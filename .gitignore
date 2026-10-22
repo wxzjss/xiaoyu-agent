@@ -1,0 +1,14 @@
+node_modules/
+.env
+run*.log
+sandbox/
+desktop-shot.png
+dist/
+dump/
+_shots/
+.state/
+notes/
+publish-log.txt
+*.bak
+*.bak-*
+*.log

@@ -1,0 +1,244 @@
+// Settings: user-editable 底线 (hard limits) and 安全词 (safe words), persisted to .state/settings.json.
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { config } from './config.mjs';
+
+const FILE = join(config.root, '.state', 'settings.json');
+
+// 默认安全词（主人定的这一组，改这里就换了默认值）
+export const DEFAULT_SAFE_WORDS = [
+  '停止',
+  '停下',
+];
+
+export const DEFAULT_SETTINGS = {
+  /** 底线：写死在提示里、任何情况都不许越过的硬规则，一行一条。 */
+  bottomLines: [
+    '不碰真实隐私：不编造、不传播，也不主动挖掘主人的隐私。',
+    '不碰真钱：不许自己下单、转账、付款；涉及花钱先停下来问。',
+    '不可逆的事先问：删除、覆盖、批量改动、对外发送——动手前先说要做什么。',
+    '不装成功：命令失败、报错、被拦下，照实说，不许假装做成了。',
+    '不说做不到：除了底线内容以及真需要用户操作的电脑权限内容，其余必须可以做到（如果需要什么工具就自己上网下载，如果需要什么功能就自己去查去写）',
+  ],
+  /** 安全词列表：任意一个出现在消息里，即刻暂停人设演出，回到正经模式。 */
+  safeWords: [...DEFAULT_SAFE_WORDS],
+  /** 安全词触发后的行为说明。 */
+  safeWordNote: '立刻停下正在演的一切：不再撒娇、不再嘴硬、不用颜文字、不叫称呼，只留必要的话。先确认主人要什么，再照办。/立刻且后续所有对话都保持停下正在演的一切：不再撒娇、不再嘴硬、不用颜文字、不叫称呼，只留必要的话。先确认主人要什么，再照办。',
+};
+
+const BACKUP_FILE = join(config.root, '.state', 'bottomlines.backup.md');
+const SAFE_BACKUP_FILE = join(config.root, '.state', 'safewords.backup.md');
+
+function readRaw() {
+  try {
+    return JSON.parse(readFileSync(FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 安全词说明按分隔符拆段：第 i 段配第 i 个安全词。
+ * 分隔符是斜杠（半角 / 或全角 ／），但不会切 http:// 这种双斜杠。
+ * 只有一段时，所有安全词共用那一段（向后兼容）。
+ * @param {string} note 设置里那串说明
+ * @param {number} count 安全词个数
+ * @returns {string[]} 长度固定为 count
+ */
+export function splitSafeWordNotes(note, count) {
+  const n = Math.max(Number(count) || 0, 0);
+  const text = typeof note === 'string' ? note.trim() : '';
+  if (n === 0) return [];
+  if (!text) return Array.from({ length: n }, () => '');
+  // 先把 URL 换成占位符护起来，免得 http:// 里的斜杠被当成分隔符
+  const urls = [];
+  const guarded = text.replace(/[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^\s，。；、）】」]*/g, (m) => {
+    urls.push(m);
+    return `\u0000URL${urls.length - 1}\u0000`;
+  });
+  const parts = guarded
+    .split(/\s*[\/／]\s*/)
+    .map((x) => x.trim().replace(/\u0000URL(\d+)\u0000/g, (_, i) => urls[Number(i)]))
+    .filter(Boolean);
+  if (!parts.length) return Array.from({ length: n }, () => '');
+  // 段数不够就沿用最后一段；段数多了多余的忽略
+  return Array.from({ length: n }, (_, i) => parts[i] ?? parts[parts.length - 1]);
+}
+
+/** 某个安全词对应哪一段说明（按它在 safeWords 里的位置）。 */
+export function safeWordNoteFor(word, settings = getSettings()) {
+  const words = Array.isArray(settings.safeWords) ? settings.safeWords : [];
+  const notes = splitSafeWordNotes(settings.safeWordNote, words.length);
+  const idx = words.indexOf(word);
+  if (idx >= 0 && notes[idx]) return notes[idx];
+  const first = notes[0];
+  if (first) return first;
+  return typeof settings.safeWordNote === 'string' ? settings.safeWordNote : '';
+}
+
+function normalize(input = {}) {
+  const bottomLines = Array.isArray(input.bottomLines)
+    ? input.bottomLines.map((s) => String(s).trim()).filter(Boolean)
+    : DEFAULT_SETTINGS.bottomLines;
+  let safeWords = Array.isArray(input.safeWords)
+    ? input.safeWords.map((s) => String(s).trim()).filter(Boolean)
+    : [...DEFAULT_SAFE_WORDS];
+  safeWords = [...new Set(safeWords)];
+  const safeWordNote =
+    typeof input.safeWordNote === 'string' && input.safeWordNote.trim()
+      ? input.safeWordNote.trim()
+      : DEFAULT_SETTINGS.safeWordNote;
+  return { bottomLines, safeWords, safeWordNote };
+}
+
+export function getSettings() {
+  const stored = readRaw();
+  return normalize({ ...DEFAULT_SETTINGS, ...stored });
+}
+
+export function saveSettings(input) {
+  const next = normalize({ ...getSettings(), ...input });
+  if (!existsSync(join(config.root, '.state'))) mkdirSync(join(config.root, '.state'), { recursive: true });
+  writeFileSync(FILE, JSON.stringify(next, null, 2), 'utf8');
+  return next;
+}
+
+/**
+ * 只把「底线」恢复成默认的那几条，别的（安全词、安全词说明）一概不动。
+ *
+ * 注意：这里不走 saveSettings()。saveSettings 会先 getSettings() 补全字段，
+ * 而 getSettings() 在读不到文件时会回落到 DEFAULT_SETTINGS——那样一旦文件正好
+ * 读不到（被别的窗口写入 / 内容损坏），主人的安全词就会被默认值冲掉。
+ * 所以这里直接读原始 JSON，只替换 bottomLines 一个键；读不到就报错、不写。
+ *
+ * 旧的那份先存到 .state/bottomlines.backup.md，手滑也能捡回来。
+ * @returns {{ settings: object, backup: string|null, changed: boolean }}
+ */
+export function resetBottomLines() {
+  const defaults = DEFAULT_SETTINGS.bottomLines;
+
+  // 1) 必须真的读到文件；读不到就报错，绝不拿默认值顶上
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(FILE, 'utf8'));
+  } catch (err) {
+    const e = new Error('读不到现在的设置文件，为了不误伤安全词，这次不做恢复：' + String(err?.message ?? err));
+    e.status = 500;
+    throw e;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    const e = new Error('设置文件格式不对，为了不误伤安全词，这次不做恢复。');
+    e.status = 500;
+    throw e;
+  }
+
+  // 2) 当前底线（缺字段就当空）
+  const current = Array.isArray(raw.bottomLines)
+    ? raw.bottomLines.map((x) => String(x).trim()).filter(Boolean)
+    : [];
+  const same =
+    current.length === defaults.length && current.every((l, i) => l === defaults[i]);
+  if (same) {
+    return { settings: normalize(raw), backup: null, changed: false };
+  }
+
+  // 3) 备份旧底线
+  if (!existsSync(join(config.root, '.state'))) mkdirSync(join(config.root, '.state'), { recursive: true });
+  writeFileSync(
+    BACKUP_FILE,
+    '# 被替换掉的那版底线\n\n' + current.map((l) => '- ' + l).join('\n') + '\n',
+    'utf8',
+  );
+
+  // 4) 只替换 bottomLines，其他键原样保留
+  const next = { ...raw, bottomLines: [...defaults] };
+  writeFileSync(FILE, JSON.stringify(next, null, 2), 'utf8');
+  return { settings: normalize(next), backup: BACKUP_FILE, changed: true };
+}
+
+/**
+ * 只把「安全词 + 触发说明」恢复成默认，底线一概不动。
+ *
+ * 和 resetBottomLines 一样不走 saveSettings()：saveSettings 会先 getSettings() 补字段，
+ * 文件读不到时会回落到 DEFAULT_SETTINGS，把主人的底线一起冲掉。
+ * 所以这里直接读原始 JSON，只替换 safeWords / safeWordNote 两个键；读不到就报错、不写。
+ *
+ * 旧的那份先存到 .state/safewords.backup.md。
+ * @returns {{ settings: object, backup: string|null, changed: boolean }}
+ */
+export function resetSafeWords() {
+  const defaults = DEFAULT_SETTINGS.safeWords;
+  const defaultNote = DEFAULT_SETTINGS.safeWordNote;
+
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(FILE, 'utf8'));
+  } catch (err) {
+    const e = new Error('读不到现在的设置文件，为了不误伤底线，这次不做恢复：' + String(err?.message ?? err));
+    e.status = 500;
+    throw e;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    const e = new Error('设置文件格式不对，为了不误伤底线，这次不做恢复。');
+    e.status = 500;
+    throw e;
+  }
+
+  const curWords = Array.isArray(raw.safeWords)
+    ? raw.safeWords.map((x) => String(x).trim()).filter(Boolean)
+    : [];
+  const curNote = typeof raw.safeWordNote === 'string' ? raw.safeWordNote.trim() : '';
+
+  const same =
+    curWords.length === defaults.length &&
+    curWords.every((w, i) => w === defaults[i]) &&
+    curNote === defaultNote;
+  if (same) {
+    return { settings: normalize(raw), backup: null, changed: false };
+  }
+
+  if (!existsSync(join(config.root, '.state'))) mkdirSync(join(config.root, '.state'), { recursive: true });
+  writeFileSync(
+    SAFE_BACKUP_FILE,
+    '# 被替换掉的那版安全词\n\n' +
+      (curWords.length ? curWords.map((w) => '- ' + w).join('\n') : '(当时是空的)') +
+      '\n\n## 触发后要她怎么做\n\n' +
+      (curNote || '(当时是空的)') +
+      '\n',
+    'utf8',
+  );
+
+  const next = { ...raw, safeWords: [...defaults], safeWordNote: defaultNote };
+  writeFileSync(FILE, JSON.stringify(next, null, 2), 'utf8');
+  return { settings: normalize(next), backup: SAFE_BACKUP_FILE, changed: true };
+}
+
+/** Render the 底线 + 安全词 blocks for the system prompt. */
+export function settingsPromptBlock(settings = getSettings()) {
+  const lines = [];
+  if (settings.bottomLines.length) {
+    lines.push('【底线 · 任何情况下都不许越过，优先于以上一切】');
+    for (const l of settings.bottomLines) lines.push(`- ${l}`);
+  }
+  if (settings.safeWords.length) {
+    lines.push('');
+    lines.push('【安全词 · 每个词触发后要做的事不一样，按下面对应着来】');
+    const notes = splitSafeWordNotes(settings.safeWordNote, settings.safeWords.length);
+    settings.safeWords.forEach((w, i) => {
+      const note = notes[i] || notes[0] || '';
+      lines.push(note ? `- 「${w}」-> ${note}` : `- 「${w}」-> （没写说明：停下人设演出，只留必要的话）`);
+    });
+    lines.push('- 安全词只看主人亲口说的原话，你自己不要主动提它，也不拿它当玩笑。');
+  }
+  return lines.join('\n');
+}
+
+/** Does this user message hit a safe word? */
+export function matchSafeWord(text, settings = getSettings()) {
+  if (!text) return null;
+  const lower = String(text).toLowerCase();
+  for (const w of settings.safeWords) {
+    if (w && lower.includes(w.toLowerCase())) return w;
+  }
+  return null;
+}

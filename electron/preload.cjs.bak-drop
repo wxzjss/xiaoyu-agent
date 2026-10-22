@@ -1,0 +1,7 @@
+// Minimal, safe bridge: the renderer only gets these two calls.
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('desktop', {
+  info: () => ipcRenderer.invoke('app:info'),
+  openWorkspace: () => ipcRenderer.invoke('app:openWorkspace'),
+});

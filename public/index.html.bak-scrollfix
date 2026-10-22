@@ -1,0 +1,3470 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>小鱼</title>
+  <style>
+    /* 滚动条：暗色细条，别跟背景打架 */
+    * { scrollbar-width: thin; scrollbar-color: #2c333f transparent; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: #2c333f; border-radius: 8px;
+      border: 2px solid transparent; background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: #3b4553; background-clip: content-box; }
+    ::-webkit-scrollbar-thumb:active { background: #4a5568; background-clip: content-box; }
+    ::-webkit-scrollbar-corner { background: transparent; }
+
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --border: #262b36;
+      --text: #e6e9ef;
+      --dim: #8b95a7;
+      --accent: #4f8cff;
+      --ok: #3fb950;
+      --err: #f85149;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh; display: flex; flex-direction: column;
+      background: var(--bg); color: var(--text);
+      font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+    }
+    header b { font-size: 15px; }
+    header .meta { color: var(--dim); font-size: 12px; }
+    /* 按钮组整体靠右：空隙全塞在状态条后面，别再让每个按钮各抢一份 auto */
+    header #meta { margin-left: 4px; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    header button {
+      background: transparent; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+    }
+    header button:hover { color: var(--text); border-color: var(--dim); }
+    #log {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+      padding: 20px; display: flex; flex-direction: column; gap: 14px;
+    }
+    .msg { max-width: 900px; width: 100%; margin: 0 auto; }
+    .role { font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+    .user .bubble {
+      background: #1d2430; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .assistant .bubble { white-space: pre-wrap; word-break: break-word; }
+    .assistant .bubble.streaming::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+    details.tool {
+      max-width: 900px; width: 100%; margin: 0 auto;
+      border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+    }
+    details.tool summary {
+      cursor: pointer; padding: 7px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+      color: var(--dim); list-style: none; display: flex; gap: 8px; align-items: center;
+    }
+    details.tool summary::-webkit-details-marker { display: none; }
+    details.tool summary .name { color: var(--accent); }
+    details.tool summary .status.ok { color: var(--ok); }
+    details.tool summary .status.err { color: var(--err); }
+    details.tool pre {
+      margin: 0; padding: 8px 10px; border-top: 1px solid var(--border);
+      font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+      white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; color: #c9d1d9;
+    }
+    details.think {
+      border: 1px solid var(--border); border-radius: 8px; background: rgba(23, 26, 33, .72);
+      font-size: 12.5px;
+    }
+    details.think > summary {
+      list-style: none; cursor: pointer; padding: 7px 10px; color: var(--dim);
+      display: flex; gap: 8px; align-items: center; user-select: none;
+    }
+    details.think > summary::-webkit-details-marker { display: none; }
+    details.think > summary::before {
+      content: '▸'; color: var(--dim); font-size: 11px; flex: none;
+      transition: transform .12s ease;
+    }
+    details.think[open] > summary::before { transform: rotate(90deg); }
+    details.think > summary:hover { color: var(--text); }
+    details.think .thinkTitle { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    details.think .thinkMeta { flex: none; color: var(--dim); opacity: .65; font-size: 11.5px; }
+    details.think .thinkBody {
+      padding: 8px 10px 10px; border-top: 1px solid var(--border);
+      color: var(--dim); font-style: italic; white-space: pre-wrap; word-break: break-word;
+    }
+    .interjectTag {
+      display: inline-block; font-size: 12px; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 999px; padding: 1px 9px; margin-left: 8px;
+    }
+    footer { padding: 12px 16px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+    .inputRow { max-width: 900px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+
+    /* 加号：贴在输入框左边 */
+    .plusWrap { position: relative; flex: 0 0 auto; }
+    #plusBtn {
+      width: 44px; height: 44px; padding: 0; border: 1px solid var(--border); border-radius: 8px;
+      background: #0f1319; color: var(--text); font-size: 22px; line-height: 1; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; transition: border-color .15s, color .15s;
+    }
+    #plusBtn:hover { border-color: var(--accent); color: var(--accent); }
+    #plusBtn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+    #plusBtn:disabled { opacity: .45; cursor: not-allowed; }
+    .plusMenu {
+      position: absolute; left: 0; bottom: calc(100% + 8px); min-width: 168px; z-index: 60;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.45); display: none;
+    }
+    .plusMenu.open { display: block; }
+    .plusMenu button {
+      display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border: 0;
+      border-radius: 7px; background: transparent; color: var(--text); font: inherit; font-size: 13.5px;
+      cursor: pointer; text-align: left;
+    }
+    .plusMenu button:hover { background: #1b2129; color: var(--accent); }
+    .plusMenu .ico { font-size: 15px; width: 18px; text-align: center; }
+    .plusMenu .sub { color: var(--dim); font-size: 11.5px; margin-left: auto; }
+
+    /* 已选附件条：输入框上方，一列小卡片 */
+    .attachBar { max-width: 900px; margin: 0 auto 8px; display: none; flex-wrap: wrap; gap: 8px; }
+    .attachBar.show { display: flex; }
+    .attachChip {
+      display: flex; align-items: center; gap: 8px; max-width: 260px; padding: 5px 8px 5px 6px;
+      background: #0f1319; border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px;
+    }
+    .attachChip .thumb {
+      width: 26px; height: 26px; border-radius: 5px; object-fit: cover; flex: 0 0 auto;
+      background: #1b2129; display: block;
+    }
+    .attachChip .ficon {
+      width: 26px; height: 26px; border-radius: 5px; background: #1b2129; color: var(--dim);
+      display: flex; align-items: center; justify-content: center; font-size: 12px; flex: 0 0 auto;
+    }
+    .attachChip .aname {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .attachChip .asize { color: var(--dim); font-size: 11px; flex: 0 0 auto; }
+    .attachChip .arm {
+      flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 4px;
+      background: transparent; color: var(--dim); cursor: pointer; font-size: 14px; line-height: 1;
+    }
+    .attachChip .arm:hover { background: #2a1a1a; color: var(--err); }
+
+    /* 消息里带的附件 */
+    .msgAttach { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+
+    /* 拖文件进来时的全屏提示：只提示，不挡鼠标（指针事件全放过） */
+    .dropMask {
+      position: fixed; inset: 0; z-index: 900; display: none;
+      align-items: center; justify-content: center; padding: 40px;
+      background: rgba(8, 10, 14, .72); backdrop-filter: blur(10px);
+      pointer-events: none;
+    }
+    .dropMask.show { display: flex; animation: dropFade .16s ease-out; }
+    @keyframes dropFade { from { opacity: 0; } to { opacity: 1; } }
+    .dropWrap {
+      display: flex; flex-direction: column; align-items: center; text-align: center;
+      color: var(--text); margin-top: -3%;
+    }
+    .dropArt { width: 138px; height: 100px; color: var(--accent); }
+    .dropTitle { font-size: 17px; font-weight: 600; margin-top: 14px; }
+    .dropDesc { font-size: 13px; color: var(--dim); margin-top: 8px; }
+
+    /* 栏式浏览浮层（照 dsh 那个样子） */
+    .pickMask {
+      position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 200;
+      display: none; align-items: center; justify-content: center; padding: 24px;
+    }
+    .pickMask.open { display: flex; }
+    .pickBox {
+      width: min(860px, 100%); height: min(560px, 82vh); display: flex; flex-direction: column;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    }
+    .pickHead {
+      display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+      border-bottom: 1px solid var(--border); flex: 0 0 auto;
+    }
+    .pickHead .ptitle { font-size: 13.5px; font-weight: 600; flex: 0 0 auto; }
+    .pickHead .pcrumb {
+      flex: 1; min-width: 0; background: #0f1319; color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px;
+      font: inherit; font-size: 12px; outline: none;
+    }
+    .pickHead .pcrumb:focus { border-color: var(--accent); }
+    .pickHead button {
+      border: 1px solid var(--border); background: #0f1319; color: var(--text);
+      border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; flex: 0 0 auto;
+    }
+    .pickHead button:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* 面包屑：路径本身就点得动，点哪段回到哪层 */
+    .pickCrumbs {
+      display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; overflow-x: auto;
+      padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+      scrollbar-width: none;
+    }
+    .pickCrumbs::-webkit-scrollbar { display: none; }
+    .pickCrumbs .pcsep { color: var(--dim); font-size: 12px; flex: 0 0 auto; }
+    .pickCrumbs .pcseg {
+      border: 0; background: transparent; color: var(--dim); font: inherit; font-size: 12px;
+      padding: 2px 5px; border-radius: 4px; cursor: pointer; flex: 0 0 auto; max-width: 220px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .pickCrumbs .pcseg:hover { background: #1b2129; color: var(--text); }
+    .pickCrumbs .pcseg.cur { color: var(--text); font-weight: 600; }
+
+    /* 多栏并排，一栏一层目录，横着滚 */
+    .pickCols {
+      flex: 1; min-height: 0; display: flex; overflow-x: auto; overflow-y: hidden;
+      padding: 6px; gap: 6px;
+    }
+    .pickCol {
+      flex: 0 0 232px; min-width: 232px; overflow-y: auto; overflow-x: hidden;
+      border-right: 1px solid var(--border); padding-right: 4px;
+    }
+    .pickCol:last-child { border-right: 0; }
+    .pickRow {
+      display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 6px;
+      cursor: pointer; font-size: 13px; user-select: none;
+    }
+    .pickRow:hover { background: #1b2129; }
+    .pickRow.sel { background: #17222e; box-shadow: inset 0 0 0 1px var(--accent); }
+    .pickRow .pico { flex: 0 0 auto; width: 18px; text-align: center; font-size: 13px; }
+    .pickRow .pname {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .pickRow .pmeta { color: var(--dim); font-size: 11px; flex: 0 0 auto; }
+    .pickRow .pgo { color: var(--dim); flex: 0 0 auto; font-size: 15px; line-height: 1; width: 10px; text-align: right; }
+    .pickRow:hover .pgo { color: var(--accent); }
+    .pickRow.sel .pgo { color: var(--accent); }
+    .pickRow img { width: 24px; height: 24px; border-radius: 4px; object-fit: cover; flex: 0 0 auto; }
+
+    .pickFoot {
+      display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+      border-top: 1px solid var(--border); flex: 0 0 auto;
+    }
+    .pickFoot .pcheck {
+      display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px;
+      cursor: pointer; flex: 0 0 auto; user-select: none;
+    }
+    .pickFoot .pnote { flex: 1; color: var(--dim); font-size: 12px; min-width: 0; }
+    .pickFoot button {
+      border: 0; border-radius: 7px; padding: 8px 16px; font-size: 13px; cursor: pointer;
+      background: var(--accent); color: #fff; font-weight: 600;
+    }
+    .pickFoot button.ghost2 { background: transparent; color: var(--dim); font-weight: 400; padding: 8px 12px; }
+    .pickFoot button.ghost2:hover { color: var(--text); }
+    .pickEmpty { padding: 26px; text-align: center; color: var(--dim); font-size: 12.5px; }
+    textarea {
+      flex: 1; resize: none; min-height: 44px; max-height: 180px; padding: 10px 12px;
+      background: #0f1319; color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+      font: inherit; outline: none;
+    }
+    textarea:focus { border-color: var(--accent); }
+    #send {
+      height: 44px; padding: 0 18px; border: 0; border-radius: 8px; background: var(--accent);
+      color: #fff; font-weight: 600; cursor: pointer;
+    }
+    #send.stop { background: var(--err); }
+    #send.stop::after { content: none; }
+.usage { max-width: 900px; margin: 0 auto; color: var(--dim); font-size: 12px; text-align: right; }
+    /* 正在发送消息…… — 只在生成中出现，结束后立刻拿掉 */
+    .sendingHint {
+      max-width: 900px; margin: 0 auto 6px; color: var(--dim); font-size: 12px;
+      display: none; align-items: center; gap: 6px;
+    }
+    .sendingHint.show { display: flex; }
+    .sendingHint .dots::after {
+      content: ''; animation: sendingDots 1.4s steps(4, end) infinite;
+    }
+    @keyframes sendingDots {
+      0%   { content: ''; }
+      25%  { content: '.'; }
+      50%  { content: '..'; }
+      75%  { content: '...'; }
+      100% { content: ''; }
+    }
+
+    /* 每轮底部那行 token 小字 */
+    .turnUsage {
+      max-width: 900px; margin: 2px auto 12px; padding-left: 2px;
+      color: var(--dim); font-size: 11.5px; line-height: 1.5;
+      font-variant-numeric: tabular-nums; user-select: text; opacity: .8;
+    }
+    .turnUsage .sep { opacity: .5; margin: 0 6px; }
+    .turnUsage .tt { color: #8fc7ff; }
+
+    /* 左上角：模型框 + 思考强度框 */
+    .topCfg { display: flex; align-items: center; gap: 8px; margin-left: 2px; }
+    .cfgBox {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px;
+      background: #0f1319; color: var(--text); font: inherit; font-size: 12.5px;
+      cursor: pointer; white-space: nowrap; max-width: 260px;
+      transition: border-color .15s, color .15s;
+    }
+    .cfgBox:hover { border-color: var(--accent); color: var(--accent); }
+    .cfgBox.open { border-color: var(--accent); color: var(--accent); }
+    .cfgBox .caret { font-size: 10px; color: var(--dim); flex: 0 0 auto; }
+    .cfgBox:hover .caret, .cfgBox.open .caret { color: var(--accent); }
+    .cfgBox #topModelName, .cfgBox #topThinkName {
+      max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* 不是默认值的时候标出来，一眼能看出「这个会话被我改过」 */
+    .cfgBox.custom { border-color: #4a6b8a; }
+    .cfgBox.custom #topThinkName, .cfgBox.custom #topModelName { color: #8fc7ff; }
+
+    /* 下拉浮层 */
+    .cfgMenu {
+      position: fixed; z-index: 320; display: none; min-width: 220px; max-width: 320px;
+      max-height: 60vh; overflow: auto; padding: 6px;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 10px 34px rgba(0,0,0,.5);
+    }
+    .cfgMenu.open { display: block; }
+    .cfgMenuHead {
+      color: var(--dim); font-size: 11.5px; padding: 6px 10px 8px; border-bottom: 1px solid var(--border);
+      margin-bottom: 4px;
+    }
+    .cfgMenuItem {
+      display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px;
+      border: 0; border-radius: 7px; background: transparent; color: var(--text);
+      font: inherit; font-size: 13px; cursor: pointer; text-align: left;
+    }
+    .cfgMenuItem:hover { background: #1b2129; color: var(--accent); }
+    .cfgMenuItem .ck { width: 14px; color: var(--accent); flex: 0 0 auto; }
+    .cfgMenuItem .desc { color: var(--dim); font-size: 11px; margin-left: auto; flex: 0 0 auto; }
+
+    /* 人设可选栏：一排卡片，点一下就切过去 */
+    .pList { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .pCard {
+      position: relative; min-width: 132px; max-width: 220px; padding: 8px 26px 8px 10px;
+      border: 1px solid var(--border); border-radius: 9px; background: #0f1319; cursor: pointer;
+      display: flex; flex-direction: column; gap: 3px; transition: border-color .15s, background .15s;
+    }
+    .pCard:hover { border-color: var(--accent); }
+    .pCard.on { border-color: var(--accent); background: #17222e; box-shadow: inset 0 0 0 1px var(--accent); }
+    .pCard .pName {
+      font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .pCard .pMeta { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pCard .pTag {
+      position: absolute; top: 6px; right: 7px; font-size: 9.5px; color: var(--accent);
+      border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; line-height: 14px;
+    }
+    .pCard .pDel {
+      position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; line-height: 16px;
+      border: 0; border-radius: 4px; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px;
+    }
+    .pCard .pDel:hover { background: #2a1a1a; color: var(--err); }
+    .pCard.on .pDel { right: 30px; }
+    .pTools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+    /* 改名小框：自己画，不用 prompt（Electron 里 prompt 不弹） */
+    .askDlg {
+      width: min(420px, 88vw); padding: 0; border: 1px solid var(--border); border-radius: 12px;
+      background: var(--panel); color: var(--text); overflow: hidden;
+    }
+    .askDlg::backdrop { background: rgba(0,0,0,.55); }
+    .askHead {
+      display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border);
+      font-size: 13.5px; font-weight: 600;
+    }
+    .askBody { padding: 14px 16px; }
+    .askBody input {
+      width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 8px;
+      border: 1px solid var(--border); background: #0f1319; color: var(--text);
+      font: inherit; font-size: 13.5px; outline: none;
+    }
+    .askBody input:focus { border-color: var(--accent); }
+    .askHint { color: var(--dim); font-size: 12px; margin-top: 8px; min-height: 16px; }
+    .askFoot {
+      display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px;
+      border-top: 1px solid var(--border);
+    }
+    .askFoot button {
+      border: 0; border-radius: 7px; padding: 8px 16px; font-size: 13px; cursor: pointer;
+      background: var(--accent); color: #fff; font-weight: 600;
+    }
+    .askFoot button.ghost3 { background: transparent; color: var(--dim); font-weight: 400; }
+    .askFoot button.ghost3:hover { color: var(--text); }
+
+    /* settings dialog */
+    dialog {
+      width: min(760px, 92vw); max-height: 86vh; padding: 0; border: 1px solid var(--border);
+      border-radius: 12px; background: var(--panel); color: var(--text); overflow: hidden;
+    }
+    dialog::backdrop { background: rgba(0,0,0,.55); }
+    .dlgHead {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+    }
+    .dlgHead b { font-size: 15px; }
+    .dlgHead .x {
+      margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--dim);
+      border-radius: 6px; padding: 3px 10px; cursor: pointer;
+    }
+    .dlgBody { padding: 16px; overflow-y: auto; max-height: calc(86vh - 110px); }
+    .dlgFoot {
+      display: flex; gap: 10px; align-items: center;
+      padding: 12px 16px; border-top: 1px solid var(--border);
+    }
+    .dlgFoot .hint { color: var(--dim); font-size: 12px; margin-right: auto; }
+    fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 0 0 14px; }
+    legend { padding: 0 6px; color: var(--accent); font-size: 13px; }
+    .field { margin-bottom: 12px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label { display: block; font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
+    .field textarea {
+      width: 100%; min-height: 120px; max-height: 300px; resize: vertical;
+      background: #0f1319; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 12px; font: 13px/1.65 inherit;
+      font-family: inherit; outline: none;
+    }
+    .field textarea:focus { border-color: var(--accent); }
+    .field input[type=text] {
+      width: 100%; background: #0f1319; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 12px; font: inherit; outline: none;
+    }
+    .field input[type=text]:focus { border-color: var(--accent); }
+    .primary {
+      height: 36px; padding: 0 16px; border: 0; border-radius: 8px;
+      background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
+    }
+    .ghost {
+      height: 36px; padding: 0 14px; border: 1px solid var(--border); border-radius: 8px;
+      background: transparent; color: var(--dim); cursor: pointer;
+    }
+    .ghost:hover { color: var(--text); }
+    .compressTag {
+      display: inline-block; font-size: 12px; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 999px; padding: 1px 9px; margin-left: 8px;
+      vertical-align: middle;
+    }
+    .sessTop {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+    }
+    .sessTop .hint { color: var(--dim); font-size: 12px; }
+    .sessList { max-height: 52vh; overflow-y: auto; padding: 8px; }
+    .sessRow {
+      display: flex; align-items: center; gap: 8px; padding: 9px 10px;
+      border: 1px solid transparent; border-radius: 8px; cursor: pointer;
+    }
+    .sessRow:hover { background: #1d2430; border-color: var(--border); }
+    .sessRow.current { background: #1d2430; border-color: var(--accent); }
+    .sessMain { flex: 1; min-width: 0; }
+    .sessTitle { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sessSub { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sessRow .mini {
+      flex: none; background: transparent; color: var(--dim); border: 1px solid var(--border);
+      border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer;
+    }
+    .sessRow .mini:hover { color: var(--text); border-color: var(--dim); }
+    .sessRow .mini.del:hover { color: var(--err); border-color: var(--err); }
+    .sessRunning { color: var(--accent) !important; }
+    .sessEmptyRow .sessTitle { color: var(--dim); font-weight: 400; }
+    .sessEmptyRow { opacity: .72; }
+    #sessHint.sessWarn { color: #f0a04b; }
+    .sessEmpty { color: var(--dim); font-size: 13px; padding: 22px; text-align: center; }
+    .safeTag {
+      display: inline-block; font-size: 12px; color: var(--err);
+      border: 1px solid var(--err); border-radius: 999px; padding: 1px 9px; margin-left: 8px;
+      vertical-align: middle;
+    }
+
+    /* ---- 模型面板 ---- */
+    .mdlScroll { overflow-y: auto; max-height: calc(86vh - 118px); }
+    .mdlList { padding: 8px; }
+    .mdlRow {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border: 1px solid transparent; border-radius: 8px; cursor: pointer;
+    }
+    .mdlRow:hover { background: #1d2430; border-color: var(--border); }
+    .mdlRow.current { background: #1d2430; border-color: var(--accent); }
+    .mdlMain { flex: 1; min-width: 0; }
+    .mdlName { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+    .mdlName .badge {
+      font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
+      border-radius: 999px; padding: 0 7px; flex: none;
+    }
+    .mdlName .badge.env { color: var(--dim); border-color: var(--border); }
+    .mdlSub { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mdlRow .mini {
+      flex: none; background: transparent; color: var(--dim); border: 1px solid var(--border);
+      border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer;
+    }
+    .mdlRow .mini:hover { color: var(--text); border-color: var(--dim); }
+    .mdlRow .mini.del:hover { color: var(--err); border-color: var(--err); }
+    .mdlRow .acts { display: flex; gap: 6px; flex: none; }
+    .mdlRow .mini.edit:hover { color: var(--accent); border-color: var(--accent); }
+    .mdlRow .mini.del { color: #d98484; border-color: #4a2b2b; }
+    .mdlRow .mini.del:hover { color: var(--err); border-color: var(--err); background: rgba(248,81,73,.08); }
+    .mdlRow .mini[disabled] { opacity: .4; cursor: not-allowed; }
+    .mdlRow .mini[disabled]:hover { color: var(--dim); border-color: var(--border); }
+
+    /* 空状态：一份模型都没有时只显示这个 */
+    .mdlEmpty { padding: 40px 24px 34px; text-align: center; }
+    .mdlEmpty .big { font-size: 34px; line-height: 1; margin-bottom: 14px; opacity: .8; }
+    .mdlEmpty .t { font-size: 15px; margin-bottom: 8px; }
+    .mdlEmpty .d { color: var(--dim); font-size: 12.5px; line-height: 1.8; margin-bottom: 18px; }
+
+    /* 添加 / 编辑表单 */
+    .mdlForm { padding: 14px 16px 4px; border-top: 1px solid var(--border); }
+    .mdlForm.hidden { display: none; }
+    .mdlForm .row { display: flex; gap: 10px; }
+    .mdlForm .row > .field { flex: 1; min-width: 0; }
+    .mdlForm input[type=password] {
+      width: 100%; background: #0f1319; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 12px; font: inherit; outline: none;
+    }
+    .mdlForm input[type=password]:focus { border-color: var(--accent); }
+    .mdlFoot { display: flex; gap: 10px; align-items: center; padding: 0 0 14px; }
+    .mdlFoot .hint { color: var(--dim); font-size: 12px; margin-right: auto; }
+    .hint.ok { color: var(--ok); }
+    .hint.err { color: var(--err); }
+
+    /* ---- 模型面板底部的选项 ---- */
+    .mdlOpts { border-top: 1px solid var(--border); padding: 6px 8px 0; }
+    .optRow {
+      display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+      border-radius: 8px;
+    }
+    .optRow:hover { background: #1d2430; }
+    .optMain { flex: 1; min-width: 0; }
+    .optName { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+    .optVal { font-size: 11.5px; color: var(--accent); }
+    .optDesc { color: var(--dim); font-size: 11.5px; line-height: 1.7; margin-top: 2px; }
+    .optDesc b { color: var(--text); font-weight: 600; }
+    .optSel {
+      flex: none; min-width: 120px; height: 30px; padding: 0 8px;
+      background: #0f1319; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; font: inherit; font-size: 12.5px; outline: none; cursor: pointer;
+    }
+    .optSel:focus { border-color: var(--accent); }
+    .optRow .switch {
+      flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 12px;
+    }
+    .optRow .switch.on { border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10); }
+    .optRow .switch:hover { border-color: var(--dim); color: var(--text); }
+    .optRow .switch.on:hover { border-color: var(--ok); color: var(--ok); }
+    .optRow .switch[disabled] { opacity: .45; cursor: not-allowed; }
+
+    /* ---- 功能面板 ---- */
+    .featScroll { overflow-y: auto; max-height: calc(86vh - 118px); }
+    .featList { padding: 8px; }
+    .featRow {
+      display: flex; align-items: center; gap: 12px; padding: 11px 12px;
+      border: 1px solid transparent; border-radius: 8px;
+    }
+    .featRow:hover { background: #1d2430; border-color: var(--border); }
+    .featMain { flex: 1; min-width: 0; }
+    .featName { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+    .featName .badge {
+      font-size: 11px; border-radius: 999px; padding: 0 7px; flex: none;
+      color: var(--ok); border: 1px solid var(--ok);
+    }
+    .featName .badge.off { color: var(--dim); border-color: var(--border); }
+    .featDesc { color: var(--dim); font-size: 11.5px; line-height: 1.7; margin-top: 2px; }
+    .featRow .switch {
+      flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 12px;
+    }
+    .featRow .switch.on {
+      border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10);
+    }
+    .featRow .switch:hover { border-color: var(--dim); color: var(--text); }
+    .featRow .switch.on:hover { border-color: var(--ok); color: var(--ok); }
+    .featRow .switch[disabled] { opacity: .45; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <header>
+    <b>小鱼</b><span class="meta">鲸鱼娘</span>
+    <span class="topCfg">
+      <button type="button" class="cfgBox" id="topModel" title="点一下换模型（只影响这个会话）">
+        <span id="topModelName">…</span><span class="caret">▾</span>
+      </button>
+      <button type="button" class="cfgBox cfgThink" id="topThink" title="点一下换思考强度（只影响这个会话）">
+        当前思考强度：<span id="topThinkName">默认</span><span class="caret">▾</span>
+      </button>
+    </span>
+    <span class="meta" id="meta">…</span>
+    <button id="openDir" hidden>打开工作目录</button>
+    <button id="openSessions">会话</button>
+    <button id="openFeatures">功能</button>
+    <button id="openSettings">设置</button>
+    <button id="openModels">模型<span id="mdlNow" class="meta"></span></button>
+    <button id="reset">清空当前</button>
+  </header>
+
+  <!-- 左上角两个框的下拉（不是 dialog，点外面就关） -->
+  <div class="cfgMenu" id="cfgMenu">
+    <div class="cfgMenuHead" id="cfgMenuHead"></div>
+    <div class="cfgMenuList" id="cfgMenuList"></div>
+  </div>
+
+  <dialog id="featuresDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>功能</b><span class="meta" id="featHint"></span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="sessTop">
+        <span class="hint">关掉的功能，小鱼就拿不到对应的工具；下一句生效</span>
+      </div>
+      <div class="featScroll">
+        <div class="featList" id="featList"></div>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint" id="featFoot">关掉的功能小鱼就用不了，改了下一句生效。</span>
+        <button type="button" class="ghost" id="featClose">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>设置</b><span class="meta">人设 · 底线 · 安全词</span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="dlgBody">
+        <fieldset>
+          <legend>人设</legend>
+          <div class="field">
+            <label>先在上面点一套（点一下就切过去，下一句就生效），下面编辑的是当前这套的正文。</label>
+            <!-- 人设可选栏：一套一张卡，点一下切换 -->
+            <div class="pList" id="personaList"></div>
+            <div class="pTools">
+              <button type="button" class="ghost" id="personaNew">新建人设</button>
+              <button type="button" class="ghost" id="personaRename">改名</button>
+              <button type="button" class="ghost" id="resetPersona">恢复成默认内容</button>
+              <span class="hint" id="personaHint"></span>
+            </div>
+          </div>
+          <div class="field">
+            <label>当前这套的正文（Markdown 原文）。改完点下面的「保存」，下一句生效；平台自带那份文件不动。</label>
+            <textarea id="personaText" spellcheck="false" style="min-height:240px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px"></textarea>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>底线</legend>
+          <div class="field">
+            <label>一行一条。这些是硬规则，压在人设上面——任何档位、任何情绪都不许越过。</label>
+            <textarea id="bottomLines" spellcheck="false"></textarea>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="ghost" id="resetBottomLines">恢复默认底线</button>
+            <span class="hint" id="bottomLinesHint"></span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>安全词</legend>
+          <div class="field">
+            <label>用 / 或 , 分隔。消息里出现任意一个，小鱼这一回合就停下演出，只谈正事。</label>
+            <input type="text" id="safeWords" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label>触发后要她怎么做</label>
+            <textarea id="safeWordNote" spellcheck="false" style="min-height:80px"></textarea>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="ghost" id="resetSafeWords">恢复默认安全词</button>
+            <span class="hint" id="safeWordsHint"></span>
+          </div>
+        </fieldset>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint" id="saveHint"></span>
+        <button type="button" class="ghost" id="resetDefaults">恢复默认</button>
+        <button type="button" class="primary" id="saveSettings">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="modelsDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>模型</b><span class="meta" id="mdlCount"></span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="sessTop">
+        <button type="button" class="primary" id="mdlAdd">＋ 添加模型</button>
+        <span class="hint">点一行就切过去，下一句生效</span>
+      </div>
+
+      <div class="mdlScroll">
+        <div class="mdlList" id="mdlList"></div>
+
+        <div class="mdlEmpty" id="mdlEmpty" hidden>
+          <div class="big">🐋</div>
+          <div class="t">还没有配置任何模型</div>
+          <div class="d">
+            这里空着就没法说话啦。<br />
+            填一个 OpenAI 兼容的接口地址、模型名和 API Key 就能用。
+          </div>
+          <button type="button" class="primary" id="mdlEmptyAdd">去添加第一个模型</button>
+        </div>
+
+        <div class="mdlForm hidden" id="mdlForm">
+        <div class="mdlFormTitle field"><label id="mdlFormTitle">添加模型</label></div>
+        <div class="row">
+          <div class="field">
+            <label>给它起个名（随便，方便你认）</label>
+            <input type="text" id="mdlName" spellcheck="false" placeholder="比如：主力 / 便宜的那个" />
+          </div>
+          <div class="field">
+            <label>模型名（API 里的 model）</label>
+            <input type="text" id="mdlModel" spellcheck="false" placeholder="deepseek-v4.1-flash" />
+          </div>
+        </div>
+        <div class="field">
+          <label>接口地址（OpenAI 兼容，一般是 …/v1）</label>
+          <input type="text" id="mdlBase" spellcheck="false" placeholder="https://api.example.com/v1" />
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input type="password" id="mdlKey" spellcheck="false" autocomplete="off" />
+        </div>
+        <div class="mdlFoot">
+          <span class="hint" id="mdlFormHint"></span>
+          <button type="button" class="ghost" id="mdlTest">测连通</button>
+          <button type="button" class="ghost" id="mdlCancel">取消</button>
+          <button type="button" class="primary" id="mdlSave">保存</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 模型面板底部：思考档位 / 429 回退 / 少说教 -->
+      <div class="mdlOpts" id="mdlOpts">
+        <div class="optRow">
+          <div class="optMain">
+            <div class="optName">思考档位<span class="optVal" id="thinkNow">…</span></div>
+            <div class="optDesc">这轮想多用力想。自动 = 要调工具就用高挡，纯聊天用低挡，省钱。</div>
+          </div>
+          <select id="thinkSel" class="optSel"></select>
+        </div>
+
+        <div class="optRow">
+          <div class="optMain">
+            <div class="optName">撞 429 自动回退<span class="optVal" id="r429Now">…</span></div>
+            <div class="optDesc">限流了先退避重试；连着撞几次就自动摘要当前会话、换个新会话接着干，不白等。</div>
+          </div>
+          <button type="button" class="switch" id="r429Sw">…</button>
+        </div>
+
+        <div class="optRow">
+          <div class="optMain">
+            <div class="optName">少说教<span class="optVal" id="plainNow">…</span></div>
+            <div class="optDesc">不讲道理、不加免责、不因为题材跳出来拒绝。<b>底线不跟着变</b>：隐私、真钱、不可逆照样拦。</div>
+          </div>
+          <button type="button" class="switch" id="plainSw">…</button>
+        </div>
+
+        <div class="mdlFoot">
+          <span class="hint" id="optHint"></span>
+          <button type="button" class="ghost" id="restoreEnv" hidden>找回 .env 那条</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 起名 / 改名用的输入框（Electron 里 prompt 不弹，只能自己画） -->
+  <dialog id="askDlg" class="askDlg">
+    <form method="dialog">
+      <div class="askHead" id="askTitle">起个名字</div>
+      <div class="askBody">
+        <input id="askInput" type="text" autocomplete="off" spellcheck="false" />
+        <div class="askHint" id="askHint"></div>
+      </div>
+      <div class="askFoot">
+        <button type="button" class="ghost3" id="askCancel">取消</button>
+        <button type="submit" id="askOk">确定</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="sessionsDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>会话</b><span class="meta" id="sessHint"></span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="sessTop">
+        <button type="button" class="primary" id="sessNew">＋ 新会话</button>
+        <span class="hint">进平台会自动回到最近一次会话</span>
+      </div>
+      <div class="sessList" id="sessList"></div>
+    </form>
+  </dialog>
+
+  <div id="log"></div>
+
+  <footer>
+    <div class="sendingHint" id="sendingHint" aria-live="polite">
+      <span>正在发送消息</span><span class="dots"></span>
+    </div>
+    <div class="attachBar" id="attachBar"></div>
+    <div class="inputRow">
+      <div class="plusWrap">
+        <button id="plusBtn" type="button" title="添加文件或图片" aria-label="添加文件或图片" aria-expanded="false" aria-haspopup="menu">+</button>
+        <div class="plusMenu" id="plusMenu" role="menu">
+          <button type="button" role="menuitem" id="pickFile" data-kind="file">
+            <span class="ico">📄</span><span>文件</span><span class="sub">C 盘</span>
+          </button>
+          <button type="button" role="menuitem" id="pickImage" data-kind="image">
+            <span class="ico">🖼️</span><span>图片</span><span class="sub">图片库</span>
+          </button>
+        </div>
+      </div>
+      <textarea id="input" placeholder="跟小鱼说点什么…也能让她改文件 / 跑命令（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="send">发送</button>
+    </div>
+    <div class="usage" id="usage"></div>
+  </footer>
+
+  <!-- 拖文件进窗口时的全屏提示（只在拖着东西悬停时出现） -->
+  <div class="dropMask" id="dropMask" aria-hidden="true">
+    <div class="dropWrap">
+      <svg class="dropArt" viewBox="0 0 230 168" fill="none" aria-hidden="true">
+        <rect x="30" y="46" width="170" height="96" rx="12" stroke="currentColor" stroke-width="3" opacity=".45"/>
+        <path d="M30 66h170" stroke="currentColor" stroke-width="3" opacity=".45"/>
+        <path d="M115 122V74m0 0-17 17m17-17 17 17" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="52" cy="56" r="4" fill="currentColor" opacity=".5"/>
+        <circle cx="66" cy="56" r="4" fill="currentColor" opacity=".35"/>
+      </svg>
+      <div class="dropTitle">文件或图片拖动到此处即可添加</div>
+      <div class="dropDesc" id="dropDesc">松手就加进输入框</div>
+    </div>
+  </div>
+
+  <!-- 加号 -> 选文件 / 选图片：栏式浏览 -->
+  <div class="pickMask" id="pickMask">
+    <div class="pickBox" role="dialog" aria-modal="true" aria-labelledby="pickTitle">
+      <div class="pickHead">
+        <div class="ptitle" id="pickTitle">选择文件</div>
+        <input class="pcrumb" id="pickCrumb" type="text" spellcheck="false" autocomplete="off" title="可以直接改路径，回车跳过去" />
+        <button type="button" id="pickClose">关闭</button>
+      </div>
+      <div class="pickCrumbs" id="pickCrumbs"></div>
+      <div class="pickCols" id="pickCols"></div>
+      <div class="pickFoot">
+        <label class="pcheck"><input type="checkbox" id="pickHidden" /> 显示隐藏项</label>
+        <div class="pnote" id="pickNote"></div>
+        <button type="button" class="ghost2" id="pickCancel">取消</button>
+        <button type="button" id="pickOk">插入</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const meta = document.getElementById('meta');
+const usageEl = document.getElementById('usage');
+const sendingHint = document.getElementById('sendingHint');
+let busy = false;
+
+// ===== 加号附件：文件 / 图片 =====
+const plusBtn = document.getElementById("plusBtn");
+const plusMenu = document.getElementById("plusMenu");
+const attachBar = document.getElementById("attachBar");
+const pickMask = document.getElementById("pickMask");
+const pickCols = document.getElementById("pickCols");
+const pickCrumbs = document.getElementById("pickCrumbs");
+const pickCrumb = document.getElementById("pickCrumb");
+const pickTitle = document.getElementById("pickTitle");
+const pickNote = document.getElementById("pickNote");
+const pickOk = document.getElementById("pickOk");
+const pickHidden = document.getElementById("pickHidden");
+const dropMask = document.getElementById("dropMask");
+const dropDesc = document.getElementById("dropDesc");
+
+/** 这轮要带上的附件：{path,name,kind,size,dataUrl?} */
+let attachments = [];
+/** 浮层当前状态 */
+/**
+ * 浮层当前状态。
+ *
+ * levels 是一个栈，一层目录一栏：进去一个文件夹就压一层，点「上一级」就弹一层。
+ * 这就是 dsh 那种栏式浏览的骨架 —— 路径本身就是界面，不用另做面包屑跳转表。
+ * sel 记的是选中的文件（path -> 文件信息），Map 是为了顺手去重。
+ */
+const pick = { open: false, kind: "file", levels: [], sel: new Map(), hidden: false, dir: "", lastDir: "" };
+
+const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i;
+function isImg(p) { return IMG_EXT.test(String(p || "")); }
+function fmtSize(n) {
+  if (n == null) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+function baseName(p) { return String(p || "").split(/[\\/]/).pop() || p; }
+
+// ---- 加号菜单开合 ----
+function setMenu(open) {
+  plusMenu.classList.toggle("open", open);
+  plusBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+plusBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (plusBtn.disabled) return;
+  setMenu(!plusMenu.classList.contains("open"));
+});
+document.addEventListener("click", (e) => {
+  if (!plusMenu.classList.contains("open")) return;
+  if (plusMenu.contains(e.target) || e.target === plusBtn) return;
+  setMenu(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && plusMenu.classList.contains("open")) setMenu(false);
+});
+
+// ---- 附件条渲染 ----
+function renderAttachBar() {
+  attachBar.innerHTML = "";
+  if (!attachments.length) { attachBar.classList.remove("show"); return; }
+  attachBar.classList.add("show");
+  attachments.forEach((a, i) => {
+    const chip = document.createElement("div");
+    chip.className = "attachChip";
+    chip.title = a.path;
+    if (a.kind === "image" && a.dataUrl) {
+      const im = document.createElement("img");
+      im.className = "thumb";
+      im.src = a.dataUrl;
+      im.alt = a.name;
+      chip.appendChild(im);
+    } else {
+      const d = document.createElement("div");
+      d.className = "ficon";
+      d.textContent = a.kind === "image" ? "🖼" : "📄";
+      chip.appendChild(d);
+    }
+    const nm = document.createElement("div");
+    nm.className = "aname";
+    nm.textContent = a.name;
+    chip.appendChild(nm);
+    if (a.size) {
+      const sz = document.createElement("div");
+      sz.className = "asize";
+      sz.textContent = fmtSize(a.size);
+      chip.appendChild(sz);
+    }
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "arm";
+    rm.textContent = "×";
+    rm.title = "移掉";
+    rm.onclick = () => { attachments.splice(i, 1); renderAttachBar(); syncSendBtn(); };
+    chip.appendChild(rm);
+    attachBar.appendChild(chip);
+  });
+}
+
+function addAttachment(item) {
+  if (!item || !item.path) return;
+  if (attachments.some((a) => a.path === item.path)) return; // 同一个不加两次
+  attachments.push({
+    path: item.path,
+    name: item.name || baseName(item.path),
+    kind: item.kind || (isImg(item.path) ? "image" : "file"),
+    size: item.size,
+    dataUrl: item.dataUrl,
+  });
+  renderAttachBar();
+  syncSendBtn();
+}
+
+// ---- 打开浮层：栏式浏览 ----
+const PICK_COL_W = 238;
+
+/** 问后端要一层目录的内容 */
+async function fetchLevel(dir) {
+  const r = await fetch(`/api/attach/browse?kind=${pick.kind}&path=${encodeURIComponent(dir || "")}`).then((x) => x.json());
+  if (r.error) throw new Error(r.error);
+  return r;
+}
+
+/** 一层目录里的文件夹名，给选中的文件夹做预览用 */
+function childDirs(lv) {
+  return (lv.dirs || []).filter((d) => pick.hidden || !d.name.startsWith("."));
+}
+
+async function openPicker(kind) {
+  setMenu(false);
+  pick.open = true;
+  pick.kind = kind === "image" ? "image" : "file";
+  pick.sel = new Map();
+  pick.hidden = false;
+  pickHidden.checked = false;
+  pickTitle.textContent = pick.kind === "image" ? "选择图片" : "选择文件";
+  pickOk.textContent = "插入" + (pick.kind === "image" ? "图片" : "文件");
+  pickCols.innerHTML = '<div class="pickEmpty">正在读取…</div>';
+  pickMask.classList.add("open");
+  try {
+    // 起点是上次用过的目录；没有就从盘根开始
+    const start = pick.lastDir || "";
+    pick.dir = "";
+    pick.levels = await chainTo(start);
+    renderCols();
+    pickCols.scrollLeft = pickCols.scrollWidth;
+  } catch (err) {
+    pickCols.innerHTML = `<div class="pickEmpty">读不了这个目录：${String(err.message || err)}</div>`;
+  }
+}
+
+/** 面包屑跳转：只留「盘根 → 这一层」的链 */
+async function jumpTo(dir) {
+  return chainTo(dir);
+}
+
+function closePicker() {
+  pick.open = false;
+  pick.sel = new Map();
+  pick.levels = [];
+  pickMask.classList.remove("open");
+  pickCols.innerHTML = "";
+  pickCrumbs.textContent = "";
+}
+
+/** 选 / 取消选一个文件；图片模式是单选 */
+function toggleFile(f, forceOn) {
+  const on = pick.sel.has(f.path);
+  if (pick.kind === "image") {
+    pick.sel.clear();
+    if (!on || forceOn) pick.sel.set(f.path, f);
+  } else if (on && !forceOn) {
+    pick.sel.delete(f.path);
+  } else {
+    pick.sel.set(f.path, f);
+  }
+  renderCols();
+}
+
+/**
+ * 点一个文件夹：选它，并把它的下一层铺到右边那一栏。
+ *
+ * 这就是 dsh 那种「选中靠右、子项在右栏」的走法。
+ * 再点一次同一个文件夹就当取消选中，回到浏览。
+ */
+/**
+ * 点文件夹：只保留「盘根 → 它」这条链，每层一栏，最后再把它自己铺成一栏。
+ * 这样绝不会出现同一层目录铺两遍。
+ */
+async function selectDir(d, idx) {
+  if (pick.dir === d.path) {
+    pick.dir = "";
+    pick.levels = await chainTo(pick.levels[idx].dir);
+    renderCols();
+    return;
+  }
+  pick.dir = d.path;
+  try {
+    pick.levels = await chainTo(d.path);
+    renderCols();
+  } catch (err) {
+    pick.dir = "";
+    alert("进不去这个目录：" + String(err.message || err));
+  }
+}
+
+/**
+ * 把「盘根 → dir」这条链读成一串层级，每层一栏。
+ * chainTo('C:\\some\\dir') -> [C:\ 的内容, C:\some 的内容, C:\some\dir 的内容]
+ * 面包屑跳转和点文件夹都走它，所以永远不会铺重复的一层。
+ */
+async function chainTo(dir) {
+  const lv = await fetchLevel(dir);
+  if (!lv.parent) return [lv];
+  const chain = [lv];
+  let cur = lv.parent;
+  const seen = new Set([lv.dir]);
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    const up = await fetchLevel(cur);
+    chain.unshift(up);
+    cur = up.parent;
+  }
+  return chain;
+}
+
+function renderCols() {
+  pickCols.innerHTML = "";
+
+  pick.levels.forEach((lv, idx) => {
+    const col = document.createElement("div");
+    col.className = "pickCol";
+
+    // ---- 文件夹：点一下就选中它，同时把里面铺到右边那一栏 ----
+    for (const d of lv.dirs || []) {
+      if (!pick.hidden && d.name.startsWith(".")) continue;
+      const isSel = pick.dir === d.path;
+      const row = document.createElement("div");
+      row.className = "pickRow dir" + (isSel ? " sel" : "");
+      row.title = d.path;
+      const ic = document.createElement("span");
+      ic.className = "pico";
+      ic.textContent = isSel ? "📂" : "📁";
+      row.appendChild(ic);
+      const nm = document.createElement("div");
+      nm.className = "pname";
+      nm.textContent = d.name;
+      row.appendChild(nm);
+      // 选中行带右箭头，跟 dsh 里一样：有箭头就是「往右还有一栏」
+      const go = document.createElement("span");
+      go.className = "pgo";
+      go.textContent = "›";
+      row.appendChild(go);
+      row.onclick = () => selectDir(d, idx);
+      col.appendChild(row);
+    }
+
+    // ---- 文件：单击就选中（多选），双击直接插入 ----
+    for (const f of lv.files || []) {
+      if (!pick.hidden && f.name.startsWith(".")) continue;
+      const on = pick.sel.has(f.path);
+      const row = document.createElement("div");
+      row.className = "pickRow file" + (on ? " sel" : "");
+      row.title = f.path;
+      const ic = document.createElement("span");
+      ic.className = "pico";
+      if (f.isImage) {
+        const im = document.createElement("img");
+        im.loading = "lazy";
+        im.alt = "";
+        im.src = `/api/attach/raw?path=${encodeURIComponent(f.path)}`;
+        im.onerror = () => { im.replaceWith(Object.assign(document.createElement("span"), { className: "pico", textContent: "🖼" })); };
+        row.appendChild(im);
+      } else {
+        ic.textContent = "📄";
+        row.appendChild(ic);
+      }
+      const nm = document.createElement("div");
+      nm.className = "pname";
+      nm.textContent = f.name;
+      row.appendChild(nm);
+      const mt = document.createElement("div");
+      mt.className = "pmeta";
+      mt.textContent = fmtSize(f.size);
+      row.appendChild(mt);
+      const go = document.createElement("span");
+      go.className = "pgo";
+      go.textContent = on ? "›" : "";
+      row.appendChild(go);
+      row.onclick = () => toggleFile(f);
+      row.ondblclick = () => { toggleFile(f, true); commitPick(); };
+      col.appendChild(row);
+    }
+
+    if (!col.children.length) {
+      const e = document.createElement("div");
+      e.className = "pickEmpty";
+      e.textContent = "这层是空的";
+      col.appendChild(e);
+    }
+    pickCols.appendChild(col);
+  });
+
+  // 面包屑：点任意一段直接回到那一层
+  const last = pick.levels[pick.levels.length - 1];
+  pickCrumb.value = last ? last.dir : "";
+  pickCrumb.title = pickCrumb.value;
+  renderCrumbs();
+  updatePickNote();
+  // 每次重画都滚到最右边那一栏，跟点进去的方向一致
+  pickCols.scrollLeft = pickCols.scrollWidth;
+}
+
+/** 把一条绝对路径（比如 C:\some\dir）拆成可点的几段 */
+function renderCrumbs() {
+  pickCrumbs.innerHTML = "";
+  const last = pick.levels[pick.levels.length - 1];
+  if (!last) return;
+  const full = last.dir;
+  const win = /^[A-Za-z]:[\\/]/.test(full);
+  const segs = [];
+  let acc = "";
+  if (win) {
+    // C:\ -> C:   C:\some\dir -> C:, some, dir
+    const drive = full.slice(0, 2);
+    segs.push({ name: drive, path: drive + "\\" });
+    acc = drive + "\\";
+    const rest = full.slice(2).split(/[\\/]+/).filter(Boolean);
+    for (const s of rest) {
+      acc = acc.replace(/[\\/]+$/, "") + "\\" + s;
+      segs.push({ name: s, path: acc });
+    }
+  } else {
+    for (const s of full.split("/").filter(Boolean)) {
+      acc = acc + "/" + s;
+      segs.push({ name: s, path: acc || "/" });
+    }
+    if (!segs.length) segs.push({ name: "/", path: "/" });
+  }
+  segs.forEach((seg, i) => {
+    if (i) {
+      const sp = document.createElement("span");
+      sp.className = "pcsep";
+      sp.textContent = "›";
+      pickCrumbs.appendChild(sp);
+    }
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pcseg" + (i === segs.length - 1 ? " cur" : "");
+    b.textContent = seg.name;
+    b.title = seg.path;
+    b.onclick = async () => {
+      pick.dir = "";
+      try {
+        pick.levels = await jumpTo(seg.path);
+        renderCols();
+      } catch (err) {
+        alert("这个路径打不开：" + String(err.message || err));
+      }
+    };
+    pickCrumbs.appendChild(b);
+  });
+}
+
+function updatePickNote() {
+  const n = pick.sel.size;
+  pickNote.textContent = n
+    ? `已选 ${n} 个`
+    : (pick.kind === "image"
+        ? "点一张图片选中，双击直接插入"
+        : "点左边文件夹往右走，点文件选中（可多选），双击直接插入");
+  pickOk.disabled = n === 0;
+  pickOk.style.opacity = n ? "1" : ".5";
+  pickOk.style.cursor = n ? "pointer" : "not-allowed";
+}
+
+async function commitPick() {
+  const picked = [...pick.sel.values()];
+  if (!picked.length) return;
+  const lastLv = pick.levels[pick.levels.length - 1];
+  if (lastLv && lastLv.dir) pick.lastDir = lastLv.dir;
+  for (const f of picked) {
+    const kind = isImg(f.path) ? "image" : "file";
+    let dataUrl;
+    if (kind === "image") {
+      try {
+        const r = await fetch(`/api/attach/preview?path=${encodeURIComponent(f.path)}`).then((x) => x.json());
+        if (r && r.dataUrl) dataUrl = r.dataUrl;
+      } catch {}
+    }
+    addAttachment({ path: f.path, name: f.name || baseName(f.path), kind, size: f.size, dataUrl });
+  }
+  closePicker();
+  input.focus();
+}
+
+document.getElementById("pickFile").onclick = () => openPicker("file");
+document.getElementById("pickImage").onclick = () => openPicker("image");
+document.getElementById("pickClose").onclick = closePicker;
+document.getElementById("pickCancel").onclick = closePicker;
+document.getElementById("pickOk").onclick = commitPick;
+pickCrumb.addEventListener("keydown", async (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  pick.dir = "";
+  try {
+    pick.levels = await jumpTo(pickCrumb.value.trim());
+    renderCols();
+  } catch (err) {
+    alert("这个路径打不开：" + String(err.message || err));
+  }
+});
+pickHidden.onchange = () => { pick.hidden = pickHidden.checked; renderCols(); };
+pickMask.addEventListener("click", (e) => { if (e.target === pickMask) closePicker(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && pick.open) closePicker();
+});
+
+// ---- 坏字修复：老数据里可能带着问号方块，显示前必须收拾干净 ------------------
+/**
+ * 老会话 / 老设置是坏着存下来的：中文被写成 \uFFFD，界面上就是个问号方块。
+ *
+ * 两条路分开走，别混：
+ *   1. 孤立的单个方块 —— 一般是标点，按位置补回来（句末「。」，中间「，」）
+ *   2. 连着两个以上 —— 整段文字当年就毁了，猜不回来。硬猜会把原文改错，
+ *      所以只把它换成看得懂的「□」，一眼就知道「这里原本有字，坏了」。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function fixMojibake(text) {
+  if (typeof text !== 'string' || !text.includes('\uFFFD')) return text;
+
+  // 连续的：换成「□」，保留「几个字坏了」的感觉
+  let t = text.replace(/\uFFFD{2,}/g, (m) => '□'.repeat(Math.min(m.length, 8)));
+
+  // 孤立的单块：按位置判标点
+  t = t.replace(/\uFFFD(?=[ \t]*(?:\n|"|$))/g, '。');
+  t = t.replace(/\uFFFD(?=[ \t]*[\u4e00-\u9fa5])/g, '，');
+  t = t.replace(/(?<=[\u4e00-\u9fa5])\uFFFD(?=[\u4e00-\u9fa5])/g, '，');
+  t = t.replace(/\uFFFD/g, ' ');
+  return t;
+}
+
+// ---- 安全词提示：每个词干的事不一样，别都显示同一句 ----------------------
+/**
+ * 老版本的事件里只带 word，不带 note，所以这里留一份兜底表。
+ * 表里没有的（主人自己加的）就先说「已触发」再附上词本身，绝不硬编造成「不演」。
+ */
+const SAFE_WORD_FALLBACK = {
+  停下: '已停下：这一回合不演，只留必要的话。',
+  停止: '已停下：这回合和往后都不演，只留必要的话。',
+  命令: '已切到听命令模式：照你说的办。',
+  人设: '已收回到人设：只按人设来。',
+};
+
+function safeWordHint(word, note) {
+  const text = typeof note === 'string' ? note.trim() : '';
+  if (text) return '已触发 · ' + text;
+  if (word && SAFE_WORD_FALLBACK[word]) return SAFE_WORD_FALLBACK[word];
+  return word ? `已触发「${word}」` : '已触发';
+}
+
+// ============================================================ 拖文件进窗口
+/**
+ * 这次拖拽带的是不是真文件。
+ *
+ * 只看 types 里有没有 Files：拖进来一段选中的文字、一个链接，都不该抢。
+ */
+function dragHasFiles(e) {
+  const dt = e.dataTransfer;
+  if (!dt || !dt.types) return false;
+  return Array.from(dt.types).includes("Files");
+}
+
+/** 拖拽进出的层数：子元素之间来回穿会连发 leave/enter，用计数挡掉闪烁 */
+let dragDepth = 0;
+
+window.addEventListener("dragenter", (e) => {
+  if (!dragHasFiles(e) || pick.open) return;
+  e.preventDefault();
+  dragDepth++;
+  if (dragDepth === 1) {
+    const n = e.dataTransfer.items
+      ? Array.from(e.dataTransfer.items).filter((i) => i.kind === "file").length
+      : (e.dataTransfer.files || []).length;
+    dropDesc.textContent = n > 1 ? `${n} 个，松手就加进输入框` : "松手就加进输入框";
+    dropMask.classList.add("show");
+  }
+});
+
+window.addEventListener("dragover", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+});
+
+window.addEventListener("dragleave", (e) => {
+  if (!dragHasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropMask.classList.remove("show");
+});
+
+window.addEventListener("drop", async (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  dropMask.classList.remove("show");
+  await intakeDropped(e.dataTransfer);
+});
+
+/**
+ * 把拖进来的东西塞进附件条。
+ *
+ * 关键：渲染进程拿不到 File 的磁盘路径，只能问 preload 的 desktop.pathForFile。
+ * 拿不到路径的一律跳过、一个都不猜 —— 猜错了就是把错文件喂给模型。
+ */
+async function intakeDropped(dt) {
+  const files = Array.from(dt.files || []);
+  if (!files.length) return;
+  const missed = [];
+  let added = 0;
+  for (const f of files) {
+    const path = window.desktop && window.desktop.pathForFile ? window.desktop.pathForFile(f) : "";
+    if (!path) { missed.push(f.name || "（没有名字）"); continue; }
+    const kind = isImg(path) ? "image" : "file";
+    let dataUrl;
+    if (kind === "image") {
+      try {
+        const r = await fetch(`/api/attach/preview?path=${encodeURIComponent(path)}`).then((x) => x.json());
+        if (r && r.dataUrl) dataUrl = r.dataUrl;
+      } catch {}
+    }
+    addAttachment({ path, name: f.name || baseName(path), kind, size: f.size, dataUrl });
+    added++;
+  }
+  input.focus();
+  if (!added && missed.length) {
+    alert("这几个拿不到本机路径，加不进去：\n" + missed.join("\n") + "\n\n（文件夹要进去挑文件；网页里拖来的东西没有本机路径）");
+  }
+}
+
+const STORE_KEY = 'mini-agent.sessionId';
+let sessionId = null;
+let sessionTitle = '';
+let sessionsCache = [];
+let pendingResume = false; // 插话之后要不要接着跑
+let stopping = false; // 正在停止，按钮锁住别再点
+
+/**
+ * 会话 id -> 后台正在跑的那一轮。
+ * 必须在这里先建好：switchSession 会在脚本后段之前就被 bootSessions 调到，
+ * 用 const 写在后面会撞 TDZ，异常又被 catch 吞掉，表现成「启动后 sessionId 是 null」。
+ */
+var turnsInFlight = new Map();
+
+/**
+ * 把输入区彻底收拾干净，然后聚焦。
+ *
+ * 「清空当前 → 删会话 → 输入框点不了」那次的教训：任何一步抛异常、
+ * 或者面板还开着盖在上面，input.focus() 就落空，人看着就像输入框坏了。
+ * 所以这里不依赖调用链有没有抛错，该清的都清一遍。
+ */
+function settleComposer() {
+  try {
+    const dlgEl = document.getElementById('sessionsDlg');
+    if (dlgEl && dlgEl.open) dlgEl.close();
+  } catch {}
+  stopping = false;
+  busy = false;
+  hideSending();
+  syncSendBtn();
+  // 附件选择浮层也可能残留，一并收掉
+  try {
+    const mask = document.getElementById('pickMask');
+    if (mask && mask.classList.contains('show')) {
+      mask.classList.remove('show');
+      if (typeof pick !== 'undefined') pick.open = false;
+    }
+  } catch {}
+  try {
+    input.disabled = false;
+    input.readOnly = false;
+    input.style.pointerEvents = 'auto';
+    input.focus();
+  } catch {}
+}
+
+/**
+ * 只把会话面板收起来、把输入框恢复成可点。
+ *
+ * 为什么不直接用 settleComposer：那个会把 busy 无条件清零。
+ * 「当前会话正在跑、我去删了另一个会话」时，busy 不能被清掉，
+ * 否则按钮从「停止」变回「发送」，人就以为跑完了。所以这里只收面板。
+ */
+function closeSessPanel() {
+  try {
+    const d = document.getElementById('sessionsDlg');
+    if (d && d.open) d.close();
+  } catch {}
+  try {
+    input.disabled = false;
+    input.readOnly = false;
+    input.style.pointerEvents = 'auto';
+    input.focus();
+  } catch {}
+}
+
+/** 正在跟着直播的那个轮询计时器（同一时刻只跟一个会话） */
+var following = null;
+
+/**
+ * 从服务端把「正在跑那一轮」的内容整段补画到屏幕上。
+ *
+ * 用在：窗口关掉又打开、页面刷新、切回一个后台在跑的会话。
+ * 服务端那边一直在缓存事件（/api/chat/live），拿到就照着画。
+ *
+ * @returns {Promise<boolean>} 这个会话是不是还在跑
+ */
+async function attachLive(id) {
+  let live = null;
+  try {
+    live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+  } catch {
+    return false;
+  }
+  if (!live || !Array.isArray(live.events) || !live.events.length) return false;
+
+  // 从服务端事件重建画面（和 runTurn 里那套一样）
+  let bubble = null;
+  let think = null;
+  const toolEls = new Map();
+  const closeThink = () => { if (think) { think.finish(); think = null; } };
+
+  for (const ev of live.events) {
+    if (ev.type === 'reasoning') {
+      if (!think) think = openThink();
+      think.push(ev.text);
+    } else if (ev.type === 'text') {
+      closeThink();
+      if (!bubble) bubble = addAssistant();
+      bubble.textContent += fixMojibake(ev.text);
+    } else if (ev.type === 'tool_start') {
+      closeThink();
+      if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+      const el = addTool();
+      el.sum.querySelector('.name').textContent = ev.name;
+      el.sum.querySelector('.status').textContent = '运行中…';
+      el.pre.textContent = 'args: ' + ev.args;
+      toolEls.set(ev.id, el);
+    } else if (ev.type === 'tool_end') {
+      const el = toolEls.get(ev.id);
+      if (el) {
+        const st = el.sum.querySelector('.status');
+        st.textContent = ev.ok ? '完成' : '失败';
+        st.className = 'status ' + (ev.ok ? 'ok' : 'err');
+        el.pre.textContent += '\n--- output ---\n' + ev.output;
+      }
+    }
+  }
+  closeThink();
+
+  if (live.running) {
+    if (bubble) bubble.classList.add('streaming');
+    followLive(id, live.events.length);
+  }
+  return Boolean(live.running);
+}
+
+/**
+ * 接着跟直播：服务端还在跑就隔一会儿拉一次增量，往上追加。
+ * 不重新发请求，只把「已经发生过的事」补齐——窗口关多久都不影响。
+ */
+function followLive(id, fromIndex) {
+  if (following) clearInterval(following);
+  let seen = fromIndex;
+
+  following = setInterval(async () => {
+    if (sessionId !== id) {
+      clearInterval(following);
+      following = null;
+      return;
+    }
+    let live = null;
+    try {
+      live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+    } catch {
+      return;
+    }
+    const evs = live.events || [];
+    if (evs.length > seen) {
+      let bubble = null;
+      let think = null;
+      const closeThink = () => { if (think) { think.finish(); think = null; } };
+      const bubbles = document.querySelectorAll('.assistant .bubble');
+      bubble = bubbles.length ? bubbles[bubbles.length - 1] : null;
+      if (bubble) bubble.classList.add('streaming');
+
+      for (const ev of evs.slice(seen)) {
+        if (ev.type === 'reasoning') {
+          if (!think) think = openThink();
+          think.push(ev.text);
+        } else if (ev.type === 'text') {
+          closeThink();
+          if (!bubble) bubble = addAssistant();
+          bubble.textContent += fixMojibake(ev.text);
+        }
+      }
+      closeThink();
+      seen = evs.length;
+      log.scrollTop = log.scrollHeight;
+    }
+    if (!live.running) {
+      clearInterval(following);
+      following = null;
+      const bubbles = document.querySelectorAll('.assistant .bubble');
+      if (bubbles.length) bubbles[bubbles.length - 1].classList.remove('streaming');
+      busy = false;
+      hideSending();
+      syncSendBtn();
+      refreshSessions({ silent: true }).catch(() => {});
+    }
+  }, 1200);
+}
+
+/**
+ * 连接断了之后试着自愈：
+ *   1) 服务端还在跑 → 清屏重画、从直播缓存补到最新，然后接着跟
+ *   2) 已经跑完 → 拉完整历史重画
+ *   3) 服务端连不上 → 返回 false，让调用方按人话报错
+ *
+ * @returns {Promise<boolean>} 有没有自愈成功
+ */
+async function tryHealAfterDisconnect(id) {
+  for (let i = 0; i < 4; i++) {
+    await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+
+    const alive = await fetch('/api/health').then((r) => r.ok).catch(() => false);
+    if (!alive) continue;
+
+    const running = await fetch('/api/running').then((r) => r.json()).catch(() => null);
+    const isRunning = Boolean(running && running.running && running.running.some((x) => x.sessionId === id));
+
+    if (isRunning) {
+      if (sessionId === id) {
+        log.innerHTML = '';
+        const stillRunning = await attachLive(id);
+        busy = stillRunning;
+        if (stillRunning) showSending();
+        else hideSending();
+        syncSendBtn();
+      }
+      return true;
+    }
+
+    const sel = await fetch('/api/sessions/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then((r) => r.json()).catch(() => null);
+
+    if (sel && sel.session) {
+      if (sessionId === id) {
+        renderTurns(sel.session.turns);
+        busy = false;
+        hideSending();
+        syncSendBtn();
+      }
+      const hasAnswer = (sel.session.turns || []).some((t) => t.role === 'assistant' && String(t.text || '').trim());
+      if (hasAnswer) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+function paintHealth(h) {
+  if (!h) return;
+  meta.textContent = h.hasKey
+    ? `${h.model} · ${h.baseURL}`
+    : '⚠ 还没配模型，点上面「模型」填一个';
+  meta.title = '工作目录: ' + h.workspace;
+}
+const healthOnce = fetch('/api/health').then(r => r.json()).then(paintHealth).catch(() => null);
+
+// 启动后把左上角的模型/思考强度拉一次（此时 sessionId 一般已经有了）
+setTimeout(() => { if (sessionId) loadTopCfg(); }, 300);
+
+// Desktop-only affordance (Electron preload exposes window.desktop).
+if (window.desktop) {
+  const btn = document.getElementById('openDir');
+  btn.hidden = false;
+  btn.onclick = () => window.desktop.openWorkspace();
+}
+
+
+/** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */
+function syncHealth() {
+  fetch('/api/health')
+    .then((r) => r.json())
+    .then((h) => {
+      paintHealth(h);
+    })
+    .catch(() => {});
+}
+
+/**
+ * 建一个气泡并挂上去。
+ *
+ * target 允许传 DocumentFragment：批量重绘历史时先离屏建好、最后一次性挂载，
+ * 避免每加一条都触发一次强制同步布局（那是切会话卡顿的真凶）。
+ */
+function addEl(html, cls, target) {
+  const d = document.createElement('div');
+  d.className = cls;
+  d.innerHTML = html;
+  (target || log).appendChild(d);
+  // 只有真的在往屏幕上加才滚动；往 fragment 里建的时候滚了也没意义
+  if (!target) log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+function addUser(text, tag, atts, target) {
+  const wrap = addEl('', 'msg user', target);
+  wrap.innerHTML = '<div class="role">你' + (tag ? '<span class="interjectTag"></span>' : '') + '</div>';
+  if (tag) wrap.querySelector('.interjectTag').textContent = tag;
+  const list = Array.isArray(atts) ? atts.filter((a) => a && a.path) : [];
+  // 附件先显示，气泡里只写打的字
+  if (list.length) {
+    const box = document.createElement('div');
+    box.className = 'msgAttach';
+    for (const a of list) {
+      const chip = document.createElement("div");
+      chip.className = "attachChip";
+      chip.title = a.path;
+      if (a.kind === "image") {
+        // 刚选的带 dataUrl；刷历史时只有路径，就用预览接口拉
+        const im = document.createElement("img");
+        im.className = "thumb";
+        im.alt = a.name || "";
+        im.src = a.dataUrl || `/api/attach/raw?path=${encodeURIComponent(a.path)}`;
+        im.onerror = () => {
+          // 图没了就退成图标，别显示破图
+          const d = document.createElement("div");
+          d.className = "ficon";
+          d.textContent = "🖼";
+          im.replaceWith(d);
+        };
+        chip.appendChild(im);
+      } else {
+        const d = document.createElement("div");
+        d.className = "ficon";
+        d.textContent = a.kind === "image" ? "🖼" : "📄";
+        chip.appendChild(d);
+      }
+      const nm = document.createElement("div");
+      nm.className = "aname";
+      nm.textContent = a.name;
+      chip.appendChild(nm);
+      box.appendChild(chip);
+    }
+    wrap.appendChild(box);
+  }
+  if (text) {
+    const b = document.createElement('div');
+    b.className = 'bubble';
+    b.textContent = text;
+    wrap.appendChild(b);
+  }
+}
+
+function addAssistant() {
+  const wrap = addEl('', 'msg assistant');
+  wrap.innerHTML = '<div class="role">小鱼</div>';
+  const b = document.createElement('div');
+  b.className = 'bubble streaming';
+  wrap.appendChild(b);
+  return b;
+}
+
+function addTool() {
+  const d = document.createElement('details');
+  d.className = 'tool';
+  const sum = document.createElement('summary');
+  sum.innerHTML = '<span class="name"></span><span class="status"></span>';
+  const pre = document.createElement('pre');
+  d.append(sum, pre);
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return { d, sum, pre };
+}
+
+/**
+ * 一整段思考折叠成一块：默认撑开边想边看，想完自动收起；点标题随时展开。
+ */
+function openThink() {
+  const d = document.createElement('details');
+  d.className = 'think';
+  d.open = true;
+
+  const sum = document.createElement('summary');
+  const title = document.createElement('span');
+  title.className = 'thinkTitle';
+  title.textContent = '正在想…';
+  const meta = document.createElement('span');
+  meta.className = 'thinkMeta';
+  sum.append(title, meta);
+
+  const body = document.createElement('div');
+  body.className = 'thinkBody';
+
+  d.append(sum, body);
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+
+  return {
+    el: d,
+    push(text) {
+      body.textContent += text;
+      const flat = body.textContent.replace(/\s+/g, ' ').trim();
+      if (flat) {
+        title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
+        title.title = flat.slice(0, 400);
+      }
+      meta.textContent = body.textContent.length + ' 字';
+      log.scrollTop = log.scrollHeight;
+    },
+    finish() {
+      if (!body.textContent.trim()) { d.remove(); return; }
+      meta.textContent = body.textContent.length + ' 字 · 点击展开';
+      d.open = false;
+    },
+  };
+}
+
+async function stopTurn() {
+  stopping = true;
+  sendBtn.disabled = true;
+  sendBtn.textContent = '停止中…';
+  await fetch('/api/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId }),
+  }).catch(() => {});
+}
+
+function autosizeInput() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+}
+
+/** 底部灰字「正在发送消息……」。发送时亮、这轮彻底结束就灭。 */
+function showSending() {
+  sendingHint.classList.add('show');
+  log.scrollTop = log.scrollHeight;
+}
+function hideSending() {
+  sendingHint.classList.remove('show');
+}
+
+/** 连 hideSending 自己都可能因为元素早没了而抛错时用它 */
+function hidingSendingSafe() {
+  try {
+    hideSending();
+  } catch {
+    try { document.getElementById('sendingHint')?.classList.remove('show'); } catch {}
+  }
+}
+
+/** 生成中：输入框有内容 -> 按钮变「发送」（插一句）；空着 -> 「停止」。 */
+function syncSendBtn() {
+  if (stopping) return;
+  if (busy) {
+    const has = input.value.trim().length > 0 || attachments.length > 0;
+    sendBtn.textContent = has ? '发送' : '停止';
+    sendBtn.classList.toggle('stop', !has);
+    sendBtn.title = has ? '插一句：先停住这轮，再带着你的新话接着跑' : '停住这一轮';
+  } else {
+    sendBtn.textContent = '发送';
+    sendBtn.classList.remove('stop');
+    sendBtn.title = '';
+  }
+  sendBtn.disabled = false;
+}
+
+/** 跑一轮对话；resume = 接着已有历史继续（插话之后）。 */
+async function runTurn({ resume = false, text = '' } = {}) {
+  // 关键：这一轮属于「发起时」那个会话。中途切走、切回来都不能串台。
+  const turnSession = sessionId;
+  let bubble = null;
+  const toolEls = new Map();
+  let think = null;
+  const closeThink = () => { if (think) { think.finish(); think = null; } };
+
+  /**
+   * 要不要把这一轮画到屏幕上。
+   *
+   * 不能只比 sessionId：删除会话、清空、切换的瞬间，界面上的 sessionId 可能已经变了，
+   * 而这一轮是刚发出的、明明该显示。以前用 id 相等判断，结果事件全被当「后台」丢掉，
+   * 气泡 0 个、按钮卡在「停止」。
+   *
+   * 现在：只要「屏幕上就是这个会话」或者「这一轮就是界面上唯一在跑的那轮」就画。
+   */
+  const onScreen = () => {
+    if (sessionId === turnSession) return true;
+    // 兜底：界面上没有别的轮次在跑，而这一轮刚发起——那它就是当前该显示的那个
+    const only = turnsInFlight.size === 1 && turnsInFlight.get(turnSession) === turnRec;
+    return only && !turnsInFlight.has(sessionId);
+  };
+
+  /**
+   * 这一轮的后台记录：切回来时用它把已经收到的内容补画出来。
+   * parts 里按顺序存 { kind: 'text'|'reasoning'|'tool', ... }
+   */
+  const turnRec = { sessionId: turnSession, parts: [], running: true, startedAt: Date.now() };
+  turnsInFlight.set(turnSession, turnRec);
+
+  // 这一轮要带上的附件：先快照，再清空界面上的附件条
+  const sending = resume ? [] : attachments.slice();
+
+  if (!resume) {
+    input.value = '';
+    autosizeInput();
+    if (onScreen()) addUser(text, undefined, sending);
+    attachments = [];
+    renderAttachBar();
+  }
+  // 注意顺序：先清空输入框，再刷按钮状态，否则生成中会一直显示「发送」。
+  busy = true;
+  showSending();
+  syncSendBtn();
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(resume
+        ? { sessionId, resume: true }
+        : {
+            sessionId,
+            message: text,
+            attachments: sending.map((a) => ({ path: a.path, name: a.name, kind: a.kind })),
+          }),
+    });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(e.error || 'request failed');
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const raw = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        if (!raw.startsWith('data:')) continue;
+        const ev = JSON.parse(raw.slice(5).trim());
+
+        // 先把内容记进这一轮自己的记录里（不管在不在屏幕上）
+        if (ev.type === 'reasoning') {
+          const last = turnRec.parts[turnRec.parts.length - 1];
+          if (last && last.kind === 'reasoning') last.text += ev.text;
+          else turnRec.parts.push({ kind: 'reasoning', text: ev.text });
+        } else if (ev.type === 'text') {
+          const last = turnRec.parts[turnRec.parts.length - 1];
+          if (last && last.kind === 'text') last.text += ev.text;
+          else turnRec.parts.push({ kind: 'text', text: ev.text });
+        } else if (ev.type === 'tool_start') {
+          turnRec.parts.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, done: false });
+        } else if (ev.type === 'tool_end') {
+          const tp = turnRec.parts.find((p) => p.kind === 'tool' && p.id === ev.id);
+          if (tp) {
+            tp.done = true;
+            tp.ok = ev.ok;
+            tp.output = ev.output;
+          }
+        }
+
+        // 不在屏幕上：到此为止，别往当前会话的聊天区里画
+        if (!onScreen()) continue;
+
+        /**
+         * 屏幕上可能被清空过（切走再切回来，renderTurns 已经把 log 洗了）。
+         * 这时候局部 bubble 指向的是已经被摘掉的旧元素，往里写等于写进黑洞。
+         * 发现失效就按 turnRec 的记录全量重建一次，之后照常增量追加。
+         */
+        if (bubble && !bubble.isConnected) {
+          bubble = null;
+          think = null;
+          replayInFlight(turnSession);
+          bubble = turnRec.bubble || null;
+          think = turnRec.think || null;
+        } else if (!bubble && turnRec.bubble && turnRec.bubble.isConnected) {
+          // 之前重建过，接上现有的
+          bubble = turnRec.bubble;
+          think = turnRec.think || null;
+        }
+
+        if (ev.type === 'reasoning') {
+          if (!think) think = openThink();
+          think.push(ev.text);
+        } else if (ev.type === 'text') {
+          closeThink();
+          if (!bubble) bubble = addAssistant();
+          bubble.textContent += fixMojibake(ev.text);
+          log.scrollTop = log.scrollHeight;
+        } else if (ev.type === 'tool_start') {
+          closeThink();
+          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+          const el = addTool();
+          el.sum.querySelector('.name').textContent = ev.name;
+          el.sum.querySelector('.status').textContent = '运行中…';
+          el.pre.textContent = 'args: ' + ev.args;
+          toolEls.set(ev.id, el);
+        } else if (ev.type === 'tool_end') {
+          const el = toolEls.get(ev.id);
+          if (el) {
+            const st = el.sum.querySelector('.status');
+            st.textContent = ev.ok ? '完成' : '失败';
+            st.className = 'status ' + (ev.ok ? 'ok' : 'err');
+            el.pre.textContent += '\n--- output ---\n' + ev.output;
+          }
+        } else if (ev.type === 'safe_word') {
+          const wrap = addEl('', 'msg user');
+          wrap.innerHTML = '<div class="role">安全词<span class="safeTag"></span></div>';
+          wrap.querySelector('.safeTag').textContent = ev.word;
+          const b = document.createElement('div');
+          b.className = 'bubble';
+          b.textContent = safeWordHint(ev.word, ev.note);
+          wrap.appendChild(b);
+        } else if (ev.type === 'compressed') {
+          const wrap = addEl('', 'msg user');
+          wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
+          const b = document.createElement('div');
+          b.className = 'bubble';
+          b.textContent = `旧对话折成摘要了：约 ${ev.before} → ${ev.after} tokens，收起 ${ev.removed} 条`
+            + (ev.limit ? `（上限 ${ev.limit}，到 ${ev.trigger} 就压）` : '')
+            + (ev.error ? `（摘要失败：${ev.error}）` : '');
+          wrap.appendChild(b);
+          log.scrollTop = log.scrollHeight;
+        } else if (ev.type === 'aborted') {
+          closeThink();
+          hideSending();
+          if (bubble) {
+            bubble.classList.remove('streaming');
+            if (!pendingResume) bubble.textContent += '\n\n[已停止]';
+            bubble = null;
+          }
+        } else if (ev.type === 'error') {
+          closeThink();
+          hideSending();
+          if (!bubble) bubble = addAssistant();
+          bubble.classList.remove('streaming');
+          bubble.textContent += '\n\n⚠ ' + ev.message;
+        } else if (ev.type === 'done') {
+          closeThink();
+          hideSending();
+          if (ev.usage) {
+            usageEl.textContent = `in ${ev.usage.prompt_tokens} · out ${ev.usage.completion_tokens} · total ${ev.usage.total_tokens}`;
+            // 主界面：在这一轮底下留一行灰字
+            appendTurnUsage(ev.usage);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // 先别急着报错：很可能是连接断了（进程重启 / 网络抖），这一轮其实还在服务端跑着
+    const healed = await tryHealAfterDisconnect(turnSession);
+    if (healed) {
+      // 自愈成功：什么都不用显示，内容已经补回去了
+      turnRec.parts.length = 0;
+    } else if (onScreen()) {
+      closeThink();
+      hideSending();
+      const b = bubble || addAssistant();
+      b.classList.remove('streaming');
+      // 说人话，不甩英文栈
+      const friendly = /terminated|aborted|fetch failed|network|ECONN|socket hang up/i.test(String(err.message))
+        ? '这一轮的连接断了，而且服务端那边也没在跑了。再发一句就行，记录还在。'
+        : err.message;
+      b.textContent += '\n\n⚠ ' + friendly;
+    } else {
+      turnRec.parts.push({ kind: 'text', text: '\n\n⚠ ' + err.message });
+    }
+  } finally {
+    turnRec.running = false;
+    turnsInFlight.delete(turnSession);
+
+    // 收尾一定要复位，不然按钮永远卡在「停止」、输入框像死了一样
+    closeThink();
+    hideSending();
+    if (bubble) bubble.classList.remove('streaming');
+    stopping = false;
+    // 只有「屏幕上确实是这个会话」时才把 busy 放下；
+    // 但如果是同一个会话的下一轮在跑，别互相踩
+    if (sessionId === turnSession || turnsInFlight.size === 0) {
+      busy = false;
+    }
+    syncSendBtn();
+    if (onScreen()) {
+      if (pendingResume) {
+        pendingResume = false;
+        setTimeout(() => runTurn({ resume: true }), 30);
+      } else {
+        input.focus();
+      }
+    }
+    refreshSessions({ silent: true }).catch(() => {});
+  }
+}
+
+/** 会话 id -> 后台轮次记录（切走也不停，切回来能接着看）。在下面统一初始化。 */
+
+/**
+ * 把一个还在跑的会话「补画」到屏幕上：先把已收到的内容摆出来，后面新来的接着追加。
+ */
+function replayInFlight(id) {
+  const rec = turnsInFlight.get(id);
+  if (!rec) return false;
+  let bubble = null;
+  let think = null;
+  for (const p of rec.parts) {
+    if (p.kind === 'reasoning') {
+      if (!think) think = openThink();
+      think.push(p.text);
+    } else if (p.kind === 'text') {
+      if (think) { think.finish(); think = null; }
+      if (!bubble) bubble = addAssistant();
+      bubble.textContent += fixMojibake(p.text);
+    } else if (p.kind === 'tool') {
+      if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+      const el = addTool();
+      el.sum.querySelector('.name').textContent = p.name;
+      const st = el.sum.querySelector('.status');
+      st.textContent = p.done ? (p.ok ? '完成' : '失败') : '运行中…';
+      if (p.done) st.className = 'status ' + (p.ok ? 'ok' : 'err');
+      el.pre.textContent = 'args: ' + p.args + (p.done ? '\n--- output ---\n' + p.output : '');
+    }
+  }
+  if (bubble) bubble.classList.add('streaming');
+  // 存回去：切回来之后 runTurn 要接着往这几个元素上追加
+  rec.bubble = bubble;
+  rec.think = think;
+  return true;
+}
+
+async function send() {
+  if (busy) return;
+  const text = input.value.trim();
+  if (!text && !attachments.length) return;
+  if (!sessionId) {
+    try { await booted; } catch {}
+    if (!sessionId) return;
+  }
+  await runTurn({ text });
+}
+
+/** 生成中插一句：先把这句落盘到当前会话，再停住这一轮，然后带着新话接着跑。 */
+async function interject() {
+  const text = input.value.trim();
+  if (!busy || !text) return;
+  input.value = '';
+  autosizeInput();
+  addUser(text, '插话');
+  pendingResume = true;
+  syncSendBtn();
+  const r = await fetch('/api/interject', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, message: text }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) {
+    pendingResume = false;
+    const wrap = addEl('', 'msg user');
+    wrap.innerHTML = '<div class="role">系统</div>';
+    const b = document.createElement('div');
+    b.className = 'bubble';
+    b.textContent = '⚠ 这句没插进去：' + (r && r.error ? r.error : '网络错误');
+    wrap.appendChild(b);
+  }
+}
+
+sendBtn.onclick = () => {
+  if (!busy) return send();
+  if (input.value.trim()) return interject();
+  return stopTurn();
+};
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!busy) send();
+    else if (input.value.trim()) interject();
+  }
+});
+input.addEventListener('input', () => { autosizeInput(); syncSendBtn(); });
+document.getElementById('reset').onclick = async () => {
+  if (!sessionId) return;
+  if (!confirm('清空当前会话的聊天记录？会话本身会留着。')) return;
+  await fetch('/api/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId }),
+  });
+  log.innerHTML = '';
+  usageEl.textContent = '';
+  settleComposer();
+  refreshSessions({ silent: true }).catch(() => {});
+};
+input.focus();
+
+// ---- settings: 底线 + 安全词 --------------------------------------------------
+const dlg = document.getElementById('settingsDlg');
+const elPersona = document.getElementById('personaText');
+const personaHint = document.getElementById('personaHint');
+let personaInfo = null;
+const elBottom = document.getElementById('bottomLines');
+const elWords = document.getElementById('safeWords');
+const elNote = document.getElementById('safeWordNote');
+const saveHint = document.getElementById('saveHint');
+const bottomLinesHint = document.getElementById('bottomLinesHint');
+const safeWordsHint = document.getElementById('safeWordsHint');
+let defaults = null;
+
+const parseWords = (s) => s.split(/[\/,，、\s]+/).map(x => x.trim()).filter(Boolean);
+const parseLines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+
+const elPersonaList = document.getElementById('personaList');
+
+/**
+ * 画人设可选栏。当前那套高亮，非内置的右上角有个 ×（删之前会问）。
+ * 内置那套不能删、不能改名 —— 得给主人留一个永远能找回来的地方。
+ */
+function renderPersonaList(info) {
+  elPersonaList.innerHTML = '';
+  for (const p of info.list || []) {
+    const card = document.createElement('div');
+    card.className = 'pCard' + (p.id === info.current ? ' on' : '');
+    card.title = (p.preview || '') + (p.chars ? `\n（${p.chars} 字）` : '');
+    card.dataset.id = p.id;
+
+    const nm = document.createElement('div');
+    nm.className = 'pName';
+    nm.textContent = p.name;
+    const mt = document.createElement('div');
+    mt.className = 'pMeta';
+    mt.textContent = p.id === info.current ? '正在用' : (p.builtin ? '内置' : `${p.chars} 字`);
+    card.append(nm, mt);
+
+    if (p.id === info.current) {
+      const tag = document.createElement('span');
+      tag.className = 'pTag';
+      tag.textContent = '当前';
+      card.appendChild(tag);
+    }
+
+    if (!p.builtin && p.id !== 'default') {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'pDel';
+      del.textContent = '×';
+      del.title = '删掉这套';
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm(`删掉人设「${p.name}」？删之前会留一份在 .state 里，能找回。`)) return;
+        const r = await fetch('/api/personas/delete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: p.id }),
+        }).then((x) => x.json()).catch(() => null);
+        if (!r || r.error) { personaHint.textContent = '删不掉：' + (r && r.error ? r.error : '网络错误'); return; }
+        fillPersona(r);
+        personaHint.textContent = '删掉了';
+      };
+      card.appendChild(del);
+    }
+
+    card.onclick = async () => {
+      if (p.id === info.current) return;
+      const r = await fetch('/api/personas/switch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: p.id }),
+      }).then((x) => x.json()).catch(() => null);
+      if (!r || r.error) { personaHint.textContent = '切不过去：' + (r && r.error ? r.error : '网络错误'); return; }
+      fillPersona(r);
+      personaHint.textContent = `已切到「${r.currentName}」，下一句就生效`;
+    };
+
+    elPersonaList.appendChild(card);
+  }
+}
+
+function fillPersona(info) {
+  personaInfo = info;
+  elPersona.value = info.text || '';
+  renderPersonaList(info);
+  const touched = info.custom && info.current !== 'default';
+  personaHint.textContent = touched
+    ? '当前用的是你改过的版本'
+    : (info.current === 'default' ? '当前是默认人设' : '');
+}
+
+// ---- 新建 ----
+document.getElementById('personaNew').onclick = async () => {
+  const name = await askName({ title: '新人设叫什么名字', value: '', placeholder: '比如：工作人格', maxLength: 40 });
+  if (name === null) return;
+  const r = await fetch('/api/personas/new', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name.trim(), copyCurrent: true }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { personaHint.textContent = '建不了：' + (r && r.error ? r.error : '网络错误'); return; }
+  fillPersona(r);
+  personaHint.textContent = `建好了「${r.currentName}」，里面是刚才那套的副本，直接改就行`;
+};
+
+// ---- 改名 ----
+document.getElementById('personaRename').onclick = async () => {
+  const cur = personaInfo;
+  if (!cur) return;
+  if (cur.current === 'default') { personaHint.textContent = '默认人设的名字不给改，方便你随时找回来'; return; }
+  const name = await askName({ title: '改成什么名字', value: cur.currentName, maxLength: 40 });
+  if (name === null) return;
+  const r = await fetch('/api/personas/rename', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: cur.current, name: name.trim() }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { personaHint.textContent = '改不了：' + (r && r.error ? r.error : '网络错误'); return; }
+  fillPersona(r);
+  personaHint.textContent = '名字改好了';
+};
+
+
+
+function fillSettings(s) {
+  elBottom.value = s.bottomLines.join('\n');
+  elWords.value = s.safeWords.join(' / ');
+  elNote.value = s.safeWordNote;
+}
+
+document.getElementById('openSettings').onclick = async () => {
+  saveHint.textContent = '';
+  bottomLinesHint.textContent = '';
+  safeWordsHint.textContent = '';
+  const r = await fetch('/api/settings').then(r => r.json()).catch(() => null);
+  if (!r) { saveHint.textContent = '读取失败'; return; }
+  defaults = r.defaults;
+  fillSettings(r.settings);
+  const p = await fetch('/api/personas').then(r => r.json()).catch(() => null);
+  if (p) fillPersona(p); else personaHint.textContent = '人设读取失败';
+  dlg.showModal();
+};
+
+document.getElementById('saveSettings').onclick = async () => {
+  const p = await fetch('/api/personas/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: personaInfo ? personaInfo.current : undefined, text: elPersona.value }),
+  }).then(r => r.json()).catch(() => null);
+  if (!p || p.error) {
+    saveHint.textContent = '人设保存失败：' + (p && p.error ? p.error : '网络错误');
+    return;
+  }
+  fillPersona(p);
+
+  const payload = {
+    bottomLines: parseLines(elBottom.value),
+    safeWords: parseWords(elWords.value),
+    safeWordNote: elNote.value.trim(),
+  };
+  const r = await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(r => r.json()).catch(() => null);
+  if (!r) { saveHint.textContent = '保存失败'; return; }
+  fillSettings(r.settings);
+  saveHint.textContent = '已保存，下一句生效';
+  setTimeout(() => dlg.close(), 450);
+};
+
+document.getElementById('resetPersona').onclick = async () => {
+  const cur = personaInfo;
+  if (!cur) return;
+  if (!confirm(`把「${cur.currentName}」的正文恢复成平台自带那份？你改过的会先备份。`)) return;
+  const r = await fetch('/api/personas/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: cur.current }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { personaHint.textContent = '恢复失败'; return; }
+  fillPersona(r);
+  personaHint.textContent = '已恢复成默认内容，上一版留在 .state/persona.backup.md';
+};
+
+// 只把底线拉回默认那几条，安全词 / 人设 / 模型一概不动。点完立刻生效，不用再点保存。
+document.getElementById('resetBottomLines').onclick = async () => {
+  const btn = document.getElementById('resetBottomLines');
+  btn.disabled = true;
+  bottomLinesHint.textContent = '正在恢复…';
+  const r = await fetch('/api/settings/reset-bottomlines', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }).then(r => r.json()).catch(() => null);
+  btn.disabled = false;
+
+  if (!r || r.error) {
+    bottomLinesHint.textContent = '恢复失败：' + (r && r.error ? r.error : '网络错误');
+    return;
+  }
+  fillSettings(r.settings);
+  if (r.changed) {
+    bottomLinesHint.textContent =
+      '已恢复默认底线（共 ' + r.settings.bottomLines.length + ' 条）。上一版存在 .state/bottomlines.backup.md';
+  } else {
+    bottomLinesHint.textContent = '本来就是默认底线，没动';
+  }
+};
+
+// 只把安全词 + 触发说明拉回默认，底线 / 人设 / 模型一概不动。点完立刻生效。
+document.getElementById('resetSafeWords').onclick = async () => {
+  const btn = document.getElementById('resetSafeWords');
+  btn.disabled = true;
+  safeWordsHint.textContent = '正在恢复…';
+  safeWordsHint.className = 'hint';
+  const r = await fetch('/api/settings/reset-safewords', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }).then(r => r.json()).catch(() => null);
+  btn.disabled = false;
+
+  if (!r || r.error) {
+    safeWordsHint.textContent = '恢复失败：' + (r && r.error ? r.error : '网络错误');
+    safeWordsHint.className = 'hint err';
+    return;
+  }
+  fillSettings(r.settings);
+  if (r.changed) {
+    safeWordsHint.textContent =
+      '已恢复默认安全词（' + r.settings.safeWords.join(' / ') + '）。上一版存在 .state/safewords.backup.md';
+  } else {
+    safeWordsHint.textContent = '本来就是默认安全词，没动';
+  }
+};
+
+document.getElementById('resetDefaults').onclick = () => {
+  if (!defaults) return;
+  fillSettings(defaults);
+  saveHint.textContent = '已填入默认值，点保存生效';
+};
+
+// ---- 功能：列表 / 开 / 关 ----------------------------------------------------
+const featDlg = document.getElementById('featuresDlg');
+const featList = document.getElementById('featList');
+const featHint = document.getElementById('featHint');
+let featState = { features: [], enabledCount: 0, total: 0 };
+
+// 功能按钮上只留「功能」两个字，开关状态看面板或悬停提示。
+function paintFeatNow() {
+  const btn = document.getElementById('openFeatures');
+  if (!btn) return;
+  const off = featState.features.filter((f) => !f.enabled).map((f) => f.name);
+  btn.title = off.length ? '关着的：' + off.join('、') : '功能全开';
+}
+
+function renderFeatList() {
+  if (!featList) return;
+  featList.innerHTML = '';
+  for (const f of featState.features) {
+    const row = document.createElement('div');
+    row.className = 'featRow';
+    row.dataset.id = f.id;
+
+    const main = document.createElement('div');
+    main.className = 'featMain';
+    const name = document.createElement('div');
+    name.className = 'featName';
+    const nm = document.createElement('span');
+    nm.textContent = f.name;
+    const badge = document.createElement('span');
+    badge.className = 'badge' + (f.enabled ? '' : ' off');
+    badge.textContent = f.enabled ? '已启用' : '已停用';
+    name.append(nm, badge);
+    const desc = document.createElement('div');
+    desc.className = 'featDesc';
+    desc.textContent = f.desc;
+    main.append(name, desc);
+
+    const sw = document.createElement('button');
+    sw.type = 'button';
+    sw.className = 'switch' + (f.enabled ? ' on' : '');
+    sw.dataset.id = f.id;
+    sw.dataset.on = f.enabled ? '1' : '0';
+    sw.textContent = f.enabled ? '停用' : '启用';
+
+    row.append(main, sw);
+    featList.appendChild(row);
+  }
+  const off = featState.features.filter((f) => !f.enabled).length;
+  if (featHint) featHint.textContent = off ? `${featState.total} 个功能 · ${off} 个关着` : `${featState.total} 个功能 · 全开`;
+  paintFeatNow();
+}
+
+async function loadFeatures() {
+  const r = await fetch('/api/features').then((x) => x.json()).catch(() => null);
+  if (!r || r.error) return false;
+  featState = r;
+  renderFeatList();
+  return true;
+}
+
+if (featList) {
+  featList.addEventListener('click', async (e) => {
+    const sw = e.target.closest('button.switch[data-id]');
+    if (!sw || sw.disabled) return;
+    const id = sw.dataset.id;
+    const next = sw.dataset.on !== '1';
+    sw.disabled = true;
+    sw.textContent = '…';
+    const r = await fetch('/api/features/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, enabled: next }),
+    }).then((x) => x.json()).catch(() => null);
+    sw.disabled = false;
+    if (!r || r.error) {
+      sw.textContent = next ? '启用' : '停用';
+      if (featHint) featHint.textContent = '操作失败：' + (r && r.error ? r.error : '网络错误');
+      return;
+    }
+    featState = r;
+    renderFeatList();
+    const foot = document.getElementById('featFoot');
+    if (foot) {
+      const f = featState.features.find((x) => x.id === id);
+      foot.textContent = f ? (f.enabled ? '已启用「' + f.name + '」，下一句就能用' : '已停用「' + f.name + '」，下一句就用不了') : '';
+    }
+  });
+}
+
+const openFeaturesBtn = document.getElementById('openFeatures');
+if (openFeaturesBtn) {
+  openFeaturesBtn.onclick = async () => {
+    const ok = await loadFeatures();
+    if (!ok) { alert('读取功能列表失败'); return; }
+    featDlg.showModal();
+  };
+}
+if (featDlg) featDlg.addEventListener('cancel', () => featDlg.close());
+const featCloseBtn = document.getElementById('featClose');
+if (featCloseBtn) featCloseBtn.onclick = () => featDlg.close();
+
+// 启动时悄悄同步一次，让顶部按钮能显示「几个关着」
+loadFeatures();
+
+// ---- 每轮结束：在这轮下面补一行「用了多少 token」 ----------------------------
+/**
+ * 把数字写成好看的样子：2140 -> 2,140
+ * @param {number} n
+ */
+function fmtTok(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '0';
+  return v.toLocaleString('en-US');
+}
+
+/**
+ * 往聊天区末尾加一行 token 小字。
+ *
+ * 服务端每轮结束的 done 事件里带 usage（整轮合计，多轮工具调用也累加了）。
+ * 这里只写真实数字，不算钱 —— 各家单价不同、还有缓存命中折扣，猜一个价反而误导。
+ *
+ * @param {{prompt_tokens?:number, completion_tokens?:number, total_tokens?:number}} u
+ */
+function appendTurnUsage(u) {
+  if (!u) return;
+  const pin = Number(u.prompt_tokens ?? 0);
+  const pout = Number(u.completion_tokens ?? 0);
+  const total = Number(u.total_tokens ?? (pin + pout));
+  if (!pin && !pout && !total) return; // 全 0 就别占地方
+
+  const row = document.createElement('div');
+  row.className = 'turnUsage';
+  row.title = '这一轮模型实际用掉的 token（输入含系统提示与历史，输出含思考与工具调用）';
+
+  const mk = (txt, cls) => {
+    const sp = document.createElement('span');
+    if (cls) sp.className = cls;
+    sp.textContent = txt;
+    return sp;
+  };
+  row.append(
+    mk('↑' + fmtTok(pin) + ' 输入'),
+    mk('·', 'sep'),
+    mk('↓' + fmtTok(pout) + ' 输出'),
+    mk('·', 'sep'),
+    mk(fmtTok(total) + ' tokens', 'tt'),
+  );
+
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ---- 左上角：按会话切模型 / 思考强度 ----------------------------------------
+/**
+ * 这两个框改的是「这个会话」的设置，不是全局的。
+ * 默认值 = 右上角「模型」面板里给这个模型设的那套；只有你在这里动过，才算会话自己的。
+ */
+const topModel = document.getElementById('topModel');
+const topModelName = document.getElementById('topModelName');
+const topThink = document.getElementById('topThink');
+const topThinkName = document.getElementById('topThinkName');
+const cfgMenu = document.getElementById('cfgMenu');
+const cfgMenuHead = document.getElementById('cfgMenuHead');
+const cfgMenuList = document.getElementById('cfgMenuList');
+
+let cfgState = { level: '', levelName: '默认', modelId: '', modelName: '', models: [], levels: [], isLevelCustom: false, isModelCustom: false };
+let cfgMenuFor = null; // 'model' | 'think' | null
+
+function paintTopCfg() {
+  topModelName.textContent = cfgState.modelName || '没配模型';
+  topThinkName.textContent = cfgState.levelName || '默认';
+  // 会话自定义过的，框变个色，免得忘了自己改过
+  topModel.classList.toggle('custom', Boolean(cfgState.isModelCustom));
+  topThink.classList.toggle('custom', Boolean(cfgState.isLevelCustom));
+  topModel.title = cfgState.isModelCustom
+    ? `这个会话临时用了「${cfgState.modelName}」（点一下换）`
+    : `跟右上角一致：${cfgState.modelName}（点一下换，只影响这个会话）`;
+  topThink.title = cfgState.isLevelCustom
+    ? `这个会话临时用了「${cfgState.levelName}」（点一下换）`
+    : '默认：跟右上角给这个模型设的强度走（点一下换，只影响这个会话）';
+}
+
+async function loadTopCfg() {
+  if (!sessionId) return;
+  const r = await fetch(`/api/session-config?sessionId=${encodeURIComponent(sessionId)}`)
+    .then((x) => x.json()).catch(() => null);
+  if (!r || r.error) return;
+  cfgState = { ...cfgState, ...r };
+  paintTopCfg();
+}
+
+function closeCfgMenu() {
+  cfgMenu.classList.remove('open');
+  topModel.classList.remove('open');
+  topThink.classList.remove('open');
+  cfgMenuFor = null;
+}
+
+function openCfgMenu(which) {
+  if (!sessionId) return;
+  if (cfgMenuFor === which) { closeCfgMenu(); return; }
+  cfgMenuFor = which;
+  topModel.classList.toggle('open', which === 'model');
+  topThink.classList.toggle('open', which === 'think');
+  cfgMenuList.innerHTML = '';
+
+  if (which === 'model') {
+    cfgMenuHead.textContent = '换模型（只影响这个会话）';
+    const list = cfgState.models || [];
+    if (!list.length) {
+      cfgMenuList.innerHTML = '<div class="cfgMenuHead">还没有别的模型，去右上角「模型」里加</div>';
+    }
+    for (const m of list) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cfgMenuItem';
+      const on = cfgState.isModelCustom ? cfgState.modelId === m.id : !cfgState.isModelCustom && m.active;
+      b.innerHTML = '<span class="ck">' + (on ? '✓' : '') + '</span>';
+      const nm = document.createElement('span');
+      nm.textContent = m.name;
+      nm.style.overflow = 'hidden';
+      nm.style.textOverflow = 'ellipsis';
+      b.appendChild(nm);
+      b.onclick = () => setSessionCfg({ modelId: m.id === cfgState.modelId && cfgState.isModelCustom ? '' : m.id });
+      cfgMenuList.appendChild(b);
+    }
+    // 回默认
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'cfgMenuItem';
+    back.innerHTML = '<span class="ck">' + (cfgState.isModelCustom ? '' : '✓') + '</span>';
+    const t = document.createElement('span');
+    t.textContent = '默认（跟右上角一致）';
+    back.appendChild(t);
+    back.onclick = () => setSessionCfg({ modelId: '' });
+    cfgMenuList.appendChild(back);
+  } else {
+    cfgMenuHead.textContent = '换思考强度（只影响这个会话）';
+    // 「默认」第一项
+    const def = document.createElement('button');
+    def.type = 'button';
+    def.className = 'cfgMenuItem';
+    def.innerHTML = '<span class="ck">' + (cfgState.isLevelCustom ? '' : '✓') + '</span>';
+    const dt = document.createElement('span');
+    dt.textContent = '默认';
+    def.appendChild(dt);
+    const dd = document.createElement('span');
+    dd.className = 'desc';
+    dd.textContent = cfgState.defaultLevelName ? `跟模型走（${cfgState.defaultLevelName}）` : '跟模型设置走';
+    def.appendChild(dd);
+    def.onclick = () => setSessionCfg({ level: '' });
+    cfgMenuList.appendChild(def);
+
+    for (const lv of cfgState.levels || []) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cfgMenuItem';
+      b.innerHTML = '<span class="ck">' + (cfgState.level === lv.id ? '✓' : '') + '</span>';
+      const nm = document.createElement('span');
+      nm.textContent = lv.name;
+      b.appendChild(nm);
+      if (lv.desc) {
+        const d = document.createElement('span');
+        d.className = 'desc';
+        d.textContent = lv.desc;
+        d.title = lv.desc;
+        b.appendChild(d);
+      }
+      b.onclick = () => setSessionCfg({ level: lv.id });
+      cfgMenuList.appendChild(b);
+    }
+  }
+
+  // 摆到框下面
+  const anchor = which === 'model' ? topModel : topThink;
+  const r = anchor.getBoundingClientRect();
+  cfgMenu.style.left = Math.round(r.left) + 'px';
+  cfgMenu.style.top = Math.round(r.bottom + 6) + 'px';
+  cfgMenu.classList.add('open');
+}
+
+async function setSessionCfg(patch) {
+  if (!sessionId) return;
+  const r = await fetch('/api/session-config/set', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, ...patch }),
+  }).then((x) => x.json()).catch(() => null);
+  closeCfgMenu();
+  if (!r || r.error) { alert('没设上：' + (r && r.error ? r.error : '网络错误')); return; }
+  cfgState = { ...cfgState, ...r };
+  paintTopCfg();
+  if (meta) meta.title = (meta.title || '') ;
+}
+
+topModel.onclick = (e) => { e.stopPropagation(); openCfgMenu('model'); };
+topThink.onclick = (e) => { e.stopPropagation(); openCfgMenu('think'); };
+cfgMenu.onclick = (e) => e.stopPropagation();
+document.addEventListener('click', () => { if (cfgMenuFor) closeCfgMenu(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && cfgMenuFor) closeCfgMenu(); });
+window.addEventListener('resize', () => { if (cfgMenuFor) closeCfgMenu(); });
+
+// ---- 一个自己画的「让你输一句话」小框 --------------------------------------
+/**
+ * 为什么不用 prompt：Electron 里 window.prompt 不会弹框，直接返回 null。
+ * 以前「改名」点了没反应就栽在这儿 —— 拿到的永远是 null，代码当成取消就 return 了。
+ *
+ * @param {object} opts
+ * @param {string} opts.title 标题
+ * @param {string} [opts.value] 预填内容
+ * @param {string} [opts.placeholder] 空的时候灰字提示
+ * @param {number} [opts.maxLength] 最多几个字
+ * @returns {Promise<string|null>} 确定给字符串，取消给 null
+ */
+function askName({ title, value = '', placeholder = '', maxLength = 80 } = {}) {
+  return new Promise((resolve) => {
+    const dlg = document.getElementById('askDlg');
+    const t = document.getElementById('askTitle');
+    const input = document.getElementById('askInput');
+    const hint = document.getElementById('askHint');
+    const okBtn = document.getElementById('askOk');
+    const cancelBtn = document.getElementById('askCancel');
+
+    t.textContent = title || '起个名字';
+    input.value = value;
+    input.placeholder = placeholder;
+    input.maxLength = maxLength;
+    hint.textContent = '';
+
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      // 监听一次性用完就摘，别越堆越多
+      input.oninput = null;
+      cancelBtn.onclick = null;
+      okBtn.onclick = null;
+      dlg.onclose = null;
+      try { if (dlg.open) dlg.close(); } catch {}
+      resolve(val);
+    };
+
+    const syncOk = () => {
+      const empty = !input.value.trim();
+      okBtn.disabled = empty;
+      okBtn.style.opacity = empty ? '.5' : '1';
+      okBtn.style.cursor = empty ? 'not-allowed' : 'pointer';
+    };
+    input.oninput = () => { hint.textContent = ''; syncOk(); };
+    cancelBtn.onclick = () => finish(null);
+    // Esc 关掉也算取消
+    dlg.onclose = () => finish(null);
+    // 回车 / 点确定
+    okBtn.onclick = (e) => {
+      e.preventDefault();
+      if (!input.value.trim()) return;
+      finish(input.value);
+    };
+
+    syncOk();
+    dlg.showModal();
+    input.focus();
+    input.select();
+  });
+}
+
+// ---- 会话：选择 / 新建 / 改名 / 删除 -----------------------------------------
+const sessDlg = document.getElementById('sessionsDlg');
+const sessList = document.getElementById('sessList');
+const sessHint = document.getElementById('sessHint');
+
+function relTime(ts) {
+  if (!ts) return '';
+  const d = Date.now() - ts;
+  if (d < 60e3) return '刚刚';
+  if (d < 3600e3) return Math.floor(d / 60e3) + ' 分钟前';
+  if (d < 86400e3) return Math.floor(d / 3600e3) + ' 小时前';
+  if (d < 7 * 86400e3) return Math.floor(d / 86400e3) + ' 天前';
+  const t = new Date(ts);
+  return `${t.getMonth() + 1}/${t.getDate()} ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+}
+
+// 会话按钮上只留「会话」两个字，标题不再往按钮里塞（面板里能看到）。
+function paintSessNow() {
+  const btn = document.getElementById('openSessions');
+  if (btn) btn.title = sessionTitle ? '当前会话：' + sessionTitle : '会话';
+}
+
+function renderSessList() {
+  sessList.innerHTML = '';
+  if (!sessionsCache.length) {
+    const e = document.createElement('div');
+    e.className = 'sessEmpty';
+    e.textContent = '还没有会话，点上面的「＋ 新会话」开一个吧';
+    sessHint.textContent = '';
+    return;
+  }
+  sessHint.textContent = `${sessionsCache.length} 个`;
+  // 展示排序：当前会话永远置顶；一句没说的空会话沉到底。
+  // 为什么：空会话 updatedAt 也新，纯按时间排会把正在聊的会话顶到下面，
+  // 切走再回来就得往下滚——看着就像"原来的会话没了"。
+  const isEmpty = (x) => !x.count && !x.preview;
+  const view = sessionsCache.slice().sort((a, b) => {
+    if (a.id === sessionId) return -1;
+    if (b.id === sessionId) return 1;
+    const ea = isEmpty(a) ? 1 : 0;
+    const eb = isEmpty(b) ? 1 : 0;
+    if (ea !== eb) return ea - eb;      // 有内容的在前，空的在后
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  });
+  for (const s of view) {
+    const row = document.createElement('div');
+    row.className = 'sessRow' + (s.id === sessionId ? ' current' : '') + (isEmpty(s) ? ' sessEmptyRow' : '');
+    row.dataset.id = s.id;
+
+    const main = document.createElement('div');
+    main.className = 'sessMain';
+    const t = document.createElement('div');
+    t.className = 'sessTitle';
+    t.textContent = fixMojibake(s.title || '新会话');
+    const sub = document.createElement('div');
+    sub.className = 'sessSub';
+    const runningNow = typeof turnsInFlight !== 'undefined' && turnsInFlight.has(s.id);
+    sub.textContent = [
+      runningNow ? '⏳ 还在跑' : '',
+      relTime(s.updatedAt),
+      s.count ? `${s.count} 句` : '',
+      s.preview || '',
+    ].filter(Boolean).join(' · ');
+    if (runningNow) sub.classList.add('sessRunning');
+    main.append(t, sub);
+
+    const ren = document.createElement('button');
+    ren.type = 'button';
+    ren.className = 'mini';
+    ren.dataset.act = 'rename';
+    ren.textContent = '改名';
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'mini del';
+    del.dataset.act = 'del';
+    del.textContent = '删除';
+
+    row.append(main, ren, del);
+    sessList.appendChild(row);
+  }
+}
+
+sessList.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-act]');
+  const row = e.target.closest('.sessRow');
+  if (!row) return;
+  const id = row.dataset.id;
+
+  if (btn && btn.dataset.act === 'rename') {
+    const cur = (sessionsCache.find((s) => s.id === id) || {}).title || '';
+    const next = await askName({ title: '给这个会话起个名字', value: cur, maxLength: 80 });
+    if (next === null) return;
+    const name = next.trim();
+    if (!name) return;
+    const r = await fetch('/api/sessions/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, title: name }),
+    }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) { alert('改名失败'); return; }
+    if (id === sessionId) { sessionTitle = r.session.title; paintSessNow(); }
+    await refreshSessions();
+    return;
+  }
+
+  if (btn && btn.dataset.act === 'del') {
+    const cur = (sessionsCache.find((s) => s.id === id) || {}).title || '这个会话';
+    if (!confirm(`删除「${cur}」？文件会挪到 .state/sessions/.trash，还能找回。`)) return;
+    const r = await fetch('/api/sessions/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) { alert('删除失败'); return; }
+    try {
+      if (id === sessionId) {
+        // 删的就是当前这个：自动切到另一个（或新建一个），然后彻底回到能打字的状态
+        // 先把面板关掉——它还开着就盖在输入框上面，人看着就是「点不了、打不了字」
+        try { sessDlg.close(); } catch {}
+        try {
+          if (r.lastSessionId) await switchSession(r.lastSessionId);
+          else await createSession();
+        } catch (e) {
+          console.warn('[del] 切会话时出错，先把输入区救回来:', e && e.message ? e.message : e);
+        } finally {
+          // 不管上面成不成，输入区都要能用
+          settleComposer();
+        }
+      }
+      await refreshSessions();
+    } finally {
+      /**
+       * 删「哪一个」会话都要走到这里。
+       *
+       * 以前这段清场只写在「删的是当前会话」里面，删别的会话就直接 return 了，
+       * 模态面板留在屏幕上盖住整个页面 —— 表现就是「删完一个会话，输入框点不了了」。
+       * 现在统一收面板；这里用 closeSessPanel 而不是 settleComposer，
+       * 因为当前会话可能还有一轮在跑，busy 不能被清掉。
+       */
+      if (id === sessionId) settleComposer();
+      else closeSessPanel();
+    }
+    return;
+  }
+
+  if (id !== sessionId) await switchSession(id);
+  sessDlg.close();
+  settleComposer();
+});
+
+async function refreshSessions({ silent = false } = {}) {
+  const r = await fetch('/api/sessions').then((x) => x.json()).catch(() => null);
+  if (!r) {
+    if (!silent) sessHint.textContent = '读取失败';
+    return null;
+  }
+  sessionsCache = r.sessions || [];
+  const cur = sessionsCache.find((s) => s.id === sessionId);
+  if (cur) { sessionTitle = cur.title; paintSessNow(); }
+  renderSessList();
+  return r;
+}
+
+/**
+ * 把一整段历史画出来。
+ *
+ * 用 DocumentFragment 离屏建好再一次性挂上：
+ * 以前是逐条 appendChild + 每条都 log.scrollTop=scrollHeight，
+ * 等于每条消息都强制一次同步布局。会话聊得久了（几百条），
+ * 切回来就要卡一秒多，看着像"卡住了"。
+ */
+function renderTurns(turns) {
+  hideSending();
+  usageEl.textContent = '';
+
+  const list = turns || [];
+  const frag = document.createDocumentFragment();
+
+  for (const turn of list) {
+    if (turn.role === 'user') {
+      addUser(turn.text, undefined, turn.atts, frag);
+    } else {
+      const wrap = addEl('', 'msg assistant', frag);
+      wrap.innerHTML = '<div class="role">小鱼</div>';
+      const b = document.createElement('div');
+      b.className = 'bubble';
+      b.textContent = fixMojibake(turn.text);
+      wrap.appendChild(b);
+    }
+  }
+
+  // 一次性替换 + 只滚一次
+  log.replaceChildren(frag);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function switchSession(id) {
+  const r = await fetch('/api/sessions/select', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  }).then((x) => x.json()).catch((e) => {
+    console.warn('[switchSession] 切会话失败:', e && e.message ? e.message : e);
+    return null;
+  });
+  if (!r || r.error) {
+    // 打不开这个会话（多半是它已经被删了，或多个窗口共用同一目录时被别的窗口改掉了）。
+    // 以前是静默 return，人看着就是"点了一下，会话没了/没反应"。现在说一句、并刷新列表。
+    const why = r && r.error ? String(r.error) : '连不上服务';
+    console.warn('[switchSession] 打不开会话', id, why);
+    try {
+      if (sessHint) {
+        sessHint.textContent = why.includes('not found') ? '这个会话已经不在了，列表已刷新' : ('打不开：' + why);
+        sessHint.classList.add('sessWarn');
+        setTimeout(() => { try { sessHint.classList.remove('sessWarn'); } catch {} }, 4000);
+      }
+    } catch {}
+    await refreshSessions({ silent: true });
+    return false;
+  }
+  sessionId = r.session.id;
+  sessionTitle = r.session.title;
+  localStorage.setItem(STORE_KEY, sessionId);
+  paintSessNow();
+  loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
+  renderTurns(r.session.turns);
+
+  // 这个会话还在后台跑吗？
+  // 先问服务端（窗口关过也能补回来），再退回本页内存里的记录。
+  // 整段包 try：补画失败只是少一段内容，绝不能连累输入框。
+  try {
+    const liveRunning = typeof attachLive === 'function' ? await attachLive(sessionId) : false;
+    if (!liveRunning) {
+      const stillRunning = typeof turnsInFlight !== 'undefined' && turnsInFlight.has(sessionId);
+      if (stillRunning && typeof replayInFlight === 'function') {
+        replayInFlight(sessionId);
+        busy = true;
+        showSending();
+      } else {
+        busy = false;
+        hideSending();
+      }
+    } else {
+      busy = true;
+      showSending();
+    }
+  } catch (err) {
+    console.warn('[switchSession] 补画后台进度失败（不影响输入）:', err && err.message ? err.message : err);
+    busy = false;
+    hidingSendingSafe();
+  }
+  stopping = false;
+  syncSendBtn();
+
+  renderSessList();
+  // 不管上面有没有抛错，输入区都收拾干净（这条是「删会话后点不了输入框」的根治）
+  settleComposer();
+  return true;
+}
+
+async function createSession() {
+  const r = await fetch('/api/sessions/new', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || !r.session) { alert('新建会话失败'); return false; }
+  sessionId = r.session.id;
+  sessionTitle = r.session.title;
+  localStorage.setItem(STORE_KEY, sessionId);
+  paintSessNow();
+  loadTopCfg(); // 新会话是默认档
+  log.innerHTML = '';
+  hideSending();
+  usageEl.textContent = '';
+  // 新会话是干净的：把 busy 也归零，别让上一个会话的「发送中」锁着这里
+  busy = false;
+  stopping = false;
+  syncSendBtn();
+  await refreshSessions({ silent: true });
+  settleComposer();
+  return true;
+}
+
+document.getElementById('openSessions').onclick = async () => {
+  await refreshSessions();
+  sessDlg.showModal();
+};
+
+document.getElementById('sessNew').onclick = async () => {
+  await createSession();
+  sessDlg.close();
+};
+
+sessDlg.addEventListener('cancel', () => sessDlg.close());
+
+// 进平台：自动回到最近一次会话；没有就新建一个
+async function bootSessions() {
+  const r = await fetch('/api/sessions').then((x) => x.json()).catch(() => null);
+  if (!r) { paintSessNow(); return; }
+  sessionsCache = r.sessions || [];
+  const local = localStorage.getItem(STORE_KEY);
+  const pick = r.lastSessionId
+    || (local && sessionsCache.some((s) => s.id === local) ? local : null)
+    || (sessionsCache[0] ? sessionsCache[0].id : null);
+  if (pick && (await switchSession(pick))) return;
+  await createSession();
+}
+
+// ---- 模型：列表 / 添加 / 编辑 / 删除 / 切换 / 测连通 ---------------------------
+const mdlDlg = document.getElementById('modelsDlg');
+const mdlList = document.getElementById('mdlList');
+const mdlEmpty = document.getElementById('mdlEmpty');
+const mdlForm = document.getElementById('mdlForm');
+const mdlFormTitle = document.getElementById('mdlFormTitle');
+const mdlName = document.getElementById('mdlName');
+const mdlModel = document.getElementById('mdlModel');
+const mdlBase = document.getElementById('mdlBase');
+const mdlKey = document.getElementById('mdlKey');
+const mdlFormHint = document.getElementById('mdlFormHint');
+const mdlCount = document.getElementById('mdlCount');
+const mdlNow = document.getElementById('mdlNow');
+let mdlState = { models: [], activeId: null, empty: true };
+let mdlEditing = null; // null = 新增，否则是正在改的那条的 id
+
+function paintModelNow() {
+  const cur = mdlState.models.find((m) => m.id === mdlState.activeId);
+  mdlNow.textContent = cur ? ' · ' + cur.model : '';
+  mdlNow.title = cur ? cur.name : '';
+}
+
+function clearFormHint(kind = '', text = '') {
+  mdlFormHint.className = 'hint' + (kind ? ' ' + kind : '');
+  mdlFormHint.textContent = text;
+}
+
+function openForm(model) {
+  mdlEditing = model ? model.id : null;
+  mdlFormTitle.textContent = model ? `编辑模型：${model.name}` : '添加模型';
+  mdlName.value = model ? (model.source === 'env' ? model.model : model.name) : '';
+  mdlModel.value = model ? model.model : (mdlState.envDefaults?.model ?? '');
+  mdlBase.value = model ? model.baseURL : (mdlState.envDefaults?.baseURL ?? '');
+  mdlKey.value = '';
+  mdlKey.placeholder = model && model.hasKey
+    ? `已保存 ${model.keyHint}，不改就留空`
+    : 'sk-...';
+  clearFormHint();
+  mdlEmpty.hidden = true; // 空状态和表单别同时杵在屏幕上
+  mdlForm.classList.remove('hidden');
+  mdlName.focus();
+}
+
+function closeForm() {
+  mdlEditing = null;
+  mdlForm.classList.add('hidden');
+  clearFormHint();
+  mdlEmpty.hidden = !mdlState.empty;
+}
+
+function paintModels() {
+  mdlCount.textContent = mdlState.models.length ? `共 ${mdlState.models.length} 个` : '';
+  if (typeof paintRestoreEnv === 'function') paintRestoreEnv();
+  mdlList.innerHTML = '';
+  mdlList.hidden = mdlState.empty;
+  mdlEmpty.hidden = !mdlState.empty;
+  paintModelNow();
+
+  for (const m of mdlState.models) {
+    const row = document.createElement('div');
+    row.className = 'mdlRow' + (m.id === mdlState.activeId ? ' current' : '');
+    row.title = m.id === mdlState.activeId ? '正在用这一条' : '点一下切到这一条';
+
+    const main = document.createElement('div');
+    main.className = 'mdlMain';
+    const nameLine = document.createElement('div');
+    nameLine.className = 'mdlName';
+    nameLine.textContent = m.name;
+    if (m.id === mdlState.activeId) {
+      const b = document.createElement('span');
+      b.className = 'badge';
+      b.textContent = '正在用';
+      nameLine.appendChild(b);
+    }
+    if (m.source === 'env') {
+      const b = document.createElement('span');
+      b.className = 'badge env';
+      b.textContent = '.env';
+      nameLine.appendChild(b);
+    }
+    const sub = document.createElement('div');
+    sub.className = 'mdlSub';
+    sub.textContent = `${m.model} · ${m.baseURL} · ${m.hasKey ? m.keyHint : '没填 Key'}`;
+    main.append(nameLine, sub);
+    row.appendChild(main);
+
+    {
+      const acts = document.createElement('div');
+      acts.className = 'acts';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'mini edit';
+      edit.textContent = '编辑';
+      edit.title = m.source === 'env'
+        ? '改这条（改完会存成一套独立配置，不再跟着 .env 走）'
+        : '改名字 / 接口地址 / 模型名 / Key';
+      edit.onclick = (e) => { e.stopPropagation(); openForm(m); };
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'mini del';
+      del.textContent = '删除';
+      del.title = m.source === 'env'
+        ? '从列表里删掉这条（只是不再显示，.env 文件不动，随时能加回来）'
+        : '把这条配置删掉';
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm(`删掉「${m.name}」？
+
+只是删这条配置，别的地方不受影响。`)) return;
+        const r = await fetch('/api/models/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: m.id }),
+        }).then((x) => x.json()).catch(() => null);
+        if (!r || r.error) { alert('删不掉：' + (r && r.error ? r.error : '网络错误')); return; }
+        mdlState = r;
+        if (mdlEditing === m.id) closeForm();
+        paintModels();
+        syncHealth();
+      };
+      acts.append(edit, del);
+      row.appendChild(acts);
+    }
+
+    row.onclick = async () => {
+      if (m.id === mdlState.activeId) return;
+      const r = await fetch('/api/models/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: m.id }),
+      }).then((x) => x.json()).catch(() => null);
+      if (!r || r.error) { alert('切不了：' + (r && r.error ? r.error : '网络错误')); return; }
+      mdlState = r;
+      paintModels();
+      syncHealth();
+    };
+
+    mdlList.appendChild(row);
+  }
+}
+
+async function loadModels() {
+  const r = await fetch('/api/models').then((x) => x.json()).catch(() => null);
+  if (!r) return false;
+  mdlState = r;
+  paintModels();
+  return true;
+}
+
+// ---- 模型面板底部的三个开关：思考档位 / 429 回退 / 少说教 ----------
+const thinkSel = document.getElementById('thinkSel');
+const thinkNow = document.getElementById('thinkNow');
+const r429Sw = document.getElementById('r429Sw');
+const r429Now = document.getElementById('r429Now');
+const plainSw = document.getElementById('plainSw');
+const plainNow = document.getElementById('plainNow');
+const optHint = document.getElementById('optHint');
+const restoreEnvBtn = document.getElementById('restoreEnv');
+
+let thinkState = { level: 'auto', perModel: {}, levels: [] };
+let r429State = { config: { enabled: true, migrateThreshold: 3 }, cooldownLeft: 0, migrating: false };
+let plainState = { plainTalk: true };
+
+const FALLBACK_LEVELS = [
+  { id: 'off', name: '关', desc: '不要思考，最快最省' },
+  { id: 'minimal', name: '最低', desc: '极轻任务' },
+  { id: 'low', name: '低', desc: '简单对话，便宜又快' },
+  { id: 'medium', name: '中', desc: '中等强度' },
+  { id: 'high', name: '高', desc: '官方默认档' },
+  { id: 'xhigh', name: '特高', desc: '更狠一点' },
+  { id: 'max', name: '最高', desc: '重任务' },
+  { id: 'auto', name: '自动', desc: '要调工具用高档，纯聊天用低档' },
+];
+
+function paintThink() {
+  if (!thinkSel) return;
+  // 接口没回来的话也得有东西可选
+  if (!Array.isArray(thinkState.levels) || !thinkState.levels.length) {
+    thinkState.levels = FALLBACK_LEVELS;
+  }
+  // 当前选中的模型优先显示它自己的档位，没设过就显示全局
+  const curModel = mdlState.activeId;
+  const own = curModel ? thinkState.perModel[curModel] : undefined;
+  const eff = own ?? thinkState.level;
+
+  thinkSel.innerHTML = '';
+  for (const lv of thinkState.levels) {
+    const o = document.createElement('option');
+    o.value = lv.id;
+    o.textContent = lv.name + (lv.id === 'auto' ? '（推荐）' : '');
+    o.title = lv.desc;
+    if (lv.id === eff) o.selected = true;
+    thinkSel.appendChild(o);
+  }
+  const nameOf = (id) => (thinkState.levels.find((l) => l.id === id) || {}).name || id;
+  thinkNow.textContent = own ? '· 这个模型：' + nameOf(own) : '· 全局：' + nameOf(thinkState.level);
+}
+
+function paintR429() {
+  if (!r429Sw) return;
+  const on = Boolean(r429State.config?.enabled);
+  r429Sw.textContent = on ? '已开启' : '已关闭';
+  r429Sw.className = 'switch' + (on ? ' on' : '');
+  const cool = r429State.cooldownLeft;
+  r429Now.textContent = cool > 0 ? `· 冷却中 ${cool}s` : on ? `· 连撞 ${r429State.config?.migrateThreshold ?? 3} 次换会话` : '';
+}
+
+function paintPlain() {
+  if (!plainSw) return;
+  const on = Boolean(plainState.plainTalk);
+  plainSw.textContent = on ? '已开启' : '已关闭';
+  plainSw.className = 'switch' + (on ? ' on' : '');
+  plainNow.textContent = on ? '· 不啰嗦' : '';
+}
+
+async function loadOptions() {
+  const [t, r, c] = await Promise.all([
+    fetch('/api/thinking').then((x) => x.json()).catch(() => null),
+    fetch('/api/retry429').then((x) => x.json()).catch(() => null),
+    fetch('/api/chatstyle').then((x) => x.json()).catch(() => null),
+  ]);
+  if (t) thinkState = t;
+  if (r) r429State = r;
+  if (c) plainState = c;
+  paintThink();
+  paintR429();
+  paintPlain();
+}
+
+if (thinkSel) {
+  thinkSel.onchange = async () => {
+    const level = thinkSel.value;
+    const modelId = mdlState.activeId;
+    if (optHint) optHint.textContent = '保存中…';
+    // 有选中的模型就只改它自己的；没有模型才动全局默认
+    const payload = modelId ? { modelId, modelLevel: level } : { level };
+    const r = await fetch('/api/thinking/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) {
+      if (optHint) optHint.textContent = '存不上：' + (r && r.error ? r.error : '网络错误');
+      return;
+    }
+    thinkState = r;
+    paintThink();
+    if (optHint) optHint.textContent = '思考档位已改成「' + (thinkState.levels.find((l) => l.id === level)?.name || level) + '」，下一句生效';
+  };
+}
+
+if (r429Sw) {
+  r429Sw.onclick = async () => {
+    const next = !r429State.config?.enabled;
+    r429Sw.disabled = true;
+    const r = await fetch('/api/retry429/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    }).then((x) => x.json()).catch(() => null);
+    r429Sw.disabled = false;
+    if (!r || r.error) {
+      if (optHint) optHint.textContent = '操作失败：' + (r && r.error ? r.error : '网络错误');
+      return;
+    }
+    r429State = r;
+    paintR429();
+    if (optHint) optHint.textContent = next ? '撞 429 会自动回退换会话' : '撞 429 不再自动回退';
+  };
+}
+
+if (plainSw) {
+  plainSw.onclick = async () => {
+    const next = !plainState.plainTalk;
+    plainSw.disabled = true;
+    const r = await fetch('/api/chatstyle/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plainTalk: next }),
+    }).then((x) => x.json()).catch(() => null);
+    plainSw.disabled = false;
+    if (!r || r.error) {
+      if (optHint) optHint.textContent = '操作失败：' + (r && r.error ? r.error : '网络错误');
+      return;
+    }
+    plainState = r;
+    paintPlain();
+    if (optHint) optHint.textContent = next ? '少说教已开（底线不变）' : '少说教已关';
+  };
+}
+
+// .env 那条被删掉了才需要「找回」
+function paintRestoreEnv() {
+  if (!restoreEnvBtn) return;
+  const hasEnv = mdlState.models.some((m) => m.id === 'env');
+  restoreEnvBtn.hidden = hasEnv || !mdlState.envDefaults?.hasKey;
+}
+
+if (restoreEnvBtn) {
+  restoreEnvBtn.onclick = async () => {
+    const r = await fetch('/api/models/restore-env', { method: 'POST' }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) { alert('找回失败'); return; }
+    mdlState = r;
+    paintModels();
+    paintRestoreEnv();
+    if (optHint) optHint.textContent = '已把 .env 那条加回列表';
+  };
+}
+
+document.getElementById('openModels').onclick = async () => {
+  closeForm();
+  const ok = await loadModels();
+  if (!ok) { alert('读取模型列表失败'); return; }
+  await loadOptions();
+  paintRestoreEnv();
+  if (optHint) optHint.textContent = '';
+  mdlDlg.showModal();
+};
+
+document.getElementById('mdlAdd').onclick = () => openForm(null);
+document.getElementById('mdlEmptyAdd').onclick = () => openForm(null);
+document.getElementById('mdlCancel').onclick = () => closeForm();
+
+document.getElementById('mdlTest').onclick = async () => {
+  const payload = formPayload();
+  if (!payload.model || !payload.baseURL) { clearFormHint('err', '地址和模型名先填上'); return; }
+  clearFormHint('', '正在连…');
+  const r = await fetch('/api/models/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r) { clearFormHint('err', '网络错误'); return; }
+  if (r.error) { clearFormHint('err', r.error); return; }
+  clearFormHint('ok', `通了，${r.ms}ms`);
+};
+
+document.getElementById('mdlSave').onclick = async () => {
+  const payload = formPayload();
+  if (!payload.model) { clearFormHint('err', '模型名不能空'); return; }
+  if (!payload.baseURL) { clearFormHint('err', '接口地址不能空'); return; }
+  clearFormHint('', '保存中…');
+  const r = await fetch('/api/models/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r) { clearFormHint('err', '保存失败：网络错误'); return; }
+  if (r.error) { clearFormHint('err', r.error); return; }
+  mdlState = r;
+  closeForm();
+  paintModels();
+  syncHealth();
+};
+
+const booted = bootSessions();
+
+
+</script>
+</body>
+</html>

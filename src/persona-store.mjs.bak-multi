@@ -1,0 +1,66 @@
+// Persona store: user-editable persona card, driven from the settings dialog.
+// Edits are written to .state/persona.md; while that file exists it wins over persona/xiaoyu.md.
+// The shipped file is never modified, so "恢复默认人设" is always possible.
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { config } from './config.mjs';
+
+const BASE_FILE = join(config.root, 'persona', 'xiaoyu.md');
+const USER_FILE = join(config.root, '.state', 'persona.md');
+const BACKUP_FILE = join(config.root, '.state', 'persona.backup.md');
+const STATE_DIR = join(config.root, '.state');
+
+function readFileSafe(file) {
+  try {
+    return readFileSync(file, 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
+export function readBasePersona() {
+  const text = readFileSafe(BASE_FILE);
+  if (text === null) throw new Error(`persona file missing: ${BASE_FILE}`);
+  return text;
+}
+
+function readUserPersona() {
+  const text = readFileSafe(USER_FILE);
+  return text ? text : null;
+}
+
+/** Current persona state as the settings dialog sees it. */
+export function personaInfo() {
+  const base = readBasePersona();
+  const custom = readUserPersona();
+  return {
+    text: custom ?? base,
+    base,
+    custom: custom !== null,
+    path: custom !== null ? USER_FILE : BASE_FILE,
+  };
+}
+
+/** Save the user's edit. Empty text is rejected so the prompt never loses its persona. */
+export function saveUserPersona(text) {
+  const clean = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  if (!clean) {
+    const err = new Error('人设内容不能为空');
+    err.status = 400;
+    throw err;
+  }
+  if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
+  writeFileSync(USER_FILE, clean + '\n', 'utf8');
+  return personaInfo();
+}
+
+/** Drop the user override. The previous override is backed up first, nothing is lost. */
+export function resetUserPersona() {
+  const custom = readUserPersona();
+  if (custom !== null) {
+    if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(BACKUP_FILE, custom + '\n', 'utf8');
+    rmSync(USER_FILE, { force: true });
+  }
+  return personaInfo();
+}

@@ -1,0 +1,172 @@
+// 功能开关：界面上【功能】面板管的就是这里。存到 .state/features.json。
+// 一个功能 = 一个开关 + 它管的那些工具。关掉之后工具就从模型手里拿掉，真调也会被拒。
+//
+// 默认值只有一条规矩：**每项都默认开着**。所以：
+//   - 文件里没写过的键当成开；
+//   - 老版本留下的开关文件里缺了新功能的键，也当成开（新加的功能自动生效，
+//     不用等用户去点，也不会出现「代码里默认开、实际却显示关」这种自相矛盾）。
+// 想真的关掉，就得在 features.json 里明确写 false —— 那只有用户点「停用」才会发生。
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { config } from './config.mjs';
+
+const FILE = join(config.dataDir, '.state', 'features.json');
+/** 老文件没有这些键时补写进去，让文件内容和界面显示对得上 */
+const SCHEMA_VERSION = 2;
+
+/** 功能清单。数组顺序就是界面上的顺序。 */
+export const FEATURES = [
+  {
+    id: 'web',
+    name: '联网搜索',
+    desc: '上网搜东西，再打开搜到的网页读正文。关掉之后既搜不了也打不开网页。',
+    tools: ['web_search', 'fetch_url'],
+  },
+  {
+    id: 'readFile',
+    name: '读文件',
+    desc: '读工作区里的文本文件。',
+    tools: ['read_file'],
+  },
+  {
+    id: 'writeFile',
+    name: '写文件',
+    desc: '在工作区里新建或覆盖文件。',
+    tools: ['write_file'],
+  },
+  {
+    id: 'listDir',
+    name: '看目录',
+    desc: '列工作区里的文件和文件夹。',
+    tools: ['list_dir'],
+  },
+  {
+    id: 'shell',
+    name: '跑命令',
+    desc: '在这台电脑上跑 PowerShell 命令。关掉之后完全碰不到命令行。',
+    tools: ['run_command'],
+  },
+  {
+    id: 'plan',
+    name: '任务清单',
+    desc: '多步的事先拆清单，边做边勾进度。',
+    tools: ['plan'],
+  },
+  {
+    id: 'note',
+    name: '便签',
+    desc: '把关键数字、路径、结论记下来，隔几轮还能翻出来。',
+    tools: ['note'],
+  },
+  {
+    // 纯界面功能，不带工具。默认开着，素材就在 assets/background.mp4。
+    id: 'videoBg',
+    name: '视频背景',
+    desc: '把一段短片铺成聊天背景（无声循环播放），右下角小圆钮调透明度。不想要就关掉。',
+    tools: [],
+    defaultOn: true,
+  },
+];
+
+const BY_ID = new Map(FEATURES.map((f) => [f.id, f]));
+
+/** 工具名 -> 所属功能 id */
+export const TOOL_FEATURE = new Map();
+for (const f of FEATURES) for (const t of f.tools) TOOL_FEATURE.set(t, f.id);
+
+function readRaw() {
+  try {
+    const raw = JSON.parse(readFileSync(FILE, 'utf8'));
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 每个功能是开是关。
+ *
+ * 规矩见文件头：**没写过 = 开**。所以这里只认显式的 false —— 老文件里缺了新功能的键，
+ * 那个新功能也是开的。用户点「停用」才会写进 false。
+ *
+ * 顺手把缺的键补写回文件：不然界面上写着「已启用」，features.json 里却没这一行，
+ * 下次谁去看文件都会以为它关着（这个误会真发生过）。
+ */
+export function getEnabledMap() {
+  const raw = readRaw();
+  const out = {};
+  const missing = [];
+  for (const f of FEATURES) {
+    if (raw[f.id] === undefined) missing.push(f.id);
+    out[f.id] = raw[f.id] === undefined ? true : Boolean(raw[f.id]);
+  }
+  if (missing.length && raw.schemaVersion !== SCHEMA_VERSION) {
+    try {
+      const dir = join(config.dataDir, '.state');
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(FILE, JSON.stringify({ schemaVersion: SCHEMA_VERSION, ...out }, null, 2), 'utf8');
+    } catch {
+      // 写不进去也不影响这次读数，下次再补
+    }
+  }
+  return out;
+}
+
+/** 界面用的一份完整状态。 */
+export function getFeatures() {
+  const enabled = getEnabledMap();
+  const features = FEATURES.map((f) => ({
+    id: f.id,
+    name: f.name,
+    desc: f.desc,
+    tools: [...f.tools],
+    enabled: enabled[f.id],
+  }));
+  return {
+    features,
+    total: features.length,
+    enabledCount: features.filter((f) => f.enabled).length,
+    enabledTools: features.filter((f) => f.enabled).flatMap((f) => f.tools),
+  };
+}
+
+/** 开 / 关一个功能，写盘后返回最新状态。 */
+export function setFeature(id, on) {
+  const key = String(id ?? '').trim();
+  const f = BY_ID.get(key);
+  if (!f) {
+    const e = new Error(`没有这个功能：${key || '(空)'}`);
+    e.status = 400;
+    throw e;
+  }
+  const map = getEnabledMap();
+  map[f.id] = Boolean(on);
+  if (!existsSync(join(config.dataDir, '.state'))) {
+    mkdirSync(join(config.dataDir, '.state'), { recursive: true });
+  }
+  writeFileSync(FILE, JSON.stringify(map, null, 2), 'utf8');
+  return getFeatures();
+}
+
+/** 现在能用的工具名。 */
+export function enabledToolNames() {
+  return getFeatures().enabledTools;
+}
+
+/** 这个工具现在能不能用；不认识的工具一律当不能用。 */
+export function isToolEnabled(name) {
+  const id = TOOL_FEATURE.get(String(name ?? ''));
+  if (!id) return false;
+  return getEnabledMap()[id];
+}
+
+/** 某个工具被关掉时，返回它所属功能的名字，方便报错说清楚。 */
+export function featureNameOfTool(name) {
+  const id = TOOL_FEATURE.get(String(name ?? ''));
+  return id ? BY_ID.get(id)?.name ?? id : '';
+}
+
+/** 关掉的功能名单，给系统提示用。 */
+export function disabledFeatureNames() {
+  return getFeatures().features.filter((f) => !f.enabled).map((f) => f.name);
+}

@@ -1180,6 +1180,20 @@
             <span class="hint">安装版数据在 <code>%APPDATA%\小鱼Agent\data\.state</code>，免安装版在 exe 旁边的 <code>data\</code>。卸载不会删数据，但换安装方式会换目录 —— 备份一下最稳。</span>
           </div>
         </fieldset>
+
+        <fieldset>
+          <legend>更新</legend>
+          <div class="field">
+            <label>程序会自己检查新版本，有就自动换上、重启生效（只换程序文件，会话、人设、模型配置一个都不动）。</label>
+            <span class="hint" id="updState">…</span>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="ghost" id="updCheck">马上检查一次</button>
+          </div>
+          <div class="field">
+            <span class="hint">不想每次启动都去网上查，也可以就在这儿点。装的是哪个版本的看左上角标题栏底下那行小字。</span>
+          </div>
+        </fieldset>
       </div>
       <div class="dlgFoot">
         <span class="hint" id="saveHint"></span>
@@ -3585,6 +3599,64 @@ if (document.getElementById('bakExport')) {
     } finally {
       btn.disabled = false;
       btn.textContent = '确定恢复';
+    }
+  };
+}
+
+// ---- 更新 ----
+// 后台每次启动都会自己查；这儿是给主人主动点的地方。
+async function refreshUpdate() {
+  const el = document.getElementById('updState');
+  if (!el) return;
+  const r = await fetch('/api/update/status').then((x) => x.json()).catch(() => null);
+  if (!r || !r.ok) {
+    el.textContent = '读不到版本信息';
+    return;
+  }
+  const bits = [`现在是 ${r.local}`];
+  if (r.last && r.last.to) {
+    const d = new Date(r.last.at);
+    const p = (n) => String(n).padStart(2, '0');
+    bits.push(`上次从 ${r.last.from} 更新到 ${r.last.to}（${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}），重启过就生效了`);
+  }
+  if (r.retryAt) {
+    const d = new Date(r.retryAt);
+    bits.push(`上次没查成，${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')} 之后会再自动试`);
+  }
+  el.textContent = bits.join('；');
+}
+
+if (document.getElementById('updCheck')) {
+  refreshUpdate();
+  document.getElementById('updCheck').onclick = async () => {
+    const btn = document.getElementById('updCheck');
+    const el = document.getElementById('updState');
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = '查着呢…';
+    try {
+      const r = await fetch('/api/update/check', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      }).then((x) => x.json());
+      if (!r.ok) {
+        el.textContent = '查不了：' + (r.error || '未知原因');
+      } else if (r.status === 'updated') {
+        el.textContent = r.detail;
+        addSysNote('已经自动更新到 ' + r.to + ' 了，重启一下小鱼Agent 就生效（会话和设置都不动）');
+      } else if (r.status === 'same') {
+        el.textContent = r.detail;
+        addSysNote('已经是最新的 ' + (r.from || '') + ' 啦 (๑•̀ㅂ•́)و✧');
+      } else {
+        el.textContent = r.detail || r.status;
+      }
+      await refreshUpdate();
+    } catch (e) {
+      el.textContent = '查不了：' + (e.message || e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
     }
   };
 }

@@ -14,6 +14,8 @@ import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMem
 import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit } from './edit.mjs';
 // 整份数据备份：会话 / 人设 / 模型配置 / 设置，换电脑或重装时救命用。
 import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
+// 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
+import { quickCheck, updateStatus } from './updater.mjs';
 import { buildSessionLog } from './session-log.mjs';
 import { applySafeWord, sessionModeWord } from './mode.mjs';
 import {
@@ -1547,6 +1549,18 @@ const server = createServer(async (req, res) => {
   // 概览：GET /api/backup/info
   if (req.method === 'GET' && url.pathname === '/api/backup/info') {
     return json(res, 200, { ok: true, ...backupSummary() });
+  }
+  // 版本情况：GET /api/update/status  → 当前版本、上次更新什么时候、失败的话什么时候重试
+  if (req.method === 'GET' && url.pathname === '/api/update/status') {
+    return json(res, 200, { ok: true, ...(await updateStatus()) });
+  }
+  // 马上查一次：POST /api/update/check { force?: true }
+  // force 默认 true —— 人主动点的，就别管那个「失败后歇 6 小时」的节流了
+  if (req.method === 'POST' && url.pathname === '/api/update/check') {
+    const bodyJson = await body(req).catch(() => null);
+    const force = bodyJson?.force !== false;
+    const r = await quickCheck({ force });
+    return json(res, 200, { ok: true, ...r });
   }
   // 下载整包：GET /api/backup/export
   if (req.method === 'GET' && url.pathname === '/api/backup/export') {

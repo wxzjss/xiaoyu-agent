@@ -373,6 +373,14 @@ export async function checkForUpdate(opts = {}) {
       locallyModified: touchedRel,
     };
   } catch (err) {
+    // 失败也落一份记录（带 status），main.cjs 的 quickVersionCheck 靠它做重试节流
+    try {
+      writeFileSync(
+        UPDATE_INFO,
+        JSON.stringify({ at: Date.now(), status: 'failed', from: local, to: remote, detail: String(err?.message ?? err) }, null, 2),
+        'utf8',
+      );
+    } catch {}
     return {
       status: 'failed',
       local,
@@ -396,12 +404,58 @@ export function shouldRestartForUpdate() {
   return true;
 }
 
+const RETRY_MS = 6 * 60 * 60 * 1000; // 上次失败的话，6 小时内不再试
+
+/**
+ * 每次启动都跑一次的那条路径：只查版本 + 真更新。
+ *
+ * 为什么单独拎出来：自检（selfcheck.mjs）按 SELFCHECK_VERSION 节流，环境没变就
+ * 一直 skip，于是「查新版本」这件事被一起跳掉了 —— 装好之后可能好几天都不知道
+ * 线上发了新版。所以版本检查必须独立，每次启动都走一遍。
+ *
+ * 失败要落盘（带 status: 'failed'），靠它做重试节流：没网、GitHub 抽风的时候
+ * 别每次启动都去撞，撞一次等 RETRY_MS 再试。
+ *
+ * @param {{force?: boolean}} opts force=true 时无视节流（界面上的「检查更新」用）
+ * @returns {Promise<{status:string, detail:string, needsRestart?:boolean, from?:string, to?:string, files?:string[]}>}
+ */
+export async function quickCheck(opts = {}) {
+  const info = lastUpdateInfo();
+  if (!opts.force && info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS) {
+    return { status: 'throttled', detail: '上次检查失败，先歇会儿再试' };
+  }
+  const r = await checkForUpdate({ apply: true });
+  if (r.status === 'updated') {
+    return { status: 'updated', detail: r.detail, needsRestart: true, from: r.local, to: r.remote, files: r.updated };
+  }
+  if (r.status === 'failed') {
+    try {
+      writeFileSync(
+        UPDATE_INFO,
+        JSON.stringify({ at: Date.now(), status: 'failed', from: r.local, to: r.remote, detail: r.detail }, null, 2),
+        'utf8',
+      );
+    } catch {}
+  }
+  return { status: r.status, detail: r.detail, from: r.local, to: r.remote };
+}
+
+/** 给界面用的：现在是什么情况 */
+export async function updateStatus() {
+  const local = localVersion();
+  const info = lastUpdateInfo();
+  return {
+    local,
+    last: info && info.status !== 'failed' ? { at: info.at, from: info.from, to: info.to } : null,
+    retryAt: info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS ? (info.at || 0) + RETRY_MS : null,
+  };
+}
+
 /** 给自检用的那一项 */
 export async function versionCheckItem() {
   const r = await checkForUpdate();
   const name = '版本更新';
-  switch (r.status) {
-    case 'same':
+  switch (r.status) {    case 'same':
       return { id: 'version', name, level: 'ok', detail: r.detail };
     case 'unknown':
       return { id: 'version', name, level: 'warn', detail: r.detail };

@@ -64,25 +64,56 @@ let quitting = false;
 async function selfCheck() {
   try {
     const { runSelfCheck, decideMode } = await import('../src/selfcheck.mjs');
-    if (decideMode() === 'skip') return false;
-
-    const r = await runSelfCheck();
-    const { summary, items } = r;
-    console.log(
-      `[selfcheck] AI 自检 ${Math.round((r.tookMs ?? 0) / 100) / 10}s: ` +
-        `${summary.okCount} ok / ${summary.warnCount} warn / ${summary.failCount} fail` +
-        (summary.fixedCount ? ` (${summary.fixedCount} 项已自动修好)` : ''),
-    );
-    if (r.skipped) console.log(`[selfcheck] 跳过：${r.skipped}`);
-    if (r.summaryText) console.log(`[selfcheck] 结论：${r.summaryText}`);
-    for (const i of items) {
-      if (i.level === 'ok') continue;
-      console.log(`[selfcheck] ${i.level === 'fail' ? '✗' : '!'} ${i.name}: ${i.detail}${i.fixed ? ' [已自动修复]' : ''}`);
-    }
-    return Boolean(r.needsRestart);
+    // 自检本身可以「这次跳过」（上次跑过、环境没变），但**版本检查不能跳过**。
+    // 以前这两件事捆在一起，结果主人装好之后如果环境一直没变，就再也不查新版本了
+    // —— 想更新只能自己去 GitHub 手点。现在拆开：AI 环境自检按老规矩节流，
+    // 更新检查每次启动都跑一次（成功与否都记时间戳，失败了隔一段时间再重试）。
+    const skipAll = decideMode() === 'skip';
+    if (!skipAll) await runFullSelfCheck(runSelfCheck);
+    else await quickVersionCheck();
+    return Boolean(global.__xyNeedsRestart);
   } catch (err) {
     console.error('[selfcheck] 跑挂了（不影响使用）:', err && err.message ? err.message : err);
     return false;
+  }
+}
+
+/** 完整自检（包含版本检查那一项） */
+async function runFullSelfCheck(runSelfCheck) {
+  const r = await runSelfCheck();
+  const { summary, items } = r;
+  console.log(
+    `[selfcheck] AI 自检 ${Math.round((r.tookMs ?? 0) / 100) / 10}s: ` +
+      `${summary.okCount} ok / ${summary.warnCount} warn / ${summary.failCount} fail` +
+      (summary.fixedCount ? ` (${summary.fixedCount} 项已自动修好)` : ''),
+  );
+  if (r.skipped) console.log(`[selfcheck] 跳过：${r.skipped}`);
+  if (r.summaryText) console.log(`[selfcheck] 结论：${r.summaryText}`);
+  for (const i of items) {
+    if (i.level === 'ok') continue;
+    console.log(`[selfcheck] ${i.level === 'fail' ? '✗' : '!'} ${i.name}: ${i.detail}${i.fixed ? ' [已自动修复]' : ''}`);
+  }
+  global.__xyNeedsRestart = Boolean(r.needsRestart);
+}
+
+/**
+ * 只查版本（每次启动都调）。
+ *
+ * 逻辑在 src/updater.mjs 的 quickCheck() 里 —— 那边还顺带管「失败后 6 小时内
+ * 别再去撞」的节流，界面上点「检查更新」时传 force:true 就能无视节流。
+ */
+async function quickVersionCheck() {
+  try {
+    const { quickCheck } = await import('../src/updater.mjs');
+    const r = await quickCheck();
+    if (r.status === 'updated') {
+      console.log(`[update] ${r.detail}`);
+      global.__xyNeedsRestart = Boolean(r.needsRestart);
+    } else if (r.status !== 'same') {
+      console.log(`[update] ${r.detail}`);
+    }
+  } catch (err) {
+    console.log('[update] 检查出错（不影响使用）：', err && err.message ? err.message : err);
   }
 }
 

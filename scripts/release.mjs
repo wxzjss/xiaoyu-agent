@@ -210,10 +210,14 @@ async function main() {
   }
 
   // 2) 上传附件（同名先删）
+  // 附件名一律用英文。
+  // GitHub 的 asset 名只认 ASCII，中文会被逐字剥掉（实测「小鱼Agent-免安装版-0.9.0.exe」
+  // 传上去变成「Agent-.-0.9.0.exe」，装完根本看不出是什么）。
+  // 中文名留给桌面和安装目录，下载列表用英文反而更清楚。
   const files = [
-    `dist/installer/小鱼Agent-${VERSION}-x64.exe`,
-    `dist/installer/小鱼Agent-免安装版-${VERSION}.exe`,
-    `dist/installer/小鱼Agent-手机端-${VERSION}.apk`,
+    `dist/installer/XiaoyuAgent-${VERSION}-Setup-x64.exe`,
+    `dist/installer/XiaoyuAgent-${VERSION}-Portable.exe`,
+    `dist/installer/XiaoyuAgent-${VERSION}-Mobile.apk`,
   ];
   const have = Array.isArray(rel.assets) ? rel.assets : [];
 

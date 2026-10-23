@@ -21,3 +21,7 @@ _*.mjs
 _*.py
 _*.png
 .build/
+_*.log
+_*.err
+_*.out
+_*.json

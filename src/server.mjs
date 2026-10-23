@@ -44,7 +44,7 @@ import {
 } from './persona-store.mjs';
 import { getFeatures, setFeature } from './features.mjs';
 // 纯净模式开关（见 pure.mjs）
-import { pureModeOn, setPureMode } from './pure.mjs';
+import { pureModeOn, setPureMode, pureSystemPrompt } from './pure.mjs';
 import { getSkinState, writeSkin, skinVideoPath, ensureBundledVideo } from './skin.mjs';
 import { getThinking, setThinking, LEVELS } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
@@ -1510,6 +1510,38 @@ const server = createServer(async (req, res) => {
     });
   }
 
+  // 批量删除：POST /api/sessions/delete-many  { ids: [...] }
+  // 跟单个删除一模一样，只是循环一遍、一次把结果报回去（前端不用发几十个请求）。
+  if (req.method === 'POST' && url.pathname === '/api/sessions/delete-many') {
+    const { ids } = await body(req).catch(() => ({}));
+    const want = Array.isArray(ids) ? ids.filter((x) => typeof x === 'string' && x) : [];
+    if (!want.length) return json(res, 400, { error: '没有选中要删的会话' });
+    const done = [];
+    const failed = [];
+    for (const id of want) {
+      try {
+        const ok = deleteSession(id);
+        try {
+          trashMemory(id);
+        } catch {}
+        sessions.delete(id);
+        if (ok) done.push(id);
+        else failed.push(id);
+      } catch (e) {
+        failed.push(id);
+      }
+    }
+    const list = listSessions();
+    const last = getLastSessionId();
+    return json(res, 200, {
+      ok: true,
+      deleted: done.length,
+      failed,
+      lastSessionId: last && list.some((s) => s.id === last) ? last : (list[0]?.id ?? null),
+      remaining: list.length,
+    });
+  }
+
   // ---- 整份数据备份 / 恢复 -------------------------------------------------
   // 会话、人设、模型配置、设置……全在这里。换电脑 / 重装 / 换安装方式时用。
   // 概览：GET /api/backup/info
@@ -1762,9 +1794,14 @@ const server = createServer(async (req, res) => {
     // 而且一删下次又「没开过场」，会再补一遍。所以只在这一刻的拷贝上摘。
     if (pureModeOn()) {
       wireMessages = wireMessages.filter((m) => !isOpeningMessage(m));
-      // 系统提示（不管空的还是有内容的）一律不发：老会话盘里存的是完整人设，
-      // 不摘掉就等于一边说"纯净"一边还带着人设说话。context 那条规则副本同理。
+      // 系统提示一律不发：老会话盘里存的是完整人设，不摘掉就等于
+      // 一边说"纯净"一边还带着人设说话。context 那条规则副本同理。
       wireMessages = wireMessages.filter((m) => !(m && (m.role === 'system' || m.context)));
+      // 然后只补一条「答短点」。为什么还要发点什么：系统提示全空的话，
+      // 模型没有任何长度锚点，纯净模式反而变得比人设模式还能唠。
+      // 注意顺序——先摘干净再补，否则刚补的这条会被上面那个 filter 一起摘掉。
+      const brief = pureSystemPrompt();
+      if (brief) wireMessages.unshift({ role: 'system', content: brief });
     }
     // 前情：只贴给模型看，不进会话记录。
     // 位置在 system（+上下文说明）之后、真正的对话之前 —— 模型读起来就是「之前聊过的」。
@@ -1992,39 +2029,63 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/reset') {
-    const { sessionId = 'default', memory = false, persona = false } = await body(req).catch(() => ({}));
-    const session = getSession(sessionId);
-    let wiped = null;
-    if (session) {
-      session.messages = sysSeed(sessionId);
-      saveSession(session);
-    }
+    const { sessionId = 'default' } = await body(req).catch(() => ({}));
     /**
-     * 记忆有两份，分开清，别混一件事：
-     *   ① memory=true  清这个会话自己的本子（.state/memory/<会话id>.md）—— 只影响这一个会话；
-     *   ② persona=true 清那套人设的正文（.state/personas/<当前>.md）—— 全体共用，影响所有会话。
-     * 两份都先备份再清，路径在返回值里给出去。
+     * 「清空当前」= 把这个会话删掉、当场开一个新的。
+     *
+     * 为什么改成这样（主人原话：清空当前只等于把这个会话删了再建一个新的）：
+     *   以前的实现是在**原会话**上把 messages 重置回 system 那一条 —— 会话 id 不变、
+     *   创建时间不变、记忆本子也不动。于是「清空」之后那个会话还带着旧名字、
+     *   旧记忆，看着就不像新开的。而且原来还挂着两个勾选框（清会话记忆 / 清人设），
+     *   主人明确不要那两个选项了，一并去掉。
+     *
+     * 现在的语义跟「删除 + 新建」完全一致：
+     *   - 旧会话整个挪进 .trash（跟 /api/sessions/delete 一条路，能找回）
+     *   - 它的记忆本子也挪进 .trash
+     *   - 新会话拿新 id、新标题、新建时间，system 提示按当前设置重新拼一份
+     *   - 新会话也照常排队开场白（跟新建接口一样 fire-and-forget）
+     * 返回新会话的 id，前端拿它切过去。
      */
-    if (memory || persona) {
-      const out = { session: null, persona: null };
-      if (memory) {
-        try {
-          out.session = wipeMemory(sessionId);
-        } catch (e) {
-          out.session = { error: e.message };
-        }
+    const old = getSession(sessionId);
+    if (old) {
+      try {
+        deleteSession(sessionId);
+      } catch (e) {
+        console.warn('[reset] 旧会话没删成：', String(e?.message ?? e));
       }
-      if (persona) {
-        try {
-          const p = wipePersonaText();
-          out.persona = { id: p.id, backup: p.backup, bytes: p.bytes };
-        } catch (e) {
-          out.persona = { error: e.message };
-        }
-      }
-      return json(res, 200, { ok: true, wiped: out, memory: memoryInfo(sessionId) });
+      try {
+        trashMemory(sessionId);
+      } catch {}
+      sessions.delete(sessionId);
     }
-    return json(res, 200, { ok: true, wiped: null, memory: memoryInfo(sessionId) });
+
+    const id = newSessionId();
+    const now = Date.now();
+    const session = {
+      id,
+      title: '新会话',
+      createdAt: now,
+      updatedAt: now,
+      messages: sysSeed(id),
+      _openingPending: true,
+    };
+    saveSession(session);
+    sessions.set(id, session);
+    try {
+      ensureMemory(id);
+    } catch (err) {
+      console.warn('[memory] 清空后新会话的本子没建起来：', String(err?.message ?? err));
+    }
+    setLastSessionId(id);
+    startOpening(id).catch((err) => console.warn('[opening] 清空后的开场没跑成：', String(err?.message ?? err)));
+
+    return json(res, 200, {
+      ok: true,
+      // 旧会话的 id 一并给出去，前端要用它把界面上的旧东西撤掉
+      cleared: old ? sessionId : null,
+      session: publicSession(session),
+      memory: memoryInfo(id),
+    });
   }
 
   if (req.method === 'GET') return serveStatic(req, res);

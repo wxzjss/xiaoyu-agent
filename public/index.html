@@ -577,6 +577,9 @@
       display: flex; align-items: center; gap: 12px;
       padding: 12px 16px; border-bottom: 1px solid var(--border);
     }
+    /* display:flex 会把 [hidden] 的 display:none 盖掉，得显式补回来。
+       这个坑很经典：属性设对了、界面就是不消失。 */
+    .sessTop[hidden] { display: none !important; }
     .sessTop .hint { color: var(--dim); font-size: 12px; }
     /* 导入 / 导出那排：比上面那排窄一点，不当主角。
        颜色分三层：导入=描边蓝（往里进），导出=安静灰（往外拿），全部导出=更淡（备用）。 */
@@ -602,6 +605,23 @@
     /* 全部导出再淡一档，免得和「导出这个」看混 */
     #sessExportAll { color: #6b7484; }
     #sessExportAll:hover { color: var(--text); }
+    /* 批量删除：跟删除一个颜色，但平时是安静描边，避免误点 */
+    #sessBulk { border: 1px solid var(--border); background: transparent; color: var(--dim); }
+    #sessBulk:hover { border-color: rgba(226, 96, 96, .55); background: rgba(226, 96, 96, .08); color: #ff8b8b; }
+    #sessBulk.on { border-color: rgba(226, 96, 96, .7); background: rgba(226, 96, 96, .16); color: #ff9a9a; font-weight: 600; }
+    .sessBulkBar { gap: 8px; padding-top: 0; }
+    .sessBulkBar button { font-size: 12.5px; padding: 5px 12px; height: 28px; border-radius: 7px; }
+    #sessBulkDel {
+      margin-left: auto; border: 1px solid rgba(226, 96, 96, .55);
+      background: rgba(226, 96, 96, .12); color: #ff8b8b; font-weight: 600;
+    }
+    #sessBulkDel:hover:not(:disabled) { background: rgba(226, 96, 96, .24); border-color: #e26060; color: #ffb3b3; }
+    #sessBulkDel:disabled { opacity: .4; cursor: not-allowed; }
+    /* 勾选框：只在批量模式出现，别的时候不挤地方 */
+    .sessPick { flex: none; width: 16px; height: 16px; accent-color: #e26060; cursor: pointer; }
+    .sessRow.picked { background: rgba(226, 96, 96, .08); border-color: rgba(226, 96, 96, .45); }
+    .sessRow.picked .sessTitle { color: #ffb3b3; }
+    .sessList.bulk .sessRow .mini { display: none; }
     .sessList { max-height: 52vh; overflow-y: auto; flex: 1 1 auto; min-height: 0; padding: 8px; }
     .sessRow {
       display: flex; align-items: center; gap: 8px; padding: 9px 10px;
@@ -1328,6 +1348,14 @@
         <button type="button" class="ghost3" id="sessImport" title="从本地 JSON 文件导入会话">导入</button>
         <button type="button" class="ghost3" id="sessExportOne" title="把当前选中的会话导出成 JSON 文件">导出这个</button>
         <button type="button" class="ghost3" id="sessExportAll" title="把所有会话打成一个 JSON 文件备份">全部导出</button>
+        <button type="button" class="ghost3" id="sessBulk" title="勾选好一次删掉">批量删除</button>
+      </div>
+      <div class="sessTop sessBulkBar" id="sessBulkBar" hidden>
+        <button type="button" class="ghost3" id="sessBulkAll">全选</button>
+        <button type="button" class="ghost3" id="sessBulkNone">全不选</button>
+        <span class="hint" id="sessBulkCount">选中 0 个</span>
+        <button type="button" class="ghost3 del" id="sessBulkDel" disabled>删掉选中的</button>
+        <button type="button" class="ghost3" id="sessBulkCancel">取消</button>
       </div>
       <div class="sessList" id="sessList"></div>
       <input type="file" id="sessFile" accept=".json,application/json" hidden />
@@ -3025,64 +3053,44 @@ input.addEventListener('input', () => { autosizeInput(); syncSendBtn(); });
 document.getElementById('reset').onclick = async () => {
   if (!sessionId) return;
   /**
-   * 这里问两件事：
-   *   一定要清的 —— 当前会话的聊天记录（会话本身留着）；
-   *   可选清的 —— 记忆（人设正文）。
+   * 「清空当前」= 把这个会话删掉、当场开一个新的。
    *
-   * 记忆现在有两份，都得讲清楚：
-   *   ① 这个会话自己的本子（.state/memory/<会话id>.md）—— 只影响这一个会话；
-   *   ② 设置里那套人设的正文 —— 全体共用，清了所有会话都受影响。
-   * 界面上把①做成默认勾上、②做成额外勾选，别让主人误连人设一起清了。
+   * 以前这里还挂着两个勾选框（连会话记忆一起清 / 连设置里那套人设一起清），
+   * 现在语义变干净了 —— 清空就是「删了这个再建一个新的」，新会话天然是个
+   * 空白本子，人设是全局共用的、跟清不清空一个会话没关系，所以那两个选项
+   * 全去掉，弹窗只问一句。
    */
   const ans = await askConfirm({
     title: '清空当前',
-    body: '当前会话的聊天记录会清掉，会话本身留着。',
+    body: '这个会话连同它的聊天记录会被删掉（挪进 .trash，还能找回），然后新开一个空的。',
     ok: '清空',
     danger: true,
-    opt: {
-      label: '连这个会话的记忆也清（只清这一个会话，聊天记录以外的东西才叫记忆）',
-      extra: { label: '连设置里那套人设也清（所有会话都受影响，慎勾）' },
-      danger: true,
-    },
   });
   if (!ans) return;
-  const withMemory = Boolean(ans && ans.opt);
-  const withPersona = Boolean(ans && ans.extra);
 
   const r = await fetch('/api/reset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, memory: withMemory, persona: withPersona }),
+    body: JSON.stringify({ sessionId }),
   }).then((x) => x.json()).catch(() => null);
 
-  log.innerHTML = '';
-  usageEl.textContent = '';
-  settleComposer();
-  refreshSessions({ silent: true }).catch(() => {});
-
-  if (withMemory) {
-    const w = (r && r.wiped) || {};
-    const sm = w.session;
-    if (sm && sm.error) addSysNote('⚠ 聊天记录清掉了，但这个会话的记忆没清成：' + sm.error);
-    else if (sm && sm.bytes) {
-      // 备份路径说出来，手滑了还能捡回来
-      addSysNote(`聊天记录清掉了；这个会话的记忆也清了（${sm.bytes} 字）。清之前那份存在：\n${sm.backup || '（备份没写成）'}`);
-    } else {
-      addSysNote('聊天记录清掉了。这个会话的记忆本来就是空的，没东西可清。');
-    }
-    if (withPersona) {
-      const pm = w.persona;
-      if (pm && pm.error) addSysNote('⚠ 那套人设没清成：' + pm.error);
-      else if (pm && pm.bytes) {
-        addSysNote(`设置里那套人设也清掉了（${pm.bytes} 字），所有会话都跟着变。清之前那份存在：\n${pm.backup || '（备份没写成）'}`);
-      } else {
-        addSysNote('设置里那套人设本来就是空的，没东西可清。');
-      }
-      // 设置面板里那份人设预览要跟着变空
-      fetch('/api/personas').then(x => x.json()).then(p => { if (p && !p.error) fillPersona(p); }).catch(() => {});
-    }
-    paintMemoryFlag(r && r.memory);
+  if (!r || r.error || !r.session) {
+    addSysNote('⚠ 清空失败：' + ((r && r.error) || '服务没回应'));
+    settleComposer();
+    return;
   }
+
+  // 新会话回来了：直接切过去（switchSession 会重画列表和正文）
+  try {
+    await switchSession(r.session.id);
+  } catch (e) {
+    console.warn('[reset] 切到新会话出错：', e && e.message ? e.message : e);
+    log.innerHTML = '';
+    usageEl.textContent = '';
+  }
+  await refreshSessions({ silent: true }).catch(() => {});
+  settleComposer();
+  addSysNote('清空啦，已经在新的会话里了 (๑•̀ㅂ•́)و✧');
 };
 input.focus();
 
@@ -4537,11 +4545,16 @@ function paintSessNow() {
 
 function renderSessList() {
   sessList.innerHTML = '';
+  sessList.classList.toggle('bulk', bulkMode);
+  document.getElementById('sessBulkBar').hidden = !bulkMode;
+  const bulkBtn = document.getElementById('sessBulk');
+  if (bulkBtn) bulkBtn.classList.toggle('on', bulkMode);
   if (!sessionsCache.length) {
     const e = document.createElement('div');
     e.className = 'sessEmpty';
     e.textContent = '还没有会话，点上面的「＋ 新会话」开一个吧';
     sessHint.textContent = '';
+    leaveBulkIfEmpty();
     return;
   }
   sessHint.textContent = `${sessionsCache.length} 个`;
@@ -4561,6 +4574,17 @@ function renderSessList() {
     const row = document.createElement('div');
     row.className = 'sessRow' + (s.id === sessionId ? ' current' : '') + (isEmpty(s) ? ' sessEmptyRow' : '');
     row.dataset.id = s.id;
+    if (bulkMode && picked.has(s.id)) row.classList.add('picked');
+
+    if (bulkMode) {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'sessPick';
+      cb.checked = picked.has(s.id);
+      cb.dataset.pick = s.id;
+      cb.setAttribute('aria-label', '选中这个会话');
+      row.appendChild(cb);
+    }
 
     const main = document.createElement('div');
     main.className = 'sessMain';
@@ -4594,13 +4618,129 @@ function renderSessList() {
     row.append(main, ren, del);
     sessList.appendChild(row);
   }
+  paintBulkCount();
 }
+
+/**
+ * 批量删除的三个小状态。
+ * picked 只存 id，不存下标：列表顺序会变（当前会话置顶、空会话沉底），
+ * 存下标一重排就错位，勾的跟删的不是一回事。
+ */
+let bulkMode = false;
+const picked = new Set();
+
+function leaveBulkIfEmpty() {
+  if (!sessionsCache.length && bulkMode) {
+    bulkMode = false;
+    picked.clear();
+    document.getElementById('sessBulkBar').hidden = true;
+    document.getElementById('sessBulk').classList.remove('on');
+  }
+}
+
+function paintBulkCount() {
+  const el = document.getElementById('sessBulkCount');
+  const btn = document.getElementById('sessBulkDel');
+  if (!el || !btn) return;
+  // 只算还在列表里的，避免删完之后计数虚高
+  const alive = [...picked].filter((id) => sessionsCache.some((s) => s.id === id));
+  if (alive.length !== picked.size) { picked.clear(); for (const id of alive) picked.add(id); }
+  el.textContent = `选中 ${alive.length} 个`;
+  btn.disabled = alive.length === 0;
+  btn.textContent = alive.length ? `删掉选中的 ${alive.length} 个` : '删掉选中的';
+}
+
+function setBulk(on) {
+  bulkMode = Boolean(on);
+  if (!bulkMode) picked.clear();
+  renderSessList();
+  // 单独再显一次：renderSessList 开头那个 `hidden = !bulkMode` 只在
+  // 列表重画时生效，而「取消」这条路径外面还有一层 form 的 hidden 属性
+  // 会被浏览器缓存成旧值 —— 实测关掉之后那排按钮还赖在界面上。
+  const bar = document.getElementById('sessBulkBar');
+  if (bar) bar.hidden = !bulkMode;
+  const b = document.getElementById('sessBulk');
+  if (b) b.classList.toggle('on', bulkMode);
+}
+
+document.getElementById('sessBulk').onclick = () => setBulk(!bulkMode);
+document.getElementById('sessBulkCancel').onclick = () => setBulk(false);
+document.getElementById('sessBulkAll').onclick = () => {
+  for (const s of sessionsCache) picked.add(s.id);
+  renderSessList();
+};
+document.getElementById('sessBulkNone').onclick = () => {
+  picked.clear();
+  renderSessList();
+};
+document.getElementById('sessBulkDel').onclick = async () => {
+  const ids = [...picked].filter((id) => sessionsCache.some((s) => s.id === id));
+  if (!ids.length) return;
+  const names = ids.slice(0, 5).map((id) => {
+    const s = sessionsCache.find((x) => x.id === id) || {};
+    return '「' + fixMojibake(s.title || '新会话') + '」';
+  }).join('、');
+  const more = ids.length > 5 ? ` 等 ${ids.length} 个会话` : '';
+  const hasCur = ids.includes(sessionId);
+  const body = `${names}${more}都会挪到 .state/sessions/.trash，还能找回。`
+    + (hasCur ? '\n\n当前正在聊的这个也在里面，删完会自动切到别的会话。' : '');
+  if (!(await askConfirm({ title: '批量删除会话', body, ok: `删掉 ${ids.length} 个`, danger: true }))) return;
+
+  const btn = document.getElementById('sessBulkDel');
+  btn.disabled = true;
+  btn.textContent = '正在删…';
+  const r = await fetch('/api/sessions/delete-many', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) {
+    alert('批量删除失败');
+    paintBulkCount();
+    return;
+  }
+  picked.clear();
+  try {
+    if (hasCur) {
+      // 删的里面有当前会话：先关面板再切，跟单个删除一个套路，
+      // 免得面板盖在输入框上、人以为「删完打不了字」
+      try { sessDlg.close(); } catch {}
+      try {
+        if (r.lastSessionId) await switchSession(r.lastSessionId);
+        else await createSession();
+      } catch (e) {
+        console.warn('[bulk-del] 切会话出错:', e && e.message ? e.message : e);
+      } finally {
+        settleComposer();
+      }
+    }
+    await refreshSessions();
+    addSysNote(`已删掉 ${r.deleted} 个会话${r.failed.length ? `，${r.failed.length} 个没删成功` : ''}`);
+  } finally {
+    settleComposer();
+  }
+};
 
 sessList.addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-act]');
   const row = e.target.closest('.sessRow');
   if (!row) return;
   const id = row.dataset.id;
+
+  // 批量模式：点整行就是勾/取消勾，不切会话（不然一勾就跑走，很烦）
+  if (bulkMode) {
+    if (e.target.classList.contains('sessPick')) {
+      // 原生复选框自己会翻，跟着它走
+      if (e.target.checked) picked.add(id); else picked.delete(id);
+    } else {
+      if (picked.has(id)) picked.delete(id); else picked.add(id);
+      const cb = row.querySelector('.sessPick');
+      if (cb) cb.checked = picked.has(id);
+    }
+    row.classList.toggle('picked', picked.has(id));
+    paintBulkCount();
+    return;
+  }
 
   if (btn && btn.dataset.act === 'rename') {
     const cur = (sessionsCache.find((s) => s.id === id) || {}).title || '';

@@ -10,7 +10,7 @@ import { personaInfo } from './persona-store.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
 import { ensureMemory } from './session-memory.mjs';
 // 纯净模式：开了就一个字系统提示都不发（见 pure.mjs）。
-import { pureModeOn } from './pure.mjs';
+import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 
 /**
  * 兜底：安全词命中但设置里没写对应说明时用这一段。
@@ -121,10 +121,10 @@ export function personaModeRules(settings = getSettings()) {
  * @param {string} [opts.safeWord] which safe word fired (drives which note applies)
  */
 export function buildSystemPrompt({ sessionId = 'default', safeMode = false, safeWord = "" } = {}) {
-  // 纯净模式：一句话都不加。人设、思考语言、说话规矩、安全词、人设档、会话记忆
-  // 全部不发 —— 主人要的就是「只看对话本身」。这里必须是第一判断，
-  // 免得后面任何一块漏出去。
-  if (pureModeOn()) return '';
+  // 纯净模式：人设、思考语言、说话规矩、安全词、人设档、会话记忆全部不发
+  // —— 主人要的就是「只看对话本身」。这里必须是第一判断，免得后面任何一块漏出去。
+  // 但只发一条「答短点」：系统提示全空的话，模型没有任何长度锚点，会突然拉长篇大论。
+  if (pureModeOn()) return pureSystemPrompt();
 
   const settings = getSettings();
   const word = String(safeWord ?? '').trim();

@@ -4,6 +4,7 @@ import { inflateHistory } from './attach.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt } from './persona.mjs';
+import { pureModeOn } from './pure.mjs';
 import { compressHistory } from './compress.mjs';
 import {
   getRetry429,
@@ -38,11 +39,19 @@ function isStreamDropped(err) {
 
 const CONTEXT_PREAMBLE = '下面是本次对话的设定与规则，从现在起一直有效，直到我明确要求更换。接下来才是我要说的话。';
 
-/** The rules text, framed for delivery as a user-role context message. */
+/**
+ * The rules text, framed for delivery as a user-role context message.
+ *
+ * 为什么要把规则发两遍（system 一遍、user 一遍）：很多网关会悄悄丢掉 system，
+ * 只发 system 就等于没发规矩。所以副本这一趟是必要的。
+ *
+ * 纯净模式例外：这时候「规则」只剩一条长度要求，没必要再套一层
+ * 「下面是本次对话的设定与规则…」的前言（那句话本身就是人设腔），
+ * 而且一份丢了也不影响（它只是让你答短点，不是底线）。所以直接返回空。
+ */
 export function contextMessage(sessionId = 'default', opts = {}) {
+  if (pureModeOn()) return '';
   const rules = buildSystemPrompt({ sessionId, ...opts });
-  // 纯净模式：规则本身是空的，那段「下面是本次对话的设定与规则…」也就没必要发 ——
-  // 发个只有前言的空壳上去，模型反而会去找「设定在哪」。
   if (!rules) return '';
   return `${CONTEXT_PREAMBLE}\n\n${rules}`;
 }

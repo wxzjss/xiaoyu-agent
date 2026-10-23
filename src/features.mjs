@@ -12,7 +12,7 @@ import { config } from './config.mjs';
 
 const FILE = join(config.dataDir, '.state', 'features.json');
 /** 老文件没有这些键时补写进去，让文件内容和界面显示对得上 */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 /** 功能清单。数组顺序就是界面上的顺序。 */
 export const FEATURES = [
@@ -76,6 +76,13 @@ export const FEATURES = [
     name: '繁体转简中',
     desc: '抓到的书要是繁体（繁體）就自动翻成简体，抓书、批量抓、打包成书全链路都管；也能手动把一段字/一个文件转简。',
     tools: ['t2s_convert'],
+    defaultOn: true,
+  },
+  {
+    id: 'sendFile',
+    name: '发文件',
+    desc: '让小鱼把做好的东西亲手交过来：图片、视频、压缩包、报告，什么后缀都行。聊天里直接出卡片，图片能看、视频能播、别的点一下就下载。',
+    tools: ['send_file'],
     defaultOn: true,
   },
   {

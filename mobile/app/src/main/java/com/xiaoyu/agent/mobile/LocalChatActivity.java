@@ -2,8 +2,10 @@ package com.xiaoyu.agent.mobile;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Typeface;
+import android.media.MediaPlayer;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -16,9 +18,11 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -60,6 +64,12 @@ public class LocalChatActivity extends Activity {
     private static final String K_KEY = "key";
     private static final String K_MODEL = "model";
     private static final String K_SYS = "sys";
+    /** 外观：面板不透明度（0 最透、100 最实）。跟电脑端那个 --surface 是一个意思 */
+    private static final String K_SURFACE = "surface";
+    /** 背景音乐：开没开、音量、哪首（空 = 内置那首，也就是电脑端默认的壁纸音乐） */
+    private static final String K_MUSIC_ON = "musicOn";
+    private static final String K_MUSIC_VOL = "musicVol";
+    private static final String K_MUSIC_FILE = "musicFile";
 
     private static final String DEFAULT_BASE = "https://api.deepseek.com/v1";
     private static final String DEFAULT_MODEL = "deepseek-chat";
@@ -124,6 +134,16 @@ public class LocalChatActivity extends Activity {
         cfg.setMinHeight(Ui.dp(this, 38));
         cfg.setOnClickListener(v -> showSettings());
         bar.addView(cfg);
+
+        // 外观 / 背景音乐
+        Button look = Ui.button(this, "外观", false);
+        look.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        look.setMinHeight(Ui.dp(this, 38));
+        LinearLayout.LayoutParams lkp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lkp.leftMargin = Ui.dp(this, 8);
+        look.setOnClickListener(v -> showLook());
+        bar.addView(look, lkp);
 
         page.addView(bar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -308,12 +328,238 @@ public class LocalChatActivity extends Activity {
                 .show();
     }
 
+    // ────────────────────────────── 外观 / 背景音乐 ──────────────────────────────
+
+    /**
+     * 外观面板。
+     *
+     * 比电脑端简化的理由：手机屏幕小，塞不下「面板暗度 / 蒙版 / 原色 / 均衡 / 透明」
+     * 那一整套。只留两样最有感知的 —— 背景音乐开关和音量。
+     *
+     * 本地模式没有视频背景：视频不在手机上，硬塞一个空 <video> 只白耗电。
+     */
+    private void showLook() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        int p = Ui.dp(this, 18);
+        col.setPadding(p, p, p, p);
+        col.setBackgroundColor(Ui.BG);
+
+        final CheckBox cOn = new CheckBox(this);
+        cOn.setText("播背景音乐");
+        cOn.setTextColor(Ui.TEXT);
+        cOn.setChecked(sp.getBoolean(K_MUSIC_ON, true));
+        col.addView(cOn);
+
+        TextView musicNow = Ui.text(this, "", 12f, Ui.DIM, false);
+        musicNow.setLineSpacing(Ui.dp(this, 3), 1f);
+        col.addView(musicNow);
+
+        col.addView(label("音量"));
+        final SeekBar vol = new SeekBar(this);
+        vol.setMax(100);
+        vol.setProgress(sp.getInt(K_MUSIC_VOL, 40));
+        col.addView(vol);
+
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bp.topMargin = Ui.dp(this, 10);
+
+        Button pick = Ui.button(this, "选本地音乐", false);
+        pick.setOnClickListener(v -> pickMusic());
+        btns.addView(pick);
+
+        Button def = Ui.button(this, "恢复默认", false);
+        LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        dp2.leftMargin = Ui.dp(this, 8);
+        def.setOnClickListener(v -> {
+            sp.edit().putString(K_MUSIC_FILE, "").putBoolean(K_MUSIC_ON, true).apply();
+            refreshMusicNote(musicNow);
+            restartMusic();
+        });
+        btns.addView(def, dp2);
+        col.addView(btns, bp);
+
+        TextView tip = Ui.text(this,
+                "默认那首是电脑端壁纸的音乐，手机这边是去电脑借的 —— 电脑没开就静音，不报错。\n"
+                        + "想用手机自己的歌就点「选本地音乐」，会拷进 App 私有目录，之后离线也能放。",
+                11.5f, 0xFF6b7484, false);
+        tip.setLineSpacing(Ui.dp(this, 3), 1f);
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        tp.topMargin = Ui.dp(this, 12);
+        col.addView(tip, tp);
+
+        refreshMusicNote(musicNow);
+
+        ScrollView sv = new ScrollView(this);
+        sv.setBackgroundColor(Ui.BG);
+        sv.addView(col);
+
+        new AlertDialog.Builder(this)
+                .setTitle("外观 / 背景音乐")
+                .setView(sv)
+                .setPositiveButton("保存", (d, which) -> {
+                    sp.edit()
+                            .putBoolean(K_MUSIC_ON, cOn.isChecked())
+                            .putInt(K_MUSIC_VOL, vol.getProgress())
+                            .apply();
+                    restartMusic();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+
+        vol.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int v, boolean fromUser) {
+                sp.edit().putInt(K_MUSIC_VOL, v).apply();
+                applyMusicVolume();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar sb) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+            }
+        });
+    }
+
+    /** 面板上那行「现在放的是…」 */
+    private void refreshMusicNote(TextView tv) {
+        if (tv == null) return;
+        String f = sp.getString(K_MUSIC_FILE, "");
+        boolean on = sp.getBoolean(K_MUSIC_ON, true);
+        String name = TextUtils.isEmpty(f) ? "默认那首（电脑端壁纸音乐）" : new File(f).getName();
+        tv.setText(on ? "现在放的是：" + name : "已关闭。上次放的是：" + name);
+    }
+
+    /** 默认那首从电脑端借：同一个接口，不把音频打进 APK（能省 2MB） */
+    private static final String REMOTE_MUSIC = "http://192.168.1.100:8787/api/skin/music";
+
+    private MediaPlayer player;
+
+    private void applyMusicVolume() {
+        if (player != null) {
+            try {
+                player.setVolume(v01(), v01());
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private float v01() {
+        return Math.max(0f, Math.min(1f, sp.getInt(K_MUSIC_VOL, 40) / 100f));
+    }
+
+    private void restartMusic() {
+        stopMusic();
+        if (!sp.getBoolean(K_MUSIC_ON, true)) return;
+        String f = sp.getString(K_MUSIC_FILE, "");
+        try {
+            player = new MediaPlayer();
+            player.setLooping(true);
+            if (TextUtils.isEmpty(f)) {
+                player.setDataSource(REMOTE_MUSIC);
+            } else {
+                player.setDataSource(f);
+            }
+            player.setVolume(v01(), v01());
+            player.setOnPreparedListener(mp -> {
+                try {
+                    mp.start();
+                } catch (Exception ignored) {
+                }
+            });
+            player.setOnErrorListener((mp, what, extra) -> {
+                // 电脑没开 / 网络不通都很正常，静音就算了，别弹框烦人
+                stopMusic();
+                return true;
+            });
+            player.prepareAsync();
+        } catch (Exception e) {
+            stopMusic();
+        }
+    }
+
+    private void stopMusic() {
+        if (player != null) {
+            try {
+                if (player.isPlaying()) player.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
+            player = null;
+        }
+    }
+
+    private static final int REQ_MUSIC = 4301;
+
+    /** 选一首手机里的歌，拷进 App 私有目录再播（换了手机也还在，除非卸载） */
+    private void pickMusic() {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.setType("audio/*");
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(i, REQ_MUSIC);
+        } catch (Exception e) {
+            Toast.makeText(this, "这台手机没有可用的选歌界面", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != REQ_MUSIC || res != RESULT_OK || data == null || data.getData() == null) return;
+        try (InputStream in = getContentResolver().openInputStream(data.getData())) {
+            File dir = new File(getFilesDir(), "music");
+            if (!dir.exists()) dir.mkdirs();
+            File dest = new File(dir, "bg-" + System.currentTimeMillis() + ".m4a");
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            }
+            sp.edit().putString(K_MUSIC_FILE, dest.getAbsolutePath()).putBoolean(K_MUSIC_ON, true).apply();
+            restartMusic();
+            Toast.makeText(this, "换好了", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "这首读不出来：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (player == null) restartMusic();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // 切出去就停，别在后台一直响
+        stopMusic();
+    }
+
+    @Override
+    protected void onDestroy() {
+        stopMusic();
+        super.onDestroy();
+    }
+
     private TextView label(String s) {
         TextView v = Ui.text(this, s, 12.5f, Ui.DIM, true);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        p.topMargin = Ui.dp(this, 12);
-        v.setLayoutParams(p);
+        lp2.topMargin = Ui.dp(this, 12);
+        v.setLayoutParams(lp2);
         return v;
     }
 

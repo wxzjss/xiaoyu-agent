@@ -2,10 +2,11 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
+import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
 // 前情：一进来就记得的那段对话。只贴给模型看，不进会话记录，界面也不会画出来。
 import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
@@ -14,6 +15,10 @@ import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMem
 import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit } from './edit.mjs';
 // 整份数据备份：会话 / 人设 / 模型配置 / 设置，换电脑或重装时救命用。
 import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
+// 进行中那一轮的草稿：边跑边落，进程被杀也不会把已经说出来的话全丢。
+import { saveDraft, readDraft, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
+// 进程兜底：一处没 catch 的异常不该让整个程序消失。
+import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
 import { quickCheck, updateStatus } from './updater.mjs';
 import { buildSessionLog } from './session-log.mjs';
@@ -26,7 +31,10 @@ import {
   DEFAULT_SETTINGS,
   resetBottomLines,
   setDefaultBottomLines,
+  setDefaults,
   defaultBottomLines,
+  defaultSafeWords,
+  defaultSafeWordNote,
   resetSafeWords,
   effectiveContextLimit,
 } from './settings.mjs';
@@ -47,7 +55,15 @@ import {
 import { getFeatures, setFeature } from './features.mjs';
 // 纯净模式开关（见 pure.mjs）
 import { pureModeOn, setPureMode, pureSystemPrompt } from './pure.mjs';
-import { getSkinState, writeSkin, skinVideoPath, ensureBundledVideo } from './skin.mjs';
+import {
+  getSkinState,
+  writeSkin,
+  skinVideoPath,
+  skinMusicPath,
+  importMusic,
+  ensureBundledVideo,
+  ensureBundledMusic,
+} from './skin.mjs';
 import { getThinking, setThinking, LEVELS } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
 import {
@@ -156,7 +172,16 @@ function publicSession(session) {
     const atts = [
       ...(Array.isArray(m._files) ? m._files.map((p) => ({ path: p, kind: 'file' })) : []),
       ...(Array.isArray(m._images) ? m._images.map((p) => ({ path: p, kind: 'image' })) : []),
-    ].map((a) => ({ ...a, name: String(a.path).split(/[\\/]/).pop() }));
+    ].map((a) => {
+      const name = String(a.path).split(/[\\/]/).pop();
+      // 顺手带上大小：界面要靠它显示「名字 · 12.3 MB · 下载」，跟「发文件」那套卡片一致。
+      // stat 失败（文件被挪走）就不给 size，界面那一栏自动空着。
+      let size = 0;
+      try {
+        size = statSync(a.path).size;
+      } catch {}
+      return { ...a, name, size };
+    });
     if (!text && !atts.length) continue;
     const edited = Object.prototype.hasOwnProperty.call(editedAt, i);
     if (m.role === 'user') {
@@ -170,7 +195,7 @@ function publicSession(session) {
       }
       turns.push({ role: 'user', text: shown, atts, rewindId: i, edited });
     }
-    else if (m.role === 'assistant') turns.push({ role: 'assistant', text, rewindId: i, edited });
+    else if (m.role === 'assistant') turns.push({ role: 'assistant', text, rewindId: i, edited, out: Array.isArray(m._out) ? m._out : [] });
   }
   // 撤回记录本身也交出去，界面才能提示「还能撤销回退」
   const rewinds = loadRewinds(session);
@@ -219,6 +244,25 @@ async function body(req) {
   let raw = '';
   for await (const chunk of req) raw += chunk;
   return raw ? JSON.parse(raw) : {};
+}
+
+/**
+ * 收原始字节（导入音乐用）。
+ *
+ * 跟 body() 的区别：这个不解析 JSON，直接把请求体攒成 Buffer。
+ * 加了上限，免得有人误传一个 2GB 的文件把内存吃光。
+ */
+async function bodyBuffer(req, limit = 64 * 1024 * 1024) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > limit) {
+      throw Object.assign(new Error(`文件太大了（超过 ${Math.round(limit / 1024 / 1024)} MB）`), { status: 413 });
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 /** 导出文件名里用的时间戳：20261023-034512 */
@@ -374,6 +418,84 @@ function serveSkinVideo(req, res) {
   pipe({ start, end });
 }
 
+/** 按扩展名给音乐一个像样的 Content-Type，浏览器才肯直接播 */
+function musicMime(file) {
+  const ext = String(file).split('.').pop().toLowerCase();
+  if (ext === 'mp3') return 'audio/mpeg';
+  if (ext === 'm4a' || ext === 'aac' || ext === 'mp4') return 'audio/mp4';
+  if (ext === 'ogg' || ext === 'oga') return 'audio/ogg';
+  if (ext === 'wav') return 'audio/wav';
+  if (ext === 'flac') return 'audio/flac';
+  if (ext === 'webm') return 'audio/webm';
+  return 'application/octet-stream';
+}
+
+/**
+ * 背景音乐。跟视频一样必须支持 Range（音频播放器要拖进度条），
+ * 而且只播 skin.mjs 认定的那一份，不接受前端传路径。
+ */
+function serveSkinMusic(req, res) {
+  const file = skinMusicPath();
+  if (!file) return json(res, 404, { error: '没有背景音乐' });
+
+  let size = 0;
+  try {
+    const st = statSync(file);
+    if (!st.isFile()) return json(res, 404, { error: '没有背景音乐' });
+    size = st.size;
+  } catch {
+    return json(res, 404, { error: '读不到背景音乐' });
+  }
+
+  const head = {
+    'Content-Type': musicMime(file),
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-store',
+  };
+
+  const pipe = (opts) => {
+    const s = createReadStream(file, opts);
+    s.on('error', (e) => {
+      console.warn('[skin] 音乐读取中断：' + (e && e.message));
+      try {
+        res.destroy();
+      } catch {}
+    });
+    s.pipe(res);
+  };
+
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? '').trim());
+  if (!m) {
+    res.writeHead(200, { ...head, 'Content-Length': size });
+    if (req.method === 'HEAD') return res.end();
+    pipe();
+    return;
+  }
+
+  let start = m[1] === '' ? null : Number(m[1]);
+  let end = m[2] === '' ? null : Number(m[2]);
+  if (start === null) {
+    const n = end ?? 0;
+    start = Math.max(0, size - n);
+    end = size - 1;
+  } else if (end === null || end >= size) {
+    end = size - 1;
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) {
+    res.writeHead(416, { ...head, 'Content-Range': `bytes */${size}` });
+    return res.end();
+  }
+
+  res.writeHead(206, {
+    ...head,
+    'Content-Range': `bytes ${start}-${end}/${size}`,
+    'Content-Length': end - start + 1,
+  });
+  if (req.method === 'HEAD') return res.end();
+  pipe({ start, end });
+}
+
 async function serveStatic(req, res) {
   const url = new URL(req.url, 'http://localhost');
   const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
@@ -416,6 +538,8 @@ async function serveStatic(req, res) {
 // 打包版首启把内置短片复制到可写的数据目录，之后只从那份读。
 // 必须赶在第一个 /api/skin/video 请求之前。
 ensureBundledVideo();
+// 内置背景音乐同理（壁纸那首抽出来的曲子），赶在 /api/skin/music 之前。
+ensureBundledMusic();
 
 /** 本机请求？手机配对守卫用它决定要不要记设备、要不要放行 */
 function isLoopbackReq(req) {
@@ -667,9 +791,13 @@ const server = createServer(async (req, res) => {
     if (!isSessionId(sid)) return json(res, 400, { error: 'bad sessionId' });
     const live = liveLogs.get(sid);
     if (!live) return json(res, 200, { sessionId: sid, running: false, events: [] });
+    // 「还在跑」以真正登记在跑的轮次为准，不能只看这份缓存标记。
+    // 缓存只活在内存里：进程一崩/一重启，那份 done=false 就留在了旧对象上；
+    // 界面照着它当「还在跑」，就会一直等一条永远不会来的回复。
+    const alive = runningTurns.has(sid);
     return json(res, 200, {
       sessionId: sid,
-      running: !live.done,
+      running: alive && !live.done,
       startedAt: live.startedAt,
       endedAt: live.endedAt ?? null,
       events: live.events,
@@ -882,6 +1010,41 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // 背景曲子走这条：同样带 Range，音频要能循环、能拖进度条
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/skin/music') {
+    return serveSkinMusic(req, res);
+  }
+
+  // 导入一首自己的音乐：整个请求体就是文件字节，文件名放在 ?name=
+  //
+  // 为什么不用 multipart：解析 multipart 要引依赖，而这边前端用 FormData 之外
+  // 直接 fetch(file) 就能把 File 当 body 送过来，简单又不会出错。
+  if (req.method === 'POST' && url.pathname === '/api/skin/music/import') {
+    const name = url.searchParams.get('name') || 'music.m4a';
+    let buf;
+    try {
+      buf = await bodyBuffer(req, 64 * 1024 * 1024);
+    } catch (err) {
+      return json(res, err?.status ?? 400, { error: String(err?.message ?? err) });
+    }
+    try {
+      const dest = importMusic(name, buf);
+      return json(res, 200, { ok: true, file: dest, ...getSkinState() });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 把音乐恢复成内置那首（壁纸那首）
+  if (req.method === 'POST' && url.pathname === '/api/skin/music/reset') {
+    try {
+      writeSkin({ musicFile: '', musicOn: true });
+      return json(res, 200, { ok: true, ...getSkinState() });
+    } catch (err) {
+      return json(res, 500, { error: String(err?.message ?? err) });
+    }
+  }
+
   // 背景片子走这一条：带 Range，浏览器才能边下边播、循环拖动
   if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/skin/video') {
     return serveSkinVideo(req, res);
@@ -905,7 +1068,35 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { settings: saveSettings(payload ?? {}) });
   }
 
-  // 把「现在这版底线」定成新的出厂默认（以后「恢复默认底线」回到这版）
+  // 把「现在生效的」底线 / 安全词 / 安全词说明一起定成默认（三样独立判定）
+  if (req.method === 'POST' && url.pathname === '/api/settings/defaults') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const out = setDefaults({
+        bottomLines: payload?.bottomLines,
+        safeWords: payload?.safeWords,
+        safeWordNote: payload?.safeWordNote,
+      });
+      return json(res, 200, {
+        ...out,
+        defaults: {
+          ...DEFAULT_SETTINGS,
+          bottomLines: defaultBottomLines(),
+          safeWords: defaultSafeWords(),
+          safeWordNote: defaultSafeWordNote(),
+        },
+        settings: getSettings(),
+      });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/settings/default-bottomlines') {
     let payload;
     try {
@@ -950,6 +1141,60 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: String(err?.message ?? err) });
     }
   }
+  // 出件箱兜底：/api/attach/outbox-out?key=xxx
+  // 发出去的文件都会往 .state/outbox 抄一份；消息里的路径没了（换了机器、原文件删了）就点这个
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/attach/outbox-out') {
+    const key = url.searchParams.get('key') || '';
+    const op = outboxPath(key);
+    if (!op) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('兜底箱里没有这个文件了');
+      return;
+    }
+    const ost = statSync(op);
+    const oname = String(key).replace(/^o-[0-9a-f]{10}-/, '') || 'file';
+    res.writeHead(200, {
+      'Content-Type': mimeOf(op),
+      'Content-Length': ost.size,
+      'Cache-Control': 'no-cache',
+      'Content-Disposition': "inline; filename*=UTF-8''" + encodeURIComponent(oname),
+    });
+    if (req.method === 'HEAD') { res.end(); return; }
+    createReadStream(op).pipe(res);
+    return;
+  }
+
+  // 文件的字节：<img src> / <video src> / 点一下下载，全走这个。
+  // 「发文件」功能发出去的也在这里出（任何后缀都行）：
+  // download=1 就当场存盘（文件名原样给回去），不带就 inline（缩略图 / 播放用）。
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/attach/raw'
+      && (url.searchParams.get('download') === '1' || !isImagePath(url.searchParams.get('path') || ''))) {
+    const abs = String(url.searchParams.get('path') || '');
+    try {
+      if (!abs || !isAbsolutePath(abs)) throw new Error('只接受绝对路径');
+      // 跟「发文件」一个规矩：只给放行的盘，程序自己的机密（.env / .state / node_modules）不给
+      const bad = sendCheck(abs);
+      if (bad) throw new Error(bad);
+      const fst = statSync(abs);
+      if (!fst.isFile()) throw new Error('不是一个文件：' + abs);
+      const fname = abs.split(/[\\/]/).pop() || 'file';
+      const cd = url.searchParams.get('download') === '1' ? 'attachment' : 'inline';
+      res.writeHead(200, {
+        'Content-Type': mimeOf(abs),
+        'Content-Length': fst.size,
+        'Cache-Control': 'no-cache',
+        'Content-Disposition': cd + "; filename*=UTF-8''" + encodeURIComponent(fname),
+      });
+      if (req.method === 'HEAD') { res.end(); return; }
+      createReadStream(abs).pipe(res);
+      return;
+    } catch (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(String(err?.message ?? err));
+      return;
+    }
+  }
+
   // <img src> 用这个：直接吐图片字节
   if (req.method === 'GET' && url.pathname === '/api/attach/raw') {
     const target = url.searchParams.get('path') || '';
@@ -1416,8 +1661,32 @@ const server = createServer(async (req, res) => {
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
     setLastSessionId(id);
+    // 上次这一轮没跑完（进程被杀 / 断电 / 点了退出）留下的草稿：
+    // 把已经说出来的话补成一条正式的助手消息，别让主人以为「记忆丢了」。
+    // 只在没有在跑的时候补 —— 正在跑的那一轮草稿是活着的，补进去就重复了。
+    let recovered = false;
+    const runningNow = runningTurns.get(id);
+    if (!runningNow || runningNow.ac.signal.aborted) {
+      const draft = readDraft(id);
+      if (draft && draft.text.trim()) {
+        const last = session.messages[session.messages.length - 1];
+        // 只有「最后一句话是主人说的」才补：说明确实缺了这条回复。
+        // 否则草稿多半是以前遗留的脏数据，补进去反而多一条。
+        if (last && last.role === 'user') {
+          session.messages.push({
+            role: 'assistant',
+            content: draft.text.trim() + '\n\n（说到这儿断了一下——当时程序被关了，这段话是接回来的。）',
+            _recovered: true,
+          });
+          session.updatedAt = Date.now();
+          saveSession(session);
+          recovered = true;
+        }
+        dropDraft(id);
+      }
+    }
     // 顺带把本子的状态带回去，界面不用再单发一次请求就知道有没有记忆
-    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id) });
+    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id), recovered });
   }
 
   // ---- 对话回退 ----
@@ -1771,14 +2040,36 @@ const server = createServer(async (req, res) => {
         // 连接早断了也无所谓：事件已经进缓存，人回来看的时候还能补
       }
     };
-    // 带上这个词自己的说明：四个安全词干的事不一样，界面不能一律显示同一句。
-    // 「人设」是基线档，每轮都在，不用弹提示；只有真的切到别的档才通知界面。
-    if (modeInfo.switched) send({ type: 'safe_word', word: modeInfo.word, note: safeWordNoteFor(modeInfo.word) });
-    else if (modeInfo.backToBase) send({ type: 'safe_word', word: modeInfo.word, note: safeWordNoteFor(modeInfo.word), back: true });
+    // 安全词提示不在这个位置发：send 还没定义，以前就是在这儿炸掉整轮的（见下面 send 之后那段）。
 
     const ac = new AbortController();
     let finishTurn;
     const done = new Promise((r) => { finishTurn = r; });
+    /**
+     * 安全词提示：必须等 send 定义好之后再发。
+     * 以前这两行写在上面（send 声明之前），只要这轮点了「命令」这种会切档的词，
+     * 一进 /api/chat 就抛 ReferenceError，被外层 catch 接走 ——
+     * 界面看到的就是「只回了个空字 / 问了没反应」。modeInfo 到这里还没被重新赋值，
+     * 用的仍是 applySafeWord 的结果，发出去的档位跟以前一模一样。
+     */
+    if (modeInfo.switched) send({ type: 'safe_word', word: modeInfo.word, note: safeWordNoteFor(modeInfo.word) });
+    else if (modeInfo.backToBase) send({ type: 'safe_word', word: modeInfo.word, note: safeWordNoteFor(modeInfo.word), back: true });
+    /**
+     * 先把这轮登记进 runningTurns，再往下跑。
+     *
+     * 以前是等 try 里拼好 ac 之后才 sessions.set/登记，中间那几步（补开场、写历史、
+     * 匹配安全词）任何一处抛错，界面就只有一条「用户说了话、我一个字没回」。
+     * 现在登记放前面：哪怕下面立刻炸了，界面也知道这一轮「结束了」，
+     * 而不是看着一份永远 done=false 的缓存以为它还在跑。
+     */
+    // 先占个位（ac 还没有，下面建好再换成真的）；收尾时按「对象」摘，不按 ac 比。
+    const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId };
+    // 这一轮已经说出来的字，实时挂在这儿。
+    // 进程级兜底（installGuards 的 onFatal）在退出前会读这个字段补写最后一份草稿，
+    // 免得「正好在两次自动写盘之间崩溃」时丢掉最后一小段。
+    reg.draft = { text: '', reasoning: '', tools: [], startedAt: reg.startedAt };
+    runningTurns.set(sessionId, reg);
+
     /**
      * 这一轮不再跟 HTTP 连接绑死。
      *
@@ -1791,7 +2082,9 @@ const server = createServer(async (req, res) => {
      * 代价：没人看的轮次也会把 token 花完。所以界面上切走的会话会标个「在跑」，
      * 切回去还能看到进度。真不想让它跑，点停止就行。
      */
-    runningTurns.set(sessionId, { ac, done, startedAt: Date.now(), sessionId });
+    reg.ac = ac;
+    reg.done = done;
+    runningTurns.set(sessionId, reg);
     // 断线不 abort；只在记一笔，方便排查
     req.on('close', () => {
       if (!ac.signal.aborted) {
@@ -1912,7 +2205,15 @@ const server = createServer(async (req, res) => {
         saveSession(session);
       }
 
-      const { usage } = await runAgent({
+      // 这一轮的草稿：边跑边落，进程中途没了也能把已经说的话捡回来。
+      // 只在这一轮内部有效，整轮收尾时（下面 finally）会删掉。
+      let draftText = '';
+      let draftReasoning = '';
+      const draftTools = [];
+      const draftStartedAt = Date.now();
+      const shouldDraft = makeDraftThrottle();
+
+      const { usage, files: sentFiles } = await runAgent({
         messages: wireMessages,
         sessionId,
         snap,
@@ -1922,6 +2223,36 @@ const server = createServer(async (req, res) => {
         safeWord: modeInfo.word || '',
         signal: ac.signal,
         onEvent: (ev) => {
+          // 边收边存草稿：进程被杀 / 断电时，已经说出来的字不至于全丢。
+          // 正式历史仍然只在整轮跑完后接（commitWireBack），草稿只是保险。
+          if (ev.type === 'text') {
+            draftText += ev.text;
+            // 同步到 reg.draft：进程兜底退出前会读它补写最后一份，见 installGuards
+            if (reg.draft) reg.draft.text = draftText;
+            if (shouldDraft(draftText.length)) {
+              saveDraft(sessionId, {
+                text: draftText,
+                reasoning: draftReasoning,
+                toolCalls: draftTools,
+                startedAt: draftStartedAt,
+              });
+            }
+          } else if (ev.type === 'reasoning') {
+            draftReasoning += ev.text;
+            if (reg.draft) reg.draft.reasoning = draftReasoning;
+          } else if (ev.type === 'tool_start' || ev.type === 'tool_end') {
+            draftTools.push({ type: ev.type, name: ev.name, at: Date.now() });
+            if (reg.draft) reg.draft.tools = draftTools;
+            if (shouldDraft(draftText.length, true)) {
+              saveDraft(sessionId, {
+                text: draftText,
+                reasoning: draftReasoning,
+                toolCalls: draftTools,
+                startedAt: draftStartedAt,
+              });
+            }
+          }
+
           if (ev.type === 'aborted') send({ type: 'aborted' });
           else if (ev.type === 'compressed') send({ type: 'compressed', before: ev.before, after: ev.after, removed: ev.removed, error: ev.error });
           else if (ev.type === 'reasoning') send({ type: 'reasoning', text: ev.text });
@@ -1932,6 +2263,41 @@ const server = createServer(async (req, res) => {
       });
       // 把这一轮模型说的话接回正式历史，再算「用户那句话」的下标
       commitWireBack();
+      // 「发文件」发出去的东西挂到最后那条助手消息身上：
+      // 跟着会话一起落盘，重开窗口还画得出来；点一下就能预览 / 下载。
+      {
+        const sent = Array.isArray(sentFiles) ? sentFiles.filter(Boolean) : [];
+        if (sent.length) {
+          const msgs = session.messages;
+          let idx = -1;
+          for (let k = msgs.length - 1; k >= 0; k--) {
+            const m = msgs[k];
+            if (m && m.role === 'assistant' && !m.context) { idx = k; break; }
+          }
+          if (idx >= 0) {
+            // 合并而不是覆盖：同一轮可能分几次发，前一批不能被后一批冲掉。
+            const prev = Array.isArray(msgs[idx]._out) ? msgs[idx]._out : [];
+            const merged = prev.slice();
+            for (const it of sent) {
+              const dup = merged.some((x) => x && x.key && it && x.key === it.key);
+              if (!dup) merged.push(it);
+            }
+            msgs[idx]._out = merged;
+            // 顺手在会话记忆本子里记一笔：消息万一丢了，记忆里还留着
+            // 「这一轮发过什么、在出件箱里叫什么名字」，主人还能从兜底箱捞回来。
+            // 只记文件名和 key，不记完整路径（路径换机器就失效了）。
+            // 记忆写失败不能影响发文件本身，但也不能悄悄吞掉——记一条日志方便查。
+            try {
+              const names = sent.map((x) => String(x?.name || '文件')).join('、');
+              appendDigest(sessionId, `发了文件：${names}`);
+            } catch (e) {
+              console.warn('[sendfile] 记忆本子没记上：', String(e?.message ?? e), 'sessionId =', sessionId);
+            }
+            send({ type: 'files', items: sent, at: idx });
+            saveSession(session);
+          }
+        }
+      }
       // 带上这一轮用户消息的下标：前端据此给刚画出来的气泡补「↶ 回退」按钮
       const doneAt = userMsgRef ? session.messages.indexOf(userMsgRef) : -1;
       // 带上真正用的模型名（不是主人起的外号）—— 前端要拿它查价目表算这一轮花多少钱。
@@ -1986,6 +2352,11 @@ const server = createServer(async (req, res) => {
         } finally {
           setMigrating(null);
         }
+        // 交接成功也是「这一轮到此为止」：换会话之前说过的话得接回历史，
+        // 不然重启之后打开旧会话，会只剩主人的问题、没有我的回答。
+        try {
+          commitWireBack();
+        } catch {}
       } else {
         const status = Number(err?.status ?? 0);
         const text = String(err?.text ?? err?.message ?? '');
@@ -1998,13 +2369,21 @@ const server = createServer(async (req, res) => {
     } finally {
       live.done = true;
       live.endedAt = Date.now();
-      if (runningTurns.get(sessionId)?.ac === ac) runningTurns.delete(sessionId);
+      // 收尾时把自己这一条登记摘掉（提前登记过、ac 可能还是 null，所以认对象不认 ac）
+      {
+        const mine = runningTurns.get(sessionId);
+        if (mine === reg || (mine && mine.ac === ac)) runningTurns.delete(sessionId);
+      }
       // 正常结束那条路已经接过一次；出错 / 被中止时这里兜底，
       // 不然「半截回答」也跟着丢。commitWireBack 内部用 Set 记账，重复调不会重复接。
       try {
         commitWireBack();
       } catch {}
       saveSession(session);
+      // 这一轮已经进了正式历史，草稿没用了，删掉。
+      // 注意顺序：saveSession 必须在 dropDraft 之前 —— 万一存盘失败，
+      // 草稿还在，下次打开还能救回来。
+      dropDraft(sessionId);
       finishTurn();
     }
     return res.end();
@@ -2107,6 +2486,25 @@ const server = createServer(async (req, res) => {
 });
 
 export function startServer({ port = config.port, quiet = false, selfCheck = true } = {}) {
+  // 第一件事：装上进程兜底。
+  // 以前整个项目没有 uncaughtException / unhandledRejection 处理，
+  // Node 15 之后一个没人接的 Promise 拒绝就能把进程直接杀掉——
+  // 表现就是「聊着聊着她突然没了」，跑长任务时那一轮回复全丢。
+  // 退出之前先把每个正在跑的会话的草稿落盘，草稿会在下次打开时接回来。
+  installGuards({
+    onFatal: () => {
+      for (const id of runningTurns.keys()) {
+        try {
+          const s = runningTurns.get(id);
+          const d = s && s.draft;
+          if (d && String(d.text || '').trim()) {
+            saveDraft(id, { text: d.text, reasoning: d.reasoning || '', toolCalls: d.tools || [], startedAt: d.startedAt });
+          }
+        } catch {}
+      }
+    },
+  });
+
   // 启动自检：异步跑，不挡服务起来。桌面版由 electron 先跑过一次，这里复用结果。
   if (selfCheck) {
     // 自检后台跑，不挡服务起来。环境检查由 AI 自己做（要调模型，可能慢几秒）。

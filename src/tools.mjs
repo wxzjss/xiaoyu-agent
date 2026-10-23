@@ -9,6 +9,7 @@ import { planAction, noteAction } from './plan.mjs';
 import { isToolEnabled, featureNameOfTool, enabledToolNames } from './features.mjs';
 import { snapshotBeforeWrite } from './rewind.mjs';
 import { webSearch, formatResults } from './search.mjs';
+import { sendFileTool } from './tools-sendfile.mjs';
 
 const LIMIT = 20000;
 
@@ -17,7 +18,7 @@ const ROOT = resolve(config.workspace);
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Per-run context (which session is talking) so plan/note land in the right board. */
-const CTX = { sessionId: 'default', snap: null };
+const CTX = { sessionId: 'default', snap: null, outbox: null };
 /**
  * 指定本轮消息的文件快照对象（对话回退要用）。
  *
@@ -26,6 +27,16 @@ const CTX = { sessionId: 'default', snap: null };
 export function setToolContext(sessionId, snap = null) {
   CTX.sessionId = sessionId || 'default';
   CTX.snap = snap && typeof snap === 'object' ? snap : null;
+  // 这一轮要发给主人的文件（send_file 往里塞，跑完由 server 挂到回复上）
+  CTX.outbox = null;
+}
+
+/**
+ * 这一轮发出去的文件清单。给 runAgent 用：它每轮都新开一个，跑完交给 server。
+ */
+export function beginOutbox() {
+  CTX.outbox = [];
+  return CTX.outbox;
 }
 
 /** Resolve a model-supplied path inside the workspace; refuse escapes. */
@@ -377,6 +388,7 @@ export const tools = [
       return out === src ? `本来就是简体，一字没动：\n${out}` : out;
     },
   },
+  sendFileTool,
 ];
 
 /** Very small HTML -> text reducer (good enough for reading articles / docs). */
@@ -430,7 +442,7 @@ export async function runTool(name, rawArgs) {
     } catch {}
   }
   try {
-    return { ok: true, output: await tool.run(args) };
+    return { ok: true, output: await tool.run(args, CTX) };
   } catch (err) {
     return { ok: false, output: String(err?.message ?? err) };
   }

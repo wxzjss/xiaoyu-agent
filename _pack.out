@@ -1,0 +1,20 @@
+  • electron-builder  version=26.15.3 os=10.0.26200
+  • loaded configuration  file=package.json ("build" field)
+  • author is missed in the package.json  appPackageFile=D:\小鱼Agent\package.json
+  • packageManager not detected by file, falling back to environment detection  resolvedPackageManager=npm detected=D:\小鱼Agent
+  • executing @electron/rebuild  electronVersion=33.4.11 arch=x64 buildFromSource=false workspaceRoot=D:\小鱼Agent projectDir=./ appDir=./
+  • installing native dependencies  arch=x64
+  • completed installing native dependencies
+  • packaging       platform=win32 arch=x64 electron=33.4.11 appOutDir=dist\installer\win-unpacked
+  • downloaded      label=electron progress=100%
+  • downloaded electron zip extracted successfully  output=D:\小鱼Agent\dist\installer\win-unpacked
+  • searching for node modules  pm=npm searchDir=D:\小鱼Agent
+  • updating asar integrity executable resource  executablePath=dist\installer\win-unpacked\小鱼Agent.exe
+  • signing with signtool.exe  path=dist\installer\win-unpacked\小鱼Agent.exe
+  • building        target=nsis file=dist\installer\小鱼Agent-0.9.0-x64.exe archs=x64 oneClick=false perMachine=false
+  • signing with signtool.exe  path=dist\installer\win-unpacked\resources\elevate.exe
+  • signing with signtool.exe  path=dist\installer\小鱼Agent-0.9.0-x64.__uninstaller.exe
+  • signing with signtool.exe  path=dist\installer\小鱼Agent-0.9.0-x64.exe
+  • building block map  blockMapFile=dist\installer\小鱼Agent-0.9.0-x64.exe.blockmap
+  • building        target=portable file=dist\installer\小鱼Agent-免安装版-0.9.0.exe archs=x64
+  • signing with signtool.exe  path=dist\installer\小鱼Agent-免安装版-0.9.0.exe

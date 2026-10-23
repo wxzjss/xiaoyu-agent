@@ -175,6 +175,45 @@
 
     /* 消息里带的附件 */
     .msgAttach { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+    /* 消息里带的视频 / 音频：要能直接播，不能缩成纸片图标 */
+    .msgAttach .attachMedia {
+      display: flex; flex-direction: column; gap: 6px; max-width: 420px;
+      background: #0f1319; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+    }
+    .msgAttach .attachMedia .amediaName {
+      font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .msgAttach .attachMedia video { width: 100%; max-height: 260px; border-radius: 6px; display: block; background: #000; }
+    .msgAttach .attachMedia audio { width: 100%; display: block; }
+
+    /* ---- 我发出去的文件：卡片（图片看、视频播、别的下载）---- */
+    .fileList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .fileCard {
+      display: flex; align-items: center; gap: 8px; max-width: 300px; padding: 7px 9px;
+      background: #0f1319; border: 1px solid var(--border); border-radius: 9px;
+      font-size: 12.5px; color: var(--text); text-decoration: none; cursor: pointer;
+    }
+    .fileCard:hover { border-color: #3a4657; background: #141a22; }
+    .fileCard .fk {
+      width: 30px; height: 30px; border-radius: 6px; background: #1b2129; color: var(--dim);
+      display: flex; align-items: center; justify-content: center; font-size: 14px; flex: 0 0 auto;
+    }
+    .fileCard img.fk { object-fit: cover; display: block; }
+    .fileCard .fmeta { flex: 1; min-width: 0; }
+    .fileCard .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fileCard .fsize { color: var(--dim); font-size: 11px; margin-top: 1px; }
+    .fileCard .fdl { color: var(--dim); font-size: 14px; flex: 0 0 auto; }
+    .fileCard:hover .fdl { color: var(--accent, #7cc4ff); }
+    .fileCard img.fthumb { max-width: 260px; max-height: 200px; border-radius: 7px; display: block; }
+    .fileCard video { max-width: 300px; max-height: 220px; border-radius: 7px; display: block; background: #000; }
+    .fileRow { display: flex; flex-direction: column; gap: 2px; max-width: 320px; }
+    .fileRow img.fthumb { max-width: 260px; max-height: 200px; border-radius: 7px; display: block; }
+    .fileRow video { max-width: 300px; max-height: 220px; border-radius: 7px; display: block; background: #000; }
+    .fileRow .finfo { display: flex; align-items: center; gap: 6px; }
+    .fileRow .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+    .fileRow .fsize { color: var(--dim); font-size: 11px; flex: 0 0 auto; }
+    .fileRow .fdl { color: var(--dim); font-size: 12px; text-decoration: none; flex: 0 0 auto; }
+    .fileRow .fdl:hover { color: var(--accent, #7cc4ff); }
 
     /* 拖文件进来时的全屏提示：只提示，不挡鼠标（指针事件全放过） */
     .dropMask {
@@ -1002,12 +1041,16 @@
   <div id="bgTint"></div>
   <div id="bgVeil"></div>
   <video id="bgVideo" muted loop playsinline preload="none"></video>
+  <!-- 背景音乐：默认就是主人桌面壁纸（[deepseek娘]深夜的大肥鱼）那首，循环放 -->
+  <audio id="bgMusic" loop preload="none"></audio>
   <!-- 背景的调节钮：只有开着背景时才显示（body.skin #skinKnob{display:block}） -->
   <button type="button" id="skinKnob" title="调整背景">◐</button>
   <div id="skinPanel">
     <div class="skRow"><span>面板暗度</span><input type="range" id="skSurface" min="0" max="95" step="5" value="20"></div>
     <div class="skRow"><span>蒙版</span><input type="range" id="skVeil" min="0" max="95" step="5" value="14"></div>
     <div class="skVal" id="skVal"></div>
+    <div class="skRow"><span>音乐</span><input type="range" id="skMusic" min="0" max="100" step="5" value="40"></div>
+    <div class="skVal" id="skMusicNote"></div>
     <div class="skPre">
       <button type="button" data-pre="native">原色</button>
       <button type="button" data-pre="balanced">均衡</button>
@@ -1182,6 +1225,29 @@
         </fieldset>
 
         <fieldset>
+          <legend>背景音乐</legend>
+          <div class="field">
+            <label>默认放的就是你桌面壁纸那首（[deepseek娘]深夜的大肥鱼）。也可以换成自己的歌。</label>
+            <span class="hint" id="musState">…</span>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+              <input type="checkbox" id="musToggle" /> 开启背景音乐
+            </label>
+            <button type="button" class="ghost" id="musImport">导入本地音乐</button>
+            <button type="button" class="ghost" id="musDefault">恢复默认</button>
+            <input type="file" id="musFile" accept="audio/*,.mp3,.m4a,.wav,.ogg,.flac,.aac" hidden />
+          </div>
+          <div class="field">
+            <label>音量 <span class="hint" id="musVolVal">40%</span></label>
+            <input type="range" id="musVol" min="0" max="100" step="5" value="40" style="width:100%" />
+          </div>
+          <div class="field">
+            <span class="hint">浏览器规定页面必须先被点一下才许出声，所以是「点一下界面就开始放」。想静音就取消上面那个勾。</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
           <legend>更新</legend>
           <div class="field">
             <label>程序会自己检查新版本，有就自动换上、重启生效（只换程序文件，会话、人设、模型配置一个都不动）。</label>
@@ -1189,9 +1255,6 @@
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="updCheck">马上检查一次</button>
-          </div>
-          <div class="field">
-            <span class="hint">不想每次启动都去网上查，也可以就在这儿点。装的是哪个版本的看左上角标题栏底下那行小字。</span>
           </div>
         </fieldset>
       </div>
@@ -2147,30 +2210,31 @@ var following = null;
  *
  * @returns {Promise<boolean>} 这个会话是不是还在跑
  */
-async function attachLive(id) {
-  let live = null;
+/**
+ * 带超时的 fetch：只给「切会话 / 新建会话」这种一卡就把界面锁死的地方用。
+ * 超时了就跟连不上一模一样地报错，交给调用方把输入区救回来。
+ */
+async function fetchTimed(url, opts = {}, ms = 8000) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
   try {
-    live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
-  } catch {
-    return false;
+    return await fetch(url, { ...opts, signal: ac.signal });
+  } finally {
+    clearTimeout(t);
   }
-  if (!live || !Array.isArray(live.events) || !live.events.length) return false;
+}
 
-  // 已经跑完的那一轮，历史里早就落盘了（renderTurns 刚画过），
-  // 再把缓存里的 text 重画一遍就成了两条一样的回复。
-  // 只有「还在跑、历史还没写进去」的才需要补画。
-  if (!live.running) {
-    turnsInFlight.delete(id);
-    return false;
-  }
-
-  // 从服务端事件重建画面（和 runTurn 里那套一样）
-  let bubble = null;
+/**
+ * 把服务端直播缓存里的事件照着画一遍，返回下一个要读的下标。
+ *
+ * 「窗口关了又开、刷新、切回后台在跑的会话」都走这里。
+ * 只画有内容的：safe_word 那种提示不是回复，别给主人添一行噪音。
+ */
+function paintLiveEvents(evs, bubble) {
   let think = null;
   const toolEls = new Map();
   const closeThink = () => { if (think) { think.finish(); think = null; } };
-
-  for (const ev of live.events) {
+  for (const ev of evs) {
     if (ev.type === 'reasoning') {
       if (!think) think = openThink();
       think.push(ev.text);
@@ -2194,15 +2258,116 @@ async function attachLive(id) {
         st.className = 'status ' + (ev.ok ? 'ok' : 'err');
         el.pre.textContent += '\n--- output ---\n' + ev.output;
       }
+    } else if (ev.type === 'files') {
+      const wrap = lastAssistantWrap();
+      if (wrap) attachFiles(wrap, ev.items);
     }
   }
   closeThink();
+  return bubble;
+}
+async function attachLive(id) {
+  let live = null;
+  try {
+    live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+  } catch {
+    return false;
+  }
+  const evs = live && Array.isArray(live.events) ? live.events : [];
+
+  /**
+   * 这一轮还该不该「算在跑」，分两种情况看：
+   *
+   *  1) 本窗口正在跟这一轮（turnsInFlight 里有它，或者屏幕上正跑着它）：
+   *     一切以服务端为准，接着轮询就行。
+   *  2) 本窗口没在跟：说明是「窗口关过 / 刷新过 / 切回一个后台会话」。
+   *     这时候更要紧的是历史：历史里最后一条是主人的话，就说明这条回复还没落盘，
+   *     才需要靠直播缓存补画；历史里最后一条是我说的话，那这轮早结束了 ——
+   *     服务端那份 running 只是上次进程留下的残骸（它就存在内存里，进程一崩就停在那儿），
+   *     再拿它当准就会一直显示「还在跑」：气泡空着、输入框锁着、问什么都像没人应。
+   */
+  const mine = turnsInFlight.has(id) || (sessionId === id && busy);
+
+  // 一条事件都没有：没东西可补画。是不是还在跑，照上面那套判断说回去。
+  if (!evs.length) {
+    if (live && live.running) {
+      if (mine) return true;
+      // 刚打开 / 刚切过来的这一瞬间，屏幕上一眼是空的（或还挂着上一个会话的消息），
+      // 这时「历史最后一条是谁说的」说明不了任何事，当它是主人的话处理，
+      // 让下面那套轮询去等它吐字 —— 比当场宣布「跑完了」安全。
+      const tail = historyTailRole() || 'user';
+      if (tail === 'user') {
+        // 历史停在主人那句话上：这轮确实还没写完，但缓存里一个字都没有，
+        // 只能在这儿等它吐字 —— 交给 followLive 轮询。
+        followLive(id, 0);
+        return true;
+      }
+    }
+    if (!mine) turnsInFlight.delete(id);
+    return false;
+  }
+
+  // 已经跑完的那一轮，历史里早就落盘了（renderTurns 刚画过），
+  // 再把缓存里的 text 重画一遍就成了两条一样的回复。
+  // 只有「还在跑、历史还没写进去」的才需要补画。
+  if (!live.running) {
+    turnsInFlight.delete(id);
+    return false;
+  }
+
+  // 服务端说还在跑，但历史已经写完了：这份 running 是残骸，别照着它卡界面。
+  if (!mine && historyTailRole() === 'assistant') {
+    turnsInFlight.delete(id);
+    return false;
+  }
+
+  let bubble = paintLiveEvents(evs, null);
 
   if (live.running) {
+    if (mine) {
+      if (bubble) bubble.classList.add('streaming');
+      followLive(id, evs.length);
+      return true;
+    }
+    // 不是本窗口在跑、历史也还没写完：那就是真的还在跑，接着跟，但别锁输入区
     if (bubble) bubble.classList.add('streaming');
-    followLive(id, live.events.length);
+    followLive(id, evs.length);
+    return false;
   }
-  return Boolean(live.running);
+  return false;
+}
+
+/** 屏幕上历史最后一条是谁说的：'user' / 'assistant'，一条都没有就空串 */
+function historyTailRole() {
+  // 先看「重绘之后屏幕停在谁的话上」这份记录；一次都没画过，才退回 DOM。
+  if (tailRoleOnScreen) return tailRoleOnScreen;
+  if (!log) return '';
+  const all = log.querySelectorAll('.msg.user, .msg.assistant');
+  if (!all.length) return '';
+  const last = all[all.length - 1];
+  return last.classList.contains('user') ? 'user' : 'assistant';
+}
+
+/**
+ * 只认「屏幕上这一屏」。重绘 / 切会话时它被重置成历史最后一条是谁说的。
+ *
+ * 为什么不能只看 DOM：切会话的那一刻，屏幕里还是上一个会话的消息。
+ * 拿它判断「这轮回复写完没有」，就会得出完全相反的结论 ——
+ * 要么以为写完了（把还在跑的扔掉），要么以为没写完（把早结束的当成还在跑）。
+ */
+let tailRoleOnScreen = '';
+
+/** 重绘之后记一笔：画完之后屏幕停在谁的话上 */
+function markTailRole(turns) {
+  let role = '';
+  const list = Array.isArray(turns) ? turns : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const t = list[i];
+    if (!t) continue;
+    if (t.role === 'user' || t.role === 'assistant') { role = t.role; break; }
+  }
+  tailRoleOnScreen = role;
+  return role;
 }
 
 /**
@@ -2291,7 +2456,7 @@ async function tryHealAfterDisconnect(id) {
       return true;
     }
 
-    const sel = await fetch('/api/sessions/select', {
+    const sel = await fetchTimed('/api/sessions/select', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
@@ -2429,6 +2594,54 @@ function addUser(text, tag, atts, target, rewindId) {
     const box = document.createElement('div');
     box.className = 'msgAttach';
     for (const a of list) {
+      // 视频 / 音频要能直接播，不能缩成一个纸片图标——
+      // 主人重进会话后还指望点一下就能看，缩成图标等于「东西没了」。
+      const ext = String(a.path || '').split('.').pop().toLowerCase();
+      const mediaKind =
+        a.kind === 'video' || ['mp4', 'webm', 'mkv', 'mov', 'm4v', 'flv'].includes(ext)
+          ? 'video'
+          : a.kind === 'audio' || ['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac'].includes(ext)
+            ? 'audio'
+            : '';
+      if (mediaKind) {
+        // 直接复用她「发文件」那套卡片样式（.fileRow）：播放器 + 一行「名字 · 大小 · 下载」。
+        // 两边长一样，主人就不用适应两种观感。
+        const box2 = document.createElement('div');
+        box2.className = 'fileRow';
+        const m = document.createElement(mediaKind);
+        m.controls = true;
+        m.preload = 'metadata';
+        m.src = `/api/attach/raw?path=${encodeURIComponent(a.path)}`;
+        const dlHref = `/api/attach/raw?path=${encodeURIComponent(a.path)}&download=1`;
+        m.onerror = () => {
+          // 文件被挪走/删了，退成一行说明，别留个坏播放器
+          box2.innerHTML = '';
+          const e = document.createElement('div');
+          e.className = 'finfo';
+          const t = document.createElement('div');
+          t.className = 'fname';
+          t.textContent = '⚠ ' + (a.name || '文件') + ' 打不开了（可能被移走或删了）';
+          e.appendChild(t);
+          box2.appendChild(e);
+        };
+        const info = document.createElement('div');
+        info.className = 'finfo';
+        const nm = document.createElement('div');
+        nm.className = 'fname';
+        nm.textContent = (mediaKind === 'video' ? '🎬 ' : '🎵 ') + (a.name || '');
+        const sz = document.createElement('div');
+        sz.className = 'fsize';
+        sz.textContent = a.size ? fmtSize(a.size) : '';
+        const dlink = document.createElement('a');
+        dlink.className = 'fdl';
+        dlink.href = dlHref;
+        dlink.textContent = '下载';
+        info.append(nm, sz, dlink);
+        box2.append(m, info);
+        box.appendChild(box2);
+        continue;
+      }
+
       const chip = document.createElement("div");
       chip.className = "attachChip";
       chip.title = a.path;
@@ -2449,7 +2662,7 @@ function addUser(text, tag, atts, target, rewindId) {
       } else {
         const d = document.createElement("div");
         d.className = "ficon";
-        d.textContent = a.kind === "image" ? "🖼" : "📄";
+        d.textContent = "📄";
         chip.appendChild(d);
       }
       const nm = document.createElement("div");
@@ -2591,6 +2804,120 @@ function startEdit(wrap, at) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); save(); }
   });
   setTimeout(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }, 0);
+}
+
+/**
+ * 我发出去的文件画像。
+ * 服务端每条助手消息会带 _out：[{path,name,size,kind,mime,key}]。
+ * 图片给缩略图（点开看大图），视频直接能播，别的就是一行「点一下下载」。
+ * 路径没了还有 key：兜底箱里抄了一份，照样下得回来。
+ */
+function outUrl(f, download) {
+  if (f && f.key) return '/api/attach/outbox-out?key=' + encodeURIComponent(f.key);
+  const p = (f && f.path) || '';
+  if (!p) return '';
+  return '/api/attach/raw?path=' + encodeURIComponent(p) + (download ? '&download=1' : '');
+}
+function iconOf(f) {
+  const k = (f && f.kind) || 'file';
+  if (k === 'video') return '🎬';
+  if (k === 'image') return '🖼';
+  if (k === 'audio') return '🎵';
+  if (k === 'pdf') return '📕';
+  if (k === 'text') return '📝';
+  const ext = String((f && f.name) || '').split('.').pop().toLowerCase();
+  if (ext === 'zip' || ext === 'rar' || ext === '7z') return '🗜';
+  return '📄';
+}
+function outCard(f) {
+  const name = (f && f.name) || '文件';
+  const size = fmtSize(f && f.size);
+  const url = outUrl(f, false);
+  const dl = outUrl(f, true);
+  const kind = (f && f.kind) || 'file';
+
+  if (kind === 'image') {
+    const card = document.createElement('a');
+    card.className = 'fileCard';
+    card.href = url;
+    card.target = '_blank';
+    card.rel = 'noopener';
+    card.title = name + ' · ' + size + '（点开看大图）';
+    const im = document.createElement('img');
+    im.className = 'fthumb';
+    im.alt = name;
+    im.src = url;
+    im.onerror = () => {
+      card.className = 'fileCard';
+      card.innerHTML = '';
+      const ic = document.createElement('div'); ic.className = 'fk'; ic.textContent = '🖼';
+      const meta = document.createElement('div'); meta.className = 'fmeta';
+      const nm = document.createElement('div'); nm.className = 'fname'; nm.textContent = name;
+      const sz = document.createElement('div'); sz.className = 'fsize'; sz.textContent = size + ' · 打不开了';
+      meta.append(nm, sz);
+      card.append(ic, meta);
+    };
+    card.appendChild(im);
+    return card;
+  }
+
+  if (kind === 'video' || kind === 'audio') {
+    const box = document.createElement('div');
+    box.className = 'fileRow';
+    const media = document.createElement(kind === 'video' ? 'video' : 'audio');
+    media.controls = true;
+    media.preload = 'metadata';
+    media.src = url;
+    box.appendChild(media);
+    const info = document.createElement('div');
+    info.className = 'finfo';
+    const nm = document.createElement('div'); nm.className = 'fname'; nm.textContent = iconOf(f) + ' ' + name;
+    const sz = document.createElement('div'); sz.className = 'fsize'; sz.textContent = size;
+    const a = document.createElement('a'); a.className = 'fdl'; a.href = dl; a.textContent = '下载';
+    info.append(nm, sz, a);
+    box.appendChild(info);
+    return box;
+  }
+
+  const card = document.createElement('a');
+  card.className = 'fileCard';
+  card.href = dl;
+  card.title = name + ' · ' + size + '（点一下下载）';
+  const ic = document.createElement('div');
+  ic.className = 'fk';
+  ic.textContent = iconOf(f);
+  const meta = document.createElement('div');
+  meta.className = 'fmeta';
+  const nm = document.createElement('div'); nm.className = 'fname'; nm.textContent = name;
+  const sz = document.createElement('div'); sz.className = 'fsize'; sz.textContent = size + ' · 点一下存下来';
+  meta.append(nm, sz);
+  const ar = document.createElement('div'); ar.className = 'fdl'; ar.textContent = '⬇';
+  card.append(ic, meta, ar);
+  return card;
+}
+/** 把一串文件挂在某条消息下面（重复调用不会叠两层） */
+function attachFiles(wrap, items) {
+  const list = Array.isArray(items) ? items.filter((x) => x && (x.path || x.key)) : [];
+  if (!wrap || !list.length) return null;
+  let box = wrap.querySelector(':scope > .fileList');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fileList';
+    wrap.appendChild(box);
+  }
+  box.innerHTML = '';
+  for (const f of list) box.appendChild(outCard(f));
+  if (log) log.scrollTop = log.scrollHeight;
+  return box;
+}
+
+/**
+ * 聊天区里最后一条「小鱼的回复」的外壳。
+ * 文件卡片要挂在我说的话下面，不能挂在工具折叠块或者系统提示后面。
+ */
+function lastAssistantWrap() {
+  const wraps = log ? log.querySelectorAll('.msg.assistant') : [];
+  return wraps.length ? wraps[wraps.length - 1] : null;
 }
 
 function addAssistant() {
@@ -2789,7 +3116,9 @@ async function runTurn({ resume = false, text = '' } = {}) {
     });
     if (!res.ok) {
       const e = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(e.error || 'request failed');
+      // statusText 很多时候是空的，报出来就是一句 reading 'error' of... 那种天书
+      const why = (e && (e.error || e.message)) || res.statusText || ('服务端回了 ' + res.status + '，这一轮没发出去');
+      throw new Error(why);
     }
 
     const reader = res.body.getReader();
@@ -2825,6 +3154,8 @@ async function runTurn({ resume = false, text = '' } = {}) {
             tp.ok = ev.ok;
             tp.output = ev.output;
           }
+        } else if (ev.type === 'files') {
+          turnRec.files = ev.items || [];
         }
 
         // 不在屏幕上：到此为止，别往当前会话的聊天区里画
@@ -2871,6 +3202,16 @@ async function runTurn({ resume = false, text = '' } = {}) {
             st.className = 'status ' + (ev.ok ? 'ok' : 'err');
             el.pre.textContent += '\n--- output ---\n' + ev.output;
           }
+        } else if (ev.type === 'files') {
+          // 这一轮我发出去的文件：挂在最后那条回复下面
+          closeThink();
+          const wrap = lastAssistantWrap();
+          if (wrap) attachFiles(wrap, ev.items);
+        } else if (ev.type === 'error') {
+          // 上一轮是报错结束的：重开窗口也不能一片空白，得让主人看见那句原因
+          closeThink();
+          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+          addSysNote('⚠ ' + (ev.message || '这一轮出错了'));
         } else if (ev.type === 'safe_word') {
           const wrap = addEl('', 'msg user');
           wrap.innerHTML = '<div class="role">安全词<span class="safeTag"></span></div>';
@@ -3096,7 +3437,7 @@ document.getElementById('reset').onclick = async () => {
 
   // 新会话回来了：直接切过去（switchSession 会重画列表和正文）
   try {
-    await switchSession(r.session.id);
+    await switchSessionSafe(r.session.id);
   } catch (e) {
     console.warn('[reset] 切到新会话出错：', e && e.message ? e.message : e);
     log.innerHTML = '';
@@ -4778,7 +5119,7 @@ document.getElementById('sessBulkDel').onclick = async () => {
       // 免得面板盖在输入框上、人以为「删完打不了字」
       try { sessDlg.close(); } catch {}
       try {
-        if (r.lastSessionId) await switchSession(r.lastSessionId);
+        if (r.lastSessionId) await switchSessionSafe(r.lastSessionId);
         else await createSession();
       } catch (e) {
         console.warn('[bulk-del] 切会话出错:', e && e.message ? e.message : e);
@@ -4846,7 +5187,7 @@ sessList.addEventListener('click', async (e) => {
         // 先把面板关掉——它还开着就盖在输入框上面，人看着就是「点不了、打不了字」
         try { sessDlg.close(); } catch {}
         try {
-          if (r.lastSessionId) await switchSession(r.lastSessionId);
+          if (r.lastSessionId) await switchSessionSafe(r.lastSessionId);
           else await createSession();
         } catch (e) {
           console.warn('[del] 切会话时出错，先把输入区救回来:', e && e.message ? e.message : e);
@@ -4872,7 +5213,7 @@ sessList.addEventListener('click', async (e) => {
     return;
   }
 
-  if (id !== sessionId) await switchSession(id);
+  if (id !== sessionId) await switchSessionSafe(id);
   sessDlg.close();
   settleComposer();
 });
@@ -4918,6 +5259,7 @@ function renderTurns(turns) {
       b.className = 'bubble';
       b.textContent = fixMojibake(turn.text);
       wrap.appendChild(b);
+      if (Array.isArray(turn.out) && turn.out.length) attachFiles(wrap, turn.out);
       attachEdit(wrap, turn.rewindId);
       if (turn.edited) wrap.classList.add('edited');
     }
@@ -4926,6 +5268,8 @@ function renderTurns(turns) {
   // 一次性替换 + 只滚一次
   log.replaceChildren(frag);
   log.scrollTop = log.scrollHeight;
+  // 记一笔：这一屏最后停在谁的话上。切会话 / 断开自愈时判断「这轮写完没」要用。
+  markTailRole(list);
 }
 
 // ---- 对话回退（DSH /rewind 的那套：只遮蔽、不删除）----
@@ -5022,7 +5366,7 @@ async function branchHere(at, btn) {
       return;
     }
     await refreshSessions({ silent: true }).catch(() => {});
-    await switchSession(newId);
+    await switchSessionSafe(newId);
     const hint = document.getElementById('sessHint');
     if (hint) {
       hint.textContent = '已分支到新会话，原来那个还在列表里';
@@ -5033,8 +5377,28 @@ async function branchHere(at, btn) {
   }
 }
 
+/**
+ * 切会话这件事本身也得有个上限。
+ *
+ * 以前这里是直接 await 一个没有超时的请求：服务端只要有一口气不吐字，
+ * 界面就停在「上一个会话的画面 + 输入框被锁着」的样子，怎么点都没反应。
+ * 现在最多等 8 秒，超时就当连不上，走下面那套「说一句 + 把输入区救回来」。
+ */
+async function switchSessionSafe(id) {
+  try {
+    return await Promise.race([
+      switchSession(id),
+      new Promise((r) => setTimeout(() => r(false), 12000)),
+    ]);
+  } catch (e) {
+    console.warn('[switchSessionSafe] 切会话出错:', e && e.message ? e.message : e);
+    releaseComposer();
+    return false;
+  }
+}
+
 async function switchSession(id) {
-  const r = await fetch('/api/sessions/select', {
+  const r = await fetchTimed('/api/sessions/select', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id }),
@@ -5111,7 +5475,7 @@ async function createSession() {
  */
 async function createSessionEx(opts = {}) {
   const { quiet = false, title = '' } = opts;
-  const r = await fetch('/api/sessions/new', {
+  const r = await fetchTimed('/api/sessions/new', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(title ? { title } : {}),
@@ -5208,7 +5572,7 @@ async function importSessionsFromFile(file) {
   sessHint.textContent = `导入好了，${r.count} 个会话`;
   // 只导了一个就直接切过去，省得再找
   if (r.count === 1 && r.imported[0] && r.imported[0].id !== sessionId) {
-    try { await switchSession(r.imported[0].id); } catch {}
+    try { await switchSessionSafe(r.imported[0].id); } catch {}
     sessDlg.close();
     settleComposer();
   }
@@ -5252,7 +5616,12 @@ async function bootSessions() {
   const pick = localOk
     || r.lastSessionId
     || (sessionsCache[0] ? sessionsCache[0].id : null);
-  if (pick && (await switchSession(pick))) return;
+  try {
+    if (pick && (await switchSessionSafe(pick))) return;
+  } catch (e) {
+    // 切不过去也别把输入区锁着：下面新建一个，界面照样能用
+    console.warn('[bootSessions] 切回上次的会话失败:', e && e.message ? e.message : e);
+  }
   await createSessionEx({ quiet: true });
 }
 
@@ -6071,6 +6440,183 @@ if (skinPanelEl) {
 }
 
 refreshSkin();
+
+/* ========================================================================== *
+ * 背景音乐
+ *
+ * 跟视频背景是两个独立的东西：视频可以不看，但音乐照放。
+ * 浏览器有硬规矩 —— 页面没被用户碰过不许出声（自动播放策略），
+ * 所以这里注册一个「一次性的首次交互」监听：主人随便点哪儿、按个键，
+ * 音乐就开始。这也顺带解决了「一打开就轰一声」的问题。
+ * ========================================================================== */
+const musicEl = document.getElementById('bgMusic');
+const musState = { on: true, volume: 0.4, hasMusic: false, isDefault: true, name: '' };
+let musArmed = false; // 是不是还在等第一次交互
+
+function paintMusicUI() {
+  const tg = document.getElementById('musToggle');
+  if (tg) tg.checked = Boolean(musState.on);
+  const vol = document.getElementById('musVol');
+  if (vol) vol.value = String(Math.round((musState.volume || 0) * 100));
+  const vv = document.getElementById('musVolVal');
+  if (vv) vv.textContent = Math.round((musState.volume || 0) * 100) + '%';
+  const st = document.getElementById('musState');
+  if (st) {
+    if (!musState.hasMusic) st.textContent = '还没找到音乐文件';
+    else if (musState.on) st.textContent = `现在放的是：${musState.name}${musState.isDefault ? '（默认，壁纸那首）' : '（自己导入的）'}`;
+    else st.textContent = `已关闭。上次放的是：${musState.name}`;
+  }
+  const note = document.getElementById('skMusicNote');
+  if (note) note.textContent = musState.on ? `音乐 ${Math.round((musState.volume || 0) * 100)}%` : '音乐已关';
+  const sk = document.getElementById('skMusic');
+  if (sk) sk.value = String(Math.round((musState.volume || 0) * 100));
+}
+
+/** 真要出声：设音量、设源、开播。被拦就把「等交互」的旗子插上。 */
+function musicStart() {
+  if (!musicEl || !musState.hasMusic || !musState.on) return;
+  musicEl.volume = Math.max(0, Math.min(1, Number(musState.volume) || 0));
+  const want = '/api/skin/music';
+  if (!String(musicEl.getAttribute('src') || '').startsWith(want)) {
+    musicEl.src = want + '?t=' + Date.now();
+  }
+  const p = musicEl.play();
+  if (p && typeof p.catch === 'function') {
+    p.catch(() => {
+      musArmed = true;
+      armMusicGesture();
+    });
+  }
+}
+
+function musicStop() {
+  if (!musicEl) return;
+  try {
+    musicEl.pause();
+  } catch {}
+}
+
+/** 等一次用户交互再开播；只挂一次，响了就撤 */
+function armMusicGesture() {
+  if (musArmed && musicEl && !musicEl.paused) return;
+  const fire = () => {
+    document.removeEventListener('pointerdown', fire, true);
+    document.removeEventListener('keydown', fire, true);
+    musArmed = false;
+    musicStart();
+  };
+  document.addEventListener('pointerdown', fire, true);
+  document.addEventListener('keydown', fire, true);
+}
+
+async function refreshMusic() {
+  const r = await fetch('/api/skin').then((x) => x.json()).catch(() => null);
+  if (!r || r.error) return;
+  const s = r.settings || {};
+  musState.on = s.musicOn !== false;
+  musState.volume = Number.isFinite(Number(s.musicVolume)) ? Number(s.musicVolume) : 0.4;
+  musState.hasMusic = Boolean(r.hasMusic);
+  musState.isDefault = !r.musicIsCustom;
+  musState.name = r.musicName || '（没有）';
+  paintMusicUI();
+  if (musState.on && musState.hasMusic) musicStart();
+  else musicStop();
+}
+
+async function pushMusic(patch) {
+  Object.assign(musState, patch);
+  paintMusicUI();
+  if (musState.on && musState.hasMusic) musicStart();
+  else musicStop();
+  await fetch('/api/skin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).catch(() => {});
+}
+
+(function wireMusicUI() {
+  const tg = document.getElementById('musToggle');
+  if (tg) tg.addEventListener('change', () => pushMusic({ musicOn: tg.checked }));
+  const vol = document.getElementById('musVol');
+  if (vol) {
+    // 拖的时候只改内存里的音量和元素音量，松手才写盘（免得拖一下打几十个请求）
+    vol.addEventListener('input', () => {
+      const v = Number(vol.value) / 100;
+      musState.volume = v;
+      if (musicEl) musicEl.volume = v;
+      const vv = document.getElementById('musVolVal');
+      if (vv) vv.textContent = Math.round(v * 100) + '%';
+    });
+    vol.addEventListener('change', () => pushMusic({ musicVolume: Number(vol.value) / 100 }));
+  }
+  const imp = document.getElementById('musImport');
+  const file = document.getElementById('musFile');
+  if (imp && file) {
+    imp.addEventListener('click', () => file.click());
+    file.addEventListener('change', async () => {
+      const f = file.files && file.files[0];
+      if (!f) return;
+      imp.disabled = true;
+      imp.textContent = '导入中…';
+      try {
+        const r = await fetch('/api/skin/music/import?name=' + encodeURIComponent(f.name), {
+          method: 'POST',
+          headers: { 'Content-Type': f.type || 'application/octet-stream' },
+          body: f,
+        }).then((x) => x.json());
+        if (r && r.error) throw new Error(r.error);
+        musState.hasMusic = Boolean(r.hasMusic);
+        musState.isDefault = !r.musicIsCustom;
+        musState.name = r.musicName || f.name;
+        musState.on = true;
+        if (musicEl) musicEl.removeAttribute('src');
+        paintMusicUI();
+        musicStart();
+        addSysNote('换上了：' + (r.musicName || f.name));
+      } catch (e) {
+        addSysNote('⚠ 导入失败：' + (e && e.message ? e.message : e));
+      } finally {
+        imp.disabled = false;
+        imp.textContent = '导入本地音乐';
+        file.value = '';
+      }
+    });
+  }
+  const def = document.getElementById('musDefault');
+  if (def) {
+    def.addEventListener('click', async () => {
+      try {
+        const r = await fetch('/api/skin/music/reset', { method: 'POST' }).then((x) => x.json());
+        if (r && r.error) throw new Error(r.error);
+        musState.hasMusic = Boolean(r.hasMusic);
+        musState.isDefault = !r.musicIsCustom;
+        musState.name = r.musicName || '（没有）';
+        musState.on = true;
+        if (musicEl) musicEl.removeAttribute('src');
+        paintMusicUI();
+        musicStart();
+        addSysNote('换回默认那首了');
+      } catch (e) {
+        addSysNote('⚠ 没换成默认：' + (e && e.message ? e.message : e));
+      }
+    });
+  }
+  // 右下角那个小面板里也能调音量
+  const sk = document.getElementById('skMusic');
+  if (sk) {
+    sk.addEventListener('input', () => {
+      const v = Number(sk.value) / 100;
+      musState.volume = v;
+      if (musicEl) musicEl.volume = v;
+      const note = document.getElementById('skMusicNote');
+      if (note) note.textContent = `音乐 ${Math.round(v * 100)}%`;
+    });
+    sk.addEventListener('change', () => pushMusic({ musicVolume: Number(sk.value) / 100 }));
+  }
+})();
+
+refreshMusic();
 
 </script>
 </body>

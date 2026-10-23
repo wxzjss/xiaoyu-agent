@@ -111,6 +111,80 @@ APK 也支持**不连电脑**的模式：填一个 API Key 直接在手机上聊
 - 底线 + 安全词：写进设置就生效，说了安全词立刻停手
 `;
 
+/**
+ * 按版本号临时覆盖发布说明。
+ *
+ * 为什么不把每一版都写进一个 if：以前的说明留在文件里也是一份「变更记录」，
+ * 真要翻旧账能直接看 git 历史，不必让这个脚本越写越长。
+ * 查得到就返回 null，走上面那份通用的。
+ */
+function changelogFor(v) {
+  if (v === '0.9.0') {
+    return `这一版加了**背景音乐**，还有一堆看不见的稳定性修补。
+
+## 下载哪个
+
+| 文件 | 是什么 |
+|---|---|
+| **XiaoyuAgent-${v}-Setup-x64.exe** | 安装版。装完有开始菜单/桌面快捷方式，数据在 \`%APPDATA%\\小鱼Agent\\data\` |
+| **XiaoyuAgent-${v}-Portable.exe** | 单文件免安装，双击就跑，数据在 exe 旁边的 \`data\\\` |
+| **XiaoyuAgent-${v}-Mobile.apk** | 安卓手机壳 |
+
+第一次打开没有模型：右上角【模型】→ 添加 → 选厂商（预置 20 家）→ 填 Key → 测试 → 保存。
+
+## 新功能：背景音乐
+
+【设置】→【背景音乐】。
+
+- **默认放的就是你桌面壁纸那首** —— 从 Wallpaper Engine 那个壁纸的 mp4 里把音轨抽出来的，
+  长短、音质都照原样（2 分 05 秒，AAC 48kHz 立体声）
+- **导入本地音乐**：mp3 / m4a / wav / ogg / flac 都行，会拷进 \`.state/bg-music/\`
+- **恢复默认**：一键换回壁纸那首
+- 音量滑杆，右下角那个调背景的小圆钮里也能拖
+- 浏览器规定页面得先被点一下才许出声，所以是「点一下界面就开始放」，不会一打开就轰一声
+
+手机端（不连电脑的模式）也有【外观】按钮，能开关音乐、调音量、选手机里的歌。
+连电脑的那个模式本来就是电脑端的界面，背景音乐跟着电脑走。
+
+## 稳定性：三个「她突然没了」的真凶
+
+1. **没有任何进程兜底** —— 整个项目之前连 \`uncaughtException\` / \`unhandledRejection\` 都没挂。
+   Node 15 以后，一个没人接的 Promise 拒绝就能直接把进程杀掉。现在单次异常记进
+   \`.state/crash.log\` 然后继续跑，同类错误 60 秒内连犯 5 次才退，且退出前先把草稿落盘。
+2. **一轮回复只在整轮跑完才存盘** —— 中途被杀，整轮一个字都不剩。实测真出过：
+   一个任务跑了两小时、107 次工具调用，崩了之后那轮全没了。
+   现在每 1.5 秒写一次草稿到 \`.state/drafts/\`，下次打开会话自动接回来，
+   末尾标一句「（说到这儿断了一下——当时程序被关了，这段话是接回来的。）」
+3. **手机壳按返回键就把网页销毁了** —— 电脑还在跑，手机这边 fetch 流已经断了，
+   看着像「一切换就中断」。现在改成把网页"停"起来而不是销毁，回去接着用。
+
+## 修：视频/音频附件重进后只剩一个纸片
+
+以前别人（或你自己）发的视频，重进会话只显示一个 📄 图标，点了没反应。
+现在直接用播放器 + 一行「🎬 文件名 · 5.9 MB · 下载」，跟「发文件」那套卡片长得一样。
+
+## 其它
+
+- 「清空当前」改成「删掉这个会话再新开一个」——跟真的删了再建完全等价
+- 会话面板加【批量删除】，可以全选
+- 纯净模式加了答复长度约束：能一句话就一句话，不再比人设模式还啰嗦
+  （实测同一句话：关了 1695 字，开了 191 字）
+- 版本检查从自检节流里拆出来了，以前 SELFCHECK_VERSION 没变就永远不查更新
+- 发文件：同一轮分几次发不会被后一批冲掉前一批；发过什么也会记进会话记忆
+
+## 一直有的功能
+
+- 聊天：流式输出、思考强度可调、上下文自动压缩、每轮显示花了多少 token 和多少钱
+- 干活：读/写文件、看目录、跑 PowerShell、联网搜索 + 抓网页、任务清单、便签、发文件
+- 会话：新建/切换/改名/删除/回退/分支，每句可编辑，每个会话有独立记忆本子
+- 手机：扫码连电脑，或干脆不连、自己填 Key 当独立客户端
+- 数据备份：一个 json 打包所有东西，换电脑/重装都能一次搬完
+`;
+  }
+  return null;
+}
+
+
 async function main() {
   const token = readToken();
   if (!token) throw new Error('找不到 GitHub token（环境变量 GITHUB_TOKEN 或 GitHub仓库/ghp.txt）');
@@ -126,7 +200,7 @@ async function main() {
     const res = await fetch(`https://api.github.com/repos/${REPO}/releases`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ tag_name: TAG, name: NAME, body: BODY, draft: false, prerelease: false, target_commitish: 'main' }),
+      body: JSON.stringify({ tag_name: TAG, name: NAME, body: changelogFor(VERSION) || BODY, draft: false, prerelease: false, target_commitish: 'main' }),
     });
     rel = await res.json();
     if (!rel.id) throw new Error('创建 release 失败：' + JSON.stringify(rel).slice(0, 400));

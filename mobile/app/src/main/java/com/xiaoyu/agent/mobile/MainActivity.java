@@ -18,6 +18,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -386,6 +387,30 @@ public class MainActivity extends Activity {
                     fileCallback = null;
                     return false;
                 }
+            }
+
+            /**
+             * 放行媒体权限请求。
+             *
+             * 手机 WebView 里带声音的 <video>/<audio> 有时候会先问一次权限，
+             * 不 grant 的话就永远不播（表现为「背景音乐点了没反应」）。
+             * 这里是自己的页面，直接全放。
+             */
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            request.grant(request.getResources());
+                        } catch (Exception e) {
+                            try {
+                                request.deny();
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
+                });
             }
         });
 

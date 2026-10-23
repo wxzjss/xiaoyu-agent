@@ -8,6 +8,8 @@ dump/
 _shots/
 .state/
 notes/
+# 进行中那一轮的草稿（崩溃恢复用，属于本机运行数据）
+.state/drafts/
 publish-log.txt
 *.bak
 *.bak-*

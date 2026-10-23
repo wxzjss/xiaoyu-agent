@@ -36,6 +36,18 @@ export const BUNDLED_VIDEO = config.packaged
 export const SOURCE_VIDEO = join(config.root, 'assets', 'background.mp4');
 
 /**
+ * 内置背景音乐的位置，规则跟视频一模一样：
+ * 开发时是项目的 assets/bg-music.m4a；打包后用数据目录下那份副本。
+ */
+export const SOURCE_MUSIC = join(config.root, 'assets', 'bg-music.m4a');
+export const BUNDLED_MUSIC = config.packaged
+  ? join(config.dataDir, 'assets', 'bg-music.m4a')
+  : join(config.root, 'assets', 'bg-music.m4a');
+
+/** 主人自己导入的音乐放这儿，别污染 assets */
+export const MUSIC_DIR = join(STATE, 'bg-music');
+
+/**
  * 首启把内置短片复制到数据目录；已经有一份就不再动。
  * 复制失败不算错——真没有就退回没背景。
  */
@@ -61,6 +73,10 @@ export const DEFAULTS = {
   veil: 0.14,
   playbackRate: 1,
   file: '',
+  // 背景音乐：默认开、走内置那首（= 主人桌面壁纸的音乐）、音量 40%、循环
+  musicOn: true,
+  musicVolume: 0.4,
+  musicFile: '',
 };
 
 const KEYS = Object.keys(DEFAULTS);
@@ -83,6 +99,10 @@ export function readSkin() {
     veil: clampNum(raw.veil, 0, 0.8, DEFAULTS.veil),
     playbackRate: clampNum(raw.playbackRate, 0.25, 4, DEFAULTS.playbackRate),
     file: typeof raw.file === 'string' ? raw.file.trim() : '',
+    // 没写过就当开（老版本 skin.json 里没这几个键，升级上来也该有音乐）
+    musicOn: typeof raw.musicOn === 'boolean' ? raw.musicOn : DEFAULTS.musicOn,
+    musicVolume: clampNum(raw.musicVolume, 0, 1, DEFAULTS.musicVolume),
+    musicFile: typeof raw.musicFile === 'string' ? raw.musicFile.trim() : '',
   };
 }
 
@@ -95,6 +115,9 @@ export function writeSkin(patch) {
   if ('veil' in p) next.veil = clampNum(p.veil, 0, 0.8, cur.veil);
   if ('playbackRate' in p) next.playbackRate = clampNum(p.playbackRate, 0.25, 4, cur.playbackRate);
   if ('file' in p) next.file = typeof p.file === 'string' ? p.file.trim() : '';
+  if ('musicOn' in p) next.musicOn = Boolean(p.musicOn);
+  if ('musicVolume' in p) next.musicVolume = clampNum(p.musicVolume, 0, 1, cur.musicVolume);
+  if ('musicFile' in p) next.musicFile = typeof p.musicFile === 'string' ? p.musicFile.trim() : '';
   if (!existsSync(STATE)) {
     try {
       mkdirSync(STATE, { recursive: true });
@@ -119,16 +142,75 @@ export function skinVideoPath() {
   return null;
 }
 
-/** 界面要的一份状态：开关（来自功能面板）+ 旋钮 + 有没有片子。 */
+/**
+ * 首启把内置那首音乐也复制到数据目录。
+ * 跟视频同一个理由：打包后不能直接读 asar 里的路径。
+ */
+export function ensureBundledMusic() {
+  if (!config.packaged) return;
+  try {
+    if (existsSync(BUNDLED_MUSIC) && statSync(BUNDLED_MUSIC).size > 0) return;
+  } catch {}
+  try {
+    if (!existsSync(SOURCE_MUSIC)) return;
+    const dir = join(config.dataDir, 'assets');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(BUNDLED_MUSIC, readFileSync(SOURCE_MUSIC));
+  } catch (e) {
+    console.warn('[skin] 内置音乐复制失败：' + (e && e.message));
+  }
+}
+
+/**
+ * 现在该放哪首：导入的优先，断了就退回内置那首，都没有就 null。
+ * 返回绝对路径；调用方负责 404。
+ */
+export function skinMusicPath() {
+  const { musicFile } = readSkin();
+  if (musicFile) {
+    const p = isAbsolute(musicFile) ? musicFile : resolve(MUSIC_DIR, musicFile);
+    try {
+      if (existsSync(p) && statSync(p).isFile()) return p;
+    } catch {}
+  }
+  try {
+    if (existsSync(BUNDLED_MUSIC) && statSync(BUNDLED_MUSIC).isFile()) return BUNDLED_MUSIC;
+  } catch {}
+  return null;
+}
+
+/**
+ * 收下主人导入的一首音乐：把字节写进 .state/bg-music/<safeName>，
+ * 文件名用时间戳打头防止撞名，返回落盘后的绝对路径。
+ */
+export function importMusic(name, buffer) {
+  if (!buffer || !buffer.length) throw Object.assign(new Error('这个文件是空的'), { status: 400 });
+  const raw = String(name || 'music').split(/[\\/]/).pop();
+  const ext = (/\.([a-z0-9]{1,5})$/i.exec(raw) || [, 'm4a'])[1].toLowerCase();
+  const stem = raw.replace(/\.[^.]+$/, '').replace(/[^\w\u4e00-\u9fa5-]+/g, '_').slice(0, 40) || 'music';
+  const filename = `${Date.now()}-${stem}.${ext}`;
+  if (!existsSync(MUSIC_DIR)) mkdirSync(MUSIC_DIR, { recursive: true });
+  const dest = join(MUSIC_DIR, filename);
+  writeFileSync(dest, buffer);
+  writeSkin({ musicFile: dest, musicOn: true });
+  return dest;
+}
+
+/** 界面要的一份状态：开关（来自功能面板）+ 旋钮 + 有没有片子 / 音乐。 */
 export function getSkinState() {
   const enabled = Boolean(getEnabledMap().videoBg);
   const settings = readSkin();
   const videoPath = skinVideoPath();
+  const musicPath = skinMusicPath();
+  const musicCustom = Boolean(settings.musicFile) && musicPath === settings.musicFile;
   return {
     enabled,
     settings,
     defaults: DEFAULTS,
     hasVideo: Boolean(videoPath),
     videoName: videoPath ? videoPath.split(/[\\/]/).pop() : '',
+    hasMusic: Boolean(musicPath),
+    musicName: musicPath ? musicPath.split(/[\\/]/).pop().replace(/^\d{10,}-/, '') : '',
+    musicIsCustom: musicCustom,
   };
 }

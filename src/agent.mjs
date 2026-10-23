@@ -1,7 +1,7 @@
 // The agent loop: call model -> run tools -> feed results back -> repeat.
 import { streamChat } from './llm.mjs';
 import { inflateHistory } from './attach.mjs';
-import { toolSchemas, enabledToolSchemas, runTool, setToolContext } from './tools.mjs';
+import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt } from './persona.mjs';
 import { pureModeOn } from './pure.mjs';
@@ -75,6 +75,8 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
   let usageTotal = null;
 
   setToolContext(sessionId, snap);
+  // 这一轮发出去的文件（send_file 登记）先开个筐，跑完交回去
+  const outbox = beginOutbox();
 
   if (refreshSystem) {
     const text = systemPrompt(sessionId, { safeMode, safeWord });
@@ -124,7 +126,7 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
     }
     if (signal?.aborted) {
       onEvent({ type: 'aborted' });
-      return { text: '', usage: usageTotal, aborted: true };
+      return { text: '', usage: usageTotal, aborted: true, files: outbox };
     }
     let text = '';
     let reasoning = '';
@@ -234,7 +236,7 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
 
     if (!toolCalls.length) {
       messages.push({ role: 'assistant', content: text });
-      return { text, usage: usageTotal };
+      return { text, usage: usageTotal, files: outbox };
     }
 
     const assistantMsg = {
@@ -263,12 +265,12 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
   // 只有设了具体上限才会走到这里；不限模式（Infinity）下循环只会因 abort 或模型收尾结束。
   if (!Number.isFinite(config.maxRounds)) {
     onEvent({ type: 'aborted' });
-    return { text: '', usage: usageTotal, aborted: true };
+    return { text: '', usage: usageTotal, aborted: true, files: outbox };
   }
   const stop = `\n\n[stopped: reached MAX_ROUNDS=${config.maxRounds}]`;
   onEvent({ type: 'text', text: stop });
   messages.push({ role: 'assistant', content: stop.trim() });
-  return { text: stop, usage: usageTotal };
+  return { text: stop, usage: usageTotal, files: outbox };
 }
 
 /**

@@ -313,6 +313,105 @@ export function setDefaultBottomLines(lines) {
 }
 
 /**
+ * 把「现在生效的」底线 + 安全词 + 安全词说明 一起定成默认。
+ *
+ * 跟 setDefaultBottomLines 的区别：那个只管底线（老接口，保留兼容），
+ * 这个三样一起写。主人点「现在这版设成默认」时三样本来就该一起走 ——
+ * 只把底线定成默认、安全词还是出厂的，点「恢复默认」出来的是个混搭，
+ * 比什么都不设更让人困惑。
+ *
+ * 三条互相独立判定：哪样跟现在不一样才写哪样，全一样就 changed:false。
+ * 写之前把旧的那份存 .state/defaults.backup.md，手滑能捡回来。
+ *
+ * @param {{bottomLines?: string[], safeWords?: string[], safeWordNote?: string}} input
+ * @returns {{ bottomLines: string[], safeWords: string[], safeWordNote: string, backup: string|null, changed: boolean, what: string[] }}
+ */
+export function setDefaults(input = {}) {
+  const prev = readDefaults();
+  const next = { ...prev };
+  const what = [];
+
+  // 底线
+  if (Array.isArray(input.bottomLines)) {
+    const list = input.bottomLines.map((x) => String(x).trim()).filter(Boolean);
+    if (!list.length) {
+      const e = new Error('一条底线都没有，不能把它设成默认');
+      e.status = 400;
+      throw e;
+    }
+    const old = Array.isArray(prev.bottomLines) ? prev.bottomLines : null;
+    const same = old && old.length === list.length && old.every((l, i) => l === list[i]);
+    if (!same) {
+      next.bottomLines = list;
+      what.push('底线');
+    }
+  }
+
+  // 安全词（去重、去空、保序）
+  if (Array.isArray(input.safeWords)) {
+    const list = [];
+    for (const w of input.safeWords) {
+      const s = String(w).trim();
+      if (s && !list.includes(s)) list.push(s);
+    }
+    if (!list.length) {
+      const e = new Error('一个安全词都没有，不能把它设成默认');
+      e.status = 400;
+      throw e;
+    }
+    const old = Array.isArray(prev.safeWords) ? prev.safeWords : null;
+    const same = old && old.length === list.length && old.every((w, i) => w === list[i]);
+    if (!same) {
+      next.safeWords = list;
+      what.push('安全词');
+    }
+  }
+
+  // 安全词说明
+  if (typeof input.safeWordNote === 'string') {
+    const note = input.safeWordNote.trim();
+    if (note !== (prev.safeWordNote || '').trim()) {
+      next.safeWordNote = note;
+      what.push('安全词说明');
+    }
+  }
+
+  let backup = null;
+  if (what.length) {
+    ensureStateDir();
+    backup = join(config.dataDir, '.state', 'defaults.backup.md');
+    const dump = [
+      '# 被替换掉的那版默认（底线 / 安全词 / 说明）',
+      '',
+      '## 底线',
+      ...(Array.isArray(prev.bottomLines) ? prev.bottomLines.map((l) => '- ' + l) : ['（没设过）']),
+      '',
+      '## 安全词',
+      ...(Array.isArray(prev.safeWords) ? prev.safeWords.map((w) => '- ' + w) : ['（没设过）']),
+      '',
+      '## 安全词说明',
+      prev.safeWordNote || '（没设过）',
+      '',
+    ].join('\n');
+    try {
+      writeFileSync(backup, dump, 'utf8');
+    } catch {
+      backup = null;
+    }
+    writeFileSync(DEFAULTS_FILE, JSON.stringify(next, null, 2), 'utf8');
+  }
+
+  return {
+    bottomLines: Array.isArray(next.bottomLines) ? next.bottomLines : [...DEFAULT_SETTINGS.bottomLines],
+    safeWords: Array.isArray(next.safeWords) ? next.safeWords : [...DEFAULT_SETTINGS.safeWords],
+    safeWordNote: typeof next.safeWordNote === 'string' ? next.safeWordNote : DEFAULT_SETTINGS.safeWordNote,
+    backup,
+    changed: what.length > 0,
+    what,
+  };
+}
+
+/**
  * 只把「安全词 + 触发说明」恢复成默认，底线一概不动。
  *
  * 和 resetBottomLines 一样不走 saveSettings()：saveSettings 会先 getSettings() 补字段，

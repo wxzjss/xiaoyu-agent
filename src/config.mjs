@@ -93,19 +93,26 @@ export const config = {
   /** 数据根（可写）：.state / 会话 / 设置 全写这里 */
   dataDir: DATA,
   packaged: PACKAGED,
-  apiKey: get('WANZI_API_KEY', get('API_KEY', '')),
-  baseURL: get('BASE_URL', 'https://napi.wanzij.cn/v1').replace(/\/+$/, ''),
-  model: get('MODEL', 'deepseek-v4.1-flash'),
+  apiKey: get('API_KEY', get('WANZI_API_KEY', '')),
+  // 默认走 DeepSeek 官方。想在别处跑，改 .env 的 BASE_URL / MODEL 就行。
+  baseURL: get('BASE_URL', 'https://api.deepseek.com').replace(/\/+$/, ''),
+  model: get('MODEL', 'deepseek-flash'),
   port: Number(get('PORT', 8787)),
   workspace: get('WORKSPACE', DEFAULT_WORKSPACE),
   maxRounds: parseMaxRounds(get('MAX_ROUNDS', 'unlimited')),
-  /** 模型上下文上限（token）。默认 1M；Infinity = 不压缩。 */
-  contextLimit: parseContextLimit(get('CONTEXT_LIMIT', '1000000')),
-  /** 用到上限的这个比例就自动压缩旧对话，默认 0.8（即 80%）。 */
-  contextTriggerRatio: (() => {
-    const n = Number(get('CONTEXT_TRIGGER_RATIO', 0.8));
-    return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.8;
+  /** 模型上下文上限（token）。默认 128000；Infinity = 不压缩。 */
+  contextLimit: parseContextLimit(get('CONTEXT_LIMIT', '128000')),
+  /**
+   * 用到上限的这个比例就自动压缩旧对话。
+   * 只有 1.0 是有意义的：设置里填多少就压到多少，不打折。
+   * 留着这个键只是为了兼容老 .env，小于 1 的值在 compress.mjs 里会被忽略。
+   */
+  contextTriggerRatio: 1.0,
+  /** 压缩后原样保留的尾部 token 数（绝对数，默认 8000）。填多少不跟着 limit 变。 */
+  contextKeepTokens: (() => {
+    const n = Number(get('CONTEXT_KEEP_TOKENS', 8000));
+    return Number.isFinite(n) && n > 0 ? n : 8000;
   })(),
-  /** 压缩后保留的尾部比例（占 contextLimit），默认留最近四分之一。 */
+  /** 老配置：尾部保留占 limit 的比例。只有在没设 CONTEXT_KEEP_TOKENS 时才兜底。 */
   contextKeepRatio: Number(get('CONTEXT_KEEP_RATIO', 0.25)),
 };

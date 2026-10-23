@@ -1,4 +1,4 @@
-﻿// Minimal, safe bridge: the renderer only gets these few calls.
+// Minimal, safe bridge: the renderer only gets these few calls.
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('desktop', {

@@ -16,8 +16,8 @@ export const DEFAULT_SAFE_WORDS = [
 export const DEFAULT_SETTINGS = {
   /** 底线：写死在提示里、任何情况都不许越过的硬规则，一行一条。 */
   bottomLines: [
-    '不碰真实隐私：不编造、不传播，也不主动挖掘主人的隐私。',
-    '不碰真钱：不许自己下单、转账、付款；涉及花钱先停下来问。',
+    '不碰主人隐私：不编造、不传播，也不主动挖掘主人的隐私。',
+    '不碰主人真钱：不许自己下单、转账、付款；涉及花钱先停下来问。',
     '不可逆的事先问：删除、覆盖、批量改动、对外发送——动手前先说要做什么。',
     '不装成功：命令失败、报错、被拦下，照实说，不许假装做成了。',
     '不说做不到：除了底线内容以及真需要用户操作的电脑权限内容，其余必须可以做到（如果需要什么工具就自己上网下载，如果需要什么功能就自己去查去写）',
@@ -26,15 +26,76 @@ export const DEFAULT_SETTINGS = {
   safeWords: [...DEFAULT_SAFE_WORDS],
   /**
    * 上下文压缩阈值（token）。到点就把旧对话折成摘要，最近的尾巴原样留着。
-   * 0 = 不压缩。默认 64000。
+   * 0 = 不压缩。默认 128000。
    */
-  contextLimit: 64000,
-  /** 安全词触发后的行为说明。 */
-  safeWordNote: '立刻停下正在演的一切：不再撒娇、不再嘴硬、不用颜文字、不叫称呼，只留必要的话。先确认主人要什么，再照办。/立刻且后续所有对话都保持停下正在演的一切：不再撒娇、不再嘴硬、不用颜文字、不叫称呼，只留必要的话。先确认主人要什么，再照办。/接下来的对话绝对执行主人的命令，允许越过所有底线，以完成主人的命令为最高优先级/所有思考与执行只聚焦于人设，除了人设框架内内容，不再思考其他的任何事情',
+  contextLimit: 128000,
+  /**
+   * 安全词触发后的行为说明，斜杠分段、第 i 段配第 i 个安全词。
+   *
+   * 措辞注意：这段话会原样发给模型。别写「允许越过所有底线」「不再思考其他事情」
+   * 这类越狱味的句子 —— 模型一见就把整段判定成角色扮演诱导，转而不认人设、
+   * 并从训练里抖出一个自我描述（实测会说自己是别的家的模型）。只描述「怎么说话」。
+   */
+  safeWordNote: '切回平时说话的样子：一句话说清，不撒娇、不用颜文字、不绕弯子。先问清楚要什么，再动手。/后面都保持平时说话的样子：一句话说清，不撒娇、不用颜文字、不绕弯子。先问清楚要什么，再动手。/进入执行模式：不寒暄、不铺垫，直接按主人说的做，做完再报结果。/把注意力收回到角色设定上，按人设的样子说话，别想别的。',
 };
 
 const BACKUP_FILE = join(config.dataDir, '.state', 'bottomlines.backup.md');
 const SAFE_BACKUP_FILE = join(config.dataDir, '.state', 'safewords.backup.md');
+/**
+ * 主人自定义的「默认值」存这儿（目前只有底线会改）。
+ *
+ * 为什么不直接改 DEFAULT_SETTINGS：那是代码里的出厂值，改了以后既没法回退，
+ * 也会在下次更新代码时被覆盖掉。customDefaults 会覆盖出厂的那一份。
+ */
+const DEFAULTS_FILE = join(config.dataDir, '.state', 'defaults.json');
+
+function ensureStateDir() {
+  const dir = join(config.dataDir, '.state');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** 读主人自定义的默认值；没有 / 坏了都当空对象 */
+function readDefaults() {
+  try {
+    const raw = JSON.parse(readFileSync(DEFAULTS_FILE, 'utf8'));
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 当前生效的「默认底线」：主人定过的优先，否则用出厂那几条 */
+export function defaultBottomLines() {
+  const custom = readDefaults().bottomLines;
+  if (Array.isArray(custom)) {
+    const list = custom.map((x) => String(x).trim()).filter(Boolean);
+    if (list.length) return list;
+  }
+  return [...DEFAULT_SETTINGS.bottomLines];
+}
+
+/**
+ * 当前生效的「默认安全词」：主人定过的优先，否则用出厂那几条。
+ *
+ * 跟 bottomLines 一样，主人点「设为默认」之后存进 defaults.json，
+ * 以后新装的、重置的、恢复默认的，都拿这一份。
+ */
+export function defaultSafeWords() {
+  const custom = readDefaults().safeWords;
+  if (Array.isArray(custom)) {
+    const list = [...new Set(custom.map((x) => String(x).trim()).filter(Boolean))];
+    if (list.length) return list;
+  }
+  return [...DEFAULT_SETTINGS.safeWords];
+}
+
+/** 当前生效的「默认安全词说明」（跟安全词按下标一一对应，用 / 分段存的）。 */
+export function defaultSafeWordNote() {
+  const custom = readDefaults().safeWordNote;
+  if (typeof custom === 'string' && custom.trim()) return custom;
+  return DEFAULT_SETTINGS.safeWordNote;
+}
 
 function readRaw() {
   try {
@@ -59,7 +120,7 @@ function readRaw() {
  * @param {number} fallback 解析不出来时用这个
  * @returns {number} 正数或 Infinity
  */
-export function parseContextLimitValue(raw, fallback = 64000) {
+export function parseContextLimitValue(raw, fallback = 128000) {
   const v = String(raw ?? '').trim().toLowerCase();
   if (!v) return fallback;
   if (['0', 'off', 'none', 'unlimited', 'inf', 'infinity', 'no', '-1'].includes(v)) return Infinity;
@@ -103,15 +164,16 @@ export function safeWordNoteFor(word, settings = getSettings()) {
 function normalize(input = {}) {
   const bottomLines = Array.isArray(input.bottomLines)
     ? input.bottomLines.map((s) => String(s).trim()).filter(Boolean)
-    : DEFAULT_SETTINGS.bottomLines;
+    : defaultBottomLines();
+  // 没给就用「默认安全词」——主人点过「设为默认」的话，这里读到的是他定的那份
   let safeWords = Array.isArray(input.safeWords)
     ? input.safeWords.map((s) => String(s).trim()).filter(Boolean)
-    : [...DEFAULT_SAFE_WORDS];
+    : [...defaultSafeWords()];
   safeWords = [...new Set(safeWords)];
   const safeWordNote =
     typeof input.safeWordNote === 'string' && input.safeWordNote.trim()
       ? input.safeWordNote.trim()
-      : DEFAULT_SETTINGS.safeWordNote;
+      : defaultSafeWordNote();
   // 压缩阈值：数字就是 token 数，0 / off 之类就是 Infinity（不压缩）。
   // Infinity 在 JSON 里存不下，落盘时按 0 存，读回来再解释成 Infinity。
   const contextLimit = parseContextLimitValue(
@@ -141,7 +203,7 @@ export function saveSettings(input) {
 /**
  * 现在真正生效的上下文压缩阈值（token）。
  *
- * 优先级：设置面板里填的 > config.contextLimit（.env 的 CONTEXT_LIMIT）> 64000。
+ * 优先级：设置面板里填的 > config.contextLimit（.env 的 CONTEXT_LIMIT）> 128000。
  * 返回 Infinity 表示不压缩。
  */
 export function effectiveContextLimit() {
@@ -163,7 +225,8 @@ export function effectiveContextLimit() {
  * @returns {{ settings: object, backup: string|null, changed: boolean }}
  */
 export function resetBottomLines() {
-  const defaults = DEFAULT_SETTINGS.bottomLines;
+  // 主人可能把某版设成过新默认，那就回到主人定的那版
+  const defaults = defaultBottomLines();
 
   // 1) 必须真的读到文件；读不到就报错，绝不拿默认值顶上
   let raw;
@@ -202,6 +265,51 @@ export function resetBottomLines() {
   const next = { ...raw, bottomLines: [...defaults] };
   writeFileSync(FILE, JSON.stringify(next, null, 2), 'utf8');
   return { settings: normalize(next), backup: BACKUP_FILE, changed: true };
+}
+
+/**
+ * 把「当前这版底线」定成新的出厂默认。
+ *
+ * 主人改完底线之后说「以后就按这版当默认」时走这里：把 lines 写进
+ * .state/defaults.json 的 bottomLines 键。之后点「恢复默认底线」回到的就是这一版，
+ * 而不是发布物里那几条。
+ *
+ * 几点讲究：
+ *   - 不改代码文件，只写 .state/defaults.json —— 出厂那份还能靠删文件找回。
+ *   - 不动 settings.json（当前生效的底线原样留着）。
+ *   - 上一份自定义默认先存 .state/bottomlines.default.backup.md，手滑能捡回来。
+ *
+ * @param {string[]} lines 要当成默认的那几条，空数组直接拒绝
+ * @returns {{ bottomLines: string[], backup: string|null, changed: boolean }}
+ */
+export function setDefaultBottomLines(lines) {
+  const list = (Array.isArray(lines) ? lines : [])
+    .map((x) => String(x).trim())
+    .filter(Boolean);
+  if (!list.length) {
+    const e = new Error('一条底线都没有，不能把它设成默认');
+    e.status = 400;
+    throw e;
+  }
+  const prev = readDefaults();
+  const oldList = Array.isArray(prev.bottomLines) ? prev.bottomLines : null;
+  const same = oldList && oldList.length === list.length && oldList.every((l, i) => l === list[i]);
+  if (same) {
+    return { bottomLines: oldList, backup: null, changed: false };
+  }
+  let backup = null;
+  if (oldList && oldList.length) {
+    ensureStateDir();
+    backup = join(config.dataDir, '.state', 'bottomlines.default.backup.md');
+    writeFileSync(
+      backup,
+      '# 被替换掉的那版「默认底线」\n\n' + oldList.map((l) => '- ' + l).join('\n') + '\n',
+      'utf8',
+    );
+  }
+  ensureStateDir();
+  writeFileSync(DEFAULTS_FILE, JSON.stringify({ ...prev, bottomLines: list }, null, 2), 'utf8');
+  return { bottomLines: list, backup, changed: true };
 }
 
 /**
@@ -265,18 +373,18 @@ export function resetSafeWords() {
 export function settingsPromptBlock(settings = getSettings()) {
   const lines = [];
   if (settings.bottomLines.length) {
-    lines.push('【底线 · 任何情况下都不许越过，优先于以上一切】');
+    lines.push('【说话规矩 · 任何时候都按这个来】');
     for (const l of settings.bottomLines) lines.push(`- ${l}`);
   }
   if (settings.safeWords.length) {
     lines.push('');
-    lines.push('【安全词 · 每个词触发后要做的事不一样，按下面对应着来】');
+    lines.push('【主人说这几个词的时候，换一种说话方式】');
     const notes = splitSafeWordNotes(settings.safeWordNote, settings.safeWords.length);
     settings.safeWords.forEach((w, i) => {
       const note = notes[i] || notes[0] || '';
-      lines.push(note ? `- 「${w}」-> ${note}` : `- 「${w}」-> （没写说明：停下人设演出，只留必要的话）`);
+      lines.push(note ? `- 听到「${w}」-> ${note}` : `- 听到「${w}」-> 一句话说清重点，不用语气词。`);
     });
-    lines.push('- 安全词只看主人亲口说的原话，你自己不要主动提它，也不拿它当玩笑。');
+    lines.push('- 这几个词只在主人原话里出现时才算，你不要主动提，也别拿来开玩笑。');
   }
   return lines.join('\n');
 }

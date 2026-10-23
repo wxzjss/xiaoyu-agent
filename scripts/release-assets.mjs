@@ -3,7 +3,8 @@ import { readFileSync, existsSync, createReadStream, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const REPO = 'wxzjss/xiaoyu-agent';
-const TAG = 'v0.7.1';
+const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+const TAG = 'v' + VERSION;
 const TOKEN_FILE = 'C:\\GitHub仓库\\ghp.txt';
 
 const raw = existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, 'utf8') : '';
@@ -14,14 +15,14 @@ const H = { Authorization: `token ${token}`, 'User-Agent': 'xiaoyu-release', Acc
 
 const plan = [
   {
-    file: 'dist/installer/小鱼Agent-0.7.1-x64.exe',
-    name: 'xiaoyu-agent-setup-0.7.1-x64.exe',
-    label: '小鱼Agent 安装版 0.7.1 (x64)',
+    file: `dist/installer/小鱼Agent-${VERSION}-x64.exe`,
+    name: `xiaoyu-agent-setup-${VERSION}-x64.exe`,
+    label: `小鱼Agent 安装版 ${VERSION} (x64)`,
   },
   {
-    file: 'dist/installer/小鱼Agent-免安装版-0.7.1.exe',
-    name: 'xiaoyu-agent-portable-0.7.1.exe',
-    label: '小鱼Agent 免安装版 0.7.1 (单文件)',
+    file: `dist/installer/小鱼Agent-免安装版-${VERSION}.exe`,
+    name: `xiaoyu-agent-portable-${VERSION}.exe`,
+    label: `小鱼Agent 免安装版 ${VERSION} (单文件)`,
   },
 ];
 

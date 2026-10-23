@@ -59,6 +59,34 @@ export const FEATURES = [
     tools: ['note'],
   },
   {
+    id: 'webFetchTxt',
+    name: '联网抓取文本',
+    desc: '给一个链接，把网页正文抓下来存进 dump/txt，再拿回来读。',
+    tools: ['fetch_txt'],
+  },
+  {
+    id: 'fetchPack',
+    name: '批量抓取成书',
+    desc: '一次抓一堆链接（中文站不会乱码：自动认 GBK/UTF-8/繁体），能把多页拼成一本 .md + .txt 存进 dump/books。',
+    tools: ['fetch_many', 'pack_book'],
+    defaultOn: true,
+  },
+  {
+    id: 'zhConvert',
+    name: '繁体转简中',
+    desc: '抓到的书要是繁体（繁體）就自动翻成简体，抓书、批量抓、打包成书全链路都管；也能手动把一段字/一个文件转简。',
+    tools: ['t2s_convert'],
+    defaultOn: true,
+  },
+  {
+    // 纯界面/会话功能，不带工具。默认开着。
+    id: 'opening',
+    name: '开场白',
+    desc: '新建会话时先垫一轮「她自己在等你」的对话：AI 看得见、你界面上看不见。想从白纸开始聊就关掉。',
+    tools: [],
+    defaultOn: true,
+  },
+  {
     // 纯界面功能，不带工具。默认开着，素材就在 assets/background.mp4。
     id: 'videoBg',
     name: '视频背景',
@@ -144,7 +172,7 @@ export function setFeature(id, on) {
   if (!existsSync(join(config.dataDir, '.state'))) {
     mkdirSync(join(config.dataDir, '.state'), { recursive: true });
   }
-  writeFileSync(FILE, JSON.stringify(map, null, 2), 'utf8');
+  writeFileSync(FILE, JSON.stringify({ schemaVersion: SCHEMA_VERSION, ...map }, null, 2), 'utf8');
   return getFeatures();
 }
 

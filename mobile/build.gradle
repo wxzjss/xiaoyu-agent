@@ -1,0 +1,4 @@
+// 根构建脚本：什么都不做，插件版本只在这一行声明。
+plugins {
+    id 'com.android.application' version '8.9.1' apply false
+}

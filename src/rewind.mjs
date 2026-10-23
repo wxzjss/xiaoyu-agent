@@ -10,6 +10,8 @@
 //          回退点藏起来的消息也要一起算进来（连续回退才对）；
 // - ws     每条消息那一轮里被写过的文件：{ 相对路径: 原内容 | null }。
 //          null 表示「原来不存在」→ 回退时删掉它。只记写过的、确实变过的。
+// - mem    那一轮开始时这个会话的记忆本子（正文 | null）。回退时连记忆一起退回去，
+//          不然对话退回去了、记忆还记着后来那些事，两边就对不上了。
 //
 // 真正发给模型的历史由 effectiveHistory() 实时算出来：
 // 保留 system + 上下文两条，然后只留「最早那个回退点之前」的消息。
@@ -17,6 +19,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute, dirname } from 'node:path';
 import { config } from './config.mjs';
+import { readMemory, snapMemory } from './session-memory.mjs';
 
 const DIR = join(config.dataDir, '.state', 'rewind');
 const MAX_SNAPSHOT_BYTES = 1024 * 1024; // 单文件超过 1MB 就不备份（对齐 DSH：过大不备份）
@@ -33,11 +36,17 @@ export function loadRewinds(session) {
   const list = Array.isArray(session?.rewinds) ? session.rewinds : [];
   return list
     .filter((r) => r && Number.isFinite(Number(r.at)))
-    .map((r) => ({
-      at: Number(r.at),
-      hidden: (Array.isArray(r.hidden) ? r.hidden : []).map(Number).filter(Number.isFinite),
-      ws: r.ws && typeof r.ws === 'object' ? r.ws : {},
-    }));
+    .map((r) => {
+      const out = {
+        at: Number(r.at),
+        hidden: (Array.isArray(r.hidden) ? r.hidden : []).map(Number).filter(Number.isFinite),
+        ws: r.ws && typeof r.ws === 'object' ? r.ws : {},
+      };
+      // mem 必须原样带出去：漏掉它，撤销回退时就拿不到记忆快照了。
+      // 值是 null 也算有（意思「那一轮还没有本子」），所以用 'in' 判断。
+      if (Object.prototype.hasOwnProperty.call(r, 'mem')) out.mem = r.mem;
+      return out;
+    });
 }
 
 /**
@@ -108,19 +117,39 @@ export function createRewind(session, at) {
   Object.assign(ws, target._ws || {});
   delete target._ws;
 
+  // 记忆也一起退回这一轮开始时的样子（当时没有本子就记 null，回退时删掉）
+  // 记忆也一起退回这一轮开始时的样子。用 'in' 判断而不是看值：
+  // 那一轮开始时会话还没有本子时快照就是 null，null 也是有效快照（回退时要删掉本子）。
+  const hasMem = Object.prototype.hasOwnProperty.call(target, '_mem');
+  const mem = hasMem ? target._mem : undefined;
+  delete target._mem;
+
   const rewind = { at: idx, hidden: [...hidden].sort((a, b) => a - b), ws };
+  if (hasMem) rewind.mem = mem;
   session.rewinds = [...existing.filter((r) => r.at < idx), rewind];
   void head;
   return { ok: true, rewind };
 }
 
-/** 撤销最近一次回退（摘掉最后一个回退点，对话原样回来） */
+/**
+ * 撤销最近一次回退（摘掉最后一个回退点，对话原样回来）。
+ *
+ * 注意：撤销回退 = 让「回退」这件事没发生过，所以记忆也得回到「还没退」的样子。
+ * 那个快照就存在被摘掉的那个回退点里，必须**在删之前**取出来 —— 一开始写的是
+ * 先调这个函数再从 session.rewinds 里找，结果回退点已经没了，记忆永远还原不回来。
+ */
 export function undoLastRewind(session) {
   const list = loadRewinds(session);
   if (!list.length) return { ok: false, error: '没有可撤销的回退' };
   const last = list[list.length - 1];
   session.rewinds = list.slice(0, -1);
-  return { ok: true, at: last.at };
+  return {
+    ok: true,
+    at: last.at,
+    hasMem: Object.prototype.hasOwnProperty.call(last, 'mem'),
+    mem: last.mem,
+    ws: last.ws || {},
+  };
 }
 
 function resolveInsideWorkspace(p) {
@@ -149,7 +178,9 @@ const TURN_MARK = -1; // 在 rewinds 里占位：at:-1 表示「进行中这一�
 export function openTurn(session) {
   const box = { files: {} };
   const rewinds = Array.isArray(session.rewinds) ? session.rewinds : (session.rewinds = []);
-  const entry = { at: TURN_MARK, hidden: [], ws: box.files };
+  // 这一轮开始时记忆本子长什么样。回退到这一轮时用它还原，别让对话退回去、记忆还往前跑。
+  const mem = session?.id ? readMemory(session.id) : null;
+  const entry = { at: TURN_MARK, hidden: [], ws: box.files, mem };
   const i = rewinds.findIndex((r) => Number(r.at) === TURN_MARK);
   if (i >= 0) rewinds[i] = entry;
   else rewinds.push(entry);
@@ -162,14 +193,41 @@ export function closeTurn(session, targetIndex) {
   const i = rewinds.findIndex((r) => Number(r.at) === TURN_MARK);
   if (i < 0) return {};
   const files = rewinds[i].ws || {};
+  // 注意：mem 可能是 null（那一轮开始时会话还没有本子），null 也是有效快照，
+  // 代表「回退到这儿就得把本子删掉」。所以判空必须用 'mem' in 而不是 !== undefined。
+  const hasMem = Object.prototype.hasOwnProperty.call(rewinds[i], 'mem');
+  const mem = rewinds[i].mem;
   rewinds.splice(i, 1);
   const n = Number(targetIndex);
-  if (Number.isFinite(n) && Object.keys(files).length) {
-    const hit = rewinds.find((r) => Number(r.at) === n);
-    if (hit) hit.ws = { ...(hit.ws || {}), ...files };
-    else rewinds.push({ at: n, hidden: [], ws: files });
+  if (Number.isFinite(n)) {
+    const hasFiles = Object.keys(files).length > 0;
+    if (hasFiles || hasMem) {
+      const hit = rewinds.find((r) => Number(r.at) === n);
+      if (hit) {
+        if (hasFiles) hit.ws = { ...(hit.ws || {}), ...files };
+        // 已经有快照就别覆盖：那个才是这一轮开始时的样子
+        if (hasMem && !Object.prototype.hasOwnProperty.call(hit, 'mem')) hit.mem = mem;
+      } else {
+        const entry = { at: n, hidden: [], ws: files };
+        if (hasMem) entry.mem = mem;
+        rewinds.push(entry);
+      }
+    }
   }
   return files;
+}
+
+/**
+ * 回退时还原记忆。别的什么都不动，只让本子回到那个回退点记下的样子。
+ * 找不到快照就什么都不做（老的回退点没有 mem 字段）。
+ */
+export function restoreMemory(session, rewind) {
+  if (!session?.id || !rewind || !('mem' in rewind)) return null;
+  try {
+    return snapMemory(session.id, rewind.mem ?? null);
+  } catch {
+    return null;
+  }
 }
 
 export function snapshotBeforeWrite(snap, p) {

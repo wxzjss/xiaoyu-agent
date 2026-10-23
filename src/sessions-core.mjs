@@ -52,6 +52,8 @@ export function loadSession(id) {
       messages: Array.isArray(raw.messages) ? raw.messages : [],
       // 回退点跟着会话一起落盘：只追加、从不改写老消息。
       rewinds: Array.isArray(raw.rewinds) ? raw.rewinds : [],
+      // 老会话没有这个字段 -> 当人设档处理，不去补写盘
+      mode: raw.mode && typeof raw.mode === 'object' && raw.mode.word ? { word: String(raw.mode.word), since: Number(raw.mode.since) || 0 } : null,
     };
   } catch {
     return null;
@@ -71,6 +73,9 @@ export function saveSession(session) {
     messages: session.messages ?? [],
     rewinds: Array.isArray(session.rewinds) ? session.rewinds : [],
   };
+  // 会话当前处在哪个安全词档位。没这个字段的老会话 = 人设档（见 mode.mjs），
+  // 所以只在真的记过档位时才写，免得给所有会话塞一堆冗余字段。
+  if (session.mode?.word) payload.mode = { word: session.mode.word, since: session.mode.since ?? Date.now() };
   writeFileSync(fileFor(session.id), JSON.stringify(payload), 'utf8');
   return session;
 }
@@ -124,6 +129,8 @@ export function listSessions() {
       updatedAt: s.updatedAt,
       count: s.messages.filter((m) => m && m.role === 'user' && !m.context).length,
       preview: previewOf(s.messages),
+      // 会话列表里带一句当前档位，界面想显示「这会话被叫停过」就有数据可用
+      mode: s.mode?.word || null,
     });
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -157,4 +164,144 @@ export function getLastSessionId() {
 export function setLastSessionId(id) {
   ensureDir();
   writeFileSync(LAST, JSON.stringify({ id: isSessionId(id) ? id : null, at: Date.now() }), 'utf8');
+}
+
+// ---- 导入 / 导出 -----------------------------------------------------------
+/**
+ * 导出格式（一个会话一个文件，纯 JSON，人类可读）：
+ * {
+ *   "kind": "xiaoyu-agent.session",
+ *   "version": 1,
+ *   "exportedAt": 1690000000000,
+ *   "session": { id, title, createdAt, updatedAt, messages: [...], rewinds: [...] }
+ * }
+ * 消息里的附件只存路径（_images / _files），不内联二进制 —— 换台机器上那些路径可能不存在，
+ * 这一点在 README 里写清楚了。要连附件一起搬，就把整个 .state 目录拷过去。
+ */
+export const EXPORT_KIND = 'xiaoyu-agent.session';
+export const EXPORT_VERSION = 1;
+
+/** 把一个会话包成可导出的对象；会话不存在返回 null。 */export function exportSession(id) {
+  const s = loadSession(id);
+  if (!s) return null;
+  return {
+    kind: EXPORT_KIND,
+    version: EXPORT_VERSION,
+    exportedAt: Date.now(),
+    session: {
+      id: s.id,
+      title: s.title,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      messages: s.messages,
+      rewinds: s.rewinds,
+    },
+  };
+}
+
+/** 全部会话一起导出（备份用），不含 .trash。 */
+export function exportAllSessions() {
+  const ids = listSessions().map((s) => s.id);
+  return {
+    kind: EXPORT_KIND + '.bundle',
+    version: EXPORT_VERSION,
+    exportedAt: Date.now(),
+    sessions: ids.map((id) => exportSession(id)).filter(Boolean).map((x) => x.session),
+  };
+}
+
+/**
+ * 把一条消息洗成我们认的样子。认不出来的直接丢掉，不让脏数据进库。
+ * 只保留用得到的字段：role / content / _images / _files / toolCallId / isError / context 等。
+ */
+function cleanMessage(m) {
+  if (!m || typeof m !== 'object') return null;
+  const role = String(m.role ?? '').trim();
+  if (!['system', 'user', 'assistant', 'tool'].includes(role)) return null;
+  const out = { role };
+  if (typeof m.content === 'string') out.content = m.content;
+  else if (Array.isArray(m.content)) out.content = m.content;
+  else out.content = '';
+  for (const k of ['_images', '_files']) {
+    if (Array.isArray(m[k])) out[k] = m[k].filter((x) => typeof x === 'string');
+  }
+  if (typeof m.toolCallId === 'string') out.toolCallId = m.toolCallId;
+  if (typeof m.toolName === 'string') out.toolName = m.toolName;
+  if (m.isError) out.isError = true;
+  if (m.context) out.context = true;
+  return out;
+}
+
+/**
+ * 从导入的数据里抠出会话列表。同时认三种形状：
+ *   1. 单会话导出：{ kind, session: {...} }
+ *   2. 整包导出：  { kind, sessions: [...] }
+ *   3. 裸会话对象：{ messages: [...] } —— 手写的、或从别处拷来的也能进
+ *   4. 裸数组：    [ {...}, {...} ]
+ * @returns {Array<object>} 干净的会话草稿（还没分配 id）
+ */
+export function parseImport(raw) {
+  const list = [];
+  const push = (s) => {
+    if (!s || typeof s !== 'object') return;
+    const messages = Array.isArray(s.messages) ? s.messages.map(cleanMessage).filter(Boolean) : [];
+    if (!messages.length) return;
+    list.push({
+      title: cleanTitle(s.title) || titleFromMessage(textOf(messages)),
+      createdAt: Number(s.createdAt) || Date.now(),
+      updatedAt: Number(s.updatedAt) || Date.now(),
+      messages,
+      rewinds: Array.isArray(s.rewinds) ? s.rewinds : [],
+    });
+  };
+
+  if (Array.isArray(raw)) {
+    for (const x of raw) push(x && x.session ? x.session : x);
+  } else if (raw && typeof raw === 'object') {
+    if (Array.isArray(raw.sessions)) for (const x of raw.sessions) push(x);
+    else if (raw.session) push(raw.session);
+    else push(raw);
+  }
+  return list;
+}
+
+function textOf(messages) {
+  for (const m of messages) {
+    if (m.role !== 'user' || m.context) continue;
+    const raw = m.content;
+    const body = Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join(' ') : raw;
+    const t = String(body ?? '').trim();
+    if (t) return t;
+  }
+  return '';
+}
+
+/**
+ * 把导入的草稿真正写进 .state/sessions，每条都拿一个新 id（不会覆盖现有会话）。
+ * @returns {Array<{id:string,title:string,count:number}>}
+ */
+export function importSessions(drafts) {
+  ensureDir();
+  const made = [];
+  for (const d of drafts) {
+    const session = {
+      id: newSessionId(),
+      title: d.title,
+      createdAt: d.createdAt,
+      updatedAt: d.updatedAt,
+      messages: d.messages,
+      rewinds: d.rewinds,
+    };
+    // 极端情况下生成的 id 撞了，就再摇一次
+    let guard = 0;
+    while (existsSync(fileFor(session.id)) && guard++ < 8) session.id = newSessionId();
+    const saved = saveSession(session);
+    if (!saved) continue;
+    made.push({
+      id: saved.id,
+      title: saved.title,
+      count: saved.messages.filter((m) => m && m.role === 'user' && !m.context).length,
+    });
+  }
+  return made;
 }

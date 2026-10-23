@@ -1,0 +1,187 @@
+// 各家的价目表 + 一轮花多少钱
+//
+// 为什么要有这张表：模型接口只告诉你「用掉多少 token」，不告诉你「多少钱」。
+// 各家单价差得很远（DeepSeek flash 输出 8 元/百万，GLM-5.3 输出 28 元/百万），
+// 而且同一家还有缓存命中折扣、有峰谷价 —— 不自己算就只能看个数字干瞪眼。
+//
+// 价格单位一律是「元 / 百万 token」，跟各家官网标价一致，照着抄就行。
+//
+// 键的规则：先按模型名精确找，找不到再按前缀/后缀模糊找（deepseek-v4-pro-0813
+// 会命中 deepseek-v4-pro 那条）。认不出来就不算钱，只显示 token 数 —— 宁可不说，
+// 也别报个假价格。
+
+/**
+ * 价目表。形如：
+ *   { hit, miss, output, off?, currency? }
+ *     hit    缓存命中的输入单价（没有缓存机制就填成和 miss 一样）
+ *     miss   缓存未命中的输入单价
+ *     output 输出单价
+ *     三档默认就是「高峰价」（各家官网上标的那组）。
+ *     off    可选，谷价：{ when:{days,ranges}, hit, miss, output }
+ *            只有 DeepSeek 这种分峰谷的才写；没写的是一口价。
+ *
+ * 数据核对时间见每条注释。价格会变，主人自己改这个文件就行，不用动别的代码。
+ */
+const RATES = {
+  // ── DeepSeek 官方（2026-10 核对 api-docs.deepseek.com/zh-cn/quick_start/pricing）──
+  // 高峰＝北京时间周一至五 9:00-12:00、14:00-18:00；谷价是峰价的一半
+  'deepseek-flash': {
+    hit: 0.04, miss: 2, output: 8,
+    off: { when: { days: [1, 2, 3, 4, 5], ranges: [['09:00', '12:00'], ['14:00', '18:00']] }, hit: 0.02, miss: 1, output: 4 },
+  },
+  'deepseek-v4-pro': {
+    hit: 0.3, miss: 9, output: 27,
+    off: { when: { days: [1, 2, 3, 4, 5], ranges: [['09:00', '12:00'], ['14:00', '18:00']] }, hit: 0.15, miss: 4.5, output: 13.5 },
+  },
+  // 旧名还在服，按 flash 价计费（官方脚注 1），老配置别报「认不出来」
+  'deepseek-v4-flash': { hit: 0.04, miss: 2, output: 8, same: 'deepseek-flash' },
+  'deepseek-v4.1-flash': { hit: 0.04, miss: 2, output: 8, same: 'deepseek-flash' },
+  'deepseek-v4-pro-0813': { hit: 0.3, miss: 9, output: 27, same: 'deepseek-v4-pro' },
+
+  // ── 智谱 GLM（一口价，无峰谷）──
+  'glm-5.3': { hit: 2, miss: 8, output: 28 },
+  'glm-5.2': { hit: 2, miss: 8, output: 28 },
+  'glm-5.3-flash': { hit: 0.23, miss: 0.8, output: 2.8 },
+  'glm-4.7': { hit: 1, miss: 4, output: 16 },
+  'glm-4.7-flash': { hit: 0.15, miss: 0.5, output: 2 },
+  'glm-4.5-air': { hit: 0.1, miss: 0.4, output: 1.6 },
+
+  // ── 阿里云百炼（qwen 系列各自定价，这里给常用档）──
+  'qwen3.8-max': { hit: 2.4, miss: 12, output: 48 },
+  'qwen3.7-plus': { hit: 0.4, miss: 2, output: 8 },
+  'qwen3.8-flash': { hit: 0.15, miss: 0.6, output: 2.4 },
+  'qwen-plus': { hit: 0.4, miss: 2, output: 8 },
+
+  // ── 月之暗面 Kimi ──
+  'kimi-k3': { hit: 4, miss: 20, output: 80 },
+  'kimi-k2.6': { hit: 1, miss: 4, output: 16 },
+  'kimi-k2.7-code': { hit: 1, miss: 4, output: 16 },
+
+  // ── 硅基流动（转卖多家模型，价随模型走）──
+  'deepseek-ai/DeepSeek-V4.1-Flash': { hit: 0.14, miss: 1.4, output: 5.6 },
+  'deepseek-ai/DeepSeek-V4-Pro': { hit: 0.3, miss: 9, output: 27 },
+  'Qwen/Qwen3.8-Max': { hit: 2.4, miss: 12, output: 48 },
+
+  // ── OpenAI（美元换算成人民币按 7.2 算，主人在国内看的都是元）──
+  'gpt-5': { hit: 9, miss: 90, output: 720 },
+  'gpt-4.1': { hit: 18, miss: 18, output: 72 },
+  'gpt-4o': { hit: 18, miss: 18, output: 72 },
+  'gpt-4o-mini': { hit: 1.1, miss: 1.1, output: 4.3 },
+  'o4-mini': { hit: 8, miss: 8, output: 32 },
+
+  // ── 其它常见 ──
+  'MiniMax-M3': { hit: 2, miss: 10, output: 40 },
+  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16 },
+  'grok-4': { hit: 22, miss: 22, output: 108 },
+  'gemini-3-pro': { hit: 9, miss: 9, output: 72 },
+};
+
+/** 认不出模型时给个空壳，别再往下算 */
+const UNKNOWN = null;
+
+/** 现在是不是「高峰」（只认北京时间周一至五的两个区间；法定节假日不扣，宁可多算不少算） */
+function isPeak(when, now = new Date()) {
+  if (!when) return false;
+  // 换成北京时间。别用 getTimezoneOffset() 手算 —— 那玩意儿在某些机器上会因为
+  // 系统时区设置跟实际偏移不同而错位（踩过，10:00 被判成了谷）。
+  // Intl 走的是系统时区数据库，最稳。
+  let bj;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Shanghai',
+      hour12: false,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).formatToParts(now);
+    const get = (t) => (parts.find((p) => p.type === t) || {}).value;
+    const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    const day = dayMap[get('weekday')];
+    const hm = Number(get('hour')) * 60 + Number(get('minute'));
+    bj = { day, hm };
+  } catch {
+    // Intl 不支持时区（极老的运行时）就退回本地时间，至少不会崩
+    bj = { day: now.getDay(), hm: now.getHours() * 60 + now.getMinutes() };
+  }
+  if (!Array.isArray(when.days) || !when.days.includes(bj.day)) return false;
+  for (const [from, to] of when.ranges || []) {
+    const [fh, fm] = String(from).split(':').map(Number);
+    const [th, tm] = String(to).split(':').map(Number);
+    if (bj.hm >= fh * 60 + fm && bj.hm < th * 60 + tm) return true;
+  }
+  return false;
+}
+
+/** 按模型名找一档价格；认不出返回 null */
+function rateOf(model) {
+  const name = String(model || '').trim();
+  if (!name) return UNKNOWN;
+  // 1) 精确
+  if (RATES[name]) return RATES[name];
+  // 2) 不分大小写精确
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(RATES)) {
+    if (k.toLowerCase() === lower) return RATES[k];
+  }
+  // 3) 模糊：按 key 从长到短试。
+  //    必须先精确再模糊、且长的优先，否则 deepseek-v4.1-flash 会撞上
+  //    deepseek-v4-flash 那条（踩过，价格虽然一样，但模型名报错了）。
+  const keys = Object.keys(RATES).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    const kl = k.toLowerCase();
+    // 前缀命中（deepseek-v4-pro-0813 → deepseek-v4-pro）优先
+    if (lower.startsWith(kl)) return RATES[k];
+  }
+  for (const k of keys) {
+    const kl = k.toLowerCase();
+    if (lower.includes(kl)) return RATES[k];
+  }
+  return UNKNOWN;
+}
+
+/**
+ * 算这一轮花了多少钱。
+ * @param {string} model 模型名
+ * @param {{prompt_tokens?:number, completion_tokens?:number, prompt_cache_hit_tokens?:number, prompt_cache_miss_tokens?:number}} u
+ * @param {Date} [now] 算峰谷用，测试时可以传固定时间
+ * @returns {{cost:number, currency:string, rate:object, off:boolean, breakdown:{hit:number,miss:number,out:number}}|null}
+ */
+export function costOf(model, u, now = new Date()) {
+  const rate = rateOf(model);
+  if (!rate || !u) return null;
+  // 分峰谷的：写着「谷」的那组时段（工作日 9-12、14-18）之外，一律按便宜的谷价。
+  // 注意顶层那三档是「高峰价」，off 里才是「谷价」，别弄反（踩过）。
+  const inPeakWindow = isPeak(rate.off && rate.off.when, now);
+  const cur = rate.off && !inPeakWindow ? rate.off : rate;
+
+  const pin = Number(u.prompt_tokens ?? 0);
+  const pout = Number(u.completion_tokens ?? 0);
+  // 缓存命中数：接口给了就用，没给说明不支持缓存，全按未命中算
+  let hitTok = Number(u.prompt_cache_hit_tokens ?? u.cached_tokens ?? 0);
+  let missTok = Number(u.prompt_cache_miss_tokens ?? 0);
+  if (!missTok) missTok = Math.max(0, pin - hitTok);
+  if (!hitTok && !missTok) missTok = pin;
+
+  const per = 1e6;
+  const cHit = (hitTok / per) * Number(cur.hit ?? cur.miss ?? 0);
+  const cMiss = (missTok / per) * Number(cur.miss ?? 0);
+  const cOut = (pout / per) * Number(cur.output ?? 0);
+
+  return {
+    cost: cHit + cMiss + cOut,
+    currency: '元',
+    rate: cur,
+    peak: !inPeakWindow && Boolean(rate.off),
+    breakdown: { hit: cHit, miss: cMiss, out: cOut },
+  };
+}
+
+/** 给界面用：这个模型有没有价目（没有就别显示钱，免得误导） */
+export function hasRate(model) {
+  return Boolean(rateOf(model));
+}
+
+/** 价目表整个交出去（设置页也许要看） */
+export function listRates() {
+  return RATES;
+}

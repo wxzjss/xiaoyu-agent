@@ -57,7 +57,7 @@ npm run selfcheck -- --deep  # 深度
 
 | 按钮 | 干什么 |
 |---|---|
-| 会话 | 新建 / 切换 / 改名 / 删除会话，自动回到上次那个 |
+| 会话 | 新建 / 切换 / 改名 / 删除会话，自动回到上次那个；还能把会话导出到本地、或从本地导入 |
 | 功能 | 列出当前所有能力，**每条能单独停用**（见下） |
 | 设置 | 改人设卡、底线、安全词 |
 | 模型 | 存多套 OpenAI 兼容端点，点一行就切，支持测连通 |
@@ -70,12 +70,37 @@ npm run selfcheck -- --deep  # 深度
 
 | 功能 | 工具 |
 |---|---|
-| 联网功能 | `fetch_url` |
+| 联网搜索 | `web_search` / `fetch_url` |
 | 读文件 / 写文件 / 看目录 | `read_file` / `write_file` / `list_dir` |
 | 跑命令 | `run_command` |
 | 任务清单 | `plan` |
 | 便签 | `note` |
 | 视频背景 | ——（纯界面：短片铺成聊天背景，无声循环；右下角小圆钮调亮度，可随时关掉） |
+
+## 会话导入 / 导出
+
+会话存在 `.state/sessions/` 里，本来就是 JSON，但目录结构不适合直接给用户看。
+「会话」面板多了三个按钮，走的是同一份数据的干净版本：
+
+| 按钮 | 干什么 |
+|---|---|
+| 导入 | 选一个之前导出的 `.json`，把里面的会话加进来 |
+| 导出这个 | 把**当前**会话存成一个文件 |
+| 全部导出 | 把所有会话打成一个文件，当备份用 |
+
+几点设计上的取舍：
+
+- **导入永远新建会话**，每条都分配新 id，不会覆盖你现有的任何一个 —— 所以从备份里导回来
+  是安全的，重复导也只是多出几份副本。一次只导进来一个会话时会自动切过去。
+- **文件里没有 API Key，也没有人设卡**（除了历史里恰好存着当时的提示快照）。换台机器导入后
+  还得在「模型」面板填自己的 key。
+- 中文文件名走 `Content-Disposition` 的 `filename*`，不然 Windows 下载会存成乱码。
+- 格式：单会话是 `{kind:"xiaoyu-agent.session", version:1, session:{...}}`，
+  整包是 `{kind:"xiaoyu-agent.session.bundle", sessions:[...]}`；导入时也接受裸的会话对象，
+  或者直接是一串消息数组。认不出来就明确报错，不会塞进半截数据。
+
+> 会话文件里 user 和 assistant 都有。如果你发现打开会话只剩自己的话，那是 0.7.2 及之前的
+> bug（回退功能的临时数组没接回正式历史），0.7.3 已修。
 
 ## 视频背景
 
@@ -109,7 +134,7 @@ src/selfcheck.mjs     启动自检 + 自动修复
 src/features.mjs      功能开关
 src/skin.mjs          视频背景：旋钮读写 + 该播哪个文件
 src/models.mjs        多套模型端点
-src/sessions-core.mjs 会话落盘
+src/sessions-core.mjs 会话落盘、导入导出（exportSession / exportAllSessions / parseImport / importSessions）
 src/settings.mjs      底线 / 安全词
 src/persona-store.mjs 人设卡读写
 src/compress.mjs      上下文压缩
@@ -122,14 +147,14 @@ scripts/auto-publish.mjs  改完自动发布
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `WANZI_API_KEY` | LLM 的 API Key（也可用 `API_KEY`） | 空 |
-| `BASE_URL` | OpenAI 兼容接口根地址 | `https://napi.wanzij.cn/v1` |
-| `MODEL` | 模型名 | `deepseek-v4.1-flash` |
+| `API_KEY` | LLM 的 API Key（也认 `WANZI_API_KEY`） | 空 |
+| `BASE_URL` | OpenAI 兼容接口根地址 | `https://api.deepseek.com` |
+| `MODEL` | 模型名 | `deepseek-flash` |
 | `PORT` | 网页版端口（桌面版用随机端口） | `8787` |
 | `WORKSPACE` | 工具能操作的工作目录（越界会被拒） | 项目里的 `sandbox/` |
 | `MAX_ROUNDS` | 单轮工具调用上限，`unlimited` = 不限 | `unlimited` |
-| `CONTEXT_LIMIT` | 历史超过这么多 token 就压缩旧对话，`off` = 关 | `120000` |
-| `CONTEXT_KEEP_RATIO` | 压缩后保留的尾部比例 | `0.25` |
+| `CONTEXT_LIMIT` | 历史超过这么多 token 就压缩旧对话，`off` = 关 | `128000` |
+| `CONTEXT_KEEP_RATIO` | 压缩后保留的尾部比例（一般不用改，跟着 limit 走） | `0.5` |
 
 ## 其它入口
 

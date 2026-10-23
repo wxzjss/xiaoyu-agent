@@ -21,6 +21,27 @@ const INDEX_FILE = join(STATE_DIR, 'personas.json');
 const LEGACY_FILE = join(STATE_DIR, 'persona.md');
 const LEGACY_BACKUP = join(STATE_DIR, 'persona.backup.md');
 
+/**
+ * 主人自定义的「默认值」存这儿，跟 settings.mjs 用的是同一个文件。
+ *
+ * 目前两个键：
+ *   bottomLines  这个项目里的一套底线（见 settings.mjs 的 setDefaultBottomLines）
+ *   persona      这个项目里的一套人设正文（见本文件的 setPersonaAsBuiltinDefault）
+ * 为什么不直接改 persona/xiaoyu.md：那是发布物，改了下次更新就被覆盖，
+ * 而且主人想「回到原厂」时就没得回了。
+ */
+const DEFAULTS_FILE = join(STATE_DIR, 'defaults.json');
+
+/** 读主人自定义的默认值；没有 / 坏了都当空对象 */
+function readDefaults() {
+  try {
+    const raw = JSON.parse(readFileSync(DEFAULTS_FILE, 'utf8'));
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
 const DEFAULT_ID = 'default';
 const DEFAULT_NAME = '默认人设';
 const MAX_NAME = 40;
@@ -141,7 +162,8 @@ function ensureIndex() {
 function textOf(id) {
   const own = readFileSafe(fileFor(id));
   if (own !== null && own.trim()) return own.trim();
-  if (id === DEFAULT_ID) return readBasePersona();
+  // 内置那套没自己的文件时，落到「当前生效的默认」上（主人定过就用主人定的）
+  if (id === DEFAULT_ID) return builtinPersonaText();
   return '';
 }
 
@@ -169,7 +191,10 @@ export function personaInfo() {
   const touched = existsSync(fileFor(current));
   return {
     text,
-    base: readBasePersona(),
+    // base = 「出厂默认」那份：主人定过就用主人定的，没定过才是发布物那份
+    base: builtinPersonaText(),
+    // 出厂那份的原始正文（真·原厂），给「连出厂的也看」这类场景用
+    factory: readBasePersona(),
     custom: isDefault ? touched : true,
     path: existsSync(fileFor(current)) ? fileFor(current) : BASE_FILE,
     current,
@@ -227,6 +252,50 @@ export function savePersonaText(id, text) {
   meta.updatedAt = Date.now();
   writeIndex(idx);
   return personaInfo();
+}
+
+/**
+ * 把当前正在用的这套人设存成「默认人设」（内置那套，id = default）。
+ *
+ * 主人的意思很直白：现在用的这套就是我要的默认，以后点「恢复自带人设」要回到这套。
+ * 所以把当前正文原样写进 personas/default.md，再把当前切到 default。
+ * 原来那套不自删，留着随时能切回去。
+ *
+ * 注意：发布物里的 persona/xiaoyu.md **一个字都不碰** —— 那是出厂备份。
+ * @param {string} [id] 要存成默认的那套，不传就存当前用的
+ * @returns {{ persona: object, from: string, changed: boolean }}
+ */
+export function setPersonaAsDefault(id) {
+  const idx = ensureIndex();
+  const from = id && isPersonaId(id) ? id : idx.current;
+  if (!idx.list.some((p) => p.id === from)) {
+    const e = new Error('没有这套人设');
+    e.status = 404;
+    throw e;
+  }
+  const body = cleanText(textOf(from));
+  const oldDefault = readFileSafe(fileFor(DEFAULT_ID));
+  const already =
+    from === DEFAULT_ID &&
+    oldDefault !== null &&
+    oldDefault.trim() === body;
+  if (already) {
+    return { persona: personaInfo(), from, changed: false };
+  }
+  // 旧默认先留一份，手滑能捡回来
+  if (oldDefault && oldDefault.trim()) {
+    try {
+      ensureDirs();
+      writeFileSync(join(STATE_DIR, 'persona.default.backup.md'), oldDefault, 'utf8');
+    } catch {}
+  }
+  ensureDirs();
+  writeFileSync(fileFor(DEFAULT_ID), body + '\n', 'utf8');
+  const meta = idx.list.find((p) => p.id === DEFAULT_ID);
+  if (meta) meta.updatedAt = Date.now();
+  idx.current = DEFAULT_ID;
+  writeIndex(idx);
+  return { persona: personaInfo(), from, changed: true };
 }
 
 /** 改名字 */
@@ -300,7 +369,8 @@ export function resetPersona(id) {
       writeFileSync(LEGACY_BACKUP, own, 'utf8');
     } catch {}
   }
-  rmSync(fileFor(target), { force: true }); // 删掉自己的文件就回到发布物那份
+  // 删掉自己的文件就回到「当前生效的默认」（主人定过的那版，否则是发布物那份）
+  rmSync(fileFor(target), { force: true });
   const meta = idx.list.find((p) => p.id === target);
   meta.updatedAt = Date.now();
   writeIndex(idx);
@@ -321,10 +391,110 @@ export function resetUserPersona() {
   return resetPersona(idx.current);
 }
 
+/**
+ * 把一套人设的正文定成「出厂的默认」。
+ *
+ * 主人用顺了某套之后说「这个就当默认吧」，以后新建会话 / 恢复默认时想回到它。
+ * 做法和底线的 setDefaultBottomLines 完全对称：不改代码文件，
+ * 只把正文抄到 .state/defaults.json 的 persona 键里；persona/xiaoyu.md 一个字都不碰。
+ * 上一份自定义默认先备份到 .state/persona.default.backup.md。
+ *
+ * @param {string} [id] 要定成默认的那套，不传就用当前这套
+ * @returns {{ persona: object, from: string, backup: string|null, changed: boolean }}
+ */
+export function setPersonaAsBuiltinDefault(id) {
+  const idx = ensureIndex();
+  const from = id && isPersonaId(id) ? id : idx.current;
+  if (!idx.list.some((p) => p.id === from)) {
+    const e = new Error('没有这套人设');
+    e.status = 404;
+    throw e;
+  }
+  const body = textOf(from);
+  if (!body.trim()) {
+    const e = new Error('这套是空的，不能定成默认');
+    e.status = 400;
+    throw e;
+  }
+  const prev = readDefaults();
+  const before = typeof prev.persona === 'string' ? prev.persona.trim() : '';
+  if (before && before === body.trim()) {
+    return { persona: personaInfo(), from, backup: null, changed: false };
+  }
+  let backup = null;
+  if (before) {
+    ensureDirs();
+    backup = join(STATE_DIR, 'persona.default.backup.md');
+    try {
+      writeFileSync(backup, before, 'utf8');
+    } catch {
+      backup = null;
+    }
+  }
+  ensureDirs();
+  writeFileSync(
+    DEFAULTS_FILE,
+    JSON.stringify({ ...prev, persona: body }, null, 2),
+    'utf8',
+  );
+  return { persona: personaInfo(), from, backup, changed: true };
+}
+
+/** 主人定过的默认人设正文；没定过就是发布物那份 */
+export function builtinPersonaText() {
+  const t = readDefaults().persona;
+  if (typeof t === 'string' && t.trim()) return t.trim();
+  return readBasePersona();
+}
+
 /** 当前生效的那套人设正文（给系统提示用） */
 export function currentPersonaText() {
   const idx = ensureIndex();
   return textOf(idx.current);
+}
+
+/**
+ * 把当前这套人设的内容清空（不是删掉这套，是把正文抹成空）。
+ *
+ * 主人点「清空当前」并勾上了「连记忆一起清」时走这里。
+ * 两条底线：
+ *   1. 清之前一定先备份到 .state/persona.wiped-<时间戳>.md —— 记忆是一次次聊出来的，
+ *      点错按钮不该等于永久丢失。
+ *   2. 内置的 persona/xiaoyu.md 一个字都不碰。那是出厂的那份，
+ *      清空只影响「主人正在用的这一套」（personas/<id>.md）。
+ *
+ * @param {string} [id] 要清的那套，不传就清当前用的
+ * @returns {{ persona: object, id: string, backup: string|null, bytes: number }}
+ */
+export function wipePersonaText(id) {
+  const idx = ensureIndex();
+  const target = id && isPersonaId(id) ? id : idx.current;
+  if (!idx.list.some((p) => p.id === target)) {
+    const e = new Error('没有这套人设');
+    e.status = 404;
+    throw e;
+  }
+  const file = fileFor(target);
+  const before = readFileSafe(file);
+  // 没自定义过（文件不存在）= 用的还是出厂那份，没有可清的东西，如实告诉调用方
+  if (before === null) {
+    return { persona: personaInfo(), id: target, backup: null, bytes: 0 };
+  }
+  let backup = null;
+  if (before.trim()) {
+    ensureDirs();
+    backup = join(STATE_DIR, `persona.wiped-${Date.now()}.md`);
+    try {
+      writeFileSync(backup, before, 'utf8');
+    } catch {
+      backup = null;
+    }
+  }
+  writeFileSync(file, '\n', 'utf8');
+  const meta = idx.list.find((p) => p.id === target);
+  if (meta) meta.updatedAt = Date.now();
+  writeIndex(idx);
+  return { persona: personaInfo(), id: target, backup, bytes: before.length };
 }
 
 /** 顺手清掉没人用的残留文件（只为一眼看清目录，不删备份） */

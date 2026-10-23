@@ -1,4 +1,4 @@
-﻿// Terminal client: node src/cli.mjs "your prompt"  (streams reasoning, tools, answer)
+// Terminal client: node src/cli.mjs "your prompt"  (streams reasoning, tools, answer)
 import readline from 'node:readline';
 import { runAgent, systemPrompt } from './agent.mjs';
 import { activeEndpoint } from './models.mjs';

@@ -1,0 +1,13 @@
+local.properties
+build/
+.gradle/
+app/build/
+
+# 签名用的 keystore 不进仓库。
+# 想自己打包的，在 app/build.gradle 里指向自己的 jks；
+# 没有就删掉 signingConfigs，改用 debug 签名也能装上。
+app/keystore/
+
+# 打包产物
+*.apk
+*.aab

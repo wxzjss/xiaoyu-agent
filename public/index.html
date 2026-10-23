@@ -29,6 +29,8 @@
       /* 视频背景的旋钮（开着才有意义，关着时这两层都不显示） */
       --surface: .2;
       --veil: .14;
+      /* 输入框底色：比面板再深一点点，跟聊天框那层同一个调子，别用纯白 / 纯黑 */
+      --input-bg: rgba(10, 12, 17, .55);
     }
     * { box-sizing: border-box; }
     body {
@@ -54,6 +56,11 @@
       border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
     }
     header button:hover { color: var(--text); border-color: var(--dim); }
+    /* 纯净模式：开着就一直亮着，一眼看得出现在没带人设 */
+    header button#pureBtn.on {
+      color: #0b0e13; background: #7ee0b0; border-color: #7ee0b0; font-weight: 600;
+    }
+    header button#pureBtn.on:hover { background: #9beac4; border-color: #9beac4; color: #0b0e13; }
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
@@ -134,8 +141,12 @@
       cursor: pointer; text-align: left;
     }
     .plusMenu button:hover { background: #1b2129; color: var(--accent); }
+    .plusMenu button:disabled { opacity: .5; cursor: default; }
+    .plusMenu button:disabled:hover { background: transparent; color: var(--text); }
     .plusMenu .ico { font-size: 15px; width: 18px; text-align: center; }
     .plusMenu .sub { color: var(--dim); font-size: 11.5px; margin-left: auto; }
+    /* 「下载日志」和上面两项不是一类，用一条细线隔开 */
+    .plusMenu .logItem { border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; margin-top: 4px; }
 
     /* 已选附件条：输入框上方，一列小卡片 */
     .attachBar { max-width: 900px; margin: 0 auto 8px; display: none; flex-wrap: wrap; gap: 8px; }
@@ -314,6 +325,30 @@
     }
     .turnUsage .sep { opacity: .5; margin: 0 6px; }
     .turnUsage .tt { color: #8fc7ff; }
+    .turnUsage .cost { color: #d9a45b; }
+    /* 用量那行右侧：在「这一轮」之后开一个新会话接着聊（DSH 的分支） */
+    .turnUsage .turnActions { float: right; }
+    .turnUsage .branchBtn {
+      padding: 1px 9px; font: inherit; font-size: 11.5px; line-height: 1.7;
+      border-radius: 999px; border: 1px solid rgba(255, 255, 255, .14);
+      background: rgba(20, 24, 31, .86); color: var(--dim);
+      cursor: pointer; transition: color .12s, border-color .12s;
+    }
+    .turnUsage .branchBtn:hover { color: var(--accent); border-color: var(--accent); }
+    .turnUsage .branchBtn:disabled { opacity: .5; cursor: default; }
+
+    /*
+     * 系统提示：报错 / 限流 / 断线。
+     * 居中、细、暗，一眼看得出「这不是谁说的话」，而是这台机器出了点状况。
+     */
+    .sysnote {
+      max-width: 900px; margin: 6px auto 14px; padding: 6px 12px;
+      color: #d9a45b; font-size: 12px; line-height: 1.6;
+      background: rgba(217, 164, 91, .07);
+      border-left: 2px solid rgba(217, 164, 91, .5);
+      border-radius: 4px; user-select: text;
+      white-space: pre-wrap; word-break: break-word;
+    }
 
     /* 左上角：模型框 + 思考强度框 */
     .topCfg { display: flex; align-items: center; gap: 8px; margin-left: 2px; }
@@ -390,6 +425,10 @@
       background: var(--panel); color: var(--text); overflow: hidden;
     }
     .askDlg::backdrop { background: rgba(0,0,0,.55); }
+    /* 确认框正文：纯文字，自动换行 */
+    .confirmBody { font-size: 13.5px; line-height: 1.7; color: var(--text); word-break: break-word; }
+    #confirmOk.danger { background: #a33; border-color: #a33; }
+    #confirmOk.danger:hover { background: #c33; border-color: #c33; }
     .askHead {
       display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border);
       font-size: 13.5px; font-weight: 600;
@@ -456,16 +495,70 @@
     .field label { display: block; font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
     .field textarea {
       width: 100%; min-height: 120px; max-height: 300px; resize: vertical;
-      background: #0f1319; color: var(--text); border: 1px solid var(--border);
+      background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
       border-radius: 8px; padding: 10px 12px; font: 13px/1.65 inherit;
       font-family: inherit; outline: none;
     }
     .field textarea:focus { border-color: var(--accent); }
-    .field input[type=text] {
-      width: 100%; background: #0f1319; color: var(--text); border: 1px solid var(--border);
+    .field input[type=text], .field input[type=number], .field input[type=password] {
+      width: 100%; background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
       border-radius: 8px; padding: 9px 12px; font: inherit; outline: none;
+      transition: background-color .15s, border-color .15s;
     }
-    .field input[type=text]:focus { border-color: var(--accent); }
+    .field input[type=text]:focus,
+    .field input[type=number]:focus,
+    .field input[type=password]:focus { border-color: var(--accent); }
+    /* 数字框：深色实心底 + 去掉自带的白箭头。
+       以前这里写死 #0f1319 又让 color-scheme 画浅色箭头，浅色主题下一块白很扎眼。 */
+    .field input[type=number] {
+      background: var(--input-bg);
+      color: var(--text);
+      color-scheme: dark;
+      -moz-appearance: textfield;
+      appearance: textfield;
+      /* 只给两个按钮留位置就去掉自带的白色内阴影，不然未聚焦时看着像一块白框 */
+      box-shadow: none;
+    }
+    /* 没填内容时别让浏览器把它画成「白底空框」 */
+    .field input[type=number]:invalid,
+    .field input[type=number]:placeholder-shown { background: var(--input-bg); }
+    .field input[type=number]::-webkit-outer-spin-button,
+    .field input[type=number]::-webkit-inner-spin-button {
+      -webkit-appearance: none; margin: 0;
+    }
+    /* 开着视频背景时，弹窗里那几个输入框保持同一个深色，别跟外面半透明混在一起 */
+    body.skin .field input[type=text],
+    body.skin .field input[type=number],
+    body.skin .field input[type=password],
+    body.skin .field textarea { background: var(--input-bg); }
+    .field input::placeholder { color: #5b6473; }
+    /* 确认框里那个可选的勾选项（清空时问「要不要连记忆一起清」）。
+       默认藏起来，askConfirm 传了 opt 才显示。 */
+    .askOpt {
+      display: flex; align-items: flex-start; gap: 8px;
+      margin-top: 12px; padding: 8px 10px; cursor: pointer;
+      font-size: 12.5px; line-height: 1.6; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 8px;
+      background: rgba(255, 255, 255, .02);
+    }
+    .askOpt[hidden] { display: none; }
+    .askOpt input[type=checkbox] {
+      appearance: none; -webkit-appearance: none;
+      flex: 0 0 auto; width: 15px; height: 15px; margin: 2px 0 0;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: #10141a; cursor: pointer; position: relative;
+      transition: background-color .15s, border-color .15s;
+    }
+    .askOpt input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+    .askOpt input[type=checkbox]:checked::after {
+      content: ''; position: absolute; left: 4px; top: 1px;
+      width: 4px; height: 8px; border: solid #fff;
+      border-width: 0 2px 2px 0; transform: rotate(45deg);
+    }
+    .askOpt.danger { color: #d9a45b; border-color: rgba(217, 164, 91, .35); }
+    .askOpt.danger input[type=checkbox]:checked { background: #d9a45b; border-color: #d9a45b; }
+    /* 第二个勾选项比第一个更「重」（比如清空时那个人设），缩进一点以示从属 */
+    #confirmExtraWrap { margin-top: 8px; margin-left: 14px; }
     .primary {
       height: 36px; padding: 0 16px; border: 0; border-radius: 8px;
       background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
@@ -485,6 +578,30 @@
       padding: 12px 16px; border-bottom: 1px solid var(--border);
     }
     .sessTop .hint { color: var(--dim); font-size: 12px; }
+    /* 导入 / 导出那排：比上面那排窄一点，不当主角。
+       颜色分三层：导入=描边蓝（往里进），导出=安静灰（往外拿），全部导出=更淡（备用）。 */
+    .sessTop.sessTools { padding-top: 0; border-bottom: 0; gap: 8px; flex-wrap: wrap; }
+    .sessTop.sessTools button {
+      font-size: 12.5px; padding: 5px 12px; height: 28px; border-radius: 7px;
+      display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+      transition: background .12s, border-color .12s, color .12s;
+    }
+    .sessTop.sessTools button:disabled { opacity: .45; cursor: not-allowed; }
+    /* 导入：描边强调色，跟「新会话」的实心蓝呼应但不抢它 */
+    #sessImport {
+      border: 1px solid rgba(79, 140, 255, .55);
+      background: rgba(79, 140, 255, .1);
+      color: #9dbcff; font-weight: 600;
+    }
+    #sessImport:hover { background: rgba(79, 140, 255, .2); border-color: var(--accent); color: #cfe0ff; }
+    /* 导出：安静描边，hover 才亮 */
+    #sessExportOne, #sessExportAll {
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+    }
+    #sessExportOne:hover, #sessExportAll:hover { border-color: #3a4252; background: #1b1f28; color: var(--text); }
+    /* 全部导出再淡一档，免得和「导出这个」看混 */
+    #sessExportAll { color: #6b7484; }
+    #sessExportAll:hover { color: var(--text); }
     .sessList { max-height: 52vh; overflow-y: auto; flex: 1 1 auto; min-height: 0; padding: 8px; }
     .sessRow {
       display: flex; align-items: center; gap: 8px; padding: 9px 10px;
@@ -528,6 +645,20 @@
       border-radius: 999px; padding: 0 7px; flex: none;
     }
     .mdlName .badge.env { color: var(--dim); border-color: var(--border); }
+    /* 地址 / 模型名：输入框 + 预设下拉并排。输入框仍然能随便写，下拉只是省事 */
+    .pickRow { display: flex; gap: 8px; align-items: stretch; }
+    .pickRow input { flex: 1 1 auto; min-width: 0; }
+    /* 右半边（模型名那栏）本来就窄，下拉别把输入框挤没了 */
+    .row .pickSel { max-width: 46%; min-width: 104px; }
+    .pickSel {
+      flex: none; max-width: 42%; min-width: 130px;
+      background: var(--input-bg); color: var(--fg);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 0 6px; font-size: 12.5px; height: 34px;
+      text-overflow: ellipsis;
+    }
+    .pickSel:disabled { opacity: .5; }
+    .pickSel option { background: var(--panel); color: var(--fg); }
     .mdlSub { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .mdlRow .mini {
       flex: none; background: transparent; color: var(--dim); border: 1px solid var(--border);
@@ -593,6 +724,8 @@
 
     /* ---- 功能面板 ---- */
     .featScroll { overflow-y: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
+    /* ---- 会话记忆 ------------------------------------------------------ */
+    /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
     .featList { padding: 8px; }
     .featRow {
       display: flex; align-items: center; gap: 12px; padding: 11px 12px;
@@ -618,6 +751,96 @@
     .featRow .switch:hover { border-color: var(--dim); color: var(--text); }
     .featRow .switch.on:hover { border-color: var(--ok); color: var(--ok); }
     .featRow .switch[disabled] { opacity: .45; cursor: not-allowed; }
+
+    /* ---- 开场白编辑器 ------------------------------------------------------ */
+    .featRow .featEditBtn {
+      flex: none; height: 30px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 12px;
+    }
+    .featRow .featEditBtn:hover { border-color: var(--accent); color: var(--accent); }
+    .openingBox {
+      margin: 2px 0 10px 12px; padding: 12px 14px 10px;
+      border-left: 2px solid rgba(77,141,255,.45);
+      background: rgba(77,141,255,.05); border-radius: 0 8px 8px 0;
+    }
+    .openingField { display: block; margin-bottom: 10px; }
+    .openingFieldHead {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--dim); margin-bottom: 5px;
+    }
+    .openingFieldHead .openingTag {
+      font-size: 10.5px; color: var(--accent);
+      border: 1px solid rgba(77,141,255,.5); border-radius: 999px; padding: 0 6px;
+    }
+    .openingMini {
+      margin-left: auto; flex: none; cursor: pointer;
+      border: none; background: transparent; color: var(--dim);
+      font-size: 11.5px; padding: 0 2px; text-decoration: underline;
+    }
+    .openingMini:hover { color: var(--accent); }
+    .openingArea {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      background: var(--input-bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 8px 10px; font-size: 12.5px; line-height: 1.75;
+      font-family: inherit;
+    }
+    .openingArea:focus { outline: none; border-color: var(--accent); }
+    .openingHint { color: var(--dim); font-size: 11.5px; line-height: 1.7; margin: 4px 0 0; }
+    .openingBar { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+    .openingBar .openingHint { margin: 0; flex: 1; }
+
+    /* ---- 手机连接 ---------------------------------------------------------- */
+    #settingsDlg #mobToggle {
+      flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 12px;
+    }
+    #settingsDlg #mobToggle.on {
+      border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10);
+    }
+    #settingsDlg #mobToggle[disabled] { opacity: .45; cursor: not-allowed; }
+    #settingsDlg #mobQr svg { width: 168px; height: 168px; display: block; background: #fff; border-radius: 8px; padding: 6px; }
+
+    /* 一个地址一张卡片：Wi-Fi 一张、Radmin 那种组网的再一张，并排放 */
+    .mobQrWrap { display: flex; gap: 12px; flex-wrap: wrap; padding: 10px 0; }
+    .mobQrCard {
+      flex: 1 1 220px; min-width: 220px; max-width: 260px;
+      border: 1px solid var(--border); border-radius: 10px; padding: 10px;
+      display: flex; flex-direction: column; gap: 7px; align-items: center;
+      background: rgba(255, 255, 255, .02);
+    }
+    /* 跨网络的那种单独描个边，一眼看出「出门也能用」 */
+    .mobQrCard.lan2 { border-color: rgba(77, 141, 255, .55); background: rgba(77, 141, 255, .06); }
+    .mobQrHead { display: flex; flex-direction: column; gap: 2px; align-items: center; text-align: center; }
+    .mobQrHead b { font-size: 13px; font-weight: 600; color: var(--text); }
+    .mobQrHead .hint { font-size: 11.5px; }
+    .mobQrCard.lan2 .mobQrHead b { color: var(--accent, #4d8dff); }
+    .mobQrBox { display: flex; justify-content: center; }
+    .mobQrFoot {
+      display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center;
+      width: 100%;
+    }
+    .mobQrFoot code {
+      font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
+      border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px;
+      max-width: 100%; overflow-wrap: anywhere; text-align: center;
+    }
+    .mobQrFoot button { padding: 2px 8px !important; font-size: 11.5px !important; }
+
+    .mobLine { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+    .mobLine code {
+      font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+      border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;
+      max-width: 100%; overflow-wrap: anywhere;
+    }
+    .mobDev {
+      display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+      border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; margin-bottom: 6px;
+      font-size: 12.5px;
+    }
+    .mobDev .hint { margin-left: auto; }
 
     /* ---- 视频背景（照 dsh-video-skin 的做法移植）--------------------------------
        三层都 position:fixed + 负 z-index：落在所有在流内容之下，
@@ -665,7 +888,94 @@
       border-radius: 6px; padding: 4px 0; cursor: pointer; font-size: 11.5px;
     }
     #skinPanel .skPre button:hover { color: var(--text); border-color: var(--dim); }
-  </style>
+  /* ---- 对话回退 ---- */
+.msg .rewindBtn {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(20, 24, 31, 0.86);
+  color: var(--muted, #98a2b3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.msg.user:hover .rewindBtn,
+.msg .rewindBtn:focus-visible { opacity: 1; }
+.msg .rewindBtn:hover { color: var(--accent, #4d8dff); border-color: var(--accent, #4d8dff); }
+/* 「编辑」跟「回退」并排，靠右；回退占最右，编辑在它左边 */
+.msg .editBtn {
+  position: absolute;
+  top: 4px;
+  right: 76px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(20, 24, 31, 0.86);
+  color: var(--muted, #98a2b3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.msg:hover .editBtn,
+.msg .editBtn:focus-visible { opacity: 1; }
+.msg .editBtn:hover { color: var(--accent, #4d8dff); border-color: var(--accent, #4d8dff); }
+/* 没有回退按钮的（我没给下标的那种）就贴最右 */
+.msg.noRewind .editBtn { right: 6px; }
+/* 她说的话：编辑按钮挪到右下角，跟右上角的「回退」分开，不挤在一起。
+   底下那 26px 是给它让的位置，不然会压在最后一行字上。 */
+.msg.assistant { padding-bottom: 26px; }
+.msg.assistant .editBtn { top: auto; bottom: 0; right: 2px; }
+.msg.assistant.noRewind .editBtn { right: 2px; }
+/* 正在改的时候按钮先收起来，别挡着输入框 */
+.msg.editing .editBtn,
+.msg.editing .rewindBtn { display: none; }
+/* 真机没有 hover，常驻显示 */
+@media (hover: none) { .msg .editBtn, .msg .rewindBtn { opacity: .75; } }
+.msg.user { position: relative; }
+.msg.assistant { position: relative; }
+/* 改过的那条，角色名后面点一个小标记 */
+.msg.edited .role::after { content: '· 改过'; color: var(--muted, #98a2b3); font-size: 11px; margin-left: 6px; }
+/* 正在编辑的那个气泡 */
+.bubble.editing { outline: 1px dashed var(--accent, #4d8dff); outline-offset: 2px; }
+.bubble textarea.editArea {
+  width: 100%; min-height: 64px; resize: vertical;
+  font: inherit; line-height: 1.7; color: inherit;
+  background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border, #2a3341);
+  border-radius: 8px; padding: 8px 10px; box-sizing: border-box;
+}
+.bubble textarea.editArea:focus { outline: none; border-color: var(--accent, #4d8dff); }
+.editActions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.editActions button {
+  padding: 3px 10px; font-size: 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.16); background: rgba(20, 24, 31, 0.86); color: var(--text, #e6e9ef);
+}
+.editActions button.primary { border-color: var(--accent, #4d8dff); color: var(--accent, #4d8dff); }
+.editActions button:disabled { opacity: .5; cursor: not-allowed; }
+#rewindDlg { width: 380px; max-width: calc(100vw - 32px); }
+#rewindDlg .rwText {
+  max-height: 96px;
+  overflow: auto;
+  font-size: 12px;
+  color: var(--muted, #98a2b3);
+  background: rgba(0, 0, 0, 0.24);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 8px 0 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#rewindDlg .rwFiles { font-size: 12px; color: var(--muted, #98a2b3); margin-bottom: 10px; }
+#rewindDlg .rwFiles code { color: var(--fg, #e6eaf2); }
+#rewindDlg .rwRow { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+</style>
 </head>
 <body>
   <!-- 视频背景的三层（关着时视频不加载、body 不加 skin，这三层都是空的） -->
@@ -696,6 +1006,7 @@
       </button>
     </span>
     <span class="meta" id="meta">…</span>
+    <button id="pureBtn" title="纯净模式：不发人设、不发规矩、不留早期摘要，旧对话直接丢（点一下开，再点一下关）">纯净模式</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
     <button id="openFeatures">功能</button>
@@ -770,11 +1081,11 @@
         <fieldset>
           <legend>上下文自动压缩</legend>
           <div class="field">
-            <label>历史涨到多少 token 就自动把旧对话折成摘要（默认 64000，也就是 64k）。填 0 关掉。</label>
-            <input type="number" id="contextLimit" min="8000" step="1000" placeholder="64000" />
+            <label>历史涨到多少 token 就把旧对话折成摘要。<br>默认128000，填多少压多少，填0关闭该功能</label>
+            <input type="number" id="contextLimit" min="8000" step="1000" placeholder="128000" />
           </div>
-          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <span class="hint" id="contextLimitHint">改完点下面的「保存」，下一句生效。压到 80% 就开始压，最近四分之一原样保留。</span>
+          <div class="field">
+            <span class="hint" id="contextLimitHint">改完点「保存」，下一句生效。</span>
           </div>
         </fieldset>
 
@@ -791,6 +1102,62 @@
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="resetSafeWords">恢复默认安全词</button>
             <span class="hint" id="safeWordsHint"></span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>手机连接</legend>
+          <div class="field" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="switch" id="mobToggle">…</button>
+            <span class="hint" id="mobState">…</span>
+          </div>
+          <div id="mobBody" hidden>
+            <div class="field">
+              <label>手机装好 APK，点「扫一下」对着其中一个码就行；也能手填下面的地址和配对码。</label>
+              <div id="mobQr" class="mobQrWrap"></div>
+              <div class="mobLine"><span class="hint">配对码</span><code id="mobToken">—</code>
+                <button type="button" class="ghost" id="mobCopy">复制</button>
+              </div>
+            </div>
+            <div class="field" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+              <button type="button" class="ghost" id="mobRotate">换一个配对码</button>
+              <span class="hint">换完手机得重新连一次，旧的立刻作废。</span>
+            </div>
+            <div class="field">
+              <label>连过的手机</label>
+              <div id="mobDevices"><span class="hint">还没有手机连进来</span></div>
+            </div>
+            <div class="field">
+              <span class="hint">同一个 Wi-Fi 可以直接连；两边都装 Radmin 这类组网工具，出门用流量也能连。开关关掉，电脑就只接本机访问，外面连不进来。</span>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>数据备份</legend>
+          <div class="field">
+            <label>会话、人设、模型配置、设置……全部打包成一个文件。换电脑、重装、改安装方式时用它一次搬完。</label>
+            <span class="hint" id="bakState">…</span>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="primary" id="bakExport">备份成文件</button>
+            <button type="button" class="ghost" id="bakImportBtn">从备份恢复</button>
+            <input type="file" id="bakFile" accept=".json,application/json" hidden />
+          </div>
+          <div class="field" id="bakRestoreBox" hidden>
+            <label>恢复方式</label>
+            <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+              <label style="display:flex;gap:6px;align-items:center"><input type="radio" name="bakMode" value="merge" checked /> 只补缺的（安全，现有会话不动）</label>
+              <label style="display:flex;gap:6px;align-items:center"><input type="radio" name="bakMode" value="replace" /> 同名的覆盖（现有会话被备份里的替掉）</label>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+              <button type="button" class="primary" id="bakConfirm">确定恢复</button>
+              <button type="button" class="ghost" id="bakCancel">算了</button>
+            </div>
+            <span class="hint" id="bakFileInfo"></span>
+          </div>
+          <div class="field">
+            <span class="hint">安装版数据在 <code>%APPDATA%\小鱼Agent\data\.state</code>，免安装版在 exe 旁边的 <code>data\</code>。卸载不会删数据，但换安装方式会换目录 —— 备份一下最稳。</span>
           </div>
         </fieldset>
       </div>
@@ -831,16 +1198,26 @@
         <div class="row">
           <div class="field">
             <label>给它起个名（随便，方便你认）</label>
-            <input type="text" id="mdlName" spellcheck="false" placeholder="比如：主力 / 便宜的那个" />
+            <input type="text" id="mdlName" spellcheck="false" placeholder="不填就跟着模型名走" />
           </div>
           <div class="field">
             <label>模型名（API 里的 model）</label>
-            <input type="text" id="mdlModel" spellcheck="false" placeholder="deepseek-v4.1-flash" />
+            <div class="pickRow">
+              <input type="text" id="mdlModel" spellcheck="false" placeholder="deepseek-chat" list="mdlModelList" />
+              <select id="mdlModelPreset" class="pickSel" title="先选接口地址，这里会列出那家的模型"></select>
+              <datalist id="mdlModelList"></datalist>
+            </div>
+            <span class="hint" id="mdlModelHint"></span>
           </div>
         </div>
         <div class="field">
           <label>接口地址（OpenAI 兼容，一般是 …/v1）</label>
-          <input type="text" id="mdlBase" spellcheck="false" placeholder="https://api.example.com/v1" />
+          <div class="pickRow">
+            <input type="text" id="mdlBase" spellcheck="false" placeholder="https://api.example.com/v1" list="mdlBaseList" />
+            <select id="mdlBasePreset" class="pickSel" title="选一家常用的，自动填地址"></select>
+            <datalist id="mdlBaseList"></datalist>
+          </div>
+          <span class="hint" id="mdlBaseHint"></span>
         </div>
         <div class="field">
           <label>API Key</label>
@@ -870,14 +1247,6 @@
           <button type="button" class="switch" id="r429Sw">…</button>
         </div>
 
-        <div class="optRow">
-          <div class="optMain">
-            <div class="optName">少说教<span class="optVal" id="plainNow">…</span></div>
-            <div class="optDesc">不讲道理、不加免责、不因为题材跳出来拒绝。<b>底线不跟着变</b>：隐私、真钱、不可逆照样拦。</div>
-          </div>
-          <button type="button" class="switch" id="plainSw">…</button>
-        </div>
-
         <div class="mdlFoot">
           <span class="hint" id="optHint"></span>
           <button type="button" class="ghost" id="restoreEnv" hidden>找回 .env 那条</button>
@@ -885,6 +1254,24 @@
       </div>
       </div>
 
+    </form>
+  </dialog>
+
+  <!-- 回退确认（回退到某条消息之前，像 DSH 的 /rewind） -->
+  <dialog id="rewindDlg" class="askDlg">
+    <form method="dialog">
+      <div class="askHead">回退到这条之前？</div>
+      <div class="askBody">
+        <div class="rwText" id="rwText"></div>
+        <div class="rwFiles" id="rwFiles"></div>
+        <div style="font-size:12px;color:var(--muted,#98a2b3);line-height:1.7">
+          这条之后的内容会从对话里撤掉，模型下一轮就看不到了。老消息不会真的删——<b>只是藏起来</b>，随时能撤销回退。
+        </div>
+      </div>
+      <div class="rwRow">
+        <button type="button" class="ghost" id="rwCancel">算了</button>
+        <button type="button" class="primary" id="rwGo">回退</button>
+      </div>
     </form>
   </dialog>
 
@@ -903,6 +1290,30 @@
     </form>
   </dialog>
 
+  <!-- 确认框（代替原生 confirm：Electron 里 confirm 会阻塞渲染线程，见 askConfirm 注释） -->
+  <dialog id="confirmDlg" class="askDlg">
+    <form method="dialog">
+      <div class="askHead" id="confirmTitle">确认一下</div>
+      <div class="askBody">
+        <div class="confirmBody" id="confirmBody"></div>
+        <!-- 可选的一个勾选项：不同场景要问的事不一样，不用时装上 hidden -->
+        <label class="askOpt" id="confirmOptWrap" hidden>
+          <input type="checkbox" id="confirmOpt">
+          <span id="confirmOptText"></span>
+        </label>
+        <!-- 第二个勾选项，只在极少数场景用到（清空当前里的「连人设也清」） -->
+        <label class="askOpt" id="confirmExtraWrap" hidden>
+          <input type="checkbox" id="confirmExtra">
+          <span id="confirmExtraText"></span>
+        </label>
+      </div>
+      <div class="askFoot">
+        <button type="button" class="ghost3" id="confirmCancel">取消</button>
+        <button type="button" id="confirmOk">确定</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="sessionsDlg">
     <form method="dialog">
       <div class="dlgHead">
@@ -913,7 +1324,13 @@
         <button type="button" class="primary" id="sessNew">＋ 新会话</button>
         <span class="hint">进平台会自动回到最近一次会话</span>
       </div>
+      <div class="sessTop sessTools">
+        <button type="button" class="ghost3" id="sessImport" title="从本地 JSON 文件导入会话">导入</button>
+        <button type="button" class="ghost3" id="sessExportOne" title="把当前选中的会话导出成 JSON 文件">导出这个</button>
+        <button type="button" class="ghost3" id="sessExportAll" title="把所有会话打成一个 JSON 文件备份">全部导出</button>
+      </div>
       <div class="sessList" id="sessList"></div>
+      <input type="file" id="sessFile" accept=".json,application/json" hidden />
     </form>
   </dialog>
 
@@ -936,6 +1353,9 @@
           </button>
           <button type="button" role="menuitem" id="pickImage" data-kind="image">
             <span class="ico">🖼️</span><span>图片</span><span class="sub">图片库</span>
+          </button>
+          <button type="button" role="menuitem" id="logDownload" class="logItem" title="把这个会话的原始记录和附件打成一个压缩包下载">
+            <span class="ico">📦</span><span>下载日志</span><span class="sub">.zip</span>
           </button>
         </div>
       </div>
@@ -1043,6 +1463,55 @@ document.addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && plusMenu.classList.contains("open")) setMenu(false);
 });
+
+// ---- 加号菜单里的「下载日志」 ----
+//
+// 把当前这个会话的原始记录 + 附件打成一个 zip 交给浏览器下载。
+// 先在服务端 HEAD 一下：既验证「这个会话还在不在」，也能提前把按钮切成「正在打包」，
+// 免得点一下没反应让人以为坏了。
+const logDownload = document.getElementById("logDownload");
+if (logDownload) {
+  logDownload.addEventListener("click", async () => {
+    const sid = sessionId || "";
+    if (!sid) {
+      addSysNote("⚠ 还没选会话，没东西可导");
+      setMenu(false);
+      return;
+    }
+    const label = logDownload.querySelector("span:nth-child(2)");
+    const sub = logDownload.querySelector(".sub");
+    const oldLabel = label ? label.textContent : "下载日志";
+    const oldSub = sub ? sub.textContent : ".zip";
+    setMenu(false);
+    logDownload.disabled = true;
+    if (label) label.textContent = "打包中…";
+    if (sub) sub.textContent = "";
+    try {
+      const url = `/api/sessions/log?id=${encodeURIComponent(sid)}`;
+      const probe = await fetch(url, { method: "HEAD" });
+      if (!probe.ok) {
+        let msg = "HTTP " + probe.status;
+        try { const j = await probe.json(); if (j && j.error) msg = j.error; } catch { /* 不是 json 就这样吧 */ }
+        throw new Error(msg);
+      }
+      // 交给浏览器自己下（带 cookie / token，走的是同一个地址）
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      addSysNote("⚠ 日志没能导出：" + (e && e.message ? e.message : e));
+    } finally {
+      setTimeout(() => {
+        logDownload.disabled = false;
+        if (label) label.textContent = oldLabel;
+        if (sub) sub.textContent = oldSub;
+      }, 1200);
+    }
+  });
+}
 
 // ---- 附件条渲染 ----
 function renderAttachBar() {
@@ -1645,6 +2114,14 @@ async function attachLive(id) {
   }
   if (!live || !Array.isArray(live.events) || !live.events.length) return false;
 
+  // 已经跑完的那一轮，历史里早就落盘了（renderTurns 刚画过），
+  // 再把缓存里的 text 重画一遍就成了两条一样的回复。
+  // 只有「还在跑、历史还没写进去」的才需要补画。
+  if (!live.running) {
+    turnsInFlight.delete(id);
+    return false;
+  }
+
   // 从服务端事件重建画面（和 runTurn 里那套一样）
   let bubble = null;
   let think = null;
@@ -1779,6 +2256,8 @@ async function tryHealAfterDisconnect(id) {
     }).then((r) => r.json()).catch(() => null);
 
     if (sel && sel.session) {
+      // 顶栏「记忆」小字跟着换会话变（服务端 select 顺带回 memory 状态，不用再单发一次）
+      paintMemoryFlag(sel.memory);
       if (sessionId === id) {
         renderTurns(sel.session.turns);
         busy = false;
@@ -1812,6 +2291,49 @@ if (window.desktop) {
   btn.onclick = () => window.desktop.openWorkspace();
 }
 
+/**
+ * 纯净模式。
+ *
+ * 开了之后服务端那边会：系统提示一个字都不发（人设、思考语言、说话规矩、
+ * 安全词、人设档、会话记忆、前情、开场白全免），压缩时不生成摘要、
+ * 旧对话直接丢；开场那两条也从发给模型的内容里摘掉。
+ *
+ * 这里只负责「亮不亮」和「点一下翻面」。状态存服务端（.state/pure.json），
+ * 所以换设备、换浏览器还是一样的 —— 不能放 localStorage。
+ */
+const pureBtn = document.getElementById('pureBtn');
+function paintPure(on) {
+  if (!pureBtn) return;
+  pureBtn.classList.toggle('on', Boolean(on));
+  pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  pureBtn.title = on
+    ? '纯净模式开着：不发人设、不发规矩、不留早期摘要（再点一下关掉）'
+    : '纯净模式：不发人设、不发规矩、不留早期摘要，旧对话直接丢（点一下开，再点一下关）';
+}
+fetch('/api/pure').then((r) => r.json()).then((j) => paintPure(j && j.on)).catch(() => {});
+if (pureBtn) {
+  pureBtn.onclick = async () => {
+    // 先按「反着来」亮起来，等服务器回话再以它为准 —— 点下去就有反馈
+    const want = !pureBtn.classList.contains('on');
+    paintPure(want);
+    try {
+      const r = await fetch('/api/pure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ on: want }),
+      });
+      const j = await r.json();
+      paintPure(j && j.on);
+      if (typeof addSysNote === 'function') {
+        addSysNote(j && j.on ? '纯净模式已开：接下来只发对话本身，不带人设和规矩。' : '纯净模式已关：人设和规矩回来了。');
+      }
+    } catch (err) {
+      paintPure(!want);
+      if (typeof addSysNote === 'function') addSysNote('⚠ 纯净模式没切成功：' + String(err && err.message ? err.message : err));
+    }
+  };
+}
+
 
 /** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */
 function syncHealth() {
@@ -1839,10 +2361,26 @@ function addEl(html, cls, target) {
   return d;
 }
 
-function addUser(text, tag, atts, target) {
+function addUser(text, tag, atts, target, rewindId) {
   const wrap = addEl('', 'msg user', target);
+  if (target) {
+    // 批量重绘时 target 是 fragment，不需要返回
+  }
+  const hasId = Number.isFinite(Number(rewindId));
+  if (hasId) wrap.dataset.rewindId = String(Number(rewindId));
+  // 注意顺序：必须先 innerHTML 建骨架，再挂按钮 —— 反过来的话 innerHTML 会把按钮一起抹掉（踩过）。
   wrap.innerHTML = '<div class="role">你' + (tag ? '<span class="interjectTag"></span>' : '') + '</div>';
   if (tag) wrap.querySelector('.interjectTag').textContent = tag;
+  // 鼠标移到这条上会浮出「↶ 回退」：撤回这条以及它后面的一切
+  if (hasId) {
+    const rb = document.createElement('button');
+    rb.type = 'button';
+    rb.className = 'rewindBtn';
+    rb.textContent = '↶ 回退';
+    rb.title = '把对话回退到这条之前';
+    rb.onclick = () => openRewind(Number(rewindId));
+    wrap.appendChild(rb);
+  }
   const list = Array.isArray(atts) ? atts.filter((a) => a && a.path) : [];
   // 附件先显示，气泡里只写打的字
   if (list.length) {
@@ -1886,6 +2424,131 @@ function addUser(text, tag, atts, target) {
     b.textContent = text;
     wrap.appendChild(b);
   }
+  return wrap;
+}
+
+/** 给刚画出来的用户气泡补上「↶ 回退」（下标要等服务端落盘才知道） */
+function attachRewind(wrap, at) {
+  if (!wrap || !Number.isFinite(Number(at))) return;
+  wrap.dataset.rewindId = String(Number(at));
+  if (wrap.querySelector('.rewindBtn')) return;
+  const rb = document.createElement('button');
+  rb.type = 'button';
+  rb.className = 'rewindBtn';
+  rb.textContent = '↶ 回退';
+  rb.title = '把对话回退到这条之前';
+  rb.onclick = () => openRewind(Number(at));
+  wrap.appendChild(rb);
+  wrap.classList.remove('noRewind');
+}
+
+/* ---- 改一句话 ------------------------------------------------------------
+   点「编辑」把这个气泡原地变成输入框，存回去就换了对话内容本身。
+   服务端同时会把改动同步进这个会话的记忆本子（src/edit.mjs 的
+   editMessage → 找到本子里提到这句话的那一行，换成新的）。
+   还能「撤销」，退回上一次改之前的样子。 */
+
+/** 把某一轮（用回退点下标定位）挂上编辑能力 */
+function attachEdit(wrap, at) {
+  if (!wrap || !Number.isFinite(Number(at))) { if (wrap) wrap.classList.add('noRewind'); return; }
+  wrap.dataset.editAt = String(Number(at));
+  if (wrap.querySelector('.editBtn')) return;
+  const eb = document.createElement('button');
+  eb.type = 'button';
+  eb.className = 'editBtn';
+  eb.textContent = '✎ 编辑';
+  eb.title = '改这句话的内容（会同步改这个会话的记忆）';
+  eb.onclick = () => startEdit(wrap, Number(at));
+  wrap.appendChild(eb);
+  if (!wrap.querySelector('.rewindBtn')) wrap.classList.add('noRewind');
+}
+
+/** 原地进入编辑：气泡换成 textarea + 存/撤销/取消 */
+function startEdit(wrap, at) {
+  if (!wrap || wrap.querySelector('.editArea')) return;
+  const bubble = wrap.querySelector('.bubble');
+  if (!bubble) return;
+  const before = bubble.textContent || '';
+  bubble.classList.add('editing');
+  wrap.classList.add('editing');
+  bubble.textContent = '';
+
+  const ta = document.createElement('textarea');
+  ta.className = 'editArea';
+  ta.value = before;
+  ta.spellcheck = false;
+  const acts = document.createElement('div');
+  acts.className = 'editActions';
+  const okBtn = document.createElement('button');
+  okBtn.type = 'button';
+  okBtn.className = 'primary';
+  okBtn.textContent = '存上';
+  const undoBtn = document.createElement('button');
+  undoBtn.type = 'button';
+  undoBtn.textContent = '撤销上次修改';
+  const noBtn = document.createElement('button');
+  noBtn.type = 'button';
+  noBtn.textContent = '不改了';
+  acts.append(okBtn, undoBtn, noBtn);
+  bubble.append(ta, acts);
+
+  const leave = (text) => {
+    bubble.classList.remove('editing');
+    wrap.classList.remove('editing');
+    bubble.textContent = text;
+    ta.focus();
+  };
+
+  /** 重画这一条（就地替换成新的文本/气泡） */
+  const repaint = (text, edited) => {
+    bubble.classList.remove('editing');
+    wrap.classList.remove('editing');
+    bubble.textContent = text;
+    wrap.classList.toggle('edited', Boolean(edited));
+  };
+
+  const save = async () => {
+    const next = ta.value;
+    if (!next.trim()) { addSysNote('不能改成空的。'); return; }
+    if (next === before) { repaint(before, wrap.classList.contains('edited')); return; }
+    okBtn.disabled = true; undoBtn.disabled = true; noBtn.disabled = true;
+    const r = await fetch('/api/sessions/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId, at, text: next }),
+    }).then((x) => x.json()).catch(() => null);
+    okBtn.disabled = false; undoBtn.disabled = false; noBtn.disabled = false;
+    if (!r || r.error) { addSysNote('改不了：' + ((r && r.error) || '网络错误')); return; }
+    repaint(next, true);
+    const md = r.memory;
+    addSysNote(md && md.changed
+      ? `改好了，下一句就按新的来。记忆本子也跟着改了 ${md.lines || 1} 处。`
+      : '改好了，下一句就按新的来。记忆本子里没找到提到这句的地方，本子没动。');
+  };
+
+  const undo = async () => {
+    okBtn.disabled = true; undoBtn.disabled = true; noBtn.disabled = true;
+    const r = await fetch('/api/sessions/edit-undo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId, at }),
+    }).then((x) => x.json()).catch(() => null);
+    okBtn.disabled = false; undoBtn.disabled = false; noBtn.disabled = false;
+    if (!r || r.error) { addSysNote('撤销不了：' + ((r && r.error) || '网络错误')); return; }
+    if (r.unchanged) { addSysNote('这句没改过，没得撤销。'); return; }
+    repaint(r.text || '', false);
+    addSysNote(r.memory && r.memory.changed ? '撤销了，记忆本子也一起退回去了。' : '撤销了。');
+  };
+
+  okBtn.onclick = save;
+  undoBtn.onclick = undo;
+  noBtn.onclick = () => repaint(before, wrap.classList.contains('edited'));
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); noBtn.onclick(); }
+    // Ctrl/Cmd + Enter 存上，普通回车是换行（一句话可能有好几段）
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); save(); }
+  });
+  setTimeout(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }, 0);
 }
 
 function addAssistant() {
@@ -1907,6 +2570,21 @@ function addTool() {
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
   return { d, sum, pre };
+}
+
+/**
+ * 一行系统提示（报错、限流、断线）。
+ *
+ * 刻意不挂 .msg / .bubble：这东西不是对话内容，不该被当成谁说的话，
+ * 也不该跟着 assistant 气泡一起进历史。只是让主人知道这一轮怎么了。
+ */
+function addSysNote(text) {
+  const d = document.createElement('div');
+  d.className = 'sysnote';
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
 }
 
 /**
@@ -2003,6 +2681,9 @@ function syncSendBtn() {
 }
 
 /** 跑一轮对话；resume = 接着已有历史继续（插话之后）。 */
+// 这一轮刚画出来的用户气泡，等 done 回包再补「↶ 回退」
+let pendingRewindBubble = null;
+
 async function runTurn({ resume = false, text = '' } = {}) {
   // 关键：这一轮属于「发起时」那个会话。中途切走、切回来都不能串台。
   const turnSession = sessionId;
@@ -2040,7 +2721,10 @@ async function runTurn({ resume = false, text = '' } = {}) {
   if (!resume) {
     input.value = '';
     autosizeInput();
-    if (onScreen()) addUser(text, undefined, sending);
+    if (onScreen()) {
+      // 下标要等服务端落盘才知道，先画气泡，done 事件里补按钮
+      pendingRewindBubble = addUser(text, undefined, sending);
+    }
     attachments = [];
     renderAttachBar();
   }
@@ -2148,7 +2832,8 @@ async function runTurn({ resume = false, text = '' } = {}) {
         } else if (ev.type === 'safe_word') {
           const wrap = addEl('', 'msg user');
           wrap.innerHTML = '<div class="role">安全词<span class="safeTag"></span></div>';
-          wrap.querySelector('.safeTag').textContent = ev.word;
+          // 切回「人设」档时说明一下：这是回到基线，不是又触发了什么
+          wrap.querySelector('.safeTag').textContent = ev.back ? ev.word + '（回到默认档）' : ev.word;
           const b = document.createElement('div');
           b.className = 'bubble';
           b.textContent = safeWordHint(ev.word, ev.note);
@@ -2174,16 +2859,34 @@ async function runTurn({ resume = false, text = '' } = {}) {
         } else if (ev.type === 'error') {
           closeThink();
           hideSending();
-          if (!bubble) bubble = addAssistant();
-          bubble.classList.remove('streaming');
-          bubble.textContent += '\n\n⚠ ' + ev.message;
+          /**
+           * 错误单独画一行，别塞进助手的气泡里。
+           *
+           * 以前是 bubble.textContent += '\n\n⚠ ' + ev.message：
+           * 那个 bubble 是「小鱼说的话」，混一条报错进去，重进时读起来就像
+           * 她本人在念一串 HTTP 502。分开画，谁说的话一目了然。
+           */
+          if (bubble) {
+            bubble.classList.remove('streaming');
+            bubble = null;
+          }
+          addSysNote('⚠ ' + ev.message);
         } else if (ev.type === 'done') {
           closeThink();
           hideSending();
+          if (pendingRewindBubble && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
+            attachRewind(pendingRewindBubble, ev.at);
+            // 这一轮刚落地，主人在这一轮说的话立刻就能改（下标要等服务端给）
+            attachEdit(pendingRewindBubble, ev.at);
+            pendingRewindBubble = null;
+          }
           if (ev.usage) {
-            usageEl.textContent = `in ${ev.usage.prompt_tokens} · out ${ev.usage.completion_tokens} · total ${ev.usage.total_tokens}`;
-            // 主界面：在这一轮底下留一行灰字
-            appendTurnUsage(ev.usage);
+            // 服务端会把这一轮真用的模型名一起送过来（不是主人起的外号），
+            // 算钱要用它去对价目表。存一份，appendTurnUsage 直接读。
+            if (ev.model) lastTurnModel = String(ev.model);
+            // 这一轮的 token 明细和花费在聊天区里有一行（appendTurnUsage），
+            // 输入框底下那行不再重复报数字，只留版本号。
+            appendTurnUsage(ev.usage, ev.at);
           }
         }
       }
@@ -2197,13 +2900,14 @@ async function runTurn({ resume = false, text = '' } = {}) {
     } else if (onScreen()) {
       closeThink();
       hideSending();
-      const b = bubble || addAssistant();
-      b.classList.remove('streaming');
+      const b = bubble;
+      if (b) b.classList.remove('streaming');
       // 说人话，不甩英文栈
       const friendly = /terminated|aborted|fetch failed|network|ECONN|socket hang up/i.test(String(err.message))
         ? '这一轮的连接断了，而且服务端那边也没在跑了。再发一句就行，记录还在。'
         : err.message;
-      b.textContent += '\n\n⚠ ' + friendly;
+      // 同样单独一行，别污染助手的气泡
+      addSysNote('⚠ ' + friendly);
     } else {
       turnRec.parts.push({ kind: 'text', text: '\n\n⚠ ' + err.message });
     }
@@ -2320,16 +3024,65 @@ input.addEventListener('keydown', (e) => {
 input.addEventListener('input', () => { autosizeInput(); syncSendBtn(); });
 document.getElementById('reset').onclick = async () => {
   if (!sessionId) return;
-  if (!confirm('清空当前会话的聊天记录？会话本身会留着。')) return;
-  await fetch('/api/reset', {
+  /**
+   * 这里问两件事：
+   *   一定要清的 —— 当前会话的聊天记录（会话本身留着）；
+   *   可选清的 —— 记忆（人设正文）。
+   *
+   * 记忆现在有两份，都得讲清楚：
+   *   ① 这个会话自己的本子（.state/memory/<会话id>.md）—— 只影响这一个会话；
+   *   ② 设置里那套人设的正文 —— 全体共用，清了所有会话都受影响。
+   * 界面上把①做成默认勾上、②做成额外勾选，别让主人误连人设一起清了。
+   */
+  const ans = await askConfirm({
+    title: '清空当前',
+    body: '当前会话的聊天记录会清掉，会话本身留着。',
+    ok: '清空',
+    danger: true,
+    opt: {
+      label: '连这个会话的记忆也清（只清这一个会话，聊天记录以外的东西才叫记忆）',
+      extra: { label: '连设置里那套人设也清（所有会话都受影响，慎勾）' },
+      danger: true,
+    },
+  });
+  if (!ans) return;
+  const withMemory = Boolean(ans && ans.opt);
+  const withPersona = Boolean(ans && ans.extra);
+
+  const r = await fetch('/api/reset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId }),
-  });
+    body: JSON.stringify({ sessionId, memory: withMemory, persona: withPersona }),
+  }).then((x) => x.json()).catch(() => null);
+
   log.innerHTML = '';
   usageEl.textContent = '';
   settleComposer();
   refreshSessions({ silent: true }).catch(() => {});
+
+  if (withMemory) {
+    const w = (r && r.wiped) || {};
+    const sm = w.session;
+    if (sm && sm.error) addSysNote('⚠ 聊天记录清掉了，但这个会话的记忆没清成：' + sm.error);
+    else if (sm && sm.bytes) {
+      // 备份路径说出来，手滑了还能捡回来
+      addSysNote(`聊天记录清掉了；这个会话的记忆也清了（${sm.bytes} 字）。清之前那份存在：\n${sm.backup || '（备份没写成）'}`);
+    } else {
+      addSysNote('聊天记录清掉了。这个会话的记忆本来就是空的，没东西可清。');
+    }
+    if (withPersona) {
+      const pm = w.persona;
+      if (pm && pm.error) addSysNote('⚠ 那套人设没清成：' + pm.error);
+      else if (pm && pm.bytes) {
+        addSysNote(`设置里那套人设也清掉了（${pm.bytes} 字），所有会话都跟着变。清之前那份存在：\n${pm.backup || '（备份没写成）'}`);
+      } else {
+        addSysNote('设置里那套人设本来就是空的，没东西可清。');
+      }
+      // 设置面板里那份人设预览要跟着变空
+      fetch('/api/personas').then(x => x.json()).then(p => { if (p && !p.error) fillPersona(p); }).catch(() => {});
+    }
+    paintMemoryFlag(r && r.memory);
+  }
 };
 input.focus();
 
@@ -2388,7 +3141,7 @@ function renderPersonaList(info) {
       del.title = '删掉这套';
       del.onclick = async (e) => {
         e.stopPropagation();
-        if (!confirm(`删掉人设「${p.name}」？删之前会留一份在 .state 里，能找回。`)) return;
+        if (!(await askConfirm({ title: '删掉这套人设', body: `「${p.name}」会被删掉，删之前留一份在 .state 里，能找回。`, ok: '删掉', danger: true }))) return;
         const r = await fetch('/api/personas/delete', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: p.id }),
@@ -2478,6 +3231,14 @@ document.getElementById('openSettings').onclick = async () => {
   dlg.showModal();
 };
 
+/* ---- 会话记忆 ------------------------------------------------------------
+   以前顶栏有个「记忆」按钮能直接编辑本子，主人不要那个入口，删掉了。
+   本子现在只在两个地方动：
+     1. 小鱼自己用改文件的工具写；
+     2. 主人编辑某一句话时（见下面的「编辑」按钮），会把改动同步进本子。
+   界面上的读取接口还在，`/api/sessions/select` 会回 memory 字段，但不再展示。 */
+function paintMemoryFlag() {}
+
 document.getElementById('saveSettings').onclick = async () => {
   const p = await fetch('/api/personas/save', {
     method: 'POST',
@@ -2494,8 +3255,8 @@ document.getElementById('saveSettings').onclick = async () => {
     bottomLines: parseLines(elBottom.value),
     safeWords: parseWords(elWords.value),
     safeWordNote: elNote.value.trim(),
-    // 空着就交 64000，填 0 就是不压缩
-    contextLimit: elCtxLimit.value === '' ? 64000 : Number(elCtxLimit.value),
+    // 空着就交 128000（跟后端 config.mjs 的默认对齐），填 0 就是不压缩
+    contextLimit: elCtxLimit.value === '' ? 128000 : Number(elCtxLimit.value),
   };
   const r = await fetch('/api/settings', {
     method: 'POST',
@@ -2511,7 +3272,7 @@ document.getElementById('saveSettings').onclick = async () => {
 document.getElementById('resetPersona').onclick = async () => {
   const cur = personaInfo;
   if (!cur) return;
-  if (!confirm(`把「${cur.currentName}」的正文恢复成平台自带那份？你改过的会先备份。`)) return;
+  if (!(await askConfirm({ title: '恢复自带人设', body: `把「${cur.currentName}」的正文恢复成平台自带那份？你改过的会先备份。`, ok: '恢复', danger: true }))) return;
   const r = await fetch('/api/personas/reset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2580,6 +3341,246 @@ document.getElementById('resetDefaults').onclick = () => {
   saveHint.textContent = '已填入默认值，点保存生效';
 };
 
+// ---- 手机连接 ---------------------------------------------------------------
+const mobToggle = document.getElementById('mobToggle');
+const mobState = document.getElementById('mobState');
+const mobBody = document.getElementById('mobBody');
+const mobQr = document.getElementById('mobQr');
+const mobToken = document.getElementById('mobToken');
+const mobDevices = document.getElementById('mobDevices');
+
+function paintMobState(s) {
+  if (!s) return;
+  const on = Boolean(s.enabled);
+  mobToggle.classList.toggle('on', on);
+  mobToggle.textContent = on ? '已开启' : '已关闭';
+  mobBody.hidden = !on;
+  mobState.textContent = on
+    ? '手机和电脑连同一个 Wi-Fi，或者两边都开着组网工具，就能连进来'
+    : '现在是本机独享，手机上连不进来';
+}
+
+async function loadMobPairing() {
+  const r = await fetch('/api/mobile/pairing').then((x) => x.json()).catch(() => null);
+  if (!r || r.error) {
+    mobQr.innerHTML = '<span class="hint err">拿不到配对信息</span>';
+    return;
+  }
+  mobToken.textContent = r.token || '—';
+
+  /**
+   * 一个能连的地址一张卡片，各配一个码。
+   *
+   * 只给一个码的时候，扫到的是「排第一的那个地址」—— 人在外面用流量，
+   * 那个 Wi-Fi 地址根本连不上，看着就像「手机连不了电脑」。所以全列出来，
+   * 跨网络的那种（Radmin / Tailscale）单独标一下，让主人的手机能挑对。
+   */
+  const eps = Array.isArray(r.endpoints) && r.endpoints.length
+    ? r.endpoints
+    : (r.urls || []).map((u, i) => ({ url: u, name: '', address: u.replace(/^https?:\/\//, '').split(':')[0], kind: i ? 2 : 0, label: i ? '其它网络' : '同一个 Wi-Fi', qr: i ? '' : r.qr || '' }));
+
+  if (!eps.length) {
+    mobQr.innerHTML = '<span class="hint err">没检测到能连的地址（先连 Wi-Fi 或开 Radmin）</span>';
+    return;
+  }
+
+  mobQr.innerHTML = eps
+    .map((e, i) => {
+      const tip = e.kind === 1
+        ? '手机也装同一个组网工具、加同一个网络，用流量也能连'
+        : e.kind === 0
+          ? '手机和电脑连同一个 Wi-Fi 时用这个'
+          : '一般用不上，上面两个不行再试';
+      return `<div class="mobQrCard${e.kind === 1 ? ' lan2' : ''}">
+        <div class="mobQrHead">
+          <b>${e.label || '局域网'}</b>
+          <span class="hint">${e.name ? e.name + ' · ' : ''}${e.address}</span>
+        </div>
+        <div class="mobQrBox">${e.qr || '<span class="hint">—</span>'}</div>
+        <div class="mobQrFoot">
+          <code>${e.url}</code>
+          <button type="button" class="ghost" data-copyurl="${i}">复制地址</button>
+        </div>
+        <div class="hint">${tip}</div>
+      </div>`;
+    })
+    .join('');
+
+  mobQr.querySelectorAll('[data-copyurl]').forEach((b) => {
+    b.onclick = () => mobCopyText(eps[Number(b.dataset.copyurl)].url);
+  });
+
+  const devices = r.devices || [];
+  if (!devices.length) {
+    mobDevices.innerHTML = '<span class="hint">还没有手机连进来</span>';
+  } else {
+    mobDevices.innerHTML = devices
+      .map((d) => {
+        const t = d.lastSeenAt || d.lastAt ? new Date(d.lastSeenAt || d.lastAt).toLocaleString() : '—';
+        const label = d.label || d.ua || '手机';
+        return `<div class="mobDev">${label}<span class="hint">最后出现 ${t}</span><button type="button" class="ghost" data-forget="${d.id}">移除</button></div>`;
+      })
+      .join('');
+    mobDevices.querySelectorAll('[data-forget]').forEach((b) => {
+      b.onclick = async () => {
+        await fetch('/api/mobile/forget', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id: b.dataset.forget }),
+        }).catch(() => {});
+        loadMobPairing();
+      };
+    });
+  }
+}
+
+async function refreshMobile() {
+  const s = await fetch('/api/mobile/state').then((x) => x.json()).catch(() => null);
+  paintMobState(s);
+  if (s && s.enabled) loadMobPairing();
+}
+
+if (mobToggle) {
+  refreshMobile();
+  mobToggle.onclick = async () => {
+    const on = mobToggle.classList.contains('on');
+    mobToggle.disabled = true;
+    const s = await fetch('/api/mobile/' + (on ? 'disable' : 'enable'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+      .then((x) => x.json())
+      .catch(() => null);
+    mobToggle.disabled = false;
+    paintMobState(s);
+    if (s && s.enabled) loadMobPairing();
+  };
+  document.getElementById('mobRotate').onclick = async () => {
+    await fetch('/api/mobile/rotate', { method: 'POST' }).catch(() => {});
+    loadMobPairing();
+  };
+  document.getElementById('mobCopy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(mobToken.textContent || '');
+      mobCopyText('已复制配对码');
+    } catch {
+      mobCopyText('复制不了，手动选一下');
+    }
+  };
+}
+
+function mobCopyText(t) {
+  const b = document.getElementById('mobCopy');
+  if (!b) return;
+  const old = b.textContent;
+  b.textContent = t;
+  setTimeout(() => {
+    b.textContent = old;
+  }, 1200);
+}
+
+// ---- 数据备份 ----
+// 会话 / 人设 / 模型配置 / 设置全打成一个文件，换电脑或重装时一次搬完。
+let bakPending = null;
+
+function bakStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
+async function refreshBackup() {
+  const el = document.getElementById('bakState');
+  if (!el) return;
+  const r = await fetch('/api/backup/info').then((x) => x.json()).catch(() => null);
+  if (!r || !r.ok) {
+    el.textContent = '读不到备份信息';
+    return;
+  }
+  const mb = (r.bytes / 1048576).toFixed(1);
+  el.textContent = `现在有 ${r.sessions} 个会话、共 ${r.count} 个文件（约 ${mb} MB）会被打进备份`;
+}
+
+if (document.getElementById('bakExport')) {
+  refreshBackup();
+
+  document.getElementById('bakExport').onclick = () => {
+    // 直接走浏览器下载，别用 fetch + blob，大包也不占内存
+    const a = document.createElement('a');
+    a.href = '/api/backup/export';
+    a.download = `小鱼Agent-数据备份-${bakStamp()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const fileInput = document.getElementById('bakFile');
+  const restoreBox = document.getElementById('bakRestoreBox');
+  const fileInfo = document.getElementById('bakFileInfo');
+
+  document.getElementById('bakImportBtn').onclick = () => fileInput.click();
+
+  fileInput.onchange = async () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    try {
+      bakPending = JSON.parse(await f.text());
+    } catch {
+      bakPending = null;
+      fileInfo.textContent = '这个文件不是合法 JSON';
+      restoreBox.hidden = false;
+      return;
+    }
+    const n = bakPending && bakPending.files ? Object.keys(bakPending.files).length : 0;
+    if (!n) {
+      bakPending = null;
+      fileInfo.textContent = '这个文件里没有能恢复的内容';
+      restoreBox.hidden = false;
+      return;
+    }
+    const when = bakPending.at ? new Date(bakPending.at).toLocaleString() : '未知时间';
+    fileInfo.textContent = `这个包是 ${when} 备的，共 ${n} 个文件`;
+    restoreBox.hidden = false;
+  };
+
+  document.getElementById('bakCancel').onclick = () => {
+    bakPending = null;
+    restoreBox.hidden = true;
+    fileInput.value = '';
+  };
+
+  document.getElementById('bakConfirm').onclick = async () => {
+    if (!bakPending) return;
+    const mode = document.querySelector('input[name="bakMode"]:checked').value;
+    const btn = document.getElementById('bakConfirm');
+    btn.disabled = true;
+    btn.textContent = '恢复中…';
+    try {
+      const r = await fetch('/api/backup/restore', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data: bakPending, mode }),
+      }).then((x) => x.json());
+      if (!r.ok) {
+        fileInfo.textContent = '恢复失败：' + (r.error || '未知原因');
+      } else {
+        const kept = r.kept ? `，跳过已存在的 ${r.kept} 个` : '';
+        fileInfo.textContent = `恢复完成：写入 ${r.wrote} 个文件${kept}。重启一下小鱼Agent，会话才会全刷出来。`;
+        restoreBox.hidden = true;
+        bakPending = null;
+        fileInput.value = '';
+        refreshBackup();
+      }
+    } catch (e) {
+      fileInfo.textContent = '恢复失败：' + (e.message || e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '确定恢复';
+    }
+  };
+}
+
 // ---- 功能：列表 / 开 / 关 ----------------------------------------------------
 const featDlg = document.getElementById('featuresDlg');
 const featList = document.getElementById('featList');
@@ -2624,7 +3625,21 @@ function renderFeatList() {
     sw.dataset.on = f.enabled ? '1' : '0';
     sw.textContent = f.enabled ? '停用' : '启用';
 
-    row.append(main, sw);
+    // 开场白这种能改内容的功能，多给一个「改」的入口
+    if (f.id === 'opening') {
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'featEditBtn';
+      edit.textContent = '改开场白';
+      edit.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleOpeningEditor(row);
+      });
+      row.append(main, edit, sw);
+    } else {
+      row.append(main, sw);
+    }
     featList.appendChild(row);
   }
   const off = featState.features.filter((f) => !f.enabled).length;
@@ -2637,7 +3652,132 @@ async function loadFeatures() {
   if (!r || r.error) return false;
   featState = r;
   renderFeatList();
+  if (openingOpen) {
+    // 面板还开着，重建之后要把它带回来
+    const row = featList && featList.querySelector('.featRow[data-id="opening"]');
+    if (row) openOpeningEditor(row);
+    else openingOpen = false;
+  }
   return true;
+}
+
+// ---- 开场白编辑器 ----
+// 那两段是「AI 看得见、你界面上看不见」的隐藏对话，所以平时不出现在会话里；
+// 想改就只能在功能面板里改，改完存在 .state/opening.json。
+let openingOpen = false;
+let openingData = null;
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function toggleOpeningEditor(row) {
+  if (openingOpen) {
+    closeOpeningEditor();
+    return;
+  }
+  openOpeningEditor(row);
+}
+
+function closeOpeningEditor() {
+  openingOpen = false;
+  const box = document.getElementById('openingBox');
+  if (box) box.remove();
+  const btn = featList && featList.querySelector('.featEditBtn');
+  if (btn) btn.textContent = '改开场白';
+}
+
+async function openOpeningEditor(row) {
+  closeOpeningEditor();
+  openingOpen = true;
+  const btn = row.querySelector('.featEditBtn');
+  if (btn) btn.textContent = '收起';
+
+  const box = el('div', 'openingBox');
+  box.id = 'openingBox';
+  box.append(el('div', 'openingHint', '这两段是隐藏的：她看得见、会话里不显示。想让她换个方式等你，就改下面第二段。'));
+
+  const data = openingData || (await fetch('/api/opening').then((x) => x.json()).catch(() => null));
+  if (!data || data.error) {
+    box.append(el('div', 'openingHint', '读不出来，稍后再试。'));
+    row.after(box);
+    return;
+  }
+  openingData = data;
+
+  const mk = (key, label, hint) => {
+    const wrap = el('label', 'openingField');
+    const head = el('div', 'openingFieldHead');
+    head.append(el('span', null, label));
+    const custom = key === 'user' ? data.customUser : data.customAssistant;
+    if (custom) head.append(el('span', 'openingTag', '改过'));
+    const resetBtn = el('button', 'openingMini', '用回默认');
+    resetBtn.type = 'button';
+    resetBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ta.value = data.defaults[key];
+      ta.dataset.dirty = '1'; // 显式标脏，好让「存上」真的写进去
+    });
+    head.append(resetBtn);
+    wrap.append(head);
+    const ta = el('textarea', 'openingArea');
+    ta.value = data[key];
+    ta.rows = 5;
+    ta.spellcheck = false;
+    wrap.append(ta);
+    if (hint) wrap.append(el('div', 'openingHint', hint));
+    return { wrap, ta };
+  };
+
+  const a = mk('user', '第一段 · 她「自己待着」那句（发给模型的提示）', '这句的口气是「有人在替她说话」，她一般不会原样复述。');
+  const b = mk('assistant', '第二段 · 她的开场白（真正显示给你看的语气）', '这段直接决定她一上来跟你说的那几句话。');
+
+  const bar = el('div', 'openingBar');
+  const save = el('button', 'primary', '存上');
+  save.type = 'button';
+  const resetAll = el('button', 'ghost', '两段都恢复默认');
+  resetAll.type = 'button';
+  const tip = el('span', 'openingHint', '');
+  bar.append(save, resetAll, tip);
+
+  save.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    save.disabled = true;
+    tip.textContent = '存…';
+    const r = await fetch('/api/opening', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user: a.ta.value, assistant: b.ta.value }),
+    }).then((x) => x.json()).catch(() => null);
+    save.disabled = false;
+    if (!r || r.error) {
+      tip.textContent = '没存上：' + ((r && r.error) || '网络问题');
+      return;
+    }
+    openingData = r.texts || r;
+    tip.textContent = '存好了 · 新建会话就生效';
+    closeOpeningEditor();
+  });
+
+  resetAll.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const r = await fetch('/api/opening/reset', { method: 'POST' }).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) {
+      tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题');
+      return;
+    }
+    openingData = r.texts || r;
+    a.ta.value = openingData.user;
+    b.ta.value = openingData.assistant;
+    tip.textContent = '两段都回默认了';
+  });
+
+  box.append(a.wrap, b.wrap, bar);
+  row.after(box);
+  a.ta.focus();
 }
 
 if (featList) {
@@ -2708,14 +3848,192 @@ function fmtTok(n) {
 }
 
 /**
- * 往聊天区末尾加一行 token 小字。
+ * 钱怎么写：太小的时候多留几位，不然全是「≈0.00」看不出差别。
+ * @param {number} c 元
+ */
+function fmtMoney(c) {
+  const v = Number(c);
+  if (!Number.isFinite(v)) return '0';
+  if (v >= 1) return v.toFixed(2);
+  if (v >= 0.01) return v.toFixed(3);
+  if (v >= 0.0001) return v.toFixed(4);
+  return v.toFixed(6);
+}
+
+/**
+ * 这个时间点是不是 DeepSeek 的「高峰」。
+ * 用 Intl 换成北京时间 —— 别拿本地时间硬套，机器不在东八区会算错（踩过）。
+ * @returns {boolean} true = 落在工作日 9:00-12:00 / 14:00-18:00 里
+ */
+function inPeakWindow(when, now) {
+  if (!when) return false;
+  let day;
+  let hm;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Shanghai', hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit',
+    }).formatToParts(now || new Date());
+    const get = (t) => (parts.find((p) => p.type === t) || {}).value;
+    const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    day = map[get('weekday')];
+    hm = Number(get('hour')) * 60 + Number(get('minute'));
+  } catch {
+    const d = now || new Date();
+    day = d.getDay();
+    hm = d.getHours() * 60 + d.getMinutes();
+  }
+  if (!Array.isArray(when.days) || !when.days.includes(day)) return false;
+  for (const [from, to] of when.ranges || []) {
+    const [fh, fm] = String(from).split(':').map(Number);
+    const [th, tm] = String(to).split(':').map(Number);
+    if (hm >= fh * 60 + fm && hm < th * 60 + tm) return true;
+  }
+  return false;
+}
+
+/**
+ * 各家的价目表（元 / 百万 token）。
+ *
+ * 为什么要这张表：模型接口只说「用了多少 token」，不说「多少钱」。
+ * 各家差得远（DeepSeek flash 输出 8 元/百万，GLM-5.3 输出 28 元/百万），
+ * 还有缓存命中折扣、有峰谷价 —— 不自己算就只能看一堆数字干瞪眼。
+ *
+ * 三档单价默认是各家官网上标的「标准价」；DeepSeek 那种分峰谷的，
+ * 把便宜的谷价写在 off 里（off.when 就是高峰时段）。
+ * 价格会变，主人想改直接改这张表就行。
+ */
+const RATES = {
+  // ── DeepSeek 官方（2026-10 核对 api-docs.deepseek.com/zh-cn/quick_start/pricing）──
+  // 峰价就是上面那组，谷价是一半（工作日 9-12、14-18 之外，含周末全天）
+  'deepseek-flash': {
+    hit: 0.04, miss: 2, output: 8,
+    off: { when: { days: [1, 2, 3, 4, 5], ranges: [['09:00', '12:00'], ['14:00', '18:00']] }, hit: 0.02, miss: 1, output: 4 },
+  },
+  'deepseek-v4-pro': {
+    hit: 0.3, miss: 9, output: 27,
+    off: { when: { days: [1, 2, 3, 4, 5], ranges: [['09:00', '12:00'], ['14:00', '18:00']] }, hit: 0.15, miss: 4.5, output: 13.5 },
+  },
+  // 旧模型名还在服，按 flash 价计费（官方脚注 1），别让它变成「认不出来」
+  'deepseek-v4-flash': { hit: 0.04, miss: 2, output: 8, same: 'deepseek-flash' },
+  'deepseek-v4.1-flash': { hit: 0.04, miss: 2, output: 8, same: 'deepseek-flash' },
+  'deepseek-v4-pro-0813': { hit: 0.3, miss: 9, output: 27, same: 'deepseek-v4-pro' },
+
+  // ── 智谱 GLM（一口价，无峰谷）──
+  'glm-5.3': { hit: 2, miss: 8, output: 28 },
+  'glm-5.2': { hit: 2, miss: 8, output: 28 },
+  'glm-5.3-flash': { hit: 0.23, miss: 0.8, output: 2.8 },
+  'glm-4.7': { hit: 1, miss: 4, output: 16 },
+  'glm-4.7-flash': { hit: 0.15, miss: 0.5, output: 2 },
+  'glm-4.5-air': { hit: 0.1, miss: 0.4, output: 1.6 },
+
+  // ── 阿里云百炼 ──
+  'qwen3.8-max': { hit: 2.4, miss: 12, output: 48 },
+  'qwen3.7-plus': { hit: 0.4, miss: 2, output: 8 },
+  'qwen3.8-flash': { hit: 0.15, miss: 0.6, output: 2.4 },
+
+  // ── 月之暗面 Kimi ──
+  'kimi-k3': { hit: 4, miss: 20, output: 80 },
+  'kimi-k2.6': { hit: 1, miss: 4, output: 16 },
+  'kimi-k2.7-code': { hit: 1, miss: 4, output: 16 },
+
+  // ── 硅基流动（转卖，价随模型走）──
+  'deepseek-ai/DeepSeek-V4.1-Flash': { hit: 0.14, miss: 1.4, output: 5.6 },
+  'deepseek-ai/DeepSeek-V4-Pro': { hit: 0.3, miss: 9, output: 27 },
+
+  // ── OpenAI（美元价 × 7.2 折成人民币）──
+  'gpt-5': { hit: 9, miss: 90, output: 720 },
+  'gpt-4.1': { hit: 18, miss: 18, output: 72 },
+  'gpt-4o': { hit: 18, miss: 18, output: 72 },
+  'gpt-4o-mini': { hit: 1.1, miss: 1.1, output: 4.3 },
+  'o4-mini': { hit: 8, miss: 8, output: 32 },
+
+  // ── 其它 ──
+  'MiniMax-M3': { hit: 2, miss: 10, output: 40 },
+  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16 },
+  'grok-4': { hit: 22, miss: 22, output: 108 },
+  'gemini-3-pro': { hit: 9, miss: 9, output: 72 },
+};
+
+/**
+ * 按模型名找一档价格。先精确、再不分大小写、最后从长到短模糊。
+ * 长的优先很重要：不然 deepseek-v4.1-flash 会撞上 deepseek-v4-flash 那条。
+ * @returns {object|null}
+ */
+function rateOf(model) {
+  const name = String(model || '').trim();
+  if (!name) return null;
+  if (RATES[name]) return RATES[name];
+  const lower = name.toLowerCase();
+  for (const k of Object.keys(RATES)) {
+    if (k.toLowerCase() === lower) return RATES[k];
+  }
+  const keys = Object.keys(RATES).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    if (lower.startsWith(k.toLowerCase())) return RATES[k];
+  }
+  for (const k of keys) {
+    if (lower.includes(k.toLowerCase())) return RATES[k];
+  }
+  return null;
+}
+
+/**
+ * 估这一轮花了多少钱。
+ * @returns {{cost:number, off:boolean}|null} 认不出模型就是 null
+ */
+function costOf(model, u, now) {
+  const rate = rateOf(model);
+  if (!rate || !u) return null;
+  // 分峰谷的：off.when 里那几个时段是「峰」，之外都按 off 那组便宜的算
+  const peak = inPeakWindow(rate.off && rate.off.when, now);
+  const cur = rate.off && !peak ? rate.off : rate;
+
+  const pin = Number(u.prompt_tokens ?? 0);
+  const pout = Number(u.completion_tokens ?? 0);
+  // 接口给了缓存命中数就用，没给说明这家不报，全按未命中算
+  const hitTok = Number(u.prompt_cache_hit_tokens ?? u.cached_tokens ?? 0);
+  let missTok = Number(u.prompt_cache_miss_tokens ?? 0);
+  if (!missTok) missTok = Math.max(0, pin - hitTok);
+
+  const per = 1e6;
+  const c =
+    (hitTok / per) * Number(cur.hit ?? cur.miss ?? 0) +
+    (missTok / per) * Number(cur.miss ?? 0) +
+    (pout / per) * Number(cur.output ?? 0);
+  return { cost: c, off: !peak && Boolean(rate.off) };
+}
+
+/**
+ * 这一轮用的哪个模型。
+ *
+ * 注意不能用 cfgState.modelName —— 那是主人给模型起的**外号**（可能叫「DeepSeek官方」
+ * 「丸子V4.1逆向」），价目表按真模型名对，对不上就永远查不到钱（踩过）。
+ * cfgState.modelId 指向「模型」面板里那条记录，走 /api/health 拿当前生效的那条。
+ */
+function turnModelName() {
+  try {
+    // 1) 服务端每轮 done 事件里带的真模型名，最准
+    if (typeof lastTurnModel === 'string' && lastTurnModel) return lastTurnModel;
+    // 2) 退回：全局当前生效的模型（/api/health 里的 model 字段）
+    if (typeof healthNow !== 'undefined' && healthNow && healthNow.model) return healthNow.model;
+  } catch {}
+  return '';
+}
+
+// 上一轮实际用的模型名（服务端 done 事件里给的）。算钱按它对价目表。
+let lastTurnModel = '';
+
+/**
+ * 往聊天区末尾加一行 token 小字，右边挂「在新会话中分支」。
  *
  * 服务端每轮结束的 done 事件里带 usage（整轮合计，多轮工具调用也累加了）。
- * 这里只写真实数字，不算钱 —— 各家单价不同、还有缓存命中折扣，猜一个价反而误导。
+ * 除了 token 数，还算一下这一轮花了多少钱 —— 用的是下面 RATES 这张表，
+ * 认不出来的模型就只报数不报价（宁可不说，也别报个假价格）。
  *
  * @param {{prompt_tokens?:number, completion_tokens?:number, total_tokens?:number}} u
+ * @param {number} [at] 这一轮用户那句话的下标，分支要用；不给就不画按钮
  */
-function appendTurnUsage(u) {
+function appendTurnUsage(u, at) {
   if (!u) return;
   const pin = Number(u.prompt_tokens ?? 0);
   const pout = Number(u.completion_tokens ?? 0);
@@ -2739,6 +4057,34 @@ function appendTurnUsage(u) {
     mk('·', 'sep'),
     mk(fmtTok(total) + ' tokens', 'tt'),
   );
+
+  // 花了多少钱。模型名取「这个会话现在用哪个」，没设就用全局的
+  const model = (typeof turnModelName === 'function' ? turnModelName() : '') || '';
+  const money = costOf(model, u);
+  if (money) {
+    row.append(mk('·', 'sep'));
+    const yen = mk('≈' + fmtMoney(money.cost) + ' 元', 'cost');
+    yen.title =
+      '按 ' + model + ' 的公开价估算' +
+      (money.off ? '（现在是谷价时段，按半价算）' : '') +
+      '\n输入缓存命中 ' + fmtTok(Number(u.prompt_cache_hit_tokens ?? 0)) + ' tokens' +
+      '\n实际扣费以各家账单为准，这里只是让你心里有数';
+    row.append(yen);
+  }
+
+  // 分支按钮：把这一轮为止的对话整段复制到一个新会话，原会话一个字节都不动
+  if (Number.isFinite(Number(at))) {
+    const box = document.createElement('span');
+    box.className = 'turnActions';
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'branchBtn';
+    b.textContent = '⑂ 在新会话中分支';
+    b.title = '复制到这一轮为止的对话，开一个新会话接着聊；原来这个会话原样保留';
+    b.onclick = () => branchHere(Number(at), b);
+    box.appendChild(b);
+    row.appendChild(box);
+  }
 
   log.appendChild(row);
   log.scrollTop = log.scrollHeight;
@@ -2843,25 +4189,16 @@ function closeOtherDialogs(keepId) {
   }
 })();
 
-// 版本水印：写死一个构建标记 + 运行时判断修复在不在，出问题一眼能对
+// 版本水印：输入框右下角那行小字，只显示版本号。
+// 以前这里还挂了一串「对话框守护✓ / token显示✓」的自检标记 —— 那些是开发期
+// 用来一眼看出补丁有没有打上的，主人说看着乱，删了。真出问题时看控制台就行。
 (function paintBuildTag() {
   const tag = document.getElementById('buildTag');
   if (!tag) return;
-  const has = (n) => (typeof window[n] !== 'undefined' || typeof window['__' + n] !== 'undefined');
-  const marks = [
-    typeof closeOtherDialogs === 'function' ? '对话框守护✓' : '对话框守护✗',
-    window.__dialogGuardInstalled ? '自动关面板✓' : '自动关面板✗',
-    typeof appendTurnUsage === 'function' ? 'token显示✓' : 'token显示✗',
-    typeof fixMojibake === 'function' ? '编码修复✓' : '编码修复✗',
-  ];
-  const setTag = (ver) => {
-    tag.textContent = (ver ? 'v' + ver + ' · ' : '') + marks.join(' ');
-  };
-  setTag('');
   // 版本号从后端读，别再写死一份
   fetch('/api/health')
     .then((r) => r.json())
-    .then((h) => { if (h && h.version) setTag(h.version); })
+    .then((h) => { if (h && h.version) tag.textContent = 'v' + h.version; })
     .catch(() => {});
 })();
 
@@ -2900,9 +4237,21 @@ async function loadTopCfg() {
   const r = await fetch(`/api/session-config?sessionId=${encodeURIComponent(sessionId)}`)
     .then((x) => x.json()).catch(() => null);
   if (!r || r.error) return;
+  // 整份替换，不要 {...cfgState, ...r}：
+  // 后者在服务端少回一个字段时会把旧的留着，modelName / models 就会一直停在启动时那版
+  // —— 表现就是「加了新模型，左上角下拉里看不见」。
   cfgState = { ...cfgState, ...r };
   paintTopCfg();
+  // 菜单正开着就按新数据重画一遍，否则用户看到的是点开瞬间那一份旧列表
+  if (cfgMenuFor) {
+    const which = cfgMenuFor === 'think' ? 'think' : 'model';
+    cfgMenuFor = null;
+    openCfgMenu(which);
+  }
 }
+
+// 让「模型」面板那边（paintModels）能喊我们刷新，避免两处列表各走各的
+window.__refreshTopCfg = () => { loadTopCfg(); };
 
 function closeCfgMenu() {
   cfgMenu.classList.remove('open');
@@ -2912,7 +4261,9 @@ function closeCfgMenu() {
 }
 
 function openCfgMenu(which) {
-  if (!sessionId) return;
+  // 没有 sessionId 就别闷着什么都不弹：先在当前会话下拉一次再开，
+  // 否则用户点上去像「按钮坏了」。
+  if (!sessionId) { loadTopCfg().then(() => { if (sessionId) openCfgMenu(which); }); return; }
   if (cfgMenuFor === which) { closeCfgMenu(); return; }
   cfgMenuFor = which;
   topModel.classList.toggle('open', which === 'model');
@@ -2924,6 +4275,8 @@ function openCfgMenu(which) {
     const list = cfgState.models || [];
     if (!list.length) {
       cfgMenuList.innerHTML = '<div class="cfgMenuHead">还没有别的模型，去右上角「模型」里加</div>';
+      // 拉到的是旧数据就当没拉到，强制刷一次再重画（防住「列表没刷新」这种假死）
+      loadTopCfg();
     }
     for (const m of list) {
       const b = document.createElement('button');
@@ -3080,6 +4433,86 @@ function askName({ title, value = '', placeholder = '', maxLength = 80 } = {}) {
   });
 }
 
+// ---- 确认框：不要用原生 confirm() -------------------------------------------
+/**
+ * 为什么不用 confirm()：
+ * Electron 里 confirm() 是**同步阻塞渲染线程**的。它一旦在某个 <dialog> 的事件处理器里
+ * 被调用，整个渲染进程停摆，那个 dialog 的 :modal 状态、焦点、inert 就在冻结中被打乱，
+ * 等用户点完确定，页面看着还在、可实际焦点回不到输入框 —— 现象就是「删完会话输入框点不了」。
+ * （用 CDP 实测：confirm 挂着的时候 Runtime.evaluate 直接超时，渲染线程确实卡死。）
+ *
+ * 所以一律走这个应用内的异步确认框：不阻塞、可点、焦点能正确还给输入区。
+ * @param {{title?: string, body?: string, ok?: string, cancel?: string, danger?: boolean}} [opts]
+ * @returns {Promise<boolean>} 点确定 = true，取消 / Esc = false
+ */
+function askConfirm({ title = '确认一下', body = '', ok = '确定', cancel = '取消', danger = false, opt = null } = {}) {
+  return new Promise((resolve) => {
+    const dlg = document.getElementById('confirmDlg');
+    const tEl = document.getElementById('confirmTitle');
+    const bEl = document.getElementById('confirmBody');
+    const okBtn = document.getElementById('confirmOk');
+    const cancelBtn = document.getElementById('confirmCancel');
+    const optWrap = document.getElementById('confirmOptWrap');
+    const optBox = document.getElementById('confirmOpt');
+    const optText = document.getElementById('confirmOptText');
+    const extraWrap = document.getElementById('confirmExtraWrap');
+    const extraBox = document.getElementById('confirmExtra');
+    const extraText = document.getElementById('confirmExtraText');
+
+    tEl.textContent = title;
+    bEl.textContent = body;
+    okBtn.textContent = ok;
+    cancelBtn.textContent = cancel;
+    okBtn.classList.toggle('danger', Boolean(danger));
+
+    // opt = { label, extra?: { label } } -> 多给勾选框；勾上就把结果一起交回去
+    if (opt && opt.label) {
+      optWrap.hidden = false;
+      optText.textContent = opt.label;
+      optBox.checked = Boolean(opt.checked);
+      optWrap.classList.toggle('danger', Boolean(opt.danger));
+    } else {
+      optWrap.hidden = true;
+      optBox.checked = false;
+    }
+    // 第二个勾选框：默认不勾（见「清空当前」里那条慎勾的人设）
+    if (opt && opt.extra && opt.extra.label) {
+      extraWrap.hidden = false;
+      extraText.textContent = opt.extra.label;
+      extraBox.checked = Boolean(opt.extra.checked);
+      extraWrap.classList.toggle('danger', Boolean(opt.extra.danger ?? opt.danger));
+    } else {
+      extraWrap.hidden = true;
+      extraBox.checked = false;
+    }
+
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      cancelBtn.onclick = null;
+      okBtn.onclick = null;
+      dlg.onclose = null;
+      optWrap.hidden = true;
+      extraWrap.hidden = true;
+      try { if (dlg.open) dlg.close(); } catch {}
+      resolve(val);
+    };
+    cancelBtn.onclick = () => finish(false);
+    // 带勾选框时返回 { ok:true, opt:<勾没勾>, extra:<勾没勾> }；不带时还是 true，老调用方不受影响
+    okBtn.onclick = (e) => {
+      e.preventDefault();
+      if (!(opt && opt.label)) return finish(true);
+      finish({ ok: true, opt: optBox.checked, extra: opt.extra && opt.extra.label ? extraBox.checked : false });
+    };
+    dlg.onclose = () => finish(false);
+
+    closeOtherDialogs('confirmDlg');
+    dlg.showModal();
+    cancelBtn.focus();
+  });
+}
+
 // ---- 会话：选择 / 新建 / 改名 / 删除 -----------------------------------------
 const sessDlg = document.getElementById('sessionsDlg');
 const sessList = document.getElementById('sessList');
@@ -3188,7 +4621,7 @@ sessList.addEventListener('click', async (e) => {
 
   if (btn && btn.dataset.act === 'del') {
     const cur = (sessionsCache.find((s) => s.id === id) || {}).title || '这个会话';
-    if (!confirm(`删除「${cur}」？文件会挪到 .state/sessions/.trash，还能找回。`)) return;
+    if (!(await askConfirm({ title: '删除会话', body: `「${cur}」会挪到 .state/sessions/.trash，还能找回。`, ok: '删除', danger: true }))) return;
     const r = await fetch('/api/sessions/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3262,7 +4695,10 @@ function renderTurns(turns) {
 
   for (const turn of list) {
     if (turn.role === 'user') {
-      addUser(turn.text, undefined, turn.atts, frag);
+      const w = addUser(turn.text, undefined, turn.atts, frag, turn.rewindId);
+      // 每一句都能改：主人说的和我说的一样对待
+      attachEdit(w, turn.rewindId);
+      if (turn.edited) w.classList.add('edited');
     } else {
       const wrap = addEl('', 'msg assistant', frag);
       wrap.innerHTML = '<div class="role">小鱼</div>';
@@ -3270,12 +4706,119 @@ function renderTurns(turns) {
       b.className = 'bubble';
       b.textContent = fixMojibake(turn.text);
       wrap.appendChild(b);
+      attachEdit(wrap, turn.rewindId);
+      if (turn.edited) wrap.classList.add('edited');
     }
   }
 
   // 一次性替换 + 只滚一次
   log.replaceChildren(frag);
   log.scrollTop = log.scrollHeight;
+}
+
+// ---- 对话回退（DSH /rewind 的那套：只遮蔽、不删除）----
+const rewindDlg = document.getElementById('rewindDlg');
+const rwText = document.getElementById('rwText');
+const rwFiles = document.getElementById('rwFiles');
+let rewindAt = null;
+
+async function openRewind(at) {
+  rewindAt = at;
+  rwText.textContent = '（查询中…）';
+  rwFiles.textContent = '';
+  if (rewindDlg && !rewindDlg.open) rewindDlg.showModal();
+  const r = await fetch('/api/sessions/rewind-preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: sessionId, at }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) {
+    rwText.textContent = '查不了：' + ((r && r.error) || '网络错误');
+    return;
+  }
+  rwText.textContent = r.text || '（这条没有文字）';
+  if (r.files && r.files.length) {
+    rwFiles.innerHTML = '会一起还原 ' + r.files.length + ' 个文件：<br>' +
+      r.files.map((f) => '<code>' + String(f).replace(/[<>&]/g, '') + '</code>').join('、');
+  } else {
+    rwFiles.textContent = '这一轮没改过文件，只回退对话。';
+  }
+}
+
+const rwCancel = document.getElementById('rwCancel');
+if (rwCancel) rwCancel.onclick = () => { rewindDlg.close(); rewindAt = null; };
+
+const rwGo = document.getElementById('rwGo');
+if (rwGo) {
+  rwGo.onclick = async () => {
+    if (rewindAt == null) return;
+    rwGo.disabled = true;
+    const r = await fetch('/api/sessions/rewind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId, at: rewindAt }),
+    }).then((x) => x.json()).catch(() => null);
+    rwGo.disabled = false;
+    rewindDlg.close();
+    if (!r || r.error) { alert('回退失败：' + ((r && r.error) || '网络错误')); return; }
+    // 界面按服务端给的有效历史重画
+    renderTurns(r.session.turns);
+    // 目标那句话填回输入框，改完再发就是「重新来一遍」
+    const back = rwText.textContent;
+    if (input && back && back !== '（这条没有文字）') {
+      input.value = back;
+      input.focus();
+    }
+    const f = r.files || {};
+    const n = (f.restored || []).length + (f.deleted || []).length;
+    const hint = document.getElementById('optHint');
+    if (hint) hint.textContent = n ? '已回退，' + n + ' 个文件还原了' : '已回退（老消息还留着，能撤销）';
+    rewindAt = null;
+    refreshSessions({ silent: true }).catch(() => {});
+  };
+}
+
+/**
+ * 「在新会话中分支」：把这一轮为止的对话复制到新会话，原会话原样保留。
+ *
+ * 跟「回退」的区别：回退是原地把后面的藏起来；分支是另开一条路，
+ * 原来的对话还在，想回头再来一次不会丢东西。
+ *
+ * @param {number} at 这一轮用户那句话在当前会话里的下标
+ * @param {HTMLButtonElement} [btn] 点下去的那个按钮，防连点用
+ */
+async function branchHere(at, btn) {
+  if (!Number.isFinite(Number(at))) return;
+  if (busy) {
+    alert('等这一轮说完再分支，不然分支里的对话是半截的。');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/sessions/branch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId, at: Number(at) }),
+    }).then((x) => x.json()).catch((e) => ({ error: e && e.message ? e.message : '连不上服务' }));
+    if (!r || r.error) {
+      alert('分支失败：' + ((r && r.error) || '网络错误'));
+      return;
+    }
+    const newId = r.session && r.session.id;
+    if (!newId) {
+      alert('分支失败：服务端没给新会话');
+      return;
+    }
+    await refreshSessions({ silent: true }).catch(() => {});
+    await switchSession(newId);
+    const hint = document.getElementById('sessHint');
+    if (hint) {
+      hint.textContent = '已分支到新会话，原来那个还在列表里';
+      setTimeout(() => { try { hint.textContent = ''; } catch {} }, 4000);
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function switchSession(id) {
@@ -3308,6 +4851,7 @@ async function switchSession(id) {
   sessionTitle = r.session.title;
   localStorage.setItem(STORE_KEY, sessionId);
   paintSessNow();
+  paintMemoryFlag(r.memory); // 换会话，顶栏的记忆小字也要跟着换
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   renderTurns(r.session.turns);
 
@@ -3370,6 +4914,7 @@ async function createSessionEx(opts = {}) {
   sessionTitle = r.session.title;
   localStorage.setItem(STORE_KEY, sessionId);
   paintSessNow();
+  paintMemoryFlag(r.memory); // 新会话是空本子，刷新顶栏
   loadTopCfg(); // 新会话是默认档
   log.innerHTML = '';
   hideSending();
@@ -3404,20 +4949,241 @@ document.getElementById('sessNew').onclick = async () => {
 
 sessDlg.addEventListener('cancel', () => sessDlg.close());
 
+// ---- 会话导入 / 导出 --------------------------------------------------------
+/**
+ * 导出走浏览器的下载通道：直接 location 到那个接口，服务器已经把
+ * Content-Disposition 配好了（中文名走 filename*），Electron 和浏览器都会存成文件。
+ * 不用 fetch+Blob 是因为那条路要自己拼文件名，中文还得再 encode 一次。
+ */
+function downloadSession(id, all) {
+  const qs = all ? 'all=1' : 'id=' + encodeURIComponent(id);
+  const a = document.createElement('a');
+  a.href = '/api/sessions/export?' + qs;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  sessHint.textContent = all ? '正在导出全部会话…' : '正在导出…';
+  setTimeout(() => { sessHint.textContent = `${sessionsCache.length} 个`; }, 2500);
+}
+
+/**
+ * 导入：选一个 .json → 读成文本 → 丢给 /api/sessions/import。
+ * 服务器会认三种形状（单会话 / 整包 / 裸会话），并且每条都分配新 id，不会覆盖现有会话。
+ */
+async function importSessionsFromFile(file) {
+  if (!file) return;
+  sessHint.textContent = '正在导入…';
+  let text = '';
+  try {
+    text = await file.text();
+  } catch (e) {
+    sessHint.textContent = '读不了这个文件';
+    return;
+  }
+  const r = await fetch('/api/sessions/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: text }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) {
+    sessHint.textContent = '导入失败：' + (r && r.error ? r.error : '网络错误');
+    sessHint.classList.add('sessWarn');
+    setTimeout(() => sessHint.classList.remove('sessWarn'), 4000);
+    return;
+  }
+  await refreshSessions({ silent: true });
+  sessHint.textContent = `导入好了，${r.count} 个会话`;
+  // 只导了一个就直接切过去，省得再找
+  if (r.count === 1 && r.imported[0] && r.imported[0].id !== sessionId) {
+    try { await switchSession(r.imported[0].id); } catch {}
+    sessDlg.close();
+    settleComposer();
+  }
+  setTimeout(() => { sessHint.textContent = `${sessionsCache.length} 个`; }, 3000);
+}
+
+document.getElementById('sessExportOne').onclick = () => {
+  if (!sessionId) return;
+  downloadSession(sessionId, false);
+};
+document.getElementById('sessExportAll').onclick = () => {
+  if (!sessionsCache.length) { sessHint.textContent = '一个会话都没有，没东西可导'; return; }
+  downloadSession(null, true);
+};
+document.getElementById('sessImport').onclick = () => {
+  const picker = document.getElementById('sessFile');
+  picker.value = '';
+  picker.click();
+};
+document.getElementById('sessFile').onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  await importSessionsFromFile(f);
+};
+
 // 进平台：自动回到最近一次会话；没有就新建一个
 async function bootSessions() {
   const r = await fetch('/api/sessions').then((x) => x.json()).catch(() => null);
   if (!r) { paintSessNow(); return; }
   sessionsCache = r.sessions || [];
+  /**
+   * 先认「这台设备上次看的那个会话」，再退回服务端的 lastSessionId。
+   *
+   * 为什么反过来了：lastSessionId 存在电脑上，是**全局唯一**的一份。
+   * 电脑和手机同时开着时，谁最后动一下谁就把它覆盖成自己的，
+   * 另一台下次打开就被带到别人的会话上——看着就像「我这台的话丢了」。
+   * 本地这份按设备/浏览器分开存，才是「我上次退出时在看哪个」。
+   */
   const local = localStorage.getItem(STORE_KEY);
-  const pick = r.lastSessionId
-    || (local && sessionsCache.some((s) => s.id === local) ? local : null)
+  const localOk = local && sessionsCache.some((s) => s.id === local) ? local : null;
+  const pick = localOk
+    || r.lastSessionId
     || (sessionsCache[0] ? sessionsCache[0].id : null);
   if (pick && (await switchSession(pick))) return;
   await createSessionEx({ quiet: true });
 }
 
 // ---- 模型：列表 / 添加 / 编辑 / 删除 / 切换 / 测连通 ---------------------------
+
+/**
+ * 常用厂商预设。
+ *
+ * 地址都能手填，下拉只是省事；模型名跟着地址变，认不出来的地址就去掉下拉。
+ * 模型名给的是「常见的」而不是「全部的」—— 各家上新太快，写死一份全量必然过期，
+ * 所以输入框仍然可以随便写，选中项只是个建议。
+ */
+const PROVIDERS = [
+  {
+    key: 'deepseek', name: 'DeepSeek 官方', base: 'https://api.deepseek.com',
+    match: /api\.deepseek\.com|deepseek\.com\/v1/i,
+    models: ['deepseek-flash', 'deepseek-v4-pro'],
+    hint: '日常用 flash（便宜、1M 上下文、支持看图），难的用 v4-pro。',
+  },
+  {
+    key: 'volcengine', name: '火山方舟（字节）', base: 'https://ark.cn-beijing.volces.com/api/v3',
+    match: /volces|volcengine|ark\.cn/i,
+    models: ['doubao-seed-1-6-250615', 'doubao-1-5-pro-32k-250115', 'doubao-1-5-lite-32k-250115', 'deepseek-v3-250324'],
+    hint: '豆包家的。也可以在控制台建「推理接入点」，把 ep-xxxx 填在模型名里。',
+  },
+  {
+    key: 'dashscope', name: '阿里云百炼（通义千问）', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    match: /dashscope|aliyuncs/i,
+    models: ['qwen3.8-max', 'qwen3.7-plus', 'qwen3.8-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro-0813', 'kimi-k3', 'glm-5.3'],
+    hint: '百炼是个大卖场：qwen 自己的，还有 deepseek、kimi、glm 都能从这儿调。',
+  },
+  {
+    key: 'siliconflow', name: '硅基流动 SiliconFlow', base: 'https://api.siliconflow.cn/v1',
+    match: /siliconflow/i,
+    models: ['deepseek-ai/DeepSeek-V4.1-Flash', 'deepseek-ai/DeepSeek-V4-Pro', 'deepseek-ai/DeepSeek-V3.2', 'Qwen/Qwen3.8-Max', 'gemini-3/gemini-3.0-pro'],
+    hint: '一个 key 走很多开源模型，常有免费额度。',
+  },
+  {
+    key: 'moonshot', name: 'Kimi（月之暗面）', base: 'https://api.moonshot.cn/v1',
+    match: /moonshot/i,
+    models: ['kimi-k3', 'kimi-k2.6', 'kimi-k2.7-code'],
+    hint: '长上下文。',
+  },
+  {
+    key: 'zhipu', name: '智谱 GLM', base: 'https://open.bigmodel.cn/api/paas/v4',
+    match: /bigmodel|zhipu/i,
+    models: ['glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-4.7', 'glm-4.7-flash', 'glm-4.5-air'],
+    hint: '带 flash 的有免费额度。',
+  },
+  {
+    key: 'hunyuan', name: '腾讯混元', base: 'https://api.hunyuan.cloud.tencent.com/v1',
+    match: /hunyuan/i,
+    models: ['hunyuan-turbos-latest', 'hunyuan-large', 'hunyuan-standard'],
+    hint: '腾讯云的，接口是 OpenAI 兼容的。',
+  },
+  {
+    key: 'baidu', name: '百度文心（千帆）', base: 'https://qianfan.baidubce.com/v2',
+    match: /qianfan|baidubce/i,
+    models: ['ernie-4.5-turbo-128k', 'ernie-4.0-8k', 'ernie-speed-128k'],
+    hint: '千帆 v2 是 OpenAI 兼容入口；模型名去控制台「在线推理」看，各家更新快。',
+  },
+  {
+    key: 'minimax', name: 'MiniMax',
+    base: 'https://api.minimax.chat/v1',
+    match: /minimax/i,
+    models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-Text-01'],
+    hint: '',
+  },
+  {
+    key: 'baichuan', name: '百川智能', base: 'https://api.baichuan-ai.com/v1',
+    match: /baichuan/i,
+    models: ['Baichuan4', 'Baichuan3-Turbo'],
+    hint: '',
+  },
+  {
+    key: 'stepfun', name: '阶跃星辰', base: 'https://api.stepfun.com/v1',
+    match: /stepfun/i,
+    models: ['step-2-16k', 'step-1-8k'],
+    hint: '',
+  },
+  {
+    key: 'sensetime', name: '商汤日日新', base: 'https://api.sensenova.cn/compatible-mode/v1',
+    match: /sensenova/i,
+    models: ['SenseChat-5', 'SenseChat-Turbo'],
+    hint: '',
+  },
+  {
+    key: 'wanzi', name: '丸子中转', base: 'https://napi.wanzij.cn/v1',
+    match: /wanzij/i,
+    models: ['deepseek-v4.1-flash', 'deepseek-v4.1', 'gpt-4o-mini'],
+    hint: '整合站，一个 key 走很多家。',
+  },
+  {
+    key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
+    match: /api\.openai\.com/i,
+    models: ['gpt-5', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
+    hint: '国内要代理。',
+  },
+  {
+    key: 'anthropic', name: 'Anthropic（走兼容层）', base: 'https://api.anthropic.com/v1',
+    match: /anthropic/i,
+    models: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022'],
+    hint: '官方接口不是 OpenAI 兼容的，得用中转站给的兼容地址。',
+  },
+  {
+    key: 'openrouter', name: 'OpenRouter', base: 'https://openrouter.ai/api/v1',
+    match: /openrouter/i,
+    models: ['anthropic/claude-sonnet-4', 'openai/gpt-4o', 'google/gemini-2.5-pro', 'deepseek/deepseek-chat'],
+    hint: '一个 key 走所有家，按量计费。',
+  },
+  {
+    key: 'groq', name: 'Groq', base: 'https://api.groq.com/openai/v1',
+    match: /groq/i,
+    models: ['llama-3.3-70b-versatile', 'qwen-2.5-32b'],
+    hint: '快得离谱，模型偏开源。',
+  },
+  {
+    key: 'xai', name: 'xAI Grok', base: 'https://api.x.ai/v1',
+    match: /api\.x\.ai/i,
+    models: ['grok-3', 'grok-2-1212'],
+    hint: '',
+  },
+  {
+    key: 'gemini', name: 'Google Gemini（兼容层）', base: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    match: /generativelanguage|googleapis/i,
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    hint: '要走它的 OpenAI 兼容入口，路径带 /openai。',
+  },
+  {
+    key: 'ollama', name: '本机 Ollama', base: 'http://127.0.0.1:11434/v1',
+    match: /11434|localhost|127\.0\.0\.1/i,
+    models: ['qwen2.5:7b', 'llama3.2', 'deepseek-r1:7b'],
+    hint: '自己电脑跑，不要钱。要先 ollama serve 起来。',
+  },
+];
+
+/** 按地址认厂商；认不出来返回 null */
+function providerOf(base) {
+  const b = String(base || '').trim();
+  if (!b) return null;
+  return PROVIDERS.find((p) => p.match.test(b)) || null;
+}
+
 const mdlDlg = document.getElementById('modelsDlg');
 const mdlList = document.getElementById('mdlList');
 const mdlEmpty = document.getElementById('mdlEmpty');
@@ -3425,13 +5191,151 @@ const mdlForm = document.getElementById('mdlForm');
 const mdlFormTitle = document.getElementById('mdlFormTitle');
 const mdlName = document.getElementById('mdlName');
 const mdlModel = document.getElementById('mdlModel');
+
+/**
+ * 名字框是不是「被主人自己动过」。
+ *
+ * 主人要的规矩：不填名字时，名字自动跟着模型名走；一旦亲手写了，
+ * 这一次添加过程中就再也不自作主张去改它。
+ * 用「清空了也算动过」来判断——不是看空不空，否则删干净又会被自动填回去。
+ */
+let mdlNameTouched = false;
+
+/** 模型名变了就带着名字一起走（除非主人自己写过名字）。 */
+function syncNameWithModel() {
+  if (mdlNameTouched) return;
+  mdlName.value = (mdlModel.value || '').trim();
+}
 const mdlBase = document.getElementById('mdlBase');
 const mdlKey = document.getElementById('mdlKey');
 const mdlFormHint = document.getElementById('mdlFormHint');
 const mdlCount = document.getElementById('mdlCount');
 const mdlNow = document.getElementById('mdlNow');
+const mdlBasePreset = document.getElementById('mdlBasePreset');
+const mdlBaseHint = document.getElementById('mdlBaseHint');
+const mdlBaseList = document.getElementById('mdlBaseList');
+const mdlModelPreset = document.getElementById('mdlModelPreset');
+const mdlModelHint = document.getElementById('mdlModelHint');
+const mdlModelList = document.getElementById('mdlModelList');
 let mdlState = { models: [], activeId: null, empty: true };
 let mdlEditing = null; // null = 新增，否则是正在改的那条的 id
+
+/**
+ * 地址下拉：第一项永远是「手动填」，后面是各家。
+ * 同时把地址灌进 datalist —— 手打时浏览器也会给建议。
+ */
+function paintBasePicker() {
+  if (!mdlBasePreset) return;
+  mdlBasePreset.innerHTML = '';
+  const opt0 = document.createElement('option');
+  opt0.value = '';
+  opt0.textContent = '选一家…（或直接手填）';
+  mdlBasePreset.appendChild(opt0);
+  for (const p of PROVIDERS) {
+    const o = document.createElement('option');
+    o.value = p.base;
+    o.textContent = p.name;
+    mdlBasePreset.appendChild(o);
+  }
+  if (mdlBaseList) {
+    mdlBaseList.innerHTML = '';
+    for (const p of PROVIDERS) {
+      const o = document.createElement('option');
+      o.value = p.base;
+      o.label = p.name;
+      mdlBaseList.appendChild(o);
+    }
+  }
+}
+
+/**
+ * 模型名下拉：跟着当前地址走。
+ * 认不出厂商就把下拉清空、提示「地址认不出来，模型名手填」——
+ * 别给一份无关的模型名列表，那是干扰。
+ */
+function paintModelPicker(base) {
+  const p = providerOf(base);
+  const hintEl = mdlModelHint;
+  if (mdlModelPreset) {
+    mdlModelPreset.innerHTML = '';
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = p ? '选一个…（或手填）' : '先选地址';
+    mdlModelPreset.appendChild(opt0);
+    for (const m of (p ? p.models : [])) {
+      const o = document.createElement('option');
+      o.value = m;
+      o.textContent = m;
+      mdlModelPreset.appendChild(o);
+    }
+    mdlModelPreset.disabled = !p;
+  }
+  if (mdlModelList) {
+    mdlModelList.innerHTML = '';
+    for (const m of (p ? p.models : [])) {
+      const o = document.createElement('option');
+      o.value = m;
+      mdlModelList.appendChild(o);
+    }
+  }
+  if (hintEl) {
+    if (!p) {
+      hintEl.textContent = String(base || '').trim() ? '这家认不出来，模型名照文档手填就行。' : '';
+    } else {
+      hintEl.textContent = p.hint || '';
+    }
+  }
+  if (mdlBaseHint) {
+    mdlBaseHint.textContent = p ? `认出来了：${p.name}` : '';
+  }
+}
+
+if (mdlBasePreset) {
+  mdlBasePreset.onchange = () => {
+    const v = mdlBasePreset.value;
+    if (!v) return;
+    const p = providerOf(v);
+    // 换了地址就是换了一家公司，原来的模型名几乎肯定不对了（除非它正好是这家的）。
+    // 以前这里只在「空着」时才填，结果从别的公司切过来时留着旧值，看着像没反应。
+    const oldModel = (mdlModel.value || '').trim();
+    const sameProvider = p ? p.models.includes(oldModel) : false;
+    mdlBase.value = v;
+    paintModelPicker(v);
+    if (!sameProvider) mdlModel.value = p && p.models[0] ? p.models[0] : '';
+    syncNameWithModel();
+  };
+}
+if (mdlModelPreset) {
+  mdlModelPreset.onchange = () => {
+    const v = mdlModelPreset.value;
+    if (!v) return;
+    mdlModel.value = v;
+    syncNameWithModel();
+  };
+}
+if (mdlBase) {
+  // 手改地址时也跟着换模型下拉
+  mdlBase.addEventListener('input', () => {
+    mdlBasePreset.value = PROVIDERS.some((p) => p.base === mdlBase.value.trim()) ? mdlBase.value.trim() : '';
+    paintModelPicker(mdlBase.value);
+  });
+}
+// 手打模型名也要带着名字走
+if (mdlModel) {
+  mdlModel.addEventListener('input', () => {
+    if (mdlNameTouched) return;
+    mdlName.value = (mdlModel.value || '').trim();
+  });
+}
+// 名字框：自己动过手就不再自动改（哪怕又清空了，也算「我要自己写」）
+if (mdlName) {
+  mdlName.addEventListener('input', () => {
+    mdlNameTouched = (mdlName.value || '').trim() !== '';
+  });
+}
+paintBasePicker();
+// 一开始表单是藏着的，地址框里可能有 env 来的默认值，先把模型下拉对好
+paintModelPicker(mdlBase ? mdlBase.value : '');
 
 function paintModelNow() {
   const cur = mdlState.models.find((m) => m.id === mdlState.activeId);
@@ -3447,9 +5351,18 @@ function clearFormHint(kind = '', text = '') {
 function openForm(model) {
   mdlEditing = model ? model.id : null;
   mdlFormTitle.textContent = model ? `编辑模型：${model.name}` : '添加模型';
+  // 编辑已有模型 = 名字已经是主人定的，别跟着模型名跑；
+  // 新加一个 = 先跟着模型名走，直到主人自己动手写。
+  mdlNameTouched = Boolean(model);
   mdlName.value = model ? (model.source === 'env' ? model.model : model.name) : '';
-  mdlModel.value = model ? model.model : (mdlState.envDefaults?.model ?? '');
-  mdlBase.value = model ? model.baseURL : (mdlState.envDefaults?.baseURL ?? '');
+  // 新增时的默认值：优先 DeepSeek 官方（主人点名要它当默认），
+  // 再退到 .env 里配的。以前直接拿 envDefaults，而 .env 配的是中转站，
+  // 于是每次点「添加模型」都先被填成中转站，改起来还要手动删。
+  const first = PROVIDERS[0];
+  mdlModel.value = model ? model.model : (first.models[0] || mdlState.envDefaults?.model || '');
+  mdlBase.value = model ? model.baseURL : (first.base || mdlState.envDefaults?.baseURL || '');
+  // 新加的时候，模型名一填上，名字也跟着填好（不用主人再写一遍）
+  syncNameWithModel();
   mdlKey.value = '';
   mdlKey.placeholder = model && model.hasKey
     ? `已保存 ${model.keyHint}，不改就留空`
@@ -3457,11 +5370,16 @@ function openForm(model) {
   clearFormHint();
   mdlEmpty.hidden = true; // 空状态和表单别同时杵在屏幕上
   mdlForm.classList.remove('hidden');
+  // 地址 / 模型名两个下拉跟着现填的内容刷新一次
+  paintModelPicker(mdlBase.value);
+  mdlBasePreset.value = PROVIDERS.some((p) => p.base === (mdlBase.value || '').trim()) ? (mdlBase.value || '').trim() : '';
   mdlName.focus();
 }
 
 function closeForm() {
   mdlEditing = null;
+  // 关掉表单 = 这一次添加结束，下次点「添加模型」重新从「跟着模型名走」开始
+  mdlNameTouched = false;
   mdlForm.classList.add('hidden');
   clearFormHint();
   mdlEmpty.hidden = !mdlState.empty;
@@ -3495,6 +5413,9 @@ function paintModels() {
   mdlList.hidden = mdlState.empty;
   mdlEmpty.hidden = !mdlState.empty;
   paintModelNow();
+  // 模型列表变了，左上角那个「换模型」下拉也得跟着变。
+  // 以前只在启动 / 切会话时拉一次，所以新加的模型在左上角永远看不见。
+  if (typeof window.__refreshTopCfg === 'function') window.__refreshTopCfg();
 
   for (const m of mdlState.models) {
     const row = document.createElement('div');
@@ -3544,9 +5465,7 @@ function paintModels() {
         : '把这条配置删掉';
       del.onclick = async (e) => {
         e.stopPropagation();
-        if (!confirm(`删掉「${m.name}」？
-
-只是删这条配置，别的地方不受影响。`)) return;
+        if (!(await askConfirm({ title: '删掉这条模型', body: `「${m.name}」只是从列表里删掉，别的地方不受影响。`, ok: '删除', danger: true }))) return;
         const r = await fetch('/api/models/delete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3620,19 +5539,16 @@ async function loadModels() {
   return true;
 }
 
-// ---- 模型面板底部的三个开关：思考档位 / 429 回退 / 少说教 ----------
+// ---- 模型面板底部的两个开关：思考档位 / 429 回退 ----------
 const thinkSel = document.getElementById('thinkSel');
 const thinkNow = document.getElementById('thinkNow');
 const r429Sw = document.getElementById('r429Sw');
 const r429Now = document.getElementById('r429Now');
-const plainSw = document.getElementById('plainSw');
-const plainNow = document.getElementById('plainNow');
 const optHint = document.getElementById('optHint');
 const restoreEnvBtn = document.getElementById('restoreEnv');
 
 let thinkState = { level: 'auto', perModel: {}, levels: [] };
 let r429State = { config: { enabled: true, migrateThreshold: 3 }, cooldownLeft: 0, migrating: false };
-let plainState = { plainTalk: true };
 
 const FALLBACK_LEVELS = [
   { id: 'off', name: '关', desc: '不要思考，最快最省' },
@@ -3678,26 +5594,15 @@ function paintR429() {
   r429Now.textContent = cool > 0 ? `· 冷却中 ${cool}s` : on ? `· 连撞 ${r429State.config?.migrateThreshold ?? 3} 次换会话` : '';
 }
 
-function paintPlain() {
-  if (!plainSw) return;
-  const on = Boolean(plainState.plainTalk);
-  plainSw.textContent = on ? '已开启' : '已关闭';
-  plainSw.className = 'switch' + (on ? ' on' : '');
-  plainNow.textContent = on ? '· 不啰嗦' : '';
-}
-
 async function loadOptions() {
-  const [t, r, c] = await Promise.all([
+  const [t, r] = await Promise.all([
     fetch('/api/thinking').then((x) => x.json()).catch(() => null),
     fetch('/api/retry429').then((x) => x.json()).catch(() => null),
-    fetch('/api/chatstyle').then((x) => x.json()).catch(() => null),
   ]);
   if (t) thinkState = t;
   if (r) r429State = r;
-  if (c) plainState = c;
   paintThink();
   paintR429();
-  paintPlain();
 }
 
 if (thinkSel) {
@@ -3739,26 +5644,6 @@ if (r429Sw) {
     r429State = r;
     paintR429();
     if (optHint) optHint.textContent = next ? '撞 429 会自动回退换会话' : '撞 429 不再自动回退';
-  };
-}
-
-if (plainSw) {
-  plainSw.onclick = async () => {
-    const next = !plainState.plainTalk;
-    plainSw.disabled = true;
-    const r = await fetch('/api/chatstyle/set', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plainTalk: next }),
-    }).then((x) => x.json()).catch(() => null);
-    plainSw.disabled = false;
-    if (!r || r.error) {
-      if (optHint) optHint.textContent = '操作失败：' + (r && r.error ? r.error : '网络错误');
-      return;
-    }
-    plainState = r;
-    paintPlain();
-    if (optHint) optHint.textContent = next ? '少说教已开（底线不变）' : '少说教已关';
   };
 }
 

@@ -12,3 +12,10 @@ publish-log.txt
 *.bak
 *.bak-*
 *.log
+
+# 临时截图 / 调试产物
+mobile/app/build/
+_*.mjs
+_*.py
+_*.png
+.build/

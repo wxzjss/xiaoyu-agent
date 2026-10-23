@@ -7,6 +7,15 @@ import { config } from './config.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
+// 前情：一进来就记得的那段对话。只贴给模型看，不进会话记录，界面也不会画出来。
+import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
+// 会话记忆文件：一个会话一份自己的本子，每轮拼进系统提示（见 persona.mjs 的 memoryBlock）。
+import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, wipeMemory, snapMemory, SKELETON } from './session-memory.mjs';
+import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit } from './edit.mjs';
+// 整份数据备份：会话 / 人设 / 模型配置 / 设置，换电脑或重装时救命用。
+import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
+import { buildSessionLog } from './session-log.mjs';
+import { applySafeWord, sessionModeWord } from './mode.mjs';
 import {
   getSettings,
   saveSettings,
@@ -14,6 +23,8 @@ import {
   safeWordNoteFor,
   DEFAULT_SETTINGS,
   resetBottomLines,
+  setDefaultBottomLines,
+  defaultBottomLines,
   resetSafeWords,
   effectiveContextLimit,
 } from './settings.mjs';
@@ -27,8 +38,13 @@ import {
   renamePersona,
   deletePersona,
   resetPersona,
+  setPersonaAsBuiltinDefault,
+  wipePersonaText,
+  setPersonaAsDefault,
 } from './persona-store.mjs';
 import { getFeatures, setFeature } from './features.mjs';
+// 纯净模式开关（见 pure.mjs）
+import { pureModeOn, setPureMode } from './pure.mjs';
 import { getSkinState, writeSkin, skinVideoPath, ensureBundledVideo } from './skin.mjs';
 import { getThinking, setThinking, LEVELS } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
@@ -45,6 +61,18 @@ import {
 } from './retry429.mjs';
 import { runSelfCheck, decideMode, lastSelfCheck, pendingIssues } from './selfcheck.mjs';
 import {
+  hasOpening,
+  markOpened,
+  seedOpeningMessages,
+  finishOpening,
+  openingEnabled,
+  openingTexts,
+  setOpeningTexts,
+  resetOpeningTexts,
+  openingHeadIndexes,
+  isOpeningMessage,
+} from './opening.mjs';
+import {
   listModels,
   saveModel,
   deleteModel,
@@ -54,7 +82,19 @@ import {
   endpointFor,
   restoreEnvModel,
 } from './models.mjs';
-import { loadRewinds, effectiveIndexes, createRewind, undoLastRewind, restoreWorkspace } from './rewind.mjs';
+import { loadRewinds, effectiveIndexes, createRewind, undoLastRewind, restoreWorkspace, restoreMemory } from './rewind.mjs';
+import {
+  publicMobileState,
+  enableMobile,
+  disableMobile,
+  rotateMobileToken,
+  forgetDevice,
+  checkAccess,
+  touchDevice,
+  pairingInfo,
+  lanAddresses,
+} from './mobile.mjs';
+import { qrSvg, pairingUrl } from './qrcode.mjs';
 import {
   isSessionId,
   newSessionId,
@@ -66,6 +106,10 @@ import {
   getLastSessionId,
   setLastSessionId,
   titleFromMessage,
+  exportSession,
+  exportAllSessions,
+  parseImport,
+  importSessions,
 } from './sessions-core.mjs';
 
 const PUBLIC = join(config.root, 'public');
@@ -93,9 +137,16 @@ function publicSession(session) {
   // 回退：只按「有效下标」画气泡，被撤回的那些直接不出现。
   const all = Array.isArray(session.messages) ? session.messages : [];
   const alive = new Set(effectiveIndexes(all, loadRewinds(session)).keep);
+  // 哪些句子主人手动改过（下标 → 最后一次改的时间），界面据此点「· 改过」
+  const editedAt = editInfo(session);
+  // 会话开头那一对 user→assistant 是新建时垫的：它们在历史里就是两条真实的对话，
+  // 模型看到的就是这一份完整的记录（不带任何记号），只有界面从开头把它们跳过。
+  // 用位置判断而不是在消息上打标记，是为了让盘里的历史干干净净、看不出人工痕迹。
+  const headSkip = openingHeadIndexes(all);
   for (let i = 0; i < all.length; i++) {
     const m = all[i];
     if (!m || m.context) continue;
+    if (headSkip.has(i)) continue;
     if (!alive.has(i)) continue;
     // content 可能是多模态数组（只在内存里出现过），取文字段
     const raw = m.content;
@@ -105,6 +156,7 @@ function publicSession(session) {
       ...(Array.isArray(m._images) ? m._images.map((p) => ({ path: p, kind: 'image' })) : []),
     ].map((a) => ({ ...a, name: String(a.path).split(/[\\/]/).pop() }));
     if (!text && !atts.length) continue;
+    const edited = Object.prototype.hasOwnProperty.call(editedAt, i);
     if (m.role === 'user') {
       // 有 _text 就用它（那是主人真打的字）。
       // 老消息可能没存 _text，那就把拼进去的附件说明块剥掉，别糊在气泡里。
@@ -114,9 +166,9 @@ function publicSession(session) {
         const mark = shown.indexOf('【主人随这条消息一起发来的');
         if (mark >= 0) shown = shown.slice(0, mark).trim();
       }
-      turns.push({ role: 'user', text: shown, atts, rewindId: i });
+      turns.push({ role: 'user', text: shown, atts, rewindId: i, edited });
     }
-    else if (m.role === 'assistant') turns.push({ role: 'assistant', text, rewindId: i });
+    else if (m.role === 'assistant') turns.push({ role: 'assistant', text, rewindId: i, edited });
   }
   // 撤回记录本身也交出去，界面才能提示「还能撤销回退」
   const rewinds = loadRewinds(session);
@@ -165,6 +217,88 @@ async function body(req) {
   let raw = '';
   for await (const chunk of req) raw += chunk;
   return raw ? JSON.parse(raw) : {};
+}
+
+/** 导出文件名里用的时间戳：20261023-034512 */
+function stamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/**
+ * 新建会话时垫在历史最前面那几条。
+ *
+ * 一般就是一条 system（人设 + 规矩）。**纯净模式下系统提示是空串，那就一条都别放** ——
+ * 空的 system 发出去有的网关会 400，留在盘里也只是个占位的空壳。
+ * 关掉纯净模式之后，runAgent 的 refreshSystem 会在这一轮开头把 system 补回来。
+ */
+function sysSeed(sessionId) {
+  const text = systemPrompt(sessionId);
+  return text ? [{ role: 'system', content: text }] : [];
+}
+
+/**
+ * 把开场那一轮的结果落到会话里，并让它对后面这一轮「算数」。
+ *
+ * @param {object} session 会话
+ * @param {object} openingUser 开场用的那条 user（模型输出暂存在它的 _got 上）
+ * @param {object[]} [wire] 这一轮要发给模型的数组；给了就把开场两条插进去
+ *                           （不给就是新建时后台跑，那时候还没有 wire）
+ */
+function applyOpening(session, openingUser, wire) {
+  const text = String(openingUser && openingUser._got ? openingUser._got : '').trim();
+  if (openingUser) delete openingUser._got;
+  if (!text) {
+    // 一个字都没说出来：把占位那条摘掉，别留个空 user 在历史里
+    const at = session.messages.indexOf(openingUser);
+    if (at >= 0) session.messages.splice(at, 1);
+    if (wire) {
+      const wat = wire.indexOf(openingUser);
+      if (wat >= 0) wire.splice(wat, 1);
+    }
+    markOpened(session.id);
+    delete session._openingUser;
+    return false;
+  }
+  finishOpening(session, openingUser, text);
+  if (wire) {
+    // 开场那两条必须出现在这一轮发给模型的数组里，不然模型看不到自己刚说过的话。
+    // 插的是 history 里的那一条对象（不是副本）——commitWireBack 只接
+    // 「session.messages 里没有的新对象」，对象一致才不会重复接一次。
+    const idx = session.messages.indexOf(openingUser);
+    const reply = idx >= 0 ? session.messages[idx + 1] : null;
+    const at = wire.indexOf(openingUser);
+    if (at >= 0 && reply && wire[at + 1] !== reply) wire.splice(at + 1, 0, reply);
+  }
+  delete session._openingUser;
+  return true;
+}
+
+/**
+ * 新建会话时把开场那两轮接进历史。
+ *
+ * 主人要的是「新建那一瞬间就已经历过第一轮」。以前是让模型现场编开场白，
+ * 每次都不一样；主人 2026-10-23 给了定稿（`D:\小鱼\第一轮对话` 里那个新会话的
+ * 前两条），改成写死 —— 所以现在不需要跑模型、不需要等，建完立刻就有这两条。
+ *
+ * 保留 async 签名：调用方是 fire-and-forget 的 .catch()，改成同步会炸它。
+ */
+async function startOpening(sessionId) {
+  // 功能面板里关掉「开场白」就什么都不垫，新建会话直接是白纸。
+  if (!openingEnabled()) return;
+  // 纯净模式：开场白那两条也是「设定」，而且它前面那句「在吗」对模型来说
+  // 就是一段来历不明的前情。纯净模式下不垫 —— 新会话就是真的空。
+  if (pureModeOn()) return;
+  const session = getSession(sessionId);
+  if (!session || hasOpening(session)) return;
+  const { userMsg, assistantText } = seedOpeningMessages();
+  const at = session.messages.findIndex((m) => m && m.role !== 'system' && !m.context);
+  const pair = [userMsg, { role: 'assistant', content: assistantText }];
+  if (at < 0) session.messages.push(...pair);
+  else session.messages.splice(at, 0, ...pair);
+  markOpened(session.id);
+  saveSession(session);
 }
 
 /**
@@ -251,7 +385,26 @@ async function serveStatic(req, res) {
         : name.endsWith('.css')
           ? 'text/css; charset=utf-8'
           : 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+    const head = { 'Content-Type': type, 'Cache-Control': 'no-store' };
+
+    /**
+     * 手机壳第一次进来时地址里带 ?token=…，这里顺手把它种成 cookie。
+     *
+     * 为什么要 cookie：WebView 里页面自己发的 fetch 带不上自定义头（loadUrl 的
+     * Map 只对主框架生效），token 放 URL query 也不行 —— 页面代码全是绝对路径
+     * '/api/xxx'，绝对路径不继承文档的 query。只有 cookie 是浏览器自动带的，
+     * 页面一行都不用改。种上之后后面所有请求 checkAccess 都能认出来。
+     *
+     * httpOnly 关掉是故意的：页面自己不需要读它，但关掉便于以后在手机上排查；
+     * 这是内网自建服务，token 本来也只在局域网里有意义。
+     */
+    const qTok = (url.searchParams.get('token') || '').trim();
+    if (qTok && name.endsWith('.html')) {
+      head['Set-Cookie'] =
+        `xy_token=${encodeURIComponent(qTok)}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    }
+
+    res.writeHead(200, head);
     res.end(data);
   } catch {
     json(res, 404, { error: 'not found' });
@@ -262,8 +415,143 @@ async function serveStatic(req, res) {
 // 必须赶在第一个 /api/skin/video 请求之前。
 ensureBundledVideo();
 
+/** 本机请求？手机配对守卫用它决定要不要记设备、要不要放行 */
+function isLoopbackReq(req) {
+  const a = String(req.socket?.remoteAddress || '');
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+}
+
+/** 现在监听的实际端口（listen 之前是 0，配对页拿到也没用，所以用它兜底） */
+let listeningPort = 0;
+function currentPort() {
+  try {
+    const a = server.address();
+    if (a && typeof a === 'object' && a.port) return a.port;
+  } catch {}
+  return listeningPort || config.port;
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+
+  /**
+   * 局域网（手机）那一侧不在 HTTP 上做跨域。
+   *
+   * 为什么要专门写：APK 里的 WebView 加载的就是 http://192.168.x.x:8787 本身（同源，本来用不上 CORS）。
+   * 可要是给局域网来的请求发 `Access-Control-Allow-Origin: *`，手机浏览器里随便哪个网页、
+   * 别的 App 的 WebView 就能跨域读写这台电脑 —— token 又是能塞进 ?token= 的。
+   * 所以干脆一条 CORS 头都不给（WebSocket 握手不受 CORS 限制，照常能连）。
+   * 桌面版/本机回环不受影响：它跟页面同源，也不需要这些头。
+   */
+  const isLocalReq = isLoopbackReq(req);
+  const rawSetHeader = res.setHeader.bind(res);
+  if (!isLocalReq) {
+    res.setHeader = (k, v) => {
+      if (!String(k).toLowerCase().startsWith('access-control-')) rawSetHeader(k, v);
+      return res;
+    };
+  }
+
+  /**
+   * 手机配对守卫。只有一句话：**开了局域网，就必须带对 token**。
+   *
+   * 为什么自己写而不是交给 WebView / 反向代理：这台服务能读能写文件、能跑命令，
+   * 局域网里谁都能访问等于把机器交出去。token 是唯一的门。
+   *
+   * 例外（有意为之）：
+   *  - 本机回环地址永远放行，桌面版自己要用；
+   *  - /api/health 放行，手机靠它探「这台电脑在不在」，它不含任何隐私；
+   *  - /api/mobile/ping 放行，配对页要用它判断「地址对不对」。
+   */
+  const openPaths = new Set(['/api/health', '/api/mobile/ping']);
+  if (!openPaths.has(url.pathname)) {
+    const gate = checkAccess(req);
+    if (!gate.ok) {
+      return json(res, 401, {
+        error: 'unauthorized',
+        reason: gate.reason,
+        hint:
+          gate.reason === 'off'
+            ? '这台服务只监听本机。要在手机上用，先在电脑上打开【设置 → 手机连接】开启局域网。'
+            : '配对码不对。在电脑上打开【设置 → 手机连接】重新扫码。',
+      });
+    }
+    if (gate.ok && !isLocalReq) touchDevice(req);
+  }
+
+  // ---- 手机配对 ----
+  // 这几条只让本机访问（配对页在电脑上开）。手机那边只认 token，不需要这些接口。
+  if (url.pathname.startsWith('/api/mobile/')) {
+    const local = isLoopbackReq(req);
+    if (req.method === 'GET' && url.pathname === '/api/mobile/ping') {
+      // 手机用：只回「到了没、要不要 token」，不泄露地址和设备信息。
+      // needToken 问的是「有没有开局域网」，不是命中计数（那个变量根本不存在，别再用）。
+      return json(res, 200, {
+        ok: true,
+        app: 'xiaoyu-agent',
+        version: config.version,
+        needToken: publicMobileState().enabled,
+      });
+    }
+    if (!local) {
+      return json(res, 403, { error: '只能在电脑上操作配对' });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/mobile/state') {
+      return json(res, 200, { ...publicMobileState(), port: currentPort(), hosts: lanAddresses() });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/mobile/enable') {
+      const b = await body(req).catch(() => ({}));
+      const s = enableMobile({ resetToken: Boolean(b?.resetToken) });
+      return json(res, 200, { ...publicMobileState(), token: s.token, port: currentPort(), hosts: lanAddresses() });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/mobile/disable') {
+      disableMobile();
+      return json(res, 200, publicMobileState());
+    }
+    if (req.method === 'POST' && url.pathname === '/api/mobile/rotate') {
+      const s = rotateMobileToken();
+      return json(res, 200, { ...publicMobileState(), token: s.token });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/mobile/forget') {
+      const b = await body(req).catch(() => ({}));
+      forgetDevice(String(b?.id || ''));
+      return json(res, 200, publicMobileState());
+    }
+    // 配对页要展示的完整信息（含 token 明文、二维码 SVG，只在本机给）
+    if (req.method === 'GET' && url.pathname === '/api/mobile/pairing') {
+      const info = pairingInfo(currentPort());
+      /**
+       * 每个能连的地址各配一个二维码。
+       *
+       * 以前只给 urls[0] 一个码，地址一多就会「扫到的那个连不上」——
+       * 排第一的是 Wi-Fi，可人可能在别的网络里；Radmin 那种跨网络的地址
+       * 反而排第二，扫不到就以为连不上。现在一次全给，界面上并排列出来。
+       *
+       * hosts 是 [{name, address, kind}]，用 address 拼 URL；别直接拼对象
+       * （会变成 http://[object Object]:8787）。
+       */
+      const urls = info.hosts.map((h) => `http://${typeof h === 'string' ? h : h.address}:${info.port}`);
+      const endpoints = info.hosts.map((h, i) => {
+        const url = urls[i];
+        const kind = typeof h === 'string' ? 2 : Number(h.kind) || 0;
+        return {
+          name: typeof h === 'string' ? '' : String(h.name || ''),
+          address: typeof h === 'string' ? h : h.address,
+          url,
+          kind,
+          label: kind === 0 ? '同一个 Wi-Fi' : kind === 1 ? '跨网络（组网工具）' : '其它网络',
+          qr: info.token ? qrSvg(pairingUrl(url, info.token), { scale: 5, margin: 2 }) : '',
+        };
+      });
+      return json(res, 200, {
+        ...info,
+        urls,
+        endpoints,
+        qr: endpoints[0]?.qr || '',
+      });
+    }
+    return json(res, 404, { error: 'no such mobile endpoint' });
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/health') {
     const ep = activeEndpoint();
@@ -447,7 +735,7 @@ const server = createServer(async (req, res) => {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messages: [
-          { role: 'system', content: systemPrompt(newId) },
+          ...sysSeed(newId),
           { role: 'user', content: handoffMessage(summaryText, cur.title ?? '') },
         ],
       };
@@ -525,6 +813,53 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // ---- 纯净模式：读状态 / 切换 ----
+  //
+  // 状态存在服务端（.state/pure.json），不放 localStorage：
+  // 换设备、换浏览器都得一致，而且服务端拼系统提示时自己要知道开没开。
+  if (req.method === 'GET' && url.pathname === '/api/pure') {
+    return json(res, 200, { on: pureModeOn() });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/pure') {
+    let payload = {};
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      // 不传 on 就当作「翻一下」，前端点按钮不用自己算当前值
+      const next = typeof payload?.on === 'boolean' ? payload.on : !pureModeOn();
+      return json(res, 200, { on: setPureMode(next) });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // ---- 开场白那两段隐藏对话：读 / 改 / 恢复默认 ----
+  if (req.method === 'GET' && url.pathname === '/api/opening') {
+    return json(res, 200, openingTexts());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/opening') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      return json(res, 200, setOpeningTexts(payload || {}));
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/opening/reset') {
+    return json(res, 200, resetOpeningTexts());
+  }
+
   // ---- 视频背景：状态 / 旋钮 / 片子本身 ----
   if (req.method === 'GET' && url.pathname === '/api/skin') {
     return json(res, 200, getSkinState());
@@ -551,7 +886,11 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/settings') {
-    return json(res, 200, { settings: getSettings(), defaults: DEFAULT_SETTINGS });
+    // defaults 交的是「当前生效的默认值」：主人定过就用主人定的那版
+    return json(res, 200, {
+      settings: getSettings(),
+      defaults: { ...DEFAULT_SETTINGS, bottomLines: defaultBottomLines() },
+    });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/settings') {
@@ -562,6 +901,22 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     return json(res, 200, { settings: saveSettings(payload ?? {}) });
+  }
+
+  // 把「现在这版底线」定成新的出厂默认（以后「恢复默认底线」回到这版）
+  if (req.method === 'POST' && url.pathname === '/api/settings/default-bottomlines') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const out = setDefaultBottomLines(payload?.bottomLines ?? []);
+      return json(res, 200, { ...out, settings: getSettings() });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
   }
 
   // 只恢复「底线」，安全词 / 人设 / 模型一概不动
@@ -774,10 +1129,30 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // 把当前这套人设存成默认（以后「恢复成默认内容」就回到这套）
+  if (req.method === 'POST' && url.pathname === '/api/personas/set-default') {
+    try {
+      const payload = await body(req);
+      return json(res, 200, setPersonaAsDefault(payload?.id));
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/personas/reset') {
     try {
       const payload = await body(req);
       return json(res, 200, resetPersona(payload?.id));
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 把「现在这套人设」定成默认（以后「恢复成默认内容」回到它）
+  if (req.method === 'POST' && url.pathname === '/api/personas/as-default') {
+    try {
+      const payload = await body(req);
+      return json(res, 200, setPersonaAsBuiltinDefault(payload?.id));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -802,12 +1177,235 @@ const server = createServer(async (req, res) => {
       title: String(payload?.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 40) || '\u65b0\u4f1a\u8bdd',
       createdAt: now,
       updatedAt: now,
-      messages: [{ role: 'system', content: systemPrompt(id) }],
+      messages: sysSeed(id),
+      // 这个会话还没开过场：下面 /api/chat 收到第一次 resume 时会先补一轮开场白。
+      // （不在新建接口里直接跑模型 —— 新建要立刻返回，不能让界面等十几秒）
+      _openingPending: true,
     };
     saveSession(session);
     sessions.set(id, session);
+    // 新会话当场就有一份自己的记忆本子（骨架），不用等到第一次开口才建
+    try {
+      ensureMemory(id);
+    } catch (err) {
+      console.warn('[memory] 新会话本子没建起来：', String(err?.message ?? err));
+    }
     setLastSessionId(id);
-    return json(res, 200, { session: publicSession(session) });
+    // 建完就立刻去跑开场（后台跑，不等它）。主人要的是「新建那一瞬间就已经历过第一轮」，
+    // 所以不能等主人先开口 —— 但也不能让新建接口卡十几秒，所以 fire-and-forget。
+    // 失败无所谓：开场跑不出来就当没开过场，主人第一句话照样能聊。
+    startOpening(id).catch((err) => console.warn('[opening] 后台开场没跑成：', String(err?.message ?? err)));
+    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id) });
+  }
+
+  /**
+   * 在当前会话的某一轮之后「开一个新会话接着往下聊」（DSH 的 branch）。
+   *
+   * 跟 rewind 不一样：**不动原会话**，把原会话到这一轮为止的消息复制一份到新会话里，
+   * 手动复制那几个文件也不动。主人想从某个岔路口往另一个方向试，原会话还在。
+   *
+   * 新会话要先过一遍压缩历史：原会话里可能已经有旧的 context 消息，
+   * 再叠一份新的系统提示就成两套规则了，模型会挑着看。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/sessions/branch') {
+    const { id, at, title } = await body(req).catch(() => ({}));
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const src = getSession(id);
+    if (!src) return json(res, 404, { error: 'session not found' });
+    repairHistory(src.messages);
+
+    const msgs = Array.isArray(src.messages) ? src.messages : [];
+    // at 是「用户那句话」在 messages 里的下标（前端 done 事件里就带的这个数）。
+    // 不传 / 传坏了就整段复制。
+    let end = Number.isFinite(Number(at)) ? Math.floor(Number(at)) : msgs.length - 1;
+    if (end < 0 || end >= msgs.length) end = msgs.length - 1;
+
+    const newId = newSessionId();
+    const now = Date.now();
+    // 拷一份，别把原会话的消息对象换个会话继续共用（后面会被改写 content）
+    const copied = msgs.slice(0, end + 1).map((m) => JSON.parse(JSON.stringify(m)));
+    // 分支点之后的「回退点」与文件快照不再适用，丢掉
+    const keptRewinds = (Array.isArray(src.rewinds) ? src.rewinds : []).filter(
+      (r) => Number.isFinite(Number(r?.at)) && Number(r.at) <= end,
+    );
+    const session = {
+      id: newId,
+      title:
+        String(title ?? '').replace(/\s+/g, ' ').trim().slice(0, 40) ||
+        (src.title ? `${src.title} (分支)` : '分支会话'),
+      createdAt: now,
+      updatedAt: now,
+      messages: copied.length ? copied : sysSeed(newId),
+      rewinds: keptRewinds,
+      // 档位跟着过来：原会话要是在「停下」档，分支也接着那一档
+      mode: src.mode?.word ? { word: src.mode.word, since: now } : null,
+      branchedFrom: { id, at: end },
+    };
+    saveSession(session);
+    sessions.set(newId, session);
+    // 分支继承原会话的记忆本子：这一段对话是接着往下长的，前情该记得的一样得记得。
+    try {
+      copyMemory(id, newId);
+    } catch (err) {
+      console.warn('[memory] 分支记忆没继承成：', String(err?.message ?? err));
+    }
+    setLastSessionId(newId);
+    return json(res, 200, { session: publicSession(session), from: id, at: end });
+  }
+
+  // ---- 会话记忆（一个会话一份本子） ----------------------------------------
+  // 放在会话那一组接口旁边：它跟会话同生共死，删除时一起进回收站、分支时一起继承。
+
+  // 读：没建过就先建骨架再返回（新建会话走不到这里也不怕）
+  if (req.method === 'GET' && url.pathname === '/api/sessions/memory') {
+    const id = url.searchParams.get('id') || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    try {
+      const text = ensureMemory(id);
+      return json(res, 200, { id, text, ...memoryInfo(id) });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 写：整份覆盖（界面上的编辑器、我改文件都用这条）
+  if (req.method === 'POST' && url.pathname === '/api/sessions/memory') {
+    const payload = await body(req).catch(() => ({}));
+    const id = payload?.id || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    if (typeof payload?.text !== 'string') return json(res, 400, { error: '没有正文' });
+    try {
+      writeMemory(id, payload.text);
+      return json(res, 200, { ok: true, id, ...memoryInfo(id) });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 加一条滚动摘要：编号自己算，满 80 条自动把最旧的挪进归档
+  if (req.method === 'POST' && url.pathname === '/api/sessions/memory/digest') {
+    const payload = await body(req).catch(() => ({}));
+    const id = payload?.id || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    try {
+      const out = appendDigest(id, payload?.summary);
+      return json(res, 200, { ok: true, id, index: out.index, folded: out.folded.length, ...memoryInfo(id) });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 清空：回到骨架。删之前备份，返回备份路径
+  if (req.method === 'POST' && url.pathname === '/api/sessions/memory/wipe') {
+    const payload = await body(req).catch(() => ({}));
+    const id = payload?.id || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    try {
+      const out = wipeMemory(id);
+      return json(res, 200, { ok: true, id, ...out, ...memoryInfo(id) });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 下载：存成 .md，主人能拿去看
+  if (req.method === 'GET' && url.pathname === '/api/sessions/memory/export') {
+    const id = url.searchParams.get('id') || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const text = ensureMemory(id);
+    const name = encodeURIComponent(`会话记忆-${id}.md`);
+    res.writeHead(200, {
+      'content-type': 'text/markdown; charset=utf-8',
+      'content-disposition': `attachment; filename*=UTF-8''${name}`,
+      'cache-control': 'no-store',
+    });
+    return res.end(text);
+  }
+
+  // ---- 改某一句 / 撤销修改 ------------------------------------------------
+  // 「改一句」有两种：改对话本身、改它在记忆本子里那条摘要。都记进 session.edits，
+  // 撤销时按后进先出还原，只动那一句，别的一句不碰。
+
+  if (req.method === 'POST' && url.pathname === '/api/sessions/edit') {
+    const { id, at, text } = await body(req).catch(() => ({}));
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const session = getSession(id);
+    if (!session) return json(res, 404, { error: 'session not found' });
+    // 跑着的时候不让改：「改一句」和「模型正在读这一句」抢同一份 messages，
+    // 落盘顺序一乱就会互相覆盖。判断的是这一轮真的还在跑（signal 没 abort）。
+    // 注意 runningTurns 是在 res.writeHead 之后才 set 的，这里只是拦「已经开始跑」的。
+    const busyTurn = runningTurns.get(id);
+    if (busyTurn && !busyTurn.ac.signal.aborted) {
+      return json(res, 409, { error: '这个会话正在跑，先点停止再改' });
+    }
+    const out = editMessage(session, at, text);
+    if (!out.ok) return json(res, 400, { error: out.error });
+    if (!out.unchanged) saveSession(session);
+    // 改完对话，把这个会话记忆本子里提到这句话的地方也换成新的（主人明确要的）
+    let mem = null;
+    if (!out.unchanged) {
+      try {
+        const s = syncMemoryAfterEdit(id, out.before, out.after);
+        mem = { changed: s.changed, lines: s.changed, where: s.where };
+        // 改了本子哪几行、原来长什么样，抄一份到这次改动记录上。
+        // 撤销时就按这份记录原样写回去 —— 不能靠拿原话再去本子里匹配，
+        // 本子里存的是截断后的新内容，原话开头已经没了，匹配必然失败（踩过）。
+        if (s.changed) {
+          const stack = Array.isArray(session.edits) ? session.edits : [];
+          const last = stack[stack.length - 1];
+          if (last) {
+            last.memNote = s.hits;
+            saveSession(session);
+          }
+        }
+      } catch (e) {
+        mem = { changed: 0, lines: 0, where: [], error: e.message };
+      }
+    }
+    return json(res, 200, {
+      ok: true,
+      unchanged: Boolean(out.unchanged),
+      session: publicSession(session),
+      edits: editInfo(session),
+      memory: mem,
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/sessions/edit-undo') {
+    const { id, at } = await body(req).catch(() => ({}));
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const session = getSession(id);
+    if (!session) return json(res, 404, { error: 'session not found' });
+    const out = undoEdit(session, at);
+    if (!out.ok) return json(res, 400, { error: out.error });
+    saveSession(session);
+    // 撤销也要把记忆一起退回去，不然本子里留着「改成了…」会很怪
+    let mem = null;
+    try {
+      const s = unsyncMemoryAfterEdit(id, out.memNote);
+      mem = { changed: s.changed };
+    } catch (e) {
+      mem = { changed: 0, error: e.message };
+    }
+    return json(res, 200, {
+      ok: true, at: out.idx, text: out.text, unchanged: false,
+      session: publicSession(session), edits: editInfo(session), memory: mem,
+    });
+  }
+
+  // 改摘要：lineNo 是摘要行 `- R0001 …` 里的编号
+  if (req.method === 'POST' && url.pathname === '/api/sessions/memory/digest/edit') {
+    const { id, index, summary } = await body(req).catch(() => ({}));
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const out = editDigest(id, index, summary);
+    if (!out.ok) return json(res, 400, { error: out.error });
+    return json(res, 200, { ok: true, ...out, ...memoryInfo(id), digests: digestLines(id) });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/sessions/memory/digests') {
+    const id = url.searchParams.get('id') || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    return json(res, 200, { id, digests: digestLines(id) });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/sessions/select') {
@@ -816,7 +1414,8 @@ const server = createServer(async (req, res) => {
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
     setLastSessionId(id);
-    return json(res, 200, { session: publicSession(session) });
+    // 顺带把本子的状态带回去，界面不用再单发一次请求就知道有没有记忆
+    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id) });
   }
 
   // ---- 对话回退 ----
@@ -834,8 +1433,10 @@ const server = createServer(async (req, res) => {
     if (!out.ok) return json(res, 400, { error: out.error });
     // 文件按快照还原（以快照为准，只动真正不一致的文件）
     const files = restoreWorkspace(out.rewind.ws || {});
+    // 记忆跟着一起退回这一轮开始时的样子，否则对话退回去了、记忆还记着后来那些事
+    const memory = restoreMemory(session, out.rewind);
     saveSession(session);
-    return json(res, 200, { ok: true, session: publicSession(session), files });
+    return json(res, 200, { ok: true, session: publicSession(session), files, memory });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/sessions/rewind-undo') {
@@ -843,10 +1444,20 @@ const server = createServer(async (req, res) => {
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
+    // undoLastRewind 会把被摘掉那个回退点的 mem / ws 一起带回来（它在删之前取的），
+    // 所以这里拿到的是真快照。撤销回退 = 记忆也回到「还没退」的样子。
     const out = undoLastRewind(session);
     if (!out.ok) return json(res, 400, { error: out.error });
+    let memory = null;
+    if (out.hasMem) {
+      try {
+        memory = snapMemory(id, out.mem ?? null);
+      } catch {
+        memory = null;
+      }
+    }
     saveSession(session);
-    return json(res, 200, { ok: true, session: publicSession(session) });
+    return json(res, 200, { ok: true, session: publicSession(session), memory });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/sessions/rewind-preview') {
@@ -886,6 +1497,10 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/sessions/delete') {
     const { id } = await body(req).catch(() => ({}));
     const ok = deleteSession(id);
+    // 本子跟着会话走：挪进 .state/memory/.trash，不直接删（主人可能想找回）
+    try {
+      trashMemory(id);
+    } catch {}
     sessions.delete(id);
     const list = listSessions();
     const last = getLastSessionId();
@@ -893,6 +1508,113 @@ const server = createServer(async (req, res) => {
       ok,
       lastSessionId: last && list.some((s) => s.id === last) ? last : (list[0]?.id ?? null),
     });
+  }
+
+  // ---- 整份数据备份 / 恢复 -------------------------------------------------
+  // 会话、人设、模型配置、设置……全在这里。换电脑 / 重装 / 换安装方式时用。
+  // 概览：GET /api/backup/info
+  if (req.method === 'GET' && url.pathname === '/api/backup/info') {
+    return json(res, 200, { ok: true, ...backupSummary() });
+  }
+  // 下载整包：GET /api/backup/export
+  if (req.method === 'GET' && url.pathname === '/api/backup/export') {
+    const payload = buildBackup();
+    if (!payload.count) return json(res, 404, { error: '没有可备份的数据' });
+    const buf = Buffer.from(JSON.stringify(payload), 'utf8');
+    const filename = `小鱼Agent-数据备份-${stamp()}.json`;
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': String(buf.length),
+      'Content-Disposition': `attachment; filename="xiaoyu-backup-${stamp()}.json"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'Cache-Control': 'no-store',
+    });
+    return res.end(buf);
+  }
+  // 恢复：POST /api/backup/restore  { data: <包内容，对象或字符串>, mode: 'merge' | 'replace' }
+  if (req.method === 'POST' && url.pathname === '/api/backup/restore') {
+    const bodyJson = await body(req).catch(() => null);
+    if (!bodyJson) return json(res, 400, { error: '请求体不是合法 JSON' });
+    const mode = bodyJson.mode === 'replace' ? 'replace' : 'merge';
+    try {
+      const out = restoreBackup(bodyJson.data, { mode });
+      return json(res, 200, out);
+    } catch (e) {
+      return json(res, e.status || 500, { error: e.message || '恢复失败' });
+    }
+  }
+
+  // ---- 会话日志（.zip）------------------------------------------------------
+  // GET /api/sessions/log?id=xxx  → 把这个会话的原始记录 + 附件打成压缩包下载
+  //
+  // 跟上面那个 /api/sessions/export 不是一回事：
+  //   export 给的是「能再导进来」的 JSON；log 给的是「能拿去看、拿去查」的压缩包，
+  //   消息一条不删（系统提示、隐藏的开场轮都在），附带的图片文件也一并塞进去。
+  // 同一条路也认 HEAD：前端点「下载日志」时先探一下，好提前把错误摆出来
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/sessions/log') {
+    const id = url.searchParams.get('id') || getLastSessionId() || '';
+    const s = id ? getSession(id) : null;
+    if (!s) return json(res, 404, { error: '找不到这个会话' });
+    try {
+      const out = buildSessionLog(s);
+      if (!out.ok) return json(res, 400, { error: out.error });
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Length': String(out.bytes),
+        'Content-Disposition': `attachment; filename="xiaoyu-session-log.zip"; filename*=UTF-8''${encodeURIComponent(out.filename)}`,
+        'Cache-Control': 'no-store',
+      });
+      return res.end(req.method === 'HEAD' ? undefined : out.buffer);
+    } catch (e) {
+      return json(res, 500, { error: '打包失败：' + (e && e.message ? e.message : e) });
+    }
+  }
+
+  // ---- 会话导入 / 导出 -----------------------------------------------------
+  // 导出单会话：GET /api/sessions/export?id=xxx  → 直接当文件下载
+  // 导出全部：  GET /api/sessions/export?all=1   → 整包
+  if (req.method === 'GET' && url.pathname === '/api/sessions/export') {
+    const wantAll = url.searchParams.get('all') === '1';
+    let payload;
+    let filename;
+    if (wantAll) {
+      payload = exportAllSessions();
+      filename = `小鱼Agent-全部会话-${stamp()}.json`;
+      if (!payload.sessions.length) return json(res, 404, { error: '一个会话都没有' });
+    } else {
+      const id = url.searchParams.get('id') || '';
+      payload = exportSession(id);
+      if (!payload) return json(res, 404, { error: '找不到这个会话' });
+      const safe = payload.session.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40) || '会话';
+      filename = `小鱼Agent-${safe}-${stamp()}.json`;
+    }
+    const buf = Buffer.from(JSON.stringify(payload, null, 2), 'utf8');
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': String(buf.length),
+      // 中文文件名走 filename* （RFC 5987），别用裸 filename，Windows 下载会变乱码
+      'Content-Disposition': `attachment; filename="xiaoyu-session-${stamp()}.json"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'Cache-Control': 'no-store',
+    });
+    return res.end(buf);
+  }
+
+  // 导入：POST /api/sessions/import  { data: <导出文件的内容，对象或字符串> }
+  if (req.method === 'POST' && url.pathname === '/api/sessions/import') {
+    const bodyJson = await body(req).catch(() => null);
+    if (!bodyJson) return json(res, 400, { error: '请求体不是合法 JSON' });
+    let raw = bodyJson.data;
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        return json(res, 400, { error: '文件内容不是合法 JSON' });
+      }
+    }
+    const drafts = parseImport(raw);
+    if (!drafts.length) return json(res, 400, { error: '里面没有能用的会话（要么没消息，要么格式不对）' });
+    const made = importSessions(drafts);
+    if (!made.length) return json(res, 500, { error: '写文件失败，一个都没导进来' });
+    return json(res, 200, { ok: true, imported: made, count: made.length });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/chat') {
@@ -904,6 +1626,11 @@ const server = createServer(async (req, res) => {
     }
     const { sessionId = 'default', message = '', resume = false } = payload;
     const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+    // 这个会话已经在跑就别再起一轮：两轮同时改同一个 messages 数组，改一句话也会打架。
+    // 注意判断要用「这里的 sessionId」——别处的接口用的是 id 变量，名字不一样。
+    if (runningTurns.has(sessionId)) {
+      return json(res, 409, { error: '这个会话还在跑，等它跑完（或者点停止）再发' });
+    }
     // 允许「只发附件、不打字」
     if (!resume && !String(message).trim() && !attachments.length) {
       return json(res, 400, { error: 'empty message' });
@@ -924,18 +1651,39 @@ const server = createServer(async (req, res) => {
       title: titleFromMessage(String(message).trim() || attachments.map((a) => a?.name).filter(Boolean).join(' ')),
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      messages: [{ role: 'system', content: systemPrompt(sessionId) }],
+      messages: sysSeed(sessionId),
     };
     const history = session.messages;
     let userMsgRef = null;
     if (!Array.isArray(history) || !history.length) {
       history.length = 0;
-      history.push({ role: 'system', content: systemPrompt(sessionId) });
+      history.push(...sysSeed(sessionId));
     }
     if (resume) {
       // 插话途中被打断，尾巴可能不齐，先修好再喂给模型。
       repairHistory(history);
-    } else {
+    }
+    // 这个会话还没开场：先把开场那两轮补上。
+    //
+    // 正常情况下 /api/sessions/new 已经写好了（startOpening 是同步的、不调模型），
+    // 只有老会话（这功能上线之前建的）或文件被手改过才会走到这里。补进去的两条
+    // 跟新建时一模一样，都对模型可见；气泡不画 —— publicSession 按开头位置跳过那一对。
+    //
+    // 条件：从没开过场、功能面板里没关掉它，而且这不是「接着跑」（resume）。
+    // resume 是插话/续跑，那时候补开场会把顺序搞乱。
+    const wantOpening = !resume && openingEnabled() && !hasOpening(session) && session._openingPending !== false
+      // 纯净模式：开场白也是「设定」，开场白连着它前面那段用户消息一起不发
+      && !pureModeOn();
+    if (wantOpening) {
+      const { userMsg: openingUser, assistantText } = seedOpeningMessages();
+      // 插在 system（+可能的 context）之后、现有对话之前，顺序才对
+      const at = history.findIndex((m) => m && m.role !== 'system' && !m.context);
+      const pair = [openingUser, { role: 'assistant', content: assistantText }];
+      if (at < 0) history.push(...pair);
+      else history.splice(at, 0, ...pair);
+      delete session._openingPending;
+    }
+    if (!resume) {
       const firstUserTurn = !history.some((m) => m.role === 'user' && !m.context);
       const userMsg = { role: 'user', content: composeUserContent(message, attachments) };
       // 图片路径单独记一份：落盘只留路径，发请求前再读成 base64
@@ -954,6 +1702,11 @@ const server = createServer(async (req, res) => {
     setLastSessionId(sessionId);
 
     const safeWord = resume ? null : matchSafeWord(message);
+    // 这一轮该处在哪一档：没喊别的词就继续当前档（新会话默认人设档），
+    // 喊了就切过去并记住，下一轮还是那一档。
+    const modeInfo = resume ? { word: sessionModeWord(session), switched: false } : applySafeWord(session, message);
+    const changedMode = modeInfo.switched || modeInfo.backToBase;
+    if (changedMode) saveSession(session);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -972,8 +1725,10 @@ const server = createServer(async (req, res) => {
         // 连接早断了也无所谓：事件已经进缓存，人回来看的时候还能补
       }
     };
-    // 带上这个词自己的说明：四个安全词干的事不一样，界面不能一律显示同一句
-    if (safeWord) send({ type: 'safe_word', word: safeWord, note: safeWordNoteFor(safeWord) });
+    // 带上这个词自己的说明：四个安全词干的事不一样，界面不能一律显示同一句。
+    // 「人设」是基线档，每轮都在，不用弹提示；只有真的切到别的档才通知界面。
+    if (modeInfo.switched) send({ type: 'safe_word', word: modeInfo.word, note: safeWordNoteFor(modeInfo.word) });
+    else if (modeInfo.backToBase) send({ type: 'safe_word', word: modeInfo.word, note: safeWordNoteFor(modeInfo.word), back: true });
 
     const ac = new AbortController();
     let finishTurn;
@@ -1000,18 +1755,120 @@ const server = createServer(async (req, res) => {
 
     // 回退：发给模型的只有「有效历史」那份拷贝，日志本身一条不动。
     const view = effectiveIndexes(history, loadRewinds(session));
-    const wireMessages = [...view.head.map((i) => history[i]), ...view.keep.map((i) => history[i])];
+    let wireMessages = [...view.head.map((i) => history[i]), ...view.keep.map((i) => history[i])];
+    // 纯净模式：把开场那两条（user + assistant）从这一轮真正发出去的内容里摘掉。
+    //
+    // 为什么不从 history 里删：那是会话记录，主人还能翻回来看；
+    // 而且一删下次又「没开过场」，会再补一遍。所以只在这一刻的拷贝上摘。
+    if (pureModeOn()) {
+      wireMessages = wireMessages.filter((m) => !isOpeningMessage(m));
+      // 系统提示（不管空的还是有内容的）一律不发：老会话盘里存的是完整人设，
+      // 不摘掉就等于一边说"纯净"一边还带着人设说话。context 那条规则副本同理。
+      wireMessages = wireMessages.filter((m) => !(m && (m.role === 'system' || m.context)));
+    }
+    // 前情：只贴给模型看，不进会话记录。
+    // 位置在 system（+上下文说明）之后、真正的对话之前 —— 模型读起来就是「之前聊过的」。
+    //
+    // 插入点为什么是 2 而不是 view.head.length：
+    //   head 是 [system] 或 [system, context]，那个 context 是「设定与规则」的副本
+    //   （agent.mjs 的 contextMessage，很多网关会丢 system，所以规则要发两遍）。
+    //   插在 1 会把规则副本和前情拆开，规则副本就不挨着 system 了；插在 2 才是
+    //   「设定 → 设定副本 → 前情 → 真正的对话」，读起来顺序对。
+    //
+    // 为什么不能插在 messages 上：runAgent 每轮开头会重建那两条（agent.mjs 61-80 行），
+    //   而重建时会 map 出新对象、把带 context 的消息挤到 1 号位 —— 前情会被顶掉。
+    //   所以前情是在「已经重建完之后」才贴上去的，就一次，不参与重建。
+    // 会话里的 system 永远是设置里那套人设，前情一个字都不往里塞。
+    {
+      const pm = preludeContextMessage();
+      // 纯净模式：前情也是「设定」，不发。
+      if (pm && !pureModeOn()) wireMessages.splice(2, 0, pm);
+    }
+    /** 前情那条消息的引用，日志里好认（纯净模式没插，就是 undefined） */
+    const preludeRef = pureModeOn() ? undefined : wireMessages[2];
+    // 这一轮真正交给模型的形状，日志里留一份，排查时一眼看得出前情在不在
+    console.log(
+      '[prelude] 条数=' + wireMessages.length + ' 形状=' +
+        wireMessages.map((m) => m.role + (m === preludeRef ? '(前情)' : m.context ? '(规则)' : '')).join(' → '),
+    );
+    /**
+     * wireMessages 是给模型的副本：回退掉的那些不能出现在上下文里。
+     * 但模型这一轮新说的话（assistant / tool 轮）是 push 到 wireMessages 上的，
+     * 必须接回 history，否则 session.messages 永远只有用户那句话 ——
+     * 重启后打开会话就只剩自己的话（这个 bug 真发生过，别再删这段）。
+     *
+     * 为什么不用下标：runAgent 开头遇到「没有 context 消息」时会把整个数组清空重建
+     * （见 agent.mjs 第 76-78 行），下标全错位，用下标会把 user 消息重复接一次。
+     * 所以这里记「跑之前有哪些消息对象」的 Set，跑完只接不在集合里的那些。
+     */
+    const seenBefore = new Set(history);
+    const wireSeenBefore = new Set(wireMessages);
+    const committed = new Set();
+    const commitWireBack = () => {
+      let n = 0;
+      for (const m of wireMessages) {
+        if (!m || wireSeenBefore.has(m) || committed.has(m)) continue;
+        committed.add(m);
+        // 只接对话轮次；system / context 是每轮重算的，不进历史
+        if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'tool') continue;
+        if (m.context) continue;
+        // 开场那两条自己走 finishOpening，不走这里。
+        // 不然开场白会被接两次：一次是 finishOpening 插的，一次是这里接的，
+        // 历史里就出现两条一模一样的助手消息（这个 bug 真发生过，别删这段）。
+        // 历史里已经有了这条（同一对象）就不用再接；
+        // 开场那两条走 applyOpening / finishOpening 插进 history，对象一致，会走到这一句。
+        if (seenBefore.has(m)) continue;
+        history.push(m);
+        n++;
+      }
+      return n;
+    };
     // 这一轮改过的文件先记在这条消息身上；回退到它时一起还原。
     const snap = {};
-    if (userMsgRef) userMsgRef._ws = snap;
+    if (userMsgRef) {
+      userMsgRef._ws = snap;
+      // 记忆本子也拍一张：回退到这一句时，本子退回到这一轮开始前的样子。
+      // 记在消息上而不是 rewinds 里，是因为消息本身会被 saveSession 原样存下来。
+      userMsgRef._mem = readMemory(sessionId);
+    }
 
     try {
+      // 先补开场轮：这一次模型调用只让小鱼说开场白，别的话一句都不要。
+      //
+      // 一般情况下开场在「新建会话」那一刻就已经后台跑完了（startOpening），
+      // 走到这里说明那时候没跑成（没配模型、断网、进程刚好被打断）——
+      // 那就趁主人第一次开口这一轮补上，补不上就算了，别耽误回主人。
+      if (wantOpening && !ac.signal.aborted) {
+        const openingUser = session._openingUser;
+        try {
+          // 开场轮跑的是深拷贝：runAgent 会往传进去的数组里 push 一条 assistant
+          // （agent.mjs:208），共用对象的话它会跟 wireMessages 里那条打架，
+          // 历史里就会出现两条一模一样的开场白（真出过，别改回去）。
+          const openingWire = wireMessages.slice(0, wireMessages.indexOf(openingUser) + 1).map((m) => ({ ...m }));
+          await runAgent({
+            messages: openingWire,
+            sessionId,
+            safeMode: false,
+            safeWord: '',
+            signal: ac.signal,
+            // 开场的字一个都不往界面上发：主人视角里看不到这一轮
+            onEvent: (ev) => { if (ev.type === 'text') openingUser._got = (openingUser._got || '') + ev.text; },
+          });
+        } catch (err) {
+          console.warn('[opening] 开场白没跑成：', String(err?.message ?? err));
+        }
+        applyOpening(session, openingUser, wireMessages);
+        saveSession(session);
+      }
+
       const { usage } = await runAgent({
         messages: wireMessages,
         sessionId,
         snap,
-        safeMode: Boolean(safeWord),
-        safeWord: safeWord || '',
+        // 没喊别的安全词就是「待在当前档」——新会话天然是「人设」档；
+        // 喊了别的词就临时切过去，这句话说完仍继续保持那一档，直到再切回来。
+        safeMode: modeInfo.switched,
+        safeWord: modeInfo.word || '',
         signal: ac.signal,
         onEvent: (ev) => {
           if (ev.type === 'aborted') send({ type: 'aborted' });
@@ -1022,7 +1879,13 @@ const server = createServer(async (req, res) => {
           else if (ev.type === 'tool_end') send({ type: 'tool_end', id: ev.id, name: ev.name, ok: ev.ok, output: ev.output });
         },
       });
-      send({ type: 'done', usage });
+      // 把这一轮模型说的话接回正式历史，再算「用户那句话」的下标
+      commitWireBack();
+      // 带上这一轮用户消息的下标：前端据此给刚画出来的气泡补「↶ 回退」按钮
+      const doneAt = userMsgRef ? session.messages.indexOf(userMsgRef) : -1;
+      // 带上真正用的模型名（不是主人起的外号）—— 前端要拿它查价目表算这一轮花多少钱。
+      // 界面上写的是「DeepSeek官方」，价目表里认的是 deepseek-flash，不传这个就永远算不出来。
+      send({ type: 'done', usage, at: doneAt, model: ep.model });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {
@@ -1042,7 +1905,7 @@ const server = createServer(async (req, res) => {
             createdAt: Date.now(),
             updatedAt: Date.now(),
             messages: [
-              { role: 'system', content: systemPrompt(newId) },
+              ...sysSeed(newId),
               { role: 'user', content: firstMsg },
             ],
           };
@@ -1085,6 +1948,11 @@ const server = createServer(async (req, res) => {
       live.done = true;
       live.endedAt = Date.now();
       if (runningTurns.get(sessionId)?.ac === ac) runningTurns.delete(sessionId);
+      // 正常结束那条路已经接过一次；出错 / 被中止时这里兜底，
+      // 不然「半截回答」也跟着丢。commitWireBack 内部用 Set 记账，重复调不会重复接。
+      try {
+        commitWireBack();
+      } catch {}
       saveSession(session);
       finishTurn();
     }
@@ -1124,13 +1992,39 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/reset') {
-    const { sessionId = 'default' } = await body(req).catch(() => ({}));
+    const { sessionId = 'default', memory = false, persona = false } = await body(req).catch(() => ({}));
     const session = getSession(sessionId);
+    let wiped = null;
     if (session) {
-      session.messages = [{ role: 'system', content: systemPrompt(sessionId) }];
+      session.messages = sysSeed(sessionId);
       saveSession(session);
     }
-    return json(res, 200, { ok: true });
+    /**
+     * 记忆有两份，分开清，别混一件事：
+     *   ① memory=true  清这个会话自己的本子（.state/memory/<会话id>.md）—— 只影响这一个会话；
+     *   ② persona=true 清那套人设的正文（.state/personas/<当前>.md）—— 全体共用，影响所有会话。
+     * 两份都先备份再清，路径在返回值里给出去。
+     */
+    if (memory || persona) {
+      const out = { session: null, persona: null };
+      if (memory) {
+        try {
+          out.session = wipeMemory(sessionId);
+        } catch (e) {
+          out.session = { error: e.message };
+        }
+      }
+      if (persona) {
+        try {
+          const p = wipePersonaText();
+          out.persona = { id: p.id, backup: p.backup, bytes: p.bytes };
+        } catch (e) {
+          out.persona = { error: e.message };
+        }
+      }
+      return json(res, 200, { ok: true, wiped: out, memory: memoryInfo(sessionId) });
+    }
+    return json(res, 200, { ok: true, wiped: null, memory: memoryInfo(sessionId) });
   }
 
   if (req.method === 'GET') return serveStatic(req, res);
@@ -1162,11 +2056,23 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
+    /**
+     * 监听地址：默认只监听 127.0.0.1（本机）。
+     * 开了手机配对（.state/mobile.json 里 enabled=true）之后才监听 0.0.0.0，
+     * 局域网里的手机连得上；此时所有请求都要过 checkAccess 的 token 校验。
+     */
+    const lanOn = publicMobileState().enabled;
+    const bindHost = lanOn ? '0.0.0.0' : '127.0.0.1';
+    server.listen(port, bindHost, () => {
       const actual = server.address().port;
+      listeningPort = actual;
       const url = `http://127.0.0.1:${actual}`;
       if (!quiet) {
         console.log(`小鱼Agent running: ${url}`);
+        if (lanOn) {
+          for (const h of lanAddresses()) console.log(`  手机访问 : http://${h.address}:${actual}/  （配对码在 设置→手机连接）`);
+          if (!lanAddresses().length) console.log('  手机访问 : 没找到局域网 IPv4 地址，检查 Wi-Fi/网线');
+        }
         const bootEp = activeEndpoint();
         console.log(`  model    : ${bootEp.model}${bootEp.source === 'user' ? '（界面里选的）' : '（.env）'}`);
         console.log(`  endpoint : ${bootEp.baseURL}`);
@@ -1174,9 +2080,10 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         console.log(`  api key  : ${bootEp.apiKey ? 'loaded' : 'MISSING -> 打开界面顶部「模型」按钮配置'}`);
         console.log(`  rounds   : ${Number.isFinite(config.maxRounds) ? config.maxRounds : 'unlimited'}`);
         {
-          // 真正生效的阈值是「设置面板里那个」，不是 config 里的兜底值，日志得说真话
+          // 真正生效的阈值是「设置面板里那个」，不是 config 里的兜底值，日志得说真话。
+          // 填多少就是多少，所以不再乘什么比例，直接报 limit。
           const ctx = effectiveContextLimit();
-          console.log(`  context  : ${Number.isFinite(ctx) ? `${ctx} tokens, compress at ${Math.floor(ctx * config.contextTriggerRatio)} (${Math.round(config.contextTriggerRatio * 100)}%), keep ${config.contextKeepRatio}` : 'no limit'}`);
+          console.log(`  context  : ${Number.isFinite(ctx) ? `${ctx} tokens, compress at exactly ${ctx} (100%), keep last ~${config.contextKeepTokens} tokens` : 'no limit'}`);
         }
       }
       resolve({ port: actual, url, close: () => new Promise((r) => server.close(r)) });

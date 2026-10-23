@@ -1,0 +1,69 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.xiaoyu.agent.mobile'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.xiaoyu.agent.mobile'
+        minSdk 24
+        targetSdk 34
+        versionCode 13
+        versionName '0.8.0'
+    }
+
+    /**
+     * 签名：用仓库里 mobile/keystore 那一份自签证书。
+     *
+     * 为什么不用 debug 签名：debug key 每台机器都不一样，换机器重新打包后手机上会报
+     * 「应用未安装」——主人得先卸载再装，App 里存的配对码和本地记录就跟着没了。
+     * 固定 keystore 才能原地升级。
+     *
+     * 证书口令写在仓库里是有意的：这是自家局域网用的壳，不放应用商店，也不保护什么
+     * 秘密（只是为了「下次打的包能盖掉这次」）。真要发布时换一份，别复用这把。
+     */
+    signingConfigs {
+        release {
+            storeFile file('keystore/xiaoyu-mobile.jks')
+            storePassword 'xiaoyu-agent'
+            keyAlias 'xiaoyu'
+            keyPassword 'xiaoyu-agent'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    // 压缩用不上，开了反而要配 proguard 规则
+    buildFeatures {
+        buildConfig false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        // 打 release 包时别让 lint 因为「用了废弃的 android.hardware.Camera」把构建卡住
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    packagingOptions {
+        resources.excludes += ['META-INF/*']
+    }
+}
+
+dependencies {
+    // 故意一个都不引。壳里的东西全用 android.* 写完（含二维码解码，见 QrDecode.java）。
+}

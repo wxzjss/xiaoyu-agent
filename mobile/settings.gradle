@@ -1,0 +1,27 @@
+// 小鱼Agent 手机端：一个零依赖的原生 Android 壳。
+//
+// 不引 AndroidX，也不引第三个第三方库 —— 壳里所有界面都是手搓 View，WebView 装电脑端的页面。
+// 这样命令行 gradle 构建不需要联网拉一堆 AAR，这台机器（甚至离线）都能打出包来。
+//
+// 为什么是「壳」而不是「第二个客户端」：电脑端和小鱼Agent 的会话、记忆、模型、工具全在电脑上。
+// 手机上重写一套 UI 是双份维护，而且会话对不上。用 WebView 载入同一份页面，
+// 电脑上改了界面手机上刷新就是新的，旧会话也天然还在（见 notes/手机连接.md）。
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+        // 离线兜底：上面三个都够不着时，用本地缓存的 maven 仓库
+        maven { url = uri("${rootDir}/offline-repo") }
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("${rootDir}/offline-repo") }
+    }
+}
+
+rootProject.name = 'xiaoyu-mobile'
+include ':app'

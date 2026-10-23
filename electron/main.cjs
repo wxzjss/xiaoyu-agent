@@ -24,6 +24,13 @@ if (process.env.ELECTRON_RUN_AS_NODE) {
 
 const { app, BrowserWindow, shell, ipcMain, dialog, Tray, Menu, nativeImage } = require('electron');
 const { join } = require('node:path');
+const { readFileSync, writeFileSync } = require('node:fs');
+
+// 显示名。package.json 的 name 故意还是 xiaoyu-mini-agent（仓库地址、localStorage 键都靠它），
+// 但 Electron 拿它当应用名显示 —— 原生弹窗、托盘、任务管理器里就全变成 "mini-agent"。
+// 这里显式改成中文名，凡是 app.getName() 的地方都用它。
+// 必须在 ready 之前调，否则窗口已经建好了。
+app.setName('小鱼Agent');
 
 // 打包后 app.asar 是只读的，.state / 会话 / 设置必须写到可写目录：
 //   免安装版 → exe 旁边的 data\（真正随身带）
@@ -82,8 +89,40 @@ async function selfCheck() {
 async function startServer() {
   const { startServer: run } = await import('../src/server.mjs');
   // 自检在 selfCheck() 里已经跑过了，这里别跑第二遍
-  serverInfo = await run({ port: 0, quiet: true, selfCheck: false });
-  return serverInfo;
+  //
+  // 【为什么不再用 port: 0】
+  // 以前让系统随便挑个空闲端口，每次启动端口都不一样。手机上扫码配对时存的地址
+  // 里带着端口，电脑一重启那个地址就废了 —— 表现就是「昨天还能连，今天连不上」，
+  // 得回电脑再扫一次码。所以这里优先用固定端口，占用了才往后挪，实在不行才交给系统。
+  // 这样手机上存下来的地址能一直用。
+  const PORT_FILE = join(app.getPath('userData'), 'port.txt');
+  const prefer = [];
+  const envPort = Number(process.env.PORT);
+  if (Number.isFinite(envPort) && envPort > 0) prefer.push(envPort);
+  try {
+    const last = Number(readFileSync(PORT_FILE, 'utf8').trim());
+    if (Number.isFinite(last) && last > 0 && !prefer.includes(last)) prefer.push(last);
+  } catch {}
+  for (const p of [8787, 8788, 8789, 8790]) if (!prefer.includes(p)) prefer.push(p);
+  prefer.push(0);
+
+  let lastErr = null;
+  for (const p of prefer) {
+    try {
+      serverInfo = await run({ port: p, quiet: true, selfCheck: false });
+      try { writeFileSync(PORT_FILE, String(serverInfo.port), 'utf8'); } catch {}
+      if (p !== 0 && serverInfo.port !== p) console.log(`[port] 想用 ${p}，实际落在 ${serverInfo.port}`);
+      return serverInfo;
+    } catch (err) {
+      lastErr = err;
+      if (err && err.code === 'EADDRINUSE') {
+        console.log(`[port] ${p} 被占了，换下一个`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('起不来服务：没有可用端口');
 }
 
 async function createWindow(updated = false) {

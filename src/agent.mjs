@@ -40,7 +40,11 @@ const CONTEXT_PREAMBLE = '下面是本次对话的设定与规则，从现在起
 
 /** The rules text, framed for delivery as a user-role context message. */
 export function contextMessage(sessionId = 'default', opts = {}) {
-  return `${CONTEXT_PREAMBLE}\n\n${buildSystemPrompt({ sessionId, ...opts })}`;
+  const rules = buildSystemPrompt({ sessionId, ...opts });
+  // 纯净模式：规则本身是空的，那段「下面是本次对话的设定与规则…」也就没必要发 ——
+  // 发个只有前言的空壳上去，模型反而会去找「设定在哪」。
+  if (!rules) return '';
+  return `${CONTEXT_PREAMBLE}\n\n${rules}`;
 }
 
 /** The full rules text: persona card + user rules + 底线/安全词 + live plan progress. */
@@ -66,16 +70,31 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
   if (refreshSystem) {
     const text = systemPrompt(sessionId, { safeMode, safeWord });
     const ctx = contextMessage(sessionId, { safeMode, safeWord });
-    if (messages[0]?.role === 'system') messages[0].content = text;
-    if (messages[1]?.role === 'user' && messages[1].context) {
-      messages[1].content = ctx;
-    } else {
-      // First run (or the history was trimmed): (re)insert the context message right after system.
-      const rest = messages.filter((m) => m !== messages[0] || m.role !== 'system');
-      const sys = messages[0]?.role === 'system' ? [{ role: 'system', content: text }] : [];
-      const withoutCtx = rest.filter((m) => !m.context);
+    // 纯净模式：text 和 ctx 都是空的。这时候一条 system、一条 context 都不该发 ——
+    // 空 system 有的网关会直接 400，只有前言的 context 更是纯噪音。
+    // 所以先把历史里残留的那两条清掉，再把对话本身整理好。
+    if (!text && !ctx) {
+      const body = messages.filter((m) => {
+        if (m?.role === 'system' && !String(m.content ?? '').trim()) return false;
+        if (m?.role === 'system') return false;   // 纯净模式下一条 system 都不要，不是只删空的
+        if (m?.context) return false;
+        return true;
+      });
       messages.length = 0;
-      messages.push(...sys, { role: 'user', content: ctx, context: true }, ...withoutCtx);
+      messages.push(...body);
+    } else {
+      // 走到这里说明 text 有东西（纯净模式那条空分支在上面拦掉了）
+      if (messages[0]?.role === 'system') messages[0].content = text;
+      if (messages[1]?.role === 'user' && messages[1].context) {
+        messages[1].content = ctx;
+      } else {
+        // First run (or the history was trimmed): (re)insert the context message right after system.
+        const rest = messages.filter((m) => m !== messages[0] || m.role !== 'system');
+        const sys = messages[0]?.role === 'system' ? [{ role: 'system', content: text }] : [];
+        const withoutCtx = rest.filter((m) => !m.context);
+        messages.length = 0;
+        messages.push(...sys, { role: 'user', content: ctx, context: true }, ...withoutCtx);
+      }
     }
   }
 

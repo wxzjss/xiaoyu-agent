@@ -1,7 +1,9 @@
 // Built-in tools. Each tool: { name, description, parameters(JSON Schema), run(args) }
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
-import { exec } from 'node:child_process';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { exec, execFile } from 'node:child_process';
 import { resolve, dirname, isAbsolute, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { planAction, noteAction } from './plan.mjs';
 import { isToolEnabled, featureNameOfTool, enabledToolNames } from './features.mjs';
@@ -11,6 +13,8 @@ import { webSearch, formatResults } from './search.mjs';
 const LIMIT = 20000;
 
 const ROOT = resolve(config.workspace);
+/** 程序自己的安装目录（src 的上一级），scripts/ 和 dump/ 都在这下面 */
+const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Per-run context (which session is talking) so plan/note land in the right board. */
 const CTX = { sessionId: 'default', snap: null };
@@ -202,6 +206,175 @@ export const tools = [
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = htmlToText(await res.text());
       return clip(text.length > 6000 ? `${text.slice(0, 6000)}\n...[truncated]` : text);
+    },
+  },
+  {
+    name: 'fetch_txt',
+    description:
+      'Fetch a web page, strip it to plain text (auto-detects charset: utf-8 / gbk / gb2312 / big5 / bom, so Chinese pages no longer come out garbled), save it under dump/txt, and return the saved path + length + detected charset. Traditional-Chinese pages (繁體) are automatically converted to Simplified (简体) before saving. Use when the page should be kept on disk.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'http(s) URL' } },
+      required: ['url'],
+    },
+    run({ url }) {
+      if (!/^https?:\/\//i.test(url)) throw new Error('only http(s) URLs are allowed');
+      const script = resolve(APP_ROOT, 'scripts', 'fetch-txt.mjs');
+      const outDir = resolve(APP_ROOT, 'dump', 'txt');
+      return new Promise((done, fail) => {
+        execFile(
+          process.execPath,
+          [script, url, outDir],
+          { timeout: 120000, maxBuffer: 8 * 1024 * 1024, windowsHide: true, encoding: "utf8" },
+          (err, stdout, stderr) => {
+            if (err) return fail(new Error(String(stderr || err.message).trim()));
+            done(String(stdout || "").trim() || "(no output)");
+          },
+        );
+      });
+    },
+  },
+  {
+    name: 'fetch_many',
+    description:
+      'Batch-fetch many pages at once (same charset auto-detection as fetch_txt): pass a list of URLs or a urls.txt path, each page is saved as its own txt under dump/txt. Optionally follow "next page" links N times per seed URL. Returns per-URL ok/fail, saved paths, titles, char counts, detected charsets. Use this instead of calling fetch_txt in a loop when there are more than ~3 pages.',
+    parameters: {
+      type: 'object',
+      properties: {
+        urls: { type: 'array', items: { type: 'string' }, description: 'http(s) URLs to fetch' },
+        file: { type: 'string', description: 'Alternative: path to a text file with one URL per line (workspace-relative or absolute)' },
+        dir: { type: 'string', description: 'Output folder, default dump/txt under the app root' },
+        follow: { type: 'integer', description: 'Follow the "next page" link this many times per seed URL, 0 = no follow, max 20' },
+      },
+    },
+    async run({ urls, file, dir, follow }) {
+      let list = Array.isArray(urls) ? urls.slice() : [];
+      if (file) {
+        const p = isAbsolute(file) ? file : resolve(ROOT, file);
+        if (!existsSync(p)) throw new Error(`file not found: ${p}`);
+        list = list.concat(
+          readFileSync(p, 'utf8')
+            .replace(/^\uFEFF/, '')
+            .split(/\r?\n/)
+            .map((x) => x.trim()),
+        );
+      }
+      list = list.filter((x) => /^https?:\/\//i.test(x));
+      if (!list.length) throw new Error('no http(s) URLs given');
+      if (list.length > 300) throw new Error('too many URLs in one go (max 300), split it up');
+      const finalDir = dir ? (isAbsolute(dir) ? dir : resolve(APP_ROOT, dir)) : resolve(APP_ROOT, 'dump', 'txt');
+      const { fetchMany } = await import('../scripts/fetch-batch.mjs');
+      const r = await fetchMany(list, { dir: finalDir, follow: Number(follow) || 0 });
+      const lines = r.done.map(
+        (d) =>
+          `OK  ${d.url} -> ${d.file}  (${d.chars} chars, ${d.charset}${d.title ? ', ' + d.title : ''}${d.converted ? ', 已转简体' : ''})`,
+      );
+      const bad = r.failed.map((f) => `FAIL ${f.url}  ${f.error}`);
+      return clip(
+        [`saved to ${r.dir}`, `ok ${r.done.length} / fail ${r.failed.length}`, ...lines, ...bad].join('\n'),
+      );
+    },
+  },
+  {
+    name: 'pack_book',
+    description:
+      'Stitch already-fetched txt pages into one book file: strips Project Gutenberg header/footer boilerplate, re-flows hard-wrapped lines into paragraphs, writes dump/books/<title>.md and <title>.txt (utf8), returns both paths + char count + a preview. Use after fetch_txt / fetch_many to turn many pages into a single readable book.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Book title, also used as the file name' },
+        files: { type: 'array', items: { type: 'string' }, description: 'txt file paths or file names under dump/txt, in reading order' },
+        dir: { type: 'string', description: 'Alternative: pack every .txt in this folder, sorted by name' },
+        author: { type: 'string', description: 'Optional author line' },
+        source: { type: 'string', description: 'Optional source URL' },
+        reflow: { type: 'boolean', description: 'Re-flow hard-wrapped lines into paragraphs, default true' },
+      },
+      required: ['title'],
+    },
+    async run({ title, files, dir, author, source, reflow }) {
+      const { packBook } = await import('../scripts/fetch-batch.mjs');
+      const abs = (f) =>
+        isAbsolute(String(f)) || existsSync(String(f))
+          ? String(f)
+          : existsSync(resolve(APP_ROOT, String(f)))
+            ? resolve(APP_ROOT, String(f))
+            : String(f);
+      let list = (Array.isArray(files) ? files.slice() : []).map(abs);
+      if (dir) {
+        const d = isAbsolute(dir) ? dir : resolve(APP_ROOT, dir);
+        if (!existsSync(d)) throw new Error(`dir not found: ${d}`);
+        list = list.concat(
+          readdirSync(d)
+            .filter((f) => f.toLowerCase().endsWith('.txt'))
+            .sort()
+            .map((f) => resolve(d, f)),
+        );
+      }
+      if (!list.length) throw new Error('no files to pack');
+      const r = packBook({
+        title,
+        files: list,
+        author,
+        source,
+        outDir: dir ? (isAbsolute(dir) ? dir : resolve(APP_ROOT, dir)) : undefined,
+        reflowParagraphs: reflow !== false,
+      });
+      return clip(
+        [
+          `title: ${r.title}`,
+          `pages: ${r.files}`,
+          `chars: ${r.chars}`,
+          `md: ${r.md}`,
+          `txt: ${r.txt}`,
+          '',
+          '--- preview ---',
+          r.preview,
+        ].join('\n'),
+      );
+    },
+  },
+  {
+    name: 't2s_convert',
+    description:
+      '繁体转简体（Traditional -> Simplified Chinese, uses OpenCC word-level conversion so 頭髮→头发, 軟體→软件). Give it text, or a file under the workspace (path), and it returns/gives back the Simplified version. With inPlace=true a workspace text file is overwritten in Simplified (original kept as .bak-t2s). Use when the master hands over 繁體 text or a 繁體 txt and wants it readable in 简体.',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '要转的文本（和 path 二选一）' },
+        path: { type: 'string', description: '工作区里的文本文件路径（和 text 二选一）' },
+        inPlace: { type: 'boolean', description: '传了 path 时，直接覆盖原文件为简体（原文件存成 .bak-t2s），默认 false 只返回结果' },
+        from: { type: 'string', enum: ['twp', 'tw', 'hk'], description: '繁体的口音：twp=台繁+台湾用词（默认），tw=台繁，hk=港繁' },
+      },
+    },
+    async run({ text, path, inPlace, from }) {
+      const { toSimplified, autoToSimplified, converterReady } = await import('./zh-convert.mjs');
+      if (!converterReady()) return '转简库没装上（缺 opencc-js），先别急着转，跟我说一声。';
+      if (path) {
+        const { resolve, isAbsolute } = await import('node:path');
+        // 相对路径按「工作区」算，工作区没设就按程序根目录（dump/txt 就在那儿），
+        // 绝对不按 cwd 算 —— 打包启动时 cwd 可能是 System32。
+        const { writeFileSync, copyFileSync: cp, statSync, existsSync } = await import('node:fs');
+        // 工作区里找不到，就按程序根目录再找一次（dump/txt 在那儿，抓来的书也顺手）
+        const rel = String(path);
+        const guesses = isAbsolute(rel)
+          ? [rel]
+          : [resolve(config.workspace || process.cwd(), rel), resolve(rel)];
+        const abs = guesses.find((g) => existsSync(g)) || guesses[0];
+        statSync(abs);
+        const raw = readFileSync(abs, 'utf8');
+        const r = autoToSimplified(raw, { from });
+        if (!r.converted) return `这文件本来就是简体（繁体字占比 ${(r.ratio * 100).toFixed(1)}%），不用转：${abs}`;
+        if (inPlace) {
+          cp(abs, abs + '.bak-t2s');
+          writeFileSync(abs, r.text, 'utf8');
+          return `转好了，已覆盖：${abs}\n原文件备份：${abs}.bak-t2s\n字数：${raw.length} -> ${r.text.length}`;
+        }
+        return `转好了（没覆盖原文件，要覆盖就加 inPlace=true）：${abs}\n繁体字占比 ${(r.ratio * 100).toFixed(1)}%\n\n--- preview ---\n${r.text.slice(0, 800)}`;
+      }
+      const src = String(text ?? '');
+      if (!src.trim()) return '没东西可转，把 text 或 path 给我一个。';
+      const out = toSimplified(src, { from });
+      return out === src ? `本来就是简体，一字没动：\n${out}` : out;
     },
   },
 ];

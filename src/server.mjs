@@ -152,7 +152,52 @@ function getSession(id) {
   return cold;
 }
 
-/** What the UI needs to redraw a session: bubbles only, no tool/reasoning noise. */
+/**
+ * 工具输出可能几十万字（跑个命令把整个目录树打回来），界面回放只需要看个大概，
+ * 所以截断。真要看全文，会话文件里原样都在。
+ */
+const TOOL_ARGS_MAX = 600;
+const TOOL_OUT_MAX = 3000;
+
+function clipTool(s, max) {
+  const t = String(s ?? '');
+  if (t.length <= max) return t;
+  return t.slice(0, max) + `\n…（后面还有 ${t.length - max} 字，完整内容在会话文件里）`;
+}
+
+/**
+ * 把一条 assistant 消息里的 tool_calls 加上对应的执行结果，整理成界面能画的样子。
+ *
+ * 【为什么要有这个】
+ * 以前 publicSession 只交气泡，工具调用和结果全被当成「噪音」跳过了 ——
+ * 于是一轮干完活退出再回来，那一整屏的工具调用全都消失，看起来像她什么都没做。
+ * 工具调用是这一轮的经过，本来就该跟着回复一起留在界面上。
+ *
+ * 结果靠 tool_call_id 配对（历史里 role:'tool' 的消息只带这个 id）。
+ * 失败时 agent.mjs 会把内容写成 `ERROR: xxx`，所以 ok 能从内容里认出来；
+ * 结果压根没落盘（那一轮被打断了）就给 null，界面显示「没跑完」，别冒充失败。
+ */
+function toolListOf(m, toolResults) {
+  if (!Array.isArray(m.tool_calls) || !m.tool_calls.length) return [];
+  const out = [];
+  for (const c of m.tool_calls) {
+    const f = (c && c.function) || {};
+    const id = String((c && c.id) || '');
+    const raw = toolResults.has(id) ? toolResults.get(id) : null;
+    let ok = null;
+    if (raw !== null) ok = !/^\s*ERROR:\s*/.test(raw);
+    out.push({
+      id,
+      name: String(f.name || '工具'),
+      args: clipTool(f.arguments || '', TOOL_ARGS_MAX),
+      ok,
+      output: raw === null ? '' : clipTool(raw, TOOL_OUT_MAX),
+    });
+  }
+  return out;
+}
+
+/** What the UI needs to redraw a session: bubbles + the tool calls that went with them. */
 function publicSession(session) {
   const turns = [];
   // 回退：只按「有效下标」画气泡，被撤回的那些直接不出现。
@@ -164,11 +209,19 @@ function publicSession(session) {
   // 模型看到的就是这一份完整的记录（不带任何记号），只有界面从开头把它们跳过。
   // 用位置判断而不是在消息上打标记，是为了让盘里的历史干干净净、看不出人工痕迹。
   const headSkip = openingHeadIndexes(all);
+  // 历史里 role:'tool' 的消息本身不是「谁说的话」，只带 tool_call_id。
+  // 先按 id 建索引，等会儿把结果挂回对应的那条 assistant 上（工具调用就是这么配对的）。
+  const toolResults = new Map();
+  for (const x of all) {
+    if (x && x.role === 'tool' && x.tool_call_id) toolResults.set(String(x.tool_call_id), String(x.content ?? ''));
+  }
   for (let i = 0; i < all.length; i++) {
     const m = all[i];
     if (!m || m.context) continue;
     if (headSkip.has(i)) continue;
     if (!alive.has(i)) continue;
+    // 工具结果不进 turns，它的内容会跟着上面那条 assistant 一起交出去
+    if (m.role === 'tool') continue;
     // content 可能是多模态数组（只在内存里出现过），取文字段
     const raw = m.content;
     const text = (Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n') : String(raw ?? '')).trim();
@@ -185,7 +238,10 @@ function publicSession(session) {
       } catch {}
       return { ...a, name, size };
     });
-    if (!text && !atts.length) continue;
+    // 只调了工具、一个字没说的那条 assistant 消息（content 是 null），
+    // 以前被这句 `continue` 整个丢掉 —— 那正是「退出再回来工具调用全消失」的直接原因。
+    const tools = m.role === 'assistant' ? toolListOf(m, toolResults) : [];
+    if (!text && !atts.length && !tools.length) continue;
     const edited = Object.prototype.hasOwnProperty.call(editedAt, i);
     if (m.role === 'user') {
       // 有 _text 就用它（那是主人真打的字）。
@@ -201,7 +257,7 @@ function publicSession(session) {
       const usage = m._usage && typeof m._usage === 'object' ? { ...m._usage } : null;
       turns.push({ role: 'user', text: shown, atts, rewindId: i, edited, usage });
     }
-    else if (m.role === 'assistant') turns.push({ role: 'assistant', text, rewindId: i, edited, out: Array.isArray(m._out) ? m._out : [] });
+    else if (m.role === 'assistant') turns.push({ role: 'assistant', text, rewindId: i, edited, out: Array.isArray(m._out) ? m._out : [], tools });
   }
   // 撤回记录本身也交出去，界面才能提示「还能撤销回退」
   const rewinds = loadRewinds(session);

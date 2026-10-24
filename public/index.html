@@ -86,6 +86,7 @@
     details.tool summary .name { color: var(--accent); }
     details.tool summary .status.ok { color: var(--ok); }
     details.tool summary .status.err { color: var(--err); }
+    details.tool summary .status.warn { color: #d9a45b; }
     details.tool pre {
       margin: 0; padding: 8px 10px; border-top: 1px solid var(--border);
       font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
@@ -3003,6 +3004,38 @@ function addTool() {
 }
 
 /**
+ * 把历史里留下的工具调用画出来（回放用）。
+ *
+ * 和实时那一套（addTool）长得一样，区别只在这儿是一次性拼进 frag、不碰 log。
+ * 以前这一块只在「跑着的时候」存在，一旦切走再回来、或者重启，界面上就等于
+ * 她从没调过工具 —— 明明干了半天活，看着像啥也没做。
+ *
+ * ok 三种值：true 完成 / false 失败 / null 没跑完（那一轮被中途打断，结果没落盘）。
+ */
+function paintTools(list, target) {
+  if (!Array.isArray(list) || !list.length) return;
+  for (const t of list) {
+    const d = document.createElement('details');
+    d.className = 'tool';
+    const sum = document.createElement('summary');
+    const nm = document.createElement('span');
+    nm.className = 'name';
+    nm.textContent = t.name || '工具';
+    const st = document.createElement('span');
+    st.className = 'status ' + (t.ok === null ? 'warn' : t.ok ? 'ok' : 'err');
+    st.textContent = t.ok === null ? '没跑完' : t.ok ? '完成' : '失败';
+    sum.append(nm, st);
+    const pre = document.createElement('pre');
+    let body = t.args ? 'args: ' + t.args : '';
+    if (t.output) body += (body ? '\n--- output ---\n' : '--- output ---\n') + t.output;
+    if (!body) body = '（这一轮没留下结果）';
+    pre.textContent = fixMojibake(body);
+    d.append(sum, pre);
+    target.appendChild(d);
+  }
+}
+
+/**
  * 一行系统提示（报错、限流、断线）。
  *
  * 刻意不挂 .msg / .bubble：这东西不是对话内容，不该被当成谁说的话，
@@ -5529,28 +5562,42 @@ function renderTurns(turns) {
   const list = turns || [];
   const frag = document.createDocumentFragment();
 
-  for (const turn of list) {
+  for (let ti = 0; ti < list.length; ti++) {
+    const turn = list[ti];
+    // 一轮干工具活会留下好几条 assistant（先只带工具调用的、再带最后那段话的），
+    // 用量和「说完没」都该等这一串画完再补。
+    const nextTurn = list[ti + 1];
+    const nextIsAssistant = Boolean(nextTurn && nextTurn.role === 'assistant');
     if (turn.role === 'user') {
       const w = addUser(turn.text, undefined, turn.atts, frag, turn.rewindId);
       // 每一句都能改：主人说的和我说的一样对待
       attachEdit(w, turn.rewindId);
       if (turn.edited) w.classList.add('edited');
     } else {
-      const wrap = addEl('', 'msg assistant', frag);
-      wrap.innerHTML = '<div class="role">小鱼</div>';
-      // 搜会话时靠这个下标把命中那条滚到眼前
-      if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
-      const b = document.createElement('div');
-      b.className = 'bubble';
-      b.textContent = fixMojibake(turn.text);
-      wrap.appendChild(b);
-      if (Array.isArray(turn.out) && turn.out.length) attachFiles(wrap, turn.out);
-      attachEdit(wrap, turn.rewindId);
-      if (turn.edited) wrap.classList.add('edited');
+      const hasText = String(turn.text || '').trim().length > 0;
+      const outs = Array.isArray(turn.out) ? turn.out : [];
+      const tools = Array.isArray(turn.tools) ? turn.tools : [];
+      // 只调了工具、一个字没说的那条 assistant（content 是 null）：不画空气泡，只画工具块
+      if (hasText || outs.length) {
+        const wrap = addEl('', 'msg assistant', frag);
+        wrap.innerHTML = '<div class="role">小鱼</div>';
+        // 搜会话时靠这个下标把命中那条滚到眼前
+        if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
+        const b = document.createElement('div');
+        b.className = 'bubble';
+        b.textContent = fixMojibake(turn.text);
+        wrap.appendChild(b);
+        if (outs.length) attachFiles(wrap, outs);
+        attachEdit(wrap, turn.rewindId);
+        if (turn.edited) wrap.classList.add('edited');
+      }
+      // 工具调用是这一轮的经过，得跟着回复一起留在界面上
+      //（以前只活在「正在跑」的那一屏里，切走再回来就全没了）
+      paintTools(tools, frag);
       // 这一轮的 token 用量：存过就一定要画出来，重启、换设备都一样。
       // 一轮的用量挂在「主人那句」的 user turn 上（见 server.mjs 的 _usage），
       // 但视觉上它属于这一轮的回复，所以画在 assistant 后面。
-      if (lastTurnUsage) appendTurnUsage(lastTurnUsage, lastTurnAt, lastTurnModelOfUsage, frag);
+      if (lastTurnUsage && !nextIsAssistant) appendTurnUsage(lastTurnUsage, lastTurnAt, lastTurnModelOfUsage, frag);
     }
     if (turn.role === 'user') {
       lastTurnUsage = turn.usage || null;

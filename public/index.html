@@ -5410,6 +5410,10 @@ let lastTurnModel = '';
 function appendTurnUsage(u, at, modelOverride, host) {
   // 历史里的老轮次没有用量记录：也画一行，明说「没记」，不装作没有。
   // （这个功能是后加的，早于它的对话谁也没存，只能如实标出来。）
+  //
+  // 关键：这一行**也要带分支按钮**。以前这里直接 return，导致分支出来的会话
+  // （历史轮次全都没存用量）一个分支按钮都没有 —— 就是「分支只能用一次」那个毛病。
+  // 所以这里不能早退，得把 row 建出来、画上「没记用量」、再走到下面挂按钮那一段。
   if (!u) {
     if (!Number.isFinite(Number(at))) return;
     const gone = document.createElement('div');
@@ -5417,10 +5421,11 @@ function appendTurnUsage(u, at, modelOverride, host) {
     gone.title = '这一轮是在「记录用量」功能加上之前跑的，当时没有存下来，所以只能空着';
     const sp = document.createElement('span');
     sp.className = 'na';
-    sp.textContent = '这一轮没记用量（功能加之前的对话）';
+    sp.textContent = '这一轮没记用量';
     gone.appendChild(sp);
-    log.appendChild(gone);
-    noteNewContent();
+    attachBranchBtn(gone, at);
+    (host || log).appendChild(gone);
+    if (!host) noteNewContent();
     return;
   }
   const pin = Number(u.prompt_tokens ?? 0);
@@ -5461,24 +5466,34 @@ function appendTurnUsage(u, at, modelOverride, host) {
     row.append(yen);
   }
 
-  // 分支按钮：把这一轮为止的对话整段复制到一个新会话，原会话一个字节都不动
-  if (Number.isFinite(Number(at))) {
-    const box = document.createElement('span');
-    box.className = 'turnActions';
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'branchBtn';
-    b.textContent = '⑂ 在新会话中分支';
-    b.title = '复制到这一轮为止的对话，开一个新会话接着聊；原来这个会话原样保留';
-    b.onclick = () => branchHere(Number(at), b);
-    box.appendChild(b);
-    row.appendChild(box);
-  }
+  // 分支按钮：把这一轮为止的对话整段复制到一个新会话，原会话一个字节都不动。
+  //
+  // 【为什么抽成函数】
+  // 「没记用量」那条也要有按钮（分支出来的会话全走那条），两处画法必须一致。
+  attachBranchBtn(row, at);
 
   // host 是「画进哪个容器」：实时那一轮不传，直接挂到 log 上；
   // 回放历史时传 frag，否则 renderTurns 最后的 log.replaceChildren(frag) 会把它一起冲掉（真踩过）。
   (host || log).appendChild(row);
   if (!host) noteNewContent();
+}
+
+/**
+ * 往一行 turnUsage 上挂「⑂ 在新会话中分支」。
+ * at 是这一轮**用户那句话**在 messages 里的下标；不是数字就不挂。
+ */
+function attachBranchBtn(row, at) {
+  if (!Number.isFinite(Number(at))) return;
+  const box = document.createElement('span');
+  box.className = 'turnActions';
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'branchBtn';
+  b.textContent = '⑂ 在新会话中分支';
+  b.title = '复制到这一轮为止的对话，开一个新会话接着聊；原来这个会话原样保留';
+  b.onclick = () => branchHere(Number(at), b);
+  box.appendChild(b);
+  row.appendChild(box);
 }
 
 // ---- 同一时间只开一个面板 ----------------------------------------------------
@@ -6345,10 +6360,10 @@ async function refreshSessions({ silent = false } = {}) {
 function renderTurns(turns) {
   hideSending();
   usageEl.textContent = '';
-  // 回放历史时用：最近一句主人说的话上带着的用量，轮到画它的回复时补上去
-  let lastTurnUsage = null;
-  let lastTurnAt;
-  let lastTurnModelOfUsage = '';
+  // 回放历史时用：最近几句主人说的话上带着的用量，轮到画它们回复时批量补上去。
+  // 用队列而不是单个变量：连着好几条 user 的情况太常见（催促、中途打断），
+  // 单个变量会把前一句直接覆盖掉，那条用量行和分支按钮就没了。
+  const pendingTurns = [];
 
   const list = turns || [];
   const frag = document.createDocumentFragment();
@@ -6385,17 +6400,33 @@ function renderTurns(turns) {
       // 工具调用是这一轮的经过，得跟着回复一起留在界面上
       //（以前只活在「正在跑」的那一屏里，切走再回来就全没了）
       paintTools(tools, frag);
-      // 这一轮的 token 用量：存过就一定要画出来，重启、换设备都一样。
-      // 一轮的用量挂在「主人那句」的 user turn 上（见 server.mjs 的 _usage），
+      // 这一轮的 token 用量 + 分支按钮。
+      // 用量挂在「主人那句」的 user turn 上（见 server.mjs 的 _usage），
       // 但视觉上它属于这一轮的回复，所以画在 assistant 后面。
-      if (lastTurnUsage && !nextIsAssistant) appendTurnUsage(lastTurnUsage, lastTurnAt, lastTurnModelOfUsage, frag);
+      //
+      // 【为什么用队列】
+      // 一轮正常的形状是 user → assistant，但实际历史里「连着好几条 user」很常见：
+      // 主人连着催「没有感情」「求求你了」，或者上一轮被中断了没回复。
+      // 以前只用一个 lastTurnAt 变量记「当前这句」，后一句一来就把前一句盖掉，
+      // 被盖掉那条的用量行和分支按钮就一起消失了 —— 表现是「分支只能点一次」。
+      // 现在每遇到一条 user 就压进队列，等到这一串 assistant 画完再一起补。
+      if (!nextIsAssistant && pendingTurns.length) {
+        for (const p of pendingTurns) appendTurnUsage(p.u, p.at, p.model, frag);
+        pendingTurns.length = 0;
+      }
     }
     if (turn.role === 'user') {
-      lastTurnUsage = turn.usage || null;
-      lastTurnAt = Number.isFinite(Number(turn.rewindId)) ? Number(turn.rewindId) : undefined;
-      lastTurnModelOfUsage = (turn.usage && turn.usage.model) || '';
+      pendingTurns.push({
+        u: turn.usage || null,
+        at: Number.isFinite(Number(turn.rewindId)) ? Number(turn.rewindId) : undefined,
+        model: (turn.usage && turn.usage.model) || '',
+      });
     }
   }
+
+  // 历史末尾还挂着一串没等到回复的 user（正在跑 / 被打断），也得各自有那一行
+  for (const p of pendingTurns) appendTurnUsage(p.u, p.at, p.model, frag);
+  pendingTurns.length = 0;
 
   // 一次性替换 + 只滚一次
   log.replaceChildren(frag);

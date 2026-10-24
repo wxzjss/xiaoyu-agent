@@ -133,6 +133,7 @@ import {
   exportAllSessions,
   parseImport,
   importSessions,
+  sessionPath,
 } from './sessions-core.mjs';
 
 /**
@@ -166,11 +167,31 @@ const sessions = new Map();
 function getSession(id) {
   if (!isSessionId(id)) return null;
   const hot = sessions.get(id);
-  if (hot) return hot;
-  const cold = loadSession(id);
-  if (!cold) return null;
-  sessions.set(id, cold);
-  return cold;
+  if (!hot) {
+    const cold = loadSession(id);
+    if (!cold) return null;
+    sessions.set(id, cold);
+    return cold;
+  }
+  // 【内存那份可能比磁盘旧】
+  // sessions Map 是纯缓存，进程活着的期间一直是同一个对象。只要磁盘上的会话文件
+  // 被别的路径改过（另一个进程、手动恢复备份、update 后重载），内存里就还是老样子。
+  // 以前这里直接 return hot，于是「内存少的消息」会一路带下去：
+  // 分支拿到的是残缺数据，再被 saveSession 写回磁盘，磁盘上的真数据就被覆盖没了。
+  // 现在每次取都瞄一眼文件修改时间，更新时间晚于内存里的 updatedAt 且磁盘那份更新，
+  // 就用磁盘的换掉缓存。多一次 statSync，比丢消息便宜太多。
+  try {
+    const st = statSync(sessionPath(id));
+    const known = Number(hot.updatedAt) || 0;
+    if (st.mtimeMs > known) {
+      const fresh = loadSession(id);
+      if (fresh) {
+        sessions.set(id, fresh);
+        return fresh;
+      }
+    }
+  } catch {}
+  return hot;
 }
 
 /**
@@ -1752,8 +1773,13 @@ const server = createServer(async (req, res) => {
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
     const src = getSession(id);
     if (!src) return json(res, 404, { error: 'session not found' });
-    repairHistory(src.messages);
 
+    // 【不要再对 src.messages 调 repairHistory】
+    // repairHistory 是就地改数组的，而 src 就是内存里那个活会话对象 ——
+    // 在这儿调它等于「分支一次，原会话就被删掉一条末尾消息」。
+    // 更糟的是它以前连完整的 assistant 都吃（连带 _out 里的语音文件一起没了），
+    // 之后随便一次 saveSession 就把这个残缺状态写回磁盘，永久丢。
+    // 分支只需要「复制」：拿一份深拷贝去修，原会话一个字节都不碰。
     const msgs = Array.isArray(src.messages) ? src.messages : [];
     // at 是「用户那句话」在 messages 里的下标（前端 done 事件里就带的这个数）。
     // 不传 / 传坏了就整段复制。
@@ -1764,6 +1790,8 @@ const server = createServer(async (req, res) => {
     const now = Date.now();
     // 拷一份，别把原会话的消息对象换个会话继续共用（后面会被改写 content）
     const copied = msgs.slice(0, end + 1).map((m) => JSON.parse(JSON.stringify(m)));
+    // 拷贝出来的那份要修一遍（去掉可能存在的半截 tool 组），但**不能碰原会话**
+    repairHistory(copied);
     // 分支点之后的「回退点」与文件快照不再适用，丢掉
     const keptRewinds = (Array.isArray(src.rewinds) ? src.rewinds : []).filter(
       (r) => Number.isFinite(Number(r?.at)) && Number(r.at) <= end,

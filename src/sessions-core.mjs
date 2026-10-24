@@ -23,6 +23,15 @@ function fileFor(id) {
   return join(DIR, `${id}.json`);
 }
 
+/**
+ * 会话文件在磁盘上的完整路径。
+ * 给外面（server.mjs）用：它靠 statSync 这个文件判断内存缓存是不是过期了。
+ * 不导出的话外面只能自己拼一遍路径 —— 拼错了就悄悄失效，这类 bug 最难查。
+ */
+export function sessionPath(id) {
+  return fileFor(id);
+}
+
 function cleanTitle(t) {
   return String(t ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE);
 }

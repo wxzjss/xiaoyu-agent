@@ -12,7 +12,7 @@
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { config } from './config.mjs';
 
@@ -139,21 +139,60 @@ function alreadyTriedThisBoot(targetVersion) {
 
 // ---------------------------------------------------------------- 下载
 
-/** 用 git clone 拉一份到临时目录；没装 git 返回 null */
+/**
+ * 用 git clone 拉一份到临时目录；没装 git 或拉不动就返回 null。
+ *
+ * 【为什么超时只有 25 秒，而且是异步 spawn 不是 execFileSync】
+ * 以前这里用的是 execFileSync + timeout: 120000，后果很严重：
+ * 这台机器到 github.com:443 的连接经常被 reset（error: RPC failed; curl 55），
+ * git 会一直重试，一路卡满 120 秒。而 execFileSync 是**同步**的 ——
+ * 它把 Electron 主进程整个堵死，界面表现就是「重进小鱼Agent卡死、点了没反应」。
+ * 唯一能松绑的办法是关掉进程。这个坑真踩过，别改回去。
+ *
+ * 现在：异步 spawn + 25 秒硬超时 + 失败立刻返回 null（走 raw 那条路）。
+ * 拉不下来本来就不该让用户陪着等。
+ */
+const GIT_TIMEOUT_MS = 25000;
+
 function downloadWithGit(dir) {
-  const has = spawnSync('git', ['--version'], { encoding: 'utf8', timeout: 10000 });
-  if (has.status !== 0) return null;
-  try {
-    execFileSync('git', ['clone', '--depth', '1', '--branch', BRANCH, CLONE_URL, dir], {
-      stdio: 'pipe',
-      encoding: 'utf8',
-      timeout: 120000,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+    let has;
+    try {
+      has = spawnSync('git', ['--version'], { encoding: 'utf8', timeout: 8000 });
+    } catch {
+      return finish(null);
+    }
+    if (!has || has.status !== 0) return finish(null);
+
+    let child;
+    try {
+      child = spawn('git', ['clone', '--depth', '1', '--branch', BRANCH, CLONE_URL, dir], {
+        stdio: 'ignore',
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '15' },
+      });
+    } catch {
+      return finish(null);
+    }
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch {}
+      console.warn('[update] git clone 25 秒还没动静，掐掉改走 http 下载');
+      finish(null);
+    }, GIT_TIMEOUT_MS);
+    child.on('error', () => {
+      clearTimeout(timer);
+      finish(null);
     });
-    return dir;
-  } catch {
-    return null;
-  }
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      finish(code === 0 ? dir : null);
+    });
+  });
 }
 
 /** 没有 git 就逐个文件从 raw 下（raw 不算 API 限额） */
@@ -193,7 +232,8 @@ async function download(targetVersion) {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
 
-  const viaGit = downloadWithGit(dir);
+  // git 那条路先试（快、一次拿全），拉不动就算了 —— 它内部有 25 秒硬超时，不会卡住主进程
+  const viaGit = await downloadWithGit(dir);
   if (viaGit) {
     // 校验一下下到的是不是真东西
     if (existsSync(join(dir, 'src', 'server.mjs')) && existsSync(join(dir, 'package.json'))) {

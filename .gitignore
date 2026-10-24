@@ -39,3 +39,6 @@ scripts/voice/__pycache__/
 _asar_*/
 _chk*/
 .ui/
+
+# 语音引擎（Python / ffmpeg，用时才装，108MB 不进仓库）
+runtime/

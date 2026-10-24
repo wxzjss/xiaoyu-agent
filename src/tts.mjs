@@ -14,6 +14,10 @@ import { join, isAbsolute, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import { config } from './config.mjs';
 
+// 嵌入式语音引擎（可选）：主人第一次点「试听」时才装，装在 <数据目录>/runtime 下。
+// 装了就用它，没装就退回本机 python —— 开发机上一直都是后者，所以这里只是多一个候选。
+import { bundledPython } from './voice-runtime.mjs';
+
 const ROOT = config.root;
 import { getEnabledMap } from './features.mjs';
 
@@ -50,12 +54,23 @@ export const VOICES = [
     script: join(ROOT, 'voice6.py'),
     args: [],
   },
+  {
+    // 主人亲耳听了一圈挑中的就是这个：晓伊嗓子、语速 -18%、音高 +26Hz。
+    // 比「糯」档更慢更高，奶味最足，但不是一个字一个字蹦，还在整句念。
+    id: 'v4_ji_ruan',
+    name: '极软（晓伊）',
+    desc: '晓伊嗓子压低放慢、音调抬高，奶味最足。主人亲耳挑的那一档。',
+    script: join(ROOT, 'voice4.py'),
+    args: ['--mood', '极软'],
+  },
 ];
 
 const BY_ID = new Map(VOICES.map((v) => [v.id, v]));
 
 // 出厂默认：主人拍板「默认是最软」—— v4_nuo（软糯·最软）。
 // 原来是 v4_tian（软糯·偏甜）。别又改回去。
+// 主人拍板：出厂默认 = v4_nuo（软糯·最软）。
+// v4_ji_ruan（极软·晓伊）是后来加的档，很软，但不是默认 —— 别再把默认改回它。
 export const DEFAULTS = { voice: 'v4_nuo' };
 
 export function readTTS() {
@@ -104,6 +119,8 @@ export function pythonExe() {
 export function pythonCandidates() {
   const lad = process.env.LOCALAPPDATA || '';
   const raw = [
+    // 自己装的那份最可信：它就是为这台机器配好的，import edge_tts 一定有用
+    bundledPython(),
     process.env.XIAOYU_PYTHON || '',
     lad ? join(lad, 'Python', 'bin', 'python.exe') : '',
     lad ? join(lad, 'Python', 'pythoncore-3.14-64', 'python.exe') : '',

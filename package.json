@@ -1,6 +1,6 @@
 {
   "name": "xiaoyu-mini-agent",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "private": true,
   "description": "小鱼Agent —— 一个自用的极简 Agent 平台：Electron 桌面版 + OpenAI 兼容 API + 工具循环",
   "main": "electron/main.cjs",
@@ -38,6 +38,7 @@
       "persona/**/*",
       "assets/**/*",
       "scripts/voice/**/*",
+      "scripts/fetch-txt.mjs",
       "package.json",
       "!**/*.bak",
       "!**/*.bak-*",

@@ -9,7 +9,13 @@
 //   hk  -> 香港繁体
 //   twp -> 台湾正体 + 台湾用词（"軟體"→"软件"、"滑鼠"→"鼠标"），默认用这个，最贴简体习惯
 //
-// 转换器第一次用才建，建好缓存住。opencc-js 不在就直接原样返回，绝不把抓书流程搞挂。
+// 转换器第一次用才建，建好缓存住。opencc 不在就直接原样返回，绝不把抓书流程搞挂。
+//
+// 加载顺序（重要）：
+//   1. assets/opencc/opencc-full.js —— 打包时一起进 asar，装到别人电脑上也有
+//   2. node_modules 里的 opencc-js —— 只有开发机才有，留着当后备
+// 以前只认第 2 条，结果装好的程序里「繁简转换」这个功能看着有、实际永远不转。
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,14 +37,33 @@ let openccTried = false;
 function loadOpenCC() {
   if (openccTried) return opencc;
   openccTried = true;
+
+  // 1) 随包装的那份（asar 里也能用 readFileSync 读出来）
+  for (const p of [
+    resolve(APP_ROOT, 'assets', 'opencc', 'opencc-full.js'),
+    resolve(APP_ROOT, 'node_modules', 'opencc-js', 'dist', 'umd', 'full.js'),
+  ]) {
+    try {
+      const code = readFileSync(p, 'utf8');
+      // opencc 是个 UMD，用 Function 造一个假的 module/exports 环境把它喂进去，
+      // 这样就不用动 require 缓存、也不会被 asar 的路径规则坑。
+      const mod = { exports: {} };
+      // eslint-disable-next-line no-new-func
+      const fn = new Function('module', 'exports', 'require', code);
+      fn(mod, mod.exports, requireFromApp);
+      const got = mod.exports && mod.exports.Converter ? mod.exports : null;
+      if (got) {
+        opencc = got;
+        return opencc;
+      }
+    } catch {}
+  }
+
+  // 2) 老路：开发机上 node_modules 里那份
   try {
     opencc = requireFromApp('opencc-js');
   } catch {
-    try {
-      opencc = requireFromApp(resolve(APP_ROOT, 'node_modules', 'opencc-js'));
-    } catch {
-      opencc = null;
-    }
+    opencc = null;
   }
   return opencc;
 }

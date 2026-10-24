@@ -120,18 +120,20 @@
     footer { padding: 12px 16px 16px; border-top: 1px solid var(--border); background: var(--panel); }
     .inputRow { max-width: 900px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
 
-    /* 「回到最新」：悬在输入框右上角。
+    /* 「回到最新」：悬在聊天区右下角。
+       必须 fixed（#log 自己会滚，当定位父级会跟着滚走；footer 也没设 relative，
+       所以以前 absolute 会相对 body 定位，直接飘出屏幕看不见）。
        平时藏起来，只有你往上翻、新内容在底下等着的时候才露头，
        旁边那个小数字告诉你攒了几条新的。 */
     #toBottom {
-      position: absolute; right: max(24px, calc(50% - 428px)); bottom: 100%; margin-bottom: 8px;
-      width: 34px; height: 34px; padding: 0; border-radius: 50%;
+      position: fixed; right: max(24px, calc(50% - 428px)); bottom: 132px;
+      width: 38px; height: 38px; padding: 0; border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
       background: var(--panel); color: var(--fg);
       border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, .38);
       cursor: pointer; opacity: 0; transform: translateY(6px); pointer-events: none;
       transition: opacity .16s ease, transform .16s ease, border-color .16s ease;
-      z-index: 30;
+      z-index: 40;
     }
     #toBottom[hidden] { display: none !important; }
     #toBottom.show { opacity: 1; transform: none; pointer-events: auto; }
@@ -1035,6 +1037,17 @@
     }
     .mobQrFoot button { padding: 2px 8px !important; font-size: 11.5px !important; }
 
+    /* 语音引擎的进度条。窄一点、扁一点，跟设置页里别的东西一个调子。 */
+    .vrBar {
+      height: 6px; border-radius: 999px; overflow: hidden;
+      background: var(--input-bg); border: 1px solid var(--border);
+    }
+    .vrBarIn {
+      height: 100%; width: 0; border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent), #7ee0b0);
+      transition: width .25s ease;
+    }
+
     .mobLine { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
     .mobLine code {
       font-family: ui-monospace, Consolas, monospace; font-size: 12px;
@@ -1368,6 +1381,26 @@
           </div>
           <div class="field">
             <span class="hint">安装版数据在 <code>%APPDATA%\小鱼Agent\data\.state</code>，免安装版在 exe 旁边的 <code>data\</code>。卸载不会删数据，但换安装方式会换目录 —— 备份一下最稳。</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>语音引擎</legend>
+          <div class="field">
+            <label>「小鱼说话」要的东西：一个 Python、几个语音库、加一个 ffmpeg。装的时候不带着，第一次要用才现装，省得所有人都白下 100 多 MB。</label>
+            <span class="hint" id="vrState">查一下…</span>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="primary" id="vrInstall">装/修复</button>
+            <button type="button" class="ghost" id="vrCheck">检查一下</button>
+            <button type="button" class="ghost" id="vrRemove">删掉省空间</button>
+          </div>
+          <div class="field" id="vrBarBox" hidden>
+            <div class="vrBar"><div class="vrBarIn" id="vrBarIn"></div></div>
+            <span class="hint" id="vrBarText"></span>
+          </div>
+          <div class="field">
+            <span class="hint">从国内镜像下（python.org 实测只有 74 KB/s，npmmirror 有 5 MB/s，差 70 倍）。装好后放在数据目录的 <code>runtime\</code> 里，大约 108 MB；删掉不影响别的功能，下次用会重装。</span>
           </div>
         </fieldset>
 
@@ -2429,7 +2462,9 @@ var turnsInFlight = new Map();
  * 这时候 busy 不能清；但面板必须关、输入框必须能点。
  * ——「新建会话→立刻删掉→输入框点不了」，根子就在这两件事被绑死在一起。
  */
-function releaseComposer() {
+function releaseComposer(opts) {
+  const forceFocus = Boolean(opts && opts.focus === true);
+  const noFocus = Boolean(opts && opts.focus === false);
   try {
     const dlgEl = document.getElementById('sessionsDlg');
     if (dlgEl && dlgEl.open) dlgEl.close();
@@ -2456,25 +2491,64 @@ function releaseComposer() {
   } catch {}
   // 焦点要等模态面板真正关掉之后再去抢：<dialog>.close() 是异步生效的，
   // 紧接着 focus() 会被还开着的模态吞掉，看起来就是「输入框点不了、打不了字」。
-  const grab = () => { try { input.focus({ preventScroll: true }); } catch {} };
-  grab();
-  requestAnimationFrame(grab);
-  setTimeout(grab, 60);
+  //
+  // 但**不能无脑抢**：Windows 上 input.focus() 会重建 IME 上下文，
+  // 短时间连着 focus 三次（立即 + 下一帧 + 60ms）会让输入法把状态打回默认（英文），
+  // 表现就是「重进之后点输入框，想打中文出来的是英文，不知道啥时候被切成英文了」。
+  // 所以：已经聚焦了就一次都别调；而且只在用户确实要打字时才去抢。
+  const grab = () => {
+    try {
+      if (document.activeElement === input) return; // 已经在里面了，重复 focus 只会打乱 IME
+      input.focus({ preventScroll: true });
+    } catch {}
+  };
+  if (!noFocus && (forceFocus || wantFocus())) {
+    grab();
+    requestAnimationFrame(grab);
+    setTimeout(grab, 60);
+  }
 }
 
 /**
- * 把输入区彻底收拾干净，然后聚焦。
+ * 现在该不该把焦点抢到输入框。
+ *
+ * 页面刚打开、刚切完会话的时候不该抢 —— 人还没打算打字，抢一次只会
+ * 把输入法冲成英文（Windows 上 focus() 会重建 IME 上下文）。
+ * 真正需要抢的是「刚关掉一个面板 / 刚点了删除 / 刚清空会话」这种
+ * 人正准备接着说话的时刻，那时由调用方明确要求（force=true）。
+ */
+function wantFocus(force) {
+  if (force === true) return true;
+  try {
+    if (document.hidden) return false;              // 窗口在后台，抢焦点没意义
+    const ae = document.activeElement;
+    // 人已经在别的输入框里打字（设置、模型、搜索…），别把人拽走
+    if (ae && ae !== input && ae !== document.body &&
+        (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return false;
+    // 有模态面板开着，抢了也是白抢
+    if (document.querySelector('dialog[open]')) return false;
+  } catch {}
+  return true;
+}
+
+/**
+ * 把输入区彻底收拾干净，然后（视情况）聚焦。
  *
  * 「清空当前 → 删会话 → 输入框点不了」那次的教训：任何一步抛异常、
  * 或者面板还开着盖在上面，input.focus() 就落空，人看着就像输入框坏了。
  * 所以这里不依赖调用链有没有抛错，该清的都清一遍。
+ *
+ * @param {{ focus?: boolean }} [opts]
+ *   focus=true  明确要把光标送到输入框（人刚关掉面板、刚删完会话，准备接着说话）
+ *   focus=false 只收拾干净，别抢焦点（页面启动、切会话、后台事件）
+ *   不传        交给 wantFocus() 自己判断
  */
-function settleComposer() {
+function settleComposer(opts) {
   stopping = false;
   busy = false;
   hideSending();
   syncSendBtn();
-  releaseComposer();
+  releaseComposer(opts);
 }
 
 /**
@@ -2940,8 +3014,8 @@ function addUser(text, tag, atts, target, rewindId) {
         sz.textContent = a.size ? fmtSize(a.size) : '';
         const dlink = document.createElement('a');
         dlink.className = 'fdl';
-        dlink.href = dlHref;
         dlink.textContent = '下载';
+        wireSave(dlink, dlHref, a.name || '');
         info.append(nm, sz, dlink);
         box2.append(m, info);
         box.appendChild(box2);
@@ -3166,6 +3240,7 @@ function voiceBubble(f, name, size, url, dl) {
   a.textContent = '\u2193';
   a.href = dl;
   a.title = '存下来';
+  wireSave(a, dl, name);
   a.addEventListener('click', (e) => e.stopPropagation());
 
   b.append(wave, sec, tag, a, prog);
@@ -3211,6 +3286,65 @@ function voiceBubble(f, name, size, url, dl) {
   return row;
 }
 
+/**
+ * 存文件：抓下来自己写盘，页面原地不动。
+ *
+ * 以前直接给 <a href="...download=1">，浏览器拿 Content-Disposition: attachment
+ * 就整页去「下载」，在 Electron 里就是开一个新页或者把当前页顶掉，
+ * 主人回不来只能退出重进。改成 fetch → Blob → a[download]，
+ * 全程在当前页里完成，点完还是聊天界面。
+ */
+async function saveFile(url, name) {
+  const tip = (txt) => {
+    try {
+      let t = document.getElementById('saveTip');
+      if (!t) {
+        t = document.createElement('div');
+        t.id = 'saveTip';
+        t.style.cssText = 'position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:9999;'
+          + 'padding:8px 16px;border-radius:10px;background:rgba(26,32,41,.95);color:#e8eefb;'
+          + 'font-size:13px;border:1px solid #2b3341;transition:opacity .25s;pointer-events:none';
+        document.body.appendChild(t);
+      }
+      t.textContent = txt;
+      t.style.opacity = '1';
+      clearTimeout(t._h);
+      t._h = setTimeout(() => { t.style.opacity = '0'; }, 2200);
+    } catch (e) {}
+  };
+  tip('正在存 ' + (name || '文件') + ' …');
+  try {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = name || 'download';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      try { URL.revokeObjectURL(href); } catch (e) {}
+      try { a.remove(); } catch (e) {}
+    }, 1500);
+    tip('已存好：' + (name || '文件'));
+  } catch (e) {
+    tip('存不下来：' + String(e && e.message || e));
+  }
+}
+/** 给一个 <a> 挂上「点了就存，不跳页」 */
+function wireSave(el, url, name) {
+  if (!el) return el;
+  el.setAttribute('href', url || '#');
+  el.setAttribute('download', name || '');
+  el.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    saveFile(url, name);
+  });
+  return el;
+}
 function outCard(f) {
   const name = (f && f.name) || '文件';
   const size = fmtSize(f && f.size);
@@ -3243,10 +3377,20 @@ function outCard(f) {
     return card;
   }
 
-  // 语音一律走小语音条
+  // 语音一律走小语音条。
+  // 以前只认 say_ 开头和 _v4_/_v6_ 这种命名，换个文件名（比如试音 cand/N4_xxx.mp3）
+  // 就掉到下面的「文件卡片」里，变成一个大播放器——主人要的是气泡，不是文件。
+  // 名字像语音、或者本来就在 voice 目录里的音频，一律按语音条画。
   const rawPath = String((f && f.path) || '').replace(/\\/g, '/');
-  const isVoiceFile = /(^|\/)(say_[^\/]*|[^\/]*_v[46]_[^\/]*)\.(mp3|m4a|wav|ogg|aac)$/i.test(rawPath);
-  if (kind === 'audio' && isVoiceFile) {
+  const looksVoice =
+    /(^|\/)(say_|voice_)[^\/]*\.(mp3|m4a|wav|ogg|aac)$/i.test(rawPath) ||
+    /[\/\\]voice[\/\\][^\/\\]*\.(mp3|m4a|wav|ogg|aac)$/i.test(rawPath) ||
+    /_v[0-9]+_[^\/]*\.(mp3|m4a|wav|ogg|aac)$/i.test(rawPath);
+  if (kind === 'audio' && (looksVoice || !f || !f.path)) {
+    return voiceBubble(f, name, size, url, dl);
+  }
+  // 剩下在语音目录/像语音但 kind 没认出来的，也走语音条
+  if (kind !== 'video' && kind !== 'image' && looksVoice) {
     return voiceBubble(f, name, size, url, dl);
   }
 
@@ -3262,7 +3406,8 @@ function outCard(f) {
     info.className = 'finfo';
     const nm = document.createElement('div'); nm.className = 'fname'; nm.textContent = iconOf(f) + ' ' + name;
     const sz = document.createElement('div'); sz.className = 'fsize'; sz.textContent = size;
-    const a = document.createElement('a'); a.className = 'fdl'; a.href = dl; a.textContent = '下载';
+    const a = document.createElement('a'); a.className = 'fdl'; a.textContent = '下载';
+    wireSave(a, dl, name);
     info.append(nm, sz, a);
     box.appendChild(info);
     return box;
@@ -3270,8 +3415,8 @@ function outCard(f) {
 
   const card = document.createElement('a');
   card.className = 'fileCard';
-  card.href = dl;
   card.title = name + ' · ' + size + '（点一下下载）';
+  wireSave(card, dl, name);
   const ic = document.createElement('div');
   ic.className = 'fk';
   ic.textContent = iconOf(f);
@@ -3537,6 +3682,10 @@ async function runTurn({ resume = false, text = '' } = {}) {
     if (onScreen()) {
       // 下标要等服务端落盘才知道，先画气泡，done 事件里补按钮
       pendingRewindBubble = addUser(text, undefined, sending);
+      // 我自己刚发的话，必须看得见 —— 不管你刚才是不是正往上翻，
+      // 发消息就等于「我要看最新的」，所以这里无条件贴底，
+      // 不能交给 noteNewContent()（那个会看 stickBottom，翻了历史就不滚）。
+      jumpToBottom();
     }
     attachments = [];
     renderAttachBar();
@@ -3875,7 +4024,7 @@ document.getElementById('reset').onclick = async () => {
 
   if (!r || r.error || !r.session) {
     addSysNote('⚠ 清空失败：' + ((r && r.error) || '服务没回应'));
-    settleComposer();
+    settleComposer({ focus: true });
     return;
   }
 
@@ -3888,7 +4037,8 @@ document.getElementById('reset').onclick = async () => {
     usageEl.textContent = '';
   }
   await refreshSessions({ silent: true }).catch(() => {});
-  settleComposer();
+  // 清空之后就是新会话，光标给到位，直接接着说话
+  settleComposer({ focus: true });
   addSysNote('清空啦，已经在新的会话里了 (๑•̀ㅂ•́)و✧');
 };
 input.focus();
@@ -4321,6 +4471,123 @@ function mobCopyText(t) {
   setTimeout(() => {
     b.textContent = old;
   }, 1200);
+}
+
+// ---- 语音引擎 ----
+// 「小鱼说话」要 python + edge_tts + ffmpeg，安装包里不带（带齐 +108MB）。
+// 服务端开机会自己静默装，这里只是让人能看见进度、能手动重来、能删掉省空间。
+let vrTimer = 0;
+
+function vrPaint(info) {
+  const st = document.getElementById('vrState');
+  const barBox = document.getElementById('vrBarBox');
+  const barIn = document.getElementById('vrBarIn');
+  const barText = document.getElementById('vrBarText');
+  const btn = document.getElementById('vrInstall');
+  if (!st) return;
+  const r = info || {};
+  const p = r.progress || null;
+  const mb = (n) => Math.round((Number(n) || 0) / 1048576);
+  if (r.busy && p) {
+    st.textContent = `正在装…… ${p.msg || ''}（${p.pct}%）`;
+  } else if (r.installed) {
+    st.textContent = `✅ 装好了：Python 和 ffmpeg 都在 ${r.dir}，占 ${mb(r.bytes)} MB。「小鱼说话」随时能用。`;
+  } else if (p && p.phase === 'error') {
+    st.textContent = `上次装到 ${p.pct}% 时出错了：${p.msg}。点「装/修复」再试一次。`;
+  } else if (r.hasPython && r.hasFfmpeg) {
+    st.textContent = `✅ 环境齐了（${r.dir}），占 ${mb(r.bytes)} MB。`;
+  } else {
+    st.textContent = '还没装。开着小鱼Agent 一会儿它会自己悄悄装，也可以现在点「装/修复」。';
+  }
+  if (barBox && barIn && barText) {
+    const show = Boolean(r.busy && p);
+    barBox.hidden = !show;
+    if (show) {
+      barIn.style.width = Math.max(0, Math.min(100, p.pct)) + '%';
+      barText.textContent = p.msg || '';
+    }
+  }
+  if (btn) {
+    btn.disabled = Boolean(r.busy);
+    btn.textContent = r.busy ? '正在装…' : r.installed ? '重新装一遍' : '装/修复';
+  }
+}
+
+async function refreshVoiceRuntime() {
+  try {
+    const r = await fetch('/api/voice-runtime').then((x) => x.json());
+    vrPaint(r);
+    // 装的过程中每 1.5 秒刷一次；装完就停
+    if (r && r.busy) {
+      clearTimeout(vrTimer);
+      vrTimer = setTimeout(refreshVoiceRuntime, 1500);
+    }
+  } catch {
+    const st = document.getElementById('vrState');
+    if (st) st.textContent = '查不到状态（服务没连上？）';
+  }
+}
+
+(function wireVoiceRuntime() {
+  const ins = document.getElementById('vrInstall');
+  const chk = document.getElementById('vrCheck');
+  const rem = document.getElementById('vrRemove');
+  if (!ins) return;
+  ins.onclick = async () => {
+    ins.disabled = true;
+    ins.textContent = '正在装…';
+    try {
+      const r = await fetch('/api/voice-runtime/install', { method: 'POST' }).then((x) => x.json());
+      vrPaint(r.runtime || r);
+      if (r.ok === false) addSysNote('⚠ 装失败了：' + (r.error || '不知道为啥'));
+      else addSysNote('语音引擎装好了，「小鱼说话」现在能用啦 (๑•̀ㅂ•́)و✧');
+    } catch (e) {
+      addSysNote('⚠ 装失败了：' + e.message);
+    } finally {
+      refreshVoiceRuntime();
+    }
+  };
+  chk.onclick = async () => {
+    chk.disabled = true;
+    try {
+      const r = await fetch('/api/voice-runtime/check', { method: 'POST' }).then((x) => x.json());
+      const st = document.getElementById('vrState');
+      if (st) {
+        st.textContent = r.ready
+          ? `✅ 能用的 python：${(r.pythons || []).join(' / ') || '（无）'}；ffmpeg：${r.ffmpeg || '（无）'}`
+          : `⚠ 还不能用。python：${(r.pythons || []).length} 个；ffmpeg：${r.ffmpeg || '没有'}`;
+      }
+    } catch (e) {
+      addSysNote('⚠ 检查失败：' + e.message);
+    } finally {
+      chk.disabled = false;
+    }
+  };
+  rem.onclick = async () => {
+    const ans = await askConfirm({
+      title: '删掉语音引擎',
+      body: '会删掉 Python 和 ffmpeg（约 108 MB），「小鱼说话」就暂时用不了了。下次要用会重新装。',
+      ok: '删掉',
+      danger: true,
+    });
+    if (!ans) return;
+    try {
+      const r = await fetch('/api/voice-runtime', { method: 'DELETE' }).then((x) => x.json());
+      vrPaint(r.runtime || r);
+      addSysNote('删掉了，省了 108 MB 左右。');
+    } catch (e) {
+      addSysNote('⚠ 删不掉：' + e.message);
+    }
+  };
+})();
+
+// 打开设置页时刷一次状态
+const vrDlg = document.getElementById('settingsDlg');
+if (vrDlg) {
+  const obs = new MutationObserver(() => {
+    if (vrDlg.open) refreshVoiceRuntime();
+  });
+  obs.observe(vrDlg, { attributes: true, attributeFilter: ['open'] });
 }
 
 // ---- 数据备份 ----
@@ -4777,7 +5044,12 @@ if (featList) {
     featState = r;
     renderFeatList();
     // 视频背景是纯界面开关，改完立刻生效，不用等下一句
-    if (id === 'videoBg' && typeof window.__applySkin === 'function') window.__applySkin();
+    if (id === 'videoBg') {
+      if (typeof window.__applySkin === 'function') window.__applySkin();
+      // 音乐跟视频背景绑死：这一下必须重新问一遍服务端，否则关掉视频背景
+      // 之后音乐还会自顾自地放着（refreshMusic 里会把 bound 抹掉、顺手停播）。
+      if (typeof refreshMusic === 'function') refreshMusic().catch(() => {});
+    }
     // 纯净模式关掉之后顶栏那个按钮要立刻消失（开回来再出现）
     if (id === 'pure') {
       fetch('/api/pure')
@@ -5952,13 +6224,14 @@ document.getElementById('sessBulkDel').onclick = async () => {
       } catch (e) {
         console.warn('[bulk-del] 切会话出错:', e && e.message ? e.message : e);
       } finally {
-        settleComposer();
+        settleComposer({ focus: true });
       }
     }
     await refreshSessions();
     addSysNote(`已删掉 ${r.deleted} 个会话${r.failed.length ? `，${r.failed.length} 个没删成功` : ''}`);
   } finally {
-    settleComposer();
+    // 人刚点了「新建」，光标直接给到位
+    settleComposer({ focus: true });
   }
 };
 
@@ -6020,8 +6293,8 @@ sessList.addEventListener('click', async (e) => {
         } catch (e) {
           console.warn('[del] 切会话时出错，先把输入区救回来:', e && e.message ? e.message : e);
         } finally {
-          // 不管上面成不成，输入区都要能用
-          settleComposer();
+          // 不管上面成不成，输入区都要能用。人刚删完会话，正打算接着说话
+          settleComposer({ focus: true });
         }
       }
       await refreshSessions();
@@ -6035,15 +6308,17 @@ sessList.addEventListener('click', async (e) => {
        * 现在：面板一定关、输入区一定复位（releaseComposer 只管这个）；
        * 当前会话真还在跑的时候由下面这个 settleComposer 按 busy 重新算按钮状态，
        * 既不会盖住输入框，也不会把「停止」骗回「发送」。
+       * focus:true —— 人刚点了删除，光标该回到输入框接着说话。
        */
-      settleComposer();
+      settleComposer({ focus: true });
     }
     return;
   }
 
   if (id !== sessionId) await switchSessionSafe(id);
   sessDlg.close();
-  settleComposer();
+  // 人刚点完会话，正打算接着说话 —— 这里明确把焦点送进去
+  settleComposer({ focus: true });
 });
 
 async function refreshSessions({ silent = false } = {}) {
@@ -6330,8 +6605,10 @@ async function switchSession(id) {
   syncSendBtn();
 
   renderSessList();
-  // 不管上面有没有抛错，输入区都收拾干净（这条是「删会话后点不了输入框」的根治）
-  settleComposer();
+  // 不管上面有没有抛错，输入区都收拾干净（这条是「删会话后点不了输入框」的根治）。
+  // focus:false —— 切会话/开机恢复都会走这里，此时人不一定想打字，
+  // 抢焦点只会把 Windows 输入法冲回英文（见 releaseComposer 里的说明）。
+  settleComposer({ focus: false });
   return true;
 }
 
@@ -6353,7 +6630,7 @@ async function createSessionEx(opts = {}) {
   }).then((x) => x.json()).catch(() => null);
   if (!r || !r.session) {
     // 建失败也必须把输入区放开——不然人卡在「新建了一个空的、打不了字」的状态里
-    settleComposer();
+    settleComposer({ focus: true });
     if (!quiet) { try { alert('新建会话失败'); } catch {} }
     return false;
   }
@@ -6371,8 +6648,10 @@ async function createSessionEx(opts = {}) {
   stopping = false;
   syncSendBtn();
   await refreshSessions({ silent: true });
-  // 面板一定收（不只是按钮那条路，删完会话兜底新建也一样）
-  settleComposer();
+  // 面板一定收（不只是按钮那条路，删完会话兜底新建也一样）。
+  // focus:false —— 开机兜底新建、删完会话自动新建都会走这里，
+  // 这时候人可能还在看着屏幕发愣，不该把光标硬塞进输入框、顺带把输入法切成英文。
+  settleComposer({ focus: false });
   return true;
 }
 
@@ -6390,7 +6669,8 @@ document.getElementById('sessNew').onclick = async () => {
   } catch (e) {
     console.warn('[sessNew] 新建会话出错', e && e.message ? e.message : e);
   } finally {
-    settleComposer();
+    // 人刚点了「新建」，光标直接给到位
+    settleComposer({ focus: true });
   }
 };
 
@@ -6445,7 +6725,8 @@ async function importSessionsFromFile(file) {
   if (r.count === 1 && r.imported[0] && r.imported[0].id !== sessionId) {
     try { await switchSessionSafe(r.imported[0].id); } catch {}
     sessDlg.close();
-    settleComposer();
+    // 刚导入完，人十有八九要立刻跟她说两句
+    settleComposer({ focus: true });
   }
   setTimeout(() => { sessHint.textContent = `${sessionsCache.length} 个`; }, 3000);
 }
@@ -7321,7 +7602,9 @@ refreshSkin();
  * 音乐就开始。这也顺带解决了「一打开就轰一声」的问题。
  * ========================================================================== */
 const musicEl = document.getElementById('bgMusic');
-const musState = { on: true, volume: 0.4, hasMusic: false, isDefault: true, name: '' };
+// bound = 视频背景这个功能是不是开着。音乐跟它绑死：它停，音乐就停。
+// on = 主人自己在设置里给音乐打的勾（不随视频背景变，只是被它盖住）。
+const musState = { on: true, bound: true, volume: 0.4, hasMusic: false, isDefault: true, name: '' };
 let musArmed = false; // 是不是还在等第一次交互
 
 function paintMusicUI() {
@@ -7336,18 +7619,27 @@ function paintMusicUI() {
     // 默认那首在包里的文件名是 bg-music.m4a，界面上要说人话
     const title = musState.isDefault ? '[deepseek娘]深夜的大肥鱼' : musState.name;
     if (!musState.hasMusic) st.textContent = '还没找到音乐文件';
-    else if (musState.on) st.textContent = `现在放的是：${title}${musState.isDefault ? '（默认）' : '（自己导入的）'}`;
+    else if (!musState.bound) {
+      // 视频背景关着 —— 音乐跟着停，但下面那格勾的意愿保留着
+      st.textContent = `视频背景在【功能】里关着，音乐跟着停了。上次放的是：${title}`;
+    } else if (musState.on) st.textContent = `现在放的是：${title}${musState.isDefault ? '（默认）' : '（自己导入的）'}`;
     else st.textContent = `已关闭。上次放的是：${title}`;
   }
   const note = document.getElementById('skMusicNote');
-  if (note) note.textContent = musState.on ? `音乐 ${Math.round((musState.volume || 0) * 100)}%` : '音乐已关';
+  if (note) {
+    note.textContent = !musState.bound
+      ? '视频背景关着，音乐也停着'
+      : (musState.on ? `音乐 ${Math.round((musState.volume || 0) * 100)}%` : '音乐已关');
+  }
   const sk = document.getElementById('skMusic');
   if (sk) sk.value = String(Math.round((musState.volume || 0) * 100));
 }
 
 /** 真要出声：设音量、设源、开播。被拦就把「等交互」的旗子插上。 */
 function musicStart() {
-  if (!musicEl || !musState.hasMusic || !musState.on) return;
+  // musState.bound 是「视频背景」功能开关；它关着的时候一律不出声，
+  // 哪怕主人自己那格音乐勾还亮着（勾留着，视频背景一开就自动回来）。
+  if (!musicEl || !musState.hasMusic || !musState.on || !musState.bound) return;
   musicEl.volume = Math.max(0, Math.min(1, Number(musState.volume) || 0));
   const want = '/api/skin/music';
   if (!String(musicEl.getAttribute('src') || '').startsWith(want)) {
@@ -7386,20 +7678,22 @@ async function refreshMusic() {
   const r = await fetch('/api/skin').then((x) => x.json()).catch(() => null);
   if (!r || r.error) return;
   const s = r.settings || {};
+  // enabled 来自「功能」里的视频背景开关；音乐跟着它走
+  musState.bound = r.enabled !== false;
   musState.on = s.musicOn !== false;
   musState.volume = Number.isFinite(Number(s.musicVolume)) ? Number(s.musicVolume) : 0.4;
   musState.hasMusic = Boolean(r.hasMusic);
   musState.isDefault = !r.musicIsCustom;
   musState.name = r.musicName || '（没有）';
   paintMusicUI();
-  if (musState.on && musState.hasMusic) musicStart();
+  if (musState.on && musState.bound && musState.hasMusic) musicStart();
   else musicStop();
 }
 
 async function pushMusic(patch) {
   Object.assign(musState, patch);
   paintMusicUI();
-  if (musState.on && musState.hasMusic) musicStart();
+  if (musState.on && musState.bound && musState.hasMusic) musicStart();
   else musicStop();
   await fetch('/api/skin', {
     method: 'POST',

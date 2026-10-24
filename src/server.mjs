@@ -68,6 +68,7 @@ import {
   ensureBundledMusic,
 } from './skin.mjs';
 import { getTTSState, writeTTS, speak } from './tts.mjs';
+import { runtimeInfo, installRuntime, removeRuntime, readyPythons, readyFfmpeg, ensureVoiceRuntimeInBackground } from './voice-runtime.mjs';
 import { getThinking, setThinking, LEVELS } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
 import {
@@ -1162,6 +1163,54 @@ const server = createServer(async (req, res) => {
       return json(res, 404, { error: '没这个语音' });
     }
     return;
+  }
+
+  // ---- 语音引擎：本机有没有 python + ffmpeg，没有就现装 ----
+  // 这两样是「小鱼说话」的前提。安装包里不带（带齐要 +150MB），
+  // 所以第一次要用的时候从这儿装到 <数据目录>/runtime 下。
+  if (req.method === 'GET' && url.pathname === '/api/voice-runtime') {
+    const info = runtimeInfo();
+    return json(res, 200, info);
+  }
+
+  // 真去查一遍：不是看目录在不在，而是看能不能 import edge_tts / 跑得动 ffmpeg
+  if (req.method === 'POST' && url.pathname === '/api/voice-runtime/check') {
+    try {
+      const [pys, ff] = await Promise.all([readyPythons(), readyFfmpeg()]);
+      return json(res, 200, {
+        ok: true,
+        ready: pys.length > 0 && Boolean(ff),
+        pythons: pys,
+        ffmpeg: ff,
+        runtime: runtimeInfo(),
+      });
+    } catch (err) {
+      return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/voice-runtime/install') {
+    try {
+      const out = await installRuntime();
+      return json(res, 200, { ...out, runtime: runtimeInfo() });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { ok: false, error: String(err?.message ?? err), runtime: runtimeInfo() });
+    }
+  }
+
+  if (req.method === 'DELETE' && url.pathname === '/api/voice-runtime') {
+    try {
+      removeRuntime();
+      return json(res, 200, { ok: true, runtime: runtimeInfo() });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { ok: false, error: String(err?.message ?? err) });
+    }
+  }
+
+  // 让界面能主动踢一脚「静默装」——用户点了试听却没有引擎的时候用
+  if (req.method === 'POST' && url.pathname === '/api/voice-runtime/silent') {
+    const started = ensureVoiceRuntimeInBackground('界面请求');
+    return json(res, 200, { ok: true, started, runtime: runtimeInfo() });
   }
 
   // ---- 视频背景：状态 / 旋钮 / 片子本身 ----
@@ -2878,6 +2927,19 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
   } catch (e) {
     console.warn('[update] 定时查没起来（不影响使用）：', String(e?.message ?? e));
   }
+
+  // 语音引擎静默自检。
+  // 开机时不抢戏：等 20 秒（先把窗口、会话、背景都弄利索）再悄悄看一眼，
+  // 缺东西就在后台下载安装，界面上不弹窗、不挡任何操作。
+  // 用户真去点试听的时候，多半已经装好了。
+  // 为什么是后台装而不是安装包里带：带齐要 +108MB，而大部分人根本不用语音。
+  setTimeout(() => {
+    try {
+      ensureVoiceRuntimeInBackground('开机自检');
+    } catch (e) {
+      console.warn('[voice-runtime] 自检没跑成（不影响使用）：', String(e?.message ?? e));
+    }
+  }, 20000).unref?.();
 
   // 启动自检：异步跑，不挡服务起来。桌面版由 electron 先跑过一次，这里复用结果。
   if (selfCheck) {

@@ -18,6 +18,19 @@ import edge_tts
 # ffmpeg 在哪：系统 PATH 里没有就按常见位置挨个找
 import shutil as _shutil
 def _find_ffmpeg():
+    # 优先用小鱼Agent 自己装的那份（<数据目录>/runtime/bin/ffmpeg.exe）。
+    # 别的电脑上没有系统 ffmpeg，只有这份能保证一定能念出声。
+    import os as _o, sys as _s
+    _here = _o.path.dirname(_o.path.abspath(__file__))
+    _cands = []
+    for _up in (_here, _o.path.dirname(_here), _o.path.dirname(_o.path.dirname(_here))):
+        _cands.append(_o.path.join(_up, 'runtime', 'bin', 'ffmpeg.exe'))
+        _cands.append(_o.path.join(_up, 'bin', 'ffmpeg.exe'))
+    if _o.environ.get('XIAOYU_FFMPEG'):
+        _cands.insert(0, _o.environ['XIAOYU_FFMPEG'])
+    for _c in _cands:
+        if _o.path.isfile(_c):
+            return _c
     p = _shutil.which('ffmpeg')
     if p: return p
     import os as _os

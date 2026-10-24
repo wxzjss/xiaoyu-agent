@@ -298,6 +298,14 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
 /**
  * 被中途打断时，历史尾部可能留着「有 tool_calls 却没有 tool 结果」的半截，
  * 直接发出去会被网关拒掉。这里把不齐的那一组整组砍掉（system/context 两条永远保留）。
+ *
+ * 【只修「不齐」，别吃好数据】
+ * 以前末尾只要有 assistant 就无条件 pop（注释写的是「被打断、没写完的回答」），
+ * 但函数没法分辨「没写完」和「写完了」—— 结果一条完整的好回复也会被吃掉。
+ * 后果很实在：/api/sessions/branch 会调它，于是**分支一次就少一条消息、少一个附件**，
+ * 再被 saveSession 写回磁盘，原会话里那条语音就永久没了。
+ * 现在只处理真正不齐的情况：tool 结果缺失、或 assistant 带着悬空的 tool_calls。
+ * 普通 assistant 一律留着 —— 它是正常内容，不是残渣。
  */
 export function repairHistory(messages) {
   const floor = messages[0]?.role === 'system' ? (messages[1]?.context ? 2 : 1) : 0;
@@ -317,11 +325,12 @@ export function repairHistory(messages) {
       messages.length = Math.max(floor, i);
       continue;
     }
+    // assistant 带着 tool_calls 但后面一条 tool 结果都没有 —— 这组是不齐的，砍掉
     if (last.role === 'assistant' && last.tool_calls?.length) {
       messages.pop();
       continue;
     }
-    if (last.role === 'assistant') messages.pop(); // 被打断、没写完的回答
+    // 到这里尾部是正常的 user / 干净的 assistant，没什么要修的
     return messages;
   }
   return messages;

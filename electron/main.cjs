@@ -24,6 +24,7 @@ if (process.env.ELECTRON_RUN_AS_NODE) {
 
 const { app, BrowserWindow, shell, ipcMain, dialog, Tray, Menu, nativeImage } = require('electron');
 const { join } = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { readFileSync, writeFileSync } = require('node:fs');
 
 // 显示名。package.json 的 name 故意还是 xiaoyu-mini-agent（仓库地址、localStorage 键都靠它），
@@ -51,6 +52,40 @@ if (app.isPackaged) {
   process.env.MINI_AGENT_DATA = base;
 }
 
+/**
+ * 可写代码目录：打包后 asar 是只读的，自动更新根本写不进去。
+ *
+ * 以前 updater 直接往 config.root（= app.asar 那个**文件**）里 mkdir，
+ * 于是「发现新版 → ENOTDIR → 更新失败」，打包版的自动更新一次都没成功过。
+ *
+ * 现在约定：更新下来的新代码放在 <数据目录>/code 下，启动时**优先**从那儿加载，
+ * 加载失败（文件不全、语法错、半路断电）就退回 asar 里的原版 —— 装坏不至于开不了机。
+ * 免安装版同样适用，data 本来就在 exe 旁边。
+ */
+function codeRoot() {
+  if (!app.isPackaged) return join(__dirname, '..'); // 开发时就是源码目录
+  return join(process.env.MINI_AGENT_DATA, 'code');
+}
+
+/**
+ * 从可写代码目录 import，失败就退回 asar。
+ * @param {string} rel 形如 'src/server.mjs'
+ */
+async function importSrc(rel) {
+  if (app.isPackaged) {
+    const { existsSync } = require('node:fs');
+    const over = join(codeRoot(), rel);
+    if (existsSync(over)) {
+      try {
+        return await import(pathToFileURL(over).href);
+      } catch (e) {
+        console.warn('[code] 可写目录里的 ' + rel + ' 加载失败，退回自带版本：', String(e?.message ?? e));
+      }
+    }
+  }
+  return import('../' + rel);
+}
+
 let serverInfo = null;
 let win = null;
 let tray = null;
@@ -63,7 +98,7 @@ let quitting = false;
  */
 async function selfCheck() {
   try {
-    const { runSelfCheck, decideMode } = await import('../src/selfcheck.mjs');
+    const { runSelfCheck, decideMode } = await importSrc('src/selfcheck.mjs');
     // 自检本身可以「这次跳过」（上次跑过、环境没变），但**版本检查不能跳过**。
     // 以前这两件事捆在一起，结果主人装好之后如果环境一直没变，就再也不查新版本了
     // —— 想更新只能自己去 GitHub 手点。现在拆开：AI 环境自检按老规矩节流，
@@ -104,7 +139,7 @@ async function runFullSelfCheck(runSelfCheck) {
  */
 async function quickVersionCheck() {
   try {
-    const { quickCheck } = await import('../src/updater.mjs');
+    const { quickCheck } = await importSrc('src/updater.mjs');
     const r = await quickCheck();
     if (r.status === 'updated') {
       console.log(`[update] ${r.detail}`);
@@ -118,7 +153,7 @@ async function quickVersionCheck() {
 }
 
 async function startServer() {
-  const { startServer: run } = await import('../src/server.mjs');
+  const { startServer: run } = await importSrc('src/server.mjs');
   // 告诉服务端「有人在管我」：界面上那个「重启让它生效」就是靠它决定
   // 能不能真的自己重启（浏览器直开的时候没人管，只能让主人手动关）。
   process.env.XIAOYU_DESKTOP = '1';
@@ -409,7 +444,7 @@ ipcMain.handle('app:info', () => ({
 }));
 
 ipcMain.handle('app:openWorkspace', async () => {
-  const { config } = await import('../src/config.mjs');
+  const { config } = await importSrc('src/config.mjs');
   const { error } = await shell.openPath(config.workspace);
   if (error) dialog.showErrorBox('打开工作目录失败', error);
 });

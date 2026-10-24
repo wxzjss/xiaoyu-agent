@@ -16,10 +16,26 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { config } from './config.mjs';
 
-const ROOT = config.root;
-const STATE = join(ROOT, '.state');
+/**
+ * 更新要写到哪儿。
+ *
+ * 打包后 config.root 是 app.asar 这个**文件**（只读），往它里面 mkdir 报 ENOTDIR
+ * —— 打包版的自动更新一直因此失败。所以：
+ *   开发时（root 是真实目录）→ 直接改源码目录，跟以前一样
+ *   打包后 → 写到 <数据目录>/code，electron/main.cjs 的 importSrc() 会优先从那儿加载
+ * 两边都保留 .state 在数据目录里（STATE 用 config.dataDir，见下）。
+ */
+const ROOT = config.packaged ? join(config.dataDir, 'code') : config.root;
+const STATE = join(config.dataDir, '.state');
 const UPDATE_INFO = join(STATE, 'update.json');
 const BACKUP_ROOT = join(STATE, 'update-backup');
+
+/**
+ * 现在真正在跑的那份代码在哪儿：优先 code/（更新过的），没有就 asar 里的原版。
+ * 版本号必须从这份读 —— 只从 code/ 读的话，第一次更新前那儿是空的，
+ * 就会报「读不到本地版本号」，然后永远判断不出该不该更新。
+ */
+const ACTIVE = existsSync(join(ROOT, 'package.json')) ? ROOT : config.root;
 
 const REPO = 'wxzjss/xiaoyu-agent';
 const BRANCH = 'main';
@@ -48,7 +64,7 @@ function readJson(file, fallback) {
 
 /** 本地版本 */
 export function localVersion() {
-  const pkg = readJson(join(ROOT, 'package.json'), null);
+  const pkg = readJson(join(ACTIVE, 'package.json'), null);
   return typeof pkg?.version === 'string' ? pkg.version : null;
 }
 
@@ -337,7 +353,7 @@ export async function checkForUpdate(opts = {}) {
     const copied = applyUpdate(srcDir);
     if (!copied.length) throw new Error('一个文件都没覆盖上，可能下载的东西不对');
 
-    const nowVersion = readJson(join(ROOT, 'package.json'), {})?.version ?? null;
+    const nowVersion = readJson(join(ACTIVE, 'package.json'), {})?.version ?? null;
     writeFileSync(
       UPDATE_INFO,
       JSON.stringify(

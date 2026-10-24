@@ -134,6 +134,16 @@ npm run selfcheck -- --deep  # 深度
 - 手机也能**不连电脑**用：连接页有「不连电脑，手机上直接用」，填自己的接口地址和 Key 就能聊
   （只是不念记忆、另存一份对话记录）。详见 `notes/手机连接.md`。
 
+## 自动更新
+
+启动时会去 GitHub 查一次新版，运行中每 3 小时再查一次（凌晨 1–7 点顺延到 7 点）。设置里的「更新」那一栏能看当前版本，也能手动点「马上检查一次」。
+
+发现新版会下载白名单里的文件（src public electron persona rules assets scripts 和几个根文件），**不碰** .env、.state、sandbox、node_modules、dist、dump。覆盖前会把旧文件备份到 .state/update-backup/<时间戳>/。
+
+**更新装到哪**：不是往 app.asar 里写（那是只读的，写进去会报 ENOTDIR），而是写到 %APPDATA%\小鱼Agent\data\code\。启动时如果这个目录存在、并且里面有 package.json，就**优先从这儿加载代码**；没有才用 asar 里自带的。加载失败会自动退回自带版本，不会整个人打不开。
+
+**想退回自带版本**：把 %APPDATA%\小鱼Agent\data\code 整个删掉，重启就是安装包里那版。
+
 ## 数据备份
 
 【设置】→【数据备份】：一键把会话、会话记忆、人设、设置、模型配置打成一个 json 导出；也能导入回来（合并或覆盖）。

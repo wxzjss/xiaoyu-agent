@@ -2,6 +2,8 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
+// 自动档的水位线要按模型窗口算，窗口表在 rates.mjs（跟价目表放一起）
+import { autoLimitFor, contextWindowOf } from './rates.mjs';
 
 const FILE = join(config.dataDir, '.state', 'settings.json');
 
@@ -99,7 +101,13 @@ export function defaultSafeWordNote() {
 
 function readRaw() {
   try {
-    return JSON.parse(readFileSync(FILE, 'utf8'));
+    const raw = JSON.parse(readFileSync(FILE, 'utf8'));
+    if (raw && typeof raw === 'object' && 'contextLimit' in raw) {
+      // 老文件里 0 表示「关闭」，新文件里 0 表示「自动」（自动存成字符串 "auto"）。
+      // 这里把老的 0 翻成 Infinity，别让以前的「关掉压缩」读回来变成自动档。
+      raw.contextLimit = decodeContextLimit(raw.contextLimit);
+    }
+    return raw;
   } catch {
     return {};
   }
@@ -115,17 +123,37 @@ function readRaw() {
  */
 /**
  * 把界面上填的压缩阈值夹成一个能用的整数。
- * 传空 / 传不认识的 -> 沿用 fallback；0 / off / none / unlimited -> Infinity（不压缩）。
+ *
+ * 三种填法：
+ *   空        -> 沿用 fallback
+ *   0 / auto  -> **自动档**：按当前模型的窗口自动算水位（返回 0 当哨兵，
+ *               真正的水位在 effectiveContextLimit(model) 里算）
+ *   off / none / unlimited / inf / -1
+ *             -> Infinity（彻底不压缩，一次都不压）
+ *   正数       -> 就是那个数字，填多少压多少
+ *
+ * 为什么 0 从「不压缩」改成「自动」：主人原话「改成自动压缩为0时让AI自己
+ * 选择什么时候压缩」。真让模型自己每轮报个数字不可靠（它没有 token 计数器，
+ * 长会话里经常觉得自己才聊了几句），所以 0 = 程序按模型窗口自动定水位，
+ * 换模型自动跟着变 —— 效果就是「不用你操心什么时候压」。
+ * 想要真的永不压缩，填 off 或 unlimited（界面上也有勾选框）。
+ *
  * @param {*} raw 界面来的原始值
  * @param {number} fallback 解析不出来时用这个
- * @returns {number} 正数或 Infinity
+ * @returns {number} 正数 / 0（自动） / Infinity（关闭）
  */
 export function parseContextLimitValue(raw, fallback = 128000) {
   const v = String(raw ?? '').trim().toLowerCase();
   if (!v) return fallback;
-  if (['0', 'off', 'none', 'unlimited', 'inf', 'infinity', 'no', '-1'].includes(v)) return Infinity;
+  // 「自动」的两个写法都认
+  if (['auto', '智能', '自动'].includes(v)) return 0;
+  // 真的要关掉
+  if (['off', 'none', 'unlimited', 'inf', 'infinity', 'no', '-1'].includes(v)) return Infinity;
   const n = Number(v);
-  if (!Number.isFinite(n) || n <= 0) return fallback;
+  if (!Number.isFinite(n)) return fallback;
+  // 0 = 自动档
+  if (n === 0) return 0;
+  if (n < 0) return fallback;
   // 太小了压起来没意义，夹到 8000 起步
   return Math.max(8000, Math.round(n));
 }
@@ -174,8 +202,14 @@ function normalize(input = {}) {
     typeof input.safeWordNote === 'string' && input.safeWordNote.trim()
       ? input.safeWordNote.trim()
       : defaultSafeWordNote();
-  // 压缩阈值：数字就是 token 数，0 / off 之类就是 Infinity（不压缩）。
-  // Infinity 在 JSON 里存不下，落盘时按 0 存，读回来再解释成 Infinity。
+  // 压缩阈值：数字就是 token 数，0 = 自动档，Infinity = 彻底关掉。
+  //
+  // 落盘编码（JSON 存不下 Infinity，也分不清 0 的两种含义）：
+  //   自动  -> 字符串 "auto"
+  //   关闭  -> 数字 0
+  //   正数  -> 数字原样
+  // 以前「0 表示关闭」是直接写 0，现在 0 归「自动」了，所以关闭必须写成别的形式，
+  // 否则主人以前把阈值设成 0（想关掉）的配置，读回来会变成自动档 —— 惊到人。
   const contextLimit = parseContextLimitValue(
     input.contextLimit === undefined ? DEFAULT_SETTINGS.contextLimit : input.contextLimit,
     DEFAULT_SETTINGS.contextLimit,
@@ -188,13 +222,37 @@ export function getSettings() {
   return normalize({ ...DEFAULT_SETTINGS, ...stored });
 }
 
+/**
+ * 把内存里的 contextLimit 编码成能存进 JSON 的值。
+ *
+ * JSON 没有 Infinity，也分不清「0 = 自动」和「0 = 关闭」，所以这里统一挪到字符串上。
+ * @param {number} v normalize 过的值
+ * @returns {number|string}
+ */
+function encodeContextLimit(v) {
+  if (v === Infinity) return 0; // 0 当「关闭」的落盘编码（向后兼容老文件）
+  if (v === 0) return 'auto'; // 0 = 自动
+  return Number.isFinite(v) ? v : DEFAULT_SETTINGS.contextLimit;
+}
+
+/**
+ * 把落盘的值解回 normalize 认识的形式。
+ * @param {*} raw
+ * @returns {*}
+ */
+function decodeContextLimit(raw) {
+  // 老文件里 0 就是「关闭」，别把老配置误读成自动档
+  if (raw === 0) return Infinity;
+  return raw;
+}
+
 export function saveSettings(input) {
   const next = normalize({ ...getSettings(), ...input });
   if (!existsSync(join(config.dataDir, '.state'))) mkdirSync(join(config.dataDir, '.state'), { recursive: true });
   // Infinity 存不进 JSON（会变成 null），落盘时转成 0，读回来 normalize 再解释成 Infinity
   const onDisk = {
     ...next,
-    contextLimit: Number.isFinite(next.contextLimit) ? next.contextLimit : 0,
+    contextLimit: encodeContextLimit(next.contextLimit),
   };
   writeFileSync(FILE, JSON.stringify(onDisk, null, 2), 'utf8');
   return next;
@@ -203,14 +261,35 @@ export function saveSettings(input) {
 /**
  * 现在真正生效的上下文压缩阈值（token）。
  *
- * 优先级：设置面板里填的 > config.contextLimit（.env 的 CONTEXT_LIMIT）> 128000。
- * 返回 Infinity 表示不压缩。
+ * @param {string} [model] 当前会话用的模型名。传了才能算「自动档」的水位
+ *   （不同模型窗口从 32k 到 1M，用同一个数字是荒唐的）。
+ *   不传就按认不出来的模型处理，用保守的 FALLBACK_WINDOW。
+ *
+ * 三种结果：
+ *   Infinity  彻底不压缩
+ *   0         自动档但没给模型名 —— 调用方自己按 FALLBACK 处理
+ *   正数       就是水位
  */
-export function effectiveContextLimit() {
+export function effectiveContextLimit(model = '') {
   const s = getSettings();
+  // 自动档：按模型窗口算（见 rates.mjs 的 autoLimitFor）
+  if (s.contextLimit === 0) return autoLimitFor(model || '');
   if (Number.isFinite(s.contextLimit) && s.contextLimit > 0) return s.contextLimit;
   if (s.contextLimit === Infinity) return Infinity;
   return config.contextLimit;
+}
+
+/**
+ * 这个会话的压缩设置到底是哪种（给界面显示用）。
+ * @param {string} [model]
+ * @returns {{mode:'auto'|'fixed'|'off', limit:number|null, window:number}}
+ */
+export function contextLimitInfo(model = '') {
+  const s = getSettings();
+  const win = contextWindowOf(model || '');
+  if (s.contextLimit === Infinity) return { mode: 'off', limit: null, window: win };
+  if (s.contextLimit === 0) return { mode: 'auto', limit: autoLimitFor(model || ''), window: win };
+  return { mode: 'fixed', limit: s.contextLimit, window: win };
 }
 
 /**

@@ -39,7 +39,10 @@ import {
   defaultSafeWordNote,
   resetSafeWords,
   effectiveContextLimit,
+  contextLimitInfo,
 } from './settings.mjs';
+// 自动档的水位线按模型窗口算，窗口表在 rates.mjs（跟价目表放一起）
+import { autoLimitFor } from './rates.mjs';
 import {
   personaInfo,
   saveUserPersona,
@@ -66,6 +69,7 @@ import {
   importMusic,
   ensureBundledVideo,
   ensureBundledMusic,
+  DEFAULTS as SKIN_DEFAULTS,
 } from './skin.mjs';
 import { getTTSState, writeTTS, speak } from './tts.mjs';
 import { runtimeInfo, installRuntime, removeRuntime, readyPythons, readyFfmpeg, ensureVoiceRuntimeInBackground } from './voice-runtime.mjs';
@@ -475,6 +479,99 @@ async function startOpening(sessionId) {
   else session.messages.splice(at, 0, ...pair);
   markOpened(session.id);
   saveSession(session);
+}
+
+/**
+ * 把一个本地文件按 Range 请求发出去（206 分段 / 200 整包 / 416 越界）。
+ *
+ * 为什么抽出来：`<video>` 和 `<audio>` 的进度条全靠 206 分段。
+ * 只回 200 整包的话，浏览器必须先下完才能播、拖到哪儿都重头来 ——
+ * 表现就是「进度条拖不动」。以前 /api/attach/raw 有 Range，
+ * 而出件箱的 /api/attach/outbox-out 忘了写，主人发的视频正好全走那条，
+ * 于是拖不动，查了半天还以为是文件本身的问题。
+ *
+ * @param {object} req
+ * @param {object} res
+ * @param {string} file 绝对路径
+ * @param {object} opts
+ * @param {string} opts.mime Content-Type
+ * @param {string} [opts.disposition] Content-Disposition 的 type（inline / attachment）
+ * @param {string} [opts.filename] 下载时用的文件名
+ * @returns {boolean} 是否已经接管了这次响应
+ */
+function sendFileWithRange(req, res, file, { mime, disposition = 'inline', filename = '' } = {}) {
+  let size = 0;
+  try {
+    const st = statSync(file);
+    if (!st.isFile()) return false;
+    size = st.size;
+  } catch {
+    return false;
+  }
+
+  const head = {
+    'Content-Type': mime || 'application/octet-stream',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-cache',
+  };
+  const name = filename || (String(file).split(/[\\/]/).pop() || 'file');
+  if (disposition === 'attachment') {
+    // 中文文件名走 RFC 5987，老浏览器退回 filename=
+    head['Content-Disposition'] = "attachment; filename*=UTF-8''" + encodeURIComponent(name);
+  } else {
+    head['Content-Disposition'] = "inline; filename*=UTF-8''" + encodeURIComponent(name);
+  }
+
+  const pipe = (opts) => {
+    const s = createReadStream(file, opts);
+    s.on('error', (e) => {
+      console.warn('[attach] 读取中断：' + (e && e.message));
+      try {
+        res.destroy();
+      } catch {}
+    });
+    s.pipe(res);
+  };
+
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? '').trim());
+  if (!m || size <= 0) {
+    res.writeHead(200, { ...head, 'Content-Length': size });
+    if (req.method === 'HEAD') {
+      res.end();
+      return true;
+    }
+    pipe();
+    return true;
+  }
+
+  let start = m[1] === '' ? null : Number(m[1]);
+  let end = m[2] === '' ? null : Number(m[2]);
+  if (start === null) {
+    // bytes=-N 表示「最后 N 字节」
+    const n = end ?? 0;
+    start = Math.max(0, size - n);
+    end = size - 1;
+  } else if (end === null || end >= size) {
+    end = size - 1;
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) {
+    res.writeHead(416, { ...head, 'Content-Range': `bytes */${size}` });
+    res.end();
+    return true;
+  }
+
+  res.writeHead(206, {
+    ...head,
+    'Content-Range': `bytes ${start}-${end}/${size}`,
+    'Content-Length': end - start + 1,
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+    return true;
+  }
+  pipe({ start, end });
+  return true;
 }
 
 /**
@@ -1279,10 +1376,15 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // 把音乐恢复成内置那首（壁纸那首）
+  // 把音乐恢复成内置那首（壁纸那首），顺带把音量也拉回出厂值。
+  //
+  // 【为什么连音量一起还原】
+  // 以前这里只写 musicFile 和 musicOn，音量没动 —— 主人拖到多少，就一直是多少。
+  // 于是「恢复默认」只换了曲子、开了开关，音量还停在 0.7 / 0.2，
+  // 看着就是「恢复默认没把音量恢复」。既然按钮叫「恢复默认」，就该整组回去。
   if (req.method === 'POST' && url.pathname === '/api/skin/music/reset') {
     try {
-      writeSkin({ musicFile: '', musicOn: true });
+      writeSkin({ musicFile: '', musicOn: true, musicVolume: SKIN_DEFAULTS.musicVolume });
       return json(res, 200, { ok: true, ...getSkinState() });
     } catch (err) {
       return json(res, 500, { error: String(err?.message ?? err) });
@@ -1307,6 +1409,31 @@ const server = createServer(async (req, res) => {
         safeWordNote: defaultSafeWordNote(),
       },
     });
+  }
+
+  /**
+   * 压缩阈值现在是哪种模式、自动档会落到多少。
+   *
+   * 界面要用它算「填 0 到底等于几」—— 不同模型窗口差十倍，
+   * 不把这个数写出来，主人根本不知道自己什么时候会被压。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/context-limit') {
+    try {
+      const mod = await import('./llm.mjs');
+      const model = mod.modelNameForSession(url.searchParams.get('sessionId') || '');
+      const info = contextLimitInfo(model);
+      return json(res, 200, {
+        ok: true,
+        model,
+        window: info.window,
+        mode: info.mode,
+        limit: Number.isFinite(info.limit) ? info.limit : null,
+        auto: autoLimitFor(model),
+        raw: getSettings().contextLimit,
+      });
+    } catch (err) {
+      return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+    }
   }
 
   if (req.method === 'POST' && url.pathname === '/api/settings') {
@@ -1393,7 +1520,11 @@ const server = createServer(async (req, res) => {
     }
   }
   // 出件箱兜底：/api/attach/outbox-out?key=xxx
-  // 发出去的文件都会往 .state/outbox 抄一份；消息里的路径没了（换了机器、原文件删了）就点这个
+  // 发出去的文件都会往 .state/outbox 抄一份；消息里的路径没了（换了机器、原文件删了）就点这个。
+  //
+  // 必须支持 Range：主人发的视频/语音全走这条（前端 outUrl() 先看 key），
+  // 以前这里只回 200 整包，进度条就拖不动 —— 明明 /api/attach/raw 早就写了 Range，
+  // 两条路各写一份就容易漏，现在统一走 sendFileWithRange。
   if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/attach/outbox-out') {
     const key = url.searchParams.get('key') || '';
     const op = outboxPath(key);
@@ -1402,16 +1533,19 @@ const server = createServer(async (req, res) => {
       res.end('兜底箱里没有这个文件了');
       return;
     }
-    const ost = statSync(op);
     const oname = String(key).replace(/^o-[0-9a-f]{10}-/, '') || 'file';
-    res.writeHead(200, {
-      'Content-Type': mimeOf(op),
-      'Content-Length': ost.size,
-      'Cache-Control': 'no-cache',
-      'Content-Disposition': "inline; filename*=UTF-8''" + encodeURIComponent(oname),
-    });
-    if (req.method === 'HEAD') { res.end(); return; }
-    createReadStream(op).pipe(res);
+    const dl = url.searchParams.get('download') === '1';
+    if (
+      sendFileWithRange(req, res, op, {
+        mime: mimeOf(op),
+        disposition: dl ? 'attachment' : 'inline',
+        filename: oname,
+      })
+    ) {
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('兜底箱里这个文件读不出来了');
     return;
   }
 
@@ -1430,9 +1564,51 @@ const server = createServer(async (req, res) => {
       if (!fst.isFile()) throw new Error('不是一个文件：' + abs);
       const fname = abs.split(/[\\/]/).pop() || 'file';
       const cd = url.searchParams.get('download') === '1' ? 'attachment' : 'inline';
+      const mime = mimeOf(abs);
+
+      /**
+       * 分段（Range）支持。
+       * 没有它，<video> 的进度条就是个摆设：拖到哪儿都只能从头整包重下，
+       * 看着像「拖不动」。浏览器要一段，就得老老实实回 206 + 那一段。
+       */
+      const range = String(req.headers.range || '');
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (m && fst.size > 0) {
+        let start = m[1] === '' ? null : Number(m[1]);
+        let end = m[2] === '' ? null : Number(m[2]);
+        if (start === null && end === null) {
+          // 格式不对，当没发过
+        } else {
+          if (start === null) {
+            // bytes=-N 表示「最后 N 字节」
+            start = Math.max(0, fst.size - end);
+            end = fst.size - 1;
+          } else if (end === null || end >= fst.size) {
+            end = fst.size - 1;
+          }
+          if (start > end || start >= fst.size) {
+            res.writeHead(416, { 'Content-Range': 'bytes */' + fst.size });
+            res.end();
+            return;
+          }
+          res.writeHead(206, {
+            'Content-Type': mime,
+            'Content-Length': end - start + 1,
+            'Content-Range': 'bytes ' + start + '-' + end + '/' + fst.size,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-cache',
+            'Content-Disposition': cd + "; filename*=UTF-8''" + encodeURIComponent(fname),
+          });
+          if (req.method === 'HEAD') { res.end(); return; }
+          createReadStream(abs, { start, end }).pipe(res);
+          return;
+        }
+      }
+
       res.writeHead(200, {
-        'Content-Type': mimeOf(abs),
+        'Content-Type': mime,
         'Content-Length': fst.size,
+        'Accept-Ranges': 'bytes',
         'Cache-Control': 'no-cache',
         'Content-Disposition': cd + "; filename*=UTF-8''" + encodeURIComponent(fname),
       });
@@ -3019,8 +3195,19 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         {
           // 真正生效的阈值是「设置面板里那个」，不是 config 里的兜底值，日志得说真话。
           // 填多少就是多少，所以不再乘什么比例，直接报 limit。
-          const ctx = effectiveContextLimit();
-          console.log(`  context  : ${Number.isFinite(ctx) ? `${ctx} tokens, compress at exactly ${ctx} (100%), keep last ~${config.contextKeepTokens} tokens` : 'no limit'}`);
+          // 填 0（自动档）时得按模型窗口算出来再报，不然日志写「no limit」等于骗人。
+          const bootModel = String(bootEp?.model ?? '');
+          const ctx = effectiveContextLimit(bootModel);
+          const info = contextLimitInfo(bootModel);
+          if (info.mode === 'off') {
+            console.log('  context  : 不压缩（设置里填的是 off）');
+          } else if (info.mode === 'auto') {
+            console.log(
+              `  context  : 自动档 —— ${bootModel} 窗口 ${info.window} tokens，涨到 ${ctx} 就压，keep last ~${config.contextKeepTokens} tokens`,
+            );
+          } else {
+            console.log(`  context  : ${ctx} tokens, compress at exactly ${ctx} (100%), keep last ~${config.contextKeepTokens} tokens`);
+          }
         }
       }
       resolve({ port: actual, url, close: () => new Promise((r) => server.close(r)) });

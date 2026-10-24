@@ -10,8 +10,8 @@ android {
         applicationId 'com.xiaoyu.agent.mobile'
         minSdk 24
         targetSdk 34
-        versionCode 23
-        versionName '0.9.7'
+        versionCode 25
+        versionName '0.9.9'
     }
 
     /**

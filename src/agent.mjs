@@ -1,5 +1,5 @@
 // The agent loop: call model -> run tools -> feed results back -> repeat.
-import { streamChat } from './llm.mjs';
+import { streamChat, modelNameForSession } from './llm.mjs';
 import { inflateHistory } from './attach.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
 import { config } from './config.mjs';
@@ -116,10 +116,14 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
     }
   }
 
+  // 这一轮用的是哪个模型：自动档要按它的窗口算水位，所以先问清楚
+  // （会话里切过模型就按那个算，否则按全局默认）。
+  const turnModel = modelNameForSession(sessionId);
+
   // maxRounds 可以被设成 Infinity（不限）：那就一直跑到模型自己收尾，或用户点「停止」。
   for (let round = 0; round < config.maxRounds; round++) {
     // 每轮调模型前都量一下历史；超了就把旧对话折成摘要。没超就什么都不做（不额外花钱）。
-    const compressed = await compressHistory({ messages, signal });
+    const compressed = await compressHistory({ messages, signal, model: turnModel });
     if (compressed.compressed) {
       onEvent({
         type: 'compressed',
@@ -128,6 +132,8 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
         limit: compressed.limit ?? null,
         trigger: compressed.trigger ?? null,
         removed: compressed.removed,
+        kept: compressed.kept ?? null,
+        model: turnModel,
         error: compressed.error ?? null,
       });
     }

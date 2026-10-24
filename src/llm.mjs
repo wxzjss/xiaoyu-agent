@@ -48,6 +48,21 @@ function endpointForForSession(sessionId) {
 }
 
 /**
+ * 这个会话实际会用哪个模型的**名字**。
+ *
+ * 压缩阈值设成「自动」时要按模型窗口算水位，而窗口从 32k 到 1M 差得远，
+ * 所以必须在调模型之前就知道用哪个。判断顺序跟 streamChat 完全一致：
+ * 会话里临时切过模型 → 用它；否则用全局默认那一套。
+ *
+ * @param {string} [sessionId]
+ * @returns {string} 模型名（认不出来时返回空串）
+ */
+export function modelNameForSession(sessionId) {
+  const ep = endpointForForSession(sessionId) ?? activeEndpoint();
+  return String(ep?.model ?? '');
+}
+
+/**
  * Stream one chat completion.
  * Yields {type:'text', text} | {type:'reasoning', text} | {type:'tool_calls', toolCalls} | {type:'usage', usage}
  */

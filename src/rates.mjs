@@ -210,3 +210,104 @@ export function hasRate(model) {
 export function listRates() {
   return RATES;
 }
+
+/**
+ * 各家模型的上下文窗口（token）。
+ *
+ * 为什么要单独一张表：压缩阈值设成「自动」时，得知道这个模型到底能吃多少。
+ * 128000 和 1000000 的模型用同一个水位线是荒唐的 —— 一个压得太勤白花钱，
+ * 一个压得太晚直接 400（超过窗口）。
+ *
+ * 键的匹配规则跟价目表一样（精确 → 前缀模糊）。查不到时用 FALLBACK_WINDOW，
+ * 宁可保守一点：水位低了最多多压一次，水位高了是真的会请求失败。
+ */
+const WINDOWS = {
+  // DeepSeek 官方文档明写 1M（api-docs.deepseek.com，2026-10 核对）
+  'deepseek-flash': 1000000,
+  'deepseek-v4-pro': 1000000,
+  'deepseek-v4-flash': 1000000,
+  'deepseek-v4.1-flash': 1000000,
+  'deepseek-v4-pro-0813': 1000000,
+  // 丸子中转是转发，窗口跟着上游走，按 DeepSeek 同档给
+  deepseek: 1000000,
+  // 智谱 GLM-5.x 系列 128k 档
+  'glm-5.3': 128000,
+  'glm-5.2': 128000,
+  'glm-5.3-flash': 128000,
+  'glm-4.7': 128000,
+  'glm-4.7-flash': 128000,
+  'glm-4.5-air': 128000,
+  glm: 128000,
+  // 阿里百炼 qwen3.x
+  'qwen3.8-max': 256000,
+  'qwen3.7-plus': 128000,
+  'qwen3.8-flash': 128000,
+  'qwen-plus': 128000,
+  qwen: 128000,
+  // Kimi k3 是 256k 档
+  'kimi-k3': 256000,
+  'kimi-k2.6': 128000,
+  'kimi-k2.7-code': 128000,
+  kimi: 128000,
+  moonshot: 128000,
+  // MiniMax M3 标称 512k（官方 pricing 页超 512k 另一档价，窗口不止 512k，保守取 512k）
+  'MiniMax-M3': 512000,
+  'MiniMax-M2.7': 204800,
+  'MiniMax-M2.5': 204800,
+  MiniMax: 204800,
+  // OpenAI
+  'gpt-5': 400000,
+  'gpt-4.1': 1000000,
+  'gpt-4o': 128000,
+  'o4-mini': 200000,
+  gpt: 128000,
+  // Anthropic claude 系列 200k
+  claude: 200000,
+  // Gemini 1M
+  gemini: 1000000,
+  // 本地 ollama 全看显存，按常见的 32k 给
+  ollama: 32000,
+};
+
+/** 认不出模型时的窗口：宁可保守，超了是真会 400 的 */
+export const FALLBACK_WINDOW = 128000;
+
+/**
+ * 这个模型的上下文窗口有多大。
+ * @param {string} model 模型名
+ * @returns {number} token 数
+ */
+export function contextWindowOf(model) {
+  const key = String(model ?? '').trim();
+  if (!key) return FALLBACK_WINDOW;
+  if (WINDOWS[key]) return WINDOWS[key];
+  const lower = key.toLowerCase();
+  // 不分大小写精确
+  for (const [k, v] of Object.entries(WINDOWS)) {
+    if (k.toLowerCase() === lower) return v;
+  }
+  // 长的键优先，免得 deepseek-v4-flash 抢在 deepseek-v4.1-flash 前面
+  const keys = Object.keys(WINDOWS).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    const lk = k.toLowerCase();
+    if (lower.startsWith(lk) || lower.includes(lk)) return WINDOWS[k];
+  }
+  return FALLBACK_WINDOW;
+}
+
+/**
+ * 自动档的水位线：窗口的 70%。
+ *
+ * 为什么不压到 100%：请求本身还要给输出留空间（各家 max_tokens 占窗口），
+ * 而且「压完那一次请求」的上下文还是旧的大小 —— 水位一旦贴顶，
+ * 就会出现「这一轮压了、下一轮又超了」的反复压缩，每次都要额外调一次模型做摘要。
+ * 留三成余量，压一次能撑很久。
+ *
+ * 下限 32000：万一碰到个超小窗口的冷门模型，也别压成一条线。
+ * @param {string} model
+ * @returns {number}
+ */
+export function autoLimitFor(model) {
+  const win = contextWindowOf(model);
+  return Math.max(32000, Math.floor(win * 0.7));
+}

@@ -422,8 +422,11 @@ export function setDefaults(input = {}) {
  * @returns {{ settings: object, backup: string|null, changed: boolean }}
  */
 export function resetSafeWords() {
-  const defaults = DEFAULT_SETTINGS.safeWords;
-  const defaultNote = DEFAULT_SETTINGS.safeWordNote;
+  // 必须用 defaultSafeWords() / defaultSafeWordNote()，不能直接拿 DEFAULT_SETTINGS ——
+  // 那是出厂常量（含「停下」）。主人把改过的安全词设成默认之后，「恢复默认」就该回到
+  // 他自己定那版，而不是回去把出厂那套原样端上来。
+  const defaults = defaultSafeWords();
+  const defaultNote = defaultSafeWordNote();
 
   let raw;
   try {

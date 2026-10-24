@@ -73,8 +73,9 @@ export function readDraft(sessionId) {
     const j = JSON.parse(readFileSync(p, 'utf8'));
     if (!j || typeof j !== 'object') return null;
     const text = String(j.text || '');
-    // 一个字都没有的草稿没意义（比如刚开跑就被杀），不算
-    if (!text.trim()) return null;
+    const tools = Array.isArray(j.toolCalls) ? j.toolCalls : [];
+    // 一个字都没有、也没调过工具的草稿没意义（比如刚开跑就被杀），不算
+    if (!text.trim() && !tools.length) return null;
     return {
       sessionId,
       startedAt: Number(j.startedAt) || 0,
@@ -86,6 +87,33 @@ export function readDraft(sessionId) {
   } catch {
     return null;
   }
+}
+
+/**
+ * 把草稿拼成一条给主人看的「残句」。
+ *
+ * 干工具活的时候最尴尬：她说了「我这就去改」，然后调了七八个工具，一句正经话都没说，
+ * 这时候进程没了 —— 只有工具记录。光凭工具记录人看不懂，所以这里把工具名串成一句
+ * 人话垫在文字前面。一个字都没说的时候，最后那句提示也要保留，不然重进会话
+ * 看到的就是「主人说了句，她没回」。
+ */
+export function draftAsMessage(draft, toolLabel = (n) => n) {
+  const text = String(draft?.text || '').trim();
+  const tools = Array.isArray(draft?.toolCalls) ? draft.toolCalls : [];
+  const names = [];
+  for (const t of tools) {
+    if (!t || t.type !== 'tool_start' || !t.name) continue;
+    const label = toolLabel(t.name) || t.name;
+    if (!names.includes(label)) names.push(label);
+  }
+  const tail = '（说到这儿断了一下——当时程序被关了，这段是接回来的。）';
+  const parts = [];
+  if (text) parts.push(text);
+  if (names.length) {
+    parts.push((text ? '' : '（这一轮还没说上话就被打断了。）') + `中间动了这些工具：${names.join('、')}`);
+  }
+  if (!parts.length) return '';
+  return parts.join('\n\n') + '\n\n' + tail;
 }
 
 /** 删草稿。正常收尾后必须调，不然下次打开会重复补一条。 */

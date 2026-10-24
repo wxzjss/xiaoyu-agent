@@ -10,8 +10,79 @@ import { pureModeOn } from './pure.mjs';
 /** 摘要消息的标记（只在本地用，不进 API 请求体）。 */
 const SUMMARY_FLAG = 'summary';
 
+/**
+ * 纯净模式压完之后，原样留住的尾部 token 预算。
+ *
+ * 不是「越多越好」：纯净模式的用处是干活，历史只要够接着做下去就行。
+ * 20000 大约相当于最近十来轮正常对话，长任务（边跑工具边改代码）也够接力。
+ */
+const PURE_KEEP_TOKENS = 20000;
+
 /** 每条消息的固定结构开销（role / 分隔符等），保守取 4。 */
 const PER_MESSAGE_OVERHEAD = 4;
+
+/**
+ * 纯净模式：把历史里「人设腔」的痕迹洗掉。
+ *
+ * 为什么必须洗：主人经常聊到一半才点开纯净模式，这时候历史里的助手回复
+ * 全是「（耳朵都竖起来）主人～你好呀 (≧▽≦)」。模型看到这些会当成示范，
+ * 只靠系统提示里一句「别用旁白」根本拦不住 —— 实测中途开启后照样一大段旁白加颜文字。
+ * 所以把旁白括号、颜文字、对主人的称呼从**发给模型的历史副本**里去掉。
+ *
+ * 注意：只改副本，不动盘上的记录。主人回头看历史，看到的还是原来的样子。
+ */
+function stripFlavor(text) {
+  let s = String(text ?? '');
+  if (!s) return s;
+  // 1) 整行只是旁白：直接删掉这一行（最常见的「（歪头）」「（小声嘀咕）……」）
+  s = s
+    .split('\n')
+    .filter((line) => !/^\s*[（(][^）)]{0,120}[）)]\s*$/.test(line))
+    .join('\n');
+  // 2) 行内的旁白括号（全角/半角都算）
+  s = s.replace(/[（(][^（()）]{0,120}[）)]/g, ' ');
+  // 3) 颜文字里的特殊符号
+  s = s.replace(/[≧≦▽ω˃˂◡•｀´Дﾉ๑ฅﾟ∀ヮ゜°]/g, '');
+  // 4) 波浪号连打、重复标点
+  s = s.replace(/[～~]+/g, '');
+  s = s.replace(/[!！?？]{2,}/g, (m) => m[0]);
+  // 5) 对主人的称呼（只在句首/标点后，避免误伤正文里的名词）
+  s = s.replace(/(^|[，,。！!？?\s])主人(?=[，,。！!？?\s]|$)/g, '$1');
+  // 6) 收尾
+  return s
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+/**
+ * 纯净模式：把发给模型的历史副本洗一遍。
+ *
+ * @param {Array} messages 要发给模型的数组（就地改，调用方负责传副本）
+ * @returns {number} 删掉了几条（洗完变成空串的整条不要）
+ */
+export function purifyWire(messages) {
+  if (!Array.isArray(messages)) return 0;
+  let removed = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || (m.role !== 'assistant' && m.role !== 'user')) continue;
+    const before = String(m.content ?? '');
+    if (!before) continue;
+    const after = stripFlavor(before);
+    if (after === before) continue;
+    if (!after) {
+      // 整段都是旁白/颜文字，洗完什么都不剩 —— 不发给模型
+      messages.splice(i, 1);
+      removed++;
+      continue;
+    }
+    m.content = after;
+  }
+  return removed;
+}
 
 /**
  * 粗估 token 数。实测这个端点：纯中文约 1.45 字符/token，纯英文约 4.67。
@@ -48,12 +119,18 @@ function headLength(messages) {
  * 安全 = 不把 assistant(tool_calls) 和它的 tool 结果拆开。
  */
 function findCut(messages, start, keepTokens) {
+  // 至少留最后一个来回：keepTokens 再小也不能把尾巴删空。
+  // 以前纯净模式把预算夹到 0 的时候，这里返回 start，整段历史全没了 ——
+  // 模型拿到的是一个空上下文，等于当场失忆，活干不下去。
+  const floor = Math.max(1, Math.min(4, messages.length - start));
   let acc = 0;
   let cut = messages.length;
+  let taken = 0;
   for (let i = messages.length - 1; i >= start; i--) {
-    if (acc >= keepTokens) break;
+    if (acc >= keepTokens && taken >= floor) break;
     acc += estimateTokens([messages[i]]);
     cut = i;
+    taken++;
   }
   while (cut > start) {
     const at = messages[cut];
@@ -146,8 +223,15 @@ export async function compressHistory({
   if (!Number.isFinite(limit) || limit <= 0) {
     return { compressed: false, before, after: before, reason: 'disabled' };
   }
-  // 填多少就是多少：不再乘 0.8
-  const trigger = Math.floor(limit);
+  /**
+   * 触发线。
+   *
+   * 人设模式：填多少就是多少，涨到 limit 才动手（不额外花钱）。
+   * 纯净模式：**每轮都压**，不管现在多少 —— 它存在的意义就是「把上下文压到最小」，
+   *   不是「到线了才压」。界面上那个「历史涨到多少才压」对它不适用。
+   */
+  const pureNow = pureModeOn();
+  const trigger = pureNow ? 0 : Math.floor(limit);
   if (before <= trigger) {
     return { compressed: false, before, after: before, limit, trigger, reason: 'under-trigger' };
   }
@@ -160,8 +244,24 @@ export async function compressHistory({
    * 摘要那条消息大约占多少 token —— 先按保守值预留，算完再按真实长度校准。
    */
   const SUMMARY_RESERVE = 600;
-  const budget = Math.max(1, trigger - headTokens);
-  const keepTarget = clampKeep(resolveKeepTokens({ keepTokens, limit }), Math.max(1, budget - SUMMARY_RESERVE));
+  const budget = Math.max(1, Math.min(limit, Number.isFinite(limit) ? limit : 0) - headTokens);
+  /**
+   * 纯净模式的尾部预算另算，不走「limit 的几成」那一套。
+   *
+   * 纯净模式是干活用的：历史全丢，只留最近几轮当接力棒，
+   * 不然一轮轮攒下来，token 又全花在复述旧对话上了。
+   * 上限两万，够长任务接着往下做，又不会把上下文撑起来。
+   *
+   * 注意这里**不能**走 resolveKeepTokens：它有「至少 CONTEXT_KEEP_TOKENS（默认 8000）
+   * 或 limit 的一半」的下限，套到纯净模式上会被抬到 64000，再被 budget 一夹就成 0，
+   * 结果是历史全删、一句不剩 —— 实测真的压成 6 token，模型直接失忆。
+   * 所以直接取「两万」和「预算」里小的那个，并且至少留一条。
+   */
+  const pureKeep = pureNow ? Math.max(1, Math.min(PURE_KEEP_TOKENS, budget)) : null;
+  const keepTarget = pureNow
+    ? pureKeep
+    : clampKeep(resolveKeepTokens({ keepTokens, limit }), Math.max(1, budget - SUMMARY_RESERVE));
+
 
   const cut = findCut(messages, start, keepTarget);
   if (cut <= start) return { compressed: false, before, after: before, limit, trigger, reason: 'nothing-safe-to-drop' };
@@ -175,7 +275,7 @@ export async function compressHistory({
   //
   // 为什么：主人开纯净模式就是不想让模型被前面那一大堆设定和往事牵着走，
   // 留一句「早期对话摘要」等于又塞了一坨上下文进去。干脆不生成、不留。
-  const pure = pureModeOn();
+  const pure = pureNow;
   if (pure) {
     summaryText = '';
     error = undefined;
@@ -234,10 +334,19 @@ export async function compressHistory({
   const withSummary = (tailPart) => (
     summaryMsg ? [...messages.slice(0, start), summaryMsg, ...tailPart] : [...messages.slice(0, start), ...tailPart]
   );
+  /**
+   * 这一轮「至少留几条」，跟 findCut 的 floor 一致。
+   *
+   * 纯净模式下 trigger 是 0（每轮都压），如果这里不留底线，
+   * 循环会一路把尾巴丢到空 —— 实测真的丢成了 after=6、kept=0，
+   * 模型拿到一个空上下文，当场失忆，活干不下去。
+   * 留最后一个来回（最多四条），够它接着往下做。
+   */
+  const keepFloor = Math.max(1, Math.min(4, keep.length));
   while (guard++ < 200) {
     const next = withSummary(keep);
     if (estimateTokens(next) <= trigger) break;
-    if (!keep.length) break;
+    if (keep.length <= keepFloor) break;
     // 一次至少丢一条；保持工具调用和它的结果不拆开
     let cutAt = 1;
     while (cutAt < keep.length) {
@@ -247,6 +356,9 @@ export async function compressHistory({
       if (!splitsTool) break;
       cutAt++;
     }
+    // 别一下丢掉超过「留够底线」的量
+    cutAt = Math.min(cutAt, keep.length - keepFloor);
+    if (cutAt <= 0) break;
     keep = keep.slice(cutAt);
     dropped += cutAt;
   }

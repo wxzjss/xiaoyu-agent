@@ -291,18 +291,50 @@ const SYSTEM = `你是这台机器上「小鱼Agent」项目的「自检员」�
 
 findings 只写你真查过的。全都正常就给一条 level=ok 的。`;
 
+/**
+ * 从模型的回复里把 JSON 抠出来。
+ *
+ * 模型不听话是常态，实测会出现的几种：
+ *   1. 规规矩矩的纯 JSON
+ *   2. 包在 ```json ... ``` 里
+ *   3. 前后带一段「好的，我来汇报：」
+ *   4. 中文引号、单引号（JSON.parse 直接挂）
+ *   5. 末尾多一个逗号
+ *   6. 干脆没给 JSON，只给一段话
+ * 这里逐级往下退，退到底还不行就返回 null，让调用方当「这次没结论」处理。
+ */
 function parseJsonReply(text) {
   const raw = String(text ?? '').trim();
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const body = fenced ? fenced[1] : raw;
-  const start = body.indexOf('{');
-  const end = body.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  try {
-    return JSON.parse(body.slice(start, end + 1));
-  } catch {
-    return null;
+  if (!raw) return null;
+
+  // 1) 有代码块就先剥出来；可能不止一个，从后往前试（模型习惯把结论放最后）
+  const fences = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1]);
+  const candidates = [...fences, raw];
+
+  for (const c of candidates) {
+    const start = c.indexOf('{');
+    const end = c.lastIndexOf('}');
+    if (start < 0 || end <= start) continue;
+    let body = c.slice(start, end + 1);
+
+    const tries = [
+      () => JSON.parse(body),
+      // 中文引号 / 单引号当字符串定界符的，先换成普通双引号（只换紧贴冒号或逗号的，别误伤正文）
+      () => JSON.parse(body.replace(/[“”]/g, '"')),
+      // 末尾多余逗号
+      () => JSON.parse(body.replace(/,\s*([}\]])/g, '$1')),
+      () => JSON.parse(body.replace(/[“”]/g, '"').replace(/,\s*([}\]])/g, '$1')),
+      // 单引号当定界符（简单粗暴地把 'x' 换成 "x"，只在双侧成对时生效）
+      () => JSON.parse(body.replace(/'([^'\\]*)'/g, '"$1"')),
+    ];
+    for (const t of tries) {
+      try {
+        const v = t();
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+      } catch {}
+    }
   }
+  return null;
 }
 
 /**
@@ -329,6 +361,9 @@ export async function runAiSelfCheck(opts = {}) {
   ];
 
   const deadline = started + TOTAL_TIMEOUT;
+
+  // 格式不对时只补问一次，别为了漂亮格式反复烧 token
+  let askedAgain = false;
 
   try {
     for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -376,7 +411,18 @@ export async function runAiSelfCheck(opts = {}) {
         return { items, summary: String(parsed.summary ?? '').slice(0, 300), ok: parsed.ok !== false, transcript };
       }
 
-      // 没按格式来：把这段当总结收下，别再耗 token
+      // 没按格式来：先试一次「再问一句要 JSON」——比直接把一段话当结论靠谱得多，
+      // 但也只多问这一次，不为了漂亮格式去烧 token。
+      if (!askedAgain) {
+        askedAgain = true;
+        messages.push({ role: 'assistant', content: String(msg.content ?? '') });
+        messages.push({
+          role: 'user',
+          content: '格式不对。只要那个 JSON：{"findings":[{"name":"…","level":"ok|warn|fail","detail":"…","fix":"…"}],"summary":"…"}。不要代码块，不要解释。',
+        });
+        continue;
+      }
+
       return {
         items: [{ id: 'ai-0', name: '自检结论', level: 'warn', detail: String(msg.content ?? '').slice(0, 500), fix: '' }],
         summary: String(msg.content ?? '').slice(0, 200),

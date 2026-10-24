@@ -18,15 +18,19 @@ const ROOT = resolve(config.workspace);
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Per-run context (which session is talking) so plan/note land in the right board. */
-const CTX = { sessionId: 'default', snap: null, outbox: null };
+const CTX = { sessionId: 'default', snap: null, outbox: null, signal: null };
 /**
  * 指定本轮消息的文件快照对象（对话回退要用）。
  *
  * 传 null 就是「这轮不管文件」——cli、自检这些不走回退的调用方就这么用。
  */
-export function setToolContext(sessionId, snap = null) {
+export function setToolContext(sessionId, snap = null, signal = null) {
   CTX.sessionId = sessionId || 'default';
   CTX.snap = snap && typeof snap === 'object' ? snap : null;
+  // 这一轮的 AbortSignal：主人点停止 / 点退出时，长命令（Start-Sleep、ffmpeg、装依赖）
+  // 要能被真的打断。否则 agent 卡在 await 里，那一轮的 finally 永远不执行，
+  // 磁盘上就只剩主人那句话 —— 看起来像「她压根没回」。
+  CTX.signal = signal && typeof signal === 'object' ? signal : null;
   // 这一轮要发给主人的文件（send_file 往里塞，跑完由 server 挂到回复上）
   CTX.outbox = null;
 }
@@ -56,10 +60,11 @@ function clip(s) {
 export const tools = [
   {
     name: 'read_file',
-    description: 'Read a UTF-8 text file from the workspace.',
+    description:
+      '读一个文本文件的内容。工作区里的相对路径，或主人机器上的绝对路径都行（带中文、空格也没问题）。大文件会截断。',
     parameters: {
       type: 'object',
-      properties: { path: { type: 'string', description: 'Relative path in workspace' } },
+      properties: { path: { type: 'string', description: '工作区里的相对路径' } },
       required: ['path'],
     },
     async run({ path }) {
@@ -68,7 +73,8 @@ export const tools = [
   },
   {
     name: 'write_file',
-    description: 'Create or overwrite a text file in the workspace.',
+    description:
+      '新建或整个覆盖一个文本文件（代码、报告、配置、笔记都行）。要改已有文件的一小段，先 read_file 再整份写回去；父目录不存在会自动建。',
     parameters: {
       type: 'object',
       properties: {
@@ -86,10 +92,11 @@ export const tools = [
   },
   {
     name: 'list_dir',
-    description: 'List files and folders in a workspace directory.',
+    description:
+      '看一个目录里有什么文件和子目录，带大小和修改时间。不知道文件在哪、要找刚下载的东西，就先列一下。',
     parameters: {
       type: 'object',
-      properties: { path: { type: 'string', description: 'Directory, "." for workspace root' } },
+      properties: { path: { type: 'string', description: '目录；「.」表示工作区根' } },
       required: ['path'],
     },
     async run({ path }) {
@@ -111,54 +118,76 @@ export const tools = [
   },
   {
     name: 'run_command',
-    description: 'Run a shell command (PowerShell on Windows) with the workspace as cwd. Returns combined stdout/stderr.',
+    description:
+      '在本机跑一条命令（Windows 上是 PowerShell，工作区当前目录）。装依赖、跑脚本、压包、转格式、调 ffmpeg、查环境全都靠它。返回 stdout 和 stderr 合并的结果。',
     parameters: {
       type: 'object',
       properties: { command: { type: 'string' } },
       required: ['command'],
     },
     run({ command }) {
+      const signal = CTX.signal;
       return new Promise((done) => {
-        exec(
+        const child = exec(
           command,
           { cwd: ROOT, timeout: 120000, maxBuffer: 4 * 1024 * 1024, shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/sh' },
           (err, stdout, stderr) => {
+            if (onAbort) signal.removeEventListener('abort', onAbort);
             const parts = [];
             if (stdout) parts.push(stdout);
             if (stderr) parts.push(stderr);
-            if (err && !stdout && !stderr) parts.push(`exit ${err.code}: ${err.message}`);
+            if (aborted) { parts.push('[被主人叫停了，命令已经掐掉]'); }
+            else if (err && !stdout && !stderr) parts.push(`exit ${err.code}: ${err.message}`);
             done(clip(parts.join('\n').trim() || '(no output)'));
           },
         );
+        // 主人点停止 / 点退出：立刻把子进程砍掉，别让整轮卡在一个跑不完的命令上。
+        let aborted = false;
+        let onAbort = null;
+        if (signal && typeof signal.addEventListener === 'function') {
+          if (signal.aborted) {
+            aborted = true;
+            try { child.kill('SIGTERM'); } catch {}
+          } else {
+            onAbort = () => {
+              aborted = true;
+              try { child.kill('SIGTERM'); } catch {}
+              // PowerShell 有时候不吃 SIGTERM，2 秒后补一刀
+              setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000);
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+          }
+        }
       });
     },
   },
   {
     name: 'plan',
     description:
-      'Autopilot task board. Create a short checklist before a multi-step job, tick steps off as you go, and read it back. Never start a multi-step task without a plan.',
+      '维护这次任务的分步清单：多步的活儿开工前先列出 3~8 步，做一步勾一步，随时能读回来。别没计划就开干。',
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
           enum: ['create', 'update', 'add', 'view', 'clear'],
-          description: 'create = new checklist, update = set one step status, add = append a step, view = show it, clear = wipe it',
+          description:
+      '维护这次任务的分步清单：create 新建，update 改某一步的状态，add 追加一步，view 看当前清单，clear 清空。长任务先用它把步骤列出来，别做到一半忘了。',
         },
-        goal: { type: 'string', description: 'One line: what the user asked for (create only)' },
+        goal: { type: 'string', description: '一句话说清主人要什么（仅 create）' },
         steps: {
           type: 'array',
           items: { type: 'string' },
-          description: 'One action per step, 3~8 steps (create only)',
+          description: '一步一个动作，3~8 步（仅 create）',
         },
-        stepId: { type: 'number', description: 'Step number to update (update only)' },
+        stepId: { type: 'number', description: '要改第几步（仅 update）' },
         status: {
           type: 'string',
           enum: ['pending', 'doing', 'done', 'skipped'],
-          description: 'New status for the step (update only)',
+          description: '这一步的新状态（仅 update）',
         },
-        note: { type: 'string', description: 'Short result note for the step (update only)' },
-        text: { type: 'string', description: 'Step text (add only)' },
+        note: { type: 'string', description: '这一步的一句话结果备注（仅 update）' },
+        text: { type: 'string', description: '新增那一步写什么（仅 add）' },
       },
       required: ['action'],
     },
@@ -169,12 +198,12 @@ export const tools = [
   {
     name: 'note',
     description:
-      'Scratch notes for the current job: key numbers, paths, conclusions you must not lose between tool calls. Read them back with action=view.',
+      '记便签：这次任务里不能丢的关键数字、路径、结论，先记下来，下一步再 action=view 读回来。',
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['add', 'view', 'clear'], description: 'Default add' },
-        text: { type: 'string', description: 'What to remember (add only)' },
+        action: { type: 'string', enum: ['add', 'view', 'clear'], description: '不填就当 add' },
+        text: { type: 'string', description: '要记住的内容（仅 add）' },
         tag: { type: 'string', description: 'Optional tag, e.g. 结论 / 路径' },
       },
       required: [],
@@ -186,12 +215,12 @@ export const tools = [
   {
     name: 'web_search',
     description:
-      'Search the web and get a numbered list of results (title, URL, snippet). Use this first when the answer depends on current facts, then fetch_url the best link for details.',
+      '上网搜，拿回一串带编号的结果（标题、网址、摘要）。答案要看最新情况就先用它，再拿 fetch_url 打开最合适的那条看细节。',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Search keywords' },
-        limit: { type: 'integer', description: 'How many results, default 8, max 20' },
+        query: { type: 'string', description: '搜索关键词' },
+        limit: { type: 'integer', description: '要几条结果，默认 8，最多 20' },
       },
       required: ['query'],
     },
@@ -202,10 +231,11 @@ export const tools = [
   },
   {
     name: 'fetch_url',
-    description: 'Fetch a web page and return its readable text (HTML stripped, capped at ~6000 chars).',
+    description:
+      '打开一个网页，把正文抽出来给你看（去掉 HTML 标签，大约 6000 字以内）。想读某篇文章、某个文档页就用它。',
     parameters: {
       type: 'object',
-      properties: { url: { type: 'string', description: 'http(s) URL' } },
+      properties: { url: { type: 'string', description: 'http(s) 网址' } },
       required: ['url'],
     },
     async run({ url }) {
@@ -222,10 +252,10 @@ export const tools = [
   {
     name: 'fetch_txt',
     description:
-      'Fetch a web page, strip it to plain text (auto-detects charset: utf-8 / gbk / gb2312 / big5 / bom, so Chinese pages no longer come out garbled), save it under dump/txt, and return the saved path + length + detected charset. Traditional-Chinese pages (繁體) are automatically converted to Simplified (简体) before saving. Use when the page should be kept on disk.',
+      '抓一个网页、剥成纯文本（自动认编码：utf-8 / gbk / gb2312 / big5 / bom，中文页不会再乱码），存到 dump/txt 下，返回存到哪、多少字、认出来的编码。繁体页（繁體）会先自动转成简体（简体）再存。想把页面留在硬盘上就用它。',
     parameters: {
       type: 'object',
-      properties: { url: { type: 'string', description: 'http(s) URL' } },
+      properties: { url: { type: 'string', description: 'http(s) 网址' } },
       required: ['url'],
     },
     run({ url }) {
@@ -248,14 +278,14 @@ export const tools = [
   {
     name: 'fetch_many',
     description:
-      'Batch-fetch many pages at once (same charset auto-detection as fetch_txt): pass a list of URLs or a urls.txt path, each page is saved as its own txt under dump/txt. Optionally follow "next page" links N times per seed URL. Returns per-URL ok/fail, saved paths, titles, char counts, detected charsets. Use this instead of calling fetch_txt in a loop when there are more than ~3 pages.',
+      '一次批量抓很多个网页（编码自动识别，跟 fetch_txt 一样）：给一串网址，或给一个 urls.txt 路径，每页各存成一个 txt 放在 dump/txt 下。还能顺着每个起始网址的「下一页」往下翻若干次。返回每个网址成功/失败、存到哪、标题、字数、识别到的编码。要抓三个以上的页面就用它，别用 fetch_txt 一个个循环。',
     parameters: {
       type: 'object',
       properties: {
-        urls: { type: 'array', items: { type: 'string' }, description: 'http(s) URLs to fetch' },
-        file: { type: 'string', description: 'Alternative: path to a text file with one URL per line (workspace-relative or absolute)' },
-        dir: { type: 'string', description: 'Output folder, default dump/txt under the app root' },
-        follow: { type: 'integer', description: 'Follow the "next page" link this many times per seed URL, 0 = no follow, max 20' },
+        urls: { type: 'array', items: { type: 'string' }, description: '要抓的 http(s) 网址，可以给多个' },
+        file: { type: 'string', description: '也可以给一个 txt 路径，里面一行一个网址（工作区相对路径或绝对路径都行）' },
+        dir: { type: 'string', description: '存到哪个目录，默认是程序目录下的 dump/txt' },
+        follow: { type: 'integer', description: '每个起始网址顺着「下一页」往下翻几次，0 = 不翻，最多 20' },
       },
     },
     async run({ urls, file, dir, follow }) {
@@ -289,16 +319,16 @@ export const tools = [
   {
     name: 'pack_book',
     description:
-      'Stitch already-fetched txt pages into one book file: strips Project Gutenberg header/footer boilerplate, re-flows hard-wrapped lines into paragraphs, writes dump/books/<title>.md and <title>.txt (utf8), returns both paths + char count + a preview. Use after fetch_txt / fetch_many to turn many pages into a single readable book.',
+      '把已经抓下来的零散 txt 章节拼成一整本书：会去掉 Project Gutenberg 的页头页尾、把硬换行接回段落，写出 dump/books/<书名>.md 和 <书名>.txt（UTF-8），返回两个路径、字数和一个开头预览。抓完一批页面之后用它收尾。',
     parameters: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Book title, also used as the file name' },
-        files: { type: 'array', items: { type: 'string' }, description: 'txt file paths or file names under dump/txt, in reading order' },
-        dir: { type: 'string', description: 'Alternative: pack every .txt in this folder, sorted by name' },
-        author: { type: 'string', description: 'Optional author line' },
-        source: { type: 'string', description: 'Optional source URL' },
-        reflow: { type: 'boolean', description: 'Re-flow hard-wrapped lines into paragraphs, default true' },
+        title: { type: 'string', description: '书名，也当文件名用' },
+        files: { type: 'array', items: { type: 'string' }, description: '各章 txt 的路径或 dump/txt 下的文件名，按阅读顺序排' },
+        dir: { type: 'string', description: '也可以给一个目录，把这个目录下所有 .txt 按文件名顺序打包' },
+        author: { type: 'string', description: '作者，可有可无' },
+        source: { type: 'string', description: '来源网址，可有可无' },
+        reflow: { type: 'boolean', description: '把硬换行重新接成段落，默认接' },
       },
       required: ['title'],
     },
@@ -347,7 +377,7 @@ export const tools = [
   {
     name: 't2s_convert',
     description:
-      '繁体转简体（Traditional -> Simplified Chinese, uses OpenCC word-level conversion so 頭髮→头发, 軟體→软件). Give it text, or a file under the workspace (path), and it returns/gives back the Simplified version. With inPlace=true a workspace text file is overwritten in Simplified (original kept as .bak-t2s). Use when the master hands over 繁體 text or a 繁體 txt and wants it readable in 简体.',
+      '繁体转简体（OpenCC 词级转换，頭髮→头发、軟體→软件）。可以给一段文字，也可以给工作区里的文件路径，返回简体结果；inPlace=true 会直接把那个文件改写成简体（原文留一份 .bak-t2s）。主人丢来繁體文字或繁體 txt、想看得顺时就用它。',
     parameters: {
       type: 'object',
       properties: {
@@ -420,6 +450,28 @@ export const toolSchemas = tools.map((t) => ({
 export function enabledToolSchemas() {
   const on = new Set(enabledToolNames());
   return toolSchemas.filter((t) => on.has(t.function.name));
+}
+
+/**
+ * 启动自检：每个工具都得有中文 description 和中文参数说明。
+ *
+ * 为什么要查：工具清单是**从 schema 自动生成**塞进系统提示的（见 persona.mjs 的 toolBlock）。
+ * 哪天加了新工具忘了写中文 description，模型就会拿着一行英文去判断该不该用 —— 等于白给。
+ * 这里只在启动时 console.warn，不抛错、不影响服务起来。
+ */
+export function checkToolDocs() {
+  const problems = [];
+  const hasCjk = (s) => /[\u4e00-\u9fff]/.test(String(s ?? ''));
+  for (const t of tools) {
+    if (!hasCjk(t.description)) problems.push(`${t.name}: description 没有中文`);
+    const props = (t.parameters && t.parameters.properties) || {};
+    for (const [key, spec] of Object.entries(props)) {
+      if (spec && spec.description && !hasCjk(spec.description)) {
+        problems.push(`${t.name}.${key}: 参数说明没有中文`);
+      }
+    }
+  }
+  return problems;
 }
 
 export async function runTool(name, rawArgs) {

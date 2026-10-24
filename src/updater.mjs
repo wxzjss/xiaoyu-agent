@@ -448,7 +448,77 @@ export async function updateStatus() {
     local,
     last: info && info.status !== 'failed' ? { at: info.at, from: info.from, to: info.to } : null,
     retryAt: info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS ? (info.at || 0) + RETRY_MS : null,
+    // 运行中定时查的下一步时间（界面要显示「下次几点查」）
+    nextAt: nextPeriodicAt(),
+    periodic: PERIODIC_MS,
   };
+}
+
+// ───────────────────────────── 运行中定时查 ─────────────────────────────
+//
+// 为什么要有：以前只有 Electron 启动时跑一次 quickCheck。主人开着小鱼Agent
+// 一整天不关，那这一天里线上发了新版也不会知道 —— 得等下次重启。
+// 现在服务端自己隔一段时间查一次（结果落盘，界面一刷新就能看见）。
+
+/** 隔多久查一次：3 小时。再密就是白撞 GitHub，再疏就跟「只在启动时查」没区别 */
+const PERIODIC_MS = 3 * 60 * 60 * 1000;
+
+/** 半夜不查：凌晨 1–7 点直接顺延到 7 点，省得主人睡着的时候机器在那儿撞网 */
+function nextPeriodicAt(from = Date.now()) {
+  const at = from + PERIODIC_MS;
+  const d = new Date(at);
+  const h = d.getHours();
+  if (h >= 1 && h < 7) {
+    d.setHours(7, 0, 0, 0);
+    // 如果 7 点已经过了（理论上不会，h<7 保证没到），保守加一天
+    if (d.getTime() <= at) d.setDate(d.getDate() + 1);
+  }
+  return d.getTime();
+}
+
+let periodicTimer = null;
+
+/**
+ * 开一个定时器，隔 PERIODIC_MS 查一次版本。
+ *
+ * 注意几点：
+ *   - 用 unref()，别因为这个定时器让 node 退不出去；
+ *   - 查的时候给 force:false（沿用 6 小时失败节流），免得没网时反复撞；
+ *   - 发现更新只记状态、不自动重启 —— 重启会把主人正在跑的对话掐掉，
+ *     得由界面上那个「新版本已经下好了，点这里重启」来确认。
+ */
+export function startUpdateWatcher(opts = {}) {
+  if (periodicTimer) return { already: true, nextAt: nextPeriodicAt() };
+  const tick = async () => {
+    try {
+      const info = lastUpdateInfo();
+      // 已经因为更新过、等着重启了，就别再查
+      if (shouldRestartForUpdate()) return;
+      if (info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS) return;
+      const r = await quickCheck({ apply: true });
+      if (r.status === 'updated' || r.status === 'failed') {
+        console.log(`[update] 定时查：${r.status} — ${r.detail || ''}`);
+      }
+    } catch (e) {
+      console.warn('[update] 定时查出错（不影响使用）：', String(e?.message ?? e));
+    } finally {
+      const next = nextPeriodicAt();
+      periodicTimer = setTimeout(tick, Math.max(60_000, next - Date.now()));
+      if (periodicTimer.unref) periodicTimer.unref();
+    }
+  };
+  // 不立刻查（启动时 Electron 那边已经查过了），等第一个周期
+  periodicTimer = setTimeout(tick, Math.max(60_000, nextPeriodicAt() - Date.now()));
+  if (periodicTimer.unref) periodicTimer.unref();
+  return { started: true, nextAt: nextPeriodicAt() };
+}
+
+/** 收工用（自检/测试里能关掉） */
+export function stopUpdateWatcher() {
+  if (periodicTimer) {
+    clearTimeout(periodicTimer);
+    periodicTimer = null;
+  }
 }
 
 /** 给自检用的那一项 */

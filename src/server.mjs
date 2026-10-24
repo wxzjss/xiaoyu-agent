@@ -5,6 +5,8 @@ import { createReadStream, statSync } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
+// 启动自检用：查每个工具是不是都有中文 description / 参数说明。
+import { checkToolDocs } from './tools.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
@@ -16,11 +18,11 @@ import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAft
 // 整份数据备份：会话 / 人设 / 模型配置 / 设置，换电脑或重装时救命用。
 import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 // 进行中那一轮的草稿：边跑边落，进程被杀也不会把已经说出来的话全丢。
-import { saveDraft, readDraft, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
+import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 进程兜底：一处没 catch 的异常不该让整个程序消失。
 import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
-import { quickCheck, updateStatus } from './updater.mjs';
+import { quickCheck, updateStatus, startUpdateWatcher } from './updater.mjs';
 import { buildSessionLog } from './session-log.mjs';
 import { applySafeWord, sessionModeWord } from './mode.mjs';
 import {
@@ -52,9 +54,10 @@ import {
   wipePersonaText,
   setPersonaAsDefault,
 } from './persona-store.mjs';
-import { getFeatures, setFeature } from './features.mjs';
+import { getFeatures, setFeature, featureNameOfTool } from './features.mjs';
 // 纯净模式开关（见 pure.mjs）
-import { pureModeOn, setPureMode, pureSystemPrompt } from './pure.mjs';
+import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, pureFeatureOn } from './pure.mjs';
+import { purifyWire } from './compress.mjs';
 import {
   getSkinState,
   writeSkin,
@@ -193,7 +196,10 @@ function publicSession(session) {
         const mark = shown.indexOf('【主人随这条消息一起发来的');
         if (mark >= 0) shown = shown.slice(0, mark).trim();
       }
-      turns.push({ role: 'user', text: shown, atts, rewindId: i, edited });
+      // 这一轮的 token 用量（老会话可能没有，界面就那行小字不画）。
+      // 挂在 user 上：回退掉这一句时，用量跟着一起消失，不会留下对不上的数字。
+      const usage = m._usage && typeof m._usage === 'object' ? { ...m._usage } : null;
+      turns.push({ role: 'user', text: shown, atts, rewindId: i, edited, usage });
     }
     else if (m.role === 'assistant') turns.push({ role: 'assistant', text, rewindId: i, edited, out: Array.isArray(m._out) ? m._out : [] });
   }
@@ -270,6 +276,32 @@ function stamp() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/**
+ * 这一轮**真正**用的是哪个模型（真名，不是主人起的外号）。
+ *
+ * 为什么要单独一个函数：请求实际走的是 llm.mjs 的 `endpointForForSession(sessionId) ?? activeEndpoint()`
+ * ——会话左上角选过模型就用那个，没选才用全局默认。
+ * 而 /api/chat 开头的 `ep` 是 `activeEndpoint()`，只是全局默认那一份。
+ * 以前 done 事件直接报 `ep.model`，会话里换过模型时前端就按错的那家算钱（价差能到十倍）。
+ * 这里按同样的优先级重算一遍，保证「算钱用的模型」= 「真正发请求的模型」。
+ */
+function modelUsedThisTurn(sessionId) {
+  try {
+    const ov = getOverride(sessionId);
+    if (ov && ov.modelId) {
+      const picked = endpointFor(ov.modelId);
+      if (picked && picked.model) return picked.model;
+    }
+  } catch {
+    // 会话配置读不到就回落到全局默认，绝不能因为算钱把这一轮搞挂
+  }
+  try {
+    return activeEndpoint().model;
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -947,11 +979,19 @@ const server = createServer(async (req, res) => {
   //
   // 状态存在服务端（.state/pure.json），不放 localStorage：
   // 换设备、换浏览器都得一致，而且服务端拼系统提示时自己要知道开没开。
+  // 顶栏那个「纯净模式」按钮的状态。
+  //
+  // available 是给界面用的：功能页里把「纯净模式」关掉之后它是 false，
+  // 前端就不画那个按钮了 —— 不是灰掉、不是藏起来，是当作这个功能不存在。
+  // on 只有功能开着、按钮也按下了才算真开（服务端判断口径一致，见 pure.mjs）。
   if (req.method === 'GET' && url.pathname === '/api/pure') {
-    return json(res, 200, { on: pureModeOn() });
+    const available = pureFeatureOn();
+    return json(res, 200, { on: available && pureModeOn(), pressed: available && pureButtonOn(), available });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/pure') {
+    // 功能页里关掉了就别再让它被打开：否则下次一开功能，按钮会带着上次的状态冒出来。
+    if (!pureFeatureOn()) return json(res, 403, { ok: false, error: '这个功能在【功能】里是关的，先在【功能】里打开' });
     let payload = {};
     try {
       payload = await body(req);
@@ -1051,10 +1091,17 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/settings') {
-    // defaults 交的是「当前生效的默认值」：主人定过就用主人定的那版
+    // defaults 交的是「当前生效的默认值」：主人定过就用主人定的那版。
+    // bottomLines / safeWords / safeWordNote 三样都得换 —— 只换 bottomLines 的话，
+    // 界面会把出厂的「停下」当成默认安全词显示出来，主人明明删了它，看着像没生效。
     return json(res, 200, {
       settings: getSettings(),
-      defaults: { ...DEFAULT_SETTINGS, bottomLines: defaultBottomLines() },
+      defaults: {
+        ...DEFAULT_SETTINGS,
+        bottomLines: defaultBottomLines(),
+        safeWords: defaultSafeWords(),
+        safeWordNote: defaultSafeWordNote(),
+      },
     });
   }
 
@@ -1415,6 +1462,69 @@ const server = createServer(async (req, res) => {
     });
   }
 
+  /**
+   * 搜会话内容。
+   *
+   * 会话一多（主人现在四十多个），列表里只看得见标题和最后一句，
+   * 想找「上次说那个脚本」根本没处下手。这里把每条消息的正文也翻一遍。
+   *
+   * 只回命中的片段和位置，不回整段正文 —— 一个会话几百条消息，全发过去界面就卡了。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/sessions/search') {
+    const q = String(url.searchParams.get('q') || '').trim();
+    if (q.length < 1) return json(res, 200, { q: '', total: 0, hits: [] });
+    const needle = q.toLowerCase();
+    const hits = [];
+    let total = 0;
+    for (const meta of listSessions()) {
+      const s = getSession(meta.id);
+      if (!s) continue;
+      const out = [];
+      (s.messages || []).forEach((m, i) => {
+        if (!m || m.context || m._opening) return;
+        if (m.role !== 'user' && m.role !== 'assistant') return;
+        // user 的正文可能是 _text（带附件时 content 是一大段说明），优先拿 _text
+        const text = String((m.role === 'user' && m._text) || m.content || '');
+        if (!text) return;
+        const at = text.toLowerCase().indexOf(needle);
+        if (at < 0) return;
+        // 命中的前后各留一段，前后文对齐到 20 字，看起来才像话
+        const from = Math.max(0, at - 24);
+        const to = Math.min(text.length, at + q.length + 40);
+        out.push({
+          idx: i,
+          role: m.role,
+          at,
+          snippet: (from > 0 ? '…' : '') + text.slice(from, to).replace(/\s+/g, ' ') + (to < text.length ? '…' : ''),
+        });
+      });
+      if (out.length) {
+        total += out.length;
+        hits.push({
+          id: meta.id,
+          title: meta.title,
+          updatedAt: meta.updatedAt,
+          count: out.length,
+          // 一个会话最多给 3 条，够用来判断「是不是这个会话」就行
+          samples: out.slice(0, 3),
+        });
+      }
+    }
+    hits.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return json(res, 200, { q, total, hits });
+  }
+
+  // 跳到某个会话的第 N 条消息（搜索结果点进去用）
+  if (req.method === 'POST' && url.pathname === '/api/sessions/jump') {
+    const payload = await body(req).catch(() => ({}));
+    const id = isSessionId(payload?.id) ? payload.id : '';
+    const at = Number(payload?.at);
+    const s = id ? getSession(id) : null;
+    if (!s) return json(res, 404, { error: '没有这个会话' });
+    const idx = Number.isFinite(at) ? Math.max(0, Math.min(s.messages.length - 1, at)) : 0;
+    return json(res, 200, { ok: true, id, at: idx, role: s.messages[idx]?.role ?? null });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
     const payload = await body(req).catch(() => ({}));
     const id = isSessionId(payload?.id) ? payload.id : newSessionId();
@@ -1668,19 +1778,21 @@ const server = createServer(async (req, res) => {
     const runningNow = runningTurns.get(id);
     if (!runningNow || runningNow.ac.signal.aborted) {
       const draft = readDraft(id);
-      if (draft && draft.text.trim()) {
+      // 干工具活的时候往往一个字正经话都没说，只有工具记录 —— 以前读到「没文字」就当没草稿，
+      // 于是那一整轮（她说了「我这就去改」然后调了七八个工具）在历史里彻底蒸发。
+      // 现在只要草稿里有文字**或者**有工具记录，都接回来。
+      if (draft) {
         const last = session.messages[session.messages.length - 1];
         // 只有「最后一句话是主人说的」才补：说明确实缺了这条回复。
         // 否则草稿多半是以前遗留的脏数据，补进去反而多一条。
         if (last && last.role === 'user') {
-          session.messages.push({
-            role: 'assistant',
-            content: draft.text.trim() + '\n\n（说到这儿断了一下——当时程序被关了，这段话是接回来的。）',
-            _recovered: true,
-          });
-          session.updatedAt = Date.now();
-          saveSession(session);
-          recovered = true;
+          const body = draftAsMessage(draft, (n) => featureNameOfTool(n) || n);
+          if (body) {
+            session.messages.push({ role: 'assistant', content: body, _recovered: true });
+            session.updatedAt = Date.now();
+            saveSession(session);
+            recovered = true;
+          }
         }
         dropDraft(id);
       }
@@ -1823,7 +1935,55 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/update/status') {
     return json(res, 200, { ok: true, ...(await updateStatus()) });
   }
+  // 退出前的收尾：POST /api/app/quitting
+  //
+  // 谁在调：electron/main.cjs 的 before-quit。主人点「退出」时它先 preventDefault，
+  // 调这里，等最多 5 秒再真退。
+  //
+  // 干什么：把每个正在跑的轮次立刻 abort（不是 kill）。agent 收到 abort 会走自己的
+  // finally：把已经说出来的话 commitWireBack 接回历史、saveSession 落盘、dropDraft。
+  // 所以「正常退出」和「崩溃」都能留下东西，区别只是前者更完整。
+  //
+  // 为什么不能直接 process.exit：那样正在跑的轮次里 agent 的 finally 不会执行，
+  // 历史里就只剩主人那句话 —— 看起来就像她什么都没回过。
+  if (req.method === 'POST' && url.pathname === '/api/app/quitting') {
+    const ids = [];
+    for (const [id, turn] of runningTurns) {
+      if (!turn || !turn.ac || turn.ac.signal.aborted) continue;
+      ids.push(id);
+      try {
+        turn.ac.abort();
+        // 草稿里已经说出来的字，abort 之后 agent 自己会 commit；
+        // 但如果 agent 还在等模型第一句，那就一个正式历史都没有 —— 这时候靠草稿接回来，
+        // 所以这里再补写最后一份，保证「正在跑工具」也留痕。
+        if (turn.draft && String(turn.draft.text || '').trim()) {
+          saveDraft(id, {
+            text: turn.draft.text,
+            reasoning: turn.draft.reasoning || '',
+            toolCalls: turn.draft.tools || [],
+            startedAt: turn.draft.startedAt,
+          });
+        }
+      } catch {}
+    }
+    json(res, 200, { ok: true, count: ids.length, ids });
+    return;
+  }
+
   // 马上查一次：POST /api/update/check { force?: true }
+  // 重启：只有桌面版（Electron）能自己重启，浏览器直开时给个明确的「不行」。
+  // 注意：server.mjs 是子进程，它自己从来不是 Electron，所以不能拿
+  // process.versions.electron 判断 —— 真正的判据是 electron/main.cjs 传下来的环境变量。
+  if (req.method === 'POST' && url.pathname === '/api/app/restart') {
+    if (process.env.XIAOYU_DESKTOP !== '1') {
+      return json(res, 501, { ok: false, error: '这个窗口不是从桌面图标打开的，没法自己重启' });
+    }
+    json(res, 200, { ok: true });
+    // 回完再退，让界面收到回执。退出码 75 = 「我要重启」，electron/main.cjs 会认。
+    setTimeout(() => process.exit(75), 200);
+    return;
+  }
+
   // force 默认 true —— 人主动点的，就别管那个「失败后歇 6 小时」的节流了
   if (req.method === 'POST' && url.pathname === '/api/update/check') {
     const bodyJson = await body(req).catch(() => null);
@@ -2015,6 +2175,18 @@ const server = createServer(async (req, res) => {
     sessions.set(sessionId, session);
     saveSession(session);
     setLastSessionId(sessionId);
+    /**
+     * 主人这句话进来就先落盘（上面那次 saveSession 已经做了），紧接着再挂一张「空草稿」。
+     *
+     * 【为什么一进来就要写草稿】
+     * 干工具活的时候，界面上的顺序是：她说「我这就去改」→ 调七八个工具（可能要跑几分钟）
+     * → 最后才说结果。整轮只在最后 saveSession，所以这段时间里：
+     *   进程被杀 / 正常点退出 / 断电 → 磁盘上只有主人那句话，她干过的活一个字不剩。
+     * 有了这张「一开始就存在」的草稿，至少能标记「这一轮确实开始了、没跑完」，
+     * 打开会话时会被接成一条「这一轮还没说上话就被打断了」的助手消息，
+     * 而不是一片空白让人以为她根本没理人。
+     */
+    saveDraft(sessionId, { text: '', reasoning: '', toolCalls: [], startedAt: Date.now() });
 
     const safeWord = resume ? null : matchSafeWord(message);
     // 这一轮该处在哪一档：没喊别的词就继续当前档（新会话默认人设档），
@@ -2109,6 +2281,13 @@ const server = createServer(async (req, res) => {
       // 注意顺序——先摘干净再补，否则刚补的这条会被上面那个 filter 一起摘掉。
       const brief = pureSystemPrompt();
       if (brief) wireMessages.unshift({ role: 'system', content: brief });
+      // 把历史里那些旁白、颜文字、撒娇、称呼洗掉再发。
+      //
+      // 为什么要动历史：只在系统提示里说「答短点」压不住 —— 前面几十条撒娇回复
+      // 就是活生生的示范，模型会照着学，实测中途开纯净依旧满屏旁白。
+      // 所以发给模型的副本先洗一遍，只动副本，盘上的记录一个字不改。
+      const washed = purifyWire(wireMessages);
+      if (washed) console.log('[pure] 洗掉 ' + washed + ' 条全是旁白的旧消息');
     }
     // 前情：只贴给模型看，不进会话记录。
     // 位置在 system（+上下文说明）之后、真正的对话之前 —— 模型读起来就是「之前聊过的」。
@@ -2243,14 +2422,15 @@ const server = createServer(async (req, res) => {
           } else if (ev.type === 'tool_start' || ev.type === 'tool_end') {
             draftTools.push({ type: ev.type, name: ev.name, at: Date.now() });
             if (reg.draft) reg.draft.tools = draftTools;
-            if (shouldDraft(draftText.length, true)) {
-              saveDraft(sessionId, {
-                text: draftText,
-                reasoning: draftReasoning,
-                toolCalls: draftTools,
-                startedAt: draftStartedAt,
-              });
-            }
+            // 干工具活的时候必须也落盘：主人在这一步看到的界面是「她说了要做，然后半天没动静」，
+            // 这时候重启 / 关窗口 / 断电，如果只有文字草稿，那就是一片空白 —— 看起来像她什么都没干。
+            // 所以每次工具开始/结束都强制写一份（force=true 无视节流）。
+            saveDraft(sessionId, {
+              text: draftText,
+              reasoning: draftReasoning,
+              toolCalls: draftTools,
+              startedAt: draftStartedAt,
+            });
           }
 
           if (ev.type === 'aborted') send({ type: 'aborted' });
@@ -2300,9 +2480,40 @@ const server = createServer(async (req, res) => {
       }
       // 带上这一轮用户消息的下标：前端据此给刚画出来的气泡补「↶ 回退」按钮
       const doneAt = userMsgRef ? session.messages.indexOf(userMsgRef) : -1;
+
+      /**
+       * 把这一轮的 token 用量**存进会话**，挂在主人那句话上（`_usage`）。
+       *
+       * 为什么不只发事件就完事：usage 以前只在 done 事件里飘一下，前端画完就没了，
+       * 会话文件里一个字都没留 —— 重启/换个设备打开，那行 token 小字就永远消失了。
+       * 挂在 user 消息上（而不是 assistant）是因为一轮的用量属于「这次提问」，
+       * 而且回退到某一句时，那句对应的用量自然跟着一起被藏掉，不会错位。
+       *
+       * 存真模型名（model）而不只是数字：过几天主人换了默认模型，
+       * 回头看旧账还得按当时的价算，所以单价依据也要留在盘上。
+       */
+      if (usage && userMsgRef) {
+        try {
+          userMsgRef._usage = {
+            prompt_tokens: Number(usage.prompt_tokens ?? 0),
+            completion_tokens: Number(usage.completion_tokens ?? 0),
+            total_tokens: Number(usage.total_tokens ?? 0),
+            prompt_cache_hit_tokens: Number(usage.prompt_cache_hit_tokens ?? 0),
+            model: modelUsedThisTurn(sessionId),
+            at: Date.now(),
+          };
+          saveSession(session);
+        } catch (e) {
+          console.warn('[usage] 用量没存下来：', String(e?.message ?? e), 'sessionId =', sessionId);
+        }
+      }
       // 带上真正用的模型名（不是主人起的外号）—— 前端要拿它查价目表算这一轮花多少钱。
       // 界面上写的是「DeepSeek官方」，价目表里认的是 deepseek-flash，不传这个就永远算不出来。
-      send({ type: 'done', usage, at: doneAt, model: ep.model });
+      // 报给前端的模型名必须是**这一轮真正用的那个**。
+      // 实际请求走的是「会话左上角选的那个」优先（llm.mjs 的 endpointForForSession），
+      // 只有没选才回落到全局默认（就是上面那个 ep）。
+      // 以前这里一律报 ep.model，会话里换过模型时，钱就按错的那家算了 —— 价差能有十倍。
+      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId) });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {
@@ -2504,6 +2715,29 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       }
     },
   });
+
+  // 工具文档自检：工具清单是从 schema 自动生成塞进系统提示的（persona.mjs 的 toolBlock），
+  // 谁加了新工具却忘了写中文 description，模型就会拿着一行英文去判断该不该用 —— 等于白给。
+  // 这里只在启动时提醒，不抛错、不影响服务起来。
+  try {
+    const problems = checkToolDocs();
+    if (problems.length) {
+      console.warn('[tools] 下面这些工具还缺中文说明，模型会看不懂：');
+      for (const p of problems) console.warn('  · ' + p);
+    }
+  } catch (e) {
+    console.warn('[tools] 文档自检没跑成（不影响使用）：', String(e?.message ?? e));
+  }
+
+  // 运行中定时查版本。
+  // 以前只有 Electron 启动时查一次 —— 主人开着小鱼Agent 一整天不关，
+  // 那一天里发了新版也不知道。这里每 3 小时查一次（凌晨 1–7 点不查），
+  // 查到了只记状态，要不要重启由界面上那个按钮决定，绝不自动掐掉正在跑的对话。
+  try {
+    startUpdateWatcher();
+  } catch (e) {
+    console.warn('[update] 定时查没起来（不影响使用）：', String(e?.message ?? e));
+  }
 
   // 启动自检：异步跑，不挡服务起来。桌面版由 electron 先跑过一次，这里复用结果。
   if (selfCheck) {

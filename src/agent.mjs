@@ -3,9 +3,16 @@ import { streamChat } from './llm.mjs';
 import { inflateHistory } from './attach.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
 import { config } from './config.mjs';
-import { buildSystemPrompt } from './persona.mjs';
-import { pureModeOn } from './pure.mjs';
+import { buildSystemPrompt, setToolLister } from './persona.mjs';
+import { pureModeOn, setPureToolLister } from './pure.mjs';
 import { compressHistory } from './compress.mjs';
+
+// persona.mjs 不能静态 import tools.mjs（tools.mjs 反过来 import 了 persona，静态成环会炸），
+// 所以「当前有哪些工具」靠这里注入。工具清单是**从 schema 现读**的，不是手抄的第二份文案：
+// 新增工具自动出现在系统提示里，关掉功能自动消失。
+setToolLister(() => enabledToolSchemas());
+// 纯净模式的提示里也要报工具清单，同一个来源，不走第二份文案。
+setPureToolLister(() => enabledToolSchemas());
 import {
   getRetry429,
   bumpStreak,
@@ -74,7 +81,7 @@ export function systemPrompt(sessionId = 'default', opts = {}) {
 export async function runAgent({ messages, signal, sessionId = 'default', refreshSystem = true, safeMode = false, safeWord = '', onEvent = () => {}, snap = null }) {
   let usageTotal = null;
 
-  setToolContext(sessionId, snap);
+  setToolContext(sessionId, snap, signal);
   // 这一轮发出去的文件（send_file 登记）先开个筐，跑完交回去
   const outbox = beginOutbox();
 
@@ -259,6 +266,21 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
         tool_call_id: call.id,
         content: ok ? output : `ERROR: ${output}`,
       });
+      /**
+       * 一个工具跑完就检查一次「是不是被叫停了」。
+       *
+       * 【为什么必须在这里查】
+       * abort 只能掐断「正在等网络」的 fetch，掐不断一个已经跑起来的工具
+       * （runTool 是同步/异步混着来的，比如 Start-Sleep -Seconds 40 就得等满 40 秒）。
+       * 以前不查，主人点「停止」或者点「退出」之后，agent 还老老实实把剩下七个工具
+       * 一个一个跑完才肯回来 —— 那个 finally 里的 saveSession 就一直不执行，
+       * 于是磁盘上永远只有主人那句话，看起来像「她什么都没回」。
+       * 现在跑完手上这一个就停，已经说过的话照样进 finally 落盘。
+       */
+      if (signal?.aborted) {
+        onEvent({ type: 'aborted' });
+        return { text, usage: usageTotal, aborted: true, files: outbox };
+      }
     }
   }
 

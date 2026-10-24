@@ -7,7 +7,7 @@ import android.content.SharedPreferences;
  * 一对一记住「连哪台电脑」。
  *
  * 存两样：
- *  - base  ：页面地址，形如 http://192.168.1.100:8787
+ *  - base  ：页面地址，形如 http://192.168.1.5:8787
  *  - token ：配对码（电脑端「设置 → 手机连接」里那一串）
  *
  * token 为什么不塞进 URL 里来回传：URL 会进历史记录、WebView 的缓存键、崩溃日志。
@@ -47,7 +47,7 @@ final class Prefs {
         sp(c).edit().remove(K_BASE).remove(K_TOKEN).remove(K_LABEL).apply();
     }
 
-    /** "192.168.1.100:8787" → "http://192.168.1.100:8787"；顺手把结尾的斜杠去掉 */
+    /** "192.168.1.5:8787" → "http://192.168.1.5:8787"；顺手把结尾的斜杠去掉 */
     static String normalize(String raw) {
         if (raw == null) return "";
         String s = raw.trim();

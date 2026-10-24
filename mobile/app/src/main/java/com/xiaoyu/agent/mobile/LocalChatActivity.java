@@ -294,7 +294,7 @@ public class LocalChatActivity extends Activity {
                 "地址填到 /v1 就行，程序自己补 /chat/completions。\n"
                         + "DeepSeek：https://api.deepseek.com/v1\ndeepseek-chat\n"
                         + "通义：https://dashscope.aliyuncs.com/compatible-mode/v1\nqwen-plus\n"
-                        + "本地 Ollama：http://192.168.1.100:11434/v1\nqwen2.5",
+                        + "本地 Ollama：http://192.168.1.5:11434/v1\nqwen2.5",
                 11.5f, 0xFF6b7484, false);
         hint.setLineSpacing(Ui.dp(this, 3), 1f);
         LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(
@@ -434,12 +434,19 @@ public class LocalChatActivity extends Activity {
         if (tv == null) return;
         String f = sp.getString(K_MUSIC_FILE, "");
         boolean on = sp.getBoolean(K_MUSIC_ON, true);
-        String name = TextUtils.isEmpty(f) ? "默认那首（电脑端壁纸音乐）" : new File(f).getName();
+        String name = TextUtils.isEmpty(f) ? "自带的壁纸音乐" : new File(f).getName();
         tv.setText(on ? "现在放的是：" + name : "已关闭。上次放的是：" + name);
     }
 
-    /** 默认那首从电脑端借：同一个接口，不把音频打进 APK（能省 2MB） */
-    private static final String REMOTE_MUSIC = "http://192.168.1.100:8787/api/skin/music";
+    /**
+     * 「默认那首」= APK 里自带的那段音频（assets/bg-music.m4a，约 2MB）。
+     *
+     * 以前这里写的是 http://<电脑IP>:8787/api/skin/music，两个毛病：
+     *   1. 本地模式本来就不连电脑，等于一开机就放不出来；
+     *   2. 那个 IP 是我编的占位符，永远连不上。
+     * 现在打进 APK，离线也有声音。要换的话，走「选本地音乐」。
+     */
+    private static final String ASSET_BUNDLED_MUSIC = "bg-music.m4a";
 
     private MediaPlayer player;
 
@@ -464,7 +471,10 @@ public class LocalChatActivity extends Activity {
             player = new MediaPlayer();
             player.setLooping(true);
             if (TextUtils.isEmpty(f)) {
-                player.setDataSource(REMOTE_MUSIC);
+                // 用 AssetFileDescriptor 喂进 MediaPlayer，省得先拷一份到内部存储
+                android.content.res.AssetFileDescriptor afd = getAssets().openFd(ASSET_BUNDLED_MUSIC);
+                player.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+                afd.close();
             } else {
                 player.setDataSource(f);
             }
@@ -476,7 +486,7 @@ public class LocalChatActivity extends Activity {
                 }
             });
             player.setOnErrorListener((mp, what, extra) -> {
-                // 电脑没开 / 网络不通都很正常，静音就算了，别弹框烦人
+                // 自己选的音乐被删了、格式不认，都会走这儿：静音就行，别弹框烦人
                 stopMusic();
                 return true;
             });

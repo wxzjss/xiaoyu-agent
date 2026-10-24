@@ -132,14 +132,92 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   // 只有主人喊了别的安全词、且不是「人设」自己，才走临时切换那段。
   const switched = Boolean(safeMode) && word !== '' && word !== personaWord(settings);
   const parts = [
+    PLATFORM_BLOCK,
     loadPersona(),
     REASONING_LANGUAGE_RULE,
     settingsPromptBlock(settings),
     personaModeRules(settings),
+    toolBlock(),
     memoryBlock(sessionId),
   ].filter(Boolean);
   if (switched) parts.push(safeModeRules(word));
   return parts.join('\n\n');
+}
+
+/**
+ * 「你现在跑在什么程序里」。
+ *
+ * 为什么要有这一段：人设里只写了「我叫小鱼、怎么说话」，一个字没提她运行在哪儿、
+ * 能用什么工具、有哪些功能。结果主人问「纯净模式的详细功能是什么」「你有哪些本事」，
+ * 她只能反问「你说的是哪个软件」—— 因为在她那儿，这些信息**真的不存在**。
+ *
+ * 放在整段提示的最前面：身份和边界应该先立住，再谈说话风格。
+ * 注意别在这里写死具体功能清单 —— 功能会变，写死就会过期。
+ * 只讲「有哪些工具」（从 schema 现读，见 toolBlock）、「怎么自己查」。
+ */
+const PLATFORM_BLOCK = [
+  '【你在哪儿】',
+  '你跑在主人电脑上的「小鱼Agent」这个程序里，不是网页版聊天窗口，也不是某个大厂的 App。',
+  '主人说「纯净模式」「开场白」「会话记忆」「安全词」「回退」「分支」这些词，说的都是这个程序里的功能，不是别家的东西。',
+  '主人问起这些功能怎么用、有哪些本事，就照实说；不清楚具体细节时，可以说「我看看」——你能读这个程序自己的文件，也能列目录、跑命令去确认，别反问主人「你说的是哪个软件」。',
+].join('\n');
+
+/**
+ * 「你手上有哪些工具」。
+ *
+ * 为什么非要单独写一段：工具是通过 API 的 tools 字段隐式给模型的，系统提示里
+ * 一个字都不提。模型在长对话里经常想不起来自己能调工具 —— 主人问「你能发文件吗」
+ * 她会答「我不能」，而 send_file 明明就在工具列表里。
+ *
+ * 关键设计：**这里不维护第二份文案**。清单和一句话说明全部从工具 schema 的
+ * description 现读（tools.mjs 里的 description 已经改成中文人话了），所以：
+ *   - 新增一个工具 -> 这里自动多一行，不用改本文件；
+ *   - 关掉某个功能 -> enabledToolSchemas() 少一项，这里自动消失；
+ *   - 永远不可能出现「提示词说有、实际调不了」或「实际有、提示词不说」。
+ * 唯一例外是下面这几条 hand-written 的「怎么用」总纲 —— 它们是跨工具的行为习惯，
+ * 不是某个工具的说明，所以只能手写。
+ */
+let _listTools = null;
+
+/** @param {(() => Array<{name:string}>)|null} fn */
+export function setToolLister(fn) {
+  _listTools = typeof fn === 'function' ? fn : null;
+}
+
+/** 把 schema 的 description 压成一句话（去掉换行、截断）。 */
+function oneLine(text, max = 120) {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+function toolBlock() {
+  if (!_listTools) return '';
+  let rows = [];
+  try {
+    rows = _listTools()
+      .map((s) => {
+        const f = (s && s.function) || s || {};
+        const name = f.name || '';
+        if (!name) return null;
+        return { name, desc: oneLine(f.description) };
+      })
+      .filter(Boolean);
+  } catch {
+    return '';
+  }
+  if (!rows.length) return '';
+  const lines = rows.map((r) => (r.desc ? `- ${r.name}：${r.desc}` : `- ${r.name}`)).join('\n');
+  const hasSend = rows.some((r) => r.name === 'send_file');
+  const tips = [
+    '下面这些工具你是真能用的，不是摆设。遇到对应的事就直接调，不要推脱说做不到。',
+  ];
+  if (hasSend) {
+    tips.push('- 要让主人拿到文件（图、视频、声音、压缩包、报告……），就用 send_file，别只把路径打出来；');
+  }
+  tips.push('- 要查新东西、要下载、要装依赖、要算数，先调工具再回答，别凭印象编；');
+  tips.push('- 不确定某个工具怎么用，就先调用一次看报错，报错里通常写着该传什么。');
+  return ['【你手上有什么】', ...tips, '', lines].join('\n');
 }
 
 /**

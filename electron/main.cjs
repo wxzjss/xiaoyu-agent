@@ -119,6 +119,9 @@ async function quickVersionCheck() {
 
 async function startServer() {
   const { startServer: run } = await import('../src/server.mjs');
+  // 告诉服务端「有人在管我」：界面上那个「重启让它生效」就是靠它决定
+  // 能不能真的自己重启（浏览器直开的时候没人管，只能让主人手动关）。
+  process.env.XIAOYU_DESKTOP = '1';
   // 自检在 selfCheck() 里已经跑过了，这里别跑第二遍
   //
   // 【为什么不再用 port: 0】
@@ -141,6 +144,22 @@ async function startServer() {
   for (const p of prefer) {
     try {
       serverInfo = await run({ port: p, quiet: true, selfCheck: false });
+      // 服务端因为「重启让它生效」自己退了（退出码 75）：浏览器窗口还在，得重起一遍
+      if (serverInfo && typeof serverInfo.on === 'function') {
+        serverInfo.on('exit', (code) => {
+          if (code !== 75) return;
+          serverInfo = null;
+          console.log('[restart] 服务端要求重启，正在重起…');
+          setTimeout(() => {
+            startServer()
+              .then((info) => {
+                if (win && !win.isDestroyed()) win.loadURL(info.url + '/?r=' + Date.now());
+                else createWindow();
+              })
+              .catch((e) => console.warn('[restart] 重起失败：', String(e && e.message ? e.message : e)));
+          }, 400);
+        });
+      }
       try { writeFileSync(PORT_FILE, String(serverInfo.port), 'utf8'); } catch {}
       if (p !== 0 && serverInfo.port !== p) console.log(`[port] 想用 ${p}，实际落在 ${serverInfo.port}`);
       return serverInfo;
@@ -305,9 +324,22 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
-    const updated = await selfCheck();
+    // 【为什么把自检挪到后面】
+    // 以前是 `await selfCheck()` 跑完才开窗口，而自检要联网问一次模型（还可能卡在
+    // 「版本检查」那一步）。网不好或者那次请求挂住，窗口就永远不出来 —— 表现是
+    // 「双击图标，任务管理器里有进程，但什么都没弹出来」，服务端自然也没起。
+    // 现在：先把托盘和窗口立起来（窗口里的 startServer 立刻开跑），自检丢到后台去。
+    const selfCheckDone = selfCheck().catch((e) => {
+      console.error('[selfcheck] 后台自检出错（不影响使用）:', e && e.message ? e.message : e);
+      return false;
+    });
     createTray();
-    await createWindow(updated);
+    await createWindow(false);
+    // 自检结果回来之后，如果它说「需要重启才生效」，把界面重载一次就好，不再阻塞任何人。
+    selfCheckDone.then((updated) => {
+      if (!updated) return;
+      if (win && !win.isDestroyed()) win.loadURL(win.webContents.getURL().replace(/([?&])r=\d+/, '$1r=' + Date.now()));
+    });
   });
 }
 
@@ -320,7 +352,48 @@ app.on('window-all-closed', () => {
   // 否则什么都不做，等托盘叫回来
 });
 
-app.on('before-quit', () => {
+/**
+ * 退出之前：给正在跑的那一轮留出几秒把话说完 / 把草稿写掉。
+ *
+ * 【为什么需要】
+ * 以前点「退出」是立刻 app.quit()，服务端着 HTTP 连接就被掐断 ——
+ * 正在跑的那一轮（尤其是正在跑工具的时候）一个字都来不及落盘，
+ * 重进会话看到的就是「主人说了句，她没有回」。这跟崩溃长得一模一样，
+ * 但它是正常退出，进程级兜底（uncaughtException）根本不触发。
+ *
+ * 【怎么做的】
+ * before-quit 里先 preventDefault，问服务端要一个「最多等 5 秒」的收尾：
+ *   GET /api/app/quitting —— 服务端把每个正在跑的轮次立刻 abort，
+ *   agent 的 finally 会把已经说出来的话 commitWireBack + saveSession + dropDraft。
+ * 等它回话（或者等超时），再真的退。第二次 before-quit 直接放行，避免死循环。
+ */
+let quitHandled = false;
+
+app.on('before-quit', async (ev) => {
+  if (quitHandled) return;
+  quitHandled = true;
+  const info = serverInfo;
+  if (info && info.url) {
+    ev.preventDefault();
+    quitting = true;
+    const waitMs = 5000;
+    const done = new Promise((resolve) => {
+      const timer = setTimeout(resolve, waitMs);
+      fetch(`${info.url}/api/app/quitting`, { method: 'POST' })
+        .then((r) => r.json())
+        .then((r) => {
+          console.log(`[quit] 收尾完成：${(r && r.count) || 0} 个轮次`);
+          // 再给 300ms，让 finally 里的 saveSession 真正写进磁盘
+          setTimeout(resolve, 300);
+        })
+        .catch(() => resolve())
+        .finally(() => clearTimeout(timer));
+    });
+    await done;
+    if (serverInfo && serverInfo.close) serverInfo.close().catch(() => {});
+    app.quit();
+    return;
+  }
   quitting = true;
 });
 

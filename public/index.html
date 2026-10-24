@@ -362,6 +362,10 @@
       color: var(--dim); font-size: 11.5px; line-height: 1.5;
       font-variant-numeric: tabular-nums; user-select: text; opacity: .8;
     }
+    /* 老轮次（那时候还没存用量）也给一行，别让界面看起来像少画了东西。
+       主人明确要求「每句话都显示 token 消耗，不要隐藏，哪怕重启进入那行字也在」，
+       所以宁可写一句「这一轮没记用量」，也不要整行消失。 */
+    .turnUsage .na { opacity: .65; }
     .turnUsage .sep { opacity: .5; margin: 0 6px; }
     .turnUsage .tt { color: #8fc7ff; }
     .turnUsage .cost { color: #d9a45b; }
@@ -648,6 +652,31 @@
     #sessBulk { border: 1px solid var(--border); background: transparent; color: var(--dim); }
     #sessBulk:hover { border-color: rgba(226, 96, 96, .55); background: rgba(226, 96, 96, .08); color: #ff8b8b; }
     #sessBulk.on { border-color: rgba(226, 96, 96, .7); background: rgba(226, 96, 96, .16); color: #ff9a9a; font-weight: 600; }
+#sessFindToggle.on { border-color: rgba(77, 141, 255, .6); background: rgba(77, 141, 255, .14); color: #9dc0ff; }
+
+/* 搜会话内容 */
+.sessFind[hidden] { display: none !important; }
+.sessFind { gap: 8px; padding-top: 0; }
+.sessFind input[type=search] {
+  flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 10px; font-size: 13px;
+  background: var(--input-bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 7px;
+}
+.sessFindHits { flex: 0 0 auto; max-height: 44%; overflow: auto; border-bottom: 1px solid var(--border); }
+.sessFindHits[hidden] { display: none !important; }
+.findHit { padding: 8px 14px; border-bottom: 1px solid rgba(255, 255, 255, .05); cursor: pointer; }
+.findHit:hover { background: rgba(77, 141, 255, .09); }
+.findHit .fhTitle { font-size: 13px; color: var(--fg); display: flex; gap: 8px; align-items: baseline; }
+.findHit .fhCount { color: var(--accent, #4d8dff); font-size: 11.5px; }
+.findHit .fhSnippet { font-size: 12px; color: var(--dim); margin-top: 3px; line-height: 1.55; word-break: break-word; }
+.findHit .fhSnippet b { color: #ffd479; font-weight: 600; }
+.findEmpty { padding: 12px 14px; color: var(--dim); font-size: 12.5px; }
+/* 搜到的那条滚到眼前时闪一下，不然一眼找不到 */
+.msg.foundFlash .bubble { animation: foundPulse 2.2s ease-out; }
+@keyframes foundPulse {
+  0% { box-shadow: 0 0 0 3px rgba(255, 212, 121, .85); }
+  100% { box-shadow: 0 0 0 3px rgba(255, 212, 121, 0); }
+}
     .sessBulkBar { gap: 8px; padding-top: 0; }
     .sessBulkBar button { font-size: 12.5px; padding: 5px 12px; height: 28px; border-radius: 7px; }
     #sessBulkDel {
@@ -840,10 +869,15 @@
     .openingMini:hover { color: var(--accent); }
     .openingArea {
       width: 100%; box-sizing: border-box; resize: vertical;
+      /* 定死高度、允许内部滚动 —— 以前只写 rows=5 + resize:vertical，
+         textarea 会随着输入不断撑高，连带 .featScroll 反复重排，
+         上下滚几下就卡成幻灯片。 */
+      height: 96px; min-height: 96px; max-height: 240px; overflow: auto;
       background: var(--input-bg); color: var(--text);
       border: 1px solid var(--border); border-radius: var(--radius);
       padding: 8px 10px; font-size: 12.5px; line-height: 1.75;
       font-family: inherit;
+      contain: content;
     }
     .openingArea:focus { outline: none; border-color: var(--accent); }
     .openingHint { color: var(--dim); font-size: 11.5px; line-height: 1.7; margin: 4px 0 0; }
@@ -1255,6 +1289,7 @@
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="updCheck">马上检查一次</button>
+            <button type="button" class="primary" id="updRestart" hidden>重启让它生效</button>
           </div>
         </fieldset>
       </div>
@@ -1426,7 +1461,16 @@
         <button type="button" class="ghost3" id="sessExportOne" title="把当前选中的会话导出成 JSON 文件">导出这个</button>
         <button type="button" class="ghost3" id="sessExportAll" title="把所有会话打成一个 JSON 文件备份">全部导出</button>
         <button type="button" class="ghost3" id="sessBulk" title="勾选好一次删掉">批量删除</button>
+        <button type="button" class="ghost3" id="sessFindToggle" title="在会话内容里搜关键词">搜索</button>
       </div>
+      <!-- 搜会话内容：只看得见标题和最后一句时，想找「上次说那个脚本」根本没处下手 -->
+      <div class="sessTop sessFind" id="sessFindBar" hidden>
+        <input type="search" id="sessFindInput" placeholder="搜会话里的内容（说了什么、提到过什么）" />
+        <button type="button" class="ghost3" id="sessFindGo">搜</button>
+        <button type="button" class="ghost3" id="sessFindClose">关</button>
+      </div>
+      <div class="sessFindHits" id="sessFindHits" hidden></div>
+      <div class="sessList" id="sessList"></div>
       <div class="sessTop sessBulkBar" id="sessBulkBar" hidden>
         <button type="button" class="ghost3" id="sessBulkAll">全选</button>
         <button type="button" class="ghost3" id="sessBulkNone">全不选</button>
@@ -2514,10 +2558,23 @@ function paintPure(on) {
   pureBtn.classList.toggle('on', Boolean(on));
   pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
   pureBtn.title = on
-    ? '纯净模式开着：不发人设、不发规矩、不留早期摘要（再点一下关掉）'
-    : '纯净模式：不发人设、不发规矩、不留早期摘要，旧对话直接丢（点一下开，再点一下关）';
+    ? '纯净模式开着：只发对话本身，每轮自动压缩历史（再点一下关掉）'
+    : '干任务用的精简模式：不套人设、不念记忆、每轮自动压缩历史，token 全花在活上（点一下开）';
 }
-fetch('/api/pure').then((r) => r.json()).then((j) => paintPure(j && j.on)).catch(() => {});
+/**
+ * 按服务端说的状态刷新按钮。
+ *
+ * available 为 false 表示【功能】里「纯净模式」被关掉了 —— 这时候按钮整块拿掉，
+ * 不是灰掉也不是藏起来，是当作这个功能不存在。
+ */
+function paintPureState(j) {
+  if (!pureBtn) return;
+  const available = !j || j.available !== false;
+  pureBtn.hidden = !available;
+  if (!available) return;
+  paintPure(j && j.on);
+}
+fetch('/api/pure').then((r) => r.json()).then(paintPureState).catch(() => {});
 if (pureBtn) {
   pureBtn.onclick = async () => {
     // 先按「反着来」亮起来，等服务器回话再以它为准 —— 点下去就有反馈
@@ -2574,7 +2631,11 @@ function addUser(text, tag, atts, target, rewindId) {
     // 批量重绘时 target 是 fragment，不需要返回
   }
   const hasId = Number.isFinite(Number(rewindId));
-  if (hasId) wrap.dataset.rewindId = String(Number(rewindId));
+  if (hasId) {
+    wrap.dataset.rewindId = String(Number(rewindId));
+    // 搜会话时靠这个下标把命中那条滚到眼前（回退按钮和它同一个号）
+    wrap.dataset.at = String(Number(rewindId));
+  }
   // 注意顺序：必须先 innerHTML 建骨架，再挂按钮 —— 反过来的话 innerHTML 会把按钮一起抹掉（踩过）。
   wrap.innerHTML = '<div class="role">你' + (tag ? '<span class="interjectTag"></span>' : '') + '</div>';
   if (tag) wrap.querySelector('.interjectTag').textContent = tag;
@@ -3950,8 +4011,10 @@ async function refreshUpdate() {
   const el = document.getElementById('updState');
   if (!el) return;
   const r = await fetch('/api/update/status').then((x) => x.json()).catch(() => null);
+  const btn = document.getElementById('updRestart');
   if (!r || !r.ok) {
     el.textContent = '读不到版本信息';
+    if (btn) btn.hidden = true;
     return;
   }
   const bits = [`现在是 ${r.local}`];
@@ -3964,7 +4027,30 @@ async function refreshUpdate() {
     const d = new Date(r.retryAt);
     bits.push(`上次没查成，${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')} 之后会再自动试`);
   }
+  if (r.nextAt) {
+    const d = new Date(r.nextAt);
+    bits.push(`下次自动查是 ${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+  }
   el.textContent = bits.join('；');
+  // 已经下好新版等着重启：把重启按钮亮出来。但正在跑对话的时候不给点——
+  // 重启会把那一轮掐掉，草稿虽然能救回来，但没必要冒这个险。
+  if (btn) {
+    const ready = Boolean(r.needsRestart);
+    // 只有真的要重启的时候才去问「有没有会话在跑」。
+    // 以前这里写的是裸的 running，可 running 只是别处一个 if 里的局部变量，
+    // 到这儿是未定义 → 整段 Promise 抛 ReferenceError，外层没人接，
+    // 浏览器就报「Uncaught (in promise) ReferenceError: running is not defined」。
+    let busyNow = false;
+    if (ready) {
+      const at = await fetch('/api/running').then((x) => x.json()).catch(() => null);
+      busyNow = Boolean(at && at.running && at.running.some((x) => x.sessionId === sessionId));
+    }
+    btn.hidden = !ready;
+    btn.disabled = busyNow;
+    btn.title = busyNow
+      ? '这个会话还在跑，等它说完再重启'
+      : '重启一下小鱼Agent，新版本就生效了（会话和设置都不动）';
+  }
 }
 
 if (document.getElementById('updCheck')) {
@@ -3999,6 +4085,26 @@ if (document.getElementById('updCheck')) {
       btn.disabled = false;
       btn.textContent = old;
     }
+  };
+}
+
+// 「新版本已经下好了，点这里重启」——只有 needsRestart 时才露出来
+if (document.getElementById('updRestart')) {
+  document.getElementById('updRestart').onclick = async () => {
+    const ans = await askConfirm({
+      title: '重启让它生效',
+      body: '小鱼Agent 会关掉再打开，新版本就换上了。\n\n会话、人设、模型配置、记忆本子全都不动；正在跑的那一轮会先落一份草稿，重开之后自动接回来。',
+      ok: '重启',
+      danger: false,
+    });
+    if (!ans) return;
+    // 优先走桌面端那条能自己重启的路；浏览器直开的时候没有这条路，只能让主人手动关
+    let r = null;
+    try {
+      r = await fetch('/api/app/restart', { method: 'POST' }).then((x) => x.json());
+    } catch {}
+    if (r && r.ok) addSysNote('正在重启，几秒后刷新这一页就好');
+    else addSysNote('这个窗口没法自己重启（不是从桌面图标打开的）。把小鱼Agent 关掉再打开一次就行，新版本已经在里面了。');
   };
 }
 
@@ -4087,6 +4193,9 @@ async function loadFeatures() {
 // 想改就只能在功能面板里改，改完存在 .state/opening.json。
 let openingOpen = false;
 let openingData = null;
+// 每次重画都会重建 DOM。用一个序号标记「当前这次」，异步回来的旧请求直接丢弃 ——
+// 否则快速开关 / 滚动触发重画时，多个 setTimeout 回来各插一个 box，DOM 越堆越多。
+let openingSeq = 0;
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -4104,6 +4213,7 @@ function toggleOpeningEditor(row) {
 }
 
 function closeOpeningEditor() {
+  openingSeq += 1;
   openingOpen = false;
   const box = document.getElementById('openingBox');
   if (box) box.remove();
@@ -4113,18 +4223,26 @@ function closeOpeningEditor() {
 
 async function openOpeningEditor(row) {
   closeOpeningEditor();
+  const seq = openingSeq;
   openingOpen = true;
-  const btn = row.querySelector('.featEditBtn');
-  if (btn) btn.textContent = '收起';
-
   const box = el('div', 'openingBox');
   box.id = 'openingBox';
   box.append(el('div', 'openingHint', '这两段是隐藏的：她看得见、会话里不显示。想让她换个方式等你，就改下面第二段。'));
+  // 先把壳插进去（哪怕数据还没回来），这样点「收起」永远有东西可删。
+  row.after(box);
+  const btn = row.querySelector('.featEditBtn');
+  if (btn) btn.textContent = '收起';
 
-  const data = openingData || (await fetch('/api/opening').then((x) => x.json()).catch(() => null));
+  let data = openingData;
+  if (!data) {
+    const loading = el('div', 'openingHint', '读着呢…');
+    box.append(loading);
+    data = await fetch('/api/opening').then((x) => x.json()).catch(() => null);
+    if (seq !== openingSeq) return; // 期间被关掉 / 重开过，这批结果作废
+    loading.remove();
+  }
   if (!data || data.error) {
     box.append(el('div', 'openingHint', '读不出来，稍后再试。'));
-    row.after(box);
     return;
   }
   openingData = data;
@@ -4197,8 +4315,9 @@ async function openOpeningEditor(row) {
   });
 
   box.append(a.wrap, b.wrap, bar);
-  row.after(box);
-  a.ta.focus();
+  // 壳在开头就插好了，这里只补内容，别再 row.after（会插出第二个 box）
+  if (seq !== openingSeq) return;
+  a.ta.focus({ preventScroll: true });
 }
 
 if (featList) {
@@ -4224,6 +4343,13 @@ if (featList) {
     renderFeatList();
     // 视频背景是纯界面开关，改完立刻生效，不用等下一句
     if (id === 'videoBg' && typeof window.__applySkin === 'function') window.__applySkin();
+    // 纯净模式关掉之后顶栏那个按钮要立刻消失（开回来再出现）
+    if (id === 'pure') {
+      fetch('/api/pure')
+        .then((x) => x.json())
+        .then((j) => paintPureState(j))
+        .catch(() => {});
+    }
     const foot = document.getElementById('featFoot');
     if (foot) {
       const f = featState.features.find((x) => x.id === id);
@@ -4369,10 +4495,13 @@ const RATES = {
   'o4-mini': { hit: 8, miss: 8, output: 32 },
 
   // ── 其它 ──
-  'MiniMax-M3': { hit: 2, miss: 10, output: 40 },
-  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16 },
-  'grok-4': { hit: 22, miss: 22, output: 108 },
-  'gemini-3-pro': { hit: 9, miss: 9, output: 72 },
+  // MiniMax：2026-10 核对官方定价概览表。以前填的「2/10/40」便宜了一半，已改正。
+  'MiniMax-M3.1-Flash': { hit: 0.1, miss: 1, output: 4 },
+  'MiniMax-M3': { hit: 0.84, miss: 4.2, output: 16.8, est: true },
+  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16, est: true },
+  // xAI / Google 官网这台机器连不上，按美元牌价 × 7.2 估的，标 est
+  'grok-4': { hit: 22, miss: 22, output: 108, est: true },
+  'gemini-3-pro': { hit: 9, miss: 9, output: 72, est: true },
 };
 
 /**
@@ -4421,7 +4550,10 @@ function costOf(model, u, now) {
     (hitTok / per) * Number(cur.hit ?? cur.miss ?? 0) +
     (missTok / per) * Number(cur.miss ?? 0) +
     (pout / per) * Number(cur.output ?? 0);
-  return { cost: c, off: !peak && Boolean(rate.off) };
+  // est：这一档价格是估的不是官方标价（OpenAI / xAI / Google 那几家抓不到官网），
+  // 界面上要标个「估」字，别让人误当准数去对账。
+  const est = Boolean(rate.est || (rate.same && RATES[rate.same] && RATES[rate.same].est));
+  return { cost: c, off: !peak && Boolean(rate.off), est };
 }
 
 /**
@@ -4454,8 +4586,22 @@ let lastTurnModel = '';
  * @param {{prompt_tokens?:number, completion_tokens?:number, total_tokens?:number}} u
  * @param {number} [at] 这一轮用户那句话的下标，分支要用；不给就不画按钮
  */
-function appendTurnUsage(u, at) {
-  if (!u) return;
+function appendTurnUsage(u, at, modelOverride, host) {
+  // 历史里的老轮次没有用量记录：也画一行，明说「没记」，不装作没有。
+  // （这个功能是后加的，早于它的对话谁也没存，只能如实标出来。）
+  if (!u) {
+    if (!Number.isFinite(Number(at))) return;
+    const gone = document.createElement('div');
+    gone.className = 'turnUsage';
+    gone.title = '这一轮是在「记录用量」功能加上之前跑的，当时没有存下来，所以只能空着';
+    const sp = document.createElement('span');
+    sp.className = 'na';
+    sp.textContent = '这一轮没记用量（功能加之前的对话）';
+    gone.appendChild(sp);
+    log.appendChild(gone);
+    log.scrollTop = log.scrollHeight;
+    return;
+  }
   const pin = Number(u.prompt_tokens ?? 0);
   const pout = Number(u.completion_tokens ?? 0);
   const total = Number(u.total_tokens ?? (pin + pout));
@@ -4480,13 +4626,14 @@ function appendTurnUsage(u, at) {
   );
 
   // 花了多少钱。模型名取「这个会话现在用哪个」，没设就用全局的
-  const model = (typeof turnModelName === 'function' ? turnModelName() : '') || '';
+  const model = String(modelOverride || '') || (typeof turnModelName === 'function' ? turnModelName() : '') || '';
   const money = costOf(model, u);
   if (money) {
     row.append(mk('·', 'sep'));
-    const yen = mk('≈' + fmtMoney(money.cost) + ' 元', 'cost');
+    const yen = mk('≈' + fmtMoney(money.cost) + ' 元' + (money.est ? '（估）' : ''), 'cost');
     yen.title =
       '按 ' + model + ' 的公开价估算' +
+      (money.est ? '（这家官网抓不到，价格是按美元牌价折算的，只能当个大概）' : '') +
       (money.off ? '（现在是谷价时段，按半价算）' : '') +
       '\n输入缓存命中 ' + fmtTok(Number(u.prompt_cache_hit_tokens ?? 0)) + ' tokens' +
       '\n实际扣费以各家账单为准，这里只是让你心里有数';
@@ -4507,8 +4654,10 @@ function appendTurnUsage(u, at) {
     row.appendChild(box);
   }
 
-  log.appendChild(row);
-  log.scrollTop = log.scrollHeight;
+  // host 是「画进哪个容器」：实时那一轮不传，直接挂到 log 上；
+  // 回放历史时传 frag，否则 renderTurns 最后的 log.replaceChildren(frag) 会把它一起冲掉（真踩过）。
+  (host || log).appendChild(row);
+  if (!host) log.scrollTop = log.scrollHeight;
 }
 
 // ---- 同一时间只开一个面板 ----------------------------------------------------
@@ -5078,6 +5227,136 @@ function setBulk(on) {
 
 document.getElementById('sessBulk').onclick = () => setBulk(!bulkMode);
 document.getElementById('sessBulkCancel').onclick = () => setBulk(false);
+
+/* ------------------------------------------------------------------ *
+ * 搜会话内容
+ *
+ * 会话四五十个以后，光靠「标题 + 最后一句」根本找不到东西。
+ * 这里搜的是每条消息的正文（服务端 /api/sessions/search 干这件事），
+ * 结果按会话归堆，点一条就跳进那个会话。
+ * ------------------------------------------------------------------ */
+const sessFindBar = document.getElementById('sessFindBar');
+const sessFindInput = document.getElementById('sessFindInput');
+const sessFindHits = document.getElementById('sessFindHits');
+
+function setFind(on) {
+  if (!sessFindBar) return;
+  sessFindBar.hidden = !on;
+  const b = document.getElementById('sessFindToggle');
+  if (b) b.classList.toggle('on', on);
+  if (on) {
+    sessFindHits.hidden = true;
+    sessFindHits.innerHTML = '';
+    setTimeout(() => sessFindInput && sessFindInput.focus(), 30);
+  } else {
+    sessFindHits.hidden = true;
+    sessFindHits.innerHTML = '';
+    if (sessFindInput) sessFindInput.value = '';
+  }
+}
+
+/** 把命中的关键词标黄（只标第一处，够看就行） */
+function markHit(snippet, q) {
+  const s = String(snippet || '');
+  const at = s.toLowerCase().indexOf(String(q || '').toLowerCase());
+  if (at < 0) return document.createTextNode(s);
+  const frag = document.createDocumentFragment();
+  frag.append(s.slice(0, at));
+  const b = document.createElement('b');
+  b.textContent = s.slice(at, at + q.length);
+  frag.append(b, s.slice(at + q.length));
+  return frag;
+}
+
+async function runFind() {
+  const q = (sessFindInput.value || '').trim();
+  if (!q) return;
+  sessFindHits.hidden = false;
+  sessFindHits.innerHTML = '';
+  const tip = document.createElement('div');
+  tip.className = 'findEmpty';
+  tip.textContent = '搜着呢…';
+  sessFindHits.append(tip);
+
+  let r = null;
+  try {
+    r = await fetch('/api/sessions/search?q=' + encodeURIComponent(q)).then((x) => x.json());
+  } catch {}
+  sessFindHits.innerHTML = '';
+  if (!r || r.error) {
+    const e = document.createElement('div');
+    e.className = 'findEmpty';
+    e.textContent = '搜不了：' + ((r && r.error) || '网络问题');
+    sessFindHits.append(e);
+    return;
+  }
+  if (!r.hits.length) {
+    const e = document.createElement('div');
+    e.className = 'findEmpty';
+    e.textContent = `没找到「${q}」。试试短一点的关键词。`;
+    sessFindHits.append(e);
+    return;
+  }
+
+  const head = document.createElement('div');
+  head.className = 'findEmpty';
+  head.textContent = `${r.hits.length} 个会话里提过，共 ${r.total} 处`;
+  sessFindHits.append(head);
+
+  for (const h of r.hits) {
+    const row = document.createElement('div');
+    row.className = 'findHit';
+    const t = document.createElement('div');
+    t.className = 'fhTitle';
+    const nm = document.createElement('span');
+    nm.textContent = h.title || '（没名字）';
+    const cnt = document.createElement('span');
+    cnt.className = 'fhCount';
+    cnt.textContent = `${h.count} 处`;
+    t.append(nm, cnt);
+    row.append(t);
+    for (const s of h.samples) {
+      const d = document.createElement('div');
+      d.className = 'fhSnippet';
+      const who = document.createElement('span');
+      who.textContent = (s.role === 'user' ? '主人：' : '小鱼：');
+      d.append(who, markHit(s.snippet, q));
+      row.append(d);
+    }
+    row.onclick = async () => {
+      setFind(false);
+      await switchSession(h.id);
+      sessDlg.close();
+      // 跳到命中的那一条：给它加一下高亮，免得找不到
+      const idx = h.samples[0] ? h.samples[0].idx : -1;
+      if (idx >= 0) {
+        const all = [...log.querySelectorAll('.msg')];
+        const el = all.find((x) => Number(x.dataset.at) === idx) || all[Math.min(idx, all.length - 1)];
+        if (el) {
+          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          el.classList.add('foundFlash');
+          setTimeout(() => el.classList.remove('foundFlash'), 2200);
+        }
+      }
+    };
+    sessFindHits.append(row);
+  }
+}
+
+const sessFindToggle = document.getElementById('sessFindToggle');
+if (sessFindToggle) sessFindToggle.onclick = () => setFind(sessFindBar.hidden);
+document.getElementById('sessFindGo').onclick = runFind;
+document.getElementById('sessFindClose').onclick = () => setFind(false);
+sessFindInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    runFind();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    setFind(false);
+  }
+});
+
 document.getElementById('sessBulkAll').onclick = () => {
   for (const s of sessionsCache) picked.add(s.id);
   renderSessList();
@@ -5242,6 +5521,10 @@ async function refreshSessions({ silent = false } = {}) {
 function renderTurns(turns) {
   hideSending();
   usageEl.textContent = '';
+  // 回放历史时用：最近一句主人说的话上带着的用量，轮到画它的回复时补上去
+  let lastTurnUsage = null;
+  let lastTurnAt;
+  let lastTurnModelOfUsage = '';
 
   const list = turns || [];
   const frag = document.createDocumentFragment();
@@ -5255,6 +5538,8 @@ function renderTurns(turns) {
     } else {
       const wrap = addEl('', 'msg assistant', frag);
       wrap.innerHTML = '<div class="role">小鱼</div>';
+      // 搜会话时靠这个下标把命中那条滚到眼前
+      if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
       const b = document.createElement('div');
       b.className = 'bubble';
       b.textContent = fixMojibake(turn.text);
@@ -5262,6 +5547,15 @@ function renderTurns(turns) {
       if (Array.isArray(turn.out) && turn.out.length) attachFiles(wrap, turn.out);
       attachEdit(wrap, turn.rewindId);
       if (turn.edited) wrap.classList.add('edited');
+      // 这一轮的 token 用量：存过就一定要画出来，重启、换设备都一样。
+      // 一轮的用量挂在「主人那句」的 user turn 上（见 server.mjs 的 _usage），
+      // 但视觉上它属于这一轮的回复，所以画在 assistant 后面。
+      if (lastTurnUsage) appendTurnUsage(lastTurnUsage, lastTurnAt, lastTurnModelOfUsage, frag);
+    }
+    if (turn.role === 'user') {
+      lastTurnUsage = turn.usage || null;
+      lastTurnAt = Number.isFinite(Number(turn.rewindId)) ? Number(turn.rewindId) : undefined;
+      lastTurnModelOfUsage = (turn.usage && turn.usage.model) || '';
     }
   }
 

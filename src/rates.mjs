@@ -70,14 +70,38 @@ const RATES = {
   'o4-mini': { hit: 8, miss: 8, output: 32 },
 
   // ── 其它常见 ──
-  'MiniMax-M3': { hit: 2, miss: 10, output: 40 },
-  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16 },
-  'grok-4': { hit: 22, miss: 22, output: 108 },
-  'gemini-3-pro': { hit: 9, miss: 9, output: 72 },
+  // MiniMax（2026-10 核对 platform.minimaxi.com/document/price 的定价概览表）
+  // M3.1-Flash：输入 1.00 / 输出 4.00 / 缓存读 0.10
+  // M3 ≤512k：输入 4.20 / 输出 16.80（优先档 6.30 / 25.20，按标准档算）
+  // M3 >512k：输入 8.40 / 输出 33.60
+  // 注意：以前这里填的是「2 / 10 / 40」，比官方便宜一半，别再用那组数。
+  'MiniMax-M3.1-Flash': { hit: 0.1, miss: 1, output: 4 },
+  'MiniMax-M3': { hit: 0.84, miss: 4.2, output: 16.8, est: true },
+  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16, est: true },
+  // xAI / Google 这两家这台机器连不上官网，价格按美元牌价 × 7.2 估的，标 est 表示「估算」
+  'grok-4': { hit: 22, miss: 22, output: 108, est: true },
+  'gemini-3-pro': { hit: 9, miss: 9, output: 72, est: true },
 };
 
 /** 认不出模型时给个空壳，别再往下算 */
 const UNKNOWN = null;
+
+/**
+ * 哪些模型的价格是「估算」而不是抄官方标价。
+ *
+ * 为什么要有这个标记：这台机器连不上 OpenAI / xAI / Google 的定价页，
+ * 那几家的数字是按美元牌价 × 7.2 估的。不标出来的话，主人会以为那是准数，
+ * 报销、对账的时候对不上。界面上会多打一个「估」字。
+ *
+ * 判定顺序：条目自带 est:true 就算；别名（same 指向另一条）跟着目标走。
+ */
+export function isEstimated(model) {
+  const rate = rateOf(model);
+  if (!rate) return false;
+  if (rate.est) return true;
+  if (rate.same && RATES[rate.same]) return Boolean(RATES[rate.same].est);
+  return false;
+}
 
 /** 现在是不是「高峰」（只认北京时间周一至五的两个区间；法定节假日不扣，宁可多算不少算） */
 function isPeak(when, now = new Date()) {
@@ -172,6 +196,7 @@ export function costOf(model, u, now = new Date()) {
     currency: '元',
     rate: cur,
     peak: !inPeakWindow && Boolean(rate.off),
+    est: Boolean(rate.est || (rate.same && RATES[rate.same] && RATES[rate.same].est)),
     breakdown: { hit: cHit, miss: cMiss, out: cOut },
   };
 }

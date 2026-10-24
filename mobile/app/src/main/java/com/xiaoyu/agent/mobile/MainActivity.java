@@ -114,7 +114,7 @@ public class MainActivity extends Activity {
 
         TextView labAddr = Ui.text(this, "电脑地址", 12.5f, Ui.DIM, true);
         col.addView(labAddr);
-        final EditText addr = Ui.input(this, "192.168.1.100:8787", true);
+        final EditText addr = Ui.input(this, "192.168.1.5:8787", true);
         addr.setText(Prefs.base(this).replace("http://", "").replace("https://", ""));
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);

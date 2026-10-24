@@ -235,6 +235,44 @@
     .fileCard video { max-width: 300px; max-height: 220px; border-radius: 7px; display: block; background: #000; }
     .fileRow { display: flex; flex-direction: column; gap: 2px; max-width: 320px; }
 
+    /* ---- 视频：给足地方，别挤成小方块 ---- */
+    /* 视频右上角那个「存」的小箭头：平时藏着，鼠标移到视频上才出来 */
+    .fileRow.vidBox { position: relative; }
+    .vidSave {
+      position: absolute; top: 8px; right: 8px;
+      width: 30px; height: 30px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(12, 16, 22, .62); color: #e8eefb;
+      font-size: 15px; line-height: 1; text-decoration: none;
+      opacity: 0; transition: opacity .15s, background .15s;
+      backdrop-filter: blur(6px);
+    }
+    .fileRow.vidBox:hover .vidSave { opacity: 1; }
+    .vidSave:hover { background: rgba(30, 40, 54, .9); }
+
+    .fileRow.vidBox {
+      max-width: min(720px, 100%);
+      width: 100%;
+      background: transparent;
+      border: none;
+      padding: 0;
+    }
+    .fileRow.vidBox video {
+      width: 100%;
+      max-width: 100%;
+      max-height: 60vh;
+      border-radius: 10px;
+      background: #000;
+      display: block;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, .35);
+    }
+    .fileRow.vidBox .finfo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 2px 0;
+    }
+
     /* ---- 语音气泡：像聊天软件那种语音条，点一下就响 ---- */
     .vbub {
       position: relative; display: inline-flex; align-items: center; gap: 9px;
@@ -281,6 +319,7 @@
 
     .fileRow img.fthumb { max-width: 260px; max-height: 200px; border-radius: 7px; display: block; }
     .fileRow video { max-width: 300px; max-height: 220px; border-radius: 7px; display: block; background: #000; }
+    /* .vidBox 里的视频单独放宽，见上面 */
     .fileRow .finfo { display: flex; align-items: center; gap: 6px; }
     .fileRow .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
     .fileRow .fsize { color: var(--dim); font-size: 11px; flex: 0 0 auto; }
@@ -428,12 +467,31 @@
       100% { content: ''; }
     }
 
-    /* 每轮底部那行 token 小字 */
+    /* 每轮底部那行 token 小字。
+       主人要求：挂在她说的话底下，**鼠标悬停在她那句话上才显示**，
+       平时不占眼睛。所以默认 opacity 0，悬停 .msg 时淡入；
+       真机没有 hover，那边常驻半透明（见下面 @media (hover: none)）。 */
     .turnUsage {
-      max-width: 900px; margin: 2px auto 12px; padding-left: 2px;
+      max-width: 900px; margin: 2px auto 4px; padding-left: 2px;
       color: var(--dim); font-size: 11.5px; line-height: 1.5;
-      font-variant-numeric: tabular-nums; user-select: text; opacity: .8;
+      font-variant-numeric: tabular-nums; user-select: text;
+      opacity: 0; transition: opacity .14s ease;
     }
+    /* 挂在她说的话里面（气泡内部、底部）：跟气泡左边对齐，别居中到整行 */
+    .msg .turnUsage.underMsg {
+      max-width: none;
+      margin: 4px 0 0;
+      padding-left: 0;
+      text-align: left;
+    }
+    /* 悬停她这句话 → 这行淡出来。
+       两种挂法都要吃到：①气泡内部（.msg:hover .turnUsage）
+       ②跟在气泡后面做兄弟（.msg:hover + .turnUsage，实时那一轮走这条）。 */
+    .msg:hover .turnUsage,
+    .msg:focus-within .turnUsage,
+    .msg:hover + .turnUsage,
+    .msg:focus-within + .turnUsage,
+    .turnUsage:hover { opacity: .82; }
     /* 老轮次（那时候还没存用量）也给一行，别让界面看起来像少画了东西。
        主人明确要求「每句话都显示 token 消耗，不要隐藏，哪怕重启进入那行字也在」，
        所以宁可写一句「这一轮没记用量」，也不要整行消失。 */
@@ -441,16 +499,6 @@
     .turnUsage .sep { opacity: .5; margin: 0 6px; }
     .turnUsage .tt { color: #8fc7ff; }
     .turnUsage .cost { color: #d9a45b; }
-    /* 用量那行右侧：在「这一轮」之后开一个新会话接着聊（DSH 的分支） */
-    .turnUsage .turnActions { float: right; }
-    .turnUsage .branchBtn {
-      padding: 1px 9px; font: inherit; font-size: 11.5px; line-height: 1.7;
-      border-radius: 999px; border: 1px solid rgba(255, 255, 255, .14);
-      background: rgba(20, 24, 31, .86); color: var(--dim);
-      cursor: pointer; transition: color .12s, border-color .12s;
-    }
-    .turnUsage .branchBtn:hover { color: var(--accent); border-color: var(--accent); }
-    .turnUsage .branchBtn:disabled { opacity: .5; cursor: default; }
 
     /*
      * 系统提示：报错 / 限流 / 断线。
@@ -1126,11 +1174,30 @@
 .msg.user:hover .rewindBtn,
 .msg .rewindBtn:focus-visible { opacity: 1; }
 .msg .rewindBtn:hover { color: var(--accent, #4d8dff); border-color: var(--accent, #4d8dff); }
-/* 「编辑」跟「回退」并排，靠右；回退占最右，编辑在它左边 */
-.msg .editBtn {
+/*
+ * 每条消息右上角（她说的话是右下角）那一排小按钮。
+ *
+ * 【为什么改成 flex 容器，而不是各自 absolute + 算 right 像素】
+ * 以前「回退」「编辑」「分支」每个都是 position:absolute; right: 96px / 52px / 2px，
+ * 靠手算像素错开。字号一渲染偏差几 px 就叠在一起（实测重叠了 5px）。
+ * 现在装进一个右对齐的 flex 容器，谁多宽就不用管了，永远不会重叠。
+ */
+.msg .msgActions {
   position: absolute;
   top: 4px;
-  right: 76px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* 容器本身不挡鼠标，只有里面的按钮接收事件 */
+  pointer-events: none;
+  z-index: 2;
+}
+.msg .msgActions > button { pointer-events: auto; }
+/* 她说的话：这一排挪到右下角，跟右上角分开；底下留的 26px 是给它让的位置 */
+.msg.assistant .msgActions { top: auto; bottom: 0; right: 2px; }
+
+.msg .msgActions > button {
   padding: 2px 8px;
   font-size: 11px;
   line-height: 1.6;
@@ -1142,21 +1209,18 @@
   opacity: 0;
   transition: opacity 0.12s, color 0.12s, border-color 0.12s;
 }
-.msg:hover .editBtn,
-.msg .editBtn:focus-visible { opacity: 1; }
-.msg .editBtn:hover { color: var(--accent, #4d8dff); border-color: var(--accent, #4d8dff); }
-/* 没有回退按钮的（我没给下标的那种）就贴最右 */
-.msg.noRewind .editBtn { right: 6px; }
-/* 她说的话：编辑按钮挪到右下角，跟右上角的「回退」分开，不挤在一起。
-   底下那 26px 是给它让的位置，不然会压在最后一行字上。 */
-.msg.assistant { padding-bottom: 26px; }
-.msg.assistant .editBtn { top: auto; bottom: 0; right: 2px; }
-.msg.assistant.noRewind .editBtn { right: 2px; }
+.msg:hover .msgActions > button,
+.msg .msgActions > button:focus-visible { opacity: 1; }
+.msg .msgActions > button:hover { color: var(--accent, #4d8dff); border-color: var(--accent, #4d8dff); }
+.msg .msgActions > button:disabled { opacity: .5; cursor: default; }
 /* 正在改的时候按钮先收起来，别挡着输入框 */
-.msg.editing .editBtn,
-.msg.editing .rewindBtn { display: none; }
+.msg.editing .msgActions { display: none; }
 /* 真机没有 hover，常驻显示 */
-@media (hover: none) { .msg .editBtn, .msg .rewindBtn { opacity: .75; } }
+/* 真机没有 hover（点不出「悬停」），按钮和用量行常驻半透明 */
+@media (hover: none) {
+  .msg .msgActions > button { opacity: .75; }
+  .turnUsage { opacity: .6; }
+}
 .msg.user { position: relative; }
 .msg.assistant { position: relative; }
 /* 改过的那条，角色名后面点一个小标记 */
@@ -1304,8 +1368,8 @@
         <fieldset>
           <legend>上下文自动压缩</legend>
           <div class="field">
-            <label>历史涨到多少 token 就把旧对话折成摘要。<br>默认128000，填多少压多少，填0关闭该功能</label>
-            <input type="number" id="contextLimit" min="8000" step="1000" placeholder="128000" />
+            <label>历史涨到多少 token 就把旧对话折成摘要。<br>填0自动（按当前模型的上下文窗口算水位），填多少压多少，填 off 关闭该功能</label>
+            <input type="text" id="contextLimit" inputmode="numeric" placeholder="0" spellcheck="false" autocomplete="off" />
           </div>
           <div class="field">
             <span class="hint" id="contextLimitHint">改完点「保存」，下一句生效。</span>
@@ -3063,6 +3127,22 @@ function addUser(text, tag, atts, target, rewindId) {
 }
 
 /** 给刚画出来的用户气泡补上「↶ 回退」（下标要等服务端落盘才知道） */
+/**
+ * 取这条消息的按钮容器，没有就造一个。
+ *
+ * 三个按钮（回退 / 编辑 / 分支）都往这里塞，由 CSS 的 flex 排成一排。
+ * 以前是各自 absolute + 手算 right 像素，字号一渲染偏差就叠在一起。
+ */
+function actionsOf(wrap) {
+  let box = wrap.querySelector(':scope > .msgActions');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'msgActions';
+    wrap.appendChild(box);
+  }
+  return box;
+}
+
 function attachRewind(wrap, at) {
   if (!wrap || !Number.isFinite(Number(at))) return;
   wrap.dataset.rewindId = String(Number(at));
@@ -3073,7 +3153,7 @@ function attachRewind(wrap, at) {
   rb.textContent = '↶ 回退';
   rb.title = '把对话回退到这条之前';
   rb.onclick = () => openRewind(Number(at));
-  wrap.appendChild(rb);
+  actionsOf(wrap).appendChild(rb);
   wrap.classList.remove('noRewind');
 }
 
@@ -3094,8 +3174,31 @@ function attachEdit(wrap, at) {
   eb.textContent = '✎ 编辑';
   eb.title = '改这句话的内容（会同步改这个会话的记忆）';
   eb.onclick = () => startEdit(wrap, Number(at));
-  wrap.appendChild(eb);
+  actionsOf(wrap).appendChild(eb);
   if (!wrap.querySelector('.rewindBtn')) wrap.classList.add('noRewind');
+}
+
+/**
+ * 把「⑂ 分支」挂到某条消息的「✎ 编辑」左边。
+ *
+ * 【为什么挂在气泡上，而不是挪用量那行】
+ * 以前分支按钮画在每轮底下的用量行里（「↑xx 输入 · ↓xx 输出 · ⑂ 在新会话中分支」）。
+ * 有两个毛病：①没有用量记录的老轮次整行不画，分支按钮就一起没了；
+ * ②一轮多条 assistant（干工具活）时用量行在一整串末尾，分不清是从哪句分出去。
+ * 现在跟「编辑 / 回退」一样贴着那句话，鼠标移上去才露头，一眼就知道从哪儿分。
+ */
+function attachBranchBtn(wrap, at) {
+  if (!wrap || !Number.isFinite(Number(at))) return;
+  if (wrap.querySelector('.branchBtn')) return;
+  const bb = document.createElement('button');
+  bb.type = 'button';
+  bb.className = 'branchBtn';
+  bb.textContent = '⑂ 分支';
+  bb.title = '把到这句话为止的对话整段复制到一个新会话，接着往下聊；原来这个会话原样保留';
+  bb.onclick = () => branchHere(Number(at), bb);
+  actionsOf(wrap).appendChild(bb);
+  // 有分支按钮了就不用「贴最右」那套了（那是没回退按钮时的兜底）
+  wrap.classList.remove('noRewind');
 }
 
 /** 原地进入编辑：气泡换成 textarea + 存/撤销/取消 */
@@ -3395,21 +3498,32 @@ function outCard(f) {
   }
 
   if (kind === 'video') {
+    // 视频给足地方：以前锁死在 300×220，小人儿一样，看着憋屈。
+    // 现在单独一个宽屏样式 .vidBox，能撑到聊天区宽度，右上角还能一键放大。
     const box = document.createElement('div');
-    box.className = 'fileRow';
+    box.className = 'fileRow vidBox';
     const media = document.createElement('video');
     media.controls = true;
     media.preload = 'metadata';
     media.src = url;
+    media.playsInline = true;
+    // 双击视频 = 全屏，跟平时看视频的习惯一样
+    media.addEventListener('dblclick', () => {
+      try {
+        if (media.requestFullscreen) media.requestFullscreen();
+        else if (media.webkitEnterFullscreen) media.webkitEnterFullscreen();
+      } catch (e) {}
+    });
     box.appendChild(media);
-    const info = document.createElement('div');
-    info.className = 'finfo';
-    const nm = document.createElement('div'); nm.className = 'fname'; nm.textContent = iconOf(f) + ' ' + name;
-    const sz = document.createElement('div'); sz.className = 'fsize'; sz.textContent = size;
-    const a = document.createElement('a'); a.className = 'fdl'; a.textContent = '下载';
-    wireSave(a, dl, name);
-    info.append(nm, sz, a);
-    box.appendChild(info);
+    // 底下那行「🎬 文件名 · 大小 · 下载」主人嫌碍眼，整行不要了。
+    // 下载换个不占地方的办法：鼠标移到视频上，右上角浮出一个小箭头。
+    const saver = document.createElement('a');
+    saver.className = 'vidSave';
+    saver.textContent = '↓';
+    saver.title = '存下来：' + name;
+    wireSave(saver, dl, name);
+    box.appendChild(saver);
+    box.title = name + ' · ' + size;
     return box;
   }
 
@@ -3854,15 +3968,17 @@ async function runTurn({ resume = false, text = '' } = {}) {
             attachRewind(pendingRewindBubble, ev.at);
             // 这一轮刚落地，主人在这一轮说的话立刻就能改（下标要等服务端给）
             attachEdit(pendingRewindBubble, ev.at);
+            attachBranchBtn(pendingRewindBubble, ev.at);
             pendingRewindBubble = null;
           }
           if (ev.usage) {
             // 服务端会把这一轮真用的模型名一起送过来（不是主人起的外号），
             // 算钱要用它去对价目表。存一份，appendTurnUsage 直接读。
             if (ev.model) lastTurnModel = String(ev.model);
-            // 这一轮的 token 明细和花费在聊天区里有一行（appendTurnUsage），
-            // 输入框底下那行不再重复报数字，只留版本号。
-            appendTurnUsage(ev.usage, ev.at);
+            // 这一轮的 token 明细和花费，挂在**她说的话**下面
+            // （平时不显示，鼠标悬停那句话才淡出来）。找不到气泡就退回画在 log 里。
+            const under = bubble && bubble.isConnected ? bubble : null;
+            appendTurnUsage(ev.usage, ev.at, '', under, Boolean(under));
           }
         }
       }
@@ -4062,6 +4178,48 @@ const parseWords = (s) => s.split(/[\/,，、\s]+/).map(x => x.trim()).filter(Bo
 const parseLines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
 
 /**
+ * 现在填的这个压缩阈值是什么意思、要是自动档会落到多少。
+ *
+ * 为什么要显示出来：填 0（自动）的时候，真实水位取决于**当前模型**的窗口
+ * （DeepSeek 1M 窗口 → 70 万，GLM 128k → 8.96 万），不写出来主人根本不知道
+ * 自己现在到底什么时候会压。
+ */
+async function paintCtxLimitNote() {
+  if (!contextLimitHint) return;
+  const raw = String(elCtxLimit.value || '').trim().toLowerCase();
+  const base = '改完点「保存」，下一句生效。';
+  try {
+    const info = await fetch('/api/context-limit').then((r) => r.json()).catch(() => null);
+    const f = (n) => Number(n || 0).toLocaleString('en-US');
+    if (!raw) {
+      contextLimitHint.textContent = `空着按默认 128000 算。${base}`;
+      return;
+    }
+    if (raw === 'off' || raw === 'none' || raw === 'unlimited' || raw === '-1') {
+      contextLimitHint.textContent = `不压缩了：历史一直往上涨，涨到模型装不下会直接报错。${base}`;
+      return;
+    }
+    if (raw === '0' || raw === 'auto') {
+      if (info && info.model) {
+        contextLimitHint.textContent =
+          `自动：按当前模型 ${info.model} 的窗口 ${f(info.window)} 算，涨到 ${f(info.auto)} 就压。换模型会自动跟着变。${base}`;
+      } else {
+        contextLimitHint.textContent = `自动：按当前模型的窗口算水位。${base}`;
+      }
+      return;
+    }
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0 && info && info.window && n >= info.window) {
+      contextLimitHint.textContent = `⚠ ${f(n)} 已经超过 ${info.model} 的窗口 ${f(info.window)} —— 还没压到就被模型拒了。${base}`;
+      return;
+    }
+    contextLimitHint.textContent = `固定：涨到 ${Number.isFinite(n) ? f(n) : raw} 就压，填多少压多少。${base}`;
+  } catch {
+    contextLimitHint.textContent = base;
+  }
+}
+
+/**
  * 中文输入法打出来的全角标点换成半角的。
  *
  * 安全词这栏最容易出事：主人打「停下/停止」时斜杠常常是输入法给的「／」，
@@ -4188,8 +4346,14 @@ function fillSettings(s) {
   elBottom.value = s.bottomLines.join('\n');
   elWords.value = s.safeWords.join(' / ');
   elNote.value = s.safeWordNote;
-  // Infinity 存盘时是 0，界面上也显示 0（= 不压缩）
-  elCtxLimit.value = Number.isFinite(s.contextLimit) ? s.contextLimit : 0;
+  // 三种状态要分清楚，不能都写成数字：
+  //   自动 -> 显示 0
+  //   关闭 -> 显示 text（存盘里是 0，但 0 现在归「自动」了，所以关掉得写成 off）
+  //   固定 -> 显示那个数字
+  if (s.contextLimit === 0) elCtxLimit.value = '0';
+  else if (s.contextLimit === Infinity) elCtxLimit.value = 'off';
+  else elCtxLimit.value = Number.isFinite(s.contextLimit) ? String(s.contextLimit) : '0';
+  paintCtxLimitNote();
 }
 
 document.getElementById('openSettings').onclick = async () => {
@@ -4224,6 +4388,10 @@ elWords.addEventListener('blur', () => {
   if (pretty && pretty !== elWords.value) elWords.value = pretty;
 });
 
+// 压缩阈值这栏是自由文本（能填数字、0、off），每改一次就重算一下「这到底是什么意思」
+elCtxLimit.addEventListener('input', () => { paintCtxLimitNote(); });
+elCtxLimit.addEventListener('change', () => { paintCtxLimitNote(); });
+
 /* ---- 会话记忆 ------------------------------------------------------------
    以前顶栏有个「记忆」按钮能直接编辑本子，主人不要那个入口，删掉了。
    本子现在只在两个地方动：
@@ -4248,8 +4416,9 @@ document.getElementById('saveSettings').onclick = async () => {
     bottomLines: parseLines(elBottom.value),
     safeWords: parseWords(elWords.value),
     safeWordNote: elNote.value.trim(),
-    // 空着就交 128000（跟后端 config.mjs 的默认对齐），填 0 就是不压缩
-    contextLimit: elCtxLimit.value === '' ? 128000 : Number(elCtxLimit.value),
+    // 原文交给后端解析：空 -> 默认 128000，0 / auto -> 自动档，off -> 关闭，数字 -> 那个数。
+    // 这里不自己 Number()，否则 "off" 会变成 NaN 被后端当成「没填」。
+    contextLimit: elCtxLimit.value.trim(),
   };
   const r = await fetch('/api/settings', {
     method: 'POST',
@@ -5407,23 +5576,25 @@ let lastTurnModel = '';
  * @param {{prompt_tokens?:number, completion_tokens?:number, total_tokens?:number}} u
  * @param {number} [at] 这一轮用户那句话的下标，分支要用；不给就不画按钮
  */
-function appendTurnUsage(u, at, modelOverride, host) {
+function appendTurnUsage(u, at, modelOverride, host, underMsg) {
   // 历史里的老轮次没有用量记录：也画一行，明说「没记」，不装作没有。
   // （这个功能是后加的，早于它的对话谁也没存，只能如实标出来。）
   //
-  // 关键：这一行**也要带分支按钮**。以前这里直接 return，导致分支出来的会话
-  // （历史轮次全都没存用量）一个分支按钮都没有 —— 就是「分支只能用一次」那个毛病。
-  // 所以这里不能早退，得把 row 建出来、画上「没记用量」、再走到下面挂按钮那一段。
+  // 分支按钮不画在这里了 —— 它已经挪到每条消息气泡上（跟「编辑」并排）。
+  // 这里只负责「这一轮花了多少 token」。
+  //
+  // underMsg = true：这行挂在她说的话后面（CSS 里 .turnUsage 默认透明，
+  // 鼠标悬停那句话才淡出来 —— 这是主人要的「悬停才显示」）。
+  const cls = underMsg ? 'turnUsage underMsg' : 'turnUsage';
   if (!u) {
     if (!Number.isFinite(Number(at))) return;
     const gone = document.createElement('div');
-    gone.className = 'turnUsage';
+    gone.className = cls;
     gone.title = '这一轮是在「记录用量」功能加上之前跑的，当时没有存下来，所以只能空着';
     const sp = document.createElement('span');
     sp.className = 'na';
     sp.textContent = '这一轮没记用量';
     gone.appendChild(sp);
-    attachBranchBtn(gone, at);
     (host || log).appendChild(gone);
     if (!host) noteNewContent();
     return;
@@ -5434,7 +5605,7 @@ function appendTurnUsage(u, at, modelOverride, host) {
   if (!pin && !pout && !total) return; // 全 0 就别占地方
 
   const row = document.createElement('div');
-  row.className = 'turnUsage';
+  row.className = cls;
   row.title = '这一轮模型实际用掉的 token（输入含系统提示与历史，输出含思考与工具调用）';
 
   const mk = (txt, cls) => {
@@ -5466,34 +5637,12 @@ function appendTurnUsage(u, at, modelOverride, host) {
     row.append(yen);
   }
 
-  // 分支按钮：把这一轮为止的对话整段复制到一个新会话，原会话一个字节都不动。
-  //
-  // 【为什么抽成函数】
-  // 「没记用量」那条也要有按钮（分支出来的会话全走那条），两处画法必须一致。
-  attachBranchBtn(row, at);
+  // 分支按钮不在这儿了 —— 见 attachBranchBtn：它现在贴着每条消息的气泡。
 
   // host 是「画进哪个容器」：实时那一轮不传，直接挂到 log 上；
   // 回放历史时传 frag，否则 renderTurns 最后的 log.replaceChildren(frag) 会把它一起冲掉（真踩过）。
   (host || log).appendChild(row);
   if (!host) noteNewContent();
-}
-
-/**
- * 往一行 turnUsage 上挂「⑂ 在新会话中分支」。
- * at 是这一轮**用户那句话**在 messages 里的下标；不是数字就不挂。
- */
-function attachBranchBtn(row, at) {
-  if (!Number.isFinite(Number(at))) return;
-  const box = document.createElement('span');
-  box.className = 'turnActions';
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.className = 'branchBtn';
-  b.textContent = '⑂ 在新会话中分支';
-  b.title = '复制到这一轮为止的对话，开一个新会话接着聊；原来这个会话原样保留';
-  b.onclick = () => branchHere(Number(at), b);
-  box.appendChild(b);
-  row.appendChild(box);
 }
 
 // ---- 同一时间只开一个面板 ----------------------------------------------------
@@ -6364,6 +6513,8 @@ function renderTurns(turns) {
   // 用队列而不是单个变量：连着好几条 user 的情况太常见（催促、中途打断），
   // 单个变量会把前一句直接覆盖掉，那条用量行和分支按钮就没了。
   const pendingTurns = [];
+  // 这一串 assistant 里最后画出来那个气泡（用量行要挂在它下面，悬停它才显形）
+  let lastBubbleOfTurn = null;
 
   const list = turns || [];
   const frag = document.createDocumentFragment();
@@ -6378,7 +6529,17 @@ function renderTurns(turns) {
       const w = addUser(turn.text, undefined, turn.atts, frag, turn.rewindId);
       // 每一句都能改：主人说的和我说的一样对待
       attachEdit(w, turn.rewindId);
+      // 「分支」也贴着句子放：从这句往下另开一个会话
+      attachBranchBtn(w, turn.rewindId);
       if (turn.edited) w.classList.add('edited');
+      // 【用量要在 user 之后立刻入队】
+      // 以前放在循环末尾，而「补画」又发生在 user 分支里 —— 也就是先补画、后入队，
+      // 顺序反了，结果除了最后一条，前面每一轮的用量都补不出来。
+      pendingTurns.push({
+        u: turn.usage || null,
+        at: Number.isFinite(Number(turn.rewindId)) ? Number(turn.rewindId) : undefined,
+        model: (turn.usage && turn.usage.model) || '',
+      });
     } else {
       const hasText = String(turn.text || '').trim().length > 0;
       const outs = Array.isArray(turn.out) ? turn.out : [];
@@ -6395,32 +6556,32 @@ function renderTurns(turns) {
         wrap.appendChild(b);
         if (outs.length) attachFiles(wrap, outs);
         attachEdit(wrap, turn.rewindId);
+        // 她说的话下面也有「分支」：从这句回复往下另开一个会话
+        attachBranchBtn(wrap, turn.rewindId);
         if (turn.edited) wrap.classList.add('edited');
+        lastBubbleOfTurn = wrap;
+      } else {
+        lastBubbleOfTurn = null;
       }
       // 工具调用是这一轮的经过，得跟着回复一起留在界面上
       //（以前只活在「正在跑」的那一屏里，切走再回来就全没了）
       paintTools(tools, frag);
-      // 这一轮的 token 用量 + 分支按钮。
-      // 用量挂在「主人那句」的 user turn 上（见 server.mjs 的 _usage），
-      // 但视觉上它属于这一轮的回复，所以画在 assistant 后面。
+      // 这一轮的 token 用量。
+      // 用量存在「主人那句」的 user turn 上（见 server.mjs 的 _usage），
+      // 但视觉上它属于这一轮的回复 —— 所以挂在**她说的话**下面，
+      // 而且平时不显示，鼠标悬停在那句话上才淡出来（见 .turnUsage 的 CSS）。
       //
       // 【为什么用队列】
-      // 一轮正常的形状是 user → assistant，但实际历史里「连着好几条 user」很常见：
-      // 主人连着催「没有感情」「求求你了」，或者上一轮被中断了没回复。
-      // 以前只用一个 lastTurnAt 变量记「当前这句」，后一句一来就把前一句盖掉，
-      // 被盖掉那条的用量行和分支按钮就一起消失了 —— 表现是「分支只能点一次」。
-      // 现在每遇到一条 user 就压进队列，等到这一串 assistant 画完再一起补。
+      // 一轮正常的形状是 user → assistant，但历史里「连着好几条 user」很常见：
+      // 主人连着催、或者上一轮被中断了没回复。单个变量会把前一句直接盖掉，
+      // 那条用量就没了。所以每遇到一条 user 就压进队列，等这一串 assistant 画完再补。
       if (!nextIsAssistant && pendingTurns.length) {
-        for (const p of pendingTurns) appendTurnUsage(p.u, p.at, p.model, frag);
+        for (const p of pendingTurns) {
+          const host = lastBubbleOfTurn || frag;
+          appendTurnUsage(p.u, p.at, p.model, host, true);
+        }
         pendingTurns.length = 0;
       }
-    }
-    if (turn.role === 'user') {
-      pendingTurns.push({
-        u: turn.usage || null,
-        at: Number.isFinite(Number(turn.rewindId)) ? Number(turn.rewindId) : undefined,
-        model: (turn.usage && turn.usage.model) || '',
-      });
     }
   }
 
@@ -7791,10 +7952,18 @@ async function pushMusic(patch) {
         musState.isDefault = !r.musicIsCustom;
         musState.name = r.musicName || '（没有）';
         musState.on = true;
+        // 音量也跟着回出厂值了（服务端一起写的），界面上的滑块必须同步，
+        // 否则声音确实变回 40%，滑块还停在 0.7 —— 看着像没恢复。
+        // 只改 musState.volume，两个滑块（设置页和右下角小面板）
+        // 都由 paintMusicUI() 统一刷。
+        const dv = r.settings && Number.isFinite(Number(r.settings.musicVolume))
+          ? Number(r.settings.musicVolume)
+          : 0.4;
+        musState.volume = dv;
         if (musicEl) musicEl.removeAttribute('src');
         paintMusicUI();
         musicStart();
-        addSysNote('换回默认那首了');
+        addSysNote('换回默认那首了，音量也回到 ' + Math.round(dv * 100) + '%');
       } catch (e) {
         addSysNote('⚠ 没换成默认：' + (e && e.message ? e.message : e));
       }

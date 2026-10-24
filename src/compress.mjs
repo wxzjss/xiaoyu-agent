@@ -203,12 +203,14 @@ function renderForSummary(messages) {
  * @param {number} [opts.triggerRatio] 兼容旧参数，只允许 1（或省略）
  * @param {number} [opts.keepTokens] 压缩后原样保留的尾部 token 预算
  * @param {AbortSignal} [opts.signal]
+ * @param {string} [opts.model] 当前会话用的模型名 —— 自动档要按它的窗口算水位
  * @returns {Promise<{compressed:boolean, before:number, after:number, limit?:number, trigger?:number, removed?:number, kept?:number, reason?:string, error?:string}>}
  */
 export async function compressHistory({
   messages,
-  // 默认取「设置面板里填的那个阈值」，没填才回落到 .env 的 CONTEXT_LIMIT
-  limit = effectiveContextLimit(),
+  // 默认取「设置面板里填的那个阈值」，没填才回落到 .env 的 CONTEXT_LIMIT。
+  // 填 0（自动档）时，这里按 model 的窗口算出真实水位。
+  limit,
   // 保留为兼容老调用方：填多少压多少，所以触发线就是 limit（1.0），
   // 任何小于 1 的值都会让「填的数字」变成假的，直接忽略。
   triggerRatio = 1,
@@ -216,24 +218,27 @@ export async function compressHistory({
   // 最后才回落到「limit 的几成」（老配置）。
   keepTokens,
   signal,
+  model = '',
 } = {}) {
   if (signal?.aborted) return { compressed: false, before: estimateTokens(messages), after: estimateTokens(messages), reason: 'aborted' };
 
+  // 没显式给 limit 就去设置里问（带上模型名，自动档才能算对）
+  const cap = limit === undefined ? effectiveContextLimit(model) : limit;
   const before = estimateTokens(messages);
-  if (!Number.isFinite(limit) || limit <= 0) {
+  if (!Number.isFinite(cap) || cap <= 0) {
     return { compressed: false, before, after: before, reason: 'disabled' };
   }
   /**
    * 触发线。
    *
-   * 人设模式：填多少就是多少，涨到 limit 才动手（不额外花钱）。
+   * 人设模式：涨到水位才动手（不额外花钱）。
    * 纯净模式：**每轮都压**，不管现在多少 —— 它存在的意义就是「把上下文压到最小」，
    *   不是「到线了才压」。界面上那个「历史涨到多少才压」对它不适用。
    */
   const pureNow = pureModeOn();
-  const trigger = pureNow ? 0 : Math.floor(limit);
+  const trigger = pureNow ? 0 : Math.floor(cap);
   if (before <= trigger) {
-    return { compressed: false, before, after: before, limit, trigger, reason: 'under-trigger' };
+    return { compressed: false, before, after: before, limit: cap, trigger, reason: 'under-trigger' };
   }
 
   const start = headLength(messages);
@@ -244,7 +249,7 @@ export async function compressHistory({
    * 摘要那条消息大约占多少 token —— 先按保守值预留，算完再按真实长度校准。
    */
   const SUMMARY_RESERVE = 600;
-  const budget = Math.max(1, Math.min(limit, Number.isFinite(limit) ? limit : 0) - headTokens);
+  const budget = Math.max(1, Math.min(cap, Number.isFinite(cap) ? cap : 0) - headTokens);
   /**
    * 纯净模式的尾部预算另算，不走「limit 的几成」那一套。
    *
@@ -260,11 +265,11 @@ export async function compressHistory({
   const pureKeep = pureNow ? Math.max(1, Math.min(PURE_KEEP_TOKENS, budget)) : null;
   const keepTarget = pureNow
     ? pureKeep
-    : clampKeep(resolveKeepTokens({ keepTokens, limit }), Math.max(1, budget - SUMMARY_RESERVE));
+    : clampKeep(resolveKeepTokens({ keepTokens, limit: cap }), Math.max(1, budget - SUMMARY_RESERVE));
 
 
   const cut = findCut(messages, start, keepTarget);
-  if (cut <= start) return { compressed: false, before, after: before, limit, trigger, reason: 'nothing-safe-to-drop' };
+  if (cut <= start) return { compressed: false, before, after: before, limit: cap, trigger, reason: 'nothing-safe-to-drop' };
 
   const old = messages.slice(start, cut);
   const tail = messages.slice(cut);
@@ -369,7 +374,7 @@ export async function compressHistory({
 
   const after = estimateTokens(messages);
   return {
-    compressed: true, before, after, limit, trigger,
+    compressed: true, before, after, limit: cap, trigger,
     removed: old.length + dropped, kept: keep.length,
     ...(after > trigger ? { reason: 'still-over-limit' } : {}),
     ...(error ? { error } : {}),

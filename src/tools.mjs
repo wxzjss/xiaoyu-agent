@@ -10,6 +10,7 @@ import { isToolEnabled, featureNameOfTool, enabledToolNames } from './features.m
 import { snapshotBeforeWrite } from './rewind.mjs';
 import { webSearch, formatResults } from './search.mjs';
 import { sendFileTool } from './tools-sendfile.mjs';
+import { sayTool } from './tools-say.mjs';
 
 const LIMIT = 20000;
 
@@ -418,6 +419,7 @@ export const tools = [
       return out === src ? `本来就是简体，一字没动：\n${out}` : out;
     },
   },
+  sayTool,
   sendFileTool,
 ];
 

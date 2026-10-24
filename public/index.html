@@ -120,6 +120,30 @@
     footer { padding: 12px 16px 16px; border-top: 1px solid var(--border); background: var(--panel); }
     .inputRow { max-width: 900px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
 
+    /* 「回到最新」：悬在输入框右上角。
+       平时藏起来，只有你往上翻、新内容在底下等着的时候才露头，
+       旁边那个小数字告诉你攒了几条新的。 */
+    #toBottom {
+      position: absolute; right: max(24px, calc(50% - 428px)); bottom: 100%; margin-bottom: 8px;
+      width: 34px; height: 34px; padding: 0; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--panel); color: var(--fg);
+      border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0, 0, 0, .38);
+      cursor: pointer; opacity: 0; transform: translateY(6px); pointer-events: none;
+      transition: opacity .16s ease, transform .16s ease, border-color .16s ease;
+      z-index: 30;
+    }
+    #toBottom[hidden] { display: none !important; }
+    #toBottom.show { opacity: 1; transform: none; pointer-events: auto; }
+    #toBottom:hover { border-color: var(--accent); color: var(--accent); }
+    #toBottom svg { width: 18px; height: 18px; display: block; }
+    #toBottom .jumpBadge {
+      position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px;
+      padding: 0 4px; border-radius: 999px; background: var(--accent); color: #fff;
+      font-size: 10.5px; line-height: 16px; text-align: center; font-weight: 600;
+    }
+    #toBottom .jumpBadge:empty { display: none; }
+
     /* 加号：贴在输入框左边 */
     .plusWrap { position: relative; flex: 0 0 auto; }
     #plusBtn {
@@ -208,6 +232,51 @@
     .fileCard img.fthumb { max-width: 260px; max-height: 200px; border-radius: 7px; display: block; }
     .fileCard video { max-width: 300px; max-height: 220px; border-radius: 7px; display: block; background: #000; }
     .fileRow { display: flex; flex-direction: column; gap: 2px; max-width: 320px; }
+
+    /* ---- 语音气泡：像聊天软件那种语音条，点一下就响 ---- */
+    .vbub {
+      position: relative; display: inline-flex; align-items: center; gap: 9px;
+      max-width: 300px; padding: 9px 14px 9px 11px; cursor: pointer;
+      background: #1a2029; border: 1px solid #2b3341; border-radius: 16px 16px 16px 4px;
+      color: var(--text); text-decoration: none; user-select: none;
+      transition: background .15s, border-color .15s, transform .08s;
+    }
+    .vbub:hover { background: #202834; border-color: #384254; }
+    .vbub:active { transform: scale(.985); }
+    .vbub .vwave { display: flex; align-items: center; gap: 2px; height: 18px; flex: 0 0 auto; }
+    .vbub .vwave i {
+      display: block; width: 2.5px; border-radius: 2px; background: #7fa8e8; height: 6px;
+      transition: height .2s ease;
+    }
+    .vbub .vwave i:nth-child(2) { height: 12px; }
+    .vbub .vwave i:nth-child(3) { height: 18px; }
+    .vbub .vwave i:nth-child(4) { height: 11px; }
+    .vbub .vwave i:nth-child(5) { height: 7px; }
+    .vbub.playing .vwave i { animation: vbwave .62s ease-in-out infinite; }
+    .vbub.playing .vwave i:nth-child(2) { animation-delay: .10s; }
+    .vbub.playing .vwave i:nth-child(3) { animation-delay: .20s; }
+    .vbub.playing .vwave i:nth-child(4) { animation-delay: .30s; }
+    .vbub.playing .vwave i:nth-child(5) { animation-delay: .40s; }
+    @keyframes vbwave { 0%, 100% { height: 5px; } 50% { height: 17px; } }
+    .vbub .vsec { font-size: 12px; color: #9fb4d4; font-variant-numeric: tabular-nums; flex: 0 0 auto; min-width: 26px; }
+    .vbub .vtag {
+      font-size: 10.5px; color: #7f8ca3; flex: 0 0 auto;
+      border-left: 1px solid #2f3847; padding-left: 8px;
+    }
+    .vbub .vprog {
+      position: absolute; left: 10px; right: 10px; bottom: 3px; height: 2px;
+      border-radius: 2px; background: rgba(127, 168, 232, .18); overflow: hidden;
+      opacity: 0; transition: opacity .15s;
+    }
+    .vbub.playing .vprog, .vbub.paused .vprog { opacity: 1; }
+    .vbub .vprog b { display: block; height: 100%; width: 0%; background: #7fa8e8; border-radius: 2px; }
+    .vbub .vdl {
+      font-size: 11px; color: #6f7b90; flex: 0 0 auto;
+      padding: 1px 5px; border-radius: 5px; text-decoration: none;
+    }
+    .vbub .vdl:hover { color: #9fb4d4; background: rgba(127,168,232,.12); }
+    .msgVoice { display: inline-block; }
+
     .fileRow img.fthumb { max-width: 260px; max-height: 200px; border-radius: 7px; display: block; }
     .fileRow video { max-width: 300px; max-height: 220px; border-radius: 7px; display: block; background: #000; }
     .fileRow .finfo { display: flex; align-items: center; gap: 6px; }
@@ -811,7 +880,50 @@
     .optRow .switch.on:hover { border-color: var(--ok); color: var(--ok); }
     .optRow .switch[disabled] { opacity: .45; cursor: not-allowed; }
 
-    /* ---- 功能面板 ---- */
+    /* ---- 小鱼的嗓子（功能页里的选声音面板） ---- */
+.voiceBox {
+  margin: 6px 0 10px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(120, 170, 255, 0.28);
+  border-radius: 12px;
+  background: rgba(120, 170, 255, 0.06);
+}
+.voiceHint {
+  font-size: 12px;
+  opacity: 0.72;
+  margin-bottom: 8px;
+  line-height: 1.6;
+}
+.voiceRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.voiceRow:hover { background: rgba(120, 170, 255, 0.10); }
+.voiceRow.on { background: rgba(120, 170, 255, 0.16); }
+.voiceRow input { margin-top: 3px; accent-color: #6aa8ff; }
+.voiceMeta { flex: 1; min-width: 0; }
+.voiceName { font-size: 13px; font-weight: 600; }
+.voiceDesc { font-size: 11.5px; opacity: 0.68; line-height: 1.55; margin-top: 2px; }
+.voicePlay {
+  flex: none;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 170, 255, 0.45);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.voicePlay:hover { background: rgba(120, 170, 255, 0.16); }
+.voicePlay:disabled { opacity: 0.5; cursor: default; }
+.voiceBar { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; }
+
+/* ---- 功能面板 ---- */
     .featScroll { overflow-y: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
     /* ---- 会话记忆 ------------------------------------------------------ */
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
@@ -1191,7 +1303,7 @@
           <legend>安全词</legend>
           <div class="field">
             <label>用 / 或 , 分隔。消息里出现任意一个，小鱼这一回合就停下演出，只谈正事。</label>
-            <input type="text" id="safeWords" spellcheck="false" />
+            <input type="text" id="safeWords" spellcheck="false" autocomplete="off" />
           </div>
           <div class="field">
             <label>触发后要她怎么做</label>
@@ -1262,8 +1374,7 @@
         <fieldset>
           <legend>背景音乐</legend>
           <div class="field">
-            <label>默认放的就是你桌面壁纸那首（[deepseek娘]深夜的大肥鱼）。也可以换成自己的歌。</label>
-            <span class="hint" id="musState">…</span>
+            <span class="hint" id="musState">现在放的是：[deepseek娘]深夜的大肥鱼（默认）</span>
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
@@ -1494,6 +1605,13 @@
       <span>正在发送消息</span><span class="dots"></span>
     </div>
     <div class="attachBar" id="attachBar"></div>
+    <button id="toBottom" type="button" aria-label="回到最新" title="回到最新" hidden>
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M10 3.5v11M4.8 9.6L10 14.8l5.2-5.2" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="jumpBadge" id="toBottomBadge"></span>
+    </button>
     <div class="inputRow">
       <div class="plusWrap">
         <button id="plusBtn" type="button" title="添加文件或图片" aria-label="添加文件或图片" aria-expanded="false" aria-haspopup="menu">+</button>
@@ -1551,6 +1669,132 @@
 
   <script>
 const log = document.getElementById('log');
+
+/* ------------------------------------------------------------------
+   滚动跟随
+
+   以前是「每来一个新事件就 log.scrollTop = log.scrollHeight」——
+   你往上翻看历史的时候，她吐一个字就把你拽回底部，翻不了。
+
+   现在跟聊天软件一个规矩：
+     - 贴着底（差 40px 以内）→ 跟随，新内容自动往下滚
+     - 往上翻超过 40px → 停止跟随，新内容在底下攒着，不拽你
+     - 自己滚回底部 → 恢复跟随
+     - 你自己发消息 → 强制跟随（你肯定想看回答）
+     - 切会话 / 清空 → 强制跟随（不然会停在顶部）
+
+   右下角那 13 处调用全换成 stickToBottom()，行为由这里统一决定。
+------------------------------------------------------------------ */
+const SCROLL_STICK_PX = 40;
+let stickBottom = true;
+let unseenNew = 0;
+let stickRaf = 0;
+let stickRo = null;
+
+function toBottomEl() {
+  return document.getElementById('toBottom');
+}
+
+/**
+ * 把视口拉到最底。**只负责滚**，不判 stickBottom、不攒未读数。
+ * 这行以前被误写成 noteNewContent()，导致「跟随中」也会走到 noteNewContent
+ * 再调回 stickToBottom，绕圈子却一次都没真滚 —— 表现就是发新消息画面不动、
+ * 打开会话停在最早的位置。
+ */
+function hardScrollBottom() {
+  if (!log) return;
+  log.scrollTop = log.scrollHeight;
+}
+
+/** 节流：一帧内多次调用只滚一次，别每条事件都做一次布局。 */
+function stickToBottom() {
+  if (!stickBottom) return;
+  if (stickRaf) return;
+  stickRaf = requestAnimationFrame(() => {
+    stickRaf = 0;
+    if (stickBottom) hardScrollBottom();
+  });
+}
+
+/** 刷新那个小箭头：脱离跟随 + 有新东西时才露头。 */
+function paintToBottom() {
+  const btn = toBottomEl();
+  if (!btn) return;
+  const need = !stickBottom;
+  btn.classList.toggle('show', need);
+  if (need) btn.hidden = false;
+  const badge = document.getElementById('toBottomBadge');
+  if (badge) badge.textContent = unseenNew > 0 ? String(unseenNew > 99 ? '99+' : unseenNew) : '';
+}
+
+/** 新内容到了：跟随就滚，不跟随就攒未读数。 */
+function noteNewContent() {
+  if (stickBottom) {
+    stickToBottom();
+    return;
+  }
+  unseenNew += 1;
+  paintToBottom();
+}
+
+/** 回到最新（点箭头、或自己滚到底都会走到这儿）。 */
+function jumpToBottom() {
+  stickBottom = true;
+  unseenNew = 0;
+  paintToBottom();
+  hardScrollBottom();
+}
+
+/** 切会话、清空、重新渲染历史之后调它：无条件回到底部。 */
+function resetScrollStick() {
+  stickBottom = true;
+  unseenNew = 0;
+  paintToBottom();
+  // 一次不够：历史多的时候，replaceChildren + 字体/图片布局要分几帧才稳，
+  // 只滚一次会停在中间。所以连着补几次，最后再兜一下。
+  hardScrollBottom();
+  requestAnimationFrame(() => {
+    hardScrollBottom();
+    requestAnimationFrame(() => {
+      if (stickBottom) hardScrollBottom();
+    });
+  });
+  setTimeout(() => { if (stickBottom) hardScrollBottom(); }, 60);
+  setTimeout(() => { if (stickBottom) hardScrollBottom(); }, 220);
+}
+
+(function wireScroll() {
+  if (log) {
+    // passive：滚动事件里不 preventDefault，别拖慢滚动
+    log.addEventListener('scroll', () => {
+      const gap = log.scrollHeight - log.scrollTop - log.clientHeight;
+      const wasStick = stickBottom;
+      stickBottom = gap <= SCROLL_STICK_PX;
+      if (stickBottom && !wasStick) {
+        unseenNew = 0;
+        paintToBottom();
+      } else if (!stickBottom && wasStick) {
+        paintToBottom();
+      }
+    }, { passive: true });
+  }
+
+  const btn = toBottomEl();
+  if (btn) {
+    btn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      jumpToBottom();
+    });
+  }
+
+  // 内容变高（流式输出、插工具块、图片加载完）时也得决定要不要跟
+  if (log && typeof ResizeObserver === 'function') {
+    stickRo = new ResizeObserver(() => {
+      if (stickBottom) hardScrollBottom();
+    });
+    try { stickRo.observe(log); } catch {}
+  }
+})();
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const meta = document.getElementById('meta');
@@ -2291,9 +2535,9 @@ function paintLiveEvents(evs, bubble) {
       closeThink();
       if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
       const el = addTool();
-      el.sum.querySelector('.name').textContent = ev.name;
+      el.sum.querySelector('.name').textContent = niceTool(ev.name);
       el.sum.querySelector('.status').textContent = '运行中…';
-      el.pre.textContent = 'args: ' + ev.args;
+      el.pre.textContent = '参数：' + ev.args;
       toolEls.set(ev.id, el);
     } else if (ev.type === 'tool_end') {
       const el = toolEls.get(ev.id);
@@ -2456,7 +2700,7 @@ function followLive(id, fromIndex) {
       }
       closeThink();
       seen = evs.length;
-      log.scrollTop = log.scrollHeight;
+      noteNewContent();
     }
     if (!live.running) {
       clearInterval(following);
@@ -2622,7 +2866,7 @@ function addEl(html, cls, target) {
   d.innerHTML = html;
   (target || log).appendChild(d);
   // 只有真的在往屏幕上加才滚动；往 fragment 里建的时候滚了也没意义
-  if (!target) log.scrollTop = log.scrollHeight;
+  if (!target) noteNewContent();
   return d;
 }
 
@@ -2891,6 +3135,82 @@ function iconOf(f) {
   if (ext === 'zip' || ext === 'rar' || ext === '7z') return '🗜';
   return '📄';
 }
+/** 语音气泡：点一下响，再点一下停。长得像聊天软件那种语音条，不是大播放器 */
+function voiceBubble(f, name, size, url, dl) {
+  const row = document.createElement('div');
+  row.className = 'msgVoice';
+
+  const b = document.createElement('div');
+  b.className = 'vbub';
+  b.title = '点一下听，再点一下停';
+
+  const wave = document.createElement('div');
+  wave.className = 'vwave';
+  for (let i = 0; i < 5; i++) wave.appendChild(document.createElement('i'));
+
+  const sec = document.createElement('span');
+  sec.className = 'vsec';
+  sec.textContent = '0\u2033';
+
+  const tag = document.createElement('span');
+  tag.className = 'vtag';
+  tag.textContent = '语音';
+
+  const prog = document.createElement('div');
+  prog.className = 'vprog';
+  const bar = document.createElement('b');
+  prog.appendChild(bar);
+
+  const a = document.createElement('a');
+  a.className = 'vdl';
+  a.textContent = '\u2193';
+  a.href = dl;
+  a.title = '存下来';
+  a.addEventListener('click', (e) => e.stopPropagation());
+
+  b.append(wave, sec, tag, a, prog);
+
+  const au = document.createElement('audio');
+  au.preload = 'metadata';
+  au.src = url;
+  au.style.display = 'none';
+  b.appendChild(au);
+
+  au.addEventListener('loadedmetadata', () => {
+    const d = isFinite(au.duration) ? au.duration : 0;
+    sec.textContent = (d > 0 ? Math.max(1, Math.round(d)) : '\u2013') + '\u2033';
+  });
+  au.addEventListener('timeupdate', () => {
+    if (!au.duration) return;
+    bar.style.width = Math.min(100, (au.currentTime / au.duration) * 100) + '%';
+    sec.textContent = Math.max(1, Math.round(au.duration - au.currentTime)) + '\u2033';
+  });
+  au.addEventListener('play', () => { b.classList.add('playing'); b.classList.remove('paused'); });
+  au.addEventListener('pause', () => {
+    b.classList.remove('playing');
+    if (!au.ended) b.classList.add('paused');
+  });
+  au.addEventListener('ended', () => {
+    b.classList.remove('playing', 'paused');
+    bar.style.width = '0%';
+    sec.textContent = (au.duration ? Math.max(1, Math.round(au.duration)) : '\u2013') + '\u2033';
+  });
+
+  b.addEventListener('click', () => {
+    if (au.paused) {
+      document.querySelectorAll('.vbub audio').forEach((x) => {
+        if (x !== au && !x.paused) { try { x.pause(); } catch (e) {} }
+      });
+      try { au.play(); } catch (e) {}
+    } else {
+      try { au.pause(); } catch (e) {}
+    }
+  });
+
+  row.appendChild(b);
+  return row;
+}
+
 function outCard(f) {
   const name = (f && f.name) || '文件';
   const size = fmtSize(f && f.size);
@@ -2923,10 +3243,17 @@ function outCard(f) {
     return card;
   }
 
-  if (kind === 'video' || kind === 'audio') {
+  // 语音一律走小语音条
+  const rawPath = String((f && f.path) || '').replace(/\\/g, '/');
+  const isVoiceFile = /(^|\/)(say_[^\/]*|[^\/]*_v[46]_[^\/]*)\.(mp3|m4a|wav|ogg|aac)$/i.test(rawPath);
+  if (kind === 'audio' && isVoiceFile) {
+    return voiceBubble(f, name, size, url, dl);
+  }
+
+  if (kind === 'video') {
     const box = document.createElement('div');
     box.className = 'fileRow';
-    const media = document.createElement(kind === 'video' ? 'video' : 'audio');
+    const media = document.createElement('video');
     media.controls = true;
     media.preload = 'metadata';
     media.src = url;
@@ -2969,7 +3296,7 @@ function attachFiles(wrap, items) {
   }
   box.innerHTML = '';
   for (const f of list) box.appendChild(outCard(f));
-  if (log) log.scrollTop = log.scrollHeight;
+  if (log) noteNewContent();
   return box;
 }
 
@@ -2991,6 +3318,29 @@ function addAssistant() {
   return b;
 }
 
+// 工具名说人话：主人一眼看得出她在干嘛，而不是看 run_command 这种英文
+const TOOL_NICE = {
+  run_command: '跑命令',
+  read_file: '读文件',
+  write_file: '写文件',
+  list_dir: '看目录',
+  plan: '整理计划',
+  note: '记一笔',
+  web_search: '上网查',
+  fetch_url: '打开网页',
+  fetch_txt: '抓网页',
+  fetch_many: '批量抓网页',
+  pack_book: '拼书',
+  t2s_convert: '繁转简',
+  say: '念给主人听',
+  send_file: '发文件',
+};
+function niceTool(name) {
+  const n = String(name || '').trim();
+  if (!n) return '工具';
+  return TOOL_NICE[n] || n;
+}
+
 function addTool() {
   const d = document.createElement('details');
   d.className = 'tool';
@@ -2999,7 +3349,7 @@ function addTool() {
   const pre = document.createElement('pre');
   d.append(sum, pre);
   log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
+  noteNewContent();
   return { d, sum, pre };
 }
 
@@ -3020,14 +3370,14 @@ function paintTools(list, target) {
     const sum = document.createElement('summary');
     const nm = document.createElement('span');
     nm.className = 'name';
-    nm.textContent = t.name || '工具';
+    nm.textContent = niceTool(t.name);
     const st = document.createElement('span');
     st.className = 'status ' + (t.ok === null ? 'warn' : t.ok ? 'ok' : 'err');
     st.textContent = t.ok === null ? '没跑完' : t.ok ? '完成' : '失败';
     sum.append(nm, st);
     const pre = document.createElement('pre');
-    let body = t.args ? 'args: ' + t.args : '';
-    if (t.output) body += (body ? '\n--- output ---\n' : '--- output ---\n') + t.output;
+    let body = t.args ? '参数：' + t.args : '';
+    if (t.output) body += (body ? '\n--- 结果 ---\n' : '--- 结果 ---\n') + t.output;
     if (!body) body = '（这一轮没留下结果）';
     pre.textContent = fixMojibake(body);
     d.append(sum, pre);
@@ -3046,7 +3396,7 @@ function addSysNote(text) {
   d.className = 'sysnote';
   d.textContent = text;
   log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
+  noteNewContent();
   return d;
 }
 
@@ -3071,7 +3421,7 @@ function openThink() {
 
   d.append(sum, body);
   log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
+  noteNewContent();
 
   return {
     el: d,
@@ -3083,7 +3433,7 @@ function openThink() {
         title.title = flat.slice(0, 400);
       }
       meta.textContent = body.textContent.length + ' 字';
-      log.scrollTop = log.scrollHeight;
+      noteNewContent();
     },
     finish() {
       if (!body.textContent.trim()) { d.remove(); return; }
@@ -3112,7 +3462,7 @@ function autosizeInput() {
 /** 底部灰字「正在发送消息……」。发送时亮、这轮彻底结束就灭。 */
 function showSending() {
   sendingHint.classList.add('show');
-  log.scrollTop = log.scrollHeight;
+  noteNewContent();
 }
 function hideSending() {
   sendingHint.classList.remove('show');
@@ -3279,14 +3629,14 @@ async function runTurn({ resume = false, text = '' } = {}) {
           closeThink();
           if (!bubble) bubble = addAssistant();
           bubble.textContent += fixMojibake(ev.text);
-          log.scrollTop = log.scrollHeight;
+          noteNewContent();
         } else if (ev.type === 'tool_start') {
           closeThink();
           if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
           const el = addTool();
-          el.sum.querySelector('.name').textContent = ev.name;
+          el.sum.querySelector('.name').textContent = niceTool(ev.name);
           el.sum.querySelector('.status').textContent = '运行中…';
-          el.pre.textContent = 'args: ' + ev.args;
+          el.pre.textContent = '参数：' + ev.args;
           toolEls.set(ev.id, el);
         } else if (ev.type === 'tool_end') {
           const el = toolEls.get(ev.id);
@@ -3324,7 +3674,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
             + (ev.limit ? `（上限 ${ev.limit}，到 ${ev.trigger} 就压）` : '')
             + (ev.error ? `（摘要失败：${ev.error}）` : '');
           wrap.appendChild(b);
-          log.scrollTop = log.scrollHeight;
+          noteNewContent();
         } else if (ev.type === 'aborted') {
           closeThink();
           hideSending();
@@ -3436,11 +3786,11 @@ function replayInFlight(id) {
     } else if (p.kind === 'tool') {
       if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
       const el = addTool();
-      el.sum.querySelector('.name').textContent = p.name;
+      el.sum.querySelector('.name').textContent = niceTool(p.name);
       const st = el.sum.querySelector('.status');
       st.textContent = p.done ? (p.ok ? '完成' : '失败') : '运行中…';
       if (p.done) st.className = 'status ' + (p.ok ? 'ok' : 'err');
-      el.pre.textContent = 'args: ' + p.args + (p.done ? '\n--- output ---\n' + p.output : '');
+      el.pre.textContent = '参数：' + p.args + (p.done ? '\n--- output ---\n' + p.output : '');
     }
   }
   if (bubble) bubble.classList.add('streaming');
@@ -3560,6 +3910,24 @@ let defaults = null;
 
 const parseWords = (s) => s.split(/[\/,，、\s]+/).map(x => x.trim()).filter(Boolean);
 const parseLines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+
+/**
+ * 中文输入法打出来的全角标点换成半角的。
+ *
+ * 安全词这栏最容易出事：主人打「停下/停止」时斜杠常常是输入法给的「／」，
+ * 全角逗号、顿号也混进来。程序里这些都是不同的字符，拆词会拆错、
+ * 跟消息里比对也会对不上。所以这里只在打字时换标点，汉字一个不动。
+ * （服务端 matchSafeWord 另外还兜了一层，两边都换了才算稳。）
+ */
+const PUNCT_MAP = {
+  '，': ',', '。': '.', '、': ',', '／': '/', '；': ';', '：': ':',
+  '？': '?', '！': '!', '（': '(', '）': ')', '【': '[', '】': ']',
+  '「': '"', '」': '"', '『': '"', '』': '"', '《': '<', '》': '>',
+  '“': '"', '”': '"', '‘': "'", '’': "'", '～': '~', '　': ' ',
+};
+function toAsciiPunct(s) {
+  return String(s ?? '').replace(/[，。、／；：？！（）【】「」『』《》“”‘’～　]/g, (c) => PUNCT_MAP[c] || c);
+}
 
 const elPersonaList = document.getElementById('personaList');
 
@@ -3687,6 +4055,24 @@ document.getElementById('openSettings').onclick = async () => {
   closeOtherDialogs('settingsDlg');
   dlg.showModal();
 };
+
+/* 安全词这栏：打进去的全角标点当场换成半角（含粘上来的）。
+   只换标点，汉字原样留着。 */
+elWords.addEventListener('input', () => {
+  const raw = elWords.value;
+  const fixed = toAsciiPunct(raw);
+  if (fixed !== raw) {
+    const at = elWords.selectionStart;
+    elWords.value = fixed;
+    // 光标位置大致按长度差修正，别让它跳回开头
+    try { elWords.setSelectionRange(at, at); } catch {}
+  }
+});
+elWords.addEventListener('blur', () => {
+  const fixed = toAsciiPunct(elWords.value);
+  const pretty = parseWords(fixed).join(' / ');
+  if (pretty && pretty !== elWords.value) elWords.value = pretty;
+});
 
 /* ---- 会话记忆 ------------------------------------------------------------
    以前顶栏有个「记忆」按钮能直接编辑本子，主人不要那个入口，删掉了。
@@ -4185,6 +4571,22 @@ function renderFeatList() {
     sw.dataset.on = f.enabled ? '1' : '0';
     sw.textContent = f.enabled ? '停用' : '启用';
 
+    // 小鱼说话：多给一个「选声音」的入口
+    if (f.id === 'ttsVoice') {
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = 'featEditBtn';
+      pick.textContent = '选声音';
+      pick.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleVoicePicker(row);
+      });
+      row.append(main, pick, sw);
+      featList.appendChild(row);
+      continue;
+    }
+
     // 开场白这种能改内容的功能，多给一个「改」的入口
     if (f.id === 'opening') {
       const edit = document.createElement('button');
@@ -4413,6 +4815,120 @@ if (featDlg) featDlg.addEventListener('cancel', () => featDlg.close());
 const featCloseBtn = document.getElementById('featClose');
 if (featCloseBtn) featCloseBtn.onclick = () => featDlg.close();
 
+// ---- 小鱼的嗓子：选声音 / 试听 ----
+let voiceOpen = false;
+let voiceData = null;
+let voiceSeq = 0;
+let voiceAudio = null;
+
+function closeVoicePicker() {
+  voiceSeq += 1;
+  voiceOpen = false;
+  const box = document.getElementById('voiceBox');
+  if (box) box.remove();
+  const btn = featList && featList.querySelector('.featRow[data-id="ttsVoice"] .featEditBtn');
+  if (btn) btn.textContent = '选声音';
+  if (voiceAudio) {
+    try { voiceAudio.pause(); } catch {}
+    voiceAudio = null;
+  }
+}
+
+function toggleVoicePicker(row) {
+  if (voiceOpen) closeVoicePicker();
+  else openVoicePicker(row);
+}
+
+async function openVoicePicker(row) {
+  closeVoicePicker();
+  const seq = voiceSeq;
+  voiceOpen = true;
+  const box = el('div', 'voiceBox');
+  box.id = 'voiceBox';
+  box.append(el('div', 'voiceHint', '听着哪个像她，就选哪个。选完不用点保存，下一句起就用这个声音说话了；右边可以试听。'));
+  row.after(box);
+  const btn = row.querySelector('.featEditBtn');
+  if (btn) btn.textContent = '收起';
+
+  const loading = el('div', 'voiceHint', '读着呢…');
+  box.append(loading);
+  const data = await fetch('/api/tts').then((x) => x.json()).catch(() => null);
+  if (seq !== voiceSeq) return;
+  loading.remove();
+  if (!data || data.error) {
+    box.append(el('div', 'voiceHint', '读不出来，稍后再试。'));
+    return;
+  }
+  voiceData = data;
+
+  const bar = el('div', 'voiceBar');
+  const tip = el('span', 'voiceHint', '');
+  bar.append(tip);
+
+  const makeRow = (v) => {
+    const r = el('label', 'voiceRow' + (v.id === voiceData.voice ? ' on' : ''));
+    r.dataset.vid = v.id;
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'xiaoyuVoice';
+    radio.value = v.id;
+    radio.checked = v.id === voiceData.voice;
+    radio.addEventListener('change', async () => {
+      tip.textContent = '换着呢…';
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ voice: v.id }),
+      }).then((x) => x.json()).catch(() => null);
+      if (!res || res.error) {
+        tip.textContent = '没换成：' + ((res && res.error) || '网络问题');
+        return;
+      }
+      voiceData = res;
+      box.querySelectorAll('.voiceRow').forEach((n) => {
+        n.classList.toggle('on', n.dataset.vid === res.voice);
+        const i = n.querySelector('input');
+        if (i) i.checked = n.dataset.vid === res.voice;
+      });
+      tip.textContent = '换好了 · 下一句就用这个声音';
+    });
+
+    const meta = el('div', 'voiceMeta');
+    meta.append(el('div', 'voiceName', v.name));
+    meta.append(el('div', 'voiceDesc', v.desc));
+
+    const play = el('button', 'voicePlay', '试听');
+    play.type = 'button';
+    play.addEventListener('click', async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      play.disabled = true;
+      play.textContent = '念…';
+      const res = await fetch('/api/tts/try', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ voice: v.id }),
+      }).then((x) => x.json()).catch(() => null);
+      play.disabled = false;
+      play.textContent = '试听';
+      if (!res || res.error) {
+        tip.textContent = '没念成：' + ((res && res.error) || '网络问题');
+        return;
+      }
+      if (voiceAudio) { try { voiceAudio.pause(); } catch {} }
+      voiceAudio = new Audio('/api/tts/play?f=' + encodeURIComponent(res.file));
+      voiceAudio.play().catch(() => {});
+      tip.textContent = '这是「' + v.name + '」的声音';
+    });
+
+    r.append(radio, meta, play);
+    return r;
+  };
+
+  for (const v of voiceData.voices) box.append(makeRow(v));
+  box.append(bar);
+}
+
 // 启动时悄悄同步一次，让顶部按钮能显示「几个关着」
 loadFeatures();
 
@@ -4632,7 +5148,7 @@ function appendTurnUsage(u, at, modelOverride, host) {
     sp.textContent = '这一轮没记用量（功能加之前的对话）';
     gone.appendChild(sp);
     log.appendChild(gone);
-    log.scrollTop = log.scrollHeight;
+    noteNewContent();
     return;
   }
   const pin = Number(u.prompt_tokens ?? 0);
@@ -4690,7 +5206,7 @@ function appendTurnUsage(u, at, modelOverride, host) {
   // host 是「画进哪个容器」：实时那一轮不传，直接挂到 log 上；
   // 回放历史时传 frag，否则 renderTurns 最后的 log.replaceChildren(frag) 会把它一起冲掉（真踩过）。
   (host || log).appendChild(row);
-  if (!host) log.scrollTop = log.scrollHeight;
+  if (!host) noteNewContent();
 }
 
 // ---- 同一时间只开一个面板 ----------------------------------------------------
@@ -5608,9 +6124,23 @@ function renderTurns(turns) {
 
   // 一次性替换 + 只滚一次
   log.replaceChildren(frag);
-  log.scrollTop = log.scrollHeight;
+  // 渲染完一整屏历史之后，必须无条件跳到最底 —— 你打开会话就是想看最新那句。
+  // 这里不能用 noteNewContent()：它会看 stickBottom，而这会儿的 stickBottom
+  // 还是上一个会话 / 上一次渲染留下的，一旦是 false 就只加未读数、一次都不滚，
+  // 表现就是「退出重进还停在最早的位置，得自己往下翻」。
+  resetScrollStick();
   // 记一笔：这一屏最后停在谁的话上。切会话 / 断开自愈时判断「这轮写完没」要用。
   markTailRole(list);
+  // 图片、视频加载完会把高度撑开，撑开之后还得再贴一次底
+  if (log) {
+    for (const el of log.querySelectorAll('img, video')) {
+      if (el.complete === undefined) {
+        el.addEventListener('loadedmetadata', () => { if (stickBottom) hardScrollBottom(); }, { once: true });
+      } else if (!el.complete) {
+        el.addEventListener('load', () => { if (stickBottom) hardScrollBottom(); }, { once: true });
+      }
+    }
+  }
 }
 
 // ---- 对话回退（DSH /rewind 的那套：只遮蔽、不删除）----
@@ -6803,9 +7333,11 @@ function paintMusicUI() {
   if (vv) vv.textContent = Math.round((musState.volume || 0) * 100) + '%';
   const st = document.getElementById('musState');
   if (st) {
+    // 默认那首在包里的文件名是 bg-music.m4a，界面上要说人话
+    const title = musState.isDefault ? '[deepseek娘]深夜的大肥鱼' : musState.name;
     if (!musState.hasMusic) st.textContent = '还没找到音乐文件';
-    else if (musState.on) st.textContent = `现在放的是：${musState.name}${musState.isDefault ? '（默认，壁纸那首）' : '（自己导入的）'}`;
-    else st.textContent = `已关闭。上次放的是：${musState.name}`;
+    else if (musState.on) st.textContent = `现在放的是：${title}${musState.isDefault ? '（默认）' : '（自己导入的）'}`;
+    else st.textContent = `已关闭。上次放的是：${title}`;
   }
   const note = document.getElementById('skMusicNote');
   if (note) note.textContent = musState.on ? `音乐 ${Math.round((musState.volume || 0) * 100)}%` : '音乐已关';

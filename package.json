@@ -1,6 +1,6 @@
 {
   "name": "xiaoyu-mini-agent",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "private": true,
   "description": "小鱼Agent —— 一个自用的极简 Agent 平台：Electron 桌面版 + OpenAI 兼容 API + 工具循环",
   "main": "electron/main.cjs",
@@ -37,6 +37,7 @@
       "public/**/*",
       "persona/**/*",
       "assets/**/*",
+      "scripts/voice/**/*",
       "package.json",
       "!**/*.bak",
       "!**/*.bak-*",
@@ -46,7 +47,10 @@
       "!.state/**/*",
       "!sandbox/**/*",
       "!dist/**/*",
-      "!dump/**/*"
+      "!dump/**/*",
+      "talk.py",
+      "voice4.py",
+      "voice6.py"
     ],
     "asar": true,
     "asarUnpack": [

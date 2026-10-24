@@ -491,12 +491,42 @@ export function settingsPromptBlock(settings = getSettings()) {
   return lines.join('\n');
 }
 
+/**
+ * 中文 / 全角标点 → 英文半角。
+ *
+ * 为什么只换标点不换汉字：安全词是主人手打的短词（停下 / 停止 / 命令 / 人设），
+ * 打「停下/停止」时输入法常常把斜杠打成全角「／」，还可能顺带打出全角逗号、
+ * 引号、括号、冒号。这些在程序里都是「不同的字符」，会让拆分失败、
+ * 也会让「这句里有没有这个安全词」的判断对不上。汉字本身不换 ——
+ * 换了就成乱码了。
+ */
+const FULLWIDTH_MAP = new Map([
+  ['，', ','], ['。', '.'], ['、', ','], ['；', ';'], ['：', ':'],
+  ['？', '?'], ['！', '!'], ['（', '('], ['）', ')'], ['【', '['], ['】', ']'],
+  ['「', '"'], ['」', '"'], ['『', '"'], ['』', '"'], ['《', '<'], ['》', '>'],
+  ['“', '"'], ['”', '"'], ['‘', "'"], ['’', "'"],
+  ['～', '~'], ['　', ' '], ['－', '-'], ['—', '-'], ['｀', '`'],
+]);
+
+export function toAsciiPunct(text) {
+  let out = '';
+  for (const ch of String(text ?? '')) {
+    if (ch === '／') { out += '/'; continue; }   // 全角斜杠单独拿出来，最常用
+    const hit = FULLWIDTH_MAP.get(ch);
+    out += hit === undefined ? ch : hit;
+  }
+  return out;
+}
+
 /** Does this user message hit a safe word? */
 export function matchSafeWord(text, settings = getSettings()) {
   if (!text) return null;
-  const lower = String(text).toLowerCase();
+  // 两边都先换成半角标点：主人手打「停下」用的是中文输入法，标点常常是全角的，
+  // 安全词要是设成了英文（如 stop），全角字符会让 includes 对不上。
+  const lower = toAsciiPunct(String(text)).toLowerCase();
   for (const w of settings.safeWords) {
-    if (w && lower.includes(w.toLowerCase())) return w;
+    const word = toAsciiPunct(String(w ?? '')).trim().toLowerCase();
+    if (word && lower.includes(word)) return w;
   }
   return null;
 }

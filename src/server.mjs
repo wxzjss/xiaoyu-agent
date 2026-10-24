@@ -67,6 +67,7 @@ import {
   ensureBundledVideo,
   ensureBundledMusic,
 } from './skin.mjs';
+import { getTTSState, writeTTS, speak } from './tts.mjs';
 import { getThinking, setThinking, LEVELS } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
 import {
@@ -133,7 +134,26 @@ import {
   importSessions,
 } from './sessions-core.mjs';
 
+/**
+ * 界面文件目录。
+ *
+ * asar 是只读的（程序开着时还锁死），改不了里面的 public/index.html。
+ * 但主窗口是从本地服务器 loadURL 出来的，所以这里给可写的数据目录留个口子：
+ * 数据目录下 public/ 里放了的文件优先用它，没有的照旧从 asar 里读。
+ * 这样更新界面不用重新打包，也不动资源根。
+ */
 const PUBLIC = join(config.root, 'public');
+const PUBLIC_OVERRIDE = config.packaged ? join(config.dataDir, 'public') : '';
+
+/** 按「数据目录 > 资源目录」的顺序找界面文件 */
+async function readPublic(name) {
+  if (PUBLIC_OVERRIDE) {
+    try {
+      return await readFile(join(PUBLIC_OVERRIDE, name));
+    } catch {}
+  }
+  return readFile(join(PUBLIC, name));
+}
 
 /** 静默模式下少打日志（自检、测试用） */
 const quietBoot = process.env.MINI_AGENT_QUIET === '1';
@@ -589,7 +609,7 @@ async function serveStatic(req, res) {
   const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
   if (name.includes('..')) return json(res, 400, { error: 'bad path' });
   try {
-    const data = await readFile(join(PUBLIC, name));
+    const data = await readPublic(name);
     const type = name.endsWith('.html')
       ? 'text/html; charset=utf-8'
       : name.endsWith('.js')
@@ -1084,6 +1104,64 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/api/opening/reset') {
     return json(res, 200, resetOpeningTexts());
+  }
+
+  // ---- 小鱼的嗓子：状态 / 换声音 / 试听 ----
+  if (req.method === 'GET' && url.pathname === '/api/tts') {
+    return json(res, 200, getTTSState());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/tts') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      writeTTS(payload ?? {});
+      return json(res, 200, getTTSState());
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 试听：body 里给 text，voice 可选；返回合成好的文件名
+  if (req.method === 'POST' && url.pathname === '/api/tts/try') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const text = String(payload?.text ?? '').trim() || '主人，我是小鱼，这个声音你听着还顺耳吗？';
+    try {
+      const file = await speak(text, payload?.voice);
+      return json(res, 200, { ok: true, file: file.split(/[\\/]/).pop() });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 把合成好的语音流给 <audio> 播（只认 voice 目录里的文件名，不接受路径）
+  if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/tts/play') {
+    const want = String(url.searchParams.get('f') || '').replace(/[\\/]/g, '');
+    if (!want || !/^[\w.\-]+\.mp3$/i.test(want)) return json(res, 400, { error: 'bad file name' });
+    const { createReadStream, statSync } = await import('node:fs');
+    const fpath = join(config.dataDir, 'voice', want);
+    try {
+      const st = statSync(fpath);
+      res.writeHead(200, {
+        'content-type': 'audio/mpeg',
+        'content-length': st.size,
+        'cache-control': 'no-store',
+      });
+      if (req.method === 'HEAD') return res.end();
+      createReadStream(fpath).pipe(res);
+    } catch {
+      return json(res, 404, { error: '没这个语音' });
+    }
+    return;
   }
 
   // ---- 视频背景：状态 / 旋钮 / 片子本身 ----
@@ -2030,7 +2108,13 @@ const server = createServer(async (req, res) => {
   // 重启：只有桌面版（Electron）能自己重启，浏览器直开时给个明确的「不行」。
   // 注意：server.mjs 是子进程，它自己从来不是 Electron，所以不能拿
   // process.versions.electron 判断 —— 真正的判据是 electron/main.cjs 传下来的环境变量。
-  if (req.method === 'POST' && url.pathname === '/api/app/restart') {
+    // 临时诊断：把进程眼里的路径吐出来
+  if (req.method === 'GET' && url.pathname === '/api/dbg/paths') {
+    const out = { root: config.root, dataDir: config.dataDir, workspace: config.workspace, packaged: config.packaged, cwd: process.cwd(), desktop: process.env.XIAOYU_DESKTOP, mad: process.env.MINI_AGENT_DATA };
+    try { const { scriptPath } = await import('./tts.mjs'); out.voice4 = scriptPath('voice4.py'); } catch(e) { out.err = String(e); }
+    return json(res, 200, out);
+  }
+if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (process.env.XIAOYU_DESKTOP !== '1') {
       return json(res, 501, { ok: false, error: '这个窗口不是从桌面图标打开的，没法自己重启' });
     }

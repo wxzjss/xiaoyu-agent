@@ -12,7 +12,7 @@ import { config } from './config.mjs';
 
 const FILE = join(config.dataDir, '.state', 'features.json');
 /** 老文件没有这些键时补写进去，让文件内容和界面显示对得上 */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 /** 功能清单。数组顺序就是界面上的顺序。 */
 export const FEATURES = [
@@ -110,8 +110,16 @@ export const FEATURES = [
     // 纯界面功能，不带工具。默认开着，素材就在 assets/background.mp4。
     id: 'videoBg',
     name: '视频背景',
-    desc: '把一段短片铺成聊天背景（无声循环播放），右下角小圆钮调透明度。不想要就关掉。',
+    desc: '把一段短片铺成聊天背景（循环播放），右下角小圆钮调透明度。不想要就关掉。',
     tools: [],
+    defaultOn: true,
+  },
+  {
+    // 小鱼的嗓子：念出来给主人听。四档声音在【功能】里挑。
+    id: 'ttsVoice',
+    name: '小鱼说话',
+    desc: '让小鱼开口：把要说的话念成语音发过来，四档嗓音随便挑（活泼甜 / 软糯最软 / 软糯偏甜 / 连读自然）。点「选声音」就能换，改完下一句生效。',
+    tools: ['say'],
     defaultOn: true,
   },
 ];

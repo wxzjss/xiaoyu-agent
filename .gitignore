@@ -25,3 +25,17 @@ _*.log
 _*.err
 _*.out
 _*.json
+
+# 语音合成本地产物（venv 有几千个文件，绝不能进仓库）
+voice/venv/
+voice/*.mp3
+voice/*.wav
+voice/*.m4a
+voice/try/
+scripts/voice/__pycache__/
+.state-test/
+
+# asar 解包 / 调试副本（体积大，永不入库）
+_asar_*/
+_chk*/
+.ui/

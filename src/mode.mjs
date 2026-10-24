@@ -11,7 +11,7 @@
  * 老会话没有 mode 字段，读出来一律当人设档，不改盘。
  */
 import { personaWord } from './persona.mjs';
-import { getSettings } from './settings.mjs';
+import { getSettings, matchSafeWord } from './settings.mjs';
 
 /** 某个会话当前生效的档位词名。 */
 export function sessionModeWord(session) {
@@ -37,9 +37,9 @@ export function inPersonaMode(session) {
 export function applySafeWord(session, message) {
   const settings = getSettings();
   const base = personaWord(settings);
-  const words = Array.isArray(settings.safeWords) ? settings.safeWords : [];
-  const text = String(message ?? '').toLowerCase();
-  const hit = words.find((w) => w && text.includes(w.toLowerCase())) || '';
+  // 走 matchSafeWord 而不是自己 includes：它会把全角标点换成半角再比，
+  // 主人用中文输入法打完字顺手带的「，」「！」不该让安全词失灵。
+  const hit = matchSafeWord(message, settings) || '';
 
   // 喊了「人设」= 明确回到基线，不算切换，但也不该把档位记成别的
   const current = sessionModeWord(session);

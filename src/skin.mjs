@@ -198,6 +198,8 @@ export function importMusic(name, buffer) {
 
 /** 界面要的一份状态：开关（来自功能面板）+ 旋钮 + 有没有片子 / 音乐。 */
 export function getSkinState() {
+  // enabled 是「视频背景这个功能开着没」，音乐跟它绑在一起：
+  // 视频背景一停，音乐也得停（主人要的是「整套背景」，不是拆开的两半）。
   const enabled = Boolean(getEnabledMap().videoBg);
   const settings = readSkin();
   const videoPath = skinVideoPath();
@@ -212,5 +214,7 @@ export function getSkinState() {
     hasMusic: Boolean(musicPath),
     musicName: musicPath ? musicPath.split(/[\\/]/).pop().replace(/^\d{10,}-/, '') : '',
     musicIsCustom: musicCustom,
+    // 音乐实际会不会响 = 视频背景开着 且 主人自己没关它
+    musicPlayable: enabled && settings.musicOn && Boolean(musicPath),
   };
 }

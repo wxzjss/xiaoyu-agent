@@ -295,6 +295,33 @@ async function createWindow(updated = false) {
     return { action: 'deny' };
   });
 
+  // 下载一律就地存，不拿页面去换。
+  // 以前点「下载」会给浏览器一个 Content-Disposition: attachment，
+  // 窗口整页跳走 / 开个新页，主人只能退出重进才回得来。
+  // 现在：拦下 will-download，弹系统的「另存为」，存完聊天界面原样还在。
+  try {
+    win.webContents.session.on('will-download', (event, item, webContents) => {
+      const base = String(item.getFilename() || 'download');
+      const dir = app.getPath('downloads');
+      item.setSavePath(join(dir, base));
+      item.once('done', (e, state) => {
+        if (state === 'completed') {
+          try { shell.showItemInFolder(item.getSavePath()); } catch (e2) {}
+        }
+      });
+    });
+  } catch (e) {}
+
+  // 兜底：真有东西想把当前页导走，直接掐掉，绝不离开聊天界面
+  win.webContents.on('will-navigate', (event, target) => {
+    try {
+      const cur = win.webContents.getURL() || '';
+      const sameOrigin = cur && target && new URL(target).origin === new URL(cur).origin
+        && !/\/api\/attach\/raw/.test(target);
+      if (!sameOrigin) event.preventDefault();
+    } catch (e) {}
+  });
+
   try {
     const { url } = await startServer();
     await win.loadURL(url);

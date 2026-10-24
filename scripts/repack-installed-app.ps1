@@ -62,12 +62,23 @@ if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 & $node $asarJs extract $asarP $work
 
-foreach ($d in @('src', 'public', 'persona', 'electron', 'assets')) {
+foreach ($d in @('src', 'public', 'persona', 'electron', 'assets', 'scripts')) {
   $from = Join-Path $src $d
   if (-not (Test-Path $from)) { continue }
   $dst = Join-Path $work $d
   if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
   Copy-Item $from $dst -Recurse -Force
+}
+# scripts/ 只管语音合成那三个 .py；打包脚本、图标生成脚本这些不该进包，
+# 拷完把它们再删掉，免得把 .ps1 / 开发工具也塞进 asar。
+$ws = Join-Path $work 'scripts'
+if (Test-Path $ws) {
+  Get-ChildItem $ws -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -ne '.py' } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+  Get-ChildItem $ws -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne 'voice' } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 Copy-Item (Join-Path $src 'package.json') (Join-Path $work 'package.json') -Force
 

@@ -12,15 +12,20 @@
 
 /**
  * 价目表。形如：
- *   { hit, miss, output, off?, currency? }
+ *   { hit, miss, output, win?, off?, currency?, same? }
  *     hit    缓存命中的输入单价（没有缓存机制就填成和 miss 一样）
  *     miss   缓存未命中的输入单价
  *     output 输出单价
  *     三档默认就是「高峰价」（各家官网上标的那组）。
+ *     win    可选，这个模型的上下文窗口。填了就以它为准，不再去下面 WINDOWS 里猜。
  *     off    可选，谷价：{ when:{days,ranges}, hit, miss, output }
  *            只有 DeepSeek 这种分峰谷的才写；没写的是一口价。
  *
  * 数据核对时间见每条注释。价格会变，主人自己改这个文件就行，不用动别的代码。
+ *
+ * 2026-11 大核一遍的依据：这份表以前有一半是「照印象填的整数」，一查就错。
+ * 现在除 DeepSeek / 智谱（有国内官网可对）以外，一律以 LiteLLM 的
+ * model_prices_and_context_window.json 为准，美元牌价 × 7.2 换成元。
  */
 const RATES = {
   // ── DeepSeek 官方（2026-10 核对 api-docs.deepseek.com/zh-cn/quick_start/pricing）──
@@ -39,23 +44,31 @@ const RATES = {
   'deepseek-v4-pro-0813': { hit: 0.3, miss: 9, output: 27, same: 'deepseek-v4-pro' },
 
   // ── 智谱 GLM（一口价，无峰谷）──
-  'glm-5.3': { hit: 2, miss: 8, output: 28 },
-  'glm-5.2': { hit: 2, miss: 8, output: 28 },
-  'glm-5.3-flash': { hit: 0.23, miss: 0.8, output: 2.8 },
-  'glm-4.7': { hit: 1, miss: 4, output: 16 },
-  'glm-4.7-flash': { hit: 0.15, miss: 0.5, output: 2 },
-  'glm-4.5-air': { hit: 0.1, miss: 0.4, output: 1.6 },
+  // 2026-11 核实：单价这六条对得住官网，但窗口全写小了 —— 5.x 系列实际都是 1M 档，不是 128k。
+  // 窗口写小了不会报错，只会「压得太勤」，白花压摘要的钱。
+  'glm-5.3': { hit: 2, miss: 8, output: 28, win: 1048576 },
+  'glm-5.2': { hit: 2, miss: 8, output: 28, win: 1048576 },
+  'glm-5.3-flash': { hit: 0.23, miss: 0.8, output: 2.8, win: 1048576 },
+  'glm-4.7': { hit: 1, miss: 4, output: 16, win: 200000 },
+  'glm-4.7-flash': { hit: 0.15, miss: 0.5, output: 2, win: 200000 },
+  'glm-4.5-air': { hit: 0.1, miss: 0.4, output: 1.6, win: 128000 },
 
   // ── 阿里云百炼（qwen 系列各自定价，这里给常用档）──
-  'qwen3.8-max': { hit: 2.4, miss: 12, output: 48 },
-  'qwen3.7-plus': { hit: 0.4, miss: 2, output: 8 },
-  'qwen3.8-flash': { hit: 0.15, miss: 0.6, output: 2.4 },
-  'qwen-plus': { hit: 0.4, miss: 2, output: 8 },
+  // 2026-11 核实：以前这四条全是「猜的整数」（2.4/12/48、0.4/2/8），
+  // 对的只有 qwen-plus 那条。实际官方价差得多，尤其输出价普遍是输入价的 3 倍而不是 4 倍。
+  'qwen3.8-max': { hit: 0.25, miss: 2, output: 6, win: 991808 },
+  'qwen3.7-max': { hit: 0.5, miss: 2.5, output: 7.5, win: 991808 },
+  'qwen3.7-plus': { hit: 0.4, miss: 2, output: 8, win: 991808 },
+  'qwen3.8-flash': { hit: 0.016, miss: 0.15, output: 0.47, win: 991808 },
+  'qwen-plus': { hit: 0.4, miss: 2, output: 8, win: 129024 },
 
-  // ── 月之暗面 Kimi ──
-  'kimi-k3': { hit: 4, miss: 20, output: 80 },
-  'kimi-k2.6': { hit: 1, miss: 4, output: 16 },
-  'kimi-k2.7-code': { hit: 1, miss: 4, output: 16 },
+  // ── 月之暗面 Kimi（2026-11 核实，官方 API 美元价 × 7.2）──
+  // 以前 k3 填 4/20/80、k2.6 填 1/4/16，都比官方标价高出两三成，
+  // k2.7-code 跟 k2.6 同价但缓存单价不一样（0.19 vs 0.16 美元），以前抹平成一样了。
+  'kimi-k3': { hit: 2.16, miss: 21.6, output: 108, win: 1048576 },
+  'kimi-k2.6': { hit: 1.15, miss: 6.84, output: 28.8, win: 262144 },
+  'kimi-k2.7-code': { hit: 1.37, miss: 6.84, output: 28.8, win: 262144 },
+  'kimi-k2.5': { hit: 0.72, miss: 4.32, output: 21.6, win: 262144 },
 
   // ── 硅基流动（转卖多家模型，价随模型走）──
   'deepseek-ai/DeepSeek-V4.1-Flash': { hit: 0.14, miss: 1.4, output: 5.6 },
@@ -63,27 +76,65 @@ const RATES = {
   'Qwen/Qwen3.8-Max': { hit: 2.4, miss: 12, output: 48 },
 
   // ── OpenAI（美元换算成人民币按 7.2 算，主人在国内看的都是元）──
-  'gpt-5': { hit: 9, miss: 90, output: 720 },
-  'gpt-4.1': { hit: 18, miss: 18, output: 72 },
-  'gpt-4o': { hit: 18, miss: 18, output: 72 },
-  'gpt-4o-mini': { hit: 1.1, miss: 1.1, output: 4.3 },
-  'o4-mini': { hit: 8, miss: 8, output: 32 },
+  // 2026-11 核实：以前 gpt-5 / gpt-4.1 / gpt-4o-mini / o4-mini 的输入输出都是旧牌价，
+  // 而且全把缓存命中写成了「跟没命中一个价」（等于认定它没有缓存折扣）。
+  // 其实 gpt-5 输出早就从 10 美元降到 …没降，是以前这里多算了一倍（旧值 720＝100 美元）。
+  'gpt-5': { hit: 0.9, miss: 9, output: 72, win: 272000 },
+  'gpt-5-mini': { hit: 0.18, miss: 1.8, output: 14.4, win: 272000 },
+  'gpt-4.1': { hit: 3.6, miss: 14.4, output: 57.6, win: 1047576 },
+  'gpt-4.1-mini': { hit: 0.72, miss: 2.88, output: 11.52, win: 1047576 },
+  'gpt-4o': { hit: 9, miss: 18, output: 72, win: 128000 },
+  'gpt-4o-mini': { hit: 0.54, miss: 1.08, output: 4.32, win: 128000 },
+  'o4-mini': { hit: 1.98, miss: 7.92, output: 31.68, win: 200000 },
+
+  // ── Anthropic Claude（2026-11 核实，美元价 × 7.2）──
+  // 以前这张表里根本没有 claude —— 主人要是把模型换成 claude 系列，
+  // 界面就不显示钱，只说 token 数。补上。
+  // 注意：claude 的缓存是「写」另外收费（比原价贵 25%），这里只记「读」的折扣价。
+  'claude-opus-5': { hit: 3.6, miss: 36, output: 180, win: 1000000 },
+  'claude-opus-4-7': { hit: 3.6, miss: 36, output: 180, win: 1000000 },
+  'claude-opus-4-6': { hit: 3.6, miss: 36, output: 180, win: 1000000 },
+  'claude-opus-4-5': { hit: 3.6, miss: 36, output: 180, win: 200000 },
+  'claude-sonnet-5': { hit: 1.44, miss: 14.4, output: 72, win: 1000000 },
+  'claude-sonnet-4-6': { hit: 2.16, miss: 21.6, output: 108, win: 1000000 },
+  'claude-sonnet-4-5': { hit: 2.16, miss: 21.6, output: 108, win: 200000 },
+  'claude-haiku-5-5': { hit: 0.072, miss: 0.72, output: 3.6, win: 1000000 },
+  'claude-haiku-4-5': { hit: 0.72, miss: 7.2, output: 36, win: 200000 },
+
+  // ── Mistral（2026-11 核实，美元价 × 7.2）──
+  'mistral-large-3': { hit: 0.36, miss: 3.6, output: 10.8, win: 262144 },
+  'mistral-large-4': { hit: 0.49, miss: 4.9, output: 15.05, win: 1048576 },
+  'mistral-medium-3.5': { hit: 1.08, miss: 10.8, output: 54, win: 262144 },
+  'mistral-small': { hit: 0.072, miss: 0.72, output: 4.32, win: 262144 },
+  'devstral': { hit: 0.29, miss: 2.88, output: 14.4, win: 256000 },
+  'codestral': { hit: 0.22, miss: 2.16, output: 6.48, win: 128000 },
+
+  // ── Groq（跑开源模型，便宜到离谱；2026-11 核实，美元价 × 7.2）──
+  'llama-3.3-70b': { hit: 0.43, miss: 0.43, output: 0.5, win: 131072 },
+  'gpt-oss-120b': { hit: 0.54, miss: 1.08, output: 4.32, win: 131072 },
+  'gpt-oss-20b': { hit: 0.27, miss: 0.54, output: 2.16, win: 131072 },
 
   // ── 其它常见 ──
-  // MiniMax（2026-10 核对 platform.minimaxi.com/document/price 的定价概览表）
-  // M3.1-Flash：输入 1.00 / 输出 4.00 / 缓存读 0.10
-  // M3 ≤512k：输入 4.20 / 输出 16.80（优先档 6.30 / 25.20，按标准档算）
-  // M3 >512k：输入 8.40 / 输出 33.60
-  // 注意：以前这里填的是「2 / 10 / 40」，比官方便宜一半，别再用那组数。
-  // 2026-10 再核一次官网：M3 现在挂「永久五折」，标准 4.20/16.80 打对折就是 2.10/8.40。
-  // 这里按**折后实付**填（主人关心的就是这个），标准价写进注释备查。
-  // M2.7 已从官网下架，删掉，免得认错。>512k 那档单价翻倍，落到 4.20/16.80 折后 2.10/8.40 —— 
-  // 但那一档是「超长输入」才触发，绝大多数对话够不到，统一按 ≤512k 那档算。
-  'MiniMax-M3.1-Flash': { hit: 0.1, miss: 1, output: 4, off: { hit: 0.05, miss: 0.5, output: 2 } },
-  'MiniMax-M3': { hit: 0.42, miss: 2.1, output: 8.4 },
-  // xAI / Google 这两家这台机器连不上官网，价格按美元牌价 × 7.2 估的，标 est 表示「估算」
-  'grok-4': { hit: 22, miss: 22, output: 108, est: true },
-  'gemini-3-pro': { hit: 9, miss: 9, output: 72, est: true },
+  // MiniMax（2026-11 按官方 API 牌价再核一遍）
+  // M3.1-Flash：输入 1.00 / 输出 4.00 / 缓存读 0.10（元，没变）
+  // M3：牌价 $0.3 / $1.2、命中 $0.06，× 7.2 就是 2.16 / 8.64。以前填的 2.10/8.40 是按
+  //     「永久五折」算的实付价，活动结束后就得按牌价。M2.7 已从官网下架，不填。
+  'MiniMax-M3.1-Flash': { hit: 0.1, miss: 1, output: 4 },
+  'MiniMax-M3': { hit: 0.43, miss: 2.16, output: 8.64 },
+
+  // ── xAI（2026-11 核实：grok-4 已经下架，grok-4.3 是 1.25/2.5 美元一口价，
+  //    grok-4.5 之后涨到 2/6。以前 grok-4 填 22/22/108（美元 3/3/15）早过期了。──
+  'grok-4.6': { hit: 3.6, miss: 14.4, output: 43.2, win: 500000 },
+  'grok-4.5': { hit: 2.16, miss: 14.4, output: 43.2, win: 500000 },
+  'grok-4.3': { hit: 1.44, miss: 9, output: 18, win: 1000000 },
+  'grok-4.20': { hit: 1.44, miss: 9, output: 18, win: 1000000 },
+  'grok-code-fast': { hit: 1.44, miss: 7.2, output: 14.4, win: 256000 },
+
+  // ── Google Gemini（2026-11 核实）──
+  // 以前 gemini-3-pro 填 9/9/72 是拿「$1.25/$1.25/$10」算的，pro 现在只有 3.1 预览版，
+  // 价格是 $2/$12；顺带缓存命中也确实有折扣（$0.2），以前写成跟没命中一样。
+  'gemini-3.1-pro': { hit: 1.44, miss: 14.4, output: 86.4, win: 1048576 },
+  'gemini-3-flash': { hit: 0.36, miss: 3.6, output: 21.6, win: 1048576 },
 };
 
 /** 认不出模型时给个空壳，别再往下算 */
@@ -283,6 +334,10 @@ export const FALLBACK_WINDOW = 128000;
 export function contextWindowOf(model) {
   const key = String(model ?? '').trim();
   if (!key) return FALLBACK_WINDOW;
+  // 0) 价目条目里自带窗口的，直接用。价目和窗口本来就该是同一份数据，
+  //    分两张表迟早对不上（这次核对就发现 qwen3.8-max 一边写 256k 一边官方是 991808）。
+  const rate = rateOf(key);
+  if (rate && Number(rate.win) > 0) return Number(rate.win);
   if (WINDOWS[key]) return WINDOWS[key];
   const lower = key.toLowerCase();
   // 不分大小写精确

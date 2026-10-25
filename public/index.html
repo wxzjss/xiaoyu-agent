@@ -6281,34 +6281,65 @@ const RATES = {
   'glm-4.5-air': { hit: 0.1, miss: 0.4, output: 1.6 },
 
   // ── 阿里云百炼 ──
-  'qwen3.8-max': { hit: 2.4, miss: 12, output: 48 },
+  // 2026-11 核实：以前这几条是按印象填的整数，对的只有 qwen-plus 那条。
+  'qwen3.8-max': { hit: 0.25, miss: 2, output: 6 },
+  'qwen3.7-max': { hit: 0.5, miss: 2.5, output: 7.5 },
   'qwen3.7-plus': { hit: 0.4, miss: 2, output: 8 },
-  'qwen3.8-flash': { hit: 0.15, miss: 0.6, output: 2.4 },
+  'qwen3.8-flash': { hit: 0.016, miss: 0.15, output: 0.47 },
+  'qwen-plus': { hit: 0.4, miss: 2, output: 8 },
 
-  // ── 月之暗面 Kimi ──
-  'kimi-k3': { hit: 4, miss: 20, output: 80 },
-  'kimi-k2.6': { hit: 1, miss: 4, output: 16 },
-  'kimi-k2.7-code': { hit: 1, miss: 4, output: 16 },
+  // ── 月之暗面 Kimi（2026-11 核实，美元价 × 7.2）──
+  // 以前 k3 填 4/20/80，比官方贵了两三成。
+  'kimi-k3': { hit: 2.16, miss: 21.6, output: 108 },
+  'kimi-k2.6': { hit: 1.15, miss: 6.84, output: 28.8 },
+  'kimi-k2.7-code': { hit: 1.37, miss: 6.84, output: 28.8 },
 
-  // ── 硅基流动（转卖，价随模型走）──
+  // ── 硅基流动（转卖，价随模型走；跟着上面阿里/官方的价一起改）──
   'deepseek-ai/DeepSeek-V4.1-Flash': { hit: 0.14, miss: 1.4, output: 5.6 },
   'deepseek-ai/DeepSeek-V4-Pro': { hit: 0.3, miss: 9, output: 27 },
+  'Qwen/Qwen3.8-Max': { hit: 0.25, miss: 2, output: 6 },
 
-  // ── OpenAI（美元价 × 7.2 折成人民币）──
-  'gpt-5': { hit: 9, miss: 90, output: 720 },
-  'gpt-4.1': { hit: 18, miss: 18, output: 72 },
-  'gpt-4o': { hit: 18, miss: 18, output: 72 },
-  'gpt-4o-mini': { hit: 1.1, miss: 1.1, output: 4.3 },
-  'o4-mini': { hit: 8, miss: 8, output: 32 },
+  // ── OpenAI（美元价 × 7.2 折成人民币；2026-11 核实）──
+  // 以前 gpt-5 输出算成 720（＝100 美元），实际是 10 美元；缓存命中也都有折扣，以前全写成原价。
+  'gpt-5': { hit: 0.9, miss: 9, output: 72 },
+  'gpt-5-mini': { hit: 0.18, miss: 1.8, output: 14.4 },
+  'gpt-4.1': { hit: 3.6, miss: 14.4, output: 57.6 },
+  'gpt-4.1-mini': { hit: 0.72, miss: 2.88, output: 11.52 },
+  'gpt-4o': { hit: 9, miss: 18, output: 72 },
+  'gpt-4o-mini': { hit: 0.54, miss: 1.08, output: 4.32 },
+  'o4-mini': { hit: 1.98, miss: 7.92, output: 31.68 },
+
+  // ── Anthropic Claude（2026-11 新增；以前整张表里没有 claude，会说「不知道多少钱」）──
+  'claude-opus-5': { hit: 3.6, miss: 36, output: 180 },
+  'claude-opus-4-7': { hit: 3.6, miss: 36, output: 180 },
+  'claude-opus-4-6': { hit: 3.6, miss: 36, output: 180 },
+  'claude-opus-4-5': { hit: 3.6, miss: 36, output: 180 },
+  'claude-sonnet-5': { hit: 1.44, miss: 14.4, output: 72 },
+  'claude-sonnet-4-6': { hit: 2.16, miss: 21.6, output: 108 },
+  'claude-sonnet-4-5': { hit: 2.16, miss: 21.6, output: 108 },
+  'claude-haiku-5-5': { hit: 0.072, miss: 0.72, output: 3.6 },
+  'claude-haiku-4-5': { hit: 0.72, miss: 7.2, output: 36 },
+
+  // ── Mistral / Groq（2026-11 新增，美元价 × 7.2）──
+  'mistral-large-4': { hit: 0.49, miss: 4.9, output: 15.05 },
+  'mistral-large-3': { hit: 0.36, miss: 3.6, output: 10.8 },
+  'mistral-medium-3.5': { hit: 1.08, miss: 10.8, output: 54 },
+  'mistral-small': { hit: 0.072, miss: 0.72, output: 4.32 },
+  'llama-3.3-70b': { hit: 0.43, miss: 0.43, output: 0.5 },
+  'gpt-oss-120b': { hit: 0.54, miss: 1.08, output: 4.32 },
+  'gpt-oss-20b': { hit: 0.27, miss: 0.54, output: 2.16 },
 
   // ── 其它 ──
-  // MiniMax：2026-10 核对官方定价概览表。以前填的「2/10/40」便宜了一半，已改正。
+  // MiniMax（2026-11 按官方 API 牌价再核）：M3 五折活动结束了，按 $0.3/$1.2 × 7.2 填。
   'MiniMax-M3.1-Flash': { hit: 0.1, miss: 1, output: 4 },
-  'MiniMax-M3': { hit: 0.84, miss: 4.2, output: 16.8, est: true },
-  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16, est: true },
-  // xAI / Google 官网这台机器连不上，按美元牌价 × 7.2 估的，标 est
-  'grok-4': { hit: 22, miss: 22, output: 108, est: true },
-  'gemini-3-pro': { hit: 9, miss: 9, output: 72, est: true },
+  'MiniMax-M3': { hit: 0.43, miss: 2.16, output: 8.64 },
+  // xAI / Google（2026-11 核实，美元价 × 7.2）。以前 grok-4 / gemini-3-pro 那两条早下架了。
+  'grok-4.6': { hit: 3.6, miss: 14.4, output: 43.2 },
+  'grok-4.5': { hit: 2.16, miss: 14.4, output: 43.2 },
+  'grok-4.3': { hit: 1.44, miss: 9, output: 18 },
+  'grok-4.20': { hit: 1.44, miss: 9, output: 18 },
+  'gemini-3.1-pro': { hit: 1.44, miss: 14.4, output: 86.4 },
+  'gemini-3-flash': { hit: 0.36, miss: 3.6, output: 21.6 },
 };
 
 /**
@@ -7876,13 +7907,13 @@ const PROVIDERS = [
   {
     key: 'dashscope', name: '阿里云百炼（通义千问）', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     match: /dashscope|aliyuncs/i,
-    models: ['qwen3.8-max', 'qwen3.7-plus', 'qwen3.8-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro-0813', 'kimi-k3', 'glm-5.3'],
+    models: ['qwen3.8-max', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.8-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro-0813', 'kimi-k3', 'glm-5.3'],
     hint: '百炼是个大卖场：qwen 自己的，还有 deepseek、kimi、glm 都能从这儿调。',
   },
   {
     key: 'siliconflow', name: '硅基流动 SiliconFlow', base: 'https://api.siliconflow.cn/v1',
     match: /siliconflow/i,
-    models: ['deepseek-ai/DeepSeek-V4.1-Flash', 'deepseek-ai/DeepSeek-V4-Pro', 'deepseek-ai/DeepSeek-V3.2', 'Qwen/Qwen3.8-Max', 'gemini-3/gemini-3.0-pro'],
+    models: ['deepseek-ai/DeepSeek-V4.1-Flash', 'deepseek-ai/DeepSeek-V4-Pro', 'Qwen/Qwen3.8-Max'],
     hint: '一个 key 走很多开源模型，常有免费额度。',
   },
   {
@@ -7913,7 +7944,7 @@ const PROVIDERS = [
     key: 'minimax', name: 'MiniMax',
     base: 'https://api.minimax.chat/v1',
     match: /minimax/i,
-    models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-Text-01'],
+    models: ['MiniMax-M3', 'MiniMax-M3.1-Flash'],
     hint: '',
   },
   {
@@ -7943,13 +7974,13 @@ const PROVIDERS = [
   {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
     match: /api\.openai\.com/i,
-    models: ['gpt-5', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
+    models: ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
     hint: '国内要代理。',
   },
   {
     key: 'anthropic', name: 'Anthropic（走兼容层）', base: 'https://api.anthropic.com/v1',
     match: /anthropic/i,
-    models: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022'],
+    models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'],
     hint: '官方接口不是 OpenAI 兼容的，得用中转站给的兼容地址。',
   },
   {
@@ -7961,19 +7992,19 @@ const PROVIDERS = [
   {
     key: 'groq', name: 'Groq', base: 'https://api.groq.com/openai/v1',
     match: /groq/i,
-    models: ['llama-3.3-70b-versatile', 'qwen-2.5-32b'],
+    models: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
     hint: '快得离谱，模型偏开源。',
   },
   {
     key: 'xai', name: 'xAI Grok', base: 'https://api.x.ai/v1',
     match: /api\.x\.ai/i,
-    models: ['grok-3', 'grok-2-1212'],
+    models: ['grok-4.3', 'grok-4.5'],
     hint: '',
   },
   {
     key: 'gemini', name: 'Google Gemini（兼容层）', base: 'https://generativelanguage.googleapis.com/v1beta/openai',
     match: /generativelanguage|googleapis/i,
-    models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    models: ['gemini-3.1-pro-preview', 'gemini-3-flash-preview'],
     hint: '要走它的 OpenAI 兼容入口，路径带 /openai。',
   },
   {

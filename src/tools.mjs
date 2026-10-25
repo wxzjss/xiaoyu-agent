@@ -262,14 +262,38 @@ export const tools = [
                * 直接回一句「好的，停了」，插进来的那句话当没看见。
                */
               const why = signal && signal.reason;
+              /**
+               * 【别再一律写「主人点了停止」，主人生气过的】
+               *
+               * abort() 不传参数时 signal.reason 是个 DOMException 对象（name=AbortError），
+               * 不是字符串。以前这里用 === 跟三个字符串比，全不匹配就掉进 else，
+               * 于是任何一次「原因不明」的掐断都栽赃到主人头上。
+               *
+               * 现在：先认字符串原因，再认对象/空值，一种都不许糊成「主人点的」。
+               * 真认不出来就老实说认不出来，并把原始原因带上 —— 下次好查。
+               */
+              const whyName = why && typeof why === 'object' ? String(why.name || '') : '';
+              const whyText = why === undefined || why === null ? '(没有原因)'
+                : (typeof why === 'object' ? (whyName || 'AbortError') + ': ' + String(why.message || '') : String(why));
+
               if (why === 'interject') {
                 parts.push('[主人插了一句话，这一轮先停在这里。他插的话就在这条消息后面，往下接着看，别当成叫停。]');
               } else if (why === 'handoff') {
                 parts.push('[这一轮被自动交接了，命令被掐掉]');
               } else if (why === 'quit') {
                 parts.push('[程序正在退出，命令被掐掉]');
-              } else {
+              } else if (why === 'stop') {
+                // 只有真的走了 /api/stop 才会有这个字符串
                 parts.push('[主人点了停止，命令被掐掉]');
+              } else if (why === 'fish') {
+                // 主人把「小鱼」开关关掉时掐的（/api/fish），跟点停止不是一回事
+                parts.push('[小鱼被关掉了，手上这条命令跟着停了。不是主人点的停止。]');
+              } else if (whyName === 'TimeoutError' || /timeout/i.test(whyText)) {
+                parts.push('[命令超时被掐掉了，不是主人叫停的。]');
+              } else if (whyName === 'AbortError') {
+                parts.push('[这一轮被程序自己掐断了（不是主人点的停止），原因没记清楚：' + whyText + ']');
+              } else {
+                parts.push('[命令被掐掉了，原因：' + whyText + '（不是主人点的停止）]');
               }
             }
             else if (err && !stdout && !stderr) parts.push(`exit ${err.code}: ${err.message}`);

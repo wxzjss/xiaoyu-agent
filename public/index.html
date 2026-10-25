@@ -734,6 +734,12 @@
       width: min(760px, 92vw); max-height: 86vh; padding: 0; border: 1px solid var(--border);
       border-radius: 12px; background: var(--panel); color: var(--text);
       overflow: hidden; display: flex; flex-direction: column;
+      /* 手机 WebView（Chrome 91）里 dialog 默认 height:fit-content，配上 display:flex
+         会算出 0 高、连宽度一起塌成 0×0 —— 弹窗明明 open 了却整块看不见，
+         表现为「点了没反应 / 打开了关不掉」。显式给 height 就不靠 fit-content 了。 */
+      height: auto;
+      /* 同理，某些 WebView 下 fixed 定位元素需要显式居中，否则跑出可视区 */
+      margin: auto;
     }
     /* 关掉的弹窗必须真的消失：上面那条 dialog{display:flex} 会盖掉浏览器自带的
        dialog:not([open]){display:none}，于是 close() 之后 open 属性没了、画面还在——
@@ -1166,7 +1172,8 @@
     }
     .memTab:hover { color: var(--text); border-color: #3a4553; }
     .memTab.on { color: var(--accent); border-color: var(--accent); background: rgba(120,170,255,.08); }
-    .memTab .n { color: var(--dim); font-size: 11px; margin-left: 4px; }
+    /* 小鲸那本是另一本书：虚线框 + 换一个色（青绿），一眼看出「这条不是她这本」 */
+    .memTab.memTabOn { color: #7fd6c0; border-color: #7fd6c0; border-style: dashed; background: rgba(127,214,192,.10); }    .memTab .n { color: var(--dim); font-size: 11px; margin-left: 4px; }
     .memTab.on .n { color: var(--accent); }
     .memTabGap { flex: 1 1 auto; }
     .memTabWhale { border-style: dashed; }
@@ -1590,7 +1597,7 @@
         <fieldset>
           <legend>上下文自动压缩</legend>
           <div class="field">
-            <label>历史涨到多少 token 就把旧对话折成摘要。<br>填0自动（按当前模型的上下文窗口算水位），填多少压多少，填 off 关闭该功能</label>
+            <label>历史涨到多少 token 就把旧对话折成摘要。<br>填 0 自动（小鱼自己看着办：宽裕时不压、占窗口一大半就压、拿不准时问小鲸），填多少压多少，填 off 关闭该功能</label>
             <input type="text" id="contextLimit" inputmode="numeric" placeholder="0" spellcheck="false" autocomplete="off" />
           </div>
           <div class="field">
@@ -1909,8 +1916,8 @@
         <button type="button" class="ghost3 del" id="sessBulkDel" disabled>删掉选中的</button>
         <button type="button" class="ghost3" id="sessBulkCancel">取消</button>
       </div>
-      <div class="sessList" id="sessList"></div>
       <input type="file" id="sessFile" accept=".json,application/json" hidden />
+    </form>
   </dialog>
 
   <!-- 记忆本整本（只给看，不给改）
@@ -1926,16 +1933,18 @@
   <dialog id="memoryDlg" class="memDlg">
     <form method="dialog">
       <div class="dlgHead">
-        <b>记忆本</b><span class="meta" id="memBookHint"></span>
+        <b id="memBookTitle">记忆本</b><span class="meta" id="memBookHint"></span>
         <button class="x" value="cancel">关闭</button>
       </div>
       <div class="memTabs" id="memTabs">
-        <button type="button" class="memTab on" data-zone="fixed">固定记忆</button>
+        <button type="button" class="memTab" data-zone="fixed">固定记忆</button>
         <button type="button" class="memTab" data-zone="roll">滚动摘要</button>
         <button type="button" class="memTab" data-zone="detail">详细区</button>
         <button type="button" class="memTab" data-zone="archive">归档</button>
         <button type="button" class="memTab" data-zone="raw">原文</button>
         <span class="memTabGap"></span>
+        <!-- 两本之间要能来回切。以前这里只有一个「小鲸那本」，切过去之后
+             她这本的五个页签 data-zone 还是小鱼那本的分区，点哪个都留在鲸鱼那本里出不来。 -->
         <button type="button" class="memTab memTabWhale" data-zone="whale">小鲸那本</button>
       </div>
       <div class="memBody" id="memBody"></div>
@@ -1943,8 +1952,6 @@
         <span class="hint" id="memPathHint"></span>
         <span class="hint memHintR">本子是她自己写的，界面只给看不给改 —— 要改跟她说一声，她自己会改</span>
       </div>
-    </form>
-  </dialog>
     </form>
   </dialog>
 
@@ -5118,11 +5125,14 @@ async function paintCtxLimitNote() {
       return;
     }
     if (raw === '0' || raw === 'auto') {
-      if (info && info.model) {
+      if (info && info.model && info.window) {
+        // 自适应判断：30% 以下是舒适区、45% 以上直接压、中间问小鲸
         contextLimitHint.textContent =
-          `自动：按当前模型 ${info.model} 的窗口 ${f(info.window)} 算，涨到 ${f(info.auto)} 就压。换模型会自动跟着变。${base}`;
+          `自动（小鱼自己判断）：${info.model} 窗口 ${f(info.window)}。` +
+          `历史不到 ${f(info.comfortAt)}（30%）不压；超过 ${f(info.actAt)}（45%）就压；` +
+          `中间这段拿不准时问小鲸。换模型会自动跟着变。${base}`;
       } else {
-        contextLimitHint.textContent = `自动：按当前模型的窗口算水位。${base}`;
+        contextLimitHint.textContent = `自动：小鱼按窗口余量自己判断该不该压。${base}`;
       }
       return;
     }
@@ -5396,9 +5406,13 @@ function renderMemZone() {
   }
   const s = memBook.session || {};
   const parsed = parseMemText(s.text || '');
+  const titleEl0 = document.getElementById('memBookTitle');
+  if (titleEl0) titleEl0.textContent = '记忆本';
 
   if (memZone === 'whale') {
     hint.textContent = memBook.whale?.path || '';
+    const titleEl = document.getElementById('memBookTitle');
+    if (titleEl) titleEl.textContent = '记忆本 · 小鲸那本';
     const wt = String(memBook.whale?.text || '').trim();
     if (!wt) {
       body.append(el('div', 'memEmpty', '小鲸那本还是空的（她还没记过东西）。'));
@@ -5479,14 +5493,24 @@ function renderMemZone() {
   }
 }
 
-/** 页签上的数字（固定记忆不显示个数；摘要显示「保留/总数」） */
+/**
+ * 页签上的数字（固定记忆不显示个数；摘要显示「保留/总数」）
+ *
+ * 另外管「两本之间切换」：
+ *   memZone 是 'whale' 时，她这本那五个页签里的分区概念不适用，把它们置灰但不隐藏——
+ *   点任何一个都会先切回她这本再跳到对应分区。做不到这一点的话，切进小鲸那本
+ *   就再也回不来了（以前就是这样）。
+ */
 function paintMemTabs() {
   const tabs = document.getElementById('memTabs');
   if (!tabs) return;
+  const inWhale = memZone === 'whale';
   for (const b of tabs.querySelectorAll('.memTab')) {
     b.classList.toggle('on', b.dataset.zone === memZone);
     const old = b.querySelector('.n');
     if (old) old.remove();
+    // 小鲸那本单独标一笔，别跟她那几个分区混在一起
+    if (b.dataset.zone === 'whale') b.classList.toggle('memTabOn', inWhale);
   }
   if (!memBook) return;
   const s = memBook.session || {};
@@ -5543,7 +5567,13 @@ document.getElementById('openMemoryBook').onclick = () => {
 document.getElementById('memTabs').onclick = (ev) => {
   const b = ev.target.closest('.memTab');
   if (!b) return;
-  memZone = b.dataset.zone;
+  const zone = b.dataset.zone;
+  if (!zone) return;
+  // 点「小鲸那本」/ 从小鲸那本点回任意分区 —— 都是简单的整块切换，
+  // 以前没有回程：memZone 一旦是 'whale'，再点那五个页签只会把 memZone
+  // 改成 fixed/roll/… 却仍然渲染不出内容（因为 renderMemZone 的 whale 分支
+  // 只认 'whale'），视觉上就是「卡在小鲸那本里出不来了」。
+  memZone = zone;
   paintMemTabs();
   renderMemZone();
 };

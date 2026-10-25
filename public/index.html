@@ -79,6 +79,28 @@
     .role { font-size: 12px; color: var(--dim); margin-bottom: 4px; }
     /* 主人的名字：中性偏亮，跟我和小鲸都不一样 */
     /* 「小鲸」按钮：按下去就一直是她的冷蓝色 */
+    /* 小鱼按钮：默认就在场，所以它天生是亮的；点一下才灭 */
+    #fishBtn {
+      border-color: rgba(240, 166, 160, 0.5);
+      background: rgba(240, 166, 160, 0.2);
+      color: #f5c4bf;
+      font-weight: 600;
+      box-shadow: 0 0 0 1px rgba(240, 166, 160, 0.28) inset;
+    }
+    #fishBtn.on {
+      background: rgba(240, 166, 160, 0.26);
+      border-color: #f0a6a0;
+      color: #ffd9d5;
+      font-weight: 700;
+      box-shadow: 0 0 0 1px rgba(240, 166, 160, 0.45) inset;
+    }
+    #fishBtn.off {
+      background: transparent;
+      border-color: var(--border);
+      color: var(--dim);
+      font-weight: 400;
+      box-shadow: none;
+    }
     #whaleBtn { border-color: rgba(122, 168, 232, 0.45); }
     #whaleBtn.on {
       background: rgba(122, 168, 232, 0.22);
@@ -1364,6 +1386,7 @@
     </span>
     <span class="meta" id="meta">…</span>
     <button id="pureBtn" title="纯净模式：不发人设、不发规矩、不留早期摘要，旧对话直接丢（点一下开，再点一下关）">纯净模式</button>
+    <button id="fishBtn" title="小鱼在场：点一下就让她歇着 —— 之后这个会话里你说的话、小鲸说的话，她一个字都收不到，记忆里也不会留">小鱼</button>
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
@@ -3184,6 +3207,36 @@ if (window.desktop) {
  *
  * 状态存服务端（跟纯净模式一个道理），换设备也一致。
  */
+const fishBtn = document.getElementById('fishBtn');
+function paintFish(on) {
+  if (!fishBtn) return;
+  fishBtn.classList.toggle('on', Boolean(on));
+  fishBtn.classList.toggle('off', !on);
+  fishBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  fishBtn.title = on
+    ? '小鱼在场（默认开着）：点一下让她歇着，之后这个会话的话她收不到，记忆里也不会留'
+    : '小鱼已经被你请出去了：这个会话的话她一个字都收不到，记忆里也不会留（再点一下叫她回来）';
+}
+if (fishBtn) {
+  paintFish(true);
+  fetch('/api/fish').then((r) => r.json()).then((j) => paintFish(j && j.on)).catch(() => {});
+  fishBtn.onclick = async () => {
+    const want = !fishBtn.classList.contains('on');
+    paintFish(want);
+    try {
+      const r = await fetch('/api/fish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ on: want }),
+      });
+      const j = await r.json();
+      paintFish(j && j.on);
+    } catch {
+      paintFish(!want);
+    }
+  };
+}
+
 const whaleBtn = document.getElementById('whaleBtn');
 function paintWhale(on) {
   if (!whaleBtn) return;

@@ -465,6 +465,8 @@ if (!gotLock) {
       if (!updated) return;
       if (win && !win.isDestroyed()) win.loadURL(win.webContents.getURL().replace(/([?&])r=\d+/, '$1r=' + Date.now()));
     });
+    // 看门狗等程序彻底醒过来再上岗：太早装的话，启动阶段的小毛病会被它误判成崩溃。
+    setTimeout(() => armWatchdog(), 8000).unref?.();
   });
 }
 
@@ -705,4 +707,115 @@ function matchImeToSystem() {
 }
 
 ipcMain.handle('ime:systemLang', () => systemLangCode());
+
+/* ---------------- 崩溃自愈（外部看门狗） ---------------- */
+
+/**
+ * 进程自己炸了，谁来把它拉起来？
+ *
+ * 服务端有 src/crash-guard.mjs 兜底，但它只能接住「单个没人管的异常」；
+ * 一旦同一类错误 60 秒内反复出现 5 次，它就只能 process.exit(1) ——
+ * 因为服务就跑在主进程里，这一退整个程序就没了，托盘、窗口一起消失。
+ * 主人看到的是「小鱼突然不见了」，还得自己去双击图标，那一轮也凉了。
+ *
+ * Node 进程没法在自己死后再救自己，所以这里用**外部看门狗**：
+ *   起一个小 PowerShell，盯着本进程的 PID，等它退出，
+ *   用一个「标记文件」判断这次退出要不要重启：
+ *     - 正常退出（托盘退出 / 关了窗口真要退）→ 标记文件存在，看门狗直接收工
+ *     - 意外退出（崩溃、被系统杀）→ 没有标记文件 → 重新拉起
+ *
+ * 防死循环：看门狗最多连拉 3 次，且两次之间至少隔 8 秒；
+ * 反复秒退说明代码坏了，再拉也没用，那时候就老老实实停手。
+ *
+ * 为什么用 PowerShell 而不是再起一个 node：node 得再有解释器路径、打包后也没有
+ * 稳定的 node.exe 可用；PowerShell 在 Windows 上一定有。
+ */
+const WATCHDOG_FLAG = 'watchdog.flag';
+const WATCHDOG_KILL = 'watchdog.pid';
+
+function watchdogDir() {
+  try {
+    return app.getPath('userData');
+  } catch {
+    return process.env.MINI_AGENT_DATA || process.cwd();
+  }
+}
+
+/** 正常退出前调：写下标记，让看门狗**别**重启。只生效一次。 */
+let watchdogDisarmed = false;
+function disarmWatchdog() {
+  if (watchdogDisarmed) return;
+  watchdogDisarmed = true;
+  try {
+    writeFileSync(join(watchdogDir(), WATCHDOG_FLAG), String(Date.now()), 'utf8');
+  } catch {}
+  // 顺手把看门狗自己也收掉，别留一个空转的 powershell
+  try {
+    const pidFile = join(watchdogDir(), WATCHDOG_KILL);
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    if (Number.isFinite(pid) && pid > 0) process.kill(pid);
+  } catch {}
+}
+
+/**
+ * 起看门狗。只在「真身」（不是被拉起来的那一次）上装，而且同一刻只有一只。
+ * 用环境变量 XIAOYU_SUPERVISED 防套娃：被拉起来的进程不再装看门狗，
+ * 否则崩溃一次会滚出一串 powershell。
+ */
+function armWatchdog() {
+  if (process.env.XIAOYU_SUPERVISED === '1') return;
+  const { spawn } = require('node:child_process');
+  const dir = watchdogDir();
+  const flag = join(dir, WATCHDOG_FLAG);
+  const pidFile = join(dir, WATCHDOG_KILL);
+  const exe = process.execPath;
+  // 清掉上一轮留下的标记，不然这次真崩了也会被当成正常退出
+  try { require('node:fs').unlinkSync(flag); } catch {}
+
+  const script = [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    `$target = ${process.pid}`,
+    `$exe = '${exe.replace(/'/g, "''")}'`,
+    `$flag = '${flag.replace(/'/g, "''")}'`,
+    `$pidFile = '${pidFile.replace(/'/g, "''")}'`,
+    '$tries = 0',
+    'while ($tries -lt 3) {',
+    '  Wait-Process -Id $target -Timeout 2147483',
+    '  if (Test-Path $flag) { break }',
+    '  $tries++',
+    '  Start-Sleep -Seconds 2',
+    '  if (Test-Path $flag) { break }',
+    '  $env:XIAOYU_SUPERVISED = "1"',
+    '  $env:XIAOYU_RESUMED = "1"',
+    '  try { Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) } catch { break }',
+    '  Start-Sleep -Seconds 8',
+    '  $p = Get-Process | Where-Object { $_.ProcessName -eq ' +
+      JSON.stringify(String(require('node:path').basename(exe, '.exe'))) +
+      ' } | Select-Object -First 1',
+    '  if (-not $p) { break }',
+    '  $target = $p.Id',
+    '}',
+  ].join('\r\n');
+
+  try {
+    const enc = Buffer.from(script, 'utf16le').toString('base64');
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc],
+      { detached: true, stdio: 'ignore', windowsHide: true },
+    );
+    child.unref();
+    try { writeFileSync(pidFile, String(child.pid), 'utf8'); } catch {}
+    console.log('[watchdog] 看门狗已上岗，PID', child.pid);
+  } catch (e) {
+    console.warn('[watchdog] 起看门狗失败（不影响使用）:', String(e?.message ?? e));
+  }
+}
+
+  console.log('[watchdog] 看门狗暂不起（等窗口和服务都立住了再说）');
+
+// 正常退出的所有出口都要先拆看门狗，否则「点退出」会被当成崩溃又拉起来。
+app.on('will-quit', () => disarmWatchdog());
+process.on('exit', () => disarmWatchdog());
+
 ipcMain.handle('ime:matchSystem', () => matchImeToSystem());

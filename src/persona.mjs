@@ -11,6 +11,8 @@ import { personaInfo } from './persona-store.mjs';
 import { ensureMemory } from './session-memory.mjs';
 // 纯净模式：开了就一个字系统提示都不发（见 pure.mjs）。
 import { pureModeOn, pureSystemPrompt } from './pure.mjs';
+// 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
+import { fishOn } from './fish-presence.mjs';
 
 /**
  * 兜底：安全词命中但设置里没写对应说明时用这一段。
@@ -229,6 +231,16 @@ function toolBlock() {
  * 读不到/文件坏了就什么都不加，绝不能因为记忆读不了把整轮对话搞崩。
  */
 function memoryBlock(sessionId) {
+  /**
+   * 小鱼不在场（顶栏那个「小鱼」按钮被禁用）：
+   * 本子一个字都不发给她 —— 主人原话「记忆里也不会存在」。
+   *
+   * 这是「根本不读」而不是「读了再忘」：不往提示里放，她就真的不知道，
+   * 后面的轮次也没法替自己补课。
+   */
+  try {
+    if (!fishOn()) return '';
+  } catch {}
   let text = '';
   try {
     text = ensureMemory(sessionId) ?? '';

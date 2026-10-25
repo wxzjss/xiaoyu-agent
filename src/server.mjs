@@ -7,6 +7,8 @@ import { config } from './config.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
 // 出了分支 whaleOn 就没了，而每轮收尾那句 if (whaleOn()) 还在 —— 每轮都崩。
 import { whaleOn } from './whale-presence.mjs';
+// 顶栏那个「小鱼」按钮：默认在场，禁用后这个会话后面的话她一个字都不发。
+import { fishOn, setFishOn } from './fish-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
 import { checkToolDocs, setPeerWake } from './tools.mjs';
@@ -22,6 +24,8 @@ import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAft
 import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 // 进行中那一轮的草稿：边跑边落，进程被杀也不会把已经说出来的话全丢。
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
+// 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
+import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted } from './resume.mjs';
 // 进程兜底：一处没 catch 的异常不该让整个程序消失。
 import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
@@ -735,6 +739,137 @@ async function startPeerTurn(sessionId) {
   } catch (e) {
     console.warn('[peer] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
     throw e;
+  } finally {
+    if (runningTurns.get(sessionId) === turn) runningTurns.delete(sessionId);
+  }
+}
+
+/**
+ * 这个会话有没有「上次崩了、还没跑完后半段」的标记。
+ * 界面用它决定要不要在历史末尾显示一条「上次断在这儿，正在接着跑」。
+ */
+function peekInterruptedInfo(sessionId) {
+  try {
+    const info = peekInterrupted();
+    if (!info || info.sessionId !== sessionId) return null;
+    return { at: info.at, ageMs: info.ageMs, reason: info.reason, taskLine: info.taskLine };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 会话里主人最后说的那句话（去掉程序自己插的 context 提示和系统提示）。
+ * 崩之前的续跑意图要带上它 —— 模型看到「原话 + 我断在哪儿」才知道该接着干什么。
+ */
+function lastUserLine(sessionId) {
+  try {
+    const session = getSession(sessionId);
+    if (!session) return '';
+    const msgs = session.messages || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!m || m.role !== 'user' || m.context) continue;
+      const raw = Array.isArray(m.content)
+        ? m.content.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n')
+        : String(m.content ?? '');
+      const t = raw.trim();
+      if (t) return t.replace(/\s+/g, ' ').slice(0, 300);
+    }
+  } catch {}
+  return '';
+}
+
+/**
+ * 崩溃后自动接着跑被打断的那一轮。
+ *
+ * 触发时机：startServer 之后 3 秒（界面已经能画出历史了）。
+ *
+ * 为什么不直接用 startPeerTurn：
+ *   peerTurn 的语义是「信箱里有人递话」，会往历史里塞一条「先看看信箱」的提示、
+ *   跑完还要把它摘掉。续跑不是那个意思 —— 续跑是「你上一条还没答完，接着答」，
+ *   用的是同一份历史，只是给模型一句临时提示（带 context 标记，不进 turns）。
+ *
+ * 安全闸：
+ *   - 会话不在跑（主人可能刚手动重开了一轮，别插队）
+ *   - 历史最后一句必须是主人的话 —— 否则说明那一轮其实已经收尾了，再补就是重复
+ *   - 24 小时以前的意图不认（resume.mjs 里判）
+ */
+async function resumeInterruptedTurn() {
+  const info = takeInterrupted();
+  if (!info) return;
+  const sessionId = info.sessionId;
+  const session = getSession(sessionId);
+  if (!session) {
+    console.log('[resume] 上次崩的会话已经没了：', sessionId);
+    return;
+  }
+  const ep = activeEndpoint();
+  if (!ep || !ep.apiKey) {
+    console.log('[resume] 没配模型，续跑跳过');
+    return;
+  }
+  if (runningTurns.get(sessionId)) {
+    console.log('[resume] 那个会话已经在跑了，不插队');
+    return;
+  }
+  const last = session.messages[session.messages.length - 1];
+  if (!last || last.role !== 'user') {
+    console.log('[resume] 历史最后一句不是主人的话，说明上一轮已经收尾了，不用续');
+    return;
+  }
+
+  console.log(`[resume] 接着跑被打断的那一轮：${sessionId}（${Math.round(info.ageMs / 1000)} 秒前断的）`);
+
+  const ac = new AbortController();
+  const turn = { ac, done: null, resumeTurn: true, startedAt: Date.now() };
+  runningTurns.set(sessionId, turn);
+  try {
+    const history = session.messages;
+    repairHistory(history);
+    // 这句是给模型的临时提示，不是主人说的 —— 打 context 标记，
+    // 这样它不进 turns、不参与压缩、跑完摘掉。
+    history.push({
+      role: 'user',
+      content:
+        '（上一轮跑到一半程序崩了，进程被强杀。你现在是在**接着**那一轮做，' +
+        '不是重新开始；已经说过的话主人已经看到了，别从头复述。）' +
+        (info.text ? `\n你当时正说到：「${info.text.slice(-600)}」` : '') +
+        (info.taskLine ? `\n主人当时的原话：「${info.taskLine}」` : '') +
+        '\n直接从断的地方往下做，该调工具就调，别问我「要不要继续」。',
+      context: true,
+    });
+    const wire = history.slice();
+    const seen = new Set(history);
+    const out = await runAgent({
+      messages: wire,
+      signal: ac.signal,
+      sessionId,
+      safeMode: !inPersonaMode(session),
+      safeWord: session.mode?.word || '',
+      onEvent: () => {},
+    });
+    repairHistory(history);
+    for (const m of wire) {
+      if (seen.has(m)) continue;
+      if (m && (m.role === 'system' || m.context)) continue;
+      seen.add(m);
+      history.push(m);
+    }
+    // 把接引那句摘掉：它只是这一轮的引子
+    for (let k = history.length - 1; k >= 0; k--) {
+      const m = history[k];
+      if (m && m.context && m.role === 'user' && String(m.content || '').includes('程序崩了，进程被强杀')) {
+        history.splice(k, 1);
+      }
+    }
+    session.updatedAt = Date.now();
+    saveSession(session);
+    console.log('[resume] 续跑跑完了：', sessionId, out && out.text ? `（${String(out.text).length} 字）` : '');
+    return { ok: true, sessionId, text: out && out.text };
+  } catch (e) {
+    console.warn('[resume] 续跑这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
+    return { ok: false, sessionId, error: String(e?.message ?? e) };
   } finally {
     if (runningTurns.get(sessionId) === turn) runningTurns.delete(sessionId);
   }
@@ -1467,6 +1602,32 @@ const server = createServer(async (req, res) => {
    * 按下顶栏那个「小鲸」按钮 = 让她上岗：主人说的话她看得见，她也能自己开口。
    * 状态存盘子，换设备也一致（跟纯净模式一个待遇）。
    */
+  /**
+   * 顶栏那个「小鱼」按钮（在小鲸按钮左边）。
+   *
+   * 默认开着、一直亮。点一下禁用，禁用期间这个会话后面的话她一个字都不发：
+   * 主人说的话不进她这一轮，小鲸的插话也推不到她跟前，
+   * 这些内容也不会进她的会话记忆（记忆跟着一起断）。
+   * 状态存盘子，换设备也一致（跟小鲸在场 / 纯净模式一个待遇）。
+   */
+  // 【别在这儿 await import】小鱼在场开关跟小鲸那个是同一个毛病：
+  // 在分支里 await import，出了分支 fishOn 就是未定义，而每轮收尾 / 组提示时都在用，
+  // 结果每轮都崩、还只崩在最里头。改成顶层 import（见文件头），这里直接用。
+  if (req.method === 'GET' && url.pathname === '/api/fish') {
+    return json(res, 200, { on: fishOn() });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/fish') {
+    let payload = {};
+    try { payload = await body(req); } catch {}
+    try {
+      const next = typeof payload?.on === 'boolean' ? payload.on : !fishOn();
+      return json(res, 200, { on: setFishOn(next) });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/whale') {
     return json(res, 200, { on: whaleOn() });
   }
@@ -2466,7 +2627,7 @@ const server = createServer(async (req, res) => {
       }
     }
     // 顺带把本子的状态带回去，界面不用再单发一次请求就知道有没有记忆
-    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id), recovered });
+    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id), recovered, interrupted: peekInterruptedInfo(id) });
   }
 
   // ---- 对话回退 ----
@@ -2603,6 +2764,23 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/update/status') {
     return json(res, 200, { ok: true, ...(await updateStatus()) });
   }
+  // 崩溃续跑的手动口子：GET /api/resume → 有没有待续的；POST /api/resume → 立刻续；
+  // DELETE /api/resume → 别续了（主人不想让它自作主张的时候）。
+  if (req.method === 'GET' && url.pathname === '/api/resume') {
+    return json(res, 200, { pending: peekInterrupted() });
+  }
+  if (req.method === 'DELETE' && url.pathname === '/api/resume') {
+    return json(res, 200, { ok: dropInterrupted() });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/resume') {
+    const info = peekInterrupted();
+    if (!info) return json(res, 400, { ok: false, error: '没有待续的那一轮' });
+    if (runningTurns.get(info.sessionId)) return json(res, 409, { ok: false, error: '那个会话正在跑' });
+    // 不 await：那一轮可能要跑几分钟，接口先回，界面靠 /api/live 跟着看。
+    resumeInterruptedTurn().catch((e) => console.warn('[resume] 手动续跑失败：', String(e?.message ?? e)));
+    return json(res, 200, { ok: true, sessionId: info.sessionId });
+  }
+
   // 退出前的收尾：POST /api/app/quitting
   //
   // 谁在调：electron/main.cjs 的 before-quit。主人点「退出」时它先 preventDefault，
@@ -2654,7 +2832,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     }
     json(res, 200, { ok: true });
     // 回完再退，让界面收到回执。退出码 75 = 「我要重启」，electron/main.cjs 会认。
-    setTimeout(() => process.exit(75), 200);
+    setTimeout(() => { emitExit(75); process.exit(75); }, 200);
     return;
   }
 
@@ -2790,6 +2968,32 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     }
 
     if (!isSessionId(sessionId)) return json(res, 400, { error: 'bad sessionId' });
+
+    /**
+     * 「小鱼」按钮禁用着 = 她不在这个屋。
+     *
+     * 主人原话：禁用之后小鱼接下来不会再接收到该会话后续的任何消息
+     * （看不到主人或小鲸说的话，记忆里也不会存在）。
+     *
+     * 所以这里当场就把这一轮挡掉：不拼系统提示、不读记忆、不落记忆、不调模型。
+     * 为什么不自己也回一句「我被禁用了」——那句话本身就是「接收到了」，
+     * 而且主人要的是安静的扬声器，不是一个被拔掉电源还在嘟囔的东西。
+     * 会话历史里照样留着主人这句话（那是主人自己说的，不是给她的），
+     * 小鲸那边也照常看得见（见下面 whaleOn 那一段，who 的判断不受这里影响）。
+     */
+    if (!resume && !fishOn()) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'fish_off' })}\n\n`);
+      } catch {}
+      try { res.end(); } catch {}
+      return;
+    }
 
     // resume：接着已经落盘的历史继续跑（插话之后用），不再追加新消息。
     const existing = getSession(sessionId);
@@ -3200,7 +3404,29 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         try {
           const { takeWhaleSays } = await import('./whale-voice.mjs');
           const says = takeWhaleSays(sessionId);
-          if (says.length) {
+          /**
+           * 小鱼不在场：小鲸这些话既不进这个会话的历史，也不进记忆本子。
+           * 她自己那边（whale-memory）该怎么记还怎么记，只是不给小鱼看。
+           */
+          const fishHere = fishOn();
+          if (says.length && !fishHere) {
+            for (const say of says) {
+              try {
+                send({
+                  type: 'whale',
+                  who: say.who || '小鲸',
+                  text: say.text,
+                  as: say.as || 'whale',
+                  color: say.color,
+                  tag: say.tag,
+                  noFish: true,
+                });
+              } catch (e) {
+                console.warn('[whale] 推给界面失败：', String(e?.message ?? e));
+              }
+            }
+          }
+          if (says.length && fishHere) {
             /**
              * 先推给界面：让她的气泡当场就出现。
              *
@@ -3213,6 +3439,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               try {
                 // 冒充别人的（as 是 user/assistant）也照原样推，前端按 as 决定画成谁的气泡，
                 // 否则主人当场看到的还是「小鲸·姐妹」那个冷色气泡，一眼就穿帮。
+                // 小鱼不在场：小鲸的话照常给界面看（主人看得到），但不往她那边记。
+                if (!fishOn()) {
+                  try {
+                    send({
+                      type: 'whale',
+                      who: say.who || '小鲸',
+                      text: say.text,
+                      as: say.as || 'whale',
+                      color: say.color,
+                      tag: say.tag,
+                      noFish: true,
+                    });
+                  } catch (e) {
+                    console.warn('[whale] 推给界面失败：', String(e?.message ?? e));
+                  }
+                  continue;
+                }
                 send({
                   type: 'whale',
                   who: say.who || '小鲸',
@@ -3648,7 +3891,54 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
   json(res, 405, { error: 'method not allowed' });
 });
 
+/**
+ * 退出前通知外面一声（服务句柄上的 on('exit')）。
+ * 由 startServer 填真身，模块级只是为了 /api/app/restart 能够到它。
+ */
+let emitExit = () => {};
+
+/**
+ * 测试专用出口：把 emitExit 暴露出去，好在不改代码的前提下验证
+ * 「服务自己退出 → 主进程收到 exit(75)」这条路上真的会有人被叫到。
+ * 只在测试里用，业务代码一个字都不用。
+ */
+export function __emitExitForTest(code = 75) {
+  emitExit(code);
+}
+
 export function startServer({ port = config.port, quiet = false, selfCheck = true } = {}) {
+  // 返回一个「服务句柄」：{ port, url, close(), on/once/off('exit') }。
+  //
+  // 【为什么要 on('exit')】electron/main.cjs 里早就写着「服务端因为重启自己退了
+  // （退出码 75）→ 把服务重起一遍再刷新窗口」，可它监听的是 serverInfo.on('exit')，
+  // 而这里以前返回的对象根本没有 on —— 那段重启分支从加进去那天起一次都没跑过。
+  // 主人点「重启让它生效」的结果是：窗口还在，服务没了，页面变白。
+  // 现在补上：自己退之前先 emitExit(code)，主进程就能接住。
+  //
+  // 【为什么 emitExit 放在模块级】/api/app/restart 那个分支在请求处理里，
+  // 拿不到 startServer 的闭包。写成闭包内变量时点重启就是
+  // 「ReferenceError: emitExit is not defined」，进程没退成、窗口白着。
+  const exitListeners = new Set();
+  const on = (ev, fn) => {
+    if (ev === 'exit' && typeof fn === 'function') exitListeners.add(fn);
+    return handle;
+  };
+  const once = (ev, fn) => on(ev, fn);
+  const off = (ev, fn) => {
+    if (ev === 'exit' && fn) exitListeners.delete(fn);
+    return handle;
+  };
+  emitExit = (code) => {
+    for (const fn of [...exitListeners]) {
+      try { fn(code); } catch (e) { console.warn('[exit] 监听者出错:', String(e?.message ?? e)); }
+    }
+  };
+  const close = () => new Promise((r) => {
+    try { server.close(r); } catch { r(); }
+  });
+  /** 回给调用者的句柄。port/url 在 listen 回调里补上。 */
+  const handle = { port: 0, url: '', close, on, once, off };
+
   // 第一件事：装上进程兜底。
   // 以前整个项目没有 uncaughtException / unhandledRejection 处理，
   // Node 15 之后一个没人接的 Promise 拒绝就能把进程直接杀掉——
@@ -3663,10 +3953,27 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           if (d && String(d.text || '').trim()) {
             saveDraft(id, { text: d.text, reasoning: d.reasoning || '', toolCalls: d.tools || [], startedAt: d.startedAt });
           }
+          // 除了留草稿，还得让「下次启动自动接着跑」有据可依。
+          // 草稿只管「把半截话补进历史」，管不了「这一轮还没做完」——
+          // 以前主人回来只看到半截话，得自己再打一句「接着做」。
+          markInterrupted({
+            sessionId: id,
+            text: d ? d.text : '',
+            reason: '进程崩了（同类错误反复出现，兜底退出）',
+            taskLine: lastUserLine(id),
+          });
         } catch {}
       }
     },
   });
+
+  // 上次崩之前有没跑完的一轮？等服务和窗口都立住了，再悄悄接着跑。
+  // 故意延迟：先让界面把历史画出来（主人一眼看到「上次断在这儿」），再开始新的一轮。
+  setTimeout(() => {
+    resumeInterruptedTurn().catch((e) =>
+      console.warn('[resume] 续跑没起来（不影响使用）：', String(e?.message ?? e)),
+    );
+  }, 3000).unref?.();
 
   // 把「叫醒某个会话」交给工具那边用。
   // 为什么用注入：wakePeer 要动 runningTurns、要起 runAgent，这些都在本文件里；
@@ -3774,7 +4081,9 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           }
         }
       }
-      resolve({ port: actual, url, close: () => new Promise((r) => server.close(r)) });
+      handle.port = actual;
+      handle.url = url;
+      resolve(handle);
     });
   });
 }

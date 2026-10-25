@@ -18,6 +18,11 @@
  *   2. 我干完一轮 → 她也能看到，觉得该提醒才说话。
  *   3. 不想说就安静待着，一个 token 都不花（判断这一步是让她自己说「不用」）。
  *
+ * ── 按会话，不是全局 ──────────────────────────────────────────
+ *
+ * 主人要的：在 A 会话叫上她，去 B 会话没叫，那 B 里她就安静待着。
+ * 跟「小鱼」那个按钮同一个规矩 —— 两个都在顶栏，行为不该一个全局一个按会话。
+ *
  * 状态存盘子（.state/whale-on.json），换设备、换浏览器都一致，
  * 跟纯净模式一个待遇。
  */
@@ -29,27 +34,81 @@ function file() {
   return join(config.dataDir, '.state', 'whale-on.json');
 }
 
-/** 现在开没开。读不到、文件坏了都当「没开」—— 绝不让她自己冒出来。 */
-export function whaleOn() {
+/**
+ * 读出按会话的那张表。
+ *
+ * 返回 { map, legacy }
+ *   - map   ：{ '<sessionId>': true/false }
+ *   - legacy：老文件里那个全局值（如果有）。**只用来一次性判断**，
+ *             不再往后传 —— 小鱼那次就是栽在「把 legacy 一直带着」上。
+ */
+function readTable() {
   try {
     const f = file();
-    if (!existsSync(f)) return false;
+    if (!existsSync(f)) return { map: {}, legacy: null };
     const j = JSON.parse(readFileSync(f, 'utf8'));
-    return j && j.on === true;
+
+    // 新格式：{ on: { '<sid>': true } }
+    if (j && j.on && typeof j.on === 'object' && !Array.isArray(j.on)) {
+      const map = {};
+      for (const [k, v] of Object.entries(j.on)) {
+        if (typeof v === 'boolean') map[k] = v;
+      }
+      return { map, legacy: null };
+    }
+    // 老格式：{ on: true } —— 只当一次性默认值，不往新格式里搬
+    if (j && typeof j.on === 'boolean') return { map: {}, legacy: j.on };
+    return { map: {}, legacy: null };
+  } catch {
+    return { map: {}, legacy: null };
+  }
+}
+
+/**
+ * 这个会话里小鲸在不在。
+ *
+ * 【读不到必须当「关」】这点跟小鱼正好相反，别搞混：
+ * 小鲸是「要不要叫上她」，默认是**不叫**。
+ * 读盘失败就当没叫 —— 绝不让她自己冒出来。
+ *
+ * @param {string} sessionId 哪个会话
+ */
+export function whaleOn(sessionId) {
+  try {
+    const { map } = readTable();
+    const sid = String(sessionId || '');
+    if (sid && Object.prototype.hasOwnProperty.call(map, sid)) return map[sid] === true;
+    /**
+     * 这个会话没单独设过 → 默认「不在」。
+     *
+     * 老文件里那个全局值【不用】了：它就是「全局」这套的老祖宗，
+     * 拿它兜底等于换汤不换药。主人明确要按会话，那就干脆当没设过。
+     */
+    return false;
   } catch {
     return false;
   }
 }
 
-/** 改开关。先写临时文件再改名，断电不会留半个坏文件。 */
-export function setWhaleOn(on) {
+/**
+ * 改某个会话的开关。先写临时文件再改名，断电不会留半个坏文件。
+ *
+ * @param {string} sessionId 哪个会话
+ * @param {boolean} on 叫上她还是让她歇着
+ */
+export function setWhaleOn(sessionId, on) {
   const next = Boolean(on);
+  const sid = String(sessionId || '');
   try {
     const dir = join(config.dataDir, '.state');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+    const { map } = readTable();
+    if (sid) map[sid] = next;
+
     const f = file();
     const tmp = f + '.tmp';
-    writeFileSync(tmp, JSON.stringify({ on: next, at: Date.now() }, null, 2), 'utf8');
+    writeFileSync(tmp, JSON.stringify({ schemaVersion: 2, on: map, at: Date.now() }, null, 2), 'utf8');
     renameSync(tmp, f);
   } catch {}
   return next;

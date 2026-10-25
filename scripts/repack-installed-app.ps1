@@ -82,6 +82,18 @@ if (Test-Path $ws) {
 }
 Copy-Item (Join-Path $src 'package.json') (Join-Path $work 'package.json') -Force
 
+# 3.5) 打包之前先把 .bak 中间版本清出去。
+# 我改代码时每步都留一个 .bak-before-xxx，要是跟着打进包，
+# 包会白白胖一大圈（实测 20.8MB → 22.8MB），而且里面全是重复代码，看着乱。
+# 只清 electron / src / public 三个目录下的，别的一概不碰。
+foreach ($d in @('electron', 'src', 'public')) {
+  $dir = Join-Path $work $d
+  if (-not (Test-Path $dir)) { continue }
+  Get-ChildItem $dir -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '\.bak(-|$)' -and $_.Extension -ne '.md' } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
 $new = Join-Path $src '.build\app-new.asar'
 if (Test-Path $new) { Remove-Item $new -Force }
 & $node $asarJs pack $work $new

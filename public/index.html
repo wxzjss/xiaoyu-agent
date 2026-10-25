@@ -28,7 +28,8 @@
     ::-webkit-scrollbar-corner { background: transparent; }
 
     :root {
-      --bg: #0f1115;
+      /* 跟 electron/main.cjs 的 backgroundColor 必须一致：不一致的话淡入时会跳一下色 */
+    --bg: #000000;
       --panel: #171a21;
       --border: #262b36;
       --text: #e6e9ef;
@@ -58,6 +59,18 @@
     header b, header .meta { white-space: nowrap; }  /* 标题和副标题永远横着一行 */
     header .topCfg { flex: 0 1 auto; min-width: 0; }  /* 只有这两个框可以缩一点 */
     header #meta { flex: 1 1 auto; min-width: 0; }    /* 状态条吃掉多余空间，不够就省略号 */
+    /**
+     * 【这一排按钮靠右的开关】
+     *
+     * 以前是「模型 · 地址」那条 #meta 用 margin-right:auto 吃掉空隙，
+     * 把右边的按钮群挤到最右边。主人让把那条灰字删了 —— 推手没了，
+     * 按钮就散回中间。这里把推力挪到「小鱼」身上：
+     * margin-left:auto 会把左边剩下的空间全塞在自己前面，
+     * 于是「小鱼」到「清空当前」这一整排自然贴右。
+     *
+     * 别改成给每个按钮都加 auto：那样空隙会被平均分掉，整排反而散开。
+     */
+    header #fishBtn { margin-left: auto; }
     header .meta { color: var(--dim); font-size: 12px; }
     /* 按钮组整体靠右：空隙全塞在状态条后面，别再让每个按钮各抢一份 auto */
     header #meta { margin-left: 4px; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -205,14 +218,6 @@
       padding: 8px 10px 10px; border-top: 1px solid var(--border);
       color: var(--dim); font-style: italic; white-space: pre-wrap; word-break: break-word;
     }
-    /* 历史里的思考（从盘上读回来的）：比实时那块淡一点、窄一点，
-       免得满屏旧思考把真正在看的那轮对话挤下去 */
-    details.think.thinkPast {
-      background: transparent; border-color: rgba(255, 255, 255, .06);
-      margin-bottom: 8px; max-width: 92%;
-    }
-    details.think.thinkPast > summary { padding: 5px 9px; font-size: 12px; opacity: .8; }
-    details.think.thinkPast[open] { background: rgba(23, 26, 33, .72); border-color: var(--border); }
     .interjectTag {
       display: inline-block; font-size: 12px; color: var(--accent);
       border: 1px solid var(--accent); border-radius: 999px; padding: 1px 9px; margin-left: 8px;
@@ -939,9 +944,49 @@
 
     /* ---- 模型面板 ---- */
     .mdlScroll { overflow-y: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
+
+    /**
+     * 模型对话框整体放宽一档。
+     *
+     * 【为什么要单独写】所有 dialog 是统一 760px 的，别的弹窗够用，
+     * 但模型这个里头塞了：两列字段、带下拉的输入行、接口地址、API Key、
+     * 思考档位……全挤在 760 里，padding 再一削，字就挤成一团，
+     * 按钮被压窄还会竖着排（「测连通」三个字一行一个）。
+     * 这里只给模型这一家加宽，别家不动。
+     */
+    #modelsDlg { width: min(900px, 94vw); }
+    #modelsDlg .mdlScroll { padding: 4px 2px 8px; }
+
+    /* 表单整体松一档：字号、行高、间距都往上抬一点 */
+    #modelsDlg .mdlForm { padding: 22px 24px 10px; }
+    #modelsDlg .mdlForm .field { margin-bottom: 20px; }
+    #modelsDlg .mdlForm .field > label {
+      display: block; margin-bottom: 8px;
+      font-size: 13px; line-height: 1.6;
+    }
+    #modelsDlg .mdlForm input[type=text],
+    #modelsDlg .mdlForm input[type=password] {
+      padding: 9px 12px; font-size: 13.5px; line-height: 1.5;
+    }
+    #modelsDlg .mdlForm .hint {
+      display: block; margin-top: 7px;
+      font-size: 12.5px; line-height: 1.7;
+    }
+    /* 两列在放不下时干脆叠成一列，别硬挤成两条细缝 */
+    #modelsDlg .mdlForm .row { gap: 18px; flex-wrap: wrap; }
+    #modelsDlg .mdlForm .row > .field { flex: 1 1 280px; min-width: 0; }
+    /* 下拉框别霸占太多宽度，也别窄到看不见字 */
+    #modelsDlg .row .pickSel { max-width: 42%; min-width: 130px; }
+    /* 底下一排按钮：留足空、别挤在一起 */
+    #modelsDlg .mdlFoot { gap: 12px; padding-top: 4px; padding-bottom: 18px; }
+    /* 思考档位那块也松一点 */
+    #modelsDlg .mdlOpts { padding: 10px 14px 4px; }
+    #modelsDlg .optRow { padding: 12px 10px; }
+    #modelsDlg .optName { font-size: 14px; }
+    #modelsDlg .optDesc { font-size: 12.5px; line-height: 1.75; margin-top: 5px; }
     .mdlList { padding: 8px; }
     .mdlRow {
-      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      display: flex; align-items: center; gap: 12px; padding: 13px 14px;
       border: 1px solid transparent; border-radius: 8px; cursor: pointer;
     }
     .mdlRow:hover { background: #1d2430; border-color: var(--border); }
@@ -969,8 +1014,11 @@
     .pickSel option { background: var(--panel); color: var(--fg); }
     .mdlSub { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .mdlRow .mini {
+      /* 原来 2px 8px / 12px，量出来只有 41×23，两个字贴着边很挤。
+         放宽一档：手指也更好点，字也不顶边。 */
       flex: none; background: transparent; color: var(--dim); border: 1px solid var(--border);
-      border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer;
+      border-radius: 7px; padding: 5px 12px; font-size: 12.5px; cursor: pointer;
+      white-space: nowrap; line-height: 1.4;
     }
     .mdlRow .mini:hover { color: var(--text); border-color: var(--dim); }
     .mdlRow .mini.del:hover { color: var(--err); border-color: var(--err); }
@@ -988,17 +1036,36 @@
     .mdlEmpty .d { color: var(--dim); font-size: 12.5px; line-height: 1.8; margin-bottom: 18px; }
 
     /* 添加 / 编辑表单 */
-    .mdlForm { padding: 14px 16px 4px; border-top: 1px solid var(--border); }
+    .mdlForm { padding: 18px 18px 8px; border-top: 1px solid var(--border); }
     .mdlForm.hidden { display: none; }
-    .mdlForm .row { display: flex; gap: 10px; }
-    .mdlForm .row > .field { flex: 1; min-width: 0; }
+    /* 两列在窄屏上直接叠成一列，别硬挤成一团 */
+    .mdlForm .row { display: flex; gap: 14px; flex-wrap: wrap; }
+    .mdlForm .row > .field { flex: 1 1 220px; min-width: 0; }
+    /* 字段之间、标签和输入框之间都松一点 */
+    .mdlForm .field { margin-bottom: 16px; }
+    .mdlForm .field > label { display: block; margin-bottom: 6px; line-height: 1.5; }
+    .mdlForm .hint { display: block; margin-top: 5px; line-height: 1.6; }
     .mdlForm input[type=password] {
       width: 100%; background: #0f1319; color: var(--text); border: 1px solid var(--border);
       border-radius: 8px; padding: 9px 12px; font: inherit; outline: none;
     }
     .mdlForm input[type=password]:focus { border-color: var(--accent); }
-    .mdlFoot { display: flex; gap: 10px; align-items: center; padding: 0 0 14px; }
-    .mdlFoot .hint { color: var(--dim); font-size: 12px; margin-right: auto; }
+    /**
+     * 底部这几个按钮。
+     *
+     * 【为什么按钮必须 flex:0 0 auto】
+     * 这里是 flex 行，hint 用 margin-right:auto 吃掉所有空隙。
+     * 按钮没写 flex-shrink 会被一路压缩，窄到只剩一个字宽时，
+     * 浏览器就一个字一行地竖着排 —— 就是「竖着的测连通」。
+     * 现在：按钮不压缩、不换行；hint 自己截断，别跟按钮抢地方。
+     */
+    .mdlFoot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 0 0 14px; }
+    .mdlFoot .hint {
+      color: var(--dim); font-size: 12px; margin-right: auto;
+      flex: 1 1 120px; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .mdlFoot button { flex: 0 0 auto; white-space: nowrap; }
     .hint.ok { color: var(--ok); }
     .hint.err { color: var(--err); }
 
@@ -1077,49 +1144,6 @@
     .featScroll { overflow-y: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
     /* ---- 会话记忆 ------------------------------------------------------ */
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
-    /* ---- 记忆本整本 ---- */
-    /* 弹窗本身要宽一点：摘要和固定记忆都是整句话，窄了全是折行 */
-    dialog.memDlg { width: min(880px, 94vw); }
-    .memTabs {
-      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-      padding: 10px 16px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
-    }
-    .memTab {
-      background: transparent; border: 1px solid var(--border); color: var(--dim);
-      border-radius: 20px; padding: 4px 12px; font: inherit; font-size: 12.5px; cursor: pointer;
-      transition: color .15s, border-color .15s, background .15s;
-    }
-    .memTab:hover { color: var(--text); border-color: #3a4553; }
-    .memTab.on { color: var(--accent); border-color: var(--accent); background: rgba(120,170,255,.08); }
-    .memTab .n { color: var(--dim); font-size: 11px; margin-left: 4px; }
-    .memTab.on .n { color: var(--accent); }
-    .memTabGap { flex: 1 1 auto; }
-    .memTabWhale { border-style: dashed; }
-    .memBody {
-      padding: 16px; overflow-y: auto; flex: 1 1 auto; min-height: 260px; max-height: 66vh;
-      overscroll-behavior: contain; font-size: 13.5px; line-height: 1.7;
-    }
-    /* 原文那页要等宽字体：缩进和编号对不齐就读不出层次 */
-    .memBody pre {
-      margin: 0; white-space: pre-wrap; word-break: break-word;
-      font-family: ui-monospace, Consolas, 'Courier New', monospace; font-size: 12.5px; line-height: 1.6;
-    }
-    .memSec { margin-bottom: 18px; }
-    .memSec:last-child { margin-bottom: 0; }
-    .memSec h4 {
-      margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: var(--accent);
-      padding-bottom: 5px; border-bottom: 1px solid var(--border);
-    }
-    /* 后面的小标题要跟上一段正文拉开，不然「用户约束/偏好」会贴在前一句底下 */
-    .memSec h4 ~ h4 { margin-top: 18px; }
-    .memLine { padding: 3px 0; }
-    .memLine .id {
-      color: #7f8b9c; font-size: 11.5px; font-family: ui-monospace, Consolas, monospace;
-      margin-right: 6px;
-    }
-    .memLine .t { color: #6f7b8a; font-size: 11.5px; margin-right: 6px; }
-    .memEmpty { color: var(--dim); font-size: 13px; padding: 20px 2px; line-height: 1.8; }
-    .memHintR { margin-left: auto; }
     .featList { padding: 8px; }
     .featRow {
       display: flex; align-items: center; gap: 12px; padding: 11px 12px;
@@ -1262,7 +1286,7 @@
     /* 开着背景时 body 的底色让给 #bgTint，面板和输入区跟着半透明，画面才看得见 */
     body.skin {
       background: transparent;
-      --bg: rgba(15, 17, 21, var(--surface, .2));
+      --bg: rgba(0, 0, 0, var(--surface, .2));
       --panel: rgba(23, 26, 33, var(--surface, .2));
     }
     /* 这几处是写死的底色，不跟着透就会是一块块死黑，很扎眼 */
@@ -1435,16 +1459,14 @@
         当前思考强度：<span id="topThinkName">默认</span><span class="caret">▾</span>
       </button>
     </span>
-    <span class="meta" id="meta">…</span>
     <button id="pureBtn" title="纯净模式：不发人设、不发规矩、不留早期摘要，旧对话直接丢（点一下开，再点一下关）">纯净模式</button>
     <button id="fishBtn" title="小鱼在场：点一下就让她歇着 —— 之后这个会话里你说的话、小鲸说的话，她一个字都收不到，记忆里也不会留">小鱼</button>
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
-    <button id="openMemoryBook" title="记忆本：看看她这个会话到底记了些什么，小鲸那本也在（只给看不给改，改她记的东西得跟她说）">记忆本</button>
     <button id="openFeatures">功能</button>
     <button id="openSettings">设置</button>
-    <button id="openModels">模型<span id="mdlNow" class="meta"></span></button>
+    <button id="openModels" title="模型">模型</button>
     <button id="reset">清空当前</button>
   </header>
 
@@ -1835,39 +1857,6 @@
       </div>
       <div class="sessList" id="sessList"></div>
       <input type="file" id="sessFile" accept=".json,application/json" hidden />
-    </form>
-  </dialog>
-
-  <!-- 记忆本整本（只给看，不给改）
-       ── 为什么要有这个 ──
-       以前界面上只有一个「改过」小标记，本子里到底记了什么，主人只能去翻文件夹。
-       她记错了一件事、或者干脆把不该记的记进去了，主人根本发现不了。
-       这里把两本摊开：这个会话的本子（她替你记的）+ 小鲸那本（跨会话的）。
-
-       ── 为什么故意不给编辑框 ──
-       本子是她自己写的东西。主人直接改，跟她下一轮「凭记忆」说的话对不上，
-       她会觉得自己记的和你看到的不一样。要看就明明白白看，要改就跟她说一声——
-       她会自己改，而且改完还会告诉你改了哪儿。 -->
-  <dialog id="memoryDlg" class="memDlg">
-    <form method="dialog">
-      <div class="dlgHead">
-        <b>记忆本</b><span class="meta" id="memBookHint"></span>
-        <button class="x" value="cancel">关闭</button>
-      </div>
-      <div class="memTabs" id="memTabs">
-        <button type="button" class="memTab on" data-zone="fixed">固定记忆</button>
-        <button type="button" class="memTab" data-zone="roll">滚动摘要</button>
-        <button type="button" class="memTab" data-zone="detail">详细区</button>
-        <button type="button" class="memTab" data-zone="archive">归档</button>
-        <button type="button" class="memTab" data-zone="raw">原文</button>
-        <span class="memTabGap"></span>
-        <button type="button" class="memTab memTabWhale" data-zone="whale">小鲸那本</button>
-      </div>
-      <div class="memBody" id="memBody"></div>
-      <div class="dlgFoot">
-        <span class="hint" id="memPathHint"></span>
-        <span class="hint memHintR">本子是她自己写的，界面只给看不给改 —— 要改跟她说一声，她自己会改</span>
-      </div>
     </form>
   </dialog>
 
@@ -2864,14 +2853,6 @@ let sessionId = null;
 let sessionTitle = '';
 let sessionsCache = [];
 let pendingResume = false; // 插话之后要不要接着跑
-/**
- * 刚才「插话」时乐观画上去的那条气泡。
- *
- * 为什么要留着引用：插话是**先画后问**（点了就立刻显示，不等服务端）。
- * 要是服务端回来一句 `running:false`，说明其实没有一轮在跑、这句压根没人接 ——
- * 那条气泡就得收回去，否则屏幕上永远挂着一条我从来没回复过的话。
- */
-let lastInterjectBubble = null;
 let stopping = false; // 正在停止，按钮锁住别再点
 
 /**
@@ -2989,7 +2970,17 @@ function closeSessPanel() {
 }
 
 /** 正在跟着直播的那个轮询计时器（同一时刻只跟一个会话） */
-var following = null;
+var following = null; // 旧变量留着：别处可能还在读它（只读不写也行）
+/**
+ * 会话 id -> 那个会话的直播轮询定时器。
+ *
+ * 【为什么必须按会话分开，别改回单个变量】
+ * 以前只有一个 following。A 在轮询、切到 B、B 也开轮询，following 就指向 B 了；
+ * 这时 A 的轮询回调跑起来，里面 clearInterval(following) 清的是【B 的】，
+ * 还把 following 置 null —— 两个轮询一块儿没了。
+ * 主人看到的就是：在一个会话发消息，另一个会话的她就不动了。
+ */
+var followingBySession = new Map();
 
 /**
  * 从服务端把「正在跑那一轮」的内容整段补画到屏幕上。
@@ -3049,7 +3040,16 @@ function paintLiveEvents(evs, bubble) {
       }
     } else if (ev.type === 'whale') {
       // 她说话了：当场画一个她自己的气泡，不跟我的挤在一起。
-      addWhaleBubble(ev.who, ev.text);
+      // 如果刚才有流式的临时气泡，就【定稿】到那上面，别再画第二个
+      if (whaleStreamFinish(ev.text)) {
+        // 已经写进流式那个气泡了，不用再建
+      } else {
+        addWhaleBubble(ev.who, ev.text);
+      }
+    } else if (ev.type === 'whale_stream_start') {
+      whaleStreamStart(ev.who);
+    } else if (ev.type === 'whale_delta') {
+      whaleStreamDelta(ev.text);
     } else if (ev.type === 'files') {
       const wrap = lastAssistantWrap();
       if (wrap) attachFiles(wrap, ev.items);
@@ -3087,13 +3087,16 @@ async function attachLive(id) {
       // 刚打开 / 刚切过来的这一瞬间，屏幕上一眼是空的（或还挂着上一个会话的消息），
       // 这时「历史最后一条是谁说的」说明不了任何事，当它是主人的话处理，
       // 让下面那套轮询去等它吐字 —— 比当场宣布「跑完了」安全。
-      const tail = historyTailRole() || 'user';
-      if (tail === 'user') {
-        // 历史停在主人那句话上：这轮确实还没写完，但缓存里一个字都没有，
-        // 只能在这儿等它吐字 —— 交给 followLive 轮询。
-        followLive(id, 0);
-        return true;
-      }
+      /**
+       * 服务端说在跑，但直播缓存里一条事件都没有（刚开跑、还没吐字）。
+       *
+       * 以前这里还要再看「历史最后一条是谁说的」，判 assistant 就不算在跑。
+       * 那个判断在切会话时会误伤：刚切回来那一刻屏幕上的历史可能还是上一个会话的，
+       * 拿它来决定这一轮算不算在跑，就会把真在跑的一轮判成「跑完了」。
+       * 服务端都说在跑了，就以服务端为准 —— 锁输入区，等它吐字。
+       */
+      followLive(id, 0);
+      return true;
     }
     if (!mine) turnsInFlight.delete(id);
     return false;
@@ -3107,24 +3110,41 @@ async function attachLive(id) {
     return false;
   }
 
-  // 服务端说还在跑，但历史已经写完了：这份 running 是残骸，别照着它卡界面。
-  if (!mine && historyTailRole() === 'assistant') {
-    turnsInFlight.delete(id);
-    return false;
-  }
+  /**
+   * 【服务端说还在跑，就以服务端为准】—— 这里原来有一条相反的逻辑，删了。
+   *
+   * 原来是：不是本窗口在跟、而且屏幕上历史最后一条是我说的话 ⇒ 判成「跑完了」，
+   * 把 turnsInFlight 删掉、返回 false。本意是防「进程崩过留下的 running 残骸」。
+   * 可这条在切会话时一定误伤：切回来的那一瞬间，屏幕上的历史还是【上一个会话】的，
+   * 拿它去判这一轮，就会把明明还在跑的一轮判成跑完了。
+   * 后果就是主人报的：切回来按钮变回「发送」，按下去发不出去。
+   *
+   * 残骸这件事另有办法兜（服务端进程真死了，/api/chat/live 会连不上，
+   * 走的是 catch 里那条路；真跑完了 live.running 自己就是 false）。
+   * 所以这里不再用屏幕上的历史去否定服务端。
+   */
 
   let bubble = paintLiveEvents(evs, null);
 
   if (live.running) {
-    if (mine) {
-      if (bubble) bubble.classList.add('streaming');
-      followLive(id, evs.length);
-      return true;
-    }
-    // 不是本窗口在跑、历史也还没写完：那就是真的还在跑，接着跟，但别锁输入区
     if (bubble) bubble.classList.add('streaming');
     followLive(id, evs.length);
-    return false;
+    /**
+     * 【只要服务端说这轮还在跑，就返回 true，不管是谁发起的】
+     *
+     * 以前这里对「不是本窗口在跑」的轮次返回 false —— 想让输入区别被锁，
+     * 主人可以一边等一边打下一句。想法挺好，实际是个坑：
+     *
+     *   返回 false → 上层把 busy 设成 false → 输入区解锁、
+     *   按钮变回「发送」→ 主人一按，走的是「发新一轮」而不是「插话」
+     *   → 服务端回 409「这个会话还在跑」→ 那句发不出去，按钮还停在「发送」，
+     *   再按一次还是同样下场。主人就是这么卡住的。
+     *
+     * 现在统一返回 true：界面上那轮还在跑，输入区就锁着，
+     * 按钮显示「停止」，要说话就走「插话」（那条路会把当前轮掐掉接你的话）。
+     * 宁可让主人多按一次「停止」，也不能让他打个字石沉大海。
+     */
+    return true;
   }
   return false;
 }
@@ -3167,13 +3187,14 @@ function markTailRole(turns) {
  * 不重新发请求，只把「已经发生过的事」补齐——窗口关多久都不影响。
  */
 function followLive(id, fromIndex) {
-  if (following) clearInterval(following);
+  // 只清自己这个会话的，别人的别动
+  stopFollow(id);
   let seen = fromIndex;
 
-  following = setInterval(async () => {
+  const timer = setInterval(async () => {
+    // 屏幕上换到别的会话了：这个会话的轮询留着没意义，停掉（只停自己）
     if (sessionId !== id) {
-      clearInterval(following);
-      following = null;
+      stopFollow(id);
       return;
     }
     let live = null;
@@ -3206,8 +3227,7 @@ function followLive(id, fromIndex) {
       noteNewContent();
     }
     if (!live.running) {
-      clearInterval(following);
-      following = null;
+      stopFollow(id);
       const bubbles = document.querySelectorAll('.assistant .bubble');
       if (bubbles.length) bubbles[bubbles.length - 1].classList.remove('streaming');
       busy = false;
@@ -3216,6 +3236,27 @@ function followLive(id, fromIndex) {
       refreshSessions({ silent: true }).catch(() => {});
     }
   }, 1200);
+
+  followingBySession.set(id, timer);
+  // 兼容旧变量：让它指着「最近一次开起来的那个」，只读它的人也还能用
+  following = timer;
+}
+
+/** 只停某个会话的轮询；别的会话的定时器一根汗毛都不碰 */
+function stopFollow(id) {
+  const t = followingBySession.get(id);
+  if (t) {
+    clearInterval(t);
+    followingBySession.delete(id);
+  }
+  if (following && ![...followingBySession.values()].includes(following)) following = null;
+}
+
+/** 停掉所有轮询（退出登录、页面卸载之类） */
+function stopFollowAll() {
+  for (const t of followingBySession.values()) clearInterval(t);
+  followingBySession.clear();
+  following = null;
 }
 
 /**
@@ -3271,12 +3312,24 @@ async function tryHealAfterDisconnect(id) {
   return false;
 }
 
+/**
+ * 顶栏那条「模型 · 地址」的灰字，主人要删掉了（太吵）。
+ * 这里不再往界面上写，只把信息留在控制台里 —— 真要看地址，
+ * 顶部「模型」按钮点开就有。元素可能已经不在了，所以整段都做空保护。
+ */
 function paintHealth(h) {
   if (!h) return;
-  meta.textContent = h.hasKey
-    ? `${h.model} · ${h.baseURL}`
-    : '⚠ 还没配模型，点上面「模型」填一个';
-  meta.title = '工作目录: ' + h.workspace;
+  try {
+    if (!h.hasKey) console.warn('[health] 还没配模型，点顶部「模型」填一个');
+    else console.log('[health] ' + h.model + ' · ' + h.baseURL + ' | 工作目录: ' + h.workspace);
+  } catch {}
+  // 元素还在（老版本缓存之类）就顺手更新，不在就什么也不做
+  try {
+    if (typeof meta !== 'undefined' && meta) {
+      meta.textContent = h.hasKey ? `${h.model} · ${h.baseURL}` : '⚠ 还没配模型，点上面「模型」填一个';
+      meta.title = '工作目录: ' + h.workspace;
+    }
+  } catch {}
 }
 const healthOnce = fetch('/api/health').then(r => r.json()).then(paintHealth).catch(() => null);
 
@@ -3312,7 +3365,26 @@ function paintFish(on) {
 }
 if (fishBtn) {
   paintFish(true);
-  fetch('/api/fish').then((r) => r.json()).then((j) => paintFish(j && j.on)).catch(() => {});
+
+  /**
+   * 【这个开关是按会话的，不是全局的】
+   *
+   * 主人要的是：在 B 会话把小鱼关掉，A 会话该跑照样跑。
+   * 所以读和写都得带上 sessionId，切会话之后还要重新读一次 ——
+   * 不然界面上显示的还是上一个会话的状态，一点就点错了。
+   */
+  const loadFishFor = (sid) => {
+    const q = sid ? ('?sessionId=' + encodeURIComponent(sid)) : '';
+    return fetch('/api/fish' + q)
+      .then((r) => r.json())
+      .then((j) => { paintFish(j && j.on); })
+      .catch(() => {});
+  };
+  // 让切会话 / 新建会话的地方也能调
+  window.__reloadFishState = () => { if (sessionId) loadFishFor(sessionId); };
+  if (sessionId) loadFishFor(sessionId);
+  else fetch('/api/fish').then((r) => r.json()).then((j) => paintFish(j && j.on)).catch(() => {});
+
   fishBtn.onclick = async () => {
     const want = !fishBtn.classList.contains('on');
     paintFish(want);
@@ -3320,7 +3392,8 @@ if (fishBtn) {
       const r = await fetch('/api/fish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ on: want }),
+        // 带上会话：只改这个会话的开关，别的会话一根汗毛都不动
+        body: JSON.stringify({ on: want, sessionId }),
       });
       const j = await r.json();
       paintFish(j && j.on);
@@ -4022,6 +4095,59 @@ function addAssistant() {
  * 为什么单独一个函数：不能拿 addAssistant 改个名字就完事 ——
  * 那会把我自己的气泡也带歪。
  */
+/**
+ * 她正在打的这个气泡（流式用）。
+ *
+ * 【为什么要一个全局的"当前正在流的那个"】
+ *   whale_stream_start 建它、whale_delta 往里加字、whale 定稿时把它替换掉。
+ *   三个事件分三次到，中间没有别的办法把她们串起来 —— 只能记在全局。
+ *
+ * 行为约定：
+ *   · 只允许有一个在流（她说一句话就是一句话，不会同时说两句）
+ *   · 定稿时把整段文字塞进去，并且标记"已定稿"，之后来的 delta 一律忽略
+ */
+let whaleStreamingEl = null;
+
+/** 她开口了：建一个空气泡等着往里加字 */
+function whaleStreamStart(who) {
+  // 上一次没定稿就跑了（连接断了之类），先把它收干净，别留着
+  whaleStreamingEl = null;
+  const wrap = addWhaleBubble(who, '');
+  const bubble = wrap.querySelector('.bubble');
+  if (bubble) bubble.classList.add('streaming');
+  whaleStreamingEl = { wrap, bubble, who: who || '小鲸' };
+  noteNewContent();
+  return wrap;
+}
+
+/** 她吐了一点字：往正在流的那个气泡里追加 */
+function whaleStreamDelta(text) {
+  const st = whaleStreamingEl;
+  if (!st || !st.bubble) return;
+  // 防御：万一这个气泡已经被别的东西移出画面了，就别往里写
+  if (!st.bubble.isConnected) { whaleStreamingEl = null; return; }
+  st.bubble.textContent += fixMojibake(String(text || ''));
+  noteNewContent();
+}
+
+/** 她这轮说完了：把整段定稿塞进去（以定稿为准，不用流的那些碎片拼） */
+function whaleStreamFinish(text) {
+  const st = whaleStreamingEl;
+  whaleStreamingEl = null;
+  if (!st || !st.bubble) return false;
+  if (!st.bubble.isConnected) return false;
+  st.bubble.classList.remove('streaming');
+  const full = String(text || '').trim();
+  // 定稿有内容就用定稿；没有（她其实没想说话）就把这个空泡删掉
+  if (!full) {
+    try { st.wrap.remove(); } catch {}
+    return true;
+  }
+  st.bubble.textContent = full;
+  noteNewContent();
+  return true;
+}
+
 function addWhaleBubble(who, text) {
   const wrap = addEl('', 'msg whale');
   const roleEl = document.createElement('div');
@@ -4168,43 +4294,6 @@ function openThink() {
   };
 }
 
-/**
- * 回放历史时把她当时想过的东西画出来。
- *
- * 【为什么不直接复用 openThink】
- * 那个函数是「正在想」用的：它 open=true、往 log 里 append、每次 push 都
- * noteNewContent 抢滚动条。回放历史要的是反过来的 —— 默认收起、画进 frag、
- * 一次性填满、不碰滚动位置。
- *
- * 挂的位置和实时流一致：在她说的话**上面**（想在前、说在后）。
- */
-function paintReasoning(text, host) {
-  const body0 = String(text || '').trim();
-  if (!body0) return null;
-  const d = document.createElement('details');
-  d.className = 'think thinkPast';
-  d.open = false; // 历史里的思考默认收起，不然一打开会话满屏都是内心戏
-
-  const sum = document.createElement('summary');
-  const title = document.createElement('span');
-  title.className = 'thinkTitle';
-  const flat = body0.replace(/\s+/g, ' ').trim();
-  title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
-  title.title = flat.slice(0, 400);
-  const meta = document.createElement('span');
-  meta.className = 'thinkMeta';
-  meta.textContent = body0.length + ' 字 · 点击展开';
-  sum.append(title, meta);
-
-  const body = document.createElement('div');
-  body.className = 'thinkBody';
-  body.textContent = body0;
-
-  d.append(sum, body);
-  (host || log).appendChild(d);
-  return d;
-}
-
 async function stopTurn() {
   stopping = true;
   sendBtn.disabled = true;
@@ -4277,17 +4366,27 @@ async function runTurn({ resume = false, text = '' } = {}) {
    * 现在：只要「屏幕上就是这个会话」或者「这一轮就是界面上唯一在跑的那轮」就画。
    */
   const onScreen = () => {
-    if (sessionId === turnSession) return true;
-    // 兜底：界面上没有别的轮次在跑，而这一轮刚发起——那它就是当前该显示的那个
-    const only = turnsInFlight.size === 1 && turnsInFlight.get(turnSession) === turnRec;
-    return only && !turnsInFlight.has(sessionId);
+    /**
+     * 只认会话 id 相等 —— 屏幕上是 A，那只有 A 的话才画得出来。
+     *
+     * 【以前这里有条兜底，为什么删了】
+     * 原来是「界面上没有别的轮次在跑、而这一轮刚发起」也算该显示。
+     * 出发点是对的：发完消息、切了一下再切回来那零点几秒里，别把气泡丢了。
+     * 但这条在切会话时会判错 —— 屏幕上已经是 B 了，
+     * 只要 A 那一轮恰好是唯一在跑的那个，A 的话就会画到 B 的界面上。
+     * 「别丢气泡」和「别串会话」这两件事里，串会话是更严重的那件：
+     * 丢的气泡切回去能补画（replayInFlight / attachLive 都干这个），
+     * 串过去的话却是主人当面看不到的错乱，而且没法自愈。
+     * 所以宁可不画，也不能画错地方。
+     */
+    return sessionId === turnSession;
   };
 
   /**
    * 这一轮的后台记录：切回来时用它把已经收到的内容补画出来。
    * parts 里按顺序存 { kind: 'text'|'reasoning'|'tool', ... }
    */
-  const turnRec = { sessionId: turnSession, parts: [], running: true, startedAt: Date.now() };
+  const turnRec = { sessionId: turnSession, parts: [], running: true, startedAt: Date.now(), fishOff: false };
   turnsInFlight.set(turnSession, turnRec);
 
   // 这一轮要带上的附件：先快照，再清空界面上的附件条
@@ -4346,6 +4445,16 @@ async function runTurn({ resume = false, text = '' } = {}) {
         if (!raw.startsWith('data:')) continue;
         const ev = JSON.parse(raw.slice(5).trim());
 
+        /**
+         * 小鱼被请出去了：服务端一个字都没发给她，也不会发任何内容回来。
+         * 这不是出错，是主人自己要的安静 —— 打上标记，收尾时别弹出「这一轮没发出去」那种吓人的红字，
+         * 只轻轻提醒一句。
+         */
+        if (ev.type === 'fish_off') {
+          turnRec.fishOff = true;
+          continue;
+        }
+
         // 先把内容记进这一轮自己的记录里（不管在不在屏幕上）
         if (ev.type === 'reasoning') {
           const last = turnRec.parts[turnRec.parts.length - 1];
@@ -4357,7 +4466,19 @@ async function runTurn({ resume = false, text = '' } = {}) {
           else turnRec.parts.push({ kind: 'text', text: ev.text });
         } else if (ev.type === 'whale') {
           // 她说话了：记进这一轮的记录，中途切走再回来也补得出来。
+          // 已经在流式里记过的，把那些碎片收拢成一条定稿，别留一堆半截
+          const open = turnRec.parts.findIndex((p) => p.kind === 'whale_start');
+          if (open >= 0) {
+            turnRec.parts.splice(open);
+          }
           turnRec.parts.push({ kind: 'whale', who: ev.who || '小鲸', text: ev.text });
+        } else if (ev.type === 'whale_stream_start') {
+          turnRec.parts.push({ kind: 'whale_start', who: ev.who || '小鲸' });
+        } else if (ev.type === 'whale_delta') {
+          // 她吐了一点字：跟上一段 delta 接起来，别攒一堆碎片
+          const last = turnRec.parts[turnRec.parts.length - 1];
+          if (last && last.kind === 'whale_delta') last.text += ev.text;
+          else turnRec.parts.push({ kind: 'whale_delta', text: ev.text });
         } else if (ev.type === 'tool_start') {
           turnRec.parts.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, done: false });
         } else if (ev.type === 'tool_end') {
@@ -4404,8 +4525,15 @@ async function runTurn({ resume = false, text = '' } = {}) {
           // 先把我这段收尾，再另起一个——她是她，我是我。
           closeThink();
           if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-          addWhaleBubble(ev.who, ev.text);
+          // 有流式临时气泡就定稿到它上面，别再画第二个
+          if (!whaleStreamFinish(ev.text)) addWhaleBubble(ev.who, ev.text);
           noteNewContent();
+        } else if (ev.type === 'whale_stream_start') {
+          closeThink();
+          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+          whaleStreamStart(ev.who);
+        } else if (ev.type === 'whale_delta') {
+          whaleStreamDelta(ev.text);
         } else if (ev.type === 'tool_start') {
           closeThink();
           // 一段话到此为止（后面接着干工具），先把这段落记上
@@ -4598,14 +4726,28 @@ async function send() {
   await runTurn({ text });
 }
 
-/** 生成中插一句：先把这句落盘到当前会话，再停住这一轮，然后带着新话接着跑。 */
+/**
+ * 生成中插一句：先把这句落盘到当前会话，再停住这一轮，然后带着新话接着跑。
+ *
+ * 【主人报过的事故，别改回去】
+ * 切走再切回来，打字按「发送」发不出去，按钮还停在「发送」，再发也发不出去。
+ * 原因是：界面以为还在跑（busy=true），服务端那边其实早跑完了。
+ * 以前这里不管结果如何都当「插进去了」，可根本没人接着跑 —— 那句话就石沉大海。
+ *
+ * 现在分三种结局，一种都不许糊过去：
+ *   1) 真插进去了（running:true）→ 照老样子接着跑；
+ *   2) 服务端说「根本没有在跑的那一轮」（running:false）→ 界面认错，
+ *      把 busy 放掉，直接当一条新消息重新发 —— 主人要的是这句话能出去，
+ *      不是要一个「你刚才不该按这里」的报错；
+ *   3) 网络错、服务端报错 → 明明白白说一句，并把 busy 状态重新问一遍，
+ *      别让界面停在一个跟现实不符的状态上。
+ */
 async function interject() {
   const text = input.value.trim();
   if (!busy || !text) return;
   input.value = '';
   autosizeInput();
-  // 记下这条气泡：万一下面服务端说「其实没在跑」，得把它收回去（不然屏幕上留一条没人回的话）
-  lastInterjectBubble = addUser(text, '插话');
+  addUser(text, '插话');
   pendingResume = true;
   syncSendBtn();
   const r = await fetch('/api/interject', {
@@ -4613,41 +4755,79 @@ async function interject() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId, message: text }),
   }).then((x) => x.json()).catch(() => null);
-  if (!r || r.error) {
+
+  // ② 服务端说：没有在跑的那一轮。界面这边的 busy 是假的，现在纠正它。
+  //
+  // 别再要求 r.ok === false 了：服务端现在回的是 { ok:true, running:false }，
+  // 意思是「话收进历史了，但根本没有在跑的那一轮」。这种也得当成新一轮发出去，
+  // 不然这句话就只剩历史里一条，谁也不会接着回 —— 主人看到的就是「消息没了」。
+  if (r && r.running === false) {
     pendingResume = false;
+    busy = false;
+    turnsInFlight.delete(sessionId);
+    syncSendBtn();
+    // 刚画的那条「插话」气泡是假的（那句没进历史），撤掉再正常发
+    try { if (pendingRewindBubble && pendingRewindBubble.parentNode) pendingRewindBubble.parentNode.removeChild(pendingRewindBubble); } catch {}
+    pendingRewindBubble = null;
+    if (input.value.trim() === '' ) input.value = text;
+    return runTurn({ text });
+  }
+
+  // ③ 真出错了：说清楚，并且把界面状态重新对一遍
+  if (!r || r.error || r.ok !== true) {
+    pendingResume = false;
+    busy = false;
+    turnsInFlight.delete(sessionId);
+    syncSendBtn();
     const wrap = addEl('', 'msg user');
     wrap.innerHTML = '<div class="role">系统</div>';
     const b = document.createElement('div');
     b.className = 'bubble';
     b.textContent = '⚠ 这句没插进去：' + (r && r.error ? r.error : '网络错误');
     wrap.appendChild(b);
+    // 话给回主人，别让他白打一遍
+    if (!input.value.trim()) { input.value = text; autosizeInput(); }
     return;
   }
+
   /**
-   * 服务端说「这轮其实已经跑完了」——那就是咱们算错了 busy。
+   * ④ 服务端说「插进去了」，但这轮没接着跑起来 —— 把话还给主人。
    *
-   * 【不处理会怎样】上面那句 addUser 已经把这话画在屏幕上了，可实际上没有任何一轮
-   * 在跑、这句话谁也没接。模型根本不知道主人说过这句，界面却挂着它 ——
-   * 主人看到的是：打了字、发出去了、我一句话没回。
-   *
-   * 所以这里把**刚才画的那条气泡收回去**，再把话交回正常发送那条路
-   *（正常发送会自己画气泡）。不然屏幕上会出现两条一模一样的话。
+   * pendingResume 是在 runTurn 的 finally 里被消费的。可那一轮要是压根没在跑，
+   * 或者收尾早就走完了，finally 再也不会来，这句话就永远等不到人接。
+   * 所以留个 9 秒观察窗（服务端等收尾最多 8 秒，别抢在它前面）：
+   * 时间到了还挂着 pendingResume，就认这句没落地，放回输入框、说一声。
    */
-  if (r.running === false) {
+  const mySession = sessionId;
+  const myText = text;
+  setTimeout(() => {
+    if (!pendingResume) return;             // 已经接着跑了，正常
+    if (sessionId !== mySession) return;     // 换会话了，别动别人的界面
     pendingResume = false;
-    // 收回刚画的那条「插话」气泡：它是乐观画上去的，服务端说没接住就不该留着
-    if (lastInterjectBubble && lastInterjectBubble.parentNode) lastInterjectBubble.remove();
-    lastInterjectBubble = null;
-    const wrap = addEl('', 'msg user');
-    wrap.innerHTML = '<div class="role">系统</div>';
-    const b = document.createElement('div');
-    b.className = 'bubble';
-    b.textContent = '刚才那一轮已经跑完了，这句没接上 —— 我重新发一遍。';
-    wrap.appendChild(b);
-    input.value = text;
-    autosizeInput();
-    return send();
-  }
+    busy = false;
+    stopping = false;
+    turnsInFlight.delete(mySession);
+    syncSendBtn();
+
+    /**
+     * 【别把锅甩给主人】
+     *
+     * 以前这里是「把字放回输入框 + 让他再按一次发送」。
+     * 主人报过：打了字、按了发送、消息没了，还得重打一遍。
+     * 他要的不是「你刚才不该按这里」的提示，是这句话真的被听见。
+     *
+     * 所以：既然插话没接上，就把这句当成一条普通消息正经发出去。
+     * 顺序不能反 —— 必须先 busy=false 再调 runTurn，否则又被挡回来。
+     */
+    addSysNote('⚠ 这句没能插进去，我当成新的一句发了');
+    runTurn({ text: myText }).catch((e) => {
+      // 真发不出去（断网之类）才退回输入框，并且说清楚
+      busy = false;
+      syncSendBtn();
+      if (input && !input.value.trim()) { input.value = myText; autosizeInput(); }
+      addSysNote('⚠ 这句还是没发出去：' + (e && e.message ? e.message : '网络错误') + '，已经放回输入框');
+    });
+  }, 9000);
 }
 
 sendBtn.onclick = () => {
@@ -4984,236 +5164,13 @@ elWords.addEventListener('blur', () => {
 elCtxLimit.addEventListener('input', () => { paintCtxLimitNote(); });
 elCtxLimit.addEventListener('change', () => { paintCtxLimitNote(); });
 
-/* ---- 记忆本整本 ------------------------------------------------------------
-   顶栏「记忆本」按钮 → 一个只读的弹窗，把两本摊开给人看。
-
-   以前这里写过「主人不要那个入口，删掉了」—— 那是当时只要一个能改的编辑器，
-   主人觉得多余。现在要的是「她到底记了我什么」，是**看**，不是**改**：
-   她记错了我得能发现，而不是只能等她哪天说漏嘴。
-
-   本子现在仍然只在两个地方动：
+/* ---- 会话记忆 ------------------------------------------------------------
+   以前顶栏有个「记忆」按钮能直接编辑本子，主人不要那个入口，删掉了。
+   本子现在只在两个地方动：
      1. 小鱼自己用改文件的工具写；
      2. 主人编辑某一句话时（见下面的「编辑」按钮），会把改动同步进本子。
-   这个界面一个字都不写盘 —— 连「清空」都不给，那是会毁东西的按钮，
-   要清空走设置里那条有备份的。 */
+   界面上的读取接口还在，`/api/sessions/select` 会回 memory 字段，但不再展示。 */
 function paintMemoryFlag() {}
-
-/** 记忆本那个弹窗拿到的最近一次数据（切页签时不用重新请求） */
-let memBook = null;
-/** 当前页签：fixed/roll/detail/archive/raw/whale */
-let memZone = 'fixed';
-
-/** 把 `/api/memory/book` 的正文拆成四块：固定记忆 / 滚动摘要 / 详细 / 归档 */
-function parseMemText(text) {
-  const out = { fixed: '', roll: [], detail: '', archive: [] };
-  const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
-  let zone = '';
-  const fixedBuf = [];
-  const detailBuf = [];
-  for (const line of lines) {
-    const h = /^##\s+(.+?)\s*$/.exec(line);
-    if (h) {
-      const name = h[1];
-      if (/固定记忆/.test(name)) zone = 'fixed';
-      else if (/滚动摘要/.test(name)) zone = 'roll';
-      else if (/归档/.test(name)) zone = 'archive';
-      else if (/详细/.test(name)) zone = 'detail';
-      else zone = '';
-      continue;
-    }
-    if (zone === 'fixed') fixedBuf.push(line);
-    else if (zone === 'roll') {
-      const t = line.trim();
-      if (/^-\s+R\d{4}\b/.test(t)) out.roll.push(t);
-    } else if (zone === 'detail') detailBuf.push(line);
-    else if (zone === 'archive') {
-      const t = line.trim();
-      if (/^-\s+/.test(t)) out.archive.push(t);
-    }
-  }
-  // 固定记忆里那几节（### 任务目标 之类）保留小标题，不然读起来是一坨
-  out.fixed = fixedBuf.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  out.detail = detailBuf.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  return out;
-}
-
-/** 一条摘要：`- R0003 [2026-10-25 17:42] 摘要：……` → 三块 */
-function splitRollLine(line) {
-  const m = /^-\s+(R\d{4})\s*(?:\[([^\]]+)\])?\s*摘要：\s*(.*)$/.exec(line);
-  if (!m) return { id: '', at: '', body: line.replace(/^-\s+/, '') };
-  return { id: m[1], at: m[2] || '', body: m[3] || '' };
-}
-
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text != null) e.textContent = text;
-  return e;
-}
-
-/** 画出当前页签 */
-function renderMemZone() {
-  const body = document.getElementById('memBody');
-  const hint = document.getElementById('memPathHint');
-  if (!body) return;
-  body.innerHTML = '';
-  if (!memBook) {
-    body.append(el('div', 'memEmpty', '正在读本子…'));
-    return;
-  }
-  const s = memBook.session || {};
-  const parsed = parseMemText(s.text || '');
-
-  if (memZone === 'whale') {
-    hint.textContent = memBook.whale?.path || '';
-    const wt = String(memBook.whale?.text || '').trim();
-    if (!wt) {
-      body.append(el('div', 'memEmpty', '小鲸那本还是空的（她还没记过东西）。'));
-      return;
-    }
-    // 小鲸那本是她自己的格式（三个分区），原样排版就行，别再拆
-    const pre = el('pre');
-    pre.textContent = wt;
-    body.append(pre);
-    return;
-  }
-
-  hint.textContent = s.path || '';
-
-  if (memZone === 'raw') {
-    const pre = el('pre');
-    pre.textContent = String(s.text || '').trim() || '（本子是空的）';
-    body.append(pre);
-    return;
-  }
-
-  if (memZone === 'fixed') {
-    if (!parsed.fixed) {
-      body.append(el('div', 'memEmpty', '固定记忆还是空的。\n要她一劳永逸记住的事（「以后都叫我小鱼」这种），让她写进这里。'));
-      return;
-    }
-    const sec = el('div', 'memSec');
-    // 按 ### 小节切，前面没有小标题的部分单独成段
-    const parts = parsed.fixed.split(/\n(?=###\s)/);
-    for (const part of parts) {
-      const lines = part.split('\n');
-      const head = lines[0] && /^###\s/.test(lines[0]) ? lines.shift().replace(/^###\s*/, '') : '';
-      if (head) sec.append(el('h4', '', head));
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t) continue;
-        sec.append(el('div', 'memLine', t));
-      }
-    }
-    body.append(sec);
-    return;
-  }
-
-  if (memZone === 'roll') {
-    if (!parsed.roll.length) {
-      body.append(el('div', 'memEmpty', '还没有滚动摘要。她每说完一轮会往这儿记一句。'));
-      return;
-    }
-    // 倒过来显示：最近的在最上面，跟聊天记录一个习惯
-    for (const line of [...parsed.roll].reverse()) {
-      const r = splitRollLine(line);
-      const wrap = el('div', 'memLine');
-      if (r.id) wrap.append(el('span', 'id', r.id));
-      if (r.at) wrap.append(el('span', 't', r.at));
-      wrap.append(document.createTextNode(r.body));
-      body.append(wrap);
-    }
-    return;
-  }
-
-  if (memZone === 'detail') {
-    if (!parsed.detail) {
-      body.append(el('div', 'memEmpty', '详细区是空的（最近几轮写得细一点，不占摘要名额）。'));
-      return;
-    }
-    const pre = el('pre');
-    pre.textContent = parsed.detail;
-    body.append(pre);
-    return;
-  }
-
-  if (memZone === 'archive') {
-    if (!parsed.archive.length) {
-      body.append(el('div', 'memEmpty', '归档是空的。摘要满了 80 条之后，最旧的会被挪到这儿 —— 一条都不丢，只是不在正文里堆着。'));
-      return;
-    }
-    for (const line of parsed.archive) body.append(el('div', 'memLine', line));
-  }
-}
-
-/** 页签上的数字（固定记忆不显示个数；摘要显示「保留/总数」） */
-function paintMemTabs() {
-  const tabs = document.getElementById('memTabs');
-  if (!tabs) return;
-  for (const b of tabs.querySelectorAll('.memTab')) {
-    b.classList.toggle('on', b.dataset.zone === memZone);
-    const old = b.querySelector('.n');
-    if (old) old.remove();
-  }
-  if (!memBook) return;
-  const s = memBook.session || {};
-  const parsed = parseMemText(s.text || '');
-  const counts = {
-    roll: parsed.roll.length ? `${parsed.roll.length}` : '',
-    archive: parsed.archive.length ? `${parsed.archive.length}` : '',
-  };
-  for (const b of tabs.querySelectorAll('.memTab')) {
-    const n = counts[b.dataset.zone];
-    if (n) b.append(el('span', 'n', n));
-  }
-}
-
-async function openMemoryBook() {
-  const dlg = document.getElementById('memoryDlg');
-  if (!dlg) return;
-  const hint = document.getElementById('memBookHint');
-  if (hint) hint.textContent = '正在读…';
-  memBook = null;
-  renderMemZone();
-  try {
-    const id = encodeURIComponent(sessionId || '');
-    const r = await fetch(`/api/memory/book?id=${id}`).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) throw new Error((r && r.error) || '读不到');
-    memBook = r;
-    if (hint) {
-      const chars = (r.session && r.session.chars) || 0;
-      const digest = (r.session && r.session.digest) || 0;
-      hint.textContent = `${r.title || '当前会话'} · ${chars} 字 · ${digest} 条摘要`;
-    }
-  } catch (e) {
-    if (hint) hint.textContent = '读不到本子：' + (e && e.message ? e.message : e);
-    const body = document.getElementById('memBody');
-    if (body) {
-      body.innerHTML = '';
-      body.append(el('div', 'memEmpty', '读不到本子。她这个会话可能还没开始记东西。'));
-    }
-    return;
-  }
-  paintMemTabs();
-  renderMemZone();
-}
-
-document.getElementById('openMemoryBook').onclick = () => {
-  const dlg = document.getElementById('memoryDlg');
-  if (!dlg) return;
-  memZone = 'fixed';
-  closeOtherDialogs('memoryDlg');
-  dlg.showModal();
-  openMemoryBook();
-};
-
-document.getElementById('memTabs').onclick = (ev) => {
-  const b = ev.target.closest('.memTab');
-  if (!b) return;
-  memZone = b.dataset.zone;
-  paintMemTabs();
-  renderMemZone();
-};
 
 document.getElementById('saveSettings').onclick = async () => {
   const p = await fetch('/api/personas/save', {
@@ -6281,65 +6238,34 @@ const RATES = {
   'glm-4.5-air': { hit: 0.1, miss: 0.4, output: 1.6 },
 
   // ── 阿里云百炼 ──
-  // 2026-11 核实：以前这几条是按印象填的整数，对的只有 qwen-plus 那条。
-  'qwen3.8-max': { hit: 0.25, miss: 2, output: 6 },
-  'qwen3.7-max': { hit: 0.5, miss: 2.5, output: 7.5 },
+  'qwen3.8-max': { hit: 2.4, miss: 12, output: 48 },
   'qwen3.7-plus': { hit: 0.4, miss: 2, output: 8 },
-  'qwen3.8-flash': { hit: 0.016, miss: 0.15, output: 0.47 },
-  'qwen-plus': { hit: 0.4, miss: 2, output: 8 },
+  'qwen3.8-flash': { hit: 0.15, miss: 0.6, output: 2.4 },
 
-  // ── 月之暗面 Kimi（2026-11 核实，美元价 × 7.2）──
-  // 以前 k3 填 4/20/80，比官方贵了两三成。
-  'kimi-k3': { hit: 2.16, miss: 21.6, output: 108 },
-  'kimi-k2.6': { hit: 1.15, miss: 6.84, output: 28.8 },
-  'kimi-k2.7-code': { hit: 1.37, miss: 6.84, output: 28.8 },
+  // ── 月之暗面 Kimi ──
+  'kimi-k3': { hit: 4, miss: 20, output: 80 },
+  'kimi-k2.6': { hit: 1, miss: 4, output: 16 },
+  'kimi-k2.7-code': { hit: 1, miss: 4, output: 16 },
 
-  // ── 硅基流动（转卖，价随模型走；跟着上面阿里/官方的价一起改）──
+  // ── 硅基流动（转卖，价随模型走）──
   'deepseek-ai/DeepSeek-V4.1-Flash': { hit: 0.14, miss: 1.4, output: 5.6 },
   'deepseek-ai/DeepSeek-V4-Pro': { hit: 0.3, miss: 9, output: 27 },
-  'Qwen/Qwen3.8-Max': { hit: 0.25, miss: 2, output: 6 },
 
-  // ── OpenAI（美元价 × 7.2 折成人民币；2026-11 核实）──
-  // 以前 gpt-5 输出算成 720（＝100 美元），实际是 10 美元；缓存命中也都有折扣，以前全写成原价。
-  'gpt-5': { hit: 0.9, miss: 9, output: 72 },
-  'gpt-5-mini': { hit: 0.18, miss: 1.8, output: 14.4 },
-  'gpt-4.1': { hit: 3.6, miss: 14.4, output: 57.6 },
-  'gpt-4.1-mini': { hit: 0.72, miss: 2.88, output: 11.52 },
-  'gpt-4o': { hit: 9, miss: 18, output: 72 },
-  'gpt-4o-mini': { hit: 0.54, miss: 1.08, output: 4.32 },
-  'o4-mini': { hit: 1.98, miss: 7.92, output: 31.68 },
-
-  // ── Anthropic Claude（2026-11 新增；以前整张表里没有 claude，会说「不知道多少钱」）──
-  'claude-opus-5': { hit: 3.6, miss: 36, output: 180 },
-  'claude-opus-4-7': { hit: 3.6, miss: 36, output: 180 },
-  'claude-opus-4-6': { hit: 3.6, miss: 36, output: 180 },
-  'claude-opus-4-5': { hit: 3.6, miss: 36, output: 180 },
-  'claude-sonnet-5': { hit: 1.44, miss: 14.4, output: 72 },
-  'claude-sonnet-4-6': { hit: 2.16, miss: 21.6, output: 108 },
-  'claude-sonnet-4-5': { hit: 2.16, miss: 21.6, output: 108 },
-  'claude-haiku-5-5': { hit: 0.072, miss: 0.72, output: 3.6 },
-  'claude-haiku-4-5': { hit: 0.72, miss: 7.2, output: 36 },
-
-  // ── Mistral / Groq（2026-11 新增，美元价 × 7.2）──
-  'mistral-large-4': { hit: 0.49, miss: 4.9, output: 15.05 },
-  'mistral-large-3': { hit: 0.36, miss: 3.6, output: 10.8 },
-  'mistral-medium-3.5': { hit: 1.08, miss: 10.8, output: 54 },
-  'mistral-small': { hit: 0.072, miss: 0.72, output: 4.32 },
-  'llama-3.3-70b': { hit: 0.43, miss: 0.43, output: 0.5 },
-  'gpt-oss-120b': { hit: 0.54, miss: 1.08, output: 4.32 },
-  'gpt-oss-20b': { hit: 0.27, miss: 0.54, output: 2.16 },
+  // ── OpenAI（美元价 × 7.2 折成人民币）──
+  'gpt-5': { hit: 9, miss: 90, output: 720 },
+  'gpt-4.1': { hit: 18, miss: 18, output: 72 },
+  'gpt-4o': { hit: 18, miss: 18, output: 72 },
+  'gpt-4o-mini': { hit: 1.1, miss: 1.1, output: 4.3 },
+  'o4-mini': { hit: 8, miss: 8, output: 32 },
 
   // ── 其它 ──
-  // MiniMax（2026-11 按官方 API 牌价再核）：M3 五折活动结束了，按 $0.3/$1.2 × 7.2 填。
+  // MiniMax：2026-10 核对官方定价概览表。以前填的「2/10/40」便宜了一半，已改正。
   'MiniMax-M3.1-Flash': { hit: 0.1, miss: 1, output: 4 },
-  'MiniMax-M3': { hit: 0.43, miss: 2.16, output: 8.64 },
-  // xAI / Google（2026-11 核实，美元价 × 7.2）。以前 grok-4 / gemini-3-pro 那两条早下架了。
-  'grok-4.6': { hit: 3.6, miss: 14.4, output: 43.2 },
-  'grok-4.5': { hit: 2.16, miss: 14.4, output: 43.2 },
-  'grok-4.3': { hit: 1.44, miss: 9, output: 18 },
-  'grok-4.20': { hit: 1.44, miss: 9, output: 18 },
-  'gemini-3.1-pro': { hit: 1.44, miss: 14.4, output: 86.4 },
-  'gemini-3-flash': { hit: 0.36, miss: 3.6, output: 21.6 },
+  'MiniMax-M3': { hit: 0.84, miss: 4.2, output: 16.8, est: true },
+  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16, est: true },
+  // xAI / Google 官网这台机器连不上，按美元牌价 × 7.2 估的，标 est
+  'grok-4': { hit: 22, miss: 22, output: 108, est: true },
+  'gemini-3-pro': { hit: 9, miss: 9, output: 72, est: true },
 };
 
 /**
@@ -6445,6 +6371,27 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
   // underMsg = true：这行挂在她说的话后面（CSS 里 .turnUsage 默认透明，
   // 鼠标悬停那句话才淡出来 —— 这是主人要的「悬停才显示」）。
   const cls = underMsg ? 'turnUsage underMsg' : 'turnUsage';
+
+  /**
+   * 【一道兜住了事的保险】
+   *
+   * 实测主人这边一个会话里有 4 处「同一块下面挤了两行」：
+   * 一行「这一轮没记用量」、一行真数字，并排挂着 —— 看着就矛盾。
+   *
+   * 为什么按 turn id 去重没治住：补画历史、实时那一轮的 done、末尾兜底，
+   * 三条路各自拿到的是不同的对象，谁也不知道别人画过。
+   * 所以在真正落笔这一处拦：宿主里已经有一行用量了，直接不画。
+   *
+   * 注意「宿主」可能是 log 本身（实时那一轮没有气泡可挂）。
+   * 那种情况不能一刀切 —— log 里本来就该有多行。只拦「带气泡的宿主」。
+   */
+  const hostEl = host || null;
+  if (hostEl && hostEl !== log) {
+    try {
+      if (hostEl.querySelector(':scope > .turnUsage')) return;
+    } catch {}
+  }
+
   if (!u) {
     if (!Number.isFinite(Number(at))) return;
     const gone = document.createElement('div');
@@ -6534,7 +6481,7 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
  * @param {string} [keepId] 这个要留着（正在开的那个）
  */
 function closeOtherDialogs(keepId) {
-  for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'memoryDlg']) {
+  for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg']) {
     if (id === keepId) continue;
     const d = document.getElementById(id);
     if (d && d.open) {
@@ -6588,7 +6535,7 @@ function closeOtherDialogs(keepId) {
   if (window.__dialogGuardInstalled) return;
   window.__dialogGuardInstalled = true;
 
-  const IDS = ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'memoryDlg'];
+  const IDS = ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg'];
 
   const enforce = (keeper) => {
     for (const id of IDS) {
@@ -7392,6 +7339,15 @@ function renderTurns(turns) {
   // 用队列而不是单个变量：连着好几条 user 的情况太常见（催促、中途打断），
   // 单个变量会把前一句直接覆盖掉，那条用量行和分支按钮就没了。
   const pendingTurns = [];
+  /**
+   * 已经画过用量的那些 turn 的 id。
+   *
+   * 【为什么必须有它】实测主人这边一个会话里有 4 处「同一块下面挤了两行」：
+   * 一行「这一轮没记用量」+ 一行真数字并排。
+   * 根因是补画会触发多次（一轮常是 user→assistant→tool→assistant），
+   * 只清空数组防不住末尾那次兜底补画。用集合记死，谁画过谁就不再画。
+   */
+  const drawnUsage = new Set();
   // 这一串 assistant 里最后画出来那个气泡（用量行要挂在它下面，悬停它才显形）
   let lastBubbleOfTurn = null;
 
@@ -7415,6 +7371,11 @@ function renderTurns(turns) {
       // 以前放在循环末尾，而「补画」又发生在 user 分支里 —— 也就是先补画、后入队，
       // 顺序反了，结果除了最后一条，前面每一轮的用量都补不出来。
       pendingTurns.push({
+        // 每一条给个唯一记号：同一条用量只许画一次。
+        // 为什么要这个：一轮常长成 user→assistant→tool→assistant，
+        // 补画会触发好几次，以前靠清空数组来防重，但清空之后
+        // 末尾那段「兜底补画」又会把剩下的再画一遍 —— 就出现了两行。
+        id: 'u' + ti,
         u: turn.usage || null,
         at: Number.isFinite(Number(turn.rewindId)) ? Number(turn.rewindId) : undefined,
         model: (turn.usage && turn.usage.model) || '',
@@ -7423,14 +7384,6 @@ function renderTurns(turns) {
       const hasText = String(turn.text || '').trim().length > 0;
       const outs = Array.isArray(turn.out) ? turn.out : [];
       const tools = Array.isArray(turn.tools) ? turn.tools : [];
-      /**
-       * 她这一轮想过什么。挂在她说的话**上面**，跟实时流里那个「正在想…」的位置一致
-       *（想在前、说在后，读起来才是「先想过再开口」）。
-       *
-       * 只画给我自己的回放：小鲸说的话（turn.whale）没有思考过程，
-       * 那是另一个人的话，别把她的思考算到别人头上。
-       */
-      if (turn.reasoning && !turn.whale) paintReasoning(turn.reasoning, frag);
       // 只调了工具、一个字没说的那条 assistant（content 是 null）：不画空气泡，只画工具块
       if (hasText || outs.length) {
         /**
@@ -7490,6 +7443,8 @@ function renderTurns(turns) {
       // 那条用量就没了。所以每遇到一条 user 就压进队列，等这一串 assistant 画完再补。
       if (!nextIsAssistant && pendingTurns.length) {
         for (const p of pendingTurns) {
+          if (drawnUsage.has(p.id)) continue;   // 画过就别再画
+          drawnUsage.add(p.id);
           const host = lastBubbleOfTurn || frag;
           appendTurnUsage(p.u, p.at, p.model, host, true);
         }
@@ -7498,8 +7453,13 @@ function renderTurns(turns) {
     }
   }
 
-  // 历史末尾还挂着一串没等到回复的 user（正在跑 / 被打断），也得各自有那一行
-  for (const p of pendingTurns) appendTurnUsage(p.u, p.at, p.model, frag);
+  // 历史末尾还挂着一串没等到回复的 user（正在跑 / 被打断），也得各自有那一行。
+  // 同样先查记号：前面画过的绝不再画一遍（这就是「两行」的来源）。
+  for (const p of pendingTurns) {
+    if (drawnUsage.has(p.id)) continue;
+    drawnUsage.add(p.id);
+    appendTurnUsage(p.u, p.at, p.model, frag);
+  }
   pendingTurns.length = 0;
 
   // 一次性替换 + 只滚一次
@@ -7679,6 +7639,9 @@ async function switchSession(id) {
   localStorage.setItem(STORE_KEY, sessionId);
   paintSessNow();
   paintMemoryFlag(r.memory); // 换会话，顶栏的记忆小字也要跟着换
+  // 「小鱼在不在场」也是按会话的：切过去得重新读一次，
+  // 不然按钮还亮着上一个会话的状态，一点就点反了。
+  try { if (typeof window.__reloadFishState === 'function') window.__reloadFishState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   renderTurns(r.session.turns);
 
@@ -7710,10 +7673,23 @@ async function switchSession(id) {
   syncSendBtn();
 
   renderSessList();
-  // 不管上面有没有抛错，输入区都收拾干净（这条是「删会话后点不了输入框」的根治）。
-  // focus:false —— 切会话/开机恢复都会走这里，此时人不一定想打字，
-  // 抢焦点只会把 Windows 输入法冲回英文（见 releaseComposer 里的说明）。
-  settleComposer({ focus: false });
+  /**
+   * 不管上面有没有抛错，输入区都收拾干净（这条是「删会话后点不了输入框」的根治）。
+   *
+   * 【这里不能用 settleComposer，它会把 busy 无条件清成 false】
+   *   上面刚根据「服务端说这一轮还在跑吗」把 busy 设好（还在跑就是 true），
+   *   紧接着 settleComposer 一调，busy 又被清成 false ——
+   *   按钮从「停止」变回「发送」，主人一按就是发新一轮，撞 409，消息发不出去。
+   *   主人报的「切回来她就停了、发不出话」就是这个。
+   *
+   *   closeSessPanel 只做该做的事：收面板、放开输入框、还焦点，一个 busy 都不碰。
+   *   （settleComposer 的注释里也写着这一条，只是这个调用点以前漏改了。）
+   */
+  closeSessPanel();
+  if (typeof input !== 'undefined' && input) {
+    try { input.disabled = false; input.readOnly = false; if (input.dataset) delete input.dataset.locked; } catch {}
+  }
+  // focus:false 的理由跟以前一样：切会话时人不一定想打字，抢焦点会把输入法冲回英文。
   return true;
 }
 
@@ -7907,13 +7883,13 @@ const PROVIDERS = [
   {
     key: 'dashscope', name: '阿里云百炼（通义千问）', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     match: /dashscope|aliyuncs/i,
-    models: ['qwen3.8-max', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.8-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro-0813', 'kimi-k3', 'glm-5.3'],
+    models: ['qwen3.8-max', 'qwen3.7-plus', 'qwen3.8-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro-0813', 'kimi-k3', 'glm-5.3'],
     hint: '百炼是个大卖场：qwen 自己的，还有 deepseek、kimi、glm 都能从这儿调。',
   },
   {
     key: 'siliconflow', name: '硅基流动 SiliconFlow', base: 'https://api.siliconflow.cn/v1',
     match: /siliconflow/i,
-    models: ['deepseek-ai/DeepSeek-V4.1-Flash', 'deepseek-ai/DeepSeek-V4-Pro', 'Qwen/Qwen3.8-Max'],
+    models: ['deepseek-ai/DeepSeek-V4.1-Flash', 'deepseek-ai/DeepSeek-V4-Pro', 'deepseek-ai/DeepSeek-V3.2', 'Qwen/Qwen3.8-Max', 'gemini-3/gemini-3.0-pro'],
     hint: '一个 key 走很多开源模型，常有免费额度。',
   },
   {
@@ -7944,7 +7920,7 @@ const PROVIDERS = [
     key: 'minimax', name: 'MiniMax',
     base: 'https://api.minimax.chat/v1',
     match: /minimax/i,
-    models: ['MiniMax-M3', 'MiniMax-M3.1-Flash'],
+    models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-Text-01'],
     hint: '',
   },
   {
@@ -7974,13 +7950,13 @@ const PROVIDERS = [
   {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
     match: /api\.openai\.com/i,
-    models: ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
+    models: ['gpt-5', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
     hint: '国内要代理。',
   },
   {
     key: 'anthropic', name: 'Anthropic（走兼容层）', base: 'https://api.anthropic.com/v1',
     match: /anthropic/i,
-    models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'],
+    models: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022'],
     hint: '官方接口不是 OpenAI 兼容的，得用中转站给的兼容地址。',
   },
   {
@@ -7992,19 +7968,19 @@ const PROVIDERS = [
   {
     key: 'groq', name: 'Groq', base: 'https://api.groq.com/openai/v1',
     match: /groq/i,
-    models: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
+    models: ['llama-3.3-70b-versatile', 'qwen-2.5-32b'],
     hint: '快得离谱，模型偏开源。',
   },
   {
     key: 'xai', name: 'xAI Grok', base: 'https://api.x.ai/v1',
     match: /api\.x\.ai/i,
-    models: ['grok-4.3', 'grok-4.5'],
+    models: ['grok-3', 'grok-2-1212'],
     hint: '',
   },
   {
     key: 'gemini', name: 'Google Gemini（兼容层）', base: 'https://generativelanguage.googleapis.com/v1beta/openai',
     match: /generativelanguage|googleapis/i,
-    models: ['gemini-3.1-pro-preview', 'gemini-3-flash-preview'],
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
     hint: '要走它的 OpenAI 兼容入口，路径带 /openai。',
   },
   {
@@ -8177,8 +8153,13 @@ paintModelPicker(mdlBase ? mdlBase.value : '');
 
 function paintModelNow() {
   const cur = mdlState.models.find((m) => m.id === mdlState.activeId);
-  mdlNow.textContent = cur ? ' · ' + cur.model : '';
-  mdlNow.title = cur ? cur.name : '';
+  // #mdlNow 那条灰字主人要求删掉了；元素可能不在，整段做空保护。
+  try {
+    if (mdlNow) {
+      mdlNow.textContent = cur ? ' · ' + cur.model : '';
+      mdlNow.title = cur ? cur.name : '';
+    }
+  } catch {}
 }
 
 function clearFormHint(kind = '', text = '') {

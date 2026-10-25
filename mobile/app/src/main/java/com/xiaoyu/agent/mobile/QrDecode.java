@@ -154,18 +154,28 @@ public final class QrDecode {
 
         double dx1 = tr.x - tl.x, dy1 = tr.y - tl.y;
         double dx2 = bl.x - tl.x, dy2 = bl.y - tl.y;
+        // 定位角「中心」到「中心」的模块数 = dim - 7（每个定位角 7 模块宽，
+        // 中心各在内侧 3.5 处，两个中心之间隔 dim-7 个模块）。
+        // 以前这里写的是 size(v) - 1，少了 6 —— 于是所有版本都匹配不上，
+        // 每次都掉到下面的粗估兜底，粗估一旦差一个版本（差 4 个模块）就必然解不出来。
+        double g1 = Math.hypot(dx1, dy1) / tl.module;   // 实测的模块数
+        double g2 = Math.hypot(dx2, dy2) / tl.module;
+        double avg = (g1 + g2) / 2.0;
         int dim = 0;
-        for (int v = 1; v <= 40; v++) {
-            if (Math.abs(size(v) - 1 - Math.hypot(dx1, dy1) / tl.module) < 1.5
-                    && Math.abs(size(v) - 1 - Math.hypot(dx2, dy2) / tl.module) < 1.5) {
-                dim = size(v);
-                break;
+        if (avg >= 10 && avg <= size(40) - 7 + 2) {
+            int v = (int) Math.round((avg + 7 - 17) / 4.0);   // 由模块数反推版本号
+            if (v >= 1 && v <= 40) {
+                double want = size(v) - 7;
+                // 两个方向都要贴近，且彼此不能差太多（差太多说明拍得太歪）
+                if (Math.abs(want - g1) < 2.0 && Math.abs(want - g2) < 2.0
+                        && Math.abs(g1 - g2) < 2.0) {
+                    dim = size(v);
+                }
             }
         }
         if (dim == 0) {
-            // 粗估：模块数 = 距离 / 模块大小 + 7
-            double est = (Math.hypot(dx1, dy1) / tl.module + Math.hypot(dx2, dy2) / tl.module) / 2 + 7;
-            int v = (int) Math.round((est - 17) / 4.0);
+            // 粗估兜底：模块数 = 中心距 / 模块大小 + 7
+            int v = (int) Math.round((avg + 7 - 17) / 4.0);
             if (v < 1 || v > 40) return null;
             dim = size(v);
         }
@@ -333,10 +343,12 @@ public final class QrDecode {
             if (runIdx == 4) {
                 int total = 0;
                 for (int k = 0; k < 5; k++) total += runs[k];
-                int mod = total / 7;
-                if (mod >= minM && matchRatio(runs, mod)) {
+                // 模块边长要用浮点：整数截断会把 13.35 变成 13，差 0.35 个像素
+                // 乘以 34 个模块就是十几个像素的漂移，右下角整个采样框歪掉。
+                double modF = total / 7.0;
+                if (modF >= Math.max(1, minM) && matchRatio(runs, modF)) {
                     // 中心 = 窗口第一段的起点 + 五段总长的一半
-                    Manager.add(out, horiz, fixed, segStart[0] + total / 2, mod);
+                    Manager.add(out, horiz, fixed, segStart[0] + total / 2.0, modF);
                 }
                 // 滑一段：长度和起点同步左移
                 for (int k = 0; k < 4; k++) {
@@ -366,7 +378,7 @@ public final class QrDecode {
         }
     }
 
-    private static boolean matchRatio(int[] runs, int mod) {
+    private static boolean matchRatio(int[] runs, double mod) {
         double total = 0;
         for (int r : runs) total += r;
         double avg = total / 7.0;
@@ -379,13 +391,13 @@ public final class QrDecode {
     }
 
     private static final class Manager {
-        static void add(List<Finder> out, boolean horiz, int fixed, int cross, int mod) {
+        static void add(List<Finder> out, boolean horiz, int fixed, double cross, double mod) {
             for (Finder f : out) {
                 if (Math.abs(f.x - (horiz ? cross : fixed)) < mod * 3
                         && Math.abs(f.y - (horiz ? fixed : cross)) < mod * 3
                         && Math.abs(f.module - mod) <= Math.max(1, mod * 0.5)) {
-                    f.x = (f.x * f.count + (horiz ? cross : fixed)) / (double) (f.count + 1);
-                    f.y = (f.y * f.count + (horiz ? fixed : cross)) / (double) (f.count + 1);
+                    f.x = (f.x * f.count + (horiz ? cross : fixed)) / (f.count + 1.0);
+                    f.y = (f.y * f.count + (horiz ? fixed : cross)) / (f.count + 1.0);
                     f.count++;
                     return;
                 }

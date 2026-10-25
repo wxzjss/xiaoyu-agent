@@ -99,8 +99,22 @@ function trimFiller(text) {
   return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-const DEFAULT_MAX_ROUNDS = 12;
-const DEFAULT_TIMEOUT_MS = 180000; // 3 分钟
+/**
+ * 默认最多几轮工具循环。
+ *
+ * 【为什么从 12 放到 200】主人要她跟我一样：干多久干多久，别干一半被腰斩。
+ * 我那边是不限（跑到模型自己收尾），她不行 —— 她是 server 放出来的、
+ * 没人看着，真无限就可能一直转圈烧 token。所以给个「够大但有限」的上限。
+ */
+const DEFAULT_MAX_ROUNDS = 200;
+/**
+ * 默认总超时。
+ *
+ * 【为什么从 3 分钟放到 30 分钟】以前她只被用来「查一下东西」，3 分钟够。
+ * 现在要她像我一样正经干活（读一堆文件、改代码、跑命令），3 分钟根本不够，
+ * 干到一半就被判超时。30 分钟够长活，又不至于真挂一天。
+ */
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 分钟
 
 /**
  * 跑一个子智能体，返回它的结论文本。
@@ -138,11 +152,33 @@ export async function runSubagent({
   model = '',
   sessionId = '',
   onProgress = () => {},
+  /**
+   * 她说到一半的字，一个字一个字往外给。
+   *
+   * 【为什么加这个】以前她的 text 是一个字一个字收、但全攒在变量里，
+   * 等整轮跑完才一次性吐出去 —— 主人那边几十秒屏幕上什么都没有。
+   * 我（小鱼）不是那样的：边想边流。她要像我一样，就得把每个字当场推出去。
+   *
+   * 不传也没关系：不传就跟以前一模一样（只是攒着）。
+   *
+   * @param {string} chunk 这一小段字
+   */
+  onDelta = null,
+  /**
+   * 外部的「随时掐掉我」开关。
+   *
+   * 主人要的是「禁用小鲸 = 中断她手上那一轮」。她那一轮是 server 那边
+   * (async()=>{})() 放出来的，不拿个信号进来，外面就只能干等她自己跑完 ——
+   * 那不叫中断，那叫等它完。
+   */
+  signal = null,
 } = {}) {
   const cleanTask = String(task ?? '').trim();
   if (!cleanTask) {
     return { ok: false, text: '没有给我任务内容（task 是空的）。' };
   }
+  // 还没开跑就被叫停了（主人点了请她出去）
+  if (signal?.aborted) return { ok: false, aborted: true, text: '' };
 
   // ---- 闸一：嵌套深度 ----
   if (subagentDepth() >= MAX_SUBAGENT_DEPTH) {
@@ -163,6 +199,13 @@ export async function runSubagent({
   bumpSubagentDepth();
 
   const abortCtrl = new AbortController();
+  // 把主人的「请她出去」接到这一轮的信号上：外面一掐，这里立刻跟着断
+  if (signal) {
+    if (signal.aborted) abortCtrl.abort('stop');
+    else {
+      try { signal.addEventListener('abort', () => abortCtrl.abort('stop'), { once: true }); } catch {}
+    }
+  }
   const timer = setTimeout(() => {
     try { abortCtrl.abort('timeout'); } catch {}
   }, Math.max(5000, timeoutMs));
@@ -334,6 +377,10 @@ export async function runSubagent({
       '一条准则：宁可说「不知道」，也不编。查得到就给证据，查不到就说查不到，',
       '把「我找过哪些地方」列出来，让她知道该换个方向。',
       '',
+      '【安全词跟你无关】',
+      '小鱼和主人之间有一套安全词（「停止」「命令」「人设」这类）。那些词只改变**小鱼**的说法和做法，',
+      '对你不生效。你看到对话里出现它们，照自己的判断办事就行 —— 不用跟着换腔调，不用停下，也不用特别提它。',
+      '',
       '【你在什么地方】（很重要，先读这段）',
       '你每被叫起来一次，都是一张白纸 —— 上一次说过什么、干过什么，你自己脑子里是空的。',
       '你唯一的记性是下面那个本子。所以「记得」这件事，只能靠读本子，不能靠你以为自己记得。',
@@ -437,8 +484,18 @@ export async function runSubagent({
         signal: abortCtrl.signal,
         sessionId: subSessionId,
       })) {
-        if (ev.type === 'text') text += ev.text;
-        else if (ev.type === 'tool_calls') toolCalls = ev.toolCalls;
+        if (ev.type === 'text') {
+          text += ev.text;
+          /**
+           * 边收边吐：主人在屏幕上能看见她正在说这句话。
+           *
+           * 包一层 try：推给界面失败（窗口关了、连接断了）绝不能连累她继续跑，
+           * 顶多是主人这会儿看不见，话最后还是会整段落在历史里。
+           */
+          if (typeof onDelta === 'function') {
+            try { onDelta(ev.text); } catch {}
+          }
+        } else if (ev.type === 'tool_calls') toolCalls = ev.toolCalls;
         else if (ev.type === 'usage') usage = ev.usage;
       }
 

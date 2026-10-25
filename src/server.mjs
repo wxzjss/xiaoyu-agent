@@ -3298,6 +3298,94 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     const seenBefore = new Set(history);
     const wireSeenBefore = new Set(wireMessages);
+    /**
+     * 把压缩的结果接回正式历史。
+     *
+     * 【为什么必须要有这个】
+     * compressHistory 是就地改它拿到的那个数组，而它拿到的是 wireMessages ——
+     * 从 history 里按回退索引挑出来重拼的**副本**。所以以前压缩只改了副本：
+     * 这一轮发给模型的是短的，可 history 一条没少、saveSession 存回去的还是那一大坨。
+     * 下一轮又从同一份长历史开始压，再压一次，再白压一次。
+     * 主人看到的就是「压缩弹了、历史一点没小、永远压不下去」。
+     *
+     * 【怎么接】
+     * wireMessages 里除了这一轮新 push 的 assistant/tool，其余都是在 history 里出现过的同一批对象。
+     * 压缩后还多一条 context:true 的摘要。所以：
+     *   头部（history 开头那几条 role:system）保持不动，
+     *   尾部 = history 里那些**还在 wireMessages 里**的对象（按 history 原顺序），
+     *   摘要 = wireMessages 里那条带 summary 标记、且不属于 history 的。
+     * 回退点的 at 是相对 history 的下标，删了消息下标就错位 —— 必须跟着重映射。
+     */
+    const commitCompression = () => {
+      if (!Array.isArray(history) || !Array.isArray(wireMessages)) return false;
+      const alive = new Set(wireMessages);
+      /**
+       * 这次新生成的那条摘要。
+       *
+       * 只认 summary && context 两个标记都在的 —— compress.mjs 造的摘要一定带 context:true。
+       * 老版本压缩留下的摘要没有 context（盘上实测 14 条、白占 2 万 token），
+       * 那种不能当成「这次的新摘要」，否则会被一直留在历史里滚下去。
+       */
+      const summaryMsg = wireMessages.find(
+        (m) => m && m.summary && m.context && !seenBefore.has(m),
+      ) || null;
+      const beforeLen = history.length;
+
+      /**
+       * 压缩后还活着、原本就在 history 里的对象，按 history 原顺序挑出来。
+       *
+       * 同时把「老版本留下的裸摘要」（有 summary 标记、却没有 context 标记）剔掉：
+       * 那是历史垃圾，压一次就该清一次，不然越攒越多，每轮都白烧 token。
+       */
+      const survivors = history.filter(
+        (m) => alive.has(m) && !(m && m.summary && !m.context),
+      );
+      // 本来一条没少、也没有新摘要 —— 没真压过，别动
+      if (survivors.length === beforeLen && !summaryMsg) return false;
+
+      // 头部：history 开头连续的 system，再加上紧跟的那条 context 规则副本。
+      // 判定必须和 rewind.mjs 的 headIndexes() 一模一样 ——
+      // 那边认 system + context user 两条是头部，这边要是只认 system，
+      // 规则副本就会被当成「对话尾巴」留下来，位置也会跑偏。
+      let headCount = 0;
+      while (headCount < history.length && history[headCount]?.role === 'system') headCount++;
+      if (history[headCount]?.role === 'user' && history[headCount]?.context) headCount++;
+      const headPart = history.slice(0, headCount);
+      const headSet = new Set(headPart);
+      const tailPart = survivors.filter((m) => !headSet.has(m));
+
+      const next = [...headPart];
+      if (summaryMsg) next.push(summaryMsg);
+      next.push(...tailPart);
+
+      // 回退点重映射：老下标 -> 新下标（按对象找回位置）
+      const posOf = new Map();
+      next.forEach((m, i) => { if (!posOf.has(m)) posOf.set(m, i); });
+      const rawRewinds = Array.isArray(session?.rewinds) ? session.rewinds : [];
+      for (const r of rawRewinds) {
+        if (!r || !Number.isFinite(Number(r.at))) continue;
+        const oldAt = Number(r.at);
+        if (oldAt < 0) continue; // -1 是本轮登记表，不算回退点
+        const atObj = history[oldAt];
+        if (atObj && posOf.has(atObj)) {
+          r.at = posOf.get(atObj);
+        } else {
+          // 那条消息被压掉了：顺延到它后面最近一条还活着的
+          let moved = oldAt;
+          while (moved < history.length && !posOf.has(history[moved])) moved++;
+          r.at = posOf.has(history[moved]) ? posOf.get(history[moved]) : next.length;
+        }
+        // hidden 记的是「被回退藏起来的下标」，那些消息压完多半已经不在了，
+        // 留着这些下标只会误伤新位置的别的消息 —— 清掉。
+        r.hidden = [];
+      }
+
+      history.length = 0;
+      history.push(...next);
+      console.log('[compress] 历史已同步进会话：' + beforeLen + ' → ' + next.length
+        + ' 条（摘要 ' + (summaryMsg ? 1 : 0) + ' 条）');
+      return true;
+    };
     const committed = new Set();
     const commitWireBack = () => {
       let n = 0;
@@ -3371,6 +3459,12 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         // 压完立刻落盘。压缩是就地改 wireMessages（= session.messages 的浅拷贝，
         // 里面是同一批消息对象），不存的话这一轮中途退出，下次打开还是压缩前那一大坨。
         onCompressed: async () => {
+          // 先把压缩结果接回正式历史，再落盘 —— 顺序反了的话存回去的还是压缩前那一坨。
+          try {
+            commitCompression();
+          } catch (e) {
+            console.warn('[compress] 接回历史失败：', String(e?.message ?? e));
+          }
           try {
             saveSession(session);
           } catch (e) {

@@ -1,4 +1,4 @@
-// The agent loop: call model -> run tools -> feed results back -> repeat.
+﻿// The agent loop: call model -> run tools -> feed results back -> repeat.
 import { streamChat, modelNameForSession } from './llm.mjs';
 import { takeMail, formatMail } from './peer.mjs';
 import { inflateHistory } from './attach.mjs';
@@ -189,7 +189,7 @@ export async function runAgent({
   // maxRounds 可以被设成 Infinity（不限）：那就一直跑到模型自己收尾，或用户点「停止」。
   for (let round = 0; round < config.maxRounds; round++) {
     // 每轮调模型前都量一下历史；超了就把旧对话折成摘要。没超就什么都不做（不额外花钱）。
-    const compressed = await compressHistory({ messages, signal, model: turnModel });
+    const compressed = await compressHistory({ messages, signal, model: turnModel, sessionId });
     if (compressed.compressed) {
       onEvent({
         type: 'compressed',

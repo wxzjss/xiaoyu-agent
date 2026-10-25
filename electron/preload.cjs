@@ -31,4 +31,34 @@ contextBridge.exposeInMainWorld('desktop', {
       return '';
     }
   },
+
+  /**
+   * 内置浏览器。
+   *
+   * 网页跑在【另一个窗口】里，不塞进主界面 —— 主窗口是 sandbox 的，
+   * 往里塞 <webview> 等于把安全边界往下拉。这里只给界面留几个发指令的按钮。
+   *
+   * 地址只收 http / https，主进程那边也会再挡一遍（两处都挡，不靠单点）。
+   */
+  browser: {
+    open: (url) => ipcRenderer.invoke('browser:open', url),
+    close: () => ipcRenderer.invoke('browser:close'),
+    goto: (url) => ipcRenderer.invoke('browser:goto', url),
+    back: () => ipcRenderer.invoke('browser:back'),
+    forward: () => ipcRenderer.invoke('browser:forward'),
+    reload: () => ipcRenderer.invoke('browser:reload'),
+    state: () => ipcRenderer.invoke('browser:state'),
+    snap: () => ipcRenderer.invoke('browser:snap'),
+
+    /**
+     * 浏览器窗口状态变了（地址、标题、能不能后退）就叫一下。
+     * 返回一个「取消订阅」的函数，界面关掉时记得调，免得越挂越多。
+     */
+    onState: (fn) => {
+      if (typeof fn !== 'function') return () => {};
+      const h = (_e, st) => { try { fn(st); } catch {} };
+      ipcRenderer.on('browser:state', h);
+      return () => { try { ipcRenderer.removeListener('browser:state', h); } catch {} };
+    },
+  },
 });

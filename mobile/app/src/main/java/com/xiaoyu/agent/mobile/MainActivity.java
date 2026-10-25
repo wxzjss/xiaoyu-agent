@@ -5,6 +5,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,6 +14,8 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -31,6 +34,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -68,6 +72,31 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 4242;
     private static final int REQ_CAMERA = 4243;
 
+    // ── 连接页自己的背景 ──────────────────────────────────────────────
+    /**
+     * 这三个是连接页的背景，素材都打在 APK 里，联网前后都在，不依赖电脑。
+     *
+     * 以前连接页就是一块纯深灰 —— 明明音乐都打进包了，一打开却是「没做完的半成品」。
+     * 现在跟聊天界面一样有动着的背景，只是画的人不一样：
+     *   连接页 → 这里的 SurfaceView + MediaPlayer（原生）
+     *   聊天页 → 网页自己那套（跟电脑端同步的那个视频和音乐）
+     * 进网页前一定要 stopPageBackdrop()，否则两边会一起响。
+     *
+     * 为什么不用 VideoView：它读不了 assets/ 里的文件。
+     * setVideoURI("file:///android_asset/...") 会直接
+     * `Unable to open content` → `IOException: setDataSource failed`，
+     * 表面上看是「背景没出来」，其实一个字节都没读到。
+     * 只有 SurfaceView + MediaPlayer.setDataSource(fd, offset, length) 这条路能读 assets。
+     */
+    private SurfaceView backSurface = null;
+    private MediaPlayer backVideoMp = null;
+    private MediaPlayer backMusic = null;
+    /** backMusic 是否已经 onPrepared —— 没准备好的播放器不能 start，会报 -38 */
+    private boolean backMusicReady = false;
+
+    private static final String ASSET_BG_VIDEO = "bg-video.mp4";
+    private static final String ASSET_BG_MUSIC = "bg-music.m4a";
+
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -93,8 +122,15 @@ public class MainActivity extends Activity {
      * 连接页。first=false 时顶部加一行「换个地址」，不吓人。
      */
     private void showConnectScreen(boolean first) {
+        // 回到连接页 = 一定要把网页那套背景停掉，不然它还在后台放音乐，
+        // 跟下面新起的原生背景撞在一起。
+        stopWebBackdrop();
         root.removeAllViews();
         parkWeb();
+
+        // 先铺背景层（视频 + 一层压暗），再把表单盖在最上面。
+        // 顺序很重要：FrameLayout 后加的在上层。
+        startPageBackdrop();
 
         LinearLayout col = Ui.column(this, 0);
         col.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -220,8 +256,204 @@ public class MainActivity extends Activity {
             }
         });
 
-        root.addView(Ui.scroll(this, col, false),
+        // 连接页这一层必须**透明**：Ui.scroll() 默认刷的是不透明的 BG，
+        // 而它铺满整屏、又盖在背景视频和压暗层上面 —— 之前背景明明在放
+        // （dumpsys media.player 里能看到 mime(video/avc) state(5) looping(1)），
+        // 屏幕上却一片黑，就是被这层死板的底色挡死了。
+        // 透明之后画面才透得上来；字能不能看清交给下面那块半透明卡片。
+        ScrollView page = Ui.scroll(this, col, false);
+        page.setBackgroundColor(0x00000000);
+        // 表单本身垫一层半透明深色卡片，保证任何背景下字都读得清
+        col.setBackgroundColor(0x660b0e13);
+        int cardPad = Ui.dp(this, 18);
+        col.setPadding(cardPad, cardPad, cardPad, cardPad);
+        root.addView(page,
                 new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    // ────────────────────── 连接页背景（视频 + 音乐） ──────────────────────
+    /**
+     * 起连接页的背景：底层一段循环视频，上面压一层半透明深色（保证字看得清），
+     * 再来一首背景音乐。
+     *
+     * 两边都出错就静默退化成纯色底 —— 不能让「背景播不了」把登录这件事也拖下水。
+     */
+    /**
+     * 把 assets 里的大媒体文件摊到缓存目录，返回那个真实文件的路径（失败了返回 null）。
+     *
+     * 为什么非得走这一步：
+     *   1) VideoView.setVideoURI("file:///android_asset/x.mp4") 读不了 assets，
+     *      日志里是 `Unable to open content ... setDataSource failed`。
+     *   2) MediaPlayer.setDataSource(fd, offset, length) 理论可行，但 aapt 打包时
+     *      assets 里的文件**可能被压缩**，那时 offset/length 指向的是压缩流，
+     *      MediaPlayer 解出来是乱码，报 `error (-38, 0)`（MEDIA_ERROR_UNKNOWN）。
+     *      .mp4 虽然一般在 aapt 的白名单里不压，但依赖这个默认值不稳。
+     *   3) 摊成真实文件之后就是普通文件路径，任何播放器都认，一次解决三条路。
+     * 文件已经摊过且字节数对得上就直接复用，不重复拷 7MB。
+     */
+    private java.io.File assetToCache(String name) {
+        try {
+            java.io.File dir = new java.io.File(getCacheDir(), "bg");
+            if (!dir.exists() && !dir.mkdirs()) return null;
+            java.io.File out = new java.io.File(dir, name);
+            long assetLen = -1;
+            try {
+                android.content.res.AssetFileDescriptor afd = getAssets().openFd(name);
+                assetLen = afd.getLength();
+                afd.close();
+            } catch (Throwable ignored) {}
+            if (out.exists() && out.length() > 0 && (assetLen <= 0 || out.length() == assetLen)) {
+                return out;   // 已经摊好了，直接用
+            }
+            java.io.InputStream in = getAssets().open(name);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            long total = 0;
+            while ((n = in.read(buf)) > 0) {
+                fos.write(buf, 0, n);
+                total += n;
+            }
+            fos.flush();
+            fos.close();
+            in.close();
+            // 拷完核一下字节数，短了就是坏文件，别拿去播
+            if (total <= 0 || (assetLen > 0 && total != assetLen)) {
+                out.delete();
+                return null;
+            }
+            return out;
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    private void startPageBackdrop() {
+        // 视频层：SurfaceView + MediaPlayer，播缓存目录里的真实文件（见 assetToCache 的注释）
+        try {
+            final java.io.File vfile = assetToCache(ASSET_BG_VIDEO);
+            if (vfile == null) {
+                // 摊不出来就干脆不画，别留一块黑
+                backSurface = null;
+                backVideoMp = null;
+            } else {
+                SurfaceView sv = new SurfaceView(this);
+                sv.setLayoutParams(new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                final MediaPlayer mp = new MediaPlayer();
+                final SurfaceHolder holder = sv.getHolder();
+                holder.addCallback(new SurfaceHolder.Callback() {
+                    @Override
+                    public void surfaceCreated(SurfaceHolder h) {
+                        // 画面到手了才喂数据：没有 Surface 时 setDisplay 会抛错
+                        try {
+                            mp.setDisplay(h);
+                            mp.setDataSource(vfile.getAbsolutePath());
+                            mp.setLooping(true);
+                            mp.setVolume(0f, 0f);   // 画面归画面，声音交给音乐那一路，免得两条音轨叠着响
+                            try {
+                                mp.setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING);
+                            } catch (Throwable ignored) {}
+                            mp.setOnPreparedListener(m -> {
+                                try { m.setVolume(0f, 0f); m.start(); } catch (Throwable ignored) {}
+                            });
+                            mp.setOnErrorListener((m, what, extra) -> {
+                                // 解不了就把画面层藏掉，只留压暗底色，别让登录跟着挂
+                                sv.setVisibility(View.GONE);
+                                return true;
+                            });
+                            mp.prepareAsync();
+                        } catch (Throwable e) {
+                            sv.setVisibility(View.GONE);
+                        }
+                    }
+
+                    @Override
+                    public void surfaceChanged(SurfaceHolder h, int fmt, int w, int hh) {
+                    }
+
+                    @Override
+                    public void surfaceDestroyed(SurfaceHolder h) {
+                        try { if (mp.isPlaying()) mp.pause(); } catch (Throwable ignored) {}
+                    }
+                });
+                backSurface = sv;
+                backVideoMp = mp;
+                root.addView(sv);
+            }
+        } catch (Throwable e) {
+            backSurface = null;
+            backVideoMp = null;
+        }
+
+        // 压暗层：视频在下面动，字在上面看清楚（45% 不透明）
+        View veil = new View(this);
+        veil.setBackgroundColor(0x730b0e13);
+        veil.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(veil);
+
+        // 音乐：同样摊成真实文件再播
+        try {
+            java.io.File mfile = assetToCache(ASSET_BG_MUSIC);
+            if (mfile == null) {
+                backMusic = null;
+                backMusicReady = false;
+            } else {
+                MediaPlayer mp = new MediaPlayer();
+                mp.setDataSource(mfile.getAbsolutePath());
+                mp.setLooping(true);
+                float vol = 0.4f;
+                try {
+                    String pref = getSharedPreferences("xiaoyu_local", android.content.Context.MODE_PRIVATE)
+                            .getString("musicVolume", null);
+                    if (pref != null) vol = Float.parseFloat(pref);
+                } catch (Throwable ignored) {}
+                mp.setVolume(vol, vol);
+                mp.setOnPreparedListener(m -> {
+                    backMusicReady = true;
+                    try { m.start(); } catch (Throwable ignored) {}
+                });
+                mp.setOnErrorListener((m, what, extra) -> true);
+                backMusic = mp;
+                backMusicReady = false;
+                mp.prepareAsync();
+            }
+        } catch (Throwable e) {
+            backMusic = null;
+            backMusicReady = false;
+        }
+    }
+    /** 连接页背景收工：离开连接页、或者 Activity 不可见时都得调。 */
+    private void stopPageBackdrop() {
+        if (backVideoMp != null) {
+            try { backVideoMp.stop(); } catch (Throwable ignored) {}
+            try { backVideoMp.release(); } catch (Throwable ignored) {}
+            backVideoMp = null;
+        }
+        if (backSurface != null) {
+            try {
+                ViewGroup parent = (ViewGroup) backSurface.getParent();
+                if (parent != null) parent.removeView(backSurface);
+            } catch (Throwable ignored) {}
+            backSurface = null;
+        }
+        if (backMusic != null) {
+            try { if (backMusicReady && backMusic.isPlaying()) backMusic.pause(); } catch (Throwable ignored) {}
+            try { backMusic.release(); } catch (Throwable ignored) {}
+            backMusic = null;
+        }
+        backMusicReady = false;
+    }
+    /** 网页（聊天界面）那套背景用的是网页里的 video/audio，原生管不着它的开关；
+     *  离开网页时至少得让它把声音停掉，否则回到连接页会两首一起响。 */
+    private void stopWebBackdrop() {
+        if (web == null) return;
+        try {
+            web.evaluateJavascript(
+                    "(function(){try{var a=document.getElementById('bgMusic');if(a){a.pause();}var v=document.getElementById('bgVideo');if(v){v.pause();}}catch(e){}})();",
+                    null);
+        } catch (Throwable ignored) {}
     }
 
     private static class ButtonHolder {
@@ -259,6 +491,10 @@ public class MainActivity extends Activity {
             showConnectScreen(true);
             return;
         }
+
+        // 进网页之前先把连接页那套原生背景停掉：视频一帧都不想多解，
+        // 音乐更是必须停 —— 不然它会和网页里那首一起响。
+        stopPageBackdrop();
 
         /**
          * 有留着的页面就直接挂回来，别重建。
@@ -624,6 +860,13 @@ public class MainActivity extends Activity {
             web.onPause();
             web.resumeTimers();   // 关键：定时器留着，流式输出才不会停
         }
+        // 退到后台就停掉连接页的背景：视频不必在后台解，音乐也不该在别人打电话时响。
+        if (backVideoMp != null) {
+            try { if (backVideoMp.isPlaying()) backVideoMp.pause(); } catch (Throwable ignored) {}
+        }
+        if (backMusic != null && backMusicReady) {
+            try { if (backMusic.isPlaying()) backMusic.pause(); } catch (Throwable ignored) {}
+        }
     }
 
     @Override
@@ -632,6 +875,15 @@ public class MainActivity extends Activity {
         if (web != null) {
             web.onResume();
             web.resumeTimers();
+        }
+        // 回到前台，连接页还在的话接着放（网页在的时候就不管，它自己会管）
+        if (web == null || webParked) {
+            if (backVideoMp != null) {
+                try { if (!backVideoMp.isPlaying()) backVideoMp.start(); } catch (Throwable ignored) {}
+            }
+            if (backMusic != null && backMusicReady) {
+                try { if (!backMusic.isPlaying()) backMusic.start(); } catch (Throwable ignored) {}
+            }
         }
     }
 
@@ -679,6 +931,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopPageBackdrop();   // 背景的 MediaPlayer 不解会漏，Activity 走了就收工
         detachWeb();
         super.onDestroy();
     }

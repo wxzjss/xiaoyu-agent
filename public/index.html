@@ -1792,7 +1792,10 @@ const log = document.getElementById('log');
 
    右下角那 13 处调用全换成 stickToBottom()，行为由这里统一决定。
 ------------------------------------------------------------------ */
-const SCROLL_STICK_PX = 40;
+// 离底多近算「还贴着底」。
+// 以前是 40，太紧：手指滚轮轻轻一抖、或者内容刚好高一像素，就掉出跟随状态，
+// 之后消息再怎么来都不滚了（主人反馈过这个）。放到 80，正常抖动掉不出去。
+const SCROLL_STICK_PX = 80;
 let stickBottom = true;
 let unseenNew = 0;
 let stickRaf = 0;
@@ -1808,9 +1811,20 @@ function toBottomEl() {
  * 再调回 stickToBottom，绕圈子却一次都没真滚 —— 表现就是发新消息画面不动、
  * 打开会话停在最早的位置。
  */
+/**
+ * 我们自己刚滚过一次底的凭证。
+ *
+ * 为什么需要它：scroll 事件分不清「主人自己往上滚」和「内容变高把视口顶下去了」。
+ * 前者该停止跟随，后者不该。以前不分，结果流式吐字时经常被误判，
+ * 好好的跟随状态自己就断了 —— 主人看到的就是「不滚了，得手动拉」。
+ */
+let selfScrollAt = 0;
+
 function hardScrollBottom() {
   if (!log) return;
   log.scrollTop = log.scrollHeight;
+  // 打戳：紧跟着来的那个 scroll 事件是我们自己造成的，不算主人翻页
+  selfScrollAt = Date.now();
 }
 
 /** 节流：一帧内多次调用只滚一次，别每条事件都做一次布局。 */
@@ -1969,6 +1983,19 @@ function resetScrollStick() {
     // passive：滚动事件里不 preventDefault，别拖慢滚动
     log.addEventListener('scroll', () => {
       const gap = log.scrollHeight - log.scrollTop - log.clientHeight;
+      /**
+       * 这一下如果是我们自己滚出来的（跟随、内容变高），就别去改 stickBottom。
+       *
+       * 不这么写的话，流式吐字时内容一变高，浏览器会先甩一个 scroll 事件，
+       * 那会儿 scrollTop 还是老值、gap 突然很大，就被判成「主人往上翻了」，
+       * 跟随状态自己就断了 —— 主人看到的就是「我什么都没做，它不滚了」。
+       *
+       * 120ms 够覆盖「设完 scrollTop 到浏览器回调」这段延迟，
+       * 又不至于把主人真·往上滚误认成自己人。
+       */
+      const mine = Date.now() - selfScrollAt < 120;
+      if (mine) return;
+
       const wasStick = stickBottom;
       stickBottom = gap <= SCROLL_STICK_PX;
       if (stickBottom && !wasStick) {
@@ -7884,7 +7911,7 @@ const booted = bootSessions();
  * 把两个旋钮写进 CSS 变量、右下角给个能实时调的小面板。
  * 做法照 dsh-video-skin：无声循环 + object-fit: cover，面板半透明让画面透出来。
  */
-const skinState = { on: false, settings: { surface: .2, veil: .14, playbackRate: 1 }, hasVideo: false };
+const skinState = { on: false, settings: { surface: .2, veil: .14, playbackRate: 1 }, hasVideo: false, allowMobileVideo: false };
 
 const skinVideoEl = document.getElementById('bgVideo');
 const skinKnobEl = document.getElementById('skinKnob');
@@ -7911,9 +7938,38 @@ function teardownSkin() {
   if (skinVideoEl) {
     try { skinVideoEl.pause(); } catch {}
     skinVideoEl.removeAttribute('src');
+    skinVideoEl.style.display = '';
     try { skinVideoEl.load(); } catch {}
   }
+  clearTimeout(skinFailTimer);
   if (skinPanelEl) skinPanelEl.classList.remove('open');
+}
+
+/**
+ * 是不是手机壳打开的（APK 里的 WebView）。
+ *
+ * 判两样：UA 里带着壳自己加的 XiaoyuMobile，或者 UA 本身是移动端。
+ * 手机上的差别不是「能不能播」，而是「该不该拉」——
+ * 这段片子是 10.6 MB，同一个 Wi-Fi 下还行，出门走组网就是灾难。
+ */
+function isMobileShell() {
+  try {
+    const ua = String(navigator.userAgent || '');
+    if (/XiaoyuMobile/i.test(ua)) return true;
+    return /Android|iPhone|iPad|Mobile/i.test(ua);
+  } catch { return false; }
+}
+
+/** 视频背景加载失败/超时就把画面层藏起来，只留压暗底色 —— 别黑屏也别空等 */
+let skinFailTimer = null;
+function skinGiveUp(why) {
+  clearTimeout(skinFailTimer);
+  if (skinVideoEl) {
+    try { skinVideoEl.pause(); } catch {}
+    skinVideoEl.style.display = 'none';
+  }
+  // 把 class 留着：压暗底色和蒙版还在，界面不会突然变亮
+  console.warn('[skin] 背景视频没加载出来：' + why);
 }
 
 async function setupSkin() {
@@ -7921,12 +7977,31 @@ async function setupSkin() {
   skinState.on = true;
   document.body.classList.add('skin');
   applySkinVars();
+
+  // 手机上默认不拉这 10.6 MB。想强行开就在【功能】里把「手机上放背景视频」打开。
+  const mobile = isMobileShell();
+  skinVideoEl.dataset.mobile = mobile ? '1' : '0';
+  if (mobile && !skinState.allowMobileVideo) {
+    skinGiveUp('手机上默认不加载背景视频（省流量）');
+    return;
+  }
+
+  skinVideoEl.style.display = '';
   const want = '/api/skin/video';
   const now = skinVideoEl.getAttribute('src') || '';
   // 换过片子（URL 没变但内容变了）时就带个时间戳重下一次
   if (!now.startsWith(want)) {
     skinVideoEl.src = want + '?t=' + Date.now();
     skinVideoEl.playbackRate = Number(skinState.settings.playbackRate) || 1;
+
+    // 兜底一：错误直接放弃（文件没了、token 没带上、内核不认这个编码…）
+    skinVideoEl.addEventListener('error', () => skinGiveUp('元素报 error'), { once: true });
+    // 兜底二：12 秒还没首帧也算放弃（弱网下别让人对着黑屏干等）
+    clearTimeout(skinFailTimer);
+    skinFailTimer = setTimeout(() => {
+      if (skinVideoEl.readyState < 2) skinGiveUp('12 秒没出画面');
+    }, 12000);
+
     // 自动播放被挡（理论上不会，Electron 默认允许）就静音兜底，反正本来就是无声
     skinVideoEl.play().catch(() => {
       skinVideoEl.muted = true;
@@ -7940,6 +8015,7 @@ async function refreshSkin() {
   if (!r || r.error) return;
   skinState.settings = { ...skinState.settings, ...(r.settings || {}) };
   skinState.hasVideo = Boolean(r.hasVideo);
+  skinState.allowMobileVideo = Boolean(r.allowMobileVideo);
   if (!r.enabled || !r.hasVideo) {
     teardownSkin();
     return;

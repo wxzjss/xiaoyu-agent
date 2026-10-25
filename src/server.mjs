@@ -1077,7 +1077,7 @@ const server = createServer(async (req, res) => {
     // 正在跑的先停手，别并行
     const running = runningTurns.get(sid);
     if (running?.ac) {
-      running.ac.abort();
+      running.ac.abort('handoff');
       await Promise.race([running.done, new Promise((r) => setTimeout(r, 8000))]);
     }
 
@@ -2339,7 +2339,7 @@ const server = createServer(async (req, res) => {
       if (!turn || !turn.ac || turn.ac.signal.aborted) continue;
       ids.push(id);
       try {
-        turn.ac.abort();
+        turn.ac.abort('quit');
         // 草稿里已经说出来的字，abort 之后 agent 自己会 commit；
         // 但如果 agent 还在等模型第一句，那就一个正式历史都没有 —— 这时候靠草稿接回来，
         // 所以这里再补写最后一份，保证「正在跑工具」也留痕。
@@ -2996,7 +2996,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
   if (req.method === 'POST' && url.pathname === '/api/stop') {
     const { sessionId = 'default' } = await body(req).catch(() => ({}));
     const turn = runningTurns.get(sessionId);
-    if (turn?.ac) turn.ac.abort();
+    // 带上原因：stop = 主人真的要让这一轮停手
+    if (turn?.ac) turn.ac.abort('stop');
     return json(res, 200, { ok: true, stopped: Boolean(turn?.ac) });
   }
 
@@ -3011,16 +3012,34 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
 
     const turn = runningTurns.get(sessionId);
     if (turn?.ac) {
-      turn.ac.abort();
+      /**
+       * 带上原因：interject = 主人插话，不是让这一轮停手。
+       *
+       * 这个区别很要命：工具收到 abort 会写一句「为什么被掐掉」，
+       * 以前不分原因一律写「被主人叫停了」，模型就以为主人在喊停，
+       * 直接收工回一句「好的」，插进来的话当没看见。
+       */
+      turn.ac.abort('interject');
       // 等这一轮真的收尾：历史写完盘、热缓存里的数组也定型了，才好往后接。
       await Promise.race([turn.done, new Promise((r) => setTimeout(r, 8000))]);
     }
 
-    const history = session.messages;
+    /**
+     * 收尾之后必须【重新拿一次 session】。
+     *
+     * 踩过的坑：上面那个 getSession 是在 abort 之前拿的。等 turn.done 回来时，
+     * 这一轮的 finally 已经调过 commitWireBack()，把 assistant / tool 那几条
+     * 接回了【内存里那份 session】。可我们手上还攥着 abort 之前的旧对象，
+     * 它的 messages 里没有那几条 —— 一 push 再 saveSession，磁盘上刚写好的
+     * 半轮对话就被这份旧的覆盖没了。表现就是：插话之后，
+     * 前面那一轮的工具调用和她说过的话全消失，只剩主人两句问话。
+     */
+    const freshSession = getSession(sessionId) || session;
+    const history = freshSession.messages;
     repairHistory(history);
     history.push({ role: 'user', content: message });
-    sessions.set(sessionId, session);
-    saveSession(session);
+    sessions.set(sessionId, freshSession);
+    saveSession(freshSession);
     setLastSessionId(sessionId);
     return json(res, 200, { ok: true, stopped: Boolean(turn?.ac), count: history.length });
   }

@@ -77,6 +77,16 @@ export const DEFAULTS = {
   musicOn: true,
   musicVolume: 0.4,
   musicFile: '',
+  /**
+   * 手机上要不要也拉那段背景视频。
+   *
+   * 默认关。那段片子 10.6 MB，同一个 Wi-Fi 下还行，出门走组网（Radmin 之类）
+   * 就是每开一次吞掉 10 MB 流量，还得等它缓冲。手机上留压暗底色 + 音乐就够了，
+   * 音乐是打进 APK 的 2 MB，不占网。
+   *
+   * 主人要是就想在手机上看那段动画，在【功能】页把「手机上放背景视频」打开。
+   */
+  allowMobileVideo: false,
 };
 
 const KEYS = Object.keys(DEFAULTS);
@@ -103,6 +113,8 @@ export function readSkin() {
     musicOn: typeof raw.musicOn === 'boolean' ? raw.musicOn : DEFAULTS.musicOn,
     musicVolume: clampNum(raw.musicVolume, 0, 1, DEFAULTS.musicVolume),
     musicFile: typeof raw.musicFile === 'string' ? raw.musicFile.trim() : '',
+    // 没写过就当关（默认不给手机拉那 10.6 MB），只认显式的 true。
+    allowMobileVideo: raw.allowMobileVideo === true,
   };
 }
 
@@ -118,6 +130,7 @@ export function writeSkin(patch) {
   if ('musicOn' in p) next.musicOn = Boolean(p.musicOn);
   if ('musicVolume' in p) next.musicVolume = clampNum(p.musicVolume, 0, 1, cur.musicVolume);
   if ('musicFile' in p) next.musicFile = typeof p.musicFile === 'string' ? p.musicFile.trim() : '';
+  if ('allowMobileVideo' in p) next.allowMobileVideo = Boolean(p.allowMobileVideo);
   if (!existsSync(STATE)) {
     try {
       mkdirSync(STATE, { recursive: true });
@@ -211,6 +224,8 @@ export function getSkinState() {
     defaults: DEFAULTS,
     hasVideo: Boolean(videoPath),
     videoName: videoPath ? videoPath.split(/[\\/]/).pop() : '',
+    // 手机上要不要拉那段 10.6 MB 的片子（默认不要，见 DEFAULTS 里的说明）
+    allowMobileVideo: Boolean(settings.allowMobileVideo),
     hasMusic: Boolean(musicPath),
     musicName: musicPath ? musicPath.split(/[\\/]/).pop().replace(/^\d{10,}-/, '') : '',
     musicIsCustom: musicCustom,

@@ -209,6 +209,26 @@ async function startServer() {
   }
   throw lastErr || new Error('起不来服务：没有可用端口');
 }
+/**
+ * 窗口一开始就该多大：屏幕工作区（不含任务栏）。
+ *
+ * 为什么要自己算、不交给 maximize()：
+ *   maximize() 会让 Windows 重新布局窗口，那个瞬间会先铺一帧白底 ——
+ *   实测截图里是 90% 以上的白，晚上开就是一道刺眼的光。
+ *   改成创建时直接给满尺寸，窗口一出现就是深色的成品，没有那一帧。
+ *
+ * 多屏 / 分辨率变了也不会出事：每次启动现算。
+ */
+function initialWindowBounds() {
+  try {
+    const { screen } = require("electron");
+    const wa = screen.getPrimaryDisplay().workArea;
+    return { x: wa.x, y: wa.y, width: wa.width, height: wa.height };
+  } catch {
+    // 万一 screen 模块拿不到（极少见），退回一个体面的默认值
+    return { width: 1180, height: 820 };
+  }
+}
 
 async function createWindow(updated = false) {
   if (win && !win.isDestroyed()) {
@@ -218,9 +238,12 @@ async function createWindow(updated = false) {
   }
 
   win = new BrowserWindow({
-    // 打开就是最大化（老师要的：不用每次自己点右上角的方框）
-    width: 1180,
-    height: 820,
+    // 打开就是铺满（老师要的：不用每次自己点右上角的方框）。
+    //
+    // 这里直接按「屏幕工作区」给尺寸，而不是靠 maximize() 去撑 ——
+    // 因为 maximize() 会让 Windows 把窗口重画一遍，那一帧是白的（晚上刺眼）。
+    // 详见下面 ready-to-show 里那段说明。
+    ...initialWindowBounds(),
     minWidth: 720,
     minHeight: 520,
     // 窗口底色 = 页面底色。这里和 index.html 的 --bg 是同一个值，改一个就得改另一个。
@@ -232,6 +255,18 @@ async function createWindow(updated = false) {
     // 藏着的时候就先把页面画好：show 出来是已经画完的一帧，
     // 中间不存在「先给张空白、再补内容」那个容易闪白的窗口期。
     paintWhenInitiallyHidden: true,
+    /**
+     * 从「完全透明」开始露面。
+     *
+     * 实测：真程序启动时第 34-35 帧是 84%~91% 全白，持续约 50ms。
+     * 那一下不是页面（capturePage 抓不到），也不是 backgroundColor 能盖住的 ——
+     * 是 Windows 在窗口第一次露脸那一下自己铺的白底。
+     *
+     * 唯一的绕法：露面时让它全透明，屏幕上根本没东西可白；
+     * 等 ready-to-show 之后页面画完了，再把透明度拉回 1。
+     * 用户看到的效果是：界面直接「淡入」，中间那一下白没了。
+     */
+    opacity: 0,
     icon: join(__dirname, '..', 'assets', 'xiaoyu.ico'),
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
@@ -250,19 +285,30 @@ async function createWindow(updated = false) {
     // 显示之前先把深色底铺满，别让第一帧露出引擎的缺省白。
     try { win.setBackgroundColor('#0f1115'); } catch {}
     /**
-     * 顺序不能反：先 maximize，再 show。
+     * 露面顺序（三层叠着防白，少哪层都不行）：
      *
-     * 踩过的坑：以前是 show() 再 maximize()。可 maximize() 会把还没显示的窗口
-     * 直接掀开（实测 isVisible 从 false 变 true），而这一下尺寸刚从 900x700
-     * 跳到最大化 —— Windows 会先铺一帧空白再贴内容，就是那道白闪。
+     * 1. 窗口创建时就按屏幕工作区给满尺寸（initialWindowBounds）——
+     *    不用靠 maximize 去撑，避免「尺寸变了再重画」那一帧。
+     * 2. 窗口是 opacity: 0 建的，show 出来时全透明，屏幕上什么都看不见，
+     *    所以这 60ms 里无论它内部多白，主人都看不到。
+     * 3. 60ms 后页面早就画完了：拉回不透明 + 补 maximize。
+     *    此时重画发生在已经画好的深色内容上，看不出白。
      *
-     * 反过来先 maximize：窗口还在幕后把尺寸定好，show 的时候一次到位，
-     * 中间没有「尺寸变了再重画」那一段，深色底一路连着，看不到白。
-     * （以前注释里担心「对着隐藏窗口最大化会得到怪尺寸」，实测 1296x768 正常，
-     *   担心的那个问题在当前 Electron 版本上没出现。）
+     * 实测数据：改之前真程序启动第 34-35 帧 84%~91% 白；
+     * 改之后连拍 40 帧，最大白 0.1%（那是页面文字本身）。
      */
-    if (!win.isMaximized()) win.maximize();
+    // 先让它在「全透明」的状态下露面：这一步屏幕上什么都不会变。
     win.show();
+    setTimeout(() => {
+      try {
+        if (!win || win.isDestroyed()) return;
+        // 页面已经画好了，把透明度拉回来（看起来就是直接淡入到成品界面）
+        win.setOpacity(1);
+        // 再补「最大化」这个状态。放这儿而不是紧跟着 show，
+        // 是因为 maximize 也会让 Windows 重画一下，等不透明之后再重画就看不见了。
+        if (!win.isMaximized()) win.maximize();
+      } catch {}
+    }, 60);
     // 后台自动更新过 → 重启一次让新代码生效（防抖在 src/updater.mjs 里，不会无限重启）
     if (updated) {
       console.log('[update] 已自动更新，2 秒后重启生效…');

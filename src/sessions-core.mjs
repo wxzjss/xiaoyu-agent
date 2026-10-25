@@ -48,6 +48,42 @@ export function newSessionId() {
   return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/**
+ * 读历史时剔掉「伪装成主人说话的报错」。
+ *
+ * 【为什么要有】
+ * 老版本在连接断掉 / 网关 502 时，会把 `⚠ terminated`、`⚠ LLM HTTP 502: {...}`
+ * 当成一条 role:'user' 的消息写进历史。它们看着像主人发的，实际是系统告警。
+ *
+ * 危害有三个，都不小：
+ * 1. 界面上这几个字显示成主人的气泡，主人会以为是自己说的；
+ * 2. 每次继续对话都原样发给模型，模型以为主人真的说了这句，白费 token 还带偏判断；
+ * 3. 502 重试那段逻辑会被自己造成的假 user 消息污染。
+ *
+ * 现在的写入路径已经不再这么干了（报错走前端提示条，不进历史），
+ * 但磁盘上老会话里的那几条还在 —— 这里读的时候统一滤掉，不动物理文件，想回滚随时能回去。
+ */
+const ALERT_USER_RE = /^\s*⚠/;
+
+function sanitizeLoadedMessages(list) {
+  if (!Array.isArray(list) || !list.length) return list || [];
+  const out = [];
+  for (const m of list) {
+    if (m && m.role === 'user') {
+      // content 可能是字符串，也可能是 [{type:'text',text:...}, ...] 这种多段结构
+      let head = '';
+      if (typeof m.content === 'string') head = m.content;
+      else if (Array.isArray(m.content)) {
+        const t = m.content.find((x) => x && typeof x.text === 'string');
+        head = t ? t.text : '';
+      }
+      if (ALERT_USER_RE.test(head)) continue; // 系统告警，不是主人说的话
+    }
+    out.push(m);
+  }
+  return out;
+}
+
 export function loadSession(id) {
   if (!isSessionId(id)) return null;
   try {
@@ -58,7 +94,7 @@ export function loadSession(id) {
       title: cleanTitle(raw.title) || '新会话',
       createdAt: Number(raw.createdAt) || 0,
       updatedAt: Number(raw.updatedAt) || 0,
-      messages: Array.isArray(raw.messages) ? raw.messages : [],
+      messages: sanitizeLoadedMessages(Array.isArray(raw.messages) ? raw.messages : []),
       // 回退点跟着会话一起落盘：只追加、从不改写老消息。
       rewinds: Array.isArray(raw.rewinds) ? raw.rewinds : [],
       // 老会话没有这个字段 -> 当人设档处理，不去补写盘

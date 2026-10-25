@@ -186,11 +186,27 @@ export async function runAgent({
   // （会话里切过模型就按那个算，否则按全局默认）。
   const turnModel = modelNameForSession(sessionId);
 
+  /**
+   * 【这一轮已经压过一次了，就别再压】
+   *
+   * 压缩是写在 for-round 里的：每一轮调模型前都量一次历史。
+   * 可万一压完还超（或者摘要很短、尾巴又长），下一 round 又会压一次 ——
+   * 实测「小鱼说话」那个会话一轮里被压了 41 次，越压越碎，人话都被压没了。
+   *
+   * 一轮只压一次就够了。这一轮真还不够，下一轮（主人再说话）自然会再压。
+   */
+  let compressedThisTurn = false;
+
   // maxRounds 可以被设成 Infinity（不限）：那就一直跑到模型自己收尾，或用户点「停止」。
   for (let round = 0; round < config.maxRounds; round++) {
     // 每轮调模型前都量一下历史；超了就把旧对话折成摘要。没超就什么都不做（不额外花钱）。
-    const compressed = await compressHistory({ messages, signal, model: turnModel, sessionId });
+    // 一轮只压一次（见上面 compressedThisTurn 的说明）
+    const noCompress = { compressed: false, before: 0, after: 0 };
+    const compressed = compressedThisTurn
+      ? noCompress
+      : await compressHistory({ messages, signal, model: turnModel, sessionId });
     if (compressed.compressed) {
+      compressedThisTurn = true;
       onEvent({
         type: 'compressed',
         before: compressed.before,

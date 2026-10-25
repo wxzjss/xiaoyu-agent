@@ -403,10 +403,26 @@ export async function compressHistory({
     }
   }
 
+  /**
+   * 【摘要两次都没成 → 这一轮不压，原文一条不动】
+   *
+   * 以前这里是写一句「原文已折叠」然后照压 —— 等于把早期几千条对话
+   * 直接扔进碎纸机，只留一句「摘要没生成出来」。
+   * 实测丢过 798 条、864 条原文，主人回头翻记录一片空白，还以为是自己记错。
+   *
+   * 摘要做不出来，就不该动画事。宁可这次不压、上下文暂时大一点，
+   * 也不能把他的话扔掉 —— 扔掉的东西是找不回来的。
+   * 下一轮如果摘要能出来，自然会再压。
+   */
   if (!pure && !summaryText) {
-    // 两次都没成：写一句占位，压缩照做。整轮不能因为摘要挂了就不回主人。
-    summaryText = `（早期 ${old.length} 条对话的自动摘要没能生成出来${error ? `：${error.slice(0, 160)}` : ''}）`
-      + `原文已折叠。要是主人觉得我这边接不上话，把要紧的事再说一遍就行。`;
+    return {
+      compressed: false,
+      before,
+      after: before,
+      limit: cap,
+      reason: 'summary-failed-keep-original',
+      error: error || '摘要没生成出来',
+    };
   }
 
   /**

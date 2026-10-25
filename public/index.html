@@ -4,6 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>小鱼Agent</title>
+  <!--
+    启动防白闪：这一小块必须在最前面、且内联。
+    为什么：Electron 窗口虽然给了深色 backgroundColor，但页面一旦开始加载，
+    浏览器会先用【缺省白底】刷一帧，然后才轮到下面的 CSS 生效。
+    晚上开就是一道刺眼白光。这里抢先把 html 和 body 都涂成深色，
+    连 first-paint 那一帧也压在深色里，看不到白。
+  -->
+  <style>
+    html, body { background: #0f1115; }
+  </style>
   <style>
     /* 滚动条：暗色细条，别跟背景打架 */
     * { scrollbar-width: thin; scrollbar-color: #2c333f transparent; }
@@ -1824,8 +1834,97 @@ function paintToBottom() {
   if (badge) badge.textContent = unseenNew > 0 ? String(unseenNew > 99 ? '99+' : unseenNew) : '';
 }
 
-/** 新内容到了：跟随就滚，不跟随就攒未读数。 */
+/**
+ * 界面长高了（流式吐字、插工具块、图片加载完、用量行……）：跟着滚就行，**不数数**。
+ *
+ * 以前这里叫 noteNewContent()，只要 DOM 多出一块就 unseenNew += 1 ——
+ * 结果流式输出每刷新一次、思考块每吐几个字、连「正在发送」那行灰字都算一条，
+ * 数字一路飙到 99+，主人根本不知道那个数在数什么。
+ *
+ * 现在数数只认两种真事情（见 bumpUnseen）：
+ *   一、开始调一个工具     → +1
+ *   二、说完一段话（气泡收尾）→ +1
+ * 剩下的全走这里，只管滚。
+ */
 function noteNewContent() {
+  if (stickBottom) stickToBottom();
+}
+
+/**
+ * 「这一段话算过了吗」——防止同一段话被数两次。
+ *
+ * 一轮里她可能说：一段话 → 调工具 → 又一段话 → 调工具 → 最后一段话。
+ * 每段话只该 +1，所以拿这篇「已经数过的字」记一下记号。
+ *
+ * 为什么不在流式每来一块就数：那样一句话能被数几十次（就是原来数字乱飙的原因）。
+ * 什么时候才算是「说完一段话」：
+ *   - 她开始调工具了（说明这话说完了，要动手了）
+ *   - 这一轮结束了（done / 出错 / 被叫停）
+ */
+function speechMark() {
+  if (!window.__imCount) {
+    // 按会话分开记：切会话不能串
+    window.__imCount = { session: null, counted: new Set() };
+  }
+  return window.__imCount;
+}
+
+/** 当前这段（这个气泡里的）话的记号。 */
+function speechKey(bubble, think) {
+  const parts = [];
+  if (bubble) parts.push('b' + Number(bubble.dataset.imSeq || 0));
+  if (think) parts.push('t' + Number(think.el?.dataset?.imSeq || 0));
+  // 还没有气泡 = 只有思考（她还在想），也算这一段
+  return parts.length ? parts.join('|') : 'none';
+}
+
+/**
+ * 给气泡/思考块编号：它们在 DOM 里出现的前后顺序就是「第几段」。
+ * 每建一个新的就 +1，反复重绘也不会撞号。
+ */
+function stampSpeechNode(node) {
+  if (!node || node.dataset.imSeq) return node;
+  const st = speechMark();
+  st.next = (st.next || 0) + 1;
+  node.dataset.imSeq = String(st.next);
+  return node;
+}
+
+/**
+ * 把「当前这一段」记成已数过：数过就 +1，没数过就什么都不做。
+ * 这是「说完一段话」的唯一入口 —— 保证同一段话只涨一次。
+ */
+function flushSpeech() {
+  const st = speechMark();
+  const b = (typeof bubble !== 'undefined') ? bubble : null;
+  const t = (typeof think !== 'undefined') ? think : null;
+  // 什么都没说（既没气泡也没思考），不数
+  const hasText = Boolean((b && b.isConnected && String(b.textContent || '').trim())
+    || (t && t.el && t.el.isConnected && String(t.el.textContent || '').trim()));
+  if (!hasText) return;
+  const key = speechKey(b, t);
+  if (key === 'none') return;
+  if (st.counted.has(key)) return; // 这段已经数过了
+  st.counted.add(key);
+  bumpUnseen();
+}
+
+/**
+ * 这一轮结束了：最后那段话也要数上。
+ *
+ * 跟 flushSpeech 的区别只有一个 —— 顺便把这一轮的记号清掉（除了当前这段，
+ * 防止 finally 里又数一次）；下一轮从干净的记号开始。
+ */
+function finishSpeech() {
+  flushSpeech();
+}
+
+/**
+ * 真·攒计数：只有「调工具」「说完一段话」这两个语义事件能涨数字。
+ *
+ * 跟随中就顺手滚下去；主人翻着历史才真的累加，让他知道底下还压着几件事。
+ */
+function bumpUnseen() {
   if (stickBottom) {
     stickToBottom();
     return;
@@ -1846,6 +1945,11 @@ function jumpToBottom() {
 function resetScrollStick() {
   stickBottom = true;
   unseenNew = 0;
+  // 换了一个会话 / 重画了一遍：把「哪段数过了」的记号一起清掉，
+  // 不然上个会话的记号会在这边挡着，新说的话数不上。
+  try {
+    window.__imCount = { session: null, counted: new Set(), next: 0 };
+  } catch {}
   paintToBottom();
   // 一次不够：历史多的时候，replaceChildren + 字体/图片布局要分几帧才稳，
   // 只滚一次会停在中间。所以连着补几次，最后再兜一下。
@@ -2393,8 +2497,62 @@ document.addEventListener("keydown", (e) => {
  * @param {string} text
  * @returns {string}
  */
+/**
+ * 把 markdown 记号剥掉，只留干净的纯文本。
+ *
+ * 为什么要这一步：气泡里是纯文本（textContent），不认 markdown。
+ * 模型一旦打出两个星号括字、井号标题、反引号，屏幕上就原样露出这些符号，
+ * 看着像乱码。与其祈祷它每句都记得不打，不如在显示前统一清一遍 —— 稳。
+ *
+ * 只剥「看起来像 markdown」的，正常文字一个不动：
+ *   两个星号括住的一段     -> 只留里面的字
+ *   行首一到六个井号 + 空格 -> 去掉井号，留文字
+ *   行首的减号/星号 + 空格（列表） -> 换成「· 」
+ *   反引号（含三个的那种代码块标记） -> 去掉符号，留内容
+ *   下划线包住 / 波浪线包住的字 -> 只留里面的字
+ * @param {string} text
+ * @returns {string}
+ */
+function stripMarkdownMarks(text) {
+  if (typeof text !== 'string' || !text) return text;
+  let t = text;
+  // 代码块的三反引号（连同后面可选的语言名）——先处理，免得被单反引号规则拆坏
+  t = t.replace(/^\s*```[^\n]*$/gm, '');
+  // 行内代码：反引号括住的，留内容
+  t = t.replace(/`([^`\n]+)`/g, '$1');
+  // 剩下的孤立反引号直接去掉
+  t = t.replace(/`/g, '');
+  // 标题：行首一到六个井号 + 空白
+  t = t.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  // 列表：行首的减号 / 星号 / 加号 + 空白
+  t = t.replace(/^\s{0,3}[-*+]\s+/gm, '· ');
+  // 加粗 / 斜体：两个星号、两个下划线、两个波浪线，只留里面的字。
+  //
+  // 这里【不】要求星号前面是非空白字符 —— 踩过：`**粗体**` 常常出现在
+  // 行首或者空格后面（「还有就是 **这段**」），一旦要求前面有字，
+  // 这两个星号就会被下面的单星号规则先吃掉一个，屏幕上留个孤儿星号。
+  t = t.replace(/\*\*([\s\S]+?)\*\*/g, '$1');
+  t = t.replace(/__([\s\S]+?)__/g, '$1');
+  t = t.replace(/~~([\s\S]+?)~~/g, '$1');
+  // 单星号 / 单下划线的斜体：只在「中间没有空白」时算强调，
+  // 并且两侧不能紧挨数字，保住「2 * 3 = 6」这种算式不被拆坏。
+  t = t.replace(/(^|[^\d\w*])\*(\S(?:[^*\n]*?\S)?)\*(?![\d\w])/g, '$1$2');
+  t = t.replace(/(^|[^\d\w_])_(\S(?:[^_\n]*?\S)?)_(?![\d\w])/g, '$1$2');
+  // 兜底：两个星号还连着（上面有残缺的配对）→ 直接抹掉。
+  t = t.replace(/\*\*/g, '');
+  //
+  // 剩下孤零零的单星号：绝大多数是没配对的 markdown 残渣，该抹。
+  // 但「2 * 3 = 6」这种算式的乘号不能被吃掉。
+  // 做法：先把数字之间的星号换成占位符（\u0001）藏起来，抹完星号再还原。
+  t = t.replace(/(\d)\s*\*\s*(?=\d)/g, '$1\u0001');
+  t = t.replace(/\*/g, '');
+  t = t.replace(/\u0001/g, ' * ');
+  return t;
+}
 function fixMojibake(text) {
-  if (typeof text !== 'string' || !text.includes('\uFFFD')) return text;
+  if (typeof text !== 'string') return text;
+  // 没有乱码也照样过一遍记号清理（这是显示前的最后一道关）
+  if (!text.includes('\uFFFD')) return stripMarkdownMarks(text);
 
   // 连续的：换成「□」，保留「几个字坏了」的感觉
   let t = text.replace(/\uFFFD{2,}/g, (m) => '□'.repeat(Math.min(m.length, 8)));
@@ -3574,6 +3732,8 @@ function addAssistant() {
   const b = document.createElement('div');
   b.className = 'bubble streaming';
   wrap.appendChild(b);
+  // 编个号：这是本轮「第几段说的话」，用来防同一段被数两遍
+  stampSpeechNode(b);
   return b;
 }
 
@@ -3680,6 +3840,8 @@ function openThink() {
 
   d.append(sum, body);
   log.appendChild(d);
+  // 编个号：只有思考、还没出气泡的时候，「这一段」就靠它认
+  stampSpeechNode(d);
   noteNewContent();
 
   return {
@@ -3895,7 +4057,11 @@ async function runTurn({ resume = false, text = '' } = {}) {
           noteNewContent();
         } else if (ev.type === 'tool_start') {
           closeThink();
+          // 一段话到此为止（后面接着干工具），先把这段落记上
+          flushSpeech();
           if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+          // 开始调一个工具 → 数字 +1
+          bumpUnseen();
           const el = addTool();
           el.sum.querySelector('.name').textContent = niceTool(ev.name);
           el.sum.querySelector('.status').textContent = '运行中…';
@@ -3941,6 +4107,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
         } else if (ev.type === 'aborted') {
           closeThink();
           hideSending();
+          flushSpeech();
           if (bubble) {
             bubble.classList.remove('streaming');
             if (!pendingResume) bubble.textContent += '\n\n[已停止]';
@@ -3949,6 +4116,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
         } else if (ev.type === 'error') {
           closeThink();
           hideSending();
+          flushSpeech();
           /**
            * 错误单独画一行，别塞进助手的气泡里。
            *
@@ -3964,6 +4132,8 @@ async function runTurn({ resume = false, text = '' } = {}) {
         } else if (ev.type === 'done') {
           closeThink();
           hideSending();
+          // 这一轮说完了：最后那段话收尾 → 数字 +1
+          finishSpeech();
           if (pendingRewindBubble && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
             attachRewind(pendingRewindBubble, ev.at);
             // 这一轮刚落地，主人在这一轮说的话立刻就能改（下标要等服务端给）
@@ -4010,6 +4180,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
     // 收尾一定要复位，不然按钮永远卡在「停止」、输入框像死了一样
     closeThink();
     hideSending();
+    flushSpeech();
     if (bubble) bubble.classList.remove('streaming');
     stopping = false;
     // 只有「屏幕上确实是这个会话」时才把 busy 放下；
@@ -4114,6 +4285,49 @@ input.addEventListener('keydown', (e) => {
   }
 });
 input.addEventListener('input', () => { autosizeInput(); syncSendBtn(); });
+/**
+ * 一点输入框，输入法就跟着系统语言走。
+ *
+ * 系统是中文、输入法却在英文上，一点就自动换回中文，省得打了半天
+ * 全是字母。只在这台桌面版里管用（网页版够不着系统输入法），
+ * 后台静默跑，失败也不弹窗、不挡打字。
+ */
+let imeSwitching = false;
+/**
+ * 这个功能能不能用：桌面版 + 【功能】里那个开关开着。
+ *
+ * 为什么要问服务端：开关存在服务端的 features.json 里，界面这边没缓存。
+ * 但每点一次输入框就发一次请求也太浪费 —— 所以只问一次，缓存 5 秒。
+ * 主人在功能页点开关会调 invalidateImeGate()，缓存立刻作废，下一下点就按新的来。
+ */
+let imeGateOn = null;
+let imeGateAt = 0;
+function invalidateImeGate() {
+  imeGateOn = null;
+  imeGateAt = 0;
+}
+async function imeFeatureOn() {
+  const now = Date.now();
+  if (imeGateOn !== null && now - imeGateAt < 5000) return imeGateOn;
+  try {
+    const r = await fetch('/api/features').then((x) => x.json());
+    const f = (r && Array.isArray(r.features)) ? r.features.find((x) => x.id === 'imeMatch') : null;
+    // 服务端没这个功能（老版本）就当开，别把人家的习惯弄没了
+    imeGateOn = f ? Boolean(f.enabled) : true;
+  } catch {
+    imeGateOn = true;
+  }
+  imeGateAt = Date.now();
+  return imeGateOn;
+}
+input.addEventListener('focus', async () => {
+  if (imeSwitching) return;
+  if (!window.desktop || !window.desktop.imeMatchSystem) return; // 网页版，管不着
+  if (!(await imeFeatureOn())) return; // 功能页里关掉了
+  imeSwitching = true;
+  try { await window.desktop.imeMatchSystem(); } catch {}
+  finally { setTimeout(() => { imeSwitching = false; }, 600); }
+});
 document.getElementById('reset').onclick = async () => {
   if (!sessionId) return;
   /**
@@ -5212,6 +5426,8 @@ if (featList) {
     }
     featState = r;
     renderFeatList();
+    // 输入法跟随系统是纯界面的开关，改完立刻按新的来，别等那 5 秒缓存
+    if (id === 'imeMatch' && typeof invalidateImeGate === 'function') invalidateImeGate();
     // 视频背景是纯界面开关，改完立刻生效，不用等下一句
     if (id === 'videoBg') {
       if (typeof window.__applySkin === 'function') window.__applySkin();
@@ -5590,10 +5806,19 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
     if (!Number.isFinite(Number(at))) return;
     const gone = document.createElement('div');
     gone.className = cls;
-    gone.title = '这一轮是在「记录用量」功能加上之前跑的，当时没有存下来，所以只能空着';
+    /**
+     * 分两种说清楚，别让人对着「没记用量」瞎猜：
+     *   一、这一轮被程序关掉打断过（草稿接回来的那种）—— 话都没说完，当然没用量；
+     *   二、真什么都没有（「记录用量」是后加的功能，更早的对话压根没存过）。
+     */
+    const hinted = String((host && host.textContent) || '').includes('说到这儿断了一下')
+      || String((typeof bubble !== 'undefined' && bubble && bubble.textContent) || '').includes('说到这儿断了一下');
+    gone.title = hinted
+      ? '这一轮说到一半程序被关掉了，没跑完，所以没有用量记录'
+      : '这一轮是在「记录用量」功能加上之前跑的，当时没有存下来，所以只能空着';
     const sp = document.createElement('span');
     sp.className = 'na';
-    sp.textContent = '这一轮没记用量';
+    sp.textContent = hinted ? '这一轮被打断了 · 没用量' : '这一轮没记用量';
     gone.appendChild(sp);
     (host || log).appendChild(gone);
     if (!host) noteNewContent();

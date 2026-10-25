@@ -1,9 +1,19 @@
-// Minimal, safe bridge: the renderer only gets these few calls.
+﻿// Minimal, safe bridge: the renderer only gets these few calls.
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('desktop', {
   info: () => ipcRenderer.invoke('app:info'),
   openWorkspace: () => ipcRenderer.invoke('app:openWorkspace'),
+
+  /**
+   * 点了聊天输入框，把系统输入法切到「系统语言」那一种。
+   *
+   * 为什么放主进程：渲染进程管不了系统输入法，只有主进程能问 Windows
+   * 要列表、能点那个输入法。win 是当前窗口句柄，Windows 就在这个窗口
+   * 上换输入法，跟人手点任务栏那一下是一回事。
+   */
+  imeMatchSystem: () => ipcRenderer.invoke('ime:matchSystem'),
+  imeSystemLang: () => ipcRenderer.invoke('ime:systemLang'),
 
   /**
    * 拖进来的文件，拿它在本机上的真实路径。

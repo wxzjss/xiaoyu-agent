@@ -3110,36 +3110,67 @@ async function fetchTimed(url, opts = {}, ms = 8000) {
  *
  * 【主人报的原话】「重启后我这边没显示你说的后续内容」。
  *
- * 【查到的实情】服务端一切正常：直播缓存里我这一轮吐的每个字都在，
- * 会话文件里 93 条消息也全落了盘。断的只有那一条 SSE ——
- * 它一断，done 之前的正文前端就再也收不到；而 done 之后这里原本
- * 只补拉小鲸的话（whale），正文一概不补，于是屏幕上永远停在那半句。
+ * 【查到的实情】服务端一切正常：我这一轮吐的每个字都在直播缓存里，
+ * 会话文件也落了盘。断的只有那一条 SSE —— 它一断，done 之前的正文
+ * 前端就再也收不到；而 done 之后这里原本只补拉小鲸的话（whale），
+ * 正文一概不补，于是屏幕上永远停在那半句。
  *
- * 【怎么修】服务端现在在 done 事件里直接把这一轮的正文捎过来（ev.turnTexts），
- * 不额外查接口（那条接口会改「当前选中会话」，有副作用）。
- * 这里拿它跟屏幕上已画的比：按结尾那几十个字认，认不到的才补。
- * 只补这一轮，不碰历史，重复的不会多画一条。
+ * 【怎么修】服务端在 done 事件里把这一轮正文捎过来（ev.turnTexts），
+ * 这里拿它跟屏幕上已画的比：
+ *   · 结尾对得上 → 整段都在，跳过；
+ *   · 半句对得上但整段对不上 → 那一截是断在半路的残句，删掉重画整段；
+ *   · 两头都对不上 → 这段压根没到过，补一条。
+ * 只处理这一轮，不碰历史，重复的不会多画。
  */
 function reconcileTurnTexts(ev) {
   const want = Array.isArray(ev && ev.turnTexts) ? ev.turnTexts : [];
   if (!want.length) return;
 
-  const onScreen = () => Array.from(document.querySelectorAll('.msg.assistant'))
-    .map((el) => String(el.textContent || ''));
+  const allBubbles = () => Array.from(document.querySelectorAll('.msg.assistant .bubble'));
+  const textOf = (el) => String(el.textContent || '');
+  let added = 0, fixed = 0;
 
-  let added = 0;
   for (const raw of want) {
-    const text = String(raw || '');
+    const text = String(raw || '').replace(/\r/g, '');
+    if (!text.trim()) continue;
+    const head = text.slice(0, 40).trim();
     const tail = text.slice(-40).trim();
-    if (!tail) continue;
-    if (onScreen().some((s) => s.includes(tail))) continue;
+    if (!tail || !head) continue;
+
+    const bubbles = allBubbles();
+    const full = bubbles.find((el) => {
+      const t = textOf(el);
+      return t.includes(tail) || (t.length >= text.length - 8 && t.includes(head));
+    });
+    if (full) continue;
+
+    // 半句对得上：屏幕上有一段是这段的开头，但结尾没到 —— 残句，删了重画
+    const partial = bubbles.find((el) => {
+      const t = textOf(el).trim();
+      if (!t || t.length < 6) return false;
+      return t.length < text.length && (text.startsWith(t) || t.includes(head));
+    });
+    if (partial) {
+      const host = partial.closest('.msg.assistant');
+      const fresh = addAssistant();
+      fresh.textContent = fixMojibake(text);
+      fresh.classList.remove('streaming');
+      if (host && host !== fresh.closest('.msg.assistant')) {
+        // 把残句那条整个换成新的：先在它后面插好，再删掉旧的
+        host.after(fresh.closest('.msg.assistant'));
+        host.remove();
+      }
+      fixed++;
+      continue;
+    }
+
     const b = addAssistant();
     b.textContent = fixMojibake(text);
     b.classList.remove('streaming');
     added++;
   }
-  if (added) {
-    console.warn('[turn-reconcile] 这一轮补画了 ' + added + ' 段正文');
+  if (added || fixed) {
+    console.warn('[turn-reconcile] 这一轮补画了 ' + added + ' 段、修好 ' + fixed + ' 段残缺');
     finishSpeech();
   }
 }

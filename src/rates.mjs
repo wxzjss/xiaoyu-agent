@@ -75,9 +75,12 @@ const RATES = {
   // M3 ≤512k：输入 4.20 / 输出 16.80（优先档 6.30 / 25.20，按标准档算）
   // M3 >512k：输入 8.40 / 输出 33.60
   // 注意：以前这里填的是「2 / 10 / 40」，比官方便宜一半，别再用那组数。
-  'MiniMax-M3.1-Flash': { hit: 0.1, miss: 1, output: 4 },
-  'MiniMax-M3': { hit: 0.84, miss: 4.2, output: 16.8, est: true },
-  'MiniMax-M2.7': { hit: 1, miss: 4, output: 16, est: true },
+  // 2026-10 再核一次官网：M3 现在挂「永久五折」，标准 4.20/16.80 打对折就是 2.10/8.40。
+  // 这里按**折后实付**填（主人关心的就是这个），标准价写进注释备查。
+  // M2.7 已从官网下架，删掉，免得认错。>512k 那档单价翻倍，落到 4.20/16.80 折后 2.10/8.40 —— 
+  // 但那一档是「超长输入」才触发，绝大多数对话够不到，统一按 ≤512k 那档算。
+  'MiniMax-M3.1-Flash': { hit: 0.1, miss: 1, output: 4, off: { hit: 0.05, miss: 0.5, output: 2 } },
+  'MiniMax-M3': { hit: 0.42, miss: 2.1, output: 8.4 },
   // xAI / Google 这两家这台机器连不上官网，价格按美元牌价 × 7.2 估的，标 est 表示「估算」
   'grok-4': { hit: 22, miss: 22, output: 108, est: true },
   'gemini-3-pro': { hit: 9, miss: 9, output: 72, est: true },

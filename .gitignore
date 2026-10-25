@@ -42,3 +42,10 @@ _chk*/
 
 # 语音引擎（Python / ffmpeg，用时才装，108MB 不进仓库）
 runtime/
+
+# 自动更新用的 GitHub token（绝不能进仓库）
+github-token.txt
+.state/github-token.txt
+
+# 更新落地目录（数据目录里那份，误建到源码目录时不入库）
+code/

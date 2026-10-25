@@ -15,6 +15,7 @@ import { join, dirname, relative } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { config } from './config.mjs';
+import { inflateRawSync } from 'node:zlib';
 
 /**
  * 更新要写到哪儿。
@@ -40,6 +41,50 @@ const ACTIVE = existsSync(join(ROOT, 'package.json')) ? ROOT : config.root;
 const REPO = 'wxzjss/xiaoyu-agent';
 const BRANCH = 'main';
 const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/${BRANCH}`;
+
+/**
+ * 可选：给自己的仓库配一个 GitHub token。
+ *
+ * 为什么需要：匿名调 api.github.com 每小时只有 **60 次**请求，白名单 76 个文件
+ * 一轮就爆（实测成功 31 个后全是 403），自动更新等于废的。
+ * 带上 token 就是每小时 5000 次，一次更新连零头都用不到。
+ *
+ * token 从哪儿来（按顺序找，都没有就匿名跑）：
+ *   1. 环境变量 XIAOYU_GITHUB_TOKEN
+ *   2. 数据目录下的 .state/github-token.txt（一行，就是那串 ghp_…）
+ *
+ * 注意：这个 token 只用于读自己的公开仓库，权限按最小给（只要 read）。
+ */
+let _ghToken;
+
+function ghToken() {
+  if (_ghToken !== undefined) return _ghToken;
+  _ghToken = null;
+  try {
+    const env = String(process.env.XIAOYU_GITHUB_TOKEN || "").trim();
+    if (env) { _ghToken = env; return _ghToken; }
+    // 两个地方都找：数据目录（用户放这儿）和源码/程序目录（开发时放这儿）
+    const cands = [
+      join(config.dataDir, ".state", "github-token.txt"),
+      join(config.root, ".state", "github-token.txt"),
+      join(config.root, "github-token.txt"),
+    ];
+    for (const f of cands) {
+      if (!existsSync(f)) continue;
+      const t = readFileSync(f, "utf8").trim().split(/\s+/).pop() || "";
+      if (/^[A-Za-z0-9_]{20,}$/.test(t)) { _ghToken = t; break; }
+    }
+  } catch {}
+  return _ghToken;
+}
+
+/** 调 api.github.com 统一的头（有 token 就带上，额度从 60 变 5000） */
+function ghHeaders(extra = {}) {
+  const h = { "User-Agent": "xiaoyu-updater", Accept: "application/vnd.github+json", ...extra };
+  const t = ghToken();
+  if (t) h.Authorization = "Bearer " + t;
+  return h;
+}
 const CLONE_URL = `https://github.com/${REPO}.git`;
 
 /** 允许被更新覆盖的东西，跟发布白名单保持一致 */
@@ -99,7 +144,7 @@ export async function remoteVersion() {
   for (const url of tryUrls) {
     try {
       const res = await fetch(url, {
-        headers: { 'User-Agent': 'xiaoyu-updater', Accept: 'application/vnd.github+json' },
+        headers: ghHeaders(),
         signal: AbortSignal.timeout(NET_TIMEOUT),
       });
       if (!res.ok) continue;
@@ -195,11 +240,127 @@ function downloadWithGit(dir) {
   });
 }
 
+// ---- 手写 zip 读取（项目零依赖，不引第三方包）----------------------------
+
+/** 在 buf 里从 from 开始找一个 4 字节签名，找不到回 -1 */
+function findSig(buf, sig, from = 0) {
+  for (let i = from; i <= buf.length - 4; i++) {
+    if (buf[i] === sig[0] && buf[i + 1] === sig[1] && buf[i + 2] === sig[2] && buf[i + 3] === sig[3]) return i;
+  }
+  return -1;
+}
+
+/** 读中央目录，得到每个条目的名字 / 偏移 / 是否压缩 */
+export function listZip(file) {
+  const buf = readFileSync(file);
+  // EOCD 在文件尾，最多 65535 字节注释，所以从尾部往前找
+  const eocd = findSig(buf, [0x50, 0x4b, 0x05, 0x06], Math.max(0, buf.length - 66000));
+  if (eocd < 0) throw new Error("不是 zip（找不到中央目录结尾）");
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(p + 10);
+    const compSize = buf.readUInt32LE(p + 20);
+    const size = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const offset = buf.readUInt32LE(p + 42);
+    const name = buf.slice(p + 46, p + 46 + nameLen).toString("utf8");
+    out.push({ name, method, compSize, size, offset, dir: name.endsWith("/") });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+/** 把某一项的内容解出来（只支持 store / deflate，zip 只用这两种） */
+export function extractZipEntry(file, entry) {
+  const buf = readFileSync(file);
+  const p = entry.offset;
+  if (buf.readUInt32LE(p) !== 0x04034b50) throw new Error("条目头坏了：" + entry.name);
+  const nameLen = buf.readUInt16LE(p + 26);
+  const extraLen = buf.readUInt16LE(p + 28);
+  const start = p + 30 + nameLen + extraLen;
+  const raw = buf.slice(start, start + entry.compSize);
+  if (entry.method === 0) return raw;
+  if (entry.method === 8) return inflateRawSync(raw);
+  throw new Error("不认识的压缩方式 " + entry.method + "：" + entry.name);
+}
+
+/**
+ * 一次就把整包拿下来（codeload 的 zip）。
+ *
+ * 为什么留它：逐个文件走 api.github.com 看着优雅，但未认证的 API 每小时只有 60 次请求，
+ * 白名单 76 个文件一轮就爆（实测成功 31 / 失败 45，remaining 0）。
+ * zip 只算 1 次请求、不吃那个额度，所以先试它；但实测这台机器 23 MB 三分钟都下不完，
+ * 所以超时只给 20 秒 —— 下不来就立刻放弃，交给逐文件那条路（1 MB 左右，很快就完）。
+ */
+const ZIP_TIMEOUT_MS = 20000;
+
+async function downloadWithZip(dir) {
+  const url = `https://codeload.github.com/${REPO}/zip/refs/heads/${BRANCH}`;
+  let buf;
+  let resp;
+  try {
+    resp = await fetch(url, {
+      headers: { "User-Agent": "xiaoyu-updater" },
+      signal: AbortSignal.timeout(ZIP_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      console.warn(`[update] zip 包 HTTP ${resp.status}，改走逐文件`);
+      return null;
+    }
+    buf = Buffer.from(await resp.arrayBuffer());
+  } catch (e) {
+    console.warn("[update] zip 包没下下来：" + String(e?.message ?? e));
+    return null;
+  }
+
+  const tmpZip = join(dir + "-src.zip");
+  writeFileSync(tmpZip, buf);
+
+  // 包里套了一层 `仓库名-sha/` 前缀，要剥掉
+  let entries;
+  try {
+    entries = listZip(tmpZip);
+  } catch (e) {
+    console.warn("[update] zip 解不开：" + String(e?.message ?? e));
+    return null;
+  }
+  if (!entries.length) return null;
+
+  let prefix = "";
+  const first = entries[0].name;
+  const slash = first.indexOf("/");
+  if (slash > 0 && entries.every((e) => e.name.startsWith(first.slice(0, slash + 1)))) {
+    prefix = first.slice(0, slash + 1);
+  }
+
+  let n = 0;
+  for (const e of entries) {
+    if (e.dir) continue;
+    const rel = prefix ? e.name.slice(prefix.length) : e.name;
+    if (!rel) continue;
+    const top = rel.split("/")[0];
+    const ok = rel.includes("/") ? WHITELIST_DIRS.includes(top) : WHITELIST_FILES.includes(rel);
+    if (!ok || NEVER_TOUCH.has(top)) continue;
+    const dst = join(dir, rel);
+    mkdirSync(dirname(dst), { recursive: true });
+    writeFileSync(dst, extractZipEntry(tmpZip, e));
+    n += 1;
+  }
+  try { rmSync(tmpZip, { force: true }); } catch {}
+  if (!n) return null;
+  return { dir, count: n };
+}
+
 /** 没有 git 就逐个文件从 raw 下（raw 不算 API 限额） */
 async function downloadWithRaw(dir) {
   const treeUrl = `https://api.github.com/repos/${REPO}/git/trees/${BRANCH}?recursive=1`;
   const res = await fetch(treeUrl, {
-    headers: { 'User-Agent': 'xiaoyu-updater', Accept: 'application/vnd.github+json' },
+    headers: ghHeaders(),
     signal: AbortSignal.timeout(NET_TIMEOUT),
   });
   if (!res.ok) throw new Error(`列文件失败 HTTP ${res.status}`);
@@ -212,43 +373,144 @@ async function downloadWithRaw(dir) {
   });
   if (!wanted.length) throw new Error('远端没列出任何要更新的文件');
 
+  // 以前每个文件都去 raw.githubusercontent.com 拉 —— 那台机器在国内经常直接不通，
+  // 于是「列得出文件、一个也下不下来」，日志只剩 `The operation was aborted due to timeout`，
+  // 表现出来就是「发现新版 0.9.xx 但更新失败」，一年也更新不了一次。
+  // 现在优先走 api.github.com 的 git/blob 接口（这台机器实测通），raw 只当备胎。
+  // 大文件（片子、音乐、字典）不参与更新 —— 它们占 13 MB，而全部代码加起来才 1 MB。
+  // 门槛定 512 KB：代码文件最大的也就几十 KB，而 bg-music.m4a 1.96 MB /
+  // opencc-full.js 1.14 MB / background.mp4 10 MB 在这台机器上单个都下不完（15 秒超时），
+  // 一个卡住就把整次更新带崩。这些资源只在本地没有时才补。
+  const BIG_SKIP = 512 * 1024;
+  let skippedBig = 0;
+  let viaApi = 0;
+  let viaRaw = 0;
+  const haveToken = Boolean(ghToken());
+  let apiErr = '';
   for (const f of wanted) {
-    const r = await fetch(`${RAW_BASE}/${f.path}`, {
-      headers: { 'User-Agent': 'xiaoyu-updater' },
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!r.ok) throw new Error(`下载 ${f.path} 失败 HTTP ${r.status}`);
-    const buf = Buffer.from(await r.arrayBuffer());
+    if ((f.size || 0) > BIG_SKIP) {
+      // 「本地有没有」要按程序自带的原版算（config.root，也就是 asar 里那份）。
+      // 只查 ROOT（更新后的 code/）会误判：第一次更新时 code/ 是空的，
+      // 于是 10 MB 的 background.mp4 被当成「本地缺」去下载，卡 30 秒后把整次更新带崩。
+      const hasIt = existsSync(join(ROOT, f.path)) || existsSync(join(config.root, f.path));
+      if (hasIt) { skippedBig += 1; continue; }
+    }
+    let buf = null;
+    if (f.sha) {
+      try {
+        const br = await fetch(`https://api.github.com/repos/${REPO}/git/blobs/${f.sha}`, {
+          headers: ghHeaders(),
+          signal: AbortSignal.timeout(30000),
+        });
+        if (br.status === 403 || br.status === 429) {
+          // 额度用完了：不是网络问题，是匿名 60 次/小时被吃光。
+          // 立刻抛出去说清楚，别继续跑剩下几十个文件。
+          const reset = br.headers.get('x-ratelimit-reset');
+          const when = reset ? new Date(Number(reset) * 1000).toLocaleTimeString('zh-CN') : '稍后';
+          throw new Error('GitHub 接口额度用完了（匿名每小时 60 次），' + when + ' 之后才恢复');
+        }
+        if (br.ok) {
+          const j = await br.json();
+          if (j && typeof j.content === 'string') {
+            buf = j.encoding === 'base64' ? Buffer.from(j.content, 'base64') : Buffer.from(j.content, 'utf8');
+            viaApi++;
+          }
+        }
+      } catch (e) {
+        // 这里以前是空的 catch，把错误吞了，然后落到 raw.githubusercontent.com ——
+        // 而那台机器上这个域名**根本解析不了**（ENOENT），于是整次更新只剩一句
+        // 「fetch failed」。现在：带 token 时 API 是通路的，单个文件失败就直接说出
+        // 是哪个文件、为什么失败；只有完全没 token 时才去试 raw 兜底。
+        apiErr = `${f.path}: ${e?.message ?? e}`;
+      }
+    }
+    if (!buf) {
+      if (haveToken) {
+        // 有 token 还失败 = 真出问题了，别再拿 raw 那条死路浪费时间
+        throw new Error(`下载 ${f.path} 失败（${apiErr || '接口没回内容'}）`);
+      }
+      const r = await fetch(`${RAW_BASE}/${f.path}`, {
+        headers: { 'User-Agent': 'xiaoyu-updater' },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!r.ok) throw new Error(`下载 ${f.path} 失败 HTTP ${r.status}`);
+      buf = Buffer.from(await r.arrayBuffer());
+      viaRaw++;
+    }
     const dst = join(dir, f.path);
     mkdirSync(dirname(dst), { recursive: true });
     writeFileSync(dst, buf);
   }
-  return { dir, count: wanted.length };
+  return { dir, count: wanted.length, viaApi, viaRaw, skippedBig };
 }
 
 /** 下到临时目录，返回来源目录 */
+/**
+ * 删临时目录。删不掉就算了 —— 不为了清垃圾把更新搞挂。
+ *
+ * 这里踩过坑：git clone 被 SIGKILL 之后，Windows 上还会有一小会儿占着目录里的
+ * .git 文件，rmSync 直接抛 EPERM: Permission denied，把整次更新带崩，
+ * 报出来还特别迷惑：「发现新版 0.9.11 但更新失败：EPERM…」。
+ * force: true 只管「文件不存在不报错」，不管权限 —— 别指望它。
+ */
+function tryRm(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 换一个干净的目录继续（删不掉旧的就不删了，反正落在 %TEMP% 里） */
+function freshDir(base) {
+  const d = `${base}-${Date.now().toString(36)}`;
+  try {
+    mkdirSync(d, { recursive: true });
+    return d;
+  } catch {
+    return null;
+  }
+}
 async function download(targetVersion) {
-  const dir = join(tmpdir(), `xiaoyu-update-${targetVersion}-${Date.now().toString(36)}`);
-  rmSync(dir, { recursive: true, force: true });
+  const base = join(tmpdir(), `xiaoyu-update-${targetVersion}-${Date.now().toString(36)}`);
+  let dir = base;
+  tryRm(dir);
   mkdirSync(dir, { recursive: true });
 
-  // git 那条路先试（快、一次拿全），拉不动就算了 —— 它内部有 25 秒硬超时，不会卡住主进程
+  // 每次「推倒重来」都换个新目录，不去删可能还被占着的旧目录（见 tryRm 的注释）
+  const reset = () => {
+    const nd = freshDir(base);
+    if (!nd) throw new Error('临时目录建不出来，可能是 %TEMP% 满了或者没权限');
+    dir = nd;
+  };
+
+  // 1) git clone（最快，但要本机能连 github.com；这台机器大概率连不上）
   const viaGit = await downloadWithGit(dir);
   if (viaGit) {
-    // 校验一下下到的是不是真东西
     if (existsSync(join(dir, 'src', 'server.mjs')) && existsSync(join(dir, 'package.json'))) {
       const got = readJson(join(dir, 'package.json'), {}).version;
       if (!got || compareVersion(got, targetVersion) === 0) return { dir, via: 'git' };
     }
-    rmSync(dir, { recursive: true, force: true });
-    mkdirSync(dir, { recursive: true });
+    reset();
   }
 
+  // 2) zip 整包（1 次请求、不吃 API 额度；但 23 MB 在慢网上下不完，超时只有 45 秒）
+  const viaZip = await downloadWithZip(dir);
+  if (viaZip) {
+    const hasCore = existsSync(join(dir, 'src', 'server.mjs')) && existsSync(join(dir, 'package.json'));
+    if (hasCore) {
+      const got = readJson(join(dir, 'package.json'), {}).version;
+      if (!got || compareVersion(got, targetVersion) === 0) return { dir, via: 'zip' };
+    }
+    reset();
+  }
+
+  // 3) 逐个文件走 api.github.com（带 token 时 5000 次/小时，够用；大文件已跳过）
   await downloadWithRaw(dir);
   if (!existsSync(join(dir, 'src', 'server.mjs'))) throw new Error('下载完的文件不全（缺 src/server.mjs）');
   return { dir, via: 'http' };
 }
-
 // ---------------------------------------------------------------- 落盘
 
 /** 递归列出白名单里的现有文件 */
@@ -429,20 +691,33 @@ export async function checkForUpdate(opts = {}) {
       locallyModified: touchedRel,
     };
   } catch (err) {
-    // 失败也落一份记录（带 status），main.cjs 的 quickVersionCheck 靠它做重试节流
+    const msg = String(err?.message ?? err);
+    // 分清两种失败，别再一律报「更新失败」把人搞糊涂：
+    //   net     —— 根本连不上 GitHub（这台机器 github.com / raw 常年不通），
+    //              这种重试到天亮也没用，直接告诉主人「去手动下载」，别再假装能自动更新。
+    //   other   —— 连上了但半路出问题（磁盘满、文件对不上），这种可以下次再试。
+    const isNet = /timeout|aborted|ENOTFOUND|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|fetch failed|EAI_AGAIN|socket hang up/i.test(msg);
+    const kind = isNet ? 'net' : 'other';
+    const REL = `https://github.com/${REPO}/releases`;
+    const detail = isNet
+      ? `这台机器连不上 GitHub，自动更新走不通。新版 ${remote} 请到 ${REL} 手动下载（覆盖安装即可，会话和设置都在）。`
+      : `发现新版 ${remote} 但更新失败：${msg.slice(0, 160)}`;
     try {
       writeFileSync(
         UPDATE_INFO,
-        JSON.stringify({ at: Date.now(), status: 'failed', from: local, to: remote, detail: String(err?.message ?? err) }, null, 2),
+        JSON.stringify({ at: Date.now(), status: 'failed', kind, from: local, to: remote, detail, error: msg.slice(0, 300) }, null, 2),
         'utf8',
       );
     } catch {}
     return {
       status: 'failed',
+      kind,
       local,
       remote,
-      detail: `发现新版 ${remote} 但更新失败：${String(err?.message ?? err).slice(0, 160)}`,
-      error: String(err?.message ?? err),
+      manual: isNet,
+      url: REL,
+      detail,
+      error: msg,
     };
   }
 }

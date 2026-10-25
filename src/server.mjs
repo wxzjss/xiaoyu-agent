@@ -2872,7 +2872,26 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     }
     json(res, 200, { ok: true });
     // 回完再退，让界面收到回执。退出码 75 = 「我要重启」，electron/main.cjs 会认。
-    setTimeout(() => { emitExit(75); process.exit(75); }, 200);
+    /**
+     * 【重启只能由主进程做，服务端自己 exit 等于整个程序退出】
+     *
+     * 服务端是被 electron/main.cjs 用 await import() 加载进【主进程】里跑的
+     * （8788 端口归 小鱼Agent.exe 自己，不是独立 node 进程，实测对得上）。
+     * 所以这里一 process.exit，死的是整个 Electron —— 主进程里那段
+     * 「收到 75 就重起服务」的代码根本来不及跑（进程都没了）。
+     * 这就是主人看到的「重启 = 退出，还得手动双击」。
+     *
+     * 现在改为喊主进程去 app.relaunch()（系统级「退出后重开」）+ app.exit(0)。
+     */
+    setTimeout(() => {
+      const relaunch = globalThis.__xiaoyuRelaunch;
+      if (typeof relaunch === 'function') {
+        try { relaunch(); return; } catch (e) { console.warn('[restart] 喊主进程重启失败：', String(e?.message ?? e)); }
+      }
+      console.warn('[restart] 没有主进程可喊，只能自退');
+      try { emitExit(75); } catch {}
+      process.exit(75);
+    }, 200);
     return;
   }
 
@@ -4069,6 +4088,18 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
   // 为什么用注入：wakePeer 要动 runningTurns、要起 runAgent，这些都在本文件里；
   // 而 tools.mjs 反过来 import server.mjs 就成环了。所以在这里塞进去。
   setPeerWake(wakePeer);
+
+  /**
+   * 「重启整个程序」这件事，交给主进程做。
+   *
+   * server.mjs 是被 electron/main.cjs 用 await import() 加载进【主进程】里跑的，
+   * 不是独立子进程（8788 端口是 小鱼Agent.exe 自己在听）。
+   * 所以这里的 process.exit 退的是 Electron 主进程本身 —— 程序当场消失，没有重起。
+   * 主进程那边用 app.relaunch() + app.exit(0)，那才是真重启。
+   */
+  if (typeof globalThis.__xiaoyuRelaunch !== 'function') {
+    globalThis.__xiaoyuRelaunch = () => { setTimeout(() => process.exit(75), 200); };
+  }
 
   // 工具文档自检：工具清单是从 schema 自动生成塞进系统提示的（persona.mjs 的 toolBlock），
   // 谁加了新工具却忘了写中文 description，模型就会拿着一行英文去判断该不该用 —— 等于白给。

@@ -1,5 +1,7 @@
 // Built-in tools. Each tool: { name, description, parameters(JSON Schema), run(args) }
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { appendFileSync } from 'node:fs';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { exec, execFile } from 'node:child_process';
 import { resolve, dirname, isAbsolute, relative } from 'node:path';
@@ -11,6 +13,7 @@ import { snapshotBeforeWrite } from './rewind.mjs';
 import { webSearch, formatResults } from './search.mjs';
 import { sendFileTool } from './tools-sendfile.mjs';
 import { sayTool } from './tools-say.mjs';
+import { browserTools } from './tools-browser.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
 
@@ -23,6 +26,39 @@ const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** Per-run context (which session is talking) so plan/note land in the right board. */
 /** 纯净模式下不该出现的工具（见 runTool 里那道闸）。 */
 const FOREIGN_IN_PURE = ['memory_add', 'memory_pin'];
+
+/**
+ * 这一轮的工具上下文，按「异步调用链」隔离。
+ *
+ * 【为什么非它不可】
+ * tools.mjs 里原来只有一份全局 CTX。两个会话同时跑的时候，后开跑的那个会把
+ * CTX.sessionId / CTX.signal 全顶掉 —— 于是先开跑那个会话的工具：
+ *   · 拿到别人的 signal（别人一收尾或被掐，它就跟着被判「被掐」，
+ *     还把这笔账记在主人头上，写「主人点了停止」）
+ *   · 结果写进别人的快照、文件塞进别人的 outbox
+ * 主人最早说的「我在这个会话发消息，另一个会话里的你就停了」就是这一条。
+ *
+ * 按 sessionId 存表也救不了：取的时候要靠 CTX.sessionId，而它已经被顶掉了。
+ * AsyncLocalStorage 是 Node 给并发场景准备的：一次 run() 里面整条异步链路
+ * 都只看得到自己那份，怎么切会话都串不了。实测 A/B 并发互不影响。
+ */
+const CTX_STORE = new AsyncLocalStorage();
+
+/** 当前这条异步链路自己的上下文（没有就退回全局 CTX，保证老路径照旧） */
+export function ctxNow() {
+  return CTX_STORE.getStore() || CTX;
+}
+
+/**
+ * 让一段异步逻辑跑在「这一轮自己的上下文」里。
+ *
+ * server 侧那一轮开跑的地方这样用：
+ *   await runWithToolContext({ sessionId, snap, signal }, () => runAgent(...))
+ * 这笔活儿里所有工具调用就只认自己的 sessionId / snap / signal。
+ */
+export function runWithToolContext(ctx, fn) {
+  return CTX_STORE.run(ctx, fn);
+}
 
 const CTX = {
   sessionId: 'default',
@@ -243,13 +279,29 @@ export const tools = [
       required: ['command'],
     },
     run({ command }) {
-      const signal = CTX.signal;
+      // 按「这条异步链路自己的上下文」取 signal，不碰全局那份。
+      // 用全局的那份会被别的会话顶掉，害得这条命令跟着别人一起被掐。
+      const signal = (ctxNow() || CTX).signal;
       return new Promise((done) => {
         const child = exec(
           command,
           { cwd: ROOT, timeout: 120000, maxBuffer: 4 * 1024 * 1024, shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/sh' },
           (err, stdout, stderr) => {
             if (onAbort) signal.removeEventListener('abort', onAbort);
+            // 【临时探针】被掐的时候把真实原因落盘，别再靠猜
+            if (aborted) {
+              try {
+                const why2 = signal && signal.reason;
+                appendFileSync(
+                  'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/abort-why.log',
+                  new Date().toISOString() + '  reason=' + JSON.stringify(why2) +
+                  '  type=' + typeof why2 +
+                  '  name=' + (why2 && why2.name) +
+                  '  cmd=' + String(command).slice(0, 80) + '\n',
+                  'utf8',
+                );
+              } catch {}
+            }
             const parts = [];
             if (stdout) parts.push(stdout);
             if (stderr) parts.push(stderr);
@@ -318,6 +370,57 @@ export const tools = [
           }
         }
       });
+    },
+  },
+  {
+    name: 'restart_self',
+    description:
+      '重启小鱼自己（把程序关掉再拉起来）。改完代码要生效、界面卡住、服务端不听话的时候用。' +
+      '重启前会等最多几秒把这一轮的话落盘。用完就别再指望这一轮还能继续跑工具了。',
+    parameters: {
+      type: 'object',
+      properties: {
+        reason: { type: 'string', description: '为什么要重启（写给自己以后看，主人也会看到）' },
+      },
+      required: [],
+    },
+    async run({ reason = '' } = {}) {
+      /**
+       * 为什么走 HTTP 调自己，而不是 process.exit(75)：
+       * 这一条命令可能正跑在「几秒后要给主人回话」的中间，
+       * 直接把自己的进程干掉，那条回话就没了、草稿也落不干净。
+       * 走接口让 server 那边按它的规矩收尾（先回执、再退），稳当。
+       *
+       * 端口从环境变量拿，拿不到就用常见默认；再不行把几个端口都试一遍。
+       */
+      const tryPorts = () => {
+        const out = [];
+        const p = Number(process.env.PORT || process.env.XIAOYU_PORT || 0);
+        if (p) out.push(p);
+        for (const c of [8788, 8787, 8790, 8791]) if (!out.includes(c)) out.push(c);
+        return out;
+      };
+
+      for (const port of tryPorts()) {
+        try {
+          const r = await fetch('http://127.0.0.1:' + port + '/api/app/restart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: String(reason || '') }),
+          });
+          const j = await r.json().catch(() => null);
+          if (r.ok && j && j.ok) {
+            return '好，正在重启（' + (reason ? '原因：' + reason : '没写原因') + '）。过几秒窗口会重新立起来。';
+          }
+          if (r.status === 501) {
+            return '这次不行：' + (j && j.error ? j.error : '这个窗口不是从桌面图标打开的，没法自己重启') +
+              '。要从桌面图标打开的那个程序里点才行。';
+          }
+        } catch {
+          // 这个端口不通，换下一个
+        }
+      }
+      return '没找到能重启的入口（端口都没连上）。可能要主人手动关掉再开一次。';
     },
   },
   {
@@ -681,6 +784,7 @@ export const tools = [
   },
   sayTool,
   sendFileTool,
+  ...browserTools,
   /**
    * 往我自己的记忆本里记一条。
    *

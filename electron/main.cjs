@@ -154,6 +154,57 @@ async function quickVersionCheck() {
 
 async function startServer() {
   const { startServer: run } = await importSrc('src/server.mjs');
+
+  /**
+   * 把「真·重启」注给服务端。
+   *
+   * 服务端跑在主进程里，它自己 process.exit 等于整个程序退出 —— 所以重启这件事
+   * 只能主进程做。app.relaunch() 是「记下：我退出之后把我自己重开」，
+   * 交给系统去执行，不依赖这之后任何 JS 还能不能跑；app.exit(0) 立刻退。
+   * （main.cjs 自动更新那条路就是这么干的，见 createWindow 里 updated 那段。）
+   */
+  globalThis.__xiaoyuRelaunch = () => {
+    console.log('[restart] 主进程准备重启（app.relaunch）');
+    try { app.relaunch(); } catch (e) { console.warn('[restart] relaunch 失败：', String(e?.message ?? e)); }
+    try { app.exit(0); } catch { process.exit(0); }
+  };
+
+  /**
+   * 把内置浏览器交给【小鱼自己】用（tools-browser.mjs 里那几个工具）。
+   *
+   * 主人说得清楚：这个浏览器不是给人点的按钮，是她的眼睛 ——
+   * 她能自己开页、跳转、截一张图看看。
+   * 所以这里只挂通道，界面上一个按钮都不加。
+   *
+   * 服务端是 await import() 进主进程跑的（同一个进程），globalThis 共用，
+   * 所以挂在这儿，tools.mjs 那边直接取得到。必须在 startServer() 之前挂好。
+   */
+  globalThis.__xiaoyuBrowser = {
+    open: (url) => openBrowser(url),
+    goto: (url) => {
+      const u = normalizeUrl(url);
+      if (!u) return Promise.resolve({ ok: false, error: '只支持 http / https 地址' });
+      if (!browserWin || browserWin.isDestroyed()) return Promise.resolve(openBrowser(u));
+      try { browserWin.loadURL(u); return Promise.resolve({ ok: true, url: u }); }
+      catch (e) { return Promise.resolve({ ok: false, error: String(e?.message ?? e) }); }
+    },
+    back: () => {
+      try { if (browserWin && !browserWin.isDestroyed() && browserWin.webContents.navigationHistory.canGoBack()) browserWin.webContents.navigationHistory.goBack(); } catch {}
+      return Promise.resolve(browserState());
+    },
+    forward: () => {
+      try { if (browserWin && !browserWin.isDestroyed() && browserWin.webContents.navigationHistory.canGoForward()) browserWin.webContents.navigationHistory.goForward(); } catch {}
+      return Promise.resolve(browserState());
+    },
+    reload: () => {
+      try { if (browserWin && !browserWin.isDestroyed()) browserWin.webContents.reload(); } catch {}
+      return Promise.resolve(browserState());
+    },
+    close: () => Promise.resolve(closeBrowser()),
+    state: () => Promise.resolve(browserState()),
+    snap: () => snapBrowser(),
+  };
+
   // 告诉服务端「有人在管我」：界面上那个「重启让它生效」就是靠它决定
   // 能不能真的自己重启（浏览器直开的时候没人管，只能让主人手动关）。
   process.env.XIAOYU_DESKTOP = '1';
@@ -246,9 +297,15 @@ async function createWindow(updated = false) {
     ...initialWindowBounds(),
     minWidth: 720,
     minHeight: 520,
-    // 窗口底色 = 页面底色。这里和 index.html 的 --bg 是同一个值，改一个就得改另一个。
-    // 它管的是「页面还没画出来」那几百毫秒：窗口已经是深色，不会先露一版白的。
-    backgroundColor: '#0f1115',
+    /**
+     * 窗口底色 = 页面底色（跟 index.html 的 --bg 是同一个值，改一个就得改另一个）。
+     *
+     * 【为什么是纯黑】主人说启动那一闪的白屏晚上刺眼。原来是 #0f1115（深灰蓝），
+     * 本身不亮，但万一哪一帧漏了统一白底，灰蓝盖不住。纯黑兜底最稳：
+     * 就算真漏一帧，屏幕也不会突然亮一下。蓝底不考虑 —— 蓝光波长更短，
+     * 暗环境里反而更影响睡眠。
+     */
+    backgroundColor: '#000000',
     title: '小鱼',
     autoHideMenuBar: true,
     show: false,
@@ -283,7 +340,7 @@ async function createWindow(updated = false) {
   // 默认最大化（顺序与原因见下面 ready-to-show 里那段，别改回去）。
   win.once('ready-to-show', () => {
     // 显示之前先把深色底铺满，别让第一帧露出引擎的缺省白。
-    try { win.setBackgroundColor('#0f1115'); } catch {}
+    try { win.setBackgroundColor('#000000'); } catch {}
     /**
      * 露面顺序（三层叠着防白，少哪层都不行）：
      *
@@ -297,6 +354,12 @@ async function createWindow(updated = false) {
      * 实测数据：改之前真程序启动第 34-35 帧 84%~91% 白；
      * 改之后连拍 40 帧，最大白 0.1%（那是页面文字本身）。
      */
+    /**
+     * 【多铺一层底】有些机器上 ready-to-show 之后还会有一帧引擎缺省色，
+     * 先把窗口底色再按一遍纯黑，再走透明露面那套。
+     */
+    try { win.setBackgroundColor('#000000'); } catch {}
+
     // 先让它在「全透明」的状态下露面：这一步屏幕上什么都不会变。
     win.show();
     setTimeout(() => {
@@ -318,6 +381,23 @@ async function createWindow(updated = false) {
       }, 2000);
     }
   });
+
+  /**
+   * 兜底：万一某些环境下 ready-to-show 没来（极少见，但不能没有退路），
+   * 窗口就永远透明、看着像「没打开」。这里给个上限 —— 3 秒还没 ready 就直接露面。
+   * 露面的时候底色已经是纯黑了，就算内容没画完也不刺眼。
+   */
+  setTimeout(() => {
+    try {
+      if (!win || win.isDestroyed()) return;
+      if (!win.isVisible()) {
+        console.warn('[boot] ready-to-show 没来，兜底直接露面（纯黑底）');
+        win.setBackgroundColor('#000000');
+        win.show();
+        setTimeout(() => { try { if (win && !win.isDestroyed()) win.setOpacity(1); } catch {} }, 80);
+      }
+    } catch {}
+  }, 3000);
 
   // 关窗口 = 收进托盘，服务端和正在跑的那一轮都留着
   win.on('close', (e) => {
@@ -389,7 +469,7 @@ async function createWindow(updated = false) {
     const { url } = await startServer();
     await win.loadURL(url);
   } catch (err) {
-    const html = `<html style="background:#0f1115"><body style="background:#0f1115;color:#e6e9ef;font:14px/1.6 'Segoe UI';padding:40px">
+    const html = `<html style="background:#000000"><body style="background:#000000;color:#e6e9ef;font:14px/1.6 'Segoe UI';padding:40px">
         <h2>启动失败</h2><pre style="color:#f85149;white-space:pre-wrap">${String((err && err.stack) || err)}</pre></body>`;
     await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     win.show();
@@ -465,8 +545,6 @@ if (!gotLock) {
       if (!updated) return;
       if (win && !win.isDestroyed()) win.loadURL(win.webContents.getURL().replace(/([?&])r=\d+/, '$1r=' + Date.now()));
     });
-    // 看门狗等程序彻底醒过来再上岗：太早装的话，启动阶段的小毛病会被它误判成崩溃。
-    setTimeout(() => armWatchdog(), 8000).unref?.();
   });
 }
 
@@ -707,115 +785,177 @@ function matchImeToSystem() {
 }
 
 ipcMain.handle('ime:systemLang', () => systemLangCode());
-
-/* ---------------- 崩溃自愈（外部看门狗） ---------------- */
-
-/**
- * 进程自己炸了，谁来把它拉起来？
- *
- * 服务端有 src/crash-guard.mjs 兜底，但它只能接住「单个没人管的异常」；
- * 一旦同一类错误 60 秒内反复出现 5 次，它就只能 process.exit(1) ——
- * 因为服务就跑在主进程里，这一退整个程序就没了，托盘、窗口一起消失。
- * 主人看到的是「小鱼突然不见了」，还得自己去双击图标，那一轮也凉了。
- *
- * Node 进程没法在自己死后再救自己，所以这里用**外部看门狗**：
- *   起一个小 PowerShell，盯着本进程的 PID，等它退出，
- *   用一个「标记文件」判断这次退出要不要重启：
- *     - 正常退出（托盘退出 / 关了窗口真要退）→ 标记文件存在，看门狗直接收工
- *     - 意外退出（崩溃、被系统杀）→ 没有标记文件 → 重新拉起
- *
- * 防死循环：看门狗最多连拉 3 次，且两次之间至少隔 8 秒；
- * 反复秒退说明代码坏了，再拉也没用，那时候就老老实实停手。
- *
- * 为什么用 PowerShell 而不是再起一个 node：node 得再有解释器路径、打包后也没有
- * 稳定的 node.exe 可用；PowerShell 在 Windows 上一定有。
- */
-const WATCHDOG_FLAG = 'watchdog.flag';
-const WATCHDOG_KILL = 'watchdog.pid';
-
-function watchdogDir() {
-  try {
-    return app.getPath('userData');
-  } catch {
-    return process.env.MINI_AGENT_DATA || process.cwd();
-  }
-}
-
-/** 正常退出前调：写下标记，让看门狗**别**重启。只生效一次。 */
-let watchdogDisarmed = false;
-function disarmWatchdog() {
-  if (watchdogDisarmed) return;
-  watchdogDisarmed = true;
-  try {
-    writeFileSync(join(watchdogDir(), WATCHDOG_FLAG), String(Date.now()), 'utf8');
-  } catch {}
-  // 顺手把看门狗自己也收掉，别留一个空转的 powershell
-  try {
-    const pidFile = join(watchdogDir(), WATCHDOG_KILL);
-    const pid = Number(readFileSync(pidFile, 'utf8').trim());
-    if (Number.isFinite(pid) && pid > 0) process.kill(pid);
-  } catch {}
-}
-
-/**
- * 起看门狗。只在「真身」（不是被拉起来的那一次）上装，而且同一刻只有一只。
- * 用环境变量 XIAOYU_SUPERVISED 防套娃：被拉起来的进程不再装看门狗，
- * 否则崩溃一次会滚出一串 powershell。
- */
-function armWatchdog() {
-  if (process.env.XIAOYU_SUPERVISED === '1') return;
-  const { spawn } = require('node:child_process');
-  const dir = watchdogDir();
-  const flag = join(dir, WATCHDOG_FLAG);
-  const pidFile = join(dir, WATCHDOG_KILL);
-  const exe = process.execPath;
-  // 清掉上一轮留下的标记，不然这次真崩了也会被当成正常退出
-  try { require('node:fs').unlinkSync(flag); } catch {}
-
-  const script = [
-    '$ErrorActionPreference = "SilentlyContinue"',
-    `$target = ${process.pid}`,
-    `$exe = '${exe.replace(/'/g, "''")}'`,
-    `$flag = '${flag.replace(/'/g, "''")}'`,
-    `$pidFile = '${pidFile.replace(/'/g, "''")}'`,
-    '$tries = 0',
-    'while ($tries -lt 3) {',
-    '  Wait-Process -Id $target -Timeout 2147483',
-    '  if (Test-Path $flag) { break }',
-    '  $tries++',
-    '  Start-Sleep -Seconds 2',
-    '  if (Test-Path $flag) { break }',
-    '  $env:XIAOYU_SUPERVISED = "1"',
-    '  $env:XIAOYU_RESUMED = "1"',
-    '  try { Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) } catch { break }',
-    '  Start-Sleep -Seconds 8',
-    '  $p = Get-Process | Where-Object { $_.ProcessName -eq ' +
-      JSON.stringify(String(require('node:path').basename(exe, '.exe'))) +
-      ' } | Select-Object -First 1',
-    '  if (-not $p) { break }',
-    '  $target = $p.Id',
-    '}',
-  ].join('\r\n');
-
-  try {
-    const enc = Buffer.from(script, 'utf16le').toString('base64');
-    const child = spawn(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc],
-      { detached: true, stdio: 'ignore', windowsHide: true },
-    );
-    child.unref();
-    try { writeFileSync(pidFile, String(child.pid), 'utf8'); } catch {}
-    console.log('[watchdog] 看门狗已上岗，PID', child.pid);
-  } catch (e) {
-    console.warn('[watchdog] 起看门狗失败（不影响使用）:', String(e?.message ?? e));
-  }
-}
-
-  console.log('[watchdog] 看门狗暂不起（等窗口和服务都立住了再说）');
-
-// 正常退出的所有出口都要先拆看门狗，否则「点退出」会被当成崩溃又拉起来。
-app.on('will-quit', () => disarmWatchdog());
-process.on('exit', () => disarmWatchdog());
-
 ipcMain.handle('ime:matchSystem', () => matchImeToSystem());
+
+/* ============================================================================
+ * 内置浏览器
+ *
+ * 一个独立的窗口，跟主界面彻底分开：主窗口 sandbox + contextIsolation 不动，
+ * 网页在那个窗口里跑。谁能干什么都列在下面，别往主界面里塞 <webview>。
+ * ==========================================================================*/
+
+/** 浏览器窗口（单例：点第二次就把它叫到前面，不叠一摞） */
+let browserWin = null;
+
+/** 只认 http / https —— file:// 和 javascript: 一律不接，这是底线 */
+function normalizeUrl(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  // 像「baidu.com」这种没写协议的，补 https
+  let u = raw;
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u)) u = 'https://' + u;
+  try {
+    const parsed = new URL(u);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+/** 浏览器窗口现在的样子（给界面和工具用） */
+function browserState() {
+  if (!browserWin || browserWin.isDestroyed()) {
+    return { open: false, url: '', title: '', canGoBack: false, canGoForward: false, loading: false };
+  }
+  const wc = browserWin.webContents;
+  let url = '';
+  try { url = wc.getURL(); } catch {}
+  let title = '';
+  try { title = wc.getTitle(); } catch {}
+  return {
+    open: true,
+    url: url || '',
+    title: title || '',
+    canGoBack: (() => { try { return wc.navigationHistory.canGoBack(); } catch { return false; } })(),
+    canGoForward: (() => { try { return wc.navigationHistory.canGoForward(); } catch { return false; } })(),
+    loading: (() => { try { return wc.isLoading(); } catch { return false; } })(),
+  };
+}
+
+/** 把状态推给主界面（地址栏要跟着变） */
+function pushBrowserState() {
+  try {
+    if (win && !win.isDestroyed()) win.webContents.send('browser:state', browserState());
+  } catch {}
+}
+
+/** 开浏览器窗口；已经开着就直接跳转 + 叫到前面 */
+function openBrowser(rawUrl) {
+  const target = normalizeUrl(rawUrl) || 'https://www.bing.com';
+
+  if (browserWin && !browserWin.isDestroyed()) {
+    try { browserWin.show(); browserWin.focus(); } catch {}
+    try { browserWin.loadURL(target); } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+    return { ok: true, reused: true, url: target };
+  }
+
+  browserWin = new BrowserWindow({
+    width: 1180,
+    height: 820,
+    title: '内置浏览器',
+    icon: join(__dirname, '..', 'assets', 'xiaoyu.ico'),
+    webPreferences: {
+      // 网页窗口不给 preload、不给 node —— 它就是个浏览器
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // 让网页里的新窗口请求回来问我们，别自己乱弹
+      webSecurity: true,
+    },
+  });
+
+  browserWin.loadURL(target);
+
+  // 地址栏跟着变
+  for (const ev of ['did-navigate', 'did-navigate-in-page', 'did-start-loading', 'did-stop-loading', 'page-title-updated']) {
+    try { browserWin.webContents.on(ev, () => pushBrowserState()); } catch {}
+  }
+
+  /**
+   * 网页想开新窗口（target=_blank 那些）。
+   *
+   * 不拦的话 Electron 会自己弹一个没头没脑的新窗口，地址栏都没有，
+   * 主人想回都回不来。我们统一处理：
+   *   - http/https → 就在这个内置浏览器里打开
+   *   - 别的一律拒绝（file://、外部协议交给系统浏览器）
+   */
+  browserWin.webContents.setWindowOpenHandler(({ url }) => {
+    const u = normalizeUrl(url);
+    if (u) {
+      try { browserWin.loadURL(u); } catch {}
+    } else {
+      try { shell.openExternal(url); } catch {}
+    }
+    return { action: 'deny' };
+  });
+
+  /**
+   * 网页想把整个窗口导航走（比如点了链接跳到别的站、或者被脚本强跳）。
+   * 只放行 http/https，别的拦下来 —— 免得一个网页把浏览器窗口变成别的程序。
+   */
+  browserWin.webContents.on('will-navigate', (e, url) => {
+    if (!normalizeUrl(url)) {
+      try { e.preventDefault(); } catch {}
+      try { shell.openExternal(url); } catch {}
+    }
+  });
+
+  browserWin.on('closed', () => {
+    browserWin = null;
+    pushBrowserState();
+  });
+
+  return { ok: true, reused: false, url: target };
+}
+
+/** 关掉浏览器窗口 */
+function closeBrowser() {
+  if (browserWin && !browserWin.isDestroyed()) {
+    try { browserWin.destroy(); } catch {}
+  }
+  browserWin = null;
+  pushBrowserState();
+  return { ok: true };
+}
+
+/** 截一张浏览器窗口的图（工具用来「看看网页长什么样」） */
+async function snapBrowser() {
+  if (!browserWin || browserWin.isDestroyed()) return { ok: false, error: '浏览器没开着' };
+  try {
+    const img = await browserWin.webContents.capturePage();
+    if (!img || img.isEmpty()) return { ok: false, error: '截出来是空的（页面可能还没画好）' };
+    const dir = join(app.getPath('userData'), 'browser-shots');
+    try { require('node:fs').mkdirSync(dir, { recursive: true }); } catch {}
+    const file = join(dir, 'shot-' + Date.now() + '.png');
+    writeFileSync(file, img.toPNG());
+    return { ok: true, file, ...browserState() };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+}
+
+ipcMain.handle('browser:open', (_e, url) => openBrowser(url));
+ipcMain.handle('browser:close', () => closeBrowser());
+ipcMain.handle('browser:goto', (_e, url) => {
+  const u = normalizeUrl(url);
+  if (!u) return { ok: false, error: '只支持 http / https 地址' };
+  if (!browserWin || browserWin.isDestroyed()) return openBrowser(u);
+  try { browserWin.loadURL(u); return { ok: true, url: u }; }
+  catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+});
+ipcMain.handle('browser:back', () => {
+  try { if (browserWin && !browserWin.isDestroyed() && browserWin.webContents.navigationHistory.canGoBack()) browserWin.webContents.navigationHistory.goBack(); } catch {}
+  return browserState();
+});
+ipcMain.handle('browser:forward', () => {
+  try { if (browserWin && !browserWin.isDestroyed() && browserWin.webContents.navigationHistory.canGoForward()) browserWin.webContents.navigationHistory.goForward(); } catch {}
+  return browserState();
+});
+ipcMain.handle('browser:reload', () => {
+  try { if (browserWin && !browserWin.isDestroyed()) browserWin.webContents.reload(); } catch {}
+  return browserState();
+});
+ipcMain.handle('browser:state', () => browserState());
+ipcMain.handle('browser:snap', () => snapBrowser());
+

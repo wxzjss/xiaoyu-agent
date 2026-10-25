@@ -6,7 +6,7 @@ import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox }
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
 import { pureModeOn, setPureToolLister } from './pure.mjs';
-import { compressHistory } from './compress.mjs';
+import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
@@ -212,7 +212,37 @@ export async function runAgent({
    */
   let stallRounds = 0;
   const STALL_LIMIT = 40;
+
+  /**
+   * 【另一道闸：这一轮总共跑了多久】
+   *
+   * 上面那道管「一句话不说、光调工具」。可打转还有另一种样子：
+   * 它每轮都在说话、也在调工具，看起来像在干活 —— 只是永远干不完。
+   * 那种情形 stallRounds 永远清零，拦不住。
+   *
+   * 所以再压一道时间的底：一轮跑过这么久还没收尾，就当它卡住了，
+   * 收尾把话交回去，而不是让它转到天亮。
+   *
+   * 3 小时是拍得比较宽的：真正的大活（重写一个模块、跑一整套回归）
+   * 也就几十分钟。真到三小时还在转，基本不是活多，是它绕进去了。
+   * 想改就设环境变量 TURN_MAX_MINUTES。
+   */
+  const TURN_WALL_LIMIT_MS = (() => {
+    const raw = Number(String(process.env.TURN_MAX_MINUTES ?? '').trim());
+    if (Number.isFinite(raw) && raw > 0) return raw * 60 * 1000;
+    return 180 * 60 * 1000; // 默认 3 小时
+  })();
+  const turnStartedAt = Date.now();
   for (let round = 0; round < config.maxRounds; round++) {
+    // 时间闸：这一轮跑太久就别再转了（见上面 TURN_WALL_LIMIT_MS 的说明）
+    if (Date.now() - turnStartedAt > TURN_WALL_LIMIT_MS) {
+      const mins = Math.round((Date.now() - turnStartedAt) / 60000);
+      const note = '这一轮已经跑了 ' + mins + ' 分钟还没个头。我先停在这儿 —— '
+        + '要么把现在的结论说给我，要么告诉我卡在哪儿，我们换个走法。';
+      onEvent({ type: 'text', text: '\n\n（' + note + '）' });
+      messages.push({ role: 'assistant', content: note });
+      return { text: note, usage: usageTotal, lastUsage, files: outbox };
+    }
     // 每轮调模型前都量一下历史；超了就把旧对话折成摘要。没超就什么都不做（不额外花钱）。
     // 一轮只压一次（见上面 compressedThisTurn 的说明）
     const noCompress = { compressed: false, before: 0, after: 0 };
@@ -354,6 +384,27 @@ export async function runAgent({
       usageTotal = sumUsage(usageTotal, usage);
       // 最后一次请求的原始用量：它的 prompt_tokens 就是「当前上下文有多大」
       lastUsage = { ...usage };
+
+      /**
+       * 拿这一轮的真实用量，校准一下估算。
+       *
+       * 【为什么非得校】实测：同一份历史，估算报 47,439，网关报 76,603 —— 差 1.61 倍。
+       * 估算偏低会漏压：明明该压了，判断说「还没到」，接着往上下文里堆，
+       * 堆到网关打回来，主人看到的就是「怎么突然不回了」。
+       *
+       * 这里拿「真实 prompt_tokens」对「同一份历史的估算值」，
+       * 系数往真值挪一半（单次用量可能含缓存/复算，不一定干净，一次跳满不保险）。
+       * 估算是纯本地计算、不发请求，不花钱。
+       */
+      try {
+        const realPrompt = Number(usage.prompt_tokens ?? 0);
+        if (realPrompt > 0) {
+          const est = estimateTokens(inflateHistory(messages));
+          if (est > 0) noteRealTokens(realPrompt, est);
+        }
+      } catch {
+        // 校准是锦上添花，算挂了也不能把这一轮带崩
+      }
     }
 
     /**

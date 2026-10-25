@@ -3488,6 +3488,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             await whaleMaybeReply({ session, userText: userTextNow, send, sessionId, live });
           } catch (e) {
             console.warn('[whale] 她这次没接上：', String(e?.message ?? e));
+            /**
+             * 【她没接上，得留下痕迹】
+             *
+             * 以前这里只 console.warn —— 那条输出打在打包版的窗口进程里，
+             * 主人看不见，我也读不到（没有日志文件）。
+             * 结果就是「她一句话没说」这种时候，谁都不知道是没启动、
+             * 启动了报错、还是她自己决定不说。
+             *
+             * 现在落一条到 whale-actions.log：以后一查就知道卡在哪一步。
+             */
+            try {
+              const { logWhaleAction } = await import('./whale-presence.mjs');
+              logWhaleAction('whale-catch-' + (e?.name || 'Error') + '：' + String(e?.message ?? e).slice(0, 200));
+            } catch {}
           }
         })();
       }

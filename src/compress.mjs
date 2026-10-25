@@ -91,6 +91,35 @@ export function purifyWire(messages) {
  * 粗估 token 数。实测这个端点：纯中文约 1.45 字符/token，纯英文约 4.67。
  * 按最坏情况（1.5 字符/token）估，宁可高估也不被网关打回来。
  */
+/**
+ * 【估算系数：拿真实用量自己校】
+ *
+ * 实测过的事：这个端点报回来的 prompt_tokens，跟「字符数 ÷ 1.5」差得不少。
+ * 同一份历史，估 47,439、真 76,603，差 1.61 倍；再往前更狠。
+ *
+ * 估少了会怎样：明明该压了，判断说「还没到」，于是接着往上下文里堆，
+ * 堆到网关那边直接打回来 —— 主人看到的就是「怎么突然不回了」。
+ *
+ * 所以这里记一个系数：每拿到一次真实 usage，就用「真 ÷ 估」把系数往真值挪一点
+ * （挪一半，别一下跳满 —— 单次用量可能含缓存、复算，不一定干净）。
+ * 夹在 1~8 之间：小于 1 说明估高了，那也是毛病；大于 8 基本是数据脏了。
+ */
+let calibRatio = 1.6;   // 起点就用实测那个 1.61，别从 1 慢慢爬
+
+/** 真实用量回来了：校准一下估算系数 */
+export function noteRealTokens(realTokens, estimatedTokens) {
+  const real = Number(realTokens);
+  const est = Number(estimatedTokens);
+  if (!Number.isFinite(real) || !Number.isFinite(est) || real <= 0 || est <= 0) return;
+  const ratio = Math.min(8, Math.max(1, real / est));
+  calibRatio = calibRatio * 0.5 + ratio * 0.5;
+}
+
+/** 现在用的系数是多少（测试/排查用） */
+export function currentCalibration() {
+  return calibRatio;
+}
+
 export function estimateTokens(messages) {
   let total = 0;
   for (const m of messages) {
@@ -104,7 +133,7 @@ export function estimateTokens(messages) {
     if (m.tool_calls) for (const tc of m.tool_calls) parts.push(tc.function?.name, tc.function?.arguments);
     for (const p of parts) {
       if (typeof p !== 'string' || !p) continue;
-      total += Math.ceil(p.length / 1.5);
+      total += Math.ceil(p.length / 1.5 * calibRatio);
     }
   }
   return total;

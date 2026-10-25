@@ -4286,15 +4286,28 @@ function whaleStreamFinish(text) {
  * 那种情况是新的意思，不该被吞掉。
  */
 const _whaleRecent = new Map();
+/**
+ * 这句话画过没有。
+ *
+ * 【为什么不再按时间窗】原来是「同人同话 3 秒内不重画」。可她那句话会被
+ * 两个补捞循环各捞一遍（fish_off 后 1.2/3.5/7/12 秒、done 后 1.5/4/8 秒），
+ * 每次间隔都超过 3 秒 —— 时间窗根本挡不住，主人看到的是一条话冒出三四个气泡。
+ *
+ * 现在改成「论句话」：同一轮里，同一句话只画一次，不管补捞多少遍。
+ * 这一轮的记录在开新轮时清（__whaleRoundReset），所以下一轮她真再说一遍，
+ * 照样画得出来。
+ */
+const _whaleDrawnThisRound = new Set();
+function __whaleRoundReset() {
+  _whaleDrawnThisRound.clear();
+  _whaleRecent.clear();
+}
 function whaleAlreadyDrawn(who, text) {
   const key = String(who || '小鲸') + '\u0000' + String(text || '');
-  const now = Date.now();
-  const last = _whaleRecent.get(key);
-  if (_whaleRecent.size > 60) {
-    for (const [k, t] of _whaleRecent) if (now - t > 10000) _whaleRecent.delete(k);
-  }
-  if (last && now - last < 3000) return true;
-  _whaleRecent.set(key, now);
+  if (_whaleDrawnThisRound.has(key)) return true;
+  _whaleDrawnThisRound.add(key);
+  if (_whaleDrawnThisRound.size > 200) _whaleDrawnThisRound.clear();
+  _whaleRecent.set(key, Date.now());
   return false;
 }
 
@@ -4574,6 +4587,8 @@ async function runTurn({ resume = false, text = '' } = {}) {
    * 这一轮的后台记录：切回来时用它把已经收到的内容补画出来。
    * parts 里按顺序存 { kind: 'text'|'reasoning'|'tool', ... }
    */
+  // 新的一轮：她这一轮说过的话重新算，同一句只画一次（见 whaleAlreadyDrawn）
+  try { if (typeof __whaleRoundReset === 'function') __whaleRoundReset(); } catch {}
   const turnRec = { sessionId: turnSession, parts: [], running: true, startedAt: Date.now(), fishOff: false };
   turnsInFlight.set(turnSession, turnRec);
 

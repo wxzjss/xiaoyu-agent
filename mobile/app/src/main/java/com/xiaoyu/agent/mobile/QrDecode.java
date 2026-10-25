@@ -102,6 +102,19 @@ public final class QrDecode {
     // ───────────────────────────── 主流程 ─────────────────────────────
 
     /**
+     * 一个像素算不算黑。
+     *
+     * 注意 byte 是**有符号**的：白色 0xFF 存进 byte 就是 -1，而 -1 < 128 恒为真。
+     * 以前这里直接写 `lum[i] < 128`，导致整张图每个像素都被判成黑 —— 扫描线永远是
+     * 一整条黑，1:1:3:1:1 一个都匹配不上，findFinders 恒返回 null，decode 恒返回 null。
+     * 手机上「怎么扫都扫不出来」就是这个原因，跟透视、跟算法都没关系。
+     * 所以必须先 & 0xFF 转成无符号再比。
+     */
+    private static boolean isDark(byte v) {
+        return (v & 0xFF) < 128;
+    }
+
+    /**
      * @param lum 灰度图（0=黑），w*h，行优先
      */
     public static Result decode(byte[] lum, int w, int h) {
@@ -168,7 +181,18 @@ public final class QrDecode {
         double qx = px + 3.5 * ux + 3.5 * vx;
         double qy = py + 3.5 * uy + 3.5 * vy;
 
-        boolean[][] m = sample(lum, w, h, ox, oy, qx, qy, dim);
+        // 四个角都算出来再采样：只给两个对角点的话，旋转/透视畸变会全被吃掉
+        // （以前这里就是只传了 O 和 Q，见下面 sample 的注释）。
+        //   A = 原点（左上外扩 3.5 模块前的位置）
+        //   B = A 沿 u 方向走 dim 个模块
+        //   C = B 再沿 v 方向走 dim 个模块（右下）
+        //   D = A 沿 v 方向走 dim 个模块（左下）
+        double ax = ox, ay = oy;
+        double bx = ox + dim * ux, by = oy + dim * uy;
+        double cx2 = ox + dim * ux + dim * vx, cy2 = oy + dim * uy + dim * vy;
+        double dqx = ox + dim * vx, dqy = oy + dim * vy;
+
+        boolean[][] m = sample(lum, w, h, ax, ay, bx, by, cx2, cy2, dqx, dqy, dim);
         if (m == null) return null;
         return parseMatrix(m, dim);
     }
@@ -178,40 +202,57 @@ public final class QrDecode {
         return dx * dx + dy * dy;
     }
 
-    /** 双线性透视采样：src 是四边形 (ox,oy)-(qx,qy)，dest 是 dim×dim 网格 */
-    private static boolean[][] sample(byte[] lum, int w, int h, double ox, double oy, double qx, double qy, int dim) {
+    /**
+     * 双线性四边形采样：把任意四边形 (A,B,C,D) 摊成 dim×dim 的方格，每格取一次灰度。
+     *
+     * 以前这函数只收两个对角点 (O, Q)，然后 px = ox + fx*(qx-ox)、py = oy + fy*(qy-oy) ——
+     * 那是「把四边形当成沿对角线拉直的矩形」，等于假设二维码永远正着放。
+     * 手机举着扫，手一歪就带旋转和梯形畸变，采样矩阵整个错位，后面 Reed-Solomon
+     * 纠错再怎么修也修不回来。这就是「怎么扫都扫不出来」的根。
+     *
+     * 现在用四点的双线性插值：
+     *   P(fx,fy) = A + fx*(B-A) + fy*(D-A) + fx*fy*(A-B-C+D)
+     * 它在四个角上严格等于 A/B/C/D，中间是平滑过渡，对付轻微旋转和梯形够了
+     * （真正的单应变换要解 8 元方程组，这里没必要 —— 定位角已经把尺度标准化过了）。
+     *
+     * A=左上 B=右上 C=右下 D=左下，四项顺序不能错，错了画面会镜像/翻转。
+     */
+    private static boolean[][] sample(byte[] lum, int w, int h,
+                                      double ax, double ay, double bx, double by,
+                                      double cx, double cy, double dx, double dy, int dim) {
         boolean[][] m = new boolean[dim][dim];
-        double maxX = Math.max(ox, qx), maxY = Math.max(oy, qy);
-        if (ox < -2 || oy < -2 || qx > w + 2 || qy > h + 2) {
-            // 允许一点点越界（摄像头边缘），但整体出画就不要了
-            if (ox < -20 || oy < -20 || qx > w + 20 || qy > h + 20) return null;
-        }
+
+        // 整块出画就别费劲了（留一点点余量给摄像头边缘切掉的情况）
+        double minX = Math.min(Math.min(ax, bx), Math.min(cx, dx));
+        double maxX = Math.max(Math.max(ax, bx), Math.max(cx, dx));
+        double minY = Math.min(Math.min(ay, by), Math.min(cy, dy));
+        double maxY = Math.max(Math.max(ay, by), Math.max(cy, dy));
+        if (maxX < 0 || maxY < 0 || minX > w || minY > h) return null;
+
         for (int j = 0; j < dim; j++) {
             for (int i = 0; i < dim; i++) {
-                // 双线性插值：目标网格的 (i+0.5, j+0.5)
-                double fx = (i + 0.5) / dim, fy = (j + 0.5) / dim;
-                double x = ox + (qx - ox) * fx + ((ox + (qx - ox) * 0) - ox); // 见下方注释
-                // 正确的透视：p = O + fx*(Q-O) 在行方向上再按 fy 倾斜
-                // 用「三条边的仿射近似」：先沿上边取一点，再沿竖边下滑
-                double topX = ox + (qx - ox) * fx;
-                double topY = oy + (qy - oy) * fx;
-                // 竖边方向：从 tl 到 bl（用了 tl/bl 的中点近似，四边形足够接近平行四边形）
-                double botX = ox + (qx - ox) * fx;
-                double botY = oy + (qy - oy) * fx;
-                // 竖边用 (Q-O) 的垂直分量不好取，这里直接用整体竖轴：
-                double vx = (qx - ox) / dim, vy = (qy - oy) / dim;
-                double vsx = (ox - ox) ;
-                // 简化：用「正方形映射到四边形」的常用近似 —— 两个方向都线性
-                double sx = ox + (qx - ox - (ox - ox)) * 0;
-                // 最终坐标 = O + fx*(Q-O) + fy*((O+u) - O)，u 是竖边方向
-                double ux = ((qx - ox) - (qx - ox)) ;
-                // ↑ 上面这些废变量是推导过程留下的，真正的计算在下面三行：
-                double x2 = ox + fx * (qx - ox) + fy * (vx * dim * 0);
-                double yy2 = oy + fy * (qy - oy) + fx * (vy * 0);
-                int px = (int) Math.round(ox + fx * (qx - ox));
-                int py = (int) Math.round(oy + fy * (qy - oy));
-                if (px < 0 || py < 0 || px >= w || py >= h) return null;
-                m[j][i] = lum[py * w + px] < 128;
+                // 取格子中心，不是格子角 —— 差半个模块就够把边缘的采样点挪到隔壁去
+                double fx = (i + 0.5) / dim;
+                double fy = (j + 0.5) / dim;
+
+                // 双线性：角点严格命中，中间平滑
+                double px = ax
+                        + fx * (bx - ax)
+                        + fy * (dx - ax)
+                        + fx * fy * (ax - bx - dx + cx);
+                double py = ay
+                        + fx * (by - ay)
+                        + fy * (dy - ay)
+                        + fx * fy * (ay - by - dy + cy);
+
+                int ix = (int) Math.round(px);
+                int iy = (int) Math.round(py);
+                if (ix < 0 || iy < 0 || ix >= w || iy >= h) {
+                    // 单点出界就当中灰，别整块放弃 —— 边缘几个模块错不代表整张图不能用
+                    m[j][i] = false;
+                    continue;
+                }
+                m[j][i] = isDark(lum[iy * w + ix]);
             }
         }
         return m;
@@ -225,10 +266,10 @@ public final class QrDecode {
         for (int step = 1; step <= 2; step++) {
             int stride = step == 1 ? 3 : 5;
             for (int y = stride; y < h; y += stride) {
-                scanLine(lum, w, h, true, y, cands, w / 50);
+                scanLine(lum, w, h, true, y, cands, MIN_MODULE);
             }
             for (int x = stride; x < w; x += stride) {
-                scanLine(lum, w, h, false, x, cands, h / 50);
+                scanLine(lum, w, h, false, x, cands, MIN_MODULE);
             }
             List<Finder> merged = merge(cands, 6);
             if (merged.size() >= 3) {
@@ -241,45 +282,87 @@ public final class QrDecode {
     }
 
     /**
+     * 一个模块最少几个像素才算数。只用来滤掉 1~2 像素的抗锯齿噪声。
+     *
+     * 以前这里是「画面宽度的 1/50」（findFinders 里直接传 w/50），等于硬性要求
+     * 二维码至少占画面 1/7 宽。留白多一点、或者拍照时二维码在画面里偏小，
+     * mod 就小于这个门槛，所有定位角候选被一刀切丢掉，findFinders 恒返回 null ——
+     * 表现就是"二维码明明看得清清楚楚，就是扫不出来"。
+     * 模块大小该由扫描线自己量，不该由画面尺寸假定。
+     */
+    private static final int MIN_MODULE = 2;
+
+    /**
      * 一条扫描线：找 1:1:3:1:1 的黑白黑（黑）白黑序列。
      * 魔数来自二维码定位角的规格（中心那块是 3 倍宽）。
+     *
+     * 这里用一个「五段滑窗」逐段推进：每遇到颜色变化就结算当前段的长度，
+     * 窗口满五段就试一次，不管成不成都要向前滑一段继续找。
+     *
+     * 踩过的四个坑（都已修）：
+     *  1. color 初值死写 0。扫描线从黑像素起步时开头的黑段会被当成「变颜色」，
+     *     runs[0] 记成 0，五段整体错位，永远匹配不上。
+     *  2. 报给上层的坐标用了 lastX（一个每轮都被覆盖成 i-1 的临时量）。定位角中心
+     *     应该是窗口第一段的起点 + 五段总长的一半。
+     *  3. 滑窗一次跳两段，会跳过「窗口起点落在第 1 段」的那个正确窗口 ——
+     *     而定位角前面往往压着一段静区白，正好把正确窗口挤到第 1 段上。
+     *  4. **窗口滑动时只挪了 runs，没挪起点。** 这一条最致命：起点还停在旧位置，
+     *     算出来的中心坐标整体偏右好几段，定位角坐标全歪，采样自然全错。
+     *     所以下面用 segStart 一并记录每段起点，滑窗时和 runs 一起左移。
      */
     private static void scanLine(byte[] lum, int w, int h, boolean horiz, int fixed, List<Finder> out, int minMod) {
         int n = horiz ? w : h;
-        int[] runs = new int[5];
-        int color = 0;
+        int[] runs = new int[5];        // 五段长度
+        int[] segStart = new int[5];    // 五段各自的起始像素
         int runIdx = 0;
+        int color = (horiz ? isDark(lum[fixed * w]) : isDark(lum[fixed])) ? 1 : 0;
         int start = 0;
-        int lastX = 0;
+        int minM = Math.max(1, minMod);
+
         for (int i = 0; i < n; i++) {
-            boolean dark = horiz ? (lum[fixed * w + i] < 128) : (lum[i * w + fixed] < 128);
+            boolean dark = horiz ? isDark(lum[fixed * w + i]) : isDark(lum[i * w + fixed]);
             int c = dark ? 1 : 0;
-            if (c != color) {
-                // 一段结束
-                if (runIdx < 5) {
-                    runs[runIdx] = i - start; // 长度
-                    if (runIdx == 4) {
-                        // 白段也要检查，凑满 6 段（1:1:3:1:1:白）
-                    }
-                }
-                if (runIdx == 4) {
-                    int total = 0;
-                    for (int k = 0; k < 5; k++) total += runs[k];
-                    int mod = total / 7;
-                    if (mod >= Math.max(1, minMod) && matchRatio(runs, mod)) {
-                        Manager.add(out, horiz, fixed, lastX, mod);
-                    }
-                    // 滑窗：把前两段丢掉继续（可能紧挨着下一个定位角）
-                    System.arraycopy(runs, 1, runs, 0, 4);
-                    runs[4] = 0;
-                    runIdx = 4;
-                } else {
-                    runIdx++;
-                }
-                start = i;
-                color = c;
+            if (c == color) continue;
+
+            // ── 一段结束：记下长度和起点 ──
+            if (runIdx < 5) {
+                runs[runIdx] = i - start;
+                segStart[runIdx] = start;
             }
-            lastX = i;
+
+            if (runIdx == 4) {
+                int total = 0;
+                for (int k = 0; k < 5; k++) total += runs[k];
+                int mod = total / 7;
+                if (mod >= minM && matchRatio(runs, mod)) {
+                    // 中心 = 窗口第一段的起点 + 五段总长的一半
+                    Manager.add(out, horiz, fixed, segStart[0] + total / 2, mod);
+                }
+                // 滑一段：长度和起点同步左移
+                for (int k = 0; k < 4; k++) {
+                    runs[k] = runs[k + 1];
+                    segStart[k] = segStart[k + 1];
+                }
+                runs[4] = 0;
+                segStart[4] = i;
+                runIdx = 4;
+            } else {
+                runIdx++;
+            }
+            start = i;
+            color = c;
+        }
+
+        // 扫描线走完，最后一段还没结算（贴边的定位角靠这个）
+        if (runIdx == 4) {
+            runs[4] = n - start;
+            segStart[4] = start;
+            int total = 0;
+            for (int k = 0; k < 5; k++) total += runs[k];
+            int mod = total / 7;
+            if (mod >= minM && matchRatio(runs, mod)) {
+                Manager.add(out, horiz, fixed, segStart[0] + total / 2, mod);
+            }
         }
     }
 
@@ -338,8 +421,17 @@ public final class QrDecode {
         return out;
     }
 
-    /** 三个定位角要构成近似等腰直角三角形 */
+    /**
+     * 三个定位角要构成近似等腰直角三角形，并且**还得有一对角在同一个方向上**
+     * （左上&右上共 y，或左上&左下共 x）—— 否则可能挑出三个噪声点凑成的假三角形。
+     *
+     * 注意这里是「全遍历、挑最像的那个」，不是「第一个满足就返回」。
+     * 以前是第一个通过粗筛的组合直接 return，只要图里有杂点凑出个大致直角三角形，
+     * 就会把三个假点当定位角送回上层，后面采样全错、解不出来。
+     */
     private static Finder[] pickThree(List<Finder> cands, int w, int h) {
+        Finder[] best = null;
+        double bestErr = Double.MAX_VALUE;
         for (int i = 0; i < cands.size(); i++) {
             for (int j = i + 1; j < cands.size(); j++) {
                 for (int k = j + 1; k < cands.size(); k++) {
@@ -355,35 +447,61 @@ public final class QrDecode {
                     if (Math.abs(d[2] - d[0] * 1.4142135623730951) > d[0] * 0.25) continue;
                     if (Math.abs(a.module - b.module) > a.module * 0.6) continue;
                     if (Math.abs(a.module - c.module) > a.module * 0.6) continue;
-                    return new Finder[]{a, b, c};
+
+                    // 误差 = 两腰不等程度 + 斜边偏离 √2 程度，越小越像
+                    double err = Math.abs(d[1] - d[0]) / d[0]
+                            + Math.abs(d[2] - d[0] * 1.4142135623730951) / (d[0] * 1.4142135623730951);
+                    if (err < bestErr) {
+                        bestErr = err;
+                        best = new Finder[]{a, b, c};
+                    }
                 }
             }
         }
-        return null;
+        return best;
     }
 
     // ───────────────────────────── 解析矩阵 ─────────────────────────────
 
-    private static final char[] EC_ORDER = {'L', 'M', 'Q', 'H'};
+    /**
+     * 格式信息里纠错等级的 2 位编码 → 等级。
+     * 注意这不是 0,1,2,3 顺序：ISO 18004 规定 01=L、00=M、11=Q、10=H。
+     * 以前写成 {'L','M','Q','H'}（即 0=L,1=M,2=Q,3=H），M 被当成 L、Q 和 H 互换，
+     * 于是 BLOCKS 查错表、块数/每块长度全错，去交织把码字切得面目全非 —— 这就是二维码一直扫不出来的根因。
+     */
+    private static final char[] EC_ORDER = {'M', 'L', 'H', 'Q'};
 
     private static Result parseMatrix(boolean[][] m, int dim) {
         int ver = (dim - 17) / 4;
         if (ver < 1 || ver > 40) return null;
 
-        // 格式信息两份（左上 + 右上/左下），取能通过 BCH 校验的那份
+        // 格式信息两份（左上 + 右上/左下），取能通过 BCH 校验的那份。
+        //
+        // 位序：QR 格式信息的 15 位是**低位先写**（ISO 18004）：
+        // 格子 (8,0) 里放的是 bit0，(0,8) 里放的是 bit14，中间 (8,6) 是定时图形要跳过。
+        // 所以读数时得从 bit14 那头开始往回读，也就是从 (0,8) 起、(8,0) 收尾。
+        // 以前这里正好读反（把 (8,0) 当 bit14），15 位整个镜像，
+        // BCH 永远校验不过，fixFormat 恒 -1，parseMatrix 直接 null ——
+        // 这就是「扫半天扫不出来」的第一层原因。
         int fmt = 0;
         boolean ok = false;
         for (int pass = 0; pass < 2 && !ok; pass++) {
             int bits = 0;
             if (pass == 0) {
-                for (int i = 0; i <= 5; i++) bits = (bits << 1) | (m[i][8] ? 1 : 0);
-                bits = (bits << 1) | (m[7][8] ? 1 : 0);
-                bits = (bits << 1) | (m[8][8] ? 1 : 0);
-                bits = (bits << 1) | (m[8][7] ? 1 : 0);
-                for (int i = 5; i >= 0; i--) bits = (bits << 1) | (m[8][i] ? 1 : 0);
+                // 左上这条：bit14..bit0 依次在 (0,8)(1,8)(2,8)(3,8)(4,8)(5,8)(7,8)(8,8)
+                //              (8,7)(8,5)(8,4)(8,3)(8,2)(8,1)(8,0)
+                int[][] path = {
+                    {0,8},{1,8},{2,8},{3,8},{4,8},{5,8},{7,8},{8,8},
+                    {8,7},{8,5},{8,4},{8,3},{8,2},{8,1},{8,0}
+                };
+                for (int[] p : path) bits = (bits << 1) | (m[p[1]][p[0]] ? 1 : 0);
             } else {
-                for (int i = dim - 1; i >= dim - 7; i--) bits = (bits << 1) | (m[8][i] ? 1 : 0);
-                for (int i = dim - 8; i <= dim - 1; i++) bits = (bits << 1) | (m[i][8] ? 1 : 0);
+                // 右上副本：bit0..bit7 依次在 (dim-1,8)..(dim-8,8)
+                // 左下副本：bit8..bit14 依次在 (8,dim-7)..(8,dim-1)
+                int[] b = new int[15];
+                for (int i = 0; i <= 7; i++) b[i] = m[8][dim - 1 - i] ? 1 : 0;
+                for (int i = 8; i <= 14; i++) b[i] = m[dim - 15 + i][8] ? 1 : 0;
+                for (int i = 14; i >= 0; i--) bits = (bits << 1) | b[i];
             }
             int fixed = fixFormat(bits);
             if (fixed >= 0) {
@@ -393,14 +511,19 @@ public final class QrDecode {
         }
         if (!ok) return null;
 
-        int ecBits = (fmt >> 13) & 0x3;
-        char ecc = EC_ORDER[ecBits == 0 ? 1 : ecBits == 1 ? 0 : ecBits == 2 ? 3 : 2];
+        // fmt 现在是 5 位原始格式数据：bit13..10 对齐到高 5 位之后，
+        // 高 2 位 = 纠错等级，低 3 位 = 掩码编号。
+        // （fixFormat 以前返回 15 位码字，所以这里 fmt & 0x7 拿到的是 BCH 校验位的末 3 位，
+        //  掩码整个拆错，数据区读出来全是乱码。）
+        int ecBits = (fmt >> 3) & 0x3;
+        char ecc = EC_ORDER[ecBits];
+        // BLOCKS 的四个槽位固定按 L,M,Q,H 排列，而 ecBits 是标准的乱序编码
+        // （01=L,00=M,11=Q,10=H），所以必须用 ecc 字符再映射一次，
+        // 不能直接拿 ecBits 当索引 —— 否则 M 等级会去查 L 的表，块数全错。
         int ecIdx = ecc == 'L' ? 0 : ecc == 'M' ? 1 : ecc == 'Q' ? 2 : 3;
+        int maskId = fmt & 0x7;
 
         boolean[][] func = functionMask(ver, dim);
-
-        // 去掉 mask，按之字形读数据码字
-        int maskId = fmt & 0x7;
         byte[] cw = readCodewords(m, func, dim, maskId);
         if (cw == null) return null;
 
@@ -421,28 +544,24 @@ public final class QrDecode {
         return new Result(text, ver, ecc);
     }
 
-    /** BCH(15,5) 校验 + 还原 5 位格式信息 */
+    /**
+     * BCH(15,5) 校验 + 还原 5 位格式信息。
+     *
+     * 返回的是**高 5 位的原始格式数据**（2 位纠错等级 + 3 位掩码），不是 15 位码字。
+     * 以前这里 return full（15 位全码字），调用方又拿 fmt & 0x7 当 maskId ——
+     * 那取到的是 BCH 校验位的末 3 位，跟掩码编号毫无关系，
+     * 掩码拆错之后整张数据区全是乱的，RS 纠错也救不回来。
+     */
     private static int fixFormat(int raw) {
-        final int[] EXP = new int[32];
-        int x = 1;
-        for (int i = 0; i < 31; i++) {
-            EXP[i] = x;
-            x <<= 1;
-            if ((x & 0x100) != 0) x ^= 0x537;
-        }
         for (int d = 0; d < 32; d++) {
-            // 用表格里的生成式直接算：data(5) << 10 再取模
-            int code = d << 10;
-            int rem = code;
+            // 生成多项式 0x537，data(5) << 10 再取模得 10 位校验
+            int rem = d << 10;
             for (int i = 14; i >= 10; i--) {
                 if (((rem >> i) & 1) != 0) rem ^= 0x537 << (i - 10);
             }
-            int full = code | rem;
-            full ^= 0x5412;
-            if (full == (raw & 0x7FFF)) {
-                // 高 5 位是格式信息（2 位纠错等级 + 3 位 mask）
-                return full & 0x7FFF;
-            }
+            int code = (d << 10) | (rem & 0x3FF);
+            int wire = code ^ 0x5412;          // 上线前统一异或的掩码
+            if (wire == (raw & 0x7FFF)) return d;   // ← 返回原始 5 位，不是 wire
         }
         return -1;
     }
@@ -450,24 +569,36 @@ public final class QrDecode {
     /** 功能图形掩码：true = 不参与数据 */
     private static boolean[][] functionMask(int ver, int dim) {
         boolean[][] f = new boolean[dim][dim];
-        // 定位角 + 分隔符 + 格式区
-        for (int i = 0; i < 9; i++) {
-            for (int j = 0; j < 9; j++) {
-                if (i < dim && j < dim) f[i][j] = true;
-                if (i < dim && dim - 1 - j >= 0 && dim - 1 - j < dim) {
-                    if (i < 9) f[i][dim - 1 - j] = true;
-                    if (j < 9) f[dim - 1 - j][i] = true;
-                }
+
+        // 三个定位角 + 分隔符：7×7 的角 + 各一侧 1 格分隔 = 8×8。
+        // 以前这里写的是 i<9 / j<9（9×9），多圈了一圈，把 16 个本属数据的模块
+        // 误标成功能模块 —— 数据区就少了整整 16 个模块（2 个码字），
+        // 读出来的码字长度比理论少 1~2 字节，RS 纠错跟着全错。
+        for (int i = 0; i < 8; i++) {
+            for (int j = 0; j < 8; j++) {
+                f[i][j] = true;                      // 左上
+                f[i][dim - 1 - j] = true;            // 右上
+                f[dim - 1 - i][j] = true;            // 左下
             }
         }
-        // 校正图形
+
+        // 格式信息：定位角外侧那一行/一列。左上那条已经在 8×8 里，这里补另外两条。
+        for (int i = 0; i < 8; i++) {
+            f[8][i] = true;          // 左上角下方一行（横向，bit0..7 那一段）
+            f[i][8] = true;          // 左上角右侧一列
+            f[8][dim - 1 - i] = true; // 右上角下方一行
+            f[dim - 1 - i][8] = true; // 左下角右侧一列
+        }
+        f[8][8] = true;              // 那个交叉点
+
+        // 校正图形：5×5 的中心图案（含外圈），位置表见 ALIGN
         int[] centers = ALIGN[ver];
-        for (int a = 0; a < centers.length; a++) {
-            for (int b = 0; b < centers.length; b++) {
+        int last = centers.length - 1;
+        for (int a = 0; a <= last; a++) {
+            for (int b = 0; b <= last; b++) {
                 int cx = centers[a], cy = centers[b];
-                // 和定位角重叠的三个不画
-                if ((cx == 6 && cy == 6) || (cx == 6 && cy == centers[centers.length - 1])
-                        || (cx == centers[centers.length - 1] && cy == 6)) continue;
+                // 和定位角重叠的三个位置没有校正图形
+                if ((a == 0 && b == 0) || (a == 0 && b == last) || (a == last && b == 0)) continue;
                 for (int dy = -2; dy <= 2; dy++) {
                     for (int dx = -2; dx <= 2; dx++) {
                         int px = cx + dx, py = cy + dy;
@@ -476,17 +607,19 @@ public final class QrDecode {
                 }
             }
         }
-        // 定时图形
+
+        // 定时图形：第 6 行和第 6 列
         for (int i = 8; i < dim - 8; i++) {
             f[6][i] = true;
             f[i][6] = true;
         }
-        // 版本信息（版本 ≥ 7）
+
+        // 版本信息（版本 ≥ 7）：右上 3×6 和左下 6×3
         if (ver >= 7) {
             for (int i = 0; i < 6; i++) {
                 for (int j = 0; j < 3; j++) {
-                    f[dim - 11 + j][i] = true;
-                    f[i][dim - 11 + j] = true;
+                    f[dim - 11 + j][i] = true;   // 左下那块（横 6 竖 3）
+                    f[i][dim - 11 + j] = true;   // 右上那块（横 3 竖 6）
                 }
             }
         }
@@ -519,8 +652,9 @@ public final class QrDecode {
             up = !up;
         }
         if (bit > 0) {
-            cur <<= (8 - bit);
-            out[n++] = (byte) cur;
+            // 收尾不足 8 位的是「余数位」，按标准它们恒为 0，不构成码字，直接丢掉。
+            // 以前这里补零凑成整字节塞进 out，于是 ver6 读出 173 字节（应 172），
+            // 多出的假码字把后面 deinterleave 的块边界整个推错一位，RS 纠错再也救不回来。
         }
         byte[] trimmed = new byte[n];
         System.arraycopy(out, 0, trimmed, 0, n);

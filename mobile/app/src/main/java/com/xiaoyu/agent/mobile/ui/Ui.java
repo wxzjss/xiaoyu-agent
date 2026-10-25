@@ -31,6 +31,24 @@ public final class Ui {
     public static final int ACCENT = 0xFF4d8dff;
     public static final int RED = 0xFFe2564a;
 
+    /**
+     * 底色（带透明度）。BG 是不透明的，压在视频背景上会把画面全糊掉，
+     * 所以铺在背景上的那几层得用这个 —— 0xC4 ≈ 77%，字还看得清，画面也透得出来。
+     * 外观面板里那个「背景暗度」滑杆调的就是这最后一个字节。
+     */
+    public static int bgAlpha(int alpha0to100) {
+        int a = Math.max(0, Math.min(100, alpha0to100));
+        int byteA = Math.round(a * 255f / 100f);
+        return (byteA << 24) | (BG & 0x00FFFFFF);
+    }
+
+    /** 面板色（带透明度），道理同 bgAlpha */
+    public static int panelAlpha(int alpha0to100) {
+        int a = Math.max(0, Math.min(100, alpha0to100));
+        int byteA = Math.round(a * 255f / 100f);
+        return (byteA << 24) | (PANEL & 0x00FFFFFF);
+    }
+
     public static int dp(Context c, float v) {
         return (int) (v * c.getResources().getDisplayMetrics().density + 0.5f);
     }

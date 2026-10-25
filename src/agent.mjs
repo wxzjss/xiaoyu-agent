@@ -198,6 +198,20 @@ export async function runAgent({
   let compressedThisTurn = false;
 
   // maxRounds 可以被设成 Infinity（不限）：那就一直跑到模型自己收尾，或用户点「停止」。
+  /**
+   * 【原地打转的守护：连着多少轮一点正经话都没说、只在调工具】
+   *
+   * 为什么要它：MAX_ROUNDS 默认是 unlimited（主人要「干多久干多久」），
+   * 可有的活儿没有「做完」的判据 —— 比如让它一遍遍写同一份东西。
+   * 2026-10-25 夜真发生过：某个会话自己陷进去，一轮接一轮地改同一处，
+   * 整晚都在转，主人喊它也不应。
+   *
+   * 这里只拦最典型的那一种：一整轮下来一个字都没说出口、只调了工具。
+   * 正常干活会说「我这就去改」「读完了，接下来改这行」，不会连着几十轮全是哑的。
+   * 真到这么多轮还一句人话没有，那就不是干活，是在原地刨坑 —— 收尾，把话交回去。
+   */
+  let stallRounds = 0;
+  const STALL_LIMIT = 40;
   for (let round = 0; round < config.maxRounds; round++) {
     // 每轮调模型前都量一下历史；超了就把旧对话折成摘要。没超就什么都不做（不额外花钱）。
     // 一轮只压一次（见上面 compressedThisTurn 的说明）
@@ -375,6 +389,19 @@ export async function runAgent({
       return { text, usage: usageTotal, lastUsage, files: outbox };
     }
 
+    // 这一轮说了人话没有？没说就是在原地打转（见上面 stallRounds 的说明）
+    if (String(text || '').trim()) {
+      stallRounds = 0;
+    } else {
+      stallRounds++;
+      if (stallRounds >= STALL_LIMIT) {
+        const note = '已经连着 ' + stallRounds + ' 轮只调工具、一句话都没说出来。先停在这儿 —— '
+          + '你要么把现在的结论说给我，要么告诉我卡在哪儿。';
+        onEvent({ type: 'text', text: '\n\n（' + note + '）' });
+        messages.push({ role: 'assistant', content: note });
+        return { text: note, usage: usageTotal, lastUsage, files: outbox };
+      }
+    }
     const assistantMsg = {
       role: 'assistant',
       content: text || null,

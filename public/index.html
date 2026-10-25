@@ -3105,6 +3105,45 @@ async function fetchTimed(url, opts = {}, ms = 8000) {
  * 「窗口关了又开、刷新、切回后台在跑的会话」都走这里。
  * 只画有内容的：safe_word 那种提示不是回复，别给主人添一行噪音。
  */
+/**
+ * 这一轮对一次账：SSE 要是中途断了，后头的正文就永远看不见。
+ *
+ * 【主人报的原话】「重启后我这边没显示你说的后续内容」。
+ *
+ * 【查到的实情】服务端一切正常：直播缓存里我这一轮吐的每个字都在，
+ * 会话文件里 93 条消息也全落了盘。断的只有那一条 SSE ——
+ * 它一断，done 之前的正文前端就再也收不到；而 done 之后这里原本
+ * 只补拉小鲸的话（whale），正文一概不补，于是屏幕上永远停在那半句。
+ *
+ * 【怎么修】服务端现在在 done 事件里直接把这一轮的正文捎过来（ev.turnTexts），
+ * 不额外查接口（那条接口会改「当前选中会话」，有副作用）。
+ * 这里拿它跟屏幕上已画的比：按结尾那几十个字认，认不到的才补。
+ * 只补这一轮，不碰历史，重复的不会多画一条。
+ */
+function reconcileTurnTexts(ev) {
+  const want = Array.isArray(ev && ev.turnTexts) ? ev.turnTexts : [];
+  if (!want.length) return;
+
+  const onScreen = () => Array.from(document.querySelectorAll('.msg.assistant'))
+    .map((el) => String(el.textContent || ''));
+
+  let added = 0;
+  for (const raw of want) {
+    const text = String(raw || '');
+    const tail = text.slice(-40).trim();
+    if (!tail) continue;
+    if (onScreen().some((s) => s.includes(tail))) continue;
+    const b = addAssistant();
+    b.textContent = fixMojibake(text);
+    b.classList.remove('streaming');
+    added++;
+  }
+  if (added) {
+    console.warn('[turn-reconcile] 这一轮补画了 ' + added + ' 段正文');
+    finishSpeech();
+  }
+}
+
 function paintLiveEvents(evs, bubble) {
   let think = null;
   const toolEls = new Map();
@@ -4840,6 +4879,22 @@ async function runTurn({ resume = false, text = '' } = {}) {
         } else if (ev.type === 'done') {
           closeThink();
           hideSending();
+          /**
+           * 【这一轮对一次账：SSE 要是中途断了，后头的正文就永远看不见】
+           *
+           * 主人报的原话：「重启后我这边没显示你说的后续内容」。
+           *
+           * 查到的实情：服务端的直播缓存（live.events）里，我这一轮吐的每个字都在，
+           * 850 条事件一条不少；会话文件 93 条消息也都落了盘。
+           * 断的只有那一条 SSE —— 它一断，done 之前的正文就丢了。
+           * 而 done 之后这里原本只补拉小鲸的话（whale），**正文一概不补**，
+           * 所以屏幕上就停在最后收到的那半句，后面写多少主人都看不到。
+           *
+           * 这里补一手：拿历史里「主人那句话之后」的 assistant 条目，
+           * 跟屏幕上已经画出来的比一比，少了就把缺的补上。
+           * 只补这一轮（at 之后的），不碰历史，不会把旧话重画一遍。
+           */
+          reconcileTurnTexts(ev);
           // 这一轮说完了：最后那段话收尾 → 数字 +1
           finishSpeech();
           if (pendingRewindBubble && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {

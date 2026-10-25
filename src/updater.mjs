@@ -751,6 +751,24 @@ const RETRY_MS = 6 * 60 * 60 * 1000; // 上次失败的话，6 小时内不再�
  * @returns {Promise<{status:string, detail:string, needsRestart?:boolean, from?:string, to?:string, files?:string[]}>}
  */
 export async function quickCheck(opts = {}) {
+  // 【开发态绝不自动覆盖源码】
+  //
+  // 这条是血换来的。config.packaged 为 false 时 ROOT 就是源码目录本身
+  // （见文件顶上的 ROOT = config.packaged ? join(config.dataDir,'code') : config.root），
+  // 于是 quickCheck({apply:true}) 会拿 GitHub 上的版本直接盖掉工作区。
+  //
+  // 后果有多恶心：开发时改的 src/server.mjs、public/index.html 还没提交，
+  // 三小时一到被定时器一盖，全部变回线上那版，而且没有任何提示 ——
+  // 看起来就像「代码自己回退了」。这种事在 0.9.13~0.9.19 期间反复发生了好几次，
+  // 每次都白排查一轮。
+  //
+  // 所以开发态只查不盖：要更新就去打包版里更新，或者在源码目录里自己 git pull。
+  // 想强行试更新，显式传 { applyInDev: true }。
+  if (!config.packaged && !opts.applyInDev) {
+    const r = await checkForUpdate({ ...opts, apply: false });
+    return { status: r.status, detail: r.detail, from: r.local, to: r.remote, dev: true };
+  }
+
   const info = lastUpdateInfo();
   if (!opts.force && info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS) {
     return { status: 'throttled', detail: '上次检查失败，先歇会儿再试' };

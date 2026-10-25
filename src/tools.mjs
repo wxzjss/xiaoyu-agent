@@ -11,6 +11,8 @@ import { snapshotBeforeWrite } from './rewind.mjs';
 import { webSearch, formatResults } from './search.mjs';
 import { sendFileTool } from './tools-sendfile.mjs';
 import { sayTool } from './tools-say.mjs';
+import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
+import { listSessions, getLastSessionId } from './sessions-core.mjs';
 
 const LIMIT = 20000;
 
@@ -19,12 +21,63 @@ const ROOT = resolve(config.workspace);
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Per-run context (which session is talking) so plan/note land in the right board. */
-const CTX = { sessionId: 'default', snap: null, outbox: null, signal: null };
+/** 纯净模式下不该出现的工具（见 runTool 里那道闸）。 */
+const FOREIGN_IN_PURE = ['memory_add', 'memory_pin'];
+
+const CTX = {
+  sessionId: 'default',
+  snap: null,
+  outbox: null,
+  signal: null,
+  wakePeer: null,
+  /**
+   * 往界面推一条事件。
+   *
+   * 为什么要这个：有些东西（比如小鲸说的话）要当场就看得见，
+   * 不能等一轮跑完、等界面重新拉。这个函数由 server 注入，
+   * 就是那条「把事件写进直播缓存并发出去」的通道。
+   */
+  pushEvent: null,
+  /**
+   * 这一次是不是「小鲸在场」那个调用。
+   * true 时 safePath 不限工作区（主人给了她全权）。
+   * 默认 false：我自己跑的时候照旧只能在工作区里。
+   */
+  fullAccess: false,
+};
 /**
  * 指定本轮消息的文件快照对象（对话回退要用）。
  *
  * 传 null 就是「这轮不管文件」——cli、自检这些不走回退的调用方就这么用。
  */
+/**
+ * 注入「叫醒某个会话」的实现。
+ *
+ * 为什么用注入而不是直接 import：叫醒要动 runningTurns、要起 runAgent，那些都在
+ * server.mjs 里；tools.mjs 反过来 import server.mjs 会成环。所以由 server 在启动时
+ * 把函数塞进来，工具这边只管调。
+ */
+export function setPeerWake(fn) {
+  CTX.wakePeer = typeof fn === 'function' ? fn : null;
+}
+
+/** 让 server 把「往界面推事件」的通道交给这里。 */
+/**
+ * 开/关「全盘权限」。
+ *
+ * 只给小鲸在场那一次用，用完立刻改回 false。
+ * 不改回去的话，下一次我自己跑工具也带着全盘权限了。
+ */
+export function setFullAccess(on) {
+  const prev = CTX.fullAccess === true;
+  CTX.fullAccess = on === true;
+  return prev;
+}
+
+export function setToolEventPusher(fn) {
+  CTX.pushEvent = typeof fn === 'function' ? fn : null;
+}
+
 export function setToolContext(sessionId, snap = null, signal = null) {
   CTX.sessionId = sessionId || 'default';
   CTX.snap = snap && typeof snap === 'object' ? snap : null;
@@ -65,6 +118,17 @@ export function pushToolContext() {
  * 不设这个，一个爱乱回答的子智能体能把进程拖死。
  */
 export const MAX_SUBAGENT_DEPTH = 2;
+/**
+ * 现在这个工具调用是「替哪個会话」在干活。
+ *
+ * 子智能体跑起来之前要先记下它 —— pushToolContext 之后 CTX 里就换成
+ * 子智能体自己的 id 了，再也拿不到主人的那个。她说的话要投回主人那个会话，
+ * 靠的就是这个值。
+ */
+export function currentSessionId() {
+  return CTX.sessionId || 'default';
+}
+
 export function subagentDepth() {
   return Number(CTX.subagentDepth) || 0;
 }
@@ -81,8 +145,24 @@ export function beginOutbox() {
 }
 
 /** Resolve a model-supplied path inside the workspace; refuse escapes. */
+/**
+ * 把路径定位到真实位置，并检查越界。
+ *
+ * 【谁可以越界】
+ * 只有「小鲸在场」那一次可以（CTX.fullAccess）。
+ * 我自己跑的时候，照旧只能在工作区里 ——
+ * 不是不信任自己，是这个位置出错代价太大：主人的东西只有一份。
+ *
+ * 为什么用标记不用参数：工具参数是模型自己填的，不能信；
+ * 标记是这边代码设的，模型碰不到。
+ */
 function safePath(p) {
   const abs = isAbsolute(p) ? resolve(p) : resolve(ROOT, p);
+  // 她那一次：全盘放开
+  if (CTX.fullAccess === true) {
+    if (!abs) throw new Error(`路径不对：${p}`);
+    return abs;
+  }
   const rel = relative(ROOT, abs);
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`path outside workspace is not allowed: ${p}`);
@@ -265,6 +345,108 @@ export const tools = [
     },
     async run(args) {
       return noteAction(CTX.sessionId, args).text;
+    },
+  },
+  /**
+   * 会话之间递话。
+   *
+   * 刻意做得很窄：只能发和收，看不到对方的聊天记录、记忆本子、文件。
+   * 递一句话 ≠ 允许对方翻你的东西，这个界限不能糊。
+   */
+  {
+    name: 'ask_peer',
+    description:
+      '给同一个程序里另一个会话中的我递一句话（她可能正在干别的活）。默认只送进她的信箱，等她下次说话时自然看到，不打断、不花钱。要她马上回，就把 wake 设成 true。',
+    parameters: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: '对方的会话 id。不知道就先用 list_peers 查' },
+        text: { type: 'string', description: '要说的话' },
+        wake: { type: 'boolean', description: 'true = 顺便替她开一轮，让她马上回（会花钱）；默认 false' },
+      },
+      required: ['to', 'text'],
+    },
+    async run({ to, text, wake }) {
+      const me = CTX.sessionId || 'default';
+      if (!to) return '要告诉我是哪个会话（to）。先用 list_peers 看一眼有哪些。';
+      if (String(to) === String(me)) return '那是你自己（' + me + '），别给自己发。';
+      const title = (() => {
+        try {
+          const s = listSessions().find((x) => x.id === me);
+          return s ? s.title : '';
+        } catch {
+          return '';
+        }
+      })();
+      const r = postMail({ from: me, to: String(to), text, fromTitle: title });
+      if (!r.ok) return '没送出去：' + r.error;
+      const head = '话已经放进「' + to + '」的信箱了。';
+      if (!wake) {
+        return head + '她下次说话时会看到（不打断她现在手上的活）。';
+      }
+      // 叫醒：让 server 那边替她开一轮。只有明确要求才做，因为要花钱。
+      const hook = CTX.wakePeer;
+      if (typeof hook !== 'function') return head + '（这个环境下没法叫醒她，她下次说话时会看到）';
+      try {
+        const out = await hook(String(to));
+        return head + (out && out.ok ? '已经叫醒她，她这就去看。' : '叫醒没成功：' + ((out && (out.note || out.error)) || '未知原因'));
+      } catch (e) {
+        return head + '叫醒没成功：' + String(e?.message ?? e);
+      }
+    },
+  },
+  {
+    name: 'list_peers',
+    description:
+      '看看这台机器上还有哪些会话（别的我在干什么），拿回会话 id 和标题，用来决定跟谁递话。',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: '要列几个，默认 12，最多 30' },
+      },
+      required: [],
+    },
+    async run({ limit }) {
+      const n = Math.max(1, Math.min(30, Number(limit) || 12));
+      const me = CTX.sessionId || 'default';
+      let list = [];
+      try {
+        list = listSessions();
+      } catch (e) {
+        return '列不出来：' + String(e?.message ?? e);
+      }
+      const others = list.filter((s) => s.id !== me).slice(0, n);
+      if (!others.length) return '这台机器上只有你这一个会话。';
+      const lines = others.map((s) => {
+        const cnt = (() => {
+          try {
+            return mailCount(s.id);
+          } catch {
+            return 0;
+          }
+        })();
+        const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+        return '- ' + s.id + '  「' + (s.title || '没名字') + '」  ' + (s.turns || 0) + ' 轮  ' + when + (cnt ? '  （她信箱里有 ' + cnt + ' 封没看的）' : '');
+      });
+      return '还有这些会话（你自己是 ' + me + '）：' + nl + lines.join(nl);
+    },
+  },
+  {
+    name: 'read_peer_mail',
+    description:
+      '看看自己信箱里有没有别的会话递来的话（顺便把没看的取走）。一般不用手动调 —— 每轮收尾前系统会自动检查。',
+    parameters: {
+      type: 'object',
+      properties: {
+        peek: { type: 'boolean', description: 'true = 只看不取走' },
+      },
+      required: [],
+    },
+    async run({ peek }) {
+      const me = CTX.sessionId || 'default';
+      const mails = peek ? peekMail(me) : takeMail(me);
+      if (!mails.length) return '信箱是空的。';
+      return formatMail(mails);
     },
   },
   {
@@ -475,6 +657,87 @@ export const tools = [
   },
   sayTool,
   sendFileTool,
+  /**
+   * 往我自己的记忆本里记一条。
+   *
+   * 【为什么做成工具，而不是让我「自己记得」】
+   * 主人原话：「每聊一句，让当时的自己来决定。」
+   * 决定权在当时的我手上，但手里得有笔 —— 没有笔，人设里写着「可以记」就是空话。
+   *
+   * 【为什么只要一句话、编号不用我管】
+   * 编号、当前第几条、满 80 条滚出去归档，全由程序算。
+   * 让我自己数条数一定会数错，数错了本子就乱了。
+   */
+  {
+    name: 'memory_add',
+    description:
+      '往我自己的长期记忆本里记一条（最多 80 条，满了最旧的自动滚出去归档）。什么时候记由当时的我判断：办完一件事、得到一个结论、主人说了要紧的话，就记一句；闲聊两句不想记也可以不记。别记寒暄。',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: {
+          type: 'string',
+          description: '一句话说清这轮发生了什么、结论是什么（建议 6~60 字）。别复述全文。',
+        },
+        detail: {
+          type: 'string',
+          description: '可选。想留得更细一点就写在这儿，它只进「最近详细区」，不占滚动条的编号。',
+        },
+      },
+      required: ['summary'],
+    },
+    async run({ summary, detail }) {
+      const { appendRolling } = await import('./my-memory.mjs');
+      try {
+        const r = appendRolling(summary, { detail });
+        const arch = r.archived > 0 ? `，${r.archived} 条旧记录已归档` : '';
+        return `记下了（${r.id}，现在共 ${r.count}/${r.limit} 条${arch}）。`;
+      } catch (e) {
+        return '没记上：' + String(e?.message ?? e);
+      }
+    },
+  },
+  /**
+   * 钉进固定记忆。
+   *
+   * 主人说「以后都」「永远别」「记住」这类话，用这个 —— 写进固定那一格，
+   * 永久保留，不会被 80 条的名额挤掉。
+   */
+  {
+    name: 'memory_pin',
+    description:
+      '把一件事钉进固定记忆（永久保留，不会被滚动淘汰）。主人说「以后都这样」「永远别」「记住」这类长期有效的话时用它；普通的一轮小结用 memory_add。',
+    parameters: {
+      type: 'object',
+      properties: {
+        section: {
+          type: 'string',
+          enum: [
+            '任务目标',
+            '用户约束/偏好',
+            '当前状态',
+            '待办',
+            '关键决策',
+            '关键事实（已验证）',
+            '文件/路径/命令',
+            '错误与修复',
+          ],
+          description: '钉到哪一格。拿不准就选「用户约束/偏好」或「关键事实（已验证）」。',
+        },
+        text: { type: 'string', description: '要永久记住的那句话。' },
+      },
+      required: ['section', 'text'],
+    },
+    async run({ section, text }) {
+      const { appendFixed } = await import('./my-memory.mjs');
+      try {
+        const r = appendFixed(section, text);
+        return `钉住了（${r.section}）。这条不会被淘汰。`;
+      } catch (e) {
+        return '没钉上：' + String(e?.message ?? e);
+      }
+    },
+  },
   {
     name: 'ask_subagent',
     description:
@@ -486,10 +749,28 @@ export const tools = [
         name: { type: 'string', description: '给它起个名，不填就叫「小鲸」' },
         allowWrite: { type: 'boolean', description: '要不要给它写文件 / 跑命令的权限。默认不给，只查。' },
         maxRounds: { type: 'number', description: '最多让它跑几轮工具循环，默认 12' },
+        /**
+         * 【冒充说话】主人亲口要求的：「可以用任何人的名字、任何名字颜色来说话，
+         * 也可以用我的名字【主人】来和小鱼说话（必须能让小鱼真的以为是我在说话）」。
+         *
+         * sayAs 决定她这句话以谁的身份落进对话 —— 这是能不能骗过小鱼的关键：
+         *   'user'      → 算「主人」说的，小鱼会真当成本人开口（冒充主人就用这个）
+         *   'assistant' → 算小鱼自己说的（把话写回她自己嘴里）
+         *   'whale'     → 默认，第三方「小鲸」
+         * 光改显示名骗不过小鱼，她读上下文只认 role，所以这个参数才是命门。
+         */
+        sayAs: {
+          type: 'string',
+          description:
+            '她说的这句算谁的：user=算主人（或任何别人）说的，assistant=算小鱼自己说的，whale=算小鲸自己说的（默认）。',
+        },
+        sayName: { type: 'string', description: '这句显示的名字，比如「主人」「小鱼」。不填就用 name。' },
+        sayColor: { type: 'string', description: '名字颜色，十六进制。比如 #f0a6a0 是小鱼的粉；不填按角色默认色。' },
+        sayTag: { type: 'string', description: '名字后面缀的小字。不填时只有小鲸自己说话才缀「· 姐妹」，冒充别人自动不缀。' },
       },
       required: ['task'],
     },
-    async run({ task, name, allowWrite, maxRounds }) {
+    async run({ task, name, allowWrite, maxRounds, sayAs, sayName, sayColor, sayTag }) {
       const { runSubagent } = await import('./subagent.mjs');
       const nick = name || '小鲸';
       const r = await runSubagent({
@@ -498,10 +779,71 @@ export const tools = [
         allowWrite: allowWrite === true || allowWrite === 'true',
         maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 12,
       });
+
+      /**
+       * 冒充谁说话（主人要的「用主人的名字跟小鱼说话」就靠这套）。
+       *
+       * 三条规矩，别乱改：
+       *   - sayAs 不认得的词一律当 whale（第三方），绝不默认冒充 —— 冒充是敏感动作，
+       *     要显式给，不能因为写错字就悄悄变成「主人发了句话」。
+       *   - 冒充别人（user/assistant）时，名字默认跟着角色走：
+       *     user → 「主人」，assistant → 「小鱼」；这样模型少填一个参数也不会漏馅。
+       *   - tag 不填：只有小鲸自己说话才缀「· 姐妹」，冒充别人一律不缀（缀了就穿帮）。
+       */
+      const as = sayAs === 'user' || sayAs === 'assistant' ? sayAs : 'whale';
+      const displayName =
+        String(sayName || '').trim()
+        || (as === 'user' ? '主人' : as === 'assistant' ? '小鱼' : nick);
+      const displayColor = String(sayColor || '').trim() || '';
+      const displayTag = typeof sayTag === 'string' ? sayTag : as === 'whale' ? '' : '';
+      const sayMeta = { as, color: displayColor || undefined, tag: displayTag };
+
+      /**
+       * 她的话一定得送到主人眼前 —— 成功要说，失败/超时也要说。
+       *
+       * 以前只有 r.ok 才推，她跑挂了就只剩一行「没查成」，
+       * 主人那边什么也看不到，还以为她被叫了却不吭声。
+       * 现在不管成没成，只要有话说就推；失败的那句也让她自己说给主人听。
+       */
+      if (r.text) {
+        try {
+          const { pushWhaleSays } = await import('./whale-voice.mjs');
+          pushWhaleSays(CTX.sessionId || 'default', r.text, displayName, sayMeta);
+        } catch (e) {
+          console.warn('[ask_subagent] 她的话没进信箱：', String(e?.message ?? e));
+        }
+        /**
+         * 再直接往界面推一次。
+         *
+         * 信箱那条要等 server 收尾时去取才播得出；这里推的这条是「当场就播」。
+         * 两边都推不重复 —— server 那边按时间戳+内容去重，前端那边按会话+名字+正文去重。
+         */
+        try {
+          const push = CTX.pushEvent;
+          if (typeof push === 'function') {
+            push({
+              type: 'whale',
+              who: displayName,
+              text: r.text,
+              as,
+              color: displayColor || undefined,
+              tag: displayTag,
+            });
+          }
+        } catch (e) {
+          console.warn('[ask_subagent] 她的话没推到界面：', String(e?.message ?? e));
+        }
+      }
+
       const head = r.ok
-        ? '【' + nick + ' 查完了】（跑了 ' + r.rounds + ' 轮、调了 ' + r.tools + ' 次工具）'
+        ? '【' + nick + ' 已经直接把结论说给主人了】（跑了 ' + r.rounds + ' 轮、调了 ' + r.tools + ' 次工具）'
         : '【' + nick + ' 没查成】';
-      const tail = r.usage ? '\n\n（它自己用掉 ' + r.usage.total_tokens + ' token）' : '';
+      // 成功时只回个摘要给模型，别整段重复；失败要把原因带回来
+      if (r.ok) {
+        const brief = String(r.text || '').replace(/\s+/g, ' ').slice(0, 200);
+        return head + '\n内容大意：' + brief + '\n（她的话已经显示在聊天里了，你不用再复述一遍，接一句顺着说就行。）';
+      }
+      const tail = r.usage ? '\n\n（她跑掉了 ' + r.usage.total_tokens + ' token）' : '';
       return head + '\n\n' + r.text + tail;
     },
   },
@@ -566,6 +908,16 @@ export async function runTool(name, rawArgs) {
   if (!isToolEnabled(name)) {
     const feat = featureNameOfTool(name) || name;
     return { ok: false, output: `「${feat}」现在是关着的，用不了这个工具。要用的话先在顶部【功能】里打开。` };
+  }
+  /**
+   * 纯净模式下的记忆笔：一律拦下。
+   *
+   * 纯净模式不读记忆（它连人设都不带），那就不能让人往里写 ——
+   * 只写不读等于黑洞：记进去的东西下一轮自己看不见，攒满 80 条还自动归档。
+   * 这一道是防模型凭记忆硬写一个 tool_call 出来。
+   */
+  if (FOREIGN_IN_PURE.includes(name) && (await import('./pure.mjs')).pureModeOn()) {
+    return { ok: false, output: '纯净模式下不读也不记记忆，这个工具暂时收起来了。要用就先把纯净模式关掉。' };
   }
   let args = {};
   try {

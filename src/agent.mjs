@@ -1,18 +1,23 @@
 // The agent loop: call model -> run tools -> feed results back -> repeat.
 import { streamChat, modelNameForSession } from './llm.mjs';
+import { takeMail, formatMail } from './peer.mjs';
 import { inflateHistory } from './attach.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
 import { pureModeOn, setPureToolLister } from './pure.mjs';
 import { compressHistory } from './compress.mjs';
+// 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
+// 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
+// 只有 user 那趟是稳的。
+import { memoryText } from './my-memory.mjs';
 
 // persona.mjs 不能静态 import tools.mjs（tools.mjs 反过来 import 了 persona，静态成环会炸），
 // 所以「当前有哪些工具」靠这里注入。工具清单是**从 schema 现读**的，不是手抄的第二份文案：
 // 新增工具自动出现在系统提示里，关掉功能自动消失。
 setToolLister(() => enabledToolSchemas());
 // 纯净模式的提示里也要报工具清单，同一个来源，不走第二份文案。
-setPureToolLister(() => enabledToolSchemas());
+setPureToolLister(() => toolsForTurn());
 import {
   getRetry429,
   bumpStreak,
@@ -44,6 +49,20 @@ function isStreamDropped(err) {
   return /terminated|aborted|socket hang up|other side closed|ECONNRESET|fetch failed|premature close|UND_ERR_SOCKET|network error/i.test(m);
 }
 
+/**
+ * 纯净模式下要藏起来的工具。
+ *
+ * 见上面那段说明：纯净模式不读记忆，那两支笔也一并收走，免得只写不读。
+ */
+const PURE_HIDDEN_TOOLS = ['memory_add', 'memory_pin'];
+
+/** 当前这一轮真正能交到模型手上的工具。 */
+function toolsForTurn() {
+  const all = enabledToolSchemas();
+  if (!pureModeOn()) return all;
+  return all.filter((t) => !PURE_HIDDEN_TOOLS.includes(t?.function?.name));
+}
+
 const CONTEXT_PREAMBLE = '下面是本次对话的设定与规则，从现在起一直有效，直到我明确要求更换。接下来才是我要说的话。';
 
 /**
@@ -60,7 +79,27 @@ export function contextMessage(sessionId = 'default', opts = {}) {
   if (pureModeOn()) return '';
   const rules = buildSystemPrompt({ sessionId, ...opts });
   if (!rules) return '';
-  return `${CONTEXT_PREAMBLE}\n\n${rules}`;
+
+  /**
+   * 记忆跟规则一起搭这趟车。
+   *
+   * 为什么必须挂在 user 这条上，而不是另开一条 system：
+   * system 很多网关会整段丢掉（实测过：同样的内容放 system 不生效，放 user 立刻生效）。
+   * 所以记忆只有跟着「user 版规则」走，才真的会到我眼前。
+   *
+   * 读盘失败不能把这一轮弄死：记忆是锦上添花，规矩才是底线。
+   */
+  let memory = '';
+  try {
+    memory = memoryText();
+  } catch (e) {
+    console.warn('[memory] 记忆本没读出来：', String(e?.message ?? e));
+    memory = '';
+  }
+
+  return memory
+    ? `${CONTEXT_PREAMBLE}\n\n${rules}\n\n${memory}`
+    : `${CONTEXT_PREAMBLE}\n\n${rules}`;
 }
 
 /** The full rules text: persona card + user rules + 底线/安全词 + live plan progress. */
@@ -78,8 +117,35 @@ export function systemPrompt(sessionId = 'default', opts = {}) {
  * @param {string} [opts.safeWord]  which safe word fired (each word can have its own note)
  * @param {(ev:object)=>void} [opts.onEvent]
  */
-export async function runAgent({ messages, signal, sessionId = 'default', refreshSystem = true, safeMode = false, safeWord = '', onEvent = () => {}, snap = null }) {
+export async function runAgent({
+  messages,
+  signal,
+  sessionId = 'default',
+  refreshSystem = true,
+  safeMode = false,
+  safeWord = '',
+  onEvent = () => {},
+  snap = null,
+  /**
+   * 历史被压缩完、刚要发请求的那一刻回调一次。
+   *
+   * 为什么需要：压缩是**就地改 messages 数组**的（messages 就是会话里那个活对象），
+   * 而 /api/chat 只在整轮跑完的 finally 里 saveSession。中间这段空档里如果主人
+   * 点了停止 / 关窗口 / 进程被杀，压缩结果就一个字都没落盘 —— 下次打开读出来
+   * 还是压缩前那一大坨，看起来就是「压了半天，退出重进又变回去了」。
+   * 更糟的是压缩已经把内存里的历史换掉了，磁盘还是旧的，两边对不上。
+   * 所以让 server 在这里插一次 saveSession，压完立刻落地。
+   */
+  onCompressed = null,
+} = {}) {
   let usageTotal = null;
+  /**
+   * 最后一次请求的原始用量。
+   *
+   * usageTotal 是累加值（这一轮一共灌进去多少），lastUsage 是最后那一次
+   * （当前上下文多大）。两个数意思不同，都得留着 —— 界面上要分开写清楚。
+   */
+  let lastUsage = null;
 
   setToolContext(sessionId, snap, signal);
   // 这一轮发出去的文件（send_file 登记）先开个筐，跑完交回去
@@ -136,6 +202,15 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
         model: turnModel,
         error: compressed.error ?? null,
       });
+      // 压完立刻落盘：不然「压了没存」这一窗口期里退出，历史又变回压缩前。
+      // 回调里自己 try/catch，落盘失败不该把这一轮带崩。
+      if (typeof onCompressed === 'function') {
+        try {
+          await onCompressed(compressed);
+        } catch (e) {
+          console.warn('[compress] 压完落盘失败：', String(e?.message ?? e));
+        }
+      }
     }
     if (signal?.aborted) {
       onEvent({ type: 'aborted' });
@@ -160,7 +235,7 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
       try {
         for await (const ev of streamChat({
           messages: inflateHistory(messages),
-          tools: enabledToolSchemas(),
+          tools: toolsForTurn(),
           signal,
           sessionId, // 让「会话级模型/思考强度」生效
         })) {
@@ -245,11 +320,43 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
     }
     if (handedOff) break;
 
-    if (usage) usageTotal = sumUsage(usageTotal, usage);
+    if (usage) {
+      usageTotal = sumUsage(usageTotal, usage);
+      // 最后一次请求的原始用量：它的 prompt_tokens 就是「当前上下文有多大」
+      lastUsage = { ...usage };
+    }
 
+    /**
+     * 这一轮要收尾了 —— 先看信箱有没有别的会话递来的话。
+     *
+     * 为什么挑这个点：此刻模型已经说完最后一句、也不再要工具了，正好是
+     * 「插一句话让她接着处理」最自然的时机。既不打断任何正在跑的东西，
+     * 也不至于让消息压着一个回合不生效。
+     *
+     * 有信就把这句话变成一条 user 消息塞进去，然后 continue —— 不收尾，
+     * 让她接着答。没信就照常返回。
+     */
     if (!toolCalls.length) {
+      if (sessionId) {
+        let mails = [];
+        try {
+          mails = takeMail(sessionId);
+        } catch {
+          mails = [];
+        }
+        if (mails.length) {
+          messages.push({ role: 'assistant', content: text });
+          messages.push({ role: 'user', content: formatMail(mails) });
+          onEvent({
+            type: 'peer_mail',
+            count: mails.length,
+            from: mails.map((m) => m.from),
+          });
+          continue;
+        }
+      }
       messages.push({ role: 'assistant', content: text });
-      return { text, usage: usageTotal, files: outbox };
+      return { text, usage: usageTotal, lastUsage, files: outbox };
     }
 
     const assistantMsg = {
@@ -298,7 +405,7 @@ export async function runAgent({ messages, signal, sessionId = 'default', refres
   const stop = `\n\n[stopped: reached MAX_ROUNDS=${config.maxRounds}]`;
   onEvent({ type: 'text', text: stop });
   messages.push({ role: 'assistant', content: stop.trim() });
-  return { text: stop, usage: usageTotal, files: outbox };
+  return { text: stop, usage: usageTotal, lastUsage, files: outbox };
 }
 
 /**

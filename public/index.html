@@ -77,11 +77,62 @@
     }
     .msg { max-width: 900px; width: 100%; margin: 0 auto; }
     .role { font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+    /* 主人的名字：中性偏亮，跟我和小鲸都不一样 */
+    .user .role {
+      color: #cfd6e4;
+      font-weight: 600;
+    }
+    /* 我自己的名字：暖色，一眼看出是这条鲸鱼在说话 */
+    .assistant .role {
+      color: #f0a6a0;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    /* 小鲸的名字：冷色，跟她的气泡竖线一个调子（下面 .whale .role 有更细的设定，这里只兜底） */
+    .whale .role {
+      color: #7aa8e8;
+      font-weight: 600;
+    }
     .user .bubble {
       background: #1d2430; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
       white-space: pre-wrap; word-break: break-word;
     }
     .assistant .bubble { white-space: pre-wrap; word-break: break-word; }
+
+/**
+ * 小鲸的气泡。
+ *
+ * 她不是我，不能看着跟我一模一样 —— 不然主人分不清谁在说话。
+ * 用一点冷色 + 左边一道竖线，跟我的暖色区分开；
+ * 名字那行显示她的名字，后面缀个「· 姐妹」。
+ * 字比我稍微收一点，对应她「话少、稳」的性子。
+ */
+.whale .bubble {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(45, 60, 84, 0.55);
+  border-left: 2px solid #5b8fd6;
+  padding-left: 10px;
+}
+.whale .role {
+  color: #7aa8e8;
+  font-size: 0.92em;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+.whale .role::after {
+  content: ' · 姐妹';
+  opacity: 0.5;
+  font-size: 0.85em;
+}
+/**
+ * 小鲸冒充别人说话时（主人要「让她用主人的名字跟小鱼说话，得真以为是我在说」）。
+ *
+ * 这种句子不能留任何小鲸的痕迹：不要冷色、不要竖线、不要「· 姐妹」。
+ * 气泡根节点的 class 由脚本整个换成 msg user / msg assistant，
+ * 所以这里只需要保住一件事 —— 后号码只在「她以自己身份说话」时才出现。
+ */
+.whale .role:not(.whaleSelf)::after { content: ''; }
     .assistant .bubble.streaming::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
     @keyframes blink { 50% { opacity: 0; } }
     details.tool {
@@ -2870,6 +2921,9 @@ function paintLiveEvents(evs, bubble) {
         st.className = 'status ' + (ev.ok ? 'ok' : 'err');
         el.pre.textContent += '\n--- output ---\n' + ev.output;
       }
+    } else if (ev.type === 'whale') {
+      // 她说话了：当场画一个她自己的气泡，不跟我的挤在一起。
+      addWhaleBubble(ev.who, ev.text);
     } else if (ev.type === 'files') {
       const wrap = lastAssistantWrap();
       if (wrap) attachFiles(wrap, ev.items);
@@ -3205,7 +3259,7 @@ function addUser(text, tag, atts, target, rewindId) {
     wrap.dataset.at = String(Number(rewindId));
   }
   // 注意顺序：必须先 innerHTML 建骨架，再挂按钮 —— 反过来的话 innerHTML 会把按钮一起抹掉（踩过）。
-  wrap.innerHTML = '<div class="role">你' + (tag ? '<span class="interjectTag"></span>' : '') + '</div>';
+  wrap.innerHTML = '<div class="role">主人' + (tag ? '<span class="interjectTag"></span>' : '') + '</div>';
   if (tag) wrap.querySelector('.interjectTag').textContent = tag;
   // 鼠标移到这条上会浮出「↶ 回退」：撤回这条以及它后面的一切
   if (hasId) {
@@ -3764,6 +3818,29 @@ function addAssistant() {
   return b;
 }
 
+/**
+ * 画小鲸的气泡。
+ *
+ * 跟 addAssistant 差不多，两个地方不同：
+ *   1. 外层加 .whale 类（冷色、名字不一样）
+ *   2. 名字写她的，不写「小鱼」
+ *
+ * 为什么单独一个函数：不能拿 addAssistant 改个名字就完事 ——
+ * 那会把我自己的气泡也带歪。
+ */
+function addWhaleBubble(who, text) {
+  const wrap = addEl('', 'msg whale');
+  const roleEl = document.createElement('div');
+  roleEl.className = 'role';
+  roleEl.textContent = String(who || '小鲸');
+  wrap.appendChild(roleEl);
+  const b = document.createElement('div');
+  b.className = 'bubble';
+  b.textContent = String(text || '');
+  wrap.appendChild(b);
+  return wrap;
+}
+
 // 工具名说人话：主人一眼看得出她在干嘛，而不是看 run_command 这种英文
 const TOOL_NICE = {
   run_command: '跑命令',
@@ -3780,6 +3857,12 @@ const TOOL_NICE = {
   t2s_convert: '繁转简',
   say: '念给主人听',
   send_file: '发文件',
+  ask_subagent: '叫小鲸',
+  memory_add: '记进本子',
+  memory_pin: '钉住不忘',
+  ask_peer: '递话给另一个我',
+  list_peers: '看看有谁在',
+  read_peer_mail: '看信箱',
 };
 function niceTool(name) {
   const n = String(name || '').trim();
@@ -4041,6 +4124,9 @@ async function runTurn({ resume = false, text = '' } = {}) {
           const last = turnRec.parts[turnRec.parts.length - 1];
           if (last && last.kind === 'text') last.text += ev.text;
           else turnRec.parts.push({ kind: 'text', text: ev.text });
+        } else if (ev.type === 'whale') {
+          // 她说话了：记进这一轮的记录，中途切走再回来也补得出来。
+          turnRec.parts.push({ kind: 'whale', who: ev.who || '小鲸', text: ev.text });
         } else if (ev.type === 'tool_start') {
           turnRec.parts.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, done: false });
         } else if (ev.type === 'tool_end') {
@@ -4081,6 +4167,13 @@ async function runTurn({ resume = false, text = '' } = {}) {
           closeThink();
           if (!bubble) bubble = addAssistant();
           bubble.textContent += fixMojibake(ev.text);
+          noteNewContent();
+        } else if (ev.type === 'whale') {
+          // 她说话了：当场画一个她自己的气泡。
+          // 先把我这段收尾，再另起一个——她是她，我是我。
+          closeThink();
+          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+          addWhaleBubble(ev.who, ev.text);
           noteNewContent();
         } else if (ev.type === 'tool_start') {
           closeThink();
@@ -5858,7 +5951,7 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
 
   const row = document.createElement('div');
   row.className = cls;
-  row.title = '这一轮模型实际用掉的 token（输入含系统提示与历史，输出含思考与工具调用）';
+  row.title = '上下文：最后一次请求真正送进去的量（历史有多大）。↑↓：这一轮所有请求加起来的输入/输出。'
 
   const mk = (txt, cls) => {
     const sp = document.createElement('span');
@@ -5866,13 +5959,24 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
     sp.textContent = txt;
     return sp;
   };
-  row.append(
-    mk('↑' + fmtTok(pin) + ' 输入'),
-    mk('·', 'sep'),
-    mk('↓' + fmtTok(pout) + ' 输出'),
-    mk('·', 'sep'),
-    mk(fmtTok(total) + ' tokens', 'tt'),
-  );
+  /**
+   * 两个数必须分开写，别挤在一个名字下。
+   *
+   * 以前只写「↑输入」，看了都以为是「这一轮上下文有多大」。
+   * 可实际上那是累加值 —— 一轮里调十几次模型，每次都背着全部历史，
+   * 加起来几百上千万是正常的，可跟「上下文」一对就像出了错。
+   *
+   * 所以：上下文 = 最后一次请求的 prompt_tokens；
+   *       ↑↓ = 这一轮所有请求加起来（真实流量）。
+   *
+   * 老数据没有 context_tokens，就不画那一截 —— 不胡编。
+   */
+  const ctxTok = Number(u.context_tokens ?? 0);
+  const segs = [];
+  if (ctxTok > 0) { segs.push(mk('上下文 ' + fmtTok(ctxTok), 'ctx')); segs.push(mk('·', 'sep')); }
+  segs.push(mk('↑' + fmtTok(pin)), mk('·', 'sep'), mk('↓' + fmtTok(pout)));
+  segs.push(mk('·', 'sep'), mk(fmtTok(total) + ' tokens', 'tt'));
+  row.append(...segs);
 
   // 花了多少钱。模型名取「这个会话现在用哪个」，没设就用全局的
   const model = String(modelOverride || '') || (typeof turnModelName === 'function' ? turnModelName() : '') || '';
@@ -6798,20 +6902,46 @@ function renderTurns(turns) {
       const tools = Array.isArray(turn.tools) ? turn.tools : [];
       // 只调了工具、一个字没说的那条 assistant（content 是 null）：不画空气泡，只画工具块
       if (hasText || outs.length) {
-        const wrap = addEl('', 'msg assistant', frag);
-        wrap.innerHTML = '<div class="role">小鱼</div>';
-        // 搜会话时靠这个下标把命中那条滚到眼前
-        if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
-        const b = document.createElement('div');
-        b.className = 'bubble';
-        b.textContent = fixMojibake(turn.text);
-        wrap.appendChild(b);
-        if (outs.length) attachFiles(wrap, outs);
-        attachEdit(wrap, turn.rewindId);
-        // 她说的话下面也有「分支」：从这句回复往下另开一个会话
-        attachBranchBtn(wrap, turn.rewindId);
-        if (turn.edited) wrap.classList.add('edited');
-        lastBubbleOfTurn = wrap;
+        /**
+         * 小鲸说的话，单独画成她的气泡。
+         *
+         * 【为什么不能并进我的气泡里】
+         * 主人要的是「她能说话」，那就得一眼看出哪句是她说的。
+         * 并进来就又变成我转述了 —— 跟没做一样。
+         *
+         * 服务端在消息上打了 whale（她的名字），这里认它。
+         * 颜色、称呼都不一样，别的照旧（能改、能分支）。
+         */
+        if (turn.whale) {
+          const wrap = addEl('', 'msg whale', frag);
+          const roleEl = document.createElement('div');
+          roleEl.className = 'role';
+          roleEl.textContent = String(turn.whale);
+          wrap.appendChild(roleEl);
+          if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
+          const b = document.createElement('div');
+          b.className = 'bubble';
+          b.textContent = fixMojibake(turn.text);
+          wrap.appendChild(b);
+          if (outs.length) attachFiles(wrap, outs);
+          if (turn.edited) wrap.classList.add('edited');
+          lastBubbleOfTurn = wrap;
+        } else {
+          const wrap = addEl('', 'msg assistant', frag);
+          wrap.innerHTML = '<div class="role">小鱼</div>';
+          // 搜会话时靠这个下标把命中那条滚到眼前
+          if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
+          const b = document.createElement('div');
+          b.className = 'bubble';
+          b.textContent = fixMojibake(turn.text);
+          wrap.appendChild(b);
+          if (outs.length) attachFiles(wrap, outs);
+          attachEdit(wrap, turn.rewindId);
+          // 她说的话下面也有「分支」：从这句回复往下另开一个会话
+          attachBranchBtn(wrap, turn.rewindId);
+          if (turn.edited) wrap.classList.add('edited');
+          lastBubbleOfTurn = wrap;
+        }
       } else {
         lastBubbleOfTurn = null;
       }

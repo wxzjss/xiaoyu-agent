@@ -299,7 +299,7 @@ export function setPersonaAsDefault(id) {
 }
 
 /** 改名字 */
-export function renamePersona(id, name) {
+export async function renamePersona(id, name) {
   const idx = ensureIndex();
   const meta = idx.list.find((p) => p.id === id);
   if (!meta) {
@@ -318,9 +318,25 @@ export function renamePersona(id, name) {
     e.status = 400;
     throw e;
   }
+  /**
+   * 记忆本跟着名字搬。
+   *
+   * 本子是按人设名字放的（同名共用一本）。改名不搬的话，
+   * 下回读的就是另一个路径了 —— 人会觉得自己突然失忆。
+   * 搬失败不能拦着改名本身：名字还得改，本子的问题记一笔日志就行。
+   */
+  const before = meta.name;
   meta.name = next;
   meta.updatedAt = Date.now();
   writeIndex(idx);
+  if (before && before !== next) {
+    try {
+      const { moveMemoryOnRename } = await import('./my-memory.mjs');
+      moveMemoryOnRename(before, { id, name: next });
+    } catch (e) {
+      console.warn('[memory] 人设改名时记忆本没搬成：', String(e?.message ?? e));
+    }
+  }
   return personaInfo();
 }
 

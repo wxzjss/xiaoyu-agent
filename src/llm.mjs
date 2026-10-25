@@ -48,6 +48,39 @@ function endpointForForSession(sessionId) {
 }
 
 /**
+ * 把消息整理成「只带模型该看的东西」再发出去。
+ *
+ * 【为什么必须有这一步】
+ * 我们把内部标记都塞在消息对象上（下划线开头）：`_whale` / `_tale` / `_say` /
+ * `_usage` / `_mem` / `_ws` / `_text` / `_out` / `_internal` / `_recovered` …
+ * 直接 `messages` 原样塞进请求体，模型下次读历史就看见了。
+ *
+ * 最要命的是 `_tale`：那是「这条是小鲸说的」的标记。
+ * 主人要的是「我能一眼认出来，但她自己不能意识到这件事」——
+ * 她要是看见历史里自己那条带着 `_tale: {who:'小鲸'}`，立刻就知道
+ * 「原来我说的话是被单独标出来的」，那套「不像工具」的戏就演不下去了。
+ *
+ * 所以：只放行 `role / content / name / tool_calls / tool_call_id`。
+ * 万一哪天有人加了新字段忘了这里，后果是「模型看见了内部字段」，
+ * 不是「消息丢了内容」—— 这个方向出错更安全。
+ */
+const WIRE_KEYS = ['role', 'content', 'name', 'tool_calls', 'tool_call_id'];
+export function wireMessage(m) {
+  if (!m || typeof m !== 'object') return m;
+  const out = {};
+  for (const k of WIRE_KEYS) {
+    if (m[k] !== undefined && m[k] !== null) out[k] = m[k];
+  }
+  // 网关不接受 content:null（有些连字段缺了都报错），带工具调用的那种补成空串
+  if (out.role === 'assistant' && (out.content === undefined || out.content === null)) out.content = '';
+  if (out.role === 'tool' && out.content === undefined) out.content = '';
+  return out;
+}
+export function wireMessages(messages) {
+  return Array.isArray(messages) ? messages.map(wireMessage) : messages;
+}
+
+/**
  * 这个会话实际会用哪个模型的**名字**。
  *
  * 压缩阈值设成「自动」时要按模型窗口算水位，而窗口从 32k 到 1M 差得远，
@@ -70,7 +103,8 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
   const ep = endpointForForSession(sessionId) ?? activeEndpoint();
   const body = {
     model: ep.model,
-    messages,
+    // 只发模型该看的那几个字段（内部标记一律剥掉，见上方 wireMessage 的注释）
+    messages: wireMessages(messages),
     stream: true,
     stream_options: { include_usage: true },
   };
@@ -191,7 +225,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
 /** Non-streaming helper used by the context summarizer and smoke checks. */
 export async function chat({ messages, tools, signal, sessionId = '' }) {
   const ep = activeEndpoint();
-  const body = { model: ep.model, messages };
+  const body = { model: ep.model, messages: wireMessages(messages) };
   if (tools?.length) body.tools = tools;
 
   // chat 也要带档位（摘要、连通测试都走这里）；关档位同样显式发 disabled

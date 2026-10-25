@@ -223,10 +223,15 @@ async function createWindow(updated = false) {
     height: 820,
     minWidth: 720,
     minHeight: 520,
+    // 窗口底色 = 页面底色。这里和 index.html 的 --bg 是同一个值，改一个就得改另一个。
+    // 它管的是「页面还没画出来」那几百毫秒：窗口已经是深色，不会先露一版白的。
     backgroundColor: '#0f1115',
     title: '小鱼',
     autoHideMenuBar: true,
     show: false,
+    // 藏着的时候就先把页面画好：show 出来是已经画完的一帧，
+    // 中间不存在「先给张空白、再补内容」那个容易闪白的窗口期。
+    paintWhenInitiallyHidden: true,
     icon: join(__dirname, '..', 'assets', 'xiaoyu.ico'),
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
@@ -240,12 +245,24 @@ async function createWindow(updated = false) {
     },
   });
 
-  // 默认最大化。
-  // 注意别在 show 之前 maximize：Windows 上对着一个还没显示的窗口最大化，
-  // 会得到一个一百多像素的怪尺寸（踩过）。所以先正常显示，再最大化。
+  // 默认最大化（顺序与原因见下面 ready-to-show 里那段，别改回去）。
   win.once('ready-to-show', () => {
+    // 显示之前先把深色底铺满，别让第一帧露出引擎的缺省白。
+    try { win.setBackgroundColor('#0f1115'); } catch {}
+    /**
+     * 顺序不能反：先 maximize，再 show。
+     *
+     * 踩过的坑：以前是 show() 再 maximize()。可 maximize() 会把还没显示的窗口
+     * 直接掀开（实测 isVisible 从 false 变 true），而这一下尺寸刚从 900x700
+     * 跳到最大化 —— Windows 会先铺一帧空白再贴内容，就是那道白闪。
+     *
+     * 反过来先 maximize：窗口还在幕后把尺寸定好，show 的时候一次到位，
+     * 中间没有「尺寸变了再重画」那一段，深色底一路连着，看不到白。
+     * （以前注释里担心「对着隐藏窗口最大化会得到怪尺寸」，实测 1296x768 正常，
+     *   担心的那个问题在当前 Electron 版本上没出现。）
+     */
+    if (!win.isMaximized()) win.maximize();
     win.show();
-    win.maximize();
     // 后台自动更新过 → 重启一次让新代码生效（防抖在 src/updater.mjs 里，不会无限重启）
     if (updated) {
       console.log('[update] 已自动更新，2 秒后重启生效…');
@@ -326,7 +343,7 @@ async function createWindow(updated = false) {
     const { url } = await startServer();
     await win.loadURL(url);
   } catch (err) {
-    const html = `<body style="background:#0f1115;color:#e6e9ef;font:14px/1.6 'Segoe UI';padding:40px">
+    const html = `<html style="background:#0f1115"><body style="background:#0f1115;color:#e6e9ef;font:14px/1.6 'Segoe UI';padding:40px">
         <h2>启动失败</h2><pre style="color:#f85149;white-space:pre-wrap">${String((err && err.stack) || err)}</pre></body>`;
     await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     win.show();
@@ -475,3 +492,171 @@ ipcMain.handle('app:openWorkspace', async () => {
   const { error } = await shell.openPath(config.workspace);
   if (error) dialog.showErrorBox('打开工作目录失败', error);
 });
+
+/* ---------------- 输入法跟着系统语言走 ---------------- */
+
+/**
+ * 主人一点聊天输入框，就把输入法掰到「系统语言」那一边去。
+ *
+ * 系统是中文、输入法却停在英文 —— 一点就自动回中文，省得打半天全是字母。
+ * 反过来系统是英文、输入法停在中文，也一样掰回英文。
+ *
+ * 怎么做：
+ *   一、输入法语言（中文还是英文）—— 渲染进程够不着，只能主进程来。
+ *       系统里没装英文键盘就临时挂一个（LoadKeyboardLayout），掰完就摘。
+ *   二、中文输入法的「中文/英文」状态 —— 走 imm32，
+ *       WM_IME_CONTROL + IMC_SETCONVERSIONSTATUS 直接把状态位写过去。
+ *       这条最稳；ImmSetOpenStatus 那个在微软拼音上经常原地不动。
+ *
+ * 静默干活：切不动就什么都不做，绝不弹窗、绝不挡主人打字。
+ *
+ * 注意：C# 那段用单引号一行一行拼，不用模板串 —— 里面反引号太多，
+ * 塞进模板串会被当成结束符，整个文件就废了（上一版就是这么翻的车）。
+ */
+
+const IME_CS_LINES = [
+  'using System;',
+  'using System.Runtime.InteropServices;',
+  '',
+  'public class XiaoYuIme',
+  '{',
+  '  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();',
+  '  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);',
+  '  [DllImport("user32.dll")] public static extern IntPtr LoadKeyboardLayout(string id, uint flags);',
+  '  [DllImport("user32.dll")] public static extern bool UnloadKeyboardLayout(IntPtr hkl);',
+  '  [DllImport("imm32.dll")] public static extern IntPtr ImmGetDefaultIMEWnd(IntPtr h);',
+  '',
+  '  const uint WM_IME_CONTROL = 0x0283;',
+  '  const int IMC_GETCONVERSIONSTATUS = 0x0001;',
+  '  const int IMC_SETCONVERSIONSTATUS = 0x0002;',
+  '',
+  '  const long CN_STATUS = 1025;',
+  '',
+  '  static IntPtr DefImeWnd()',
+  '  {',
+  '    IntPtr fg = GetForegroundWindow();',
+  '    if (fg == IntPtr.Zero) return IntPtr.Zero;',
+  '    return ImmGetDefaultIMEWnd(fg);',
+  '  }',
+  '',
+  '  public static long ReadChineseMode()',
+  '  {',
+  '    IntPtr def = DefImeWnd();',
+  '    if (def == IntPtr.Zero) return -1;',
+  '    long st = SendMessage(def, WM_IME_CONTROL, new IntPtr(IMC_GETCONVERSIONSTATUS), IntPtr.Zero).ToInt64();',
+  '    return (st & 1) == 1 ? 1 : 0;',
+  '  }',
+  '',
+  '  public static long SetChineseMode(bool zh)',
+  '  {',
+  '    IntPtr def = DefImeWnd();',
+  '    if (def == IntPtr.Zero) return -1;',
+  '    long want = zh ? CN_STATUS : 0;',
+  '    SendMessage(def, WM_IME_CONTROL, new IntPtr(IMC_SETCONVERSIONSTATUS), new IntPtr(want));',
+  '    return ReadChineseMode();',
+  '  }',
+  '',
+  '  public static long AttachEnglish()',
+  '  {',
+  '    IntPtr hkl = LoadKeyboardLayout("00000409", 0x00000001);',
+  '    if (hkl == IntPtr.Zero) return 0;',
+  '    return hkl.ToInt64();',
+  '  }',
+  '',
+  '  public static void DetachEnglish(long hkl)',
+  '  {',
+  '    if (hkl != 0) UnloadKeyboardLayout(new IntPtr(hkl));',
+  '  }',
+  '',
+  '  public static long Apply(string mode)',
+  '  {',
+  '    bool wantZh = (mode == "zh");',
+  '    if (wantZh)',
+  '    {',
+  '      long before = ReadChineseMode();',
+  '      if (before == 1) return 1;',
+  '      long en = AttachEnglish();',
+  '      if (en != 0) DetachEnglish(en);',
+  '      long r = SetChineseMode(true);',
+  '      return r;',
+  '    }',
+  '    if (ReadChineseMode() == 0) return 0;',
+  '    return SetChineseMode(false);',
+  '  }',
+  '}',
+];
+
+const IME_NATIVE_SRC = IME_CS_LINES.join('\n');
+
+/** 系统界面语言，取前两位：zh-CN -> zh */
+function systemLangCode() {
+  try {
+    return String(app.getLocale() || '').slice(0, 2).toLowerCase() || 'en';
+  } catch {
+    return 'en';
+  }
+}
+
+let imeScriptPath = null;
+
+/**
+ * 把 C# 那段落成 .ps1，第一次用到时写一次，后面复用。
+ *
+ * 坑：这段 C# 里【一个汉字都不能有】。
+ * 我们写出去的是 UTF-8，可 powershell.exe 默认拿 GBK 去读，
+ * 中文注释会被按字节切坏，编译器当场报一堆「标记无效」，Add-Type 直接失败 ——
+ * 整个切输入法的功能就静默失效了（真踩过）。说明写在外面这层就行。
+ */
+function ensureImeScript() {
+  if (imeScriptPath) return imeScriptPath;
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = path.join(os.tmpdir(), 'xiaoyu-agent');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  const file = path.join(dir, 'ime.ps1');
+  const body =
+    "$ErrorActionPreference='SilentlyContinue'\r\n" +
+    "Add-Type -TypeDefinition @'\r\n" +
+    IME_NATIVE_SRC +
+    "\r\n'@\r\n" +
+    "if (-not ('XiaoYuIme' -as [type])) { exit 3 }\r\n" +
+    '$m = $args[0]\r\n' +
+    'if (-not $m) { $m = (Get-Culture).Name.Substring(0,2).ToLower() }\r\n' +
+    'Write-Output ([XiaoYuIme]::Apply($m))\r\n';
+  fs.writeFileSync(file, body, 'utf8');
+  imeScriptPath = file;
+  return file;
+}
+
+/** 掰输入法。返回 { ok, lang, chinese }，失败也不影响聊天。 */
+function matchImeToSystem() {
+  const lang = systemLangCode();
+  const wantZh = lang === 'zh';
+  const { execFile } = require('child_process');
+  let script;
+  try {
+    script = ensureImeScript();
+  } catch (e) {
+    return Promise.resolve({ ok: false, lang, chinese: null, detail: 'script:' + e.message });
+  }
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, wantZh ? 'zh' : 'en'],
+      { timeout: 6000, windowsHide: true },
+      (err, stdout, stderr) => {
+        const out = String(stdout || '').trim().split(/\r?\n/).pop() || '';
+        const n = Number(out);
+        if (!err && !Number.isNaN(n) && n >= 0) {
+          resolve({ ok: (n === 1) === wantZh, lang, chinese: n === 1 });
+        } else {
+          resolve({ ok: false, lang, chinese: null, detail: (out || String(stderr || err || '')).slice(0, 200) });
+        }
+      }
+    );
+  });
+}
+
+ipcMain.handle('ime:systemLang', () => systemLangCode());
+ipcMain.handle('ime:matchSystem', () => matchImeToSystem());

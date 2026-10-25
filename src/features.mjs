@@ -12,7 +12,7 @@ import { config } from './config.mjs';
 
 const FILE = join(config.dataDir, '.state', 'features.json');
 /** 老文件没有这些键时补写进去，让文件内容和界面显示对得上 */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 /** 功能清单。数组顺序就是界面上的顺序。 */
 export const FEATURES = [
@@ -120,6 +120,17 @@ export const FEATURES = [
     name: '小鱼说话',
     desc: '让小鱼开口：把要说的话念成语音发过来，四档嗓音随便挑（活泼甜 / 软糯最软 / 软糯偏甜 / 连读自然）。点「选声音」就能换，改完下一句生效。',
     tools: ['say'],
+    defaultOn: true,
+  },
+  {
+    // 纯界面功能，不带工具。
+    // 点聊天输入框那一下，把 Windows 输入法掰到「系统语言」那边：
+    // 系统是中文、输入法却停在英文，一点就自动回中文；反过来也一样。
+    // 只在桌面版管用（网页版够不着系统输入法），后台静默跑，不会弹窗。
+    id: 'imeMatch',
+    name: '输入法跟随系统',
+    desc: '一点聊天输入框，系统输入法就自动切到系统语言那一边（系统中文就用中文，英文就用英文）。省得打了一屏字母才发现输入法是英文。不想要就关掉。',
+    tools: [],
     defaultOn: true,
   },
 ];

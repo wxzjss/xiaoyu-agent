@@ -19,6 +19,8 @@ import { getOverride, setOverride } from './session-overrides.mjs';
 import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
 // 会话记忆文件：一个会话一份自己的本子，每轮拼进系统提示（见 persona.mjs 的 memoryBlock）。
 import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, wipeMemory, snapMemory, SKELETON } from './session-memory.mjs';
+// 记忆本整本界面：小鲸那本是跨会话的，也要给主人看（见 /api/memory/book）
+import { readWhaleMemory, memoryPath as whaleMemoryPath } from './whale-memory.mjs';
 import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit } from './edit.mjs';
 // 整份数据备份：会话 / 人设 / 模型配置 / 设置，换电脑或重装时救命用。
 import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
@@ -2437,6 +2439,37 @@ const server = createServer(async (req, res) => {
     }
     setLastSessionId(newId);
     return json(res, 200, { session: publicSession(session), from: id, at: end });
+  }
+
+  // ---- 记忆本整本（主人要看「她到底记了些什么」） -------------------------
+  // 以前界面上只有一个小标记：本子多少字、几条摘要。想看内容得自己去翻文件夹。
+  // 这里一次把两本都吐出来：会话本子（这个会话的）+ 小鲸的本子（跨会话的）。
+
+  if (req.method === 'GET' && url.pathname === '/api/memory/book') {
+    const id = url.searchParams.get('id') || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    try {
+      const sessionText = ensureMemory(id);
+      let sessionTitle = '';
+      try {
+        sessionTitle = getSession(id)?.title || '';
+      } catch {}
+      // 小鲸那本读不到就当空本子：一本坏了不能连带把这边也拖垮
+      let whaleText = '';
+      let whalePath = '';
+      try {
+        whaleText = readWhaleMemory() || '';
+        whalePath = whaleMemoryPath();
+      } catch {}
+      return json(res, 200, {
+        id,
+        title: sessionTitle,
+        session: { text: sessionText, ...memoryInfo(id) },
+        whale: { text: whaleText, path: whalePath },
+      });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
   }
 
   // ---- 会话记忆（一个会话一份本子） ----------------------------------------

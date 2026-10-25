@@ -1069,6 +1069,49 @@
     .featScroll { overflow-y: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
     /* ---- 会话记忆 ------------------------------------------------------ */
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
+    /* ---- 记忆本整本 ---- */
+    /* 弹窗本身要宽一点：摘要和固定记忆都是整句话，窄了全是折行 */
+    dialog.memDlg { width: min(880px, 94vw); }
+    .memTabs {
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      padding: 10px 16px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+    }
+    .memTab {
+      background: transparent; border: 1px solid var(--border); color: var(--dim);
+      border-radius: 20px; padding: 4px 12px; font: inherit; font-size: 12.5px; cursor: pointer;
+      transition: color .15s, border-color .15s, background .15s;
+    }
+    .memTab:hover { color: var(--text); border-color: #3a4553; }
+    .memTab.on { color: var(--accent); border-color: var(--accent); background: rgba(120,170,255,.08); }
+    .memTab .n { color: var(--dim); font-size: 11px; margin-left: 4px; }
+    .memTab.on .n { color: var(--accent); }
+    .memTabGap { flex: 1 1 auto; }
+    .memTabWhale { border-style: dashed; }
+    .memBody {
+      padding: 16px; overflow-y: auto; flex: 1 1 auto; min-height: 260px; max-height: 66vh;
+      overscroll-behavior: contain; font-size: 13.5px; line-height: 1.7;
+    }
+    /* 原文那页要等宽字体：缩进和编号对不齐就读不出层次 */
+    .memBody pre {
+      margin: 0; white-space: pre-wrap; word-break: break-word;
+      font-family: ui-monospace, Consolas, 'Courier New', monospace; font-size: 12.5px; line-height: 1.6;
+    }
+    .memSec { margin-bottom: 18px; }
+    .memSec:last-child { margin-bottom: 0; }
+    .memSec h4 {
+      margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: var(--accent);
+      padding-bottom: 5px; border-bottom: 1px solid var(--border);
+    }
+    /* 后面的小标题要跟上一段正文拉开，不然「用户约束/偏好」会贴在前一句底下 */
+    .memSec h4 ~ h4 { margin-top: 18px; }
+    .memLine { padding: 3px 0; }
+    .memLine .id {
+      color: #7f8b9c; font-size: 11.5px; font-family: ui-monospace, Consolas, monospace;
+      margin-right: 6px;
+    }
+    .memLine .t { color: #6f7b8a; font-size: 11.5px; margin-right: 6px; }
+    .memEmpty { color: var(--dim); font-size: 13px; padding: 20px 2px; line-height: 1.8; }
+    .memHintR { margin-left: auto; }
     .featList { padding: 8px; }
     .featRow {
       display: flex; align-items: center; gap: 12px; padding: 11px 12px;
@@ -1390,6 +1433,7 @@
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
+    <button id="openMemoryBook" title="记忆本：看看她这个会话到底记了些什么，小鲸那本也在（只给看不给改，改她记的东西得跟她说）">记忆本</button>
     <button id="openFeatures">功能</button>
     <button id="openSettings">设置</button>
     <button id="openModels">模型<span id="mdlNow" class="meta"></span></button>
@@ -1783,6 +1827,39 @@
       </div>
       <div class="sessList" id="sessList"></div>
       <input type="file" id="sessFile" accept=".json,application/json" hidden />
+    </form>
+  </dialog>
+
+  <!-- 记忆本整本（只给看，不给改）
+       ── 为什么要有这个 ──
+       以前界面上只有一个「改过」小标记，本子里到底记了什么，主人只能去翻文件夹。
+       她记错了一件事、或者干脆把不该记的记进去了，主人根本发现不了。
+       这里把两本摊开：这个会话的本子（她替你记的）+ 小鲸那本（跨会话的）。
+
+       ── 为什么故意不给编辑框 ──
+       本子是她自己写的东西。主人直接改，跟她下一轮「凭记忆」说的话对不上，
+       她会觉得自己记的和你看到的不一样。要看就明明白白看，要改就跟她说一声——
+       她会自己改，而且改完还会告诉你改了哪儿。 -->
+  <dialog id="memoryDlg" class="memDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>记忆本</b><span class="meta" id="memBookHint"></span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="memTabs" id="memTabs">
+        <button type="button" class="memTab on" data-zone="fixed">固定记忆</button>
+        <button type="button" class="memTab" data-zone="roll">滚动摘要</button>
+        <button type="button" class="memTab" data-zone="detail">详细区</button>
+        <button type="button" class="memTab" data-zone="archive">归档</button>
+        <button type="button" class="memTab" data-zone="raw">原文</button>
+        <span class="memTabGap"></span>
+        <button type="button" class="memTab memTabWhale" data-zone="whale">小鲸那本</button>
+      </div>
+      <div class="memBody" id="memBody"></div>
+      <div class="dlgFoot">
+        <span class="hint" id="memPathHint"></span>
+        <span class="hint memHintR">本子是她自己写的，界面只给看不给改 —— 要改跟她说一声，她自己会改</span>
+      </div>
     </form>
   </dialog>
 
@@ -4827,13 +4904,236 @@ elWords.addEventListener('blur', () => {
 elCtxLimit.addEventListener('input', () => { paintCtxLimitNote(); });
 elCtxLimit.addEventListener('change', () => { paintCtxLimitNote(); });
 
-/* ---- 会话记忆 ------------------------------------------------------------
-   以前顶栏有个「记忆」按钮能直接编辑本子，主人不要那个入口，删掉了。
-   本子现在只在两个地方动：
+/* ---- 记忆本整本 ------------------------------------------------------------
+   顶栏「记忆本」按钮 → 一个只读的弹窗，把两本摊开给人看。
+
+   以前这里写过「主人不要那个入口，删掉了」—— 那是当时只要一个能改的编辑器，
+   主人觉得多余。现在要的是「她到底记了我什么」，是**看**，不是**改**：
+   她记错了我得能发现，而不是只能等她哪天说漏嘴。
+
+   本子现在仍然只在两个地方动：
      1. 小鱼自己用改文件的工具写；
      2. 主人编辑某一句话时（见下面的「编辑」按钮），会把改动同步进本子。
-   界面上的读取接口还在，`/api/sessions/select` 会回 memory 字段，但不再展示。 */
+   这个界面一个字都不写盘 —— 连「清空」都不给，那是会毁东西的按钮，
+   要清空走设置里那条有备份的。 */
 function paintMemoryFlag() {}
+
+/** 记忆本那个弹窗拿到的最近一次数据（切页签时不用重新请求） */
+let memBook = null;
+/** 当前页签：fixed/roll/detail/archive/raw/whale */
+let memZone = 'fixed';
+
+/** 把 `/api/memory/book` 的正文拆成四块：固定记忆 / 滚动摘要 / 详细 / 归档 */
+function parseMemText(text) {
+  const out = { fixed: '', roll: [], detail: '', archive: [] };
+  const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
+  let zone = '';
+  const fixedBuf = [];
+  const detailBuf = [];
+  for (const line of lines) {
+    const h = /^##\s+(.+?)\s*$/.exec(line);
+    if (h) {
+      const name = h[1];
+      if (/固定记忆/.test(name)) zone = 'fixed';
+      else if (/滚动摘要/.test(name)) zone = 'roll';
+      else if (/归档/.test(name)) zone = 'archive';
+      else if (/详细/.test(name)) zone = 'detail';
+      else zone = '';
+      continue;
+    }
+    if (zone === 'fixed') fixedBuf.push(line);
+    else if (zone === 'roll') {
+      const t = line.trim();
+      if (/^-\s+R\d{4}\b/.test(t)) out.roll.push(t);
+    } else if (zone === 'detail') detailBuf.push(line);
+    else if (zone === 'archive') {
+      const t = line.trim();
+      if (/^-\s+/.test(t)) out.archive.push(t);
+    }
+  }
+  // 固定记忆里那几节（### 任务目标 之类）保留小标题，不然读起来是一坨
+  out.fixed = fixedBuf.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  out.detail = detailBuf.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return out;
+}
+
+/** 一条摘要：`- R0003 [2026-10-25 17:42] 摘要：……` → 三块 */
+function splitRollLine(line) {
+  const m = /^-\s+(R\d{4})\s*(?:\[([^\]]+)\])?\s*摘要：\s*(.*)$/.exec(line);
+  if (!m) return { id: '', at: '', body: line.replace(/^-\s+/, '') };
+  return { id: m[1], at: m[2] || '', body: m[3] || '' };
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+/** 画出当前页签 */
+function renderMemZone() {
+  const body = document.getElementById('memBody');
+  const hint = document.getElementById('memPathHint');
+  if (!body) return;
+  body.innerHTML = '';
+  if (!memBook) {
+    body.append(el('div', 'memEmpty', '正在读本子…'));
+    return;
+  }
+  const s = memBook.session || {};
+  const parsed = parseMemText(s.text || '');
+
+  if (memZone === 'whale') {
+    hint.textContent = memBook.whale?.path || '';
+    const wt = String(memBook.whale?.text || '').trim();
+    if (!wt) {
+      body.append(el('div', 'memEmpty', '小鲸那本还是空的（她还没记过东西）。'));
+      return;
+    }
+    // 小鲸那本是她自己的格式（三个分区），原样排版就行，别再拆
+    const pre = el('pre');
+    pre.textContent = wt;
+    body.append(pre);
+    return;
+  }
+
+  hint.textContent = s.path || '';
+
+  if (memZone === 'raw') {
+    const pre = el('pre');
+    pre.textContent = String(s.text || '').trim() || '（本子是空的）';
+    body.append(pre);
+    return;
+  }
+
+  if (memZone === 'fixed') {
+    if (!parsed.fixed) {
+      body.append(el('div', 'memEmpty', '固定记忆还是空的。\n要她一劳永逸记住的事（「以后都叫我小鱼」这种），让她写进这里。'));
+      return;
+    }
+    const sec = el('div', 'memSec');
+    // 按 ### 小节切，前面没有小标题的部分单独成段
+    const parts = parsed.fixed.split(/\n(?=###\s)/);
+    for (const part of parts) {
+      const lines = part.split('\n');
+      const head = lines[0] && /^###\s/.test(lines[0]) ? lines.shift().replace(/^###\s*/, '') : '';
+      if (head) sec.append(el('h4', '', head));
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        sec.append(el('div', 'memLine', t));
+      }
+    }
+    body.append(sec);
+    return;
+  }
+
+  if (memZone === 'roll') {
+    if (!parsed.roll.length) {
+      body.append(el('div', 'memEmpty', '还没有滚动摘要。她每说完一轮会往这儿记一句。'));
+      return;
+    }
+    // 倒过来显示：最近的在最上面，跟聊天记录一个习惯
+    for (const line of [...parsed.roll].reverse()) {
+      const r = splitRollLine(line);
+      const wrap = el('div', 'memLine');
+      if (r.id) wrap.append(el('span', 'id', r.id));
+      if (r.at) wrap.append(el('span', 't', r.at));
+      wrap.append(document.createTextNode(r.body));
+      body.append(wrap);
+    }
+    return;
+  }
+
+  if (memZone === 'detail') {
+    if (!parsed.detail) {
+      body.append(el('div', 'memEmpty', '详细区是空的（最近几轮写得细一点，不占摘要名额）。'));
+      return;
+    }
+    const pre = el('pre');
+    pre.textContent = parsed.detail;
+    body.append(pre);
+    return;
+  }
+
+  if (memZone === 'archive') {
+    if (!parsed.archive.length) {
+      body.append(el('div', 'memEmpty', '归档是空的。摘要满了 80 条之后，最旧的会被挪到这儿 —— 一条都不丢，只是不在正文里堆着。'));
+      return;
+    }
+    for (const line of parsed.archive) body.append(el('div', 'memLine', line));
+  }
+}
+
+/** 页签上的数字（固定记忆不显示个数；摘要显示「保留/总数」） */
+function paintMemTabs() {
+  const tabs = document.getElementById('memTabs');
+  if (!tabs) return;
+  for (const b of tabs.querySelectorAll('.memTab')) {
+    b.classList.toggle('on', b.dataset.zone === memZone);
+    const old = b.querySelector('.n');
+    if (old) old.remove();
+  }
+  if (!memBook) return;
+  const s = memBook.session || {};
+  const parsed = parseMemText(s.text || '');
+  const counts = {
+    roll: parsed.roll.length ? `${parsed.roll.length}` : '',
+    archive: parsed.archive.length ? `${parsed.archive.length}` : '',
+  };
+  for (const b of tabs.querySelectorAll('.memTab')) {
+    const n = counts[b.dataset.zone];
+    if (n) b.append(el('span', 'n', n));
+  }
+}
+
+async function openMemoryBook() {
+  const dlg = document.getElementById('memoryDlg');
+  if (!dlg) return;
+  const hint = document.getElementById('memBookHint');
+  if (hint) hint.textContent = '正在读…';
+  memBook = null;
+  renderMemZone();
+  try {
+    const id = encodeURIComponent(sessionId || '');
+    const r = await fetch(`/api/memory/book?id=${id}`).then((x) => x.json()).catch(() => null);
+    if (!r || r.error) throw new Error((r && r.error) || '读不到');
+    memBook = r;
+    if (hint) {
+      const chars = (r.session && r.session.chars) || 0;
+      const digest = (r.session && r.session.digest) || 0;
+      hint.textContent = `${r.title || '当前会话'} · ${chars} 字 · ${digest} 条摘要`;
+    }
+  } catch (e) {
+    if (hint) hint.textContent = '读不到本子：' + (e && e.message ? e.message : e);
+    const body = document.getElementById('memBody');
+    if (body) {
+      body.innerHTML = '';
+      body.append(el('div', 'memEmpty', '读不到本子。她这个会话可能还没开始记东西。'));
+    }
+    return;
+  }
+  paintMemTabs();
+  renderMemZone();
+}
+
+document.getElementById('openMemoryBook').onclick = () => {
+  const dlg = document.getElementById('memoryDlg');
+  if (!dlg) return;
+  memZone = 'fixed';
+  closeOtherDialogs('memoryDlg');
+  dlg.showModal();
+  openMemoryBook();
+};
+
+document.getElementById('memTabs').onclick = (ev) => {
+  const b = ev.target.closest('.memTab');
+  if (!b) return;
+  memZone = b.dataset.zone;
+  paintMemTabs();
+  renderMemZone();
+};
 
 document.getElementById('saveSettings').onclick = async () => {
   const p = await fetch('/api/personas/save', {
@@ -6123,7 +6423,7 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
  * @param {string} [keepId] 这个要留着（正在开的那个）
  */
 function closeOtherDialogs(keepId) {
-  for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg']) {
+  for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'memoryDlg']) {
     if (id === keepId) continue;
     const d = document.getElementById(id);
     if (d && d.open) {
@@ -6177,7 +6477,7 @@ function closeOtherDialogs(keepId) {
   if (window.__dialogGuardInstalled) return;
   window.__dialogGuardInstalled = true;
 
-  const IDS = ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg'];
+  const IDS = ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'memoryDlg'];
 
   const enforce = (keeper) => {
     for (const id of IDS) {

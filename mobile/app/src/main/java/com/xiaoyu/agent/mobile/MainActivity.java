@@ -518,6 +518,8 @@ public class MainActivity extends Activity {
         web.setBackgroundColor(Ui.BG);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
+        // 调试开关：连着 adb 时可以 chrome://inspect 看页面、抓 JS 报错。正式版也不碍事。
+        WebView.setWebContentsDebuggingEnabled(true);
         s.setDomStorageEnabled(true);           // 会话列表、滚动位置都靠 localStorage
         s.setDatabaseEnabled(true);
         s.setLoadWithOverviewMode(true);
@@ -609,6 +611,12 @@ public class MainActivity extends Activity {
         });
 
         web.setWebChromeClient(new WebChromeClient() {
+            /** 页面里的 console 和 JS 异常转到 logcat —— 手机上没有控制台，只能靠这个看。 */
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                android.util.Log.i("XyWeb", m.messageLevel() + " @" + m.lineNumber() + ": " + m.message());
+                return true;
+            }
             @Override
             public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams params) {
                 // 电脑端页面的「＋ → 文件/图片」走的就是这里

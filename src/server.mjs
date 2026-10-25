@@ -338,6 +338,13 @@ function publicSession(session) {
        * 原本的样子，主人当场看得出不对，可又说不清哪儿不对。
        */
       say: m._say && typeof m._say === 'object' ? { ...m._say } : undefined,
+      /**
+       * 她这一轮想过什么（reasoning）。存的时候写在 assistant 的 `_reasoning` 上，
+       * 界面画成「想过」的折叠块 —— 默认收起，点开才看。
+       *
+       * 老会话没有这个字段（功能是后加的），前端就当没想过，不画那块。
+       */
+      reasoning: typeof m._reasoning === 'string' && m._reasoning.trim() ? m._reasoning : undefined,
     });
   }
   // 撤回记录本身也交出去，界面才能提示「还能撤销回退」
@@ -3424,6 +3431,41 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 把这一轮模型说的话接回正式历史，再算「用户那句话」的下标
       commitWireBack();
       /**
+       * 她的思考过程（reasoning）存到盘上。
+       *
+       * 【为什么要存】原来 reasoning 只活在流里：界面上「想」那块一闪而过，
+       * 进程一重启、或者切到别的会话再切回来，这段就永远没了 —— 可它恰恰是
+       * 「她为什么这么答」的唯一线索。回头翻聊天，只看得到结论看不到思路。
+       *
+       * 【存哪儿】存在这一轮**最后那条 assistant** 的 `_reasoning` 上。
+       * 挂在最后一条而不是第一条，是因为一轮里可能有七八条 assistant（中间夹着
+       * 工具调用），思考是伴着头一条开始的、但收尾的说法在最后一条，
+       * 界面上折叠块画在结论旁边才读得顺。
+       *
+       * 【为什么字段名带下划线、为什么不会被模型看见】
+       * llm.mjs 的 wireMessage 用的是白名单（WIRE_KEYS = role/content/name/
+       * tool_calls/tool_call_id），下划线开头的字段一个都发不出去 ——
+       * 所以不用额外写剥离逻辑，模型永远看不到自己的旧思考（看到了它会顺着念下去）。
+       *
+       * 【为什么先挑 assistant 再存整段】
+       * 一轮里的 reasoning 是连续的（多次请求之间的思考会被 draftReasoning 累加）。
+       * 不细分到每次请求，是因为界面上就是一个「想过」的折叠块，分太细没人看。
+       */
+      if (draftReasoning && draftReasoning.trim()) {
+        try {
+          for (let i = history.length - 1; i >= 0; i--) {
+            const m = history[i];
+            if (!m || m.role !== 'assistant' || m.context) continue;
+            // 只挂这一轮新接进来的那条，别糊到上一轮的回复上
+            if (seenBefore.has(m)) break;
+            m._reasoning = draftReasoning.trim();
+            break;
+          }
+        } catch (e) {
+          console.warn('[reasoning] 没存下来：', String(e?.message ?? e));
+        }
+      }
+      /**
        * 小鲸这一轮说过的话，挂成一条单独的消息。
        *
        * 【为什么要单独一条，而不是并进我这轮的回复里】
@@ -3797,6 +3839,15 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (!session) return json(res, 404, { error: 'session not found' });
 
     const turn = runningTurns.get(sessionId);
+    /**
+     * 有没有「真的在跑的那一轮」—— 这个字段前端一直在等，可我们以前从来不给。
+     *
+     * 前端的 interject 写好了三路：running:true 接着跑、running:false 认错重发、
+     * 出错就说清楚。结果服务端只回 { ok, stopped, count }，那个 running:false
+     * 的分支永远走不到 —— 等于把「这句没插进去」的情况一律当成插进去了。
+     * 主人看到的就是：打了字、按了发送、消息没了，什么都没发生。
+     */
+    const wasRunning = Boolean(turn && turn.ac && !turn.ac.signal.aborted);
     if (turn?.ac) {
       /**
        * 带上原因：interject = 主人插话，不是让这一轮停手。
@@ -3827,7 +3878,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     sessions.set(sessionId, freshSession);
     saveSession(freshSession);
     setLastSessionId(sessionId);
-    return json(res, 200, { ok: true, stopped: Boolean(turn?.ac), count: history.length });
+    return json(res, 200, {
+      ok: true,
+      // 前端靠这个字段决定「接着跑」还是「认错重发」。必须给。
+      running: wasRunning,
+      stopped: Boolean(turn?.ac),
+      count: history.length,
+    });
   }
 
   // ---- 会话之间递话（peer mail）-----------------------------------------

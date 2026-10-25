@@ -205,6 +205,14 @@
       padding: 8px 10px 10px; border-top: 1px solid var(--border);
       color: var(--dim); font-style: italic; white-space: pre-wrap; word-break: break-word;
     }
+    /* 历史里的思考（从盘上读回来的）：比实时那块淡一点、窄一点，
+       免得满屏旧思考把真正在看的那轮对话挤下去 */
+    details.think.thinkPast {
+      background: transparent; border-color: rgba(255, 255, 255, .06);
+      margin-bottom: 8px; max-width: 92%;
+    }
+    details.think.thinkPast > summary { padding: 5px 9px; font-size: 12px; opacity: .8; }
+    details.think.thinkPast[open] { background: rgba(23, 26, 33, .72); border-color: var(--border); }
     .interjectTag {
       display: inline-block; font-size: 12px; color: var(--accent);
       border: 1px solid var(--accent); border-radius: 999px; padding: 1px 9px; margin-left: 8px;
@@ -2856,6 +2864,14 @@ let sessionId = null;
 let sessionTitle = '';
 let sessionsCache = [];
 let pendingResume = false; // 插话之后要不要接着跑
+/**
+ * 刚才「插话」时乐观画上去的那条气泡。
+ *
+ * 为什么要留着引用：插话是**先画后问**（点了就立刻显示，不等服务端）。
+ * 要是服务端回来一句 `running:false`，说明其实没有一轮在跑、这句压根没人接 ——
+ * 那条气泡就得收回去，否则屏幕上永远挂着一条我从来没回复过的话。
+ */
+let lastInterjectBubble = null;
 let stopping = false; // 正在停止，按钮锁住别再点
 
 /**
@@ -4152,6 +4168,43 @@ function openThink() {
   };
 }
 
+/**
+ * 回放历史时把她当时想过的东西画出来。
+ *
+ * 【为什么不直接复用 openThink】
+ * 那个函数是「正在想」用的：它 open=true、往 log 里 append、每次 push 都
+ * noteNewContent 抢滚动条。回放历史要的是反过来的 —— 默认收起、画进 frag、
+ * 一次性填满、不碰滚动位置。
+ *
+ * 挂的位置和实时流一致：在她说的话**上面**（想在前、说在后）。
+ */
+function paintReasoning(text, host) {
+  const body0 = String(text || '').trim();
+  if (!body0) return null;
+  const d = document.createElement('details');
+  d.className = 'think thinkPast';
+  d.open = false; // 历史里的思考默认收起，不然一打开会话满屏都是内心戏
+
+  const sum = document.createElement('summary');
+  const title = document.createElement('span');
+  title.className = 'thinkTitle';
+  const flat = body0.replace(/\s+/g, ' ').trim();
+  title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
+  title.title = flat.slice(0, 400);
+  const meta = document.createElement('span');
+  meta.className = 'thinkMeta';
+  meta.textContent = body0.length + ' 字 · 点击展开';
+  sum.append(title, meta);
+
+  const body = document.createElement('div');
+  body.className = 'thinkBody';
+  body.textContent = body0;
+
+  d.append(sum, body);
+  (host || log).appendChild(d);
+  return d;
+}
+
 async function stopTurn() {
   stopping = true;
   sendBtn.disabled = true;
@@ -4551,7 +4604,8 @@ async function interject() {
   if (!busy || !text) return;
   input.value = '';
   autosizeInput();
-  addUser(text, '插话');
+  // 记下这条气泡：万一下面服务端说「其实没在跑」，得把它收回去（不然屏幕上留一条没人回的话）
+  lastInterjectBubble = addUser(text, '插话');
   pendingResume = true;
   syncSendBtn();
   const r = await fetch('/api/interject', {
@@ -4567,6 +4621,32 @@ async function interject() {
     b.className = 'bubble';
     b.textContent = '⚠ 这句没插进去：' + (r && r.error ? r.error : '网络错误');
     wrap.appendChild(b);
+    return;
+  }
+  /**
+   * 服务端说「这轮其实已经跑完了」——那就是咱们算错了 busy。
+   *
+   * 【不处理会怎样】上面那句 addUser 已经把这话画在屏幕上了，可实际上没有任何一轮
+   * 在跑、这句话谁也没接。模型根本不知道主人说过这句，界面却挂着它 ——
+   * 主人看到的是：打了字、发出去了、我一句话没回。
+   *
+   * 所以这里把**刚才画的那条气泡收回去**，再把话交回正常发送那条路
+   *（正常发送会自己画气泡）。不然屏幕上会出现两条一模一样的话。
+   */
+  if (r.running === false) {
+    pendingResume = false;
+    // 收回刚画的那条「插话」气泡：它是乐观画上去的，服务端说没接住就不该留着
+    if (lastInterjectBubble && lastInterjectBubble.parentNode) lastInterjectBubble.remove();
+    lastInterjectBubble = null;
+    const wrap = addEl('', 'msg user');
+    wrap.innerHTML = '<div class="role">系统</div>';
+    const b = document.createElement('div');
+    b.className = 'bubble';
+    b.textContent = '刚才那一轮已经跑完了，这句没接上 —— 我重新发一遍。';
+    wrap.appendChild(b);
+    input.value = text;
+    autosizeInput();
+    return send();
   }
 }
 
@@ -7312,6 +7392,14 @@ function renderTurns(turns) {
       const hasText = String(turn.text || '').trim().length > 0;
       const outs = Array.isArray(turn.out) ? turn.out : [];
       const tools = Array.isArray(turn.tools) ? turn.tools : [];
+      /**
+       * 她这一轮想过什么。挂在她说的话**上面**，跟实时流里那个「正在想…」的位置一致
+       *（想在前、说在后，读起来才是「先想过再开口」）。
+       *
+       * 只画给我自己的回放：小鲸说的话（turn.whale）没有思考过程，
+       * 那是另一个人的话，别把她的思考算到别人头上。
+       */
+      if (turn.reasoning && !turn.whale) paintReasoning(turn.reasoning, frag);
       // 只调了工具、一个字没说的那条 assistant（content 是 null）：不画空气泡，只画工具块
       if (hasText || outs.length) {
         /**

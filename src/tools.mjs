@@ -901,11 +901,56 @@ export const tools = [
     async run({ task, name, allowWrite, maxRounds, sayAs, sayName, sayColor, sayTag }) {
       const { runSubagent } = await import('./subagent.mjs');
       const nick = name || '小鲸';
+
+      /**
+       * 【主人定的规矩：按钮关着 = 她彻底不在场】
+       *
+       * 以前这里压根不看「小鲸」那个开关 —— 关着我也能把人叫出来干活，
+       * 主人看到的就是「我明明把她请出去了，她怎么还在」。
+       *
+       * 现在：这个会话没叫她就直接拒绝，一个 token 都不花。
+       * 要看/改开关，就是顶栏那个「小鲸」按钮。
+       */
+      try {
+        const { whaleOn } = await import('./whale-presence.mjs');
+        const sid = CTX.sessionId || 'default';
+        if (!whaleOn(sid)) {
+          return '【' + nick + ' 不在场】这个会话里你还没把她叫上（顶栏「小鲸」按钮是关着的）。'
+            + '要先在主界面上把那个按钮打开，我才能找她干活。别自己去开，那是主人的开关。';
+        }
+      } catch (e) {
+        console.warn('[ask_subagent] 查小鲸开关失败：', String(e?.message || e));
+      }
+      /**
+       * 【主人要看见我们在说什么】
+       *
+       * 以前只有她的话推给界面，我问她什么主人看不到 ——
+       * 界面上只剩她的回答，前因全无，主人只能听我复述。
+       *
+       * 现在开工之前，先把我派的那句话也推上去，标成「小鱼 → 小鲸」。
+       * 这样主人看到的是一条完整对话，而不是半截。
+       */
+      try {
+        const push = CTX.pushEvent;
+        if (typeof push === 'function') {
+          push({
+            type: 'whale',
+            who: '小鱼 → ' + nick,
+            text: String(task || '').trim(),
+            as: 'whale',
+            tag: '',
+          });
+        }
+      } catch (e) {
+        console.warn('[ask_subagent] 我说的话没推到界面：', String(e?.message ?? e));
+      }
+
       const r = await runSubagent({
         task,
         name: nick,
         allowWrite: allowWrite === true || allowWrite === 'true',
-        maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 12,
+        // 主人要她像我一样：干多久干多久。这里不再写死 12 轮，用 subagent 的默认。
+        maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 200,
       });
 
       /**
@@ -941,26 +986,15 @@ export const tools = [
           console.warn('[ask_subagent] 她的话没进信箱：', String(e?.message ?? e));
         }
         /**
-         * 再直接往界面推一次。
+         * 【别再在这儿直接推一次了 —— 这就是"同一句话出现两遍"的根源】
          *
-         * 信箱那条要等 server 收尾时去取才播得出；这里推的这条是「当场就播」。
-         * 两边都推不重复 —— server 那边按时间戳+内容去重，前端那边按会话+名字+正文去重。
+         * 原来这儿还有一段 push({type:'whale', ...})，说是"当场就播"，
+         * 可上面 pushWhaleSays 已经把话放进信箱了，server 每轮收尾时
+         * 会 takeWhaleSays 取出来播一遍 —— 两边各播一次，主人就看见两条。
+         *
+         * 现在只留信箱这一条路：唯一的播放口，不会重。
+         * 代价是慢半拍（要等这一轮收尾），但她本来也不是秒回，不值当为这点时间重一遍。
          */
-        try {
-          const push = CTX.pushEvent;
-          if (typeof push === 'function') {
-            push({
-              type: 'whale',
-              who: displayName,
-              text: r.text,
-              as,
-              color: displayColor || undefined,
-              tag: displayTag,
-            });
-          }
-        } catch (e) {
-          console.warn('[ask_subagent] 她的话没推到界面：', String(e?.message ?? e));
-        }
       }
 
       const head = r.ok

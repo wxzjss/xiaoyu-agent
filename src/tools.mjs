@@ -137,7 +137,25 @@ export const tools = [
             const parts = [];
             if (stdout) parts.push(stdout);
             if (stderr) parts.push(stderr);
-            if (aborted) { parts.push('[被主人叫停了，命令已经掐掉]'); }
+            if (aborted) {
+              /**
+               * 为什么停的，必须说清楚。
+               *
+               * 踩过的坑：以前不管什么原因都写「被主人叫停了」，
+               * 可插话也会走到这里 —— 于是模型看到这句，就以为主人在叫停，
+               * 直接回一句「好的，停了」，插进来的那句话当没看见。
+               */
+              const why = signal && signal.reason;
+              if (why === 'interject') {
+                parts.push('[主人插了一句话，这一轮先停在这里。他插的话就在这条消息后面，往下接着看，别当成叫停。]');
+              } else if (why === 'handoff') {
+                parts.push('[这一轮被自动交接了，命令被掐掉]');
+              } else if (why === 'quit') {
+                parts.push('[程序正在退出，命令被掐掉]');
+              } else {
+                parts.push('[主人点了停止，命令被掐掉]');
+              }
+            }
             else if (err && !stdout && !stderr) parts.push(`exit ${err.code}: ${err.message}`);
             done(clip(parts.join('\n').trim() || '(no output)'));
           },

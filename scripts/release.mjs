@@ -119,6 +119,39 @@ APK 也支持**不连电脑**的模式：填一个 API Key 直接在手机上聊
  * 查得到就返回 null，走上面那份通用的。
  */
 function changelogFor(v) {
+  if (v === '0.9.11') {
+    return `这一版主要修**手机端连接页**：背景视频和音乐终于真的出来了。
+
+## 修了什么
+
+- **连接页背景视频**：以前一打开是纯黑一片。真因链有三层，全修了：
+  1. \`VideoView\` 读不了 \`assets/\` 里的文件（\`Unable to open content\` / \`setDataSource failed\`），
+     换成 \`SurfaceView\` + \`MediaPlayer\`；
+  2. \`MediaPlayer\` 直接吃 \`AssetFileDescriptor\` 不稳（\`error (-38, 0)\`），
+     改成启动时把片子摊到缓存目录、播真实文件路径，拷完还核字节数；
+  3. 最要命的一条：\`Ui.scroll()\` 那个铺满整屏的 ScrollView 刷的是**不透明底色**，
+     把下面的视频死死盖住 —— 视频明明在放（\`dumpsys\` 里 \`mime(video/avc) state(5) looping(1)\`）却看不见。
+     现在这层透明了，表单改垫半透明卡片，字照样清楚。
+- **连接页背景音乐**：\`prepareAsync\` 没回来就 \`start\`，日志是 \`start called in state 1\` / \`error (-38, 0)\`。
+  加了就绪标志，\`onPrepared\` 里才播，前后台切换也只看这个标志。
+- 进网页前会停掉连接页那套，不会和网页里的背景音乐撞在一起。
+
+## 下载哪个
+
+| 文件 | 是什么 |
+|---|---|
+| **XiaoyuAgent-${v}-Setup-x64.exe** | 安装版。装完有开始菜单/桌面快捷方式，数据在 \`%APPDATA%\\小鱼Agent\\data\` |
+| **XiaoyuAgent-${v}-Portable.exe** | 免安装版。数据在 exe 旁边的 \`data\` 目录，可放 U 盘 |
+| **XiaoyuAgent-${v}-Mobile.apk** | 手机端。装在安卓手机上连这台电脑 |
+
+> 覆盖安装就行，会话、记忆、模型配置、配对码都不会丢。
+
+## 手机端
+
+第一次打开会看到背景视频在动、音乐在响。上面填电脑地址和配对码，或者点「有二维码的话点这里扫一下」。
+不想连电脑就直接点「不连电脑，手机上直接用」，填好模型接口和密钥就能聊。
+`;
+  }
   if (v === '0.9.10') {
     return `这一版主要是「说话不用再自己动手」：**输入法跟着系统语言走**、**上下文上限默认改自动**、**回复不带 Markdown 记号**。
 

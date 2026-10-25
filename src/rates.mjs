@@ -1,4 +1,4 @@
-// 各家的价目表 + 一轮花多少钱
+﻿// 各家的价目表 + 一轮花多少钱
 //
 // 为什么要有这张表：模型接口只告诉你「用掉多少 token」，不告诉你「多少钱」。
 // 各家单价差得很远（DeepSeek flash 输出 8 元/百万，GLM-5.3 输出 28 元/百万），
@@ -368,4 +368,39 @@ export function contextWindowOf(model) {
 export function autoLimitFor(model) {
   const win = contextWindowOf(model);
   return Math.max(32000, Math.floor(win * 0.7));
+}
+
+/**
+ * 自动档的「自适应判断」比例带。
+ *
+ * 旧的 autoLimitFor 是一刀切：窗口 70% 才压。碰到 100 万窗口的模型（deepseek-v4.1-flash），
+ * 水位就是 70 万 —— 历史涨到六七十万都不动，主人看到的就是「一直压不了」。
+ *
+ * 现在改成按「历史占窗口的比例」分三段判断：
+ *   - 低于 COMFORT_RATIO（30%）：还很宽裕，不压（不额外花钱）。
+ *   - 高于 ACT_RATIO（45%）：明显该压了，直接压。
+ *   - 中间那一段（30%~45%）：拿不准，交给小鲸拍板（见 whale-judge.mjs，带冷却）。
+ *
+ * 用比例而不是绝对 token，是为了让 100 万窗口的模型也灵：30% 就是 30 万，
+ * 历史涨到那儿就该动手了，不用等它堆到 70 万。
+ */
+export const AUTO_COMFORT_RATIO = 0.3;
+export const AUTO_ACT_RATIO = 0.45;
+
+/**
+ * 按窗口比例判断「现在该不该压」。给 process 侧判断用。
+ *
+ * @param {string} model 模型名
+ * @param {number} beforeTokens 当前历史大约多少 token
+ * @returns {{ratio:number, window:number, verdict:'comfortable'|'critical'|'act'}}
+ *   comfortable = 别压；act = 该压；critical = 拿不准，问小鲸。
+ */
+export function autoRatioVerdict(model, beforeTokens) {
+  const win = contextWindowOf(model);
+  const before = Number(beforeTokens);
+  const ratio = win > 0 && Number.isFinite(before) ? before / win : 0;
+  let verdict = 'comfortable';
+  if (ratio >= AUTO_ACT_RATIO) verdict = 'act';
+  else if (ratio >= AUTO_COMFORT_RATIO) verdict = 'critical';
+  return { ratio, window: win, verdict };
 }

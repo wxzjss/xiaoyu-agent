@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -3311,6 +3311,16 @@ function followLive(id, fromIndex) {
         if (ev.type === 'reasoning') {
           if (!think) think = openThink();
           think.push(ev.text);
+        } else if (ev.type === 'whale') {
+          // 补画的时候也得认她的话 —— 不然断线重连 / done 后补拉，她的气泡永远补不出来
+          closeThink();
+          whaleStreamFinish(ev.text) || addWhaleBubble(ev.who, ev.text);
+          bubble = null;
+        } else if (ev.type === 'whale_stream_start') {
+          closeThink();
+          whaleStreamStart(ev.who);
+        } else if (ev.type === 'whale_delta') {
+          whaleStreamDelta(ev.text);
         } else if (ev.type === 'text') {
           closeThink();
           if (!bubble) bubble = addAssistant();
@@ -3478,7 +3488,10 @@ if (fishBtn) {
   // 让切会话 / 新建会话的地方也能调
   window.__reloadFishState = () => { if (sessionId) loadFishFor(sessionId); };
   if (sessionId) loadFishFor(sessionId);
-  else fetch('/api/fish').then((r) => r.json()).then((j) => paintFish(j && j.on)).catch(() => {});
+  // sessionId 还没就位就不读：不带会话去读，服务端会退回「上一次用过的会话」，
+  // 新开会话那一瞬间读到的其实是上一个会话的状态（比如上个会话关了鱼、开了鲸），
+  // 按钮就会显示成「鲸亮鱼灭」，可服务端判定新会话时鱼是默认开着的 —— 喊一声回的是小鱼。
+  // 所以宁可先按默认占位，等切会话/新建走 __reloadFishState 拿到 id 再读真状态。
 
   fishBtn.onclick = async () => {
     const want = !fishBtn.classList.contains('on');
@@ -3527,7 +3540,7 @@ if (whaleBtn) {
   // 让切会话的地方也能调
   window.__reloadWhaleState = () => { if (sessionId) loadWhaleFor(sessionId); };
   if (sessionId) loadWhaleFor(sessionId);
-  else fetch('/api/whale').then((r) => r.json()).then((j) => paintWhale(j && j.on)).catch(() => {});
+  // 同上：没 sessionId 就别读，免得读到上一个会话的状态
 
   whaleBtn.onclick = async () => {
     const want = !whaleBtn.classList.contains('on');
@@ -4264,7 +4277,29 @@ function whaleStreamFinish(text) {
   return true;
 }
 
+/**
+ * 她一句话会被塞两次：send 一次进 SSE，live.events 里再补一份兜底。
+ * 两条路都活着的时候，同一句话就会画两遍 —— 主人看到两个一模一样的冷色气泡。
+ *
+ * 这里按「谁 + 说了什么」记最近画过的，3 秒内同样的不重画。
+ * 为什么用时间窗而不是一直记着：她完全可能过一会儿又把同一句话认真说一遍，
+ * 那种情况是新的意思，不该被吞掉。
+ */
+const _whaleRecent = new Map();
+function whaleAlreadyDrawn(who, text) {
+  const key = String(who || '小鲸') + '\u0000' + String(text || '');
+  const now = Date.now();
+  const last = _whaleRecent.get(key);
+  if (_whaleRecent.size > 60) {
+    for (const [k, t] of _whaleRecent) if (now - t > 10000) _whaleRecent.delete(k);
+  }
+  if (last && now - last < 3000) return true;
+  _whaleRecent.set(key, now);
+  return false;
+}
+
 function addWhaleBubble(who, text) {
+  if (whaleAlreadyDrawn(who, text)) return null;
   const wrap = addEl('', 'msg whale');
   const roleEl = document.createElement('div');
   roleEl.className = 'role';
@@ -4605,6 +4640,32 @@ async function runTurn({ resume = false, text = '' } = {}) {
          */
         if (ev.type === 'fish_off') {
           turnRec.fishOff = true;
+          /**
+           * 【小鱼被请出去了，小鲸还得说话】
+           *
+           * 服务端发完这条 fish_off 就把连接关了，可小鲸要过几秒才想好。
+           * 她的话落在直播缓存里，这条 SSE 早死了收不到 ——
+           * 主人看到的就是「只关了小鱼、开着鲸，喊半天她不理」。
+           *
+           * 所以这儿自己起一段轮询，隔几秒去捞一次 live，把她的气泡捡回来。
+           * addWhaleBubble 自带 whaleAlreadyDrawn 去重，重复捞到也只画一次。
+           */
+          (async () => {
+            const sidFishOff = turnSession || sessionId;
+            for (const wait of [1200, 3500, 7000, 12000]) {
+              await new Promise((r) => setTimeout(r, wait));
+              if (sessionId !== sidFishOff) return;
+              let lv = null;
+              try {
+                lv = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sidFishOff)).then((r) => r.json());
+              } catch { return; }
+              const evs = (lv && lv.events) || [];
+              for (const it of evs) {
+                if (!it || it.type !== 'whale') continue;
+                if (!whaleStreamFinish(it.text)) addWhaleBubble(it.who, it.text);
+              }
+            }
+          })();
           continue;
         }
 
@@ -4782,6 +4843,46 @@ async function runTurn({ resume = false, text = '' } = {}) {
             const under = bubble && bubble.isConnected ? bubble : null;
             appendTurnUsage(ev.usage, ev.at, '', under, Boolean(under));
           }
+          /**
+           * 她的话是这一轮跑完之后才说出来的，得补拉一次。
+           *
+           * 自动接话是这一轮末尾异步跑起来的，她说出来时这条 SSE 已经关掉了。
+           * 话进了服务端的直播缓存（send 里先 push 进 live.events），
+           * 但前端 done 之后就不再拉 live —— 主人屏幕上什么都看不见，还以为她没回。
+           *
+           * 这里补一手：隔几秒拉一次 live，把 done 之后才到的 whale 事件画出来。
+           * 只画 whale，别的（text/reasoning）done 之后不该再有。
+           */
+          (async () => {
+            const sidForWhale = turnSession || sessionId;
+            for (const wait of [1500, 4000, 8000]) {
+              await new Promise((r) => setTimeout(r, wait));
+              if (sessionId !== sidForWhale) return;
+              let live = null;
+              try {
+                live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sidForWhale)).then((r) => r.json());
+              } catch { return; }
+              const evs = (live && live.events) || [];
+              const doneAt = evs.findIndex((x) => x && x.type === 'done');
+              if (doneAt < 0) continue;
+              const tails = evs.slice(doneAt + 1)
+                .filter((x) => x && (x.type === 'whale' || x.type === 'whale_stream_start' || x.type === 'whale_delta'));
+              for (const x of tails) {
+                if (x.type === 'whale') {
+                  if (whaleStreamFinish(x.text)) continue;
+                  const raw = String(x.text || '').slice(0, 24);
+                  const key = 'k' + Array.from(raw).map((c) => c.codePointAt(0).toString(36)).join('');
+                  if (document.querySelector('[data-whale-key="' + key + '"]')) continue;
+                  const wrap = addWhaleBubble(x.who, x.text);
+                  try { if (wrap) wrap.dataset.whaleKey = key; } catch {}
+                } else if (x.type === 'whale_stream_start') {
+                  whaleStreamStart(x.who);
+                } else if (x.type === 'whale_delta') {
+                  whaleStreamDelta(x.text);
+                }
+              }
+            }
+          })();
         }
       }
     }
@@ -8136,6 +8237,22 @@ async function createSessionEx(opts = {}) {
   localStorage.setItem(STORE_KEY, sessionId);
   paintSessNow();
   paintMemoryFlag(r.memory); // 新会话是空本子，刷新顶栏
+  /**
+   * 【新会话必须重读「小鱼/小鲸在不在」】
+   *
+   * 这两个开关是按会话的，可新会话这里以前压根没重读 ——
+   * 界面上留的还是上一个会话的样子。
+   * 主人在上个会话「关了鱼、开了鲸」，新建一个会话，
+   * 按钮依旧显示「鲸亮鱼灭」；可服务端判定新会话时鱼是默认开着的，
+   * 喊一声，回话的其实是小鱼。按钮和真相两回事，看着像闹鬼。
+   *
+   * 新会话的真相是：鱼默认在、鲸默认不在。
+   * 先按这个画，再向服务端确认真值 —— 别让人对着假灯按。
+   */
+  try { paintFish(true); } catch {}
+  try { paintWhale(false); } catch {}
+  try { if (typeof window.__reloadFishState === 'function') window.__reloadFishState(); } catch {}
+  try { if (typeof window.__reloadWhaleState === 'function') window.__reloadWhaleState(); } catch {}
   loadTopCfg(); // 新会话是默认档
   log.innerHTML = '';
   hideSending();

@@ -6,6 +6,9 @@ import { config } from './config.mjs';
 import { effectiveContextLimit } from './settings.mjs';
 // 纯净模式：压的时候不做摘要，旧对话直接丢（见 pure.mjs 文件头的理由）。
 import { pureModeOn } from './pure.mjs';
+// 自动档的「拿不准」地带交给小鲸判断（带冷却，不每轮花钱）
+import { autoRatioVerdict, contextWindowOf } from './rates.mjs';
+import { askWhaleCompress } from './whale-judge.mjs';
 
 /** 摘要消息的标记（只在本地用，不进 API 请求体）。 */
 const SUMMARY_FLAG = 'summary';
@@ -222,6 +225,8 @@ export async function compressHistory({
   // 保留为兼容老调用方：填多少压多少，所以触发线就是 limit（1.0），
   // 任何小于 1 的值都会让「填的数字」变成假的，直接忽略。
   triggerRatio = 1,
+  // 会话 id：自动档在「拿不准」地带要问小鲸，冷却按会话算
+  sessionId = '',
   // 尾部预算：优先用显式的 token 数，其次 config.contextKeepTokens，
   // 最后才回落到「limit 的几成」（老配置）。
   keepTokens,
@@ -244,7 +249,60 @@ export async function compressHistory({
    *   不是「到线了才压」。界面上那个「历史涨到多少才压」对它不适用。
    */
   const pureNow = pureModeOn();
-  const trigger = pureNow ? 0 : Math.floor(cap);
+  /**
+   * 触发线。这里跟以前不一样了 —— 以前是「涨到 cap 才压」，而 cap 是窗口的 70%，
+   * 遇到 100 万窗口的模型就是 70 万，历史涨到六七十万都不动，主人看到的就是
+   * 「一直压不了」。
+   *
+   * 现在自动档改走「自适应判断」：
+   *   - 历史占窗口很低（< 30%）→ 别压，宽裕着呢；
+   *   - 占 30%~45% 这段拿不准 → 问小鲸拍板（带冷却，不每轮花钱）；
+   *   - 占 45% 以上 → 直接压。
+   *
+   * 怎么区分「是不是自动档」：cap 恰好等于 autoLimitFor(model)（= 窗口 70%）时，
+   * 说明是自动档算出来的；显式填了数字的人要「填多少压多少」，不许自作聪明。
+   */
+  let trigger;
+  // 判定「压完还超没超」的基准线。不能直接用 trigger：临界带里小鲸说「压」时
+  // 会把 trigger 临时置 0 让路，拿它当基准则 after(十万多) > 0 恒成立，压得再好也会
+  // 被误标成 still-over-limit。所以另记一份真正的判定线。
+  let judgeLine;
+  if (pureNow) {
+    trigger = 0; // 纯净模式每轮都压
+  } else if (Math.abs(cap - Math.floor(contextWindowOf(model) * 0.7)) <= 1) {
+    // 自动档：按比例判断
+    const autoVerdict = autoRatioVerdict(model, before);
+    trigger = Math.floor(autoVerdict.window * 0.3); // 低于舒适线就一定不压
+    judgeLine = trigger; // 判定基准：舒适线（不受下面 trigger=0 影响）
+    if (autoVerdict.verdict === 'critical') {
+      // 拿不准 —— 问小鲸。冷却期内沿用上次结论，不重复花钱。
+      const judge = await askWhaleCompress({
+        sessionId,
+        model,
+        before,
+        window: autoVerdict.window,
+        ratio: autoVerdict.ratio,
+        signal,
+      });
+      if (!judge.decide) {
+        return {
+          compressed: false,
+          before,
+          after: before,
+          limit: cap,
+          trigger,
+          reason: `whale-says-hold(${judge.source})`,
+        };
+      }
+      trigger = 0; // 她说压 —— 直接压
+    } else if (autoVerdict.verdict === 'comfortable') {
+      trigger = Math.floor(cap); // 等价于「别压」
+    }
+    // verdict === 'act'：trigger 保持 30% 线，before 早已超过，会往下压
+  } else {
+    trigger = Math.floor(cap); // 显式填了数字：填多少压多少
+    judgeLine = trigger;
+  }
   if (before <= trigger) {
     return { compressed: false, before, after: before, limit: cap, trigger, reason: 'under-trigger' };
   }
@@ -430,7 +488,7 @@ export async function compressHistory({
   return {
     compressed: true, before, after, limit: cap, trigger,
     removed: old.length + dropped, kept: keep.length,
-    ...(after > trigger ? { reason: 'still-over-limit' } : {}),
+    ...(after > judgeLine ? { reason: 'still-over-limit' } : {}),
     ...(error ? { error } : {}),
   };
 }

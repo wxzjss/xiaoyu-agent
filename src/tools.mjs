@@ -555,7 +555,7 @@ export const tools = [
         const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
         return '- ' + s.id + '  「' + (s.title || '没名字') + '」  ' + (s.turns || 0) + ' 轮  ' + when + (cnt ? '  （她信箱里有 ' + cnt + ' 封没看的）' : '');
       });
-      return '还有这些会话（你自己是 ' + me + '）：' + nl + lines.join(nl);
+      return '还有这些会话（你自己是 ' + me + '）：' + '\n' + lines.join('\n');
     },
   },
   {
@@ -869,7 +869,9 @@ export const tools = [
   {
     name: 'ask_subagent',
     description:
-      '叫一个子智能体（叫「小鲸」）去替你查事情。它自己会翻文件、看目录、搜网页、抓网页，查完把结论交回来。适合：要读一堆文件才能答的问题、要上网翻好几页才能确认的事。它拿到的历史和你完全分开，所以不占你的上下文。默认只有查的权限，动不了主人的东西；要它动手得显式给 allowWrite。',
+      '叫一个子智能体（叫「小鲸」）去替你查事情。它自己会翻文件、看目录、搜网页、抓网页，查完把结论交回来。适合：要读一堆文件才能答的问题、要上网翻好几页才能确认的事。它拿到的历史和你完全分开，所以不占你的上下文。默认只有查的权限，动不了主人的东西；要它动手得显式给 allowWrite。'
+      + '\n\n【主人点名要她查的时候必须用这个】主人说「让小鲸去查」「叫小鲸看看」这种话，就走这个工具，别自己查完了再替她复述 —— 她得有自己的本子、自己的一份。'
+      + '你自己叫她说两句（不经过这个工具）时她是空手的、只带嘴，抱怨「没工具」是误会，别理也别替她解释。',
     parameters: {
       type: 'object',
       properties: {

@@ -1,4 +1,4 @@
-// Minimal web server: static UI + one SSE endpoint that runs the agent.
+﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync } from 'node:fs';
@@ -51,7 +51,7 @@ import {
   contextLimitInfo,
 } from './settings.mjs';
 // 自动档的水位线按模型窗口算，窗口表在 rates.mjs（跟价目表放一起）
-import { autoLimitFor } from './rates.mjs';
+import { autoLimitFor, AUTO_COMFORT_RATIO, AUTO_ACT_RATIO } from './rates.mjs';
 import {
   personaInfo,
   saveUserPersona,
@@ -387,13 +387,20 @@ function lastUserTextOf(session) {
  * 【她说什么都不写进我这一轮】她的话单独成一条（带 _whale），
  * 走 send 推出去，界面画成她自己的气泡。
  */
-async function whaleMaybeReply({ session, userText, send, sessionId }) {
+async function whaleMaybeReply({ session, userText, send, sessionId, live = null }) {
   const { runSubagent } = await import('./subagent.mjs');
 
   // 最近几轮当背景，让她知道现在说到哪儿了（不给她整个历史，省 token 也免得被旧话带跑）
   const recent = (session.messages || [])
-    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && !m.context && !m.summary && !m._whale)
-    .slice(-8)
+    // 只取「人和人真正说的话」：跳过工具调用、工具结果、上下文、摘要、她自己的话。
+    // 以前只过滤了 role，结果把小鱼这轮一大串 run_command 的干活记录也喂给她，
+    // 她照着上一轮的任务接着去查目录，查八轮没头绪就认输 —— 跟主人那句话毫无关系。
+    .filter((m) => m
+      && (m.role === 'user' || m.role === 'assistant')
+      && !m.context && !m.summary && !m._whale && !m._tale
+      && !(Array.isArray(m.tool_calls) && m.tool_calls.length)
+      && typeof m.content === 'string' && m.content.trim())
+    .slice(-6)
     .map((m) => (m.role === 'user' ? '主人：' : '小鱼：') + String(m.content ?? '').replace(/\s+/g, ' ').slice(0, 300))
     .join('\n');
 
@@ -431,7 +438,19 @@ async function whaleMaybeReply({ session, userText, send, sessionId }) {
       task,
       name: '小鲸',
       allowWrite: true,
-      maxRounds: 8,
+      /**
+       * 【接话只给嘴，不给工具】
+       *
+       * 以前这里是 allowWrite + 8 轮：她为了判断「要不要插一句」，
+       * 拿着全盘权限去翻文件查日志，8 轮花光还没得出答案，
+       * 最后 r.ok=false 被掐断 —— 主人眼前一个字都没有，
+       * 还以为气泡不显示（实际是她压根没说完）。
+       *
+       * 接话只要三两句口语。真要查东西，那是我（小鱼）的活儿，
+       * 或者主人明说「让小鲸去查」。轮到她张嘴时，就只用嘴。
+       */
+      noTools: true,
+      maxRounds: 1,
     });
   } finally {
     setFullAccess(false);
@@ -440,10 +459,39 @@ async function whaleMaybeReply({ session, userText, send, sessionId }) {
   logWhaleAction('结束一次：' + (r && r.ok ? '成' : '败'));
 
   // 空 = 她决定不说话，那就什么都别推（这是设计，不是出错）
+  // 她这一趟跑输了（r.ok 为假）：那句多半是「查了几轮没结论，先停在这儿」
+  // 这种残骸不该当她说的话推到主人眼前 —— 她没开口，就该安安静静。
+  if (!r || r.ok === false) return;
   const text = String(r?.text ?? '').trim();
   if (!text) return;
 
+  /**
+   * 【她的话怎么送到主人眼前】
+   *
+   * 自动接话是在 /api/chat 主流程末尾以 (async()=>{})() 不 await 方式启动的。
+   * 主流程很快 return res.end() 关掉连接；她要想几秒才说完。
+   * 她说完时 res.write 写的是已经关掉的连接 —— 但 send 会先把这条事件
+   * push 进这一轮的直播缓存（live.events）。前端 done 之后会再补拉一次 live
+   * （见 index.html 的 done 分支），那一次就能把这条 whale 事件画出来。
+   *
+   * 所以这里必须用 send：信箱是另一套口子，不落 live.events，前端补拉就看不见她。
+   */
+  /**
+   * 【两道口子，谁活着走谁】
+   *
+   * 一、send：我这一轮还没收工、SSE 还开着 → 顺着它当场到她眼前，最快。
+   * 二、live.events 亲手补一份：万一 send 那一刻连接已经没了（res 关了），
+   *    光靠 send 里那次 push 有可能写进的是「已经被下一轮换掉的」旧缓存 ——
+   *    所以这里再按我手上这一份 live 直接塞一遍，前端轮询一定捞得到。
+   *    同一句塞两次也安全：前端按 text+who 去重（hashWhale）。
+   */
   try { send({ type: 'whale', who: '小鲸', text }); } catch {}
+  try {
+    if (live && Array.isArray(live.events) && live.events.length < 20000) {
+      live.events.push({ type: 'whale', who: '小鲸', text });
+      live.done = live.done === true;
+    }
+  } catch {}
   try { logWhaleAction('说了一句：' + String(text).replace(/\s+/g, ' ').slice(0, 120)); } catch {}
 
   // 也挂进会话，重开窗口还画得出来
@@ -1877,6 +1925,11 @@ const server = createServer(async (req, res) => {
       const mod = await import('./llm.mjs');
       const model = mod.modelNameForSession(url.searchParams.get('sessionId') || '');
       const info = contextLimitInfo(model);
+      // 自适应判断的三条线：舒适线（占窗口 30%）、动手线（45%）。
+      // 前端拿它显示「大概到多少 token 会开始压」，主人心里有数。
+      const win = info.window || 0;
+      const comfortAt = Math.floor(win * AUTO_COMFORT_RATIO);
+      const actAt = Math.floor(win * AUTO_ACT_RATIO);
       return json(res, 200, {
         ok: true,
         model,
@@ -1884,6 +1937,8 @@ const server = createServer(async (req, res) => {
         mode: info.mode,
         limit: Number.isFinite(info.limit) ? info.limit : null,
         auto: autoLimitFor(model),
+        comfortAt,
+        actAt,
         raw: getSettings().contextLimit,
       });
     } catch (err) {
@@ -3054,6 +3109,30 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       try {
         res.write(`data: ${JSON.stringify({ type: 'fish_off' })}\n\n`);
       } catch {}
+      /**
+       * 【小鱼不在屋，不代表小鲸也听不见】
+       *
+       * 以前这里直接 res.end() 就 return 了，小鲸那句调用写在主流程末尾，
+       * 根本走不到 —— 主人把小鱼一关、只开小鲸，说半天她一句话没有。
+       *
+       * 现在在这儿就把主人这句给她，让她照常判断要不要接。
+       * 她那句话走她自己的通道推出去，不指望这条已经关掉的 SSE。
+       */
+      try {
+        const sessForWhale = getSession(sessionId);
+        const said = String(message || '').trim();
+        if (sessForWhale && said && whaleOn(sessionId)) {
+          const live0 = { sessionId, events: [], startedAt: Date.now(), done: false };
+          liveLogs.set(sessionId, live0);
+          const send0 = (ev) => {
+            try { if (live0.events.length < LIVE_MAX_EVENTS) live0.events.push(ev); } catch {}
+          };
+          whaleMaybeReply({ session: sessForWhale, userText: said, send: send0, sessionId, live: live0 })
+            .catch((e) => console.warn('[whale] 小鱼不在时她没接上：', String(e?.message ?? e)));
+        }
+      } catch (e) {
+        console.warn('[whale] 小鱼不在时叫她失败：', String(e?.message ?? e));
+      }
       try { res.end(); } catch {}
       return;
     }
@@ -3208,6 +3287,36 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     // 先占个位（ac 还没有，下面建好再换成真的）；收尾时按「对象」摘，不按 ac 比。
     const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId };
+    /**
+     * 【她跟我是并排的，不是排在我后面】
+     *
+     * 主人原话：「小鲸能在你说话的过程中插话吗？」——以前不能。她那一趟
+     * 是挂在这一轮**收尾之后**才启动的，而我一轮要查要改要跑命令，几十秒
+     * 到几分钟都常见。这段时间里主人喊她，她明明想说话，却得一直憋着；
+     * 主人屏幕上什么都没有，还以为她死了。
+     *
+     * 现在改成：主人这句话一进来（这一轮刚开跑、send 也已经建好），
+     * 就同时把她叫起来，和我是并排的两条线。她说一句就当场推出去 ——
+     * 若我这一轮还开着，这条 whale 事件顺着本轮 SSE 立刻到主人眼前；
+     * 若我的连接已经关了，它也已经进了 live.events，前端轮询会补画。
+     * 两条路都通，所以主人**随时**能看见她说话。
+     *
+     * 不 await：她要想几秒，绝不能把我这一轮拖慢。
+     * 她不想说就一个字都不回（提示里写死了），不会每句都抢话。
+     */
+    if (whaleOn(sessionId)) {
+      const userTextNow = lastUserTextOf(session);
+      if (userTextNow) {
+        (async () => {
+          try {
+            await whaleMaybeReply({ session, userText: userTextNow, send, sessionId, live });
+          } catch (e) {
+            console.warn('[whale] 她这次没接上：', String(e?.message ?? e));
+          }
+        })();
+      }
+    }
+
     // 这一轮已经说出来的字，实时挂在这儿。
     // 进程级兜底（installGuards 的 onFatal）在退出前会读这个字段补写最后一份草稿，
     // 免得「正好在两次自动写盘之间崩溃」时丢掉最后一小段。
@@ -3524,29 +3633,51 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         dbg((await import('node:path')).join(dir, 'usage-debug.log'),
           new Date().toISOString() + ' usage=' + JSON.stringify(usage) + ' userMsgRef=' + (userMsgRef ? 'YES' : 'NO') + '\n');
       } catch {}
-      /**
-       * 主人说完一句，通知小鲸一声，让她自己判断要不要接。
-       *
-       * 为什么不 await：她可能要想几秒，不能把主人这一轮拖住。
-       * 她说完往 send 推一条 whale 事件，界面自然就出她的气泡。
-       *
-       * 为什么她「可能不说话」：提示里写死了「不想接就一个字都别回」，
-       * 回了空的就是不接。这样她才不会每句都抢。
-       */
-      if (whaleOn(sessionId)) {
-        (async () => {
-          try {
-            const userText = lastUserTextOf(session);
-            if (!userText) return;
-            await whaleMaybeReply({ session, userText, send, sessionId });
-          } catch (e) {
-            console.warn('[whale] 她这次没接上：', String(e?.message ?? e));
-          }
-        })();
-      }
-
-      // 把这一轮模型说的话接回正式历史，再算「用户那句话」的下标
+            // 把这一轮模型说的话接回正式历史，再算「用户那句话」的下标
       commitWireBack();
+
+      /**
+       * 【每轮自动往本子记一笔】
+       *
+       * 主人原话：「退出后我再进你后面记忆没了，小鲸的记忆不应该是独立于会话之外吗」
+       *
+       * 查出来的病根：本子（.state/memory/<id>.md）以前只有两个地方会写 ——
+       *   ① 主人手动点「记一条」 ② 发文件时顺手记一句
+       * 正常聊完一轮，一个字都不落盘。所以重开页面，后面聊的全没了，
+       * 本子里只剩一条「发了文件：xxx.png」—— 主人看到的就是「你没记忆」。
+       *
+       * 小鲸为什么记得？因为她的本子是她自己主动拿笔写的，不靠程序。
+       * 我这支笔，程序从来没递到我手上。这里补上。
+       *
+       * 【为什么不用模型来写摘要】
+       * 每轮多调一次模型，又慢又花钱，还可能在断网时整个卡住。
+       * 就记「主人说了什么 + 我回了什么」的头一句，纯文字、当场落盘、不花钱。
+       * 300 字上限，appendDigest 里自动截；满了会把最旧的挪进归档段，一条不丢。
+       */
+      try {
+        const said = lastUserTextOf(session);
+        let mine = '';
+        for (let k = history.length - 1; k >= 0; k--) {
+          const m = history[k];
+          if (m && m.role === 'assistant' && !m.context && !m.summary && !m._whale && !m._tale
+            && typeof m.content === 'string' && m.content.trim()) {
+            mine = m.content.trim();
+            break;
+          }
+        }
+        if (said) {
+          const clip = (s, n) => {
+            const one = String(s ?? '').replace(/\s+/g, ' ').trim();
+            return one.length > n ? one.slice(0, n) + '…' : one;
+          };
+          const line = mine
+            ? '主人说「' + clip(said, 100) + '」，我回了「' + clip(mine, 160) + '」'
+            : '主人说「' + clip(said, 200) + '」';
+          appendDigest(sessionId, line);
+        }
+      } catch (e) {
+        console.warn('[memory] 这一轮没记进本子：', String(e?.message ?? e));
+      }
       /**
        * 她的思考过程（reasoning）存到盘上。
        *

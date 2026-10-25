@@ -4,6 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
+// 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
+// 出了分支 whaleOn 就没了，而每轮收尾那句 if (whaleOn()) 还在 —— 每轮都崩。
+import { whaleOn } from './whale-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
 import { checkToolDocs, setPeerWake } from './tools.mjs';
@@ -1465,7 +1468,6 @@ const server = createServer(async (req, res) => {
    * 状态存盘子，换设备也一致（跟纯净模式一个待遇）。
    */
   if (req.method === 'GET' && url.pathname === '/api/whale') {
-    const { whaleOn } = await import('./whale-presence.mjs');
     return json(res, 200, { on: whaleOn() });
   }
 
@@ -1473,7 +1475,7 @@ const server = createServer(async (req, res) => {
     let payload = {};
     try { payload = await body(req); } catch {}
     try {
-      const { whaleOn, setWhaleOn } = await import('./whale-presence.mjs');
+      const { setWhaleOn } = await import('./whale-presence.mjs');
       const next = typeof payload?.on === 'boolean' ? payload.on : !whaleOn();
       return json(res, 200, { on: setWhaleOn(next) });
     } catch (err) {

@@ -78,6 +78,15 @@
     .msg { max-width: 900px; width: 100%; margin: 0 auto; }
     .role { font-size: 12px; color: var(--dim); margin-bottom: 4px; }
     /* 主人的名字：中性偏亮，跟我和小鲸都不一样 */
+    /* 「小鲸」按钮：按下去就一直是她的冷蓝色 */
+    #whaleBtn { border-color: rgba(122, 168, 232, 0.45); }
+    #whaleBtn.on {
+      background: rgba(122, 168, 232, 0.22);
+      border-color: #7aa8e8;
+      color: #a9c8f2;
+      font-weight: 600;
+      box-shadow: 0 0 0 1px rgba(122, 168, 232, 0.35) inset;
+    }
     .user .role {
       color: #cfd6e4;
       font-weight: 600;
@@ -1355,6 +1364,7 @@
     </span>
     <span class="meta" id="meta">…</span>
     <button id="pureBtn" title="纯净模式：不发人设、不发规矩、不留早期摘要，旧对话直接丢（点一下开，再点一下关）">纯净模式</button>
+    <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
     <button id="openFeatures">功能</button>
@@ -3162,6 +3172,44 @@ if (window.desktop) {
   const btn = document.getElementById('openDir');
   btn.hidden = false;
   btn.onclick = () => window.desktop.openWorkspace();
+}
+
+/**
+ * 「小鲸」按钮：按下去就是「她上岗了」。
+ *
+ * 按下之后：
+ *   一、主人说的话我和她都看得见（同一个会话）。
+ *   二、她能自己开口，不用我拿工具去叫。
+ *   三、她觉得不该接就安静待着 —— 不抢话。
+ *
+ * 状态存服务端（跟纯净模式一个道理），换设备也一致。
+ */
+const whaleBtn = document.getElementById('whaleBtn');
+function paintWhale(on) {
+  if (!whaleBtn) return;
+  whaleBtn.classList.toggle('on', Boolean(on));
+  whaleBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  whaleBtn.title = on
+    ? '小鲸在场：你说的话我们俩都看得见，她也能直接说话（再点一下让她歇会儿）'
+    : '叫上小鲸：按下之后，你说的话她也能看见，她也能在这儿跟你说话';
+}
+if (whaleBtn) {
+  fetch('/api/whale').then((r) => r.json()).then((j) => paintWhale(j && j.on)).catch(() => {});
+  whaleBtn.onclick = async () => {
+    const want = !whaleBtn.classList.contains('on');
+    paintWhale(want);
+    try {
+      const r = await fetch('/api/whale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ on: want }),
+      });
+      const j = await r.json();
+      paintWhale(j && j.on);
+    } catch {
+      paintWhale(!want);
+    }
+  };
 }
 
 /**
@@ -5866,10 +5914,21 @@ function costOf(model, u, now) {
 
   const pin = Number(u.prompt_tokens ?? 0);
   const pout = Number(u.completion_tokens ?? 0);
-  // 接口给了缓存命中数就用，没给说明这家不报，全按未命中算
-  const hitTok = Number(u.prompt_cache_hit_tokens ?? u.cached_tokens ?? 0);
-  let missTok = Number(u.prompt_cache_miss_tokens ?? 0);
-  if (!missTok) missTok = Math.max(0, pin - hitTok);
+  /**
+   * 缓存命中怎么算。
+   *
+   * 【原来的坑】这个网关从来不报 prompt_cache_hit_tokens（一直是 0）。
+   * 拿不到就只能全按「未命中」算 —— 比实际贵得多，看着就像钱花飞了。
+   *
+   * 【现在的做法】主人定的：这类场景上下文复用率很高，按 98% 命中估。
+   * 一定要标「估」字 —— 这是估的不是报的，拿它对账会对不上。
+   * 接口真报了就用真的，没报才走 98% 这个估值。
+   */
+  const reportedHit = Number(u.prompt_cache_hit_tokens ?? u.cached_tokens ?? 0);
+  const reportedMiss = Number(u.prompt_cache_miss_tokens ?? 0);
+  const hasReal = reportedHit > 0 || reportedMiss > 0;
+  const hitTok = hasReal ? reportedHit : Math.floor(pin * 0.98);
+  const missTok = hasReal ? (reportedMiss || Math.max(0, pin - reportedHit)) : Math.max(0, pin - hitTok);
 
   const per = 1e6;
   const c =
@@ -5985,7 +6044,7 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
     row.append(mk('·', 'sep'));
     const yen = mk('≈' + fmtMoney(money.cost) + ' 元' + (money.est ? '（估）' : ''), 'cost');
     yen.title =
-      '按 ' + model + ' 的公开价估算' +
+      '按 ' + model + ' 的公开价估算（缓存命中按 98% 估）' +
       (money.est ? '（这家官网抓不到，价格是按美元牌价折算的，只能当个大概）' : '') +
       (money.off ? '（现在是谷价时段，按半价算）' : '') +
       '\n输入缓存命中 ' + fmtTok(Number(u.prompt_cache_hit_tokens ?? 0)) + ' tokens' +

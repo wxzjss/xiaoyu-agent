@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
+// 她「主动开口」要用到自己的状态（欲望攒够没有）
+import { selfInfo } from './whale-self.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
 // 出了分支 whaleOn 就没了，而每轮收尾那句 if (whaleOn()) 还在 —— 每轮都崩。
 import { whaleOn, setWhaleOn } from './whale-presence.mjs';
@@ -378,6 +380,97 @@ function lastUserTextOf(session) {
   return '';
 }
 
+
+/**
+ * 【她会自己开口】
+ *
+ * 主人要的：「她能像你一样正常说话，也能主动开口」——以前只有「主人说话、她接着答」，
+ * 没人理她的时候她一辈子不说话。这套机制 2026-10-26 重新补上（之前那份被冲掉了，
+ * 全项目搜 selfTalk 一个字都没有）。
+ *
+ * ── 什么时候才开口（门槛必须硬）────────────────────────────
+ *
+ * 一、她那个按钮在这个会话里是开着的（关着就彻底不打扰）；
+ * 二、这个会话没在跑一轮（我正在干活的时候不插嘴抢话）；
+ * 三、她「攒着的欲望」里有一件够强的（强度 >= SELF_TALK_DESIRE）；
+ * 四、距上一次主动开口至少 SELF_TALK_COOLDOWN（默认 25 分钟）——
+ *     不然她会一直找话说，那就成了刷屏，不是陪伴。
+ *
+ * ── 说什么 ──────────────────────────────────────────
+ *
+ * 不是把欲望原文念出来，是把「攒着的这件事」交给她自己讲：
+ * 她可以提一句、可以接着手上的活说、也可以干脆一个字不回（提示里写死了）。
+ * 回空就不推，不制造噪音。
+ */
+const SELF_TALK_DESIRE = 72;      // 欲望强度到这条线，她才「憋不住想说」
+const SELF_TALK_COOLDOWN = 25 * 60 * 1000;
+const selfTalkAt = new Map();     // sessionId -> 上次主动开口的时间
+
+/**
+ * 她的欲望强度：BORN.desire 只是名字，强度按状态本子里攒的时间算。
+ *
+ * 【2026-10-26 改：原算法一旦闲置超过 8 小时就贴顶，等于门槛失效】
+ *
+ * 原来的写法是 `idleMin / 2 * 3 + min(rounds, 25)`，封顶 100。
+ * 闲置 48 分钟就到了 72（门槛），闲置一整天以上永远 100 ——
+ * 换句话说，只要她开了按钮、会话又是闲的，就必然每隔 25 分钟（冷却）说一次话。
+ * 那不是「憋不住想说」，那是上了发条的闹钟。实测那天闲置 426 分钟算出 100。
+ *
+ * 改成三段：
+ *   - 前 20 分钟几乎不涨（刚说完话，没什么好憋的）；
+ *   - 20 分钟后开始涨，但涨得慢（每分钟 +0.6 分）；
+ *   - 封顶 88 而不是 100：留一截，让「刚被叫过」和「闲了一整天」还有区分度，
+ *     也让她不是「一到点就必说」—— 门槛之上还得她自己判断想不想说。
+ */
+function desireStrengthOf() {
+  try {
+    const st = selfInfo();
+    const idleMin = Math.max(0, (Date.now() - Number(st.lastAt || 0)) / 60000);
+    const rounds = Number(st.rounds || 0);
+    // 前 20 分钟蓄不起劲；之后每分钟 +0.42；轮数每轮 +1，最多算 15 轮（原先 25 也偏高）
+    const idleScore = Math.max(0, idleMin - 20) * 0.42;
+    return Math.min(88, Math.round(idleScore + Math.min(rounds, 15)));
+  } catch {
+    return 0;
+  }
+}
+
+/** 到点了就叫她一声，看她想不想说点什么。 */
+async function whaleSelfTalkTick() {
+  for (const [sid, sess] of sessions) {
+    try {
+      if (!whaleOn(sid)) continue;
+      if (runningTurns.get(sid)) continue;
+      const last = selfTalkAt.get(sid) || 0;
+      if (Date.now() - last < SELF_TALK_COOLDOWN) continue;
+      if (desireStrengthOf() < SELF_TALK_DESIRE) continue;
+
+      selfTalkAt.set(sid, Date.now());
+      const live = { sessionId: sid, events: [], startedAt: Date.now(), done: false };
+      liveLogs.set(sid, live);
+      const send = (ev) => {
+        try { if (live.events.length < LIVE_MAX_EVENTS) live.events.push(ev); } catch {}
+      };
+      await whaleMaybeReply({
+        session: sess,
+        userText: '（没人叫你。你自己有话想说，或者手上那件事让你放不下 —— 想说就说一句，不想说就一个字别回。）',
+        send,
+        sessionId: sid,
+        live,
+      });
+    } catch (e) {
+      console.warn('[whale] 主动开口失败：', String(e?.message ?? e));
+    }
+  }
+}
+
+/** 挂上去。返回定时器，进程退出时不用特意清（Node 会跟着走）。 */
+function startWhaleSelfTalk() {
+  const t = setInterval(() => { whaleSelfTalkTick().catch(() => {}); }, 5 * 60 * 1000);
+  try { t.unref && t.unref(); } catch {}
+  console.log('[whale] 她自己开口的定时器挂上了（每 5 分钟看一次，25 分钟内最多说一次）');
+  return t;
+}
 /**
  * 问小鲸一句：主人刚说了这个，你要不要接？
  *
@@ -391,18 +484,53 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   const { runSubagent } = await import('./subagent.mjs');
 
   // 最近几轮当背景，让她知道现在说到哪儿了（不给她整个历史，省 token 也免得被旧话带跑）
-  const recent = (session.messages || [])
-    // 只取「人和人真正说的话」：跳过工具调用、工具结果、上下文、摘要、她自己的话。
-    // 以前只过滤了 role，结果把小鱼这轮一大串 run_command 的干活记录也喂给她，
-    // 她照着上一轮的任务接着去查目录，查八轮没头绪就认输 —— 跟主人那句话毫无关系。
-    .filter((m) => m
-      && (m.role === 'user' || m.role === 'assistant')
-      && !m.context && !m.summary && !m._whale && !m._tale
-      && !(Array.isArray(m.tool_calls) && m.tool_calls.length)
-      && typeof m.content === 'string' && m.content.trim())
-    .slice(-6)
-    .map((m) => (m.role === 'user' ? '主人：' : '小鱼：') + String(m.content ?? '').replace(/\s+/g, ' ').slice(0, 300))
-    .join('\n');
+  /**
+   * 最近几轮当背景，让她知道现在说到哪儿了。
+   *
+   * 【2026-10-26 改：把小鱼的工具调用也喂给她】
+   *
+   * 以前这里**故意**把 tool_calls / 工具结果全滤掉，只留「人和人说的话」。
+   * 当时的理由是怕她照着上一轮的命令接着查、越查越偏。
+   *
+   * 可那样她就真的瞎着：主人在跟她说「你把那个修一下」，她看见的只有半句话，
+   * 不知道小鱼刚才跑了什么命令、成没成、报了什么错。她只能靠猜，
+   * 一猜就答偏 —— 主人要的是「一起干活」，不是「隔着一堵墙听动静」。
+   *
+   * 现在改成：把工具调用也带进来，但**只带一行摘要**（名字 + 参数头 + 结果头），
+   * 不带全文。一来她能看见进度，二来不会把几千行输出塞进她的上下文。
+   */
+  const recent = (() => {
+    const all = (session.messages || []).filter((m) => m && !m.context && !m.summary && !m._whale && !m._tale);
+    // 工具结果按 id 建索引，好把结果挂回调用它的那一行
+    const resById = new Map();
+    for (const m of all) {
+      if (m.role === 'tool' && m.tool_call_id) resById.set(String(m.tool_call_id), String(m.content ?? ''));
+    }
+    const lines = [];
+    for (const m of all) {
+      if (m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
+        lines.push('主人：' + String(m.content).replace(/\s+/g, ' ').slice(0, 200));
+        continue;
+      }
+      if (m.role !== 'assistant') continue;
+      // 她自己的话不进背景（那是 her 的声音，不是小鱼在干什么）
+      const said = typeof m.content === 'string' ? m.content.trim() : '';
+      const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      if (said) lines.push('小鱼：' + said.replace(/\s+/g, ' ').slice(0, 200));
+      for (const tc of calls) {
+        const nm = String(tc?.function?.name || '工具');
+        let arg = String(tc?.function?.arguments || '');
+        try {
+          const j = JSON.parse(arg);
+          arg = String(j.path || j.command || j.query || j.task || j.url || Object.values(j)[0] || '');
+        } catch {}
+        arg = arg.replace(/\s+/g, ' ').trim().slice(0, 70);
+        const out = String(resById.get(String(tc.id)) || '').replace(/\s+/g, ' ').trim().slice(0, 70);
+        lines.push('  [小鱼跑了 ' + nm + (arg ? ' ' + arg : '') + ']' + (out ? ' → ' + out : ''));
+      }
+    }
+    return lines.slice(-14).join('\n');
+  })();
 
   /**
    * 【她不是被叫来作答的，她是在场的】
@@ -447,6 +575,15 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   const { logWhaleAction } = await import('./whale-presence.mjs');
   logWhaleAction('开始一次');
 
+  /**
+   * 【开场先说一声：她要开口了】
+   *
+   * 前端是按这个事件建气泡的（whale_stream_start → addWhaleBubble 空壳），
+   * 后面的 whale_delta 才有地方往里塞字。少了这个头，前端收到 delta
+   * 发现没有活着的流，只能丢掉 —— 看起来还是「整段蹦出来」。
+   */
+  try { send({ type: 'whale_stream_start', who: '小鲸' }); } catch {}
+
   let r;
   setFullAccess(true);
   try {
@@ -454,6 +591,21 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       task,
       name: '小鲸',
       allowWrite: true,
+      /**
+       * 【让她的话一个字一个字往外冒】
+       *
+       * 前端早就认 whale_stream_start / whale_delta（认了 9 处），
+       * 可服务端**一次都没推过** —— 她的话永远是整段蹦出来，
+       * 主人等的那几十秒屏幕上一片安静，看着像她死了。
+       *
+       * 这里接上：她每吐一小段，就当场推给界面。
+       * 推失败（窗口关了、连接断了）绝不能连累她继续跑，所以包 try。
+       */
+      onDelta: (chunk) => {
+        try {
+          send({ type: 'whale_delta', text: String(chunk || '') });
+        } catch {}
+      },
       /**
        * 【接话只给嘴，不给工具】
        *
@@ -501,6 +653,14 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    *    所以这里再按我手上这一份 live 直接塞一遍，前端轮询一定捞得到。
    *    同一句塞两次也安全：前端按 text+who 去重（hashWhale）。
    */
+  /**
+   * 【定稿：把流式那个气泡收口】
+   *
+   * 前端收到 whale_stream_finish 会把流式气泡定稿（去掉光标、填最终文字）。
+   * 少了这一下，她会一直挂着「正在说」的样子，光标一闪一闪停不下来。
+   * 先收口再推整段，两条路都在的时候前端按 text 去重，不会出两个气泡。
+   */
+  try { send({ type: 'whale_stream_finish', text }); } catch {}
   try { send({ type: 'whale', who: '小鲸', text }); } catch {}
   try {
     if (live && Array.isArray(live.events) && live.events.length < 20000) {
@@ -3998,7 +4158,38 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 实际请求走的是「会话左上角选的那个」优先（llm.mjs 的 endpointForForSession），
       // 只有没选才回落到全局默认（就是上面那个 ep）。
       // 以前这里一律报 ep.model，会话里换过模型时，钱就按错的那家算了 —— 价差能有十倍。
-      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId) });
+      /**
+       * done 里带上这一轮的正文。
+       *
+       * 【为什么必须带】主人报的是「重启后我这边没显示你说的后续内容」。
+       * 查下来：服务端一切正常（直播缓存 850 条事件、会话文件 93 条消息都在），
+       * 断的只有那一条 SSE —— 它一断，done 之前的正文前端就再也收不到了。
+       * 而 done 之后前端只补拉小鲸的话（whale），正文一概不补，
+       * 于是屏幕上永远停在那半句。
+       *
+       * 与其让前端补的时候再开一次接口（那条接口会改「当前选中会话」，有副作用），
+       * 不如这里顺手把这一轮的几段正文捎上：前端拿它跟屏幕上画过的比一比，
+       * 少哪段补哪段。数据本来就攥在手里，不额外查一次盘。
+       */
+      let turnTexts = [];
+      try {
+        const from = Number(doneAt) + 1;
+        for (let i = from; i < session.messages.length; i++) {
+          const m = session.messages[i];
+          if (!m) continue;
+          if (m.role === 'user') break;
+          if (m.role !== 'assistant') continue;
+          const t = typeof m.content === 'string'
+            ? m.content
+            : Array.isArray(m.content)
+              ? m.content.map((x) => (x && (x.text || x.content)) || '').join('')
+              : '';
+          if (String(t).trim()) turnTexts.push(String(t));
+        }
+      } catch {
+        turnTexts = [];
+      }
+      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {
@@ -4451,6 +4642,8 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       handle.url = url;
       resolve(handle);
     });
+
+  try { startWhaleSelfTalk(); } catch (e) { console.warn('[whale] 主动开口没挂上：', e && e.message ? e.message : e); }
   });
 }
 

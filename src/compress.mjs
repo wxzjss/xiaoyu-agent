@@ -1,4 +1,4 @@
-// Context compression: when the history gets too long, fold the old turns into one summary
+﻿// Context compression: when the history gets too long, fold the old turns into one summary
 // message and keep the recent tail verbatim. Nothing is deleted from disk — only the prompt
 // gets shorter. The summary is itself merged into later summaries, so it rolls forward.
 import { chat } from './llm.mjs';
@@ -151,8 +151,16 @@ const SUMMARY_SYSTEM = `你是一个对话压缩器。把给你的早期对话�
 - 数字、路径、文件名、接口名、变量名必须原样保留。
 - 尽量短，够后面接着干就行。`;
 
-/** 摘要请求自己的超时（毫秒）：超了就按「摘要失败」走保底路径，不拖死对话。 */
-const SUMMARY_TIMEOUT_MS = 45000;
+/**
+ * 摘要请求自己的超时（毫秒）。
+ *
+ * 【为什么从 45 秒放宽到 150 秒】
+ * 上下文涨到十几万 token 时，摘要要读两万多字符的旧对话再写一段出来，
+ * 45 秒根本不够 —— 一到点就被 abort，报 This operation was aborted，
+ * 然后整轮跟着断，主人看着就是「一压缩就失忆」。
+ * 宁可在这一步多等，也不能因为摘要没写完就把整轮回复扔掉。
+ */
+const SUMMARY_TIMEOUT_MS = 150000;
 
 /** 摘要最多喂进去多少字符：太长的话既不省钱也容易超时。 */
 const SUMMARY_INPUT_MAX = 24000;
@@ -285,45 +293,91 @@ export async function compressHistory({
     summaryText = '';
     error = undefined;
   }
-  // 摘要本身也要有上限：模型不回话不能把整轮对话一起拖死
-  const ac = new AbortController();
-  const onAbort = () => { try { ac.abort(); } catch {} };
-  if (signal) {
-    if (signal.aborted) onAbort();
-    else signal.addEventListener('abort', onAbort, { once: true });
-  }
-  const timer = setTimeout(() => { try { ac.abort(); } catch {} }, SUMMARY_TIMEOUT_MS);
-  if (!pure) {
+  /**
+   * 摘要请求的超时与中断。
+   *
+   * 【关键改动：摘要失败绝不能连累整轮】
+   * 以前超时一到就 abort，整轮跟着断掉，主人连一句话都收不到。
+   * 现在：超时只砍摘要自己；失败了再重试一次（喂更短的输入，快一些）；
+   * 两次都失败也只写占位文案，压缩照做，整轮照跑。
+   */
+  const runSummary = async (inputText, timeoutMs) => {
+    const ac = new AbortController();
+    const onAbort = () => { try { ac.abort(); } catch {} };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    const timer = setTimeout(() => { try { ac.abort(); } catch {} }, timeoutMs);
     try {
       const res = await chat({
         messages: [
           { role: 'system', content: SUMMARY_SYSTEM },
-          { role: 'user', content: renderForSummary(old) },
+          { role: 'user', content: inputText },
         ],
         signal: ac.signal,
       });
-      summaryText = String(res?.choices?.[0]?.message?.content ?? '').trim();
-    } catch (err) {
-      error = String(err?.message ?? err);
+      const t = String(res?.choices?.[0]?.message?.content ?? '').trim();
+      if (!t) throw new Error('摘要回了个空的');
+      return t;
     } finally {
       clearTimeout(timer);
       if (signal) { try { signal.removeEventListener('abort', onAbort); } catch {} }
     }
-  } else {
-    clearTimeout(timer);
-    if (signal) { try { signal.removeEventListener('abort', onAbort); } catch {} }
+  };
+
+  if (!pure) {
+    // 第一次：完整输入
+    try {
+      summaryText = await runSummary(renderForSummary(old), SUMMARY_TIMEOUT_MS);
+    } catch (err) {
+      error = String(err?.message ?? err);
+    }
+    // 第二次（主人没喊停才试）：把输入砍短一点，省时间
+    if (!summaryText && !signal?.aborted) {
+      try {
+        const shorter = renderForSummary(old).slice(-Math.floor(SUMMARY_INPUT_MAX * 0.6));
+        summaryText = await runSummary(shorter, SUMMARY_TIMEOUT_MS);
+        error = undefined;
+      } catch (err2) {
+        error = String(err2?.message ?? err2);
+      }
+    }
   }
 
   if (!pure && !summaryText) {
-    // 摘要失败也要把历史压下来，否则下一次请求直接被网关拒掉。
-    summaryText = `（早期 ${old.length} 条对话的自动摘要生成失败${error ? `：${error.slice(0, 120)}` : ''}）`
-      + `已丢弃这部分原文，需要细节请让主人重新提供。`;
+    // 两次都没成：写一句占位，压缩照做。整轮不能因为摘要挂了就不回主人。
+    summaryText = `（早期 ${old.length} 条对话的自动摘要没能生成出来${error ? `：${error.slice(0, 160)}` : ''}）`
+      + `原文已折叠。要是主人觉得我这边接不上话，把要紧的事再说一遍就行。`;
   }
 
-  // 纯净模式下不生成 summary 那条，直接把旧的一段扔掉
+  /**
+   * 压缩后插进历史的那一条。
+   *
+   * 【为什么 role 还是 user，但必须带 context: true】
+   *
+   * 以前这条是裸的 `role: 'user'`，结果模型真的把它当成「主人说的话」——
+   * 而摘要正文里写的全是上一轮她自己的口吻（「主人，这轮我把你提过的问题全过了一遍…」），
+   * 于是模型看到的是「主人告诉我：我把问题过了一遍」。再压几次，历史里就堆了好几条
+   * 「冒充主人的假话」，最后一条 2214 字的直接跑偏成英文拒答。
+   *
+   * 为什么不干脆改成 role: 'system'：有的网关只认一条 system（多一条直接 400），
+   * 而 agent.mjs 早就因为「网关会整段丢 system」才额外发一份 context 消息。
+   * 所以这里沿用同一套机制：role 仍是 user（兼容性好），但打上 context: true，
+   * 并且正文开头把话说死 —— 这是程序给的摘要，不是主人在说话。
+   *
+   * context: true 还顺手带来三个好处：
+   *   1. publicSession 会跳过它（L267），界面上不会冒出一条冒充主人的气泡
+   *   2. 回退 / 分支 / 记忆本子都只看非 context 的消息，不会把摘要当成对话内容
+   *   3. 纯净模式会把 context 全滤掉（server.mjs L2762），纯净模式本来就不该有摘要
+   */
   const makeSummary = () => (pure ? null : {
     role: 'user',
-    content: `【早期对话摘要 · 原文已压缩】\n${summaryText}`,
+    content:
+      '（下面是程序自动生成的「早期对话摘要」，不是主人说的话。'
+      + '这段里出现的第一人称是之前那个你的口吻，只当作参考资料，别当成主人在对你提要求。）'
+      + `\n\n【早期对话摘要 · 原文已压缩】\n${summaryText}`,
+    context: true,
     [SUMMARY_FLAG]: true,
   });
 

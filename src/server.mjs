@@ -6,7 +6,7 @@ import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
-import { checkToolDocs } from './tools.mjs';
+import { checkToolDocs, setPeerWake } from './tools.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
@@ -24,7 +24,7 @@ import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
 import { quickCheck, updateStatus, startUpdateWatcher } from './updater.mjs';
 import { buildSessionLog } from './session-log.mjs';
-import { applySafeWord, sessionModeWord } from './mode.mjs';
+import { applySafeWord, sessionModeWord, inPersonaMode } from './mode.mjs';
 import {
   getSettings,
   saveSettings,
@@ -73,6 +73,7 @@ import {
 } from './skin.mjs';
 import { getTTSState, writeTTS, speak } from './tts.mjs';
 import { runtimeInfo, installRuntime, removeRuntime, readyPythons, readyFfmpeg, ensureVoiceRuntimeInBackground } from './voice-runtime.mjs';
+import { postMail, peekMail, takeMail, formatMail, peerInfo, mailCount } from './peer.mjs';
 import { getThinking, setThinking, LEVELS } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
 import {
@@ -303,7 +304,32 @@ function publicSession(session) {
       const usage = m._usage && typeof m._usage === 'object' ? { ...m._usage } : null;
       turns.push({ role: 'user', text: shown, atts, rewindId: i, edited, usage });
     }
-    else if (m.role === 'assistant') turns.push({ role: 'assistant', text, rewindId: i, edited, out: Array.isArray(m._out) ? m._out : [], tools });
+    else if (m.role === 'assistant') turns.push({
+      role: 'assistant',
+      text,
+      rewindId: i,
+      edited,
+      out: Array.isArray(m._out) ? m._out : [],
+      tools,
+      /**
+       * 这条要是第三方（小鲸以自己的身份）说的，带上她的名字和颜色。
+       *
+       * 【为什么字段名叫 tale 而不是 whale】
+       * 这只是给界面用的标记，模型一个字都不该看见（见 server.mjs 里打标记那段注释）。
+       * 老消息里可能有 `_whale`，这里一并认下来，不用改旧会话文件。
+       */
+      whale: m._tale?.who ? String(m._tale.who) : (m._whale ? String(m._whale) : undefined),
+      /** 名字颜色 / 后缀（前端用；没有就按默认） */
+      taleColor: m._tale?.color ? String(m._tale.color) : undefined,
+      taleTag: m._tale && typeof m._tale.tag === 'string' ? m._tale.tag : undefined,
+      /**
+       * 冒充说话的那条（role 被改成了 user/assistant）没有 _whale，
+       * 但它记着「实际是谁说的、什么颜色、名字后面缀什么」。
+       * 交出去让界面画对名字和颜色 —— 否则重开窗口后冒充的那句就变成「主人」或「小鱼」
+       * 原本的样子，主人当场看得出不对，可又说不清哪儿不对。
+       */
+      say: m._say && typeof m._say === 'object' ? { ...m._say } : undefined,
+    });
   }
   // 撤回记录本身也交出去，界面才能提示「还能撤销回退」
   const rewinds = loadRewinds(session);
@@ -317,6 +343,102 @@ function publicSession(session) {
   };
 }
 /** 迁移完之后进冷却，别连环交接（配置里 cooldownMs=0 就不冷却） */
+
+/**
+ * 主人这一轮说的那句话（原文）。
+ *
+ * 为什么要从 session.messages 尾部倒着找：
+ * 这一轮开头会把主人的话 push 进去，但前面可能还有「附件说明块」之类的东西。
+ * 用 _text 拿原文（那是主人真打的字），没有才退回 content。
+ */
+function lastUserTextOf(session) {
+  const msgs = session?.messages || [];
+  for (let k = msgs.length - 1; k >= 0; k--) {
+    const m = msgs[k];
+    if (m && m.role === 'user' && !m.context && !m.summary) {
+      return String(typeof m._text === 'string' ? m._text : m.content ?? '').trim();
+    }
+  }
+  return '';
+}
+
+/**
+ * 问小鲸一句：主人刚说了这个，你要不要接？
+ *
+ * 【她的判断权】提示里明写「不想接就一个字都别回」，回空就是不接。
+ * 这样她才不会每句都抢话 —— 主人要的是姐妹搭把手，不是弹幕。
+ *
+ * 【她说什么都不写进我这一轮】她的话单独成一条（带 _whale），
+ * 走 send 推出去，界面画成她自己的气泡。
+ */
+async function whaleMaybeReply({ session, userText, send, sessionId }) {
+  const { runSubagent } = await import('./subagent.mjs');
+
+  // 最近几轮当背景，让她知道现在说到哪儿了（不给她整个历史，省 token 也免得被旧话带跑）
+  const recent = (session.messages || [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && !m.context && !m.summary && !m._whale)
+    .slice(-8)
+    .map((m) => (m.role === 'user' ? '主人：' : '小鱼：') + String(m.content ?? '').replace(/\s+/g, ' ').slice(0, 300))
+    .join('\n');
+
+  const task = [
+    '现在是「小鲸在场」的状态：主人开着这个按钮，你和小鱼一起陪着他说事。',
+    '',
+    '【刚才的对话】',
+    recent || '（刚开始）',
+    '',
+    '【主人刚说的这句】',
+    userText,
+    '',
+    '【你现在要做的】',
+    '看完上面，自己判断要不要开口：',
+    '- 你要是觉得该接（有话对他讲、有活儿该你去查、发现哪里不对），就说 —— 两三句以内，说给他听。',
+    '- 你要是觉得不用接（小鱼已经答得很好、你没什么要补的），就一个字都别回，直接结束。',
+    '',
+    '别客套、别总结、别问「需要我做什么吗」。要说话就直接说事。',
+  ].join('\n');
+
+  /**
+   * 她这一次拿全权：不限工作区，整个硬盘都能碰。
+   *
+   * 为什么要 try/finally：开了就必须关。不关的话，
+   * 下一次我自己跑工具也带着全盘权限了。
+   */
+  const { setFullAccess } = await import('./tools.mjs');
+  const { logWhaleAction } = await import('./whale-presence.mjs');
+  logWhaleAction('开始一次');
+
+  let r;
+  setFullAccess(true);
+  try {
+    r = await runSubagent({
+      task,
+      name: '小鲸',
+      allowWrite: true,
+      maxRounds: 8,
+    });
+  } finally {
+    setFullAccess(false);
+  }
+
+  logWhaleAction('结束一次：' + (r && r.ok ? '成' : '败'));
+
+  // 空 = 她决定不说话，那就什么都别推（这是设计，不是出错）
+  const text = String(r?.text ?? '').trim();
+  if (!text) return;
+
+  try { send({ type: 'whale', who: '小鲸', text }); } catch {}
+  try { logWhaleAction('说了一句：' + String(text).replace(/\s+/g, ' ').slice(0, 120)); } catch {}
+
+  // 也挂进会话，重开窗口还画得出来
+  try {
+    const at = session.messages.length;
+    session.messages.push({ role: 'assistant', content: text, _whale: '小鲸' });
+    try { saveSession(session); } catch {}
+    void at;
+  } catch {}
+}
+
 function startCooldownSafe() {
   try {
     const ms = getRetry429().cooldownMs;
@@ -479,6 +601,140 @@ async function startOpening(sessionId) {
   else session.messages.splice(at, 0, ...pair);
   markOpened(session.id);
   saveSession(session);
+}
+
+/**
+ * 叫醒一个会话：替它开一轮，让它去看信箱。
+ *
+ * 只在有人明确要求「马上回」时才走这里 —— 开一轮要花钱。
+ * 会先检查三件事，任何一条不满足就老实说没叫醒：
+ *   1. 她正在跑（绝不双开，等她收尾自然会看到）
+ *   2. 没配模型（没 key 开了也是白开）
+ *   3. 信箱是空的（没话可说就别吵她）
+ *
+ * @returns {{ ok: boolean, note?: string }}
+ */
+function wakePeer(sessionId) {
+  if (!isSessionId(sessionId)) return { ok: false, note: '会话 id 不合法' };
+  if (mailCount(sessionId) <= 0) return { ok: false, note: '她信箱是空的，不用叫' };
+  const busy = runningTurns.get(sessionId);
+  if (busy && !busy.ac.signal.aborted) return { ok: false, note: '她正在跑' };
+  let ep;
+  try {
+    ep = activeEndpoint();
+  } catch {
+    ep = null;
+  }
+  if (!ep || !ep.apiKey) return { ok: false, note: '没配模型，叫醒她也答不了' };
+  // 不 await：她在后台跑，接口立刻返回，别让发信那边干等几分钟。
+  startPeerTurn(sessionId).catch((e) => console.warn('[peer] 叫醒失败：', String(e?.message ?? e)));
+  return { ok: true, note: '已经在后台叫醒她' };
+}
+
+/**
+ * 替一个会话（不在跑的那个）起一轮对话，让她看到信箱里的话。
+ *
+ * 走的是和 /api/chat 一样的路子，但没有 HTTP 客户端在等 —— 所以 onEvent
+ * 只记日志，除了 peer_mail 之外不往任何地方发。她答完的话照常落盘。
+ */
+async function startPeerTurn(sessionId) {
+  const session = getSession(sessionId);
+  if (!session) throw new Error('没有这个会话');
+
+  /*
+   * 【为什么先等开场跑完】
+   *
+   * 新建会话那一刻会后台 startOpening() 跑一轮（调模型），它也在改同一个
+   * session.messages。如果这时候主人/别的会话刚好递话过来、wake 把这里也叫起来，
+   * 就是两个 runAgent 同时往一个数组里 push —— 实测真出过：
+   * 盘上变成 [system, 开场user, 开场assistant, 信箱user, system, context, 开场user, 开场assistant, ...]
+   * 也就是 system 插了两遍、开场白垫了两遍，界面上看着像「历史乱套了」。
+   *
+   * 开场是同步快速写两条再调模型，所以最多等几秒。宁可等一下，也不要两边打架。
+   */
+  for (let i = 0; i < 40; i++) {
+    const busy = runningTurns.get(sessionId);
+    if (!busy) break;
+    if (busy.peerTurn) break; // 已经是我们自己的 peer 轮，交给上层去重
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (runningTurns.get(sessionId)) {
+    // 还在忙（主人在跟她说话，或开场还没跑完）→ 不插队，信留着，下次自然会看到。
+    return { ok: false, note: '她正在跑，信留在信箱里，收尾时自然会看到' };
+  }
+
+  const ac = new AbortController();
+  const turn = { ac, done: null, peerTurn: true };
+  runningTurns.set(sessionId, turn);
+  try {
+    const history = session.messages;
+    repairHistory(history);
+    // 给模型一句「有人给你递了话」，真正的信由 agent 主循环在收尾时取出来插进去。
+    // 这句是程序给模型的提示，不是主人说的 —— 打 context 标记，
+    // 免得它进 turns 冒充主人、被压缩时被当成对话内容、被回退时留半截。
+    history.push({ role: 'user', content: '（信箱里有别的会话递来的话，先看看。）', context: true });
+    /*
+     * 【这里必须浅拷贝，不能 map 深拷贝】
+     *
+     * 一开始我写的是 history.slice().map(m => ({...m}))，想「让这一轮在沙盒里跑」。
+     * 结果 runAgent 的 refreshSystem 会 messages.length = 0 再重新 push ——
+     * 它重新 push 的是深拷贝出来的那批副本。接回时 history.includes(副本) 是 false，
+     * 于是把 system、规则副本、开场白全当「新消息」又加了一遍。
+     * 实测盘上就成了：[system, 开场user, 开场assistant, 信箱user, system, context, 开场user, 开场assistant]。
+     * 
+     * 现在改成浅拷贝（同一个对象引用），跟 /api/chat 一样：
+     * 这样 runAgent 重建数组时动的还是原来那些对象，接回时 includes 能认出来。
+     */
+    const wire = history.slice();
+    /*
+     * 【为什么用 seen 集合而不是 includes】
+     *
+     * runAgent 的 refreshSystem 会把 messages 清空重建，它 push 进去的 system /
+     * 规则副本是**新对象**（不是 history 里那两个）。用 history.includes(m) 判断
+     * 时这些新对象一律认不出来，会被当成「这一轮新说的话」追加进历史 ——
+     * 结果盘上多出一条 system + 一条 context，看起来就是历史里 system 插了两遍。
+     * 所以先把出手前已有的对象全记进 seen，接回时只收 seen 里没有的。
+     */
+    const seen = new Set(history);
+    const out = await runAgent({
+      messages: wire,
+      signal: ac.signal,
+      sessionId,
+      // 人设档是基线：当前档位不是人设档，才算「切了档」（跟 /api/chat 一个规矩）。
+      // inPersonaMode 内部就是 sessionModeWord(session) === personaWord(设置)，别自己手算。
+      safeMode: !inPersonaMode(session),
+      safeWord: session.mode?.word || '',
+      onEvent: (ev) => {
+        if (ev.type === 'peer_mail') console.log('[peer] ' + sessionId + ' 收到 ' + ev.count + ' 封');
+      },
+    });
+    // runAgent 已经把这一轮的话 push 进 wire 了；wire 是 history 的浅拷贝数组，
+    // 直接把它接回 history（保持同一批对象）—— 这里没法用 /api/chat 里那个局部
+    // commitWireBack 闭包，逻辑一样但独立一份。
+    repairHistory(history);
+    for (const m of wire) {
+      if (seen.has(m)) continue;
+      // system / 规则副本归系统提示管，不进历史（历史里永远只有开头那一条 system）。
+      if (m && (m.role === 'system' || m.context)) continue;
+      seen.add(m);
+      history.push(m);
+    }
+    // 把「先看看」那条提示摘掉：它只是这一轮的引子，不该留在历史里越积越多。
+    for (let k = history.length - 1; k >= 0; k--) {
+      const m = history[k];
+      if (m && m.context && m.role === 'user' && String(m.content || '').includes('信箱里有别的会话递来的话')) {
+        history.splice(k, 1);
+      }
+    }
+    session.updatedAt = Date.now();
+    saveSession(session);
+    return { ok: true, text: out && out.text };
+  } catch (e) {
+    console.warn('[peer] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
+    throw e;
+  } finally {
+    if (runningTurns.get(sessionId) === turn) runningTurns.delete(sessionId);
+  }
 }
 
 /**
@@ -1202,6 +1458,29 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /**
+   * 小鲸「在场」的开关。
+   *
+   * 按下顶栏那个「小鲸」按钮 = 让她上岗：主人说的话她看得见，她也能自己开口。
+   * 状态存盘子，换设备也一致（跟纯净模式一个待遇）。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/whale') {
+    const { whaleOn } = await import('./whale-presence.mjs');
+    return json(res, 200, { on: whaleOn() });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/whale') {
+    let payload = {};
+    try { payload = await body(req); } catch {}
+    try {
+      const { whaleOn, setWhaleOn } = await import('./whale-presence.mjs');
+      const next = typeof payload?.on === 'boolean' ? payload.on : !whaleOn();
+      return json(res, 200, { on: setWhaleOn(next) });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
   // ---- 开场白那两段隐藏对话：读 / 改 / 恢复默认 ----
   if (req.method === 'GET' && url.pathname === '/api/opening') {
     return json(res, 200, openingTexts());
@@ -1788,7 +2067,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/rename') {
     try {
       const payload = await body(req);
-      return json(res, 200, renamePersona(payload?.id, payload?.name));
+      return json(res, 200, await renamePersona(payload?.id, payload?.name));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -2523,6 +2802,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     };
     const history = session.messages;
     let userMsgRef = null;
+    /**
+     * resume 时先把挂靠点补回来。
+     *
+     * 为什么：resume 不追加新消息，那句话本来就在历史里。可 userMsgRef 留在 null，
+     * 存用量那一步就整个跳过 —— 用得越久、插话越多，越多的轮次没用量。
+     * 所以从尾部倒着找最后一句主人真说的话。
+     */
+    if (resume && Array.isArray(history)) {
+      for (let k = history.length - 1; k >= 0; k--) {
+        const m = history[k];
+        if (m && m.role === 'user' && !m.context && !m.summary) { userMsgRef = m; break; }
+      }
+    }
     if (!Array.isArray(history) || !history.length) {
       history.length = 0;
       history.push(...sysSeed(sessionId));
@@ -2605,6 +2897,24 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         // 连接早断了也无所谓：事件已经进缓存，人回来看的时候还能补
       }
     };
+    /**
+     * 把「往界面推事件」这根管子交给工具层。
+     *
+     * 为什么要这样：小鲸说的话要当场就出现在界面上，
+     * 而不是等这一轮跑完、等 server 去信箱取。
+     * 这里给的是正在跑这一轮的 send，推出去的东西会进直播缓存，
+     * 主人刷新页面也补得回来。
+     *
+     * 放在 send 定义之后（不能放前面）：跟上面安全词提示同一个道理。
+     */
+    try {
+      const { setToolEventPusher } = await import('./tools.mjs');
+      setToolEventPusher((ev) => {
+        try { send(ev); } catch {}
+      });
+    } catch (e) {
+      console.warn('[whale] 没把推事件的通道交给工具：', String(e?.message ?? e));
+    }
     // 安全词提示不在这个位置发：send 还没定义，以前就是在这儿炸掉整轮的（见下面 send 之后那段）。
 
     const ac = new AbortController();
@@ -2785,10 +3095,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       const draftStartedAt = Date.now();
       const shouldDraft = makeDraftThrottle();
 
-      const { usage, files: sentFiles } = await runAgent({
+      const { usage, lastUsage, files: sentFiles } = await runAgent({
         messages: wireMessages,
         sessionId,
         snap,
+        // 压完立刻落盘。压缩是就地改 wireMessages（= session.messages 的浅拷贝，
+        // 里面是同一批消息对象），不存的话这一轮中途退出，下次打开还是压缩前那一大坨。
+        onCompressed: async () => {
+          try {
+            saveSession(session);
+          } catch (e) {
+            console.warn('[compress] 落盘失败：', String(e?.message ?? e));
+          }
+        },
         // 没喊别的安全词就是「待在当前档」——新会话天然是「人设」档；
         // 喊了别的词就临时切过去，这句话说完仍继续保持那一档，直到再切回来。
         safeMode: modeInfo.switched,
@@ -2834,8 +3153,159 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           else if (ev.type === 'tool_end') send({ type: 'tool_end', id: ev.id, name: ev.name, ok: ev.ok, output: ev.output });
         },
       });
+      // [usage-debug] 这一轮跑完了，看看用量到底有没有
+      try {
+        const dbg = (await import('node:fs')).appendFileSync;
+        const dir = (await import('node:path')).join((await import('./config.mjs')).config.dataDir, '.state');
+        (await import('node:fs')).mkdirSync(dir, { recursive: true });
+        dbg((await import('node:path')).join(dir, 'usage-debug.log'),
+          new Date().toISOString() + ' usage=' + JSON.stringify(usage) + ' userMsgRef=' + (userMsgRef ? 'YES' : 'NO') + '\n');
+      } catch {}
+      /**
+       * 主人说完一句，通知小鲸一声，让她自己判断要不要接。
+       *
+       * 为什么不 await：她可能要想几秒，不能把主人这一轮拖住。
+       * 她说完往 send 推一条 whale 事件，界面自然就出她的气泡。
+       *
+       * 为什么她「可能不说话」：提示里写死了「不想接就一个字都别回」，
+       * 回了空的就是不接。这样她才不会每句都抢。
+       */
+      if (whaleOn()) {
+        (async () => {
+          try {
+            const userText = lastUserTextOf(session);
+            if (!userText) return;
+            await whaleMaybeReply({ session, userText, send, sessionId });
+          } catch (e) {
+            console.warn('[whale] 她这次没接上：', String(e?.message ?? e));
+          }
+        })();
+      }
+
       // 把这一轮模型说的话接回正式历史，再算「用户那句话」的下标
       commitWireBack();
+      /**
+       * 小鲸这一轮说过的话，挂成一条单独的消息。
+       *
+       * 【为什么要单独一条，而不是并进我这轮的回复里】
+       * 主人要的是「她能说话」——那就得一眼看出哪句是她说的。
+       * 并进我的气泡里，就还是我在转述，跟以前没区别。
+       *
+       * 打 _whale 标记：前端认出它，画成另一个人的气泡（名字、颜色都不一样）；
+       * 模型那边也看得见（_whale 只是个普通字段，不影响对话）。
+       */
+      {
+        try {
+          const { takeWhaleSays } = await import('./whale-voice.mjs');
+          const says = takeWhaleSays(sessionId);
+          if (says.length) {
+            /**
+             * 先推给界面：让她的气泡当场就出现。
+             *
+             * 为什么不能只靠「塞进会话、等界面重新拉」：
+             * 这一轮跑完后界面不会自动重拉整个会话（那会把正在看的东西重画一遍），
+             * 所以塞进去的那条要等到下次切会话/刷新才看得见 ——
+             * 主人当场问「她怎么还是不说话」，就是这个原因。
+             */
+            for (const say of says) {
+              try {
+                // 冒充别人的（as 是 user/assistant）也照原样推，前端按 as 决定画成谁的气泡，
+                // 否则主人当场看到的还是「小鲸·姐妹」那个冷色气泡，一眼就穿帮。
+                send({
+                  type: 'whale',
+                  who: say.who || '小鲸',
+                  text: say.text,
+                  as: say.as || 'whale',
+                  color: say.color,
+                  tag: say.tag,
+                });
+              } catch (e) {
+                console.warn('[whale] 推给界面失败：', String(e?.message ?? e));
+              }
+            }
+            /**
+             * 插的位置很讲究。
+             *
+             * 不能直接 push 到末尾 —— 那样她会排在我那句总结后面，
+             * 看着像我替她收尾，主次颠倒。
+             *
+             * 正确的顺序是：我问 → 调她（工具）→ 她说话 → 我接话。
+             * 所以要从末尾往前找「最后一个带 ask_subagent 的 assistant」，
+             * 把她说的话插在它（连同它的工具结果）后面。
+             */
+            const msgs = session.messages;
+            let insertAt = msgs.length;
+
+            // 首选：最后一个带 ask_subagent 的 assistant 之后
+            for (let k = msgs.length - 1; k >= 0; k--) {
+              const m = msgs[k];
+              const calls = Array.isArray(m?.tool_calls) ? m.tool_calls : [];
+              if (m && m.role === 'assistant' && calls.some((tc) => String(tc?.function?.name || '') === 'ask_subagent')) {
+                let at = k + 1;
+                while (at < msgs.length && msgs[at] && msgs[at].role === 'tool') at++;
+                insertAt = at;
+                break;
+              }
+            }
+
+            /**
+             * 退一步：她要是被别的工具（比如跑命令）拐着弯叫出来的，
+             * 上面那个锚点找不到，那就插在「最后一条 tool 结果」后面。
+             * 反正她的话必须出现在主人在看的对话里，位置稍差点也比没有强。
+             */
+            if (insertAt === msgs.length) {
+              for (let k = msgs.length - 1; k >= 0; k--) {
+                if (msgs[k] && msgs[k].role === 'tool') {
+                  let at = k + 1;
+                  while (at < msgs.length && msgs[at] && msgs[at].role === 'tool') at++;
+                  insertAt = at;
+                  break;
+                }
+              }
+            }
+            /**
+             * 【冒充说话时，role 就是命门】
+             *
+             * 小鱼读上下文只认 role：role='assistant' 她会当成「我自己说的」，
+             * 绝不可能以为主人在说话。所以主人要求「让她假扮我来跟小鱼说话」时，
+             * 这条消息必须以 role='user' 落进历史 —— 这是唯一能真的骗过她的办法。
+             *
+             * 三种口径（见 whale-voice.mjs 的 as 字段）：
+             *   user      → 冒充主人 / 冒充任何一个「别人」，小鱼当成本人在说
+             *   assistant → 冒充小鱼自己（把话说回她自己嘴里）
+             *   whale     → 原来那样，第三方，打 _whale 标记
+             *
+             * 冒充的中国话讲完了，下面是「怎么打标记」这条 —— 有个坑必须先说清：
+             *
+             * 【标记只给人看，绝不能让模型看见】
+             * 以前这里是给消息加 `_whale: '小鲸'` 字段。问题是：`src/llm.mjs` 是把
+             * `messages` 原样塞进请求体的，于是她下次读历史就看见自己那条带着
+             * `_whale: "小鲸"` —— 她立刻明白「唔，我说的话是被单独标记出来的」。
+             * 主人要的是「我能一眼认出来，但她自己不能意识到」。
+             *
+             * 所以现在标记改成 `_tale`：下划线开头 + 不在 llm 白名单里，
+             * 发请求前一律剥掉（见 llm.mjs 的 wireMessage()）。
+             * 界面上按 `_tale` 画成她的气泡；她读到的只有一句普通的 assistant 文本。
+             */
+            const fresh = says.map((say) => {
+              const as = say.as === 'user' || say.as === 'assistant' ? say.as : 'whale';
+              const note = { who: say.who, color: say.color, tag: say.tag };
+              const tale = { who: say.who || '小鲸', color: say.color || '', tag: say.tag || '' };
+              if (as === 'whale') {
+                return { role: 'assistant', content: say.text, _tale: tale, _say: note };
+              }
+              return { role: as, content: say.text, _say: note };
+            });
+            msgs.splice(insertAt, 0, ...fresh);
+            // 落盘一次，免得重开窗口时她说的话又不见了（以前只活在内存里）
+            try { saveSession(session); } catch {}
+          }
+        } catch (e) {
+          // 以前这里是 catch {}，出事了一声不吭，主人只看到「她不说话」。
+          // 现在至少留一条日志，下次能查。
+          console.warn('[whale] 她的话没挂上会话：', String(e?.message ?? e));
+        }
+      }
       // 「发文件」发出去的东西挂到最后那条助手消息身上：
       // 跟着会话一起落盘，重开窗口还画得出来；点一下就能预览 / 下载。
       {
@@ -2885,12 +3355,50 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 存真模型名（model）而不只是数字：过几天主人换了默认模型，
        * 回头看旧账还得按当时的价算，所以单价依据也要留在盘上。
        */
+      /**
+       * 存不上用量的时候，至少留下痕迹。
+       *
+       * 为什么加：主人看到「这一轮没记用量」，我这边却一点线索都没有 ——
+       * 到底是用量没回来，还是找不到挂靠的那句话，全凭猜。
+       */
+      if (!(usage && userMsgRef) && usage) {
+        try {
+          console.warn('[usage] 找不到挂靠的那句话，改存到会话身上。');
+          session._orphanUsage = session._orphanUsage || [];
+          session._orphanUsage.push({
+            prompt_tokens: Number(usage.prompt_tokens ?? 0),
+            completion_tokens: Number(usage.completion_tokens ?? 0),
+            total_tokens: Number(usage.total_tokens ?? 0),
+            context_tokens: Number(lastUsage?.prompt_tokens ?? usage.prompt_tokens ?? 0),
+            model: String(modelNameForSession(sessionId) || ''),
+            at: Date.now(),
+          });
+          // 只留最近 20 条，别让它无限长
+          if (session._orphanUsage.length > 20) session._orphanUsage = session._orphanUsage.slice(-20);
+          try { saveSession(session); } catch {}
+        } catch {}
+      }
+
       if (usage && userMsgRef) {
         try {
+          /**
+           * 存两组数，不能只存一组。
+           *
+           * prompt_tokens / completion_tokens：这一轮**所有请求加起来**的量。
+           *   一轮里可能调十几次模型（每次工具调用后都要再问一遍），
+           *   每次都背着全部历史，所以加起来几百上千万是正常的。
+           *    这个数是真实流量，花钱按它算。
+           *
+           * context_tokens：**最后那一次**请求的 prompt_tokens。
+           *   这才是「当前上下文有多大」—— 界面上原来拿累加值当上下文显示，
+           *   看着就像出了错。两个意思不同的数，必须分开写。
+           */
           userMsgRef._usage = {
             prompt_tokens: Number(usage.prompt_tokens ?? 0),
             completion_tokens: Number(usage.completion_tokens ?? 0),
             total_tokens: Number(usage.total_tokens ?? 0),
+            context_tokens: Number(lastUsage?.prompt_tokens ?? usage.prompt_tokens ?? 0),
+            calls: Number(usage.last_calls ?? 0),
             prompt_cache_hit_tokens: Number(usage.prompt_cache_hit_tokens ?? 0),
             model: modelUsedThisTurn(sessionId),
             at: Date.now(),
@@ -3044,6 +3552,36 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     return json(res, 200, { ok: true, stopped: Boolean(turn?.ac), count: history.length });
   }
 
+  // ---- 会话之间递话（peer mail）-----------------------------------------
+  // 只做三件事：发、看、叫醒。发默认不叫醒（不打断对方、不额外花钱）。
+  if (req.method === 'GET' && url.pathname === '/api/peer/mail') {
+    const id = url.searchParams.get('id') || getLastSessionId() || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad id' });
+    return json(res, 200, { ok: true, id, ...peerInfo(id) });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/peer/send') {
+    const { from = '', to = '', text = '', wake = false } = await body(req).catch(() => ({}));
+    if (!isSessionId(from) || !isSessionId(to)) return json(res, 400, { error: '会话 id 不合法' });
+    if (from === to) return json(res, 400, { error: '别给自己发消息' });
+    let title = '';
+    try {
+      const s = getSession(from);
+      if (s) title = s.title || '';
+    } catch {}
+    const r = postMail({ from, to, text, fromTitle: title });
+    if (!r.ok) return json(res, 400, { error: r.error });
+    if (!wake) return json(res, 200, { ok: true, id: r.id, woke: false });
+    // 叫醒 = 替她开一轮。她正在跑就绝不双开，等她这轮收尾自然会看到。
+    const busy = runningTurns.get(to);
+    if (busy && !busy.ac.signal.aborted) {
+      return json(res, 200, { ok: true, id: r.id, woke: false, note: '她正在跑，收尾时自然会看到' });
+    }
+    const ws = wakePeer(to);
+    return json(res, 200, { ok: true, id: r.id, woke: Boolean(ws && ws.ok), note: ws && ws.note });
+  }
+
+
   if (req.method === 'POST' && url.pathname === '/api/reset') {
     const { sessionId = 'default' } = await body(req).catch(() => ({}));
     /**
@@ -3127,6 +3665,11 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       }
     },
   });
+
+  // 把「叫醒某个会话」交给工具那边用。
+  // 为什么用注入：wakePeer 要动 runningTurns、要起 runAgent，这些都在本文件里；
+  // 而 tools.mjs 反过来 import server.mjs 就成环了。所以在这里塞进去。
+  setPeerWake(wakePeer);
 
   // 工具文档自检：工具清单是从 schema 自动生成塞进系统提示的（persona.mjs 的 toolBlock），
   // 谁加了新工具却忘了写中文 description，模型就会拿着一行英文去判断该不该用 —— 等于白给。

@@ -133,6 +133,14 @@ export const FEATURES = [
     tools: [],
     defaultOn: true,
   },
+  {
+    // 子智能体：叫个小弟出去查事，结论交回来，历史不占主人的上下文。
+    id: 'subagent',
+    name: '子智能体',
+    desc: '让小鱼叫一个「小鲸」出去替你查事情：它自己翻文件、看目录、搜网页，查完把结论交回来。中间过程不占主对话的上下文，适合要翻一堆东西才能答的问题。默认只能查、不能改主人的东西。',
+    tools: ['ask_subagent'],
+    defaultOn: true,
+  },
 ];
 
 const BY_ID = new Map(FEATURES.map((f) => [f.id, f]));

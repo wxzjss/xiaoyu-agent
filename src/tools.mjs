@@ -39,6 +39,42 @@ export function setToolContext(sessionId, snap = null, signal = null) {
 /**
  * 这一轮发出去的文件清单。给 runAgent 用：它每轮都新开一个，跑完交给 server。
  */
+/**
+ * 把当前这套上下文存一份，返回一个「还原函数」。
+ *
+ * 子智能体用：它进来时调 setToolContext 换成自己的，跑完调还原函数，
+ * 把主人的那份（sessionId / signal / snap / outbox）原样放回去。
+ * 不还原的话，子智能体跑完，主智能体的工具调用就会落到子智能体的会话上，
+ * 计划、便签、回退快照全记错地方。
+ */
+export function pushToolContext() {
+  const saved = { ...CTX };
+  return function restoreToolContext() {
+    CTX.sessionId = saved.sessionId;
+    CTX.snap = saved.snap;
+    CTX.outbox = saved.outbox;
+    CTX.signal = saved.signal;
+    CTX.subagentDepth = saved.subagentDepth;
+  };
+}
+
+/**
+ * 子智能体嵌套了几层。
+ *
+ * 用来断掉「子智能体又开子智能体」的无限套娃：超过上限直接拒绝。
+ * 不设这个，一个爱乱回答的子智能体能把进程拖死。
+ */
+export const MAX_SUBAGENT_DEPTH = 2;
+export function subagentDepth() {
+  return Number(CTX.subagentDepth) || 0;
+}
+export function bumpSubagentDepth() {
+  CTX.subagentDepth = subagentDepth() + 1;
+}
+export function dropSubagentDepth() {
+  CTX.subagentDepth = Math.max(0, subagentDepth() - 1);
+}
+
 export function beginOutbox() {
   CTX.outbox = [];
   return CTX.outbox;
@@ -439,6 +475,36 @@ export const tools = [
   },
   sayTool,
   sendFileTool,
+  {
+    name: 'ask_subagent',
+    description:
+      '叫一个子智能体（叫「小鲸」）去替你查事情。它自己会翻文件、看目录、搜网页、抓网页，查完把结论交回来。适合：要读一堆文件才能答的问题、要上网翻好几页才能确认的事。它拿到的历史和你完全分开，所以不占你的上下文。默认只有查的权限，动不了主人的东西；要它动手得显式给 allowWrite。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: '要它查什么，说具体点：查哪个文件、确认什么事、回答哪个疑问' },
+        name: { type: 'string', description: '给它起个名，不填就叫「小鲸」' },
+        allowWrite: { type: 'boolean', description: '要不要给它写文件 / 跑命令的权限。默认不给，只查。' },
+        maxRounds: { type: 'number', description: '最多让它跑几轮工具循环，默认 12' },
+      },
+      required: ['task'],
+    },
+    async run({ task, name, allowWrite, maxRounds }) {
+      const { runSubagent } = await import('./subagent.mjs');
+      const nick = name || '小鲸';
+      const r = await runSubagent({
+        task,
+        name: nick,
+        allowWrite: allowWrite === true || allowWrite === 'true',
+        maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 12,
+      });
+      const head = r.ok
+        ? '【' + nick + ' 查完了】（跑了 ' + r.rounds + ' 轮、调了 ' + r.tools + ' 次工具）'
+        : '【' + nick + ' 没查成】';
+      const tail = r.usage ? '\n\n（它自己用掉 ' + r.usage.total_tokens + ' token）' : '';
+      return head + '\n\n' + r.text + tail;
+    },
+  },
 ];
 
 /** Very small HTML -> text reducer (good enough for reading articles / docs). */

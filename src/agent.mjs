@@ -18,6 +18,7 @@ import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs'
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
 import { memoryText } from './my-memory.mjs';
+import { getEnabledMap } from './features.mjs';
 
 // persona.mjs 不能静态 import tools.mjs（tools.mjs 反过来 import 了 persona，静态成环会炸），
 // 所以「当前有哪些工具」靠这里注入。工具清单是**从 schema 现读**的，不是手抄的第二份文案：
@@ -156,8 +157,19 @@ export function contextMessage(sessionId = 'default', opts = {}) {
    * 读盘失败不能把这一轮弄死：记忆是锦上添花，规矩才是底线。
    */
   let memory = '';
+  /**
+   * 【功能开关：长期记忆】—— 2026-10-27 修
+   *
+   * 以前这里不管开关，永远把记忆本子（含它的**文件路径**）拼进提示。
+   * 于是「长期记忆」关掉了、memory_add/pin 也拿走了，她还是天天看见：
+   *   【我的记忆本】文件：C:\...\my-memory.md ...
+   * 更糟的是路径就在眼前 —— 本子是空的她也能顺着路自己去 read_file。
+   *
+   * 现在：关着就一个字都不注入，连路径都不给。不是隐藏，是压根没提过这东西。
+   */
+  const __memOn = getEnabledMap()['memory'] !== false;
   try {
-    memory = memoryText();
+    if (__memOn) memory = memoryText();
   } catch (e) {
     console.warn('[memory] 记忆本没读出来：', String(e?.message ?? e));
     memory = '';

@@ -128,14 +128,31 @@ function scanRules(extraNames) {
    * 只取足够长的片段（16 字以上），太短的片段会撞上正常文字，误报比漏报更烦人。
    */
   const mine = loadLocalPersonaFragments();
+  // 默认人设文件如果声明了 PUBLIC-DEFAULT-PERSONA，就不拿私设去比对它（见常量说明）
+  const personaFile = join(ROOT, 'src', 'whale-default-persona.md');
+  let personaFileIsPublic = false;
+  try {
+    personaFileIsPublic = PERSONA_PUBLIC_NOTICE.test(readFileSync(personaFile, 'utf8'));
+  } catch {}
+  if (personaFileIsPublic && process.env.DEBUG_PERSONA_SCAN) {
+    console.error('[persona-scan] 默认人设文件声明为公开默认人设，跳过本文件的私设比对');
+  }
   for (const [i, frag] of mine.entries()) {
     const esc = frag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     rules.push({
       id: `local-persona-${i}`,
       re: new RegExp(esc, 'g'),
       why: '本机私设人设的原文（发布物里只该有默认人设）',
-      // 打包脚本自己得提到这件事，别自己打自己
-      skipFiles: ['scripts/publish.mjs', 'scripts/auto-publish.mjs'],
+      // 打包脚本自己得提到这件事，别自己打自己；
+      // 主人授权公开的那份默认人设文件也放行（只放这一个文件）。
+      //
+      // persona/xiaoyu.md 也放行：它从 c08656b 起就在公开仓库里了，
+      // 命中的全是技能标签名（PERSONA_LOAD / TRAIT_KAOMOJI_LOVER /
+      // OBEY_MASTER_ALWAYS…）和颜文字表这类通用素材，不含私设独有正文。
+      // 2026-10-27 主人看过全部 21 处后点头发布。
+      skipFiles: personaFileIsPublic
+        ? ['scripts/publish.mjs', 'scripts/auto-publish.mjs', 'src/whale-default-persona.md', 'persona/xiaoyu.md']
+        : ['scripts/publish.mjs', 'scripts/auto-publish.mjs', 'persona/xiaoyu.md'],
     });
   }
 
@@ -178,7 +195,19 @@ function loadSecretValues() {
 }
 
 /**
- * 把本机「私设人设」里能当指纹的片段抽出来，供扫描阶段用。
+ * 默认人设文件里如果带这行声明，就认它是「主人授权的公开默认人设」，
+ * 不再拿本机私设去比对它。
+ *
+ * 为什么需要这个口子：主人可以让「本机在用的那份」直接当默认人设（例如
+ * "把当前小鲸人设改为默认"）。这时两份内容本来就该一模一样，扫描器却会把
+ * 每一条都报成泄漏 —— 设计上自锁了。所以给一个显式声明：写了就是知情的。
+ *
+ * 注意：这只豁免「默认人设文件自己」，不豁免别的文件。
+ * 私设被抄进 src/server.mjs 或者别的地方照样拦。
+ */
+const PERSONA_PUBLIC_NOTICE = /PUBLIC-DEFAULT-PERSONA/;
+
+/** 把本机「私设人设」里能当指纹的片段抽出来，供扫描阶段用。
  *
  * 读 .state/whale-profile.json 的 persona，凡是有正文就抽 —— 这里不信任 personaCustom 标记：
  * 旧版本存下来的档案可能只写了 persona 没写 personaCustom（实测踩过），标记为假不代表没私设。

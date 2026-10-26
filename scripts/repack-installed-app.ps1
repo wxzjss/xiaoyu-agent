@@ -62,7 +62,9 @@ if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 & $node $asarJs extract $asarP $work
 
-foreach ($d in @('src', 'public', 'persona', 'electron', 'assets', 'scripts')) {
+# vendor/ 是运行期要 exec 的外部程序（看视频那套的 vw.py + 替身 magick.bat），
+# 跟 src 一样属于「没有就跑不起来」，必须一起进包。
+foreach ($d in @('src', 'public', 'persona', 'electron', 'assets', 'scripts', 'vendor')) {
   $from = Join-Path $src $d
   if (-not (Test-Path $from)) { continue }
   $dst = Join-Path $work $d

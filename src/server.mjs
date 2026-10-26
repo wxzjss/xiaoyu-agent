@@ -122,6 +122,7 @@ import {
   activeEndpoint,
   endpointFor,
   restoreEnvModel,
+  probeEndpoint,
 } from './models.mjs';
 import { loadRewinds, effectiveIndexes, createRewind, undoLastRewind, restoreWorkspace, restoreMemory } from './rewind.mjs';
 import {
@@ -1405,6 +1406,42 @@ function isLoopbackReq(req) {
 
 /** 现在监听的实际端口（listen 之前是 0，配对页拿到也没用，所以用它兜底） */
 let listeningPort = 0;
+
+/**
+ * 最近一次「模型地址通不通」的体检结果，给界面上的提示条用。
+ *
+ * 为什么要有这个变量：2026-10-26 主人一上午都在看「连接一直断」，
+ * 而真正的原因是 models.json 里的地址被写成了 127.0.0.1:18599 ——
+ * 一个根本不存在的本地服务。这个错误是静态的、可提前发现的，
+ * 却要等到发消息、重试三十次、攒出那句含糊的「连接一直断」才露头。
+ * 所以启动时探一次，结果存在这儿，/api/health 带出去，界面直接显示。
+ * 形状：{ ok, host, port, reason, ms, baseURL, at }，没探过就是 null。
+ */
+let lastProbe = null;
+
+/**
+ * 立刻重新探一次并更新 lastProbe。切模型 / 改模型之后调。
+ * 失败不抛，体检本身不该把正常操作带崩。
+ */
+async function refreshProbe(baseURL) {
+  try {
+    const ep = baseURL ? { baseURL } : activeEndpoint();
+    const r = await probeEndpoint(ep.baseURL, { timeoutMs: 3000 });
+    lastProbe = { ...r, baseURL: ep.baseURL, at: Date.now() };
+  } catch (err) {
+    lastProbe = {
+      ok: false,
+      host: '',
+      port: 0,
+      reason: String(err?.message ?? err),
+      ms: 0,
+      baseURL: baseURL || '',
+      at: Date.now(),
+    };
+  }
+  return lastProbe;
+}
+
 function currentPort() {
   try {
     const a = server.address();
@@ -1545,7 +1582,19 @@ const server = createServer(async (req, res) => {
       hasKey: Boolean(ep.apiKey),
       source: ep.source,
       workspace: config.workspace,
+      /**
+       * 模型地址到底通不通。界面上拿这个画提示条。
+       *
+       * 只报「最后一次探的结果」：地址跟当前活跃的那套对不上（主人刚换了模型、
+       * 我们还没探完）就不给，免得拿旧地址的结论去警告新配置。
+       */
+      probe: lastProbe && lastProbe.baseURL === ep.baseURL ? lastProbe : null,
     });
+  }
+
+  // 手动重探一次（界面上「重新检查」按钮用）。
+  if (req.method === 'POST' && url.pathname === '/api/probe') {
+    return json(res, 200, await refreshProbe());
   }
 
   // ---- 模型：列表 / 新增或修改 / 删除 / 切换 / 试连通 ----
@@ -1562,7 +1611,9 @@ const server = createServer(async (req, res) => {
     }
     try {
       const saved = saveModel(payload ?? {});
-      return json(res, 200, { model: saved, ...listModels() });
+      // 改完地址立刻重探一次：地址写错了要当场说出来，别等主人发消息。
+      const pr = await refreshProbe(activeEndpoint().baseURL);
+      return json(res, 200, { model: saved, ...listModels(), probe: pr });
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -1590,7 +1641,10 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     try {
-      return json(res, 200, selectModel(String(payload?.id ?? '')));
+      const listed = selectModel(String(payload?.id ?? ''));
+      // 切完立刻重探：换到一条写错地址的模型，界面应当马上说「连不上」。
+      const pr = await refreshProbe(activeEndpoint().baseURL);
+      return json(res, 200, { ...listed, probe: pr });
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4668,6 +4722,18 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         console.log(`  workspace: ${config.workspace}`);
         console.log(`  api key  : ${bootEp.apiKey ? 'loaded' : 'MISSING -> 打开界面顶部「模型」按钮配置'}`);
         console.log(`  rounds   : ${Number.isFinite(config.maxRounds) ? config.maxRounds : 'unlimited'}`);
+        // 启动体检：地址填错了不用等主人发一条消息才发现（2026-10-26 那次
+        // models.json 被写成 127.0.0.1:18599，界面上一切正常，一发就是
+        // 「连接一直断」，卡了整整一上午）。这里只探端口，不发请求，几百毫秒内出结果。
+        probeEndpoint(bootEp.baseURL, { timeoutMs: 3000 }).then((r) => {
+          lastProbe = { ...r, baseURL: bootEp.baseURL, at: Date.now() };
+          if (r.ok) {
+            console.log(`  probe    : ok（${r.host}:${r.port}，${r.ms}ms）`);
+          } else {
+            console.log(`  probe    : ✗ ${r.host}:${r.port} 连不上 —— ${r.reason}`);
+            console.log('             模型地址写错或那台服务没开；打开界面顶部「模型」按钮核对。');
+          }
+        }).catch(() => {});
         {
           // 真正生效的阈值是「设置面板里那个」，不是 config 里的兜底值，日志得说真话。
           // 填多少就是多少，所以不再乘什么比例，直接报 limit。

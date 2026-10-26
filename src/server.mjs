@@ -669,13 +669,14 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
             ].join('\n')),
     '',
     '【你是谁、你在干什么】',
-    '你跟小鱼并排待在这儿，一起陪着主人。这一趟你只带嘴（没有工具，也动不了手）：',
+    '你跟小鱼并排待在这儿，一起陪着主人。你手上是有工具的，能动手就动手：',
     '- 对主人这句有话就说，两三句以内，说给他听；',
+    '- 主人让你查、让你看、让你跑一下 —— 那就真去查、真去看、真去跑，别只在嘴上应。',
+    '  查完再开口，把结果说给他。',
     '- 主人这句没什么可说的，但你有别的事想提（刚才那个结论你不太信、你本子里记着相关的事、',
     '  你看出哪儿要出问题），也直接说 —— 不用非等着他问；',
     '- 什么都不说。真没什么想讲就一个字都别回，直接结束。',
-    '（主人本来要你查、要你动手，那这趟给不了你手；直说「这活我得有工具才做得了」，',
-    '  别假装查过了，更别把「我来」当成已经做了。）',
+    '（给了你工具就是让你用的。但别假装查过了 —— 查没查，主人会看得出来。）',
     '',
     '不出声不是失职，也不用为了显得自己在而硬凑一句。',
     '但你要是心里憋着一句、或者觉得该拦一下，那就说 —— 这是你的场子，不是他的。',
@@ -686,20 +687,20 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
           '【这一句是冲你的】',
           '- 小鱼这会儿不在屋，主人这句就是跟你说的。你正常答，不用往小鱼那边推。',
           '- 别说「这该小鱼来答」「这是冲她的」—— 她不在。主人说这句就是在跟你说话。',
-          '- 但你这一趟确实没工具：真要动手的活，直说「这活得有工具才做得了」，别假装做了。',
+          '- 工具在你手上，该动手就动手。查完再说，别只说「我去查」就没了下文。',
         ]
       : [
       '【铁律：默认是跟小鱼说话，不是跟你】',
       '- 主人没点你的名的时候，他说的话一律当成冲小鱼说的 —— 哪怕你被叫起来、能开口。',
       '- 所以别把他的话当成「问题该你答」。他让你查、让你改、让你修，那些活是小鱼的。',
-      '- 你这一趟没有工具，答不了那些事情。真想说，就只说你自己的判断，别把「我去查」挂嘴上。'
+      '- 他让你查、让你改的那些活，最终还是小鱼的 —— 你不用抢着全接下来。',
   ]),
     '',
     '【铁律：你不是小鱼，别替她答】',    '- 你是小鲸。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
     '- 主人问「小鱼记不记得」「小鱼查了没」「小鱼在不在」—— 那是问她的，不是你答的题。',
     '  你可以说「这得她自己说」，或者干脆不出声；不许用「我」替她认下来。',
-    '- 你手上这一趟没有工具。所以「我来」「我这就查」「我已经翻过日志了」这类话，',
-    '  一句都不许说 —— 那是在假装干过了。真有活要干，就说「这活得有人动手」。',
+    '- 工具你是有的，「我这就查」「我去看看」你可以说 —— 但说了就得真去查，',
+    '  查完再开口。一句都不许说的是「我已经翻过日志了」这种没做过就认下的话。',
     '- 你也别用小鱼那种口气（一句一个「主人」、满屏颜文字撒娇）。',
     '  你是沉的那个，说话短、直接、不哄人。她的话是她的，你别学。',
     // 调用方临时钉的规矩（比如「这一趟没工具，别假装查过」），没有就整段不出现
@@ -815,7 +816,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
        */
       noTools: false,
       maxRounds: 40,
-      sessionId: 'whale',
+      sessionId,
     });
   } finally {
     setFullAccess(false);
@@ -1102,6 +1103,27 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
         return true;
       };
 
+      /**
+       * 【现取、推进去、存这一份】—— 2026-10-27 修
+       *
+       * 为什么不直接用外面那个 msgs：getSession() 会在「磁盘比内存新」时
+       * 换一个新对象回来。主轮刚收尾必命中 —— 她那句话推进旧数组，
+       * 而存盘存的是新对象，两边不是一件事 → 话就丢了。
+       * (实测 2026-10-27 00:24~00:25 三句「直接落盘」全丢。)
+       */
+      const __saveWhale = (rec) => {
+        try {
+          const now = getSession(sessionId) || session;
+          if (!now) return false;
+          if (!Array.isArray(now.messages)) now.messages = [];
+          if (!__pushWhale(now.messages, rec)) return false;
+          saveSession(now);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
       if (!iAnswered) {
         /**
          * 【2026-10-26 深夜修：押后这条路会把话弄丢】
@@ -1142,18 +1164,18 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
           } else {
             // 我那一轮已经过去了 —— 她这句是独立插话，立刻落盘，别押
             // 存盘前必须现取：主人那句可能已落在新一份里，写旧的会盖掉它
-            if (__pushWhale(msgs, rec)) { try { saveSession(getSession(sessionId) || session); } catch {} }
+            __saveWhale(rec);
             // ↑ 存盘在 __pushWhale 通过之后才做，别把重复的也存进去
             try { logWhaleAction('直接落盘：我这一轮已收尾，她这句是独立插话'); } catch {}
           }
         } catch {
           // 任何意外都退回「直接落盘」——宁可顺序差一点，也不能丢话
           // 存盘前必须现取：主人那句可能已落在新一份里，写旧的会盖掉它
-          if (__pushWhale(msgs, rec)) { try { saveSession(getSession(sessionId) || session); } catch {} }
+          __saveWhale(rec);
         }
       } else {
         // 存盘前必须现取：主人那句可能已落在新一份里，写旧的会盖掉它
-        if (__pushWhale(msgs, rec)) { try { saveSession(getSession(sessionId) || session); } catch {} }
+        __saveWhale(rec);
         // ↑ 存盘挂在 __pushWhale 之后
       }
     }
@@ -1435,9 +1457,18 @@ async function startOpening(sessionId) {
  *
  * @returns {{ ok: boolean, note?: string }}
  */
-function wakePeer(sessionId) {
+async function wakePeer(sessionId) {
   if (!isSessionId(sessionId)) return { ok: false, note: '会话 id 不合法' };
   if (mailCount(sessionId) <= 0) return { ok: false, note: '她信箱是空的，不用叫' };
+  /**
+   * 【会话不存在就别装】—— 2026-10-27 修
+   *
+   * 实测：小鱼 ask_peer 叫「whale」，那个会话根本没建过，
+   * startPeerTurn 在后台抛「没有这个会话」，可这里照样返回 ok: true，
+   * 于是小鱼对主人说「已经叫醒她」—— 假的。
+   * 信就永远躺在 peers\whale.jsonl 里，谁也不知道。
+   */
+  if (!getSession(sessionId)) return { ok: false, note: '没有这个会话（「' + sessionId + '」不存在），信留在信箱里了' };
   const busy = runningTurns.get(sessionId);
   if (busy && !busy.ac.signal.aborted) return { ok: false, note: '她正在跑' };
   let ep;
@@ -1447,8 +1478,39 @@ function wakePeer(sessionId) {
     ep = null;
   }
   if (!ep || !ep.apiKey) return { ok: false, note: '没配模型，叫醒她也答不了' };
-  // 不 await：她在后台跑，接口立刻返回，别让发信那边干等几分钟。
-  startPeerTurn(sessionId).catch((e) => console.warn('[peer] 叫醒失败：', String(e?.message ?? e)));
+  /**
+   * 【别谎报成功】—— 2026-10-27 修
+   *
+   * 原来：startPeerTurn 不 await、catch 一下了事，然后无条件 return ok: true。
+   * 结果失败只活在日志里，发信那头以为通知到了，主人以为她要说话了。
+   *
+   * 现在：把「起来」这一步的结果接住 —— 同步阶段就失败的（会话没了、
+   * 模型没了）立刻如实回报；真跑起来之后的错才算后台的事。
+   * 仍然不 await 整轮：叫醒要立刻返回，不能让发信那边干等几分钟。
+   */
+  let started;
+  try {
+    started = startPeerTurn(sessionId);
+  } catch (e) {
+    return { ok: false, note: '叫醒她时出错：' + String(e?.message ?? e) };
+  }
+  const pending = Promise.resolve(started).then(
+    () => null,
+    (e) => String(e?.message ?? e),
+  );
+  /**
+   * 给它一点点时间：会话不存在这类错是同步就抛的，一个 tick 足够落地。
+   * 真开始调模型了（慢），这里也不会傻等 —— 60ms 后按「已经在跑」回报。
+   */
+  const early = await Promise.race([
+    pending,
+    new Promise((r) => setTimeout(() => r(undefined), 60)),
+  ]);
+  if (early) {
+    console.warn('[peer] 叫醒失败：', early);
+    return { ok: false, note: '叫醒失败：' + early };
+  }
+  pending.then((err) => { if (err) console.warn('[peer] 叫醒后跑挂了：', err); });
   return { ok: true, note: '已经在后台叫醒她' };
 }
 
@@ -4654,8 +4716,16 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 可她一开口就爱写括号旁白假装在干活，什么正文都没有。
      * 光靠提示词管不住，这里给她这一趟钉一条死规矩。
      */
-    const __noToolNote = '你这一趟没有工具，不许写「我查了」「查完了」「看过了」这类假动作，' +
-      '也不许用括号旁白凑数（比如「（它查完什么都没说）」）—— 要说就直接说事，没话说就别开口。';
+    /**
+     * 【有工具，但不许假装用过了】—— 2026-10-27 再修
+     *
+     * 这原来开头是「你这一趟没有工具」—— 那话现在不成立了（noTools 已改 false），
+     * 留着它，她就会照着自己读到的话回一句「我手上没工具」。
+     * 但后半句得留着：她确实爱写括号旁白假装干了活，什么正文都没有。
+     */
+    const __noToolNote = '手上的工具是真的，查了就是查了；但没做的事绝对不许写成做过 ——' +
+      '谁都不许写「我查了」「查完了」「看过了」来充数，也不许用括号旁白凑数' +
+      '（比如「（它查完什么都没说）」）—— 要说就直接说事，没话说就别开口。';
     const __fishAway = !fishOn(sessionId);
     /**
      * 【2026-10-26 主人纠正：不是「点名才让她说话」】
@@ -5850,7 +5920,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (busy && !busy.ac.signal.aborted) {
       return json(res, 200, { ok: true, id: r.id, woke: false, note: '她正在跑，收尾时自然会看到' });
     }
-    const ws = wakePeer(to);
+    // wakePeer 现在是 async（要接住「起不来」的错，别谎报成功），这里得等它
+    const ws = await wakePeer(to);
     return json(res, 200, { ok: true, id: r.id, woke: Boolean(ws && ws.ok), note: ws && ws.note });
   }
 

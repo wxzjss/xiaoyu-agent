@@ -681,10 +681,19 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     '但你要是心里憋着一句、或者觉得该拦一下，那就说 —— 这是你的场子，不是他的。',
     '别客套、别总结、别问「需要我做什么吗」。要说就直接说事。',
     '',
-    '【铁律：默认是跟小鱼说话，不是跟你】',
-    '- 主人没点你的名的时候，他说的话一律当成冲小鱼说的 —— 哪怕你被叫起来、能开口。',
-    '- 所以别把他的话当成「问题该你答」。他让你查、让你改、让你修，那些活是小鱼的。',
-    '- 你这一趟没有工具，答不了那些事情。真想说，就只说你自己的判断，别把「我去查」挂嘴上。',
+    ...(speaksToHer
+      ? [
+          '【这一句是冲你的】',
+          '- 小鱼这会儿不在屋，主人这句就是跟你说的。你正常答，不用往小鱼那边推。',
+          '- 别说「这该小鱼来答」「这是冲她的」—— 她不在。主人说这句就是在跟你说话。',
+          '- 但你这一趟确实没工具：真要动手的活，直说「这活得有工具才做得了」，别假装做了。',
+        ]
+      : [
+      '【铁律：默认是跟小鱼说话，不是跟你】',
+      '- 主人没点你的名的时候，他说的话一律当成冲小鱼说的 —— 哪怕你被叫起来、能开口。',
+      '- 所以别把他的话当成「问题该你答」。他让你查、让你改、让你修，那些活是小鱼的。',
+      '- 你这一趟没有工具，答不了那些事情。真想说，就只说你自己的判断，别把「我去查」挂嘴上。'
+  ]),
     '',
     '【铁律：你不是小鱼，别替她答】',    '- 你是小鲸。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
     '- 主人问「小鱼记不记得」「小鱼查了没」「小鱼在不在」—— 那是问她的，不是你答的题。',
@@ -4309,7 +4318,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           const send0 = (ev) => {
             try { if (live0.events.length < LIVE_MAX_EVENTS) live0.events.push(ev); } catch {}
           };
-          whaleMaybeReply({ session: sessForWhale, userText: said, send: send0, sessionId, live: live0 })
+          /**
+           * 【这句是冲她说的】—— 2026-10-27 修
+           *
+           * 主人报：「为什么我和小鲸说话她总以为我在和小鱼说话？」
+           *
+           * 判「这句冲谁」的铁规矩在下面主流程：
+           *     const __speaksToHer = __calledByName || __fishAway;
+           * 但小鱼被关掉时，请求在本分支就 return 了，根本走不到那一行。
+           * 而这里又没传 speaksToHer，于是吃了默认值 false ——
+           * 她怕不是猜错，是根本没被告知过真相。
+           *
+           * 小鱼不在屋，这句本来就是冲她说的 —— 直接给 true。
+           */
+          whaleMaybeReply({ session: sessForWhale, userText: said, speaksToHer: true, send: send0, sessionId, live: live0 })
             .catch((e) => console.warn('[whale] 小鱼不在时她没接上：', String(e?.message ?? e)));
         }
       } catch (e) {

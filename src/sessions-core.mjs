@@ -129,18 +129,66 @@ export function saveSession(session) {
     const diskMsgs = Array.isArray(raw?.messages) ? raw.messages : [];
     const memMsgs = Array.isArray(payload.messages) ? payload.messages : [];
     if (diskMsgs.length) {
-      const key = (m) => (m && typeof m.content === 'string' ? (m.role || '') + '\u0001' + m.content : null);
-      const diskKeys = new Set(diskMsgs.map(key).filter(Boolean));
+      /**
+       * 【合流用指纹】—— 2026-10-26 重写
+       *
+       * 旧版只按「角色 + content 字符串」算，content 不是字符串就返回 null，
+       * 然后被当成「磁盘/内存各自独有」—— 于是每存一次盘，content 为 null 的
+       * assistant(tool_calls) 就被再追加一遍：一次插话能让同一个 tool_call id
+       * 从 1 条变 3 条，上游按 OpenAI 协议判非法直接 502，
+       * 主人看到的就是「插了话她不理我」。
+       *
+       * 新版指纹带上 tool_calls 的 id 和 tool_call_id，内容空也有身份；
+       * 算不出指纹（不是对象 / 没角色）的才返回 null，那种一律不参与合并。
+       */
+      const key = (m) => {
+        if (!m || typeof m !== 'object') return null;
+        const role = String(m.role || '');
+        if (!role) return null;
+        const txt = typeof m.content === 'string' ? m.content
+          : (m.content == null ? '' : JSON.stringify(m.content));
+        let tcId = '';
+        if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+          tcId = m.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',');
+        }
+        const callId = m.tool_call_id ? String(m.tool_call_id) : '';
+        return role + '|' + callId + '|' + tcId + '|' + txt;
+      };
       const memKeys = new Set(memMsgs.map(key).filter(Boolean));
-      const diskOnly = diskMsgs.filter((m) => { const k = key(m); return !k || !memKeys.has(k); });
-      const memOnly = memMsgs.filter((m) => { const k = key(m); return !k || !diskKeys.has(k); });
-      if (diskOnly.length && !memOnly.length) {
-        payload.messages = diskMsgs;
-      } else if (diskOnly.length && memOnly.length) {
-        const merged = diskMsgs.slice();
-        for (const m of memOnly) merged.push(m);
-        payload.messages = merged;
+      // 算不出指纹的不参与合并（见上）
+      /**
+       * 【system / context 不参与合流】—— 2026-10-26 修
+       *
+       * runAgent 每轮开头会把历史里 system 的 content 就地刷成最新的人设。
+       * 于是磁盘上那份还是**旧人设**、内存这份已经变成新人设 —— 指纹不同，
+       * 下面就会把旧 system 当成「磁盘独有的新消息」补到历史末尾。
+       * 实测结果：每轮多一条一模一样的 system，越跑越多，几百条历史全被它
+       * 逼着重发一遍，还挤掉了真正该带上去的对话。
+       *
+       * system 和 context 是每轮重算的框架，不属于对话内容，一律不补。
+       */
+      const isFraming = (m) => m && (m.role === 'system' || m.context);
+      const diskOnly = diskMsgs.filter((m) => { if (isFraming(m)) return false; const k = key(m); return k && !memKeys.has(k); });
+      /**
+       * 【两边都接：内存的打底，磁盘独有的补在后面】
+       *
+       * 内存这份是这一轮真正跑过的历史（已压缩、已回退、已去重），是主线；
+       * 磁盘那份可能有内存里还没有的（插话刚 push 的那句、另一个进程写的），
+       * 所以按指纹把磁盘独有的接在末尾，一条不丢。
+       *
+       * 关键在于指纹稳定：同一批 assistant(tool_calls) 在两边算出的 key 一样，
+       * 就只会留一份 —— 这才是旧版真正缺的东西（旧版对 content=null 的消息
+       * 算不出 key，于是两边都「独有」，每存一次盘就多几条）。
+       */
+      const merged = memMsgs.slice();
+      const seenKey = new Set(merged.map(key).filter(Boolean));
+      for (const m of diskOnly) {
+        const k = key(m);
+        if (!k || seenKey.has(k)) continue;
+        seenKey.add(k);
+        merged.push(m);
       }
+      payload.messages = merged;
     }
   } catch {}
   writeFileSync(fileFor(session.id), JSON.stringify(payload), 'utf8');

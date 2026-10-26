@@ -5585,6 +5585,27 @@ async function interject() {
   }
 
   /**
+   * ③.5 服务端说「旧轮还在收尾，我已经自己接上了」—— 这边一个字都别动。
+   *
+   * 【为什么要有这一路（2026-10-26 插话不接话的真凶之一）】
+   * 插话时那一轮可能还在收尾（跑长命令、正在写盘）。以前这里不管三七二十一等 9 秒
+   * 就自己 runTurn 再来一轮，于是旧轮和新轮抢着写同一个 messages 数组 ——
+   * 历史里同一批 tool_call 叠成两三层，上游按协议判非法直接 502，
+   * 主人看到的就是「插了她一句，她不理我」。
+   *
+   * 现在服务端把这句记成待处理、挂在旧轮的收尾上自己起接续轮，
+   * 并把 replyPending:true 告诉我们。这里只做一件事：守住界面状态，等 SSE 来。
+   */
+  if (r && r.replyPending === true) {
+    // pendingResume 留着：万一接续轮那边出了岔子、迟迟没有 done 事件，
+    // 收尾的兜底还能把它当成新消息发一次，不至于无声消失。
+    busy = true;
+    showSending();
+    syncSendBtn();
+    return;
+  }
+
+  /**
    * ④ 正常路径：话已经在服务端落盘，这一轮也被停住了 —— 接着跑。
    *
    * 【0.9.26 的分工】服务端只负责「把话写进历史」，接续是前端的事。
@@ -5615,14 +5636,18 @@ async function interject() {
      * 所以：既然插话没接上，就把这句当成一条普通消息正经发出去。
      * 顺序不能反 —— 必须先 busy=false 再调 runTurn，否则又被挡回来。
      */
-    addSysNote('⚠ 这句没能插进去，我当成新的一句发了');
-    runTurn({ text: myText }).catch((e) => {
-      // 真发不出去（断网之类）才退回输入框，并且说清楚
-      busy = false;
-      syncSendBtn();
-      if (input && !input.value.trim()) { input.value = myText; autosizeInput(); }
-      addSysNote('⚠ 这句还是没发出去：' + (e && e.message ? e.message : '网络错误') + '，已经放回输入框');
-    });
+    /**
+     * 【别再当成新消息重发】—— 2026-10-26 修
+     *
+     * 这里以前是 `runTurn({ text: myText })`：服务端明明已经把这句话 push 进历史了，
+     * 前端又把它当新消息发一遍 —— 主人的话在历史里出现两次，模型读起来像他自己重复。
+     * 而且真正的接续（resume）根本没发生，所以「插了话她不接」的观感就是这么来的。
+     *
+     * 现在统一走 resumeOrResend：先查那句话在不在历史里，
+     *   在 → resume（接着答，不重复写）
+     *   不在 → 按新消息发一次（不丢话）
+     */
+    resumeOrResend(mySession, myText);
   }, 9000);
 }
 

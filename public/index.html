@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -3437,10 +3437,24 @@ let tailRoleOnScreen = '';
 function markTailRole(turns) {
   let role = '';
   const list = Array.isArray(turns) ? turns : [];
+  /**
+   * 【2026-10-26 修：最后一句是小鲸插的话，不能算「我收尾了」】
+   *
+   * 实测：小鲸是并排跑的另一条线，常常比我先说完，
+   * 于是历史里最后一条是「她的话」，接口给的 whale 字段有值。
+   *
+   * 以前这里只看 role（assistant）就当「这一轮我说完了」——
+   * 结果主人的屏幕上永远等不到我那句，看着就像「小鱼的话没显示」。
+   *
+   * 现在：她的话（whale 有值 / whaleSide）跳过，继续往前找真正属于这一轮的收尾。
+   */
   for (let i = list.length - 1; i >= 0; i--) {
     const t = list[i];
     if (!t) continue;
-    if (t.role === 'user' || t.role === 'assistant') { role = t.role; break; }
+    if (t.role !== 'user' && t.role !== 'assistant') continue;
+    if (t.whale || t.whaleSide) continue;   // 她的话跳过去
+    role = t.role;
+    break;
   }
   tailRoleOnScreen = role;
   return role;
@@ -3554,6 +3568,10 @@ async function tryHealAfterDisconnect(id) {
     if (isRunning) {
       if (sessionId === id) {
         log.innerHTML = '';
+  // 【清空历史后扫残留光标】
+  // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
+  // 万一进程上次是被强杀的，类就留在那儿了 —— 这里扫一遍收干净。
+  try { sweepStaleStreaming(); } catch {}
         const stillRunning = await attachLive(id);
         busy = stillRunning;
         if (stillRunning) showSending();
@@ -4444,6 +4462,64 @@ function lastAssistantWrap() {
   return wraps.length ? wraps[wraps.length - 1] : null;
 }
 
+
+/**
+ * 【蓝光标不许留残局】
+ *
+ * 那个蓝光标是 .bubble.streaming::after 的 ▍。只要气泡还挂着 streaming 这个类，
+ * 它就一直在闪 —— 哪怕这句话早就说完了。
+ *
+ * 什么时候会挂着不掉：进程被强杀 / 重启 / 页面在说的中途刷新。
+ * 那些时候收尾的代码（finally、done）根本没机会跑，类就留在 DOM 上了。
+ * 表现出来就是主人看到的「你说的话末尾一直有蓝光标在闪」。
+ *
+ * 这里给两道保险：
+ *   一、每次重新画历史 / 切会话之后，把所有 assistant 气泡的 streaming 摘掉
+ *       —— 那时候屏幕上画的都是「已经说完的话」，没有一个还在打字；
+ *   二、新挂上的 streaming 超过 90 秒自动摘 —— 一句话流不了那么久，
+ *       真流那么久肯定是断了，光标别在那儿闪一整天。
+ */
+function sweepStaleStreaming() {
+  try {
+    const all = document.querySelectorAll('.bubble.streaming');
+    for (const b of all) b.classList.remove('streaming');
+  } catch {}
+}
+
+/** 给流式气泡加个「最多亮这么久」的保险 */
+function armStreamingTimeout(bubble) {
+  try {
+    setTimeout(() => {
+      try { if (bubble && bubble.isConnected) bubble.classList.remove('streaming'); } catch {}
+    }, 90000);
+  } catch {}
+}
+/**
+ * 【程序被强杀后，光标会一直闪】
+ *
+ * 气泡上挂着 streaming 类，末尾那个 ▍ 就会 blink。正常说完由 done 分支收，
+ * 可要是那一轮说到一半程序被杀（打包、强关、崩），finally 根本没机会跑 ——
+ * 那个气泡就永远挂着 streaming，主人屏幕上一条蓝光标一直闪。
+ *
+ * 所以加两道保险：
+ *   一、画完历史 / 换会话时扫一遍，把所有残留的 streaming 全摘掉；
+ *   二、每建一个气泡顺手上 90 秒的闹钟，到点还没收就自己收。
+ * 第二道是底线：就算哪天真出了没收干净的路径，也不会闪到主人忍不了。
+ */
+
+/** 给一个新气泡上「90 秒还没收就自己收」的闹钟 */
+function armStreamingTimer(bubble) {
+  if (!bubble) return;
+  try {
+    if (bubble._autoStreamingTimer) clearTimeout(bubble._autoStreamingTimer);
+    bubble._autoStreamingTimer = setTimeout(() => {
+      try {
+        if (bubble.classList.contains('streaming')) bubble.classList.remove('streaming');
+      } catch {}
+    }, 90000);
+  } catch {}
+}
+
 function addAssistant() {
   const wrap = addEl('', 'msg assistant');
   wrap.innerHTML = '<div class="role">小鱼</div>';
@@ -4452,6 +4528,9 @@ function addAssistant() {
   wrap.appendChild(b);
   // 编个号：这是本轮「第几段说的话」，用来防同一段被数两遍
   stampSpeechNode(b);
+  // 光标最多亮 90 秒：一句话流不了那么久，真流那么久是断了，别闪一整天
+  armStreamingTimeout(b);
+  try { armStreamingTimer(b); } catch {}
   return b;
 }
 
@@ -5135,6 +5214,25 @@ async function runTurn({ resume = false, text = '' } = {}) {
           }
           addSysNote('⚠ ' + ev.message);
         } else if (ev.type === 'done') {
+          /**
+           * 【说完就把光标收掉】
+           *
+           * 主人报过：「你说的话末尾一直有蓝光标在闪」。
+           *
+           * 那个蓝光标是 .bubble.streaming::after 的 ▍。说完了还得挂着 streaming，
+           * 它就永远闪 —— 因为 done 这条路上从前没人把类摘掉。
+           * （error 那条路摘了、finally 也摘了，可 done 之后 bubble 可能已经被
+           *  换成了新的一段，finally 手里攥的是老引用，摘不到它。）
+           *
+           * 这里干脆把屏幕上所有还挂着的 streaming 全收掉：
+           *   · 这一轮已经说完了，任何气泡都不该还在「正在打字」的状态；
+           *   · 只动 assistant 气泡，小鲸的气泡她那边自己管。
+           */
+          try {
+            const stillStreaming = log ? log.querySelectorAll('.msg.assistant .bubble.streaming') : [];
+            for (const el2 of stillStreaming) el2.classList.remove('streaming');
+            if (bubble) bubble.classList.remove('streaming');
+          } catch {}
           closeThink();
           hideSending();
           /**
@@ -5357,11 +5455,26 @@ async function interject() {
     busy = false;
     turnsInFlight.delete(sessionId);
     syncSendBtn();
-    // 刚画的那条「插话」气泡是假的（那句没进历史），撤掉再正常发
-    try { if (pendingRewindBubble && pendingRewindBubble.parentNode) pendingRewindBubble.parentNode.removeChild(pendingRewindBubble); } catch {}
+    // 刚画的那条「插话」气泡要留着 —— 那句话服务端已经收下了
+    /**
+     * 【话已经落盘，就别从屏幕上撤掉】
+     *
+     * 从前这里会把刚画的那条「插话」气泡整个删掉，再把它当新消息重发一遍。
+     * 主人看到的是：「我一插话，不到一秒我说的话就消失了」—— 因为那条气泡
+     * 确实被删了，接着 runTurn 又画一条，中间那一瞬间就是空的。
+     *
+     * 服务端回 running:false 的意思是「此刻没有在跑的那一轮」，
+     * 可它同时也回了 ok:true —— 那句话已经真的写进历史了。
+     * 既然收下了，屏幕上就该留着它，接着起一轮把它答掉就行。
+     * 删掉再重画只会让主人以为自己的话丢了。
+     */
+    try { if (pendingRewindBubble) pendingRewindBubble.classList.add("kept"); } catch {}
+    // 话已经在历史里了（服务端 ok:true 就是落了盘）—— 直接用 resume 接着答，
+    // 别再把它当新消息 push 一遍，不然历史里就有两句一模一样的话。
     pendingRewindBubble = null;
-    if (input.value.trim() === '' ) input.value = text;
-    return runTurn({ text });
+    input.value = '';
+    autosizeInput();
+    return runTurn({ resume: true });
   }
 
   // ③ 真出错了：说清楚，并且把界面状态重新对一遍
@@ -5529,6 +5642,10 @@ document.getElementById('reset').onclick = async () => {
   } catch (e) {
     console.warn('[reset] 切到新会话出错：', e && e.message ? e.message : e);
     log.innerHTML = '';
+  // 【清空历史后扫残留光标】
+  // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
+  // 万一进程上次是被强杀的，类就留在那儿了 —— 这里扫一遍收干净。
+  try { sweepStaleStreaming(); } catch {}
     usageEl.textContent = '';
   }
   await refreshSessions({ silent: true }).catch(() => {});
@@ -6724,6 +6841,22 @@ function renderFeatList() {
       continue;
     }
 
+    // 子智能体：她能改人设、能单独选模型
+    if (f.id === 'subagent') {
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'featEditBtn';
+      edit.textContent = '改人设 · 选模型';
+      edit.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleWhaleProfileEditor(row);
+      });
+      row.append(main, edit, sw);
+      featList.appendChild(row);
+      continue;
+    }
+
     // 开场白这种能改内容的功能，多给一个「改」的入口
     if (f.id === 'opening') {
       const edit = document.createElement('button');
@@ -6758,6 +6891,164 @@ async function loadFeatures() {
     else openingOpen = false;
   }
   return true;
+}
+
+// ---- 小鲸的人设与模型 ----
+// 她的人设和模型存在服务端 .state/whale-profile.json，跟会话无关。
+// 换多少会话都是同一个小鲸 —— 所以这里改一次，到处生效。
+let whaleProfileOpen = false;
+let whaleProfileData = null;
+let whaleProfileSeq = 0;
+
+function toggleWhaleProfileEditor(row) {
+  if (whaleProfileOpen) closeWhaleProfileEditor();
+  else openWhaleProfileEditor(row);
+}
+
+function closeWhaleProfileEditor() {
+  whaleProfileSeq += 1;
+  whaleProfileOpen = false;
+  const box = document.getElementById('whaleProfileBox');
+  if (box) box.remove();
+  const btn = featList && featList.querySelector('.featRow[data-id="subagent"] .featEditBtn');
+  if (btn) btn.textContent = '改人设 · 选模型';
+}
+
+async function openWhaleProfileEditor(row) {
+  closeWhaleProfileEditor();
+  const seq = whaleProfileSeq;
+  whaleProfileOpen = true;
+  const box = el('div', 'openingBox');
+  box.id = 'whaleProfileBox';
+  box.append(el('div', 'openingHint', '这里改的是「小鲸」这个人 —— 换多少会话都是同一个她，所以改一次、到处都用这个。'));
+  row.after(box);
+  const btn = row.querySelector('.featEditBtn');
+  if (btn) btn.textContent = '收起';
+
+  // 人设和模型两边都要读：人设走 /api/whale/profile，模型列表走 /api/models
+  const [prof, mods] = await Promise.all([
+    fetch('/api/whale/profile').then((x) => x.json()).catch(() => null),
+    fetch('/api/models').then((x) => x.json()).catch(() => null),
+  ]);
+  if (seq !== whaleProfileSeq) return;
+  if (!prof || prof.error) {
+    box.append(el('div', 'openingHint', '读不出来：' + ((prof && prof.error) || '网络问题')));
+    return;
+  }
+  whaleProfileData = prof;
+
+  // --- 人设那一块 ---
+  const wrap = el('label', 'openingField');
+  const head = el('div', 'openingFieldHead');
+  head.append(el('span', null, '她是什么样的人（人设）'));
+  if (prof.personaCustom) head.append(el('span', 'openingTag', '改过'));
+  const resetBtn = el('button', 'openingMini', '用回内置');
+  resetBtn.type = 'button';
+  head.append(resetBtn);
+  wrap.append(head);
+
+  const ta = el('textarea', 'openingArea');
+  ta.value = prof.persona || '';
+  ta.rows = 9;
+  ta.spellcheck = false;
+  ta.placeholder =
+    '（空着 = 用内置那套）' + (prof.builtinHint ? ' ' + prof.builtinHint : '');
+  wrap.append(ta);
+  wrap.append(el('div', 'openingHint',
+    '写完全套替换「她是谁、跟小鱼怎么相处」那一部分。底线、安全词说明、她自己的本子、当前状态、' +
+    '「记下一行」这些是底座，一个字都不会被冲掉。'));
+  resetBtn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    ta.value = '';
+    ta.dataset.dirty = '1';
+  });
+
+  // --- 模型那一块 ---
+  const mWrap = el('label', 'openingField');
+  const mHead = el('div', 'openingFieldHead');
+  mHead.append(el('span', null, '她干活用哪个模型'));
+  if (prof.modelId) mHead.append(el('span', 'openingTag', '单独指定'));
+  mWrap.append(mHead);
+
+  const sel = document.createElement('select');
+  sel.className = 'whaleModelSel';
+  sel.style.cssText = 'width:100%;padding:7px 9px;border-radius:8px;border:1px solid var(--border);' +
+    'background:var(--panel);color:var(--text);font-size:13px;';
+  const optAuto = document.createElement('option');
+  optAuto.value = '';
+  optAuto.textContent = '跟主人当前用的那个（默认）';
+  sel.append(optAuto);
+  const list = (mods && Array.isArray(mods.models)) ? mods.models : [];
+  for (const m of list) {
+    const o = document.createElement('option');
+    o.value = m.id;
+    const nm = m.name || m.model || m.id;
+    const mm = m.model && m.model !== nm ? ' · ' + m.model : '';
+    o.textContent = nm + mm + (m.id === (mods && mods.activeId) ? '（主人正在用）' : '');
+    sel.append(o);
+  }
+  sel.value = prof.modelId || '';
+  // 选的那个模型要是已经被删了，得说清楚，别静悄悄回落到默认
+  if (prof.modelId && !list.some((m) => m.id === prof.modelId)) {
+    const o = document.createElement('option');
+    o.value = prof.modelId;
+    o.textContent = '（这个模型已经被删了：' + prof.modelId + '）';
+    sel.insertBefore(o, sel.children[1] || null);
+    sel.value = prof.modelId;
+  }
+  mWrap.append(sel);
+  mWrap.append(el('div', 'openingHint', '她每被叫起来一次就按这个模型跑。选「跟主人当前用的那个」就是不用单独管她。'));
+
+  // --- 底下的按钮 ---
+  const bar = el('div', 'openingBar');
+  const save = el('button', 'primary', '存上');
+  save.type = 'button';
+  const resetAll = el('button', 'ghost', '人设和模型都恢复默认');
+  resetAll.type = 'button';
+  const tip = el('span', 'openingHint', '');
+  bar.append(save, resetAll, tip);
+
+  save.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    save.disabled = true;
+    tip.textContent = '存…';
+    const r = await fetch('/api/whale/profile/save', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ persona: ta.value, modelId: sel.value }),
+    }).then((x) => x.json()).catch(() => null);
+    save.disabled = false;
+    if (!r || r.error) {
+      tip.textContent = '没存上：' + ((r && r.error) || '网络问题');
+      return;
+    }
+    whaleProfileData = r;
+    tip.textContent = '存好了 · 下次叫她干活就按这个';
+    // 存完重画一下列表，让「改过 / 单独指定」这两个小标签跟着变
+    const keepOpen = true;
+    await loadFeatures();
+    if (keepOpen) {
+      const row2 = featList && featList.querySelector('.featRow[data-id="subagent"]');
+      if (row2) openWhaleProfileEditor(row2);
+    }
+  });
+
+  resetAll.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    const r = await fetch('/api/whale/profile/reset', { method: 'POST' })
+      .then((x) => x.json()).catch(() => null);
+    if (!r || r.error) {
+      tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题');
+      return;
+    }
+    ta.value = '';
+    sel.value = '';
+    tip.textContent = '人设和模型都回默认了';
+  });
+
+  box.append(wrap, mWrap, bar);
+  if (seq !== whaleProfileSeq) return;
+  ta.focus({ preventScroll: true });
 }
 
 // ---- 开场白编辑器 ----
@@ -8365,6 +8656,15 @@ function renderTurns(turns) {
           b.textContent = fixMojibake(turn.text);
           wrap.appendChild(b);
           if (outs.length) attachFiles(wrap, outs);
+          /*
+           * 她的话也能改、也能从这儿分出去。
+           *【为什么原先没有】上面注释一直写着「别的照旧（能改、能分支）」，
+           * 可实际漏了这两个调用 —— 主人点不开她说的那句。
+           * 后端 /api/sessions/edit 本来就允许改 assistant（她就是 assistant + _whale），
+           * 缺的只是这里的按钮。回退不挂：退到「主人那句话之前」挂在她身上会误伤。
+           */
+          attachEdit(wrap, turn.rewindId);
+          attachBranchBtn(wrap, turn.rewindId);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         } else {
@@ -8723,6 +9023,10 @@ async function createSessionEx(opts = {}) {
   try { if (typeof window.__reloadWhaleState === 'function') window.__reloadWhaleState(); } catch {}
   loadTopCfg(); // 新会话是默认档
   log.innerHTML = '';
+  // 【清空历史后扫残留光标】
+  // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
+  // 万一进程上次是被强杀的，类就留在那儿了 —— 这里扫一遍收干净。
+  try { sweepStaleStreaming(); } catch {}
   hideSending();
   usageEl.textContent = '';
   // 新会话是干净的：把 busy 也归零，别让上一个会话的「发送中」锁着这里

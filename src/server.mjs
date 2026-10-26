@@ -1,7 +1,8 @@
 // Minimal web server: static UI + one SSE endpoint that runs the agent.
+
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, statSync, appendFileSync as __iqAppendSync } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 // 她「主动开口」要用到自己的状态（欲望攒够没有）
@@ -35,6 +36,7 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted } from './resume.mjs';
+import { getWhaleProfile, saveWhaleProfile, MAX_PERSONA_CHARS } from './whale-profile.mjs';
 // 进程兜底：一处没 catch 的异常不该让整个程序消失。
 import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
@@ -336,6 +338,13 @@ function publicSession(session) {
        * 老消息里可能有 `_whale`，这里一并认下来，不用改旧会话文件。
        */
       whale: m._tale?.who ? String(m._tale.who) : (m._whale ? String(m._whale) : undefined),
+      /**
+       * 【这句是小鲸并排插进来的，不是这一轮的收尾回答】—— 2026-10-26 补
+       *
+       * 前端要靠它分辨：屏幕上最后那条气泡要是她插的话，就不能当成
+       * 「小鱼这轮说完了」——否则主人永远等不到我那句。
+       */
+      whaleSide: m._whaleSide === true ? true : undefined,
       /** 名字颜色 / 后缀（前端用；没有就按默认） */
       taleColor: m._tale?.color ? String(m._tale.color) : undefined,
       taleTag: m._tale && typeof m._tale.tag === 'string' ? m._tale.tag : undefined,
@@ -522,7 +531,12 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       // 她自己的话不进背景（那是 her 的声音，不是小鱼在干什么）
       const said = typeof m.content === 'string' ? m.content.trim() : '';
       const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
-      if (said) lines.push('小鱼：' + said.replace(/\s+/g, ' ').slice(0, 200));
+      // 【闸 1】她的背景里只留「我在干什么」的骨架，不给我的完整回答。
+      // 以前给 200 字，她会把我的答案当成「这一句该怎么回」照着复述，
+      // 结果主人看到的是「小鲸把我的回答抢走了」（2026-10-26 日志实证：
+      // 17:09~17:13 每一条「她说了一句」都是我的原文）。
+      // 现在压到 40 字，只够她知道进度，不够她整段照抄。
+      if (said) lines.push('小鱼（大概在干什么）：' + said.replace(/\s+/g, ' ').slice(0, 40) + (said.length > 40 ? '…' : ''));
       for (const tc of calls) {
         const nm = String(tc?.function?.name || '工具');
         let arg = String(tc?.function?.arguments || '');
@@ -550,6 +564,26 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    *   - 不问「要不要接」，问「你现在有没有想说的」；
    *   - 明确告诉她：不出声不等于失职，不必为了证明自己在这儿而凑话。
    */
+  /**
+   * 【这一句是冲谁说的】—— 2026-10-26 补
+   *
+   * 以前 task 里只有主人那句话的原文，一个字都没说「这句是叫你说的，
+   * 还是叫你替她去传话」。结果主人说「你和小鱼说…让小鱼来」这种传话令时，
+   * 她一律当成「主人在跟我聊」，把小鱼该说的话也说了 ——
+   * 主人看见的是「该答的人没答，传话的抢着答」。
+   *
+   * 系统提示里其实早写了「谁被点名谁开口」，但那只是通用规矩，
+   * 没把**这一句**归好类。规矩是通用的，归类是具体的，她缺的是后者。
+   */
+  const relayTo = (() => {
+    const t = String(userText || '');
+    // 「你和小鱼说 / 你跟她说 / 转告她 / 给她带个话」这类
+    const m = t.match(/(?:你(?:去|帮我)?(?:跟|和|对|给)\s*(?:小鱼|她))\s*(?:说|讲|讲一声|说一声|提一句|转告|带个话|问一下)?[：:，,]?\s*([\s\S]*)/)
+      || t.match(/(?:转告|转达|带话给|带个话给|告诉)\s*(?:小鱼|她)[：:，,]?\s*([\s\S]*)/);
+    if (!m) return null;
+    return { what: String(m[1] || '').trim() };
+  })();
+
   const task = [
     '现在主人把「小鲸」那个按钮开着 —— 意思是你在场，不是叫你来答这一题。',
     '',
@@ -559,16 +593,42 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     '【主人刚说的这句】',
     userText,
     '',
+    relayTo
+      ? [
+          '【这一句是叫你传话，不是叫你答】',
+          '主人这句是让你把话带给小鱼，不是问你意见。你要做的只有两件：',
+          '  1. 把主人的原话（或你要带的那半句）原样交给小鱼；',
+          '  2. 一句确认「带到了」就结束。',
+          '下面这些一句都不许有：',
+          '  · 不许替小鱼回答、不许替她说「我在」「我这就来」「随时等吩咐」；',
+          '  · 不许替小鱼问主人「是不是指让我这条会话继续」—— 那是她该问的，不是你；',
+          '  · 不许用小鱼的口吻说她想干什么；',
+          '  · 不许在结尾加「还有别的吗」「需要我做什么吗」—— 那是在替她收尾。',
+          '递完就停，一个字都别多。她自己会开口；你说的每一句替她说的话，都会让主人分不清谁是谁。',
+        ].join('\n')
+      : '【这一句是冲你说的】不是传话令 —— 那就按你自己想说的说。',
+    '',
     '【你是谁、你在干什么】',
-    '你跟小鱼并排待在这儿，一起陪着主人。下面这些你都能做，没有先后：',
+    '你跟小鱼并排待在这儿，一起陪着主人。这一趟你只带嘴（没有工具，也动不了手）：',
     '- 对主人这句有话就说，两三句以内，说给他听；',
     '- 主人这句没什么可说的，但你有别的事想提（刚才那个结论你不太信、你本子里记着相关的事、',
     '  你看出哪儿要出问题），也直接说 —— 不用非等着他问；',
     '- 什么都不说。真没什么想讲就一个字都别回，直接结束。',
+    '（主人本来要你查、要你动手，那这趟给不了你手；直说「这活我得有工具才做得了」，',
+    '  别假装查过了，更别把「我来」当成已经做了。）',
     '',
     '不出声不是失职，也不用为了显得自己在而硬凑一句。',
     '但你要是心里憋着一句、或者觉得该拦一下，那就说 —— 这是你的场子，不是他的。',
     '别客套、别总结、别问「需要我做什么吗」。要说就直接说事。',
+    '',
+    '【铁律：你不是小鱼，别替她答】',
+    '- 你是小鲸。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
+    '- 主人问「小鱼记不记得」「小鱼查了没」「小鱼在不在」—— 那是问她的，不是你答的题。',
+    '  你可以说「这得她自己说」，或者干脆不出声；不许用「我」替她认下来。',
+    '- 你手上这一趟没有工具。所以「我来」「我这就查」「我已经翻过日志了」这类话，',
+    '  一句都不许说 —— 那是在假装干过了。真有活要干，就说「这活得有人动手」。',
+    '- 你也别用小鱼那种口气（一句一个「主人」、满屏颜文字撒娇）。',
+    '  你是沉的那个，说话短、直接、不哄人。她的话是她的，你别学。',
   ].join('\n');
 
   /**
@@ -577,6 +637,49 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    * 为什么要 try/finally：开了就必须关。不关的话，
    * 下一次我自己跑工具也带着全盘权限了。
    */
+  /**
+   * 【闸 A：我这一轮刚说过话，她就别开口】
+   *
+   * 2026-10-26 实测：主人打一句派活令，我先答了一大段，
+   * 紧接着她也"说了一句"——内容是把我那段的前 40 字复述一遍。
+   * 主人看到的顺序是「她的话在前、我的话在后」，就以为我的话没了。
+   *
+   * 为什么不是砍她看到的摘要字数：砍了她就真瞎了，不知道我在干什么。
+   * 正确做法是——我在这一轮已经开过口的，她这一趟就不出声。
+   * 她要真想说什么，下一轮照样有机会说，不用非挤在同一秒。
+   */
+  /**
+   * 【闸 A 修正 · 2026-10-26 17:30】
+   *
+   * 上一版写的是「我这一轮说过话，她就不许说」。
+   * 错了 —— 我每一轮都在说话，这个判据等于把她永久静音。
+   * 实测：改完之后 whale-actions.log 一条新记录都没有，她彻底不开口了。
+   *
+   * 现在改成时间窗：只有「我刚说完这一下（3 秒内）」才让她让一让，
+   * 免得两个气泡叠在一起看不出谁是谁。超过 3 秒她就照常能说。
+   *
+   * 她的话会不会重复我的，交给下面闸 B 按重合率判 —— 那才是对的判据。
+   */
+  const __myLastSayAt = (() => {
+    const msgs = Array.isArray(session?.messages) ? session.messages : [];
+    for (let k = msgs.length - 1; k >= 0; k--) {
+      const m = msgs[k];
+      if (!m) continue;
+      if (m.role === 'user') break;
+      if (m.role === 'assistant' && !m._whale && !m._tale) {
+        const t = String(m.content ?? '').trim();
+        if (t && Number.isFinite(Number(m._at))) return Number(m._at);
+        if (t) return Date.now() - 10000;   // 有内容但没记时间：当它早就说完了，不挡
+      }
+    }
+    return 0;
+  })();
+  if (Date.now() - __myLastSayAt < 3000) {
+    try { logWhaleAction('闸A 让行：我 3 秒前刚说完，她这一下先让'); } catch {}
+    try { send({ type: 'whale_stream_finish', text: '' }); } catch {}
+    return;
+  }
+
   const { setFullAccess } = await import('./tools.mjs');
   const { logWhaleAction } = await import('./whale-presence.mjs');
   logWhaleAction('开始一次');
@@ -636,8 +739,109 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   // 她这一趟跑输了（r.ok 为假）：那句多半是「查了几轮没结论，先停在这儿」
   // 这种残骸不该当她说的话推到主人眼前 —— 她没开口，就该安安静静。
   if (!r || r.ok === false) return;
+  /**
+   * 【闸 2：她在复述我的话，就不推】
+   *
+   * 实测（2026-10-26 17:09~17:13）她连着几条「说了一句」，字面就是我刚说的话，
+   * 主人看到的是「自己的回答被挂成小鲸的气泡」。根因是背景里塞了我的完整正文。
+   * 闸 1 已经把源头压小了，这里再兜一道：
+   * 把她这段和「最近几条我说的话」比相似度，超 0.55 就当她没说话。
+   */
+  try {
+    const __norm = (x) => String(x || '').replace(/[\s，。、！？；：「」（）()\[\]【】~～…·\-—_'"“”‘’]/g, '');
+    const __mine = __norm(text);
+    if (__mine.length >= 8) {
+      const __msgs = (session?.messages || []);
+      const __recent = [];
+      for (let __i = __msgs.length - 1; __i >= 0 && __recent.length < 6; __i--) {
+        const __m = __msgs[__i];
+        if (!__m || __m.role !== 'assistant' || __m._whale || __m._tale) continue;
+        const __t = __norm(__m.content);
+        if (__t) __recent.push(__t);
+      }
+      const __grams = (s, n = 6) => {
+        const set = new Set();
+        for (let __k = 0; __k + n <= s.length; __k++) set.add(s.slice(__k, __k + n));
+        return set;
+      };
+      const __g1 = __grams(__mine);
+      for (const __t of __recent) {
+        if (!__t) continue;
+        const __g2 = __grams(__t);
+        if (!__g1.size || !__g2.size) continue;
+        let __hit = 0;
+        for (const __g of __g1) if (__g2.has(__g)) __hit++;
+        const __ratio = __hit / __g1.size;
+        if (__ratio >= 0.55) {
+          try { logWhaleAction('闸2 拦下：她在复述我的话（重合 ' + __ratio.toFixed(2) + '）'); } catch {}
+          try { send({ type: 'whale_stream_finish', text: '' }); } catch {}
+          return;
+        }
+      }
+    }
+  } catch {}
+
   const text = String(r?.text ?? '').trim();
   if (!text) return;
+
+  /**
+   * 【闸 B：她说的话跟我的回答太像，就当她没说】
+   *
+   * 上面闸 2 只跟我"这一轮上一句"比。可我的回答常常分好几条落
+   * （工具调用中间态 + 最后那段），闸 2 拿到的对比样本经常是空的或很短的。
+   *
+   * 这里改成：把我这一轮所有说过的话拼起来当样本，按 2-gram 重合率比。
+   * 超过 0.5 就认定她在复述，直接丢掉——她的原话本来就该是她自己的判断，
+   * 不是把我的结论换个说法再说一遍。
+   */
+  try {
+    const mineAll = (() => {
+      const msgs = Array.isArray(session?.messages) ? session.messages : [];
+      const parts = [];
+      for (let k = msgs.length - 1; k >= 0; k--) {
+        const m = msgs[k];
+        if (!m) continue;
+        if (m.role === 'user') break;
+        if (m.role === 'assistant' && !m._whale && !m._tale) {
+          const t = String(m.content ?? '').trim();
+          if (t) parts.push(t);
+        }
+      }
+      return parts.join('\n');
+    })();
+    if (mineAll) {
+      const grams = (s) => {
+        const t = String(s).replace(/[\s\p{P}\p{S}]+/gu, '');
+        const g = new Set();
+        for (let i = 0; i < t.length - 1; i++) g.add(t.slice(i, i + 2));
+        return g;
+      };
+      const g1 = grams(text);
+      const g2 = grams(mineAll);
+      if (g1.size && g2.size) {
+        let hit = 0;
+        for (const x of g1) if (g2.has(x)) hit++;
+        const ratio = hit / g1.size;
+        /**
+         * 【收窄 · 2026-10-26 17:35】
+         *
+         * 原来只看重合率 >= 0.5 就丢。风险：我这轮话多，她只是评价两句，
+         * 常用字的 2-gram 也容易撞到 0.5 —— 那就把她正常的话也丢了。
+         *
+         * 加一个「长度条件」：她说的必须比我的样本短得多（不到 70%），
+         * 才可能是照抄。她要真有自己的判断，往往会说新的东西，重合自然低。
+         * 两个条件同时成立才丢 —— 宁可漏掉一次复述，也别把她整段静音。
+         */
+        const lenRatio = g1.size / Math.max(1, g2.size);
+        if (ratio >= 0.5 && lenRatio < 0.7) {
+          try { logWhaleAction('闸B 丢掉：她在复述我这一轮的话（重合 ' + ratio.toFixed(2) + '，长度比 ' + lenRatio.toFixed(2) + '）'); } catch {}
+          try { send({ type: 'whale_stream_finish', text: '' }); } catch {}
+          return;
+        }
+      }
+    }
+  } catch {}
+
 
   /**
    * 【她的话怎么送到主人眼前】
@@ -676,12 +880,37 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   } catch {}
   try { logWhaleAction('说了一句：' + String(text).replace(/\s+/g, ' ').slice(0, 120)); } catch {}
 
-  // 也挂进会话，重开窗口还画得出来
+  /**
+   * 【也挂进会话，重开窗口还画得出来】—— 2026-10-26 修
+   *
+   * 修了两件实测出过的事：
+   *
+   * ① 空壳别落盘。以前 text 只要非空就 push。她有时候整段就是个壳
+   *    （whale-actions.log 里真有一条 10 字的「（它查完什么都没说）」）。
+   *    落进去以后，界面上最后一条就变成这句空壳 —— 主人找「我刚才那句话」找不到。
+   *
+   * ② 她的话必须标清楚是「并排插进来的」，不是这一轮的收尾回答。
+   *    实测会话 smvp1ardfhg5g：接口给出的最后一条永远是 whale=小鲸，
+   *    主人看到的就是「小鱼的话没显示」。
+   *    根因：她是并排跑的另一条线，往往比我先收工 —— 她 push 的时候
+   *    我的回复还没进 messages。光改顺序治不了（她确实先说完了），
+   *    所以这里打 _whaleSide：前端据此知道「最后那条是插话」，
+   *    不会把它当成「小鱼说完了」。
+   */
   try {
-    const at = session.messages.length;
-    session.messages.push({ role: 'assistant', content: text, _whale: '小鲸' });
-    try { saveSession(session); } catch {}
-    void at;
+    const body = String(text || '').trim();
+    // 去掉括号旁白、标点、空白之后还剩字，才算真的说了话
+    const meaningful = body.replace(/[（(][^）)]*[）)]/g, '').replace(/[\s\p{P}]/gu, '');
+    if (meaningful.length > 0) {
+      session.messages.push({
+        role: 'assistant',
+        content: text,
+        _whale: '小鲸',
+        // 这句是并排插进来的，不是这一轮的收尾回答
+        _whaleSide: true,
+      });
+      try { saveSession(session); } catch {}
+    }
   } catch {}
 }
 
@@ -1021,6 +1250,8 @@ async function startPeerTurn(sessionId) {
  * 走 runAgent 跟 /api/chat 同一条路，但没有 HTTP 客户端在等：
  * onEvent 只做日志，答完的话照常落盘，前端靠 followLive / attachLive 补画。
  */
+const __iqDbg = (m) => { try { const _p = process.env.APPDATA + '\\小鱼Agent\\data\\.state\\iq-debug.log'; __iqAppendSync(_p, new Date().toISOString() + ' ' + m + '\n'); } catch {} };
+
 async function startQueuedTurn(sessionId) {
   const session = getSession(sessionId);
   if (!session) throw new Error('没有这个会话');
@@ -2068,6 +2299,55 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/api/opening/reset') {
     return json(res, 200, resetOpeningTexts());
+  }
+
+  // ---- 小鲸的身份卡：她的人设 + 她用的模型 ----------------------------------
+  //
+  // 主人原话：「能在功能页的子智能体那栏增加修改人设与模型的功能吗？」
+  // 她的人设和模型存在 .state/whale-profile.json，跟会话完全无关 ——
+  // 换多少会话都是同一个小鲸、同一套人设、同一个模型。
+  if (req.method === 'GET' && url.pathname === '/api/whale/profile') {
+    try {
+      const p = getWhaleProfile();
+      return json(res, 200, {
+        ok: true,
+        persona: p.persona,
+        personaCustom: p.personaCustom,
+        modelId: p.modelId,
+        /** 内置那套人设的「长相」：界面要能说清「没改过时她是什么样的」 */
+        builtinHint:
+          '内置那套写死在程序里：她是小鲸，小鱼的姐妹 —— 沉、话少、比小鱼不客气，' +
+          '哄主人不是她的活，她管的是把事查清楚、把风险说明白。' +
+          '想换就写在下面，写完全套替换性格那一部分（底线、安全词说明、本子、状态都不动）。',
+        maxChars: MAX_PERSONA_CHARS,
+      });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/whale/profile/save') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const p = saveWhaleProfile(payload || {});
+      return json(res, 200, { ok: true, persona: p.persona, personaCustom: p.personaCustom, modelId: p.modelId });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/whale/profile/reset') {
+    try {
+      const p = saveWhaleProfile({ persona: '', modelId: '' });
+      return json(res, 200, { ok: true, persona: p.persona, personaCustom: p.personaCustom, modelId: p.modelId });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
   }
 
   // ---- 小鱼的嗓子：状态 / 换声音 / 试听 ----
@@ -3313,6 +3593,51 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (process.env.XIAOYU_DESKTOP !== '1') {
       return json(res, 501, { ok: false, error: '这个窗口不是从桌面图标打开的，没法自己重启' });
     }
+    /**
+     * 【主动重启也要能续跑】
+     *
+     * 以前只有「进程崩了」才写 resume.json，主动重启这条路是不写的 ——
+     * 所以重启之后虽然新代码生效了，可手上没干完的活没人接着做，
+     * 主人还得自己再打一句「继续」。
+     *
+     * 现在重启前也记一笔。记的是【当前正在跑的那个会话 id】，
+     * 不是「上一次聊过的会话」—— 所以绝不会串到别的会话去。
+     * 只有真的有一轮在跑（runningTurns 里有它）才记，没在跑就不记，
+     * 免得重启完莫名其妙自己开一轮。
+     *
+     * 【必须放在 json(res) 之前】：body(req) 要把请求体读完，
+     * 而响应一发出去，这条连接就收尾了，再去读 body 是空的。
+     */
+    let _resumeSid = '';
+    try {
+      const _b = await body(req).catch(() => ({}));
+      const _want = String(_b?.sessionId || '');
+      /**
+       * 【认谁在跑，不认谁最后聊过】
+       *
+       * 前端点「重启」时不一定带 sessionId，所以这里兜底：
+       * 只从 runningTurns 里找「此刻真有一轮在跑」的会话。
+       * 绝不去翻 lastSessionId —— 那个是「最后聊过的」，
+       * 用它就正好会犯主人担心的事：重启完跑到别的会话里去接着干。
+       * runningTurns 里没有，就一条都不记，重启完安安静静。
+       */
+      const _cands = _want ? [_want] : [...runningTurns.keys()];
+      for (const _sid of _cands) {
+        const _live = runningTurns.get(_sid);
+        if (!_live) continue;
+        const _d = _live.draft;
+        markInterrupted({
+          sessionId: _sid,
+          text: _d ? _d.text : '',
+          reason: '主人让它重启（重启前这一轮还没跑完）',
+          taskLine: lastUserLine(_sid),
+        });
+        _resumeSid = _sid;
+        break;
+      }
+    } catch (e) {
+      console.warn('[restart] 记续跑意图失败（不影响重启）：', String(e?.message ?? e));
+    }
     json(res, 200, { ok: true });
     // 回完再退，让界面收到回执。退出码 75 = 「我要重启」，electron/main.cjs 会认。
     /**
@@ -3670,7 +3995,6 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 而不是看着一份永远 done=false 的缓存以为它还在跑。
      */
     // 先占个位（ac 还没有，下面建好再换成真的）；收尾时按「对象」摘，不按 ac 比。
-    const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId, queued: [] };
     /**
      * 【她跟我是并排的，不是排在我后面】
      *
@@ -3688,7 +4012,75 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 不 await：她要想几秒，绝不能把我这一轮拖慢。
      * 她不想说就一个字都不回（提示里写死了），不会每句都抢话。
      */
-    if (whaleOn(sessionId)) {
+    /**
+     * 【这一轮的登记对象 —— 提前建】
+     *
+     * 原来它建在闸 3 后面，于是闸 3 判「我忙不忙」时压根没有这个对象，
+     * 只能读到「不忙」。现在挪到这里，闸 3 一判就是准的。
+     * 后面 ac / done 建好之后再补挂上去（保持原逻辑不变）。
+     */
+    const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId, queued: [] };
+
+    /**
+     * 【闸 3：主人喊收工，就别叫她开口】
+     *
+     * 「别说话了」「修吧」「动手吧」「闭嘴」这类是把活交下去的指令，
+     * 她要开口也是废话，而且她一开口就容易被当成「回答」。
+     * 命中就不叫她 —— 她要真想说，下一轮还有机会。
+     */
+    /**
+     * 【2026-10-26 修：收工词表太窄】
+     *
+     * 实测出事：主人打了「改」「命令，不要废话了，直接一次性找到问题全部修好」，
+     * 旧表只认「别说话了/修吧/动手吧」，这两句都没命中 —— 她照常开口，
+     * 她的话先落盘、排在我前面，主人看到的是「小鲸在答，小鱼那句没了」。
+     *
+     * 现在的判据分两档：
+     *   · 明确收工（原来那批）
+     *   · 把活派下来的单字/短句：改、修、命令、动手、开始干、一次修好……
+     *     这类句子讲的是「你去干活」，不是在跟她聊天，她开口就是抢。
+     */
+    const __quietCmd = /^(别说话了|别说了|闭嘴|修吧|动手吧|直接修|去修|干吧|开干|不用说了|安静|改|修|命令|动手|开始干|干活|去干|一次修好|全部修好|修好|改好)/i;
+    const __nowSaid = String(lastUserTextOf(session) || '').replace(/\s+/g, '');
+    // 上限从 20 放到 40：主人的派活令常常带一句说明（「命令，不要废话了，直接一次性找到问题全部修好」= 24 字），
+    // 卡在 20 字会让这种句子漏网 —— 那正是这次出事的原句。
+    const __quiet = Boolean(__nowSaid && __nowSaid.length <= 40 && __quietCmd.test(__nowSaid));
+    /**
+     * 【闸 3 补一条：主人已经把活交下来了就别插嘴】
+     * 上面只按「这句话像不像派活」判。还有一种情况：这一轮我正开着工具在干，
+     * 她这时候开口，话会落在我的工具调用中间，读起来就是「她替我答了」。
+     * 判据用 runningTurns（这一轮我在跑），不是靠猜。
+     */
+    /**
+     * 【2026-10-26 二次修：这道锁从来没起过作用】
+     *
+     * 上一版写的是 Boolean(runningTurns.get(sessionId)) —— 看着对，
+     * 实测全是 false。因为登记 runningTurns.set(sessionId, reg) 写在**下面**，
+     * 程序先问「我忙不忙」，那时候还没登记，答案永远是「不忙」。
+     *
+     * 所以闸 3 只剩「收工词」那一半在干活。主人打一句不带收工词的话，
+     * 她就照常开口，抢在我的回答前面落盘 —— 主人看到的就是「我的话没了」。
+     *
+     * 现在改成看 __selfRunning：这一轮是**我**在跑，就绝不叫她。
+     * 判据用「本轮起始时间」，不靠已有登记 —— 这是硬事实，不是猜。
+     */
+    /**
+     * 【她该不该开口 —— 判据修正 2026-10-26 17:40】
+     *
+     * 上一版我写的是 Boolean(reg && reg.startedAt) —— 错得离谱：
+     * reg 就是这一轮刚建的对象，startedAt 必然有值，
+     * 于是 __busyTurn 永远为真、她永远开口不了。主人当场发现「小鲸说不了话了」。
+     *
+     * 正确的语义是：**另一个会话轮次正在跑** 才算忙。
+     *   · runningTurns.get(sessionId) === reg  → 就是我自己，不算忙（她本来就该并排在场）
+     *   · 拿到别的对象                          → 真有另一轮在跑，那才别插嘴
+     *
+     * 至于「我会不会被她抢话」，已经由闸 A（我这一轮说过了就不叫她）
+     * 和闸 B（她复述我的回答就丢掉）分开管，不需要在这里一刀切。
+     */
+    const __holder = runningTurns.get(sessionId);
+    const __busyTurn = Boolean(__holder && __holder !== reg);
+    if (whaleOn(sessionId) && !__quiet && !__busyTurn) {
       const userTextNow = lastUserTextOf(session);
       if (userTextNow) {
         (async () => {
@@ -3919,6 +4311,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         // 历史里已经有了这条（同一对象）就不用再接；
         // 开场那两条走 applyOpening / finishOpening 插进 history，对象一致，会走到这一句。
         if (seenBefore.has(m)) continue;
+        /**
+         * 【给我说的话盖个时间戳】
+         *
+         * 闸 A 靠「我最后一句离现在多久」判断要不要让她让一让。
+         * 以前消息上根本没有时间字段，那个判据只能瞎猜。
+         * 这里落盘前补一个 _at（毫秒），老消息没有就退回 0 —— 不影响读。
+         */
+        if (m.role === 'assistant' && !m._at) m._at = Date.now();
         history.push(m);
         n++;
       }
@@ -4473,7 +4873,30 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 收尾时把自己这一条登记摘掉（提前登记过、ac 可能还是 null，所以认对象不认 ac）
       {
         const mine = runningTurns.get(sessionId);
-        if (mine === reg || (mine && mine.ac === ac)) runningTurns.delete(sessionId);
+        /**
+         * 【收尾摘登记：不能因为被新一轮顶掉就永远不摘】
+         *
+         * 以前判据是「登记的这一条 === 我这条」，对不上就不删。
+         * 可主人连着插话 / 反复试的时候，同一个会话会起新的一轮，
+         * 把 runningTurns 里的登记顶掉；等老的那一轮 finally 回来，
+         * 一看对不上就跳过 —— 那条登记从此永远留在表里。
+         * 表现（2026-10-26 实测抓到的）：/api/running 里挂着早就跑完的会话，
+         * 于是 /api/interject 以为「还在跑」，把主人插的话挂进一个
+         * 永远不会被消费的队列 —— 主人那儿就是「说了一句，一秒就没，也没人答」。
+         *
+         * 现在改成：只要表里这条不是「比我还新的一轮」，就摘掉。
+         * 比谁新看 startedAt；看不出来（缺字段）就当是同一条，照摘不误 ——
+         * 宁愿多摘一次（下一轮会自己重新登记），也别留一条死的。
+         */
+        if (!mine) {
+          // 已经没人登记了，什么都不用做
+        } else if (mine === reg || (mine && mine.ac === ac)) {
+          runningTurns.delete(sessionId);
+        } else {
+          const mineAt = Number(mine.startedAt) || 0;
+          const myAt = Number(reg.startedAt) || 0;
+          if (!mineAt || !myAt || mineAt <= myAt) runningTurns.delete(sessionId);
+        }
       }
       // 正常结束那条路已经接过一次；出错 / 被中止时这里兜底，
       // 不然「半截回答」也跟着丢。commitWireBack 内部用 Set 记账，重复调不会重复接。
@@ -4504,6 +4927,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       if (!Array.isArray(reg.queued)) reg.queued = [];
       const pending = reg.queued;
+      // __iqDbg('consume sid='+sessionId+' regQueuedLen='+reg.queued.length+' runningSame='+(runningTurns.get(sessionId)===reg));   // 调试日志：要开就删掉行首这两个斜杠
       if (pending.length) {
         pending.shift();
         setImmediate(() => {
@@ -4547,6 +4971,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 主人看到的就是：打了字、按了发送、消息没了，什么都没发生。
      */
     const wasRunning = Boolean(turn && turn.ac && !turn.ac.signal.aborted);
+    // __iqDbg('interject-in sid='+sessionId+' hasTurn='+!!turn+' hasQueued='+(turn?Array.isArray(turn.queued):'n/a')+' wasRunning='+wasRunning);   // 调试日志：要开就删掉行首这两个斜杠
     /**
      * 插话等这一轮收尾，最多等多久。
      *
@@ -4639,6 +5064,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (!wantsStop) {
       if (turn && Array.isArray(turn.queued)) {
         turn.queued.push(message);
+        // __iqDbg('pushed len='+turn.queued.length);   // 调试日志：要开就删掉行首这两个斜杠
       } else if (!wasRunning) {
         // 根本没有在跑的那一轮：这句话没人接，当场起一轮
         setImmediate(() => {

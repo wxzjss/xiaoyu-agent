@@ -558,6 +558,14 @@ export async function runAgent({
       })),
     };
     messages.push(assistantMsg);
+    try {
+      const __dbgAppend = (await import('node:fs')).appendFileSync;
+      __dbgAppend("C:\\Users\\35453\\AppData\\Roaming\\小鱼Agent\\data\\.state\\dup-debug.log",
+        new Date().toISOString() + ' [agent] push assistantMsg round=' + round +
+        ' ids=' + assistantMsg.tool_calls.map((t) => t.id).join(',') +
+        ' textLen=' + String(assistantMsg.content || '').length +
+        ' msgsLen=' + messages.length + '\n');
+    } catch {}
 
     for (const call of assistantMsg.tool_calls) {
       onEvent({ type: 'tool_start', id: call.id, name: call.function.name, args: call.function.arguments });

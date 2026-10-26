@@ -116,6 +116,29 @@ function scanRules(extraNames) {
       skipFiles: ['scripts/publish.mjs', 'scripts/auto-publish.mjs'],
     },
   ];
+  /**
+   * 【主人自己的私设人设，绝不能跟着发布出门】
+   *
+   * 2026-10-26 主人原话：「我后来改了子智能体的人设（私设），发布的时候要发默认人设，不是我的私设」。
+   *
+   * 私设本来存在 .state/whale-profile.json（不进发布包），但有两个口子会漏：
+   *   1. 谁把 .state 抄进了 src/ 或 public/；
+   *   2. 有人图省事，直接把私设写进 src/whale-default-persona.md 当默认。
+   * 所以这里按「当前本机私设的正文片段」当扫描词：命中就中止发布。
+   * 只取足够长的片段（16 字以上），太短的片段会撞上正常文字，误报比漏报更烦人。
+   */
+  const mine = loadLocalPersonaFragments();
+  for (const [i, frag] of mine.entries()) {
+    const esc = frag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    rules.push({
+      id: `local-persona-${i}`,
+      re: new RegExp(esc, 'g'),
+      why: '本机私设人设的原文（发布物里只该有默认人设）',
+      // 打包脚本自己得提到这件事，别自己打自己
+      skipFiles: ['scripts/publish.mjs', 'scripts/auto-publish.mjs'],
+    });
+  }
+
   if (nameAlt) {
     rules.push({
       id: 'known-name',
@@ -151,6 +174,43 @@ function loadSecretValues() {
     }
   } catch {}
 
+  return out;
+}
+
+/**
+ * 把本机「私设人设」里能当指纹的片段抽出来，供扫描阶段用。
+ *
+ * 读 .state/whale-profile.json 的 persona，凡是有正文就抽 —— 这里不信任 personaCustom 标记：
+ * 旧版本存下来的档案可能只写了 persona 没写 personaCustom（实测踩过），标记为假不代表没私设。
+ * 然后按句子切开，只留长度 >= 16 的句子（太短会撞上正常文字）。最多取 40 句，
+ * 够拦住「整份抄过去」了，也不至于让扫描慢下来。
+ */
+function loadLocalPersonaFragments() {
+  const out = [];
+  const paths = [
+    join(ROOT, '.state', 'whale-profile.json'),
+    // 真正在用的那一份在数据目录（%APPDATA%\小鱼Agent\data），源码目录里通常没有
+    join(process.env.APPDATA || '', '小鱼Agent', 'data', '.state', 'whale-profile.json'),
+    join(process.env.LOCALAPPDATA || '', '小鱼Agent', 'data', '.state', 'whale-profile.json'),
+  ];
+  let j = null;
+  for (const p of paths) {
+    if (!p) continue;
+    try { j = JSON.parse(readFileSync(p, 'utf8')); break; } catch {}
+    j = null;   // 这条读失败就把上一个结果清掉，别让「读到了但没字段」混进来
+  }
+  try {
+    if (!j) return out;
+    const text = String(j.persona || '');
+    for (const raw of text.split(/[\n。！？；，]/)) {
+      const seg = raw.trim();
+      if (seg.length >= 16) out.push(seg);
+      if (out.length >= 40) break;
+    }
+  } catch (e) {
+    if (process.env.DEBUG_PERSONA_SCAN) console.error('[persona-scan] 读失败', e.message);
+  }
+  if (process.env.DEBUG_PERSONA_SCAN) console.error('[persona-scan] 片段数', out.length, out.slice(0,3));
   return out;
 }
 

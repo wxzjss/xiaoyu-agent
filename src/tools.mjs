@@ -8,7 +8,7 @@ import { resolve, dirname, isAbsolute, relative, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { planAction, noteAction } from './plan.mjs';
-import { isToolEnabled, featureNameOfTool, enabledToolNames } from './features.mjs';
+import { isToolEnabled, getEnabledMap, featureNameOfTool, enabledToolNames } from './features.mjs';
 import { snapshotBeforeWrite } from './rewind.mjs';
 import { webSearch, formatResults } from './search.mjs';
 import { sendFileTool } from './tools-sendfile.mjs';
@@ -27,6 +27,9 @@ const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** Per-run context (which session is talking) so plan/note land in the right board. */
 /** 纯净模式下不该出现的工具（见 runTool 里那道闸）。 */
 const FOREIGN_IN_PURE = ['memory_add', 'memory_pin'];
+
+/** 长期记忆关着时，碰 .state 的回答 */
+const BLOCKED_HINT = '长期记忆现在是关着的，那一块不能读也不能写。要用就先在顶部【功能】里把长期记忆打开。'
 
 /**
  * 这一轮的工具上下文，按「异步调用链」隔离。
@@ -193,13 +196,33 @@ export function beginOutbox() {
  * 为什么用标记不用参数：工具参数是模型自己填的，不能信；
  * 标记是这边代码设的，模型碰不到。
  */
+/**
+ * 【・state 禁区】—— 2026-10-27 新增
+ *
+ * 「长期记忆」关掉时，记忆本就在 .state 里。
+ * 光不注入还不够：她 list_dir 翻一遍就看见了，read_file 再一读就全拿到了。
+ * 所以这里钉一道死规矩：开关关着就不许碰 .state。
+ *
+ * 为什么不是一直禁：开着的时候她自己翻本子是正常需求（主人要求过「我要能看到她记了什么」）。
+ */
+function stateBlocked(abs) {
+  try {
+    const on = getEnabledMap()['memory'] !== false;
+    if (on) return false;
+    const st = join(config.dataDir, '.state');
+    const relToState = relative(st, abs);
+    if (!relToState.startsWith('..') && !isAbsolute(relToState)) return true;
+    return false;
+  } catch { return false; }
+}
+
 function safePath(p) {
   const abs = isAbsolute(p) ? resolve(p) : resolve(ROOT, p);
+  // 长期记忆关着时，.state（记忆本所在）一概不许碰 —— 放在所有分支之前，一条都不能漏
+  if (!abs) throw new Error(`路径不对：${p}`);
+  if (stateBlocked(abs)) throw new Error(BLOCKED_HINT + ': ' + p);
   // 她那一次：全盘放开
-  if (CTX.fullAccess === true) {
-    if (!abs) throw new Error(`路径不对：${p}`);
-    return abs;
-  }
+  if (CTX.fullAccess === true) return abs;
   const rel = relative(ROOT, abs);
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`path outside workspace is not allowed: ${p}`);

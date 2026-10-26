@@ -493,7 +493,13 @@ export async function runSubagent({
      * 主人原话：换多少会话，她的性格都不能跟着变。
      * 所以这里一个会话相关的 config 都不出现 —— 一读进来，性格就跟着会话飘了。
      */
-    let memoryText = readWhaleMemory();
+    /**
+     * 【功能开关：长期记忆】—— 2026-10-27 修
+     *
+     * 关掉之后她不该再读本子：不然主人以为「关了就不知道了」，
+     * 她其实每次开口都把整本念一遍。跟小鱼那边同一道闸。
+     */
+    let memoryText = getEnabledMap()['memory'] !== false ? readWhaleMemory() : '';
     /**
      * 【已结案的条目先标死，别让她当成待办念】
      *
@@ -847,7 +853,8 @@ export async function runSubagent({
         outcomeText = clean || '';
         return {
           ok: true,
-          text: clean || '（它查完什么都没说）',
+          // 【别再编一句假话兜底】她没话说就是没话说，返回空串让上层不显示（2026-10-27 修）
+          text: clean || '',
           rounds: round + 1,
           tools: trace.length,
           usage: totalUsage,

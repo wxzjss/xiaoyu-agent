@@ -495,6 +495,45 @@ function startWhaleSelfTalk() {
  * 【她说什么都不写进我这一轮】她的话单独成一条（带 _whale），
  * 走 send 推出去，界面画成她自己的气泡。
  */
+/**
+ * 【统一落盘：把主人说的话写进历史】—— 2026-10-27
+ *
+ * 两个 bug 同一个根：主人的话没真正进历史。
+ *   ① 小鱼关掉的分支忘了 push（只叫了小鲸）→ 重启后只剩她的回答
+ *   ② 小鲸那一轮收尾拿创建时的旧 session 存盘 → 把刚落的话盖掉
+ *
+ * 所以这里只留一份实现，所有入口都调它。
+ *
+ * @returns {boolean} 真的写进去了（已存在同样的就不重复写，返回 false）
+ */
+function saveUserMessage(sessionId, message, attachments = null) {
+  try {
+    const said = String(message ?? '');
+    if (!said.trim()) return false;
+    // 必须现取：创建时那份可能已经被收尾换掉了
+    const live = getSession(sessionId);
+    if (!live || !Array.isArray(live.messages)) return false;
+    const msgs = live.messages;
+    try { repairHistory(msgs); } catch {}
+    const last = msgs[msgs.length - 1];
+    const dup = Boolean(last && last.role === 'user' && String(last.content ?? '') === said);
+    if (!dup) {
+      const uMsg = { role: 'user', content: message };
+      if (Array.isArray(attachments) && attachments.length) uMsg.attachments = attachments;
+      msgs.push(uMsg);
+    }
+    sessions.set(sessionId, live);
+    live.updatedAt = Date.now();
+    saveSession(live);
+    setLastSessionId(sessionId);
+    try { logWhaleAction(dup ? '主人这句已在历史里，不重复写' : '主人这句已落盘：长度=' + msgs.length); } catch {}
+    return !dup;
+  } catch (e) {
+    console.warn('[chat] 主人这句没存下：', String(e?.message ?? e));
+    return false;
+  }
+}
+
 async function whaleMaybeReply({ session, userText, send, sessionId, live = null, speaksToHer = false, extraRule = '' }) {
   const { runSubagent } = await import('./subagent.mjs');
 
@@ -948,11 +987,21 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       return;
     }
     // 假动作：没有工具却说「查完了 / 翻过日志了」，且整条就这么点字
-    if (/(查完|查过|翻过|看过|测过|试过)(了)?/.test(withoutAside) && withoutAside.length <= 12) {
+    /**
+     * 【假动作判据收紧】—— 2026-10-27 修
+     *
+     * 原来是「提到查完/看过 且不超过 12 字」就当假动作丢掉。
+     * 结果把正常的短回答也猎杀了：「查完了日志里没异常」（9 字）
+     * 被当成假动作丢掉 → 她没话了 → 下游兜底成「（它查完什么都没说）」。
+     *
+     * 现在只吐「整条就只剩一个查完的动作词」的情况，
+     * 带着具体内容的短回答一律放行。
+     */
+    const __bareAction = /^(\u67e5\u5b8c\u4e86?|\u67e5\u8fc7\u4e86?|\u7ffb\u8fc7\u4e86?|\u770b\u8fc7\u4e86?|\u6d4b\u8fc7\u4e86?|\u8bd5\u8fc7\u4e86?|\u641c\u8fc7\u4e86?|\u627e\u8fc7\u4e86?)[\u4e86\u7684]?$/;
+    if (__bareAction.test(withoutAside)) {
       try { logWhaleAction('丢掉假动作：' + body.slice(0, 60)); } catch {}
       return;
     }
-    // 去掉括号旁白、标点、空白之后还剩字，才算真的说了话
     const meaningful = body.replace(/[（(][^）)]*[）)]/g, '').replace(/[\s\p{P}]/gu, '');
     if (meaningful.length > 0) {
       /**
@@ -1070,16 +1119,19 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
             try { logWhaleAction('押后：我这一轮还没收尾，这句等收尾补'); } catch {}
           } else {
             // 我那一轮已经过去了 —— 她这句是独立插话，立刻落盘，别押
-            if (__pushWhale(msgs, rec)) { try { saveSession(session); } catch {} }
+            // 存盘前必须现取：主人那句可能已落在新一份里，写旧的会盖掉它
+            if (__pushWhale(msgs, rec)) { try { saveSession(getSession(sessionId) || session); } catch {} }
             // ↑ 存盘在 __pushWhale 通过之后才做，别把重复的也存进去
             try { logWhaleAction('直接落盘：我这一轮已收尾，她这句是独立插话'); } catch {}
           }
         } catch {
           // 任何意外都退回「直接落盘」——宁可顺序差一点，也不能丢话
-          if (__pushWhale(msgs, rec)) { try { saveSession(session); } catch {} }
+          // 存盘前必须现取：主人那句可能已落在新一份里，写旧的会盖掉它
+          if (__pushWhale(msgs, rec)) { try { saveSession(getSession(sessionId) || session); } catch {} }
         }
       } else {
-        if (__pushWhale(msgs, rec)) { try { saveSession(session); } catch {} }
+        // 存盘前必须现取：主人那句可能已落在新一份里，写旧的会盖掉它
+        if (__pushWhale(msgs, rec)) { try { saveSession(getSession(sessionId) || session); } catch {} }
         // ↑ 存盘挂在 __pushWhale 之后
       }
     }
@@ -4235,7 +4287,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 现在在这儿就把主人这句给她，让她照常判断要不要接。
        * 她那句话走她自己的通道推出去，不指望这条已经关掉的 SSE。
        */
-      try {
+      /**
+       * 【主人说的话必须落地】—— 2026-10-27 修
+       *
+       * 上面那段注释写着「会话历史里照样留着主人这句话」，
+       * 但代码里根本没有 push 也没有 saveSession。
+       * 表现：小鱼一关，主人说的话全不进历史，重启后只剩小鲸的回答。
+       *
+       * 顺序很重要：先落盘、再叫小鲸。
+       * 否则她那一轮的收尾会拿着自己那份 session 存盘，
+       * 把主人这句话抹掉。
+       */
+      // 主人这句必须先落盘，再叫小鲸（见 saveUserMessage 注释）
+      saveUserMessage(sessionId, message, attachments);
+        try {
         const sessForWhale = getSession(sessionId);
         const said = String(message || '').trim();
         if (sessForWhale && said && whaleOn(sessionId)) {

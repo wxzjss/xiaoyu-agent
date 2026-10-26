@@ -55,14 +55,26 @@ function msOr(raw, fallback, floorMs, name) {
   return n;
 }
 
-/** 上游 LLM 一个字节都不吐的忍耐上限（默认 5 分钟，最少给 15 秒） */
-export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 5 * 60 * 1000, 15000, 'LLM_IDLE_TIMEOUT_MS');
+/**
+ * 上游 LLM 一个字节都不吐的忍耐上限。
+ *
+ * 默认 10 分钟，最少给 3 分钟。
+ *
+ * 为什么定这么长：这个闸的本意是「上游真卡死了别让界面永远转圈」，
+ * 不是「催模型快点说话」。模型在长任务里憋半分钟一分钟都是常事，
+ * 主人刚发完消息就弹「我认输」是最难受的观感 —— 2026-10-26 踩过，
+ * 那次还是被一个残留的 LLM_IDLE_TIMEOUT_MS=600 坑的。
+ *
+ * 所以宁可 10 分钟才认输（那时基本可以确定是真卡死了），
+ * 也不要为了「反应快」在正常人身上误报。
+ */
+export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 10 * 60 * 1000, 3 * 60 * 1000, 'LLM_IDLE_TIMEOUT_MS');
 
-/** 单个工具从开跑到返回的忍耐上限（默认 30 分钟，最少给 10 秒；跑整套回归、装依赖都够） */
-export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, 10000, 'TOOL_MAX_TIMEOUT_MS');
+/** 单个工具从开跑到返回的忍耐上限（默认 30 分钟，最少给 3 分钟；跑整套回归、装依赖都够） */
+export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, 3 * 60 * 1000, 'TOOL_MAX_TIMEOUT_MS');
 
-/** 整轮允许的最长静默（默认 45 分钟，最少给 60 秒）—— 哑转闸管「一直在转」，这个管「完全不动」 */
-export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 45 * 60 * 1000, 60000, 'TURN_IDLE_MAX_MS');
+/** 整轮允许的最长静默（默认 60 分钟，最少给 10 分钟）—— 哑转闸管「一直在转」，这个管「完全不动」 */
+export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 60 * 60 * 1000, 10 * 60 * 1000, 'TURN_IDLE_MAX_MS');
 
 function fmtMins(ms) {
   const m = ms / 60000;

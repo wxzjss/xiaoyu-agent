@@ -39,6 +39,7 @@ import { readSelf, writeSelf, decayOverTime, afterRound, stateBrief, selfPath } 
 import { pushWhaleSays } from './whale-voice.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { takeMail, formatMail } from './peer.mjs';
 
 /**
  * 她的手。
@@ -774,6 +775,27 @@ export async function runSubagent({
     let totalUsage = null;
 
     for (let round = 0; round < maxRounds; round++) {
+      /**
+       * 【每轮先看一眼信箱】—— 2026-10-27 新增
+       *
+       * 主人要「她们一起干活一起交流互报进度」。
+       * 小鱼那边有 startPeerTurn 替真会话取信，但那只管会话；
+       * 她这一趟是子智能体，没人替她取 —— 信就一直堆在信箱里。
+       * 这里每轮开头先取一遍，有新信就当成一条 user 消息。
+       * 取不到、信箱为空 —— 一律无声，不能把她这一轮搞挂。
+       */
+      try {
+        const mails = takeMail(subSessionId);
+        if (mails && mails.length) {
+          messages.push({
+            role: 'user',
+            content: '（信箱里有别人递来的话，先看看。）\n' + formatMail(mails),
+            context: true,
+          });
+          // logWhaleAction 不在这一层作用域，用 console 就够（别为一行日志加依赖）
+          console.log('[subagent] 收到姐妹递来的 ' + mails.length + ' 封信');
+        }
+      } catch {}
       if (abortCtrl.signal.aborted) {
         return { ok: false, text: `超时了（${Math.round(timeoutMs / 1000)} 秒还没查完）。已经查到的：\n${trace.join('\n') || '（无）'}`, timedOut: true };
       }

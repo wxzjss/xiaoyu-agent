@@ -100,8 +100,18 @@ export function modelNameForSession(sessionId) {
  * Stream one chat completion.
  * Yields {type:'text', text} | {type:'reasoning', text} | {type:'tool_calls', toolCalls} | {type:'usage', usage}
  */
-export async function* streamChat({ messages, tools, signal, temperature, sessionId }) {
-  const ep = endpointForForSession(sessionId) ?? activeEndpoint();
+export async function* streamChat({ messages, tools, signal, temperature, sessionId, model }) {
+  /**
+   * 【显式指定的模型压过一切】
+   *
+   * 顺序：显式传的 model → 会话里切过的 → 全局默认。
+   * 小鲸没有会话，她的模型就是靠这个参数带进来的（见 whale-profile.mjs）。
+   */
+  const _ovEp = endpointForForSession(sessionId) ?? activeEndpoint();
+  const _ep = String(model || '').trim()
+    ? { ..._ovEp, model: String(model).trim() }
+    : _ovEp;
+  const ep = _ep;
   const body = {
     model: ep.model,
     // 只发模型该看的那几个字段（内部标记一律剥掉，见上方 wireMessage 的注释）

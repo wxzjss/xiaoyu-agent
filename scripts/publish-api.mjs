@@ -6,6 +6,7 @@
  *   blobs → tree → commit → 更新 ref
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, relative } from 'node:path';
 
 const REPO = 'wxzjss/xiaoyu-agent';
@@ -26,7 +27,8 @@ async function api(token, path, opts = {}) {
     method: opts.method ?? 'GET',
     headers: headers(token),
     body: opts.body ? JSON.stringify(opts.body) : undefined,
-    signal: AbortSignal.timeout(60000),
+    // 大文件 blob 的 base64 body 不小，60s 会刚好卡在超时上，放宽到 3 分钟
+    signal: AbortSignal.timeout(180000),
   });
   const text = await res.text();
   let json = null;
@@ -71,24 +73,50 @@ export async function publishViaApi(dir, token, message) {
     if (!/404/.test(String(err.message))) throw err;
   }
 
-  // 2) 每个文件造 blob
+  // 2) 每个文件造 blob（先按内容 SHA 去重：同一个 blob 只传一次）
   const files = collect(dir);
   const entries = [];
+  const seen = new Map(); // contentSha -> blob.sha
   for (const rel of files) {
     const abs = join(dir, rel);
-    const isBin = BINARY_EXT.has(rel.slice(rel.lastIndexOf('.')).toLowerCase());
     const buf = readFileSync(abs);
-    const blob = await api(token, `/repos/${REPO}/git/blobs`, {
-      method: 'POST',
-      body: { content: buf.toString('base64'), encoding: 'base64' },
-    });
-    entries.push({ path: rel, mode: '100644', type: 'blob', sha: blob.sha });
+    const ext = rel.slice(rel.lastIndexOf('.')).toLowerCase();
+    // BINARY_EXT 只用于日志区分，base64 传输对两者都成立
+    void BINARY_EXT.has(ext);
+    const contentSha = createHash('sha1')
+      .update('blob ' + buf.length + '\0')
+      .update(buf)
+      .digest('hex');
+    let blobSha = seen.get(contentSha);
+    if (!blobSha) {
+      const blob = await api(token, `/repos/${REPO}/git/blobs`, {
+        method: 'POST',
+        body: { content: buf.toString('base64'), encoding: 'base64' },
+      });
+      blobSha = blob.sha;
+      seen.set(contentSha, blobSha);
+    }
+    entries.push({ path: rel, mode: '100644', type: 'blob', sha: blobSha });
   }
 
-  // 3) 一棵完整的树（不带 base_tree = 完全以这里为准，仓库里多出来的会被清掉）
+  /**
+   * 3) 建树 —— 必须带 base_tree。
+   *
+   * 【为什么】不带 base_tree 时 GitHub 会把这棵树当成「完整快照」：仓库里
+   * 有、但这棵树里没有的路径会被**静默删掉**。而 dir 一般是发布包
+   * （dist/release），是筛过的子集 —— 安卓工程 mobile/、插件源码
+   * vendor/、persona.mjs 这些不在发布包里的东西就会整个消失。
+   * 2026-10-26 真踩过：一次 API 发布把仓库里 58 个文件全清了，还得
+   * 再用 git push --force 补回来。
+   *
+   * 带上 base_tree 之后语义变成「在现有树上覆盖/新增这些文件」，
+   * 不在这次上传范围内的路径原样保留。
+   */
+  const treeBody = { tree: entries };
+  if (baseTree) treeBody.base_tree = baseTree;
   const tree = await api(token, `/repos/${REPO}/git/trees`, {
     method: 'POST',
-    body: { tree: entries },
+    body: treeBody,
   });
 
   // 4) 没变化就不提交

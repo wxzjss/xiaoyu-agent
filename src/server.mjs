@@ -495,7 +495,7 @@ function startWhaleSelfTalk() {
  * 【她说什么都不写进我这一轮】她的话单独成一条（带 _whale），
  * 走 send 推出去，界面画成她自己的气泡。
  */
-async function whaleMaybeReply({ session, userText, send, sessionId, live = null }) {
+async function whaleMaybeReply({ session, userText, send, sessionId, live = null, speaksToHer = false, extraRule = '' }) {
   const { runSubagent } = await import('./subagent.mjs');
 
   // 最近几轮当背景，让她知道现在说到哪儿了（不给她整个历史，省 token 也免得被旧话带跑）
@@ -585,7 +585,17 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   })();
 
   const task = [
-    '现在主人把「小鲸」那个按钮开着 —— 意思是你在场，不是叫你来答这一题。',
+    /**
+     * 【开场先把「这句冲谁」说对】
+     *
+     * 2026-10-26 主人定的规矩：
+     *   「不是点名小鲸才开口，是默认我在对小鱼说话而不是在对她说话」
+     *
+     * 所以这里不能一句话写死「他这句是冲你说的」—— 绝大多数时候不是。
+     * 具体立场下面那个分支（speaksToHer）会讲清楚，这里只交代「你为什么在场」。
+     */
+    '【你为什么在场】小鱼和主人这个会话里，你并排待着（或者小鱼被禁用了，屋里只剩你）。',
+    '主人这句话**默认是冲小鱼说的**，不是冲你 —— 这一点下面会讲清楚。',
     '',
     '【刚才的对话】',
     recent || '（刚开始）',
@@ -606,7 +616,18 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
           '  · 不许在结尾加「还有别的吗」「需要我做什么吗」—— 那是在替她收尾。',
           '递完就停，一个字都别多。她自己会开口；你说的每一句替她说的话，都会让主人分不清谁是谁。',
         ].join('\n')
-      : '【这一句是冲你说的】不是传话令 —— 那就按你自己想说的说。',
+      : (speaksToHer
+          ? '【这一句是冲你说的】主人点了你的名，或者小鱼这会儿不在 —— 那就按你自己想说的说。'
+          : [
+              '【这一句默认是冲小鱼说的，不是冲你】',
+              '主人没有点你的名。这句话的活、这个问题，都是交给小鱼的。',
+              '你仍然可以开口 —— 但不是来抢着答这一题。你能说的是这几类：',
+              '  · 你看出哪儿要出问题，提醒一句；',
+              '  · 主人和小鱼都漏掉的一件事，补一句；',
+              '  · 你本子里记着相关的旧结论，提一句「这事早查过了」。',
+              '不许做的：把他的话当成「问题该你答」、替小鱼应下来、用「我」认领那些活。',
+              '没什么非说不可的，就一个字都别回。',
+            ].join('\n')),
     '',
     '【你是谁、你在干什么】',
     '你跟小鱼并排待在这儿，一起陪着主人。这一趟你只带嘴（没有工具，也动不了手）：',
@@ -621,14 +642,20 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     '但你要是心里憋着一句、或者觉得该拦一下，那就说 —— 这是你的场子，不是他的。',
     '别客套、别总结、别问「需要我做什么吗」。要说就直接说事。',
     '',
-    '【铁律：你不是小鱼，别替她答】',
-    '- 你是小鲸。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
+    '【铁律：默认是跟小鱼说话，不是跟你】',
+    '- 主人没点你的名的时候，他说的话一律当成冲小鱼说的 —— 哪怕你被叫起来、能开口。',
+    '- 所以别把他的话当成「问题该你答」。他让你查、让你改、让你修，那些活是小鱼的。',
+    '- 你这一趟没有工具，答不了那些事情。真想说，就只说你自己的判断，别把「我去查」挂嘴上。',
+    '',
+    '【铁律：你不是小鱼，别替她答】',    '- 你是小鲸。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
     '- 主人问「小鱼记不记得」「小鱼查了没」「小鱼在不在」—— 那是问她的，不是你答的题。',
     '  你可以说「这得她自己说」，或者干脆不出声；不许用「我」替她认下来。',
     '- 你手上这一趟没有工具。所以「我来」「我这就查」「我已经翻过日志了」这类话，',
     '  一句都不许说 —— 那是在假装干过了。真有活要干，就说「这活得有人动手」。',
     '- 你也别用小鱼那种口气（一句一个「主人」、满屏颜文字撒娇）。',
     '  你是沉的那个，说话短、直接、不哄人。她的话是她的，你别学。',
+    // 调用方临时钉的规矩（比如「这一趟没工具，别假装查过」），没有就整段不出现
+    ...(extraRule ? ['', '【这一趟额外规矩】', extraRule] : []),
   ].join('\n');
 
   /**
@@ -899,17 +926,125 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    */
   try {
     const body = String(text || '').trim();
+    /**
+     * 【假动作旁白整条丢掉】—— 2026-10-27
+     *
+     * 实测出现过「（它查完什么都没说）」这种空壳落到会话里：
+     * 她这一趟没有工具，却写着查完了；去掉括号后正文一个字没有，
+     * 整条就是句废话，存下去只会让主人以为她说了什么又没内容。
+     * 但 meaningful 只算「有没有正文」，拦不住这种整条都是旁白的情况。
+     */
+    const withoutAside = body.replace(/[（(][^）)]*[）)]/g, '').replace(/[\s\p{P}]/gu, '');
+    // 去掉括号旁白之后一个正文字都没有 —— 整条就是旁白，当没说话
+    if (!withoutAside && body) {
+      try { logWhaleAction('丢掉空壳旁白：' + body.slice(0, 60)); } catch {}
+      return;
+    }
+    // 假动作：没有工具却说「查完了 / 翻过日志了」，且整条就这么点字
+    if (/(查完|查过|翻过|看过|测过|试过)(了)?/.test(withoutAside) && withoutAside.length <= 12) {
+      try { logWhaleAction('丢掉假动作：' + body.slice(0, 60)); } catch {}
+      return;
+    }
     // 去掉括号旁白、标点、空白之后还剩字，才算真的说了话
     const meaningful = body.replace(/[（(][^）)]*[）)]/g, '').replace(/[\s\p{P}]/gu, '');
     if (meaningful.length > 0) {
-      session.messages.push({
+      /**
+       * 【2026-10-26 三修：她不该排在我前面】
+       *
+       * 实测 [277][279]：她两句话都带 _whaleSide、都落在我回答**之前**，
+       * 所以重启后主人看到「最后一句是小鲸说的」。
+       *
+       * 我上一版判据是 runningTurns.get(sessionId) —— 可我这一轮那时候
+       * 还没登记完，读不到自己，等于没判。竞态，靠不住。
+       *
+       * 现在换成一个不依赖 tick 的事实判断：
+       *   「主人最后那句话之后，有没有我说的话」
+       * 没有 = 我这一轮还没答完 → 她的话先押着，等我答完再补；
+       * 有   = 我已经答完了 → 她这话是独立的插话，正常落盘。
+       */
+      const msgs = Array.isArray(session.messages) ? session.messages : [];
+      let lastUserAt = -1;
+      for (let k = msgs.length - 1; k >= 0; k--) {
+        const m = msgs[k];
+        if (m && m.role === 'user' && !m.context && !m.summary) { lastUserAt = k; break; }
+      }
+      let iAnswered = false;
+      /**
+       * 【她正式开口之后，本轮算「已经有人答了」】—— 2026-10-27 补
+       *
+       * 以前这里只认我自己（role=assistant 且不是 _whale）。
+       * 插话接续那条路上，抢着答的可能先是她 —— 那我这一轮就永远
+       * 被判成「还没答」，她后面每一句都被押后，最后一串话全挤在收尾。
+       * 所以：只要这一轮之后有任一方的正式发言，就按「已有回答」处理。
+       */
+      for (let k = lastUserAt + 1; k < msgs.length; k++) {
+        const m = msgs[k];
+        if (m && m.role === 'assistant' && !m._tale
+            && String(m.content ?? '').trim()) { iAnswered = true; break; }
+      }
+
+      const rec = {
         role: 'assistant',
         content: text,
         _whale: '小鲸',
         // 这句是并排插进来的，不是这一轮的收尾回答
         _whaleSide: true,
-      });
-      try { saveSession(session); } catch {}
+        // flushWhalePark 要按这个时间排序补写；不写它，排序就全靠运气
+        _at: Date.now(),
+      };
+
+      if (!iAnswered) {
+        /**
+         * 【2026-10-26 深夜修：押后这条路会把话弄丢】
+         *
+         * 实测：她说了话、日志写着「押后」，会话文件里一条没有，重启就没了。
+         *
+         * 根子是**顺序反了**：她开口是异步的，常常在我这一轮 finally 收尾
+         * **之后**才答完。那一刻 runningTurns 里已经没有我 → holder=null →
+         * 话进了 whaleParkBox（旁路箱）；而收尾那段早就跑完了、箱子也已经 delete。
+         * 她的话就永久躺在了一个没人读的箱子里。
+         *
+         * 现在的规矩（简单、不靠猜）：
+         *   · 我这一轮还在跑（holder 就是我）→ 押进 reg，收尾一定补得上；
+         *   · 我那轮已经收尾了（holder 为空或不是进行中的轮）→ **直接落盘**，
+         *     因为她这句就是一句独立的插话，本来就该立刻进历史。
+         * 旁路箱只留给「正在收尾的那一瞬间」，而且下一轮一进来就先把它冲掉。
+         */
+        try {
+          const holder = typeof runningTurns !== 'undefined' ? runningTurns.get(sessionId) : null;
+          const holderAlive = Boolean(holder && typeof holder === 'object' && holder.ac && !holder.ac.signal.aborted);
+          if (holderAlive) {
+            if (!Array.isArray(holder.whaleParked)) holder.whaleParked = [];
+            holder.whaleParked.push(rec);
+            /**
+             *【2026-10-27 补：押进轮次上的也要再过一遍旁路箱】
+             *
+             * 只押在 holder 上有个洞：holder 收尾时若因为「登记不是自己」被跳过
+             * （比如插话接续轮已经登记上来了），这一段就再没人读 —— 话又丢了。
+             * 旁路箱是三个入口都会 flush 的，押两份、按内容去重，才丢不了。
+             */
+            try {
+              let box = whaleParkBox.get(sessionId);
+              if (!box) { box = { whaleParked: [] }; whaleParkBox.set(sessionId, box); }
+              if (!Array.isArray(box.whaleParked)) box.whaleParked = [];
+              box.whaleParked.push(rec);
+            } catch {}
+            try { logWhaleAction('押后：我这一轮还没收尾，这句等收尾补'); } catch {}
+          } else {
+            // 我那一轮已经过去了 —— 她这句是独立插话，立刻落盘，别押
+            msgs.push(rec);
+            try { saveSession(session); } catch {}
+            try { logWhaleAction('直接落盘：我这一轮已收尾，她这句是独立插话'); } catch {}
+          }
+        } catch {
+          // 任何意外都退回「直接落盘」——宁可顺序差一点，也不能丢话
+          msgs.push(rec);
+          try { saveSession(session); } catch {}
+        }
+      } else {
+        msgs.push(rec);
+        try { saveSession(session); } catch {}
+      }
     }
   } catch {}
 }
@@ -938,6 +1073,85 @@ const LIVE_MAX_EVENTS = 20000;
 // In-flight turns: sessionId -> { ac: AbortController, done: Promise<void> }
 // 插话要先 abort，再等这一轮真的收尾（历史写完盘）后才能把新话接上去。
 const runningTurns = new Map();
+
+/**
+ * 【押后箱：她说的话等着补】
+ *
+ * 她开口比我这边登记轮次还早的时候（实测 17:36），runningTurns 里读不到
+ * 我这一轮，押不进轮次对象。那就先放这儿，等下一轮收尾时一起补。
+ * 键是会话 id，值里只放待补的消息。
+ */
+const whaleParkBox = new Map();
+
+/**
+ * 把旁路箱里押着的小鲸的话补写进会话，然后清空箱子。
+ *
+ * 【为什么要抽成函数（2026-10-27 修）】
+ * 这段以前手写了两份（/api/chat 收尾一份、/api/chat 开跑一份），
+ * 可 startQueuedTurn（插话接续轮）里**一份都没有**。
+ *
+ * 结果就是这条丢话路径：
+ *   主轮收尾 → 箱子清空 → 小鲸这才把话押进箱子（她那条线比我慢）
+ *   → 下一轮是**插话接续轮**（不是 /api/chat）→ 没人读箱子
+ *   → 她的话一直躺在箱子里 → 重启就没了。
+ * 主人报的「插话之后小鲸的话重启即失」就是这么来的。
+ *
+ * 现在统一走这一处，三个入口（chat 开跑 / chat 收尾 / 接续轮开跑）都调它，
+ * 就再没有「没人读箱子」的窗口了。
+ *
+ * @returns {{n:number, before:number, after:number}} 补了几条
+ */
+function flushWhalePark(session, sessionId, tag = '') {
+  const out = { n: 0, before: 0, after: 0 };
+  try {
+    const parked = [];
+    const reg = runningTurns.get(sessionId);
+    if (reg && Array.isArray(reg.whaleParked)) parked.push(...reg.whaleParked);
+    const box = whaleParkBox.get(sessionId);
+    if (box && Array.isArray(box.whaleParked)) parked.push(...box.whaleParked);
+    if (!parked.length) {
+      if (reg) reg.whaleParked = [];
+      if (box) box.whaleParked = [];
+      return out;
+    }
+    // 按时间排一下：她是并排跑的另一条线，塞进来的顺序不一定就是说的话的顺序
+    parked.sort((a, b) => Number(a?._at ?? 0) - Number(b?._at ?? 0));
+    const msgs = Array.isArray(session?.messages) ? session.messages : null;
+    if (!msgs) {
+      try { logWhaleAction((tag || '补写') + '失败：session.messages 不是数组'); } catch {}
+      return out;
+    }
+    out.before = msgs.length;
+    /**
+     * 【去重】同一条消息可能既押在 reg 上也押在旁路箱里（两边都存才丢不了），
+     * 补写时认 _at + 正文当键，已经进历史的就不再补第二遍。
+     */
+    const seen = new Set();
+    for (const m of msgs) {
+      if (m && m._whale) seen.add(String(m._at ?? '') + '|' + String(m.content ?? ''));
+    }
+    for (const rec of parked) {
+      if (!rec) continue;
+      const k = String(rec._at ?? '') + '|' + String(rec.content ?? '');
+      if (seen.has(k)) continue;
+      seen.add(k);
+      msgs.push(rec);
+      out.n++;
+    }
+    out.after = msgs.length;
+    let saved = 'ok';
+    try { saveSession(session); } catch (e) { saved = '失败:' + String(e?.message ?? e).slice(0, 80); }
+    try {
+      logWhaleAction((tag || '补写') + '：' + out.before + ' → ' + out.after + '（+' + out.n + '），存盘' + saved);
+    } catch {}
+    if (reg) reg.whaleParked = [];
+    if (box) box.whaleParked = [];
+    return out;
+  } catch (e) {
+    try { logWhaleAction((tag || '补写') + '整段抛错：' + String(e?.message ?? e).slice(0, 120)); } catch {}
+    return out;
+  }
+}
 
 /**
  * 删会话前的两道闸。
@@ -1252,21 +1466,118 @@ async function startPeerTurn(sessionId) {
  */
 const __iqDbg = (m) => { try { const _p = process.env.APPDATA + '\\小鱼Agent\\data\\.state\\iq-debug.log'; __iqAppendSync(_p, new Date().toISOString() + ' ' + m + '\n'); } catch {} };
 
-async function startQueuedTurn(sessionId) {
+/**
+ * 把直播缓存开出来，给「排队轮」用。
+ *
+ * 主轮有 HTTP 客户端在等 SSE，事件直接顺着 res 写出去；
+ * 排队轮没有客户端，只能写进 liveLogs，前端 followLive / attachLive 才补得回来。
+ * 不写这里的话，主人插完话屏幕上半天没动静，以为她根本没理。
+ *
+ * 【优先复用主轮留下的那一份】
+ * 前端那条 /api/chat/live 轮询是按「第几条事件」记游标的（seen）。
+ * 我这边一换新对象，events 从头数起，前端看 evs.length 比 seen 还小，
+ * 就不会再画 —— 排队轮的正文又白写了。所以主轮收尾时标了 pendingNext 的，
+ * 直接把这份缓存接过来续写。
+ */
+function openLiveForQueuedTurn(sessionId) {
+  try {
+    const prev = liveLogs.get(sessionId);
+    if (prev && prev.pendingNext && !prev.done) {
+      prev.pendingNext = false;
+      prev.queuedTurn = true;
+      prev.done = false;
+      prev.endedAt = 0;
+      return prev;
+    }
+    const live = { sessionId, events: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true };
+    liveLogs.set(sessionId, live);
+    return live;
+  } catch { return null; }
+}
+
+/**
+ * @param {string} sessionId
+ * @param {Array<object>|null} queue 这一轮的插话队列。
+ *   传数组 = 收尾那边把整个队列交过来，由这里决定要不要 shift（确定真跑才取走）；
+ *   传 null = 「压根没在跑」那种，调用方已经自己管好了。
+ */
+async function startQueuedTurn(sessionId, queue = null) {
   const session = getSession(sessionId);
   if (!session) throw new Error('没有这个会话');
 
-  // 这一轮必须真的收干净了才起，不然两轮同时改同一个 messages 数组
-  if (runningTurns.get(sessionId)) {
-    return { ok: false, note: '还有一轮在跑，这句话等它' };
+  /** 队列里还剩几句。前端要这个数才知道「还有没有话排着」 */
+  const rest = () => (Array.isArray(queue) ? queue.length : 0);
+
+  /**
+   * 这一轮必须真的收干净了才起，不然两轮同时改同一个 messages 数组。
+   *
+   * 【2026-10-26 补：挡住的时候要留痕】
+   * 以前这里静默 return，插话那头只看到「什么都没发生」，
+   * 谁也说不清是没起、还是被挡了。现在落一条日志，查的时候一眼能看见。
+   */
+  const holder = runningTurns.get(sessionId);
+  /**
+   * 【2026-10-26 修：这条闸把接续轮自己挡住了】
+   *
+   * 实测：主人插话 → 话落盘 → 我这一轮收尾 setImmediate 调 startQueuedTurn
+   * → 进门发现 runningTurns 里还有东西 → 直接返回「还有一轮在跑，这句话等它」。
+   * 可里面那条**要么就是我刚收工的那一轮（登记没清干净）**，
+   * 要么就是排队轮自己 —— 两种情况都该放行。
+   *
+   * 现在按「这一轮还活着吗」判，不按「表里有没有东西」判：
+   *   · ac 存在、没 abort、done 还没落地 → 真在跑，拒绝（这才该拒绝）
+   *   · 已经 abort / 已经收工 / 就是排队轮自己 → 放行，顺手摘掉脏登记
+   */
+  const holderAlive = Boolean(
+    holder
+    && holder.ac
+    && !holder.ac.signal.aborted
+    && holder.done !== null
+    && !holder.finished
+  ) ;
+  if (holder && holderAlive && !holder.queuedTurn) {
+    try {
+      const { logWhaleAction } = await import('./whale-presence.mjs');
+      logWhaleAction('插话接续被挡：确实还有一轮真在跑（queuedTurn=' + Boolean(holder.queuedTurn) + '）');
+    } catch {}
+    return { ok: false, note: '还有一轮在跑，这句话等它', rest: rest() };
   }
+  // 放行：顺手把那条不活的登记摘掉，免得下一轮又踩同一个坑
+  if (holder && !holderAlive) {
+    try { runningTurns.delete(sessionId); } catch {}
+  }
+
+  /**
+   * 【shift 挪到这里，是这次修复的关键之一】
+   *
+   * 以前是调用方先 `pending.shift()` 再调进来 —— 那句话从队列里拿走了，
+   * 可上面那道闸一挡（或者 runAgent 一抛），话就既不在队列、也没人答，
+   * 孤零零躺在历史里，主人看到的只有「说了没反应」。
+   * 现在只有「确定真的要跑了」才把它取走。
+   */
+  if (Array.isArray(queue) && queue.length) queue.shift();
 
   const ac = new AbortController();
   const turn = { ac, done: null, queuedTurn: true };
   runningTurns.set(sessionId, turn);
 
+  const live = openLiveForQueuedTurn(sessionId);
+  const send = (ev) => {
+    if (!live) return;
+    try { live.events.push({ ...ev, at: Date.now() }); } catch {}
+  };
+
   const history = session.messages;
   try {
+    /**
+     * 【接续轮开跑前，先把旁路箱补一遍】
+     *
+     * /api/chat 开跑有这一步，接续轮以前没有 —— 于是「主轮收尾清空箱子 →
+     * 小鲸这才押进来 → 下一轮恰好是接续轮」这条路径上，她的话永远没人读，
+     * 重启即失。三个入口统一走 flushWhalePark，这条缝就补上了。
+     */
+    try { flushWhalePark(session, sessionId, '接续轮开跑补写'); } catch {}
+
     repairHistory(history);
     // 浅拷贝，理由同 startPeerTurn：runAgent 会清空重建，深拷贝会让接回时认不出对象
     const wire = history.slice();
@@ -1279,7 +1590,12 @@ async function startQueuedTurn(sessionId) {
       safeMode: !inPersonaMode(session),
       safeWord: session.mode?.word || '',
       onEvent: (ev) => {
+        if (!ev) return;
         if (ev.type === 'error') console.warn('[queued] ' + sessionId + ' 出错：' + String(ev.message ?? ''));
+        // 照主轮的样子写进直播缓存，前端 followLive 才画得出来
+        if (ev.type === 'text' || ev.type === 'reasoning' || ev.type === 'tool' || ev.type === 'tool_result' || ev.type === 'whale' || ev.type === 'whale_stream_start' || ev.type === 'whale_delta') {
+          send(ev);
+        }
       },
     });
 
@@ -1292,11 +1608,23 @@ async function startQueuedTurn(sessionId) {
     }
     session.updatedAt = Date.now();
     saveSession(session);
-    return { ok: true, text: out && out.text };
+    // 跟主轮同一种收尾事件，前端才认得出「这一轮完了」
+    send({
+      type: 'done',
+      at: Math.max(0, history.length - 1),
+      turnTexts: [],
+      queued: rest(),
+      startedAt: live ? live.startedAt : Date.now(),
+      queuedTurn: true,
+    });
+    return { ok: true, text: out && out.text, rest: rest() };
   } catch (e) {
     console.warn('[queued] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
+    if (ac.signal.aborted) send({ type: 'aborted', reason: String(ac.signal.reason ?? '') });
+    else send({ type: 'error', message: String(e?.message ?? e) });
     throw e;
   } finally {
+    if (live) { live.done = true; live.endedAt = Date.now(); }
     if (runningTurns.get(sessionId) === turn) runningTurns.delete(sessionId);
   }
 }
@@ -3930,6 +4258,38 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     saveDraft(sessionId, { text: '', reasoning: '', toolCalls: [], startedAt: Date.now() });
 
+    /**
+     * 【开跑先补上次漏掉的话】—— 2026-10-26 修
+     *
+     * 症状：主人插话或者随便说一句，小鲸答了，日志里写着「押后」，
+     * 但重启之后她的话没了、会话文件里也找不到。
+     *
+     * 根：她的话是「押后落盘」进 whaleParkBox 的，但那个箱子**只在
+     * 我这一轮收尾时读一次**（见下面 finally 里那段）。可她是并排跑的另一条线，
+     * 常常在我收尾**之后**才说完。等她说完往里放，箱子早被清空了，
+     * 于是她的话就躺在一个永远不会被读的箱子里，重启一丢就没了。
+     *
+     * 修法：每一轮一开跑，先把箱子里剩的补进去再干活。
+     * 这样「她上一轮说完的」和「这一轮要说的」，一条都不会漏。
+     */
+    try {
+      const leftover = whaleParkBox.get(sessionId);
+      const parkedLeft = (leftover && Array.isArray(leftover.whaleParked)) ? leftover.whaleParked : [];
+      if (parkedLeft.length) {
+        const msgs = Array.isArray(session.messages) ? session.messages : null;
+        if (msgs) {
+          const n0 = msgs.length;
+          for (const rec of parkedLeft) msgs.push(rec);
+          try { saveSession(session); } catch {}
+          try { logWhaleAction('开跑补上次漏的：' + n0 + ' → ' + msgs.length + '（+' + parkedLeft.length + '）'); } catch {}
+        }
+        leftover.whaleParked = [];
+        whaleParkBox.delete(sessionId);
+      }
+    } catch (e) {
+      try { logWhaleAction('开跑补漏抛错：' + String(e && e.message ? e.message : e).slice(0, 100)); } catch {}
+    }
+
     const safeWord = resume ? null : matchSafeWord(message);
     // 这一轮该处在哪一档：没喊别的词就继续当前档（新会话默认人设档），
     // 喊了就切过去并记住，下一轮还是那一档。
@@ -4080,12 +4440,64 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     const __holder = runningTurns.get(sessionId);
     const __busyTurn = Boolean(__holder && __holder !== reg);
+    /**
+     * 【2026-10-26 主人定规矩：默认归小鱼，只有点名才叫她】
+     *
+     * 原话：「默认归小鱼，只有点名小鲸或小鱼被禁用」。
+     *
+     * 以前的毛病：程序把主人每句话都默认当成「在跟小鲸说话」，
+     * 于是主人明明在派活给小鱼，她也接一句，看着像抢答。
+     * 而主人嘴里根本没有「我在跟谁说话」这个开关，模型只能猜，一猜就错。
+     *
+     * 现在给一条硬判据，不猜：
+     *   · 话里点了她的名（小鲸 / 鲸鲸）→ 这一句是冲她说的，她正常答
+     *   · 小鱼被禁用了（她不在屋）→ 这一句也是冲她的，她正常答
+     *   · 其余（绝大多数）→ 这一句默认是冲小鱼说的
+     *
+     * 【注意：这里判的是「立场」，不是「叫不叫她」】
+     * 没点名的时候她**照样被叫起来**（下面的 if 只拦收工词和另一轮在跑），
+     * 只是提示词里会告诉她「这句是冲小鱼说的，你可以补一句、提个醒，
+     * 但别把他的话当成该你答的题」。
+     *
+     * 为什么不干脆别叫她：主人要的是她并排在场、能主动提意见，
+     * 不是关掉她的嘴。上次理解错了写成「没点名就不叫她」，
+     * 主人当场纠正：「不是点名小鲸才开口，是默认我在对小鱼说话。」
+     *
+     * 为什么「小鱼被禁用」要放行：主人只开小鲸的时候，
+     * 那一句本来就是冲她说的，不放行她就彻底哑了。
+     */
+    const __calledByName = /小鲸|鲸鲸/.test(__nowSaid);
+    /**
+     * 【她说话时没有工具「查完」这回事】—— 2026-10-27 补
+     *
+     * 实测空壳「（它查完什么都没说）」落进会话：她这一趟只带嘴，
+     * 可她一开口就爱写括号旁白假装在干活，什么正文都没有。
+     * 光靠提示词管不住，这里给她这一趟钉一条死规矩。
+     */
+    const __noToolNote = '你这一趟没有工具，不许写「我查了」「查完了」「看过了」这类假动作，' +
+      '也不许用括号旁白凑数（比如「（它查完什么都没说）」）—— 要说就直接说事，没话说就别开口。';
+    const __fishAway = !fishOn(sessionId);
+    /**
+     * 【2026-10-26 主人纠正：不是「点名才让她说话」】
+     *
+     * 上一版理解错了，写成「没点名就完全不叫她」——那样她是摆设，
+     * 主人要的不是这个。主人原话：
+     *   「不是点名小鲸才开口，是默认我在对小鱼说话而不是在对她说话」
+     *
+     * 所以这里只用来定**立场**，不用来拦人：
+     *   · 点了她的名，或者小鱼被禁用  → 这句是冲她说的，她正常答；
+     *   · 其余（绝大多数）           → 这句是冲小鱼说的，她仍可开口，
+     *                                  但开口是在旁边补一句、提个醒，
+     *                                  不是在回答主人这个问题。
+     * 立场会传给 whaleMaybeReply，写进她的提示词里，由她自己把握分寸。
+     */
+    const __speaksToHer = __calledByName || __fishAway;
     if (whaleOn(sessionId) && !__quiet && !__busyTurn) {
       const userTextNow = lastUserTextOf(session);
       if (userTextNow) {
         (async () => {
           try {
-            await whaleMaybeReply({ session, userText: userTextNow, send, sessionId, live });
+            await whaleMaybeReply({ session, userText: userTextNow, send, sessionId, live, speaksToHer: __speaksToHer, extraRule: __noToolNote });
           } catch (e) {
             console.warn('[whale] 她这次没接上：', String(e?.message ?? e));
             /**
@@ -4121,7 +4533,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 为什么放在 reg 上、不是全局：一轮一个队列，天然跟着会话走，
      * 轮次结束对象就没了，不会串到下一个人那儿。
      */
-    reg.queued = [];
+    /**
+     * 【2026-10-26 二次修：这一行会把主人的话冲掉】
+     *
+     * reg 在闸 3 之前就建好了，带着 queued: []。
+     * 从那之后到这儿，主人随时可以插话 —— 插进来的话 push 进 reg.queued。
+     * 然后执行到这里，「reg.queued = []」当场把它清空。
+     *
+     * 实测后果：主人插一句话，API 回 ok:true（话确实落盘了），
+     * 但队列被清空，这一轮收尾时 pending.length 是 0，没人接着答。
+     * 主人看到的就是「插了话，没反应」。
+     *
+     * 所以：只在还没有队列的时候初始化，已有的一个字都不许动。
+     */
+    if (!Array.isArray(reg.queued)) reg.queued = [];
     runningTurns.set(sessionId, reg);
 
     /**
@@ -4868,8 +5293,24 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         }
       }
     } finally {
-      live.done = true;
-      live.endedAt = Date.now();
+      /**
+       * 【队列里还有话 → 这份直播缓存别收，留给下一轮接着写】
+       *
+       * 收尾这里如果是 `live.done = true`，前端那条 SSE 一 done 就停跟直播，
+       * 而排队轮是 setImmediate 才起来的 —— 中间这段空窗里 /api/chat/live
+       * 会回「running:false / done:true」，前端一看就认定「全答完了」，
+       * 剩下那几句的回复就没人画到屏幕上。
+       *
+       * 所以：队列还有话，就把 done 留在 false，events 留着，让排队轮
+       * 直接往这份缓存里续写，前端那条轮询自然就接上了。
+       */
+      const __leftForNext = Array.isArray(reg.queued) ? reg.queued.length : 0;
+      if (!__leftForNext) {
+        live.done = true;
+        live.endedAt = Date.now();
+      } else {
+        live.pendingNext = true;
+      }
       // 收尾时把自己这一条登记摘掉（提前登记过、ac 可能还是 null，所以认对象不认 ac）
       {
         const mine = runningTurns.get(sessionId);
@@ -4888,15 +5329,85 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 比谁新看 startedAt；看不出来（缺字段）就当是同一条，照摘不误 ——
          * 宁愿多摘一次（下一轮会自己重新登记），也别留一条死的。
          */
+        /**
+         * 【收尾：把押后的她的话补上】
+         *
+         * 她答在我还没开口的时候，话被押进了 reg.whaleParked / whaleParkBox。
+         * 现在我这一轮答完了 —— 该把她的话按顺序补进来，让她排在我后面。
+         *
+         * 这一步必须在摘登记之前做：摘掉之后就找不到那个箱子了。
+         */
+        /**
+         * 【收尾：把押后的她的话补上】—— 2026-10-26 加诊断
+         *
+         * 实测症状：她说了话、日志写着「押后」，但会话文件里没有。
+         * 所以这里每一步都留痕：押了几条、push 前几条、push 后几条、存盘成没成。
+         * 出问题一眼能看出断在哪一步，不用再靠猜。
+         */
+        try {
+          const parked = [];
+          const fromReg = (reg && Array.isArray(reg.whaleParked)) ? reg.whaleParked.length : 0;
+          const fromBox = (() => {
+            const b = whaleParkBox.get(sessionId);
+            return (b && Array.isArray(b.whaleParked)) ? b.whaleParked.length : 0;
+          })();
+          if (reg && Array.isArray(reg.whaleParked)) parked.push(...reg.whaleParked);
+          const box = whaleParkBox.get(sessionId);
+          if (box && Array.isArray(box.whaleParked)) parked.push(...box.whaleParked);
+          try {
+            logWhaleAction('补写检查：reg里' + fromReg + '条、旁路箱' + fromBox + '条、合计' + parked.length + '条');
+          } catch {}
+          if (parked.length) {
+            const msgs = Array.isArray(session.messages) ? session.messages : null;
+            if (!msgs) {
+              try { logWhaleAction('补写失败：session.messages 不是数组（session=' + (session && session.id) + '）'); } catch {}
+            } else {
+              const n0 = msgs.length;
+              for (const rec of parked) msgs.push(rec);
+              let saved = 'ok';
+              try { saveSession(session); } catch (e) { saved = '失败:' + String(e && e.message ? e.message : e).slice(0, 80); }
+              try {
+                logWhaleAction('补写完成：' + n0 + ' → ' + msgs.length + '（+' + parked.length + '），存盘' + saved);
+              } catch {}
+            }
+          }
+          if (reg) reg.whaleParked = [];
+          /**
+           * 【别一刀切清空】2026-10-26 修
+           *
+           * 原来这里无条件 delete，可箱子里的东西可能**是刚放进去、还没轮到补**的——
+           * 清掉就等于把她说的话扔了（实测「重启后小鲸的话没了」就是这么来的）。
+           * 现在：真补完了才清；没补完（列表还非空）就留着，下一轮收尾接着补。
+           */
+          const leftBox = whaleParkBox.get(sessionId);
+          const leftN = (leftBox && Array.isArray(leftBox.whaleParked)) ? leftBox.whaleParked.length : 0;
+          try { logWhaleAction('收尾后箱里剩' + leftN + '条（下一轮开跑会补）'); } catch {}
+          // 只清空，不删箱子：箱子留着她下一句还能放进来，下一轮开跑会补
+          if (leftBox) leftBox.whaleParked = [];
+        } catch (e) {
+          try { logWhaleAction('补写整段抛错：' + String(e && e.message ? e.message : e).slice(0, 120)); } catch {}
+        }
+
+        /**
+         * 【只删自己，别人的一概不碰】—— 2026-10-26 修
+         *
+         * 原来这里有个「按时间戳兜底」：mineAt <= myAt 就删。
+         * 看着是想清理脏记录，实际把**插话接续刚起的那一轮**也删了。
+         *
+         * 后果：这一轮收尾 → 删掉了接续轮的登记 → 接续轮自己跑着，
+         * 但下一句插话进来时 runningTurns 是空的，被判成「没有在跑的那一轮」；
+         * 更要命的是收尾里那句 startQueuedTurn 会因为登记不对而被挡，
+         * 插进去的话就永远没人答 —— 主人看到的就是「插了，没反应」。
+         *
+         * 现在的规矩很简单：登记里是我自己才删。不是我的，一个字都不动。
+         * 脏记录由 deleteSession / 会话回收自己处理，不在这条热路径上兜。
+         */
         if (!mine) {
           // 已经没人登记了，什么都不用做
         } else if (mine === reg || (mine && mine.ac === ac)) {
           runningTurns.delete(sessionId);
-        } else {
-          const mineAt = Number(mine.startedAt) || 0;
-          const myAt = Number(reg.startedAt) || 0;
-          if (!mineAt || !myAt || mineAt <= myAt) runningTurns.delete(sessionId);
         }
+        // else：登记的是别人（多半是插话接续刚起的那一轮），留着它，别动
       }
       // 正常结束那条路已经接过一次；出错 / 被中止时这里兜底，
       // 不然「半截回答」也跟着丢。commitWireBack 内部用 Set 记账，重复调不会重复接。
@@ -4970,7 +5481,26 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 的分支永远走不到 —— 等于把「这句没插进去」的情况一律当成插进去了。
      * 主人看到的就是：打了字、按了发送、消息没了，什么都没发生。
      */
-    const wasRunning = Boolean(turn && turn.ac && !turn.ac.signal.aborted);
+    /**
+     * 【「真的在跑」不能只看 ac】
+     *
+     * 2026-10-26 实测：插话返回 ok:true、count 也涨了，但那句话没人答，
+     * 磁盘上还找不到它。根子是这里判「在跑」的判据太松：
+     *   turn.ac 有、turn.ac.signal.aborted 是假  → 就认定"还在跑"
+     * 可收工的那一轮，ac 一直留着不清理，aborted 也永远是 false。
+     * 于是插话被挂进一个**它的 finally 早就跑完了**的队列，永远没人消费。
+     *
+     * 现在多问两个硬事实：这一轮自己有没有打 finished、done 有没有落地。
+     */
+    const turnAlive = Boolean(
+      turn
+      && turn.ac
+      && !turn.ac.signal.aborted
+      && !turn.finished
+      && turn.done !== null
+      && typeof turn.done?.then === 'function'
+    );
+    const wasRunning = turnAlive;
     // __iqDbg('interject-in sid='+sessionId+' hasTurn='+!!turn+' hasQueued='+(turn?Array.isArray(turn.queued):'n/a')+' wasRunning='+wasRunning);   // 调试日志：要开就删掉行首这两个斜杠
     /**
      * 插话等这一轮收尾，最多等多久。
@@ -5044,9 +5574,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const history = freshSession.messages;
     repairHistory(history);
     history.push({ role: 'user', content: message });
+    /**
+     * 【这句话必须真的进磁盘】
+     *
+     * 实测踩过：上面 push 了、saveSession 也调了，可磁盘上就是没有这句。
+     * 原因：freshSession 是 getSession() 现取的，但这一轮的收尾可能晚一步
+     * 又把 sessions 里那份换掉，我们写的是个马上要被丢弃的对象。
+     *
+     * 现在 push 完立刻再 set 一次 + 存一次，并且把「存到哪」记进日志，
+     * 出事能一眼看出是没写、还是写到别处去了。
+     */
     sessions.set(sessionId, freshSession);
+    freshSession.updatedAt = Date.now();
     saveSession(freshSession);
     setLastSessionId(sessionId);
+    try {
+      const back = getSession(sessionId);
+      const okInMem = Boolean(back && Array.isArray(back.messages)
+        && back.messages.some((m) => m && m.role === 'user' && String(m.content ?? '').slice(-40) === String(message).slice(-40)));
+      const { logWhaleAction } = await import('./whale-presence.mjs');
+      logWhaleAction('插话落盘：在内存里=' + okInMem + ' 长度=' + history.length);
+    } catch {}
 
     /**
      * 【挂到这一轮的队列上，让它跑完自己接着答】
@@ -5062,9 +5610,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 这时候再自动接着答反而是硬塞，是不是要接着说交给他。
      */
     if (!wantsStop) {
-      if (turn && Array.isArray(turn.queued)) {
+      if (turnAlive && turn && Array.isArray(turn.queued)) {
         turn.queued.push(message);
-        // __iqDbg('pushed len='+turn.queued.length);   // 调试日志：要开就删掉行首这两个斜杠
       } else if (!wasRunning) {
         // 根本没有在跑的那一轮：这句话没人接，当场起一轮
         setImmediate(() => {

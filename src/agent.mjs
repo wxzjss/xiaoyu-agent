@@ -1,4 +1,4 @@
-// The agent loop: call model -> run tools -> feed results back -> repeat.
+﻿// The agent loop: call model -> run tools -> feed results back -> repeat.
 import { streamChat, modelNameForSession } from './llm.mjs';
 // activeEndpoint / endpointFor：连不上模型时报错要说清是哪个地址，得能拿到当前生效的那套参数。
 import { activeEndpoint, endpointFor } from './models.mjs';
@@ -35,6 +35,7 @@ import {
   handoffSummary,
   handoffMessage,
 } from './retry429.mjs';
+import { withTimeout, TOOL_MAX_MS } from './deadline.mjs';
 
 /**
  * Some OpenAI-compatible gateways drop `system` messages entirely (verified against the
@@ -557,7 +558,29 @@ export async function runAgent({
 
     for (const call of assistantMsg.tool_calls) {
       onEvent({ type: 'tool_start', id: call.id, name: call.function.name, args: call.function.arguments });
-      const { ok, output } = await runTool(call.function.name, call.function.arguments);
+      /**
+       * 【工具时间闸】
+       *
+       * 为什么必须有：agent 上面那几道闸（哑转 40 轮、3 小时墙钟、整轮静默）
+       * 都只在「每一轮开头」判一次。工具一旦真的蹲住不返回 —— 等输入的进程、
+       * 连上就不动了的网络请求 —— 循环根本走不到下一轮开头，三道闸一次都轮不到。
+       * 主人看到的就是界面停了，连「我卡住了」都等不到。
+       *
+       * 所以在这里套一层：超过 TOOL_MAX_MS 就当这个工具失败，把失败当成工具结果
+       * 往下走（模型会看到「这个工具超时了」），而不是把整轮钉死。
+       * 注意：这里只掐「等」，掐不断已经跑起来的子进程 —— 那是 tools.mjs 自己
+       * 的 timeout 负责的（run_command 就有 120 秒）。
+       */
+      const { ok, output } = await withTimeout(
+        runTool(call.function.name, call.function.arguments),
+        TOOL_MAX_MS,
+        { what: '工具「' + call.function.name + '」', ac: signal },
+      ).catch((e) => ({
+        ok: false,
+        output: e?.isTimeout
+          ? '这个工具超过 ' + (TOOL_MAX_MS >= 60000 ? Math.round(TOOL_MAX_MS / 60000) + ' 分钟' : Math.round(TOOL_MAX_MS / 1000) + ' 秒') + '没返回（' + call.function.name + '），先跳过它，接着往下走。'
+          : String(e?.message ?? e),
+      }));
       onEvent({ type: 'tool_end', id: call.id, name: call.function.name, ok, output });
       messages.push({
         role: 'tool',

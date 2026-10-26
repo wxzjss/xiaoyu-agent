@@ -49,3 +49,6 @@ github-token.txt
 
 # 更新落地目录（数据目录里那份，误建到源码目录时不入库）
 code/
+
+# 统一存放 *.bak / *.bak-* 备份（人工归档，不进 git）
+backup/

@@ -17,6 +17,7 @@
 import { execFileSync } from 'node:child_process';
 import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const ROOT = 'D:\\小鱼Agent';
 let bad = 0;
@@ -87,6 +88,16 @@ try {
 } catch { note('git 不可用，跳过'); }
 
 // ---------- 结论 ----------
+// ---------- 4. .bak 堆积（提醒，不算错） ----------
+head('4. 备份文件堆积');
+try {
+  const out = execFileSync(process.execPath, [fileURLToPath(new URL('./archive-baks.mjs', import.meta.url))], { encoding: 'utf8', cwd: join(ROOT) });
+  const m = out.match(/找到 (\d+) 个/);
+  const n = m ? Number(m[1]) : 0;
+  if (n) note('源码目录里有 ' + n + ' 个 .bak 没归档（不影响运行）。跑 node scripts/archive-baks.mjs --apply 收进 backup/');
+  else ok('没有散落的 .bak');
+} catch { note('查不出来，跳过'); }
+
 console.log('\n' + '═'.repeat(60));
 if (bad) {
   console.log('✘ 预检不通过（' + bad + ' 处）—— 别发布，别同步到安装版。');

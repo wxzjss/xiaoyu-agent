@@ -1163,7 +1163,17 @@ function flushWhalePark(session, sessionId, tag = '') {
       const k = String(rec._at ?? '') + '|' + String(rec.content ?? '');
       if (seen.has(k)) continue;
       seen.add(k);
-      msgs.push(rec);
+      // 按 _at 插回它该在的位置：她的话是收尾补写的，裸 push 会挂到最后，
+      // 重进后看起来就是「小鱼先说、小鲸后答」，顺序反了。时间早的排前头。
+      let __ins = msgs.length;
+      const __at = Number(rec._at);
+      if (Number.isFinite(__at)) {
+        for (let __j = 0; __j < msgs.length; __j++) {
+          const __mat = Number(msgs[__j] && msgs[__j]._at);
+          if (Number.isFinite(__mat) && __mat > __at) { __ins = __j; break; }
+        }
+      }
+      msgs.splice(__ins, 0, rec);
       out.n++;
     }
     out.after = msgs.length;
@@ -4357,7 +4367,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         const msgs = Array.isArray(session.messages) ? session.messages : null;
         if (msgs) {
           const n0 = msgs.length;
-          for (const rec of parkedLeft) msgs.push(rec);
+          // 同样按 _at 插回该在的位置（她的话是补写的，裸 push 会排到我后面）
+          for (const rec of parkedLeft) {
+            if (!rec) continue;
+            let __ins3 = msgs.length;
+            const __at3 = Number(rec._at);
+            if (Number.isFinite(__at3)) {
+              for (let __j3 = 0; __j3 < msgs.length; __j3++) {
+                const __m3 = Number(msgs[__j3] && msgs[__j3]._at);
+                if (Number.isFinite(__m3) && __m3 > __at3) { __ins3 = __j3; break; }
+              }
+            }
+            msgs.splice(__ins3, 0, rec);
+          }
           try { saveSession(session); } catch {}
           try { logWhaleAction('开跑补上次漏的：' + n0 + ' → ' + msgs.length + '（+' + parkedLeft.length + '）'); } catch {}
         }
@@ -5441,11 +5463,47 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               try { logWhaleAction('补写失败：session.messages 不是数组（session=' + (session && session.id) + '）'); } catch {}
             } else {
               const n0 = msgs.length;
-              for (const rec of parked) msgs.push(rec);
+              /**
+               * 【2026-10-26 修：同一条她的话被写了两遍 → 界面两个「在。」】
+               *
+               * 根因：上面那句她的话，既 push 进了 reg.whaleParked，
+               * 又 push 进了旁路箱 whaleParkBox，**押的是同一个 rec 对象**
+               * （见 1046 / 1058 两处）。收尾这里把两边都收进 parked，
+               * 原来又裸 push 一遍 —— 同一个 _at、同一句正文，落盘两条。
+               * 实测会话 smvolexk13kd4 第 70/71 条：_at 都是 1793009284932、"在。"。
+               *
+               * 和 flushWhalePark（1157 行那处）用同一套键：_at + 正文。
+               * 已经进历史的不再补第二遍；parked 内部重复的也一起挡掉。
+               */
+              const seen = new Set();
+              for (const m of msgs) {
+                if (m && m._whale) seen.add(String(m._at ?? '') + '|' + String(m.content ?? ''));
+              }
+              let added = 0;
+              for (const rec of parked) {
+                if (!rec) continue;
+                const k = String(rec._at ?? '') + '|' + String(rec.content ?? '');
+                if (seen.has(k)) continue;
+                seen.add(k);
+                // 同样按 _at 插回该在的位置（别裸 push 到末尾，否则重进后她排到我后面）
+                let __ins2 = msgs.length;
+                const __at2 = Number(rec._at);
+                if (Number.isFinite(__at2)) {
+                  for (let __j2 = 0; __j2 < msgs.length; __j2++) {
+                    const __m2 = Number(msgs[__j2] && msgs[__j2]._at);
+                    if (Number.isFinite(__m2) && __m2 > __at2) { __ins2 = __j2; break; }
+                  }
+                }
+                msgs.splice(__ins2, 0, rec);
+                added++;
+              }
+              if (added !== parked.length) {
+                try { logWhaleAction('收尾补写去重：parked ' + parked.length + ' 条 → 实补 ' + added + ' 条'); } catch {}
+              }
               let saved = 'ok';
               try { saveSession(session); } catch (e) { saved = '失败:' + String(e && e.message ? e.message : e).slice(0, 80); }
               try {
-                logWhaleAction('补写完成：' + n0 + ' → ' + msgs.length + '（+' + parked.length + '），存盘' + saved);
+                logWhaleAction('补写完成：' + n0 + ' → ' + msgs.length + '（+' + added + '，去重前' + parked.length + '），存盘' + saved);
               } catch {}
             }
           }
@@ -5584,7 +5642,29 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       && typeof turn.done?.then === 'function'
     );
     const wasRunning = turnAlive;
-    // __iqDbg('interject-in sid='+sessionId+' hasTurn='+!!turn+' hasQueued='+(turn?Array.isArray(turn.queued):'n/a')+' wasRunning='+wasRunning);   // 调试日志：要开就删掉行首这两个斜杠
+
+    /**
+     * 【2026-10-27 主人实测：「插话收不到消息」—— 根子就在下面这两行】
+     *
+     * 上一版（692ba74）为了「说一句就停手接着答」，把插话一律 abort 掉当前这一轮。
+     * 实测发现 abort 一进来，正在跑的工具（powerShell 里那条长命令）当场被杀，
+     * 它那条 tool 结果只剩一句
+     *   「[主人插了一句话，这一轮先停在这里。他插的话就在这条消息后面，往下接着看，别当成叫停。]」
+     * 而主人的话根本没出现在历史里 —— 模型看到的就是「有个人插了句话，但话没了」。
+     * 会话 smvp4w6j26co0.json 里那条就是这个形状：user / assistant("") / tool(那句话)。
+     *
+     * 为什么会这样：`__landAfter` 挂在 turn.done 上，先 push 进 turn.queued，
+     * 等终于收尾才真写进历史。可 abort 之后运行的顺序不保证 —— 工具先把占位话写进
+     * 历史并 commitWireBack，`repairHistory` / 收尾又可能把刚 push 的那条挤掉，
+     * 前端那边 409 重试一旦超时就彻底没人接。
+     *
+     * 现在的顺序改成「**先落盘，再停手**」：
+     *   ① 不等、不排队 —— 立刻重新 getSession() 取到最新那份，把话 push 进去 + saveSession；
+     *   ② 落盘成功了才 abort 这一轮（abort 只为让它别继续瞎干，不为收话）；
+     *   ③ 回 started:true，让前端起接续轮；接续轮靠 _interject 标记把它们并成一次提问。
+     * 工具被杀也无所谓了 —— 话已经在历史里，模型看得见。
+     */
+    __iqDbg('interject-in sid='+sessionId+' hasTurn='+!!turn+' hasQueued='+(turn?Array.isArray(turn.queued):'n/a')+' wasRunning='+wasRunning);   // 调试日志：要开就删掉行首这两个斜杠
     /**
      * 插话等这一轮收尾，最多等多久。
      *
@@ -5629,6 +5709,52 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const STOP_WORDS = ['停下', '停下来', '别干了', '别做了', '先别做', '先别干', '停一下', '打断', '中止', '取消这个任务'];
     const wantsStop = STOP_WORDS.some((w) => String(message).includes(w));
 
+    /**
+     * 【新的顺序：先落盘，再停手】—— 2026-10-27「插话收不到消息」的修法
+     *
+     * 只有**真在跑**的时候才需要这一套；没在跑就照旧当场补一句、起一轮。
+     * 落盘用的是「重新 getSession()」拿到的那份：前面判 turnAlive 时可能已经
+     * 摸过文件 mtime，缓存里是旧对象，直接 push 进去会被收尾的 saveSession 冲掉。
+     */
+    if (turnAlive && !wantsStop) {
+      let landed = false;
+      try {
+        const s1 = getSession(sessionId);
+        if (s1 && Array.isArray(s1.messages)) {
+          const h1 = s1.messages;
+          const sameAsLast = h1.length && h1[h1.length - 1]?.role === 'user'
+            && String(h1[h1.length - 1].content ?? '') === String(message);
+          if (!sameAsLast) h1.push({ role: 'user', content: message, _at: Date.now(), _interject: true });
+          s1.updatedAt = Date.now();
+          sessions.set(sessionId, s1);
+          saveSession(s1);
+          landed = true;
+        }
+      } catch (e) {
+        console.warn('[interject] 先把话写进历史失败：', String(e?.message ?? e));
+      }
+
+      /**
+       * 话写字了 → 现在才让这一轮停手。
+       * 这里 abort 的**唯一目的**是不让它接着往下瞎干（免得跟接续轮抢同一份历史），
+       * 已经不是「靠它来收话」了。落盘失败就不 abort：
+       * 让它把这一轮跑完，至少不会既丢话又白干一件活。
+       */
+      if (landed && turn?.ac && !turn.ac.signal.aborted) {
+        try { turn.ac.abort('interject'); } catch {}
+      }
+      if (Array.isArray(turn.queued)) turn.queued.push(message);
+
+      __iqDbg('RET(fast) sid=' + sessionId + ' landed=' + landed + ' abort=' + (landed && !!turn?.ac));
+      return json(res, 200, {
+        ok: true,
+        running: true,
+        started: Boolean(landed),   // 前端看到 true 就立刻起接续轮
+        queued: (turn && Array.isArray(turn.queued)) ? turn.queued.length : 1,
+        landed,
+      });
+    }
+
     if (turn?.ac && wantsStop) {
       /**
        * 带上原因：interject = 主人插话，不是让这一轮停手。
@@ -5653,9 +5779,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 半轮对话就被这份旧的覆盖没了。表现就是：插话之后，
      * 前面那一轮的工具调用和她说过的话全消失，只剩主人两句问话。
      */
-    const freshSession = getSession(sessionId) || session;
-    const history = freshSession.messages;
-    repairHistory(history);
+    // const freshSession = getSession(sessionId) || session;   // 【已停用】现在改成收尾后再 getSession，见下面 __landAfter
+    // const history = freshSession.messages;
+    // repairHistory(history);
     /**
      * 【插话要打标记】—— 2026-10-27
      *
@@ -5663,81 +5789,87 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 靠的就是这个标记。没有它就只能按位置猜，猜错就把主人正常说的话也算进插话里。
      * 顺便记下时间：she 的判断（闸 A）和给模型的提示都要用。
      */
-    history.push({ role: 'user', content: message, _at: Date.now(), _interject: true });
     /**
-     * 【这句话必须真的进磁盘】
+     * 【插话：话先记下，等这一轮收尾再真正写进历史】
      *
-     * 实测踩过：上面 push 了、saveSession 也调了，可磁盘上就是没有这句。
-     * 原因：freshSession 是 getSession() 现取的，但这一轮的收尾可能晚一步
-     * 又把 sessions 里那份换掉，我们写的是个马上要被丢弃的对象。
+     * 为什么要等 —— 2026-10-26 夜实测挖出来的真根子：
+     *   getSession() 每次取都会瞄一眼文件 mtime，磁盘比内存新就**重新加载一个新对象**
+     *   换掉缓存（见 server.mjs 开头那个函数）。于是：
+     *     · /api/chat 那一轮手上攥着对象 A；
+     *     · 这里 getSession() 拿到的是新加载的对象 B；
+     *     · 话 push 进 B、存盘 ✔ —— 看着没问题；
+     *     · 可那一轮的 finally 还在用 A，saveSession(A) 一写，**B 连话一起被冲掉**。
+     *   结果：磁盘上没有这句话，模型只看到一句空的「[主人插了一句话…]」，
+     *   回一句「好像半路被截掉了」—— 主人看到的就是「插话没了」。
      *
-     * 现在 push 完立刻再 set 一次 + 存一次，并且把「存到哪」记进日志，
-     * 出事能一眼看出是没写、还是写到别处去了。
-     */
-    sessions.set(sessionId, freshSession);
-    freshSession.updatedAt = Date.now();
-    saveSession(freshSession);
-    setLastSessionId(sessionId);
-    try {
-      const back = getSession(sessionId);
-      const okInMem = Boolean(back && Array.isArray(back.messages)
-        && back.messages.some((m) => m && m.role === 'user' && String(m.content ?? '').slice(-40) === String(message).slice(-40)));
-      const { logWhaleAction } = await import('./whale-presence.mjs');
-      logWhaleAction('插话落盘：在内存里=' + okInMem + ' 长度=' + history.length);
-    } catch {}
-
-    /**
-     * 【挂到这一轮的队列上，让它跑完自己接着答】
-     *
-     * 上面已经把这句 push 进历史了 —— 所以这里是「话已经收下」的实锤。
-     * 还没收工的只有两种情况：
-     *   · 这一轮还在跑（没叫停）：挂上去，等它收尾由 startQueuedTurn 接；
-     *   · 已经没在跑了：那这句话就孤零零躺在历史里没人答 ——
-     *     这种得当场起一轮，不然主人看到的就是「说了没反应」。
-     *
-     * 【为什么只在 !wantsStop 时挂】叫停的那一路已经 abort 了这一轮，
-     * abort 之后收尾会跑，队列里的东西也会跟着被接 —— 但主人是叫停，
-     * 这时候再自动接着答反而是硬塞，是不是要接着说交给他。
+     * 现在：话先挂在 turn.queued 上，等 turn.done 之后**重新 getSession() 一次**
+     * （那时 A 已经写完盘，再取到的就是最终那份），push 进去、存盘、然后起接续。
+     * 这一轮照常跑完，活不白干，话也一定在。
      */
     if (!wantsStop) {
       if (turnAlive && turn && Array.isArray(turn.queued)) {
         turn.queued.push(message);
         /**
-         * 【光排队不够：得让这一轮当场停手】—— 2026-10-27 主人要求的改造
-         *
-         * 主人原话：「改成 dsh 一样的插话机制，就像我现在这样插话」，
-         * 紧接着又说「插话机制存在问题」。
-         *
-         * 老设计是「插话不打断，等这一轮跑完再答」—— 看着温柔，实际就是
-         * 主人说话没人理：他那句要等这一轮慢慢磨完才被想起，中间他只能干等。
-         * 更糟的是这一轮收尾时若又起了新一轮，两条线撞一起，句子就丢了。
-         *
-         * 现在改成：这句已经落盘了 → 立刻 abort('interject') 让这一轮停手
-         * （工具收到 abort 会干净退出，已说的字都在草稿和历史里），
-         * 前端收到 started:true 就接着开一条接续轮把这几句答掉。
-         *
-         * 【为什么不在这儿自己起一轮】就是上面那条：两条触发路必有一句落空。
-         * 服务端只负责「停手 + 落盘 + 报数」，跑由前端那条唯一的 SSE 来跑。
+         * 这一轮收尾之后，再把话真正写进历史。
+         * 用 setTimeout 让 finally 先把这个 promise 后面的活干完（摘登记、存盘）。
          */
-        try { turn.ac.abort('interject'); } catch {}
+        const __landAfter = async () => {
+          try {
+            if (turn && turn.done && typeof turn.done.then === "function") {
+              await Promise.race([turn.done, new Promise((r) => setTimeout(r, 15000))]);
+            }
+          } catch {}
+          await new Promise((r) => setTimeout(r, 60));
+          try {
+            const s2 = getSession(sessionId);
+            if (!s2) return;
+            const h2 = s2.messages;
+            const already = h2.some((m) => m && m.role === "user" && String(m.content ?? "") === String(message));
+            if (!already) h2.push({ role: "user", content: message, _at: Date.now(), _interject: true });
+            s2.updatedAt = Date.now();
+            sessions.set(sessionId, s2);
+            saveSession(s2);
+          } catch (e) {
+            console.warn("[interject] 收尾后补写插话失败：", String(e?.message ?? e));
+          }
+        };
+        turn.__landAfter = __landAfter;
+        __landAfter().catch(() => {});
       } else if (!wasRunning) {
-        // 根本没有在跑的那一轮：这句话没人接，当场起一轮
+        // 根本没有在跑的那一轮：话没人接，当场补进历史再起一轮
         setImmediate(() => {
+          try {
+            const s3 = getSession(sessionId);
+            if (s3) {
+              const h3 = s3.messages;
+              const already3 = h3.some((m) => m && m.role === "user" && String(m.content ?? "") === String(message));
+              if (!already3) h3.push({ role: "user", content: message, _at: Date.now(), _interject: true });
+              s3.updatedAt = Date.now();
+              sessions.set(sessionId, s3);
+              saveSession(s3);
+            }
+          } catch {}
           startQueuedTurn(sessionId).catch((e) => {
-            console.warn('[interject] 立刻接这一句没跑起来：', String(e?.message ?? e));
+            console.warn("[interject] 立刻接这一句没跑起来：", String(e?.message ?? e));
           });
         });
       }
     }
+    __iqDbg("RET sid=" + sessionId + " wasRunning=" + wasRunning + " wantsStop=" + wantsStop + " hasAc=" + Boolean(turn && turn.ac) + " hasQ=" + (turn ? Array.isArray(turn.queued) : "na") + " qLen=" + (turn && Array.isArray(turn.queued) ? turn.queued.length : -1) + " alive=" + turnAlive + " inMap=" + runningTurns.has(sessionId));
     return json(res, 200, {
       ok: true,
       // 前端靠这个字段决定「接着跑」还是「认错重发」。必须给。
       running: wasRunning,
       // 「已经停手、等前端接着开」——前端看到它就准备接续
-      started: Boolean(!wantsStop && wasRunning),
+      // 【started 现在永远是 false】
+      // 以前它=true 是告诉前端「服务端已经停手了，你来接一条接续轮」。
+      // 现在服务端不再 abort，而是把话挂进队列、等这一轮收尾自己接着答 ——
+      // 前端要是再去 runTurn，就会跟 startQueuedTurn 撞成两轮，必有一句落空。
+      // 所以这里固定 false，前端的「接续」分支永远不走；只看 queued>0 知道话收下了。
+      started: false,
       queued: Array.isArray(turn?.queued) ? turn.queued.length : 0,
       stopped: Boolean(turn?.ac),
-      count: history.length,
+      count: (getSession(sessionId) || session || {}).messages?.length || 0,
     });
   }
 

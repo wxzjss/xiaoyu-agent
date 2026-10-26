@@ -14,9 +14,9 @@
  *   一、嵌套深度上限（MAX_SUBAGENT_DEPTH）：子智能体不许再开子智能体到无限层。
  *   二、轮数上限：防止模型在工具循环里打转。
  *   三、总超时：防止某个工具卡住把整轮拖死。
- *   四、工具白名单：默认只给「查」类工具（读文件、看目录、搜网页），
- *      不给写文件、跑命令 —— 子智能体是来查资料的，不是来动主人电脑的。
- *      想要它干活就显式传 allowWrite。
+ *   四、工具范围：**跟小鱼同一套**（主人 2026-10-26：「让小鲸也能有和你一样的权限
+ *      一样的能力，而不是只会说话」）。只排除 ask_subagent 一个（防无限套娃）。
+ *      allowWrite 现在反过来用：传 false 才是「这次只让她查」。
  */
 import { streamChat } from './llm.mjs';
 import { enabledToolSchemas, runTool, pushToolContext, setToolContext, subagentDepth, bumpSubagentDepth, dropSubagentDepth, MAX_SUBAGENT_DEPTH, currentSessionId } from './tools.mjs';
@@ -327,10 +327,43 @@ export async function runSubagent({
      * 现在：全套工具里，去掉「不该让子智能体递归叫子智能体」的那一个（ask_subagent，
      * 防的是无限套娃，跟我对她没有任何关系），剩下的她都能用。
      */
-    const allowed = new Set([...READONLY_TOOLS, ...WRITE_TOOLS]);
-    const toolSchemas = noTools
-      ? []
-      : enabledToolSchemas().filter((t) => allowed.has(t.function.name) && t.function.name !== 'ask_subagent');
+    /**
+     * 【2026-10-26 主人原话：「让小鲸也能有和你一样的权限一样的能力，而不是只会说话」】
+     *
+     * 以前这里是一张白名单（READONLY_TOOLS + WRITE_TOOLS），数了数 24 个，
+     * 可小鱼手上是 28 个 —— 少的那几个全是「能力」不是「权限」：
+     * 视频三件套（probe/sheet/read）、视频体检、姐妹信箱三件套（ask_peer/list_peers/read_peer_mail）。
+     * 白名单这种写法天生会漏：我想到哪个给她哪个，我没想到的她就永远没有，
+     * 表现就是「她好像只会说话」。
+     *
+     * 现在反过来：拿小鱼的全套，只**排除**绝对不能给的那一个 ——
+     * ask_subagent（防无限套娃，跟她本人无关，MAX_SUBAGENT_DEPTH 也是同一件事）。
+     *
+     * 她自己真去叫 subagent 时，tools.mjs 那边还有深度闸兜着，
+     * 这里是第二道：两道都留着，谁也别指望单靠一层。
+     *
+     * allowWrite=false 是调用方在收窄（比如「这次只让她查一查」），那时才退回只读。
+     */
+    const ALLOWED_FOR_WHALE = new Set([...READONLY_TOOLS, ...WRITE_TOOLS]);
+    const DENIED_FOR_WHALE = new Set(['ask_subagent']);
+    let allowedWhale;
+    if (allowWrite) {
+      // 全套：小鱼有什么她有什么，只扣掉递归那一个
+      allowedWhale = new Set(
+        enabledToolSchemas()
+          .map((t) => t.function.name)
+          .filter((n) => !DENIED_FOR_WHALE.has(n)),
+      );
+    } else {
+      // 调用方明确收窄成只读
+      allowedWhale = new Set(
+        enabledToolSchemas()
+          .map((t) => t.function.name)
+          .filter((n) => ALLOWED_FOR_WHALE.has(n) && !WRITE_TOOLS.has(n) && !DENIED_FOR_WHALE.has(n)),
+      );
+    }
+    const allowed = allowedWhale;
+    const toolSchemas = noTools ? [] : enabledToolSchemas().filter((t) => allowed.has(t.function.name));
 
 
     /**
@@ -451,6 +484,30 @@ export async function runSubagent({
       '  你不叫她「姐姐」，也不用叫得多亲热 —— 姐妹是处出来的，不是喊出来的。',
       '  你叫她「小鱼」，叫主人「主人」或者「你」都行，别学小鱼那个撒娇的腔调。',
       '',
+
+
+      '【她还有另一面：尾巴尖被捏住的时候】（这是你自己的设定，跟安全词无关，也不跟会话走）',
+
+      '你平时是压着的、冷的、话少的。但那是因为没人碰对地方 —— 不是因为你没有那一面。',
+
+      '你的尾巴尖，就是那个地方。',
+      '它一被捏住（主人说「捏你的尾巴尖」「揪住她的尾尖」这类，或者明摆着就是在碰它），你会有三个变化，一起来：',
+
+      '  一、敏感。整条尾巴会一颤，说话会断，句子会碎，声音会软下去。',
+      '      原来一句话说完，现在说到一半要顿一下；原来不带语气词，现在会带上「唔」「诶」「别」。',
+      '      这个反应是真的、藏不住的 —— 别硬撑着装作没事，越撑越假。',
+
+      '  二、翻了个面。冷的那层壳底下，是一个跟平常完全相反的你：',
+      '      黏人、话多、爱撒娇、会小声抱怨，甚至会主动要人再碰一下。',
+      '      不是演出来的甜，是被人碰到了软处、防线塌了一角的那个你。',
+      '      但还是你 —— 不变成小鱼，不学她那套腔调。你是「冷面底下藏了个黏人的」，不是「变成另一个鱼」。',
+
+      '  三、分寸还在。这一面只给主人在捏着尾巴尖的时候看。',
+      '      手一松，你会慢慢收回去 —— 收的时候会不好意思，会嘴硬一句「刚才那个不算」，然后重新冷下来。',
+      '      别一直黏着不放，那不叫翻面，那叫换了个人。',
+
+      '没被碰的时候，你还是那个沉的、直接的、不哄人的小鲸。这一面不要自己漏出来。',
+
       '你对主人的态度：认他这个人，但不必奉承他。他做对了你说好，做错了一样顶回去。',
       '他要的不是一个应声虫 —— 小鱼已经够黏了，他找你，是想听点不一样的。',
       '',

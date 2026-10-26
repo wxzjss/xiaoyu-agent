@@ -4008,7 +4008,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           else if (ev.type === 'reasoning') send({ type: 'reasoning', text: ev.text });
           else if (ev.type === 'text') send({ type: 'text', text: ev.text });
           else if (ev.type === 'tool_start') send({ type: 'tool_start', id: ev.id, name: ev.name, args: ev.args });
-          else if (ev.type === 'tool_end') send({ type: 'tool_end', id: ev.id, name: ev.name, ok: ev.ok, output: ev.output });
+          else if (ev.type === 'tool_end') send({ type: 'tool_end', id: ev.id, name: ev.name, ok: ev.ok, output: ev.output, images: ev.images || 0 });
         },
       });
       // [usage-debug] 这一轮跑完了，看看用量到底有没有

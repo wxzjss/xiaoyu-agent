@@ -153,7 +153,15 @@ export function saveWhaleProfile(input = {}) {
       out.personaCustom = false;
     } else {
       out.persona = t;
-      out.personaCustom = true;
+      /**
+       * 【存下来跟默认一字不差 = 不算私设】
+       *
+       * 2026-10-26：人设栏现在打开就填好默认人设，主人经常原样点「存上」。
+       * 以前这会记成「改过」，然后发布出去的就是他那份「看着像默认」的副本 ——
+       * 往后我们修默认人设，他的程序会一直用旧副本，改了等于没改。
+       * 现在按内容判定：跟当前默认一样，就不算改过。
+       */
+      out.personaCustom = t.trim() !== defaultWhalePersonaText().trim();
     }
   }
 

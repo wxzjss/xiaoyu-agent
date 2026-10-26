@@ -4755,6 +4755,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const committed = new Set();
     const commitWireBack = () => {
       let n = 0;
+      try {
+        __iqAppendSync("C:\\Users\\35453\\AppData\\Roaming\\小鱼Agent\\data\\.state\\dup-debug.log",
+          new Date().toISOString() + ' [commit] wire=' + wireMessages.length + ' history=' + history.length +
+          ' wireIds=' + wireMessages.filter((m) => Array.isArray(m && m.tool_calls)).map((m) => m.tool_calls.map((t) => String(t.id).slice(-6)).join('+')).join('|') + '\n');
+      } catch {}
       for (const m of wireMessages) {
         if (!m || wireSeenBefore.has(m) || committed.has(m)) continue;
         committed.add(m);

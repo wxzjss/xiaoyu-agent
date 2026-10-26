@@ -3215,6 +3215,26 @@ async function fetchTimed(url, opts = {}, ms = 8000) {
  *   · 两头都对不上 → 这段压根没到过，补一条。
  * 只处理这一轮，不碰历史，重复的不会多画。
  */
+/**
+ * 【比对用的「洗文本」】
+ *
+ * 2026-10-26 主人报「同一段话在屏幕上说两遍」。
+ *
+ * 查下来是「找得到就跳过」那个判据太严：它拿正文最后 40 个字做 includes，
+ * 只要屏幕上那个气泡跟服务端给的正文有一丁点不同 ——
+ * 多一个换行、少一个标点、mojibake 修正前后不一样 —— 就判成「没画过」，
+ * 于是再补一条。主人看到的就是同一段话挨着出现两次。
+ *
+ * 所以比对之前先把两边都洗一遍：去掉所有空白和标点，只留字。
+ * 洗完还一样的，就是同一段话，不许再画。
+ */
+function __washForCompare(s) {
+  return String(s || '')
+    .replace(/\r/g, '')
+    .replace(/[\s\p{P}\p{S}]/gu, '')
+    .toLowerCase();
+}
+
 function reconcileTurnTexts(ev) {
   const want = Array.isArray(ev && ev.turnTexts) ? ev.turnTexts : [];
   if (!want.length) return;
@@ -3234,7 +3254,22 @@ function reconcileTurnTexts(ev) {
 
     const bubbles = allBubbles();
     const full = bubbles.find((el) => {
+      /**
+       * 【判据改成洗完了再比】—— 2026-10-26 修「说两遍」
+       *
+       * 原来：t.includes(tail)，tail 是原文最后 40 字，差一个标点就不认，
+       * 于是判成「没画过」又补一条。
+       * 现在：两边都洗掉空白和标点，只留字，再看是不是同一段话。
+       */
       const t = textOf(el);
+      const washEl = __washForCompare(t);
+      const washText = __washForCompare(text);
+      if (!washEl || !washText) return false;
+      // 屏幕上这段已经包含正文全部（洗完比）→ 画过了
+      if (washEl.includes(washText)) return true;
+      // 正文包含屏幕上这段，且长度差得不多（末尾几个标点不同）→ 也算画过了
+      if (washText.includes(washEl) && washEl.length >= Math.floor(washText.length * 0.9)) return true;
+      // 老判据留着兜底：整段结尾对得上
       return t.includes(tail) || (t.length >= text.length - 8 && t.includes(head));
     });
     if (full) continue;
@@ -3247,7 +3282,14 @@ function reconcileTurnTexts(ev) {
       // 以前还写了 || t.includes(head)，可 head 是从这段正文自己头上切的，
       // 对任何 text 都恒为真 —— 于是每处理一段就把上一段误判成残句删掉重画，
       // 一轮说七段，屏幕上最后只剩一小段。别再加回去。
-      return t.length < text.length && t.length >= 6 && text.startsWith(t);
+      /**
+       * 【2026-10-26 补：改成洗完再比】
+       * 免得「标点不同」把完整的一段当成残句删了重画。
+       */
+      const washEl = __washForCompare(t);
+      const washTxt = __washForCompare(text);
+      if (!washEl || washEl.length < 6) return false;
+      return washTxt.length > washEl.length && washTxt.startsWith(washEl);
     });
     if (partial) {
       const host = partial.closest('.msg.assistant');
@@ -5236,6 +5278,23 @@ async function runTurn({ resume = false, text = '' } = {}) {
           closeThink();
           hideSending();
           /**
+           * 【这一轮说完了，可队列里还有话排着】
+           *
+           * 主人连插两句的时候：第一句跑完，服务端收尾里 setImmediate 起下一轮。
+           * 那一轮是**服务端自己跑的**，前端这条 SSE 到这就 done 了。
+           *
+           * 【这里千万不能 runTurn({resume:true})】
+           * 服务端那一轮正在跑，前端再起一轮就是两轮抢同一份历史，
+           * 其中一句话永远没人答。所以这里只做一件事：把 busing 保持住，
+           * 跟直播（followLive）看它把剩下那句答完。
+           */
+          if (Number(ev.queued) > 0) {
+            pendingResume = false;      // 排队轮由服务端跑，前端不抢
+            busy = true;
+            syncSendBtn();
+            followQueuedLive(turnSession || sessionId);
+          }
+          /**
            * 【这一轮对一次账：SSE 要是中途断了，后头的正文就永远看不见】
            *
            * 主人报的原话：「重启后我这边没显示你说的后续内容」。
@@ -5340,8 +5399,32 @@ async function runTurn({ resume = false, text = '' } = {}) {
     syncSendBtn();
     if (onScreen()) {
       if (pendingResume) {
+        /**
+         * 【这一轮收尾：把主人刚插的那句接着答掉】
+         *
+         * 【2026-10-26 修的坑：这里能把主人的话弄丢】
+         * 以前是无条件 pendingResume=false 然后 runTurn({resume:true})。
+         * 可「pendingResume 挂着」只说明「有人想接着跑」，不说明「那句话已经落盘」。
+         * 插话那次 fetch 还没回来（网络慢）、或者服务端回了 400/404 的时候，
+         * 这里照样 resume —— 而 resume 是「接着已有历史跑」，历史里根本没有那句，
+         * 于是这一句话既没进历史、也不在输入框，屏幕上的气泡还被下一次重画冲掉。
+         * 主人报的「打了字、按了发送、消息没了」就是这么来的。
+         *
+         * 现在先问一遍：服务端那边到底有没有那句。有 → resume 接着答；
+         * 没有 → 这句话是我的责任，用正常发消息的路径补发一次（这时历史里没有，
+         * 不会写两遍）。补发也失败，才老老实实退回输入框。
+         */
         pendingResume = false;
-        setTimeout(() => runTurn({ resume: true }), 30);
+        setTimeout(() => {
+          resumeOrResend(turnSession, lastInterjectText).catch((e) => {
+            // 兜底：续跑/补发本身炸了，别让这句话无声消失
+            busy = false;
+            syncSendBtn();
+            const t = String(lastInterjectText || '').trim();
+            if (input && !input.value.trim() && t) { input.value = t; autosizeInput(); }
+            addSysNote('⚠ 插的这句没接上：' + (e && e.message ? e.message : '未知错误') + '，已经放回输入框');
+          });
+        }, 30);
       } else {
         input.focus();
       }
@@ -5397,20 +5480,27 @@ async function send() {
 }
 
 /**
- * 生成中插一句：先把这句落盘到当前会话，再停住这一轮，然后带着新话接着跑。
+ * 生成中插一句：这句先落盘到当前会话，然后排到这一轮后面，由它自己跑完接着答。
  *
  * 【主人报过的事故，别改回去】
  * 切走再切回来，打字按「发送」发不出去，按钮还停在「发送」，再发也发不出去。
  * 原因是：界面以为还在跑（busy=true），服务端那边其实早跑完了。
  * 以前这里不管结果如何都当「插进去了」，可根本没人接着跑 —— 那句话就石沉大海。
  *
- * 现在分三种结局，一种都不许糊过去：
- *   1) 真插进去了（running:true）→ 照老样子接着跑；
- *   2) 服务端说「根本没有在跑的那一轮」（running:false）→ 界面认错，
+ * 【四种结局，一种都不许糊过去】
+ *   1) 服务端排上了队 / 自己起了一轮（queued>0 或 started）→ 安静等，
+ *      接上直播看它答，别自己再起一轮（起了就是两轮打架，后到那条没人答）；
+ *   2) 服务端说「根本没有在跑的那一轮」（running:false 且 started:false）→ 界面认错，
  *      把 busy 放掉，直接当一条新消息重新发 —— 主人要的是这句话能出去，
  *      不是要一个「你刚才不该按这里」的报错；
- *   3) 网络错、服务端报错 → 明明白白说一句，并把 busy 状态重新问一遍，
- *      别让界面停在一个跟现实不符的状态上。
+ *   3) 主人带了叫停词（stopping）→ 服务端刻意不自动接着答，这是听主人的，
+ *      不能当「丢了」又把话发一遍；
+ *   4) 网络错、服务端报错 → 明明白白说一句，并把这句话还给主人。
+ *
+ * 【2026-10-26 为什么重写这一段】
+ * 以前前端只能靠 running 一个字段猜「话有没有人答」，猜不准就一路兜底：
+ * 弹黄字、把话当新消息重发、或者不管三七二十一 resume 一轮。三条兜底各自都能
+ * 把话弄丢或者答两遍。现在服务端把「排上了没有」直接告诉前端，就别再猜了。
  */
 async function interject() {
   const text = input.value.trim();
@@ -5419,6 +5509,7 @@ async function interject() {
   autosizeInput();
   addUser(text, '插话');
   pendingResume = true;
+  lastInterjectText = text;
   syncSendBtn();
   const r = await fetch('/api/interject', {
     method: 'POST',
@@ -5444,6 +5535,43 @@ async function interject() {
    * 绝不说「没插进去」，也别让主人重打一遍。
    */
   const serverTookIt = Boolean(r && r.ok === true);
+
+  /**
+   * ① 服务端已经把这一句接上了：排进队（queued>0）或者当场起了一轮（started）。
+   *
+   * 【这一步以前没有，是 2026-10-26 补的】
+   * 少了它，前端只能在「running:false 就认错重发」和「9 秒兜底」之间二选一，
+   * 两条路都会跟服务端自己排好的那一轮撞车。服务端既然说了「有人答」，
+   * 就把 pendingResume 交回给 runTurn 的 finally —— 那一轮收尾时接上直播。
+   */
+  if (r && r.ok === true && (r.started === true || Number(r.queued) > 0)) {
+    // pendingResume 保持 true：由这一轮的 finally 接上直播看它答（见 runTurn 收尾）
+    pendingResume = true;
+    busy = true;
+    syncSendBtn();
+    // 气泡留着 —— 这句话服务端已经收下，而且确实有人会答它
+    if (pendingRewindBubble) pendingRewindBubble = pendingRewindBubble;
+    // 盯一眼：万一没人接上，兜底从「重发一遍」改成「拉一次历史补画」，绝不重发
+    watchInterject(sessionId, text);
+    return;
+  }
+
+  /**
+   * ③ 主人叫停了（stopping）：服务端刻意不自动接着答 —— 这是听主人的。
+   *
+   * 以前这里会一路走到 9 秒兜底，弹「这句没能插进去，我当成新的一句发了」，
+   * 然后真的把话又发一遍：主人刚说「停下」，下一句就是她接着干 —— 正好反着来。
+   * 现在只做一件事：把 busy 放掉，让主人自己决定要不要继续说。
+   */
+  if (r && r.ok === true && r.stopping === true) {
+    pendingResume = false;
+    busy = false;
+    stopping = false;
+    turnsInFlight.delete(sessionId);
+    syncSendBtn();
+    addSysNote('已叫停。这句我记下了，要接着做就说一句');
+    return;
+  }
 
   // ② 服务端说：没有在跑的那一轮。界面这边的 busy 是假的，现在纠正它。
   //
@@ -5495,59 +5623,113 @@ async function interject() {
   }
 
   /**
-   * ④ 服务端说「插进去了」，但这轮没接着跑起来 —— 把话还给主人。
-   *
-   * pendingResume 是在 runTurn 的 finally 里被消费的。可那一轮要是压根没在跑，
-   * 或者收尾早就走完了，finally 再也不会来，这句话就永远等不到人接。
-   * 所以留个 9 秒观察窗（服务端等收尾最多 8 秒，别抢在它前面）：
-   * 时间到了还挂着 pendingResume，就认这句没落地，放回输入框、说一声。
+   * ④ 到这里说明服务端回了 ok:true，但既没排队也没替我们起一轮 ——
+   * 这种情况已经不该发生（服务端那两个字段必给一个），留着一条安静的路：
+   * 交给 watchInterject 兜底，它只补画、不重发。
    */
-  const mySession = sessionId;
-  const myText = text;
-  setTimeout(() => {
-    if (!pendingResume) return;             // 已经接着跑了，正常
-    if (sessionId !== mySession) return;     // 换会话了，别动别人的界面
+  watchInterject(sessionId, text);
+}
 
+/**
+ * 放过一句话之后，盯一眼「有没有人接着答」。
+ *
+ * 【为什么不再用一对 setInterval / setTimeout 各盯各的】
+ * 以前每次插话都留一个 9 秒定时器，它们看的是同一个全局 pendingResume ——
+ * 连着插三句就有三个定时器互相踩，第一个到点把后面的状态一把清掉，
+ * 主人看到的就是「后面那两句话还在等，界面却以为都结束了」。
+ *
+ * 现在反过来：定时器只认「这个会话这一轮跑完没有」，不碰全局状态。
+ * 时间到还在跑 → 什么都不做（正常，它在干活）；跑完了话还在历史里没答 →
+ * 拉一次会话把话补画出来，并且明确说一句「还排着」，绝不悄悄重发。
+ */
+function watchInterject(s, text) {
+  // 每句插话一个 token，防止上一个定时器把这次的状态清掉
+  const token = {};
+  const startedAt = Date.now();
+  const tick = () => {
+    // 还在跑：有人答，正常，不用管
+    if (turnsInFlight.has(s)) return;
+    if (Number(busy)) return;
+    // 已经把话收下、并且补画过了，就不再折腾
+    if (interjectWatch.get(s) !== token) return;
+    interjectWatch.delete(s);
+    void startedAt;
     /**
-     * 服务端收下了（ok:true）—— 这句话已经在历史里，只是这一轮没接上跑。
-     * 那就用 resume:true 让这一轮接着答它。
-     * 不弹黄字、不改输入框：这句话本来就是主人的，不需要被提醒一次。
+     * 到了这里：这句话确实落盘了（ok:true），但这一轮已经收工、也没人在答它。
+     * 用 resume 起一轮把它答掉 —— 这是**唯一**一条兜底路径，
+     * 不做「当新消息重发」那种会把同一句话写两遍的事。
      */
-    if (serverTookIt) {
-      pendingResume = false;
-      busy = false;
-      stopping = false;
-      turnsInFlight.delete(mySession);
-      syncSendBtn();
-      runTurn({ resume: true }).catch(() => { syncSendBtn(); });
-      return;
+    if (sessionId === s) {
+      runTurn({ resume: true }).catch(() => {
+        syncSendBtn();
+        addSysNote('⚠ 这句话还排着，没答上' + (text ? '' : '') + '：过一会儿再说一句就能接上');
+      });
     }
+  };
+  interjectWatch.set(s, token);
+  const check = () => {
+    if (interjectWatch.get(s) !== token) return;  // 被更新的一次接管了
+    tick();
+  };
+  setTimeout(check, 9000);
+  /**
+   * 服务端替我们起了一轮的话，runTurn 会在收尾时把 pendingResume 用掉；
+   * 那种情况下上面这个 9 秒检查基本是空转。留着它只为「真的没人接」那一种。
+   */
+}
 
-    pendingResume = false;
+/** 会话 -> 当前那次插话观察的 token（同一会话只留最新一次） */
+const interjectWatch = new Map();
+
+/**
+ * 最近一次插话说的那句话。
+ *
+ * 只用来一件事：收尾时发现「这句话根本没落盘」，好把它补发出去。
+ * 不放回 input.value 是因为主人可能已经在打别的字了，抢他的输入框更讨嫌。
+ */
+let lastInterjectText = '';
+
+/**
+ * 接着那一轮跑。但先确认「那句话到底在不在历史里」。
+ *
+ * 【为什么不能直接 resume（2026-10-26 修）】
+ * resume 的意思是「把已有历史再跑一遍」。历史里要是没有主人刚插的那句，
+ * 它就只是把上一轮重答一次；而主人那句话既没进历史、也不在输入框 —— 彻底没了。
+ * 这个 bug 只在「插话的 fetch 还没回来，/api/chat 那一轮就先收尾了」时出现，
+ * 每次只丢一句话，可丢的偏偏是主人刚打的那句，最不能丢。
+ *
+ * 所以：拉一次会话，看最后一两句主人说的话里有没有它。
+ *   有 → resume，接着答；
+ *   没有 → 按正常消息发一次（历史里没有，不会写两遍）；
+ *   连拉都拉不到（断网）→ 退回输入框并说清楚，别让它无声消失。
+ */
+async function resumeOrResend(s, text) {
+  const needle = String(text || '').trim();
+  let has = !needle; // 没记下那句话（老调用路径）就按「在」处理，保持原行为
+  if (needle) {
+    try {
+      const rr = await fetch('/api/sessions/peek?n=12&id=' + encodeURIComponent(s)).then((x) => x.json());
+      const msgs = Array.isArray(rr && rr.messages) ? rr.messages : [];
+      // 倒着看尾部几条就够，别为了找一句话把整段历史都扫一遍
+      for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 12; i--) {
+        const m = msgs[i];
+        if (!m || m.role !== 'user') continue;
+        const t = m.text;
+        if (String(t).trim() === needle) { has = true; break; }
+      }
+    } catch {
+      // 拉不到：不能判断，宁可当它没落盘 —— 补发一次顶多重复一句，
+      // 总比主人打完字看着它消失强
+      has = false;
+    }
+  }
+  if (has) return runTurn({ resume: true });
+  return runTurn({ text: needle }).catch((e) => {
     busy = false;
-    stopping = false;
-    turnsInFlight.delete(mySession);
     syncSendBtn();
-
-    /**
-     * 【别把锅甩给主人】
-     *
-     * 以前这里是「把字放回输入框 + 让他再按一次发送」。
-     * 主人报过：打了字、按了发送、消息没了，还得重打一遍。
-     * 他要的不是「你刚才不该按这里」的提示，是这句话真的被听见。
-     *
-     * 所以：既然插话没接上，就把这句当成一条普通消息正经发出去。
-     * 顺序不能反 —— 必须先 busy=false 再调 runTurn，否则又被挡回来。
-     */
-    addSysNote('⚠ 这句没能插进去，我当成新的一句发了');
-    runTurn({ text: myText }).catch((e) => {
-      // 真发不出去（断网之类）才退回输入框，并且说清楚
-      busy = false;
-      syncSendBtn();
-      if (input && !input.value.trim()) { input.value = myText; autosizeInput(); }
-      addSysNote('⚠ 这句还是没发出去：' + (e && e.message ? e.message : '网络错误') + '，已经放回输入框');
-    });
-  }, 9000);
+    if (input && !input.value.trim() && needle) { input.value = needle; autosizeInput(); }
+    addSysNote('⚠ 这句没发出去：' + (e && e.message ? e.message : '网络错误') + '，已经放回输入框');
+  });
 }
 
 sendBtn.onclick = () => {
@@ -5910,7 +6092,6 @@ function paintMemoryFlag() {}
      2. 主人编辑某一句话时（见下面的「编辑」按钮），会把改动同步进本子。
    这个界面一个字都不写盘 —— 连「清空」都不给，那是会毁东西的按钮，
    要清空走设置里那条有备份的。 */
-function paintMemoryFlag() {}
 
 /** 记忆本那个弹窗拿到的最近一次数据（切页签时不用重新请求） */
 let memBook = null;
@@ -7060,12 +7241,8 @@ let openingData = null;
 // 否则快速开关 / 滚动触发重画时，多个 setTimeout 回来各插一个 box，DOM 越堆越多。
 let openingSeq = 0;
 
-function el(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text != null) n.textContent = text;
-  return n;
-}
+// el() 在上面（记忆本那一段）已经定义过了，这里不再重复。重复定义一个同名函数，
+// 整个脚本块会直接 SyntaxError = 整页白屏，一行 JS 都不执行。
 
 function toggleOpeningEditor(row) {
   if (openingOpen) {
@@ -9628,19 +9805,10 @@ function paintModels() {
  * 以前这个函数根本不存在：「保存」和「测连通」一点就在第一行抛
  * ReferenceError: formPayload is not defined，handled 不了、也没有 catch，
  * 表现就是「点保存模型没反应」。
+ *
+ * 上面 9697 行左右已经有一个 formPayload() 了，这里再定义一个同名 function
+ * 会让整个脚本块直接 SyntaxError（整页白屏），所以删掉重复的这个。
  */
-function formPayload() {
-  const name = String(mdlName?.value ?? '').trim();
-  const model = String(mdlModel?.value ?? '').trim();
-  const baseURL = String(mdlBase?.value ?? '').trim();
-  const key = String(mdlKey?.value ?? '').trim();
-  const payload = { model, baseURL };
-  if (name) payload.name = name;
-  if (mdlEditing) payload.id = mdlEditing;
-  // Key 留空 = 不改原来那把
-  if (key) payload.apiKey = key;
-  return payload;
-}
 
 /** 把接口报错原样讲给人听（别只说「失败」） */
 async function jsonOrError(res) {

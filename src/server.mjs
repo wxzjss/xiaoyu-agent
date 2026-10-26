@@ -4753,6 +4753,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       return true;
     };
     const committed = new Set();
+    /**
+     * 【存盘前把中段多出来的 system 清掉】—— 2026-10-26 修
+     *
+     * runAgent 每轮开头会重建 system：历史里 messages[1] 不是 context 时，
+     * 它会 push 一条**全新的** system 进数组，跟着 wire 被接回历史。
+     * 实测会话末尾多出一条一模一样的 system，越跑越多，几百条历史全被它逼着重发。
+     * system 只该有一条、只在最前面。
+     */
+    const stripExtraSystem = (ms) => {
+      if (!Array.isArray(ms)) return 0;
+      let seen = 0;
+      let removed = 0;
+      for (let i = 0; i < ms.length; i++) {
+        const m = ms[i];
+        if (!m || m.role !== 'system') continue;
+        seen++;
+        if (seen > 1) { ms.splice(i, 1); i--; removed++; }
+      }
+      return removed;
+    };
+
     const commitWireBack = () => {
       let n = 0;
       try {
@@ -5508,9 +5529,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           // 这一轮的引用也切到最新那份，后面的代码看到的是同一个
           session.messages = latest.messages;
           if (latest.rewinds) session.rewinds = latest.rewinds;
+          stripExtraSystem(latest.messages);
           saveSession(latest);
           sessions.set(sessionId, latest);
         } else {
+          stripExtraSystem(session.messages);
           saveSession(session);
         }
       } catch (e) {

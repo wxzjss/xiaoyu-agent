@@ -100,6 +100,35 @@ function toolsForTurn() {
   return all.filter((t) => !PURE_HIDDEN_TOOLS.includes(t?.function?.name));
 }
 
+/**
+ * 【一整轮里已经认领过的 tool_call id】
+ *
+ * 2026-10-26 踩的大坑：插话（abort）之后 resume 重跑同一份历史时，
+ * 有的网关会把**上一轮那个已经被掐断的 tool_call 原样再吐一遍** ——
+ * 实测同一个 id 在一份 1044 条的会话里出现了 32 次。
+ *
+ * 以前 `toolCalls = ev.toolCalls` 是无脑覆盖，于是每一圈都把它当成新调用：
+ * 再执行一次工具、再 push 一条 assistant(tool_calls)。历史里同一个 id 越堆越多，
+ * 上游按 OpenAI 协议判定非法，直接 502 —— 主人看到的就是「插完话她就不动了」。
+ *
+ * 所以按 id 记账，同一个 id 一辈子只认第一次。
+ */
+const seenToolCallIds = new Set();
+
+/** 把一批 tool_call 里没见过的挑出来，顺手记进 seenToolCallIds */
+function takeFreshToolCalls(list) {
+  const out = [];
+  for (const tc of Array.isArray(list) ? list : []) {
+    const id = tc && tc.id ? String(tc.id) : '';
+    if (id) {
+      if (seenToolCallIds.has(id)) continue;   // 见过 = 上一轮重播的，丢掉
+      seenToolCallIds.add(id);
+    }
+    out.push(tc);
+  }
+  return out;
+}
+
 const CONTEXT_PREAMBLE = '下面是本次对话的设定与规则，从现在起一直有效，直到我明确要求更换。接下来才是我要说的话。';
 
 /**
@@ -176,6 +205,18 @@ export async function runAgent({
   onCompressed = null,
 } = {}) {
   let usageTotal = null;
+
+  /**
+   * 【这一圈自己的话、思考、工具调用】
+   *
+   * 2026-10-26 的坑：这三个以前就靠 for 循环里「直接用」隐式造全局，
+   * 整理代码时把 for 里那声 `let` 删了，就变成 ReferenceError（text is not defined），
+   * 每一轮刚开跑就炸 —— 主人看到的是「一发消息就报错」。
+   * 所以在这里显式声明；循环每圈开头只负责**清空**，不再声明。
+   */
+  let text = '';
+  let reasoning = '';
+  let toolCalls = [];
   /**
    * 最后一次请求的原始用量。
    *
@@ -313,9 +354,19 @@ export async function runAgent({
       onEvent({ type: 'aborted' });
       return { text: '', usage: usageTotal, aborted: true, files: outbox };
     }
-    let text = '';
-    let reasoning = '';
-    let toolCalls = [];
+    /**
+     * 【每一圈都要从头数】
+     *
+     * 这几个变量以前只在整轮开头声明的那个位置干净一次，之后每一圈都是往上面「叠」。
+     * 叠出来的两个后果都很难看：
+     *   · text：上一圈那声「（乖乖点头，尾巴一摆就冲去干活）」会跟着后面每一圈的
+     *     assistant 消息一起落盘 —— 历史里散着 928 条这种该被丢掉的空壳旁白；
+     *   · reasoning：整轮的思考越滚越长，最后一股脑挂到末尾那条消息上。
+     * 所以每圈开头清空，只留这一圈自己的。
+     */
+    text = '';
+    reasoning = '';
+    toolCalls = [];
     let usage = null;
 
     // 图片在本机是路径，调模型前才读成 base64；历史本身不动
@@ -347,7 +398,7 @@ export async function runAgent({
             reasoning += ev.text;
             onEvent({ type: 'reasoning', text: ev.text });
           } else if (ev.type === 'tool_calls') {
-            toolCalls = ev.toolCalls;
+            toolCalls = takeFreshToolCalls(ev.toolCalls);
           } else if (ev.type === 'usage') {
             usage = ev.usage;
           }
@@ -558,14 +609,6 @@ export async function runAgent({
       })),
     };
     messages.push(assistantMsg);
-    try {
-      const __dbgAppend = (await import('node:fs')).appendFileSync;
-      __dbgAppend("C:\\Users\\35453\\AppData\\Roaming\\小鱼Agent\\data\\.state\\dup-debug.log",
-        new Date().toISOString() + ' [agent] push assistantMsg round=' + round +
-        ' ids=' + assistantMsg.tool_calls.map((t) => t.id).join(',') +
-        ' textLen=' + String(assistantMsg.content || '').length +
-        ' msgsLen=' + messages.length + '\n');
-    } catch {}
 
     for (const call of assistantMsg.tool_calls) {
       onEvent({ type: 'tool_start', id: call.id, name: call.function.name, args: call.function.arguments });
@@ -678,6 +721,19 @@ export async function runAgent({
  */
 export function repairHistory(messages) {
   const floor = messages[0]?.role === 'system' ? (messages[1]?.context ? 2 : 1) : 0;
+  /**
+   * 【中段多出来的 system 一律删掉】—— 2026-10-26 修
+   *
+   * runAgent 每轮开头会重建 system：历史里 messages[1] 不是 context 时，
+   * 它会 push 一条**全新的** system 进数组（见上面 refreshSystem 那段）。
+   * 那个新对象跟着 wire 被接回历史，于是会话末尾多出一条一模一样的 system，
+   * 越跑越多。system 只该有一条、只在最前面。
+   */
+  for (let i = messages.length - 1; i >= floor; i--) {
+    const m = messages[i];
+    if (m && m.role === 'system') messages.splice(i, 1);
+  }
+  dedupeToolCalls(messages, floor);
   while (messages.length > floor) {
     const last = messages[messages.length - 1];
     if (last.role === 'tool') {
@@ -701,6 +757,93 @@ export function repairHistory(messages) {
     }
     // 到这里尾部是正常的 user / 干净的 assistant，没什么要修的
     return messages;
+  }
+  return messages;
+}
+
+/**
+ * 【同一个 tool_call id 只留第一次】—— 2026-10-26 修「插完话她不回」
+ *
+ * 病根：插话时被掐断的那一轮，它的 assistant(tool_calls) 已经在 wire 里了；
+ * 等接续轮拿同一份历史重跑，网关有时会把**那个已经断掉的调用原样再吐一遍**
+ * （实测同一个 id 在一份会话里出现 32 次）。以前没人管中段，于是历史越跑越脏：
+ *
+ *   assistant(call_X) → tool(call_X) → assistant(call_X) → assistant(call_X) → user …
+ *
+ * 这种形状上游按 OpenAI 协议判非法，直接回 502 —— 主人看到的就是「插了话，她不理我」。
+ *
+ * 规矩很简单：**第一次出现的那个 id 算正主，后面重复的一律丢掉**。
+ *   · 重复的 assistant(tool_calls) → 整条删；它要是还带着人话，就把人话
+ *     改成一条普通 assistant 留着（别把她说过的话也一起删了）；
+ *   · 重复的 tool 结果 → 删（第一组的才有效）。
+ * 只动重复的，正常的对话一条都不碰。
+ */
+function dedupeToolCalls(messages, floor = 0) {
+  if (!Array.isArray(messages) || messages.length <= floor) return messages;
+
+  /**
+   * 【两趟走，别在循环里搜数组】
+   *
+   * 第一版写成「边扫边 messages.some(...) 查正主是不是被删了」，
+   * 单条历史几千条时那是 O(n²)，插话这一下能把主线程卡住好几秒 ——
+   * 主人看到的是「打完字界面僵住」。所以分两趟：
+   *   第一趟只记账（谁先认领了哪个 id、哪些要删）；
+   *   第二趟一次性 splice 掉。
+   */
+  const ownerIndex = new Map();   // tool_call id → 第一次认领它的消息下标
+  const drop = new Set();         // 要整条丢掉的 assistant 下标
+  const replacedOk = new Set();   // 被「只剩人话」替代掉的那些下标
+
+  // —— 第一趟：认领 id，标记重复 ——
+  for (let i = floor; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || typeof m !== 'object') continue;
+    if (m.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) continue;
+    const fresh = [];
+    let duplicated = false;
+    for (const tc of m.tool_calls) {
+      const id = tc && tc.id ? String(tc.id) : '';
+      if (!id) { fresh.push(tc); continue; }        // 没 id 的没法判，留着
+      if (ownerIndex.has(id)) { duplicated = true; continue; }   // 见过 → 不再重复执行
+      ownerIndex.set(id, i);
+      fresh.push(tc);
+    }
+    if (!duplicated) continue;
+    if (fresh.length) {
+      messages[i] = { ...m, tool_calls: fresh };
+      replacedOk.add(i);
+    } else {
+      // 整条都是重播的：她要是还说了人话，就把人话留下，别一起删
+      const said = typeof m.content === 'string' ? m.content.trim() : '';
+      if (said) {
+        const plain = { role: 'assistant', content: m.content };
+        if (m._at) plain._at = m._at;
+        messages[i] = plain;
+        replacedOk.add(i);
+      } else {
+        // 一句话都没有的空壳 —— 落盘只会让历史更脏（实测一条会话里 928 条这种），删
+        drop.add(i);
+      }
+    }
+  }
+
+  // —— 第二趟：处理 tool 结果 ——
+  const firstToolAt = new Map();   // id → 第一条 tool 结果的下标
+  for (let i = floor; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || m.role !== 'tool' || !m.tool_call_id) continue;
+    const id = String(m.tool_call_id);
+    const owner = ownerIndex.get(id);
+    // 正主已经被删掉了 → 结果留着也没用
+    if (owner === undefined || drop.has(owner)) { drop.add(i); continue; }
+    // 正主还在，但已经有一条结果了 → 这条是重复的
+    if (firstToolAt.has(id)) { drop.add(i); continue; }
+    firstToolAt.set(id, i);
+  }
+
+  if (!drop.size) return messages;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (drop.has(i)) messages.splice(i, 1);
   }
   return messages;
 }

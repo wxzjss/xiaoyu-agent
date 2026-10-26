@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { config } from './config.mjs';
 
 const DIR = join(config.dataDir, '.state', 'plan');
-// 全体共用的一份 txt 清单，界面上原样显示它就是这份
-const TXT_FILE = join(config.dataDir, '.state', '任务清单.txt');
+// txt 清单目录：每个会话一份（以前是全体共用一份，谁最后动谁说了算）
+const TXT_DIR = join(config.dataDir, '.state', 'plan');
 const MAX_STEPS = 30;
 const MAX_NOTES = 40;
 const MAX_PROMPT_CHARS = 900;
@@ -28,6 +28,12 @@ function normStatus(v) {
 
 function clean(v, max) {
   return String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+/** 某个会话的 txt 清单路径 */
+function txtFileFor(key) {
+  const safe = String(key || 'default').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 80) || 'default';
+  return join(TXT_DIR, `${safe}.txt`);
 }
 
 function fileFor(key) {
@@ -99,19 +105,20 @@ function syncTxt(key, state) {
       body += '\n笔记\n';
       for (const n of state.notes.slice(-20)) body += `- ${n.tag ? `[${n.tag}] ` : ''}${n.text}\n`;
     }
-    writeFileSync(TXT_FILE, body, 'utf8');
+    writeFileSync(txtFileFor(key), body, 'utf8');
   } catch {
     // 写 txt 失败不影响主流程
   }
 }
 
 /** 界面读的就是这份 txt 原文 */
-export function readPlanTxt() {
+export function readPlanTxt(key = 'default') {
+  const file = txtFileFor(key);
   try {
-    if (!existsSync(TXT_FILE)) return { text: '（还没有任务清单，等我要做事的时候会写进来）', path: TXT_FILE };
-    return { text: readFileSync(TXT_FILE, 'utf8'), path: TXT_FILE };
+    if (!existsSync(file)) return { text: '（还没有任务清单，等我要做事的时候会写进来）', path: file };
+    return { text: readFileSync(file, 'utf8'), path: file };
   } catch (e) {
-    return { text: `（读清单出错了：${e && e.message}）`, path: TXT_FILE };
+    return { text: `（读清单出错了：${e && e.message}）`, path: file };
   }
 }
 

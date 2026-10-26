@@ -38,6 +38,30 @@ const ROOT = dirname(HERE);
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry');
 const CHECK = args.includes('--check');
+// 同步之前先过一遍预检：会把白屏的错误挡在「进到安装版」之前。
+// 真需要硬推的时候加 --no-gate（比如只想补一个无关紧要的文件）。
+const SKIP_GATE = args.includes('--no-gate');
+
+if (!CHECK && !DRY && !SKIP_GATE) {
+  /**
+   * 为什么把闸设在这里
+   * ------------------
+   * sync-live 是「源码 → 安装版」的唯一通路，也是这次事故的扩散通道：
+   * 小鱼的改动直接落在数据目录、没进源码，于是源码是干净的、git 是干净的，
+   * 一读 `node --check` 全过，谁都不知道安装版里那个页面已经打不开了。
+   *
+   * 在唯一的出口上装一道闸，比事后靠人记得跑检查可靠。
+   */
+  const { execFileSync } = await import('node:child_process');
+  try {
+    execFileSync(process.execPath, [join(HERE, 'check-ui.mjs')], { stdio: 'inherit' });
+  } catch {
+    console.error('');
+    console.error('页面自检没过，同步已中止。');
+    console.error('（确认只是无关改动、要强行同步的话，加 --no-gate）');
+    process.exit(1);
+  }
+}
 
 /** 数据目录：跟 src/config.mjs 一个规矩 */
 function dataDir() {

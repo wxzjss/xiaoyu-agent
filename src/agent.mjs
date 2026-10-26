@@ -330,13 +330,28 @@ export async function runAgent({
 
         const status = Number(err?.status ?? 0);
         const text_ = String(err?.text ?? err?.message ?? '');
+        // 诊断：把断流/重试的真实错误原样打到 stderr，别只靠消息文字猜。
+        // 2026-10-26 连着几轮都报「连接一直断」，只看聚合消息分不清是网关掐的、
+        // 超时了、还是我们自己 abort 的。这行留着一阵，等确认稳了再摘。
+        try {
+          const code = err?.code || err?.cause?.code || err?.cause?.errno || '';
+          const name = err?.name || 'Error';
+          console.error(
+            `[stream-error] session=${sessionId} name=${name} code=${code} status=${status} ` +
+              `isTimeout=${!!err?.isTimeout} cause=${String(err?.cause?.message || err?.cause || '').slice(0, 120)} ` +
+              `msg=${String(err?.message || err).slice(0, 200)}`,
+          );
+        } catch { /* 诊断失败不影响主流程 */ }
         // 流被掐断：这一轮已经吐出来的字不能丢，先记进历史，然后接着跑
         if (isStreamDropped(err)) {
           const partial = text.trim();
           const n = bumpStreak(sessionId + ':drop');
 
-          if (n > 5) {
-            throw new Error('连接一直断（已经重试 5 次了）。先停一下，检查网络，或者稍后再让我接着写。');
+          // 重试上限放宽到 30 次。原来 5 次太少了：网络抖一下、网关抽个风就来几条，
+          // 一晚上能攒够。而且「报错停下」对主人没有任何用 —— 她既不知道出了什么事，
+          // 也没法处理。宁可多等几轮自己缓过来。真断了二三十次那才说明是硬故障。
+          if (n > 30) {
+            throw new Error('上游连接断了很多次（30 次），这次是真的接不上了。已经写出来的都留着，稍后再叫我接着写。');
           }
 
           if (partial) {
@@ -351,7 +366,8 @@ export async function runAgent({
             onEvent({ type: 'text', text: '\n\n（连接断了一下，接着往下写…）\n\n' });
           }
 
-          const wait = retryDelay(Math.min(n, 3));
+          // 等待时间封顶 8 秒：原来卡在 3 次就封顶，连着抖就变成疯狂重连。
+          const wait = retryDelay(Math.min(n, 8));
           onEvent({ type: 'retry', reason: 'stream_drop', attempt: n, waitMs: wait });
           await sleep(wait);
           continue; // 回到 for(attempt) 开头，重新发这次请求

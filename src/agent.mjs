@@ -1,4 +1,4 @@
-﻿// The agent loop: call model -> run tools -> feed results back -> repeat.
+// The agent loop: call model -> run tools -> feed results back -> repeat.
 import { streamChat, modelNameForSession } from './llm.mjs';
 import { takeMail, formatMail } from './peer.mjs';
 import { inflateHistory } from './attach.mjs';
@@ -45,8 +45,15 @@ import {
 function isStreamDropped(err) {
   if (!err) return false;
   if (err.name === 'AbortError') return false;
+  // 超时（deadline.mjs 认输、withTimeout 到点）不是「断流」，别当成断流去硬重试。
+  // 为什么：断流的处理是「接着要」，可超时说明上游就是没动静，接着要只会再等一遍，
+  // 5 次之后刷出「连接一直断」。2026-10-26 就是这么连着弹两条的。
+  if (err.isTimeout || err.name === 'TimeoutError') return false;
   const m = String(err.message ?? err);
-  return /terminated|aborted|socket hang up|other side closed|ECONNRESET|fetch failed|premature close|UND_ERR_SOCKET|network error/i.test(m);
+  // 只认真正的连接层故障。「fetch failed」是 undici 对连接失败的统一包装，留着；
+  // 但「network error」「timeout」这种太泛的说法容易误伤，单列出来排除。
+  if (/\btimed?\s*out\b|静了超过|认输/i.test(m)) return false;
+  return /terminated|aborted|socket hang up|other side closed|ECONNRESET|fetch failed|premature close|UND_ERR_SOCKET/i.test(m);
 }
 
 /**
@@ -290,6 +297,10 @@ export async function runAgent({
     let handedOff = false;
     /** 这一轮里「流断掉又续上」了几次，别无限续 */
     let dropRetries = 0;
+    // 本轮开头的旧账清掉：上一次回答没成功就走了（用户打断、程序关了、报错退出），
+    // 那个 streak 会一直挂在内存里，等下一次抖动时直接顶到 5，报「连接一直断」。
+    // 每轮重来都从 0 数，才符合「连续 5 次都断」的本意 —— 2026-10-26 踩过。
+    resetStreak(sessionId + ':drop');
 
     for (let attempt = 0; ; attempt++) {
       try {
@@ -314,8 +325,7 @@ export async function runAgent({
         // 成功了就把连续失败清零
         resetStreak(sessionId);
         resetStreak(sessionId + ':drop');
-        break;
-      } catch (err) {
+        break;      } catch (err) {
         if (signal?.aborted) throw err;
 
         const status = Number(err?.status ?? 0);

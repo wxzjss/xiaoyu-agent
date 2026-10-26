@@ -31,14 +31,38 @@ function numOr(raw, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-/** 上游 LLM 一个字节都不吐的忍耐上限（默认 5 分钟） */
-export const LLM_IDLE_MS = numOr(process.env.LLM_IDLE_TIMEOUT_MS, 5 * 60 * 1000);
+/**
+ * 带下限的 numOr —— 专门用来读「等多久」这类配置。
+ *
+ * 为什么要有下限：这几个值一旦配得太小，界面就会在最平常的一轮里刷出
+ * 「静了超过 600 毫秒，我认输，不往下等了」，看着像程序坏了，其实是配置
+ * 把人正常思考的时间也算成了僵死。（2026-10-26 真踩过：调试时在外壳里设了
+ * LLM_IDLE_TIMEOUT_MS=600 忘了撤，之后起的服务全继承了这个 600，主人一说话
+ * 就弹认输。）
+ *
+ * 所以：低于下限的一律退回默认值，并在 stderr 留一行警告 —— 宁可安静地
+ * 用默认值，也不要让一个手滑的数字毁掉整场对话。
+ */
+function msOr(raw, fallback, floorMs, name) {
+  const n = Number(String(raw ?? '').trim());
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  if (n < floorMs) {
+    try {
+      console.warn(`[deadline] ${name}=${n} 太短了（下限 ${floorMs} 毫秒），已退回默认 ${fallback} 毫秒。`);
+    } catch { /* 忽略 */ }
+    return fallback;
+  }
+  return n;
+}
 
-/** 单个工具从开跑到返回的忍耐上限（默认 30 分钟；跑整套回归、装依赖都够） */
-export const TOOL_MAX_MS = numOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000);
+/** 上游 LLM 一个字节都不吐的忍耐上限（默认 5 分钟，最少给 15 秒） */
+export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 5 * 60 * 1000, 15000, 'LLM_IDLE_TIMEOUT_MS');
 
-/** 整轮允许的最长静默（默认 45 分钟）—— 哑转闸管「一直在转」，这个管「完全不动」 */
-export const TURN_IDLE_MAX_MS = numOr(process.env.TURN_IDLE_MAX_MS, 45 * 60 * 1000);
+/** 单个工具从开跑到返回的忍耐上限（默认 30 分钟，最少给 10 秒；跑整套回归、装依赖都够） */
+export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, 10000, 'TOOL_MAX_TIMEOUT_MS');
+
+/** 整轮允许的最长静默（默认 45 分钟，最少给 60 秒）—— 哑转闸管「一直在转」，这个管「完全不动」 */
+export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 45 * 60 * 1000, 60000, 'TURN_IDLE_MAX_MS');
 
 function fmtMins(ms) {
   const m = ms / 60000;

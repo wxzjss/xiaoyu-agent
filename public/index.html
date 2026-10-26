@@ -5480,27 +5480,12 @@ async function send() {
 }
 
 /**
- * 生成中插一句：这句先落盘到当前会话，然后排到这一轮后面，由它自己跑完接着答。
+ * 生成中插话：把这句话送上去，打断手上这一轮，让它带着新话接着答。
  *
- * 【主人报过的事故，别改回去】
- * 切走再切回来，打字按「发送」发不出去，按钮还停在「发送」，再发也发不出去。
- * 原因是：界面以为还在跑（busy=true），服务端那边其实早跑完了。
- * 以前这里不管结果如何都当「插进去了」，可根本没人接着跑 —— 那句话就石沉大海。
- *
- * 【四种结局，一种都不许糊过去】
- *   1) 服务端排上了队 / 自己起了一轮（queued>0 或 started）→ 安静等，
- *      接上直播看它答，别自己再起一轮（起了就是两轮打架，后到那条没人答）；
- *   2) 服务端说「根本没有在跑的那一轮」（running:false 且 started:false）→ 界面认错，
- *      把 busy 放掉，直接当一条新消息重新发 —— 主人要的是这句话能出去，
- *      不是要一个「你刚才不该按这里」的报错；
- *   3) 主人带了叫停词（stopping）→ 服务端刻意不自动接着答，这是听主人的，
- *      不能当「丢了」又把话发一遍；
- *   4) 网络错、服务端报错 → 明明白白说一句，并把这句话还给主人。
- *
- * 【2026-10-26 为什么重写这一段】
- * 以前前端只能靠 running 一个字段猜「话有没有人答」，猜不准就一路兜底：
- * 弹黄字、把话当新消息重发、或者不管三七二十一 resume 一轮。三条兜底各自都能
- * 把话弄丢或者答两遍。现在服务端把「排上了没有」直接告诉前端，就别再猜了。
+ * 【这是 0.9.26 的写法，2026-10-26 主人要求退回】
+ * 中间试过两版都不对：排队版要等活干完才被听见；打断式两版把话丢了。
+ * 0.9.26 最短，而且分工清楚 ——
+ *   服务端只负责「话落盘」；「接着跑」由这里根据 running 字段决定。
  */
 async function interject() {
   const text = input.value.trim();
@@ -5509,7 +5494,6 @@ async function interject() {
   autosizeInput();
   addUser(text, '插话');
   pendingResume = true;
-  lastInterjectText = text;
   syncSendBtn();
   const r = await fetch('/api/interject', {
     method: 'POST',
@@ -5517,65 +5501,9 @@ async function interject() {
     body: JSON.stringify({ sessionId, message: text }),
   }).then((x) => x.json()).catch(() => null);
 
-  /**
-   * 【2026-10-26 主人报的真 BUG：跑长命令时插话，消息消失 + 黄字一闪】
-   *
-   * 服务端 /api/interject 等这一轮收尾最多 8 秒，等不到也照样把这句话
-   * push 进 history 并 saveSession，然后回 { ok:true }。
-   * 也就是说：**只要 ok:true，这句话就已经真的存进去了。**
-   *
-   * 可前端这里 9 秒一到，看到 pendingResume 还挂着就认定「没插进去」，
-   * 弹一句黄字，再 runTurn 把同一句话又发一遍 ——
-   * 主人看到的就是「黄字一闪 + 那句话没了」。
-   *
-   * 所以现在分清楚两件事：
-   *   话有没有落盘 —— 服务端说了算，ok:true 就是落了；
-   *   这一轮有没有接着跑起来 —— 前端说了算，pendingResume 被消费才算。
-   * 落了盘、只是没接上跑：用 resume:true 让这一轮接着跑，把这条答完。
-   * 绝不说「没插进去」，也别让主人重打一遍。
-   */
-  const serverTookIt = Boolean(r && r.ok === true);
-
-  /**
-   * ① 服务端已经把这一句接上了：排进队（queued>0）或者当场起了一轮（started）。
-   *
-   * 【这一步以前没有，是 2026-10-26 补的】
-   * 少了它，前端只能在「running:false 就认错重发」和「9 秒兜底」之间二选一，
-   * 两条路都会跟服务端自己排好的那一轮撞车。服务端既然说了「有人答」，
-   * 就把 pendingResume 交回给 runTurn 的 finally —— 那一轮收尾时接上直播。
-   */
-  if (r && r.ok === true && (r.started === true || Number(r.queued) > 0)) {
-    // pendingResume 保持 true：由这一轮的 finally 接上直播看它答（见 runTurn 收尾）
-    pendingResume = true;
-    busy = true;
-    syncSendBtn();
-    // 气泡留着 —— 这句话服务端已经收下，而且确实有人会答它
-    if (pendingRewindBubble) pendingRewindBubble = pendingRewindBubble;
-    // 盯一眼：万一没人接上，兜底从「重发一遍」改成「拉一次历史补画」，绝不重发
-    watchInterject(sessionId, text);
-    return;
-  }
-
-  /**
-   * ③ 主人叫停了（stopping）：服务端刻意不自动接着答 —— 这是听主人的。
-   *
-   * 以前这里会一路走到 9 秒兜底，弹「这句没能插进去，我当成新的一句发了」，
-   * 然后真的把话又发一遍：主人刚说「停下」，下一句就是她接着干 —— 正好反着来。
-   * 现在只做一件事：把 busy 放掉，让主人自己决定要不要继续说。
-   */
-  if (r && r.ok === true && r.stopping === true) {
-    pendingResume = false;
-    busy = false;
-    stopping = false;
-    turnsInFlight.delete(sessionId);
-    syncSendBtn();
-    addSysNote('已叫停。这句我记下了，要接着做就说一句');
-    return;
-  }
-
   // ② 服务端说：没有在跑的那一轮。界面这边的 busy 是假的，现在纠正它。
   //
-  // 别再要求 r.ok === false 了：服务端现在回的是 { ok:true, running:false }，
+  // 别再要求 r.ok === false 了：服务端回的是 { ok:true, running:false }，
   // 意思是「话收进历史了，但根本没有在跑的那一轮」。这种也得当成新一轮发出去，
   // 不然这句话就只剩历史里一条，谁也不会接着回 —— 主人看到的就是「消息没了」。
   if (r && r.running === false) {
@@ -5583,26 +5511,11 @@ async function interject() {
     busy = false;
     turnsInFlight.delete(sessionId);
     syncSendBtn();
-    // 刚画的那条「插话」气泡要留着 —— 那句话服务端已经收下了
-    /**
-     * 【话已经落盘，就别从屏幕上撤掉】
-     *
-     * 从前这里会把刚画的那条「插话」气泡整个删掉，再把它当新消息重发一遍。
-     * 主人看到的是：「我一插话，不到一秒我说的话就消失了」—— 因为那条气泡
-     * 确实被删了，接着 runTurn 又画一条，中间那一瞬间就是空的。
-     *
-     * 服务端回 running:false 的意思是「此刻没有在跑的那一轮」，
-     * 可它同时也回了 ok:true —— 那句话已经真的写进历史了。
-     * 既然收下了，屏幕上就该留着它，接着起一轮把它答掉就行。
-     * 删掉再重画只会让主人以为自己的话丢了。
-     */
-    try { if (pendingRewindBubble) pendingRewindBubble.classList.add("kept"); } catch {}
-    // 话已经在历史里了（服务端 ok:true 就是落了盘）—— 直接用 resume 接着答，
-    // 别再把它当新消息 push 一遍，不然历史里就有两句一模一样的话。
+    // 刚画的那条「插话」气泡是假的（那句没进历史），撤掉再正常发
+    try { if (pendingRewindBubble && pendingRewindBubble.parentNode) pendingRewindBubble.parentNode.removeChild(pendingRewindBubble); } catch {}
     pendingRewindBubble = null;
-    input.value = '';
-    autosizeInput();
-    return runTurn({ resume: true });
+    if (input.value.trim() === '') input.value = text;
+    return runTurn({ text });
   }
 
   // ③ 真出错了：说清楚，并且把界面状态重新对一遍
@@ -5623,63 +5536,42 @@ async function interject() {
   }
 
   /**
-   * ④ 到这里说明服务端回了 ok:true，但既没排队也没替我们起一轮 ——
-   * 这种情况已经不该发生（服务端那两个字段必给一个），留着一条安静的路：
-   * 交给 watchInterject 兜底，它只补画、不重发。
+   * ④ 服务端说「插进去了」，这一轮也已经被打断、该由前端接着跑 ——
+   * 但 pendingResume 是在 runTurn 的 finally 里被消费的。那一轮要是压根没在跑，
+   * 或者收尾早就走完了，finally 再也不会来，这句话就永远等不到人接。
+   * 所以留个 9 秒观察窗（服务端等收尾最多 8 秒，别抢在它前面）。
    */
-  watchInterject(sessionId, text);
-}
+  const mySession = sessionId;
+  const myText = text;
+  setTimeout(() => {
+    if (!pendingResume) return;             // 已经接着跑了，正常
+    if (sessionId !== mySession) return;     // 换会话了，别动别人的界面
+    pendingResume = false;
+    busy = false;
+    stopping = false;
+    turnsInFlight.delete(mySession);
+    syncSendBtn();
 
-/**
- * 放过一句话之后，盯一眼「有没有人接着答」。
- *
- * 【为什么不再用一对 setInterval / setTimeout 各盯各的】
- * 以前每次插话都留一个 9 秒定时器，它们看的是同一个全局 pendingResume ——
- * 连着插三句就有三个定时器互相踩，第一个到点把后面的状态一把清掉，
- * 主人看到的就是「后面那两句话还在等，界面却以为都结束了」。
- *
- * 现在反过来：定时器只认「这个会话这一轮跑完没有」，不碰全局状态。
- * 时间到还在跑 → 什么都不做（正常，它在干活）；跑完了话还在历史里没答 →
- * 拉一次会话把话补画出来，并且明确说一句「还排着」，绝不悄悄重发。
- */
-function watchInterject(s, text) {
-  // 每句插话一个 token，防止上一个定时器把这次的状态清掉
-  const token = {};
-  const startedAt = Date.now();
-  const tick = () => {
-    // 还在跑：有人答，正常，不用管
-    if (turnsInFlight.has(s)) return;
-    if (Number(busy)) return;
-    // 已经把话收下、并且补画过了，就不再折腾
-    if (interjectWatch.get(s) !== token) return;
-    interjectWatch.delete(s);
-    void startedAt;
     /**
-     * 到了这里：这句话确实落盘了（ok:true），但这一轮已经收工、也没人在答它。
-     * 用 resume 起一轮把它答掉 —— 这是**唯一**一条兜底路径，
-     * 不做「当新消息重发」那种会把同一句话写两遍的事。
+     * 【别把锅甩给主人】
+     *
+     * 以前这里是「把字放回输入框 + 让他再按一次发送」。
+     * 主人报过：打了字、按了发送、消息没了，还得重打一遍。
+     * 他要的不是「你刚才不该按这里」的提示，是这句话真的被听见。
+     *
+     * 所以：既然插话没接上，就把这句当成一条普通消息正经发出去。
+     * 顺序不能反 —— 必须先 busy=false 再调 runTurn，否则又被挡回来。
      */
-    if (sessionId === s) {
-      runTurn({ resume: true }).catch(() => {
-        syncSendBtn();
-        addSysNote('⚠ 这句话还排着，没答上' + (text ? '' : '') + '：过一会儿再说一句就能接上');
-      });
-    }
-  };
-  interjectWatch.set(s, token);
-  const check = () => {
-    if (interjectWatch.get(s) !== token) return;  // 被更新的一次接管了
-    tick();
-  };
-  setTimeout(check, 9000);
-  /**
-   * 服务端替我们起了一轮的话，runTurn 会在收尾时把 pendingResume 用掉；
-   * 那种情况下上面这个 9 秒检查基本是空转。留着它只为「真的没人接」那一种。
-   */
+    addSysNote('⚠ 这句没能插进去，我当成新的一句发了');
+    runTurn({ text: myText }).catch((e) => {
+      // 真发不出去（断网之类）才退回输入框，并且说清楚
+      busy = false;
+      syncSendBtn();
+      if (input && !input.value.trim()) { input.value = myText; autosizeInput(); }
+      addSysNote('⚠ 这句还是没发出去：' + (e && e.message ? e.message : '网络错误') + '，已经放回输入框');
+    });
+  }, 9000);
 }
-
-/** 会话 -> 当前那次插话观察的 token（同一会话只留最新一次） */
-const interjectWatch = new Map();
 
 /**
  * 最近一次插话说的那句话。
@@ -8467,6 +8359,26 @@ const sessFindBar = document.getElementById('sessFindBar');
 const sessFindInput = document.getElementById('sessFindInput');
 const sessFindHits = document.getElementById('sessFindHits');
 
+/**
+ * 【2026-10-27 主人报：打开会话界面启用搜索，关掉再打开，搜索还是启用状态】
+ *
+ * 跟批量删除同一个毛病：setFind 只管显示/隐藏，面板再打开时拿的还是上次那份 DOM，
+ * 搜索框照旧亮着、上回的搜索结果还挂着。批量删除那边切会话时会清，搜索这块漏了。
+ * 这里补一个「悄悄收干净」的版本，打开面板和关面板两处都调。
+ */
+function exitFindSilently() {
+  try {
+    const bar = document.getElementById('sessFindBar');
+    if (bar) bar.hidden = true;
+    const b = document.getElementById('sessFindToggle');
+    if (b) b.classList.remove('on');
+    const hits = document.getElementById('sessFindHits');
+    if (hits) { hits.hidden = true; hits.innerHTML = ''; }
+    const inp = document.getElementById('sessFindInput');
+    if (inp) inp.value = '';
+  } catch {}
+}
+
 function setFind(on) {
   if (!sessFindBar) return;
   sessFindBar.hidden = !on;
@@ -8615,7 +8527,7 @@ document.getElementById('sessBulkDel').onclick = async () => {
     body: JSON.stringify({ ids }),
   }).then((x) => x.json()).catch(() => null);
   if (!r || r.error) {
-    alert('批量删除失败');
+    alert('批量删除失败' + (r && r.error ? '：' + r.error : ''));
     paintBulkCount();
     return;
   }
@@ -8635,7 +8547,16 @@ document.getElementById('sessBulkDel').onclick = async () => {
       }
     }
     await refreshSessions();
-    addSysNote(`已删掉 ${r.deleted} 个会话${r.failed.length ? `，${r.failed.length} 个没删成功` : ''}`);
+    const refusedN = Array.isArray(r.refused) ? r.refused.length : 0;
+    addSysNote(`已删掉 ${r.deleted} 个会话`
+      + (r.failed.length ? `，${r.failed.length} 个没删成功` : '')
+      + (refusedN ? `，${refusedN} 个正在跑、先跳过` : ''));
+    if (refusedN) {
+      const why = r.refused
+        .map((x) => '· ' + ((sessionsCache.find((v) => v.id === x.id) || {}).title || x.id) + '：' + x.why)
+        .join('\n');
+      alert('有 ' + refusedN + ' 个会话没删（不是出错，是被保护了）：\n' + why);
+    }
   } finally {
     // 人刚点了「新建」，光标直接给到位
     settleComposer({ focus: true });
@@ -8688,7 +8609,10 @@ sessList.addEventListener('click', async (e) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
     }).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) { alert('删除失败'); return; }
+    // 被闸拦下（refused）时要说真原因，不能笼统一句「删除失败」——
+    // 2026-10-26 主人报「删除失败」，其实是会话被保护拦住了，界面把原因吞了。
+    if (r && r.refused) { alert('删不了：' + (r.error || '这个会话现在不能删')); return; }
+    if (!r || r.error) { alert('删除失败' + (r && r.error ? '：' + r.error : '')); return; }
     try {
       if (id === sessionId) {
         // 删的就是当前这个：自动切到另一个（或新建一个），然后彻底回到能打字的状态
@@ -9219,6 +9143,8 @@ async function createSessionEx(opts = {}) {
 }
 
 document.getElementById('openSessions').onclick = async () => {
+  // 打开面板就当作一件事重新开始：搜索框不该跟着上一次还亮着
+  try { exitFindSilently(); } catch {}
   await refreshSessions();
   closeOtherDialogs('sessionsDlg');
   sessDlg.showModal();
@@ -9238,6 +9164,8 @@ document.getElementById('sessNew').onclick = async () => {
 };
 
 sessDlg.addEventListener('cancel', () => sessDlg.close());
+// 面板一关就把搜索框收干净：下次打开不该还是启用状态
+sessDlg.addEventListener('close', () => { try { exitFindSilently(); } catch {} });
 
 // ---- 会话导入 / 导出 --------------------------------------------------------
 /**

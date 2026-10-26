@@ -1166,8 +1166,11 @@ function flushWhalePark(session, sessionId, tag = '') {
  * 不交给文件名、时间、大小这些看起来像的东西。
  */
 function refuseDeleteReason(id) {
+  // 只有「正在跑」才拦。当前会话不再拦 —— 2026-10-26 主人报「删除失败」，
+  // 真因就是拿当前会话去删被这道闸 409 挡了，前端却只弹一句「删除失败」。
+  // 删当前会话本来就是支持的：前端删完用 lastSessionId 自动切到别的会话，
+  // 一个都不剩就新建一个（见 index.html 的单删分支）。
   if (runningTurns.has(id)) return '这个会话正在跑，等它跑完（或者点停止）再删';
-  if (getLastSessionId() === id) return '这是当前正在用的会话，不能删';
   return '';
 }
 

@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFileSync } from 'node:fs';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { exec, execFile } from 'node:child_process';
-import { resolve, dirname, isAbsolute, relative } from 'node:path';
+import { resolve, dirname, isAbsolute, relative, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 import { planAction, noteAction } from './plan.mjs';
@@ -294,7 +294,7 @@ export const tools = [
               try {
                 const why2 = signal && signal.reason;
                 appendFileSync(
-                  'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/abort-why.log',
+                  join(config.dataDir, '.state', 'abort-why.log'),
                   new Date().toISOString() + '  reason=' + JSON.stringify(why2) +
                   '  type=' + typeof why2 +
                   '  name=' + (why2 && why2.name) +

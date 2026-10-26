@@ -1,5 +1,9 @@
 // The agent loop: call model -> run tools -> feed results back -> repeat.
 import { streamChat, modelNameForSession } from './llm.mjs';
+// activeEndpoint / endpointFor：连不上模型时报错要说清是哪个地址，得能拿到当前生效的那套参数。
+import { activeEndpoint, endpointFor } from './models.mjs';
+// getOverride：会话里临时切过模型的话，报错要报那一套的地址，不是全局默认那套。
+import { getOverride } from './session-overrides.mjs';
 import { takeMail, formatMail } from './peer.mjs';
 import { inflateHistory } from './attach.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
@@ -39,6 +43,26 @@ import {
  * for well-behaved providers, and once as the first `user` message, which no gateway discards.
  */
 /**
+ * 这个错是不是「根本连不上」：地址写错了、服务没开、端口填错。
+ *
+ * 跟「断流」是两码事，处理方式也相反：
+ *   - 断流：连接建起来了又被掐，重试**有意义**（网络抖一下就过去了）→ 接着要
+ *   - 连不上：目标根本不在那儿，重试 30 次也还是不在 → 重试是白等，只会让主人
+ *     盯着「正在发送消息」看两分钟，最后看到一句莫名其妙的「连接一直断」
+ *
+ * 2026-10-26 踩过：把模型地址写成 http://127.0.0.1:18599（一个不存在的本地服务），
+ * ECONNREFUSED 被当成断流反复重试，主人只看到「卡在发送中」和「连接一直断」，
+ * 完全看不出真正的原因是地址填错了。所以这一类的错必须**当场说清楚是哪个地址**。
+ */
+function isConnectionRefused(err) {
+  if (!err) return false;
+  const code = err.code || err.cause?.code || err.cause?.errno || '';
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') return true;
+  const m = String(err.message ?? err) + ' ' + String(err.cause?.message ?? err.cause ?? '');
+  return /ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|getaddrinfo/i.test(m);
+}
+
+/**
  * 这个错是不是「流半路断了」：网关掐连接、网络抖动、socket hang up。
  * 跟 429 不一样——不降档、不换会话，而是**接着要**。
  */
@@ -49,6 +73,8 @@ function isStreamDropped(err) {
   // 为什么：断流的处理是「接着要」，可超时说明上游就是没动静，接着要只会再等一遍，
   // 5 次之后刷出「连接一直断」。2026-10-26 就是这么连着弹两条的。
   if (err.isTimeout || err.name === 'TimeoutError') return false;
+  // 根本连不上也不是断流：重试没有意义，交给上面那条路当场报清楚。
+  if (isConnectionRefused(err)) return false;
   const m = String(err.message ?? err);
   // 只认真正的连接层故障。「fetch failed」是 undici 对连接失败的统一包装，留着；
   // 但「network error」「timeout」这种太泛的说法容易误伤，单列出来排除。
@@ -342,6 +368,45 @@ export async function runAgent({
               `msg=${String(err?.message || err).slice(0, 200)}`,
           );
         } catch { /* 诊断失败不影响主流程 */ }
+
+        /**
+         * 根本连不上（地址写错、服务没开、端口填错）：当场说清楚是哪个地址，
+         * 别走断流重试那条路 —— 那个目标根本不在那儿，重试三十次也还是不在。
+         *
+         * 2026-10-26：模型地址被写成 http://127.0.0.1:18599（不存在的本地服务），
+         * ECONNREFUSED 被当成断流反复重试，主人只看到「卡在发送中」和
+         * 「连接一直断」，完全看不出真正的原因是地址填错了。
+         */
+        if (isConnectionRefused(err)) {
+          let where = '';
+          try {
+            // 会话里临时切过模型就报那一套的地址，否则报全局默认那套 ——
+            // 报错里那个地址必须就是这次请求真正打过去的地址，不能报错的。
+            where = String(activeEndpoint()?.baseURL || '');
+            const ov = getOverride(sessionId);
+            if (ov?.modelId) {
+              const one = endpointFor(ov.modelId);
+              if (one && one.baseURL) where = String(one.baseURL);
+            }
+            // 兜底：拿不到配置就退回错误里自带的地址（undici 会写在 cause 里）
+            if (!where) {
+              const hint = err?.cause?.message || err?.message || '';
+              const m = String(hint).match(/ECONNREFUSED\s+([^\s,;)]+)/);
+              if (m) where = m[1];
+            }
+          } catch { /* 拿不到就算了，下面还有原始错误信息 */ }
+          const code = err?.code || err?.cause?.code || err?.cause?.errno || 'ECONNREFUSED';
+          const e2 = new Error(
+            where
+              ? `连不上模型服务器：${where}（${code}）。这个地址上现在没有服务在应答 —— 要么地址填错了，要么那台服务没开。打开顶部「模型」按钮核对一下。`
+              : `连不上模型服务器（${code}）。检查一下顶部「模型」里的地址和端口对不对。`,
+          );
+          e2.isConnRefused = true;
+          e2.baseURL = where;
+          e2.code = code;
+          throw e2;
+        }
+
         // 流被掐断：这一轮已经吐出来的字不能丢，先记进历史，然后接着跑
         if (isStreamDropped(err)) {
           const partial = text.trim();

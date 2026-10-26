@@ -324,3 +324,69 @@ export function activeLabel() {
   const ep = activeEndpoint();
   return ep.apiKey ? `${ep.model} · ${ep.baseURL}` : `${ep.model} · 未配置 API Key`;
 }
+
+/**
+ * 「这个地址上到底有没有人在听」—— 只探端口，不发请求。
+ *
+ * 为什么不直接复用 testModel() 发一次真请求：
+ *   - 启动时网络上如果慢，一条 chat 请求能卡 20 秒，把整个服务启动拖住；
+ *   - 我们要回答的问题只是「地址填错了吗」，TCP 能不能握上手就足够回答，
+ *     不需要模型真的回一句话（那是「试连通」按钮该干的事）。
+ *
+ * 为什么这件事必须有人做（2026-10-26）：
+ *   模型地址被写成 http://127.0.0.1:18599 —— 一个根本不存在的本地服务。
+ *   界面上一切正常，只有发消息时才会 ECONNREFUSED，而那个错当时又被当成
+ *   「连接断了一下」反复重试，主人看到的是「卡在发送中」和「连接一直断」，
+ *   完全看不出真正的原因。地址写错是**静态错误**，应该在发消息之前就说出来。
+ *
+ * @param {string} baseURL 形如 https://napi.wanzij.cn/v1
+ * @param {{timeoutMs?:number}} [opts]
+ * @returns {Promise<{ok:boolean, host:string, port:number, reason?:string, ms:number}>}
+ */
+export async function probeEndpoint(baseURL, opts = {}) {
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 3000;
+  const started = Date.now();
+  let url;
+  try {
+    url = new URL(trimSlash(baseURL));
+  } catch {
+    return { ok: false, host: String(baseURL || ''), port: 0, reason: '地址不是合法的 URL', ms: 0 };
+  }
+  const isHttps = url.protocol === 'https:';
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  const port = Number(url.port) || (isHttps ? 443 : 80);
+
+  const { connect } = await import('node:net');
+  const tls = isHttps ? await import('node:tls') : null;
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    const done = (ok, reason) => {
+      if (settled) return;
+      settled = true;
+      try { sock.destroy(); } catch { /* 已关就算了 */ }
+      resolve({ ok, host, port, reason, ms: Date.now() - started });
+    };
+
+    let sock;
+    try {
+      sock = isHttps
+        ? tls.connect({ host, port, servername: host, timeout: timeoutMs })
+        : connect({ host, port, timeout: timeoutMs });
+    } catch (err) {
+      return resolve({ ok: false, host, port, reason: String(err?.message ?? err), ms: Date.now() - started });
+    }
+
+    sock.once(isHttps ? 'secureConnect' : 'connect', () => done(true));
+    sock.once('timeout', () => done(false, `${timeoutMs} 毫秒内没有应答`));
+    sock.once('error', (err) => {
+      const code = err?.code || '';
+      if (code === 'ECONNREFUSED') done(false, '这个端口上没有服务在听（连接被拒绝）');
+      else if (code === 'ENOTFOUND') done(false, '这个域名解析不出来（拼错了吗）');
+      else if (code === 'EHOSTUNREACH' || code === 'ENETUNREACH') done(false, '这台主机 / 这个网段到不了');
+      else if (code === 'CERT_HAS_EXPIRED') done(false, '证书过期了');
+      else if (/CERT|SELF_SIGNED/i.test(code)) done(false, `证书有问题（${code}）`);
+      else done(false, code || String(err?.message ?? err));
+    });
+  });
+}

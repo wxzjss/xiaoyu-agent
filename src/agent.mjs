@@ -5,7 +5,10 @@ import { activeEndpoint, endpointFor } from './models.mjs';
 // getOverride：会话里临时切过模型的话，报错要报那一套的地址，不是全局默认那套。
 import { getOverride } from './session-overrides.mjs';
 import { takeMail, formatMail } from './peer.mjs';
-import { inflateHistory } from './attach.mjs';
+// readImageDataUrl：工具（尤其 video_read / video_sheet）的结果里带着图片路径时，
+// 得当场把图变成多模态 content 递给模型。只给路径她看不见图 —— 会去 read_file 读 PNG
+// 读成乱码，然后如实说「一片糊」。她没撒谎，是真的没看见。
+import { inflateHistory, readImageDataUrl } from './attach.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
@@ -590,11 +593,39 @@ export async function runAgent({
           ? '这个工具超过 ' + (TOOL_MAX_MS >= 60000 ? Math.round(TOOL_MAX_MS / 60000) + ' 分钟' : Math.round(TOOL_MAX_MS / 1000) + ' 秒') + '没返回（' + call.function.name + '），先跳过它，接着往下走。'
           : String(e?.message ?? e),
       }));
-      onEvent({ type: 'tool_end', id: call.id, name: call.function.name, ok, output });
+      /**
+       * 【工具结果里带图】
+       *
+       * 有的工具（video_read / video_sheet）跑完产出的不是文字，是几张图。
+       * 以前只返回路径字符串 —— 模型拿到一串路径看不见东西，会去调 read_file
+       * 读 PNG，读出来是乱码，最后只能说「我看不清」。它没说谎，是真没看见。
+       *
+       * 所以允许工具返回 { text, images: [...] }：文字照旧，图当场编码成
+       * image_url 段拼进同一条 tool 消息的多模态 content。
+       * 单张图读失败只丢那一张，不能让整个工具结果变成错误 ——
+       * 文字部分（时间点、位置映射）本身就是有用的。
+       */
+      let toolContent = ok ? output : `ERROR: ${output}`;
+      let imgGot = 0;
+      if (ok && output && typeof output === 'object' && Array.isArray(output.images) && output.images.length) {
+        const parts = [{ type: 'text', text: String(output.text ?? '') }];
+        for (const p of output.images) {
+          try {
+            const img = readImageDataUrl(p);
+            parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+            imgGot += 1;
+          } catch { /* 这一张读不了就算了，文字部分还在 */ }
+        }
+        toolContent = imgGot ? parts : String(output.text ?? '');
+      } else if (output && typeof output === 'object') {
+        // 兜底：万一哪个工具返回了对象却没 images，别把 [object Object] 喂给模型
+        toolContent = String(output.text ?? JSON.stringify(output));
+      }
+      onEvent({ type: 'tool_end', id: call.id, name: call.function.name, ok, output, images: imgGot });
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
-        content: ok ? output : `ERROR: ${output}`,
+        content: toolContent,
       });
       /**
        * 一个工具跑完就检查一次「是不是被叫停了」。

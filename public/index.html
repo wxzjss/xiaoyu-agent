@@ -896,10 +896,39 @@
 /* 搜会话内容 */
 .sessFind[hidden] { display: none !important; }
 .sessFind { gap: 8px; padding-top: 0; }
+/* 搜会话内容：输入框
+ *
+ * 【2026-10-26 主人报「搜索是亮白色的，和背景不符」】
+ * 两个原因叠在一起：
+ *   ① color 写的是 var(--fg)，可这个变量**根本没定义**（别处一律用 --text），
+ *      于是 color 变成无效值，浏览器回退成默认黑色；
+ *   ② input[type=search] 在暗色页面上会吃到浏览器自己的默认外观
+ *      （白底 + 白描边），只写 background 压不住。
+ * 所以：颜色改用 --text，再把 appearance 和 WebKit 那几个内部件一并压掉。 */
 .sessFind input[type=search] {
   flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 10px; font-size: 13px;
-  background: var(--input-bg); color: var(--fg);
+  background: var(--input-bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 7px;
+  -webkit-appearance: none; appearance: none;
+  outline: none;
+  color-scheme: dark;
+}
+.sessFind input[type=search]::placeholder { color: var(--dim); }
+.sessFind input[type=search]:focus {
+  border-color: rgba(79, 140, 255, .55);
+  background: rgba(10, 12, 17, .78);
+  box-shadow: 0 0 0 2px rgba(79, 140, 255, .12);
+}
+.sessFind input[type=search]::-webkit-search-decoration,
+.sessFind input[type=search]::-webkit-search-cancel-button,
+.sessFind input[type=search]::-webkit-search-results-button,
+.sessFind input[type=search]::-webkit-search-results-decoration {
+  -webkit-appearance: none; appearance: none;
+}
+/* 取消按钮自己画一个，跟暗色配套（浏览器自带的那个是黑的，在白底上看不清） */
+.sessFind input[type=search]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  width: 0; height: 0;
 }
 .sessFindHits { flex: 0 0 auto; max-height: 44%; overflow: auto; border-bottom: 1px solid var(--border); }
 .sessFindHits[hidden] { display: none !important; }
@@ -5299,6 +5328,25 @@ async function interject() {
     body: JSON.stringify({ sessionId, message: text }),
   }).then((x) => x.json()).catch(() => null);
 
+  /**
+   * 【2026-10-26 主人报的真 BUG：跑长命令时插话，消息消失 + 黄字一闪】
+   *
+   * 服务端 /api/interject 等这一轮收尾最多 8 秒，等不到也照样把这句话
+   * push 进 history 并 saveSession，然后回 { ok:true }。
+   * 也就是说：**只要 ok:true，这句话就已经真的存进去了。**
+   *
+   * 可前端这里 9 秒一到，看到 pendingResume 还挂着就认定「没插进去」，
+   * 弹一句黄字，再 runTurn 把同一句话又发一遍 ——
+   * 主人看到的就是「黄字一闪 + 那句话没了」。
+   *
+   * 所以现在分清楚两件事：
+   *   话有没有落盘 —— 服务端说了算，ok:true 就是落了；
+   *   这一轮有没有接着跑起来 —— 前端说了算，pendingResume 被消费才算。
+   * 落了盘、只是没接上跑：用 resume:true 让这一轮接着跑，把这条答完。
+   * 绝不说「没插进去」，也别让主人重打一遍。
+   */
+  const serverTookIt = Boolean(r && r.ok === true);
+
   // ② 服务端说：没有在跑的那一轮。界面这边的 busy 是假的，现在纠正它。
   //
   // 别再要求 r.ok === false 了：服务端现在回的是 { ok:true, running:false }，
@@ -5346,6 +5394,22 @@ async function interject() {
   setTimeout(() => {
     if (!pendingResume) return;             // 已经接着跑了，正常
     if (sessionId !== mySession) return;     // 换会话了，别动别人的界面
+
+    /**
+     * 服务端收下了（ok:true）—— 这句话已经在历史里，只是这一轮没接上跑。
+     * 那就用 resume:true 让这一轮接着答它。
+     * 不弹黄字、不改输入框：这句话本来就是主人的，不需要被提醒一次。
+     */
+    if (serverTookIt) {
+      pendingResume = false;
+      busy = false;
+      stopping = false;
+      turnsInFlight.delete(mySession);
+      syncSendBtn();
+      runTurn({ resume: true }).catch(() => { syncSendBtn(); });
+      return;
+    }
+
     pendingResume = false;
     busy = false;
     stopping = false;
@@ -7441,10 +7505,30 @@ function closeOtherDialogs(keepId) {
 (function paintBuildTag() {
   const tag = document.getElementById('buildTag');
   if (!tag) return;
-  // 版本号从后端读，别再写死一份
+  /**
+   * 版本号从后端读，别再写死一份。
+   *
+   * 而且要读两个：正在跑的这一版（running），和更新器已经下好、只等重启的那一版（target）。
+   * 之前只读 running，于是「设置里显示已经是最新的 0.9.26」和「右下角还是 0.9.25」
+   * 能同时出现在一个屏幕上 —— 主人没法判断到底在跑哪一版，只能来问。
+   * 现在只要两者不一致就直接写在角上，并说清要重启。
+   */
   fetch('/api/health')
     .then((r) => r.json())
-    .then((h) => { if (h && h.version) tag.textContent = 'v' + h.version; })
+    .then((h) => {
+      if (!h) return;
+      const run = h.running || h.version;
+      if (!run) return;
+      if (h.versionStale && h.target) {
+        tag.textContent = 'v' + run + '（已下好 v' + h.target + '，重启后生效）';
+        tag.style.color = '#d8a657';
+        tag.style.opacity = '.75';
+        tag.title = '现在跑的是 v' + run + '；更新器已经把 v' + h.target
+          + ' 下载好了，重启小鱼Agent 才会用上（会话和设置都不动）。';
+      } else {
+        tag.textContent = 'v' + run;
+      }
+    })
     .catch(() => {});
 })();
 
@@ -8482,6 +8566,32 @@ async function switchSessionSafe(id) {
 }
 
 async function switchSession(id) {
+  /**
+   * 【2026-10-26 主人报：批量删除开了之后，关掉会话、下次打开还是启用状态】
+   *
+   * bulkMode / picked 是纯内存变量，从来没人把它清掉，
+   * 而 switchSession 一路走到底、最后 renderSessList() 又照着旧值把
+   * 复选框和「删掉选中的 N 个」整个重画出来 —— 看着就像「记住了」。
+   *
+   * 批量删除是「我现在就要删一批」的临时动作，不是该常驻的模式。
+   * 切会话就是换了一件事在做，顺手收掉最稳妥：
+   * 不带着勾选跨会话（勾的都是上一个列表里的 id，留着反而容易删错）。
+   * 注意必须在 start 就清，不能等 renderSessList 之后再清 ——
+   * 那样中间会闪一下批量界面。
+   */
+  if (bulkMode || picked.size) {
+    bulkMode = false;
+    picked.clear();
+    try {
+      const bar = document.getElementById('sessBulkBar');
+      if (bar) bar.hidden = true;
+      const bb = document.getElementById('sessBulk');
+      if (bb) bb.classList.remove('on');
+      const sl = document.getElementById('sessList');
+      if (sl) sl.classList.remove('bulk');
+    } catch {}
+  }
+
   const r = await fetchTimed('/api/sessions/select', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

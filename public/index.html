@@ -891,9 +891,6 @@
     #sessBulk { border: 1px solid var(--border); background: transparent; color: var(--dim); }
     #sessBulk:hover { border-color: rgba(226, 96, 96, .55); background: rgba(226, 96, 96, .08); color: #ff8b8b; }
     #sessBulk.on { border-color: rgba(226, 96, 96, .7); background: rgba(226, 96, 96, .16); color: #ff9a9a; font-weight: 600; }
-/* 搜索按钮：平时态之前漏了，落回浏览器默认白底；照旁边几个写成安静描边 */
-    #sessFindToggle { border: 1px solid var(--border); background: transparent; color: var(--dim); }
-    #sessFindToggle:hover { border-color: #3a4252; background: #1b1f28; color: var(--text); }
 #sessFindToggle.on { border-color: rgba(77, 141, 255, .6); background: rgba(77, 141, 255, .14); color: #9dc0ff; }
 
 /* 搜会话内容 */
@@ -4970,7 +4967,7 @@ function syncSendBtn() {
 // 这一轮刚画出来的用户气泡，等 done 回包再补「↶ 回退」
 let pendingRewindBubble = null;
 
-async function runTurn({ resume = false, text = '', retried = false } = {}) {
+async function runTurn({ resume = false, text = '' } = {}) {
   // 关键：这一轮属于「发起时」那个会话。中途切走、切回来都不能串台。
   const turnSession = sessionId;
   let bubble = null;
@@ -5049,29 +5046,6 @@ async function runTurn({ resume = false, text = '', retried = false } = {}) {
     });
     if (!res.ok) {
       const e = await res.json().catch(() => ({ error: res.statusText }));
-      /**
-       * 【409 = 上一轮还没收干净，不是错】—— 2026-10-27 插话改造配套
-       *
-       * 插话走的是「打断 → 立刻接续」。服务端 abort 之后还要写盘、接回历史，
-       * 那几十毫秒到两三秒里它仍然挂着这一轮的登记，POST /api/chat 会被挡回来。
-       * 这不是失败，是「再等一下」。所以这里退让着重试，最多约 4 秒。
-       *
-       * 不重试的话主人看到的就是：插一句 → 红字「这个会话还在跑」→ 话没人答。
-       */
-      if (res.status === 409 && retried !== true) {
-        for (let wait = 150, n = 0; n < 14; n++) {
-          await new Promise((r) => setTimeout(r, wait));
-          if (sessionId !== turnSession) break;
-          const again = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId: turnSession, resume: true }),
-          }).catch(() => null);
-          if (again && again.ok) return runTurn({ resume: true, retried: true });
-          if (again && again.status !== 409) break;
-          wait = Math.min(wait * 1.5, 600);
-        }
-      }
       // statusText 很多时候是空的，报出来就是一句 reading 'error' of... 那种天书
       const why = (e && (e.error || e.message)) || res.statusText || ('服务端回了 ' + res.status + '，这一轮没发出去');
       throw new Error(why);
@@ -5304,20 +5278,21 @@ async function runTurn({ resume = false, text = '', retried = false } = {}) {
           closeThink();
           hideSending();
           /**
-           * 【这一轮说完了，可还有插话没答】—— 2026-10-27 改
+           * 【这一轮说完了，可队列里还有话排着】
            *
-           * 以前这里等「服务端自己 setImmediate 起下一轮」，前端只跟直播。
-           * 那条路已经拆了（两条触发路径必有一句落空，见服务端 finally 那段）。
-           * 现在服务端在 done 里报 `resume = 还剩几句`，由**前端**起那唯一一条接续轮。
+           * 主人连插两句的时候：第一句跑完，服务端收尾里 setImmediate 起下一轮。
+           * 那一轮是**服务端自己跑的**，前端这条 SSE 到这就 done 了。
            *
-           * 那些句子本身已经在历史里（带 _interject），接续轮会把它们并成一次提问，
-           * 不会重复进历史、也不会重复画气泡。
+           * 【这里千万不能 runTurn({resume:true})】
+           * 服务端那一轮正在跑，前端再起一轮就是两轮抢同一份历史，
+           * 其中一句话永远没人答。所以这里只做一件事：把 busing 保持住，
+           * 跟直播（followLive）看它把剩下那句答完。
            */
-          if (Number(ev.resume) > 0 || Number(ev.queued) > 0) {
-            pendingResume = false;
+          if (Number(ev.queued) > 0) {
+            pendingResume = false;      // 排队轮由服务端跑，前端不抢
             busy = true;
             syncSendBtn();
-            if (turnSession === sessionId) resumeSoon(30);
+            followQueuedLive(turnSession || sessionId);
           }
           /**
            * 【这一轮对一次账：SSE 要是中途断了，后头的正文就永远看不见】
@@ -5505,45 +5480,27 @@ async function send() {
 }
 
 /**
- * 插话之后：马上起一条接续轮。
+ * 生成中插一句：这句先落盘到当前会话，然后排到这一轮后面，由它自己跑完接着答。
  *
- * 【2026-10-27 为主人那句「改成 dsh 一样的插话机制」重写】
+ * 【主人报过的事故，别改回去】
+ * 切走再切回来，打字按「发送」发不出去，按钮还停在「发送」，再发也发不出去。
+ * 原因是：界面以为还在跑（busy=true），服务端那边其实早跑完了。
+ * 以前这里不管结果如何都当「插进去了」，可根本没人接着跑 —— 那句话就石沉大海。
  *
- * 服务端收到插话 → 立刻 abort 掉这一轮 → 回 started:true。
- * 这边不等那条 SSE 走完收尾，直接开跑，主人说完话就能看到我开始接。
+ * 【四种结局，一种都不许糊过去】
+ *   1) 服务端排上了队 / 自己起了一轮（queued>0 或 started）→ 安静等，
+ *      接上直播看它答，别自己再起一轮（起了就是两轮打架，后到那条没人答）；
+ *   2) 服务端说「根本没有在跑的那一轮」（running:false 且 started:false）→ 界面认错，
+ *      把 busy 放掉，直接当一条新消息重新发 —— 主人要的是这句话能出去，
+ *      不是要一个「你刚才不该按这里」的报错；
+ *   3) 主人带了叫停词（stopping）→ 服务端刻意不自动接着答，这是听主人的，
+ *      不能当「丢了」又把话发一遍；
+ *   4) 网络错、服务端报错 → 明明白白说一句，并把这句话还给主人。
  *
- * 【为什么要重试 409】
- * 被打断的那一轮还在收尾（写盘、commitWireBack），服务端还挂着它的登记，
- * 这一瞬间 POST /api/chat 会被「这个会话还在跑」挡回来。
- * 那不是错，就是它还没收干净 —— 所以等一下再试，最多试到 3 秒多。
- * 过了还挡着才认输，说一句给主人听，并把输入框还给他。
- *
- * 【为什么只能有一条】这里是接续的唯一入口。别的路径（done 事件、9 秒兜底）
- * 一律不许自己再起一轮，否则两条线撞一起必有一句没人答。
- */
-let resumeSeq = 0;
-function resumeSoon(delay = 60) {
-  const my = ++resumeSeq;
-  const sessionAtCall = sessionId;
-  setTimeout(async () => {
-    if (my !== resumeSeq) return;            // 后来又有一次接续，这次作废
-    if (sessionAtCall !== sessionId) return; // 主人切走了，不在这儿乱跑
-    await runTurn({ resume: true, retried: true }).catch(() => { syncSendBtn(); });
-  }, delay);
-}
-
-/**
- * 生成中插一句：这句先落盘到当前会话，然后**当场打断这一轮**，接着跑。
- *
- * 【2026-10-27 主人的要求：「改成 dsh 一样的插话机制，就像我现在这样插话」】
- *
- * 以前是「排进队，等这一轮跑完再答」：主人说一句，前面在磨就得干等，
- * 磨完还可能撞上别的触发路径把话丢掉。现在改成打断式：
- *   1. 服务端把这句 push 进历史并落盘（ok:true 就是落了）；
- *   2. 服务端 abort 掉当前这一轮，工具干净退出，已说的话留在草稿里；
- *   3. 这边立刻起一条接续轮 —— 那几句插话由服务端并成一次提问，只答一遍。
- * 只有「被打断的那一轮」和「接续的那一轮」两条 SSE，前者收尾即结束，
- * 后者是唯一执行线，不存在两轮并存。
+ * 【2026-10-26 为什么重写这一段】
+ * 以前前端只能靠 running 一个字段猜「话有没有人答」，猜不准就一路兜底：
+ * 弹黄字、把话当新消息重发、或者不管三七二十一 resume 一轮。三条兜底各自都能
+ * 把话弄丢或者答两遍。现在服务端把「排上了没有」直接告诉前端，就别再猜了。
  */
 async function interject() {
   const text = input.value.trim();
@@ -5587,35 +5544,15 @@ async function interject() {
    * 两条路都会跟服务端自己排好的那一轮撞车。服务端既然说了「有人答」，
    * 就把 pendingResume 交回给 runTurn 的 finally —— 那一轮收尾时接上直播。
    */
-  /**
-   * 【插话：服务端说「话已经写字了、这一轮我也让它停手了」—— 立刻起接续轮】
-   *
-   * 2026-10-27 顺序改成「先落盘，再停手」：服务端回 landed:true + started:true，
-   * 表示这句话**当场就写进了历史**（不再等这一轮收尾、不再靠 turn.done），
-   * 那我们就直接起那唯一一条接续轮 —— 主人说完话就能看到有人接。
-   *
-   * 【为什么这里必须自己起，不能等服务端】服务端的 setImmediate 接续已经拆了，
-   * 执行线只剩前端这一条（见 resumeSoon 上面那段注释）。不接就是真的没人答。
-   */
-  if (r && r.ok === true && r.started === true) {
-    pendingResume = false;
+  if (r && r.ok === true && (r.started === true || Number(r.queued) > 0)) {
+    // pendingResume 保持 true：由这一轮的 finally 接上直播看它答（见 runTurn 收尾）
+    pendingResume = true;
     busy = true;
     syncSendBtn();
-    resumeSoon(60);
-    return;
-  }
-
-  /**
-   * 【老路径的兜底：服务端只把话挂上了队列，没让这一轮停手】
-   *
-   * 落到这里说明服务端走的是「等这一轮自己收尾再答」（例如落盘失败、它没敢 abort）。
-   * 这时候前端**绝不能**自己 runTurn —— 两条 SSE 撞上必有一句落空。
-   * 只把按钮还成「停止」，接续由那一轮的 done 事件报 resume>0 时再起。
-   */
-  if (r && r.ok === true && (Number(r.queued) > 0)) {
-    pendingResume = false;
-    busy = true;
-    syncSendBtn();
+    // 气泡留着 —— 这句话服务端已经收下，而且确实有人会答它
+    if (pendingRewindBubble) pendingRewindBubble = pendingRewindBubble;
+    // 盯一眼：万一没人接上，兜底从「重发一遍」改成「拉一次历史补画」，绝不重发
+    watchInterject(sessionId, text);
     return;
   }
 
@@ -9105,29 +9042,6 @@ async function switchSessionSafe(id) {
   }
 }
 
-/**
- * 【2026-10-26 主人报：批量删除启用后，关掉会话界面再打开，还是启用状态】
- * 「切会话」那条路早就清了，但「关面板 → 再打开」走的是 openSessions → showModal，
- * 压根没碰 bulkMode，所以再打开时按钮还亮着、勾选还在。
- * 抽成具名函数，两条路共用；不重画列表，避免打开瞬间闪一下批量界面。
- */
-function exitBulkSilently() {
-  bulkMode = false;
-  picked.clear();
-  try {
-    const bar = document.getElementById('sessBulkBar');
-    if (bar) bar.hidden = true;
-    const bb = document.getElementById('sessBulk');
-    if (bb) bb.classList.remove('on');
-    const sl = document.getElementById('sessList');
-    if (sl) sl.classList.remove('bulk');
-    const cnt = document.getElementById('sessBulkCount');
-    if (cnt) cnt.textContent = '选中 0 个';
-    const del = document.getElementById('sessBulkDel');
-    if (del) del.disabled = true;
-  } catch {}
-}
-
 async function switchSession(id) {
   /**
    * 【2026-10-26 主人报：批量删除开了之后，关掉会话、下次打开还是启用状态】
@@ -9142,7 +9056,18 @@ async function switchSession(id) {
    * 注意必须在 start 就清，不能等 renderSessList 之后再清 ——
    * 那样中间会闪一下批量界面。
    */
-  exitBulkSilently();
+  if (bulkMode || picked.size) {
+    bulkMode = false;
+    picked.clear();
+    try {
+      const bar = document.getElementById('sessBulkBar');
+      if (bar) bar.hidden = true;
+      const bb = document.getElementById('sessBulk');
+      if (bb) bb.classList.remove('on');
+      const sl = document.getElementById('sessList');
+      if (sl) sl.classList.remove('bulk');
+    } catch {}
+  }
 
   const r = await fetchTimed('/api/sessions/select', {
     method: 'POST',
@@ -9294,8 +9219,6 @@ async function createSessionEx(opts = {}) {
 }
 
 document.getElementById('openSessions').onclick = async () => {
-  // 打开面板就当作一件事重新开始：批量删除不该跟着上一次留下来
-  exitBulkSilently();
   await refreshSessions();
   closeOtherDialogs('sessionsDlg');
   sessDlg.showModal();

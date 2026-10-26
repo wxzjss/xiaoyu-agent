@@ -571,6 +571,18 @@ export const tools = [
       } catch (e) {
         return '列不出来：' + String(e?.message ?? e);
       }
+      /**
+       * 【把小鲸也列进来】—— 2026-10-27 新增
+       *
+       * 她是子智能体，不在 listSessions() 里 —— 于是小鱼永远
+       * 在「list_peers」里看不到她，也就没法递话过去。
+       * 她的 sessionId 固定是 'whale'（见 server.mjs 里
+       * runSubagent({ sessionId: 'whale' })），那里有真的信箱，
+       * postMail('whale', ...) 存得下，她下一轮也取得到。
+       */
+      if (me !== 'whale' && !list.some((s) => s.id === 'whale')) {
+        list = [{ id: 'whale', title: '小鲸', turns: 0, updatedAt: 0 }, ...list];
+      }
       const others = list.filter((s) => s.id !== me).slice(0, n);
       if (!others.length) return '这台机器上只有你这一个会话。';
       const lines = others.map((s) => {

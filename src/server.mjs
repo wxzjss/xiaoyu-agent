@@ -801,8 +801,21 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
        * 接话只要三两句口语。真要查东西，那是我（小鱼）的活儿，
        * 或者主人明说「让小鲸去查」。轮到她张嘴时，就只用嘴。
        */
-      noTools: true,
-      maxRounds: 1,
+      /**
+       * 【她要能干活，不只是说话】—— 2026-10-27 改
+       *
+       * 主人原话：「无论关不关小鱼，小鲸都能干活，
+       * 甚至她们可以一起干活一起交流互报进度」。
+       *
+       * 这里原来写死 noTools: true + maxRounds: 1，理由是「接话只要三两句口语」。
+       * 但 allowWrite: true 早就把她的权限定成了全套（见 subagent.mjs）——
+       * 有权没手，等于没给。所以这里跟上去：
+       *   · 给全套工具（权限仍是 enabledToolSchemas() 那套，只扣 ask_subagent 防递归）；
+       *   · 40 轮：够她把一件事查完干完，又不至于像小鱼那样跑 200 轮收不住。
+       */
+      noTools: false,
+      maxRounds: 40,
+      sessionId: 'whale',
     });
   } finally {
     setFullAccess(false);

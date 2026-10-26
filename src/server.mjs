@@ -4258,6 +4258,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           if (!m) continue;
           if (m.role === 'user') break;
           if (m.role !== 'assistant') continue;
+          // 她的话不算我的正文：小鲸的话在会话里也是 role:'assistant'，
+          // 只是多了 _whale / _tale 标记。以前没排除，她的话被当成我这轮的
+          // 正文塞进 turnTexts，前端补画时就多画一条「鱼口吻」的重复气泡。
+          if (m._whale || m._tale) continue;
           const t = typeof m.content === 'string'
             ? m.content
             : Array.isArray(m.content)

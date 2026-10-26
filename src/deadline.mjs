@@ -79,6 +79,18 @@ export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 10 * 60 * 1000,
 /** 单个工具从开跑到返回的忍耐上限（默认 30 分钟，最少给 3 分钟；跑整套回归、装依赖都够） */
 export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 3 * 60 * 1000, 'TOOL_MAX_TIMEOUT_MS');
 
+/**
+ * 工具跑到这个点先喊一声「还在跑」（默认 10 分钟，最少给 30 秒）。
+ *
+ * 为什么要留可调：跑大活时主人一直没动静，他分不清我是在干活还是卡死了。
+ * 但每个主人的耐心不一样，有人 5 分钟就想知道，有人跑一小时的转码不想被打断。
+ * 所以这个点也做成环境变量，能调、能关（设成很大的数就等于不喊）。
+ *
+ * 注意：真正的提醒点还会被压到「不超过工具总窗口的 1/3」——
+ * 不然还没喊完就该掐了，那句话等于废话。
+ */
+export const TOOL_NOTICE_MS = msOr(process.env.TOOL_NOTICE_TIMEOUT_MS, 10 * 60 * 1000, DEADLINE_TEST_MODE ? 100 : 30 * 1000, 'TOOL_NOTICE_TIMEOUT_MS');
+
 /** 整轮允许的最长静默（默认 60 分钟，最少给 10 分钟）—— 哑转闸管「一直在转」，这个管「完全不动」 */
 export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 60 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 10 * 60 * 1000, 'TURN_IDLE_MAX_MS');
 
@@ -106,8 +118,27 @@ export function withTimeout(work, ms, opts = {}) {
   const limit = Number.isFinite(ms) && ms > 0 ? ms : 0;
   if (!limit) return Promise.resolve(work);
 
+  /**
+   * 中途报平安：跑到 noticeAt 先喊一声，然后接着等。
+   *
+   * 为什么要有：跑大活（整套回归、装依赖、转视频）十几分钟很正常，
+   * 主人那边一直没动静，他分不清我是在干活还是卡死了。
+   * 到点喊一句「还在跑」，比让人干等半小时强。
+   */
+  const noticeAt = Number.isFinite(opts.noticeAt) && opts.noticeAt > 0 && opts.noticeAt < limit
+    ? opts.noticeAt
+    : 0;
+
   let timer = null;
+  let noticeTimer = null;
+
   const timeout = new Promise((_, reject) => {
+    if (noticeAt) {
+      noticeTimer = setTimeout(() => {
+        try { opts.onNotice?.(noticeAt); } catch {}
+      }, noticeAt);
+      if (typeof noticeTimer.unref === 'function') noticeTimer.unref();
+    }
     timer = setTimeout(() => {
       const err = new Error(what + '静了超过 ' + fmtMins(limit) + '，我认输，不往下等了。');
       err.isTimeout = true;
@@ -123,6 +154,7 @@ export function withTimeout(work, ms, opts = {}) {
 
   return Promise.race([Promise.resolve(work), timeout]).finally(() => {
     if (timer) clearTimeout(timer);
+    if (noticeTimer) clearTimeout(noticeTimer);
   });
 }
 

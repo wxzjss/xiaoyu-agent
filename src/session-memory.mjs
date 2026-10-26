@@ -209,6 +209,39 @@ export function appendDigest(id, summary) {
   const cur = ensureMemory(id);
   const parts = splitDigest(cur);
   const entries = digestEntries(cur);
+
+  /**
+   * 【源头查重】同一件事不许记第二遍。
+   *
+   * 踩过两次的坑（2026-10-25、2026-10-26，同一个坑踩了两次）：
+   * 我卡在某个地方反复说同一段话，appendDigest 来一条记一条，
+   * 20 条上限一满，有用的全被挤走 —— 看着就像「记忆被清空了」。
+   *
+   * 上次的修法是事后擦（scripts/clean-digest.mjs），擦完下一轮又照样写进来。
+   * 这次改在源头：新摘要跟已有的任何一条「足够像」就不记。
+   *
+   * 怎么算「像」：把两边的标点、空白、数字编号都剃掉，只留文字，
+   * 然后比「开头这 60 个字」——同一件事的开头总是差不多的。
+   * 不用相似度算法是怕误伤：两件不同的事，开头很少会一模一样。
+   */
+  const norm = (t) =>
+    String(t ?? '')
+      .replace(/^.*?摘要：/, '')
+      .replace(/[\s\u3000]+/g, '')
+      .replace(/[，。、；：！？「」『』（）()【】\[\]…—\-·.,!?;:"']/g, '')
+      .slice(0, 60);
+  const mine = norm(one);
+  if (mine) {
+    const dup = entries.find((l) => {
+      const body = norm(l);
+      return body && (body === mine || (body.length >= 40 && mine.length >= 40 && (body.startsWith(mine.slice(0, 40)) || mine.startsWith(body.slice(0, 40)))));
+    });
+    if (dup) {
+      // 重复的不记，原样返回。调用方不用管 —— 记忆没变就是没变。
+      return { text: cur, index: null, folded: [], skipped: 'duplicate' };
+    }
+  }
+
   const nextNo = entries.length
     ? Math.max(...entries.map((l) => Number(l.match(/^-\s+R(\d{4})/)[1]))) + 1
     : 1;

@@ -3190,7 +3190,9 @@ function reconcileTurnTexts(ev) {
   const want = Array.isArray(ev && ev.turnTexts) ? ev.turnTexts : [];
   if (!want.length) return;
 
-  const allBubbles = () => Array.from(document.querySelectorAll('.msg.assistant .bubble'));
+  // 比对时把鲸气泡也算进来：她的话和我的话可能内容相同，只认 .msg.assistant
+  // 会把她的气泡当成「没画过」，于是再补一条重复的。
+  const allBubbles = () => Array.from(document.querySelectorAll('.msg.assistant .bubble, .msg.whale .bubble'));
   const textOf = (el) => String(el.textContent || '');
   let added = 0, fixed = 0;
 

@@ -7067,30 +7067,56 @@ async function openWhaleProfileEditor(row) {
   const wrap = el('label', 'openingField');
   const head = el('div', 'openingFieldHead');
   head.append(el('span', null, '她是什么样的人（人设）'));
-  if (prof.personaCustom) head.append(el('span', 'openingTag', '改过'));
   const resetBtn = el('button', 'openingMini', '恢复默认');
   resetBtn.type = 'button';
   head.append(resetBtn);
+  // 「改过」小标签：框里的内容跟默认人设不一样才亮（以前只看后端 personaCustom，
+  // 结果主人一字没动、只是打开看看，也会挂着「改过」，误导人）
+  const tagChanged = el('span', 'openingTag', '改过');
+  tagChanged.style.display = (prof.personaCustom && String(prof.persona || '').trim() !== String(prof.defaultPersona || '').trim()) ? '' : 'none';
+  head.append(tagChanged);
   wrap.append(head);
 
   const ta = el('textarea', 'openingArea');
-  ta.value = prof.persona || '';
+  /**
+   * 【默认人设要直接填进去，不是当占位文本】
+   *
+   * 2026-10-26 主人原话：「把小鲸的默认人设填进功能页，子智能体的人设栏里」。
+   * 以前这里只把默认人设塞进 placeholder —— 灰字，看着像填好了，其实框里是空的，
+   * 主人一打字就把整份默认覆盖掉，而且「存上」存进去的是他自己瞎写的半句话。
+   *
+   * 现在：真把它填进输入框，光标放在最前面，改就改、不改就原样存。
+   * 没写过（prof.personaCustom 为假）时填的就是默认人设，并标一个「未改动」小标签，
+   * 让主人一眼看出「这框现在是原样，我一动就是改过了」。
+   */
+  const defaultText = String(prof.defaultPersona || '');
+  const ownText = String(prof.persona || '');
+  ta.value = ownText || defaultText;
   ta.rows = 9;
   ta.spellcheck = false;
-  ta.placeholder =
-    '（这是她的默认人设，改了就照你写的来）' + (prof.builtinHint ? ' ' + prof.builtinHint : '');
+  ta.placeholder = defaultText ? '（她的默认人设，点「恢复默认」随时能填回来）' : '（还没写人设）';
   wrap.append(ta);
   const tip0 = el('div', 'openingHint', '');
   wrap.append(tip0);
+  if (!prof.personaCustom && ta.value) {
+    tip0.textContent = '现在填的是她的默认人设（' + ta.value.length + ' 字），改了就照你写的来';
+  }
   wrap.append(el('div', 'openingHint',
     '写完全套替换「她是谁、跟小鱼怎么相处」那一部分。底线、安全词说明、她自己的本子、当前状态、' +
     '「记下一行」这些是底座，一个字都不会被冲掉。'));
+  ta.addEventListener('input', () => {
+    const same = String(ta.value || '').trim() === String(prof.defaultPersona || '').trim();
+    tagChanged.style.display = same ? 'none' : '';
+    if (same) tip0.textContent = '跟默认人设一致，没改动';
+  });
   resetBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
     // 2026-10-26 主人要求：恢复默认 = 把默认人设填回来，不是清空
+    // 填完不标 dirty：内容跟默认一字不差，存下去等于没改，后端就不会记成「改过」
     ta.value = prof.defaultPersona || '';
-    ta.dataset.dirty = '1';
-    tip0.textContent = '已填回默认人设，记得点「存上」';
+    ta.dataset.dirty = '0';
+    tagChanged.style.display = 'none';
+    tip0.textContent = '已填回默认人设（' + ta.value.length + ' 字），记得点「存上」';
   });
 
   // --- 模型那一块 ---

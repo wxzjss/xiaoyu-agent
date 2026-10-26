@@ -217,6 +217,12 @@ function toolBlock() {
   if (hasSend) {
     tips.push('- 要让主人拿到文件（图、视频、声音、压缩包、报告……），就用 send_file，别只把路径打出来；');
   }
+  const hasVideo = rows.some((r) => r.name === 'video_probe');
+  if (hasVideo) {
+    tips.push('- 主人给你一个视频、或者问「这视频里是什么 / 讲了什么 / 有没有说到 X」，别说自己看不了 —— video_probe 先把切点、冻结、静音量成时间轴，video_sheet 把关键处铺成图版你直接看，video_read 把小字裁开放大读。这套全是本地程序跑的，不传网；');
+    tips.push('- 看完视频要发给主人看的图，用 send_file 发图版，别只丢路径；');
+    tips.push('- 视频里的小字（字幕、水印、角标、时间码）一定要走 video_read 放大再读。原帧里认不出的字，硬猜出来的不是「差一点」，是编；');
+  }
   tips.push('- 要查新东西、要下载、要装依赖、要算数，先调工具再回答，别凭印象编；');
   tips.push('- 不确定某个工具怎么用，就先调用一次看报错，报错里通常写着该传什么。');
   return ['【你手上有什么】', ...tips, '', lines].join('\n');

@@ -40,6 +40,22 @@ export const FEATURES = [
     defaultOn: true,
   },
   {
+    /**
+     * 看视频 —— 跟内置浏览器一样，是【我自己的眼睛】，不是给人点的按钮。
+     *
+     * 主人 2026-10-26 让装的 video-watch-plus 那套：先用 ffmpeg 把切点/冻结/运动/静音
+     * 量成数字（零 token），再按骨架抽样铺图版，图版每格带「第几秒」的映射，
+     * 要读小字再裁开放大。走的全是本地程序，不上传视频。
+     *
+     * 关掉之后我完全看不了视频 —— 调了会直接说「看视频被关了」，不假装看过。
+     */
+    id: 'video',
+    name: '看视频',
+    desc: '我自己的眼睛（视频版）：能量出切点/冻结/静音、把关键处铺成图版看、把小字裁开放大读。关掉之后完全看不了视频。',
+    tools: ['video_probe', 'video_sheet', 'video_read', 'video_doctor'],
+    defaultOn: true,
+  },
+  {
     id: 'readFile',
     name: '读文件',
     desc: '读工作区里的文本文件。',

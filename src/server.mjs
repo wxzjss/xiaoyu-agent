@@ -2,7 +2,7 @@
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createReadStream, statSync, appendFileSync as __iqAppendSync } from 'node:fs';
+import { createReadStream, statSync } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 // 她「主动开口」要用到自己的状态（欲望攒够没有）
@@ -1467,7 +1467,6 @@ async function startPeerTurn(sessionId) {
  * 走 runAgent 跟 /api/chat 同一条路，但没有 HTTP 客户端在等：
  * onEvent 只做日志，答完的话照常落盘，前端靠 followLive / attachLive 补画。
  */
-const __iqDbg = (m) => { try { const _p = process.env.APPDATA + '\\小鱼Agent\\data\\.state\\iq-debug.log'; __iqAppendSync(_p, new Date().toISOString() + ' ' + m + '\n'); } catch {} };
 
 /**
  * 把直播缓存开出来，给「排队轮」用。
@@ -4777,10 +4776,6 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const commitWireBack = () => {
       let n = 0;
       try {
-        __iqAppendSync("C:\\Users\\35453\\AppData\\Roaming\\小鱼Agent\\data\\.state\\dup-debug.log",
-          new Date().toISOString() + ' [commit] wire=' + wireMessages.length + ' history=' + history.length +
-          ' wireIds=' + wireMessages.filter((m) => Array.isArray(m && m.tool_calls)).map((m) => m.tool_calls.map((t) => String(t.id).slice(-6)).join('+')).join('|') + '\n');
-      } catch {}
       for (const m of wireMessages) {
         if (!m || wireSeenBefore.has(m) || committed.has(m)) continue;
         committed.add(m);
@@ -4794,6 +4789,25 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         // 开场那两条走 applyOpening / finishOpening 插进 history，对象一致，会走到这一句。
         if (seenBefore.has(m)) continue;
         /**
+         * 【同一批工具调用只能进历史一次】—— 第二层保险
+         *
+         * 上面靠对象身份 + committed 记账，正常只有一次。可只要数组被换过一次，
+         * 记账就失效，同一批 assistant(tool_calls) 会被再接一遍 —— 上游按
+         * OpenAI 协议判非法直接 502，主人看到的就是「插了话她不理我」。
+         * 这里按 tool_calls 的 id 拼指纹，最近的 40 条里有同样的就跳过。
+         */
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+          const key = m.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',');
+          const tailFrom = Math.max(0, history.length - 40);
+          let already = false;
+          for (let k = tailFrom; k < history.length; k++) {
+            const h = history[k];
+            if (!h || h.role !== 'assistant' || !Array.isArray(h.tool_calls)) continue;
+            if (h.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',') === key) { already = true; break; }
+          }
+          if (already) continue;
+        }
+        /**
          * 【给我说的话盖个时间戳】
          *
          * 闸 A 靠「我最后一句离现在多久」判断要不要让她让一让。
@@ -4804,6 +4818,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         history.push(m);
         n++;
       }
+      } catch {}
       return n;
     };
     // 这一轮改过的文件先记在这条消息身上；回退到它时一起还原。

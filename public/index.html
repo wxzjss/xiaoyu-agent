@@ -1160,6 +1160,50 @@
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
     /* ---- 记忆本整本 ---- */
     /* 弹窗本身要宽一点：摘要和固定记忆都是整句话，窄了全是折行 */
+    /* ---- 任务清单 ---- */
+    dialog.todoDlg { width: min(620px, 94vw); display: flex; flex-direction: column; max-height: 78vh; }
+    dialog.todoDlg:not([open]) { display: none; }
+    .todoTop {
+      display: flex; align-items: center; gap: 10px; padding: 10px 16px 8px;
+      border-bottom: 1px solid var(--border); flex: 0 0 auto; flex-wrap: wrap;
+    }
+    .todoGoal { font-size: 13px; color: var(--text); flex: 1 1 200px; min-width: 0; }
+    .todoBarWrap {
+      flex: none; width: 96px; height: 6px; border-radius: 3px;
+      background: rgba(255,255,255,.10); overflow: hidden;
+    }
+    .todoBar { display: block; height: 100%; width: 0%; background: var(--accent); transition: width .25s; }
+    .todoPct { flex: none; font-size: 11.5px; color: var(--dim); }
+    .todoTxtBox { overflow-y: auto; flex: 1 1 auto; min-height: 200px; max-height: 60vh; margin: 0 12px 8px; padding: 10px 12px;
+      white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+      line-height: 1.7; color: #d6dbe3; background: #12161c; border: 1px solid #2a3038; border-radius: 8px; }
+    .todoItem {
+      display: flex; align-items: flex-start; gap: 9px; padding: 7px 8px;
+      border-radius: 8px; font-size: 13.5px; line-height: 1.5;
+    }
+    .todoItem:hover { background: rgba(255,255,255,.045); }
+    .todoDot {
+      flex: none; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%;
+      border: 1.5px solid #4a5566; background: transparent; color: transparent;
+      font-size: 10px; line-height: 13px; text-align: center; cursor: pointer; padding: 0;
+    }
+    .todoDot:hover { border-color: var(--accent); }
+    .todoItem.doing .todoDot { border-color: var(--accent); color: var(--accent); }
+    .todoItem.done .todoDot { border-color: #4fb47a; background: #4fb47a; color: #0d1117; }
+    .todoItem.done .todoText { color: #6b7482; text-decoration: line-through; }
+    .todoText { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+    .todoMeta { flex: none; font-size: 11px; color: var(--dim); padding-top: 2px; }
+    .todoNote { display: block; font-size: 11.5px; color: #6b7482; margin-top: 2px; }
+    .todoEmpty { padding: 26px 12px; text-align: center; font-size: 13px; color: var(--dim); line-height: 1.7; }
+    .todoAddRow { display: flex; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--border); flex: 0 0 auto; }
+    .todoAddRow input {
+      flex: 1 1 auto; min-width: 0; padding: 7px 10px; font: inherit; font-size: 13px;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+    }
+    .todoAddRow button {
+      flex: none; padding: 7px 16px; font: inherit; font-size: 13px; cursor: pointer;
+      background: var(--accent); color: #0d1117; border: 0; border-radius: 8px;
+    }
     dialog.memDlg { width: min(880px, 94vw); }
     .memTabs {
       display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -1524,6 +1568,7 @@
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
+    <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
     <button id="openMemoryBook" title="记忆本：看看她这个会话到底记了些什么，小鲸那本也在（只给看不给改，改她记的东西得跟她说）">记忆本</button>
     <button id="openFeatures">功能</button>
     <button id="openSettings">设置</button>
@@ -1953,6 +1998,25 @@
         <span class="hint memHintR">本子是她自己写的，界面只给看不给改 —— 要改跟她说一声，她自己会改</span>
       </div>
     </form>
+  </dialog>
+
+  <!-- 任务清单：跟小鱼手里 plan 工具是同一份数据（/api/plan），这边勾了她那边就认得 -->
+  <dialog id="todoDlg" class="todoDlg">
+    <div class="dlgHead">
+      <b>任务清单</b><span class="meta" id="todoHint">一份 txt，我写，你想看就瞄一眼</span>
+      <button type="button" class="x" id="todoClose">关闭</button>
+    </div>
+    <pre class="todoTxtBox" id="todoTxtBox"></pre>
+    <div class="dlgFoot">
+      <span class="hint">这上面就是文件里的原文，没加工。</span>
+      <button type="button" class="ghost" id="todoReload">刷新</button>
+    </div>
+    <!-- 想临时加一条，直接在这儿写。跟小鱼手里的 plan 工具是同一份数据，
+         她下次开工时看得见。 -->
+    <div class="todoAddRow">
+      <input type="text" id="todoAddInput" placeholder="加一条……回车就进清单" />
+      <button type="button" id="todoAddBtn">加上</button>
+    </div>
   </dialog>
 
   <div id="log"></div>
@@ -5757,6 +5821,75 @@ async function openMemoryBook() {
   renderMemZone();
 }
 
+// ---- 任务清单面板（朴素版）------------------------------------------------
+// 界面上加一条 / 勾一下，都走这里，跟小鱼手里的 plan 工具改的是同一份单子。
+let todoPlan = { total: 0, done: 0, steps: [] };
+
+async function todoPost(payload) {
+  const r = await fetch('/api/plan', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...payload, sessionId }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j && j.error ? j.error : '改清单失败了');
+  todoPlan = { total: j.total || 0, done: j.done || 0, steps: j.steps || [] };
+  return j;
+}
+
+// 主人定的：清单不用花哨，就是一份 txt，界面上原样显示出来就行。
+// 我这边一改清单（plan 工具），txt 就跟着重写；这里只负责把 txt 读出来显示。
+
+async function todoLoad() {
+  const box = document.getElementById('todoTxtBox');
+  const hint = document.getElementById('todoHint');
+  if (!box) return;
+  try {
+    const r = await (await fetch('/api/plan/txt')).json();
+    box.textContent = r.text || '（空的）';
+    // 顺便把结构化那份也拉一下，加完一条好知道 total 有没有变
+    try {
+      const p = await (await fetch('/api/plan?sessionId=' + encodeURIComponent(sessionId))).json();
+      todoPlan = { total: p.total || 0, done: p.done || 0, steps: p.steps || [] };
+    } catch {}
+    if (hint) hint.textContent = '一份 txt，我写，你想看就瞄一眼';
+  } catch (e) {
+    box.textContent = '（读不出来：' + (e && e.message) + '）';
+  }
+}
+
+document.getElementById('todoBtn').onclick = () => {
+  const dlg = document.getElementById('todoDlg');
+  if (!dlg) return;
+  closeOtherDialogs('todoDlg');
+  dlg.showModal();
+  todoLoad();
+};
+
+document.getElementById('todoClose').onclick = () => {
+  const dlg = document.getElementById('todoDlg');
+  if (dlg) dlg.close();
+};
+
+document.getElementById('todoReload').onclick = todoLoad;
+
+const todoAddGo = async () => {
+  const inp = document.getElementById('todoAddInput');
+  const text = (inp && inp.value || '').trim();
+  if (!text) return;
+  if (todoPlan && !todoPlan.total) {
+    await todoPost({ action: 'create', goal: text, steps: [text] });
+  } else {
+    await todoPost({ action: 'add', text });
+  }
+  if (inp) inp.value = '';
+  await todoLoad();
+};
+document.getElementById('todoAddBtn').onclick = todoAddGo;
+document.getElementById('todoAddInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); todoAddGo(); }
+});
+
 document.getElementById('openMemoryBook').onclick = () => {
   const dlg = document.getElementById('memoryDlg');
   if (!dlg) return;
@@ -7089,7 +7222,7 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
  * @param {string} [keepId] 这个要留着（正在开的那个）
  */
 function closeOtherDialogs(keepId) {
-  for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'memoryDlg']) {
+  for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'memoryDlg', 'todoDlg']) {
     if (id === keepId) continue;
     const d = document.getElementById(id);
     if (d && d.open) {

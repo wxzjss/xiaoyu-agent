@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { config } from './config.mjs';
 
 const DIR = join(config.dataDir, '.state', 'plan');
+// 全体共用的一份 txt 清单，界面上原样显示它就是这份
+const TXT_FILE = join(config.dataDir, '.state', '任务清单.txt');
 const MAX_STEPS = 30;
 const MAX_NOTES = 40;
 const MAX_PROMPT_CHARS = 900;
@@ -69,6 +71,48 @@ function savePlan(key, state) {
   state.updatedAt = Date.now();
   if (!state.createdAt) state.createdAt = state.updatedAt;
   writeFileSync(fileFor(key), JSON.stringify(state, null, 2), 'utf8');
+  syncTxt(key, state);
+}
+
+/** 把某个会话的清单同步写成那份共用 txt（谁最后动谁说了算） */
+function syncTxt(key, state) {
+  try {
+    if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+    const { done, total } = progress(state);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    let body = '';
+    body += `任务清单\n`;
+    body += `更新：${stamp}\n`;
+    body += `目标：${state.goal || '（没写）'}\n`;
+    body += `进度：${done}/${total}\n`;
+    body += '------------------------------\n';
+    if (!state.steps.length) {
+      body += '（现在没有清单）\n';
+    } else {
+      for (const s of state.steps) {
+        body += `${s.id}. ${MARK[s.status] || '·'} ${s.text}${s.note ? `（${s.note}）` : ''}\n`;
+      }
+    }
+    if (state.notes && state.notes.length) {
+      body += '\n笔记\n';
+      for (const n of state.notes.slice(-20)) body += `- ${n.tag ? `[${n.tag}] ` : ''}${n.text}\n`;
+    }
+    writeFileSync(TXT_FILE, body, 'utf8');
+  } catch {
+    // 写 txt 失败不影响主流程
+  }
+}
+
+/** 界面读的就是这份 txt 原文 */
+export function readPlanTxt() {
+  try {
+    if (!existsSync(TXT_FILE)) return { text: '（还没有任务清单，等我要做事的时候会写进来）', path: TXT_FILE };
+    return { text: readFileSync(TXT_FILE, 'utf8'), path: TXT_FILE };
+  } catch (e) {
+    return { text: `（读清单出错了：${e && e.message}）`, path: TXT_FILE };
+  }
 }
 
 function progress(state) {
@@ -174,4 +218,31 @@ export function progressBlock(key = 'default') {
   body += '\n（接着办就不用重新拆步骤；办完了用 plan 把对应步骤勾成 done，再照清单收尾。）';
   if (body.length > MAX_PROMPT_CHARS) body = `${body.slice(0, MAX_PROMPT_CHARS)}…`;
   return body;
+}
+
+// ---- 给界面用的（任务清单面板）---------------------------------------------
+// 界面要的是「一眼能看明白」的东西：目标、进度、每步状态，别带上工具名那些术语。
+export function planPublicView(key = 'default') {
+  const state = loadPlan(key);
+  const { done, total } = progress(state);
+  return {
+    goal: state.goal,
+    total,
+    done,
+    createdAt: state.createdAt,
+    updatedAt: state.updatedAt,
+    steps: state.steps.map((s) => ({ id: s.id, text: s.text, status: s.status, note: s.note })),
+  };
+}
+
+/** 界面勾选/追加/删除/清空都走这一条，返回最新的界面视图 */
+export function planUiAction(key, { action, stepId, status, text, note } = {}) {
+  const res = planAction(key, { action, stepId, status, text, note });
+  return { text: res.text, plan: planPublicView(key), ok: !String(res.text).startsWith('ERROR') };
+}
+
+/** 列表页用：哪些会话有待办（没办完的才列出来） */
+export function planHasOpenSteps(key = 'default') {
+  const state = loadPlan(key);
+  return progress(state).left.length > 0;
 }

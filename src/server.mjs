@@ -17,6 +17,8 @@ import { checkToolDocs, setPeerWake } from './tools.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
+// 任务清单（界面面板用）：跟小鱼自己的 plan 工具是同一份数据，别另存一套
+import { planPublicView, planUiAction, readPlanTxt } from './plan.mjs';
 // 前情：一进来就记得的那段对话。只贴给模型看，不进会话记录，界面也不会画出来。
 import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
 // 会话记忆文件：一个会话一份自己的本子，每轮拼进系统提示（见 persona.mjs 的 memoryBlock）。
@@ -2513,6 +2515,38 @@ const server = createServer(async (req, res) => {
     try {
       const payload = await body(req);
       return json(res, 200, setPersonaAsBuiltinDefault(payload?.id));
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // ---- 任务清单：跟小鱼手里那个 plan 工具同一份数据（按会话分） ----
+  // 界面只读这份、只改这份，绝不另存 —— 否则我跟主人看到的会是两张单子。
+  // ---- 任务清单的 txt 版：界面原样显示这份，全体共用 ----
+  if (req.method === 'GET' && url.pathname === '/api/plan/txt') {
+    return json(res, 200, readPlanTxt());
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/plan') {
+    const sid = String(url.searchParams.get('sessionId') || '') || getLastSessionId() || 'default';
+    return json(res, 200, { sessionId: sid, ...planPublicView(sid) });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/plan') {
+    let payload = {};
+    try { payload = await body(req); } catch {}
+    try {
+      const sid = String(payload?.sessionId || url.searchParams.get('sessionId') || '') || getLastSessionId() || 'default';
+      const action = String(payload?.action || '').trim();
+      if (!action) return json(res, 400, { error: '要带 action：update / add / create / clear' });
+      const out = planUiAction(sid, {
+        action,
+        stepId: payload?.stepId,
+        status: payload?.status,
+        text: payload?.text,
+        note: payload?.note,
+      });
+      return json(res, 200, { sessionId: sid, ok: out.ok, message: out.text, ...out.plan });
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }

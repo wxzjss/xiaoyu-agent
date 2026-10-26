@@ -4567,20 +4567,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 为什么放在 reg 上、不是全局：一轮一个队列，天然跟着会话走，
      * 轮次结束对象就没了，不会串到下一个人那儿。
      */
-    /**
-     * 【2026-10-26 二次修：这一行会把主人的话冲掉】
-     *
-     * reg 在闸 3 之前就建好了，带着 queued: []。
-     * 从那之后到这儿，主人随时可以插话 —— 插进来的话 push 进 reg.queued。
-     * 然后执行到这里，「reg.queued = []」当场把它清空。
-     *
-     * 实测后果：主人插一句话，API 回 ok:true（话确实落盘了），
-     * 但队列被清空，这一轮收尾时 pending.length 是 0，没人接着答。
-     * 主人看到的就是「插了话，没反应」。
-     *
-     * 所以：只在还没有队列的时候初始化，已有的一个字都不许动。
-     */
-    if (!Array.isArray(reg.queued)) reg.queued = [];
+    // 登记这一轮：插话靠它找到「正在跑的那一轮」好 abort（0.9.26 语义）。
     runningTurns.set(sessionId, reg);
 
     /**
@@ -5338,13 +5325,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 所以：队列还有话，就把 done 留在 false，events 留着，让排队轮
        * 直接往这份缓存里续写，前端那条轮询自然就接上了。
        */
-      const __leftForNext = Array.isArray(reg.queued) ? reg.queued.length : 0;
-      if (!__leftForNext) {
-        live.done = true;
-        live.endedAt = Date.now();
-      } else {
-        live.pendingNext = true;
-      }
+      live.done = true;
+      live.endedAt = Date.now();
       // 收尾时把自己这一条登记摘掉（提前登记过、ac 可能还是 null，所以认对象不认 ac）
       {
         const mine = runningTurns.get(sessionId);
@@ -5470,21 +5452,6 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 【一次只接一条】接一条就够了 —— 那条的收尾又会看队列，
        * 队列里还剩就继续接，自然串起来。一次接一把反而乱。
        */
-      if (!Array.isArray(reg.queued)) reg.queued = [];
-      const pending = reg.queued;
-      // __iqDbg('consume sid='+sessionId+' regQueuedLen='+reg.queued.length+' runningSame='+(runningTurns.get(sessionId)===reg));   // 调试日志：要开就删掉行首这两个斜杠
-      if (pending.length) {
-        pending.shift();
-        setImmediate(() => {
-          try {
-            startQueuedTurn(sessionId).catch((e) => {
-              console.warn('[interject-queue] 接着答没跑起来:', String(e?.message ?? e));
-            });
-          } catch (e) {
-            console.warn('[interject-queue] 起不来:', String(e?.message ?? e));
-          }
-        });
-      }
     }
     return res.end();
   }
@@ -5556,31 +5523,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const INTERJECT_SETTLE_MS = 8000;
 
     /**
-     * 【2026-10-26 主人报：「你不能同时跑多个命令吗？我发现你是单线程，
-     *   在干一件事时必须把这件事干完才能进行下一件事，也不能在干活过程中和我聊天」】
+     * 【0.9.26 的做法：插话就打断】
      *
-     * 他说的现象是真的，根子就在下面这一句 abort。
-     *
-     * 以前的设计：主人一插话，就把他手上这一轮**掐断**（abort('interject')），
-     * 好腾出手来接新话。代价是 ——
-     *   · 我正在跑的长命令当场被杀，那件事就白干了；
-     *   · 主人在等的那份结果，永远等不到；
-     *   · 表现上就是「她干起活来不理我」「想插句话就得先等它干完」。
-     *
-     * 现在反过来：**插话不打断，排队。**
-     * 这句话先落盘进历史，然后挂到这一轮头上，等这一轮真的跑完，
-     * 由这一轮的收尾（那个 finally）自己接着再起一轮去答它。
-     * 主人随时能说话，手上的活照干，两边都不耽误。
-     *
-     * 【什么时候才该真打断】主人明说要停 —— 走 /api/stop（停止按钮），
-     * 或者插话里带「停下 / 别干了 / 先别做」这类**明确的叫停**。
-     * 这里给一个窄判据：只有话里出现叫停词，才走老路（abort）。
-     * 判据宁窄勿宽 —— 误判成「叫停」会把活杀掉，那比慢一点严重得多。
+     * 曾经为了「干活时也能说话」改成排队（不打断，等这一轮跑完再答），
+     * 但实测下来代价更大：主人在它跑 10 次 sleep 的时候说「停」，
+     * 那 10 次要跑完 55 秒才会被看见 —— 主人眼里就是「插话没用」。
+     * 所以退回 0.9.26：插话立刻 abort 手上这一轮，话落盘，由前端接着跑。
      */
-    const STOP_WORDS = ['停下', '停下来', '别干了', '别做了', '先别做', '先别干', '停一下', '打断', '中止', '取消这个任务'];
-    const wantsStop = STOP_WORDS.some((w) => String(message).includes(w));
-
-    if (turn?.ac && wantsStop) {
+    if (turn?.ac) {
       /**
        * 带上原因：interject = 主人插话，不是让这一轮停手。
        *
@@ -5590,7 +5540,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       turn.ac.abort('interject');
       // 等这一轮真的收尾：历史写完盘、热缓存里的数组也定型了，才好往后接。
-      // 等不到（工具还在收尾）也照样往下走：话照收、盘照落，见上面那段。
+      // 等不到（工具还在收尾）也照样往下走：话照收、盘照落。
       await Promise.race([turn.done, new Promise((r) => setTimeout(r, INTERJECT_SETTLE_MS))]);
     }
 
@@ -5630,31 +5580,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       logWhaleAction('插话落盘：在内存里=' + okInMem + ' 长度=' + history.length);
     } catch {}
 
-    /**
-     * 【挂到这一轮的队列上，让它跑完自己接着答】
-     *
-     * 上面已经把这句 push 进历史了 —— 所以这里是「话已经收下」的实锤。
-     * 还没收工的只有两种情况：
-     *   · 这一轮还在跑（没叫停）：挂上去，等它收尾由 startQueuedTurn 接；
-     *   · 已经没在跑了：那这句话就孤零零躺在历史里没人答 ——
-     *     这种得当场起一轮，不然主人看到的就是「说了没反应」。
-     *
-     * 【为什么只在 !wantsStop 时挂】叫停的那一路已经 abort 了这一轮，
-     * abort 之后收尾会跑，队列里的东西也会跟着被接 —— 但主人是叫停，
-     * 这时候再自动接着答反而是硬塞，是不是要接着说交给他。
-     */
-    if (!wantsStop) {
-      if (turnAlive && turn && Array.isArray(turn.queued)) {
-        turn.queued.push(message);
-      } else if (!wasRunning) {
-        // 根本没有在跑的那一轮：这句话没人接，当场起一轮
-        setImmediate(() => {
-          startQueuedTurn(sessionId).catch((e) => {
-            console.warn('[interject] 立刻接这一句没跑起来：', String(e?.message ?? e));
-          });
-        });
-      }
-    }
+    // 服务端只负责「话落盘」。接着跑不跑由前端按 running 决定（0.9.26 的分工）。
     return json(res, 200, {
       ok: true,
       // 前端靠这个字段决定「接着跑」还是「认错重发」。必须给。

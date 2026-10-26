@@ -5288,12 +5288,6 @@ async function runTurn({ resume = false, text = '' } = {}) {
            * 其中一句话永远没人答。所以这里只做一件事：把 busing 保持住，
            * 跟直播（followLive）看它把剩下那句答完。
            */
-          if (Number(ev.queued) > 0) {
-            pendingResume = false;      // 排队轮由服务端跑，前端不抢
-            busy = true;
-            syncSendBtn();
-            followQueuedLive(turnSession || sessionId);
-          }
           /**
            * 【这一轮对一次账：SSE 要是中途断了，后头的正文就永远看不见】
            *
@@ -5494,6 +5488,7 @@ async function interject() {
   autosizeInput();
   addUser(text, '插话');
   pendingResume = true;
+  lastInterjectText = text;   // 【必须有】runTurn 收尾时靠它判断「那句到底在不在历史里」
   syncSendBtn();
   const r = await fetch('/api/interject', {
     method: 'POST',

@@ -228,34 +228,91 @@ export function stallGuard(opts = {}) {
 export async function* guardedStream(stream, guard) {
   const it = stream[Symbol.asyncIterator]();
   const limitMs = guard.limitMs || LLM_IDLE_MS;
-  // 多久去看一眼看门狗。窗口的 1/4，夹在 50ms~1s 之间 —— 既能及时反应，也不空转。
+  // 多久去看一眼：窗口的 1/4，夹在 50ms~1s 之间 —— 反应够快，也不空转。
   const tickMs = Math.max(50, Math.min(1000, Math.floor(limitMs / 4)));
+
+  /**
+   * 【为什么要 race，而不是只靠 it.return()】
+   *
+   * 两版都试过，各有各的死法，最后只能两个都要：
+   *
+   * 一、只用 Promise.race([it.next(), stalled])：
+   *    stalled 准时 reject，外层确实被叫醒了。但 it.next() 还在后台悬着，
+   *    若流真的永远不动，它就一直悬着，反复几轮就是泄漏。
+   *
+   * 二、只用 it.return()（定时器里主动收流）：
+   *    对「还能响应 return 的流」很干净，但它治不了真正卡死的流 ——
+   *    如果那个迭代器正 await 一个永不 settle 的 promise，it.return() 会
+   *    跟着一起吊住，于是 await it.next() 永远不返回，整个 for-await 卡死。
+   *    实测：800ms 的窗口，进程直接带着 "unsettled top-level await" 退出。
+   *
+   * 所以现在是：race 负责「外层一定被叫醒」，it.return() 负责「尽量把流
+   * 收掉，别留悬着的东西」。谁先到就听谁的，另一条路不会把流程钉死。
+   */
+  let timedOut = null;
+  let tick = null;
+
+  const arm = () => {
+    if (tick) clearInterval(tick);
+    tick = setInterval(() => {
+      const e = guard.error();
+      if (!e) return;
+      timedOut = e;
+      try { if (tick) { clearInterval(tick); tick = null; } } catch {}
+      // 顺手把流收掉。收得掉最好，收不掉也没关系 —— 上面的 race 已经能返回。
+      try { it.return?.()?.catch?.(() => {}); } catch {}
+    }, tickMs);
+    if (typeof tick.unref === 'function') tick.unref();
+  };
 
   try {
     for (;;) {
-      let tick = null;
-      const stalled = new Promise((_, reject) => {
-        tick = setInterval(() => {
-          const e = guard.error();
-          if (e) reject(e);
-        }, tickMs);
-        if (typeof tick.unref === 'function') tick.unref();
-      });
-
+      arm();
       let step;
       try {
-        step = await Promise.race([it.next(), stalled]);
+        step = await Promise.race([it.next(), stalledPromise(guard, tickMs)]);
+      } catch (err) {
+        if (timedOut || guard.error()) throw timedOut || guard.error();
+        throw err;
       } finally {
-        if (tick) clearInterval(tick);
+        if (tick) { try { clearInterval(tick); } catch {} tick = null; }
       }
-
-      if (step.done) return;
+      if (timedOut || guard.error()) throw timedOut || guard.error();
+      if (!step || step.done) return;
       guard.beat('收到数据块');
       yield step.value;
     }
   } finally {
+    if (tick) { try { clearInterval(tick); } catch {} }
     guard.stop();
-    // 由拿着 reader 的这边自己收尾（见上面那条坑）
-    try { await it.return?.(); } catch {}
+    // 这里千万不能直接 await it.return()。
+    // 流若已经卡死（迭代器正 await 一个永不 settle 的 promise），
+    // it.return() 会跟着一起吊住，于是 finally 永不返回 —— 而 finally 卡住，
+    // 上面那个 timeout 错误就永远传不出去，整个对话卡死在这。实测过。
+    // 所以：发出去就不管了，最多等一小会儿。
+    try {
+      const closing = it.return?.();
+      if (closing && typeof closing.then === 'function') {
+        await Promise.race([
+          closing.catch(() => {}),
+          new Promise((r) => { const t = setTimeout(r, 50); if (t.unref) t.unref(); }),
+        ]);
+      }
+    } catch {}
   }
+}
+
+/**
+ * 「看门狗开火」做成一个会 reject 的 promise，专门用来把 race 叫醒。
+ * 每次进循环都新建一个，自己不持有任何资源（interval 会在 settle 时清掉）。
+ */
+function stalledPromise(guard, tickMs) {
+  return new Promise((_, reject) => {
+    const t = setInterval(() => {
+      const e = guard.error();
+      if (e) { clearInterval(t); reject(e); }
+    }, tickMs);
+    // 故意**不** unref：这个定时器存在的唯一目的就是把 race 叫醒，
+    // unref 掉以后它可能压根不跑（进程没别的活儿时），race 就白等了。
+  });
 }

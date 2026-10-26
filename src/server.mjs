@@ -3803,33 +3803,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     }
 
     try {
-      // 先补开场轮：这一次模型调用只让小鱼说开场白，别的话一句都不要。
-      //
-      // 一般情况下开场在「新建会话」那一刻就已经后台跑完了（startOpening），
-      // 走到这里说明那时候没跑成（没配模型、断网、进程刚好被打断）——
-      // 那就趁主人第一次开口这一轮补上，补不上就算了，别耽误回主人。
-      if (wantOpening && !ac.signal.aborted) {
-        const openingUser = session._openingUser;
-        try {
-          // 开场轮跑的是深拷贝：runAgent 会往传进去的数组里 push 一条 assistant
-          // （agent.mjs:208），共用对象的话它会跟 wireMessages 里那条打架，
-          // 历史里就会出现两条一模一样的开场白（真出过，别改回去）。
-          const openingWire = wireMessages.slice(0, wireMessages.indexOf(openingUser) + 1).map((m) => ({ ...m }));
-          await runAgent({
-            messages: openingWire,
-            sessionId,
-            safeMode: false,
-            safeWord: '',
-            signal: ac.signal,
-            // 开场的字一个都不往界面上发：主人视角里看不到这一轮
-            onEvent: (ev) => { if (ev.type === 'text') openingUser._got = (openingUser._got || '') + ev.text; },
-          });
-        } catch (err) {
-          console.warn('[opening] 开场白没跑成：', String(err?.message ?? err));
-        }
-        applyOpening(session, openingUser, wireMessages);
-        saveSession(session);
-      }
+      // 开场那一对已经在上面补进 history 了（seedOpeningMessages 是定稿文本，不跑模型）。
+      // 这里以前是「让模型现场编开场白」的老写法，靠 session._openingUser 传值；
+      // 定稿之后全库再没有任何地方给 _openingUser 赋值，这段只会拿到 undefined 然后崩。
+      // 2026-10-26 删掉 —— 症状：发消息必报 Cannot read properties of undefined (reading '_got')。
 
       // 这一轮的草稿：边跑边落，进程中途没了也能把已经说的话捡回来。
       // 只在这一轮内部有效，整轮收尾时（下面 finally）会删掉。

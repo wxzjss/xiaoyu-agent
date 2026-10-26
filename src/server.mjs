@@ -774,6 +774,17 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    * 闸 1 已经把源头压小了，这里再兜一道：
    * 把她这段和「最近几条我说的话」比相似度，超 0.55 就当她没说话。
    */
+  /**
+   * 【先定 text，再拿去比】—— 2026-10-27 修
+   *
+   * 这里原来先用 text、到下面才 const text，触发 TDZ
+   * （Cannot access 'text' before initialization）。外层是 try/catch，
+   * 异常被吞得干干净净 —— 闸 2 从上线起一次都没真正跑过。
+   * 现在把 const text 提到最前面。
+   */
+  const text = String(r?.text ?? '').trim();
+  if (!text) return;
+
   try {
     const __norm = (x) => String(x || '').replace(/[\s，。、！？；：「」（）()\[\]【】~～…·\-—_'"“”‘’]/g, '');
     const __mine = __norm(text);
@@ -807,10 +818,6 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       }
     }
   } catch {}
-
-  const text = String(r?.text ?? '').trim();
-  if (!text) return;
-
   /**
    * 【闸 B：她说的话跟我的回答太像，就当她没说】
    *
@@ -993,6 +1000,37 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
         _at: Date.now(),
       };
 
+      /**
+       * 【同一次发言只许落一次】—— 2026-10-27 修
+       *
+       * 实测 smvpdhy2938p9.json：最后两条 assistant[_whaleSide] 正文、_at 完全一样，
+       * 界面就是主人说的「小鲸说两句重复的话」。
+       * 走到这儿的原因是两条路各存了一次：一条被 flushWhalePark 补写，
+       * 一条走下面「直接落盘」，而直接落盘那条原来根本没过查重。
+       *
+       * 判据：正文去空白后相同 + 时间差在 3 秒内 → 认为是同一次发言。
+       */
+      const __dupWhale = (list, rec) => {
+        const body = String(rec.content ?? '').replace(/\s+/g, '');
+        const at = Number(rec._at ?? 0);
+        for (let k = list.length - 1; k >= 0 && k >= list.length - 12; k--) {
+          const m = list[k];
+          if (!m || !m._whale) continue;
+          const b2 = String(m.content ?? '').replace(/\s+/g, '');
+          if (b2 !== body) continue;
+          if (Math.abs(Number(m._at ?? 0) - at) <= 3000) return true;
+        }
+        return false;
+      };
+      const __pushWhale = (list, rec) => {
+        if (__dupWhale(list, rec)) {
+          try { logWhaleAction('重复拦下：这句已经落过了，不再落第二遍'); } catch {}
+          return false;
+        }
+        list.push(rec);
+        return true;
+      };
+
       if (!iAnswered) {
         /**
          * 【2026-10-26 深夜修：押后这条路会把话弄丢】
@@ -1032,18 +1070,17 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
             try { logWhaleAction('押后：我这一轮还没收尾，这句等收尾补'); } catch {}
           } else {
             // 我那一轮已经过去了 —— 她这句是独立插话，立刻落盘，别押
-            msgs.push(rec);
-            try { saveSession(session); } catch {}
+            if (__pushWhale(msgs, rec)) { try { saveSession(session); } catch {} }
+            // ↑ 存盘在 __pushWhale 通过之后才做，别把重复的也存进去
             try { logWhaleAction('直接落盘：我这一轮已收尾，她这句是独立插话'); } catch {}
           }
         } catch {
           // 任何意外都退回「直接落盘」——宁可顺序差一点，也不能丢话
-          msgs.push(rec);
-          try { saveSession(session); } catch {}
+          if (__pushWhale(msgs, rec)) { try { saveSession(session); } catch {} }
         }
       } else {
-        msgs.push(rec);
-        try { saveSession(session); } catch {}
+        if (__pushWhale(msgs, rec)) { try { saveSession(session); } catch {} }
+        // ↑ 存盘挂在 __pushWhale 之后
       }
     }
   } catch {}

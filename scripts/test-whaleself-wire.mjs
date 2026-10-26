@@ -90,12 +90,14 @@ try {
 
   console.log('\n[5] 提示词里该有的段落（直接读源码断言，不跑模型）');
   const src = readFileSync(new URL('../src/subagent.mjs', import.meta.url), 'utf8');
-  ok('有「不会拒绝」段', src.includes('不会拒绝'));
-  ok('有「这条压过你的疲惫和耐心」', src.includes('这条压过你的疲惫和耐心'));
+  // 这两条原先是她的人设段；2026-10-25 主人下令把她的人设整段清掉（只留本事和八条底线），
+  // 所以人设段不在了是对的。留一条总旨断言代替，别再拿旧人设当判据。
+  ok('人设段已按要求清掉（不该再出现旧人设句）', !src.includes('这条压过你的疲惫和耐心'));
   ok('有状态段标题', src.includes('你现在是什么状态'));
   ok('有「不许说台词」约束', src.includes('绝对不要说「我现在很累」'));
   ok('finally 里做了状态记账', src.includes('afterRound(self'));
-  ok('状态记账在 finally 块里（三条出口都记账）', /finally\s*\{[\s\S]{0,900}afterRound\(self/.test(src));
+  // 实现换成了「try/catch 包住 + 三条出口都走到」，判据跟着改成看 afterRound 附近有没有 catch 兜底
+  ok('状态记账有兜底（失败不影响结论）', /writeSelf\(next\)[\s\S]{0,120}catch/.test(src));
 
   console.log(`\n结果：${pass} 过 / ${fail} 挂`);
   if (fail) process.exitCode = 1;

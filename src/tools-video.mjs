@@ -433,10 +433,13 @@ export const videoTools = [
         from: { type: 'number', description: '从第几秒开始' },
         to: { type: 'number', description: '到第几秒（不填就到片尾，别偷懒给太长，会切出一堆图）' },
         shotlistPath: { type: 'string', description: '不填会自动用最近一次 video_sheet 的清单' },
+        times: { type: 'string', description: '直接点名要读哪几个时刻，逗号分隔，如 "2.33,5.1"。要读某一格的字就用这个 —— 比给 from/to 更准，出的面板也少、好找' },
+        region: { type: 'string', description: '只切画面里的一块，写 "x,y,w,h"（像素）。读角落的时间码/角标、读字幕条就用它，别整帧均分碰运气' },
+        zoom: { type: 'number', description: '放大倍数，默认 2。字特别小就上 3 或 4' },
       },
       required: ['path'],
     },
-    async run({ path, from, to, shotlistPath }) {
+    async run({ path, from, to, times, region, zoom, shotlistPath }) {
       const bad = skillReady();
       if (bad) return bad;
       const abs = mediaPath(path);
@@ -467,20 +470,44 @@ export const videoTools = [
       await mkdir(outDir, { recursive: true });
       const readDir = join(outDir, 'read');
       const args = ['read', '--media', abs, '--shotlist', shot, '--out', readDir];
+      /**
+       * --times 是点名要哪几个时刻；vw.py 原生支持，之前没往外暴露。
+       * 为什么重要：默认走 shotlist 的全部采样点，一次能切几十张，模型拿到「前 24 张」
+       * 的路径列表根本不知道该看哪一张 —— 让她读 2.33 秒的字，她可能翻到 0.05 秒那张
+       * 然后如实说「一片纯色读不出」。这不是她笨，是没给准头。
+       */
+      const timesArg = typeof times === 'string' ? times.trim() : '';
+      if (timesArg) args.push('--times', timesArg);
+      /**
+       * --region 只切画面里的一块。角落的时间码只有十几个像素宽，
+       * 按整帧均分去切等于碰运气；点名区域才有足够的放大倍数。
+       */
+      const regionArg = typeof region === 'string' ? region.trim() : '';
+      if (regionArg) args.push('--region', regionArg);
+      if (typeof zoom === 'number' && zoom > 0) args.push('--zoom', String(zoom));
       if (typeof from === 'number') args.push('--t0', String(from));
       if (typeof to === 'number') args.push('--t1', String(to));
       let r = await runVw(py, args);
-      if (!r.ok && (typeof from === 'number' || typeof to === 'number')) {
+      if (!r.ok && (typeof from === 'number' || typeof to === 'number' || timesArg || regionArg)) {
+        // 退一步：去掉可选参数再来一次，至少给回东西（但要说清是退回了默认）
         r = await runVw(py, ['read', '--media', abs, '--shotlist', shot, '--out', readDir]);
+        if (r.ok) r.out = (r.out || '') + '\n（注：--times/--region/--zoom 这次没被接受，退回了默认整帧均分）';
       }
       if (!r.ok) return `切面板失败：\n${r.err || r.out || r.why}`.trim();
 
       const files = (await readdir(readDir).catch(() => [])).filter((f) => f.toLowerCase().endsWith('.png')).sort();
-      if (!files.length) return `跑完了但没切出面板，不装懂。\n\n${r.out}\n${r.err}`.trim();
+      if (!files.length) {
+        const hint = /跳过空白\s*[1-9]/.test(r.out || '')
+          ? '\n\n（看着像是被当成空白跳过了：region 开得太小、字只占一点点面积时，纯色底会把标准差压到阈值以下。把 region 放大一圈再试，比如 \"0,0,300,60\"；或者干脆不填 region 让它按整帧均分。）'
+          : '';
+        return `跑完了但没切出面板，不装懂。\n\n${r.out}\n${r.err}${hint}`.trim();
+      }
       // 面板动辄几十张，一次别全塞回去
       const shown = files.slice(0, 24).map((f) => join(readDir, f));
+      const skipLine = /跳过空白\s*[1-9]/.test(r.out || '') ? ('（有 ' + String((r.out.match(/跳过空白\s*(\d+)/) || [])[1] || '?') + ' 块因为太像纯色被跳过了，那些位置大概率确实没内容。）') : '';
       return [
         `切好了 ${files.length} 张面板（每张是一块放大后的区域）。`,
+        skipLine,
         '',
         '前 24 张：',
         ...shown.map((p) => '  ' + p),

@@ -1,4 +1,4 @@
-﻿// Context compression: when the history gets too long, fold the old turns into one summary
+// Context compression: when the history gets too long, fold the old turns into one summary
 // message and keep the recent tail verbatim. Nothing is deleted from disk — only the prompt
 // gets shorter. The summary is itself merged into later summaries, so it rolls forward.
 import { chat } from './llm.mjs';
@@ -12,6 +12,10 @@ import { askWhaleCompress } from './whale-judge.mjs';
 
 /** 摘要消息的标记（只在本地用，不进 API 请求体）。 */
 const SUMMARY_FLAG = 'summary';
+
+const SUMMARY_BLOCK_TAG = /^\s*(主人要什么|已经做完|已完成|还没做完|未做完|待办|关键约束|结论|约束|现状|进度|背景|目标|备注)\s*[:：]/;
+const SUMMARY_FACT_LINE = /\d|[\\/][\w.-]+|`[\w.]+`|[\w-]+\.(mjs|js|json|md|html|ts|py|exe|ps1|txt)\b/;
+const SUMMARY_ADVISOR = /(建议|要不要我|如果这是|如果你需要|请提供|需要你确认|需要确认|这看起来像|这串消息|你这段对话|我无法|我不能|有个明显问题|不一致|不是一回事|套模板|空转|困在|回放|测试桩|到底|我检查了|我发现|总结来说|下一步方案|只输出|四行标签|不许有|不合格|纠正|现在开始输出)/;
 
 /**
  * 纯净模式压完之后，原样留住的尾部 token 预算。
@@ -139,10 +143,17 @@ export function estimateTokens(messages) {
   return total;
 }
 
-/** 头部两条（system + context）永远不动。 */
+/**
+ * 头部两条（system + context）永远不动。
+ *
+ * 【必须排除摘要】摘要也带 context:true，和上下文副本长得一样。历史里没有那条
+ * 上下文的会话（老会话、回退之后、纯净模式清过），摘要会落到 messages[1]，
+ * 这里就会把它当头部保住 —— 结果每压一次就多出一份摘要层层堆着，越压越大，
+ * 跟文件头承诺的「摘要会滚进后续摘要」正好相反。摘要可以被再折叠，不算头部。
+ */
 function headLength(messages) {
   let n = messages[0]?.role === 'system' ? 1 : 0;
-  if (messages[n]?.context) n += 1;
+  if (messages[n]?.context && !messages[n]?.summary) n += 1;
   return n;
 }
 
@@ -174,14 +185,54 @@ function findCut(messages, start, keepTokens) {
   return -1;
 }
 
-const SUMMARY_SYSTEM = `你是一个对话压缩器。把给你的早期对话压成一份事实清单，供后续继续干活时参考。
+const SUMMARY_SYSTEM = `你是一个对话压缩器，不是助手，也不是顾问。
+你收到的是一段已经发生的旧对话，你要把它压成一份事实清单，交给后面接手的人看。
+你不是对话的一方，没有人会回答你的问题；你输出的是档案，不是回复。
 
-要求：
-- 中文，纯文本，不要 Markdown 标题。
-- 按这几块写：主人要什么 / 已经做完什么（含具体文件路径、命令、数字）/ 还没做完什么 / 关键约束和结论。
-- 只写能从对话里确认的事实，不要推测、不要评价、不要客套。
-- 数字、路径、文件名、接口名、变量名必须原样保留。
-- 尽量短，够后面接着干就行。`;
+输出格式（机器解析，格式不对整段作废）：
+只用下面这四个标签开头，每个标签单独占一行，格式固定为「标签: 内容」。
+每个标签下最多 5 行，每行以「- 」开头。
+
+主人要什么:
+- （这段对话里主人提出的要求，一条一行）
+已经做完:
+- （已经落地的改动：文件路径、函数名、commit 号、数字，原样抄）
+还没做完:
+- （还没做的、卡住的、失败的事）
+关键约束:
+- （踩过的坑、必须遵守的规矩、环境限制）
+
+硬性要求：
+- 只写对话里能确认的事实。数字、路径、文件名、接口名、变量名原样保留，不许改写。
+- 这段对话很可能又长又重复（同一句话来回说几十遍）。删掉重复，只写事实一次。
+- 对话质量差、内容机械重复、双方在空转 —— 这些都不用评价，也不用记录。
+  这不是你的职责；你只负责把「要什么/做了什么/没做什么/约束」提取出来。
+- 尽量短。够后面接着干就行。
+
+下面是错误示范和正确示范，照着正确的那个写。
+
+【错误示范 —— 这就是在当顾问，绝对不要这样写】
+这批对话在重复同一个循环，主人每轮都提同样几个问题。
+要么是记录漏了一轮，要么是修好的问题又复现了。你希望我按哪种情况查？
+要查 logs 还是直接看 server.mjs 的 /api/interject 那段？
+还有一点值得注意：单位是毫秒，45 秒应该是 45000，别误写成 150。
+
+【正确示范 —— 就写这样】
+主人要什么:
+- 修好插话后她不接着答的问题。
+已经做完:
+- src/server.mjs 的 /api/interject：主轮 reg 改用真 done promise，finally 里 resolveDone。
+- src/sessions-core.mjs 的 saveSession 合流时排除 system 和 context。
+- commit 15a8b8e，4 个文件 269 增 30 删。
+还没做完:
+- 推 GitHub 失败：直连超时，代理 8146 没监听，token 401。
+关键约束:
+- src/server.mjs 与 agent.mjs 是 CRLF，改写必须按行 splice，不能全局替换换行。
+- 摘要失败不能连累整轮，超时只砍摘要自己。`;
+
+/** 摘要允许的四个标签（清洗时只认这几个）。 */
+const SUMMARY_TAGS = ['主人要什么', '已经做完', '还没做完', '关键约束'];
+
 
 /**
  * 摘要请求自己的超时（毫秒）。
@@ -402,6 +453,10 @@ export async function compressHistory({
           { role: 'system', content: SUMMARY_SYSTEM },
           { role: 'user', content: inputText },
         ],
+        // 摘要必须跟当前会话用同一个模型 / 同一套端点：会话切了模型，
+        // 摘要却还拿全局默认去算，压出来的东西对不上那个模型的窗口和风格。
+        model,
+        sessionId,
         signal: ac.signal,
       });
       const t = String(res?.choices?.[0]?.message?.content ?? '').trim();
@@ -428,6 +483,43 @@ export async function compressHistory({
         error = undefined;
       } catch (err2) {
         error = String(err2?.message ?? err2);
+      }
+    }
+    /**
+     * 第三次（重试）：模型没守格式，跑题当顾问了。
+     *
+     * 实测：喂一段机械重复的对话进去，模型经常不写标签，而是回一段
+     * 「这批对话在重复同一个循环…你希望我按哪种情况查？」这种点评。
+     * 那种东西进了历史就是毒 —— 后面接手的模型会以为自己是个顾问。
+     *
+     * 所以先验格式：至少要有两个标签。不合格就把「上次你跑题了，
+     * 只输出四个标签」再要一遍；还不行就干脆不压（见下面 summaryText 为空的分支）。
+     */
+    const looksStructured = (t) => {
+      const ls = String(t || '').split('\n');
+      return ls.filter((l) => SUMMARY_BLOCK_TAG.test(l.trim())).length >= 2;
+    };
+    /**
+     * 最多再要两次。每次把「上一次错在哪」写得比上次更硬
+     * —— 实测这种模型只加一句「请用标签」是不听的，得点名它错在哪。
+     */
+    const RETRY_HINTS = [
+      '【纠正】你上一次的输出不合格：没有使用那四个标签，而是评价了这段对话、还问了对方要怎么做。'
+      + '现在只输出：主人要什么: / 已经做完: / 还没做完: / 关键约束: 这四行标签，'
+      + '每个标签下面用 "- " 列事实。不许有第五行标签，不许有任何解释、评论、提问、结尾语。',
+      '【最后一次】再重复一遍：输出必须形如\n'
+      + '主人要什么:\n- ...\n已经做完:\n- ...\n还没做完:\n- ...\n关键约束:\n- ...\n'
+      + '只要这四段。不要写"你贴的这段""我先确认""下一步你要哪个"。现在开始输出。',
+    ];
+    for (const hint of RETRY_HINTS) {
+      if (!summaryText || looksStructured(summaryText) || signal?.aborted) break;
+      try {
+        const retry = await runSummary(renderForSummary(old) + '\n\n' + hint, SUMMARY_TIMEOUT_MS);
+        if (looksStructured(retry)) { summaryText = retry; error = undefined; }
+        else { summaryText = summaryText || retry; }
+      } catch (err3) {
+        error = String(err3?.message ?? err3);
+        break;
       }
     }
   }
@@ -474,12 +566,103 @@ export async function compressHistory({
    *   2. 回退 / 分支 / 记忆本子都只看非 context 的消息，不会把摘要当成对话内容
    *   3. 纯净模式会把 context 全滤掉（server.mjs L2762），纯净模式本来就不该有摘要
    */
+/**
+ * 摘要后处理：把模型没听进去的那几条洗掉。
+ *
+ * 提示词里已经写明「纯文本、不要建议、不要评论对话质量、不要提问」，但实测喂进来
+ * 一段机械重复的对话时，模型照样回「我建议你…」「这看起来像无意义的重复灌注」
+ * 「你的描述和我记录的不一致」—— 顾问腔换着花样来，光靠关键词黑名单堵不住。
+ *
+ * 所以这里不跟它打词表战，改用**结构**：
+ * 摘要是给后续干活用的账本，只认「块标签 + 事实行」这一种形状，
+ * 其余（寒暄、评论、建议、提问）一律不留。
+ *
+ * 只做保守清洗，不做语义改写 —— 宁可少留一句废话，也不能把事实数字洗掉。
+ * 万一模型完全没按格式写（老模型、换了个模型），退回到「限长 + 去 Markdown」，
+ * 不会把整个摘要清空。
+ */
+/** 一行是不是「事实」：带数字 / 路径 / 文件名 / 命令的，基本可以信。 */
+/** 顾问腔：即使落在标签下的行里，带这些词的也不要。 */
+
+function cleanSummary(text) {
+  let s = String(text ?? '');
+  if (!s) return s;
+  // ── 先做通用的干净化 ────────────────────────────────
+  // 1) 围栏代码块记号（保留里面内容，只去 ``` 那一行）
+  s = s.replace(/^\s*```[^\n]*$/gm, '');
+  // 2) Markdown 记号：标题 #、粗体 **、__、反引号
+  s = s.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+  s = s.replace(/__([^_\n]+)__/g, '$1');
+  s = s.replace(/`([^`\n]+)`/g, '$1');
+  // 3) 列表记号统一成「- 」
+  s = s.replace(/^\s*[•·*+]\s+/gm, '- ');
+
+  // ── 再按结构筛 ────────────────────────────────────
+  // 关键判断：模型守不守格式。
+  // 守格式（出现 ≥2 个标签）→ 严格模式：只留四个标签下的行，标签外的一律不要。
+  // 不守格式 → 宽松模式：只按顾问腔/空话过滤，尽量保事实（老模型/换模型时的退路）。
+  const rawLines = s.split('\n').map((l) => l.trim()).filter(Boolean);
+  const tagHits = rawLines.filter((l) => SUMMARY_BLOCK_TAG.test(l)).length;
+  const strict = tagHits >= 2;
+
+  /** 明显的「空话」开头：寒暄、评论、复述自己在干什么 */
+  const noise = /^(我|你|好的|收到|明白|了解|嗯|当然|另外|不过|但是|同时|此外|所以|因此|总结来说|总的来说|主人说|小鱼回|这说明|这两件事|从第|需要|这种|这样|如果)/;
+
+  let kept = [];
+  if (strict) {
+    // 严格模式：认标签。标签下的每一行都留（只砍顾问腔），
+    // 标签外的行必须「像事实」（带数字/路径）才留 —— 那是模型的额外补充。
+    // 注意：标签下的行不再要求含数字，否则「合流时排除 system 和 context」这种
+    // 关键结论会被误杀（实测就吃过这个亏，摘要只剩一句 commit 号）。
+    let inTag = false;
+    for (const line of rawLines) {
+      const isTag = SUMMARY_BLOCK_TAG.test(line);
+      if (isTag) {
+        inTag = SUMMARY_TAGS.some((t) => new RegExp('^\\s*' + t + '\\s*[:：]').test(line));
+        if (inTag) {
+          kept.push(line.replace(/\s*[:：]\s*/, ': ').trim());
+        } else if (SUMMARY_FACT_LINE.test(line) && !SUMMARY_ADVISOR.test(line)) {
+          kept.push(line);
+        }
+        continue;
+      }
+      if (SUMMARY_ADVISOR.test(line)) continue;
+      if (inTag) { kept.push(line); continue; }
+      if (SUMMARY_FACT_LINE.test(line) && !noise.test(line)) kept.push(line);
+    }
+  } else {
+    // 宽松模式（模型没按标签写）：砍顾问腔和空话行，其余照留。
+    // 另外：以「- 」开头却一个数字/路径都没有的，基本是评论，不是事实，也丢掉。
+    kept = rawLines.filter((line) => {
+      if (SUMMARY_ADVISOR.test(line)) return false;
+      if (noise.test(line) && !SUMMARY_FACT_LINE.test(line)) return false;
+      if (/^-\s/.test(line) && !SUMMARY_FACT_LINE.test(line) && line.length < 60) return false;
+      return true;
+    });
+  }
+  s = kept.join('\n');
+
+  // ── 最后兜底：限长 ──────────────────────────────────
+  // 摘要长期留在历史里，超过这个长度就开始挤占「真正该留的对话」。
+  // 按句子边界截，避免截断在半个数字上。
+  const SUMMARY_TEXT_MAX = 2400;
+  if (s.length > SUMMARY_TEXT_MAX) {
+    const head = s.slice(0, SUMMARY_TEXT_MAX);
+    const lastStop = Math.max(head.lastIndexOf('。'), head.lastIndexOf('\n'), head.lastIndexOf('；'));
+    s = (lastStop > SUMMARY_TEXT_MAX * 0.5 ? head.slice(0, lastStop + 1) : head) + '\n（摘要过长，已截断）';
+  }
+  s = s.replace(/\n{3,}/g, '\n\n').trim();
+  // 全被洗空了也得给一句实话，别留下一条空摘要占着位置
+  return s || '（这段早期对话没有压出可用的事实，原文已折叠）';
+}
+
   const makeSummary = () => (pure ? null : {
     role: 'user',
     content:
       '（下面是程序自动生成的「早期对话摘要」，不是主人说的话。'
       + '这段里出现的第一人称是之前那个你的口吻，只当作参考资料，别当成主人在对你提要求。）'
-      + `\n\n【早期对话摘要 · 原文已压缩】\n${summaryText}`,
+      + `\n\n【早期对话摘要 · 原文已压缩】\n${cleanSummary(summaryText)}`,
     context: true,
     [SUMMARY_FLAG]: true,
   });

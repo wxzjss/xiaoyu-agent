@@ -1,4 +1,4 @@
-﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
+// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -4919,9 +4919,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 判定必须和 rewind.mjs 的 headIndexes() 一模一样 ——
       // 那边认 system + context user 两条是头部，这边要是只认 system，
       // 规则副本就会被当成「对话尾巴」留下来，位置也会跑偏。
+      //
+      // 摘要不算头部（哪怕它带 context:true、正好落在 system 后面）：
+      // 它是「可再次折叠的旧对话」。当成头部会把它永久冻在最前面，
+      // 之后每次压缩都压不到它，历史里一份份摘要越堆越多。
       let headCount = 0;
       while (headCount < history.length && history[headCount]?.role === 'system') headCount++;
-      if (history[headCount]?.role === 'user' && history[headCount]?.context) headCount++;
+      if (history[headCount]?.role === 'user' && history[headCount]?.context
+        && !history[headCount]?.summary) headCount++;
       const headPart = history.slice(0, headCount);
       const headSet = new Set(headPart);
       const tailPart = survivors.filter((m) => !headSet.has(m));

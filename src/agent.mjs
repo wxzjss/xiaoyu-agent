@@ -1,4 +1,4 @@
-﻿// The agent loop: call model -> run tools -> feed results back -> repeat.
+// The agent loop: call model -> run tools -> feed results back -> repeat.
 import { streamChat, modelNameForSession } from './llm.mjs';
 // activeEndpoint / endpointFor：连不上模型时报错要说清是哪个地址，得能拿到当前生效的那套参数。
 import { activeEndpoint, endpointFor } from './models.mjs';
@@ -259,13 +259,28 @@ export async function runAgent({
     } else {
       // 走到这里说明 text 有东西（纯净模式那条空分支在上面拦掉了）
       if (messages[0]?.role === 'system') messages[0].content = text;
-      if (messages[1]?.role === 'user' && messages[1].context) {
+      /**
+       * 【摘要不能被当成 context 覆盖或删掉】—— 压缩体检时发现的
+       *
+       * 压缩生成的摘要同样是 role:'user' + context:true。以前这里只认 context，
+       * 于是：
+       *   · 摘要正好在 messages[1] 时，被 `messages[1].content = ctx` 整段覆盖
+       *     —— 早期对话摘要当场蒸发，模型下一轮就"失忆"；
+       *   · 摘要不在 messages[1] 时走下面 else，被 `filter(m => !m.context)` 一并踢掉
+       *     —— 同样蒸发。
+       * 摘要必须原样留着、且只能有一条：真正的 context 副本每轮重算，
+       * 摘要则是「过去的账」，两码事。
+       */
+      const isSummary = (m) => Boolean(m && m.summary);
+      if (messages[1]?.role === 'user' && messages[1].context && !isSummary(messages[1])) {
         messages[1].content = ctx;
       } else {
         // First run (or the history was trimmed): (re)insert the context message right after system.
         const rest = messages.filter((m) => m !== messages[0] || m.role !== 'system');
         const sys = messages[0]?.role === 'system' ? [{ role: 'system', content: text }] : [];
-        const withoutCtx = rest.filter((m) => !m.context);
+        // 只摘掉「旧的那条 context 副本」（每轮重算，留着就是重复）；
+        // 摘要不在此列 —— 它是旧对话压出来的账，摘掉就真丢了。
+        const withoutCtx = rest.filter((m) => !m.context || isSummary(m));
         messages.length = 0;
         messages.push(...sys, { role: 'user', content: ctx, context: true }, ...withoutCtx);
       }
@@ -732,7 +747,10 @@ export async function runAgent({
  * 普通 assistant 一律留着 —— 它是正常内容，不是残渣。
  */
 export function repairHistory(messages) {
-  const floor = messages[0]?.role === 'system' ? (messages[1]?.context ? 2 : 1) : 0;
+  // 头部的第二种情况也要排除摘要：摘要虽然带 context:true，但它是可再折叠的旧对话，
+  // 当成框架会让 floor 抬高，后面那些该清的重复 system / 悬空 tool_calls 就清不到。
+  const headIsFraming = messages[1]?.context && !messages[1]?.summary;
+  const floor = messages[0]?.role === 'system' ? (headIsFraming ? 2 : 1) : 0;
   /**
    * 【中段多出来的 system 一律删掉】—— 2026-10-26 修
    *

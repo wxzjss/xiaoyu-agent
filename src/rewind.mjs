@@ -24,10 +24,19 @@ import { readMemory, snapMemory } from './session-memory.mjs';
 const DIR = join(config.dataDir, '.state', 'rewind');
 const MAX_SNAPSHOT_BYTES = 1024 * 1024; // 单文件超过 1MB 就不备份（对齐 DSH：过大不备份）
 
-/** 头部两条：system + 带人设的上下文消息。它们永远不算对话。 */
+/**
+ * 头部两条：system + 带人设的上下文消息。它们永远不算对话。
+ *
+ * 【必须排除摘要】
+ * 压缩生成的摘要也是 role:'user' + context:true，跟真正的上下文副本长得一模一样。
+ * 老会话 / 回退之后历史里可能没有那条上下文，摘要就正好落到 messages[1]，
+ * 于是被当成「头部」冻住：既不跟着再压缩，回退时也当它不可动。
+ * 摘要属于「可再次被折叠的旧对话」，不是框架 —— 这里认出来剔掉。
+ */
 function headIndexes(messages) {
   if (!Array.isArray(messages) || messages[0]?.role !== 'system') return [];
-  return messages[1]?.role === 'user' && messages[1]?.context ? [0, 1] : [0];
+  const isFraming = messages[1]?.role === 'user' && messages[1]?.context && !messages[1]?.summary;
+  return isFraming ? [0, 1] : [0];
 }
 
 /** 会话里已有的回退点（按时间先后）。坏数据一律当没有。 */

@@ -146,11 +146,56 @@ export function readWhaleMemory() {
 }
 
 /**
+ * 把一条话里的「要素」抠出来：数字、带扩展名的词、引号里的短词。
+ *
+ * 这是查重的原料。为什么抠这些而不是整句比相似度，见 appendWhaleMemory 里的长注释。
+ * @param {string} s
+ * @returns {Set<string>}
+ */
+function keysOf(s) {
+  const out = new Set();
+  const t = String(s ?? '');
+  // 数字：57、1、2、10-26 之类
+  for (const m of t.matchAll(/\d+(?:[.-]\d+)*/g)) out.add('#' + m[0]);
+  // 带扩展名的词：.mjs / whale-test.txt / src/server.mjs
+  for (const m of t.matchAll(/[A-Za-z_][\w.-]*\.[a-z]{2,4}\b/g)) out.add('@' + m[0].toLowerCase());
+  // 引号里的短词：「我回来了」「不对」
+  for (const m of t.matchAll(/[「『]([^」』]{1,10})[」』]/g)) out.add('"' + m[1] + '"');
+  return out;
+}
+
+/**
  * 往某个分区追加一条。
  *
  * 不整份覆盖：记忆是累积的，覆盖一次就把从前的事全抹了。
+ *
+ * 【源头查重：同一件事只说一次】
+ *
+ * 真事（2026-10-26）：她这栏里 25 条，其中 19 条是同一件没干完的事在反复重申
+ * ——「57 个 .mjs 我没独立复核过，等小鱼按子目录重数」。每条前面挂着不同的
+ * 当轮噪声（主人问颜色答蓝、问 1+1 答 2、测试第几轮），把 20 条上限顶满，
+ * 真有内容的 6 条差点被挤进归档。看着像「记忆没了」，其实是被废话淹的。
+ *
+ * 试过但都不行的判法（别再试）：
+ *   - Jaccard 2-gram：那 19 条内部最低相似度 0.026，比它跟真事件的最高值
+ *     0.066 还低 —— 每条夹带不同前缀，把 n-gram 全稀释了，分不开。
+ *   - overlap coefficient（交集/min）：内部最低 0.000（第 1 条和第 23 条
+ *     连一个共同 3-gram 都没有），交叉最高 0.114。**分界线根本不存在。**
+ *
+ * 所以不判「像不像」，判「说的是不是同一批东西」：
+ * 如果某个要素在已有条目里**成批出现**（≥3 条都带），它就是这件事的标识；
+ * 新条目也带这个标识 → 判定为同一件事。
+ *
+ * 判定为同一件事之后，**不是丢弃，是原地更新**：把最旧的那条挪走，把新的加到末尾。
+ * 条数不涨、日期变新、内容变准 —— 事情还在，只是不再重复第二十遍。
+ *
+ * 为什么用「成批出现」而不是「出现过」：单个数字太容易撞（1+1、测试 3 轮、
+ * 问周几的 10-26）。只有三条以上都在说同一个数字/同一个文件名时，
+ * 它才真的在指同一件事。
+ *
  * @param {string} section SECTIONS 里的一个（传简写也认）
  * @param {string} line 一行话
+ * @returns {boolean|string} true = 新增；'merged' = 判为同一件事、原地更新了
  */
 export function appendWhaleMemory(section, line) {
   const clean = String(line ?? '').replace(/\s+/g, ' ').trim();
@@ -161,7 +206,59 @@ export function appendWhaleMemory(section, line) {
   const stamp = new Date().toISOString().slice(0, 10);
   try {
     const bucket = parse(readWhaleMemory());
-    bucket[name].push(`${stamp} · ${clean}`);
+    const items = bucket[name] || [];
+
+    const newKeys = keysOf(clean);
+
+    /**
+     * 第一道闸：**原样（或近乎原样）重复，直接不记**。
+     *
+     * 这条最便宜也最可靠 —— 一模一样的句子没有任何新信息。
+     * 去日期、去空白、去标点后完全相等就算重复（标点差异不算新内容）。
+     */
+    const flat = (s) =>
+      String(s ?? '')
+        .replace(/^\d{4}-\d{2}-\d{2}\s*·\s*/, '')
+        .replace(/[\s\u3000]+/g, '')
+        .replace(/[，。、；：！？「」『』（）()【】\[\]…—\-·.,!?;:"'""'']/g, '');
+    const mineFlat = flat(clean);
+    if (mineFlat && items.some((it) => flat(it) === mineFlat)) {
+      return 'duplicate';
+    }
+
+    if (newKeys.size) {
+      // 统计已有条目里每个要素出现了几次
+      const keyed = items.map((it) => keysOf(it));
+      const freq = new Map();
+      for (const ks of keyed) for (const k of ks) freq.set(k, (freq.get(k) || 0) + 1);
+
+      // 成批出现的要素才算「这件事的标识」。
+      // 门槛定 2：同一句话写第二遍就已经是废话了，不用等到第三遍。
+      // （踩过的坑：一开始定 >=3，结果同句连写三次才拦住，前两条白占位置）
+      const anchors = [...newKeys].filter((k) => (freq.get(k) || 0) >= 2);
+
+      if (anchors.length) {
+        // 找最旧的那条同时带锚点的 —— 挪掉它
+        let oldestIdx = -1;
+        for (let i = 0; i < keyed.length; i++) {
+          if (anchors.some((k) => keyed[i].has(k))) {
+            oldestIdx = i;
+            break;
+          }
+        }
+        if (oldestIdx >= 0) {
+          items.splice(oldestIdx, 1);
+          items.push(`${stamp} · ${clean}`);
+          bucket[name] = items;
+          ensureDir();
+          writeFileSync(FILE, render(bucket), 'utf8');
+          return 'merged';
+        }
+      }
+    }
+
+    items.push(`${stamp} · ${clean}`);
+    bucket[name] = items;
     // 分区超上限就先合并最老的（见 compactSection）
     if (bucket[name].length > MAX_PER_SECTION) {
       bucket[name] = compactSection(bucket[name], Math.floor(MAX_PER_SECTION * 0.7));

@@ -35,7 +35,7 @@ import {
   handoffSummary,
   handoffMessage,
 } from './retry429.mjs';
-import { withTimeout, TOOL_MAX_MS } from './deadline.mjs';
+import { withTimeout, TOOL_MAX_MS, TOOL_NOTICE_MS } from './deadline.mjs';
 
 /**
  * Some OpenAI-compatible gateways drop `system` messages entirely (verified against the
@@ -574,8 +574,17 @@ export async function runAgent({
       const { ok, output } = await withTimeout(
         runTool(call.function.name, call.function.arguments),
         TOOL_MAX_MS,
-        { what: '工具「' + call.function.name + '」', ac: signal },
-      ).catch((e) => ({
+        {
+        what: '工具「' + call.function.name + '」',
+        ac: signal,
+        // 跑到 10 分钟先喊一声「还在跑」，别让主人干等。窗口本身不足 30 分钟时按 1/3 算。
+        noticeAt: Math.min(TOOL_NOTICE_MS, Math.floor(TOOL_MAX_MS / 3)),
+        onNotice: (ms) => {
+        const span = ms >= 60000 ? Math.max(1, Math.round(ms / 60000)) + ' 分钟' : Math.max(1, Math.round(ms / 1000)) + ' 秒';
+        onEvent({ type: 'text', text: '\n\n（「' + call.function.name + '」还在跑，已经 ' + span + '，再等等我。）' });
+        },
+        },
+        ).catch((e) => ({
         ok: false,
         output: e?.isTimeout
           ? '这个工具超过 ' + (TOOL_MAX_MS >= 60000 ? Math.round(TOOL_MAX_MS / 60000) + ' 分钟' : Math.round(TOOL_MAX_MS / 1000) + ' 秒') + '没返回（' + call.function.name + '），先跳过它，接着往下走。'

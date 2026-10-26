@@ -707,6 +707,24 @@ const LIVE_MAX_EVENTS = 20000;
 // 插话要先 abort，再等这一轮真的收尾（历史写完盘）后才能把新话接上去。
 const runningTurns = new Map();
 
+/**
+ * 删会话前的两道闸。
+ *
+ * 一、**正在跑的那一轮不许删**——删掉之后 runAgent 收尾时会把历史写回一个已经进回收站的
+ *     文件，等于当场复活一个「幽灵会话」，而界面那头已经不在列表里了。
+ * 二、**当前活动会话不许删**——2026-10-26 出过一次：清测试残留时按「新建时间 + 消息少」筛，
+ *     把刚被重启切成新文件的当前会话也筛进去了。那个会话进来才 6 条消息、标题还是「新会话」，
+ *     长得跟测试残留一模一样。删了它，主人当场失忆。
+ *
+ * 所以这里不看「像不像测试」，只看「是不是活着的那一个」。判断权交给运行状态和 lastSessionId，
+ * 不交给文件名、时间、大小这些看起来像的东西。
+ */
+function refuseDeleteReason(id) {
+  if (runningTurns.has(id)) return '这个会话正在跑，等它跑完（或者点停止）再删';
+  if (getLastSessionId() === id) return '这是当前正在用的会话，不能删';
+  return '';
+}
+
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -3071,6 +3089,8 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/api/sessions/delete') {
     const { id } = await body(req).catch(() => ({}));
+    const why = refuseDeleteReason(id);
+    if (why) return json(res, 409, { error: why, refused: true, id });
     const ok = deleteSession(id);
     // 本子跟着会话走：挪进 .state/memory/.trash，不直接删（主人可能想找回）
     try {
@@ -3093,7 +3113,14 @@ const server = createServer(async (req, res) => {
     if (!want.length) return json(res, 400, { error: '没有选中要删的会话' });
     const done = [];
     const failed = [];
+    /** 被闸挡下的：{ id, why }。前端要把这些单独提示，不能混进「失败」里让人以为文件坏了。 */
+    const refused = [];
     for (const id of want) {
+      const why = refuseDeleteReason(id);
+      if (why) {
+        refused.push({ id, why });
+        continue;
+      }
       try {
         const ok = deleteSession(id);
         try {
@@ -3112,6 +3139,7 @@ const server = createServer(async (req, res) => {
       ok: true,
       deleted: done.length,
       failed,
+      refused,
       lastSessionId: last && list.some((s) => s.id === last) ? last : (list[0]?.id ?? null),
       remaining: list.length,
     });

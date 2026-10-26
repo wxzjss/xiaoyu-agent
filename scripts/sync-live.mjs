@@ -115,7 +115,9 @@ function finger(file) {
 
 // 收集要同步的
 const targets = [];
-for (const sub of ['src', 'public', 'electron', 'persona', 'assets', 'scripts']) {
+// vendor/ 放的是运行期要 exec 的外部程序（video-watch 的 vw.py + 替身 magick.bat），
+// 跟 src 一样属于「没有就跑不起来」的那一类，必须一起同步。
+for (const sub of ['src', 'public', 'electron', 'persona', 'assets', 'scripts', 'vendor']) {
   const abs = join(ROOT, sub);
   if (!existsSync(abs)) continue;
   for (const f of walk(abs)) {
@@ -168,7 +170,7 @@ console.log('');
 
 console.log('[1/2] 同步到 code/ …');
 for (const rel of targets) {
-  if (!/^(src|electron|persona|scripts|package\.json)/.test(rel)) continue;
+  if (!/^(src|electron|persona|scripts|vendor|package\.json)/.test(rel)) continue;
   syncTo(CODE, rel);
 }
 

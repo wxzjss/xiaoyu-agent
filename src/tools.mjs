@@ -14,6 +14,7 @@ import { webSearch, formatResults } from './search.mjs';
 import { sendFileTool } from './tools-sendfile.mjs';
 import { sayTool } from './tools-say.mjs';
 import { browserTools } from './tools-browser.mjs';
+import { videoTools } from './tools-video.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
 
@@ -785,6 +786,7 @@ export const tools = [
   sayTool,
   sendFileTool,
   ...browserTools,
+  ...videoTools,
   /**
    * 往我自己的记忆本里记一条。
    *

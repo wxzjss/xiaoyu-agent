@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -3214,7 +3214,11 @@ function reconcileTurnTexts(ev) {
     const partial = bubbles.find((el) => {
       const t = textOf(el).trim();
       if (!t || t.length < 6) return false;
-      return t.length < text.length && (text.startsWith(t) || t.includes(head));
+      // 只认「屏幕上那段是这段的开头」才算残句。
+      // 以前还写了 || t.includes(head)，可 head 是从这段正文自己头上切的，
+      // 对任何 text 都恒为真 —— 于是每处理一段就把上一段误判成残句删掉重画，
+      // 一轮说七段，屏幕上最后只剩一小段。别再加回去。
+      return t.length < text.length && t.length >= 6 && text.startsWith(t);
     });
     if (partial) {
       const host = partial.closest('.msg.assistant');

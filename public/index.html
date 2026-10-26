@@ -4468,6 +4468,7 @@ function whaleStreamDelta(text) {
 }
 
 /** 她这轮说完了：把整段定稿塞进去（以定稿为准，不用流的那些碎片拼） */
+let _whaleLastFinishEl = null;
 function whaleStreamFinish(text) {
   const st = whaleStreamingEl;
   whaleStreamingEl = null;
@@ -4481,6 +4482,7 @@ function whaleStreamFinish(text) {
     return true;
   }
   st.bubble.textContent = full;
+  _whaleLastFinishEl = st.bubble;
   noteNewContent();
   return true;
 }
@@ -4509,6 +4511,7 @@ const _whaleDrawnThisRound = new Set();
 function __whaleRoundReset() {
   _whaleDrawnThisRound.clear();
   _whaleRecent.clear();
+  try { _whalePainted.clear(); _whaleLastFinishEl = null; } catch {}
 }
 function whaleAlreadyDrawn(who, text) {
   const key = String(who || '小鲸') + '\u0000' + String(text || '');
@@ -4517,6 +4520,59 @@ function whaleAlreadyDrawn(who, text) {
   if (_whaleDrawnThisRound.size > 200) _whaleDrawnThisRound.clear();
   _whaleRecent.set(key, Date.now());
   return false;
+}
+
+/**
+ * 她在流里的那一段气泡，按「谁 + 说了什么」登记一份长期句柄。
+ *
+ * 【为什么要这个】live 里同一句话有两种事件：whale_stream_start/delta 是滚动的碎片，
+ * whale 是定稿。两个补捞循环（fish_off 后 1.2/3.5/7/12 秒、done 后 1.5/4/8 秒）
+ * 都是隔几秒醒一次，每次醒来都重新看一遍 live 缓存：
+ *   第一次醒 -> whaleStreamFinish 成功，句柄清成 null；
+ *   第二次醒 -> whaleStreamFinish 返回 false，掉进 addWhaleBubble；
+ *   而 addWhaleBubble 自己有去重，记着「这句画过」就返回 null —— 句柄永久清掉了；
+ *   第三次醒 -> 再走一遍同样的路，于是同一句话被画了第二遍、第三遍。
+ * 主人看到的就是「小鲸一句话冒出三四个气泡」。
+ *
+ * 修法：句柄不光挂在「正在流」那个变量上，还按内容登记在这里；
+ * 补捞时先问「这句是不是已经画完了」，画完了就原地对齐文本，绝不新建。
+ */
+const _whalePainted = new Map();
+
+/** 从 live 里捞到一条 whale 事件 -> 认领它该去哪个气泡，绝不重复新建 */
+function paintWhaleFromLive(ev) {
+  if (!ev) return;
+  const who = String(ev.who || '小鲸');
+  if (ev.type === 'whale_stream_start' || ev.type === 'whale_delta') {
+    // 碎片只在真流式里用。补捞时靠定稿兜底 —— 这一句已经定稿了，再来碎片没有意义。
+    const given = String(ev.text || '');
+    if (ev.type === 'whale_delta' && (!given || !whaleStreamingEl)) return;
+    if (given) whaleStreamDelta(given);
+    return;
+  }
+  const text = String(ev.text || '').trim();
+  const key = who + '\u0000' + text;
+  // ① 这句已经画过了：只把文本对齐（以定稿为准），不再新建气泡
+  const seen = _whalePainted.get(key);
+  if (seen && seen.isConnected) {
+    if (text && String(seen.textContent || '').trim() !== text) {
+      seen.textContent = text;
+      noteNewContent();
+    }
+    return;
+  }
+  // ② 有正在流的气泡：把它定稿，并登记句柄
+  if (whaleStreamFinish(text)) {
+    const el = _whaleLastFinishEl;
+    if (el && el.isConnected && text) _whalePainted.set(key, el);
+    return;
+  }
+  // ③ 真的没有：画一个新的，并登记句柄
+  const wrap = addWhaleBubble(who, text);
+  if (wrap) {
+    const b = wrap.querySelector('.bubble');
+    if (b && text) _whalePainted.set(key, b);
+  }
 }
 
 function addWhaleBubble(who, text) {
@@ -4885,7 +4941,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
               const evs = (lv && lv.events) || [];
               for (const it of evs) {
                 if (!it || it.type !== 'whale') continue;
-                if (!whaleStreamFinish(it.text)) addWhaleBubble(it.who, it.text);
+                paintWhaleFromLive(it);
               }
             }
           })();
@@ -5107,18 +5163,8 @@ async function runTurn({ resume = false, text = '' } = {}) {
               const tails = evs.slice(doneAt + 1)
                 .filter((x) => x && (x.type === 'whale' || x.type === 'whale_stream_start' || x.type === 'whale_delta'));
               for (const x of tails) {
-                if (x.type === 'whale') {
-                  if (whaleStreamFinish(x.text)) continue;
-                  const raw = String(x.text || '').slice(0, 24);
-                  const key = 'k' + Array.from(raw).map((c) => c.codePointAt(0).toString(36)).join('');
-                  if (document.querySelector('[data-whale-key="' + key + '"]')) continue;
-                  const wrap = addWhaleBubble(x.who, x.text);
-                  try { if (wrap) wrap.dataset.whaleKey = key; } catch {}
-                } else if (x.type === 'whale_stream_start') {
-                  whaleStreamStart(x.who);
-                } else if (x.type === 'whale_delta') {
-                  whaleStreamDelta(x.text);
-                }
+                // 一律交给同一个管道句柄认领，别在这儿自己找气泡（见 paintWhaleFromLive 注释）
+                paintWhaleFromLive(x);
               }
             }
           })();

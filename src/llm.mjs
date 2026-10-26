@@ -4,6 +4,7 @@ import { activeEndpoint } from './models.mjs';
 import { levelFor, resolveLevel, withEffort, isThinkingUnsupported } from './thinking.mjs';
 import { endpointFor } from './models.mjs';
 import { getOverride } from './session-overrides.mjs';
+import { withTimeout, stallGuard, guardedStream, LLM_IDLE_MS } from './deadline.mjs';
 
 /**
  * 这个错误是不是「连接被中途掐断」。
@@ -130,18 +131,33 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
   let level = effort;
   for (let guard = 0; guard < 8; guard++) {
     const payload = withEffort(body, level).body;
-    const r = await fetch(ep.baseURL + '/chat/completions', {
-      method: 'POST',
-      headers: headers(ep),
-      body: JSON.stringify(payload),
-      signal,
-    });
+    /**
+     * 【静默闸：建了连接却一个字节都不吐，不能永远等】
+     *
+     * 真发生过：网关接了连接、握手也成了，然后就没有然后了 —— 不报错、不断开、
+     * 不吐字节。fetch 自己不会超时（Node 的 fetch 没有默认超时），下面的读取
+     * 就一直挂着。而 agent 那两道闸（哑转闸、整轮时间闸）只在「每一轮开头」判
+     * 一次，卡在这儿走不到检查点 —— 主人看到的就是界面停在半句话上，一直不动。
+     *
+     * LLM_IDLE_MS 管「响应头回来之前」这段静默（默认 5 分钟）。头回来之后、
+     * 正在吐字那段由下面的看门狗 StallWatch 管，两边不重叠。
+     */
+    const r = await withTimeout(
+      fetch(ep.baseURL + '/chat/completions', {
+        method: 'POST',
+        headers: headers(ep),
+        body: JSON.stringify(payload),
+        signal,
+      }),
+      LLM_IDLE_MS,
+      { what: '等上游开始回话' },
+    );
     if (r.ok) {
       res = r;
       break;
     }
     lastStatus = r.status;
-    lastText = await r.text().catch(() => '');
+    lastText = await withTimeout(r.text().catch(() => ''), LLM_IDLE_MS, { what: '读上游的错误正文' });
     if (!isThinkingUnsupported(r.status, lastText)) {
       throw new Error(`LLM HTTP ${r.status}: ${lastText.slice(0, 500)}`);
     }
@@ -165,7 +181,24 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
    * 从断点继续读完。续的时候带着已收到的内容再去要一次，模型会把话写完。
    */
   try {
-    for await (const chunk of res.body) {
+    /**
+     * 【流到一半不动了，也得能认输】
+     *
+     * 上面那道静默闸只管到「响应头回来」。头回来之后还有更难看的僵死：
+     * 吐了半句，然后不吐了、不结束、也不报错，连接就那么挂着 —— 真碰上过。
+     *
+     * 看门狗：一个定时器盯全程，每收到一块就重置。静默超窗就取消这条流，
+     * 于是 for-await 抛错、落进下面的 catch —— 恰好就是已有的「流被中途掐断」
+     * 那条路，上层带着已收到的内容去续读，不必另写一套恢复逻辑。
+     */
+    // 注意：这里别再调 res.body.cancel()。guardedStream 已经拿住了 reader，
+    // 外部 cancel 会抛 ERR_INVALID_STATE（ReadableStream is locked）把进程带走。
+    const guard = stallGuard({
+      what: '上游往这边吐字',
+      limitMs: LLM_IDLE_MS,
+    });
+    for await (const chunk of guardedStream(res.body, guard)) {
+    guard.beat('收到数据块');
     buf += decoder.decode(chunk, { stream: true });
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
@@ -200,9 +233,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
         acc.clear();
       }
     }
-  }
-
-    if (acc.size) yield { type: 'tool_calls', toolCalls: [...acc.values()].filter((t) => t.name) };
+    }
   } catch (err) {
     // 流被掐断了。把已经攒好的 tool_calls 先交出去，别让这一轮白跑；
     // 然后往上抛一个带标记的错，交给 agent 那边决定「续跑」。
@@ -212,7 +243,9 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
         acc.clear();
       } catch {}
     }
-    if (isStreamDropError(err)) {
+    // 看门狗取消流之后抛出来的错，语义就是「静了太久」，跟真断线一样走续读
+    const stalled = err?.name === 'AbortError' || /cancel/i.test(String(err?.message ?? ''));
+    if (isStreamDropError(err) || stalled) {
       const e = new Error('流被中途掐断（' + (String(err.cause?.code ?? err.message ?? err)) + '）');
       e.streamDropped = true;
       e.received = buf.length;

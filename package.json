@@ -12,14 +12,16 @@
     "cli": "node src/cli.mjs",
     "selfcheck": "node src/selfcheck-cli.mjs",
     "shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File make-shortcut.ps1",
-    "publish": "node scripts/publish.mjs",
+    "publish": "node scripts/preflight.mjs && node scripts/publish.mjs",
     "publish:dry": "node scripts/publish.mjs --dry",
     "scan": "node scripts/publish.mjs --deep-scan",
     "autopublish": "node scripts/auto-publish.mjs",
     "pack:exe": "electron-builder --win",
     "pack:dir": "electron-builder --win --dir",
-    "sync": "node scripts/sync-live.mjs",
-    "sync:check": "node scripts/sync-live.mjs --check"
+    "sync": "node scripts/preflight.mjs && node scripts/sync-live.mjs",
+    "sync:check": "node scripts/sync-live.mjs --check",
+    "check:ui": "node scripts/check-ui.mjs --all",
+    "preflight": "node scripts/preflight.mjs"
   },
   "devDependencies": {
     "electron": "33.4.11",

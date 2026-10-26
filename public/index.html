@@ -893,6 +893,28 @@
     #sessBulk.on { border-color: rgba(226, 96, 96, .7); background: rgba(226, 96, 96, .16); color: #ff9a9a; font-weight: 600; }
 #sessFindToggle.on { border-color: rgba(77, 141, 255, .6); background: rgba(77, 141, 255, .14); color: #9dc0ff; }
 
+    /* 会话面板里那一排 ghost3 按钮（导入/导出/批量删除/搜索/搜/关/全选/删掉选中的/取消）
+     * 【2026-10-27 主人报「搜索按钮是亮白色的，与背景不符」】
+     * 根因：ghost3 只在 .askFoot 下面写过样式（.askFoot button.ghost3），
+     * 会话面板这排压根没被管到，于是露出浏览器原生 button 外观——白底白描边，跟暗色页面撞成一团。
+     * 这里补一条全局的，照 .ghost 的手感：透明底、暗灰字、细描边。 */
+    button.ghost3 {
+      background: transparent;
+      color: var(--dim);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 5px 11px;
+      font-size: 12.5px;
+      font-weight: 400;
+      cursor: pointer;
+      -webkit-appearance: none;
+      appearance: none;
+      color-scheme: dark;
+    }
+    button.ghost3:hover { color: var(--text); border-color: rgba(255, 255, 255, .22); }
+    button.ghost3:disabled { opacity: .45; cursor: default; }
+
+
 /* 搜会话内容 */
 .sessFind[hidden] { display: none !important; }
 .sessFind { gap: 8px; padding-top: 0; }
@@ -4966,6 +4988,8 @@ function syncSendBtn() {
 /** 跑一轮对话；resume = 接着已有历史继续（插话之后）。 */
 // 这一轮刚画出来的用户气泡，等 done 回包再补「↶ 回退」
 let pendingRewindBubble = null;
+/** 上一轮被插话打断时保留下来的思考块（<details>），下一轮接着往里写 */
+let savedOpenThink = null;
 
 async function runTurn({ resume = false, text = '' } = {}) {
   // 关键：这一轮属于「发起时」那个会话。中途切走、切回来都不能串台。
@@ -4973,7 +4997,22 @@ async function runTurn({ resume = false, text = '' } = {}) {
   let bubble = null;
   const toolEls = new Map();
   let think = null;
+  // 上一轮被插话打断、思考块还摊着 —— 接着往那块里写，别另开一个
+  if (savedOpenThink && savedOpenThink.el && savedOpenThink.el.isConnected) {
+    think = savedOpenThink;
+    savedOpenThink = null;
+  }
   const closeThink = () => { if (think) { think.finish(); think = null; } };
+  /**
+   * 【插话打断时别折叠思考块】
+   *
+   * 实测：主人正看着它边想边跑，一插话，整段思考"唰"地收起来，
+   * 主人说"屏幕折叠了"。
+   * 原因就是收尾那句无条件 closeThink() —— finish() 会把 details 的 open 关掉。
+   * 所以先记一笔"这一轮是不是被插话掐断的"，是的话就别收，
+   * 让 think 留在屏幕上，下一轮接着往里写。
+   */
+  let interruptedByInterject = false;
 
   /**
    * 要不要把这一轮画到屏幕上。
@@ -5380,7 +5419,15 @@ async function runTurn({ resume = false, text = '' } = {}) {
     turnsInFlight.delete(turnSession);
 
     // 收尾一定要复位，不然按钮永远卡在「停止」、输入框像死了一样
-    closeThink();
+    // 但「被插话掐断」的那一轮例外：思考块保持展开，下一轮接着往里写
+    interruptedByInterject = Boolean(pendingResume);
+    if (interruptedByInterject && think) {
+      // 留着这块，下一轮接着写。push 追加到同一个 body，主人在屏幕上看到的是连续的
+      savedOpenThink = think;
+      think = null;
+    } else if (!interruptedByInterject) {
+      closeThink();
+    }
     hideSending();
     flushSpeech();
     if (bubble) bubble.classList.remove('streaming');

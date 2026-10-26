@@ -265,9 +265,19 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
   }
 }
 
-/** Non-streaming helper used by the context summarizer and smoke checks. */
-export async function chat({ messages, tools, signal, sessionId = '' }) {
-  const ep = activeEndpoint();
+/**
+ * Non-streaming helper used by the context summarizer and smoke checks.
+ *
+ * 【为什么要有 model 参数】
+ * 以前这里写死 activeEndpoint()，于是「压缩摘要」永远用全局默认端点去算 ——
+ * 会话里切到别的模型（比如切到窗口 100 万的、或者切到便宜的），摘要还是拿
+ * 默认那个模型的 key/地址/名字去请求，等于白切。压完的上下文还可能超对方窗口。
+ * 现在跟 streamChat 一致：显式给的 model → 会话里切过的 → 全局默认。
+ * 摘要调用（compress.mjs）就是靠这个把当前会话的模型带进来的。
+ */
+export async function chat({ messages, tools, signal, sessionId = '', model }) {
+  const _ovEp = endpointForForSession(sessionId) ?? activeEndpoint();
+  const ep = String(model || '').trim() ? { ..._ovEp, model: String(model).trim() } : _ovEp;
   const body = { model: ep.model, messages: wireMessages(messages) };
   if (tools?.length) body.tools = tools;
 

@@ -143,12 +143,13 @@ function checkFile(label, path) {
     // 去掉注释和字符串里的伪标签：只数「真正在标签位置」的
     const open = (html.match(new RegExp('<' + tag + '\\b[^>]*>', 'gi')) || []).length;
     const close = (html.match(new RegExp('</' + tag + '\\s*>', 'gi')) || []).length;
-    if (tag === 'dialog') {
-      // <dialog> 在 JS 注释里出现是常见的（`<dialog>.close()`），要剔除
+    if (tag === 'dialog' || tag === 'body') {
+      // 这两个标签名经常被写进注释当说明（`<dialog>.close()`、`独立 <dialog> 在 <body> 下`），
+      // 直接数字面量会误报。统一走 countRealTags：先挖 script/style/注释再数。
       const realOpen = countRealTags(html, tag, 'open');
-      const realClose = (html.match(/<\/dialog\s*>/gi) || []).length;
+      const realClose = countRealTags(html, tag, 'close');
       if (realOpen !== realClose) {
-        console.log('    ✘ <' + tag + '> 真正开 ' + realOpen + ' 闭 ' + realClose + '（JS 注释里的不算）');
+        console.log('    ✘ <' + tag + '> 真正开 ' + realOpen + ' 闭 ' + realClose + '（注释里的不算）');
         fatal++;
       } else console.log('    ✔ <' + tag + '> ' + realOpen + ' 对');
       continue;
@@ -286,9 +287,22 @@ function checkFile(label, path) {
   console.log('  文件 ' + html.length + ' 字符 / ' + allLines.length + ' 行');
 }
 
+/**
+ * 数「真正在标签位置」的开标签。
+ *
+ * 以前只挖掉 <script>，漏了 <style> —— 而我们在 CSS 注释、JS 注释里
+ * 写 `<body>` / `<dialog>` 解释事情是常事（2026-10-27 加小鲸人设大面板时，
+ * 注释里写了「独立 <dialog> 在 <body> 下」，结果 body 被数成「开 2 闭 1」，
+ * 误报成致命问题）。现在 script 和 style 一起挖掉。
+ */
 function countRealTags(html, tag, kind) {
-  // 粗略剔除 JS 注释：先挖掉 <script> 内容，再数
-  const stripped = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '<script></script>');
+  // 先把 <script> / <style> 整段挖掉（里面 JS、CSS 注释里常有标签），再挖 HTML 注释。
+  // 顺序很关键：先挖 script 再挖 /* */，反过来会把 JS 的正则和字符串破坏掉。
+  const stripped = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '<script></script>')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '<style></style>')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  if (kind === 'close') return (stripped.match(new RegExp('</' + tag + '\\s*>', 'gi')) || []).length;
   return (stripped.match(new RegExp('<' + tag + '\\b[^>]*>', 'gi')) || []).length;
 }
 

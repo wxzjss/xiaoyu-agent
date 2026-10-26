@@ -1369,6 +1369,41 @@
     .openingBar { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
     .openingBar .openingHint { margin: 0; flex: 1; }
 
+    /* ---- 小鲸人设大面板 --------------------------------------------------
+       2026-10-27 主人原话：「人设栏太小了，我要那种点击一下直接弹出一个新界面，
+       一个大面板上面写着所有人设，然后下面有保存与关闭，还有恢复默认」。
+       所以把它从功能列表里那一条内联小框，搬成一个独立的 <dialog>。 */
+    #whalePersonaDlg { width: min(920px, 94vw); }
+    #whalePersonaDlg .wpBody {
+      padding: 14px 16px 16px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
+      overscroll-behavior: contain;
+    }
+    #whalePersonaDlg .wpTop {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      margin-bottom: 10px; font-size: 12px; color: var(--dim);
+    }
+    #whalePersonaDlg .wpTop .wpGrow { flex: 1 1 auto; min-width: 120px; }
+    /* 正文框：桌面给足高度，手机按视口缩，内部滚动，绝不把底部按钮顶出去 */
+    #whalePersonaDlg #wpArea {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      height: min(46vh, 420px); min-height: 180px; max-height: 60vh; overflow: auto;
+      background: var(--input-bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 12px; font-size: 13px; line-height: 1.8;
+      font-family: inherit; contain: content;
+    }
+    #whalePersonaDlg #wpArea:focus { outline: none; border-color: var(--accent); }
+    #whalePersonaDlg .wpModelRow {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px;
+      font-size: 12px; color: var(--dim);
+    }
+    #whalePersonaDlg #wpModel {
+      flex: 1 1 260px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--text); font-size: 13px;
+    }
+    #whalePersonaDlg .wpStat { margin-top: 8px; font-size: 11.5px; color: var(--dim); line-height: 1.7; }
+    #whalePersonaDlg .wpStat b { color: var(--accent); font-weight: 600; }
+
     /* ---- 手机连接 ---------------------------------------------------------- */
     #settingsDlg #mobToggle {
       flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
@@ -2052,6 +2087,39 @@
   </dialog>
 
   <!-- 任务清单：跟小鱼手里 plan 工具是同一份数据（/api/plan），这边勾了她那边就认得 -->
+  <!-- 小鲸的人设与模型：点功能列表里那一条就弹出这个大面板。
+       上一版是内联在功能列表里的小框（openingBox），主人嫌小，
+       要「点一下弹出一个新界面，大面板写着所有人设，底下保存/关闭/恢复默认」。 -->
+  <dialog id="whalePersonaDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>小鲸的人设</b><span class="meta">改一次，到处都用这一个她</span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="wpBody">
+        <div class="wpTop">
+          <span>她是什么样的人 —— 换多少会话都是同一个小鲸，所以这里改一次就全局生效。</span>
+          <span class="wpGrow"></span>
+          <span id="wpHint"></span>
+        </div>
+        <textarea id="wpArea" spellcheck="false"></textarea>
+        <div class="wpStat" id="wpStat"></div>
+        <div class="wpModelRow">
+          <span>她干活用哪个模型</span>
+          <select id="wpModel"></select>
+          <span id="wpModelHint"></span>
+        </div>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint" id="wpTip">写完全套替换「她是谁、跟小鱼怎么相处」那一部分；底线、安全词说明、她自己的本子、当前状态都不会被冲掉。</span>
+        <button type="button" class="ghost" id="wpReset">恢复默认</button>
+        <button type="button" class="ghost" id="wpResetAll">人设和模型都恢复默认</button>
+        <button type="button" class="primary" id="wpSave">保存</button>
+        <button type="button" class="ghost" id="wpClose">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="todoDlg" class="todoDlg">
     <div class="dlgHead">
       <b>任务清单</b><span class="meta" id="todoHint">一份 txt，我写，你想看就瞄一眼</span>
@@ -7052,184 +7120,197 @@ let whaleProfileData = null;
 let whaleProfileSeq = 0;
 
 function toggleWhaleProfileEditor(row) {
-  if (whaleProfileOpen) closeWhaleProfileEditor();
-  else openWhaleProfileEditor(row);
+  // 2026-10-27：不再内联展开，改成弹出大面板（主人要「点一下直接弹出一个新界面」）
+  openWhalePersonaDlg();
 }
 
 function closeWhaleProfileEditor() {
   whaleProfileSeq += 1;
   whaleProfileOpen = false;
-  const box = document.getElementById('whaleProfileBox');
-  if (box) box.remove();
+  const dlg = document.getElementById('whalePersonaDlg');
+  if (dlg && dlg.open) {
+    try { dlg.close(); } catch {}
+  }
   const btn = featList && featList.querySelector('.featRow[data-id="subagent"] .featEditBtn');
   if (btn) btn.textContent = '改人设 · 选模型';
 }
 
-async function openWhaleProfileEditor(row) {
-  closeWhaleProfileEditor();
+/**
+ * 小鲸人设大面板。
+ *
+ * 2026-10-27 主人原话：「子智能体功能的人设栏太小了，我要那种点击一下直接弹出一个新界面，
+ * 一个大面板上面写着所有人设，然后下面有保存与关闭，还有恢复默认」。
+ *
+ * 之前是内联在功能列表里的一小块（openingBox + 96px 高的 textarea），
+ * 人设 1118~5000 字，那个高度等于只能看见开头几行。现在搬成独立 <dialog>，
+ * 正文框给到 46vh（桌面约 400px 高），底部固定「恢复默认 / 都恢复默认 / 保存 / 关闭」。
+ *
+ * 为什么不用 row.after(box)：功能列表那边每次 loadFeatures() 都会重画，
+ * 内联的 DOM 会跟着被抹掉；独立 dialog 在 <body> 下，重画列表不会动它。
+ */
+async function openWhalePersonaDlg() {
+  whaleProfileSeq += 1;
   const seq = whaleProfileSeq;
   whaleProfileOpen = true;
-  const box = el('div', 'openingBox');
-  box.id = 'whaleProfileBox';
-  box.append(el('div', 'openingHint', '这里改的是「小鲸」这个人 —— 换多少会话都是同一个她，所以改一次、到处都用这个。'));
-  row.after(box);
-  const btn = row.querySelector('.featEditBtn');
-  if (btn) btn.textContent = '收起';
 
-  // 人设和模型两边都要读：人设走 /api/whale/profile，模型列表走 /api/models
+  const dlg = document.getElementById('whalePersonaDlg');
+  const area = document.getElementById('wpArea');
+  const stat = document.getElementById('wpStat');
+  const hint = document.getElementById('wpHint');
+  const tip = document.getElementById('wpTip');
+  const modelSel = document.getElementById('wpModel');
+  const modelHint = document.getElementById('wpModelHint');
+  const btnSave = document.getElementById('wpSave');
+  const btnReset = document.getElementById('wpReset');
+  const btnResetAll = document.getElementById('wpResetAll');
+  const btnClose = document.getElementById('wpClose');
+  if (!dlg || !area) return;
+
+  // 打开前先清空，别让上一轮的旧内容闪一下
+  area.value = '';
+  area.placeholder = '正在读…';
+  stat.textContent = '';
+  hint.textContent = '';
+  tip.textContent = '';
+  modelSel.innerHTML = '';
+  modelHint.textContent = '';
+  btnSave.disabled = true;
+
+  try { closeOtherDialogs('whalePersonaDlg'); } catch {}
+  if (!dlg.open) {
+    try { dlg.showModal(); } catch { dlg.setAttribute('open', ''); }
+  }
+
+  // 人设走 /api/whale/profile，模型列表走 /api/models
   const [prof, mods] = await Promise.all([
     fetch('/api/whale/profile').then((x) => x.json()).catch(() => null),
     fetch('/api/models').then((x) => x.json()).catch(() => null),
   ]);
   if (seq !== whaleProfileSeq) return;
   if (!prof || prof.error) {
-    box.append(el('div', 'openingHint', '读不出来：' + ((prof && prof.error) || '网络问题')));
+    area.placeholder = '读不出来：' + ((prof && prof.error) || '网络问题');
+    tip.textContent = '人设没读出来，先关掉重开一次试试。';
     return;
   }
   whaleProfileData = prof;
 
-  // --- 人设那一块 ---
-  const wrap = el('label', 'openingField');
-  const head = el('div', 'openingFieldHead');
-  head.append(el('span', null, '她是什么样的人（人设）'));
-  const resetBtn = el('button', 'openingMini', '恢复默认');
-  resetBtn.type = 'button';
-  head.append(resetBtn);
-  // 「改过」小标签：框里的内容跟默认人设不一样才亮（以前只看后端 personaCustom，
-  // 结果主人一字没动、只是打开看看，也会挂着「改过」，误导人）
-  const tagChanged = el('span', 'openingTag', '改过');
-  tagChanged.style.display = (prof.personaCustom && String(prof.persona || '').trim() !== String(prof.defaultPersona || '').trim()) ? '' : 'none';
-  head.append(tagChanged);
-  wrap.append(head);
-
-  const ta = el('textarea', 'openingArea');
-  /**
-   * 【默认人设要直接填进去，不是当占位文本】
-   *
-   * 2026-10-26 主人原话：「把小鲸的默认人设填进功能页，子智能体的人设栏里」。
-   * 以前这里只把默认人设塞进 placeholder —— 灰字，看着像填好了，其实框里是空的，
-   * 主人一打字就把整份默认覆盖掉，而且「存上」存进去的是他自己瞎写的半句话。
-   *
-   * 现在：真把它填进输入框，光标放在最前面，改就改、不改就原样存。
-   * 没写过（prof.personaCustom 为假）时填的就是默认人设，并标一个「未改动」小标签，
-   * 让主人一眼看出「这框现在是原样，我一动就是改过了」。
-   */
   const defaultText = String(prof.defaultPersona || '');
   const ownText = String(prof.persona || '');
-  ta.value = ownText || defaultText;
-  ta.rows = 9;
-  ta.spellcheck = false;
-  ta.placeholder = defaultText ? '（她的默认人设，点「恢复默认」随时能填回来）' : '（还没写人设）';
-  wrap.append(ta);
-  const tip0 = el('div', 'openingHint', '');
-  wrap.append(tip0);
-  if (!prof.personaCustom && ta.value) {
-    tip0.textContent = '现在填的是她的默认人设（' + ta.value.length + ' 字），改了就照你写的来';
-  }
-  wrap.append(el('div', 'openingHint',
-    '写完全套替换「她是谁、跟小鱼怎么相处」那一部分。底线、安全词说明、她自己的本子、当前状态、' +
-    '「记下一行」这些是底座，一个字都不会被冲掉。'));
-  ta.addEventListener('input', () => {
-    const same = String(ta.value || '').trim() === String(prof.defaultPersona || '').trim();
-    tagChanged.style.display = same ? 'none' : '';
-    if (same) tip0.textContent = '跟默认人设一致，没改动';
-  });
-  resetBtn.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    // 2026-10-26 主人要求：恢复默认 = 把默认人设填回来，不是清空
-    // 填完不标 dirty：内容跟默认一字不差，存下去等于没改，后端就不会记成「改过」
-    ta.value = prof.defaultPersona || '';
-    ta.dataset.dirty = '0';
-    tagChanged.style.display = 'none';
-    tip0.textContent = '已填回默认人设（' + ta.value.length + ' 字），记得点「存上」';
-  });
+  area.value = ownText || defaultText;
+  area.placeholder = defaultText ? '（她的默认人设，点「恢复默认」随时能填回来）' : '（还没写人设）';
+  btnSave.disabled = false;
 
-  // --- 模型那一块 ---
-  const mWrap = el('label', 'openingField');
-  const mHead = el('div', 'openingFieldHead');
-  mHead.append(el('span', null, '她干活用哪个模型'));
-  if (prof.modelId) mHead.append(el('span', 'openingTag', '单独指定'));
-  mWrap.append(mHead);
+  /** 「改过没」按内容算，不看后端那个 personaCustom 标记 —— 打开看看不该算改过 */
+  const refreshStat = () => {
+    const cur = String(area.value || '').trim();
+    const same = cur === defaultText.trim();
+    const changed = prof.personaCustom && !same;
+    hint.textContent = changed ? '改过' : (same ? '跟默认一致' : '正在改');
+    hint.style.color = changed ? 'var(--accent)' : 'var(--dim)';
+    const lines = (cur.match(/\n/g) || []).length + (cur ? 1 : 0);
+    stat.innerHTML = '当前 <b>' + cur.length + '</b> 字 / 约 ' + lines + ' 行 · 默认人设 <b>' +
+      defaultText.length + '</b> 字' + (changed ? ' · <b>存下去就按你写的来</b>' : '');
+  };
+  refreshStat();
 
-  const sel = document.createElement('select');
-  sel.className = 'whaleModelSel';
-  sel.style.cssText = 'width:100%;padding:7px 9px;border-radius:8px;border:1px solid var(--border);' +
-    'background:var(--panel);color:var(--text);font-size:13px;';
+  // --- 模型 ---
+  const list = (mods && Array.isArray(mods.models)) ? mods.models : [];
   const optAuto = document.createElement('option');
   optAuto.value = '';
   optAuto.textContent = '跟主人当前用的那个（默认）';
-  sel.append(optAuto);
-  const list = (mods && Array.isArray(mods.models)) ? mods.models : [];
+  modelSel.append(optAuto);
   for (const m of list) {
     const o = document.createElement('option');
     o.value = m.id;
     const nm = m.name || m.model || m.id;
     const mm = m.model && m.model !== nm ? ' · ' + m.model : '';
     o.textContent = nm + mm + (m.id === (mods && mods.activeId) ? '（主人正在用）' : '');
-    sel.append(o);
+    modelSel.append(o);
   }
-  sel.value = prof.modelId || '';
+  modelSel.value = prof.modelId || '';
   // 选的那个模型要是已经被删了，得说清楚，别静悄悄回落到默认
   if (prof.modelId && !list.some((m) => m.id === prof.modelId)) {
     const o = document.createElement('option');
     o.value = prof.modelId;
     o.textContent = '（这个模型已经被删了：' + prof.modelId + '）';
-    sel.insertBefore(o, sel.children[1] || null);
-    sel.value = prof.modelId;
+    modelSel.insertBefore(o, modelSel.children[1] || null);
+    modelSel.value = prof.modelId;
   }
-  mWrap.append(sel);
-  mWrap.append(el('div', 'openingHint', '她每被叫起来一次就按这个模型跑。选「跟主人当前用的那个」就是不用单独管她。'));
+  modelHint.textContent = prof.modelId ? '单独指定' : '不单独指定';
 
-  // --- 底下的按钮 ---
-  const bar = el('div', 'openingBar');
-  const save = el('button', 'primary', '存上');
-  save.type = 'button';
-  const resetAll = el('button', 'ghost', '人设和模型都恢复默认');
-  resetAll.type = 'button';
-  const tip = el('span', 'openingHint', '');
-  bar.append(save, resetAll, tip);
+  const wire = () => {
+    area.oninput = () => { refreshStat(); tip.textContent = ''; };
+    modelSel.onchange = () => { modelHint.textContent = modelSel.value ? '单独指定' : '不单独指定'; tip.textContent = ''; };
 
-  save.addEventListener('click', async (ev) => {
-    ev.preventDefault();
-    save.disabled = true;
-    tip.textContent = '存…';
-    const r = await fetch('/api/whale/profile/save', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ persona: ta.value, modelId: sel.value }),
-    }).then((x) => x.json()).catch(() => null);
-    save.disabled = false;
-    if (!r || r.error) {
-      tip.textContent = '没存上：' + ((r && r.error) || '网络问题');
-      return;
-    }
-    whaleProfileData = r;
-    tip.textContent = '存好了 · 下次叫她干活就按这个';
-    // 存完重画一下列表，让「改过 / 单独指定」这两个小标签跟着变
-    const keepOpen = true;
-    await loadFeatures();
-    if (keepOpen) {
-      const row2 = featList && featList.querySelector('.featRow[data-id="subagent"]');
-      if (row2) openWhaleProfileEditor(row2);
-    }
-  });
+    btnReset.onclick = (ev) => {
+      ev.preventDefault();
+      // 恢复默认 = 把默认人设填回来（不是清空）
+      area.value = defaultText;
+      refreshStat();
+      tip.textContent = '已填回默认人设（' + defaultText.length + ' 字），点「保存」才生效。';
+    };
 
-  resetAll.addEventListener('click', async (ev) => {
-    ev.preventDefault();
-    const r = await fetch('/api/whale/profile/reset', { method: 'POST' })
-      .then((x) => x.json()).catch(() => null);
-    if (!r || r.error) {
-      tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题');
-      return;
-    }
-    ta.value = (r && r.defaultPersona) || prof.defaultPersona || '';
-    sel.value = '';
-    tip.textContent = '人设和模型都回默认了（人设栏已填回默认人设，点「存上」才生效）';
-  });
+    btnResetAll.onclick = async (ev) => {
+      ev.preventDefault();
+      btnResetAll.disabled = true;
+      tip.textContent = '恢复中…';
+      const r = await fetch('/api/whale/profile/reset', { method: 'POST' })
+        .then((x) => x.json()).catch(() => null);
+      btnResetAll.disabled = false;
+      if (!r || r.error) {
+        tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题');
+        return;
+      }
+      const d = String((r && r.defaultPersona) || defaultText);
+      area.value = d;
+      modelSel.value = '';
+      modelHint.textContent = '不单独指定';
+      refreshStat();
+      tip.textContent = '人设和模型都回默认了（栏里已填回默认人设，点「保存」才生效）。';
+    };
 
-  box.append(wrap, mWrap, bar);
-  if (seq !== whaleProfileSeq) return;
-  ta.focus({ preventScroll: true });
+    btnSave.onclick = async (ev) => {
+      ev.preventDefault();
+      btnSave.disabled = true;
+      tip.textContent = '存…';
+      const r = await fetch('/api/whale/profile/save', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ persona: area.value, modelId: modelSel.value }),
+      }).then((x) => x.json()).catch(() => null);
+      btnSave.disabled = false;
+      if (!r || r.error) {
+        tip.textContent = '没存上：' + ((r && r.error) || '网络问题');
+        return;
+      }
+      whaleProfileData = r;
+      // 用服务端回来的为准，别让界面显示跟实际存的不一样
+      if (typeof r.persona === 'string') area.value = r.persona;
+      if (typeof r.defaultPersona === 'string') prof.defaultPersona = r.defaultPersona;
+      prof.personaCustom = Boolean(r.personaCustom);
+      refreshStat();
+      tip.textContent = '存好了 · 下次叫她干活就按这个';
+      // 列表那边的「改过 / 单独指定」小标签要跟着变，重画但不碰这个 dialog
+      try { await loadFeatures(); } catch {}
+    };
+
+    btnClose.onclick = (ev) => {
+      ev.preventDefault();
+      closeWhaleProfileEditor();
+    };
+  };
+  wire();
+
+  // 点面板外面（backdrop）就关掉 —— <dialog> 的默认行为是点外面不关，这里补上
+  dlg.onclick = (ev) => { if (ev.target === dlg) closeWhaleProfileEditor(); };
+  // 按 Esc 关掉时，onclose 兜一下状态
+  dlg.onclose = () => {
+    whaleProfileOpen = false;
+    const btn = featList && featList.querySelector('.featRow[data-id="subagent"] .featEditBtn');
+    if (btn) btn.textContent = '改人设 · 选模型';
+  };
+
+  try { area.focus({ preventScroll: true }); area.setSelectionRange(0, 0); area.scrollTop = 0; } catch {}
 }
 
 // ---- 开场白编辑器 ----

@@ -32,6 +32,15 @@ const ROOT = config.root;
 /** 一次自检最多让模型来回几轮 */
 const MAX_ROUNDS = 5;
 
+// 探针总次数上限。2026-10-26 实测：模型每轮会一次甩出 4~5 个探针，5 轮 = 10 次，
+// 轮数还没用完但「整轮探针」已经把时间烧光，最后连一句结论都没给，
+// 报出来的是「问了太多轮还没给结论」——轮数其实是够的，是探针太碎。
+// 所以这里按「探针总次数」掐，而不是按轮数掐。留一格给收尾轮。
+// 2026-10-26 实测第二轮：掐到 4 还是不够 —— 模型第一次调用就甩 4 个探针，
+// 一轮就把预算烧光，收尾轮仓促，3 次里有 1 次给不出 JSON（items 空）。放到 6
+// 允许「甩一次 4 个 + 再补 2 个」，同时仍然只有原来 10 次的一半多点。
+const MAX_PROBES = 6;
+
 /** 整个自检最多花多久（毫秒） */
 const TOTAL_TIMEOUT = 90_000;
 
@@ -297,9 +306,16 @@ const SYSTEM = `你是这台机器上「小鱼Agent」项目的「自检员」�
    - 查过没问题的就别写进结果，别凑数；
 4. 你只负责「查 + 判断 + 给建议」，**不要改文件、不要装东西、不要发布**。要修就写进建议里，等主人来了再说。
 
-**效率是硬要求**：整个自检最多 5 轮，一般 2~3 个探针就够。
-现场快照里没毛病的地方就别去翻文件了——确认「关键文件在不在、依赖装没装、key 配没配」就收手，
-立刻给 JSON 结论。查得太全反而会超轮数，那这次自检直接算失败，等于白查。
+**效率是硬要求，这条最要紧**：
+- 整个自检**最多只能调 ${MAX_PROBES} 次探针**（超出的调用会被直接丢掉，你什么都拿不到）；
+- **一次只调一个探针**。一次甩四五个 = 把这轮预算一次烧光，然后你就再也查不了了；
+- 预算用完会立刻逼你给结论。到那一步你还没查完也得给，所以先查最要紧的；
+- **快照里已经写清楚的事实，不要再探针去验**。特别是：
+  · 快照有「接口可达性：通（…ms）」这行，说明地址已经真探过了，**不要再 probe_port**；
+  · 快照有「当前模型 / key：有」这行，**不要再读 .env**；
+  · 快照已经列了 src/ 和顶层文件清单，**不要再 probe_files 去看这些**；
+- 真正值得花探针的是快照里**没结论**的地方：比如某个文件明明该在却不在、某个目录该有却没有、进程数目对不上；
+- 快照里看下来一切正常，那就**一次探针都不要调**，直接给结论。这是最理想的情况。
 
 最后必须只回下面这个 JSON（不要 Markdown 代码块，不要多余的话）：
 
@@ -319,6 +335,119 @@ findings 只写你真查过的。全都正常就给一条 level=ok 的。`;
  *   6. 干脆没给 JSON，只给一段话
  * 这里逐级往下退，退到底还不行就返回 null，让调用方当「这次没结论」处理。
  */
+/**
+ * 模型没按 findings 格式回话时，尽量从它自己那套结构里把「查到了什么」捞出来。
+ *
+ * 见过的形状（都是同一个模型自称更清楚时写的）：
+ *   { status, machine, verified: [...], issues_found: [...], not_checked: [...], next_steps: [...] }
+ *   { ok, checks: [{name, result, note}], problems: [...] }
+ *   { summary, items: [...] }
+ * 捞不出来就返回 null，让上层照旧追问。
+ *
+ * @param {object} o 解析出来的对象
+ * @returns {Array|null} items 或 null
+ */
+/**
+ * 把一条「模型认为的发现」归一成 {id,name,level,detail,fix}。
+ *
+ * 2026-10-26 实测的大坑：提示词里明明写着 name/level/detail/fix，
+ * 模型**真的**回了 findings 数组，但每条的字段是
+ *   { severity: "high", area: "rules", fact: "…", evidence: "…", fix: "…" }
+ * 原来代码 `.filter(f => f && f.name)` 直接把 7 条全过滤掉了，
+ * 于是界面上「有 summary、下面一条没有」，看起来像自检没跑成。
+ * 所以这里按**语义**认字段，不认名字。
+ *
+ * @param {any} f
+ * @param {number} i
+ * @returns {object|null}
+ */
+function normFinding(f, i) {
+  if (!f) return null;
+  if (typeof f === 'string') {
+    const t = f.trim();
+    return t ? { id: 'ai-' + i, name: '发现', level: 'warn', detail: t.slice(0, 600), fix: '' } : null;
+  }
+  if (typeof f !== 'object') return null;
+
+  const pick = (...keys) => {
+    for (const k of keys) {
+      const v = f[k];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      if (typeof v === 'number') return String(v);
+    }
+    return '';
+  };
+
+  const title = pick('name', 'title', 'area', 'topic', 'subject', 'item', 'check', 'kind');
+  const body = pick('detail', 'description', 'desc', 'fact', 'note', 'message', 'msg', 'text', 'result', 'finding', 'evidence', 'problem', 'issue');
+  const fix = pick('fix', 'suggestion', 'advice', 'remedy', 'recommend', 'action');
+  const lvRaw = pick('level', 'severity', 'status', 'result', 'grade', 'priority');
+
+  // severity: high/medium/low 也要能认；中文也认
+  let level = 'warn';
+  if (/^(ok|pass|good|fine|正常|通过)/i.test(lvRaw)) level = 'ok';
+  else if (/fail|fatal|critical|blocker|严重|致命|错误|失败|不可用/i.test(lvRaw)) level = 'fail';
+  else if (/^(warn|warning|medium|low|minor|注意|提醒|警告)/i.test(lvRaw)) level = 'warn';
+  // high 当成 fail 太重，但也不能当 ok —— 留在 warn
+  if (!title && !body) return null;
+
+  // detail 里把 evidence 也带上，别丢信息
+  const evidence = pick('evidence', 'proof', 'why');
+  const detail = [body, evidence && evidence !== body ? '依据：' + evidence : ''].filter(Boolean).join('\n').slice(0, 600);
+
+  return {
+    id: 'ai-' + i,
+    name: (title || body || '发现').slice(0, 60),
+    level,
+    detail: detail || (title ? title : ''),
+    fix: fix.slice(0, 400),
+  };
+}
+
+function adaptLooseFindings(o) {
+  const out = [];
+  const push = (level, name, detail, fix = '') => {
+    const n = String(name ?? '').trim();
+    if (!n) return;
+    out.push({
+      id: 'ai-' + out.length,
+      name: n.slice(0, 60),
+      level: ['fail', 'warn', 'ok'].includes(level) ? level : 'warn',
+      detail: String(detail ?? '').slice(0, 600),
+      fix: String(fix ?? '').slice(0, 400),
+    });
+  };
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  const txt = (v) => (typeof v === 'string' ? v : v && typeof v === 'object' ? JSON.stringify(v).slice(0, 300) : '');
+
+  // 「查过没问题的」
+  for (const v of arr(o.verified).concat(arr(o.checks), arr(o.items))) {
+    if (typeof v === 'string') push('ok', '已确认', v);
+    else if (v && typeof v === 'object') {
+      const lv = /fail|error|错|失败/i.test(txt(v.level) + txt(v.result)) ? 'warn' : 'ok';
+      push(lv, v.name ?? v.check ?? '已确认', txt(v.detail ?? v.note ?? v.result));
+    }
+  }
+
+  // 「发现的问题」—— 一律 warn 起步；明确说 fail 才算 fail
+  // 注意：**不要**把 o.findings 放进来 —— 那是标准格式，主循环会自己处理，
+  // 放进来会让「有 findings 但字段残缺」的回复被这套兜底逻辑抢走。
+  for (const src of [arr(o.issues_found), arr(o.problems), arr(o.issues)]) {
+    for (const v of src) {
+      if (typeof v === 'string') push('warn', '发现问题', v);
+      else if (v && typeof v === 'object') {
+        const lv = /fail|fatal|严重|致命/i.test(txt(v.level) + txt(v.severity)) ? 'fail' : 'warn';
+        push(lv, v.name ?? v.title ?? '发现问题', txt(v.detail ?? v.desc ?? v.description), txt(v.fix ?? v.suggestion));
+      }
+    }
+  }
+
+  // 「还没查的」也值得记一笔，但只是提醒
+  for (const v of arr(o.not_checked)) push('warn', '未验证', typeof v === 'string' ? v : txt(v));
+
+  return out.length ? out : null;
+}
+
 function parseJsonReply(text) {
   const raw = String(text ?? '').trim();
   if (!raw) return null;
@@ -386,8 +515,9 @@ export async function runAiSelfCheck(opts = {}) {
       if (opts.signal?.aborted) throw new Error('被中止了');
       if (Date.now() > deadline) throw new Error('自检超时');
 
-      // 最后一轮不再给工具：逼它把已有的发现收成结论，别又跑去查
-      const isLast = round === MAX_ROUNDS - 1;
+      // 最后一轮不再给工具：逼它把已有的发现收成结论，别又跑去查。
+      // 探针预算用完也当最后一轮处理 —— 查够了，给结论。
+      const isLast = round === MAX_ROUNDS - 1 || transcript.length >= MAX_PROBES;
       if (isLast) {
         messages.push({
           role: 'user',
@@ -406,6 +536,8 @@ export async function runAiSelfCheck(opts = {}) {
         }));
         messages.push({ role: 'assistant', content: msg.content ?? null, tool_calls: normalized });
         for (const tc of normalized) {
+          // 预算用完就别再查了，剩下的工具调用直接丢掉（模型一次甩 5 个是常态）
+          if (transcript.length >= MAX_PROBES) break;
           const out = await runProbe(tc.function.name, tc.function.arguments);
           transcript.push({ probe: tc.function.name, args: tc.function.arguments, out: String(out).slice(0, 400) });
           messages.push({ role: 'tool', tool_call_id: tc.id, content: String(out) });
@@ -414,17 +546,28 @@ export async function runAiSelfCheck(opts = {}) {
       }
 
       const parsed = parseJsonReply(msg.content);
+
+      // 2026-10-26 实测：模型有一半的机会不回 findings，而是自己发明一套结构，
+      // 比如 {status, machine, verified[], issues_found[], not_checked[], next_steps[]}。
+      // 原来的写法是「没 findings 就当格式错，追问一次」，代价是白烧一整轮，
+      // 而且预算紧的时候追问那轮根本轮不到，于是 items 直接是空的 —— 界面上
+      // 明明有一句像样的 summary，底下却一条都没有。
+      // 现在先别追问，看看能不能从它自己那套结构里把材料捞出来。
+      const adapted = parsed && !Array.isArray(parsed.findings) ? adaptLooseFindings(parsed) : null;
+      if (adapted && adapted.length) {
+        return {
+          items: adapted,
+          summary: String(parsed.summary ?? parsed.verdict ?? parsed.conclusion ?? '').slice(0, 300),
+          transcript,
+        };
+      }
+
       if (parsed && Array.isArray(parsed.findings)) {
-        const items = parsed.findings
-          .filter((f) => f && f.name)
-          .map((f, i) => ({
-            id: `ai-${i}`,
-            name: String(f.name).slice(0, 60),
-            level: ['fail', 'warn', 'ok'].includes(f.level) ? f.level : 'warn',
-            detail: String(f.detail ?? '').slice(0, 600),
-            fix: String(f.fix ?? '').slice(0, 400),
-          }));
-        return { items, summary: String(parsed.summary ?? '').slice(0, 300), ok: parsed.ok !== false, transcript };
+        // 别指望字段名就叫 name/level/detail —— 见 normFinding 里的说明
+        const items = parsed.findings.map((f, i) => normFinding(f, i)).filter(Boolean);
+        if (items.length) {
+          return { items, summary: String(parsed.summary ?? '').slice(0, 300), ok: parsed.ok !== false, transcript };
+        }
       }
 
       // 没按格式来：先试一次「再问一句要 JSON」——比直接把一段话当结论靠谱得多，

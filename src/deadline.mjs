@@ -43,6 +43,12 @@ function numOr(raw, fallback) {
  * 所以：低于下限的一律退回默认值，并在 stderr 留一行警告 —— 宁可安静地
  * 用默认值，也不要让一个手滑的数字毁掉整场对话。
  */
+/**
+ * 测试放行开关：只在跑验证脚本时打开（MINI_AGENT_DEADLINE_TEST=1）。
+ * 打开后不套下限，可以把窗口压到秒级；生产上这个变量不存在，行为不变。
+ */
+const DEADLINE_TEST_MODE = String(process.env.MINI_AGENT_DEADLINE_TEST ?? '').trim() === '1';
+
 function msOr(raw, fallback, floorMs, name) {
   const n = Number(String(raw ?? '').trim());
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -68,13 +74,13 @@ function msOr(raw, fallback, floorMs, name) {
  * 所以宁可 10 分钟才认输（那时基本可以确定是真卡死了），
  * 也不要为了「反应快」在正常人身上误报。
  */
-export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 10 * 60 * 1000, 3 * 60 * 1000, 'LLM_IDLE_TIMEOUT_MS');
+export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 10 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 3 * 60 * 1000, 'LLM_IDLE_TIMEOUT_MS');
 
 /** 单个工具从开跑到返回的忍耐上限（默认 30 分钟，最少给 3 分钟；跑整套回归、装依赖都够） */
-export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, 3 * 60 * 1000, 'TOOL_MAX_TIMEOUT_MS');
+export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 3 * 60 * 1000, 'TOOL_MAX_TIMEOUT_MS');
 
 /** 整轮允许的最长静默（默认 60 分钟，最少给 10 分钟）—— 哑转闸管「一直在转」，这个管「完全不动」 */
-export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 60 * 60 * 1000, 10 * 60 * 1000, 'TURN_IDLE_MAX_MS');
+export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 60 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 10 * 60 * 1000, 'TURN_IDLE_MAX_MS');
 
 function fmtMins(ms) {
   const m = ms / 60000;

@@ -19,6 +19,9 @@ import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs
 import { getOverride, setOverride } from './session-overrides.mjs';
 // 任务清单（界面面板用）：跟小鱼自己的 plan 工具是同一份数据，别另存一套
 import { planPublicView, planUiAction, readPlanTxt } from './plan.mjs';
+// localVersion：更新器眼里「本地该是哪一版」。跟正在跑的版本可能不是一个数 ——
+// 见下面 /api/health 里 running/target 的注释。
+import { localVersion } from './updater.mjs';
 // 前情：一进来就记得的那段对话。只贴给模型看，不进会话记录，界面也不会画出来。
 import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
 // 会话记忆文件：一个会话一份自己的本子，每轮拼进系统提示（见 persona.mjs 的 memoryBlock）。
@@ -999,6 +1002,75 @@ async function startPeerTurn(sessionId) {
 }
 
 /**
+ * 接着答主人插进来的那一句。
+ *
+ * 【为什么要有这个函数（2026-10-26）】
+ * 主人原话：「我发现你是单线程，在干一件事时必须把这件事干完才能进行下一件事，
+ * 也不能在干活过程中和我聊天」。
+ *
+ * 根子是 /api/interject 以前一进来就 abort 当前这一轮 —— 想说话就得先把活掐死。
+ * 现在插话不 abort 了，只说「这句话我收下了，排着」；等那一轮自己跑完，
+ * 由 /api/chat 的 finally 调到这里，把话接着答掉。
+ *
+ * 【跟 startPeerTurn 的区别，别混】
+ *   · peer 轮：话在**信箱**里，历史里还没有，所以要 push 一条 context 引子让 agent 去取；
+ *   · 这里：那句话在 /api/interject 时**已经 push 进历史了**（role=user，货真价实），
+ *     所以什么都不用引，直接把历史发给模型就行。
+ * 引子多推一条就是多一条脏历史，界面上还会多出一句莫名其妙的话。
+ *
+ * 走 runAgent 跟 /api/chat 同一条路，但没有 HTTP 客户端在等：
+ * onEvent 只做日志，答完的话照常落盘，前端靠 followLive / attachLive 补画。
+ */
+async function startQueuedTurn(sessionId) {
+  const session = getSession(sessionId);
+  if (!session) throw new Error('没有这个会话');
+
+  // 这一轮必须真的收干净了才起，不然两轮同时改同一个 messages 数组
+  if (runningTurns.get(sessionId)) {
+    return { ok: false, note: '还有一轮在跑，这句话等它' };
+  }
+
+  const ac = new AbortController();
+  const turn = { ac, done: null, queuedTurn: true };
+  runningTurns.set(sessionId, turn);
+
+  const history = session.messages;
+  try {
+    repairHistory(history);
+    // 浅拷贝，理由同 startPeerTurn：runAgent 会清空重建，深拷贝会让接回时认不出对象
+    const wire = history.slice();
+    const seen = new Set(history);
+
+    const out = await runAgent({
+      messages: wire,
+      signal: ac.signal,
+      sessionId,
+      safeMode: !inPersonaMode(session),
+      safeWord: session.mode?.word || '',
+      onEvent: (ev) => {
+        if (ev.type === 'error') console.warn('[queued] ' + sessionId + ' 出错：' + String(ev.message ?? ''));
+      },
+    });
+
+    repairHistory(history);
+    for (const m of wire) {
+      if (seen.has(m)) continue;
+      if (m && (m.role === 'system' || m.context)) continue;
+      seen.add(m);
+      history.push(m);
+    }
+    session.updatedAt = Date.now();
+    saveSession(session);
+    return { ok: true, text: out && out.text };
+  } catch (e) {
+    console.warn('[queued] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
+    throw e;
+  } finally {
+    if (runningTurns.get(sessionId) === turn) runningTurns.delete(sessionId);
+  }
+}
+
+/**
  * 这个会话有没有「上次崩了、还没跑完后半段」的标记。
  * 界面用它决定要不要在历史末尾显示一条「上次断在这儿，正在接着跑」。
  */
@@ -1592,9 +1664,29 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/health') {
     const ep = activeEndpoint();
+    /**
+     * 【为什么这里有两个版本号】
+     *
+     * 界面上原本有两处显示版本，各读各的来源，一旦对不上就自相矛盾：
+     *   右下角小字 ← /api/health 的 version，读 config.version，也就是
+     *                **正在跑的那份代码**（安装版是 asar 里的 package.json）。
+     *   设置→更新   ← /api/update/status 的 local，读 <数据目录>/code/package.json，
+     *                也就是**更新器已经下载好、等着重启才加载**的那一版。
+     *
+     * 更新器把新版写进 code/ 之后 asar 原地不动，所以重启前这两个数天然不同。
+     * 以前界面只显示自己的那个数，主人看到「设置里说已经是最新的 0.9.26」
+     * 和「右下角还是 0.9.25」并存，没法判断到底在跑哪一版。
+     *
+     * 现在两个都带出去，由前端把话说清楚。
+     */
+    const pendingVersion = localVersion();
     return json(res, 200, {
       ok: true,
       version: config.version,
+      running: config.version,
+      target: pendingVersion || null,
+      versionStale: Boolean(pendingVersion && pendingVersion !== config.version),
+      versionSource: config.packaged ? 'code' : 'source',
       model: ep.model,
       baseURL: ep.baseURL,
       hasKey: Boolean(ep.apiKey),
@@ -3578,7 +3670,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 而不是看着一份永远 done=false 的缓存以为它还在跑。
      */
     // 先占个位（ac 还没有，下面建好再换成真的）；收尾时按「对象」摘，不按 ac 比。
-    const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId };
+    const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId, queued: [] };
     /**
      * 【她跟我是并排的，不是排在我后面】
      *
@@ -3627,6 +3719,17 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 进程级兜底（installGuards 的 onFatal）在退出前会读这个字段补写最后一份草稿，
     // 免得「正好在两次自动写盘之间崩溃」时丢掉最后一小段。
     reg.draft = { text: '', reasoning: '', tools: [], startedAt: reg.startedAt };
+    /**
+     * 【主人插话时没说完的话，排在这儿】
+     *
+     * 见 /api/interject：插话不再 abort 当前这一轮，而是把话落盘 + 挂到这里。
+     * 这一轮一收尾，下面的 finally 就把它们一条条接着答掉。
+     * 这样主人干活中间随时能说话，手上的活也不白跑。
+     *
+     * 为什么放在 reg 上、不是全局：一轮一个队列，天然跟着会话走，
+     * 轮次结束对象就没了，不会串到下一个人那儿。
+     */
+    reg.queued = [];
     runningTurns.set(sessionId, reg);
 
     /**
@@ -4383,6 +4486,36 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 草稿还在，下次打开还能救回来。
       dropDraft(sessionId);
       finishTurn();
+
+      /**
+       * 【这一轮跑完，把主人插的话接着答掉】
+       *
+       * 以前这里是空的：插话因为 abort 掉了这一轮，所以由前端重新起一轮来接。
+       * 现在插话不 abort 了（主人要「边干活边能说话」），那就得由收尾这边接：
+       * 队列里有话，就自己再起一轮，把最前面那条当成主人的新消息发出去。
+       *
+       * 【为什么用 setImmediate（往下一拍再跑）】
+       * 这一轮此刻还挂在 runningTurns 上的删除刚做完，
+       * 但 /api/chat 那条路有「这个会话还在跑就别再起一轮」的 409 闸。
+       * 往下一拍跑，让它先彻底收干净，再起下一轮，不然会被自己挡回去。
+       *
+       * 【一次只接一条】接一条就够了 —— 那条的收尾又会看队列，
+       * 队列里还剩就继续接，自然串起来。一次接一把反而乱。
+       */
+      if (!Array.isArray(reg.queued)) reg.queued = [];
+      const pending = reg.queued;
+      if (pending.length) {
+        pending.shift();
+        setImmediate(() => {
+          try {
+            startQueuedTurn(sessionId).catch((e) => {
+              console.warn('[interject-queue] 接着答没跑起来:', String(e?.message ?? e));
+            });
+          } catch (e) {
+            console.warn('[interject-queue] 起不来:', String(e?.message ?? e));
+          }
+        });
+      }
     }
     return res.end();
   }
@@ -4414,7 +4547,51 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 主人看到的就是：打了字、按了发送、消息没了，什么都没发生。
      */
     const wasRunning = Boolean(turn && turn.ac && !turn.ac.signal.aborted);
-    if (turn?.ac) {
+    /**
+     * 插话等这一轮收尾，最多等多久。
+     *
+     * 【为什么是 8000，而且等不到也不算失败】
+     * 主人插话时手上很可能正跑着一条长命令（编译、装依赖、扫目录）。
+     * 工具收到 abort 会立刻退出，但命令本身、以及这一轮的 finally 收尾
+     * （写盘、commitWireBack）还得一会儿。
+     *
+     * 等不到就不能干等着 —— 但「等不到」只表示「这一轮还在收尾」，
+     * **不表示主人的话没被收下**。所以下面无论等没等到，
+     * 都照样把这句话 push 进 history 并 saveSession，然后回 ok:true。
+     * 前端就是靠这个 ok:true 判断「话已经落盘」的，别改成给 false。
+     *
+     * 2026-10-26 主人报的「跑长命令时插话，消息消失 + 黄字一闪」，
+     * 根子在前端把「没接着跑」误当成了「没插进去」，那边已修；
+     * 这里保持原值不动 —— 它只是收窄等待窗口，不是判定。
+     */
+    const INTERJECT_SETTLE_MS = 8000;
+
+    /**
+     * 【2026-10-26 主人报：「你不能同时跑多个命令吗？我发现你是单线程，
+     *   在干一件事时必须把这件事干完才能进行下一件事，也不能在干活过程中和我聊天」】
+     *
+     * 他说的现象是真的，根子就在下面这一句 abort。
+     *
+     * 以前的设计：主人一插话，就把他手上这一轮**掐断**（abort('interject')），
+     * 好腾出手来接新话。代价是 ——
+     *   · 我正在跑的长命令当场被杀，那件事就白干了；
+     *   · 主人在等的那份结果，永远等不到；
+     *   · 表现上就是「她干起活来不理我」「想插句话就得先等它干完」。
+     *
+     * 现在反过来：**插话不打断，排队。**
+     * 这句话先落盘进历史，然后挂到这一轮头上，等这一轮真的跑完，
+     * 由这一轮的收尾（那个 finally）自己接着再起一轮去答它。
+     * 主人随时能说话，手上的活照干，两边都不耽误。
+     *
+     * 【什么时候才该真打断】主人明说要停 —— 走 /api/stop（停止按钮），
+     * 或者插话里带「停下 / 别干了 / 先别做」这类**明确的叫停**。
+     * 这里给一个窄判据：只有话里出现叫停词，才走老路（abort）。
+     * 判据宁窄勿宽 —— 误判成「叫停」会把活杀掉，那比慢一点严重得多。
+     */
+    const STOP_WORDS = ['停下', '停下来', '别干了', '别做了', '先别做', '先别干', '停一下', '打断', '中止', '取消这个任务'];
+    const wantsStop = STOP_WORDS.some((w) => String(message).includes(w));
+
+    if (turn?.ac && wantsStop) {
       /**
        * 带上原因：interject = 主人插话，不是让这一轮停手。
        *
@@ -4424,7 +4601,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       turn.ac.abort('interject');
       // 等这一轮真的收尾：历史写完盘、热缓存里的数组也定型了，才好往后接。
-      await Promise.race([turn.done, new Promise((r) => setTimeout(r, 8000))]);
+      // 等不到（工具还在收尾）也照样往下走：话照收、盘照落，见上面那段。
+      await Promise.race([turn.done, new Promise((r) => setTimeout(r, INTERJECT_SETTLE_MS))]);
     }
 
     /**
@@ -4444,6 +4622,32 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     sessions.set(sessionId, freshSession);
     saveSession(freshSession);
     setLastSessionId(sessionId);
+
+    /**
+     * 【挂到这一轮的队列上，让它跑完自己接着答】
+     *
+     * 上面已经把这句 push 进历史了 —— 所以这里是「话已经收下」的实锤。
+     * 还没收工的只有两种情况：
+     *   · 这一轮还在跑（没叫停）：挂上去，等它收尾由 startQueuedTurn 接；
+     *   · 已经没在跑了：那这句话就孤零零躺在历史里没人答 ——
+     *     这种得当场起一轮，不然主人看到的就是「说了没反应」。
+     *
+     * 【为什么只在 !wantsStop 时挂】叫停的那一路已经 abort 了这一轮，
+     * abort 之后收尾会跑，队列里的东西也会跟着被接 —— 但主人是叫停，
+     * 这时候再自动接着答反而是硬塞，是不是要接着说交给他。
+     */
+    if (!wantsStop) {
+      if (turn && Array.isArray(turn.queued)) {
+        turn.queued.push(message);
+      } else if (!wasRunning) {
+        // 根本没有在跑的那一轮：这句话没人接，当场起一轮
+        setImmediate(() => {
+          startQueuedTurn(sessionId).catch((e) => {
+            console.warn('[interject] 立刻接这一句没跑起来：', String(e?.message ?? e));
+          });
+        });
+      }
+    }
     return json(res, 200, {
       ok: true,
       // 前端靠这个字段决定「接着跑」还是「认错重发」。必须给。

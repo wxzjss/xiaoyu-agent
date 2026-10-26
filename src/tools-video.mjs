@@ -274,6 +274,27 @@ async function summarizeSheet(sheetDir) {
 }
 
 // ─────────────────────────── 工具 ───────────────────────────
+/**
+ * 让工具的结果能带上图片。
+ *
+ * 【为什么必须有】
+ * 之前 video_read 只把「面板的**路径**」当文字返回，模型拿到一串路径根本看不见图 ——
+ * 她想去开，就调 read_file，可 read_file 读的是文本，PNG 进去只能得到乱码，
+ * 于是她如实说「一片毛玻璃似的糊，不敢瞎猜」。她没撒谎，是真的什么都没看见。
+ * 同一张图我自己用 read_image 看，时间码清清楚楚。
+ *
+ * 这跟「小字必须放大再读」是同一条原则的两半：
+ *   光把图切好不够，得真的递到眼睛前面。
+ *
+ * 返回 { text, images } 的形状由 agent.mjs 认（那边会拼成多模态 content）；
+ * 没有 images 字段时行为跟以前完全一样，所以别的工具不受影响。
+ */
+function withImages(text, images) {
+  const list = (Array.isArray(images) ? images : []).filter((p) => typeof p === 'string' && p && existsSync(p));
+  if (!list.length) return text;
+  return { text, images: list };
+}
+
 export const videoTools = [
   {
     name: 'video_probe',
@@ -407,17 +428,25 @@ export const videoTools = [
       const pngs = files.filter((f) => f.toLowerCase().endsWith('.png')).sort().map((f) => join(sheetDir, f));
       if (!pngs.length) return `跑完了但一张图都没生成，不装懂。\n\n${r.out || ''}\n${r.err || ''}`.trim();
 
-      return [
+      /**
+       * 图版也直接递过去。只给路径的话她看不见图，所谓「看见的主通道」就断了 ——
+       * 她会去 read_file 读 PNG，读成乱码，然后说「我看不到图」。
+       * 图版本来就设计成「一次看个大概」，几张全给出去正合适。
+       */
+      const text = [
         `铺好了：${basename(abs)}`,
         '',
         summary,
         '',
-        '图在这里（可以直接发给主人看）：',
+        pngs.length ? `图版就在下面（${pngs.length} 张，每格对应的秒数见上面的位置映射）。` : '',
+        '',
+        '图在这里（也可以直接发给主人看）：',
         ...pngs.map((p) => '  ' + p),
         '',
         `映射清单：${join(sheetDir, 'manifest.json')}`,
         '要读图里的字（字幕、水印、角标、时间码），别硬看 —— 用 video_read 把那一块裁下来放大。',
-      ].join('\n');
+      ].filter(Boolean).join('\n');
+      return withImages(text, pngs);
     },
   },
 
@@ -505,16 +534,26 @@ export const videoTools = [
       // 面板动辄几十张，一次别全塞回去
       const shown = files.slice(0, 24).map((f) => join(readDir, f));
       const skipLine = /跳过空白\s*[1-9]/.test(r.out || '') ? ('（有 ' + String((r.out.match(/跳过空白\s*(\d+)/) || [])[1] || '?') + ' 块因为太像纯色被跳过了，那些位置大概率确实没内容。）') : '';
-      return [
+      /**
+       * 面板图直接递过去，别只给路径。
+       * 只给路径的时候她会去调 read_file，PNG 读成乱码，然后如实说「一片糊」。
+       * 上限 6 张：图很吃 token，一次几十张会把这轮预算吃干净。
+       * 多出来的照旧在文字里列路径，她需要哪张可以再点名读一次。
+       */
+      const MAX_IMG = 6;
+      const attach = files.slice(0, MAX_IMG).map((f) => join(readDir, f));
+      const text = [
         `切好了 ${files.length} 张面板（每张是一块放大后的区域）。`,
         skipLine,
+        attach.length ? `其中前 ${attach.length} 张直接给你看了（就是下面这几张图）。` : '',
         '',
-        '前 24 张：',
+        '全部在这：',
         ...shown.map((p) => '  ' + p),
         files.length > shown.length ? `\n还有 ${files.length - shown.length} 张在 ${readDir}` : '',
         '',
         '读的时候记住：图上看见的字直接抄，看不清就说看不清，别拿上下文猜。',
       ].filter(Boolean).join('\n');
+      return withImages(text, attach);
     },
   },
 

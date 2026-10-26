@@ -321,7 +321,18 @@ function publicSession(session) {
       // 这一轮的 token 用量（老会话可能没有，界面就那行小字不画）。
       // 挂在 user 上：回退掉这一句时，用量跟着一起消失，不会留下对不上的数字。
       const usage = m._usage && typeof m._usage === 'object' ? { ...m._usage } : null;
-      turns.push({ role: 'user', text: shown, atts, rewindId: i, edited, usage });
+      /**
+       * 【并进这一问的那些插话，单独还给界面】—— 2026-10-27
+       *
+       * 接续轮把连着几句插话合成一次提问（见 /api/chat 的 resume 那段），
+       * 摘掉的那几条存在 _absorbed 里。不还给界面，主人翻历史就会觉得
+       * 「我明明说了好几句，怎么只剩一句」—— 字都还在，只是被并了。
+       */
+      const absorbed = Array.isArray(m._absorbed)
+        ? m._absorbed.map((x) => String(typeof x?.content === 'string' ? x.content : x?._text ?? '').trim()).filter(Boolean)
+        : [];
+      const interject = m._interject === true ? true : undefined;
+      turns.push({ role: 'user', text: shown, atts, rewindId: i, edited, usage, absorbed, interject });
     }
     else if (m.role === 'assistant') turns.push({
       role: 'assistant',
@@ -945,6 +956,23 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       try { logWhaleAction('丢掉假动作：' + body.slice(0, 60)); } catch {}
       return;
     }
+    /**
+     * 【占位句一律不许进会话】—— 2026-10-26 主人报的「她说了一段，突然变成一句话」
+     *
+     * subagent 那边原来用 clean || '（它查完什么都没说）' 兜底：
+     * 她的话被 trimFiller 清空、或被闸 B 判成复述，就自动填这句假话。
+     * 现在源头已经不许再编，但历史里存进去的那些还得挡住 ——
+     * 一句假话留在对话里，主人会以为她真的什么都没查。
+     *
+     * 判据：整条就是一句「（…没说什么…）」这类旁白，且不超过 20 字。
+     * 只拦这一种，不误伤她真说的话。
+     */
+    const PLACEHOLDER_RE = /^[（(][^）)]{0,24}(没说什么|什么都没说|没查出什么|无结论)[^）)]{0,10}[）)]$/;
+    if (PLACEHOLDER_RE.test(body.trim())) {
+      try { logWhaleAction('丢掉占位句：' + body.slice(0, 60)); } catch {}
+      return;
+    }
+
     // 去掉括号旁白、标点、空白之后还剩字，才算真的说了话
     const meaningful = body.replace(/[（(][^）)]*[）)]/g, '').replace(/[\s\p{P}]/gu, '');
     if (meaningful.length > 0) {
@@ -4207,6 +4235,56 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (resume) {
       // 插话途中被打断，尾巴可能不齐，先修好再喂给模型。
       repairHistory(history);
+      /**
+       * 【接续轮：把上一轮被打断后的那几句插话合成一次提问】—— 2026-10-27
+       *
+       * 现在插话是「打断 → 接续」，被中断的那一轮尾巴上会连着几条
+       * role:'user' 的消息（都带 _interject）。原样发给模型，它看到的是
+       * 主人在同一秒说了好几句、中间没有回答 —— 容易只答最后一句，
+       * 也容易被当成「我在自言自语」。
+       *
+       * 所以并成一真身：
+       *   · 最后那一条（主人最新的话）保留原对象 —— 用量、回退点都挂在它上面；
+       *   · 它前面的那几条从历史里摘出来，改写成 _text（气泡不再单画），
+       *     正文并进最后那条，标 _merged。
+       *   · 摘下来也要留着（_absorbed），不然主人翻历史会以为自己的话被吞了。
+       *
+       * 【只合并连续的 _interject，不碰别的】判据明确，不按位置猜。
+       */
+      try {
+        const tailStart = (() => {
+          let i = history.length - 1;
+          // 跳过收尾的空 assistant / tool（打断后常见的尾巴），找到最后一条 user
+          while (i >= 0 && !(history[i] && history[i].role === 'user' && !history[i].context && !history[i].summary)) i--;
+          return i;
+        })();
+        if (tailStart > 0) {
+          let first = tailStart;
+          while (first - 1 >= 0) {
+            const p = history[first - 1];
+            if (p && p.role === 'user' && !p.context && !p.summary && p._interject) first--;
+            else break;
+          }
+          const run = history.slice(first, tailStart + 1);
+          if (run.length > 1) {
+            const last = history[tailStart];
+            const absorbed = run.slice(0, -1);
+            const lines = absorbed
+              .map((m) => String(typeof m.content === 'string' ? m.content : m._text ?? '').trim())
+              .filter(Boolean);
+            if (lines.length) {
+              last.content = [...lines, String(typeof last.content === 'string' ? last.content : last._text ?? '').trim()].join('\n');
+              last._merged = true;
+            }
+            last._absorbed = absorbed;
+            // 从历史里摘掉它们（连着的、同一批对象）—— 但让它们留在 _absorbed 里等前端补画
+            history.splice(first, absorbed.length);
+            try { logWhaleAction('接续：把 ' + absorbed.length + ' 句插话并进最后一次提问'); } catch {}
+          }
+        }
+      } catch (e) {
+        console.warn('[interject-merge] 合并插话失败，按原样跑：', String(e?.message ?? e));
+      }
     }
     // 这个会话还没开场：先把开场那两轮补上。
     //
@@ -5228,7 +5306,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       } catch {
         turnTexts = [];
       }
-      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts });
+      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts, resume: (Array.isArray(reg.queued) ? reg.queued.length : 0) });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {
@@ -5436,20 +5514,25 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 【一次只接一条】接一条就够了 —— 那条的收尾又会看队列，
        * 队列里还剩就继续接，自然串起来。一次接一把反而乱。
        */
+      /**
+       * 【done 之后不再自己接下一轮，交给前端开】—— 2026-10-27 改造
+       *
+       * 主人原话：「改成 dsh 一样的插话机制，就像我现在这样插话」。
+       * 要的是：打断、插进去、接着一条线跑；不是旁边另起一轮跟这一轮打架。
+       *
+       * 以前这里是 setImmediate(startQueuedTurn)，实测就是丢话的来源之一：
+       * 那句被 startQueuedTurn 从队列里 shift 掉，又没谁把它真正喂给模型，
+       * 最后既不在这一轮的上下文里，也不在任何下一轮里。
+       *
+       * 现在只报数，不动队列：done 事件带 `resume`（还剩几句没答），
+       * 前端收到就立刻起**一条**统一的接续轮 —— 那些句子本身已经在历史里、
+       * 而且带 _interject 标记，接续轮会把它们合并成一次提问，不会重复。
+       *
+       * 【为什么不能两条路都留着】两条触发路各管一半，就一定有一句落空。
+       */
       if (!Array.isArray(reg.queued)) reg.queued = [];
-      const pending = reg.queued;
-      // __iqDbg('consume sid='+sessionId+' regQueuedLen='+reg.queued.length+' runningSame='+(runningTurns.get(sessionId)===reg));   // 调试日志：要开就删掉行首这两个斜杠
-      if (pending.length) {
-        pending.shift();
-        setImmediate(() => {
-          try {
-            startQueuedTurn(sessionId).catch((e) => {
-              console.warn('[interject-queue] 接着答没跑起来:', String(e?.message ?? e));
-            });
-          } catch (e) {
-            console.warn('[interject-queue] 起不来:', String(e?.message ?? e));
-          }
-        });
+      if (reg.queued.length) {
+        try { logWhaleAction('收尾：还剩 ' + reg.queued.length + ' 句插话没答，交给前端接续'); } catch {}
       }
     }
     return res.end();
@@ -5573,7 +5656,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const freshSession = getSession(sessionId) || session;
     const history = freshSession.messages;
     repairHistory(history);
-    history.push({ role: 'user', content: message });
+    /**
+     * 【插话要打标记】—— 2026-10-27
+     *
+     * 接续轮要把「上一轮被打断后补进来的那几句」合并成一次提问（见 resume 那段），
+     * 靠的就是这个标记。没有它就只能按位置猜，猜错就把主人正常说的话也算进插话里。
+     * 顺便记下时间：she 的判断（闸 A）和给模型的提示都要用。
+     */
+    history.push({ role: 'user', content: message, _at: Date.now(), _interject: true });
     /**
      * 【这句话必须真的进磁盘】
      *
@@ -5612,6 +5702,24 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (!wantsStop) {
       if (turnAlive && turn && Array.isArray(turn.queued)) {
         turn.queued.push(message);
+        /**
+         * 【光排队不够：得让这一轮当场停手】—— 2026-10-27 主人要求的改造
+         *
+         * 主人原话：「改成 dsh 一样的插话机制，就像我现在这样插话」，
+         * 紧接着又说「插话机制存在问题」。
+         *
+         * 老设计是「插话不打断，等这一轮跑完再答」—— 看着温柔，实际就是
+         * 主人说话没人理：他那句要等这一轮慢慢磨完才被想起，中间他只能干等。
+         * 更糟的是这一轮收尾时若又起了新一轮，两条线撞一起，句子就丢了。
+         *
+         * 现在改成：这句已经落盘了 → 立刻 abort('interject') 让这一轮停手
+         * （工具收到 abort 会干净退出，已说的字都在草稿和历史里），
+         * 前端收到 started:true 就接着开一条接续轮把这几句答掉。
+         *
+         * 【为什么不在这儿自己起一轮】就是上面那条：两条触发路必有一句落空。
+         * 服务端只负责「停手 + 落盘 + 报数」，跑由前端那条唯一的 SSE 来跑。
+         */
+        try { turn.ac.abort('interject'); } catch {}
       } else if (!wasRunning) {
         // 根本没有在跑的那一轮：这句话没人接，当场起一轮
         setImmediate(() => {
@@ -5625,6 +5733,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       ok: true,
       // 前端靠这个字段决定「接着跑」还是「认错重发」。必须给。
       running: wasRunning,
+      // 「已经停手、等前端接着开」——前端看到它就准备接续
+      started: Boolean(!wantsStop && wasRunning),
+      queued: Array.isArray(turn?.queued) ? turn.queued.length : 0,
       stopped: Boolean(turn?.ac),
       count: history.length,
     });

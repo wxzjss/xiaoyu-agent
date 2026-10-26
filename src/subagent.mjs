@@ -917,7 +917,8 @@ export async function runSubagent({
         outcomeText = clean || '';
         return {
           ok: true,
-          text: clean || '（它查完什么都没说）',
+          // 见上：不许编「它查完什么都没说」。真没话说就是空串，上层据此不出声。
+          text: clean,
           rounds: round + 1,
           tools: trace.length,
           usage: totalUsage,

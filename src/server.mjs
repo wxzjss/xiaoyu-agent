@@ -1,4 +1,4 @@
-// Minimal web server: static UI + one SSE endpoint that runs the agent.
+﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -14,7 +14,7 @@ import { whaleOn, setWhaleOn } from './whale-presence.mjs';
 import { fishOn, setFishOn } from './fish-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
-import { checkToolDocs, setPeerWake } from './tools.mjs';
+import { checkToolDocs, setPeerWake, runWithToolContext } from './tools.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
@@ -36,7 +36,7 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted } from './resume.mjs';
-import { getWhaleProfile, saveWhaleProfile, MAX_PERSONA_CHARS } from './whale-profile.mjs';
+import { getWhaleProfile, saveWhaleProfile, MAX_PERSONA_CHARS, whalePersonaForEditor, defaultWhalePersonaPath } from './whale-profile.mjs';
 // 进程兜底：一处没 catch 的异常不该让整个程序消失。
 import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
@@ -1406,7 +1406,7 @@ async function startPeerTurn(sessionId) {
      * 所以先把出手前已有的对象全记进 seen，接回时只收 seen 里没有的。
      */
     const seen = new Set(history);
-    const out = await runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -1417,7 +1417,7 @@ async function startPeerTurn(sessionId) {
       onEvent: (ev) => {
         if (ev.type === 'peer_mail') console.log('[peer] ' + sessionId + ' 收到 ' + ev.count + ' 封');
       },
-    });
+    }));
     // runAgent 已经把这一轮的话 push 进 wire 了；wire 是 history 的浅拷贝数组，
     // 直接把它接回 history（保持同一批对象）—— 这里没法用 /api/chat 里那个局部
     // commitWireBack 闭包，逻辑一样但独立一份。
@@ -1586,7 +1586,7 @@ async function startQueuedTurn(sessionId, queue = null) {
     const wire = history.slice();
     const seen = new Set(history);
 
-    const out = await runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -1600,7 +1600,7 @@ async function startQueuedTurn(sessionId, queue = null) {
           send(ev);
         }
       },
-    });
+    }));
 
     repairHistory(history);
     for (const m of wire) {
@@ -1729,14 +1729,14 @@ async function resumeInterruptedTurn() {
     });
     const wire = history.slice();
     const seen = new Set(history);
-    const out = await runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
       safeMode: !inPersonaMode(session),
       safeWord: session.mode?.word || '',
       onEvent: () => {},
-    });
+    }));
     repairHistory(history);
     for (const m of wire) {
       if (seen.has(m)) continue;
@@ -2640,16 +2640,24 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/whale/profile') {
     try {
       const p = getWhaleProfile();
+      // 人设栏该显示什么：主人写过就显示那套，没写过就显示内置默认人设（2026-10-26 主人要求）
+      const ed = whalePersonaForEditor();
       return json(res, 200, {
         ok: true,
-        persona: p.persona,
-        personaCustom: p.personaCustom,
+        persona: ed.persona,
+        personaCustom: ed.custom,
+        defaultPersona: ed.defaultText,
+        defaultPersonaPath: defaultWhalePersonaPath(),
+        defaultPersonaChars: ed.defaultText.length,
         modelId: p.modelId,
-        /** 内置那套人设的「长相」：界面要能说清「没改过时她是什么样的」 */
+        /**
+         * 人设栏的表现：内置那套已经删了（2026-10-26 主人要求「以后认准这个人设栏」），
+         * 所以这里不能再骗人说「没改过时她是沉、话少、不客气」—— 那是旧版内置人设。
+         * 空着就是空着：主人写之前她只有骨架，不编性格。
+         */
         builtinHint:
-          '内置那套写死在程序里：她是小鲸，小鱼的姐妹 —— 沉、话少、比小鱼不客气，' +
-          '哄主人不是她的活，她管的是把事查清楚、把风险说明白。' +
-          '想换就写在下面，写完全套替换性格那一部分（底线、安全词说明、本子、状态都不动）。',
+          '这一栏平时装的就是她的默认人设（原来写死的那一整套）。你改了保存，就用你写的；' +
+          '点「恢复默认」会把默认人设填回来。改的只是性格那部分，底线、安全词说明、本子、状态都不动。',
         maxChars: MAX_PERSONA_CHARS,
       });
     } catch (e) {
@@ -3297,9 +3305,11 @@ const server = createServer(async (req, res) => {
 
   // ---- 任务清单：跟小鱼手里那个 plan 工具同一份数据（按会话分） ----
   // 界面只读这份、只改这份，绝不另存 —— 否则我跟主人看到的会是两张单子。
-  // ---- 任务清单的 txt 版：界面原样显示这份，全体共用 ----
+  // ---- 任务清单的 txt 版：界面原样显示这份，按会话分（每个会话各一份） ----
+  // 以前这里不带会话号，是谁最后动谁说了算 —— 切了会话看到的还是上一个人的单子。
   if (req.method === 'GET' && url.pathname === '/api/plan/txt') {
-    return json(res, 200, readPlanTxt());
+    const sid = String(url.searchParams.get('sessionId') || '') || getLastSessionId() || 'default';
+    return json(res, 200, { sessionId: sid, ...readPlanTxt(sid) });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/plan') {
@@ -4413,7 +4423,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 只能读到「不忙」。现在挪到这里，闸 3 一判就是准的。
      * 后面 ac / done 建好之后再补挂上去（保持原逻辑不变）。
      */
-    const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId, queued: [] };
+    const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId };
 
     /**
      * 【闸 3：主人喊收工，就别叫她开口】
@@ -4793,7 +4803,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       const draftStartedAt = Date.now();
       const shouldDraft = makeDraftThrottle();
 
-      const { usage, lastUsage, files: sentFiles } = await runAgent({
+      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
         messages: wireMessages,
         sessionId,
         snap,
@@ -4856,7 +4866,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           else if (ev.type === 'tool_start') send({ type: 'tool_start', id: ev.id, name: ev.name, args: ev.args });
           else if (ev.type === 'tool_end') send({ type: 'tool_end', id: ev.id, name: ev.name, ok: ev.ok, output: ev.output, images: ev.images || 0 });
         },
-      });
+      }));
       // [usage-debug] 这一轮跑完了，看看用量到底有没有
       try {
         const dbg = (await import('node:fs')).appendFileSync;
@@ -5430,28 +5440,88 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       try {
         commitWireBack();
       } catch {}
-      saveSession(session);
+      /**
+       * 【收尾存盘：绝不能拿这一轮开工时那份老 session 覆盖】
+       *
+       * 2026-10-26 实测抓到的真凶（插话丢话）：
+       *   · 这一轮在 4212 行 getSession() 拿到 session 对象，一路攥着；
+       *   · 主人插话时 /api/interject 也调 getSession()，但那边发现磁盘比内存新，
+       *     会从磁盘 loadSession() 读一份**全新的对象**，push 话、存盘；
+       *   · 等这一轮收尾，这里的 saveSession(session) 拿**老对象**一写 ——
+       *     插话那句连同它存过的盘，整个被盖回去。
+       *   现象就是：插话那一刻磁盘上真有，跑完就没了，而且没人答。
+       *
+       * 现在的做法：存盘前先把「最新的那份」取出来，把这一轮的成果并进去。
+       *   判据只看对象的 messages 是否同一个数组 —— 同一个就是同一份，直接写；
+       *   不是同一个，说明中途被换过（插话 / 别的进程），得逐条并回去。
+       *   按对象引用去重，天然不会重复；顺序保持「最新那份打底 + 这一轮新接的排后面」。
+       */
+      try {
+        const latest = getSession(sessionId);
+        if (latest && latest !== session && Array.isArray(latest.messages) && Array.isArray(session.messages)) {
+          /**
+           * 去重指纹：角色 + 文本 + 工具调用 id。
+           *
+           * 【为什么不能按对象引用去重】上一版踩过的坑：
+           *   最新那份是从磁盘 loadSession 读出来的全新对象，这一轮手里的
+           *   也是另一批对象，两边引用永远不相等 —— 于是「什么都算新的」，
+           *   同一条工具调用 assistant 被塞了四遍、system 开场白也塞了三遍。
+           *   现在改成按内容指纹比，语义相同的只留一份。
+           *
+           * 【system 一律不并】system 是 seed 出来的固定开头，最新那份里本来就有，
+           *   这一轮的也带着一份，并进去就是重复。
+           */
+          const fp = (m) => {
+            if (!m || typeof m !== 'object') return null;
+            const role = String(m.role || '');
+            const txt = typeof m.content === 'string' ? m.content
+              : (m.content == null ? '' : JSON.stringify(m.content));
+            let tcId = '';
+            if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+              tcId = m.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',');
+            }
+            const toolCallId = m.tool_call_id ? String(m.tool_call_id) : '';
+            return role + '\u0001' + toolCallId + '\u0001' + tcId + '\u0001' + txt;
+          };
+          const lightTxt = new Set(latest.messages.map(fp).filter(Boolean));
+          let merged = 0;
+          for (const m of session.messages) {
+            if (!m) continue;
+            const role = String(m.role || '');
+            if (role === 'system') continue;            // system 不并
+            const key = fp(m);
+            if (!key) continue;
+            if (lightTxt.has(key)) continue;             // 内容一样，跳过
+            latest.messages.push(m);
+            lightTxt.add(key);
+            merged++;
+          }
+          try {
+            const { logWhaleAction } = await import('./whale-presence.mjs');
+            logWhaleAction('收尾合并：最新' + (latest.messages.length - merged) + '条 + 本轮新' + merged + '条 = ' + latest.messages.length + '条');
+          } catch {}
+          // 这一轮的引用也切到最新那份，后面的代码看到的是同一个
+          session.messages = latest.messages;
+          if (latest.rewinds) session.rewinds = latest.rewinds;
+          saveSession(latest);
+          sessions.set(sessionId, latest);
+        } else {
+          saveSession(session);
+        }
+      } catch (e) {
+        // 合并失败就退回原来的写法，至少别把这一轮也丢了
+        try {
+          const { logWhaleAction } = await import('./whale-presence.mjs');
+          logWhaleAction('收尾合并失败，退回原写法：' + String(e && e.message ? e.message : e).slice(0, 120));
+        } catch {}
+        saveSession(session);
+      }
       // 这一轮已经进了正式历史，草稿没用了，删掉。
       // 注意顺序：saveSession 必须在 dropDraft 之前 —— 万一存盘失败，
       // 草稿还在，下次打开还能救回来。
       dropDraft(sessionId);
       finishTurn();
 
-      /**
-       * 【这一轮跑完，把主人插的话接着答掉】
-       *
-       * 以前这里是空的：插话因为 abort 掉了这一轮，所以由前端重新起一轮来接。
-       * 现在插话不 abort 了（主人要「边干活边能说话」），那就得由收尾这边接：
-       * 队列里有话，就自己再起一轮，把最前面那条当成主人的新消息发出去。
-       *
-       * 【为什么用 setImmediate（往下一拍再跑）】
-       * 这一轮此刻还挂在 runningTurns 上的删除刚做完，
-       * 但 /api/chat 那条路有「这个会话还在跑就别再起一轮」的 409 闸。
-       * 往下一拍跑，让它先彻底收干净，再起下一轮，不然会被自己挡回去。
-       *
-       * 【一次只接一条】接一条就够了 —— 那条的收尾又会看队列，
-       * 队列里还剩就继续接，自然串起来。一次接一把反而乱。
-       */
     }
     return res.end();
   }
@@ -5483,26 +5553,16 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 主人看到的就是：打了字、按了发送、消息没了，什么都没发生。
      */
     /**
-     * 【「真的在跑」不能只看 ac】
+     * 【判据退回 0.9.26：只看 ac】
      *
-     * 2026-10-26 实测：插话返回 ok:true、count 也涨了，但那句话没人答，
-     * 磁盘上还找不到它。根子是这里判「在跑」的判据太松：
-     *   turn.ac 有、turn.ac.signal.aborted 是假  → 就认定"还在跑"
-     * 可收工的那一轮，ac 一直留着不清理，aborted 也永远是 false。
-     * 于是插话被挂进一个**它的 finally 早就跑完了**的队列，永远没人消费。
-     *
-     * 现在多问两个硬事实：这一轮自己有没有打 finished、done 有没有落地。
+     * 以前这里还加了 turn.finished / turn.done 两道形状检查 ——
+     * 可 .finished 这个字段在本作用域根本没人赋值（定义在 /api/chat 内层，
+     * 这里拿到的 runningTurns 记录上没有），稍微一歪就把「在跑」判成「没在跑」，
+     * 插话直接走错分支。0.9.26 只问一句：有个没被 abort 的 ac，就是还在跑。
      */
-    const turnAlive = Boolean(
-      turn
-      && turn.ac
-      && !turn.ac.signal.aborted
-      && !turn.finished
-      && turn.done !== null
-      && typeof turn.done?.then === 'function'
-    );
+    const turnAlive = Boolean(turn && turn.ac && !turn.ac.signal.aborted);
     const wasRunning = turnAlive;
-    // __iqDbg('interject-in sid='+sessionId+' hasTurn='+!!turn+' hasQueued='+(turn?Array.isArray(turn.queued):'n/a')+' wasRunning='+wasRunning);   // 调试日志：要开就删掉行首这两个斜杠
+    // __iqDbg('interject-in sid='+sessionId+' hasTurn='+!!turn+' wasRunning='+wasRunning);   // 调试日志：要开就删掉行首这两个斜杠
     /**
      * 插话等这一轮收尾，最多等多久。
      *
@@ -5523,24 +5583,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const INTERJECT_SETTLE_MS = 8000;
 
     /**
-     * 【0.9.26 的做法：插话就打断】
+     * 【退回 0.9.26 的做法：插话就当打断】
      *
-     * 曾经为了「干活时也能说话」改成排队（不打断，等这一轮跑完再答），
-     * 但实测下来代价更大：主人在它跑 10 次 sleep 的时候说「停」，
-     * 那 10 次要跑完 55 秒才会被看见 —— 主人眼里就是「插话没用」。
-     * 所以退回 0.9.26：插话立刻 abort 手上这一轮，话落盘，由前端接着跑。
+     * 主人 2026-10-26 定调：「实在不行，把插话机制恢复成之前的版本」「回退到 0.9.26」。
+     *
+     * 0.9.26 的做法只有一句：手上这一轮立刻松手（abort），等它收尾，话落盘，
+     * 然后由前端拿新话重新起一轮接着答。没有 STOP_WORDS、没有队列、
+     * 没有「是不是叫停」的猜测 —— 猜错了（把「停」当普通插话）就是现在这个 bug。
+     *
+     * 等服务这一轮收尾：历史写完盘、热缓存里的数组也定型了，才好往后接。
+     * 等不到（工具还在收尾）也照样往下走：话照收、盘照落。
      */
     if (turn?.ac) {
-      /**
-       * 带上原因：interject = 主人插话，不是让这一轮停手。
-       *
-       * 这个区别很要命：工具收到 abort 会写一句「为什么被掐掉」，
-       * 以前不分原因一律写「被主人叫停了」，模型就以为主人在喊停，
-       * 直接收工回一句「好的」，插进来的话当没看见。
-       */
       turn.ac.abort('interject');
-      // 等这一轮真的收尾：历史写完盘、热缓存里的数组也定型了，才好往后接。
-      // 等不到（工具还在收尾）也照样往下走：话照收、盘照落。
       await Promise.race([turn.done, new Promise((r) => setTimeout(r, INTERJECT_SETTLE_MS))]);
     }
 
@@ -5580,7 +5635,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       logWhaleAction('插话落盘：在内存里=' + okInMem + ' 长度=' + history.length);
     } catch {}
 
-    // 服务端只负责「话落盘」。接着跑不跑由前端按 running 决定（0.9.26 的分工）。
+    // running 仍按「插话时这一轮到底在不在跑」给，前端据此决定还画不画转圈。
     return json(res, 200, {
       ok: true,
       // 前端靠这个字段决定「接着跑」还是「认错重发」。必须给。

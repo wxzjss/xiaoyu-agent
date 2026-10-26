@@ -3086,6 +3086,13 @@ function releaseComposer(opts) {
     const dlgEl = document.getElementById('sessionsDlg');
     if (dlgEl && dlgEl.open) dlgEl.close();
   } catch {}
+  // 【2026-10-27 主人报：打开会话界面启用搜索，关掉再打开，搜索还是启用状态】
+  // 根子：面板不一定是被"人点关闭"关掉的——切会话、删会话、switchSession 收尾
+  // 都会走 releaseComposer 直接把 dialog close 掉。那条路以前不管搜索，搜索框
+  // 就一直亮着。这里在"收面板"这一个出口上顺手把搜索也收干净，不管谁关的都算。
+  try {
+    if (typeof exitFindSilently === 'function') exitFindSilently();
+  } catch {}
   // 附件选择浮层也可能残留，一并收掉
   // 注意：pickMask 的打开类名是 .open（不是 .show）——以前写错类名，这条从来没生效过，
   // 浮层残留时整页盖着一层透明遮罩，人看着就是「输入框点不了」。
@@ -5578,10 +5585,14 @@ async function interject() {
   }
 
   /**
-   * ④ 服务端说「插进去了」，这一轮也已经被打断、该由前端接着跑 ——
-   * 但 pendingResume 是在 runTurn 的 finally 里被消费的。那一轮要是压根没在跑，
-   * 或者收尾早就走完了，finally 再也不会来，这句话就永远等不到人接。
-   * 所以留个 9 秒观察窗（服务端等收尾最多 8 秒，别抢在它前面）。
+   * ④ 正常路径：话已经在服务端落盘，这一轮也被停住了 —— 接着跑。
+   *
+   * 【0.9.26 的分工】服务端只负责「把话写进历史」，接续是前端的事。
+   * 所以这里不能有「先等 9 秒看看有没有人接」那种兜底：服务端压根不会自己接，
+   * 等满 9 秒必然超时，然后把同一句话当成新消息再发一遍 —— 主人看到的就是发重了。
+   *
+   * 直接走 resumeOrResend：先查那句话到底在不在历史里，
+   * 在就 resume（接着答），不在就按新消息正经发一次 —— 绝不丢话。
    */
   const mySession = sessionId;
   const myText = text;
@@ -6265,7 +6276,7 @@ async function todoLoad() {
   const hint = document.getElementById('todoHint');
   if (!box) return;
   try {
-    const r = await (await fetch('/api/plan/txt')).json();
+    const r = await (await fetch('/api/plan/txt?sessionId=' + encodeURIComponent(sessionId))).json();
     box.textContent = r.text || '（空的）';
     // 顺便把结构化那份也拉一下，加完一条好知道 total 有没有变
     try {
@@ -7057,7 +7068,7 @@ async function openWhaleProfileEditor(row) {
   const head = el('div', 'openingFieldHead');
   head.append(el('span', null, '她是什么样的人（人设）'));
   if (prof.personaCustom) head.append(el('span', 'openingTag', '改过'));
-  const resetBtn = el('button', 'openingMini', '用回内置');
+  const resetBtn = el('button', 'openingMini', '恢复默认');
   resetBtn.type = 'button';
   head.append(resetBtn);
   wrap.append(head);
@@ -7067,15 +7078,19 @@ async function openWhaleProfileEditor(row) {
   ta.rows = 9;
   ta.spellcheck = false;
   ta.placeholder =
-    '（空着 = 用内置那套）' + (prof.builtinHint ? ' ' + prof.builtinHint : '');
+    '（这是她的默认人设，改了就照你写的来）' + (prof.builtinHint ? ' ' + prof.builtinHint : '');
   wrap.append(ta);
+  const tip0 = el('div', 'openingHint', '');
+  wrap.append(tip0);
   wrap.append(el('div', 'openingHint',
     '写完全套替换「她是谁、跟小鱼怎么相处」那一部分。底线、安全词说明、她自己的本子、当前状态、' +
     '「记下一行」这些是底座，一个字都不会被冲掉。'));
   resetBtn.addEventListener('click', (ev) => {
     ev.preventDefault();
-    ta.value = '';
+    // 2026-10-26 主人要求：恢复默认 = 把默认人设填回来，不是清空
+    ta.value = prof.defaultPersona || '';
     ta.dataset.dirty = '1';
+    tip0.textContent = '已填回默认人设，记得点「存上」';
   });
 
   // --- 模型那一块 ---
@@ -7156,9 +7171,9 @@ async function openWhaleProfileEditor(row) {
       tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题');
       return;
     }
-    ta.value = '';
+    ta.value = (r && r.defaultPersona) || prof.defaultPersona || '';
     sel.value = '';
-    tip.textContent = '人设和模型都回默认了';
+    tip.textContent = '人设和模型都回默认了（人设栏已填回默认人设，点「存上」才生效）';
   });
 
   box.append(wrap, mWrap, bar);

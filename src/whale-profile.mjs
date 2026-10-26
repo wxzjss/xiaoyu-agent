@@ -23,11 +23,45 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 
 const DIR = join(config.dataDir, '.state');
 const FILE = join(DIR, 'whale-profile.json');
+
+/**
+ * 内置默认人设：原来写死在 subagent.mjs 的那一整套，2026-10-26 搬成了 whale-default-persona.md。
+ * 优先级：主人自己写的（whale-profile.json 的 persona）> 这个文件 > 空。
+ */
+const SELF_DIR = dirname(fileURLToPath(import.meta.url));
+const DEFAULT_PERSONA_FILE = (() => {
+  const cands = [
+    join(SELF_DIR, 'whale-default-persona.md'),
+    join(config.root, 'src', 'whale-default-persona.md'),
+    join(config.dataDir, 'code', 'src', 'whale-default-persona.md'),
+  ];
+  for (const p of cands) {
+    try { if (existsSync(p)) return p; } catch {}
+  }
+  return cands[0];
+})();
+
+/** 读内置默认人设正文；读不出来返回空串（人设文件坏了也不能把她整个人搞没） */
+export function defaultWhalePersonaText() {
+  try {
+    let t = readFileSync(DEFAULT_PERSONA_FILE, 'utf8');
+    t = t.replace(/^<!--[\s\S]*?-->\s*/, '').trim();
+    return t;
+  } catch {
+    return '';
+  }
+}
+
+/** 默认人设文件在哪（排查用） */
+export function defaultWhalePersonaPath() {
+  return DEFAULT_PERSONA_FILE;
+}
 
 /** 人设最长多少字。够写得很细了，再长就是往里灌资料，不是人设。 */
 export const MAX_PERSONA_CHARS = 20000;
@@ -66,12 +100,22 @@ export function getWhaleProfile() {
 }
 
 /**
- * 她自定义的人设。没改过就返回空串 —— 调用方看到空串就用内置默认那套。
+ * 她自定义的人设。空串 = 人设栏空着 —— 调用方只给骨架，不编性格（内置那套 2026-10-26 已删）。
  */
 export function whalePersonaOverride() {
   const p = getWhaleProfile();
   const t = String(p.persona || '').trim();
-  return t ? t : '';
+  if (t) return t;
+  // 人设栏空着 = 主人还没写过 -> 用内置默认人设
+  return defaultWhalePersonaText();
+}
+
+/** 人设栏里该显示什么：主人写过的显示那套，没写过就显示默认人设 */
+export function whalePersonaForEditor() {
+  const p = getWhaleProfile();
+  const own = String(p.persona || '').trim();
+  const def = defaultWhalePersonaText();
+  return { persona: own || def, custom: Boolean(own), defaultText: def };
 }
 
 /**

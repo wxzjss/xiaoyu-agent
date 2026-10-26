@@ -455,7 +455,10 @@ export const tools = [
       required: ['action'],
     },
     async run(args) {
-      return planAction(CTX.sessionId, args).text;
+      // 清单按会话分：必须走这一轮自己的上下文（ctxNow），不能认全局 CTX ——
+      // 两个会话同时跑的时候，全局那份早就被后开跑的顶掉了，清单会写进别人的单子。
+      const me = (ctxNow() || CTX).sessionId || 'default';
+      return planAction(me, args).text;
     },
   },
   {
@@ -472,7 +475,9 @@ export const tools = [
       required: [],
     },
     async run(args) {
-      return noteAction(CTX.sessionId, args).text;
+      // 便签跟清单存在同一块板子上，一样按会话分
+      const me = (ctxNow() || CTX).sessionId || 'default';
+      return noteAction(me, args).text;
     },
   },
   /**

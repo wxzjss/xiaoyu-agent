@@ -121,6 +121,28 @@ export function saveSession(session) {
   // 会话当前处在哪个安全词档位。没这个字段的老会话 = 人设档（见 mode.mjs），
   // 所以只在真的记过档位时才写，免得给所有会话塞一堆冗余字段。
   if (session.mode?.word) payload.mode = { word: session.mode.word, since: session.mode.since ?? Date.now() };
+  // 【合流】写盘前先看一眼磁盘上那份：中途可能有别人（主人插话 / 另一轮）
+  // 往里写了话，那这份内存里的 session 就是旧的。整份覆盖会把人家的话抹掉。
+  // 做法：磁盘那份打底，把内存这份有、磁盘没有的接在后面，再去重写回。
+  try {
+    const raw = JSON.parse(readFileSync(fileFor(session.id), 'utf8'));
+    const diskMsgs = Array.isArray(raw?.messages) ? raw.messages : [];
+    const memMsgs = Array.isArray(payload.messages) ? payload.messages : [];
+    if (diskMsgs.length) {
+      const key = (m) => (m && typeof m.content === 'string' ? (m.role || '') + '\u0001' + m.content : null);
+      const diskKeys = new Set(diskMsgs.map(key).filter(Boolean));
+      const memKeys = new Set(memMsgs.map(key).filter(Boolean));
+      const diskOnly = diskMsgs.filter((m) => { const k = key(m); return !k || !memKeys.has(k); });
+      const memOnly = memMsgs.filter((m) => { const k = key(m); return !k || !diskKeys.has(k); });
+      if (diskOnly.length && !memOnly.length) {
+        payload.messages = diskMsgs;
+      } else if (diskOnly.length && memOnly.length) {
+        const merged = diskMsgs.slice();
+        for (const m of memOnly) merged.push(m);
+        payload.messages = merged;
+      }
+    }
+  } catch {}
   writeFileSync(fileFor(session.id), JSON.stringify(payload), 'utf8');
   return session;
 }

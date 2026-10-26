@@ -24,7 +24,7 @@ import { homedir, platform, release, cpus, totalmem } from 'node:os';
 
 import { config } from './config.mjs';
 import { chat } from './llm.mjs';
-import { activeEndpoint } from './models.mjs';
+import { activeEndpoint, probeEndpoint } from './models.mjs';
 import { loadRulesText } from './rules.mjs';
 
 const ROOT = config.root;
@@ -213,7 +213,7 @@ async function runProbe(name, rawArgs) {
 // ------------------------------------------------------------------ 现场快照
 
 /** 纯本地读出来的现状，不调模型 */
-export function snapshot() {
+export async function snapshot() {
   const has = (p) => existsSync(join(ROOT, p));
   const ls = (p) => {
     try {
@@ -236,6 +236,18 @@ export function snapshot() {
     }
   }
 
+  // 真探一次端口（只连 TCP/TLS，不发请求，几百毫秒内出结果）。
+  let probeLine = '（没配模型，跳过）';
+  if (ep && ep.baseURL) {
+    try {
+      const pr = await probeEndpoint(ep.baseURL, { timeoutMs: 3000 });
+      probeLine = pr.ok
+        ? `通（${pr.host}:${pr.port}，${pr.ms}ms）`
+        : `✗ 不通 —— ${pr.reason}（${pr.host}:${pr.port}）。这个地址上现在没有服务在应答，模型一调就会失败。`;
+    } catch (e) {
+      probeLine = `探不了（${String(e?.message ?? e)}）`;
+    }
+  }
   return [
     `项目目录：${ROOT}`,
     `node：${process.version}   平台：${platform()} ${release()}`,
@@ -255,6 +267,10 @@ export function snapshot() {
     ep
       ? `当前模型：${ep.model}   接口：${ep.baseURL}   key：${ep.apiKey ? '有' : '没有'}（来源：${ep.source}）`
       : '当前模型：读不出来',
+    // 地址写得对不对，光看字符串看不出来 —— 必须真探一次。
+    // 2026-10-26 教训：models.json 里有个指向 127.0.0.1:18599 的地址，
+    // 字符串看着完全正常，实际那个端口上没有服务，主人看到的却是「连接一直断」。
+    `接口可达性：${probeLine}`,
     `规则文件 rules/rules.md：${rulesInfo}`,
     `端口配置：${config.port}`,
     `单轮工具上限：${Number.isFinite(config.maxRounds) ? config.maxRounds : '不限'}`,
@@ -357,7 +373,7 @@ export async function runAiSelfCheck(opts = {}) {
 
   const messages = [
     { role: 'system', content: SYSTEM },
-    { role: 'user', content: `这是这台机器现在的现场快照：\n\n${snapshot()}\n\n开始查吧，该调的探针你自己调。` },
+    { role: 'user', content: `这是这台机器现在的现场快照：\n\n${await snapshot()}\n\n开始查吧，该调的探针你自己调。` },
   ];
 
   const deadline = started + TOTAL_TIMEOUT;

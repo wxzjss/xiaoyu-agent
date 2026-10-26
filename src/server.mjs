@@ -3400,6 +3400,37 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, id, at: idx, role: s.messages[idx]?.role ?? null });
   }
 
+  /**
+   * 【只读地瞥一眼会话尾巴】GET /api/sessions/peek?id=xxx&n=12
+   *
+   * 【为什么要有这个端点】
+   * 插话之后前端得回答一个问题：「我刚说的那句，到底进历史了没有？」
+   * 进了 → runTurn({resume:true}) 接着答；
+   * 没进 → 只能按正常消息再发一遍（不然这句话就没了）。
+   * 判错的代价是双向的：判成「进了」而其实没进 → 话丢了；
+   * 判成「没进」而其实进了 → 历史里出现两句一模一样的话。
+   *
+   * 以前的写法是前端去读 /api/sessions/get，可那个端点根本不存在 ——
+   * 于是每次都落到 catch 里，永远判成「没进」，然后拿一句空话去重发。
+   * 这里补一个**只读、无副作用**的端点：不调 repairHistory（它会就地改数组），
+   * 不 saveSession，只把最近 n 条整理成 { role, text } 回去。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/sessions/peek') {
+    const id = String(url.searchParams.get('id') || getLastSessionId() || '');
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const sess = getSession(id);
+    if (!sess) return json(res, 404, { error: 'session not found' });
+    const n = Math.max(1, Math.min(200, Number(url.searchParams.get('n')) || 12));
+    const all = Array.isArray(sess.messages) ? sess.messages : [];
+    const tail = all.slice(-n);
+    const messages = tail.map((m) => ({
+      role: m && m.role ? String(m.role) : '',
+      // text 和 content 都给：老的前端读 text，新的一律读 text，别让人猜
+      text: typeof (m && m.content) === 'string' ? m.content : '',
+    }));
+    return json(res, 200, { ok: true, id, total: all.length, messages });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
     const payload = await body(req).catch(() => ({}));
     const id = isSessionId(payload?.id) ? payload.id : newSessionId();

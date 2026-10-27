@@ -142,15 +142,28 @@ export const PROBES = [
   {
     name: 'probe_cmd',
     description:
-      '跑一条只读的查看命令（node -v / npm -v / git status 之类），看输出。自检阶段不许改东西。',
+      '跑一条只读的查看命令（node -v / npm -v / git status 之类），看输出。自检阶段不许改东西。' +
+      '【Windows 上这个工具背后是 PowerShell】多条命令请用 ; 分隔，不要用 &&（PowerShell 不认）。',
     parameters: {
       type: 'object',
       properties: { command: { type: 'string' } },
       required: ['command'],
     },
     run({ command }) {
-      const cmd = String(command || '').trim();
+      let cmd = String(command || '').trim();
       if (!cmd) throw new Error('命令是空的');
+      /**
+       * 【2026-10-28 修：`&&` 别再让主人看见那条提醒】
+       *
+       * 自检模型习惯了 bash，常写 `node --check x.mjs && echo ok`。
+       * 这条命令在 PowerShell 下直接解析失败（退出码 1），它就把「语法错误」
+       * 当成真的问题报给主人 —— 每次自检都顶着一条「语法检查整条没跑成」，
+       * 而代码其实是好的。一条永远冤枉人的提醒，比没有提醒更坏。
+       *
+       * 这里替它翻译一下：Windows 上把 && 换成 ;。语义上不完全等价
+       * （前一条失败也照跑后一条），但自检只是「看一眼」，这个差别不要紧。
+       */
+      if (platform() === 'win32') cmd = cmd.replace(/\s*&&\s*/g, '; ');
       // 自检只读：把明显会写盘/搞破坏的挡在外面
       const risky = /(^|[\s;&|])(rm|del|erase|rmdir|rd|move|mv|cp|copy|ren|rename|format|mkfs|shutdown|taskkill|kill|npm\s+(i|install|ci)|pip\s+install|winget\s+install)(\s|$)/i;
       if (risky.test(cmd) || /(>|>>)\s*\S/.test(cmd) || /git\s+(push|commit|reset|checkout|clean|merge)/i.test(cmd)) {
@@ -236,10 +249,21 @@ export async function snapshot() {
     ep = activeEndpoint();
   } catch {}
 
-  let rulesInfo = '没有（会用占位文案）';
+  /**
+   * 【2026-10-28 修：原来这条提醒是假的】
+   *
+   * 以前这里写「没有 rules/rules.md（会用占位文案）」，主人每次来自检都被告知
+   * 「规则层走占位文案」。实测不是：`loadRulesText()` 只被自检自己 import，
+   * 系统提示根本不拼它（systemPrompt 5138 字里连「规则」两个字都没有），
+   * 「占位文案」之说早就不成立 —— 一条永远修不掉的提醒，只会教人以后无视自检。
+   *
+   * 现在按真实情况说：文件在就报字数（全是注释等于空）；不在就直说没启用，不吓人。
+   */
+  let rulesInfo = '没有（这一版不读它，不影响）';
   if (has('rules/rules.md')) {
     try {
-      rulesInfo = `${loadRulesText().length} 字`;
+      const len = loadRulesText().length;
+      rulesInfo = len > 0 ? `${len} 字` : '有，但全是注释 —— 等于空';
     } catch {
       rulesInfo = '有，但读不出来';
     }

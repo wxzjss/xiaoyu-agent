@@ -4025,6 +4025,25 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { id, digests: digestLines(id) });
   }
 
+  /**
+   * 只读：这个会话现在历史里有多少条。
+   *
+   * 前端断流自愈要用它当分界 —— 断线之后判断「这一轮到底答没答」，
+   * 不能只看「历史里有没有过助手的话」（上一轮说的也算，会当场谎报成功、
+   * 把还在跑的轮次当成跑完了，气泡上那个蓝光标就一直挂着）。
+   *
+   * 不碰磁盘、不改状态，拿不到就 0，前端自己会退回保守判断。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/sessions/length') {
+    const id = url.searchParams.get('sessionId') || url.searchParams.get('id') || '';
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const session = getSession(id);
+    if (!session) return json(res, 404, { error: 'session not found' });
+    const count = Array.isArray(session.messages) ? session.messages.length : 0;
+    const running = Boolean(runningTurns.get(id) && !runningTurns.get(id).ac.signal.aborted);
+    return json(res, 200, { id, count, running });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/sessions/select') {
     const { id } = await body(req).catch(() => ({}));
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });

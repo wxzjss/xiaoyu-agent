@@ -627,12 +627,17 @@ ipcMain.handle('app:openWorkspace', async () => {
  * 系统是中文、输入法却停在英文 —— 一点就自动回中文，省得打半天全是字母。
  * 反过来系统是英文、输入法停在中文，也一样掰回英文。
  *
- * 怎么做：
- *   一、输入法语言（中文还是英文）—— 渲染进程够不着，只能主进程来。
- *       系统里没装英文键盘就临时挂一个（LoadKeyboardLayout），掰完就摘。
- *   二、中文输入法的「中文/英文」状态 —— 走 imm32，
- *       WM_IME_CONTROL + IMC_SETCONVERSIONSTATUS 直接把状态位写过去。
- *       这条最稳；ImmSetOpenStatus 那个在微软拼音上经常原地不动。
+ * 怎么做：走 imm32，对【当前输入法】只动「中英转换状态」里那一位。
+ *   WM_IME_CONTROL + IMC_GET/SETCONVERSIONSTATUS，
+ *   只翻 IME_CMODE_NATIVE(0x0001)，别的位（全角、标点、软键盘）原样留着。
+ *   已经是想要的状态就【直接返回，一次都不写】。
+ *
+ * 【2026-10-27 主人报：重启后点输入框，原本的中文输入一下子被切成英文】
+ * 病根就是老写法在动手前先 LoadKeyboardLayout("00000409") 挂一个美式键盘、
+ * 再 UnloadKeyboardLayout 摘掉。机器上本来没这个键盘时，Windows 会顺带把
+ * 「当前激活的输入法」也带到那个临时键盘上；摘掉之后它记着英文，
+ * 主人的中文就没了。现在这条彻底删掉 —— 不碰键盘列表，只翻那一位。
+ * 另外：系统里压根没有中文键盘时（HasChineseKb 为假）什么都不做，返回 2。
  *
  * 静默干活：切不动就什么都不做，绝不弹窗、绝不挡主人打字。
  *
@@ -648,15 +653,17 @@ const IME_CS_LINES = [
   '{',
   '  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();',
   '  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);',
-  '  [DllImport("user32.dll")] public static extern IntPtr LoadKeyboardLayout(string id, uint flags);',
-  '  [DllImport("user32.dll")] public static extern bool UnloadKeyboardLayout(IntPtr hkl);',
   '  [DllImport("imm32.dll")] public static extern IntPtr ImmGetDefaultIMEWnd(IntPtr h);',
+  '  [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint tid);',
+  '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
+  '  [DllImport("user32.dll")] public static extern int GetKeyboardLayoutList(int nBuff, [Out] IntPtr[] lpList);',
   '',
   '  const uint WM_IME_CONTROL = 0x0283;',
   '  const int IMC_GETCONVERSIONSTATUS = 0x0001;',
   '  const int IMC_SETCONVERSIONSTATUS = 0x0002;',
   '',
-  '  const long CN_STATUS = 1025;',
+  '  // IME_CMODE_NATIVE = 0x0001 : 0 means alphanumeric(EN), 1 means native(CN)',
+  '  const long CMODE_NATIVE = 0x0001;',
   '',
   '  static IntPtr DefImeWnd()',
   '  {',
@@ -665,49 +672,61 @@ const IME_CS_LINES = [
   '    return ImmGetDefaultIMEWnd(fg);',
   '  }',
   '',
-  '  public static long ReadChineseMode()',
+  '  // any Chinese keyboard layout loaded? (0x0804 zh-CN, 0x0404 zh-TW, 0x0C04 zh-HK, 0x1004 zh-SG)',
+  '  public static bool HasChineseKb()',
+  '  {',
+  '    int n = GetKeyboardLayoutList(0, null);',
+  '    if (n <= 0) return false;',
+  '    IntPtr[] list = new IntPtr[n];',
+  '    n = GetKeyboardLayoutList(n, list);',
+  '    for (int i = 0; i < n; i++)',
+  '    {',
+  '      int id = (int)(list[i].ToInt64() & 0xFFFF);',
+  '      if (id == 0x0804 || id == 0x0404 || id == 0x0C04 || id == 0x1004) return true;',
+  '    }',
+  '    return false;',
+  '  }',
+  '',
+  '  // read raw conversion status, -1 when unavailable',
+  '  public static long RawStatus()',
   '  {',
   '    IntPtr def = DefImeWnd();',
   '    if (def == IntPtr.Zero) return -1;',
   '    long st = SendMessage(def, WM_IME_CONTROL, new IntPtr(IMC_GETCONVERSIONSTATUS), IntPtr.Zero).ToInt64();',
-  '    return (st & 1) == 1 ? 1 : 0;',
+  '    if (st < 0) return -1;',
+  '    return st;',
   '  }',
   '',
+  '  // 1 = native(CN) on, 0 = alphanumeric(EN), -1 = cannot tell',
+  '  public static long ReadChineseMode()',
+  '  {',
+  '    long st = RawStatus();',
+  '    if (st < 0) return -1;',
+  '    return (st & CMODE_NATIVE) == CMODE_NATIVE ? 1 : 0;',
+  '  }',
+  '',
+  '  // flip ONLY the NATIVE bit, keep every other bit as it was',
   '  public static long SetChineseMode(bool zh)',
   '  {',
   '    IntPtr def = DefImeWnd();',
   '    if (def == IntPtr.Zero) return -1;',
-  '    long want = zh ? CN_STATUS : 0;',
+  '    long st = RawStatus();',
+  '    if (st < 0) return -1;',
+  '    long want = zh ? (st | CMODE_NATIVE) : (st & ~CMODE_NATIVE);',
+  '    if (want == st) return zh ? 1 : 0;',
   '    SendMessage(def, WM_IME_CONTROL, new IntPtr(IMC_SETCONVERSIONSTATUS), new IntPtr(want));',
   '    return ReadChineseMode();',
   '  }',
   '',
-  '  public static long AttachEnglish()',
-  '  {',
-  '    IntPtr hkl = LoadKeyboardLayout("00000409", 0x00000001);',
-  '    if (hkl == IntPtr.Zero) return 0;',
-  '    return hkl.ToInt64();',
-  '  }',
-  '',
-  '  public static void DetachEnglish(long hkl)',
-  '  {',
-  '    if (hkl != 0) UnloadKeyboardLayout(new IntPtr(hkl));',
-  '  }',
-  '',
   '  public static long Apply(string mode)',
   '  {',
+  '    if (!HasChineseKb()) return 2;   // no Chinese keyboard at all: do nothing',
   '    bool wantZh = (mode == "zh");',
-  '    if (wantZh)',
-  '    {',
-  '      long before = ReadChineseMode();',
-  '      if (before == 1) return 1;',
-  '      long en = AttachEnglish();',
-  '      if (en != 0) DetachEnglish(en);',
-  '      long r = SetChineseMode(true);',
-  '      return r;',
-  '    }',
-  '    if (ReadChineseMode() == 0) return 0;',
-  '    return SetChineseMode(false);',
+  '    long cur = ReadChineseMode();',
+  '    if (cur < 0) return -1;',
+  '    if (wantZh && cur == 1) return 1;  // already Chinese: touch nothing',
+  '    if (!wantZh && cur == 0) return 0; // already English: touch nothing',
+  '    return SetChineseMode(wantZh);',
   '  }',
   '}',
 ];
@@ -775,6 +794,11 @@ function matchImeToSystem() {
         const out = String(stdout || '').trim().split(/\r?\n/).pop() || '';
         const n = Number(out);
         if (!err && !Number.isNaN(n) && n >= 0) {
+          // 2 = 这台机器压根没装中文输入法，什么都没动（不算失败，也不算成功）
+          if (n === 2) {
+            resolve({ ok: false, skipped: true, lang, chinese: null, detail: 'no-chinese-keyboard' });
+            return;
+          }
           resolve({ ok: (n === 1) === wantZh, lang, chinese: n === 1 });
         } else {
           resolve({ ok: false, lang, chinese: null, detail: (out || String(stderr || err || '')).slice(0, 200) });

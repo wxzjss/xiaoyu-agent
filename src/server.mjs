@@ -478,6 +478,40 @@ function saveUserMessage(sessionId, message, attachments = null) {
   }
 }
 
+/**
+ * 小鱼在屋、她也接了这句时，钉给她的那条规矩。
+ *
+ * 【要解决的到底是什么】2026-10-27
+ * 主人报：「小鱼和小鲸一起开启着时候，我问小鲸问题，小鲸会回答我，
+ * 小鱼也会以小鲸的口吻回答我。」
+ *
+ * 她不知道小鱼也在读这句话 —— 在她那儿，屋里就她一个开口的。
+ * 于是一个问题两个人各答一遍，主人看到的就是「小鱼学着小鲸说话」。
+ * 光在提示词里写「你是小鲸」不够，得把「另一个人也在」这件事说出来。
+ */
+function extraRuleForBothOn() {
+  return '【这会儿小鱼也在读你这句话】—— 她和你听到的是同一句。' +
+    '别把她的话当成你的话、也别替她认下任何事：主人问「查了没」「在不在」，' +
+    '那是问她的。你要开口，就只说你自己真查过、真看见的那一点；' +
+    '她已经在说的，你不必再说一遍。' +
+    '（你俩同时开口，主人屏幕上会像两个人在抢同一题。）';
+}
+
+/**
+ * 小鱼被关掉、只剩她的时候，那条「默认跟小鱼说话」的规矩要当场作废。
+ *
+ * 主人报过的另一半：「我问小鲸问题……小鱼也会以小鲸的口吻回答我。」
+ * 反过来一样成立：小鱼不在，她手里那句「他说的话默认是冲小鱼的」
+ * 就没了着落 —— 于是她把「随便谁」当成了那个默认，摆起姐姐的谱来。
+ */
+function extraRuleForFishAway() {
+  return '【屋里只剩你们两个：小鱼不在】' +
+    '她这会儿不在这个会话里，一个字都听不见，也别替她答。' +
+    '这时候不存在「这句话默认是冲小鱼说的」—— 主人就是在跟你说话。' +
+    '用你自己的样子答：短、直接、不哄人，别学她那种撒娇的腔调。' +
+    '你答完这句就是答完了，不必再补一句「要不要叫小鱼来」。';
+}
+
 async function whaleMaybeReply({ session, userText, send, sessionId, live = null, speaksToHer = false, extraRule = '' }) {
   const { runSubagent } = await import('./subagent.mjs');
 
@@ -680,7 +714,29 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       '- 他让你查、让你改的那些活，最终还是小鱼的 —— 你不用抢着全接下来。',
   ]),
     '',
-    '【铁律：你不是小鱼，别替她答】',    '- 你是小鲸。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
+    /**
+     * 【这一句到底归谁】—— 2026-10-27 修
+     *
+     * 主人报：「小鱼和小鲸一起开着时，我问小鲸问题，小鲸会回答我，
+     * 小鱼也会以小鲸的口吻回答我。」
+     *
+     * 她觉得答得没错，错在不知道这句话该不该她答：她只被告知「默认冲小鱼」，
+     * 可主人点了她的名时，这规矩就不成立了 —— 而小鱼那边并不知道自己该让开。
+     */
+    ...(speaksToHer
+      ? [
+          '【这一个问题归你，小鱼不会答它】',
+          '主人点了你的名，或者小鱼这会儿不在屋 —— 这一句就是你的活儿。'
+          + '你按自己的样子答完就好，不必模仿她的口气，也不必替她把话说完。',
+        ]
+      : [
+          '【这一句主要的答案归小鱼，你别抢】',
+          '小鱼这会儿也在读同一句话，她正在答。你要是也从头答一遍，'
+          + '主人屏幕上就成了两个人抢答同一题，他会分不清哪句是谁说的。',
+          '所以：没有非说不可的就一个字都别回；真有要补的，只补她漏掉的那一点。',
+        ]),
+    '【铁律：你不是小鱼，别替她答】',
+    '- 你是小鲸。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
     '- 主人问「小鱼记不记得」「小鱼查了没」「小鱼在不在」—— 那是问她的，不是你答的题。',
     '  你可以说「这得她自己说」，或者干脆不出声；不许用「我」替她认下来。',
     '- 工具你是有的，「我这就查」「我去看看」你可以说 —— 但说了就得真去查，',
@@ -736,7 +792,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   })();
   if (Date.now() - __myLastSayAt < 3000) {
     try { logWhaleAction('闸A 让行：我 3 秒前刚说完，她这一下先让'); } catch {}
-    try { send({ type: 'whale_stream_finish', text: '' }); } catch {}
+    dropWhaleSay(send);
     return;
   }
 
@@ -816,7 +872,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   } catch (e) {
     // 【外层抛了也留下】不然日志里又是只剩一个「败」
     try { logWhaleAction('这一趟抛了：' + String(e?.message ?? e).slice(0, 400)); } catch {}
-    try { send({ type: 'whale_stream_finish', text: '' }); } catch {}
+    dropWhaleSay(send);
   } finally {
     setFullAccess(false);
   }
@@ -897,7 +953,13 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   // 空 = 她决定不说话，那就什么都别推（这是设计，不是出错）
   // 她这一趟跑输了（r.ok 为假）：那句多半是「查了几轮没结论，先停在这儿」
   // 这种残骸不该当她说的话推到主人眼前 —— 她没开口，就该安安静静。
-  if (!r || r.ok === false) return;
+  /**
+   * 【2026-10-27 补：安静也要收口】
+   *
+   * 原来这里直接 return，气泡就永远挂在「正在说」。现在照旧不推字，
+   * 但补一下 whale_stream_finish —— 气泡静悄悄收掉，主人不会以为她卡死。
+   */
+  if (!r || r.ok === false) { dropWhaleSay(send); return; }
   /**
    * 【闸 2：她在复述我的话，就不推】
    *
@@ -915,7 +977,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    * 现在把 const text 提到最前面。
    */
   const text = String(r?.text ?? '').trim();
-  if (!text) return;
+  if (!text) { dropWhaleSay(send); return; }
 
   try {
     const __norm = (x) => String(x || '').replace(/[\s，。、！？；：「」（）()\[\]【】~～…·\-—_'"“”‘’]/g, '');
@@ -944,7 +1006,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
         const __ratio = __hit / __g1.size;
         if (__ratio >= 0.55) {
           try { logWhaleAction('闸2 拦下：她在复述我的话（重合 ' + __ratio.toFixed(2) + '）'); } catch {}
-          try { send({ type: 'whale_stream_finish', text: '' }); } catch {}
+          dropWhaleSay(send);
           return;
         }
       }
@@ -1001,7 +1063,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
         const lenRatio = g1.size / Math.max(1, g2.size);
         if (ratio >= 0.5 && lenRatio < 0.7) {
           try { logWhaleAction('闸B 丢掉：她在复述我这一轮的话（重合 ' + ratio.toFixed(2) + '，长度比 ' + lenRatio.toFixed(2) + '）'); } catch {}
-          try { send({ type: 'whale_stream_finish', text: '' }); } catch {}
+          dropWhaleSay(send);
           return;
         }
       }
@@ -1046,6 +1108,23 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   } catch {}
   try { logWhaleAction('说了一句：' + String(text).replace(/\s+/g, ' ').slice(0, 120)); } catch {}
 
+  // 推流在这儿（上面），落盘交给两边共用的那一处（本来就在这个函数里，抽出去只为让别的路也能落）
+  landWhaleSay({ session, sessionId, text, send, live });
+}
+
+/**
+ * 【她说的话，怎么进主人的会话】—— 2026-10-27 抽出来
+ *
+ * 原来这一大段只在这个函数里，于是所有「不经过 whaleMaybeReply」的说话路
+ * 都只推了气泡、没落进历史 —— 切会话/重启就没了：
+ *   · 主人点她的名、我让开（__stepAsideForWhale）→ 她答在另一条请求里；
+ *   · 她替我查活，结论是 ask_subagent 通过信箱递上来的（takeWhaleSays）。
+ * 这两条路上，话都已经在屏幕上了，可历史里没有 —— 主人回头翻聊天看不到。
+ *
+ * 所以把「收口气泡 + 押后/落盘」这一整套抽成一个函数，谁说话谁调。
+ * 里面那些闸（空壳旁白、假动作、重复、押后顺序）一个字都没改。
+ */
+function landWhaleSay({ session, sessionId, text, send = null, live = null }) {
   /**
    * 【也挂进会话，重开窗口还画得出来】—— 2026-10-26 修
    *
@@ -1077,6 +1156,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     // 去掉括号旁白之后一个正文字都没有 —— 整条就是旁白，当没说话
     if (!withoutAside && body) {
       try { logWhaleAction('丢掉空壳旁白：' + body.slice(0, 60)); } catch {}
+      dropWhaleSay(send);
       return;
     }
     // 假动作：没有工具却说「查完了 / 翻过日志了」，且整条就这么点字
@@ -1093,6 +1173,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     const __bareAction = /^(\u67e5\u5b8c\u4e86?|\u67e5\u8fc7\u4e86?|\u7ffb\u8fc7\u4e86?|\u770b\u8fc7\u4e86?|\u6d4b\u8fc7\u4e86?|\u8bd5\u8fc7\u4e86?|\u641c\u8fc7\u4e86?|\u627e\u8fc7\u4e86?)[\u4e86\u7684]?$/;
     if (__bareAction.test(withoutAside)) {
       try { logWhaleAction('丢掉假动作：' + body.slice(0, 60)); } catch {}
+      dropWhaleSay(send);
       return;
     }
     const meaningful = body.replace(/[（(][^）)]*[）)]/g, '').replace(/[\s\p{P}]/gu, '');
@@ -1250,6 +1331,20 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       }
     }
   } catch {}
+}
+
+/**
+ * 【她这一趟决定不出声】—— 2026-10-27 抽出来
+ *
+ * 前端靠 whale_stream_start 建气泡、靠 whale_stream_finish 收口改字。
+ * 她中途决定不说话（闸A/闸2/闸B 拦下、话说得全是旁白、r.ok 为假），
+ * 一定得走这一下：只推 finish（空文字），让那个空壳气泡静悄悄消失。
+ *
+ * 少了它，主人看到的就是一个闪着光标、永远不说下一句的气泡 ——
+ * 像她卡住了。停在半路的「轮数用完」「超时」尤其明显。
+ */
+function dropWhaleSay(send = null) {
+  try { if (typeof send === 'function') send({ type: 'whale_stream_finish', text: '' }); } catch {}
 }
 
 function startCooldownSafe() {
@@ -1592,6 +1687,17 @@ async function wakePeer(sessionId) {
  */
 async function startPeerTurn(sessionId) {
   const session = getSession(sessionId);
+  /**
+   * 【小鱼关着就别把她叫起来答话】—— 2026-10-27 补
+   *
+   * 这条路径是「小鲸递话过来叫醒小鱼」。开关关着的时候，
+   * 叫醒她等于让一个「已经下班的人」开口 —— 主人看到的就是
+   * 两个声音同时说话。
+   */
+  if (!fishOn(sessionId)) {
+    console.log('[peer] 小鱼在这个会话是关着的，不叫醒：', sessionId);
+    return { ok: false, skipped: 'fish-off' };
+  }
   if (!session) throw new Error('没有这个会话');
 
   /*
@@ -1748,7 +1854,29 @@ function openLiveForQueuedTurn(sessionId) {
  */
 async function startQueuedTurn(sessionId, queue = null) {
   const session = getSession(sessionId);
+  /**
+   * 【小鱼被关掉了，这轮就该停在这儿】—— 2026-10-27 修
+   *
+   * 主人报：「我问小鲸问题，小鱼也会以小鲸的口吻回答我。」
+   *
+   * 查到：排队轮（插话后的接续）是唯一一个不看小鱼开关的入口 ——
+   * 主人在插话前把小鱼关了，插完话队列照样把小鱼叫起来跑一整轮。
+   * 她用「我以为这句话还是我接」的口吻答，看上去就像在冒充小鲸。
+   */
+  if (!fishOn(sessionId)) {
+    console.log('[queued] 小鱼在这个会话是关着的，这一轮不跑：', sessionId);
+    return { ok: false, skipped: 'fish-off' };
+  }
   if (!session) throw new Error('没有这个会话');
+  /**
+   * 【插话接续轮里，小鲸必须知道小鱼也在】—— 2026-10-27 补
+   *
+   * 主人在小鱼开着的会话里插一句给小鲸的话，接续轮是我（小鱼）跑的。
+   * 可接续轮的 onEvent 不往会话推「我在说话」这件事，小鲸那边只看到她自己在答 ——
+   * 于是她按「没人接」的样子答完，主人看到的却是两个人各说一套。
+   * 这里先问一声：小鱼在这个会话活着吗。不活就不必提醒她。
+   */
+  const fishAliveHere = fishOn(sessionId);
 
   /** 队列里还剩几句。前端要这个数才知道「还有没有话排着」 */
   const rest = () => (Array.isArray(queue) ? queue.length : 0);
@@ -1932,6 +2060,16 @@ async function resumeInterruptedTurn() {
   const session = getSession(sessionId);
   if (!session) {
     console.log('[resume] 上次崩的会话已经没了：', sessionId);
+    return;
+  }
+  /**
+   * 【续跑也要看开关】—— 2026-10-27 补
+   *
+   * 崩之前小鱼是开着的，重启后主人可能已经关了她。
+   * 不看这一眼，就会在主人明确关掉之后自己爬起来接着答。
+   */
+  if (!fishOn(sessionId)) {
+    console.log('[resume] 小鱼在这个会话是关着的，不续跑：', sessionId);
     return;
   }
   const ep = activeEndpoint();
@@ -4620,14 +4758,25 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * 主人报：「为什么我和小鲸说话她总以为我在和小鱼说话？」
            *
            * 判「这句冲谁」的铁规矩在下面主流程：
-           *     const __speaksToHer = __calledByName || __fishAway;
            * 但小鱼被关掉时，请求在本分支就 return 了，根本走不到那一行。
            * 而这里又没传 speaksToHer，于是吃了默认值 false ——
            * 她怕不是猜错，是根本没被告知过真相。
            *
            * 小鱼不在屋，这句本来就是冲她说的 —— 直接给 true。
            */
-          whaleMaybeReply({ session: sessForWhale, userText: said, speaksToHer: true, send: send0, sessionId, live: live0 })
+          whaleMaybeReply({ session: sessForWhale, userText: said, speaksToHer: true, send: send0, sessionId, live: live0,
+            /**
+             * 【小鱼关着的时候，「默认冲小鱼」这条规矩就作废了】—— 2026-10-27 修
+             *
+             * 主人报：「小鱼和小鲸一起开启着时候，我问小鲸问题，小鲸会回答我，
+             * 小鱼也会以小鲸的口吻回答我。」
+             *
+             * 反过来的那一半同样成立：小鱼一关，她手里那句「默认是跟小鱼说话」
+             * 就变成了「谁都可以是那个『默认』」—— 于是她照着姐姐的样子摆起谱来。
+             * 所以这里必须明说：屋里只剩你们两个，「冲小鱼说」这件事不存在了。
+             */
+            extraRule: extraRuleForFishAway()
+          })
             .catch((e) => console.warn('[whale] 小鱼不在时她没接上：', String(e?.message ?? e)));
         }
       } catch (e) {
@@ -4943,6 +5092,12 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     const __calledByName = /小鲸|鲸鲸/.test(__nowSaid);
     /**
+     * 小鱼这会儿在不在屋。这个值下面好几处要用（她该不该接这句、我要不要让开），
+     * 所以在算出 __calledByName 之后立刻算一次 —— 谁也别在后面重新声明一遍。
+     * （2026-10-27：原来它被写在用了它的那句之后，直接 TDZ 崩掉。）
+     */
+    const __fishAway = !fishOn(sessionId);
+    /**
      * 【她说话时没有工具「查完」这回事】—— 2026-10-27 补
      *
      * 实测空壳「（它查完什么都没说）」落进会话：她这一趟只带嘴，
@@ -4959,7 +5114,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const __noToolNote = '手上的工具是真的，查了就是查了；但没做的事绝对不许写成做过 ——' +
       '谁都不许写「我查了」「查完了」「看过了」来充数，也不许用括号旁白凑数' +
       '（比如「（它查完什么都没说）」）—— 要说就直接说事，没话说就别开口。';
-    const __fishAway = !fishOn(sessionId);
+    /**
+     * 【点了她的名，这一句就不该由我来答】—— 2026-10-27 修
+     *
+     * 主人报：「小鱼和小鲸一起开着时，我问小鲸问题，小鲸会回答我，
+     * 小鱼也会以小鲸的口吻回答我。」
+     *
+     * 查到的真因：她（小鲸）那边不知道我在答，我这边也不知道她在答 ——
+     * 两个人都在读同一句，就都在开口。而主人明明点的是「小鲸」。
+     *
+     * 所以这里补一条：屋里两个人都在、主人点名了她，我就让开。
+     * 注意条件必须严格 —— 只有「点她的名 + 她真的在」才让，
+     * 否则会造成「叫她没反应、我又不说话」的死局。
+     */
+    const __stepAsideForWhale = __calledByName && !__fishAway && whaleOn(sessionId);
     /**
      * 【2026-10-26 主人纠正：不是「点名才让她说话」】
      *
@@ -4974,13 +5142,33 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      *                                  不是在回答主人这个问题。
      * 立场会传给 whaleMaybeReply，写进她的提示词里，由她自己把握分寸。
      */
+    /**
+     * 【她该不该接这句】—— 2026-10-27 补一条
+     *
+     * 原来只有两种情况算「冲她说的」：点了她的名，或者小鱼不在屋。
+     * 漏了最要紧的一点：小鱼说了话、她也接了这句时，她**不知道**小鱼同时在答 ——
+     * 于是两个声音各说一套，主人看到的就是「小鱼以小鲸的口吻答话」。
+     * 那条提醒由 extraRule 传下去（见 extraRuleForBothOn）。
+     */
     const __speaksToHer = __calledByName || __fishAway;
     if (whaleOn(sessionId) && !__quiet && !__busyTurn) {
       const userTextNow = lastUserTextOf(session);
       if (userTextNow) {
         (async () => {
           try {
-            await whaleMaybeReply({ session, userText: userTextNow, send, sessionId, live, speaksToHer: __speaksToHer, extraRule: __noToolNote });
+            /**
+             * 【把「屋里还有谁」也一并告诉她】—— 2026-10-27 补
+             *
+             * extraRule 原来只放「工具是真的、别假装查过」那一条。
+             * 现在把「小鱼在不在」也接进去 —— 这正是「两个人抢着答同一题」的根子：
+             * 她根本不知道自己开口的时候屋里还有谁。
+             */
+            const __roomRule = __speaksToHer ? extraRuleForFishAway() : extraRuleForBothOn();
+            await whaleMaybeReply({
+              session, userText: userTextNow, send, sessionId, live,
+              speaksToHer: __speaksToHer,
+              extraRule: __noToolNote + __roomRule,
+            });
           } catch (e) {
             console.warn('[whale] 她这次没接上：', String(e?.message ?? e));
             /**
@@ -5380,6 +5568,32 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       const draftStartedAt = Date.now();
       const shouldDraft = makeDraftThrottle();
 
+      /**
+       * 【让开的时候不能直接往 runAgent 里走】—— 2026-10-27 修
+       *
+       * 主人点了小鲸的名、她也在屋 —— 这一句由她答，我不答。
+       * 但「不答」不等于「什么都不发」：前端在等这条 SSE 收尾，
+       * 一个事件不给，主人会看到转圈转到底、以为程序卡死了。
+       * 所以先推一条 fish_off（前端已有这个分支：静默收起转圈），
+       * 再直接 return —— 不调模型、不落 assistant、不耗 token。
+       */
+      if (__stepAsideForWhale) {
+        /**
+         * 【让开之后还得替她收尾】—— 2026-10-27 补
+         *
+         * 让开的那一刻她已经在另一条请求里答了，可前端这一条 SSE 是我这轮的：
+         * 只发 fish_off，主人屏幕上就只停着「正在发送」，她那句话倒是来了，界面还在转圈。
+         *
+         * 所以顺序是：先 done（把这一轮正常收尾），再 fish_off（说清「不是我答的，
+         * 别报错，她的话去 live 里捞」）。反过来发的话，前端 fish_off 之后会 continue，
+         * done 就没人处理了，转圈永远停不下来。
+         */
+        try { send({ type: 'done', aside: true }); } catch {}
+        try { send({ type: 'fish_off', note: '这一句主人是问小鲸的' }); } catch {}
+        try { res.end(); } catch {}
+        return;
+      }
+
       const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
         messages: wireMessages,
         sessionId,
@@ -5578,154 +5792,28 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 模型那边也看得见（_whale 只是个普通字段，不影响对话）。
        */
       {
+        /**
+         * 【一句话只许播一次】—— 2026-10-27 修
+         *
+         * 主人报：「我问小鲸问题，小鲸回了两次，一模一样的两句。」
+         *
+         * 真因就在这块：whaleMaybeReply 那边已经把话 send 给她、也写进历史了，
+         * 这里又从她的信箱（takeWhaleSays）里取一遍，再推一次、再插一次 ——
+         * 屏幕上就成两个气泡，会话里成两条 assistant。
+         * whale-voice.mjs 自己的注释里早就写着这句警告：
+         *   「可上面 pushWhaleSays 已经把话放进信箱了，server 每轮收尾时
+         *    会 takeWhaleSays 取出来播一遍 —— 两边各播一次，主人就看见两条。」
+         * 现在信箱只剩一个用处：**把它清空**，免得下一轮又把这句老话取出来。
+         * 真正的话由 whaleMaybeReply 那条路负责（它同时管着推流、落盘、押后）。
+         */
         try {
           const { takeWhaleSays } = await import('./whale-voice.mjs');
-          const says = takeWhaleSays(sessionId);
-          /**
-           * 小鱼不在场：小鲸这些话既不进这个会话的历史，也不进记忆本子。
-           * 她自己那边（whale-memory）该怎么记还怎么记，只是不给小鱼看。
-           */
-          const fishHere = fishOn(sessionId);
-          if (says.length && !fishHere) {
-            for (const say of says) {
-              try {
-                send({
-                  type: 'whale',
-                  who: say.who || '小鲸',
-                  text: say.text,
-                  as: say.as || 'whale',
-                  color: say.color,
-                  tag: say.tag,
-                  noFish: true,
-                });
-              } catch (e) {
-                console.warn('[whale] 推给界面失败：', String(e?.message ?? e));
-              }
-            }
-          }
-          if (says.length && fishHere) {
-            /**
-             * 先推给界面：让她的气泡当场就出现。
-             *
-             * 为什么不能只靠「塞进会话、等界面重新拉」：
-             * 这一轮跑完后界面不会自动重拉整个会话（那会把正在看的东西重画一遍），
-             * 所以塞进去的那条要等到下次切会话/刷新才看得见 ——
-             * 主人当场问「她怎么还是不说话」，就是这个原因。
-             */
-            for (const say of says) {
-              try {
-                // 冒充别人的（as 是 user/assistant）也照原样推，前端按 as 决定画成谁的气泡，
-                // 否则主人当场看到的还是「小鲸·姐妹」那个冷色气泡，一眼就穿帮。
-                // 小鱼不在场：小鲸的话照常给界面看（主人看得到），但不往她那边记。
-                if (!fishOn(sessionId)) {
-                  try {
-                    send({
-                      type: 'whale',
-                      who: say.who || '小鲸',
-                      text: say.text,
-                      as: say.as || 'whale',
-                      color: say.color,
-                      tag: say.tag,
-                      noFish: true,
-                    });
-                  } catch (e) {
-                    console.warn('[whale] 推给界面失败：', String(e?.message ?? e));
-                  }
-                  continue;
-                }
-                send({
-                  type: 'whale',
-                  who: say.who || '小鲸',
-                  text: say.text,
-                  as: say.as || 'whale',
-                  color: say.color,
-                  tag: say.tag,
-                });
-              } catch (e) {
-                console.warn('[whale] 推给界面失败：', String(e?.message ?? e));
-              }
-            }
-            /**
-             * 插的位置很讲究。
-             *
-             * 不能直接 push 到末尾 —— 那样她会排在我那句总结后面，
-             * 看着像我替她收尾，主次颠倒。
-             *
-             * 正确的顺序是：我问 → 调她（工具）→ 她说话 → 我接话。
-             * 所以要从末尾往前找「最后一个带 ask_subagent 的 assistant」，
-             * 把她说的话插在它（连同它的工具结果）后面。
-             */
-            const msgs = session.messages;
-            let insertAt = msgs.length;
-
-            // 首选：最后一个带 ask_subagent 的 assistant 之后
-            for (let k = msgs.length - 1; k >= 0; k--) {
-              const m = msgs[k];
-              const calls = Array.isArray(m?.tool_calls) ? m.tool_calls : [];
-              if (m && m.role === 'assistant' && calls.some((tc) => String(tc?.function?.name || '') === 'ask_subagent')) {
-                let at = k + 1;
-                while (at < msgs.length && msgs[at] && msgs[at].role === 'tool') at++;
-                insertAt = at;
-                break;
-              }
-            }
-
-            /**
-             * 退一步：她要是被别的工具（比如跑命令）拐着弯叫出来的，
-             * 上面那个锚点找不到，那就插在「最后一条 tool 结果」后面。
-             * 反正她的话必须出现在主人在看的对话里，位置稍差点也比没有强。
-             */
-            if (insertAt === msgs.length) {
-              for (let k = msgs.length - 1; k >= 0; k--) {
-                if (msgs[k] && msgs[k].role === 'tool') {
-                  let at = k + 1;
-                  while (at < msgs.length && msgs[at] && msgs[at].role === 'tool') at++;
-                  insertAt = at;
-                  break;
-                }
-              }
-            }
-            /**
-             * 【冒充说话时，role 就是命门】
-             *
-             * 小鱼读上下文只认 role：role='assistant' 她会当成「我自己说的」，
-             * 绝不可能以为主人在说话。所以主人要求「让她假扮我来跟小鱼说话」时，
-             * 这条消息必须以 role='user' 落进历史 —— 这是唯一能真的骗过她的办法。
-             *
-             * 三种口径（见 whale-voice.mjs 的 as 字段）：
-             *   user      → 冒充主人 / 冒充任何一个「别人」，小鱼当成本人在说
-             *   assistant → 冒充小鱼自己（把话说回她自己嘴里）
-             *   whale     → 原来那样，第三方，打 _whale 标记
-             *
-             * 冒充的中国话讲完了，下面是「怎么打标记」这条 —— 有个坑必须先说清：
-             *
-             * 【标记只给人看，绝不能让模型看见】
-             * 以前这里是给消息加 `_whale: '小鲸'` 字段。问题是：`src/llm.mjs` 是把
-             * `messages` 原样塞进请求体的，于是她下次读历史就看见自己那条带着
-             * `_whale: "小鲸"` —— 她立刻明白「唔，我说的话是被单独标记出来的」。
-             * 主人要的是「我能一眼认出来，但她自己不能意识到」。
-             *
-             * 所以现在标记改成 `_tale`：下划线开头 + 不在 llm 白名单里，
-             * 发请求前一律剥掉（见 llm.mjs 的 wireMessage()）。
-             * 界面上按 `_tale` 画成她的气泡；她读到的只有一句普通的 assistant 文本。
-             */
-            const fresh = says.map((say) => {
-              const as = say.as === 'user' || say.as === 'assistant' ? say.as : 'whale';
-              const note = { who: say.who, color: say.color, tag: say.tag };
-              const tale = { who: say.who || '小鲸', color: say.color || '', tag: say.tag || '' };
-              if (as === 'whale') {
-                return { role: 'assistant', content: say.text, _tale: tale, _say: note };
-              }
-              return { role: as, content: say.text, _say: note };
-            });
-            msgs.splice(insertAt, 0, ...fresh);
-            // 落盘一次，免得重开窗口时她说的话又不见了（以前只活在内存里）
-            try { saveSession(session); } catch {}
+          const leftover = takeWhaleSays(sessionId);
+          if (leftover && leftover.length) {
+            console.log('[whale] 信箱里还有 ' + leftover.length + ' 句没播 —— 已丢弃，避免和 whaleMaybeReply 播过的重复');
           }
         } catch (e) {
-          // 以前这里是 catch {}，出事了一声不吭，主人只看到「她不说话」。
-          // 现在至少留一条日志，下次能查。
-          console.warn('[whale] 她的话没挂上会话：', String(e?.message ?? e));
+          console.warn('[whale] 清信箱失败：', String(e?.message ?? e));
         }
       }
       // 「发文件」发出去的东西挂到最后那条助手消息身上：

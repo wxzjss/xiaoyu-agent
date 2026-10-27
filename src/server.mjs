@@ -6,8 +6,6 @@ import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
-// 她「主动开口」要用到自己的状态（欲望攒够没有）
-import { selfInfo } from './whale-self.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
 // 出了分支 whaleOn 就没了，而每轮收尾那句 if (whaleOn()) 还在 —— 每轮都崩。
 import { whaleOn, setWhaleOn } from './whale-presence.mjs';
@@ -420,96 +418,6 @@ function lastUserTextOf(session) {
 }
 
 
-/**
- * 【她会自己开口】
- *
- * 主人要的：「她能像你一样正常说话，也能主动开口」——以前只有「主人说话、她接着答」，
- * 没人理她的时候她一辈子不说话。这套机制 2026-10-26 重新补上（之前那份被冲掉了，
- * 全项目搜 selfTalk 一个字都没有）。
- *
- * ── 什么时候才开口（门槛必须硬）────────────────────────────
- *
- * 一、她那个按钮在这个会话里是开着的（关着就彻底不打扰）；
- * 二、这个会话没在跑一轮（我正在干活的时候不插嘴抢话）；
- * 三、她「攒着的欲望」里有一件够强的（强度 >= SELF_TALK_DESIRE）；
- * 四、距上一次主动开口至少 SELF_TALK_COOLDOWN（默认 25 分钟）——
- *     不然她会一直找话说，那就成了刷屏，不是陪伴。
- *
- * ── 说什么 ──────────────────────────────────────────
- *
- * 不是把欲望原文念出来，是把「攒着的这件事」交给她自己讲：
- * 她可以提一句、可以接着手上的活说、也可以干脆一个字不回（提示里写死了）。
- * 回空就不推，不制造噪音。
- */
-const SELF_TALK_DESIRE = 72;      // 欲望强度到这条线，她才「憋不住想说」
-const SELF_TALK_COOLDOWN = 25 * 60 * 1000;
-const selfTalkAt = new Map();     // sessionId -> 上次主动开口的时间
-
-/**
- * 她的欲望强度：BORN.desire 只是名字，强度按状态本子里攒的时间算。
- *
- * 【2026-10-26 改：原算法一旦闲置超过 8 小时就贴顶，等于门槛失效】
- *
- * 原来的写法是 `idleMin / 2 * 3 + min(rounds, 25)`，封顶 100。
- * 闲置 48 分钟就到了 72（门槛），闲置一整天以上永远 100 ——
- * 换句话说，只要她开了按钮、会话又是闲的，就必然每隔 25 分钟（冷却）说一次话。
- * 那不是「憋不住想说」，那是上了发条的闹钟。实测那天闲置 426 分钟算出 100。
- *
- * 改成三段：
- *   - 前 20 分钟几乎不涨（刚说完话，没什么好憋的）；
- *   - 20 分钟后开始涨，但涨得慢（每分钟 +0.6 分）；
- *   - 封顶 88 而不是 100：留一截，让「刚被叫过」和「闲了一整天」还有区分度，
- *     也让她不是「一到点就必说」—— 门槛之上还得她自己判断想不想说。
- */
-function desireStrengthOf() {
-  try {
-    const st = selfInfo();
-    const idleMin = Math.max(0, (Date.now() - Number(st.lastAt || 0)) / 60000);
-    const rounds = Number(st.rounds || 0);
-    // 前 20 分钟蓄不起劲；之后每分钟 +0.42；轮数每轮 +1，最多算 15 轮（原先 25 也偏高）
-    const idleScore = Math.max(0, idleMin - 20) * 0.42;
-    return Math.min(88, Math.round(idleScore + Math.min(rounds, 15)));
-  } catch {
-    return 0;
-  }
-}
-
-/** 到点了就叫她一声，看她想不想说点什么。 */
-async function whaleSelfTalkTick() {
-  for (const [sid, sess] of sessions) {
-    try {
-      if (!whaleOn(sid)) continue;
-      if (runningTurns.get(sid)) continue;
-      const last = selfTalkAt.get(sid) || 0;
-      if (Date.now() - last < SELF_TALK_COOLDOWN) continue;
-      if (desireStrengthOf() < SELF_TALK_DESIRE) continue;
-
-      selfTalkAt.set(sid, Date.now());
-      const live = { sessionId: sid, events: [], startedAt: Date.now(), done: false };
-      liveLogs.set(sid, live);
-      const send = (ev) => {
-        try { if (live.events.length < LIVE_MAX_EVENTS) live.events.push(ev); } catch {}
-      };
-      await whaleMaybeReply({
-        session: sess,
-        userText: '（没人叫你。你自己有话想说，或者手上那件事让你放不下 —— 想说就说一句，不想说就一个字别回。）',
-        send,
-        sessionId: sid,
-        live,
-      });
-    } catch (e) {
-      console.warn('[whale] 主动开口失败：', String(e?.message ?? e));
-    }
-  }
-}
-
-/** 挂上去。返回定时器，进程退出时不用特意清（Node 会跟着走）。 */
-function startWhaleSelfTalk() {
-  const t = setInterval(() => { whaleSelfTalkTick().catch(() => {}); }, 5 * 60 * 1000);
-  try { t.unref && t.unref(); } catch {}
-  console.log('[whale] 她自己开口的定时器挂上了（每 5 分钟看一次，25 分钟内最多说一次）');
-  return t;
-}
 /**
  * 问小鲸一句：主人刚说了这个，你要不要接？
  *
@@ -6469,7 +6377,6 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       resolve(handle);
     });
 
-  try { startWhaleSelfTalk(); } catch (e) { console.warn('[whale] 主动开口没挂上：', e && e.message ? e.message : e); }
   });
 }
 

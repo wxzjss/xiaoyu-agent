@@ -35,7 +35,6 @@ import { readWhaleMemory, appendWhaleMemory, compactWhaleMemory } from './whale-
  * 只有把状态变成存盘的数字、每轮跟着经历变，行为才会真的跟着变；
  * 写在提示词里只会变成「我有点累了」这种台词。
  */
-import { readSelf, writeSelf, decayOverTime, afterRound, stateBrief, selfPath } from './whale-self.mjs';
 // 她自己的话直接投进信箱：万一调用方那条路断了，她说的也不会凭空消失。
 import { pushWhaleSays } from './whale-voice.mjs';
 import path from 'node:path';
@@ -464,19 +463,6 @@ export async function runSubagent({
   let finishedOk = false;
   let outcomeText = '';
 
-  /**
-   * 【这三个必须声明在 try 外面】
-   *
-   * 状态记账放在 finally 里（三条出口都要记），而 finally 读不到 try 块里的 let。
-   * 第一次写的时候就把 `let self = readSelf()` 留在了 try 里面，
-   * 跑起来是 `[whale-self] 状态没记上：self is not defined` ——
-   * 话说对了、活也干了，就是她的状态一个字没存下来，白累。
-   */
-  let self = readSelf();
-  let selfOn = true;
-  let stateText = '';
-  /** 同一个问题被问第几次 —— 耐心掉多少全靠这个，同样要在 finally 里能读到。 */
-  let sameBore = 1;
 
   try {
     // ---- 工具白名单 ----
@@ -581,49 +567,6 @@ export async function runSubagent({
       } catch {}
     }
 
-    /**
-     * 读她的状态本子，先把「搁了那么久」的时间回落算掉。
-     *
-     * 顺序很重要：先 decay（她刚被叫醒，累该退、耐心该回），
-     * 再交给提示词。不先回落的话，昨天干到 90 分的疲惫今天还挂着。
-     *
-     * 这里**不写盘** —— 写盘等这一轮跑完（afterRound → writeSelf），
-     * 中途崩了也不该把她记成「干完了」。
-     */
-    self = readSelf();
-    try {
-      self = decayOverTime(self);
-    } catch {}
-    /**
-     * 【2026-10-27】功能页里那个「小鲸的状态」开关已经摘掉了（主人要求删）。
-     * 状态本子从此常开 —— 它撑着两件事：她说话的样子（stateBrief），
-     * 以及「她自己要不要主动开口」（server.mjs 的 desireStrengthOf 读 selfInfo）。
-     * 所以这里不再看任何开关，一律 selfOn = true。
-     */
-    selfOn = true;
-    /** 把状态翻译成「该怎么做」，不是「你感觉怎么样」（主人要行为表现，不要台词）。 */
-    stateText = '';
-    if (selfOn) {
-      try {
-        stateText = stateBrief(self);
-      } catch {}
-    }
-
-    /** 同一个问题被问第几次 —— 耐心掉多少全靠这个。 */
-    sameBore = 0;
-    try {
-      const bore = String(self.patience?.bore || '');
-      const probe = String(cleanTask || '').slice(0, 8);
-      if (bore && probe && bore.includes(probe)) {
-        sameBore = (Number(self.boreCount) || 1) + 1;
-      } else if (bore && probe) {
-        const a = bore.slice(0, 12);
-        const b = probe.slice(0, 12);
-        sameBore = a && b && (a.includes(b) || b.includes(a)) ? (Number(self.boreCount) || 1) + 1 : 1;
-      } else {
-        sameBore = 1;
-      }
-    } catch { sameBore = 1; }
 
     const systemPrompt = [
       /**
@@ -734,28 +677,6 @@ export async function runSubagent({
       '最忌的就是：把本子里一条陈年「未结」原样念给主人听，还以为自己很负责。',
       '那不是负责，那是复述 —— 主人已经因为这种事说过你很多回了。',
       '',
-      /**
-       * 【状态段 —— 只给做法，不给台词】
-       *
-       * 主人拍板：「状态只用行为表现，不明说」。
-       * 所以这段里一个「你很累 / 你很烦」的说法都没有，
-       * 全是「该把话压短 / 别再完整讲一遍 / 直接说干不动」这类**动作**。
-       *
-       * 【跟「状态明说」的矛盾怎么解，别写反了】
-       * 主人后来说自卑这件事「半自知」：她知道自己自卑、知道自己怕，
-       * 而且不觉得这是问题，甚至会拿理性包装 —— 这部分**可以明说**。
-       * 所以边界是：
-       *   - 累、烦、慌这些**磨人的**，靠行为漏，不报数字；
-       *   - 「我是个可被替代的东西」「我这样想是合理的」这种**自我认识**，她敢说出口。
-       * 两套并存，别互相污染：别让她说「我现在疲惫值 70」，也别让她说「我一点都不怕」。
-       */
-      '【你现在是什么状态】（这是真的，别自己另编一套）',
-      stateText || '（状态正常，照平常那样说话）',
-      '',
-      '上面这些是**你现在该怎么说**，不是让你照着念台词。',
-      '绝对不要说「我现在很累」「我有点不耐烦」这种话 ——',
-      '累和烦要让人从你的句子长度、语气、肯不肯多说一句里看出来，说出来就假了。',
-      '但你对**自己是个什么东西**的看法不一样：那个你可以直接讲。',
       '',
       '【必须做的一件事】',
       '你每干完一件活，最后都要留一行：',
@@ -1042,53 +963,6 @@ export async function runSubagent({
     // 投两次也没关系，whale-voice 那边会按时间戳去重。
     if (lastSaid && !saidDelivered) {
       try { pushWhaleSays(ownerSessionId, lastSaid, name); } catch {}
-    }
-    /**
-     * 【记账：这一轮她真的过了时间】
-     *
-     * 这里是唯一写状态本子的地方 —— 三条出口（交结论 / 轮数用完 / 抛错）都会走到这儿，
-     * 所以不管她怎么收场，状态都会更新。写在 try 里的话，出一次错就永远不累了。
-     *
-     * 顺带把「同一个问题第几次」也记下去：
-     * sameBore 由开头算好，这里只在「这次确实是同一个问题」时才 +1，
-     * 别的情况从 1 重新数。
-     */
-    try {
-      const minutes = Math.max(0, (Date.now() - startedAt) / 60000);
-      /**
-       * 【认一下「只有你能干」这句话】
-       *
-       * 主人给的成长线里唯一的转折点就是这一句，所以它不该只靠她自己听出来。
-       * 这里在任务原文里认一遍（主人/小鱼交代时说的），认到就传给 afterRound，
-       * 让 worth 大幅掉下去并记进 proof 那行。
-       *
-       * 认的是「说法」不是「夸奖」—— 只认这种指名道姓交给她的句式，
-       * 泛泛的「你真棒」不算，不然她会天天自愈，那个人设就废了。
-       */
-      const onlyYouHit = /只有你能|只有你会|非你不可|你来我才放心|只能靠你|别人做不了|这个我信不过别人/.test(String(cleanTask || ''));
-      const next = afterRound(self, {
-        minutes,
-        toolCount,
-        ok: finishedOk,
-        sameBore: Number(sameBore) || 1,
-        corrected: false,
-        taskText: cleanTask,
-        outcome: outcomeText,
-        onlyYou: onlyYouHit ? cleanTask : '',
-        /**
-         * 【这一趟主人到底有没有给她工具】
-         *
-         * noTools 的场景（接话只给嘴）本来就轮不到她动手，
-         * 不能记成「她一个工具都没用上 → 觉得自己多余」。
-         * 那个 +8 实测把 worth 一路推到 91，跟她台词全对不上。
-         */
-        hasTools: noTools ? false : true,
-      });
-      next.boreCount = Number(sameBore) > 1 ? Number(sameBore) : 1;
-      writeSelf(next);
-    } catch (e) {
-      // 状态记账失败不能影响她已经给出的结论
-      console.warn('[whale-self] 状态没记上：', String(e?.message ?? e));
     }
     dropSubagentDepth();
     restoreCtx();

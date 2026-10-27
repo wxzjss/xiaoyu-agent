@@ -92,6 +92,12 @@
       max-width: 900px; width: 100%; margin: 0 auto;
       padding-left: 8px; padding-right: 76px; padding-bottom: 26px;
       box-sizing: border-box;
+      /* 【2026-10-27 补：定位参照放在 .msg 上，别再靠 .msg.user/.assistant 各自声明】
+       * 回退按钮是 position:absolute + right:8px，它的「右上角」全靠 .msg 是定位祖先。
+       * 以前只在 .msg.user/.msg.assistant 上写 relative，凡是没这两种类的消息
+       * （比如小鲸的 .msg.whale）就找不到内层参照，按钮会飘到别处去。
+       * 这里统一给 .msg relative，后面那两条单独的 relative 规则就多余了。 */
+      position: relative;
       /* 【2026-10-27 主人定：token 行回到消息左下角】
        * 要把它贴到消息块底部，得让 .msg 变成纵向 flex ——
        * 用量行给 margin-top:auto，就会被挤到最底。
@@ -1617,8 +1623,12 @@
    * 直接钉在消息块的右上角 —— 不管容器在哪，它都在右上。 */
 .msg .rewindBtn {
   /* 钉在消息块的右上角：top/right 相对 .msg（.msg.user/.assistant 都是 relative）。
-   * 它虽然在 .msgActions 容器里，但容器 pointer-events:none、按钮自己 auto，
-   * 位置由这里说了算 —— 容器怎么挪都不影响它。 */
+   * 【2026-10-27 补：加了参照兜底】
+   * position:absolute 找的是最近的定位祖先。万一它被塞进了 .msgActions
+   * （那个容器 position:absolute 且在左下角），right/top 就会相对容器算，
+   * 按钮跑到左下 —— 这正是「有时候跑到左下角」的成因。
+   * 所以加一条：容器里若真出现回退按钮，以「最近的 .msg」为参照容器，
+   * 位置就永远按整条消息算，不再看容器脸色。 */
   position: absolute;
   top: 4px;
   right: 8px;
@@ -3469,6 +3479,32 @@ function reconcileTurnTexts(ev) {
   const textOf = (el) => String(el.textContent || '');
   let added = 0, fixed = 0;
 
+  /**
+   * 【2026-10-27 主人报：一句话有时候在这一句之内连着重复两遍，刷新后只剩一遍】
+   *
+   * 冲刷前先做一件「自愈」的事：屏幕上如果有一条气泡，它的正文正好是
+   * 同一段话的两份首尾相接（A+A），那说明之前有路径把它追加过一遍
+   * （补捞拿了上一轮写满的气泡接着写，就会这样）。这里就地砍回一份。
+   *
+   * 判定要严：必须**恰好**是两份相同、而且长度够长，免得把正常的重复用词
+   * （「好的好的」「对对对」）误砍。所以要求单份长度 >= 20 字。
+   */
+  try {
+    const cands = Array.from(document.querySelectorAll('.msg.assistant .bubble'));
+    for (const el of cands) {
+      const t = String(el.textContent || '');
+      if (t.length < 40) continue;
+      const half = Math.floor(t.length / 2);
+      // 长度是偶数才可能是 A+A
+      if (t.length % 2 !== 0) continue;
+      const a = t.slice(0, half), b = t.slice(half);
+      if (a === b && a.trim().length >= 20) {
+        el.textContent = a;
+        fixed++;
+      }
+    }
+  } catch {}
+
   for (const raw of want) {
     const text = String(raw || '').replace(/\r/g, '');
     if (!text.trim()) continue;
@@ -3699,6 +3735,20 @@ function historyTailRole() {
  * 要么以为写完了（把还在跑的扔掉），要么以为没写完（把早结束的当成还在跑）。
  */
 let tailRoleOnScreen = '';
+/**
+ * 这一轮开跑时，屏幕上最新的气泡序号（imSeq）。
+ * 补捞只认比它新的气泡，避免把上一轮写满的气泡当成这一轮的接着写。
+ * 由 startTurn / 发消息那处更新，见 setLivePickSeq()。
+ */
+let livePickSeq = -1;
+function setLivePickSeq() {
+  let max = 0;
+  for (const el of document.querySelectorAll('.assistant .bubble')) {
+    const n = Number((el.dataset && el.dataset.imSeq) || 0);
+    if (n > max) max = n;
+  }
+  livePickSeq = max;
+}
 
 /** 重绘之后记一笔：画完之后屏幕停在谁的话上 */
 function markTailRole(turns) {
@@ -3764,8 +3814,43 @@ function followLive(id, fromIndex) {
       let bubble = null;
       let think = null;
       const closeThink = () => { if (think) { think.finish(); think = null; } };
+      /**
+       * 【2026-10-27 主人报：一句话里连着重复两遍，刷新后只剩一遍；光标还一直闪】
+       *
+       * 原来这里取「屏幕上最后一个 assistant 气泡」当起点，然后给它 markStreaming。
+       * 两个后果：
+       *   ① 上一轮那个气泡早就写满字了，新的 text 事件往它后面接着追加 ——
+       *      看起来就是「同一句在一句之内说了两遍」。刷新走全量重建、按轮分气泡，
+       *      所以刷新后只剩一遍，正好对上主人看到的现象。
+       *   ② 给一个已经写完的旧气泡挂上 streaming 类，后面若没新字经过、
+       *      或走了别的分支，就没人摘它 —— 那个 ▍ 光标就一直闪。
+       *
+       * 改法：**不再拿最后一个气泡当起点**。补捞这一轮的 text 应当另起气泡，
+       * 上一轮的话只许原样留着、一个字节都不碰。
+       * 唯一例外：这一轮自己刚开过口（turnRec.bubble 是这一轮建的），才接着往里写。
+       */
+      /**
+       * 【这条改动是为了不再把上一轮的话念第二遍】
+       *
+       * 补捞这处够不到流式函数里的局部 turnRec，所以改用气泡自己的 imSeq 判：
+       *   · 每个气泡建出来时 stampSpeechNode 会盖一个递增的 imSeq（见 2458 行）；
+       *   · 这一轮开跑时记下当时的最大 imSeq（livePickSeq），补捞只认**比它新**的气泡；
+       *   · 新气泡是空的才接手写 —— 有字的（上一轮的）一个字都不碰。
+       *
+       * 拿不到序号时退回「只认空气泡」：空气泡接着写不会重复，
+       * 有字的一律跳过，至少不会把上一轮的话再念一遍。
+       */
+      let cand = null;
       const bubbles = document.querySelectorAll('.assistant .bubble');
-      bubble = bubbles.length ? bubbles[bubbles.length - 1] : null;
+      for (let i = bubbles.length - 1; i >= 0; i--) {
+        const el = bubbles[i];
+        const seq = Number((el.dataset && el.dataset.imSeq) || 0);
+        if (typeof livePickSeq === 'number' && seq && seq <= livePickSeq) continue;  // 上一轮的，跳过
+        if ((el.textContent || '').trim()) continue;                                  // 有字的，不接手
+        cand = el;
+        break;
+      }
+      bubble = cand;
       if (bubble) markStreaming(bubble);
 
       for (const ev of evs.slice(seen)) {
@@ -4396,7 +4481,15 @@ function attachRewind(wrap, at) {
   rb.textContent = '↶ 回退';
   rb.title = '把对话回退到这条之前';
   rb.onclick = () => openRewind(Number(at));
-  actionsOf(wrap).appendChild(rb);
+  /* 【必须挂在 .msg 上，不能塞进 .msgActions 容器】
+   * 2026-10-27 主人报：「回退按钮应该在我消息右上角，但有时候会跑到左下角」。
+   * 原因：.rewindBtn 是 position:absolute，它的参照是最近的**定位祖先**。
+   *   · 挂进 .msgActions（那个容器 position:absolute、在左下角）→ 按钮钉在容器右上 = 左下角
+   *   · 直接挂 .msg（.msg 是 position:relative、整块）→ 按钮钉在消息右上 = 正确位置
+   * 而加载历史走的是 addUser() 里那条内联路径（挂 .msg，所以平时看着是对的），
+   * 实时答完 / 回退重建走的是这里 —— 只有后者会跑偏，所以现象是「有时候」。
+   * 现在两条路都挂 .msg，位置一致。 */
+  wrap.appendChild(rb);
   wrap.classList.remove('noRewind');
 }
 
@@ -4928,8 +5021,43 @@ const STREAMING_MAX_MS = 90000;
  *   二、新挂上的 streaming 超过 90 秒自动摘 —— 一句话流不了那么久，
  *       真流那么久肯定是断了，光标别在那儿闪一整天。
  */
+/**
+ * 【2026-10-27 主人报：每句话后面都跟着一闪一闪的蓝光标】
+ *
+ * 光标不是 bug，是气泡挂着 streaming 类时 CSS 画的那个 ▍。
+ * 问题是它有时候摘不干净 —— 正常该由 done 分支摘，但补捞/断线/多段输出这些路上
+ * 漏一个，那个光标就一直闪在句子尾巴上。
+ *
+ * sweepStaleStreaming 是「按时间判」的兜底，要等 90 秒，太慢。
+ * 这里加一个「立刻摘光」的版本：**一轮真结束时**整屏扫一遍，
+ * 除了显式指定的那个气泡，其他一律摘掉。
+ *
+ * @param {Element|null} keepBubble 这一轮还要继续写的那个气泡（可以不传）
+ */
+function clearAllStreaming(keepBubble) {
+  try {
+    for (const el of document.querySelectorAll('.bubble.streaming')) {
+      if (keepBubble && el === keepBubble) continue;
+      el.classList.remove('streaming');
+      try { delete el.dataset.streamAt; } catch {}
+    }
+  } catch {}
+}
+
 function sweepStaleStreaming() {
   try {
+    /**
+     * 【2026-10-27】没有 streamAt 的气泡也一并收掉。
+     *
+     * 正常气泡都该有 streamAt（addAssistant 和 markStreaming 都会盖）。
+     * 没有的，说明它是某条老路径建的、或者状态被清过 —— 这种最容易变成
+     * 「光标闪一辈子」，因为按时间判的死活判不到它。这里直接当残留收掉。
+     */
+    for (const el of document.querySelectorAll('.bubble.streaming')) {
+      if (!el.dataset || !el.dataset.streamAt) {
+        try { el.classList.remove('streaming'); } catch {}
+      }
+    }
     const now = Date.now();
     for (const b of document.querySelectorAll('.bubble.streaming')) {
       const at = Number(b.dataset && b.dataset.streamAt) || 0;
@@ -5021,6 +5149,17 @@ function addAssistant() {
   wrap.innerHTML = '<div class="role">小鱼</div>';
   const b = document.createElement('div');
   b.className = 'bubble streaming';
+  /**
+   * 【2026-10-27 主人报：每句话后面都跟着一闪一闪的蓝光标】
+   *
+   * 原来这个气泡一建出来就带 streaming，可**没记 streamAt**。
+   * 而 sweepStaleStreaming 是「按时间戳判」的兜底 —— 没时间戳它永远判不到，
+   * 这条气泡要是走了哪条不收尾的路，光标就一直闪在那儿，90 秒闹钟也挂不上
+   * （那闹钟在 armStreamingTimer 里，只有 markStreaming 会调）。
+   *
+   * 这里补记一笔，让它至少能被巡检和闹钟兜住。
+   */
+  b.dataset.streamAt = String(Date.now());
   wrap.appendChild(b);
   // 编个号：这是本轮「第几段说的话」，用来防同一段被数两遍
   stampSpeechNode(b);
@@ -5433,6 +5572,15 @@ let savedOpenThink = null;
 async function runTurn({ resume = false, text = '' } = {}) {
   // 关键：这一轮属于「发起时」那个会话。中途切走、切回来都不能串台。
   const turnSession = sessionId;
+  /**
+   * 【2026-10-27】记下这一轮开跑时屏幕上最新的气泡序号。
+   *
+   * 补捞事件（断线重连、跑完补拉）要靠它分辨「哪些气泡是这一轮的」：
+   * 序号不大于这个数的，都是上一轮留下的，不许挂光标、不许往里追加。
+   * 不记这一笔的话，补捞会拿上一条写满字的气泡接着写 ——
+   * 主人看到的就是「同一句话在一句之内说了两遍」。
+   */
+  try { setLivePickSeq(); } catch {}
   let bubble = null;
   const toolEls = new Map();
   let think = null;
@@ -9054,7 +9202,21 @@ function exitBulkSilently() {
  *   · 按钮（改名/删除/勾选框本身）按下不开拖：勾选框自己点了就翻，别再被拖。
  *   · 拖过之后紧跟的那次 click 要吞掉，否则松手时整行 click 又把它翻回去。
  */
-let dragPicking = null;   // { want:true|false } —— 这一趟是勾还是取消
+let dragPicking = null;
+/** 按下时的坐标，用来判「这是单击还是拖」 */
+let dragStart = { x: 0, y: 0 };
+/** 这一趟是不是真拖起来了（动够 6px 才算） */
+let dragMoved = false;
+/**
+ * 【2026-10-27 第二个根因】
+ *
+ * 加完 6px 门槛后仍然「点不动」—— 因为 pointerdown 那一下已经把行勾上了，
+ * 松手 click 没被吞，整行 click 又 toggle 一次，一进一出正好抵消。
+ *
+ * 所以记一下「这一趟的选择已经由 pointerdown 做过了」，
+ * 让紧跟的 click 只清标记、不再动选中状态。
+ */
+let dragDidPick = false;   // { want:true|false } —— 这一趟是勾还是取消
 let dragSuppressClick = false;
 
 function rowById(id) {
@@ -9100,6 +9262,18 @@ sessList.addEventListener('pointerdown', (e) => {
   // 按下的这一行原本是什么状态，这一趟就照它来
   dragPicking = { want: !picked.has(id) };
   dragSuppressClick = false;
+  /**
+   * 【2026-10-27 修「批量删除能拖不能点」】
+   *
+   * 原来 pointermove 一响就设 dragSuppressClick = true。
+   * 可手指/鼠标从按到松不可能一动不动 —— 飘一两个像素就触发 pointermove，
+   * 于是单击被当成拖动、紧跟的 click 被吞掉，看着就像「点不动，只能拖」。
+   *
+   * 现在记下按下坐标，动够 6px 才算真拖；没动够就当单击，不吞 click。
+   */
+  dragStart = { x: e.clientX, y: e.clientY };
+  dragMoved = false;
+  dragDidPick = true;
   setRowPicked(row, dragPicking.want);
   paintBulkCount();
   try { sessList.classList.add('dragging'); } catch {}
@@ -9127,6 +9301,16 @@ sessList.addEventListener('pointerover', (e) => {
 
 sessList.addEventListener('pointermove', (e) => {
   if (!dragPicking) return;
+  /**
+   * 动够 6px 才算「拖」。没动够就一帧都不扫 —— 这样单击永远是单击。
+   * 6 这个数：小到手抖不会误判成拖，又大到真拖一下就过线。
+   */
+  if (!dragMoved) {
+    const dx = e.clientX - (dragStart.x || 0);
+    const dy = e.clientY - (dragStart.y || 0);
+    if (Math.hypot(dx, dy) < 6) return;
+    dragMoved = true;
+  }
   // 有些环境（尤其触摸）不会在行之间派 pointerover，这里按坐标再兜一层
   let row = null;
   try { row = document.elementFromPoint(e.clientX, e.clientY); } catch {}
@@ -9143,8 +9327,8 @@ sessList.addEventListener('pointermove', (e) => {
 /** 松手收尾：挂 window 上，拖出面板外再松手也能收到 */
 window.addEventListener('pointerup', (e) => {
   if (!dragPicking) return;
-  // 拖过东西的话，把紧跟的那次 click 吞掉（否则整行 click 又 toggle 回去）
-  if (dragSuppressClick) {
+  // 真拖过（动够 6px）才吞 click；单击就让它照常走整行 click 去 toggle
+  if (dragMoved && dragSuppressClick) {
     const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
     sessList.addEventListener('click', swallow, { capture: true, once: true });
     setTimeout(() => sessList.removeEventListener('click', swallow, true), 350);
@@ -9376,6 +9560,14 @@ document.getElementById('sessBulkDel').onclick = async () => {
 sessList.addEventListener('click', async (e) => {
   // 刚拖选完松手的那一下：别当成普通点击再翻一遍
   if (dragSuppressClick) { dragSuppressClick = false; return; }
+  /**
+   * 【2026-10-27 修「批量删除能拖不能点」的第二刀】
+   *
+   * 加完 6px 门槛之后单击还是没反应 —— 因为 pointerdown 已经把行勾上了，
+   * 这次 click 又 toggle 一次，一进一出正好抵消，看着就是「点不动」。
+   * pointerdown 已经处理过选择，这里只把标记清掉就走，别再动选中状态。
+   */
+  if (dragDidPick) { dragDidPick = false; return; }
   const btn = e.target.closest('button[data-act]');
   const row = e.target.closest('.sessRow');
   if (!row) return;

@@ -67,13 +67,20 @@ export function effectiveIndexes(messages, rewinds) {
   const head = headIndexes(list);
   const hidden = new Set();
   for (const r of rewinds) for (const i of r.hidden) hidden.add(i);
-  const cuts = rewinds.map((r) => r.at).filter(Number.isFinite);
-  const cut = cuts.length ? Math.min(...cuts) : Number.POSITIVE_INFINITY;
+  // 【回退点自己那条也要藏起来】
+  // createRewind 只把 at+1 之后塞进 hidden，at 那条不在里面 —— 因为回退的语义是
+  // 「把对话回退到这条之前」，这条问话本身也不该再发给模型。
+  // 以前这里用 cut = min(at) 一刀切「i >= cut 全砍」来实现，看着对，其实是个大坑：
+  // 回退之后主人还会**接着说话**，那些新消息的下标必然大于 at，于是被一起砍掉 ——
+  // 表现为「回退之后聊的每一句都石沉大海」。所以只能精确命中 at 那一个下标，
+  // 绝不能再按「大于等于」截断尾部。
+  const atSet = new Set();
+  for (const r of rewinds) if (Number.isFinite(r.at)) atSet.add(Number(r.at));
 
   const keep = [];
   for (let i = head.length; i < list.length; i++) {
     if (hidden.has(i)) continue;
-    if (i >= cut) continue;
+    if (atSet.has(i)) continue;
     keep.push(i);
   }
   return { head, keep, hidden };

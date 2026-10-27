@@ -4444,6 +4444,81 @@ function attachBranchBtn(wrap, at) {
   wrap.classList.remove('noRewind');
 }
 
+/**
+ * 「↻ 重发」：把这句话退回去，再用主人当时那句原话问一遍。
+ *
+ * 【为什么不直接再发一次】
+ * 直接再发一遍 = 历史里多一条一模一样的 user，对话变成「问 → 答 → 又问 → 又答」，
+ * 而且上一轮她干过的工具活、改过的文件还留着，第二轮是在错误的前提下跑的。
+ * 所以要先用回退接口把这一轮整体抹掉（对话、文件、记忆一起退），再重问。
+ *
+ * 【为什么要 askQueue】
+ * 回退接口只认 role=user 且非 context 的消息 —— 光有 assistant 的 rewindId 退不了。
+ * 所以一路画下来，每遇到一条 user 就把它记下，轮到画回复时取「最近的那一问」。
+ */
+function attachRetry(wrap, askQueue) {
+  if (!wrap || wrap.querySelector(".retryBtn")) return;
+  const ask = lastAsk(askQueue);
+  // 找不到那一问（老会话缺 rewindId、或这条是插话冒出来的）就别挂，挂了也是按不动的
+  if (!ask || !Number.isFinite(Number(ask.at))) return;
+  const rb = document.createElement("button");
+  rb.type = "button";
+  rb.className = "retryBtn";
+  rb.textContent = "↻ 重发";
+  rb.title = "把这一轮退掉，用你当时那句话重新问一遍";
+  rb.onclick = () => retryHere(Number(ask.at), String(ask.text || ""), rb);
+  actionsOf(wrap).appendChild(rb);
+  wrap.classList.remove("noRewind");
+}
+
+/** 取最近一条还没被领走的那一问 */
+function lastAsk(askQueue) {
+  if (!Array.isArray(askQueue) || !askQueue.length) return null;
+  return askQueue[askQueue.length - 1];
+}
+
+/**
+ * 真正干活的：先退，再问。
+ *
+ * 任何一步失败都要说清楚，不许静默 —— 静默的话主人会以为重发了，
+ * 其实什么都没发生（这个坑在插话那边踩过好几次）。
+ */
+async function retryHere(at, askText, btn) {
+  if (!Number.isFinite(Number(at))) return;
+  if (busy) {
+    alert("等这一轮说完再重发，不然退到一半她又开始跑，会乱。");
+    return;
+  }
+  if (!askText) {
+    alert("这一问的原话没取到（可能是很早以前的会话），没法原样重发。");
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/sessions/rewind", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: sessionId, at: Number(at) }),
+    }).then((x) => x.json()).catch((e) => ({ error: (e && e.message) || "连不上服务" }));
+    if (!r || r.error) {
+      alert("重发失败（退不回去）：" + ((r && r.error) || "网络错误"));
+      return;
+    }
+    // 服务端给的是退完之后的有效历史，照它重画一遍，界面才跟盘上对得上
+    if (r.session && Array.isArray(r.session.turns)) renderTurns(r.session.turns);
+    const f = r.files || {};
+    const nFiles = (f.restored || []).length + (f.deleted || []).length;
+    if (nFiles) addSysNote("已跟着退回 " + nFiles + " 个文件");
+    if (r.memory) addSysNote("记忆也退回到这一轮之前");
+    // 退完了，把原话放回输入框，走正常那一轮 ——
+    // 这样流式、思考块、插话那套全都跟平时一样，不用另铺一条路
+    input.value = askText;
+    input.focus();
+    runTurn({ text: askText });
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 /** 原地进入编辑：气泡换成 textarea + 存/撤销/取消 */
 function startEdit(wrap, at) {
   if (!wrap || wrap.querySelector('.editArea')) return;
@@ -5724,6 +5799,16 @@ async function runTurn({ resume = false, text = '' } = {}) {
             attachEdit(pendingRewindBubble, ev.at);
             attachBranchBtn(pendingRewindBubble, ev.at);
             pendingRewindBubble = null;
+          }
+          // 【实时跑完这一轮，也要能一键重发】
+          // 上面那段只给「主人刚说的那句」挂按钮；她说的话走的是流式气泡，
+          // 平时要等下次 renderTurns（切会话、刷新）才由 attachRetry 补上 ——
+          // 结果是刚答完这一句想让她重答，偏偏没有按钮可点。这里当场挂。
+          // ev.at 就是这一轮那句 user 的下标，重发需要它来定位退回到哪。
+          if (bubble && bubble.isConnected && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
+            try {
+              attachRetry(bubble, [{ at: Number(ev.at), text: String(text || "") }]);
+            } catch {}
           }
           if (ev.usage) {
             // 服务端会把这一轮真用的模型名一起送过来（不是主人起的外号），
@@ -9425,6 +9510,16 @@ function renderTurns(turns) {
    * 每遇到 user 就清零，跟着这一轮走。
    */
   let turnReplyChars = 0;
+  /**
+   * 【重发要用】这一串回复是回哪一句话的。
+   *
+   * 重发的做法是「退回问这句话之前，再用原话跑一轮」——
+   * 回退接口只认 role=user 且非 context 的消息，所以必须记住那条 user 的 rewindId，
+   * 画到 assistant 气泡时才挂得上「重发」。
+   *
+   * 用队列而不是单个变量：连着一串 user 时（催、打断）不能把前一句盖掉。
+   */
+  const askQueue = [];
 
   const list = turns || [];
   const frag = document.createDocumentFragment();
@@ -9457,6 +9552,11 @@ function renderTurns(turns) {
         // 新的一轮开始，回复字数从头数
         replyChars: 0,
         userChars: String(turn.text || '').length,
+      });
+      // 记住这一问，画回复时「重发」要用
+      askQueue.push({
+        at: Number.isFinite(Number(turn.rewindId)) ? Number(turn.rewindId) : undefined,
+        text: String(turn.text || ''),
       });
       turnReplyChars = 0;
     } else {
@@ -9506,6 +9606,7 @@ function renderTurns(turns) {
            */
           attachEdit(wrap, turn.rewindId);
           attachBranchBtn(wrap, turn.rewindId);
+          attachRetry(wrap, askQueue);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         } else {
@@ -9521,6 +9622,8 @@ function renderTurns(turns) {
           attachEdit(wrap, turn.rewindId);
           // 她说的话下面也有「分支」：从这句回复往下另开一个会话
           attachBranchBtn(wrap, turn.rewindId);
+          // 她说错了、或者想让她重答一遍：一键退回再问一次
+          attachRetry(wrap, askQueue);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         }

@@ -25,6 +25,31 @@ import { getEnabledMap } from './features.mjs';
 /** 界面上显示的名字。改文案只改这里。 */
 export const MODE_NAME = '专业模式';
 
+/**
+ * 【快速模式】—— 2026-10-27 主人加在专业模式右边的第二个按钮
+ *
+ * 主人原话：「快速模式在专业模式的基础上不同的地方为：只做不检查，快速做完主人
+ * 要求的任务，但过程不会有检查行为，只会在所有任务做完后跑一次全量」。
+ *
+ * 所以它不是第三种世界观，只是同一个模式换一套作业规范：
+ *   · 不发人设、压历史、洗旁白、摘开场白 —— 跟专业模式一字不差（全走同一套代码）
+ *   · 唯一差别在【怎么干活】那一段：过程里不许停下来自检、不许一次改一件验一件，
+ *     一路干到底，干完之后跑一次全量验证收尾。
+ *
+ * 为什么不做成两个独立模式：那得把 pureModeOn() 的十几个调用点全改一遍，
+ * 每处都可能漏。现在只有一个 truth，两种模式只差最终拼进去的那段规范。
+ *
+ * 存在哪：跟专业模式同一个文件 .state/pure.json，多一个 mode 字段。
+ *   { on: true, mode: 'pure' }  专业模式
+ *   { on: true, mode: 'fast' }  快速模式
+ *   { on: false }               两个都关
+ */
+export const FAST_MODE_NAME = '快速模式';
+
+/** 快速模式的 id —— 给界面和服务端来回传用 */
+export const FAST_ID = 'fast';
+export const PURE_ID = 'pure';
+
 function file() {
   return join(config.dataDir, '.state', 'pure.json');
 }
@@ -45,45 +70,75 @@ export function pureFeatureOn() {
   }
 }
 
+/** 读盘上那份原始状态，坏了当「没开、专业模式」—— 绝不让它把整轮对话卡住 */
+function readRaw() {
+  try {
+    const f = file();
+    if (!existsSync(f)) return { on: false, mode: PURE_ID };
+    const j = JSON.parse(readFileSync(f, 'utf8'));
+    const on = j && j.on === true;
+    // 老文件没有 mode 字段，那时候只有专业模式 —— 一律当专业模式，别把主人切成别的
+    const mode = j && j.mode === FAST_ID ? FAST_ID : PURE_ID;
+    return { on, mode };
+  } catch {
+    return { on: false, mode: PURE_ID };
+  }
+}
+
+/**
+ * 现在是哪个模式 —— 'pure' | 'fast' | null（没开就是 null）
+ *
+ * 「开没开」和「开的是哪个」是两个问题：上面十几个调用点只关心前者，
+ * 只有拼作业规范那一步关心后者。所以留这两个函数，别混在一起。
+ */
+export function currentMode() {
+  if (!pureFeatureOn()) return null;
+  const st = readRaw();
+  return st.on ? st.mode : null;
+}
+
 /**
  * 现在开没开（真正判断用这个）。
  *
- * 两个条件都满足才算开：功能页里「专业模式」开着，且顶栏那个按钮是按下状态。
- * 读不到、文件坏了都当「没开」，绝不让它把整轮对话卡住。
+ * 两个条件都满足才算开：功能页里「专业模式」开着，且任一模式被按下。
+ * 专业模式和快速模式共用这一个判断 —— 它们对人设/历史/工具的处理完全一样，
+ * 差别只在最后拼进去的那段作业规范（见 fastRule / PRO_MODE_RULE）。
  */
 export function pureModeOn() {
-  if (!pureFeatureOn()) return false;
-  try {
-    const f = file();
-    if (!existsSync(f)) return false;
-    const j = JSON.parse(readFileSync(f, 'utf8'));
-    return j && j.on === true;
-  } catch {
-    return false;
-  }
+  return currentMode() !== null;
 }
 
-/** 顶栏那个按钮按下了没有（不管功能页开关）。给界面回填高亮用。 */
+/** 顶栏那两个按钮按下了没有（不管功能页开关）。给界面回填高亮用。 */
 export function pureButtonOn() {
-  try {
-    const f = file();
-    if (!existsSync(f)) return false;
-    const j = JSON.parse(readFileSync(f, 'utf8'));
-    return j && j.on === true;
-  } catch {
-    return false;
-  }
+  return readRaw().on;
 }
 
-/** 改开关，返回改完之后的状态。 */
-export function setPureMode(on) {
+/** 顶栏现在是哪个按钮亮着：'pure' | 'fast' | null */
+export function purePressedMode() {
+  const st = readRaw();
+  return st.on ? st.mode : null;
+}
+
+/**
+ * 改开关，返回改完之后的状态。
+ *
+ * @param {boolean} on  开不开
+ * @param {'pure'|'fast'} [mode]  开的话用哪个模式。不传就保持原来的（没存过按专业模式）
+ *
+ * 为什么两个模式共用一个文件而不是各存各的：它们是互斥的 —— 「开着专业模式同时
+ * 又开着快速模式」没有意义，两个一起亮会让人以为能叠加。一个文件一个 on 字段，
+ * 天然就是互斥的，前端也只用画一个亮着的。
+ */
+export function setPureMode(on, mode) {
   const next = Boolean(on);
+  const prev = readRaw().mode;
+  const want = mode === FAST_ID || mode === PURE_ID ? mode : prev;
   const f = file();
   // 先写临时文件再改名：中途断电也不会留下半个坏文件
   const tmp = f + '.tmp';
-  writeFileSync(tmp, JSON.stringify({ on: next, at: Date.now() }, null, 2), 'utf8');
+  writeFileSync(tmp, JSON.stringify({ on: next, mode: want, at: Date.now() }, null, 2), 'utf8');
   renameSync(tmp, f);
-  return next;
+  return { on: next, mode: want };
 }
 
 /**
@@ -135,21 +190,55 @@ export const PRO_MODE_RULE = [
 ].join('\n');
 
 /**
- * 专业模式下发给模型的系统提示。
+ * 【快速模式】的作业规范 —— 与专业模式唯一的差别就在这一段。
+ *
+ * 主人原话：「只做不检查，快速做完主人要求的任务，但过程不会有然后检查行为，
+ * 只会在所有任务做完后跑一次全量」。
+ *
+ * 所以这里要把专业模式那 8 条里的「收尾要能验证」「一次只改一件事」翻个个儿：
+ *   · 过程里**不许**停下来自检、不许改一件验一件、不许跑一半回头确认
+ *   · 一路干到底，干完之后**跑一次全量验证**收尾（不是不验，是只在最后验一次）
+ *
+ * 保留不动的（这几条跟快慢无关，砍了就变成乱来）：
+ *   先查再说、报错找根因、管住副作用、不许骗自己、汇报照实。
+ *
+ * 为什么不能把「不许检查」写得更狠：真砍掉收尾验证，就成了「改完就说好了」——
+ * 那是主人最讨厌的毛病（专业模式第 7 条专门治它）。快速模式省的是**过程里**的
+ * 反复验，不是省掉最后那一次。
+ */
+export const FAST_RULE = [
+  '【怎么干活】现在开着「快速模式」：把主人要的一口气干完，过程里不反复自检，干完统一验一次。',
+  '',
+  '1. 先查再说。要动手的事先真的动一次手：读文件、跑命令、看日志。不许凭印象回答「应该是」。这一步省不得 —— 省了它就得返工，反而更慢。',
+  '2. 一次把事做完。确定了要改哪些地方就一口气改完，不要改一处验一处、不要每改一步就停下来跑一次检查。过程里不做中间验证，不回头确认，不边干边汇报进度。',
+  '3. 报错先找根因。看到「失败」先拿到原始报错和相关那几行，确定原因再动手。不许试一个「可能行」的改法 —— 那不是快，是抽奖，抽不中就得更慢地返工。',
+  '4. 全部做完之后，跑一次全量验证。这是本模式唯一一次验证：语法检查全过、该跑的检查脚本全跑、能起来的起来、实际效果再走一遍。一次做齐，不做一样看一样。',
+  '5. 改完立刻管住副作用。临时脚本、临时文件、调试日志，收尾时一次删干净。',
+  '6. 不许骗自己。没验完就说没验完，不确定就说哪里不确定。全量验证跑通了才能说「好了」；哪一项没过就照实说哪一项没过、报错是什么。',
+  '7. 汇报一次说完：改了什么、在哪、为什么这么改、全量验证跑的结果、还剩什么没做。数字、路径、报错原文照抄。',
+  '',
+  '一句话：过程里只管往前冲，冲到底再回头一次性验收。',
+].join('\n');
+
+/**
+ * 专业模式 / 快速模式下发给模型的系统提示。
  *
  * 三块：先说自己在哪儿、手上有什么工具（不这样它会不知道自己运行在什么平台上，
  * 主人问「专业模式是什么」它只能反问「你说的是哪个软件」），再定说话方式，
- * 最后给作业规范。
+ * 最后给作业规范 —— 那一段是两种模式**唯一**的差别。
  *
  * 注意：这里**不能**夹带人设和语气 —— 不许出现名字、颜文字、旁白、称呼，
  * 不然「不带人设」就白开了。只讲事实和做法。
  */
 export function pureSystemPrompt() {
-  if (!pureModeOn()) return '';
+  const mode = currentMode();
+  if (!mode) return '';
+  const fast = mode === FAST_ID;
+  const name = fast ? FAST_MODE_NAME : MODE_NAME;
   const tools = toolNames();
   const lines = [
     '你跑在主人电脑上的「小鱼Agent」程序里，不是网页版聊天窗口。',
-    '现在开着「专业模式」：这一轮不套人设、不用特定语气，只说事实、只干活。',
+    `现在开着「${name}」：这一轮不套人设、不用特定语气，只说事实、只干活。`,
   ];
   if (tools.length) {
     lines.push(
@@ -157,7 +246,7 @@ export function pureSystemPrompt() {
     );
   }
   lines.push('主人问到这个程序的功能、你自己能干什么，就照实说，不要反问「你说的是哪个软件」。');
-  return lines.join('\n') + '\n\n' + STYLE_RESET_RULE + '\n\n' + PRO_MODE_RULE;
+  return lines.join('\n') + '\n\n' + STYLE_RESET_RULE + '\n\n' + (fast ? FAST_RULE : PRO_MODE_RULE);
 }
 
 /** 当前开着哪些工具名，取不到就返回空数组，绝不因为这里出错把对话搞挂。 */

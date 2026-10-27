@@ -1,6 +1,8 @@
 // Context compression: when the history gets too long, fold the old turns into one summary
 // message and keep the recent tail verbatim. Nothing is deleted from disk — only the prompt
 // gets shorter. The summary is itself merged into later summaries, so it rolls forward.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { chat } from './llm.mjs';
 import { config } from './config.mjs';
 import { effectiveContextLimit } from './settings.mjs';
@@ -161,11 +163,33 @@ function headLength(messages) {
  * 从尾部往前攒够 keepTokens，得到候选切点，再往前挪到安全位置。
  * 安全 = 不把 assistant(tool_calls) 和它的 tool 结果拆开。
  */
+/**
+ * 把被截断的原文写到 .state/oversize/ 下，返回路径（存不了就返回空串）。
+ * 为什么不直接删：主人亲手打的那句话可能几万字，丢了就真找不回来了。
+ */
+function saveOversize(sessionId, index, text) {
+  const dir = join(config.dataDir, ".state", "oversize");
+  mkdirSync(dir, { recursive: true });
+  const sid = String(sessionId || "unknown").replace(/[^\w-]/g, "_");
+  const file = join(dir, sid + "-" + index + "-" + Date.now() + ".txt");
+  writeFileSync(file, text, "utf8");
+  return file;
+}
+
 function findCut(messages, start, keepTokens) {
   // 至少留最后一个来回：keepTokens 再小也不能把尾巴删空。
   // 以前专业模式把预算夹到 0 的时候，这里返回 start，整段历史全没了 ——
   // 模型拿到的是一个空上下文，等于当场失忆，活干不下去。
-  const floor = Math.max(1, Math.min(4, messages.length - start));
+  //
+  // 【2026-10-27 补：可压缩的消息本来就不到 4 条时，别再硬留 4 条】
+  // 真踩过：历史是「system + context + 一条 68 万字符的巨型 user 消息 + 两句短的」，
+  // 可压缩的只有 3 条，min(4, 3) = 3 → 循环刚开始 taken 是 0，小于 3，
+  // 于是一路把三条全吃进 keep，最后切点落到头部 → 返回 -1 → 上层报
+  // nothing-safe-to-drop，那条巨型消息原样留着，下一次照样撞窗，永远压不动。
+  // 切点只需守两条规矩：至少留 floor 条、且不拆工具对。floor 得服从
+  // 「真有那么多东西可留吗」—— 可留的不足 4 条就让一步，留 1 条也算压过了。
+  const compressible = Math.max(1, messages.length - start);
+  const floor = Math.max(1, Math.min(4, compressible - 1 || 1));
   let acc = 0;
   let cut = messages.length;
   let taken = 0;
@@ -345,7 +369,8 @@ export async function compressHistory({
 
   // 没显式给 limit 就去设置里问（带上模型名，自动档才能算对）
   const cap = limit === undefined ? effectiveContextLimit(model) : limit;
-  const before = estimateTokens(messages);
+  let before = estimateTokens(messages);
+  const beforeOrigin = before;
   if (!Number.isFinite(cap) || cap <= 0) {
     return { compressed: false, before, after: before, reason: 'disabled' };
   }
@@ -513,8 +538,65 @@ export async function compressHistory({
 
 
   // 注意是 let：下面那段「尾巴不能只剩 4 条」的兜底会把它往前挪（窄窗口必走这条路）
+  /**
+   * 【单条消息本身就把窗口撑爆：先把它截断，别硬扛】
+   *
+   * 2026-10-27 补。真踩过：一条 68 万字符的 user 消息（约 72 万 token），
+   * 比窗口本身还大。findCut 从尾巴往前攒，攒到它的时候已经无可再让，
+   * 切点只能用回头部 → 返回 -1 → 上层报 nothing-safe-to-drop，
+   * 于是这条消息原样留着，下一轮照样撞窗，而且永远压不动 —— 死循环。
+   *
+   * 光靠丢旧对话救不了：要救的是这条消息自身。
+   * 做法：把超预算的那条截到预算的 85%，末尾留一句「已截断」的说明；
+   * 原文不删，另存到 .state/oversize/ 下（主人给的东西不能凭空消失）。
+   */
+  {
+    const windowTok = Number.isFinite(cap) && cap > 0 ? cap : budget + headTokens;
+    const hardCap = Math.max(2000, Math.floor(windowTok * 0.85));
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (!m || typeof m.content !== "string") continue;
+      const self = estimateTokens([m]);
+      if (self <= hardCap) continue;
+      const keepChars = Math.max(500, Math.floor(m.content.length * (hardCap / self)));
+      let savedPath = "";
+      try { savedPath = saveOversize(sessionId, i, m.content); } catch {}
+      const omitted = m.content.length - keepChars;
+      const mark = "……【这段太长，超出上下文窗口，后面 " + omitted + " 字已省略"
+        + (savedPath ? "，原文存到 " + savedPath : "") + "】";
+      m.content = m.content.slice(0, keepChars) + mark;
+      console.warn("[compress] 第 " + i + " 条消息自身体积就超窗口（" + self + " token > " + hardCap
+        + "），已截断到 " + keepChars + " 字符" + (savedPath ? "，原文存 " + savedPath : ""));
+    }
+  }
+
+  // 截断之后再算切点：上一步可能已经把某条巨型消息压到窗口以内
+  //
+  // 【回填 before】截断改了 messages 的内容，before 还是原来的数。
+  // 不重算的话，后面 log 和返回值全是假的 —— 实测就出现过
+  // before=729631 而实际已经降到 599425，看着像「压了个寂寞」。
+  const beforeAfterTrim = estimateTokens(messages);
+  if (beforeAfterTrim < before) {
+    if (process.env.COMPRESS_DEBUG) {
+      console.log("[compress] 截断单条巨型消息：before " + before + " → " + beforeAfterTrim);
+    }
+    before = beforeAfterTrim;
+  }
+  // 截断已经压到线内了，就不用再丢旧对话 —— 那会把近况也削掉
+  if (before <= trigger) {
+    if (process.env.COMPRESS_DEBUG) {
+      console.log("[compress] 截断后已在线内：before=" + before + " trigger=" + trigger);
+    }
+    return { compressed: true, before, after: before, limit: cap, trigger, reason: "trimmed-oversize", kept: messages.length };
+  }
   let cut = findCut(messages, start, keepTarget);
-  if (cut <= start) return { compressed: false, before, after: before, limit: cap, trigger, reason: 'nothing-safe-to-drop' };
+  if (cut <= start) {
+    // 兜底：实在没得切，返回 trimmed 的结果而不是谎报 nothing-safe-to-drop
+    if (beforeAfterTrim < beforeOrigin) {
+      return { compressed: true, before: beforeAfterTrim, after: before, limit: cap, trigger, reason: "trimmed-oversize", kept: messages.length };
+    }
+    return { compressed: false, before, after: before, limit: cap, trigger, reason: "nothing-safe-to-drop" };
+  }
 
   /**
    * 兜底：cap 被填得比头部还小时（headTokens 常 9k~21k，主人却填 8000），
@@ -527,7 +609,13 @@ export async function compressHistory({
   {
     let keepCount = messages.length - cut;
     let probe = cut;
-    const wantTail = hardTail ? 1 : MIN_KEEP_MSGS;
+    // 【2026-10-27 补】wantTail 也得服从「真有那么多条可留吗」。
+    // 以前这里写死 MIN_KEEP_MSGS（8）：历史里只挂着 3 条可压缩消息时，
+    // probe 一路退到 start 就 break，切点又落回头部 → 上层拿到 -1 →
+    // 报 nothing-safe-to-drop → 那条巨型消息原样留着，永远压不动。
+    // 现在最多退到「除了留 1 条什么都别留」为止。
+    const tailCap = Math.max(1, messages.length - start);
+    const wantTail = hardTail ? 1 : Math.min(MIN_KEEP_MSGS, Math.max(1, tailCap - 1 || 1));
     while (keepCount < wantTail && probe > start) {
       let back = probe - 1;
       // 不拆工具对：往前挪时如果 probe 是 tool 或前一条是带 tool_calls 的 assistant，就继续往前

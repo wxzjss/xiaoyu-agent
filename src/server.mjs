@@ -78,6 +78,17 @@ import {
   setPersonaAsDefault,
 } from './persona-store.mjs';
 import { getFeatures, setFeature, featureNameOfTool, getEnabledMap } from './features.mjs';
+import {
+  identityState,
+  currentIdentity,
+  currentIdentityId,
+  isOwnerIdentity,
+  setIdentity,
+  addCustomIdentity,
+  updateCustomIdentity,
+  removeCustomIdentity,
+  identityBlock,
+} from './identity.mjs';
 // 专业模式开关（见 pure.mjs）
 import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, pureFeatureOn } from './pure.mjs';
 import { purifyWire } from './compress.mjs';
@@ -792,6 +803,15 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       noTools: false,
       maxRounds: 40,
       sessionId,
+      /**
+       * 【小鲸也得知道现在是谁在跟她说话】—— 身份功能（主人 2026-10-27 定）
+       *
+       * 她走的是 subagent 那条路，跟小鱼不是同一个 systemPrompt，
+       * 上面给小鱼贴的那段 identityBlock 到不了她这儿。所以单独传一份：
+       * speaker: 'whale' —— 让 identityBlock 知道「现在是小鲸在回话」，
+       * 这样用小鱼身份叫她时才会写成「是姐姐在叫你」而不是「你自己在说话」。
+       */
+      identityNote: identityBlock({ speaker: 'whale', sessionId }),
     });
   } catch (e) {
     // 【外层抛了也留下】不然日志里又是只剩一个「败」
@@ -2728,6 +2748,73 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // ---- 当前身份：现在我以谁的身份在跟她们说话 ----
+  //
+  // 【这套东西不是装饰】主人 2026-10-27 定：
+  //   · 换成别的身份，她们要真以为说话的不是主人，可以不听命令；
+  //   · 安全词只有主人身份说了才算数（见 /api/chat 里 __speakerIsOwner 那段）。
+  // 所以切身份这个动作**立即生效、不需要重启**，下一轮就按新身份走。
+  if (req.method === 'GET' && url.pathname === '/api/identity') {
+    return json(res, 200, identityState());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/identity/set') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const id = String(payload?.id || '');
+    if (!id) return json(res, 400, { error: '没说是哪个身份' });
+    if (!setIdentity(id)) return json(res, 404, { error: '没有这个身份' });
+    return json(res, 200, identityState());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/identity/add') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const item = addCustomIdentity({
+      name: payload?.name,
+      desc: payload?.desc,
+      address: payload?.address,
+    });
+    if (!item) return json(res, 400, { error: '名字不能空，自定义身份也最多 20 个' });
+    return json(res, 200, { ...identityState(), added: item });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/identity/update') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    if (!updateCustomIdentity(String(payload?.id || ''), {
+      name: payload?.name,
+      desc: payload?.desc,
+      address: payload?.address,
+    })) return json(res, 400, { error: '改不了：内置身份不许改，或者没这个身份' });
+    return json(res, 200, identityState());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/identity/remove') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    if (!removeCustomIdentity(String(payload?.id || ''))) {
+      return json(res, 400, { error: '删不了：内置身份不许删，或者没这个身份' });
+    }
+    return json(res, 200, identityState());
+  }
+
   // ---- 功能：列表 / 开 / 关 ----
   if (req.method === 'GET' && url.pathname === '/api/features') {
     return json(res, 200, getFeatures());
@@ -4638,10 +4725,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       try { logWhaleAction('开跑补漏抛错：' + String(e && e.message ? e.message : e).slice(0, 100)); } catch {}
     }
 
-    const safeWord = resume ? null : matchSafeWord(message);
+    /**
+     * 【安全词只有主人说得才算数】—— 主人 2026-10-27 定的（身份功能）。
+     *
+     * 换了身份（用小鱼/小鲸/自定义身份说话）之后，这个人喊什么安全词都不认：
+     * 档位既不切、也不记住，界面照旧演。要停，得主人自己来说。
+     *
+     * 为什么不干脆把消息拦下来：拦了主人就没法用别的身份试她们的底线了。
+     * 这里只掐掉「安全词的效力」，话照样送进去 —— 她会当成一个普通人在跟她提要求。
+     */
+    const __speakerIsOwner = isOwnerIdentity();
+    const safeWord = (resume || !__speakerIsOwner) ? null : matchSafeWord(message);
     // 这一轮该处在哪一档：没喊别的词就继续当前档（新会话默认人设档），
     // 喊了就切过去并记住，下一轮还是那一档。
-    const modeInfo = resume ? { word: sessionModeWord(session), switched: false } : applySafeWord(session, message);
+    const modeInfo = (resume || !__speakerIsOwner)
+      ? { word: sessionModeWord(session), switched: false }
+      : applySafeWord(session, message);
     const changedMode = modeInfo.switched || modeInfo.backToBase;
     if (changedMode) saveSession(session);
     res.writeHead(200, {
@@ -4959,6 +5058,33 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     }
     /** 前情那条消息的引用，日志里好认（专业模式没插，就是 undefined） */
     const preludeRef = pureModeOn() ? undefined : wireMessages[2];
+
+    /**
+     * 【这一轮说话的是谁】—— 身份功能（主人 2026-10-27 定）。
+     *
+     * 换身份之后她们要真的以为说话的不是主人，所以每轮现拼一段贴进去。
+     * 贴的位置很讲究：
+     *   · 不动 messages[0] 的 system —— 那是最稳的缓存前缀，改它整段缓存作废；
+     *   · 别固定插在 index 2（前情已经占了那格，会挤掉它）；
+     *   · 所以贴在**最后一条 user 消息之前**：模型读到它的时候正好还在处理那句请求，
+     *     「谁在跟我说话」离得最近，最不容易被前面的内容冲淡。
+     * 代价是每轮都进上下文 —— 几十个字，比缓存作废划算得多。
+     *
+     * 主人身份返回 null（出厂设定本来就写着主人），所以平时一分钱不花。
+     */
+    {
+      const ib = identityBlock({ sessionId });
+      if (ib) {
+        let at = -1;
+        for (let i = wireMessages.length - 1; i >= 0; i--) {
+          const m = wireMessages[i];
+          if (m && m.role === 'user' && !m.context) { at = i; break; }
+        }
+        const bm = { role: 'user', content: ib, context: true, _identity: true };
+        if (at < 0) wireMessages.push(bm);
+        else wireMessages.splice(at, 0, bm);
+      }
+    }
     // 这一轮真正交给模型的形状，日志里留一份，排查时一眼看得出前情在不在
     console.log(
       '[prelude] 条数=' + wireMessages.length + ' 形状=' +

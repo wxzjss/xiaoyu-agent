@@ -118,6 +118,17 @@
     /* 主人的名字：中性偏亮，跟我和小鲸都不一样 */
     /* 「小鲸」按钮：按下去就一直是她的冷蓝色 */
     /* 小鱼按钮：默认就在场，所以它天生是亮的；点一下才灭 */
+    /* 身份徽标：换成非主人身份时才显示。橘色系是「注意」的意思 ——
+       这个状态下她们不认主人、安全词也不作数，得让人一眼看见。 */
+    #idBadge {
+      border-color: rgba(224, 163, 58, .55);
+      background: rgba(224, 163, 58, .16);
+      color: #f0c47a;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #idBadge:hover { border-color: #e0a33a; background: rgba(224, 163, 58, .26); }
+    #idBadge[hidden] { display: none; }
     #fishBtn {
       border-color: rgba(240, 166, 160, 0.5);
       background: rgba(240, 166, 160, 0.2);
@@ -1514,6 +1525,67 @@
     #whalePersonaDlg .wpStat { margin-top: 8px; font-size: 11.5px; color: var(--dim); line-height: 1.7; }
     #whalePersonaDlg .wpStat b { color: var(--accent); font-weight: 600; }
 
+    /* ---- 当前身份面板 -------------------------------------------------------
+       主人 2026-10-27：「在功能里增加【当前身份】……每个身份都有一个简介」。
+       版式跟小鲸人设面板一样：左边一排身份，右边是这个身份的简介和称呼。 */
+    #identityDlg { width: min(880px, 94vw); }
+    #identityDlg .idBody {
+      display: flex; gap: 0; flex: 1 1 auto; min-height: 0; overflow: hidden;
+    }
+    /* 左栏：身份清单。窄屏时收到上面去（见下面的 @media） */
+    #identityDlg .idList {
+      flex: 0 0 208px; border-right: 1px solid var(--border);
+      overflow-y: auto; padding: 10px; overscroll-behavior: contain;
+    }
+    #identityDlg .idItem {
+      display: block; width: 100%; text-align: left; cursor: pointer;
+      border: 1px solid transparent; border-radius: var(--radius);
+      background: transparent; color: var(--text);
+      padding: 9px 10px; margin-bottom: 6px; font-family: inherit;
+    }
+    #identityDlg .idItem:hover { background: var(--input-bg); }
+    /* 选中的那个：左边一道亮边，一眼看得出「现在是谁」 */
+    #identityDlg .idItem.on {
+      border-color: var(--accent); background: rgba(77, 141, 255, .12);
+    }
+    #identityDlg .idItem .n { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+    #identityDlg .idItem .d {
+      font-size: 11.5px; color: var(--dim); margin-top: 3px; line-height: 1.5;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    /* 内置身份挂一枚小标签，免得主人以为是能删的 */
+    #identityDlg .idItem .tag {
+      font-size: 10px; font-weight: 400; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
+    }
+    #identityDlg .idRight { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 12px 16px 14px; overflow-y: auto; overscroll-behavior: contain; }
+    #identityDlg .idField { margin-bottom: 10px; }
+    #identityDlg .idField > span { display: block; font-size: 12px; color: var(--dim); margin-bottom: 5px; }
+    #identityDlg .idField input,
+    #identityDlg .idField textarea {
+      width: 100%; box-sizing: border-box;
+      background: var(--input-bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 8px 10px; font-size: 13px; font-family: inherit; line-height: 1.7;
+    }
+    #identityDlg .idField textarea { height: 128px; resize: vertical; }
+    #identityDlg .idField input:focus,
+    #identityDlg .idField textarea:focus { outline: none; border-color: var(--accent); }
+    #identityDlg .idField input:disabled,
+    #identityDlg .idField textarea:disabled { opacity: .62; cursor: not-allowed; }
+    /* 那句「换成非主人身份会发生什么」—— 这不是装饰，得让人看见 */
+    #identityDlg .idWarn {
+      font-size: 11.5px; line-height: 1.7; color: var(--warn, #e0a33a);
+      border-left: 2px solid var(--warn, #e0a33a); padding: 2px 0 2px 8px; margin: 2px 0 10px;
+    }
+    @media (max-width: 720px) {
+      #identityDlg .idBody { flex-direction: column; }
+      #identityDlg .idList {
+        flex: 0 0 auto; max-height: 30vh; border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+    }
+
     /* ---- 手机连接 ---------------------------------------------------------- */
     #settingsDlg #mobToggle {
       flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
@@ -1807,6 +1879,9 @@
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
     <button id="openMemoryBook" title="记忆本：看看她这个会话到底记了些什么，小鲸那本也在（只给看不给改，改她记的东西得跟她说）">记忆本</button>
+    <!-- 身份徽标：只有换成非主人身份时才冒出来。
+         不藏在「功能」面板里，是因为那时候她们真的不认主人了 —— 这事得常驻可见。 -->
+    <button id="idBadge" type="button" hidden>以「」身份说话中</button>
     <button id="openFeatures">功能</button>
     <button id="openSettings">设置</button>
     <button id="openModels" title="模型">模型</button>
@@ -2244,6 +2319,45 @@
   <!-- 小鲸的人设与模型：点功能列表里那一条就弹出这个大面板。
        上一版是内联在功能列表里的小框（openingBox），主人嫌小，
        要「点一下弹出一个新界面，大面板写着所有人设，底下保存/关闭/恢复默认」。 -->
+  <!-- 当前身份：现在我以谁的身份跟她们说话。
+       主人 2026-10-27：「在功能里增加【当前身份】功能，默认为主人，可切换小鱼、小鲸身份，
+       也可以自定义身份，每个身份都有一个简介，不同身份会真的以为我是那个人」。
+       版式跟小鲸人设面板同一个路子（点一下弹出大面板），左清单右编辑。 -->
+  <dialog id="identityDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>当前身份</b><span class="meta" id="idWho"></span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="idBody">
+        <div class="idList" id="idList"></div>
+        <div class="idRight">
+          <div class="idField">
+            <span>这个身份叫什么</span>
+            <input id="idName" maxlength="24" spellcheck="false" placeholder="比如 主人 / 小鱼 / 小鲸 / 隔壁老王" />
+          </div>
+          <div class="idField">
+            <span>她眼里这个人是什么样（简介）——这段会原样给她看</span>
+            <textarea id="idDesc" spellcheck="false" placeholder="写的是「她眼里的这个人」，不是给你自己看的简历。比如：小鱼。是小鲸的姐姐，说话不用客气，但不是主人。"></textarea>
+          </div>
+          <div class="idField">
+            <span>她该怎么称呼这个人（可留空）</span>
+            <textarea id="idAddr" spellcheck="false" style="height:72px" placeholder="比如：你说话的人是小鱼，别把他当主人。"></textarea>
+          </div>
+          <div class="idWarn" id="idWarn" hidden></div>
+        </div>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint" id="idTip">选中一个身份点「用这个身份」就立刻生效，下一句就按新身份说话。</span>
+        <button type="button" class="ghost" id="idAdd">新建身份</button>
+        <button type="button" class="ghost" id="idDel">删掉这个</button>
+        <button type="button" class="ghost" id="idSave">保存</button>
+        <button type="button" class="primary" id="idUse">用这个身份</button>
+        <button type="button" class="ghost" id="idClose">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="whalePersonaDlg">
     <form method="dialog">
       <div class="dlgHead">
@@ -7642,6 +7756,22 @@ function renderFeatList() {
       continue;
     }
 
+    // 当前身份：点一下弹出身份面板（切换 / 新建自定义身份 / 改简介）
+    if (f.id === 'identity') {
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'featEditBtn';
+      edit.textContent = '切换身份';
+      edit.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openIdentityDlg();
+      });
+      row.append(main, edit, sw);
+      featList.appendChild(row);
+      continue;
+    }
+
     // 子智能体：她能改人设、能单独选模型
     if (f.id === 'subagent') {
       const edit = document.createElement('button');
@@ -7730,6 +7860,253 @@ function closeWhaleProfileEditor() {
  * 为什么不用 row.after(box)：功能列表那边每次 loadFeatures() 都会重画，
  * 内联的 DOM 会跟着被抹掉；独立 dialog 在 <body> 下，重画列表不会动它。
  */
+/**
+ * 当前身份面板 —— 现在我以谁的身份跟她们说话。
+ *
+ * 【主人 2026-10-27 原话】
+ *   「在功能里增加【当前身份】功能，默认为主人，可切换小鱼、小鲸身份，也可以自定义身份，
+ *    每个身份都有一个简介，不同身份会真的以为我是那个人，比如说我用小鱼身份和小鲸说话，
+ *    她会以为真的是小鱼在和她说话，用小鱼身份和小鱼说话，小鱼会以为是自己在说话
+ *    （自言自语，或者说内心想法），如果我用非主人身份和她们说话，她们会真的以为我不是主人
+ *    甚至拒绝听从我的命令，且安全词只有主人身份说的才有效」
+ *
+ * 这里只管界面。真正让她们「信」的是服务端 identity.mjs 拼的那段提示词，
+ * 以及 server.mjs 里 __speakerIsOwner 那个闸（非主人喊安全词不算数）。
+ *
+ * 【为什么不在界面上画一个下拉框】
+ * 主人要的是「每个身份都有一个简介」——简介是要读、要改的，下拉框装不下。
+ * 所以左清单右编辑，跟小鲸人设面板一个路子。
+ */
+let idState = null;      // 服务端给的全量状态
+let idSel = 'owner';     // 当前在面板里选中的那个（不一定等于生效的那个）
+let idSeq = 0;
+
+/** 打开面板。每次都从服务端重新拉一遍，免得两份状态对不上。 */
+async function openIdentityDlg() {
+  const dlg = document.getElementById('identityDlg');
+  if (!dlg) return;
+  idSeq += 1;
+  const seq = idSeq;
+  try {
+    const r = await fetch('/api/identity').then((x) => x.json());
+    if (seq !== idSeq) return;              // 期间又被打开了，这次的结果作废
+    if (!r || !r.ok) { toast('身份功能读不出来：' + ((r && r.error) || '服务端没回')); return; }
+    idState = r;
+    idSel = r.current;
+  } catch (e) {
+    toast('身份功能读不出来：' + (e && e.message ? e.message : e));
+    return;
+  }
+  if (!dlg.open) dlg.showModal();
+  renderIdentityDlg();
+}
+
+function closeIdentityDlg() {
+  idSeq += 1;
+  const dlg = document.getElementById('identityDlg');
+  if (dlg && dlg.open) { try { dlg.close(); } catch {} }
+  // 身份可能变了：右上角那行小字要跟着改（谁在跟你说话）
+  if (typeof refreshIdentityBadge === 'function') refreshIdentityBadge();
+}
+
+/** 重画左边清单 + 右边编辑区 */
+function renderIdentityDlg() {
+  if (!idState) return;
+  const who = document.getElementById('idWho');
+  const cur = idState.identities.find((x) => x.id === idState.current);
+  if (who) who.textContent = '现在生效的：' + (cur ? cur.name : '主人');
+
+  const list = document.getElementById('idList');
+  list.textContent = '';
+  for (const it of idState.identities) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'idItem' + (it.id === idSel ? ' on' : '');
+    const n = document.createElement('div');
+    n.className = 'n';
+    n.textContent = it.name;
+    if (it.builtin) {
+      const t = document.createElement('span');
+      t.className = 'tag';
+      t.textContent = '内置';
+      n.appendChild(t);
+    }
+    if (it.id === idState.current) {
+      const t = document.createElement('span');
+      t.className = 'tag';
+      t.textContent = '生效中';
+      n.appendChild(t);
+    }
+    const d = document.createElement('div');
+    d.className = 'd';
+    d.textContent = it.desc || '（还没写简介）';
+    b.append(n, d);
+    b.addEventListener('click', () => { idSel = it.id; renderIdentityDlg(); });
+    list.appendChild(b);
+  }
+
+  const sel = idState.identities.find((x) => x.id === idSel);
+  if (!sel) return;
+  const nameEl = document.getElementById('idName');
+  const descEl = document.getElementById('idDesc');
+  const addrEl = document.getElementById('idAddr');
+  nameEl.value = sel.name || '';
+  descEl.value = sel.desc || '';
+  addrEl.value = sel.address || '';
+  // 内置那三个不许改：主人那份关系是写死的，改了「谁才能下命令」就乱了
+  const lock = !!sel.builtin;
+  nameEl.disabled = lock;
+  descEl.disabled = lock;
+  addrEl.disabled = lock;
+
+  document.getElementById('idDel').disabled = lock;
+  document.getElementById('idDel').style.opacity = lock ? '.45' : '';
+  document.getElementById('idSave').disabled = lock;
+  document.getElementById('idSave').style.opacity = lock ? '.45' : '';
+  const use = document.getElementById('idUse');
+  use.disabled = sel.id === idState.current;
+  use.style.opacity = sel.id === idState.current ? '.45' : '';
+  use.textContent = sel.id === idState.current ? '已经是这个了' : '用这个身份';
+
+  // 换成非主人会发生什么 —— 必须让人事先看见，别事后惊讶
+  const warn = document.getElementById('idWarn');
+  if (sel.id === 'owner') {
+    warn.hidden = true;
+  } else {
+    warn.hidden = false;
+    warn.textContent = '用「' + sel.name + '」说话时：她们会真的以为说话的人不是主人，可以拒绝听命令；'
+      + '你喊安全词也不作数 —— 只有主人自己说才算数。';
+  }
+  document.getElementById('idTip').textContent = lock
+    ? '内置身份不能改也不能删（「谁能下命令」这件事得写死，不能靠改）。想改就新建一个自己的身份。'
+    : '改完点「保存」，再点「用这个身份」就生效。';
+}
+
+/** 保存当前编辑（只对自定义身份有效） */
+async function saveIdentityEdit() {
+  const sel = idState && idState.identities.find((x) => x.id === idSel);
+  if (!sel || sel.builtin) return;
+  const name = document.getElementById('idName').value.trim();
+  if (!name) { toast('名字不能空'); return; }
+  try {
+    const r = await fetch('/api/identity/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: sel.id,
+        name,
+        desc: document.getElementById('idDesc').value,
+        address: document.getElementById('idAddr').value,
+      }),
+    }).then((x) => x.json());
+    if (!r || !r.ok) { toast('存不上：' + ((r && r.error) || '服务端没回')); return; }
+    idState = r;
+    renderIdentityDlg();
+    toast('存好了');
+  } catch (e) {
+    toast('存不上：' + (e && e.message ? e.message : e));
+  }
+}
+
+/** 切换生效身份 */
+async function useIdentity(id) {
+  try {
+    const r = await fetch('/api/identity/set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then((x) => x.json());
+    if (!r || !r.ok) { toast('切不过去：' + ((r && r.error) || '服务端没回')); return; }
+    idState = r;
+    idSel = r.current;
+    renderIdentityDlg();
+    const cur = r.identities.find((x) => x.id === r.current);
+    toast('现在是：' + (cur ? cur.name : '主人'));
+    refreshIdentityBadge();
+  } catch (e) {
+    toast('切不过去：' + (e && e.message ? e.message : e));
+  }
+}
+
+/** 新建一个自定义身份 */
+async function addIdentity() {
+  // 先把「正在编辑的内容」拿来当新身份的初值 —— 主人多半是照着改的
+  const name = (document.getElementById('idName').value || '').trim() || '新身份';
+  try {
+    const r = await fetch('/api/identity/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // 初值不抄简介：抄了会让人以为「上来就写好了一个人」，其实一个字都不该沿用
+      body: JSON.stringify({ name: '新的身份', desc: '', address: '' }),
+    }).then((x) => x.json());
+    if (!r || !r.ok) { toast('建不了：' + ((r && r.error) || '服务端没回')); return; }
+    idState = r;
+    if (r.added) idSel = r.added.id;
+    renderIdentityDlg();
+    toast('建好了，改个名字和简介吧');
+    const el = document.getElementById('idName');
+    if (el) { el.focus(); el.select(); }
+  } catch (e) {
+    toast('建不了：' + (e && e.message ? e.message : e));
+  }
+}
+
+/** 删掉选中的自定义身份 */
+async function delIdentity() {
+  const sel = idState && idState.identities.find((x) => x.id === idSel);
+  if (!sel || sel.builtin) return;
+  if (!confirm('删掉身份「' + sel.name + '」？删了就没这个身份了。')) return;
+  try {
+    const r = await fetch('/api/identity/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sel.id }),
+    }).then((x) => x.json());
+    if (!r || !r.ok) { toast('删不了：' + ((r && r.error) || '服务端没回')); return; }
+    idState = r;
+    idSel = r.current;
+    renderIdentityDlg();
+    refreshIdentityBadge();
+    toast('删掉了');
+  } catch (e) {
+    toast('删不了：' + (e && e.message ? e.message : e));
+  }
+}
+
+document.getElementById('idClose').onclick = () => closeIdentityDlg();
+document.getElementById('idSave').onclick = () => saveIdentityEdit();
+document.getElementById('idUse').onclick = () => useIdentity(idSel);
+document.getElementById('idAdd').onclick = () => addIdentity();
+document.getElementById('idDel').onclick = () => delIdentity();
+document.getElementById('identityDlg').addEventListener('close', () => {
+  idSeq += 1;
+  if (typeof refreshIdentityBadge === 'function') refreshIdentityBadge();
+});
+
+/**
+ * 右上角那行小字：现在是谁在说话。
+ *
+ * 主人身份时不显示 —— 平时就是主人，天天挂着「主人」两个字只会碍眼。
+ * 换成别的身份才提醒，因为那时候她真的会不认人，主人得知道为什么。
+ */
+async function refreshIdentityBadge() {
+  const el = document.getElementById('idBadge');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/identity').then((x) => x.json());
+    if (!r || !r.ok) { el.hidden = true; return; }
+    if (r.current === 'owner') { el.hidden = true; return; }
+    const cur = r.identities.find((x) => x.id === r.current);
+    el.hidden = false;
+    el.textContent = '以「' + (cur ? cur.name : '?') + '」身份说话中';
+    el.title = '她们现在不认你是主人，你说的话命令不动她们；安全词也不作数。点这里切回去。';
+    el.onclick = () => openIdentityDlg();
+  } catch {
+    el.hidden = true;
+  }
+}
+
+
 async function openWhalePersonaDlg() {
   whaleProfileSeq += 1;
   const seq = whaleProfileSeq;
@@ -8206,6 +8583,9 @@ async function openVoicePicker(row) {
 
 // 启动时悄悄同步一次，让顶部按钮能显示「几个关着」
 loadFeatures();
+// 身份徽标也同步一次：上次退出时要是停在「小鱼」身份，重开就得继续提醒，
+// 不能重启一次就悄悄变回主人 —— 那会让人以为身份没生效。
+refreshIdentityBadge();
 
 // ---- 每轮结束：在这轮下面补一行「用了多少 token」 ----------------------------
 /**

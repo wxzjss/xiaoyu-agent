@@ -400,6 +400,13 @@ export async function compressHistory({
   // 会把 trigger 临时置 0 让路，拿它当基准则 after(十万多) > 0 恒成立，压得再好也会
   // 被误标成 still-over-limit。所以另记一份真正的判定线。
   let judgeLine;
+  /**
+   * 压完之后「历史大概落到多少 token」——和 trigger 分开记。
+   * trigger 回答的是「要不要压」，targetAfter 回答的是「压完留多大」。
+   * 小鲸在临界带说「压」会把 trigger 设成 0（只表示允许动手），
+   * 一旦拿它当落地目标，落盘前那个循环就永远不满足，一路丢到只剩 4 条。
+   */
+  let targetAfter = 0;
   if (pureNow) {
     /**
      * 专业模式「每轮都压」——但历史本身还没堆起来时压了纯亏。
@@ -417,6 +424,9 @@ export async function compressHistory({
     const autoVerdict = autoRatioVerdict(model, before);
     trigger = Math.floor(autoVerdict.window * 0.3); // 低于舒适线就一定不压
     judgeLine = trigger; // 判定基准：舒适线（不受下面 trigger=0 影响）
+    // 压完想落到多大：按窗口的 15%。小鲸说「压」只代表允许动手，
+    // 不代表要压到只剩零头 —— 这一点必须和下面的 trigger 分开记（见 targetAfter）。
+    targetAfter = Math.floor(autoVerdict.window * 0.15);
     if (autoVerdict.verdict === 'critical') {
       // 拿不准 —— 问小鲸。冷却期内沿用上次结论，不重复花钱。
       const judge = await askWhaleCompress({
@@ -906,7 +916,15 @@ function cleanSummary(text) {
   const keepFloor = Math.max(1, Math.min(4, keep.length));
   while (guard++ < 200) {
     const next = withSummary(keep);
-    if (estimateTokens(next) <= trigger) break;
+    // 【2026-10-27 补】这里不能拿 trigger 当目标。
+    // 小鲸在临界带说「压」时 trigger 会被设成 0（表示允许动手），
+    // 可一旦拿 0 当「压完要落到多少」，这个循环就永远不满足、一路丢到 keepFloor。
+    // 实测：历史 34.8 万 token、该留 17.5 万，结果只剩 4 条（3727 token）—— 当场失忆。
+    // 现在用 targetAfter（窗口的 15%）当落地目标，它一定是个正数。
+    const landAt = Number.isFinite(targetAfter) && targetAfter > 0
+      ? targetAfter
+      : (trigger > 0 ? trigger : Math.floor(cap * 0.15));
+    if (estimateTokens(next) <= landAt) break;
     if (keep.length <= keepFloor) break;
     // 一次至少丢一条；保持工具调用和它的结果不拆开
     let cutAt = 1;

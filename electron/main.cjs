@@ -10,7 +10,18 @@
 // app 是 undefined，窗口永远不出来，进程安安静静退出、退出码还是 0 —— 看起来就像「双击没反应」。
 // 有些工具链会把这个变量写进用户环境，用户自己也不知道。所以这里先摘掉变量、用同一个 exe
 // 重新拉一遍，然后自己退掉，保证双击总有窗口。
-if (process.env.ELECTRON_RUN_AS_NODE) {
+/**
+ * 【空字符串不算】—— 2026-10-27 踩到的坑
+ *
+ * 原判据是 `if (process.env.ELECTRON_RUN_AS_NODE)`。PowerShell 里
+ * `$env:ELECTRON_RUN_AS_NODE=""` 设出来的是**空字符串而不是删除**，布尔值仍是 true，
+ * 于是程序每次启动都判定「我要当 node 用」→ 自己 spawn 一个自己再退出 →
+ * 新进程继承同一个空字符串 → 再退出。表现就是「双击 exe 一闪就没，什么日志都没有」，
+ * 我对着它查了半天端口和 asar。
+ *
+ * Electron 只在值**非空**时才真的退化成 node，所以判据跟着它走：空串当没有。
+ */
+if (String(process.env.ELECTRON_RUN_AS_NODE || '').trim()) {
   try {
     const { spawn } = require('node:child_process');
     const env = { ...process.env };

@@ -5021,29 +5021,6 @@ const STREAMING_MAX_MS = 90000;
  *   二、新挂上的 streaming 超过 90 秒自动摘 —— 一句话流不了那么久，
  *       真流那么久肯定是断了，光标别在那儿闪一整天。
  */
-/**
- * 【2026-10-27 主人报：每句话后面都跟着一闪一闪的蓝光标】
- *
- * 光标不是 bug，是气泡挂着 streaming 类时 CSS 画的那个 ▍。
- * 问题是它有时候摘不干净 —— 正常该由 done 分支摘，但补捞/断线/多段输出这些路上
- * 漏一个，那个光标就一直闪在句子尾巴上。
- *
- * sweepStaleStreaming 是「按时间判」的兜底，要等 90 秒，太慢。
- * 这里加一个「立刻摘光」的版本：**一轮真结束时**整屏扫一遍，
- * 除了显式指定的那个气泡，其他一律摘掉。
- *
- * @param {Element|null} keepBubble 这一轮还要继续写的那个气泡（可以不传）
- */
-function clearAllStreaming(keepBubble) {
-  try {
-    for (const el of document.querySelectorAll('.bubble.streaming')) {
-      if (keepBubble && el === keepBubble) continue;
-      el.classList.remove('streaming');
-      try { delete el.dataset.streamAt; } catch {}
-    }
-  } catch {}
-}
-
 function sweepStaleStreaming() {
   try {
     /**

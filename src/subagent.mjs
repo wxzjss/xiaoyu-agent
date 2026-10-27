@@ -25,6 +25,7 @@ import { featureNameOfTool, getEnabledMap } from './features.mjs';
 import { getSettings } from './settings.mjs';
 import { config } from './config.mjs';
 import { whalePersonaOverride, whaleModelId } from './whale-profile.mjs';
+import { endpointFor } from './models.mjs';
 import { readWhaleMemory, appendWhaleMemory, compactWhaleMemory } from './whale-memory.mjs';
 /**
  * 她的「状态本子」：欲望 / 牵挂 / 耐心 / 疲惫 / 羞耻 / 自我认识 / 恐惧 / 情感。
@@ -311,6 +312,34 @@ const appRoot = (() => {
     return '';
   }
 })();
+
+/**
+ * 【她该用哪个模型】—— 2026-10-27 修
+ *
+ * 主人在「子智能体 · 选模型」里存下来的是**模型配置条目的 id**
+ * （就是右上角模型列表里那个 `mmvj...`），不是模型名。
+ *
+ * 而 streamChat 的 `model` 参数意思是「用这个名字去请求」——
+ * 于是把条目 id 当成模型名发了出去，上游回
+ * 503 model_not_found: No available channel for model mmvjvxqzcxple，
+ * 她那一轮从头到尾就没成功过一次（界面上「累计」永远是 0，也是这个原因）。
+ *
+ * 现在按端点 id 解出真正的模型名：
+ *   · 选中了一条真实存在的配置 → 用它那一条的 model 名；
+ *   · 配置被删了 → 回落到主人在用的那个（空串 = 跟随）；
+ *   · 本来就是空 → 跟随主人。
+ * 顺带把「配置被删了」这件事写进日志，别再悄悄失效。
+ */
+function pickWhaleModel(explicit) {
+  const want = String(explicit || whaleModelId() || '').trim();
+  if (!want) return '';
+  const ep = endpointFor(want);
+  if (ep && ep.model) return ep.model;
+  try {
+    console.warn('[whale] 她指定的模型配置不在列表里了（' + want + '），这次先跟主人用同一个');
+  } catch {}
+  return '';
+}
 
 export async function runSubagent({
   task,
@@ -815,7 +844,7 @@ export async function runSubagent({
          * 主人能给她单独选一个模型（功能页 · 子智能体 · 选模型）。
          * 没选过就是空串，streamChat 会回落到跟主人当前用的那个一致。
          */
-        model: model || whaleModelId(),
+        model: pickWhaleModel(model),
       })) {
         if (ev.type === 'text') {
           text += ev.text;

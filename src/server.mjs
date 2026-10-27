@@ -1,6 +1,7 @@
 // Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
+try { require('node:fs').appendFileSync('D:/小鱼Agent/_diag_whale.log', new Date().toISOString() + ' MODULE-TOP\n'); } catch (e) {}
 import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
@@ -822,6 +823,61 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     setFullAccess(false);
   }
 
+  /**
+   * 【她那一轮烧的 token 也记账】—— 2026-10-27
+   *
+   * 主人要「当前会话累计总用量」。她那几轮用的是同一个 key、同一份账单，
+   * 不算进来，账单和界面对不上。
+   *
+   * 【为什么不能只用 r.usage】runSubagent 返回的 usage 是**整趟合起来**的一个数，
+   * 而且只有一口气说完（只有一条 assistant）时才有值；她一旦调工具，多圈下来就是 undefined。
+   * 实测：她答得好好的，这里一次都没进过 —— 界面上「累计」一直 0。
+   * 所以改成从 messages 里把每一圈的 usage 加一遍（subagent 每圈都挂到了 assistant 上），
+   * r.usage 有就当兜底。
+   *
+   * 【挂在哪里】不往 messages 里塞占位消息（那会被 wireMessages 当成空壳发出去），
+   * 只累加在 session._whaleUsage 这个独立字段上。
+   * 它是真数据，saveSession 会自然带下去（合流只认 role，别的字段原样保留）。
+   */
+  try {
+    let pin = 0;
+    let pout = 0;
+    const msgs = Array.isArray(r && r.messages) ? r.messages : [];
+    for (const m of msgs) {
+      const u = m && m.usage;
+      if (!u || typeof u !== 'object') continue;
+      pin += Number(u.prompt_tokens ?? 0) || 0;
+      pout += Number(u.completion_tokens ?? 0) || 0;
+    }
+    if (!pin && !pout && r && r.usage) {
+      pin = Number(r.usage.prompt_tokens ?? 0) || 0;
+      pout = Number(r.usage.completion_tokens ?? 0) || 0;
+    }
+    const sum = pin + pout;
+    if (sum > 0) {
+      session._whaleUsage = session._whaleUsage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, at: 0 };
+      session._whaleUsage.prompt_tokens += pin;
+      session._whaleUsage.completion_tokens += pout;
+      session._whaleUsage.total_tokens += sum;
+      session._whaleUsage.at = Date.now();
+      try {
+        logWhaleAction('这一轮烧了 ' + sum + ' tokens（' + pin + ' 进 / ' + pout + ' 出，' + msgs.length + ' 段），本会话她合计 ' + session._whaleUsage.total_tokens);
+      } catch {}
+      /**
+       * 把她烧的这笔数当场推给前端。
+       *
+       * 为什么不省这一步：她答话根本不经过 /api/chat 的 done，
+       * 主人正盯着屏幕上的「累计」，数字不动就像坏了一样。
+       * 前端收到 whale_usage 只管重画表（见 paintCtxGauge）。
+       */
+      try {
+        if (typeof send === 'function') {
+          send({ type: 'whale_usage', gauge: contextGaugeOf(session, sessionId) });
+        }
+      } catch {}
+    }
+  } catch {}
+
   logWhaleAction('结束一次：' + (r && r.ok ? '成' : '败'));
 
   // 空 = 她决定不说话，那就什么都别推（这是设计，不是出错）
@@ -1354,6 +1410,71 @@ function stamp() {
  * 以前 done 事件直接报 `ep.model`，会话里换过模型时前端就按错的那家算钱（价差能到十倍）。
  * 这里按同样的优先级重算一遍，保证「算钱用的模型」= 「真正发请求的模型」。
  */
+/**
+ * 这个会话现在「上下文用了多少 / 能装多少 / 一共跑了多少」。
+ *
+ * 【为什么要单独一个函数】（2026-10-27，主人要在输入框上方看到）
+ *
+ * 界面上原来只有一个「累计 tokens」，那是**流量**：一轮里调十几次模型，
+ * 每次都背着全部历史，加起来几百万很正常 —— 可它跟「上下文」根本不是一回事，
+ * 主人看着只会以为出了错。所以三个数分开给：
+ *
+ *   used  ：**最近一次请求**的 prompt_tokens，这才是「当前上下文多大」。
+ *           取法：从历史末尾往前找第一条带 _usage 的消息（挂在 user 上，见写盘那段）。
+ *           顺序上「后说的覆盖先说的」—— 越靠后越新。
+ *   limit ：压缩水位（自动档按模型窗口算，固定档就是填的那个数）。
+ *          设成「不压缩」时退回模型窗口 —— 那时限制真的只剩模型的嘴。
+ *   window：模型窗口本身，前端拿它兜底显示。
+ *   total ：整个会话灌进去的 token 总和（prompt+completion，含缓存命中的部分）。
+ *
+ * 【为什么小鲸那一轮也要算进 total】
+ * 她也烧钱。主人问的是「这个会话累计总用量」，她那几轮用的是同一个 key，
+ * 不给算进去，账单和界面对不上。
+ *
+ * @param {object} session 会话对象（要它的 messages）
+ * @param {string} sessionId
+ */
+function contextGaugeOf(session, sessionId) {
+  const out = { used: 0, limit: 0, window: 0, mode: 'auto', total: 0, model: '' };
+  try {
+    const model = modelUsedThisTurn(sessionId);
+    out.model = model;
+    const info = contextLimitInfo(model);
+    out.mode = info.mode;
+    out.window = Number(info.window) || 0;
+    let limit = 0;
+    if (info.mode === 'off') limit = out.window;
+    else if (Number.isFinite(info.limit) && info.limit > 0) limit = Number(info.limit);
+    else limit = out.window;
+    out.limit = limit;
+  } catch {
+    // 拿不到窗口就当没有 —— 前端会退化成只显示累计
+  }
+
+  const msgs = Array.isArray(session?.messages) ? session.messages : [];
+  let used = 0;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    const u = m && m._usage;
+    if (!u || typeof u !== 'object') continue;
+    const c = Number(u.context_tokens ?? u.prompt_tokens ?? 0);
+    if (Number.isFinite(c) && c > 0) { used = c; break; }
+  }
+  out.used = used;
+
+  let total = 0;
+  for (const m of msgs) {
+    if (!m) continue;
+    const u = m._usage;
+    if (u && typeof u === 'object') total += Number(u.total_tokens ?? 0) || 0;
+  }
+  // 她那一轮烧的（见 whaleMaybeReply 的记账）。历史里不给她留占位消息，
+  // 所以单独挂在会话对象上。
+  total += Number(session?._whaleUsage?.total_tokens ?? 0) || 0;
+  out.total = Number.isFinite(total) ? total : 0;
+  return out;
+}
+
 function modelUsedThisTurn(sessionId) {
   try {
     const ov = getOverride(sessionId);
@@ -3053,6 +3174,19 @@ const server = createServer(async (req, res) => {
    * 界面要用它算「填 0 到底等于几」—— 不同模型窗口差十倍，
    * 不把这个数写出来，主人根本不知道自己什么时候会被压。
    */
+  /**
+   * 输入框上方那个球要的三个数（见 contextGaugeOf）。
+   * 只读、不碰磁盘、不改任何状态。界面每分钟也会来问一次，
+   * 所以它必须便宜：只遍历内存里那个 messages 数组。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/context-gauge') {
+    const sid = url.searchParams.get('sessionId') || '';
+    if (!isSessionId(sid)) return json(res, 400, { error: 'bad sessionId' });
+    const session = getSession(sid);
+    if (!session) return json(res, 404, { error: 'session not found' });
+    return json(res, 200, { ok: true, ...contextGaugeOf(session, sid) });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/context-limit') {
     try {
       const mod = await import('./llm.mjs');
@@ -4315,6 +4449,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     return json(res, 200, { ok: true, imported: made, count: made.length });
   }
 
+  try { require('node:fs').appendFileSync('D:/小鱼Agent/_diag_whale.log', new Date().toISOString() + ' CHAT-ENTER\n'); } catch (e) {}
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     let payload;
     try {
@@ -5512,7 +5647,17 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       } catch {
         turnTexts = [];
       }
-      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts });
+      /**
+       * done 里顺手带上「上下文表」的三个数。
+       *
+       * 为什么不只靠 /api/context-gauge 拉：那一轮刚答完，主人最想看的就是
+       * 数字跳一下。等前端再发一次请求、再等一个往返，数字会明显慢半拍。
+       * 【注意时机】此时用量已经写进 userMsgRef._usage 并 saveSession 过了
+       * （在上面那段之后），所以这里取到的 used / total 都是这一轮之后的真数。
+       */
+      let gauge = null;
+      try { gauge = contextGaugeOf(session, sessionId); } catch {}
+      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts, gauge });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {

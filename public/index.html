@@ -914,6 +914,25 @@
     button.ghost3:hover { color: var(--text); border-color: rgba(255, 255, 255, .22); }
     button.ghost3:disabled { opacity: .45; cursor: default; }
 
+    /* 【2026-10-27 主人报：批量删除关了再开还是开着】
+     * 查下来两头都有问题，这里一次补掉：
+     *
+     * ① 亮灯看不出来：#sessBulk.on 写在 button.ghost3 前面，两者都是
+     *    (0,1,1)，同优先级后到的赢 —— 「亮了」的红底被 transparent 压掉。
+     *    所以这里把 .on 再写一遍，放到 button.ghost3 后面，用 id+class+元素
+     *    (1,1,1) 稳压一层。
+     * ② 那排「全选/全不选/删掉选中的/取消」本来靠 .sessBulkBar 的 display:flex
+     *    跟 hidden 打架：作者样式里的 display 会盖过浏览器给 [hidden] 的
+     *    display:none，于是 hidden=true 了还照常显示。补一条 !important 压死。
+     */
+    #sessBulk.sessBulkBtn.on, button#sessBulk.on {
+      border-color: rgba(226, 96, 96, .7);
+      background: rgba(226, 96, 96, .16);
+      color: #ff9a9a;
+      font-weight: 600;
+    }
+    .sessBulkBar[hidden] { display: none !important; }
+
 
 /* 搜会话内容 */
 .sessFind[hidden] { display: none !important; }
@@ -976,7 +995,50 @@
     #sessBulkDel:hover:not(:disabled) { background: rgba(226, 96, 96, .24); border-color: #e26060; color: #ffb3b3; }
     #sessBulkDel:disabled { opacity: .4; cursor: not-allowed; }
     /* 勾选框：只在批量模式出现，别的时候不挤地方 */
-    .sessPick { flex: none; width: 16px; height: 16px; accent-color: #e26060; cursor: pointer; }
+    /* 【2026-10-27 主人报：批量删除启用后会话左侧冒出个亮白色方块，颜色样式不喜欢】
+     * 原来 .sessPick 只写了 accent-color，底色还是浏览器给的 —— 暗色页面上
+     * 直接露出一块白，很扎眼。这里照 .askOpt 那套自己画：
+     *   未选：深底 + 细描边，跟页面融在一起；
+     *   已选：红底 + 白勾（跟删除主题一个色，一眼看出勾了哪些）。
+     * 另外加 :disabled、:focus-visible 两档，别让键盘聚焦时又冒出白框。 */
+    .sessPick {
+      flex: none;
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, .22);
+      border-radius: 4px;
+      background: #12161d;
+      cursor: pointer;
+      position: relative;
+      color-scheme: dark;
+      transition: background-color .12s, border-color .12s;
+      outline: none;
+    }
+    .sessPick:hover { border-color: rgba(226, 96, 96, .7); }
+    .sessPick:focus-visible { border-color: rgba(226, 96, 96, .8); box-shadow: 0 0 0 2px rgba(226, 96, 96, .22); }
+    .sessPick:checked {
+      background: #e26060;
+      border-color: #e26060;
+    }
+    .sessPick:checked::after {
+      content: '';
+      position: absolute;
+      left: 4px;
+      top: 1px;
+      width: 4px;
+      height: 8px;
+      border: solid #fff;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+    /* 拖动连选的时候：正在拖的那些行给个跟手的提示，别让人以为没反应 */
+    .sessList.dragging { cursor: grabbing; user-select: none; }
+    .sessList.dragging .sessRow { cursor: grabbing; }
+    .sessRow.dragover { border-color: rgba(226, 96, 96, .55); }
     .sessRow.picked { background: rgba(226, 96, 96, .08); border-color: rgba(226, 96, 96, .45); }
     .sessRow.picked .sessTitle { color: #ffb3b3; }
     .sessList.bulk .sessRow .mini { display: none; }
@@ -3161,6 +3223,10 @@ function releaseComposer(opts) {
   try {
     if (typeof exitFindSilently === 'function') exitFindSilently();
   } catch {}
+  // 【2026-10-27 主人报：批量删除关面板后还是开着】同一个出口一起收
+  try {
+    if (typeof exitBulkSilently === 'function') exitBulkSilently();
+  } catch {}
   // 附件选择浮层也可能残留，一并收掉
   // 注意：pickMask 的打开类名是 .open（不是 .show）——以前写错类名，这条从来没生效过，
   // 浮层残留时整页盖着一层透明遮罩，人看着就是「输入框点不了」。
@@ -5334,6 +5400,13 @@ async function runTurn({ resume = false, text = '' } = {}) {
           b.className = 'bubble';
           b.textContent = safeWordHint(ev.word, ev.note);
           wrap.appendChild(b);
+        } else if (ev.type === 'whale_usage') {
+          /**
+           * 小鲸自己那一轮烧的 token（服务端直接推来的）。
+           * 她不走 /api/chat 的 done —— 这里不接，主人就得等 60 秒轮询才看见数字动。
+           * 只管重画表，不碰气泡。
+           */
+          try { if (ev.gauge) paintCtxGauge(ev.gauge); } catch {}
         } else if (ev.type === 'compressed') {
           const wrap = addEl('', 'msg user');
           wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
@@ -5818,13 +5891,63 @@ async function imeFeatureOn() {
   imeGateAt = Date.now();
   return imeGateOn;
 }
-input.addEventListener('focus', async () => {
-  if (imeSwitching) return;
-  if (!window.desktop || !window.desktop.imeMatchSystem) return; // 网页版，管不着
-  if (!(await imeFeatureOn())) return; // 功能页里关掉了
-  imeSwitching = true;
-  try { await window.desktop.imeMatchSystem(); } catch {}
-  finally { setTimeout(() => { imeSwitching = false; }, 600); }
+/**
+ * 【2026-10-27 主人报：重启后点输入框，原本的中文一下子被切成英文】
+ *
+ * 表层：底层的切换逻辑（main.cjs 里那段 imm32）本身是好的 —— 实测当前已经是
+ * 中文时它 ReadChineseMode()=1、Apply 直接返回，一次都不写；连点三次状态不变，
+ * 键盘布局列表前后一模一样。老写法那个「临时塞一个美式键盘再摘掉」已经删了，
+ * 那才是把中文冲成英文的元凶。
+ *
+ * 但这里还有一个自己挖的坑：锁上晚了。
+ * 原来第一行判 imeSwitching，可 `imeSwitching = true` 写在 `await imeFeatureOn()`
+ * 【之后】。第一次点输入框时那个缓存是空的、要发一次请求，这一 await 就让出执行权，
+ * 后面的 focus 全都看到 imeSwitching 还是 false，各自也进去了 —— 同一个瞬间连着
+ * 调好几次切输入法。就算底层每次都判断「已经是中文、不动」，这种并发本身也该堵死：
+ * 一个是白跑，二个是万一哪个环节慢半拍，几次写叠在一起就容易把状态搅乱。
+ *
+ * 改法：先占位再 await。进函数第一件事就把锁上掉，任何一条早退的路都要负责解开。
+ */
+/**
+ * 【2026-10-27 主人报：选中输入框时才能切换，但点击已经选中的输入框时切换不了】
+ *
+ * 原因很简单：只挂了 focus。输入框本来就在焦点上时再点它，浏览器不会再发 focus
+ * （focus 只在「从没聚焦 → 聚焦」那一下发一次），所以那条路根本走不到。
+ *
+ * 改法：把动作抽成 imeMatchOnce()，两条路都挂 ——
+ *   · focus：从别处第一次点进来，走它
+ *   · click：已经聚焦在输入框里、再点一下，走它（这就是主人要的那一下）
+ * 两条路共用同一把锁 imeSwitching，同一瞬间只会有一次在跑；
+ * 真跑过的留 600ms 冷却，防手抖连点。
+ */
+async function imeMatchOnce() {
+  if (imeSwitching) return;                                          // 已有一趟在跑，直接让路
+  if (!window.desktop || !window.desktop.imeMatchSystem) return;      // 网页版，管不着
+  imeSwitching = true;                                               // ★ 先上锁，再做慢的活
+  let keepLock = false;
+  try {
+    if (!(await imeFeatureOn())) return;                             // 功能页里关掉了（finally 会解锁）
+    await window.desktop.imeMatchSystem();
+    keepLock = true;                                                  // 真跑过一趟：留 600ms 冷却，防连点
+  } catch {
+    // 切换失败不弹窗、不挡打字，锁照常放掉
+  } finally {
+    if (keepLock) setTimeout(() => { imeSwitching = false; }, 600);
+    else imeSwitching = false;
+  }
+}
+
+input.addEventListener('focus', () => { imeMatchOnce(); });
+/**
+ * 已经聚焦在输入框里、再点一下：focus 不会再来，靠这条兜住。
+ * 用 pointerdown 而不是 click —— click 要等松手才发，人点了半天没反应会以为坏了；
+ * pointerdown 一按下就切，手感跟「点一下就换」一致。
+ * 只在「本来就聚焦」时才走：从别处第一次点进来是 focus 那条路的活，这里让开，
+ * 免得同一次点击把切换做两遍（虽然锁会挡住第二遍，但少跑一趟总是好）。
+ */
+input.addEventListener('pointerdown', () => {
+  if (document.activeElement !== input) return;   // 还没聚焦：交给 focus 那条路
+  imeMatchOnce();
 });
 document.getElementById('reset').onclick = async () => {
   if (!sessionId) return;
@@ -8537,6 +8660,159 @@ function setBulk(on) {
 document.getElementById('sessBulk').onclick = () => setBulk(!bulkMode);
 document.getElementById('sessBulkCancel').onclick = () => setBulk(false);
 
+/**
+ * 【2026-10-27 主人报：打开会话界面启用【批量删除】，关掉再打开，还是启用状态】
+ *
+ * 病根跟搜索那条一模一样：bulkMode / picked 是纯内存变量。
+ * switchSession 开头清过一次，可「人点关闭」「切会话」「删完会话」
+ * 这些路都不走 switchSession 开头，把面板一关 bulkMode 还是 true；
+ * 再打开时 renderSessList() 照着旧值又把复选框、勾选行、那排按钮全画出来。
+ *
+ * 所以照 exitFindSilently 的样子补一个：只收干净、不重画列表（重画会闪），
+ * 面板关闭的所有出口都调它。批量删除是「现在要删一批」的临时动作，
+ * 不该跨一次开合保留。
+ */
+function exitBulkSilently() {
+  // 拖到一半被收掉（关面板/切会话）也要把拖动状态清干净，不能卡着
+  try { if (typeof endDragPick === 'function') endDragPick(); } catch {}
+  try {
+    if (bulkMode || picked.size) {
+      bulkMode = false;
+      picked.clear();
+    }
+    const bar = document.getElementById('sessBulkBar');
+    if (bar) bar.hidden = true;
+    const b = document.getElementById('sessBulk');
+    if (b) b.classList.remove('on');
+    const sl = document.getElementById('sessList');
+    if (sl) {
+      sl.classList.remove('bulk');
+      // 已经画出来的勾选行、勾选框一并抹掉，不整张重画
+      for (const row of sl.querySelectorAll('.sessRow.picked')) row.classList.remove('picked');
+      for (const cb of sl.querySelectorAll('input[type=checkbox]')) cb.checked = false;
+    }
+    const cnt = document.getElementById('sessBulkCount');
+    if (cnt) cnt.textContent = '选中 0 个';
+    const del = document.getElementById('sessBulkDel');
+    if (del) { del.disabled = true; del.textContent = '删掉选中的'; }
+  } catch {}
+}
+
+/**
+ * 【2026-10-27 主人要：启动【批量删除】后，长按加拖动能一下子连选多个会话】
+ *
+ * 做法跟文件管理器一个手感：
+ *   · 只在批量模式里生效，平时按下还是普通点击（点行切会话、点按钮干活）。
+ *   · 按下的那一行说了算：它原本没勾，这一趟拖过的全勾上；它原本已勾，
+ *     这一趟拖过的全取消。不 toggle —— toggle 会让同一行来回翻，手一抖就乱。
+ *   · 只认左键/单指（pointerType 是 mouse 时判 button===0）。
+ *   · 按钮（改名/删除/勾选框本身）按下不开拖：勾选框自己点了就翻，别再被拖。
+ *   · 拖过之后紧跟的那次 click 要吞掉，否则松手时整行 click 又把它翻回去。
+ */
+let dragPicking = null;   // { want:true|false } —— 这一趟是勾还是取消
+let dragSuppressClick = false;
+
+function rowById(id) {
+  if (!id) return null;
+  return sessList.querySelector('.sessRow[data-id="' + String(id).replace(/"/g, '\\"') + '"]');
+}
+
+/** 把一行设成「勾上」或「取消」，不 toggle，重复调同一个值结果一样 */
+function setRowPicked(row, want) {
+  if (!row) return false;
+  const id = row.dataset.id;
+  if (!id) return false;
+  const had = picked.has(id);
+  if (want) picked.add(id); else picked.delete(id);
+  const cb = row.querySelector('.sessPick');
+  if (cb) cb.checked = want;
+  row.classList.toggle('picked', want);
+  return had !== want;
+}
+
+function endDragPick() {
+  if (!dragPicking) return;
+  dragPicking = null;
+  try { sessList.classList.remove('dragging'); } catch {}
+  try {
+    for (const r of sessList.querySelectorAll('.sessRow.dragover')) r.classList.remove('dragover');
+  } catch {}
+  try { paintBulkCount(); } catch {}
+}
+
+sessList.addEventListener('pointerdown', (e) => {
+  if (!bulkMode) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;   // 只认左键
+  const row = e.target.closest('.sessRow');
+  if (!row) return;
+  // 按在按钮上别开拖（改名/删除这些 mini 按钮，批量模式下其实藏起来了，留着保险）
+  if (e.target.closest('button')) return;
+  const id = row.dataset.id;
+  if (!id) return;
+  // 按在勾选框上：让它自己翻，不接管
+  if (e.target.classList && e.target.classList.contains('sessPick')) return;
+
+  // 按下的这一行原本是什么状态，这一趟就照它来
+  dragPicking = { want: !picked.has(id) };
+  dragSuppressClick = false;
+  setRowPicked(row, dragPicking.want);
+  paintBulkCount();
+  try { sessList.classList.add('dragging'); } catch {}
+  // 别让浏览器把这当成「选中文字」或者原生拖拽
+  try { e.preventDefault(); } catch {}
+}, { passive: false });
+
+sessList.addEventListener('pointerover', (e) => {
+  if (!dragPicking) return;
+  // 拖的时候扫过按钮（批量下 mini 按钮藏了，留着保险）不算选中；
+  // 但勾选框本身要算 —— 指针从方块上划过去，这一行也该跟着勾上，
+  // 不然贴着左边拖就一行都选不中。
+  if (e.target.closest('button')) return;
+  const row = e.target.closest('.sessRow');
+  if (!row) return;
+  const id = row.dataset.id;
+  if (!id) return;
+  // touch 的 pointerover 不一定跟着手指走，pointermove 那条也会兜一层
+  if (setRowPicked(row, dragPicking.want)) {
+    dragSuppressClick = true;
+    paintBulkCount();
+  }
+  try { row.classList.add('dragover'); } catch {}
+});
+
+sessList.addEventListener('pointermove', (e) => {
+  if (!dragPicking) return;
+  // 有些环境（尤其触摸）不会在行之间派 pointerover，这里按坐标再兜一层
+  let row = null;
+  try { row = document.elementFromPoint(e.clientX, e.clientY); } catch {}
+  if (row && !row.closest) return;
+  const target = row && row.closest('.sessRow');
+  if (!target) return;
+  if (setRowPicked(target, dragPicking.want)) {
+    dragSuppressClick = true;
+    paintBulkCount();
+  }
+  try { target.classList.add('dragover'); } catch {}
+});
+
+/** 松手收尾：挂 window 上，拖出面板外再松手也能收到 */
+window.addEventListener('pointerup', (e) => {
+  if (!dragPicking) return;
+  // 拖过东西的话，把紧跟的那次 click 吞掉（否则整行 click 又 toggle 回去）
+  if (dragSuppressClick) {
+    const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+    sessList.addEventListener('click', swallow, { capture: true, once: true });
+    setTimeout(() => sessList.removeEventListener('click', swallow, true), 350);
+  }
+  endDragPick();
+});
+window.addEventListener('pointercancel', () => endDragPick());
+window.addEventListener('blur', () => endDragPick());
+// 拖的时候如果列表自己滚了，pointerover 就不准了，直接收尾最稳
+sessList.addEventListener('scroll', () => { if (dragPicking) endDragPick(); }, { passive: true });
+// 面板一关 / 切走，绝不能留着 dragging 卡在那儿
+sessDlg.addEventListener('close', () => { try { endDragPick(); } catch {} });
+
 /* ------------------------------------------------------------------ *
  * 搜会话内容
  *
@@ -8753,6 +9029,8 @@ document.getElementById('sessBulkDel').onclick = async () => {
 };
 
 sessList.addEventListener('click', async (e) => {
+  // 刚拖选完松手的那一下：别当成普通点击再翻一遍
+  if (dragSuppressClick) { dragSuppressClick = false; return; }
   const btn = e.target.closest('button[data-act]');
   const row = e.target.closest('.sessRow');
   if (!row) return;
@@ -9334,6 +9612,8 @@ async function createSessionEx(opts = {}) {
 document.getElementById('openSessions').onclick = async () => {
   // 打开面板就当作一件事重新开始：搜索框不该跟着上一次还亮着
   try { exitFindSilently(); } catch {}
+  // 【2026-10-27】批量删除同理：每次打开都是干净的一次
+  try { exitBulkSilently(); } catch {}
   await refreshSessions();
   closeOtherDialogs('sessionsDlg');
   sessDlg.showModal();
@@ -9354,7 +9634,11 @@ document.getElementById('sessNew').onclick = async () => {
 
 sessDlg.addEventListener('cancel', () => sessDlg.close());
 // 面板一关就把搜索框收干净：下次打开不该还是启用状态
-sessDlg.addEventListener('close', () => { try { exitFindSilently(); } catch {} });
+sessDlg.addEventListener('close', () => {
+  try { exitFindSilently(); } catch {}
+  // 【2026-10-27】批量删除也是临时模式，面板一关就收干净，下次打开不该还亮着
+  try { exitBulkSilently(); } catch {}
+});
 
 // ---- 会话导入 / 导出 --------------------------------------------------------
 /**

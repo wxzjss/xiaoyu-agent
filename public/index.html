@@ -1574,6 +1574,15 @@
     #identityDlg .idField input:disabled,
     #identityDlg .idField textarea:disabled { opacity: .62; cursor: not-allowed; }
     /* 那句「换成非主人身份会发生什么」—— 这不是装饰，得让人看见 */
+    /* 底部那排按钮 —— 主人 2026-10-27 报过：「按钮文本竖着排，两个字一行」。
+       原因：.dlgFoot 是 flex，几条按钮默认允许被压扁，而左边那段提示文字又占着空间，
+       面板一窄按钮就各自被挤成两三行。这里给按钮钉死单行、不许收缩，提示文字先让位。 */
+    #identityDlg .dlgFoot { flex-wrap: wrap; }
+    #identityDlg .dlgFoot .hint { flex: 1 1 100%; order: -1; margin: 0 0 8px; }
+    #identityDlg .dlgFoot button {
+      flex: 0 0 auto; white-space: nowrap;
+      padding: 6px 14px; line-height: 1.35;
+    }
     #identityDlg .idWarn {
       font-size: 11.5px; line-height: 1.7; color: var(--warn, #e0a33a);
       border-left: 2px solid var(--warn, #e0a33a); padding: 2px 0 2px 8px; margin: 2px 0 10px;
@@ -2342,7 +2351,7 @@
           </div>
           <div class="idField">
             <span>她该怎么称呼这个人（可留空）</span>
-            <textarea id="idAddr" spellcheck="false" style="height:72px" placeholder="比如：你说话的人是小鱼，别把他当主人。"></textarea>
+            <textarea id="idAddr" spellcheck="false" style="height:72px" placeholder="比如：你说话的人是小鱼，别把她当主人。"></textarea>
           </div>
           <div class="idWarn" id="idWarn" hidden></div>
         </div>

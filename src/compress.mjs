@@ -4,7 +4,7 @@
 import { chat } from './llm.mjs';
 import { config } from './config.mjs';
 import { effectiveContextLimit } from './settings.mjs';
-// 纯净模式：压的时候不做摘要，旧对话直接丢（见 pure.mjs 文件头的理由）。
+// 专业模式：压的时候不做摘要，旧对话直接丢（见 pure.mjs 文件头的理由）。
 import { pureModeOn } from './pure.mjs';
 // 自动档的「拿不准」地带交给小鲸判断（带冷却，不每轮花钱）
 import { autoRatioVerdict, contextWindowOf } from './rates.mjs';
@@ -18,9 +18,9 @@ const SUMMARY_FACT_LINE = /\d|[\\/][\w.-]+|`[\w.]+`|[\w-]+\.(mjs|js|json|md|html
 const SUMMARY_ADVISOR = /(建议|要不要我|如果这是|如果你需要|请提供|需要你确认|需要确认|这看起来像|这串消息|你这段对话|我无法|我不能|有个明显问题|不一致|不是一回事|套模板|空转|困在|回放|测试桩|到底|我检查了|我发现|总结来说|下一步方案|只输出|四行标签|不许有|不合格|纠正|现在开始输出)/;
 
 /**
- * 纯净模式压完之后，原样留住的尾部 token 预算。
+ * 专业模式压完之后，原样留住的尾部 token 预算。
  *
- * 不是「越多越好」：纯净模式的用处是干活，历史只要够接着做下去就行。
+ * 不是「越多越好」：专业模式的用处是干活，历史只要够接着做下去就行。
  * 20000 大约相当于最近十来轮正常对话，长任务（边跑工具边改代码）也够接力。
  */
 const PURE_KEEP_TOKENS = 20000;
@@ -29,9 +29,9 @@ const PURE_KEEP_TOKENS = 20000;
 const PER_MESSAGE_OVERHEAD = 4;
 
 /**
- * 纯净模式：把历史里「人设腔」的痕迹洗掉。
+ * 专业模式：把历史里「人设腔」的痕迹洗掉。
  *
- * 为什么必须洗：主人经常聊到一半才点开纯净模式，这时候历史里的助手回复
+ * 为什么必须洗：主人经常聊到一半才点开专业模式，这时候历史里的助手回复
  * 全是「（耳朵都竖起来）主人～你好呀 (≧▽≦)」。模型看到这些会当成示范，
  * 只靠系统提示里一句「别用旁白」根本拦不住 —— 实测中途开启后照样一大段旁白加颜文字。
  * 所以把旁白括号、颜文字、对主人的称呼从**发给模型的历史副本**里去掉。
@@ -65,7 +65,7 @@ function stripFlavor(text) {
 }
 
 /**
- * 纯净模式：把发给模型的历史副本洗一遍。
+ * 专业模式：把发给模型的历史副本洗一遍。
  *
  * @param {Array} messages 要发给模型的数组（就地改，调用方负责传副本）
  * @returns {number} 删掉了几条（洗完变成空串的整条不要）
@@ -147,7 +147,7 @@ export function estimateTokens(messages) {
  * 头部两条（system + context）永远不动。
  *
  * 【必须排除摘要】摘要也带 context:true，和上下文副本长得一样。历史里没有那条
- * 上下文的会话（老会话、回退之后、纯净模式清过），摘要会落到 messages[1]，
+ * 上下文的会话（老会话、回退之后、专业模式清过），摘要会落到 messages[1]，
  * 这里就会把它当头部保住 —— 结果每压一次就多出一份摘要层层堆着，越压越大，
  * 跟文件头承诺的「摘要会滚进后续摘要」正好相反。摘要可以被再折叠，不算头部。
  */
@@ -163,7 +163,7 @@ function headLength(messages) {
  */
 function findCut(messages, start, keepTokens) {
   // 至少留最后一个来回：keepTokens 再小也不能把尾巴删空。
-  // 以前纯净模式把预算夹到 0 的时候，这里返回 start，整段历史全没了 ——
+  // 以前专业模式把预算夹到 0 的时候，这里返回 start，整段历史全没了 ——
   // 模型拿到的是一个空上下文，等于当场失忆，活干不下去。
   const floor = Math.max(1, Math.min(4, messages.length - start));
   let acc = 0;
@@ -325,7 +325,7 @@ export async function compressHistory({
    * 触发线。
    *
    * 人设模式：涨到水位才动手（不额外花钱）。
-   * 纯净模式：**每轮都压**，不管现在多少 —— 它存在的意义就是「把上下文压到最小」，
+   * 专业模式：**每轮都压**，不管现在多少 —— 它存在的意义就是「把上下文压到最小」，
    *   不是「到线了才压」。界面上那个「历史涨到多少才压」对它不适用。
    */
   const pureNow = pureModeOn();
@@ -348,7 +348,7 @@ export async function compressHistory({
   // 被误标成 still-over-limit。所以另记一份真正的判定线。
   let judgeLine;
   if (pureNow) {
-    trigger = 0; // 纯净模式每轮都压
+    trigger = 0; // 专业模式每轮都压
   } else if (Math.abs(cap - Math.floor(contextWindowOf(model) * 0.7)) <= 1) {
     // 自动档：按比例判断
     const autoVerdict = autoRatioVerdict(model, before);
@@ -397,14 +397,14 @@ export async function compressHistory({
   const SUMMARY_RESERVE = 600;
   const budget = Math.max(1, Math.min(cap, Number.isFinite(cap) ? cap : 0) - headTokens);
   /**
-   * 纯净模式的尾部预算另算，不走「limit 的几成」那一套。
+   * 专业模式的尾部预算另算，不走「limit 的几成」那一套。
    *
-   * 纯净模式是干活用的：历史全丢，只留最近几轮当接力棒，
+   * 专业模式是干活用的：历史全丢，只留最近几轮当接力棒，
    * 不然一轮轮攒下来，token 又全花在复述旧对话上了。
    * 上限两万，够长任务接着往下做，又不会把上下文撑起来。
    *
    * 注意这里**不能**走 resolveKeepTokens：它有「至少 CONTEXT_KEEP_TOKENS（默认 8000）
-   * 或 limit 的一半」的下限，套到纯净模式上会被抬到 64000，再被 budget 一夹就成 0，
+   * 或 limit 的一半」的下限，套到专业模式上会被抬到 64000，再被 budget 一夹就成 0，
    * 结果是历史全删、一句不剩 —— 实测真的压成 6 token，模型直接失忆。
    * 所以直接取「两万」和「预算」里小的那个，并且至少留一条。
    */
@@ -422,9 +422,9 @@ export async function compressHistory({
 
   let summaryText = '';
   let error;
-  // 纯净模式：不做摘要，直接把旧对话丢掉。
+  // 专业模式：不做摘要，直接把旧对话丢掉。
   //
-  // 为什么：主人开纯净模式就是不想让模型被前面那一大堆设定和往事牵着走，
+  // 为什么：主人开专业模式就是不想让模型被前面那一大堆设定和往事牵着走，
   // 留一句「早期对话摘要」等于又塞了一坨上下文进去。干脆不生成、不留。
   const pure = pureNow;
   if (pure) {
@@ -564,7 +564,7 @@ export async function compressHistory({
    * context: true 还顺手带来三个好处：
    *   1. publicSession 会跳过它（L267），界面上不会冒出一条冒充主人的气泡
    *   2. 回退 / 分支 / 记忆本子都只看非 context 的消息，不会把摘要当成对话内容
-   *   3. 纯净模式会把 context 全滤掉（server.mjs L2762），纯净模式本来就不该有摘要
+   *   3. 专业模式会把 context 全滤掉（server.mjs L2762），专业模式本来就不该有摘要
    */
 /**
  * 摘要后处理：把模型没听进去的那几条洗掉。
@@ -674,7 +674,7 @@ function cleanSummary(text) {
   let keep = tail.slice();
   let dropped = 0;
   let guard = 0;
-  // 纯净模式没有 summaryMsg 这一条；用空数组拼，`...[]` 就是什么都不插
+  // 专业模式没有 summaryMsg 这一条；用空数组拼，`...[]` 就是什么都不插
   const summaryMsg = makeSummary();
   const withSummary = (tailPart) => (
     summaryMsg ? [...messages.slice(0, start), summaryMsg, ...tailPart] : [...messages.slice(0, start), ...tailPart]
@@ -682,7 +682,7 @@ function cleanSummary(text) {
   /**
    * 这一轮「至少留几条」，跟 findCut 的 floor 一致。
    *
-   * 纯净模式下 trigger 是 0（每轮都压），如果这里不留底线，
+   * 专业模式下 trigger 是 0（每轮都压），如果这里不留底线，
    * 循环会一路把尾巴丢到空 —— 实测真的丢成了 after=6、kept=0，
    * 模型拿到一个空上下文，当场失忆，活干不下去。
    * 留最后一个来回（最多四条），够它接着往下做。

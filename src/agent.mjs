@@ -24,7 +24,7 @@ import { getEnabledMap } from './features.mjs';
 // 所以「当前有哪些工具」靠这里注入。工具清单是**从 schema 现读**的，不是手抄的第二份文案：
 // 新增工具自动出现在系统提示里，关掉功能自动消失。
 setToolLister(() => enabledToolSchemas());
-// 纯净模式的提示里也要报工具清单，同一个来源，不走第二份文案。
+// 专业模式的提示里也要报工具清单，同一个来源，不走第二份文案。
 setPureToolLister(() => toolsForTurn());
 import {
   getRetry429,
@@ -88,9 +88,9 @@ function isStreamDropped(err) {
 }
 
 /**
- * 纯净模式下要藏起来的工具。
+ * 专业模式下要藏起来的工具。
  *
- * 见上面那段说明：纯净模式不读记忆，那两支笔也一并收走，免得只写不读。
+ * 见上面那段说明：专业模式不读记忆，那两支笔也一并收走，免得只写不读。
  */
 const PURE_HIDDEN_TOOLS = ['memory_add', 'memory_pin'];
 
@@ -138,7 +138,7 @@ const CONTEXT_PREAMBLE = '下面是本次对话的设定与规则，从现在起
  * 为什么要把规则发两遍（system 一遍、user 一遍）：很多网关会悄悄丢掉 system，
  * 只发 system 就等于没发规矩。所以副本这一趟是必要的。
  *
- * 纯净模式例外：这时候「规则」只剩一条长度要求，没必要再套一层
+ * 专业模式例外：这时候「规则」只剩一条长度要求，没必要再套一层
  * 「下面是本次对话的设定与规则…」的前言（那句话本身就是人设腔），
  * 而且一份丢了也不影响（它只是让你答短点，不是底线）。所以直接返回空。
  */
@@ -244,20 +244,20 @@ export async function runAgent({
   if (refreshSystem) {
     const text = systemPrompt(sessionId, { safeMode, safeWord });
     const ctx = contextMessage(sessionId, { safeMode, safeWord });
-    // 纯净模式：text 和 ctx 都是空的。这时候一条 system、一条 context 都不该发 ——
+    // 专业模式：text 和 ctx 都是空的。这时候一条 system、一条 context 都不该发 ——
     // 空 system 有的网关会直接 400，只有前言的 context 更是纯噪音。
     // 所以先把历史里残留的那两条清掉，再把对话本身整理好。
     if (!text && !ctx) {
       const body = messages.filter((m) => {
         if (m?.role === 'system' && !String(m.content ?? '').trim()) return false;
-        if (m?.role === 'system') return false;   // 纯净模式下一条 system 都不要，不是只删空的
+        if (m?.role === 'system') return false;   // 专业模式下一条 system 都不要，不是只删空的
         if (m?.context) return false;
         return true;
       });
       messages.length = 0;
       messages.push(...body);
     } else {
-      // 走到这里说明 text 有东西（纯净模式那条空分支在上面拦掉了）
+      // 走到这里说明 text 有东西（专业模式那条空分支在上面拦掉了）
       if (messages[0]?.role === 'system') messages[0].content = text;
       /**
        * 【摘要不能被当成 context 覆盖或删掉】—— 压缩体检时发现的

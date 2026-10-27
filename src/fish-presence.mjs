@@ -19,7 +19,7 @@
  * 跟小鲸那个开关的区别：小鲸是「要不要叫上她」（默认关），
  * 小鱼是「她本来就在」（默认开），所以这里读不到文件要当「开着」。
  *
- * 状态存盘子（.state/fish-on.json），跟纯净模式、小鲸在场一个待遇：
+ * 状态存盘子（.state/fish-on.json），跟专业模式、小鲸在场一个待遇：
  * 换设备、换浏览器都一致，不放 localStorage。
  */
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';

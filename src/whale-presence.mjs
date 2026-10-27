@@ -24,7 +24,7 @@
  * 跟「小鱼」那个按钮同一个规矩 —— 两个都在顶栏，行为不该一个全局一个按会话。
  *
  * 状态存盘子（.state/whale-on.json），换设备、换浏览器都一致，
- * 跟纯净模式一个待遇。
+ * 跟专业模式一个待遇。
  */
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';

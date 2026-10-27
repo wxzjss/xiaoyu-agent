@@ -819,6 +819,10 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       maxRounds: 40,
       sessionId,
     });
+  } catch (e) {
+    // 【外层抛了也留下】不然日志里又是只剩一个「败」
+    try { logWhaleAction('这一趟抛了：' + String(e?.message ?? e).slice(0, 400)); } catch {}
+    try { send({ type: 'whale_stream_finish', text: '' }); } catch {}
   } finally {
     setFullAccess(false);
   }
@@ -872,12 +876,28 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
        */
       try {
         if (typeof send === 'function') {
-          send({ type: 'whale_usage', gauge: contextGaugeOf(session, sessionId) });
+          send({ type: 'whale_usage' });
         }
       } catch {}
     }
   } catch {}
 
+  /**
+   * 【她这趟败了，得留下原因】—— 2026-10-27
+   *
+   * 原来只记一个字「败」。主人报「跟小鲸说话她不回」，
+   * 翻日志只有「开始一次 / 结束一次：败」，败在超时、报错还是没出词，全靠猜。
+   * 主人说了：找问题不许靠猜。那就把真话写下来。
+   */
+  try {
+    if (!r || r.ok !== true) {
+      const why = r
+        ? (r.timedOut ? '超时' : (r.aborted ? '被掐掉' : (String(r.text || '').trim() ? '没出结论' : '空')))
+        : '没返回';
+      logWhaleAction('败因：' + why + '｜任务头=' + String(userText || '').replace(/\s+/g, ' ').slice(0, 60)
+        + '｜她说=' + String((r && r.text) || '').replace(/\s+/g, ' ').slice(0, 300));
+    }
+  } catch {}
   logWhaleAction('结束一次：' + (r && r.ok ? '成' : '败'));
 
   // 空 = 她决定不说话，那就什么都别推（这是设计，不是出错）
@@ -1410,71 +1430,6 @@ function stamp() {
  * 以前 done 事件直接报 `ep.model`，会话里换过模型时前端就按错的那家算钱（价差能到十倍）。
  * 这里按同样的优先级重算一遍，保证「算钱用的模型」= 「真正发请求的模型」。
  */
-/**
- * 这个会话现在「上下文用了多少 / 能装多少 / 一共跑了多少」。
- *
- * 【为什么要单独一个函数】（2026-10-27，主人要在输入框上方看到）
- *
- * 界面上原来只有一个「累计 tokens」，那是**流量**：一轮里调十几次模型，
- * 每次都背着全部历史，加起来几百万很正常 —— 可它跟「上下文」根本不是一回事，
- * 主人看着只会以为出了错。所以三个数分开给：
- *
- *   used  ：**最近一次请求**的 prompt_tokens，这才是「当前上下文多大」。
- *           取法：从历史末尾往前找第一条带 _usage 的消息（挂在 user 上，见写盘那段）。
- *           顺序上「后说的覆盖先说的」—— 越靠后越新。
- *   limit ：压缩水位（自动档按模型窗口算，固定档就是填的那个数）。
- *          设成「不压缩」时退回模型窗口 —— 那时限制真的只剩模型的嘴。
- *   window：模型窗口本身，前端拿它兜底显示。
- *   total ：整个会话灌进去的 token 总和（prompt+completion，含缓存命中的部分）。
- *
- * 【为什么小鲸那一轮也要算进 total】
- * 她也烧钱。主人问的是「这个会话累计总用量」，她那几轮用的是同一个 key，
- * 不给算进去，账单和界面对不上。
- *
- * @param {object} session 会话对象（要它的 messages）
- * @param {string} sessionId
- */
-function contextGaugeOf(session, sessionId) {
-  const out = { used: 0, limit: 0, window: 0, mode: 'auto', total: 0, model: '' };
-  try {
-    const model = modelUsedThisTurn(sessionId);
-    out.model = model;
-    const info = contextLimitInfo(model);
-    out.mode = info.mode;
-    out.window = Number(info.window) || 0;
-    let limit = 0;
-    if (info.mode === 'off') limit = out.window;
-    else if (Number.isFinite(info.limit) && info.limit > 0) limit = Number(info.limit);
-    else limit = out.window;
-    out.limit = limit;
-  } catch {
-    // 拿不到窗口就当没有 —— 前端会退化成只显示累计
-  }
-
-  const msgs = Array.isArray(session?.messages) ? session.messages : [];
-  let used = 0;
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const m = msgs[i];
-    const u = m && m._usage;
-    if (!u || typeof u !== 'object') continue;
-    const c = Number(u.context_tokens ?? u.prompt_tokens ?? 0);
-    if (Number.isFinite(c) && c > 0) { used = c; break; }
-  }
-  out.used = used;
-
-  let total = 0;
-  for (const m of msgs) {
-    if (!m) continue;
-    const u = m._usage;
-    if (u && typeof u === 'object') total += Number(u.total_tokens ?? 0) || 0;
-  }
-  // 她那一轮烧的（见 whaleMaybeReply 的记账）。历史里不给她留占位消息，
-  // 所以单独挂在会话对象上。
-  total += Number(session?._whaleUsage?.total_tokens ?? 0) || 0;
-  out.total = Number.isFinite(total) ? total : 0;
-  return out;
-}
-
 function modelUsedThisTurn(sessionId) {
   try {
     const ov = getOverride(sessionId);
@@ -3166,25 +3121,6 @@ const server = createServer(async (req, res) => {
         safeWordNote: defaultSafeWordNote(),
       },
     });
-  }
-
-  /**
-   * 压缩阈值现在是哪种模式、自动档会落到多少。
-   *
-   * 界面要用它算「填 0 到底等于几」—— 不同模型窗口差十倍，
-   * 不把这个数写出来，主人根本不知道自己什么时候会被压。
-   */
-  /**
-   * 输入框上方那个球要的三个数（见 contextGaugeOf）。
-   * 只读、不碰磁盘、不改任何状态。界面每分钟也会来问一次，
-   * 所以它必须便宜：只遍历内存里那个 messages 数组。
-   */
-  if (req.method === 'GET' && url.pathname === '/api/context-gauge') {
-    const sid = url.searchParams.get('sessionId') || '';
-    if (!isSessionId(sid)) return json(res, 400, { error: 'bad sessionId' });
-    const session = getSession(sid);
-    if (!session) return json(res, 404, { error: 'session not found' });
-    return json(res, 200, { ok: true, ...contextGaugeOf(session, sid) });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/context-limit') {
@@ -5187,7 +5123,71 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       } catch {}
       return n;
     };
-    // 这一轮改过的文件先记在这条消息身上；回退到它时一起还原。
+    /**
+     * 【A · 工具调用当场落盘】2026-10-27 主人要求。
+     *
+     * 以前只有整轮跑完才 commitWireBack()，中途重启/关窗口，
+     * 这一轮跑过的工具调用一条都没进正式历史 —— 界面上只剩我说的话。
+     * 现在每来一次 tool_end 就调这里：把已经齐了的工具组接进 history 并立刻写盘。
+     *
+     * 只接「齐了的」：assistant(tool_calls) 里每个 id 都等到结果了才接，
+     * 不然历史里会留半截，上游按 OpenAI 协议判非法直接 502。
+     */
+    const commitToolsNow = () => {
+      try {
+        // wire 里所有 tool 结果，按 tool_call_id 归堆
+        const doneIds = new Set();
+        for (const m of wireMessages) {
+          if (m && m.role === 'tool' && m.tool_call_id) doneIds.add(String(m.tool_call_id));
+        }
+        let added = 0;
+        for (const m of wireMessages) {
+          if (!m || m.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) continue;
+          if (m.context || committed.has(m) || wireSeenBefore.has(m) || seenBefore.has(m)) continue;
+          // 这一组必须每个 id 都有结果，否则先不接（等下一次）
+          let all = true;
+          for (const tc of m.tool_calls) {
+            if (!doneIds.has(String(tc && tc.id ? tc.id : ''))) { all = false; break; }
+          }
+          if (!all) continue;
+          // 指纹去重：最近 40 条里已经有同一批就不接
+          const key = m.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',');
+          const tailFrom = Math.max(0, history.length - 40);
+          let already = false;
+          for (let k = tailFrom; k < history.length; k++) {
+            const h = history[k];
+            if (!h || h.role !== 'assistant' || !Array.isArray(h.tool_calls)) continue;
+            if (h.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',') === key) { already = true; break; }
+          }
+          if (already) { committed.add(m); continue; }
+          committed.add(m);
+          if (!m._at) m._at = Date.now();
+          history.push(m);
+          added++;
+        }
+        if (!added) return 0;
+        // 还没接的结果（按 assistant 接进去的顺序）也补上，保证 tool 紧跟在它的 assistant 后面
+        for (const m of wireMessages) {
+          if (!m || m.role !== 'tool') continue;
+          if (committed.has(m) || wireSeenBefore.has(m)) continue;
+          const id = String(m.tool_call_id || '');
+          if (!id) continue;
+          // 它的 assistant 已经在 history 里了才接
+          let ownerIn = false;
+          for (let k = history.length - 1; k >= 0 && k >= history.length - 40; k--) {
+            const h = history[k];
+            if (h && h.role === 'assistant' && Array.isArray(h.tool_calls) &&
+                h.tool_calls.some((t) => String(t && t.id ? t.id : '') === id)) { ownerIn = true; break; }
+          }
+          if (!ownerIn) continue;
+          committed.add(m);
+          history.push(m);
+        }
+        // 记账之后立刻写盘 —— 这才是主人要的「重启后照样在」
+        try { saveSession(session); } catch {}
+        return added;
+      } catch { return 0; }
+    };    // 这一轮改过的文件先记在这条消息身上；回退到它时一起还原。
     const snap = {};
     if (userMsgRef) {
       userMsgRef._ws = snap;
@@ -5264,6 +5264,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               toolCalls: draftTools,
               startedAt: draftStartedAt,
             });
+            // 【A · 当场落盘】每跑完一个工具，就把已经齐了的工具组接进正式历史并写盘。
+            // 这样进程被关/断电/重启，重启后那些【跑命令】【写文件】照样画得出来。
+            if (ev.type === 'tool_end') commitToolsNow();
           }
 
           if (ev.type === 'aborted') send({ type: 'aborted' });
@@ -5666,17 +5669,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       } catch {
         turnTexts = [];
       }
-      /**
-       * done 里顺手带上「上下文表」的三个数。
-       *
-       * 为什么不只靠 /api/context-gauge 拉：那一轮刚答完，主人最想看的就是
-       * 数字跳一下。等前端再发一次请求、再等一个往返，数字会明显慢半拍。
-       * 【注意时机】此时用量已经写进 userMsgRef._usage 并 saveSession 过了
-       * （在上面那段之后），所以这里取到的 used / total 都是这一轮之后的真数。
-       */
-      let gauge = null;
-      try { gauge = contextGaugeOf(session, sessionId); } catch {}
-      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts, gauge });
+      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {

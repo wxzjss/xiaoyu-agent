@@ -348,7 +348,17 @@ export async function compressHistory({
   // 被误标成 still-over-limit。所以另记一份真正的判定线。
   let judgeLine;
   if (pureNow) {
-    trigger = 0; // 专业模式每轮都压
+    /**
+     * 专业模式「每轮都压」——但历史本身还没堆起来时压了纯亏。
+     *
+     * 触发线取 PURE_KEEP_TOKENS 的一半：压完只留一段接力棒（2 万），
+     * 那历史还没到 4 万之前，压一次省不了多少，却要多花一次摘要调用。
+     * 更要紧的是：刚开始聊（3~10 条）就压，等于开局先失忆一次。
+     *
+     * 所以这里给一条**下限**，不是取消「每轮都压」：超过它之后仍然每轮压。
+     */
+    trigger = Math.floor(PURE_KEEP_TOKENS / 2);
+    judgeLine = trigger;
   } else if (Math.abs(cap - Math.floor(contextWindowOf(model) * 0.7)) <= 1) {
     // 自动档：按比例判断
     const autoVerdict = autoRatioVerdict(model, before);
@@ -383,6 +393,14 @@ export async function compressHistory({
     trigger = Math.floor(cap); // 显式填了数字：填多少压多少
     judgeLine = trigger;
   }
+  // 专业模式：历史条数太少也不压（压完只剩摘要，等于开局失忆）
+  const PURE_MIN_MSGS = 8;
+  if (pureNow && messages.length <= PURE_MIN_MSGS) {
+    return {
+      compressed: false, before, after: before, limit: cap, trigger,
+      reason: 'too-few-messages(' + messages.length + ')',
+    };
+  }
   if (before <= trigger) {
     return { compressed: false, before, after: before, limit: cap, trigger, reason: 'under-trigger' };
   }
@@ -395,6 +413,16 @@ export async function compressHistory({
    * 摘要那条消息大约占多少 token —— 先按保守值预留，算完再按真实长度校准。
    */
   const SUMMARY_RESERVE = 600;
+  /**
+   * 尾巴预算的独立下限（token）。
+   *
+   * 尾巴不该因为主人把阈值填小就被砍光 —— 填小是「早点动手压」，
+   * 不是「连最近的对话也别留」。历史上真的出现过 713 条压到 13 条。
+   * 只有 cap 自己比这条线还窄时才让步（见下面 keepTarget 的算）。
+   */
+  const CONTEXT_KEEP_FLOOR = 6000;
+  /** 压完至少留这么多条消息（不够就在日志里报出来，别再静默） */
+  const MIN_KEEP_MSGS = 8;
   const budget = Math.max(1, Math.min(cap, Number.isFinite(cap) ? cap : 0) - headTokens);
   /**
    * 专业模式的尾部预算另算，不走「limit 的几成」那一套。
@@ -409,13 +437,57 @@ export async function compressHistory({
    * 所以直接取「两万」和「预算」里小的那个，并且至少留一条。
    */
   const pureKeep = pureNow ? Math.max(1, Math.min(PURE_KEEP_TOKENS, budget)) : null;
+
+  /**
+   * 人设模式下的尾巴预算，按顺序让步：
+   *   1. 主人显式填的 keepTokens 说了算；
+   *   2. 否则按 limit 的比例算（老逻辑）；
+   *   3. 但**不低于 CONTEXT_KEEP_FLOOR**，除非 cap 自己都装不下；
+   *   4. 最后才受 budget 约束 —— 且不允许被夹到 0 以下（以前就是被夹成 1，
+   *      findCut 只够留 floor 那 4 条，713 条压成 13 条）。
+   *
+   * 「budget - SUMMARY_RESERVE」这层额外惩罚去掉了：摘要真占多少，
+   * 后面那个 while 循环会按 estimateTokens 实际裁，不需要在这儿先扣一遍。
+   */
+  const wantKeep = resolveKeepTokens({ keepTokens, limit: cap });
+  // cap 自己比下限还窄时，以 cap 的 40% 为限（总得给摘要和头部留点位置）
+  const floorKeep = Math.min(CONTEXT_KEEP_FLOOR, Math.max(1, Math.floor(cap * 0.4)));
+  const wantWithFloor = Math.max(wantKeep, floorKeep);
   const keepTarget = pureNow
     ? pureKeep
-    : clampKeep(resolveKeepTokens({ keepTokens, limit: cap }), Math.max(1, budget - SUMMARY_RESERVE));
+    : clampKeep(wantWithFloor, Math.max(1, budget));
 
 
   const cut = findCut(messages, start, keepTarget);
   if (cut <= start) return { compressed: false, before, after: before, limit: cap, trigger, reason: 'nothing-safe-to-drop' };
+
+  /**
+   * 兜底：cap 被填得比头部还小时（headTokens 常 9k~21k，主人却填 8000），
+   * 上面的预算会算成 1，findCut 只留 floor 那 4 条。4 条尾巴 = 当场失忆。
+   *
+   * 这里硬性把切点往前挪到够 MIN_KEEP_MSGS 条。代价是 after 可能略超 cap ——
+   * 有意识的取舍：超一点只是多花钱，削到 4 条是活干不下去。
+   * 挪的时候仍然不拆 assistant(tool_calls) 与它的 tool 结果。
+   */
+  {
+    let keepCount = messages.length - cut;
+    let probe = cut;
+    while (keepCount < MIN_KEEP_MSGS && probe > start) {
+      let back = probe - 1;
+      // 不拆工具对：往前挪时如果 probe 是 tool 或前一条是带 tool_calls 的 assistant，就继续往前
+      while (back > start) {
+        const at = messages[back];
+        const prev = messages[back - 1];
+        const splitsTool = at?.role === 'tool' || (prev?.role === 'assistant' && prev?.tool_calls?.length);
+        if (!splitsTool) break;
+        back--;
+      }
+      if (back <= start) break;
+      probe = back;
+      keepCount = messages.length - probe;
+    }
+    if (probe < cut) cut = probe;
+  }
 
   const old = messages.slice(start, cut);
   const tail = messages.slice(cut);
@@ -713,9 +785,17 @@ function cleanSummary(text) {
   messages.push(...next);
 
   const after = estimateTokens(messages);
+  // 尾巴被削得太薄 = 近况没了，模型接着干会失忆。不是致命错，但必须留痕。
+  const thin = keep.length < MIN_KEEP_MSGS;
+  if (thin) {
+    console.warn('[compress] 尾巴只剩 ' + keep.length + ' 条（低于 ' + MIN_KEEP_MSGS
+      + '），cap=' + cap + ' headTokens=' + headTokens + ' keepTarget=' + keepTarget
+      + ' before=' + before + ' after=' + after);
+  }
   return {
     compressed: true, before, after, limit: cap, trigger,
     removed: old.length + dropped, kept: keep.length,
+    ...(thin ? { thinTail: keep.length } : {}),
     ...(after > judgeLine ? { reason: 'still-over-limit' } : {}),
     ...(error ? { error } : {}),
   };

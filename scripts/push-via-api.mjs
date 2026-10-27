@@ -104,6 +104,32 @@ for (const f of files) {
 }
 console.log(`上传 ${uploaded} 个，复用 ${reused} 个`);
 
+/**
+ * 删掉「远端有、本地已经没有了」的文件。
+ *
+ * 【2026-10-27 踩到的坑：只加不删，删掉的文件在远端永远活着】
+ * 建树时带了 base_tree，GitHub 会把远端原来的条目合并进来 ——
+ * entries 里没有的路径**不会消失**，只是没被覆盖。
+ * 所以本地 `git rm` 掉的文件（这次的 whale-self.mjs 和三个测试脚本），
+ * 推完之后还在远端躺着，仓库看着就像没删干净。
+ *
+ * 解法：对每个「远端独有」的路径显式发一条 sha:null 的条目，
+ * 那才是 GitHub API 里「删除这个文件」的写法。
+ *
+ * 安全线：只删本地 git 追踪树里确实没有的；
+ * 另外跳过 .git 目录和明显的手写配置（万一远端有别人加的东西，别一推就没）。
+ */
+const localPaths = new Set(files.map((f) => f.path));
+const KEEP_ALWAYS = [/^\.git\//, /^LICENSE/i, /^\.github\//];
+const toDelete = [...remoteByPath.keys()].filter(
+  (p) => !localPaths.has(p) && !KEEP_ALWAYS.some((re) => re.test(p)),
+);
+for (const p of toDelete) {
+  entries.push({ path: p, mode: '100644', type: 'blob', sha: null });
+  console.log(`  × ${p}（本地已删除，远端一并删掉）`);
+}
+if (toDelete.length) console.log(`删除 ${toDelete.length} 个`);
+
 // 建树（带 base_tree 无所谓：这里 entries 就是全集，但带上更安全）
 const tree = await api(`/repos/${REPO}/git/trees`, {
   method: 'POST',

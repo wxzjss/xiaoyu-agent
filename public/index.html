@@ -2182,6 +2182,9 @@
         <button type="button" class="ghost3" id="sessExportAll" title="把所有会话打成一个 JSON 文件备份">全部导出</button>
         <button type="button" class="ghost3" id="sessBulk" title="勾选好一次删掉">批量删除</button>
         <button type="button" class="ghost3" id="sessFindToggle" title="在会话内容里搜关键词">搜索</button>
+        <!-- 导出 txt：JSON 导出是给「再导回来」用的，看不了。
+             主人要的是能直接读、能发给别人的聊天记录，所以单开一个纯文本出口。 -->
+        <button type="button" class="ghost3" id="sessExportTxt" title="把当前会话的聊天记录导出成 txt（人能直接读）">导出txt</button>
       </div>
       <!-- 搜会话内容：只看得见标题和最后一句时，想找「上次说那个脚本」根本没处下手 -->
       <div class="sessTop sessFind" id="sessFindBar" hidden>
@@ -10272,6 +10275,22 @@ document.getElementById('sessExportAll').onclick = () => {
   if (!sessionsCache.length) { sessHint.textContent = '一个会话都没有，没东西可导'; return; }
   downloadSession(null, true);
 };
+document.getElementById('sessExportTxt').onclick = () => {
+  if (!sessionId) { sessHint.textContent = '先选一个会话'; return; }
+  /* 【主人 2026-10-27 定：只导出聊天记录，不导出工具调用】
+   * 所以固定带 notools=1 —— 工具调用/结果一行都不进 txt。
+   * 这样导出来的就是能直接读的对话：谁说了什么，一句不多一句不少。
+   * system=0（默认）也不带系统提示词，同一条理由：那是机器的内务，不是聊天记录。 */
+  const a = document.createElement('a');
+  a.href = '/api/sessions/export-txt?id=' + encodeURIComponent(sessionId) + '&notools=1';
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  sessHint.textContent = '正在导出 txt…';
+  setTimeout(() => { sessHint.textContent = `${sessionsCache.length} 个`; }, 2500);
+};
+
 document.getElementById('sessImport').onclick = () => {
   const picker = document.getElementById('sessFile');
   picker.value = '';

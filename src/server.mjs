@@ -41,6 +41,7 @@ import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
 import { quickCheck, updateStatus, startUpdateWatcher } from './updater.mjs';
 import { buildSessionLog } from './session-log.mjs';
+import { sessionToText, txtFilenameOf } from './session-text.mjs';
 import { applySafeWord, sessionModeWord, inPersonaMode } from './mode.mjs';
 // 人设档的档位词名（默认「人设」）—— 她的安全词档位要用
 import { personaWord } from './persona.mjs';
@@ -4353,6 +4354,48 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       'Content-Length': String(buf.length),
       // 中文文件名走 filename* （RFC 5987），别用裸 filename，Windows 下载会变乱码
       'Content-Disposition': `attachment; filename="xiaoyu-session-${stamp()}.json"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'Cache-Control': 'no-store',
+    });
+    return res.end(buf);
+  }
+
+  // ---- 会话导出成 txt（给人读的聊天记录）------------------------------------
+  // GET /api/sessions/export-txt?id=xxx  → 直接当 .txt 下载
+  //
+  // 跟下面那个 export 的区别：
+  //   export 给 JSON，是为了**再导回来**（备份）；
+  //   export-txt 给纯文本，是为了**看**：主人想留个档、发给别人、或者拿去搜。
+  //
+  // 可选参数：
+  //   system=1      连系统提示词一起导（默认不导 —— 那是几万字的规则，会糊在开头）
+  //   notools=1     不写工具调用（前端「导出txt」固定带这个 —— 主人只要聊天记录）
+  //   toolchars=N   每条工具结果最多留多少字（默认 240）
+  //
+  // 注意：工具调用是**默认不写**的。主人 2026-10-27 明确要求「只导出聊天记录，
+  // 不导出工具调用」——纯文本是给人读的，工具那一堆命令和输出混在中间只会碍事。
+  // 真要看工具细节，另走 /api/sessions/log（zip，原始记录全在里面）。
+  if (req.method === 'GET' && url.pathname === '/api/sessions/export-txt') {
+    const id = url.searchParams.get('id') || getLastSessionId() || '';
+    const s = id ? getSession(id) : null;
+    if (!s) return json(res, 404, { error: '找不到这个会话' });
+    let text;
+    try {
+      text = sessionToText(s, {
+        withSystem: url.searchParams.get('system') === '1',
+        withTools: url.searchParams.get('withtools') === '1',
+        toolChars: url.searchParams.get('toolchars') || undefined,
+        version: localVersion(),
+      });
+    } catch (e) {
+      return json(res, 500, { error: '导出失败：' + (e && e.message ? e.message : e) });
+    }
+    const buf = Buffer.from(text, 'utf8');
+    const name = txtFilenameOf(s, stamp());
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Length': String(buf.length),
+      // 中文文件名走 filename*（RFC 5987），别用裸 filename，Windows 下载会变乱码
+      'Content-Disposition': `attachment; filename="xiaoyu-session-${stamp()}.txt"; filename*=UTF-8''${encodeURIComponent(name)}`,
       'Cache-Control': 'no-store',
     });
     return res.end(buf);

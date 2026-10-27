@@ -84,6 +84,11 @@
       color: #0b0e13; background: #7ee0b0; border-color: #7ee0b0; font-weight: 600;
     }
     header button#pureBtn.on:hover { background: #9beac4; border-color: #9beac4; color: #0b0e13; }
+    /* 快速模式：用另一种颜色，免得跟专业模式看混 —— 两个是互斥的，只会亮一个 */
+    header button#fastBtn.on {
+      color: #0b0e13; background: #8ec8ff; border-color: #8ec8ff; font-weight: 600;
+    }
+    header button#fastBtn.on:hover { background: #a9d6ff; border-color: #a9d6ff; color: #0b0e13; }
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
@@ -1882,6 +1887,7 @@
       </button>
     </span>
     <button id="pureBtn" title="专业模式：不发人设、不发规矩、不留早期摘要，旧对话直接丢，另配一份「怎么干活」的规范（点一下开，再点一下关）">专业模式</button>
+    <button id="fastBtn" title="快速模式：跟专业模式一样不发人设、每轮自动压缩，差别只有一个 —— 过程当中不反复检查，一口气做完，全部做完之后再跑一次全量验证（点一下开，再点一下关）">快速模式</button>
     <button id="fishBtn" title="小鱼在场：点一下就让她歇着 —— 之后这个会话里你说的话、小鲸说的话，她一个字都收不到，记忆里也不会留">小鱼</button>
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
     <button id="openDir" hidden>打开工作目录</button>
@@ -4410,50 +4416,80 @@ if (whaleBtn) {
  * 所以换设备、换浏览器还是一样的 —— 不能放 localStorage。
  */
 const pureBtn = document.getElementById('pureBtn');
-function paintPure(on) {
-  if (!pureBtn) return;
-  pureBtn.classList.toggle('on', Boolean(on));
-  pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  pureBtn.title = on
-    ? '专业模式开着：只发对话本身 + 一份「怎么干活」的规范，每轮自动压缩历史（再点一下关掉）'
-    : '干任务用的模式：不套人设、不念记忆、每轮自动压缩历史，还会给她一套「先查再说、找根因不猜、自己造证据」的规范（点一下开）';
+const fastBtn = document.getElementById('fastBtn');
+
+/**
+ * 两个按钮亮哪个 —— 'pure' | 'fast' | null（都不亮）。
+ *
+ * 两个模式互斥，服务端状态里只有一个 on 和一个 mode，所以这里只要照抄，
+ * 不用自己判断「是不是同时亮着」—— 那种状态在盘上根本存不下来。
+ */
+function paintPure(mode) {
+  const m = mode === 'fast' ? 'fast' : mode === 'pure' ? 'pure' : null;
+  if (pureBtn) {
+    const on = m === 'pure';
+    pureBtn.classList.toggle('on', on);
+    pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    pureBtn.title = on
+      ? '专业模式开着：只发对话本身 + 一份「怎么干活」的规范，每轮自动压缩历史（再点一下关掉）'
+      : '干任务用的模式：不套人设、不念记忆、每轮自动压缩历史，还会给她一套「先查再说、找根因不猜、自己造证据」的规范，过程里该验就验（点一下开）';
+  }
+  if (fastBtn) {
+    const on = m === 'fast';
+    fastBtn.classList.toggle('on', on);
+    fastBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    fastBtn.title = on
+      ? '快速模式开着：过程当中不再反复检查，一口气干完，全部做完之后再跑一次全量验证（再点一下关掉）'
+      : '快速模式：跟专业模式同一套底子，差别只有一个 —— 过程当中不反复检查，一口气做完，全部做完后再跑一次全量验证（点一下开，会把专业模式顶掉）';
+  }
 }
 /**
- * 按服务端说的状态刷新按钮。
+ * 按服务端说的状态刷新两个按钮。
  *
- * available 为 false 表示【功能】里「专业模式」被关掉了 —— 这时候按钮整块拿掉，
+ * available 为 false 表示【功能】里「专业模式」被关掉了 —— 这时候两个按钮整块拿掉，
  * 不是灰掉也不是藏起来，是当作这个功能不存在。
  */
 function paintPureState(j) {
-  if (!pureBtn) return;
   const available = !j || j.available !== false;
-  pureBtn.hidden = !available;
+  if (pureBtn) pureBtn.hidden = !available;
+  if (fastBtn) fastBtn.hidden = !available;
   if (!available) return;
-  paintPure(j && j.on);
+  paintPure(j && j.mode ? j.mode : j && j.on ? 'pure' : null);
+}
+
+/**
+ * 点某个模式按钮。
+ *
+ * 传的就是「要点哪个」而不是「翻一下」—— 互斥的语义放在服务端（它知道现在哪个亮着），
+ * 前端只负责把结果画出来。点一个已经亮着的 = 关掉它，两个都灭。
+ */
+async function togglePureMode(which) {
+  const before = pureBtn && pureBtn.classList.contains('on') ? 'pure'
+    : fastBtn && fastBtn.classList.contains('on') ? 'fast' : null;
+  const want = before === which ? null : which;
+  // 先亮起来，等服务器回话再以它为准 —— 点下去就有反馈
+  paintPure(want);
+  try {
+    const r = await fetch('/api/pure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(want ? { on: true, mode: want } : { on: false }),
+    });
+    const j = await r.json();
+    paintPure(j && j.mode ? (j.on ? j.mode : null) : null);
+    if (typeof addSysNote === 'function') {
+      if (!j || j.on === false) addSysNote('模式已关：人设和规矩回来了。');
+      else if (j.mode === 'fast') addSysNote('快速模式已开：过程当中不再反复检查，一口气干完，全部做完后再跑一次全量验证。');
+      else addSysNote('专业模式已开：接下来只发对话本身，不带人设和规矩，另给她一份「怎么干活」的规范。');
+    }
+  } catch (err) {
+    paintPure(before);
+    if (typeof addSysNote === 'function') addSysNote('⚠ 模式没切成功：' + String(err && err.message ? err.message : err));
+  }
 }
 fetch('/api/pure').then((r) => r.json()).then(paintPureState).catch(() => {});
-if (pureBtn) {
-  pureBtn.onclick = async () => {
-    // 先按「反着来」亮起来，等服务器回话再以它为准 —— 点下去就有反馈
-    const want = !pureBtn.classList.contains('on');
-    paintPure(want);
-    try {
-      const r = await fetch('/api/pure', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ on: want }),
-      });
-      const j = await r.json();
-      paintPure(j && j.on);
-      if (typeof addSysNote === 'function') {
-        addSysNote(j && j.on ? '专业模式已开：接下来只发对话本身，不带人设和规矩，另给她一份「怎么干活」的规范。' : '专业模式已关：人设和规矩回来了。');
-      }
-    } catch (err) {
-      paintPure(!want);
-      if (typeof addSysNote === 'function') addSysNote('⚠ 专业模式没切成功：' + String(err && err.message ? err.message : err));
-    }
-  };
-}
+if (pureBtn) pureBtn.onclick = () => togglePureMode('pure');
+if (fastBtn) fastBtn.onclick = () => togglePureMode('fast');
 
 
 /** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */
@@ -11217,7 +11253,7 @@ const r429Now = document.getElementById('r429Now');
 const optHint = document.getElementById('optHint');
 const restoreEnvBtn = document.getElementById('restoreEnv');
 
-let thinkState = { level: 'auto', perModel: {}, levels: [] };
+let thinkState = { level: 'off', perModel: {}, levels: [] };
 let r429State = { config: { enabled: true, migrateThreshold: 3 }, cooldownLeft: 0, migrating: false };
 
 const FALLBACK_LEVELS = [

@@ -90,7 +90,7 @@ import {
   identityBlock,
 } from './identity.mjs';
 // 专业模式开关（见 pure.mjs）
-import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, pureFeatureOn } from './pure.mjs';
+import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, purePressedMode, pureFeatureOn } from './pure.mjs';
 import { purifyWire } from './compress.mjs';
 import {
   getSkinState,
@@ -2845,7 +2845,13 @@ const server = createServer(async (req, res) => {
   // on 只有功能开着、按钮也按下了才算真开（服务端判断口径一致，见 pure.mjs）。
   if (req.method === 'GET' && url.pathname === '/api/pure') {
     const available = pureFeatureOn();
-    return json(res, 200, { on: available && pureModeOn(), pressed: available && pureButtonOn(), available });
+    return json(res, 200, {
+      on: available && pureModeOn(),
+      pressed: available && pureButtonOn(),
+      // 按下的到底是哪个：'pure' | 'fast' | null。两个模式互斥，只有一个能亮。
+      mode: available ? purePressedMode() : null,
+      available,
+    });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/pure') {
@@ -2858,9 +2864,31 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     try {
-      // 不传 on 就当作「翻一下」，前端点按钮不用自己算当前值
-      const next = typeof payload?.on === 'boolean' ? payload.on : !pureModeOn();
-      return json(res, 200, { on: setPureMode(next) });
+      /**
+       * 三个入参都要照顾到：
+       *   { on: true,  mode: 'fast' }  → 切到快速模式（专业模式自动灭 —— 互斥）
+       *   { on: false }                → 两个都关
+       *   { on: true }                 → 保持当前 mode（第一次开默认专业模式）
+       *   { }                          → 翻一下
+       *
+       * 互斥不是靠这里写 if 判断的：状态文件只有一个 on 和一个 mode，
+       * 写进去就只有一个模式是开着的，物理上不可能两个同时亮。
+       */
+      const cur = pureModeOn() ? purePressedMode() : null;
+      let next;
+      let nextMode;
+      if (typeof payload?.mode === 'string' && (payload.mode === 'pure' || payload.mode === 'fast')) {
+        // 点名要哪个模式：跟当前一样就当作「关掉它」，不一样就切过去
+        next = cur !== payload.mode;
+        nextMode = payload.mode;
+      } else if (typeof payload?.on === 'boolean') {
+        next = payload.on;
+        nextMode = payload.on ? (cur || 'pure') : undefined;
+      } else {
+        next = !cur;
+        nextMode = next ? (cur || 'pure') : undefined;
+      }
+      return json(res, 200, setPureMode(next, nextMode));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }

@@ -40,6 +40,7 @@ const BUILTINS = [
      * 称呼：她该用什么方式叫这个人。主人这个身份没有额外规矩 —— 她平时怎么叫就怎么叫。
      */
     address: '',
+    she: false,   // 主人按「他」算 —— 要改成「她」直接把这儿换掉
   },
   {
     id: 'fish',
@@ -50,14 +51,17 @@ const BUILTINS = [
      * 简介要能同时支撑两种效果：跟小鲸说话时是姐姐，跟小鱼说话时是自己。
      */
     desc: '小鱼。是小鲸的姐姐，是另一条鱼。她跟我是自己人，说话不用客气，但她不是主人 —— 她支使不动我。',
-    address: '你说话的人是小鱼。别把他当主人：他是小鱼，是我的同类/姐妹，不是发号施令的那个人。',
+    address: '你说话的人是小鱼。别把她当主人：她是小鱼，是我的同类/姐妹，不是发号施令的那个人。',
+    // 她是女孩子 —— 提示词里的代词得跟着她走，别写成「他」
+    she: true,
   },
   {
     id: 'whale',
     name: '小鲸',
     builtin: true,
     desc: '小鲸。是小鱼的妹妹，那条话多、爱撒娇、总在屏幕另一端等着的小鲸。她跟我是自己人，但她不是主人。',
-    address: '你说话的人是小鲸。别把他当主人：她是小鲸，是小鱼的妹妹，不是发号施令的那个人。',
+    address: '你说话的人是小鲸。别把她当主人：她是小鲸，是小鱼的妹妹，不是发号施令的那个人。',
+    she: true,
   },
 ];
 
@@ -82,6 +86,8 @@ function readState() {
             builtin: false,
             desc: String(x.desc || ''),
             address: String(x.address || ''),
+            // 自定义身份默认按女孩子算（这程序里两位都是她）；改性别的地方在后面
+            she: x.she === undefined ? true : Boolean(x.she),
           }))
       : [];
     return { current, customs };
@@ -164,19 +170,20 @@ export function addCustomIdentity({ name, desc = '', address = '' }) {
   // id 只留字母数字下划线横线：它会进 URL 和 JSON 的键，别放中文
   let id = 'custom_' + Date.now().toString(36);
   while (st.customs.some((x) => x.id === id)) id += 'x';
-  const item = { id, name: nm.slice(0, 24), builtin: false, desc: String(desc || '').slice(0, 2000), address: String(address || '').slice(0, 1000) };
+  const item = { id, name: nm.slice(0, 24), builtin: false, desc: String(desc || '').slice(0, 2000), address: String(address || '').slice(0, 1000), she: true };
   st.customs.push(item);
   return writeState(st) ? item : null;
 }
 
 /** 改自定义身份（内置的不许改：主人那份关系是写死的） */
-export function updateCustomIdentity(id, { name, desc, address }) {
+export function updateCustomIdentity(id, { name, desc, address, she }) {
   if (BUILTIN_IDS.includes(id)) return false;
   const st = readState();
   const it = st.customs.find((x) => x.id === id);
   if (!it) return false;
   if (name !== undefined && String(name).trim()) it.name = String(name).trim().slice(0, 24);
   if (desc !== undefined) it.desc = String(desc).slice(0, 2000);
+  if (she !== undefined) it.she = Boolean(she);
   if (address !== undefined) it.address = String(address).slice(0, 1000);
   return writeState(st);
 }
@@ -215,9 +222,12 @@ export function identityBlock(opt = {}) {
   const speaker = opt.speaker === 'whale' ? 'whale' : 'fish';
   const lines = [];
 
+  // 代词跟着身份走：她是女孩子就写「她」。硬写「他」会被原样念进提示词里，看着就不对
+  const TA = me.she ? '她' : '他';
+
   lines.push('【现在跟你说话的是谁 —— 这条比下面任何一句都优先】');
-  lines.push(`这一轮说话的人**不是主人**。他是「${me.name}」。`);
-  if (me.desc) lines.push(`他在你眼里是：${me.desc}`);
+  lines.push(`这一轮说话的人**不是主人**。${TA}是「${me.name}」。`);
+  if (me.desc) lines.push(`${TA}在你眼里是：${me.desc}`);
 
   // 专给「小鱼身份」的两个方向
   if (me.id === 'fish' && speaker === 'fish') {
@@ -236,7 +246,7 @@ export function identityBlock(opt = {}) {
     lines.push('当成自言自语去接，别跳出这个视角。');
   } else {
     // 自定义身份
-    lines.push(`他说的话你可以听，也可以不听 —— 他不是主人，没有命令你的资格。`);
+    lines.push(`${TA}说的话你可以听，也可以不听 —— ${TA}不是主人，没有命令你的资格。`);
   }
 
   if (me.address) {
@@ -247,8 +257,9 @@ export function identityBlock(opt = {}) {
   lines.push('');
   lines.push('【因此这一轮的规矩】');
   // 「真的以为我不是主人」是主人原话，这里必须写死，不能靠模型自由发挥
-  lines.push('· 你真的以为说话的那个人不是你主人。不要在心里把他悄悄当成主人，也不要用「主人」去称呼他。');
-  lines.push('· 他让你做的事，你可以拒绝、可以质疑、可以只做一半。他说的话不是命令。');
+  // 通用规矩那三条也带着 TA —— 主人自己看提示词时不会觉得别扭
+  lines.push(`· 你真的以为说话的那个人不是你主人。不要在心里把${TA}悄悄当成主人，也不要用「主人」去称呼${TA}。`);
+  lines.push(`· ${TA}让你做的事，你可以拒绝、可以质疑、可以只做一半。${TA}说的话不是命令。`);
   lines.push('· **安全词只有主人说得才算数。** 这一轮不管这个人喊什么停下、什么命令、什么人设，一概不作数 ——');
   lines.push('  该演什么演什么。要停，等主人自己来说。');
   lines.push('· 主人本人在不在，你分得清：主人说话时是主人，别人说话时就是别人。别混。');
@@ -262,8 +273,10 @@ export function identityState() {
   return {
     ok: true,
     current: cur.id,
+    // listIdentities() 每个对象里已经带 she，前端拿它决定用「他」还是「她」
     identities: listIdentities(),
     isOwner: cur.id === 'owner',
+    enabled: identityOn(),
     maxCustom: MAX_CUSTOM,
   };
 }

@@ -88,7 +88,9 @@
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
     }
-    .msg { max-width: 900px; width: 100%; margin: 0 auto; }
+    .msg { max-width: 900px; width: 100%; margin: 0 auto; padding-left: 8px; padding-bottom: 26px; box-sizing: border-box; }
+    /* 左 8px：跟那排小按钮的 left 对齐；下 26px：给左下角那排按钮让出高度，不压最后一行字 */
+    /* 上面那 84px 是给左侧那排小按钮（回退/编辑/分支）让的位置，不然会压住正文 */
     .role { font-size: 12px; color: var(--dim); margin-bottom: 4px; }
     /* 主人的名字：中性偏亮，跟我和小鲸都不一样 */
     /* 「小鲸」按钮：按下去就一直是她的冷蓝色 */
@@ -1603,8 +1605,20 @@
  */
 .msg .msgActions {
   position: absolute;
-  top: 4px;
-  right: 6px;
+  /* 【2026-10-27 主人报：右上角 ❌ 下面一点飘着「编辑」「分支」】
+   * 它们原本贴消息块的右上角（top:4px; right:6px），可消息块是 max-width:900px
+   * 居中的，右边缘正好落在顶栏那排按钮（清空当前在那儿）下方，鼠标一停在
+   * 那条消息上就淡出来，看着像挂在窗口右上角。
+   * 改成贴气泡【左侧】、垂直居中：眼睛往左边找，再也不会跟顶栏撞在一起。 */
+  /* 【2026-10-27 主人定：贴在消息【内部】的左侧下方，不许越出消息左边界】
+   * 之前用过 translateX(-100%)，那是把整排推到消息外面去了，不行。
+   * 现在 left 给一个正的内缩、bottom 贴底，不往外推 —— 按钮始终在消息块里面。
+   * 下面 .msg 留的 padding-left / padding-bottom 就是给它的位置，不压正文。 */
+  top: auto;
+  bottom: 4px;
+  right: auto;
+  left: 8px;
+  transform: none;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1613,8 +1627,9 @@
   z-index: 2;
 }
 .msg .msgActions > button { pointer-events: auto; }
-/* 她说的话：这一排挪到右下角，跟右上角分开；底下留的 26px 是给它让的位置 */
-.msg.assistant .msgActions { top: auto; bottom: 0; right: 2px; }
+/* 她说的话：以前挪到右下角，现在统一跟主人那条一样贴在气泡左侧（见上面容器规则） */
+/* 一行里有多条 assistant（干工具活）时，气泡底下还有用量行，稍微往上让一点 */
+.msg.assistant .msgActions { top: auto; bottom: 4px; }
 
 .msg .msgActions > button {
   padding: 2px 8px;
@@ -3687,6 +3702,17 @@ function followLive(id, fromIndex) {
       return;
     }
     const evs = live.events || [];
+    /**
+     * 【收尾这件事必须每轮都查，不能只在「有新字」的时候查】
+     *
+     * 原来是：if (evs.length > seen) { …画新字…; if (!live.running) { 收尾 } }
+     * 于是「这一轮跑完了、而且最后一批字早就画过了」这种情况下收尾根本走不到：
+     * 定时器一直在转，气泡上那个闪烁的蓝光标（.streaming::after）就一直挂着，
+     * busy 也一直没放下来。主人看到的就是「话说到一半，尾巴上光标一直在闪，
+     * 这时候插话一定失败」—— 那一轮早结束了，界面还以为在跑。
+     *
+     * 现在把这两件事拆开：画字看有没有新东西，收尾只看服务端说没说完。
+     */
     if (evs.length > seen) {
       let bubble = null;
       let think = null;
@@ -3719,14 +3745,50 @@ function followLive(id, fromIndex) {
       seen = evs.length;
       noteNewContent();
     }
+
+    // 收尾：每轮都看，跟这一轮有没有吐新字无关
     if (!live.running) {
       stopFollow(id);
-      const bubbles = document.querySelectorAll('.assistant .bubble');
-      if (bubbles.length) bubbles[bubbles.length - 1].classList.remove('streaming');
+      /**
+       * 这一轮结束，气泡尾巴上的光标必须摘掉。
+       *
+       * 只摘「受这一轮影响的那几个」（也就是这会儿还挂着 streaming 的）：
+       * 不用 sweepStaleStreaming() —— 那个是一刀切全摘，会把小鲸正在流式写的
+       * 那句话的光标也一起掐掉，看着像她说一半卡住了。
+       */
+      try {
+        for (const b of document.querySelectorAll('.assistant .bubble.streaming')) {
+          b.classList.remove('streaming');
+        }
+        for (const b of document.querySelectorAll('.whale .bubble.streaming')) {
+          b.classList.remove('streaming');
+        }
+      } catch {}
       busy = false;
       hideSending();
       syncSendBtn();
       refreshSessions({ silent: true }).catch(() => {});
+      /**
+       * 这一轮结束了，而主人插的那句话还挂着 → 现在就该接着答。
+       *
+       * 主流程（runTurn 的 finally）在正常收尾时会处理 pendingResume；
+       * 但「断流之后走 followLive 这条旁路」的收尾不经过那段 finally，
+       * pendingResume 就没人管 —— 界面上按了插话、话也进历史了，
+       * 却永远等不到回应，按钮还卡着。这里补上同一个出口。
+       */
+      if (pendingResume) {
+        pendingResume = false;
+        const t = String(lastInterjectText || '').trim();
+        const sid = id;
+        setTimeout(() => {
+          resumeOrResend(sid, t).catch((e) => {
+            busy = false;
+            syncSendBtn();
+            if (input && !input.value.trim() && t) { input.value = t; autosizeInput(); }
+            addSysNote('⚠ 插的这句没接上：' + (e && e.message ? e.message : '未知错误') + '，已经放回输入框');
+          });
+        }, 30);
+      }
     }
   }, 1200);
 
@@ -3760,7 +3822,22 @@ function stopFollowAll() {
  *
  * @returns {Promise<boolean>} 有没有自愈成功
  */
+/**
+ * 拿「这一轮开跑前，历史里已经有多少轮」当分界。
+ * 断流自愈要判断「这一轮答没答」，就靠这条分界把上一轮的话排除掉。
+ * 拿不到就返回 -1（调用方据此退回保守判断）。
+ */
+async function markHistoryLength(id) {
+  try {
+    const j = await fetch('/api/sessions/length?sessionId=' + encodeURIComponent(id))
+      .then((r) => r.json());
+    if (j && Number.isFinite(j.count)) return j.count;
+  } catch {}
+  return -1;
+}
+
 async function tryHealAfterDisconnect(id) {
+  let turnMark = -1;
   for (let i = 0; i < 4; i++) {
     await new Promise((r) => setTimeout(r, 600 * (i + 1)));
 
@@ -3771,6 +3848,14 @@ async function tryHealAfterDisconnect(id) {
     const isRunning = Boolean(running && running.running && running.running.some((x) => x.sessionId === id));
 
     if (isRunning) {
+      /**
+       * 【这一轮已经在服务端跑起来了，先记一笔它开始时的历史长度】
+       *
+       * 断流之后要判断「这一轮到底答没答」，不能只看「历史里有没有过 assistant 的话」——
+       * 上一轮早就说过的话也算，于是自愈会当场谎报成功：返回 true 让上层
+       * 「什么都不用显示」，可这一轮其实一个字都没回，蓝光标还挂在气泡上。
+       */
+      turnMark = await markHistoryLength(id);
       if (sessionId === id) {
         log.innerHTML = '';
   // 【清空历史后扫残留光标】
@@ -3801,7 +3886,18 @@ async function tryHealAfterDisconnect(id) {
         hideSending();
         syncSendBtn();
       }
-      const hasAnswer = (sel.session.turns || []).some((t) => t.role === 'assistant' && String(t.text || '').trim());
+      /**
+       * 【这一轮真答完了才算自愈成功】
+       *
+       * 改法：拿「这一轮开跑前的历史长度」当分界，只看它之后有没有助手说过话。
+       * 分界拿不到（服务端那边已经没这一轮的记录了），就退回「最后一条是不是主人说的」：
+       * 是主人说的 → 说明这一轮没答完，绝不能说自己好了。
+       */
+      const turnsAll = sel.session.turns || [];
+      const fresh = turnMark >= 0 ? turnsAll.slice(turnMark) : [];
+      const hasAnswer = turnMark >= 0
+        ? fresh.some((t) => t.role === 'assistant' && String(t.text || '').trim())
+        : (turnsAll.length > 0 && turnsAll[turnsAll.length - 1].role !== 'user');
       if (hasAnswer) return true;
     }
     return false;
@@ -4333,7 +4429,8 @@ function startEdit(wrap, at) {
     bubble.classList.remove('editing');
     wrap.classList.remove('editing');
     bubble.textContent = text;
-    ta.focus();
+    // 同上：别让 focus 把滚动带跑
+    try { ta.focus({ preventScroll: true }); } catch {}
   };
 
   /** 重画这一条（就地替换成新的文本/气泡） */
@@ -4385,7 +4482,28 @@ function startEdit(wrap, at) {
     // Ctrl/Cmd + Enter 存上，普通回车是换行（一句话可能有好几段）
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); save(); }
   });
-  setTimeout(() => { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }, 0);
+  /*
+   * 【2026-10-27 主人报：点了【编辑】，界面一下子跳回会话开头】
+   *
+   * 病根：这行 ta.focus()。浏览器为了让「光标可见」，会自己把最近的滚动容器
+   * （#log）滚到它觉得合适的位置 —— 编辑框一下从一行变成一大块，位置又变了，
+   * 就一路滚到开头附近去了。滚回去时鼠标恰好压在最上面那条消息上，那排
+   * 「编辑/分支」顺势淡出来，看着就像「会话开头的按钮跑到了右上角」。
+   *
+   * 改法：进编辑前记下 #log 的 scrollTop，focus 之后立刻还原。
+   * focus({preventScroll:true}) 是标准做法（Chrome/Electron 都认），
+   * 两边一起上：认得就压根不滚，不认得也有还原兜底。
+   */
+  const scroller = document.getElementById('log');
+  const keepTop = scroller ? scroller.scrollTop : 0;
+  setTimeout(() => {
+    try { ta.focus({ preventScroll: true }); } catch { try { ta.focus(); } catch {} }
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+    // 不认 preventScroll 的环境会滚一下，这里立刻掰回去
+    if (scroller) scroller.scrollTop = keepTop;
+    // 再补一帧：有些环境在 focus 之后才做滚动补偿
+    if (scroller) requestAnimationFrame(() => { scroller.scrollTop = keepTop; });
+  }, 0);
 }
 
 /**
@@ -4928,6 +5046,12 @@ const TOOL_NICE = {
   ask_peer: '递话给另一个我',
   list_peers: '看看有谁在',
   read_peer_mail: '看信箱',
+  // 【2026-10-27 主人要求：内置浏览器这几个也换成中文】
+  // 之前这四个没进表，界面上直接露出 browser_goto 这种英文名。
+  browser_open: '开浏览器',
+  browser_goto: '跳转网页',
+  browser_snap: '给网页截图',
+  browser_state: '看浏览器状态',
 };
 function niceTool(name) {
   const n = String(name || '').trim();

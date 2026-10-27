@@ -88,9 +88,20 @@
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
     }
-    .msg { max-width: 900px; width: 100%; margin: 0 auto; padding-left: 8px; padding-bottom: 26px; box-sizing: border-box; }
+    .msg {
+      max-width: 900px; width: 100%; margin: 0 auto;
+      padding-left: 8px; padding-right: 76px; padding-bottom: 26px;
+      box-sizing: border-box;
+      /* 【2026-10-27 主人定：token 行回到消息左下角】
+       * 要把它贴到消息块底部，得让 .msg 变成纵向 flex ——
+       * 用量行给 margin-top:auto，就会被挤到最底。
+       * 不给 flex 的话它是普通块级，永远紧跟在气泡下面，
+       * 「左下角」就变成了「气泡正下方」，不是主人要的。 */
+      display: flex;
+      flex-direction: column;
+    }
+    /* 右 76px：给右上角那颗「回退」让位；下 26px：给左下角那排（编辑/分支）让位 */
     /* 左 8px：跟那排小按钮的 left 对齐；下 26px：给左下角那排按钮让出高度，不压最后一行字 */
-    /* 上面那 84px 是给左侧那排小按钮（回退/编辑/分支）让的位置，不然会压住正文 */
     .role { font-size: 12px; color: var(--dim); margin-bottom: 4px; }
     /* 主人的名字：中性偏亮，跟我和小鲸都不一样 */
     /* 「小鲸」按钮：按下去就一直是她的冷蓝色 */
@@ -571,6 +582,12 @@
       display: none; align-items: center; gap: 6px;
     }
     .sendingHint.show { display: flex; }
+    /* 「正在发送消息」那一行：居中、和输入框同宽 */
+    .sendingRow { max-width: 900px; margin: 0 auto 6px; display: flex; align-items: center; gap: 10px; }
+    .sendingRow .sendingHint { margin: 0; flex: none; }
+
+      color: var(--dim); font-size: 12px; white-space: nowrap;
+    }
     .sendingHint .dots::after {
       content: ''; animation: sendingDots 1.4s steps(4, end) infinite;
     }
@@ -587,21 +604,38 @@
        平时不占眼睛。所以默认 opacity 0，悬停 .msg 时淡入；
        真机没有 hover，那边常驻半透明（见下面 @media (hover: none)）。 */
     .turnUsage {
-      max-width: 900px; margin: 2px auto 4px; padding-left: 2px;
+      /* 【2026-10-27 主人定：回到消息【左下角】】
+       * 做法：.msg 是纵向 flex，这里 margin-top:auto 就把这行挤到最底。
+       * 左边留 120px，是给左下角那排「编辑/分支」按钮让位置，两者并排不打架。
+       * 平时 opacity 0，鼠标停在这条消息上才淡出来（见下面悬停规则）。 */
+      max-width: none;
+      margin: 10px 0 0;
+      margin-top: auto;
+      padding-left: 120px;
+      text-align: left;
       color: var(--dim); font-size: 11.5px; line-height: 1.5;
       font-variant-numeric: tabular-nums; user-select: text;
       opacity: 0; transition: opacity .14s ease;
     }
     /* 挂在她说的话里面（气泡内部、底部）：跟气泡左边对齐，别居中到整行 */
+    /* 挂在气泡内部的那一路（实时那一轮）：口径跟外面完全一致，同样贴底、左对齐 */
     .msg .turnUsage.underMsg {
       max-width: none;
-      margin: 4px 0 0;
-      padding-left: 0;
+      margin: 10px 0 0;
+      margin-top: auto;
+      padding-left: 120px;
       text-align: left;
+    }
     }
     /* 悬停她这句话 → 这行淡出来。
        两种挂法都要吃到：①气泡内部（.msg:hover .turnUsage）
        ②跟在气泡后面做兄弟（.msg:hover + .turnUsage，实时那一轮走这条）。 */
+    /* 【2026-10-27 主人要的：鼠标悬浮在这条消息上就显示】
+     * 三种挂法都吃：
+     *   ① 挂在消息块内部（历史回放 + 实时那轮，现在都走这条）
+     *   ② 跟在消息块后面做兄弟（老实现的兜底路，留着不碍事）
+     *   ③ 鼠标直接停在这一行自己身上 —— 不写这条的话，移下来它就闪没了
+     * 不刷屏：默认 0，悬浮才 0.82。 */
     .msg:hover .turnUsage,
     .msg:focus-within .turnUsage,
     .msg:hover + .turnUsage,
@@ -1577,10 +1611,20 @@
     }
     #skinPanel .skPre button:hover { color: var(--text); border-color: var(--dim); }
   /* ---- 对话回退 ---- */
+/* 【2026-10-27 主人定：回退按钮留在消息右上角】
+   * 它本来是跟编辑/分支挤在同一个 .msgActions 容器里的，容器被挪到左下后
+   * 它也跟了过去。所以这里用 position:absolute 把它从容器的 flex 流里摘出来，
+   * 直接钉在消息块的右上角 —— 不管容器在哪，它都在右上。 */
 .msg .rewindBtn {
+  /* 钉在消息块的右上角：top/right 相对 .msg（.msg.user/.assistant 都是 relative）。
+   * 它虽然在 .msgActions 容器里，但容器 pointer-events:none、按钮自己 auto，
+   * 位置由这里说了算 —— 容器怎么挪都不影响它。 */
   position: absolute;
   top: 4px;
-  right: 6px;
+  right: 8px;
+  left: auto;
+  bottom: auto;
+  transform: none;
   padding: 2px 8px;
   font-size: 11px;
   line-height: 1.6;
@@ -1605,11 +1649,11 @@
  */
 .msg .msgActions {
   position: absolute;
-  /* 【2026-10-27 主人报：右上角 ❌ 下面一点飘着「编辑」「分支」】
-   * 它们原本贴消息块的右上角（top:4px; right:6px），可消息块是 max-width:900px
-   * 居中的，右边缘正好落在顶栏那排按钮（清空当前在那儿）下方，鼠标一停在
-   * 那条消息上就淡出来，看着像挂在窗口右上角。
-   * 改成贴气泡【左侧】、垂直居中：眼睛往左边找，再也不会跟顶栏撞在一起。 */
+  /* 【2026-10-27 主人定的最终位置：消息内部左下侧】
+   * 注意：主人说的「右上角」是指**窗口**右上角（顶栏那块），不是消息块的右上角。
+   * 当初贴消息块右上角时，消息块 900px 居中，右边缘正好落在顶栏按钮下方，
+   * 看着就像挂在窗口右上角了 —— 所以「编辑」「分支」挪到消息左下。
+   * 回退按钮主人要求留在右上，单独见下面 .msg .rewindBtn。 */
   /* 【2026-10-27 主人定：贴在消息【内部】的左侧下方，不许越出消息左边界】
    * 之前用过 translateX(-100%)，那是把整排推到消息外面去了，不行。
    * 现在 left 给一个正的内缩、bottom 贴底，不往外推 —— 按钮始终在消息块里面。
@@ -2221,8 +2265,10 @@
   <div id="buildTag" style="position:fixed;right:8px;bottom:6px;font-size:10.5px;color:#5b6472;opacity:.55;pointer-events:none;z-index:5;font-family:ui-monospace,Consolas,monospace"></div>
 
   <footer>
-    <div class="sendingHint" id="sendingHint" aria-live="polite">
-      <span>正在发送消息</span><span class="dots"></span>
+    <div class="sendingRow">
+      <div class="sendingHint" id="sendingHint" aria-live="polite">
+        <span>正在发送消息</span><span class="dots"></span>
+      </div>
     </div>
     <div class="attachBar" id="attachBar"></div>
     <button id="toBottom" type="button" aria-label="回到最新" title="回到最新" hidden>
@@ -5530,8 +5576,8 @@ async function runTurn({ resume = false, text = '' } = {}) {
            * 她不走 /api/chat 的 done —— 这里不接，主人就得等 60 秒轮询才看见数字动。
            * 只管重画表，不碰气泡。
            */
-          try { if (ev.gauge) paintCtxGauge(ev.gauge); } catch {}
         } else if (ev.type === 'compressed') {
+          // 压完上下文小了一截，球的数字得跟着掉下来，别还挂着压之前那个
           const wrap = addEl('', 'msg user');
           wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
           const b = document.createElement('div');
@@ -5588,6 +5634,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
           } catch {}
           closeThink();
           hideSending();
+          // 这一轮刚答完，主人最想看数字跳一下 —— 服务端在 done 里就把表带过来了
           /**
            * 【这一轮说完了，可队列里还有话排着】
            *
@@ -8086,7 +8133,7 @@ let lastTurnModel = '';
  * @param {{prompt_tokens?:number, completion_tokens?:number, total_tokens?:number}} u
  * @param {number} [at] 这一轮用户那句话的下标，分支要用；不给就不画按钮
  */
-function appendTurnUsage(u, at, modelOverride, host, underMsg) {
+function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userChars) {
   // 历史里的老轮次没有用量记录：也画一行，明说「没记」，不装作没有。
   // （这个功能是后加的，早于它的对话谁也没存，只能如实标出来。）
   //
@@ -8117,6 +8164,31 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
     } catch {}
   }
 
+  /**
+   * 【C · 接口没报用量怎么办】2026-10-27 主人定：别空着，本地估一个，标「估」。
+   *
+   * 估算口径（粗，只求量级对）：
+   *   输出 = 回答字数 ÷ 1.5（中文大约 1.5 字一个 token）
+   *   输入 = (主人那句话 + 这一串回答) ÷ 1.5 × 1.5，再按这一轮假设问了 2 次算
+   * v1 不想做得更细：拿不准就写「估」，让主人心里有个数，不去装准。
+   */
+  if (!u && (Number(replyChars) > 0 || Number(userChars) > 0)) {
+    const rc = Number(replyChars) || 0;
+    const uc = Number(userChars) || 0;
+    // 中文约 1.5 字 / token；英文更省，这里一律按中文算（偏保守，宁多不少）
+    const outEst = Math.max(1, Math.round(rc / 1.5));
+    // 输入：光这一轮就得把这些原话送进去一遍；再加一点系统提示的余量
+    const inEst = Math.max(1, Math.round((uc + rc) / 1.5) + 600);
+    u = {
+      prompt_tokens: inEst,
+      completion_tokens: outEst,
+      total_tokens: inEst + outEst,
+      context_tokens: inEst,
+      _estimated: true,
+    };
+    // 别让下一次判断「有没有 u」又被绕回来
+    // （这里就是靠 u 重新赋值往下走的）
+  }
   if (!u) {
     if (!Number.isFinite(Number(at))) return;
     const gone = document.createElement('div');
@@ -8146,7 +8218,9 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
 
   const row = document.createElement('div');
   row.className = cls;
-  row.title = '上下文：最后一次请求真正送进去的量（历史有多大）。↑↓：这一轮所有请求加起来的输入/输出。'
+  row.title = u._estimated
+    ? '这一轮接口没回用量：这些数是我按字数粗估的（中文约 1.5 字 1 token），只能看量级，别拿去对账'
+    : '上下文：最后一次请求真正送进去的量（历史有多大）。↑↓：这一轮所有请求加起来的输入/输出。';
 
   const mk = (txt, cls) => {
     const sp = document.createElement('span');
@@ -8171,6 +8245,13 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg) {
   if (ctxTok > 0) { segs.push(mk('上下文 ' + fmtTok(ctxTok), 'ctx')); segs.push(mk('·', 'sep')); }
   segs.push(mk('↑' + fmtTok(pin)), mk('·', 'sep'), mk('↓' + fmtTok(pout)));
   segs.push(mk('·', 'sep'), mk(fmtTok(total) + ' tokens', 'tt'));
+  // 本地估出来的：必须写清「估」，别让人拿它对账（主人明确要的）
+  if (u._estimated) {
+    segs.push(mk('·', 'sep'));
+    const estTag = mk('估', 'na');
+    estTag.title = '这一轮接口没回用量，这里的数是我按字数粗估的（中文约 1.5 字 1 token），只能看个量级，别拿去对账';
+    segs.push(estTag);
+  }
   row.append(...segs);
 
   // 花了多少钱。模型名取「这个会话现在用哪个」，没设就用全局的
@@ -9282,6 +9363,13 @@ function renderTurns(turns) {
   const drawnUsage = new Set();
   // 这一串 assistant 里最后画出来那个气泡（用量行要挂在它下面，悬停它才显形）
   let lastBubbleOfTurn = null;
+  /**
+   * 【C · 估算用的字数】
+   * 这一串回复（可能好几条 assistant）一共写了多少字。
+   * 接口没报 usage 的时候，只能按字数估个大概，总比整行空着强。
+   * 每遇到 user 就清零，跟着这一轮走。
+   */
+  let turnReplyChars = 0;
 
   const list = turns || [];
   const frag = document.createDocumentFragment();
@@ -9311,9 +9399,15 @@ function renderTurns(turns) {
         u: turn.usage || null,
         at: Number.isFinite(Number(turn.rewindId)) ? Number(turn.rewindId) : undefined,
         model: (turn.usage && turn.usage.model) || '',
+        // 新的一轮开始，回复字数从头数
+        replyChars: 0,
+        userChars: String(turn.text || '').length,
       });
+      turnReplyChars = 0;
     } else {
       const hasText = String(turn.text || '').trim().length > 0;
+      // 这一串回复写了多少字：接口没报 usage 时拿来估
+      if (hasText) turnReplyChars += String(turn.text || '').length;
       const outs = Array.isArray(turn.out) ? turn.out : [];
       const tools = Array.isArray(turn.tools) ? turn.tools : [];
       /**
@@ -9395,7 +9489,9 @@ function renderTurns(turns) {
           if (drawnUsage.has(p.id)) continue;   // 画过就别再画
           drawnUsage.add(p.id);
           const host = lastBubbleOfTurn || frag;
-          appendTurnUsage(p.u, p.at, p.model, host, true);
+          // 把这一轮回复的字数给下去：usage 空的时候好估（标「估」）
+          p.replyChars = turnReplyChars;
+          appendTurnUsage(p.u, p.at, p.model, host, true, p.replyChars, p.userChars);
         }
         pendingTurns.length = 0;
       }
@@ -9407,7 +9503,7 @@ function renderTurns(turns) {
   for (const p of pendingTurns) {
     if (drawnUsage.has(p.id)) continue;
     drawnUsage.add(p.id);
-    appendTurnUsage(p.u, p.at, p.model, frag);
+    appendTurnUsage(p.u, p.at, p.model, frag, false, p.replyChars, p.userChars);
   }
   pendingTurns.length = 0;
 
@@ -9558,6 +9654,7 @@ async function switchSessionSafe(id) {
 }
 
 async function switchSession(id) {
+  // 换会话 = 换了一份历史，球的数必须跟着换（先清掉旧数字，别让上一份的残留骗人）
   /**
    * 【2026-10-26 主人报：批量删除开了之后，关掉会话、下次打开还是启用状态】
    *
@@ -9621,6 +9718,7 @@ async function switchSession(id) {
   try { if (typeof window.__reloadWhaleState === 'function') window.__reloadWhaleState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   renderTurns(r.session.turns);
+  // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
 
   // 这个会话还在后台跑吗？
   // 先问服务端（窗口关过也能补回来），再退回本页内存里的记录。

@@ -3552,6 +3552,7 @@ function paintLiveEvents(evs, bubble) {
       closeThink();
       if (!bubble) bubble = addAssistant();
       bubble.textContent += fixMojibake(ev.text);
+      touchStreaming(bubble);
     } else if (ev.type === 'tool_start') {
       closeThink();
       if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
@@ -3657,7 +3658,7 @@ async function attachLive(id) {
   let bubble = paintLiveEvents(evs, null);
 
   if (live.running) {
-    if (bubble) bubble.classList.add('streaming');
+    if (bubble) markStreaming(bubble);
     followLive(id, evs.length);
     /**
      * 【只要服务端说这轮还在跑，就返回 true，不管是谁发起的】
@@ -3765,7 +3766,7 @@ function followLive(id, fromIndex) {
       const closeThink = () => { if (think) { think.finish(); think = null; } };
       const bubbles = document.querySelectorAll('.assistant .bubble');
       bubble = bubbles.length ? bubbles[bubbles.length - 1] : null;
-      if (bubble) bubble.classList.add('streaming');
+      if (bubble) markStreaming(bubble);
 
       for (const ev of evs.slice(seen)) {
         if (ev.type === 'reasoning') {
@@ -3785,6 +3786,7 @@ function followLive(id, fromIndex) {
           closeThink();
           if (!bubble) bubble = addAssistant();
           bubble.textContent += fixMojibake(ev.text);
+          touchStreaming(bubble);
         }
       }
       closeThink();
@@ -4832,6 +4834,9 @@ function lastAssistantWrap() {
 }
 
 
+/** 一个流式气泡最长能挂多久（毫秒）。超过就当它断了，光标摘掉。 */
+const STREAMING_MAX_MS = 90000;
+
 /**
  * 【蓝光标不许留残局】
  *
@@ -4850,12 +4855,59 @@ function lastAssistantWrap() {
  */
 function sweepStaleStreaming() {
   try {
-    const all = document.querySelectorAll('.bubble.streaming');
-    for (const b of all) b.classList.remove('streaming');
+    const now = Date.now();
+    for (const b of document.querySelectorAll('.bubble.streaming')) {
+      const at = Number(b.dataset && b.dataset.streamAt) || 0;
+      // 没记时间戳的（老代码留下的）或超时的，一律摘
+      if (!at || now - at > STREAMING_MAX_MS) b.classList.remove('streaming');
+    }
   } catch {}
 }
 
-/** 给流式气泡加个「最多亮这么久」的保险 */
+/**
+ * 【兜底巡检】每 15 秒看一眼有没有「早该收却没收到」的流式气泡。
+ *
+ * 前面几道（done / followLive 收尾 / 画历史时扫）都依赖「某段代码有机会跑到」。
+ * 进程被杀、SSE 静默断、页面切走再回来 —— 那些时候谁都没机会跑。
+ * 这个定时器不依赖任何事件，只要页面还开着就一直在看。
+ */
+setInterval(() => {
+  try { sweepStaleStreaming(); } catch {}
+}, 15000);
+
+
+/**
+ * 【加流式光标的唯一入口】
+ *
+ * 以前是各处直接 `bubble.classList.add('streaming')`，有的挂了 90 秒闹钟、
+ * 有的没挂。没挂的那几处一旦碰上 SSE 断了 / done 不来，那个 ▍ 就永远闪。
+ *
+ * 现在规定：谁要把气泡标成「正在打字」，一律走这里 ——
+ * 加类、记时间戳、挂闹钟，三件事绑死在一起，想漏都漏不掉。
+ *
+ * 重复调用是安全的：会清掉旧闹钟重新计 90 秒（长时间真在写也不会被误摘）。
+ */
+function markStreaming(bubble) {
+  if (!bubble) return;
+  try {
+    bubble.classList.add('streaming');
+    bubble.dataset.streamAt = String(Date.now());
+  } catch {}
+  try { armStreamingTimeout(bubble); } catch {}
+  try { armStreamingTimer(bubble); } catch {}
+}
+
+/**
+ * 【流式还活着】往气泡里追加了字，就把时间戳往前推。
+ *
+ * 只动时间戳，不重挂闹钟：闹钟是「兜底收尾」，不该被正常输出无限续命。
+ * 巡检靠这个时间戳判断「它是不是已经 90 秒没动过了」。
+ */
+function touchStreaming(bubble) {
+  if (!bubble) return;
+  try { bubble.dataset.streamAt = String(Date.now()); } catch {}
+}
+
 function armStreamingTimeout(bubble) {
   try {
     setTimeout(() => {
@@ -4932,7 +4984,7 @@ function whaleStreamStart(who) {
   whaleStreamingEl = null;
   const wrap = addWhaleBubble(who, '');
   const bubble = wrap.querySelector('.bubble');
-  if (bubble) bubble.classList.add('streaming');
+  if (bubble) markStreaming(bubble);
   whaleStreamingEl = { wrap, bubble, who: who || '小鲸' };
   noteNewContent();
   return wrap;
@@ -4945,6 +4997,7 @@ function whaleStreamDelta(text) {
   // 防御：万一这个气泡已经被别的东西移出画面了，就别往里写
   if (!st.bubble.isConnected) { whaleStreamingEl = null; return; }
   st.bubble.textContent += fixMojibake(String(text || ''));
+  touchStreaming(st.bubble);
   noteNewContent();
 }
 
@@ -5516,6 +5569,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
           closeThink();
           if (!bubble) bubble = addAssistant();
           bubble.textContent += fixMojibake(ev.text);
+          touchStreaming(bubble);
           noteNewContent();
         } else if (ev.type === 'whale') {
           // 她说话了：当场画一个她自己的气泡。
@@ -5811,6 +5865,7 @@ function replayInFlight(id) {
       if (think) { think.finish(); think = null; }
       if (!bubble) bubble = addAssistant();
       bubble.textContent += fixMojibake(p.text);
+      touchStreaming(bubble);
     } else if (p.kind === 'tool') {
       if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
       const el = addTool();
@@ -5821,7 +5876,7 @@ function replayInFlight(id) {
       el.pre.textContent = '参数：' + p.args + (p.done ? '\n--- output ---\n' + p.output : '');
     }
   }
-  if (bubble) bubble.classList.add('streaming');
+  if (bubble) markStreaming(bubble);
   // 存回去：切回来之后 runTurn 要接着往这几个元素上追加
   rec.bubble = bubble;
   rec.think = think;

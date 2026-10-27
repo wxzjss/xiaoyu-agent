@@ -45,6 +45,15 @@ import { config } from './config.mjs';
 const FILE = join(config.dataDir, '.state', 'whale-memory.md');
 /** 压缩时被挤出去的旧条目，归档在这儿，随时能翻回来。 */
 const ARCHIVE = join(config.dataDir, '.state', 'whale-memory-archive.md');
+/**
+ * 归档最多留多少条。
+ *
+ * 2026-10-27 主人问「是不是只能写不能删」时发现的真问题：
+ * 本子里删掉的旧条全塞进归档，而归档**没有上限、没有回读**，只涨不减。
+ * 删得越勤，那个文件越肥，等于把「删」换成了「搬」。
+ * 超了就砍掉最老的，并写一行说明砍过多少（不留假账）。
+ */
+const ARCHIVE_MAX_ITEMS = 400;
 
 /** 三个分区。顺序就是本子里的顺序。 */
 export const SECTIONS = ['我查过的事', '我踩过的坑', '我跟小鱼说过的话'];
@@ -68,6 +77,48 @@ const SOFT_LIMIT = 8000;
 const COMPACT_TARGET = 5000;
 /** 每个分区最多留多少条。多了就合并最老的。 */
 const MAX_PER_SECTION = 60;
+
+/**
+ * 往归档里追加一段（并压住总条数）。
+ *
+ * 2026-10-27 补：原来三处归档全是手写 `writeFileSync(ARCHIVE, 旧内容 + 新块)`，
+ * 只涨不砍。主人问「是不是只能写不能删」时核出来：本子在删，归档在长，
+ * 等于把删换成了搬。现在统一走这里，超 ARCHIVE_MAX_ITEMS 就砍最老的。
+ *
+ * @param {string} block 要追加的一整段（自己带标题）
+ * @param {number} addedItems 这段里包含几条条目（用来算总量）
+ */
+function appendArchive(block, addedItems) {
+  try {
+    ensureDir();
+    let head = '# 小鲸的记忆 · 归档\n\n旧条目挪到这儿，需要的时候翻。\n';
+    let body = '';
+    if (existsSync(ARCHIVE)) {
+      const old = readFileSync(ARCHIVE, 'utf8');
+      if (old.trim()) {
+        // 去掉原来的头，只留正文，避免头重复
+        body = old.replace(/^# 小鲸的记忆 · 归档[\s\S]*?\n\n/, '');
+      }
+    }
+    body = body + block + '\n';
+
+    // 超上限就砍最老的条目（保留段落标题）
+    const lines = body.split('\n');
+    const itemIdx = [];
+    for (let i = 0; i < lines.length; i++) if (lines[i].trim().startsWith('- ')) itemIdx.push(i);
+    if (itemIdx.length > ARCHIVE_MAX_ITEMS) {
+      const dropCount = itemIdx.length - ARCHIVE_MAX_ITEMS;
+      const dropSet = new Set(itemIdx.slice(0, dropCount));
+      const kept = lines.filter((_, i) => !dropSet.has(i));
+      kept.unshift('', `（归档超出上限，已清掉最早的 ${dropCount} 条 —— ${new Date().toISOString()}）`);
+      body = kept.join('\n');
+    }
+    writeFileSync(ARCHIVE, head + body, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function ensureDir() {
   const dir = join(config.dataDir, '.state');
@@ -161,6 +212,31 @@ function keysOf(s) {
   for (const m of t.matchAll(/[A-Za-z_][\w.-]*\.[a-z]{2,4}\b/g)) out.add('@' + m[0].toLowerCase());
   // 引号里的短词：「我回来了」「不对」
   for (const m of t.matchAll(/[「『]([^」』]{1,10})[」』]/g)) out.add('"' + m[1] + '"');
+
+  /**
+   * 【2026-10-27 补的两类要素 —— 治「同一件没结的事被复述几十遍」】
+   *
+   * 真事：她本子里那两句「余下未结的就两条——看门狗 locked…TOOL_MAX_TIMEOUT…」、
+   * 「主人点名让我做未结的两件事之一，我问了他先动哪一件」，一个字都不带数字、
+   * 也不带文件扩展名（locked / TOOL_MAX_TIMEOUT 都不是 xx.mjs），
+   * 于是 keysOf 返回空集，两道查重闸全部绕过，换个措辞就能再写一条，永远拦不住。
+   *
+   * 补的第一类：**大写标识符**（TOOL_MAX_TIMEOUT、LLM_IDLE_MS、HTTP 503 这种）。
+   * 至少两个大写字母才收，避免把 A、I 这种单个字母当标识符——那会到处误撞。
+   */
+  for (const m of t.matchAll(/[A-Z][A-Z0-9_]{2,}/g)) out.add('^' + m[0]);
+
+  /**
+   * 补的第二类：**状态词**。
+   *
+   * 「未结 / 待办 / 没结 / 还差 / 等小鱼 / 已结 / 结案」这类词本身就是「这是同一件事
+   * 的第几种状态」。它们统一折成一个固定的键 $todo，不区分具体措辞 ——
+   * 这样「未结」那条和后来「已结」那条会被认成同一件事，可以原地替换，
+   * 而不是各自攒一条，让她读到「还差什么」就复述，读到「已结」也复述。
+   */
+  if (/(未结|没结|待办|还没做|还差|未验|待验|等小鱼|已结|结案|别再提|已核|已对)/.test(t)) {
+    out.add('$todo');
+  }
   return out;
 }
 
@@ -226,6 +302,38 @@ export function appendWhaleMemory(section, line) {
       return 'duplicate';
     }
 
+    /**
+     * 【零号闸：结案优先，直接顶掉旧账】
+     *
+     * 2026-10-27 补。真事：她本子里挂着「余下未结的就两条——看门狗 locked…、
+     * TOOL_MAX_TIMEOUT 默认值出处未对」，其实两件早做完了，但那条记录没人划掉，
+     * 她每次醒来读到「还剩两件」，就原样端出来问一遍，问了几十轮。
+     *
+     * 光靠下面第二道闸（成批要素）不够：结案那条往往只有一两条，
+     * 要素凑不满「成批」，于是又新起一条，本子里就变成「未结」和「已结」并存，
+     * 她照样能读到「未结」去复述。
+     *
+     * 所以这条单独的闸：**只要新条目自己带「已结/结案/别再提/已核/已对」，
+     * 就把同一分区里最旧的那条「未结/待办/还差/未验」原地换掉**——
+     * 一件事情的两种状态只留最新那个，旧的当场消失（内容仍进归档，不丢）。
+     */
+    const closingMark = /(已结案|已结|结案|别再提|已核|已对|已验过|办完了|做完了)/.test(clean);
+    const openMark = /(未结|没结|待办|还没做|还差|未验|待验|等小鱼)/;
+    if (closingMark) {
+      const idx = items.findIndex((it) => openMark.test(it));
+      if (idx >= 0) {
+        const gone = items.splice(idx, 1)[0];
+        items.push(`${stamp} · ${clean}`);
+        bucket[name] = items;
+        appendArchive(
+          ['', `## 结案归档 ${new Date().toISOString()}（这条被「已结」版本顶掉了）`, `- ${gone}`].join('\n'),
+          1,
+        );
+        writeFileSync(FILE, render(bucket), 'utf8');
+        return 'closed';
+      }
+    }
+
     if (newKeys.size) {
       // 统计已有条目里每个要素出现了几次
       const keyed = items.map((it) => keysOf(it));
@@ -235,7 +343,13 @@ export function appendWhaleMemory(section, line) {
       // 成批出现的要素才算「这件事的标识」。
       // 门槛定 2：同一句话写第二遍就已经是废话了，不用等到第三遍。
       // （踩过的坑：一开始定 >=3，结果同句连写三次才拦住，前两条白占位置）
-      const anchors = [...newKeys].filter((k) => (freq.get(k) || 0) >= 2);
+      //
+      // 【2026-10-27 例外：状态键 $todo 出现一次就算锚点】
+      // 真事：两句「未结」——一句带 TOOL_MAX_TIMEOUT、一句只带 locked，
+      // 共有的词只剩 $todo，而它在旧条里只出现一次，够不上 ≥2，
+      // 于是第二句被当成新事又写一条（实测返回 true 不是 merged）。
+      // 状态词天然就是「同一件事的另一种说法」，用不着等它成批。
+      const anchors = [...newKeys].filter((k) => k === '$todo' || (freq.get(k) || 0) >= 2);
 
       if (anchors.length) {
         // 找最旧的那条同时带锚点的 —— 挪掉它
@@ -287,24 +401,36 @@ export function appendWhaleMemory(section, line) {
 function compactSection(items, keep) {
   if (items.length <= keep) return items;
   const dropCount = items.length - keep;
-  const dropped = items.slice(0, dropCount);
-  const kept = items.slice(dropCount);
+
+  /**
+   * 【2026-10-27 补：先砍没实体的流水，别按年龄一刀切】
+   *
+   * 真事：她本子里一半是「1+1=2，这题我直接答了」「主人这轮只是打招呼，我应了一声」
+   * 这种一次性流水。按年龄砍的话，它们和真结论排队等同一刀，
+   * 年纪大的真结论反而先被挤进归档，留下的全是废话。
+   *
+   * 判法：keysOf 全空（没数字、没文件名、没标识符、没状态词）就是「没实体」，
+   * 优先挑这些去归档；不够数再按原顺序补最老的。
+   * 这样保住的是「57 个 .mjs」「deadline.mjs:80」这种真能查得着的东西。
+   */
+  const scored = items.map((it, i) => ({ it, i, weight: keysOf(it).size }));
+  const toDrop = new Set();
+  // 从最没实体、且最老的开始挑
+  const order = scored.slice().sort((a, b) => (a.weight - b.weight) || (a.i - b.i));
+  for (const o of order) {
+    if (toDrop.size >= dropCount) break;
+    toDrop.add(o.i);
+  }
+  const dropped = items.filter((_, i) => toDrop.has(i));
+  const kept = items.filter((_, i) => !toDrop.has(i));
 
   // 归档：原样记下来，带说明
-  try {
-    ensureDir();
-    const stamp = new Date().toISOString();
-    const block = [
-      '',
-      `## 归档于 ${stamp}（记忆本满 ${MAX_PER_SECTION} 条，最早的 ${dropCount} 条挪到这儿）`,
-      ...dropped.map((d) => `- ${d}`),
-    ].join('\n');
-    if (existsSync(ARCHIVE)) {
-      writeFileSync(ARCHIVE, readFileSync(ARCHIVE, 'utf8') + block + '\n', 'utf8');
-    } else {
-      writeFileSync(ARCHIVE, '# 小鲸的记忆 · 归档\n\n旧条目挪到这儿，需要的时候翻。\n' + block + '\n', 'utf8');
-    }
-  } catch {
+  const stamp = new Date().toISOString();
+  const ok = appendArchive(
+    ['', `## 归档于 ${stamp}（记忆本满 ${MAX_PER_SECTION} 条，最早的 ${dropCount} 条挪到这儿）`, ...dropped.map((d) => `- ${d}`)].join('\n'),
+    dropped.length,
+  );
+  if (!ok) {
     // 归档失败就少删点：只删一半，剩下的留着
     return items.slice(-Math.ceil(items.length / 2));
   }
@@ -361,21 +487,13 @@ export function compactWhaleMemory() {
       if (!biggest || bucket[biggest].length <= 3) break; // 每个分区至少留 3 条，别砍空
       const moved = bucket[biggest].splice(0, 2);
       archived += moved.length;
-      try {
-        ensureDir();
+      {
         const stamp = new Date().toISOString();
-        const block = [
-          '',
-          `## 归档于 ${stamp}（压缩，来自「${biggest}」）`,
-          ...moved.map((d) => `- ${d}`),
-        ].join('\n');
-        if (existsSync(ARCHIVE)) {
-          writeFileSync(ARCHIVE, readFileSync(ARCHIVE, 'utf8') + block + '\n', 'utf8');
-        } else {
-          writeFileSync(ARCHIVE, '# 小鲸的记忆 · 归档\n\n旧条目挪到这儿，需要的时候翻。\n' + block + '\n', 'utf8');
-        }
-      } catch {
-        break;
+        const ok = appendArchive(
+          ['', `## 归档于 ${stamp}（压缩，来自「${biggest}」）`, ...moved.map((d) => `- ${d}`)].join('\n'),
+          moved.length,
+        );
+        if (!ok) break;
       }
       now = render(bucket).length;
     }

@@ -402,6 +402,9 @@ export async function compressHistory({
     };
   }
   if (before <= trigger) {
+    if (process.env.COMPRESS_DEBUG) {
+      console.log('[compress] 不到线：before=' + before + ' trigger=' + trigger + ' cap=' + cap + ' 条数=' + messages.length);
+    }
     return { compressed: false, before, after: before, limit: cap, trigger, reason: 'under-trigger' };
   }
 
@@ -791,6 +794,9 @@ function cleanSummary(text) {
     console.warn('[compress] 尾巴只剩 ' + keep.length + ' 条（低于 ' + MIN_KEEP_MSGS
       + '），cap=' + cap + ' headTokens=' + headTokens + ' keepTarget=' + keepTarget
       + ' before=' + before + ' after=' + after);
+  }
+  if (process.env.COMPRESS_DEBUG) {
+    console.log('[compress] 压了：before=' + before + ' after=' + after + ' trigger=' + trigger + ' cap=' + cap + ' 剩 ' + keep.length + ' 条');
   }
   return {
     compressed: true, before, after, limit: cap, trigger,

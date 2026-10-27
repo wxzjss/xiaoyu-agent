@@ -41,6 +41,27 @@ function headers(ep) {
  *
  * @param {string} [sessionId]
  */
+/**
+ * 【model 参数能是「模型名」，也能是「模型配置 id」】—— 2026-10-27 修
+ *
+ * 血案：小鲸的身份卡里选的是「deepseek官方」（id=mmvjvxqzcxple，
+ * 地址 api.deepseek.com，模型名 deepseek-flash）。她的调用把 model 传成这个 id，
+ * 这里却只做了 { ...全局默认, model: 'mmvjvxqzcxple' } —— 名字被换成了 id，
+ * 地址还是全局默认那个网关。结果拿着 deepseek-flash 去丸子网关要渠道，
+ * 回 503 model_not_found（No available channel for model deepseek-flash），
+ * 她一张嘴就被掐死，日志里只剩一个「败」字，主人看到的就是「跟她说话她不回」。
+ *
+ * 现在：先拿 model 当 id 去配置表里找，找得到就连**地址和 key**一起用；
+ * 找不到才当成纯模型名，套在当前那套上（老行为，别的调用方不受影响）。
+ */
+function epForModelArg(want, fallbackEp) {
+  const id = String(want || '').trim();
+  if (!id) return fallbackEp;
+  const byId = endpointFor(id);
+  if (byId) return byId;
+  return { ...fallbackEp, model: id };
+}
+
 function endpointForForSession(sessionId) {
   if (!sessionId) return null;
   const ov = getOverride(sessionId);
@@ -108,10 +129,11 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
    * 小鲸没有会话，她的模型就是靠这个参数带进来的（见 whale-profile.mjs）。
    */
   const _ovEp = endpointForForSession(sessionId) ?? activeEndpoint();
-  const _ep = String(model || '').trim()
-    ? { ..._ovEp, model: String(model).trim() }
-    : _ovEp;
-  const ep = _ep;
+  const ep = epForModelArg(model, _ovEp);
+  // 【她到底用了哪套】查「小鲸不说话」时靠这一行看真话，不靠猜
+  try {
+    if (process.env.WHALE_DEBUG || String(model || '').trim()) console.log('[llm] streamChat model参数=' + JSON.stringify(String(model||'')) + ' → 用 ' + ep.name + ' (' + ep.baseURL + ' / ' + ep.model + ')');
+  } catch {}
   const body = {
     model: ep.model,
     // 只发模型该看的那几个字段（内部标记一律剥掉，见上方 wireMessage 的注释）
@@ -277,7 +299,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
  */
 export async function chat({ messages, tools, signal, sessionId = '', model }) {
   const _ovEp = endpointForForSession(sessionId) ?? activeEndpoint();
-  const ep = String(model || '').trim() ? { ..._ovEp, model: String(model).trim() } : _ovEp;
+  const ep = epForModelArg(model, _ovEp);
   const body = { model: ep.model, messages: wireMessages(messages) };
   if (tools?.length) body.tools = tools;
 

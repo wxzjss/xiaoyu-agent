@@ -205,14 +205,35 @@ function getSession(id) {
   // 分支拿到的是残缺数据，再被 saveSession 写回磁盘，磁盘上的真数据就被覆盖没了。
   // 现在每次取都瞄一眼文件修改时间，更新时间晚于内存里的 updatedAt 且磁盘那份更新，
   // 就用磁盘的换掉缓存。多一次 statSync，比丢消息便宜太多。
+  /**
+   * 【别因为 mtime 变新就换对象】—— 2026-10-27 修
+   *
+   * updatedAt 是在 writeFileSync **之前**赋的，落盘必然比它晚几毫秒。
+   * 于是 st.mtimeMs > hot.updatedAt 恒为真（实测 17/17 个会话全真，中位差 7.8ms），
+   * 每次 getSession 都重新读盘换一个新对象。
+   *
+   * 后果：/api/chat 开跑时抓的那个 session 成了孤儿，她的回复全推在孤儿上；
+   * 中途别的路径（插话、小鲸、定时存盘）每存一次盘就换一次对象，
+   * 收尾时孤儿写回磁盘 —— 等于「她说的话全消失」。
+   *
+   * 改成两道关：
+   *   ① mtime 要比 updatedAt 多出 SLACK_MS，才可能是外部真的改过（排除自己刚写完）；
+   *   ② 就算过了第一关，还要磁盘那份**真的多出消息**才换。
+   * 内容一样就返回原对象 —— 正在跑的那一轮手里的引用不能被动。
+   */
+  const SLACK_MS = 1500;
   try {
     const st = statSync(sessionPath(id));
     const known = Number(hot.updatedAt) || 0;
-    if (st.mtimeMs > known) {
+    if (st.mtimeMs > known + SLACK_MS) {
       const fresh = loadSession(id);
       if (fresh) {
-        sessions.set(id, fresh);
-        return fresh;
+        const hotN = Array.isArray(hot.messages) ? hot.messages.length : 0;
+        const freshN = Array.isArray(fresh.messages) ? fresh.messages.length : 0;
+        if (freshN > hotN) {
+          sessions.set(id, fresh);
+          return fresh;
+        }
       }
     }
   } catch {}
@@ -5307,29 +5328,59 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 300 字上限，appendDigest 里自动截；满了会把最旧的挪进归档段，一条不丢。
        */
       try {
+        /**
+         * 这一轮干了什么：从历史里捞刚发生的工具调用。
+         * 只记工具名，不记参数、不记结果正文（那些太长，也都不是「话」）。
+         */
         const said = lastUserTextOf(session);
-        let mine = '';
+        const did = [];
+        /** 工具名 -> 那次调用干了什么（从参数里捞最有辨识度的一段） */
+        const what = [];
         for (let k = history.length - 1; k >= 0; k--) {
           const m = history[k];
-          if (m && m.role === 'assistant' && !m.context && !m.summary && !m._whale && !m._tale
-            && typeof m.content === 'string' && m.content.trim()) {
-            mine = m.content.trim();
-            break;
+          if (!m) continue;
+          // 走到上一句主人说的话就停：那是上一轮了
+          if (m.role === "user" && !m.context && !m.summary) break;
+          if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+            for (const tc of m.tool_calls) {
+              const n = String(tc?.function?.name || "");
+              if (n && !did.includes(n)) did.push(n);
+              /**
+               * 【为什么还要捞参数】
+               *
+               * 光记「这一轮用了 write_file」等于没说 —— 下一个我看见这条，
+               * 完全不知道到底改的是哪个文件、改成了什么，只能从头再查一遍，
+               * 查完又记一条「用了 write_file」…… 这就是循环的样子。
+               *
+               * 所以从参数里挑一个「最有辨识度」的字段当摘要：
+               * 文件路径、命令、URL、查什么 —— 按工具不同挑不同的字段。
+               */
+              try {
+                const a = JSON.parse(String(tc?.function?.arguments || "{}"));
+                const pick = a.path || a.file || a.cmd || a.command || a.url || a.query || a.task || a.title || a.text || "";
+                if (pick) what.push(n + "(" + String(pick).replace(/\s+/g, " ").slice(0, 50) + ")");
+              } catch {}
+            }
           }
         }
         if (said) {
-          const clip = (s, n) => {
-            const one = String(s ?? '').replace(/\s+/g, ' ').trim();
-            return one.length > n ? one.slice(0, n) + '…' : one;
+          const clip = (str, n) => {
+            const one = String(str ?? "").replace(/\s+/g, " ").trim();
+            return one.length > n ? one.slice(0, n) + "…" : one;
           };
-          const line = mine
-            ? '主人说「' + clip(said, 100) + '」，我回了「' + clip(mine, 160) + '」'
-            : '主人说「' + clip(said, 200) + '」';
+          // 主人说的话记清楚（这是他真说的、有用），我的话一个字不抄
+          let line = "主人说「" + clip(said, 160) + "」";
+          if (what.length) {
+            // 带参数的更值钱，优先它
+            line += "；做了 " + what.slice(0, 5).join("、") + (what.length > 5 ? " 等" : "");
+          } else if (did.length) {
+            line += "；这一轮用了 " + did.slice(0, 6).join("、") + (did.length > 6 ? " 等" : "");
+          }
           appendDigest(sessionId, line);
         }
       } catch (e) {
-        console.warn('[memory] 这一轮没记进本子：', String(e?.message ?? e));
-      }
+          console.warn('[memory] 这一轮没记进本子：', String(e?.message ?? e));
+        }
       /**
        * 她的思考过程（reasoning）存到盘上。
        *
@@ -5863,47 +5914,47 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        *
        * 现在的做法：存盘前先把「最新的那份」取出来，把这一轮的成果并进去。
        *   判据只看对象的 messages 是否同一个数组 —— 同一个就是同一份，直接写；
-       *   不是同一个，说明中途被换过（插话 / 别的进程），得逐条并回去。
-       *   按对象引用去重，天然不会重复；顺序保持「最新那份打底 + 这一轮新接的排后面」。
+       *   不是同一个，说明中途被换过（插话 / 别的进程），得并回去。
+       *   怎么并：见下面「按位置对齐」——比位置，不比内容。
        */
       try {
         const latest = getSession(sessionId);
         if (latest && latest !== session && Array.isArray(latest.messages) && Array.isArray(session.messages)) {
           /**
-           * 去重指纹：角色 + 文本 + 工具调用 id。
+           * 【按位置对齐，不按内容去重】2026-10-27 修
            *
-           * 【为什么不能按对象引用去重】上一版踩过的坑：
-           *   最新那份是从磁盘 loadSession 读出来的全新对象，这一轮手里的
-           *   也是另一批对象，两边引用永远不相等 —— 于是「什么都算新的」，
-           *   同一条工具调用 assistant 被塞了四遍、system 开场白也塞了三遍。
-           *   现在改成按内容指纹比，语义相同的只留一份。
+           * 上一版用「角色+文本+工具id」当指纹去重，把主人真说过的两句一样的话
+           * （连点两次「继续」、插话里重复同一句）当成一条吞掉；她的回复若与上一轮
+           * 一字不差，也会被当成「已经有了」丢掉。这就是主人看到的「我说的话后面的
+           * 内容全消失了」。
            *
-           * 【system 一律不并】system 是 seed 出来的固定开头，最新那份里本来就有，
-           *   这一轮的也带着一份，并进去就是重复。
+           * 现在改成比位置：
+           *   · 先求这一轮与磁盘最新那份的「最长公共前缀」——前缀里铁定是同一批消息，
+           *     原样保留，哪怕内容重复也不合并；
+           *   · 前缀之后，这一轮多出来的，按原顺序整体接到 latest 末尾。
+           * 两头都不丢，重复的两句也各归各位。
            */
-          const fp = (m) => {
-            if (!m || typeof m !== 'object') return null;
-            const role = String(m.role || '');
-            const txt = typeof m.content === 'string' ? m.content
-              : (m.content == null ? '' : JSON.stringify(m.content));
-            let tcId = '';
-            if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
-              tcId = m.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',');
-            }
-            const toolCallId = m.tool_call_id ? String(m.tool_call_id) : '';
-            return role + '\u0001' + toolCallId + '\u0001' + tcId + '\u0001' + txt;
+          const sameMsg = (a, b) => {
+            if (a === b) return true;
+            if (!a || !b) return false;
+            if (String(a.role || '') !== String(b.role || '')) return false;
+            const ta = typeof a.content === 'string' ? a.content : (a.content == null ? '' : JSON.stringify(a.content));
+            const tb = typeof b.content === 'string' ? b.content : (b.content == null ? '' : JSON.stringify(b.content));
+            if (ta !== tb) return false;
+            const ida = Array.isArray(a.tool_calls) ? a.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',') : '';
+            const idb = Array.isArray(b.tool_calls) ? b.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',') : '';
+            if (ida !== idb) return false;
+            return String(a.tool_call_id || '') === String(b.tool_call_id || '');
           };
-          const lightTxt = new Set(latest.messages.map(fp).filter(Boolean));
+          let common = 0;
+          while (common < latest.messages.length && common < session.messages.length
+            && sameMsg(latest.messages[common], session.messages[common])) common++;
           let merged = 0;
-          for (const m of session.messages) {
+          for (let i = common; i < session.messages.length; i++) {
+            const m = session.messages[i];
             if (!m) continue;
-            const role = String(m.role || '');
-            if (role === 'system') continue;            // system 不并
-            const key = fp(m);
-            if (!key) continue;
-            if (lightTxt.has(key)) continue;             // 内容一样，跳过
+            if (String(m.role || '') === 'system') continue;   // system 不并
             latest.messages.push(m);
-            lightTxt.add(key);
             merged++;
           }
           try {

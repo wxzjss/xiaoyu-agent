@@ -4719,6 +4719,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         'X-Accel-Buffering': 'no',
       });
       try {
+        /**
+         * 【2026-10-28 实测补：这条 SSE 也得收尾】
+         *
+         * 端到端测出来的：小鱼关着时说一句话，前端收到的事件只有 `["fish_off"]` ——
+         * 没有 done。前端 fish_off 之后只是「不报错、去 live 里捞她的话」，
+         * 不等于这一轮结束了。主人看到的是转圈转到她自己说完为止，
+         * 她若这一趟决定不出声（闸A/闸2/闸B 拦下），那个圈就永远停不下来。
+         *
+         * 顺序跟前面对齐：先 done 收口，再 fish_off 说明「不是我答的」。
+         * aside 必须给 —— done 那条路上有对账、挂重发按钮、算钱一堆事，
+         * 这一轮我一个字都没说，那些都不该跑，只要「不再转圈」这一件事。
+         */
+        res.write(`data: ${JSON.stringify({ type: 'done', aside: true })}\n\n`);
         res.write(`data: ${JSON.stringify({ type: 'fish_off' })}\n\n`);
       } catch {}
       /**
@@ -5576,6 +5589,18 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 一个事件不给，主人会看到转圈转到底、以为程序卡死了。
        * 所以先推一条 fish_off（前端已有这个分支：静默收起转圈），
        * 再直接 return —— 不调模型、不落 assistant、不耗 token。
+       */
+      /**
+       * 【让开的路口也得有人守】—— 2026-10-28 实测补
+       *
+       * 端到端测下来：点名「小鲸」那一句，frontend 收到的是
+       * `["text","tool_start","tool_end","done"]` —— 也就是说 __stepAsideForWhale
+       * 这条路口根本没进去，我照旧跑了一整轮工具、答了一遍。
+       *
+       * 光把一个路口修好不够：这类「本该让开却没说清」的情况，前端只能靠 done
+       * 收尾。所以这里立一条兜底 —— 真的走到 allow 分支却没发过 done，
+       * 就在收尾时补一条，界面绝不因为「路走岔了」而永远转圈。
+       * （flag 一发过就不再补，不会出现两条 done 把下一轮提前收掉。）
        */
       if (__stepAsideForWhale) {
         /**

@@ -90,7 +90,13 @@
     }
     .msg {
       max-width: 900px; width: 100%; margin: 0 auto;
-      padding-left: 8px; padding-right: 76px; padding-bottom: 26px;
+      /* 【2026-10-27 主人定：回退按钮不许超出我消息的右侧】
+       * 以前这里留着 76px 是给右上角那颗「回退」让位的 —— 结果气泡右缘停在 1003，
+       * 而按钮是 right:8px 相对整条 .msg（到 1079）算的，落在 1019~1071，
+       * 比气泡硬生生多出 68px。主人看到的就是「按钮超出了我的消息右侧」。
+       * 现在不再给按钮留那条空白带：气泡直接顶到消息区右缘，
+       * 按钮改为「贴右缘、hover 时整个滑进气泡里」，谁也不越界。 */
+      padding-left: 8px; padding-right: 0; padding-bottom: 26px;
       box-sizing: border-box;
       /* 【2026-10-27 补：定位参照放在 .msg 上，别再靠 .msg.user/.assistant 各自声明】
        * 回退按钮是 position:absolute + right:8px，它的「右上角」全靠 .msg 是定位祖先。
@@ -1617,24 +1623,29 @@
     }
     #skinPanel .skPre button:hover { color: var(--text); border-color: var(--dim); }
   /* ---- 对话回退 ---- */
-/* 【2026-10-27 主人定：回退按钮留在消息右上角】
-   * 它本来是跟编辑/分支挤在同一个 .msgActions 容器里的，容器被挪到左下后
-   * 它也跟了过去。所以这里用 position:absolute 把它从容器的 flex 流里摘出来，
-   * 直接钉在消息块的右上角 —— 不管容器在哪，它都在右上。 */
+/* 【2026-10-27 主人定：回退按钮留在消息右上角，且**不许超出消息右缘**】
+ *
+ * 硬要求两条：
+ *   ① 位置在消息的右上角（不是左下角，不许跑到 .msgActions 那边去）
+ *   ② 右边缘**绝不越过这条消息的气泡右缘**，宁可往里缩
+ *
+ * 怎么同时满足：
+ *   · 平时（没 hover）整颗按钮 right:0 + translateX(100%) —— 正好停在右边界外侧，
+ *     一个像素都不进消息块里，也不压字；
+ *   · 鼠标移到这条消息上时（.msg:hover），translateX(0) 让它往左滑回来，
+ *     右缘落在 right:0，也就是刚好贴住右边界内侧，永远不越界。
+ *
+ * 为什么用 translateX 而不是改 right：
+ *   translateX 走合成层，hover 时不触发重排；而且「越界」与「贴边」只差一个位移量，
+ *   算起来清楚。另：right:0 是相对最近的定位祖先（.msg 是 position:relative），
+ *   所以按钮的 0 就是消息块的右边界 —— 这也正是主人说的「我消息的右侧」。
+ */
 .msg .rewindBtn {
-  /* 钉在消息块的右上角：top/right 相对 .msg（.msg.user/.assistant 都是 relative）。
-   * 【2026-10-27 补：加了参照兜底】
-   * position:absolute 找的是最近的定位祖先。万一它被塞进了 .msgActions
-   * （那个容器 position:absolute 且在左下角），right/top 就会相对容器算，
-   * 按钮跑到左下 —— 这正是「有时候跑到左下角」的成因。
-   * 所以加一条：容器里若真出现回退按钮，以「最近的 .msg」为参照容器，
-   * 位置就永远按整条消息算，不再看容器脸色。 */
   position: absolute;
   top: 4px;
-  right: 8px;
+  right: 0;
   left: auto;
   bottom: auto;
-  transform: none;
   padding: 2px 8px;
   font-size: 11px;
   line-height: 1.6;
@@ -1644,10 +1655,19 @@
   color: var(--muted, #98a2b3);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+  transform: translateX(100%);
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s, transform 0.12s;
+  /* 没露头时不吃鼠标，免得挡住气泡右边缘的点击 */
+  pointer-events: none;
 }
+/* hover 时滑进来，右缘贴住消息右边界（不越界） */
 .msg.user:hover .rewindBtn,
-.msg .rewindBtn:focus-visible { opacity: 1; }
+.msg.assistant:hover .rewindBtn,
+.msg .rewindBtn:focus-visible {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
 .msg .rewindBtn:hover { color: var(--accent, #4d8dff); border-color: var(--accent, #4d8dff); }
 /*
  * 每条消息右上角（她说的话是右下角）那一排小按钮。

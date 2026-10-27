@@ -9,6 +9,7 @@ import { takeMail, formatMail } from './peer.mjs';
 // 得当场把图变成多模态 content 递给模型。只给路径她看不见图 —— 会去 read_file 读 PNG
 // 读成乱码，然后如实说「一片糊」。她没撒谎，是真的没看见。
 import { inflateHistory, readImageDataUrl } from './attach.mjs';
+import { slimRoundMessages, measureMessages } from './turn-slim.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
@@ -395,6 +396,19 @@ export async function runAgent({
     reasoning = '';
     toolCalls = [];
     let usage = null;
+    /**
+     * 【只瘦这一轮】
+     *
+     * 整份历史里的 tool 结果不能一律压 —— 主人上个回合让它读的文件、
+     * 查出来的报错，这个回合还可能要接着用。压了它就等于失忆。
+     *
+     * 所以先记下「本轮那条 user 消息在哪」，只对它之后的部分做瘦身。
+     * 找不到 user（极少见的续跑）就退回整份 —— 宁可多省点，也不能不省。
+     */
+    let turnStart = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i] && messages[i].role === 'user') { turnStart = i; break; }
+    }
 
     // 图片在本机是路径，调模型前才读成 base64；历史本身不动
     /**
@@ -412,8 +426,31 @@ export async function runAgent({
 
     for (let attempt = 0; ; attempt++) {
       try {
+        /**
+         * 回合内瘦身：把「更早那几圈的工具结果」压成摘要形态再发出去。
+         *
+         * 【为什么必须在这儿做】
+         * 一个回合里每调一次工具，结果就拼进 messages；下一圈把 messages
+         * 整个再发一遍。第 N 圈发的是「前 N-1 圈之和」——
+         * 实测同一个会话 prompt_tokens 在 1.4 万和 861 万之间跳，差 300 倍。
+         * 那几百万里 85% 是【已经看过的旧工具结果】。
+         *
+         * 后果不只是花钱：模型每圈都在读自己刚读过的几十万字，
+         * 最新那句话被稀释到几乎看不见 —— 表现出来就是「每轮都像第一次」。
+         *
+         * 【注意】压的是「发出去的那一份」，messages 本身一个字不动 ——
+         * 落盘的历史必须完整，主人回来看的时候得跟当时看到的一样。
+         */
+        const slimmed = slimRoundMessages(messages, { from: turnStart });
+        const sendMessages = slimmed.changed ? slimmed.messages : messages;
+        if (process.env.TURN_SLIM_DEBUG === '1') {
+          const b4 = measureMessages(messages);
+          const af = measureMessages(sendMessages);
+          console.log('[瘦身] 第 ' + (round + 1) + ' 圈：原文 ' + b4.chars + ' 字符 / 工具结果 ' + b4.tools
+            + ' 条 → 发出 ' + af.chars + ' 字符（省 ' + (b4.chars - af.chars) + '，压短 ' + slimmed.changed + ' 条）');
+        }
         for await (const ev of streamChat({
-          messages: inflateHistory(messages),
+          messages: inflateHistory(sendMessages),
           tools: toolsForTurn(),
           signal,
           sessionId, // 让「会话级模型/思考强度」生效

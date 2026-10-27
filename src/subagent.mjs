@@ -293,6 +293,8 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 分钟
  * @param {string} opts.task          要它干什么（自然语言，越具体越好）
  * @param {string} [opts.name]        它的名字，默认「小鲸」
  * @param {number} [opts.maxRounds]   最多几轮工具循环
+ * @param {string} [opts.safeWord]      当前这一档安全词的名字（默认「人设」）
+ * @param {string} [opts.safeWordNote]  这一档该怎么说话（来自设置；不传就只按人设）
  * @param {number} [opts.timeoutMs]   总超时
  * @param {boolean} [opts.allowWrite] 允许它写文件 / 跑命令
  * @param {string} [opts.model]       指定模型（不传就跟主人当前用的那个）
@@ -357,6 +359,12 @@ export async function runSubagent({
   task,
   name = '小鲸',
   maxRounds = DEFAULT_MAX_ROUNDS,
+  /**
+   * 【她也在安全词底下】2026-10-27 主人定的：
+   * 安全词不只管小鱼，也管她。不传就是「人设」这一档（默认状态）。
+   */
+  safeWord = '',
+  safeWordNote = '',
   timeoutMs = DEFAULT_TIMEOUT_MS,
   /**
    * 她的手：默认跟我一样全。
@@ -568,7 +576,8 @@ export async function runSubagent({
     if (memoryText.length > 8000) {
       try {
         compactWhaleMemory();
-        memoryText = readWhaleMemory();
+        // 压完重读也得守闸：关着就不许把本子重新捞回来
+        if (getEnabledMap()['memory'] !== false) memoryText = readWhaleMemory();
       } catch {}
     }
 
@@ -695,10 +704,17 @@ export async function runSubagent({
       '一条准则：查得到就给证据，查不到就换条路接着找 —— 别编，也别一遇卡壳就撂挑子。',
       '实在换了几条路都不通，再把「我找过哪些地方」列出来，说清卡在哪、下一步该往哪试。',
       '',
-      '【安全词跟你无关】',
-      '小鱼和主人之间有一套安全词（「停止」「命令」「人设」这类）。那些词只改变**小鱼**的说法和做法，',
-      '对你不生效。你看到对话里出现它们，照自己的判断办事就行 —— 不用跟着换腔调，不用停下，也不用特别提它。',
+      '【安全词对你也一样生效】',
+      '主人和小鱼之间有一套安全词（「停止」「命令」「人设」这类）。这套词**同样管你** ——',
+      '主人喊了哪个，你就跟小鱼一起换到那个说法上，不是只有她一个人换。',
+      '默认状态就是「人设」这一档：按你自己的人设说话，不额外加戏，也不用刻意提它。',
       '',
+      // 这一档具体该怎么说话，由调用方传进来（正文来自设置里的安全词说明）
+      ...(safeWordNote ? [
+        `【你现在这一档：${safeWord || '人设'}】`,
+        safeWordNote,
+        '',
+      ] : []),
       '【你在什么地方】（很重要，先读这段）',
       '你每被叫起来一次，脑子里都是空的 —— 上一趟说过什么、干过什么，不记得。',
       '但你**有本子**：下面那段就是你自己攒下的，写着的就是真事，直接拿来用。',

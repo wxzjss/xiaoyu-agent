@@ -24,16 +24,17 @@ const bak = p + '.e2e';
 if (existsSync(p)) renameSync(p, bak);
 
 try {
-  console.log('\n[1] 功能项存在且默认开');
+  console.log('\n[1] 功能页里不该再有 whaleSelf 项（主人 2026-10-27 要求删掉）');
   const featSrc = readFileSync(new URL('../src/features.mjs', import.meta.url), 'utf8');
-  ok('有 whaleSelf 项', featSrc.includes("id: 'whaleSelf'"));
-  ok('默认开', /id: 'whaleSelf'[\s\S]{0,400}defaultOn: true/.test(featSrc));
+  ok('功能页里没有 whaleSelf 项', !featSrc.includes("id: 'whaleSelf'"));
 
   console.log('\n[2] subagent 里状态段的接线');
   const src = readFileSync(new URL('../src/subagent.mjs', import.meta.url), 'utf8');
   ok('读了状态本子', src.includes('readSelf()'));
   ok('做了时间回落', src.includes('decayOverTime(self)'));
-  ok('尊重功能开关', src.includes('m.whaleSelf !== false'));
+  // 2026-10-27 主人删掉了功能页的「小鲸的状态」开关，
+  // 状态系统改成常开（不再读 m.whaleSelf）。这里改成守「确实不再依赖那个开关」。
+  ok('不再依赖已删除的 whaleSelf 开关', !src.includes('m.whaleSelf'));
   ok('状态段拼进提示词', src.includes('你说的状态') || src.includes('你现在是什么状态'));
   ok('不会拒绝那条在状态段之前', src.indexOf('不会拒绝') < src.indexOf('你现在是什么状态'), '顺序反了');
   ok('明确禁止念台词', src.includes('绝对不要说「我现在很累」'));

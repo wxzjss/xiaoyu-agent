@@ -1,7 +1,8 @@
 // OpenAI-compatible chat client with streaming (SSE) support.
 // 端点 / key / 模型名都从 models.mjs 取：界面里能换，.env 只是其中一套。
 import { activeEndpoint } from './models.mjs';
-import { levelFor, resolveLevel, withEffort, isThinkingUnsupported } from './thinking.mjs';
+import { levelFor, resolveLevel, withEffort, isThinkingUnsupported, contextOverflowSize } from './thinking.mjs';
+import { compressHistory, noteRealTokens } from './compress.mjs';
 import { endpointFor } from './models.mjs';
 import { getOverride } from './session-overrides.mjs';
 import { withTimeout, stallGuard, guardedStream, LLM_IDLE_MS } from './deadline.mjs';
@@ -161,6 +162,15 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
   let lastStatus = 0;
   let lastText = '';
   let level = effort;
+  /**
+   * 上游说「你超窗口了」之后，这里最多压一次再重发。
+   *
+   * 为什么不在进这函数之前压：压不压是按 CONTEXT_LIMIT 算的，
+   * 而主人可能把窗口填得比上游实际给的大，也可能是网关偷偷调小 ——
+   * 只有上游亲口说「超了、上限是 N」，才是最可信的数字。
+   * 压过一次还报同样的错，就不再死循环，老实抛给主人看。
+   */
+  let overflowTried = false;
   for (let guard = 0; guard < 8; guard++) {
     const payload = withEffort(body, level).body;
     /**
@@ -190,6 +200,26 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
     }
     lastStatus = r.status;
     lastText = await withTimeout(r.text().catch(() => ''), LLM_IDLE_MS, { what: '读上游的错误正文' });
+    /**
+     * 【上下文塞爆：先救一次，别一撞就死】
+     * 上游回的窗口大小最可信，按它压一刀再重发；压完还报就认了。
+     */
+    const over = contextOverflowSize(r.status, lastText);
+    if (over !== null && !overflowTried && Array.isArray(messages) && messages.length) {
+      overflowTried = true;
+      const cap = over > 0 ? Math.floor(over * 0.85) : undefined; // 留 15% 给回话和摘要
+      try {
+        const cr = await compressHistory({ messages, limit: cap, signal });
+        if (cr && cr.compressed) noteRealTokens(cr.after, cr.after);
+        console.warn('[llm] 上游说超窗口（' + (over > 0 ? over : '没说大小') + '），压了一刀：' + JSON.stringify({ before: cr?.before, after: cr?.after, kept: cr?.kept }));
+        if (cr && cr.compressed) {
+          body = { ...body, messages }; // 用压过的历史重发
+          continue;
+        }
+      } catch (e) {
+        console.warn('[llm] 压了也没成：', String(e?.message ?? e));
+      }
+    }
     if (!isThinkingUnsupported(r.status, lastText)) {
       throw new Error(`LLM HTTP ${r.status}: ${lastText.slice(0, 500)}`);
     }

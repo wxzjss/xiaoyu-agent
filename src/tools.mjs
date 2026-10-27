@@ -29,7 +29,7 @@ const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FOREIGN_IN_PURE = ['memory_add', 'memory_pin'];
 
 /** 长期记忆关着时，碰 .state 的回答 */
-const BLOCKED_HINT = '长期记忆现在是关着的，那一块不能读也不能写。要用就先在顶部【功能】里把长期记忆打开。'
+const BLOCKED_HINT = '长期记忆现在是关着的，记忆本那几份文件不能读也不能写（.state 里别的东西照常）。要用就先在顶部【功能】里把长期记忆打开。'
 
 /**
  * 这一轮的工具上下文，按「异步调用链」隔离。
@@ -201,7 +201,8 @@ export function beginOutbox() {
  *
  * 「长期记忆」关掉时，记忆本就在 .state 里。
  * 光不注入还不够：她 list_dir 翻一遍就看见了，read_file 再一读就全拿到了。
- * 所以这里钉一道死规矩：开关关着就不许碰 .state。
+ * 所以这里钉一道死规矩：开关关着就不许碰「记忆本那几份文件」。
+ * 不是整个 .state —— 一刀切会把会话、清单、便签、信箱全锁死，那是把自己关小黑屋。
  *
  * 为什么不是一直禁：开着的时候她自己翻本子是正常需求（主人要求过「我要能看到她记了什么」）。
  */
@@ -209,16 +210,35 @@ function stateBlocked(abs) {
   try {
     const on = getEnabledMap()['memory'] !== false;
     if (on) return false;
-    const st = join(config.dataDir, '.state');
-    const relToState = relative(st, abs);
-    if (!relToState.startsWith('..') && !isAbsolute(relToState)) return true;
+    /**
+     * 只锁「记忆本那几份」，不是把整个 .state 关禁闭。
+     *
+     * 原来这里一刀切：开关一关，.state 底下什么都不许碰。
+     * 结果回旋镖打到自己 —— .state 里还躺着会话文件、清单、便签、出件箱、
+     * 主人的信箱，我一个都摸不到了，等于被关小黑屋。这不对。
+     *
+     * 现在按「目录 + 文件名形状」精确匹配：
+     *   · memory/                会话本子（一个会话一份）
+     *   · my-memory*.md          我自己的本子（含 .bak）
+     *   · whale-memory*.md       小鲸的本子（含归档）
+     *   · whale-reset-backup-开头的目录   她本子的整本备份（备份里也是本子内容）
+     * 其余照常，一个都不拦。
+     */
+    const rel = relative(join(config.dataDir, '.state'), abs).replace(/\\/g, '/');
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) return false; // 不在 .state 里，不管
+    const seg = rel.split('/');
+    if (seg[0] === 'memory') return true;
+    const base = seg[seg.length - 1];
+    if (/^my-memory.*\.md/i.test(base)) return true;
+    if (/^whale-memory.*\.md/i.test(base)) return true;
+    if (seg[0].startsWith('whale-reset-backup-')) return true;
     return false;
   } catch { return false; }
 }
 
 function safePath(p) {
   const abs = isAbsolute(p) ? resolve(p) : resolve(ROOT, p);
-  // 长期记忆关着时，.state（记忆本所在）一概不许碰 —— 放在所有分支之前，一条都不能漏
+  // 长期记忆关着时，.state 里的记忆本文件不许碰 —— 放在所有分支之前，一条都不能漏
   if (!abs) throw new Error(`路径不对：${p}`);
   if (stateBlocked(abs)) throw new Error(BLOCKED_HINT + ': ' + p);
   // 她那一次：全盘放开

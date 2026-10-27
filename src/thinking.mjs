@@ -173,6 +173,39 @@ export function withEffort(body, level) {
 }
 
 /**
+ * 这个错误是不是「上下文塞爆了」，而且带上游报的窗口大小。
+ *
+ * 这是 2026-10-27 补的：真会话已经到 104 万 token（compress.mjs 自己都算得出来），
+ * 而压不压的线是 80%×窗口 = 104.8 万 —— 一直卡在「马上要压、又还没到线」的缝里。
+ * 上游这时候直接回 400 context_length_exceeded，而 llm.mjs 原来遇到 400 就立刻抛错，
+ * 一个字都不试着救。主人看到的就是「聊两句就爆」。
+ *
+ * 所以这里认出这类报错，顺便把上游自己说的窗口捞出来，让 llm.mjs 能当场压到那个数以内。
+ * @returns {number|null} 上游报的窗口大小（认不出就是 null）
+ */
+export function contextOverflowSize(status, text) {
+  if (status !== 400 && status !== 413 && status !== 422) return null;
+  const t = String(text ?? '');
+  const hit = /context[_ ]length|context_length_exceeded|maximum context|too many tokens|exceeds? the maximum|prompt is too long|input is too long/i.test(t);
+  if (!hit) return null;
+  //
+  // 报错里常常两个数一起出现：请求量 + 窗口量，谁大谁小都不一定
+  // （实测两种都遇过：「maximum context length is 1048576 tokens. However, you requested
+  //   1045901 tokens」请求量比窗口小；「prompt is too long: 1200000 tokens > 1048576」请求量大）。
+  // 所以不能只靠大小猜，先认「窗口」旁边那个数。
+  const WIN_NEAR = /(?:maximum context\s*length\s*is|maximum\s*(?:context|prompt)?\s*(?:length|size)?\s*(?:is|=)?\s*|context\s*(?:length|window)\s*(?:is|=|of)?\s*|max(?:imum)?\s*=?\s*|limit\s*(?:is|=)?\s*|>\s*)(\d{4,9})/i;
+  const near = t.match(WIN_NEAR);
+  if (near) {
+    const n = Number(near[1]);
+    if (Number.isFinite(n) && n >= 4096) return n;
+  }
+  const nums = (t.match(/\d{4,9}/g) || []).map(Number).filter((n) => n >= 4096);
+  if (!nums.length) return -1; // 认出来了，但没说大小
+  // 没有上下文线索：取最小的那个（窗口通常比超量的请求还小）
+  return Math.min(...nums);
+}
+
+/**
  * 这个错误是不是「模型不认 reasoning 字段」。
  *
  * 注意检查的是 `reasoning_effort` / `thinking` 这一类参数名，

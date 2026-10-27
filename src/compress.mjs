@@ -264,11 +264,39 @@ function renderForSummary(messages) {
       if (calls.length) lines.push(`[调用] ${calls.join(' ')}`);
       continue;
     }
-    const tag = m[SUMMARY_FLAG] ? '[早期摘要]' : '[主人]';
+    const isOldSummary = !!m[SUMMARY_FLAG];
+    const tag = isOldSummary ? '[早期摘要]' : '[主人]';
     const body = Array.isArray(m.content)
       ? m.content.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n')
       : m.content;
-    lines.push(`${tag} ${String(body ?? '').slice(0, 4000)}`);
+    /**
+     * 【别再让摘要吃摘要，也别让它吃设定】
+     *
+     * 2026-10-27 补，起因是真会话里躺着一条 21935 字的「摘要」——
+     * 打开一看，里面是整段系统提示词 + 整本记忆本子，一个字没摘。
+     * 怎么来的：那一轮把 system 和 context 一起喂给了摘要模型，模型只会照抄；
+     * 抄出来的东西又带着 summary:true 留在历史里，下次压缩再当素材喂进去 ——
+     * 每轮滚一圈，越滚越厚。
+     *
+     * 两条护栏：
+     *   1. 旧摘要只喂前 1200 字（它本来就是压缩过的，再翻馅没意义）；
+     *   2. 正文里出现「设定 / 记忆本子」的标志行就切掉 ——
+     *      那不是对话内容，是被误当素材抄进来的。
+     */
+    let one = String(body ?? '');
+    for (const mark of ['\n下面是本次对话的设定与规则', '\n【这个会话的记忆本子】', '\n# 会话记忆']) {
+      const at = one.indexOf(mark);
+      if (at > 0) one = one.slice(0, at);
+    }
+    if (isOldSummary) {
+      // 3. 开头就是系统提示词 / 设定块 —— 说明这条摘要是把设定照抄进来的，整条作废
+      const head = one.slice(0, 200);
+      if (/下面是本次对话的设定与规则/.test(head) || /【PERSONA_LOAD】/.test(head) || /【你在哪儿】/.test(head)) {
+        continue;
+      }
+    }
+    const capChars = isOldSummary ? 1200 : 4000;
+    lines.push(`${tag} ${one.slice(0, capChars)}`);
   }
   // 整体超长就从最早的地方裁掉：摘要看最近的就有用，远古的聊天细节不值钱
   let text = lines.join('\n');
@@ -413,6 +441,24 @@ export async function compressHistory({
   const headTokens = estimateTokens(messages.slice(0, start));
 
   /**
+   * 【头部自己就装不下：别再假装能压】
+   *
+   * 2026-10-27 补。真踩过：那条携带旧记忆的摘要涨到 21935 字，光「system + 它」
+   * 就吃 7800 token；主人把上下文上限填成 8000，于是不管怎么压尾巴，
+   * 总量永远在 11000 上下 —— 压了个寂寞，还每轮白花一次摘要请求的钱。
+   *
+   * 这时唯一对的做法是把话说清楚：**上限太小了，压不动**。
+   * 用 reason='head-too-big' 交回去，让上层提示主人把上限调大，
+   * 而不是在后台无声无息地空转。
+   */
+  if (Number.isFinite(cap) && cap > 0 && headTokens >= cap) {
+    if (process.env.COMPRESS_DEBUG) {
+      console.log('[compress] 头部就超窗口：headTokens=' + headTokens + ' cap=' + cap + '（system ' + (start > 0 ? '在' : '不在') + '）');
+    }
+    return { compressed: false, before, after: before, limit: cap, trigger, reason: 'head-too-big', headTokens };
+  }
+
+  /**
    * 摘要那条消息大约占多少 token —— 先按保守值预留，算完再按真实长度校准。
    */
   const SUMMARY_RESERVE = 600;
@@ -426,6 +472,11 @@ export async function compressHistory({
   const CONTEXT_KEEP_FLOOR = 6000;
   /** 压完至少留这么多条消息（不够就在日志里报出来，别再静默） */
   const MIN_KEEP_MSGS = 8;
+  /**
+   * 但头部吃掉窗口九成以上时，「保持 8 条」就是压不下去的唯一原因 ——
+   * 那种情况下留 1 条尾巴，把总量压到线下，比留 8 条超线更好。
+   */
+  const hardTail = Number.isFinite(cap) && cap > 0 && headTokens > cap * 0.9;
   const budget = Math.max(1, Math.min(cap, Number.isFinite(cap) ? cap : 0) - headTokens);
   /**
    * 专业模式的尾部预算另算，不走「limit 的几成」那一套。
@@ -461,7 +512,8 @@ export async function compressHistory({
     : clampKeep(wantWithFloor, Math.max(1, budget));
 
 
-  const cut = findCut(messages, start, keepTarget);
+  // 注意是 let：下面那段「尾巴不能只剩 4 条」的兜底会把它往前挪（窄窗口必走这条路）
+  let cut = findCut(messages, start, keepTarget);
   if (cut <= start) return { compressed: false, before, after: before, limit: cap, trigger, reason: 'nothing-safe-to-drop' };
 
   /**
@@ -475,7 +527,8 @@ export async function compressHistory({
   {
     let keepCount = messages.length - cut;
     let probe = cut;
-    while (keepCount < MIN_KEEP_MSGS && probe > start) {
+    const wantTail = hardTail ? 1 : MIN_KEEP_MSGS;
+    while (keepCount < wantTail && probe > start) {
       let back = probe - 1;
       // 不拆工具对：往前挪时如果 probe 是 tool 或前一条是带 tool_calls 的 assistant，就继续往前
       while (back > start) {

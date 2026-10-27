@@ -44,6 +44,8 @@ import { installGuards, crashSummary } from './crash-guard.mjs';
 import { quickCheck, updateStatus, startUpdateWatcher } from './updater.mjs';
 import { buildSessionLog } from './session-log.mjs';
 import { applySafeWord, sessionModeWord, inPersonaMode } from './mode.mjs';
+// 人设档的档位词名（默认「人设」）—— 她的安全词档位要用
+import { personaWord } from './persona.mjs';
 import {
   getSettings,
   saveSettings,
@@ -76,7 +78,7 @@ import {
   wipePersonaText,
   setPersonaAsDefault,
 } from './persona-store.mjs';
-import { getFeatures, setFeature, featureNameOfTool } from './features.mjs';
+import { getFeatures, setFeature, featureNameOfTool, getEnabledMap } from './features.mjs';
 // 专业模式开关（见 pure.mjs）
 import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, pureFeatureOn } from './pure.mjs';
 import { purifyWire } from './compress.mjs';
@@ -559,6 +561,19 @@ function saveUserMessage(sessionId, message, attachments = null) {
 async function whaleMaybeReply({ session, userText, send, sessionId, live = null, speaksToHer = false, extraRule = '' }) {
   const { runSubagent } = await import('./subagent.mjs');
 
+  /**
+   * 【安全词也管她】2026-10-27 主人定的。
+   * 会话当前在哪个档位，就按哪个档位跟她说 —— 她跟小鱼同步。
+   * 没喊过任何词 = 「人设」档（默认）。
+   */
+  let __swWord = '';
+  let __swNote = '';
+  try {
+    __swWord = sessionModeWord(session) || '';
+    if (!__swWord) __swWord = personaWord(getSettings());
+    __swNote = safeWordNoteFor(__swWord) || '';
+  } catch {}
+
   // 最近几轮当背景，让她知道现在说到哪儿了（不给她整个历史，省 token 也免得被旧话带跑）
   /**
    * 最近几轮当背景，让她知道现在说到哪儿了。
@@ -576,7 +591,15 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    * 不带全文。一来她能看见进度，二来不会把几千行输出塞进她的上下文。
    */
   const recent = (() => {
-    const all = (session.messages || []).filter((m) => m && !m.context && !m.summary && !m._whale && !m._tale);
+    // 全集：她的话也要，不然下面看不见「我上一句答过什么」
+    const every = (session.messages || []).filter((m) => m && !m.context && !m.summary);
+    // 给「小鱼在干什么」用的那部分：她自己的话不算
+    const all = every.filter((m) => !m._whale && !m._tale);
+    // 【2026-10-27 补】她上一两句自己说的话也留一份 —— 不然她看不见「我已经答过了」
+    const myRecent = every.filter((m) => m && m._whale)
+      .map((m) => String(m.content ?? '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .slice(-2);
     // 工具结果按 id 建索引，好把结果挂回调用它的那一行
     const resById = new Map();
     for (const m of all) {
@@ -590,6 +613,12 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
       }
       if (m.role !== 'assistant') continue;
       // 她自己的话不进背景（那是 her 的声音，不是小鱼在干什么）
+      // 【2026-10-27 补】她自己的话也进背景，标明「你说过的」，只压 50 字
+      if (m._whale) {
+        const own = typeof m.content === 'string' ? m.content.replace(/\s+/g, ' ').trim() : '';
+        if (own) lines.push('你说过：' + own.slice(0, 50) + (own.length > 50 ? '…' : ''));
+        continue;
+      }
       const said = typeof m.content === 'string' ? m.content.trim() : '';
       const calls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
       // 【闸 1】她的背景里只留「我在干什么」的骨架，不给我的完整回答。
@@ -610,7 +639,13 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
         lines.push('  [小鱼跑了 ' + nm + (arg ? ' ' + arg : '') + ']' + (out ? ' → ' + out : ''));
       }
     }
-    return lines.slice(-14).join('\n');
+    const tail = lines.slice(-14);
+    // 她刚说过的两句贴在最后，明确标「你已经说过了」
+    if (myRecent.length) {
+      tail.push('【你已经说过的话 · 别再说第二遍】');
+      for (const s of myRecent) tail.push('  ' + s.slice(0, 60) + (s.length > 60 ? '…' : ''));
+    }
+    return tail.join('\n');
   })();
 
   /**
@@ -703,6 +738,13 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     '不出声不是失职，也不用为了显得自己在而硬凑一句。',
     '但你要是心里憋着一句、或者觉得该拦一下，那就说 —— 这是你的场子，不是他的。',
     '别客套、别总结、别问「需要我做什么吗」。要说就直接说事。',
+    '',
+    '【铁律：答过的不再答第二遍】',
+    '- 同一个问题你已经答过一次，就到此为止。主人后面只是揉揉头、碰碰你、发个表情——',
+    '  那不是又问你一遍，不用再表一次态、再答一次「喜欢」这类话。',
+    '- 被碰一下，最多应一声（一句话、几个字），或者干脆不出声。反复把同一句话端出来，',
+    '  是复读，不是亲近。',
+    '- 判断法：这句要说的，是不是你上面「你已经说过的话」里已经有的意思？是，就别说了。',
     '',
     ...(speaksToHer
       ? [
@@ -797,6 +839,8 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     r = await runSubagent({
       task,
       name: '小鲸',
+      safeWord: __swWord,
+      safeWordNote: __swNote,
       allowWrite: true,
       /**
        * 【让她的话一个字一个字往外冒】
@@ -5328,6 +5372,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 300 字上限，appendDigest 里自动截；满了会把最旧的挪进归档段，一条不丢。
        */
       try {
+        /* 【功能开关：长期记忆】关着就不写。关掉之后既不该读也不该记 —— 只写不读就是黑洞，本子还会被悄悄改动。 */
+        if (getEnabledMap()['memory'] === false) throw { __skip: 1 };
         /**
          * 这一轮干了什么：从历史里捞刚发生的工具调用。
          * 只记工具名，不记参数、不记结果正文（那些太长，也都不是「话」）。
@@ -5379,7 +5425,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           appendDigest(sessionId, line);
         }
       } catch (e) {
-          console.warn('[memory] 这一轮没记进本子：', String(e?.message ?? e));
+          if (!e?.__skip) console.warn('[memory] 这一轮没记进本子：', String(e?.message ?? e));
         }
       /**
        * 她的思考过程（reasoning）存到盘上。
@@ -5602,10 +5648,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             // 只记文件名和 key，不记完整路径（路径换机器就失效了）。
             // 记忆写失败不能影响发文件本身，但也不能悄悄吞掉——记一条日志方便查。
             try {
+              if (getEnabledMap()['memory'] === false) throw { __skip: 1 };
               const names = sent.map((x) => String(x?.name || '文件')).join('、');
               appendDigest(sessionId, `发了文件：${names}`);
             } catch (e) {
-              console.warn('[sendfile] 记忆本子没记上：', String(e?.message ?? e), 'sessionId =', sessionId);
+              if (!e?.__skip) console.warn('[sendfile] 记忆本子没记上：', String(e?.message ?? e), 'sessionId =', sessionId);
             }
             send({ type: 'files', items: sent, at: idx });
             saveSession(session);

@@ -9,7 +9,7 @@ import { getSettings, settingsPromptBlock, matchSafeWord, safeWordNoteFor } from
 import { personaInfo } from './persona-store.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
 import { ensureMemory } from './session-memory.mjs';
-// 纯净模式：开了就一个字系统提示都不发（见 pure.mjs）。
+// 专业模式：开了就一个字系统提示都不发（见 pure.mjs）。
 import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
 import { fishOn } from './fish-presence.mjs';
@@ -123,7 +123,7 @@ export function personaModeRules(settings = getSettings()) {
  * @param {string} [opts.safeWord] which safe word fired (drives which note applies)
  */
 export function buildSystemPrompt({ sessionId = 'default', safeMode = false, safeWord = "" } = {}) {
-  // 纯净模式：人设、思考语言、说话规矩、安全词、人设档、会话记忆全部不发
+  // 专业模式：人设、思考语言、说话规矩、安全词、人设档、会话记忆全部不发
   // —— 主人要的就是「只看对话本身」。这里必须是第一判断，免得后面任何一块漏出去。
   // 但只发一条「答短点」：系统提示全空的话，模型没有任何长度锚点，会突然拉长篇大论。
   if (pureModeOn()) return pureSystemPrompt();
@@ -150,7 +150,7 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
  * 「你现在跑在什么程序里」。
  *
  * 为什么要有这一段：人设里只写了「我叫小鱼、怎么说话」，一个字没提她运行在哪儿、
- * 能用什么工具、有哪些功能。结果主人问「纯净模式的详细功能是什么」「你有哪些本事」，
+ * 能用什么工具、有哪些功能。结果主人问「专业模式的详细功能是什么」「你有哪些本事」，
  * 她只能反问「你说的是哪个软件」—— 因为在她那儿，这些信息**真的不存在**。
  *
  * 放在整段提示的最前面：身份和边界应该先立住，再谈说话风格。
@@ -160,7 +160,7 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
 const PLATFORM_BLOCK = [
   '【你在哪儿】',
   '你跑在主人电脑上的「小鱼Agent」这个程序里，不是网页版聊天窗口，也不是某个大厂的 App。',
-  '主人说「纯净模式」「开场白」「会话记忆」「安全词」「回退」「分支」这些词，说的都是这个程序里的功能，不是别家的东西。',
+  '主人说「专业模式」「开场白」「会话记忆」「安全词」「回退」「分支」这些词，说的都是这个程序里的功能，不是别家的东西。',
   '主人问起这些功能怎么用、有哪些本事，就照实说；不清楚具体细节时，可以说「我看看」——你能读这个程序自己的文件，也能列目录、跑命令去确认，别反问主人「你说的是哪个软件」。',
 ].join('\n');
 

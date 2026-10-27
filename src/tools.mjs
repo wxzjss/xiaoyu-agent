@@ -25,7 +25,7 @@ const ROOT = resolve(config.workspace);
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Per-run context (which session is talking) so plan/note land in the right board. */
-/** 纯净模式下不该出现的工具（见 runTool 里那道闸）。 */
+/** 专业模式下不该出现的工具（见 runTool 里那道闸）。 */
 const FOREIGN_IN_PURE = ['memory_add', 'memory_pin'];
 
 /** 长期记忆关着时，碰 .state 的回答 */
@@ -1128,14 +1128,14 @@ export async function runTool(name, rawArgs) {
     return { ok: false, output: `「${feat}」现在是关着的，用不了这个工具。要用的话先在顶部【功能】里打开。` };
   }
   /**
-   * 纯净模式下的记忆笔：一律拦下。
+   * 专业模式下的记忆笔：一律拦下。
    *
-   * 纯净模式不读记忆（它连人设都不带），那就不能让人往里写 ——
+   * 专业模式不读记忆（它连人设都不带），那就不能让人往里写 ——
    * 只写不读等于黑洞：记进去的东西下一轮自己看不见，攒满 80 条还自动归档。
    * 这一道是防模型凭记忆硬写一个 tool_call 出来。
    */
   if (FOREIGN_IN_PURE.includes(name) && (await import('./pure.mjs')).pureModeOn()) {
-    return { ok: false, output: '纯净模式下不读也不记记忆，这个工具暂时收起来了。要用就先把纯净模式关掉。' };
+    return { ok: false, output: '专业模式下不读也不记记忆，这个工具暂时收起来了。要用就先把专业模式关掉。' };
   }
   let args = {};
   try {

@@ -76,7 +76,7 @@ import {
   setPersonaAsDefault,
 } from './persona-store.mjs';
 import { getFeatures, setFeature, featureNameOfTool } from './features.mjs';
-// 纯净模式开关（见 pure.mjs）
+// 专业模式开关（见 pure.mjs）
 import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, pureFeatureOn } from './pure.mjs';
 import { purifyWire } from './compress.mjs';
 import {
@@ -1374,9 +1374,9 @@ function modelUsedThisTurn(sessionId) {
 /**
  * 新建会话时垫在历史最前面那几条。
  *
- * 一般就是一条 system（人设 + 规矩）。**纯净模式下系统提示是空串，那就一条都别放** ——
+ * 一般就是一条 system（人设 + 规矩）。**专业模式下系统提示是空串，那就一条都别放** ——
  * 空的 system 发出去有的网关会 400，留在盘里也只是个占位的空壳。
- * 关掉纯净模式之后，runAgent 的 refreshSystem 会在这一轮开头把 system 补回来。
+ * 关掉专业模式之后，runAgent 的 refreshSystem 会在这一轮开头把 system 补回来。
  */
 function sysSeed(sessionId) {
   const text = systemPrompt(sessionId);
@@ -1432,8 +1432,8 @@ function applyOpening(session, openingUser, wire) {
 async function startOpening(sessionId) {
   // 功能面板里关掉「开场白」就什么都不垫，新建会话直接是白纸。
   if (!openingEnabled()) return;
-  // 纯净模式：开场白那两条也是「设定」，而且它前面那句「在吗」对模型来说
-  // 就是一段来历不明的前情。纯净模式下不垫 —— 新会话就是真的空。
+  // 专业模式：开场白那两条也是「设定」，而且它前面那句「在吗」对模型来说
+  // 就是一段来历不明的前情。专业模式下不垫 —— 新会话就是真的空。
   if (pureModeOn()) return;
   const session = getSession(sessionId);
   if (!session || hasOpening(session)) return;
@@ -2697,13 +2697,13 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // ---- 纯净模式：读状态 / 切换 ----
+  // ---- 专业模式：读状态 / 切换 ----
   //
   // 状态存在服务端（.state/pure.json），不放 localStorage：
   // 换设备、换浏览器都得一致，而且服务端拼系统提示时自己要知道开没开。
-  // 顶栏那个「纯净模式」按钮的状态。
+  // 顶栏那个「专业模式」按钮的状态。
   //
-  // available 是给界面用的：功能页里把「纯净模式」关掉之后它是 false，
+  // available 是给界面用的：功能页里把「专业模式」关掉之后它是 false，
   // 前端就不画那个按钮了 —— 不是灰掉、不是藏起来，是当作这个功能不存在。
   // on 只有功能开着、按钮也按下了才算真开（服务端判断口径一致，见 pure.mjs）。
   if (req.method === 'GET' && url.pathname === '/api/pure') {
@@ -2733,7 +2733,7 @@ const server = createServer(async (req, res) => {
    * 小鲸「在场」的开关。
    *
    * 按下顶栏那个「小鲸」按钮 = 让她上岗：主人说的话她看得见，她也能自己开口。
-   * 状态存盘子，换设备也一致（跟纯净模式一个待遇）。
+   * 状态存盘子，换设备也一致（跟专业模式一个待遇）。
    */
   /**
    * 顶栏那个「小鱼」按钮（在小鲸按钮左边）。
@@ -2741,7 +2741,7 @@ const server = createServer(async (req, res) => {
    * 默认开着、一直亮。点一下禁用，禁用期间这个会话后面的话她一个字都不发：
    * 主人说的话不进她这一轮，小鲸的插话也推不到她跟前，
    * 这些内容也不会进她的会话记忆（记忆跟着一起断）。
-   * 状态存盘子，换设备也一致（跟小鲸在场 / 纯净模式一个待遇）。
+   * 状态存盘子，换设备也一致（跟小鲸在场 / 专业模式一个待遇）。
    */
   // 【别在这儿 await import】小鱼在场开关跟小鲸那个是同一个毛病：
   // 在分支里 await import，出了分支 fishOn 就是未定义，而每轮收尾 / 组提示时都在用，
@@ -4459,7 +4459,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 条件：从没开过场、功能面板里没关掉它，而且这不是「接着跑」（resume）。
     // resume 是插话/续跑，那时候补开场会把顺序搞乱。
     const wantOpening = !resume && openingEnabled() && !hasOpening(session) && session._openingPending !== false
-      // 纯净模式：开场白也是「设定」，开场白连着它前面那段用户消息一起不发
+      // 专业模式：开场白也是「设定」，开场白连着它前面那段用户消息一起不发
       && !pureModeOn();
     if (wantOpening) {
       const { userMsg: openingUser, assistantText } = seedOpeningMessages();
@@ -4811,7 +4811,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 回退：发给模型的只有「有效历史」那份拷贝，日志本身一条不动。
     const view = effectiveIndexes(history, loadRewinds(session));
     let wireMessages = [...view.head.map((i) => history[i]), ...view.keep.map((i) => history[i])];
-    // 纯净模式：把开场那两条（user + assistant）从这一轮真正发出去的内容里摘掉。
+    // 专业模式：把开场那两条（user + assistant）从这一轮真正发出去的内容里摘掉。
     //
     // 为什么不从 history 里删：那是会话记录，主人还能翻回来看；
     // 而且一删下次又「没开过场」，会再补一遍。所以只在这一刻的拷贝上摘。
@@ -4821,7 +4821,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 一边说"纯净"一边还带着人设说话。context 那条规则副本同理。
       wireMessages = wireMessages.filter((m) => !(m && (m.role === 'system' || m.context)));
       // 然后只补一条「答短点」。为什么还要发点什么：系统提示全空的话，
-      // 模型没有任何长度锚点，纯净模式反而变得比人设模式还能唠。
+      // 模型没有任何长度锚点，专业模式反而变得比人设模式还能唠。
       // 注意顺序——先摘干净再补，否则刚补的这条会被上面那个 filter 一起摘掉。
       const brief = pureSystemPrompt();
       if (brief) wireMessages.unshift({ role: 'system', content: brief });
@@ -4848,10 +4848,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 会话里的 system 永远是设置里那套人设，前情一个字都不往里塞。
     {
       const pm = preludeContextMessage();
-      // 纯净模式：前情也是「设定」，不发。
+      // 专业模式：前情也是「设定」，不发。
       if (pm && !pureModeOn()) wireMessages.splice(2, 0, pm);
     }
-    /** 前情那条消息的引用，日志里好认（纯净模式没插，就是 undefined） */
+    /** 前情那条消息的引用，日志里好认（专业模式没插，就是 undefined） */
     const preludeRef = pureModeOn() ? undefined : wireMessages[2];
     // 这一轮真正交给模型的形状，日志里留一份，排查时一眼看得出前情在不在
     console.log(

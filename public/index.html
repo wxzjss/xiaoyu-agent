@@ -124,16 +124,8 @@
     /* 「小鲸」按钮：按下去就一直是她的冷蓝色 */
     /* 小鱼按钮：默认就在场，所以它天生是亮的；点一下才灭 */
     /* 身份徽标：换成非主人身份时才显示。橘色系是「注意」的意思 ——
-       这个状态下她们不认主人、安全词也不作数，得让人一眼看见。 */
-    #idBadge {
-      border-color: rgba(224, 163, 58, .55);
-      background: rgba(224, 163, 58, .16);
-      color: #f0c47a;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    #idBadge:hover { border-color: #e0a33a; background: rgba(224, 163, 58, .26); }
-    #idBadge[hidden] { display: none; }
+       这个状态下她们不认主人、安全词也不作数，得让人一眼看见。
+       具体样式在 .sendingRow / #idBadge 那段（它已经挪到聊天框那一行了）。 */
     #fishBtn {
       border-color: rgba(240, 166, 160, 0.5);
       background: rgba(240, 166, 160, 0.2);
@@ -613,7 +605,22 @@
     /* 「正在发送消息」那一行：居中、和输入框同宽 */
     .sendingRow { max-width: 900px; margin: 0 auto 6px; display: flex; align-items: center; gap: 10px; }
     .sendingRow .sendingHint { margin: 0; flex: none; }
-
+    /* 身份徽标：钉在顶栏「清空当前」正下方、聊天区顶部偏右那一块（主人指截图定的位置）。
+       top:54px 紧贴顶栏下沿；right:22px 跟「清空当前」右缘大致齐平。
+       用 fixed 是为了它不跟着 .sendingRow（那行会时隐时现）上下跳。
+       z-index 要高于 #log 但低于各种弹窗（那些是 1000+）。 */
+    #idBadge {
+      position: fixed; top: 54px; right: 22px; z-index: 20;
+      border: 1px solid rgba(224, 163, 58, .55); border-radius: 6px;
+      padding: 3px 10px; cursor: pointer;
+      background: rgba(224, 163, 58, .16);
+      color: #f0c47a;
+      font-size: 12px; font-weight: 600; white-space: nowrap;
+      font-family: inherit;
+    }
+    #idBadge:hover { border-color: #e0a33a; background: rgba(224, 163, 58, .26); }
+    #idBadge[hidden] { display: none; }
+    .sendingHint span, .sendingHint {
       color: var(--dim); font-size: 12px; white-space: nowrap;
     }
     .sendingHint .dots::after {
@@ -1894,9 +1901,6 @@
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
     <button id="openMemoryBook" title="记忆本：看看她这个会话到底记了些什么，小鲸那本也在（只给看不给改，改她记的东西得跟她说）">记忆本</button>
-    <!-- 身份徽标：只有换成非主人身份时才冒出来。
-         不藏在「功能」面板里，是因为那时候她们真的不认主人了 —— 这事得常驻可见。 -->
-    <button id="idBadge" type="button" hidden>以「」身份说话中</button>
     <button id="openFeatures">功能</button>
     <button id="openSettings">设置</button>
     <button id="openModels" title="模型">模型</button>
@@ -2422,6 +2426,14 @@
   </dialog>
 
   <div id="log"></div>
+
+  <!-- 身份徽标：换成非主人身份时才冒出来。
+       位置是主人指着截图定的：顶栏「清空当前」的正下方、聊天区顶部偏右那一块，
+       用 position:fixed 钉在那儿，不管顶栏怎么换行、聊天框怎么变高它都不动。
+       right:22px 跟顶栏「清空当前」的右缘大致齐平（button 自带 padding）。
+       为什么不放在 .sendingRow 里跟着流排：那一行会随「正在发送消息」时隐时现，
+       徽标会跟着上下跳，主人要的是「固定放在这里」。 -->
+  <button id="idBadge" type="button" hidden>以「」身份说话中</button>
 
   <!-- 版本水印：右下角小字，一眼看出跑的是哪一版。查「看到旧界面」时就靠它 -->
   <div id="buildTag" style="position:fixed;right:8px;bottom:6px;font-size:10.5px;color:#5b6472;opacity:.55;pointer-events:none;z-index:5;font-family:ui-monospace,Consolas,monospace"></div>
@@ -4530,7 +4542,14 @@ function addUser(text, tag, atts, target, rewindId) {
     wrap.dataset.at = String(Number(rewindId));
   }
   // 注意顺序：必须先 innerHTML 建骨架，再挂按钮 —— 反过来的话 innerHTML 会把按钮一起抹掉（踩过）。
-  wrap.innerHTML = '<div class="role">主人' + (tag ? '<span class="interjectTag"></span>' : '') + '</div>';
+  wrap.innerHTML = '<div class="role"></div>';
+  wrap.querySelector('.role').textContent = currentIdentityName; // 现在是哪个身份就用哪个名字
+  if (tag) {
+    const tg = document.createElement('span');
+    tg.className = 'interjectTag';
+    tg.textContent = tag;
+    wrap.querySelector('.role').appendChild(tg);
+  }
   if (tag) wrap.querySelector('.interjectTag').textContent = tag;
   // 鼠标移到这条上会浮出「↶ 回退」：撤回这条以及它后面的一切
   if (hasId) {
@@ -8134,14 +8153,51 @@ document.getElementById('identityDlg').addEventListener('close', () => {
  * 主人身份时不显示 —— 平时就是主人，天天挂着「主人」两个字只会碍眼。
  * 换成别的身份才提醒，因为那时候她真的会不认人，主人得知道为什么。
  */
+/**
+ * 我这一轮是以谁的身份在说话 —— 消息左上角就写这个名字。
+ *
+ * 为什么要有它：署名以前在画消息的时候写死成「主人」。主人切到小鱼身份跟我说话，
+ * 屏幕左边他自己的那几句头顶上还是「主人」两个字，跟徽标写着「以小鱼身份说话中」
+ * 自相矛盾。现在两处共用这一个值：徽标读它，署名也读它。
+ *
+ * 默认「主人」是安全的：还没拉到身份状态、或者请求失败时，显示主人的名字最不容易误导。
+ */
+let currentIdentityName = '主人';
+
+/**
+ * 把已经画在屏幕上的「我」的消息署名全部改成当前身份名。
+ *
+ * 切身份之后历史里那些话是我用旧身份说的 —— 主人要的是「屏幕上看着一致」，
+ * 不是「保留当时的署名」，所以这里一律刷成现在的名字。
+ * 小鲸冒充我说话那种（.whale 的气泡）不在此列：它不是 .msg.user。
+ */
+function repaintUserRoles() {
+  try {
+    for (const wrap of document.querySelectorAll('#log .msg.user')) {
+      const r = wrap.querySelector(':scope > .role');
+      if (!r) continue;
+      // 保留插话小标签（interjectTag），只换前面那截文字
+      const tg = r.querySelector('.interjectTag');
+      r.textContent = currentIdentityName;
+      if (tg) r.appendChild(tg);
+    }
+  } catch {}
+}
+
 async function refreshIdentityBadge() {
   const el = document.getElementById('idBadge');
   if (!el) return;
   try {
     const r = await fetch('/api/identity').then((x) => x.json());
     if (!r || !r.ok) { el.hidden = true; return; }
+    // 【消息署名】—— 我这一轮是以谁的身份说话，消息左上角就写谁的名字。
+    // 以前那里写死'主人'，切到小鱼身份之后我发的话还顶着「主人」两个字，主人当场发现了。
+    // 这个变量同时给身份徽标和消息署名用，一处更新、两处一致。
+    const me = r.identities && r.identities.find((x) => x.id === r.current);
+    currentIdentityName = (me && me.name) ? String(me.name) : '主人';
+    if (typeof repaintUserRoles === 'function') repaintUserRoles();
     if (r.current === 'owner') { el.hidden = true; return; }
-    const cur = r.identities.find((x) => x.id === r.current);
+    const cur = me;
     el.hidden = false;
     el.textContent = '以「' + (cur ? cur.name : '?') + '」身份说话中';
     el.title = '她们现在不认你是主人，你说的话命令不动她们；安全词也不作数。点这里切回去。';

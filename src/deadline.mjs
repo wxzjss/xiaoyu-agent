@@ -3,14 +3,14 @@
  *
  * 为什么需要它
  * ------------
- * agent.mjs 里那两道闸（哑转闸 STALL_LIMIT、时间闸 TURN_WALL_LIMIT_MS）都只在
+ * agent.mjs 里那道时间闸（TURN_WALL_LIMIT_MS）只在
  * **每一轮开头** 判一次。可真正难看的僵死不是「一直在转」，而是「卡住不动」：
  *
  *   - 上游 LLM 建了连接，一个字节都不吐（网关抽风、模型在思考、防火墙吞包）
  *   - 读流读到一半，不结束也不报错
  *   - 某个工具蹲在那里等输入
  *
- * 这几种情况下循环根本走不到下一轮的检查点，两道闸一次都轮不到执行 ——
+ * 这几种情况下循环根本走不到下一轮的检查点，那道闸一次都轮不到执行 ——
  * 主人看到的就是界面停在半句话上，一直不动，连「我卡住了」都等不到。
  *
  * 怎么办
@@ -91,7 +91,7 @@ export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000,
  */
 export const TOOL_NOTICE_MS = msOr(process.env.TOOL_NOTICE_TIMEOUT_MS, 10 * 60 * 1000, DEADLINE_TEST_MODE ? 100 : 30 * 1000, 'TOOL_NOTICE_TIMEOUT_MS');
 
-/** 整轮允许的最长静默（默认 60 分钟，最少给 10 分钟）—— 哑转闸管「一直在转」，这个管「完全不动」 */
+/** 整轮允许的最长静默（默认 60 分钟，最少给 10 分钟）—— 这个管「完全不动」（哑转闸 2026-10-29 已删） */
 export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 60 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 10 * 60 * 1000, 'TURN_IDLE_MAX_MS');
 
 function fmtMins(ms) {

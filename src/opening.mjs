@@ -65,13 +65,28 @@ const OPENING_FILE = () => join(config.dataDir, '.state', 'opening.json');
  */
 const CARD_FILE = () => join(config.dataDir, '.state', 'agent-openings.json');
 
+/**
+ * 【2026-10-29 修 · 这张表被两种键混着写过，读的时候必须认会话 id】
+ *
+ * `agent-openings.json` 里现在躺着 577 个键，形如 `smvkyzlei9kg4` —— 那是**会话 id**，
+ * 是上一版把 `setCardOpening` 挂到 `/api/opening`（按会话改开场白的老接口）时写进去的。
+ * 卡片键只有 `xiaoyu` / `xiaojing` / `ag_xxx` 这几种，会话 id 一律是 `sm` 打头。
+ *
+ * 混着没关系（取值时只按卡片 id 去查），但有两条必须挡住：
+ *   1. 会话键不许当成某张卡的开场白 —— `isOpeningMessage` 会拿全表去比对，
+ *      会话键混进来只会白比一轮；
+ *   2. 收藏时别把会话键一起搬来搬去。
+ * 所以出口统一过滤一遍：只留「像卡片 id」的键。
+ */
+const looksLikeCardId = (k) => typeof k === 'string' && k.length > 0 && k.length <= 64 && !/^sm[a-z0-9]{8,}$/i.test(k);
+
 function readCardMap() {
   try {
     const j = JSON.parse(readFileSync(CARD_FILE(), 'utf8'));
     if (!j || typeof j !== 'object') return {};
     const out = {};
     for (const [k, v] of Object.entries(j)) {
-      if (typeof v === 'string') out[k] = v;
+      if (typeof v === 'string' && looksLikeCardId(k)) out[k] = v;
     }
     return out;
   } catch {
@@ -100,8 +115,36 @@ export function setCardOpening(agentId, text) {
     err.status = 400;
     throw err;
   }
+  /**
+   * 【2026-10-29 修 · 不许再往这张表里写会话 id】
+   *
+   * 这张表叫 agent-openings，键只能是卡片 id。上一版 `/api/opening` 是「按会话改开场白」，
+   * 它的 sessionId 被顺手写进了这张卡片表 —— 577 条会话键就是这么来的，
+   * 而主人真正改的那张卡（xiaoyu）里一个字都没写进去，于是「填了开场白她不开口」。
+   * 现在把口子堵死：会话 id 一律 400，谁再想这么写都写不进来。
+   */
+  if (/^sm[a-z0-9]{8,}$/i.test(id)) {
+    const err = new Error('开场白是按智能体卡存的，不是按会话存的');
+    err.status = 400;
+    throw err;
+  }
   const raw = String(text ?? '').replace(/\r\n/g, '\n');
-  const map = readCardMap();
+  /**
+   * 【2026-10-29 修 · 写回时别把别人的开场白抹掉】
+   *
+   * readCardMap() 出口过滤了会话键，如果拿它当底再整表写回，
+   * 那 577 条会话键就会被顺手删掉。那批数据不是这次要清的东西（可能还有老会话在用），
+   * 所以这里另读一份「原样的文件」当底，只改自己那一格。
+   */
+  let map = {};
+  try {
+    const rawFile = JSON.parse(readFileSync(CARD_FILE(), 'utf8'));
+    if (rawFile && typeof rawFile === 'object') {
+      for (const [k, v] of Object.entries(rawFile)) if (typeof v === 'string') map[k] = v;
+    }
+  } catch {
+    map = readCardMap();
+  }
   // 两头空白一律修掉：那玩意儿在界面上看不见，留着只会让「是不是同一句」比较出岔子
   map[id] = raw.trim();
   try {

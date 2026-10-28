@@ -565,7 +565,12 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     const lines = [];
     for (const m of all) {
       if (m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
-        lines.push('主人：' + String(m.content).replace(/\s+/g, ' ').slice(0, 200));
+        // 【谁说的】—— 2026-10-28
+        // 以前不分身份一律写「主人：」。主人披着小鲸身份说话时，她背景里
+        // 看到的还是「主人：…」，于是把这句当主人说的处理 —— 身份对她等于没生效。
+        // 老消息没存 _who 的照旧当「主人」，跟别处规矩一致。
+        const _said = String(m._who || '').trim() || '主人';
+        lines.push(_said + '：' + String(m.content).replace(/\s+/g, ' ').slice(0, 200));
         continue;
       }
       if (m.role !== 'assistant') continue;
@@ -628,6 +633,20 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    * 系统提示里其实早写了「谁被点名谁开口」，但那只是通用规矩，
    * 没把**这一句**归好类。规矩是通用的，归类是具体的，她缺的是后者。
    */
+  /**
+   * 【这一轮说话的人叫什么】—— 2026-10-28
+   *
+   * 主人要的效果：「我披着小鲸身份说话时，在小鱼眼里完完全全是小鲸本身和她说话那样」。
+   * 她的 task 原来把说话人一律写成「主人」，所以她看见主人披着小鲸身份说的话，
+   * 还是当成主人在跟她说话 —— 身份对她等于没生效。
+   */
+  const __sayName = (() => {
+    try {
+      const id = currentIdentity(sessionId);
+      if (!id || !id.id || id.id === 'owner') return '主人';
+      return String(id.name || '').trim() || '主人';
+    } catch { return '主人'; }
+  })();
   const relayTo = (() => {
     const t = String(userText || '');
     // 「你和小鱼说 / 你跟她说 / 转告她 / 给她带个话」这类
@@ -648,18 +667,18 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
      * 具体立场下面那个分支（speaksToHer）会讲清楚，这里只交代「你为什么在场」。
      */
     '【你为什么在场】小鱼和主人这个会话里，你并排待着（或者小鱼被禁用了，屋里只剩你）。',
-    '主人这句话**默认是冲小鱼说的**，不是冲你 —— 这一点下面会讲清楚。',
+    `${__sayName}这句话**默认是冲小鱼说的**，不是冲你 —— 这一点下面会讲清楚。`,
     '',
     '【刚才的对话】',
     recent || '（刚开始）',
     '',
-    '【主人刚说的这句】',
+    `【${__sayName}刚说的这句】`,
     userText,
     '',
     relayTo
       ? [
           '【这一句是叫你传话，不是叫你答】',
-          '主人这句是让你把话带给小鱼，不是问你意见。你要做的只有两件：',
+          `${__sayName}这句是让你把话带给小鱼，不是问你意见。你要做的只有两件：`,
           '  1. 把主人的原话（或你要带的那半句）原样交给小鱼；',
           '  2. 一句确认「带到了」就结束。',
           '下面这些一句都不许有：',
@@ -5316,6 +5335,29 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 回退：发给模型的只有「有效历史」那份拷贝，日志本身一条不动。
     const view = effectiveIndexes(history, loadRewinds(session));
     let wireMessages = [...view.head.map((i) => history[i]), ...view.keep.map((i) => history[i])];
+    /**
+     * 【谁说的这句话】—— 2026-10-28 主人要「真的认为」，不是提示词哄
+     *
+     * 原来身份只影响两处：界面署名（_who，下划线字段发请求时被滤掉，模型看不见）、
+     * 和 identityBlock 那段贴在最末尾的说明。于是模型看到的历史里，
+     * 主人说的、披着小鲸身份说的、小鱼自言自语说的，全都是一个样：光秃秃一句话。
+     * 它只能按人设那句「对用户的称呼：主人」默认当成主人在说。
+     *
+     * 现在标签长在消息本身：历史里每条 user 消息带 `[小鲸] 过来一下` 这样的头，
+     * 模型读历史时看见的就是**两个不同的人在说话**，不是同一句话配一段解释。
+     *
+     * 只在发给模型的那份拷贝上拼（wireMessages），盘上那句一个字不改 ——
+     * 界面靠 _text 画气泡，回退靠原文，都不能被前缀污染。
+     */
+    wireMessages = wireMessages.map((m) => {
+      if (!m || m.role !== 'user') return m;
+      if (m.context || m._identity) return m;              // 规则副本/身份说明不是人说的
+      if (typeof m.content !== 'string' || !m.content.trim()) return m;
+      const who = String(m._who || '').trim();
+      if (!who) return m;                                   // 老消息：不标，跟以前一样
+      if (m.content.startsWith('[' + who + ']')) return m;   // 已经标过，别叠
+      return { ...m, content: '[' + who + '] ' + m.content };
+    });
     // 专业模式：把开场那两条（user + assistant）从这一轮真正发出去的内容里摘掉。
     //
     // 为什么不从 history 里删：那是会话记录，主人还能翻回来看；
@@ -5378,7 +5420,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 现在还要把「这条是你自己说的、你心里浮上来的念头」那一条也贴进来（见 standaloneNote），
        * 所以 at 只算一次，两段一起插。
        */
-      const ib = identityBlock({ sessionId });
+      const ib = identityBlock({ sessionId, speaker: 'fish' });
       const sn = standaloneNote(sessionId);
       const blocks = [ib, sn].filter(Boolean);
       if (blocks.length) {

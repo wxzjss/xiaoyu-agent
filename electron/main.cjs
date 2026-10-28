@@ -20,15 +20,59 @@
  * 我对着它查了半天端口和 asar。
  *
  * Electron 只在值**非空**时才真的退化成 node，所以判据跟着它走：空串当没有。
+ *
+ * 【自救不能成死循环】—— 2026-10-28 接着踩到的坑
+ *
+ * 上面的自救只给**子进程**删了变量。但如果这个变量是从注册表（用户环境）里来的，
+ * 子进程虽然 env 里没有了，可 Electron 启动时自己又会去读注册表补回来 —— 一样退化成 node。
+ * 于是「启动 → 判断要当 node → spawn 自己 → 退出」无限循环，表现还是双击无窗口。
+ * 现在加一层护栏：自救只试一次，子进程带上标记；看到标记就直接放弃自救，正常往下走。
+ *
+ * 【为什么用 explorer 而不是 spawn】—— 2026-10-28 实测出来的
+ *
+ * 如果变量来自注册表（用户环境），spawn 出来的子进程虽然 env 里删掉了，
+ * Electron 启动时又会去读注册表补回来 —— 子进程照样退化成 node，照样闪退。
+ * 实测换成 `explorer.exe <exe>` 重新拉起就能绕过：explorer 用的是它自己的干净环境。
+ * 所以自救走 explorer，走不通再退回 spawn（至少带标记不会死循环）。
+ *
+ * 【但这段代码本身救不了双击闪退】—— 2026-10-28 更晚实测，必须记下来
+ *
+ * 上面这套写得很像回事，其实**进不来**。变量非空时 Electron 根本不去加载 app.asar，
+ * 而是把 argv 当脚本直接交给 node —— 没有参数就什么都不干、退出码 0、没有任何输出。
+ * 也就是说 main.cjs 连一行都没执行，这里的自救永远不会跑。
+ *
+ * 真正的防线在两个地方，都不在这儿：
+ *   1. 开发版 —— start.bat 第一行 `set ELECTRON_RUN_AS_NODE=`，快捷方式指向它而不是 electron.exe。
+ *   2. 打包版 —— 用户在【功能】里点「检查环境」，见 src/selfcheck.mjs 的 checkBootEnv()：
+ *      发现这个变量就提示并给一键清除（写注册表）。
+ * 这段留着只是在「变量只在当前进程里有、但 exe 仍被正常当 app 拉起」的边缘情况下兜底。
  */
-if (String(process.env.ELECTRON_RUN_AS_NODE || '').trim()) {
-  try {
-    const { spawn } = require('node:child_process');
-    const env = { ...process.env };
-    delete env.ELECTRON_RUN_AS_NODE;
-    spawn(process.execPath, process.argv.slice(1), { env, detached: true, stdio: 'ignore' }).unref();
-  } catch (err) {
-    console.error('[boot] 环境里有 ELECTRON_RUN_AS_NODE，自救重启失败:', err && err.message ? err.message : err);
+const SELF_RESCUE_MARK = 'XIAOYU_NO_SELF_RESCUE';
+if (String(process.env.ELECTRON_RUN_AS_NODE || '').trim() && !process.env[SELF_RESCUE_MARK]) {
+  const { spawn } = require('node:child_process');
+  // 注意：这里不能读 `app.isPackaged` —— 走自救时说明已经是 node 模式，
+  // `require('electron')` 拿到的不是对象，`app` 根本不存在。判据换成「exe 名字里没有 electron」，
+  // 能区分打包版（小鱼Agent.exe）和开发态（electron.exe）。
+  const isPackagedExe = process.platform === 'win32'
+    && !/electron(\.exe)?$/i.test(process.execPath);
+  let rescued = false;
+  if (isPackagedExe) {
+    try {
+      spawn('explorer.exe', [process.execPath], { detached: true, stdio: 'ignore' }).unref();
+      rescued = true;
+    } catch (err) {
+      console.error('[boot] explorer 自救失败，退回 spawn:', err && err.message ? err.message : err);
+    }
+  }
+  if (!rescued) {
+    try {
+      const env = { ...process.env };
+      delete env.ELECTRON_RUN_AS_NODE;
+      env[SELF_RESCUE_MARK] = '1';
+      spawn(process.execPath, process.argv.slice(1), { env, detached: true, stdio: 'ignore' }).unref();
+    } catch (err) {
+      console.error('[boot] 环境里有 ELECTRON_RUN_AS_NODE，自救重启失败:', err && err.message ? err.message : err);
+    }
   }
   process.exit(0);
 }

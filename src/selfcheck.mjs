@@ -238,6 +238,80 @@ export function checkShortcut() {
   return [fixedAll ? warn('shortcut', '桌面快捷方式', detail, { fixed: true }) : fail('shortcut', '桌面快捷方式', detail, { pending: true })];
 }
 
+// ---------------------------------------------------------------- 启动环境
+
+/**
+ * 查「双击 exe 一闪就没」的元凶：ELECTRON_RUN_AS_NODE。
+ *
+ * 2026-10-28 踩到的：这个变量一旦非空，Electron 就退化成一个纯 node ——
+ * 不去加载 app.asar、不建窗口、也不执行 main.cjs 里的任何一行自救代码，
+ * 表现就是双击闪退、退出码 0、没有任何日志，查起来完全无从下手。
+ *
+ * 注意：**这里读到的是「当前进程」的环境**。如果程序本身已经因此起不来，
+ * 这段代码也就跑不到 —— 所以它只能抓住「变量在注册表里、这次靠别的方式起来了」这种情况。
+ * 真正兜底还是在启动器侧（开发版 start.bat 已清；打包版靠这条提示 + 一键清除）。
+ *
+ * 修法：删掉用户级 / 系统级注册表里的这个变量，下次启动就干净了。
+ */
+export function checkBootEnv() {
+  if (!IS_WIN) return [ok('bootenv', '启动环境', '非 Windows，跳过')];
+
+  const cur = String(process.env.ELECTRON_RUN_AS_NODE || '').trim();
+  const reg = readRegEnv();
+  const regHas = Object.entries(reg).filter(([, v]) => String(v || '').trim());
+
+  if (!cur && !regHas.length) {
+    return [ok('bootenv', '启动环境', '没有 ELECTRON_RUN_AS_NODE，双击能正常开窗口')];
+  }
+
+  const where = regHas.map(([k]) => (k === 'User' ? '当前用户环境' : '系统环境')).join('、');
+  const detail = cur
+    ? `ELECTRON_RUN_AS_NODE=${cur}` + (regHas.length ? `（来自${where}）` : '（只在当前进程里有）')
+    : `注册表${where}里有 ELECTRON_RUN_AS_NODE，双击 exe 会闪退`;
+
+  // 注册表里有 → 尝试清掉，清掉就是真修好了
+  if (regHas.length) {
+    const cleaned = regHas.map(([k]) => clearRegEnv(k));
+    const allDone = cleaned.every(Boolean);
+    return [allDone
+      ? warn('bootenv', '启动环境', detail + ' → 已从注册表删除，重启后生效', { fixed: true, needsRestart: true })
+      : fail('bootenv', '启动环境', detail + ' → 自动清除失败，请手动删（系统属性 → 环境变量）', { pending: true })];
+  }
+
+  // 只在当前进程里 → 告诉主人不用管，是启动它的那个程序带进来的
+  return [warn('bootenv', '启动环境', detail + ' → 是启动它的程序带进来的，不影响双击', { pending: false })];
+}
+
+/** 读注册表里的用户级 / 系统级环境变量 */
+function readRegEnv() {
+  const out = {};
+  for (const [key, scope] of [['HKCU\\Environment', 'User'], ['HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', 'Machine']]) {
+    try {
+      const r = execFileSync('reg', ['query', key, '/v', 'ELECTRON_RUN_AS_NODE'], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      const m = r.match(/ELECTRON_RUN_AS_NODE\s+REG_[A-Z_]+\s+(.*)/i);
+      if (m) out[scope] = m[1].trim();
+    } catch {}
+  }
+  return out;
+}
+
+/** 从注册表删掉这个变量；返回是否删干净了 */
+function clearRegEnv(scope) {
+  const key = scope === 'User' ? 'HKCU\\Environment' : 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment';
+  try {
+    execFileSync('reg', ['delete', key, '/v', 'ELECTRON_RUN_AS_NODE', '/f'], { encoding: 'utf8', windowsHide: true, stdio: 'ignore' });
+    // 通知系统环境已变，免得新进程还读旧的
+    try {
+      execFileSync('powershell', ['-NoProfile', '-Command',
+        "[Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE',$null,'" + (scope === 'User' ? 'User' : 'Machine') + "')"],
+        { encoding: 'utf8', windowsHide: true, stdio: 'ignore' });
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------- 跑一遍
 
 /**
@@ -245,6 +319,11 @@ export function checkShortcut() {
  */
 async function runFixedItems() {
   const items = [];
+  try {
+    items.push(...checkBootEnv());
+  } catch (e) {
+    items.push(warn('bootenv', '启动环境', '检查时出错：' + String(e?.message ?? e)));
+  }
   try {
     items.push(...checkShortcut());
   } catch (e) {

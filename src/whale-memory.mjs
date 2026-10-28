@@ -200,19 +200,29 @@ function render(bucket) {
  * @returns {string}
  */
 export function readWhaleMemory() {
-  // 关着就不读：返回空串，调用方拼不出东西 —— 连「本子在哪儿」也不带出去
-  if (memoryOff()) return '';
+  /**
+   * 【关着也读，只读】—— 2026-10-28
+   *
+   * 上一版这里是 `if (memoryOff()) return '';`。
+   * 主人要的是「关了还能翻，但不能写」，所以读这一侧全放开。
+   *
+   * 但有一条不能放：**不许顺手把本子建出来**。
+   * 原来的逻辑是「没有就写一份骨架」—— 那是写动作，关着的时候一读就落一个新文件，
+   * 等于用一个「只读」的入口凭空改动了磁盘。现在关着时只读、不建。
+   */
+  const off = memoryOff();
   try {
     if (!existsSync(FILE)) {
+      if (off) return ''; // 关着：不建文件，就当还没记过东西
       ensureDir();
       writeFileSync(FILE, SKELETON, 'utf8');
       return SKELETON;
     }
     const text = readFileSync(FILE, 'utf8');
-    if (!text.trim()) return SKELETON;
+    if (!text.trim()) return off ? '' : SKELETON;
     return text;
   } catch {
-    return SKELETON;
+    return off ? '' : SKELETON;
   }
 }
 

@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -3716,20 +3716,28 @@ function reconcileTurnTexts(ev) {
       return washTxt.length > washEl.length && washTxt.startsWith(washEl);
     });
     if (partial) {
-      const host = partial.closest('.msg.assistant');
-      const fresh = addAssistant();
-      fresh.textContent = fixMojibake(text);
-      fresh.classList.remove('streaming');
-      if (host && host !== fresh.closest('.msg.assistant')) {
-        // 把残句那条整个换成新的：先在它后面插好，再删掉旧的
-        host.after(fresh.closest('.msg.assistant'));
-        host.remove();
-      }
+      /**
+       * 【残句就地补全，绝不新开气泡 —— 2026-10-28 主人报的「一条回复被劈成两个气泡」】
+       *
+       * 主人原话（截图）：「（坐好，看着主人）这回」断了，下面又冒一个「小鱼」，
+       *                  接着才是「是真点过的」。
+       *
+       * 病根就在这儿：原来这里调 addAssistant() 新建一个气泡写完整正文，
+       * 再把旧的删掉。可 addAssistant() 的署名是写死「小鱼」的 ——
+       * 新气泡一建，名字就重来一次；旧气泡要是有哪条路没删干净，
+       * 屏幕上就变成「上半截 + 小鱼 + 下半截」。
+       *
+       * 现在：残句还在屏幕上，就【接着往里写】，一个字都不新建。
+       * 气泡是同一个，署名只有开头那一个。这样无论怎么补画，
+       * 一条回复永远只有一个气泡、一次署名。
+       */
+      partial.textContent = fixMojibake(text);
+      partial.classList.remove('streaming');
       fixed++;
       continue;
     }
 
-    const b = addAssistant();
+    const b = addAssistantAuto();
     b.textContent = fixMojibake(text);
     b.classList.remove('streaming');
     added++;
@@ -3750,7 +3758,7 @@ function paintLiveEvents(evs, bubble) {
       think.push(ev.text);
     } else if (ev.type === 'text') {
       closeThink();
-      if (!bubble) bubble = addAssistant();
+      if (!bubble) bubble = addAssistantAuto();
       bubble.textContent += fixMojibake(ev.text);
       touchStreaming(bubble);
     } else if (ev.type === 'tool_start') {
@@ -4033,7 +4041,7 @@ function followLive(id, fromIndex) {
           whaleStreamDelta(ev.text);
         } else if (ev.type === 'text') {
           closeThink();
-          if (!bubble) bubble = addAssistant();
+          if (!bubble) bubble = addAssistantAuto();
           bubble.textContent += fixMojibake(ev.text);
           touchStreaming(bubble);
         }
@@ -4530,7 +4538,7 @@ function addEl(html, cls, target) {
   return d;
 }
 
-function addUser(text, tag, atts, target, rewindId) {
+function addUser(text, tag, atts, target, rewindId, who = '') {
   const wrap = addEl('', 'msg user', target);
   if (target) {
     // 批量重绘时 target 是 fragment，不需要返回
@@ -4543,7 +4551,21 @@ function addUser(text, tag, atts, target, rewindId) {
   }
   // 注意顺序：必须先 innerHTML 建骨架，再挂按钮 —— 反过来的话 innerHTML 会把按钮一起抹掉（踩过）。
   wrap.innerHTML = '<div class="role"></div>';
-  wrap.querySelector('.role').textContent = currentIdentityName; // 现在是哪个身份就用哪个名字
+  // 这句是哪个身份说的就写哪个 —— 存了就用存的，没存（老消息）才用当前身份。
+  // 2026-10-28 主人：「切换身份后不动以前的消息，上一句显示依旧是主人」。
+  {
+    const roleEl = wrap.querySelector('.role');
+    // 没存 who 的老消息：一律当「主人」说的。
+    // 为什么不用 currentIdentityName：身份功能是后来才有的，在那之前的消息和
+    // 主人身份下发的消息本来就没记号 —— 它们必然是主人说的。用「当前身份」去补，
+    // 一旦当时正切在小鲸上，满屏主人说的话就全变成小鲸了，正好是主人不要的效果。
+    const nm = (typeof who === 'string' && who) ? who : '主人';
+    roleEl.textContent = nm;
+    // 只有「这句话真的存过身份」才钉死它。
+    // 老会话里那些没存的（who 为空）不打标记 —— 切身份时补成当前名字，
+    // 但一旦补过也就钉住了，不会来回跳。
+    if (typeof who === 'string' && who) roleEl.dataset.who = nm;
+  }
   if (tag) {
     const tg = document.createElement('span');
     tg.className = 'interjectTag';
@@ -5322,9 +5344,46 @@ function armStreamingTimer(bubble) {
   } catch {}
 }
 
-function addAssistant() {
+/**
+ * 【这一轮的名字报过了没有 —— 2026-10-28】
+ *
+ * 主人拿着截图报：一条回复被劈成两个气泡，下面那个又冒出一行「小鱼」。
+ * 原因是这一轮中间调了工具，前端按「一段一个气泡」画，每段都从 addAssistant() 新建，
+ * 而它默认会写署名 —— 于是同一个人在同一轮里报了两次名字。
+ *
+ * 这个开关就是「本轮第一次建气泡时写名字，之后一律不写」。
+ * 每一轮开始时 resetRoleOnce()，画完不用管，下一轮开头自然重置。
+ */
+let roleShownThisTurn = false;
+function resetRoleOnce() { roleShownThisTurn = false; }
+
+/** 建气泡的包装：自动决定要不要写名字，别处一律用它，别直接调 addAssistant */
+function addAssistantAuto(who) {
+  const hide = roleShownThisTurn;
+  if (!roleShownThisTurn) roleShownThisTurn = true;
+  return addAssistant(who, hide);
+}
+
+function addAssistant(who, hideRole) {
   const wrap = addEl('', 'msg assistant');
-  wrap.innerHTML = '<div class="role">小鱼</div>';
+  wrap.innerHTML = '<div class="role">' + (who || '小鱼') + '</div>';
+  /**
+   * 【hideRole：同一条回复中间换了气泡，不再重报一次名字】
+   *
+   * 2026-10-28 主人拿着截图报：一条回复被劈成两个气泡，下面那个又冒出一行「小鱼」。
+   *
+   * 病根：我这一轮说完一段就去调工具，工具回来接着说，前端按「一段一个气泡」画，
+   * 每个气泡都从头建，于是每段都带一次署名。可那本来就是同一轮、同一个人说的话，
+   * 署名只该在最前面出现一次。
+   *
+   * 用法：同一条回复的第 2 段起传 hideRole=true，只留气泡不写名字，
+   * 视觉上接着上一段往下写。切会话重画历史时仍由 renderTurns 自己决定署名。
+   */
+  if (hideRole) {
+    const r = wrap.querySelector('.role');
+    if (r) r.style.display = 'none';
+    wrap.classList.add('cont');
+  }
   const b = document.createElement('div');
   b.className = 'bubble streaming';
   /**
@@ -5822,7 +5881,12 @@ async function runTurn({ resume = false, text = '' } = {}) {
     autosizeInput();
     if (onScreen()) {
       // 下标要等服务端落盘才知道，先画气泡，done 事件里补按钮
-      pendingRewindBubble = addUser(text, undefined, sending);
+      // 【署名 = 发这条时正用着的身份 —— 2026-10-28 主人补的要求】
+      // 主人原话：「切换身份时不要把我以前说过的话顶着的名字也改成切换身份后的，
+      // 只改我切换身份之后说出的话的顶着的名字」。
+      // currentIdentityName 由 refreshIdentityBadge 跟着身份一起更新，这里取的就是「此刻是谁」。
+      // 取不到（还没拉到身份）就留空，addUser 会当「主人」处理 —— 这是最不容易吓到人的默认值。
+      pendingRewindBubble = addUser(text, undefined, sending, undefined, undefined, currentIdentityName);
       // 我自己刚发的话，必须看得见 —— 不管你刚才是不是正往上翻，
       // 发消息就等于「我要看最新的」，所以这里无条件贴底，
       // 不能交给 noteNewContent()（那个会看 stickBottom，翻了历史就不滚）。
@@ -5833,6 +5897,8 @@ async function runTurn({ resume = false, text = '' } = {}) {
   }
   // 注意顺序：先清空输入框，再刷按钮状态，否则生成中会一直显示「发送」。
   busy = true;
+  // 新的一轮：署名重新允许报一次（同一轮里的第 2、3 段不再重报名字）
+  try { if (typeof resetRoleOnce === "function") resetRoleOnce(); } catch {}
   showSending();
   syncSendBtn();
 
@@ -5968,7 +6034,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
           think.push(ev.text);
         } else if (ev.type === 'text') {
           closeThink();
-          if (!bubble) bubble = addAssistant();
+          if (!bubble) bubble = addAssistantAuto();
           bubble.textContent += fixMojibake(ev.text);
           touchStreaming(bubble);
           noteNewContent();
@@ -6274,7 +6340,7 @@ function replayInFlight(id) {
       think.push(p.text);
     } else if (p.kind === 'text') {
       if (think) { think.finish(); think = null; }
-      if (!bubble) bubble = addAssistant();
+      if (!bubble) bubble = addAssistantAuto();
       bubble.textContent += fixMojibake(p.text);
       touchStreaming(bubble);
     } else if (p.kind === 'tool') {
@@ -6318,7 +6384,8 @@ async function interject() {
   if (!busy || !text) return;
   input.value = '';
   autosizeInput();
-  addUser(text, '插话');
+  // 插话也是「现在这个身份说的话」，署名跟着当前身份走
+  addUser(text, '插话', undefined, undefined, undefined, currentIdentityName);
   pendingResume = true;
   lastInterjectText = text;   // 【必须有】runTurn 收尾时靠它判断「那句到底在不在历史里」
   syncSendBtn();
@@ -7952,7 +8019,7 @@ async function openIdentityDlg() {
   idSeq += 1;
   const seq = idSeq;
   try {
-    const r = await fetch('/api/identity').then((x) => x.json());
+    const r = await fetch('/api/identity?sessionId=' + encodeURIComponent(sessionId || '')).then((x) => x.json());
     if (seq !== idSeq) return;              // 期间又被打开了，这次的结果作废
     if (!r || !r.ok) { toast('身份功能读不出来：' + ((r && r.error) || '服务端没回')); return; }
     idState = r;
@@ -8075,10 +8142,19 @@ async function saveIdentityEdit() {
 /** 切换生效身份 */
 async function useIdentity(id) {
   try {
+    /**
+     * 【必须带上 sessionId —— 2026-10-28 主人报「用小鲸身份问我是谁，她答你是主人」】
+     *
+     * 身份是按会话存的，服务端要知道「切的是哪个会话」。
+     * 原来这里只传 { id }，sessionId 是空的 —— 服务端只更新了全局 current，
+     * 这个会话的 bySession 一条都没记。
+     * 等这一轮拼提示词时按会话去查，查不到就回落到全局，
+     * 而全局正好是主人 → 她当然答「你是主人」。
+     */
     const r = await fetch('/api/identity/set', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id, sessionId: sessionId || '' }),
     }).then((x) => x.json());
     if (!r || !r.ok) { toast('切不过去：' + ((r && r.error) || '服务端没回')); return; }
     idState = r;
@@ -8172,23 +8248,33 @@ let currentIdentityName = '主人';
  * 小鲸冒充我说话那种（.whale 的气泡）不在此列：它不是 .msg.user。
  */
 function repaintUserRoles() {
-  try {
-    for (const wrap of document.querySelectorAll('#log .msg.user')) {
-      const r = wrap.querySelector(':scope > .role');
-      if (!r) continue;
-      // 保留插话小标签（interjectTag），只换前面那截文字
-      const tg = r.querySelector('.interjectTag');
-      r.textContent = currentIdentityName;
-      if (tg) r.appendChild(tg);
-    }
-  } catch {}
+  /**
+   * 【只补没有署名的旧消息，绝不动有署名的 —— 2026-10-28 主人定的】
+   *
+   * 主人原话：「切换身份后不动以前的消息，比如说上一句是主人在说，
+   * 我切换身份后下一句是切换后的在说，而上一句显示依旧是主人」。
+   *
+   * 原来这里是「全部刷成现在的名字」：一切换，满屏旧消息的署名全被改写，
+   * 上一句明明是我以主人身份说的，切一下就成了别人的名字。
+   *
+   * 现在：画消息时已经把「说的时候是谁」写进 data-who 了。
+   * 有 data-who 的（新消息）一律不动；只有老会话里没存的，才补上当前身份名。
+   */
+  const wrap = document.getElementById('log') || document;
+  wrap.querySelectorAll('.msg.user').forEach((el) => {
+    const r = el.querySelector('.role');
+    if (!r) return;
+    if (r.dataset && r.dataset.who) return;   // 说的时候有署名 —— 保持原样
+    r.textContent = '主人';
+    r.dataset.who = '主人';   // 补过一次就钉住，不再随切换变
+  });
 }
 
 async function refreshIdentityBadge() {
   const el = document.getElementById('idBadge');
   if (!el) return;
   try {
-    const r = await fetch('/api/identity').then((x) => x.json());
+    const r = await fetch('/api/identity?sessionId=' + encodeURIComponent(sessionId || '')).then((x) => x.json());
     if (!r || !r.ok) { el.hidden = true; return; }
     // 【消息署名】—— 我这一轮是以谁的身份说话，消息左上角就写谁的名字。
     // 以前那里写死'主人'，切到小鱼身份之后我发的话还顶着「主人」两个字，主人当场发现了。
@@ -10204,7 +10290,7 @@ function renderTurns(turns) {
     const nextTurn = list[ti + 1];
     const nextIsAssistant = Boolean(nextTurn && nextTurn.role === 'assistant');
     if (turn.role === 'user') {
-      const w = addUser(turn.text, undefined, turn.atts, frag, turn.rewindId);
+      const w = addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
       // 每一句都能改：主人说的和我说的一样对待
       attachEdit(w, turn.rewindId);
       // 「分支」也贴着句子放：从这句往下另开一个会话

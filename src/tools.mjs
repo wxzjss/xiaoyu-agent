@@ -1428,7 +1428,7 @@ export function checkToolDocs() {
   return problems;
 }
 
-export async function runTool(name, rawArgs) {
+export async function runTool(name, rawArgs, sessionId) {
   const tool = tools.find((t) => t.name === name);
   if (!tool) return { ok: false, output: `unknown tool: ${name}` };
   if (!isToolEnabled(name)) {
@@ -1442,7 +1442,7 @@ export async function runTool(name, rawArgs) {
    * 只写不读等于黑洞：记进去的东西下一轮自己看不见，攒满 80 条还自动归档。
    * 这一道是防模型凭记忆硬写一个 tool_call 出来。
    */
-  if (FOREIGN_IN_PURE.includes(name) && (await import('./pure.mjs')).pureModeOn()) {
+  if (FOREIGN_IN_PURE.includes(name) && (await import('./pure.mjs')).pureModeOn(sessionId)) {
     return { ok: false, output: '专业模式下不读也不记记忆，这个工具暂时收起来了。要用就先把专业模式关掉。' };
   }
   /**

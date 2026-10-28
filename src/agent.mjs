@@ -27,7 +27,7 @@ import { getEnabledMap } from './features.mjs';
 // 新增工具自动出现在系统提示里，关掉功能自动消失。
 setToolLister(() => enabledToolSchemas());
 // 专业模式的提示里也要报工具清单，同一个来源，不走第二份文案。
-setPureToolLister(() => toolsForTurn());
+setPureToolLister((sid) => toolsForTurn(sid));
 import {
   getRetry429,
   bumpStreak,
@@ -97,9 +97,9 @@ function isStreamDropped(err) {
 const PURE_HIDDEN_TOOLS = ['memory_add', 'memory_pin'];
 
 /** 当前这一轮真正能交到模型手上的工具。 */
-function toolsForTurn() {
+function toolsForTurn(sessionId) {
   const all = enabledToolSchemas();
-  if (!pureModeOn()) return all;
+  if (!pureModeOn(sessionId)) return all;
   return all.filter((t) => !PURE_HIDDEN_TOOLS.includes(t?.function?.name));
 }
 
@@ -145,7 +145,7 @@ const CONTEXT_PREAMBLE = '下面是本次对话的设定与规则，从现在起
  * 而且一份丢了也不影响（它只是让你答短点，不是底线）。所以直接返回空。
  */
 export function contextMessage(sessionId = 'default', opts = {}) {
-  if (pureModeOn()) return '';
+  if (pureModeOn(sessionId)) return '';
   const rules = buildSystemPrompt({ sessionId, ...opts });
   if (!rules) return '';
 
@@ -430,27 +430,20 @@ export async function runAgent({
   let compressedThisTurn = false;
 
   // maxRounds 可以被设成 Infinity（不限）：那就一直跑到模型自己收尾，或用户点「停止」。
-  /**
-   * 【原地打转的守护：连着多少轮一点正经话都没说、只在调工具】
-   *
-   * 为什么要它：MAX_ROUNDS 默认是 unlimited（主人要「干多久干多久」），
-   * 可有的活儿没有「做完」的判据 —— 比如让它一遍遍写同一份东西。
-   * 2026-10-25 夜真发生过：某个会话自己陷进去，一轮接一轮地改同一处，
-   * 整晚都在转，主人喊它也不应。
-   *
-   * 这里只拦最典型的那一种：一整轮下来一个字都没说出口、只调了工具。
-   * 正常干活会说「我这就去改」「读完了，接下来改这行」，不会连着几十轮全是哑的。
-   * 真到这么多轮还一句人话没有，那就不是干活，是在原地刨坑 —— 收尾，把话交回去。
-   */
-  let stallRounds = 0;
-  const STALL_LIMIT = 40;
+  // 【2026-10-29 主人要求：这条限制整套删掉】
+  // 原来这里有 stallRounds / STALL_LIMIT = 40：连着 40 轮只说工具不出声就强行收尾，
+  // 收尾句式还是写死的「先停在这儿 —— 把结论说给我」。实测它会误伤正在干活的会话：
+  // 2026-10-28 夜，一个 1265 次工具调用、说了 47 段话的会话，因为连续 40 个"只出工具不出话"
+  // 的 step 被它剪断，卡在「现在给 persona.mjs 加上…」这句半截话上。
+  // 主人原话：「把【连着 40 轮只调工具、一句话都没说出来】就停止的限制彻底删掉」。
+  // 现在一个字都不剩；打转由下面的「一轮跑多久」时间闸兜底。
 
   /**
    * 【另一道闸：这一轮总共跑了多久】
    *
    * 上面那道管「一句话不说、光调工具」。可打转还有另一种样子：
    * 它每轮都在说话、也在调工具，看起来像在干活 —— 只是永远干不完。
-   * 那种情形 stallRounds 永远清零，拦不住。
+   * 那种情形一道量时间的闸拦不住 —— 它一轮一轮都在说话。
    *
    * 所以再压一道时间的底：一轮跑过这么久还没收尾，就当它卡住了，
    * 收尾把话交回去，而不是让它转到天亮。
@@ -577,7 +570,7 @@ export async function runAgent({
         }
         for await (const ev of streamChat({
           messages: inflateHistory(sendMessages),
-          tools: toolsForTurn(),
+          tools: toolsForTurn(sessionId),
           signal,
           sessionId, // 让「会话级模型/思考强度」生效
         })) {
@@ -776,19 +769,7 @@ export async function runAgent({
       return { text, usage: usageTotal, lastUsage, files: outbox };
     }
 
-    // 这一轮说了人话没有？没说就是在原地打转（见上面 stallRounds 的说明）
-    if (String(text || '').trim()) {
-      stallRounds = 0;
-    } else {
-      stallRounds++;
-      if (stallRounds >= STALL_LIMIT) {
-        const note = '已经连着 ' + stallRounds + ' 轮只调工具、一句话都没说出来。先停在这儿 —— '
-          + '你要么把现在的结论说给我，要么告诉我卡在哪儿。';
-        onEvent({ type: 'text', text: '\n\n（' + note + '）' });
-        messages.push({ role: 'assistant', content: note });
-        return { text: note, usage: usageTotal, lastUsage, files: outbox };
-      }
-    }
+    // （原来这里还有一道「连着 40 轮不出声就停」的闸，2026-10-29 按主人要求删掉了）
     const assistantMsg = {
       role: 'assistant',
       content: text || null,
@@ -805,9 +786,9 @@ export async function runAgent({
       /**
        * 【工具时间闸】
        *
-       * 为什么必须有：agent 上面那几道闸（哑转 40 轮、3 小时墙钟、整轮静默）
+       * 为什么必须有：agent 上面那道闸（3 小时墙钟、整轮静默）
        * 都只在「每一轮开头」判一次。工具一旦真的蹲住不返回 —— 等输入的进程、
-       * 连上就不动了的网络请求 —— 循环根本走不到下一轮开头，三道闸一次都轮不到。
+       * 连上就不动了的网络请求 —— 循环根本走不到下一轮开头，闸一次都轮不到。
        * 主人看到的就是界面停了，连「我卡住了」都等不到。
        *
        * 所以在这里套一层：超过 TOOL_MAX_MS 就当这个工具失败，把失败当成工具结果
@@ -816,7 +797,7 @@ export async function runAgent({
        * 的 timeout 负责的（run_command 就有 120 秒）。
        */
       const { ok, output } = await withTimeout(
-        runTool(call.function.name, call.function.arguments),
+        runTool(call.function.name, call.function.arguments, sessionId),
         TOOL_MAX_MS,
         {
         what: '工具「' + call.function.name + '」',

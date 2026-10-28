@@ -393,7 +393,7 @@ export async function compressHistory({
    *   · 旧对话直接丢 = 丢的东西找不回来，主人回头翻记录一片空白。
    * 现在跟人设模式走同一套：到水位才压、压就写摘要、按 limit 的比例留尾巴。
    */
-  const pureNow = pureModeOn();
+  const pureNow = pureModeOn(sessionId);
   /**
    * 触发线。这里跟以前不一样了 —— 以前是「涨到 cap 才压」，而 cap 是窗口的 70%，
    * 遇到 100 万窗口的模型就是 70 万，历史涨到六七十万都不动，主人看到的就是

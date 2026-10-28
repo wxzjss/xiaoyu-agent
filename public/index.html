@@ -84,11 +84,6 @@
       color: #0b0e13; background: #7ee0b0; border-color: #7ee0b0; font-weight: 600;
     }
     header button#pureBtn.on:hover { background: #9beac4; border-color: #9beac4; color: #0b0e13; }
-    /* 快速模式：用另一种颜色，免得跟专业模式看混 —— 两个是互斥的，只会亮一个 */
-    header button#fastBtn.on {
-      color: #0b0e13; background: #8ec8ff; border-color: #8ec8ff; font-weight: 600;
-    }
-    header button#fastBtn.on:hover { background: #a9d6ff; border-color: #a9d6ff; color: #0b0e13; }
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
@@ -1611,6 +1606,20 @@
       font-family: inherit; font-size: 12.5px; line-height: 1.7;
     }
     #agentListDlg .agRow #agOpening:focus { outline: none; border-color: var(--accent); }
+    /* 群聊名单那一行（2026-10-30）：每张自建卡一个能点的圆牌。
+       用圆牌不用复选框：这个面板已经有一列卡了，再来一列方框像表格；
+       点名字像群成员列表，一眼看得出「谁在这个屋里」。 */
+    #agentListDlg .agGroup { display: flex; flex-wrap: wrap; gap: 6px; flex: 1 1 100%; }
+    #agentListDlg .agGroup .agMem {
+      cursor: pointer; padding: 3px 10px; border-radius: 999px;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-family: inherit; font-size: 12px; line-height: 1.6;
+    }
+    #agentListDlg .agGroup .agMem:hover { color: var(--text); border-color: var(--accent); }
+    #agentListDlg .agGroup .agMem.on {
+      color: var(--text); border-color: var(--accent); background: rgba(140, 220, 210, .16);
+    }
+    #agentListDlg .agGroupHint { flex: 1 1 100%; font-size: 11.5px; color: var(--dim); }
     @media (max-width: 760px) {
       #agentListDlg .agBody { flex-direction: column; }
       #agentListDlg .agList {
@@ -1975,8 +1984,7 @@
         当前思考强度：<span id="topThinkName">默认</span><span class="caret">▾</span>
       </button>
     </span>
-    <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范（点一下开，再点一下关）">专业模式</button>
-    <button id="fastBtn" title="快速模式：跟专业模式一样不发人设、压缩规则也一样，差别只有一个 —— 过程当中不反复检查，一口气做完，全部做完之后再跑一次全量验证（点一下开，再点一下关）">快速模式</button>
+    <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
     <button id="fishBtn" title="小鱼在场：点一下就让她歇着 —— 之后这个会话里你说的话、小鲸说的话，她一个字都收不到，记忆里也不会留">小鱼</button>
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
     <!-- 2026-10-29：这个会话里要不是小鱼在说话（主人自己建的卡挂上来了），
@@ -2551,6 +2559,15 @@
             <label>这个会话里</label>
             <span id="agBindState" style="flex:1 1 160px;color:var(--dim)"></span>
             <button type="button" class="ghost" id="agBind">让这个会话用她说话</button>
+          </div>
+          <div class="agRow">
+            <!-- 2026-10-30【群聊：一个会话里好几个人说话】
+                 主人要「多开智能体」。上面那行管「谁替我说话」（一个人），
+                 这一行管「屋里还坐着谁」（好几个人）：点了谁，我答完她就接着补一句。
+                 小鲸不在这张名单里 —— 她走 ask_subagent 那条腿，有自己的一套开关。 -->
+            <label>一起说话的</label>
+            <div id="agGroup" class="agGroup"></div>
+            <span id="agGroupHint" class="agGroupHint"></span>
           </div>
           <div class="agRow">
             <!-- 2026-10-29 主人：「把原来删掉的【一句话】回滚回去，但改名为【开场白】…
@@ -3947,8 +3964,10 @@ function paintLiveEvents(evs, bubble) {
         st.className = 'status ' + (ev.ok ? 'ok' : 'err');
         el.pre.textContent += '\n--- output ---\n' + ev.output;
       }
-    } else if (ev.type === 'whale') {
+    } else if (ev.type === 'whale' || ev.type === 'agent') {
       // 她说话了：当场画一个她自己的气泡，不跟我的挤在一起。
+      // agent = 群聊里别的智能体卡说的（2026-10-30）：同一件事 —— 别人开口，
+      // 名字由 ev.who 带着，画法跟小鲸一样，别塞进我这条气泡里。
       // 如果刚才有流式的临时气泡，就【定稿】到那上面，别再画第二个
       if (whaleStreamFinish(ev.text)) {
         // 已经写进流式那个气泡了，不用再建
@@ -4035,7 +4054,33 @@ async function attachLive(id) {
 
   let bubble = paintLiveEvents(evs, null);
 
+  /**
+   * 【2026-10-28 修：切回来能看见内容，但再切一次就卡死】
+   *
+   * 上面那行把直播缓存里的事件画出来了 —— 所以「切回来」这一眼是好的。
+   * 可它画完就完了，**没有在 turnsInFlight 里留下任何记录**。
+   *
+   * 于是下一次 renderTurns（再切一次会话、或切到别的会话再切回来）会把整个聊天区
+   * 清空重建，然后问 replayInFlight「这一轮画到哪了」—— 找不到记录，什么也不补。
+   * 屏幕上就停在一个空的/残缺的状态，流式事件还在往已删除的孤儿节点里写，
+   * 非要刷新页面才恢复。多个会话同时跑的时候尤其明显：每切一次就丢一次。
+   *
+   * 修法：补画完就把记录建起来，把这轮已经画到的 part 数记成 evs.length，
+   * 并把 bubble 指针一起存进去 —— 后续流式追加和下一次重画都能接上。
+   */
   if (live.running) {
+    const rec = turnsInFlight.get(id) || {
+      sessionId: id, parts: [], running: true, startedAt: Date.now(), fishOff: false,
+      userText: '', userAttach: [], userDrawn: true,   // 历史里已经有了，不用再补主人那句
+      bubble: null, drawnParts: 0,
+    };
+    // 把直播缓存里的事件同步成 parts，重画时照这个补
+    rec.parts = evs.map((e) => ({ kind: e.type, ...e }));
+    rec.drawnParts = rec.parts.length;
+    rec.bubble = bubble || null;
+    rec.running = true;
+    turnsInFlight.set(id, rec);
+
     if (bubble) markStreaming(bubble);
     followLive(id, evs.length);
     /**
@@ -4199,7 +4244,7 @@ function followLive(id, fromIndex) {
         if (ev.type === 'reasoning') {
           if (!think) think = openThink();
           think.push(ev.text);
-        } else if (ev.type === 'whale') {
+        } else if (ev.type === 'whale' || ev.type === 'agent') {
           // 补画的时候也得认她的话 —— 不然断线重连 / done 后补拉，她的气泡永远补不出来
           closeThink();
           whaleStreamFinish(ev.text) || addWhaleBubble(ev.who, ev.text);
@@ -4596,90 +4641,93 @@ if (whaleBtn) {
 }
 
 /**
- * 专业模式（原「专业模式」）。
+ * 专业模式（原「纯净模式」）。
  *
  * 开了之后服务端那边会：系统提示一个字都不发（人设、思考语言、说话规矩、
  * 安全词、人设档、会话记忆、前情、开场白全免），压缩时不生成摘要、
  * 旧对话直接丢；开场那两条也从发给模型的内容里摘掉。
  *
- * 这里只负责「亮不亮」和「点一下翻面」。状态存服务端（.state/pure.json），
- * 所以换设备、换浏览器还是一样的 —— 不能放 localStorage。
+ * 【2026-10-28 改成按会话启用】
+ * 以前是全局一个开关，开一次所有会话全变。现在按会话各开各的：
+ * 状态存在服务端 .state/pure.json 里一张表 { on: { '<sid>': true } }，
+ * 换设备、换浏览器还是一样的 —— 不能放 localStorage。
+ * 所以每次切会话都要重新拉一次状态（见 __reloadPureState）。
  */
 const pureBtn = document.getElementById('pureBtn');
-const fastBtn = document.getElementById('fastBtn');
 
 /**
- * 两个按钮亮哪个 —— 'pure' | 'fast' | null（都不亮）。
+ * 按服务端说的状态刷新按钮。
  *
- * 两个模式互斥，服务端状态里只有一个 on 和一个 mode，所以这里只要照抄，
- * 不用自己判断「是不是同时亮着」—— 那种状态在盘上根本存不下来。
- */
-function paintPure(mode) {
-  const m = mode === 'fast' ? 'fast' : mode === 'pure' ? 'pure' : null;
-  if (pureBtn) {
-    const on = m === 'pure';
-    pureBtn.classList.toggle('on', on);
-    pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    pureBtn.title = on
-      ? '专业模式开着：只发对话本身 + 一份「怎么干活」的规范，到上限才压缩、会写摘要（再点一下关掉）'
-      : '干任务用的模式：不套人设、不念记忆、到上限才压缩（跟平常同一套压缩规则，会写摘要），还会给她一套「先查再说、找根因不猜、自己造证据」的规范，过程里该验就验（点一下开）';
-  }
-  if (fastBtn) {
-    const on = m === 'fast';
-    fastBtn.classList.toggle('on', on);
-    fastBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    fastBtn.title = on
-      ? '快速模式开着：过程当中不再反复检查，一口气干完，全部做完之后再跑一次全量验证（再点一下关掉）'
-      : '快速模式：跟专业模式同一套底子，差别只有一个 —— 过程当中不反复检查，一口气做完，全部做完后再跑一次全量验证（点一下开，会把专业模式顶掉）';
-  }
-}
-/**
- * 按服务端说的状态刷新两个按钮。
- *
- * available 为 false 表示【功能】里「专业模式」被关掉了 —— 这时候两个按钮整块拿掉，
+ * available 为 false 表示【功能】里「专业模式」被关掉了 —— 按钮整块拿掉，
  * 不是灰掉也不是藏起来，是当作这个功能不存在。
  */
 function paintPureState(j) {
   const available = !j || j.available !== false;
   if (pureBtn) pureBtn.hidden = !available;
-  if (fastBtn) fastBtn.hidden = !available;
   if (!available) return;
-  paintPure(j && j.mode ? j.mode : j && j.on ? 'pure' : null);
+  if (pureBtn) {
+    const on = !!(j && j.on);
+    pureBtn.classList.toggle('on', on);
+    pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    pureBtn.title = on
+      ? '专业模式开着（只对这个会话）：只发对话本身 + 一份「怎么干活」的规范，到上限才压缩、会写摘要（再点一下关掉）'
+      : '专业模式：不套人设、不念记忆、到上限才压缩（跟平常同一套压缩规则，会写摘要），还会给她一套「先查再说、找根因不猜、自己造证据」的规范。按会话各开各的 —— 只对这个会话生效（点一下开）';
+  }
+}
+
+/** 当前会话 id（顶层那个全局变量，切会话时会被改） */
+function pureSid() {
+  try {
+    return typeof sessionId === 'string' ? sessionId : (sessionId && sessionId.id) || '';
+  } catch { return ''; }
+}
+
+/** 拉一次当前会话的专业模式状态 */
+function loadPureState() {
+  const sid = pureSid();
+  if (!sid) { paintPureState({ available: true, on: false, mode: null }); return; }
+  fetch('/api/pure?sessionId=' + encodeURIComponent(sid))
+    .then((r) => r.json())
+    .then(paintPureState)
+    .catch(() => {});
 }
 
 /**
- * 点某个模式按钮。
+ * 点专业模式按钮：只翻当前会话这一格。
  *
- * 传的就是「要点哪个」而不是「翻一下」—— 互斥的语义放在服务端（它知道现在哪个亮着），
- * 前端只负责把结果画出来。点一个已经亮着的 = 关掉它，两个都灭。
+ * 点一下开、再点一下关。别的会话原样不动 —— 这是「按会话启用」的全部意义。
  */
-async function togglePureMode(which) {
-  const before = pureBtn && pureBtn.classList.contains('on') ? 'pure'
-    : fastBtn && fastBtn.classList.contains('on') ? 'fast' : null;
-  const want = before === which ? null : which;
-  // 先亮起来，等服务器回话再以它为准 —— 点下去就有反馈
-  paintPure(want);
+async function togglePureMode() {
+  const sid = pureSid();
+  if (!sid) {
+    if (typeof addSysNote === 'function') addSysNote('这个会话还没建好，等它落了盘再点。');
+    return;
+  }
+  const wasOn = !!(pureBtn && pureBtn.classList.contains('on'));
+  const want = !wasOn;
+  // 先翻个面，等服务器回话再以它为准 —— 点下去就有反馈
+  paintPureState({ available: true, on: want });
   try {
     const r = await fetch('/api/pure', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(want ? { on: true, mode: want } : { on: false }),
+      body: JSON.stringify({ sessionId: sid, on: want }),
     });
     const j = await r.json();
-    paintPure(j && j.mode ? (j.on ? j.mode : null) : null);
+    paintPureState({ available: j && j.available !== false, on: !!(j && j.on) });
     if (typeof addSysNote === 'function') {
-      if (!j || j.on === false) addSysNote('模式已关：人设和规矩回来了。');
-      else if (j.mode === 'fast') addSysNote('快速模式已开：过程当中不再反复检查，一口气干完，全部做完后再跑一次全量验证。');
-      else addSysNote('专业模式已开：接下来只发对话本身，不带人设和规矩，另给她一份「怎么干活」的规范。');
+      if (j && j.on) addSysNote('专业模式已开（只对这个会话）：接下来只发对话本身，不带人设和规矩，另给她一份「怎么干活」的规范。');
+      else addSysNote('专业模式已关（这个会话）：人设和规矩回来了。');
     }
   } catch (err) {
-    paintPure(before);
+    paintPureState({ available: true, on: wasOn });
     if (typeof addSysNote === 'function') addSysNote('⚠ 模式没切成功：' + String(err && err.message ? err.message : err));
   }
 }
-fetch('/api/pure').then((r) => r.json()).then(paintPureState).catch(() => {});
-if (pureBtn) pureBtn.onclick = () => togglePureMode('pure');
-if (fastBtn) fastBtn.onclick = () => togglePureMode('fast');
+loadPureState();
+if (pureBtn) pureBtn.onclick = () => togglePureMode();
+/** 切会话之后重拉一次 —— 每个会话的开/关是各自独立的 */
+window.__reloadPureState = loadPureState;
 
 
 /** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */
@@ -5772,6 +5820,18 @@ const TOOL_NICE = {
   browser_goto: '跳转网页',
   browser_snap: '给网页截图',
   browser_state: '看浏览器状态',
+  // 【2026-10-28 主人要求：岁月史书/折叠箱这几个也换成中文】
+  chronicle_toc: '翻史书目录',
+  chronicle_search: '翻史书查',
+  chronicle_read: '读史书原文',
+  folded_list: '看折叠箱',
+  folded_read: '读折叠原文',
+  restart_self: '重启自己',
+  // 【2026-10-28】视频那套工具也补中文
+  video_probe: '量视频',
+  video_sheet: '铺视频图版',
+  video_read: '读视频小字',
+  video_doctor: '查视频工具',
 };
 function niceTool(name) {
   const n = String(name || '').trim();
@@ -6040,7 +6100,21 @@ async function runTurn({ resume = false, text = '' } = {}) {
    */
   // 新的一轮：她这一轮说过的话重新算，同一句只画一次（见 whaleAlreadyDrawn）
   try { if (typeof __whaleRoundReset === 'function') __whaleRoundReset(); } catch {}
-  const turnRec = { sessionId: turnSession, parts: [], running: true, startedAt: Date.now(), fishOff: false };
+  /**
+   * 【2026-10-28 修：切走再切回来，主人自己那句话不见了】
+   *
+   * 以前 rec 里只记她吐出来的 parts，不记主人问的那句。于是切回来补画时，
+   * 屏幕上只有她那半边 —— 主人看到的是自己刚说的话凭空消失，只剩一段回答。
+   * 所以这里把 userText / attachments 一起存进来，补画时连主人那句话一起补。
+   */
+  const turnRec = {
+    sessionId: turnSession, parts: [], running: true, startedAt: Date.now(), fishOff: false,
+    userText: resume ? '' : String(text || ''),
+    userAttach: resume ? [] : attachments.slice(),
+    userDrawn: false,   // 主人那句画过没有 —— 补画时据此判断要不要补
+    bubble: null,       // 当前这段文字气泡，切会话/重画之后要重新认领
+    drawnParts: 0,      // parts 里已经画到第几个 —— 补画只补增量，不整段重来
+  };
   turnsInFlight.set(turnSession, turnRec);
 
   // 这一轮要带上的附件：先快照，再清空界面上的附件条
@@ -6057,6 +6131,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
       // currentIdentityName 由 refreshIdentityBadge 跟着身份一起更新，这里取的就是「此刻是谁」。
       // 取不到（还没拉到身份）就留空，addUser 会当「主人」处理 —— 这是最不容易吓到人的默认值。
       pendingRewindBubble = addUser(text, undefined, sending, undefined, undefined, currentIdentityName);
+      turnRec.userDrawn = true;   // 记一笔：主人这句已经画在屏幕上了
       // 我自己刚发的话，必须看得见 —— 不管你刚才是不是正往上翻，
       // 发消息就等于「我要看最新的」，所以这里无条件贴底，
       // 不能交给 noteNewContent()（那个会看 stickBottom，翻了历史就不滚）。
@@ -6151,7 +6226,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
           const last = turnRec.parts[turnRec.parts.length - 1];
           if (last && last.kind === 'text') last.text += ev.text;
           else turnRec.parts.push({ kind: 'text', text: ev.text });
-        } else if (ev.type === 'whale') {
+        } else if (ev.type === 'whale' || ev.type === 'agent') {
           // 她说话了：记进这一轮的记录，中途切走再回来也补得出来。
           // 已经在流式里记过的，把那些碎片收拢成一条定稿，别留一堆半截
           const open = turnRec.parts.findIndex((p) => p.kind === 'whale_start');
@@ -6208,7 +6283,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
           bubble.textContent += fixMojibake(ev.text);
           touchStreaming(bubble);
           noteNewContent();
-        } else if (ev.type === 'whale') {
+        } else if (ev.type === 'whale' || ev.type === 'agent') {
           // 她说话了：当场画一个她自己的气泡。
           // 先把我这段收尾，再另起一个——她是她，我是我。
           closeThink();
@@ -6404,7 +6479,9 @@ async function runTurn({ resume = false, text = '' } = {}) {
               const doneAt = evs.findIndex((x) => x && x.type === 'done');
               if (doneAt < 0) continue;
               const tails = evs.slice(doneAt + 1)
-                .filter((x) => x && (x.type === 'whale' || x.type === 'whale_stream_start' || x.type === 'whale_delta'));
+                // agent：群聊里别的卡说的话也落在 done 之后（小鱼答完她们才开口），
+                // 断线/提前收尾时同样得补得出来，不然「她们说了什么」只有刷新才看得到
+                .filter((x) => x && (x.type === 'whale' || x.type === 'agent' || x.type === 'whale_stream_start' || x.type === 'whale_delta'));
               for (const x of tails) {
                 // 一律交给同一个管道句柄认领，别在这儿自己找气泡（见 paintWhaleFromLive 注释）
                 paintWhaleFromLive(x);
@@ -6500,21 +6577,80 @@ async function runTurn({ resume = false, text = '' } = {}) {
  * 把一个还在跑的会话「补画」到屏幕上：先把已收到的内容摆出来，后面新来的接着追加。
  */
 function replayInFlight(id) {
+  /**
+   * 【2026-10-28 重写：切走再切回来，屏幕上会乱】
+   *
+   * 老版本是「整段重建」：把 rec.parts 从头到尾再画一遍。
+   * 用在「切回一个正在跑的会话」时有两个毛病：
+   *   ① 主人自己那句话根本不在 rec.parts 里 —— 补出来只有她那半边，
+   *      看起来像主人刚才没说话、系统自己冒出一段回答；
+   *   ② 每补一次就从头重画一次，而流式循环还在同一屏上追加，
+   *      来回切两下就是同一段话叠两份。
+   *
+   * 新做法：
+   *   · 主人那句没画过就补画（userDrawn 标记）；
+   *   · parts 只补「还没画过的增量」（drawnParts 游标）；
+   *   · 补完之后把 bubble / think 指针存回 rec，让流式循环接着往活节点上写。
+   */
   const rec = turnsInFlight.get(id);
   if (!rec) return false;
-  let bubble = null;
-  let think = null;
-  for (const p of rec.parts) {
-    if (p.kind === 'reasoning') {
-      if (!think) think = openThink();
-      think.push(p.text);
-    } else if (p.kind === 'text') {
-      if (think) { think.finish(); think = null; }
-      if (!bubble) bubble = addAssistantAuto();
-      bubble.textContent += fixMojibake(p.text);
-      touchStreaming(bubble);
-    } else if (p.kind === 'tool') {
-      if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+
+  // ── 主人那句话：没画过就补上（切走时它可能还在屏幕上，切会话后被清掉了） ──
+  if (!rec.userDrawn && (rec.userText || (rec.userAttach && rec.userAttach.length))) {
+    // 附件跟着一起补：只说「主人问了一句」却不显示图，会让人以为附件丢了
+    addUser(rec.userText || '', undefined, rec.userAttach && rec.userAttach.length ? rec.userAttach : undefined,
+      undefined, undefined, rec.userIdentity);
+  }
+  rec.userDrawn = true;
+
+  // ── 只补增量 ──
+  if (!Number.isFinite(rec.drawnParts)) rec.drawnParts = 0;
+  if (rec.drawnParts > rec.parts.length) rec.drawnParts = 0;   // 记录被重置过，从头补
+
+  for (let i = rec.drawnParts; i < rec.parts.length; i++) {
+    const p = rec.parts[i];
+    // kind 优先，退回去认 type —— 直播缓存里存的是原始事件（有 type 没 kind），
+    // 主循环 push 进去的是 { kind: ... }。两种都得认，不然补画会漏。
+    const kind = p.kind || p.type || '';
+    if (kind === 'reasoning') {
+      if (!rec.think) rec.think = openThink();
+      rec.think.push(p.text);
+    } else if (kind === 'text') {
+      if (rec.think) { rec.think.finish(); rec.think = null; }
+      if (!rec.bubble) rec.bubble = addAssistantAuto();
+      rec.bubble.textContent += fixMojibake(p.text);
+      touchStreaming(rec.bubble);
+    } else if (kind === 'whale' || kind === 'agent') {
+      // 小鲸说的话：单独一个气泡，标上她的名字
+      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
+      if (rec.think) { rec.think.finish(); rec.think = null; }
+      addWhaleBubble(p.who, p.text);
+    } else if (kind === 'whale_start') {
+      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
+      whaleStreamStart(p.who || '小鲸');
+    } else if (kind === 'whale_delta') {
+      // 还在流式的她：用流式气泡接着写，别每次重建一个新气泡
+      if (!rec.whaleStarted) { whaleStreamStart(p.who || '小鲸'); rec.whaleStarted = true; }
+      whaleStreamDelta(p.text);
+    } else if (kind === 'tool_start') {
+      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
+      const el = addTool();
+      el.sum.querySelector('.name').textContent = niceTool(p.name);
+      el.sum.querySelector('.status').textContent = '运行中…';
+      el.pre.textContent = '参数：' + p.args;
+      if (!rec.toolEls) rec.toolEls = new Map();
+      rec.toolEls.set(p.id, el);
+    } else if (kind === 'tool_end') {
+      const el = rec.toolEls && rec.toolEls.get(p.id);
+      if (el) {
+        const st = el.sum.querySelector('.status');
+        st.textContent = p.ok ? '完成' : '失败';
+        st.className = 'status ' + (p.ok ? 'ok' : 'err');
+        el.pre.textContent += '\n--- output ---\n' + p.output;
+      }
+    } else if (kind === 'tool') {
+      // 老格式（parts 里直接存成 kind:'tool' 的那种）
+      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
       const el = addTool();
       el.sum.querySelector('.name').textContent = niceTool(p.name);
       const st = el.sum.querySelector('.status');
@@ -6523,10 +6659,15 @@ function replayInFlight(id) {
       el.pre.textContent = '参数：' + p.args + (p.done ? '\n--- output ---\n' + p.output : '');
     }
   }
-  if (bubble) markStreaming(bubble);
-  // 存回去：切回来之后 runTurn 要接着往这几个元素上追加
-  rec.bubble = bubble;
-  rec.think = think;
+  rec.drawnParts = rec.parts.length;
+
+  // 把指针存回 rec：主循环 6239 那段就是从 turnRec.bubble / turnRec.think 接回去的。
+  // 不存的话它每次都判「没接上」，一有新事件就再重建一遍 —— 屏幕上反复闪。
+  rec.bubble = rec.bubble || null;
+  rec.think = rec.think || null;
+
+  if (rec.bubble) markStreaming(rec.bubble);
+  noteNewContent();
   return true;
 }
 
@@ -7101,6 +7242,8 @@ function closeFishPersonaDlg() {
 let agentState = { agents: [], models: [], activeModelId: '', max: 30, maxPersonaChars: 20000 };
 let agentSel = '';
 let agentCur = null;
+/** 群聊名单：这个会话里除小鱼以外，还有谁在场说话（2026-10-30） */
+let agentGroup = [];
 
 function agVal(id) {
   const el = document.getElementById(id);
@@ -7216,6 +7359,7 @@ async function selectAgent(id) {
     }
   }
   syncBindRow();
+  renderGroupRow();
   agHint('');
 }
 
@@ -7233,14 +7377,34 @@ async function refreshAgentChip() {
   const el = document.getElementById('agentChip');
   if (!el) return;
   if (!sessionId) { el.hidden = true; return; }
-  const r = await fetch('/api/agents/current?sessionId=' + encodeURIComponent(sessionId))
-    .then((x) => x.json()).catch(() => null);
-  if (!r || r.error) { el.hidden = true; return; }
-  const id = String(r.agentId || '');
-  const name = String(r.name || '');
-  if (!id || id === 'xiaoyu' || !name) { el.hidden = true; return; }
-  el.textContent = '现在：' + name;
-  el.title = `这个会话里说话的是「${name}」，不是小鱼 —— 点一下换人或换回小鱼`;
+  /**
+   * 2026-10-30【群聊来了以后这块牌要说的不止一个人】
+   *
+   * 以前只问「谁替我说话」。现在一个会话里可能坐着好几个人，
+   * 所以这块牌改成「现在：小鱼 + 阿蓝 + 阿绿」——不然主人根本看不出
+   * 为什么她答完还有人接一句，会以为程序自己乱说话。
+   *
+   * 两条请求并发发：一块牌等两趟串行往返太慢，切会话时会看得见地闪一下。
+   */
+  const sid = encodeURIComponent(sessionId);
+  const [cur, grp] = await Promise.all([
+    fetch('/api/agents/current?sessionId=' + sid).then((x) => x.json()).catch(() => null),
+    fetch('/api/agents/group?sessionId=' + sid).then((x) => x.json()).catch(() => null),
+  ]);
+  if (!cur || cur.error) { el.hidden = true; return; }
+  const id = String(cur.agentId || '');
+  const name = String(cur.name || '');
+  const mates = (grp && !grp.error && Array.isArray(grp.agentIds)) ? grp.agentIds : [];
+  const mateNames = (grp && !grp.error && Array.isArray(grp.names)) ? grp.names.filter(Boolean) : [];
+  // 默认就是小鱼：既没换人、也没别人在场的时候不挂牌（左边标题已经写着「小鱼」）
+  const swapped = Boolean(id && id !== 'xiaoyu' && name);
+  if (!swapped && !mates.length) { el.hidden = true; return; }
+  const head = swapped ? name : '小鱼';
+  const tail = mates.length ? ' + ' + (mateNames.length ? mateNames.join('、') : String(mates.length)) : '';
+  el.textContent = '现在：' + head + tail;
+  el.title = mates.length
+    ? `这个会话里说话的是「${head}」，${mates.length} 个还会接着补一句 —— 点一下换人或换回小鱼`
+    : `这个会话里说话的是「${head}」，不是小鱼 —— 点一下换人或换回小鱼`;
   el.hidden = false;
 }
 
@@ -7250,7 +7414,70 @@ async function loadAgentState() {
   const r = await fetch('/api/agents' + q).then((x) => x.json()).catch(() => null);
   if (!r || r.error) return null;
   agentState = r;
+  /**
+   * 群聊名单单独一条接口（2026-10-30）。
+   *
+   * 为什么不并进 /api/agents：那份清单是「所有卡 + 人设字数」，跟会话无关；
+   * 名单是「这个会话里谁在场」。主人切会话时只需要重新问后者，不必重算全部人设。
+   * 读不到就当没人在场 —— 界面上少一行勾选，比整块面板打不开强。
+   */
+  agentGroup = [];
+  if (q) {
+    const g = await fetch('/api/agents/group' + q).then((x) => x.json()).catch(() => null);
+    if (g && !g.error && Array.isArray(g.agentIds)) agentGroup = g.agentIds.map(String);
+  }
+  // 开了面板就等于重新问了一遍「这个会话里都有谁」，顶栏那块牌跟着更新 ——
+  // 不然刚把人叫进屋，牌子上还写着只有一个人（截图时当场撞见的）
+  try { refreshAgentChip(); } catch { /* 忽略 */ }
   return r;
+}
+
+/** 群聊名单那行：把每张自建卡画成一个能点的圆牌 */
+function renderGroupRow() {
+  const box = document.getElementById('agGroup');
+  const hint = document.getElementById('agGroupHint');
+  if (!box) return;
+  box.innerHTML = '';
+  const cards = (agentState.agents || []).filter((a) => a.kind === 'custom');
+  const hasSession = typeof sessionId === 'string' && !!sessionId;
+  if (!hasSession) {
+    if (hint) hint.textContent = '先打开一个会话，再挑谁跟她一起说话';
+    return;
+  }
+  if (!cards.length) {
+    if (hint) hint.textContent = '还没有自己建的智能体，先建一张再来';
+    return;
+  }
+  for (const a of cards) {
+    const on = agentGroup.includes(String(a.id));
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'agMem' + (on ? ' on' : '');
+    b.textContent = String(a.name || '她');
+    b.title = on ? '点一下：让她别说话' : '点一下：让她也在这个会话里说话';
+    b.onclick = () => toggleGroupMember(String(a.id));
+    box.appendChild(b);
+  }
+  if (hint) {
+    const n = agentGroup.length;
+    hint.textContent = n
+      ? `这个会话里小鱼 + ${n} 个还会接着说话；点名字可以增减`
+      : '只有小鱼一个人说话。点了谁，小鱼答完她就会接着补一句';
+  }
+}
+
+/** 点一下圆牌：把这个会话的在场名单改掉 */
+async function toggleGroupMember(id) {
+  if (typeof sessionId !== 'string' || !sessionId) { agHint('还没有会话'); return; }
+  const next = agentGroup.includes(id) ? agentGroup.filter((x) => x !== id) : [...agentGroup, id];
+  const r = await fetch('/api/agents/group', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, agentIds: next }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { agHint('改不了：' + ((r && r.error) || '网络错误')); return; }
+  agentGroup = Array.isArray(r.agentIds) ? r.agentIds.map(String) : [];
+  renderGroupRow();
+  try { refreshAgentChip(); } catch { /* 忽略 */ }
 }
 
 /** 底下那行「这个会话里用谁说话」：按当前选中卡和绑定状态长成该有的样子 */
@@ -10774,6 +11001,20 @@ async function refreshSessions({ silent = false } = {}) {
  */
 function renderTurns(turns) {
   hideSending();
+  /**
+   * 【2026-10-28 修：重画之后流式追加写进了「孤儿节点」，界面就卡住不动】
+   *
+   * 重画会把聊天区整个清空重建，原来那个 bubble 元素已经不在 DOM 里了。
+   * 可是 runTurn 的流式循环手里还攥着旧引用，接着往里写 —— 写的是没人看得见的孤魂，
+   * 屏幕上就停在重画那一刻，非要刷页面才行。
+   * 这里把「正在跑的会话」的 bubble 指针清掉，让补画逻辑重新认一个活节点。
+   */
+  try {
+    for (const rec of turnsInFlight.values()) {
+      if (rec) { rec.bubble = null; rec.drawnParts = 0; rec.userDrawn = false; }
+    }
+  } catch {}
+
   usageEl.textContent = '';
   // 回放历史时用：最近几句主人说的话上带着的用量，轮到画它们回复时批量补上去。
   // 用队列而不是单个变量：连着好几条 user 的情况太常见（催促、中途打断），
@@ -11161,6 +11402,8 @@ async function switchSession(id) {
   try { if (typeof window.__reloadFishState === 'function') window.__reloadFishState(); } catch {}
   // 小鲸的按钮同理：它也按会话，切过去得重读
   try { if (typeof window.__reloadWhaleState === 'function') window.__reloadWhaleState(); } catch {}
+  // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
+  try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   renderTurns(r.session.turns);
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
@@ -11262,6 +11505,8 @@ async function createSessionEx(opts = {}) {
   try { paintWhale(false); } catch {}
   try { if (typeof window.__reloadFishState === 'function') window.__reloadFishState(); } catch {}
   try { if (typeof window.__reloadWhaleState === 'function') window.__reloadWhaleState(); } catch {}
+  // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
+  try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
   loadTopCfg(); // 新会话是默认档
   log.innerHTML = '';
   // 【清空历史后扫残留光标】

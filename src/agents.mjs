@@ -51,15 +51,27 @@ export { MAX_PERSONA_CHARS };
 export const MAX_NAME = 24;
 export const MAX_DESC = 200;
 
+function objOf(v) {
+  return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+}
+
 function readAll() {
-  const blank = { version: 2, customs: [], bySession: {} };
+  const blank = { version: 3, customs: [], bySession: {}, groupBySession: {} };
   try {
     const j = JSON.parse(readFileSync(FILE, 'utf8'));
     if (!j || typeof j !== 'object' || Array.isArray(j)) return blank;
-    const bySession = (j.bySession && typeof j.bySession === 'object' && !Array.isArray(j.bySession))
-      ? j.bySession
-      : {};
-    return { version: 2, customs: Array.isArray(j.customs) ? j.customs : [], bySession };
+    return {
+      version: 3,
+      customs: Array.isArray(j.customs) ? j.customs : [],
+      bySession: objOf(j.bySession),
+      /**
+       * 群聊名单：这个会话里除了小鱼，还有谁在场说得出话。
+       *
+       * 为什么不写进会话文件：跟「挂哪张卡」一个道理 —— 那是设置，不是聊天记录。
+       * 换阵容不该在账本里多出一行，删同事也不该把聊天记录改写一遍。
+       */
+      groupBySession: objOf(j.groupBySession),
+    };
   } catch {
     return blank;
   }
@@ -69,9 +81,10 @@ function writeAll(data) {
   try {
     if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
     writeFileSync(FILE, JSON.stringify({
-      version: 2,
+      version: 3,
       customs: data.customs || [],
-      bySession: data.bySession && typeof data.bySession === 'object' ? data.bySession : {},
+      bySession: objOf(data.bySession),
+      groupBySession: objOf(data.groupBySession),
     }, null, 2), 'utf8');
     return true;
   } catch {
@@ -332,6 +345,13 @@ export function removeAgent(id) {
   for (const [sid, aid] of Object.entries(data.bySession)) {
     if (String(aid) === key) delete data.bySession[sid];
   }
+  // 群聊名单里也得把她摘掉，不然「在场的人」会少一个却还留着她那一格
+  for (const [sid, ids] of Object.entries(data.groupBySession)) {
+    if (!Array.isArray(ids)) { delete data.groupBySession[sid]; continue; }
+    const kept = ids.filter((x) => String(x) !== key);
+    if (kept.length) data.groupBySession[sid] = kept;
+    else delete data.groupBySession[sid];
+  }
   return writeAll(data);
 }
 
@@ -499,4 +519,74 @@ export function agentForSession(sessionId) {
     if (a) return a;
   }
   return getAgent(AGENT_XIAOYU);
+}
+
+// ---- 群聊：这个会话里还有谁在场（2026-10-30）---------------------------------
+/**
+ * 主人要「多开智能体」，最直白的一种理解就是：**一个会话里不止一个人说话**。
+ *
+ * 【为什么不复用「身份」那套】
+ * 身份（identity）回答的是「现在跟我说话的是谁」—— 它整个会话只有一个人，
+ * 是「我戴上哪张脸」。群聊要的是「屋里还坐着谁」—— 小鱼一直在，另外几张卡
+ * 各自用自己的嘴说话。两者会打架，所以名单单独存，一个字都不碰 identity。
+ *
+ * 【小鲸为什么不进这个名单】
+ * 她是「跑出去查事情的她」，用 ask_subagent 那条工具链进来，本来就有自己的插话闸
+ * （whaleMaybeReply，还带冷却/预算）。再让她当一个群成员，等于给她两套开关。
+ */
+export const MAX_GROUP = 3;
+
+function cleanGroup(data, ids) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(ids) ? ids : []) {
+    const id = String(raw || '');
+    if (!id || seen.has(id)) continue;
+    if (id === AGENT_XIAOYU || id === AGENT_XIAOJING) continue; // 小鱼一直在；小鲸不走这条路
+    if (!data.customs.some((a) => String(a.id) === id)) continue; // 卡被删了就不算在场
+    seen.add(id);
+    out.push(id);
+    if (out.length >= MAX_GROUP) break;
+  }
+  return out;
+}
+
+/** 这个会话里在场说话的卡（不含小鱼，也可能为空数组） */
+export function groupAgentIds(sessionId) {
+  const sid = String(sessionId || '');
+  if (!sid) return [];
+  const data = readAll();
+  return cleanGroup(data, data.groupBySession[sid]);
+}
+
+/** 一次读出「每个会话分别有谁在场」（给会话列表/顶栏用，跟 sessionAgentMap 一个口径） */
+export function groupAgentMap() {
+  const data = readAll();
+  const out = {};
+  for (const [sid, ids] of Object.entries(data.groupBySession || {})) {
+    const kept = cleanGroup(data, ids);
+    if (kept.length) out[String(sid)] = kept;
+  }
+  return out;
+}
+
+/**
+ * 改这个会话的在场名单。
+ *
+ * 传空数组就是「只剩小鱼一个人」。超上限不报错，砍掉多的 —— 这是一份名单，
+ * 不是一份合同，报错只会让界面多一个弹窗。
+ */
+export function setSessionGroup(sessionId, ids) {
+  const sid = String(sessionId || '');
+  if (!sid) {
+    const e = new Error('得先有会话');
+    e.status = 400;
+    throw e;
+  }
+  const data = readAll();
+  const kept = cleanGroup(data, ids);
+  if (kept.length) data.groupBySession[sid] = kept;
+  else delete data.groupBySession[sid];
+  if (!writeAll(data)) return null;
+  return { sessionId: sid, agentIds: kept, max: MAX_GROUP };
 }

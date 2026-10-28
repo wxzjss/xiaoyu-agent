@@ -19,6 +19,18 @@
  *      allowWrite 现在反过来用：传 false 才是「这次只让她查」。
  */
 import { streamChat } from './llm.mjs';
+/**
+ * 回合内瘦身。
+ *
+ * 【为什么子智能体这边也要】
+ * 2026-10-28 查出来的：干活鱼那一轮 prompt 在 1.2 万里跳到 47.8 万，
+ * 查了半天主流程的瘦身是好的，漏在这儿 ——
+ * 这条路每轮把工具结果 push 进 messages 再整份重发，
+ * 一条都没压过。实测 60 次工具调用就能发出去 116 万字符。
+ *
+ * 主流程那套（agent.mjs）早就有了，这里照同一份规矩来，别再写第二套。
+ */
+import { slimRoundMessages } from './turn-slim.mjs';
 import { enabledToolSchemas, runTool, pushToolContext, setToolContext, subagentDepth, bumpSubagentDepth, dropSubagentDepth, MAX_SUBAGENT_DEPTH, currentSessionId } from './tools.mjs';
 import { featureNameOfTool, getEnabledMap } from './features.mjs';
 // 底线要从设置里读 —— 主人定的那几条对她也生效（主人 2026-10-25 明确要求）
@@ -913,8 +925,21 @@ export async function runSubagent({
       let toolCalls = [];
       let usage = null;
 
+      /**
+       * 发出去之前先瘦一遍。
+       *
+       * `from: 1` —— 第 0 条是 system，第 1 条是「设定 + 任务」那条 user。
+       * 只瘦它之后的工具结果：主人交代的任务本身一个字不能动。
+       * （子智能体一趟任务是从头自己跑的，不存在「上个回合读过的东西」，
+       *   所以整趟都算本轮，直接给 1 就对了。）
+       *
+       * 压的只是「发出去的那一份」，messages 本身不动 —— 落盘轨迹要完整。
+       */
+      const slimmedSub = slimRoundMessages(messages, { from: 1 });
+      const sendSub = slimmedSub.changed ? slimmedSub.messages : messages;
+
       for await (const ev of streamChat({
-        messages,
+        messages: sendSub,
         tools: toolSchemas,
         signal: abortCtrl.signal,
         sessionId: subSessionId,

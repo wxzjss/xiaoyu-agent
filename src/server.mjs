@@ -5354,10 +5354,54 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       if (m.context || m._identity) return m;              // 规则副本/身份说明不是人说的
       if (typeof m.content !== 'string' || !m.content.trim()) return m;
       const who = String(m._who || '').trim();
-      if (!who) return m;                                   // 老消息：不标，跟以前一样
+      if (!who) return m;                                    // 老消息：不标，跟以前一样
+      /**
+       * 【自己说的话不加标签】—— 2026-10-28 主人截图纠正
+       *
+       * 上一版对所有 _who 一刀切加前缀，于是用「小鱼」身份说话时，她那边看到的是
+       *   [小鱼] （翻着手中的书）
+       * 结果她不但没觉得那是自己想说的话，反而更确信「屋里还有个叫小鱼的」——
+       * 截图里她在后面回「（赶紧凑过去看那本书）」。
+       * 标签把「自言自语」硬生生变成了「第三方发言」，方向刚好搞反。
+       *
+       * 对小鱼自己说话 = 那就是她心里冒出来的念头，一个字都不加，直接就是她的话；
+       * 只有「别人」才需要标签 —— 主人的不加（她本来就知道是谁），小鲸的要加。
+       */
+      if (who === '小鱼') return m;
+      if (who === '主人') return m;
       if (m.content.startsWith('[' + who + ']')) return m;   // 已经标过，别叠
       return { ...m, content: '[' + who + '] ' + m.content };
     });
+
+    /**
+     * 【同一个人连着说两句，别各标一次】—— 2026-10-28
+     *
+     * 主人连着发三条，模型看到的是三个独立的 [主人] 段？不 —— 主人和小鱼本来就不标，
+     * 这条只服务第三方身份：小鲸连着说两句时，重复的标签会显得像两次插话。
+     * 合并成一段，读起来才是「她一直在这个位置」，而不是「她插了两次」。
+     */
+    {
+      const out = [];
+      for (const m of wireMessages) {
+        const prev = out[out.length - 1];
+        const who = m && m.role === 'user' && !m.context && !m._identity ? String(m._who || '').trim() : '';
+        const pwho = prev && prev.role === 'user' && !prev.context && !prev._identity ? String(prev._who || '').trim() : '';
+        if (who && who === pwho && typeof m.content === 'string' && m.content.startsWith('[' + who + '] ')) {
+          const head = '[' + who + '] ';
+          const body = m.content.slice(head.length);
+          const pbody = typeof prev.content === 'string' && prev.content.startsWith(head)
+            ? prev.content.slice(head.length)
+            : String(prev.content || '');
+          out[out.length - 1] = { ...prev, content: head + pbody + '\n' + body };
+          continue;
+        }
+        out.push(m);
+      }
+      if (out.length !== wireMessages.length) {
+        console.log('[who] 合并了同一个人连说的 ' + (wireMessages.length - out.length) + ' 段');
+      }
+      wireMessages = out;
+    }
     // 专业模式：把开场那两条（user + assistant）从这一轮真正发出去的内容里摘掉。
     //
     // 为什么不从 history 里删：那是会话记录，主人还能翻回来看；

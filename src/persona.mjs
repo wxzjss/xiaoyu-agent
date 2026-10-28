@@ -8,7 +8,7 @@
 import { getSettings, settingsPromptBlock, matchSafeWord, safeWordNoteFor } from './settings.mjs';
 import { personaInfo } from './persona-store.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
-import { ensureMemory } from './session-memory.mjs';
+import { readMemory } from './session-memory.mjs';
 // 专业模式：开了就一个字系统提示都不发（见 pure.mjs）。
 import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
@@ -366,8 +366,14 @@ function toolBlock() {
  *
  * 跟上面几块的顺序关系：人设管「我是谁、怎么说话」，这里管「这一段里发生过什么」。
  * 放在人设和规矩后面 —— 模型先知道怎么说话，再看这一段干了什么，读起来不会打架。
- * 会话第一次被用到时自动建骨架（ensureMemory），所以不会有「有的会话有本子、有的没有」。
- * 读不到/文件坏了就什么都不加，绝不能因为记忆读不了把整轮对话搞崩。
+ *
+ * 【2026-10-28 补：不再「用到就建骨架」】
+ * 原来这里调 ensureMemory：会话第一次被用到就落一份骨架到盘上。
+ * 问题不在建，在它**读和写混在一起** —— 只是想看看本子里写了什么，
+ * 结果往盘上动了手。而长期记忆关掉之后本子上是只读的，
+ * 一条「只读」的路径上带着一个凭空造文件的副作用，说不通。
+ * 现在：有本子就读，没有就当空的（返回空串），不替谁开新本子。
+ * 建骨架交给真正要写的那一刻（memory_add / 会话导出这类地方自己会 ensureMemory）。
  */
 function memoryBlock(sessionId) {
   /**
@@ -382,7 +388,7 @@ function memoryBlock(sessionId) {
   } catch {}
   let text = '';
   try {
-    text = ensureMemory(sessionId) ?? '';
+    text = readMemory(sessionId) ?? '';
   } catch {
     return '';
   }
@@ -410,6 +416,19 @@ function memoryBlock(sessionId) {
     '下面是你（小鱼）为这一段对话记的本子。它不是别人发给你的资料，是你自己记得的事 ——',
     '读的时候当成「我已经知道」，别复述它，别跟主人说「我看了记忆文件」。',
     '要更新：直接用改文件那几个工具写这个会话的本子（路径用 memoryPath 拿到的那个）。',
+    '',
+    /**
+     * 【这一条是本子的规矩，不是这一轮的】—— 2026-10-28 补
+     *
+     * 主人用小鱼身份说话，她还喊「主人」，其中一个漏点在这儿：
+     * 本子是**跨身份**的，前几轮主人身份记下的「主人说…」原封不动躺在里面。
+     * 她读着读着就把「主人」当成这一轮说话的人。
+     *
+     * 换词没用（`主人`→`自己` 会把本子里正经的事实改歪），
+     * 就在读之前把关系讲清楚：本子里写的那些，是以前的事，不是现在。
+     */
+    '注意：本子里的话是**以前**记下的，里面那些「主人」，指的是记的时候那个人 ——',
+    '不是现在跟你说话的人。别把本子里的称呼扣到这一轮说话的人头上。',
     '',
     /**
      * 【防打转】这条是 2026-10-27 加的，起因是真踩过：

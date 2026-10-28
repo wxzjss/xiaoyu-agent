@@ -6,7 +6,10 @@ import { join } from 'node:path';
 import { chat } from './llm.mjs';
 import { config } from './config.mjs';
 import { effectiveContextLimit } from './settings.mjs';
-// 专业模式：压的时候不做摘要，旧对话直接丢（见 pure.mjs 文件头的理由）。
+// 【2026-10-28 改】专业/快速模式不再有单独的压缩规则：到水位才压、压就写摘要、
+// 尾巴按 limit 的比例留 —— 跟人设模式一模一样（主人原话「改为正常的压缩规则」）。
+// 下面还有两处残留会问 pureModeOn()（哪几档走得通、条数太少不压），
+// 那两条是「门槛」不是「规则」，留着。
 import { pureModeOn } from './pure.mjs';
 // 自动档的「拿不准」地带交给小鲸判断（带冷却，不每轮花钱）
 import { autoRatioVerdict, contextWindowOf } from './rates.mjs';
@@ -20,10 +23,10 @@ const SUMMARY_FACT_LINE = /\d|[\\/][\w.-]+|`[\w.]+`|[\w-]+\.(mjs|js|json|md|html
 const SUMMARY_ADVISOR = /(建议|要不要我|如果这是|如果你需要|请提供|需要你确认|需要确认|这看起来像|这串消息|你这段对话|我无法|我不能|有个明显问题|不一致|不是一回事|套模板|空转|困在|回放|测试桩|到底|我检查了|我发现|总结来说|下一步方案|只输出|四行标签|不许有|不合格|纠正|现在开始输出)/;
 
 /**
- * 专业模式压完之后，原样留住的尾部 token 预算。
+ * 【2026-10-28：这个常量已经不用了，留着只为一行注释有处可指】
  *
- * 不是「越多越好」：专业模式的用处是干活，历史只要够接着做下去就行。
- * 20000 大约相当于最近十来轮正常对话，长任务（边跑工具边改代码）也够接力。
+ * 原来是「专业模式压完留两万」，现在专业/快速模式跟人设模式同一套预算
+ * （见 resolveKeepTokens），两万这个数不再参与任何计算。
  */
 const PURE_KEEP_TOKENS = 20000;
 
@@ -378,8 +381,15 @@ export async function compressHistory({
    * 触发线。
    *
    * 人设模式：涨到水位才动手（不额外花钱）。
-   * 专业模式：**每轮都压**，不管现在多少 —— 它存在的意义就是「把上下文压到最小」，
-   *   不是「到线了才压」。界面上那个「历史涨到多少才压」对它不适用。
+   * 【2026-10-28 改：专业/快速模式不再「每轮都压、压完不留摘要」】
+   * 主人原话：「还有专业模式与快速模式的压缩规则改为正常的压缩规则」。
+   *
+   * 原来这两档是特殊待遇：不看水位每轮都压、压的时候不做摘要直接把旧对话丢掉、
+   * 只留两万 token 的尾巴。当时的理由写得很足（专业模式就是不想被往事牵着走）。
+   * 但代价是两个说不出口的毛病：
+   *   · 每轮压一次 = 每轮白花一次摘要/裁剪，长任务里光压就压掉几十块；
+   *   · 旧对话直接丢 = 丢的东西找不回来，主人回头翻记录一片空白。
+   * 现在跟人设模式走同一套：到水位才压、压就写摘要、按 limit 的比例留尾巴。
    */
   const pureNow = pureModeOn();
   /**
@@ -409,15 +419,16 @@ export async function compressHistory({
   let targetAfter = 0;
   if (pureNow) {
     /**
-     * 专业模式「每轮都压」——但历史本身还没堆起来时压了纯亏。
+     * 【2026-10-28 改：跟人设模式同一个触发线】
      *
-     * 触发线取 PURE_KEEP_TOKENS 的一半：压完只留一段接力棒（2 万），
-     * 那历史还没到 4 万之前，压一次省不了多少，却要多花一次摘要调用。
-     * 更要紧的是：刚开始聊（3~10 条）就压，等于开局先失忆一次。
+     * 原来这里是 `trigger = PURE_KEEP_TOKENS / 2`（两万就压），
+     * 后来改成了「每轮都压」。两种写法的共同点是：都跟主人填的上下文上限无关，
+     * 都跟「历史到底涨到多高了」无关 —— 那就不叫压缩策略，叫定时清空。
      *
-     * 所以这里给一条**下限**，不是取消「每轮都压」：超过它之后仍然每轮压。
+     * 现在按主人填的那个 limit 走：显式填了数字就「到多少压多少」，
+     * 没填（自动档）就走下面自动档那条比例判断。
      */
-    trigger = Math.floor(PURE_KEEP_TOKENS / 2);
+    trigger = Math.floor(cap);
     judgeLine = trigger;
   } else if (Math.abs(cap - Math.floor(contextWindowOf(model) * 0.7)) <= 1) {
     // 自动档：按比例判断
@@ -463,8 +474,7 @@ export async function compressHistory({
       compressed: false, before, after: before, limit: cap, trigger,
       reason: 'too-few-messages(' + messages.length + ')',
     };
-  }
-  if (before <= trigger) {
+  }  if (before <= trigger) {
     if (process.env.COMPRESS_DEBUG) {
       console.log('[compress] 不到线：before=' + before + ' trigger=' + trigger + ' cap=' + cap + ' 条数=' + messages.length);
     }
@@ -514,18 +524,13 @@ export async function compressHistory({
   const hardTail = Number.isFinite(cap) && cap > 0 && headTokens > cap * 0.9;
   const budget = Math.max(1, Math.min(cap, Number.isFinite(cap) ? cap : 0) - headTokens);
   /**
-   * 专业模式的尾部预算另算，不走「limit 的几成」那一套。
+   * 尾巴预算：专业/快速模式**不再另算**，跟人设模式同一套（2026-10-28）。
    *
-   * 专业模式是干活用的：历史全丢，只留最近几轮当接力棒，
-   * 不然一轮轮攒下来，token 又全花在复述旧对话上了。
-   * 上限两万，够长任务接着往下做，又不会把上下文撑起来。
-   *
-   * 注意这里**不能**走 resolveKeepTokens：它有「至少 CONTEXT_KEEP_TOKENS（默认 8000）
-   * 或 limit 的一半」的下限，套到专业模式上会被抬到 64000，再被 budget 一夹就成 0，
-   * 结果是历史全删、一句不剩 —— 实测真的压成 6 token，模型直接失忆。
-   * 所以直接取「两万」和「预算」里小的那个，并且至少留一条。
+   * 原来这两档写死两万：历史全丢，只留最近几轮当接力棒。
+   * 主人要求「改成正常的压缩规则」之后，这里跟着走 resolveKeepTokens ——
+   * 主人填 64000 就留一大段，填 8000 才留一点点，跟人设模式一模一样。
    */
-  const pureKeep = pureNow ? Math.max(1, Math.min(PURE_KEEP_TOKENS, budget)) : null;
+  void PURE_KEEP_TOKENS;
 
   /**
    * 人设模式下的尾巴预算，按顺序让步：
@@ -542,9 +547,7 @@ export async function compressHistory({
   // cap 自己比下限还窄时，以 cap 的 40% 为限（总得给摘要和头部留点位置）
   const floorKeep = Math.min(CONTEXT_KEEP_FLOOR, Math.max(1, Math.floor(cap * 0.4)));
   const wantWithFloor = Math.max(wantKeep, floorKeep);
-  const keepTarget = pureNow
-    ? pureKeep
-    : clampKeep(wantWithFloor, Math.max(1, budget));
+  const keepTarget = clampKeep(wantWithFloor, Math.max(1, budget));
 
 
   // 注意是 let：下面那段「尾巴不能只剩 4 条」的兜底会把它往前挪（窄窗口必走这条路）
@@ -648,15 +651,21 @@ export async function compressHistory({
 
   let summaryText = '';
   let error;
-  // 专业模式：不做摘要，直接把旧对话丢掉。
-  //
-  // 为什么：主人开专业模式就是不想让模型被前面那一大堆设定和往事牵着走，
-  // 留一句「早期对话摘要」等于又塞了一坨上下文进去。干脆不生成、不留。
+  /**
+   * 【2026-10-28 改：专业/快速模式也做摘要了】
+   *
+   * 原来这里写着「专业模式不做摘要，直接把旧对话丢掉」，理由是
+   * 「主人开专业模式就是不想被往事牵着走」。
+   *
+   * 主人现在要求换成正常压缩规则，这条理由就站不住了：
+   * 丢掉的原文找不回来，主人回头翻记录一片空白 —— 摘要只要两三千 token，
+   * 换来的是「这一段干过什么」还留着，比省那点钱划算。
+   *
+   * 注意下面 `pure` 这个变量还留着：它现在只表示「这一轮是专业/快速模式」，
+   * 不再决定「压不压摘要」。历史里那几条注释写的是旧口径，改的时候已经同步过。
+   */
   const pure = pureNow;
-  if (pure) {
-    summaryText = '';
-    error = undefined;
-  }
+  void pure;
   /**
    * 摘要请求的超时与中断。
    *
@@ -694,7 +703,7 @@ export async function compressHistory({
     }
   };
 
-  if (!pure) {
+  {
     // 第一次：完整输入
     try {
       summaryText = await runSummary(renderForSummary(old), SUMMARY_TIMEOUT_MS);
@@ -883,7 +892,7 @@ function cleanSummary(text) {
   return s || '（这段早期对话没有压出可用的事实，原文已折叠）';
 }
 
-  const makeSummary = () => (pure ? null : {
+  const makeSummary = () => ({
     role: 'user',
     content:
       '（下面是程序自动生成的「早期对话摘要」，不是主人说的话。'

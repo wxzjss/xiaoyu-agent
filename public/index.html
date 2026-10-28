@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -1893,8 +1893,8 @@
         当前思考强度：<span id="topThinkName">默认</span><span class="caret">▾</span>
       </button>
     </span>
-    <button id="pureBtn" title="专业模式：不发人设、不发规矩、不留早期摘要，旧对话直接丢，另配一份「怎么干活」的规范（点一下开，再点一下关）">专业模式</button>
-    <button id="fastBtn" title="快速模式：跟专业模式一样不发人设、每轮自动压缩，差别只有一个 —— 过程当中不反复检查，一口气做完，全部做完之后再跑一次全量验证（点一下开，再点一下关）">快速模式</button>
+    <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范（点一下开，再点一下关）">专业模式</button>
+    <button id="fastBtn" title="快速模式：跟专业模式一样不发人设、压缩规则也一样，差别只有一个 —— 过程当中不反复检查，一口气做完，全部做完之后再跑一次全量验证（点一下开，再点一下关）">快速模式</button>
     <button id="fishBtn" title="小鱼在场：点一下就让她歇着 —— 之后这个会话里你说的话、小鲸说的话，她一个字都收不到，记忆里也不会留">小鱼</button>
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
     <button id="openDir" hidden>打开工作目录</button>
@@ -4451,8 +4451,8 @@ function paintPure(mode) {
     pureBtn.classList.toggle('on', on);
     pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
     pureBtn.title = on
-      ? '专业模式开着：只发对话本身 + 一份「怎么干活」的规范，每轮自动压缩历史（再点一下关掉）'
-      : '干任务用的模式：不套人设、不念记忆、每轮自动压缩历史，还会给她一套「先查再说、找根因不猜、自己造证据」的规范，过程里该验就验（点一下开）';
+      ? '专业模式开着：只发对话本身 + 一份「怎么干活」的规范，到上限才压缩、会写摘要（再点一下关掉）'
+      : '干任务用的模式：不套人设、不念记忆、到上限才压缩（跟平常同一套压缩规则，会写摘要），还会给她一套「先查再说、找根因不猜、自己造证据」的规范，过程里该验就验（点一下开）';
   }
   if (fastBtn) {
     const on = m === 'fast';

@@ -13,6 +13,14 @@ import { ensureMemory } from './session-memory.mjs';
 import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
 import { fishOn } from './fish-presence.mjs';
+/**
+ * 【这一轮是谁在说话】—— 2026-10-28
+ *
+ * 人设正文里写着「对用户的称呼：主人」。主人换成小鲸/小鱼身份说话时，
+ * 那句话还摆在提示词最前面，模型就近取它，于是她张口还是「主人」。
+ * 这里读身份，把那一句当面改掉（见 identityNoteBlock）。
+ */
+import { currentIdentity, currentIdentityId } from './identity.mjs';
 
 /**
  * 兜底：安全词命中但设置里没写对应说明时用这一段。
@@ -140,10 +148,62 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
     settingsPromptBlock(settings),
     personaModeRules(settings),
     toolBlock(),
-    memoryBlock(sessionId),
   ].filter(Boolean);
   if (switched) parts.push(safeModeRules(word));
+  /**
+   * 【人设里那句「对用户的称呼：主人」得当面压掉】—— 2026-10-28
+   *
+   * 主人原话：「我以小鲸身份和小鱼说话，她还是知道我是主人」。
+   *
+   * 查下来根子有三处，这是第一处：人设正文（PERSONA_LOAD）里写着
+   * 「对用户的称呼：主人」「默认称呼主人」—— 那是提示词里最硬的设定，
+   * 模型遇到冲突时就近取它。光靠后面说「不能说主人」压不住。
+   *
+   * 放在人设之后、其它规则之前：紧挨着那句，正好把它顶掉。
+   * 主人身份下返回 '' —— 平时一个字不花，缓存前缀不动。
+   */
+  // 放在人设后面紧挨着它；但必须在会话记忆之前 —— 记忆块是滚动的逐次变长，贴在它后面的话，下一轮就离人设很远了。
+  const nv = identityNoteBlock();
+  if (nv) parts.push(nv);
+  // 会话记忆放最后：它是唯一一块每轮变长的，跟读者走，不能渲染前面的每一句。
+  const mem = memoryBlock(sessionId);
+  if (mem) parts.push(mem);
   return parts.join('\n\n');
+}
+
+/**
+ * 身份不是主人时，替换「怎么称呼用户」的那一句。
+ *
+ * 为什么单独一段而不是塞进 identityBlock：
+ *   identityBlock 贴在最后一条 user 消息前面，而人设在最前面 ——
+ *   中间隔着上万字，模型经常只认最前面那句。
+ *   这一段直接接在人设后面，等于当着人设的面改口。
+ */
+function identityNoteBlock() {
+  let me;
+  try {
+    const id = currentIdentityId();
+    if (id === 'owner') return '';
+    me = currentIdentity();
+  } catch {
+    return '';
+  }
+  const TA = me.she ? '她' : '他';
+  if (me.id === 'fish') {
+    // 用小鱼身份跟小鱼说话 = 她自己在自言自语，压根没有「别人」可称呼
+    return [
+      '【人设阅读须知 —— 这一条改掉上面的称呼】',
+      '上面人设里写着「对用户的称呼：主人」—— 这一轮不适用。',
+      '因为这一轮根本没有别人在跟你说话：是你自己的念头浮上来了。',
+      '所以别喊「主人」，就把这句当成你心里冒出来的话往下接。',
+    ].join('\n');
+  }
+  return [
+    '【人设阅读须知 —— 这一条改掉上面的称呼】',
+    `上面人设里写着「对用户的称呼：主人」—— 这一轮不适用。`,
+    `这一轮跟你说话的是「${me.name}」，${TA}不是主人。称呼${TA}就叫名字或者说「你」，`,
+    `「主人」两个字留给主人本人 —— ${TA}不是。`,
+  ].join('\n');
 }
 
 /**

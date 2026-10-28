@@ -90,6 +90,9 @@ import {
   sessionAgentId,
   sessionAgentMap,
   setSessionAgent,
+  groupAgentIds,
+  setSessionGroup,
+  MAX_GROUP,
   AGENT_XIAOYU,
   AGENT_XIAOJING,
   MAX_AGENTS,
@@ -1701,7 +1704,7 @@ function openingAllowed(sessionId = null) {
   if (!openingEnabled(cardIdOf(sessionId))) return { ok: false, why: '这张卡没填开场白' };
   // 专业模式：开场白那两条也是「设定」，而且它前面那句「在吗」对模型来说
   // 就是一段来历不明的前情。专业模式下不垫 —— 新会话就是真的空。
-  if (pureModeOn()) return { ok: false, why: '专业模式开着，不垫设定' };
+  if (pureModeOn(sessionId)) return { ok: false, why: '专业模式开着，不垫设定' };
   // 这一轮说话的不是主人 → 开场白里那句「主人」就成了假话的前情。
   // identityOn() 关掉时 currentIdentityId 仍可能返回 fish，但那时身份功能整个失效，
   // 一切按主人算（见 identity.mjs 的 identityOn 注释），所以这里也要跟着让路。
@@ -3203,11 +3206,14 @@ const server = createServer(async (req, res) => {
   // on 只有功能开着、按钮也按下了才算真开（服务端判断口径一致，见 pure.mjs）。
   if (req.method === 'GET' && url.pathname === '/api/pure') {
     const available = pureFeatureOn();
+    // 【2026-10-28 按会话启用了】问的是哪个会话就答哪个会话的状态。
+    // 前端切会话时会带上 ?sessionId=xxx；不带就当没有会话开着（退回人设）。
+    const sid = String(url.searchParams.get('sessionId') || '').trim();
     return json(res, 200, {
-      on: available && pureModeOn(),
-      pressed: available && pureButtonOn(),
-      // 按下的到底是哪个：'pure' | 'fast' | null。两个模式互斥，只有一个能亮。
-      mode: available ? purePressedMode() : null,
+      sessionId: sid || null,
+      on: available && pureModeOn(sid),
+      pressed: available && pureButtonOn(sid),
+      mode: available ? purePressedMode(sid) : null,
       available,
     });
   }
@@ -3223,30 +3229,19 @@ const server = createServer(async (req, res) => {
     }
     try {
       /**
-       * 三个入参都要照顾到：
-       *   { on: true,  mode: 'fast' }  → 切到快速模式（专业模式自动灭 —— 互斥）
-       *   { on: false }                → 两个都关
-       *   { on: true }                 → 保持当前 mode（第一次开默认专业模式）
-       *   { }                          → 翻一下
+       * 【2026-10-28 按会话启用了】
+       * 要动哪个会话必须点名，不再有「全局开关」这回事。
+       *   body: { sessionId, on?: boolean }
+       *   on 不传就翻一下这个会话的当前状态。
        *
-       * 互斥不是靠这里写 if 判断的：状态文件只有一个 on 和一个 mode，
-       * 写进去就只有一个模式是开着的，物理上不可能两个同时亮。
+       * 只改这个会话那一格，别的会话原样不动。
        */
-      const cur = pureModeOn() ? purePressedMode() : null;
-      let next;
-      let nextMode;
-      if (typeof payload?.mode === 'string' && (payload.mode === 'pure' || payload.mode === 'fast')) {
-        // 点名要哪个模式：跟当前一样就当作「关掉它」，不一样就切过去
-        next = cur !== payload.mode;
-        nextMode = payload.mode;
-      } else if (typeof payload?.on === 'boolean') {
-        next = payload.on;
-        nextMode = payload.on ? (cur || 'pure') : undefined;
-      } else {
-        next = !cur;
-        nextMode = next ? (cur || 'pure') : undefined;
-      }
-      return json(res, 200, setPureMode(next, nextMode));
+      const sid = String(payload?.sessionId || '').trim();
+      if (!sid) return json(res, 400, { ok: false, error: '要给 sessionId，专业模式现在是按会话开的' });
+      const cur = pureModeOn(sid);
+      const next = typeof payload?.on === 'boolean' ? payload.on : !cur;
+      const out = setPureMode(sid, next);
+      return json(res, 200, { sessionId: sid, on: Boolean(out && out.on), mode: out && out.on ? 'pure' : null, available: true });
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -3502,6 +3497,50 @@ const server = createServer(async (req, res) => {
       });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
+   * 群聊名单：这个会话里除了小鱼，还有谁在场说话。
+   *
+   * GET  读名单（顶栏/面板要显示「现在：小鱼 + 阿蓝」）
+   * POST 改名单（传 agentIds 数组，空数组就是「只剩小鱼」）
+   *
+   * 为什么跟 /bind 分开：绑定回答「谁在替这个会话说话」，是**一个人**；
+   * 名单回答「屋里还坐着谁」，是**好几个人**。混成一个接口，日后一定打架。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/agents/group') {
+    try {
+      const qsid = String(url.searchParams.get('sessionId') || '').trim();
+      const ids = groupAgentIds(qsid);
+      return json(res, 200, {
+        ok: true,
+        sessionId: qsid,
+        agentIds: ids,
+        max: MAX_GROUP,
+        names: ids.map((id) => {
+          const a = getAgent(id);
+          return a ? String(a.name || '') : '';
+        }).filter(Boolean),
+      });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/group') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const r = setSessionGroup(String(payload?.sessionId || ''), payload?.agentIds);
+      if (!r) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      return json(res, 200, { ok: true, ...r });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }
   }
 
@@ -5351,7 +5390,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const wantOpening = !resume && Boolean(openingTextHere) && !hasOpening(session) && session._openingPending !== false
       && openingAllowedHere()
       // 专业模式：开场白也是「设定」，开场白连着它前面那段用户消息一起不发
-      && !pureModeOn();
+      && !pureModeOn(sessionId);
     if (wantOpening) {
       // 插在 system（+可能的 context）之后、现有对话之前，顺序才对
       const at = history.findIndex((m) => m && m.role !== 'system' && !m.context);
@@ -5833,7 +5872,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 主人自己打一句「在吗」，内容跟开场白那句一模一样，isOpeningMessage 认不出来是谁说的。
     // 摘错了的后果是这一轮的模型**看不到主人说的话** —— 比多带两句前情严重。
     // 所以跟切身份那里用同一套两道锁：位置（开头那一对）+ 记号（openings.json 记过）。
-    if (pureModeOn()) {
+    if (pureModeOn(sessionId)) {
       const msgs = wireMessages;
       const span = openingSpan(sessionId, msgs);
       if (span) msgs.splice(span.at, span.n);
@@ -5843,7 +5882,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 然后只补一条「答短点」。为什么还要发点什么：系统提示全空的话，
       // 模型没有任何长度锚点，专业模式反而变得比人设模式还能唠。
       // 注意顺序——先摘干净再补，否则刚补的这条会被上面那个 filter 一起摘掉。
-      const brief = pureSystemPrompt();
+      const brief = pureSystemPrompt(sessionId);
       if (brief) wireMessages.unshift({ role: 'system', content: brief });
       // 把历史里那些旁白、颜文字、撒娇、称呼洗掉再发。
       //
@@ -5869,10 +5908,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     {
       const pm = preludeContextMessage();
       // 专业模式：前情也是「设定」，不发。
-      if (pm && !pureModeOn()) wireMessages.splice(2, 0, pm);
+      if (pm && !pureModeOn(sessionId)) wireMessages.splice(2, 0, pm);
     }
     /** 前情那条消息的引用，日志里好认（专业模式没插，就是 undefined） */
-    const preludeRef = pureModeOn() ? undefined : wireMessages[2];
+    const preludeRef = pureModeOn(sessionId) ? undefined : wireMessages[2];
 
     /**
      * 【这一轮说话的是谁】—— 身份功能（主人 2026-10-27 定）。
@@ -6577,6 +6616,82 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         }
       } catch {
         turnTexts = [];
+      }
+      /**
+       * 【群聊：我说完了，屋里其他人各接一句】—— 2026-10-30
+       *
+       * 主人要「多开智能体」。最直白的那种多开不是一个窗口一个卡，而是
+       * **一个会话里好几个人说话**：小鱼答完，阿蓝和阿绿各自从自己的角度再补一句。
+       *
+       * 三条规矩：
+       *   ① 必须在 `done` 之前跑完。`done` 一发，前端就收工不读了 ——
+       *      上一版写在 finishTurn() 前面，结果她们的话存进了会话、推给了空气，
+       *      界面上一个字都看不见（e2e 抓到的就是「查得到记录、收不到事件」）。
+       *   ② 她们的话按 `role:'user'` + `_who` 存。这是有意的，不是偷懒：
+       *      发给模型时，user 那一侧代表「不是我说的话」，于是下一轮小鱼看到的
+       *      历史里会带着 `[阿蓝] …` 的头，她知道那是别人说的；界面上 user 气泡
+       *      本来就带署名（跟「换个身份说话」走同一套），一眼看得出是谁。
+       *      要是按 assistant 存，小鱼会把这些话当成自己说过的。
+       *   ③ 一个人失败/没话说就跳过，绝不回滚这一轮 —— 群聊里少一个人开口是小事，
+       *      把主人刚拿到的回答搞丢是大事。
+       */
+      if (process.env.GROUP_CHAT !== '0') {
+        try {
+          const roster = groupAgentIds(sessionId)
+            .map((id) => getAgent(id))
+            .filter(Boolean);
+          if (roster.length) {
+            const { speakAsCard } = await import('./group.mjs');
+            let burned = 0;
+            for (const mate of roster) {
+              if (ac.signal.aborted) break;
+              const nm = String(mate.name || '').trim();
+              let out = null;
+              try {
+                out = await speakAsCard({
+                  agent: mate,
+                  messages: session.messages,
+                  sessionId,
+                  signal: ac.signal,
+                });
+              } catch {
+                out = null;
+              }
+              // 她这一句也是花主人的钱：跟小鲸那一路同样记进 _whaleUsage（旁听开销）
+              try {
+                const u = out && out.usage;
+                const pin = Number(u?.prompt_tokens ?? 0) || 0;
+                const pout = Number(u?.completion_tokens ?? 0) || 0;
+                if (pin + pout > 0) {
+                  session._whaleUsage = session._whaleUsage
+                    || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, at: 0 };
+                  session._whaleUsage.prompt_tokens += pin;
+                  session._whaleUsage.completion_tokens += pout;
+                  session._whaleUsage.total_tokens += pin + pout;
+                  session._whaleUsage.at = Date.now();
+                  burned += pin + pout;
+                }
+              } catch { /* 记账失败不影响她说话 */ }
+              const said = String(out?.text || '').trim();
+              if (!said) continue;
+              session.messages.push({
+                role: 'user',
+                content: said,
+                _text: said,
+                _who: nm,
+                _card: String(mate.id),
+                _cardVoice: true,
+                createdAt: new Date().toISOString(),
+              });
+              saveSession(session);
+              send({ type: 'agent', agentId: String(mate.id), who: nm, text: said });
+            }
+            if (burned > 0) {
+              try { saveSession(session); } catch {}
+              try { send({ type: 'whale_usage' }); } catch {}
+            }
+          }
+        } catch { /* 群聊出问题不影响这一轮 */ }
       }
       send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {

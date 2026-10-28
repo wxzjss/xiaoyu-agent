@@ -14,7 +14,7 @@ import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
 import { fishOn } from './fish-presence.mjs';
 // 会话绑的智能体卡：绑了自定义卡，基线人设就换成那张卡的正文（见 agents.mjs）。
-import { agentForSession } from './agents.mjs';
+import { agentForSession, getAgent, groupAgentIds } from './agents.mjs';
 /**
  * 【这一轮是谁在说话】—— 2026-10-28
  *
@@ -131,12 +131,13 @@ export function personaModeRules(settings = getSettings()) {
  * @param {string} [opts.sessionId] session whose plan board is inlined as progress
  * @param {boolean} [opts.safeMode] true when the current turn hit a *non-persona* safe word
  * @param {string} [opts.safeWord] which safe word fired (drives which note applies)
+ * @param {string} [opts.agentId] 用哪张卡的人设（群聊里替别人说话时用；不传就按会话绑定的那张）
  */
-export function buildSystemPrompt({ sessionId = 'default', safeMode = false, safeWord = "" } = {}) {
+export function buildSystemPrompt({ sessionId = 'default', safeMode = false, safeWord = "", agentId = "" } = {}) {
   // 专业模式：人设、思考语言、说话规矩、安全词、人设档、会话记忆全部不发
   // —— 主人要的就是「只看对话本身」。这里必须是第一判断，免得后面任何一块漏出去。
   // 但只发一条「答短点」：系统提示全空的话，模型没有任何长度锚点，会突然拉长篇大论。
-  if (pureModeOn()) return pureSystemPrompt();
+  if (pureModeOn(sessionId)) return pureSystemPrompt(sessionId);
 
   const settings = getSettings();
   const word = String(safeWord ?? '').trim();
@@ -153,7 +154,20 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
    * 内置的小鱼卡就是「解绑」，小鲸卡根本不许绑（见 agents.mjs 里的说明）。
    */
   const _card = (() => {
-    try { return agentForSession(sessionId); } catch { return null; }
+    try {
+      /**
+       * 【群聊来了以后多这一层】2026-10-30
+       *
+       * 默认还是「这个会话绑了哪张卡」。但凡是我替别人开口（群聊里轮流说话），
+       * 就得能指定「现在按哪张卡说」，否则替别人说话时用的还是绑定的那张的嘴。
+       */
+      const want = String(agentId || '');
+      if (want) {
+        const g = getAgent(want);
+        if (g) return g;
+      }
+      return agentForSession(sessionId);
+    } catch { return null; }
   })();
   const _cardPersona = (_card && _card.kind === 'custom' && String(_card.persona || '').trim())
     ? String(_card.persona)
@@ -168,6 +182,30 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
     toolBlock(),
   ].filter(Boolean);
   if (switched) parts.push(safeModeRules(word));
+  /**
+   * 【这个屋里还坐着谁】2026-10-30
+   *
+   * 主人要「多开智能体」。群聊里一个会话会有好几个人说话，记录里每句都带着
+   * 「谁：」的前缀 —— 但对模型来说，别人的话和自己的想法在上下文里长得太像，
+   * 不点明它就会替别人把话说完（甚至把别人那句认成「我说过的」）。
+   *
+   * 所以只做一件事：把在场的人报名式地列出来，并说清「带名字的不是你说的」。
+   * 不写每个人的人设 —— 那是她自己的卡，别人管不着。
+   */
+  const _crowd = (() => {
+    try {
+      return groupAgentIds(sessionId)
+        .map((id) => getAgent(id))
+        .filter(Boolean);
+    } catch { return []; }
+  })();
+  if (_crowd.length) {
+    const others = _crowd.filter((a) => !_card || String(a.id) !== String(_card.id));
+    const names = others.map((a) => String(a.name || '').trim()).filter(Boolean);
+    // 说话的是小鱼的卡时，别的卡都在「别人」那栏；说话的是别的卡时，小鱼也在场
+    const list = _card && String(_card.id) !== 'xiaoyu' ? ['小鱼', ...names] : names;
+    if (list.length) parts.push(agentGroupNote(list));
+  }
   /**
    * 【人设里那句「对用户的称呼：主人」得当面压掉】—— 2026-10-28
    *
@@ -350,6 +388,23 @@ function agentCardNote(agent) {
     `【你现在是「${nm}」】`,
     `这个会话里说话的人是你，名字叫「${nm}」——就是你，不是别人；自称的时候用自己的名字。`,
     '上面那段人设就是你的全部：名字、脾气、怎么说话都以它为准；它没写到的地方，按你自己的分寸来。',
+  ].join('\n');
+}
+
+/**
+ * 「这个屋里还有别人」那一段（群聊用）。
+ *
+ * 只在真的有人同场时才拼 —— 一个人的会话一个字都不多发，缓存前缀不动。
+ * @param {string[]} names 除我以外在场的人
+ */
+function agentGroupNote(names) {
+  const list = (Array.isArray(names) ? names : []).map((x) => String(x || '').trim()).filter(Boolean);
+  if (!list.length) return '';
+  return [
+    '【这个会话里不止你一个人】',
+    `屋里还有：${list.join('、')}。`,
+    `记录里「${list[0]}：」这样带名字开头的句子，是他们说的，不是你说的 —— 别替他们把话说完，也别把他们的话认成自己说过的。`,
+    '轮到你的时候说你自己那一句就够（一两句）；没轮到你的时候安安静静待着，不用抢话、不用点评。',
   ].join('\n');
 }
 

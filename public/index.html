@@ -11813,8 +11813,6 @@ async function createSessionEx(opts = {}) {
   }
   sessionId = r.session.id;
   sessionTitle = r.session.title;
-  // 见上面 `_unreadGuard`：开场白画出来但不许算「新到」，所以先记长度
-  try { _unreadGuard = Array.isArray(r.session.turns) ? r.session.turns.length : 0; } catch { _unreadGuard = 0; }
   localStorage.setItem(STORE_KEY, sessionId);
   paintSessNow();
   paintMemoryFlag(r.memory); // 新会话是空本子，刷新顶栏

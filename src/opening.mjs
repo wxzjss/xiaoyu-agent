@@ -65,19 +65,10 @@ const OPENING_FILE = () => join(config.dataDir, '.state', 'opening.json');
  */
 const CARD_FILE = () => join(config.dataDir, '.state', 'agent-openings.json');
 
-/**
- * 【2026-10-29 修 · 这张表被两种键混着写过，读的时候必须认会话 id】
- *
- * `agent-openings.json` 里现在躺着 577 个键，形如 `smvkyzlei9kg4` —— 那是**会话 id**，
- * 是上一版把 `setCardOpening` 挂到 `/api/opening`（按会话改开场白的老接口）时写进去的。
- * 卡片键只有 `xiaoyu` / `xiaojing` / `ag_xxx` 这几种，会话 id 一律是 `sm` 打头。
- *
- * 混着没关系（取值时只按卡片 id 去查），但有两条必须挡住：
- *   1. 会话键不许当成某张卡的开场白 —— `isOpeningMessage` 会拿全表去比对，
- *      会话键混进来只会白比一轮；
- *   2. 收藏时别把会话键一起搬来搬去。
- * 所以出口统一过滤一遍：只留「像卡片 id」的键。
- */
+// 【2026-10-31 修 · 这张表被两种键混着写过，读的时候必须认会话 id】
+// 表里曾经躺着 577 个形如 smvkyzlei9kg4 的键 —— 那是会话 id，是上一版把 setCardOpening
+// 挂到 /api/opening（按会话改开场白的老接口）时写进去的。卡片键只有 xiaoyu / xiaojing / ag_xxx。
+// 混着没关系（取值只按卡片 id 查），但会话键不能当成某张卡的开场白，所以出口统一滤一遍。
 const looksLikeCardId = (k) => typeof k === 'string' && k.length > 0 && k.length <= 64 && !/^sm[a-z0-9]{8,}$/i.test(k);
 
 function readCardMap() {
@@ -97,14 +88,15 @@ function readCardMap() {
 /** 这张卡的开场白。没记过的话小鱼用出厂那段，别的卡一律空着。 */
 export function cardOpening(agentId) {
   const id = String(agentId || '');
+  // 【2026-10-31 修 · 卡是唯一来源，不许再拿老文件顶】
+  // 原来「表里没记过 → 小鱼回落到老 .state/opening.json 的 assistant → 再不行出厂段」。
+  // 那条回落成了病根：功能页那个入口删了，可 opening.json 里那句老话还在盘上，
+  // 于是「功能页开场白删了效果还在」，卡里清空了也照样冒出来。
+  // 现在只认卡：表里有这个键（含空串=不开口）就用它；没这个键，小鱼用出厂段，别的卡空着。
   const map = readCardMap();
   if (Object.prototype.hasOwnProperty.call(map, id)) return map[id];
   if (id !== 'xiaoyu') return '';
-  // 小鱼的默认就是「原来功能页里她自己那段」。主人以前在功能页改过的话
-  // （老文件 .state/opening.json 里的 assistant），搬过来继续当她的默认，
-  // 别让她的开场白凭空变回出厂那几句。
-  const legacy = readOpeningPack().assistant;
-  return legacy || DEFAULT_OPENING_ASSISTANT_TEXT;
+  return DEFAULT_OPENING_ASSISTANT_TEXT;
 }
 
 /** 改这张卡的开场白。传空串 = 她以后不开口（不会回落到默认）。 */

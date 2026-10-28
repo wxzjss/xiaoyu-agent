@@ -154,9 +154,9 @@ import {
   seedOpeningMessages,
   finishOpening,
   openingEnabled,
-  openingTexts,
-  setOpeningTexts,
-  resetOpeningTexts,
+  // 2026-10-31：openingTexts / setOpeningTexts / resetOpeningTexts 不再 import ——
+  // 功能页那个「开场白」入口删了，按会话/全局改开场白的老 API 也一起撤了，
+  // 现在开场白只按智能体卡存（cardOpening / setCardOpening）。
   openingHeadIndexes,
   isOpeningMessage,
   openingSpan,

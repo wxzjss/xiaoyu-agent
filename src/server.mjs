@@ -87,6 +87,8 @@ import {
   addCustomIdentity,
   updateCustomIdentity,
   removeCustomIdentity,
+  editIdentity,
+  resetBuiltinIdentity,
   identityBlock,
   identityOn,
 } from './identity.mjs';
@@ -3100,11 +3102,26 @@ const server = createServer(async (req, res) => {
     } catch {
       return json(res, 400, { error: 'invalid JSON body' });
     }
-    if (!updateCustomIdentity(String(payload?.id || ''), {
+    // 2026-10-29：内置身份（主人/小鱼/小鲸）也允许编辑了 —— 主人原话
+    // 「切换身份页的内置身份信息可以编辑」。改的是 identity.json 里的补丁，出厂常量不动。
+    if (!editIdentity(String(payload?.id || ''), {
       name: payload?.name,
       desc: payload?.desc,
       address: payload?.address,
-    })) return json(res, 400, { error: '改不了：内置身份不许改，或者没这个身份' });
+      she: payload?.she,
+    })) return json(res, 400, { error: '改不了：没这个身份，或者名字空了' });
+    return json(res, 200, identityState());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/identity/reset') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    // 只对内建身份有意义：把主人改过的那份补丁删掉，回到出厂介绍/称呼。
+    resetBuiltinIdentity(String(payload?.id || ''));
     return json(res, 200, identityState());
   }
 

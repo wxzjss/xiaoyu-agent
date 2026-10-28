@@ -133,3 +133,48 @@ export function cleanReply(text, agent) {
   t = t.split('\n').filter((line) => !/^\s*#{1,6}\s+\S/.test(line)).join('\n');
   return t.trim();
 }
+
+/**
+ * 【谁该开口】挑出这一轮要说话的人。
+ *
+ * 主人原话：「让群聊别一直全员齐发 —— 点谁的名字才让谁接，某人这轮先别说」。
+ * 于是两条规矩，按顺序生效：
+ *
+ *   ① 谁被点了名（`@阿蓝 早上好`），就只让被点的人接 —— 点了名还全员齐发，
+ *      那这个功能等于没做。点小鱼而没点别人 = 这轮她们都不接。
+ *   ② 没点名时，跳过「安静」的卡（只在叫名字时才说话那类）。
+ *
+ * 为什么认 `@名字` 而不是「句子里出现名字」：后者太容易误伤 ——
+ * 「阿绿昨天说的那个办法」会把她拽出来重新答一遍，主人只是想引用一下。
+ *
+ * 名字里带空格/符号也照配（先长后短，免得「阿蓝」把「阿蓝二号」抢了）。
+ */
+export function pickSpeakers({ roster = [], userText = '', quietIds = [] } = {}) {
+  const mates = (Array.isArray(roster) ? roster : []).filter((a) => a && a.id);
+  if (!mates.length) return [];
+  const text = String(userText || '');
+  const quiet = new Set((Array.isArray(quietIds) ? quietIds : []).map((x) => String(x)));
+  const hits = parseMentions(text, mates);
+  if (hits.length) {
+    return mates.filter((a) => hits.includes(String(a.id)));
+  }
+  return mates.filter((a) => !quiet.has(String(a.id)));
+}
+
+/** 从这句话里认出被点了名的卡（返回 id 数组，可能为空） */
+export function parseMentions(text, roster = []) {
+  const arr = (Array.isArray(roster) ? roster : [])
+    .map((a) => ({ id: String(a?.id || ''), name: String(a?.name || '').trim() }))
+    .filter((a) => a.id && a.name);
+  if (!arr.length) return [];
+  // 长的名字先匹配，否则「阿蓝」会把「阿蓝二号」那一半抢走
+  arr.sort((a, b) => b.name.length - a.name.length);
+  const out = [];
+  for (const a of arr) {
+    const esc = a.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // @名字 / @ 名字 / ＠名字（全角）都算；后面不能紧跟文字，避免「@阿蓝二号」被当成「@阿蓝」
+    const re = new RegExp(`[@＠]\\s*${esc}(?![\\u4e00-\\u9fa5A-Za-z0-9_])`);
+    if (re.test(text) && !out.includes(a.id)) out.push(a.id);
+  }
+  return out;
+}

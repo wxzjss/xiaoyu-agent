@@ -169,7 +169,15 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
       return agentForSession(sessionId);
     } catch { return null; }
   })();
-  const _cardPersona = (_card && _card.kind === 'custom' && String(_card.persona || '').trim())
+  /**
+   * 2026-10-31【小鲸也是一张「有自己人设」的卡】
+   *
+   * 以前这里只认 kind === 'custom'，于是小鲸一旦当起群成员/替会话说话，
+   * 拿到的是小鱼那套人设 —— 名字叫小鲸，说话却是小鱼。主人当场指出来：
+   * 「我希望每个智能体都是像小鱼一样的独立个体」。
+   * 她自己那份人设（whale-profile，含出厂默认）现在照样顶上去。
+   */
+  const _cardPersona = (_card && (_card.kind === 'custom' || _card.kind === 'whale') && String(_card.persona || '').trim())
     ? String(_card.persona)
     : '';
   const parts = [

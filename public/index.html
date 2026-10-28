@@ -11813,6 +11813,8 @@ async function createSessionEx(opts = {}) {
   }
   sessionId = r.session.id;
   sessionTitle = r.session.title;
+  // 见上面 `_unreadGuard`：开场白画出来但不许算「新到」，所以先记长度
+  try { _unreadGuard = Array.isArray(r.session.turns) ? r.session.turns.length : 0; } catch { _unreadGuard = 0; }
   localStorage.setItem(STORE_KEY, sessionId);
   paintSessNow();
   paintMemoryFlag(r.memory); // 新会话是空本子，刷新顶栏
@@ -11836,6 +11838,24 @@ async function createSessionEx(opts = {}) {
   try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
   loadTopCfg(); // 新会话是默认档
   try { refreshWhoRail(); } catch { /* 忽略 */ }
+  // 【2026-10-29 · 新建的会话必须把开场白画出来】
+  // 服务端建会话时已经垫好了开场白（她的第一句），可这一路以前只把聊天区清空、
+  // 一条都不画 —— 主人看到的是空会话，还以为设置里填的开场白没生效
+  // （按一下刷新 / 切走再切回来就有了，因为那条路走 renderTurns）。
+  // 这里补一次重画：先要这个会话的完整历史，再交给 renderTurns。
+  // 失败只当没画，不许连累输入区。
+  try {
+    const rr = await fetchTimed('/api/sessions/select', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId }),
+    }).then((x) => x.json()).catch(() => null);
+    if (rr && rr.session && Array.isArray(rr.session.turns)) {
+      try { paintMemoryFlag(rr.memory); } catch {}
+      renderTurns(rr.session.turns);
+    }
+  } catch (err) {
+    console.warn('[createSessionEx] 开场白没画出来（不影响聊天）:', err && err.message ? err.message : err);
+  }
   log.innerHTML = '';
   // 【清空历史后扫残留光标】
   // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。

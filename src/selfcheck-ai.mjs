@@ -17,7 +17,7 @@
  *   3. 没配模型 / 没网 → 返回 skipped，绝不挡启动。
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { homedir, platform, release, cpus, totalmem } from 'node:os';
@@ -234,6 +234,54 @@ async function runProbe(name, rawArgs) {
 
 // ------------------------------------------------------------------ 现场快照
 
+/**
+ * 【本机服务实际在哪个端口】—— 2026-10-29
+ *
+ * `config.port` 只是「想用的那个」，不是「真在用的那个」：
+ * electron/main.cjs 先试 config.port，被占了就往后挪（8787 → 8788 → …），
+ * 最后把真正落在的端口写进用户数据目录的 port.txt。
+ *
+ * 于是 CLI 自检拿 config.port 去探，探到的是「8787 空着」，
+ * 就报「服务没在跑」——而主人屏幕上那个窗口好好地开着。
+ * 实测踩过一次：实际在 8788，自检 FAIL，主人以为程序坏了。
+ *
+ * 所以这里按「先问运行时、再问配置」的顺序收集候选端口。
+ */
+function localServicePorts() {
+  const cands = [];
+  const add = (n) => {
+    const v = Number(n);
+    if (Number.isFinite(v) && v > 0 && v < 65536 && !cands.includes(v)) cands.push(v);
+  };
+  add(process.env.PORT);
+  const portFiles = [join(dirname(config.dataDir), 'port.txt')];
+  if (process.env.APPDATA) portFiles.push(join(process.env.APPDATA, '小鱼Agent', 'port.txt'));
+  for (const f of portFiles) {
+    try {
+      add(readFileSync(f, 'utf8').trim());
+    } catch {}
+  }
+  add(config.port);
+  return cands;
+}
+
+/** 探一下本机端口有没有人在听（只连 TCP，几百毫秒） */
+function portOpen(port, timeoutMs = 600) {
+  return new Promise((resolve) => {
+    const sock = createConnection({ host: '127.0.0.1', port });
+    const done = (ok) => {
+      try {
+        sock.destroy();
+      } catch {}
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => done(true));
+    sock.once('timeout', () => done(false));
+    sock.once('error', () => done(false));
+  });
+}
+
 /** 纯本地读出来的现状，不调模型 */
 export async function snapshot() {
   const has = (p) => existsSync(join(ROOT, p));
@@ -281,6 +329,22 @@ export async function snapshot() {
       probeLine = `探不了（${String(e?.message ?? e)}）`;
     }
   }
+  /**
+   * 本地服务到底在不在跑 —— 自己在快照里探好，别让模型去猜端口。
+   * 探到的这行就是结论：模型照着写就行，不会再出现「明明开着却报没开」。
+   */
+  const servicePorts = localServicePorts();
+  let svcLine = '';
+  for (const p of servicePorts) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await portOpen(p)) {
+      svcLine = `本地服务：在跑（127.0.0.1:${p}）${p !== Number(config.port) ? `，注意不是配置里的 ${config.port} —— 桌面版遇到端口被占会自动往后挪` : ''}`;
+      break;
+    }
+  }
+  if (!svcLine) {
+    svcLine = `本地服务：没在跑（${servicePorts.join('、')} 都连不上）。桌面版没开，或者刚启动还没开始监听`;
+  }
   return [
     `项目目录：${ROOT}`,
     `node：${process.version}   平台：${platform()} ${release()}`,
@@ -305,7 +369,7 @@ export async function snapshot() {
     // 字符串看着完全正常，实际那个端口上没有服务，主人看到的却是「连接一直断」。
     `接口可达性：${probeLine}`,
     `规则文件 rules/rules.md：${rulesInfo}`,
-    `端口配置：${config.port}`,
+    svcLine,
     `单轮工具上限：${Number.isFinite(config.maxRounds) ? config.maxRounds : '不限'}`,
   ].join('\n');
 }
@@ -336,6 +400,7 @@ const SYSTEM = `你是这台机器上「小鱼Agent」项目的「自检员」�
 - 预算用完会立刻逼你给结论。到那一步你还没查完也得给，所以先查最要紧的；
 - **快照里已经写清楚的事实，不要再探针去验**。特别是：
   · 快照有「接口可达性：通（…ms）」这行，说明地址已经真探过了，**不要再 probe_port**；
+  · 快照有「本地服务：在跑（127.0.0.1:…）」这行，说明端口也已经真探过了，**同样不要再 probe_port**。桌面版遇到端口被占会自动往后挪，所以别拿配置里的端口去否定这行；
   · 快照有「当前模型 / key：有」这行，**不要再读 .env**；
   · 快照已经列了 src/ 和顶层文件清单，**不要再 probe_files 去看这些**；
 - 真正值得花探针的是快照里**没结论**的地方：比如某个文件明明该在却不在、某个目录该有却没有、进程数目对不上；

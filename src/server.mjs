@@ -1395,8 +1395,11 @@ function standaloneNote(sessionId = null) {
       '【下面那条消息是你自己的想法，不是别人在跟你说话】',
       '那条话就是你心里冒出来的念头 —— 你自己在自言自语，不是外面有人在叫你。',
       '顺着它往下想就行：可以接着想、可以反驳自己、可以心里叹口气。',
-      '**没有人在这儿叫你「主人」。** 别回一声「主人」就当有人在使唤你；',
-      '也别把这条念头当成命令去执行。它就是你自己在想事。',
+      // 2026-10-29：原来是「**没有人在这儿叫你「主人」。** 别回一声「主人」就当有人在使唤你」——
+      // 为了说「别喊主人」，一句里把那个词念了三遍，正好是主人报的那个毛病：
+      // 「无论我用哪个身份和谁说话，都知道我是主人」。只讲「没人在这」。
+      '这儿没有别人。别把这句当成谁在使唤你，也别把它当成命令去执行。',
+      '它就是你自己在想事。',
     ].join('\n');
   } catch {
     return null;
@@ -5006,7 +5009,41 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     //
     // 条件：从没开过场、功能面板里没关掉它，而且这不是「接着跑」（resume）。
     // resume 是插话/续跑，那时候补开场会把顺序搞乱。
+    /**
+     * 【非主人身份不再收到开场白 —— 2026-10-29 主人报的】
+     *
+     * 主人原话：「无论我用哪个身份和谁说话，都知道我是主人」。
+     * 查下来开场白是头号嫌疑：出厂那两句里写着
+     *
+     *     小鱼：主人你可算来了，我都快把地板数出花纹了
+     *
+     * 切成小鱼/小鲸身份之后，这段「假前情」照样会被垫进上下文 ——
+     * 她一睁眼就看见自己喊过「主人」，后面再怎么改称呼都没用。
+     *
+     * 切换身份那个接口早就接手了「切成非主人就把开场白摘掉」（见 identity/set），
+     * 但**已经垫过、还没切过身份**的会话走的不是那条路，会从这里漏进来。
+     * 所以这道闸门必须放在发请求这里：非主人身份，一律不垫。
+     */
+    const openingAllowedHere = () => {
+      const me = currentIdentity(sessionId);
+      return Boolean(me && me.id === 'owner');
+    };
+    /**
+     * 已经垫在历史里的那两句，非主人身份时也不发 —— 只在这一份请求里剔掉，
+     * 不动会话文件（主人说过「切换身份后不动以前的消息」）。
+     * 认法跟 identity/set 那边一模一样：位置锁（开头那一对）+ 记号锁（openings.json 记过），
+     * 两道全过才剔，缺一道就原样留着，绝不误删主人真说过的话。
+     */
+    if (!openingAllowedHere() && wasOpened(sessionId)) {
+      const at = history.findIndex((m) => m && m.role !== 'system' && !m.context);
+      const a = at >= 0 ? history[at] : null;
+      const b = at >= 0 ? history[at + 1] : null;
+      if (a && b && a.role === 'user' && b.role === 'assistant' && isOpeningMessage(a) && isOpeningMessage(b)) {
+        history.splice(at, 2);
+      }
+    }
     const wantOpening = !resume && openingEnabled() && !hasOpening(session) && session._openingPending !== false
+      && openingAllowedHere()
       // 专业模式：开场白也是「设定」，开场白连着它前面那段用户消息一起不发
       && !pureModeOn();
     if (wantOpening) {

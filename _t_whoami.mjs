@@ -67,6 +67,31 @@ for (const who of ['fish', 'whale', 'owner']) {
   }
 }
 
+/**
+ * 第二组：不许「认出来」。
+ *
+ * 主人原话：「无论我用哪个身份和谁说话，都知道我是主人」。
+ * 所以除了「主人」这两个字，还得查那些**替她把这层想通**的句子 ——
+ * 只要提示词里还写着「那是主人披的皮」「主人可以随时套上别的名字」，
+ * 她每一轮都会知道，改多少称呼都没用。
+ */
+console.log('\n=== 各身份 × 各说话人：有没有把「其实就是主人」替她想通 ===');
+const LEAK = /披的皮|披上|套上别的名字|换了名字|换了个名字|你心里知道|同一个人，只是|其实就是主人|主人本人|分得清/;
+for (const who of ['fish', 'whale', 'custom_mvro44xj']) {
+  for (const speaker of ['fish', 'whale']) {
+    id.setIdentity(who, 'sess2');
+    const blk = id.identityBlock({ speaker, sessionId: 'sess2' }) || '';
+    const sys = agent.systemPrompt('sess2');
+    const ctx = agent.contextMessage('sess2');
+    const hit = [];
+    for (const [tag, t] of [['identityBlock', blk], ['system', sys], ['context', ctx]]) {
+      const m = String(t).match(LEAK);
+      if (m) hit.push(tag + ':' + m[0]);
+    }
+    ok(hit.length === 0, `${who} 身份 / ${speaker} 说话：没露「其实就是主人」（${hit.join(' ') || '干净'}）`);
+  }
+}
+
 // 真发一次，看线上那份 wire 长什么样
 id.setIdentity('fish', 'sess1');
 const mv = await import('./src/merge-voice.mjs');

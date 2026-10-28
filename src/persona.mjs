@@ -13,6 +13,8 @@ import { readMemory } from './session-memory.mjs';
 import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
 import { fishOn } from './fish-presence.mjs';
+// 会话绑的智能体卡：绑了自定义卡，基线人设就换成那张卡的正文（见 agents.mjs）。
+import { agentForSession } from './agents.mjs';
 /**
  * 【这一轮是谁在说话】—— 2026-10-28
  *
@@ -142,9 +144,24 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   // 只有主人喊了别的安全词、且不是「人设」自己，才走临时切换那段。
   const switched = Boolean(safeMode) && word !== '' && word !== personaWord(settings);
   const _me = currentIdentity(sessionId);
+  /**
+   * 2026-10-29【会话可以挂一张「智能体卡」】
+   *
+   * 主人要「新建智能体、多开智能体、自由完美切换」。第一步落在「哪个会话用哪张卡」上：
+   *   · 没绑卡 -> 老样子：persona-store 里当前那套人设，一个字节都不动；
+   *   · 绑了自定义卡 -> 用那张卡的正文当基线人设，另加一段「你叫 X」的定位说明。
+   * 内置的小鱼卡就是「解绑」，小鲸卡根本不许绑（见 agents.mjs 里的说明）。
+   */
+  const _card = (() => {
+    try { return agentForSession(sessionId); } catch { return null; }
+  })();
+  const _cardPersona = (_card && _card.kind === 'custom' && String(_card.persona || '').trim())
+    ? String(_card.persona)
+    : '';
   const parts = [
     PLATFORM_BLOCK,
-    retargetPersona(loadPersona(), _me),
+    retargetPersona(_cardPersona || loadPersona(), _me),
+    _cardPersona ? agentCardNote(_card) : '',
     REASONING_LANGUAGE_RULE,
     settingsPromptBlock(settings),
     personaModeRules(settings),
@@ -318,6 +335,23 @@ const PLATFORM_BLOCK = [
   '主人说「专业模式」「开场白」「会话记忆」「安全词」「回退」「分支」这些词，说的都是这个程序里的功能，不是别家的东西。',
   '主人问起这些功能怎么用、有哪些本事，就照实说；不清楚具体细节时，可以说「我看看」——你能读这个程序自己的文件，也能列目录、跑命令去确认，别反问主人「你说的是哪个软件」。',
 ].join('\n');
+
+/**
+ * 会话挂着自定义智能体卡时，补一段「你现在是谁」。
+ *
+ * 为什么光有人设正文不够：模型的默认习惯是往「小鱼Agent 里那个小鱼」上靠
+ * —— 人设正文再详细，它也会顺手自称小鱼。所以要明说这两句：你叫 X、你就是 X。
+ * 别在这里多写别的：卡是主人自己写的，多说一句都可能跟卡打架。
+ */
+function agentCardNote(agent) {
+  const nm = String(agent?.name || '').trim();
+  if (!nm) return '';
+  return [
+    `【你现在是「${nm}」】`,
+    `这个会话里说话的人是你，名字叫「${nm}」——就是你，不是别人；自称的时候用自己的名字。`,
+    '上面那段人设就是你的全部：名字、脾气、怎么说话都以它为准；它没写到的地方，按你自己的分寸来。',
+  ].join('\n');
+}
 
 /**
  * 「你手上有哪些工具」。

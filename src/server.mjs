@@ -215,6 +215,56 @@ import {
  * 数据目录下 public/ 里放了的文件优先用它，没有的照旧从 asar 里读。
  * 这样更新界面不用重新打包，也不动资源根。
  */
+/**
+ * 【为什么这两个函数在模块顶层】—— 2026-10-29 修崩溃
+ *
+ * 它们原来定义在「跑一轮对话」那个函数体里面（挨着 committed 那行 Set），
+ * 可是 /api/sessions/select（点左边列表切会话）也要用 alreadyCollected 去查
+ * 「这段正文历史里收过没有」—— 那是另一个请求，根本进不到那个函数体，
+ * 于是每次点会话都 ReferenceError: alreadyCollected is not defined，
+ * 落成没人接的 Promise 拒绝，桌面端表现为整窗闪退（.state/crash.log 里连报 7 次）。
+ * 都是纯函数，放顶层最省事，两边都能用。
+ */
+/**
+ * 【2026-10-29 修 · 防「同一条回答落盘上百遍」】
+ *
+ * 症状（主人这次报的）：切出去再切回来、重启一次，会话里同一条回复就多一份，
+ * 最后历史里躺着 3~5 份一模一样的长回答，界面上看就是「说了一大堆活」。
+ *
+ * 病根：commitWireBack 只靠两个 Set 挡重复 —— committed 和 wireSeenBefore，
+ * 两个都是**按对象身份**记的。可 wireMessages 中途会被重新赋值（拼身份标签、
+ * mergeSameVoice、专业模式 filter），一旦换了数组，老对象就不在里面，
+ * 于是同一条 assistant 被当成「新的」再接一遍，一遍一遍接下去。
+ *
+ * 现在加一道**按内容**的关：算个指纹，最近 200 条里已经有同样内容的就不接。
+ * 指纹只看 role + 正文 + 工具调用 id，不看对象，也不看 _at（_at 是后补的，
+ * 同一条两次接进来的 _at 可能不同，用它当键会漏）。
+ */
+const msgFingerprint = (m) => {
+  if (!m) return '';
+  const body = typeof m.content === 'string'
+    ? m.content
+    : Array.isArray(m.content)
+      ? m.content.map((p) => (p && (p.text || p.type)) || '').join('\n')
+      : '';
+  const ids = Array.isArray(m.tool_calls) ? m.tool_calls.map((t) => String((t && t.id) || '')).join(',') : '';
+  // _at 是服务端给每条 assistant 盖的时间戳：同一次生成只有这一个值。
+  // 带上它，才能分清「同一句话被重复接入」（同 _at，该挡）和「我过一会儿又说了一遍」（不同 _at，该留）。
+  return String(m.role || '') + '|' + String(m._at || '') + '|' + String(m.tool_call_id || '') + '|' + ids + '|' + body;
+};
+/** 这段正文最近收过没有（只看尾部，够用且便宜） */
+const alreadyCollected = (ms, m) => {
+  if (!Array.isArray(ms) || !m) return false;
+  const fp = msgFingerprint(m);
+  if (!fp || fp.endsWith('|')) return false;   // 空正文也不当成重复（工具空壳另有判据）
+  const from = Math.max(0, ms.length - 200);
+  for (let k = from; k < ms.length; k++) {
+    if (msgFingerprint(ms[k]) === fp) return true;
+  }
+  return false;
+};
+
+
 const PUBLIC = join(config.root, 'public');
 const PUBLIC_OVERRIDE = config.packaged ? join(config.dataDir, 'public') : '';
 
@@ -6137,44 +6187,6 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       return true;
     };
     const committed = new Set();
-/**
- * 【2026-10-29 修 · 防「同一条回答落盘上百遍」】
- *
- * 症状（主人这次报的）：切出去再切回来、重启一次，会话里同一条回复就多一份，
- * 最后历史里躺着 3~5 份一模一样的长回答，界面上看就是「说了一大堆活」。
- *
- * 病根：commitWireBack 只靠两个 Set 挡重复 —— committed 和 wireSeenBefore，
- * 两个都是**按对象身份**记的。可 wireMessages 中途会被重新赋值（拼身份标签、
- * mergeSameVoice、专业模式 filter），一旦换了数组，老对象就不在里面，
- * 于是同一条 assistant 被当成「新的」再接一遍，一遍一遍接下去。
- *
- * 现在加一道**按内容**的关：算个指纹，最近 200 条里已经有同样内容的就不接。
- * 指纹只看 role + 正文 + 工具调用 id，不看对象，也不看 _at（_at 是后补的，
- * 同一条两次接进来的 _at 可能不同，用它当键会漏）。
- */
-const msgFingerprint = (m) => {
-  if (!m) return '';
-  const body = typeof m.content === 'string'
-    ? m.content
-    : Array.isArray(m.content)
-      ? m.content.map((p) => (p && (p.text || p.type)) || '').join('\n')
-      : '';
-  const ids = Array.isArray(m.tool_calls) ? m.tool_calls.map((t) => String((t && t.id) || '')).join(',') : '';
-  // _at 是服务端给每条 assistant 盖的时间戳：同一次生成只有这一个值。
-  // 带上它，才能分清「同一句话被重复接入」（同 _at，该挡）和「我过一会儿又说了一遍」（不同 _at，该留）。
-  return String(m.role || '') + '|' + String(m._at || '') + '|' + String(m.tool_call_id || '') + '|' + ids + '|' + body;
-};
-/** 这段正文最近收过没有（只看尾部，够用且便宜） */
-const alreadyCollected = (ms, m) => {
-  if (!Array.isArray(ms) || !m) return false;
-  const fp = msgFingerprint(m);
-  if (!fp || fp.endsWith('|')) return false;   // 空正文也不当成重复（工具空壳另有判据）
-  const from = Math.max(0, ms.length - 200);
-  for (let k = from; k < ms.length; k++) {
-    if (msgFingerprint(ms[k]) === fp) return true;
-  }
-  return false;
-};
     /**
      * 【存盘前把中段多出来的 system 清掉】—— 2026-10-26 修
      *

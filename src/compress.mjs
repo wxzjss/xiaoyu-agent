@@ -605,6 +605,61 @@ export async function compressHistory({
     return { compressed: true, before, after: before, limit: cap, trigger, reason: "trimmed-oversize", kept: messages.length };
   }
   let cut = findCut(messages, start, keepTarget);
+
+  /**
+   * ────────────────────────────────────────────────────────────
+   * 【让她自己定切点 —— 2026-10-28】
+   * ────────────────────────────────────────────────────────────
+   *
+   * 主人原话：「让该会话的 ai 自己决定哪些上下文该删，哪些不能删，怎么总结摘要，
+   * 让她自己决定怎么压，让她自己压」
+   *
+   * 【为什么不是「把整个压缩交给她」】
+   * 想过让她在主链路里说「压了，从第 N 条切」再回来接着跑。放弃了：
+   *   · 多一次往返 = 每轮多花钱多耗时，而压缩本来是为了省钱
+   *   · 她切之前看不到「切完还剩多少 token」，提的意见经常是超预算的
+   *   · 切点错了这一轮就毁了，而她没法重来；程序切错了下一轮还能再压
+   *
+   * 【做成什么样：她提意见，程序守边界】
+   * 切点由程序按 token 预算算好（上面的 findCut），然后让她**看一眼再改**：
+   * 她可以往前挪（多留一点近况）或往后挪（多折一点），但只要越界就夹回来：
+   *   · 不能吃头部（system / 人设 / 上下文前情）
+   *   · 不能把尾巴削到 MIN_KEEP_MSGS 以下 —— 那是当场失忆
+   *   · 不能拆开 assistant(tool_calls) 和它的 tool 结果
+   * 她改不了「压不压」，也改不了「落到多少 token」—— 那两件是硬线。
+   *
+   * 【花不花钱】
+   * 只在**真的要压**的时候问一次，而且给了短超时；她没答、答歪、超时，
+   * 一律用程序算好的 cut 照压（fail-safe：宁可切得中规中矩，不能卡住不压）。
+   * 环境变量 COMPRESS_ASK_CUT=0 可以整个关掉。
+   */
+  if (cut > start && process.env.COMPRESS_ASK_CUT !== '0') {
+    try {
+      const asked = await askCutPoint({
+        sessionId,
+        model,
+        messages,
+        start,
+        cut,
+        keepTarget,
+        cap,
+        before,
+        minKeep: MIN_KEEP_MSGS,
+        signal,
+      });
+      if (asked && Number.isFinite(asked.cut) && asked.cut !== cut) {
+        cut = clampCut(messages, start, asked.cut, MIN_KEEP_MSGS, hardTail);
+        if (process.env.COMPRESS_DEBUG || asked.source === 'model') {
+          console.log('[compress] 切点 ' + asked.cut + ' → 夹到 ' + cut
+            + '（她说的：' + (asked.text || '') + ' / ' + asked.source + '）');
+        }
+      }
+    } catch (err) {
+      // 问切点出任何问题都照原计划压，绝不让它挡住压缩
+      console.warn('[compress] 问切点出错（照原计划压）：', String(err?.message ?? err));
+    }
+  }
+
   if (cut <= start) {
     // 兜底：实在没得切，返回 trimmed 的结果而不是谎报 nothing-safe-to-drop
     if (beforeAfterTrim < beforeOrigin) {
@@ -1052,3 +1107,162 @@ function clampKeep(want, max) {
   return Math.min(w, max);
 }
 
+
+/**
+ * ────────────────────────────────────────────────────────────
+ *  切点守卫：把她提的切点夹回安全范围
+ * ────────────────────────────────────────────────────────────
+ *
+ * 她可以提任何数字，落到历史里必须是安全的。三道硬边界，谁都改不了：
+ *
+ *  ① 不能吃头部 —— start 之前是 system / 人设 / 上下文前情，切了就废
+ *  ② 尾巴不能薄于 minKeep 条 —— 削到几条就是当场失忆（实测丢过整段近况）
+ *  ③ 不能拆开 assistant(tool_calls) 和它的 tool 结果 —— 拆了模型看到的是一对孤儿
+ *
+ * hardTail（巨型单条消息的硬兜底）时不谈 ②，跟 findCut 的口径保持一致。
+ *
+ * @param {Array} messages
+ * @param {number} start 头部结束位置（切点下界）
+ * @param {number} want 她提的切点
+ * @param {number} minKeep 尾巴至少留几条
+ * @param {boolean} hardTail 是否是「必须压掉超大单条」的硬兜底
+ * @returns {number} 夹好之后的切点
+ */
+export function clampCut(messages, start, want, minKeep = 8, hardTail = false) {
+  const total = messages.length;
+  let c = Math.floor(Number(want));
+  if (!Number.isFinite(c)) return start;
+
+  // ① 不吃头部
+  if (c < start) c = start;
+
+  // ② 尾巴不能太薄（硬兜底除外 —— 那种情况就是要压掉大段）
+  if (!hardTail) {
+    const minKeepNow = Math.max(1, Math.min(minKeep, total - start - 1));
+    const maxCut = total - minKeepNow;
+    if (c > maxCut) c = maxCut;
+  }
+  if (c > total - 1) c = total - 1;
+
+  // ③ 不拆工具对：如果 c 落在 tool 上，或 c 前面那条是带 tool_calls 的 assistant，
+  //    就往回退到这一对的起点（宁可多折一点，也不能留半对）。
+  let guard = 0;
+  while (c > start && guard++ < 500) {
+    const at = messages[c];
+    const prev = messages[c - 1];
+    const splitsTool = at?.role === 'tool' || (prev?.role === 'assistant' && prev?.tool_calls?.length);
+    if (!splitsTool) break;
+    c--;
+  }
+
+  // 退过头了就退回原判 —— 让调用方用程序算的那个，别交出个明显不对的数
+  if (c <= start) return start;
+  return c;
+}
+
+/**
+ * ────────────────────────────────────────────────────────────
+ *  问她：这一刀你想切在哪儿
+ * ────────────────────────────────────────────────────────────
+ *
+ * 不是「把压缩交给她」，是「让她对切点说一句」。细节和取舍见调用处注释。
+ *
+ * 喂给她的东西刻意做小：只给每一段的一句话轮廓（谁说的 + 开头几十字），
+ * 不给全文 —— 问一句切点要是先把历史全文发一遍，等于为了省钱先花一笔。
+ *
+ * 她回什么都行，从里面认第一个「CUT 数字」；认不出就当没问过。
+ *
+ * @returns {Promise<{cut:number, source:string, text?:string}|null>}
+ */
+export async function askCutPoint({
+  sessionId = '',
+  model = '',
+  messages = [],
+  start = 0,
+  cut = 0,
+  keepTarget = 0,
+  cap = 0,
+  before = 0,
+  minKeep = 8,
+  signal = null,
+} = {}) {
+  const TIMEOUT_MS = Number(process.env.COMPRESS_ASK_CUT_MS) > 0
+    ? Number(process.env.COMPRESS_ASK_CUT_MS)
+    : 12000;
+
+  // 轮廓：每条一行，太长就砍。最多给 60 条，够她判断「哪段还有用」。
+  const outline = [];
+  const from = start;
+  const to = Math.min(messages.length, start + 60);
+  for (let i = from; i < to; i++) {
+    const m = messages[i];
+    const role = String(m?.role || '?');
+    const who = role === 'user' ? '主人' : role === 'assistant' ? '我' : role === 'tool' ? '工具' : role === 'system' ? '设定' : role;
+    let text = '';
+    if (typeof m?.content === 'string') text = m.content;
+    else if (Array.isArray(m?.content)) {
+      text = m.content.map((p) => (typeof p === 'string' ? p : p?.text || '')).join(' ');
+    }
+    if (!text && m?.tool_calls?.length) {
+      text = '调用了 ' + m.tool_calls.map((t) => t?.function?.name || t?.name || '?').join('、');
+    }
+    text = String(text).replace(/\s+/g, ' ').trim().slice(0, 60);
+    outline.push('#' + i + ' [' + who + '] ' + text);
+  }
+  if (to < messages.length) outline.push('…（后面还有 ' + (messages.length - to) + ' 条没列）');
+
+  const system = [
+    '你在帮自己决定「压上下文时这一刀切在哪儿」。',
+    '历史是一串带编号的消息。编号比切点小的会被折成一份摘要，比它大的原样留着。',
+    '你来定这个编号：想让近况多留一点就往小改，想多折一点就往大改。',
+    '',
+    '只输出一行：CUT <编号>',
+    '不要解释，不要别的话，不要标点以外的东西。',
+  ].join('\n');
+
+  const user = [
+    '当前：历史约 ' + before + ' token，上限 ' + cap + ' token。',
+    '程序算的切点是 #' + cut + '（尾巴大约要留 ' + keepTarget + ' token）。',
+    '可以选的范围：#' + start + ' ~ #' + Math.max(start, messages.length - minKeep) + '。',
+    '',
+    '各段轮廓：',
+    ...outline,
+    '',
+    '切在哪儿？只回一行 CUT <编号>',
+  ].join('\n');
+
+  // 超时自己掐，失败一律返回 null（照程序原计划压）
+  const ac = new AbortController();
+  const onAbort = () => { try { ac.abort(); } catch {} };
+  if (signal) {
+    if (signal.aborted) return null;
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+  const timer = setTimeout(onAbort, TIMEOUT_MS);
+  let text = '';
+  try {
+    const res = await chat({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      model,
+      sessionId,
+      signal: ac.signal,
+    });
+    text = String(res?.choices?.[0]?.message?.content ?? '').trim();
+  } catch (err) {
+    if (process.env.COMPRESS_DEBUG) console.warn('[compress] 问切点失败：', String(err?.message ?? err));
+    return null;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', onAbort);
+  }
+
+  const m = /\bCUT\s*#?\s*(\d{1,7})\b/i.exec(text);
+  if (!m) {
+    if (process.env.COMPRESS_DEBUG) console.log('[compress] 切点回答认不出：' + JSON.stringify(text.slice(0, 80)));
+    return null;
+  }
+  return { cut: Number(m[1]), source: 'model', text: text.slice(0, 80) };
+}

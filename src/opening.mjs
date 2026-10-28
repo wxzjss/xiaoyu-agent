@@ -1,40 +1,24 @@
-// 开场轮（opening turn）：新建会话的那一瞬间，先让小鱼自己跑一轮。
+// 开场（opening）：新建会话的那一瞬间，先把她自己那句开场白垫进历史。
 //
-// 主人原话（2026-10-23）：「我想要的实现方式是在玩家新建会话那一瞬间经历第一轮对话，
-// 然后在玩家视角是删除记录、但在 AI 视角还在」。
+// 主人原话（2026-10-23）：「我想要的实现方式是在玩家新建会话那一瞬间经历第一轮对话」。
+// 主人 2026-10-29 又定了一次口径：开场白变成「每张智能体卡自己的一句话」，
+// 功能页那个全局开关撤掉 —— 见下面 cardOpening / setCardOpening。
 //
-// 所以这一轮是真跑 —— 真的进了模型、真的落进 session.messages、真的占了 AI 的上下文；
-// 只是 publicSession() 把它跳过了，界面上看不见。
-//
-// 跟「前情」（prelude）的区别：
-//   前情是每次请求现拼一段贴给模型，会话记录里没有；
-//   这里是真的写进历史，重启、导出、分支都在。
-//
-// 为什么用 assistant 发起：OpenAI 兼容的接口不接受 assistant 打头的一轮，
-// 所以开场是一对 user/assistant —— 两条都是真实的历史记录，
-// 模型看到的就是这一份完整的、没有删改过的对话。
-//
-// 界面上不展示：两条都带 bof: true（beginning of file），publicSession 认这个就跳过。
-// 它只是个「从开头藏掉」的记号，不是把消息从上下文里挖走 —— 换句话说，
-// 玩家不知道有过这两句，但对她来说那就是真发生过的。
+// 历史里垫的是一对：一条 user 引子（看不见）+ 一条 assistant（就是她那张卡的开场白，看得见）。
+// 为什么还要那条 user：OpenAI 兼容的接口有不接受 assistant 打头的，垫一条引子最稳；
+// 它界面上不显示（openingHeadIndexes 只跳它一个），对模型来说却是真实发生过的一问一答。
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
-import { getEnabledMap } from './features.mjs';
 
 /**
- * 开场白功能现在开着没有。
+ * 这张卡这次要不要开场。
  *
- * 关掉之后：新建会话就是一张白纸，不垫那一轮；已经垫过的老会话照旧（历史不动）。
- * 读 features.json（`opening` 那个键），没写过 = 开，见 features.mjs 文件头。
+ * 2026-10-29 起不再看功能页的开关（那个功能已经删了），只看「她那张卡的开场白填了没有」：
+ * 填了内容她就开口，留空（比如小鲸）就是一张白纸。
  */
-export function openingEnabled() {
-  try {
-    return Boolean(getEnabledMap().opening);
-  } catch {
-    // features.json 坏了也别让新建会话开不了 —— 当开着
-    return true;
-  }
+export function openingEnabled(agentId) {
+  return Boolean(String(cardOpening(agentId) || '').trim());
 }
 
 /** 开场那一轮用的种子：想换开场白就改这个文件，不用动代码。 */
@@ -63,6 +47,83 @@ export const DEFAULT_OPENING_ASSISTANT_TEXT = [
 
 /** 主人改过的开场白存在这里；没有就用出厂默认。 */
 const OPENING_FILE = () => join(config.dataDir, '.state', 'opening.json');
+
+/**
+ * 每张智能体卡自己的开场白。
+ *
+ * 2026-10-29 主人改的口径：
+ *   「把原来删掉的【一句话】回滚回去，但改名为【开场白】，小鲸的默认留空，
+ *     小鱼的默认填功能页【开场白】里面小鱼说的话，【开场白】内输入什么内容，
+ *     那么创建会话时智能体会默认自动发送该内容，然后删除功能页原来的【开场白】功能」
+ *
+ * 所以开场白从「全局两段隐藏对话」变成了「每张卡的一句话」：
+ *   · 小鱼默认就是原来那段出厂文本（她还是一上来就那几句）；
+ *   · 小鲸默认空着 —— 她本来就不在会话里开场；
+ *   · 主人自己建的卡也默认空着，谁想让她开口谁自己填。
+ * 存在 .state/agent-openings.json：{ [agentId]: '她开局说的那句话' }。
+ * 键在文件里、值是空串 = 主人明确清空过（她不开口），不会再回落到默认。
+ */
+const CARD_FILE = () => join(config.dataDir, '.state', 'agent-openings.json');
+
+function readCardMap() {
+  try {
+    const j = JSON.parse(readFileSync(CARD_FILE(), 'utf8'));
+    if (!j || typeof j !== 'object') return {};
+    const out = {};
+    for (const [k, v] of Object.entries(j)) {
+      if (typeof v === 'string') out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** 这张卡的开场白。没记过的话小鱼用出厂那段，别的卡一律空着。 */
+export function cardOpening(agentId) {
+  const id = String(agentId || '');
+  const map = readCardMap();
+  if (Object.prototype.hasOwnProperty.call(map, id)) return map[id];
+  if (id !== 'xiaoyu') return '';
+  // 小鱼的默认就是「原来功能页里她自己那段」。主人以前在功能页改过的话
+  // （老文件 .state/opening.json 里的 assistant），搬过来继续当她的默认，
+  // 别让她的开场白凭空变回出厂那几句。
+  const legacy = readOpeningPack().assistant;
+  return legacy || DEFAULT_OPENING_ASSISTANT_TEXT;
+}
+
+/** 改这张卡的开场白。传空串 = 她以后不开口（不会回落到默认）。 */
+export function setCardOpening(agentId, text) {
+  const id = String(agentId || '');
+  if (!id) {
+    const err = new Error('没说要改哪张卡的开场白');
+    err.status = 400;
+    throw err;
+  }
+  const raw = String(text ?? '').replace(/\r\n/g, '\n');
+  const map = readCardMap();
+  // 两头空白一律修掉：那玩意儿在界面上看不见，留着只会让「是不是同一句」比较出岔子
+  map[id] = raw.trim();
+  try {
+    const dir = join(config.dataDir, '.state');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(CARD_FILE(), JSON.stringify(map, null, 2), 'utf8');
+  } catch (e) {
+    const err = new Error('存不进去：' + e.message);
+    err.status = 500;
+    throw err;
+  }
+  return { agentId: id, opening: cardOpening(id) };
+}
+
+/** 所有卡的开场白文本，给 isOpeningMessage 认「这句是不是开场白」用。 */
+function allCardOpenings() {
+  const vals = Object.values(readCardMap()).filter((v) => typeof v === 'string' && v.trim());
+  vals.push(DEFAULT_OPENING_ASSISTANT_TEXT);
+  const legacy = readOpeningPack().assistant;
+  if (legacy) vals.push(legacy);
+  return vals;
+}
 
 function readOpeningPack() {
   try {
@@ -197,20 +258,28 @@ export function wasOpened(sessionId) {
   return Object.prototype.hasOwnProperty.call(readState(), sessionId);
 }
 
-/** 开场那一轮的两条（assistant 那条用的就是现在生效的那段文本）。 */
-export function seedOpeningMessages() {
-  const t = openingTexts();
+/**
+ * 开场垫的那两条（assistant 那条用的就是这张卡的开场白）。
+ *
+ * 2026-10-29：文本改成从卡里取（cardOpening），不再读功能页那两段全局文本。
+ * user 那条是引子，界面上看不见（见 openingHeadIndexes），对模型来说是真的一问一答。
+ */
+export function seedOpeningMessages(agentId = 'xiaoyu') {
+  const userText = DEFAULT_OPENING_USER_TEXT;
+  const assistantText = cardOpening(agentId);
   // 头两条是真的历史记录，不带任何记号 —— 盘里看着就是普通的一问一答。
-  const userMsg = { role: 'user', content: t.user, _text: t.user };
-  return { userMsg, assistantText: t.assistant };
+  const userMsg = { role: 'user', content: userText, _text: userText };
+  return { userMsg, assistantText };
 }
 
 /**
- * 界面上要从会话开头跳过的下标集合（就是新建时垫的那一对）。
+ * 界面上要从会话开头跳过的下标集合。
  *
- * 只看位置，不看消息上的记号：
- *   跳过 system / context，然后头两条如果是 user 紧接 assistant，就当它们是开场那一对。
- * 一旦主人自己说了话（第三轮起），就什么都不跳了 —— 免得误伤真对话。
+ * 2026-10-29 改口径：开场白现在是「她自己默认发出的那句话」，所以**她那条要显示**，
+ * 只把那条「在吗」引子藏着。老会话里也是这样 —— 藏引子、显示她的话。
+ *
+ * 只看位置：跳过 system / context，头一条 user 紧接一条 assistant，且 assistant 那条
+ * 确实是开场白文本，就只跳 user 那条。第三轮起什么都不跳，免得误伤真对话。
  *
  * @param {Array<object>} messages 会话的 messages
  * @returns {Set<number>}
@@ -229,12 +298,13 @@ export function openingHeadIndexes(messages) {
   if (idx.length < 2) return skip;
   const a = messages[idx[0]];
   const b = messages[idx[1]];
-  if (a.role === 'user' && b.role === 'assistant') {
+  if (a.role === 'user' && b.role === 'assistant' && isOpeningMessage(a) && isOpeningMessage(b)) {
+    // 只藏那条引子；她说的那句留在界面上 —— 那才是「她自动发出来的开场白」
     skip.add(idx[0]);
-    skip.add(idx[1]);
   }
   return skip;
 }
+
 
 /**
  * 这条消息是不是「开场那一对」里的。
@@ -249,9 +319,37 @@ export function isOpeningMessage(m) {
   const body = String(m.content ?? '').trim();
   if (!body) return false;
   const t = openingTexts();
-  const cands = [t.user, t.assistant, DEFAULT_OPENING_USER_TEXT, DEFAULT_OPENING_ASSISTANT_TEXT];
+  const cands = [t.user, t.assistant, DEFAULT_OPENING_USER_TEXT, DEFAULT_OPENING_ASSISTANT_TEXT, ...allCardOpenings()];
   return cands.some((x) => String(x ?? '').trim() === body);
 }
+
+/**
+ * 开头那段开场白在哪、有多长 —— 摘的时候只认这一段。
+ *
+ * 两种形状都要认：
+ *   · 新形状（2026-10-29 起）：一条 assistant，她自己说的那句开场白；
+ *   · 老形状：user「在吗」+ assistant 那句出厂文本（老会话里还是这样）。
+ *
+ * 记号锁照旧：openings.json 里没记过这个会话就一律返回 null ——
+ * 主人自己打的那句话绝不能当成开场白删掉。
+ *
+ * @param {string} sessionId
+ * @param {Array<object>} messages
+ * @returns {{at:number, n:number}|null}
+ */
+export function openingSpan(sessionId, messages) {
+  if (!sessionId || !Array.isArray(messages) || !wasOpened(sessionId)) return null;
+  const at = messages.findIndex((m) => m && m.role !== 'system' && !m.context);
+  if (at < 0) return null;
+  const a = messages[at];
+  const b = messages[at + 1];
+  if (a && a.role === 'assistant' && isOpeningMessage(a)) return { at, n: 1 };
+  if (a && b && a.role === 'user' && b.role === 'assistant' && isOpeningMessage(a) && isOpeningMessage(b)) {
+    return { at, n: 2 };
+  }
+  return null;
+}
+
 
 /**
  * 把模型说出来的开场白接回历史。

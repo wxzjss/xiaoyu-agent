@@ -153,6 +153,9 @@ import {
   resetOpeningTexts,
   openingHeadIndexes,
   isOpeningMessage,
+  openingSpan,
+  cardOpening,
+  setCardOpening,
   unmarkOpened,
   wasOpened,
 } from './opening.mjs';
@@ -1693,7 +1696,9 @@ function applyOpening(session, openingUser, wire) {
  * @returns {{ ok: boolean, why: string }}
  */
 function openingAllowed(sessionId = null) {
-  if (!openingEnabled()) return { ok: false, why: '功能面板里关掉了开场白' };
+  // 2026-10-29：功能页那个全局开关撤了，改成「这张卡的开场白填了没有」。
+  // 小鲸默认空着 —— 她不是会话里开场的那个人，自然什么都不垫。
+  if (!openingEnabled(cardIdOf(sessionId))) return { ok: false, why: '这张卡没填开场白' };
   // 专业模式：开场白那两条也是「设定」，而且它前面那句「在吗」对模型来说
   // 就是一段来历不明的前情。专业模式下不垫 —— 新会话就是真的空。
   if (pureModeOn()) return { ok: false, why: '专业模式开着，不垫设定' };
@@ -1707,12 +1712,27 @@ function openingAllowed(sessionId = null) {
   return { ok: true, why: '' };
 }
 
+/**
+ * 这个会话用的是哪张智能体卡（没绑就是小鱼）。
+ *
+ * 开场白、人设、模型现在都跟着卡走，所以凡是要「按卡办事」的地方都用这一个。
+ */
+function cardIdOf(sessionId) {
+  try {
+    return sessionAgentId(sessionId) || AGENT_XIAOYU;
+  } catch {
+    return AGENT_XIAOYU;
+  }
+}
+
 async function startOpening(sessionId) {
   const gate = openingAllowed(sessionId);
   if (!gate.ok) return;
   const session = getSession(sessionId);
   if (!session || hasOpening(session)) return;
-  const { userMsg, assistantText } = seedOpeningMessages();
+  // 文本来自这张卡；空着就真的不开场（小鲸就是这样）
+  const { userMsg, assistantText } = seedOpeningMessages(cardIdOf(sessionId));
+  if (!String(assistantText || '').trim()) return;
   const at = session.messages.findIndex((m) => m && m.role !== 'system' && !m.context);
   const pair = [userMsg, { role: 'assistant', content: assistantText }];
   if (at < 0) session.messages.push(...pair);
@@ -3070,15 +3090,12 @@ const server = createServer(async (req, res) => {
            * 两道全过才摘。缺一道就原样留着，一个字都不动。
            */
           const msgs = session.messages || [];
-          const at = msgs.findIndex((m) => m && m.role !== 'system' && !m.context);
-          const a = at >= 0 ? msgs[at] : null;
-          const b = at >= 0 ? msgs[at + 1] : null;
-          const hasMark = wasOpened(session.id);
-          if (hasMark && a && b && a.role === 'user' && b.role === 'assistant' && isOpeningMessage(a) && isOpeningMessage(b)) {
-            msgs.splice(at, 2);
+          const span = openingSpan(session.id, msgs);
+          if (span) {
+            msgs.splice(span.at, span.n);
             unmarkOpened(session.id);
             saveSession(session);
-            openingNote = '已摘掉开头那两条开场白';
+            openingNote = '已摘掉开头的开场白';
           }
         } else if (me && me.id === 'owner') {
           // 切回主人：会话还是空的（只有 system）就把开场白补回去，
@@ -3287,12 +3304,16 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // ---- 开场白那两段隐藏对话：读 / 改 / 恢复默认 ----
-  if (req.method === 'GET' && url.pathname === '/api/opening') {
-    return json(res, 200, openingTexts());
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/opening') {
+  /**
+   * 开场白：从「功能页那两段全局隐藏对话」搬到「每张智能体卡自己的一句话」。
+   *
+   * 主人 2026-10-29 原话：「把原来删掉的【一句话】回滚回去，但改名为【开场白】，
+   * 小鲸的默认留空，小鱼的默认填功能页【开场白】里面小鱼说的话，【开场白】内输入什么内容，
+   * 那么创建会话时智能体会默认自动发送该内容，然后删除功能页原来的【开场白】功能」
+   *
+   * 所以老的三条 /api/opening 接口一起撤了，改由智能体面板存。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/agents/opening') {
     let payload;
     try {
       payload = await body(req);
@@ -3300,14 +3321,11 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     try {
-      return json(res, 200, setOpeningTexts(payload || {}));
+      const r = setCardOpening(payload?.id, payload?.opening);
+      return json(res, 200, { ok: true, ...r });
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/opening/reset') {
-    return json(res, 200, resetOpeningTexts());
   }
 
   // ---- 小鲸的身份卡：她的人设 + 她用的模型 ----------------------------------
@@ -3375,11 +3393,19 @@ const server = createServer(async (req, res) => {
     try {
       const agents = listAgents();
       const ms = listModels();
+      // 每张卡带上她的开场白（存在 .state/agent-openings.json，默认小鱼那段、别的空着）
+      const withOpening = agents.map((a) => ({ ...a, opening: (() => {
+        try {
+          return cardOpening(a.id);
+        } catch {
+          return '';
+        }
+      })() }));
       // 面板上要显示「这个会话现在挂的是哪张卡」，所以顺手带上当前会话的绑定
       const qsid = String(url.searchParams.get('sessionId') || '');
       return json(res, 200, {
         ok: true,
-        agents,
+        agents: withOpening,
         // 换模型那个下拉框要用：只给 id 和一行名字，密钥不出去
         models: (ms.models || []).map((m) => ({ id: m.id, name: m.name || m.model || m.id, model: m.model || '' })),
         activeModelId: ms.activeId || '',
@@ -3447,7 +3473,13 @@ const server = createServer(async (req, res) => {
     const id = String(url.searchParams.get('id') || '');
     const agent = getAgent(id);
     if (!agent) return json(res, 404, { error: '没有这个智能体' });
-    return json(res, 200, { ok: true, agent });
+    let opening = '';
+    try {
+      opening = cardOpening(agent.id);
+    } catch {
+      // 读不到就当没填，别让面板打不开
+    }
+    return json(res, 200, { ok: true, agent: { ...agent, opening } });
   }
 
   /**
@@ -5310,22 +5342,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 两道全过才剔，缺一道就原样留着，绝不误删主人真说过的话。
      */
     if (!openingAllowedHere() && wasOpened(sessionId)) {
-      const at = history.findIndex((m) => m && m.role !== 'system' && !m.context);
-      const a = at >= 0 ? history[at] : null;
-      const b = at >= 0 ? history[at + 1] : null;
-      if (a && b && a.role === 'user' && b.role === 'assistant' && isOpeningMessage(a) && isOpeningMessage(b)) {
-        history.splice(at, 2);
-      }
+      const span = openingSpan(sessionId, history);
+      if (span) history.splice(span.at, span.n);
     }
-    const wantOpening = !resume && openingEnabled() && !hasOpening(session) && session._openingPending !== false
+    // 2026-10-29：开场白跟着这张卡走（小鱼有、小鲸空着），文本也从卡里取
+    const openingPack = seedOpeningMessages(cardIdOf(sessionId));
+    const openingTextHere = String(openingPack.assistantText || '').trim();
+    const wantOpening = !resume && Boolean(openingTextHere) && !hasOpening(session) && session._openingPending !== false
       && openingAllowedHere()
       // 专业模式：开场白也是「设定」，开场白连着它前面那段用户消息一起不发
       && !pureModeOn();
     if (wantOpening) {
-      const { userMsg: openingUser, assistantText } = seedOpeningMessages();
       // 插在 system（+可能的 context）之后、现有对话之前，顺序才对
       const at = history.findIndex((m) => m && m.role !== 'system' && !m.context);
-      const pair = [openingUser, { role: 'assistant', content: assistantText }];
+      const pair = [openingPack.userMsg, { role: 'assistant', content: openingTextHere }];
       if (at < 0) history.push(...pair);
       else history.splice(at, 0, ...pair);
       delete session._openingPending;
@@ -5805,16 +5835,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 所以跟切身份那里用同一套两道锁：位置（开头那一对）+ 记号（openings.json 记过）。
     if (pureModeOn()) {
       const msgs = wireMessages;
-      const at = msgs.findIndex((m) => m && m.role !== 'system' && !m.context);
-      const a = at >= 0 ? msgs[at] : null;
-      const b = at >= 0 ? msgs[at + 1] : null;
-      if (
-        wasOpened(sessionId) &&
-        a && b && a.role === 'user' && b.role === 'assistant' &&
-        isOpeningMessage(a) && isOpeningMessage(b)
-      ) {
-        msgs.splice(at, 2);
-      }
+      const span = openingSpan(sessionId, msgs);
+      if (span) msgs.splice(span.at, span.n);
       // 系统提示一律不发：老会话盘里存的是完整人设，不摘掉就等于
       // 一边说"纯净"一边还带着人设说话。context 那条规则副本同理。
       wireMessages = wireMessages.filter((m) => !(m && (m.role === 'system' || m.context)));

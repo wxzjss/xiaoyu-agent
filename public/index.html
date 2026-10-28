@@ -155,6 +155,19 @@
       font-weight: 600;
       box-shadow: 0 0 0 1px rgba(122, 168, 232, 0.35) inset;
     }
+    /* 顶栏「现在是谁在说话」的牌：青色系，跟小鱼/小鲸两种颜色都错开。
+       名字可能挺长（主人自己起的），所以截断加省略号，别把整排顶栏顶出去。 */
+    #agentChip {
+      border-color: rgba(140, 220, 210, 0.5);
+      background: rgba(140, 220, 210, 0.16);
+      color: #b4e6df;
+      font-weight: 600;
+      max-width: 170px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #agentChip:hover { border-color: #8cdcd2; color: #dff7f3; }
     .user .role {
       color: #cfd6e4;
       font-weight: 600;
@@ -1990,6 +2003,10 @@
     <button id="fastBtn" title="快速模式：跟专业模式一样不发人设、压缩规则也一样，差别只有一个 —— 过程当中不反复检查，一口气做完，全部做完之后再跑一次全量验证（点一下开，再点一下关）">快速模式</button>
     <button id="fishBtn" title="小鱼在场：点一下就让她歇着 —— 之后这个会话里你说的话、小鲸说的话，她一个字都收不到，记忆里也不会留">小鱼</button>
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
+    <!-- 2026-10-29：这个会话里要不是小鱼在说话（主人自己建的卡挂上来了），
+         顶栏得有个牌子说清是谁 —— 不然换过去只当是小鱼换了语气。
+         没挂别的卡就不显示（那时「小鱼」两个字已经说清楚了）。 -->
+    <button id="agentChip" hidden title="这个会话现在是谁在说话">现在：小鱼</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
@@ -7217,6 +7234,31 @@ async function selectAgent(id) {
   agHint('');
 }
 
+/**
+ * 顶栏那枚「现在是谁在说话」的牌。
+ *
+ * 什么时候显示：这个会话挂的是主人自己建的卡（不是小鱼）。
+ * 为什么只在那种时候显示：默认就是小鱼，顶栏左边已经写着「小鱼」两个字了，
+ * 再挂一块「现在：小鱼」纯属噪音；可一旦换成别的卡，屏幕上没有任何线索，
+ * 人会以为是小鱼换了语气 —— 那才是真会误会的地方。
+ *
+ * 谁调它：loadTopCfg（开机 + 每次切会话都会走）、绑定/解绑之后。
+ */
+async function refreshAgentChip() {
+  const el = document.getElementById('agentChip');
+  if (!el) return;
+  if (!sessionId) { el.hidden = true; return; }
+  const r = await fetch('/api/agents/current?sessionId=' + encodeURIComponent(sessionId))
+    .then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { el.hidden = true; return; }
+  const id = String(r.agentId || '');
+  const name = String(r.name || '');
+  if (!id || id === 'xiaoyu' || !name) { el.hidden = true; return; }
+  el.textContent = '现在：' + name;
+  el.title = `这个会话里说话的是「${name}」，不是小鱼 —— 点一下换人或换回小鱼`;
+  el.hidden = false;
+}
+
 /** 拉一次清单（带上当前会话，好知道这个会话挂的是哪张卡） */
 async function loadAgentState() {
   const q = (typeof sessionId === 'string' && sessionId) ? ('?sessionId=' + encodeURIComponent(sessionId)) : '';
@@ -7279,6 +7321,7 @@ async function bindAgentCard() {
   if (!r || r.error) { agHint('换不了：' + ((r && r.error) || '网络错误')); return; }
   agentState.boundAgentId = String(r.boundAgentId || 'xiaoyu');
   syncBindRow();
+  try { refreshAgentChip(); } catch { /* 忽略 */ }
   agHint(r.agentId ? '这个会话从下一句开始就用她说话了' : '这个会话换回小鱼了');
 }
 
@@ -7423,6 +7466,8 @@ async function delAgentCard() {
   const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   wire('agSave', () => saveAgentCard());
   wire('agBind', () => bindAgentCard());
+  // 顶栏那枚「现在是谁在说话」的牌：点一下直接进智能体面板（换人 / 换回小鱼）
+  wire('agentChip', () => openAgentDlg());
   wire('agNew', () => newAgentCard());
   wire('agNewChat', () => newChatAsAgent());
   wire('agReset', () => resetAgentCard());
@@ -9913,6 +9958,8 @@ function paintTopCfg() {
 }
 
 async function loadTopCfg() {
+  // 顶栏「现在是谁在说话」那块牌跟着会话走，顺手一起刷（失败就当没这块牌）
+  try { refreshAgentChip(); } catch { /* 忽略 */ }
   if (!sessionId) return;
   const r = await fetch(`/api/session-config?sessionId=${encodeURIComponent(sessionId)}`)
     .then((x) => x.json()).catch(() => null);

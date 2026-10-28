@@ -3450,6 +3450,29 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, agent });
   }
 
+  /**
+   * 「这个会话现在是谁在说话」——只回一个名字，给顶栏那块牌用的。
+   *
+   * 为什么不复用 /api/agents：那一个要把所有卡和人设字数都算一遍，
+   * 而这枚牌每切一次会话就要问一次，没必要为了一个名字把整份清单拉下来。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/agents/current') {
+    try {
+      const qsid = String(url.searchParams.get('sessionId') || '');
+      const id = qsid ? (sessionAgentId(qsid) || AGENT_XIAOYU) : AGENT_XIAOYU;
+      const a = getAgent(id) || getAgent(AGENT_XIAOYU);
+      return json(res, 200, {
+        ok: true,
+        sessionId: qsid,
+        agentId: a ? String(a.id) : AGENT_XIAOYU,
+        name: a ? String(a.name || '') : '',
+        builtin: !!(a && a.builtin),
+      });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/agents/add') {
     let payload;
     try {

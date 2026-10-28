@@ -1155,6 +1155,110 @@ export const tools = [
       return head + '\n\n（她没查成，原因她自己已经说了。你要接就接一句，别帮她转述。）' + tail;
     },
   },
+  /**
+   * ────────────────────────────────────────────────────────────
+   *  岁月史书
+   * ────────────────────────────────────────────────────────────
+   *
+   * 主人原话（2026-10-28）：「增加一个新功能：岁月史书。自动记录所有会话的
+   * 全部上下文内容，ai可随时翻阅，但翻阅方式不能一股脑全看，而是能够支持索引，
+   * ai能搜索关键字，甚至可以有目录，有分类这样的」
+   *
+   * 三个工具对应三层翻阅，**顺序不能跳**：
+   *   目录（看有哪些书、多厚、什么构成）
+   *     → 搜索（关键字 → 命中行的片段 + 行号）
+   *       → 精读（会话 id + 行号区间 → 原文，一次最多 1.2 万字）
+   *
+   * 【为什么必须拆成三个】
+   *
+   * 一个工具做不到「不一味全看」：只要它能返回全文，模型迟早会一次要全文，
+   * 22 个会话 440 万字，一次就要爆。拆开之后，「精读」这个工具在实现上就
+   * 拒绝不带范围调用 —— 这是把主人的要求写进代码，而不是写进提示词求它自觉。
+   */
+  {
+    name: 'chronicle_toc',
+    description:
+      '翻「岁月史书」的目录：这里自动记着主人所有会话的全部内容（每来一句新话都会并进去）。先用它看都有哪些书、每本多少条、都说的是什么——比一股脑去翻会话文件省得多。想看「哪一类话最多」就传 byCategory。',
+    parameters: {
+      type: 'object',
+      properties: {
+        byCategory: {
+          type: 'boolean',
+          description: '改成true就按分类汇总（主人说的/她说的/工具调用/工具结果…各多少条），而不是列会话',
+        },
+        limit: { type: 'number', description: '最多列几个会话，默认40' },
+      },
+      required: [],
+    },
+    async run({ byCategory, limit }) {
+      const { chronicleToc } = await import('./chronicle.mjs');
+      try {
+        return chronicleToc({ byCategory: byCategory === true || byCategory === 'true', limit }).text;
+      } catch (e) {
+        return '岁月史书翻不开：' + String(e?.message ?? e);
+      }
+    },
+  },
+  {
+    name: 'chronicle_search',
+    description:
+      '在「岁月史书」里搜关键字——所有会话的全部内容都能搜到，包括很早期的、已经不在当前上下文里的。只回命中那一小段的前后文和行号，不会把整段历史倒给你。拿到行号再用 chronicle_read 精读那一段。多个关键词用空格隔开，命中的词越多排得越前。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '要搜的词。中文英文都行，多个词用空格隔开' },
+        session: { type: 'string', description: '只在某一个会话里搜（填 id 或标题）。不填就是全书搜' },
+        category: {
+          type: 'string',
+          description: '只看某一类命中：主人说的 / 她说的 / 工具调用 / 工具结果 / 摘要',
+        },
+        includeSystem: {
+          type: 'boolean',
+          description: '默认不搜「设定」（每个会话开头那段系统提示词，搜它只会刷屏）。要专门查当时人设怎么写的就传true',
+        },
+        limit: { type: 'number', description: '最多回几处命中，默认20' },
+      },
+      required: ['query'],
+    },
+    async run({ query, session, category, includeSystem, limit }) {
+      const { chronicleSearch } = await import('./chronicle.mjs');
+      try {
+        const r = chronicleSearch({
+          query,
+          session,
+          category,
+          includeSystem: includeSystem === true || includeSystem === 'true',
+          limit,
+        });
+        return r.text;
+      } catch (e) {
+        return '岁月史书搜不动：' + String(e?.message ?? e);
+      }
+    },
+  },
+  {
+    name: 'chronicle_read',
+    description:
+      '按行号读「岁月史书」里某一段原文。必须给范围（from/to）——史书不许一次全读，先用 chronicle_search 找到在哪几行。一次最多回一万二千字，超了会提示从哪一行接着读。',
+    parameters: {
+      type: 'object',
+      properties: {
+        session: { type: 'string', description: '哪个会话（填 id 或标题，从 chronicle_toc / chronicle_search 里拿）' },
+        from: { type: 'number', description: '起始行号（含）。chronicle_search 的命中里会写「第 N 行」' },
+        to: { type: 'number', description: '结束行号（含）。不给就只读 from 往后二十行' },
+      },
+      required: ['session'],
+    },
+    async run({ session, from, to }) {
+      const { chronicleRead } = await import('./chronicle.mjs');
+      try {
+        const r = chronicleRead({ session, from, to });
+        return r.text;
+      } catch (e) {
+        return '岁月史书读不动：' + String(e?.message ?? e);
+      }
+    },
+  },
 ];
 
 /** Very small HTML -> text reducer (good enough for reading articles / docs). */

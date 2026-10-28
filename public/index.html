@@ -7091,7 +7091,14 @@ function renderAgentList() {
   const list = document.getElementById('agList');
   if (!list) return;
   list.innerHTML = '';
-  for (const a of agentState.agents || []) {
+  const all = agentState.agents || [];
+  const own = all.filter((a) => !a.builtin).length;
+  const head = document.getElementById('agHeadHint');
+  if (head) {
+    const cap = Number(agentState.max || 0);
+    head.textContent = cap ? `每个智能体都有自己的名字、人设和模型（自己建的 ${own}/${cap}）` : '每个智能体都有自己的名字、人设和模型';
+  }
+  for (const a of all) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'agItem' + (a.id === agentSel ? ' on' : '');

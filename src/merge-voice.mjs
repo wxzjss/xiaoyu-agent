@@ -53,8 +53,35 @@ export function mergeSameVoice(wireMessages) {
     // 严格相邻：中间夹着别的（比如她的回答、规则副本）就绝不算连着说
     if (sameVoice(prev, m) && prevIdx === wi - 1) {
       prevIdx = wi;
-      // 用换行接起来，读起来就是同一个人连着说的两行
-      out[out.length - 1] = { ...prev, content: String(prev.content) + '\n' + String(m.content) };
+      /**
+       * 【拼起来之后，得让模型看得出这是两行不同的话 —— 2026-10-29 补】
+       *
+       * 上一版只是拿换行接起来：
+       *     在吗
+       *     （翻着手中的书）
+       * 结果她还是回「（赶紧凑过去看那本书）」—— 把后面那行当成了**别人**的动作。
+       *
+       * 为什么拼了还认错：换行对模型来说只是同一句话里断了一下，
+       * 没有任何标记说「这第二行不是刚才那个人说的」。
+       * 而她要的正是这个信息：**第二行是她自己心里的念头**。
+       *
+       * 所以拼的时候带上来源标记（_whoMade 由 server 那边打，见它 who 分支的注释）：
+       * 她自己那几行前面加「（心里）」——不是称呼、不是标签，是把行属性讲清。
+       * 主人那几行不加任何前缀（她知道那是谁说的）。
+       * 标记只在合并时加、只加在**发出去的拷贝**上，盘上那句话原本就是干净的一条。
+       */
+      const mine = (x) => Boolean(x && x._whoMade);
+      const lineOf = (x) => String(x.content ?? '');
+      /**
+       * 一段里第一次出现「她自己说的」那行才打标记，后面的不用每行都打 ——
+       * 打太多变成噪音，模型反而会去猜「为什么每行都标」。
+       */
+      const body = String(prev.content ?? '');
+      const tagged = body.includes('（心里）') || mine(prev);
+      out[out.length - 1] = {
+        ...prev,
+        content: body + '\n' + (mine(m) && !tagged ? '（心里）' : '') + lineOf(m),
+      };
       continue;
     }
     out.push(m);

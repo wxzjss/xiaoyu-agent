@@ -14,6 +14,8 @@ import { pureModeOn } from './pure.mjs';
 // 自动档的「拿不准」地带交给小鲸判断（带冷却，不每轮花钱）
 import { autoRatioVerdict, contextWindowOf } from './rates.mjs';
 import { askWhaleCompress } from './whale-judge.mjs';
+// 折掉的原文存盘（见 folded.mjs 顶部）。存盘失败不影响压缩，只是少一层保险。
+import { saveSegment } from './folded.mjs';
 
 /** 摘要消息的标记（只在本地用，不进 API 请求体）。 */
 const SUMMARY_FLAG = 'summary';
@@ -952,6 +954,52 @@ function cleanSummary(text) {
   }
 
   const next = withSummary(keep);
+
+  /**
+   * 【折掉的原文，存盘再销毁 —— 2026-10-28】
+   *
+   * 上面 `withSummary(keep)` 一执行，中间那几十条就被摘要吃掉、再也拿不回来。
+   * 主人回头翻「上周三你让我改的是哪一行代码」，摘要里根本没有那行代码。
+   *
+   * 所以覆盖历史之前，先把丢掉的那些原样存一份（见 folded.mjs）。
+   * 存不下来也照压 —— 存盘是加分项，不能因为它失败就让压缩卡住。
+   * 但一定要**在覆盖之前**存，覆盖之后手上就没这个东西了。
+   *
+   * 存的是 messages 里「第一条摘要之后、尾巴之前」的那一段：
+   * 摘要本身不用存（它是替换品，不是被替换的），尾巴还在上下文里。
+   */
+  try {
+    const keptText = new Set(keep);
+    const lost = [];
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (keptText.has(m)) continue;
+      if (m?.summary) continue; // 上一轮的摘要不用再存一遍
+      lost.push({ msg: m, at: i });
+    }
+    if (lost.length && sessionId) {
+      /**
+       * token 数：这里不能用 `before - after` —— `after` 在下面才算出来，
+       * 此时还是个暂时性死区里的变量（真踩了：Cannot access 'after' before initialization）。
+       * 直接按丢掉的原文自己估一个，估的本来就是「这段原文原来多重」，反而更准。
+       */
+      const seg = saveSegment({
+        sessionId,
+        fromIndex: lost[0].at,
+        toIndex: lost[lost.length - 1].at + 1,
+        messages: lost.map((x) => x.msg),
+        tokens: estimateTokens(lost.map((x) => x.msg)),
+        summary: summaryText,
+        reason: String(trigger || 'compress'),
+      });
+      if (seg) {
+        console.log('[compress] 折掉的 ' + lost.length + ' 条原文已存盘：' + seg.id);
+      }
+    }
+  } catch (err) {
+    console.warn('[compress] 存折叠原文出错了（不影响压缩）：', String(err?.message ?? err));
+  }
+
   messages.length = 0;
   messages.push(...next);
 

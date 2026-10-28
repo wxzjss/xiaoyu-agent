@@ -166,7 +166,22 @@ export const MAX_SUBAGENT_DEPTH = 2;
  * 靠的就是这个值。
  */
 export function currentSessionId() {
-  return CTX.sessionId || 'default';
+  /**
+   * 【2026-10-28 修的坑：这里读错了 CTX】
+   *
+   * 原先是 `CTX.sessionId || 'default'` —— 直接摸**全局**那份。
+   * 但 A/B 两个会话并发跑的时候，两个人各在自己的 AsyncLocalStorage 里干活
+   * （见文件顶部那段注释），全局 CTX 上挂的是「最后那个开跑的会话」。
+   * 于是 A 会话里调工具，工具拿到的却是 B 的 sessionId。
+   *
+   * 实测照出来的样子：折叠箱工具明明在会话 smvfoldtest06 里跑，
+   * currentSessionId() 却回 'default'，去查一个不存在的会话，
+   * 永远报「这个会话还没折过东西」。岁月史书那三个工具同病。
+   *
+   * 改成 ctxNow() —— 它优先取本异步链路的，没有才退回全局，老路径照旧。
+   */
+  const c = ctxNow();
+  return c.sessionId || 'default';
 }
 
 export function subagentDepth() {
@@ -1256,6 +1271,105 @@ export const tools = [
         return r.text;
       } catch (e) {
         return '岁月史书读不动：' + String(e?.message ?? e);
+      }
+    },
+  },
+  /**
+   * ────────────────────────────────────────────────────────────
+   *  折叠箱（折掉的原文还能翻回来）
+   * ────────────────────────────────────────────────────────────
+   *
+   * 主人原话（2026-10-28）：「让该会话的 ai 自己决定哪些上下文该删，哪些不能删，
+   * 怎么总结摘要，让她自己决定怎么压，让她自己压」
+   *
+   * 光让她「决定」是不够的：注意力有限是必然的，决定本身救不回丢掉的原文。
+   * 真正的解法是**压掉的段不销毁，存盘，给她一个能翻回来的工具** ——
+   * 这样她才敢放心折，因为折了还能翻。
+   *
+   * 和岁月史书的区别：
+   *   岁月史书 = 主人的全部会话（外部记忆，翻别人的账本）
+   *   折叠箱   = 这个会话自己折掉的那几段（自己的衣柜，翻自己收起来的东西）
+   */
+  {
+    name: 'folded_list',
+    description:
+      '看这个会话「折起来的东西」——之前压缩上下文时被换成摘要的那些原文，都存着，没丢。这里列出每一段：第几条到第几条、原来多少 token、为什么折的、摘要开头一句。想找回某句原话就先看这个，再用 folded_read 读。',
+    parameters: { type: 'object', properties: { session: { type: 'string', description: '会话 id。不填就是当前这个会话' } }, required: [] },
+    async run({ session }) {
+      const { listSegments } = await import('./folded.mjs');
+      try {
+        /**
+         * 用当前会话的 id，不要让模型自己传。
+         *
+         * 她要是随手写个别的 id（比如从岁月史书里抄来的），读到的就是别人衣柜里的东西。
+         * 折叠箱是「自己的」，范围必须钉死在这一轮所在的会话上。
+         *
+         * 【2026-10-28 踩过的坑】这里原先写的是
+         *   `const { currentSessionId } = await import('./tools.mjs')`
+         * —— 在 tools.mjs 内部 import 自己，拿回来的是**另一个模块实例**，
+         * 那份实例的 CTX 是空的，于是 currentSessionId() 永远返回 'default'，
+         * 去查一个不存在的会话，工具就永远报「这个会话还没折过东西」。
+         * 直接调本模块里已有函数就行，别动态 import 自己。
+         */
+        const sid = String(session || currentSessionId() || '').trim();
+        if (!sid) return '不知道是哪个会话，没法看折叠箱。';
+        const list = listSegments(sid);
+        if (!list.length) {
+          return '这个会话还没折过东西（没压缩过，或者压缩时原文都还在尾巴里）。';
+        }
+        const lines = ['【折叠箱 · 这个会话折了 ' + list.length + ' 段】'];
+        for (const e of list) {
+          lines.push('');
+          lines.push('▸ ' + e.id);
+          lines.push('  第 ' + e.from + '–' + (e.to - 1) + ' 条 ｜ 共 ' + e.count + ' 条 ｜ 约 ' + e.tokens + ' token ｜ ' + e.at);
+          lines.push('  原因: ' + (e.reason || '压缩'));
+          if (e.summary) lines.push('  换来的摘要: ' + e.summary);
+        }
+        lines.push('');
+        lines.push('下一步：用 folded_read 传 id（可以只给 seg-12-30 这种前缀）读原文。');
+        return lines.join('\n');
+      } catch (e) {
+        return '折叠箱打不开：' + String(e?.message ?? e);
+      }
+    },
+  },
+  {
+    name: 'folded_read',
+    description:
+      '把折叠箱里某一段的原文读回来。这是唯一能看到「当时到底怎么说的」的办法 —— 摘要只留了四行结论，原文里那些代码、原话、数字全在。id 从 folded_list 拿，可以只给前缀。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '哪一段，从 folded_list 拿。可以只给 seg-12-30 这种前缀' },
+        session: { type: 'string', description: '会话 id。不填就是当前这个会话' },
+      },
+      required: ['id'],
+    },
+    async run({ id, session }) {
+      const { readSegment } = await import('./folded.mjs');
+      try {
+        // 同上：别 import 自己，直接用本模块的 currentSessionId
+        const sid = String(session || currentSessionId() || '').trim();
+        if (!sid) return '不知道是哪个会话，没法读折叠箱。';
+        const r = readSegment(sid, id);
+        if (!r.ok) return '读不到：' + r.error;
+        const head = '【折叠箱 · ' + r.id + '（第 ' + r.from + '–' + (r.to - 1) + ' 条，' + r.size + ' 字节）】';
+        /**
+         * 一次别回太多。
+         *
+         * 实测一段可以是 1.6 万字、甚至几万字（工具结果为主）。一口气塞回去，
+         * 等于刚压下来的上下文立刻又涨回去 —— 这事就白干了。
+         * 所以超长就只给前一段，并告诉她后面还有多少、让她自己决定要不要接着要。
+         */
+        const MAX = 12000;
+        if (r.text.length > MAX) {
+          return head + '\n\n' + r.text.slice(0, MAX)
+            + '\n\n（这一段一共 ' + r.text.length + ' 字，先给前 ' + MAX + ' 字。'
+            + '剩下的如果不是非看不可就别要了 —— 塞回来会把刚压下去的上下文又撑满。）';
+        }
+        return head + '\n\n' + r.text;
+      } catch (e) {
+        return '折叠箱读不动：' + String(e?.message ?? e);
       }
     },
   },

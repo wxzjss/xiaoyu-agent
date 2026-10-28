@@ -1489,42 +1489,9 @@
     .featRow .featEditBtn:hover { border-color: var(--accent); color: var(--accent); }
     /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
     .featRow .featEditGroup { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
-    .openingBox {
-      margin: 2px 0 10px 12px; padding: 12px 14px 10px;
-      border-left: 2px solid rgba(77,141,255,.45);
-      background: rgba(77,141,255,.05); border-radius: 0 8px 8px 0;
-    }
-    .openingField { display: block; margin-bottom: 10px; }
-    .openingFieldHead {
-      display: flex; align-items: center; gap: 8px;
-      font-size: 12px; color: var(--dim); margin-bottom: 5px;
-    }
-    .openingFieldHead .openingTag {
-      font-size: 10.5px; color: var(--accent);
-      border: 1px solid rgba(77,141,255,.5); border-radius: 999px; padding: 0 6px;
-    }
-    .openingMini {
-      margin-left: auto; flex: none; cursor: pointer;
-      border: none; background: transparent; color: var(--dim);
-      font-size: 11.5px; padding: 0 2px; text-decoration: underline;
-    }
-    .openingMini:hover { color: var(--accent); }
-    .openingArea {
-      width: 100%; box-sizing: border-box; resize: vertical;
-      /* 定死高度、允许内部滚动 —— 以前只写 rows=5 + resize:vertical，
-         textarea 会随着输入不断撑高，连带 .featScroll 反复重排，
-         上下滚几下就卡成幻灯片。 */
-      height: 96px; min-height: 96px; max-height: 240px; overflow: auto;
-      background: var(--input-bg); color: var(--text);
-      border: 1px solid var(--border); border-radius: var(--radius);
-      padding: 8px 10px; font-size: 12.5px; line-height: 1.75;
-      font-family: inherit;
-      contain: content;
-    }
-    .openingArea:focus { outline: none; border-color: var(--accent); }
-    .openingHint { color: var(--dim); font-size: 11.5px; line-height: 1.7; margin: 4px 0 0; }
-    .openingBar { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-    .openingBar .openingHint { margin: 0; flex: 1; }
+    /* 2026-10-29：原来那套「开场白编辑器」的样式（.openingBox/.openingField/.openingArea/.openingBar）
+       随功能页那个入口一起删掉了 —— 开场白现在在智能体面板里改，只用人设框那套样式。 */
+
 
     /* ---- 小鲸人设大面板 --------------------------------------------------
        2026-10-27 主人原话：「人设栏太小了，我要那种点击一下直接弹出一个新界面，
@@ -1635,6 +1602,15 @@
       font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; line-height: 1.8;
     }
     #agentListDlg .agTip { font-size: 11.5px; color: var(--dim); line-height: 1.7; }
+    /* 开场白那一栏：一行 label 带一句多行输入。它不像人设那么长，但也要能写几行，
+       所以给它固定 3 行的初始高度 + 可手动拉，宽度吃满（它跟 label 挤在一行会很难看）。 */
+    #agentListDlg .agRow #agOpening {
+      flex: 1 1 100%; width: 100%; box-sizing: border-box; min-height: 74px;
+      resize: vertical; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--input-bg); color: var(--text);
+      font-family: inherit; font-size: 12.5px; line-height: 1.7;
+    }
+    #agentListDlg .agRow #agOpening:focus { outline: none; border-color: var(--accent); }
     @media (max-width: 760px) {
       #agentListDlg .agBody { flex-direction: column; }
       #agentListDlg .agList {
@@ -2575,6 +2551,14 @@
             <label>这个会话里</label>
             <span id="agBindState" style="flex:1 1 160px;color:var(--dim)"></span>
             <button type="button" class="ghost" id="agBind">让这个会话用她说话</button>
+          </div>
+          <div class="agRow">
+            <!-- 2026-10-29 主人：「把原来删掉的【一句话】回滚回去，但改名为【开场白】…
+                 创建会话时智能体会默认自动发送该内容」。
+                 所以这一栏不是给人看的介绍，是她自己开口说的第一句：
+                 填了什么，新建会话时她就先发什么；留空（比如小鲸）就是一张白纸。 -->
+            <label>开场白</label>
+            <textarea id="agOpening" rows="3" spellcheck="false" placeholder="新建会话时她先说的那句；留空就是她不开口"></textarea>
           </div>
           <textarea id="agPersona" spellcheck="false" placeholder="她的人设正文：她是谁、怎么说话、什么脾气……"></textarea>
           <div class="agTip" id="agTip"></div>
@@ -7174,6 +7158,7 @@ async function selectAgent(id) {
 
   agSet('agName', agentCur.name);
   agSet('agPersona', agentCur.persona);
+  agSet('agOpening', agentCur.opening || '');
 
   // 模型下拉：第一项永远是「跟当前模型一致」
   const sel = document.getElementById('agModel');
@@ -7387,6 +7372,12 @@ async function saveAgentCard() {
       body: JSON.stringify({ id, text: agVal('agPersona') }),
     }).then((x) => x.json()).catch(() => null);
     if (!r2 || r2.error) { agHint('人设没存上：' + ((r2 && r2.error) || '网络错误')); return; }
+    // 开场白跟人设一样是「这张卡的」，一起存（留空 = 她不开口）
+    const r2b = await fetch('/api/agents/opening', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, opening: agVal('agOpening') }),
+    }).then((x) => x.json()).catch(() => null);
+    if (!r2b || r2b.error) { agHint('开场白没存上：' + ((r2b && r2b.error) || '网络错误')); return; }
     if (id !== 'xiaoyu') {
       const sel = document.getElementById('agModel');
       const want = sel && !sel.disabled ? sel.value : undefined;
@@ -8545,21 +8536,9 @@ function renderFeatList() {
       continue;
     }
 
-    // 开场白这种能改内容的功能，多给一个「改」的入口
-    if (f.id === 'opening') {
-      const edit = document.createElement('button');
-      edit.type = 'button';
-      edit.className = 'featEditBtn';
-      edit.textContent = '改开场白';
-      edit.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        toggleOpeningEditor(row);
-      });
-      row.append(main, edit, sw);
-    } else {
-      row.append(main, sw);
-    }
+    // 2026-10-29 主人：「删除功能页原来的【开场白】功能」——
+    // 开场白已经搬到智能体面板里（每张卡自己一句），这里那行「改开场白」入口跟着撤掉。
+    row.append(main, sw);
     featList.appendChild(row);
   }
   const off = featState.features.filter((f) => !f.enabled).length;
@@ -8572,12 +8551,6 @@ async function loadFeatures() {
   if (!r || r.error) return false;
   featState = r;
   renderFeatList();
-  if (openingOpen) {
-    // 面板还开着，重建之后要把它带回来
-    const row = featList && featList.querySelector('.featRow[data-id="opening"]');
-    if (row) openOpeningEditor(row);
-    else openingOpen = false;
-  }
   return true;
 }
 
@@ -9120,133 +9093,10 @@ async function openWhalePersonaDlg() {
   try { area.focus({ preventScroll: true }); area.setSelectionRange(0, 0); area.scrollTop = 0; } catch {}
 }
 
-// ---- 开场白编辑器 ----
-// 那两段是「AI 看得见、你界面上看不见」的隐藏对话，所以平时不出现在会话里；
-// 想改就只能在功能面板里改，改完存在 .state/opening.json。
-let openingOpen = false;
-let openingData = null;
-// 每次重画都会重建 DOM。用一个序号标记「当前这次」，异步回来的旧请求直接丢弃 ——
-// 否则快速开关 / 滚动触发重画时，多个 setTimeout 回来各插一个 box，DOM 越堆越多。
-let openingSeq = 0;
-
-// el() 在上面（记忆本那一段）已经定义过了，这里不再重复。重复定义一个同名函数，
-// 整个脚本块会直接 SyntaxError = 整页白屏，一行 JS 都不执行。
-
-function toggleOpeningEditor(row) {
-  if (openingOpen) {
-    closeOpeningEditor();
-    return;
-  }
-  openOpeningEditor(row);
-}
-
-function closeOpeningEditor() {
-  openingSeq += 1;
-  openingOpen = false;
-  const box = document.getElementById('openingBox');
-  if (box) box.remove();
-  const btn = featList && featList.querySelector('.featEditBtn');
-  if (btn) btn.textContent = '改开场白';
-}
-
-async function openOpeningEditor(row) {
-  closeOpeningEditor();
-  const seq = openingSeq;
-  openingOpen = true;
-  const box = el('div', 'openingBox');
-  box.id = 'openingBox';
-  box.append(el('div', 'openingHint', '这两段是隐藏的：她看得见、会话里不显示。想让她换个方式等你，就改下面第二段。'));
-  // 先把壳插进去（哪怕数据还没回来），这样点「收起」永远有东西可删。
-  row.after(box);
-  const btn = row.querySelector('.featEditBtn');
-  if (btn) btn.textContent = '收起';
-
-  let data = openingData;
-  if (!data) {
-    const loading = el('div', 'openingHint', '读着呢…');
-    box.append(loading);
-    data = await fetch('/api/opening').then((x) => x.json()).catch(() => null);
-    if (seq !== openingSeq) return; // 期间被关掉 / 重开过，这批结果作废
-    loading.remove();
-  }
-  if (!data || data.error) {
-    box.append(el('div', 'openingHint', '读不出来，稍后再试。'));
-    return;
-  }
-  openingData = data;
-
-  const mk = (key, label, hint) => {
-    const wrap = el('label', 'openingField');
-    const head = el('div', 'openingFieldHead');
-    head.append(el('span', null, label));
-    const custom = key === 'user' ? data.customUser : data.customAssistant;
-    if (custom) head.append(el('span', 'openingTag', '改过'));
-    const resetBtn = el('button', 'openingMini', '用回默认');
-    resetBtn.type = 'button';
-    resetBtn.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      ta.value = data.defaults[key];
-      ta.dataset.dirty = '1'; // 显式标脏，好让「存上」真的写进去
-    });
-    head.append(resetBtn);
-    wrap.append(head);
-    const ta = el('textarea', 'openingArea');
-    ta.value = data[key];
-    ta.rows = 5;
-    ta.spellcheck = false;
-    wrap.append(ta);
-    if (hint) wrap.append(el('div', 'openingHint', hint));
-    return { wrap, ta };
-  };
-
-  const a = mk('user', '第一段 · 她「自己待着」那句（发给模型的提示）', '这句的口气是「有人在替她说话」，她一般不会原样复述。');
-  const b = mk('assistant', '第二段 · 她的开场白（真正显示给你看的语气）', '这段直接决定她一上来跟你说的那几句话。');
-
-  const bar = el('div', 'openingBar');
-  const save = el('button', 'primary', '存上');
-  save.type = 'button';
-  const resetAll = el('button', 'ghost', '两段都恢复默认');
-  resetAll.type = 'button';
-  const tip = el('span', 'openingHint', '');
-  bar.append(save, resetAll, tip);
-
-  save.addEventListener('click', async (ev) => {
-    ev.preventDefault();
-    save.disabled = true;
-    tip.textContent = '存…';
-    const r = await fetch('/api/opening', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ user: a.ta.value, assistant: b.ta.value }),
-    }).then((x) => x.json()).catch(() => null);
-    save.disabled = false;
-    if (!r || r.error) {
-      tip.textContent = '没存上：' + ((r && r.error) || '网络问题');
-      return;
-    }
-    openingData = r.texts || r;
-    tip.textContent = '存好了 · 新建会话就生效';
-    closeOpeningEditor();
-  });
-
-  resetAll.addEventListener('click', async (ev) => {
-    ev.preventDefault();
-    const r = await fetch('/api/opening/reset', { method: 'POST' }).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) {
-      tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题');
-      return;
-    }
-    openingData = r.texts || r;
-    a.ta.value = openingData.user;
-    b.ta.value = openingData.assistant;
-    tip.textContent = '两段都回默认了';
-  });
-
-  box.append(a.wrap, b.wrap, bar);
-  // 壳在开头就插好了，这里只补内容，别再 row.after（会插出第二个 box）
-  if (seq !== openingSeq) return;
-  a.ta.focus({ preventScroll: true });
-}
+// ---- （2026-10-29）开场白编辑器已撤 ----
+// 主人把开场白从功能页搬到了智能体面板：每张卡自己一句，存 .state/agent-openings.json。
+// 这里原来那套「两段隐藏对话」的编辑器（openingBox / toggleOpeningEditor / openOpeningEditor）
+// 已经删掉，别再从这里改开场白。
 
 if (featList) {
   featList.addEventListener('click', async (e) => {

@@ -166,6 +166,67 @@ export function isOwnerIdentity(id = null, sessionId = null) {
   return id === 'owner';
 }
 
+/**
+ * 【这一轮的提示词里，「主人」这两个字该不该换成说话那个人的名字】—— 2026-10-29
+ *
+ * 主人原话（反复报过三次）：「我用小鱼身份，她还是知道我是主人。」
+ *
+ * 【为什么以前怎么改都没用】
+ * 以前只在**一两处**动手：把「对用户的称呼：主人」那句换掉、
+ * 在最后贴一段「这一轮说话的不是主人」。可是整篇提示词里「主人」出现 **37 次**
+ * （平台说明、底线、安全词、工具清单、人设档……），换成名字的地方只有 1 处。
+ * 模型看到 37 遍「主人」、1 遍「别喊主人」，当然按多的那个演。
+ *
+ * 所以改成「计数取胜」：非主人身份下，**正文里每一个「主人」都换成那个人的名字**。
+ * 这样她读到的提示词里根本没有「主人」这个词，也就不可能喊出来。
+ *
+ * 【但底线的指向不能改】
+ * 「不碰主人真钱」「禁止泄露主人隐私」这些是管她的规矩，指的人还是主人本人。
+ * 换成名字（「不碰小鱼真钱」）意思会歪成「不能碰小鱼的钱」—— 底线就废了。
+ * 所以规矩那几句的「主人」一律换成「用户」（中性、不指向身份，跟 persona.mjs 里
+ * retargetPersona 同一个做法、同一个理由）。
+ *
+ * @param {object|null} me currentIdentity() 的结果
+ * @returns {boolean} true = 这一轮要把「主人」换成称呼/用户
+ */
+export function retargetOwnerWords(me) {
+  return Boolean(me && me.id && me.id !== 'owner' && identityOn());
+}
+
+/**
+ * 把一段文字里所有的「主人」按身份换掉。
+ *
+ * 两道处理，顺序不能反（反了兜底会把刚补的称呼行再改一遍 —— 这个坑在
+ * persona.mjs 的 retargetPersona 里踩过，注释还在那儿）：
+ *   1. 先认「规矩句」：含真钱 / 转账 / 付款 / 隐私 / 命令 的那些，换成「用户」；
+ *   2. 剩下的「主人」全部换成这一轮说话那个人的名字。
+ *
+ * @param {string} text
+ * @param {object|null} me
+ * @param {{keep?:boolean}} [opt] keep=true 表示原样返回（主人身份）
+ */
+export function retargetOwnerText(text, me, opt = {}) {
+  const s = String(text ?? '');
+  if (!s) return s;
+  if (opt.keep || !retargetOwnerWords(me)) return s;
+  // 小鱼身份 = 她自己在跟自己说话，没有「称呼谁」这回事，跟 persona.mjs 一致
+  if (me.id === 'fish') {
+    return s.replace(/主人/g, '用户');
+  }
+  const nm = String(me.name || '').trim() || '用户';
+  /**
+   * 规矩句：这些句子里的「主人」指的都是主人本人，必须留成中性的「用户」。
+   * 判断只看本行 —— 提示词里这些规矩本来就是一行一条，按行处理足够稳。
+   */
+  return s
+    .split('\n')
+    .map((line) => {
+      const isRule = /真钱|转账|付款|下单|隐私|本人|命令|安全词/.test(line);
+      return line.replace(/主人/g, isRule ? '用户' : nm);
+    })
+    .join('\n');
+}
+
 /** 切身份。id 不存在就不动，返回 false —— 别静默改成别人。 */
 export function setIdentity(id, sessionId = null) {
   const all = listIdentities();
@@ -343,6 +404,26 @@ export function identityBlock(opt = {}) {
   lines.push('这几段话的主人是同一个：主人可以随时套上别的名字来说话，那一轮里的「主人」「小鱼」「小鲸」……都可能是同一个人的不同叫法。');
   lines.push('你是跟**一个人**在过日子，不是屋里挤着一群人。名字变了不等于人变了。');
   lines.push('所以对面说的动作、做的事，别往「另外一个人手里」去想 —— 除非明确说了是别人。');
+
+  /**
+   * 【「（心里）」这个记号是什么意思】—— 2026-10-29
+   *
+   * 主人第二次报同一个毛病：「（翻着手中的书）」被她当成「凑过去看别人的书」。
+   *
+   * 查下来根子在结构上：主人说一句、她自己（顶着同一副身份）说一句，
+   * 这两条在历史里是分开的两条 user 消息。中间没有她的回答时，
+   * 从模型视角看就是「这一轮里换人了」—— 于是后面那句被读成别人的动作。
+   *
+   * 前面已经有 mergeSameVoice 把紧挨着的同一个人合成一段（src/merge-voice.mjs），
+   * 并在她自己那几行前面打上「（心里）」。这里负责告诉她那个记号是干什么用的 ——
+   * 不然她只看到一行奇怪的括号。
+   */
+  lines.push('');
+  lines.push('【看到「（心里）」是什么意思】');
+  lines.push('上面那段话里，凡是前面标着「（心里）」的行，都是**你自己心里冒出来的念头**，');
+  lines.push('不是说话的那个人做的动作。比如「在吗」后面跟着一行「（心里）（翻着手中的书）」——');
+  lines.push('那是你在翻自己手上的书，不是有人在凑过来看别人的书。');
+  lines.push('这类行要和前面那人说的话接成一段读，别拆成两个人的对话。');
 
   if (me.address) {
     lines.push('');

@@ -13,7 +13,7 @@ import { slimRoundMessages, measureMessages } from './turn-slim.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
-import { currentIdentity } from './identity.mjs';
+import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identity.mjs';
 import { pureModeOn, setPureToolLister } from './pure.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
@@ -239,32 +239,73 @@ export function contextMessage(sessionId = 'default', opts = {}) {
         '名字换了，主次不换：你仍是先来的那个，不是后来者。别因为这一轮顶着「小鱼」这两个字，就把自己放到下位去撒娇、去讨好看脸色。',
         '这一轮你照常是原来的你，只是说话的人换了名字而已 —— 分寸、语气、抬得起头的那个劲儿，都不许变。',
         '',
-        '下面每一处「主人」都已经按主人本人的要求改写成「用户」，那是在讲主人定的规矩，照做就是；',
-        '但不要把它当成「现在有个叫用户的人在跟我说话」。',
-        '',
-        '【名字 ≠ 称呼】这一轮说话那个人的名字就是「小鱼」，不是「主人」。别在心里把他还原成主人再喊出口 —— 名字换了，出场叫的就是这个名字。',
+        // 见下面 systemPrompt 那段注释：真正的「主人」改词在出提示词那一刻统一做，
+        // 这里只交代一句「规矩里的人是按照说话的人写的」，不再重复那个词。
+        '下面那些规矩里提到的人，指的就是这一轮说话的人；规矩照做，但别把它当成「外面有人在跟我说话」。',
         '',
       ].join('\n');
     } else {
+      /**
+       * 【这一版不再逐字解释「下面每一处『主人』都改成……」】—— 2026-10-29
+       *
+       * 原来这里写了两行：「下面是主人本人定给这个程序的规矩」
+       * 「但下面每一处『主人』，指的都是主人在说」——
+       * 为了让模型听懂，连着把那个词念了三遍，正好是它要防的东西。
+       * 现在正文里的词已经由 retargetOwnerText 换成名字了，
+       * 这里只要说清「你是跟谁说话」这一件事。
+       */
       _whoHead = [
-        `【最要紧的一条，盖过下面所有的话：这一轮跟你说话的是「${_nm}」，不是主人】`,
-        `${_TA}不是主人。下面是主人本人定给这个程序的规矩，那些规矩照做，`,
-        `但下面每一处「主人」，指的都是主人在说，不是${_TA}在说 —— 别顺着把${_TA}也叫成主人。`,
+        `【最要紧的一条，盖过下面所有的话：这一轮跟你说话的是「${_nm}」】`,
+        `${_TA}不是你的主人。下面那些规矩是这个程序的设定，照做 ——`,
+        `但规矩里提到「说话的人」时，指的就是${_TA}，不是别人。`,
         `称呼${_TA}就叫名字，或者说「你」。`,
         '',
       ].join('\n');
     }
   }
 
+  /**
+   * 【这一句原来自己就在犯它想防的错 —— 2026-10-29】
+   *
+   * 原文：「下面每一处『主人』都已经按主人本人的要求改写成『用户』……」
+   * 下半句还补了一行「【名字 ≠ 称呼】这一轮说话那个人的名字就是『小鱼』，不是『主人』」。
+   *
+   * 这两句本意是解释，实际效果是在她开口之前又把「主人」念了两遍，
+   * 而那段解释恰好又是紧贴在系统提示最前面、最容易被照抄的位置。
+   * 现在真正的重写由 retargetOwnerText 在出提示词那一刻统一做掉了，
+   * 这里不需要再指着那个词解释 —— 说「规矩里的人称已经换过」就够了。
+   */
   const _head = _whoHead ? _whoHead + CONTEXT_PREAMBLE : CONTEXT_PREAMBLE;
-  return memory
-    ? `${_head}\n\n${rules}\n\n${memory}`
-    : `${_head}\n\n${rules}`;
+  /**
+   * 规则副本（这一趟 user 版的 rules）和系统提示一样，必须过同一道卡口。
+   * 只改系统提示、不改这份副本的话，「主人」还会从这个口子漏回去 ——
+   * 很多网关会丢掉 system，真正读到的恰恰是这一份。
+   */
+  const _rules = retargetOwnerText(rules, _who);
+  /**
+   * 记忆本也在这一趟里（memoryText() 的横幅/提示行里也有「主人」），
+   * 一起过卡口 —— 它是紧贴在 rules 后面、离这一轮说话最近的位置之一。
+   */
+  const _mem = retargetOwnerText(memory, _who);
+  return _mem
+    ? `${_head}\n\n${_rules}\n\n${_mem}`
+    : `${_head}\n\n${_rules}`;
 }
 
-/** The full rules text: persona card + user rules + 底线/安全词 + live plan progress. */
+/**
+ * 【「主人」这两个字，非主人身份下从这里彻底消失】—— 2026-10-29
+ *
+ * 主人报过三次「我用小鱼身份，她还是知道我是主人」。前面已经在 persona.mjs 里
+ * 换掉了「对用户的称呼」那一句，可提示词里「主人」一共出现 37 次，
+ * 换掉 1 处等于没换 —— 模型按出现次数投票。
+ *
+ * 所以不再在各处零敲碎打，改成在这一个卡口统一处理：
+ * 系统提示和规则副本都是从这里出去的，凡是「主人」都按当前身份换掉。
+ * 见 identity.mjs 的 retargetOwnerText（规矩句换「用户」，其余换名字）。
+ */
 export function systemPrompt(sessionId = 'default', opts = {}) {
-  return buildSystemPrompt({ sessionId, ...opts });
+  const text = buildSystemPrompt({ sessionId, ...opts });
+  return retargetOwnerText(text, currentIdentity(sessionId));
 }
 
 /**

@@ -6507,6 +6507,38 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 注意顺序：saveSession 必须在 dropDraft 之前 —— 万一存盘失败，
       // 草稿还在，下次打开还能救回来。
       dropDraft(sessionId);
+      /**
+       * 【岁月史书：这一轮已经落盘了，顺手把它并进史书】
+       *
+       * 主人要的是「自动记录所有会话的全部上下文内容」。所以不能等主人想起来去点，
+       * 得在每轮收尾自己并进去。
+       *
+       * 三个必须守的规矩：
+       *   ① 放在 saveSession 之后 —— 史书读的是磁盘上的会话，先写会话再编史，
+       *      否则并进去的是旧的那份，最新这一轮永远差一步。
+       *   ② 不 await —— 建库要读全部会话、写索引，几十到几百毫秒。
+       *      串在这一轮的返回值上，主人就会觉得「她答完了还在卡」。
+       *   ③ 失败一律吞掉 —— 史书坏了是「少一本书」，不能因此让这一轮报错或丢消息。
+       *
+       * 增量：buildChronicle 自己看 updatedAt + 条数，没变的会话直接跳过，
+       * 只为这一个会话重编，不是每次都全量重来。
+       */
+      {
+        const bookSid = sessionId;
+        setImmediate(() => {
+          import('./chronicle.mjs')
+            .then(({ buildChronicle }) => {
+              const r = buildChronicle({});
+              if (process.env.CHRONICLE_DEBUG) {
+                console.log('[chronicle] ' + bookSid + ' → 全书 ' + r.books + ' 本，本次重编 '
+                  + r.rebuilt + ' 本，跳过 ' + r.skipped + ' 本，' + r.elapsedMs + 'ms');
+              }
+            })
+            .catch((e) => {
+              console.warn('[chronicle] 并进史书失败（不影响这一轮）：', String(e?.message ?? e));
+            });
+        });
+      }
       finishTurn();
 
     }

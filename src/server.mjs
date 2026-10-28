@@ -88,6 +88,7 @@ import {
   resetAgentPersona,
   setAgentModel,
   sessionAgentId,
+  sessionAgentMap,
   setSessionAgent,
   AGENT_XIAOYU,
   AGENT_XIAOJING,
@@ -3408,6 +3409,40 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /**
+   * 用某一张卡开一个新会话 —— 「多开」的入口。
+   *
+   * 顺序有讲究：先校验卡存在、先建会话、**再绑卡、最后才跑开场白**。
+   * 开场白是照 `buildSystemPrompt(sessionId)` 写的，绑卡在前它才是「她」的口吻；
+   * 校验在建立之前，是为了不留下「卡没了但会话建出来了」的孤儿。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/agents/new-session') {
+    const payload = await body(req).catch(() => ({}));
+    const agentId = String(payload?.agentId || '').trim();
+    if (!agentId) return json(res, 400, { error: '要指定用哪张卡说话' });
+    if (agentId === AGENT_XIAOJING) {
+      return json(res, 400, { error: '小鲸是跑出去查事情的那个她，不是聊天对象，不能拿去开会话' });
+    }
+    const card = getAgent(agentId);
+    if (!card) return json(res, 400, { error: '没有这张智能体卡' });
+    try {
+      const title = String(payload?.title || '').replace(/\s+/g, ' ').trim() || card.name;
+      const session = makeSession({ title }, { opening: false });
+      // 小鱼就是「没绑卡」，不用写绑定；别的卡才要记一笔
+      if (agentId !== AGENT_XIAOYU) setSessionAgent(session.id, agentId);
+      startOpening(session.id).catch((err) => console.warn('[opening] 后台开场没跑成：', String(err?.message ?? err)));
+      return json(res, 200, {
+        ok: true,
+        session: publicSession(session),
+        agentId,
+        boundAgentId: agentId,
+        memory: memoryInfo(session.id),
+      });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/agents/one') {
     const id = String(url.searchParams.get('id') || '');
     const agent = getAgent(id);
@@ -4154,7 +4189,30 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
-    const list = listSessions();
+    // 每条会话顺手带上「它现在是哪张智能体卡在说话」。
+    // 为什么放在服务端算而不是让界面自己去问：会话一多（主人四十多个），
+    // 界面要为每一条发一次请求，列表打开就得等一整圈；这里一次带回去。
+    // 卡被删掉、绑了不存在的卡，map 里已经按「宁可掉回小鱼」滤掉了。
+    const boundMap = (() => {
+      try {
+        return sessionAgentMap();
+      } catch {
+        return {};
+      }
+    })();
+    const nameOf = (() => {
+      const m = new Map();
+      try {
+        for (const a of listAgents()) m.set(String(a.id), String(a.name || ''));
+      } catch {
+        /* 取不到名字也不该让会话列表打不开 */
+      }
+      return m;
+    })();
+    const list = listSessions().map((s) => {
+      const agentId = String(boundMap[s.id] || '');
+      return { ...s, agentId, agentName: agentId ? (nameOf.get(agentId) || '') : '' };
+    });
     const last = getLastSessionId();
     const fallback = list.length ? list[0].id : null;
     return json(res, 200, {
@@ -4257,8 +4315,15 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, id, total: all.length, messages });
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
-    const payload = await body(req).catch(() => ({}));
+  /**
+   * 开一个新会话（`/api/sessions/new` 和 `/api/agents/new-session` 共用这一份）。
+   *
+   * 为什么抽出来：建一个会话要连着做四件事 —— 垫开场、存盘、建记忆本子、后台跑开场白。
+   * 上次「两处各写一遍」的教训是改了一处忘另一处，所以宁可只留一份。
+   * `opts.opening === false` 时只建不跑：智能体卡那条路得先绑卡再跑开场，
+   * 否则开场白是按「没绑卡的小鱼」写的，跟她的人设对不上。
+   */
+  function makeSession(payload = {}, opts = {}) {
     const id = isSessionId(payload?.id) ? payload.id : newSessionId();
     const now = Date.now();
     const session = {
@@ -4283,8 +4348,16 @@ const server = createServer(async (req, res) => {
     // 建完就立刻去跑开场（后台跑，不等它）。主人要的是「新建那一瞬间就已经历过第一轮」，
     // 所以不能等主人先开口 —— 但也不能让新建接口卡十几秒，所以 fire-and-forget。
     // 失败无所谓：开场跑不出来就当没开过场，主人第一句话照样能聊。
-    startOpening(id).catch((err) => console.warn('[opening] 后台开场没跑成：', String(err?.message ?? err)));
-    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id) });
+    if (opts.opening !== false) {
+      startOpening(id).catch((err) => console.warn('[opening] 后台开场没跑成：', String(err?.message ?? err)));
+    }
+    return session;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
+    const payload = await body(req).catch(() => ({}));
+    const session = makeSession(payload);
+    return json(res, 200, { session: publicSession(session), memory: memoryInfo(session.id) });
   }
 
   /**

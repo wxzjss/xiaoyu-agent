@@ -406,6 +406,25 @@ export function sessionAgentId(sessionId) {
   return data.customs.some((a) => String(a.id) === id) ? id : '';
 }
 
+/**
+ * 一次读出「每个会话分别挂在哪张卡上」（给会话列表用）。
+ *
+ * 为什么不逐条调 `sessionAgentId`：那个每调一次读一遍文件，
+ * 主人四十多个会话就是四十多次读盘 —— 列表一打开就卡一下。
+ * 卡被删掉的那些也在这里滤掉，跟 `sessionAgentId` 一个口径：宁可掉回小鱼。
+ */
+export function sessionAgentMap() {
+  const data = readAll();
+  const out = {};
+  for (const [sid, id] of Object.entries(data.bySession || {})) {
+    const a = String(id || '');
+    if (!a || a === AGENT_XIAOYU) continue;
+    if (!data.customs.some((x) => String(x.id) === a)) continue;
+    out[String(sid)] = a;
+  }
+  return out;
+}
+
 export function setSessionAgent(sessionId, agentId) {
   const sid = String(sessionId || '');
   if (!sid) {

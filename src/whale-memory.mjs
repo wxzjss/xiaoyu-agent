@@ -34,6 +34,24 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
+import { getEnabledMap } from './features.mjs';
+
+/**
+ * 【长期记忆关着吗】—— 2026-10-28，跟 my-memory.mjs 同一道闸
+ *
+ * 本来这一路只在 subagent.mjs 里判了开关（读不读本子、给不给工具）。
+ * 实测发现那只是一层皮：模块自己从来不问，从旁边一调照样读、照样写。
+ * 小鱼那边也是这么漏的（memoryText 关着还吐路径、appendRolling 关着照写本子）。
+ *
+ * 所以这道闸钉在模块自己身上 —— 每个出口先问一句，堵在门口比堵在路上可靠。
+ */
+function memoryOff() {
+  try {
+    return getEnabledMap()['memory'] === false;
+  } catch {
+    return false; // 读不到开关就当开着，别因为一个异常把记忆整个锁死
+  }
+}
 
 /**
  * 记忆本路径。
@@ -182,6 +200,8 @@ function render(bucket) {
  * @returns {string}
  */
 export function readWhaleMemory() {
+  // 关着就不读：返回空串，调用方拼不出东西 —— 连「本子在哪儿」也不带出去
+  if (memoryOff()) return '';
   try {
     if (!existsSync(FILE)) {
       ensureDir();
@@ -274,6 +294,8 @@ function keysOf(s) {
  * @returns {boolean|string} true = 新增；'merged' = 判为同一件事、原地更新了
  */
 export function appendWhaleMemory(section, line) {
+  // 关着就不写：返回 false，跟「没写进去」同一个回答，调用方不必分情况处理
+  if (memoryOff()) return false;
   const clean = String(line ?? '').replace(/\s+/g, ' ').trim();
   if (!clean) return false;
   const name = SECTIONS.find((s) => s === section || s.replace(/^我/, '') === String(section).replace(/^我/, ''));
@@ -455,6 +477,8 @@ function compactSection(items, keep) {
  * @returns {{compacted:boolean, before:number, after:number, archived:number}}
  */
 export function compactWhaleMemory() {
+  // 关着就别压：压一次要读一次写一次，等于绕开开关动了本子
+  if (memoryOff()) return { compacted: false, before: 0, after: 0, archived: 0 };
   try {
     const raw = readWhaleMemory();
     const before = raw.length;
@@ -509,6 +533,7 @@ export function compactWhaleMemory() {
 
 /** 整份重写（主人手改或要清空时用）。 */
 export function writeWhaleMemory(text) {
+  if (memoryOff()) return false; // 关着不许整份覆盖 —— 这条最狠，一写就是把整本换掉
   try {
     ensureDir();
     writeFileSync(FILE, String(text ?? SKELETON), 'utf8');

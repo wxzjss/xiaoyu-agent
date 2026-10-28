@@ -167,16 +167,26 @@ export function contextMessage(sessionId = 'default', opts = {}) {
    *   【我的记忆本】文件：C:\...\my-memory.md ...
    * 更糟的是路径就在眼前 —— 本子是空的她也能顺着路自己去 read_file。
    *
-   * 现在：关着就一个字都不注入，连路径都不给。不是隐藏，是压根没提过这东西。
+   * 现在（2026-10-28 又改了一次口径）：**关着也注入，只读**。
+   * 主人原话：「改成关掉长期记忆功能后，只能看记忆本，也就是只允许只读，不能写」
+   *
+   * 上一版是「关着一个字都不注入」，理由是本子路径会摊在她眼前。
+   * 那条理由成立，但结论是错的：把她关在门外不叫关掉记忆功能，
+   * 那叫假装没记过。她要能翻到从前记下的东西，只是不能再往里添。
+   *
+   * 真正防住「顺着路径写本子」的不是不给她看，是三道闸：
+   *   · memory_add / memory_pin 拿不到，硬编 tool_call 也在 runTool 里被拒
+   *   · write_file / run_command 碰记忆本那几份文件 → safePath 直接抛
+   *   · 本子内容自己带一句「现在只能看」，她知道自己在做什么
    */
   const __memOn = getEnabledMap()['memory'] !== false;
   try {
-    if (__memOn) memory = memoryText();
+    memory = memoryText();
   } catch (e) {
     console.warn('[memory] 记忆本没读出来：', String(e?.message ?? e));
     memory = '';
   }
-
+  void __memOn;
   /**
    * 【身份铁律 —— 2026-10-28 主人报「小鲸身份问我是谁，小鱼答你是主人」】
    *

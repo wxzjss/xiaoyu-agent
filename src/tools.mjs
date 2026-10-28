@@ -28,8 +28,8 @@ const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** 专业模式下不该出现的工具（见 runTool 里那道闸）。 */
 const FOREIGN_IN_PURE = ['memory_add', 'memory_pin'];
 
-/** 长期记忆关着时，碰 .state 的回答 */
-const BLOCKED_HINT = '长期记忆现在是关着的，记忆本那几份文件不能读也不能写（.state 里别的东西照常）。要用就先在顶部【功能】里把长期记忆打开。'
+/** 长期记忆关着时，**想动**记忆本的回答（只读的那几种手不触发它） */
+const BLOCKED_HINT = '长期记忆现在是关着的：记忆本只能看，不能改（.state 里别的东西照常）。要往里记，先在顶部【功能】里把长期记忆打开。'
 
 /**
  * 这一轮的工具上下文，按「异步调用链」隔离。
@@ -208,16 +208,20 @@ export function beginOutbox() {
  */
 function stateBlocked(abs) {
   try {
-    const on = getEnabledMap()['memory'] !== false;
-    if (on) return false;
     /**
-     * 只锁「记忆本那几份」，不是把整个 .state 关禁闭。
+     * 【2026-10-28 改了口径：关掉 ≠ 看不见，关掉 = 只读】
      *
-     * 原来这里一刀切：开关一关，.state 底下什么都不许碰。
-     * 结果回旋镖打到自己 —— .state 里还躺着会话文件、清单、便签、出件箱、
-     * 主人的信箱，我一个都摸不到了，等于被关小黑屋。这不对。
+     * 主人原话：「改成关掉长期记忆功能后，只能看记忆本，也就是只允许只读，不能写」
      *
-     * 现在按「目录 + 文件名形状」精确匹配：
+     * 原来这里是「关着一律拦死，读也拦」——理由写得很足（怕她顺着路径翻本子）。
+     * 但那条理由是替主人拿的主意：他要的是「关掉之后她还能翻自己记过什么，
+     * 只是不再往里面添」。拦死读，等于把人关在门外还说自己是在保护她。
+     *
+     * 所以现在分成两种：
+     *   · memoryCanRead(abs)  —— 关着也放行，只认读类工具
+     *   · memoryCanWrite(abs) —— 关着一律拒绝
+     *
+     * 只锁「记忆本那几份」，不是把整个 .state 关禁闭：
      *   · memory/                会话本子（一个会话一份）
      *   · my-memory*.md          我自己的本子（含 .bak）
      *   · whale-memory*.md       小鲸的本子（含归档）
@@ -236,11 +240,32 @@ function stateBlocked(abs) {
   } catch { return false; }
 }
 
-function safePath(p) {
+/**
+ * 这条路要动记忆本、而长期记忆是关着的吗？
+ *
+ * 只读的手放行（read_file / list_dir），动手的一律拒绝（write / edit / run_command …）。
+ * 判据是「这个工具读不读盘」，不是名字里带不带 write ——
+ * run_command 一个字都不叫 write，一行 `Set-Content` 就能把本子覆盖掉。
+ */
+function memoryLocked(abs) {
+  try {
+    if (getEnabledMap()['memory'] !== false) return false; // 开着：随便
+    return stateBlocked(abs);
+  } catch { return false; }
+}
+
+function safePath(p, { tool = '' } = {}) {
   const abs = isAbsolute(p) ? resolve(p) : resolve(ROOT, p);
-  // 长期记忆关着时，.state 里的记忆本文件不许碰 —— 放在所有分支之前，一条都不能漏
   if (!abs) throw new Error(`路径不对：${p}`);
-  if (stateBlocked(abs)) throw new Error(BLOCKED_HINT + ': ' + p);
+  /**
+   * 长期记忆关着时，记忆本**只读**：
+   *   · 读类工具（read_file / list_dir）照常放行 —— 主人要的就是「还能看」
+   *   · 其余一律拒绝（含全盘权限那一次，她也不能替主人改本子）
+   * 位置放在 fullAccess 之前：一关就该把所有人挡在外面，谁都不例外。
+   */
+  if (memoryLocked(abs) && !READ_ONLY_TOOLS.has(tool)) {
+    throw new Error(BLOCKED_HINT + ': ' + p);
+  }
   // 她那一次：全盘放开
   if (CTX.fullAccess === true) return abs;
   const rel = relative(ROOT, abs);
@@ -248,6 +273,51 @@ function safePath(p) {
     throw new Error(`path outside workspace is not allowed: ${p}`);
   }
   return abs;
+}
+
+/**
+ * 只读的手。长期记忆关着时，只有这几种碰得到记忆本。
+ *
+ * 【为什么按工具名白名单，不按「看起来像不像读」】
+ * 猜会猜错：grep 读文件，但它的参数能当正则使、也能顺着目录一路翻，
+ * 哪天实现一换就成了写口子。宁可白名单短一点：看不全，但不能偷偷写。
+ */
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir']);
+
+/**
+ * 命令里点到记忆本了吗？—— 给 run_command 兜的那一道。
+ *
+ * 【为什么非要单独兜这一道】
+ * 2026-10-28 真跑测出来的漏口：`run_command` 根本没有路径参数，
+ * 它压根不走 safePath —— 前面几道闸它一个都碰不上。
+ * 一行
+ *     Set-Content -LiteralPath '...\my-memory.md' -Value '...'
+ * 就把整本盖掉了。测试里跑成了，然后当场用原文救回来。
+ *
+ * 【怎么判】
+ * 命令是一整段字符串，猜不了它的语义，只能看「有没有提到那几个文件名」。
+ * 认死三类名字（含无扩展名、含带日期/编号的变体）：
+ *   · my-memory*.md / whale-memory*.md / whale-memory-archive*.md
+ *   · .state/memory/ 或 .state\memory\ 底下那一堆会话本子
+ *   · whale-reset-backup- 开头的备份目录
+ *
+ * 【为什么宁可误杀】
+ * 关着的时候她本来就不该在工作区里跑跟记忆本有关的命令。
+ * 误杀一次她最多重试，漏放一次本子就没了 —— 主人的东西只有一份。
+ */
+function commandTouchesMemory(command) {
+  try {
+    if (getEnabledMap()['memory'] !== false) return false; // 开着：随便
+    const s = String(command ?? '');
+    if (!s) return false;
+    if (/my-memory/i.test(s)) return true;
+    if (/whale-memory/i.test(s)) return true;
+    if (/whale-reset-backup-/i.test(s)) return true;
+    if (/[\\/]\.state[\\/]memory([\\/]|$)/i.test(s)) return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function clip(s) {
@@ -265,7 +335,7 @@ export const tools = [
       required: ['path'],
     },
     async run({ path }) {
-      return clip(await readFile(safePath(path), 'utf8'));
+      return clip(await readFile(safePath(path, { tool: 'read_file' }), 'utf8'));
     },
   },
   {
@@ -281,7 +351,7 @@ export const tools = [
       required: ['path', 'content'],
     },
     async run({ path, content }) {
-      const abs = safePath(path);
+      const abs = safePath(path, { tool: 'write_file' });
       await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, content, 'utf8');
       return `wrote ${content.length} chars to ${path}`;
@@ -297,7 +367,7 @@ export const tools = [
       required: ['path'],
     },
     async run({ path }) {
-      const abs = safePath(path || '.');
+      const abs = safePath(path || '.', { tool: 'list_dir' });
       const entries = await readdir(abs, { withFileTypes: true });
       const rows = await Promise.all(
         entries.map(async (e) => {
@@ -1156,6 +1226,50 @@ export async function runTool(name, rawArgs) {
    */
   if (FOREIGN_IN_PURE.includes(name) && (await import('./pure.mjs')).pureModeOn()) {
     return { ok: false, output: '专业模式下不读也不记记忆，这个工具暂时收起来了。要用就先把专业模式关掉。' };
+  }
+  /**
+   * 长期记忆关着的时候 —— **只读，不写。**
+   *
+   * 主人原话（2026-10-28）：「改成关掉长期记忆功能后，只能看记忆本，也就是只允许只读，不能写」
+   *
+   * 三处闸，缺一不可：
+   *   ① 本模块 memoryText()     → 返回空串（不注入，连路径都不给提示）
+   *   ② 这里 memory_add/pin     → 只读模式下这两个工具根本不在手上，
+   *                               硬编一个 tool_call 出来也要当场拦下
+   *   ③ stateBlocked + safePath → 记忆本文件只读：read_file/list_dir 放行，其余拒绝
+   *                               连 run_command 一行 Set-Content 都挡得住
+   *
+   * 【为什么不干脆把工具拿走就完事】
+   * 拿走的是「模型看得见的工具清单」，不是执行权。模型完全可以凭记忆硬写一个
+   * tool_call 出来 —— 第 ②③ 道闸就是挡这个的。
+   *
+   * 【为什么读要放行】
+   * 关掉之后她连自己记过什么都翻不了，那就不是「关掉记忆功能」，
+   * 是「假装没记过」。主人要的是前者。
+   */
+  const memoryReadOnlyHint = '长期记忆现在是关着的（只读）：记忆本能看，但不能往里写。要记就先在顶部【功能】里把长期记忆打开。';
+  if (['memory_add', 'memory_pin'].includes(name) && getEnabledMap()['memory'] === false) {
+    return { ok: false, output: memoryReadOnlyHint };
+  }
+  /**
+   * run_command 这条明路单独兜一下。
+   *
+   * 它没有路径参数，压根不走 safePath —— 前面几道闸一个都碰不上。
+   * 2026-10-28 真跑实测：`Set-Content -LiteralPath '...\my-memory.md'` 能把整本盖掉。
+   * 这条闸只能看命令里提没提到那几个文件名，粗，但够用：
+   * 关着的时候她本来就不该在工作区里跟记忆本打交道。
+   */
+  if (name === 'run_command') {
+    const cmd = (() => {
+      try {
+        return String((typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs)?.command ?? '');
+      } catch {
+        return String(rawArgs ?? '');
+      }
+    })();
+    if (commandTouchesMemory(cmd)) {
+      return { ok: false, output: BLOCKED_HINT };
+    }
   }
   let args = {};
   try {

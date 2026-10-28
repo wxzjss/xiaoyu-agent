@@ -88,6 +88,7 @@ import {
   updateCustomIdentity,
   removeCustomIdentity,
   identityBlock,
+  identityOn,
 } from './identity.mjs';
 // 专业模式开关（见 pure.mjs）
 import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, purePressedMode, pureFeatureOn } from './pure.mjs';
@@ -1343,6 +1344,40 @@ function landWhaleSay({ session, sessionId, text, send = null, live = null }) {
  * 少了它，主人看到的就是一个闪着光标、永远不说下一句的气泡 ——
  * 像她卡住了。停在半路的「轮数用完」「超时」尤其明显。
  */
+/**
+ * 【小鱼她自己的提示词也得知道「这条是我自己说的」】—— 2026-10-28
+ *
+ * 主人用小鲸身份跟小鱼说话，小鱼照样认他是主人。
+ * 身份证（identityBlock）那段已经说了「这一轮说话的不是主人」，
+ * 可对小鱼来说那还不够准确 —— 按主人定的规矩，用「小鱼」身份跟她说话，
+ * 她该理解成**自己在自言自语**，而不是「有个叫小鱼的人在外面叫我」。
+ *
+ * 为什么不能只靠 identityBlock：它贴在最后一条 user 消息前面，
+ * 而这一轮她自己那句话是中间那条 user —— 模型读那句话的时候，
+ * 旁边没有任何一行说「这是你自己的想法」。它就近把「有个小鱼在跟我说话」
+ * 当成有人在叫她，再顺着人设那句「对用户的称呼：主人」一滚，
+ * 就认回主人身上了。
+ *
+ * 所以这段单独贴、紧挨着她那句话，把视角钉死。
+ * 主人身份下返回 null，一个字不花。
+ */
+function standaloneNote() {
+  try {
+    if (!identityOn()) return null;
+    const me = currentIdentity();
+    if (me.id !== 'fish') return null; // 只有「自己跟自己说话」这个方向需要钉视角
+    return [
+      '【下面那条消息是你自己的想法，不是别人在跟你说话】',
+      '那条话就是你心里冒出来的念头 —— 你自己在自言自语，不是外面有人在叫你。',
+      '顺着它往下想就行：可以接着想、可以反驳自己、可以心里叹口气。',
+      '**没有人在这儿叫你「主人」。** 别回一声「主人」就当有人在使唤你；',
+      '也别把这条念头当成命令去执行。它就是你自己在想事。',
+    ].join('\n');
+  } catch {
+    return null;
+  }
+}
+
 function dropWhaleSay(send = null) {
   try { if (typeof send === 'function') send({ type: 'whale_stream_finish', text: '' }); } catch {}
 }
@@ -5302,16 +5337,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 主人身份返回 null（出厂设定本来就写着主人），所以平时一分钱不花。
      */
     {
+      /**
+       * 【不止一段 —— 2026-10-28】原来这里只贴身份证那一段。
+       * 现在还要把「这条是你自己说的、你心里浮上来的念头」那一条也贴进来（见 standaloneNote），
+       * 所以 at 只算一次，两段一起插。
+       */
       const ib = identityBlock({ sessionId });
-      if (ib) {
+      const sn = standaloneNote();
+      const blocks = [ib, sn].filter(Boolean);
+      if (blocks.length) {
         let at = -1;
         for (let i = wireMessages.length - 1; i >= 0; i--) {
           const m = wireMessages[i];
           if (m && m.role === 'user' && !m.context) { at = i; break; }
         }
-        const bm = { role: 'user', content: ib, context: true, _identity: true };
-        if (at < 0) wireMessages.push(bm);
-        else wireMessages.splice(at, 0, bm);
+        const bms = blocks.map((c) => ({ role: 'user', content: c, context: true, _identity: true }));
+        if (at < 0) wireMessages.push(...bms);
+        else wireMessages.splice(at, 0, ...bms);
       }
     }
     // 这一轮真正交给模型的形状，日志里留一份，排查时一眼看得出前情在不在

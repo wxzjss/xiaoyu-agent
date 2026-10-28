@@ -1121,7 +1121,16 @@
     .sessRow:hover { background: #1d2430; border-color: var(--border); }
     .sessRow.current { background: #1d2430; border-color: var(--accent); }
     .sessMain { flex: 1; min-width: 0; }
-    .sessTitle { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sessTitle { font-size: 13.5px; display: flex; align-items: center; min-width: 0; }
+.sessTitleText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* 会话名旁边的小标签：这个会话是哪张智能体卡在说话（没绑就不显示） */
+.sessAgent {
+  flex: 0 0 auto;
+  margin-left: 6px; padding: 0 6px; border-radius: 8px;
+  font-size: 10.5px; line-height: 16px;
+  color: var(--dim); border: 1px solid rgba(127, 127, 127, .28); background: rgba(127, 127, 127, .10);
+  max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
     .sessSub { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sessRow .mini {
       flex: none; background: transparent; color: var(--dim); border: 1px solid var(--border);
@@ -2540,6 +2549,7 @@
       <div class="dlgFoot">
         <span class="hint" id="agHint"></span>
         <button type="button" class="ghost" id="agNew">新建智能体</button>
+        <button type="button" class="ghost" id="agNewChat">用她开个新会话</button>
         <button type="button" class="ghost" id="agPanel" hidden>多套人设…</button>
         <button type="button" class="ghost" id="agReset">恢复默认</button>
         <button type="button" class="ghost" id="agDel">删掉这个</button>
@@ -7258,6 +7268,32 @@ async function bindAgentCard() {
   agHint(r.agentId ? '这个会话从下一句开始就用她说话了' : '这个会话换回小鱼了');
 }
 
+/**
+ * 用当前选中的卡开一个新会话（「多开」）。
+ *
+ * 为什么不只是「绑定到当前会话」：主人想的是「她是另一个角色，跟她另起一摊」。
+ * 老会话里塞进另一个人设，前面几十句都是小鱼的口吻，模型会两头看——
+ * 所以多开就该是「新会话 + 绑卡」，这是干净的做法。
+ */
+async function newChatAsAgent() {
+  if (!agentCur) { agHint('先选一张卡'); return; }
+  if (agentCur.id === 'xiaojing') { agHint('小鲸是跑出去查事情的那个她，不能拿去开会话'); return; }
+  agHint('正在开新会话…');
+  const dlg = document.getElementById('agentListDlg');
+  if (dlg && dlg.open) { try { dlg.close(); } catch { /* 忽略 */ } }
+  let ok = false;
+  try {
+    ok = await createSessionEx({ agentId: agentCur.id, title: agentCur.name || '' });
+  } catch (e) {
+    agHint('没开成：' + (e && e.message ? e.message : e));
+    return;
+  }
+  if (!ok) { agHint('没开成'); return; }
+  try { await refreshSessions({ silent: true }); } catch {}
+  settleComposer({ focus: true });
+  agHint('');
+}
+
 async function openAgentDlg() {
   const dlg = document.getElementById('agentListDlg');
   if (!dlg) return;
@@ -7374,6 +7410,7 @@ async function delAgentCard() {
   wire('agSave', () => saveAgentCard());
   wire('agBind', () => bindAgentCard());
   wire('agNew', () => newAgentCard());
+  wire('agNewChat', () => newChatAsAgent());
   wire('agReset', () => resetAgentCard());
   wire('agDel', () => delAgentCard());
   wire('agClose', () => { const d = document.getElementById('agentListDlg'); if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } } });
@@ -10211,7 +10248,20 @@ function renderSessList() {
     main.className = 'sessMain';
     const t = document.createElement('div');
     t.className = 'sessTitle';
-    t.textContent = fixMojibake(s.title || '新会话');
+    // 标题文字和「挂的哪张卡」分开装：标题能被省略号截，卡名标签永远露在外面
+    const ttxt = document.createElement('span');
+    ttxt.className = 'sessTitleText';
+    ttxt.textContent = fixMojibake(s.title || '新会话');
+    t.appendChild(ttxt);
+    // 这个会话挂的是哪张智能体卡：挂在标题后面（没绑卡就不显示）
+    const agName = String(s.agentName || '').trim();
+    if (agName && s.agentId) {
+      const chip = document.createElement('span');
+      chip.className = 'sessAgent';
+      chip.textContent = agName;
+      chip.title = `这个会话用「${agName}」说话`;
+      t.appendChild(chip);
+    }
     const sub = document.createElement('div');
     sub.className = 'sessSub';
     const runningNow = typeof turnsInFlight !== 'undefined' && turnsInFlight.has(s.id);
@@ -11259,19 +11309,25 @@ async function createSession() {
 
 /**
  * 新建会话。
- * @param {{quiet?: boolean, title?: string}} opts
+ *
+ * `agentId` 给了就走 `/api/agents/new-session`：建会话 + 把这张卡绑上去，
+ * 等于「用她开一个新会话」（多开）。没给就是普通新会话（小鱼）。
+ * @param {{quiet?: boolean, title?: string, agentId?: string}} opts
  */
 async function createSessionEx(opts = {}) {
-  const { quiet = false, title = '' } = opts;
-  const r = await fetchTimed('/api/sessions/new', {
+  const { quiet = false, title = '', agentId = '' } = opts;
+  const useAgent = Boolean(agentId);
+  const url = useAgent ? '/api/agents/new-session' : '/api/sessions/new';
+  const payload = useAgent ? { agentId, ...(title ? { title } : {}) } : (title ? { title } : {});
+  const r = await fetchTimed(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(title ? { title } : {}),
+    body: JSON.stringify(payload),
   }).then((x) => x.json()).catch(() => null);
   if (!r || !r.session) {
     // 建失败也必须把输入区放开——不然人卡在「新建了一个空的、打不了字」的状态里
     settleComposer({ focus: true });
-    if (!quiet) { try { alert('新建会话失败'); } catch {} }
+    if (!quiet) { try { alert((r && r.error) ? String(r.error) : '新建会话失败'); } catch {} }
     return false;
   }
   sessionId = r.session.id;

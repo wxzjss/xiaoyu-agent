@@ -88,9 +88,10 @@ import {
   updateCustomIdentity,
   removeCustomIdentity,
   identityBlock,
-  mergeSameVoice,   // 同一个人连着说 → 拼成一段（src/merge-voice.mjs）
   identityOn,
 } from './identity.mjs';
+// 同一个人连着说 → 拼成一段。实现在 merge-voice.mjs，抽出去是为了能真跑一遍验。
+import { mergeSameVoice } from './merge-voice.mjs';
 // 专业模式开关（见 pure.mjs）
 import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, purePressedMode, pureFeatureOn } from './pure.mjs';
 import { purifyWire } from './compress.mjs';
@@ -132,6 +133,8 @@ import {
   resetOpeningTexts,
   openingHeadIndexes,
   isOpeningMessage,
+  unmarkOpened,
+  wasOpened,
 } from './opening.mjs';
 import {
   listModels,
@@ -1651,12 +1654,39 @@ function applyOpening(session, openingUser, wire) {
  *
  * 保留 async 签名：调用方是 fire-and-forget 的 .catch()，改成同步会炸它。
  */
-async function startOpening(sessionId) {
-  // 功能面板里关掉「开场白」就什么都不垫，新建会话直接是白纸。
-  if (!openingEnabled()) return;
+/**
+ * 【开场白到底该不该垫 —— 2026-10-28 主人要求】
+ *
+ * 主人原话：「切换身份当前身份非主人时，自动禁用开场白，切换主人身份时启用开场白」。
+ *
+ * 为什么这条必须做：开场白那两句是「主人：在吗 / 小鱼：主人你可算来了」——
+ * 它是一段**已经把主人写死在里面**的前情。披着小鱼或小鲸的身份说话时，
+ * 这段前情会先把「对面是主人」这个事实钉进历史，后面再怎么补身份提示词
+ * 都是在这块已经干了的底色上刷漆，刷不白。她照着开场白喊一声「主人」，
+ * 主人那边看到的就是「我明明换了身份，她还知道我是主人」。
+ *
+ * 所以这不是可选的美化，是身份功能能不能成立的前置条件。
+ *
+ * @returns {{ ok: boolean, why: string }}
+ */
+function openingAllowed(sessionId = null) {
+  if (!openingEnabled()) return { ok: false, why: '功能面板里关掉了开场白' };
   // 专业模式：开场白那两条也是「设定」，而且它前面那句「在吗」对模型来说
   // 就是一段来历不明的前情。专业模式下不垫 —— 新会话就是真的空。
-  if (pureModeOn()) return;
+  if (pureModeOn()) return { ok: false, why: '专业模式开着，不垫设定' };
+  // 这一轮说话的不是主人 → 开场白里那句「主人」就成了假话的前情。
+  // identityOn() 关掉时 currentIdentityId 仍可能返回 fish，但那时身份功能整个失效，
+  // 一切按主人算（见 identity.mjs 的 identityOn 注释），所以这里也要跟着让路。
+  if (identityOn()) {
+    const me = currentIdentity(sessionId);
+    if (me && me.id !== 'owner') return { ok: false, why: `当前身份是「${me.name}」，开场白里那句「主人」会先把她钉错` };
+  }
+  return { ok: true, why: '' };
+}
+
+async function startOpening(sessionId) {
+  const gate = openingAllowed(sessionId);
+  if (!gate.ok) return;
   const session = getSession(sessionId);
   if (!session || hasOpening(session)) return;
   const { userMsg, assistantText } = seedOpeningMessages();
@@ -2976,7 +3006,72 @@ const server = createServer(async (req, res) => {
      */
     const sid = String(payload?.sessionId || '').trim() || getLastSessionId() || '';
     if (!setIdentity(id, sid)) return json(res, 404, { error: '没有这个身份' });
-    return json(res, 200, identityState(sid));
+
+    /**
+     * 【切完身份，开场白跟着动 —— 2026-10-28 主人要求】
+     *
+     * 主人原话：「切换身份当前身份非主人时，自动禁用开场白，切换主人身份时启用开场白」。
+     *
+     * 两个方向都得管，光管新建会话不够：
+     *   · 切成非主人 → 会话里可能**已经垫着**那两句「主人：在吗 / 小鱼：主人你可算来了」。
+     *     留着它，就等于让一段写着「主人」的假前情一直躺在她上下文里，
+     *     后面每一轮都要跟它打架。所以这里要把已垫的那两条摘掉。
+     *   · 切回主人 → 这个会话可能因为「那时候不是主人」而没垫，
+     *     现在该补。补不补得上交给 startOpening 自己判断（它已经有全部闸门）。
+     *
+     * 摘的时候只认 isOpeningMessage —— 主人自己打的那句「在吗」绝不能当成开场白删掉。
+     *
+     * 【2026-10-28 二次修：两种错都不能再犯】
+     *   1. 全文扫 → 把主人说的「在吗」删了。现在只认开头那一对，且 user/assistant 都得命中。
+     *   2. 把主人**真说过的话**当成开场白。位置对了也不够：
+     *      开场白是服务端自己垫的，垫完立刻 markOpened 记一笔。
+     *      openings.json 里**没有**这个会话的记录 → 开头这对不是我们垫的 → 一律不动。
+     *      宁可留着一段假前情，也不能删主人一句话。
+     */
+    let openingNote = '';
+    try {
+      const session = getSession(sid);
+      if (session) {
+        const me = currentIdentity(sid);
+        if (me && me.id !== 'owner') {
+          /**
+           * 【只摘「开头那一对」，且必须是服务端自己垫过的】—— 2026-10-28
+           *
+           * isOpeningMessage 是按**内容**认的，主人自己打一句「在吗」也会命中。
+           * 全文过滤一遍就等于把主人真说的话删了 —— 那比留着一句假前情严重得多。
+           *
+           * 所以两道锁一起上：
+           *   · 位置锁：开场白一定是「新建会话时垫在最前面的那两条」，
+           *     跳过 system / context 后的头两条，user 紧接 assistant；
+           *   · 记号锁：垫完会 markOpened 往 openings.json 记一笔，没这笔就不是我们垫的。
+           * 两道全过才摘。缺一道就原样留着，一个字都不动。
+           */
+          const msgs = session.messages || [];
+          const at = msgs.findIndex((m) => m && m.role !== 'system' && !m.context);
+          const a = at >= 0 ? msgs[at] : null;
+          const b = at >= 0 ? msgs[at + 1] : null;
+          const hasMark = wasOpened(session.id);
+          if (hasMark && a && b && a.role === 'user' && b.role === 'assistant' && isOpeningMessage(a) && isOpeningMessage(b)) {
+            msgs.splice(at, 2);
+            unmarkOpened(session.id);
+            saveSession(session);
+            openingNote = '已摘掉开头那两条开场白';
+          }
+        } else if (me && me.id === 'owner') {
+          // 切回主人：会话还是空的（只有 system）就把开场白补回去，
+          // 补不补得上交给 startOpening 自己判断（它已经有全部闸门）。
+          const live = (session.messages || []).filter((m) => m && m.role !== 'system');
+          if (!live.length) {
+            await startOpening(sid);
+            openingNote = '已补上开场白';
+          }
+        }
+      }
+    } catch (e) {
+      openingNote = '开场白联动没做成：' + String(e?.message ?? e);
+    }
+
+    return json(res, 200, { ...identityState(sid), openingNote });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/identity/add') {
@@ -5391,8 +5486,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     //
     // 为什么不从 history 里删：那是会话记录，主人还能翻回来看；
     // 而且一删下次又「没开过场」，会再补一遍。所以只在这一刻的拷贝上摘。
+    //
+    // 【2026-10-28 修：原来是一句全文 filter，会把主人真说的「在吗」也摘掉】
+    // 主人自己打一句「在吗」，内容跟开场白那句一模一样，isOpeningMessage 认不出来是谁说的。
+    // 摘错了的后果是这一轮的模型**看不到主人说的话** —— 比多带两句前情严重。
+    // 所以跟切身份那里用同一套两道锁：位置（开头那一对）+ 记号（openings.json 记过）。
     if (pureModeOn()) {
-      wireMessages = wireMessages.filter((m) => !isOpeningMessage(m));
+      const msgs = wireMessages;
+      const at = msgs.findIndex((m) => m && m.role !== 'system' && !m.context);
+      const a = at >= 0 ? msgs[at] : null;
+      const b = at >= 0 ? msgs[at + 1] : null;
+      if (
+        wasOpened(sessionId) &&
+        a && b && a.role === 'user' && b.role === 'assistant' &&
+        isOpeningMessage(a) && isOpeningMessage(b)
+      ) {
+        msgs.splice(at, 2);
+      }
       // 系统提示一律不发：老会话盘里存的是完整人设，不摘掉就等于
       // 一边说"纯净"一边还带着人设说话。context 那条规则副本同理。
       wireMessages = wireMessages.filter((m) => !(m && (m.role === 'system' || m.context)));

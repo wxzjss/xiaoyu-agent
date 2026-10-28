@@ -177,6 +177,26 @@ export function markOpened(sessionId) {
   writeState(state);
 }
 
+/**
+ * 取消「开过场」的记号。
+ *
+ * 2026-10-28：切成非主人身份时会把垫在最前面的那两条开场白摘掉，
+ * 摘掉之后这笔记号也得跟着销，不然这个会话以后永远补不回开场白。
+ */
+export function unmarkOpened(sessionId) {
+  if (!sessionId) return;
+  const state = readState();
+  if (!Object.prototype.hasOwnProperty.call(state, sessionId)) return;
+  delete state[sessionId];
+  writeState(state);
+}
+
+/** 这个会话有没有「服务端自己垫过开场白」的记号（只认记号，不看内容）。 */
+export function wasOpened(sessionId) {
+  if (!sessionId) return false;
+  return Object.prototype.hasOwnProperty.call(readState(), sessionId);
+}
+
 /** 开场那一轮的两条（assistant 那条用的就是现在生效的那段文本）。 */
 export function seedOpeningMessages() {
   const t = openingTexts();

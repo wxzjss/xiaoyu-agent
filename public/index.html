@@ -628,6 +628,48 @@
     }
     #idBadge:hover { border-color: #e0a33a; background: rgba(224, 163, 58, .26); }
     #idBadge[hidden] { display: none; }
+    /* 【屋里的人】左上角那竖列（2026-10-31 主人指截图定的位置）。
+       跟 #idBadge 一样用 fixed 钉在顶栏下沿，只是贴在左边、竖着排。
+       z-index 20 跟 #idBadge 同级：都在聊天内容之上、弹窗（1000+）之下。 */
+    #whoRail {
+      position: fixed; top: 54px; left: 14px; z-index: 20;
+      display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+      max-width: 152px;
+    }
+    #whoRail[hidden] { display: none; }
+    #whoRail .whoBtn {
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 3px 10px; background: var(--panel); color: var(--text);
+      font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap;
+      max-width: 152px; overflow: hidden; text-overflow: ellipsis;
+      cursor: pointer;
+    }
+    #whoRail .whoBtn:hover { border-color: var(--accent); }
+    #whoRail .whoBtn.me { border-color: rgba(240, 166, 160, .6); background: rgba(240, 166, 160, .16); color: #f0a6a0; }
+    #whoRail .whoBtn.whale { border-color: rgba(150, 200, 245, .5); background: rgba(150, 200, 245, .12); color: #a8cdf5; }
+    #whoRail .whoBtn.quiet { border-style: dashed; }
+    #whoRail .whoCap { font-size: 10.5px; color: var(--dim); padding-left: 2px; margin-bottom: -2px; }
+
+    /* 新建会话的挑人框 */
+    /* height:fit-content 是必须的：弹窗用 position:fixed + 上下 inset 都被浏览器 UA
+       设成 0，配上全局那条 height:auto 就会被拉满到 max-height（86vh），
+       内容只有 200 多高却画出一大块空板子。给它一个确定的高度就不会被拉。
+       min-height 是给手机 WebView 的保险：那边 fit-content 配 flex 有可能算成 0。 */
+    #newSessionDlg { width: min(430px, 92vw); height: fit-content; min-height: 190px; max-height: 86vh; }
+    #newSessionDlg .nsLead { margin: 0 0 10px; color: var(--dim); font-size: 12px; line-height: 1.6; }
+    #newSessionDlg .nsList { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow-y: auto; }
+    #newSessionDlg .nsRow {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+    }
+    #newSessionDlg .nsRow:hover { border-color: var(--accent); }
+    #newSessionDlg .nsRow.locked { opacity: .72; cursor: default; }
+    #newSessionDlg .nsRow.locked:hover { border-color: var(--border); }
+    #newSessionDlg .nsRow input[type="checkbox"] { flex: 0 0 auto; width: 14px; height: 14px; margin: 0; }
+    #newSessionDlg .nsRow .nm { flex: 1 1 auto; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #newSessionDlg .nsRow .tag { flex: 0 0 auto; font-size: 10.5px; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+    #newSessionDlg .nsBar { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+    #newSessionDlg .nsNote { flex: 1 1 auto; color: var(--dim); font-size: 12px; min-width: 0; }
     .sendingHint span, .sendingHint {
       color: var(--dim); font-size: 12px; white-space: nowrap;
     }
@@ -1620,6 +1662,20 @@
       color: var(--text); border-color: var(--accent); background: rgba(140, 220, 210, .16);
     }
     #agentListDlg .agGroupHint { flex: 1 1 100%; font-size: 11.5px; color: var(--dim); }
+  /* 「只在叫名字时才说话」那类：名字后面挂个「·静」，颜色压暗一点 */
+  #agentListDlg .agGroup .agMem.quiet { border-style: dashed; color: var(--dim); }
+  #agentListDlg .agGroup .agMem.quiet.on { color: var(--text); }
+    #agentListDlg .agQuietWrap {
+      display: flex; align-items: center; gap: 8px;
+      flex: 0 1 auto; margin-right: auto;
+      font-size: 12.5px; color: var(--dim); cursor: pointer;
+    }
+    /* 勾选框别继承上面那条「输入框撑满」的规矩，否则它会飘到行中间去 */
+    #agentListDlg .agQuietWrap input[type="checkbox"] {
+      flex: 0 0 auto; width: 14px; height: 14px; padding: 0; margin: 0;
+      accent-color: var(--accent); cursor: pointer;
+    }
+    #agentListDlg .agQuietWrap span { flex: 0 0 auto; white-space: nowrap; }
     @media (max-width: 760px) {
       #agentListDlg .agBody { flex-direction: column; }
       #agentListDlg .agList {
@@ -2000,6 +2056,26 @@
     <button id="openModels" title="模型">模型</button>
     <button id="reset">清空当前</button>
   </header>
+
+  <!-- 屋里的人：钉在顶栏下沿、聊天区左边那一竖列。
+       主人 2026-10-31 指着截图定：「就像切换身份后那块『当前身份』一样，
+       挂在顶栏下面、盖在聊天区上」。一条一个人：小鱼在最上面，
+       接着是小鲸和主人勾进来的人。点一下 = 在输入框里叫她的名字。 -->
+  <div id="whoRail" hidden></div>
+
+  <!-- 新建会话：先挑这间屋子里还坐着谁（小鱼和小鲸默认在场，不能取消） -->
+  <dialog id="newSessionDlg">
+    <div class="dlgHead">
+      <b>开一间新会话</b><span class="meta" id="nsHint"></span>
+    </div>
+    <p class="nsLead">小鱼和小鲸默认就在这间屋子里，取消不了；下面还能再叫几个。</p>
+    <div class="nsList" id="nsList"></div>
+    <div class="nsBar">
+      <span class="nsNote" id="nsNote"></span>
+      <button type="button" class="ghost" id="nsCancel">取消</button>
+      <button type="button" class="primary" id="nsOk">开一间</button>
+    </div>
+  </dialog>
 
   <!-- 左上角两个框的下拉（不是 dialog，点外面就关） -->
   <div class="cfgMenu" id="cfgMenu">
@@ -2568,6 +2644,16 @@
             <label>一起说话的</label>
             <div id="agGroup" class="agGroup"></div>
             <span id="agGroupHint" class="agGroupHint"></span>
+          </div>
+          <div class="agRow">
+            <!-- 2026-10-30 主人：「别一直全员齐发 —— 点谁的名字才让谁接，某人这轮先别说」。
+                 所以给每张卡一个「安静」：打开它，她就只在 `@她` 的时候开口。
+                 这是她的性子（阿绿话少），所以存在卡上，换个会话照样记得。 -->
+            <label>性子</label>
+            <label class="agQuietWrap">
+              <input type="checkbox" id="agQuiet">
+              <span>只有在叫到她名字（@她）的时候才说话</span>
+            </label>
           </div>
           <div class="agRow">
             <!-- 2026-10-29 主人：「把原来删掉的【一句话】回滚回去，但改名为【开场白】…
@@ -3969,15 +4055,15 @@ function paintLiveEvents(evs, bubble) {
       // agent = 群聊里别的智能体卡说的（2026-10-30）：同一件事 —— 别人开口，
       // 名字由 ev.who 带着，画法跟小鲸一样，别塞进我这条气泡里。
       // 如果刚才有流式的临时气泡，就【定稿】到那上面，别再画第二个
-      if (whaleStreamFinish(ev.text)) {
+      if (whaleStreamFinish(ev.text, StreamKey(id, ev.who))) {
         // 已经写进流式那个气泡了，不用再建
       } else {
         addWhaleBubble(ev.who, ev.text);
       }
     } else if (ev.type === 'whale_stream_start') {
-      whaleStreamStart(ev.who);
+          whaleStreamStart(ev.who, StreamKey(id, ev.who));
     } else if (ev.type === 'whale_delta') {
-      whaleStreamDelta(ev.text);
+          whaleStreamDelta(ev.text, StreamKey(id, ev.who));
     } else if (ev.type === 'files') {
       const wrap = lastAssistantWrap();
       if (wrap) attachFiles(wrap, ev.items);
@@ -4247,13 +4333,13 @@ function followLive(id, fromIndex) {
         } else if (ev.type === 'whale' || ev.type === 'agent') {
           // 补画的时候也得认她的话 —— 不然断线重连 / done 后补拉，她的气泡永远补不出来
           closeThink();
-          whaleStreamFinish(ev.text) || addWhaleBubble(ev.who, ev.text);
+          whaleStreamFinish(ev.text, StreamKey(id, ev.who)) || addWhaleBubble(ev.who, ev.text);
           bubble = null;
         } else if (ev.type === 'whale_stream_start') {
           closeThink();
-          whaleStreamStart(ev.who);
+          whaleStreamStart(ev.who, StreamKey(id, ev.who));
         } else if (ev.type === 'whale_delta') {
-          whaleStreamDelta(ev.text);
+          whaleStreamDelta(ev.text, StreamKey(id, ev.who));
         } else if (ev.type === 'text') {
           closeThink();
           if (!bubble) bubble = addAssistantAuto();
@@ -5647,35 +5733,65 @@ function addAssistant(who, hideRole) {
  */
 let whaleStreamingEl = null;
 
+/**
+ * 【2026-10-29 多会话并行修 · ④：两个会话同时说话，气泡会互相踩】
+ *
+ * whaleStreamingEl 原来只有一个 —— 全页共用一个「正在流的那段气泡」。
+ * 两个会话同时在咕嘟的时候：B 的 whaleStreamStart 一开，就把 A 的那段指针顶掉；
+ * A 后面吐的字全部落空（whaleStreamDelta 找不到句柄直接 return），
+ * 屏幕上就是「A 的话只出来半截、后面没了」，非得刷新页面重新拉一遍才补回来。
+ * 群聊那张名单里的人也一样：几个人一前一后开口，前一个的碎片就被后一个顶掉。
+ *
+ * 修法：不再只记「一段」，按流名分开记 —— 一个会话一段，每个说话的人一段。
+ * whaleStreamingEl 这个名字保留着（别的地方还在读它），下面两个函数负责维护它。
+ */
+/** 流名：哪个会话 + 谁在说。同一个会话里多人同时开口也各有一条流，不会互相顶掉。 */
+function StreamKey(sid, who) {
+  return String(sid || '') + '\u0000' + String(who || '小鲸');
+}
+
+const _whaleStreams = new Map();   // 流名 -> { wrap, bubble, who }
+let _whaleStreamCur = null;         // 最近一次开流的流名 —— 兼容只有 who 没 sessionId 的调用
+
 /** 她开口了：建一个空气泡等着往里加字 */
-function whaleStreamStart(who) {
-  // 上一次没定稿就跑了（连接断了之类），先把它收干净，别留着
-  whaleStreamingEl = null;
+function whaleStreamStart(who, streamKey) {
+  // 流名：调用方给了就用它（一个会话一个 / 一张卡一个）；没给就退回「谁在说」
+  const key = String(streamKey || who || '小鲸');
+  // 同一条流上一次没定稿就跑了（连接断了之类），先把它收干净，别留着
+  const prev = _whaleStreams.get(key);
+  if (prev && prev.bubble) { try { prev.bubble.classList.remove('streaming'); } catch {} }
   const wrap = addWhaleBubble(who, '');
   const bubble = wrap.querySelector('.bubble');
   if (bubble) markStreaming(bubble);
-  whaleStreamingEl = { wrap, bubble, who: who || '小鲸' };
+  const st = { wrap, bubble, who: who || '小鲸', key };
+  _whaleStreams.set(key, st);
+  _whaleStreamCur = key;
+  whaleStreamingEl = st;   // 兼容：别处还在读这个全局
   noteNewContent();
   return wrap;
 }
 
-/** 她吐了一点字：往正在流的那个气泡里追加 */
-function whaleStreamDelta(text) {
-  const st = whaleStreamingEl;
+/** 她吐了一点字：往「这一条流」自己的那个气泡里追加 */
+function whaleStreamDelta(text, streamKey) {
+  const key = String(streamKey || _whaleStreamCur || '');
+  const st = _whaleStreams.get(key) || whaleStreamingEl;
   if (!st || !st.bubble) return;
-  // 防御：万一这个气泡已经被别的东西移出画面了，就别往里写
-  if (!st.bubble.isConnected) { whaleStreamingEl = null; return; }
+  // 防御：万一这个气泡已经被别的东西移出画面了，就把它从表里摘掉
+  if (!st.bubble.isConnected) { _whaleStreams.delete(st.key); if (whaleStreamingEl === st) whaleStreamingEl = null; return; }
   st.bubble.textContent += fixMojibake(String(text || ''));
   touchStreaming(st.bubble);
   noteNewContent();
 }
 
-/** 她这轮说完了：把整段定稿塞进去（以定稿为准，不用流的那些碎片拼） */
+/** 她这轮说完了：把整段定稿塞进「这一条流」的气泡里 */
 let _whaleLastFinishEl = null;
-function whaleStreamFinish(text) {
-  const st = whaleStreamingEl;
-  whaleStreamingEl = null;
-  if (!st || !st.bubble) return false;
+function whaleStreamFinish(text, streamKey) {
+  const key = String(streamKey || _whaleStreamCur || '');
+  const st = _whaleStreams.get(key) || whaleStreamingEl;
+  if (!st) return false;
+  _whaleStreams.delete(st.key);
+  if (whaleStreamingEl === st) whaleStreamingEl = null;
+  if (!st.bubble) return false;
   if (!st.bubble.isConnected) return false;
   st.bubble.classList.remove('streaming');
   const full = String(text || '').trim();
@@ -5711,13 +5827,24 @@ const _whaleRecent = new Map();
  * 照样画得出来。
  */
 const _whaleDrawnThisRound = new Set();
+
+/**
+ * 【2026-10-29 多会话并行修 · ①：两个人说同一句话，第二句被吞掉】
+ *
+ * 判重的键原来是「谁 + 说了什么」。多个人同时开口时，阿蓝说「好」、阿绿也说「好」，
+ * 第二句会被当成重复，直接不画 —— 主人看到的就是「有人没说话」，刷新才出现。
+ * 现在键里再带一个「这一轮的开跑时刻」（__whaleRoundGen）：同一轮里同一句仍只画一次
+ * （补捞重复的老毛病照样挡住），但换了轮次、换了人，内容一样也各画各的。
+ */
+let __whaleRoundGen = 0;
 function __whaleRoundReset() {
   _whaleDrawnThisRound.clear();
+  __whaleRoundGen = Date.now();
   _whaleRecent.clear();
   try { _whalePainted.clear(); _whaleLastFinishEl = null; } catch {}
 }
 function whaleAlreadyDrawn(who, text) {
-  const key = String(who || '小鲸') + '\u0000' + String(text || '');
+  const key = String(who || '小鲸') + '\u0000' + String(__whaleRoundGen) + '\u0000' + String(text || '');
   if (_whaleDrawnThisRound.has(key)) return true;
   _whaleDrawnThisRound.add(key);
   if (_whaleDrawnThisRound.size > 200) _whaleDrawnThisRound.clear();
@@ -5743,18 +5870,18 @@ function whaleAlreadyDrawn(who, text) {
 const _whalePainted = new Map();
 
 /** 从 live 里捞到一条 whale 事件 -> 认领它该去哪个气泡，绝不重复新建 */
-function paintWhaleFromLive(ev) {
+function paintWhaleFromLive(ev, sid) {
   if (!ev) return;
   const who = String(ev.who || '小鲸');
   if (ev.type === 'whale_stream_start' || ev.type === 'whale_delta') {
     // 碎片只在真流式里用。补捞时靠定稿兜底 —— 这一句已经定稿了，再来碎片没有意义。
     const given = String(ev.text || '');
-    if (ev.type === 'whale_delta' && (!given || !whaleStreamingEl)) return;
-    if (given) whaleStreamDelta(given);
+    if (ev.type === 'whale_delta' && (!given || !_whaleStreams.get(StreamKey(sid, who)))) return;
+    if (given) whaleStreamDelta(given, StreamKey(sid, who));
     return;
   }
   const text = String(ev.text || '').trim();
-  const key = who + '\u0000' + text;
+  const key = String(sid || '') + '\u0000' + who + '\u0000' + text;
   // ① 这句已经画过了：只把文本对齐（以定稿为准），不再新建气泡
   const seen = _whalePainted.get(key);
   if (seen && seen.isConnected) {
@@ -5765,7 +5892,7 @@ function paintWhaleFromLive(ev) {
     return;
   }
   // ② 有正在流的气泡：把它定稿，并登记句柄
-  if (whaleStreamFinish(text)) {
+  if (whaleStreamFinish(text, StreamKey(sid, who))) {
     const el = _whaleLastFinishEl;
     if (el && el.isConnected && text) _whalePainted.set(key, el);
     return;
@@ -6210,7 +6337,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
               const evs = (lv && lv.events) || [];
               for (const it of evs) {
                 if (!it || it.type !== 'whale') continue;
-                paintWhaleFromLive(it);
+            paintWhaleFromLive(it, turnSession);
               }
             }
           })();
@@ -6289,14 +6416,14 @@ async function runTurn({ resume = false, text = '' } = {}) {
           closeThink();
           if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
           // 有流式临时气泡就定稿到它上面，别再画第二个
-          if (!whaleStreamFinish(ev.text)) addWhaleBubble(ev.who, ev.text);
+          if (!whaleStreamFinish(ev.text, StreamKey(turnSession, ev.who))) addWhaleBubble(ev.who, ev.text);
           noteNewContent();
         } else if (ev.type === 'whale_stream_start') {
           closeThink();
           if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-          whaleStreamStart(ev.who);
+          whaleStreamStart(ev.who, StreamKey(turnSession, ev.who));
         } else if (ev.type === 'whale_delta') {
-          whaleStreamDelta(ev.text);
+          whaleStreamDelta(ev.text, StreamKey(turnSession, ev.who));
         } else if (ev.type === 'tool_start') {
           closeThink();
           // 一段话到此为止（后面接着干工具），先把这段落记上
@@ -6484,7 +6611,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
                 .filter((x) => x && (x.type === 'whale' || x.type === 'agent' || x.type === 'whale_stream_start' || x.type === 'whale_delta'));
               for (const x of tails) {
                 // 一律交给同一个管道句柄认领，别在这儿自己找气泡（见 paintWhaleFromLive 注释）
-                paintWhaleFromLive(x);
+                paintWhaleFromLive(x, turnSession);
               }
             }
           })();
@@ -6627,11 +6754,11 @@ function replayInFlight(id) {
       addWhaleBubble(p.who, p.text);
     } else if (kind === 'whale_start') {
       if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
-      whaleStreamStart(p.who || '小鲸');
+      whaleStreamStart(p.who || '小鲸', StreamKey(rec.sessionId, p.who));
     } else if (kind === 'whale_delta') {
       // 还在流式的她：用流式气泡接着写，别每次重建一个新气泡
-      if (!rec.whaleStarted) { whaleStreamStart(p.who || '小鲸'); rec.whaleStarted = true; }
-      whaleStreamDelta(p.text);
+      if (!rec.whaleStarted) { whaleStreamStart(p.who || '小鲸', StreamKey(rec.sessionId, p.who)); rec.whaleStarted = true; }
+      whaleStreamDelta(p.text, StreamKey(rec.sessionId, p.who));
     } else if (kind === 'tool_start') {
       if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
       const el = addTool();
@@ -6663,7 +6790,15 @@ function replayInFlight(id) {
 
   // 把指针存回 rec：主循环 6239 那段就是从 turnRec.bubble / turnRec.think 接回去的。
   // 不存的话它每次都判「没接上」，一有新事件就再重建一遍 —— 屏幕上反复闪。
-  rec.bubble = rec.bubble || null;
+  // 【2026-10-29 多会话并行修 · ③：别把「正在往上写字」的气泡换掉】
+  // 原来这里无条件赋一次值，而 attachLive 那边也会 rec.bubble = bubble ——
+  // 两个地方抢同一个指针，谁后跑谁说了算。流式还往旧节点里写，屏幕上就出现
+  // 两份一样的话、或者一段话说一半停住，非刷新不可。
+  // 规则：原本空着、或者原节点已经不在页面上（孤儿），才认领新节点。
+  if (!rec.bubble || !rec.bubble.isConnected) {
+    const _fresh = lastAssistantWrap();
+    rec.bubble = (_fresh && _fresh.isConnected) ? _fresh : null;
+  }
   rec.think = rec.think || null;
 
   if (rec.bubble) markStreaming(rec.bubble);
@@ -7303,6 +7438,21 @@ async function selectAgent(id) {
   agSet('agPersona', agentCur.persona);
   agSet('agOpening', agentCur.opening || '');
 
+  /**
+   * 「只在叫名字时才说话」：自建卡和小鲸都能设。
+   * 2026-10-31 主人纠正「每个智能体都是像小鱼一样的独立个体」以后，
+   * 小鲸和小鱼一样是屋里的一个人 —— 她能进来、能自己开口，也能被设成「要叫才应」。
+   * 只有小鱼不能设：她是这个会话的主声。
+   */
+  const quietEl = document.getElementById('agQuiet');
+  if (quietEl) {
+    const canQuiet = agentCur.kind === 'custom' || agentCur.kind === 'whale';
+    quietEl.checked = canQuiet && !!agentCur.quiet;
+    quietEl.disabled = !canQuiet;
+    quietEl.parentElement.style.opacity = canQuiet ? '' : '.45';
+    quietEl.onchange = () => setAgentQuiet(agentCur.id, quietEl.checked);
+  }
+
   // 模型下拉：第一项永远是「跟当前模型一致」
   const sel = document.getElementById('agModel');
   if (sel) {
@@ -7353,7 +7503,9 @@ async function selectAgent(id) {
       tip.textContent = `这是你自己。人设可以有好几套，下面写的是当前这套「${agentCur.personaSetName || '默认人设'}」的正文；`
         + '想换一套、新建一套，点「多套人设…」。模型跟着主对话走。';
     } else if (agentCur.id === 'xiaojing') {
-      tip.textContent = '这是跑出去查事情的那个她。人设有内置默认，你改了就是私设，「恢复默认」能退回去。模型可以单独给她挑一个。';
+      tip.textContent = '这是小鲸，一个独立的人 —— 不是我的工具。她有自己的名字、脾气和习惯，'
+        + '人设写什么她就是什么（有内置默认，改了就是私设，「恢复默认」能退回去）。'
+        + '模型可以单独给她挑一个；跑出去查事情只是她的一项本事。';
     } else {
       tip.textContent = '你自己建的智能体。人设写什么她就是什么；模型空着就跟当前模型一致。';
     }
@@ -7394,18 +7546,158 @@ async function refreshAgentChip() {
   if (!cur || cur.error) { el.hidden = true; return; }
   const id = String(cur.agentId || '');
   const name = String(cur.name || '');
-  const mates = (grp && !grp.error && Array.isArray(grp.agentIds)) ? grp.agentIds : [];
-  const mateNames = (grp && !grp.error && Array.isArray(grp.names)) ? grp.names.filter(Boolean) : [];
+  /**
+   * 2026-10-31：小鲸现在「默认就在屋里，但叫才应」。她这种默认状态不该把顶栏牌点亮 ——
+   * 每个会话都挂一块牌等于噪音。所以：安静的小鲸不算「有人在场」；
+   * 一旦主人把她的安静去掉（她会每轮都接），或者勾了别人，牌子才亮。
+   */
+  const grpMembers = (grp && !grp.error && Array.isArray(grp.members)) ? grp.members : [];
+  const loud = grpMembers.filter((m) => !(m.quiet && String(m.id) === 'xiaojing'));
+  const mates = loud.map((m) => String(m.id));
+  const mateNames = loud.map((m) => String(m.name || '')).filter(Boolean);
   // 默认就是小鱼：既没换人、也没别人在场的时候不挂牌（左边标题已经写着「小鱼」）
   const swapped = Boolean(id && id !== 'xiaoyu' && name);
   if (!swapped && !mates.length) { el.hidden = true; return; }
   const head = swapped ? name : '小鱼';
   const tail = mates.length ? ' + ' + (mateNames.length ? mateNames.join('、') : String(mates.length)) : '';
-  el.textContent = '现在：' + head + tail;
+  // 屋里有人但要叫名字才应：牌子上标一下，不然主人会觉得「她怎么不吭声」
+  const quietN = (grp && !grp.error && Array.isArray(grp.quietIds)) ? grp.quietIds.length : 0;
+  el.textContent = '现在：' + head + tail + (quietN ? `（${quietN} 个要叫才应）` : '');
   el.title = mates.length
     ? `这个会话里说话的是「${head}」，${mates.length} 个还会接着补一句 —— 点一下换人或换回小鱼`
     : `这个会话里说话的是「${head}」，不是小鱼 —— 点一下换人或换回小鱼`;
   el.hidden = false;
+}
+
+/**
+ * 往输入框里塞「@名字」——点左上角那列按钮就是干这个。
+ *
+ * 为什么不直接发出去：主人常常是「先叫她一声，后面还有话说」，
+ * 直接发就成了半句话。所以只填不发送，光标留在后面。
+ */
+function callIntoRoom(name) {
+  const nm = String(name || '').trim();
+  const ta = document.getElementById('input');
+  if (!nm || !ta) return;
+  const tag = '@' + nm + ' ';
+  const cur = String(ta.value || '');
+  ta.value = cur && !/\s$/.test(cur) ? cur + ' ' + tag : cur + tag;
+  try { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } catch { /* 忽略 */ }
+}
+
+/**
+ * 【屋里的人】左上角那竖列按钮 —— 2026-10-31 主人指着截图定的位置。
+ *
+ * 为什么要有它：一个会话里坐着好几个人以后，「谁在这屋里」在屏幕上一点痕迹都没有，
+ * 主人会以为程序自己在说话。小鱼永远第一个；其余按名单来（小鲸默认在，只是「叫才应」）。
+ *
+ * 谁调它：loadTopCfg（开机 + 每次切会话）、新建会话之后、改名单之后、改安静之后。
+ */
+async function refreshWhoRail() {
+  const box = document.getElementById('whoRail');
+  if (!box) return;
+  const sid = (typeof sessionId === 'string' && sessionId) ? sessionId : '';
+  if (!sid) { box.hidden = true; box.innerHTML = ''; return; }
+  let members = [];
+  try {
+    const r = await fetch('/api/agents/group?sessionId=' + encodeURIComponent(sid))
+      .then((x) => x.json()).catch(() => null);
+    members = (r && !r.error && Array.isArray(r.members)) ? r.members : [];
+  } catch { members = []; }
+  // 切会话很快时会有几次并发请求，回来的顺序不一定 —— 只认最后那一次的会话
+  if (String(sessionId || '') !== sid) return;
+  box.innerHTML = '';
+  const cap = document.createElement('div');
+  cap.className = 'whoCap';
+  cap.textContent = '屋里的人';
+  box.appendChild(cap);
+  const mk = (label, cls, title, name) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'whoBtn' + (cls ? ' ' + cls : '');
+    b.textContent = label;
+    b.title = title;
+    b.onclick = () => callIntoRoom(name);
+    box.appendChild(b);
+  };
+  mk('小鱼', 'me', '这个会话的主声是她。点一下 = 在输入框里叫她的名字', '小鱼');
+  for (const m of members) {
+    const nm = String(m.name || '');
+    if (!nm || String(m.id) === 'xiaoyu') continue;
+    const quiet = !!m.quiet;
+    mk(nm + (quiet ? ' ·静' : ''), (m.kind === 'whale' ? 'whale' : '') + (quiet ? ' quiet' : ''),
+      quiet ? '她在屋里，但只在你叫名字（@她）的时候说话' : '点一下 = 在输入框里叫她的名字',
+      nm);
+  }
+  box.hidden = false;
+}
+
+/**
+ * 【新建会话时挑人】—— 2026-10-31 主人：「新建会话时选择智能体」。
+ *
+ * 小鱼和小鲸是「默认在场」的两个，勾着而且锁住（取消不了）；
+ * 其余的卡片由主人自己勾。挑好的就是这间屋子的在场名单。
+ */
+async function openNewSessionDlg() {
+  const dlg = document.getElementById('newSessionDlg');
+  const list = document.getElementById('nsList');
+  const hint = document.getElementById('nsHint');
+  const note = document.getElementById('nsNote');
+  if (!dlg || !list) return;
+  list.innerHTML = '';
+  if (note) note.textContent = '';
+  if (hint) hint.textContent = '先挑这屋里还有谁';
+  if (note) note.textContent = '正在读智能体…';
+  const r = await fetch('/api/agents').then((x) => x.json()).catch(() => null);
+  const cards = (r && !r.error && Array.isArray(r.agents)) ? r.agents : [];
+  if (note) note.textContent = '';
+  const lockedIds = ['xiaoyu', 'xiaojing'];
+  for (const a of cards) {
+    const id = String(a.id || '');
+    const locked = lockedIds.includes(id);
+    const row = document.createElement('label');
+    row.className = 'nsRow' + (locked ? ' locked' : '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = locked;
+    cb.disabled = locked;
+    cb.dataset.id = id;
+    cb.dataset.locked = locked ? '1' : '';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = String(a.name || '');
+    row.append(cb, nm);
+    if (locked) {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = '默认在场';
+      row.append(tag);
+    }
+    list.append(row);
+  }
+  if (!cards.length && note) note.textContent = '还没读到智能体清单';
+  try { if (typeof closeOtherDialogs === 'function') closeOtherDialogs('newSessionDlg'); } catch { /* 忽略 */ }
+  if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+}
+
+/** 挑完人 → 开这间屋子（挑人只是名单，真正的会话还是 /api/sessions/new 建的） */
+async function submitNewSession() {
+  const dlg = document.getElementById('newSessionDlg');
+  const list = document.getElementById('nsList');
+  const ids = [];
+  if (list) {
+    for (const cb of list.querySelectorAll('input[type="checkbox"]')) {
+      if (cb.checked && !cb.dataset.locked) ids.push(String(cb.dataset.id || ''));
+    }
+  }
+  try { if (dlg) dlg.close(); } catch { /* 忽略 */ }
+  try {
+    await createSessionEx({ agentIds: ids });
+  } catch (e) {
+    console.warn('[newSession] 开会话出错', e && e.message ? e.message : e);
+  } finally {
+    settleComposer({ focus: true });
+  }
 }
 
 /** 拉一次清单（带上当前会话，好知道这个会话挂的是哪张卡） */
@@ -7438,7 +7730,8 @@ function renderGroupRow() {
   const hint = document.getElementById('agGroupHint');
   if (!box) return;
   box.innerHTML = '';
-  const cards = (agentState.agents || []).filter((a) => a.kind === 'custom');
+  // 小鲸也是一张能坐进来说话的卡（2026-10-31：她不是工具，是屋里的一个人）
+  const cards = (agentState.agents || []).filter((a) => a.kind === 'custom' || a.kind === 'whale');
   const hasSession = typeof sessionId === 'string' && !!sessionId;
   if (!hasSession) {
     if (hint) hint.textContent = '先打开一个会话，再挑谁跟她一起说话';
@@ -7452,16 +7745,21 @@ function renderGroupRow() {
     const on = agentGroup.includes(String(a.id));
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'agMem' + (on ? ' on' : '');
-    b.textContent = String(a.name || '她');
-    b.title = on ? '点一下：让她别说话' : '点一下：让她也在这个会话里说话';
+    b.className = 'agMem' + (on ? ' on' : '') + (a.quiet ? ' quiet' : '');
+    b.textContent = String(a.name || '她') + (a.quiet ? ' ·静' : '');
+    b.title = on
+      ? (a.quiet
+        ? '她在屋里，但只在被 @ 到的时候才说话 —— 点一下让她出去'
+        : '她在屋里，每轮都接一句 —— 点一下让她出去')
+      : '点一下：让她也在这个会话里说话';
     b.onclick = () => toggleGroupMember(String(a.id));
     box.appendChild(b);
   }
   if (hint) {
     const n = agentGroup.length;
+    const quiets = cards.filter((a) => a.quiet && agentGroup.includes(String(a.id))).length;
     hint.textContent = n
-      ? `这个会话里小鱼 + ${n} 个还会接着说话；点名字可以增减`
+      ? `这个会话里小鱼 + ${n} 个还会接着说话${quiets ? `（其中 ${quiets} 个要 @ 才说）` : ''}；说话时写「@名字」就只让被叫的人接`
       : '只有小鱼一个人说话。点了谁，小鱼答完她就会接着补一句';
   }
 }
@@ -7478,6 +7776,30 @@ async function toggleGroupMember(id) {
   agentGroup = Array.isArray(r.agentIds) ? r.agentIds.map(String) : [];
   renderGroupRow();
   try { refreshAgentChip(); } catch { /* 忽略 */ }
+  try { refreshWhoRail(); } catch { /* 忽略 */ }
+}
+
+/**
+ * 改一张卡的「安静」开关（只在 @她 的时候才说话）。
+ *
+ * 为什么不跟人名一起在保存时提交：主人拨一下就想立刻生效，
+ * 不该还要记得按「保存」。存完顺手把本地清单改掉，列表和名册的小点立刻跟上。
+ */
+async function setAgentQuiet(id, quiet) {
+  if (!id) return;
+  const r = await fetch('/api/agents/quiet', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, quiet: !!quiet }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { agHint('没存上：' + ((r && r.error) || '网络错误')); return; }
+  const hit = (agentState.agents || []).find((a) => String(a.id) === String(id));
+  if (hit) hit.quiet = !!r.quiet;
+  if (agentCur && String(agentCur.id) === String(id)) agentCur.quiet = !!r.quiet;
+  agHint(quiet ? '她以后只在你叫名字（@她）的时候说话' : '她会跟往常一样，每轮都接一句');
+  renderAgentList();
+  renderGroupRow();
+  try { refreshAgentChip(); } catch { /* 忽略 */ }
+  try { refreshWhoRail(); } catch { /* 忽略 */ }
 }
 
 /** 底下那行「这个会话里用谁说话」：按当前选中卡和绑定状态长成该有的样子 */
@@ -7494,11 +7816,8 @@ function syncBindRow() {
     btn.hidden = true;
     return;
   }
-  if (cur === 'xiaojing') {
-    st.textContent = '她只在跑腿的时候露面，不能挂到会话上';
-    btn.hidden = true;
-    return;
-  }
+  // 2026-10-31 主人：「每个智能体都是像小鱼一样的独立个体」。
+  // 小鲸也能替一个会话说话 —— 原来那句「不能挂到会话上」是把她当工具时留下的规矩。
   btn.hidden = false;
   if (cur === 'xiaoyu') {
     st.textContent = bound === 'xiaoyu' ? '就是她（默认）' : '这个会话现在用的是别的卡';
@@ -7534,6 +7853,7 @@ async function bindAgentCard() {
   agentState.boundAgentId = String(r.boundAgentId || 'xiaoyu');
   syncBindRow();
   try { refreshAgentChip(); } catch { /* 忽略 */ }
+  try { refreshWhoRail(); } catch { /* 忽略 */ }
   agHint(r.agentId ? '这个会话从下一句开始就用她说话了' : '这个会话换回小鱼了');
 }
 
@@ -7546,7 +7866,6 @@ async function bindAgentCard() {
  */
 async function newChatAsAgent() {
   if (!agentCur) { agHint('先选一张卡'); return; }
-  if (agentCur.id === 'xiaojing') { agHint('小鲸是跑出去查事情的那个她，不能拿去开会话'); return; }
   agHint('正在开新会话…');
   const dlg = document.getElementById('agentListDlg');
   if (dlg && dlg.open) { try { dlg.close(); } catch { /* 忽略 */ } }
@@ -10037,6 +10356,8 @@ function paintTopCfg() {
 async function loadTopCfg() {
   // 顶栏「现在是谁在说话」那块牌跟着会话走，顺手一起刷（失败就当没这块牌）
   try { refreshAgentChip(); } catch { /* 忽略 */ }
+  // 左上角那竖列「屋里的人」也是跟着会话走的
+  try { refreshWhoRail(); } catch { /* 忽略 */ }
   if (!sessionId) return;
   const r = await fetch(`/api/session-config?sessionId=${encodeURIComponent(sessionId)}`)
     .then((x) => x.json()).catch(() => null);
@@ -11010,9 +11331,13 @@ function renderTurns(turns) {
    * 这里把「正在跑的会话」的 bubble 指针清掉，让补画逻辑重新认一个活节点。
    */
   try {
-    for (const rec of turnsInFlight.values()) {
-      if (rec) { rec.bubble = null; rec.drawnParts = 0; rec.userDrawn = false; }
-    }
+    // 【2026-10-29 多会话并行修 · ②：只清「屏幕上这个会话」，别动别人】
+    // 原来这里 for…of 把 turnsInFlight 里【所有会话】的补画进度都清零了。
+    // 两个会话同时跑的时候，谁最后重画一次，谁就把另一边的进度抹掉 ——
+    // 切回去那边只剩半截、或者整片空白，非要刷新页面才回来。
+    // 重画只影响当前这一屏，所以只清当前这一步正在跑的记录。
+    const _curRec = turnsInFlight.get(sessionId);
+    if (_curRec) { _curRec.bubble = null; _curRec.drawnParts = 0; _curRec.userDrawn = false; }
   } catch {}
 
   usageEl.textContent = '';
@@ -11466,13 +11791,15 @@ async function createSession() {
  *
  * `agentId` 给了就走 `/api/agents/new-session`：建会话 + 把这张卡绑上去，
  * 等于「用她开一个新会话」（多开）。没给就是普通新会话（小鱼）。
- * @param {{quiet?: boolean, title?: string, agentId?: string}} opts
+ * @param {{quiet?: boolean, title?: string, agentId?: string, agentIds?: string[]}} opts
  */
 async function createSessionEx(opts = {}) {
-  const { quiet = false, title = '', agentId = '' } = opts;
+  const { quiet = false, title = '', agentId = '', agentIds = [] } = opts;
   const useAgent = Boolean(agentId);
   const url = useAgent ? '/api/agents/new-session' : '/api/sessions/new';
-  const payload = useAgent ? { agentId, ...(title ? { title } : {}) } : (title ? { title } : {});
+  // 挑人的只在普通新建那条路上生效（「用她开个新会话」已经指定了主声，不再拉别人）
+  const extra = (!useAgent && Array.isArray(agentIds) && agentIds.length) ? { agentIds } : {};
+  const payload = useAgent ? { agentId, ...(title ? { title } : {}) } : { ...(title ? { title } : {}), ...extra };
   const r = await fetchTimed(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -11508,6 +11835,7 @@ async function createSessionEx(opts = {}) {
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
   loadTopCfg(); // 新会话是默认档
+  try { refreshWhoRail(); } catch { /* 忽略 */ }
   log.innerHTML = '';
   // 【清空历史后扫残留光标】
   // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
@@ -11538,16 +11866,26 @@ document.getElementById('openSessions').onclick = async () => {
 };
 
 document.getElementById('sessNew').onclick = async () => {
-  // 以前：createSession 里只要抛一次（网络断、切会话出错），面板就永远关不掉，
-  // 模态 dialog 盖在整页上 —— 输入框自然点不了。现在 finally 兜住。
+  /**
+   * 2026-10-31 主人：「新建会话时选择智能体」。
+   * 所以这里不再直接建 —— 先把「屋里还有谁」挑一遍再建。
+   * 挑人框里读不到卡片清单时（接口挂了）也不能把人卡死：直接按默认建。
+   */
   try {
-    await createSession();
+    const r = await fetch('/api/agents').then((x) => x.json()).catch(() => null);
+    const cards = (r && !r.error && Array.isArray(r.agents)) ? r.agents : [];
+    if (!cards.length) { await createSession(); settleComposer({ focus: true }); return; }
+    await openNewSessionDlg();
   } catch (e) {
     console.warn('[sessNew] 新建会话出错', e && e.message ? e.message : e);
-  } finally {
-    // 人刚点了「新建」，光标直接给到位
+    try { await createSession(); } catch { /* 忽略 */ }
     settleComposer({ focus: true });
   }
+};
+document.getElementById('nsOk').onclick = () => { submitNewSession(); };
+document.getElementById('nsCancel').onclick = () => {
+  const d = document.getElementById('newSessionDlg');
+  try { if (d) d.close(); } catch { /* 忽略 */ }
 };
 
 sessDlg.addEventListener('cancel', () => sessDlg.close());

@@ -92,6 +92,9 @@ import {
   setSessionAgent,
   groupAgentIds,
   setSessionGroup,
+  quietAgentIds,
+  setAgentQuiet,
+  isAgentQuiet,
   MAX_GROUP,
   AGENT_XIAOYU,
   AGENT_XIAOJING,
@@ -3441,9 +3444,8 @@ const server = createServer(async (req, res) => {
     const payload = await body(req).catch(() => ({}));
     const agentId = String(payload?.agentId || '').trim();
     if (!agentId) return json(res, 400, { error: '要指定用哪张卡说话' });
-    if (agentId === AGENT_XIAOJING) {
-      return json(res, 400, { error: '小鲸是跑出去查事情的那个她，不是聊天对象，不能拿去开会话' });
-    }
+    // 2026-10-31：小鲸也能单独开一个会话。她是个独立的人，不是工具 ——
+    // 原来这里直接 400「不能拿去开会话」，那是把她当工具时留下的规矩。
     const card = getAgent(agentId);
     if (!card) return json(res, 400, { error: '没有这张智能体卡' });
     try {
@@ -3513,18 +3515,44 @@ const server = createServer(async (req, res) => {
     try {
       const qsid = String(url.searchParams.get('sessionId') || '').trim();
       const ids = groupAgentIds(qsid);
+      // members 是给左上角那竖列「屋里的人」按钮用的（带 id / kind / 安静 标记）
+      const members = ids.map((id) => {
+        const a = getAgent(id);
+        return a ? { id, name: String(a.name || ''), kind: String(a.kind || ''), quiet: isAgentQuiet(id) } : null;
+      }).filter(Boolean);
       return json(res, 200, {
         ok: true,
         sessionId: qsid,
         agentIds: ids,
         max: MAX_GROUP,
-        names: ids.map((id) => {
-          const a = getAgent(id);
-          return a ? String(a.name || '') : '';
-        }).filter(Boolean),
+        members,
+        names: members.map((m) => m.name),
+        // 谁「只在叫名字时才说话」——顶栏牌子和名册都要用它画那个小点
+        quietIds: ids.filter((id) => isAgentQuiet(id)),
       });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
+   * 【安静开关】某张卡改成「只在叫名字时才说话」。
+   *
+   * 主人原话：「让群聊别一直全员齐发」。三张卡每轮都开口，一长就吵，还烧钱。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/agents/quiet') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const r = setAgentQuiet(String(payload?.id || ''), payload?.quiet !== false);
+      if (!r) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      return json(res, 200, { ok: true, ...r });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }
   }
 
@@ -4451,7 +4479,27 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
     const payload = await body(req).catch(() => ({}));
     const session = makeSession(payload);
-    return json(res, 200, { session: publicSession(session), memory: memoryInfo(session.id) });
+    /**
+     * 2026-10-31 主人：「新建会话时选择智能体」。
+     *
+     * 选出来的人就是这间屋子的在场名单 —— 小鱼和小鲸默认就在（不能取消），
+     * 其余的由主人勾。名单存好之后，左上角那竖列按钮和群聊都照它来。
+     * 名单有问题也不许把会话弄没了：会话已经建好，名单顶多退回默认。
+     */
+    let group = [];
+    try {
+      group = Array.isArray(payload?.agentIds)
+        ? (setSessionGroup(session.id, payload.agentIds)?.agentIds || [])
+        : groupAgentIds(session.id);
+    } catch (err) {
+      console.warn('[session/new] 名单没设上：', String(err?.message ?? err));
+      try { group = groupAgentIds(session.id); } catch { group = []; }
+    }
+    return json(res, 200, {
+      session: publicSession(session),
+      memory: memoryInfo(session.id),
+      groupAgentIds: group,
+    });
   }
 
   /**
@@ -4744,10 +4792,22 @@ const server = createServer(async (req, res) => {
         if (last && last.role === 'user') {
           const body = draftAsMessage(draft, (n) => featureNameOfTool(n) || n);
           if (body) {
-            session.messages.push({ role: 'assistant', content: body, _recovered: true });
-            session.updatedAt = Date.now();
-            saveSession(session);
-            recovered = true;
+            /**
+             * 【草稿回灌也要过内容关】—— 2026-10-29
+             *
+             * 这里原来只判「最后一句是主人说的」就补。可重启那一下，
+             * 这一轮的话可能已经 commitWireBack 进历史了、草稿却没来得及删，
+             * 于是同一段话被补成第二条。现在先问一句：这段正文历史里有没有？
+             * 有就只删草稿，不再补。
+             */
+            if (alreadyCollected(session.messages, { role: 'assistant', content: body })) {
+              dropDraft(id);
+            } else {
+              session.messages.push({ role: 'assistant', content: body, _recovered: true });
+              session.updatedAt = Date.now();
+              saveSession(session);
+              recovered = true;
+            }
           }
         }
         dropDraft(id);
@@ -5731,7 +5791,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 那条提醒由 extraRule 传下去（见 extraRuleForBothOn）。
      */
     const __speaksToHer = __calledByName || __fishAway;
-    if (whaleOn(sessionId) && !__quiet && !__busyTurn) {
+    /**
+     * 【她已经以「一个人」的身份在这屋里了】—— 2026-10-31
+     *
+     * 主人纠正过我一次：「我希望每个智能体都是像小鱼一样的独立个体，
+     * 你怎么把小鲸写成工具了」。所以她现在可能是这个会话的说话人（绑了她），
+     * 也可能只是坐在屋里（群聊名单里有她）。
+     *
+     * 这两种情况下她的话由「主声」或「群聊」那条路说，这里就不要再插一句 ——
+     * 否则同一轮里她会说两遍，主人看到的就是「她自己接自己的话」。
+     */
+    const __whaleIsSomeone = (() => {
+      try {
+        // 她替这个会话说话 → 她的话由主声那条路说，插话闸让开
+        if (sessionAgentId(sessionId) === AGENT_XIAOJING) return true;
+        // 她在屋里、而且不是「叫才应」→ 群聊那条路会说她，插话闸也让开；
+        // 在屋里但是安静的，还归插话闸管 —— 不然她就彻底不吭声了。
+        if (groupAgentIds(sessionId).includes(AGENT_XIAOJING) && !isAgentQuiet(AGENT_XIAOJING)) return true;
+        return false;
+      } catch { return false; }
+    })();
+    if (whaleOn(sessionId) && !__quiet && !__busyTurn && !__whaleIsSomeone) {
       const userTextNow = lastUserTextOf(session);
       if (userTextNow) {
         (async () => {
@@ -6057,6 +6137,44 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       return true;
     };
     const committed = new Set();
+/**
+ * 【2026-10-29 修 · 防「同一条回答落盘上百遍」】
+ *
+ * 症状（主人这次报的）：切出去再切回来、重启一次，会话里同一条回复就多一份，
+ * 最后历史里躺着 3~5 份一模一样的长回答，界面上看就是「说了一大堆活」。
+ *
+ * 病根：commitWireBack 只靠两个 Set 挡重复 —— committed 和 wireSeenBefore，
+ * 两个都是**按对象身份**记的。可 wireMessages 中途会被重新赋值（拼身份标签、
+ * mergeSameVoice、专业模式 filter），一旦换了数组，老对象就不在里面，
+ * 于是同一条 assistant 被当成「新的」再接一遍，一遍一遍接下去。
+ *
+ * 现在加一道**按内容**的关：算个指纹，最近 200 条里已经有同样内容的就不接。
+ * 指纹只看 role + 正文 + 工具调用 id，不看对象，也不看 _at（_at 是后补的，
+ * 同一条两次接进来的 _at 可能不同，用它当键会漏）。
+ */
+const msgFingerprint = (m) => {
+  if (!m) return '';
+  const body = typeof m.content === 'string'
+    ? m.content
+    : Array.isArray(m.content)
+      ? m.content.map((p) => (p && (p.text || p.type)) || '').join('\n')
+      : '';
+  const ids = Array.isArray(m.tool_calls) ? m.tool_calls.map((t) => String((t && t.id) || '')).join(',') : '';
+  // _at 是服务端给每条 assistant 盖的时间戳：同一次生成只有这一个值。
+  // 带上它，才能分清「同一句话被重复接入」（同 _at，该挡）和「我过一会儿又说了一遍」（不同 _at，该留）。
+  return String(m.role || '') + '|' + String(m._at || '') + '|' + String(m.tool_call_id || '') + '|' + ids + '|' + body;
+};
+/** 这段正文最近收过没有（只看尾部，够用且便宜） */
+const alreadyCollected = (ms, m) => {
+  if (!Array.isArray(ms) || !m) return false;
+  const fp = msgFingerprint(m);
+  if (!fp || fp.endsWith('|')) return false;   // 空正文也不当成重复（工具空壳另有判据）
+  const from = Math.max(0, ms.length - 200);
+  for (let k = from; k < ms.length; k++) {
+    if (msgFingerprint(ms[k]) === fp) return true;
+  }
+  return false;
+};
     /**
      * 【存盘前把中段多出来的 system 清掉】—— 2026-10-26 修
      *
@@ -6119,6 +6237,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 以前消息上根本没有时间字段，那个判据只能瞎猜。
          * 这里落盘前补一个 _at（毫秒），老消息没有就退回 0 —— 不影响读。
          */
+        /**
+         * 【内容已经收过就别再接】—— 2026-10-29 加的那道关，见 msgFingerprint 旁的说明。
+         * 对象身份靠不住（数组会被换掉），内容靠得住。
+         */
+        if (alreadyCollected(history, m)) continue;
         if (m.role === 'assistant' && !m._at) m._at = Date.now();
         history.push(m);
         n++;
@@ -6637,13 +6760,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       if (process.env.GROUP_CHAT !== '0') {
         try {
+          // 小鲸那条总开关关着的时候，她不该被群聊拉出来说话（那是「她关掉了」）
           const roster = groupAgentIds(sessionId)
+            .filter((id) => (id === AGENT_XIAOJING ? whaleOn(sessionId) : true))
             .map((id) => getAgent(id))
             .filter(Boolean);
-          if (roster.length) {
-            const { speakAsCard } = await import('./group.mjs');
+          // 「别一直全员齐发」：点了名的只让被点的接，没点名就跳过「安静」的卡。
+          // 认的是 `@名字`（见 group.mjs 的 pickSpeakers），不认「句子里出现过名字」——
+          // 那样「阿绿昨天说的办法」会把她拽出来重答一遍。
+          const { speakAsCard, pickSpeakers } = await import('./group.mjs');
+          const heard = String(lastUserTextOf(session) || '');
+          const speakers = roster.length
+            ? pickSpeakers({ roster, userText: heard, quietIds: quietAgentIds() })
+            : [];
+          if (speakers.length) {
             let burned = 0;
-            for (const mate of roster) {
+            for (const mate of speakers) {
               if (ac.signal.aborted) break;
               const nm = String(mate.name || '').trim();
               let out = null;

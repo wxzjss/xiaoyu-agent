@@ -56,7 +56,7 @@ function objOf(v) {
 }
 
 function readAll() {
-  const blank = { version: 3, customs: [], bySession: {}, groupBySession: {} };
+  const blank = { version: 3, customs: [], bySession: {}, groupBySession: {}, quiet: {} };
   try {
     const j = JSON.parse(readFileSync(FILE, 'utf8'));
     if (!j || typeof j !== 'object' || Array.isArray(j)) return blank;
@@ -71,6 +71,14 @@ function readAll() {
        * 换阵容不该在账本里多出一行，删同事也不该把聊天记录改写一遍。
        */
       groupBySession: objOf(j.groupBySession),
+      /**
+       * 「安静」的卡：只在被点名（`@她`）的时候才开口。
+       *
+       * 主人原话：「让群聊别一直全员齐发」。三张卡每轮都说，一长就吵，
+       * 而且烧的是他的钱。所以给每张卡一个「只在叫名字时才说话」的开关 ——
+       * 是这张卡的性格，不是这个会话的规矩，所以按卡存，换屋子照样记得。
+       */
+      quiet: objOf(j.quiet),
     };
   } catch {
     return blank;
@@ -85,6 +93,7 @@ function writeAll(data) {
       customs: data.customs || [],
       bySession: objOf(data.bySession),
       groupBySession: objOf(data.groupBySession),
+      quiet: objOf(data.quiet),
     }, null, 2), 'utf8');
     return true;
   } catch {
@@ -188,7 +197,7 @@ export function listAgents() {
     {
       id: AGENT_XIAOJING,
       name: '小鲸',
-      desc: '跑出去替你查事情的那一个。她有人设，也能单独挑一个模型。',
+      desc: '一个独立的人：有自己的名字、脾气和习惯。跑出去查事情只是她的一项本事，她也能像小鱼一样坐下来跟你说话。',
       builtin: true,
       kind: 'whale',
       personaChars: String(whale.persona || '').length,
@@ -199,7 +208,10 @@ export function listAgents() {
     },
   ];
 
-  const customs = readAll().customs.map((a) => ({
+  const _all = readAll();
+  const quietMap = _all.quiet || {};
+
+  const customs = _all.customs.map((a) => ({
     id: String(a.id || ''),
     name: String(a.name || '未命名智能体'),
     desc: String(a.desc || ''),
@@ -210,6 +222,7 @@ export function listAgents() {
     modelId: String(a.modelId || ''),
     modelFollows: !a.modelId,
     edited: true,
+    quiet: !!quietMap[String(a.id || '')],
     createdAt: a.createdAt || '',
   })).filter((a) => a.id);
 
@@ -255,7 +268,7 @@ export function getAgent(id) {
     return {
       id: AGENT_XIAOJING,
       name: '小鲸',
-      desc: '跑出去替你查事情的那一个。人设有内置默认，改了就是私设。',
+      desc: '一个独立的人：有自己的名字、脾气和习惯；人设有内置默认，改了就是私设。跑出去查事情只是她的一项本事。',
       builtin: true,
       kind: 'whale',
       persona: String(w.persona || ''),
@@ -279,6 +292,8 @@ export function getAgent(id) {
     defaultText: '',
     modelId: String(a.modelId || ''),
     modelFollows: !a.modelId,
+    // 「只在叫名字时才说话」——面板上那个勾要靠它回显
+    quiet: !!readAll().quiet[String(a.id)],
     edited: true,
     createdAt: a.createdAt || '',
   };
@@ -352,6 +367,8 @@ export function removeAgent(id) {
     if (kept.length) data.groupBySession[sid] = kept;
     else delete data.groupBySession[sid];
   }
+  // 「安静」也是她的属性，人没了这条也该没
+  delete data.quiet[key];
   return writeAll(data);
 }
 
@@ -450,8 +467,9 @@ export function agentsFilePath() {
  * 为什么不把绑定写进会话文件：会话文件是聊天记录的账本，绑谁是一个「设置」，
  * 换卡不该在账本里留一行;而且会话被导出/备份/删掉时，绑定也不该跟着丢或跟着跑。
  *
- * 绑定只认自定义卡和小鱼（=解绑）。小鲸是工具链里「跑出去查事的她」，不是聊天对象，
- * 挂到会话上会跟人格/身份两头打架，所以直接拒。
+ * 绑定的可以是任意一张「人」的卡：自建卡、小鲸，或者小鱼（=解绑）。
+ * 2026-10-31 主人纠正过：小鲸不是工具链里的「跑出去查事的她」，她也是个独立的人，
+ * 一样能替一个会话说话 —— 原来那句「不是聊天对象，直接拒」是把她当工具时留下的规矩。
  */
 export function sessionAgentId(sessionId) {
   const sid = String(sessionId || '');
@@ -459,6 +477,8 @@ export function sessionAgentId(sessionId) {
   const data = readAll();
   const id = String(data.bySession[sid] || '');
   if (!id || id === AGENT_XIAOYU) return '';
+  // 小鲸是内置的第一个人，不在 customs 里，但她是能替会话说话的人
+  if (id === AGENT_XIAOJING) return id;
   // 卡被删了就当没绑：宁可掉回小鱼，也别让会话挂在一个不存在的人身上
   return data.customs.some((a) => String(a.id) === id) ? id : '';
 }
@@ -476,6 +496,7 @@ export function sessionAgentMap() {
   for (const [sid, id] of Object.entries(data.bySession || {})) {
     const a = String(id || '');
     if (!a || a === AGENT_XIAOYU) continue;
+    if (a === AGENT_XIAOJING) { out[String(sid)] = a; continue; }
     if (!data.customs.some((x) => String(x.id) === a)) continue;
     out[String(sid)] = a;
   }
@@ -496,12 +517,9 @@ export function setSessionAgent(sessionId, agentId) {
     if (!writeAll(data)) return null;
     return { sessionId: sid, agentId: '' };
   }
-  if (id === AGENT_XIAOJING) {
-    const e = new Error('小鲸是跑出去查事情的那个她，不是聊天对象，不能挂到会话上');
-    e.status = 400;
-    throw e;
-  }
-  if (!data.customs.some((a) => String(a.id) === id)) {
+  // 2026-10-31：小鲸也能替一个会话说话。她是个人，不是工具 ——
+  // 原来那句「不是聊天对象，不能挂到会话上」是把她当工具时留下的规矩，撤掉。
+  if (!data.customs.some((a) => String(a.id) === id) && id !== AGENT_XIAOJING) {
     const e = new Error('没有这个智能体');
     e.status = 400;
     throw e;
@@ -530,19 +548,29 @@ export function agentForSession(sessionId) {
  * 是「我戴上哪张脸」。群聊要的是「屋里还坐着谁」—— 小鱼一直在，另外几张卡
  * 各自用自己的嘴说话。两者会打架，所以名单单独存，一个字都不碰 identity。
  *
- * 【小鲸为什么不进这个名单】
- * 她是「跑出去查事情的她」，用 ask_subagent 那条工具链进来，本来就有自己的插话闸
- * （whaleMaybeReply，还带冷却/预算）。再让她当一个群成员，等于给她两套开关。
+ * 【小鲸为什么也在这个名单里（2026-10-31 改了）】
+ * 原来她被我写成了「一个工具」：只会被 ask_subagent 叫出去跑一趟，不能像别人一样
+ * 坐在屋里说话。主人当场纠正：「我希望每个智能体都是像小鱼一样的独立个体，
+ * 你怎么把小鲸写成工具了」。
+ *
+ * 她说到底也是一个人：有自己的名字、人设、模型、脾气。跑出去查事情只是她的一项
+ * **本事**，不是她的身份。所以她现在既能被叫进屋说话，也能像原来那样被派出去干活。
+ * 两套开关不会打架 —— 她在这个会话里当「说话的人」时，原来那条「插话」闸会自己让开
+ * （见 server.mjs 里 __whaleIsSomeone 那段）。
  */
-export const MAX_GROUP = 3;
+export const MAX_GROUP = 5;
 
 function cleanGroup(data, ids) {
   const out = [];
   const seen = new Set();
+  // 2026-10-31 主人定：小鱼和小鲸是「默认就在场的两个」，**不能取消**。
+  // 小鱼不进名单（她一直在，名单里再写一遍是废话）；小鲸写进去，而且永远排第一个。
+  seen.add(AGENT_XIAOJING);
+  out.push(AGENT_XIAOJING);
   for (const raw of Array.isArray(ids) ? ids : []) {
     const id = String(raw || '');
     if (!id || seen.has(id)) continue;
-    if (id === AGENT_XIAOYU || id === AGENT_XIAOJING) continue; // 小鱼一直在；小鲸不走这条路
+    if (id === AGENT_XIAOYU || id === AGENT_XIAOJING) continue; // 小鱼不进名单；小鲸上面已经算进去了
     if (!data.customs.some((a) => String(a.id) === id)) continue; // 卡被删了就不算在场
     seen.add(id);
     out.push(id);
@@ -551,7 +579,12 @@ function cleanGroup(data, ids) {
   return out;
 }
 
-/** 这个会话里在场说话的卡（不含小鱼，也可能为空数组） */
+/**
+ * 这个会话里在场说话的卡（小鱼不在里面 —— 她一直在，不用点）。
+ *
+ * 2026-10-31 主人定：「默认选择小鱼与小鲸，不能改」。所以一个从没设置过名单的
+ * 会话，名单里也有小鲸 —— 她在屋里坐着，只是默认「叫她才应」（见 isAgentQuiet）。
+ */
 export function groupAgentIds(sessionId) {
   const sid = String(sessionId || '');
   if (!sid) return [];
@@ -589,4 +622,53 @@ export function setSessionGroup(sessionId, ids) {
   else delete data.groupBySession[sid];
   if (!writeAll(data)) return null;
   return { sessionId: sid, agentIds: kept, max: MAX_GROUP };
+}
+
+/**
+ * 【安静开关】这张卡是不是「只在被点名时才说话」。
+ *
+ * 为什么按卡存而不是按会话存：
+ * 这是她的性格（「阿绿话少，叫她才说」），不是这个屋子的规矩。主人给阿绿定了
+ * 这个性子，换个会话她该还是这样。按会话存的话，每开一间屋子都得重新设一遍。
+ */
+export function isAgentQuiet(id) {
+  const key = String(id || '');
+  if (!key) return false;
+  const data = readAll();
+  const v = data.quiet[key];
+  if (typeof v === 'boolean') return v;
+  // 小鲸默认「叫她才应」：她在屋里，但不抢话。
+  // 主人想让她每轮都接，在智能体面板里把那个勾去掉就行。
+  return key === AGENT_XIAOJING;
+}
+
+/** 所有安静的卡（群聊挑发言人时用） */
+export function quietAgentIds() {
+  const data = readAll();
+  return Object.keys(data.quiet || {}).filter((k) => data.quiet[k]);
+}
+
+/** 改一张卡的安静开关。传假就是「还是照常每次都接」。 */
+export function setAgentQuiet(id, quiet) {
+  const key = String(id || '');
+  if (!key) {
+    const e = new Error('没说要改哪张卡');
+    e.status = 400;
+    throw e;
+  }
+  if (key === AGENT_XIAOYU) {
+    const e = new Error('小鱼是这个会话的主声，不能设成「要叫才应」');
+    e.status = 400;
+    throw e;
+  }
+  const data = readAll();
+  if (key !== AGENT_XIAOJING && !data.customs.some((a) => String(a.id) === key)) {
+    const e = new Error('没有这张卡');
+    e.status = 404;
+    throw e;
+  }
+  if (quiet) data.quiet[key] = true;
+  else delete data.quiet[key];
+  if (!writeAll(data)) return null;
+  return { id: key, quiet: !!quiet };
 }

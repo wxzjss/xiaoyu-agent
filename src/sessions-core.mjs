@@ -105,7 +105,48 @@ export function loadSession(id) {
   }
 }
 
+/**
+ * 【2026-10-29 修 · 存盘前把「同一次生成的同一句话」只留一份】
+ *
+ * 症状：切会话 / 重启几次之后，会话里同一条长回复躺着 3~5 份，界面上看着像
+ * 「一口气说了一大堆活」。
+ *
+ * 病根：历史数组会被重新拼（wireMessages 换引用、合并、压缩回写），
+ * 拼的时候同一条 assistant 可能被接两遍。commitWireBack 那边已经加了一道关，
+ * 这里是**最后一道**：不管上面怎么绕，落盘之前过一遍。
+ *
+ * 判据用 role + _at + 正文 + 工具调用 id：
+ *   · _at 是那次生成的时间戳，同一次只有一值 —— 同 _at 同正文 = 重复，删掉后面的；
+ *   · 我过一会儿又认真说一遍（不同 _at）→ 不同键，留着。
+ * 只动 assistant（带 tool_calls 的也不动），user / tool / 摘要一概不碰。
+ */
+function dropRepeatedTurns(ms, maxScan = 400) {
+  if (!Array.isArray(ms) || ms.length < 2) return 0;
+  const start = Math.max(0, ms.length - maxScan);
+  const seen = new Set();
+  const kill = [];
+  for (let i = start; i < ms.length; i++) {
+    const m = ms[i];
+    if (!m || m.role !== 'assistant') continue;
+    if (Array.isArray(m.tool_calls) && m.tool_calls.length) continue;
+    const body = typeof m.content === 'string'
+      ? m.content
+      : Array.isArray(m.content) ? m.content.map((p) => (p && (p.text || p.type)) || '').join('\n') : '';
+    if (!body || body.trim().length < 80) continue;   // 短句（「好」「收到」）可能是真说了两遍
+    const k = String(m._at || '') + '|' + body;
+    if (seen.has(k)) { kill.push(i); continue; }
+    seen.add(k);
+  }
+  for (let n = kill.length - 1; n >= 0; n--) ms.splice(kill[n], 1);
+  if (kill.length) {
+    try { console.log('[dedupe] 落盘前清掉 ' + kill.length + ' 条重复的回复'); } catch {}
+  }
+  return kill.length;
+}
+
 export function saveSession(session) {
+  // 落盘前最后一道：清掉同一次生成被接入多份的重复回复（见 dropRepeatedTurns 上的说明）
+  try { if (session && Array.isArray(session.messages)) dropRepeatedTurns(session.messages); } catch {}
   if (!session || !isSessionId(session.id)) return null;
   ensureDir();
   session.updatedAt = Date.now();

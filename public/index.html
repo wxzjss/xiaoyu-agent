@@ -2552,12 +2552,9 @@
             <select id="agModel"></select>
           </div>
           <div class="agRow">
-            <label>一句话</label>
-            <input id="agDesc" type="text" maxlength="200" placeholder="这人是谁、用来干嘛（可以空着）">
-          </div>
-          <div class="agRow">
-            <!-- 2026-10-29：一张卡要好用，得能真的让某个会话用它说话。
-                 绑的是会话不是全局 —— 换个会话还能是别的她，这就是「多开」。 -->
+            <!-- 2026-10-29：主人说「把【一句话】删掉」。
+                 本来那一栏就是让人手写一遍「这人是谁」，可人设正文第一句早说了；
+                 现在列表里的副标题直接从正文抠（服务端给的 snippet），少一栏要填的。 -->
             <label>这个会话里</label>
             <span id="agBindState" style="flex:1 1 160px;color:var(--dim)"></span>
             <button type="button" class="ghost" id="agBind">让这个会话用她说话</button>
@@ -7143,7 +7140,7 @@ function renderAgentList() {
     }
     const d = document.createElement('div');
     d.className = 'd';
-    d.textContent = a.desc || (a.personaChars ? `${a.personaChars} 字人设` : '还没写人设');
+    d.textContent = a.snippet || (a.personaChars ? `${a.personaChars} 字人设` : '还没写人设');
     b.append(n, d);
     b.addEventListener('click', () => { selectAgent(a.id); });
     list.appendChild(b);
@@ -7159,7 +7156,6 @@ async function selectAgent(id) {
   renderAgentList();
 
   agSet('agName', agentCur.name);
-  agSet('agDesc', agentCur.desc);
   agSet('agPersona', agentCur.persona);
 
   // 模型下拉：第一项永远是「跟当前模型一致」
@@ -7186,11 +7182,9 @@ async function selectAgent(id) {
     sel.value = agentCur.modelId || '';
   }
 
-  // 名字/简介：内置的跟着【当前身份】走，这里不给改
+  // 名字：内置的跟着【当前身份】走，这里不给改
   const nameEl = document.getElementById('agName');
-  const descEl = document.getElementById('agDesc');
   if (nameEl) { nameEl.disabled = !!agentCur.builtin; nameEl.style.opacity = agentCur.builtin ? '.6' : ''; }
-  if (descEl) { descEl.disabled = !!agentCur.builtin; descEl.style.opacity = agentCur.builtin ? '.6' : ''; }
   // 小鱼用的是主对话当前那个模型，不在这儿换
   if (sel) {
     sel.disabled = agentCur.id === 'xiaoyu';
@@ -7337,11 +7331,11 @@ async function saveAgentCard() {
   if (!agentCur) return;
   const id = agentCur.id;
   try {
-    // 名字/简介只有自定义的能改（内置的跟着身份表走）
+    // 名字只有自定义的能改（内置的跟着身份表走）；一句话那栏已经删了，不传 desc
     if (!agentCur.builtin) {
       const r1 = await fetch('/api/agents/rename', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, name: agVal('agName'), desc: agVal('agDesc') }),
+        body: JSON.stringify({ id, name: agVal('agName') }),
       }).then((x) => x.json()).catch(() => null);
       if (!r1 || r1.error) { agHint('名字没存上：' + ((r1 && r1.error) || '网络错误')); return; }
     }

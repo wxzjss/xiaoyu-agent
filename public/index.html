@@ -8161,8 +8161,11 @@ async function useIdentity(id) {
     idSel = r.current;
     renderIdentityDlg();
     const cur = r.identities.find((x) => x.id === r.current);
-    toast('现在是：' + (cur ? cur.name : '主人'));
+    // 服务端会把开场白的联动结果带回来（摘了几条 / 补上了没有），一起说给主人听
+    toast('现在是：' + (cur ? cur.name : '主人') + (r.openingNote ? '（' + r.openingNote + '）' : ''));
     refreshIdentityBadge();
+    // 身份一变，开场白那行功能就得跟着刷新（非主人身份时它是禁用的）
+    if (typeof renderFeatList === 'function' && featState && featState.features) renderFeatList();
   } catch (e) {
     toast('切不过去：' + (e && e.message ? e.message : e));
   }

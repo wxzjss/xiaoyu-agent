@@ -1517,9 +1517,12 @@
        2026-10-27 主人原话：「人设栏太小了，我要那种点击一下直接弹出一个新界面，
        一个大面板上面写着所有人设，然后下面有保存与关闭，还有恢复默认」。
        所以把它从功能列表里那一条内联小框，搬成一个独立的 <dialog>。 */
-    #whalePersonaDlg { width: min(920px, 94vw); }
+    #whalePersonaDlg { width: min(920px, 94vw); height: min(86vh, 780px); }
+    /* 小鲸那个面板也竖排起来，正文框才能吃满剩下的高度（跟小鱼那个一个道理） */
+    #whalePersonaDlg .wpBody { display: flex; flex-direction: column; gap: 10px; }
     /* 2026-10-29：小鱼的人设面板跟小鲸那个同一套版式，规则直接并在一起 */
-    #fishPersonaDlg { width: min(920px, 94vw); }
+    /* 高度定死到视口的八成多：这样正文框才是「一整块」，不是靠内容撑出来的小条 */
+    #fishPersonaDlg { width: min(920px, 94vw); height: min(86vh, 780px); }
     #whalePersonaDlg .wpBody,
     #fishPersonaDlg .wpBody {
       padding: 14px 16px 16px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
@@ -1527,6 +1530,21 @@
     }
     #fishPersonaDlg .wpBody { display: flex; flex-direction: column; gap: 10px; }
     #fishPersonaDlg .pTools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    /* 人设正文框：占满剩下的整块高度。
+       之前这里是行内 `height:46vh`，看着挺高，实际被 flex 压扁了 ——
+       `.wpBody` 是竖排 flex，高 46vh 的 textarea 是个 flex item，
+       默认 flex-shrink:1，装不下就先拿它开刀，结果只剩一小条。
+       现在改成「能长就长、最小 260px、可手动拉」，短人设也一眼看得全。 */
+    #fishPersonaDlg #personaText {
+      flex: 1 1 auto; min-height: 260px; height: auto; resize: vertical;
+      width: 100%; box-sizing: border-box;
+      background: var(--input-bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 12px; overflow: auto;
+      font-size: 12.5px; line-height: 1.8;
+      font-family: ui-monospace, Consolas, monospace;
+    }
+    #fishPersonaDlg #personaText:focus { outline: none; border-color: var(--accent); }
     #whalePersonaDlg .wpTop,
     #fishPersonaDlg .wpTop {
       display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -1536,7 +1554,8 @@
     /* 正文框：桌面给足高度，手机按视口缩，内部滚动，绝不把底部按钮顶出去 */
     #whalePersonaDlg #wpArea {
       width: 100%; box-sizing: border-box; resize: vertical;
-      height: min(46vh, 420px); min-height: 180px; max-height: 60vh; overflow: auto;
+      flex: 1 1 auto; height: auto;
+      min-height: 220px; max-height: none; overflow: auto;
       background: var(--input-bg); color: var(--text);
       border: 1px solid var(--border); border-radius: var(--radius);
       padding: 10px 12px; font-size: 13px; line-height: 1.8;
@@ -1556,7 +1575,8 @@
 
     /* ---- 智能体面板（2026-10-29）---------------------------------------------
        左栏一排卡，右栏她的名字/人设/模型。窄屏时左栏收到上面去。 */
-    #agentListDlg { width: min(960px, 95vw); }
+    /* 高度定到视口八成多：不然 agBody 是 fit-content，人设框只有那 220px 一条 */
+    #agentListDlg { width: min(960px, 95vw); height: min(86vh, 760px); }
     #agentListDlg .agBody {
       display: flex; gap: 0; flex: 1 1 auto; min-height: 0; overflow: hidden;
     }
@@ -1596,7 +1616,7 @@
       background: var(--panel); color: var(--text); font-size: 12.5px;
     }
     #agentListDlg #agPersona {
-      flex: 1 1 auto; min-height: 220px; width: 100%; box-sizing: border-box;
+      flex: 1 1 auto; min-height: 240px; width: 100%; box-sizing: border-box;
       resize: vertical; padding: 10px 12px; border-radius: 8px;
       border: 1px solid var(--border); background: var(--input-bg); color: var(--text);
       font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; line-height: 1.8;
@@ -2502,7 +2522,7 @@
           <button type="button" class="ghost" id="personaRename">改名</button>
           <button type="button" class="ghost" id="resetPersona">恢复成默认内容</button>
         </div>
-        <textarea id="personaText" spellcheck="false" style="height:46vh;font-family:ui-monospace,Consolas,monospace;font-size:12.5px"></textarea>
+        <textarea id="personaText" spellcheck="false"></textarea>
       </div>
       <div class="dlgFoot">
         <span class="hint">改完点「保存」，下一句生效；平台自带那份文件不动。</span>

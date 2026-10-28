@@ -33,7 +33,7 @@ const RESULT_FILE = join(STATE, 'selfcheck.json');
 const PENDING_FILE = join(STATE, 'selfcheck-pending.json');
 
 /** 这套自检逻辑的版本。变了 → 下次启动重跑一遍。 */
-const SELFCHECK_VERSION = 4;
+const SELFCHECK_VERSION = 5; // v5: 加 checkBootEnv（双击闪退那个 ELECTRON_RUN_AS_NODE）
 
 const IS_WIN = platform() === 'win32';
 

@@ -111,6 +111,38 @@ function activeModelId() {
 }
 
 /**
+ * 从人设正文里取一句摘要，给列表那一行当副标题用。
+ *
+ * 【为什么要它】2026-10-29 主人说「把【一句话】删掉」—— 那一栏本来就多余：
+ * 一张卡是什么样，人设正文的头一句就说清楚了，再让人手填一遍是白费力气。
+ * 所以副标题改成直接从正文里抠。
+ *
+ * 【为什么不能直接取第一行】人设正文的头几行是机器标记，不是人话：
+ * `- 【PERSONA_LOAD】`、`LANG_ZH_CN_ONLY`、`STYLE_KAOMOJI: …`。
+ * 所以先把「纯标题行」「全大写标记行」「没几个字的口令行」跳过，
+ * 再优先挑写着「人设：」的那一条（那一条本来就是一句话概括），挑不到才拿第一条像话的。
+ */
+function personaSnippet(text, n = 46) {
+  const lines = String(text || '').split(/\r?\n/);
+  const good = [];
+  for (const raw of lines) {
+    let line = raw.trim();
+    if (!line) continue;
+    line = line.replace(/^[-*>\s]+/, '').replace(/\*\*/g, '').trim();
+    if (!line) continue;
+    if (/^【[^】]*】$/.test(line)) continue; // 纯标题行
+    if (/^[A-Z][A-Z0-9_]{3,}\s*:?$/.test(line)) continue; // PERSONA_LOAD / LANG_ZH_CN_ONLY 这类
+    const cjk = (line.match(/[\u4e00-\u9fa5]/g) || []).length;
+    if (cjk < 4 && line.length < 10) continue; // 没啥内容的行
+    good.push(line);
+    if (good.length >= 40) break;
+  }
+  const pick = good.find((l) => /^人设[:：]/.test(l)) || good[0] || '';
+  const body = pick.replace(/^人设[:：]\s*/, '');
+  return body.length > n ? body.slice(0, n) + '…' : body;
+}
+
+/**
  * 全部智能体（内置两张在前）。
  * 只给界面看的摘要，不带正文 —— 列表里不需要几千字人设。
  */
@@ -118,9 +150,10 @@ export function listAgents() {
   const pinfo = (() => {
     try { return personaInfo(); } catch { return { current: 'default', currentName: '默认人设' }; }
   })();
-  const ownLit = (() => {
-    try { return String(currentPersonaText() || '').length; } catch { return 0; }
+  const ownText = (() => {
+    try { return String(currentPersonaText() || ''); } catch { return ''; }
   })();
+  const ownLit = ownText.length;
   const whale = (() => {
     try { return whalePersonaForEditor(); } catch { return { persona: '', custom: false }; }
   })();
@@ -133,6 +166,7 @@ export function listAgents() {
       builtin: true,
       kind: 'persona',
       personaChars: ownLit,
+      snippet: personaSnippet(ownText),
       modelId: activeModelId(),
       modelFollows: true,
       edited: !!pinfo.custom,
@@ -144,6 +178,7 @@ export function listAgents() {
       builtin: true,
       kind: 'whale',
       personaChars: String(whale.persona || '').length,
+      snippet: personaSnippet(whale.persona),
       modelId: whaleModelId(),
       modelFollows: !whaleModelId(),
       edited: !!whale.custom || !!whaleModelId(),
@@ -157,6 +192,7 @@ export function listAgents() {
     builtin: false,
     kind: 'custom',
     personaChars: String(a.persona || '').length,
+    snippet: personaSnippet(a.persona),
     modelId: String(a.modelId || ''),
     modelFollows: !a.modelId,
     edited: true,

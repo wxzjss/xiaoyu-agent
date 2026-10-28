@@ -1465,6 +1465,8 @@
       font-size: 12.5px; padding: 0 12px;
     }
     .featRow .featEditBtn:hover { border-color: var(--accent); color: var(--accent); }
+    /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
+    .featRow .featEditGroup { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
     .openingBox {
       margin: 2px 0 10px 12px; padding: 12px 14px 10px;
       border-left: 2px solid rgba(77,141,255,.45);
@@ -1507,11 +1509,17 @@
        一个大面板上面写着所有人设，然后下面有保存与关闭，还有恢复默认」。
        所以把它从功能列表里那一条内联小框，搬成一个独立的 <dialog>。 */
     #whalePersonaDlg { width: min(920px, 94vw); }
-    #whalePersonaDlg .wpBody {
+    /* 2026-10-29：小鱼的人设面板跟小鲸那个同一套版式，规则直接并在一起 */
+    #fishPersonaDlg { width: min(920px, 94vw); }
+    #whalePersonaDlg .wpBody,
+    #fishPersonaDlg .wpBody {
       padding: 14px 16px 16px; overflow-y: auto; flex: 1 1 auto; min-height: 0;
       overscroll-behavior: contain;
     }
-    #whalePersonaDlg .wpTop {
+    #fishPersonaDlg .wpBody { display: flex; flex-direction: column; gap: 10px; }
+    #fishPersonaDlg .pTools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    #whalePersonaDlg .wpTop,
+    #fishPersonaDlg .wpTop {
       display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
       margin-bottom: 10px; font-size: 12px; color: var(--dim);
     }
@@ -1940,21 +1948,15 @@
       </div>
       <div class="dlgBody">
         <fieldset>
-          <legend>人设</legend>
+          <legend>智能体</legend>
           <div class="field">
-            <label>先在上面点一套（点一下就切过去，下一句就生效），下面编辑的是当前这套的正文。</label>
-            <!-- 人设可选栏：一套一张卡，点一下切换 -->
-            <div class="pList" id="personaList"></div>
-            <div class="pTools">
-              <button type="button" class="ghost" id="personaNew">新建人设</button>
-              <button type="button" class="ghost" id="personaRename">改名</button>
-              <button type="button" class="ghost" id="resetPersona">恢复成默认内容</button>
-              <span class="hint" id="personaHint"></span>
+            <!-- 2026-10-29 主人：「可以在里面编辑小鱼与小鲸的人设，把小鱼的人设从设置里移过去」。
+                 所以人设那一整块搬到了【智能体】面板（功能页 → 智能体 → 小鱼的人设），
+                 这里只留一个入口，别再放第二份 —— 两份同源的东西迟早会打架。 -->
+            <label>小鱼、小鲸的人设、称呼、简介都在【智能体】里改。这里点一下也能过去。</label>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <button type="button" class="ghost" id="openFishPersonaFromSettings">改小鱼的人设</button>
             </div>
-          </div>
-          <div class="field">
-            <label>当前这套的正文（Markdown 原文）。改完点下面的「保存」，下一句生效；平台自带那份文件不动。</label>
-            <textarea id="personaText" spellcheck="false" style="min-height:240px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px"></textarea>
           </div>
         </fieldset>
 
@@ -2370,6 +2372,7 @@
         <span class="hint" id="idTip">选中一个身份点「用这个身份」就立刻生效，下一句就按新身份说话。</span>
         <button type="button" class="ghost" id="idAdd">新建身份</button>
         <button type="button" class="ghost" id="idDel">删掉这个</button>
+        <button type="button" class="ghost" id="idReset" hidden>恢复默认</button>
         <button type="button" class="ghost" id="idSave">保存</button>
         <button type="button" class="primary" id="idUse">用这个身份</button>
         <button type="button" class="ghost" id="idClose">关闭</button>
@@ -2403,6 +2406,40 @@
         <button type="button" class="ghost" id="wpResetAll">人设和模型都恢复默认</button>
         <button type="button" class="primary" id="wpSave">保存</button>
         <button type="button" class="ghost" id="wpClose">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 小鱼的人设大面板。
+       2026-10-29 主人：「可以在里面编辑小鱼与小鲸的人设，把小鱼的人设从设置里移过去」。
+       原来它内嵌在【设置】里（一个 fieldset + 240px 高的框），现在搬成独立 dialog，
+       从【智能体】面板点进来 —— 跟小鲸那个面板同一个路子，左清单右正文。
+       元素 id 一个都没改（personaList / personaText / personaNew / personaRename / resetPersona），
+       所以那一整套 persona 逻辑照旧能用。 -->
+  <dialog id="fishPersonaDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>小鱼的人设</b><span class="meta" id="fpWho">这就是她自己 —— 改一次，全部会话都跟着变</span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="wpBody">
+        <div class="wpTop">
+          <span>上面点一套（点一下就切过去，下一句就生效），下面编辑的是当前这套的正文。</span>
+          <span class="wpGrow"></span>
+          <span class="hint" id="personaHint"></span>
+        </div>
+        <div class="pList" id="personaList"></div>
+        <div class="pTools">
+          <button type="button" class="ghost" id="personaNew">新建人设</button>
+          <button type="button" class="ghost" id="personaRename">改名</button>
+          <button type="button" class="ghost" id="resetPersona">恢复成默认内容</button>
+        </div>
+        <textarea id="personaText" spellcheck="false" style="height:46vh;font-family:ui-monospace,Consolas,monospace;font-size:12.5px"></textarea>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint">改完点「保存」，下一句生效；平台自带那份文件不动。</span>
+        <button type="button" class="ghost" id="fpClose">关闭</button>
+        <button type="button" class="primary" id="fpSave">保存</button>
       </div>
     </form>
   </dialog>
@@ -6857,6 +6894,57 @@ function fillPersona(info) {
     : (info.current === 'default' ? '当前是默认人设' : '');
 }
 
+// ---- 小鱼的人设大面板（2026-10-29 从【设置 → 人设】搬过来）----
+// 主人原话：「可以在里面编辑小鱼与小鲸的人设，把小鱼的人设从设置里移过去」。
+// 元素 id 全沿用老的那套，所以上面这一整段 persona 逻辑（新建/改名/恢复/切换）不用动。
+async function openFishPersonaDlg() {
+  const dlg = document.getElementById('fishPersonaDlg');
+  if (!dlg) return;
+  try { closeOtherDialogs('fishPersonaDlg'); } catch { /* 老版本没这个函数也不该炸 */ }
+  // 先拉一次最新的：设置页那边也开着的时候，别让两边看到不同的清单
+  const p = await fetch('/api/personas').then((r) => r.json()).catch(() => null);
+  if (p && !p.error) fillPersona(p);
+  // 点面板外面也关掉（<dialog> 默认不关）
+  dlg.onclick = (ev) => { if (ev.target === dlg) closeFishPersonaDlg(); };
+  if (!dlg.open) dlg.showModal();
+}
+
+function closeFishPersonaDlg() {
+  const dlg = document.getElementById('fishPersonaDlg');
+  if (dlg && dlg.open) {
+    try { dlg.close(); } catch { /* 忽略 */ }
+  }
+}
+
+{
+  const fpClose = document.getElementById('fpClose');
+  if (fpClose) fpClose.onclick = () => closeFishPersonaDlg();
+  const fpSave = document.getElementById('fpSave');
+  if (fpSave) {
+    fpSave.onclick = async () => {
+      const r = await fetch('/api/personas/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: personaInfo ? personaInfo.current : undefined, text: elPersona.value }),
+      }).then((x) => x.json()).catch(() => null);
+      if (!r || r.error) {
+        personaHint.textContent = '保存失败：' + (r && r.error ? r.error : '网络错误');
+        return;
+      }
+      fillPersona(r);
+      personaHint.textContent = '已保存，下一句生效';
+    };
+  }
+  const fromSettings = document.getElementById('openFishPersonaFromSettings');
+  if (fromSettings) {
+    fromSettings.onclick = async () => {
+      // 设置面板是模态的，先关掉它再开人设面板，否则新面板会被压在下面
+      const sd = document.getElementById('settingsDlg') || document.getElementById('settings');
+      if (sd && sd.open) { try { sd.close(); } catch { /* 忽略 */ } }
+      await openFishPersonaDlg();
+    };
+  }
+}
+
 // ---- 新建 ----
 document.getElementById('personaNew').onclick = async () => {
   const name = await askName({ title: '新人设叫什么名字', value: '', placeholder: '比如：工作人格', maxLength: 40 });
@@ -7903,18 +7991,30 @@ function renderFeatList() {
       continue;
     }
 
-    // 子智能体：她能改人设、能单独选模型
+    // 智能体：小鱼、小鲸的人设都在这里改（2026-10-29 从【设置 → 人设】搬过来）
     if (f.id === 'subagent') {
-      const edit = document.createElement('button');
-      edit.type = 'button';
-      edit.className = 'featEditBtn';
-      edit.textContent = '改人设 · 选模型';
-      edit.addEventListener('click', (ev) => {
+      const box = document.createElement('span');
+      box.className = 'featEditGroup';
+      const fishBtn = document.createElement('button');
+      fishBtn.type = 'button';
+      fishBtn.className = 'featEditBtn';
+      fishBtn.textContent = '小鱼的人设';
+      fishBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openFishPersonaDlg();
+      });
+      const whaleBtn = document.createElement('button');
+      whaleBtn.type = 'button';
+      whaleBtn.className = 'featEditBtn';
+      whaleBtn.textContent = '小鲸的人设 · 选模型';
+      whaleBtn.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
         toggleWhaleProfileEditor(row);
       });
-      row.append(main, edit, sw);
+      box.append(fishBtn, whaleBtn);
+      row.append(main, box, sw);
       featList.appendChild(row);
       continue;
     }
@@ -7975,7 +8075,7 @@ function closeWhaleProfileEditor() {
     try { dlg.close(); } catch {}
   }
   const btn = featList && featList.querySelector('.featRow[data-id="subagent"] .featEditBtn');
-  if (btn) btn.textContent = '改人设 · 选模型';
+  if (btn) btn.textContent = '小鲸的人设 · 选模型';
 }
 
 /**
@@ -8084,16 +8184,27 @@ function renderIdentityDlg() {
   nameEl.value = sel.name || '';
   descEl.value = sel.desc || '';
   addrEl.value = sel.address || '';
-  // 内置那三个不许改：主人那份关系是写死的，改了「谁才能下命令」就乱了
-  const lock = !!sel.builtin;
-  nameEl.disabled = lock;
-  descEl.disabled = lock;
-  addrEl.disabled = lock;
+  // 2026-10-29 主人：「切换身份页的内置身份信息可以编辑」。
+  // 所以名字/简介/称呼全放开；只有「删掉内置」仍然不给 —— 安全词只认主人，
+  // 这条得留个删不掉的锚点，不然哪天真删了就没有兜底了。
+  const lock = false;
+  nameEl.disabled = false;
+  descEl.disabled = false;
+  addrEl.disabled = false;
 
-  document.getElementById('idDel').disabled = lock;
-  document.getElementById('idDel').style.opacity = lock ? '.45' : '';
-  document.getElementById('idSave').disabled = lock;
-  document.getElementById('idSave').style.opacity = lock ? '.45' : '';
+  const delBtn = document.getElementById('idDel');
+  delBtn.disabled = !!sel.builtin;
+  delBtn.style.opacity = sel.builtin ? '.45' : '';
+  document.getElementById('idSave').disabled = false;
+  document.getElementById('idSave').style.opacity = '';
+  // 「恢复默认」只对内建且改过的身份有意义
+  const rstBtn = document.getElementById('idReset');
+  if (rstBtn) {
+    const canReset = !!sel.builtin;
+    rstBtn.hidden = !canReset;
+    rstBtn.disabled = !sel.edited;
+    rstBtn.style.opacity = sel.edited ? '' : '.45';
+  }
   const use = document.getElementById('idUse');
   use.disabled = sel.id === idState.current;
   use.style.opacity = sel.id === idState.current ? '.45' : '';
@@ -8108,15 +8219,17 @@ function renderIdentityDlg() {
     warn.textContent = '用「' + sel.name + '」说话时：她们会真的以为说话的人不是主人，可以拒绝听命令；'
       + '你喊安全词也不作数 —— 只有主人自己说才算数。';
   }
-  document.getElementById('idTip').textContent = lock
-    ? '内置身份不能改也不能删（「谁能下命令」这件事得写死，不能靠改）。想改就新建一个自己的身份。'
+  document.getElementById('idTip').textContent = sel.builtin
+    ? (sel.edited
+      ? '这是内置身份，你已经改过一版了；点「恢复默认」能退回出厂的样子。内置身份不能删。'
+      : '这是内置身份，名字/简介/称呼都能改（改的是补丁，出厂那份不动，随时能恢复默认）。内置身份不能删。')
     : '改完点「保存」，再点「用这个身份」就生效。';
 }
 
-/** 保存当前编辑（只对自定义身份有效） */
+/** 保存当前编辑（内置、自定义都能存） */
 async function saveIdentityEdit() {
   const sel = idState && idState.identities.find((x) => x.id === idSel);
-  if (!sel || sel.builtin) return;
+  if (!sel) return;
   const name = document.getElementById('idName').value.trim();
   if (!name) { toast('名字不能空'); return; }
   try {
@@ -8136,6 +8249,25 @@ async function saveIdentityEdit() {
     toast('存好了');
   } catch (e) {
     toast('存不上：' + (e && e.message ? e.message : e));
+  }
+}
+
+/** 把内置身份退回出厂的样子（只删补丁，出厂常量本来就没动过） */
+async function resetIdentityEdit() {
+  const sel = idState && idState.identities.find((x) => x.id === idSel);
+  if (!sel || !sel.builtin) return;
+  try {
+    const r = await fetch('/api/identity/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sel.id }),
+    }).then((x) => x.json());
+    if (!r || !r.ok) { toast('恢复不了：' + ((r && r.error) || '服务端没回')); return; }
+    idState = r;
+    renderIdentityDlg();
+    toast('已退回出厂的样子');
+  } catch (e) {
+    toast('恢复不了：' + (e && e.message ? e.message : e));
   }
 }
 
@@ -8218,6 +8350,8 @@ async function delIdentity() {
 
 document.getElementById('idClose').onclick = () => closeIdentityDlg();
 document.getElementById('idSave').onclick = () => saveIdentityEdit();
+  const idResetBtn = document.getElementById('idReset');
+  if (idResetBtn) idResetBtn.onclick = () => resetIdentityEdit();
 document.getElementById('idUse').onclick = () => useIdentity(idSel);
 document.getElementById('idAdd').onclick = () => addIdentity();
 document.getElementById('idDel').onclick = () => delIdentity();
@@ -8456,7 +8590,7 @@ async function openWhalePersonaDlg() {
   dlg.onclose = () => {
     whaleProfileOpen = false;
     const btn = featList && featList.querySelector('.featRow[data-id="subagent"] .featEditBtn');
-    if (btn) btn.textContent = '改人设 · 选模型';
+    if (btn) btn.textContent = '小鲸的人设 · 选模型';
   };
 
   try { area.focus({ preventScroll: true }); area.setSelectionRange(0, 0); area.scrollTop = 0; } catch {}

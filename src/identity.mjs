@@ -76,12 +76,42 @@ const BUILTINS = [
 /** 自定义身份最多几个 —— 界面上是要一个个点开的，不设上限会越堆越乱 */
 export const MAX_CUSTOM = 20;
 
-const DEFAULT_STATE = { current: 'owner', customs: [], bySession: {} };
+const DEFAULT_STATE = { current: 'owner', customs: [], bySession: {}, edits: {} };
+
+/**
+ * 【内置身份也能改了 —— 2026-10-29】
+ *
+ * 主人原话：「切换身份页的内置身份信息可以编辑」。
+ *
+ * 上一版 `updateCustomIdentity` 一进门就 `if (BUILTIN_IDS.includes(id)) return false`，
+ * 理由是「主人那份关系是写死的」——可主人自己就是那个主人，他要改，就让他改。
+ *
+ * 做法上不改 BUILTINS 常量（它还是出厂默认，用来「恢复默认」），
+ * 而是在 .state/identity.json 里记一份 `edits: { fish: { name, desc, address, she } }`。
+ * listIdentities() 把这份补丁盖在出厂值上 —— 提示词、界外、权限判定读的都是这一份，
+ * 所以改完立刻生效，恢复默认就是把这条补丁删掉。
+ */
+function readEdits(j) {
+  const out = {};
+  const raw = j && j.edits;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const id of BUILTIN_IDS) {
+    const e = raw[id];
+    if (!e || typeof e !== 'object') continue;
+    const one = {};
+    if (typeof e.name === 'string' && e.name.trim()) one.name = e.name.trim().slice(0, 24);
+    if (typeof e.desc === 'string') one.desc = e.desc.slice(0, 2000);
+    if (typeof e.address === 'string') one.address = e.address.slice(0, 1000);
+    if (e.she !== undefined) one.she = Boolean(e.she);
+    if (Object.keys(one).length) out[id] = one;
+  }
+  return out;
+}
 
 /** 兜底：文件坏了也不能让程序起不来，回出厂状态 */
 function readState() {
   try {
-    if (!existsSync(FILE)) return { ...DEFAULT_STATE, customs: [], bySession: {} };
+    if (!existsSync(FILE)) return { ...DEFAULT_STATE, customs: [], bySession: {}, edits: {} };
     const j = JSON.parse(readFileSync(FILE, 'utf8'));
     const current = typeof j.current === 'string' && j.current ? j.current : 'owner';
     const customs = Array.isArray(j.customs)
@@ -106,9 +136,9 @@ function readState() {
         if (typeof sid === 'string' && sid && typeof iid === 'string' && iid) bySession[sid] = iid;
       }
     }
-    return { current, customs, bySession };
+    return { current, customs, bySession, edits: readEdits(j) };
   } catch {
-    return { ...DEFAULT_STATE, customs: [], bySession: {} };
+    return { ...DEFAULT_STATE, customs: [], bySession: {}, edits: {} };
   }
 }
 
@@ -128,7 +158,18 @@ function writeState(st) {
 /** 全部身份（内置在前，自定义在后）—— 界面按这个顺序排 */
 export function listIdentities() {
   const st = readState();
-  return [...BUILTINS.map((b) => ({ ...b })), ...st.customs];
+  const edits = st.edits || {};
+  return [
+    ...BUILTINS.map((b) => ({
+      ...b,
+      // 出厂值 + 主人改过的补丁。edited=true 让界面知道「这条被改过，能恢复默认」
+      ...(edits[b.id] || {}),
+      id: b.id,
+      builtin: true,
+      edited: Boolean(edits[b.id]),
+    })),
+    ...st.customs,
+  ];
 }
 
 /** 当前身份 id */
@@ -274,6 +315,40 @@ export function updateCustomIdentity(id, { name, desc, address, she }) {
   if (desc !== undefined) it.desc = String(desc).slice(0, 2000);
   if (she !== undefined) it.she = Boolean(she);
   if (address !== undefined) it.address = String(address).slice(0, 1000);
+  return writeState(st);
+}
+
+/**
+ * 改任何身份（内置也行）—— 2026-10-29 主人要求「内置身份信息可以编辑」。
+ *
+ * 内置的改动记在 state.edits 里，出厂常量不动，随时能恢复默认；
+ * 自定义的照旧改它自己那份。
+ * id 本身不许改：bySession / 权限判定全靠它。
+ */
+export function editIdentity(id, { name, desc, address, she } = {}) {
+  const key = String(id || '');
+  if (!key) return false;
+  if (BUILTIN_IDS.includes(key)) {
+    const st = readState();
+    const cur = { ...(st.edits && st.edits[key] ? st.edits[key] : {}) };
+    if (name !== undefined && String(name).trim()) cur.name = String(name).trim().slice(0, 24);
+    if (desc !== undefined) cur.desc = String(desc).slice(0, 2000);
+    if (address !== undefined) cur.address = String(address).slice(0, 1000);
+    if (she !== undefined) cur.she = Boolean(she);
+    if (!st.edits || typeof st.edits !== 'object') st.edits = {};
+    st.edits[key] = cur;
+    return writeState(st);
+  }
+  return updateCustomIdentity(key, { name, desc, address, she });
+}
+
+/** 恢复某个内置身份的出厂样子（删掉补丁）。自定义的用 removeCustomIdentity 删整个。 */
+export function resetBuiltinIdentity(id) {
+  if (!BUILTIN_IDS.includes(id)) return false;
+  const st = readState();
+  if (!st.edits || !st.edits[id]) return false;
+  delete st.edits[id];
+  if (!Object.keys(st.edits).length) st.edits = {};
   return writeState(st);
 }
 

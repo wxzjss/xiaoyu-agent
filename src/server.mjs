@@ -77,6 +77,23 @@ import {
   wipePersonaText,
   setPersonaAsDefault,
 } from './persona-store.mjs';
+// 2026-10-29 智能体卡：内置两张（小鱼/小鲸）+ 主人自定义的
+import {
+  listAgents,
+  getAgent,
+  addAgent,
+  renameAgent,
+  removeAgent,
+  saveAgentPersona,
+  resetAgentPersona,
+  setAgentModel,
+  sessionAgentId,
+  setSessionAgent,
+  AGENT_XIAOYU,
+  AGENT_XIAOJING,
+  MAX_AGENTS,
+  MAX_PERSONA_CHARS as MAX_AGENT_PERSONA_CHARS,
+} from './agents.mjs';
 import { getFeatures, setFeature, featureNameOfTool, getEnabledMap } from './features.mjs';
 import {
   identityState,
@@ -3346,6 +3363,151 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, persona: p.persona, personaCustom: p.personaCustom, modelId: p.modelId });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  // ---- 智能体卡 ----------------------------------------------------------
+  // 2026-10-29 主人：「可以新建智能体，多开智能体，玩家可以自由完美切换身份」。
+  // 这一层只做「卡」：内置两张（小鱼/小鲸）读写都代理回老存储，自定义的存 agents.json。
+  // 谁在哪个会话里用哪张卡，是下一步的事（现在还没有绑定的概念）。
+  if (req.method === 'GET' && url.pathname === '/api/agents') {
+    try {
+      const agents = listAgents();
+      const ms = listModels();
+      // 面板上要显示「这个会话现在挂的是哪张卡」，所以顺手带上当前会话的绑定
+      const qsid = String(url.searchParams.get('sessionId') || '');
+      return json(res, 200, {
+        ok: true,
+        agents,
+        // 换模型那个下拉框要用：只给 id 和一行名字，密钥不出去
+        models: (ms.models || []).map((m) => ({ id: m.id, name: m.name || m.model || m.id, model: m.model || '' })),
+        activeModelId: ms.activeId || '',
+        boundAgentId: qsid ? (sessionAgentId(qsid) || AGENT_XIAOYU) : '',
+        max: MAX_AGENTS,
+        maxPersonaChars: MAX_AGENT_PERSONA_CHARS,
+      });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  // 让某个会话用哪张卡说话（'' 或 xiaoyu = 恢复成小鱼）
+  if (req.method === 'POST' && url.pathname === '/api/agents/bind') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const r = setSessionAgent(String(payload?.sessionId || ''), String(payload?.agentId || ''));
+      if (!r) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      return json(res, 200, { ok: true, ...r, boundAgentId: r.agentId || AGENT_XIAOYU });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agents/one') {
+    const id = String(url.searchParams.get('id') || '');
+    const agent = getAgent(id);
+    if (!agent) return json(res, 404, { error: '没有这个智能体' });
+    return json(res, 200, { ok: true, agent });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/add') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const agent = addAgent({ name: payload?.name, desc: payload?.desc, persona: payload?.persona, modelId: payload?.modelId });
+      if (!agent) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      return json(res, 200, { ok: true, agent, agents: listAgents() });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/rename') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const agent = renameAgent(String(payload?.id || ''), { name: payload?.name, desc: payload?.desc });
+      if (!agent) return json(res, 404, { error: '没有这个智能体' });
+      return json(res, 200, { ok: true, agent, agents: listAgents() });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/remove') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const id = String(payload?.id || '');
+    // 内置那两张删不得：小鱼是主对话的她，小鲸是工具链里跑的那个她，删了等于把程序拆掉一半
+    if (id === AGENT_XIAOYU || id === AGENT_XIAOJING) {
+      return json(res, 400, { error: '内置智能体不能删' });
+    }
+    if (!removeAgent(id)) return json(res, 404, { error: '删不掉：没这个智能体' });
+    return json(res, 200, { ok: true, agents: listAgents() });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/persona/save') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const agent = saveAgentPersona(String(payload?.id || ''), payload?.text);
+      if (!agent) return json(res, 404, { error: '没有这个智能体' });
+      return json(res, 200, { ok: true, agent });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/persona/reset') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const agent = resetAgentPersona(String(payload?.id || ''));
+      if (!agent) return json(res, 404, { error: '没有这个智能体' });
+      return json(res, 200, { ok: true, agent });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/model') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const agent = setAgentModel(String(payload?.id || ''), payload?.modelId);
+      if (!agent) return json(res, 404, { error: '没有这个智能体' });
+      return json(res, 200, { ok: true, agent, agents: listAgents() });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }
   }
 

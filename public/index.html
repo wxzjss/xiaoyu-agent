@@ -1545,6 +1545,62 @@
     #whalePersonaDlg .wpStat { margin-top: 8px; font-size: 11.5px; color: var(--dim); line-height: 1.7; }
     #whalePersonaDlg .wpStat b { color: var(--accent); font-weight: 600; }
 
+    /* ---- 智能体面板（2026-10-29）---------------------------------------------
+       左栏一排卡，右栏她的名字/人设/模型。窄屏时左栏收到上面去。 */
+    #agentListDlg { width: min(960px, 95vw); }
+    #agentListDlg .agBody {
+      display: flex; gap: 0; flex: 1 1 auto; min-height: 0; overflow: hidden;
+    }
+    #agentListDlg .agList {
+      flex: 0 0 216px; border-right: 1px solid var(--border);
+      overflow-y: auto; padding: 10px 8px; overscroll-behavior: contain;
+    }
+    #agentListDlg .agItem {
+      display: block; width: 100%; text-align: left; cursor: pointer;
+      border: 1px solid transparent; border-radius: 8px; background: transparent;
+      color: var(--text); padding: 8px 10px; margin-bottom: 6px;
+    }
+    #agentListDlg .agItem:hover { background: rgba(77,141,255,.08); }
+    #agentListDlg .agItem.on { border-color: var(--accent); background: rgba(77,141,255,.12); }
+    #agentListDlg .agItem .n { font-size: 13px; font-weight: 600; }
+    #agentListDlg .agItem .n .tag {
+      font-size: 10.5px; font-weight: 400; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 999px;
+      padding: 0 6px; margin-left: 6px;
+    }
+    #agentListDlg .agItem .d {
+      font-size: 11.5px; color: var(--dim); line-height: 1.6; margin-top: 2px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    #agentListDlg .agEdit {
+      flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 10px;
+      padding: 12px 14px; overflow-y: auto; overscroll-behavior: contain;
+    }
+    #agentListDlg .agRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--dim); }
+    #agentListDlg .agRow label { font-size: 12px; color: var(--dim); }
+    #agentListDlg .agRow input {
+      flex: 1 1 140px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--input-bg); color: var(--text); font-size: 13px; font-family: inherit;
+    }
+    #agentListDlg .agRow select {
+      flex: 0 1 220px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--text); font-size: 12.5px;
+    }
+    #agentListDlg #agPersona {
+      flex: 1 1 auto; min-height: 220px; width: 100%; box-sizing: border-box;
+      resize: vertical; padding: 10px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--input-bg); color: var(--text);
+      font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; line-height: 1.8;
+    }
+    #agentListDlg .agTip { font-size: 11.5px; color: var(--dim); line-height: 1.7; }
+    @media (max-width: 760px) {
+      #agentListDlg .agBody { flex-direction: column; }
+      #agentListDlg .agList {
+        flex: 0 0 auto; max-height: 30vh; border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+    }
+
     /* ---- 当前身份面板 -------------------------------------------------------
        主人 2026-10-27：「在功能里增加【当前身份】……每个身份都有一个简介」。
        版式跟小鲸人设面板一样：左边一排身份，右边是这个身份的简介和称呼。 */
@@ -1953,8 +2009,11 @@
             <!-- 2026-10-29 主人：「可以在里面编辑小鱼与小鲸的人设，把小鱼的人设从设置里移过去」。
                  所以人设那一整块搬到了【智能体】面板（功能页 → 智能体 → 小鱼的人设），
                  这里只留一个入口，别再放第二份 —— 两份同源的东西迟早会打架。 -->
-            <label>小鱼、小鲸的人设、称呼、简介都在【智能体】里改。这里点一下也能过去。</label>
+            <label>小鱼、小鲸的人设、名字、模型都在【智能体】里改。这里点一下也能过去。</label>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <!-- 2026-10-29：智能体不止两张了（主人要新建/多开），所以主入口是那张总面板，
+                   小鱼的多套人设再给一个直通按钮，省一次点击。 -->
+              <button type="button" class="primary" id="openAgentPanelFromSettings">打开智能体面板</button>
               <button type="button" class="ghost" id="openFishPersonaFromSettings">改小鱼的人设</button>
             </div>
           </div>
@@ -2440,6 +2499,52 @@
         <span class="hint">改完点「保存」，下一句生效；平台自带那份文件不动。</span>
         <button type="button" class="ghost" id="fpClose">关闭</button>
         <button type="button" class="primary" id="fpSave">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 智能体面板：一张卡一个智能体。
+       2026-10-29 主人：「可以新建智能体，多开智能体，玩家可以自由完美切换身份」。
+       左栏是卡，右栏是她的人设和模型。小鱼/小鲸两张是内置的，人设仍然存在各自的老地方；
+       自己新建的卡存在 .state/agents.json。 -->
+  <dialog id="agentListDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>智能体</b><span class="meta" id="agHeadHint">每个智能体都有自己的名字、人设和模型</span>
+        <button class="x" value="cancel">关闭</button>
+      </div>
+      <div class="agBody">
+        <div class="agList" id="agList"></div>
+        <div class="agEdit">
+          <div class="agRow">
+            <label>名字</label>
+            <input id="agName" type="text" maxlength="24" placeholder="她叫什么">
+            <label style="margin-left:8px">模型</label>
+            <select id="agModel"></select>
+          </div>
+          <div class="agRow">
+            <label>一句话</label>
+            <input id="agDesc" type="text" maxlength="200" placeholder="这人是谁、用来干嘛（可以空着）">
+          </div>
+          <div class="agRow">
+            <!-- 2026-10-29：一张卡要好用，得能真的让某个会话用它说话。
+                 绑的是会话不是全局 —— 换个会话还能是别的她，这就是「多开」。 -->
+            <label>这个会话里</label>
+            <span id="agBindState" style="flex:1 1 160px;color:var(--dim)"></span>
+            <button type="button" class="ghost" id="agBind">让这个会话用她说话</button>
+          </div>
+          <textarea id="agPersona" spellcheck="false" placeholder="她的人设正文：她是谁、怎么说话、什么脾气……"></textarea>
+          <div class="agTip" id="agTip"></div>
+        </div>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint" id="agHint"></span>
+        <button type="button" class="ghost" id="agNew">新建智能体</button>
+        <button type="button" class="ghost" id="agPanel" hidden>多套人设…</button>
+        <button type="button" class="ghost" id="agReset">恢复默认</button>
+        <button type="button" class="ghost" id="agDel">删掉这个</button>
+        <button type="button" class="ghost" id="agClose">关闭</button>
+        <button type="button" class="primary" id="agSave">保存</button>
       </div>
     </form>
   </dialog>
@@ -6943,6 +7048,335 @@ function closeFishPersonaDlg() {
       await openFishPersonaDlg();
     };
   }
+  const agentFromSettings = document.getElementById('openAgentPanelFromSettings');
+  if (agentFromSettings) {
+    agentFromSettings.onclick = async () => {
+      const sd = document.getElementById('settingsDlg') || document.getElementById('settings');
+      if (sd && sd.open) { try { sd.close(); } catch { /* 忽略 */ } }
+      await openAgentDlg();
+    };
+  }
+}
+
+// ---- 智能体面板（2026-10-29）----
+/**
+ * 一张卡一个智能体。
+ *
+ * 主人原话：「可以新建智能体，多开智能体，玩家可以自由完美切换身份」。
+ *
+ * 这里只管「她是谁」这一半（名字/人设/模型），「我现在用谁的身份说话」还是
+ * 【当前身份】那一栏的事 —— 两件事分开，才不会互相打架。
+ *
+ * 内置两张卡的人设存在老地方（小鱼 = 多套人设的当前那套，小鲸 = whale-profile），
+ * 服务端 /api/agents/* 已经把读写代理过去了，所以这里不用管差别。
+ */
+let agentState = { agents: [], models: [], activeModelId: '', max: 30, maxPersonaChars: 20000 };
+let agentSel = '';
+let agentCur = null;
+
+function agVal(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : '';
+}
+function agSet(id, v) {
+  const el = document.getElementById(id);
+  if (el) el.value = v == null ? '' : String(v);
+}
+function agHint(t) {
+  const el = document.getElementById('agHint');
+  if (el) el.textContent = t || '';
+}
+
+function renderAgentList() {
+  const list = document.getElementById('agList');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const a of agentState.agents || []) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'agItem' + (a.id === agentSel ? ' on' : '');
+    const n = document.createElement('div');
+    n.className = 'n';
+    n.textContent = a.name;
+    if (a.builtin) {
+      const t = document.createElement('span');
+      t.className = 'tag';
+      t.textContent = '内置';
+      n.appendChild(t);
+    }
+    const d = document.createElement('div');
+    d.className = 'd';
+    d.textContent = a.desc || (a.personaChars ? `${a.personaChars} 字人设` : '还没写人设');
+    b.append(n, d);
+    b.addEventListener('click', () => { selectAgent(a.id); });
+    list.appendChild(b);
+  }
+}
+
+async function selectAgent(id) {
+  if (!id) return;
+  const r = await fetch('/api/agents/one?id=' + encodeURIComponent(id)).then((x) => x.json()).catch(() => null);
+  if (!r || r.error || !r.agent) { agHint('读不出来：' + ((r && r.error) || '网络错误')); return; }
+  agentSel = id;
+  agentCur = r.agent;
+  renderAgentList();
+
+  agSet('agName', agentCur.name);
+  agSet('agDesc', agentCur.desc);
+  agSet('agPersona', agentCur.persona);
+
+  // 模型下拉：第一项永远是「跟当前模型一致」
+  const sel = document.getElementById('agModel');
+  if (sel) {
+    sel.innerHTML = '';
+    const opt0 = document.createElement('option');
+    opt0.value = '';
+    opt0.textContent = '跟当前模型一致';
+    sel.appendChild(opt0);
+    for (const m of agentState.models || []) {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.name || m.model || m.id;
+      sel.appendChild(o);
+    }
+    // 万一她记着的那个模型已经被删了：留个占位选项，别让下拉框默默跳回「跟当前一致」
+    if (agentCur.modelId && !(agentState.models || []).some((m) => m.id === agentCur.modelId)) {
+      const o = document.createElement('option');
+      o.value = agentCur.modelId;
+      o.textContent = agentCur.modelId + '（这个模型可能已经删了）';
+      sel.appendChild(o);
+    }
+    sel.value = agentCur.modelId || '';
+  }
+
+  // 名字/简介：内置的跟着【当前身份】走，这里不给改
+  const nameEl = document.getElementById('agName');
+  const descEl = document.getElementById('agDesc');
+  if (nameEl) { nameEl.disabled = !!agentCur.builtin; nameEl.style.opacity = agentCur.builtin ? '.6' : ''; }
+  if (descEl) { descEl.disabled = !!agentCur.builtin; descEl.style.opacity = agentCur.builtin ? '.6' : ''; }
+  // 小鱼用的是主对话当前那个模型，不在这儿换
+  if (sel) {
+    sel.disabled = agentCur.id === 'xiaoyu';
+    sel.style.opacity = agentCur.id === 'xiaoyu' ? '.6' : '';
+  }
+
+  const del = document.getElementById('agDel');
+  if (del) { del.disabled = !!agentCur.builtin; del.style.opacity = agentCur.builtin ? '.45' : ''; }
+
+  // 「多套人设…」：只有小鱼有多套人设的概念；小鲸也有自己的面板（人设+模型）
+  const panel = document.getElementById('agPanel');
+  if (panel) {
+    const kind = agentCur.extra && agentCur.extra.personaPanel;
+    panel.hidden = !kind;
+    panel.textContent = kind === 'fish' ? '多套人设…' : '小鲸的人设与模型…';
+  }
+
+  const tip = document.getElementById('agTip');
+  if (tip) {
+    if (agentCur.id === 'xiaoyu') {
+      tip.textContent = `这是你自己。人设可以有好几套，下面写的是当前这套「${agentCur.personaSetName || '默认人设'}」的正文；`
+        + '想换一套、新建一套，点「多套人设…」。模型跟着主对话走。';
+    } else if (agentCur.id === 'xiaojing') {
+      tip.textContent = '这是跑出去查事情的那个她。人设有内置默认，你改了就是私设，「恢复默认」能退回去。模型可以单独给她挑一个。';
+    } else {
+      tip.textContent = '你自己建的智能体。人设写什么她就是什么；模型空着就跟当前模型一致。';
+    }
+  }
+  syncBindRow();
+  agHint('');
+}
+
+/** 拉一次清单（带上当前会话，好知道这个会话挂的是哪张卡） */
+async function loadAgentState() {
+  const q = (typeof sessionId === 'string' && sessionId) ? ('?sessionId=' + encodeURIComponent(sessionId)) : '';
+  const r = await fetch('/api/agents' + q).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) return null;
+  agentState = r;
+  return r;
+}
+
+/** 底下那行「这个会话里用谁说话」：按当前选中卡和绑定状态长成该有的样子 */
+function syncBindRow() {
+  const btn = document.getElementById('agBind');
+  const st = document.getElementById('agBindState');
+  if (!btn || !st) return;
+  const bound = String(agentState.boundAgentId || 'xiaoyu');
+  const cur = agentCur ? agentCur.id : '';
+  const hasSession = typeof sessionId === 'string' && !!sessionId;
+
+  if (!hasSession) {
+    st.textContent = '还没打开会话，先聊起来再回来挑';
+    btn.hidden = true;
+    return;
+  }
+  if (cur === 'xiaojing') {
+    st.textContent = '她只在跑腿的时候露面，不能挂到会话上';
+    btn.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  if (cur === 'xiaoyu') {
+    st.textContent = bound === 'xiaoyu' ? '就是她（默认）' : '这个会话现在用的是别的卡';
+    btn.textContent = bound === 'xiaoyu' ? '已经就是她' : '换回小鱼';
+    btn.disabled = bound === 'xiaoyu';
+    btn.style.opacity = bound === 'xiaoyu' ? '.5' : '';
+    return;
+  }
+  if (bound === cur) {
+    st.textContent = '这个会话正在用她说话';
+    btn.textContent = '换回小鱼';
+    btn.disabled = false;
+    btn.style.opacity = '';
+  } else {
+    const nm = (agentState.agents || []).find((a) => a.id === bound)?.name || '小鱼';
+    st.textContent = `现在用的是「${nm}」`;
+    btn.textContent = '让这个会话用她说话';
+    btn.disabled = false;
+    btn.style.opacity = '';
+  }
+}
+
+/** 把当前选中的卡绑到当前会话（小鱼卡 = 解绑） */
+async function bindAgentCard() {
+  if (!agentCur) return;
+  if (typeof sessionId !== 'string' || !sessionId) { agHint('还没有会话，先在聊天里说一句'); return; }
+  const target = (agentCur.id === 'xiaoyu') ? '' : agentCur.id;
+  const r = await fetch('/api/agents/bind', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, agentId: target }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { agHint('换不了：' + ((r && r.error) || '网络错误')); return; }
+  agentState.boundAgentId = String(r.boundAgentId || 'xiaoyu');
+  syncBindRow();
+  agHint(r.agentId ? '这个会话从下一句开始就用她说话了' : '这个会话换回小鱼了');
+}
+
+async function openAgentDlg() {
+  const dlg = document.getElementById('agentListDlg');
+  if (!dlg) return;
+  try { closeOtherDialogs('agentListDlg'); } catch { /* 老版本没这个函数也不该炸 */ }
+  const r = await loadAgentState();
+  if (!r) {
+    agHint('拿不到智能体清单：网络不通或服务没起');
+    if (!dlg.open) dlg.showModal();
+    return;
+  }
+  if (!agentSel || !(r.agents || []).some((a) => a.id === agentSel)) {
+    agentSel = r.agents && r.agents[0] ? r.agents[0].id : '';
+  }
+  renderAgentList();
+  if (agentSel) await selectAgent(agentSel);
+  dlg.onclick = (ev) => { if (ev.target === dlg) { try { dlg.close(); } catch { /* 忽略 */ } } };
+  if (!dlg.open) dlg.showModal();
+}
+
+async function saveAgentCard() {
+  if (!agentCur) return;
+  const id = agentCur.id;
+  try {
+    // 名字/简介只有自定义的能改（内置的跟着身份表走）
+    if (!agentCur.builtin) {
+      const r1 = await fetch('/api/agents/rename', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name: agVal('agName'), desc: agVal('agDesc') }),
+      }).then((x) => x.json()).catch(() => null);
+      if (!r1 || r1.error) { agHint('名字没存上：' + ((r1 && r1.error) || '网络错误')); return; }
+    }
+    const r2 = await fetch('/api/agents/persona/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, text: agVal('agPersona') }),
+    }).then((x) => x.json()).catch(() => null);
+    if (!r2 || r2.error) { agHint('人设没存上：' + ((r2 && r2.error) || '网络错误')); return; }
+    if (id !== 'xiaoyu') {
+      const sel = document.getElementById('agModel');
+      const want = sel && !sel.disabled ? sel.value : undefined;
+      if (want !== undefined) {
+        const r3 = await fetch('/api/agents/model', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, modelId: want }),
+        }).then((x) => x.json()).catch(() => null);
+        if (!r3 || r3.error) { agHint('模型没换：' + ((r3 && r3.error) || '网络错误')); return; }
+      }
+    }
+    await refreshAgentList();
+    agHint('存好了，下一句生效');
+  } catch (e) {
+    agHint('存不上：' + (e && e.message ? e.message : e));
+  }
+}
+
+async function refreshAgentList() {
+  const r = await loadAgentState();
+  if (!r) return;
+  renderAgentList();
+  if (agentSel) await selectAgent(agentSel);
+}
+
+async function newAgentCard() {
+  const name = await askName({ title: '新智能体叫什么名字', value: '', placeholder: '比如：写代码的那个她', maxLength: 24 });
+  if (name === null) return;
+  const r = await fetch('/api/agents/add', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name.trim() || '新的智能体', desc: '' }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { agHint('建不了：' + ((r && r.error) || '网络错误')); return; }
+  agentState = { ...agentState, agents: r.agents || agentState.agents };
+  agentSel = r.agent.id;
+  renderAgentList();
+  await selectAgent(agentSel);
+  agHint('建好了，写她的人设吧');
+  const el = document.getElementById('agPersona');
+  if (el) el.focus();
+}
+
+async function resetAgentCard() {
+  if (!agentCur) return;
+  const r = await fetch('/api/agents/persona/reset', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: agentCur.id }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { agHint('恢复不了：' + ((r && r.error) || '网络错误')); return; }
+  await refreshAgentList();
+  agHint(agentCur.builtin ? '已退回出厂的默认人设' : '已清空');
+}
+
+async function delAgentCard() {
+  if (!agentCur) return;
+  if (agentCur.builtin) { agHint('内置的不能删'); return; }
+  const yes = await askName({
+    title: `真要删掉「${agentCur.name}」？人设会一起没掉。要删就把她的名字打一遍`,
+    value: '', placeholder: agentCur.name, maxLength: 24,
+  });
+  if (yes === null) return;
+  if (String(yes).trim() !== agentCur.name) { agHint('名字对不上，没删'); return; }
+  const r = await fetch('/api/agents/remove', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: agentCur.id }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { agHint('删不掉：' + ((r && r.error) || '网络错误')); return; }
+  agentState = { ...agentState, agents: r.agents || [] };
+  agentSel = r.agents && r.agents[0] ? r.agents[0].id : '';
+  agentCur = null;
+  renderAgentList();
+  if (agentSel) await selectAgent(agentSel);
+  agHint('删掉了');
+}
+
+{
+  const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  wire('agSave', () => saveAgentCard());
+  wire('agBind', () => bindAgentCard());
+  wire('agNew', () => newAgentCard());
+  wire('agReset', () => resetAgentCard());
+  wire('agDel', () => delAgentCard());
+  wire('agClose', () => { const d = document.getElementById('agentListDlg'); if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } } });
+  wire('agPanel', () => {
+    const kind = agentCur && agentCur.extra && agentCur.extra.personaPanel;
+    const d = document.getElementById('agentListDlg');
+    if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } }
+    if (kind === 'fish') openFishPersonaDlg();
+    else if (kind === 'whale') toggleWhaleProfileEditor(null);
+  });
 }
 
 // ---- 新建 ----
@@ -7992,29 +8426,18 @@ function renderFeatList() {
     }
 
     // 智能体：小鱼、小鲸的人设都在这里改（2026-10-29 从【设置 → 人设】搬过来）
+    // 2026-10-29 主人要「新建智能体 / 多开 / 自由切换」→ 改成一张卡一张卡拉的面板
     if (f.id === 'subagent') {
-      const box = document.createElement('span');
-      box.className = 'featEditGroup';
-      const fishBtn = document.createElement('button');
-      fishBtn.type = 'button';
-      fishBtn.className = 'featEditBtn';
-      fishBtn.textContent = '小鱼的人设';
-      fishBtn.addEventListener('click', (ev) => {
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'featEditBtn';
+      edit.textContent = '管理智能体';
+      edit.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        openFishPersonaDlg();
+        openAgentDlg();
       });
-      const whaleBtn = document.createElement('button');
-      whaleBtn.type = 'button';
-      whaleBtn.className = 'featEditBtn';
-      whaleBtn.textContent = '小鲸的人设 · 选模型';
-      whaleBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        toggleWhaleProfileEditor(row);
-      });
-      box.append(fishBtn, whaleBtn);
-      row.append(main, box, sw);
+      row.append(main, edit, sw);
       featList.appendChild(row);
       continue;
     }
@@ -8074,8 +8497,8 @@ function closeWhaleProfileEditor() {
   if (dlg && dlg.open) {
     try { dlg.close(); } catch {}
   }
-  const btn = featList && featList.querySelector('.featRow[data-id="subagent"] .featEditBtn');
-  if (btn) btn.textContent = '小鲸的人设 · 选模型';
+  // 2026-10-29：功能页那一行的按钮已经统一叫「管理智能体」了，
+  // 这里原先会把它改写成「小鲸的人设 · 选模型」，关个面板就把标签改写是错的，删掉。
 }
 
 /**
@@ -8586,11 +9009,9 @@ async function openWhalePersonaDlg() {
 
   // 点面板外面（backdrop）就关掉 —— <dialog> 的默认行为是点外面不关，这里补上
   dlg.onclick = (ev) => { if (ev.target === dlg) closeWhaleProfileEditor(); };
-  // 按 Esc 关掉时，onclose 兜一下状态
+  // 按 Esc 关掉时，onclose 兜一下状态（按钮标签不在这里动，见上面的说明）
   dlg.onclose = () => {
     whaleProfileOpen = false;
-    const btn = featList && featList.querySelector('.featRow[data-id="subagent"] .featEditBtn');
-    if (btn) btn.textContent = '小鲸的人设 · 选模型';
   };
 
   try { area.focus({ preventScroll: true }); area.setSelectionRange(0, 0); area.scrollTop = 0; } catch {}
@@ -9279,7 +9700,9 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
  * @param {string} [keepId] 这个要留着（正在开的那个）
  */
 function closeOtherDialogs(keepId) {
-  for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'memoryDlg', 'todoDlg']) {
+  for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'memoryDlg', 'todoDlg',
+    // 2026-10-29：智能体面板和两个「改人设」的大面板也归这一套规矩
+    'agentListDlg', 'fishPersonaDlg', 'whalePersonaDlg']) {
     if (id === keepId) continue;
     const d = document.getElementById(id);
     if (d && d.open) {

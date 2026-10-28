@@ -88,6 +88,7 @@ import {
   updateCustomIdentity,
   removeCustomIdentity,
   identityBlock,
+  mergeSameVoice,   // 同一个人连着说 → 拼成一段（src/merge-voice.mjs）
   identityOn,
 } from './identity.mjs';
 // 专业模式开关（见 pure.mjs）
@@ -5367,40 +5368,24 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 对小鱼自己说话 = 那就是她心里冒出来的念头，一个字都不加，直接就是她的话；
        * 只有「别人」才需要标签 —— 主人的不加（她本来就知道是谁），小鲸的要加。
        */
-      if (who === '小鱼') return m;
+      if (who === '小鱼') {
+        // 她自己说的话：不标前缀，但要在拷贝上打个跟，「是我在说」和「主人在说」不能混成一档，
+        // 否则下面合并时会把主人前面那句一起吞进她的自言自语里。
+        return { ...m, _whoMade: true };
+      }
       if (who === '主人') return m;
       if (m.content.startsWith('[' + who + ']')) return m;   // 已经标过，别叠
       return { ...m, content: '[' + who + '] ' + m.content };
     });
 
-    /**
-     * 【同一个人连着说两句，别各标一次】—— 2026-10-28
-     *
-     * 主人连着发三条，模型看到的是三个独立的 [主人] 段？不 —— 主人和小鱼本来就不标，
-     * 这条只服务第三方身份：小鲸连着说两句时，重复的标签会显得像两次插话。
-     * 合并成一段，读起来才是「她一直在这个位置」，而不是「她插了两次」。
-     */
+    // 【同一个人在连着说，就拼成一段】逻辑在 src/merge-voice.mjs，注释和硬边界都写在那儿。
+    // 抽出去是为了能真跑一遍验：同一份代码，测试调的和线上跑的是同一个函数。
     {
-      const out = [];
-      for (const m of wireMessages) {
-        const prev = out[out.length - 1];
-        const who = m && m.role === 'user' && !m.context && !m._identity ? String(m._who || '').trim() : '';
-        const pwho = prev && prev.role === 'user' && !prev.context && !prev._identity ? String(prev._who || '').trim() : '';
-        if (who && who === pwho && typeof m.content === 'string' && m.content.startsWith('[' + who + '] ')) {
-          const head = '[' + who + '] ';
-          const body = m.content.slice(head.length);
-          const pbody = typeof prev.content === 'string' && prev.content.startsWith(head)
-            ? prev.content.slice(head.length)
-            : String(prev.content || '');
-          out[out.length - 1] = { ...prev, content: head + pbody + '\n' + body };
-          continue;
-        }
-        out.push(m);
+      const before = wireMessages.length;
+      wireMessages = mergeSameVoice(wireMessages);
+      if (wireMessages.length !== before) {
+        console.log('[who] 合并了同一个人连说的 ' + (before - wireMessages.length) + ' 段');
       }
-      if (out.length !== wireMessages.length) {
-        console.log('[who] 合并了同一个人连说的 ' + (wireMessages.length - out.length) + ' 段');
-      }
-      wireMessages = out;
     }
     // 专业模式：把开场那两条（user + assistant）从这一轮真正发出去的内容里摘掉。
     //

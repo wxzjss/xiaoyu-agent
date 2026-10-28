@@ -43,6 +43,30 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
+import { getEnabledMap } from './features.mjs';
+
+/**
+ * 【长期记忆关着吗】—— 2026-10-28
+ *
+ * 为什么这个判断要长在**模块自己身上**，而不是每个调用方各判一次：
+ *
+ * 原来只有 agent.mjs 那一处判了开关，memoryText() / appendRolling() / appendFixed()
+ * 三个函数自己从来不问。实测一关：
+ *   · memoryText()     照样返回 265 字，**连本子路径都还摊在里面**
+ *   · appendRolling()  照样写进盘，还返回 R0002 说成功了
+ * 工具被收走只挡住了「她自己动手」那条路；代码里从旁边一调，门是开的。
+ *
+ * 挡在门口比挡在路上可靠：这几个函数的每一个出口都得先问一句。
+ */
+function memoryOff() {
+  try {
+    return getEnabledMap()['memory'] === false;
+  } catch {
+    return false; // 读不到开关就当开着（宁可多记，也不因为一个异常把记忆整个锁死）
+  }
+}
+
+const OFF_HINT = '长期记忆现在是关着的，记忆本不读也不写。要记就先在顶部【功能】里把长期记忆打开。';
 
 /**
  * 本子在哪儿 —— 按人设分。
@@ -515,6 +539,7 @@ function mergeArchiveIndex(archive, hook) {
  * 满了 TURN_LIMIT 就从最旧的滚出去，归档到当天的文件，索引里留一行。
  */
 export function appendRolling(summary, extra = {}) {
+  if (memoryOff()) throw new Error(OFF_HINT);
   ensureFile();
   const clean = String(summary ?? '').trim();
   if (!clean) throw new Error('summary 是空的，没东西可记');
@@ -553,6 +578,7 @@ export function appendRolling(summary, extra = {}) {
  * 它不会被 80 条的名额挤掉。
  */
 export function appendFixed(section, text) {
+  if (memoryOff()) throw new Error(OFF_HINT);
   ensureFile();
   const clean = String(text ?? '').trim();
   if (!clean) throw new Error('要记的内容是空的');
@@ -595,6 +621,18 @@ export function appendFixed(section, text) {
  * 否则新开局时我拿到一片空白，连该往哪写都不知道。
  */
 export function memoryText() {
+  /**
+   * 【关着就一个字都不给，连路径也不给】—— 2026-10-28
+   *
+   * agent.mjs 那边判过开关，但那只保住了「它自己那条路」。
+   * 这个函数是公开的、谁都能调 —— 它自己不问，就等于漏。
+   * 而且漏的不是内容，是**路径**：本子空的时候这段照样把
+   *   【我的记忆本】文件：C:\...\my-memory.md
+   * 报出来，她顺着路自己 read_file 就把本子全拿到了。
+   *
+   * 关着的时候不是「藏起来」，是压根没有这回事 —— 返回空串，调用方拼不出东西。
+   */
+  if (memoryOff()) return '';
   const { text } = composeMemory();
   if (!text) {
     return [

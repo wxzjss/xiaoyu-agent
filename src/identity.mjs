@@ -68,12 +68,12 @@ const BUILTINS = [
 /** 自定义身份最多几个 —— 界面上是要一个个点开的，不设上限会越堆越乱 */
 export const MAX_CUSTOM = 20;
 
-const DEFAULT_STATE = { current: 'owner', customs: [] };
+const DEFAULT_STATE = { current: 'owner', customs: [], bySession: {} };
 
 /** 兜底：文件坏了也不能让程序起不来，回出厂状态 */
 function readState() {
   try {
-    if (!existsSync(FILE)) return { ...DEFAULT_STATE, customs: [] };
+    if (!existsSync(FILE)) return { ...DEFAULT_STATE, customs: [], bySession: {} };
     const j = JSON.parse(readFileSync(FILE, 'utf8'));
     const current = typeof j.current === 'string' && j.current ? j.current : 'owner';
     const customs = Array.isArray(j.customs)
@@ -90,9 +90,17 @@ function readState() {
             she: x.she === undefined ? true : Boolean(x.she),
           }))
       : [];
-    return { current, customs };
+    // bySession：每个会话各自记自己这一轮是谁在说话。键是会话 id，值是身份 id。
+    // 2026-10-28 加：原来是全局一份 current，导致「在一个会话切了身份，别的会话跟着变/或怎么切都白切」。
+    const bySession = {};
+    if (j && j.bySession && typeof j.bySession === 'object' && !Array.isArray(j.bySession)) {
+      for (const [sid, iid] of Object.entries(j.bySession)) {
+        if (typeof sid === 'string' && sid && typeof iid === 'string' && iid) bySession[sid] = iid;
+      }
+    }
+    return { current, customs, bySession };
   } catch {
-    return { ...DEFAULT_STATE, customs: [] };
+    return { ...DEFAULT_STATE, customs: [], bySession: {} };
   }
 }
 
@@ -116,16 +124,21 @@ export function listIdentities() {
 }
 
 /** 当前身份 id */
-export function currentIdentityId() {
+export function currentIdentityId(sessionId = null) {
   const st = readState();
   // 当前指向一个已经被删掉的自定义身份 → 退回主人，别让她们对着空气说话
   const all = listIdentities();
+  // 这个会话自己记过身份 → 用它（哪怕全局 current 是别的）
+  if (sessionId) {
+    const mine = st.bySession && st.bySession[sessionId];
+    if (mine && all.some((x) => x.id === mine)) return mine;
+  }
   return all.some((x) => x.id === st.current) ? st.current : 'owner';
 }
 
 /** 当前身份对象（永远有值，最差是主人） */
-export function currentIdentity() {
-  const id = currentIdentityId();
+export function currentIdentity(sessionId = null) {
+  const id = currentIdentityId(sessionId);
   return listIdentities().find((x) => x.id === id) || { ...BUILTINS[0] };
 }
 
@@ -147,16 +160,23 @@ export function identityOn() {
 }
 
 /** 是不是主人。安全词、命令权限全看这一个判断。功能关掉时永远是主人。 */
-export function isOwnerIdentity(id = currentIdentityId()) {
+export function isOwnerIdentity(id = null, sessionId = null) {
+  if (id === null || id === undefined) id = currentIdentityId(sessionId);
   if (!identityOn()) return true;   // 功能关了 = 没有别人，只有主人
   return id === 'owner';
 }
 
 /** 切身份。id 不存在就不动，返回 false —— 别静默改成别人。 */
-export function setIdentity(id) {
+export function setIdentity(id, sessionId = null) {
   const all = listIdentities();
   if (!all.some((x) => x.id === id)) return false;
   const st = readState();
+  if (!st.bySession || typeof st.bySession !== 'object') st.bySession = {};
+  if (sessionId) {
+    // 按会话记：这个会话从此用这个身份，别的会话不受影响
+    st.bySession[sessionId] = id;
+  }
+  // 全局那份也跟着走：新会话默认继承它（主人切完立刻开新会话，也能继承上）
   st.current = id;
   return writeState(st);
 }
@@ -216,7 +236,7 @@ export function removeCustomIdentity(id) {
  */
 export function identityBlock(opt = {}) {
   if (!identityOn()) return null; // 功能关掉：一个字都不拼，回到出厂设定
-  const me = currentIdentity();
+  const me = currentIdentity(opt.sessionId);
   if (me.id === 'owner') return null; // 主人身份：不说话，出厂设定已经写清了
 
   const speaker = opt.speaker === 'whale' ? 'whale' : 'fish';
@@ -292,8 +312,8 @@ export function identityBlock(opt = {}) {
 }
 
 /** 给界面的那份状态（前端一次拿全，省得来回问） */
-export function identityState() {
-  const cur = currentIdentity();
+export function identityState(sessionId = null) {
+  const cur = currentIdentity(sessionId);
   return {
     ok: true,
     current: cur.id,

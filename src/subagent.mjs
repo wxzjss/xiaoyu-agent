@@ -595,8 +595,8 @@ export async function runSubagent({
      * 所以把称呼抽成变量：不是主人身份时，一律叫「叫你的人」，一个字不提主人。
      * 主人身份时退回原来的措辞 —— 平时一个字不变，缓存前缀也不动。
      */
-    const me = currentIdentity();
-    const IS_OWNER = isOwnerIdentity(me.id);
+    const me = currentIdentity(sessionId);
+    const IS_OWNER = isOwnerIdentity(me.id, sessionId);
     /** 这一轮叫她的人，在提示词里怎么指代 */
     const T_ON = IS_OWNER ? '主人' : '叫你的人';
     /** 小鲸说话时跟小鱼的颜色不同 —— 主人身份下说「不一样」，别人来说无所谓，统一「一样」更稳 */

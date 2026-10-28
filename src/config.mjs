@@ -11,7 +11,23 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
  * 开发时就是 ROOT；打成 exe 跑的时候 app.asar 只读，写 .state 会失败，
  * 所以 electron/main.cjs 用 MINI_AGENT_DATA 把它指到 %APPDATA%\xiaoyu-mini-agent。
  */
-const DATA = process.env.MINI_AGENT_DATA ? resolve(process.env.MINI_AGENT_DATA) : ROOT;
+const DATA = process.env.MINI_AGENT_DATA
+  ? resolve(process.env.MINI_AGENT_DATA)
+  : // 没指 MINI_AGENT_DATA 时用哪个数据目录：
+    //
+    // 装了 exe 的人在 %APPDATA%\小鱼Agent\data 底下存会话、设置、记忆，代码在 asar 里只读。
+    // 但**在仓库里直接 `node src/xxx.mjs` 跑脚本时**，electron/main.cjs 没参与，
+    // 这里就回落成 ROOT（= D:\小鱼Agent），于是脚本读写的是 D:\小鱼Agent\.state ——
+    // 一份**空的/过期的**配置，而不是主人真正在用的那份。
+    //
+    // 2026-10-28 踩到：改完 settings 跑回归，读出来 safeWords 是出厂的「停下/停止/…」，
+    // 而主人设置里明明是「停止/命令/人设」—— 断言因此误判，我差点去改本来正确的代码。
+    //
+    // 所以：只要 %APPDATA%\小鱼Agent\data\.state 存在（说明这台机器装过/用过），就用它；
+    // 否则才用 ROOT。这样仓库里跑的任何脚本看到的都是主人真实的配置。
+    (existsSync(join(process.env.APPDATA || '', '小鱼Agent', 'data', '.state'))
+      ? join(process.env.APPDATA, '小鱼Agent', 'data')
+      : ROOT);
 const PACKAGED = DATA !== ROOT;
 
 /** 打包后默认干活目录放在数据目录下的 workspace，别用 cwd（那可能是 System32） */

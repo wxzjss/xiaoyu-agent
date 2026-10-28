@@ -141,9 +141,10 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   // 「人设」是基线档，不是临时切换：它不覆盖人设档，只是同一条规则换一说法。
   // 只有主人喊了别的安全词、且不是「人设」自己，才走临时切换那段。
   const switched = Boolean(safeMode) && word !== '' && word !== personaWord(settings);
+  const _me = currentIdentity(sessionId);
   const parts = [
     PLATFORM_BLOCK,
-    loadPersona(),
+    retargetPersona(loadPersona(), _me),
     REASONING_LANGUAGE_RULE,
     settingsPromptBlock(settings),
     personaModeRules(settings),
@@ -163,7 +164,7 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
    * 主人身份下返回 '' —— 平时一个字不花，缓存前缀不动。
    */
   // 放在人设后面紧挨着它；但必须在会话记忆之前 —— 记忆块是滚动的逐次变长，贴在它后面的话，下一轮就离人设很远了。
-  const nv = identityNoteBlock();
+  const nv = identityNoteBlock(sessionId);
   if (nv) parts.push(nv);
   // 会话记忆放最后：它是唯一一块每轮变长的，跟读者走，不能渲染前面的每一句。
   const mem = memoryBlock(sessionId);
@@ -179,12 +180,12 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
  *   中间隔着上万字，模型经常只认最前面那句。
  *   这一段直接接在人设后面，等于当着人设的面改口。
  */
-function identityNoteBlock() {
+function identityNoteBlock(sessionId = null) {
   let me;
   try {
-    const id = currentIdentityId();
+    const id = currentIdentityId(sessionId);
     if (id === 'owner') return '';
-    me = currentIdentity();
+    me = currentIdentity(sessionId);
   } catch {
     return '';
   }
@@ -192,18 +193,90 @@ function identityNoteBlock() {
   if (me.id === 'fish') {
     // 用小鱼身份跟小鱼说话 = 她自己在自言自语，压根没有「别人」可称呼
     return [
-      '【人设阅读须知 —— 这一条改掉上面的称呼】',
-      '上面人设里写着「对用户的称呼：主人」—— 这一轮不适用。',
+      '【人设阅读须知 —— 称呼已经改过】',
+      '上面人设里原先那句「对用户的称呼：主人」已经被改掉，别照旧喊。',
       '因为这一轮根本没有别人在跟你说话：是你自己的念头浮上来了。',
       '所以别喊「主人」，就把这句当成你心里冒出来的话往下接。',
     ].join('\n');
   }
   return [
-    '【人设阅读须知 —— 这一条改掉上面的称呼】',
-    `上面人设里写着「对用户的称呼：主人」—— 这一轮不适用。`,
-    `这一轮跟你说话的是「${me.name}」，${TA}不是主人。称呼${TA}就叫名字或者说「你」，`,
-    `「主人」两个字留给主人本人 —— ${TA}不是。`,
+    '【人设阅读须知 —— 称呼已经改过，别再喊主人】',
+    `上面人设里原先那句「对用户的称呼：主人」已经被换成了「${me.name}」，正文里每个「主人」也都换过了。`,
+    `这一轮跟你说话的是「${me.name}」，${TA}不是主人。称呼${TA}就叫名字或者说「你」。`,
+    `「主人」两个字只留给主人本人 —— ${TA}不是。你要是在上面看到「主人」这个词，那是因为它在讲主人本人的规矩，不是让你拿来喊${TA}的。`,
   ].join('\n');
+}
+
+/**
+ * 非主人身份时，**直接把人设正文里的称呼改掉**。
+ *
+ * 为什么非要动正文 —— 2026-10-28 主人报「小鲸身份问我是谁，小鱼答你是主人」。
+ * 查下来：人设正文里「主人」出现 22 次，而 identityNoteBlock 那一段只有 4 行，
+ * 又隔着整篇正文。模型看 22 遍「主人」，只看到 1 遍「改掉称呼」，
+ * 当然按多的那个演。靠后面补一句劝，压不住正文里的既定事实。
+ *
+ * 所以这里不是加一句劝，是把原话换掉：
+ *   「称呼：主人」  → 「称呼：小鲸」
+ *   「对用户的称呼：主人」 → 「对用户的称呼：小鲸」
+ *   正文里其余「主人」 → 身份的称呼
+ * 主人身份直接原样返回，一个字不改（缓存前缀不动）。
+ *
+ * @param {string} text 人设正文
+ * @param {object|null} me 当前身份（identity.mjs 的 currentIdentity 结果）
+ * @returns {string}
+ */
+function retargetPersona(text, me) {
+  if (!text || !me || !me.id || me.id === 'owner') return text;
+  const TA = me.she ? '她' : '他';
+  const nm = String(me.name || '').trim() || '你';
+  // 小鱼身份 = 她自己在心里自言自语，没有「称呼别人」这回事
+  if (me.id === 'fish') {
+    /**
+     * 【主人 2026-10-28 的决定：正文里的「主人」一律换成「用户」，不是「自己」】
+     *
+     * 原来这里换成了「自己」，结果底线被改写：
+     *   「不碰主人真钱」-> 「不碰自己真钱」（废了）
+     *   「禁止泄露主人隐私」-> 「禁止泄露自己隐私」（废了）
+     *   「安全词…先确认主人要什么」-> 「先确认自己要什么」（废了）
+     * 规矩指谁，必须还是指谁。
+     *
+     * 换成「用户」则两头都对：
+     *   · 不碰用户真钱 / 禁止泄露用户隐私 —— 底线保住，照样管得住她；
+     *   · 「对用户的称呼：主人」-> 「对用户的称呼：用户」，人设里那个"喊主人"的硬设定没了；
+     *   · 「用户」是个中性的第三人称称呼，跟自己这个视角不冲突 ——
+     *     她低头看自己写的东西，不会因为看到这个词就跳出去跟"别人"说话。
+     *
+     * 只有前两行（真正的「称呼」条目）单独处理：这两行说的是怎么称呼说话的人，
+     * 这一轮压根没有别人，所以不能留「用户」当称呼。
+     */
+    return text
+      // 先通换（正文里所有「主人」-> 「用户」），再补称呼行 —— 顺序不能反，
+      // 反了的话兜底会把刚补上去的「用户」字样再改一遍（这个坑在下面小鲸分支踩过）。
+      .replace(/主人/g, '用户')
+      .replace(/对用户的称呼[:：]\s*用户/g, '对用户的称呼：自己（这一轮是心里话，没有别人）')
+      .replace(/默认称呼[「""']?用户[」""']?/g, '这一轮不喊称呼，当心里话往下接');
+  }
+  /**
+   * 【顺序就是一切 —— 2026-10-28 修】
+   *
+   * 必须「先通换、再补称呼行」，不能反过来。
+   *
+   * 原来写的是：先把「称呼：主人」精确换成「称呼：小鲸（不是主人）」，
+   * 最后再来一次 .replace(/主人/g, nm) 兜底 —— 结果兜底把刚写上去的
+   * 「（不是主人）」又改成了「（不是小鲸）」，提示词里赫然出现：
+   *
+   *     对用户的称呼：小鲸（不是小鲸）。
+   *
+   * 同一行前后自相矛盾，模型读着就是噪声。
+   *
+   * 现在：先整篇通换（正文里所有「主人」都变成这个名字），
+   * 通换完正文里一个「主人」都不剩，再补那行称呼说明就不会被二次改写。
+   */
+  const swapped = text.replace(/主人/g, nm).replace(/称呼[：:]\s*主人/g, `称呼：${nm}`);
+  return swapped.replace(
+    new RegExp(`对用户的称呼[:：]\\s*${nm}`, 'g'),
+    `对用户的称呼：${nm}（这一轮说话的不是主人本人）`,
+  );
 }
 
 /**
@@ -313,7 +386,22 @@ function memoryBlock(sessionId) {
   } catch {
     return '';
   }
-  const body = text.trim();
+  let body = text.trim();
+  /**
+   * 【本子里的称呼也得跟着身份走 —— 2026-10-28】
+   * 记忆本摘要是「主人说『X』」这么记的。切到小鲸身份后，本子还在说「主人说」，
+   * 模型读着读着就以为这一轮说话的还是主人。这里把本子正文的「主人」也换掉，
+   * 并且在开头说明一句，免得模型把「主人」和「这一轮说话的人」搞混。
+   */
+  const me = currentIdentity(sessionId);
+  if (me && me.id && me.id !== 'owner') {
+    const nm = String(me.name || '').trim() || '你';
+    if (me.id === 'fish') {
+      body = body.replace(/主人说/g, '我自言自语').replace(/主人/g, '自己');
+    } else {
+      body = body.replace(/主人/g, nm);
+    }
+  }
   if (!body) return '';
   // 骨架刚建出来的那种（只有标题没有内容）就别往里塞了，白占 token
   if (body.replace(/[#\s（）()a-zA-Z\u4e00-\u9fa5/、，。-]/g, '') === '' && !body.includes('摘要：')) return '';
@@ -340,6 +428,9 @@ function memoryBlock(sessionId) {
     '- 觉得「我不记得刚才干了什么」，就去看会话文件本身（.state/sessions/<id>.json），',
     '  那里面一条都没丢，别凭感觉说自己忘了。',
     '',
+    ...(me && me.id && me.id !== 'owner'
+      ? [`（留意：本子里凡是写着「${String(me.name || '你').trim()}」的地方，说的就是这一轮跟你说话的人；「主人」这个词在本子里只指主人本人。）`, '']
+      : []),
     body,
   ].join('\n');
 }

@@ -236,7 +236,21 @@ function normalize(input = {}) {
 
 export function getSettings() {
   const stored = readRaw();
-  return normalize({ ...DEFAULT_SETTINGS, ...stored });
+  /**
+   * 【底线和安全词不该被出厂值盖掉 —— 2026-10-28 修】
+   *
+   * settings.json 里没写这两项时（主人从没在设置面板里存过，只用过「设为默认」），
+   * 原来走的是 `...DEFAULT_SETTINGS` 硬编码那几条，于是：
+   *   - 主人点「设为默认」存进 defaults.json 的底线和安全词，对他自己不生效；
+   *   - 界面显示「当前生效」的，跟实际管着他的，不是同一份；
+   *   - 安全词尤其要命：defaults.json 里是「停止/命令/人设」，实际生效的却是出厂的「停下/…」。
+   * 现在这两项缺省改用 defaultBottomLines() / defaultSafeWords()，跟界面同一口径。
+   * 只补这两项，别的字段（contextLimit 等）行为不变。
+   */
+  const merged = { ...DEFAULT_SETTINGS, ...stored };
+  if (!("bottomLines" in stored)) merged.bottomLines = defaultBottomLines();
+  if (!("safeWords" in stored)) merged.safeWords = [...defaultSafeWords()];
+  return normalize(merged);
 }
 
 /**
@@ -620,7 +634,20 @@ export function matchSafeWord(text, settings = getSettings()) {
   // 两边都先换成半角标点：主人手打「停下」用的是中文输入法，标点常常是全角的，
   // 安全词要是设成了英文（如 stop），全角字符会让 includes 对不上。
   const lower = toAsciiPunct(String(text)).toLowerCase();
-  for (const w of settings.safeWords) {
+  /**
+   * 【长词优先 —— 2026-10-28 修】
+   *
+   * 原来是按 safeWords 的存储顺序逐个 includes，谁先命中算谁。
+   * 于是 safeWords = ["停","停止"] 时，说「停止，别闹了」先撞上短词「停」，
+   * 只切到「停」这一档、永远进不了「停止」档 —— 用户设的更具体的词被短词吃掉。
+   *
+   * 现在先把词按长度降序排，更具体的词优先命中。
+   * 排序用拷贝（[...settings.safeWords]），不动 settings 本身，返回的仍是原词。
+   */
+  const words = [...settings.safeWords].sort(
+    (x, y) => String(y ?? '').length - String(x ?? '').length,
+  );
+  for (const w of words) {
     const word = toAsciiPunct(String(w ?? '')).trim().toLowerCase();
     if (word && lower.includes(word)) return w;
   }

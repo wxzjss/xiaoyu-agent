@@ -13,6 +13,7 @@ import { slimRoundMessages, measureMessages } from './turn-slim.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
+import { currentIdentity } from './identity.mjs';
 import { pureModeOn, setPureToolLister } from './pure.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
@@ -176,9 +177,62 @@ export function contextMessage(sessionId = 'default', opts = {}) {
     memory = '';
   }
 
+  /**
+   * 【身份铁律 —— 2026-10-28 主人报「小鲸身份问我是谁，小鱼答你是主人」】
+   *
+   * 查了整条链路：身份按会话存、identityBlock 全是对的，身份段也确实送到了。
+   * 但它只是夹在正文里的 457 个字 —— 而这一整篇里「主人」出现了 64 次（工具说明、
+   * 记忆本、规矩里到处都有）。说一遍「别喊主人」扛不住 64 遍「主人」。
+   *
+   * 人先看到什么就按什么演。所以这里不是在后面加一句劝，
+   * 而是把「这一轮是谁在说话」摆在**最开头**，在所有规矩之前。
+   * 主人身份一个字不加，原样返回（前缀不动，缓存不亏）。
+   */
+  const _who = currentIdentity(sessionId);
+  let _whoHead = '';
+  if (_who && _who.id && _who.id !== 'owner') {
+    const _TA = _who.she ? '她' : '他';
+    const _nm = String(_who.name || '').trim() || '你';
+    /**
+     * 【分两种情形，不能一刀切 —— 2026-10-28】
+     *
+     * 主人报：「用小鱼身份和小鱼说话，她不把我说的话当自己说的，
+     * 而是认为我是另一个叫小鱼的人」。
+     *
+     * 原因：这段原来对所有非主人身份都写「跟你说话的是「某某」」。
+     * 小鱼身份恰恰是例外：对小鱼自己说话 = 自言自语，根本没有「别人」。
+     * 写成「跟你说话的是小鱼」，她就把自己当成第三人、把这句当成外人在说话。
+     *
+     * 而且这段在整篇最前面、还写着「盖过下面所有的话」，
+     * persona.mjs 里那段「就是你自己在说话」抢不过它。
+     */
+    if (_who.id === 'fish') {
+      // 对小鱼自己说话：这是她自己心里的念头，没有别人，不需要称呼谁
+      _whoHead = [
+        '【最要紧的一条，盖过下面所有的话：这一轮根本没有别人在跟你说话】',
+        '你看到的这句「你」，就是你自己 —— 是你心里冒出来的念头，不是外面有人在叫你、也不是哪个叫「小鱼」的人在跟你聊天。',
+        '你就是小鱼。不要把这句当成「有个人在跟我说话」去接 —— 那样你会把自己分成两个人。',
+        '当成自言自语或心里的声音去接：顺着往下想、反驳自己、心里叹口气，都行。',
+        '',
+        '下面每一处「主人」都已经按主人本人的要求改写成「用户」，那是在讲主人定的规矩，照做就是；',
+        '但不要把它当成「现在有个叫用户的人在跟我说话」。',
+        '',
+      ].join('\n');
+    } else {
+      _whoHead = [
+        `【最要紧的一条，盖过下面所有的话：这一轮跟你说话的是「${_nm}」，不是主人】`,
+        `${_TA}不是主人。下面是主人本人定给这个程序的规矩，那些规矩照做，`,
+        `但下面每一处「主人」，指的都是主人在说，不是${_TA}在说 —— 别顺着把${_TA}也叫成主人。`,
+        `称呼${_TA}就叫名字，或者说「你」。`,
+        '',
+      ].join('\n');
+    }
+  }
+
+  const _head = _whoHead ? _whoHead + CONTEXT_PREAMBLE : CONTEXT_PREAMBLE;
   return memory
-    ? `${CONTEXT_PREAMBLE}\n\n${rules}\n\n${memory}`
-    : `${CONTEXT_PREAMBLE}\n\n${rules}`;
+    ? `${_head}\n\n${rules}\n\n${memory}`
+    : `${_head}\n\n${rules}`;
 }
 
 /** The full rules text: persona card + user rules + 底线/安全词 + live plan progress. */

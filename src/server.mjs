@@ -356,7 +356,9 @@ function publicSession(session) {
       // 这一轮的 token 用量（老会话可能没有，界面就那行小字不画）。
       // 挂在 user 上：回退掉这一句时，用量跟着一起消失，不会留下对不上的数字。
       const usage = m._usage && typeof m._usage === 'object' ? { ...m._usage } : null;
-      turns.push({ role: 'user', text: shown, atts, rewindId: i, edited, usage });
+      // who：这句当时是哪个身份说的。没存就是主人（老会话全走这条，显示不变）
+      const who = typeof m._who === 'string' && m._who ? m._who : '';
+      turns.push({ role: 'user', text: shown, atts, rewindId: i, edited, usage, who });
     }
     else if (m.role === 'assistant') turns.push({
       role: 'assistant',
@@ -1361,10 +1363,10 @@ function landWhaleSay({ session, sessionId, text, send = null, live = null }) {
  * 所以这段单独贴、紧挨着她那句话，把视角钉死。
  * 主人身份下返回 null，一个字不花。
  */
-function standaloneNote() {
+function standaloneNote(sessionId = null) {
   try {
     if (!identityOn()) return null;
-    const me = currentIdentity();
+    const me = currentIdentity(sessionId);
     if (me.id !== 'fish') return null; // 只有「自己跟自己说话」这个方向需要钉视角
     return [
       '【下面那条消息是你自己的想法，不是别人在跟你说话】',
@@ -2928,7 +2930,9 @@ const server = createServer(async (req, res) => {
   //   · 安全词只有主人身份说了才算数（见 /api/chat 里 __speakerIsOwner 那段）。
   // 所以切身份这个动作**立即生效、不需要重启**，下一轮就按新身份走。
   if (req.method === 'GET' && url.pathname === '/api/identity') {
-    return json(res, 200, identityState());
+    // 身份按会话算：带上会话 id，界面拿到的才是「这个会话现在是谁在说话」
+    const sid = String(url.searchParams.get('sessionId') || '').trim() || getLastSessionId() || '';
+    return json(res, 200, identityState(sid));
   }
 
   if (req.method === 'POST' && url.pathname === '/api/identity/set') {
@@ -2940,8 +2944,19 @@ const server = createServer(async (req, res) => {
     }
     const id = String(payload?.id || '');
     if (!id) return json(res, 400, { error: '没说是哪个身份' });
-    if (!setIdentity(id)) return json(res, 404, { error: '没有这个身份' });
-    return json(res, 200, identityState());
+    /**
+     * 【身份按会话记 —— 2026-10-28 主人报「用小鲸身份问我是谁，她答你是主人」】
+     *
+     * 切完只影响这个会话，别的会话、历史消息都不动。
+     *
+     * sessionId 没给就落到「当前会话」（getLastSessionId）。千万别留空：
+     * 留空 = 只改全局 current，这个会话的 bySession 一条不记。
+     * 下一轮按会话去查查不到 → 回落到全局 → 全局还是主人 → 她照样答「你是主人」。
+     * 这就是主人截图里那个「用小鲸身份问我是谁」的真相。
+     */
+    const sid = String(payload?.sessionId || '').trim() || getLastSessionId() || '';
+    if (!setIdentity(id, sid)) return json(res, 404, { error: '没有这个身份' });
+    return json(res, 200, identityState(sid));
   }
 
   if (req.method === 'POST' && url.pathname === '/api/identity/add') {
@@ -4891,6 +4906,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (!resume) {
       const firstUserTurn = !history.some((m) => m.role === 'user' && !m.context);
       const userMsg = { role: 'user', content: composeUserContent(message, attachments) };
+      /**
+       * 【这句话是哪个身份说的 —— 2026-10-28 主人定的】
+       *
+       * 主人原话：「切换身份后不动以前的消息，比如说上一句是主人在说，
+       * 我切换身份后下一句是切换后的在说，而上一句显示依旧是主人」。
+       *
+       * 身份名跟着这句消息一起存下来；界面画的时候直接用这份，
+       * 不再看「现在是哪个身份」—— 否则一切换，满屏旧消息的署名全被刷掉。
+       * 只给界面看：wireMessages 会滤掉 _ 开头的字段，模型看不见。
+       */
+      try {
+        // 【一律存，主人身份也要存 —— 2026-10-28 补的坑】
+        // 原来这里写着 id !== 'owner' 才存，等于主人说的话一个字记号都没有。
+        // 结果切到小鲸身份后重画，那些主人说的话全被刷成「小鲸」——
+        // 主人要的「上一句显示依旧是主人」恰好做不到。别再加这个判断。
+        const __me = currentIdentity(sessionId);
+        if (__me) {
+          userMsg._who = __me.name;
+          userMsg._whoId = __me.id;
+        }
+      } catch {}
       // 图片路径单独记一份：落盘只留路径，发请求前再读成 base64
       const imgPaths = attachments.map((a) => a && a.path).filter((p) => p && isImagePath(p));
       const filePaths = attachments.map((a) => a && a.path).filter((p) => p && !isImagePath(p));
@@ -4959,7 +4995,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 为什么不干脆把消息拦下来：拦了主人就没法用别的身份试她们的底线了。
      * 这里只掐掉「安全词的效力」，话照样送进去 —— 她会当成一个普通人在跟她提要求。
      */
-    const __speakerIsOwner = isOwnerIdentity();
+    const __speakerIsOwner = isOwnerIdentity(null, sessionId);
     const safeWord = (resume || !__speakerIsOwner) ? null : matchSafeWord(message);
     // 这一轮该处在哪一档：没喊别的词就继续当前档（新会话默认人设档），
     // 喊了就切过去并记住，下一轮还是那一档。
@@ -5343,7 +5379,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 所以 at 只算一次，两段一起插。
        */
       const ib = identityBlock({ sessionId });
-      const sn = standaloneNote();
+      const sn = standaloneNote(sessionId);
       const blocks = [ib, sn].filter(Boolean);
       if (blocks.length) {
         let at = -1;

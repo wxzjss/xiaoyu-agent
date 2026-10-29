@@ -7090,7 +7090,56 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           while (common < latest.messages.length && common < session.messages.length
             && sameMsg(latest.messages[common], session.messages[common])) common++;
           let merged = 0;
-          for (let i = common; i < session.messages.length; i++) {
+          /**
+           * 【压缩过的那一头，一条都不许往回接】2026-10-29 修
+           *
+           * 「按位置对齐」这条规矩本来是给插话用的，可它跟压缩撞在一起就出事：
+           *
+           *   压缩把 [start, cut) 折成一条摘要、插在头部后面 —— 公共前缀当场断在第 1 条，
+           *   于是「前缀之后这一轮多出来的」就变成了内存里那 500 多条老消息，
+           *   一条不落地整段接回压缩后的最新那份 → 2057 条 → 压了个寂寞。
+           *   而且摘要会被挤到中间、下一轮再也压不到它，越堆越多。
+           *
+           * 所以并之前先认出「这一轮是不是刚压过」：
+           *   · 内存这份里带 summary 的消息（压缩产物）数量比磁盘那份**多** —— 是这一轮压的；
+           *   · 或者磁盘那份里有 summary、内存这份没有 —— 是别的路压的，这边更得让。
+           * 只要认出来，就只允许接「压缩点之后新长出来的那几条」：
+           *   以内存这份里最后一条 summary 为界，它前面的老消息一律不接。
+           *
+           * 没压缩的普通收尾（插话把话补回来那条路）完全不受影响：一份 summary 都没有，
+           * `cutAt` 就是 0，行为跟以前一模一样。
+           */
+          const countSummary = (arr) => arr.reduce(
+            (n, m) => n + (m && m.summary && m.context ? 1 : 0), 0,
+          );
+          const sumMem = countSummary(session.messages);
+          const sumDisk = countSummary(latest.messages);
+          let from = common;
+          if (sumMem > 0 || sumDisk > 0) {
+            /**
+             * 认出来了：这一轮（或别的路）动过压缩，那就**只接压缩之后新长出来的那一段**。
+             *
+             * 判据是「连续」：从公共前缀往后走，找到的位置必须一路到尾都是磁盘里没有的，
+             * 才算新尾巴。中间只要又撞上一条磁盘里有的，说明这段里头掺着老消息
+             * （压缩把长度改了，老消息在两边对不上号），这种情况一律整段不接。
+             *
+             * 三条场景说明为什么要这么严：
+             *   · 压缩后啥也没说 → 后面全是老消息，找不到干净的新尾巴，接 0 条 ✔
+             *   · 压缩后说了 3 句 → 那 3 句连着，接 3 条 ✔
+             *   · 压缩后说了 3 句又聊了几句（新老交替）→ 宁可这一段不接，
+             *     也不能把老消息接回去把压缩推翻 —— 那一轮的话下轮还会再说。
+             */
+            const inDisk = new Set(latest.messages);
+            from = session.messages.length;
+            for (let i = common; i < session.messages.length; i++) {
+              let clean = true;
+              for (let k = i; k < session.messages.length; k++) {
+                if (inDisk.has(session.messages[k])) { clean = false; break; }
+              }
+              if (clean) { from = i; break; }
+            }
+          }
+          for (let i = from; i < session.messages.length; i++) {
             const m = session.messages[i];
             if (!m) continue;
             if (String(m.role || '') === 'system') continue;   // system 不并

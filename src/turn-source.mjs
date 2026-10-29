@@ -48,6 +48,12 @@ export function setTurnSource(sessionId, info) {
     // 名字是对方自己设的、可以随便改也可以重名；号才是认人的唯一依据。
     whoId: String(info.whoId || '').slice(0, 64),
     isOwner: info.isOwner === true,
+    // 2026-11-02：要往 QQ 发东西，就得知道「发回哪儿」。
+    // replyTarget 是官方 SDK 的 { scope:'c2c'|'group', targetId, msgId }，
+    // 只留这一次跑用，跑完 clear —— 聊天记录里不留地址。
+    replyTarget: info.replyTarget && typeof info.replyTarget === 'object' ? { ...info.replyTarget } : null,
+    // 这一轮带进来的附件（本地路径），发文件/看图时不用再猜
+    attachments: Array.isArray(info.attachments) ? info.attachments.slice(0, 20) : [],
     at: Date.now(),
   });
   log(`${id} source=${info.source} who=${info.who || '-'}`);
@@ -59,6 +65,20 @@ export function clearTurnSource(sessionId) {
 
 export function turnSourceOf(sessionId) {
   return TABLE.get(String(sessionId || '')) || null;
+}
+
+/**
+ * 这一轮要发东西回 QQ 的话，该发到哪儿。
+ * 不是 QQ 来的轮次就返回 null —— 工具据此告诉模型「现在没连着 QQ」。
+ */
+export function turnReplyTarget(sessionId) {
+  const s = turnSourceOf(sessionId);
+  if (!s || s.source !== 'qq' || !s.replyTarget) return null;
+  const t = s.replyTarget;
+  const scope = t.scope === 'group' ? 'group' : 'c2c';
+  const targetId = String(t.targetId || '');
+  if (!targetId) return null;
+  return { scope, targetId, ...(t.msgId ? { msgId: String(t.msgId) } : {}) };
 }
 
 /**
@@ -94,6 +114,7 @@ export function turnSourcePromptBlock(sessionId) {
       '1. 对方可能看不到主人的电脑屏幕 —— 别让他「看我这」「点一下那个」，你看得见的东西他多半看不见。',
       '2. 对方的身份不一定就是主人。要动手改东西、要翻主人的私事、要报账号密码这类事，先分清楚对方是谁；拿不准就直说「这个得主人本人来」。',
       '3. 你自己说话的样子别变，还是平时的你。只是心里得清楚：这会儿是对着 QQ 那头说话，不是对着主人。',
+      '4. 想发图、发语音、发文件、发视频给她看，用 qq_send 这个工具（它知道该发回哪个会话，你不用自己填地址）。',
     ].filter(Boolean).join('\n');
   }
 

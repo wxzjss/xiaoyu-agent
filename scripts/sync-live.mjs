@@ -170,7 +170,17 @@ console.log('');
 
 console.log('[1/2] 同步到 code/ …');
 for (const rel of targets) {
-  if (!/^(src|electron|persona|scripts|vendor|package\.json)/.test(rel)) continue;
+  /**
+   * 【electron/ 为什么不进 code/ —— 2026-11-02 血的教训】
+   *
+   * 主进程 `main.cjs` 也被热更覆盖过一份带重复声明的旧稿，结果双击就弹
+   * 「SyntaxError: Identifier 'TITLEBAR_SHALLOW_BLUE' has already been declared」——
+   * 界面连一帧都出不来，改源码、重打安装包全白费（因为启动时读的是 code/ 那份）。
+   *
+   * 主进程是「壳」，换个版本本来就该跟着安装包走；让它能被热更改写，
+   * 等于把「起不来」这件事装进了更新里。所以这里把 electron/ 明确排除。
+   */
+  if (!/^(src|persona|scripts|vendor|package\.json)/.test(rel)) continue;
   syncTo(CODE, rel);
 }
 

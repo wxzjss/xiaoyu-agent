@@ -13,6 +13,7 @@ import { snapshotBeforeWrite } from './rewind.mjs';
 import { webSearch, formatResults } from './search.mjs';
 import { sendFileTool } from './tools-sendfile.mjs';
 import { sayTool } from './tools-say.mjs';
+import { qqSendTool } from './tools-qq-send.mjs';
 import { browserTools } from './tools-browser.mjs';
 import { videoTools } from './tools-video.mjs';
 import { screenTools } from './tools-screen.mjs';
@@ -1022,6 +1023,7 @@ export const tools = [
   },
   sayTool,
   sendFileTool,
+  qqSendTool,
   ...browserTools,
   ...videoTools,
   ...screenTools,

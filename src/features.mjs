@@ -209,6 +209,16 @@ export const FEATURES = [
     defaultOn: true,
   },
   {
+    /* compressTag·2026-10-31 纯界面开关：历史太长被折成摘要时，
+     * 聊天里会多一行「上下文 · 已压缩」的小标签。有人喜欢知道发生了什么，
+     * 有人觉得碍眼 —— 那就让它能关掉。默认开着（跟以前一样）。 */
+    id: 'compressTag',
+    name: '压缩提示',
+    desc: '历史太长、被折成摘要的时候，聊天里会多一行「上下文 · 已压缩」。关掉就不显示了，压缩照样在做。',
+    tools: [],
+    defaultOn: true,
+  },
+  {
     // 纯界面功能，不带工具。默认开着，素材就在 assets/background.mp4。
     id: 'videoBg',
     name: '视频背景',

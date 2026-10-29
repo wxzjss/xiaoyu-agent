@@ -216,15 +216,28 @@ export function cleanReply(text, agent) {
  *
  * 名字里带空格/符号也照配（先长后短，免得「阿蓝」把「阿蓝二号」抢了）。
  */
-export function pickSpeakers({ roster = [], userText = '', quietIds = [] } = {}) {
+export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowedIds = null } = {}) {
+  /* 记住@的人·2026-10-29 */
   const mates = (Array.isArray(roster) ? roster : []).filter((a) => a && a.id);
   if (!mates.length) return [];
   const text = String(userText || '');
   const quiet = new Set((Array.isArray(quietIds) ? quietIds : []).map((x) => String(x)));
   const hits = parseMentions(text, mates);
+
+  // ① 这一句里 @ 了人：就只让被 @ 的接（这条不变）
   if (hits.length) {
     return mates.filter((a) => hits.includes(String(a.id)));
   }
+
+  // ② 这一句没 @：看上次 @ 留下的名单。
+  //    allowedIds 不是 null 就只认名单里的人 —— @ 过一次，其他人就闭嘴，
+  //    一直闭到主人下次 @ 为止。
+  if (Array.isArray(allowedIds)) {
+    const allow = new Set(allowedIds.map((x) => String(x)));
+    return mates.filter((a) => allow.has(String(a.id)) && !quiet.has(String(a.id)));
+  }
+
+  // ③ 从没 @ 过：谁都能说（跳过「安静」那类）
   return mates.filter((a) => !quiet.has(String(a.id)));
 }
 
@@ -244,4 +257,19 @@ export function parseMentions(text, roster = []) {
     if (re.test(text) && !out.includes(a.id)) out.push(a.id);
   }
   return out;
+}
+
+
+/**
+ * 记住@的人·2026-10-29
+ * 说完这句话之后，「谁还能说话」的名单该怎么变。
+ *
+ *   · 这句带 @：名单换成被 @ 的人（其他人从这一刻起闭嘴）
+ *   · 这句没 @：名单一个字不动（沿用上次的判断）
+ *   · 一直没 @ 过：null（意思是「没限制，谁都能说」）
+ */
+export function nextAllowedIds(prevAllowed, userText, roster = []) {
+  const hits = parseMentions(String(userText || ''), roster);
+  if (hits.length) return hits;            // 重新判断：只留被 @ 的
+  return Array.isArray(prevAllowed) ? prevAllowed : null;
 }

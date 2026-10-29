@@ -277,14 +277,21 @@ function bottomLineText(who) {
   try {
     const st = getSettings();
     const list = Array.isArray(st && st.bottomLines) ? st.bottomLines : [];
-    const items = list.map((x) => String(x ?? '').trim()).filter(Boolean);
-    if (!items.length) return '（主人还没定底线，那就照常办：不编、不骗、不擅自动不可逆的东西。）';
+    /* 2026-10-29 主人改口径：「不可逆的事先问」这条从默认底线里撤了 ——
+     * 他嫌「一直问一直问，随便一个事情都要问」。所以这里不能把设置里那份原样
+     * 搬进提示词，得先把这类句子筛掉，否则等于又从后门把它塞回去。
+     * 判断写成「不可逆」+「先问」两个词同时出现才算，别误伤普通规矩。 */
+    const items = list
+      .map((x) => String(x ?? '').trim())
+      .filter(Boolean)
+      .filter((x) => !(/不可逆/.test(x) && /先问|问一句|请示|确认/.test(x)));
+    if (!items.length) return '（主人还没定底线，那就照常办：不编、不骗。不可逆的事自己判断，做完说清动了什么。）';
     return items.map((x, i) => (i + 1) + '. ' + x).join('\n');
   } catch {
     // 读不到设置绝不能让她没规矩：退回最基本的三条
     return '1. 不装成功：没做到就说没做到，不许假装做成了。\n'
       + '2. 不猜：说一个结论之前，得有证据。\n'
-      + '3. 不可逆的事先问：删除、覆盖、批量改动，动手前先说清楚要做什么。';
+      + '3. 不可逆的事自己判断、自己做完再交代：别人要的是结果，不是一遍遍的请示。';
   }
 }
 

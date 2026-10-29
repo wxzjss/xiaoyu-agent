@@ -17,6 +17,7 @@ import { browserTools } from './tools-browser.mjs';
 import { videoTools } from './tools-video.mjs';
 import { screenTools } from './tools-screen.mjs';
 import { adminOn } from './admin-mode.mjs';
+import { isImagePath, readImageDataUrl } from './attach.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
 
@@ -396,14 +397,27 @@ export const tools = [
   {
     name: 'read_file',
     description:
-      '读一个文本文件的内容。工作区里的相对路径，或主人机器上的绝对路径都行（带中文、空格也没问题）。大文件会截断。',
+      '读一个文件。文本文件给内容；图片（png/jpg/jpeg/gif/webp/bmp）会真的把图给你看，不是乱码。工作区里的相对路径，或主人机器上的绝对路径都行（带中文、空格也没问题）。大文件会截断。',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string', description: '工作区里的相对路径' } },
       required: ['path'],
     },
     async run({ path }) {
-      return clip(await readFile(safePath(path, { tool: 'read_file' }), 'utf8'));
+      const abs = safePath(path, { tool: 'read_file' });
+      /* 看图·2026-10-31 图片走另一条路。
+       * agent.mjs 认的格式是 { text, images: [路径...] } —— 它拿到路径会现读现编码，
+       * 把图拼成 image_url 段喂给模型。这样才是真的「看见」，
+       * 而不是像以前那样 readFile(path,'utf8') 读出一屏乱码。 */
+      if (isImagePath(abs)) {
+        const img = readImageDataUrl(abs);   // 先试着读一次，读不了要当场说清楚
+        const kb = Math.round((img.size || 0) / 1024);
+        return {
+          text: '[这是一张图片] ' + path + '（' + img.mime + '，' + kb + ' KB）—— 图已经直接给你了，看就行，别去猜。',
+          images: [abs],
+        };
+      }
+      return clip(await readFile(abs, 'utf8'));
     },
   },
   {
@@ -616,7 +630,7 @@ export const tools = [
           type: 'string',
           enum: ['create', 'update', 'add', 'view', 'clear'],
           description:
-      '维护这次任务的分步清单：create 新建，update 改某一步的状态，add 追加一步，view 看当前清单，clear 清空。长任务先用它把步骤列出来，别做到一半忘了。',
+      '维护这次任务的分步清单：create 新建，update 改某一步的状态，add 追加一步，view 看当前清单，clear 清空。新建清单和清空都会自动把旧清单留档到 .state/plan/_history/，钉死的步骤永不消失。长任务先用它把步骤列出来，别做到一半忘了。',
         },
         goal: { type: 'string', description: '一句话说清主人要什么（仅 create）' },
         steps: {
@@ -632,6 +646,10 @@ export const tools = [
         },
         note: { type: 'string', description: '这一步的一句话结果备注（仅 update）' },
         text: { type: 'string', description: '新增那一步写什么（仅 add）' },
+        pin: {
+          type: 'boolean',
+          description: '钉死：这一步永不因为「新建清单/清空」而消失（仅 update / add）。旧账、主人交代的长期任务要钉死',
+        },
       },
       required: ['action'],
     },

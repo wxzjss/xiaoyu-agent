@@ -1,7 +1,6 @@
 // Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
-try { require('node:fs').appendFileSync('D:/小鱼Agent/_diag_whale.log', new Date().toISOString() + ' MODULE-TOP\n'); } catch (e) {}
 import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
@@ -5297,7 +5296,6 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     return json(res, 200, { ok: true, imported: made, count: made.length });
   }
 
-  try { require('node:fs').appendFileSync('D:/小鱼Agent/_diag_whale.log', new Date().toISOString() + ' CHAT-ENTER\n'); } catch (e) {}
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     let payload;
     try {

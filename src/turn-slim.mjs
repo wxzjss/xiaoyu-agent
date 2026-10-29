@@ -69,6 +69,73 @@ export function shrinkToolText(text) {
 }
 
 /**
+ * 把一段「工具调用的参数」压成摘要形态。
+ *
+ * arguments 通常是 JSON 字符串。压的时候**不能把线索压没** ——
+ * 循环.txt 里踩过这个坑：下一个「我」看见「这一轮用了 write_file」，
+ * 完全不知道改的是哪个文件，只能从头再查，查完又记一条「用了 write_file」，
+ * 就这么打转。所以路径、命令这些「定位用的字段」要原样留下。
+ *
+ * 做法：认得出的键（path / file_path / target / cmd / command / pattern 等）
+ * 原样保留；其余大字段（content / old_string / new_string / body …）压短。
+ * 不是 JSON 的话，就当纯文本按 shrinkToolText 处理。
+ *
+ * @param {string} args 原始参数
+ * @returns {string}
+ */
+export function shrinkToolArguments(args) {
+  const s = String(args ?? '');
+  if (s.length <= MIN_COMPRESS_CHARS) return s;
+
+  let obj;
+  try {
+    obj = JSON.parse(s);
+  } catch {
+    // 不是 JSON（少见）：按普通文本压
+    return shrinkToolText(s);
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return shrinkToolText(s);
+
+  /** 这些键是「定位线索」，必须原样留着 —— 宁可多花点 token */
+  const KEEP_KEYS = new Set([
+    'path', 'file_path', 'filepath', 'target', 'target_file', 'filename', 'file',
+    'cmd', 'command', 'script', 'pattern', 'glob', 'query', 'url', 'name',
+    'old_string_len', 'line', 'start', 'end', 'offset', 'limit', 'action', 'mode',
+  ]);
+  /** 这些键最占地方，压得最狠 */
+  const HEAVY_KEYS = new Set([
+    'content', 'old_string', 'new_string', 'body', 'text', 'data', 'patch',
+    'replacement', 'insert', 'source', 'code', 'diff',
+  ]);
+
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v !== 'string') {
+      out[k] = v;
+      continue;
+    }
+    if (KEEP_KEYS.has(k)) {
+      // 定位线索：长路径也留全，它是模型接下去干活的关键
+      out[k] = v.length > 500 ? v.slice(0, 500) + '…' : v;
+      continue;
+    }
+    if (HEAVY_KEYS.has(k) || v.length > LINE_MAX) {
+      const lines = v.split('\n');
+      const note = v.includes('\n')
+        ? `…（原文 ${v.length} 字符 / ${lines.length} 行，已压短）…`
+        : `…（原文 ${v.length} 字符，已压短）…`;
+      // 留个头，模型能认出这是哪段东西
+      out[k] = v.slice(0, LINE_MAX) + note;
+      continue;
+    }
+    out[k] = v;
+  }
+  const compact = JSON.stringify(out);
+  // 压完反而更长（键名多、原文本来就短）：那就别压
+  return compact.length < s.length ? compact : s;
+}
+
+/**
  * 给一份 messages 做「回合内瘦身」。
  *
  * 规矩（三不碰）：
@@ -134,6 +201,70 @@ export function slimRoundMessages(messages, opts = {}) {
     savedChars += before.length - after.length;
     return { ...m, content: after };
   });
+
+  /**
+   * 【第二块：工具调用的参数】
+   *
+   * 上面那块只压 role==='tool' 的「工具结果」。可 2026-11-01 量下来，
+   * 「修理鱼」那个会话瘦身后还剩 91.8 万 token，其中 **48.9 万（53%）
+   * 是 assistant 消息里 tool_calls 的 arguments** —— 比工具结果本身还大。
+   *
+   * 想也合理：模型每调一次 write_file，整份文件正文都在 arguments 里；
+   * 每调一次 edit，old_string + new_string 也在。一次几千字，
+   * 一个会话上千次调用，就是几十万字，每一圈都原样重发一遍。
+   *
+   * 而且这一块**压缩也管不着** —— compressHistory 只折叠旧对话，
+   * 不碰 assistant 的 tool_calls。两条路都没人管它，于是它一直躺在账上。
+   *
+   * 规矩跟工具结果一样，别抢模型还在用的东西：
+   *   · 只压更早的调用，最近 KEEP_RECENT_ROUNDS 圈的参数原样留着；
+   *   · 压的时候保留「调了什么工具、打在哪个文件上」——
+   *     这一条最要紧：下一个「我」看见 write_file 却不知道改的是哪个文件，
+   *     就只能从头再查一遍，那才是真正的打转（循环.txt 里写过这事）。
+   *     arguments 是 JSON，能认出 path/file_path/target 就写进去。
+   */
+  const allCallIdxs = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m && Array.isArray(m.tool_calls) && m.tool_calls.length) allCallIdxs.push(i);
+  }
+  /**
+   * 跨轮兜底（跟 KEEP_TOTAL_TOOLS 一个道理，2026-11-01 补）。
+   *
+   * 一开始这里只写「本轮之后」（i >= from），结果实测一点没省：
+   * 「修理鱼」的 from=2055（最后一条 user），1025 次调用全在那之前，
+   * 一个都没进压的名单 —— 那 18 万 token 的 args 照旧每圈全量重发。
+   *
+   * 工具结果那边早有 KEEP_TOTAL_TOOLS 这个跨轮兜底，调用参数这边漏了。
+   */
+  const keepGlobalCalls = Math.max(0, allCallIdxs.length - KEEP_TOTAL_TOOLS);
+  const callSlim = new Set(allCallIdxs.slice(0, keepGlobalCalls));
+  // 本轮之内：最近 KEEP_RECENT_ROUNDS 圈也原样留着
+  const localCalls = allCallIdxs.filter((i) => i >= from);
+  for (const i of localCalls.slice(Math.max(0, localCalls.length - KEEP_RECENT_ROUNDS))) callSlim.delete(i);
+
+  if (callSlim.size) {
+    const out2 = out.map((m, i) => {
+      if (!callSlim.has(i)) return m;
+      if (!m || !Array.isArray(m.tool_calls)) return m;
+      let touched = false;
+      const calls = m.tool_calls.map((tc) => {
+        const f = tc && tc.function;
+        if (!f || typeof f.arguments !== 'string') return tc;
+        const before = f.arguments;
+        const after = shrinkToolArguments(before);
+        if (after === before) return tc;
+        touched = true;
+        savedChars += before.length - after.length;
+        return { ...tc, function: { ...f, arguments: after } };
+      });
+      if (!touched) return m;
+      changed++;
+      return { ...m, tool_calls: calls };
+    });
+    out.length = 0;
+    out.push(...out2);
+  }
 
   return { messages: changed ? out : messages, changed, savedChars };
 }

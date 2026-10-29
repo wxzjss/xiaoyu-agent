@@ -199,6 +199,12 @@ export async function startQq(deps = {}) {
 
 export async function stopQq() {
   try { await rt.bot?.stop?.(); } catch {}
+  try {
+    if (rt.bot?.__onebot) {
+      const onebot = await import('./qq-onebot.mjs');
+      await onebot.stopOneBot();
+    }
+  } catch {}
   rt.bot = null;
   rt.phase = 'stopped';
   log('停了');
@@ -390,6 +396,77 @@ async function send(bot, msg, content) {
 /** 给别的模块（qq_send 工具）用的：现在那个活着的 bot 实例 */
 export function currentQqBot() {
   return rt.bot || null;
+}
+
+// ───────────────────────── 自己注册的号（OneBot v11）─────────────────────────
+
+/**
+ * OneBot 的「bot 外壳」—— 让 `handleInbound` 不用改一行就能走这条路。
+ *
+ * 为什么值得这么绕：`handleInbound` 里那一整套（白名单、认领口令、附件落地、
+ * 拆段发、replyTarget、媒体回传）是踩了很多坑才对的；OneBot 那条道要重写一遍
+ * 就一定会漏掉其中几条。所以只把「发」这一层换掉，剩下的全复用。
+ *
+ * 它有官方 SDK 的 bot 里**唯一被用到**的接口：`sendText(replyTarget, text)`。
+ */
+function oneBotShell() {
+  return {
+    __onebot: true,
+    async sendText(replyTarget, content) {
+      const scope = String(replyTarget?.scope || 'c2c');
+      const target = String(replyTarget?.targetId || '');
+      if (!target) throw new Error('没有收件人');
+      const isGroup = scope === 'group';
+      const msgId = replyTarget?.msgId;
+      // 有 msgId 就引用着回（对方一眼知道在回哪句）
+      const { sendText, replyQuote } = await import('./qq-onebot.mjs');
+      return msgId
+        ? replyQuote({ isGroup, target, messageId: msgId, text: String(content ?? '') })
+        : sendText({ isGroup, target, text: String(content ?? '') });
+    },
+  };
+}
+
+/** 启动「自己注册的号」。 */
+export async function startQqOneBot(deps = {}) {
+  if (rt.phase === 'online') return qqStatus();
+  const onebot = await import('./qq-onebot.mjs');
+  const conf = onebot.oneBotConf();
+  rt.phase = 'starting';
+  rt.error = '';
+  rt.log.length = 0;
+  log(`准备连接自己注册的号（${conf.mode} ${conf.url}）`);
+  try {
+    const st = await onebot.startOneBot(async (inbound) => {
+      const shell = oneBotShell();
+      // 回哪儿：群里回群、私聊回人；msgId 用来引用
+      inbound.replyTarget = inbound.kind === 'group'
+        ? { scope: 'group', targetId: String(inbound.groupId || ''), msgId: inbound.messageId }
+        : { scope: 'c2c', targetId: String(inbound.senderId || ''), msgId: inbound.messageId };
+      try {
+        await handleInbound({ msg: inbound, bot: shell, deps });
+      } catch (err) {
+        log(`处理一条消息失败：${String(err?.message ?? err)}`);
+      }
+    });
+    rt.bot = oneBotShell();
+    // 拨号是异步的：startOneBot 返回时往往还在 connecting。这里不能再把
+    // online 降级成 starting —— 否则刚连上就被自己抹掉，状态栏永远显示
+    // 「正在连…」，而且面板上「断开」按钮会在真连上之后还不亮。
+    if (st.phase === 'online') rt.phase = 'online';
+    else if (st.phase === 'error') rt.phase = 'error';
+    else if (rt.phase !== 'online') rt.phase = 'starting';
+    rt.startedAt = Date.now();
+    rt.error = st.error || '';
+    rt.me = st.selfId ? { id: st.selfId, name: st.nickname || '' } : rt.me;
+    if (st.selfId) log(`登录的号：${st.nickname || '(无名)'}（${st.selfId}）`);
+    return qqStatus();
+  } catch (err) {
+    rt.phase = 'error';
+    rt.error = String(err?.message ?? err);
+    log(`没连上：${rt.error}`);
+    return qqStatus();
+  }
 }
 
 /** 给面板用：最近这些人的名字、是不是主人、什么时候来过。 */

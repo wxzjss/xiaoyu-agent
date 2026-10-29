@@ -1,6 +1,6 @@
 // Sessions on disk: .state/sessions/<id>.json + _last.json (最近会话).
 // Every turn writes back to disk, so a reload/power-cut never loses the conversation.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, writeSync, fsyncSync, closeSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 
@@ -21,6 +21,32 @@ function ensureDir(dir = DIR) {
 
 function fileFor(id) {
   return join(DIR, `${id}.json`);
+}
+
+/**
+ * 原子写：先写同目录下的 .tmp，fsync 落盘，再 rename 覆盖目标。
+ *
+ * 【为什么不用 writeFileSync 直接盖】2026-10-29 修。
+ * writeFileSync 是「打开目标 → 截断成 0 字节 → 往里写」，中间任何一刻进程被杀、
+ * 断电、磁盘满，目标文件就停在「空的」或「半截 JSON」的状态 —— 整个会话当场没了，
+ * 而且 JSON 坏掉之后 loadSession 只会当「这会话不存在」，连抢救的机会都没有。
+ * rename 在同一分区上是原子的：要么还是旧的完整文件，要么就是新的完整文件。
+ */
+function writeFileAtomic(file, text) {
+  const tmp = file + '.tmp-' + process.pid;
+  let fd = null;
+  try {
+    fd = openSync(tmp, 'w');
+    writeSync(fd, text);
+    try { fsyncSync(fd); } catch {}
+    closeSync(fd);
+    fd = null;
+    renameSync(tmp, file);
+  } catch (e) {
+    if (fd !== null) { try { closeSync(fd); } catch {} }
+    try { if (existsSync(tmp)) unlinkSync(tmp); } catch {}
+    throw e;
+  }
 }
 
 /**
@@ -144,11 +170,39 @@ function dropRepeatedTurns(ms, maxScan = 400) {
   return kill.length;
 }
 
-export function saveSession(session) {
+/**
+ * 【写完前先验内存还在不在】
+ *
+ * saveSession 会拿磁盘那份来合流（见下面「合流」那段）：磁盘上有、内存里没有的
+ * 消息会被当成「插话刚 push 进来、还没落盘的那一句」接回末尾。
+ *
+ * 这条规矩本身是给插话用的，可它跟「删消息」撞在一起就翻车 ——
+ * 删掉的消息在磁盘旧文件里还在，于是每一轮存盘都把它接回来一次，
+ * 主人删了三次、它回来三次。2026-10-29 实测：/api/interject 插的那条测试消息，
+ * 手工从磁盘删掉后，下一轮 saveSession 又写回来了（sandbox/_repro_wipe2.mjs）。
+ *
+ * 真正的病根是「凭记忆判断磁盘新不新」：这份 session 可能是这一轮开头就抓下来的
+ * 旧副本，中途别人（插话、重置、压缩、另一轮）已经改过内存里那份真的了。
+ * 拿旧副本去索引磁盘，必然把它判成「磁盘上多出来的新消息」。
+ *
+ * 所以在**读磁盘之前**记下内存那份的版本号，合流之后再验一次：
+ * 变了 = 说明这次合流的前提已经作废，直接放弃、重来一次。
+ */
+function memStamp(session) {
+  if (!session || typeof session !== 'object') return null;
+  const m = session.messages;
+  return (Array.isArray(m) ? m.length : -1) + '|' + String(session.updatedAt || 0);
+}
+
+export function saveSession(session, _attempt = 0) {
   // 落盘前最后一道：清掉同一次生成被接入多份的重复回复（见 dropRepeatedTurns 上的说明）
   try { if (session && Array.isArray(session.messages)) dropRepeatedTurns(session.messages); } catch {}
   if (!session || !isSessionId(session.id)) return null;
   ensureDir();
+  // 【合流之前先记下内存这份的样子】见 memStamp 上的说明（2026-10-29）
+  // 注意这里先拍一拍「updatedAt 之前」的样子：updatedAt 每次存盘都要刷新，
+  // 拿刷新后的值去比，等于永远相等，验了个寂寞。
+  const stampBefore = memStamp(session);
   session.updatedAt = Date.now();
   if (!session.createdAt) session.createdAt = session.updatedAt;
   const payload = {
@@ -256,6 +310,28 @@ export function saveSession(session) {
        */
       if (session && session._wipe === true) diskOnly.length = 0;
 
+      /**
+       * 【删掉的，不许再接回来】—— 2026-10-29 修
+       *
+       * 上面这套「磁盘独有的接在末尾」是给插话用的，但它分不清两种「磁盘有、内存没有」：
+       *   ① 插话刚 push、还没落盘的那一句  → 该接
+       *   ② 主人刚从历史里删掉的那一句      → 绝对不该接
+       *
+       * 实测（sandbox/_repro_wipe2.mjs）：插话写下的一条测试消息，从内存里删掉之后
+       * 下一次 saveSession 就把它原样接回末尾 —— 删了三次回来三次。
+       *
+       * 判据：删消息的那一方在 session._deletedKeys 里登记指纹（字符串数组），
+       * 合流时命中这些指纹的磁盘消息一律不接。用指纹而不是下标，因为删一条之后
+       * 后面的下标全变了，按位置对必然对错。
+       */
+      const deletedKeys = Array.isArray(session && session._deletedKeys) ? session._deletedKeys : null;
+      if (deletedKeys && deletedKeys.length) {
+        const deadSet = new Set(deletedKeys);
+        for (let i = diskOnly.length - 1; i >= 0; i--) {
+          if (deadSet.has(key(diskOnly[i]))) diskOnly.splice(i, 1);
+        }
+      }
+
       const countSummary = (arr) => arr.reduce((n, m) => n + (m && m.summary && m.context ? 1 : 0), 0);
       const compressedAnywhere = countSummary(memMsgs) > 0 || countSummary(diskMsgs) > 0;
       if (compressedAnywhere) {
@@ -278,7 +354,14 @@ export function saveSession(session) {
       payload.messages = merged;
     }
   } catch {}
-  writeFileSync(fileFor(session.id), JSON.stringify(payload), 'utf8');
+  // 【合流之后回头验一遍：内存那份还是刚才那份吗】见 memStamp 上的说明（2026-10-29）
+  // 变了 = 有人（插话 / 重置 / 压缩 / 另一轮）在我们读磁盘这几毫秒里改过真的那份，
+  // 这次合流的前提已经作废 —— 写下去就会把人家刚删的接回来、或者把刚加的漏掉。
+  // 放弃这次、重来（最多 3 次；之后照写，宁可慢一拍也不死循环）。
+  if (stampBefore !== null && memStamp(session) !== stampBefore && _attempt < 3) {
+    return saveSession(session, _attempt + 1);
+  }
+  writeFileAtomic(fileFor(session.id), JSON.stringify(payload));
   if (session._wipe) delete session._wipe;
   return session;
 }
@@ -366,7 +449,7 @@ export function getLastSessionId() {
 
 export function setLastSessionId(id) {
   ensureDir();
-  writeFileSync(LAST, JSON.stringify({ id: isSessionId(id) ? id : null, at: Date.now() }), 'utf8');
+  writeFileAtomic(LAST, JSON.stringify({ id: isSessionId(id) ? id : null, at: Date.now() }));
 }
 
 // ---- 导入 / 导出 -----------------------------------------------------------

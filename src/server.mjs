@@ -91,6 +91,7 @@ import {
   setDefaultBottomLines,
   setDefaults,
   defaultBottomLines,
+  currentBottomLines,
   defaultSafeWords,
   defaultSafeWordNote,
   resetSafeWords,
@@ -4421,6 +4422,13 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /**
+   * 把「现在输入框里这几条」定成新的默认底线。
+   *
+   * 两个来源都认：body 里带了 bottomLines 就用它；没带（老界面的写法）
+   * 就拿「现在正在生效的」那一份 —— 这条路由本来就叫「把当前这版设为默认」，
+   * 让调用方必须把内容再抄一遍纯属自找不同步。
+   */
   if (req.method === 'POST' && url.pathname === '/api/settings/default-bottomlines') {
     let payload;
     try {
@@ -4429,7 +4437,8 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     try {
-      const out = setDefaultBottomLines(payload?.bottomLines ?? []);
+      const lines = Array.isArray(payload?.bottomLines) ? payload.bottomLines : currentBottomLines();
+      const out = setDefaultBottomLines(lines);
       return json(res, 200, { ...out, settings: getSettings() });
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });

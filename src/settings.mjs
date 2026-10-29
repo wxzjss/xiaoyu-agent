@@ -86,7 +86,16 @@ function readDefaults() {
   }
 }
 
-/** 当前生效的「默认底线」：主人定过的优先，否则用出厂那几条 */
+/**
+ * 当前生效的「默认底线」：主人定过的优先，否则用出厂那几条。
+ *
+ * 【主人点过「设为默认」之后，这里给的就是他定的那一版】
+ * 以前 setDefaultBottomLines() 只写 defaults.json，读的时候却是
+ * `custom || DEFAULT_SETTINGS.bottomLines` ——「设成默认」等于白按，
+ * 下次「恢复默认底线」还是回到出厂那几条。主人报过这件事（2026-11-01）：
+ * 「把设置里我改过的【底线】内容设为默认」。
+ * 现在统一走「设成默认就是把它当出厂那份」，别再让两条路各说各话。
+ */
 export function defaultBottomLines() {
   const custom = readDefaults().bottomLines;
   if (Array.isArray(custom)) {
@@ -94,6 +103,21 @@ export function defaultBottomLines() {
     if (list.length) return list;
   }
   return [...DEFAULT_SETTINGS.bottomLines];
+}
+
+/**
+ * 现在「正在生效」的底线。没存过就是默认那份。
+ *
+ * 为什么要单独一个函数：主人点「恢复默认底线」时，能不能说成
+ * 「本来就是默认，没动」，得拿现在生效的这份跟默认那份比，
+ * 而不是拿出厂常量比 —— 否则他定过默认之后，这句永远报错。
+ */
+export function currentBottomLines() {
+  const stored = readRaw();
+  const list = Array.isArray(stored?.bottomLines)
+    ? stored.bottomLines.map((x) => String(x).trim()).filter(Boolean)
+    : [];
+  return list.length ? list : defaultBottomLines();
 }
 
 /**
@@ -368,9 +392,22 @@ export function resetBottomLines() {
   try {
     raw = JSON.parse(readFileSync(FILE, 'utf8'));
   } catch (err) {
-    const e = new Error('读不到现在的设置文件，为了不误伤安全词，这次不做恢复：' + String(err?.message ?? err));
-    e.status = 500;
-    throw e;
+    /**
+     * 【文件还不存在 ≠ 读不到 —— 2026-11-01 修】
+     *
+     * 主人从没在设置面板里存过什么都没关系：这时候界面显示的、
+     * 实际管着他的，本来就是 defaultBottomLines()，跟「恢复默认」的目标一致。
+     * 以前这里一律报 500，于是他点「恢复默认底线」永远是「恢复失败」，
+     * 而屏幕上的底线看着又确实是默认那几条 —— 最让人糊涂的一种坏。
+     * 现在分清楚：ENOENT 当空文件处理，真读坏（JSON 坏了/权限没了）才报错。
+     */
+    if (err && err.code === 'ENOENT') {
+      raw = {};
+    } else {
+      const e = new Error('读不到现在的设置文件，为了不误伤安全词，这次不做恢复：' + String(err?.message ?? err));
+      e.status = 500;
+      throw e;
+    }
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     const e = new Error('设置文件格式不对，为了不误伤安全词，这次不做恢复。');
@@ -378,10 +415,11 @@ export function resetBottomLines() {
     throw e;
   }
 
-  // 2) 当前底线（缺字段就当空）
-  const current = Array.isArray(raw.bottomLines)
+  // 2) 当前底线（缺字段就当空；没存过就是默认那份）
+  const stored = Array.isArray(raw.bottomLines)
     ? raw.bottomLines.map((x) => String(x).trim()).filter(Boolean)
     : [];
+  const current = stored.length ? stored : defaults;
   const same =
     current.length === defaults.length && current.every((l, i) => l === defaults[i]);
   if (same) {

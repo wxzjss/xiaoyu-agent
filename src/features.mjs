@@ -269,9 +269,26 @@ export const FEATURES = [
     tools: ['ask_peer', 'list_peers', 'read_peer_mail'],
     defaultOn: false,
   },
+  {
+    /**
+     * 【陪看屏幕】—— 她自己抬头看一眼主人现在的屏幕（2026-11-01）。
+     *
+     * 参考 dsh-whale-sense：那个插件让帮工反复截屏、把「屏幕变了」跟图一起塞回会话。
+     * 这里改成「她想看才看」：默认开着，但只是给了她一双眼睛，
+     * 不看的时候一张都不截、一个字节都不上传。
+     *
+     * 【为什么默认开着】不给眼睛她就只能听主人转述「我屏幕上有个报错」，
+     * 那是这个程序从第一天起就在忍的事。给了眼睛她也不会自己乱看 ——
+     * tools-screen.mjs 的 description 里已经写清「别每轮都看，那是他的隐私」。
+     * 主人要是嫌吵，关掉这一栏，两个工具就都不在她手上了。
+     */
+    id: 'screenSense',
+    name: '陪看屏幕',
+    desc: '让她抬头看一眼你现在的屏幕：你说「你看我这个」「这报错你看见没」，她就截一张自己看，看完能直接就画面里的东西跟你说话，还会把看见的那张挂回聊天里给你对照。她不会一直偷看——只有她需要用的时候才截一张；每一张也只在这台机器上，两小时后自动清掉。不想要就关掉。',
+    tools: ['look_screen', 'screen_watch_status'],
+    defaultOn: true,
+  },
 ];
-
-const BY_ID = new Map(FEATURES.map((f) => [f.id, f]));
 
 /** 工具名 -> 所属功能 id */
 export const TOOL_FEATURE = new Map();
@@ -319,6 +336,20 @@ export function getEnabledMap() {
 }
 
 /** 界面用的一份完整状态。 */
+/**
+ * 按 id 查一条功能定义。
+ *
+ * 【为什么单独建表】列表只有 24 条，每次 setFeature 都线性找一遍也不算慢，
+ * 但 id 不存在时要能**立刻**判出来给 400，而不是让调用方自己 for 一遍。
+ * 表在建模块时算一次，之后只读。
+ */
+const BY_ID = new Map(FEATURES.map((f) => [f.id, f]));
+
+/** 拿某一条功能定义；没有就返回 null（不抛，调用方自己决定 400 还是忽略）。 */
+export function featureById(id) {
+  return BY_ID.get(String(id || '')) || null;
+}
+
 export function getFeatures() {
   const enabled = getEnabledMap();
   const features = FEATURES.map((f) => ({

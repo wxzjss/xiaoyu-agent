@@ -14,6 +14,8 @@ import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox }
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
 import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identity.mjs';
+// 管理员权限：开了就把「整台机器都能动」跟着规则再发一遍（很多网关丢 system）。
+import { adminPromptBlock } from './admin-mode.mjs';
 import { pureModeOn, setPureToolLister } from './pure.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
@@ -291,9 +293,16 @@ export function contextMessage(sessionId = 'default', opts = {}) {
    * 一起过卡口 —— 它是紧贴在 rules 后面、离这一轮说话最近的位置之一。
    */
   const _mem = retargetOwnerText(memory, _who);
-  return _mem
-    ? `${_head}\n\n${_rules}\n\n${_mem}`
-    : `${_head}\n\n${_rules}`;
+  /**
+   * 【管理员权限 · 2026-11-01】
+   *
+   * 跟 persona.mjs 那边同一个理由发第二遍：很多网关会丢 system，
+   * 真正读到的恰恰是这份 user 副本。主人刚按下开关，她下一轮就该知道自己能动了。
+   */
+  let _adm = '';
+  try { _adm = adminPromptBlock(sessionId); } catch { _adm = ''; }
+  const _tail = [_rules, _adm, _mem].filter(Boolean).join('\n\n');
+  return `${_head}\n\n${_tail}`;
 }
 
 /**
@@ -605,6 +614,21 @@ export async function runAgent({
               `isTimeout=${!!err?.isTimeout} cause=${String(err?.cause?.message || err?.cause || '').slice(0, 120)} ` +
               `msg=${String(err?.message || err).slice(0, 200)}`,
           );
+          // diag-file: 打包版的 stderr 进 Electron，看不见 —— 顺手落一份到 .state/diag.log，排查不用再猜
+          try {
+            const fs = await import('node:fs');
+            const path = await import('node:path');
+            const dir = path.join(config.dataDir, '.state');
+            fs.mkdirSync(dir, { recursive: true });
+            const dp = path.join(dir, 'diag.log');
+            fs.appendFileSync(
+              dp,
+              `${new Date().toISOString()} [stream-error] session=${sessionId} name=${name} code=${code} status=${status} isTimeout=${!!err?.isTimeout} msg=${String(err?.message || err).slice(0, 200)}\n`,
+              'utf8',
+            );
+            const all = fs.readFileSync(dp, 'utf8').split('\n');
+            if (all.length > 800) fs.writeFileSync(dp, all.slice(-800).join('\n'), 'utf8');
+          } catch { /* diag-file: 日志写不了不影响主流程 */ }
         } catch { /* 诊断失败不影响主流程 */ }
 
         /**

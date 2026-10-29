@@ -143,6 +143,33 @@
       box-shadow: none;
     }
     #whaleBtn { border-color: rgba(122, 168, 232, 0.45); }
+    /* 管理员权限：没开时是暗红色边框（提醒这一档存在），开了就整块亮起来。
+       参考 dsh-admin-mode：那一档在权限菜单里是要「显眼到一眼看见」的。 */
+    #adminBtn { border-color: rgba(226, 132, 132, 0.45); color: #d8b3b3; }
+    #adminBtn.on {
+      background: rgba(226, 96, 96, 0.26);
+      border-color: #e26060;
+      color: #ffd7d7;
+      font-weight: 600;
+      box-shadow: 0 0 0 1px rgba(226, 96, 96, 0.45) inset;
+    }
+    /* 陪看屏幕 · 最近看过：两列缩图，每张下面是时间和窗口名（2026-11-01） */
+    #scrFramesDlg { width: min(880px, 94vw); height: min(84vh, 720px); }
+    #scrFramesDlg .dlgBody { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+    #scrFramesGrid {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 12px; align-content: start;
+    }
+    .scrCard {
+      border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+      background: var(--input-bg); display: flex; flex-direction: column;
+    }
+    .scrCard img { width: 100%; display: block; cursor: zoom-in; background: #0b0d11; }
+    .scrCard .cap { padding: 6px 8px; font-size: 12px; line-height: 1.5; color: var(--dim); }
+    .scrCard .cap b { color: var(--text); font-weight: 600; }
+    .scrCard .why { color: var(--text); }
+    .scrHint { font-size: 12.5px; color: var(--dim); line-height: 1.7; }
     #whaleBtn.on {
       background: rgba(122, 168, 232, 0.22);
       border-color: #7aa8e8;
@@ -2023,6 +2050,10 @@
          顶栏得有个牌子说清是谁 —— 不然换过去只当是小鱼换了语气。
          没挂别的卡就不显示（那时「小鱼」两个字已经说清楚了）。 -->
     <button id="agentChip" hidden title="这个会话现在是谁在说话">现在：小鱼</button>
+    <!-- 2026-11-01：管理员权限。参考 dsh-admin-mode 那一档 ——「完全访问 + 永不询问」。
+         颜色用危险色：开着的时候一眼能看见，别让人忘了它还在开。
+         按会话存，跟专业模式/小鲸在场一个规矩。 -->
+    <button id="adminBtn" class="warn" title="管理员权限：开了之后她能读写整台机器上的文件（桌面、下载、别的盘），不再只在工作区里。按会话开，随时可以关">管理员</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
@@ -2620,6 +2651,22 @@
     </form>
   </dialog>
 
+  <!-- 陪看屏幕 · 最近看过的那几张（2026-11-01）
+       主人问过「她到底看了什么」。这里把最近 12 帧列出来：
+       什么时候、当时是哪个窗口、她为什么看、缩图长什么样。
+       点一下缩图可以看原图（走 /api/frames/<id>?size=full）。 -->
+  <dialog id="scrFramesDlg" class="dlg">
+    <div class="dlgHead">她最近看过的屏幕</div>
+    <div class="dlgBody">
+      <div class="scrHint" id="scrFramesHint">…</div>
+      <div class="scrGrid" id="scrFramesGrid"></div>
+    </div>
+    <div class="dlgFoot">
+      <span class="hint" id="scrFramesNote"></span>
+      <button type="button" class="ghost2" id="scrFramesClose">关闭</button>
+    </div>
+  </dialog>
+
   <dialog id="todoDlg" class="todoDlg">
     <div class="dlgHead">
       <b>任务清单</b><span class="meta" id="todoHint">一份 txt，我写，你想看就瞄一眼</span>
@@ -2722,6 +2769,46 @@
 
   <script>
 const log = document.getElementById('log');
+
+/**
+ * 页面级的「一句话提示」。
+ *
+ * 【2026-11-01 补：这个函数以前根本不存在】
+ *
+ * 页面上有 18 处调用 `toast('…')`（身份面板、鲸鱼人设、智能体卡那边），
+ * 可是**谁都没有定义过它** —— 那些代码只要走到「存不上 / 名字不能空」这种
+ * 错误分支，就会当场 ReferenceError，主人看到的其实什么都没发生。
+ * 平时不显形，是因为正常路径不会走到那儿，于是没人发现。
+ *
+ * 现在补上：贴页面底部中间一条小气泡，2.6 秒自己淡出。
+ * 挂在 <body> 上（不是某个面板里），所以面板开着也看得见。
+ */
+function toast(text) {
+  const s = String(text == null ? '' : text).trim();
+  if (!s || typeof document === 'undefined') return;
+  let host = document.getElementById('__toastHost');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = '__toastHost';
+    host.style.cssText = 'position:fixed;left:50%;bottom:26px;transform:translateX(-50%);'
+      + 'z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:center;'
+      + 'pointer-events:none;max-width:80vw;';
+    document.body.appendChild(host);
+  }
+  const el = document.createElement('div');
+  el.textContent = s;
+  el.style.cssText = 'background:rgba(23,26,33,.96);border:1px solid var(--border,#262b36);'
+    + 'color:var(--text,#e6e9ef);border-radius:8px;padding:8px 14px;font-size:13px;'
+    + 'line-height:1.6;box-shadow:0 6px 22px rgba(0,0,0,.45);white-space:pre-wrap;'
+    + 'max-width:80vw;opacity:0;transition:opacity .18s ease;';
+  host.appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => { try { el.remove(); } catch {} }, 240);
+  }, 2600);
+}
+
 
 /* ------------------------------------------------------------------
    滚动跟随
@@ -7456,6 +7543,168 @@ async function selectAgent(id) {
 }
 
 /**
+ * 陪看屏幕 · 「她最近看过的屏幕」面板。
+ *
+ * 【为什么要有这个面板】
+ * 这一档做进来的时候主人问了一句「她到底看了什么」。
+ * 只把图存在盘上、不给入口，等于让他去翻目录 —— 那是给开发看的，不是给主人看的。
+ *
+ * 每次打开都重新问一遍服务端（不缓存）：图两小时后会自动清掉，
+ * 缓存一份只会让列表停在「其实已经没了」的状态。
+ */
+async function openScreenFramesDlg() {
+  const dlg = document.getElementById('scrFramesDlg');
+  if (!dlg) return;
+  const grid = document.getElementById('scrFramesGrid');
+  const hint = document.getElementById('scrFramesHint');
+  const note = document.getElementById('scrFramesNote');
+  if (grid) grid.innerHTML = '';
+  if (hint) hint.textContent = '正在问她刚才看了什么…';
+  if (note) note.textContent = '';
+  try { dlg.showModal(); } catch (e) { try { dlg.show(); } catch (e2) {} }
+
+  let r = null;
+  try {
+    r = await fetch('/api/screen/frames').then((x) => x.json());
+  } catch (e) {
+    if (hint) hint.textContent = '问不到：' + (e && e.message ? e.message : e);
+    return;
+  }
+  const frames = (r && Array.isArray(r.frames)) ? r.frames : [];
+  if (hint) {
+    hint.textContent = r && r.enabled === false
+      ? '【陪看屏幕】现在是关着的 —— 关着的时候她一张都不会看。下面是她关掉之前看过的。'
+      : '她不是一直在看：只有她觉得需要抬头看一眼的时候才截一张，每张只在这台机器上，两小时后自动清掉。';
+  }
+  if (!frames.length) {
+    if (grid) {
+      const d = document.createElement('div');
+      d.className = 'scrHint';
+      d.textContent = '还没有 —— 她还没主动看过屏幕。';
+      grid.appendChild(d);
+    }
+    return;
+  }
+  for (const f of frames) {
+    const card = document.createElement('div');
+    card.className = 'scrCard';
+
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.alt = '她看过的屏幕';
+    // 只认服务端给回来的 id：full/small 是这台机器上的绝对路径，
+    // 塞进 <img src> 在别的设备上根本打不开，也没必要把本机路径送到页面上。
+    const fid = encodeURIComponent(String(f.id || ''));
+    img.src = '/api/frames/' + fid + '?size=small';
+    img.title = '点一下看原图';
+    img.addEventListener('click', () => {
+      window.open('/api/frames/' + fid + '?size=full', '_blank');
+    });
+    card.appendChild(img);
+
+    const cap = document.createElement('div');
+    cap.className = 'cap';
+    const when = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = new Date(f.at || Date.now()).toLocaleString('zh-CN');
+    when.appendChild(b);
+    const win = document.createElement('div');
+    win.textContent = f.title ? '窗口：' + f.title : '窗口：（没读到名字）';
+    cap.append(when, win);
+    if (f.tag) {
+      const why = document.createElement('div');
+      why.className = 'why';
+      why.textContent = '为什么看：' + f.tag;
+      cap.appendChild(why);
+    }
+    card.appendChild(cap);
+    if (grid) grid.appendChild(card);
+  }
+  if (note) note.textContent = '共 ' + frames.length + ' 张（最多留 240 张 / 两小时）';
+}
+
+/**
+ * 顶栏那枚「管理员权限」的按钮。
+ *
+ * 【为什么不把状态记在本地变量里】
+ * 这一档按会话存在盘上（.state/admin-mode.json）。主人可能从另一个窗口、
+ * 另一台设备把它关掉；界面自己记着「我开着呢」，就会给主人一个假象 ——
+ * 他以为关掉了，其实这个窗口还亮着。所以每次切会话、每次点完，都去问一次。
+ *
+ * 谁调它：loadTopCfg（开机 + 每次切会话）、点按钮之后、新建会话之后。
+ */
+async function refreshAdminBtn() {
+  const el = document.getElementById('adminBtn');
+  if (!el) return;
+  if (!sessionId) { el.classList.remove('on'); el.hidden = true; return; }
+  el.hidden = false;
+  try {
+    const r = await fetch('/api/admin-mode?sessionId=' + encodeURIComponent(sessionId))
+      .then((x) => x.json());
+    const on = Boolean(r && r.on === true);
+    el.classList.toggle('on', on);
+    el.textContent = on ? '管理员 · 开着' : '管理员';
+    el.title = on
+      ? '这个会话现在是管理员权限：她能读写整台机器上的文件。点一下关掉。'
+      : '管理员权限：开了之后她能读写整台机器上的文件（桌面、下载、别的盘），不再只在工作区里。按会话开，随时可以关';
+  } catch {
+    // 问不到就当没开（fail-closed，跟服务端一个口径）
+    el.classList.remove('on');
+    el.textContent = '管理员';
+  }
+}
+
+/**
+ * 点一下＝开/关。开关是要见血的事，所以开了之后必须再确认一次弹窗。
+ */
+async function toggleAdminBtn() {
+  if (!sessionId) { toast?.('得先有会话'); return; }
+  const el = document.getElementById('adminBtn');
+  const nowOn = el && el.classList.contains('on');
+  if (!nowOn) {
+    /**
+     * 2026-11-01：开之前问一句。
+     * 参考 dsh-admin-mode 的「永不询问」—— 它省掉的是**每一件事**都问，
+     * 但进入这一档本身是一次性动作，问一句让主人确认他知道自己在做什么。
+     */
+    const yes = await new Promise((resolve) => {
+      const d = document.createElement('dialog');
+      d.className = 'dlg';
+      d.innerHTML = '<div class="dlgHead">开管理员权限？</div>' +
+        '<div class="dlgBody" style="line-height:1.8">' +
+        '<p>开了之后，<b>这个会话</b>里的她就不是只动工作区了：桌面、下载、别的盘、系统目录都能读写、都能跑命令。</p>' +
+        '<p>几条不变的东西：</p>' +
+        '<ul style="margin:6px 0 0 18px;padding:0">' +
+        '<li>记忆本那几份文件还是不许她碰（关掉记忆＝只读，这条比权限更硬）</li>' +
+        '<li>不可逆的事（删文件、覆盖、改注册表、装卸软件）她得先问你一句</li>' +
+        '<li>这一档按会话开，随时可以在顶栏关掉</li>' +
+        '</ul></div>' +
+        '<div class="dlgFoot"><button type="button" id="_adNo">算了</button>' +
+        '<button type="button" class="primary" id="_adYes">开吧</button></div>';
+      document.body.appendChild(d);
+      const done = (v) => { try { d.close(); } catch {} d.remove(); resolve(v); };
+      d.querySelector('#_adNo').onclick = () => done(false);
+      d.querySelector('#_adYes').onclick = () => done(true);
+      d.oncancel = () => done(false);
+      d.showModal();
+    });
+    if (!yes) return;
+  }
+  try {
+    const r = await fetch('/api/admin-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, on: !nowOn }),
+    }).then((x) => x.json());
+    if (!r || r.error) { toast?.(r?.error || '没存上'); return; }
+    await refreshAdminBtn();
+    toast?.(r.on ? '管理员权限：开了。她可以动整台机器了。' : '管理员权限：关了。她回到工作区里。');
+  } catch (e) {
+    toast?.('没存上：' + (e?.message || e));
+  }
+}
+
+/**
  * 顶栏那枚「现在是谁在说话」的牌。
  *
  * 什么时候显示：这个会话挂的是主人自己建的卡（不是小鱼）。
@@ -7665,6 +7914,17 @@ async function loadAgentState() {
 }
 
 /** 群聊名单那行：把每张自建卡画成一个能点的圆牌 */
+/**
+ * 顶栏那颗「管理员」按钮接上点击。
+ *
+ * 放在这里（顶栏那一带的初始化旁边）是因为它就在顶栏上；
+ * 用 onclick 而不是 addEventListener，跟同一排其它按钮一个写法。
+ */
+(function wireAdminBtn() {
+  const btn = document.getElementById('adminBtn');
+  if (btn) btn.addEventListener('click', () => { toggleAdminBtn(); });
+})();
+
 function renderGroupRow() {
   const box = document.getElementById('agGroup');
   const hint = document.getElementById('agGroupHint');
@@ -8739,6 +8999,27 @@ function renderFeatList() {
     sw.dataset.id = f.id;
     sw.dataset.on = f.enabled ? '1' : '0';
     sw.textContent = f.enabled ? '停用' : '启用';
+
+    /**
+     * 陪看屏幕：多给一个「最近看过」的入口。
+     *
+     * 主人 2026-11-01 做这一档时问过「她到底看了什么」——
+     * 这事不能只靠翻目录，得在界面上能一眼看见：什么时候、哪个窗口、她为什么看。
+     */
+    if (f.id === 'screenSense') {
+      const peek = document.createElement('button');
+      peek.type = 'button';
+      peek.className = 'featEditBtn';
+      peek.textContent = '最近看过';
+      peek.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openScreenFramesDlg();
+      });
+      row.append(main, peek, sw);
+      featList.appendChild(row);
+      continue;
+    }
 
     // 小鱼说话：多给一个「选声音」的入口
     if (f.id === 'ttsVoice') {
@@ -10063,6 +10344,8 @@ function paintTopCfg() {
 async function loadTopCfg() {
   // 顶栏「现在是谁在说话」那块牌跟着会话走，顺手一起刷（失败就当没这块牌）
   try { refreshAgentChip(); } catch { /* 忽略 */ }
+  // 「管理员权限」按会话存 —— 切到别的会话，那块牌子得跟着换
+  try { refreshAdminBtn(); } catch { /* 忽略 */ }
   // 左上角那竖列「屋里的人」也是跟着会话走的
   try { refreshWhoRail(); } catch { /* 忽略 */ }
   if (!sessionId) return;
@@ -12831,6 +13114,18 @@ async function pushMusic(patch) {
     });
     sk.addEventListener('change', () => pushMusic({ musicVolume: Number(sk.value) / 100 }));
   }
+})();
+
+/**
+ * 陪看屏幕面板的「关闭」。
+ *
+ * 放在文件最末尾跟其它 dialog 的收尾一起接：这个面板是 showModal 打开的，
+ * 不接这颗按钮的话只能按 Esc —— 主人不一定知道能按 Esc。
+ */
+(function wireScreenFramesDlg() {
+  const dlg = document.getElementById('scrFramesDlg');
+  const btn = document.getElementById('scrFramesClose');
+  if (btn && dlg) btn.addEventListener('click', () => { try { dlg.close(); } catch (e) {} });
 })();
 
 refreshMusic();

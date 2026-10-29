@@ -1181,6 +1181,24 @@
   color: var(--dim); border: 1px solid rgba(127, 127, 127, .28); background: rgba(127, 127, 127, .10);
   max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 这个屋里坐着的人：每人一个小圆点，标第一个字。
+   为什么是圆点不是名字：会话列表一行就那么高，写三个名字会把标题挤没；
+   认人靠颜色和首字，鼠标停上去才出全名。 */
+.sessCrew { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; margin-left: 6px; }
+.sessCrew i {
+  width: 15px; height: 15px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9.5px; font-style: normal; line-height: 1;
+  color: #10141a; font-weight: 600;
+  background: rgba(140, 220, 210, .85);
+}
+/* 同一个人的颜色是算出来的（hash 到色相），这儿只放几个兜底底色 */
+.sessCrew i.c1 { background: rgba(140, 220, 210, .85); }
+.sessCrew i.c2 { background: rgba(240, 200, 140, .85); }
+.sessCrew i.c3 { background: rgba(180, 190, 250, .85); }
+.sessCrew i.c4 { background: rgba(240, 160, 180, .85); }
+.sessCrewMore { font-size: 10.5px; color: var(--dim); margin-left: 1px; }
+
     .sessSub { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sessRow .mini {
       flex: none; background: transparent; color: var(--dim); border: 1px solid var(--border);
@@ -10409,6 +10427,42 @@ function renderSessList() {
       chip.textContent = agName;
       chip.title = `这个会话用「${agName}」说话`;
       t.appendChild(chip);
+    }
+    /**
+     * 【这个屋里还坐着谁】2026-11-01
+     *
+     * 主人要「一眼看出去哪个会话里有几个人」。服务端已经把名字算好一起送回来了
+     * （crew 数组），这里只负责画：一人一个小圆点，标名字第一个字，颜色按名字算，
+     * 同一个人在所有会话里颜色都一样。
+     *
+     * 只挂 3 个，多的收成「+N」——会话列表一行就那么点地方。
+     */
+    const crew = Array.isArray(s.crew) ? s.crew.filter(Boolean) : [];
+    if (crew.length) {
+      const box = document.createElement('span');
+      box.className = 'sessCrew';
+      box.title = `这个会话里坐着：小鱼、${crew.join('、')}`;
+      const head = (nm) => String(nm).trim().slice(0, 1) || '·';
+      // 颜色用名字哈希到 4 档，稳定不闪：同一个名字永远同一个颜色
+      const toneOf = (nm) => {
+        let h = 0;
+        for (const ch of String(nm)) h = (h * 31 + ch.codePointAt(0)) % 997;
+        return 'c' + (1 + (h % 4));
+      };
+      for (const nm of crew.slice(0, 3)) {
+        const dot = document.createElement('i');
+        dot.className = toneOf(nm);
+        dot.textContent = head(nm);
+        dot.title = nm;
+        box.appendChild(dot);
+      }
+      if (crew.length > 3) {
+        const more = document.createElement('span');
+        more.className = 'sessCrewMore';
+        more.textContent = '+' + (crew.length - 3);
+        box.appendChild(more);
+      }
+      t.appendChild(box);
     }
     const sub = document.createElement('div');
     sub.className = 'sessSub';

@@ -33,6 +33,17 @@ const TAIL_LINES = 2;
 const LINE_MAX = 300;
 /** 短于这个长度的结果不值得压（压了也省不了多少，还容易丢信息） */
 const MIN_COMPRESS_CHARS = 800;
+/**
+ * 【跨轮兜底】整份历史里最多保留多少条「原样」工具结果，更早的一律压。
+ *
+ * 为什么要有这个：slimRoundMessages 原来只压「本轮之后」的工具结果，
+ * 跨轮的老结果一条不动。实测一个 2057 条的会话里，tool 消息占了 62% 字符
+ * （123 万 / 共 199 万），每圈都整份重发，prompt_tokens 因此冲到 1590 万。
+ * 压缩（compressHistory）看的是磁盘快照、只在回合开头判一次，根本管不到这儿。
+ *
+ * 取 24：够模型回看最近十几二十次工具调用，又不至于让历史无限膨胀。
+ */
+const KEEP_TOTAL_TOOLS = 24;
 
 /**
  * 把一段工具结果压成摘要形态。
@@ -87,17 +98,26 @@ export function slimRoundMessages(messages, opts = {}) {
    */
   const from = Number.isInteger(opts.from) && opts.from >= 0 ? opts.from : 0;
 
-  // 先找出所有 tool 消息的下标（只认 from 之后的）
-  const toolIdxs = [];
-  for (let i = from; i < messages.length; i++) {
-    if (messages[i] && messages[i].role === 'tool') toolIdxs.push(i);
-  }
-  if (toolIdxs.length <= KEEP_RECENT_ROUNDS) {
-    return { messages, changed: 0, savedChars: 0 };
+  // 全表所有 tool 消息的下标（跨轮兜底要看整份，不能只看 from 之后）
+  const allToolIdxs = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i] && messages[i].role === 'tool') allToolIdxs.push(i);
   }
 
-  // 最近 KEEP_RECENT_ROUNDS 条的保留，前面的都压
-  const slimSet = new Set(toolIdxs.slice(0, toolIdxs.length - KEEP_RECENT_ROUNDS));
+  // 本轮之后的 tool 下标
+  const toolIdxs = allToolIdxs.filter((i) => i >= from);
+
+  // 跨轮兜底：整份历史只保留最近 KEEP_TOTAL_TOOLS 条原样
+  const keepGlobalFrom = Math.max(0, allToolIdxs.length - KEEP_TOTAL_TOOLS);
+  const globalSlim = new Set(allToolIdxs.slice(0, keepGlobalFrom));
+
+  // 本轮之内：最近 KEEP_RECENT_ROUNDS 条也原样留着
+  const localSlim = new Set(toolIdxs.slice(0, Math.max(0, toolIdxs.length - KEEP_RECENT_ROUNDS)));
+
+  const slimSet = new Set([...globalSlim, ...localSlim]);
+  if (!slimSet.size) {
+    return { messages, changed: 0, savedChars: 0 };
+  }
 
   let changed = 0;
   let savedChars = 0;

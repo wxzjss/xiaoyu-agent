@@ -419,16 +419,19 @@ export async function compressHistory({
    * 一旦拿它当落地目标，落盘前那个循环就永远不满足，一路丢到只剩 4 条。
    */
   let targetAfter = 0;
-  if (pureNow) {
+  if (pureNow && !(Math.abs(cap - Math.floor(contextWindowOf(model) * 0.7)) <= 1)) {
     /**
-     * 【2026-10-28 改：跟人设模式同一个触发线】
+     * 专业模式 + 主人显式填了上限数字 → 「填多少压多少」，到线就压。
      *
-     * 原来这里是 `trigger = PURE_KEEP_TOKENS / 2`（两万就压），
-     * 后来改成了「每轮都压」。两种写法的共同点是：都跟主人填的上下文上限无关，
-     * 都跟「历史到底涨到多高了」无关 —— 那就不叫压缩策略，叫定时清空。
+     * 【2026-10-29 修：自动档被这里吃掉了】
      *
-     * 现在按主人填的那个 limit 走：显式填了数字就「到多少压多少」，
-     * 没填（自动档）就走下面自动档那条比例判断。
+     * 上一版是无条件 `trigger = Math.floor(cap)`，可是自动档算出来的 cap
+     * 也等于「窗口的 70%」（100 万窗口 → 700000）。于是专业模式下：
+     *   · 三档比例判断（<30% 不压 / 30~45% 问小鲸 / >=45% 压）一次都没生效
+     *   · 那次「问小鲸」也一次都没发生
+     *   · 折叠索引里 8 条记录的 reason 全是 "700000" —— 就是这条死线的值
+     * 可上面第 430 行的注释明明写着「没填（自动档）就走下面自动档那条比例判断」，
+     * 代码和注释对不上，以注释为准修这里。
      */
     trigger = Math.floor(cap);
     judgeLine = trigger;
@@ -1024,9 +1027,24 @@ function cleanSummary(text) {
    * 摘要本身不用存（它是替换品，不是被替换的），尾巴还在上下文里。
    */
   try {
+    /**
+     * 【2026-10-29 修 · lost 圈错了范围】
+     *
+     * 改这里之前，循环是：for (i = 0; i < messages.length; i++)，
+     * 再拿 keptText 筛。问题是 messages 里还挂着两段根本不是"这次被折掉"的东西：
+     *   · [0, start) 头部（system + 规则副本）—— 它们会被 withSummary 原样保留
+     *   · [cut, ...) 尾巴里被 keep 收下的那部分
+     * 于是 lost 从下标 0 一路圈到末尾，fromIndex 恒为 0，
+     * 每压一次就往 folded/ 里存一份"整份历史"，索引上看着像"把全部历史都折了"。
+     *
+     * 实测（2057 条的修鱼会话）：8 条折叠记录全是 from=0、count 占历史 96%~98%，
+     * 而真正被折掉的只是中间那段。
+     *
+     * 现在只扫 [start, cut)：头部没动、尾巴还在上下文里，都不用存。
+     */
     const keptText = new Set(keep);
     const lost = [];
-    for (let i = 0; i < messages.length; i++) {
+    for (let i = start; i < cut; i++) {
       const m = messages[i];
       if (keptText.has(m)) continue;
       if (m?.summary) continue; // 上一轮的摘要不用再存一遍

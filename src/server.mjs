@@ -254,6 +254,7 @@ import {
   newSessionId,
   loadSession,
   saveSession,
+  messageKey,
   listSessions,
   deleteSession,
   renameSession,
@@ -7315,13 +7316,16 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         try {
           /* 2026-11-01「屋里的人」：顺序 = 说话顺序（谁前谁先说），开关 = 这一轮谁说。
              小鲸不再看 whaleOn —— 那颗钥匙管的是「她能不能被叫出去干活」，
-             一关连她坐下来聊天都没了，那是误伤。她在这间屋子的开关就看 her 那颗牌。 */
+             一关连她坐下来聊天都没了，那是误伤。她在这间屋子的开关就看 her 那颗牌。
+             小鱼小鲸两颗牌是常亮的（点不灭），所以 here 一列不许把她们滤掉；
+             她们在不在场另有两把钥匙：fishOn / whaleOn。 */
+          const HOSTS = new Set(['xiaoyu', 'xiaojing']);
           const roster = groupAgentIds(sessionId)
             .map((id) => getAgent(id))
             .filter(Boolean);
           const enabledIds = roster
             .map((a) => String(a.id))
-            .filter((id) => isGroupMemberEnabled(id, sessionId));
+            .filter((id) => HOSTS.has(id) || isGroupMemberEnabled(id, sessionId));
           // 「别一直全员齐发」：点名只让被点的接；没点名就看「个性」那个勾。
           // 认的是 `@名字`（见 group.mjs 的 pickSpeakers），不认「句子里出现过名字」——
           // 那样「阿绿昨天说的办法」会把她拽出来重答一遍。
@@ -7923,9 +7927,25 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const sys = msgs.filter((m) => m && m.role === 'system');
     session.messages = sys.concat(kept);
 
+    /**
+     * 【把被删掉的那些登记下来】—— 2026-10-29
+     *
+     * _wipe 只挡得住「这一次」落盘。之后只要有人再 saveSession 一份**老副本**
+     * （另一轮还没收尾的 session、或者从磁盘重新读进来的），合流又会把磁盘上
+     * 那些旧消息当成「插话新来的」接回末尾 —— 清空白清。
+     *
+     * 所以把这次删掉的消息指纹记在会话上，saveSession 合流时按指纹跳过。
+     */
+    const keptKeys = new Set(session.messages.map((m) => messageKey(m)).filter(Boolean));
+    const dead = msgs.map((m) => messageKey(m)).filter((k) => k && !keptKeys.has(k));
+
+    // 先把临时字段一律清干净（_whale/_openingPending 这些），
+    // 再把 _deletedKeys / _wipe 补回去 —— 顺序反了会被这轮清理顺手删掉，
+    // 等于白登记。（2026-10-29 踩到过）
     for (const k of Object.keys(session)) {
       if (k.startsWith('_')) delete session[k];
     }
+    if (dead.length) session._deletedKeys = dead;
 
     session.updatedAt = Date.now();
     if (!session.createdAt) session.createdAt = session.updatedAt;

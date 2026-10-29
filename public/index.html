@@ -816,6 +816,14 @@
     #whoRail .whoBtn.dragging { opacity: .5; transform: scale(.97); }
     /* 拖到谁头上：被占位的那个往里让 */
     #whoRail .whoBtn.dropOn { box-shadow: inset 0 0 0 1px var(--accent); }
+    /**
+     * 常亮的牌（小鱼、小鲸）—— 2026-11-01 主人：「这两个改为常亮，
+     * 是否启用只与屏幕上方的【小鱼】与【小鲸】按钮相关，与左侧的名字点击一下关闭开启无关。」
+     * 所以它们永远不暗、不划线；但得一眼看出「点不灭」，鼠标手势给个默认箭头，
+     * 悬停时也不摆出可点的样子（不然主人还会去点它）。
+     */
+    #whoRail .whoBtn.sticky { cursor: grab; }
+    #whoRail .whoBtn.sticky.off { opacity: 1; text-decoration: none; }
     #whoRail .whoCap { font-size: 10.5px; color: var(--dim); padding-left: 2px; margin-bottom: -2px; }
 
     /* 新建会话的挑人框 */
@@ -2246,7 +2254,7 @@
        接着是小鲸和主人勾进来的人。点一下 = 在输入框里叫她的名字。 -->
   <div id="whoRail" hidden></div>
 
-  <!-- 新建会话：先挑这间屋子里还坐着谁（小鱼和小鲸默认在场，不能取消） -->
+  <!-- 新建会话：先挑这间屋子里还坐着谁（小鱼和小鲸默认在场，不能取消；她俩在不在场由顶栏两颗按钮管） -->
   <dialog id="newSessionDlg">
     <div class="dlgHead">
       <b>开一间新会话</b><span class="meta" id="nsHint"></span>
@@ -8204,21 +8212,32 @@ async function refreshWhoRail() {
   cap.textContent = '屋里的人';
   box.appendChild(cap);
   /* 名字第一颗字是有色的小点：主人的色卡里每张卡一个颜色，位置一换颜色要跟着人走 */
+  /* 小鱼、小鲸是常亮的：她们在不在场只看顶栏那两颗按钮（2026-11-01 主人要求） */
+  const STICKY = new Set(['xiaoyu', 'xiaojing']);
   const mk = (m, idx) => {
     const b = document.createElement('button');
     b.type = 'button';
-    const off = m.enabled === false;
-    b.className = 'whoBtn' + (idx === 0 ? ' first' : '') + (off ? ' off' : '');
+    const id = String(m.id || '');
+    const sticky = STICKY.has(id);
+    const off = !sticky && m.enabled === false;
+    b.className = 'whoBtn' + (idx === 0 ? ' first' : '') + (off ? ' off' : '') + (sticky ? ' sticky' : '');
     b.textContent = String(m.name || '她');
-    b.dataset.agentId = String(m.id || '');
+    b.dataset.agentId = id;
     b.style.setProperty('--whoC', String(m.color || ''));
     b.title = [
       idx === 0 ? '排第一个 —— 这一轮她先说' : `第 ${idx + 1} 个说话（顺序从上往下）`,
-      off ? '现在是关着的：这一轮她一句话都不说（点一下打开）' : '点一下关掉她这一轮；长按可上下拖动换顺序',
+      sticky
+        ? '她在不在场只看顶栏那颗按钮，点这里不会把她关掉'
+        : (off ? '现在是关着的：这一轮她一句话都不说（点一下打开）' : '点一下关掉她这一轮；长按可上下拖动换顺序'),
       m.quiet ? '个性打了勾：只有你叫她的名字（@她）才答' : '个性没打勾：每轮都会说一句',
-      '双击 = 在输入框里叫她的名字',
+      '长按可上下拖动换顺序；双击 = 在输入框里叫她的名字',
     ].join('\n');
-    b.onclick = () => { if (!b._dragged) toggleWhoBtn(m.id, off); b._dragged = false; };
+    b.onclick = () => {
+      const dragged = b._dragged;
+      b._dragged = false;
+      if (dragged || sticky) return; // 常亮的不给点灭
+      toggleWhoBtn(m.id, off);
+    };
     b.ondblclick = () => callIntoRoom(String(m.name || ''));
     makeWhoBtnDraggable(b);
     b.oncontextmenu = (e) => { e.preventDefault(); callIntoRoom(String(m.name || '')); };
@@ -8329,6 +8348,8 @@ async function commitWhoOrder() {
  * 【新建会话时挑人】—— 2026-10-31 主人：「新建会话时选择智能体」。
  *
  * 小鱼和小鲸是「默认在场」的两个，勾着而且锁住（取消不了）；
+ * 她俩在不在场另有两把钥匙：顶栏「小鱼」和「小鲸」那两颗按钮。
+ * 左侧「屋里的人」那两颗牌对她们是常亮的，点不灭（只能拖顺序、双击叫名字）。
  * 其余的卡片由主人自己勾。挑好的就是这间屋子的在场名单。
  */
 async function openNewSessionDlg() {

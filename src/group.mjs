@@ -255,7 +255,20 @@ export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowe
   // ② 没 @：上次 @ 过「个性没打勾」的人 → 屋里只留他们
   if (Array.isArray(allowedIds) && allowedIds.some((x) => !quiet.has(String(x)))) {
     const allow = new Set(allowedIds.map((x) => String(x)));
-    return alive.filter((a) => allow.has(String(a.id)));
+    const asked = alive.filter((a) => allow.has(String(a.id)));
+    /**
+     * 【@ 的是客人，也不许把小鱼和小鲸挤出去】—— 2026-11-01 主人：
+     * 「屋里的人」里那两位是常亮的，在不在场只看顶栏那两颗按钮。
+     * 所以「只让被 @ 的人说话」这条规矩管的是客人；小鱼、小鲸照旧按自己的个性来
+     * （打勾 = 叫她才应，不打勾 = 每轮都应）。不然点一下客人的名字，
+     * 这一轮小鱼连话都插不上 —— 那是主机被客人挤出去了。
+     */
+    const hosts = alive.filter(
+      (a) => (a.id === 'xiaoyu' || a.id === 'xiaojing') && !allow.has(String(a.id)) && !quiet.has(String(a.id)),
+    );
+    const merged = [...asked];
+    for (const h of hosts) if (!merged.some((x) => x.id === h.id)) merged.push(h);
+    return merged;
   }
 
   // ③ 其余情况：个性没打勾的每轮都说，打勾的闭嘴

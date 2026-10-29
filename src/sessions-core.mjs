@@ -171,6 +171,27 @@ function dropRepeatedTurns(ms, maxScan = 400) {
 }
 
 /**
+ * 一条消息的指纹：role + tool_call_id + tool_calls 的 id + 正文。
+ *
+ * 合流去重、以及「删掉的别再接回来」都靠它认人。原来是 saveSession 里的局部函数，
+ * 2026-10-29 提到模块级：删消息的那一端（server.mjs 的 /api/reset）也得用它算指纹，
+ * 两边各算一套迟早算出不一样的。
+ */
+export function messageKey(m) {
+  if (!m || typeof m !== 'object') return null;
+  const role = String(m.role || '');
+  if (!role) return null;
+  const txt = typeof m.content === 'string' ? m.content
+    : (m.content == null ? '' : JSON.stringify(m.content));
+  let tcId = '';
+  if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+    tcId = m.tool_calls.map((x) => String(x && x.id ? x.id : '')).join(',');
+  }
+  const callId = m.tool_call_id ? String(m.tool_call_id) : '';
+  return role + '|' + callId + '|' + tcId + '|' + txt;
+}
+
+/**
  * 【写完前先验内存还在不在】
  *
  * saveSession 会拿磁盘那份来合流（见下面「合流」那段）：磁盘上有、内存里没有的
@@ -213,6 +234,17 @@ export function saveSession(session, _attempt = 0) {
     messages: session.messages ?? [],
     rewinds: Array.isArray(session.rewinds) ? session.rewinds : [],
   };
+  /**
+   * 【删过的指纹跟着落盘】2026-10-29
+   *
+   * 只留在内存里不够：会话刷新 / 重启之后 getSession 从磁盘读回来，_deletedKeys 就没了，
+   * 这时候再来一份老副本合流，被删的照样会被接回。所以写进文件。
+   * 没有就整个字段不写 —— 别给正常会话平白多一个空数组。
+   */
+  { const deletedKeys = Array.isArray(session._deletedKeys)
+      ? session._deletedKeys.filter((k) => typeof k === 'string' && k)
+      : [];
+    if (deletedKeys.length) payload._deletedKeys = deletedKeys; }
   // 会话当前处在哪个安全词档位。没这个字段的老会话 = 人设档（见 mode.mjs），
   // 所以只在真的记过档位时才写，免得给所有会话塞一堆冗余字段。
   if (session.mode?.word) payload.mode = { word: session.mode.word, since: session.mode.since ?? Date.now() };
@@ -236,19 +268,7 @@ export function saveSession(session, _attempt = 0) {
        * 新版指纹带上 tool_calls 的 id 和 tool_call_id，内容空也有身份；
        * 算不出指纹（不是对象 / 没角色）的才返回 null，那种一律不参与合并。
        */
-      const key = (m) => {
-        if (!m || typeof m !== 'object') return null;
-        const role = String(m.role || '');
-        if (!role) return null;
-        const txt = typeof m.content === 'string' ? m.content
-          : (m.content == null ? '' : JSON.stringify(m.content));
-        let tcId = '';
-        if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
-          tcId = m.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',');
-        }
-        const callId = m.tool_call_id ? String(m.tool_call_id) : '';
-        return role + '|' + callId + '|' + tcId + '|' + txt;
-      };
+      const key = (m) => messageKey(m);
       const memKeys = new Set(memMsgs.map(key).filter(Boolean));
       // 算不出指纹的不参与合并（见上）
       /**

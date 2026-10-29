@@ -71,11 +71,18 @@
      * 别改成给每个按钮都加 auto：那样空隙会被平均分掉，整排反而散开。
      */
     /* 2026-11-02：原来这里挂的是 header #fishBtn { margin-left:auto }，
-       靠「小鱼」那颗按钮把整排顶到右边。那颗按钮已经撤了，改由状态条
-       （header #meta，下面带 margin-right:auto）来撑 —— 顶栏照样贴右。 */
+       靠「小鱼」那颗按钮把整排顶到右边。那颗按钮已经撤了。 */
     header .meta { color: var(--dim); font-size: 12px; }
-    /* 按钮组整体靠右：空隙全塞在状态条后面，别再让每个按钮各抢一份 auto */
-    header #meta { margin-left: 4px; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /**
+     * 【2026-11-03 主人：「从【管理员】到【清空当前】的所有按钮全部水平居右」】
+     *
+     * 推力改挂在「管理员」身上（`#adminBtn`，是这一排的头一个）：
+     * margin-left:auto 把左边剩下的地方全塞在它前面，它到「清空当前」就整排贴右。
+     * 为什么不给每个按钮都加 auto —— 那样空隙会被平均分掉，整排反而散开。
+     * 字号小、窗口窄的时候「打开工作目录」是 hidden 的，不影响（hidden 不占位）。
+     */
+    header #adminBtn { margin-left: auto; }
+    header #meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     header button {
       background: transparent; color: var(--dim);
       border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
@@ -694,6 +701,23 @@
       border: 1px solid var(--border); background: transparent; color: var(--dim);
       font-size: 12.5px; cursor: pointer;
     }
+    /* 2026-11-03：【多套人设】面板底部的「关闭 / 保存」以前没有样式，
+     * 落到了浏览器默认的亮白按钮上 —— 主人一眼看见的就是那两颗白块。
+     * 这里把 .ghost / .primary 也补上，跟别处的按钮一个手感。 */
+    .dlgFoot button.ghost {
+      height: 32px; padding: 0 14px; border-radius: 8px;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; cursor: pointer;
+    }
+    .dlgFoot button.ghost:hover { color: var(--text); border-color: var(--dim); }
+    .dlgFoot button.ghost:active { background: rgba(255, 255, 255, .06); }
+    .dlgFoot button.primary {
+      height: 32px; padding: 0 16px; border-radius: 8px;
+      border: 1px solid var(--accent); background: var(--accent); color: #fff;
+      font-size: 12.5px; font-weight: 600; cursor: pointer;
+    }
+    .dlgFoot button.primary:hover { filter: brightness(1.06); }
+    .dlgFoot button.primary:active { filter: brightness(.9); }
     .dlgFoot button.ghost2:hover { color: var(--text); border-color: var(--dim); }
     .dlgFoot button.ghost2:active { background: rgba(255, 255, 255, .06); }
     .pickEmpty { padding: 26px; text-align: center; color: var(--dim); font-size: 12.5px; }
@@ -852,10 +876,16 @@
        * 左边留 120px，是给左下角那排「编辑/分支」按钮让位置，两者并排不打架。
        * 平时常驻半透明（2026-11-02 改：以前是透明，等于看不见），
        * 鼠标停在这条消息上就变亮（见下面悬停规则）。 */
-      max-width: none;
+      /* 【2026-11-03 主人：「tokens消耗显示整条都水平居左但不超过消息的左侧」】
+       * 以前 padding-left:120px 是给左下角那排「编辑/分支」按钮让位的，
+       * 结果整行被推到中间偏右，看着不像贴着消息那边。
+       * 现在只留 4px 呼吸缝：文字左缘跟消息正文左缘对齐，
+       * 一行放不下就在自己的宽度里换行 / 省略，绝不越出这条消息。 */
+      max-width: 100%;
+      overflow: hidden;
       margin: 10px 0 0;
       margin-top: auto;
-      padding-left: 120px;
+      padding-left: 4px;
       text-align: left;
       color: var(--dim); font-size: 11.5px; line-height: 1.5;
       font-variant-numeric: tabular-nums; user-select: text;
@@ -864,10 +894,12 @@
     /* 挂在她说的话里面（气泡内部、底部）：跟气泡左边对齐，别居中到整行 */
     /* 挂在气泡内部的那一路（实时那一轮）：口径跟外面完全一致，同样贴底、左对齐 */
     .msg .turnUsage.underMsg {
-      max-width: none;
+      /* 2026-11-03：跟上面同一口径 —— 贴消息左边，不留 120px 的空 */
+      max-width: 100%;
+      overflow: hidden;
       margin: 10px 0 0;
       margin-top: auto;
-      padding-left: 120px;
+      padding-left: 4px;
       text-align: left;
     }
     /* 悬停她这句话 → 这行淡出来。
@@ -7630,6 +7662,8 @@ function renderPersonaList(info) {
       }).then((x) => x.json()).catch(() => null);
       if (!r || r.error) { personaHint.textContent = '切不过去：' + (r && r.error ? r.error : '网络错误'); return; }
       fillPersona(r);
+      // 2026-11-03：切完也回写一次 —— 主人换的是「用哪一套」，档案得跟着走
+      await syncPersonaToAgent(personaWho);
       personaHint.textContent = `已切到「${r.currentName}」，下一句就生效`;
     };
 
@@ -7656,10 +7690,45 @@ function PERSONA_API(path) {
   const q = personaWho ? ('?who=' + encodeURIComponent(personaWho)) : '';
   return path + q;
 }
+/* 这次是在给谁改人设：'' = 小鱼，'whale' = 小鲸，别的 = 自建卡的 id */
+let personaSyncWho = '';
+
+/**
+ * 【2026-11-03 主人：「在小鲸的多套人设里换了个人设，可【智能体】界面她还是原来那套」】
+ *
+ * 根子：两处是两套数据。
+ *   · 多套人设面板 —— 管「人设集」（.state/personas/ 下的 index + 正文文件）；
+ *   · 【智能体】面板 —— 人设框读的是「这个身份自己的档案」（小鱼 = 人设集的当前那套，
+ *     小鲸 = whale-profile 的 persona，自建卡 = agents.json 里的 persona）。
+ * 小鱼的档案本来就跟着人设集走，所以一致；小鲸和自建卡的档案是另一份，
+ * 在人设集里切了/存了，档案那边一动不动 —— 看上去就是「智能体里还是老的」。
+ *
+ * 修法：这边切完、存完，把「当前这套的正文」回写给对应身份的档案。
+ */
+async function syncPersonaToAgent(who) {
+  const key = String(who || '');
+  if (!key) return;                       // 小鱼的人设集就是她的档案，本来一致
+  if (key !== 'whale' && !/^ag_[A-Za-z0-9_]+$/.test(key)) return;
+  try {
+    const info = personaInfo;
+    const text = String((info && info.text) || '');
+    if (!text) return;
+    await fetch('/api/agents/persona/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: key, text }),
+    }).then((x) => x.json()).catch(() => null);
+  } catch { /* 同步不上也不能挡着主人改人设 */ }
+}
 
 async function openFishPersonaDlg(who) {
   const dlg = document.getElementById('fishPersonaDlg');
   if (!dlg) return;
+  /* 【2026-11-03 主人：「在小鲸的多套人设里换了个人设，可【智能体】里她还是原来那套」】
+   * 这两处本来是两套数据源：多套人设面板管的是「人设集」（personas/whale/…），
+   * 【智能体】面板的人设框读的是档案里那一段正文（whale-profile 的 persona）。
+   * 所以在这儿切一套，智能体面板那边当然一动不动。
+   * 修法：这个面板切完/存完，把当前这套的正文回写给对应身份的档案，两边就一致了。 */
+  personaSyncWho = who || '';
   /* 人设带who·2026-10-30 —— 先记下这次看的是谁的，后面所有接口都跟着它 */
   personaWho = who || '';
   try { closeOtherDialogs('fishPersonaDlg'); } catch { /* 老版本没这个函数也不该炸 */ }
@@ -7693,6 +7762,8 @@ function closeFishPersonaDlg() {
         return;
       }
       fillPersona(r);
+      // 2026-11-03：存完顺手回写给对应身份的档案，【智能体】那边才不会还是老一套
+      await syncPersonaToAgent(personaSyncWho);
       personaHint.textContent = '已保存，下一句生效';
     };
   }

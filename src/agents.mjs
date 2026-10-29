@@ -789,7 +789,23 @@ function cleanGroup(data, ids) {
      存过空数组 = 主人明确清空过，别再补 —— 否则「清空名单」永远清不干净。 */
   if (!seen.has(AGENT_XIAOJING) && !Array.isArray(ids)) push(AGENT_XIAOJING);
 
-  return out;
+  /**
+   * 【小鱼、小鲸默认占第一、第二·2026-11-03 主人：
+   *   「还有【小鱼】与【小鲸】在左侧默认占据第一与第二的顺序」】
+   *
+   * 以前只有小鱼被「钉」在最前，小鲸要等主人手动拖上去才算第二。
+   * 现在她俩是屋子的主声，位置固定：小鱼第一、小鲸第二，
+   * 自建卡在她俩后面按存的顺序排。
+   *
+   * 注意这**不是**「总是补进来」—— 小鲸在不在名单里，还是上面那几条规矩说了算
+   * （老会话默认在、主人手动清空过就不在）。这里只管「在的时候排哪儿」，
+   * 免得把「清空名单只剩小鱼」那条断言弄坏。
+   */
+  const pinFirst = [AGENT_XIAOYU, AGENT_XIAOJING];
+  const pinned = pinFirst.filter((id) => out.includes(id));
+  const rest = out.filter((id) => !pinFirst.includes(id));
+
+  return pinned.concat(rest);
 }
 
 /**

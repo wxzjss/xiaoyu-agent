@@ -257,18 +257,16 @@ export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowe
     const allow = new Set(allowedIds.map((x) => String(x)));
     const asked = alive.filter((a) => allow.has(String(a.id)));
     /**
-     * 【@ 的是客人，也不许把小鱼和小鲸挤出去】—— 2026-11-01 主人：
-     * 「屋里的人」里那两位是常亮的，在不在场只看顶栏那两颗按钮。
-     * 所以「只让被 @ 的人说话」这条规矩管的是客人；小鱼、小鲸照旧按自己的个性来
-     * （打勾 = 叫她才应，不打勾 = 每轮都应）。不然点一下客人的名字，
-     * 这一轮小鱼连话都插不上 —— 那是主机被客人挤出去了。
+     * 【锁场之后小鲸要不要接着讲」—— 2026-11-01 主人两句要求叠在一起的那个岔口：
+     * ①「个性打勾了，就仅艾特时说一轮话且后续不再说话」；② 小鲸那颗牌是常亮的，
+     * 她在不在场只看顶栏。
+     *
+     * 这两条对「小鲸的个性打了勾、又刚被叫过」的情形刚好相反：
+     * 说她会继续说 → 违反 ①（勾了就不再说话）；说她闭嘴 → 违反 ②（常亮的人
+     * 不该被一句 @ 顺手关掉）。主人的话是命令，牌只说明她还在屋里，
+     * 所以按 ① 走：锁场之后只看名单，不额外补谁。
      */
-    const hosts = alive.filter(
-      (a) => (a.id === 'xiaoyu' || a.id === 'xiaojing') && !allow.has(String(a.id)) && !quiet.has(String(a.id)),
-    );
-    const merged = [...asked];
-    for (const h of hosts) if (!merged.some((x) => x.id === h.id)) merged.push(h);
-    return merged;
+    return asked;
   }
 
   // ③ 其余情况：个性没打勾的每轮都说，打勾的闭嘴

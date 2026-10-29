@@ -7,7 +7,7 @@ import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
 // 出了分支 whaleOn 就没了，而每轮收尾那句 if (whaleOn()) 还在 —— 每轮都崩。
-import { whaleOn, setWhaleOn } from './whale-presence.mjs';
+import { whaleOn, setWhaleOn, markWhaleSpoke, whaleSpokeThisTurn } from './whale-presence.mjs';
 // 顶栏那个「小鱼」按钮：默认在场，禁用后这个会话后面的话她一个字都不发。
 import { fishOn, setFishOn } from './fish-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
@@ -943,6 +943,18 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    * 她的话会不会重复我的，交给下面闸 B 按重合率判 —— 那才是对的判据。
    */
   const __myLastSayAt = (() => {
+    /**
+     * 【让开的那条路上，我自己一个字都没说】—— 2026-11-03
+     *
+     * 主人报「同时开小鱼和小鲸，小鲸回两句、小鱼一句不回」。
+     * 点在「小鲸」身上的那一句，小鱼整轮让开（__stepAsideForWhale），
+     * 让开时自己去把她叫起来答话 —— 可她那时候一查这个时间窗，
+     * 会话末条 assistant 是我上一轮说的话（不到 3 秒前），
+     * 「闸 A」就把她挡掉了（whale-actions.log 里连一条「开始一次」都没有）。
+     * 结果：我不说、她也不说。
+     *
+     * 让开的时候，这一轮本来就不该有我这句话 —— 这个窗口对它不适用。
+     */
     const msgs = Array.isArray(session?.messages) ? session.messages : [];
     for (let k = msgs.length - 1; k >= 0; k--) {
       const m = msgs[k];
@@ -956,7 +968,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     }
     return 0;
   })();
-  if (Date.now() - __myLastSayAt < 3000) {
+  if (!speaksToHer && Date.now() - __myLastSayAt < 3000) {
     try { logWhaleAction('闸A 让行：我 3 秒前刚说完，她这一下先让'); } catch {}
     dropWhaleSay(send);
     return;
@@ -1273,6 +1285,14 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     }
   } catch {}
   try { logWhaleAction('说了一句：' + String(text).replace(/\s+/g, ' ').slice(0, 120)); } catch {}
+  /**
+   * 【在会话上记一笔「她这一轮开过口」】—— 2026-11-03
+   *
+   * 为什么在这儿：这是她所有说话路（whaleMaybeReply / 插话闸 / ask_peer）
+   * 的**公共出口**。记在会话对象上，收尾的群聊段才看得见，
+   * 不会对着同一句再把她叫起来答第二遍（主人报的「小鲸说两轮」）。
+   */
+  markWhaleSpoke(session, text);
 
   // 推流在这儿（上面），落盘交给两边共用的那一处（本来就在这个函数里，抽出去只为让别的路也能落）
   landWhaleSay({ session, sessionId, text, send, live });
@@ -3796,6 +3816,8 @@ const server = createServer(async (req, res) => {
         appSecret: payload.appSecret,
         enabled: payload.enabled,
         autoStart: payload.autoStart,
+        sandbox: payload.sandbox,
+        useGateway: payload.useGateway,
       });
       return json(res, 200, { ok: true, bot: qqBotPublic() });
     } catch (e) {
@@ -3865,6 +3887,32 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, peers: qqPeerList() });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /** 白名单：主人 QQ 号 / 谁能私聊 / 哪个群能说话（2026-11-03 主人要的）。 */
+  if (req.method === 'GET' && url.pathname === '/api/qq/gate') {
+    try {
+      const { qqGate } = await import('./qq.mjs');
+      return json(res, 200, { ok: true, gate: qqGate() });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/gate') {
+    const payload = await body(req).catch(() => ({}));
+    try {
+      const { setQqGate } = await import('./qq.mjs');
+      const gate = setQqGate({
+        ownerQq: payload.ownerQq,
+        allowQq: payload.allowQq,
+        allowGroup: payload.allowGroup,
+        strict: payload.strict,
+      });
+      return json(res, 200, { ok: true, gate });
+    } catch (e) {
+      return json(res, e?.status || 400, { error: String(e?.message ?? e) });
     }
   }
 
@@ -5936,6 +5984,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        *
        * 现在在这儿就把主人这句给她，让她照常判断要不要接。
        * 她那句话走她自己的通道推出去，不指望这条已经关掉的 SSE。
+       *
+       * 【2026-11-03 主人第三报：她答了两遍，而且两遍口径还不一致】
+       *
+       * 她在这一支里被叫起来时，读的是 `getSession(sessionId)` 现取的那份会话。
+       * 上面注释里写的那个「孤儿」就是它：小鱼那条路开跑就把它换成了新对象，
+       * 这一份还停在「主人这句话刚落地」——于是她说第一遍时觉得「屋里只有她」。
+       * 而小鱼那条路走到收尾的群聊段，第二次读到的已经是带着小鱼回复的历史，
+       * 于是又喊她一遍，这一次她说「小鱼也在」。
+       * 主人看到的就是「她答了两轮，前后还不一致」。
+       *
+       * 两道锁，跟群聊段那个 whaleSpokeThisTurn 配套：
+       *   · 这一支叫过她 → 收尾的群聊段不会再喊她（第一道锁在群聊段里）；
+       *   · 这一支自己只该叫一次，别被别的通道再叫第二遍。
        */
       /**
        * 【主人说的话必须落地】—— 2026-10-27 修
@@ -5984,6 +6045,17 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
              */
             extraRule: extraRuleForFishAway()
           })
+            .then((r) => {
+              /**
+               * 【等她说完了再关流】—— 2026-11-03 修
+               *
+               * 原来这里是 `.catch(...)` 不 await，紧接着就 res.end()。
+               * 她那句要几秒才说得完，而这条 SSE 已经关了 —— 主人只看到转圈停了，
+               * 却等不到她的话（她的话走 live 补拉，界面得自己再拉一次才看得见）。
+               * 现在等她说定，让这条流把她的气泡也带出去。
+               */
+              if (r === undefined) return;
+            })
             .catch((e) => console.warn('[whale] 小鱼不在时她没接上：', String(e?.message ?? e)));
         }
       } catch (e) {
@@ -6192,6 +6264,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
 
     const send = (ev) => {
       if (live.events.length < LIVE_MAX_EVENTS) live.events.push(ev);
+      /**
+       * 【连接已经收了尾，这一下别把整个进程带崩】—— 2026-11-03
+       *
+       * 主人报「同时开小鱼小鲸，小鲸说两轮」—— 查出来第二「轮」来自这里：
+       * 让开（__stepAsideForWhale）那条路先 `send({type:'done'})` 再 `res.end()`，
+       * 然后才 await 她说话。她每吐一句都往这条已经 end 的连接上写，
+       * `res.write` 抛 `ERR_STREAM_WRITE_AFTER_END` —— 这是**异步**抛的，
+       * 包在同步 try/catch 里根本接不住，直接升级成进程级未捕获异常
+       * （.state/crash.log 里连着两条就是它）。
+       *
+       * 现在先看 `res.writableEnded`：已经把话说完了就往缓存里放，不再碰连接。
+       */
+      if (res.writableEnded || res.destroyed) return;
       try {
         res.write(`data: ${JSON.stringify(ev)}\n\n`);
       } catch {
@@ -6401,7 +6486,26 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 同一个 false 把它一起关上了，两边都以为对方在说，结果谁都没说。
      *
      * 所以：让路之后必须**自己把小鲸叫起来说**，不能寄望插话闸。
+     *
+     * 【2026-11-03 主人报「同时开小鱼和小鲸，小鲸说两轮、小鱼一句话不说」】
+     * 上面那条「让路」就是真凶的另一半：
+     *   · 这一轮主人点了小鲸 → 我整轮让开，一个字不说；
+     *   · 让开之后我调 whaleMaybeReply 把小鲸叫起来 → 她答了一轮；
+     *   · 可这轮走到收尾，群聊那段（GROUP_CHAT）又把「小鲸」列进 speakers
+     *     （个性没打勾 = 每轮都说）→ 她对着同一句再答一轮。
+     * 主人看到的：两条都是她的，小鱼一条没有。
+     *
+     * 现在只把**这一句**让给她，**这一轮**里就不再让群聊重复喊她 ——
+     * 让路只在「她这一轮没被群聊叫过」时才成立，见 groupSpokeThisTurn。
+     *
+     * 【2026-11-03 第三报：她到底为什么答两遍】实测她两遍都出在同一处：
+     * 让路分支 await 完 whaleMaybeReply 之后，发给下一趟的 messages 里已经带着
+     * 她刚说的那句（`_who: 小鲸`），可群聊段照样把她列进 speakers ——
+     * 因为记账只加进 `groupSpokeThisTurn` 这个**本轮局部**集合，
+     * whaleMaybeReply 内部那条通道根本不认它。所以改成在会话上下留时间戳，
+     * 见 markWhaleSpoke / whaleSpokeThisTurn。
      */
+    const groupSpokeThisTurn = new Set();
     const __stepAsideForWhale = __calledByName && !__fishAway && whaleOn(sessionId);
     /**
      * 【2026-10-26 主人纠正：不是「点名才让她说话」】
@@ -6996,21 +7100,45 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 不 await：她要想几秒，主人不能一直卡在「正在发送」。
          */
         const __sayNow = String(lastUserTextOf(session) || '');
-        (async () => {
+        /**
+         * 【记一笔：这一轮她已经开过口了】—— 2026-11-03
+         *
+         * 见上面 groupSpokeThisTurn 的注释。记在这里，收尾那段群聊就会把她剔掉，
+         * 不会对着同一句再答一遍（主人看到的就是「小鲸说两轮、小鱼不说话」）。
+         */
+        try {
+          if (whaleOn(sessionId)) groupSpokeThisTurn.add(AGENT_XIAOJING);
+        } catch { /* 状态读不出来就不记，跟老行为一样 */ }
+        /**
+         * 【收尾顺序：先让她说完，再发 done、再关流】—— 2026-11-03 修
+         *
+         * 原来这里是「(async 里 await 她说) + 立刻 done/fish_off/res.end()」。
+         * 后果有两个，实测都撞上了：
+         *   1) res.end() 之后 send() 再写就是 write after end（ERR_STREAM_WRITE_AFTER_END），
+         *      异步抛、同步 try/catch 接不住 → 升级成进程级未捕获异常，记进 crash.log；
+         *   2) whale-actions.log 里写着她说了一句，会话里一条都没有 ——
+         *      因为那条 SSE 早关了，前端根本没收到。
+         *
+         * 她要想几秒，主人就得等几秒。这是对的：等的是「她的回答」，
+         * 不是白转圈（fish_off 已经在前面发过了，界面上这会儿是她在说话）。
+         */
+        try {
+          await whaleMaybeReply({
+            session,
+            userText: __sayNow,
+            send,
+            sessionId,
+            live,
+            speaksToHer: true,
+            extraRule: extraRuleForBothOn(),
+          });
+        } catch (e) {
+          console.warn('[whale] 让开之后她没接上：', String(e?.message ?? e));
           try {
-            await whaleMaybeReply({
-              session,
-              userText: __sayNow,
-              send,
-              sessionId,
-              live,
-              speaksToHer: true,
-              extraRule: extraRuleForBothOn(),
-            });
-          } catch (e) {
-            console.warn('[whale] 让开之后她没接上：', String(e?.message ?? e));
-          }
-        })();
+            const { logWhaleAction } = await import('./whale-presence.mjs');
+            logWhaleAction('aside-whale-catch-' + (e?.name || 'Error') + '：' + String(e?.message ?? e).slice(0, 200));
+          } catch {}
+        }
         try { send({ type: 'done', aside: true }); } catch {}
         try { send({ type: 'fish_off', note: '这一句主人是问小鲸的' }); } catch {}
         try { res.end(); } catch {}
@@ -7469,9 +7597,28 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
              @ 的只是打勾的人 → 说完这句就撤，不立规矩。 */
           const prevAllowed = allowedSpeakersOf(sessionId);
           const quietIds = quietAgentIds();
-          const speakers = roster.length
+          const speakers0 = roster.length
             ? pickSpeakers({ roster, userText: heard, quietIds, allowedIds: prevAllowed, enabledIds })
             : [];
+          /**
+           * 【这一轮已经开过口的人，群聊不再喊一遍】—— 2026-11-03
+           *
+           * 主人报「同时开小鱼和小鲸，小鲸说两轮、小鱼一句话不说」：
+           * 点了小鲸 → 小鱼让开（__stepAsideForWhale）→ 让开时已经把小鲸叫起来答了一轮；
+           * 可走到这里，她又因为「个性没打勾 = 每轮都说」被列进 speakers，于是同一句再答一遍。
+           *
+           * `groupSpokeThisTurn` 是这一轮里「已经以自己身份说过话」的集合，
+           * 让路那一刻往里面记一笔。这里把人剔掉 —— 一次发言只留一个声音。
+           * 剔空了也不慌：上面那句已经由让路那条路说了，主人不会看到一片安静。
+           *
+           * 【2026-11-03 第二道锁：她还可能从别的通道说过】本地集合只管得住
+           * 这一条主流程。所以再看一眼会话上的时间戳（whaleSpokeThisTurn）——
+           * 那是她所有说话路的公共出口打的，谁说的都能看见。
+           */
+          const speakers = speakers0.filter(
+            (a) => !groupSpokeThisTurn.has(String(a.id))
+              && !(String(a.id) === AGENT_XIAOJING && whaleSpokeThisTurn(session)),
+          );
           if (speakers.length) {
             try {
               setAllowedSpeakers(sessionId, nextAllowedIds(prevAllowed, heard, roster, quietIds));

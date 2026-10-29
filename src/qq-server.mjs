@@ -69,7 +69,11 @@ export async function ensureQqSession({ openid, peer, name = '' } = {}) {
   // ① 主人指定了「都进这一个」
   if (bind.mode === 'shared' && bind.sessionId) {
     if (h.getSession(bind.sessionId)) return { sessionId: bind.sessionId };
+    // 挑的那个会话被删了：别悄悄开一个新的装作没事，直接说不能聊，让主人重选
+    return null;
   }
+  // ①' 主人选了「各聊各的」但认人表里这人还没会话 → 落到下面 ③ 现开一个
+  if (bind.mode === 'per-user' && bind.sessionId === undefined) { /* 正常往下走 */ }
   // ② 这人已经有自己的会话了（重启后靠认人表恢复）
   if (peer && peer.sessionId) {
     if (h.getSession(peer.sessionId)) return { sessionId: peer.sessionId };

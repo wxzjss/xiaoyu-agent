@@ -984,17 +984,21 @@ export function setGroupMemberEnabled(id, sessionId, enabled) {
   const sid = String(sessionId || '');
   if (!sid) { const e = new Error('得先有会话'); e.status = 400; throw e; }
   if (!key) { const e = new Error('没说要改谁'); e.status = 400; throw e; }
-  if (key === AGENT_XIAOYU || key === AGENT_XIAOJING) {
-    const e = new Error('小鱼和小鲸是常亮的：她俩在不在场只看顶栏那两颗按钮，不从这一列关');
-    e.status = 400;
-    throw e;
-  }
+  /**
+   * 【2026-11-03 主人报「关闭小鱼或小鲸时会弹出关不了的提示」】
+   *
+   * 上面那两个 if 是老规矩的化石：以前她俩「常亮、牌子点不灭」，所以服务端拦了一道。
+   * 后来主人改口（「小鱼与小鲸的左侧按钮也可以点击开启或关闭」），顶栏那两颗按钮也删了，
+   * **左侧这颗牌成了唯一开关** —— 可这道 400 还留着，于是点一下就弹
+   * 「小鱼和小鲸是常亮的……不从这一列关」，牌子上那个「关」根本落不下去。
+   *
+   * 现在这里对所有人一视同仁：小鱼、小鲸也照常记进牌子表。
+   * 她们俩「说还是不说」真正读的是 fish-presence / whale-presence，
+   * 由 `/api/agents/group/toggle` 一并改（见 server.mjs）—— 那才是唯一开关。
+   */
   const data = readAll();
   const map = (data.groupEnabledBySession[sid] && typeof data.groupEnabledBySession[sid] === 'object')
     ? { ...data.groupEnabledBySession[sid] } : {};
-  // 顺手把历史上给小鱼/小鲸记下的「关」清掉（前一版允许关，可能已经存了 false）
-  delete map[AGENT_XIAOYU];
-  delete map[AGENT_XIAOJING];
   if (enabled) delete map[key];
   else map[key] = false;
   if (Object.keys(map).length) data.groupEnabledBySession[sid] = map;

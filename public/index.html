@@ -11154,9 +11154,23 @@ refreshIdentityBadge();
  * 把数字写成好看的样子：2140 -> 2,140
  * @param {number} n
  */
+/**
+ * 数怎么写。
+ *
+ * 【2026-11-03 主人：「tokens 消耗显示放在哪里、怎么计算，参考一下以前的版本」】
+ * 位置和口径都照 0.9.1 那版的老样子，只有一处要挪：字要小。
+ * 以前写全数字，一轮里调十几次工具就是「2,159,967」这种，
+ * 挂在一条消息底下横向直接溢出。所以上万折成「万」：
+ *   12,345 → 1.2万；215,967 → 21.6万；4,886,248 → 488.6万
+ * 一万以下照旧写全角逗号，细小数目本来就看得清。
+ */
 function fmtTok(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return '0';
+  const a = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (a >= 1000000) return sign + (a / 1000000).toFixed(1).replace(/\.0$/, '') + '万';
+  if (a >= 10000) return sign + (a / 10000).toFixed(1).replace(/\.0$/, '') + '万';
   return v.toLocaleString('en-US');
 }
 
@@ -11450,9 +11464,12 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
 
   const row = document.createElement('div');
   row.className = cls;
-  row.title = u._estimated
+  // 【2026-11-03】上下文从行里挪进悬停提示（行里放不下，见下面 segs 的注释）
+  const ctxTok = Number(u.context_tokens ?? 0);
+  row.title = (u._estimated
     ? '这一轮接口没回用量：这些数是我按字数粗估的（中文约 1.5 字 1 token），只能看量级，别拿去对账'
-    : '上下文：最后一次请求真正送进去的量（历史有多大）。↑↓：这一轮所有请求加起来的输入/输出。';
+    : '↑ = 这一轮所有请求加起来的输入（每次调用都背着全部历史，所以远大于上下文）\n↓ = 这一轮所有回答的输出（含思考与工具调用）')
+    + (ctxTok > 0 ? ('\n上下文：最后一次请求真正送进去 ' + fmtTok(ctxTok) + ' tokens（历史有多大）') : '');
 
   const mk = (txt, cls) => {
     const sp = document.createElement('span');
@@ -11472,18 +11489,21 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
    *
    * 老数据没有 context_tokens，就不画那一截 —— 不胡编。
    */
-  const ctxTok = Number(u.context_tokens ?? 0);
+  /*
+   * 【2026-11-03 主人：「tokens 消耗显示放在哪里，怎么计算，参考一下以前的版本，比如 0.9.26」】
+   *
+   * 查了 0.9.1（fd603e4，这套显示最早成形的那版）的老口径，就一句：
+   *     ↑输入 · ↓输出 · N tokens · ≈x 元（谷）
+   * 中间那版把「上下文 N」也塞进来了，行就长了 —— 一条消息底下根本放不下，
+   * 横向溢出到消息外面去。主人要的是老样子，所以现在回到老口径：
+   *   · 上下文最后一次多大 —— 挪进悬停提示里说（那是解释用的，不该占正文），
+   *     平时看不见，鼠标停上去就有。
+   *   数字上万折成「万」（见 fmtTok），一行再也不会爆。
+   */
   const segs = [];
-  if (ctxTok > 0) { segs.push(mk('上下文 ' + fmtTok(ctxTok), 'ctx')); segs.push(mk('·', 'sep')); }
-  segs.push(mk('↑' + fmtTok(pin)), mk('·', 'sep'), mk('↓' + fmtTok(pout)));
-  segs.push(mk('·', 'sep'), mk(fmtTok(total) + ' tokens', 'tt'));
-  // 本地估出来的：必须写清「估」，别让人拿它对账（主人明确要的）
-  if (u._estimated) {
-    segs.push(mk('·', 'sep'));
-    const estTag = mk('估', 'na');
-    estTag.title = '这一轮接口没回用量，这里的数是我按字数粗估的（中文约 1.5 字 1 token），只能看个量级，别拿去对账';
-    segs.push(estTag);
-  }
+  segs.push(mk('↑' + fmtTok(pin) + ' 输入'), mk('·', 'sep'));
+  segs.push(mk('↓' + fmtTok(pout) + ' 输出'), mk('·', 'sep'));
+  segs.push(mk(fmtTok(total) + ' tokens', 'tt'));
   row.append(...segs);
 
   // 花了多少钱。
@@ -11495,7 +11515,7 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
   const money = costOf(model, u);
   if (money) {
     row.append(mk('·', 'sep'));
-    const yen = mk('≈' + fmtMoney(money.cost) + ' 元' + (money.est ? '（估）' : ''), 'cost');
+    const yen = mk('≈' + fmtMoney(money.cost) + ' 元' + (money.est ? '（估）' : '') + (money.off ? '（谷）' : ''), 'cost');
     yen.title =
       '按 ' + model + ' 的公开价估算'
       + (money.cache === 'real'

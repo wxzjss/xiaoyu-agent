@@ -781,7 +781,11 @@
     #whoRail .whoBtn:hover { background: #1d2430; border-color: var(--border); }
     #whoRail .whoBtn.me { background: #1d2430; border-color: rgba(240, 166, 160, .6); color: #f0a6a0; }
     #whoRail .whoBtn.whale { background: #1d2430; border-color: rgba(150, 200, 245, .55); color: #a8cdf5; }
-    #whoRail .whoBtn.me:hover, #whoRail .whoBtn.whale:hover { background: #232b39; }
+    /* 【2026-10-29 对齐左侧方块】悬停不再跑到 #232b39，
+       跟 .sessRow:hover 用同一个 #1d2430 + var(--border)。
+       原来 me/whale 自带 #1d2430 底，悬停再刷深一档，跟左边就对不上了。 */
+    #whoRail .whoBtn.me:hover, #whoRail .whoBtn.whale:hover,
+    #whoRail .whoBtn.quiet:hover { background: #1d2430; border-color: var(--border); }
     #whoRail .whoBtn.quiet { border-style: dashed; }
     #whoRail .whoCap { font-size: 10.5px; color: var(--dim); padding-left: 2px; margin-bottom: -2px; }
 

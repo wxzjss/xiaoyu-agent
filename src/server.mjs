@@ -7318,11 +7318,18 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
              小鲸不再看 whaleOn —— 那颗钥匙管的是「她能不能被叫出去干活」，
              一关连她坐下来聊天都没了，那是误伤。她在这间屋子的开关就看 her 那颗牌。
              小鱼小鲸两颗牌是常亮的（点不灭），所以 here 一列不许把她们滤掉；
-             她们在不在场另有两把钥匙：fishOn / whaleOn。 */
+             她们在不在场另有两把钥匙：fishOn / whaleOn。
+
+             【小鱼不算「补一句的人」】—— 2026-11-01 主人：「为什么小鱼每次说完一轮都要
+             再多说一句？是不是智能体的问题？改」。就是这么回事：小鱼本来就是这轮
+             正主，她的回答在群聊这段**之前**已经完整说完了；名单里再带上她，就是让她
+             对着自己的话再补一句 —— 看着像「智能体有问题」的那种多余。所以这里把
+             小鱼剔掉，只剩「别人」。她要说话，走的是正经那个回合。 */
           const HOSTS = new Set(['xiaoyu', 'xiaojing']);
           const roster = groupAgentIds(sessionId)
             .map((id) => getAgent(id))
-            .filter(Boolean);
+            .filter(Boolean)
+            .filter((a) => String(a.id) !== AGENT_XIAOYU);
           const enabledIds = roster
             .map((a) => String(a.id))
             .filter((id) => HOSTS.has(id) || isGroupMemberEnabled(id, sessionId));

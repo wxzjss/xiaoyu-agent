@@ -223,11 +223,43 @@ export function saveSession(session) {
        */
       const merged = memMsgs.slice();
       const seenKey = new Set(merged.map(key).filter(Boolean));
-      for (const m of diskOnly) {
-        const k = key(m);
-        if (!k || seenKey.has(k)) continue;
-        seenKey.add(k);
-        merged.push(m);
+      /**
+       * 【压缩过的那份，磁盘上的老消息一条都不许接回来】—— 2026-10-31 修
+       *
+       * 上面那套「磁盘独有的接在末尾」是给插话用的：磁盘上可能有内存里还没有的
+       * 那一句。可它跟压缩撞在一起就出大问题 ——
+       *
+       *   压缩把老消息折进摘要、从数组里移走了，磁盘上那份还是压缩前的。
+       *   于是**每一条被压掉的老消息都算「磁盘独有」**，一条条接回末尾，
+       *   内存里刚压好的 838 条，落盘又成了 2058 条。
+       *
+       * 这是压缩白做的第三处（前两处在 server.mjs：收尾合并、commitCompression
+       * 之前的 history 副本）。实测：compressHistory 报 2057→838、commitCompression
+       * 日志也写着「已同步进会话：2058 → 838」，可磁盘上还是 2059 条 ——
+       * 就是这里接回去的。
+       *
+       * 判据跟 server.mjs 收尾合并那边保持一致：只要有一边带摘要（= 动过压缩），
+       * 就只接「内存这份里、磁盘那份完全没有的」那几条真正的新话。
+       * 压缩挪走的那些老消息（磁盘有、内存没有）一律视为「已经进摘要了」，不接。
+       */
+      const countSummary = (arr) => arr.reduce((n, m) => n + (m && m.summary && m.context ? 1 : 0), 0);
+      const compressedAnywhere = countSummary(memMsgs) > 0 || countSummary(diskMsgs) > 0;
+      if (compressedAnywhere) {
+        // 只接磁盘上确实没有的；压缩移走的那些不算「磁盘独有」，而是「已被压掉」
+        for (const m of diskOnly) {
+          // 老消息的特征：磁盘上有、而且算得出指纹（说明是正常的对话条目）。
+          // 压缩之后内存里没有它，只可能是被折进摘要了 —— 跳过。
+          // 真正该接的是「内存里新长出来、磁盘还没见过」的内容，那从内存那边来，
+          // 根本不会出现在 diskOnly 里，所以这里直接不接。
+          void m;
+        }
+      } else {
+        for (const m of diskOnly) {
+          const k = key(m);
+          if (!k || seenKey.has(k)) continue;
+          seenKey.add(k);
+          merged.push(m);
+        }
       }
       payload.messages = merged;
     }

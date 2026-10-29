@@ -15,6 +15,8 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
+// 【总闸要用】见 pushWhaleSays 里那段「主人把那颗按钮关了」
+import { whaleOn } from './whale-presence.mjs';
 
 const boxes = new Map();
 
@@ -48,6 +50,25 @@ export function pushWhaleSays(sessionId, text, who = '小鲸', extra = {}) {
    *   color  名字颜色（前端用，'#f0a6a0' 这种）
    *   tag    名字后面缀的小字，空串表示不要（默认小鲸是「· 姐妹」）
    */
+  /**
+   * 【总闸：主人把那颗按钮关了，她一个字也不许出去】—— 2026-10-29 修
+   *
+   * 这里是所有「她要说话」的唯一出口（ask_subagent、ask_peer、定时自说自话
+   * 全都往这儿 push），所以闸放在这一层最稳：不管哪条路上游漏了检查，
+   * 到这儿一律拦住。
+   *
+   * 为什么要放这么深：主人报的是「屏幕上那颗按钮明明是灭的，她还冒出来」。
+   * 拦在上游只能拦住我知道的那些入口，以后新加一条路又漏了；
+   * 拦在这儿，新路也漏不出去。
+   *
+   * 注意：这不影响主人主动打开按钮之后的任何行为，只在她「不在场」时生效。
+   */
+  try {
+    if (!whaleOn(id)) return;
+  } catch {
+    // 状态读不出来的时候宁可不说话 —— 主人看不见她，比看见她突然跳出来强
+    return;
+  }
   const as = ['user', 'assistant', 'whale'].includes(extra.as) ? extra.as : 'whale';
   const item = { who, text: clean, at: Date.now(), as };
   if (typeof extra.color === 'string' && extra.color.trim()) item.color = extra.color.trim();
@@ -76,6 +97,23 @@ function sameItem(a, b) {
 /** 取走（取完就清）。一轮收尾时调。内存和盘上一起收。 */
 export function takeWhaleSays(sessionId) {
   const id = String(sessionId || 'default');
+  /**
+   * 【按钮灭着，取出来也别播】—— 2026-10-29 修
+   *
+   * 盘上那份可能是她开着的时候写的，等主进程来取时主人已经把按钮关了。
+   * push 那一层挡不住这种情况（那道门是写的时候拦的，这个是读的时候拦的），
+   * 所以取的时候再看一眼：关着就整份丢掉，一个字都不播。
+   *
+   * 丢之前顺手把盘上那份清了，不然它会一直躺着，等下次开关一开又冒出来 ——
+   * 那才是最吓人的：主人隔了很久打开按钮，她突然说一句上辈子的话。
+   */
+  let on = true;
+  try { on = whaleOn(id); } catch { on = false; }
+  if (!on) {
+    boxes.delete(id);
+    try { const f = mailboxFile(id); if (existsSync(f)) unlinkSync(f); } catch {}
+    return [];
+  }
   const out = [];
 
   const mem = boxes.get(id) || [];

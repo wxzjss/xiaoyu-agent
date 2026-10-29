@@ -102,7 +102,28 @@ export function getWhaleProfile() {
 /**
  * 她自定义的人设。空串 = 人设栏空着 —— 调用方只给骨架，不编性格（内置那套 2026-10-26 已删）。
  */
+/**
+ * 多套人设接线·2026-10-30
+ * 小鲸现在有「多套人设」了（personas/whale/ 下的库）。
+ * 库里选中那一套优先，库里没有才回落 profile.persona。
+ * 这样在界面上切人设她是真的换，不是摆样子。
+ */
+function personaFromLibrary() {
+  try {
+    const idxFile = join(DIR, 'personas', 'whale.json');
+    if (!existsSync(idxFile)) return '';
+    const idx = JSON.parse(readFileSync(idxFile, 'utf8'));
+    const id = String(idx?.current || '').trim();
+    if (!id) return '';
+    const f = join(DIR, 'personas', 'whale', id + '.md');
+    if (!existsSync(f)) return '';
+    return readFileSync(f, 'utf8').trim();
+  } catch { return ''; }
+}
+
 export function whalePersonaOverride() {
+  const lib = personaFromLibrary();
+  if (lib) return lib;
   const p = getWhaleProfile();
   const t = String(p.persona || '').trim();
   if (t) return t;
@@ -181,4 +202,28 @@ export function saveWhaleProfile(input = {}) {
     throw e;
   }
   return getWhaleProfile();
+}
+
+/**
+ * 把她现在这份人设设成默认（2026-10-29 主人要的）。
+ *
+ * 「现在这份」拿的是 effective —— 改过就用改过的，没改过就是文件本身，写回去等于没动。
+ * 写之前留一份 .bak，手滑能捡回来。
+ */
+export function setWhalePersonaAsDefault() {
+  const cur = String(whalePersonaForEditor().persona || '').trim();
+  if (!cur) {
+    const e = new Error('她现在没有可设为默认的人设正文');
+    e.status = 400;
+    throw e;
+  }
+  try {
+    if (existsSync(DEFAULT_PERSONA_FILE)) {
+      const bak = DEFAULT_PERSONA_FILE + '.bak-' + Date.now();
+      writeFileSync(bak, readFileSync(DEFAULT_PERSONA_FILE, 'utf8'), 'utf8');
+    }
+  } catch { /* 备份失败不挡正事 */ }
+  mkdirSync(dirname(DEFAULT_PERSONA_FILE), { recursive: true });
+  writeFileSync(DEFAULT_PERSONA_FILE, cur, 'utf8');
+  return { ok: true, chars: cur.length, path: DEFAULT_PERSONA_FILE };
 }

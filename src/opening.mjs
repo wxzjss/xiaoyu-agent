@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
+import { cardOpeningEnabled, setCardOpeningEnabled as _setCardOpeningEnabled } from './opening-switch.mjs';
 
 /**
  * 这张卡这次要不要开场。
@@ -18,6 +19,9 @@ import { config } from './config.mjs';
  * 填了内容她就开口，留空（比如小鲸）就是一张白纸。
  */
 export function openingEnabled(agentId) {
+  // 2026-10-31：多一道「开关」。稿子还留着但开关关掉 → 这次不开口。
+  // 这样主人想暂时静一静时不用把整段话删了重打。
+  if (!cardOpeningEnabled(agentId)) return false;
   return Boolean(String(cardOpening(agentId) || '').trim());
 }
 
@@ -416,3 +420,8 @@ export function openingSeed(settings) {
   const v = settings && typeof settings.openingSeed === 'string' ? settings.openingSeed.trim() : '';
   return v || DEFAULT_SEED;
 }
+
+/* 转发开关·2026-10-29 server.mjs 要从这儿拿这两个（实现仍在 opening-switch.mjs，
+ * 这里只是转个手 —— 不转的话 server.mjs 整份加载失败，
+ * 退回 asar 老代码，智能体界面就全空了）。 */
+export { cardOpeningEnabled, _setCardOpeningEnabled as setCardOpeningEnabled };

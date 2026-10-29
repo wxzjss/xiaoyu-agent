@@ -1,6 +1,6 @@
 // Autopilot: the multi-step task board (plan + notes) that survives across turns.
 // Ported from the autopilot skill: plan / note / progress injection.
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 
@@ -61,6 +61,7 @@ export function loadPlan(key = 'default') {
           text: clean(s.text, 300),
           status: STATUSES.includes(s.status) ? s.status : 'pending',
           note: clean(s.note, 300),
+          pinned: !!s.pinned,
         })),
       notes: (Array.isArray(data.notes) ? data.notes : [])
         .filter((n) => n && typeof n.text === 'string')
@@ -72,8 +73,54 @@ export function loadPlan(key = 'default') {
   }
 }
 
+/** 清单归档目录：每次覆盖/清空前，旧清单原文先扔这儿，谁也别想再「找不回来」 */
+const HISTORY_DIR = join(config.dataDir, '.state', 'plan', '_history');
+
+/**
+ * 覆盖前先留一份档。reason 只写原因，不参与命名逻辑。
+ * 静默失败——留档坏掉不能反过来把正常保存也搞死。
+ */
+function archivePlan(key, state, reason = 'overwrite') {
+  try {
+    if (!state || !Array.isArray(state.steps) || state.steps.length === 0) return;
+    if (!existsSync(HISTORY_DIR)) mkdirSync(HISTORY_DIR, { recursive: true });
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const safeKey = String(key || 'default').replace(/[^\w.-]/g, '_');
+    const f = join(HISTORY_DIR, `${safeKey}-${stamp}-${reason}.json`);
+    writeFileSync(f, JSON.stringify(state, null, 2), 'utf8');
+    // 顺手留一份人眼能读的 txt
+    const { done, total } = progress(state);
+    const lines = [
+      `任务清单（归档 · ${reason}）`,
+      `归档时间：${now.toLocaleString('zh-CN')}`,
+      `目标：${state.goal || '（没写）'}`,
+      `进度：${done}/${total}`,
+      '------------------------------',
+      ...state.steps.map((st) => {
+        const mark = st.status === 'done' ? '✔' : st.status === 'doing' ? '▸' : st.status === 'skipped' ? '—' : '·';
+        return `${st.id}. ${mark} ${st.text}${st.note ? '（' + st.note + '）' : ''}`;
+      }),
+    ];
+    if (state.notes && state.notes.length) {
+      lines.push('', '便签：', ...state.notes.map((n) => `- ${n.tag ? '[' + n.tag + '] ' : ''}${n.text}`));
+    }
+    writeFileSync(f.replace(/\.json$/, '.txt'), lines.join('\n'), 'utf8');
+  } catch { /* 留档失败不影响主流程 */ }
+}
+
+/**
+ * 防丢闸：主人钉死的老任务不许被「新建清单」悄悄顶掉。
+ * pinned=true 的步在 create 时自动接驳到新清单后面。
+ */
+function pinnedSteps(state) {
+  return (state.steps || []).filter((st) => st && st.pinned);
+}
+
 function savePlan(key, state) {
   if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+  try { const prev = loadPlan(key); if (prev && prev.steps && prev.steps.length) archivePlan(key, prev, 'save'); } catch { /* 忽略 */ }
   state.updatedAt = Date.now();
   if (!state.createdAt) state.createdAt = state.updatedAt;
   writeFileSync(fileFor(key), JSON.stringify(state, null, 2), 'utf8');
@@ -151,15 +198,22 @@ export function planAction(key, args = {}) {
       .filter(Boolean)
       .slice(0, MAX_STEPS);
     if (!steps.length) return { text: 'ERROR：create 需要 steps（字符串数组，一句一步）', state };
+    // 旧清单先留档，再建新的——主人说过「清单不能丢」，不许再无声顶掉
+    if (state.steps.length) archivePlan(key, state, 'create');
+    const fresh = steps.map((text, i) => ({ id: i + 1, text, status: 'pending', note: '' }));
+    // 防丢闸：钉死的老任务自动接驳到新清单后面，不会因为「新建清单」消失
+    const keep = (state.steps || []).filter((st) => st && st.pinned && !fresh.some((f) => f.text === st.text));
+    const merged = [...fresh, ...keep];
     const next = {
       goal: clean(args.goal, 300) || state.goal,
       createdAt: Date.now(),
       updatedAt: 0,
-      steps: steps.map((text, i) => ({ id: i + 1, text, status: 'pending', note: '' })),
+      steps: merged.map((st, i) => ({ id: i + 1, text: st.text, status: st.status === 'done' ? 'done' : (st.status || 'pending'), note: st.note || '', pinned: !!st.pinned })),
       notes: state.notes,
     };
     savePlan(key, next);
-    return { text: `清单建好了：\n${formatPlan(next)}`, state: next };
+    const tip = keep.length ? `\n（钉死的 ${keep.length} 条老任务已自动接在后面，没丢）` : '';
+    return { text: `清单建好了：\n${formatPlan(next)}${tip}`, state: next };
   }
 
   if (action === 'update' || action === 'step' || action === 'mark') {
@@ -170,6 +224,7 @@ export function planAction(key, args = {}) {
     if (!status) return { text: `ERROR：status 只能是 pending / doing / done / skipped`, state };
     step.status = status;
     if (args.note !== undefined) step.note = clean(args.note, 300);
+    if (args.pin != null) step.pinned = !!args.pin;
     savePlan(key, state);
     return { text: `第 ${id} 步 → ${status}\n${formatPlan(state)}`, state };
   }
@@ -178,14 +233,22 @@ export function planAction(key, args = {}) {
     const text = clean(args.text ?? args.step, 300);
     if (!text) return { text: 'ERROR：add 需要 text', state };
     if (state.steps.length >= MAX_STEPS) return { text: `ERROR：清单最多 ${MAX_STEPS} 步`, state };
-    state.steps.push({ id: state.steps.length + 1, text, status: 'pending', note: '' });
+    state.steps.push({ id: state.steps.length + 1, text, status: 'pending', note: '', pinned: !!args.pin });
     savePlan(key, state);
     return { text: `加了一步：\n${formatPlan(state)}`, state };
   }
 
   if (action === 'clear' || action === 'reset') {
-    savePlan(key, emptyState());
-    return { text: '清单清空了', state: emptyState() };
+    if (state.steps.length) archivePlan(key, state, 'clear');
+    // 钉死的步不许被 clear 带走
+    const keep = pinnedSteps(state);
+    const next = emptyState();
+    if (keep.length) {
+      next.goal = state.goal;
+      next.steps = keep.map((st, i) => ({ ...st, id: i + 1 }));
+    }
+    savePlan(key, next);
+    return { text: keep.length ? `清单清空了，但钉死的 ${keep.length} 条老任务留下了` : '清单清空了（旧的那份已归档，翻得到）', state: next };
   }
 
   return { text: `ERROR：未知 action「${action}」，可用 create / update / add / view / clear`, state };
@@ -243,8 +306,8 @@ export function planPublicView(key = 'default') {
 }
 
 /** 界面勾选/追加/删除/清空都走这一条，返回最新的界面视图 */
-export function planUiAction(key, { action, stepId, status, text, note } = {}) {
-  const res = planAction(key, { action, stepId, status, text, note });
+export function planUiAction(key, { action, stepId, status, text, note, pin } = {}) {
+  const res = planAction(key, { action, stepId, status, text, note, pin });
   return { text: res.text, plan: planPublicView(key), ok: !String(res.text).startsWith('ERROR') };
 }
 

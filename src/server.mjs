@@ -1,4 +1,4 @@
-﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
+// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -71,7 +71,7 @@ function diagLog(tag, detail) {
   } catch { /* 日志写不了也不能影响主流程 */ }
 }
 
-import { getWhaleProfile, saveWhaleProfile, MAX_PERSONA_CHARS, whalePersonaForEditor, defaultWhalePersonaPath } from './whale-profile.mjs';
+import { getWhaleProfile, saveWhaleProfile, MAX_PERSONA_CHARS, whalePersonaForEditor, defaultWhalePersonaPath, setWhalePersonaAsDefault } from './whale-profile.mjs';
 // 进程兜底：一处没 catch 的异常不该让整个程序消失。
 import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
@@ -112,6 +112,7 @@ import {
   setPersonaAsBuiltinDefault,
   wipePersonaText,
   setPersonaAsDefault,
+  withPersonaScope,
 } from './persona-store.mjs';
 // 2026-10-29 智能体卡：内置两张（小鱼/小鲸）+ 主人自定义的
 import {
@@ -128,7 +129,13 @@ import {
   setSessionAgent,
   groupAgentIds,
   setSessionGroup,
+  /* 颜色接口·2026-10-29 */
+  agentColor,
+  agentColorMap,
+  setAgentColor,
   quietAgentIds,
+  allowedSpeakersOf,
+  setAllowedSpeakers,
   setAgentQuiet,
   isAgentQuiet,
   MAX_GROUP,
@@ -203,6 +210,8 @@ import {
   openingSpan,
   cardOpening,
   setCardOpening,
+  cardOpeningEnabled,
+  setCardOpeningEnabled,
   unmarkOpened,
   wasOpened,
 } from './opening.mjs';
@@ -3476,6 +3485,35 @@ const server = createServer(async (req, res) => {
    *
    * 所以老的三条 /api/opening 接口一起撤了，改由智能体面板存。
    */
+  /**
+   * 开场白开关（2026-10-31 主人要的）
+   *
+   * 原来想暂时不开场，只能把那段话删了 —— 回头还得重新打一遍。
+   * 现在单独记一个开关：稿子留着，关掉就是这次不开口。
+   * GET  ?id=xxx  → { enabled: true|false }
+   * POST { id, enabled } → 存下来
+   */
+  if (url.pathname === '/api/agents/opening-switch') {
+    if (req.method === 'GET') {
+      const id = url.searchParams.get('id') || '';
+      return json(res, 200, { ok: true, id, enabled: cardOpeningEnabled(id) });
+    }
+    if (req.method === 'POST') {
+      let payload;
+      try {
+        payload = await body(req);
+      } catch {
+        return json(res, 400, { error: 'invalid JSON body' });
+      }
+      try {
+        const r = setCardOpeningEnabled(payload?.id, payload?.enabled !== false);
+        return json(res, 200, { ok: true, ...r });
+      } catch (err) {
+        return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+      }
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/agents/opening') {
     let payload;
     try {
@@ -3912,6 +3950,32 @@ const server = createServer(async (req, res) => {
       const r = setSessionGroup(String(payload?.sessionId || ''), payload?.agentIds);
       if (!r) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
       return json(res, 200, { ok: true, ...r });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /* 颜色接口·2026-10-29 每张卡的颜色（屋里的人那一竖列要用） */
+  if (req.method === 'GET' && url.pathname === '/api/agents/colors') {
+    try {
+      return json(res, 200, { ok: true, colors: agentColorMap() });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /* 颜色接口·2026-10-29 改一张卡的颜色 */
+  if (req.method === 'POST' && url.pathname === '/api/agents/color') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const r = setAgentColor(String(payload?.id || ''), payload?.color);
+      if (!r.ok) return json(res, 400, { error: r.error });
+      return json(res, 200, { ok: true, color: r.color, colors: agentColorMap() });
     } catch (e) {
       return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }
@@ -4535,9 +4599,16 @@ const server = createServer(async (req, res) => {
   // ---------------- 人设：多套、一键切换 ----------------
   // 老的两个 /api/persona 保持不动（存/恢复「当前这套」），下面这些是新加的。
 
+
+  // who参数·2026-10-30 —— 这条请求是哪位智能体的人设库？不传就是小鱼。
+  const scopeOf = (u) => {
+    const w = String(u.searchParams.get('who') || '').trim();
+    if (!w || w === 'xiaoyu' || w === 'fish') return '';
+    return /^[A-Za-z0-9_-]{1,64}$/.test(w) ? w : '';
+  };
   if (req.method === 'GET' && url.pathname === '/api/personas') {
     try {
-      return json(res, 200, personaInfo());
+      return json(res, 200, withPersonaScope(scopeOf(url), () => personaInfo()));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4546,11 +4617,11 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/new') {
     try {
       const payload = await body(req);
-      return json(res, 200, createPersona({
+      return json(res, 200, withPersonaScope(scopeOf(url), () => createPersona({
         name: payload?.name,
         text: payload?.text,
         copyCurrent: payload?.copyCurrent !== false,
-      }));
+      })));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4559,7 +4630,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/switch') {
     try {
       const payload = await body(req);
-      return json(res, 200, switchPersona(payload?.id));
+      return json(res, 200, withPersonaScope(scopeOf(url), () => switchPersona(payload?.id)));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4568,7 +4639,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/save') {
     try {
       const payload = await body(req);
-      return json(res, 200, savePersonaText(payload?.id, payload?.text ?? ''));
+      return json(res, 200, withPersonaScope(scopeOf(url), () => savePersonaText(payload?.id, payload?.text ?? '')));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4577,7 +4648,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/rename') {
     try {
       const payload = await body(req);
-      return json(res, 200, await renamePersona(payload?.id, payload?.name));
+      return json(res, 200, await withPersonaScope(scopeOf(url), () => renamePersona(payload?.id, payload?.name)));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4586,7 +4657,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/delete') {
     try {
       const payload = await body(req);
-      return json(res, 200, deletePersona(payload?.id));
+      return json(res, 200, withPersonaScope(scopeOf(url), () => deletePersona(payload?.id)));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4596,7 +4667,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/set-default') {
     try {
       const payload = await body(req);
-      return json(res, 200, setPersonaAsDefault(payload?.id));
+      return json(res, 200, withPersonaScope(scopeOf(url), () => setPersonaAsDefault(payload?.id)));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4605,7 +4676,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/reset') {
     try {
       const payload = await body(req);
-      return json(res, 200, resetPersona(payload?.id));
+      return json(res, 200, withPersonaScope(scopeOf(url), () => resetPersona(payload?.id)));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4615,9 +4686,26 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/as-default') {
     try {
       const payload = await body(req);
-      return json(res, 200, setPersonaAsBuiltinDefault(payload?.id));
+      return json(res, 200, withPersonaScope(scopeOf(url), () => setPersonaAsBuiltinDefault(payload?.id)));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 人设设默认·2026-10-29 把智能体界面里「当前的人设」设成默认。id=xiaojing 走小鲸，别的走小鱼。
+  if (req.method === 'POST' && url.pathname === '/api/agents/persona/as-default') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+    try {
+      const id = String(payload?.id || '');
+      if (id === 'xiaojing' || id === 'whale') {
+        const r = setWhalePersonaAsDefault();
+        return json(res, 200, { ok: true, id: 'xiaojing', chars: r.chars, agents: listAgents() });
+      }
+      const r = setPersonaAsBuiltinDefault(id || 'xiaoyu');
+      return json(res, 200, { ok: true, id: id || 'xiaoyu', ...(r || {}), agents: listAgents() });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }
   }
 
@@ -6199,7 +6287,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         return false;
       } catch { return false; }
     })();
-    if (whaleOn(sessionId) && !__quiet && !__busyTurn && !__whaleIsSomeone) {
+    /**
+     * 【2026-10-29 主人发话：把「每轮自动补一句」从源头掐掉】
+     *
+     * 原来这里只有 whaleOn(sessionId) —— 一个「会话级开关」。
+     * 开关一开，**每一轮**收尾都去问小鲸要不要接话，不管主人这一句叫没叫她。
+     * 主人看到的现象就是：小鱼每答完一轮，后面总跟着一句披着小鲸样式的补充。
+     *
+     * 现在改成「叫她才应」：这一句是冲她说的（点了名 / 小鱼被禁用 / 她在群里且没被静音），
+     * 才轮到她开口。其余时候我一轮说完就是我一个人的话，不追加、不补气。
+     *
+     * 立场（__speaksToHer）照旧传下去 —— 她真开口时，仍然知道自己是在跟谁说话。
+     */
+    const __whaleCalledToSpeak = __speaksToHer || __whaleIsSomeone;
+    if (whaleOn(sessionId) && __whaleCalledToSpeak && !__quiet && !__busyTurn) {
       const userTextNow = lastUserTextOf(session);
       if (userTextNow) {
         (async () => {
@@ -7118,12 +7219,18 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           // 「别一直全员齐发」：点了名的只让被点的接，没点名就跳过「安静」的卡。
           // 认的是 `@名字`（见 group.mjs 的 pickSpeakers），不认「句子里出现过名字」——
           // 那样「阿绿昨天说的办法」会把她拽出来重答一遍。
-          const { speakAsCard, pickSpeakers } = await import('./group.mjs');
+          const { speakAsCard, pickSpeakers, nextAllowedIds } = await import('./group.mjs');
           const heard = String(lastUserTextOf(session) || '');
+          /* 记住@的人·2026-10-29 上次 @ 过谁，名单一直管到下次 @ */
+          const prevAllowed = allowedSpeakersOf(sessionId);
           const speakers = roster.length
-            ? pickSpeakers({ roster, userText: heard, quietIds: quietAgentIds() })
+            ? pickSpeakers({ roster, userText: heard, quietIds: quietAgentIds(), allowedIds: prevAllowed })
             : [];
           if (speakers.length) {
+            /* 记住@的人·2026-10-29 这句带 @ 就换成被 @ 的；不带 @ 就沿用旧的。 */
+            try {
+              setAllowedSpeakers(sessionId, nextAllowedIds(prevAllowed, heard, roster));
+            } catch { /* 存不上不影响这一轮 */ }
             let burned = 0;
             for (const mate of speakers) {
               if (ac.signal.aborted) break;

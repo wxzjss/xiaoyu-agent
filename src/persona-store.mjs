@@ -14,10 +14,48 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync
 import { join } from 'node:path';
 import { config } from './config.mjs';
 
-const BASE_FILE = join(config.root, 'persona', 'xiaoyu.md');
 const STATE_DIR = join(config.dataDir, '.state');
-const P_DIR = join(STATE_DIR, 'personas');
-const INDEX_FILE = join(STATE_DIR, 'personas.json');
+
+/**
+ * 按智能体分·2026-10-30
+ * 谁的哪套人设 —— '' 是主人自己（小鱼），其他是智能体 id。
+ * 小鱼继续用老地方，旧数据一个字节都不用搬。
+ */
+let _scope = '';
+
+/** 只许字母数字下划线横线，防止拼出 ../ */
+function scopeOk(x) {
+  return typeof x === 'string' && /^[A-Za-z0-9_-]{0,64}$/.test(x);
+}
+
+/** 临时切到某个智能体的人设库干活，干完切回来（同步函数用） */
+export function withPersonaScope(scope, fn) {
+  const prev = _scope;
+  _scope = scopeOk(scope) ? String(scope || '') : '';
+  try {
+    return fn();
+  } finally {
+    _scope = prev;
+  }
+}
+
+/** 当前 scope（调试用） */
+export function personaScope() {
+  return _scope;
+}
+
+function pDir() {
+  return _scope ? join(STATE_DIR, 'personas', _scope) : join(STATE_DIR, 'personas');
+}
+
+function indexFile() {
+  return _scope ? join(STATE_DIR, 'personas', _scope + '.json') : join(STATE_DIR, 'personas.json');
+}
+
+function baseFile() {
+  return join(config.root, 'persona', 'xiaoyu.md');
+}
+
 const LEGACY_FILE = join(STATE_DIR, 'persona.md');
 const LEGACY_BACKUP = join(STATE_DIR, 'persona.backup.md');
 
@@ -57,13 +95,14 @@ function readFileSafe(file) {
 
 function ensureDirs() {
   if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
-  if (!existsSync(P_DIR)) mkdirSync(P_DIR, { recursive: true });
+  const d = pDir();
+  if (!existsSync(d)) mkdirSync(d, { recursive: true });
 }
 
 /** 发布物自带的那份人设原文 */
 export function readBasePersona() {
-  const text = readFileSafe(BASE_FILE);
-  if (text === null) throw new Error(`persona file missing: ${BASE_FILE}`);
+  const text = readFileSafe(baseFile());
+  if (text === null) throw new Error(`persona file missing: ${baseFile()}`);
   return text.trim();
 }
 
@@ -73,7 +112,7 @@ function isPersonaId(id) {
 }
 
 function fileFor(id) {
-  return join(P_DIR, `${id}.md`);
+  return join(pDir(), `${id}.md`);
 }
 
 function cleanName(n) {
@@ -100,7 +139,7 @@ function newId() {
 }
 
 function readIndex() {
-  const raw = readFileSafe(INDEX_FILE);
+  const raw = readFileSafe(indexFile());
   if (raw === null) return null;
   try {
     const j = JSON.parse(raw);
@@ -114,7 +153,7 @@ function readIndex() {
 
 function writeIndex(idx) {
   ensureDirs();
-  writeFileSync(INDEX_FILE, JSON.stringify(idx, null, 2), 'utf8');
+  writeFileSync(indexFile(), JSON.stringify(idx, null, 2), 'utf8');
 }
 
 /**
@@ -196,7 +235,7 @@ export function personaInfo() {
     // 出厂那份的原始正文（真·原厂），给「连出厂的也看」这类场景用
     factory: readBasePersona(),
     custom: isDefault ? touched : true,
-    path: existsSync(fileFor(current)) ? fileFor(current) : BASE_FILE,
+    path: existsSync(fileFor(current)) ? fileFor(current) : baseFile(),
     current,
     currentName: curMeta.name || DEFAULT_NAME,
     list,
@@ -516,7 +555,7 @@ export function wipePersonaText(id) {
 /** 顺手清掉没人用的残留文件（只为一眼看清目录，不删备份） */
 export function listPersonaFiles() {
   try {
-    return readdirSync(P_DIR);
+    return readdirSync(pDir());
   } catch {
     return [];
   }

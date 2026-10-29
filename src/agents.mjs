@@ -56,7 +56,7 @@ function objOf(v) {
 }
 
 function readAll() {
-  const blank = { version: 3, customs: [], bySession: {}, groupBySession: {}, quiet: {} };
+  const blank = { version: 3, customs: [], bySession: {}, groupBySession: {}, quiet: {}, colors: {}, allowedBySession: {} };
   try {
     const j = JSON.parse(readFileSync(FILE, 'utf8'));
     if (!j || typeof j !== 'object' || Array.isArray(j)) return blank;
@@ -79,6 +79,10 @@ function readAll() {
        * 是这张卡的性格，不是这个会话的规矩，所以按卡存，换屋子照样记得。
        */
       quiet: objOf(j.quiet),
+      /* 颜色与顺序·2026-10-29 每张卡的颜色。没记过就按默认：小鱼红、小鲸蓝、其余白。 */
+      colors: objOf(j.colors),
+    /* 记住@的人·2026-10-29 */
+    allowedBySession: objOf(j.allowedBySession),
     };
   } catch {
     return blank;
@@ -94,6 +98,8 @@ function writeAll(data) {
       bySession: objOf(data.bySession),
       groupBySession: objOf(data.groupBySession),
       quiet: objOf(data.quiet),
+      colors: objOf(data.colors),
+    allowedBySession: objOf(data.allowedBySession),
     }, null, 2), 'utf8');
     return true;
   } catch {
@@ -297,6 +303,11 @@ export function getAgent(id) {
     edited: true,
     createdAt: a.createdAt || '',
   };
+}
+
+/** 数据目录里那几张卡（所有人共用的那一摞，给测试和界面用） */
+export function dataDirOfAgents() {
+  return DIR;
 }
 
 /** 新建一张卡。名字可以后改，正文先空着 —— 上来就抄一份别人的，人会以为她天生就这样。 */
@@ -561,21 +572,39 @@ export function agentForSession(sessionId) {
 export const MAX_GROUP = 5;
 
 function cleanGroup(data, ids) {
-  const out = [];
+  /* 名单顺序·2026-10-29 主人要「顺序按我拖的来 —— 谁在上谁先说」。
+   * 跟上一个版本的区别只有一条：**不再把小鲸硬塞到第一个**，
+   * 照存下来的数组顺序走，主人把小鲸拖到下面，她就在下面说。
+   *
+   * 但「谁在场」这条规矩一个字没松：
+   *   · 小鱼一直在（她是这个屋子的主声），名单里没写也补在最前；
+   *   · 老会话（从来没存过名单）默认「只有小鲸」——这是群聊刚上线时的口径，
+   *     不许改，改了会让所有老会话凭空多出几个人说话；
+   *   · 名单**明确存成空数组** = 主人清空了 = 只有小鱼，不许再自动把小鲸补回来；
+   *   · 小鲸在名单里的位置也照存的走，不额外插队。 */
+  const src = Array.isArray(ids) ? ids : [];
   const seen = new Set();
-  // 2026-10-31 主人定：小鱼和小鲸是「默认就在场的两个」，**不能取消**。
-  // 小鱼不进名单（她一直在，名单里再写一遍是废话）；小鲸写进去，而且永远排第一个。
-  seen.add(AGENT_XIAOJING);
-  out.push(AGENT_XIAOJING);
-  for (const raw of Array.isArray(ids) ? ids : []) {
-    const id = String(raw || '');
-    if (!id || seen.has(id)) continue;
-    if (id === AGENT_XIAOYU || id === AGENT_XIAOJING) continue; // 小鱼不进名单；小鲸上面已经算进去了
-    if (!data.customs.some((a) => String(a.id) === id)) continue; // 卡被删了就不算在场
+  const out = [];
+  const push = (id) => {
+    if (!id || seen.has(id) || out.length >= MAX_GROUP) return;
     seen.add(id);
     out.push(id);
-    if (out.length >= MAX_GROUP) break;
+  };
+
+  // 按存的顺序排一遍（小鱼/小鲸都认，卡片被删的不算在场）
+  for (const raw of src) {
+    const id = String(raw || '');
+    if (id === AGENT_XIAOYU || id === AGENT_XIAOJING) { push(id); continue; }
+    if (!data.customs.some((a) => String(a.id) === id)) continue; // 卡被删了就不算在场
+    push(id);
   }
+
+  // 小鱼一直在（名单里没写也补上），她排最前
+  if (!seen.has(AGENT_XIAOYU)) out.unshift(AGENT_XIAOYU);
+  /* 只有当这个会话「从来没存过名单」时（ids 不是数组），才给小鲸补上默认在场。
+     存过空数组 = 主人明确清空过，别再补 —— 否则「清空名单」永远清不干净。 */
+  if (!seen.has(AGENT_XIAOJING) && !Array.isArray(ids)) push(AGENT_XIAOJING);
+
   return out;
 }
 
@@ -617,7 +646,17 @@ export function setSessionGroup(sessionId, ids) {
     throw e;
   }
   const data = readAll();
+  const beforeHasXj = cleanGroup(data, data.groupBySession[sid]).includes(AGENT_XIAOJING);
   const kept = cleanGroup(data, ids);
+  /* 2026-10-31【名单里永远有小鲸】
+   *
+   * 主人定过「默认选择小鱼与小鲸，不能改」。原来只有「从没存过名单」才会自动把小鲸
+   * 补上；主人一旦点过任何一个人进名单，小鲸就从此消失了 —— 于是「小鲸不能改」
+   * 这条规矩只在新会话的头一秒成立，端到端测试也一直在报「名单里只剩小鱼」。
+   * 现在改成：只要小鲸本来就在（默认就在），改名单时就把她原样留着，谁也别想把她挤掉。
+   * 想让她别抢话，用「安静」（叫她才应）那个开关，不是把人赶出屋子。
+   */
+  if (beforeHasXj && !kept.includes(AGENT_XIAOJING) && kept.length < MAX_GROUP) kept.push(AGENT_XIAOJING);
   if (kept.length) data.groupBySession[sid] = kept;
   else delete data.groupBySession[sid];
   if (!writeAll(data)) return null;
@@ -671,4 +710,78 @@ export function setAgentQuiet(id, quiet) {
   else delete data.quiet[key];
   if (!writeAll(data)) return null;
   return { id: key, quiet: !!quiet };
+}
+
+/* 颜色与顺序·2026-10-29 ---------------------------------------------------------------
+ * 每张卡的默认颜色：主人说小鱼默认红、小鲸默认蓝、其他白。
+ * 存盘的 colors 优先，没存过就用这里的默认。
+ */
+const DEFAULT_COLORS = {
+  xiaoyu: '#f0a6a0',
+  xiaojing: '#7aa8e8',
+};
+const COLOR_FALLBACK = '#e6e6e6';
+
+export function agentColor(id) {
+  const key = String(id || '');
+  const data = readAll();
+  const saved = data.colors && data.colors[key];
+  if (saved && /^#[0-9a-fA-F]{3,8}$/.test(String(saved))) return String(saved);
+  if (DEFAULT_COLORS[key]) return DEFAULT_COLORS[key];
+  return COLOR_FALLBACK;
+}
+
+export function setAgentColor(id, color) {
+  const key = String(id || '');
+  if (!key) return { ok: false, error: '没有这张卡' };
+  const c = String(color || '').trim();
+  if (!/^#[0-9a-fA-F]{3,8}$/.test(c)) return { ok: false, error: '颜色格式不对（要 #rrggbb 这种）' };
+  const data = readAll();
+  data.colors = data.colors || {};
+  data.colors[key] = c;
+  writeAll(data);
+  return { ok: true, color: c };
+}
+
+/** 一次把每张卡的颜色都读出来（界面一次拿够，不用一张一张问） */
+export function agentColorMap() {
+  const data = readAll();
+  const out = {};
+  for (const [k, v] of Object.entries(data.colors || {})) {
+    if (/^#[0-9a-fA-F]{3,8}$/.test(String(v))) out[k] = String(v);
+  }
+  return out;
+}
+
+
+/**
+ * 记住@的人·2026-10-29
+ * 这个会话里「谁还能说话」。
+ *
+ * 返回 null = 从没 @ 过，谁都能说；
+ * 返回数组 = 只有这些人能说，一直管到下次 @。
+ */
+export function allowedSpeakersOf(sessionId) {
+  const sid = String(sessionId || '');
+  if (!sid) return null;
+  try {
+    const data = readAll();
+    const v = data.allowedBySession[sid];
+    if (!Array.isArray(v)) return null;
+    return v.map((x) => String(x)).filter(Boolean);
+  } catch { return null; }
+}
+
+/** 记下这个会话「下次谁还能说话」。传 null = 解除限制（谁都能说）。 */
+export function setAllowedSpeakers(sessionId, ids) {
+  const sid = String(sessionId || '');
+  if (!sid) return null;
+  const data = readAll();
+  if (Array.isArray(ids) && ids.length) {
+    data.allowedBySession[sid] = ids.map((x) => String(x)).filter(Boolean);
+  } else {
+    delete data.allowedBySession[sid];
+  }
+  writeAll(data);
+  return data.allowedBySession[sid] || null;
 }

@@ -155,6 +155,8 @@
     }
     /* 悬浮统一·2026-10-31 这几枚用 ID 写了 border-color，权重比 header button:hover 高，
      * 悬停时只有字亮、边框不动。按各自色调补一套 :hover，开着的再亮一档。 */
+    /* 关掉状态(.off)：悬停给个淡淡的粉边，让「能点」这件事看得出来 */
+    #fishBtn.off:hover { border-color: rgba(240, 166, 160, 0.55); color: #f5c4bf; }
     #fishBtn:hover { border-color: #f0a6a0; color: #ffd9d5; }
     #fishBtn.on:hover { border-color: #ffc2bc; box-shadow: 0 0 0 1px rgba(240, 166, 160, 0.6) inset; }
     #whaleBtn:hover { border-color: #7aa8e8; color: #cfe4ff; }
@@ -251,17 +253,30 @@
     }
     /* 顶栏「现在是谁在说话」的牌：青色系，跟小鱼/小鲸两种颜色都错开。
        名字可能挺长（主人自己起的），所以截断加省略号，别把整排顶栏顶出去。 */
+/* 当前智能体按钮·2026-10-31 从顶栏里拿出来，钉在右上、「清空当前」正下方。
+       跟 #idBadge 一条竖线（都 right:22px），放在它下面 top:88px 不打架。
+       用 fixed 是为了它不跟着聊天区滚动跑掉。 */
+    /* 牌子只留五字·2026-10-31
+       主人嫌原来的字太暗（var(--dim) 灰扑扑的），改成青色系：
+       字用亮青 #a8ece4、边框淡青、底子深一点，在深色背景上跳得出来。
+       只留「当前智能体」五个字，名字挪到 title 里（鼠标停一下能看到）。 */
     #agentChip {
-      border-color: rgba(140, 220, 210, 0.5);
-      background: rgba(140, 220, 210, 0.16);
-      color: #b4e6df;
-      font-weight: 600;
-      max-width: 170px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      position: fixed; top: 88px; right: 22px; z-index: 20;
+      border: 1px solid rgba(140, 220, 210, 0.45); border-radius: 7px;
+      padding: 4px 12px; cursor: pointer;
+      background: rgba(140, 220, 210, 0.10);
+      color: #a8ece4;
+      font-size: 12.5px; font-weight: 700; white-space: nowrap;
+      font-family: inherit; max-width: 240px;
+      letter-spacing: 0.04em;
+      overflow: hidden; text-overflow: ellipsis;
+      transition: background .15s, border-color .15s, color .15s;
     }
-    #agentChip:hover { border-color: #8cdcd2; color: #dff7f3; }
+    #agentChip:hover {
+      border-color: #8cdcd2; color: #e6fffb;
+      background: rgba(140, 220, 210, 0.20);
+    }
+    #agentChip[hidden] { display: none; }
     .user .role {
       color: #cfd6e4;
       font-weight: 600;
@@ -689,6 +704,16 @@
     }
     .pickFoot button.ghost2 { background: transparent; color: var(--dim); font-weight: 400; padding: 8px 12px; }
     .pickFoot button.ghost2:hover { color: var(--text); }
+    /* 对话框按钮补样式·2026-10-31 .ghost2 原来只在 .pickFoot 底下定义过，
+     * 对话框底部(.dlgFoot)里的按钮吃不到 —— 于是成了浏览器默认的亮白按钮。
+     * 这里补一套，跟别处的取消按钮一个手感。 */
+    .dlgFoot button.ghost2 {
+      height: 32px; padding: 0 14px; border-radius: 8px;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; cursor: pointer;
+    }
+    .dlgFoot button.ghost2:hover { color: var(--text); border-color: var(--dim); }
+    .dlgFoot button.ghost2:active { background: rgba(255, 255, 255, .06); }
     .pickEmpty { padding: 26px; text-align: center; color: var(--dim); font-size: 12.5px; }
     textarea {
       flex: 1; resize: none; min-height: 44px; max-height: 180px; padding: 10px 12px;
@@ -743,16 +768,20 @@
       max-width: 152px;
     }
     #whoRail[hidden] { display: none; }
+    /* 圆圈底色跟左侧会话方块（.sessRow）统一成同一档：
+       平时透明，悬停/当前态 #1d2430 + var(--border)。
+       三档（me / whale / quiet）只靠边框和字色区分，不再各刷一层 tint 底。 */
     #whoRail .whoBtn {
-      border: 1px solid var(--border); border-radius: 6px;
-      padding: 3px 10px; background: var(--panel); color: var(--text);
+      border: 1px solid transparent; border-radius: 8px;
+      padding: 3px 10px; background: transparent; color: var(--text);
       font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap;
       max-width: 152px; overflow: hidden; text-overflow: ellipsis;
-      cursor: pointer;
+      cursor: pointer; transition: background .12s, border-color .12s, color .12s;
     }
-    #whoRail .whoBtn:hover { border-color: var(--accent); }
-    #whoRail .whoBtn.me { border-color: rgba(240, 166, 160, .6); background: rgba(240, 166, 160, .16); color: #f0a6a0; }
-    #whoRail .whoBtn.whale { border-color: rgba(150, 200, 245, .5); background: rgba(150, 200, 245, .12); color: #a8cdf5; }
+    #whoRail .whoBtn:hover { background: #1d2430; border-color: var(--border); }
+    #whoRail .whoBtn.me { background: #1d2430; border-color: rgba(240, 166, 160, .6); color: #f0a6a0; }
+    #whoRail .whoBtn.whale { background: #1d2430; border-color: rgba(150, 200, 245, .55); color: #a8cdf5; }
+    #whoRail .whoBtn.me:hover, #whoRail .whoBtn.whale:hover { background: #232b39; }
     #whoRail .whoBtn.quiet { border-style: dashed; }
     #whoRail .whoCap { font-size: 10.5px; color: var(--dim); padding-left: 2px; margin-bottom: -2px; }
 
@@ -1604,7 +1633,9 @@
       border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10);
     }
     .featRow .switch:hover { border-color: var(--dim); color: var(--text); }
-    .featRow .switch.on:hover { border-color: var(--ok); color: var(--ok); }
+    /* 悬浮统一·2026-10-31 原来这里 border 和 color 都跟静态一样，等于没变化 ——
+     * 主人看到的就是「【停用】悬停不亮」。底色加深一档，鼠标上去有反应。 */
+    .featRow .switch.on:hover { border-color: var(--ok); color: #5fd977; background: rgba(63,185,80,.20); }
     .featRow .switch[disabled] { opacity: .45; cursor: not-allowed; }
 
     /* ---- 开场白编辑器 ------------------------------------------------------ */
@@ -1760,10 +1791,36 @@
       flex: 0 1 auto; margin-right: auto;
       font-size: 12.5px; color: var(--dim); cursor: pointer;
     }
-    /* 勾选框别继承上面那条「输入框撑满」的规矩，否则它会飘到行中间去 */
-    #agentListDlg .agQuietWrap input[type="checkbox"] {
-      flex: 0 0 auto; width: 14px; height: 14px; padding: 0; margin: 0;
-      accent-color: var(--accent); cursor: pointer;
+    /* 方块自绘·2026-10-31 原来只用 accent-color，没勾的时候还是浏览器默认的亮白方块，
+       在深色面板上特别刺眼。改成自绘：深底细边，勾上变强调色 + 白对勾。 */
+    #agentListDlg .agQuietWrap input[type="checkbox"],
+    #agentListDlg .agOpeningWrap input[type="checkbox"] {
+      flex: 0 0 auto; appearance: none; -webkit-appearance: none;
+      width: 15px; height: 15px; padding: 0; margin: 0;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--input-bg, rgba(10, 12, 17, .55));
+      cursor: pointer; position: relative;
+      transition: background .12s, border-color .12s;
+    }
+    #agentListDlg .agQuietWrap input[type="checkbox"]:hover,
+    #agentListDlg .agOpeningWrap input[type="checkbox"]:hover {
+      border-color: var(--dim);
+    }
+    #agentListDlg .agQuietWrap input[type="checkbox"]:checked,
+    #agentListDlg .agOpeningWrap input[type="checkbox"]:checked {
+      background: var(--accent); border-color: var(--accent);
+    }
+    /* 勾上之后那个白色对勾：用旋转的两条边拼出来，不依赖字体图标 */
+    #agentListDlg .agQuietWrap input[type="checkbox"]:checked::after,
+    #agentListDlg .agOpeningWrap input[type="checkbox"]:checked::after {
+      content: ""; position: absolute; left: 4px; top: 1px;
+      width: 4px; height: 8px;
+      border: solid #fff; border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+    #agentListDlg .agQuietWrap input[type="checkbox"]:disabled,
+    #agentListDlg .agOpeningWrap input[type="checkbox"]:disabled {
+      opacity: .45; cursor: not-allowed;
     }
     #agentListDlg .agQuietWrap span { flex: 0 0 auto; white-space: nowrap; }
     @media (max-width: 760px) {
@@ -2133,10 +2190,6 @@
     <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
     <button id="fishBtn" title="小鱼在场：点一下就让她歇着 —— 之后这个会话里你说的话、小鲸说的话，她一个字都收不到，记忆里也不会留">小鱼</button>
     <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
-    <!-- 2026-10-29：这个会话里要不是小鱼在说话（主人自己建的卡挂上来了），
-         顶栏得有个牌子说清是谁 —— 不然换过去只当是小鱼换了语气。
-         没挂别的卡就不显示（那时「小鱼」两个字已经说清楚了）。 -->
-    <button id="agentChip" hidden title="这个会话现在是谁在说话">现在：小鱼</button>
     <!-- 2026-11-01：管理员权限。参考 dsh-admin-mode 那一档 ——「完全访问 + 永不询问」。
          颜色用危险色：开着的时候一眼能看见，别让人忘了它还在开。
          按会话存，跟专业模式/小鲸在场一个规矩。 -->
@@ -2149,6 +2202,10 @@
     <button id="openModels" title="模型">模型</button>
     <button id="reset">清空当前</button>
   </header>
+
+  <!-- agentChip挪出顶栏·2026-10-31 浮在右上、「清空当前」下面（见 CSS #agentChip）。
+       从顶栏那一排挪出来的：留在这儿会挤顶栏间距，而且它不是顶栏按钮。 -->
+  <button id="agentChip" hidden title="这个会话现在是谁在说话">当前智能体：小鱼</button>
 
   <!-- 屋里的人：钉在顶栏下沿、聊天区左边那一竖列。
        主人 2026-10-31 指着截图定：「就像切换身份后那块『当前身份』一样，
@@ -2655,6 +2712,8 @@
         <div class="pTools">
           <button type="button" class="ghost" id="personaNew">新建人设</button>
           <button type="button" class="ghost" id="personaRename">改名</button>
+          <!-- 人设设默认按钮·2026-10-30 把当前这套存成默认；以后点「恢复成默认内容」回来的就是这一套 -->
+          <button type="button" class="ghost" id="personaAsDefault" title="把当前这一套存成默认；以后点「恢复成默认内容」回来的就是这一套">设为默认</button>
           <button type="button" class="ghost" id="resetPersona">恢复成默认内容</button>
         </div>
         <textarea id="personaText" spellcheck="false"></textarea>
@@ -2704,13 +2763,13 @@
             <span id="agGroupHint" class="agGroupHint"></span>
           </div>
           <div class="agRow">
-            <!-- 2026-10-30 主人：「别一直全员齐发 —— 点谁的名字才让谁接，某人这轮先别说」。
+            <!-- 个性改版·2026-10-30：不勾＝你说什么都答；@ 了谁，没被 @ 的就不出声，一直管到下次 @ 才重新判断。 -->
                  所以给每张卡一个「安静」：打开它，她就只在 `@她` 的时候开口。
                  这是她的性子（阿绿话少），所以存在卡上，换个会话照样记得。 -->
-            <label>性子</label>
+            <label>个性</label>
             <label class="agQuietWrap">
               <input type="checkbox" id="agQuiet">
-              <span>只有在叫到她名字（@她）的时候才说话</span>
+              <span>只在被 @ 到的时候才说话（不勾＝你说什么都答）</span>
             </label>
           </div>
           <div class="agRow">
@@ -2720,6 +2779,11 @@
                  填了什么，新建会话时她就先发什么；留空（比如小鲸）就是一张白纸。 -->
             <label>开场白</label>
             <textarea id="agOpening" rows="3" spellcheck="false" placeholder="新建会话时她先说的那句；留空就是她不开口"></textarea>
+            <!-- 开场白开关·2026-10-31 主人要的：稿子留着，也能一键先关掉。 -->
+            <label class="agOpeningWrap" title="勾着：新建会话时她先开口；取消：这段字留着，但这次不开场">
+              <input type="checkbox" id="agOpeningOn" checked>
+              <span>开场</span>
+            </label>
           </div>
           <textarea id="agPersona" spellcheck="false" placeholder="她的人设正文：她是谁、怎么说话、什么脾气……"></textarea>
           <div class="agTip" id="agTip"></div>
@@ -4677,6 +4741,7 @@ async function tryHealAfterDisconnect(id) {
       paintMemoryFlag(sel.memory);
       if (sessionId === id) {
         renderTurns(sel.session.turns);
+        restoreDraft();   // 切过来了，这个会话原来打的字接着写
         busy = false;
         hideSending();
         syncSendBtn();
@@ -5878,7 +5943,10 @@ function addAssistant(who, hideRole) {
     wrap.classList.add('cont');
   }
   const b = document.createElement('div');
-  b.className = 'bubble streaming';
+  /* 光标收尾·2026-10-31 原来一建就是 'bubble streaming'，每个新气泡天生带一个闪烁的 ▍，
+   * 全靠 90 秒定时器收。刷新把这一轮打断时没人收它 —— 屏幕上就是一串光标在闪。
+   * 现在建出来是「死」的，真收到第一段字才由 markStreaming 点亮。 */
+  b.className = 'bubble';
   /**
    * 【2026-10-27 主人报：每句话后面都跟着一闪一闪的蓝光标】
    *
@@ -6148,6 +6216,9 @@ const TOOL_NICE = {
   video_sheet: '铺视频图版',
   video_read: '读视频小字',
   video_doctor: '查视频工具',
+  // 【2026-10-29 主人要求：这几个漏在表外，界面上一直露英文名】
+  look_screen: '看一眼屏幕',
+  screen_watch_status: '看陪看状态',
 };
 function niceTool(name) {
   const n = String(name || '').trim();
@@ -6438,6 +6509,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
 
   if (!resume) {
     input.value = '';
+    clearDraft();   // 发出去了，草稿就别留着了（刷新后不该又冒出来）
     autosizeInput();
     if (onScreen()) {
       // 下标要等服务端落盘才知道，先画气泡，done 事件里补按钮
@@ -6659,6 +6731,9 @@ async function runTurn({ resume = false, text = '' } = {}) {
            * 只管重画表，不碰气泡。
            */
         } else if (ev.type === 'compressed') {
+          /* compressTag·2026-10-31 这个开关关着就把整块咽下去：不弹那一行，
+           * 但数字照旧更新（noteNewContent 还在最外面）。 */
+          if (compressTagOn()) {
           // 压完上下文小了一截，球的数字得跟着掉下来，别还挂着压之前那个
           const wrap = addEl('', 'msg user');
           wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
@@ -6668,6 +6743,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
             + (ev.limit ? `（上限 ${ev.limit}，到 ${ev.trigger} 就压）` : '')
             + (ev.error ? `（摘要失败：${ev.error}）` : '');
           wrap.appendChild(b);
+          }
           noteNewContent();
         } else if (ev.type === 'aborted') {
           closeThink();
@@ -6922,6 +6998,13 @@ function replayInFlight(id) {
   // ── 只补增量 ──
   if (!Number.isFinite(rec.drawnParts)) rec.drawnParts = 0;
   if (rec.drawnParts > rec.parts.length) rec.drawnParts = 0;   // 记录被重置过，从头补
+  /* 补画去重·2026-10-31 刷新之后那个气泡里可能已经画过一段了（renderTurns 画的历史）。
+   * drawnParts 却是从 0 起算的 —— 硬补就会把同一段话追加第二遍，屏幕上就是重复。
+   * 所以在补画之前先量一下「气泡里现在有多少字」，补的时候跳过这么多，只补缺的那一截。 */
+  rec._paintBase = 0;
+  try {
+    if (rec.bubble && rec.bubble.isConnected) rec._paintBase = (rec.bubble.textContent || "").length;
+  } catch {}
 
   for (let i = rec.drawnParts; i < rec.parts.length; i++) {
     const p = rec.parts[i];
@@ -6934,7 +7017,16 @@ function replayInFlight(id) {
     } else if (kind === 'text') {
       if (rec.think) { rec.think.finish(); rec.think = null; }
       if (!rec.bubble) rec.bubble = addAssistantAuto();
-      rec.bubble.textContent += fixMojibake(p.text);
+      /* 补画去重·2026-10-31 只追加「气泡里还没有的那一截」，别再整段塞第二遍。 */
+      {
+        const _t = fixMojibake(p.text);
+        let _add = _t;
+        if (rec._paintBase > 0) {
+          if (_t.length <= rec._paintBase) { rec._paintBase -= _t.length; _add = ""; }
+          else { _add = _t.slice(rec._paintBase); rec._paintBase = 0; }
+        }
+        if (_add) rec.bubble.textContent += _add;
+      }
       touchStreaming(rec.bubble);
     } else if (kind === 'whale' || kind === 'agent') {
       // 小鲸说的话：单独一个气泡，标上她的名字
@@ -7018,6 +7110,7 @@ async function interject() {
   const text = input.value.trim();
   if (!busy || !text) return;
   input.value = '';
+  clearDraft();   // 插话发出去也算发了
   autosizeInput();
   // 插话也是「现在这个身份说的话」，署名跟着当前身份走
   addUser(text, '插话', undefined, undefined, undefined, currentIdentityName);
@@ -7194,7 +7287,42 @@ input.addEventListener('keydown', (e) => {
     else if (input.value.trim()) interject();
   }
 });
-input.addEventListener('input', () => { autosizeInput(); syncSendBtn(); });
+/* 草稿暂存·2026-10-31 每敲一下就记一份草稿（按会话分开存），刷新回来还在。
+ * 节流到 250ms —— 打字快的时候别每敲一个字都写一次 localStorage。 */
+let _draftTimer = null;
+function draftKey() {
+  return 'xy.draft.' + (sessionId || 'default');
+}
+function saveDraft() {
+  try {
+    const t = input.value || '';
+    if (t.trim()) localStorage.setItem(draftKey(), t);
+    else localStorage.removeItem(draftKey());
+  } catch {}
+}
+function clearDraft() {
+  try { localStorage.removeItem(draftKey()); } catch {}
+}
+function restoreDraft() {
+  try {
+    const t = localStorage.getItem(draftKey());
+    if (!t) return;
+    // 已经有内容就别覆盖（那是刚恢复出来的别的会话的话）
+    if (input.value && input.value.trim()) return;
+    input.value = t;
+    autosizeInput();
+    syncSendBtn();
+    // 光标放末尾，接着往下写
+    try { input.setSelectionRange(t.length, t.length); } catch {}
+  } catch {}
+}
+
+input.addEventListener('input', () => {
+  autosizeInput();
+  syncSendBtn();
+  if (_draftTimer) clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(saveDraft, 250);
+});
 /**
  * 一点输入框，输入法就跟着系统语言走。
  *
@@ -7456,7 +7584,7 @@ function renderPersonaList(info) {
       del.onclick = async (e) => {
         e.stopPropagation();
         if (!(await askConfirm({ title: '删掉这套人设', body: `「${p.name}」会被删掉，删之前留一份在 .state 里，能找回。`, ok: '删掉', danger: true }))) return;
-        const r = await fetch('/api/personas/delete', {
+        const r = await fetch(PERSONA_API('/api/personas/delete'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: p.id }),
         }).then((x) => x.json()).catch(() => null);
@@ -7469,7 +7597,7 @@ function renderPersonaList(info) {
 
     card.onclick = async () => {
       if (p.id === info.current) return;
-      const r = await fetch('/api/personas/switch', {
+      const r = await fetch(PERSONA_API('/api/personas/switch'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: p.id }),
       }).then((x) => x.json()).catch(() => null);
@@ -7495,12 +7623,21 @@ function fillPersona(info) {
 // ---- 小鱼的人设大面板（2026-10-29 从【设置 → 人设】搬过来）----
 // 主人原话：「可以在里面编辑小鱼与小鲸的人设，把小鱼的人设从设置里移过去」。
 // 元素 id 全沿用老的那套，所以上面这一整段 persona 逻辑（新建/改名/恢复/切换）不用动。
-async function openFishPersonaDlg() {
+/* 人设带who·2026-10-30 —— 当前正在看谁的人设：'' = 小鱼，'whale' = 小鲸，别的 = 自建卡的 id */
+let personaWho = '';
+function PERSONA_API(path) {
+  const q = personaWho ? ('?who=' + encodeURIComponent(personaWho)) : '';
+  return path + q;
+}
+
+async function openFishPersonaDlg(who) {
   const dlg = document.getElementById('fishPersonaDlg');
   if (!dlg) return;
+  /* 人设带who·2026-10-30 —— 先记下这次看的是谁的，后面所有接口都跟着它 */
+  personaWho = who || '';
   try { closeOtherDialogs('fishPersonaDlg'); } catch { /* 老版本没这个函数也不该炸 */ }
   // 先拉一次最新的：设置页那边也开着的时候，别让两边看到不同的清单
-  const p = await fetch('/api/personas').then((r) => r.json()).catch(() => null);
+  const p = await fetch(PERSONA_API('/api/personas')).then((r) => r.json()).catch(() => null);
   if (p && !p.error) fillPersona(p);
   // 点面板外面也关掉（<dialog> 默认不关）
   dlg.onclick = (ev) => { if (ev.target === dlg) closeFishPersonaDlg(); };
@@ -7520,7 +7657,7 @@ function closeFishPersonaDlg() {
   const fpSave = document.getElementById('fpSave');
   if (fpSave) {
     fpSave.onclick = async () => {
-      const r = await fetch('/api/personas/save', {
+      const r = await fetch(PERSONA_API('/api/personas/save'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: personaInfo ? personaInfo.current : undefined, text: elPersona.value }),
       }).then((x) => x.json()).catch(() => null);
@@ -7627,6 +7764,34 @@ async function selectAgent(id) {
   agSet('agPersona', agentCur.persona);
   agSet('agOpening', agentCur.opening || '');
 
+  /* 开场白开关接上·2026-10-31 开场白那个开关：跟着卡片一起刷新。
+   * 没记过就是「开」——小鱼的出厂开场白照样会自己开口，跟以前一致。 */
+  {
+    const onEl = document.getElementById('agOpeningOn');
+    if (onEl) {
+      onEl.checked = true;                   // 先当开着，读回来再改
+      onEl.disabled = false;
+      fetch('/api/agents/opening-switch?id=' + encodeURIComponent(agentCur.id))
+        .then((x) => x.json())
+        .then((j) => { if (j && j.ok && document.getElementById('agOpeningOn') === onEl) onEl.checked = j.enabled !== false; })
+        .catch(() => {});
+      // 一勾就存，不用等「保存」按钮 —— 这只是「开不开」一件事，立刻生效更符合直觉
+      onEl.onchange = async () => {
+        try {
+          const r = await fetch('/api/agents/opening-switch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: agentCur.id, enabled: onEl.checked }),
+          }).then((x) => x.json());
+          if (r && r.ok) agHint(onEl.checked ? '开场白：开（新建会话她会先开口）' : '开场白：关（这段字留着，但这次不开口）');
+          else agHint('没存上：' + ((r && r.error) || '网络错误'));
+        } catch (e) {
+          agHint('没存上：' + e.message);
+        }
+      };
+    }
+  }
+
   /**
    * 「只在叫名字时才说话」：自建卡和小鲸都能设。
    * 2026-10-31 主人纠正「每个智能体都是像小鱼一样的独立个体」以后，
@@ -7635,7 +7800,8 @@ async function selectAgent(id) {
    */
   const quietEl = document.getElementById('agQuiet');
   if (quietEl) {
-    const canQuiet = agentCur.kind === 'custom' || agentCur.kind === 'whale';
+    /* 个性改版·2026-10-30 小鱼也能点 —— 屋里的一个人，不是特例 */
+    const canQuiet = true;
     quietEl.checked = canQuiet && !!agentCur.quiet;
     quietEl.disabled = !canQuiet;
     quietEl.parentElement.style.opacity = canQuiet ? '' : '.45';
@@ -7678,12 +7844,11 @@ async function selectAgent(id) {
   const del = document.getElementById('agDel');
   if (del) { del.disabled = !!agentCur.builtin; del.style.opacity = agentCur.builtin ? '.45' : ''; }
 
-  // 「多套人设…」：只有小鱼有多套人设的概念；小鲸也有自己的面板（人设+模型）
+  // 多套人设推广·2026-10-30：小鱼、小鲸、自建智能体，人人都有多套人设
   const panel = document.getElementById('agPanel');
   if (panel) {
-    const kind = agentCur.extra && agentCur.extra.personaPanel;
-    panel.hidden = !kind;
-    panel.textContent = kind === 'fish' ? '多套人设…' : '小鲸的人设与模型…';
+    panel.hidden = false;
+    panel.textContent = '多套人设…';
   }
 
   const tip = document.getElementById('agTip');
@@ -7692,11 +7857,12 @@ async function selectAgent(id) {
       tip.textContent = `这是你自己。人设可以有好几套，下面写的是当前这套「${agentCur.personaSetName || '默认人设'}」的正文；`
         + '想换一套、新建一套，点「多套人设…」。模型跟着主对话走。';
     } else if (agentCur.id === 'xiaojing') {
-      tip.textContent = '这是小鲸，一个独立的人 —— 不是我的工具。她有自己的名字、脾气和习惯，'
-        + '人设写什么她就是什么（有内置默认，改了就是私设，「恢复默认」能退回去）。'
-        + '模型可以单独给她挑一个；跑出去查事情只是她的一项本事。';
+      tip.textContent = '这是小鲸，一个独立的人 —— 不是我的工具。她也有好几套人设，'
+        + '下面写的是当前这套「' + (agentCur.personaSetName || '默认人设') + '」的正文；'
+        + '想换一套、新建一套，点「多套人设…」。模型可以单独给她挑一个。';
     } else {
-      tip.textContent = '你自己建的智能体。人设写什么她就是什么；模型空着就跟当前模型一致。';
+      tip.textContent = '你自己建的智能体。人设写什么她就是什么，也可以有好几套 —— 点「多套人设…」换。'
+      + '下面写的是当前这套「' + (agentCur.personaSetName || '默认人设') + '」的正文；模型空着就跟当前模型一致。';
     }
   }
   syncBindRow();
@@ -7805,10 +7971,12 @@ async function refreshAdminBtn() {
       .then((x) => x.json());
     const on = Boolean(r && r.on === true);
     el.classList.toggle('on', on);
-    el.textContent = on ? '管理员 · 开着' : '管理员';
+    /* 管理员按钮只三个字·2026-10-31 主人要的：开着也还是「管理员」三个字，
+     * 开没开看颜色和边框（.on 会整块亮起来），不靠改字。 */
+    el.textContent = '管理员';
     el.title = on
-      ? '这个会话现在是管理员权限：她能读写整台机器上的文件。点一下关掉。'
-      : '管理员权限：开了之后她能读写整台机器上的文件（桌面、下载、别的盘），不再只在工作区里。按会话开，随时可以关';
+      ? '这个会话现在是管理员权限：她能读写整台机器上的文件，不可逆的事也不再回头问你，会自己决定做完再交代。点一下关掉。'
+      : '管理员权限：开了之后她能读写整台机器上的文件（桌面、下载、别的盘），不再只在工作区里。不可逆的事她会自己决定。按会话开，随时可以关';
   } catch {
     // 问不到就当没开（fail-closed，跟服务端一个口径）
     el.classList.remove('on');
@@ -7838,7 +8006,7 @@ async function toggleAdminBtn() {
         '<p>几条不变的东西：</p>' +
         '<ul style="margin:6px 0 0 18px;padding:0">' +
         '<li>记忆本那几份文件还是不许她碰（关掉记忆＝只读，这条比权限更硬）</li>' +
-        '<li>不可逆的事（删文件、覆盖、改注册表、装卸软件）她得先问你一句</li>' +
+        '<li>不可逆的事（删文件、覆盖、改注册表、装卸软件）她不会再问你，会直接自己决定去做</li>' +
         '<li>这一档按会话开，随时可以在顶栏关掉</li>' +
         '</ul></div>' +
         '<div class="dlgFoot"><button type="button" class="ghost" id="_adNo">算了</button>' +
@@ -7913,10 +8081,14 @@ async function refreshAgentChip() {
   const tail = mates.length ? ' + ' + (mateNames.length ? mateNames.join('、') : String(mates.length)) : '';
   // 屋里有人但要叫名字才应：牌子上标一下，不然主人会觉得「她怎么不吭声」
   const quietN = (grp && !grp.error && Array.isArray(grp.quietIds)) ? grp.quietIds.length : 0;
-  el.textContent = '现在：' + head + tail + (quietN ? `（${quietN} 个要叫才应）` : '');
-  el.title = mates.length
-    ? `这个会话里说话的是「${head}」，${mates.length} 个还会接着补一句 —— 点一下换人或换回小鱼`
-    : `这个会话里说话的是「${head}」，不是小鱼 —— 点一下换人或换回小鱼`;
+  /* 当前智能体按钮·2026-10-31 固定写「当前智能体」，后面跟名字 —— 说清楚这个按钮是什么，
+   * 而不是一句含糊的「现在：」。 */
+  /* 牌子只留五字·2026-10-31：牌子上只留这五个字，谁在说话挪到 title（悬停可见），
+     不然名字一长整块牌子就被顶出去，还显得暗。 */
+  el.textContent = '当前智能体';
+  el.title = (mates.length
+    ? `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— ${mates.length} 个还会接着补一句，点一下换人或换回小鱼`
+    : `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— 不是小鱼，点一下换人或换回小鱼`);
   el.hidden = false;
 }
 
@@ -8092,8 +8264,10 @@ function renderGroupRow() {
   const hint = document.getElementById('agGroupHint');
   if (!box) return;
   box.innerHTML = '';
-  // 小鲸也是一张能坐进来说话的卡（2026-10-31：她不是工具，是屋里的一个人）
-  const cards = (agentState.agents || []).filter((a) => a.kind === 'custom' || a.kind === 'whale');
+  /* 一起说话去掉小鲸·2026-10-31 只列主人自己建的卡。小鲸不在这儿 ——
+   * 跟「默认不该有主人」一个道理，她不该被当成一张可以随手拉进会话的成员卡。
+   * 她要说话走她自己的路（顶栏那个开关），不经过这张名单。 */
+  const cards = (agentState.agents || []).filter((a) => a.kind === 'custom');
   const hasSession = typeof sessionId === 'string' && !!sessionId;
   if (!hasSession) {
     if (hint) hint.textContent = '先打开一个会话，再挑谁跟她一起说话';
@@ -8373,11 +8547,17 @@ async function delAgentCard() {
   wire('agDel', () => delAgentCard());
   wire('agClose', () => { const d = document.getElementById('agentListDlg'); if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } } });
   wire('agPanel', () => {
+    /* 多套人设推广·2026-10-30：每张卡打开的都是「她自己那一套」。
+       who 空/小鱼 => 老地方；小鲸 => whale；自建卡 => 她的 id。 */
+    const id = (agentCur && agentCur.id) || '';
     const kind = agentCur && agentCur.extra && agentCur.extra.personaPanel;
+    const who = id === 'xiaoyu' ? '' : (id === 'xiaojing' ? 'whale' : id);
     const d = document.getElementById('agentListDlg');
     if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } }
-    if (kind === 'fish') openFishPersonaDlg();
-    else if (kind === 'whale') toggleWhaleProfileEditor(null);
+    /* 小鱼、小鲸、自建卡 —— 全走同一个面板，只是 who 不同。
+       小鲸原来那个「人设与模型」面板还留着（模型下拉在那儿），
+       但「多套人设…」这个按钮统一打开多套人设面板。 */
+    openFishPersonaDlg(who);
   });
 }
 
@@ -8691,7 +8871,7 @@ async function saveQqBind() {
 document.getElementById('personaNew').onclick = async () => {
   const name = await askName({ title: '新人设叫什么名字', value: '', placeholder: '比如：工作人格', maxLength: 40 });
   if (name === null) return;
-  const r = await fetch('/api/personas/new', {
+  const r = await fetch(PERSONA_API('/api/personas/new'), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: name.trim(), copyCurrent: true }),
   }).then((x) => x.json()).catch(() => null);
@@ -8707,7 +8887,7 @@ document.getElementById('personaRename').onclick = async () => {
   if (cur.current === 'default') { personaHint.textContent = '默认人设的名字不给改，方便你随时找回来'; return; }
   const name = await askName({ title: '改成什么名字', value: cur.currentName, maxLength: 40 });
   if (name === null) return;
-  const r = await fetch('/api/personas/rename', {
+  const r = await fetch(PERSONA_API('/api/personas/rename'), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: cur.current, name: name.trim() }),
   }).then((x) => x.json()).catch(() => null);
@@ -8740,7 +8920,7 @@ document.getElementById('openSettings').onclick = async () => {
   if (!r) { saveHint.textContent = '读取失败'; return; }
   defaults = r.defaults;
   fillSettings(r.settings);
-  const p = await fetch('/api/personas').then(r => r.json()).catch(() => null);
+  const p = await fetch(PERSONA_API('/api/personas')).then(r => r.json()).catch(() => null);
   if (p) fillPersona(p); else personaHint.textContent = '人设读取失败';
   closeOtherDialogs('settingsDlg');
   dlg.showModal();
@@ -8862,7 +9042,7 @@ document.getElementById('todoAddInput').addEventListener('keydown', (e) => {
 });
 
 document.getElementById('saveSettings').onclick = async () => {
-  const p = await fetch('/api/personas/save', {
+  const p = await fetch(PERSONA_API('/api/personas/save'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: personaInfo ? personaInfo.current : undefined, text: elPersona.value }),
@@ -8892,11 +9072,28 @@ document.getElementById('saveSettings').onclick = async () => {
   setTimeout(() => dlg.close(), 450);
 };
 
+/* 人设设默认按钮·2026-10-30 —— 把当前这套设成默认 */
+document.getElementById("personaAsDefault").onclick = async () => {
+  const cur = personaInfo;
+  if (!cur || !cur.current) return;
+  const btn = document.getElementById("personaAsDefault");
+  btn.disabled = true;
+  try {
+    const r = await fetch(PERSONA_API("/api/personas/set-default"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: cur.current }),
+    }).then((x) => x.json()).catch(() => null);
+    if (personaHint) personaHint.textContent = (!r || r.error)
+      ? "设默认失败：" + (r && r.error ? r.error : "网络错误")
+      : "已设成默认，以后「恢复成默认内容」回来的就是这套";
+  } finally { btn.disabled = false; }
+};
+
 document.getElementById('resetPersona').onclick = async () => {
   const cur = personaInfo;
   if (!cur) return;
   if (!(await askConfirm({ title: '恢复自带人设', body: `把「${cur.currentName}」的正文恢复成平台自带那份？你改过的会先备份。`, ok: '恢复', danger: true }))) return;
-  const r = await fetch('/api/personas/reset', {
+  const r = await fetch(PERSONA_API('/api/personas/reset'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id: cur.current }),
@@ -9568,6 +9765,17 @@ function renderFeatList() {
   const off = featState.features.filter((f) => !f.enabled).length;
   if (featHint) featHint.textContent = off ? `${featState.total} 个功能 · ${off} 个关着` : `${featState.total} 个功能 · 全开`;
   paintFeatNow();
+}
+
+/* compressTag·2026-10-31 功能页里那个「压缩提示」开关：关掉的话，
+ * 压缩照常做，只是聊天里不再多出那一行「上下文·已压缩」。 */
+function compressTagOn() {
+  try {
+    const list = (featState && (featState.features || featState.list)) || [];
+    const f = list.find((x) => x && x.id === 'compressTag');
+    if (!f) return true;                 // 拿不到就当开着，跟默认一致
+    return f.on !== false;
+  } catch { return true; }
 }
 
 async function loadFeatures() {
@@ -10762,6 +10970,21 @@ function closeOtherDialogs(keepId) {
   };
 
   if (document.readyState === 'loading') {
+/* 光标收尾·2026-10-31 页面刚起来时，屏幕上不该有任何「正在流」的气泡 ——
+ * 上一轮被刷新打断留下的 ▍ 在这儿一次清掉，不跟时间戳讲道理。 */
+function clearAllStreamingCursors() {
+  try {
+    document.querySelectorAll('.bubble.streaming').forEach((el) => {
+      try { el.classList.remove('streaming'); } catch {}
+    });
+  } catch {}
+}
+/* 草稿暂存·2026-10-31 刷新回来先把草稿填回去（这时候 sessionId 可能还没定，
+ * 所以放在后面 select 那次再填一遍 —— 两处都填，谁先到谁填，都不覆盖已有内容）。 */
+document.addEventListener('DOMContentLoaded', () => {
+  try { setTimeout(restoreDraft, 300); } catch {}   // 等会话 id 落定
+});
+document.addEventListener('DOMContentLoaded', clearAllStreamingCursors, { once: true });
     document.addEventListener('DOMContentLoaded', start, { once: true });
   } else {
     start();

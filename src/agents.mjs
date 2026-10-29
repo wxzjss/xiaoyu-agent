@@ -65,12 +65,26 @@ function objOf(v) {
 }
 
 function readAll() {
-  const blank = { version: 3, customs: [], bySession: {}, groupBySession: {}, quiet: {}, colors: {}, allowedBySession: {} };
+  const blank = {
+  version: 4,
+  customs: [],
+  bySession: {},
+  groupBySession: {},
+  /* 【屋里的人的「开着/关掉」·2026-11-01】
+   * 主人原话：「屏幕上方的【小鱼】与【小鲸】按钮只有启用时她们才说话，禁用时不说话。」
+   * 按会话存（哪间屋子谁在开腔），小鲸的开关同时就是她那颗总开关。
+   * 不写 = 开着；写 false = 主人亲手关掉的。
+   * 以前拿「小鲸总开关」兼职，一关连「她还能被叫出去干活」都没了 —— 现在分开。 */
+  groupEnabledBySession: {},
+  quiet: {},
+  colors: {},
+  allowedBySession: {},
+};
   try {
     const j = JSON.parse(readFileSync(FILE, 'utf8'));
     if (!j || typeof j !== 'object' || Array.isArray(j)) return blank;
     return {
-      version: 3,
+      version: 4,
       customs: Array.isArray(j.customs) ? j.customs : [],
       bySession: objOf(j.bySession),
       /**
@@ -78,8 +92,13 @@ function readAll() {
        *
        * 为什么不写进会话文件：跟「挂哪张卡」一个道理 —— 那是设置，不是聊天记录。
        * 换阵容不该在账本里多出一行，删同事也不该把聊天记录改写一遍。
+       *
+       * 【2026-11-01 起顺序有了含义】数组顺序就是说话顺序：谁排前面谁先说。
+       * 界面上长按名字上下拖，改的就是这个数组。
        */
       groupBySession: objOf(j.groupBySession),
+      // 「屋里的人」每张牌的开/关（见 blank 里那段注释）
+      groupEnabledBySession: objOf(j.groupEnabledBySession),
       /**
        * 「安静」的卡：只在被点名（`@她`）的时候才开口。
        *
@@ -102,10 +121,11 @@ function writeAll(data) {
   try {
     if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
     writeFileSync(FILE, JSON.stringify({
-      version: 3,
+      version: 4,
       customs: data.customs || [],
       bySession: objOf(data.bySession),
       groupBySession: objOf(data.groupBySession),
+      groupEnabledBySession: objOf(data.groupEnabledBySession),
       quiet: objOf(data.quiet),
       colors: objOf(data.colors),
     allowedBySession: objOf(data.allowedBySession),
@@ -852,8 +872,7 @@ export function quietAgentIds() {
 }
 
 /** 改一张卡的安静开关。传假就是「还是照常每次都接」。 */
-export function setAgentQuiet(id, quiet) {
-  const key = String(id || '');
+export function setAgentQuiet(id, quiet) {  const key = String(id || '');
   if (!key) {
     const e = new Error('没说要改哪张卡');
     e.status = 400;
@@ -874,6 +893,99 @@ export function setAgentQuiet(id, quiet) {
   else delete data.quiet[key];
   if (!writeAll(data)) return null;
   return { id: key, quiet: !!quiet };
+}
+
+/* 屋里的人的「开着 / 关掉」·2026-11-01 ------------------------------------------------
+ *
+ * 主人原话：「屏幕上方的【小鱼】与【小鲸】按钮只有启用时她们才说话，禁用时不说话。」
+ *
+ * 【为什么不复用「安静」那个开关】
+ * 那个说的是「她要你叫才应」，人还在屋里。这个是「她这一轮就别开口了」，
+ * 连点名都不吭声 —— 两件事，混在一起会互相打架。
+ *
+ * 【为什么按会话存】
+ * 「这间屋子这会儿谁在开腔」是屋子的状态：主人开一间安静的屋子复盘，
+ * 不该把另一间热闹屋子的阵容也拖下水。
+ *
+ * 【小鲸这一档顺便把老的总开关接管了】
+ * 以前判断「小鲸能不能说话」读的是 whaleOn(sessionId)（功能页那颗小鲸总开关），
+ * 那颗钥匙其实管的是「她能不能被叫出去干活」。关掉它就是她不说话，会误伤。
+ * 现在：**「屋里的人」上那颗牌就是她在这个会话里的开关**，两件事各管各的。
+ */
+
+/** 这张牌在这个会话里是不是开着（没记过 = 开着） */
+export function isGroupMemberEnabled(id, sessionId) {
+  const key = String(id || '');
+  const sid = String(sessionId || '');
+  if (!key || !sid) return true;
+  try {
+    const map = readAll().groupEnabledBySession[sid];
+    if (!map || typeof map !== 'object') return true;
+    return map[key] !== false;
+  } catch { return true; }
+}
+
+/** 一次读出这个会话里每张牌的开/关（界面画那竖列用） */
+export function groupEnabledMap(sessionId) {
+  const sid = String(sessionId || '');
+  if (!sid) return {};
+  try {
+    const map = readAll().groupEnabledBySession[sid];
+    if (!map || typeof map !== 'object') return {};
+    const out = {};
+    for (const [k, v] of Object.entries(map)) out[String(k)] = v !== false;
+    return out;
+  } catch { return {}; }
+}
+
+/**
+ * 把一张牌开/关。
+ *
+ * 所有人在场的人都能关（含小鱼）：主人说过「小鱼小鲸这两颗牌子只有启用时才说话」，
+ * 那小鱼也得能关 —— 关了这轮她就是不出声，不是从名单上删掉。
+ */
+export function setGroupMemberEnabled(id, sessionId, enabled) {
+  const key = String(id || '');
+  const sid = String(sessionId || '');
+  if (!sid) { const e = new Error('得先有会话'); e.status = 400; throw e; }
+  if (!key) { const e = new Error('没说要改谁'); e.status = 400; throw e; }
+  const data = readAll();
+  const map = (data.groupEnabledBySession[sid] && typeof data.groupEnabledBySession[sid] === 'object')
+    ? { ...data.groupEnabledBySession[sid] } : {};
+  if (enabled) delete map[key];
+  else map[key] = false;
+  if (Object.keys(map).length) data.groupEnabledBySession[sid] = map;
+  else delete data.groupEnabledBySession[sid];
+  if (!writeAll(data)) return null;
+  return { sessionId: sid, id: key, enabled: !!enabled, map: groupEnabledMap(sid) };
+}
+
+/**
+ * 把屋里的人换个顺序（拖谁到哪儿）。
+ *
+ * 只改顺序，不改「谁在场」：传进来的名单里如果少了几个人，缺的那些按原来的相对顺序
+ * 补在后面（主人拖了个别人出去，不该顺手把人踢出屋子）；多出来的、不认识的丢掉。
+ */
+export function setSessionGroupOrder(sessionId, ids) {
+  const sid = String(sessionId || '');
+  if (!sid) { const e = new Error('得先有会话'); e.status = 400; throw e; }
+  const data = readAll();
+  const cur = cleanGroup(data, data.groupBySession[sid]);
+  const want = (Array.isArray(ids) ? ids : []).map((x) => String(x || '')).filter(Boolean);
+  const seen = new Set();
+  const out = [];
+  for (const id of want) {
+    if (!cur.includes(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  for (const id of cur) if (!seen.has(id)) out.push(id);
+  data.groupBySession[sid] = out;
+  /* 顺序变了，上一轮 @ 出来的「只让这几个人说话」名单也跟着作废 ——
+     否则主人拖完人，说话顺序看着变了，实际还是那几个人在抢。 */
+  if (data.allowedBySession && typeof data.allowedBySession === 'object') delete data.allowedBySession[sid];
+  if (!writeAll(data)) return null;
+  return { sessionId: sid, agentIds: out, max: MAX_GROUP };
 }
 
 /* 颜色与顺序·2026-10-29 ---------------------------------------------------------------

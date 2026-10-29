@@ -204,41 +204,62 @@ export function cleanReply(text, agent) {
 /**
  * 【谁该开口】挑出这一轮要说话的人。
  *
- * 主人原话：「让群聊别一直全员齐发 —— 点谁的名字才让谁接，某人这轮先别说」。
- * 于是两条规矩，按顺序生效：
+ * 主人原话（2026-10-29）：「让群聊别一直全员齐发 —— 点谁的名字才让谁接，某人这轮先别说」。
+ * 主人又改了主意（2026-11-01）：
+ *   「如果个性打勾了，那么仅艾特时说一轮话且后续不再说话」
+ *   「如果个性没打勾的话，所有没打勾的已启用角色每一轮都会说话，直到我主动艾特某个或
+ *    多个人，从艾特那一刻开始接下来只有那些角色说话，直到我再次艾特某个或某些角色」
  *
- *   ① 谁被点了名（`@阿蓝 早上好`），就只让被点的人接 —— 点了名还全员齐发，
- *      那这个功能等于没做。点小鱼而没点别人 = 这轮她们都不接。
- *   ② 没点名时，跳过「安静」的卡（只在叫名字时才说话那类）。
+ * 于是现在的规矩按顺序：
  *
- * 为什么认 `@名字` 而不是「句子里出现名字」：后者太容易误伤 ——
- * 「阿绿昨天说的那个办法」会把她拽出来重新答一遍，主人只是想引用一下。
+ *   ① 关掉的牌（「屋里的人」上点灭的）一句话都不说，点名也不应 —— 这是最硬的一层。
+ *   ② 这一句里 @ 了人：
+ *        · 被点到的「个性打勾」的（quiet）→ 这轮说；
+ *        · 被点到的「个性没打勾」的 → 这轮说，而且从这一刻起「这间屋子只留这几个人」；
+ *        · 「个性打勾」的人一旦被点过，之后不点名就不再应（见 nextAllowedIds）。
+ *   ③ 这一句没 @：
+ *        · 如果之前 @ 过，且被 @ 的是「个性没打勾」的人 → 只留名单里的人（这是主人要的
+ *          「一直只由最后那批人说话」）；
+ *        · 如果之前只 @ 过「个性打勾」的人 → 那句已经说完了，名单作废，回到默认：
+ *          「个性没打勾的每轮都说，打勾的闭嘴」。
+ *   ④ 从没 @ 过：凡是开着的、个性没打勾的都每轮说。
  *
+ * 「安静 / 个性」那个勾的意思是「她要叫才应」，不是「她永远闭嘴」。
+ *
+ * 为什么认 `@名字` 而不认「句子里出现名字」：「阿绿昨天说的那个办法」会把她拽出来重答。
  * 名字里带空格/符号也照配（先长后短，免得「阿蓝」把「阿蓝二号」抢了）。
+ *
+ * @param {object} p
+ * @param {Array} p.roster 屋里的卡（顺序 = 说话顺序，谁前谁先说）
+ * @param {string} p.userText 主人这句原话
+ * @param {Array<string>} p.quietIds 「个性打勾」的卡 = 叫才应
+ * @param {Array<string>|null} p.allowedIds 上一轮 @ 之后留下的「只让这些人说话」名单
+ * @param {Array<string>} p.enabledIds 这一轮开着的牌（不给就是全开）
  */
-export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowedIds = null } = {}) {
-  /* 记住@的人·2026-10-29 */
+export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowedIds = null, enabledIds = null } = {}) {
   const mates = (Array.isArray(roster) ? roster : []).filter((a) => a && a.id);
   if (!mates.length) return [];
   const text = String(userText || '');
   const quiet = new Set((Array.isArray(quietIds) ? quietIds : []).map((x) => String(x)));
+  /* 关掉的牌：不说话。不传就是全开（老调用方/测试不用跟着改）。 */
+  const on = Array.isArray(enabledIds) ? new Set(enabledIds.map((x) => String(x))) : null;
+  const alive = on ? mates.filter((a) => on.has(String(a.id))) : mates;
+  if (!alive.length) return [];
   const hits = parseMentions(text, mates);
 
-  // ① 这一句里 @ 了人：就只让被 @ 的接（这条不变）
+  // ① 这一句 @ 了人：被点的开口（关掉的已经被 alive 滤掉了）
   if (hits.length) {
-    return mates.filter((a) => hits.includes(String(a.id)));
+    return alive.filter((a) => hits.includes(String(a.id)));
   }
 
-  // ② 这一句没 @：看上次 @ 留下的名单。
-  //    allowedIds 不是 null 就只认名单里的人 —— @ 过一次，其他人就闭嘴，
-  //    一直闭到主人下次 @ 为止。
-  if (Array.isArray(allowedIds)) {
+  // ② 没 @：上次 @ 过「个性没打勾」的人 → 屋里只留他们
+  if (Array.isArray(allowedIds) && allowedIds.some((x) => !quiet.has(String(x)))) {
     const allow = new Set(allowedIds.map((x) => String(x)));
-    return mates.filter((a) => allow.has(String(a.id)) && !quiet.has(String(a.id)));
+    return alive.filter((a) => allow.has(String(a.id)));
   }
 
-  // ③ 从没 @ 过：谁都能说（跳过「安静」那类）
-  return mates.filter((a) => !quiet.has(String(a.id)));
+  // ③ 其余情况：个性没打勾的每轮都说，打勾的闭嘴
+  return alive.filter((a) => !quiet.has(String(a.id)));
 }
 
 /** 从这句话里认出被点了名的卡（返回 id 数组，可能为空） */
@@ -261,15 +282,27 @@ export function parseMentions(text, roster = []) {
 
 
 /**
- * 记住@的人·2026-10-29
  * 说完这句话之后，「谁还能说话」的名单该怎么变。
  *
- *   · 这句带 @：名单换成被 @ 的人（其他人从这一刻起闭嘴）
- *   · 这句没 @：名单一个字不动（沿用上次的判断）
- *   · 一直没 @ 过：null（意思是「没限制，谁都能说」）
+ * 2026-11-01 主人改了主意，规矩跟着改：
+ *
+ *   · 这句 @ 了「个性打勾」的人（叫才应那种）→ **不记账**。
+ *     主人要的是「打勾的只在被叫时答一句就住口」，所以下一句回到默认，
+ *     不点名就没人应，不会因为她被叫过就一直霸着场。
+ *   · 这句 @ 了「个性没打勾」的人 → 记下来，之后一直只由这批人说话，
+ *     直到主人再次 @ 别人。
+ *   · 这句没 @ → 名单一个字不动（沿用上次的判断）。
+ *
+ * @param {Array<string>|null} prevAllowed 上一轮留下的名单
+ * @param {string} userText 主人这句原话
+ * @param {Array} roster 屋里的卡
+ * @param {Array<string>} quietIds 「个性打勾」的卡 = 叫才应
  */
-export function nextAllowedIds(prevAllowed, userText, roster = []) {
+export function nextAllowedIds(prevAllowed, userText, roster = [], quietIds = []) {
   const hits = parseMentions(String(userText || ''), roster);
-  if (hits.length) return hits;            // 重新判断：只留被 @ 的
-  return Array.isArray(prevAllowed) ? prevAllowed : null;
+  if (!hits.length) return Array.isArray(prevAllowed) ? prevAllowed : null;
+  const quiet = new Set((Array.isArray(quietIds) ? quietIds : []).map((x) => String(x)));
+  // 被点的全是「叫才应」→ 只说这一轮，不立规矩
+  if (!hits.some((id) => !quiet.has(String(id)))) return null;
+  return hits;
 }

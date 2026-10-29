@@ -129,6 +129,11 @@ import {
   setSessionAgent,
   groupAgentIds,
   setSessionGroup,
+  /* 屋里的人·2026-11-01：顺序（拖）与开关（启用才说话） */
+  setSessionGroupOrder,
+  isGroupMemberEnabled,
+  setGroupMemberEnabled,
+  groupEnabledMap,
   /* 颜色接口·2026-10-29 */
   agentColor,
   agentColorMap,
@@ -3902,10 +3907,20 @@ const server = createServer(async (req, res) => {
     try {
       const qsid = String(url.searchParams.get('sessionId') || '').trim();
       const ids = groupAgentIds(qsid);
-      // members 是给左上角那竖列「屋里的人」按钮用的（带 id / kind / 安静 标记）
+      // members 是给左边那竖列「屋里的人」按钮用的（带 id / kind / 安静 / 开没开 / 颜色）
+      const onMap = groupEnabledMap(qsid);
       const members = ids.map((id) => {
         const a = getAgent(id);
-        return a ? { id, name: String(a.name || ''), kind: String(a.kind || ''), quiet: isAgentQuiet(id) } : null;
+        if (!a) return null;
+        return {
+          id,
+          name: String(a.name || ''),
+          kind: String(a.kind || ''),
+          quiet: isAgentQuiet(id),
+          // 「屋里的人」那颗牌子开没开：关掉的人这一轮一句话都不说（点名也不应）
+          enabled: onMap[id] !== false,
+          color: (() => { try { return agentColor(id); } catch { return ''; } })(),
+        };
       }).filter(Boolean);
       return json(res, 200, {
         ok: true,
@@ -3916,9 +3931,46 @@ const server = createServer(async (req, res) => {
         names: members.map((m) => m.name),
         // 谁「只在叫名字时才说话」——顶栏牌子和名册都要用它画那个小点
         quietIds: ids.filter((id) => isAgentQuiet(id)),
+        // 谁被关掉了
+        offIds: members.filter((m) => m.enabled === false).map((m) => m.id),
       });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
+   * 【屋里的人：换个顺序 / 开或关一张牌】
+   *
+   * 主人原话（2026-11-01）：「名字可长按上下拖动，比如我把【小鲸】拖动到小鱼上面，
+   * 那么此时小鲸的方块变成原来第一个的小鱼的方框的那种实线，小鱼的方框变成小鲸的
+   * 那种虚线，说话顺序按从上到下顺序来，且仅对于小鱼与小鲸来说，屏幕上方的【小鱼】
+   * 与【小鲸】按钮只有启用时她们才说话，禁用时不说话。」
+   */
+  if (req.method === 'POST' && url.pathname === '/api/agents/group/order') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: '请求体不是 JSON' }); }
+    try {
+      const sid = String(payload?.sessionId || '').trim();
+      const r = setSessionGroupOrder(sid, payload?.agentIds);
+      if (!r) return json(res, 500, { error: '没存下来' });
+      return json(res, 200, { ok: true, ...r });
+    } catch (e) {
+      return json(res, Number(e?.status) || 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/group/toggle') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: '请求体不是 JSON' }); }
+    try {
+      const sid = String(payload?.sessionId || '').trim();
+      const id = String(payload?.id || '').trim();
+      const r = setGroupMemberEnabled(id, sid, payload?.enabled !== false);
+      if (!r) return json(res, 500, { error: '没存下来' });
+      return json(res, 200, { ok: true, ...r });
+    } catch (e) {
+      return json(res, Number(e?.status) || 500, { error: String(e?.message ?? e) });
     }
   }
 
@@ -7252,25 +7304,30 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       if (process.env.GROUP_CHAT !== '0') {
         try {
-          // 小鲸那条总开关关着的时候，她不该被群聊拉出来说话（那是「她关掉了」）
+          /* 2026-11-01「屋里的人」：顺序 = 说话顺序（谁前谁先说），开关 = 这一轮谁说。
+             小鲸不再看 whaleOn —— 那颗钥匙管的是「她能不能被叫出去干活」，
+             一关连她坐下来聊天都没了，那是误伤。她在这间屋子的开关就看 her 那颗牌。 */
           const roster = groupAgentIds(sessionId)
-            .filter((id) => (id === AGENT_XIAOJING ? whaleOn(sessionId) : true))
             .map((id) => getAgent(id))
             .filter(Boolean);
-          // 「别一直全员齐发」：点了名的只让被点的接，没点名就跳过「安静」的卡。
+          const enabledIds = roster
+            .map((a) => String(a.id))
+            .filter((id) => isGroupMemberEnabled(id, sessionId));
+          // 「别一直全员齐发」：点名只让被点的接；没点名就看「个性」那个勾。
           // 认的是 `@名字`（见 group.mjs 的 pickSpeakers），不认「句子里出现过名字」——
           // 那样「阿绿昨天说的办法」会把她拽出来重答一遍。
           const { speakAsCard, pickSpeakers, nextAllowedIds } = await import('./group.mjs');
           const heard = String(lastUserTextOf(session) || '');
-          /* 记住@的人·2026-10-29 上次 @ 过谁，名单一直管到下次 @ */
+          /* 记住@的人·2026-10-29 / 2026-11-01 改口径：@ 了没打勾的人 → 之后一直只留他们；
+             @ 的只是打勾的人 → 说完这句就撤，不立规矩。 */
           const prevAllowed = allowedSpeakersOf(sessionId);
+          const quietIds = quietAgentIds();
           const speakers = roster.length
-            ? pickSpeakers({ roster, userText: heard, quietIds: quietAgentIds(), allowedIds: prevAllowed })
+            ? pickSpeakers({ roster, userText: heard, quietIds, allowedIds: prevAllowed, enabledIds })
             : [];
           if (speakers.length) {
-            /* 记住@的人·2026-10-29 这句带 @ 就换成被 @ 的；不带 @ 就沿用旧的。 */
             try {
-              setAllowedSpeakers(sessionId, nextAllowedIds(prevAllowed, heard, roster));
+              setAllowedSpeakers(sessionId, nextAllowedIds(prevAllowed, heard, roster, quietIds));
             } catch { /* 存不上不影响这一轮 */ }
             let burned = 0;
             for (const mate of speakers) {

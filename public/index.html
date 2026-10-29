@@ -793,14 +793,29 @@
       cursor: pointer; transition: background .12s, border-color .12s, color .12s;
     }
     #whoRail .whoBtn:hover { background: #1d2430; border-color: var(--border); }
-    #whoRail .whoBtn.me { background: #1d2430; border-color: rgba(240, 166, 160, .6); color: #f0a6a0; }
-    #whoRail .whoBtn.whale { background: #1d2430; border-color: rgba(150, 200, 245, .55); color: #a8cdf5; }
-    /* 【2026-10-29 对齐左侧方块】悬停不再跑到 #232b39，
-       跟 .sessRow:hover 用同一个 #1d2430 + var(--border)。
-       原来 me/whale 自带 #1d2430 底，悬停再刷深一档，跟左边就对不上了。 */
-    #whoRail .whoBtn.me:hover, #whoRail .whoBtn.whale:hover,
-    #whoRail .whoBtn.quiet:hover { background: #1d2430; border-color: var(--border); }
-    #whoRail .whoBtn.quiet { border-style: dashed; }
+    /* 【2026-11-01 实线 / 虚线换位】主人原话：「我把【小鲸】拖动到小鱼上面，那么此时
+       小鲸的方块变成原来第一个的小鱼的方框的那种实线，小鱼的方框变成小鲸的那种虚线」。
+       也就是说：**实线 = 排第一个的那个（她先说）**，其余一律虚线。
+       所以样式不能再按「me（小鱼）/ whale（小鲸）」分，改成按位置分：
+       .first 走实线，其它走虚线；颜色仍各归各的（小鱼粉、小鲸蓝、其余白）。 */
+    #whoRail .whoBtn.first {
+      background: #1d2430;
+      border-style: solid;
+      border-color: var(--whoC, rgba(240, 166, 160, .6));
+      color: var(--whoC, #f0a6a0);
+    }
+    #whoRail .whoBtn { border-style: dashed; border-color: var(--whoC, var(--border)); color: var(--whoC, var(--text)); }
+    #whoRail .whoBtn.first:hover, #whoRail .whoBtn:hover { background: #1d2430; border-color: var(--border); }
+    /* 关掉的牌：暗下去 + 划掉，一眼看得出「她这会儿不说话」 */
+    #whoRail .whoBtn.off {
+      opacity: .45;
+      text-decoration: line-through;
+      border-style: dashed;
+    }
+    /* 拖动中的那枚：抬起来一点点，别挡住别人的位置反而看不清拖到哪了 */
+    #whoRail .whoBtn.dragging { opacity: .5; transform: scale(.97); }
+    /* 拖到谁头上：被占位的那个往里让 */
+    #whoRail .whoBtn.dropOn { box-shadow: inset 0 0 0 1px var(--accent); }
     #whoRail .whoCap { font-size: 10.5px; color: var(--dim); padding-left: 2px; margin-bottom: -2px; }
 
     /* 新建会话的挑人框 */
@@ -2781,13 +2796,15 @@
             <span id="agGroupHint" class="agGroupHint"></span>
           </div>
           <div class="agRow">
-            <!-- 个性改版·2026-10-30：不勾＝你说什么都答；@ 了谁，没被 @ 的就不出声，一直管到下次 @ 才重新判断。 -->
-                 所以给每张卡一个「安静」：打开它，她就只在 `@她` 的时候开口。
+            <!-- 个性·2026-11-01（主人原话）：「个性如果没打勾的话，所有没打勾的已启用角色
+                 每一轮都会说话，直到我主动艾特某个或多个人，从艾特那一刻开始接下来只有那些
+                 角色说话，直到我再次艾特……如果个性打勾了，那么仅艾特时说一轮话且后续不再说话」。
+                 所以：不勾＝每轮都接一句（默认）；勾上＝叫才应，而且只应那一次，之后不再霸场。
                  这是她的性子（阿绿话少），所以存在卡上，换个会话照样记得。 -->
             <label>个性</label>
             <label class="agQuietWrap">
               <input type="checkbox" id="agQuiet">
-              <span>只在被 @ 到的时候才说话（不勾＝你说什么都答）</span>
+              <span>勾上＝只有你叫她的名字（@她）才应一句，应完就住口；不勾＝每轮都说一句</span>
             </label>
           </div>
           <div class="agRow">
@@ -8112,7 +8129,11 @@ async function refreshAgentChip() {
    * 一旦主人把她的安静去掉（她会每轮都接），或者勾了别人，牌子才亮。
    */
   const grpMembers = (grp && !grp.error && Array.isArray(grp.members)) ? grp.members : [];
-  const loud = grpMembers.filter((m) => !(m.quiet && String(m.id) === 'xiaojing'));
+  /* 2026-11-01：关掉的牌（enabled === false）这一轮一句话都不说，所以算「不在场」；
+     「叫才应」的不再当噪音删掉 —— 她们被点名应一句是主人看得见的事，
+     但默认那间屋子（小鱼 + 打勾的小鲸）仍然不点亮牌子，免得每个会话都挂一块。 */
+  const alive = grpMembers.filter((m) => m.enabled !== false);
+  const loud = alive.filter((m) => !(m.quiet && String(m.id) === 'xiaojing'));
   const mates = loud.map((m) => String(m.id));
   const mateNames = loud.map((m) => String(m.name || '')).filter(Boolean);
   // 默认就是小鱼：既没换人、也没别人在场的时候不挂牌（左边标题已经写着「小鱼」）
@@ -8150,12 +8171,18 @@ function callIntoRoom(name) {
 }
 
 /**
- * 【屋里的人】左上角那竖列按钮 —— 2026-10-31 主人指着截图定的位置。
+ * 【屋里的人】左边那竖列按钮 —— 2026-10-31 主人指着截图定的位置。
  *
  * 为什么要有它：一个会话里坐着好几个人以后，「谁在这屋里」在屏幕上一点痕迹都没有，
- * 主人会以为程序自己在说话。小鱼永远第一个；其余按名单来（小鲸默认在，只是「叫才应」）。
+ * 主人会以为程序自己在说话。
  *
- * 谁调它：loadTopCfg（开机 + 每次切会话）、新建会话之后、改名单之后、改安静之后。
+ * 2026-11-01 主人又定了三条规矩，全在这里：
+ *   ① 名字后面不再挂「·静」，只留名字；
+ *   ② 名字可以长按 + 上下拖动换顺序，**排最上面那个走实线**（她先说），其余虚线 ——
+ *      说话顺序就按从上到下；
+ *   ③ 点一下 = 开/关她（关掉划掉变暗，这一轮她一句话都不说，点名也不应）。
+ *
+ * 谁调它：loadTopCfg（开机 + 每次切会话）、新建会话之后、改名单/安静/开关/顺序之后。
  */
 async function refreshWhoRail() {
   const box = document.getElementById('whoRail');
@@ -8175,25 +8202,126 @@ async function refreshWhoRail() {
   cap.className = 'whoCap';
   cap.textContent = '屋里的人';
   box.appendChild(cap);
-  const mk = (label, cls, title, name) => {
+  /* 名字第一颗字是有色的小点：主人的色卡里每张卡一个颜色，位置一换颜色要跟着人走 */
+  const mk = (m, idx) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'whoBtn' + (cls ? ' ' + cls : '');
-    b.textContent = label;
-    b.title = title;
-    b.onclick = () => callIntoRoom(name);
+    const off = m.enabled === false;
+    b.className = 'whoBtn' + (idx === 0 ? ' first' : '') + (off ? ' off' : '');
+    b.textContent = String(m.name || '她');
+    b.dataset.agentId = String(m.id || '');
+    b.style.setProperty('--whoC', String(m.color || ''));
+    b.title = [
+      idx === 0 ? '排第一个 —— 这一轮她先说' : `第 ${idx + 1} 个说话（顺序从上往下）`,
+      off ? '现在是关着的：这一轮她一句话都不说（点一下打开）' : '点一下关掉她这一轮；长按可上下拖动换顺序',
+      m.quiet ? '个性打了勾：只有你叫她的名字（@她）才答' : '个性没打勾：每轮都会说一句',
+      '双击 = 在输入框里叫她的名字',
+    ].join('\n');
+    b.onclick = () => { if (!b._dragged) toggleWhoBtn(m.id, off); b._dragged = false; };
+    b.ondblclick = () => callIntoRoom(String(m.name || ''));
+    makeWhoBtnDraggable(b);
+    b.oncontextmenu = (e) => { e.preventDefault(); callIntoRoom(String(m.name || '')); };
     box.appendChild(b);
   };
-  mk('小鱼', 'me', '这个会话的主声是她。点一下 = 在输入框里叫她的名字', '小鱼');
-  for (const m of members) {
-    const nm = String(m.name || '');
-    if (!nm || String(m.id) === 'xiaoyu') continue;
-    const quiet = !!m.quiet;
-    mk(nm + (quiet ? ' ·静' : ''), (m.kind === 'whale' ? 'whale' : '') + (quiet ? ' quiet' : ''),
-      quiet ? '她在屋里，但只在你叫名字（@她）的时候说话' : '点一下 = 在输入框里叫她的名字',
-      nm);
-  }
+  members.forEach((m, i) => mk(m, i));
   box.hidden = false;
+}
+
+/** 开/关「屋里的人」里那颗牌（关掉 = 这一轮她一句话都不说） */
+async function toggleWhoBtn(agentId, wasOff) {
+  const sid = (typeof sessionId === 'string' && sessionId) ? sessionId : '';
+  if (!sid || !agentId) return;
+  try {
+    const r = await fetch('/api/agents/group/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, id: agentId, enabled: wasOff }),
+    }).then((x) => x.json());
+    if (r && r.error) throw new Error(r.error);
+  } catch (e) {
+    try { toast('没切成：' + (e && e.message ? e.message : e)); } catch { /* 忽略 */ }
+  }
+  try { await refreshWhoRail(); } catch { /* 忽略 */ }
+  try { refreshAgentChip(); } catch { /* 忽略 */ }
+}
+
+/**
+ * 长按 + 上下拖动换顺序（2026-11-01 主人：「名字可长按上下拖动」）。
+ *
+ * 为什么不是直接 dragstart：鼠标一按下就变成拖，很容易在点开关的时候误拖动。
+ * 所以先按住 260ms（长按）才进拖动状态；松手时谁在前面谁先说。
+ * 触屏同样吃 pointer 事件，手机上也能拖。
+ */
+function makeWhoBtnDraggable(btn) {
+  let holdTimer = null;
+  let dragging = null;
+  let startY = 0;
+  const rail = btn.parentElement;
+  const clearHold = () => { if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; } };
+  const stop = (e) => {
+    clearHold();
+    if (dragging) {
+      btn.classList.remove('dragging');
+      for (const el of rail.querySelectorAll('.whoBtn')) el.classList.remove('dropOn');
+      dragging = null;
+      btn._dragged = true;
+      setTimeout(() => { btn._dragged = false; }, 30);
+      void commitWhoOrder();
+    }
+    try { btn.releasePointerCapture(e.pointerId); } catch { /* 忽略 */ }
+  };
+  btn.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    startY = e.clientY;
+    clearHold();
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      dragging = btn;
+      btn.classList.add('dragging');
+      try { btn.setPointerCapture(e.pointerId); } catch { /* 忽略 */ }
+    }, 260);
+  });
+  btn.addEventListener('pointermove', (e) => {
+    if (!dragging) {
+      // 还没长按就移动太多 → 说明主人只是想点，不算长按
+      if (Math.abs(e.clientY - startY) > 6) clearHold();
+      return;
+    }
+    e.preventDefault();
+    const list = [...rail.querySelectorAll('.whoBtn')].filter((el) => el !== btn);
+    let before = null;
+    for (const el of list) {
+      const r = el.getBoundingClientRect();
+      if (e.clientY < r.top + r.height / 2) { before = el; break; }
+    }
+    for (const el of rail.querySelectorAll('.whoBtn')) el.classList.remove('dropOn');
+    if (before) { before.classList.add('dropOn'); rail.insertBefore(btn, before); }
+    else { rail.appendChild(btn); }
+  });
+  btn.addEventListener('pointerup', stop);
+  btn.addEventListener('pointercancel', stop);
+  btn.addEventListener('pointerleave', () => { if (!dragging) clearHold(); });
+}
+
+/** 把当前竖列的顺序存回去 */
+async function commitWhoOrder() {
+  const sid = (typeof sessionId === 'string' && sessionId) ? sessionId : '';
+  const rail = document.getElementById('whoRail');
+  if (!sid || !rail) return;
+  const ids = [...rail.querySelectorAll('.whoBtn')].map((el) => el.dataset.agentId).filter(Boolean);
+  try {
+    const r = await fetch('/api/agents/group/order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, agentIds: ids }),
+    }).then((x) => x.json());
+    if (r && r.error) throw new Error(r.error);
+  } catch (e) {
+    try { toast('顺序没存上：' + (e && e.message ? e.message : e)); } catch { /* 忽略 */ }
+  }
+  // 重画一次：实线要跟着「第一个」走（拖完小鲸到最上，她就得变成实线那块）
+  try { await refreshWhoRail(); } catch { /* 忽略 */ }
+  try { refreshAgentChip(); } catch { /* 忽略 */ }
 }
 
 /**
@@ -8323,10 +8451,11 @@ function renderGroupRow() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'agMem' + (on ? ' on' : '') + (a.quiet ? ' quiet' : '');
-    b.textContent = String(a.name || '她') + (a.quiet ? ' ·静' : '');
+    /* 2026-11-01：名字只留名字，不再挂「·静」；有没有打勾看虚线框和 tooltip 就够了 */
+    b.textContent = String(a.name || '她');
     b.title = on
       ? (a.quiet
-        ? '她在屋里，但只在被 @ 到的时候才说话 —— 点一下让她出去'
+        ? '她在屋里，但只有你叫她的名字（@她）才应一句 —— 点一下让她出去'
         : '她在屋里，每轮都接一句 —— 点一下让她出去')
       : '点一下：让她也在这个会话里说话';
     b.onclick = () => toggleGroupMember(String(a.id));
@@ -8336,7 +8465,7 @@ function renderGroupRow() {
     const n = agentGroup.length;
     const quiets = cards.filter((a) => a.quiet && agentGroup.includes(String(a.id))).length;
     hint.textContent = n
-      ? `这个会话里小鱼 + ${n} 个还会接着说话${quiets ? `（其中 ${quiets} 个要 @ 才说）` : ''}；说话时写「@名字」就只让被叫的人接`
+      ? `这个会话里小鱼 + ${n} 个还会接着说话${quiets ? `（其中 ${quiets} 个叫名字才应）` : ''}；写「@名字」就只让被叫的人接`
       : '只有小鱼一个人说话。点了谁，小鱼答完她就会接着补一句';
   }
 }

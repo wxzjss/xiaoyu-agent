@@ -699,9 +699,30 @@ export const tools = [
       required: ['to', 'text'],
     },
     async run({ to, text, wake }) {
-      const me = CTX.sessionId || 'default';
+      // 【要读这一轮自己的上下文，不是全局那份】2026-10-29 修
+      // CTX 是全局兜底：另一个会话正在跑的时候它会被顶掉，这里读到的 sessionId 就成了别人。
+      // 查小鲸开关必须按「谁在调这个工具」来查，读错了就等于查的是别人的开关。
+      const me = ctxNow().sessionId || 'default';
       if (!to) return '要告诉我是哪个会话（to）。先用 list_peers 看一眼有哪些。';
       if (String(to) === String(me)) return '那是你自己（' + me + '），别给自己发。';
+
+      /**
+       * 【小鲸的按钮关着，就别往她那儿递】—— 2026-10-29 修
+       *
+       * ask_subagent 那边一直有这道门，ask_peer 这条却漏了。
+       * 漏掉的后果不是「她多听到一句」这么轻：她的信箱只要有东西，
+       * 下一轮收尾就会被动开口说话 —— 主人屏幕上那颗按钮明明是灭的，
+       * 她却冒出来了。主人 2026-10-29 报的就是这个。
+       *
+       * 这里挡的是源头：开关关着，话根本不落进她信箱。
+       */
+      if (String(to) === 'whale') {
+        const { whaleOn } = await import('./whale-presence.mjs');
+        if (!whaleOn(me)) {
+          return '小鲸现在没被放出来（顶栏那颗「小鲸」按钮是关着的），话不能递给她。'
+            + '要跟她说话得先由主人把按钮打开 —— 那是主人的开关，别自己去开。';
+        }
+      }
       const title = (() => {
         try {
           const s = listSessions().find((x) => x.id === me);
@@ -717,7 +738,7 @@ export const tools = [
         return head + '她下次说话时会看到（不打断她现在手上的活）。';
       }
       // 叫醒：让 server 那边替她开一轮。只有明确要求才做，因为要花钱。
-      const hook = CTX.wakePeer;
+      const hook = ctxNow().wakePeer;
       if (typeof hook !== 'function') return head + '（这个环境下没法叫醒她，她下次说话时会看到）';
       try {
         const out = await hook(String(to));
@@ -740,7 +761,7 @@ export const tools = [
     },
     async run({ limit }) {
       const n = Math.max(1, Math.min(30, Number(limit) || 12));
-      const me = CTX.sessionId || 'default';
+      const me = ctxNow().sessionId || 'default';
       let list = [];
       try {
         list = listSessions();
@@ -787,7 +808,7 @@ export const tools = [
       required: [],
     },
     async run({ peek }) {
-      const me = CTX.sessionId || 'default';
+      const me = ctxNow().sessionId || 'default';
       const mails = peek ? peekMail(me) : takeMail(me);
       if (!mails.length) return '信箱是空的。';
       return formatMail(mails);
@@ -1135,7 +1156,7 @@ export const tools = [
        */
       try {
         const { whaleOn } = await import('./whale-presence.mjs');
-        const sid = CTX.sessionId || 'default';
+        const sid = ctxNow().sessionId || 'default';
         if (!whaleOn(sid)) {
           return '【' + nick + ' 不在场】这个会话里你还没把她叫上（顶栏「小鲸」按钮是关着的）。'
             + '要先在主界面上把那个按钮打开，我才能找她干活。别自己去开，那是主人的开关。';
@@ -1153,7 +1174,7 @@ export const tools = [
        * 这样主人看到的是一条完整对话，而不是半截。
        */
       try {
-        const push = CTX.pushEvent;
+        const push = ctxNow().pushEvent;
         if (typeof push === 'function') {
           push({
             type: 'whale',
@@ -1203,7 +1224,7 @@ export const tools = [
       if (r.text) {
         try {
           const { pushWhaleSays } = await import('./whale-voice.mjs');
-          pushWhaleSays(CTX.sessionId || 'default', r.text, displayName, sayMeta);
+          pushWhaleSays(ctxNow().sessionId || 'default', r.text, displayName, sayMeta);
         } catch (e) {
           console.warn('[ask_subagent] 她的话没进信箱：', String(e?.message ?? e));
         }

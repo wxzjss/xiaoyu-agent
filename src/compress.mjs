@@ -117,12 +117,41 @@ export function purifyWire(messages) {
  */
 let calibRatio = 1.6;   // 起点就用实测那个 1.61，别从 1 慢慢爬
 
+/**
+ * 只给了图片路径、还没读成 dataUrl 时，按多少字符估一张图。
+ *
+ * 为什么是 1 万：本机实测过的几张截图是 19KB~1.2MB，base64 后 26KB~1.6MB。
+ * 取 1 万是个「中等偏保守」的值 —— 反正真到了 inflate 之后会按真实长度重算，
+ * 这个数只在「还没读文件」的那一步用，宁高勿低。
+ */
+const IMAGE_ESTIMATE_CHARS = 10000;
+
 /** 真实用量回来了：校准一下估算系数 */
 export function noteRealTokens(realTokens, estimatedTokens) {
   const real = Number(realTokens);
   const est = Number(estimatedTokens);
   if (!Number.isFinite(real) || !Number.isFinite(est) || real <= 0 || est <= 0) return;
-  const ratio = Math.min(8, Math.max(1, real / est));
+  /**
+   * 【比例离谱的时候别校】—— 2026-11-01 补
+   *
+   * 上面那个 1~8 的夹子是防数据脏的，但它防不住另一种情况：
+   * 估算里根本漏了一整块（图片 base64 曾经就完全不在账上），于是
+   * real/est 一下冲到几十上百，被夹到 8，然后「挪一半」把 calibRatio
+   * 从 1.6 拖到 4.8 —— 下一次普通会话的估算就凭空虚高三倍，
+   * 一压就压过头。
+   *
+   * 那个 826 万 → 24 万的暴力落底，很可能就是这么来的。
+   *
+   * 现在：ratio 超过 6 判定为「估算漏了东西」（不是真的比例大），
+   * 只把系数往上限方向挪一小步就走，不参与正常校准。
+   */
+  const raw = real / est;
+  if (raw > 6) {
+    // 估算明显漏项：保守地抬高一点点，别让判断继续低估，但绝不当真值用
+    calibRatio = Math.min(8, calibRatio + 0.2);
+    return;
+  }
+  const ratio = Math.min(8, Math.max(1, raw));
   calibRatio = calibRatio * 0.5 + ratio * 0.5;
 }
 
@@ -135,16 +164,55 @@ export function estimateTokens(messages) {
   let total = 0;
   for (const m of messages) {
     total += PER_MESSAGE_OVERHEAD;
-    // content 可能是多模态数组：只取文字段，base64 不计入预算
+    /**
+     * 【图片必须计入预算】—— 2026-11-01 修
+     *
+     * 以前这里是 filter(p => p.type === 'text')，把 image_url 段整个丢掉了，
+     * 注释还写着「base64 不计入预算」。可网关那边**是算的**：inflateImages
+     * 把图读成 dataUrl 塞进 content，一张 1.2MB 的截图 base64 后是 1.6MB，
+     * 按 1.5 字符/token 算就是 100 万 token 上下。
+     *
+     * 后果是两头都错：
+     *   一、带图的会话永远判「还没到线」，压都不压，一路堆到网关打回；
+     *   二、真实用量回来时 real/est 被顶到 8 倍上限，把 calibRatio 钉死，
+     *       反过来让**所有**会话的估算虚高、一压就压过头 ——
+     *       实测见过一轮里 826 万 → 24 万这种暴力落底。
+     *
+     * 现在：已经是 dataUrl 的按真实 base64 长度算；只有路径的（落盘形态，
+     * 还没 inflate）按保守估值算 —— 宁可高估，也别等网关打回来再傻眼。
+     */
     const raw = m.content;
-    const textOnly = Array.isArray(raw)
-      ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n')
-      : raw;
-    const parts = [textOnly];
-    if (m.tool_calls) for (const tc of m.tool_calls) parts.push(tc.function?.name, tc.function?.arguments);
-    for (const p of parts) {
-      if (typeof p !== 'string' || !p) continue;
-      total += Math.ceil(p.length / 1.5 * calibRatio);
+    let textChars = 0;
+    let imageChars = 0;
+    if (Array.isArray(raw)) {
+      for (const p of raw) {
+        if (!p) continue;
+        if (typeof p.text === 'string') textChars += p.text.length;
+        else if (p.type === 'image_url') {
+          const url = p.image_url?.url;
+          imageChars += typeof url === 'string' && url.startsWith('data:') ? url.length : IMAGE_ESTIMATE_CHARS;
+        }
+      }
+    } else if (typeof raw === 'string') {
+      textChars = raw.length;
+    }
+    // 落盘形态的图：只有路径、还没 inflate，按保守值记一笔
+    if (Array.isArray(m._images) && m._images.length) {
+      imageChars += m._images.length * IMAGE_ESTIMATE_CHARS;
+    }
+    if (textChars) total += Math.ceil((textChars / 1.5) * calibRatio);
+    // 图片不乘 calibRatio：那个系数是拿「文字字符/token」实测校出来的，
+    // 套到 base64 上会把系数带偏，反而更不准。
+    if (imageChars) total += Math.ceil(imageChars / 1.5);
+    if (m.tool_calls) {
+      let callChars = 0;
+      for (const tc of m.tool_calls) {
+        const f = tc && tc.function;
+        if (!f) continue;
+        if (typeof f.name === 'string') callChars += f.name.length;
+        if (typeof f.arguments === 'string') callChars += f.arguments.length;
+      }
+      if (callChars) total += Math.ceil((callChars / 1.5) * calibRatio);
     }
   }
   return total;

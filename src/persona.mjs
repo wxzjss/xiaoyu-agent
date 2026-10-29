@@ -135,7 +135,7 @@ export function personaModeRules(settings = getSettings()) {
  * @param {string} [opts.safeWord] which safe word fired (drives which note applies)
  * @param {string} [opts.agentId] 用哪张卡的人设（群聊里替别人说话时用；不传就按会话绑定的那张）
  */
-export function buildSystemPrompt({ sessionId = 'default', safeMode = false, safeWord = "", agentId = "" } = {}) {
+export function buildSystemPrompt({ sessionId = 'default', safeMode = false, safeWord = "", agentId = "", turnSource = "" } = {}) {
   // 专业模式：人设、思考语言、说话规矩、安全词、人设档、会话记忆全部不发
   // —— 主人要的就是「只看对话本身」。这里必须是第一判断，免得后面任何一块漏出去。
   // 但只发一条「答短点」：系统提示全空的话，模型没有任何长度锚点，会突然拉长篇大论。
@@ -245,6 +245,21 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
     try { return adminPromptBlock(sessionId); } catch { return ''; }
   })();
   if (adm) parts.push(adm);
+
+  /**
+   * 【这一轮是从哪儿来的】2026-10-30
+   *
+   * 主人问「QQ 聊天时候你知道自己在 QQ 聊天吗」——原来是不知道的。
+   * QQ 那句被当成普通 user 消息塞进历史，唯一的 _who 只给界面署名用，
+   * 模型看不到，于是把 QQ 那头的人默认成主人，还让他「看我这」。
+   *
+   * turnSource 由 agent.mjs 从 turn-source.mjs 取来传进来：没标记就是 '',
+   * 一个字不花、缓存前缀不动。跟 admin 块同一个道理 —— 只在她真需要知道时加。
+   */
+  if (!safeMode) {
+    const src = String(turnSource || '').trim();
+    if (src) parts.push(src);
+  }
   // 会话记忆放最后：它是唯一一块每轮变长的，跟读者走，不能渲染前面的每一句。
   const mem = memoryBlock(sessionId);
   if (mem) parts.push(mem);

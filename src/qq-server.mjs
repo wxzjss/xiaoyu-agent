@@ -21,6 +21,7 @@
  * 那些坑都一样 —— 下面的代码就是照着 startPeerTurn 抄的骨架，别自己另发明一套。
  */
 import { repairHistory } from './agent.mjs';
+import { setTurnSource, clearTurnSource } from './turn-source.mjs';
 
 let H = null;
 
@@ -148,6 +149,15 @@ export async function runQqTurn({ sessionId, text, fromQq, onEvent } = {}) {
     const wire = history.slice(); // 浅拷贝：runAgent 会重建数组，引用必须留住
     const seen = new Set(history);
     const snap = h.snapFor ? h.snapFor(id) : {};
+    // 2026-10-30：告诉这一轮的她「这话是从 QQ 递进来的、是 XX 说的」。
+    // 不这么做的话她分不清电脑前的主人还是 QQ 那头的人，会让人「看我这」。
+    setTurnSource(id, {
+      source: 'qq',
+      who: (fromQq && fromQq.name) || '',
+      // 名字靠不住，号才作数 —— 主人 2026-10-30 特意交代要带上
+      whoId: (fromQq && fromQq.openid) || '',
+      isOwner: !!(fromQq && fromQq.isOwner),
+    });
     const out = await h.runWithToolContext({ sessionId: id, snap, signal: ac.signal, outbox: null }, () => h.runAgent({
       messages: wire,
       signal: ac.signal,
@@ -173,6 +183,8 @@ export async function runQqTurn({ sessionId, text, fromQq, onEvent } = {}) {
     throw e;
   } finally {
     live.done = true;
+    // 这一轮结束，来源标记马上摘掉：绝不能让下一轮（主人在界面打字）误以为来自 QQ
+    clearTurnSource(id);
     if (h.runningTurns.get(id) === turn) h.runningTurns.delete(id);
   }
 }

@@ -15,6 +15,8 @@ import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 import { fishOn } from './fish-presence.mjs';
 // 会话绑的智能体卡：绑了自定义卡，基线人设就换成那张卡的正文（见 agents.mjs）。
 import { agentForSession, getAgent, groupAgentIds } from './agents.mjs';
+// 管理员权限：这个会话开了那一档就把「整台机器都能动」写进提示词（见 admin-mode.mjs）。
+import { adminPromptBlock } from './admin-mode.mjs';
 /**
  * 【这一轮是谁在说话】—— 2026-10-28
  *
@@ -229,6 +231,20 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   // 放在人设后面紧挨着它；但必须在会话记忆之前 —— 记忆块是滚动的逐次变长，贴在它后面的话，下一轮就离人设很远了。
   const nv = identityNoteBlock(sessionId);
   if (nv) parts.push(nv);
+  /**
+   * 【管理员权限 · 2026-11-01】
+   *
+   * 主人给这个会话按了「管理员权限」那一档（按会话存，见 src/admin-mode.mjs）。
+   * 参考 dsh-admin-mode 那条「操控提示」：模型不知道自己有权限时，会先客气一句
+   * 「要不要我去桌面看看」—— 主人已经开过了，还得再答一次，白费一轮。
+   *
+   * 没开的时候 adminPromptBlock 返回 ''，一个字不花，缓存前缀不动。
+   * 放在身份那段之后、会话记忆之前：记忆块是逐次变长的，不能贴在它后面。
+   */
+  const adm = (() => {
+    try { return adminPromptBlock(sessionId); } catch { return ''; }
+  })();
+  if (adm) parts.push(adm);
   // 会话记忆放最后：它是唯一一块每轮变长的，跟读者走，不能渲染前面的每一句。
   const mem = memoryBlock(sessionId);
   if (mem) parts.push(mem);

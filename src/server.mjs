@@ -34,6 +34,33 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted } from './resume.mjs';
+
+/**
+ * 【诊断日志】2026-10-31 加
+ *
+ * 以前断流、续跑失败这些错误只 console.warn 到 stderr ——
+ * 可打包版的 stderr 是进 Electron 的，主人和下一个我都看不见，
+ * 排查时只能靠猜（「续跑为什么没续上」就是猜了半天才找到）。
+ *
+ * 现在一律往 .state/diag.log 追加一行带时间的记录，最多留 800 行。
+ */
+import { appendFileSync as __diagAppend, mkdirSync as __diagMkdir, readFileSync as __diagRead, writeFileSync as __diagWrite } from 'node:fs';
+import { join as __diagJoin } from 'node:path';
+function diagLog(tag, detail) {
+  try {
+    const fs = { appendFileSync: __diagAppend, mkdirSync: __diagMkdir, readFileSync: __diagRead, writeFileSync: __diagWrite };
+    const path = { join: __diagJoin };
+    const dir = path.join(config.dataDir, '.state');
+    fs.mkdirSync(dir, { recursive: true });
+    const line = `${new Date().toISOString()} [${tag}] ${String(detail).replace(/\n/g, ' ').slice(0, 600)}\n`;
+    fs.appendFileSync(path.join(dir, 'diag.log'), line, 'utf8');
+    // 太长就砍掉前面：只留最后 800 行
+    const p = path.join(dir, 'diag.log');
+    const all = fs.readFileSync(p, 'utf8').split('\n');
+    if (all.length > 800) fs.writeFileSync(p, all.slice(-800).join('\n'), 'utf8');
+  } catch { /* 日志写不了也不能影响主流程 */ }
+}
+
 import { getWhaleProfile, saveWhaleProfile, MAX_PERSONA_CHARS, whalePersonaForEditor, defaultWhalePersonaPath } from './whale-profile.mjs';
 // 进程兜底：一处没 catch 的异常不该让整个程序消失。
 import { installGuards, crashSummary } from './crash-guard.mjs';
@@ -100,6 +127,11 @@ import {
   MAX_AGENTS,
   MAX_PERSONA_CHARS as MAX_AGENT_PERSONA_CHARS,
 } from './agents.mjs';
+// 管理员权限：按会话的开关键（见 admin-mode.mjs 文件头）。
+import { adminOn, setAdminOn, adminSessions } from './admin-mode.mjs';
+// 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
+import { recentFrames } from './tools-screen.mjs';
+import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
 import { getFeatures, setFeature, featureNameOfTool, getEnabledMap } from './features.mjs';
 import {
   identityState,
@@ -2240,11 +2272,13 @@ function lastUserLine(sessionId) {
  */
 async function resumeInterruptedTurn() {
   const info = takeInterrupted();
+  diagLog('resume-enter', info ? `session=${info.sessionId}` : 'info=null（没有中断标记）');
   if (!info) return;
   const sessionId = info.sessionId;
   const session = getSession(sessionId);
   if (!session) {
     console.log('[resume] 上次崩的会话已经没了：', sessionId);
+  diagLog('resume-skip:no-session', sessionId);
     return;
   }
   /**
@@ -2255,26 +2289,49 @@ async function resumeInterruptedTurn() {
    */
   if (!fishOn(sessionId)) {
     console.log('[resume] 小鱼在这个会话是关着的，不续跑：', sessionId);
+  diagLog('resume-skip:fish-off', sessionId);
     return;
   }
   const ep = activeEndpoint();
   if (!ep || !ep.apiKey) {
     console.log('[resume] 没配模型，续跑跳过');
+  diagLog('resume-skip:no-endpoint', sessionId);
     return;
   }
   if (runningTurns.get(sessionId)) {
     console.log('[resume] 那个会话已经在跑了，不插队');
+  diagLog('resume-skip:already-running', sessionId);
     return;
   }
   const last = session.messages[session.messages.length - 1];
-  if (!last || last.role !== 'user') {
-    console.log('[resume] 历史最后一句不是主人的话，说明上一轮已经收尾了，不用续');
+  /**
+   * 【判「这一轮到底收完没有」】—— 2026-10-31 改宽
+   *
+   * 原来只认「最后一条是 user」，说这一轮已经收尾了就不续。
+   * 可实测的断法根本不长这样：
+   *   · 跑到一半被重启掐断 → 最后一条是 tool（工具刚返回，模型还没说话）
+   *   · 模型刚说完「我去改」准备调工具 → 最后一条是 assistant，但话没说完活也没干
+   * 这两种都被判成「收尾了」，于是重启后没人接手，主人看到的就是「小鱼干到一半自己停了」。
+   *
+   * 现在反过来判：**只有「最后一条是 assistant、且没有待执行的工具调用」才算真收尾**。
+   * 空壳 assistant（没文字也没工具）也当作没收尾 —— 那是断在半路的疤。
+   */
+  const lastHasTools = !!(last && Array.isArray(last.tool_calls) && last.tool_calls.length);
+  const lastHasText = !!(last && String(last.content ?? '').trim().length);
+  // tool 一律算断在半路：工具刚跑完、话还没来得及说就被掐断了，这是最常见的一种
+  // 【别被草稿回灌骗了】草稿会被补成一条 assistant 消息（带 _recovered），
+  // 补完以后「最后一条是 assistant 有文字」就成立了 —— 可那一轮其实没干完，
+  // 只是被打断后把半截话接回来了。所以先看尾巴有没有 _recovered 的痕迹。
+  // 【只认「紧挨着的那一条」】草稿回灌会把半截话补成一条带 _recovered 的 assistant。
+  // 补回来的那句本身绝对不能算收尾 —— 那一轮其实没干完。
+  // 但如果接回来之后又追加了新的 assistant 收尾，那就是真说完了，不能再续。
+  const lastIsRecovered = !!(last && last._recovered);
+  const reallyFinished = !!(last && last.role === 'assistant' && lastHasText && !lastHasTools && !lastIsRecovered);
+  if (reallyFinished) {
+    console.log('[resume] 上一轮是正常说完的（最后一条 assistant 有文字、没待办工具、不是接回来的），不用续');
+    diagLog('resume-skip:finished', sessionId);
     return;
   }
-
-  console.log(`[resume] 接着跑被打断的那一轮：${sessionId}（${Math.round(info.ageMs / 1000)} 秒前断的）`);
-
-  const ac = new AbortController();
   const turn = { ac, done: null, resumeTurn: true, startedAt: Date.now() };
   runningTurns.set(sessionId, turn);
   try {
@@ -2285,7 +2342,7 @@ async function resumeInterruptedTurn() {
     history.push({
       role: 'user',
       content:
-        '（上一轮跑到一半程序崩了，进程被强杀。你现在是在**接着**那一轮做，' +
+        '（上一轮跑到一半被打断了（程序重启 / 崩溃 / 被关掉都算）。你现在是在**接着**那一轮做，' +
         '不是重新开始；已经说过的话主人已经看到了，别从头复述。）' +
         (info.text ? `\n你当时正说到：「${info.text.slice(-600)}」` : '') +
         (info.taskLine ? `\n主人当时的原话：「${info.taskLine}」` : '') +
@@ -2319,9 +2376,11 @@ async function resumeInterruptedTurn() {
     session.updatedAt = Date.now();
     saveSession(session);
     console.log('[resume] 续跑跑完了：', sessionId, out && out.text ? `（${String(out.text).length} 字）` : '');
+    diagLog('resume-done', `session=${sessionId} textLen=${out && out.text ? String(out.text).length : 0}`);
     return { ok: true, sessionId, text: out && out.text };
   } catch (e) {
     console.warn('[resume] 续跑这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
+    diagLog('resume-fail', `session=${sessionId} ${String(e?.message ?? e)}`);
     return { ok: false, sessionId, error: String(e?.message ?? e) };
   } finally {
     if (runningTurns.get(sessionId) === turn) runningTurns.delete(sessionId);
@@ -3233,6 +3292,53 @@ const server = createServer(async (req, res) => {
     return json(res, 200, getFeatures());
   }
 
+  /**
+   * 【陪看屏幕 · 她最近看过的那几张】2026-11-01
+   *
+   * 主人问过一次「她到底看了什么」，当时只能翻盘上的目录。
+   * 这条接口把最近几帧（时间 / 前台窗口 / 为什么看 / 缩图路径）列出来给界面用。
+   *
+   * 只回**缩图**路径，不回整张原图 —— 缩图 78KB 左右，界面画一排不心疼；
+   * 点开看大图再走 /api/frames/<id> 那条（见下面的静态段）。
+   * 顺便 prune() 一次：这个接口本来就不常调，顺手把两小时前的清掉。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/screen/frames') {
+    try {
+      // 顺手清一次两小时前的（这个接口本来就不常调，不用另起定时器）
+      try { pruneFrames(); } catch { /* 清不掉不影响列表 */ }
+      const frames = recentFrames(12);
+      // getEnabledMap()[id] === false 才是「主人关掉了」；没这个键或 true 都算开着
+      const en = (() => { try { return getEnabledMap().screenSense !== false; } catch { return true; } })();
+      return json(res, 200, { ok: true, frames, enabled: en });
+    } catch (e) {
+      return json(res, 200, { ok: true, frames: [], note: String(e?.message ?? e) });
+    }
+  }
+  /**
+   * 【那一帧的缩图】给界面点开看大一点用。
+   *
+   * 只许取 .state/frames 目录里的东西：id 是 capture() 生成的，
+   * 但地址栏里传什么进来都得防一手 —— 这里只认 [a-z0-9-] 拼出来的 id，
+   * 拼不出就 400，绝不让 ../ 溜出这个目录。
+   */
+  if (req.method === 'GET' && url.pathname.startsWith('/api/frames/')) {
+    const id = decodeURIComponent(url.pathname.slice('/api/frames/'.length));
+    if (!/^[a-z0-9][a-z0-9-]{2,40}$/i.test(id)) return json(res, 400, { error: 'bad frame id' });
+    const want = String(url.searchParams.get('size') || 'small');
+    const name = id + (want === 'full' ? '.png' : '-small.jpg');
+    try {
+      const buf = await readFile(join(screenFrameDir(), name));
+      res.writeHead(200, {
+        'Content-Type': want === 'full' ? 'image/png' : 'image/jpeg',
+        'Cache-Control': 'no-store',
+        'Content-Length': String(buf.length),
+      });
+      return res.end(buf);
+    } catch {
+      return json(res, 404, { error: '这一帧不在了（两小时后会自动清掉）' });
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/features/set') {
     let payload;
     try {
@@ -3477,6 +3583,44 @@ const server = createServer(async (req, res) => {
       const r = setSessionAgent(String(payload?.sessionId || ''), String(payload?.agentId || ''));
       if (!r) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
       return json(res, 200, { ok: true, ...r, boundAgentId: r.agentId || AGENT_XIAOYU });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
+   * 【管理员权限 · 2026-11-01】
+   *
+   * 主人按的那个开关。按会话存（跟小鲸在场、专业模式一个规矩），
+   * 状态在 .state/admin-mode.json，每次开关都记一行 .state/admin.log。
+   *
+   * 为什么单独两条接口而不是塞进 /api/settings：
+   * 这是**升高权限**，不是普通偏好 —— 要能被单独审计、单独关掉，
+   * 而且读它的时候还要顺手告诉界面「现在到底是不是开着」，
+   * 界面不能自作聪明用本地变量记着（主人可能从另一台设备关掉）。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/admin-mode') {
+    const sid = String(url.searchParams.get('sessionId') || '');
+    try {
+      return json(res, 200, { ok: true, sessionId: sid, on: adminOn(sid) });
+    } catch (e) {
+      // 读盘失败 = 关（fail-closed，见 admin-mode.mjs 文件头）
+      return json(res, 200, { ok: true, sessionId: sid, on: false, note: String(e?.message ?? e) });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/admin-mode') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const sid = String(payload?.sessionId || '').trim();
+    if (!sid) return json(res, 400, { error: '得先有会话' });
+    try {
+      const r = setAdminOn(sid, payload?.on === true);
+      if (!r.ok) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      return json(res, 200, { ok: true, ...r });
     } catch (e) {
       return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }
@@ -4863,9 +5007,28 @@ const server = createServer(async (req, res) => {
         const last = session.messages[session.messages.length - 1];
         // 只有「最后一句话是主人说的」才补：说明确实缺了这条回复。
         // 否则草稿多半是以前遗留的脏数据，补进去反而多一条。
-        if (last && last.role === 'user') {
+        /**
+         * 【什么时候才该把草稿回灌】—— 2026-10-31 改宽
+         *
+         * 原来只认「最后一条是主人说的」。可主人反馈的真实场景是这样：
+         * 她说「我去查查」然后连着调工具，重启那一下最后一条是 tool；
+         * 或者刚说「我这就改」还没调工具，最后一条是空壳 assistant。
+         * 这两种都不满足「最后一条是 user」，于是草稿被 dropDraft 直接删掉 ——
+         * 主人那边看到的就是「重启前最后一轮她的话消失了」。
+         *
+         * 现在只在「这一轮明明已经正常收尾」时才不补：
+         * 最后一条是 assistant、有文字、且没待办工具 → 真的说完了，草稿是残留，删掉。
+         * 其它情况（最后是 tool / user / 空壳 assistant）都算断在半路，把话接回来。
+         */
+        const tailIs = last ? last.role : '';
+        const tailHasTools = !!(last && Array.isArray(last.tool_calls) && last.tool_calls.length);
+        const tailHasText = !!(last && String(last.content ?? '').trim().length);
+        // 同上：tool 算断在半路，别误判成「说完了」把草稿当残留删掉
+        const tailFinished = tailIs === 'assistant' && tailHasText && !tailHasTools;
+        if (!tailFinished) {
           const body = draftAsMessage(draft, (n) => featureNameOfTool(n) || n);
           if (body) {
+            diagLog('draft-restored', `session=${id} len=${body.length}`);
             /**
              * 【草稿回灌也要过内容关】—— 2026-10-29
              *

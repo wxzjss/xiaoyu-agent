@@ -15,6 +15,8 @@ import { sendFileTool } from './tools-sendfile.mjs';
 import { sayTool } from './tools-say.mjs';
 import { browserTools } from './tools-browser.mjs';
 import { videoTools } from './tools-video.mjs';
+import { screenTools } from './tools-screen.mjs';
+import { adminOn } from './admin-mode.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
 
@@ -84,6 +86,15 @@ const CTX = {
    * 默认 false：我自己跑的时候照旧只能在工作区里。
    */
   fullAccess: false,
+  /**
+   * 这个会话开了「管理员权限」没有。
+   *
+   * 跟 fullAccess 是两件事，别混：
+   *   fullAccess —— 小鲸跑那一趟的临时放行，跑完 server 立刻改回 false
+   *   adminMode  —— 主人按的主界面开关，按会话存盘（src/admin-mode.mjs）
+   * 每轮开跑时由 agent.mjs 的 setToolContext 读进来，谁都不用去改另一个。
+   */
+  adminMode: false,
 };
 /**
  * 指定本轮消息的文件快照对象（对话回退要用）。
@@ -127,6 +138,31 @@ export function setToolContext(sessionId, snap = null, signal = null) {
   CTX.signal = signal && typeof signal === 'object' ? signal : null;
   // 这一轮要发给主人的文件（send_file 往里塞，跑完由 server 挂到回复上）
   CTX.outbox = null;
+  /**
+   * 这个会话开没开「管理员权限」——每轮开跑时现读一次盘。
+   *
+   * 【为什么每轮都读、而不是让界面调一下 set 就完事】
+   * 主人可能在另一个窗口把这个会话的开关关掉了，而这边正跑着一轮。
+   * 每轮开头读一次盘，最多迟一轮生效，但绝不会「他关了还在动」。
+   * 读盘失败时 adminOn() 返回 false（fail-closed，见 admin-mode.mjs）。
+   */
+  try {
+    // 同步读：这里必须是同步的，setToolContext 在 agent 主循环之前调，
+    // 变成 async 会一路传染到 runAgent 的签名。
+    CTX.adminMode = adminOnSync(sessionId || 'default');
+  } catch {
+    CTX.adminMode = false;
+  }
+}
+
+/** admin-mode 的同步版本（tools.mjs 在同步上下文里要用，见 setToolContext 注释）。 */
+function adminOnSync(sessionId) {
+  try {
+    // 循环依赖：admin-mode.mjs → config.mjs，不会回到 tools.mjs，所以静态 import 安全。
+    return adminOn(sessionId);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -269,7 +305,14 @@ function memoryLocked(abs) {
   } catch { return false; }
 }
 
-function safePath(p, { tool = '' } = {}) {
+/**
+ * 把路径收进「这个会话能碰的范围」里，碰不到就抛。
+ *
+ * 【为什么导出】它不是给界面调的 API，只是端到端测试要能**直接**验
+ * 「开了管理员 = 放行 / 没开 = 拦住」这条规矩。真正的调用方都在本文件里。
+ * 中间那道 memoryLocked 谁都不例外，位置别动。
+ */
+export function safePath(p, { tool = '' } = {}) {
   const abs = isAbsolute(p) ? resolve(p) : resolve(ROOT, p);
   if (!abs) throw new Error(`路径不对：${p}`);
   /**
@@ -281,8 +324,18 @@ function safePath(p, { tool = '' } = {}) {
   if (memoryLocked(abs) && !READ_ONLY_TOOLS.has(tool)) {
     throw new Error(BLOCKED_HINT + ': ' + p);
   }
-  // 她那一次：全盘放开
-  if (CTX.fullAccess === true) return abs;
+  /**
+   * 【管理员权限】—— 2026-11-01
+   *
+   * 主人按了那个开关（按会话存，见 admin-mode.mjs），这个会话里就不再被关在工作区。
+   * 位置放在 memoryLocked **之后**：记忆本那道闸谁都不例外，
+   * 开了管理员也不能替主人改本子（主人原话：关掉记忆＝只读，这条比权限更硬）。
+   *
+   * 两个来源：
+   *   · CTX.adminMode —— 每轮开跑时由 agent.mjs 按会话读进来的
+   *   · CTX.fullAccess —— 小鲸跑那一趟的临时放行（runSubagent 用）
+   */
+  if (CTX.adminMode === true || CTX.fullAccess === true) return abs;
   const rel = relative(ROOT, abs);
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`path outside workspace is not allowed: ${p}`);
@@ -932,6 +985,7 @@ export const tools = [
   sendFileTool,
   ...browserTools,
   ...videoTools,
+  ...screenTools,
   /**
    * 往我自己的记忆本里记一条。
    *

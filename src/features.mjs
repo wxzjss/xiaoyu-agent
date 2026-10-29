@@ -288,6 +288,24 @@ export const FEATURES = [
     tools: ['look_screen', 'screen_watch_status'],
     defaultOn: true,
   },
+  /**
+   * QQ 小鱼（2026-11-01）
+   *
+   * 主人：「参考 QQAgent 连接 QQ 的方式…给小鱼Agent 增加类似的功能【QQ小鱼】
+   * （可以选择哪个会话或创建新的会话连接QQ）」。
+   *
+   * 这一条没有挂工具 —— 她不需要「调用一个工具去回 QQ」：
+   * QQ 上的话由 src/qq-bridge.mjs 直接当成你说的话送进同一条链路，
+   * 所以这条功能只管「要不要应」这一个开关。凭据、认主、挂哪个会话，
+   * 都在功能页那一行的「设置 QQ」里。
+   */
+  {
+    id: 'qqSense',
+    name: 'QQ 小鱼',
+    desc: '把 QQ 接过来：别人在 QQ 上跟她说话，她就在你指定的那个会话里回 —— 你在电脑前看得见同一段对话、同一段记忆。认主之后，只有你说话她才按主人的口径答；别人说话她按客人那套应。要填机器人的 AppID / AppSecret，都只存在这台机器上。不想要就关掉。',
+    tools: [],
+    defaultOn: false,
+  },
 ];
 
 /** 工具名 -> 所属功能 id */

@@ -7692,6 +7692,16 @@ function PERSONA_API(path) {
 }
 /* 这次是在给谁改人设：'' = 小鱼，'whale' = 小鲸，别的 = 自建卡的 id */
 let personaSyncWho = '';
+/**
+ * 【2026-11-03 主人：「从智能体界面点进多套人设界面时，把右下角的【关闭】改为【返回】，右上角的【关闭】保留】
+ *
+ * 所以这个面板的右下角按钮得按「从哪儿点进来的」变：
+ *   · 从【智能体】面板点「多套人设…」进来 → 写「返回」，点完回那张卡的智能体面板；
+ *   · 从【设置】等别处进来 → 还是「关闭」。
+ * 右上角那颗 × 一律是「关闭」，关闭就是关掉、不回上一页。
+ */
+/** 进来之前是谁在开着：'agent' = 智能体面板；'' = 别处（设置、直接调） */
+let personaFrom = '';
 
 /**
  * 【2026-11-03 主人：「在小鲸的多套人设里换了个人设，可【智能体】界面她还是原来那套」】
@@ -7731,6 +7741,7 @@ async function openFishPersonaDlg(who) {
   personaSyncWho = who || '';
   /* 人设带who·2026-10-30 —— 先记下这次看的是谁的，后面所有接口都跟着它 */
   personaWho = who || '';
+  paletteFromHint();
   try { closeOtherDialogs('fishPersonaDlg'); } catch { /* 老版本没这个函数也不该炸 */ }
   // 先拉一次最新的：设置页那边也开着的时候，别让两边看到不同的清单
   const p = await fetch(PERSONA_API('/api/personas')).then((r) => r.json()).catch(() => null);
@@ -7738,6 +7749,27 @@ async function openFishPersonaDlg(who) {
   // 点面板外面也关掉（<dialog> 默认不关）
   dlg.onclick = (ev) => { if (ev.target === dlg) closeFishPersonaDlg(); };
   if (!dlg.open) dlg.showModal();
+}
+
+/** 看这次是从哪儿点进来的（此刻智能体面板还开着 = 从它那儿进来的），顺手把右下角那颗按钮的字换掉 */
+function paletteFromHint() {
+  const ad = document.getElementById('agentListDlg');
+  personaFrom = (ad && ad.open) ? 'agent' : '';
+  const btn = document.getElementById('fpClose');
+  if (btn) btn.textContent = personaFrom === 'agent' ? '返回' : '关闭';
+}
+
+/**
+ * 右下角那颗：从智能体面板进来的就是「返回」—— 关掉这个面板、把智能体面板重新打开，
+ * 人刚改完，得让他一眼看到那张卡现在什么样（所以重开而不是只 close）。
+ * 别处进来的还是「关闭」，关掉就完事。
+ */
+async function closeOrBackFishPersonaDlg() {
+  const back = personaFrom === 'agent';
+  personaFrom = '';
+  closeFishPersonaDlg();
+  if (!back) return;
+  try { await openAgentDlg(); } catch { /* 打不开也不能把主人卡在半路 */ }
 }
 
 function closeFishPersonaDlg() {
@@ -7749,7 +7781,8 @@ function closeFishPersonaDlg() {
 
 {
   const fpClose = document.getElementById('fpClose');
-  if (fpClose) fpClose.onclick = () => closeFishPersonaDlg();
+  // 2026-11-03：从智能体界面进来的，这颗就是「返回」（回去看那张卡）
+  if (fpClose) fpClose.onclick = () => closeOrBackFishPersonaDlg();
   const fpSave = document.getElementById('fpSave');
   if (fpSave) {
     fpSave.onclick = async () => {

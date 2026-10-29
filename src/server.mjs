@@ -7381,6 +7381,12 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const session = getSession(sessionId);
     if (!session) return json(res, 404, { error: '会话不存在' });
 
+    // 【先挂记号再动 messages】—— saveSession 的合流逻辑会看 session._wipe，
+    // 而老的临时字段清理在下面才跑，所以必须在这里先置上，免得中途有任何一次
+    // 提前落盘把磁盘上的旧对话当「插话」接回来。
+    // （不加这个记号会翻车：接口回 kept=2 messages=3，磁盘上读回来还是旧的五六条）
+    session._wipe = true;
+
     const msgs = Array.isArray(session.messages) ? session.messages : [];
     const span = openingSpan(session.id, msgs);
     const kept = span ? msgs.slice(span.at, span.at + span.n) : [];
@@ -7394,8 +7400,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
 
     session.updatedAt = Date.now();
     if (!session.createdAt) session.createdAt = session.updatedAt;
-    // 【记号】告诉 saveSession：这次是整份替换，别把磁盘上的旧对话当插话接回来。
-    // （不加这个记号会翻车：接口说清了，磁盘上旧消息全被合流补回来）
+    // 上面那轮清理把 _wipe 也删了，这里补回来再落盘
     session._wipe = true;
     saveSession(session);
     delete session._wipe;

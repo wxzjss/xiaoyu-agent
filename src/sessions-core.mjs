@@ -242,6 +242,20 @@ export function saveSession(session) {
        * 就只接「内存这份里、磁盘那份完全没有的」那几条真正的新话。
        * 压缩挪走的那些老消息（磁盘有、内存没有）一律视为「已经进摘要了」，不接。
        */
+      /**
+       * 【清空闸】—— 2026-10-31 加
+       *
+       * 「清空当前」要把这个会话的聊天记录原地擦干净、只留开场白。
+       * 上面那套「磁盘独有的接在末尾」本来是给插话用的，可它跟清空撞在一起就完蛋：
+       * 清空后内存里只剩 system + 开场白，磁盘上那份还满是旧对话，
+       * 每一条旧对话都算「磁盘独有」，被一条条接回来 ——
+       *
+       * 实测：接口返回 kept=2 messages=3，磁盘上读回来还是 5 条，假消息全回来了。
+       *
+       * 判据：调用方把 session._wipe 置成 true，表示这次是整份替换，磁盘那份一个字都不接。
+       */
+      if (session && session._wipe === true) diskOnly.length = 0;
+
       const countSummary = (arr) => arr.reduce((n, m) => n + (m && m.summary && m.context ? 1 : 0), 0);
       const compressedAnywhere = countSummary(memMsgs) > 0 || countSummary(diskMsgs) > 0;
       if (compressedAnywhere) {
@@ -265,6 +279,7 @@ export function saveSession(session) {
     }
   } catch {}
   writeFileSync(fileFor(session.id), JSON.stringify(payload), 'utf8');
+  if (session._wipe) delete session._wipe;
   return session;
 }
 

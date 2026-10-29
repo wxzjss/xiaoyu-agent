@@ -143,11 +143,32 @@ export function slimRoundMessages(messages, opts = {}) {
  *
  * 只写日志、不改逻辑 —— 用来证明「瘦身到底有没有用」。
  * 估算沿用项目里的老办法（1 字符≈1 token，宁高勿低）。
+ *
+ * 【2026-11-01 补齐两处漏算】
+ * 以前只数 content 的字符串部分，结果有两样东西完全不在账上：
+ *
+ *   一、tool_calls 的 arguments。模型调 write_file 时整个文件正文都塞在
+ *       arguments 里，实测全部会话合计 268 万字符、单会话最多 50 万字符
+ *       （≈33 万 token），一分钱没算进去。compress.mjs 的 estimateTokens
+ *       是数了的，两边口径对不上，日志就会骗人。
+ *
+ *   二、图片。以前给个死数 4000 字符，可真的发出去时 inflateImages 会把
+ *       文件读成 base64 塞进 content —— 一张 1.2MB 的截图 base64 后是
+ *       1.6MB，比 4000 大三个数量级。按死数算，「带着十张图」和「不带图」
+ *       在账上一模一样，于是永远判「还没到线」，压都不压。
+ *
+ * 图片这里没法真去读文件（measureMessages 是纯函数、且可能在没有磁盘的
+ * 地方调），所以按 dataUrl 里已有的 base64 长度算；只有路径没有 dataUrl
+ * 的那种（落盘的原始形态）按 IMAGE_ESTIMATE_CHARS 估个保守值。
  */
+const IMAGE_ESTIMATE_CHARS = 4000;
+
 export function measureMessages(messages) {
-  if (!Array.isArray(messages)) return { chars: 0, tokens: 0, tools: 0 };
+  if (!Array.isArray(messages)) return { chars: 0, tokens: 0, tools: 0, calls: 0, images: 0 };
   let chars = 0;
   let tools = 0;
+  let calls = 0;
+  let images = 0;
   for (const m of messages) {
     if (!m) continue;
     if (m.role === 'tool') tools++;
@@ -155,11 +176,31 @@ export function measureMessages(messages) {
     if (typeof c === 'string') chars += c.length;
     else if (Array.isArray(c)) {
       for (const p of c) {
-        if (p && typeof p.text === 'string') chars += p.text.length;
-        // 图片按一个固定估值算，别真去数字节
-        else if (p && p.type === 'image_url') chars += 4000;
+        if (!p) continue;
+        if (typeof p.text === 'string') chars += p.text.length;
+        else if (p.type === 'image_url') {
+          images++;
+          // 已经读成 dataUrl 的：按真实 base64 长度算（这才是发出去的量）
+          const url = p.image_url?.url;
+          if (typeof url === 'string' && url.startsWith('data:')) chars += url.length;
+          else chars += IMAGE_ESTIMATE_CHARS;
+        }
+      }
+    }
+    // 落盘形态的图（只有路径、还没 inflate）：按保守估值记一笔
+    if (Array.isArray(m._images) && m._images.length) {
+      images += m._images.length;
+      chars += m._images.length * IMAGE_ESTIMATE_CHARS;
+    }
+    if (Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        const f = tc && tc.function;
+        if (!f) continue;
+        calls++;
+        if (typeof f.name === 'string') chars += f.name.length;
+        if (typeof f.arguments === 'string') chars += f.arguments.length;
       }
     }
   }
-  return { chars, tokens: chars, tools };
+  return { chars, tokens: chars, tools, calls, images };
 }

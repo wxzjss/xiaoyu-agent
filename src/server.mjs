@@ -7350,7 +7350,18 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             total_tokens: Number(usage.total_tokens ?? 0),
             context_tokens: Number(lastUsage?.prompt_tokens ?? usage.prompt_tokens ?? 0),
             calls: Number(usage.last_calls ?? 0),
-            prompt_cache_hit_tokens: Number(usage.prompt_cache_hit_tokens ?? 0),
+            // 缓存命中：以前这里固定取 `usage.prompt_cache_hit_tokens`，最外层那个对象 ——
+            // 可 agent.mjs 的 sumUsage 只累加了三个数（prompt/completion/total），
+            // 缓存字段压根没往上并，所以这里**永远是 0**。
+            // 0 传下去，前端就只能当成「接口没报缓存」，退回按 98% 估。
+            // DeepSeek 其实一直在报（prompt_cache_hit_tokens / prompt_cache_miss_tokens），
+            // 全被丢在半路上了 —— 2026-11-02 把井挖通。
+            prompt_cache_hit_tokens: Number(
+              usage.prompt_cache_hit_tokens ?? lastUsage?.prompt_cache_hit_tokens ?? 0,
+            ),
+            prompt_cache_miss_tokens: Number(
+              usage.prompt_cache_miss_tokens ?? lastUsage?.prompt_cache_miss_tokens ?? 0,
+            ),
             model: turnModel,
             at: Date.now(),
           };

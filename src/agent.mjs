@@ -1048,9 +1048,27 @@ function dedupeToolCalls(messages, floor = 0) {
 
 function sumUsage(acc, u) {
   const next = acc ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  /**
+   * 【2026-11-02：把缓存字段也累加进来】
+   *
+   * 以前这里只累加三个数，`prompt_cache_hit_tokens` 全被丢掉。
+   * 后果不是少个字段那么轻 —— 它一路传到算钱那一步，就成了「接口没报缓存」，
+   * 于是全部按主人指定的 98% 命中率去估。
+   * 可 DeepSeek 明明每条 usage 都在报真数，白瞎了，报的钱也就不准。
+   *
+   * 两家字段名不一样，都认：
+   *   DeepSeek: prompt_cache_hit_tokens / prompt_cache_miss_tokens
+   *   OpenAI : prompt_tokens_details.cached_tokens
+   */
+  const det = u.prompt_tokens_details && typeof u.prompt_tokens_details === 'object' ? u.prompt_tokens_details : {};
+  const hit = Number(u.prompt_cache_hit_tokens ?? det.cached_tokens ?? 0);
+  const miss = Number(u.prompt_cache_miss_tokens ?? 0);
   return {
     prompt_tokens: next.prompt_tokens + (u.prompt_tokens ?? 0),
     completion_tokens: next.completion_tokens + (u.completion_tokens ?? 0),
     total_tokens: next.total_tokens + (u.total_tokens ?? 0),
+    // 只要有一圈报了缓存就记着（没报的那些圈当 0，不影响别的圈的贡献）
+    prompt_cache_hit_tokens: Number(next.prompt_cache_hit_tokens ?? 0) + hit,
+    prompt_cache_miss_tokens: Number(next.prompt_cache_miss_tokens ?? 0) + miss,
   };
 }

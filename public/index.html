@@ -11217,7 +11217,6 @@ function costOf(model, u, now) {
   const hasReal = reportedHit > 0 || reportedMiss > 0;
   const hitTok = hasReal ? reportedHit : Math.floor(pin * 0.98);
   const missTok = hasReal ? (reportedMiss || Math.max(0, pin - reportedHit)) : Math.max(0, pin - hitTok);
-
   const per = 1e6;
   const c =
     (hitTok / per) * Number(cur.hit ?? cur.miss ?? 0) +
@@ -11226,7 +11225,8 @@ function costOf(model, u, now) {
   // est：这一档价格是估的不是官方标价（OpenAI / xAI / Google 那几家抓不到官网），
   // 界面上要标个「估」字，别让人误当准数去对账。
   const est = Boolean(rate.est || (rate.same && RATES[rate.same] && RATES[rate.same].est));
-  return { cost: c, off: !peak && Boolean(rate.off), est };
+  // cache：命中率是「接口真报的」还是「按 98% 估的」。界面上得说清，别含糊。
+  return { cost: c, off: !peak && Boolean(rate.off), est, cache: hasReal ? 'real' : 'guess', hitTok, missTok };
 }
 
 /**
@@ -11393,11 +11393,13 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
     row.append(mk('·', 'sep'));
     const yen = mk('≈' + fmtMoney(money.cost) + ' 元' + (money.est ? '（估）' : ''), 'cost');
     yen.title =
-      '按 ' + model + ' 的公开价估算（缓存命中按 98% 估）' +
-      (money.est ? '（这家官网抓不到，价格是按美元牌价折算的，只能当个大概）' : '') +
-      (money.off ? '（现在是谷价时段，按半价算）' : '') +
-      '\n输入缓存命中 ' + fmtTok(Number(u.prompt_cache_hit_tokens ?? 0)) + ' tokens' +
-      '\n实际扣费以各家账单为准，这里只是让你心里有数';
+      '按 ' + model + ' 的公开价估算'
+      + (money.cache === 'real'
+        ? '\n输入缓存命中 ' + fmtTok(money.hitTok) + ' / 未命中 ' + fmtTok(money.missTok) + ' tokens —— 这是接口真报的数'
+        : '\n输入缓存命中按 98% 估（接口这轮没报缓存字段，不是真数）')
+      + (money.est ? '（这家官网抓不到，价格是按美元牌价折算的，只能当个大概）' : '')
+      + (money.off ? '（现在是谷价时段，按半价算）' : '')
+      + '\n实际扣费以各家账单为准，这里只是让你心里有数';
     row.append(yen);
   } else if (model) {
     // 【2026-11-02】价目表里没这个模型：别整行不报价让人以为坏了，明说一句为什么。

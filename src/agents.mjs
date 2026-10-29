@@ -941,17 +941,32 @@ export function groupEnabledMap(sessionId) {
 /**
  * 把一张牌开/关。
  *
- * 所有人在场的人都能关（含小鱼）：主人说过「小鱼小鲸这两颗牌子只有启用时才说话」，
- * 那小鱼也得能关 —— 关了这轮她就是不出声，不是从名单上删掉。
+ * 【2026-11-01 主人改了口径】「小鱼与小鲸这两个改为常亮，这两个是否启用只与屏幕上方的
+ * 【小鱼】与【小鲸】按钮相关，与左侧的名字点击一下关闭开启无关。」
+ *
+ * 所以：小鱼、小鲸这两张**不归这一档管** —— 在这儿直接拒掉（400）。
+ * 她们在不在场只有两个开关：顶栏「小鱼」（`/api/fish`）和「小鲸」（`/api/whale`）。
+ * 左侧那颗牌对她们只有「拖动换顺序」和「双击叫名字」两个作用。
+ *
+ * 为什么要服务端也拦一道：界面可以被旧缓存页、脚本、或者别的会话再点一遍，
+ * 光靠前端不点等于没管。
  */
 export function setGroupMemberEnabled(id, sessionId, enabled) {
   const key = String(id || '');
   const sid = String(sessionId || '');
   if (!sid) { const e = new Error('得先有会话'); e.status = 400; throw e; }
   if (!key) { const e = new Error('没说要改谁'); e.status = 400; throw e; }
+  if (key === AGENT_XIAOYU || key === AGENT_XIAOJING) {
+    const e = new Error('小鱼和小鲸是常亮的：她俩在不在场只看顶栏那两颗按钮，不从这一列关');
+    e.status = 400;
+    throw e;
+  }
   const data = readAll();
   const map = (data.groupEnabledBySession[sid] && typeof data.groupEnabledBySession[sid] === 'object')
     ? { ...data.groupEnabledBySession[sid] } : {};
+  // 顺手把历史上给小鱼/小鲸记下的「关」清掉（前一版允许关，可能已经存了 false）
+  delete map[AGENT_XIAOYU];
+  delete map[AGENT_XIAOJING];
   if (enabled) delete map[key];
   else map[key] = false;
   if (Object.keys(map).length) data.groupEnabledBySession[sid] = map;

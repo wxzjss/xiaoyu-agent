@@ -80,7 +80,62 @@ if (String(process.env.ELECTRON_RUN_AS_NODE || '').trim() && !process.env[SELF_R
 const { app, BrowserWindow, shell, ipcMain, dialog, Tray, Menu, nativeImage } = require('electron');
 const { join } = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { readFileSync, writeFileSync } = require('node:fs');
+const { readFileSync, writeFileSync, existsSync: fsExists } = require('node:fs');
+const { Worker } = require('node:worker_threads');
+
+/**
+ * 【把她要看一眼的界面，隔着线程安全地递给她】2026-11-02
+ *
+ * 主人要「陪看屏幕」。以前这件事只能主进程自己做 —— 窗口、托盘这些是**句柄**，
+ * 不是能塞进 JSON 的东西，服务端要是跑在别的线程里，那些 API 它一个都调不到，
+ * 窗口会直接报错、整个界面跟着崩。
+ *
+ * 所以规矩定死：**服务端永远不碰窗口，只喊话**。
+ * 它往 `hostBridge.call(name, args)` 丢一句「我要看现在有哪些窗 / 帮我截一张」，
+ * 主线程收到、把活儿干完（截图本来就是 `webContents.capturePage()`，
+ * 帧数据是纯字节，回得过去），再把结果递回线程池里那个小工。
+ *
+ * 只认三种 name：`list`（有哪些窗）、`capture`（截某一个窗）、`sizes`（窗口尺寸）。
+ * 别的一律回 `{ ok:false, error:'unknown' }` —— 不认识的就明确说不认识，不瞎猜。
+ */
+function handleHostCall(name, args = {}) {
+  const nm = String(name || '');
+  try {
+    if (nm === 'list') {
+      const list = BrowserWindow.getAllWindows()
+        .filter((w) => w && !w.isDestroyed())
+        .map((w) => ({ id: w.id, title: w.getTitle() }));
+      return { ok: true, list };
+    }
+    if (nm === 'sizes') {
+      const one = BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed());
+      if (!one) return { ok: false, error: 'no-window' };
+      const b = one.getContentBounds();
+      return { ok: true, width: b.width, height: b.height };
+    }
+    return { ok: false, error: 'unknown' };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+/**
+ * 线程池版：真正干活的是主线程自己（`capturePage` 只能在主线程调），
+ * 池子只负责「收消息 → 干活 → 回消息」这一圈，不阻塞其他地方。
+ */
+function startHandleWorker() {
+  return new Worker(
+    `
+    const { parentPort } = require('node:worker_threads');
+    parentPort.on('message', (msg) => {
+      if (!msg || msg.type !== 'host') return;
+      parentPort.postMessage({ type: 'host-ack', id: msg.id ?? null });
+    });
+    `,
+    { eval: true },
+  );
+}
+
 
 // 显示名。package.json 的 name 故意还是 xiaoyu-mini-agent（仓库地址、localStorage 键都靠它），
 // 但 Electron 拿它当应用名显示 —— 原生弹窗、托盘、任务管理器里就全变成 "mini-agent"。
@@ -336,6 +391,51 @@ function initialWindowBounds() {
   }
 }
 
+
+// 雾蓝 #3f5f80 → COLORREF = 0x00805F3F（R=0x3f G=0x5f B=0x80，倒着写）
+const TITLEBAR_SHALLOW_BLUE = 0x00805f3f;
+
+/**
+ * 【把标题栏和那圈边框还给系统】2026-11-02
+ *
+ * 主人看到窗口外面描着一圈「橙色」的细边，问为什么。那圈边是之前那段
+ * 「刷标题栏颜色」的代码用 DWM 属性 34/35 单独给这一扇窗刷上去的浅蓝
+ * （在那块深蓝页面上看着就发橙）；主人现在要的是「回到原来的样子」。
+ *
+ * 回原样的办法不是「再刷一个颜色」，而是**明确告诉 DWM 别管它**：
+ *   DWMWA_BORDER_COLOR  = 34 → 0xFFFFFFFE（DWMWA_COLOR_NONE，系统不画边）
+ *   DWMWA_CAPTION_COLOR = 35 → 0xFFFFFFFF（DWMWA_COLOR_DEFAULT，跟系统主题走）
+ * 只动这一扇窗，系统主题色一个字不改，别的程序不受影响。
+ *
+ * 【为什么不再是 C# 那段 Add-Type】PowerShell 5.1 解析 `Add-Type -TypeDefinition "@…"@`
+ * 这种写法时，会把 C# 里的双引号提前收尾，整段直接报
+ * 「A positional parameter cannot be found that accepts argument 'dwmapi.dll)]'」——
+ * 原来那版一直是坏的（日志里那句「没设成」就是它）。现在一次性把整段包成单引号字符串，
+ * 里面一个双引号都没有，PowerShell 一眼就能看明白。失败也照样静静退回，绝不让程序起不来。
+ */
+function clearWindowBorderColor(bw) {
+  try {
+    if (process.platform !== 'win32') return;
+    if (!bw || bw.isDestroyed()) return;
+
+    const hwnd = bw.getNativeWindowHandle().readBigUInt64LE(0).toString();
+    const sig = "[DllImport(\"dwmapi.dll\")] public static extern int DwmSetWindowAttribute(IntPtr hWnd, int attr, ref int val, int size);";
+    const ps = "$sig='" + sig + "';" +
+      " Add-Type -Namespace XyDwm -Name M -MemberDefinition $sig;" +
+      ' $h=[IntPtr]' + hwnd + ';' +
+      ' $none=[int]-2; [void][XyDwm.M]::DwmSetWindowAttribute($h,34,[ref]$none,4);' +
+      ' $dflt=[int]-1; [void][XyDwm.M]::DwmSetWindowAttribute($h,35,[ref]$dflt,4);';
+
+    require('node:child_process').execFileSync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { stdio: 'ignore', timeout: 8000 },
+    );
+  } catch (e) {
+    try { console.log('[frame] 边框没还原成系统默认（不影响使用）：' + (e && e.message)); } catch {}
+  }
+}
+
 async function createWindow(updated = false) {
   if (win && !win.isDestroyed()) {
     win.show();
@@ -417,6 +517,9 @@ async function createWindow(updated = false) {
 
     // 先让它在「全透明」的状态下露面：这一步屏幕上什么都不会变。
     win.show();
+    // 2026-11-02 主人：「那圈橙边看着不对，改回原来」—— 显出来之后把 34/35
+    // 两个 DWM 属性还原成系统默认（外框不画、标题栏跟主题）。
+    clearWindowBorderColor(win);
     setTimeout(() => {
       try {
         if (!win || win.isDestroyed()) return;

@@ -28,6 +28,7 @@ import {
   qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, tryClaim, chunkText, isOwnerOpenid, readQq, setQqBot,
   qqGate, qqAllowed, normQqNum,
 } from './qq.mjs';
+import { saveInboundAttachments, describeInbound, transcodeVoiceToMp3 } from './qq-media.mjs';
 
 const SDK_PKG = '@tencent-connect/qqbot-nodejs';
 
@@ -263,19 +264,49 @@ async function handleInbound({ msg, bot, deps }) {
     return;
   }
 
-  // 空话（纯图片/纯表情没文字）先不给模型，回一句人话
-  if (!text) {
-    const hasMedia = Array.isArray(msg?.attachments) && msg.attachments.length > 0;
-    if (!hasMedia) return;
-    await send(bot, msg, '我现在还看不了 QQ 里发的图片/语音，你打字跟我说好吗？');
+  // 空话（纯图片/纯表情没文字）不再一棒打死 —— 2026-11-02 起图/语音/文件能收了，
+  // 下面统一走「附件先下到本地，再拼一句给她」这条路。
+  const rawAttachments = Array.isArray(msg?.attachments) ? msg.attachments : [];
+  if (!text && !rawAttachments.length) return;
+
+  // 附件落地：QQ 的图/视频/文件是 https 链接，语音是 voice.url。
+  // 下到 <dataDir>/qq-media 再把**绝对路径**告诉她（不是 base64，别把上下文炸了）。
+  let saved = [];
+  if (rawAttachments.length) {
+    try {
+      saved = await saveInboundAttachments(rawAttachments);
+    } catch (err) {
+      log(`附件没下下来：${String(err?.message ?? err)}`);
+    }
+    for (const one of saved) {
+      if (!one.ok) log(`附件失败：${one.kind} ${one.why || ''}`);
+    }
+    // 语音顺手转成 mp3：不转的话模型/界面都播不了（silk 没人认）
+    for (const one of saved) {
+      if (one.ok && one.kind === 'voice') {
+        try {
+          const mp3 = await transcodeVoiceToMp3(one.localPath);
+          if (mp3 && mp3 !== one.localPath) one.localPath = mp3;
+        } catch {}
+      }
+    }
+  }
+  const keptMedia = saved.filter((x) => x.ok);
+  const mediaLine = saved.map(describeInbound).join(' ');
+
+  // 只有一个图、又没有文字时的兜底提示：不提她一句，她可能以为这是空消息
+  if (!text && !keptMedia.length) {
+    await send(bot, msg, '这个附件我没接住（可能太大或者过期了），你换一个或者打字跟我说？');
     return;
   }
+  // 纯附件（没打字）：给她一句明确的话，让她知道该看图/听语音
+  const turnText = text || (keptMedia.length ? '（发来东西给你看，没打字）' : '');
 
   rt.stats.in += 1;
-  log(`← ${isGroup ? '[群] ' : ''}${name || openid.slice(0, 8)}：${text.slice(0, 40)}`);
+  log(`← ${isGroup ? '[群] ' : ''}${name || openid.slice(0, 8)}：${(text || `[${keptMedia.length} 个附件]`).slice(0, 40)}`);
 
   // ① 认人 + ④ 找会话
-  const ensured = await deps?.ensureSession?.({ openid, peer, userText: text, isGroup, name });
+  const ensured = await deps?.ensureSession?.({ openid, peer, userText: turnText, isGroup, name });
   if (!ensured || !ensured.sessionId) {
     await send(bot, msg, '这会儿接不上会话（主人还没把 QQ 接好），等我一下。');
     return;
@@ -305,7 +336,14 @@ async function handleInbound({ msg, bot, deps }) {
   try {
     await deps?.runChat?.({
       sessionId,
-      text,
+      // 附件那一行拼在正文后面：模型看到的是「图在哪」，不是一串二进制
+      text: mediaLine ? `${turnText}\n\n${mediaLine}` : turnText,
+      // 2026-11-02：把「回哪儿」也带进去，qq_send 工具才知道该往哪个会话发东西
+      replyTarget: msg?.replyTarget
+        || (isGroup
+          ? { scope: 'group', targetId: String(msg?.groupOpenid ?? msg?.groupQq ?? ''), msgId: msg?.messageId }
+          : { scope: 'c2c', targetId: String(msg?.senderId ?? openid), msgId: msg?.messageId }),
+      media: keptMedia,
       fromQq: { openid, name, isOwner: isOwnerOpenid(openid) },
       onEvent: async (ev) => {
         if (!ev) return;
@@ -347,6 +385,11 @@ async function send(bot, msg, content) {
   } catch (err) {
     log(`发不出去：${String(err?.message ?? err)}`);
   }
+}
+
+/** 给别的模块（qq_send 工具）用的：现在那个活着的 bot 实例 */
+export function currentQqBot() {
+  return rt.bot || null;
 }
 
 /** 给面板用：最近这些人的名字、是不是主人、什么时候来过。 */

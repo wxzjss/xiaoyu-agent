@@ -91,7 +91,7 @@ export async function ensureQqSession({ openid, peer, name = '' } = {}) {
  *   · 引子不是「信箱里有话」，而是 QQ 上这个人真说的那一句（play 成一条真 user 消息）
  *   · 事件推给 onEvent，不推给 SSE
  */
-export async function runQqTurn({ sessionId, text, fromQq, onEvent } = {}) {
+export async function runQqTurn({ sessionId, text, fromQq, onEvent, replyTarget, media } = {}) {
   const h = need();
   const id = String(sessionId || '');
   if (!h.isSessionId(id)) {
@@ -157,6 +157,10 @@ export async function runQqTurn({ sessionId, text, fromQq, onEvent } = {}) {
       // 名字靠不住，号才作数 —— 主人 2026-10-30 特意交代要带上
       whoId: (fromQq && fromQq.openid) || '',
       isOwner: !!(fromQq && fromQq.isOwner),
+      // 2026-11-02：她要在 QQ 里发图/发语音/发文件，得知道发回哪儿；
+      // 附件也一并带上，省得她再猜「主人刚说的那张图是哪个」。
+      replyTarget: replyTarget || null,
+      attachments: Array.isArray(media) ? media.filter((m) => m && m.ok).map((m) => ({ kind: m.kind, localPath: m.localPath })) : [],
     });
     const out = await h.runWithToolContext({ sessionId: id, snap, signal: ac.signal, outbox: null }, () => h.runAgent({
       messages: wire,

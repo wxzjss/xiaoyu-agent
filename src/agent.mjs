@@ -23,6 +23,7 @@ import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs'
 // 只有 user 那趟是稳的。
 import { memoryText } from './my-memory.mjs';
 import { getEnabledMap } from './features.mjs';
+import { turnSourcePromptBlock } from './turn-source.mjs';
 
 // persona.mjs 不能静态 import tools.mjs（tools.mjs 反过来 import 了 persona，静态成环会炸），
 // 所以「当前有哪些工具」靠这里注入。工具清单是**从 schema 现读**的，不是手抄的第二份文案：
@@ -378,7 +379,7 @@ export async function runAgent({
   const outbox = beginOutbox();
 
   if (refreshSystem) {
-    const text = systemPrompt(sessionId, { safeMode, safeWord });
+    const text = systemPrompt(sessionId, { safeMode, safeWord, turnSource: turnSourcePromptBlock(sessionId) });
     const ctx = contextMessage(sessionId, { safeMode, safeWord });
     // 专业模式：text 和 ctx 都是空的。这时候一条 system、一条 context 都不该发 ——
     // 空 system 有的网关会直接 400，只有前言的 context 更是纯噪音。

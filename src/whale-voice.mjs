@@ -141,6 +141,15 @@ export function takeWhaleSays(sessionId) {
 /** 只看，不取。 */
 export function peekWhaleSays(sessionId) {
   const id = String(sessionId || 'default');
+  /**
+   * 【看也要看开关】—— 2026-11-03 补
+   *
+   * 主人那句「小鲸按钮关着时，她一个字都不许出现在界面上（含冒充主人）」说得很死。
+   * push / take 两道门早就挡住了，但 **peek 是第三道门**：它回答的是「她有没有话」，
+   * 前端轮询走的就是它，原来压根不看开关 —— 按钮灭着，旧话照样被捞出来画到屏幕上。
+   * 这里只返回空、不动盘上的数据（清盘是 take 的活儿，peek 顺手删会把话弄丢）。
+   */
+  try { if (!whaleOn(id)) return []; } catch { return []; }
   const out = [...(boxes.get(id) || [])];
   try {
     const f = mailboxFile(id);

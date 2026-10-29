@@ -91,6 +91,44 @@ export function whaleOn(sessionId) {
 }
 
 /**
+ * 【她这一轮开过口没有】—— 2026-11-03 补
+ *
+ * 主人报「同时开小鱼和小鲸，小鲸说两轮、小鱼一句话不说」。
+ * 查下来两遍都出在同一处：让路分支已经 await 让小鲸答了一轮，
+ * 可收尾的群聊段又把她列进 speakers（个性没打勾 = 每轮都说），于是再答一遍。
+ *
+ * 为什么不能只用一个本轮局部的 Set：Whale 的通道有好几条
+ * （whaleMaybeReply / 插话闸 / ask_peer），每条都写自己的箱子，
+ * 谁也不知道别人刚说过话。所以进度记在**会话上**，谁都能看见。
+ *
+ * 只存时间戳，不存内容 —— 内容已经在 session.messages 里了。
+ * 读不到就当「没说过」（宁可多问一句，也别闷着不出声）。
+ */
+export function markWhaleSpoke(session, text) {
+  try {
+    if (!session || typeof session !== 'object') return;
+    session._whaleSpokeAt = Date.now();
+    session._whaleSpokeText = String(text ?? '').slice(0, 300);
+  } catch {}
+}
+
+/**
+ * 她刚刚（windowMs 毫秒内）是不是已经为这一句开过口了。
+ *
+ * @param {object} session 哪个会话对象
+ * @param {number} windowMs 时间窗，默认 120 秒 —— 一轮再慢也够
+ */
+export function whaleSpokeThisTurn(session, windowMs = 120000) {
+  try {
+    const at = Number(session?._whaleSpokeAt ?? 0);
+    if (!at) return false;
+    return Date.now() - at < windowMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 改某个会话的开关。先写临时文件再改名，断电不会留半个坏文件。
  *
  * @param {string} sessionId 哪个会话

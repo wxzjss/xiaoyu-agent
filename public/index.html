@@ -2976,6 +2976,24 @@
         </div>
         <div class="qqPeers" id="qqPeers"></div>
         <div class="qqHint" id="qqPeersHint">别人加她，她会应，但用的是小鲸那套身份；只有你说话时才按主人答。</div>
+
+        <!-- 你本人的 QQ 号（手动填）+ 白名单。只认白名单里的号，别人一律不回。 -->
+        <div class="qqField">
+          <label for="qqOwnerQq">你的 QQ 号</label>
+          <input id="qqOwnerQq" type="text" spellcheck="false" inputmode="numeric" placeholder="例如 10001，只填数字">
+        </div>
+        <div class="qqField">
+          <label for="qqAllowQq">能私聊她的号</label>
+          <textarea id="qqAllowQq" rows="2" spellcheck="false" placeholder="一行一个，或者用逗号隔开：10001, 10002"></textarea>
+        </div>
+        <div class="qqField">
+          <label for="qqAllowGroup">能说话的群</label>
+          <textarea id="qqAllowGroup" rows="2" spellcheck="false" placeholder="群号，一行一个。不在名单里的群，@ 她也不吭声"></textarea>
+        </div>
+        <div class="qqField qqFieldInline">
+          <label class="qqCheck"><input type="checkbox" id="qqGateStrict"><span>只理白名单，别人一句话都不回</span></label>
+        </div>
+        <div class="qqHint" id="qqGateHint">不在白名单里的号和群，她一个字都不发 —— 既不应答，也不提自己在。</div>
       </div>
 
       <!-- 第三格：挂到哪个会话 -->
@@ -2985,7 +3003,7 @@
           <label for="qqBindMode">各聊各的？</label>
           <select id="qqBindMode">
             <option value="shared">都进同一个会话（你在电脑前也看得见）</option>
-            <option value="per-peer">QQ 上每人一个会话</option>
+            <option value="per-user">QQ 上每人一个会话</option>
           </select>
         </div>
         <div class="qqField">
@@ -2999,6 +3017,7 @@
     </div>
     <div class="dlgFoot">
       <span class="hint" id="qqFootHint"></span>
+      <button type="button" class="ghost" id="qqGateSave">保存白名单</button>
       <button type="button" class="ghost" id="qqSave">保存</button>
     </div>
   </dialog>
@@ -9184,6 +9203,8 @@ let qqState = null;
 let qqClaimToken = '';
 /** 会话清单（第三格那个下拉框要用）。 */
 let qqSessions = [];
+/** 最近一次拿到的白名单（认主人时顺手把它也带一份，省一次网络）。 */
+let qqGateCache = { ownerQq: '', allowQq: [], allowGroup: [], strict: true };
 
 function qqEl(id) { return document.getElementById(id); }
 function qqSetHint(text, bad) {
@@ -9276,6 +9297,36 @@ function renderQqPanel(st) {
         + '第一个说对的人就被认成你，之后这个口令作废。';
   }
 
+  // 第二格后半：白名单（手动填的 QQ 号 / 谁的私聊 / 哪个群）
+  const gate = (st.gate && typeof st.gate === 'object') ? st.gate : {};
+  const ownerEl = qqEl('qqOwnerQq');
+  // 只看「没在打字」的框 —— 否则每两秒刷新一次，主人正在输的号会被抹掉
+  if (ownerEl && document.activeElement !== ownerEl) ownerEl.value = String(gate.ownerQq || '');
+  const allowQqEl = qqEl('qqAllowQq');
+  if (allowQqEl && document.activeElement !== allowQqEl) {
+    allowQqEl.value = Array.isArray(gate.allowQq) ? gate.allowQq.join('\n') : '';
+  }
+  const allowGroupEl = qqEl('qqAllowGroup');
+  if (allowGroupEl && document.activeElement !== allowGroupEl) {
+    allowGroupEl.value = Array.isArray(gate.allowGroup) ? gate.allowGroup.join('\n') : '';
+  }
+  const strictEl = qqEl('qqGateStrict');
+  if (strictEl) strictEl.checked = gate.strict !== false;
+  const gateHint = qqEl('qqGateHint');
+  if (gateHint) {
+    const nQq = Array.isArray(gate.allowQq) ? gate.allowQq.length : 0;
+    const nGrp = Array.isArray(gate.allowGroup) ? gate.allowGroup.length : 0;
+    if (!gate.ownerQq && !nQq && !nGrp) {
+      gateHint.textContent = '还没填白名单 —— 现在谁都私聊不了她（门是关着的）。先把你自己的号填上。';
+    } else {
+      gateHint.textContent = `现在放行：私聊 ${nQq} 个号、群 ${nGrp} 个`
+        + (gate.ownerQq ? `，你本人 ${gate.ownerQq}` : '')
+        + '。名单之外的一概不回。';
+    }
+  }
+  // 白名单里的号先给「认成主人」按钮记一份，省得再查一次
+  qqGateCache = gate;
+
   const peers = Array.isArray(st.peers) ? st.peers : [];
   const box = qqEl('qqPeers');
   if (box) {
@@ -9288,7 +9339,7 @@ function renderQqPanel(st) {
       row.className = 'qqPeer';
       const who = document.createElement('span');
       who.className = 'who';
-      who.textContent = p.name || p.openidShort || '（没留名字）';
+      who.textContent = p.name || p.short || p.openidShort || '（没留名字）';
       const tag = document.createElement('span');
       tag.className = 'tag' + (p.role === 'owner' ? ' owner' : '');
       tag.textContent = p.role === 'owner' ? '主人' : '客人';
@@ -9304,7 +9355,9 @@ function renderQqPanel(st) {
         btn.className = 'ghost';
         btn.textContent = '认成主人';
         btn.onclick = async () => {
-          const r = await qqApi('/api/qq/owner', { openid: p.openid });
+          // 以前这里打的是 /api/qq/owner —— 服务端压根没这个路由，点了必报 404。
+          // 真正的路由是 /api/qq/peer，用 role:'owner' 指定谁是主人。
+          const r = await qqApi('/api/qq/peer', { openid: p.openid, role: 'owner' });
           if (!r || r.error) { qqSetHint('没改成：' + ((r && r.error) || '网络错误'), true); return; }
           qqSetHint('好啦，以后这个人说话她按主人答');
           await refreshQqPanel();
@@ -9318,7 +9371,7 @@ function renderQqPanel(st) {
   // 第三格：挂会话
   const modeEl = qqEl('qqBindMode');
   const bind = st.bind || {};
-  if (modeEl && document.activeElement !== modeEl) modeEl.value = bind.mode === 'per-peer' ? 'per-peer' : 'shared';
+  if (modeEl && document.activeElement !== modeEl) modeEl.value = bind.mode === 'per-user' ? 'per-user' : 'shared';
   const selEl = qqEl('qqBindSession');
   if (selEl) {
     const want = String(bind.sessionId || '');
@@ -9336,7 +9389,7 @@ function renderQqPanel(st) {
   const bindHint = qqEl('qqBindHint');
   if (bindHint) {
     bindHint.textContent = bind.sessionId
-      ? (bind.mode === 'per-peer'
+      ? (bind.mode === 'per-user'
         ? '每个人说的话会各开一个会话，名字是「QQ · 谁」。'
         : 'QQ 上说的话都进这一个会话，你在电脑上接着说也行 —— 同一段记忆。')
       : '还没挂会话。选一个下面那栏，再点保存。';
@@ -9388,7 +9441,7 @@ async function openQqDlg() {
   if (!dlg.open) dlg.showModal();
 }
 
-/** 把当前填的凭据存下来。 */
+/** 第一格 + 第二格后半：凭据和白名单一起存。 */
 async function saveQqCreds() {
   const appId = String((qqEl('qqAppId') || {}).value || '').trim();
   const appSecret = String((qqEl('qqAppSecret') || {}).value || '').trim();
@@ -9400,6 +9453,23 @@ async function saveQqCreds() {
   if (!r || r.error) { qqSetHint('存不上：' + ((r && r.error) || '网络错误'), true); return false; }
   const secEl = qqEl('qqAppSecret');
   if (secEl) secEl.value = '';
+  // 白名单（2026-11-03）：跟凭据一起存，别让主人按两次保存
+  const g = await saveQqGate();
+  if (!g) return false;
+  return true;
+}
+
+/** 白名单单独存（面板上的「保存白名单」也走它）。 */
+async function saveQqGate() {
+  const ownerQq = String((qqEl('qqOwnerQq') || {}).value || '').replace(/[^0-9]/g, '');
+  const allowQq = String((qqEl('qqAllowQq') || {}).value || '');
+  const allowGroup = String((qqEl('qqAllowGroup') || {}).value || '');
+  const strict = Boolean((qqEl('qqGateStrict') || {}).checked);
+  const r = await qqApi('/api/qq/gate', { ownerQq, allowQq, allowGroup, strict });
+  if (!r || r.error) {
+    qqSetHint('白名单没存上：' + ((r && r.error) || '网络错误'), true);
+    return false;
+  }
   return true;
 }
 
@@ -9426,6 +9496,11 @@ async function saveQqBind() {
     qqClaimToken = (c && c.token) ? String(c.token) : '';
     await refreshQqPanel();
     qqSetHint('换好了，让那个人发新的这串');
+  });
+  wire('qqGateSave', async () => {
+    if (!(await saveQqGate())) return;
+    qqSetHint('白名单存好了');
+    await refreshQqPanel();
   });
   wire('qqToggle', async () => {
     const running = Boolean(qqState && qqState.running);

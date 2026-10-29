@@ -24,7 +24,10 @@
  */
 
 import { join } from 'node:path';
-import { qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, tryClaim, chunkText, isOwnerOpenid, readQq, setQqBot } from './qq.mjs';
+import {
+  qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, tryClaim, chunkText, isOwnerOpenid, readQq, setQqBot,
+  qqGate, qqAllowed, normQqNum,
+} from './qq.mjs';
 
 const SDK_PKG = '@tencent-connect/qqbot-nodejs';
 
@@ -36,7 +39,7 @@ const rt = {
   startedAt: 0,
   me: null,
   log: [],
-  stats: { in: 0, out: 0, turns: 0 },
+  stats: { in: 0, out: 0, turns: 0, blocked: 0 },
 };
 
 const LOG_MAX = 120;
@@ -57,6 +60,8 @@ export function qqStatus() {
     me: rt.me,
     bot: qqBotPublic(),
     bind: qqBind(),
+    gate: qqGate(),
+    peers: qqPeerList(),
     stats: { ...rt.stats },
     log: rt.log.slice(-40),
   };
@@ -214,6 +219,30 @@ async function handleInbound({ msg, bot, deps }) {
   const text = String(msg?.content ?? '').replace(/^<@!?[^>]+>\s*/g, '').trim();
   const isGroup = msg?.kind === 'group';
 
+  // ⓪ 白名单（2026-11-03 主人要的「只允许白名单的 QQ 号私聊、白名单的群号群聊」）
+  //
+  // 这一层放在最前面，**连 @ 都不看** —— 不在名单里的群，被 @ 了也不吭声。
+  // 网关给的号可能是数字也可能是字符串，qq.mjs 的 qqAllowed 会统一归一化再比。
+  // 主人的号（面板上手动填的那个）永远放行，免得主人自己被自己关在外面。
+  const gateVerdict = (() => {
+    try {
+      return qqAllowed({
+        qqId: msg?.senderQq ?? msg?.userOpenid ?? msg?.senderId,
+        groupId: isGroup ? (msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId) : '',
+        isOwner: isOwnerOpenid(openid),
+      });
+    } catch {
+      return { ok: false, why: 'gate-error' };
+    }
+  })();
+  if (!gateVerdict.ok) {
+    // 不在白名单 —— 一个字都不回（回了就等于告诉对方「这里有人」，
+    // 主人要的是「清净」，不是「礼貌地拒绝」）。
+    rt.stats.blocked = (Number(rt.stats.blocked) || 0) + 1;
+    log(`挡掉一条（${gateVerdict.why}）${isGroup ? '[群] ' : ''}${gateVerdict.qq || openid.slice(0, 8)}`);
+    return;
+  }
+
   // ② 群聊没 @ 就不接（QQ 自己在网关层也会过滤大部分，这里再兜一层）
   if (isGroup) {
     const you = String(rt.me?.id || '');
@@ -343,9 +372,12 @@ export function qqSelfCheck() {
     configured: b.configured,
     enabled: b.enabled,
     appId: b.appId,
+    sandbox: b.sandbox,
+    useGateway: b.useGateway,
     running: qqRunning(),
     phase: rt.phase,
     peers: Object.keys(readQq().peers).length,
+    gate: qqGate(),
   };
 }
 

@@ -45,6 +45,12 @@
  *       sessionId: 'smxxx',        // 主人挑的那个会话（可空 = 每人各开一个）
  *       mode: 'shared' | 'per-user'// 共用一个 / 每人一个
  *     },
+ *     gate: {                                          ← 白名单（2026-11-03 加）
+ *       ownerQq: '10001',          // 主人自己的 QQ 号，手动填
+ *       allowQq: ['10001','10002'],// 允许私聊她的号
+ *       allowGroup: ['700001'],    // 允许她说话的群号
+ *       strict: true               // 只管白名单，名单外一个字都不回
+ *     },
  *     peers: {                                          ← 认人表，按 openid
  *       '<openid>': { role: 'owner'|'guest', sessionId: 'smxxx', name, boundAt, lastAt, msgCount }
  *     },
@@ -71,11 +77,40 @@ export function qqFile() {
 function blank() {
   return {
     version: VERSION,
-    bot: { appId: '', appSecret: '', enabled: false, autoStart: true },
+    bot: { appId: '', appSecret: '', enabled: false, autoStart: true, sandbox: false, useGateway: true },
     bind: { sessionId: '', mode: 'per-user' },
+    // 【白名单（2026-11-03 主人要的）】
+    //   ownerQq  主人自己的 QQ 号 —— 手动填，不靠 openid 认领。
+    //   allowQq  允许私聊她的 QQ 号。
+    //   allowGroup 允许她去说话的群号。
+    //   strict   开着 = 只理白名单，别人一句话都不回（默认开，fail-closed）。
+    gate: { ownerQq: '', allowQq: [], allowGroup: [], strict: true },
     peers: {},
     claim: null,
   };
+}
+
+/**
+ * QQ 号 / 群号只认纯数字（5~12 位）。
+ *
+ * 为什么不许带「QQ:」「群」这些前缀：这种号是要拿去跟网关给的 id
+ * 去对账的，混进汉字就永远对不上，人还不知道为什么没反应。
+ */
+export function normQqNum(v) {
+  const s = String(v ?? '').replace(/\s+/g, '').replace(/^[^0-9]*/, '').replace(/[^0-9]*$/, '');
+  if (!/^[0-9]{5,12}$/.test(s)) return '';
+  return s;
+}
+
+/** 一串号：既能传数组，也能传「111,222 333」这样的文本。 */
+export function normQqList(v) {
+  const raw = Array.isArray(v) ? v : String(v ?? '').split(/[,，、;；\s]+/);
+  const out = [];
+  for (const x of raw) {
+    const n = normQqNum(x);
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out.slice(0, 200);
 }
 
 /** 单个会话最多挂多少人（防止有人拿机器人群发刷爆） */
@@ -121,10 +156,19 @@ export function readQq() {
         appSecret: str(bot.appSecret, 128),
         enabled: bot.enabled === true,
         autoStart: bot.autoStart !== false,
+        sandbox: bot.sandbox === true,
+        useGateway: bot.useGateway !== false,
       },
       bind: {
         sessionId: /^sm[a-z0-9]{6,}$/.test(str(j?.bind?.sessionId)) ? str(j.bind.sessionId) : '',
         mode: objOf(j?.bind).mode === 'shared' ? 'shared' : 'per-user',
+      },
+      gate: {
+        ownerQq: normQqNum(objOf(j?.gate).ownerQq),
+        allowQq: normQqList(objOf(j?.gate).allowQq),
+        allowGroup: normQqList(objOf(j?.gate).allowGroup),
+        // 没写这一格的老文件 → 当成「严守」（fail-closed，别因为升级就放开）
+        strict: objOf(j?.gate).strict !== false,
       },
       peers,
       claim: (() => {
@@ -150,10 +194,18 @@ export function writeQq(data) {
       appSecret: str(d.bot?.appSecret, 128),
       enabled: d.bot?.enabled === true,
       autoStart: d.bot?.autoStart !== false,
+      sandbox: d.bot?.sandbox === true,
+      useGateway: d.bot?.useGateway !== false,
     },
     bind: {
       sessionId: /^sm[a-z0-9]{6,}$/.test(str(d.bind?.sessionId)) ? str(d.bind.sessionId) : '',
       mode: objOf(d.bind).mode === 'shared' ? 'shared' : 'per-user',
+    },
+    gate: {
+      ownerQq: normQqNum(d.gate?.ownerQq),
+      allowQq: normQqList(d.gate?.allowQq),
+      allowGroup: normQqList(d.gate?.allowGroup),
+      strict: d.gate?.strict !== false,
     },
     peers: {},
     claim: (() => {
@@ -200,7 +252,7 @@ export function qqConfigured() {
   return Boolean(b.appId && b.appSecret);
 }
 
-export function setQqBot({ appId, appSecret, enabled, autoStart } = {}) {
+export function setQqBot({ appId, appSecret, enabled, autoStart, sandbox, useGateway } = {}) {
   const data = readQq();
   // 【存之前先问一句：这样存下去还有没有用】
   // AppID 和 AppSecret 是一对，缺一个连不上。以前允许只存一半，
@@ -220,6 +272,8 @@ export function setQqBot({ appId, appSecret, enabled, autoStart } = {}) {
   if (appSecret !== undefined) data.bot.appSecret = nextSecret;
   if (enabled !== undefined) data.bot.enabled = enabled === true;
   if (autoStart !== undefined) data.bot.autoStart = autoStart !== false;
+  if (sandbox !== undefined) data.bot.sandbox = sandbox === true;
+  if (useGateway !== undefined) data.bot.useGateway = useGateway !== false;
   return writeQq(data).bot;
 }
 
@@ -231,9 +285,66 @@ export function qqBotPublic() {
     hasSecret: Boolean(b.appSecret),
     enabled: b.enabled,
     autoStart: b.autoStart,
+    sandbox: b.sandbox,
+    useGateway: b.useGateway,
     configured: Boolean(b.appId && b.appSecret),
     secretTail: b.appSecret ? b.appSecret.slice(-4) : '',
   };
+}
+
+// ─────────────────────────── 白名单 ───────────────────────────
+
+export function qqGate() {
+  return readQq().gate;
+}
+
+/**
+ * 改白名单。
+ *
+ * 这里故意不校验「主人号必须在私聊白名单里」——写的时候自动帮你并进去，
+ * 省得主人填了号还是收不到消息、又不知道为啥。
+ */
+export function setQqGate({ ownerQq, allowQq, allowGroup, strict } = {}) {
+  const data = readQq();
+  if (ownerQq !== undefined) {
+    const n = normQqNum(ownerQq);
+    if (String(ownerQq || '').trim() && !n) {
+      const err = new Error('主人 QQ 号得是 5~12 位数字');
+      err.status = 400;
+      throw err;
+    }
+    data.gate.ownerQq = n;
+  }
+  if (allowQq !== undefined) data.gate.allowQq = normQqList(allowQq);
+  if (allowGroup !== undefined) data.gate.allowGroup = normQqList(allowGroup);
+  if (strict !== undefined) data.gate.strict = strict !== false;
+  // 主人自己得能私聊她 —— 自动并进白名单，但只并一次，不重复
+  if (data.gate.ownerQq && !data.gate.allowQq.includes(data.gate.ownerQq)) {
+    data.gate.allowQq.unshift(data.gate.ownerQq);
+  }
+  return writeQq(data).gate;
+}
+
+/**
+ * 这道门到底放不放这人进来。
+ *
+ * 参数都是网关给的原始值：QQ 号可能是字符串也可能是数字，
+ * 这里统一过一遍 normQqNum 再比。**白名单之外的号一律拒**。
+ */
+export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
+  const g = qqGate();
+  const q = normQqNum(qqId);
+  const grp = normQqNum(groupId);
+  // 主人的号 —— 不管 strict 关没关，他一定是自己人
+  if (g.ownerQq && q && q === g.ownerQq) return { ok: true, why: 'owner' };
+  if (isOwner) return { ok: true, why: 'owner' };
+  if (grp) {
+    return g.allowGroup.includes(grp)
+      ? { ok: true, why: 'group' }
+      : { ok: false, why: 'group-not-allowed', qq: q, group: grp };
+  }
+  if (q && g.allowQq.includes(q)) return { ok: true, why: 'whitelist' };
+  return { ok: false, why: 'not-in-whitelist', qq: q, group: '' };
 }
 
 // ─────────────────────────── 接哪个会话 ───────────────────────────

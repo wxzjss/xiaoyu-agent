@@ -7042,16 +7042,17 @@ input.addEventListener('pointerdown', () => {
 document.getElementById('reset').onclick = async () => {
   if (!sessionId) return;
   /**
-   * 「清空当前」= 把这个会话删掉、当场开一个新的。
+   * 「清空当前」= 原地清空这个会话的聊天记录，只留开场白。
    *
-   * 以前这里还挂着两个勾选框（连会话记忆一起清 / 连设置里那套人设一起清），
-   * 现在语义变干净了 —— 清空就是「删了这个再建一个新的」，新会话天然是个
-   * 空白本子，人设是全局共用的、跟清不清空一个会话没关系，所以那两个选项
-   * 全去掉，弹窗只问一句。
+   * 主人 2026-10-31 的原话：按下去要「清空当前会话除开场白以外的聊天记录
+   * （不清岁月史书），相当于重新开始一个会话」。
+   *
+   * 所以不再是「删掉再新建」—— 会话本身留着：id 不变、标题不变、记忆本子不动、
+   * 岁月史书一条不碰，只是把里面的对话擦干净、把开场白留下。
    */
   const ans = await askConfirm({
     title: '清空当前',
-    body: '这个会话连同它的聊天记录会被删掉（挪进 .trash，还能找回），然后新开一个空的。',
+    body: '这个会话里的聊天记录会被清空，只留下开场白（岁月史书和记忆本子都不动），相当于从头开始。',
     ok: '清空',
     danger: true,
   });
@@ -7069,22 +7070,21 @@ document.getElementById('reset').onclick = async () => {
     return;
   }
 
-  // 新会话回来了：直接切过去（switchSession 会重画列表和正文）
+  // 同一个会话、原地重画（switchSession 会把正文和列表都按新的来）
   try {
     await switchSessionSafe(r.session.id);
   } catch (e) {
-    console.warn('[reset] 切到新会话出错：', e && e.message ? e.message : e);
+    console.warn('[reset] 重画会话出错：', e && e.message ? e.message : e);
     log.innerHTML = '';
-  // 【清空历史后扫残留光标】
-  // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
-  // 万一进程上次是被强杀的，类就留在那儿了 —— 这里扫一遍收干净。
-  try { sweepStaleStreaming(); } catch {}
+    // 【清空历史后扫残留光标】
+    // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
+    try { sweepStaleStreaming(); } catch {}
     usageEl.textContent = '';
   }
   await refreshSessions({ silent: true }).catch(() => {});
-  // 清空之后就是新会话，光标给到位，直接接着说话
+  // 清空之后光标给到位，直接接着说话
   settleComposer({ focus: true });
-  addSysNote('清空啦，已经在新的会话里了 (๑•̀ㅂ•́)و✧');
+  addSysNote('清空啦，开场白留着，咱从头开始 (๑•̀ㅂ•́)و✧');
 };
 input.focus();
 

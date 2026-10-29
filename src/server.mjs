@@ -7363,60 +7363,50 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
   if (req.method === 'POST' && url.pathname === '/api/reset') {
     const { sessionId = 'default' } = await body(req).catch(() => ({}));
     /**
-     * 「清空当前」= 把这个会话删掉、当场开一个新的。
+     * 「清空当前」= 原地清空这个会话的聊天记录，只留开场白。
      *
-     * 为什么改成这样（主人原话：清空当前只等于把这个会话删了再建一个新的）：
-     *   以前的实现是在**原会话**上把 messages 重置回 system 那一条 —— 会话 id 不变、
-     *   创建时间不变、记忆本子也不动。于是「清空」之后那个会话还带着旧名字、
-     *   旧记忆，看着就不像新开的。而且原来还挂着两个勾选框（清会话记忆 / 清人设），
-     *   主人明确不要那两个选项了，一并去掉。
+     * 主人的原话（2026-10-31）：右上角【清空当前】按下去，要「清空当前会话除开场白以外的
+     * 聊天记录（不清岁月史书），相当于重新开始一个会话」。
      *
-     * 现在的语义跟「删除 + 新建」完全一致：
-     *   - 旧会话整个挪进 .trash（跟 /api/sessions/delete 一条路，能找回）
-     *   - 它的记忆本子也挪进 .trash
-     *   - 新会话拿新 id、新标题、新建时间，system 提示按当前设置重新拼一份
-     *   - 新会话也照常排队开场白（跟新建接口一样 fire-and-forget）
-     * 返回新会话的 id，前端拿它切过去。
+     * 所以这里不再删会话、不再新建 id：
+     *   · 会话 id、创建时间、标题、记忆本子全都留着（记忆和岁月史书一概不动）；
+     *   · messages 只留下 system 那几条 + 开头那段开场白（openingSpan 按位置认，
+     *     带记号锁：openings.json 里没记过这个会话就一条都不留，绝不误删主人自己的话）；
+     *   · 会话上挂的临时状态（_openingUser / _whale / _openingPending 之类）一起清掉，
+     *     免得清完还拖着上一轮的残影。
+     *
+     * 找不到开场白（没开过场 / 人设没配开场白）就退回成「只留 system」，
+     * 效果仍然是「重新开始一个会话」。
      */
-    const old = getSession(sessionId);
-    if (old) {
-      try {
-        deleteSession(sessionId);
-      } catch (e) {
-        console.warn('[reset] 旧会话没删成：', String(e?.message ?? e));
-      }
-      try {
-        trashMemory(sessionId);
-      } catch {}
-      sessions.delete(sessionId);
+    const session = getSession(sessionId);
+    if (!session) return json(res, 404, { error: '会话不存在' });
+
+    const msgs = Array.isArray(session.messages) ? session.messages : [];
+    const span = openingSpan(session.id, msgs);
+    const kept = span ? msgs.slice(span.at, span.at + span.n) : [];
+
+    const sys = msgs.filter((m) => m && m.role === 'system');
+    session.messages = sys.concat(kept);
+
+    for (const k of Object.keys(session)) {
+      if (k.startsWith('_')) delete session[k];
     }
 
-    const id = newSessionId();
-    const now = Date.now();
-    const session = {
-      id,
-      title: '新会话',
-      createdAt: now,
-      updatedAt: now,
-      messages: sysSeed(id),
-      _openingPending: true,
-    };
+    session.updatedAt = Date.now();
+    if (!session.createdAt) session.createdAt = session.updatedAt;
+    // 【记号】告诉 saveSession：这次是整份替换，别把磁盘上的旧对话当插话接回来。
+    // （不加这个记号会翻车：接口说清了，磁盘上旧消息全被合流补回来）
+    session._wipe = true;
     saveSession(session);
-    sessions.set(id, session);
-    try {
-      ensureMemory(id);
-    } catch (err) {
-      console.warn('[memory] 清空后新会话的本子没建起来：', String(err?.message ?? err));
-    }
-    setLastSessionId(id);
-    startOpening(id).catch((err) => console.warn('[opening] 清空后的开场没跑成：', String(err?.message ?? err)));
+    delete session._wipe;
 
     return json(res, 200, {
       ok: true,
-      // 旧会话的 id 一并给出去，前端要用它把界面上的旧东西撤掉
-      cleared: old ? sessionId : null,
+      id: session.id,
+      kept: kept.length,
+      messages: session.messages.length,
       session: publicSession(session),
-      memory: memoryInfo(id),
+      memory: memoryInfo(session.id),
     });
   }
 

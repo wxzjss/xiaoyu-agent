@@ -1,0 +1,352 @@
+/**
+ * QQ 的桥 —— 把「QQ 来一句话」接成「小鱼的一轮对话」。
+ *
+ * 这个文件只管**连**和**转向**，不碰会话存储本身（那是 server.mjs 的地盘），
+ * 所以它拿三个回调当参数：
+ *
+ *   ensureSession(openid, peer, userText) → { sessionId } | null
+ *       给这个人找一个会话（主人定了「共用一个」就都进那一个；
+ *       否则第一次说话就给他开一个新的）。返回 null = 现在不能聊。
+ *   runChat({ sessionId, text, onEvent }) → Promise<void>
+ *       跑一轮真正的对话（跟界面里发一句话走同一条路）。
+ *       事件里 `{type:'chunk'}` 是增量文字，`{type:'done'}` 是这轮结束。
+ *   upsertPeer(openid, patch) → 记账（认人表在 qq.mjs 里）
+ *   onLog(line) → 面板上那行「最近发生什么」
+ *
+ * ── 为什么不用 SDK 的 QQBot 类直接跑 ─────────────────────────
+ *
+ * `@tencent-connect/qqbot-nodejs` 是主人机器上 dsh 插件带的包，
+ * 小鱼Agent 发布物里没有它（发布只带 src/ + public/，不装 npm 依赖）。
+ * 所以这里写成**动态 import**：装了就用它的全套（网关、重连、媒体上传）；
+ * 没装就报一句人话「这台机器上没装 QQ 的 SDK，两条路：装它，或者手填凭据」。
+ *
+ * 真要长连，靠 `start()`；没有凭据 / 没启动过就跑 `status()` 看状态。
+ */
+
+import { join } from 'node:path';
+import { qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, tryClaim, chunkText, isOwnerOpenid, readQq, setQqBot } from './qq.mjs';
+
+const SDK_PKG = '@tencent-connect/qqbot-nodejs';
+
+/** 进程内的那一份运行状态（不是持久化状态，重启就没了） */
+const rt = {
+  bot: null,
+  phase: 'idle', // idle | starting | online | error | stopped
+  error: '',
+  startedAt: 0,
+  me: null,
+  log: [],
+  stats: { in: 0, out: 0, turns: 0 },
+};
+
+const LOG_MAX = 120;
+
+function log(line) {
+  const s = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${String(line ?? '')}`;
+  rt.log.push(s);
+  if (rt.log.length > LOG_MAX) rt.log.splice(0, rt.log.length - LOG_MAX);
+  try { console.log('[qq]', s); } catch {}
+}
+
+/** 不给外面看密钥的运行状态 */
+export function qqStatus() {
+  return {
+    phase: rt.phase,
+    error: rt.error,
+    startedAt: rt.startedAt,
+    me: rt.me,
+    bot: qqBotPublic(),
+    bind: qqBind(),
+    stats: { ...rt.stats },
+    log: rt.log.slice(-40),
+  };
+}
+
+export function qqRunning() {
+  return rt.phase === 'online' || rt.phase === 'starting';
+}
+
+/** 这台机器上有没有那个 SDK（只探测，不加载）。 */
+export async function sdkAvailable() {
+  return Boolean(await loadSdk());
+}
+
+/**
+ * 找到 QQ 的 SDK。
+ *
+ * 【为什么要这么麻烦】发布物只带 src/ + public/，不带 node_modules，
+ * 所以 `npm i` 装到项目里能 import 到；可主人这台机器又有可能只在 dsh 的
+ * profile 里装过它（C:\Users\<用户>\.dsh\profiles\qqbot\node_modules\…）——
+ * 那也是同一份包，直接拿来用，省得再多装一份。
+ *
+ * 两条路都不通就返回 null，调用方把它变成一句人话显示在面板上。
+ */
+let sdkCache = null;
+async function loadSdk() {
+  if (sdkCache !== null) return sdkCache || null;
+  sdkCache = false;
+  // ① 项目自己装的
+  try {
+    sdkCache = await import(SDK_PKG);
+    if (sdkCache && sdkCache.QQBot) return sdkCache;
+  } catch { /* 继续试下一条 */ }
+  // ② dsh profile 里那份（主人在 dsh 里装过 qqbot 插件才有）
+  try {
+    const { homedir } = await import('node:os');
+    const { pathToFileURL } = await import('node:url');
+    const { existsSync } = await import('node:fs');
+    const p = join(homedir(), '.dsh', 'profiles', 'qqbot', 'node_modules', SDK_PKG, 'dist', 'index.js');
+    if (existsSync(p)) {
+      const mod = await import(pathToFileURL(p).href);
+      if (mod && mod.QQBot) { sdkCache = mod; return mod; }
+    }
+  } catch { /* 没装就没装 */ }
+  sdkCache = false;
+  return null;
+}
+
+/**
+ * 启动。已经起着就直接返回。
+ *
+ * deps 见文件头的说明。任何一步失败都把 phase 放到 'error' 并记下原因，
+ * 不往上抛 —— 面板要能显示「为什么没连上」，而不是让整个服务器挂掉。
+ */
+export async function startQq(deps = {}) {
+  if (qqRunning()) return qqStatus();
+  const cred = qqBot();
+  if (!cred.appId || !cred.appSecret) {
+    rt.phase = 'error';
+    rt.error = '还没填 AppID / AppSecret';
+    return qqStatus();
+  }
+  rt.phase = 'starting';
+  rt.error = '';
+  rt.log.length = 0;
+  log(`准备连接 QQ（AppID ${cred.appId}）`);
+
+  let sdk = null;
+  try {
+    sdk = await loadSdk();
+  } catch { sdk = null; }
+  if (!sdk || !sdk.QQBot) {
+    rt.phase = 'error';
+    rt.error = `这台机器上没装 ${SDK_PKG}（npm i ${SDK_PKG} 之后再来）`;
+    log(rt.error);
+    return qqStatus();
+  }
+  const { QQBot } = sdk;
+
+  try {
+    const bot = new QQBot({
+      appId: cred.appId,
+      appSecret: cred.appSecret,
+      markdownSupport: false,
+      logger: {
+        info: (m) => log(`· ${m}`),
+        error: (m) => log(`! ${m}`),
+        warn: (m) => log(`! ${m}`),
+        debug: () => {},
+      },
+    });
+    rt.bot = bot;
+
+    bot.on('ready', (payload) => {
+      rt.phase = 'online';
+      rt.startedAt = Date.now();
+      rt.error = '';
+      try {
+        rt.me = {
+          id: payload?.user?.id ? String(payload.user.id) : '',
+          name: payload?.user?.username ? String(payload.user.username) : '',
+        };
+      } catch { rt.me = null; }
+      log(`连上了${rt.me?.name ? `，我是「${rt.me.name}」` : ''}`);
+    });
+    bot.on('disconnected', () => {
+      rt.phase = 'starting';
+      log('连接断了，SDK 自己在重连……');
+    });
+    bot.on('error', (err) => {
+      rt.phase = 'error';
+      rt.error = String(err?.message ?? err);
+      log(`出错：${rt.error}`);
+    });
+
+    bot.on('message', async (ctx, msg) => {
+      try {
+        await handleInbound({ msg, bot, deps });
+      } catch (err) {
+        log(`处理一条消息失败：${String(err?.message ?? err)}`);
+      }
+    });
+
+    await bot.start();
+    if (rt.phase === 'starting') rt.phase = 'online';
+    return qqStatus();
+  } catch (err) {
+    rt.phase = 'error';
+    rt.error = String(err?.message ?? err);
+    log(`没连上：${rt.error}`);
+    return qqStatus();
+  }
+}
+
+export async function stopQq() {
+  try { await rt.bot?.stop?.(); } catch {}
+  rt.bot = null;
+  rt.phase = 'stopped';
+  log('停了');
+  return qqStatus();
+}
+
+/**
+ * 一条进来的消息。
+ *
+ * 分层跟 dsh-qqbot 一个思路（这是实践里最不容易出错的形状）：
+ *   ① 认人（是不是主人）
+ *   ② 群聊要 @ 才理（省额度、也免得在别人的群里插话）
+ *   ③ 认领口令「#我是 123456」
+ *   ④ 转给会话引擎，边收边发
+ */
+async function handleInbound({ msg, bot, deps }) {
+  const openid = String(msg?.senderId ?? '').trim();
+  if (!openid) return;
+  const text = String(msg?.content ?? '').replace(/^<@!?[^>]+>\s*/g, '').trim();
+  const isGroup = msg?.kind === 'group';
+
+  // ② 群聊没 @ 就不接（QQ 自己在网关层也会过滤大部分，这里再兜一层）
+  if (isGroup) {
+    const you = String(rt.me?.id || '');
+    const mentioned = Array.isArray(msg?.mentions) && msg.mentions.some((m) => m && (m.is_you === true || (you && String(m.id || m.user_openid || '') === you)));
+    const atRaw = /@\S+/.test(String(msg?.content ?? ''));
+    if (!mentioned && !atRaw) return;
+  }
+
+  const peer = qqPeer(openid);
+  const name = String(msg?.senderName ?? '').trim();
+
+  // ③ 认领口令
+  if (tryClaim(openid, text, name)) {
+    rt.stats.in += 1;
+    log(`「${name || openid.slice(0, 8)}」认成了主人`);
+    await send(bot, msg, '记下了。以后你说的话我按主人来对待。');
+    deps?.onLog?.('认领成功');
+    return;
+  }
+
+  // 空话（纯图片/纯表情没文字）先不给模型，回一句人话
+  if (!text) {
+    const hasMedia = Array.isArray(msg?.attachments) && msg.attachments.length > 0;
+    if (!hasMedia) return;
+    await send(bot, msg, '我现在还看不了 QQ 里发的图片/语音，你打字跟我说好吗？');
+    return;
+  }
+
+  rt.stats.in += 1;
+  log(`← ${isGroup ? '[群] ' : ''}${name || openid.slice(0, 8)}：${text.slice(0, 40)}`);
+
+  // ① 认人 + ④ 找会话
+  const ensured = await deps?.ensureSession?.({ openid, peer, userText: text, isGroup, name });
+  if (!ensured || !ensured.sessionId) {
+    await send(bot, msg, '这会儿接不上会话（主人还没把 QQ 接好），等我一下。');
+    return;
+  }
+  const { sessionId } = ensured;
+  noteQqPeer(openid, { sessionId, name });
+
+  // 主人身份：按主人来（安全词、权限都算数）
+  if (isOwnerOpenid(openid)) {
+    try { deps?.setSpeakerOwner?.(sessionId);
+    } catch {}
+  }
+
+  // ④ 跑一轮，边跑边发
+  const out = [];
+  let sentParts = 0;
+  const flush = async () => {
+    const all = out.join('');
+    const parts = chunkText(all, 1200);
+    // 增量发送：只发还没发出去的那几块
+    for (let i = sentParts; i < parts.length - 1; i++) {
+      await send(bot, msg, parts[i]);
+      rt.stats.out += 1;
+    }
+    sentParts = Math.max(sentParts, Math.max(0, parts.length - 1));
+  };
+  try {
+    await deps?.runChat?.({
+      sessionId,
+      text,
+      fromQq: { openid, name, isOwner: isOwnerOpenid(openid) },
+      onEvent: async (ev) => {
+        if (!ev) return;
+        if (ev.type === 'chunk' && typeof ev.text === 'string') {
+          out.push(ev.text);
+          // 攒够一条就发（别等整轮说完 —— QQ 里等着没反馈很难受）
+          if (out.join('').length - (sentParts ? 0 : 0) > 1200) await flush();
+        } else if (ev.type === 'done') {
+          await flush();
+        }
+      },
+    });
+    rt.stats.turns += 1;
+    // 收尾：把最后那一块发掉
+    const parts = chunkText(out.join(''), 1200);
+    for (let i = sentParts; i < parts.length; i++) {
+      await send(bot, msg, parts[i]);
+      rt.stats.out += 1;
+    }
+    if (!parts.length) await send(bot, msg, '（这一轮她没说话）');
+  } catch (err) {
+    const m = String(err?.message ?? err);
+    log(`这一轮没答完：${m}`);
+    await send(bot, msg, `出错了：${m}`);
+  }
+}
+
+/** 发一条（被动回复优先，没有 msgId 才走主动）。 */
+async function send(bot, msg, content) {
+  const t = String(content ?? '').trim();
+  if (!t) return;
+  try {
+    if (msg?.replyTarget) await bot.sendText(msg.replyTarget, t);
+    else if (msg?.kind === 'group' && msg?.groupOpenid) {
+      await bot.sendText({ scope: 'group', targetId: String(msg.groupOpenid), msgId: msg.messageId }, t);
+    } else {
+      await bot.sendText({ scope: 'c2c', targetId: String(msg.senderId), msgId: msg.messageId }, t);
+    }
+  } catch (err) {
+    log(`发不出去：${String(err?.message ?? err)}`);
+  }
+}
+
+/** 给面板用：最近这些人的名字、是不是主人、什么时候来过。 */
+export function qqPeerList() {
+  const peers = readQq().peers;
+  return Object.entries(peers).map(([openid, p]) => ({
+    openid,
+    short: `${openid.slice(0, 6)}…${openid.slice(-4)}`,
+    role: p.role,
+    isOwner: p.role === 'owner',
+    name: p.name,
+    sessionId: p.sessionId,
+    boundAt: p.boundAt,
+    lastAt: p.lastAt,
+    msgCount: p.msgCount,
+  })).sort((a, b) => b.lastAt - a.lastAt);
+}
+
+/** 供测试 / 命令行：把「是不是配好了」打出来。 */
+export function qqSelfCheck() {
+  const b = qqBotPublic();
+  return {
+    configured: b.configured,
+    enabled: b.enabled,
+    appId: b.appId,
+    running: qqRunning(),
+    phase: rt.phase,
+    peers: Object.keys(readQq().peers).length,
+  };
+}
+
+export { setQqBot };

@@ -1,4 +1,4 @@
-// Minimal web server: static UI + one SSE endpoint that runs the agent.
+﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -34,6 +34,16 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted } from './resume.mjs';
+/**
+ * 【QQ小鱼】2026-11-01 加。
+ *
+ * 三段分工：qq.mjs 管存、qq-bridge.mjs 管连、qq-server.mjs 管「跑成一轮」。
+ * mountQq 放在下面（函数都声明完了之后），路由里用 await import 现取 ——
+ * 这样 QQ 没配的时候一个字节都不加载，也就不会因为缺 SDK 把启动弄挂。
+ */
+import { mountQq, ensureQqSession, runQqTurn, markQqOwner } from './qq-server.mjs';
+/** 「这是我」口令的有效期（跟 qq.mjs 里的 CLAIM_TTL_MS 保持一致，只给界面显示用） */
+const CLAIM_TTL_PUB = 10 * 60 * 1000;
 
 /**
  * 【诊断日志】2026-10-31 加
@@ -3692,6 +3702,148 @@ const server = createServer(async (req, res) => {
       });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
+   * ─────────────── 【QQ小鱼】（2026-11-01 主人要的）───────────────
+   *
+   * 主人原话：「选择哪个会话或创建新的会话连接 QQ」「通常是通过 QQ 号识别主人」。
+   *
+   * 这一段的接口只管「配置 + 认人 + 开关」，真收消息在 src/qq-bridge.mjs，
+   * 真跑一轮在 src/qq-server.mjs。三条分工写在 qq-server.mjs 的文件头。
+   *
+   * 安全上的三条硬规矩（别为了省事放宽）：
+   *   1. AppSecret 只进不出 —— 任何接口都不把它吐回界面，只说「有没有、尾巴四位」。
+   *   2. 谁是主人靠**主人自己在 QQ 里发一次口令**认领，不靠「谁先发谁算」。
+   *   3. 没配置 / 文件读坏 → 一律当没接（fail-closed），绝不默认放人进来。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/qq/status') {
+    try {
+      const { qqStatus, sdkAvailable } = await import('./qq-bridge.mjs');
+      const { claimState } = await import('./qq.mjs');
+      const claim = claimState();
+      const st = qqStatus();
+      return json(res, 200, {
+        ok: true,
+        ...st,
+        // `running` 是 qqStatus() 里没有的一格（它给的是 phase）——
+        // 界面要问「能不能点断开」时只看这一个布尔，所以在这儿补上。
+        running: Boolean(st.phase === 'online' || st.phase === 'starting'),
+        sdk: await sdkAvailable(),
+        claim: claim ? { alive: !claim.expired, ttlMs: CLAIM_TTL_PUB } : null,
+      });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/bot') {
+    const payload = await body(req).catch(() => ({}));
+    try {
+      const { setQqBot, qqBotPublic } = await import('./qq.mjs');
+      const bot = setQqBot({
+        appId: payload.appId,
+        appSecret: payload.appSecret,
+        enabled: payload.enabled,
+        autoStart: payload.autoStart,
+      });
+      return json(res, 200, { ok: true, bot: qqBotPublic() });
+    } catch (e) {
+      return json(res, 400, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/bind') {
+    const payload = await body(req).catch(() => ({}));
+    try {
+      const { setQqBind, qqBind } = await import('./qq.mjs');
+      const bind = setQqBind({ sessionId: payload.sessionId, mode: payload.mode });
+      return json(res, 200, { ok: true, bind: qqBind() });
+    } catch (e) {
+      return json(res, e?.status || 400, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/start') {
+    try {
+      const { startQq } = await import('./qq-bridge.mjs');
+      const st = await startQq({
+        ensureSession: ensureQqSession,
+        runChat: runQqTurn,
+        setSpeakerOwner: markQqOwner,
+        onLog: () => {},
+      });
+      return json(res, 200, { ok: st.phase !== 'error', ...st });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/stop') {
+    try {
+      const { stopQq } = await import('./qq-bridge.mjs');
+      return json(res, 200, { ok: true, ...(await stopQq()) });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /** 「这是我」：发一个一次性口令，让主人去 QQ 里说一句。 */
+  if (req.method === 'POST' && url.pathname === '/api/qq/claim') {
+    try {
+      const { newClaimToken } = await import('./qq.mjs');
+      const r = newClaimToken();
+      return json(res, 200, { ok: true, ...r, how: `在 QQ 里私聊机器人，发：#我是 ${r.token}` });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/claim/cancel') {
+    try {
+      const { clearClaim } = await import('./qq.mjs');
+      clearClaim();
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/qq/peers') {
+    try {
+      const { qqPeerList } = await import('./qq-bridge.mjs');
+      return json(res, 200, { ok: true, peers: qqPeerList() });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /** 认人表的两件事：删一个人 / 指定谁是主人。 */
+  if (req.method === 'POST' && url.pathname === '/api/qq/peer') {
+    const payload = await body(req).catch(() => ({}));
+    try {
+      const { forgetQqPeer, noteQqPeer, qqPeer } = await import('./qq.mjs');
+      const openid = String(payload.openid || '').trim();
+      if (!openid) return json(res, 400, { error: '得说清是哪个人（openid）' });
+      if (payload.remove === true) {
+        forgetQqPeer(openid);
+        return json(res, 200, { ok: true, removed: true });
+      }
+      if (payload.role !== undefined) {
+        // 只允许一个主人：先把别人的主人位撤掉
+        const all = (await import('./qq.mjs')).qqPeers();
+        if (payload.role === 'owner') {
+          for (const [k, v] of Object.entries(all)) {
+            if (v.role === 'owner' && k !== openid) noteQqPeer(k, { role: 'guest', counted: false });
+          }
+        }
+        noteQqPeer(openid, { role: payload.role === 'owner' ? 'owner' : 'guest', counted: false });
+      }
+      if (payload.name !== undefined) noteQqPeer(openid, { name: payload.name, counted: false });
+      return json(res, 200, { ok: true, peer: qqPeer(openid) });
+    } catch (e) {
+      return json(res, 400, { error: String(e?.message ?? e) });
     }
   }
 
@@ -7806,6 +7958,66 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
 
 // Auto-start when launched directly (node src/server.js).
 const isDirectRun = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('src/server.mjs');
+
+/**
+ * 【把 QQ 这一侧装到服务器身上】2026-11-01
+ *
+ * 为什么放在文件末尾、而不是写在某个函数里面：mountQq 要的是「一堆已经存在的函数」，
+ * 放在最后能保证它们全都声明过了（函数声明会提上来，但这些是 const / 闭包里的东西，
+ * 位置摆错就是 undefined）。
+ *
+ * 这里给 qq-server.mjs 的是「跑一轮需要的那几只手」：拿会话、存会话、开新会话、
+ * 以及 runAgent + 工具上下文。给了它们，QQ 那边就不必自己再造一套会话引擎。
+ */
+mountQq({
+  getSession,
+  saveSession,
+  publicSession,
+  isSessionId,
+  newSessionId,
+  runAgent,
+  runWithToolContext,
+  snapFor: (sid) => {
+    // 跟 /api/chat 一样：这一轮的「点单」快照（哪一轮改了哪些文件）。
+    // 这里给一个空对象就行 —— QQ 那边没有「主人手上那句消息」可以挂回滚点，
+    // 记在别处反而会让回退错位。所以是「空快照」而不是「不许快照」。
+    return {};
+  },
+  inPersonaMode,
+  sessionModeWord,
+  fishOn,
+  setFishOn,
+  setIdentity,
+  runningTurns,
+  liveLogs,
+  /**
+   * 给 QQ 的人开新会话。
+   *
+   * 用的是新建会话那条正路（makeSession 的逻辑），但有两点不一样：
+   *   · 不跑开场白 —— QQ 上的人一进来就看见「主人你可算来了」很怪，
+   *     而且开场白会调一次模型、白花钱。
+   *   · 名字直接用传进来的 title。
+   */
+  newSessionFor: async ({ title = '', agentId = 'xiaoyu' } = {}) => {
+    const id = newSessionId();
+    const now = Date.now();
+    const session = {
+      id,
+      title: String(title || 'QQ 会话').slice(0, 40),
+      createdAt: now,
+      updatedAt: now,
+      messages: sysSeed(id),
+      _openingPending: false,
+    };
+    saveSession(session);
+    sessions.set(id, session);
+    try { ensureMemory(id); } catch {}
+    setLastSessionId(id);
+    try { if (agentId) setSessionAgent(id, agentId); } catch {}
+    return { id };
+  },
+});
+
 if (isDirectRun) startServer().catch((err) => {
   console.error('failed to start:', err?.message ?? err);
   process.exit(1);

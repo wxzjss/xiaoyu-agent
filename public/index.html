@@ -170,6 +170,70 @@
     .scrCard .cap b { color: var(--text); font-weight: 600; }
     .scrCard .why { color: var(--text); }
     .scrHint { font-size: 12.5px; color: var(--dim); line-height: 1.7; }
+    /* QQ 小鱼（2026-11-01）：三格竖排 —— 连上、认主、挂会话。
+       每格都是「一句话说清在干什么 + 该填的东西」，不做折叠，藏起来反倒让人找不到在哪一步。 */
+    #qqDlg { width: min(720px, 94vw); height: min(86vh, 760px); }
+    .qqBody { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+    .qqSect {
+      border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+      display: flex; flex-direction: column; gap: 8px; background: rgba(255, 255, 255, 0.015);
+    }
+    .qqSectHead { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .qqSectHead b {
+      width: 18px; height: 18px; border-radius: 50%; flex: 0 0 auto;
+      display: grid; place-items: center; font-size: 11px;
+      background: rgba(140, 220, 210, 0.2); color: #8cdcd2;
+    }
+    .qqSectHead span { color: var(--text); }
+    .qqField { display: flex; align-items: center; gap: 8px; }
+    /* 标签列要够宽：这一栏的字是「各聊各的？」这种带问号的，
+       74px 会把字挤断（截图里见过折成两行）。给它 96px + 不换行。 */
+    .qqField > label { flex: 0 0 96px; font-size: 12.5px; color: var(--dim); white-space: nowrap; }
+    .qqField input[type="text"], .qqField input[type="password"], .qqField select {
+      flex: 1 1 auto; min-width: 0;
+      background: var(--input-bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 7px 9px; font-size: 12.5px; font-family: inherit;
+    }
+    .qqFieldInline { gap: 10px; flex-wrap: wrap; }
+    .qqGrow { flex: 1 1 auto; }
+    .qqTail { font-size: 11.5px; color: var(--dim); font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
+    /* 「一开就自动连上」这格：勾选框和字都得站稳 —— 截图里出现过
+       竖排成一列字的「小鱼 Agent 一开就自动连上」，全是被 flex 挤的。 */
+    .qqCheck {
+      display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+      font-size: 12.5px; color: var(--dim); cursor: pointer; white-space: nowrap;
+    }
+    .qqCheck input { flex: 0 0 auto; width: 14px; height: 14px; margin: 0; }
+    .qqCheck span { flex: 0 0 auto; white-space: nowrap; }
+    .qqState {
+      font-size: 12px; padding: 3px 9px; border-radius: 999px;
+      border: 1px solid var(--border); color: var(--dim); white-space: nowrap;
+    }
+    .qqState.on { border-color: rgba(140, 220, 210, 0.6); color: #8cdcd2; background: rgba(140, 220, 210, 0.12); }
+    .qqState.bad { border-color: rgba(232, 122, 122, 0.55); color: #e87a7a; }
+    .qqHint { font-size: 11.5px; color: var(--dim); line-height: 1.7; }
+    .qqClaimLine { display: flex; align-items: center; gap: 10px; }
+    .qqClaimLabel { font-size: 12.5px; color: var(--dim); flex: 0 0 74px; }
+    #qqClaimCode {
+      font-family: ui-monospace, Consolas, monospace; font-size: 20px; letter-spacing: 4px;
+      color: #8cdcd2; background: var(--input-bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 4px 12px;
+    }
+    .qqPeers { display: flex; flex-direction: column; gap: 6px; }
+    .qqPeer {
+      display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+      border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+    }
+    .qqPeer .who { color: var(--text); }
+    .qqPeer .tag {
+      font-size: 10.5px; padding: 1px 7px; border-radius: 999px; flex: 0 0 auto;
+      border: 1px solid var(--border); color: var(--dim);
+    }
+    .qqPeer .tag.owner { border-color: rgba(140, 220, 210, 0.6); color: #8cdcd2; }
+    .qqPeer .grow { flex: 1 1 auto; }
+    .qqPeer .when { font-size: 11px; color: var(--dim); white-space: nowrap; }
+
     #whaleBtn.on {
       background: rgba(122, 168, 232, 0.22);
       border-color: #7aa8e8;
@@ -2664,6 +2728,81 @@
     <div class="dlgFoot">
       <span class="hint" id="scrFramesNote"></span>
       <button type="button" class="ghost2" id="scrFramesClose">关闭</button>
+    </div>
+  </dialog>
+
+  <!-- QQ 小鱼（2026-11-01）
+       主人：「参考 QQAgent 连接 QQ 的方式…给小鱼Agent 增加类似的功能【QQ小鱼】
+       （可以选择哪个会话或创建新的会话连接QQ）」。
+
+       这块面板只做三件事：填机器人凭据、认主、把 QQ 上的人挂到她哪个会话上。
+       真正的消息转发在 src/qq-bridge.mjs，它把 QQ 来的话当成一次 /api/chat 送进去，
+       所以她说的、记的、用的工具，跟在这台电脑上聊天完全一样。 -->
+  <dialog id="qqDlg" class="dlg qqDlg">
+    <div class="dlgHead">
+      <b>QQ 小鱼</b><span class="meta" id="qqHeadHint">QQ 上找你说话的人，由她来应</span>
+      <button type="button" class="x" id="qqClose">关闭</button>
+    </div>
+    <div class="dlgBody qqBody">
+      <!-- 第一格：连不连得上（凭据 + 开关） -->
+      <div class="qqSect">
+        <div class="qqSectHead"><b>1</b><span>先让机器人连上 QQ</span></div>
+        <div class="qqField">
+          <label for="qqAppId">AppID</label>
+          <input id="qqAppId" type="text" spellcheck="false" placeholder="QQ 开放平台里那个机器人的 AppID">
+        </div>
+        <div class="qqField">
+          <label for="qqAppSecret">AppSecret</label>
+          <input id="qqAppSecret" type="password" spellcheck="false" placeholder="只存在这台机器上，不回显">
+          <span class="qqTail" id="qqSecretTail"></span>
+        </div>
+        <div class="qqField qqFieldInline">
+          <label class="qqCheck"><input type="checkbox" id="qqAutoStart"><span>小鱼Agent 一开就自动连上</span></label>
+          <span class="qqGrow"></span>
+          <span class="qqState" id="qqState">没连</span>
+          <button type="button" class="ghost" id="qqToggle">连上</button>
+        </div>
+        <div class="qqHint" id="qqHint">凭据去 QQ 开放平台（q.qq.com）建一个机器人拿，沙箱/正式都能用。</div>
+      </div>
+
+      <!-- 第二格：认主。没有这一步，谁加了她都能使唤她 -->
+      <div class="qqSect">
+        <div class="qqSectHead"><b>2</b><span>认出哪个人是你</span></div>
+        <div class="qqClaim" id="qqClaimBox">
+          <div class="qqClaimLine">
+            <span class="qqClaimLabel">认主口令</span>
+            <code id="qqClaimCode">------</code>
+            <button type="button" class="ghost" id="qqClaimNew">换一个</button>
+          </div>
+          <div class="qqHint" id="qqClaimHint">在 QQ 里私聊她，发一句「#我是 123456」（把 123456 换成上面这串）。
+            第一个说对的人就被认成你，之后这个口令作废。</div>
+        </div>
+        <div class="qqPeers" id="qqPeers"></div>
+        <div class="qqHint" id="qqPeersHint">别人加她，她会应，但用的是小鲸那套身份；只有你说话时才按主人答。</div>
+      </div>
+
+      <!-- 第三格：挂到哪个会话 -->
+      <div class="qqSect">
+        <div class="qqSectHead"><b>3</b><span>把 QQ 挂到她的哪个会话上</span></div>
+        <div class="qqField">
+          <label for="qqBindMode">各聊各的？</label>
+          <select id="qqBindMode">
+            <option value="shared">都进同一个会话（你在电脑前也看得见）</option>
+            <option value="per-peer">QQ 上每人一个会话</option>
+          </select>
+        </div>
+        <div class="qqField">
+          <label for="qqBindSession">挂到</label>
+          <select id="qqBindSession"></select>
+          <button type="button" class="ghost" id="qqBindNew">新建一个会话</button>
+        </div>
+        <div class="qqHint" id="qqBindHint">挂上之后，QQ 上说的话会出现在那个会话里，
+          你在电脑上接着说也行 —— 同一段记忆。</div>
+      </div>
+    </div>
+    <div class="dlgFoot">
+      <span class="hint" id="qqFootHint"></span>
+      <button type="button" class="ghost" id="qqSave">保存</button>
     </div>
   </dialog>
 
@@ -7679,7 +7818,7 @@ async function toggleAdminBtn() {
         '<li>不可逆的事（删文件、覆盖、改注册表、装卸软件）她得先问你一句</li>' +
         '<li>这一档按会话开，随时可以在顶栏关掉</li>' +
         '</ul></div>' +
-        '<div class="dlgFoot"><button type="button" id="_adNo">算了</button>' +
+        '<div class="dlgFoot"><button type="button" class="ghost" id="_adNo">算了</button>' +
         '<button type="button" class="primary" id="_adYes">开吧</button></div>';
       document.body.appendChild(d);
       const done = (v) => { try { d.close(); } catch {} d.remove(); resolve(v); };
@@ -8218,6 +8357,312 @@ async function delAgentCard() {
     else if (kind === 'whale') toggleWhaleProfileEditor(null);
   });
 }
+
+// ==================== QQ 小鱼（2026-11-01） ====================
+/**
+ * 主人：「参考 QQAgent 连接 QQ 的方式…给小鱼Agent 增加类似的功能【QQ小鱼】
+ * （可以选择哪个会话或创建新的会话连接QQ）」。
+ *
+ * 这一块只管面板：填凭据、认主、把 QQ 挂到哪个会话。
+ * 消息怎么进来怎么出去全在服务端的 src/qq-bridge.mjs —— 它把 QQ 上那句话
+ * 当成一次「主人发消息」走同一条路，所以她在这台电脑上什么脾气，在 QQ 上就什么脾气。
+ */
+
+/** 最后一次拉到的状态，保存/刷新时都用它，省得每次都等一遍网络。 */
+let qqState = null;
+/** 认主口令：只在打开面板时问一次，不刷新就一直是这一串。 */
+let qqClaimToken = '';
+/** 会话清单（第三格那个下拉框要用）。 */
+let qqSessions = [];
+
+function qqEl(id) { return document.getElementById(id); }
+function qqSetHint(text, bad) {
+  const el = qqEl('qqFootHint');
+  if (!el) return;
+  el.textContent = String(text || '');
+  el.style.color = bad ? '#e87a7a' : '';
+}
+
+async function qqApi(path, body) {
+  const opt = body === undefined ? { method: 'GET' }
+    : {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+  const r = await fetch(path, opt).then((x) => x.json()).catch(() => null);
+  return r;
+}
+
+/** 把状态画到面板上。整块重画，简单，也不会漏字段。 */
+function renderQqPanel(st) {
+  if (!st) return;
+  qqState = st;
+  const bot = st.bot || {};
+
+  // 第一格：凭据
+  const idEl = qqEl('qqAppId');
+  const secEl = qqEl('qqAppSecret');
+  if (idEl && document.activeElement !== idEl) idEl.value = String(bot.appId || '');
+  if (secEl) {
+    secEl.placeholder = bot.hasSecret
+      ? `已经存过（尾号 ${bot.secretTail || '****'}）；要换就整串重填`
+      : '只存在这台机器上，不回显';
+    if (document.activeElement !== secEl) secEl.value = '';
+  }
+  const tail = qqEl('qqSecretTail');
+  if (tail) tail.textContent = bot.hasSecret ? `已存（尾号 ${bot.secretTail || '****'}）` : '';
+  const auto = qqEl('qqAutoStart');
+  if (auto) auto.checked = bot.autoStart !== false;
+
+  const stateEl = qqEl('qqState');
+  const toggle = qqEl('qqToggle');
+  if (stateEl && toggle) {
+    stateEl.className = 'qqState';
+    if (st.running) {
+      stateEl.textContent = st.me && st.me.username ? `已连上：${st.me.username}` : '已连上';
+      stateEl.classList.add('on');
+      toggle.textContent = '断开';
+    } else if (!bot.configured) {
+      stateEl.textContent = '还没填凭据';
+      toggle.textContent = '连上';
+      toggle.disabled = true;
+    } else if (st.sdk === false) {
+      stateEl.textContent = '这台机器没装 QQ 的连接库';
+      stateEl.classList.add('bad');
+      toggle.textContent = '连上';
+      toggle.disabled = true;
+    } else {
+      stateEl.textContent = '没连';
+      toggle.textContent = '连上';
+      toggle.disabled = false;
+    }
+  }
+  const hint = qqEl('qqHint');
+  if (hint) {
+    if (st.sdk === false) {
+      hint.textContent = '没找到 @tencent-connect/qqbot-nodejs。'
+        + '在 D:\\小鱼Agent 里跑一次 npm i @tencent-connect/qqbot-nodejs 就有了。';
+    } else if (st.lastError) {
+      hint.textContent = '上次出错：' + st.lastError;
+    } else {
+      hint.textContent = '凭据去 QQ 开放平台（q.qq.com）建一个机器人拿，沙箱/正式都能用。';
+    }
+  }
+
+  // 第二格：认主
+  const codeEl = qqEl('qqClaimCode');
+  if (codeEl) codeEl.textContent = qqClaimToken || '------';
+  const claimBox = qqEl('qqClaimBox');
+  if (claimBox) {
+    const alive = st.claim && st.claim.alive;
+    claimBox.style.opacity = alive ? '1' : '0.72';
+  }
+  const claimHint = qqEl('qqClaimHint');
+  if (claimHint) {
+    claimHint.textContent = st.ownerOpenid
+      ? '已经认出你了 —— 你在 QQ 上说话，她会按主人答；别人说话，她按小鲸那套答。'
+      : `在 QQ 里私聊她，发一句「#我是 ${qqClaimToken || '------'}」。`
+        + '第一个说对的人就被认成你，之后这个口令作废。';
+  }
+
+  const peers = Array.isArray(st.peers) ? st.peers : [];
+  const box = qqEl('qqPeers');
+  if (box) {
+    box.innerHTML = '';
+    if (!peers.length) {
+      box.innerHTML = '<div class="qqHint">还没有人在 QQ 上找过她。</div>';
+    }
+    for (const p of peers) {
+      const row = document.createElement('div');
+      row.className = 'qqPeer';
+      const who = document.createElement('span');
+      who.className = 'who';
+      who.textContent = p.name || p.openidShort || '（没留名字）';
+      const tag = document.createElement('span');
+      tag.className = 'tag' + (p.role === 'owner' ? ' owner' : '');
+      tag.textContent = p.role === 'owner' ? '主人' : '客人';
+      const grow = document.createElement('span');
+      grow.className = 'grow';
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = p.lastAt ? new Date(p.lastAt).toLocaleString('zh-CN', { hour12: false }) : '';
+      row.append(who, tag, grow, when);
+      if (p.role !== 'owner') {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ghost';
+        btn.textContent = '认成主人';
+        btn.onclick = async () => {
+          const r = await qqApi('/api/qq/owner', { openid: p.openid });
+          if (!r || r.error) { qqSetHint('没改成：' + ((r && r.error) || '网络错误'), true); return; }
+          qqSetHint('好啦，以后这个人说话她按主人答');
+          await refreshQqPanel();
+        };
+        row.append(btn);
+      }
+      box.append(row);
+    }
+  }
+
+  // 第三格：挂会话
+  const modeEl = qqEl('qqBindMode');
+  const bind = st.bind || {};
+  if (modeEl && document.activeElement !== modeEl) modeEl.value = bind.mode === 'per-peer' ? 'per-peer' : 'shared';
+  const selEl = qqEl('qqBindSession');
+  if (selEl) {
+    const want = String(bind.sessionId || '');
+    if (!selEl.options.length) qqFillSessionOptions();
+    let hit = false;
+    for (const o of selEl.options) if (o.value === want) hit = true;
+    if (!hit && want) {
+      const o = document.createElement('option');
+      o.value = want;
+      o.textContent = `${want}（这个会话不在当前列表里）`;
+      selEl.append(o);
+    }
+    if (want) selEl.value = want;
+  }
+  const bindHint = qqEl('qqBindHint');
+  if (bindHint) {
+    bindHint.textContent = bind.sessionId
+      ? (bind.mode === 'per-peer'
+        ? '每个人说的话会各开一个会话，名字是「QQ · 谁」。'
+        : 'QQ 上说的话都进这一个会话，你在电脑上接着说也行 —— 同一段记忆。')
+      : '还没挂会话。选一个下面那栏，再点保存。';
+  }
+}
+
+/** 第三格的下拉框：把这个机器上的会话列出来（最近改过的排前面）。 */
+async function qqFillSessionOptions() {
+  const selEl = qqEl('qqBindSession');
+  if (!selEl) return;
+  if (!qqSessions.length) {
+    const r = await qqApi('/api/sessions');
+    qqSessions = (r && Array.isArray(r.sessions)) ? r.sessions : [];
+  }
+  const keep = selEl.value;
+  selEl.innerHTML = '';
+  const ph = document.createElement('option');
+  ph.value = '';
+  ph.textContent = '（不挂）';
+  selEl.append(ph);
+  for (const s of qqSessions.slice(0, 80)) {
+    const o = document.createElement('option');
+    o.value = String(s.id);
+    const n = String(s.title || '').trim() || '没名字的会话';
+    const t = s.updatedAt ? new Date(s.updatedAt).toLocaleDateString('zh-CN') : '';
+    o.textContent = t ? `${n}（${t}）` : n;
+    selEl.append(o);
+  }
+  if (keep) selEl.value = keep;
+}
+
+/** 重新拉一遍状态并重画。 */
+async function refreshQqPanel() {
+  const st = await qqApi('/api/qq/status');
+  if (!st || st.error) { qqSetHint('读不到状态：' + ((st && st.error) || '网络错误'), true); return; }
+  renderQqPanel(st);
+}
+
+/** 打开面板（功能页那个按钮、以及保存后重开都走这里）。 */
+async function openQqDlg() {
+  const dlg = qqEl('qqDlg');
+  if (!dlg) return;
+  if (typeof closeOtherDialogs === 'function') closeOtherDialogs('qqDlg');
+  // 每次打开换一个新口令：上一轮那串可能已经被人看见了
+  const c = await qqApi('/api/qq/claim', {});
+  qqClaimToken = (c && c.token) ? String(c.token) : '';
+  qqSessions = [];
+  await refreshQqPanel();
+  if (!dlg.open) dlg.showModal();
+}
+
+/** 把当前填的凭据存下来。 */
+async function saveQqCreds() {
+  const appId = String((qqEl('qqAppId') || {}).value || '').trim();
+  const appSecret = String((qqEl('qqAppSecret') || {}).value || '').trim();
+  const autoStart = Boolean((qqEl('qqAutoStart') || {}).checked);
+  const patch = { appId, autoStart };
+  // 空着就是「不改」—— 否则每点一次保存就把已经存好的密钥清掉了
+  if (appSecret) patch.appSecret = appSecret;
+  const r = await qqApi('/api/qq/bot', patch);
+  if (!r || r.error) { qqSetHint('存不上：' + ((r && r.error) || '网络错误'), true); return false; }
+  const secEl = qqEl('qqAppSecret');
+  if (secEl) secEl.value = '';
+  return true;
+}
+
+/** 第三格「保存」：把挂哪个会话、各聊各的写下去。 */
+async function saveQqBind() {
+  const modeEl = qqEl('qqBindMode');
+  const selEl = qqEl('qqBindSession');
+  const sessionId = String((selEl || {}).value || '');
+  const mode = String((modeEl || {}).value || 'shared');
+  if (!sessionId) { qqSetHint('先在「挂到」里选一个会话，或者点「新建一个会话」'); return false; }
+  const r = await qqApi('/api/qq/bind', { sessionId, mode });
+  if (!r || r.error) { qqSetHint('挂不上：' + ((r && r.error) || '网络错误'), true); return false; }
+  return true;
+}
+
+{
+  const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  wire('qqClose', () => {
+    const d = document.getElementById('qqDlg');
+    if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } }
+  });
+  wire('qqClaimNew', async () => {
+    const c = await qqApi('/api/qq/claim', {});
+    qqClaimToken = (c && c.token) ? String(c.token) : '';
+    await refreshQqPanel();
+    qqSetHint('换好了，让那个人发新的这串');
+  });
+  wire('qqToggle', async () => {
+    const running = Boolean(qqState && qqState.running);
+    if (!running) {
+      if (!(await saveQqCreds())) return;
+      qqSetHint('正在连 QQ…');
+      const r = await qqApi('/api/qq/start', {});
+      if (!r || r.error) { qqSetHint('连不上：' + ((r && r.error) || '网络错误'), true); await refreshQqPanel(); return; }
+      qqSetHint('连上了');
+    } else {
+      const r = await qqApi('/api/qq/stop', {});
+      if (!r || r.error) { qqSetHint('断不开：' + ((r && r.error) || '网络错误'), true); return; }
+      qqSetHint('断开了');
+    }
+    await refreshQqPanel();
+  });
+  wire('qqSave', async () => {
+    if (!(await saveQqCreds())) return;
+    if (!(await saveQqBind())) return;
+    const modeEl = qqEl('qqBindMode');
+    if (modeEl) {
+      await qqApi('/api/qq/bind', {
+        sessionId: String((qqEl('qqBindSession') || {}).value || ''),
+        mode: String(modeEl.value || 'shared'),
+      });
+    }
+    await refreshQqPanel();
+    qqSetHint('存好了');
+  });
+  wire('qqBindNew', async () => {
+    const name = await askName({
+      title: '新会话叫什么', value: 'QQ 小鱼', placeholder: '随便起个名字', maxLength: 40,
+    });
+    if (name === null) return;
+    const r = await qqApi('/api/sessions/new', {
+      title: name.trim() || 'QQ 小鱼', opening: false,
+    });
+    const id = r && r.session && r.session.id ? String(r.session.id) : '';
+    if (!id) { qqSetHint('建不了：' + ((r && r.error) || '网络错误'), true); return; }
+    qqSessions = [];
+    await qqFillSessionOptions();
+    const selEl = qqEl('qqBindSession');
+    if (selEl) selEl.value = id;
+    qqSetHint('建好了，点保存挂上去');
+  });
+}
+// ==================== QQ 小鱼 结束 ====================
 
 // ---- 新建 ----
 document.getElementById('personaNew').onclick = async () => {
@@ -9017,6 +9462,28 @@ function renderFeatList() {
         openScreenFramesDlg();
       });
       row.append(main, peek, sw);
+      featList.appendChild(row);
+      continue;
+    }
+
+    /**
+     * QQ 小鱼：多给一个「打开设置」的入口。
+     *
+     * 2026-11-01 主人要的「【QQ小鱼】（可以选择哪个会话或创建新的会话连接QQ）」。
+     * 跟陪看屏幕一样，开关只管「她要不要应 QQ 上的人」；
+     * 具体填凭据、认主、挂哪个会话，都在那个面板里。
+     */
+    if (f.id === 'qqSense') {
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'featEditBtn';
+      openBtn.textContent = '设置 QQ';
+      openBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openQqDlg();
+      });
+      row.append(main, openBtn, sw);
       featList.appendChild(row);
       continue;
     }

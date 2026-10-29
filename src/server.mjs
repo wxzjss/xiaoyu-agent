@@ -4380,9 +4380,34 @@ const server = createServer(async (req, res) => {
       }
       return m;
     })();
+    /**
+     * 【2026-11-01 加：这个会话里坐着几个人】
+     *
+     * 主人要的是「一眼看出去哪个会话里有几个人、谁在说话」。
+     * 跟 agentName 同一个理由放服务端算：会话四十多个，让界面自己一条条问
+     * 就等于四十多个请求，列表要转圈。
+     *
+     * 只回名字，不回人设 —— 列表只需要认出「谁在场」。
+     * 小鲸那条总开关关着的时候不列她（她不在屋里），跟群聊挂点的判断保持一致。
+     */
+    const groupOf = (sessionId) => {
+      try {
+        return groupAgentIds(sessionId)
+          .filter((id) => (id === AGENT_XIAOJING ? whaleOn(sessionId) : true))
+          .map((id) => String(nameOf.get(String(id)) || '').trim())
+          .filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
     const list = listSessions().map((s) => {
       const agentId = String(boundMap[s.id] || '');
-      return { ...s, agentId, agentName: agentId ? (nameOf.get(agentId) || '') : '' };
+      return {
+        ...s,
+        agentId,
+        agentName: agentId ? (nameOf.get(agentId) || '') : '',
+        crew: groupOf(s.id),
+      };
     });
     const last = getLastSessionId();
     const fallback = list.length ? list[0].id : null;

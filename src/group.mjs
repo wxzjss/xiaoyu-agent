@@ -63,8 +63,32 @@ function speakerOf(m, meId) {
 export function buildCardMessages({ agent, messages, sessionId = 'default' } = {}) {
   const meId = String(agent?.id || '');
   const nm = String(agent?.name || '').trim() || '她';
-  const pick = (Array.isArray(messages) ? messages : []).filter(usable).slice(-HISTORY_LIMIT);
+  const all = (Array.isArray(messages) ? messages : []).filter(usable);
+  const pick = all.slice(-HISTORY_LIMIT);
+  /**
+   * 【2026-11-01 补：更早的时候谁说过什么】
+   *
+   * 主人要「群聊里的人能看见彼此说过的话」。原来这里只搬最后 24 条 ——
+   * 一个八百轮的会话里，阿蓝第 3 轮说过「我不喜欢下雨」，到第 30 轮阿绿压根不知道，
+   * 她只会照最后二十几句答，看着就像刚进门。
+   *
+   * 但也不能全搬：八百轮全塞进去，每说一句都烧一大笔钱。
+   * 折中办法是「每人早先说过的话，各留一句最短的摘要式提醒」，条数和字数都上死限：
+   *   · 只取「最后 24 条以外」的那些，别和上面重复；
+   *   · 每个人（含主人、含小鱼）最多留 3 段；
+   *   · 每段压到 80 字；
+   *   · 整块总长封顶 1200 字，超了就砍最老的。
+   * 这块放在正文最前面，用【更早的时候】框起来，读起来像「前言，不是刚才说的」。
+   */
+  const olderRaw = all.slice(0, Math.max(0, all.length - HISTORY_LIMIT));
+  const earlier = earlierSayings(olderRaw, meId);
   const out = [{ role: 'system', content: buildSystemPrompt({ sessionId, agentId: meId }) }];
+  if (earlier.length) {
+    out.push({
+      role: 'user',
+      content: `【更早的时候（不是刚才，是这条记录前面那一段）】\n${earlier.map((x) => `${x.who}：${x.text}`).join('\n')}`,
+    });
+  }
   for (const m of pick) {
     const text = clip(typeof m._text === 'string' ? m._text : m.content);
     if (!text) continue;
@@ -86,6 +110,49 @@ export function buildCardMessages({ agent, messages, sessionId = 'default' } = {
     content: `（轮到「${nm}」说话了。接着上面的记录，用你自己的口吻说一句，或者两句。别复述别人说过的，别替别人发言，不用总结，不用说「轮到我说」。）`,
   });
   return out;
+}
+
+/** 每个人最多留几段「早先说过的话」 */
+const EARLIER_PER_WHO = 3;
+/** 每段压到多少字 */
+const EARLIER_CLIP = 80;
+/** 整块最多多少字（超了先砍最老的） */
+const EARLIER_TOTAL = 1200;
+
+/**
+ * 从「更早的那一段记录」里，给每个人挑几句出来。
+ *
+ * 挑法：从近往远扫，每人只收开头不重复的几句（同一个意思说两遍没意义），
+ * 收满 EARLIER_PER_WHO 就跳过这个人。这样越近的越优先，远的自然被挤掉。
+ * @returns {Array<{who:string, text:string}>}
+ */
+function earlierSayings(older, meId) {
+  const picked = new Map(); // who -> [text]
+  for (let i = older.length - 1; i >= 0; i--) {
+    const m = older[i];
+    const text = String(typeof m._text === 'string' ? m._text : m.content ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!text) continue;
+    const who = speakerOf(m, meId) === 'me' ? '你' : speakerOf(m, meId);
+    const bucket = picked.get(who) || [];
+    if (bucket.length >= EARLIER_PER_WHO) continue;
+    // 同一句话（前 20 字一样）就别再收一遍
+    const head = text.slice(0, 20);
+    if (bucket.some((b) => b.slice(0, 20) === head)) continue;
+    bucket.push(text.length > EARLIER_CLIP ? text.slice(0, EARLIER_CLIP) + '…' : text);
+    picked.set(who, bucket);
+  }
+  // 从近到远收的，输出时还得按时间正序，否则读起来像倒放
+  const rows = [];
+  for (const [who, arr] of picked) for (const text of arr.slice().reverse()) rows.push({ who, text });
+  // 总长封顶：超了从最后一行的前面砍（越早越先丢）
+  let total = rows.reduce((n, r) => n + r.who.length + r.text.length + 2, 0);
+  while (rows.length > 1 && total > EARLIER_TOTAL) {
+    const drop = rows.shift();
+    total -= drop.who.length + drop.text.length + 2;
+  }
+  return rows;
 }
 
 /**

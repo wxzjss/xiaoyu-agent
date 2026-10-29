@@ -331,7 +331,21 @@
  * 气泡根节点的 class 由脚本整个换成 msg user / msg assistant，
  * 所以这里只需要保住一件事 —— 后号码只在「她以自己身份说话」时才出现。
  */
-.whale .role:not(.whaleSelf)::after { content: ''; }
+/*
+ * 【2026-10-29 修】以前这里是 `.whale .role:not(.whaleSelf)::after { content: ''; }`，
+ * 想表达「冒充别人时不显示 · 姐妹」。但它特异性（0,3,0）比上面 `.whale .role::after`
+ * （0,2,0）高，于是永远赢 —— 不管加不加 whaleSelf，后缀都被清空。
+ * 而 JS 那边从来没人给 .role 加过 whaleSelf（全文件只此一处出现），
+ * 结果就是「小鲸以自己身份说话」也永远看不到 · 姐妹。
+ *
+ * 实测（Electron 真页面）：
+ *   .role            → ::after content ""
+ *   .role.whaleSelf  → ::after content " · 姐妹"
+ *
+ * 现在反过来：默认不显示，明确标了 whaleSelf 才显示。
+ */
+.whale .role::after { content: ''; }
+.whale .role.whaleSelf::after { content: ' · 姐妹'; opacity: 0.5; font-size: 0.85em; }
     .assistant .bubble.streaming::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
     @keyframes blink { 50% { opacity: 0; } }
     details.tool {
@@ -2793,8 +2807,13 @@
           <div class="agTip" id="agTip"></div>
         </div>
       </div>
+      <!-- 导入角色卡：选一个 .json（我们自己导出的那种，或者酒馆那种 character card 也认） -->
+      <input type="file" id="agCardFile" accept=".json,application/json" hidden />
       <div class="dlgFoot">
         <span class="hint" id="agHint"></span>
+        <!-- 角色卡·2026-11-01 主人要的「在【新建智能体】左侧增加【导入智能体】与【导出智能体】」 -->
+        <button type="button" class="ghost" id="agImport">导入智能体</button>
+        <button type="button" class="ghost" id="agExport">导出智能体</button>
         <button type="button" class="ghost" id="agNew">新建智能体</button>
         <button type="button" class="ghost" id="agNewChat">用她开个新会话</button>
         <button type="button" class="ghost" id="agPanel" hidden>多套人设…</button>
@@ -6168,9 +6187,27 @@ function paintWhaleFromLive(ev, sid) {
 
 function addWhaleBubble(who, text) {
   if (whaleAlreadyDrawn(who, text)) return null;
-  const wrap = addEl('', 'msg whale');
+  /*
+   * 【谁的样式，看谁的名字】—— 2026-10-29 修
+   *
+   * 以前这里把根节点写死成 'msg whale'：不管 who 是什么，一律套小鲸的冷蓝竖线
+   * + 冷底，只把名字换掉。于是主人看到「名字写着小鱼、其余跟小鲸一模一样」的怪东西。
+   * 触发路径：agent 事件会带别人的名字（ask_peer / ask_subagent 里那人叫「小鱼」时），
+   * 而 whale 事件的 who 恒为「小鲸」，两者走的是同一个 addWhaleBubble。
+   *
+   * 实测（Electron 真页面量 getComputedStyle）：
+   *   真小鱼 msg assistant → roleColor rgb(240,166,160)，borderLeft 0px none，底透明
+   *   真小鲸 msg whale     → roleColor rgb(122,168,232)，borderLeft 2px solid rgb(91,143,214)
+   *   修前 addWhaleBubble('小鱼') → 除名字外全部等于小鲸
+   *
+   * 现在按名字定样式：说「小鲸」的才用小鲸那套，别人的名字走普通助手气泡。
+   * 名字为空时仍当小鲸（沿用旧行为，别把老调用打坏）。
+   */
+  const isWhale = !who || String(who) === '小鲸';
+  const wrap = addEl('', isWhale ? 'msg whale' : 'msg assistant');
   const roleEl = document.createElement('div');
-  roleEl.className = 'role';
+  // 【她以自己身份说话 → 加 whaleSelf，CSS 才放行「· 姐妹」；冒充别人时压根不进这路】
+  roleEl.className = isWhale ? 'role whaleSelf' : 'role';
   roleEl.textContent = String(who || '小鲸');
   wrap.appendChild(roleEl);
   const b = document.createElement('div');
@@ -8539,12 +8576,90 @@ async function delAgentCard() {
   agHint('删掉了');
 }
 
+/**
+ * 角色卡：导入 / 导出（2026-11-01 主人要的「以角色卡形式」）
+ *
+ * 【导出】带走的只有「她本人」：名字、人设正文、颜色、开场白、安静开关、模型。
+ * 会话绑定、群聊名单、记忆本子、聊天记录一个字都不带 —— 那些是「她跟谁在哪儿」，
+ * 不是她。换了机器重新挂一遍就好，别把状态当成人格搬来搬去。
+ *
+ * 【导入】永远只生成**自建卡**，绝不覆盖已有的。重名自动叫「阿蓝 2」，
+ * 因为主人往往就是「这台机器上已经有一个阿蓝了」。内置那两张的身份表一个字不碰。
+ */
+async function exportAgentCard() {
+  if (!agentCur) { agHint('先挑一张卡'); return; }
+  const r = await fetch('/api/agents/card/export', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: agentCur.id }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { agHint('导不出来：' + ((r && r.error) || '网络错误')); return; }
+  const name = r.fileName || ((agentCur.name || '智能体') + '.json');
+  try {
+    const blob = new Blob([JSON.stringify(r.card, null, 2)], { type: 'application/json' });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = name;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      try { URL.revokeObjectURL(href); } catch { /* 忽略 */ }
+      try { a.remove(); } catch { /* 忽略 */ }
+    }, 1500);
+    agHint('导出了：' + name);
+  } catch (e) {
+    agHint('导不出来：' + (e && e.message ? e.message : e));
+  }
+}
+
+function pickAgentCardFile() {
+  const el = document.getElementById('agCardFile');
+  if (!el) { agHint('这个环境没法选文件'); return; }
+  el.value = '';
+  el.click();
+}
+
+async function importAgentCardFrom(file) {
+  if (!file) return;
+  let text = '';
+  try {
+    text = await file.text();
+  } catch (e) {
+    agHint('这个文件读不出来：' + (e && e.message ? e.message : e));
+    return;
+  }
+  let card = null;
+  try {
+    card = JSON.parse(text);
+  } catch {
+    agHint('这不是 JSON —— 角色卡应该是 .json 文件');
+    return;
+  }
+  const r = await fetch('/api/agents/card/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ card }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { agHint('导不进来：' + ((r && r.error) || '网络错误')); return; }
+  agentState = { ...agentState, agents: r.agents || agentState.agents };
+  agentSel = r.agent && r.agent.id ? r.agent.id : agentSel;
+  renderAgentList();
+  if (agentSel) await selectAgent(agentSel);
+  agHint(r.renamed ? `导进来了，重名，改叫「${r.agent.name}」` : `导进来了：「${r.agent.name}」`);
+}
+
 {
   const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   wire('agSave', () => saveAgentCard());
   wire('agBind', () => bindAgentCard());
   // 顶栏那枚「现在是谁在说话」的牌：点一下直接进智能体面板（换人 / 换回小鱼）
   wire('agentChip', () => openAgentDlg());
+  wire('agImport', () => pickAgentCardFile());
+  wire('agExport', () => exportAgentCard());
+  {
+    const f = document.getElementById('agCardFile');
+    if (f) f.onchange = () => { const one = f.files && f.files[0]; if (one) importAgentCardFrom(one); };
+  }
   wire('agNew', () => newAgentCard());
   wire('agNewChat', () => newChatAsAgent());
   wire('agReset', () => resetAgentCard());
@@ -12182,7 +12297,7 @@ function renderTurns(turns) {
          * 颜色、称呼都不一样，别的照旧（能改、能分支）。
          */
         if (turn.whale) {
-          const wrap = addEl('', 'msg whale', frag);
+          const wrap = addEl('', 'msg whale whaleSelf', frag);
           const roleEl = document.createElement('div');
           roleEl.className = 'role';
           roleEl.textContent = String(turn.whale);

@@ -36,6 +36,15 @@ import {
   MAX_PERSONA_CHARS,
 } from './whale-profile.mjs';
 import { listModels } from './models.mjs';
+/**
+ * 角色卡要用到「开场白」。
+ *
+ * 这里**故意放在文件顶**而不是在函数里 await import：opening.mjs 只依赖 config 和
+ * opening-switch，回头不会绕到 agents.mjs 来，形不成环。
+ * 用静态 import 的另一个原因：转出去的 `cardOpening` 是活绑定，主界面那边
+ * `import { cardOpening } from './agents.mjs'` 拿到的就是 opening.mjs 里那个函数。
+ */
+import { cardOpening, setCardOpening } from './opening.mjs';
 
 const DIR = join(config.dataDir, '.state');
 const FILE = join(DIR, 'agents.json');
@@ -229,6 +238,9 @@ export function listAgents() {
     modelFollows: !a.modelId,
     edited: true,
     quiet: !!quietMap[String(a.id || '')],
+    /* 颜色也在这儿给上：界面上「导进来就带着我挑的颜色」靠的就是这一行。
+       以前只在 agentColorMap() 里算，列表这一份没有，导入完一看是白的。 */
+    color: (() => { try { return agentColor(String(a.id || '')); } catch { return ''; } })(),
     createdAt: a.createdAt || '',
   })).filter((a) => a.id);
 
@@ -300,6 +312,10 @@ export function getAgent(id) {
     modelFollows: !a.modelId,
     // 「只在叫名字时才说话」——面板上那个勾要靠它回显
     quiet: !!readAll().quiet[String(a.id)],
+    // 颜色：面板上那个色块、左侧屋里的人、会话列表都用它
+    color: (() => { try { return agentColor(String(a.id)); } catch { return ''; } })(),
+    // 开场白：新建会话时她先说的那句
+    opening: (() => { try { return String(cardOpening(String(a.id)) || ''); } catch { return ''; } })(),
     edited: true,
     createdAt: a.createdAt || '',
   };
@@ -466,6 +482,154 @@ export function agentModelLabel(agent) {
 /** 给测试和排查用 */
 export function agentsFilePath() {
   return FILE;
+}
+
+/**
+ * 把开场白也转出去 —— 主界面（index.html 那侧的服务端代码）只要认一个模块就够了。
+ * 这里转的是活绑定，opening.mjs 改了这里跟着变。
+ */
+export { cardOpening, setCardOpening };
+
+// ---- 角色卡：导入 / 导出（2026-11-01 主人要的「以角色卡形式」）------------------
+/**
+ * 主人原话：「在智能体界面【新建智能体】左侧增加【导入智能体】与【导出智能体】按钮，
+ *  以角色卡形式」。
+ *
+ * 【一张卡导出成什么样】
+ * 参照市面那些 AI 聊天软件（酒馆/SillyTavern 的 character card）的做法：一个 JSON 文件，
+ * 里面装着「她是谁」的全部 —— 名字、人设正文、模型、颜色、开场白、安静开关。
+ * 但**只带「人」的部分**：会话绑定、群聊名单、记忆本子、聊天记录一个字都不带。
+ * 理由是那些是「她跟谁在哪儿」的状态，不是她本人；带出去换个机器就该重新来。
+ *
+ * 内置的两张（小鱼/小鲸）也能导出（人家可能就是想备份自己写的那版人设），
+ * 但**不许导入成新的内置卡** —— 导入永远只生成自建卡，别去动人家的身份表。
+ */
+export const CARD_FILE_VERSION = 1;
+const CARD_KIND = 'xiaoyu-agent-card';
+
+/**
+ * 把一张卡包成「角色卡」对象（纯数据，不写盘）。
+ * @param {string} id 卡 id
+ * @returns {object|null} 卡不存在返回 null
+ */
+export function exportCard(id) {
+  const a = getAgent(String(id || ''));
+  if (!a) return null;
+  const builtin = a.id === AGENT_XIAOYU || a.id === AGENT_XIAOJING;
+  const card = {
+    kind: CARD_KIND,
+    v: CARD_FILE_VERSION,
+    name: String(a.name || ''),
+    persona: String(a.persona || ''),
+    /* 模型只在**自建卡自己选过**的时候才带出去：'' 的意思是「跟当前一致」，
+       换个机器上那个模型可能压根没有，带出去只会让她一开局就答不上话。 */
+    modelId: a.kind === 'custom' ? String(a.modelId || '') : '',
+    color: String(agentColor(a.id) || ''),
+    opening: String(cardOpening(a.id) || ''),
+    quiet: Boolean(isAgentQuiet(a.id)),
+    builtin,
+    exportedAt: new Date().toISOString(),
+    by: '小鱼Agent',
+  };
+  return card;
+}
+
+/** 导出成文件名：'阿蓝.json'（把 Windows 不许的字符换掉，别留个存不下来的名字） */
+export function cardFileName(name) {
+  const t = String(name || '').replace(/[\\/:*?"<>|\r\n\t]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 40);
+  return (t || '智能体') + '.json';
+}
+
+/**
+ * 把外面拿来的角色卡认成一张卡的数据。
+ *
+ * 宽松认：既认自己这套 `{kind:'xiaoyu-agent-card', name, persona, ...}`，
+ * 也认酒馆那种 `{spec:'chara_card_v2', data:{name, description, personality, ...}}`
+ * —— 主人从别处搬卡回来时，没必要逼他先手改格式。
+ *
+ * @returns {{ok:true, card:object} | {ok:false, error:string}}
+ */
+export function normalizeCard(raw) {
+  let src = raw;
+  if (typeof src === 'string') {
+    try { src = JSON.parse(src); } catch { return { ok: false, error: '这个文件不是 JSON（可能不是角色卡）' }; }
+  }
+  if (!src || typeof src !== 'object' || Array.isArray(src)) {
+    return { ok: false, error: '这个文件里没有一张卡（应该是 JSON 对象）' };
+  }
+  // 酒馆 v2：正文全在 data 里，还拆成好几段
+  const d = (src.data && typeof src.data === 'object' && !Array.isArray(src.data)) ? src.data : src;
+  const name = String(d.name || src.name || d.char_name || '').trim();
+  /* 人设正文：自己这套叫 persona，酒馆 v2 叫 description，v1 叫 char_persona。
+     三样都试试，谁先有字用谁；再看要不要再拼「性格/场景/说话的样子」那几段。
+     如果全都空着 —— 说明这是**只有名字的空卡**，不拦：主人自己新建卡也是从空的开始。 */
+  let persona = [d.persona, d.description, d.char_persona]
+    .map((x) => (typeof x === 'string' ? x.trim() : ''))
+    .find((x) => x) || '';
+  // 酒馆那种把「性格 / 场景 / 说话样例」拆开写的，拼回一份正文，别丢东西
+  const extra = [];
+  if (d.personality && String(d.personality).trim()) extra.push('【性格】' + String(d.personality).trim());
+  if (d.scenario && String(d.scenario).trim()) extra.push('【场景】' + String(d.scenario).trim());
+  if (d.mes_example && String(d.mes_example).trim()) extra.push('【说话的样子】' + String(d.mes_example).trim());
+  if (extra.length) persona = [persona, ...extra].filter(Boolean).join('\n\n');
+  if (!name) return { ok: false, error: '这张卡没有名字' };
+  if (name.length > MAX_NAME) {
+    return { ok: false, error: `名字太长了（${name.length} 字，最多 ${MAX_NAME} 字）` };
+  }
+  if (persona.length > MAX_PERSONA_CHARS) {
+    return { ok: false, error: `人设太长了（${persona.length} 字，最多 ${MAX_PERSONA_CHARS} 字）` };
+  }
+  return {
+    ok: true,
+    card: {
+      name,
+      persona,
+      modelId: String(d.modelId || d.model || ''),
+      color: String(d.color || ''),
+      opening: String(d.opening || d.first_mes || d.first_message || '').trim(),
+      quiet: Boolean(d.quiet),
+      builtin: Boolean(d.builtin),
+    },
+  };
+}
+
+/**
+ * 导入一张卡 —— 永远生成**自建卡**，绝不覆盖已有的任何一张。
+ *
+ * 为什么重名要改名而不是拒收：主人往往是「这台机器上已经有一个阿蓝了，
+ * 我又从别处导入一个阿蓝」。拒收会让他以为坏了；叫「阿蓝 2」他一看就懂。
+ *
+ * @param {object|string} raw 角色卡对象或 JSON 文本
+ * @returns {{ok:true, agent:object, renamed:boolean} | {ok:false, error:string}}
+ */
+export function importCard(raw) {
+  const n = normalizeCard(raw);
+  if (!n.ok) return n;
+  const c = n.card;
+
+  const data = readAll();
+  if (data.customs.length >= MAX_AGENTS) {
+    return { ok: false, error: `最多 ${MAX_AGENTS} 个智能体，先删几张再来` };
+  }
+  const taken = new Set(listAgents().map((a) => String(a.name || '').trim()));
+  let name = c.name;
+  let renamed = false;
+  if (taken.has(name)) {
+    renamed = true;
+    let i = 2;
+    while (taken.has(`${name} ${i}`) && i < 99) i++;
+    name = `${name} ${i}`;
+    if (name.length > MAX_NAME) name = name.slice(0, MAX_NAME);
+    if (taken.has(name)) return { ok: false, error: '同名的卡太多了，先改个名' };
+  }
+
+  const agent = addAgent({ name, persona: c.persona, modelId: c.modelId });
+  if (!agent) return { ok: false, error: '写盘失败，没存下来' };
+  // 颜色、开场白、安静这几样是「跟着她走」的，一并搬过去
+  if (c.color) { try { setAgentColor(agent.id, c.color); } catch { /* 颜色不合法就当没填 */ } }
+  if (c.opening) { try { setCardOpening(agent.id, c.opening); } catch { /* 开场白太长也不至于整张卡丢掉 */ } }
+  if (c.quiet) { try { setAgentQuiet(agent.id, true); } catch { /* 自定义卡不该抛，兜底 */ } }
+  return { ok: true, agent: getAgent(agent.id) || agent, renamed };
 }
 
 // ---- 会话挂哪张卡（2026-10-29）-----------------------------------------------

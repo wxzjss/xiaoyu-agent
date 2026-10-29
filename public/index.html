@@ -281,12 +281,23 @@
  * 名字那行显示她的名字，后面缀个「· 姐妹」。
  * 字比我稍微收一点，对应她「话少、稳」的性子。
  */
+/**
+ * 【2026-11-03 主人：「把小鲸以及其他智能体发出的消息样式改成和小鱼一样的无背景样式」】
+ *
+ * 以前小鲸的气泡是「冷底 + 左边一道竖线」，自建卡借的是同一套（.msg.assistant 那种）。
+ * 主人现在要一个口径：**屋子里的人说话都长一样** —— 没底色、没框、没竖线，
+ * 就跟小鱼说的话一模一样，一眼看去是一整片字，不是一块块彩色方砖。
+ *
+ * 谁说的靠名字那行分（小鲸冷蓝、自建卡各自颜色），气泡本体不再上色。
+ * 只留 white-space / word-break 这两条排版性质的，别的全撤 ——
+ * 连 padding-left 也撤，不然她的字会比小鱼的字往右缩 10px，一列看着不齐。
+ */
 .whale .bubble {
   white-space: pre-wrap;
   word-break: break-word;
-  background: rgba(45, 60, 84, 0.55);
-  border-left: 2px solid #5b8fd6;
-  padding-left: 10px;
+  background: none;
+  border-left: 0;
+  padding-left: 0;
 }
 .whale .role {
   color: #7aa8e8;

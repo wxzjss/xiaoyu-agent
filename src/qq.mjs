@@ -87,6 +87,8 @@ function blank() {
     gate: { ownerQq: '', allowQq: [], allowGroup: [], strict: true },
     peers: {},
     claim: null,
+    // 「自己注册的号」那条道（OneBot v11）。默认没开 —— 没挂协议端就没意义。
+    onebot: { enabled: false, mode: 'forward', url: 'ws://127.0.0.1:3001', token: '', ownerQq: '' },
   };
 }
 
@@ -178,6 +180,20 @@ export function readQq() {
         if (!token || !at) return null;
         return { token, at };
       })(),
+      // 「自己注册的号」那条道（OneBot v11）。老文件里没这一格 → 一律当没开。
+      onebot: (() => {
+        const o = objOf(j?.onebot);
+        const mode = o.mode === 'reverse' ? 'reverse' : 'forward';
+        const rawUrl = str(o.url, 200);
+        const url = /^wss?:\/\//i.test(rawUrl) ? rawUrl : (mode === 'reverse' ? 'ws://127.0.0.1:8082' : 'ws://127.0.0.1:3001');
+        return {
+          enabled: o.enabled === true,
+          mode,
+          url,
+          token: str(o.token, 200),
+          ownerQq: normQqNum(o.ownerQq),
+        };
+      })(),
     };
   } catch {
     return blank();
@@ -213,6 +229,18 @@ export function writeQq(data) {
       const token = str(c.token, 16);
       const at = Number(c.at) || 0;
       return token && at ? { token, at } : null;
+    })(),
+    onebot: (() => {
+      const o = objOf(d.onebot);
+      const mode = o.mode === 'reverse' ? 'reverse' : 'forward';
+      const rawUrl = str(o.url, 200);
+      return {
+        enabled: o.enabled === true,
+        mode,
+        url: /^wss?:\/\//i.test(rawUrl) ? rawUrl : (mode === 'reverse' ? 'ws://127.0.0.1:8082' : 'ws://127.0.0.1:3001'),
+        token: str(o.token, 200),
+        ownerQq: normQqNum(o.ownerQq),
+      };
     })(),
   };
   for (const [k, v] of Object.entries(objOf(d.peers))) {

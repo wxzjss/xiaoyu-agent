@@ -3000,6 +3000,37 @@
         <div class="qqHint" id="qqGateHint">不在白名单里的号和群，她一个字都不发 —— 既不应答，也不提自己在。</div>
       </div>
 
+      <!-- 第一格半：「自己注册的号」那条道（OneBot / NapCat）。
+           官方机器人接口不给戳一戳、不给表情包，也连不了你自己那个号；
+           挂一个协议端就能全有。 -->
+      <div class="qqSect">
+        <div class="qqSectHead"><b>1.5</b><span>用你自己注册的号（扫码登录 NapCat）</span></div>
+        <div class="qqField qqFieldInline">
+          <label class="qqCheck"><input type="checkbox" id="obEnabled"><span>走这条道</span></label>
+          <span class="qqGrow"></span>
+          <span class="qqState" id="obState">没连</span>
+          <button type="button" class="ghost" id="obToggle">连上</button>
+        </div>
+        <div class="qqField">
+          <label for="obMode">连接方向</label>
+          <select id="obMode">
+            <option value="forward">我们拨过去（NapCat 开端口，推荐）</option>
+            <option value="reverse">我们等它拨过来</option>
+          </select>
+        </div>
+        <div class="qqField">
+          <label for="obUrl">地址</label>
+          <input id="obUrl" type="text" spellcheck="false" placeholder="ws://127.0.0.1:3001">
+        </div>
+        <div class="qqField">
+          <label for="obToken">Token</label>
+          <input id="obToken" type="password" spellcheck="false" placeholder="协议端设了 token 才填，没有就空着">
+        </div>
+        <div class="qqHint" id="obHint">要三步：① 装 NapCatQQ（或 LLOneBot），扫码登录你想用的那个 QQ 号；
+          ② 在它里面开 WebSocket 服务端（默认 ws://127.0.0.1:3001），要 token 就填到上面；
+          ③ 回来点「连上」。连上之后戳一戳、表情包、引用、群精华、群管理才全有 —— 这些官方接口给不了。</div>
+      </div>
+
       <!-- 第三格：挂到哪个会话 -->
       <div class="qqSect">
         <div class="qqSectHead"><b>3</b><span>把 QQ 挂到她的哪个会话上</span></div>
@@ -9209,6 +9240,8 @@ let qqClaimToken = '';
 let qqSessions = [];
 /** 最近一次拿到的白名单（认主人时顺手把它也带一份，省一次网络）。 */
 let qqGateCache = { ownerQq: '', allowQq: [], allowGroup: [], strict: true };
+/** 「自己注册的号」（OneBot）那一格的配置。打开面板时读一次。 */
+let oneBotConf = {};
 
 function qqEl(id) { return document.getElementById(id); }
 function qqSetHint(text, bad) {
@@ -9430,6 +9463,70 @@ async function refreshQqPanel() {
   const st = await qqApi('/api/qq/status');
   if (!st || st.error) { qqSetHint('读不到状态：' + ((st && st.error) || '网络错误'), true); return; }
   renderQqPanel(st);
+  paintOneBot(st.onebot);
+}
+
+/**
+ * 「自己注册的号」那一格（1.5）。
+ *
+ * 状态从 /api/qq/status 的 onebot 里来，配置从 /api/qq/onebot 读一次。
+ * 为什么配置不跟状态一起来：那条接口要在别的地方也能单独调（比如自检），
+ * 塞进 status 只会让两边的形状都得改。
+ */
+async function paintOneBot(obStatus) {
+  const conf = oneBotConf || {};
+  const en = qqEl('obEnabled');
+  if (en && document.activeElement !== en) en.checked = conf.enabled === true;
+  const mode = qqEl('obMode');
+  if (mode && document.activeElement !== mode) mode.value = conf.mode === 'reverse' ? 'reverse' : 'forward';
+  const url = qqEl('obUrl');
+  if (url && document.activeElement !== url) url.value = String(conf.url || '');
+  const tok = qqEl('obToken');
+  if (tok) {
+    tok.placeholder = conf.hasToken ? '已经存过；要换就整串重填' : '协议端设了 token 才填，没有就空着';
+    if (document.activeElement !== tok) tok.value = '';
+  }
+  const st = obStatus || {};
+  const stateEl = qqEl('obState');
+  const btn = qqEl('obToggle');
+  if (stateEl && btn) {
+    stateEl.className = 'qqState';
+    if (st.phase === 'online') {
+      stateEl.textContent = st.nickname ? `已连上：${st.nickname}` : '已连上';
+      stateEl.classList.add('on');
+      btn.textContent = '断开';
+    } else if (st.phase === 'connecting' || st.phase === 'starting') {
+      stateEl.textContent = st.mode === 'reverse' ? '等协议端拨进来…' : '正在连…';
+      btn.textContent = '断开';
+    } else if (st.phase === 'error') {
+      stateEl.textContent = '没连上';
+      stateEl.classList.add('bad');
+      btn.textContent = '连上';
+    } else {
+      stateEl.textContent = conf.enabled ? '没连' : '没开';
+      btn.textContent = '连上';
+    }
+  }
+  const hint = qqEl('obHint');
+  if (hint) {
+    if (st.error) hint.textContent = '上次没连上：' + st.error;
+    else if (st.phase === 'online') {
+      hint.textContent = '连上了 —— 现在戳一戳、表情包、引用、群管理这些她都能做。';
+    } else if (st.phase === 'connecting' && st.mode === 'reverse') {
+      hint.textContent = `在 ${st.url} 等协议端拨进来（NapCat 里填这个反向地址）。`;
+    } else {
+      hint.textContent = '要三步：① 装 NapCatQQ（或 LLOneBot），扫码登录你想用的那个 QQ 号；'
+        + '② 在它里面开 WebSocket 服务端（默认 ws://127.0.0.1:3001），要 token 就填到上面；'
+        + '③ 回来点「连上」。连上之后戳一戳、表情包、引用、群精华、群管理才全有。';
+    }
+  }
+}
+
+/** 读一次 OneBot 配置（打开面板时调）。 */
+async function loadOneBotConf() {
+  const r = await qqApi('/api/qq/onebot');
+  oneBotConf = (r && r.conf) ? r.conf : {};
+  return oneBotConf;
 }
 
 /** 打开面板（功能页那个按钮、以及保存后重开都走这里）。 */
@@ -9441,6 +9538,7 @@ async function openQqDlg() {
   const c = await qqApi('/api/qq/claim', {});
   qqClaimToken = (c && c.token) ? String(c.token) : '';
   qqSessions = [];
+  await loadOneBotConf();
   await refreshQqPanel();
   if (!dlg.open) dlg.showModal();
 }
@@ -9506,8 +9604,7 @@ async function saveQqBind() {
     qqSetHint('白名单存好了');
     await refreshQqPanel();
   });
-  wire('qqToggle', async () => {
-    const running = Boolean(qqState && qqState.running);
+  wire('qqToggle', async () => {    const running = Boolean(qqState && qqState.running);
     if (!running) {
       if (!(await saveQqCreds())) return;
       qqSetHint('正在连 QQ…');
@@ -9521,6 +9618,40 @@ async function saveQqBind() {
     }
     await refreshQqPanel();
   });
+  wire('obToggle', async () => {
+    const st = (qqState && qqState.onebot) || {};
+    const running = st.phase === 'online' || st.phase === 'connecting' || st.phase === 'starting';
+    const patch = {
+      enabled: Boolean((qqEl('obEnabled') || {}).checked),
+      mode: String((qqEl('obMode') || {}).value || 'forward'),
+      url: String((qqEl('obUrl') || {}).value || '').trim(),
+      ownerQq: String((qqEl('qqOwnerQq') || {}).value || '').replace(/[^0-9]/g, ''),
+    };
+    const tok = String((qqEl('obToken') || {}).value || '').trim();
+    // 空着就是「不改」—— 跟 AppSecret 一个口径，免得每存一次就把 token 抹掉
+    if (tok) patch.token = tok;
+    if (!running) patch.enabled = true;
+    const saved = await qqApi('/api/qq/onebot', patch);
+    if (!saved || saved.error) { qqSetHint('这条道没存上：' + ((saved && saved.error) || '网络错误'), true); return; }
+    oneBotConf = saved.conf || oneBotConf;
+    if (!running) {
+      if (!oneBotConf.enabled) { qqSetHint('先勾上「走这条道」'); return; }
+      qqSetHint('正在连自己注册的号…');
+      const r = await qqApi('/api/qq/onebot/start', {});
+      if (!r || r.error || r.phase === 'error') {
+        qqSetHint('连不上：' + ((r && r.error) || '网络错误'), true);
+        await refreshQqPanel();
+        return;
+      }
+      qqSetHint('连上了');
+    } else {
+      const r = await qqApi('/api/qq/onebot/stop', {});
+      if (!r || r.error) { qqSetHint('断不开：' + ((r && r.error) || '网络错误'), true); return; }
+      qqSetHint('断开了');
+    }
+    await refreshQqPanel();
+  });
+
   wire('qqSave', async () => {
     if (!(await saveQqCreds())) return;
     if (!(await saveQqBind())) return;
@@ -9538,8 +9669,7 @@ async function saveQqBind() {
     const name = await askName({
       title: '新会话叫什么', value: 'QQ 小鱼', placeholder: '随便起个名字', maxLength: 40,
     });
-    if (name === null) return;
-    const r = await qqApi('/api/sessions/new', {
+    if (name === null) return;    const r = await qqApi('/api/sessions/new', {
       title: name.trim() || 'QQ 小鱼', opening: false,
     });
     const id = r && r.session && r.session.id ? String(r.session.id) : '';

@@ -3801,6 +3801,15 @@ const server = createServer(async (req, res) => {
         running: Boolean(st.phase === 'online' || st.phase === 'starting'),
         sdk: await sdkAvailable(),
         claim: claim ? { alive: !claim.expired, ttlMs: CLAIM_TTL_PUB } : null,
+        // 「自己注册的号」那条道的状态：面板要能同时看到两条道
+        onebot: await (async () => {
+          try {
+            const ob = await import('./qq-onebot.mjs');
+            return ob.oneBotStatus();
+          } catch (e) {
+            return { phase: 'error', error: String(e?.message ?? e), conf: null };
+          }
+        })(),
       });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
@@ -3852,6 +3861,67 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/qq/stop') {
+    try {
+      const { stopQq } = await import('./qq-bridge.mjs');
+      return json(res, 200, { ok: true, ...(await stopQq()) });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
+   * 「自己注册的号」（OneBot v11）。
+   *
+   * GET  看配置 + 连接状态
+   * POST 存配置（enabled / mode / url / token / ownerQq）
+   * POST /start 拨号或起反向监听
+   * POST /stop  停
+   *
+   * 为什么不并进 /api/qq/bot：那组是官方机器人（AppID+AppSecret），这套是
+   * 挂协议端（NapCat）的号，两条道同时在也是合理的（一个办事一个玩）。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/qq/onebot') {
+    try {
+      const ob = await import('./qq-onebot.mjs');
+      return json(res, 200, { ok: true, conf: ob.publicConf(), status: ob.oneBotStatus() });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/onebot') {
+    const payload = await body(req).catch(() => ({}));
+    try {
+      const ob = await import('./qq-onebot.mjs');
+      const conf = ob.setOneBotConf({
+        enabled: payload.enabled,
+        mode: payload.mode,
+        url: payload.url,
+        token: payload.token,
+        ownerQq: payload.ownerQq,
+      });
+      return json(res, 200, { ok: true, conf });
+    } catch (e) {
+      return json(res, e?.status || 400, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/onebot/start') {
+    try {
+      const { startQqOneBot } = await import('./qq-bridge.mjs');
+      const st = await startQqOneBot({
+        ensureSession: ensureQqSession,
+        runChat: runQqTurn,
+        setSpeakerOwner: markQqOwner,
+        onLog: () => {},
+      });
+      return json(res, 200, { ok: st.phase !== 'error', ...st });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/qq/onebot/stop') {
     try {
       const { stopQq } = await import('./qq-bridge.mjs');
       return json(res, 200, { ok: true, ...(await stopQq()) });

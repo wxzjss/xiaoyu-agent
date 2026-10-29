@@ -251,6 +251,44 @@ export async function sendFileToQq(bot, target, p, opts = {}) {
   const source = { localPath: abs };
   const name = String(opts.name || '') || basename(abs);
 
+  // 【OneBot 那条道（自己注册的号）】
+  // 它没有 sendImage / sendFile 这些方法，靠 CQ 码发东西。这两条道发文件的
+  // 语义完全不一样，所以在这儿分叉，而不是在上面的 tryIt 里硬凑成同一个形状。
+  if (bot?.__onebot) {
+    const ob = await import('./qq-onebot.mjs');
+    const isGroup = String(target?.scope || 'c2c') === 'group';
+    const to = String(target?.targetId || '');
+    if (!to) throw Object.assign(new Error('没有收件人'), { status: 400 });
+    if (kind === 'image') {
+      await ob.sendImage({ isGroup, target: to, filePath: abs });
+      return { sent: 'image' };
+    }
+    if (kind === 'voice') {
+      try {
+        await ob.sendRecord({ isGroup, target: to, filePath: abs });
+        return { sent: 'voice' };
+      } catch (e) {
+        await ob.sendFile({ isGroup, target: to, filePath: abs, name });
+        return { sent: 'file', note: '语音条没发出去，改成发文件：' + String(e?.message ?? e) };
+      }
+    }
+    if (kind === 'video') {
+      // OneBot 发视频也是 [CQ:video]，协议端自己去转；NapCat 对本地路径支持不稳，
+      // 失败就退回当文件发（至少东西能到）
+      try {
+        await ob.call(isGroup ? 'send_group_msg' : 'send_private_msg', isGroup
+          ? { group_id: Number(to), message: `[CQ:video,file=${abs}]` }
+          : { user_id: Number(to), message: `[CQ:video,file=${abs}]` }, 120_000);
+        return { sent: 'video' };
+      } catch (e) {
+        await ob.sendFile({ isGroup, target: to, filePath: abs, name });
+        return { sent: 'file', note: '视频没发出去，改成发文件：' + String(e?.message ?? e) };
+      }
+    }
+    await ob.sendFile({ isGroup, target: to, filePath: abs, name });
+    return { sent: 'file' };
+  }
+
   const tryIt = async (fn) => {
     if (typeof bot?.[fn] !== 'function') return null;
     return await bot[fn](target, source, { fileName: name });

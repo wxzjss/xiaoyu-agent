@@ -70,7 +70,9 @@
      *
      * 别改成给每个按钮都加 auto：那样空隙会被平均分掉，整排反而散开。
      */
-    header #fishBtn { margin-left: auto; }
+    /* 2026-11-02：原来这里挂的是 header #fishBtn { margin-left:auto }，
+       靠「小鱼」那颗按钮把整排顶到右边。那颗按钮已经撤了，改由状态条
+       （header #meta，下面带 margin-right:auto）来撑 —— 顶栏照样贴右。 */
     header .meta { color: var(--dim); font-size: 12px; }
     /* 按钮组整体靠右：空隙全塞在状态条后面，别再让每个按钮各抢一份 auto */
     header #meta { margin-left: 4px; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -117,32 +119,8 @@
     .role { font-size: 12px; color: var(--dim); margin-bottom: 4px; }
     /* 主人的名字：中性偏亮，跟我和小鲸都不一样 */
     /* 「小鲸」按钮：按下去就一直是她的冷蓝色 */
-    /* 小鱼按钮：默认就在场，所以它天生是亮的；点一下才灭 */
-    /* 身份徽标：换成非主人身份时才显示。橘色系是「注意」的意思 ——
-       这个状态下她们不认主人、安全词也不作数，得让人一眼看见。
-       具体样式在 .sendingRow / #idBadge 那段（它已经挪到聊天框那一行了）。 */
-    #fishBtn {
-      border-color: rgba(240, 166, 160, 0.5);
-      background: rgba(240, 166, 160, 0.2);
-      color: #f5c4bf;
-      font-weight: 600;
-      box-shadow: 0 0 0 1px rgba(240, 166, 160, 0.28) inset;
-    }
-    #fishBtn.on {
-      background: rgba(240, 166, 160, 0.26);
-      border-color: #f0a6a0;
-      color: #ffd9d5;
-      font-weight: 700;
-      box-shadow: 0 0 0 1px rgba(240, 166, 160, 0.45) inset;
-    }
-    #fishBtn.off {
-      background: transparent;
-      border-color: var(--border);
-      color: var(--dim);
-      font-weight: 400;
-      box-shadow: none;
-    }
-    #whaleBtn { border-color: rgba(122, 168, 232, 0.45); }
+    /* 小鱼按钮 / 小鲸按钮（2026-11-02 已删）—— 她们的开关现在只剩左边「屋里的人」那两颗牌。
+       这里保留注释，免得以后有人在顶上又加回一颗，两处状态互相打架。 */
     /* 管理员权限：没开时是暗红色边框（提醒这一档存在），开了就整块亮起来。
        参考 dsh-admin-mode：那一档在权限菜单里是要「显眼到一眼看见」的。 */
     #adminBtn { border-color: rgba(226, 132, 132, 0.45); color: #d8b3b3; }
@@ -154,13 +132,8 @@
       box-shadow: 0 0 0 1px rgba(226, 96, 96, 0.45) inset;
     }
     /* 悬浮统一·2026-10-31 这几枚用 ID 写了 border-color，权重比 header button:hover 高，
-     * 悬停时只有字亮、边框不动。按各自色调补一套 :hover，开着的再亮一档。 */
-    /* 关掉状态(.off)：悬停给个淡淡的粉边，让「能点」这件事看得出来 */
-    #fishBtn.off:hover { border-color: rgba(240, 166, 160, 0.55); color: #f5c4bf; }
-    #fishBtn:hover { border-color: #f0a6a0; color: #ffd9d5; }
-    #fishBtn.on:hover { border-color: #ffc2bc; box-shadow: 0 0 0 1px rgba(240, 166, 160, 0.6) inset; }
-    #whaleBtn:hover { border-color: #7aa8e8; color: #cfe4ff; }
-    #whaleBtn.on:hover { border-color: #9cc4ff; box-shadow: 0 0 0 1px rgba(122, 168, 232, 0.6) inset; }
+     * 悬停时只有字亮、边框不动。按各自色调补一套 :hover，开着的再亮一档。
+     * （fishBtn / whaleBtn 那几行 2026-11-02 随按钮一起删了。） */
     #adminBtn:hover { border-color: #e26060; color: #ffd7d7; }
     #adminBtn.on:hover { border-color: #ff8a8a; box-shadow: 0 0 0 1px rgba(226, 96, 96, 0.7) inset; }
     /* 陪看屏幕 · 最近看过：两列缩图，每张下面是时间和窗口名（2026-11-01） */
@@ -244,13 +217,8 @@
     .qqPeer .grow { flex: 1 1 auto; }
     .qqPeer .when { font-size: 11px; color: var(--dim); white-space: nowrap; }
 
-    #whaleBtn.on {
-      background: rgba(122, 168, 232, 0.22);
-      border-color: #7aa8e8;
-      color: #a9c8f2;
-      font-weight: 600;
-      box-shadow: 0 0 0 1px rgba(122, 168, 232, 0.35) inset;
-    }
+    /* #whaleBtn.on 那段 2026-11-02 随顶栏那颗「小鲸」按钮一起删了：
+       小鲸的开关现在只剩左边「屋里的人」那颗牌（.whoBtn）。 */
     /* 顶栏「现在是谁在说话」的牌：青色系，跟小鱼/小鲸两种颜色都错开。
        名字可能挺长（主人自己起的），所以截断加省略号，别把整排顶栏顶出去。 */
 /* 当前智能体按钮·2026-10-31 从顶栏里拿出来，钉在右上、「清空当前」正下方。
@@ -780,6 +748,10 @@
       position: fixed; top: 54px; left: 14px; z-index: 20;
       display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
       max-width: 152px;
+      /* 2026-11-01：这几颗牌子要能上下拖。触屏上不写 touch-action，
+         浏览器会把「按住往上滑」当成页面滚动/长按选字先吃掉，
+         pointermove 根本到不了拖动逻辑 —— 这是「拖不动」的一半原因。 */
+      touch-action: none;
     }
     #whoRail[hidden] { display: none; }
     /* 圆圈底色跟左侧会话方块（.sessRow）统一成同一档：
@@ -791,6 +763,9 @@
       font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap;
       max-width: 152px; overflow: hidden; text-overflow: ellipsis;
       cursor: pointer; transition: background .12s, border-color .12s, color .12s;
+      /* 拖动要用的三件套：别选字、别接管手势、别让指针事件被默认行为吃掉 */
+      user-select: none; -webkit-user-select: none;
+      touch-action: none; -webkit-touch-callout: none;
     }
     #whoRail .whoBtn:hover { background: #1d2430; border-color: var(--border); }
     /* 【2026-11-01 实线 / 虚线换位】主人原话：「我把【小鲸】拖动到小鱼上面，那么此时
@@ -817,13 +792,12 @@
     /* 拖到谁头上：被占位的那个往里让 */
     #whoRail .whoBtn.dropOn { box-shadow: inset 0 0 0 1px var(--accent); }
     /**
-     * 常亮的牌（小鱼、小鲸）—— 2026-11-01 主人：「这两个改为常亮，
-     * 是否启用只与屏幕上方的【小鱼】与【小鲸】按钮相关，与左侧的名字点击一下关闭开启无关。」
-     * 所以它们永远不暗、不划线；但得一眼看出「点不灭」，鼠标手势给个默认箭头，
-     * 悬停时也不摆出可点的样子（不然主人还会去点它）。
+     * 【2026-11-02 原来的 .sticky 段删了】
+     * 上一版按主人 11-01 的话把小鱼、小鲸做成「常亮、点不灭」（.whoBtn.sticky 不给点。
+     * 今天他改主意了：「要求小鱼与小鲸的左侧按钮也可以点击开启或关闭」，
+     * 顶栏那两颗按钮也已经删掉。所以她们跟别人一样 —— 点一下关、再点一下开，
+     * 关了就暗下去划一道（上面 .whoBtn.off 那条规则）。
      */
-    #whoRail .whoBtn.sticky { cursor: grab; }
-    #whoRail .whoBtn.sticky.off { opacity: 1; text-decoration: none; }
     #whoRail .whoCap { font-size: 10.5px; color: var(--dim); padding-left: 2px; margin-bottom: -2px; }
 
     /* 新建会话的挑人框 */
@@ -841,6 +815,14 @@
     #newSessionDlg .nsRow:hover { border-color: var(--accent); }
     #newSessionDlg .nsRow.locked { opacity: .72; cursor: default; }
     #newSessionDlg .nsRow.locked:hover { border-color: var(--border); }
+/* 勾了的人能按住上下拖（2026-11-02 主人：新建时勾的先后 = 左侧初始排列） */
+#newSessionDlg .nsRow.picked { cursor: grab; }
+#newSessionDlg .nsRow.picked:active { cursor: grabbing; }
+#newSessionDlg .nsRow.picked.nsDragging { opacity: .55; border-style: dashed; border-color: var(--accent); }
+#newSessionDlg .nsRow .ord {
+  flex: 0 0 auto; min-width: 16px; text-align: right;
+  font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums;
+}
     #newSessionDlg .nsRow input[type="checkbox"] { flex: 0 0 auto; width: 14px; height: 14px; margin: 0; }
     #newSessionDlg .nsRow .nm { flex: 1 1 auto; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #newSessionDlg .nsRow .tag { flex: 0 0 auto; font-size: 10.5px; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
@@ -861,14 +843,15 @@
     }
 
     /* 每轮底部那行 token 小字。
-       主人要求：挂在她说的话底下，**鼠标悬停在她那句话上才显示**，
-       平时不占眼睛。所以默认 opacity 0，悬停 .msg 时淡入；
-       真机没有 hover，那边常驻半透明（见下面 @media (hover: none)）。 */
+       主人要求：挂在她说的话底下。**2026-11-02 改：常驻显示**——
+       以前默认 opacity 0、悬停才淡出，主人问「token 和花费怎么不显示了」，
+       实际上从来没看见几次。现在平时 0.5，鼠标停上去 1（见下面悬停规则）。 */
     .turnUsage {
       /* 【2026-10-27 主人定：回到消息【左下角】】
        * 做法：.msg 是纵向 flex，这里 margin-top:auto 就把这行挤到最底。
        * 左边留 120px，是给左下角那排「编辑/分支」按钮让位置，两者并排不打架。
-       * 平时 opacity 0，鼠标停在这条消息上才淡出来（见下面悬停规则）。 */
+       * 平时常驻半透明（2026-11-02 改：以前是透明，等于看不见），
+       * 鼠标停在这条消息上就变亮（见下面悬停规则）。 */
       max-width: none;
       margin: 10px 0 0;
       margin-top: auto;
@@ -887,21 +870,25 @@
       padding-left: 120px;
       text-align: left;
     }
-    }
     /* 悬停她这句话 → 这行淡出来。
        两种挂法都要吃到：①气泡内部（.msg:hover .turnUsage）
        ②跟在气泡后面做兄弟（.msg:hover + .turnUsage，实时那一轮走这条）。 */
-    /* 【2026-10-27 主人要的：鼠标悬浮在这条消息上就显示】
+    /* 【2026-11-02 主人问「token 消耗和花费怎么不显示了」—— 因为藏太深了】
+     *
+     * 原来默认 opacity 0，必须把鼠标精确停在那条消息里才淡出来 0.82。
+     * 主人压根没见过它几次，等于没有。现在改成常驻：
+     *   平时 0.5（一眼能看到，但不抢正文的眼睛），鼠标停上去 1。
+     *
      * 三种挂法都吃：
      *   ① 挂在消息块内部（历史回放 + 实时那轮，现在都走这条）
      *   ② 跟在消息块后面做兄弟（老实现的兜底路，留着不碍事）
-     *   ③ 鼠标直接停在这一行自己身上 —— 不写这条的话，移下来它就闪没了
-     * 不刷屏：默认 0，悬浮才 0.82。 */
+     *   ③ 鼠标直接停在这一行自己身上 */
+    .turnUsage { opacity: .5; }
     .msg:hover .turnUsage,
     .msg:focus-within .turnUsage,
     .msg:hover + .turnUsage,
     .msg:focus-within + .turnUsage,
-    .turnUsage:hover { opacity: .82; }
+    .turnUsage:hover { opacity: 1; }
     /* 老轮次（那时候还没存用量）也给一行，别让界面看起来像少画了东西。
        主人明确要求「每句话都显示 token 消耗，不要隐藏，哪怕重启进入那行字也在」，
        所以宁可写一句「这一轮没记用量」，也不要整行消失。 */
@@ -1943,6 +1930,19 @@
     }
 
     /* ---- 手机连接 ---------------------------------------------------------- */
+    /* 设置里的「花费与用量」块：这辈子的账一眼看全 */
+    .usageBox {
+      border: 1px solid var(--border); border-radius: 10px;
+      background: var(--input-bg); padding: 12px 14px; margin-top: 4px;
+    }
+    .usageBox .usageMain {
+      font-size: 14px; color: var(--text); line-height: 1.9;
+      font-variant-numeric: tabular-nums; user-select: text;
+    }
+    .usageBox .usageMain b { color: #d9a45b; font-weight: 600; }
+    .usageBox .usageMain .tok { color: #8fc7ff; }
+    .usageBox .usageSub { color: var(--dim); font-size: 11.5px; line-height: 1.8; margin-top: 4px; user-select: text; }
+
     #settingsDlg #mobToggle {
       flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
       border: 1px solid var(--border); background: transparent; color: var(--dim);
@@ -2229,8 +2229,12 @@
       </button>
     </span>
     <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
-    <button id="fishBtn" title="小鱼在场：点一下就让她歇着 —— 之后这个会话里你说的话、小鲸说的话，她一个字都收不到，记忆里也不会留">小鱼</button>
-    <button id="whaleBtn" title="叫上小鲸：按下之后，你说的话我们俩都看得见，她也能直接在这儿说话">小鲸</button>
+    <!--
+      【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
+      这两颗按钮连同它们的 JS / CSS 一起撤掉。开关只剩一处：左边「屋里的人」那列牌子，
+      点一下开、再点一下关（小鱼、小鲸以前是常亮的点不灭，现在也归这颗牌管 ——
+      服务端 /api/agents/group/toggle 会把 fish-presence / whale-presence 一并改掉）。
+    -->
     <!-- 2026-11-01：管理员权限。参考 dsh-admin-mode 那一档 ——「完全访问 + 永不询问」。
          颜色用危险色：开着的时候一眼能看见，别让人忘了它还在开。
          按会话存，跟专业模式/小鲸在场一个规矩。 -->
@@ -2259,7 +2263,7 @@
     <div class="dlgHead">
       <b>开一间新会话</b><span class="meta" id="nsHint"></span>
     </div>
-    <p class="nsLead">小鱼和小鲸默认就在这间屋子里，取消不了；下面还能再叫几个。</p>
+    <p class="nsLead">小鱼和小鲸默认就在这间屋子里，取消不了；下面还能再叫几个。<br>勾上之后可以按住上下拖，勾的先后就是左侧「屋里的人」从上往下的排法，也就是这一轮谁先说。</p>
     <div class="nsList" id="nsList"></div>
     <div class="nsBar">
       <span class="nsNote" id="nsNote"></span>
@@ -2353,6 +2357,20 @@
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="resetSafeWords">恢复默认安全词</button>
             <span class="hint" id="safeWordsHint"></span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>花费与用量</legend>
+          <!-- 【2026-11-02 主人问「以前不是会显示 tokens 消耗以及花费吗？现在怎么不显示了」】
+               查下来两件事：
+               ① 那行小字一直是隐藏的（默认 opacity 0，悬停才淡出），等于没显示 —— 已改常驻。
+               ② 明细还从来不算「这一轮花了多少钱」，因为服务端没告诉前端「这一轮真正用的是哪个模型」，
+                  前端只能拿全局默认去对价目表，对不上就只报数不报价。这里补上，顺手加个会话总账。 -->
+          <div class="usageBox" id="usageBox">
+            <div class="usageMain" id="usageTotal">正在算…</div>
+            <div class="usageSub" id="usageRounds"></div>
+            <div class="usageSub" id="usageModelNote"></div>
           </div>
         </fieldset>
 
@@ -4001,6 +4019,19 @@ async function intakeDropped(dt) {
 const STORE_KEY = 'mini-agent.sessionId';
 let sessionId = null;
 let sessionTitle = '';
+/**
+ * 【为什么要有这两个小窗口（2026-11-02）】
+ *
+ * `sessionId` 是 `let` 声明的模块级变量，`window.sessionId = 'xxx'` 根本改不到它 ——
+ * 所以 Electron 里的自动化测试一直没法指定「在这个会话上验」。以前那样写的测试
+ * 测的其实是页面自己挑的那个会话（会话列表第一个），断言当然对不上，
+ * 看起来像「开关坏了 / 顺序没存上」，白折腾半天。
+ *
+ * 现在给测试留一对明确的窗口：只读一个（看现在是谁）、可写一个（换成谁）。
+ * 生产代码不碰它们。
+ */
+try { Object.defineProperty(window, '__xyGetSessionId', { value: () => sessionId }); } catch { /* 忽略 */ }
+try { Object.defineProperty(window, '__xySetSessionId', { value: (v) => { sessionId = String(v || ''); return sessionId; } }); } catch { /* 忽略 */ }
 let sessionsCache = [];
 let pendingResume = false; // 插话之后要不要接着跑
 let stopping = false; // 正在停止，按钮锁住别再点
@@ -4927,107 +4958,18 @@ if (window.desktop) {
  *
  * 状态存服务端（跟专业模式一个道理），换设备也一致。
  */
-const fishBtn = document.getElementById('fishBtn');
-function paintFish(on) {
-  if (!fishBtn) return;
-  fishBtn.classList.toggle('on', Boolean(on));
-  fishBtn.classList.toggle('off', !on);
-  fishBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  fishBtn.title = on
-    ? '小鱼在场（默认开着）：点一下让她歇着，之后这个会话的话她收不到，记忆里也不会留'
-    : '小鱼已经被你请出去了：这个会话的话她一个字都收不到，记忆里也不会留（再点一下叫她回来）';
-}
-if (fishBtn) {
-  paintFish(true);
-
-  /**
-   * 【这个开关是按会话的，不是全局的】
-   *
-   * 主人要的是：在 B 会话把小鱼关掉，A 会话该跑照样跑。
-   * 所以读和写都得带上 sessionId，切会话之后还要重新读一次 ——
-   * 不然界面上显示的还是上一个会话的状态，一点就点错了。
-   */
-  const loadFishFor = (sid) => {
-    const q = sid ? ('?sessionId=' + encodeURIComponent(sid)) : '';
-    return fetch('/api/fish' + q)
-      .then((r) => r.json())
-      .then((j) => { paintFish(j && j.on); })
-      .catch(() => {});
-  };
-  // 让切会话 / 新建会话的地方也能调
-  window.__reloadFishState = () => { if (sessionId) loadFishFor(sessionId); };
-  if (sessionId) loadFishFor(sessionId);
-  // sessionId 还没就位就不读：不带会话去读，服务端会退回「上一次用过的会话」，
-  // 新开会话那一瞬间读到的其实是上一个会话的状态（比如上个会话关了鱼、开了鲸），
-  // 按钮就会显示成「鲸亮鱼灭」，可服务端判定新会话时鱼是默认开着的 —— 喊一声回的是小鱼。
-  // 所以宁可先按默认占位，等切会话/新建走 __reloadFishState 拿到 id 再读真状态。
-
-  fishBtn.onclick = async () => {
-    const want = !fishBtn.classList.contains('on');
-    paintFish(want);
-    try {
-      const r = await fetch('/api/fish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // 带上会话：只改这个会话的开关，别的会话一根汗毛都不动
-        body: JSON.stringify({ on: want, sessionId }),
-      });
-      const j = await r.json();
-      paintFish(j && j.on);
-    } catch {
-      paintFish(!want);
-    }
-  };
-}
-
-const whaleBtn = document.getElementById('whaleBtn');
-function paintWhale(on) {
-  if (!whaleBtn) return;
-  whaleBtn.classList.toggle('on', Boolean(on));
-  whaleBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  whaleBtn.title = on
-    ? '小鲸在场：你说的话我们俩都看得见，她也能直接说话（再点一下让她歇会儿）'
-    : '叫上小鲸：按下之后，你说的话她也能看见，她也能在这儿跟你说话';
-}
-if (whaleBtn) {
-  /**
-   * 【这个开关是按会话的】
-   *
-   * 以前读状态是 fetch('/api/whale')，一个 id 都不带 ——
-   * 服务端会退回「最后一次用过的那个会话」，跟主人眼前这个很可能不是同一个，
-   * 于是按钮亮灭跟实际状态对不上（明明叫了她，按钮不亮）。
-   *
-   * 现在读、写都带 sessionId；切会话时也重新读一次。
-   */
-  const loadWhaleFor = (sid) => {
-    const q = sid ? ('?sessionId=' + encodeURIComponent(sid)) : '';
-    return fetch('/api/whale' + q)
-      .then((r) => r.json())
-      .then((j) => { paintWhale(j && j.on); })
-      .catch(() => {});
-  };
-  // 让切会话的地方也能调
-  window.__reloadWhaleState = () => { if (sessionId) loadWhaleFor(sessionId); };
-  if (sessionId) loadWhaleFor(sessionId);
-  // 同上：没 sessionId 就别读，免得读到上一个会话的状态
-
-  whaleBtn.onclick = async () => {
-    const want = !whaleBtn.classList.contains('on');
-    paintWhale(want);
-    try {
-      const r = await fetch('/api/whale', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // 带上会话：只改这个会话的开关
-        body: JSON.stringify({ on: want, sessionId }),
-      });
-      const j = await r.json();
-      paintWhale(j && j.on);
-    } catch {
-      paintWhale(!want);
-    }
-  };
-}
+/*
+ * 【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
+ *
+ * 这里原来有两段：fishBtn 的 paintFish / loadFishFor / __reloadFishState、
+ * whaleBtn 的 paintWhale / loadWhaleFor / __reloadWhaleState。连同顶栏那两颗按钮一起删掉。
+ * 开关只留一处：左边「屋里的人」那列牌子 —— 点一下开、再点一下关。
+ * 服务端 POST /api/agents/group/toggle 会把 fish-presence / whale-presence
+ * 一起改掉，所以这里不用再单独跟那两个接口打交道。
+ *
+ * 以后要是有人想在顶栏恢复快捷开关：别只加按钮 —— 两处必须共用同一份状态来源，
+ * 否则「开关说开着她却不说话」那种怪事立刻回来。
+ */
 
 /**
  * 专业模式（原「纯净模式」）。
@@ -6644,6 +6586,19 @@ async function runTurn({ resume = false, text = '' } = {}) {
         if (ev.type === 'fish_off') {
           turnRec.fishOff = true;
           /**
+           * 【2026-11-02 两个开关都关着：给一句人话，别让画面死着】
+           *
+           * 主人报：「小鱼按钮关闭后，我发消息她没有回复」。两颗按钮都关的时候，
+           * 谁都不该说话 —— 这是主人自己定的规矩。但屏幕上只剩自己那句话，
+           * 看上去就像程序坏了。服务端这时会把 nobodyHome 带过来，这里落一条提示。
+           */
+          if (ev.nobodyHome) {
+            turnRec.fishOffNobody = true;
+            try {
+              addSysNote('小鱼和小鲸这会儿都关着 —— 这一句没人应。想让她回，先按下顶栏那颗按钮。');
+            } catch { /* 忽略 */ }
+          }
+          /**
            * 【小鱼被请出去了，小鲸还得说话】
            *
            * 服务端发完这条 fish_off 就把连接关了，可小鲸要过几秒才想好。
@@ -6914,6 +6869,11 @@ async function runTurn({ resume = false, text = '' } = {}) {
             // （平时不显示，鼠标悬停那句话才淡出来）。找不到气泡就退回画在 log 里。
             const under = bubble && bubble.isConnected ? bubble : null;
             appendTurnUsage(ev.usage, ev.at, '', under, Boolean(under));
+            // 设置里那块「会话总账」要是开着，顺手刷新一下，别等下次打开面板
+            try {
+              const sll = document.getElementById('settingsDlg');
+              if (sll && sll.open) paintUsageBox();
+            } catch {}
           }
           /**
            * 她的话是这一轮跑完之后才说出来的，得补拉一次。
@@ -8212,35 +8172,41 @@ async function refreshWhoRail() {
   cap.textContent = '屋里的人';
   box.appendChild(cap);
   /* 名字第一颗字是有色的小点：主人的色卡里每张卡一个颜色，位置一换颜色要跟着人走 */
-  /* 小鱼、小鲸是常亮的：她们在不在场只看顶栏那两颗按钮（2026-11-01 主人要求） */
-  const STICKY = new Set(['xiaoyu', 'xiaojing']);
+  /**
+   * 【2026-11-02 主人：「要求小鱼与小鲸的左侧按钮也可以点击开启或关闭」】
+   *
+   * 她们俩以前是 STICKY（常亮、点不灭），开关挂在顶栏那两颗按钮上 ——
+   * 可那颗按钮后来被主人删了（「现在统一由左侧的按钮决定启用」）。
+   * 所以这里反过来：小鱼、小鲸跟别人一样，点一下关、再点一下开。
+   * 真正把她们拦在门外的是服务端那两条 presence 状态，
+   * toggleWhoBtn → POST /api/agents/group/toggle 会把它一起改掉。
+   */
   const mk = (m, idx) => {
     const b = document.createElement('button');
     b.type = 'button';
     const id = String(m.id || '');
-    const sticky = STICKY.has(id);
-    const off = !sticky && m.enabled === false;
-    b.className = 'whoBtn' + (idx === 0 ? ' first' : '') + (off ? ' off' : '') + (sticky ? ' sticky' : '');
+    const off = m.enabled === false;
+    b.className = 'whoBtn' + (idx === 0 ? ' first' : '') + (off ? ' off' : '');
     b.textContent = String(m.name || '她');
     b.dataset.agentId = id;
     b.style.setProperty('--whoC', String(m.color || ''));
     b.title = [
       idx === 0 ? '排第一个 —— 这一轮她先说' : `第 ${idx + 1} 个说话（顺序从上往下）`,
-      sticky
-        ? '她在不在场只看顶栏那颗按钮，点这里不会把她关掉'
-        : (off ? '现在是关着的：这一轮她一句话都不说（点一下打开）' : '点一下关掉她这一轮；长按可上下拖动换顺序'),
+      off ? '现在是关着的：这一轮她一句话都不说（点一下打开）' : '点一下关掉她这一轮；长按可上下拖动换顺序',
       m.quiet ? '个性打了勾：只有你叫她的名字（@她）才答' : '个性没打勾：每轮都会说一句',
       '长按可上下拖动换顺序；双击 = 在输入框里叫她的名字',
     ].join('\n');
     b.onclick = () => {
       const dragged = b._dragged;
       b._dragged = false;
-      if (dragged || sticky) return; // 常亮的不给点灭
+      // 2026-11-02：不再有「常亮不给点灭」的例外 —— 小鱼、小鲸也能点
+      if (dragged) return;
       toggleWhoBtn(m.id, off);
     };
     b.ondblclick = () => callIntoRoom(String(m.name || ''));
     makeWhoBtnDraggable(b);
-    b.oncontextmenu = (e) => { e.preventDefault(); callIntoRoom(String(m.name || '')); };
+    // 「这个会话里坐着谁」——别的卡点一下是开/关她这一轮
+    b.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); callIntoRoom(String(m.name || '')); };
     box.appendChild(b);
   };
   members.forEach((m, i) => mk(m, i));
@@ -8268,59 +8234,196 @@ async function toggleWhoBtn(agentId, wasOff) {
 /**
  * 长按 + 上下拖动换顺序（2026-11-01 主人：「名字可长按上下拖动」）。
  *
- * 为什么不是直接 dragstart：鼠标一按下就变成拖，很容易在点开关的时候误拖动。
- * 所以先按住 260ms（长按）才进拖动状态；松手时谁在前面谁先说。
- * 触屏同样吃 pointer 事件，手机上也能拖。
+ * 2026-11-01 第二轮修：主人报「还是无法上下拖动」。第一版有四个毛病，凑在一起
+ * 就是「按下去什么都不发生」：
+ *   ① **握住了才等长按是个死结**：先 pointerdown 开 260ms 计时器，计时器到点才
+ *      setPointerCapture —— 可主人的手指/鼠标稍微挪一下就 pointerleave（被
+ *      「没进拖动 + 挪动超 6px」清掉计时器）。必须**按下就握住**，再等长按。
+ *   ② **长按成功那一刻手里没有 pointerId**：用的是 pointerdown 事件对象里的 e，
+ *      在 setTimeout 回调里早就失效，setPointerCapture 直接抛 → 捕获没成立 →
+ *      鼠标一离开那颗牌子就收不到 pointermove，拖到一半就断。
+ *   ③ 捕获成立之后 pointerleave 还会因为别的原因触发，把计时器清掉。
+ *   ④ 触屏没设 touch-action，浏览器把按住上滑当滚动/选字吃掉。
+ * 现在：按下即捕获 → 把「长按到点」写进 dragging 标志 → pointermove 用 elementFromPoint
+ * 换算「我拖到哪颗上面了」，不再依赖别的元素自己的事件。
  */
 function makeWhoBtnDraggable(btn) {
+  /**
+   * 【2026-11-02 拖不动的真凶（第三个，也是最后一个）：`rail` 是 null】
+   *
+   * 上面 `mk()` 里是**先** `makeWhoBtnDraggable(b)`、**后** `box.appendChild(b)` ——
+   * 所以这里 `btn.parentElement` 拿到的还是 null，函数闭包里的 `rail` 一辈子都是 null。
+   * 长按、监听、每一条都走到，最后卡在 `rail.querySelectorAll` 上抛
+   * 「Cannot read properties of null (reading 'querySelectorAll')」，
+   * 又被外层 try/catch 吞掉 → 表现就是「按住没反应、顺序一点不动」。
+   *
+   * 现在不再赌调用顺序：`rail` 改成每次现取（`btn.parentElement || …`），
+   * 取不到就从页面里找一次 #whoRail。真找不到就安静退出，不抛。
+   */
+  const railOf = () => btn.parentElement || document.getElementById('whoRail');
+  const HOLD_MS = 220;
   let holdTimer = null;
-  let dragging = null;
-  let startY = 0;
-  const rail = btn.parentElement;
+  let live = false;       // 指针还在按着
+  let armed = false;      // 已经长按到点了（真在拖）
+  let pid = null;
+  let lastOver = null;
+
   const clearHold = () => { if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; } };
-  const stop = (e) => {
+  const endDrag = () => {
     clearHold();
-    if (dragging) {
-      btn.classList.remove('dragging');
-      for (const el of rail.querySelectorAll('.whoBtn')) el.classList.remove('dropOn');
-      dragging = null;
-      btn._dragged = true;
-      setTimeout(() => { btn._dragged = false; }, 30);
-      void commitWhoOrder();
+    const wasArmed = armed;
+    const hadPid = pid;
+    live = false;
+    armed = false;
+    pid = null;
+    if (hadPid !== null) { try { btn.releasePointerCapture(hadPid); } catch { /* 忽略 */ } }
+    if (!wasArmed) {
+      dropDocHooks();
+      return;
     }
-    try { btn.releasePointerCapture(e.pointerId); } catch { /* 忽略 */ }
+    btn.classList.remove('dragging');
+    const r0 = railOf();
+    if (r0) for (const el of r0.querySelectorAll('.whoBtn')) el.classList.remove('dropOn');
+    lastOver = null;
+    dropDocHooks();
+    // 拖完这一下别让随后的 click 把牌子当成被点了一下（会顺手把开/关切反）
+    btn._dragged = true;
+    setTimeout(() => { btn._dragged = false; }, 60);
+    void commitWhoOrder();
   };
+
+  /**
+   * 【2026-11-02 拖不动的真因：捕获没成立，后面的事件全跑到别处去了】
+   *
+   * 现场证据（真 Electron 打的探针）：pointerdown 是收到的那一下，
+   * 长按 220ms 之后 class 确实变成了 'whoBtn off dragging'（说明计时器好使），
+   * 可再往上挪鼠标，牌子一个 pointermove 都收不到 —— 因为
+   * `btn.hasPointerCapture(e.pointerId)` 是 **false**。
+   *
+   * 罪魁是 touch-action:none / user-select:none 这些「别选字」的样式？不是。
+   * 是**按下就捕获那一步真的失败了**，但被我 try/catch 吞掉了，于是：
+   * ① 指针没有「粘」在这颗牌上；② 指针一离开牌子，move 就发给鼠标底下的别人，
+   * 而拖动逻辑只挂在这颗牌上 → 手势看起来「按住没反应」。
+   *
+   * 现在三件事一起做：
+   *   ① 捕获仍然尽早做，但**失败要留痕**（window.__whoCaptureErr），别再静默吞掉；
+   *   ② 长按到点之后再捕获一次（这时元素一定还在、指针一定还按着，成功率最高）；
+   *   ③ 真捕获不上就退化成「文档级监听」：把 move/up 挂到 document 上，
+   *      只要指针还按着就走同一套逻辑 —— 有没有指针捕获都能拖。
+   */
+  const grab = (id) => {
+    try {
+      btn.setPointerCapture(id);
+      if (!btn.hasPointerCapture(id)) window.__whoCaptureErr = 'setPointerCapture 调了但没生效';
+      return btn.hasPointerCapture(id);
+    } catch (err) {
+      window.__whoCaptureErr = String(err && err.message ? err.message : err);
+      return false;
+    }
+  };
+
+  /**
+   * 拖动中的那套「我压在谁身上 → 挪到什么位置」—— 捕获与文档级监听共用一份。
+   *
+   * 外面套一层 try：手势途中元素被挪走/换会话重画，都有可能让某一下抛出来。
+   * 抛出来只该让「这一下没挪」，不该把整个手势打断（以前 rail 为 null 时
+   * 每一帧都抛，又被下层吞掉，看起来就是「按住完全没反应」）。
+   */
+  const trackPointer = (x, y) => {
+    try { trackPointer2(x, y); } catch { /* 这一下没成，下一次接着来 */ }
+  };
+  const trackPointer2 = (x, y) => {
+    const rail = railOf();
+    if (!rail) return;
+    const under = document.elementFromPoint(x, y);
+    const hit = under && under.closest && under.closest('.whoBtn');
+    const list = [...rail.querySelectorAll('.whoBtn')];
+    if (hit && hit !== btn && rail.contains(hit)) {
+      const r = hit.getBoundingClientRect();
+      /**
+       * 【2026-11-02 拖到最上面只挪一格的根因：拿「自己」的中点跟别人比】
+       *
+       * 老写法是「被拖这颗牌自己的中点」跟 hit 的中点比。
+       * 可它自己也在跟着挪 —— 一旦插到 hit 后面，它的中点就跑到 hit 下方了，
+       * 下一次 move 还是「在下方」→ 再插一次后面 → 顺序原地不动。连着滑到顶也只挪一格。
+       *
+       * 该跟别人比的是**手指/指针在哪儿**（y），不是自己现在在哪儿。
+       * 指针压在 hit 的上半部分 → 插它前面；压在下半部分 → 插它后面。
+       */
+      if (y < r.top + r.height / 2) rail.insertBefore(btn, hit);
+      else rail.insertBefore(btn, hit.nextSibling);
+      lastOver = hit;
+      for (const el of list) el.classList.toggle('dropOn', el === hit);
+      return;
+    }
+    // 落到空白处：按 y 找最近的插入位（拖到最上/最下时就是这种情况）
+    const others = list.filter((el) => el !== btn);
+    let before = null;
+    for (const el of others) {
+      const r = el.getBoundingClientRect();
+      if (y < r.top + r.height / 2) { before = el; break; }
+    }
+    if (before) rail.insertBefore(btn, before);
+    else rail.appendChild(btn);
+    for (const el of others) el.classList.remove('dropOn');
+  };
+
+  // 文档级兜底：只在「长按已到点」时接手，避免影响别处的手势
+  const onDocMove = (e) => {
+    if (!live || !armed) return;
+    e.preventDefault();
+    // 逐次核对：捕获要是掉了（例如元素被挪动过），这里再抓一次
+    if (pid !== null && !btn.hasPointerCapture(pid)) grab(pid);
+    trackPointer(e.clientX, e.clientY);
+  }; const onDocUp = () => { if (live) endDrag(); };
+  /** 摘掉文档级兜底监听（手势结束/取消都要摘，不然会一直挂在页面上） */
+  const dropDocHooks = () => {
+    document.removeEventListener('pointermove', onDocMove, { passive: false });
+    document.removeEventListener('pointerup', onDocUp, true);
+    document.removeEventListener('pointercancel', onDocUp, true);
+  };
+
   btn.addEventListener('pointerdown', (e) => {
     if (e.button !== undefined && e.button !== 0) return;
-    startY = e.clientY;
+    if (!e.isPrimary) return;
+    live = true;
+    armed = false;
+    pid = e.pointerId;
+    btn._downY = e.clientY;
+    // ① 按下就握住指针：之后无论手滑到哪儿，move/up 都还能回到这颗牌子
+    grab(pid);
     clearHold();
     holdTimer = setTimeout(() => {
       holdTimer = null;
-      dragging = btn;
+      if (!live) return;      // 松手前就已经取消了
+      armed = true;
       btn.classList.add('dragging');
-      try { btn.setPointerCapture(e.pointerId); } catch { /* 忽略 */ }
-    }, 260);
+      // ② 到点再抓一次 —— 这一下几乎不会失败
+      if (pid !== null) grab(pid);
+      // ③ 兜底：无论捕获成没成，都给文档挂上（只在这个手势期间有用）
+      document.addEventListener('pointermove', onDocMove, { passive: false });
+      document.addEventListener('pointerup', onDocUp, true);
+      document.addEventListener('pointercancel', onDocUp, true);
+    }, HOLD_MS);
   });
+
   btn.addEventListener('pointermove', (e) => {
-    if (!dragging) {
-      // 还没长按就移动太多 → 说明主人只是想点，不算长按
-      if (Math.abs(e.clientY - startY) > 6) clearHold();
-      return;
-    }
+    if (!live) return;
+    if (!armed) return;
     e.preventDefault();
-    const list = [...rail.querySelectorAll('.whoBtn')].filter((el) => el !== btn);
-    let before = null;
-    for (const el of list) {
-      const r = el.getBoundingClientRect();
-      if (e.clientY < r.top + r.height / 2) { before = el; break; }
-    }
-    for (const el of rail.querySelectorAll('.whoBtn')) el.classList.remove('dropOn');
-    if (before) { before.classList.add('dropOn'); rail.insertBefore(btn, before); }
-    else { rail.appendChild(btn); }
+    trackPointer(e.clientX, e.clientY);
   });
-  btn.addEventListener('pointerup', stop);
-  btn.addEventListener('pointercancel', stop);
-  btn.addEventListener('pointerleave', () => { if (!dragging) clearHold(); });
+
+  // 按下位置已经在 pointerdown 里记了（btn._downY），这里不再重复挂一个大写捕获监听
+
+  btn.addEventListener('pointerup', endDrag);
+  btn.addEventListener('pointercancel', endDrag);
+  // ② 捕获在手，别的地方的 leave 不该打断长按；只认 pointerout 到窗口外这种真离开
+  btn.addEventListener('pointerleave', (e) => {
+    if (live && !armed && e.buttons === 0) endDrag();
+  });
+  // 长按期间别弹右键菜单（触屏长按的系统菜单）
+  btn.addEventListener('contextmenu', (e) => { if (armed || live) e.preventDefault(); });
 }
 
 /** 把当前竖列的顺序存回去 */
@@ -8371,6 +8474,7 @@ async function openNewSessionDlg() {
     const locked = lockedIds.includes(id);
     const row = document.createElement('label');
     row.className = 'nsRow' + (locked ? ' locked' : '');
+    row.dataset.id = id;
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = locked;
@@ -8380,7 +8484,10 @@ async function openNewSessionDlg() {
     const nm = document.createElement('span');
     nm.className = 'nm';
     nm.textContent = String(a.name || '');
-    row.append(cb, nm);
+    const ord = document.createElement('span');
+    ord.className = 'ord';
+    ord.textContent = '';
+    row.append(cb, nm, ord);
     if (locked) {
       const tag = document.createElement('span');
       tag.className = 'tag';
@@ -8389,19 +8496,134 @@ async function openNewSessionDlg() {
     }
     list.append(row);
   }
+  /**
+   * 【勾的顺序 = 左侧的初始排列】—— 2026-11-02 主人：「新建会话时，根据弹出来的智能体
+   * 从上到下选择顺序来决定左侧智能体初始排列顺序」。
+   *
+   * 做法：勾谁就把那一行挪到这个列表的下方（勾的顺序天然长成一列），
+   * 勾上的人能按住上下拖（跟左侧「屋里的人」同一套手感）。
+   * 提交时按这一行从上往下依次读勾着的人 —— 这个数组原样交给服务端，
+   * `setSessionGroup` 是照传入顺序存的，左侧就按这个排。
+   *
+   * 小鱼、小鲸「默认在场」但不占顺序：她们永远排在最上面，
+   * 所以这里只管自建卡（locked 的行不参与排序）。
+   */
+  const picked = () => [...list.querySelectorAll('.nsRow')].filter((el) => {
+    const cb = el.querySelector('input[type="checkbox"]');
+    return cb && cb.checked && !cb.disabled;
+  });
+  const repaint = () => {
+    const rows = [...list.querySelectorAll('.nsRow')];
+    rows.forEach((el) => {
+      const cb = el.querySelector('input[type="checkbox"]');
+      const isPicked = cb && cb.checked && !cb.disabled;
+      el.classList.toggle('picked', isPicked);
+      const ord = el.querySelector('.ord');
+      if (ord) ord.textContent = '';
+    });
+    // 从 1 开始编号（她们在小鱼、小鲸后面依次排下去）
+    picked().forEach((el, i) => {
+      const ord = el.querySelector('.ord');
+      if (ord) ord.textContent = String(i + 1);
+    });
+    if (hint) {
+      const n = picked().length;
+      hint.textContent = n ? `屋里再添 ${n} 个（可按住拖动换顺序）` : '先挑这屋里还有谁';
+    }
+  };
+  list.onchange = (e) => {
+    const cb = e.target;
+    if (!cb || cb.type !== 'checkbox' || cb.disabled) return;
+    const row = cb.closest('.nsRow');
+    if (!row) return;
+    if (cb.checked) {
+      // 勾上就落到「已勾」那一串的末尾
+      const last = picked().pop();
+      if (last && last !== row) list.insertBefore(row, last.nextSibling);
+    }
+    repaint();
+  };
+  makeNsRowSortable(list, repaint);
+  repaint();
   if (!cards.length && note) note.textContent = '还没读到智能体清单';
   try { if (typeof closeOtherDialogs === 'function') closeOtherDialogs('newSessionDlg'); } catch { /* 忽略 */ }
   if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+}
+
+/**
+ * 挑人框里的行能按住上下拖（只对勾上的行生效）。
+ *
+ * 为什么不用 setPointerCapture 而是文档级监听：这台 Electron 里
+ * setPointerCapture 会抛「No active pointer with the given id is found」，
+ * 捕获压根不成立（左侧「屋里的人」踩过这个坑）。所以从一开始就走 document 监听，
+ * 不赌指针捕获。
+ */
+function makeNsRowSortable(list, repaint) {
+  let dragEl = null;
+  let startY = 0;
+  let moved = false;
+
+  const rowsPicked = () => [...list.querySelectorAll('.nsRow.picked')];
+  const onMove = (e) => {
+    if (!dragEl) return;
+    if (Math.abs(e.clientY - startY) < 3 && !moved) return;
+    moved = true;
+    e.preventDefault();
+    const y = e.clientY;
+    for (const el of rowsPicked()) {
+      if (el === dragEl) continue;
+      const r = el.getBoundingClientRect();
+      if (y < r.top + r.height / 2) { list.insertBefore(dragEl, el); return; }
+    }
+    // 压在所有勾上的人下方：插到「最后一个勾着的人」后面
+    const ps = rowsPicked().filter((el) => el !== dragEl);
+    const last = ps[ps.length - 1];
+    if (last) list.insertBefore(dragEl, last.nextSibling);
+    else list.appendChild(dragEl);
+  };
+  const onUp = () => {
+    if (!dragEl) return;
+    dragEl.classList.remove('nsDragging');
+    dragEl = null;
+    document.removeEventListener('pointermove', onMove, true);
+    document.removeEventListener('pointerup', onUp, true);
+    document.removeEventListener('pointercancel', onUp, true);
+    if (moved) {
+      moved = false;
+      repaint();
+    }
+  };
+  list.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    const row = e.target && e.target.closest ? e.target.closest('.nsRow') : null;
+    if (!row || !list.contains(row)) return;
+    // 锁住的那两行（小鱼、小鲸）不参与排序；只按在勾上的行才拖
+    if (!row.classList.contains('picked')) return;
+    dragEl = row;
+    startY = e.clientY;
+    moved = false;
+    row.classList.add('nsDragging');
+    document.addEventListener('pointermove', onMove, true);
+    document.addEventListener('pointerup', onUp, true);
+    document.addEventListener('pointercancel', onUp, true);
+  });
 }
 
 /** 挑完人 → 开这间屋子（挑人只是名单，真正的会话还是 /api/sessions/new 建的） */
 async function submitNewSession() {
   const dlg = document.getElementById('newSessionDlg');
   const list = document.getElementById('nsList');
+  /**
+   * 【按列表从上往下读，不是按 checkbox 在 DOM 里的原始次序】
+   * 2026-11-02 主人：「根据弹出来的智能体从上到下选择顺序来决定左侧智能体初始排列顺序」。
+   * 勾人会把这行挪到已勾那一串的末尾，也能按住上下拖，所以**眼下这一行的上下位置**
+   * 就是他要的顺序。这里按行读，读到的数组原样交给服务端（服务端照顺序存）。
+   */
   const ids = [];
   if (list) {
-    for (const cb of list.querySelectorAll('input[type="checkbox"]')) {
-      if (cb.checked && !cb.dataset.locked) ids.push(String(cb.dataset.id || ''));
+    for (const row of list.querySelectorAll('.nsRow')) {
+      const cb = row.querySelector('input[type="checkbox"]');
+      if (cb && cb.checked && !cb.disabled) ids.push(String(cb.dataset.id || ''));
     }
   }
   try { if (dlg) dlg.close(); } catch { /* 忽略 */ }
@@ -9193,6 +9415,8 @@ document.getElementById('openSettings').onclick = async () => {
   const p = await fetch(PERSONA_API('/api/personas')).then(r => r.json()).catch(() => null);
   if (p) fillPersona(p); else personaHint.textContent = '人设读取失败';
   closeOtherDialogs('settingsDlg');
+  // 花多少钱：打开面板就算一遍这个会话的账（见 paintUsageBox）
+  try { paintUsageBox(); } catch {}
   dlg.showModal();
 };
 
@@ -11024,6 +11248,8 @@ function turnModelName() {
 
 // 上一轮实际用的模型名（服务端 done 事件里给的）。算钱按它对价目表。
 let lastTurnModel = '';
+// 屏幕上正画着的这一屏 turns：设置里的「会话总账」拿它加总（renderTurns 里赋值）
+let currentTurns = [];
 
 /**
  * 往聊天区末尾加一行 token 小字，右边挂「在新会话中分支」。
@@ -11156,8 +11382,12 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
   }
   row.append(...segs);
 
-  // 花了多少钱。模型名取「这个会话现在用哪个」，没设就用全局的
-  const model = String(modelOverride || '') || (typeof turnModelName === 'function' ? turnModelName() : '') || '';
+  // 花了多少钱。
+  // 【2026-11-02 改】优先用「这一轮当时存下来的模型名」（u.model，服务端写进 _usage 的），
+  // 其次才是传进来的 / 当前会话的 —— 主人在会话里换过模型，旧轮次还得按旧价算。
+  // 以前只用「现在用哪个」，一换模型历史全按新价重算，而且新模型认不出就整行不报价。
+  const model = String(u.model || '') || String(modelOverride || '')
+    || (typeof turnModelName === 'function' ? turnModelName() : '') || '';
   const money = costOf(model, u);
   if (money) {
     row.append(mk('·', 'sep'));
@@ -11169,6 +11399,15 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
       '\n输入缓存命中 ' + fmtTok(Number(u.prompt_cache_hit_tokens ?? 0)) + ' tokens' +
       '\n实际扣费以各家账单为准，这里只是让你心里有数';
     row.append(yen);
+  } else if (model) {
+    // 【2026-11-02】价目表里没这个模型：别整行不报价让人以为坏了，明说一句为什么。
+    // 以前这里静默跳过 → 主人看到的就是「花费不显示了」。
+    row.append(mk('·', 'sep'));
+    const noRate = mk('没这个模型的价', 'na');
+    noRate.title = '价目表里没有「' + model + '」这条，算不出钱来。'
+      + '\n要么是自建/中转的模型名，要么是新模型还没加进 RATES（public/index.html 里那张表）。'
+      + '\ntoken 数是真数，可以照常看。';
+    row.append(noRate);
   }
 
   // 分支按钮不在这儿了 —— 见 attachBranchBtn：它现在贴着每条消息的气泡。
@@ -11179,7 +11418,80 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
   if (!host) noteNewContent();
 }
 
-// ---- 同一时间只开一个面板 ----------------------------------------------------
+// ---- 会话总账：这个会话到现在一共花了多少 ----
+/**
+ * 把当前会话里所有轮次的用量加一遍，算出总账。
+ *
+ * 【为什么做这个】主人问「以前不是会显示 tokens 消耗以及花费吗」——
+ * 原来只有每轮一行小字（还藏着），没有地方能一眼看到「这个会话到底花了多少」。
+ * 打开设置就能看到，心里有数。
+ *
+ * @returns {{rounds:number, pin:number, pout:number, total:number, cost:number,
+ *            models:string[], unknown:string[], estimated:boolean}}
+ */
+function sessionUsageTotal() {
+  const acc = { rounds: 0, pin: 0, pout: 0, total: 0, cost: 0, models: [], unknown: [], estimated: false };
+  let list = [];
+  try { list = Array.isArray(currentTurns) ? currentTurns : []; } catch { list = []; }
+  for (const t of list) {
+    if (!t || t.role !== 'user' || !t.usage) continue;
+    const u = t.usage;
+    const pin = Number(u.prompt_tokens ?? 0);
+    const pout = Number(u.completion_tokens ?? 0);
+    if (!pin && !pout) continue;
+    acc.rounds += 1;
+    acc.pin += pin;
+    acc.pout += pout;
+    acc.total += Number(u.total_tokens ?? (pin + pout));
+    if (u._estimated) acc.estimated = true;
+    const model = String(u.model || '') || (typeof turnModelName === 'function' ? turnModelName() : '');
+    const money = costOf(model, u);
+    if (money) {
+      acc.cost += money.cost;
+      if (money.est) acc.estimated = true;
+      if (model && !acc.models.includes(model)) acc.models.push(model);
+    } else if (model && !acc.unknown.includes(model)) {
+      acc.unknown.push(model);
+    }
+  }
+  return acc;
+}
+
+/**
+ * 把总账画进设置面板。
+ * 没有一轮带用量（老会话 / 从没跑过）就如实说「还没记账」，不编数字。
+ */
+function paintUsageBox() {
+  const tot = document.getElementById('usageTotal');
+  const rounds = document.getElementById('usageRounds');
+  const note = document.getElementById('usageModelNote');
+  if (!tot) return;
+  const a = sessionUsageTotal();
+  if (!a.rounds) {
+    tot.textContent = '这个会话还没记过用量。';
+    if (rounds) rounds.textContent = '从下一轮起，每轮的 token 和花费会记在这里。老对话是在这个功能上线之前跑的，当时没存。';
+    if (note) note.textContent = '';
+    return;
+  }
+  tot.innerHTML = '';
+  const mk = (html) => { const s = document.createElement('span'); s.innerHTML = html; return s; };
+  tot.append(mk('一共 <b>' + a.rounds + '</b> 轮 · <span class="tok">' + fmtTok(a.total) + '</span> tokens'
+    + '（↑' + fmtTok(a.pin) + ' · ↓' + fmtTok(a.pout) + '）'));
+  if (a.cost > 0) tot.append(mk(' · 约花 <b>' + fmtMoney(a.cost) + '</b> 元' + (a.estimated ? '（含估）' : '')));
+
+  if (rounds) {
+    rounds.textContent = '↑ 是所有请求加起来（一轮里调十几次模型，每次背着全部历史，所以涨得快）'
+      + '；每轮「上下文」看的是最后那一次的输入量。';
+  }
+  if (note) {
+    const bits = [];
+    if (a.models.length) bits.push('按价算的模型：' + a.models.join('、'));
+    if (a.unknown.length) bits.push('还没价目表的：' + a.unknown.join('、') + '（只记 token 不报价）');
+    note.textContent = bits.join(' ｜ ');
+  }
+}
+
+// ---- 会话总账结束 ----
 /**
  * 打开一个新面板之前，把别开着的都关掉。
  *
@@ -12365,6 +12677,8 @@ async function refreshSessions({ silent = false } = {}) {
  */
 function renderTurns(turns) {
   hideSending();
+  // 记下「屏幕上这一屏是什么」：设置面板里的会话总账要拿它加总（见 paintUsageBox）。
+  try { currentTurns = Array.isArray(turns) ? turns : []; } catch {}
   /**
    * 【2026-10-28 修：重画之后流式追加写进了「孤儿节点」，界面就卡住不动】
    *
@@ -12765,11 +13079,9 @@ async function switchSession(id) {
   localStorage.setItem(STORE_KEY, sessionId);
   paintSessNow();
   paintMemoryFlag(r.memory); // 换会话，顶栏的记忆小字也要跟着换
-  // 「小鱼在不在场」也是按会话的：切过去得重新读一次，
-  // 不然按钮还亮着上一个会话的状态，一点就点反了。
-  try { if (typeof window.__reloadFishState === 'function') window.__reloadFishState(); } catch {}
-  // 小鲸的按钮同理：它也按会话，切过去得重读
-  try { if (typeof window.__reloadWhaleState === 'function') window.__reloadWhaleState(); } catch {}
+  // 小鱼/小鲸在不在场也是按会话的 —— 但 2026-11-02 顶栏那两颗按钮删了之后，
+  // 这件事只剩一处要看：左边「屋里的人」那列牌子（refreshWhoRail 会自己按
+  // 新会话重读 /api/agents/group，服务端把 fish/whale 两套状态并进去了）。
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
@@ -12860,21 +13172,14 @@ async function createSessionEx(opts = {}) {
   paintSessNow();
   paintMemoryFlag(r.memory); // 新会话是空本子，刷新顶栏
   /**
-   * 【新会话必须重读「小鱼/小鲸在不在」】
+   * 【新会话必须重读「屋里的人」】
    *
-   * 这两个开关是按会话的，可新会话这里以前压根没重读 ——
-   * 界面上留的还是上一个会话的样子。
-   * 主人在上个会话「关了鱼、开了鲸」，新建一个会话，
-   * 按钮依旧显示「鲸亮鱼灭」；可服务端判定新会话时鱼是默认开着的，
-   * 喊一声，回话的其实是小鱼。按钮和真相两回事，看着像闹鬼。
-   *
-   * 新会话的真相是：鱼默认在、鲸默认不在。
-   * 先按这个画，再向服务端确认真值 —— 别让人对着假灯按。
+   * 小鱼/小鲸在不在场是按会话的，可新会话这里以前只重读顶栏那两颗按钮 ——
+   * 2026-11-02 那两颗删了，开关只剩左边那列牌子，所以现在重读的是它。
+   * 不重读的话，界面上留的还是上一个会话的样子：上个会话关了她、
+   * 新建一个会话牌子却还亮着，按下去正好点反。
    */
-  try { paintFish(true); } catch {}
-  try { paintWhale(false); } catch {}
-  try { if (typeof window.__reloadFishState === 'function') window.__reloadFishState(); } catch {}
-  try { if (typeof window.__reloadWhaleState === 'function') window.__reloadWhaleState(); } catch {}
+  try { if (typeof refreshWhoRail === 'function') await refreshWhoRail(); } catch {}
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
   loadTopCfg(); // 新会话是默认档

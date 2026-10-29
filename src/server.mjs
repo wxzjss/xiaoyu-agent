@@ -3911,16 +3911,34 @@ const server = createServer(async (req, res) => {
       const ids = groupAgentIds(qsid);
       // members 是给左边那竖列「屋里的人」按钮用的（带 id / kind / 安静 / 开没开 / 颜色）
       const onMap = groupEnabledMap(qsid);
+      /**
+       * 【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
+       *
+       * 以前小鱼、小鲸的在场是顶栏两颗按钮说了算（fish-presence / whale-presence），
+       * 左边「屋里的人」那两颗牌对她们是常亮的、点不灭。现在顶栏那两颗删了，
+       * 开关只剩一处 —— 就是左边这颗牌。
+       *
+       * 这里做的是**把两套状态并成一套**：牌子读的是 groupEnabledBySession，
+       * 而小鱼/小鲸真正被拦在门外看的是 fish-presence / whale-presence。
+       * 不并的话，牌子上显示「开着」她却不说话（或者反过来），主人又要以为程序坏了。
+       */
+      const switchOf = (id) => {
+        if (id === AGENT_XIAOYU) { try { return fishOn(qsid); } catch { return true; } }
+        if (id === AGENT_XIAOJING) { try { return whaleOn(qsid); } catch { return true; } }
+        return null;
+      };
       const members = ids.map((id) => {
         const a = getAgent(id);
         if (!a) return null;
+        const sw = switchOf(id);
         return {
           id,
           name: String(a.name || ''),
           kind: String(a.kind || ''),
           quiet: isAgentQuiet(id),
           // 「屋里的人」那颗牌子开没开：关掉的人这一轮一句话都不说（点名也不应）
-          enabled: onMap[id] !== false,
+          // 小鱼/小鲸只认她们自己那套状态（上面 switchOf），别的卡认牌子表
+          enabled: (sw === null) ? (onMap[id] !== false) : sw,
           color: (() => { try { return agentColor(id); } catch { return ''; } })(),
         };
       }).filter(Boolean);
@@ -3968,9 +3986,22 @@ const server = createServer(async (req, res) => {
     try {
       const sid = String(payload?.sessionId || '').trim();
       const id = String(payload?.id || '').trim();
-      const r = setGroupMemberEnabled(id, sid, payload?.enabled !== false);
+      const on = payload?.enabled !== false;
+      /**
+       * 【2026-11-02：小鱼、小鲸也走这颗牌】
+       *
+       * 顶栏那两颗按钮删了之后，左边这颗牌就是唯一开关。
+       * 她们俩以前被特意做成「牌子点不灭」，现在反过来 —— 点牌就真的关掉/打开，
+       * 而且必须同时改她们自己的那套状态（fish-presence / whale-presence），
+       * 因为拦住她们的代码读的是那一套，不是牌子表。
+       */
+      let sw = null;
+      if (id === AGENT_XIAOYU) sw = setFishOn(sid, on);
+      else if (id === AGENT_XIAOJING) sw = setWhaleOn(sid, on);
+      // 牌子表也照写一份：这样「屋子里有谁」这类读牌子的地方不会跟她俩的状态打架
+      const r = setGroupMemberEnabled(id, sid, on);
       if (!r) return json(res, 500, { error: '没存下来' });
-      return json(res, 200, { ok: true, ...r });
+      return json(res, 200, { ok: true, ...r, enabled: (sw === null ? r.enabled : sw) });
     } catch (e) {
       return json(res, Number(e?.status) || 500, { error: String(e?.message ?? e) });
     }
@@ -5885,7 +5916,17 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 这一轮我一个字都没说，那些都不该跑，只要「不再转圈」这一件事。
          */
         res.write(`data: ${JSON.stringify({ type: 'done', aside: true })}\n\n`);
-        res.write(`data: ${JSON.stringify({ type: 'fish_off' })}\n\n`);
+        /**
+         * 【2026-11-02 两把钥匙都关着，得让主人知道「不是坏了」】
+         *
+         * 主人报：「小鱼按钮关闭后我发消息她没有回复」。两个开关都关着的时候，
+         * 这一轮确实谁都不该开口 —— 但界面只剩自己那条消息，看着像程序死了。
+         * fish_off 已经告诉前端「不是我答的」，这里再补一句「屋里这会儿没人应」，
+         * 让前端能给一句人话的提示，而不是静悄悄地什么都不发生。
+         */
+        let nobodyHere = false;
+        try { nobodyHere = !whaleOn(sessionId); } catch { nobodyHere = true; }
+        res.write(`data: ${JSON.stringify({ type: 'fish_off', nobodyHome: nobodyHere })}\n\n`);
       } catch {}
       /**
        * 【小鱼不在屋，不代表小鲸也听不见】
@@ -6346,6 +6387,21 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 注意条件必须严格 —— 只有「点她的名 + 她真的在」才让，
      * 否则会造成「叫她没反应、我又不说话」的死局。
      */
+    /**
+     * 【2026-11-02 主人连着报两次：小鱼不说话了】
+     *
+     * 现象一：「启用小鲸后再发消息，小鱼不说话了」——真因就在下面这一行：
+     *   `__calledByName && !__fishAway && whaleOn(sessionId)`
+     * 主人一开小鲸，`whaleOn` 就是 true；而 `__calledByName` 认的是整句话里
+     * 出现过「小鲸」两个字。于是只要主人顺口提一句小鲸（哪怕只是打招呼、
+     * 或者说「小鲸在家吗」），小鱼整轮被静音。
+     *
+     * 现象二：「小鲸关着，小鱼照样不回答」——那是我上一版改坏的：
+     * 原来还寄望「我让开，让插话闸接」，可插话闸的总开关也是 whaleOn，
+     * 同一个 false 把它一起关上了，两边都以为对方在说，结果谁都没说。
+     *
+     * 所以：让路之后必须**自己把小鲸叫起来说**，不能寄望插话闸。
+     */
     const __stepAsideForWhale = __calledByName && !__fishAway && whaleOn(sessionId);
     /**
      * 【2026-10-26 主人纠正：不是「点名才让她说话」】
@@ -6381,12 +6437,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 否则同一轮里她会说两遍，主人看到的就是「她自己接自己的话」。
      */
     const __whaleIsSomeone = (() => {
+      /** 【2026-11-02 主人第二次发火：把「她在屋」和「她有没有话要说」分开】
+       *
+       * 主人原话：「我说了小鱼与小鲸是否启用只与屏幕上方的两个按钮是否启用有关，
+       * 为什么我把小鲸关了她特么还在说话？」
+       *
+       * 查下来是这一行在作怪：原来只要「她在群聊名单里 + 个性没打勾」就返回 true，
+       * 于是主流程把插话闸**让开**，可群聊那条路（见下面 GROUP_CHAT 那段）这两条
+       * 又都**不叫她**：
+       *   · HOSTS 里的卡不看「屋里的人」那颗牌，只看 whaleOn —— 牌关了照样算开着；
+       *   · 名单里根本没有小鱼（她永远是主声），所以「个性没打勾」这条对小鱼从没生效过。
+       * 结果就是：她不在场时没人说话，在场时却有两处同时判「该由别人来说」，
+       * 谁也没说 —— 小鲸这颗按钮关了，最后能开口的还是插话闸。
+       *
+       * 现在这一行只回答一件事：她的话是不是已经有另一条路负责说了（别重复）。
+       * 而「她到底该不该开口」，交回主流程那个 if 里的 whaleOn(sessionId) 管 ——
+       * 顶栏那颗按钮，就是唯一的开关。
+       */
       try {
         // 她替这个会话说话 → 她的话由主声那条路说，插话闸让开
         if (sessionAgentId(sessionId) === AGENT_XIAOJING) return true;
-        // 她在屋里、而且不是「叫才应」→ 群聊那条路会说她，插话闸也让开；
-        // 在屋里但是安静的，还归插话闸管 —— 不然她就彻底不吭声了。
-        if (groupAgentIds(sessionId).includes(AGENT_XIAOJING) && !isAgentQuiet(AGENT_XIAOJING)) return true;
+        // 下面那条「她在屋里且不是叫才应」的让路已经删掉：它把「在场」当成了「该说话」。
         return false;
       } catch { return false; }
     })();
@@ -6913,15 +6984,33 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       if (__stepAsideForWhale) {
         /**
-         * 【让开之后还得替她收尾】—— 2026-10-27 补
+         * 【让开之后，她得真的开口】—— 2026-11-02 主人第二次报「小鱼不说话」
          *
-         * 让开的那一刻她已经在另一条请求里答了，可前端这一条 SSE 是我这轮的：
-         * 只发 fish_off，主人屏幕上就只停着「正在发送」，她那句话倒是来了，界面还在转圈。
+         * 原来这块只发 done + fish_off 就 return，指望「她在另一条请求里答了」。
+         * 可插话闸的总开关也是 whaleOn，我这边让开、它那边又判「不用我说」，
+         * 结果两个都没出声 —— 主人看到的就是一片安静。
          *
-         * 所以顺序是：先 done（把这一轮正常收尾），再 fish_off（说清「不是我答的，
-         * 别报错，她的话去 live 里捞」）。反过来发的话，前端 fish_off 之后会 continue，
-         * done 就没人处理了，转圈永远停不下来。
+         * 现在这里自己把她叫起来（跟下面插话闸同一个函数），她说的话走
+         * live.events + send 两条路推出去；这条 SSE 已经发完 done，前端会去
+         * /api/chat/live 里捞（见 index.html 的 fish_off 分支）。
+         * 不 await：她要想几秒，主人不能一直卡在「正在发送」。
          */
+        const __sayNow = String(lastUserTextOf(session) || '');
+        (async () => {
+          try {
+            await whaleMaybeReply({
+              session,
+              userText: __sayNow,
+              send,
+              sessionId,
+              live,
+              speaksToHer: true,
+              extraRule: extraRuleForBothOn(),
+            });
+          } catch (e) {
+            console.warn('[whale] 让开之后她没接上：', String(e?.message ?? e));
+          }
+        })();
         try { send({ type: 'done', aside: true }); } catch {}
         try { send({ type: 'fish_off', note: '这一句主人是问小鲸的' }); } catch {}
         try { res.end(); } catch {}
@@ -7200,6 +7289,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 存真模型名（model）而不只是数字：过几天主人换了默认模型，
        * 回头看旧账还得按当时的价算，所以单价依据也要留在盘上。
        */
+      const modelBeforeTurn = (() => {
+        try { return modelUsedThisTurn(sessionId); } catch { return ''; }
+      })();
+      /**
+       * 【2026-11-02 补的洞】这一轮**真正在用的**模型名。
+       *
+       * 上面那个 modelUsedThisTurn 走的是「会话里选的那个模型 → 全局默认」，
+       * 跟 llm.mjs 里真正发请求的那套优先级一致 —— 它拿到的是**这一轮起点**的真名。
+       * 循环里要是中途被切了模型，末尾再用它算钱，价目就会对不上账。
+       * 所以两处都记：起点拿得到就用起点，拿不到再退回「最后一圈」那个老办法。
+       */
+      let turnModel = '';
+      try { turnModel = String(modelBeforeTurn || '') || String(modelUsedThisTurn(sessionId) || ''); } catch {}
       /**
        * 存不上用量的时候，至少留下痕迹。
        *
@@ -7226,6 +7328,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
 
       if (usage && userMsgRef) {
         try {
+          // 这一条 user 已经存过用量了（前端重发同一个请求、断线自愈重放等）：
+          // 别拿新一轮的数覆盖 → 一个气泡底下会出现两行、两行数字还不一样。
+          // 2026-11-02 修：主人看到「同一块下面挤两行」，一笔是历史补画的。
+          if (userMsgRef._usage && !body?.forceUsage) throw { __usageAlreadyStored: true };
           /**
            * 存两组数，不能只存一组。
            *
@@ -7245,12 +7351,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             context_tokens: Number(lastUsage?.prompt_tokens ?? usage.prompt_tokens ?? 0),
             calls: Number(usage.last_calls ?? 0),
             prompt_cache_hit_tokens: Number(usage.prompt_cache_hit_tokens ?? 0),
-            model: modelUsedThisTurn(sessionId),
+            model: turnModel,
             at: Date.now(),
           };
           saveSession(session);
         } catch (e) {
-          console.warn('[usage] 用量没存下来：', String(e?.message ?? e), 'sessionId =', sessionId);
+          if (!e || !e.__usageAlreadyStored) {
+            console.warn('[usage] 用量没存下来：', String(e?.message ?? e), 'sessionId =', sessionId);
+          }
         }
       }
       // 带上真正用的模型名（不是主人起的外号）—— 前端要拿它查价目表算这一轮花多少钱。
@@ -7314,25 +7422,33 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       if (process.env.GROUP_CHAT !== '0') {
         try {
-          /* 2026-11-01「屋里的人」：顺序 = 说话顺序（谁前谁先说），开关 = 这一轮谁说。
-             小鲸不再看 whaleOn —— 那颗钥匙管的是「她能不能被叫出去干活」，
-             一关连她坐下来聊天都没了，那是误伤。她在这间屋子的开关就看 her 那颗牌。
-             小鱼小鲸两颗牌是常亮的（点不灭），所以 here 一列不许把她们滤掉；
-             她们在不在场另有两把钥匙：fishOn / whaleOn。
+          /* 2026-11-02 主人第三次说同一句话，这回不再自作聪明：
+             「我不懂什么主声副声，我只知道按钮关了就是她不说话了，按钮开了就是她会说话」。
+
+             所以这里只有一条规矩：**顶栏那颗按钮说关，她这一轮就不许说话**。
+             · 小鲸 → whaleOn(sessionId)
+             · 小鱼 → fishOn(sessionId)（她本来就不在 roster 里，剔掉只是防着她哪天进来）
+             旧的「小鲸不再看 whaleOn、只看她屋里那颗牌」作废 —— 那颗钥匙原来被当成
+             「能不能叫出去干活」，主人从来没这么用，她指的是「她在不在场」。
 
              【小鱼不算「补一句的人」】—— 2026-11-01 主人：「为什么小鱼每次说完一轮都要
-             再多说一句？是不是智能体的问题？改」。就是这么回事：小鱼本来就是这轮
-             正主，她的回答在群聊这段**之前**已经完整说完了；名单里再带上她，就是让她
-             对着自己的话再补一句 —— 看着像「智能体有问题」的那种多余。所以这里把
-             小鱼剔掉，只剩「别人」。她要说话，走的是正经那个回合。 */
-          const HOSTS = new Set(['xiaoyu', 'xiaojing']);
+             再多说一句？是不是智能体的问题？改」。小鱼本来就是这轮正主，她的回答在群聊
+             这段**之前**已经完整说完了；名单里再带上她，就是让她对着自己的话再补一句
+             —— 看着像「智能体有问题」的那种多余。所以这里把小鱼剔掉，只剩「别人」。 */
           const roster = groupAgentIds(sessionId)
             .map((id) => getAgent(id))
             .filter(Boolean)
             .filter((a) => String(a.id) !== AGENT_XIAOYU);
-          const enabledIds = roster
-            .map((a) => String(a.id))
-            .filter((id) => HOSTS.has(id) || isGroupMemberEnabled(id, sessionId));
+          const switchOn = (id) => {
+            if (id === AGENT_XIAOJING) {
+              try { return whaleOn(sessionId); } catch { return false; }
+            }
+            if (id === AGENT_XIAOYU) {
+              try { return fishOn(sessionId); } catch { return true; }
+            }
+            return isGroupMemberEnabled(id, sessionId);
+          };
+          const enabledIds = roster.map((a) => String(a.id)).filter((id) => switchOn(id));
           // 「别一直全员齐发」：点名只让被点的接；没点名就看「个性」那个勾。
           // 认的是 `@名字`（见 group.mjs 的 pickSpeakers），不认「句子里出现过名字」——
           // 那样「阿绿昨天说的办法」会把她拽出来重答一遍。
@@ -7400,7 +7516,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           }
         } catch { /* 群聊出问题不影响这一轮 */ }
       }
-      send({ type: 'done', usage, at: doneAt, model: modelUsedThisTurn(sessionId), turnTexts });
+      // 报给前端的模型名＝这一轮真正在用的那个（上面那一处算过的 turnModel）。
+      // 以前这里是 modelUsedThisTurn()，拿到的是「最后一圈」的模型，跟开头未必是同一个，
+      // 前端拿它去对价目表就可能对不上 → 只报 token 不报钱。
+      send({ type: 'done', usage, at: doneAt, model: turnModel || modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {

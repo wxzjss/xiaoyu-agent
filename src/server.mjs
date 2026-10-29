@@ -143,6 +143,10 @@ import {
   AGENT_XIAOJING,
   MAX_AGENTS,
   MAX_PERSONA_CHARS as MAX_AGENT_PERSONA_CHARS,
+  /* 角色卡·2026-11-01 导入/导出（见 agents.mjs 的 exportCard / importCard） */
+  exportCard,
+  importCard,
+  cardFileName,
 } from './agents.mjs';
 // 管理员权限：按会话的开关键（见 admin-mode.mjs 文件头）。
 import { adminOn, setAdminOn, adminSessions } from './admin-mode.mjs';
@@ -4008,6 +4012,43 @@ const server = createServer(async (req, res) => {
       const agent = renameAgent(String(payload?.id || ''), { name: payload?.name, desc: payload?.desc });
       if (!agent) return json(res, 404, { error: '没有这个智能体' });
       return json(res, 200, { ok: true, agent, agents: listAgents() });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
+   * 角色卡：导入 / 导出（2026-11-01 主人要的「以角色卡形式」）。
+   *
+   * 两个都只经过 agents.mjs，一个字都不碰会话。导出走 POST 是因为界面要顺手拿到
+   * 文件名（卡名里有中文和空格，不能塞进 URL），拿到再自己触发下载。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/agents/card/export') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const id = String(payload?.id || '');
+    const card = id ? exportCard(id) : null;
+    if (!card) return json(res, 404, { error: '没有这个智能体' });
+    return json(res, 200, { ok: true, fileName: cardFileName(card.name), card });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/agents/card/import') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: '这个文件读不成 JSON（可能不是角色卡）' });
+    }
+    // 接口收 {card: <对象或文本>}，也认直接给整个 body 就是一张卡
+    const rawCard = (payload && payload.card !== undefined) ? payload.card : payload;
+    try {
+      const r = importCard(rawCard);
+      if (!r.ok) return json(res, 400, { error: r.error });
+      return json(res, 200, { ok: true, agent: r.agent, renamed: r.renamed, agents: listAgents() });
     } catch (e) {
       return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }

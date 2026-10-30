@@ -156,6 +156,7 @@ import {
 } from './agents.mjs';
 // 管理员权限：按会话的开关键（见 admin-mode.mjs 文件头）。
 import { adminOn, setAdminOn, adminSessions } from './admin-mode.mjs';
+import { taskOn, setTaskOn, taskInfo, forgetSession as forgetTaskSession } from './task-mode.mjs';
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames } from './tools-screen.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
@@ -3706,6 +3707,44 @@ const server = createServer(async (req, res) => {
   }
 
   /**
+   * 办事模式：按会话存，跟「管理员权限」一个形制。
+   *
+   * 一句话说清它是干什么的：**换的是「谁来干」**。
+   *   专业模式 = 怎么说（不发人设，换一份干活规范）
+   *   管理员权限 = 能碰哪儿（整台机器）
+   *   办事模式 = 谁来干（主智能体只派活/检查/验收，活交给会话内临时 worker）
+   *
+   * 这里只给界面两个能力：读状态（按钮亮不亮）、翻开关。
+   * worker 花名册也一并带出去，界面能显示「现在手上几个活」。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/task-mode') {
+    const sid = String(url.searchParams.get('sessionId') || '');
+    try {
+      return json(res, 200, { ok: true, ...taskInfo(sid) });
+    } catch (e) {
+      // 读盘失败 = 关（fail-closed，跟 task-mode.mjs 文件头一个口径）
+      return json(res, 200, { ok: true, sessionId: sid, on: false, workers: [], note: String(e?.message ?? e) });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/task-mode') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const sid = String(payload?.sessionId || '').trim();
+    if (!sid) return json(res, 400, { error: '得先有会话' });
+    try {
+      const r = setTaskOn(sid, payload?.on === true);
+      if (!r.ok) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      return json(res, 200, { ok: true, ...r, ...taskInfo(sid) });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
    * 用某一张卡开一个新会话 —— 「多开」的入口。
    *
    * 顺序有讲究：先校验卡存在、先建会话、**再绑卡、最后才跑开场白**。
@@ -5708,6 +5747,10 @@ const server = createServer(async (req, res) => {
     try {
       trashMemory(id);
     } catch {}
+    // 办事模式开出来的 worker 只属于这个会话，会话没了就该跟着走
+    try {
+      forgetTaskSession(id);
+    } catch {}
     sessions.delete(id);
     const list = listSessions();
     const last = getLastSessionId();
@@ -5737,6 +5780,9 @@ const server = createServer(async (req, res) => {
         const ok = deleteSession(id);
         try {
           trashMemory(id);
+        } catch {}
+        try {
+          forgetTaskSession(id);
         } catch {}
         sessions.delete(id);
         if (ok) done.push(id);

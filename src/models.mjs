@@ -45,6 +45,70 @@ export function normMarkup(v) {
   return Math.min(1000, Math.round(n * 1000) / 1000);
 }
 
+/**
+ * 这一条模型自己的价目。
+ *
+ * 【为什么要「每条」一份，而不是查一张大表】
+ * 价目表（rates.mjs）按模型名查，查到的是**官方价**。
+ * 可中转站收的是它自己定的价：同样叫 deepseek-v4.1-flash，丸子可能收 1.5 倍、
+ * 凌风可能收 0.8 倍；有的站还有自己的缓存读写价、自己的倍率。
+ * 光靠「官方价 × 一个倍率」根本盖不住 —— 所以这里给每条模型一份能自己填的价。
+ *
+ * 四档，单位一律是「每百万 token」：
+ *   inMiss   输入 · 未命中缓存（新内容）
+ *   inHit    输入 · 命中缓存（缓存读）
+ *   out      输出
+ *   cacheWrite  缓存写入（Anthropic 这类，写缓存比原价贵 25%；OpenAI/DeepSeek 没有就留空）
+ *
+ * 【和倍率怎么配合】
+ * 填了就按填的算（填的是**最终价**，不再乘倍率）；
+ * 留空 → 回落到「价目表 × 倍率」。
+ * 这样主人要么填一个倍率偷懒，要么填四个精确价，两种都行，不会互相打架。
+ *
+ * @param {*} v 界面上填的东西（对象 / 字符串 / 空）
+ * @returns {{inMiss:number|null, inHit:number|null, out:number|null, cacheWrite:number|null}}
+ */
+export function normPrice(v) {
+  const pick = (x) => {
+    if (x === undefined || x === null || x === '') return null;
+    const n = Number(x);
+    if (!Number.isFinite(n) || n < 0) return null;
+    // 上限压一下：填个 99999 也就算了，再多一定是手滑
+    return Math.min(99999, Math.round(n * 10000) / 10000);
+  };
+  let src = v;
+  // 老版本 / 手写文件可能是个 JSON 字符串，别因为格式就当没填
+  if (typeof src === 'string') {
+    try { src = JSON.parse(src); } catch { src = null; }
+  }
+  if (!src || typeof src !== 'object' || Array.isArray(src)) {
+    return { inMiss: null, inHit: null, out: null, cacheWrite: null };
+  }
+  return {
+    inMiss: pick(src.inMiss ?? src.in ?? src.input),
+    inHit: pick(src.inHit ?? src.hit ?? src.cacheRead),
+    out: pick(src.out ?? src.output),
+    cacheWrite: pick(src.cacheWrite ?? src.cacheWritePrice ?? src.cacheCreate),
+  };
+}
+
+/** 这份价目填了几格（0 = 全空，等于没填） */
+export function priceFilled(p) {
+  const q = normPrice(p);
+  return ['inMiss', 'inHit', 'out', 'cacheWrite'].filter((k) => q[k] !== null).length;
+}
+
+/**
+ * 价目的币种：'cny' 或 'usd'。
+ *
+ * 主人可能从官网抄的是美元牌价（OpenAI、Anthropic 都标美元），
+ * 也可能抄的是国内官网的元。填的时候选一下，后端存的就是他自己填的那个数，
+ * 换算成元交给算钱的那一步 —— 别让他每次自己乘汇率。
+ */
+export function normPriceCurrency(v) {
+  return String(v || '').toLowerCase() === 'usd' ? 'usd' : 'cny';
+}
+
 function readRaw() {
   try {
     const raw = JSON.parse(readFileSync(FILE, 'utf8'));
@@ -111,6 +175,10 @@ function publicView(m) {
     kind: normKind(m.kind),
     /** 中转站倍率：1 = 照官方价，0.8 = 打八折。没填过就是 1 */
     markup: normMarkup(m.markup),
+    /** 这一条自己填的价目（全空 = 照价目表 × 倍率算）；单位是「每百万 token」 */
+    price: normPrice(m.price),
+    /** price 那四个数是用哪种钱填的：'cny' 或 'usd' */
+    priceCurrency: normPriceCurrency(m.priceCurrency),
     createdAt: m.createdAt ?? 0,
     updatedAt: m.updatedAt ?? 0,
   };
@@ -219,6 +287,8 @@ function normalizeInput(input = {}) {
     name: String(input.name ?? '').trim() || model,
     apiKey: String(input.apiKey ?? '').trim(),
     markup: normMarkup(input.markup),
+    price: normPrice(input.price),
+    priceCurrency: normPriceCurrency(input.priceCurrency),
   };
 }
 
@@ -259,6 +329,9 @@ export function saveModel(input = {}) {
       kind: input.kind !== undefined ? normKind(input.kind) : normKind(prev.kind),
       // 倍率同理：这一版界面还没带这个字段的旧客户端，不该把填好的数冲成 1
       markup: input.markup !== undefined ? normMarkup(input.markup) : normMarkup(prev.markup),
+      // 价目同理：老界面不会传这个字段，别把主人填好的四格冲成空
+      price: input.price !== undefined ? normPrice(input.price) : normPrice(prev.price),
+      priceCurrency: input.priceCurrency !== undefined ? normPriceCurrency(input.priceCurrency) : normPriceCurrency(prev.priceCurrency),
       updatedAt: now,
     };
     // 不擅自改用户正在用的那颗；只在压根没有指向时才补一个

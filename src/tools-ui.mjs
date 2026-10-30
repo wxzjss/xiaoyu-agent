@@ -275,15 +275,25 @@ export const uiScroll = actionTool({
 export const uiTools = [uiObserve, uiClick, uiDoubleClick, uiRightClick, uiType, uiKey, uiScroll];
 
 /**
- * 扁平一层的 schema —— tools.mjs 里别的工具都是 {name, description, parameters} 这个形状，
- * toolSchemas 那一步再包成 {type,function}。这里照那个形状给一份，摊进数组才认得出来。
+ * 摊进 tools.mjs 数组的那一份。
  *
- * 【为什么不直接把 run 一起摊进去】
- * tools.mjs 的 runTool 是按名字去 tools 数组里找 `t.run`，两处形状必须一致。
- * 上面那些 actionTool 产出的对象带 run，摊进 tools 数组时**只取 schema 那一层**，
- * 真正的执行仍然走 tools-ui 里的实现（见下面 uiObserve 那些的 run 被 registerToolRunners 收进去）。
+ * tools.mjs 里别的工具都是 `{ name, description, parameters, run }` 这个扁平形状，
+ * `toolSchemas` 那一步再包成 `{type, function}` 交给模型；而 `runTool` 是按名字
+ * 去数组里找 `t.run`。所以这里必须**带上 run**。
+ *
+ * 【踩过的坑（2026-11-03）】
+ * 原来这里写的是 `uiTools.map((t) => t.schema.function)` —— 只取了 schema 那层，
+ * run 被丢了。结果是：7 个 ui_* 工具在模型眼里列得好好的，真调用时
+ * `runTool` 报 `tool.run is not a function`，一个字都点不出去。
+ * 注释里还写了句「真正的执行走 registerToolRunners」—— 那个函数压根不存在，是我编的。
+ * 教训：**注释里说的机制，代码里得真能搜到**，不然就是自欺。
  */
-export const uiToolDefs = uiTools.map((t) => t.schema.function);
+export const uiToolDefs = uiTools.map((t) => ({
+  name: t.schema.function.name,
+  description: t.schema.function.description,
+  parameters: t.schema.function.parameters,
+  run: t.run,
+}));
 
 /** 给界面用的：这套工具的名字（功能面板里要列）。 */
 export const UI_TOOL_NAMES = uiTools.map((t) => t.schema.function.name);

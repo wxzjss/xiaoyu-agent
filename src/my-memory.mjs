@@ -504,36 +504,85 @@ function frameFixed(fixed, budget) {
   const text = String(fixed ?? '');
   const avail = Math.max(0, budget - 40);
   if (!text || text.length <= avail) return { text, dropped: 0 };
-  const lines = text.split('\n');
-  const protectedIdx = new Set();
-  let inProtect = false;
-  lines.forEach((l, i) => {
+
+  /**
+   * 【为什么不是「从最后一行往前一行一行退」—— 2026-10-30】
+   *
+   * 以前就是那样：按行从尾巴往前砍。结果「先说坏的、好的垫底」——
+   * 我的本子里「关键事实（已验证）」那一大坨压在最后，一超字数，
+   * 退掉的全是它；而前面那些已经过时的夜班交接（错误与修复、关键决策）
+   * 一字不落地留着，还占着「待办」小节的地盘。提示里看到的就是「被砍一半、还留着一堆废话」。
+   *
+   * 现在改成按小节整体退：从最靠后的非关键小节开始，整节退掉，
+   * 退到够为止；一节退完还不够才动「部分退」，而且有下限（不能只剩个标题）。
+   * 每个小节都留一行「（退掉 N 条，原文在本子里）」—— 让人知道东西没丢，只是没贴进来。
+   */
+  const sections = [];
+  let cur = { label: '', head: [], body: [] };
+  for (const l of text.split('\n')) {
     const s = l.trim();
-    if (s.startsWith('## ')) inProtect = PROTECT_SECTIONS.includes(s);
-    else if (inProtect) protectedIdx.add(i);
-  });
-  const drop = new Set();
+    if (s.startsWith('## ')) {
+      if (cur.head.length || cur.body.length) sections.push(cur);
+      cur = { label: s, head: [l], body: [] };
+    } else if (cur.head.length) cur.body.push(l);
+    else cur.head.push(l);
+  }
+  if (cur.head.length || cur.body.length) sections.push(cur);
+
+  const isProtected = (sec) => PROTECT_SECTIONS.includes(sec.label);
+  /** 每节至少要留几条正文（不多不少：够认出这节是什么就行）。 */
+  const MIN_KEEP = 2;
+  const renderAll = () => sections.map((sec) => [...sec.head, ...sec.body].join('\n')).join('\n');
+  const size = () => tidySections(renderAll()).length;
+
+  /** 从后往前退：先整节退非关键小节，再部分退，最后才碰关键小节。 */
+  const orderIdx = [];
+  for (let i = sections.length - 1; i >= 0; i--) if (!isProtected(sections[i])) orderIdx.push(i);
+  let dropped = 0;
+
+  for (let pass = 0; pass < 3 && size() > avail; pass++) {
+    for (const i of orderIdx) {
+      if (size() <= avail) break;
+      const sec = sections[i];
+      const bodyLines = sec.body.slice();
+      // pass 0：整节退光；pass 1：留 2 条；pass 2：再往下砍到 2 条为止
+      if (pass === 0) {
+        if (!bodyLines.length) continue;
+        const n = bodyLines.length;
+        sec.body = ['（这一节 ' + n + ' 条这次没贴进来，原文还在本子里）'];
+        dropped += n;
+      } else {
+        if (bodyLines.length <= MIN_KEEP) continue;
+        // 从最旧的开始退（本子里越靠前越旧）
+        const cut = Math.min(bodyLines.length - MIN_KEEP, Math.max(1, Math.ceil((bodyLines.length - MIN_KEEP) / 2)));
+        sec.body = ['（这一节最旧的 ' + cut + ' 条没贴进来，原文还在本子里）', ...bodyLines.slice(cut)];
+        dropped += cut;
+      }
+    }
+  }
+
   const render = () => {
-    let out = tidySections(lines.filter((_, i) => !drop.has(i)).join('\n'));
-    if (drop.size) out += '\n…（固定记忆超出字数，已按行退掉 ' + drop.size + ' 行；先退的是非关键小节）';
+    let out = tidySections(renderAll());
+    if (dropped) out += '\n\n…（固定记忆超出字数，这次少贴了 ' + dropped + ' 条；本子里一条没删）';
     return out;
   };
-  const order = [];
-  for (let i = lines.length - 1; i >= 0; i--) if (!protectedIdx.has(i)) order.push(i);
+
   let out = render();
-  for (const i of order) {
-    if (out.length <= avail) break;
-    drop.add(i);
-    out = render();
+  // 实在还超（关键小节也很大），才动关键小节的部分退，且必须留 LABEL_MIN 条
+  if (out.length > avail) {
+    for (const i of orderIdx.concat(sections.map((_, k) => k).reverse())) {
+      if (out.length <= avail) break;
+      const sec = sections[i];
+      const bodyLines = sec.body.slice();
+      if (bodyLines.length <= LABEL_MIN) continue;
+      const cut = Math.min(bodyLines.length - LABEL_MIN, 10);
+      if (cut <= 0) continue;
+      sec.body = ['（这一节最旧的 ' + cut + ' 条没贴进来，原文还在本子里）', ...bodyLines.slice(cut)];
+      dropped += cut;
+      out = render();
+    }
   }
-  for (let i = lines.length - 1; i >= 0 && out.length > avail; i--) {
-    if (!protectedIdx.has(i) || drop.has(i)) continue;
-    const labelLeft = lines.filter((l, k) => protectedIdx.has(k) && !drop.has(k) && l.trim().startsWith('- ')).length;
-    if (labelLeft <= LABEL_MIN) break;
-    drop.add(i);
-    out = render();
-  }
-  return { text: out, dropped: drop.size };
+  return { text: out, dropped };
 }
 
 export function composeMemory(maxChars = MAX_CHARS) {

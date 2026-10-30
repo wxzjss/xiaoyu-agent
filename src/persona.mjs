@@ -1,3 +1,4 @@
+import { renderSelfCompressBlock } from './self-compress.mjs';
 // Persona: composes the system prompt from the persona card + 底线/安全词. No affinity, no state.
 // The persona card itself lives in persona/xiaoyu.md, unless the user edited it in settings,
 // in which case .state/persona.md wins (see persona-store.mjs).
@@ -263,6 +264,12 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   // 会话记忆放最后：它是唯一一块每轮变长的，跟读者走，不能渲染前面的每一句。
   const mem = memoryBlock(sessionId);
   if (mem) parts.push(mem);
+  // 压缩规矩：告诉她「上下文太长的时候是您自己挑重点」，不是别人代挑。
+  // 放在记忆后面 —— 她读到本子紧接着读到「该你动手了」，顺序上顺。
+  try {
+    const sc = renderSelfCompressBlock();
+    if (sc) parts.push(sc);
+  } catch { /* 这个模块挂了也不能拖垮整轮提示 */ }
   return parts.join('\n\n');
 }
 

@@ -10,7 +10,7 @@ import { takeMail, formatMail } from './peer.mjs';
 // 读成乱码，然后如实说「一片糊」。她没撒谎，是真的没看见。
 import { inflateHistory, readImageDataUrl } from './attach.mjs';
 import { slimRoundMessages, measureMessages } from './turn-slim.mjs';
-import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
+import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox, ctxNow } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
 import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identity.mjs';
@@ -18,6 +18,12 @@ import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identi
 import { adminPromptBlock } from './admin-mode.mjs';
 import { pureModeOn, setPureToolLister } from './pure.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
+// 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
+import { lastSelfNote, selfCompressHint } from './self-compress.mjs';
+// 工具过程擦成结论：命令和整份代码擦掉，只留调查结果。
+import { thinHistory } from './trim-tools.mjs';
+// 清单：压缩记忆里要带「做到第几步」，所以得把清单读进来。
+import { readPlanTxt, formatPlan } from './plan.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
@@ -481,9 +487,59 @@ export async function runAgent({
     // 每轮调模型前都量一下历史；超了就把旧对话折成摘要。没超就什么都不做（不额外花钱）。
     // 一轮只压一次（见上面 compressedThisTurn 的说明）
     const noCompress = { compressed: false, before: 0, after: 0 };
+    // 【压缩改成我自己挑 —— 2026-10-30】
+    // 主人原话：「我要求压缩是当前会话的ai自己手动压缩（决定哪些该删，哪些留一句话就够），
+    // 而不是外包给模型」。所以这里分三步：
+    //   ① 先把我这一轮的工具过程（命令、整份代码、长结果）擦成结论；
+    //   ② 还超线，就只「量」不压，把存档编号和清单递给我，让我亲手写记忆；
+    //   ③ 等下一轮我把【压缩记忆·编号】写出来了，再真的压 —— 用我写的那段当摘要，
+    //      模型一个字都不问（它只在没人写的时候兜底）。
+    /** 这一轮我亲手写的压缩记忆（上一轮开头那段），没有就是空。 */
+    const selfNote = lastSelfNote();
+    const planTxt = (() => { try { return readPlanTxt(ctxNow()); } catch { return null; } })();
+    const planText = planTxt ? formatPlan(planTxt) : "";
+    thinHistory(messages, { keepRecent: 12, sessionId: ctxNow() });
+
+
+    /** ② 只量不压：超了就把「该你自己压了」递到这一轮的提示里。 */
+    if (!noCompress && !selfNote) {
+      let probe = null;
+      try {
+        probe = await compressHistory({
+          messages,
+          limit: config.contextLimit,
+          sessionId: ctxNow(),
+          model: config.model,
+          keepTokens: config.contextKeepTokens,
+          dryPlan: true,
+        });
+      } catch { /* 量不出来就照老路走，别卡住 */ }
+      if (probe?.needSelfCompress) {
+        const hint = selfCompressHint({
+          segId: probe.segId,
+          tokens: probe.before,
+          window: probe.window,
+          kept: probe.kept,
+          removed: probe.foldCount,
+          planText,
+        });
+        if (hint) {
+          messages.push({ role: "user", content: hint });
+          if (process.env.COMPRESS_DEBUG) console.log("[compress] 递给我自己压：待折 " + probe.foldCount + " 条");
+        }
+      }
+    }
     const compressed = compressedThisTurn
       ? noCompress
-      : await compressHistory({ messages, signal, model: turnModel, sessionId });
+      : await compressHistory({
+          messages,
+          signal,
+          model: turnModel,
+          sessionId,
+          // 我亲手写的就在这儿 —— 有它，模型一个字都不会被问。
+          selfNote: selfNote || undefined,
+          selfPlan: planText,
+        });
     if (compressed.compressed) {
       compressedThisTurn = true;
       onEvent({

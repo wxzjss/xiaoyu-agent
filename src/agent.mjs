@@ -34,7 +34,7 @@ import { planTextFor, formatPlan } from './plan.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
-import { memoryText } from './my-memory.mjs';
+import { memoryText, readMemoryFor } from './my-memory.mjs';
 import { getEnabledMap } from './features.mjs';
 import { turnSourcePromptBlock } from './turn-source.mjs';
 
@@ -221,7 +221,16 @@ export function contextMessage(sessionId = 'default', opts = {}) {
    */
   const __memOn = getEnabledMap()['memory'] !== false;
   try {
-    memory = memoryText();
+    /* 【2026-10-31 主人要】自建智能体读自己的本子 ——
+       当前说话的身份要是「自建」的（identity 里 customs，就是没有 builtin 标记的那些），
+       就按它自己的 id 分一本，跟小鱼按人设分一个道理。
+       内置身份（主人 / 小鲸）还走老路，一个字不改。 */
+    let __mine = null;
+    try {
+      const __id = currentIdentity(sessionId);
+      if (__id && !__id.builtin && (__id.id || __id.name)) __mine = { id: __id.id, name: __id.name };
+    } catch {}
+    memory = __mine ? (readMemoryFor(__mine) || '') : memoryText();
   } catch (e) {
     console.warn('[memory] 记忆本没读出来：', String(e?.message ?? e));
     memory = '';

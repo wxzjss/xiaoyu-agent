@@ -1055,6 +1055,11 @@
       position: absolute; top: 6px; right: 7px; font-size: 9.5px; color: var(--accent);
       border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; line-height: 14px;
     }
+    /* 官方预设的小角标·2026-11-04：跟「当前」那个角标同款，换成一抹琥珀色，
+       一眼能分出「出厂带的」和「我自己写的」。 */
+    .pCard .pTag.pOfficial {
+      top: auto; bottom: 6px; right: 7px; color: #c8a34a;
+    }
     .pCard .pDel {
       position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; line-height: 16px;
       border: 0; border-radius: 4px; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px;
@@ -8141,6 +8146,16 @@ function renderPersonaList(info) {
     mt.className = 'pMeta';
     mt.textContent = p.id === info.current ? '正在用' : (p.builtin ? '内置' : `${p.chars} 字`);
     card.append(nm, mt);
+
+    // 官方预设（出厂带的成品人设）：挂个小角标，跟主人自己写的那几套区分开。
+    // 它能删能改 —— 删了不会再自己长回来（服务端有一本账），所以不当成「内置」。
+    if (p.preset === true) {
+      const off = document.createElement('span');
+      off.className = 'pTag pOfficial';
+      off.textContent = '官方';
+      off.title = '出厂自带的成品人设，可以直接用，也可以改成你自己的';
+      card.appendChild(off);
+    }
 
     if (p.id === info.current) {
       const tag = document.createElement('span');

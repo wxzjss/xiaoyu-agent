@@ -877,3 +877,54 @@ export function memoryInfo() {
   const { keptRoll, totalRoll } = composeMemory();
   return { path: activeFile(), keptRoll, totalRoll, limit: TURN_LIMIT, detailLimit: DETAIL_LIMIT };
 }
+
+/**
+ * 【2026-10-31 主人要】自建智能体也要有自己的记忆本，跟小鱼按人设分一个道理。
+ *
+ * 老函数（composeMemory / appendRolling …）都写死「当前人设那一本」，
+ * 谁调都是同一本，所以自建智能体全挤在一起。
+ * 这里**不动老函数**（动一处牵一片，今晚已经栽过），
+ * 另开几个带 who 的旁路：传了 who 就按 who 算本子，不传照旧走老的。
+ */
+
+/** 这套东西的本子路径。who = { id, name }。 */
+export function memoryFileOf(who) {
+  if (!who || (!who.id && !who.name)) return null;
+  return memoryFileFor(who);
+}
+
+/** 读某一本正文。读不到给空串，绝不抛。 */
+export function readMemoryFor(who) {
+  const f = memoryFileOf(who);
+  if (!f) return '';
+  try { return readFileSync(f, 'utf8'); } catch { return ''; }
+}
+
+/** 这本在不在（判断是不是第一回）。 */
+export function memoryExistsFor(who) {
+  const f = memoryFileOf(who);
+  if (!f) return false;
+  try { return existsSync(f); } catch { return false; }
+}
+
+/** 往某一本固定区追加一条。 */
+export function appendFixedFor(who, section, text) {
+  const f = memoryFileOf(who);
+  if (!f) throw new Error('没说是谁的本子');
+  const clean = String(text == null ? '' : text).trim();
+  if (!clean) throw new Error('text 是空的，没东西可记');
+  let body = '';
+  try { body = readFileSync(f, 'utf8'); } catch { body = ''; }
+  const line = '- ' + new Date().toISOString().slice(0, 10) + ' ' + clean + '\n';
+  const sec = '## ' + section + '\n';
+  if (body.includes(sec)) {
+    const i = body.indexOf(sec) + sec.length;
+    body = body.slice(0, i) + line + body.slice(i);
+  } else {
+    if (!/^# 固定记忆/.test(body)) body = '# 固定记忆（永久保留）\n\n' + body;
+    body = body + (body.endsWith('\n') ? '' : '\n') + '\n' + sec + line;
+  }
+  try { const _d = f.replace(/[\\/][^\\/]+$/, ''); if (_d && !existsSync(_d)) mkdirSync(_d, { recursive: true }); } catch {}
+  writeFileSync(f, body, 'utf8');
+  return f;
+}

@@ -58,6 +58,87 @@ function findQQ() {
   return cands.find(exists) || '';
 }
 
+
+/* 【2026-10-31 主人要】自动检测 QQ 版本，别再写死。
+ *
+ * 老问题：NAPCAT_VERSION 写死 v4.18.41，它配的是 QQ 9.9.22；
+ * 主人 QQ 一升到 9.9.33，qqnt.json 就对不上，3001 死活不开，
+ * 界面只报「连不上」，人根本猜不到是版本号的事。
+ * 现在改成：先看本机 QQ 是几版，再去找能配它的 NapCat。
+ */
+
+/** 本机 QQ 的 build 号（52230 这种）。读不到就给空串，绝不抛。 */
+/**
+ * 读本机 QQ 的 build 号 —— 【2026-10-31 修】读 versions 目录，别读 QQ.exe。
+ *
+ * 踩过的坑：QQ 升级之后，QQ.exe 的版本资源还停在老版本（实测 exe 说 52230，
+ * 实际装的目录是 9.9.36-53644）。按 exe 报数会一路错到底，
+ * 拿错的号去挑协议端，永远挑不对。
+ *
+ * 真正的答案在 <QQNT>\versions\<版本号>\resources\app\package.json。
+ * versions 下如果有多个，挑最新的那个（按目录修改时间）。
+ */
+export function detectQqBuild() {
+  const exe = findQQ();
+  if (!exe) return '';
+  const dir = path.dirname(exe);
+  const vs = path.join(dir, 'versions');
+  try {
+    if (fs.existsSync(vs)) {
+      const subs = fs.readdirSync(vs, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => {
+          const full = path.join(vs, d.name);
+          let mt = 0;
+          try { mt = fs.statSync(full).mtimeMs; } catch {}
+          return { name: d.name, full, mt };
+        })
+        .sort((a, b) => b.mt - a.mt);
+      for (const sub of subs) {
+        // ① 目录名本身就是版本号：9.9.36-53644
+        const byName = sub.name.match(/-(\d{4,6})$/);
+        if (byName) return byName[1];
+        // ② 退一步读它自己的 package.json
+        try {
+          const pj = path.join(sub.full, 'resources', 'app', 'package.json');
+          if (fs.existsSync(pj)) {
+            const j = JSON.parse(fs.readFileSync(pj, 'utf8'));
+            const b = String(j.buildVersion || j.version || '').match(/(\d{4,6})/);
+            if (b) return b[1];
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  // ③ 最后的退路：老办法读 exe（至少比没有强）
+  try {
+    const ps = "(Get-Item '" + exe.split("'").join("''") + "').VersionInfo.FileVersion";
+    const out = execFileSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf8', timeout: 8000 });
+    const m = String(out).match(/\d{4,6}/g);
+    if (m && m.length) return m[m.length - 1];
+  } catch {}
+  return '';
+}
+
+
+/** 挑一个能配本机 QQ 的 release。 */
+/** 取最新那个 release 的 tag。
+ *
+ * 【为什么不去猜它配哪个 QQ】试过读说明里的版本号 —— 里面全是 commit 哈希，
+ * 猜出来的东西是假的，比不知道还坏。所以不猜：直接拿最新版，
+ * 装完读它自己 qqnt.json 里的 version，再跟本机 QQ 比，对不上就照实说。
+ */
+async function pickRelease() {
+  try {
+    const r = await fetch("https://api.github.com/repos/NapNeko/NapCatQQ/releases?per_page=5", {
+      headers: { 'User-Agent': 'xiaoyu-agent', Accept: 'application/vnd.github+json' },
+    });
+    if (!r.ok) return null;
+    const list = await r.json();
+    if (!Array.isArray(list) || !list.length) return null;
+    return { tag: list[0].tag_name };
+  } catch { return null; }
+}
 function installed() {
   return exists(path.join(DIR, 'NapCatWinBootMain.exe')) && exists(path.join(DIR, 'napcat', 'napcat.mjs'));
 }
@@ -179,19 +260,46 @@ function writeRunner(qqPath) {
   return RUNNER;
 }
 
+
+/** 已装的那份协议端配的是哪版 QQ（读它自己的 qqnt.json）。 */
+function installedBuild() {
+  try {
+    const p = path.join(DIR, 'qqnt.json');
+    if (!fs.existsSync(p)) return '';
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const v = String(j.version || '');
+    return v.split('-').pop() || '';
+  } catch { return ''; }
+}
 async function deploy() {
   fs.mkdirSync(DIR, { recursive: true });
-  if (installed()) {
-    log('已经装好了：' + DIR);
-    writeOneBotConfig();
-    return { ok: true, installed: true, dir: DIR };
-  }
   const qq = findQQ();
   if (!qq) throw new Error('这台机器上找不到 QQ.exe —— 协议端要挂在一个 QQ 客户端上');
 
+  // 【2026-10-31 主人要】装过不等于装对了：QQ 一升级，老协议端就对不上。
+  // 所以这里每次都先看本机 QQ 是几版，再看装好的那份配的是几版。
+  const qqBuild = detectQqBuild();
+  const haveBuild = installedBuild();
+  log(`本机 QQ：${qqBuild || "没读出来"}   已装协议端配的：${haveBuild || "没读过"}`);
+
+  if (installed() && qqBuild && haveBuild && qqBuild === haveBuild) {
+    log('已经装好了，版本也对得上：' + DIR);
+    writeOneBotConfig();
+    return { ok: true, installed: true, dir: DIR, qqBuild, napcatBuild: haveBuild, upToDate: true };
+  }
+
+  const NEED_UPGRADE = installed();
+  if (NEED_UPGRADE) {
+    log(`版本对不上（QQ ${qqBuild} ≠ 协议端 ${haveBuild}），换一份能配上的`);
+  }
+
+  const pick = await pickRelease().catch(() => null);
+  const TAG = pick && pick.tag ? pick.tag : NAPCAT_VERSION;
+  if (pick) log(`用最新那版：${TAG}`);
+
   let ok = false;
   for (const m of MIRRORS) {
-    const url = `${m}${NAPCAT_VERSION}/${ASSET}`;
+    const url = `${m}${TAG}/${ASSET}`;
     try {
       log('下载：' + url);
       await download(url, ZIP);
@@ -210,7 +318,7 @@ async function deploy() {
   fs.rmSync(ZIP, { force: true });
   writeOneBotConfig();
   log('装好了：' + DIR);
-  return { ok: true, installed: true, dir: DIR };
+  return { ok: true, installed: true, dir: DIR, qqBuild, napcatTag: TAG, upgraded: NEED_UPGRADE };
 }
 
 function start() {

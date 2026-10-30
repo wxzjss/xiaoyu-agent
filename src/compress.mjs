@@ -777,6 +777,54 @@ export async function compressHistory({
   const old = messages.slice(start, cut);
   const tail = messages.slice(cut);
 
+  /**
+   * 【让她自己写摘要 —— 2026-10-30】
+   *
+   * 主人原话：「让该会话的 ai 自己决定哪些上下文该删，哪些不能删，
+   * 怎么总结摘要，让她自己决定怎么压，让她自己压」。
+   *
+   * 上一层（askCutPoint）只让她说「切在哪儿」；摘要却还是程序拿固定四标签去问她 ——
+   * 那仍然是「程序决定怎么总结」。这里补上最后一段：这份档案是她自己写的，
+   * 哪条详、哪条略由她判断，而不是我们先替她定好「只许写四类事实」。
+   *
+   * 三条底线不能踩（踩了比不压更糟）：
+   *   1. 只能引原文，不许编 —— 历史里编出来的一句，后面接手的人会当成事实。
+   *   2. 不许当顾问 —— 实测喂一段机械重复的对话，模型爱写「建议你…」「你希望我查哪种」，
+   *      这种话进历史就是毒：后面接手的模型会以为自己是个顾问。
+   *   3. 标签结构不许乱 —— 后面要按标签清洗、按标签读取；结构一乱整段作废
+   *      （宁可这次不压，也不能丢原文，见下面 summary-failed-keep-original）。
+   *
+   * 环境变量 COMPRESS_HER_SUMMARY=0 可以退回老的四标签死提示词。
+   */
+  const HER_SUMMARY_SYSTEM = [
+    '你就是这段对话里的那个人（助手 / 小鱼 / 小鲸），现在轮到你翻回头，把已经过去的一段收拾一下。',
+    '你收到的是一段已经发生的旧对话（可能是你自己说过的，也可能换了人）。你要把它整理成一份事实清单，交给后面接着干的人看。',
+    '你不是顾问，没有人会回答你的问题；你输出的是档案，不是回复。',
+    '',
+    '输出格式（机器解析，格式不对整段作废）：',
+    '只用下面这四个标签开头，每个标签单独占一行，格式固定为「标签: 内容」。',
+    '每个标签下最多 5 行，每行以「- 」开头。',
+    '',
+    '主人要什么:',
+    '- （这段对话里主人提出的要求，一条一行）',
+    '已经做完:',
+    '- （已经落地的改动：文件路径、函数名、commit 号、数字，原样抄）',
+    '还没做完:',
+    '- （还没做的、卡住的、失败的事）',
+    '关键约束:',
+    '- （踩过的坑、必须遵守的规矩、环境限制）',
+    '',
+    '硬性要求：',
+    '- 只写这段对话里能确认的事实。不许编、不许猜、不许补全。数字、路径、文件名、接口名、变量名原样保留。',
+    '- 哪条该留、该留多细，你自己判断：像样的事实留详细一点，寒暄和空转的对话整段别写。',
+    '- 这段对话很可能又长又重复。删掉重复，只写事实一次。',
+    '- 不许评价这段对话，不许给建议，不许提问，不许写「你希望我…」「建议你…」。',
+    '- 尽量短。够后面接着干就行。',
+  ].join('\n');
+
+  /** 这一轮摘要用哪份提示词：她自己那份（默认）还是老死提示词。 */
+  const summarySystem = process.env.COMPRESS_HER_SUMMARY === '0' ? SUMMARY_SYSTEM : HER_SUMMARY_SYSTEM;
+
   let summaryText = '';
   let error;
   /**
@@ -813,7 +861,7 @@ export async function compressHistory({
     try {
       const res = await chat({
         messages: [
-          { role: 'system', content: SUMMARY_SYSTEM },
+          { role: 'system', content: summarySystem },
           { role: 'user', content: inputText },
         ],
         // 摘要必须跟当前会话用同一个模型 / 同一套端点：会话切了模型，
@@ -831,6 +879,16 @@ export async function compressHistory({
     }
   };
 
+  /**
+   * 跑题稿先扣在手上 —— 只有「一个标签都没有、里面也没有可用事实行」时才拿来兜底。
+   *
+   * 【2026-10-30 修的真 bug】以前这里是 `summaryText = summaryText || retry`，
+   * 跑题稿被直接塞进 summaryText，于是下面「摘要没生成出来就不压」那道闸门永远不生效：
+   * cleanSummary 宽松模式会把「建议你按哪种情况查？」这种行洗空，只剩一句
+   * 「（这段早期对话没有压出可用的事实，原文已折叠）」—— 然后照压不误，
+   * 等于拿一句占位符换掉几十条原文。
+   */
+  let lastJunk = '';
   {
     // 第一次：完整输入
     try {
@@ -879,11 +937,34 @@ export async function compressHistory({
       try {
         const retry = await runSummary(renderForSummary(old) + '\n\n' + hint, SUMMARY_TIMEOUT_MS);
         if (looksStructured(retry)) { summaryText = retry; error = undefined; }
-        else { summaryText = summaryText || retry; }
+        else { lastJunk = retry || lastJunk; }
       } catch (err3) {
         error = String(err3?.message ?? err3);
         break;
       }
+    }
+  }
+
+  /**
+   * 【只拿到跑题稿 → 这一轮不压，原文留下】
+   *
+   * 稿子里一个标签都没有 = 模型整场没听懂这活儿。cleanSummary 会把它洗成
+   * 「（这段早期对话没有压出可用的事实，原文已折叠）」那一句占位符 ——
+   * 不能拿一句占位符换掉几十条原文。
+   *
+   * 例外：虽然没按四标签写，但里面有像事实的行（带路径/数字/命令），
+   * 那是「模型换了写法」而不是跑题，还能救，交给 cleanSummary 宽松模式洗。
+   */
+  if (!summaryText && lastJunk) {
+    const junkLines = String(lastJunk).split('\n').map((l) => l.trim()).filter(Boolean);
+    const hasFact = junkLines.some((l) => SUMMARY_FACT_LINE.test(l)
+      && !SUMMARY_ADVISOR.test(l)
+      && !/^(我|你|好的|收到)/.test(l));
+    if (hasFact) {
+      summaryText = lastJunk;
+      error = undefined;
+    } else {
+      error = error || '摘要跑题（模型没按四标签写，也没有可用事实），这轮不压';
     }
   }
 
@@ -898,6 +979,19 @@ export async function compressHistory({
    * 也不能把他的话扔掉 —— 扔掉的东西是找不回来的。
    * 下一轮如果摘要能出来，自然会再压。
    */
+  /**
+   * 【摘要洗完之后是空的 → 同样这一轮不压】
+   *
+   * 两道关：上面那道管「压根没拿到稿子」，这道管「拿到了、被 cleanSummary 洗空了」
+   * —— 实测跑题稿洗空之后，以前 cleanSummary 会塞一句「（这段早期对话没有压出
+   * 可用的事实，原文已折叠）」当摘要，然后照压：几十条原文换成一句占位符。
+   * 现在 cleanSummary 洗完是空就返回空，这里看见空就整轮放弃，原文一条不动。
+   */
+  if (!pure && summaryText && !cleanSummary(summaryText)) {
+    summaryText = '';
+    error = error || '摘要洗完什么都不剩（模型跑题），这轮不压';
+  }
+
   if (!pure && !summaryText) {
     return {
       compressed: false,
@@ -1016,8 +1110,8 @@ function cleanSummary(text) {
     s = (lastStop > SUMMARY_TEXT_MAX * 0.5 ? head.slice(0, lastStop + 1) : head) + '\n（摘要过长，已截断）';
   }
   s = s.replace(/\n{3,}/g, '\n\n').trim();
-  // 全被洗空了也得给一句实话，别留下一条空摘要占着位置
-  return s || '（这段早期对话没有压出可用的事实，原文已折叠）';
+  // 全被洗空了也不能编一句假的顶上 —— 空着返回，让上层看见「这次没压出东西」
+  return s;
 }
 
   const makeSummary = () => ({

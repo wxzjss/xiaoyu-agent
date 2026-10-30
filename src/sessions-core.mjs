@@ -1,0 +1,613 @@
+// Sessions on disk: .state/sessions/<id>.json + _last.json (最近会话).
+// Every turn writes back to disk, so a reload/power-cut never loses the conversation.
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, writeSync, fsyncSync, closeSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { config } from './config.mjs';
+
+const DIR = join(config.dataDir, '.state', 'sessions');
+const TRASH = join(DIR, '.trash');
+const LAST = join(DIR, '_last.json');
+const MAX_TITLE = 40;
+
+const ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+
+export function isSessionId(id) {
+  return typeof id === 'string' && ID_RE.test(id);
+}
+
+function ensureDir(dir = DIR) {
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+}
+
+function fileFor(id) {
+  return join(DIR, `${id}.json`);
+}
+
+/**
+ * 原子写：先写同目录下的 .tmp，fsync 落盘，再 rename 覆盖目标。
+ *
+ * 【为什么不用 writeFileSync 直接盖】2026-10-29 修。
+ * writeFileSync 是「打开目标 → 截断成 0 字节 → 往里写」，中间任何一刻进程被杀、
+ * 断电、磁盘满，目标文件就停在「空的」或「半截 JSON」的状态 —— 整个会话当场没了，
+ * 而且 JSON 坏掉之后 loadSession 只会当「这会话不存在」，连抢救的机会都没有。
+ * rename 在同一分区上是原子的：要么还是旧的完整文件，要么就是新的完整文件。
+ */
+function writeFileAtomic(file, text) {
+  const tmp = file + '.tmp-' + process.pid;
+  let fd = null;
+  try {
+    fd = openSync(tmp, 'w');
+    writeSync(fd, text);
+    try { fsyncSync(fd); } catch {}
+    closeSync(fd);
+    fd = null;
+    renameSync(tmp, file);
+  } catch (e) {
+    if (fd !== null) { try { closeSync(fd); } catch {} }
+    try { if (existsSync(tmp)) unlinkSync(tmp); } catch {}
+    throw e;
+  }
+}
+
+/**
+ * 会话文件在磁盘上的完整路径。
+ * 给外面（server.mjs）用：它靠 statSync 这个文件判断内存缓存是不是过期了。
+ * 不导出的话外面只能自己拼一遍路径 —— 拼错了就悄悄失效，这类 bug 最难查。
+ */
+export function sessionPath(id) {
+  return fileFor(id);
+}
+
+function cleanTitle(t) {
+  return String(t ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE);
+}
+
+/** First user line doubles as the session title. */
+export function titleFromMessage(text) {
+  const raw = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!raw) return '新会话';
+  const line = raw.split(/[。！？!?\n]/)[0].trim() || raw;
+  return line.slice(0, MAX_TITLE);
+}
+
+export function newSessionId() {
+  return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/**
+ * 读历史时剔掉「伪装成主人说话的报错」。
+ *
+ * 【为什么要有】
+ * 老版本在连接断掉 / 网关 502 时，会把 `⚠ terminated`、`⚠ LLM HTTP 502: {...}`
+ * 当成一条 role:'user' 的消息写进历史。它们看着像主人发的，实际是系统告警。
+ *
+ * 危害有三个，都不小：
+ * 1. 界面上这几个字显示成主人的气泡，主人会以为是自己说的；
+ * 2. 每次继续对话都原样发给模型，模型以为主人真的说了这句，白费 token 还带偏判断；
+ * 3. 502 重试那段逻辑会被自己造成的假 user 消息污染。
+ *
+ * 现在的写入路径已经不再这么干了（报错走前端提示条，不进历史），
+ * 但磁盘上老会话里的那几条还在 —— 这里读的时候统一滤掉，不动物理文件，想回滚随时能回去。
+ */
+const ALERT_USER_RE = /^\s*⚠/;
+
+function sanitizeLoadedMessages(list) {
+  if (!Array.isArray(list) || !list.length) return list || [];
+  const out = [];
+  for (const m of list) {
+    if (m && m.role === 'user') {
+      // content 可能是字符串，也可能是 [{type:'text',text:...}, ...] 这种多段结构
+      let head = '';
+      if (typeof m.content === 'string') head = m.content;
+      else if (Array.isArray(m.content)) {
+        const t = m.content.find((x) => x && typeof x.text === 'string');
+        head = t ? t.text : '';
+      }
+      if (ALERT_USER_RE.test(head)) continue; // 系统告警，不是主人说的话
+    }
+    out.push(m);
+  }
+  return out;
+}
+
+export function loadSession(id) {
+  if (!isSessionId(id)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(fileFor(id), 'utf8'));
+    if (!raw || typeof raw !== 'object') return null;
+    return {
+      id,
+      title: cleanTitle(raw.title) || '新会话',
+      createdAt: Number(raw.createdAt) || 0,
+      updatedAt: Number(raw.updatedAt) || 0,
+      messages: sanitizeLoadedMessages(Array.isArray(raw.messages) ? raw.messages : []),
+      // 回退点跟着会话一起落盘：只追加、从不改写老消息。
+      rewinds: Array.isArray(raw.rewinds) ? raw.rewinds : [],
+      // 老会话没有这个字段 -> 当人设档处理，不去补写盘
+      mode: raw.mode && typeof raw.mode === 'object' && raw.mode.word ? { word: String(raw.mode.word), since: Number(raw.mode.since) || 0 } : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 【2026-10-29 修 · 存盘前把「同一次生成的同一句话」只留一份】
+ *
+ * 症状：切会话 / 重启几次之后，会话里同一条长回复躺着 3~5 份，界面上看着像
+ * 「一口气说了一大堆活」。
+ *
+ * 病根：历史数组会被重新拼（wireMessages 换引用、合并、压缩回写），
+ * 拼的时候同一条 assistant 可能被接两遍。commitWireBack 那边已经加了一道关，
+ * 这里是**最后一道**：不管上面怎么绕，落盘之前过一遍。
+ *
+ * 判据用 role + _at + 正文 + 工具调用 id：
+ *   · _at 是那次生成的时间戳，同一次只有一值 —— 同 _at 同正文 = 重复，删掉后面的；
+ *   · 我过一会儿又认真说一遍（不同 _at）→ 不同键，留着。
+ * 只动 assistant（带 tool_calls 的也不动），user / tool / 摘要一概不碰。
+ */
+function dropRepeatedTurns(ms, maxScan = 400) {
+  if (!Array.isArray(ms) || ms.length < 2) return 0;
+  const start = Math.max(0, ms.length - maxScan);
+  const seen = new Set();
+  const kill = [];
+  for (let i = start; i < ms.length; i++) {
+    const m = ms[i];
+    if (!m || m.role !== 'assistant') continue;
+    if (Array.isArray(m.tool_calls) && m.tool_calls.length) continue;
+    const body = typeof m.content === 'string'
+      ? m.content
+      : Array.isArray(m.content) ? m.content.map((p) => (p && (p.text || p.type)) || '').join('\n') : '';
+    if (!body || body.trim().length < 80) continue;   // 短句（「好」「收到」）可能是真说了两遍
+    const k = String(m._at || '') + '|' + body;
+    if (seen.has(k)) { kill.push(i); continue; }
+    seen.add(k);
+  }
+  for (let n = kill.length - 1; n >= 0; n--) ms.splice(kill[n], 1);
+  if (kill.length) {
+    try { console.log('[dedupe] 落盘前清掉 ' + kill.length + ' 条重复的回复'); } catch {}
+  }
+  return kill.length;
+}
+
+/**
+ * 一条消息的指纹：role + tool_call_id + tool_calls 的 id + 正文。
+ *
+ * 合流去重、以及「删掉的别再接回来」都靠它认人。原来是 saveSession 里的局部函数，
+ * 2026-10-29 提到模块级：删消息的那一端（server.mjs 的 /api/reset）也得用它算指纹，
+ * 两边各算一套迟早算出不一样的。
+ */
+export function messageKey(m) {
+  if (!m || typeof m !== 'object') return null;
+  const role = String(m.role || '');
+  if (!role) return null;
+  const txt = typeof m.content === 'string' ? m.content
+    : (m.content == null ? '' : JSON.stringify(m.content));
+  let tcId = '';
+  if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+    tcId = m.tool_calls.map((x) => String(x && x.id ? x.id : '')).join(',');
+  }
+  const callId = m.tool_call_id ? String(m.tool_call_id) : '';
+  return role + '|' + callId + '|' + tcId + '|' + txt;
+}
+
+/**
+ * 【写完前先验内存还在不在】
+ *
+ * saveSession 会拿磁盘那份来合流（见下面「合流」那段）：磁盘上有、内存里没有的
+ * 消息会被当成「插话刚 push 进来、还没落盘的那一句」接回末尾。
+ *
+ * 这条规矩本身是给插话用的，可它跟「删消息」撞在一起就翻车 ——
+ * 删掉的消息在磁盘旧文件里还在，于是每一轮存盘都把它接回来一次，
+ * 主人删了三次、它回来三次。2026-10-29 实测：/api/interject 插的那条测试消息，
+ * 手工从磁盘删掉后，下一轮 saveSession 又写回来了（sandbox/_repro_wipe2.mjs）。
+ *
+ * 真正的病根是「凭记忆判断磁盘新不新」：这份 session 可能是这一轮开头就抓下来的
+ * 旧副本，中途别人（插话、重置、压缩、另一轮）已经改过内存里那份真的了。
+ * 拿旧副本去索引磁盘，必然把它判成「磁盘上多出来的新消息」。
+ *
+ * 所以在**读磁盘之前**记下内存那份的版本号，合流之后再验一次：
+ * 变了 = 说明这次合流的前提已经作废，直接放弃、重来一次。
+ */
+function memStamp(session) {
+  if (!session || typeof session !== 'object') return null;
+  const m = session.messages;
+  return (Array.isArray(m) ? m.length : -1) + '|' + String(session.updatedAt || 0);
+}
+
+export function saveSession(session, _attempt = 0) {
+  // 落盘前最后一道：清掉同一次生成被接入多份的重复回复（见 dropRepeatedTurns 上的说明）
+  try { if (session && Array.isArray(session.messages)) dropRepeatedTurns(session.messages); } catch {}
+  if (!session || !isSessionId(session.id)) return null;
+  ensureDir();
+  // 【合流之前先记下内存这份的样子】见 memStamp 上的说明（2026-10-29）
+  // 注意这里先拍一拍「updatedAt 之前」的样子：updatedAt 每次存盘都要刷新，
+  // 拿刷新后的值去比，等于永远相等，验了个寂寞。
+  const stampBefore = memStamp(session);
+  session.updatedAt = Date.now();
+  if (!session.createdAt) session.createdAt = session.updatedAt;
+  const payload = {
+    id: session.id,
+    title: cleanTitle(session.title) || '新会话',
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    messages: session.messages ?? [],
+    rewinds: Array.isArray(session.rewinds) ? session.rewinds : [],
+  };
+  /**
+   * 【删过的指纹跟着落盘】2026-10-29
+   *
+   * 只留在内存里不够：会话刷新 / 重启之后 getSession 从磁盘读回来，_deletedKeys 就没了，
+   * 这时候再来一份老副本合流，被删的照样会被接回。所以写进文件。
+   * 没有就整个字段不写 —— 别给正常会话平白多一个空数组。
+   */
+  { const deletedKeys = Array.isArray(session._deletedKeys)
+      ? session._deletedKeys.filter((k) => typeof k === 'string' && k)
+      : [];
+    if (deletedKeys.length) payload._deletedKeys = deletedKeys; }
+  // 会话当前处在哪个安全词档位。没这个字段的老会话 = 人设档（见 mode.mjs），
+  // 所以只在真的记过档位时才写，免得给所有会话塞一堆冗余字段。
+  if (session.mode?.word) payload.mode = { word: session.mode.word, since: session.mode.since ?? Date.now() };
+  // 【合流】写盘前先看一眼磁盘上那份：中途可能有别人（主人插话 / 另一轮）
+  // 往里写了话，那这份内存里的 session 就是旧的。整份覆盖会把人家的话抹掉。
+  // 做法：磁盘那份打底，把内存这份有、磁盘没有的接在后面，再去重写回。
+  try {
+    const raw = JSON.parse(readFileSync(fileFor(session.id), 'utf8'));
+    const diskMsgs = Array.isArray(raw?.messages) ? raw.messages : [];
+    const memMsgs = Array.isArray(payload.messages) ? payload.messages : [];
+    if (diskMsgs.length) {
+      /**
+       * 【合流用指纹】—— 2026-10-26 重写
+       *
+       * 旧版只按「角色 + content 字符串」算，content 不是字符串就返回 null，
+       * 然后被当成「磁盘/内存各自独有」—— 于是每存一次盘，content 为 null 的
+       * assistant(tool_calls) 就被再追加一遍：一次插话能让同一个 tool_call id
+       * 从 1 条变 3 条，上游按 OpenAI 协议判非法直接 502，
+       * 主人看到的就是「插了话她不理我」。
+       *
+       * 新版指纹带上 tool_calls 的 id 和 tool_call_id，内容空也有身份；
+       * 算不出指纹（不是对象 / 没角色）的才返回 null，那种一律不参与合并。
+       */
+      const key = (m) => messageKey(m);
+      const memKeys = new Set(memMsgs.map(key).filter(Boolean));
+      // 算不出指纹的不参与合并（见上）
+      /**
+       * 【system / context 不参与合流】—— 2026-10-26 修
+       *
+       * runAgent 每轮开头会把历史里 system 的 content 就地刷成最新的人设。
+       * 于是磁盘上那份还是**旧人设**、内存这份已经变成新人设 —— 指纹不同，
+       * 下面就会把旧 system 当成「磁盘独有的新消息」补到历史末尾。
+       * 实测结果：每轮多一条一模一样的 system，越跑越多，几百条历史全被它
+       * 逼着重发一遍，还挤掉了真正该带上去的对话。
+       *
+       * system 和 context 是每轮重算的框架，不属于对话内容，一律不补。
+       */
+      const isFraming = (m) => m && (m.role === 'system' || m.context);
+      const diskOnly = diskMsgs.filter((m) => { if (isFraming(m)) return false; const k = key(m); return k && !memKeys.has(k); });
+      /**
+       * 【两边都接：内存的打底，磁盘独有的补在后面】
+       *
+       * 内存这份是这一轮真正跑过的历史（已压缩、已回退、已去重），是主线；
+       * 磁盘那份可能有内存里还没有的（插话刚 push 的那句、另一个进程写的），
+       * 所以按指纹把磁盘独有的接在末尾，一条不丢。
+       *
+       * 关键在于指纹稳定：同一批 assistant(tool_calls) 在两边算出的 key 一样，
+       * 就只会留一份 —— 这才是旧版真正缺的东西（旧版对 content=null 的消息
+       * 算不出 key，于是两边都「独有」，每存一次盘就多几条）。
+       */
+      const merged = memMsgs.slice();
+      const seenKey = new Set(merged.map(key).filter(Boolean));
+      /**
+       * 【压缩过的那份，磁盘上的老消息一条都不许接回来】—— 2026-10-31 修
+       *
+       * 上面那套「磁盘独有的接在末尾」是给插话用的：磁盘上可能有内存里还没有的
+       * 那一句。可它跟压缩撞在一起就出大问题 ——
+       *
+       *   压缩把老消息折进摘要、从数组里移走了，磁盘上那份还是压缩前的。
+       *   于是**每一条被压掉的老消息都算「磁盘独有」**，一条条接回末尾，
+       *   内存里刚压好的 838 条，落盘又成了 2058 条。
+       *
+       * 这是压缩白做的第三处（前两处在 server.mjs：收尾合并、commitCompression
+       * 之前的 history 副本）。实测：compressHistory 报 2057→838、commitCompression
+       * 日志也写着「已同步进会话：2058 → 838」，可磁盘上还是 2059 条 ——
+       * 就是这里接回去的。
+       *
+       * 判据跟 server.mjs 收尾合并那边保持一致：只要有一边带摘要（= 动过压缩），
+       * 就只接「内存这份里、磁盘那份完全没有的」那几条真正的新话。
+       * 压缩挪走的那些老消息（磁盘有、内存没有）一律视为「已经进摘要了」，不接。
+       */
+      /**
+       * 【清空闸】—— 2026-10-31 加
+       *
+       * 「清空当前」要把这个会话的聊天记录原地擦干净、只留开场白。
+       * 上面那套「磁盘独有的接在末尾」本来是给插话用的，可它跟清空撞在一起就完蛋：
+       * 清空后内存里只剩 system + 开场白，磁盘上那份还满是旧对话，
+       * 每一条旧对话都算「磁盘独有」，被一条条接回来 ——
+       *
+       * 实测：接口返回 kept=2 messages=3，磁盘上读回来还是 5 条，假消息全回来了。
+       *
+       * 判据：调用方把 session._wipe 置成 true，表示这次是整份替换，磁盘那份一个字都不接。
+       */
+      if (session && session._wipe === true) diskOnly.length = 0;
+
+      /**
+       * 【删掉的，不许再接回来】—— 2026-10-29 修
+       *
+       * 上面这套「磁盘独有的接在末尾」是给插话用的，但它分不清两种「磁盘有、内存没有」：
+       *   ① 插话刚 push、还没落盘的那一句  → 该接
+       *   ② 主人刚从历史里删掉的那一句      → 绝对不该接
+       *
+       * 实测（sandbox/_repro_wipe2.mjs）：插话写下的一条测试消息，从内存里删掉之后
+       * 下一次 saveSession 就把它原样接回末尾 —— 删了三次回来三次。
+       *
+       * 判据：删消息的那一方在 session._deletedKeys 里登记指纹（字符串数组），
+       * 合流时命中这些指纹的磁盘消息一律不接。用指纹而不是下标，因为删一条之后
+       * 后面的下标全变了，按位置对必然对错。
+       */
+      const deletedKeys = Array.isArray(session && session._deletedKeys) ? session._deletedKeys : null;
+      if (deletedKeys && deletedKeys.length) {
+        const deadSet = new Set(deletedKeys);
+        for (let i = diskOnly.length - 1; i >= 0; i--) {
+          if (deadSet.has(key(diskOnly[i]))) diskOnly.splice(i, 1);
+        }
+      }
+
+      const countSummary = (arr) => arr.reduce((n, m) => n + (m && m.summary && m.context ? 1 : 0), 0);
+      const compressedAnywhere = countSummary(memMsgs) > 0 || countSummary(diskMsgs) > 0;
+      if (compressedAnywhere) {
+        // 只接磁盘上确实没有的；压缩移走的那些不算「磁盘独有」，而是「已被压掉」
+        for (const m of diskOnly) {
+          // 老消息的特征：磁盘上有、而且算得出指纹（说明是正常的对话条目）。
+          // 压缩之后内存里没有它，只可能是被折进摘要了 —— 跳过。
+          // 真正该接的是「内存里新长出来、磁盘还没见过」的内容，那从内存那边来，
+          // 根本不会出现在 diskOnly 里，所以这里直接不接。
+          void m;
+        }
+      } else {
+        for (const m of diskOnly) {
+          const k = key(m);
+          if (!k || seenKey.has(k)) continue;
+          seenKey.add(k);
+          merged.push(m);
+        }
+      }
+      payload.messages = merged;
+    }
+  } catch {}
+  // 【合流之后回头验一遍：内存那份还是刚才那份吗】见 memStamp 上的说明（2026-10-29）
+  // 变了 = 有人（插话 / 重置 / 压缩 / 另一轮）在我们读磁盘这几毫秒里改过真的那份，
+  // 这次合流的前提已经作废 —— 写下去就会把人家刚删的接回来、或者把刚加的漏掉。
+  // 放弃这次、重来（最多 3 次；之后照写，宁可慢一拍也不死循环）。
+  if (stampBefore !== null && memStamp(session) !== stampBefore && _attempt < 3) {
+    return saveSession(session, _attempt + 1);
+  }
+  writeFileAtomic(fileFor(session.id), JSON.stringify(payload));
+  if (session._wipe) delete session._wipe;
+  return session;
+}
+
+export function renameSession(id, title) {
+  const s = loadSession(id);
+  if (!s) return null;
+  const next = cleanTitle(title);
+  if (!next) return null;
+  s.title = next;
+  saveSession(s);
+  return s;
+}
+
+function previewOf(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user' && !m.context) {
+      const raw = m.content;
+      const body = Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join(' ') : raw;
+      let text = String(body ?? '').replace(/\s+/g, ' ').trim();
+      // 只有图没文字：拿附件名顶一下
+      if (!text && Array.isArray(m._images) && m._images.length) text = '[图片] ' + m._images.map((p) => String(p).split(/[\\/]/).pop()).join(' ');
+      return text.slice(0, 60);
+    }
+  }
+  return '';
+}
+
+/** Newest first, for the 会话 picker. */
+export function listSessions() {
+  ensureDir();
+  const out = [];
+  let names = [];
+  try {
+    names = readdirSync(DIR);
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    if (name.startsWith('_') || name.startsWith('.')) continue;
+    const id = name.slice(0, -5);
+    if (!isSessionId(id)) continue;
+    const s = loadSession(id);
+    if (!s) continue;
+    out.push({
+      id: s.id,
+      title: s.title,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      count: s.messages.filter((m) => m && m.role === 'user' && !m.context).length,
+      preview: previewOf(s.messages),
+      // 会话列表里带一句当前档位，界面想显示「这会话被叫停过」就有数据可用
+      mode: s.mode?.word || null,
+    });
+  }
+  out.sort((a, b) => b.updatedAt - a.updatedAt);
+  return out;
+}
+
+/** Soft delete: the file moves to .state/sessions/.trash instead of vanishing. */
+export function deleteSession(id) {
+  if (!isSessionId(id)) return false;
+  const file = fileFor(id);
+  if (!existsSync(file)) return false;
+  ensureDir(TRASH);
+  renameSync(file, join(TRASH, `${id}-${Date.now()}.json`));
+  const last = getLastSessionId();
+  if (last === id) {
+    const rest = listSessions();
+    setLastSessionId(rest.length ? rest[0].id : null);
+  }
+  return true;
+}
+
+export function getLastSessionId() {
+  try {
+    const j = JSON.parse(readFileSync(LAST, 'utf8'));
+    return isSessionId(j?.id) ? j.id : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setLastSessionId(id) {
+  ensureDir();
+  writeFileAtomic(LAST, JSON.stringify({ id: isSessionId(id) ? id : null, at: Date.now() }));
+}
+
+// ---- 导入 / 导出 -----------------------------------------------------------
+/**
+ * 导出格式（一个会话一个文件，纯 JSON，人类可读）：
+ * {
+ *   "kind": "xiaoyu-agent.session",
+ *   "version": 1,
+ *   "exportedAt": 1690000000000,
+ *   "session": { id, title, createdAt, updatedAt, messages: [...], rewinds: [...] }
+ * }
+ * 消息里的附件只存路径（_images / _files），不内联二进制 —— 换台机器上那些路径可能不存在，
+ * 这一点在 README 里写清楚了。要连附件一起搬，就把整个 .state 目录拷过去。
+ */
+export const EXPORT_KIND = 'xiaoyu-agent.session';
+export const EXPORT_VERSION = 1;
+
+/** 把一个会话包成可导出的对象；会话不存在返回 null。 */export function exportSession(id) {
+  const s = loadSession(id);
+  if (!s) return null;
+  return {
+    kind: EXPORT_KIND,
+    version: EXPORT_VERSION,
+    exportedAt: Date.now(),
+    session: {
+      id: s.id,
+      title: s.title,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      messages: s.messages,
+      rewinds: s.rewinds,
+    },
+  };
+}
+
+/** 全部会话一起导出（备份用），不含 .trash。 */
+export function exportAllSessions() {
+  const ids = listSessions().map((s) => s.id);
+  return {
+    kind: EXPORT_KIND + '.bundle',
+    version: EXPORT_VERSION,
+    exportedAt: Date.now(),
+    sessions: ids.map((id) => exportSession(id)).filter(Boolean).map((x) => x.session),
+  };
+}
+
+/**
+ * 把一条消息洗成我们认的样子。认不出来的直接丢掉，不让脏数据进库。
+ * 只保留用得到的字段：role / content / _images / _files / toolCallId / isError / context 等。
+ */
+function cleanMessage(m) {
+  if (!m || typeof m !== 'object') return null;
+  const role = String(m.role ?? '').trim();
+  if (!['system', 'user', 'assistant', 'tool'].includes(role)) return null;
+  const out = { role };
+  if (typeof m.content === 'string') out.content = m.content;
+  else if (Array.isArray(m.content)) out.content = m.content;
+  else out.content = '';
+  for (const k of ['_images', '_files']) {
+    if (Array.isArray(m[k])) out[k] = m[k].filter((x) => typeof x === 'string');
+  }
+  if (typeof m.toolCallId === 'string') out.toolCallId = m.toolCallId;
+  if (typeof m.toolName === 'string') out.toolName = m.toolName;
+  if (m.isError) out.isError = true;
+  if (m.context) out.context = true;
+  return out;
+}
+
+/**
+ * 从导入的数据里抠出会话列表。同时认三种形状：
+ *   1. 单会话导出：{ kind, session: {...} }
+ *   2. 整包导出：  { kind, sessions: [...] }
+ *   3. 裸会话对象：{ messages: [...] } —— 手写的、或从别处拷来的也能进
+ *   4. 裸数组：    [ {...}, {...} ]
+ * @returns {Array<object>} 干净的会话草稿（还没分配 id）
+ */
+export function parseImport(raw) {
+  const list = [];
+  const push = (s) => {
+    if (!s || typeof s !== 'object') return;
+    const messages = Array.isArray(s.messages) ? s.messages.map(cleanMessage).filter(Boolean) : [];
+    if (!messages.length) return;
+    list.push({
+      title: cleanTitle(s.title) || titleFromMessage(textOf(messages)),
+      createdAt: Number(s.createdAt) || Date.now(),
+      updatedAt: Number(s.updatedAt) || Date.now(),
+      messages,
+      rewinds: Array.isArray(s.rewinds) ? s.rewinds : [],
+    });
+  };
+
+  if (Array.isArray(raw)) {
+    for (const x of raw) push(x && x.session ? x.session : x);
+  } else if (raw && typeof raw === 'object') {
+    if (Array.isArray(raw.sessions)) for (const x of raw.sessions) push(x);
+    else if (raw.session) push(raw.session);
+    else push(raw);
+  }
+  return list;
+}
+
+function textOf(messages) {
+  for (const m of messages) {
+    if (m.role !== 'user' || m.context) continue;
+    const raw = m.content;
+    const body = Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join(' ') : raw;
+    const t = String(body ?? '').trim();
+    if (t) return t;
+  }
+  return '';
+}
+
+/**
+ * 把导入的草稿真正写进 .state/sessions，每条都拿一个新 id（不会覆盖现有会话）。
+ * @returns {Array<{id:string,title:string,count:number}>}
+ */
+export function importSessions(drafts) {
+  ensureDir();
+  const made = [];
+  for (const d of drafts) {
+    const session = {
+      id: newSessionId(),
+      title: d.title,
+      createdAt: d.createdAt,
+      updatedAt: d.updatedAt,
+      messages: d.messages,
+      rewinds: d.rewinds,
+    };
+    // 极端情况下生成的 id 撞了，就再摇一次
+    let guard = 0;
+    while (existsSync(fileFor(session.id)) && guard++ < 8) session.id = newSessionId();
+    const saved = saveSession(session);
+    if (!saved) continue;
+    made.push({
+      id: saved.id,
+      title: saved.title,
+      count: saved.messages.filter((m) => m && m.role === 'user' && !m.context).length,
+    });
+  }
+  return made;
+}

@@ -1,0 +1,101 @@
+{
+  "name": "xiaoyu-mini-agent",
+  "version": "0.9.28",
+  "private": true,
+  "description": "小鱼Agent —— 一个自用的极简 Agent 平台：Electron 桌面版 + OpenAI 兼容 API + 工具循环",
+  "main": "electron/main.cjs",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "desktop": "start.bat",
+    "server": "node src/server.mjs",
+    "cli": "node src/cli.mjs",
+    "selfcheck": "node src/selfcheck-cli.mjs",
+    "shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File make-shortcut.ps1",
+    "publish": "node scripts/preflight.mjs && node scripts/publish.mjs",
+    "publish:dry": "node scripts/publish.mjs --dry",
+    "scan": "node scripts/publish.mjs --deep-scan",
+    "autopublish": "node scripts/auto-publish.mjs",
+    "pack:exe": "electron-builder --win",
+    "pack:dir": "electron-builder --win --dir",
+    "sync": "node scripts/preflight.mjs && node scripts/sync-live.mjs",
+    "sync:check": "node scripts/sync-live.mjs --check",
+    "check:ui": "node scripts/check-ui.mjs --all",
+    "preflight": "node scripts/preflight.mjs"
+  },
+  "devDependencies": {
+    "electron": "33.4.11",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.xiaoyu.mini-agent",
+    "productName": "小鱼Agent",
+    "copyright": "小鱼Agent",
+    "directories": {
+      "output": "dist/installer",
+      "buildResources": "assets"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "public/**/*",
+      "persona/**/*",
+      "assets/**/*",
+      "scripts/voice/**/*",
+      "scripts/fetch-txt.mjs",
+      "package.json",
+      "!**/*.bak",
+      "!**/*.bak-*",
+      "!**/*.map",
+      "!**/node_modules/**/*.{md,ts,map}",
+      "!.env",
+      "!.state/**/*",
+      "!sandbox/**/*",
+      "!dist/**/*",
+      "!dump/**/*",
+      "talk.py",
+      "voice4.py",
+      "voice6.py"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/xiaoyu.ico",
+      "artifactName": "小鱼Agent-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "小鱼Agent",
+      "installerIcon": "assets/xiaoyu.ico",
+      "uninstallerIcon": "assets/xiaoyu.ico",
+      "installerHeaderIcon": "assets/xiaoyu.ico",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "小鱼Agent-免安装版-${version}.${ext}"
+    }
+  },
+  "dependencies": {
+    "opencc-js": "^1.4.2"
+  }
+}

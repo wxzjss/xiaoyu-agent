@@ -17,11 +17,12 @@ import { qqSendTool } from './tools-qq-send.mjs';
 import { browserTools } from './tools-browser.mjs';
 import { videoTools } from './tools-video.mjs';
 import { screenTools } from './tools-screen.mjs';
+import { uiToolDefs } from './tools-ui.mjs';
 import { adminOn } from './admin-mode.mjs';
 import { isImagePath, readImageDataUrl } from './attach.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
-import { taskOn, listWorkers, noteWorker, finishWorker } from './task-mode.mjs';
+import { listWorkers, noteWorker, finishWorker } from './task-mode.mjs';
 
 const LIMIT = 20000;
 
@@ -1058,6 +1059,7 @@ export const tools = [
   ...browserTools,
   ...videoTools,
   ...screenTools,
+  ...uiToolDefs,
   /**
    * 往我自己的记忆本里记一条。
    *
@@ -1502,7 +1504,7 @@ export const tools = [
   },
   {
     name: 'spawn_worker',
-    description: '办事模式里派活用的：开一个临时 worker（子智能体），把一件具体的活交给它跑，它跑完把汇报原文带回来给你检查。它有自己的上下文，不占你的。'
+    description: '派活用的（专业模式里选了「谁动手＝派活」才拿得到）：开一个临时 worker（子智能体），把一件具体的活交给它跑，它跑完把汇报原文带回来给你检查。它有自己的上下文，不占你的。'
       + '\n\n【每次派活都要说清四样】要它做什么、什么算做成了、在哪儿干、不许碰什么。说不清就别派 —— 说不清说明你自己还没想明白。'
       + '\n\n【它回来的是汇报，不是结论】拿只读工具核一遍再决定收不收：它说改好了就去读那个文件，它说跑通了就去看日志。别凭一句话采信。'
       + '\n\n【没干对就退回给同一个 worker】别新开一个重做 —— 新脑子不知道之前踩过的坑。只有「这是另一件事」才新开。'
@@ -1521,8 +1523,11 @@ export const tools = [
     },
     async run({ task, name, accept, scope, forbid, maxRounds }) {
       const sid = ctxNow().sessionId || 'default';
-      if (!taskOn(sid)) {
-        return '【办事模式没开】这个会话现在不在办事模式里。要么让主人把顶栏那个按钮打开，要么你自己动手 —— 别装作派过活。';
+      const pure = await import('./pure.mjs');
+      if (!pure.pureModeOn(sid) || pure.doerOf(sid) !== 'workers') {
+        return '【现在不是派活档】这个会话没开专业模式，或者专业模式里选的是「自己动手」。'
+          + '要派活得先让主人在顶栏开专业模式、再把「谁动手」改成派活；'
+          + '在那之前你自己动手就行 —— 别装作派过活。';
       }
       const body = String(task || '').trim();
       if (!body) return '没说要干什么（task 是空的）。';
@@ -1587,7 +1592,7 @@ export const tools = [
   },
   {
     name: 'list_workers',
-    description: '看这个会话里有哪些 worker、各自什么状态、上次汇报了什么。办事模式下退回活儿要认准同一个 worker。',
+    description: '看这个会话里有哪些 worker、各自什么状态、上次汇报了什么。派活档里退回活儿要认准同一个 worker。',
     parameters: { type: 'object', properties: {} },
     async run() {
       const sid = ctxNow().sessionId || 'default';

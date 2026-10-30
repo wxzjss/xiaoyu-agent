@@ -15,9 +15,10 @@ import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
 import { fishOn } from './fish-presence.mjs';
 // 会话绑的智能体卡：绑了自定义卡，基线人设就换成那张卡的正文（见 agents.mjs）。
-import { agentForSession, getAgent, groupAgentIds } from './agents.mjs';
+import { agentForSession, getAgent, groupAgentIds, mainAgentId } from './agents.mjs';
 // 管理员权限：这个会话开了那一档就把「整台机器都能动」写进提示词（见 admin-mode.mjs）。
 import { adminPromptBlock } from './admin-mode.mjs';
+import { taskOn, taskPromptBlock } from './task-mode.mjs';
 /**
  * 【这一轮是谁在说话】—— 2026-10-28
  *
@@ -247,6 +248,34 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   })();
   if (adm) parts.push(adm);
 
+  /**
+   * 【办事模式 · 2026-11-03】
+   *
+   * 老板要的是：开了这一档，这个会话的主智能体不再自己动手 ——
+   * 只拆任务、派活、检查、验收、压上下文，活交给临时 worker。
+   *
+   * 两处必须一起改，少一处就穿帮：
+   *   · 这里加这段规矩（管「她想不想动手」）
+   *   · agent.mjs 的 toolsForTurn 把干活工具收走（管「她能不能动手」）
+   * 只写提示词不收回工具，她总会在某次「顺手改一下」里自己上手。
+   *
+   * 主智能体是谁不写死 —— 按左侧竖列从上往下第一个「开着且没被禁用」的那个人算
+   * （主人 2026-11-03 定的：「主智能体指左侧排序最靠前的已启用且未被禁用的智能体」）。
+   * 只有这一轮说话的正好是这个人，这段才发；否则发了就是在教别人抢活。
+   *
+   * 没开的时候 taskPromptBlock 返回 ""，一个字不花，缓存前缀不动。
+   */
+  if (!safeMode && (() => { try { return taskOn(sessionId); } catch { return false; } })()) {
+    const who = String(agentId || "").trim();
+    let mainId = "";
+    try { mainId = mainAgentId(sessionId) || ""; } catch { mainId = ""; }
+    if (!mainId || !who || who === mainId) {
+      let name = "";
+      try { name = String(getAgent(mainId)?.name || ""); } catch { name = ""; }
+      const tb = taskPromptBlock(sessionId, name);
+      if (tb) parts.push(tb);
+    }
+  }
   /**
    * 【这一轮是从哪儿来的】2026-10-30
    *

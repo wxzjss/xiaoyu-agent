@@ -17,6 +17,8 @@ import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identi
 // 管理员权限：开了就把「整台机器都能动」跟着规则再发一遍（很多网关丢 system）。
 import { adminPromptBlock } from './admin-mode.mjs';
 import { pureModeOn, setPureToolLister } from './pure.mjs';
+// 办事模式：主智能体不自己动手，只派活/检查/验收/压上下文（2026-11-03）。
+import { taskOn, KEEP_TOOLS as TASK_KEEP_TOOLS } from './task-mode.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
 import { lastSelfNote, selfCompressHint } from './self-compress.mjs';
@@ -107,9 +109,28 @@ const PURE_HIDDEN_TOOLS = ['memory_add', 'memory_pin'];
 
 /** 当前这一轮真正能交到模型手上的工具。 */
 function toolsForTurn(sessionId) {
-  const all = enabledToolSchemas();
-  if (!pureModeOn(sessionId)) return all;
-  return all.filter((t) => !PURE_HIDDEN_TOOLS.includes(t?.function?.name));
+  let all = enabledToolSchemas();
+  if (pureModeOn(sessionId)) {
+    all = all.filter((t) => !PURE_HIDDEN_TOOLS.includes(t?.function?.name));
+  }
+  /**
+   * 【办事模式：把干活的手收走】2026-11-03
+   *
+   * 主人要的是「主智能体不负责工作，只负责发布任务、检查、验收、压缩」。
+   *
+   * 【为什么必须在这里收，光写提示词不行】
+   * 提醒词只影响「她想不想用」，收走清单影响「她能不能用」。
+   * 手里还攥着 write_file / run_command 的主智能体，一定会在某一次「我顺手改一下」里
+   * 自己动起手来 —— 那一轮就退化成老样子了，而且主人看不出是哪一步破的。
+   *
+   * 只留 KEEP_TOOLS 那几样：派活、看花名册、清单、记事、翻史书/折叠箱（检查证据用）。
+   * 白名单写法而不是黑名单：以后新增的干活工具自动被挡住，不用回来补一行。
+   */
+  if (taskOn(sessionId)) {
+    const keep = new Set(TASK_KEEP_TOOLS);
+    all = all.filter((t) => keep.has(t?.function?.name));
+  }
+  return all;
 }
 
 /**

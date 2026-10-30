@@ -144,6 +144,8 @@ export function readQq() {
       const p = objOf(v);
       peers[id] = {
         role: p.role === 'owner' ? 'owner' : 'guest',
+        // 说话那个人的 QQ 号 —— 认主、面板上都认它（2026-11-04）
+        qq: /^\d{5,12}$/.test(str(p.qq)) ? str(p.qq) : '',
         sessionId: /^sm[a-z0-9]{6,}$/.test(str(p.sessionId)) ? str(p.sessionId) : '',
         name: str(p.name, 40),
         boundAt: Number(p.boundAt) || 0,
@@ -251,6 +253,7 @@ export function writeQq(data) {
     const p = objOf(v);
     out.peers[id] = {
       role: p.role === 'owner' ? 'owner' : 'guest',
+      qq: /^\d{5,12}$/.test(str(p.qq)) ? str(p.qq) : '',
       sessionId: /^sm[a-z0-9]{6,}$/.test(str(p.sessionId)) ? str(p.sessionId) : '',
       name: str(p.name, 40),
       boundAt: Number(p.boundAt) || 0,
@@ -450,11 +453,15 @@ export function noteQqPeer(openid, patch = {}) {
   if (!id) return null;
   const data = readQq();
   const now = Date.now();
-  const cur = data.peers[id] || { role: 'guest', sessionId: '', name: '', boundAt: now, lastAt: 0, msgCount: 0 };
+  const cur = data.peers[id] || { role: 'guest', qq: '', sessionId: '', name: '', boundAt: now, lastAt: 0, msgCount: 0 };
   const next = { ...cur, lastAt: now, msgCount: (Number(cur.msgCount) || 0) + (patch.counted === false ? 0 : 1) };
   if (patch.name !== undefined) next.name = str(patch.name, 40);
   if (patch.sessionId !== undefined && /^sm[a-z0-9]{6,}$/.test(str(patch.sessionId))) next.sessionId = str(patch.sessionId);
   if (patch.role !== undefined) next.role = patch.role === 'owner' ? 'owner' : 'guest';
+  if (patch.qq !== undefined) {
+    const q = normQqNum(patch.qq);
+    if (q) next.qq = q;
+  }
   if (!data.peers[id] && Object.keys(data.peers).length >= MAX_PEERS) {
     const err = new Error(`已经接了 ${MAX_PEERS} 个人了，先把不用的清掉`);
     err.status = 400;

@@ -3899,6 +3899,7 @@ const server = createServer(async (req, res) => {
         url: payload.url,
         token: payload.token,
         ownerQq: payload.ownerQq,
+        autoStart: payload.autoStart,
       });
       return json(res, 200, { ok: true, conf });
     } catch (e) {
@@ -8560,6 +8561,9 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       handle.port = actual;
       handle.url = url;
       resolve(handle);
+      // 「自己注册的号」那条道如果开了「开机就连」，这里替主人接上。
+      // 不 await：连不上也不该拖住启动（自愈和重拨都在 qq-onebot 里）。
+      bootAutoStartOneBot(quiet);
     });
 
   });
@@ -8567,6 +8571,32 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
 
 // Auto-start when launched directly (node src/server.js).
 const isDirectRun = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('src/server.mjs');
+
+/**
+ * 【开机自动连上「自己注册的号」】2026-11-03
+ *
+ * 主人报过「QQ 一直显示正在连」：协议端挂了、或者程序重开之后那条道就不接了。
+ * 现在 onebot.autoStart 一开，小鱼Agent 自己起来就把这条道接上，
+ * 接不上也会由 qq-onebot 的重拨 + 看门狗自己爬起来。
+ */
+async function bootAutoStartOneBot(quiet) {
+  try {
+    const ob = await import('./qq-onebot.mjs');
+    const conf = ob.oneBotConf();
+    if (!conf.enabled || !conf.autoStart) return;
+    if (!quiet) console.log('qq: 开机自动连接「自己注册的号」');
+    const { startQqOneBot } = await import('./qq-bridge.mjs');
+    const st = await startQqOneBot({
+      ensureSession: ensureQqSession,
+      runChat: runQqTurn,
+      setSpeakerOwner: markQqOwner,
+      onLog: () => {},
+    });
+    if (!quiet) console.log(`  qq       : ${st.phase}（自己注册的号，自动重连已开）`);
+  } catch (e) {
+    console.log(`qq: 开机自动连接失败 —— ${String(e?.message ?? e)}`);
+  }
+}
 
 /**
  * 【把 QQ 这一侧装到服务器身上】2026-11-01

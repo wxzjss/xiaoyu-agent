@@ -2104,6 +2104,9 @@ async function startPeerTurn(sessionId) {
      * 所以先把出手前已有的对象全记进 seen，接回时只收 seen 里没有的。
      */
     const seen = new Set(history);
+    /** 【2026-10-31 修】这一行是从别处复制来的，snap 没定义过（报 snap is not defined）。
+     *  叫她起来这一轮没有「主人手上的那句消息」可以挂回滚点，跟 QQ 那边一样给空快照。 */
+    const snap = {};
     const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
       messages: wire,
       signal: ac.signal,

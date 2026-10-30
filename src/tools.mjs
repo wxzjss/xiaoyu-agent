@@ -83,7 +83,19 @@ export function stashFileNow(entry) {
  * 这笔活儿里所有工具调用就只认自己的 sessionId / snap / signal。
  */
 export function runWithToolContext(ctx, fn) {
-  return CTX_STORE.run(ctx, fn);
+  /**
+   * 【2026-10-31 修：工具拿不到 server 注入的东西】
+   *
+   * 病根：调用方每一处都手写一个 ctx 字面量（sessionId/snap/signal/outbox/pushEvent/stashFile），
+   * 全都漏了 wakePeer —— 而 ctxNow() 优先用 getStore()，于是工具里
+   * ctxNow().wakePeer 永远是 undefined，ask_peer 的 wake 一直失效
+   * （实测：小鲸信箱里 10-29 的三封信压了一整天没人读）。
+   *
+   * 修法不挨个补调用点（5 处、以后还会加）：在这里统一继承全局 CTX，
+   * 调用方给什么覆盖什么，没给的沿用全局注入值。
+   */
+  const merged = (ctx && typeof ctx === 'object') ? { ...CTX, ...ctx } : CTX;
+  return CTX_STORE.run(merged, fn);
 }
 
 const CTX = {

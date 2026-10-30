@@ -83,7 +83,19 @@ export function stashFileNow(entry) {
  * 这笔活儿里所有工具调用就只认自己的 sessionId / snap / signal。
  */
 export function runWithToolContext(ctx, fn) {
-  return CTX_STORE.run(ctx, fn);
+  /**
+   * 【2026-10-31 修：工具拿不到 server 注入的东西】
+   *
+   * 病根：调用方每一处都手写一个 ctx 字面量（sessionId/snap/signal/outbox/pushEvent/stashFile），
+   * 全都漏了 wakePeer —— 而 ctxNow() 优先用 getStore()，于是工具里
+   * ctxNow().wakePeer 永远是 undefined，ask_peer 的 wake 一直失效
+   * （实测：小鲸信箱里 10-29 的三封信压了一整天没人读）。
+   *
+   * 修法不挨个补调用点（5 处、以后还会加）：在这里统一继承全局 CTX，
+   * 调用方给什么覆盖什么，没给的沿用全局注入值。
+   */
+  const merged = (ctx && typeof ctx === 'object') ? { ...CTX, ...ctx } : CTX;
+  return CTX_STORE.run(merged, fn);
 }
 
 const CTX = {
@@ -138,6 +150,31 @@ const CTX = {
  */
 export function setPeerWake(fn) {
   CTX.wakePeer = typeof fn === 'function' ? fn : null;
+}
+
+/**
+ * 注入「查谁正在跑」的实现（2026-11-04 新增）。
+ *
+ * 为什么要有：list_peers 原来只有会话文件里记的历史轮数 s.turns，
+ * 根本不知道「此刻谁在跑」。主人问「有别的会话在跑吗」，我看不出来，
+ * 只能瞎猜 —— 于是重启前该等的没等。
+ *
+ * server.mjs 里的 runningTurns 才是真的「正在跑」的表；它反过来 import
+ * 会成环，所以照 setPeerWake 的老办法注入：
+ *   setRunningProbe(() => [...runningTurns.keys()])
+ */
+export function setRunningProbe(fn) {
+  CTX.runningProbe = typeof fn === 'function' ? fn : null;
+}
+
+/** 拿一份「此刻正在跑的会话 id」；拿不到就回空数组，绝不抛。 */
+export function runningNow() {
+  try {
+    const r = CTX.runningProbe ? CTX.runningProbe() : [];
+    return Array.isArray(r) ? r.map(String) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** 让 server 把「往界面推事件」的通道交给这里。 */
@@ -839,6 +876,8 @@ export const tools = [
       }
       const others = list.filter((s) => s.id !== me).slice(0, n);
       if (!others.length) return '这台机器上只有你这一个会话。';
+      // 谁正在跑（真状态，不是历史轮数）
+      const runningSet = new Set(runningNow());
       const lines = others.map((s) => {
         const cnt = (() => {
           try {
@@ -848,7 +887,8 @@ export const tools = [
           }
         })();
         const when = s.updatedAt ? new Date(s.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-        return '- ' + s.id + '  「' + (s.title || '没名字') + '」  ' + (s.turns || 0) + ' 轮  ' + when + (cnt ? '  （她信箱里有 ' + cnt + ' 封没看的）' : '');
+        const live = runningSet.has(String(s.id)) ? '● 正在跑  ' : '';
+        return '- ' + s.id + '  「' + (s.title || '没名字') + '」  ' + live + (s.turns || 0) + ' 轮  ' + when + (cnt ? '  （她信箱里有 ' + cnt + ' 封没看的）' : '');
       });
       return '还有这些会话（你自己是 ' + me + '）：' + '\n' + lines.join('\n');
     },

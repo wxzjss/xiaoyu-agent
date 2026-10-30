@@ -1055,6 +1055,11 @@
       position: absolute; top: 6px; right: 7px; font-size: 9.5px; color: var(--accent);
       border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; line-height: 14px;
     }
+    /* 官方预设的小角标·2026-11-04：跟「当前」那个角标同款，换成一抹琥珀色，
+       一眼能分出「出厂带的」和「我自己写的」。 */
+    .pCard .pTag.pOfficial {
+      top: auto; bottom: 6px; right: 7px; color: #c8a34a;
+    }
     .pCard .pDel {
       position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; line-height: 16px;
       border: 0; border-radius: 4px; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px;
@@ -4119,6 +4124,27 @@ document.addEventListener("keydown", (e) => {
  * @param {string} text
  * @returns {string}
  */
+/**
+ * 往流式气泡里追加一段文字 —— 【整段重洗】，不逐片洗。
+ *
+ * 【2026-10-31 主人报：一句话还没说完就中途换行】
+ * 原来这里是 bubble.textContent += fixMojibake(ev.text)，
+ * 每个网络分片单独过一遍 stripMarkdownMarks。分片的切点是随机的：
+ *   · 切在 ** 中间 → 拼出「加粗 和 斜体·」这种多出来的字符
+ *   · 切在行首 # 之前 → ^ 认不出行首，井号留在屏幕上
+ *   · 切在 ``` 中间 → 代码块标记漏出来
+ * 所以改成：原文只往 _rawText 里攒，每次都拿「全文」重洗、整体覆盖。
+ * 一段话通常几十片，重洗几十次的代价可以忽略。
+ */
+function pushStreamText(bubble, text) {
+  if (!bubble) return;
+  if (typeof bubble._rawText !== 'string') bubble._rawText = bubble.textContent || '';
+  // 防御：气泡被别处清空过（textContent 变短且跟 _rawText 对不上）时，以画面为准重来
+  else if (bubble._rawText && !(bubble.textContent || '').length) bubble._rawText = '';
+  bubble._rawText += String(text || '');
+  bubble.textContent = fixMojibake(bubble._rawText);
+}
+
 function stripMarkdownMarks(text) {
   if (typeof text !== 'string' || !text) return text;
   let t = text;
@@ -4618,7 +4644,7 @@ function paintLiveEvents(evs, bubble) {
     } else if (ev.type === 'text') {
       closeThink();
       if (!bubble) bubble = addAssistantAuto();
-      bubble.textContent += fixMojibake(ev.text);
+      pushStreamText(bubble, ev.text);
       touchStreaming(bubble);
     } else if (ev.type === 'tool_start') {
       closeThink();
@@ -4872,6 +4898,8 @@ function followLive(id, fromIndex) {
     if (evs.length > seen) {
       let bubble = null;
       let think = null;
+      // 工具块要挂在「这一轮」的记录上，这样 tool_end 回来找得到它
+      const turnRecRef = turnsInFlight.get(id) || {};
       const closeThink = () => { if (think) { think.finish(); think = null; } };
       /**
        * 【2026-10-27 主人报：一句话里连着重复两遍，刷新后只剩一遍；光标还一直闪】
@@ -4926,10 +4954,29 @@ function followLive(id, fromIndex) {
           whaleStreamStart(ev.who, StreamKey(id, ev.who));
         } else if (ev.type === 'whale_delta') {
           whaleStreamDelta(ev.text, StreamKey(id, ev.who));
+        } else if (ev.type === 'tool_start') {
+          // followLive 也认工具事件·2026-10-31：这里原来只认 text，
+          // 切走再切回来之后工具调用直接被吞掉 —— 主人看到的就是「切回来工具块全没了」。
+          closeThink();
+          if (bubble) { try { bubble.classList.remove('streaming'); } catch {} bubble = null; }
+          const el = addTool();
+          el.sum.querySelector('.name').textContent = niceTool(ev.name);
+          el.sum.querySelector('.status').textContent = '运行中…';
+          el.pre.textContent = '参数：' + (ev.args || '');
+          if (!turnRecRef.toolEls) turnRecRef.toolEls = new Map();
+          if (ev.id) turnRecRef.toolEls.set(ev.id, el);
+        } else if (ev.type === 'tool_end') {
+          const el = turnRecRef.toolEls && ev.id ? turnRecRef.toolEls.get(ev.id) : null;
+          if (el) {
+            const st = el.sum.querySelector('.status');
+            st.textContent = ev.ok ? '完成' : '失败';
+            st.className = 'status ' + (ev.ok ? 'ok' : 'err');
+            el.pre.textContent += '\n--- output ---\n' + (ev.output || '');
+          }
         } else if (ev.type === 'text') {
           closeThink();
           if (!bubble) bubble = addAssistantAuto();
-          bubble.textContent += fixMojibake(ev.text);
+          pushStreamText(bubble, ev.text);
           touchStreaming(bubble);
         }
       }
@@ -6444,6 +6491,12 @@ function addAssistant(who, hideRole) {
    *
    * 这里补记一笔，让它至少能被巡检和闹钟兜住。
    */
+  /* 流式原文累积区·2026-10-31
+   * 主人报「一句话还没说完就中途换行」。根因：每个增量都单独过一遍
+   * stripMarkdownMarks，而增量的切点是任意的 —— 切在 ** 中间会拼出「·」，
+   * 切在行首 # 之前会让 ^ 认不出行首。所以以后只往 _rawText 里攒原文，
+   * 每次都拿全文重新洗一遍再整体写回，绝不逐片洗。 */
+  b._rawText = '';
   b.dataset.streamAt = String(Date.now());
   wrap.appendChild(b);
   // 编个号：这是本轮「第几段说的话」，用来防同一段被数两遍
@@ -6522,7 +6575,7 @@ function whaleStreamDelta(text, streamKey) {
   if (!st || !st.bubble) return;
   // 防御：万一这个气泡已经被别的东西移出画面了，就把它从表里摘掉
   if (!st.bubble.isConnected) { _whaleStreams.delete(st.key); if (whaleStreamingEl === st) whaleStreamingEl = null; return; }
-  st.bubble.textContent += fixMojibake(String(text || ''));
+  pushStreamText(st.bubble, String(text || ''));
   touchStreaming(st.bubble);
   noteNewContent();
 }
@@ -7197,7 +7250,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
         } else if (ev.type === 'text') {
           closeThink();
           if (!bubble) bubble = addAssistantAuto();
-          bubble.textContent += fixMojibake(ev.text);
+          pushStreamText(bubble, ev.text);
           touchStreaming(bubble);
           noteNewContent();
         } else if (ev.type === 'whale' || ev.type === 'agent') {
@@ -7562,7 +7615,12 @@ function replayInFlight(id) {
    * 所以在补画之前先量一下「气泡里现在有多少字」，补的时候跳过这么多，只补缺的那一截。 */
   rec._paintBase = 0;
   try {
-    if (rec.bubble && rec.bubble.isConnected) rec._paintBase = (rec.bubble.textContent || "").length;
+    // 2026-10-31：气泡里的 textContent 是「洗过 markdown」的，长度跟原始增量不是一回事。
+    // 拿它当基线去比对 parts 里的原文必然错位，所以有 _rawText 就按它量。
+    if (rec.bubble && rec.bubble.isConnected) {
+      rec._paintBase = (typeof rec.bubble._rawText === "string")
+        ? rec.bubble._rawText.length : (rec.bubble.textContent || "").length;
+    }
   } catch {}
 
   for (let i = rec.drawnParts; i < rec.parts.length; i++) {
@@ -7584,7 +7642,7 @@ function replayInFlight(id) {
           if (_t.length <= rec._paintBase) { rec._paintBase -= _t.length; _add = ""; }
           else { _add = _t.slice(rec._paintBase); rec._paintBase = 0; }
         }
-        if (_add) rec.bubble.textContent += _add;
+        if (_add) pushStreamText(rec.bubble, _add);
       }
       touchStreaming(rec.bubble);
     } else if (kind === 'whale' || kind === 'agent') {
@@ -8141,6 +8199,16 @@ function renderPersonaList(info) {
     mt.className = 'pMeta';
     mt.textContent = p.id === info.current ? '正在用' : (p.builtin ? '内置' : `${p.chars} 字`);
     card.append(nm, mt);
+
+    // 官方预设（出厂带的成品人设）：挂个小角标，跟主人自己写的那几套区分开。
+    // 它能删能改 —— 删了不会再自己长回来（服务端有一本账），所以不当成「内置」。
+    if (p.preset === true) {
+      const off = document.createElement('span');
+      off.className = 'pTag pOfficial';
+      off.textContent = '官方';
+      off.title = '出厂自带的成品人设，可以直接用，也可以改成你自己的';
+      card.appendChild(off);
+    }
 
     if (p.id === info.current) {
       const tag = document.createElement('span');
@@ -13939,7 +14007,13 @@ function renderTurns(turns) {
     // 切回去那边只剩半截、或者整片空白，非要刷新页面才回来。
     // 重画只影响当前这一屏，所以只清当前这一步正在跑的记录。
     const _curRec = turnsInFlight.get(sessionId);
-    if (_curRec) { _curRec.bubble = null; _curRec.drawnParts = 0; _curRec.userDrawn = false; }
+    if (_curRec) {
+      _curRec.bubble = null; _curRec.drawnParts = 0; _curRec.userDrawn = false;
+      // 2026-10-31：重画会把聊天区整个换掉，旧 DOM 全成了孤儿。
+      // toolEls 里攥的那些元素已经不在页面上了，tool_end 再去更新就是改空气 ——
+      // 主人看到的正是「切会话再回来，工具调用全不见」。清掉，让补画重新认新节点。
+      _curRec.toolEls = null;
+    }
   } catch {}
 
   usageEl.textContent = '';

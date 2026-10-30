@@ -234,6 +234,9 @@ function brief(id, meta) {
     id,
     name: meta.name || (id === DEFAULT_ID ? DEFAULT_NAME : id),
     builtin: Boolean(meta.builtin) || id === DEFAULT_ID,
+    // 官方预设铺进来的那几套（2026-11-04）。界面靠它区分「我自己的」和「出厂带的」，
+    // 也别让它们被当成内置那套（内置不许删，预设可以删）。
+    preset: meta.preset === true,
     updatedAt: Number(meta.updatedAt) || 0,
     chars: t.length,
     preview: t.replace(/\s+/g, ' ').slice(0, 60),
@@ -242,6 +245,7 @@ function brief(id, meta) {
 
 /** 设置面板要的全部信息 */
 export function personaInfo() {
+  try { ensurePresets(); } catch {}
   const idx = ensureIndex();
   const list = idx.list.map((p) => brief(p.id, p));
   const current = list.some((p) => p.id === idx.current) ? idx.current : DEFAULT_ID;
@@ -522,6 +526,93 @@ export function builtinPersonaText() {
   const t = readDefaults().persona;
   if (typeof t === 'string' && t.trim()) return t.trim();
   return readBasePersona();
+}
+
+/**
+ * 官方内置的「可选人设」清单 —— 2026-11-04 主人要的。
+ *
+ * 【和一键新建的区别】
+ * 「新建人设」是把当前这套复制一份，主人得自己往里填内容。
+ * 这里不一样：这些是出厂自带的成品，点了就是一个能直接用的新套。
+ *
+ * 【为什么不直接 list.push 完事】
+ * 主人可能压根不想要那几个官方选项。要是每次读索引都硬塞进去，
+ * 删了下次启动又冒出来 —— 那不叫可选，叫删不掉。
+ * 所以用一本账记下「哪些官方预设已经铺过了」：铺过的不再自动铺，主人删了就是删了。
+ */
+export const PERSONA_PRESETS = [
+  {
+    id: 'xiaoyu-qq',
+    name: '小鱼 / 鲸鱼娘（QQ 版）',
+    file: 'xiaoyu-qq.md',
+    desc: '住在 QQ 里的小鱼：短句、分条、有脾气，先像真人再谈人设。',
+  },
+];
+
+/** 一本账：哪些官方预设已经铺进这个人设库了 */
+function presetLedgerFile() {
+  return _scope ? join(STATE_DIR, 'personas', _scope + '-presets.json') : join(STATE_DIR, 'persona-presets-made.json');
+}
+
+function readPresetLedger() {
+  try {
+    const j = JSON.parse(readFileSync(presetLedgerFile(), 'utf8'));
+    return Array.isArray(j?.made) ? j.made.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePresetLedger(list) {
+  try {
+    ensureDirs();
+    writeFileSync(presetLedgerFile(), JSON.stringify({ made: list }, null, 2), 'utf8');
+  } catch {
+    /* 记不上就算了，最多下次多铺一遍 */
+  }
+}
+
+function readPresetText(preset) {
+  const p = join(config.root, 'persona', preset.file);
+  const t = readFileSafe(p);
+  return t === null ? '' : t.trim();
+}
+
+let _presetsDone = false;
+
+/**
+ * 把还没铺过的官方预设补进人设库。
+ *
+ * 只补账上没记过的；补完记一笔。幂等：调一百次也只会有一次影响。
+ * 注意：内部会调 ensureIndex，所以**不能**在 ensureIndex 里反过来调它（会递归）。
+ * 入口在 server.mjs 启动时和读人设列表时各调一次。
+ * @returns {number} 这次补了几套
+ */
+export function ensurePresets() {
+  if (_presetsDone) return 0;
+  _presetsDone = true;
+  let idx;
+  try { idx = ensureIndex(); } catch { return 0; }
+  const made = readPresetLedger();
+  let added = 0;
+  for (const preset of PERSONA_PRESETS) {
+    if (made.includes(preset.id)) continue;
+    made.push(preset.id);
+    if (idx.list.some((p) => p.id === preset.id)) continue;
+    const text = readPresetText(preset);
+    if (!text) continue;                       // 文件不在（装了一半）就跳过，别铺空人设
+    try {
+      ensureDirs();
+      writeFileSync(fileFor(preset.id), text + '\n', 'utf8');
+      idx.list.push({ id: preset.id, name: preset.name, builtin: false, preset: true, updatedAt: Date.now() });
+      added += 1;
+    } catch {
+      /* 单个失败不影响别的 */
+    }
+  }
+  if (added) { try { writeIndex(idx); } catch {} }
+  writePresetLedger(made);
+  return added;
 }
 
 /** 当前生效的那套人设正文（给系统提示用） */

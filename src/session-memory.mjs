@@ -269,6 +269,85 @@ export function appendDigest(id, summary) {
   return { text: out, index: nextNo, folded };
 }
 
+/**
+ * 把一段摘要写进固定记忆的某个小节。—— 2026-11
+ *
+ * 为什么要有这个：实测 154 个本子里 153 个的固定记忆区是空骨架。
+ * SKELETON 建了四个小节（任务目标 / 用户约束偏好 / 当前状态 / 待办），
+ * 但全文件没有一个函数往里写 —— 从建出来那天起就永远是空的。
+ *
+ * 不用模型：谁送什么就写什么（server 会把滚动摘要收敛成一句送进来）。
+ * 没有小节就补一个；同一小节里已经有一样的行就不重复写。
+ *
+ * @param {string} id 会话 id
+ * @param {string} section 小节名（不带 ###），如「当前状态」
+ * @param {string} text 要记的一句话
+ * @returns {{text: string, added: boolean, section: string}}
+ */
+/** 「当前状态」最多留几条。每条一句话，8 条已经能看出这个会话在干什么了。 */
+const STATE_KEEP = 8;
+
+export function appendFixed(id, section, text) {
+  const name = String(section ?? "").replace(/^#+\s*/, "").trim();
+  const one = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
+  if (!isId(id)) {
+    const e = new Error("会话 id 不合法：" + id);
+    e.status = 400;
+    throw e;
+  }
+  if (!name) {
+    const e = new Error("小节名不能是空的");
+    e.status = 400;
+    throw e;
+  }
+  const cur = ensureMemory(id);
+  if (!one) return { text: cur, added: false, section: name };
+
+  const lines = cur.split(/\r?\n/);
+  const head = "### " + name;
+  const at = lines.findIndex((l) => l.trim() === head);
+  const line = "- " + one;
+
+  if (at < 0) {
+    /** 没有这个小节：补在「## 滚动摘要」之前（即固定记忆区末尾），不然会跑到滚动区里去 */
+    const dig = lines.findIndex((l) => l.trim() === DIGEST_HEAD);
+    const put = dig >= 0 ? dig : lines.length;
+    const block = ["", head, line, ""];
+    lines.splice(put, 0, ...block);
+  } else {
+    /** 找这个小节的正文区间：从标题下一行到下一个标题前 */
+    let end = lines.length;
+    for (let i = at + 1; i < lines.length; i++) {
+      if (/^#{2,3}\s/.test(lines[i])) { end = i; break; }
+    }
+    const body = lines.slice(at + 1, end);
+    if (body.some((l) => l.trim() === line)) {
+      /** 同一句已经在里面了，不重复写 */
+      return { text: cur, added: false, section: name };
+    }
+    /** 底部那些占位提示行（如「（这个会话要做什么）」）在第一次真写东西时清掉 */
+    let tailAt = body.length;
+    while (tailAt > 0 && (/^\s*$/.test(body[tailAt - 1]) || /^（.*）\s*$/.test(body[tailAt - 1]))) tailAt--;
+    const kept = body.slice(0, tailAt);
+    /** 末尾补一个空行，保持「标题 → 正文 → 空行 → 下个标题」的排版 */
+    const keepTailBlank = end < lines.length;
+    /**
+     * 「当前状态」是滚动的：只保留最新的 STATE_KEEP 条。
+     * 没有这道限制它会越堆越长，写到 40 条的时候
+     * 就变成了一份没人看的日志 —— 而它占的是每一轮都要发的提示词。
+     * 其它小节不限（那几个本来就该少而精，且多半是她自己写的）。
+     */
+    const KEEP = name === "当前状态" ? STATE_KEEP : Infinity;
+    const merged = [...kept, line];
+    const trimmed = Number.isFinite(KEEP) && merged.length > KEEP ? merged.slice(merged.length - KEEP) : merged;
+    lines.splice(at + 1, end - (at + 1), ...trimmed, ...(keepTailBlank ? [""] : []));
+  }
+
+  const out = lines.join("\n").replace(/\s*$/, "") + "\n";
+  writeMemory(id, out, { force: true });
+  return { text: out, added: true, section: name };
+}
+
 /** 清掉固定记忆区的内容（留骨架），滚动摘要一起清。删之前先备份。 */
 export function wipeMemory(id) {
   const cur = readMemory(id);

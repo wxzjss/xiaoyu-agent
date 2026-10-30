@@ -24,7 +24,7 @@ import { localVersion } from './updater.mjs';
 // 前情：一进来就记得的那段对话。只贴给模型看，不进会话记录，界面也不会画出来。
 import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
 // 会话记忆文件：一个会话一份自己的本子，每轮拼进系统提示（见 persona.mjs 的 memoryBlock）。
-import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, wipeMemory, snapMemory, SKELETON } from './session-memory.mjs';
+import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, appendFixed, wipeMemory, snapMemory, SKELETON } from './session-memory.mjs';
 // 记忆本整本界面：小鲸那本是跨会话的，也要给主人看（见 /api/memory/book）
 import { readWhaleMemory, memoryPath as whaleMemoryPath } from './whale-memory.mjs';
 import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit } from './edit.mjs';
@@ -7440,6 +7440,24 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             line += "；这一轮用了 " + did.slice(0, 6).join("、") + (did.length > 6 ? " 等" : "");
           }
           appendDigest(sessionId, line);
+          /**
+           * 【同时把这一轮收进「当前状态」】—— 2026-11
+           *
+           * 实测 154 个本子 153 个固定记忆区空着。空着不只是难看：
+           * persona 每轮都把这一块发给她，四个标题横在那里一个字没有，
+           * 她读到的就是「我有个本子但里面什么都没记」。
+           *
+           * 为什么只写「当前状态」不写别的：四个小节里只有它是「滚动的」
+           * —— 任务目标、约束偏好、待办都得靠判断才能写对，程序瞎填只会填错。
+           * 它们留给她自己用 write_file 写（提示词里现在给的是真路径）。
+           *
+           * 只保留最新的几条：「当前状态」越堆越长就不叫当前了。而且同一句不重复写。
+           */
+          try {
+            const label = what.length ? what.slice(0, 3).join("、") : did.slice(0, 4).join("、");
+            const said_ = String(said || "").replace(/\s+/g, " ").trim().slice(0, 60);
+            if (said_) appendFixed(sessionId, "当前状态", said_ + (label ? "（" + label + "）" : ""));
+          } catch {}
         }
       } catch (e) {
           if (!e?.__skip) console.warn('[memory] 这一轮没记进本子：', String(e?.message ?? e));

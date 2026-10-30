@@ -40,7 +40,12 @@ export function mergeSameVoice(wireMessages) {
      * 剩下能挡住的只有 context / assistant 这些硬边界。
      *
      * 那还留名字干什么？—— 只给「真有个别人在场」留口子：
-     * 打了 _thirdParty 的才算另一个人。现阶段没有，所以永远等于同一个人。
+     * 打了 _thirdParty 的才算另一个人。
+     *
+     * 【2026-11-04 改】QQ 那头递进来的话现在也打 _thirdParty（在 qq-server 里打的）——
+     * 打上之后名字有用了：主人、她自己、QQ 上的张三，三副嗓子各自分开，
+     * 不会再把「另一个人说的话」当成主人接着自己的上一句续下去。
+     * 没打 _thirdParty 的老消息照旧合在一起，等于「都算同一个人」。
      */
     const voice = (x) => (x._thirdParty ? String(x._who || '?') : '[me]');
     return voice(a) === voice(b);

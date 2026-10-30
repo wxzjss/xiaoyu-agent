@@ -7073,15 +7073,15 @@ async function runTurn({ resume = false, text = '' } = {}) {
           /* compressTag·2026-10-31 这个开关关着就把整块咽下去：不弹那一行，
            * 但数字照旧更新（noteNewContent 还在最外面）。 */
           if (compressTagOn()) {
-          // 压完上下文小了一截，球的数字得跟着掉下来，别还挂着压之前那个
-          const wrap = addEl('', 'msg user');
-          wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
-          const b = document.createElement('div');
-          b.className = 'bubble';
-          b.textContent = `旧对话折成摘要了：约 ${ev.before} → ${ev.after} tokens，收起 ${ev.removed} 条`
-            + (ev.limit ? `（上限 ${ev.limit}，到 ${ev.trigger} 就压）` : '')
-            + (ev.error ? `（摘要失败：${ev.error}）` : '');
-          wrap.appendChild(b);
+            // 压完上下文小了一截，球的数字得跟着掉下来，别还挂着压之前那个
+            const wrap = addEl('', 'msg user');
+            wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
+            const b = document.createElement('div');
+            b.className = 'bubble';
+            b.textContent = `旧对话折成摘要了：约 ${ev.before} → ${ev.after} tokens，收起 ${ev.removed} 条`
+              + (ev.limit ? `（上限 ${ev.limit}，到 ${ev.trigger} 就压）` : '')
+              + (ev.error ? `（摘要失败：${ev.error}）` : '');
+            wrap.appendChild(b);
           }
           noteNewContent();
         } else if (ev.type === 'aborted') {
@@ -10993,13 +10993,20 @@ function renderFeatList() {
 }
 
 /* compressTag·2026-10-31 功能页里那个「压缩提示」开关：关掉的话，
- * 压缩照常做，只是聊天里不再多出那一行「上下文·已压缩」。 */
+ * 压缩照常做，只是聊天里不再多出那一行「上下文·已压缩」。
+ *
+ * 【2026-11-04 修】这里原来读的是 f.on，而 /api/features 给的是 f.enabled ——
+ * 两边字段名对不上，f.on 永远是 undefined，于是「!== false」永远成立，
+ * 这个开关**从来就没真正关掉过**：关了还是照样弹「旧对话折成摘要了」。
+ * 现在读 enabled，并且把两种写法都认一下，免得以后再有人改字段名。
+ */
 function compressTagOn() {
   try {
     const list = (featState && (featState.features || featState.list)) || [];
     const f = list.find((x) => x && x.id === 'compressTag');
     if (!f) return true;                 // 拿不到就当开着，跟默认一致
-    return f.on !== false;
+    const v = (f.enabled !== undefined) ? f.enabled : f.on;
+    return v !== false;
   } catch { return true; }
 }
 

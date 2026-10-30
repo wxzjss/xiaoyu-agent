@@ -41,6 +41,8 @@ const CHECK = args.includes('--check');
 // 同步之前先过一遍预检：会把白屏的错误挡在「进到安装版」之前。
 // 真需要硬推的时候加 --no-gate（比如只想补一个无关紧要的文件）。
 const SKIP_GATE = args.includes('--no-gate');
+/** 数据目录校验的逃生口：确认那个目录就是目标时用 */
+const FORCE_DIR = args.includes('--force-dir');
 
 if (!CHECK && !DRY && !SKIP_GATE) {
   /**
@@ -73,6 +75,60 @@ function dataDir() {
 const DATA = dataDir();
 const CODE = join(DATA, 'code');
 const PUBLIC = join(DATA, 'public');
+
+function DEFAULT_DATA_HINT() {
+  const appData = process.env.APPDATA || join(process.env.USERPROFILE || '.', 'AppData', 'Roaming');
+  return join(appData, '小鱼Agent', 'data');
+}
+
+/**
+ * 数据目录是不是真的「小鱼Agent 的数据目录」。
+ *
+ * 为什么加这道：2026-10-30 我在同一个 shell 里跑过测试探针，那探针设了
+ *   MINI_AGENT_DATA=C:\Users\35453\AppData\Local\Temp\obprobe1
+ * 环境变量留在了 shell 里。之后跑 sync-live，它老老实实照着环境变量算，
+ * 把 102 个文件往那个临时目录里同步 —— 真正的安装版一个字节没动，
+ * 而屏幕上刷满「差异 102 个」，看起来像正常同步。
+ *
+ * 试过但不够的两条判据（探针目录是从真目录拷出来的，全都过）：
+ *   ✘ 「有 .state 或 code 或 public」 —— 三样都有
+ *   ✘ 「.state 下有 ≥2 个真标记」 —— features.json / memory / personas 全有
+ *
+ * 最终判据：**默认位置存在时，只认默认位置。**
+ * 想同步到别处，必须显式加 --force-dir，让人有意识地做这个决定。
+ */
+function looksLikeDataDir(d) {
+  const appData = process.env.APPDATA || join(process.env.USERPROFILE || '.', 'AppData', 'Roaming');
+  const DEFAULT = join(appData, '小鱼Agent', 'data');
+  const norm = (p) => String(p).replace(/[\\/]+/g, '\\').replace(/\\$/, '').toLowerCase();
+  const isDefault = norm(d) === norm(DEFAULT);
+  const hasDefault = existsSync(DEFAULT);
+
+  // 已经有真安装版放在默认位置了 —— 那就不许同步到别的目录去
+  if (hasDefault && !isDefault) return false;
+
+  // 就是默认位置（或者这台机器还没装过）：再确认它结构上像个数据目录
+  const hasState = (() => {
+    try { return statSync(join(d, '.state')).isDirectory(); } catch { return false; }
+  })();
+  const hasCode = (() => {
+    try { return statSync(join(d, 'code', 'src')).isDirectory(); } catch { return false; }
+  })();
+  return hasState || hasCode;
+}
+
+if (!CHECK && !DRY && !FORCE_DIR && !looksLikeDataDir(DATA)) {
+  console.error('');
+  console.error('✘ 数据目录不是小鱼Agent 的安装位置：' + DATA);
+  console.error('  已经有安装版装在 ' + DEFAULT_DATA_HINT() + '，不该同步到别处。');
+  if (process.env.MINI_AGENT_DATA) {
+    console.error('  这次是从环境变量 MINI_AGENT_DATA 拿到的。');
+    console.error('  多半是之前跑测试探针留下的（比如 %TEMP%\\obprobe1）。');
+    console.error('  清掉再跑：PowerShell → Remove-Item Env:\\MINI_AGENT_DATA');
+  }
+  console.error('  确认这个目录是对的、就是要往这儿同步，加 --force-dir。');
+  process.exit(1);
+}
 
 /** 这些后缀是二进制，按原始字节比；其余按「行尾归一化后的文本」比 */
 const BINARY_EXT = new Set(['.ico', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mp3', '.m4a', '.wav', '.zip', '.woff', '.woff2', '.ttf', '.otf', '.exe', '.dll', '.node']);

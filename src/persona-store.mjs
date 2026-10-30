@@ -89,7 +89,7 @@ const DEFAULTS_FILE = join(STATE_DIR, 'defaults.json');
  */
 function defaultsFile() {
   const s = personaScope();
-  return s ? join(personasRoot(s), 'defaults.json') : DEFAULTS_FILE;
+  return s ? join(pDir(), 'defaults.json') : DEFAULTS_FILE;
 }
 
 /** 读主人自定义的默认值；没有 / 坏了都当空对象 */
@@ -501,7 +501,7 @@ export function setPersonaAsBuiltinDefault(id) {
   let backup = null;
   if (before) {
     ensureDirs();
-    backup = join(personaScope() ? personasRoot(personaScope()) : STATE_DIR, 'persona.default.backup.md');
+    backup = join(personaScope() ? pDir() : STATE_DIR, 'persona.default.backup.md');
     try {
       writeFileSync(backup, before, 'utf8');
     } catch {

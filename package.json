@@ -21,7 +21,9 @@
     "sync": "node scripts/preflight.mjs && node scripts/sync-live.mjs",
     "sync:check": "node scripts/sync-live.mjs --check",
     "check:ui": "node scripts/check-ui.mjs --all",
-    "preflight": "node scripts/preflight.mjs"
+    "preflight": "node scripts/preflight.mjs",
+    "check:id": "node scripts/check-identifiers.mjs",
+    "check:live": "node scripts/sync-live.mjs --check"
   },
   "devDependencies": {
     "electron": "33.4.11",

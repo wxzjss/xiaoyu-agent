@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chat } from './llm.mjs';
 import { config } from './config.mjs';
+import { acceptSelfNote, selfCompressHint } from './self-compress.mjs';
 import { effectiveContextLimit } from './settings.mjs';
 // 【2026-10-28 改】专业/快速模式不再有单独的压缩规则：到水位才压、压就写摘要、
 // 尾巴按 limit 的比例留 —— 跟人设模式一模一样（主人原话「改为正常的压缩规则」）。
@@ -583,6 +584,16 @@ export async function compressHistory({
   keepTokens,
   signal,
   model = '',
+  /**
+   * 这一轮「我亲手写的压缩记忆」。
+   * 主人原话：「我要求压缩是当前会话的 ai 自己手动压缩（决定哪些该删、
+   * 哪些留一句话就够），而不是外包给模型。」带了它就一定用它，不问模型。
+   */
+  selfNote = '',
+  /** 我这一轮的清单原文（写提示段时贴给我看，别让我凭空回忆进度）。 */
+  selfPlan = '',
+  /** 只算「该不该压、能折多少」，不真动手 —— 用来先问我，等我写完再折。 */
+  dryPlan = false,
 } = {}) {
   if (signal?.aborted) return { compressed: false, before: estimateTokens(messages), after: estimateTokens(messages), reason: 'aborted' };
 
@@ -942,6 +953,42 @@ export async function compressHistory({
    *
    * 环境变量 COMPRESS_HER_SUMMARY=0 可以退回老的四标签死提示词。
    */
+
+  /**
+   * 【我亲手写的就先压 —— 2026-10-30】
+   *
+   * 主人原话：「我要求压缩是当前会话的 ai 自己手动压缩（决定哪些该删、
+   * 哪些留一句话就够），而不是外包给模型。」
+   *
+   * 所以顺序倒过来了：
+   *   ① 带了 selfNote（这一轮我亲手写的那段）→ 直接用它，模型一个字都不问；
+   *   ② 没带 + dryPlan（先探一探）→ 只把该折多少、存到哪个编号报回去，我不动手；
+   *   ③ 没带 + 没 dryPlan → 才问模型兜底（它只是代班，不是主角）。
+   */
+  const myNote = String(selfNote ?? '').trim();
+  const __selfNoteApplied = myNote.length > 0;
+
+  if (dryPlan) {
+    const t = estimateTokens(messages);
+    const startDry = headLength(messages);
+    const keepDry = resolveKeepTokens({ keepTokens, limit: cap, model });
+    const cutDry = findCut(messages, startDry, keepDry);
+    const foldCount = Math.max(0, cutDry - startDry);
+    return {
+      compressed: false,
+      before: t,
+      after: t,
+      limit: cap,
+      trigger,
+      dryRun: true,
+      needSelfCompress: foldCount > 0 && t >= Math.max(1, trigger),
+      foldCount,
+      kept: messages.length - cutDry,
+      start: startDry,
+      cut: cutDry,
+    };
+  }
+
   const HER_SUMMARY_SYSTEM = [
     '你是一台档案机。你的唯一工作是把一段已经结束的旧对话压成一份事实档案，交给过几天回来接着干活的人看。',
     '记住：你不在那段对话里，也不跟任何人说话。你不是助手，不是顾问，没有人会回答你的问题，你也不许问任何问题。',
@@ -965,6 +1012,12 @@ export async function compressHistory({
   const summarySystem = process.env.COMPRESS_HER_SUMMARY === '0' ? SUMMARY_SYSTEM : HER_SUMMARY_SYSTEM;
 
   let summaryText = '';
+  // 【我亲手压】我的那段直接当摘要用 —— 模型一个字都不问。
+  if (__selfNoteApplied) {
+    summaryText = myNote;
+    if (process.env.COMPRESS_DEBUG) console.log('[compress] 用了我亲手写的压缩记忆，' + myNote.length + ' 字');
+  }
+
   /** 这一轮的摘要是自刨兜底（模型没写出来）。下一轮有正式摘要就换掉它。 */
   let fallbackUsed = false;
   let error;
@@ -1030,7 +1083,8 @@ export async function compressHistory({
    * 等于拿一句占位符换掉几十条原文。
    */
   let lastJunk = '';
-  {
+  /** 我亲手写了就不问模型 —— 整段跳过（主人原话：不许外包给模型）。 */
+  if (!__selfNoteApplied) {
     // 第一次：完整输入
     try {
       summaryText = await runSummary(renderForSummary(old), SUMMARY_TIMEOUT_MS);

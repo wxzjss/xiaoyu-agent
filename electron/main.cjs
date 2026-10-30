@@ -436,7 +436,7 @@ function clearWindowBorderColor(bw) {
   }
 }
 
-async /**
+/**
  * 挑窗口/托盘图标。
  *
  * 【2026-10-30 主人要】小鱼自己画的那只鲸鱼娘，也应该能当图标 —— 设置里能切。

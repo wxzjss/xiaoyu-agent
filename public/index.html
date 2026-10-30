@@ -2806,7 +2806,7 @@
   <dialog id="fishPersonaDlg">
     <form method="dialog">
       <div class="dlgHead">
-        <b>小鱼的人设</b><span class="meta" id="fpWho">这就是她自己 —— 改一次，全部会话都跟着变</span>
+        <b id="fpTitle">小鱼的人设</b><span class="meta" id="fpWho">这就是她自己 —— 改一次，全部会话都跟着变</span>
         <button class="x" value="cancel">关闭</button>
       </div>
       <div class="wpBody">
@@ -3009,8 +3009,10 @@
           <label class="qqCheck"><input type="checkbox" id="obEnabled"><span>走这条道</span></label>
           <span class="qqGrow"></span>
           <span class="qqState" id="obState">没连</span>
+          <button type="button" class="ghost" id="obPrepare">准备协议端</button>
           <button type="button" class="ghost" id="obToggle">连上</button>
         </div>
+        <div class="qqHint" id="obPrepareHint"></div>
         <div class="qqField">
           <label for="obMode">连接方向</label>
           <select id="obMode">
@@ -3026,9 +3028,9 @@
           <label for="obToken">Token</label>
           <input id="obToken" type="password" spellcheck="false" placeholder="协议端设了 token 才填，没有就空着">
         </div>
-        <div class="qqHint" id="obHint">要三步：① 装 NapCatQQ（或 LLOneBot），扫码登录你想用的那个 QQ 号；
-          ② 在它里面开 WebSocket 服务端（默认 ws://127.0.0.1:3001），要 token 就填到上面；
-          ③ 回来点「连上」。连上之后戳一戳、表情包、引用、群精华、群管理才全有 —— 这些官方接口给不了。</div>
+        <div class="qqHint" id="obHint">点「准备协议端」→ 自动装好并拉起，屏幕上会弹一个 QQ 窗口；
+          用手机 QQ 扫那个码登录，WebSocket 会自动开在 ws://127.0.0.1:3001，
+          再点「连上」就全通了。连上之后戳一戳、表情包、引用、群管理才全有 —— 这些官方接口给不了。</div>
       </div>
 
       <!-- 第三格：挂到哪个会话 -->
@@ -7806,6 +7808,7 @@ async function openFishPersonaDlg(who) {
   personaSyncWho = who || '';
   /* 人设带who·2026-10-30 —— 先记下这次看的是谁的，后面所有接口都跟着它 */
   personaWho = who || '';
+  updatePersonaDlgTitle(who || '');
   paletteFromHint();
   try { closeOtherDialogs('fishPersonaDlg'); } catch { /* 老版本没这个函数也不该炸 */ }
   // 先拉一次最新的：设置页那边也开着的时候，别让两边看到不同的清单
@@ -7815,6 +7818,26 @@ async function openFishPersonaDlg(who) {
   dlg.onclick = (ev) => { if (ev.target === dlg) closeFishPersonaDlg(); };
   if (!dlg.open) dlg.showModal();
 }
+
+/**
+ * 标题跟着人换·2026-10-30
+ * 主人报：「在小鲸页面点『多套人设』，左上角却写着『小鱼的多套人设』」。
+ * 原来那行 <b> 是写死的「小鱼的人设」，旁边留的 fpWho 坑一直没人填。
+ * 现在按 who 换：'' = 小鱼自己；'whale' = 小鲸；其它 = 那张智能体卡的名字。
+ */
+function updatePersonaDlgTitle(who) {
+  const el = document.getElementById('fpTitle');
+  if (!el) return;
+  let name = '小鱼';
+  if (who === 'whale') name = '小鲸';
+  else if (who) {
+    const list = (window.agentState && window.agentState.agents) || [];
+    const card = Array.isArray(list) ? list.find((a) => a && a.id === who) : null;
+    name = (card && (card.name || card.title)) || '智能体';
+  }
+  el.textContent = name + '的人设';
+}
+
 
 /** 看这次是从哪儿点进来的（此刻智能体面板还开着 = 从它那儿进来的），顺手把右下角那颗按钮的字换掉 */
 function paletteFromHint() {
@@ -9463,7 +9486,9 @@ async function refreshQqPanel() {
   const st = await qqApi('/api/qq/status');
   if (!st || st.error) { qqSetHint('读不到状态：' + ((st && st.error) || '网络错误'), true); return; }
   renderQqPanel(st);
-  paintOneBot(st.onebot);
+  let prep = null;
+  try { prep = await qqApi('/api/qq/onebot/protocol'); } catch { prep = null; }
+  paintOneBot(st.onebot, prep);
 }
 
 /**
@@ -9473,7 +9498,7 @@ async function refreshQqPanel() {
  * 为什么配置不跟状态一起来：那条接口要在别的地方也能单独调（比如自检），
  * 塞进 status 只会让两边的形状都得改。
  */
-async function paintOneBot(obStatus) {
+async function paintOneBot(obStatus, obPrepare) {
   const conf = oneBotConf || {};
   const en = qqEl('obEnabled');
   if (en && document.activeElement !== en) en.checked = conf.enabled === true;
@@ -9515,10 +9540,32 @@ async function paintOneBot(obStatus) {
     } else if (st.phase === 'connecting' && st.mode === 'reverse') {
       hint.textContent = `在 ${st.url} 等协议端拨进来（NapCat 里填这个反向地址）。`;
     } else {
-      hint.textContent = '要三步：① 装 NapCatQQ（或 LLOneBot），扫码登录你想用的那个 QQ 号；'
-        + '② 在它里面开 WebSocket 服务端（默认 ws://127.0.0.1:3001），要 token 就填到上面；'
-        + '③ 回来点「连上」。连上之后戳一戳、表情包、引用、群精华、群管理才全有。';
+      hint.textContent = '点「准备协议端」→ 自动装好并拉起（会弹 UAC，点「是」），屏幕上会开一个 QQ 窗口，'
+        + '用手机 QQ 扫那个码登录。WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。';
     }
+  }
+  // 「准备协议端」按钮的状态：装没装、跑没跑
+  const prepBtn = qqEl('obPrepare');
+  const prepHint = qqEl('obPrepareHint');
+  if (prepBtn) {
+    const pr = obPrepare || {};
+    if (pr.running) {
+      prepBtn.textContent = '协议端在跑';
+      prepBtn.disabled = true;
+    } else if (pr.installed) {
+      prepBtn.textContent = '启动协议端';
+      prepBtn.disabled = pr.busy;
+    } else {
+      prepBtn.textContent = pr.busy ? '准备中…' : '准备协议端';
+      prepBtn.disabled = pr.busy;
+    }
+  }
+  if (prepHint) {
+    const pr = obPrepare || {};
+    if (pr.message) prepHint.textContent = pr.message;
+    else if (pr.running) prepHint.textContent = '协议端已经在跑。去那个 QQ 窗口扫码（如果还没扫），WebUI 在 http://127.0.0.1:6099/webui';
+    else if (pr.installed) prepHint.textContent = '已经装好了（' + (pr.dir || '') + '）。点「启动协议端」就会弹 QQ 窗口。';
+    else prepHint.textContent = '';
   }
 }
 
@@ -9650,6 +9697,33 @@ async function saveQqBind() {
       qqSetHint('断开了');
     }
     await refreshQqPanel();
+  });
+
+  // 「准备协议端」：没装就装（走镜像下载），装了就拉起（会弹 UAC + QQ 扫码）
+  wire('obPrepare', async () => {
+    const hintEl = qqEl('obPrepareHint');
+    const say = (t, bad) => {
+      if (!hintEl) return;
+      hintEl.textContent = t;
+      hintEl.style.color = bad ? 'var(--danger, #d33)' : '';
+    };
+    const prepBtn = qqEl('obPrepare');
+    if (prepBtn) prepBtn.disabled = true;
+    try {
+      const cur = await qqApi('/api/qq/onebot/protocol');
+      if (!cur || cur.error) { say('读不到协议端状态：' + ((cur && cur.error) || '网络错误'), true); return; }
+      if (!cur.installed) {
+        say('正在准备协议端（第一次要下载，大概 34MB，走国内镜像）…');
+        const r = await qqApi('/api/qq/onebot/protocol/deploy', {});
+        if (!r || r.error) { say('装失败了：' + ((r && r.error) || '网络错误'), true); return; }
+        say('装好了。现在启动它 —— 会弹一个 UAC 窗口，请点「是」。');
+      }
+      const s = await qqApi('/api/qq/onebot/protocol/start', {});
+      if (!s || s.error) { say('拉不起来：' + ((s && s.error) || '网络错误'), true); return; }
+      say('已经放出去了。看那个新弹出的 QQ 窗口，用手机 QQ 扫码登录；登进去之后回来点「连上」。');
+    } finally {
+      await refreshQqPanel();
+    }
   });
 
   wire('qqSave', async () => {

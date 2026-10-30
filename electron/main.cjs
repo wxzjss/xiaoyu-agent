@@ -393,7 +393,7 @@ function initialWindowBounds() {
 
 
 // 雾蓝 #3f5f80 → COLORREF = 0x00805F3F（R=0x3f G=0x5f B=0x80，倒着写）
-const TITLEBAR_SHALLOW_BLUE = 0x00805f3f;
+const TITLEBAR_SHALLOW_BLUE = 0x000a0a0a;
 
 /**
  * 【把标题栏和那圈边框还给系统】2026-11-02
@@ -423,8 +423,8 @@ function clearWindowBorderColor(bw) {
     const ps = "$sig='" + sig + "';" +
       " Add-Type -Namespace XyDwm -Name M -MemberDefinition $sig;" +
       ' $h=[IntPtr]' + hwnd + ';' +
-      ' $none=[int]-2; [void][XyDwm.M]::DwmSetWindowAttribute($h,34,[ref]$none,4);' +
-      ' $dflt=[int]-1; [void][XyDwm.M]::DwmSetWindowAttribute($h,35,[ref]$dflt,4);';
+      ' $col=[int]0x000a0a0a; [void][XyDwm.M]::DwmSetWindowAttribute($h,34,[ref]$col,4);' +
+      ' $col=[int]0x000a0a0a; [void][XyDwm.M]::DwmSetWindowAttribute($h,35,[ref]$col,4);';
 
     require('node:child_process').execFileSync(
       'powershell',

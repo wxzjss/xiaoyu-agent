@@ -3930,6 +3930,50 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /**
+   * 协议端（NapCat）的一键化。
+   * 提不提权？**不提**。协议端和主人的 QQ 同级跑就行，
+   * 弹 UAC 让主人点「是」是 NapCat 自带启动器的毛病，不是必须的。
+   */
+  if (url.pathname === '/api/qq/onebot/protocol' && req.method === 'GET') {
+    try {
+      const p = await import('../scripts/qq-protocol.mjs');
+      const st = await p.status();
+      return json(res, 200, { ok: true, ...st });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (url.pathname === '/api/qq/onebot/protocol/deploy' && req.method === 'POST') {
+    try {
+      const p = await import('../scripts/qq-protocol.mjs');
+      const r = await p.deploy();
+      return json(res, 200, { ok: true, ...r });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (url.pathname === '/api/qq/onebot/protocol/start' && req.method === 'POST') {
+    try {
+      const p = await import('../scripts/qq-protocol.mjs');
+      const r = p.start();
+      return json(res, 200, { ok: true, ...r });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (url.pathname === '/api/qq/onebot/protocol/kill' && req.method === 'POST') {
+    try {
+      const p = await import('../scripts/qq-protocol.mjs');
+      return json(res, 200, { ok: true, ...p.kill() });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
   /** 「这是我」：发一个一次性口令，让主人去 QQ 里说一句。 */
   if (req.method === 'POST' && url.pathname === '/api/qq/claim') {
     try {

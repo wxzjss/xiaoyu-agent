@@ -436,6 +436,40 @@ function clearWindowBorderColor(bw) {
   }
 }
 
+async /**
+ * 挑窗口/托盘图标。
+ *
+ * 【2026-10-30 主人要】小鱼自己画的那只鲸鱼娘，也应该能当图标 —— 设置里能切。
+ * 设置存在 data/.state/settings.json（跟主程序同一个设置文件），
+ * 这里不 import 主程序的模块（那是 ESM，这是 CJS），自己读一遍就够，
+ * 读不到就退回原来那张，绝不因为图标把程序搞得起不来。
+ */
+function pickAppIcon() {
+  try {
+    const fs2 = require('node:fs');
+    const p2 = require('node:path');
+    const dataDir = process.env.MINI_AGENT_DATA || (function () {
+      const base = process.env.APPDATA || p2.join(process.env.USERPROFILE || '', 'AppData', 'Roaming');
+      return p2.join(base, '小鱼Agent', 'data');
+    })();
+    const sp = p2.join(dataDir, '.state', 'settings.json');
+    let style = 'classic';
+    if (fs2.existsSync(sp)) {
+      const j = JSON.parse(fs2.readFileSync(sp, 'utf8'));
+      style = String(j.iconStyle || 'classic');
+    }
+    const name = (style === 'drawn') ? 'xiaoyu-whale.ico' : 'xiaoyu.ico';
+    const full = p2.join(__dirname, '..', 'assets', name);
+    if (fs2.existsSync(full)) return full;
+    return p2.join(__dirname, '..', 'assets', 'xiaoyu.ico');
+  } catch {
+    try {
+      const p2 = require('node:path');
+      return p2.join(__dirname, '..', 'assets', 'xiaoyu.ico');
+    } catch { return ''; }
+  }
+}
+
 async function createWindow(updated = false) {
   if (win && !win.isDestroyed()) {
     win.show();
@@ -479,7 +513,7 @@ async function createWindow(updated = false) {
      * 用户看到的效果是：界面直接「淡入」，中间那一下白没了。
      */
     opacity: 0,
-    icon: join(__dirname, '..', 'assets', 'xiaoyu.ico'),
+    icon: pickAppIcon(),
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -637,7 +671,7 @@ async function createWindow(updated = false) {
 /** 托盘图标：点一下把窗口叫回来 */
 function createTray() {
   try {
-    const iconPath = join(__dirname, '..', 'assets', 'xiaoyu.ico');
+    const iconPath = pickAppIcon();
     let img = nativeImage.createFromPath(iconPath);
     if (img.isEmpty()) {
       // 图标读不出来也别让程序起不来
@@ -1036,7 +1070,7 @@ function openBrowser(rawUrl) {
     width: 1180,
     height: 820,
     title: '内置浏览器',
-    icon: join(__dirname, '..', 'assets', 'xiaoyu.ico'),
+    icon: pickAppIcon(),
     webPreferences: {
       // 网页窗口不给 preload、不给 node —— 它就是个浏览器
       contextIsolation: true,

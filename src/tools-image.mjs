@@ -7,6 +7,7 @@
  */
 import { generateImage, imageEndpoint } from './gen-image.mjs';
 import { normalizeSend, fmtSize, publicEntry, stash } from './outbox.mjs';
+import { ctxNow, stashFileNow } from './tools.mjs';
 
 export const makeImageTool = {
   name: 'make_image',
@@ -38,6 +39,13 @@ export const makeImageTool = {
     if (sent.entry) {
       sent.entry.key = stash(sent.entry);
       if (box) box.push(publicEntry(sent.entry));
+      try { stashFileNow(publicEntry(sent.entry)); } catch {}
+      /* 【2026-10-30】画好的图当场推给界面 —— 以前只塞 outbox，要等我这一轮全说完才画出来。
+       * 主人原话：「没有当场出来图片，估计得等你说完一轮才行」。 */
+      try {
+        const push = ctxNow().pushEvent;
+        if (typeof push === 'function') push({ type: 'sentfile', file: publicEntry(sent.entry), note: String(note || '').trim() });
+      } catch {}
       card = `\n（${sent.entry.name}，${fmtSize(sent.entry.size)}，在这里点开就能看）`;
     }
     const said = String(note || '').trim();

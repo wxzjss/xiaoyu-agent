@@ -506,6 +506,24 @@
 
     /* ---- 我发出去的文件：卡片（图片看、视频播、别的下载）---- */
     .fileList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    /* 【2026-10-30】聊天封面：铺在消息区底下，淡淡的，不挡字。
+       用 ::before 垫一层，z-index 压到底，正文照常在上面。 */
+    .hasCover { position: relative; }
+    .hasCover::before {
+      content: "";
+      position: absolute; inset: 0;
+      background-image: var(--cover-img);
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      opacity: 0.18;
+      pointer-events: none;
+      z-index: 0;
+      border-radius: inherit;
+    }
+    .hasCover > * { position: relative; z-index: 1; }
+    /* 【2026-10-30】send_file 当场推出来的卡片盒子，跟正式 fileList 长得一样 */
+    .sentLive { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .fileCard {
       display: flex; align-items: center; gap: 8px; max-width: 300px; padding: 7px 9px;
       background: #0f1319; border: 1px solid var(--border); border-radius: 9px;
@@ -2461,6 +2479,29 @@
           </div>
           <div class="field">
             <span class="hint" id="contextLimitHint">改完点「保存」，下一句生效。</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>外观</legend>
+          <!-- 【2026-10-30】主人夸我画的那只可爱，问能不能当图标和聊天封面。
+               图标只换窗口角上那个（Electron 启动时读，要重启才生效）；
+               桌面快捷方式那个在安装包里烤死了，这里改不到，别写成能改。 -->
+          <div class="field">
+            <label>软件图标</label>
+            <div class="mdlRow" style="display:flex;gap:12px;flex-wrap:wrap">
+              <label class="mdlKind"><input type="radio" name="iconStyle" value="classic" id="iconClassic" /><span>出厂那只</span></label>
+              <label class="mdlKind"><input type="radio" name="iconStyle" value="drawn" id="iconDrawn" /><span>我画的那只</span></label>
+            </div>
+            <span class="hint" id="iconHint">换的是窗口左上角那个小图标，<b>下次启动才看得出</b>。桌面快捷方式上的图标在安装包里，这里改不到。</span>
+          </div>
+          <div class="field">
+            <label>聊天界面封面</label>
+            <div class="mdlRow" style="display:flex;gap:12px;flex-wrap:wrap">
+              <label class="mdlKind"><input type="radio" name="chatCover" value="none" id="coverNone" /><span>不要</span></label>
+              <label class="mdlKind"><input type="radio" name="chatCover" value="whale" id="coverWhale" /><span>我画的那只</span></label>
+            </div>
+            <span class="hint" id="coverHint">铺在消息区底下，淡淡的，不挡字。选完立刻能看到。</span>
           </div>
         </fieldset>
 
@@ -5718,6 +5759,50 @@ function attachBranchBtn(wrap, at) {
  * 回退接口只认 role=user 且非 context 的消息 —— 光有 assistant 的 rewindId 退不了。
  * 所以一路画下来，每遇到一条 user 就把它记下，轮到画回复时取「最近的那一问」。
  */
+/**
+ * 【删除】—— 2026-10-30 主人：「给说的消息的【分支】右边加个删除，给 ai 说的【重发】右边也加一个」。
+ *
+ * 跟回退不一样：回退是把对话退回这条之前、连记忆文件一起退。
+ * 删除只干一件事 —— 这一条从今往后不发给模型了，别的都不动。
+ *
+ * 所以后端记的是一条 at:-1 的登记记录（见 server.mjs 的 message-delete），
+ * 只往 hidden 里塞这条的下标，不设回退点。
+ */
+function attachDelBtn(wrap, at) {
+  if (!wrap || !Number.isFinite(Number(at))) return;
+  if (wrap.querySelector('.delBtn')) return;
+  const db = document.createElement('button');
+  db.type = 'button';
+  db.className = 'delBtn';
+  db.textContent = '删除';
+  db.title = '这一条不再发给模型（不动记忆本、不动史书、不动别的消息）';
+  db.onclick = async () => {
+    if (busy) {
+      alert('等这一轮说完再删，不然删到一半她又开始跑，会乱。');
+      return;
+    }
+    if (!(await askConfirm({ title: '删除这条', body: '删掉这一条消息？删了它就不再发给模型，别的消息和记忆都不动。', ok: '删除', danger: true }))) return;
+    db.disabled = true;
+    try {
+      const r = await fetch('/api/sessions/message-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: sessionId, at: Number(at) }),
+      }).then((x) => x.json()).catch((e) => ({ error: (e && e.message) || '连不上服务' }));
+      if (!r || r.error) {
+        alert('删不掉：' + ((r && r.error) || '网络错误'));
+        return;
+      }
+      // 服务端给的是删完之后的有效历史，照它整屏重画，界面上跟盘上对得上
+      if (r.session && Array.isArray(r.session.turns)) renderTurns(r.session.turns);
+    } finally {
+      db.disabled = false;
+    }
+  };
+  actionsOf(wrap).appendChild(db);
+  wrap.classList.remove('noRewind');
+}
+
 function attachRetry(wrap, askQueue) {
   if (!wrap || wrap.querySelector(".retryBtn")) return;
   const ask = lastAsk(askQueue);
@@ -6157,6 +6242,20 @@ function attachFiles(wrap, items) {
   }
   box.innerHTML = '';
   for (const f of list) box.appendChild(outCard(f));
+  /* 【2026-10-30】工具当场推出来的图，气泡还没建好时先存在 liveFilePark。
+   * 这里补画一遍，画完就清空，不会跟正式的叠两层（同样的 path/key 只留一份）。 */
+  try {
+    const park = window.liveFilePark || [];
+    if (park.length) {
+      const seen = new Set(list.map((x) => String((x && (x.key || x.path)) || '')));
+      for (const f of park) {
+        const k = String((f && (f.dataset && f.dataset.k)) || '');
+        if (k && seen.has(k)) continue;
+        box.appendChild(f);
+      }
+      window.liveFilePark = [];
+    }
+  } catch {}
   if (log) noteNewContent();
   return box;
 }
@@ -6625,6 +6724,17 @@ const TOOL_NICE = {
   // 【2026-10-29 主人要求：这几个漏在表外，界面上一直露英文名】
   look_screen: '看一眼屏幕',
   screen_watch_status: '看陪看状态',
+  make_image: '画一张图',
+  qq_send: '发到 QQ',
+  ui_observe: '看界面',
+  ui_click: '点一下',
+  ui_double_click: '双击',
+  ui_right_click: '右键',
+  ui_type: '打字',
+  ui_key: '按键',
+  ui_scroll: '滚一下',
+  spawn_worker: '派活',
+  list_workers: '看派了几个人',
 };
 function niceTool(name) {
   const n = String(name || '').trim();
@@ -7189,6 +7299,29 @@ async function runTurn({ resume = false, text = '' } = {}) {
             bubble = null;
           }
           addSysNote('⚠ ' + ev.message);
+        } else if (ev.type === 'sentfile' && ev.file) {
+          /* 【2026-10-30 主人要：图/文件当场出来，别等这一轮说完】
+           * 以前 send_file 只往 outbox 里塞，要等整个回合 done 之后才挂上，
+           * 主人得等我把话全说完才看得见图。现在工具里当场推 sentfile，这儿立刻画。
+           * 画进「当前这条正在写的」气泡：就是最后一个正在流式的 row。 */
+          try {
+            const rows = els.messages ? [...els.messages.querySelectorAll('.row.ai')] : [];
+            let host = null;
+            for (let r = rows.length - 1; r >= 0; r--) {
+              if (rows[r].querySelector('.bubble')) { host = rows[r].querySelector('.bubble'); break; }
+            }
+            const card = outCard(ev.file);
+            if (card) {
+              if (host) {
+                let box = host.querySelector('.sentLive');
+                if (!box) { box = document.createElement('div'); box.className = 'sentLive'; host.appendChild(box); }
+                box.appendChild(card);
+              } else {
+                liveFilePark.push(card);
+              }
+              scrollBottomSoon();
+            }
+          } catch (e) { console.warn('[sentfile] 当场画失败：', e && e.message); }
         } else if (ev.type === 'done') {
           /**
            * 【说完就把光标收掉】
@@ -7246,6 +7379,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
             // 这一轮刚落地，主人在这一轮说的话立刻就能改（下标要等服务端给）
             attachEdit(pendingRewindBubble, ev.at);
             attachBranchBtn(pendingRewindBubble, ev.at);
+          attachDelBtn(pendingRewindBubble, ev.at);
             pendingRewindBubble = null;
           }
           // 【实时跑完这一轮，也要能一键重发】
@@ -7256,6 +7390,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
           if (bubble && bubble.isConnected && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
             try {
               attachRetry(bubble, [{ at: Number(ev.at), text: String(text || "") }]);
+              attachDelBtn(bubble, ev.at);
             } catch {}
           }
           if (ev.usage) {
@@ -9132,8 +9267,23 @@ async function submitNewSession() {
     }
   }
   try { if (dlg) dlg.close(); } catch { /* 忽略 */ }
+  /**
+   * 【新建会话先问名字】—— 2026-10-30 主人：「会话界面新建会话时，弹出会话名命名弹窗，默认【新会话】」
+   *
+   * 挑完人就在这儿停下来问一句名字，框里预先填好「新会话」。
+   * 点取消 = 不建了（跟大多数「新建」的对话框一个脾气）；
+   * 直接回车 / 不填就确定 = 用「新会话」这个名字。
+   */
+  const askedName = await askName({
+    title: '给这个新会话起个名字',
+    value: '新会话',
+    placeholder: '新会话',
+    maxLength: 80,
+  });
+  if (askedName === null) return; // 点了取消，不建
+  const title = String(askedName || '').trim() || '新会话';
   try {
-    await createSessionEx({ agentIds: ids });
+    await createSessionEx({ agentIds: ids, title });
   } catch (e) {
     console.warn('[newSession] 开会话出错', e && e.message ? e.message : e);
   } finally {
@@ -10183,6 +10333,15 @@ document.getElementById('personaRename').onclick = async () => {
 
 
 function fillSettings(s) {
+  /* 【2026-10-30】外观回填：图标和封面 */
+  try {
+    const ic = (s && s.iconStyle) || 'classic';
+    const elIc = document.getElementById(ic === 'drawn' ? 'iconDrawn' : 'iconClassic');
+    if (elIc) elIc.checked = true;
+    const cv = (s && s.chatCover) || 'none';
+    const elCv = document.getElementById(cv === 'whale' ? 'coverWhale' : 'coverNone');
+    if (elCv) elCv.checked = true;
+  } catch {}
   // 币种：跟着服务端存的走，缺省是元
   moneyCurrency = s.currency === 'usd' ? 'usd' : 'cny';
   if (curCny) curCny.checked = moneyCurrency === 'cny';
@@ -10220,6 +10379,37 @@ for (const [el, want] of [[curCny, 'cny'], [curUsd, 'usd']]) {
     try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {}
   };
 }
+
+/**
+ * 把聊天封面换上（或撤掉）。
+ *
+ * 【2026-10-30】主人夸我画的那只可爱，想拿来当封面。铺在消息区底下，
+ * 淡淡的、不抢字，用 mask 压住透明度，主题是黑的白的都好看。
+ */
+function applyChatCover(which) {
+  try {
+    const host = document.getElementById('log') || document.querySelector('.log') || document.querySelector('main');
+    if (!host) return;
+    const url = (which === 'whale') ? '/assets/xiaoyu-whale-cover.png' : '';
+    if (!url) {
+      host.classList.remove('hasCover');
+      host.style.removeProperty('--cover-img');
+      return;
+    }
+    host.classList.add('hasCover');
+    host.style.setProperty('--cover-img', 'url("' + url + '")');
+  } catch (e) {
+    console.warn('[cover] 换封面失败：', e && e.message);
+  }
+}
+
+// 【封面】开机自动套用（存过的话，一打开就是那张）
+(async () => {
+  try {
+    const r = await fetch('/api/settings').then((x) => x.json());
+    if (r && r.settings) applyChatCover(r.settings.chatCover);
+  } catch {}
+})();
 
 document.getElementById('openSettings').onclick = async () => {
   saveHint.textContent = '';
@@ -10375,6 +10565,9 @@ document.getElementById('saveSettings').onclick = async () => {
     contextLimit: elCtxLimit.value.trim(),
     // 记账用什么钱：'cny' / 'usd'。只影响显示，价目表不动。
     currency: (curUsd && curUsd.checked) ? 'usd' : 'cny',
+    /* 【2026-10-30】外观：图标用哪套、聊天封面用哪张 */
+    iconStyle: (document.getElementById('iconDrawn') && document.getElementById('iconDrawn').checked) ? 'drawn' : 'classic',
+    chatCover: (document.getElementById('coverWhale') && document.getElementById('coverWhale').checked) ? 'whale' : 'none',
   };
   const r = await fetch('/api/settings', {
     method: 'POST',
@@ -10383,6 +10576,8 @@ document.getElementById('saveSettings').onclick = async () => {
   }).then(r => r.json()).catch(() => null);
   if (!r) { saveHint.textContent = '保存失败'; return; }
   fillSettings(r.settings);
+  /* 封面立刻换，不用等下次刷新 */
+  try { applyChatCover(r.settings && r.settings.chatCover); } catch {}
   // 币种可能刚改过：把这一屏的钱数当场按新币种重画，别等下一轮对话
   try { paintUsageBox(); } catch {}
   try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {}
@@ -13796,6 +13991,7 @@ function renderTurns(turns) {
       attachEdit(w, turn.rewindId);
       // 「分支」也贴着句子放：从这句往下另开一个会话
       attachBranchBtn(w, turn.rewindId);
+      attachDelBtn(w, turn.rewindId);
       if (turn.edited) w.classList.add('edited');
       // 【用量要在 user 之后立刻入队】
       // 以前放在循环末尾，而「补画」又发生在 user 分支里 —— 也就是先补画、后入队，
@@ -13867,6 +14063,7 @@ function renderTurns(turns) {
           attachEdit(wrap, turn.rewindId);
           attachBranchBtn(wrap, turn.rewindId);
           attachRetry(wrap, askQueue);
+          attachDelBtn(wrap, turn.rewindId);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         } else {
@@ -13884,6 +14081,7 @@ function renderTurns(turns) {
           attachBranchBtn(wrap, turn.rewindId);
           // 她说错了、或者想让她重答一遍：一键退回再问一次
           attachRetry(wrap, askQueue);
+          attachDelBtn(wrap, turn.rewindId);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         }

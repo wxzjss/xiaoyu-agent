@@ -120,6 +120,24 @@ export const MAX_PEERS = 50;
 /** 口令多久内有效 */
 export const CLAIM_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * 【2026-10-30 补：claimState is not a function】
+ * 主人点【连上】报「读不到状态：claimState is not a function」。
+ * 根因：server.mjs 一直写 `const { claimState } = await import("./qq.mjs")`，
+ * 可这个文件从头到尾就没导出过 claimState —— 解构出来是 undefined，一调就崩。
+ * 这里按 claim 字段（token + at）现算出「口令还在不在有效期内」。
+ *   { active, token, at, ageMs, leftMs }
+ * 没有口令 / 已经过期 → active:false（fail-closed，别让过期口令还能用）。
+ */
+export function claimState(now = Date.now()) {
+  const c = readQq().claim;
+  if (!c || !c.token || !c.at) return { active: false, expired: true, token: '', at: 0, ageMs: 0, leftMs: 0 };
+  const ageMs = Math.max(0, Number(now) - Number(c.at));
+  const leftMs = Math.max(0, CLAIM_TTL_MS - ageMs);
+  return { active: leftMs > 0, expired: leftMs <= 0, token: c.token, at: c.at, ageMs, leftMs };
+}
+
+
 function str(v, n = 0) {
   const s = String(v ?? '').trim();
   return n > 0 ? s.slice(0, n) : s;

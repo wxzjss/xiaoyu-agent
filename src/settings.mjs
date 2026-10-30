@@ -60,6 +60,24 @@ export const DEFAULT_SETTINGS = {
    * 默认开着；主人要嫌它碍事，功能页里能关。
    */
   imeMatchSystem: true,
+  /**
+   * 外观 · 软件图标用哪一套。
+   *
+   *   'classic' —— 出厂那只（assets/xiaoyu.ico），跟着安装包走的默认图
+   *   'drawn'   —— 2026-10-30 主人夸可爱、让我画的那只鲸鱼娘（assets/xiaoyu-whale.ico）
+   *
+   * 只影响窗口角上那个小图标（Electron 启动时读），桌面快捷方式的图标在
+   * 安装包里烤死了，这里改不到 —— 要改得重新打包，别让主人以为点一下就变。
+   */
+  iconStyle: 'classic',
+  /**
+   * 外观 · 聊天界面的封面图（铺在消息区底下的那张）。
+   *
+   *   'none'  —— 不铺，就是原来那层纯色/视频背景
+   *   'whale' —— 我画的那只鲸鱼娘（assets/xiaoyu-whale-cover.png）
+   *   'custom'—— 主人自己传的一张（存在 .state/cover-custom.*）
+   */
+  chatCover: 'none',
 };
 
 const BACKUP_FILE = join(config.dataDir, '.state', 'bottomlines.backup.md');

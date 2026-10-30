@@ -61,6 +61,21 @@ export function ctxNow() {
 }
 
 /**
+ * 文件一到手就交给 server 存进会话。
+ *
+ * 【为什么要有它】主人 2026-10-30：「中途退出重启相当于打断，也不会显示你发的任何文件」。
+ * server 那边只有「这一轮正常跑完」才挂文件，被停 / 被重启就跳过了。
+ * 所以工具里一拿到文件就先喊一声，让 server 立刻挂上并写盘。
+ * 拿不到通道就算了（比如单独跑测试），不许因此让工具报错。
+ */
+export function stashFileNow(entry) {
+  try {
+    const fn = ctxNow()?.stashFile;
+    if (typeof fn === 'function' && entry) fn(entry);
+  } catch {}
+}
+
+/**
  * 让一段异步逻辑跑在「这一轮自己的上下文」里。
  *
  * server 侧那一轮开跑的地方这样用：
@@ -85,6 +100,14 @@ const CTX = {
    * 就是那条「把事件写进直播缓存并发出去」的通道。
    */
   pushEvent: null,
+  /**
+   * 文件一到手就存进会话（不等这一轮说完）。
+   *
+   * 【为什么】主人 2026-10-30 指出：中途点停止、或者程序重启，等于这一轮被打断，
+   * 我画好的图 / 发出去的文件就全看不见了 —— 文件明明在盘上，只是没记进会话。
+   * 这个函数由 server 注入，一调就立刻挂到当前那条回复上并写盘。
+   */
+  stashFile: null,
   /**
    * 这一次是不是「小鲸在场」那个调用。
    * true 时 safePath 不限工作区（主人给了她全权）。
@@ -1728,13 +1751,18 @@ export async function runTool(name, rawArgs, sessionId) {
     return { ok: false, output: `invalid JSON arguments for ${name}` };
   }
   // 写类工具动手前先留个底，回退时靠它把文件还原回去。
-  if (name === 'write_file' && CTX.snap) {
+  /* 【2026-10-30】原来是 CTX.snap（模块模板，永远空），回退快照可能一直没留上。改成本轮上下文。 */
+  const _snapNow = (() => { try { return ctxNow()?.snap; } catch { return null; } })();
+  if (name === 'write_file' && _snapNow) {
     try {
-      snapshotBeforeWrite(CTX.snap, args?.path);
+      snapshotBeforeWrite(_snapNow, args?.path);
     } catch {}
   }
   try {
-    return { ok: true, output: await tool.run(args, CTX) };
+    /* 【2026-10-30】以前传的是模块顶层那个 CTX 模板，里面 pushEvent/outbox 永远是空的 ——
+     * 所以 send_file 当场推、ask_subagent 那句「我刚派了什么活」全都推不出去。
+     * 现在传本轮真正的上下文。 */
+    return { ok: true, output: await tool.run(args, ctxNow()) };
   } catch (err) {
     return { ok: false, output: String(err?.message ?? err) };
   }

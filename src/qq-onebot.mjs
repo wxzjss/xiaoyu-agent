@@ -35,6 +35,7 @@
  *    直接用 CQ 码是因为它比消息段数组省事，而且 OneBot 所有实现都吃。
  */
 
+import { execFileSync } from 'node:child_process';
 import { readQq, writeQq } from './qq.mjs';
 
 /** 进程内的连接状态（不落盘）。 */
@@ -301,7 +302,18 @@ export async function startOneBot(onEvent, opts = {}) {
       }
     },
     error: (e) => {
-      rt.error = `连不上 ${conf.url}：${String(e?.message ?? e)}。协议端（NapCat）开了吗？地址对吗？`;
+      // 【2026-10-30 修】原来一拨不上就甩「协议端开了吗？地址对吗？」，可最常见的是
+      // 协议端好好地在跑、只是没开这个端口（还没登录 / WebSocket 服务端没配）。
+      // 所以先看进程有没有在，再决定说哪句话。
+      const __napRunning = (() => {
+        try {
+          const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq NapCatWinBootMain.exe', '/NH'], { encoding: 'utf8', timeout: 3000, windowsHide: true });
+          return /NapCatWinBootMain/i.test(out);
+        } catch { return false; }
+      })();
+      rt.error = __napRunning
+        ? `协议端在跑着，但还没在 ${conf.url} 上开门 —— 多半是 QQ 还没登录，或者它的 WebSocket 服务端没开（端口填 3001）。点「刷新二维码」我帮你重拉一次。`
+        : `协议端（NapCat）没在跑 —— 点「刷新二维码」我帮你拉起来。（原始错误：${String(e?.message ?? e)}）`;
       log(rt.error);
     },
   });

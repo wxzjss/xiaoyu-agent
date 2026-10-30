@@ -62,7 +62,25 @@ function need() {
  *
  * per-user 下新会话照主人的习惯起名「QQ · 名字」，智能体绑小鱼。
  */
-export async function ensureQqSession({ openid, peer, name = '' } = {}) {
+/**
+ * 拿群名。OneBot 的 get_group_info 要 group_id；拿不到就返回空，让上层用群号兜底。
+ * 结果记在内存里 —— 群名不会天天改，没必要每句话都问一遍。
+ */
+const __groupNameCache = new Map();
+export async function groupNameOf(groupId) {
+  const gid = String(groupId || '').trim();
+  if (!gid) return '';
+  if (__groupNameCache.has(gid)) return __groupNameCache.get(gid);
+  try {
+    const { call } = await import('./qq-onebot.mjs');
+    const r = await call('get_group_info', { group_id: Number(gid) || gid }, 8000);
+    const nm = String(r?.data?.group_name ?? r?.group_name ?? '').trim();
+    if (nm) { __groupNameCache.set(gid, nm); return nm; }
+  } catch {}
+  return '';
+}
+
+export async function ensureQqSession({ openid, peer, name = '', isGroup = false, groupId = '' } = {}) {
   const h = need();
   const { qqBind } = await import('./qq.mjs');
   const bind = qqBind();
@@ -80,7 +98,12 @@ export async function ensureQqSession({ openid, peer, name = '' } = {}) {
     if (h.getSession(peer.sessionId)) return { sessionId: peer.sessionId };
   }
   // ③ 现开一个
-  const title = `QQ · ${String(name || openid.slice(0, 6)).slice(0, 20)}`;
+  // 【2026-10-30 主人要的】会话名分两种，别一律挂发话人昵称：
+  //   群聊 → 「QQ群 · 群名」（拿不到群名就先叫群号）
+  //   私聊 → 「QQ · 对方昵称」
+  const title = isGroup
+    ? `QQ群 · ${String(await groupNameOf(groupId) || groupId || '群聊').slice(0, 20)}`
+    : `QQ · ${String(name || openid.slice(0, 6)).slice(0, 20)}`;
   const made = await h.newSessionFor({ title, agentId: 'xiaoyu' });
   if (!made || !made.id) return null;
   return { sessionId: made.id };
@@ -208,4 +231,20 @@ export function markQqOwner(sessionId) {
     h.setIdentity('owner', sessionId);
     h.setFishOn(sessionId, true);
   } catch {}
+}
+
+
+/** 群聊会话改名成群名（桥接那边拿到群号后调） */
+export async function renameGroupSession({ sessionId, groupId } = {}) {
+  const h = need();
+  const s = h.getSession(String(sessionId || ''));
+  if (!s) return false;
+  const nm = await groupNameOf(groupId);
+  if (!nm) return false;
+  const want = `QQ群 · ${String(nm).slice(0, 20)}`;
+  if (s.title === want) return true;
+  s.title = want;
+  s.updatedAt = Date.now();
+  h.saveSession(s);
+  return true;
 }

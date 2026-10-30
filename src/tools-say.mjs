@@ -6,6 +6,7 @@
  */
 import { speak, readTTS, VOICES } from './tts.mjs';
 import { normalizeSend, fmtSize, publicEntry, stash } from './outbox.mjs';
+import { ctxNow, stashFileNow } from './tools.mjs';
 
 export const sayTool = {
   name: 'say',
@@ -47,6 +48,7 @@ export const sayTool = {
     if (!entry) return '合成了但没找到文件：' + out;
     entry.key = stash(entry);
     if (Array.isArray(ctx.outbox)) ctx.outbox.push(publicEntry(entry));
+    try { stashFileNow(publicEntry(entry)); } catch {}
 
     const vname = (VOICES.find((v) => v.id === useVoice) || {}).name || useVoice;
     return (

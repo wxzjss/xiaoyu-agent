@@ -5,6 +5,7 @@
  * 真正「交到界面」是 server 收尾时做的（挂到那条回复的 _files 上）。
  */
 import { normalizeSend, fmtSize, publicEntry, stash } from "./outbox.mjs";
+import { stashFileNow, ctxNow } from './tools.mjs';
 
 export const sendFileTool = {
   name: "send_file",
@@ -30,9 +31,21 @@ export const sendFileTool = {
     if (!items.length) return "这个文件夹里没有能发的文件。";
     const box = Array.isArray(ctx.outbox) ? ctx.outbox : null;
     const lines = [];
+    // 【2026-10-30 主人要：图/文件当场出来，别等这一轮说完】
+    // 以前只塞进 outbox，等 server 收尾才挂到回复上 —— 主人得等我把一整轮话都说完才看得见。
+    // 现在塞进去的同时就推一条 sentfile 给界面，前端收到立刻画卡片。
+    /* 【2026-10-30】工具拿到的 ctx 常常是空对象，真通道在 ctxNow() 里。两处都看一眼。 */
+    const _c = (() => { try { return ctxNow() || {}; } catch { return {}; } })();
+    const push = typeof _c.pushEvent === 'function' ? _c.pushEvent : (typeof ctx.pushEvent === 'function' ? ctx.pushEvent : null);
     for (const e of items) {
       e.key = stash(e);
-      if (box) box.push(publicEntry(e));
+      const pub = publicEntry(e);
+      if (box) box.push(pub);
+      // 主人 2026-10-30：文件一到手就先落盘，点停止 / 重启都不至于看不见。
+      try { stashFileNow(pub); } catch {}
+      if (push) {
+        try { push({ type: 'sentfile', file: pub, note: said || '' }); } catch {}
+      }
       lines.push("- " + e.name + "（" + fmtSize(e.size) + "，" + e.kind + "）→ " + e.path);
     }
     return "已经交到主人手上了，聊天里会看到卡片：\n" + lines.join("\n") + (said ? "\n（" + said + "）" : "");

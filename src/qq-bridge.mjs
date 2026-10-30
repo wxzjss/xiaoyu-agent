@@ -254,7 +254,15 @@ async function handleInbound({ msg, bot, deps }) {
   if (isGroup) {
     const you = String(rt.me?.id || '');
     const mentioned = Array.isArray(msg?.mentions) && msg.mentions.some((m) => m && (m.is_you === true || (you && String(m.id || m.user_openid || '') === you)));
-    const atRaw = /@\S+/.test(String(msg?.content ?? ''));
+    // 【2026-10-30 修】原来 /@\S+/ 太宽了：群里谁 @ 谁都算 @ 我，
+    // 「@张三 你吃了吗」也能把我叫起来，还得一个字一个字给我答复。
+    // 现在只认两种：结构化 mentions 里明确指我（上面那行），
+    // 或者正文里 <at id="我的号"> 这种真 at 段。
+    const mine = String(you || '').replace(/\D/g, '');
+    const atRaw = Boolean(mine) && (
+      new RegExp(`<at[^>]*id\\s*=\\s*["\']?(?:qq_)?${mine}["\']?`, 'i').test(String(msg?.content ?? '')) ||
+      new RegExp(`(^|[\\s、,，])@\\s*${mine}([\\s、,，]|$)`).test(String(msg?.content ?? ''))
+    );
     if (!mentioned && !atRaw) return;
   }
 
@@ -303,13 +311,17 @@ async function handleInbound({ msg, bot, deps }) {
   log(`← ${isGroup ? '[群] ' : ''}${name || openid.slice(0, 8)}：${(text || `[${keptMedia.length} 个附件]`).slice(0, 40)}`);
 
   // ① 认人 + ④ 找会话
-  const ensured = await deps?.ensureSession?.({ openid, peer, userText: turnText, isGroup, name });
+  const ensured = await deps?.ensureSession?.({ openid, peer, userText: turnText, isGroup, name, groupId: String(msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId ?? '') });
   if (!ensured || !ensured.sessionId) {
     await send(bot, msg, '这会儿接不上会话（主人还没把 QQ 接好），等我一下。');
     return;
   }
   const { sessionId } = ensured;
   noteQqPeer(openid, { sessionId, name, qq: msg?.senderQq });
+  // 【2026-10-30】群聊：会话名改成「群名」，不是发话人的昵称
+  if (isGroup) {
+    try { await deps?.renameGroupSession?.({ sessionId, groupId: String(msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId ?? '') }); } catch {}
+  }
 
   // 主人身份：按主人来（安全词、权限都算数）。
   // 2026-11-03 起只认号 —— 面板上「你自己的 QQ 号」填的是哪个号，哪个号的话才按主人处理。

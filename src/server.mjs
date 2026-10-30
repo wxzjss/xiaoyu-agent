@@ -17,7 +17,7 @@ import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePa
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
 // 任务清单（界面面板用）：跟小鱼自己的 plan 工具是同一份数据，别另存一套
-import { planPublicView, planUiAction, readPlanTxt } from './plan.mjs';
+import { planPublicView, planUiAction, readPlanTxt, loadPlan } from './plan.mjs';
 // localVersion：更新器眼里「本地该是哪一版」。跟正在跑的版本可能不是一个数 ——
 // 见下面 /api/health 里 running/target 的注释。
 import { localVersion } from './updater.mjs';
@@ -41,7 +41,7 @@ import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted } fr
  * mountQq 放在下面（函数都声明完了之后），路由里用 await import 现取 ——
  * 这样 QQ 没配的时候一个字节都不加载，也就不会因为缺 SDK 把启动弄挂。
  */
-import { mountQq, ensureQqSession, runQqTurn, markQqOwner } from './qq-server.mjs';
+import { mountQq, ensureQqSession, renameGroupSession, runQqTurn, markQqOwner } from './qq-server.mjs';
 /** 「这是我」口令的有效期（跟 qq.mjs 里的 CLAIM_TTL_MS 保持一致，只给界面显示用） */
 const CLAIM_TTL_PUB = 10 * 60 * 1000;
 
@@ -948,7 +948,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
      * 【让开的那条路上，我自己一个字都没说】—— 2026-11-03
      *
      * 主人报「同时开小鱼和小鲸，小鲸回两句、小鱼一句不回」。
-     * 点在「小鲸」身上的那一句，小鱼整轮让开（__stepAsideForWhale），
+     * 往前点名她的那一句，小鱼曾经整轮让开（那条路 2026-10-30 已按主人意思删掉：
      * 让开时自己去把她叫起来答话 —— 可她那时候一查这个时间窗，
      * 会话末条 assistant 是我上一轮说的话（不到 3 秒前），
      * 「闸 A」就把她挡掉了（whale-actions.log 里连一条「开始一次」都没有）。
@@ -1318,7 +1318,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
  *
  * 原来这一大段只在这个函数里，于是所有「不经过 whaleMaybeReply」的说话路
  * 都只推了气泡、没落进历史 —— 切会话/重启就没了：
- *   · 主人点她的名、我让开（__stepAsideForWhale）→ 她答在另一条请求里；
+ *   · 她自己在另一条请求里开口答的（旧的「我让开」那条路 2026-10-30 已删）；
  *   · 她替我查活，结论是 ask_subagent 通过信箱递上来的（takeWhaleSays）。
  * 这两条路上，话都已经在屏幕上了，可历史里没有 —— 主人回头翻聊天看不到。
  *
@@ -2104,7 +2104,7 @@ async function startPeerTurn(sessionId) {
      * 所以先把出手前已有的对象全记进 seen，接回时只收 seen 里没有的。
      */
     const seen = new Set(history);
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -2305,7 +2305,7 @@ async function startQueuedTurn(sessionId, queue = null) {
     const wire = history.slice();
     const seen = new Set(history);
 
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -2478,12 +2478,18 @@ async function resumeInterruptedTurn() {
         '不是重新开始；已经说过的话主人已经看到了，别从头复述。）' +
         (info.text ? `\n你当时正说到：「${info.text.slice(-600)}」` : '') +
         (info.taskLine ? `\n主人当时的原话：「${info.taskLine}」` : '') +
+        /* 【2026-10-30】清单上没打勾的步骤一并告诉它 —— 否则它只知道「断在半句话」，
+         * 不知道自己还有哪几步没做完，还是得等主人发「继续」。 */
+        (Array.isArray(info.openSteps) && info.openSteps.length
+          ? `\n清单上还没做完的这几步：` + info.openSteps.map((x) => `\n  ${x.n}. ${x.text}`).join('') +
+            `\n就照这个往下做，按顺序来，别跳。`
+          : '') +
         '\n直接从断的地方往下做，该调工具就调，别问我「要不要继续」。',
       context: true,
     });
     const wire = history.slice();
     const seen = new Set(history);
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -4020,6 +4026,7 @@ const server = createServer(async (req, res) => {
       const { startQq } = await import('./qq-bridge.mjs');
       const st = await startQq({
         ensureSession: ensureQqSession,
+        renameGroupSession,
         runChat: runQqTurn,
         setSpeakerOwner: markQqOwner,
         onLog: () => {},
@@ -4082,6 +4089,7 @@ const server = createServer(async (req, res) => {
       const { startQqOneBot } = await import('./qq-bridge.mjs');
       const st = await startQqOneBot({
         ensureSession: ensureQqSession,
+        renameGroupSession,
         runChat: runQqTurn,
         setSpeakerOwner: markQqOwner,
         onLog: () => {},
@@ -5838,6 +5846,73 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, session: publicSession(session), memory });
   }
 
+  /**
+   * 【删掉某一条消息】—— 2026-10-30 主人：「给消息加个删除按钮」。
+   *
+   * 跟回退不一样：回退是「把对话退到这条之前」，会连记忆、文件一起退。
+   * 删除只办一件事：这一条从今往后不发给模型了，别的什么都不动。
+   *
+   * 做法照抄 rewind 的路子：往 session 上记一条 hiddenRewinds，用 effectiveIndexes
+   * 精确把这一条剔出去，**不改 messages 数组本身** —— 下标一变，所有 rewind 点、
+   * 所有 _ws 快照就全错位了。
+   *
+   * 两条铁律（都是 rewind.mjs 里踩出来的）：
+   *   ① 删 assistant 时，它名下 tool_calls 对应的 tool 结果必须一起删，
+   *      否则上游当场 400「Messages with role tool must be a response to a preceding tool_calls」；
+   *   ② 反过来不处理：tool 结果被删、assistant 留着，那个形状上游接受。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/sessions/message-delete') {
+    const { id, at } = await body(req).catch(() => ({}));
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const session = getSession(id);
+    if (!session) return json(res, 404, { error: 'session not found' });
+    const rt = runningTurns.get(id);
+    if (rt && !rt.ac.signal.aborted) {
+      return json(res, 409, { error: '这个会话正在跑，先点停止再删' });
+    }
+    repairHistory(session.messages);
+    const all = Array.isArray(session.messages) ? session.messages : [];
+    const idx = Number(at);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= all.length) {
+      return json(res, 400, { error: '这条消息不在这个会话里' });
+    }
+    const target = all[idx];
+    if (!target || target.role === 'system') return json(res, 400, { error: 'system 那段不能删' });
+
+    const rewinds = loadRewinds(session);
+    if (!effectiveIndexes(all, rewinds).keep.includes(idx)) {
+      return json(res, 400, { error: '这条已经删过/退过了' });
+    }
+
+    // 要剔的下标：这条自己 + （如果是 assistant）它名下所有 tool 结果
+    const drop = new Set([idx]);
+    const calls = Array.isArray(target.tool_calls) ? target.tool_calls : [];
+    for (const c of calls) {
+      const cid = String((c && c.id) || '');
+      if (!cid) continue;
+      for (let k = idx + 1; k < all.length; k++) {
+        const m = all[k];
+        if (m && m.role === 'tool' && String(m.tool_call_id || '') === cid) drop.add(k);
+      }
+    }
+
+    /**
+     * 【怎么让它真的不发给模型】
+     *
+     * 不另造字段 —— effectiveIndexes 只认 rewinds[].hidden，而且 loadRewinds 会
+     * 把「没有 at 的记录」整个滤掉。所以这里必须带 at: -1 —— rewind.mjs 第 44 行
+     * 写明「at:-1 是登记表，不是回退点，永远不算数」，正好拿来当纯隐藏用。
+     * 只给 hidden 不给 at 的话，会被 loadRewinds 丢掉，删了等于没删。
+     */
+    const rec = { at: -1, hidden: [...drop].sort((a, b) => a - b), ws: {}, deleted: true };
+    const list = Array.isArray(session.rewinds) ? session.rewinds : [];
+    list.push(rec);
+    session.rewinds = list;
+    session.updatedAt = Date.now();
+    saveSession(session);
+    return json(res, 200, { ok: true, deleted: [...drop], session: publicSession(session) });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/sessions/rewind-preview') {
     const { id, at } = await body(req).catch(() => ({}));
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
@@ -6046,11 +6121,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         const _live = runningTurns.get(_sid);
         if (!_live) continue;
         const _d = _live.draft;
+        /* 【2026-10-30 主人要：重启后自动接着干，不用再发一句「继续」】
+         * 光记「我断在半句话」不够，得把清单上还没打勾的步骤一起存进去，
+         * 重启起来照着那几步往下做，才叫真接上。 */
+        let _open = [];
+        try {
+          const _p = loadPlan(_sid);
+          const _steps = (_p && Array.isArray(_p.steps)) ? _p.steps : [];
+          _open = _steps
+            .filter((x) => x && x.status !== 'done' && x.status !== 'skipped')
+            .map((x, n) => ({ n: (x.id != null ? x.id : n + 1), text: String(x.text || '').slice(0, 200) }));
+        } catch {}
         markInterrupted({
           sessionId: _sid,
           text: _d ? _d.text : '',
           reason: '主人让它重启（重启前这一轮还没跑完）',
           taskLine: lastUserLine(_sid),
+          openSteps: _open,
         });
         _resumeSid = _sid;
         break;
@@ -6595,7 +6682,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 【连接已经收了尾，这一下别把整个进程带崩】—— 2026-11-03
        *
        * 主人报「同时开小鱼小鲸，小鲸说两轮」—— 查出来第二「轮」来自这里：
-       * 让开（__stepAsideForWhale）那条路先 `send({type:'done'})` 再 `res.end()`，
+       * 旧的「让开」那条路（2026-10-30 已删）当年是先 `send({type:'done'})` 再 `res.end()`，
        * 然后才 await 她说话。她每吐一句都往这条已经 end 的连接上写，
        * `res.write` 抛 `ERR_STREAM_WRITE_AFTER_END` —— 这是**异步**抛的，
        * 包在同步 try/catch 里根本接不住，直接升级成进程级未捕获异常
@@ -6762,7 +6849,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 为什么「小鱼被禁用」要放行：主人只开小鲸的时候，
      * 那一句本来就是冲她说的，不放行她就彻底哑了。
      */
-    const __calledByName = /小鲸|鲸鲸/.test(__nowSaid);
+    /* 【2026-10-30 主人：把「念到小鲸名字就不说话」这类设定删了】
+     * 这条判据原来只看「这句话里有没有小鲸两个字」，一命中就让小鱼整轮闭嘴。
+     * 主人要的不是这个：名字可以被顺口提到（「我刚刚把小鲸移到你下面」），
+     * 那不是在叫她，更不该因此把小鱼关掉。
+     * 所以这里恒为 false —— 不看名字了。真正控制「她开不开口」的只有她自己的
+     * 开关（whaleOn）和小鱼在不在屋（__fishAway），不再由一句话里的字眼决定。 */
+    const __calledByName = false;
     /**
      * 小鱼这会儿在不在屋。这个值下面好几处要用（她该不该接这句、我要不要让开），
      * 所以在算出 __calledByName 之后立刻算一次 —— 谁也别在后面重新声明一遍。
@@ -6833,7 +6926,6 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 见 markWhaleSpoke / whaleSpokeThisTurn。
      */
     const groupSpokeThisTurn = new Set();
-    const __stepAsideForWhale = __calledByName && !__fishAway && whaleOn(sessionId);
     /**
      * 【2026-10-26 主人纠正：不是「点名才让她说话」】
      *
@@ -7453,86 +7545,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       const shouldDraft = makeDraftThrottle();
 
       /**
-       * 【让开的时候不能直接往 runAgent 里走】—— 2026-10-27 修
+       * 【这一轮没有人替主人答，就照常自己答】—— 2026-10-30 改
        *
-       * 主人点了小鲸的名、她也在屋 —— 这一句由她答，我不答。
-       * 但「不答」不等于「什么都不发」：前端在等这条 SSE 收尾，
-       * 一个事件不给，主人会看到转圈转到底、以为程序卡死了。
-       * 所以先推一条 fish_off（前端已有这个分支：静默收起转圈），
-       * 再直接 return —— 不调模型、不落 assistant、不耗 token。
+       * 以前这里有一条「点名小鲸 → 小鱼整轮让开」，主人 2026-10-30 明确要删：
+       * 「把念到小鲸名字你就不说话这种类型设定删了」。
+       * 现在没有了：名字只当普通字眼看，我照常答；她开不开麦只由她自己的开关决定。
        */
-      /**
-       * 【让开的路口也得有人守】—— 2026-10-28 实测补
-       *
-       * 端到端测下来：点名「小鲸」那一句，frontend 收到的是
-       * `["text","tool_start","tool_end","done"]` —— 也就是说 __stepAsideForWhale
-       * 这条路口根本没进去，我照旧跑了一整轮工具、答了一遍。
-       *
-       * 光把一个路口修好不够：这类「本该让开却没说清」的情况，前端只能靠 done
-       * 收尾。所以这里立一条兜底 —— 真的走到 allow 分支却没发过 done，
-       * 就在收尾时补一条，界面绝不因为「路走岔了」而永远转圈。
-       * （flag 一发过就不再补，不会出现两条 done 把下一轮提前收掉。）
-       */
-      if (__stepAsideForWhale) {
-        /**
-         * 【让开之后，她得真的开口】—— 2026-11-02 主人第二次报「小鱼不说话」
-         *
-         * 原来这块只发 done + fish_off 就 return，指望「她在另一条请求里答了」。
-         * 可插话闸的总开关也是 whaleOn，我这边让开、它那边又判「不用我说」，
-         * 结果两个都没出声 —— 主人看到的就是一片安静。
-         *
-         * 现在这里自己把她叫起来（跟下面插话闸同一个函数），她说的话走
-         * live.events + send 两条路推出去；这条 SSE 已经发完 done，前端会去
-         * /api/chat/live 里捞（见 index.html 的 fish_off 分支）。
-         * 不 await：她要想几秒，主人不能一直卡在「正在发送」。
-         */
-        const __sayNow = String(lastUserTextOf(session) || '');
-        /**
-         * 【记一笔：这一轮她已经开过口了】—— 2026-11-03
-         *
-         * 见上面 groupSpokeThisTurn 的注释。记在这里，收尾那段群聊就会把她剔掉，
-         * 不会对着同一句再答一遍（主人看到的就是「小鲸说两轮、小鱼不说话」）。
-         */
-        try {
-          if (whaleOn(sessionId)) groupSpokeThisTurn.add(AGENT_XIAOJING);
-        } catch { /* 状态读不出来就不记，跟老行为一样 */ }
-        /**
-         * 【收尾顺序：先让她说完，再发 done、再关流】—— 2026-11-03 修
-         *
-         * 原来这里是「(async 里 await 她说) + 立刻 done/fish_off/res.end()」。
-         * 后果有两个，实测都撞上了：
-         *   1) res.end() 之后 send() 再写就是 write after end（ERR_STREAM_WRITE_AFTER_END），
-         *      异步抛、同步 try/catch 接不住 → 升级成进程级未捕获异常，记进 crash.log；
-         *   2) whale-actions.log 里写着她说了一句，会话里一条都没有 ——
-         *      因为那条 SSE 早关了，前端根本没收到。
-         *
-         * 她要想几秒，主人就得等几秒。这是对的：等的是「她的回答」，
-         * 不是白转圈（fish_off 已经在前面发过了，界面上这会儿是她在说话）。
-         */
-        try {
-          await whaleMaybeReply({
-            session,
-            userText: __sayNow,
-            send,
-            sessionId,
-            live,
-            speaksToHer: true,
-            extraRule: extraRuleForBothOn(),
-          });
-        } catch (e) {
-          console.warn('[whale] 让开之后她没接上：', String(e?.message ?? e));
-          try {
-            const { logWhaleAction } = await import('./whale-presence.mjs');
-            logWhaleAction('aside-whale-catch-' + (e?.name || 'Error') + '：' + String(e?.message ?? e).slice(0, 200));
-          } catch {}
-        }
-        try { send({ type: 'done', aside: true }); } catch {}
-        try { send({ type: 'fish_off', note: '这一句主人是问小鲸的' }); } catch {}
-        try { res.end(); } catch {}
-        return;
-      }
 
-      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
+      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
         messages: wireMessages,
         sessionId,
         snap,
@@ -7774,6 +7794,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       }
       // 「发文件」发出去的东西挂到最后那条助手消息身上：
       // 跟着会话一起落盘，重开窗口还画得出来；点一下就能预览 / 下载。
+      /* 【2026-10-30 主人原话】「中途退出重启相当于打断，也不会显示你发的任何文件」
+       * 原来这段只在「这一轮正常跑完」时才执行 —— 点停止、中途重启、断线全跳过，
+       * 画好的图 / 发出去的文件就凭空消失了（文件其实在盘上，只是没记进会话）。
+       * 现在：找不到落脚点就自己补一条助手消息，绝不因为「没地方挂」而丢掉。 */
       {
         const sent = Array.isArray(sentFiles) ? sentFiles.filter(Boolean) : [];
         if (sent.length) {
@@ -7783,29 +7807,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             const m = msgs[k];
             if (m && m.role === 'assistant' && !m.context) { idx = k; break; }
           }
-          if (idx >= 0) {
-            // 合并而不是覆盖：同一轮可能分几次发，前一批不能被后一批冲掉。
-            const prev = Array.isArray(msgs[idx]._out) ? msgs[idx]._out : [];
-            const merged = prev.slice();
-            for (const it of sent) {
-              const dup = merged.some((x) => x && x.key && it && x.key === it.key);
-              if (!dup) merged.push(it);
-            }
-            msgs[idx]._out = merged;
-            // 顺手在会话记忆本子里记一笔：消息万一丢了，记忆里还留着
-            // 「这一轮发过什么、在出件箱里叫什么名字」，主人还能从兜底箱捞回来。
-            // 只记文件名和 key，不记完整路径（路径换机器就失效了）。
-            // 记忆写失败不能影响发文件本身，但也不能悄悄吞掉——记一条日志方便查。
-            try {
-              if (getEnabledMap()['memory'] === false) throw { __skip: 1 };
-              const names = sent.map((x) => String(x?.name || '文件')).join('、');
-              appendDigest(sessionId, `发了文件：${names}`);
-            } catch (e) {
-              if (!e?.__skip) console.warn('[sendfile] 记忆本子没记上：', String(e?.message ?? e), 'sessionId =', sessionId);
-            }
-            send({ type: 'files', items: sent, at: idx });
-            saveSession(session);
+          if (idx < 0) {
+            msgs.push({ role: 'assistant', content: '', at: Date.now() });
+            idx = msgs.length - 1;
           }
+          // 合并而不是覆盖：同一轮可能分几次发，前一批不能被后一批冲掉。
+          const prev = Array.isArray(msgs[idx]._out) ? msgs[idx]._out : [];
+          const merged = prev.slice();
+          for (const it of sent) {
+            const dup = merged.some((x) => x && x.key && it && x.key === it.key);
+            if (!dup) merged.push(it);
+          }
+          msgs[idx]._out = merged;
+          // 顺手在会话记忆本子里记一笔：消息万一丢了，记忆里还留着
+          try {
+            if (getEnabledMap()['memory'] === false) throw { __skip: 1 };
+            const names = sent.map((x) => String(x?.name || '文件')).join('、');
+            appendDigest(sessionId, `发了文件：${names}`);
+          } catch (e) {
+            if (!e?.__skip) console.warn('[sendfile] 记忆本子没记上：', String(e?.message ?? e), 'sessionId =', sessionId);
+          }
+          send({ type: 'files', items: sent, at: idx });
         }
       }
       // 带上这一轮用户消息的下标：前端据此给刚画出来的气泡补「↶ 回退」按钮
@@ -7930,7 +7952,26 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         for (let i = from; i < session.messages.length; i++) {
           const m = session.messages[i];
           if (!m) continue;
-          if (m.role === 'user') break;
+          /**
+           * 【2026-10-30 修：小鲸/自建智能体插过一句，我的正文就补不回来了】
+           *
+           * 主人报：干活时刷新屏幕，界面停在半截（工具显示"完成"、话断成两截），
+           * 之后越刷越坏，要反复刷新才恢复。
+           *
+           * 查到根就在这里：老代码写的是「碰到 role:user 就 break」—— 那是在认「主人又开口了，
+           * 这一轮到我这儿为止」。可群里别人（小鲸、自建智能体）的话，是刻意按
+           * role:'user' + _who 存的（见下面那段说明）。
+           * 于是只要她们这一轮插过一句，收集就提前断了，我后面的正文全被漏掉，
+           * done 里的 turnTexts 缺段 → 前端补画时没东西可补 → 屏幕停在半截，非刷新不可。
+           *
+           * 现在改成：带 _who / _card / _cardVoice 的 user 消息不算「主人开口」，继续往下收；
+           * 只有真正的用户消息才 break。
+           */
+          if (m.role === 'user') {
+            const card = m._who || m._card || m._cardVoice;
+            if (!card) break;      // 真·主人开口了，这一轮到此为止
+            continue;              // 别人插的话不算正文，也不截断
+          }
           if (m.role !== 'assistant') continue;
           // 她的话不算我的正文：小鲸的话在会话里也是 role:'assistant'，
           // 只是多了 _whale / _tale 标记。以前没排除，她的话被当成我这轮的
@@ -8009,7 +8050,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * 【这一轮已经开过口的人，群聊不再喊一遍】—— 2026-11-03
            *
            * 主人报「同时开小鱼和小鲸，小鲸说两轮、小鱼一句话不说」：
-           * 点了小鲸 → 小鱼让开（__stepAsideForWhale）→ 让开时已经把小鲸叫起来答了一轮；
+           * 当年是「点了小鲸 → 小鱼让开」（那条路 2026-10-30 已删）→ 让开时已经把小鲸叫起来答了一轮；
            * 可走到这里，她又因为「个性没打勾 = 每轮都说」被列进 speakers，于是同一句再答一遍。
            *
            * `groupSpokeThisTurn` 是这一轮里「已经以自己身份说过话」的集合，
@@ -8901,6 +8942,7 @@ async function bootAutoStartOneBot(quiet) {
     const { startQqOneBot } = await import('./qq-bridge.mjs');
     const st = await startQqOneBot({
       ensureSession: ensureQqSession,
+      renameGroupSession,
       runChat: runQqTurn,
       setSpeakerOwner: markQqOwner,
       onLog: () => {},

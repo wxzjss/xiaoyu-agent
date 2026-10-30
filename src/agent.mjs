@@ -1215,7 +1215,29 @@ function dedupeToolCalls(messages, floor = 0) {
     if (!orphan) continue;
     // 后面直接跟着的不是这个 id 的 tool → 这组没结果，悬空
     const next = messages[i + 1];
-    const hasFollowing = next && next.role === 'tool' && !drop.has(i + 1);
+    /**
+     * 【2026-10-30 修：悬空的 tool_call 认错人】
+     *
+     * 主人报：干活时刷新屏幕，界面停在半截（工具显示"完成"、话断成两截），
+     * 之后越刷越坏，得反复刷新才恢复。
+     *
+     * 查到根：刷新的那一刻，历史正好存成「assistant 带 tool_calls，可它的结果还没写进去」，
+     * 而后面紧跟着的 tool 其实认的是【另一颗】call。
+     * 老的判法只看「下一条是不是 tool」，是就当成"有结果"放过去了 ——
+     * 那颗没人认领的 call 留在历史里，上游直接 400：
+     *   Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+     * 这一轮就废了，界面停在半截；刷新后接续又读到同一份坏历史，继续 400，越刷越坏。
+     *
+     * 现在改成：挨个看紧跟其后的那串 tool，得有一条的 tool_call_id 真正认领我这颗 call 才算数。
+     */
+    let hasFollowing = false;
+    for (let j = i + 1; j < messages.length; j++) {
+      const t = messages[j];
+      if (!t || t.role !== 'tool') break;          // 出了 tool 串，后面都跟这一组无关
+      if (drop.has(j)) continue;
+      const owned = String(t.tool_call_id || '');
+      if (owned && okTool.has(owned)) { hasFollowing = true; break; }
+    }
     if (hasFollowing) continue;   // 还有结果在，交给下一轮判断，不在这儿拆
     const said = typeof m.content === 'string' ? m.content.trim() : '';
     if (said) {

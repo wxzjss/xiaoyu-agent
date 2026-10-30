@@ -24,6 +24,7 @@ import { existsSync } from 'node:fs';
 import { capture, recent, stashSize, prune, foregroundTitle } from './screen-capture.mjs';
 import { normalizeSend, fmtSize, publicEntry, stash } from './outbox.mjs';
 import { enabledToolNames } from './features.mjs';
+import { ctxNow } from './tools.mjs';
 
 /** 这个功能开着没（关掉的时候工具根本不在她手上，这里是兜底）。 */
 function senseOn() {

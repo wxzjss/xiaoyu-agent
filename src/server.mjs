@@ -3974,27 +3974,6 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  /** 「这是我」：发一个一次性口令，让主人去 QQ 里说一句。 */
-  if (req.method === 'POST' && url.pathname === '/api/qq/claim') {
-    try {
-      const { newClaimToken } = await import('./qq.mjs');
-      const r = newClaimToken();
-      return json(res, 200, { ok: true, ...r, how: `在 QQ 里私聊机器人，发：#我是 ${r.token}` });
-    } catch (e) {
-      return json(res, 500, { error: String(e?.message ?? e) });
-    }
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/qq/claim/cancel') {
-    try {
-      const { clearClaim } = await import('./qq.mjs');
-      clearClaim();
-      return json(res, 200, { ok: true });
-    } catch (e) {
-      return json(res, 500, { error: String(e?.message ?? e) });
-    }
-  }
-
   if (req.method === 'GET' && url.pathname === '/api/qq/peers') {
     try {
       const { qqPeerList } = await import('./qq-bridge.mjs');
@@ -4042,14 +4021,12 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, removed: true });
       }
       if (payload.role !== undefined) {
-        // 只允许一个主人：先把别人的主人位撤掉
-        const all = (await import('./qq.mjs')).qqPeers();
+        // 2026-11-03：认主改由「面板上主人手填的 QQ 号」决定，这里不再能指定主人。
+        // 留着 role 只为了兼容老调用（把人标成客人）。
         if (payload.role === 'owner') {
-          for (const [k, v] of Object.entries(all)) {
-            if (v.role === 'owner' && k !== openid) noteQqPeer(k, { role: 'guest', counted: false });
-          }
+          return json(res, 400, { error: '现在认主只看「你自己的 QQ 号」那一格：把号填对就行，不用在这里指定' });
         }
-        noteQqPeer(openid, { role: payload.role === 'owner' ? 'owner' : 'guest', counted: false });
+        noteQqPeer(openid, { role: 'guest', counted: false });
       }
       if (payload.name !== undefined) noteQqPeer(openid, { name: payload.name, counted: false });
       return json(res, 200, { ok: true, peer: qqPeer(openid) });

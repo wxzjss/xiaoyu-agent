@@ -363,8 +363,9 @@ export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
   const g = qqGate();
   const q = normQqNum(qqId);
   const grp = normQqNum(groupId);
-  // 主人的号 —— 不管 strict 关没关，他一定是自己人
+  // 主人的号 —— 不管 strict 关没关，他一定是自己人（认号，不认 openid）
   if (g.ownerQq && q && q === g.ownerQq) return { ok: true, why: 'owner' };
+  // isOwner 只剩「早先被设成主人」这一个来源，口令退役后基本用不上，留着不碍事
   if (isOwner) return { ok: true, why: 'owner' };
   if (grp) {
     return g.allowGroup.includes(grp)
@@ -420,6 +421,22 @@ export function isOwnerOpenid(openid) {
 }
 
 /**
+ * 【主人认的是号，不是 openid】—— 2026-11-03
+ *
+ * 以前靠 peers[openid].role === 'owner' 记「谁是主人」，那是口令认领留下的账。
+ * 口令退休之后只留一条判据：**消息里的 QQ 号 === 面板上主人手填的那个号**。
+ *
+ * 群聊里 senderQq 是说话的那个人的号，所以主人在群里说话照样算主人；
+ * 别人在群里说话，号对不上，就按客人对待 —— 这正是主人要的口径。
+ */
+export function isOwnerQq(qqId) {
+  const q = normQqNum(qqId);
+  if (!q) return false;
+  const owner = normQqNum(qqGate().ownerQq);
+  return Boolean(owner) && q === owner;
+}
+
+/**
  * 记一个人进来（第一次见就建一条）。
  *
  * sessionId 传空 = 这个人还没有自己的会话（调用方去建）。
@@ -461,58 +478,6 @@ export function forgetAllQqPeers() {
   const data = readQq();
   data.peers = {};
   writeQq(data);
-}
-
-// ─────────────────────────── 「这是我」口令 ───────────────────────────
-
-/**
- * 发一个一次性口令，等主人去 QQ 里说一句「#我是 123456」。
- *
- * 为什么不用「谁先发消息谁就是主人」：那等于谁抢到算谁的 ——
- * 机器人一公开，主人还没说话，路人先发一句就把主人位占了。
- */
-export function newClaimToken() {
-  const data = readQq();
-  const token = String(randomInt(100000, 1000000));
-  data.claim = { token, at: Date.now() };
-  writeQq(data);
-  return { token, at: data.claim.at, ttlMs: CLAIM_TTL_MS };
-}
-
-export function claimState() {
-  const c = readQq().claim;
-  if (!c) return null;
-  if (Date.now() - c.at > CLAIM_TTL_MS) return { ...c, expired: true };
-  return { ...c, expired: false };
-}
-
-export function clearClaim() {
-  const data = readQq();
-  data.claim = null;
-  writeQq(data);
-}
-
-/**
- * 认领：文本里出现这个口令就算认成功。
- *
- * 只认一次：认成功后立刻把口令清掉，别人再发同一串没用。
- * 认出返回 true，否则 false。
- */
-export function tryClaim(openid, text, name = '') {
-  const id = str(openid, 128);
-  const c = claimState();
-  if (!id || !c || c.expired) return false;
-  const s = String(text ?? '');
-  // 口令是 6 位数字 —— 用边界匹配，避免把「2026」里的数字串当成口令
-  const hit = new RegExp(`(^|[^0-9])${c.token}([^0-9]|$)`).test(s);
-  if (!hit) return false;
-  const data = readQq();
-  const now = Date.now();
-  const cur = data.peers[id] || { sessionId: '', name: '', boundAt: now, lastAt: now, msgCount: 0 };
-  data.peers[id] = { ...cur, role: 'owner', name: str(name, 40) || cur.name || '', lastAt: now };
-  data.claim = null;
-  writeQq(data);
-  return true;
 }
 
 // ─────────────────────────── 杂项 ───────────────────────────

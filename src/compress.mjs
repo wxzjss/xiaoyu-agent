@@ -5,6 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chat } from './llm.mjs';
 import { config } from './config.mjs';
+import { acceptSelfNote, selfCompressHint } from './self-compress.mjs';
 import { effectiveContextLimit } from './settings.mjs';
 // 【2026-10-28 改】专业/快速模式不再有单独的压缩规则：到水位才压、压就写摘要、
 // 尾巴按 limit 的比例留 —— 跟人设模式一模一样（主人原话「改为正常的压缩规则」）。
@@ -340,16 +341,128 @@ const SUMMARY_TAGS = ['主人要什么', '已经做完', '还没做完', '关键
  * 然后整轮跟着断，主人看着就是「一压缩就失忆」。
  * 宁可在这一步多等，也不能因为摘要没写完就把整轮回复扔掉。
  */
+/**
+ * 【摘要至少要多长才算数】**2026-11 加**
+ *
+ * 0 = 关掉这道闸（环境变量 COMPRESS_MIN_SUMMARY_CHARS=0）。
+ * 默认 80：实测正常摘要（四标签、每个一两行）实体字数都在 250~1200 之间，
+ * 80 这条线只挡「一句话」「占位符」「【桩】摘要」这类，不会误杀真摘要。
+ * 设成 0 就退回老行为（只看非空），留给「我就是想压、短点也行」的场合。
+ */
+const SUMMARY_MIN_CHARS = (() => {
+  const raw = process.env.COMPRESS_MIN_SUMMARY_CHARS;
+  if (raw === undefined || raw === "") return 80;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 80;
+})();
 const SUMMARY_TIMEOUT_MS = 150000;
 
 /** 摘要最多喂进去多少字符：太长的话既不省钱也容易超时。 */
 const SUMMARY_INPUT_MAX = 24000;
 
+/**
+ * 把「要归档的旧对话」和「这次要做什么」排成一份请求体。
+ *
+ * 【为什么材料在前、指令在后】—— 2026-10-30 实测
+ *
+ * 以前是「system=你是这段对话里的那个人，user=对话原文」。
+ * 结果 deepseek 看到一大段有来有回、还带着自己语气和旁白的对话，
+ * 直接接着聊：回一段「主人，我先跟你说清楚」「要哪个？」，一个标签都不给。
+ * 换 pro 也一样 —— 不是模型笨，是位置放错了：
+ * 原文在 user 里 = 那是「刚发生的事」，模型的第一反应就是回应它。
+ *
+ * 实测把这堆原文挪到 user 开头、指令跟在后面（「↑以上就是这次要归档的旧对话」），
+ * 同一段素材、同一个模型，四个标签一次全中，事实抄得准。
+ *
+ * @param {string} inputText renderForSummary 的产物
+ * @returns {string}
+ */
+/**
+ * 摘要模型撂挑子的时候，自己从原文里刨一份「能看的事实清单」出来。
+ *
+ * 【为什么要有】—— 2026-10-30
+ * 以前这里写死一句「（这段早期对话没有压出可用的事实，原文已折叠）」，
+ * 整段历史就变成一行空话 —— 后面接着干的人（也就是我）完全不知道这几十轮在干嘛，
+ * 表现出来就是「被压傻了」。原文其实一条没丢，全在 folded 里，
+ * 那就把它数出来、把主人的原话摘出来，够自己认出这段活。
+ *
+ * @param {Array} old 被折掉的旧消息
+ * @param {string} segId 原文存档 id（可能为空）
+ * @returns {string}
+ */
+function fallbackSummary(old, segId) {
+  const list = Array.isArray(old) ? old : [];
+  const userSaid = [];
+  const said = [];
+  for (const m of list) {
+    const c = typeof m?.content === 'string' ? m.content.replace(/\s+/g, ' ').trim() : '';
+    if (!c) continue;
+    if (m.role === 'user' && !m.context) userSaid.push(c);
+    else if (m.role === 'assistant' && !(m.tool_calls?.length)) said.push(c);
+  }
+  const clip = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
+  const lines = [];
+  /**
+   * 抬头就写清楚：这份不是摘要，是程序拼的降级清单。
+   * 不写这句的话，后面接手的我会把下面那些「（折叠时没能自动整理」
+   * 当成事实读。
+   */
+  lines.push('（注：这份是压缩没写成时程序拼出来的清单，不是真摘要；细节在原文存档里）');
+  lines.push('主人要什么:');
+  if (userSaid.length) {
+    for (const s of userSaid.slice(-6)) lines.push('- ' + clip(s, 120));
+  } else {
+    lines.push('- （这一段里主人没开过口，全是自己在干）');
+  }
+  lines.push('已经做完:');
+  lines.push('- 这一段共 ' + list.length + ' 条消息，已整段折叠（原文没删）' + (segId ? '，存档 id：' + segId : ''));
+  if (said.length) lines.push('- 自己最后说的：' + clip(said[said.length - 1], 100));
+  lines.push('还没做完:');
+  lines.push('- （折叠时没能自动整理，要接着干就翻原文存档看细节）');
+  lines.push('关键约束:');
+  lines.push('- 摘要这一步这次没写成功，别当这段是空的：原文在 folded 存档里，一条没丢');
+  return lines.join('\n');
+}
+
+function frameSummaryInput(inputText) {
+  return [
+    String(inputText ?? ''),
+    '',
+    '↑ 以上就是要归档的旧对话。它已经结束了，不需要回应，也不要接话。',
+    '现在把它压成档案，只输出这四个标题，每个标题下面用「- 」列事实：',
+    '主人要什么:',
+    '已经做完:',
+    '还没做完:',
+    '关键约束:',
+    '不要说话、不要提问、不要旁白、不要称呼、不要建议。',
+  ].join('\n');
+}
+
+/**
+ * 工具结果留多长。
+ *
+ * 原来写死 1200。实测下来这是压缩里最伤的一处：真实会话里工具结果占全部上下文的
+ * 53%（1477 条消息、529,785 字符，正文只占 9%），单条最大 11242 字符。而报错原文、
+ * 测试输出、文件内容的关键往往就在尾巴上——1200 字正好砍在中间，摘要那头只能瞎编。
+ *
+ * 改成「掐头不掐尾」：超长就留前 40% + 后 60%，中间用省略号标出来。
+ * 报错通常在尾，文件开头通常是套话，两头都要看到才判断得准。
+ */
+const TOOL_RESULT_CHARS = 3000;
+
+function clipToolResult(s) {
+  const t = String(s ?? '');
+  if (t.length <= TOOL_RESULT_CHARS) return t;
+  const head = Math.floor(TOOL_RESULT_CHARS * 0.4);
+  const tail = TOOL_RESULT_CHARS - head;
+  return `${t.slice(0, head)}\n…（中间省略 ${t.length - TOOL_RESULT_CHARS} 字）…\n${t.slice(-tail)}`;
+}
+
 function renderForSummary(messages) {
   const lines = [];
   for (const m of messages) {
     if (m.role === 'tool') {
-      lines.push(`[工具结果] ${String(m.content ?? '').slice(0, 1200)}`);
+      lines.push(`[工具结果] ${clipToolResult(m.content)}`);
       continue;
     }
     if (m.role === 'assistant') {
@@ -395,13 +508,47 @@ function renderForSummary(messages) {
     const capChars = isOldSummary ? 1200 : 4000;
     lines.push(`${tag} ${one.slice(0, capChars)}`);
   }
-  // 整体超长就从最早的地方裁掉：摘要看最近的就有用，远古的聊天细节不值钱
+  /**
+   * 整体超长怎么办。
+   *
+   * 原来是从开头一刀切：「（更早的部分太长，已裁剪）」+ 保留最后 24000 字。
+   * 问题是每条正文先被 capChars 卡在 4000 字，所以一刀切掉的往往是**整条整条的消息**，
+   * 一段几十轮的历史可能前头二十轮一个字都没进稿，摘要那头就等于没看过。
+   *
+   * 现在分两步，先软的再硬的：
+   *   ① 每条按同一比例压短（人人有份，保留开头），塞得进去就完事；
+   *   ② 压到下限还塞不进，才丢最旧的几条，并把丢了多少条写在稿子开头。
+   */
+  const MIN_LINE = 80;
   let text = lines.join('\n');
   if (text.length > SUMMARY_INPUT_MAX) {
-    text = '（更早的部分太长，已裁剪）\n' + text.slice(text.length - SUMMARY_INPUT_MAX);
+    // ① 人均额度：总预算平摊到每条，按超额比例往下压
+    const budget = SUMMARY_INPUT_MAX - 60; // 给开头那行提示留位置
+    const avg = Math.ceil(text.length / Math.max(1, lines.length));
+    let room = Math.max(MIN_LINE, Math.floor(budget / Math.max(1, lines.length)));
+    if (room < avg) {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].length > room) lines[i] = lines[i].slice(0, room) + '…';
+      }
+      text = lines.join('\n');
+    }
+  }
+  if (text.length > SUMMARY_INPUT_MAX) {
+    // ② 还塞不进：从最旧的开始丢，直到塞得下
+    const total = lines.length;
+    let at = 0;
+    while (at < total - 1 && lines.slice(at).join('\n').length + 60 > SUMMARY_INPUT_MAX) at++;
+    const note = `（前面还有 ${at} 条没进这份稿子，原文都在 folded 存档里）`;
+    text = note + '\n' + lines.slice(at).join('\n');
   }
   return text;
 }
+
+/**
+ * 只给验收脚本用：把内部函数掏出来测。
+ * 前缀用 __for_test，正式代码里没人调，别在这上面搭业务。
+ */
+export const __for_test = { renderForSummary, clipToolResult, TOOL_RESULT_CHARS };
 
 /**
  * 压缩历史。就地改 messages，返回一份压缩前后统计。
@@ -437,6 +584,16 @@ export async function compressHistory({
   keepTokens,
   signal,
   model = '',
+  /**
+   * 这一轮「我亲手写的压缩记忆」。
+   * 主人原话：「我要求压缩是当前会话的 ai 自己手动压缩（决定哪些该删、
+   * 哪些留一句话就够），而不是外包给模型。」带了它就一定用它，不问模型。
+   */
+  selfNote = '',
+  /** 我这一轮的清单原文（写提示段时贴给我看，别让我凭空回忆进度）。 */
+  selfPlan = '',
+  /** 只算「该不该压、能折多少」，不真动手 —— 用来先问我，等我写完再折。 */
+  dryPlan = false,
 } = {}) {
   if (signal?.aborted) return { compressed: false, before: estimateTokens(messages), after: estimateTokens(messages), reason: 'aborted' };
 
@@ -777,7 +934,97 @@ export async function compressHistory({
   const old = messages.slice(start, cut);
   const tail = messages.slice(cut);
 
+  /**
+   * 【让她自己写摘要 —— 2026-10-30】
+   *
+   * 主人原话：「让该会话的 ai 自己决定哪些上下文该删，哪些不能删，
+   * 怎么总结摘要，让她自己决定怎么压，让她自己压」。
+   *
+   * 上一层（askCutPoint）只让她说「切在哪儿」；摘要却还是程序拿固定四标签去问她 ——
+   * 那仍然是「程序决定怎么总结」。这里补上最后一段：这份档案是她自己写的，
+   * 哪条详、哪条略由她判断，而不是我们先替她定好「只许写四类事实」。
+   *
+   * 三条底线不能踩（踩了比不压更糟）：
+   *   1. 只能引原文，不许编 —— 历史里编出来的一句，后面接手的人会当成事实。
+   *   2. 不许当顾问 —— 实测喂一段机械重复的对话，模型爱写「建议你…」「你希望我查哪种」，
+   *      这种话进历史就是毒：后面接手的模型会以为自己是个顾问。
+   *   3. 标签结构不许乱 —— 后面要按标签清洗、按标签读取；结构一乱整段作废
+   *      （宁可这次不压，也不能丢原文，见下面 summary-failed-keep-original）。
+   *
+   * 环境变量 COMPRESS_HER_SUMMARY=0 可以退回老的四标签死提示词。
+   */
+
+  /**
+   * 【我亲手写的就先压 —— 2026-10-30】
+   *
+   * 主人原话：「我要求压缩是当前会话的 ai 自己手动压缩（决定哪些该删、
+   * 哪些留一句话就够），而不是外包给模型。」
+   *
+   * 所以顺序倒过来了：
+   *   ① 带了 selfNote（这一轮我亲手写的那段）→ 直接用它，模型一个字都不问；
+   *   ② 没带 + dryPlan（先探一探）→ 只把该折多少、存到哪个编号报回去，我不动手；
+   *   ③ 没带 + 没 dryPlan → 才问模型兜底（它只是代班，不是主角）。
+   */
+  const myNote = String(selfNote ?? '').trim();
+  const __selfNoteApplied = myNote.length > 0;
+
+  if (dryPlan) {
+    const t = estimateTokens(messages);
+    const startDry = headLength(messages);
+    const keepDry = resolveKeepTokens({ keepTokens, limit: cap, model });
+    const cutDry = findCut(messages, startDry, keepDry);
+    const foldCount = Math.max(0, cutDry - startDry);
+    return {
+      compressed: false,
+      before: t,
+      after: t,
+      limit: cap,
+      trigger,
+      dryRun: true,
+      needSelfCompress: foldCount > 0 && t >= Math.max(1, trigger),
+      foldCount,
+      // 存档编号先按「真压时会发生的样子」报出去：会话-段号-时间戳，
+      // 这样我写记忆时能直接引用，folded_list 里翻得到。
+      segId: 'seg-' + (sessionId || 'x') + '-' + Date.now(),
+      window: contextWindowOf(model) || 0,
+      ratio: contextWindowOf(model) ? t / contextWindowOf(model) : 0,
+      kept: messages.length - cutDry,
+      start: startDry,
+      cut: cutDry,
+    };
+  }
+
+  const HER_SUMMARY_SYSTEM = [
+    '你是一台档案机。你的唯一工作是把一段已经结束的旧对话压成一份事实档案，交给过几天回来接着干活的人看。',
+    '记住：你不在那段对话里，也不跟任何人说话。你不是助手，不是顾问，没有人会回答你的问题，你也不许问任何问题。',
+    '',
+    '输出格式（机器解析，格式不对整段作废）：',
+    '只输出下面这四个标题，每个标题单独占一行，标题后面不要写东西；每个标题下面用「- 」列事实，每个标题最多 5 条。',
+    '',
+    '主人要什么:',
+    '已经做完:',
+    '还没做完:',
+    '关键约束:',
+    '',
+    '硬性要求：',
+    '- 只写这段对话里能确认的事实。不许编、不许猜、不许补全。数字、路径、文件名、接口名、变量名原样抄。',
+    '- 不许写称呼（主人 / 你 / 我）、不许写旁白和括号里的动作、不许写语气词和表情、不许评价、不许给建议、不许反问。',
+    '- 一段对话又长又重复时，删掉重复，只写一次事实；寒暄和空转的整段略过。',
+    '- 尽量短。够后面接着干就行。宁可少写，也不要破坏上面这个格式。',
+  ].join('\n');
+
+  /** 这一轮摘要用哪份提示词：她自己那份（默认）还是老死提示词。 */
+  const summarySystem = process.env.COMPRESS_HER_SUMMARY === '0' ? SUMMARY_SYSTEM : HER_SUMMARY_SYSTEM;
+
   let summaryText = '';
+  // 【我亲手压】我的那段直接当摘要用 —— 模型一个字都不问。
+  if (__selfNoteApplied) {
+    summaryText = myNote;
+    if (process.env.COMPRESS_DEBUG) console.log('[compress] 用了我亲手写的压缩记忆，' + myNote.length + ' 字');
+  }
+
+  /** 这一轮的摘要是自刨兜底（模型没写出来）。下一轮有正式摘要就换掉它。 */
+  let fallbackUsed = false;
   let error;
   /**
    * 【2026-10-28 改：专业/快速模式也做摘要了】
@@ -813,8 +1060,8 @@ export async function compressHistory({
     try {
       const res = await chat({
         messages: [
-          { role: 'system', content: SUMMARY_SYSTEM },
-          { role: 'user', content: inputText },
+          { role: 'system', content: summarySystem },
+          { role: 'user', content: frameSummaryInput(inputText) },
         ],
         // 摘要必须跟当前会话用同一个模型 / 同一套端点：会话切了模型，
         // 摘要却还拿全局默认去算，压出来的东西对不上那个模型的窗口和风格。
@@ -831,7 +1078,18 @@ export async function compressHistory({
     }
   };
 
-  {
+  /**
+   * 跑题稿先扣在手上 —— 只有「一个标签都没有、里面也没有可用事实行」时才拿来兜底。
+   *
+   * 【2026-10-30 修的真 bug】以前这里是 `summaryText = summaryText || retry`，
+   * 跑题稿被直接塞进 summaryText，于是下面「摘要没生成出来就不压」那道闸门永远不生效：
+   * cleanSummary 宽松模式会把「建议你按哪种情况查？」这种行洗空，只剩一句
+   * 「（这段早期对话没有压出可用的事实，原文已折叠）」—— 然后照压不误，
+   * 等于拿一句占位符换掉几十条原文。
+   */
+  let lastJunk = '';
+  /** 我亲手写了就不问模型 —— 整段跳过（主人原话：不许外包给模型）。 */
+  if (!__selfNoteApplied) {
     // 第一次：完整输入
     try {
       summaryText = await runSummary(renderForSummary(old), SUMMARY_TIMEOUT_MS);
@@ -867,7 +1125,7 @@ export async function compressHistory({
      * —— 实测这种模型只加一句「请用标签」是不听的，得点名它错在哪。
      */
     const RETRY_HINTS = [
-      '【纠正】你上一次的输出不合格：没有使用那四个标签，而是评价了这段对话、还问了对方要怎么做。'
+      '【纠正】你上一次的输出不合格：你没有写那四个标题，而是在跟人说话、在提问、在给建议。'
       + '现在只输出：主人要什么: / 已经做完: / 还没做完: / 关键约束: 这四行标签，'
       + '每个标签下面用 "- " 列事实。不许有第五行标签，不许有任何解释、评论、提问、结尾语。',
       '【最后一次】再重复一遍：输出必须形如\n'
@@ -879,11 +1137,34 @@ export async function compressHistory({
       try {
         const retry = await runSummary(renderForSummary(old) + '\n\n' + hint, SUMMARY_TIMEOUT_MS);
         if (looksStructured(retry)) { summaryText = retry; error = undefined; }
-        else { summaryText = summaryText || retry; }
+        else { lastJunk = retry || lastJunk; }
       } catch (err3) {
         error = String(err3?.message ?? err3);
         break;
       }
+    }
+  }
+
+  /**
+   * 【只拿到跑题稿 → 这一轮不压，原文留下】
+   *
+   * 稿子里一个标签都没有 = 模型整场没听懂这活儿。cleanSummary 会把它洗成
+   * 「（这段早期对话没有压出可用的事实，原文已折叠）」那一句占位符 ——
+   * 不能拿一句占位符换掉几十条原文。
+   *
+   * 例外：虽然没按四标签写，但里面有像事实的行（带路径/数字/命令），
+   * 那是「模型换了写法」而不是跑题，还能救，交给 cleanSummary 宽松模式洗。
+   */
+  if (!summaryText && lastJunk) {
+    const junkLines = String(lastJunk).split('\n').map((l) => l.trim()).filter(Boolean);
+    const hasFact = junkLines.some((l) => SUMMARY_FACT_LINE.test(l)
+      && !SUMMARY_ADVISOR.test(l)
+      && !/^(我|你|好的|收到)/.test(l));
+    if (hasFact) {
+      summaryText = lastJunk;
+      error = undefined;
+    } else {
+      error = error || '摘要跑题（模型没按四标签写，也没有可用事实），这轮不压';
     }
   }
 
@@ -898,15 +1179,88 @@ export async function compressHistory({
    * 也不能把他的话扔掉 —— 扔掉的东西是找不回来的。
    * 下一轮如果摘要能出来，自然会再压。
    */
+  /**
+   * 【摘要洗完之后是空的 → 同样这一轮不压】
+   *
+   * 两道关：上面那道管「压根没拿到稿子」，这道管「拿到了、被 cleanSummary 洗空了」
+   * —— 实测跑题稿洗空之后，以前 cleanSummary 会塞一句「（这段早期对话没有压出
+   * 可用的事实，原文已折叠）」当摘要，然后照压：几十条原文换成一句占位符。
+   * 现在 cleanSummary 洗完是空就返回空，这里看见空就整轮放弃，原文一条不动。
+   */
+  /**
+   * 【摘要太短 → 这轮不压】**2026-11 加**
+   *
+   * 实测事故：折叠记录 seg-2-1854 那条 count=1852、tokens=1809562，
+   * 摘要正文只有五个字「【桩】摘要」—— 1852 条原文、180 万 token，
+   * 在上下文里就换成了这么一句。原文确实还躺在 folded/ 里，可那一轮的我
+   * 等于什么都不记得，只能从头再干一遍。
+   *
+   * 病根：compressed: true 只看「有没有拿到字符串」，不看「这条摘要能不能用」。
+   * 上面那两道关挡的是「跑题」，挡不住「短」—— 而短到一句话的摘要，
+   * 和跑题对后续干活一样坏。
+   *
+   * 所以这里补第三道：洗完之后实体字数不到 SUMMARY_MIN_CHARS，就当没摘出来，
+   * 整轮放弃、原文一条不动。宁可上下文大一点，也不能拿一句话换掉几十条原文。
+   */
+  /**
+   * 【两种不同的“太短”】—— 2026-11
+   *
+   * · 真摘要（模型写的）：实字不到 SUMMARY_MIN_CHARS 就不压。
+   * · 程序兜底清单（fallbackSummary）：它本来就是降级方案。
+   *   不管它长短，都得明写「底下没经过模型」。
+   *   否则下一个我读到它，会当成是自己记下的事实 —— 而里面全是
+   *   「（折叠时没能自动整理」这种话。
+   */
+  if (SUMMARY_MIN_CHARS > 0 && !fallbackUsed) {
+    const cleaned = cleanSummary(summaryText);
+    if (summaryText && cleaned) {
+      /** 只算实体字数：去掉空白和纯符号，防止拿一堆横杠和星号凑数。 */
+      const solid = cleaned.replace(/[\s\-*#>|`~]/g, "").length;
+      if (solid < SUMMARY_MIN_CHARS) {
+        summaryText = "";
+        error = error || ("摘要只有 " + solid + " 个实字（少于 " + SUMMARY_MIN_CHARS + "），这轮不压");
+      }
+    }
+  }
+  if (!pure && summaryText && !cleanSummary(summaryText)) {
+    summaryText = '';
+    error = error || '摘要洗完什么都不剩（模型跑题），这轮不压';
+  }
+
   if (!pure && !summaryText) {
-    return {
-      compressed: false,
-      before,
-      after: before,
-      limit: cap,
-      reason: 'summary-failed-keep-original',
-      error: error || '摘要没生成出来',
-    };
+    /**
+     * 【2026-10-30 改：摘要没写出来，不再整轮放弃】
+     *
+     * 老逻辑是「摘要失败 → 这一轮不压，原文一条不动」。安全，但代价是
+     * 上下文一路涨到顶、每轮白跑一次摘要请求，表现出来就是「该压不压、越跑越傻」。
+     * 现在：自己从原文刨一份事实清单（fallbackSummary）顶上 —— 原文等会儿整段存进
+     * folded，一条不丢，摘要只负责说「这段干过什么」，够用。
+     */
+    /**
+     * 【和镠底清单分清楚】—— 2026-11
+     *
+     * fallbackSummary 拼出来的东西里大半是程序自己的话
+     * （「（这一段里主人没开过口」「（折叠时没能自动整理」），
+     * 一拼就是四五百字 —— 数字上完全过得了上面那道「太短就不压」。
+     * 所以不能拿字数当唯一尺子：它是一个明确的降级，不是一份摘要。
+     * 这里打上 fallbackUsed，后面的日志和返回值都能看出来。
+     */
+    const fb = fallbackSummary(old, sessionId || '');
+    if (fb && cleanSummary(fb)) {
+      summaryText = fb;
+      fallbackUsed = true;
+      error = undefined;
+      console.warn('[compress] 摘要模型没写出来，改用自刨的事实清单顶上（' + String(fb).length + ' 字）');
+    } else {
+      return {
+        compressed: false,
+        before,
+        after: before,
+        limit: cap,
+        reason: 'summary-failed-keep-original',
+        error: error || '摘要没生成出来',
+      };
+    }
   }
 
   /**
@@ -1016,8 +1370,8 @@ function cleanSummary(text) {
     s = (lastStop > SUMMARY_TEXT_MAX * 0.5 ? head.slice(0, lastStop + 1) : head) + '\n（摘要过长，已截断）';
   }
   s = s.replace(/\n{3,}/g, '\n\n').trim();
-  // 全被洗空了也得给一句实话，别留下一条空摘要占着位置
-  return s || '（这段早期对话没有压出可用的事实，原文已折叠）';
+  // 全被洗空了也不能编一句假的顶上 —— 空着返回，让上层看见「这次没压出东西」
+  return s;
 }
 
   const makeSummary = () => ({
@@ -1115,7 +1469,9 @@ function cleanSummary(text) {
     for (let i = start; i < cut; i++) {
       const m = messages[i];
       if (keptText.has(m)) continue;
-      if (m?.summary) continue; // 上一轮的摘要不用再存一遍
+      // 上一轮的摘要不用再存一遍；但「自刨兜底」的摘要要重新摘 ——
+      // 它只是模型没写出来时的代班，留着就把正式摘要堵在门外了（2026-10-30）。
+      if (m?.summary && !m.fallbackSummary) continue;
       lost.push({ msg: m, at: i });
     }
     if (lost.length && sessionId) {
@@ -1131,6 +1487,7 @@ function cleanSummary(text) {
         messages: lost.map((x) => x.msg),
         tokens: estimateTokens(lost.map((x) => x.msg)),
         summary: summaryText,
+      fallbackSummary: fallbackUsed,
         reason: String(trigger || 'compress'),
       });
       if (seg) {

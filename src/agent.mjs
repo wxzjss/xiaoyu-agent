@@ -1,5 +1,10 @@
 // The agent loop: call model -> run tools -> feed results back -> repeat.
 import { streamChat, modelNameForSession } from './llm.mjs';
+// 窗口预算到底怎么算：contextWindowOf 在 rates.mjs，不在 llm.mjs。
+// 这里漏了 import 整整一周没暴露（标识符自检是 569320e 才加上的，
+// 而这次是它第一次指出它），因为走的是「调一次不存在的函数就抛」那条路，
+// 抛出来又被上层的 try 当「这轮压缩算了」吞掉了 —— 见下面 537 行那段注释。
+import { contextWindowOf } from './rates.mjs';
 // activeEndpoint / endpointFor：连不上模型时报错要说清是哪个地址，得能拿到当前生效的那套参数。
 import { activeEndpoint, endpointFor } from './models.mjs';
 // getOverride：会话里临时切过模型的话，报错要报那一套的地址，不是全局默认那套。
@@ -10,14 +15,22 @@ import { takeMail, formatMail } from './peer.mjs';
 // 读成乱码，然后如实说「一片糊」。她没撒谎，是真的没看见。
 import { inflateHistory, readImageDataUrl } from './attach.mjs';
 import { slimRoundMessages, measureMessages } from './turn-slim.mjs';
-import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox } from './tools.mjs';
+import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox, ctxNow } from './tools.mjs';
 import { config } from './config.mjs';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
 import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identity.mjs';
 // 管理员权限：开了就把「整台机器都能动」跟着规则再发一遍（很多网关丢 system）。
 import { adminPromptBlock } from './admin-mode.mjs';
-import { pureModeOn, setPureToolLister } from './pure.mjs';
+import { pureModeOn, setPureToolLister, doerOf, DOER_WORKERS } from './pure.mjs';
+// 办事模式：主智能体不自己动手，只派活/检查/验收/压上下文（2026-11-03）。
+import { KEEP_TOOLS as TASK_KEEP_TOOLS } from './task-mode.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
+// 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
+import { lastSelfNote, selfCompressHint } from './self-compress.mjs';
+// 工具过程擦成结论：命令和整份代码擦掉，只留调查结果。
+import { thinHistory } from './trim-tools.mjs';
+// 清单：压缩记忆里要带「做到第几步」，所以得把清单读进来。
+import { planTextFor, formatPlan } from './plan.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
@@ -101,9 +114,33 @@ const PURE_HIDDEN_TOOLS = ['memory_add', 'memory_pin'];
 
 /** 当前这一轮真正能交到模型手上的工具。 */
 function toolsForTurn(sessionId) {
-  const all = enabledToolSchemas();
-  if (!pureModeOn(sessionId)) return all;
-  return all.filter((t) => !PURE_HIDDEN_TOOLS.includes(t?.function?.name));
+  let all = enabledToolSchemas();
+  if (pureModeOn(sessionId)) {
+    all = all.filter((t) => !PURE_HIDDEN_TOOLS.includes(t?.function?.name));
+  }
+  /**
+   * 【把干活的手收走】2026-11-03 —— 现在是「专业模式里选的那一档」，不是独立开关
+   *
+   * 主人要的是「主智能体不负责工作，只负责发布任务、检查、验收、压缩」。
+   * 这一段只在「专业模式开着 + 里面选了派活」时生效（判断全在 pure.mjs 的 doerOf 里，
+   * 那边会保证：专业模式关着就一定是 self），这里不再自己看第二个开关。
+   *
+   * 【为什么必须在这里收，光写提示词不行】
+   * 提醒词只影响「她想不想用」，收走清单影响「她能不能用」。
+   * 手里还攥着 write_file / run_command 的主智能体，一定会在某一次「我顺手改一下」里
+   * 自己动起手来 —— 那一轮就退化成老样子了，而且主人看不出是哪一步破的。
+   *
+   * 只留 KEEP_TOOLS 那几样：派活、看花名册、清单、记事、翻史书/折叠箱（检查证据用）。
+   * 白名单写法而不是黑名单：以后新增的干活工具自动被挡住，不用回来补一行。
+   *
+   * 【跟专业模式自己那层过滤的顺序】先减 memory_add/memory_pin，再减到这个白名单 ——
+   * 白名单本来就不含那两支笔，所以顺序不影响结果，留着只是因为读起来更顺。
+   */
+  if (doerOf(sessionId) === DOER_WORKERS) {
+    const keep = new Set(TASK_KEEP_TOOLS);
+    all = all.filter((t) => keep.has(t?.function?.name));
+  }
+  return all;
 }
 
 /**
@@ -481,9 +518,97 @@ export async function runAgent({
     // 每轮调模型前都量一下历史；超了就把旧对话折成摘要。没超就什么都不做（不额外花钱）。
     // 一轮只压一次（见上面 compressedThisTurn 的说明）
     const noCompress = { compressed: false, before: 0, after: 0 };
+    // 【压缩改成我自己挑 —— 2026-10-30】
+    // 主人原话：「我要求压缩是当前会话的ai自己手动压缩（决定哪些该删，哪些留一句话就够），
+    // 而不是外包给模型」。所以这里分三步：
+    //   ① 先把我这一轮的工具过程（命令、整份代码、长结果）擦成结论；
+    //   ② 还超线，就只「量」不压，把存档编号和清单递给我，让我亲手写记忆；
+    //   ③ 等下一轮我把【压缩记忆·编号】写出来了，再真的压 —— 用我写的那段当摘要，
+    //      模型一个字都不问（它只在没人写的时候兜底）。
+    /** 这一轮我亲手写的压缩记忆（上一轮开头那段），没有就是空。 */
+    /**
+     * 【工具调用别堆着 —— 2026-10-30 主人原话】
+     * 「调用的内容那一大堆代码也会记在上下文里面吗？如果是。那么就不能每调用完几次，
+     * 除非很重要，否则就把调查结果记下然后具体代码内容删吗？」
+     *
+     * 做法：把我自己这一轮的工具过程（面板里横杠那几张卡、里面是整份代码和整段返回）
+     * 擦成一句「已执行，内容略」，结论留在下面的气泡里 —— 结论本来就在气泡里，不用搬。
+     * 长结果只留头尾。最近 12 条一律不动（可能还得回头查）。
+     *
+     * 只在历史过四成、或这一轮已经压过的时候擦：擦一次就改了历史，提示缓存全废。
+     */
+    if (!noCompress && !selfNote && messages.length > 40) {
+      const est = estimateTokens(messages);
+      const win = contextWindowOf(turnModel) || 0;
+      if (win > 0 && est / win > 0.4) {
+        try {
+          const th = thinHistory(messages, { keepRecent: 12 });
+          if (th.chars > 2000 && th.tools > 0) {
+            messages.length = 0;
+            messages.push(...th.messages);
+            if (process.env.COMPRESS_DEBUG) {
+              console.log("[compress] 擦了工具过程 " + th.tools + " 处 / 省 " + th.chars + " 字");
+            }
+          }
+        } catch { /* 擦不动就不擦，别卡住这一轮 */ }
+      }
+    }
+
+    const selfNote = lastSelfNote();
+    /**
+     * 【清单读错了一个函数 —— 2026-10-30 修 · 干活鱼2 的 ⚠】
+     *
+     * 以前这里是 `const planTxt = readPlanTxt(ctxNow()); planTxt ? formatPlan(planTxt) : ''`。
+     * 可 readPlanTxt 是**界面**用的，回的是 `{text, path}`，里面没有 steps ——
+     * formatPlan 一取 `.steps.length` 就抛 `Cannot read properties of undefined (reading 'length')`。
+     *
+     * 这个位置偏偏在压缩前置段，历史一超线（420k token）每一圈都会走到它，
+     * 于是这个会话 16:05 之后一句都答不上来，界面上只剩一行 ⚠。
+     * 现在换成 planTextFor：它就是「给提示用的纯文本」，读不到也只是一句「现在没有清单」。
+     */
+    const planText = (() => { try { return planTextFor(ctxNow()); } catch { return ''; } })();
+    thinHistory(messages, { keepRecent: 12, sessionId: ctxNow() });
+
+
+    /** ② 只量不压：超了就把「该你自己压了」递到这一轮的提示里。 */
+    if (!noCompress && !selfNote) {
+      let probe = null;
+      try {
+        probe = await compressHistory({
+          messages,
+          limit: config.contextLimit,
+          sessionId: ctxNow(),
+          model: turnModel,
+          keepTokens: config.contextKeepTokens,
+          dryPlan: true,
+        });
+      } catch { /* 量不出来就照老路走，别卡住 */ }
+      if (probe?.needSelfCompress) {
+        const hint = selfCompressHint({
+          segId: probe.segId,
+          tokens: probe.before,
+          window: probe.window,
+          kept: probe.kept,
+          removed: probe.foldCount,
+          planText,
+        });
+        if (hint) {
+          messages.push({ role: "user", content: hint });
+          if (process.env.COMPRESS_DEBUG) console.log("[compress] 递给我自己压：待折 " + probe.foldCount + " 条");
+        }
+      }
+    }
     const compressed = compressedThisTurn
       ? noCompress
-      : await compressHistory({ messages, signal, model: turnModel, sessionId });
+      : await compressHistory({
+          messages,
+          signal,
+          model: turnModel,
+          sessionId,
+          // 我亲手写的就在这儿 —— 有它，模型一个字都不会被问。
+          selfNote: selfNote || undefined,
+          selfPlan: planText,
+        });
     if (compressed.compressed) {
       compressedThisTurn = true;
       onEvent({
@@ -1028,16 +1153,98 @@ function dedupeToolCalls(messages, floor = 0) {
 
   // —— 第二趟：处理 tool 结果 ——
   const firstToolAt = new Map();   // id → 第一条 tool 结果的下标
+  /**
+   * 每个 tool 结果「合法认领者」的下标集合：同一个 id 的**第一条** tool 消息的下标。
+   * 一条 tool 合不合法，判据只有一个 —— 从它往上追、**跳过其它 tool**之后，
+   * 撞见的那个非 tool 消息是不是一条带着这个 id 的 assistant(tool_calls)。
+   *
+   * 【为什么不能只看 ownerIndex —— 2026-10-30 修 · 干活鱼2 的 LLM HTTP 400】
+   *
+   * repairHistory 收拾尾巴时是这么写的：尾部 assistant 带着 tool_calls、
+   * 后面一条 tool 结果都没有 → `messages.pop()` 把它砍掉。
+   * 可那个形状在「assistant(tool_calls) + tool 结果 + 用户的下一句话」里也成立吗？
+   * 不成立 —— 用户的话就顶在 tool 后面。真正发生过的是这种情况：
+   *
+   *   assistant(call_X) → tool(call_X) → （标成「这条不要了」）→ 尾巴 pop 掉的是谁？
+   *   pop 只会摘最后一个元素，于是**它摘掉的是别的东西，留下了 assistant 的空壳** …
+   *   反过来也真踩过：有一条 assistant(call_X) 被动过（tool_calls 被清空成 []），
+   *   而它下面那条 tool(call_X) 还在，ownerIndex 里那个 id 依旧认着它的位置。
+   *
+   * 于是 wire 上出现 `assistant(无 tool_calls) → tool(call_X) → user`，
+   * 上游一句话就怼回来：「Messages with role 'tool' must be a response to a
+   * preceding message with 'tool_calls'」—— 从此这个会话每一轮都 400，
+   * 主人说多少句「继续」都没有回音（干活鱼2 就是这么卡死的）。
+   *
+   * 所以这里不再信 ownerIndex 的位置账，改成**在数组上现追现验**：
+   *   · 往上追、跳过连续的 tool，找到那个「非 tool」的老大；
+   *   · 它必须是 assistant，且 tool_calls 里真有这个 id；
+   *   · 它是这一组里第一个 tool 结果（重复的照样丢）。
+   * 三条缺一条就把这条 tool 结果丢掉 —— 留一条没人认领的 tool 结果，
+   * 换来的就是整轮请求被拒，不如丢。
+   */
+  const okTool = new Set();
   for (let i = floor; i < messages.length; i++) {
     const m = messages[i];
     if (!m || m.role !== 'tool' || !m.tool_call_id) continue;
     const id = String(m.tool_call_id);
-    const owner = ownerIndex.get(id);
-    // 正主已经被删掉了 → 结果留着也没用
-    if (owner === undefined || drop.has(owner)) { drop.add(i); continue; }
-    // 正主还在，但已经有一条结果了 → 这条是重复的
+    // 一条 id 只认第一个结果，后面的都是重播
     if (firstToolAt.has(id)) { drop.add(i); continue; }
+    // 往上追：跳过连续的 tool，看撞见的是谁
+    let k = i - 1;
+    while (k >= floor && messages[k] && messages[k].role === 'tool') k--;
+    const owner = k >= floor ? messages[k] : null;
+    const owned = Boolean(owner)
+      && owner.role === 'assistant'
+      && Array.isArray(owner.tool_calls)
+      && owner.tool_calls.some((tc) => tc && String(tc.id) === id)
+      && !drop.has(k);
+    if (!owned) { drop.add(i); continue; }
     firstToolAt.set(id, i);
+    okTool.add(id);
+  }
+  /**
+   * 反过来也要清：assistant 带着 tool_calls，可它的 tool 结果被上面丢光了
+   * （或者从来没有过）—— 那这一组的 assistant 就是悬空的，同样会被拒。
+   * 只砍挂在末尾/紧挨着下一个非 tool 的那种，别动中段还能自洽的组。
+   */
+  for (let i = floor; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || m.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) continue;
+    if (drop.has(i)) continue;
+    const orphan = m.tool_calls.some((tc) => tc && tc.id && !okTool.has(String(tc.id)));
+    if (!orphan) continue;
+    // 后面直接跟着的不是这个 id 的 tool → 这组没结果，悬空
+    const next = messages[i + 1];
+    /**
+     * 【2026-10-30 修：悬空的 tool_call 认错人】
+     *
+     * 主人报：干活时刷新屏幕，界面停在半截（工具显示"完成"、话断成两截），
+     * 之后越刷越坏，得反复刷新才恢复。
+     *
+     * 查到根：刷新的那一刻，历史正好存成「assistant 带 tool_calls，可它的结果还没写进去」，
+     * 而后面紧跟着的 tool 其实认的是【另一颗】call。
+     * 老的判法只看「下一条是不是 tool」，是就当成"有结果"放过去了 ——
+     * 那颗没人认领的 call 留在历史里，上游直接 400：
+     *   Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+     * 这一轮就废了，界面停在半截；刷新后接续又读到同一份坏历史，继续 400，越刷越坏。
+     *
+     * 现在改成：挨个看紧跟其后的那串 tool，得有一条的 tool_call_id 真正认领我这颗 call 才算数。
+     */
+    let hasFollowing = false;
+    for (let j = i + 1; j < messages.length; j++) {
+      const t = messages[j];
+      if (!t || t.role !== 'tool') break;          // 出了 tool 串，后面都跟这一组无关
+      if (drop.has(j)) continue;
+      const owned = String(t.tool_call_id || '');
+      if (owned && okTool.has(owned)) { hasFollowing = true; break; }
+    }
+    if (hasFollowing) continue;   // 还有结果在，交给下一轮判断，不在这儿拆
+    const said = typeof m.content === 'string' ? m.content.trim() : '';
+    if (said) {
+      messages[i] = { role: 'assistant', content: m.content, ...(m._at ? { _at: m._at } : {}) };
+    } else {
+      drop.add(i);
+    }
   }
 
   if (!drop.size) return messages;

@@ -833,6 +833,58 @@ export function groupAgentIds(sessionId) {
   return cleanGroup(data, data.groupBySession[sid]);
 }
 
+/**
+ * 【谁是这个会话的主智能体】—— 2026-11-03 主人定的
+ *
+ * 原话：「主智能体指左侧排序最靠前的已启用且未被禁用的智能体」。
+ *
+ * 也就是说：不看人设、不看是不是小鱼，**只看左侧那竖列「屋里的人」的从上到下**。
+ * 第一个既开着、又没被禁用的，就是主智能体。主人想换主智能体，把谁拖到最上面、开着就行。
+ *
+ * 三个来源要并成一套（跟 server.mjs 里画那一竖列用的是同一套判据，别搞成两套）：
+ *   小鱼   → fish-presence（顶栏/牌子那颗的最终真相）
+ *   小鲸   → whale-presence
+ *   别的卡 → groupEnabledBySession 那张牌子表（没记过 = 开着）
+ *
+ * 一个都不剩（全被关掉）时返回 null —— 那种情况下没有主智能体，
+ * 调用方自己决定退回谁（办事模式里会退回「没人可当主智能体」并拒绝开工）。
+ *
+ * @param {string} sessionId
+ * @param {(id:string)=>boolean} [isOn] 可选：外部传一个「这个人开着没」的判据进来，
+ *        用来跟界面/server 的那份状态对齐（不传就用本文件自己的判据）。
+ * @returns {string|null} agentId
+ */
+export function mainAgentId(sessionId, isOn = null) {
+  const sid = String(sessionId || '');
+  if (!sid) return null;
+  let ids = [];
+  try { ids = groupAgentIds(sid); } catch { return null; }
+  const onMap = (() => { try { return groupEnabledMap(sid); } catch { return {}; } })();
+  /**
+   * 小鱼、小鲸的「开着没」在 fish-presence / whale-presence 里，
+   * 不在上面那张牌子表里（牌子表只管自定义卡）。
+   *
+   * 【为什么不在文件顶 import】
+   * fish-presence / whale-presence 会反过来碰 agents（初始化时要读名单），
+   * 静态成环会炸。所以这里**同步**读：用 createRequire 不行（是 ESM），
+   * 于是改成「调用方传判据」为主 —— 不传的时候，只认牌子表 + 默认开着。
+   * 也就是说：不传 isOn 时，小鱼/小鲸按「开着」算（它们的 presence 文件读不到
+   * 就默认 true，跟 server.mjs 里 try/catch 兜底的语义一致）。
+   */
+  const judge = typeof isOn === 'function'
+    ? isOn
+    : (id) => {
+      if (id === AGENT_XIAOYU || id === AGENT_XIAOJING) return true;
+      return onMap[id] !== false;
+    };
+  for (const id of ids) {
+    let on = false;
+    try { on = judge(id) !== false; } catch { on = true; }
+    if (on) return String(id);
+  }
+  return null;
+}
+
 /** 一次读出「每个会话分别有谁在场」（给会话列表/顶栏用，跟 sessionAgentMap 一个口径） */
 export function groupAgentMap() {
   const data = readAll();

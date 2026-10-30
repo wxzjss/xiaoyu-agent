@@ -88,7 +88,7 @@ function blank() {
     peers: {},
     claim: null,
     // 「自己注册的号」那条道（OneBot v11）。默认没开 —— 没挂协议端就没意义。
-    onebot: { enabled: false, mode: 'forward', url: 'ws://127.0.0.1:3001', token: '', ownerQq: '' },
+    onebot: { enabled: false, mode: 'forward', url: 'ws://127.0.0.1:3001', token: '', ownerQq: '', autoStart: false },
   };
 }
 
@@ -120,6 +120,24 @@ export const MAX_PEERS = 50;
 /** 口令多久内有效 */
 export const CLAIM_TTL_MS = 10 * 60 * 1000;
 
+/**
+ * 【2026-10-30 补：claimState is not a function】
+ * 主人点【连上】报「读不到状态：claimState is not a function」。
+ * 根因：server.mjs 一直写 `const { claimState } = await import("./qq.mjs")`，
+ * 可这个文件从头到尾就没导出过 claimState —— 解构出来是 undefined，一调就崩。
+ * 这里按 claim 字段（token + at）现算出「口令还在不在有效期内」。
+ *   { active, token, at, ageMs, leftMs }
+ * 没有口令 / 已经过期 → active:false（fail-closed，别让过期口令还能用）。
+ */
+export function claimState(now = Date.now()) {
+  const c = readQq().claim;
+  if (!c || !c.token || !c.at) return { active: false, expired: true, token: '', at: 0, ageMs: 0, leftMs: 0 };
+  const ageMs = Math.max(0, Number(now) - Number(c.at));
+  const leftMs = Math.max(0, CLAIM_TTL_MS - ageMs);
+  return { active: leftMs > 0, expired: leftMs <= 0, token: c.token, at: c.at, ageMs, leftMs };
+}
+
+
 function str(v, n = 0) {
   const s = String(v ?? '').trim();
   return n > 0 ? s.slice(0, n) : s;
@@ -144,6 +162,8 @@ export function readQq() {
       const p = objOf(v);
       peers[id] = {
         role: p.role === 'owner' ? 'owner' : 'guest',
+        // 说话那个人的 QQ 号 —— 认主、面板上都认它（2026-11-04）
+        qq: /^\d{5,12}$/.test(str(p.qq)) ? str(p.qq) : '',
         sessionId: /^sm[a-z0-9]{6,}$/.test(str(p.sessionId)) ? str(p.sessionId) : '',
         name: str(p.name, 40),
         boundAt: Number(p.boundAt) || 0,
@@ -192,6 +212,7 @@ export function readQq() {
           url,
           token: str(o.token, 200),
           ownerQq: normQqNum(o.ownerQq),
+          autoStart: o.autoStart === true,
         };
       })(),
     };
@@ -240,6 +261,7 @@ export function writeQq(data) {
         url: /^wss?:\/\//i.test(rawUrl) ? rawUrl : (mode === 'reverse' ? 'ws://127.0.0.1:8082' : 'ws://127.0.0.1:3001'),
         token: str(o.token, 200),
         ownerQq: normQqNum(o.ownerQq),
+        autoStart: o.autoStart === true,
       };
     })(),
   };
@@ -249,6 +271,7 @@ export function writeQq(data) {
     const p = objOf(v);
     out.peers[id] = {
       role: p.role === 'owner' ? 'owner' : 'guest',
+      qq: /^\d{5,12}$/.test(str(p.qq)) ? str(p.qq) : '',
       sessionId: /^sm[a-z0-9]{6,}$/.test(str(p.sessionId)) ? str(p.sessionId) : '',
       name: str(p.name, 40),
       boundAt: Number(p.boundAt) || 0,
@@ -363,8 +386,9 @@ export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
   const g = qqGate();
   const q = normQqNum(qqId);
   const grp = normQqNum(groupId);
-  // 主人的号 —— 不管 strict 关没关，他一定是自己人
+  // 主人的号 —— 不管 strict 关没关，他一定是自己人（认号，不认 openid）
   if (g.ownerQq && q && q === g.ownerQq) return { ok: true, why: 'owner' };
+  // isOwner 只剩「早先被设成主人」这一个来源，口令退役后基本用不上，留着不碍事
   if (isOwner) return { ok: true, why: 'owner' };
   if (grp) {
     return g.allowGroup.includes(grp)
@@ -420,6 +444,22 @@ export function isOwnerOpenid(openid) {
 }
 
 /**
+ * 【主人认的是号，不是 openid】—— 2026-11-03
+ *
+ * 以前靠 peers[openid].role === 'owner' 记「谁是主人」，那是口令认领留下的账。
+ * 口令退休之后只留一条判据：**消息里的 QQ 号 === 面板上主人手填的那个号**。
+ *
+ * 群聊里 senderQq 是说话的那个人的号，所以主人在群里说话照样算主人；
+ * 别人在群里说话，号对不上，就按客人对待 —— 这正是主人要的口径。
+ */
+export function isOwnerQq(qqId) {
+  const q = normQqNum(qqId);
+  if (!q) return false;
+  const owner = normQqNum(qqGate().ownerQq);
+  return Boolean(owner) && q === owner;
+}
+
+/**
  * 记一个人进来（第一次见就建一条）。
  *
  * sessionId 传空 = 这个人还没有自己的会话（调用方去建）。
@@ -431,11 +471,15 @@ export function noteQqPeer(openid, patch = {}) {
   if (!id) return null;
   const data = readQq();
   const now = Date.now();
-  const cur = data.peers[id] || { role: 'guest', sessionId: '', name: '', boundAt: now, lastAt: 0, msgCount: 0 };
+  const cur = data.peers[id] || { role: 'guest', qq: '', sessionId: '', name: '', boundAt: now, lastAt: 0, msgCount: 0 };
   const next = { ...cur, lastAt: now, msgCount: (Number(cur.msgCount) || 0) + (patch.counted === false ? 0 : 1) };
   if (patch.name !== undefined) next.name = str(patch.name, 40);
   if (patch.sessionId !== undefined && /^sm[a-z0-9]{6,}$/.test(str(patch.sessionId))) next.sessionId = str(patch.sessionId);
   if (patch.role !== undefined) next.role = patch.role === 'owner' ? 'owner' : 'guest';
+  if (patch.qq !== undefined) {
+    const q = normQqNum(patch.qq);
+    if (q) next.qq = q;
+  }
   if (!data.peers[id] && Object.keys(data.peers).length >= MAX_PEERS) {
     const err = new Error(`已经接了 ${MAX_PEERS} 个人了，先把不用的清掉`);
     err.status = 400;
@@ -461,58 +505,6 @@ export function forgetAllQqPeers() {
   const data = readQq();
   data.peers = {};
   writeQq(data);
-}
-
-// ─────────────────────────── 「这是我」口令 ───────────────────────────
-
-/**
- * 发一个一次性口令，等主人去 QQ 里说一句「#我是 123456」。
- *
- * 为什么不用「谁先发消息谁就是主人」：那等于谁抢到算谁的 ——
- * 机器人一公开，主人还没说话，路人先发一句就把主人位占了。
- */
-export function newClaimToken() {
-  const data = readQq();
-  const token = String(randomInt(100000, 1000000));
-  data.claim = { token, at: Date.now() };
-  writeQq(data);
-  return { token, at: data.claim.at, ttlMs: CLAIM_TTL_MS };
-}
-
-export function claimState() {
-  const c = readQq().claim;
-  if (!c) return null;
-  if (Date.now() - c.at > CLAIM_TTL_MS) return { ...c, expired: true };
-  return { ...c, expired: false };
-}
-
-export function clearClaim() {
-  const data = readQq();
-  data.claim = null;
-  writeQq(data);
-}
-
-/**
- * 认领：文本里出现这个口令就算认成功。
- *
- * 只认一次：认成功后立刻把口令清掉，别人再发同一串没用。
- * 认出返回 true，否则 false。
- */
-export function tryClaim(openid, text, name = '') {
-  const id = str(openid, 128);
-  const c = claimState();
-  if (!id || !c || c.expired) return false;
-  const s = String(text ?? '');
-  // 口令是 6 位数字 —— 用边界匹配，避免把「2026」里的数字串当成口令
-  const hit = new RegExp(`(^|[^0-9])${c.token}([^0-9]|$)`).test(s);
-  if (!hit) return false;
-  const data = readQq();
-  const now = Date.now();
-  const cur = data.peers[id] || { sessionId: '', name: '', boundAt: now, lastAt: now, msgCount: 0 };
-  data.peers[id] = { ...cur, role: 'owner', name: str(name, 40) || cur.name || '', lastAt: now };
-  data.claim = null;
-  writeQq(data);
-  return true;
 }
 
 // ─────────────────────────── 杂项 ───────────────────────────

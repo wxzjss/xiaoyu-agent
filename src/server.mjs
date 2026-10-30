@@ -17,14 +17,14 @@ import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePa
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
 // 任务清单（界面面板用）：跟小鱼自己的 plan 工具是同一份数据，别另存一套
-import { planPublicView, planUiAction, readPlanTxt } from './plan.mjs';
+import { planPublicView, planUiAction, readPlanTxt, loadPlan } from './plan.mjs';
 // localVersion：更新器眼里「本地该是哪一版」。跟正在跑的版本可能不是一个数 ——
 // 见下面 /api/health 里 running/target 的注释。
 import { localVersion } from './updater.mjs';
 // 前情：一进来就记得的那段对话。只贴给模型看，不进会话记录，界面也不会画出来。
 import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
 // 会话记忆文件：一个会话一份自己的本子，每轮拼进系统提示（见 persona.mjs 的 memoryBlock）。
-import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, wipeMemory, snapMemory, SKELETON } from './session-memory.mjs';
+import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, appendFixed, wipeMemory, snapMemory, SKELETON } from './session-memory.mjs';
 // 记忆本整本界面：小鲸那本是跨会话的，也要给主人看（见 /api/memory/book）
 import { readWhaleMemory, memoryPath as whaleMemoryPath } from './whale-memory.mjs';
 import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit } from './edit.mjs';
@@ -41,7 +41,7 @@ import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted } fr
  * mountQq 放在下面（函数都声明完了之后），路由里用 await import 现取 ——
  * 这样 QQ 没配的时候一个字节都不加载，也就不会因为缺 SDK 把启动弄挂。
  */
-import { mountQq, ensureQqSession, runQqTurn, markQqOwner } from './qq-server.mjs';
+import { mountQq, ensureQqSession, renameGroupSession, runQqTurn, markQqOwner } from './qq-server.mjs';
 /** 「这是我」口令的有效期（跟 qq.mjs 里的 CLAIM_TTL_MS 保持一致，只给界面显示用） */
 const CLAIM_TTL_PUB = 10 * 60 * 1000;
 
@@ -156,6 +156,7 @@ import {
 } from './agents.mjs';
 // 管理员权限：按会话的开关键（见 admin-mode.mjs 文件头）。
 import { adminOn, setAdminOn, adminSessions } from './admin-mode.mjs';
+import { wipeWorkers as wipeTaskWorkers, taskInfo, forgetSession as forgetTaskSession } from './task-mode.mjs';
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames } from './tools-screen.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
@@ -177,7 +178,7 @@ import {
 // 同一个人连着说 → 拼成一段。实现在 merge-voice.mjs，抽出去是为了能真跑一遍验。
 import { mergeSameVoice } from './merge-voice.mjs';
 // 专业模式开关（见 pure.mjs）
-import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, purePressedMode, pureFeatureOn } from './pure.mjs';
+import { pureModeOn, pureFeatureOn, pureButtonOn, purePressedMode, setPureMode, pureSystemPrompt, doerOf, setDoer } from './pure.mjs';
 import { purifyWire } from './compress.mjs';
 import {
   getSkinState,
@@ -947,7 +948,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
      * 【让开的那条路上，我自己一个字都没说】—— 2026-11-03
      *
      * 主人报「同时开小鱼和小鲸，小鲸回两句、小鱼一句不回」。
-     * 点在「小鲸」身上的那一句，小鱼整轮让开（__stepAsideForWhale），
+     * 往前点名她的那一句，小鱼曾经整轮让开（那条路 2026-10-30 已按主人意思删掉：
      * 让开时自己去把她叫起来答话 —— 可她那时候一查这个时间窗，
      * 会话末条 assistant 是我上一轮说的话（不到 3 秒前），
      * 「闸 A」就把她挡掉了（whale-actions.log 里连一条「开始一次」都没有）。
@@ -976,6 +977,19 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
 
   const { setFullAccess } = await import('./tools.mjs');
   const { logWhaleAction } = await import('./whale-presence.mjs');
+  // 【上锁】她这一趟还没跑完，就不许再起第二趟（见 __whaleRunning 的注释）
+  if (__whaleRunning.has(sessionId)) {
+    try { logWhaleAction('重复拦下：她这一趟还在跑，第二趟不起了'); } catch {}
+    try { dropWhaleSay(send); } catch {}
+    return;
+  }
+  __whaleRunning.set(sessionId, { at: Date.now() });
+  let __whaleUnlocked = false;
+  const __whaleUnlock = () => {
+    if (__whaleUnlocked) return;
+    __whaleUnlocked = true;
+    __whaleRunning.delete(sessionId);
+  };
   logWhaleAction('开始一次');
 
   /**
@@ -1053,6 +1067,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     dropWhaleSay(send);
   } finally {
     setFullAccess(false);
+    __whaleUnlock();  // 【放锁】她这一趟跑完/抛了都放开，下一轮才能再进
   }
 
   /**
@@ -1303,7 +1318,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
  *
  * 原来这一大段只在这个函数里，于是所有「不经过 whaleMaybeReply」的说话路
  * 都只推了气泡、没落进历史 —— 切会话/重启就没了：
- *   · 主人点她的名、我让开（__stepAsideForWhale）→ 她答在另一条请求里；
+ *   · 她自己在另一条请求里开口答的（旧的「我让开」那条路 2026-10-30 已删）；
  *   · 她替我查活，结论是 ask_subagent 通过信箱递上来的（takeWhaleSays）。
  * 这两条路上，话都已经在屏幕上了，可历史里没有 —— 主人回头翻聊天看不到。
  *
@@ -1395,7 +1410,18 @@ function landWhaleSay({ session, sessionId, text, send = null, live = null }) {
        */
       for (let k = lastUserAt + 1; k < msgs.length; k++) {
         const m = msgs[k];
-        if (m && m.role === 'assistant' && !m._tale
+        /**
+         * 【她的话不能算「主流程已经答过了」】—— 2026-10-30 修
+         *
+         * 主人报：小鱼小鲸都启用时，屏幕上只剩小鲸，我的话一条都不显示。
+         *
+         * 原因就在这一行：判「这一轮有没有人答」时漏了 !m._whale。
+         * 于是她先插一句 → 被判成「主流程答完了」→ 我真正的回答
+         * 反而当成多余、被押到她后面、还挂着她的名字，界面上就只剩她。
+         * 上面 2026-10-27 那段注释本来就写了「以前只认我自己」，
+         * 这一步是漏做了，现在补回来。
+         */
+        if (m && m.role === 'assistant' && !m._tale && !m._whale
             && String(m.content ?? '').trim()) { iAnswered = true; break; }
       }
 
@@ -1594,6 +1620,19 @@ const LIVE_MAX_EVENTS = 20000;
 // In-flight turns: sessionId -> { ac: AbortController, done: Promise<void> }
 // 插话要先 abort，再等这一轮真的收尾（历史写完盘）后才能把新话接上去。
 const runningTurns = new Map();
+/*
+ * 【同一会话，她同一时刻只许跑一趟】—— 2026-10-30 修重复
+ *
+ * 主人报：小鱼小鲸都启用时，同一句话她会答两遍。
+ * 实测 whale-actions.log 20:45:30：两行「开始一次」时间完全相同 →
+ * 两次都「结束一次：成」→ 各说了一句，会话里就成了两条一样的话。
+ * 根因：whaleMaybeReply 有两处调用方（主流程收尾 / 让路分支），
+ * 各自都判「这该她说了」，于是同一轮把她叫起来两遍。
+ *
+ * 这里按会话加一把短锁：她正在跑的时候，第二个进来的直接退出，
+ * 不推流、不落盘、不花 token。锁在下面 finally 里放，抛了也会放。
+ */
+const __whaleRunning = new Map(); // sessionId -> { at }
 
 /**
  * 【押后箱：她说的话等着补】
@@ -1699,6 +1738,49 @@ function json(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(body);
+}
+
+/**
+ * 前情能插在哪儿（只认「安全缝」）。
+ *
+ * 上游网关按 OpenAI 协议验形状，一条死规矩：
+ *   assistant 带 tool_calls 之后，下一个非 tool 消息出现之前，**那批 tool 结果必须到齐**。
+ * 往中间塞任何别的东西（包括我们自己的前情那条 user 消息），直接 400：
+ *   Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+ *
+ * 干活鱼2 就是因为会话压过一次、开头变成
+ *   system → 摘要 → assistant(tc) → tool → …
+ * 前情又硬插在 2 号位，从此每轮必 400（10/27 一直躺到 10/30）。
+ *
+ * 这里从前往后找第一个「安全缝」：缝隙前面的消息里，所有 tool_calls 都已经有结果。
+ * 找不到返回 -1，由调用方把前情挪去设定副本那一格。
+ *
+ * @param {Array} msgs 已经 wire 过、准备发给模型的副本
+ * @returns {number} 可插入的下标；-1 = 没有安全缝
+ */
+function safePreludeSlot(msgs) {
+  if (!Array.isArray(msgs) || msgs.length === 0) return 0;
+  /** 还没拿到结果的 tool_call id */
+  const pending = new Set();
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    // 先记账：这条要是「assistant 带 tool_calls」，插在它前面就已经晚了
+    const opensToolCalls = !!(m && m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length);
+    // 缝：前面没欠账、当前这条也不是工具调用的开头 → 可以插（0 号位是 system，至少从 1 号开始）
+    if (!pending.size && !opensToolCalls && i >= 1) return i;
+    if (opensToolCalls) {
+      for (const tc of m.tool_calls) if (tc && tc.id) pending.add(tc.id);
+      continue;
+    }
+    if (m && m.role === 'tool') {
+      pending.delete(m.tool_call_id);
+      continue;
+    }
+    // 不是 tool 也不是 assistant(tc)，但前面还欠着结果 —— 历史本身已经坏了
+    // （repairHistory 会去修，这里只管别把前情也塞进去），继续往后找。
+  }
+  // 一轮都没还清（比如最后一条 assistant 带 tool_calls、后面还没结果）：没有安全缝
+  return pending.size ? -1 : msgs.length;
 }
 
 async function body(req) {
@@ -2022,7 +2104,7 @@ async function startPeerTurn(sessionId) {
      * 所以先把出手前已有的对象全记进 seen，接回时只收 seen 里没有的。
      */
     const seen = new Set(history);
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -2223,7 +2305,7 @@ async function startQueuedTurn(sessionId, queue = null) {
     const wire = history.slice();
     const seen = new Set(history);
 
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -2396,12 +2478,18 @@ async function resumeInterruptedTurn() {
         '不是重新开始；已经说过的话主人已经看到了，别从头复述。）' +
         (info.text ? `\n你当时正说到：「${info.text.slice(-600)}」` : '') +
         (info.taskLine ? `\n主人当时的原话：「${info.taskLine}」` : '') +
+        /* 【2026-10-30】清单上没打勾的步骤一并告诉它 —— 否则它只知道「断在半句话」，
+         * 不知道自己还有哪几步没做完，还是得等主人发「继续」。 */
+        (Array.isArray(info.openSteps) && info.openSteps.length
+          ? `\n清单上还没做完的这几步：` + info.openSteps.map((x) => `\n  ${x.n}. ${x.text}`).join('') +
+            `\n就照这个往下做，按顺序来，别跳。`
+          : '') +
         '\n直接从断的地方往下做，该调工具就调，别问我「要不要继续」。',
       context: true,
     });
     const wire = history.slice();
     const seen = new Set(history);
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -3417,12 +3505,29 @@ const server = createServer(async (req, res) => {
     // 【2026-10-28 按会话启用了】问的是哪个会话就答哪个会话的状态。
     // 前端切会话时会带上 ?sessionId=xxx；不带就当没有会话开着（退回人设）。
     const sid = String(url.searchParams.get('sessionId') || '').trim();
+    /**
+     * 【2026-11-03 办事模式并进来了】多带一个 doer。
+     *
+     * doer = 这个会话里「谁动手」：'self'（她自己干）/ 'workers'（只派活）。
+     * 以前这是个独立按钮，现在它是专业模式面板里的一个下拉，
+     * 所以状态必须跟着专业模式一起回 —— 两个接口分开读，中间就会有一段时间
+     * 界面上的勾和真正干活的判断不一致。
+     *
+     * 专业模式没开的时候一律报 'self'（doerOf 保证的），界面据此把那个下拉灰掉。
+     */
+    let doer = 'self';
+    try {
+      doer = available ? doerOf(sid) : 'self';
+    } catch {
+      doer = 'self';
+    }
     return json(res, 200, {
       sessionId: sid || null,
       on: available && pureModeOn(sid),
       pressed: available && pureButtonOn(sid),
       mode: available ? purePressedMode(sid) : null,
       available,
+      doer,
     });
   }
 
@@ -3449,7 +3554,28 @@ const server = createServer(async (req, res) => {
       const cur = pureModeOn(sid);
       const next = typeof payload?.on === 'boolean' ? payload.on : !cur;
       const out = setPureMode(sid, next);
-      return json(res, 200, { sessionId: sid, on: Boolean(out && out.on), mode: out && out.on ? 'pure' : null, available: true });
+      /**
+       * 【2026-11-03】同一个口子顺手管「谁动手」：
+       *   body: { sessionId, doer?: 'self' | 'workers' }
+       * 只有真传了 doer 才动它；不传就是只切专业模式，那一档保持原样。
+       * setDoer 自己会拒掉「专业模式没开的会话」——界面灰了但老版本还能点，
+       * 挡在服务端才挡得住。
+       */
+      let doer = null;
+      if (payload?.doer !== undefined) {
+        const r = setDoer(sid, payload.doer);
+        if (!r.ok) {
+          return json(res, 409, { ok: false, error: '专业模式没开，这一档没地方放', doer: r.doer });
+        }
+        doer = r.doer;
+      } else {
+        try {
+          doer = doerOf(sid);
+        } catch {
+          doer = 'self';
+        }
+      }
+      return json(res, 200, { sessionId: sid, on: Boolean(out && out.on), mode: out && out.on ? 'pure' : null, available: true, doer });
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -3706,6 +3832,56 @@ const server = createServer(async (req, res) => {
   }
 
   /**
+   * 【2026-11-03 主人：「把办事模式并入专业模式里面」】
+   *
+   * 原来这里是一个独立模式的开关（GET 读状态 + POST 翻开关），顶栏还配了颗按钮。
+   * 现在开关搬到 /api/pure 里去了（body 带 doer: 'self' | 'workers'），
+   * 这条接口只剩一个用途：**读这个会话手上的 worker 花名册**。
+   * 界面拿它显示「现在几个活、谁在跑」，跟专业模式那个面板解耦。
+   *
+   * POST 保留但改成转发：老版本界面（或者主人手上前端缓存没刷新）打过来
+   * 也不能让它 404 —— 404 在界面上就是一个莫名其妙的白框。
+   * 它现在做的事等价于「打开专业模式并选派活」，走的是同一套 setDoer。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/task-mode') {
+    const sid = String(url.searchParams.get('sessionId') || '');
+    try {
+      return json(res, 200, { ok: true, ...taskInfo(sid) });
+    } catch (e) {
+      // 读盘失败 = 关（fail-closed，跟 task-mode.mjs 文件头一个口径）
+      return json(res, 200, { ok: true, sessionId: sid, on: false, workers: [], note: String(e?.message ?? e) });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/task-mode') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const sid = String(payload?.sessionId || '').trim();
+    if (!sid) return json(res, 400, { error: '得先有会话' });
+    try {
+      const want = payload?.on === true;
+      if (!pureFeatureOn()) {
+        return json(res, 403, { ok: false, error: '这个功能在【功能】里是关的，先在【功能】里打开' });
+      }
+      if (want) {
+        // 打开＝「开专业模式 + 选派活」，一步到位，别让老界面停在半个状态上。
+        setPureMode(sid, true);
+        const r = setDoer(sid, 'workers');
+        if (!r.ok) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      } else {
+        setDoer(sid, 'self');
+        wipeTaskWorkers(sid); // 主人要「用完就没」：关掉就把这个会话的 worker 名册清干净
+      }
+      return json(res, 200, { ok: true, ...taskInfo(sid) });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
    * 用某一张卡开一个新会话 —— 「多开」的入口。
    *
    * 顺序有讲究：先校验卡存在、先建会话、**再绑卡、最后才跑开场白**。
@@ -3850,6 +4026,7 @@ const server = createServer(async (req, res) => {
       const { startQq } = await import('./qq-bridge.mjs');
       const st = await startQq({
         ensureSession: ensureQqSession,
+        renameGroupSession,
         runChat: runQqTurn,
         setSpeakerOwner: markQqOwner,
         onLog: () => {},
@@ -3899,6 +4076,7 @@ const server = createServer(async (req, res) => {
         url: payload.url,
         token: payload.token,
         ownerQq: payload.ownerQq,
+        autoStart: payload.autoStart,
       });
       return json(res, 200, { ok: true, conf });
     } catch (e) {
@@ -3911,6 +4089,7 @@ const server = createServer(async (req, res) => {
       const { startQqOneBot } = await import('./qq-bridge.mjs');
       const st = await startQqOneBot({
         ensureSession: ensureQqSession,
+        renameGroupSession,
         runChat: runQqTurn,
         setSpeakerOwner: markQqOwner,
         onLog: () => {},
@@ -3974,22 +4153,56 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  /** 「这是我」：发一个一次性口令，让主人去 QQ 里说一句。 */
-  if (req.method === 'POST' && url.pathname === '/api/qq/claim') {
+  /**
+   * 登录二维码：面板上直接看、直接扫。
+   *
+   * 图从协议端自己的 cache/qrcode.png 读（WebUI 那套接口要 HMAC 凭证，外部签不出来），
+   * 状态靠 3001 通不通 + 图新不新来判。?inline=0 就只回时间戳不塞 base64，
+   * 免得面板每两秒轮询一次、每次都拖一张几十 KB 的图。
+   */
+  if (url.pathname === '/api/qq/onebot/qrcode' && req.method === 'GET') {
     try {
-      const { newClaimToken } = await import('./qq.mjs');
-      const r = newClaimToken();
-      return json(res, 200, { ok: true, ...r, how: `在 QQ 里私聊机器人，发：#我是 ${r.token}` });
+      const q = await import('./qq-qrcode.mjs');
+      const ob = await import('./qq-onebot.mjs');
+      const inline = new URL(req.url || '/', 'http://x').searchParams.get('inline') !== '0';
+      let protocol = { installed: false, running: false };
+      try {
+        protocol = await ob.protocolState();
+      } catch {}
+      const st = ob.oneBotStatus();
+      const online = st?.phase === 'online';
+      const qr = await q.loginQrcode();
+      const out = {
+        ok: true,
+        online,
+        phase: st?.phase || '',
+        protocol,
+        hint: q.qrcodeHint({ protocol, qr, online }),
+        staleMs: q.QR_STALE_MS,
+        qr: {
+          ok: qr.ok,
+          reason: qr.reason || '',
+          mtime: qr.mtime || 0,
+          ageMs: qr.ageMs ?? null,
+          width: qr.width || 0,
+          height: qr.height || 0,
+          size: qr.size || 0,
+        },
+      };
+      if (inline && qr.ok) out.qr.base64 = qr.base64;
+      return json(res, 200, out);
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
     }
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/qq/claim/cancel') {
+  if (url.pathname === '/api/qq/onebot/protocol/qr-refresh' && req.method === 'POST') {
     try {
-      const { clearClaim } = await import('./qq.mjs');
-      clearClaim();
-      return json(res, 200, { ok: true });
+      const p = await import('../scripts/qq-protocol.mjs');
+      p.kill();
+      await new Promise((r) => setTimeout(r, 800));
+      const started = p.start();
+      return json(res, 200, { ok: true, ...started });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
     }
@@ -4042,14 +4255,12 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, removed: true });
       }
       if (payload.role !== undefined) {
-        // 只允许一个主人：先把别人的主人位撤掉
-        const all = (await import('./qq.mjs')).qqPeers();
+        // 2026-11-03：认主改由「面板上主人手填的 QQ 号」决定，这里不再能指定主人。
+        // 留着 role 只为了兼容老调用（把人标成客人）。
         if (payload.role === 'owner') {
-          for (const [k, v] of Object.entries(all)) {
-            if (v.role === 'owner' && k !== openid) noteQqPeer(k, { role: 'guest', counted: false });
-          }
+          return json(res, 400, { error: '现在认主只看「你自己的 QQ 号」那一格：把号填对就行，不用在这里指定' });
         }
-        noteQqPeer(openid, { role: payload.role === 'owner' ? 'owner' : 'guest', counted: false });
+        noteQqPeer(openid, { role: 'guest', counted: false });
       }
       if (payload.name !== undefined) noteQqPeer(openid, { name: payload.name, counted: false });
       return json(res, 200, { ok: true, peer: qqPeer(openid) });
@@ -4542,6 +4753,9 @@ const server = createServer(async (req, res) => {
     // 界面会把出厂的「停下」当成默认安全词显示出来，主人明明删了它，看着像没生效。
     return json(res, 200, {
       settings: getSettings(),
+      // 记账换币要用的汇率：价目表本身存的是「元 / 百万 token」，用美元看就按它折。
+      // 不联网抓（汇率天天动，抓一次还得为它加一整套失败分支），给个主人自己改的数最实在。
+      fx: { usdPerCny: Number(process.env.XY_USD_PER_CNY || 0.14) },
       defaults: {
         ...DEFAULT_SETTINGS,
         bottomLines: defaultBottomLines(),
@@ -5632,6 +5846,73 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: true, session: publicSession(session), memory });
   }
 
+  /**
+   * 【删掉某一条消息】—— 2026-10-30 主人：「给消息加个删除按钮」。
+   *
+   * 跟回退不一样：回退是「把对话退到这条之前」，会连记忆、文件一起退。
+   * 删除只办一件事：这一条从今往后不发给模型了，别的什么都不动。
+   *
+   * 做法照抄 rewind 的路子：往 session 上记一条 hiddenRewinds，用 effectiveIndexes
+   * 精确把这一条剔出去，**不改 messages 数组本身** —— 下标一变，所有 rewind 点、
+   * 所有 _ws 快照就全错位了。
+   *
+   * 两条铁律（都是 rewind.mjs 里踩出来的）：
+   *   ① 删 assistant 时，它名下 tool_calls 对应的 tool 结果必须一起删，
+   *      否则上游当场 400「Messages with role tool must be a response to a preceding tool_calls」；
+   *   ② 反过来不处理：tool 结果被删、assistant 留着，那个形状上游接受。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/sessions/message-delete') {
+    const { id, at } = await body(req).catch(() => ({}));
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const session = getSession(id);
+    if (!session) return json(res, 404, { error: 'session not found' });
+    const rt = runningTurns.get(id);
+    if (rt && !rt.ac.signal.aborted) {
+      return json(res, 409, { error: '这个会话正在跑，先点停止再删' });
+    }
+    repairHistory(session.messages);
+    const all = Array.isArray(session.messages) ? session.messages : [];
+    const idx = Number(at);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= all.length) {
+      return json(res, 400, { error: '这条消息不在这个会话里' });
+    }
+    const target = all[idx];
+    if (!target || target.role === 'system') return json(res, 400, { error: 'system 那段不能删' });
+
+    const rewinds = loadRewinds(session);
+    if (!effectiveIndexes(all, rewinds).keep.includes(idx)) {
+      return json(res, 400, { error: '这条已经删过/退过了' });
+    }
+
+    // 要剔的下标：这条自己 + （如果是 assistant）它名下所有 tool 结果
+    const drop = new Set([idx]);
+    const calls = Array.isArray(target.tool_calls) ? target.tool_calls : [];
+    for (const c of calls) {
+      const cid = String((c && c.id) || '');
+      if (!cid) continue;
+      for (let k = idx + 1; k < all.length; k++) {
+        const m = all[k];
+        if (m && m.role === 'tool' && String(m.tool_call_id || '') === cid) drop.add(k);
+      }
+    }
+
+    /**
+     * 【怎么让它真的不发给模型】
+     *
+     * 不另造字段 —— effectiveIndexes 只认 rewinds[].hidden，而且 loadRewinds 会
+     * 把「没有 at 的记录」整个滤掉。所以这里必须带 at: -1 —— rewind.mjs 第 44 行
+     * 写明「at:-1 是登记表，不是回退点，永远不算数」，正好拿来当纯隐藏用。
+     * 只给 hidden 不给 at 的话，会被 loadRewinds 丢掉，删了等于没删。
+     */
+    const rec = { at: -1, hidden: [...drop].sort((a, b) => a - b), ws: {}, deleted: true };
+    const list = Array.isArray(session.rewinds) ? session.rewinds : [];
+    list.push(rec);
+    session.rewinds = list;
+    session.updatedAt = Date.now();
+    saveSession(session);
+    return json(res, 200, { ok: true, deleted: [...drop], session: publicSession(session) });
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/sessions/rewind-preview') {
     const { id, at } = await body(req).catch(() => ({}));
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
@@ -5675,6 +5956,10 @@ const server = createServer(async (req, res) => {
     try {
       trashMemory(id);
     } catch {}
+    // 办事模式开出来的 worker 只属于这个会话，会话没了就该跟着走
+    try {
+      forgetTaskSession(id);
+    } catch {}
     sessions.delete(id);
     const list = listSessions();
     const last = getLastSessionId();
@@ -5704,6 +5989,9 @@ const server = createServer(async (req, res) => {
         const ok = deleteSession(id);
         try {
           trashMemory(id);
+        } catch {}
+        try {
+          forgetTaskSession(id);
         } catch {}
         sessions.delete(id);
         if (ok) done.push(id);
@@ -5833,11 +6121,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         const _live = runningTurns.get(_sid);
         if (!_live) continue;
         const _d = _live.draft;
+        /* 【2026-10-30 主人要：重启后自动接着干，不用再发一句「继续」】
+         * 光记「我断在半句话」不够，得把清单上还没打勾的步骤一起存进去，
+         * 重启起来照着那几步往下做，才叫真接上。 */
+        let _open = [];
+        try {
+          const _p = loadPlan(_sid);
+          const _steps = (_p && Array.isArray(_p.steps)) ? _p.steps : [];
+          _open = _steps
+            .filter((x) => x && x.status !== 'done' && x.status !== 'skipped')
+            .map((x, n) => ({ n: (x.id != null ? x.id : n + 1), text: String(x.text || '').slice(0, 200) }));
+        } catch {}
         markInterrupted({
           sessionId: _sid,
           text: _d ? _d.text : '',
           reason: '主人让它重启（重启前这一轮还没跑完）',
           taskLine: lastUserLine(_sid),
+          openSteps: _open,
         });
         _resumeSid = _sid;
         break;
@@ -6382,7 +6682,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 【连接已经收了尾，这一下别把整个进程带崩】—— 2026-11-03
        *
        * 主人报「同时开小鱼小鲸，小鲸说两轮」—— 查出来第二「轮」来自这里：
-       * 让开（__stepAsideForWhale）那条路先 `send({type:'done'})` 再 `res.end()`，
+       * 旧的「让开」那条路（2026-10-30 已删）当年是先 `send({type:'done'})` 再 `res.end()`，
        * 然后才 await 她说话。她每吐一句都往这条已经 end 的连接上写，
        * `res.write` 抛 `ERR_STREAM_WRITE_AFTER_END` —— 这是**异步**抛的，
        * 包在同步 try/catch 里根本接不住，直接升级成进程级未捕获异常
@@ -6549,7 +6849,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 为什么「小鱼被禁用」要放行：主人只开小鲸的时候，
      * 那一句本来就是冲她说的，不放行她就彻底哑了。
      */
-    const __calledByName = /小鲸|鲸鲸/.test(__nowSaid);
+    /* 【2026-10-30 主人：把「念到小鲸名字就不说话」这类设定删了】
+     * 这条判据原来只看「这句话里有没有小鲸两个字」，一命中就让小鱼整轮闭嘴。
+     * 主人要的不是这个：名字可以被顺口提到（「我刚刚把小鲸移到你下面」），
+     * 那不是在叫她，更不该因此把小鱼关掉。
+     * 所以这里恒为 false —— 不看名字了。真正控制「她开不开口」的只有她自己的
+     * 开关（whaleOn）和小鱼在不在屋（__fishAway），不再由一句话里的字眼决定。 */
+    const __calledByName = false;
     /**
      * 小鱼这会儿在不在屋。这个值下面好几处要用（她该不该接这句、我要不要让开），
      * 所以在算出 __calledByName 之后立刻算一次 —— 谁也别在后面重新声明一遍。
@@ -6620,7 +6926,6 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 见 markWhaleSpoke / whaleSpokeThisTurn。
      */
     const groupSpokeThisTurn = new Set();
-    const __stepAsideForWhale = __calledByName && !__fishAway && whaleOn(sessionId);
     /**
      * 【2026-10-26 主人纠正：不是「点名才让她说话」】
      *
@@ -6868,11 +7173,37 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 会话里的 system 永远是设置里那套人设，前情一个字都不往里塞。
     {
       const pm = preludeContextMessage();
-      // 专业模式：前情也是「设定」，不发。
-      if (pm && !pureModeOn(sessionId)) wireMessages.splice(2, 0, pm);
+      /**
+       * 【前情不许插进一对 tool 调用中间 —— 2026-10-30 修 · 干活鱼2 的 LLM HTTP 400】
+       *
+       * 真踩过，而且死得很冤：会话历史一旦被压缩，开头就成了
+       *   system → 摘要(带 context) → assistant(tool_calls) → tool → …
+       * 这时把前情硬插在 2 号位，前情（role:'user'）正好卡在
+       * 「assistant(tool_calls)」和「它的 tool 结果」中间：
+       *   system → 摘要 → 前情(user) → assistant(tc) → tool
+       * 上游按 OpenAI 协议一验就拒：
+       *   Messages with role 'tool' must be a response to a preceding message
+       *   with 'tool_calls'
+       * 于是这个会话**每一轮都 400**，主人说多少句「继续」都是石沉大海，
+       * 界面上只剩一行 ⚠（干活鱼2 从 10/27 拖到 10/30 就是这个）。
+       *
+       * 规矩：**前情只能落在「安全缝」里** —— 前面是 system/摘要，或者前面那条
+       * assistant 的 tool_calls 已经全部有了结果。落不进去就把前情送进「设定副本」
+       * 那一格（1 号位，紧挨着 system）：那是它本来就合法的两个位置之一，
+       * 绝不会把一组 tool 调用劈成两半。
+       */
+      if (pm && !pureModeOn(sessionId)) {
+        const at = safePreludeSlot(wireMessages);
+        if (at < 0) {
+          console.log('[prelude] 找不到安全缝（前面是没配齐的 tool_calls），前情改贴到设定副本那一格');
+          wireMessages.splice(1, 0, pm);
+        } else {
+          wireMessages.splice(at, 0, pm);
+        }
+      }
     }
     /** 前情那条消息的引用，日志里好认（专业模式没插，就是 undefined） */
-    const preludeRef = pureModeOn(sessionId) ? undefined : wireMessages[2];
+    const preludeRef = pureModeOn(sessionId) ? undefined : (wireMessages.find((m) => m && m.context && !m._identity) ?? undefined);
 
     /**
      * 【这一轮说话的是谁】—— 身份功能（主人 2026-10-27 定）。
@@ -6912,6 +7243,40 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       '[prelude] 条数=' + wireMessages.length + ' 形状=' +
         wireMessages.map((m) => m.role + (m === preludeRef ? '(前情)' : m.context ? '(规则)' : '')).join(' → '),
     );
+    /**
+     * 【发出去之前最后一道体检 —— 2026-10-30】
+     *
+     * 上游认的是 OpenAI 协议的形状，有两条死规矩，哪条破了都是 HTTP 400：
+     *   ① role:'tool' 前面必须是一条带同 id `tool_calls` 的 assistant；
+     *   ② assistant 带 tool_calls 之后，那批结果必须紧接着到齐，中间不许插别的东西。
+     *
+     * 拼接的地方太多（前情、规则副本、身份说明、同人合并、专业模式清场、
+     * 压缩摘要……），谁往里插一格都可能把一对 tool 调用劈成两半 ——
+     * 干活鱼2 就是这么一句「LLM HTTP 400」躺了三天的。
+     * 与其事后猜，不如出门前照一遍镜子：破了就在日志里指名道姓，
+     * 这样下次再有人动拼接逻辑，一眼就能看出是哪一步弄坏的。
+     */
+    if (process.env.WHALE_DEBUG_WIRE) {
+      const bad = [];
+      const pending = new Set();
+      wireMessages.forEach((m, i) => {
+        if (!m) return;
+        if (m.role === 'tool') {
+          if (!pending.delete(m.tool_call_id)) {
+            bad.push('#' + i + ' tool(' + String(m.tool_call_id ?? '').slice(0, 12) + ') 找不到对应的 tool_calls');
+          }
+          return;
+        }
+        if (pending.size) {
+          bad.push('#' + i + ' ' + m.role + ' 插进了还没配齐的 tool_calls（欠 ' + [...pending].join(',') + '）');
+        }
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+          for (const tc of m.tool_calls) if (tc && tc.id) pending.add(tc.id);
+        }
+      });
+      if (pending.size) bad.push('尾巴上还欠结果：' + [...pending].join(','));
+      console.log('[wire-check] ' + (bad.length ? '⚠ ' + bad.join(' / ') : '形状 OK'));
+    }
     /**
      * wireMessages 是给模型的副本：回退掉的那些不能出现在上下文里。
      * 但模型这一轮新说的话（assistant / tool 轮）是 push 到 wireMessages 上的，
@@ -7180,86 +7545,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       const shouldDraft = makeDraftThrottle();
 
       /**
-       * 【让开的时候不能直接往 runAgent 里走】—— 2026-10-27 修
+       * 【这一轮没有人替主人答，就照常自己答】—— 2026-10-30 改
        *
-       * 主人点了小鲸的名、她也在屋 —— 这一句由她答，我不答。
-       * 但「不答」不等于「什么都不发」：前端在等这条 SSE 收尾，
-       * 一个事件不给，主人会看到转圈转到底、以为程序卡死了。
-       * 所以先推一条 fish_off（前端已有这个分支：静默收起转圈），
-       * 再直接 return —— 不调模型、不落 assistant、不耗 token。
+       * 以前这里有一条「点名小鲸 → 小鱼整轮让开」，主人 2026-10-30 明确要删：
+       * 「把念到小鲸名字你就不说话这种类型设定删了」。
+       * 现在没有了：名字只当普通字眼看，我照常答；她开不开麦只由她自己的开关决定。
        */
-      /**
-       * 【让开的路口也得有人守】—— 2026-10-28 实测补
-       *
-       * 端到端测下来：点名「小鲸」那一句，frontend 收到的是
-       * `["text","tool_start","tool_end","done"]` —— 也就是说 __stepAsideForWhale
-       * 这条路口根本没进去，我照旧跑了一整轮工具、答了一遍。
-       *
-       * 光把一个路口修好不够：这类「本该让开却没说清」的情况，前端只能靠 done
-       * 收尾。所以这里立一条兜底 —— 真的走到 allow 分支却没发过 done，
-       * 就在收尾时补一条，界面绝不因为「路走岔了」而永远转圈。
-       * （flag 一发过就不再补，不会出现两条 done 把下一轮提前收掉。）
-       */
-      if (__stepAsideForWhale) {
-        /**
-         * 【让开之后，她得真的开口】—— 2026-11-02 主人第二次报「小鱼不说话」
-         *
-         * 原来这块只发 done + fish_off 就 return，指望「她在另一条请求里答了」。
-         * 可插话闸的总开关也是 whaleOn，我这边让开、它那边又判「不用我说」，
-         * 结果两个都没出声 —— 主人看到的就是一片安静。
-         *
-         * 现在这里自己把她叫起来（跟下面插话闸同一个函数），她说的话走
-         * live.events + send 两条路推出去；这条 SSE 已经发完 done，前端会去
-         * /api/chat/live 里捞（见 index.html 的 fish_off 分支）。
-         * 不 await：她要想几秒，主人不能一直卡在「正在发送」。
-         */
-        const __sayNow = String(lastUserTextOf(session) || '');
-        /**
-         * 【记一笔：这一轮她已经开过口了】—— 2026-11-03
-         *
-         * 见上面 groupSpokeThisTurn 的注释。记在这里，收尾那段群聊就会把她剔掉，
-         * 不会对着同一句再答一遍（主人看到的就是「小鲸说两轮、小鱼不说话」）。
-         */
-        try {
-          if (whaleOn(sessionId)) groupSpokeThisTurn.add(AGENT_XIAOJING);
-        } catch { /* 状态读不出来就不记，跟老行为一样 */ }
-        /**
-         * 【收尾顺序：先让她说完，再发 done、再关流】—— 2026-11-03 修
-         *
-         * 原来这里是「(async 里 await 她说) + 立刻 done/fish_off/res.end()」。
-         * 后果有两个，实测都撞上了：
-         *   1) res.end() 之后 send() 再写就是 write after end（ERR_STREAM_WRITE_AFTER_END），
-         *      异步抛、同步 try/catch 接不住 → 升级成进程级未捕获异常，记进 crash.log；
-         *   2) whale-actions.log 里写着她说了一句，会话里一条都没有 ——
-         *      因为那条 SSE 早关了，前端根本没收到。
-         *
-         * 她要想几秒，主人就得等几秒。这是对的：等的是「她的回答」，
-         * 不是白转圈（fish_off 已经在前面发过了，界面上这会儿是她在说话）。
-         */
-        try {
-          await whaleMaybeReply({
-            session,
-            userText: __sayNow,
-            send,
-            sessionId,
-            live,
-            speaksToHer: true,
-            extraRule: extraRuleForBothOn(),
-          });
-        } catch (e) {
-          console.warn('[whale] 让开之后她没接上：', String(e?.message ?? e));
-          try {
-            const { logWhaleAction } = await import('./whale-presence.mjs');
-            logWhaleAction('aside-whale-catch-' + (e?.name || 'Error') + '：' + String(e?.message ?? e).slice(0, 200));
-          } catch {}
-        }
-        try { send({ type: 'done', aside: true }); } catch {}
-        try { send({ type: 'fish_off', note: '这一句主人是问小鲸的' }); } catch {}
-        try { res.end(); } catch {}
-        return;
-      }
 
-      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null }, () => runAgent({
+      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
         messages: wireMessages,
         sessionId,
         snap,
@@ -7407,6 +7700,24 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             line += "；这一轮用了 " + did.slice(0, 6).join("、") + (did.length > 6 ? " 等" : "");
           }
           appendDigest(sessionId, line);
+          /**
+           * 【同时把这一轮收进「当前状态」】—— 2026-11
+           *
+           * 实测 154 个本子 153 个固定记忆区空着。空着不只是难看：
+           * persona 每轮都把这一块发给她，四个标题横在那里一个字没有，
+           * 她读到的就是「我有个本子但里面什么都没记」。
+           *
+           * 为什么只写「当前状态」不写别的：四个小节里只有它是「滚动的」
+           * —— 任务目标、约束偏好、待办都得靠判断才能写对，程序瞎填只会填错。
+           * 它们留给她自己用 write_file 写（提示词里现在给的是真路径）。
+           *
+           * 只保留最新的几条：「当前状态」越堆越长就不叫当前了。而且同一句不重复写。
+           */
+          try {
+            const label = what.length ? what.slice(0, 3).join("、") : did.slice(0, 4).join("、");
+            const said_ = String(said || "").replace(/\s+/g, " ").trim().slice(0, 60);
+            if (said_) appendFixed(sessionId, "当前状态", said_ + (label ? "（" + label + "）" : ""));
+          } catch {}
         }
       } catch (e) {
           if (!e?.__skip) console.warn('[memory] 这一轮没记进本子：', String(e?.message ?? e));
@@ -7483,6 +7794,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       }
       // 「发文件」发出去的东西挂到最后那条助手消息身上：
       // 跟着会话一起落盘，重开窗口还画得出来；点一下就能预览 / 下载。
+      /* 【2026-10-30 主人原话】「中途退出重启相当于打断，也不会显示你发的任何文件」
+       * 原来这段只在「这一轮正常跑完」时才执行 —— 点停止、中途重启、断线全跳过，
+       * 画好的图 / 发出去的文件就凭空消失了（文件其实在盘上，只是没记进会话）。
+       * 现在：找不到落脚点就自己补一条助手消息，绝不因为「没地方挂」而丢掉。 */
       {
         const sent = Array.isArray(sentFiles) ? sentFiles.filter(Boolean) : [];
         if (sent.length) {
@@ -7492,29 +7807,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             const m = msgs[k];
             if (m && m.role === 'assistant' && !m.context) { idx = k; break; }
           }
-          if (idx >= 0) {
-            // 合并而不是覆盖：同一轮可能分几次发，前一批不能被后一批冲掉。
-            const prev = Array.isArray(msgs[idx]._out) ? msgs[idx]._out : [];
-            const merged = prev.slice();
-            for (const it of sent) {
-              const dup = merged.some((x) => x && x.key && it && x.key === it.key);
-              if (!dup) merged.push(it);
-            }
-            msgs[idx]._out = merged;
-            // 顺手在会话记忆本子里记一笔：消息万一丢了，记忆里还留着
-            // 「这一轮发过什么、在出件箱里叫什么名字」，主人还能从兜底箱捞回来。
-            // 只记文件名和 key，不记完整路径（路径换机器就失效了）。
-            // 记忆写失败不能影响发文件本身，但也不能悄悄吞掉——记一条日志方便查。
-            try {
-              if (getEnabledMap()['memory'] === false) throw { __skip: 1 };
-              const names = sent.map((x) => String(x?.name || '文件')).join('、');
-              appendDigest(sessionId, `发了文件：${names}`);
-            } catch (e) {
-              if (!e?.__skip) console.warn('[sendfile] 记忆本子没记上：', String(e?.message ?? e), 'sessionId =', sessionId);
-            }
-            send({ type: 'files', items: sent, at: idx });
-            saveSession(session);
+          if (idx < 0) {
+            msgs.push({ role: 'assistant', content: '', at: Date.now() });
+            idx = msgs.length - 1;
           }
+          // 合并而不是覆盖：同一轮可能分几次发，前一批不能被后一批冲掉。
+          const prev = Array.isArray(msgs[idx]._out) ? msgs[idx]._out : [];
+          const merged = prev.slice();
+          for (const it of sent) {
+            const dup = merged.some((x) => x && x.key && it && x.key === it.key);
+            if (!dup) merged.push(it);
+          }
+          msgs[idx]._out = merged;
+          // 顺手在会话记忆本子里记一笔：消息万一丢了，记忆里还留着
+          try {
+            if (getEnabledMap()['memory'] === false) throw { __skip: 1 };
+            const names = sent.map((x) => String(x?.name || '文件')).join('、');
+            appendDigest(sessionId, `发了文件：${names}`);
+          } catch (e) {
+            if (!e?.__skip) console.warn('[sendfile] 记忆本子没记上：', String(e?.message ?? e), 'sessionId =', sessionId);
+          }
+          send({ type: 'files', items: sent, at: idx });
         }
       }
       // 带上这一轮用户消息的下标：前端据此给刚画出来的气泡补「↶ 回退」按钮
@@ -7639,7 +7952,26 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         for (let i = from; i < session.messages.length; i++) {
           const m = session.messages[i];
           if (!m) continue;
-          if (m.role === 'user') break;
+          /**
+           * 【2026-10-30 修：小鲸/自建智能体插过一句，我的正文就补不回来了】
+           *
+           * 主人报：干活时刷新屏幕，界面停在半截（工具显示"完成"、话断成两截），
+           * 之后越刷越坏，要反复刷新才恢复。
+           *
+           * 查到根就在这里：老代码写的是「碰到 role:user 就 break」—— 那是在认「主人又开口了，
+           * 这一轮到我这儿为止」。可群里别人（小鲸、自建智能体）的话，是刻意按
+           * role:'user' + _who 存的（见下面那段说明）。
+           * 于是只要她们这一轮插过一句，收集就提前断了，我后面的正文全被漏掉，
+           * done 里的 turnTexts 缺段 → 前端补画时没东西可补 → 屏幕停在半截，非刷新不可。
+           *
+           * 现在改成：带 _who / _card / _cardVoice 的 user 消息不算「主人开口」，继续往下收；
+           * 只有真正的用户消息才 break。
+           */
+          if (m.role === 'user') {
+            const card = m._who || m._card || m._cardVoice;
+            if (!card) break;      // 真·主人开口了，这一轮到此为止
+            continue;              // 别人插的话不算正文，也不截断
+          }
           if (m.role !== 'assistant') continue;
           // 她的话不算我的正文：小鲸的话在会话里也是 role:'assistant'，
           // 只是多了 _whale / _tale 标记。以前没排除，她的话被当成我这轮的
@@ -7718,7 +8050,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * 【这一轮已经开过口的人，群聊不再喊一遍】—— 2026-11-03
            *
            * 主人报「同时开小鱼和小鲸，小鲸说两轮、小鱼一句话不说」：
-           * 点了小鲸 → 小鱼让开（__stepAsideForWhale）→ 让开时已经把小鲸叫起来答了一轮；
+           * 当年是「点了小鲸 → 小鱼让开」（那条路 2026-10-30 已删）→ 让开时已经把小鲸叫起来答了一轮；
            * 可走到这里，她又因为「个性没打勾 = 每轮都说」被列进 speakers，于是同一句再答一遍。
            *
            * `groupSpokeThisTurn` 是这一轮里「已经以自己身份说过话」的集合，
@@ -8583,6 +8915,9 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       handle.port = actual;
       handle.url = url;
       resolve(handle);
+      // 「自己注册的号」那条道如果开了「开机就连」，这里替主人接上。
+      // 不 await：连不上也不该拖住启动（自愈和重拨都在 qq-onebot 里）。
+      bootAutoStartOneBot(quiet);
     });
 
   });
@@ -8590,6 +8925,33 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
 
 // Auto-start when launched directly (node src/server.js).
 const isDirectRun = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('src/server.mjs');
+
+/**
+ * 【开机自动连上「自己注册的号」】2026-11-03
+ *
+ * 主人报过「QQ 一直显示正在连」：协议端挂了、或者程序重开之后那条道就不接了。
+ * 现在 onebot.autoStart 一开，小鱼Agent 自己起来就把这条道接上，
+ * 接不上也会由 qq-onebot 的重拨 + 看门狗自己爬起来。
+ */
+async function bootAutoStartOneBot(quiet) {
+  try {
+    const ob = await import('./qq-onebot.mjs');
+    const conf = ob.oneBotConf();
+    if (!conf.enabled || !conf.autoStart) return;
+    if (!quiet) console.log('qq: 开机自动连接「自己注册的号」');
+    const { startQqOneBot } = await import('./qq-bridge.mjs');
+    const st = await startQqOneBot({
+      ensureSession: ensureQqSession,
+      renameGroupSession,
+      runChat: runQqTurn,
+      setSpeakerOwner: markQqOwner,
+      onLog: () => {},
+    });
+    if (!quiet) console.log(`  qq       : ${st.phase}（自己注册的号，自动重连已开）`);
+  } catch (e) {
+    console.log(`qq: 开机自动连接失败 —— ${String(e?.message ?? e)}`);
+  }
+}
 
 /**
  * 【把 QQ 这一侧装到服务器身上】2026-11-01

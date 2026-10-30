@@ -94,6 +94,22 @@
       color: #0b0e13; background: #7ee0b0; border-color: #7ee0b0; font-weight: 600;
     }
     header button#pureBtn.on:hover { background: #9beac4; border-color: #9beac4; color: #0b0e13; }
+    /* 【2026-11-03 主人：「把办事模式并入专业模式里面」】
+       原来这里有一颗珊瑚橙的「办事模式」按钮（管「谁来干」）。
+       现在它并进专业模式了：不再有第三颗按钮，只在专业模式右边多一颗
+       小下拉「谁动手」。颜色规矩因此回到两档：绿=专业模式、红=管理员。 */
+    header button#doerBtn {
+      font-size: 12px; padding: 4px 8px; border-radius: 8px;
+      border: 1px dashed #3a4250; background: transparent; color: #8b94a3;
+      cursor: pointer; white-space: nowrap;
+    }
+    header button#doerBtn:hover { border-color: #5b667a; color: #b9c2d0; }
+    /* 改成「派活」之后才上色 —— 一眼看得出现在她自己不干活 */
+    header button#doerBtn.workers {
+      border-style: solid; border-color: #f0b06a; background: #f0b06a;
+      color: #1a0f06; font-weight: 600;
+    }
+    header button#doerBtn.workers:hover { background: #f6c489; border-color: #f6c489; color: #1a0f06; }
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
@@ -204,13 +220,6 @@
     .qqState.on { border-color: rgba(140, 220, 210, 0.6); color: #8cdcd2; background: rgba(140, 220, 210, 0.12); }
     .qqState.bad { border-color: rgba(232, 122, 122, 0.55); color: #e87a7a; }
     .qqHint { font-size: 11.5px; color: var(--dim); line-height: 1.7; }
-    .qqClaimLine { display: flex; align-items: center; gap: 10px; }
-    .qqClaimLabel { font-size: 12.5px; color: var(--dim); flex: 0 0 74px; }
-    #qqClaimCode {
-      font-family: ui-monospace, Consolas, monospace; font-size: 20px; letter-spacing: 4px;
-      color: #8cdcd2; background: var(--input-bg); border: 1px solid var(--border);
-      border-radius: 8px; padding: 4px 12px;
-    }
     .qqPeers { display: flex; flex-direction: column; gap: 6px; }
     .qqPeer {
       display: flex; align-items: center; gap: 8px; font-size: 12.5px;
@@ -224,6 +233,19 @@
     .qqPeer .tag.owner { border-color: rgba(140, 220, 210, 0.6); color: #8cdcd2; }
     .qqPeer .grow { flex: 1 1 auto; }
     .qqPeer .when { font-size: 11px; color: var(--dim); white-space: nowrap; }
+
+    /* 登录二维码那一块：图放中间，白底才扫得动 */
+    .qqQrBox { display: none; flex-direction: column; gap: 8px; margin-top: 4px; }
+    .qqQrBox.on, .qqQrBox.stale { display: flex; }
+    .qqQrBox.stale .qqQrShot { opacity: .45; }
+    .qqQrHead { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); }
+    .qqQrShot {
+      display: flex; align-items: center; justify-content: center;
+      width: 168px; height: 168px; border-radius: 10px; overflow: hidden;
+      background: #fff; border: 1px solid var(--border);
+    }
+    .qqQrShot img { width: 168px; height: 168px; display: block; image-rendering: pixelated; }
+    .qqQrEmpty, .qqQrDone { font-size: 12px; color: #888; padding: 0 10px; text-align: center; }
 
     /* #whaleBtn.on 那段 2026-11-02 随顶栏那颗「小鲸」按钮一起删了：
        小鲸的开关现在只剩左边「屋里的人」那颗牌（.whoBtn）。 */
@@ -484,6 +506,24 @@
 
     /* ---- 我发出去的文件：卡片（图片看、视频播、别的下载）---- */
     .fileList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    /* 【2026-10-30】聊天封面：铺在消息区底下，淡淡的，不挡字。
+       用 ::before 垫一层，z-index 压到底，正文照常在上面。 */
+    .hasCover { position: relative; }
+    .hasCover::before {
+      content: "";
+      position: absolute; inset: 0;
+      background-image: var(--cover-img);
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      opacity: 0.18;
+      pointer-events: none;
+      z-index: 0;
+      border-radius: inherit;
+    }
+    .hasCover > * { position: relative; z-index: 1; }
+    /* 【2026-10-30】send_file 当场推出来的卡片盒子，跟正式 fileList 长得一样 */
+    .sentLive { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .fileCard {
       display: flex; align-items: center; gap: 8px; max-width: 300px; padding: 7px 9px;
       background: #0f1319; border: 1px solid var(--border); border-radius: 9px;
@@ -1488,6 +1528,7 @@
       border-radius: 999px; padding: 0 7px; flex: none;
     }
     .mdlName .badge.env { color: var(--dim); border-color: var(--border); }
+.mdlName .badge.img { color: #c8a34a; border-color: #6b5527; }
     /* 地址 / 模型名：输入框 + 预设下拉并排。输入框仍然能随便写，下拉只是省事 */
     .pickRow { display: flex; gap: 8px; align-items: stretch; }
     .pickRow input { flex: 1 1 auto; min-width: 0; }
@@ -1534,6 +1575,37 @@
     /* 字段之间、标签和输入框之间都松一点 */
     .mdlForm .field { margin-bottom: 16px; }
     .mdlForm .field > label { display: block; margin-bottom: 6px; line-height: 1.5; }
+/* 「说话 / 出图」那两格：并排、能点一大片，别做成小圆点 */
+.mdlKindRow { display: flex; gap: 10px; flex-wrap: wrap; }
+.mdlKind {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 13px; border: 1px solid var(--border); border-radius: 9px;
+  font-size: 13px; cursor: pointer; user-select: none; margin: 0;
+}
+.mdlKind:hover { border-color: var(--accent); }
+.mdlKind input { margin: 0; accent-color: var(--accent); }
+.mdlKind:has(input:checked) { border-color: var(--accent); background: rgba(240,166,160,.13); }
+/* 模型面板里那块「这一条怎么算钱」 */
+.priceBox {
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 9px;
+}
+.priceHead { display: flex; align-items: center; gap: 8px; }
+.priceTitle { font-size: 12.5px; color: var(--dim); }
+.priceGrow { flex: 1; }
+.priceCur { display: inline-flex; gap: 4px; }
+.priceCur label {
+  display: inline-flex; align-items: center; gap: 4px; margin: 0;
+  padding: 3px 9px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12.5px; cursor: pointer; user-select: none;
+}
+.priceCur label:has(input:checked) { border-color: var(--accent); background: rgba(240,166,160,.13); }
+.priceCur input { margin: 0; accent-color: var(--accent); }
+.priceGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.priceCell { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 12px; color: var(--dim); }
+.priceCell input { width: 100%; }
+.priceMul { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--dim); }
+.priceMul input { width: 90px; }
     .mdlForm .hint { display: block; margin-top: 5px; line-height: 1.6; }
     .mdlForm input[type=password] {
       width: 100%; background: #0f1319; color: var(--text); border: 1px solid var(--border);
@@ -2276,6 +2348,14 @@
       </button>
     </span>
     <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
+    <!-- 2026-11-03【主人的话：「把办事模式并入专业模式里面」】
+         原来这里挂着第三颗按钮（办事模式）。现在它并进专业模式了：
+         这颗小按钮只在专业模式开着的时候出现，管的是「谁动手」——
+           自己动手（默认）＝ 老样子，她自己读写文件、跑命令
+           派活（办事模式）＝ 她只拆任务/派活/检查/验收/压上下文，活交给临时 worker
+         hidden 而不是灰掉：专业模式没开的时候这一档根本不存在，
+         灰着的按钮只会让人一直想点，点下去服务端也只会回一句「没开」。 -->
+    <button id="doerBtn" hidden title="谁动手（属于专业模式）">谁动手：自己</button>
     <!--
       【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
       这两颗按钮连同它们的 JS / CSS 一起撤掉。开关只剩一处：左边「屋里的人」那列牌子，
@@ -2329,7 +2409,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>功能</b><span class="meta" id="featHint"></span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="sessTop">
         <span class="hint">关掉的功能，小鱼就拿不到对应的工具；下一句生效</span>
@@ -2348,7 +2428,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>设置</b><span class="meta">人设 · 底线 · 安全词</span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="dlgBody">
         <fieldset>
@@ -2374,9 +2454,20 @@
             <textarea id="bottomLines" spellcheck="false"></textarea>
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button type="button" class="ghost" id="setDefaultBottomLines">把这版设为默认</button>
             <button type="button" class="ghost" id="resetBottomLines">恢复默认底线</button>
             <span class="hint" id="bottomLinesHint"></span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>记账用什么钱</legend>
+          <div class="field">
+            <label>价目表里存的是「元 / 百万 token」。想按美元对账（OpenAI 账单、中转站后台都是美元）就选 $。</label>
+            <div class="mdlKindRow">
+              <label class="mdlKind"><input type="radio" name="moneyCur" value="cny" id="curCny" checked /><span>￥ 元</span></label>
+              <label class="mdlKind"><input type="radio" name="moneyCur" value="usd" id="curUsd" /><span>$ 美元</span></label>
+            </div>
+            <span class="hint" id="curHint">只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。</span>
           </div>
         </fieldset>
 
@@ -2388,6 +2479,29 @@
           </div>
           <div class="field">
             <span class="hint" id="contextLimitHint">改完点「保存」，下一句生效。</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>外观</legend>
+          <!-- 【2026-10-30】主人夸我画的那只可爱，问能不能当图标和聊天封面。
+               图标只换窗口角上那个（Electron 启动时读，要重启才生效）；
+               桌面快捷方式那个在安装包里烤死了，这里改不到，别写成能改。 -->
+          <div class="field">
+            <label>软件图标</label>
+            <div class="mdlRow" style="display:flex;gap:12px;flex-wrap:wrap">
+              <label class="mdlKind"><input type="radio" name="iconStyle" value="classic" id="iconClassic" /><span>出厂那只</span></label>
+              <label class="mdlKind"><input type="radio" name="iconStyle" value="drawn" id="iconDrawn" /><span>我画的那只</span></label>
+            </div>
+            <span class="hint" id="iconHint">换的是窗口左上角那个小图标，<b>下次启动才看得出</b>。桌面快捷方式上的图标在安装包里，这里改不到。</span>
+          </div>
+          <div class="field">
+            <label>聊天界面封面</label>
+            <div class="mdlRow" style="display:flex;gap:12px;flex-wrap:wrap">
+              <label class="mdlKind"><input type="radio" name="chatCover" value="none" id="coverNone" /><span>不要</span></label>
+              <label class="mdlKind"><input type="radio" name="chatCover" value="whale" id="coverWhale" /><span>我画的那只</span></label>
+            </div>
+            <span class="hint" id="coverHint">铺在消息区底下，淡淡的，不挡字。选完立刻能看到。</span>
           </div>
         </fieldset>
 
@@ -2543,7 +2657,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>模型</b><span class="meta" id="mdlCount"></span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="sessTop">
         <button type="button" class="primary" id="mdlAdd">＋ 添加模型</button>
@@ -2569,6 +2683,43 @@
           <div class="field">
             <label>给它起个名（随便，方便你认）</label>
             <input type="text" id="mdlName" spellcheck="false" placeholder="不填就跟着模型名走" />
+          </div>
+          <div class="field">
+            <label>这条拿来干嘛</label>
+            <div class="mdlKindRow">
+              <label class="mdlKind"><input type="radio" name="mdlKind" value="chat" id="mdlKindChat" checked /><span>说话 / 干活</span></label>
+              <label class="mdlKind"><input type="radio" name="mdlKind" value="image" id="mdlKindImage" /><span>出图</span></label>
+            </div>
+            <span class="hint" id="mdlKindHint">出图那条走的是 /images/generations，跟聊天模型不是一个端点，别混着填。</span>
+          </div>
+          <div class="field">
+            <label>这一条怎么算钱</label>
+            <div class="priceBox">
+              <div class="priceHead">
+                <span class="priceTitle">这一条自己填价（每百万 token）</span>
+                <span class="priceGrow"></span>
+                <span class="priceCur">
+                  <label><input type="radio" name="mdlPriceCur" value="cny" id="mdlPriceCny" checked /><span>￥</span></label>
+                  <label><input type="radio" name="mdlPriceCur" value="usd" id="mdlPriceUsd" /><span>$</span></label>
+                </span>
+              </div>
+              <div class="priceGrid">
+                <label class="priceCell"><span>输入 · 未命中缓存</span>
+                  <input type="number" id="mdlPriceIn" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
+                <label class="priceCell"><span>输入 · 命中缓存（读缓存）</span>
+                  <input type="number" id="mdlPriceInHit" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
+                <label class="priceCell"><span>输出</span>
+                  <input type="number" id="mdlPriceOut" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
+                <label class="priceCell"><span>缓存写入（有才算）</span>
+                  <input type="number" id="mdlPriceCW" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
+              </div>
+              <div class="priceMul">
+                <span>或者偷懒：填个倍率</span>
+                <input type="number" id="mdlMarkup" step="any" min="0.01" max="1000" placeholder="1" spellcheck="false" />
+                <span class="hint" id="mdlMarkupHint">1 = 照官方价算；打八折填 0.8。官方的直连不用动它。</span>
+              </div>
+              <span class="hint" id="mdlPriceHint">四格全空 = 照官方价（× 倍率）。填了哪一格，那一格就按你填的算 —— 填的是**最终价**，不再乘倍率。</span>
+            </div>
           </div>
           <div class="field">
             <label>模型名（API 里的 model）</label>
@@ -2688,7 +2839,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>会话</b><span class="meta" id="sessHint"></span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="sessTop">
         <button type="button" class="primary" id="sessNew">＋ 新会话</button>
@@ -2735,7 +2886,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>当前身份</b><span class="meta" id="idWho"></span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="idBody">
         <div class="idList" id="idList"></div>
@@ -2771,7 +2922,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>小鲸的人设</b><span class="meta">改一次，到处都用这一个她</span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="wpBody">
         <div class="wpTop">
@@ -2807,7 +2958,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b id="fpTitle">小鱼的人设</b><span class="meta" id="fpWho">这就是她自己 —— 改一次，全部会话都跟着变</span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="wpBody">
         <div class="wpTop">
@@ -2841,7 +2992,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>智能体</b><span class="meta" id="agHeadHint">每个智能体都有自己的名字、人设和模型</span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="agBody">
         <div class="agList" id="agList"></div>
@@ -2942,7 +3093,7 @@
   <dialog id="qqDlg" class="dlg qqDlg">
     <div class="dlgHead">
       <b>QQ 小鱼</b><span class="meta" id="qqHeadHint">QQ 上找你说话的人，由她来应</span>
-      <button type="button" class="x" id="qqClose">关闭</button>
+      <button type="button" class="x" id="qqClose" data-close="1">关闭</button>
     </div>
     <div class="dlgBody qqBody">
       <!-- 第一格：连不连得上（凭据 + 开关） -->
@@ -2966,26 +3117,19 @@
         <div class="qqHint" id="qqHint">凭据去 QQ 开放平台（q.qq.com）建一个机器人拿，沙箱/正式都能用。</div>
       </div>
 
-      <!-- 第二格：认主。没有这一步，谁加了她都能使唤她 -->
+      <!-- 第二格：认主 + 白名单。
+           2026-11-03 主人：「认主口令那个删了，就认我填的号」。
+           现在只有一条判据 —— 号对上就是主人，对不上就是客人。 -->
       <div class="qqSect">
-        <div class="qqSectHead"><b>2</b><span>认出哪个人是你</span></div>
-        <div class="qqClaim" id="qqClaimBox">
-          <div class="qqClaimLine">
-            <span class="qqClaimLabel">认主口令</span>
-            <code id="qqClaimCode">------</code>
-            <button type="button" class="ghost" id="qqClaimNew">换一个</button>
-          </div>
-          <div class="qqHint" id="qqClaimHint">在 QQ 里私聊她，发一句「#我是 123456」（把 123456 换成上面这串）。
-            第一个说对的人就被认成你，之后这个口令作废。</div>
-        </div>
-        <div class="qqPeers" id="qqPeers"></div>
-        <div class="qqHint" id="qqPeersHint">别人加她，她会应，但用的是小鲸那套身份；只有你说话时才按主人答。</div>
-
-        <!-- 你本人的 QQ 号（手动填）+ 白名单。只认白名单里的号，别人一律不回。 -->
+        <div class="qqSectHead"><b>2</b><span>谁是你，谁能跟她说话</span></div>
+        <!-- 你本人的 QQ 号：填了它，这个号说的话她按主人答；别人说话的号一律按客人 -->
         <div class="qqField">
           <label for="qqOwnerQq">你的 QQ 号</label>
           <input id="qqOwnerQq" type="text" spellcheck="false" inputmode="numeric" placeholder="例如 10001，只填数字">
         </div>
+        <div class="qqHint" id="qqOwnerHint">只认这一个号：这个号私聊她、在群里 @ 她，她按主人来答；别的号说破了天也只是客人。</div>
+        <div class="qqPeers" id="qqPeers"></div>
+        <div class="qqHint" id="qqPeersHint">上面这里列的是找过她的人，只是个名单 —— 谁是主人只看你填的那个号。</div>
         <div class="qqField">
           <label for="qqAllowQq">能私聊她的号</label>
           <textarea id="qqAllowQq" rows="2" spellcheck="false" placeholder="一行一个，或者用逗号隔开：10001, 10002"></textarea>
@@ -3007,6 +3151,7 @@
         <div class="qqSectHead"><b>1.5</b><span>用你自己注册的号（扫码登录 NapCat）</span></div>
         <div class="qqField qqFieldInline">
           <label class="qqCheck"><input type="checkbox" id="obEnabled"><span>走这条道</span></label>
+          <label class="qqCheck" title="小鱼Agent 一起来就把这条道接上；断了/协议端挂了会自己重拨爬起来"><input type="checkbox" id="obAutoStart"><span>开机就连</span></label>
           <span class="qqGrow"></span>
           <span class="qqState" id="obState">没连</span>
           <button type="button" class="ghost" id="obPrepare">准备协议端</button>
@@ -3031,6 +3176,15 @@
         <div class="qqHint" id="obHint">点「准备协议端」→ 自动装好并拉起，屏幕上会弹一个 QQ 窗口；
           用手机 QQ 扫那个码登录，WebSocket 会自动开在 ws://127.0.0.1:3001，
           再点「连上」就全通了。连上之后戳一戳、表情包、引用、群管理才全有 —— 这些官方接口给不了。</div>
+        <div class="qqQrBox" id="obQrBox">
+          <div class="qqQrHead">
+            <span>登录二维码</span>
+            <span class="qqGrow"></span>
+            <button type="button" class="ghost" id="obQrRefresh">换一张</button>
+          </div>
+          <div class="qqQrShot" id="obQrShot"><span class="qqQrEmpty">还没拿到二维码</span></div>
+          <div class="qqHint" id="obQrHint">扫这张码就行，不用再去找那个弹出来的 QQ 窗口。</div>
+        </div>
       </div>
 
       <!-- 第三格：挂到哪个会话 -->
@@ -3062,7 +3216,7 @@
   <dialog id="todoDlg" class="todoDlg">
     <div class="dlgHead">
       <b>任务清单</b><span class="meta" id="todoHint">一份 txt，我写，你想看就瞄一眼</span>
-      <button type="button" class="x" id="todoClose">关闭</button>
+      <button type="button" class="x" id="todoClose" data-close="1">关闭</button>
     </div>
     <pre class="todoTxtBox" id="todoTxtBox"></pre>
     <div class="dlgFoot">
@@ -5118,7 +5272,15 @@ function loadPureState() {
   if (!sid) { paintPureState({ available: true, on: false, mode: null }); return; }
   fetch('/api/pure?sessionId=' + encodeURIComponent(sid))
     .then((r) => r.json())
-    .then(paintPureState)
+    .then((j) => {
+      paintPureState(j);
+      /**
+       * 同一次响应里就有 doer，顺手把这颗小下拉画了 ——
+       * 不另开一次请求，省得两个按钮先后闪一下。
+       * paintDoerState 定义在这一段下面，函数声明会提升，运行时没问题。
+       */
+      try { paintDoerState(j); } catch {}
+    })
     .catch(() => {});
 }
 
@@ -5145,6 +5307,8 @@ async function togglePureMode() {
     });
     const j = await r.json();
     paintPureState({ available: j && j.available !== false, on: !!(j && j.on) });
+    /* 关掉专业模式时服务端会把「派活」一并清掉（回到 self），这颗下拉跟着重画 */
+    try { paintDoerState(j); } catch {}
     if (typeof addSysNote === 'function') {
       if (j && j.on) addSysNote('专业模式已开（只对这个会话）：接下来只发对话本身，不带人设和规矩，另给她一份「怎么干活」的规范。');
       else addSysNote('专业模式已关（这个会话）：人设和规矩回来了。');
@@ -5155,9 +5319,184 @@ async function togglePureMode() {
   }
 }
 loadPureState();
+/**
+ * 【2026-11-03】专业模式一刀切下去，「谁动手」那颗小下拉要跟着变 ——
+ * 它只在专业模式开着的时候才出现，而 togglePureMode 里已经调了 paintDoerState，
+ * 这里不用再补。留这段注释是因为改这一带时最容易手滑把它俩的顺序搞乱：
+ * 先 paintPureState 再 paintDoerState，反过来会出现「下拉已经显示、专业模式还没亮」的一帧。
+ */
 if (pureBtn) pureBtn.onclick = () => togglePureMode();
 /** 切会话之后重拉一次 —— 每个会话的开/关是各自独立的 */
-window.__reloadPureState = loadPureState;
+window.__reloadPureState = loadPureState();
+
+/**
+ * 【谁动手】—— 2026-11-03 主人：「把办事模式并入专业模式里面」。
+ *
+ * 以前这是一颗独立的珊瑚橙按钮（办事模式），跟专业模式、管理员并列。
+ * 主人否掉了那个形态：它本来就是「怎么干活」的一部分，另开一颗按钮
+ * 等于让人多记一个开关，还多一处可能对不齐的地方（一个开着一个关着，
+ * 界面就会显示成一个谁也说不清的状态）。
+ *
+ * 现在的形态：
+ *   · 只在专业模式开着的时候出现（专业模式没开 = 这一档不存在）
+ *   · 点一下在两个值之间翻：'self' 自己动手 / 'workers' 派活
+ *   · 状态存在服务端 .state/pure.json 的**同一条记录**里（见 pure.mjs 的 setDoer），
+ *     所以「关掉专业模式」会把它一起清掉，不会留一个休眠的勾下次偷偷复活
+ *
+ * 【为什么是「点一下翻」而不是下拉菜单】
+ * 只有两个值。两个值的下拉要点两下、还要多一层浮层的定位和收起，
+ * 而这颗东西在顶栏最右边、旁边就是窗口按钮 —— 浮层一不小心就被裁掉。
+ * 一颗按钮，字面上写清现在是哪个，点一下换另一个，最省事也最不容易点错。
+ */
+const doerBtn = document.getElementById('doerBtn');
+
+/** 服务端报来的最新一份状态（切会话/切专业模式都会重拉） */
+let doerLast = { available: true, on: false, doer: 'self', workers: [] };
+
+/** 按状态刷这颗小按钮。 */
+function paintDoerState(j) {
+  const available = !j || j.available !== false;
+  const pureOn = !!(j && j.on);
+  const doer = (j && j.doer) === 'workers' ? 'workers' : 'self';
+  const workers = Array.isArray(j && j.workers) ? j.workers : (doerLast.workers || []);
+  const running = workers.filter((w) => w && w.status === 'running').length;
+  doerLast = { available, on: pureOn, doer, workers };
+  if (!doerBtn) return;
+  /**
+   * 看不见的两种情况，一次说清为什么要藏：
+   *   ① 功能页里专业模式被关了 → 这一档跟着不存在
+   *   ② 这个会话没开专业模式   → 派活是专业模式里的选项，没开就没地方放
+   * 藏起来而不是「灰着还能点」：灰着的按钮会让人一直想点它，
+   * 而点下去服务端只会回一句「专业模式没开」，那是一次白费的解释。
+   */
+  doerBtn.hidden = !available || !pureOn;
+  doerBtn.classList.toggle('workers', doer === 'workers');
+  doerBtn.textContent = doer === 'workers' ? '谁动手：派活' : '谁动手：自己';
+  if (doer === 'workers') {
+    const tail = workers.length
+      ? '；现在手上有 ' + workers.length + ' 个 worker' + (running ? '（' + running + ' 还在跑）' : '')
+      : '；还没派过活';
+    doerBtn.title = '派活（办事模式）：她只拆任务、派活、检查、验收、管上下文，不自己动手' + tail + '。点一下改回自己动手。';
+  } else {
+    doerBtn.title = '自己动手：读文件、改代码、跑命令都在她手上（老样子）。点一下改成「派活」—— 她只出嘴，活交给会话内临时开出来的 worker。';
+  }
+}
+
+/** 当前会话 id（跟 pureSid 同一个来源） */
+function doerSid() {
+  try {
+    return typeof sessionId === 'string' ? sessionId : (sessionId && sessionId.id) || '';
+  } catch { return ''; }
+}
+
+/**
+ * 拉一次状态。
+ *
+ * 【为什么 worker 名册从 /api/task-mode 拿，而不是跟 /api/pure 一起】
+ * 「谁动手」这个开关属于专业模式（存在 pure.json 里），名册属于 task-mode.mjs
+ * （会话一删就该跟着没的东西）。两者生命周期不同，硬塞进一个响应里，
+ * 迟早会出现「开关还在、名册给人清了」这种半截状态。
+ * 名册只拿来写 title（几个活、几个在跑），拿不到就不写，不影响开关本身。
+ */
+function loadDoerState() {
+  const sid = doerSid();
+  if (!sid) { paintDoerState({ available: true, on: false, doer: 'self' }); return; }
+  fetch('/api/pure?sessionId=' + encodeURIComponent(sid))
+    .then((r) => r.json())
+    .then((j) => {
+      paintDoerState(j);
+      // 专业模式没开就别再去问名册了 —— 那一档不存在，问了也没人看
+      if (!(j && j.on)) return;
+      fetch('/api/task-mode?sessionId=' + encodeURIComponent(sid))
+        .then((r) => r.json())
+        .then((t) => {
+          if (t && t.workers) paintDoerState({ ...(j || {}), workers: t.workers });
+        })
+        .catch(() => {});
+    })
+    .catch(() => {});
+}
+
+/**
+ * 点一下：'self' ⇄ 'workers'。
+ *
+ * 从「自己动手」改成「派活」时弹一次确认 —— 这一下会把她的干活工具真收走，
+ * 主人得知道自己在切什么，别点完发现她不肯干活了以为坏了。
+ * 反方向（派活 → 自己动手）不弹：那是「把权力还回来」，没有风险。
+ */
+async function toggleDoer() {
+  const sid = doerSid();
+  if (!sid) {
+    if (typeof addSysNote === 'function') addSysNote('这个会话还没建好，等它落了盘再点。');
+    return;
+  }
+  const wantWorkers = doerLast.doer !== 'workers';
+  if (wantWorkers) {
+    const yes = await new Promise((resolve) => {
+      const d = document.createElement('dialog');
+      d.className = 'dlg';
+      d.innerHTML = '<div class="dlgHead">改成派活？</div>' +
+        '<div class="dlgBody" style="line-height:1.8">' +
+        '<p>改完之后，<b>这个会话</b>里的小鱼不再自己干活了 —— 她的活只剩四样：拆任务、派活、检查、给结论。</p>' +
+        '<p>具体的活儿交给会话内临时开出来的 worker：</p>' +
+        '<ul style="margin:6px 0 0 18px;padding:0">' +
+        '<li>worker 只属于这个会话，干完了或者会话删掉，它就没了</li>' +
+        '<li>每个活干完都要给她写一份汇报，她来核、来找问题、决定要不要退回重做</li>' +
+        '<li>她的干活工具会被收走（读写文件、跑命令都不在她手上），这不是提醒，是真收</li>' +
+        '<li>上下文由她管：什么该删、什么该留、什么该压成一句，她替你决定</li>' +
+        '<li>这一档属于专业模式，关掉专业模式它就一起关了</li>' +
+        '</ul></div>' +
+        '<div class="dlgFoot"><button type="button" class="ghost" id="_doerNo">算了</button>' +
+        '<button type="button" class="primary" id="_doerYes">改成派活</button></div>';
+      document.body.appendChild(d);
+      const done = (v) => { try { d.close(); } catch (e) {} d.remove(); resolve(v); };
+      d.querySelector('#_doerNo').onclick = () => done(false);
+      d.querySelector('#_doerYes').onclick = () => done(true);
+      d.oncancel = () => done(false);
+      d.showModal();
+    });
+    if (!yes) return;
+  }
+  const next = wantWorkers ? 'workers' : 'self';
+  // 先翻个面，等服务器回话再以它为准 —— 点下去就有反馈
+  paintDoerState({ available: true, on: true, doer: next, workers: doerLast.workers || [] });
+  try {
+    const r = await fetch('/api/pure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, doer: next }),
+    }).then((x) => x.json());
+    if (!r || r.error) {
+      /* 409 = 专业模式没开（服务端挡的，说明界面这边状态旧了） */
+      paintDoerState({ available: true, on: true, doer: wantWorkers ? 'self' : 'workers', workers: [] });
+      if (typeof addSysNote === 'function') addSysNote('⚠ ' + (r?.error || '没切成功'));
+      loadPureState();
+      return;
+    }
+    paintDoerState({ available: true, on: true, doer: r.doer === 'workers' ? 'workers' : 'self', workers: [] });
+    loadDoerState();
+    if (typeof addSysNote === 'function') {
+      if (r.doer === 'workers') addSysNote('改成派活了：她只拆任务/派活/检查/验收/管上下文，活交给临时 worker。');
+      else addSysNote('改回自己动手了：她手上的读写、跑命令都回来了，worker 名册也清了。');
+    }
+  } catch (err) {
+    paintDoerState({ available: true, on: true, doer: wantWorkers ? 'self' : 'workers', workers: [] });
+    if (typeof addSysNote === 'function') addSysNote('⚠ 没切成功：' + String(err && err.message ? err.message : err));
+  }
+}
+
+if (doerBtn) doerBtn.onclick = () => toggleDoer();
+/**
+ * 切会话之后重拉一次 —— 每个会话的档位各自独立。
+ *
+ * 【名字为什么还叫 __reloadTaskState】下面有两处切会话的调用点在等这个名字
+ * （就在 __reloadPureState 旁边）。改名要两处一起动，而这两处离得很远、
+ * 又躺在两段几乎一样的代码里，改错一处就是「切过去之后按钮亮着上一格的状态」——
+ * 那种错最难发现。所以对外保留老名字，内部实现叫 doer。
+ */
+window.__reloadTaskState = loadDoerState;
+/** 给别处用：只看「谁动手」这一个值。 */
+window.__reloadDoerState = loadDoerState;
 
 
 /** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */
@@ -5420,6 +5759,50 @@ function attachBranchBtn(wrap, at) {
  * 回退接口只认 role=user 且非 context 的消息 —— 光有 assistant 的 rewindId 退不了。
  * 所以一路画下来，每遇到一条 user 就把它记下，轮到画回复时取「最近的那一问」。
  */
+/**
+ * 【删除】—— 2026-10-30 主人：「给说的消息的【分支】右边加个删除，给 ai 说的【重发】右边也加一个」。
+ *
+ * 跟回退不一样：回退是把对话退回这条之前、连记忆文件一起退。
+ * 删除只干一件事 —— 这一条从今往后不发给模型了，别的都不动。
+ *
+ * 所以后端记的是一条 at:-1 的登记记录（见 server.mjs 的 message-delete），
+ * 只往 hidden 里塞这条的下标，不设回退点。
+ */
+function attachDelBtn(wrap, at) {
+  if (!wrap || !Number.isFinite(Number(at))) return;
+  if (wrap.querySelector('.delBtn')) return;
+  const db = document.createElement('button');
+  db.type = 'button';
+  db.className = 'delBtn';
+  db.textContent = '删除';
+  db.title = '这一条不再发给模型（不动记忆本、不动史书、不动别的消息）';
+  db.onclick = async () => {
+    if (busy) {
+      alert('等这一轮说完再删，不然删到一半她又开始跑，会乱。');
+      return;
+    }
+    if (!(await askConfirm({ title: '删除这条', body: '删掉这一条消息？删了它就不再发给模型，别的消息和记忆都不动。', ok: '删除', danger: true }))) return;
+    db.disabled = true;
+    try {
+      const r = await fetch('/api/sessions/message-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: sessionId, at: Number(at) }),
+      }).then((x) => x.json()).catch((e) => ({ error: (e && e.message) || '连不上服务' }));
+      if (!r || r.error) {
+        alert('删不掉：' + ((r && r.error) || '网络错误'));
+        return;
+      }
+      // 服务端给的是删完之后的有效历史，照它整屏重画，界面上跟盘上对得上
+      if (r.session && Array.isArray(r.session.turns)) renderTurns(r.session.turns);
+    } finally {
+      db.disabled = false;
+    }
+  };
+  actionsOf(wrap).appendChild(db);
+  wrap.classList.remove('noRewind');
+}
+
 function attachRetry(wrap, askQueue) {
   if (!wrap || wrap.querySelector(".retryBtn")) return;
   const ask = lastAsk(askQueue);
@@ -5859,6 +6242,20 @@ function attachFiles(wrap, items) {
   }
   box.innerHTML = '';
   for (const f of list) box.appendChild(outCard(f));
+  /* 【2026-10-30】工具当场推出来的图，气泡还没建好时先存在 liveFilePark。
+   * 这里补画一遍，画完就清空，不会跟正式的叠两层（同样的 path/key 只留一份）。 */
+  try {
+    const park = window.liveFilePark || [];
+    if (park.length) {
+      const seen = new Set(list.map((x) => String((x && (x.key || x.path)) || '')));
+      for (const f of park) {
+        const k = String((f && (f.dataset && f.dataset.k)) || '');
+        if (k && seen.has(k)) continue;
+        box.appendChild(f);
+      }
+      window.liveFilePark = [];
+    }
+  } catch {}
   if (log) noteNewContent();
   return box;
 }
@@ -6327,6 +6724,17 @@ const TOOL_NICE = {
   // 【2026-10-29 主人要求：这几个漏在表外，界面上一直露英文名】
   look_screen: '看一眼屏幕',
   screen_watch_status: '看陪看状态',
+  make_image: '画一张图',
+  qq_send: '发到 QQ',
+  ui_observe: '看界面',
+  ui_click: '点一下',
+  ui_double_click: '双击',
+  ui_right_click: '右键',
+  ui_type: '打字',
+  ui_key: '按键',
+  ui_scroll: '滚一下',
+  spawn_worker: '派活',
+  list_workers: '看派了几个人',
 };
 function niceTool(name) {
   const n = String(name || '').trim();
@@ -6855,15 +7263,15 @@ async function runTurn({ resume = false, text = '' } = {}) {
           /* compressTag·2026-10-31 这个开关关着就把整块咽下去：不弹那一行，
            * 但数字照旧更新（noteNewContent 还在最外面）。 */
           if (compressTagOn()) {
-          // 压完上下文小了一截，球的数字得跟着掉下来，别还挂着压之前那个
-          const wrap = addEl('', 'msg user');
-          wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
-          const b = document.createElement('div');
-          b.className = 'bubble';
-          b.textContent = `旧对话折成摘要了：约 ${ev.before} → ${ev.after} tokens，收起 ${ev.removed} 条`
-            + (ev.limit ? `（上限 ${ev.limit}，到 ${ev.trigger} 就压）` : '')
-            + (ev.error ? `（摘要失败：${ev.error}）` : '');
-          wrap.appendChild(b);
+            // 压完上下文小了一截，球的数字得跟着掉下来，别还挂着压之前那个
+            const wrap = addEl('', 'msg user');
+            wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
+            const b = document.createElement('div');
+            b.className = 'bubble';
+            b.textContent = `旧对话折成摘要了：约 ${ev.before} → ${ev.after} tokens，收起 ${ev.removed} 条`
+              + (ev.limit ? `（上限 ${ev.limit}，到 ${ev.trigger} 就压）` : '')
+              + (ev.error ? `（摘要失败：${ev.error}）` : '');
+            wrap.appendChild(b);
           }
           noteNewContent();
         } else if (ev.type === 'aborted') {
@@ -6891,6 +7299,29 @@ async function runTurn({ resume = false, text = '' } = {}) {
             bubble = null;
           }
           addSysNote('⚠ ' + ev.message);
+        } else if (ev.type === 'sentfile' && ev.file) {
+          /* 【2026-10-30 主人要：图/文件当场出来，别等这一轮说完】
+           * 以前 send_file 只往 outbox 里塞，要等整个回合 done 之后才挂上，
+           * 主人得等我把话全说完才看得见图。现在工具里当场推 sentfile，这儿立刻画。
+           * 画进「当前这条正在写的」气泡：就是最后一个正在流式的 row。 */
+          try {
+            const rows = els.messages ? [...els.messages.querySelectorAll('.row.ai')] : [];
+            let host = null;
+            for (let r = rows.length - 1; r >= 0; r--) {
+              if (rows[r].querySelector('.bubble')) { host = rows[r].querySelector('.bubble'); break; }
+            }
+            const card = outCard(ev.file);
+            if (card) {
+              if (host) {
+                let box = host.querySelector('.sentLive');
+                if (!box) { box = document.createElement('div'); box.className = 'sentLive'; host.appendChild(box); }
+                box.appendChild(card);
+              } else {
+                liveFilePark.push(card);
+              }
+              scrollBottomSoon();
+            }
+          } catch (e) { console.warn('[sentfile] 当场画失败：', e && e.message); }
         } else if (ev.type === 'done') {
           /**
            * 【说完就把光标收掉】
@@ -6948,6 +7379,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
             // 这一轮刚落地，主人在这一轮说的话立刻就能改（下标要等服务端给）
             attachEdit(pendingRewindBubble, ev.at);
             attachBranchBtn(pendingRewindBubble, ev.at);
+          attachDelBtn(pendingRewindBubble, ev.at);
             pendingRewindBubble = null;
           }
           // 【实时跑完这一轮，也要能一键重发】
@@ -6958,6 +7390,7 @@ async function runTurn({ resume = false, text = '' } = {}) {
           if (bubble && bubble.isConnected && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
             try {
               attachRetry(bubble, [{ at: Number(ev.at), text: String(text || "") }]);
+              attachDelBtn(bubble, ev.at);
             } catch {}
           }
           if (ev.usage) {
@@ -7156,8 +7589,20 @@ function replayInFlight(id) {
       touchStreaming(rec.bubble);
     } else if (kind === 'whale' || kind === 'agent') {
       // 小鲸说的话：单独一个气泡，标上她的名字
-      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
-      if (rec.think) { rec.think.finish(); rec.think = null; }
+      /**
+       * 【别掐断我正在写的那个气泡】—— 2026-10-30 修
+       *
+       * 主人报：小鱼小鲸都启用时，发完消息屏幕上全空，非得 Ctrl+F5 才看得见。
+       *
+       * 原因就是原来这两行：她的话一落，就把 rec.bubble 置空。
+       * 可这一轮我还在往上写字，指针被掐了，后面全写进一个没人认领的地方 ——
+       * 屏幕上就是空白，刷新重拉历史才重新画出来。
+       * 现在改成：只要我这一轮的气泡还挂在页面上，就留着它，
+       * 她的话另起一个气泡，两边各写各的，互不打扰。
+       */
+      const _keepMine = !!(rec.bubble && rec.bubble.isConnected);
+      if (!_keepMine && rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
+      if (!_keepMine && rec.think) { rec.think.finish(); rec.think = null; }
       addWhaleBubble(p.who, p.text);
     } else if (kind === 'whale_start') {
       if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
@@ -7601,6 +8046,9 @@ const elWords = document.getElementById('safeWords');
 const elNote = document.getElementById('safeWordNote');
 const saveHint = document.getElementById('saveHint');
 const bottomLinesHint = document.getElementById('bottomLinesHint');
+const curCny = document.getElementById('curCny');
+const curUsd = document.getElementById('curUsd');
+const curHint = document.getElementById('curHint');
 const elCtxLimit = document.getElementById('contextLimit');
 const contextLimitHint = document.getElementById('contextLimitHint');
 const safeWordsHint = document.getElementById('safeWordsHint');
@@ -8819,8 +9267,23 @@ async function submitNewSession() {
     }
   }
   try { if (dlg) dlg.close(); } catch { /* 忽略 */ }
+  /**
+   * 【新建会话先问名字】—— 2026-10-30 主人：「会话界面新建会话时，弹出会话名命名弹窗，默认【新会话】」
+   *
+   * 挑完人就在这儿停下来问一句名字，框里预先填好「新会话」。
+   * 点取消 = 不建了（跟大多数「新建」的对话框一个脾气）；
+   * 直接回车 / 不填就确定 = 用「新会话」这个名字。
+   */
+  const askedName = await askName({
+    title: '给这个新会话起个名字',
+    value: '新会话',
+    placeholder: '新会话',
+    maxLength: 80,
+  });
+  if (askedName === null) return; // 点了取消，不建
+  const title = String(askedName || '').trim() || '新会话';
   try {
-    await createSessionEx({ agentIds: ids });
+    await createSessionEx({ agentIds: ids, title });
   } catch (e) {
     console.warn('[newSession] 开会话出错', e && e.message ? e.message : e);
   } finally {
@@ -9258,7 +9721,7 @@ async function importAgentCardFrom(file) {
 /** 最后一次拉到的状态，保存/刷新时都用它，省得每次都等一遍网络。 */
 let qqState = null;
 /** 认主口令：只在打开面板时问一次，不刷新就一直是这一串。 */
-let qqClaimToken = '';
+
 /** 会话清单（第三格那个下拉框要用）。 */
 let qqSessions = [];
 /** 最近一次拿到的白名单（认主人时顺手把它也带一份，省一次网络）。 */
@@ -9341,23 +9804,7 @@ function renderQqPanel(st) {
     }
   }
 
-  // 第二格：认主
-  const codeEl = qqEl('qqClaimCode');
-  if (codeEl) codeEl.textContent = qqClaimToken || '------';
-  const claimBox = qqEl('qqClaimBox');
-  if (claimBox) {
-    const alive = st.claim && st.claim.alive;
-    claimBox.style.opacity = alive ? '1' : '0.72';
-  }
-  const claimHint = qqEl('qqClaimHint');
-  if (claimHint) {
-    claimHint.textContent = st.ownerOpenid
-      ? '已经认出你了 —— 你在 QQ 上说话，她会按主人答；别人说话，她按小鲸那套答。'
-      : `在 QQ 里私聊她，发一句「#我是 ${qqClaimToken || '------'}」。`
-        + '第一个说对的人就被认成你，之后这个口令作废。';
-  }
-
-  // 第二格后半：白名单（手动填的 QQ 号 / 谁的私聊 / 哪个群）
+  // 第二格：主人号 + 白名单（2026-11-03 起不再有口令，只认手填的号）
   const gate = (st.gate && typeof st.gate === 'object') ? st.gate : {};
   const ownerEl = qqEl('qqOwnerQq');
   // 只看「没在打字」的框 —— 否则每两秒刷新一次，主人正在输的号会被抹掉
@@ -9409,18 +9856,21 @@ function renderQqPanel(st) {
       when.className = 'when';
       when.textContent = p.lastAt ? new Date(p.lastAt).toLocaleString('zh-CN', { hour12: false }) : '';
       row.append(who, tag, grow, when);
-      if (p.role !== 'owner') {
+      // 「认成主人」那颗按钮在 2026-11-03 就撤了 —— 认主只认面板上填的那个号，
+      // 在这里点一下把别人设成主人才是漏子。这里最多给个「填进白名单」的快捷。
+      if (p.role !== 'owner' && p.qq) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'ghost';
-        btn.textContent = '认成主人';
+        btn.textContent = '加进白名单';
         btn.onclick = async () => {
-          // 以前这里打的是 /api/qq/owner —— 服务端压根没这个路由，点了必报 404。
-          // 真正的路由是 /api/qq/peer，用 role:'owner' 指定谁是主人。
-          const r = await qqApi('/api/qq/peer', { openid: p.openid, role: 'owner' });
-          if (!r || r.error) { qqSetHint('没改成：' + ((r && r.error) || '网络错误'), true); return; }
-          qqSetHint('好啦，以后这个人说话她按主人答');
-          await refreshQqPanel();
+          const el = qqEl('qqAllowQq');
+          if (!el) return;
+          const have = String(el.value || '').split(/[\s,，]+/).filter(Boolean);
+          if (have.includes(String(p.qq))) { qqSetHint('已经在白名单里了'); return; }
+          have.push(String(p.qq));
+          el.value = have.join('\n');
+          qqSetHint('填进私聊白名单了，记得点「保存白名单」');
         };
         row.append(btn);
       }
@@ -9489,6 +9939,72 @@ async function refreshQqPanel() {
   let prep = null;
   try { prep = await qqApi('/api/qq/onebot/protocol'); } catch { prep = null; }
   paintOneBot(st.onebot, prep);
+  paintQrcode().catch(() => {});
+}
+
+/**
+ * 登录二维码 —— 面板上直接看、直接扫。
+ *
+ * 为什么不每次都把图塞回来：轮询两秒一次，图一张几十 KB，
+ * 所以先用 ?inline=0 只看时间戳变没变，变了才回来取一趟图。
+ */
+let qrPaintSeq = 0;
+let qrLastMtime = 0;
+let qrLastOnline = null;
+async function paintQrcode(force) {
+  const box = qqEl('obQrBox');
+  if (!box) return;
+  const seq = ++qrPaintSeq;
+  let info = null;
+  try { info = await qqApi('/api/qq/onebot/qrcode?inline=0'); } catch { info = null; }
+  if (seq !== qrPaintSeq) return;
+  const shot = qqEl('obQrShot');
+  const hint = qqEl('obQrHint');
+  if (!info || info.error) {
+    if (hint) hint.textContent = '读不到二维码：' + ((info && info.error) || '网络错误');
+    return;
+  }
+  if (hint) hint.textContent = info.hint || '';
+  const qr = info.qr || {};
+  const stale = !qr.ok || (qr.ageMs != null && qr.ageMs > (info.staleMs || 180000));
+  box.classList.toggle('on', !!qr.ok && !info.online);
+  box.classList.toggle('stale', !!qr.ok && stale && !info.online);
+  if (info.online) {
+    if (shot) shot.innerHTML = '<span class="qqQrDone">已经登上了</span>';
+    qrLastMtime = qr.mtime || 0;
+    return;
+  }
+  if (!qr.ok) {
+    if (shot) shot.innerHTML = '<span class="qqQrEmpty">还没拿到二维码</span>';
+    qrLastMtime = 0;
+    return;
+  }
+  // 图换了（或者头一次画、或者要求强制重画）才回头取一次 base64
+  if (shot && (force || qr.mtime !== qrLastMtime || !shot.querySelector('img'))) {
+    qrLastMtime = qr.mtime;
+    try {
+      const full = await qqApi('/api/qq/onebot/qrcode');
+      if (seq !== qrPaintSeq) return;
+      if (full && full.qr && full.qr.base64) {
+        shot.innerHTML = `<img alt="登录二维码" src="data:image/png;base64,${full.qr.base64}">`;
+      }
+    } catch {}
+  }
+  qrLastOnline = info.online;
+}
+
+/** 二维码这一块只在弹窗开着、且这条道开着的时候轮询，别在后台空转。 */
+let qrTimer = null;
+function startQrPoll() {
+  if (qrTimer) return;
+  qrTimer = setInterval(() => {
+    const dlg = document.getElementById('qqDlg');
+    if (!dlg || dlg.hidden) { stopQrPoll(); return; }
+    paintQrcode().catch(() => {});
+  }, 3000);
+}
+function stopQrPoll() {
+  if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
 }
 
 /**
@@ -9511,6 +10027,8 @@ async function paintOneBot(obStatus, obPrepare) {
     tok.placeholder = conf.hasToken ? '已经存过；要换就整串重填' : '协议端设了 token 才填，没有就空着';
     if (document.activeElement !== tok) tok.value = '';
   }
+  const auto = qqEl('obAutoStart');
+  if (auto) auto.checked = conf.autoStart === true;
   const st = obStatus || {};
   const stateEl = qqEl('obState');
   const btn = qqEl('obToggle');
@@ -9540,8 +10058,11 @@ async function paintOneBot(obStatus, obPrepare) {
     } else if (st.phase === 'connecting' && st.mode === 'reverse') {
       hint.textContent = `在 ${st.url} 等协议端拨进来（NapCat 里填这个反向地址）。`;
     } else {
+      const pr0 = obPrepare || {};
+      const autoTip = conf.autoStart ? '（开了「开机就连」，断了会自己按 3/6/12/24/30 秒重拨，协议端进程没了也会替你拉起来）' : '';
       hint.textContent = '点「准备协议端」→ 自动装好并拉起（会弹 UAC，点「是」），屏幕上会开一个 QQ 窗口，'
-        + '用手机 QQ 扫那个码登录。WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。';
+        + '用手机 QQ 扫那个码登录。WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。' + autoTip
+        + (pr0.installed ? '' : '（这台机器上还没装协议端）');
     }
   }
   // 「准备协议端」按钮的状态：装没装、跑没跑
@@ -9581,13 +10102,13 @@ async function openQqDlg() {
   const dlg = qqEl('qqDlg');
   if (!dlg) return;
   if (typeof closeOtherDialogs === 'function') closeOtherDialogs('qqDlg');
-  // 每次打开换一个新口令：上一轮那串可能已经被人看见了
-  const c = await qqApi('/api/qq/claim', {});
-  qqClaimToken = (c && c.token) ? String(c.token) : '';
+  // 2026-11-03：认主口令那一套撤了，打开面板不再去要口令，只读配置和名单
   qqSessions = [];
   await loadOneBotConf();
   await refreshQqPanel();
   if (!dlg.open) dlg.showModal();
+  startQrPoll();
+  paintQrcode().catch(() => {});
 }
 
 /** 第一格 + 第二格后半：凭据和白名单一起存。 */
@@ -9638,13 +10159,8 @@ async function saveQqBind() {
   const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   wire('qqClose', () => {
     const d = document.getElementById('qqDlg');
+    stopQrPoll();
     if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } }
-  });
-  wire('qqClaimNew', async () => {
-    const c = await qqApi('/api/qq/claim', {});
-    qqClaimToken = (c && c.token) ? String(c.token) : '';
-    await refreshQqPanel();
-    qqSetHint('换好了，让那个人发新的这串');
   });
   wire('qqGateSave', async () => {
     if (!(await saveQqGate())) return;
@@ -9673,6 +10189,7 @@ async function saveQqBind() {
       mode: String((qqEl('obMode') || {}).value || 'forward'),
       url: String((qqEl('obUrl') || {}).value || '').trim(),
       ownerQq: String((qqEl('qqOwnerQq') || {}).value || '').replace(/[^0-9]/g, ''),
+      autoStart: Boolean((qqEl('obAutoStart') || {}).checked),
     };
     const tok = String((qqEl('obToken') || {}).value || '').trim();
     // 空着就是「不改」—— 跟 AppSecret 一个口径，免得每存一次就把 token 抹掉
@@ -9720,9 +10237,36 @@ async function saveQqBind() {
       }
       const s = await qqApi('/api/qq/onebot/protocol/start', {});
       if (!s || s.error) { say('拉不起来：' + ((s && s.error) || '网络错误'), true); return; }
-      say('已经放出去了。看那个新弹出的 QQ 窗口，用手机 QQ 扫码登录；登进去之后回来点「连上」。');
+      say('已经放出去了。二维码就在下面这一格里，用手机 QQ 直接扫；登进去之后回来点「连上」。');
     } finally {
       await refreshQqPanel();
+    }
+  });
+
+  // 「换一张」：把协议端重开一遍，它自己会去要一张新码。
+  // 为什么不调 NapCat 的刷新接口：那套要 HMAC 签的凭证，外面签不出来（详见 src/qq-qrcode.mjs）。
+  wire('obQrRefresh', async () => {
+    const btn = qqEl('obQrRefresh');
+    const hintEl = qqEl('obQrHint');
+    if (btn) btn.disabled = true;
+    if (hintEl) hintEl.textContent = '正在让协议端换一张码…（大概十几秒）';
+    try {
+      const r = await qqApi('/api/qq/onebot/protocol/qr-refresh', {});
+      if (!r || r.error) {
+        if (hintEl) hintEl.textContent = '换不了：' + ((r && r.error) || '网络错误');
+        return;
+      }
+      qrLastMtime = 0;
+      // 给它十几秒重新扫码窗口，这期间每 2 秒看一次
+      let tries = 0;
+      const tick = async () => {
+        tries += 1;
+        await paintQrcode(true);
+        if (tries < 8) setTimeout(tick, 2000);
+      };
+      setTimeout(tick, 2000);
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
 
@@ -9789,6 +10333,24 @@ document.getElementById('personaRename').onclick = async () => {
 
 
 function fillSettings(s) {
+  /* 【2026-10-30】外观回填：图标和封面 */
+  try {
+    const ic = (s && s.iconStyle) || 'classic';
+    const elIc = document.getElementById(ic === 'drawn' ? 'iconDrawn' : 'iconClassic');
+    if (elIc) elIc.checked = true;
+    const cv = (s && s.chatCover) || 'none';
+    const elCv = document.getElementById(cv === 'whale' ? 'coverWhale' : 'coverNone');
+    if (elCv) elCv.checked = true;
+  } catch {}
+  // 币种：跟着服务端存的走，缺省是元
+  moneyCurrency = s.currency === 'usd' ? 'usd' : 'cny';
+  if (curCny) curCny.checked = moneyCurrency === 'cny';
+  if (curUsd) curUsd.checked = moneyCurrency === 'usd';
+  if (curHint) {
+    curHint.textContent = moneyCurrency === 'usd'
+      ? '现在按美元显示。汇率是 1 元 ≈ ' + (Math.round(moneyFx * 10000) / 10000) + ' 美元，只换显示，价目表不动。'
+      : '只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。';
+  }
   elBottom.value = s.bottomLines.join('\n');
   elWords.value = s.safeWords.join(' / ');
   elNote.value = s.safeWordNote;
@@ -9802,6 +10364,53 @@ function fillSettings(s) {
   paintCtxLimitNote();
 }
 
+/* 币种单选：立刻把预览换过来（钱数要等保存后才真存，这里只是让主人先看见效果） */
+for (const [el, want] of [[curCny, 'cny'], [curUsd, 'usd']]) {
+  if (!el) continue;
+  el.onchange = () => {
+    if (!el.checked) return;
+    moneyCurrency = want;
+    if (curHint) {
+      curHint.textContent = want === 'usd'
+        ? '现在按美元显示。汇率是 1 元 ≈ ' + (Math.round(moneyFx * 10000) / 10000) + ' 美元，只换显示，价目表不动。'
+        : '只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。';
+    }
+    try { paintUsageBox(); } catch {}
+    try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {}
+  };
+}
+
+/**
+ * 把聊天封面换上（或撤掉）。
+ *
+ * 【2026-10-30】主人夸我画的那只可爱，想拿来当封面。铺在消息区底下，
+ * 淡淡的、不抢字，用 mask 压住透明度，主题是黑的白的都好看。
+ */
+function applyChatCover(which) {
+  try {
+    const host = document.getElementById('log') || document.querySelector('.log') || document.querySelector('main');
+    if (!host) return;
+    const url = (which === 'whale') ? '/assets/xiaoyu-whale-cover.png' : '';
+    if (!url) {
+      host.classList.remove('hasCover');
+      host.style.removeProperty('--cover-img');
+      return;
+    }
+    host.classList.add('hasCover');
+    host.style.setProperty('--cover-img', 'url("' + url + '")');
+  } catch (e) {
+    console.warn('[cover] 换封面失败：', e && e.message);
+  }
+}
+
+// 【封面】开机自动套用（存过的话，一打开就是那张）
+(async () => {
+  try {
+    const r = await fetch('/api/settings').then((x) => x.json());
+    if (r && r.settings) applyChatCover(r.settings.chatCover);
+  } catch {}
+})();
+
 document.getElementById('openSettings').onclick = async () => {
   saveHint.textContent = '';
   bottomLinesHint.textContent = '';
@@ -9809,6 +10418,8 @@ document.getElementById('openSettings').onclick = async () => {
   const r = await fetch('/api/settings').then(r => r.json()).catch(() => null);
   if (!r) { saveHint.textContent = '读取失败'; return; }
   defaults = r.defaults;
+  // 汇率跟着设置一起下：切了币种也要立刻生效，不能等下次开机才换过来
+  if (r.fx && Number(r.fx.usdPerCny) > 0) moneyFx = Number(r.fx.usdPerCny);
   fillSettings(r.settings);
   const p = await fetch(PERSONA_API('/api/personas')).then(r => r.json()).catch(() => null);
   if (p) fillPersona(p); else personaHint.textContent = '人设读取失败';
@@ -9952,6 +10563,11 @@ document.getElementById('saveSettings').onclick = async () => {
     // 原文交给后端解析：空 -> 默认 128000，0 / auto -> 自动档，off -> 关闭，数字 -> 那个数。
     // 这里不自己 Number()，否则 "off" 会变成 NaN 被后端当成「没填」。
     contextLimit: elCtxLimit.value.trim(),
+    // 记账用什么钱：'cny' / 'usd'。只影响显示，价目表不动。
+    currency: (curUsd && curUsd.checked) ? 'usd' : 'cny',
+    /* 【2026-10-30】外观：图标用哪套、聊天封面用哪张 */
+    iconStyle: (document.getElementById('iconDrawn') && document.getElementById('iconDrawn').checked) ? 'drawn' : 'classic',
+    chatCover: (document.getElementById('coverWhale') && document.getElementById('coverWhale').checked) ? 'whale' : 'none',
   };
   const r = await fetch('/api/settings', {
     method: 'POST',
@@ -9960,6 +10576,11 @@ document.getElementById('saveSettings').onclick = async () => {
   }).then(r => r.json()).catch(() => null);
   if (!r) { saveHint.textContent = '保存失败'; return; }
   fillSettings(r.settings);
+  /* 封面立刻换，不用等下次刷新 */
+  try { applyChatCover(r.settings && r.settings.chatCover); } catch {}
+  // 币种可能刚改过：把这一屏的钱数当场按新币种重画，别等下一轮对话
+  try { paintUsageBox(); } catch {}
+  try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {}
   saveHint.textContent = '已保存，下一句生效';
   setTimeout(() => dlg.close(), 450);
 };
@@ -9995,39 +10616,6 @@ document.getElementById('resetPersona').onclick = async () => {
   personaHint.textContent = '已恢复成默认内容，上一版留在 .state/persona.backup.md';
 };
 
-/**
- * 「把这版设为默认」—— 把输入框里现在这几条定成新的出厂默认。
- *
- * 2026-11-01 主人提的：「加一条，把设置里我改过的【底线】内容设为默认」。
- * 定完之后：以后再点「恢复默认底线」，回来的就是这一版；
- * 新装的机器、重置过的机器，拿到的也是这一版（存在 .state/defaults.json，不动代码文件）。
- * 空着不让定 —— 一条底线的默认等于没有底线，那比不定更糟。
- */
-document.getElementById('setDefaultBottomLines').onclick = async () => {
-  const btn = document.getElementById('setDefaultBottomLines');
-  const ta = document.getElementById('bottomLines');
-  const lines = String((ta && ta.value) || '')
-    .split('\n').map((s) => s.trim()).filter(Boolean);
-  if (!lines.length) {
-    bottomLinesHint.textContent = '输入框是空的 —— 一条底线都没有，不能把它当默认';
-    return;
-  }
-  btn.disabled = true;
-  bottomLinesHint.textContent = '正在定为默认…';
-  const r = await fetch('/api/settings/default-bottomlines', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bottomLines: lines }),
-  }).then((x) => x.json()).catch(() => null);
-  btn.disabled = false;
-  if (!r || r.error) {
-    bottomLinesHint.textContent = '没定成：' + (r && r.error ? r.error : '网络错误');
-    return;
-  }
-  bottomLinesHint.textContent = r.changed
-    ? '已设为默认（共 ' + r.bottomLines.length + ' 条）。以后「恢复默认底线」回到的就是这一版'
-    : '本来就是默认这一版，没动';
-};
 
 // 只把底线拉回默认那几条，安全词 / 人设 / 模型一概不动。点完立刻生效，不用再点保存。
 document.getElementById('resetBottomLines').onclick = async () => {
@@ -10694,13 +11282,20 @@ function renderFeatList() {
 }
 
 /* compressTag·2026-10-31 功能页里那个「压缩提示」开关：关掉的话，
- * 压缩照常做，只是聊天里不再多出那一行「上下文·已压缩」。 */
+ * 压缩照常做，只是聊天里不再多出那一行「上下文·已压缩」。
+ *
+ * 【2026-11-04 修】这里原来读的是 f.on，而 /api/features 给的是 f.enabled ——
+ * 两边字段名对不上，f.on 永远是 undefined，于是「!== false」永远成立，
+ * 这个开关**从来就没真正关掉过**：关了还是照样弹「旧对话折成摘要了」。
+ * 现在读 enabled，并且把两种写法都认一下，免得以后再有人改字段名。
+ */
 function compressTagOn() {
   try {
     const list = (featState && (featState.features || featState.list)) || [];
     const f = list.find((x) => x && x.id === 'compressTag');
     if (!f) return true;                 // 拿不到就当开着，跟默认一致
-    return f.on !== false;
+    const v = (f.enabled !== undefined) ? f.enabled : f.on;
+    return v !== false;
   } catch { return true; }
 }
 
@@ -11469,6 +12064,28 @@ function fmtTok(n) {
 }
 
 /**
+ * 现在记账用哪种钱。
+ *
+ * 【为什么前端要自己记一份】
+ * 价目表里全是「元 / 百万 token」（照国内官网抄的），可主人可能拿美元对账。
+ * 每次都自己心算汇率太累，所以这里存一个「显示用哪种」，读的是设置里那一格。
+ */
+let moneyCurrency = 'cny';
+let moneyFx = 0.14;
+
+/** 把「元」换成主人现在想看的币种。界面里所有钱数都必须过这一步。 */
+function inMoney(cny) {
+  const v = Number(cny);
+  if (!Number.isFinite(v)) return 0;
+  return moneyCurrency === 'usd' ? v * (Number(moneyFx) > 0 ? Number(moneyFx) : 0.14) : v;
+}
+
+/** 钱的符号：跟着币种走，别让美元的数字后面挂个「元」。 */
+function moneySign() {
+  return moneyCurrency === 'usd' ? '$' : '￥';
+}
+
+/**
  * 钱怎么写：太小的时候多留几位，不然全是「≈0.00」看不出差别。
  * @param {number} c 元
  */
@@ -11602,12 +12219,114 @@ function rateOf(model) {
 }
 
 /**
+ * 这条模型要走几倍价。
+ *
+ * 【为什么前端也得知道】
+ * 中转站（丸子、凌风…）的模型名跟官方一模一样，价目表按名字查只能查到官方价，
+ * 而实际扣的是「官方价 × 它的倍率」。后端把倍率存进每条模型里，这里按
+ * 「模型名 → 那条配置的 markup」对一下。
+ *
+ * 对不上（同一模型名有好几条、或者压根没配）就当 1，照官方价算。
+ * 宁可少算，也不要凭猜乘一个大数把主人吓一跳。
+ */
+function markupOf(modelName) {
+  const name = String(modelName || '').trim();
+  if (!name) return 1;
+  const pick = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  };
+  try {
+    const list = (mdlState && Array.isArray(mdlState.models)) ? mdlState.models : [];
+    // 1) 真名对上，且这条是「说话」用的
+    const hit = list.filter((m) => m && String(m.model || '').trim() === name && m.kind !== 'image');
+    // 2) 好几条同名的（丸子一条、凌风一条），优先「正在用」的那条，否则取倍率最大的
+    //    —— 宁可多算也别少算，主人看到钱比预期多才会去查，看到少就当没事。
+    if (hit.length === 1) return pick(hit[0].markup);
+    if (hit.length > 1) {
+      const cur = hit.find((m) => m.id === mdlState.activeId);
+      if (cur) return pick(cur.markup);
+      return hit.reduce((mx, m) => Math.max(mx, pick(m.markup)), 1);
+    }
+  } catch {}
+  return 1;
+}
+
+/**
+ * 找出这一轮该用哪条模型记录（好读它自己填的价目）。
+ *
+ * 跟 markupOf 一样按**真模型名**对，因为价目表也是按真名对的。
+ * 同名的有好几条（丸子一条、凌风一条）时优先「正在用的」那条 ——
+ * 这条的价是主人自己填的，用错一条就是把自己的账算错，所以要挑准。
+ */
+function pricedRow(modelName) {
+  const name = String(modelName || '').trim();
+  if (!name) return null;
+  try {
+    const list = (mdlState && Array.isArray(mdlState.models)) ? mdlState.models : [];
+    const hit = list.filter((m) => m && String(m.model || '').trim() === name && m.kind !== 'image');
+    if (!hit.length) return null;
+    const cur = hit.find((m) => m.id === mdlState.activeId);
+    if (cur) return cur;
+    // 没有「正在用的」（比如刚切过会话），就挑填了价的那条，一条都没填就返回第一条
+    const filled = hit.find((m) => {
+      const p = m.price || {};
+      return ['inMiss', 'inHit', 'out', 'cacheWrite'].some((k) => p[k] !== null && p[k] !== undefined);
+    });
+    return filled || hit[0];
+  } catch { return null; }
+}
+
+/**
+ * 这一条模型自己填的价目，换算成「元 / 每百万 token」。
+ *
+ * 【为什么这里要换算】主人填的时候可以选 ￥ 或 $（他从哪抄的牌价就照哪抄），
+ * 但算钱这一层统一用元。换完再往回显示时，显示层再按记账币种折一次 ——
+ * 中间只认「元」这一种，省得两边各换一次、换回来差一截。
+ *
+ * 四格里没填的保持 null，交给 costOf 回落「价目表 × 倍率」。
+ * @returns {{inMiss:number|null, inHit:number|null, out:number|null, cacheWrite:number|null}|null}
+ *   null = 这条压根没填价
+ */
+function priceOf(modelName) {
+  const row = pricedRow(modelName);
+  if (!row || !row.price) return null;
+  const p = row.price;
+  const filled = ['inMiss', 'inHit', 'out', 'cacheWrite'].some((k) => p[k] !== null && p[k] !== undefined);
+  if (!filled) return null;
+  const usd = String(row.priceCurrency || 'cny').toLowerCase() === 'usd';
+  const fx = Number(moneyFx) > 0 ? Number(moneyFx) : 0.14;
+  // $ → ￥：除以「1 元换多少美元」
+  const toCny = (v) => {
+    if (v === null || v === undefined) return null;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return usd ? n / fx : n;
+  };
+  return {
+    inMiss: toCny(p.inMiss),
+    inHit: toCny(p.inHit),
+    out: toCny(p.out),
+    cacheWrite: toCny(p.cacheWrite),
+  };
+}
+
+/**
  * 估这一轮花了多少钱。
  * @returns {{cost:number, off:boolean}|null} 认不出模型就是 null
  */
 function costOf(model, u, now) {
+  if (!u) return null;
+  // 主人自己填了价 → 那就照他填的算，不再去查价目表、也不再乘倍率。
+  // 他填的是「每百万 token 多少钱」，比官方牌价准 —— 他的账单就是这么结的。
+  const mine = priceOf(model);
+  if (mine && (mine.inMiss !== null || mine.inHit !== null || mine.out !== null)) {
+    return costWithPrice(mine, u, now);
+  }
   const rate = rateOf(model);
-  if (!rate || !u) return null;
+  if (!rate) return null;
+  // 中转站的倍率：1 = 照官方价。这个数不来自价目表，来自模型面板里主人填的那一格。
+  const markup = markupOf(model);
   // 分峰谷的：off.when 里那几个时段是「峰」，之外都按 off 那组便宜的算
   const peak = inPeakWindow(rate.off && rate.off.when, now);
   const cur = rate.off && !peak ? rate.off : rate;
@@ -11631,14 +12350,57 @@ function costOf(model, u, now) {
   const missTok = hasReal ? (reportedMiss || Math.max(0, pin - reportedHit)) : Math.max(0, pin - hitTok);
   const per = 1e6;
   const c =
-    (hitTok / per) * Number(cur.hit ?? cur.miss ?? 0) +
-    (missTok / per) * Number(cur.miss ?? 0) +
-    (pout / per) * Number(cur.output ?? 0);
+    ((hitTok / per) * Number(cur.hit ?? cur.miss ?? 0) +
+     (missTok / per) * Number(cur.miss ?? 0) +
+     (pout / per) * Number(cur.output ?? 0)) * markup;
   // est：这一档价格是估的不是官方标价（OpenAI / xAI / Google 那几家抓不到官网），
   // 界面上要标个「估」字，别让人误当准数去对账。
   const est = Boolean(rate.est || (rate.same && RATES[rate.same] && RATES[rate.same].est));
   // cache：命中率是「接口真报的」还是「按 98% 估的」。界面上得说清，别含糊。
-  return { cost: c, off: !peak && Boolean(rate.off), est, cache: hasReal ? 'real' : 'guess', hitTok, missTok };
+  return { cost: c, off: !peak && Boolean(rate.off), est, cache: hasReal ? 'real' : 'guess', hitTok, missTok, markup };
+}
+
+/**
+ * 按「主人自己填的价」算这一轮的钱（单位：元 / 每百万 token）。
+ *
+ * 跟 costOf 里查价目表那条路是同一个算法，只是价从主人手里来：
+ *   命中缓存的输入用 inHit，没填就用 inMiss（他既然填空了，说明这家不分缓存价）；
+ *   未命中的输入用 inMiss；
+ *   输出用 out。
+ * 缓存写入（cacheWrite）这里算不进去 —— 它发生在「写」的那一刻，
+ * 而 usage 里只报「写入缓存了多少 token」的字段各家都不一样，宁可不算也不乱算。
+ *
+ * @param {{inMiss:number|null,inHit:number|null,out:number|null,cacheWrite:number|null}} p
+ */
+function costWithPrice(p, u, now) {
+  const pin = Number(u.prompt_tokens ?? 0);
+  const pout = Number(u.completion_tokens ?? 0);
+  const reportedHit = Number(u.prompt_cache_hit_tokens ?? u.cached_tokens ?? 0);
+  const reportedMiss = Number(u.prompt_cache_miss_tokens ?? 0);
+  const hasReal = reportedHit > 0 || reportedMiss > 0;
+  // 接口没报命中数时，按 98% 命中估 —— 跟走价目表那条路保持同一套估计，
+  // 免得主人填了价之后数字忽然跳一大截，以为填错了。
+  const hitTok = hasReal ? reportedHit : Math.floor(pin * 0.98);
+  const missTok = hasReal ? (reportedMiss || Math.max(0, pin - reportedHit)) : Math.max(0, pin - hitTok);
+  const per = 1e6;
+  const hitRate = p.inHit !== null ? p.inHit : (p.inMiss !== null ? p.inMiss : 0);
+  const missRate = p.inMiss !== null ? p.inMiss : hitRate;
+  const outRate = p.out !== null ? p.out : 0;
+  const c = (hitTok / per) * hitRate + (missTok / per) * missRate + (pout / per) * outRate;
+  const peak = inPeakWindow(null, now);
+  return {
+    cost: c,
+    off: false,
+    // 主人自己填的价，不是官方标价 —— 但也不是「估」：他自己抄的数最准。
+    est: false,
+    cache: hasReal ? 'real' : 'guess',
+    hitTok,
+    missTok,
+    markup: 1,
+    // 标记一下这条路的钱来自「自己填的价」，界面上那行小字要说清
+    own: true,
+    peak,
+  };
 }
 
 /**
@@ -11809,7 +12571,10 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
   const money = costOf(model, u);
   if (money) {
     row.append(mk('·', 'sep'));
-    const yen = mk('≈' + fmtMoney(money.cost) + ' 元' + (money.est ? '（估）' : '') + (money.off ? '（谷）' : ''), 'cost');
+    // 倍率不是 1 就标出来：主人看到「×1.5」才知道这钱是按中转站的价算的，不是官方价
+    const rateMul = Number(money.markup || 1);
+    const mkTxt = Math.abs(rateMul - 1) > 1e-9 ? '（×' + (Math.round(rateMul * 100) / 100) + '）' : '';
+    const yen = mk('≈' + moneySign() + fmtMoney(inMoney(money.cost)) + mkTxt + (money.est ? '（估）' : '') + (money.off ? '（谷）' : ''), 'cost');
     yen.title =
       '按 ' + model + ' 的公开价估算'
       + (money.cache === 'real'
@@ -11897,7 +12662,7 @@ function paintUsageBox() {
   const mk = (html) => { const s = document.createElement('span'); s.innerHTML = html; return s; };
   tot.append(mk('一共 <b>' + a.rounds + '</b> 轮 · <span class="tok">' + fmtTok(a.total) + '</span> tokens'
     + '（↑' + fmtTok(a.pin) + ' · ↓' + fmtTok(a.pout) + '）'));
-  if (a.cost > 0) tot.append(mk(' · 约花 <b>' + fmtMoney(a.cost) + '</b> 元' + (a.estimated ? '（含估）' : '')));
+  if (a.cost > 0) tot.append(mk(' · 约花 <b>' + moneySign() + fmtMoney(inMoney(a.cost)) + '</b>' + (a.estimated ? '（含估）' : '')));
 
   if (rounds) {
     rounds.textContent = '↑ 是所有请求加起来（一轮里调十几次模型，每次背着全部历史，所以涨得快）'
@@ -11971,6 +12736,51 @@ function closeOtherDialogs(keepId) {
     if (!open.length) return;
     try { open[open.length - 1].close(); } catch {}
   });
+})();
+
+/**
+ * 面板右上角那个「关闭」。
+ *
+ * 【为什么不能靠表单的隐式提交】
+ * 那些面板的 form 都是 method="dialog"，里面的按钮默认是 submit，
+ * 点一下等于「提交表单然后关闭」。听着挺巧，可浏览器会先跑一遍原生校验：
+ * 只要有一个 input 校验不过（比如价目那格填了 0.0075、而 step 是 0.001），
+ * 这次提交就被拦下，**dialog 也就不关** —— 表现就是「点了没反应」。
+ *
+ * 2026-11-03 主人遇到的就是这个：填完价目点关闭，弹一句
+ * 「请输入有效值。两个最接近的有效值分别为0.007和0.008」，面板还杵在那儿。
+ *
+ * 现在两件事一起改了：
+ *   ① 按钮改成 type="button"，不再是 submit，不吃表单校验；
+ *   ② 点了直接 close() 自己那个 dialog —— 关面板是天经地义的事，
+ *      不该因为它旁边有格填得「不合规矩」就关不掉。
+ */
+(function installCloseButtons() {
+  const wire = () => {
+    document.querySelectorAll('button[data-close]').forEach((btn) => {
+      if (btn.__closeWired) return;
+      btn.__closeWired = true;
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const d = btn.closest('dialog');
+        if (!d) return;
+        try { d.close(); } catch {}
+        // 模型面板是有「关闭 = 收表单」语义的（closeForm 会把编辑态清掉），
+        // 这里补一声，免得下次点「添加模型」还带着上一次的输入。
+        try {
+          if (d.id === 'modelsDlg' && typeof closeForm === 'function') closeForm();
+        } catch {}
+      });
+    });
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire, { once: true });
+  } else {
+    wire();
+  }
+  // 面板是活的（有的地方会重建 DOM），隔一会儿补挂一次也不贵
+  window.__wireCloseButtons = wire;
 })();
 
 (function installDialogGuard() {
@@ -13095,6 +13905,21 @@ async function refreshSessions({ silent = false } = {}) {
  * 等于每条消息都强制一次同步布局。会话聊得久了（几百条），
  * 切回来就要卡一秒多，看着像"卡住了"。
  */
+/**
+ * 只重画「钱」这一块：屏幕上这一屏 turns 原样再画一遍。
+ *
+ * 【为什么要个小包装】
+ * 切币种、改倍率之后，聊天区那行「≈￥0.12」得当场换成新的数。
+ * 重画完全部内容没必要（还可能打断正在流式的气泡），但这几个数字在 turns 里，
+ * 只能靠重新渲染那一屏取出来。renderTurns 自己会把 currentTurns 记下来，
+ * 所以这里直接喂回去就行；流式保护在 renderTurns 内部已经做了。
+ */
+function refreshTurnsCost() {
+  const rows = Array.isArray(currentTurns) ? currentTurns : [];
+  if (!rows.length) return;
+  renderTurns(rows);
+}
+
 function renderTurns(turns) {
   hideSending();
   // 记下「屏幕上这一屏是什么」：设置面板里的会话总账要拿它加总（见 paintUsageBox）。
@@ -13166,6 +13991,7 @@ function renderTurns(turns) {
       attachEdit(w, turn.rewindId);
       // 「分支」也贴着句子放：从这句往下另开一个会话
       attachBranchBtn(w, turn.rewindId);
+      attachDelBtn(w, turn.rewindId);
       if (turn.edited) w.classList.add('edited');
       // 【用量要在 user 之后立刻入队】
       // 以前放在循环末尾，而「补画」又发生在 user 分支里 —— 也就是先补画、后入队，
@@ -13237,6 +14063,7 @@ function renderTurns(turns) {
           attachEdit(wrap, turn.rewindId);
           attachBranchBtn(wrap, turn.rewindId);
           attachRetry(wrap, askQueue);
+          attachDelBtn(wrap, turn.rewindId);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         } else {
@@ -13254,6 +14081,7 @@ function renderTurns(turns) {
           attachBranchBtn(wrap, turn.rewindId);
           // 她说错了、或者想让她重答一遍：一键退回再问一次
           attachRetry(wrap, askQueue);
+          attachDelBtn(wrap, turn.rewindId);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         }
@@ -13504,6 +14332,8 @@ async function switchSession(id) {
   // 新会话重读 /api/agents/group，服务端把 fish/whale 两套状态并进去了）。
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
+  // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
+  try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   renderTurns(r.session.turns);
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
@@ -13602,6 +14432,8 @@ async function createSessionEx(opts = {}) {
   try { if (typeof refreshWhoRail === 'function') await refreshWhoRail(); } catch {}
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
+  // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
+  try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 新会话是默认档
   try { refreshWhoRail(); } catch { /* 忽略 */ }
   // 【2026-10-29 · 新建的会话必须把开场白画出来】
@@ -13889,6 +14721,12 @@ const PROVIDERS = [
     hint: '整合站，一个 key 走很多家。',
   },
   {
+    key: 'lingfeng', name: '凌风', base: 'https://ai.windking.shop',
+    match: /windking/i,
+    models: ['deepseek-v4.1-flash', 'deepseek-v4.1', 'deepseek-v4-pro'],
+    hint: '这一家地址就填到根，别再往后加 /v1（它自己带了）。',
+  },
+  {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
     match: /api\.openai\.com/i,
     models: ['gpt-5', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
@@ -13963,6 +14801,19 @@ function syncNameWithModel() {
 }
 const mdlBase = document.getElementById('mdlBase');
 const mdlKey = document.getElementById('mdlKey');
+const mdlKindChat = document.getElementById('mdlKindChat');
+const mdlKindImage = document.getElementById('mdlKindImage');
+const mdlKindHint = document.getElementById('mdlKindHint');
+const mdlMarkup = document.getElementById('mdlMarkup');
+const mdlMarkupHint = document.getElementById('mdlMarkupHint');
+// 「这一条怎么算钱」那四个格 + 币种（2026-11-03）
+const mdlPriceCny = document.getElementById('mdlPriceCny');
+const mdlPriceUsd = document.getElementById('mdlPriceUsd');
+const mdlPriceIn = document.getElementById('mdlPriceIn');
+const mdlPriceInHit = document.getElementById('mdlPriceInHit');
+const mdlPriceOut = document.getElementById('mdlPriceOut');
+const mdlPriceCW = document.getElementById('mdlPriceCW');
+const mdlPriceHint = document.getElementById('mdlPriceHint');
 const mdlFormHint = document.getElementById('mdlFormHint');
 const mdlCount = document.getElementById('mdlCount');
 const mdlNow = document.getElementById('mdlNow');
@@ -14072,6 +14923,16 @@ if (mdlBase) {
   // 手改地址时也跟着换模型下拉
   mdlBase.addEventListener('input', () => {
     mdlBasePreset.value = PROVIDERS.some((p) => p.base === mdlBase.value.trim()) ? mdlBase.value.trim() : '';
+  // 地址一改，是不是官方直连就变了 —— 倍率那格的提示跟着换
+  try {
+    if (mdlMarkupHint) {
+      const p = providerOf(mdlBase.value);
+      const official = p && /^(deepseek|dashscope|zhipu|moonshot|siliconflow|volcengine|minimax|openai|anthropic|hunyuan|baidu)$/.test(p.key);
+      mdlMarkupHint.textContent = official
+        ? '这一家是官方直连，倍率留空（= 1）就行 —— 填了只会把账算错。'
+        : '中转站收的是「官方价 × 它自己的倍率」。不知道填多少就先留空，回头查了它后台再补。';
+    }
+  } catch {}
     paintModelPicker(mdlBase.value);
   });
 }
@@ -14123,7 +14984,50 @@ function openForm(model) {
   mdlBase.value = model ? model.baseURL : (first.base || mdlState.envDefaults?.baseURL || '');
   // 新加的时候，模型名一填上，名字也跟着填好（不用主人再写一遍）
   syncNameWithModel();
-  mdlKey.value = '';
+  // 出图那条：单选要跟着这条的 kind 走，不然一编辑就被默默改回「说话」
+  const wantImage = Boolean(model) && model.kind === 'image';
+  if (mdlKindChat) mdlKindChat.checked = !wantImage;
+  if (mdlKindImage) mdlKindImage.checked = wantImage;
+  if (mdlKindHint) {
+    mdlKindHint.textContent = wantImage
+      ? '出图那条：测连通会真画一张小图（要等 30~40 秒），能出图才算通。'
+      : '说话 / 干活那条：测连通发一句 ping 就够，很快。';
+  }
+  if (mdlMarkup) mdlMarkup.value = model && model.markup ? String(model.markup) : '';
+  if (mdlMarkupHint) {
+    // 认得出是官方直连就劝一句「别填」，认不出（中转站）就说明为什么要填
+    const prov = (() => { try { return providerOf(model ? model.baseURL : (mdlBase ? mdlBase.value : '')); } catch { return null; } })();
+    const official = prov && /^(deepseek|dashscope|zhipu|moonshot|siliconflow|volcengine|minimax|openai|anthropic|hunyuan|baidu)$/.test(prov.key);
+    mdlMarkupHint.textContent = official
+      ? '这一家是官方直连，倍率留空（= 1）就行 —— 填了只会把账算错。'
+      : '中转站收的是「官方价 × 它自己的倍率」。不知道填多少就先留空，回头查了它后台再补。';
+  }
+  // 价目回填：填过的四格 + 当时用的哪种钱。没填过就全空（= 照官方价）
+  {
+    const pr = (model && model.price) || {};
+    const setNum = (el, v) => {
+      if (!el) return;
+      const has = v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+      el.value = has ? String(v) : '';
+    };
+    setNum(mdlPriceIn, pr.inMiss);
+    setNum(mdlPriceInHit, pr.inHit);
+    setNum(mdlPriceOut, pr.out);
+    setNum(mdlPriceCW, pr.cacheWrite);
+    const usd = String((model && model.priceCurrency) || 'cny').toLowerCase() === 'usd';
+    if (mdlPriceUsd) mdlPriceUsd.checked = usd;
+    if (mdlPriceCny) mdlPriceCny.checked = !usd;
+    paintPriceHint();
+  }
+    // 改动那几格时把提示跟着刷新一遍（oninput 比 onchange 顺手：打字时就变）
+  ['mdlPriceIn', 'mdlPriceInHit', 'mdlPriceOut', 'mdlPriceCW'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.oninput = paintPriceHint;
+  });
+  [mdlPriceCny, mdlPriceUsd].forEach((el) => {
+    if (el) el.onchange = paintPriceHint;
+  });
+    mdlKey.value = '';
   mdlKey.placeholder = model && model.hasKey
     ? `已保存 ${model.keyHint}，不改就留空`
     : 'sk-...';
@@ -14134,6 +15038,47 @@ function openForm(model) {
   paintModelPicker(mdlBase.value);
   mdlBasePreset.value = PROVIDERS.some((p) => p.base === (mdlBase.value || '').trim()) ? (mdlBase.value || '').trim() : '';
   mdlName.focus();
+}
+
+/**
+ * 价目那几格下面那句提示 —— 跟着币种和「填没填」变。
+ *
+ * 三种话：
+ *   1. 一格没填：照官方价（× 倍率），并说清填哪几格才有意义
+ *   2. 填了：说清按主人自己的数算、不再乘倍率
+ *   3. 选了 $ 但记账是 ￥（或反过来）：说清「存的是你填的数，显示时按记账币种折」
+ * 这些话不是装饰 —— 填错币种是最容易让人误解「钱怎么对不上」的一处。
+ */
+function paintPriceHint() {
+  if (!mdlPriceHint) return;
+  const val = (el) => {
+    if (!el) return null;
+    const raw = String(el.value || '').trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const filled = ['mdlPriceIn', 'mdlPriceInHit', 'mdlPriceOut', 'mdlPriceCW']
+    .map((id) => val(document.getElementById(id)))
+    .filter((v) => v !== null);
+  const usd = Boolean(mdlPriceUsd && mdlPriceUsd.checked);
+  const curWord = usd ? '$（美元）' : '￥（元）';
+  if (!filled.length) {
+    mdlPriceHint.textContent = '四格全空 = 照官方价目表算（再乘下面的倍率）。'
+      + '想精确就算一算：从这家的后台或者官网抄「每百万 token 多少钱」填进来。';
+    return;
+  }
+  const parts = ['按你填的 ' + curWord + ' 算（每百万 token），不再乘倍率。'];
+  const miss = val(mdlPriceIn);
+  const hit = val(mdlPriceInHit);
+  const out = val(mdlPriceOut);
+  if (hit === null && miss !== null) parts.push('命中缓存那格空着 → 命中时也按「未命中」的价算。');
+  if (miss === null && hit !== null) parts.push('未命中那格空着 → 没命中的输入按 0 算（便宜了）。');
+  if (out === null) parts.push('输出那格空着 → 输出不算钱（便宜了）。');
+  const bookCny = (typeof moneyCurrency === 'undefined' ? 'cny' : moneyCurrency) !== 'usd';
+  if (usd && bookCny) parts.push('记账用的是 ￥，显示时会按汇率折成元。');
+  if (!usd && !bookCny) parts.push('记账用的是 $，显示时会按汇率折成美元。');
+  mdlPriceHint.textContent = parts.join(' ');
 }
 
 function closeForm() {
@@ -14163,6 +15108,32 @@ function formPayload() {
   // 编辑时 Key 留空 = 保留原来那个，不能拿空串把已有 Key 洗掉
   if (apiKey) payload.apiKey = apiKey;
   if (mdlEditing) payload.id = mdlEditing;
+  // 生图那条走另一个端点；不带着它，后端只能当聊天模型存，测连通也会问错地方
+  payload.kind = (mdlKindImage && mdlKindImage.checked) ? 'image' : 'chat';
+  // 倍率：空着就是 1（官方原价）。不做四舍五入到整数 —— 0.8 折很常见。
+  {
+    // 四格价目：填几格算几格，全空就不发（后端会当成「没填」，照官方价算）
+    const numOrNull = (el) => {
+      if (!el) return null;
+      const raw = String(el.value || '').trim();
+      if (!raw) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    };
+    const price = {
+      inMiss: numOrNull(mdlPriceIn),
+      inHit: numOrNull(mdlPriceInHit),
+      out: numOrNull(mdlPriceOut),
+      cacheWrite: numOrNull(mdlPriceCW),
+    };
+    const any = Object.values(price).some((v) => v !== null);
+    payload.price = any ? price : null;
+    payload.priceCurrency = (mdlPriceUsd && mdlPriceUsd.checked) ? 'usd' : 'cny';
+  }
+    if (mdlMarkup) {
+    const mv = Number(String(mdlMarkup.value || '').trim());
+    payload.markup = (Number.isFinite(mv) && mv > 0) ? mv : 1;
+  }
   return payload;
 }
 
@@ -14197,6 +15168,14 @@ function paintModels() {
       const b = document.createElement('span');
       b.className = 'badge env';
       b.textContent = '.env';
+      nameLine.appendChild(b);
+    }
+    // 出图那条标出来：它说不了话，点它「切过去」只会让下一句发不出去
+    const isImage = m.kind === 'image';
+    if (isImage) {
+      const b = document.createElement('span');
+      b.className = 'badge img';
+      b.textContent = '出图';
       nameLine.appendChild(b);
     }
     const sub = document.createElement('div');
@@ -14241,7 +15220,12 @@ function paintModels() {
       row.appendChild(acts);
     }
 
-    row.onclick = async () => {
+    if (isImage) {
+      // 出图那条不参与「正在用哪条」的切换：它没有聊天端点
+      row.title = '这条是出图用的，不参与「用哪条说话」的切换';
+      row.style.cursor = 'default';
+    }
+    row.onclick = isImage ? null : async () => {
       if (m.id === mdlState.activeId) return;
       const r = await fetch('/api/models/select', {
         method: 'POST',

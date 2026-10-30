@@ -25,7 +25,7 @@
 
 import { join } from 'node:path';
 import {
-  qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, tryClaim, chunkText, isOwnerOpenid, readQq, setQqBot,
+  qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, isOwnerQq, chunkText, isOwnerOpenid, readQq, setQqBot,
   qqGate, qqAllowed, normQqNum,
 } from './qq.mjs';
 import { saveInboundAttachments, describeInbound, transcodeVoiceToMp3 } from './qq-media.mjs';
@@ -236,7 +236,7 @@ async function handleInbound({ msg, bot, deps }) {
       return qqAllowed({
         qqId: msg?.senderQq ?? msg?.userOpenid ?? msg?.senderId,
         groupId: isGroup ? (msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId) : '',
-        isOwner: isOwnerOpenid(openid),
+        isOwner: isOwnerQq(msg?.senderQq),
       });
     } catch {
       return { ok: false, why: 'gate-error' };
@@ -254,21 +254,20 @@ async function handleInbound({ msg, bot, deps }) {
   if (isGroup) {
     const you = String(rt.me?.id || '');
     const mentioned = Array.isArray(msg?.mentions) && msg.mentions.some((m) => m && (m.is_you === true || (you && String(m.id || m.user_openid || '') === you)));
-    const atRaw = /@\S+/.test(String(msg?.content ?? ''));
+    // 【2026-10-30 修】原来 /@\S+/ 太宽了：群里谁 @ 谁都算 @ 我，
+    // 「@张三 你吃了吗」也能把我叫起来，还得一个字一个字给我答复。
+    // 现在只认两种：结构化 mentions 里明确指我（上面那行），
+    // 或者正文里 <at id="我的号"> 这种真 at 段。
+    const mine = String(you || '').replace(/\D/g, '');
+    const atRaw = Boolean(mine) && (
+      new RegExp(`<at[^>]*id\\s*=\\s*["\']?(?:qq_)?${mine}["\']?`, 'i').test(String(msg?.content ?? '')) ||
+      new RegExp(`(^|[\\s、,，])@\\s*${mine}([\\s、,，]|$)`).test(String(msg?.content ?? ''))
+    );
     if (!mentioned && !atRaw) return;
   }
 
   const peer = qqPeer(openid);
   const name = String(msg?.senderName ?? '').trim();
-
-  // ③ 认领口令
-  if (tryClaim(openid, text, name)) {
-    rt.stats.in += 1;
-    log(`「${name || openid.slice(0, 8)}」认成了主人`);
-    await send(bot, msg, '记下了。以后你说的话我按主人来对待。');
-    deps?.onLog?.('认领成功');
-    return;
-  }
 
   // 空话（纯图片/纯表情没文字）不再一棒打死 —— 2026-11-02 起图/语音/文件能收了，
   // 下面统一走「附件先下到本地，再拼一句给她」这条路。
@@ -312,16 +311,21 @@ async function handleInbound({ msg, bot, deps }) {
   log(`← ${isGroup ? '[群] ' : ''}${name || openid.slice(0, 8)}：${(text || `[${keptMedia.length} 个附件]`).slice(0, 40)}`);
 
   // ① 认人 + ④ 找会话
-  const ensured = await deps?.ensureSession?.({ openid, peer, userText: turnText, isGroup, name });
+  const ensured = await deps?.ensureSession?.({ openid, peer, userText: turnText, isGroup, name, groupId: String(msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId ?? '') });
   if (!ensured || !ensured.sessionId) {
     await send(bot, msg, '这会儿接不上会话（主人还没把 QQ 接好），等我一下。');
     return;
   }
   const { sessionId } = ensured;
-  noteQqPeer(openid, { sessionId, name });
+  noteQqPeer(openid, { sessionId, name, qq: msg?.senderQq });
+  // 【2026-10-30】群聊：会话名改成「群名」，不是发话人的昵称
+  if (isGroup) {
+    try { await deps?.renameGroupSession?.({ sessionId, groupId: String(msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId ?? '') }); } catch {}
+  }
 
-  // 主人身份：按主人来（安全词、权限都算数）
-  if (isOwnerOpenid(openid)) {
+  // 主人身份：按主人来（安全词、权限都算数）。
+  // 2026-11-03 起只认号 —— 面板上「你自己的 QQ 号」填的是哪个号，哪个号的话才按主人处理。
+  if (isOwnerQq(msg?.senderQq)) {
     try { deps?.setSpeakerOwner?.(sessionId);
     } catch {}
   }
@@ -350,7 +354,7 @@ async function handleInbound({ msg, bot, deps }) {
           ? { scope: 'group', targetId: String(msg?.groupOpenid ?? msg?.groupQq ?? ''), msgId: msg?.messageId }
           : { scope: 'c2c', targetId: String(msg?.senderId ?? openid), msgId: msg?.messageId }),
       media: keptMedia,
-      fromQq: { openid, name, isOwner: isOwnerOpenid(openid) },
+      fromQq: { openid, name, isOwner: isOwnerQq(msg?.senderQq) },
       onEvent: async (ev) => {
         if (!ev) return;
         if (ev.type === 'chunk' && typeof ev.text === 'string') {
@@ -469,20 +473,37 @@ export async function startQqOneBot(deps = {}) {
   }
 }
 
-/** 给面板用：最近这些人的名字、是不是主人、什么时候来过。 */
+/**
+ * 给面板用：最近这些人的名字、是不是主人、什么时候来过。
+ *
+ * 「是不是主人」这里**不能**看 peers[openid].role —— 那是口令认领时代的旧账，
+ * 口令退休之后 peers 里只剩 sessionId / name / 来没来过，role 永远是 guest。
+ * 现在只认一条：这个号在不在主人那份名单里（面板上那个号 + 私聊白名单）。
+ * 代价是：老 peer 记录里没存号的话，他得再发一句话，面板上才会亮成主人。
+ */
 export function qqPeerList() {
-  const peers = readQq().peers;
-  return Object.entries(peers).map(([openid, p]) => ({
-    openid,
-    short: `${openid.slice(0, 6)}…${openid.slice(-4)}`,
-    role: p.role,
-    isOwner: p.role === 'owner',
-    name: p.name,
-    sessionId: p.sessionId,
-    boundAt: p.boundAt,
-    lastAt: p.lastAt,
-    msgCount: p.msgCount,
-  })).sort((a, b) => b.lastAt - a.lastAt);
+  const data = readQq();
+  const peers = data.peers;
+  const ownerQq = normQqNum((data.gate && data.gate.ownerQq) || '');
+  const allow = Array.isArray(data.gate && data.gate.allowQq)
+    ? data.gate.allowQq.map((x) => normQqNum(x)).filter(Boolean)
+    : [];
+  return Object.entries(peers).map(([openid, p]) => {
+    const qq = normQqNum(p.qq || '');
+    const known = Boolean(qq) && (qq === ownerQq || allow.includes(qq));
+    return {
+      openid,
+      short: `${openid.slice(0, 6)}…${openid.slice(-4)}`,
+      qq,
+      role: known ? 'owner' : 'guest',
+      isOwner: known,
+      name: p.name,
+      sessionId: p.sessionId,
+      boundAt: p.boundAt,
+      lastAt: p.lastAt,
+      msgCount: p.msgCount,
+    };
+  }).sort((a, b) => b.lastAt - a.lastAt);
 }
 
 /** 供测试 / 命令行：把「是不是配好了」打出来。 */

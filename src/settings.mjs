@@ -42,6 +42,8 @@ export const DEFAULT_SETTINGS = {
    * 所以出厂就该是「自动」，让每个模型自己按窗口算。
    */
   contextLimit: 0,
+  /** 记账用什么钱：'cny'（元）或 'usd'（美元）。价目表本身存的是元，界面按汇率换。 */
+  currency: 'cny',
   /**
    * 安全词触发后的行为说明，斜杠分段、第 i 段配第 i 个安全词。
    *
@@ -58,6 +60,24 @@ export const DEFAULT_SETTINGS = {
    * 默认开着；主人要嫌它碍事，功能页里能关。
    */
   imeMatchSystem: true,
+  /**
+   * 外观 · 软件图标用哪一套。
+   *
+   *   'classic' —— 出厂那只（assets/xiaoyu.ico），跟着安装包走的默认图
+   *   'drawn'   —— 2026-10-30 主人夸可爱、让我画的那只鲸鱼娘（assets/xiaoyu-whale.ico）
+   *
+   * 只影响窗口角上那个小图标（Electron 启动时读），桌面快捷方式的图标在
+   * 安装包里烤死了，这里改不到 —— 要改得重新打包，别让主人以为点一下就变。
+   */
+  iconStyle: 'classic',
+  /**
+   * 外观 · 聊天界面的封面图（铺在消息区底下的那张）。
+   *
+   *   'none'  —— 不铺，就是原来那层纯色/视频背景
+   *   'whale' —— 我画的那只鲸鱼娘（assets/xiaoyu-whale-cover.png）
+   *   'custom'—— 主人自己传的一张（存在 .state/cover-custom.*）
+   */
+  chatCover: 'none',
 };
 
 const BACKUP_FILE = join(config.dataDir, '.state', 'bottomlines.backup.md');
@@ -280,7 +300,18 @@ function normalize(input = {}) {
   );
   // 输入法跟不跟系统语言：只有明确的 false 才算关，其余（没存过、存坏了）都当开。
   const imeMatchSystem = input.imeMatchSystem === false ? false : true;
-  return { bottomLines, safeWords, safeWordNote, contextLimit, imeMatchSystem };
+  /**
+   * 记账用哪种钱。
+   *
+   * 【为什么要这一格】
+   * 价目表里存的都是「元 / 百万 token」（照各家国内官网抄的），
+   * 但主人可能拿美元对账（OpenAI 账单、中转站后台都是美元），
+   * 每次都自己在心里乘一下汇率太累了。这里让他选，界面按选的那一种显示。
+   *
+   * 只认 'cny' 和 'usd'，别的一律当 'cny' —— 存坏了也别让账本哑掉。
+   */
+  const currency = String(input.currency || '').toLowerCase() === 'usd' ? 'usd' : 'cny';
+  return { bottomLines, safeWords, safeWordNote, contextLimit, imeMatchSystem, currency };
 }
 
 export function getSettings() {

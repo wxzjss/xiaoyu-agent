@@ -17,10 +17,13 @@ import { qqSendTool } from './tools-qq-send.mjs';
 import { browserTools } from './tools-browser.mjs';
 import { videoTools } from './tools-video.mjs';
 import { screenTools } from './tools-screen.mjs';
+import { uiToolDefs } from './tools-ui.mjs';
+import { makeImageTool } from './tools-image.mjs';
 import { adminOn } from './admin-mode.mjs';
 import { isImagePath, readImageDataUrl } from './attach.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
+import { listWorkers, noteWorker, finishWorker } from './task-mode.mjs';
 
 const LIMIT = 20000;
 
@@ -58,6 +61,21 @@ export function ctxNow() {
 }
 
 /**
+ * 文件一到手就交给 server 存进会话。
+ *
+ * 【为什么要有它】主人 2026-10-30：「中途退出重启相当于打断，也不会显示你发的任何文件」。
+ * server 那边只有「这一轮正常跑完」才挂文件，被停 / 被重启就跳过了。
+ * 所以工具里一拿到文件就先喊一声，让 server 立刻挂上并写盘。
+ * 拿不到通道就算了（比如单独跑测试），不许因此让工具报错。
+ */
+export function stashFileNow(entry) {
+  try {
+    const fn = ctxNow()?.stashFile;
+    if (typeof fn === 'function' && entry) fn(entry);
+  } catch {}
+}
+
+/**
  * 让一段异步逻辑跑在「这一轮自己的上下文」里。
  *
  * server 侧那一轮开跑的地方这样用：
@@ -82,6 +100,14 @@ const CTX = {
    * 就是那条「把事件写进直播缓存并发出去」的通道。
    */
   pushEvent: null,
+  /**
+   * 文件一到手就存进会话（不等这一轮说完）。
+   *
+   * 【为什么】主人 2026-10-30 指出：中途点停止、或者程序重启，等于这一轮被打断，
+   * 我画好的图 / 发出去的文件就全看不见了 —— 文件明明在盘上，只是没记进会话。
+   * 这个函数由 server 注入，一调就立刻挂到当前那条回复上并写盘。
+   */
+  stashFile: null,
   /**
    * 这一次是不是「小鲸在场」那个调用。
    * true 时 safePath 不限工作区（主人给了她全权）。
@@ -338,6 +364,21 @@ export function safePath(p, { tool = '' } = {}) {
    *   · CTX.fullAccess —— 小鲸跑那一趟的临时放行（runSubagent 用）
    */
   if (CTX.adminMode === true || CTX.fullAccess === true) return abs;
+  /**
+   * 【本会话自己的记忆本子，放行】—— 2026-11
+   *
+   * 主人问「为什么 154 个本子里 153 个固定记忆是空的」，查出来的真因：
+   * persona.mjs 的提示词明写着「直接用改文件那几个工具写这个会话的本子」，
+   * 可工具这边一律抦的是下面那句「只能写工作区」——而本子在 %APPDATA% 里。
+   * 于是她按提示去写，必定撞一壁 path outside workspace，只能不写了。
+   * 提示词在一个劲儿地叫她写，手却被绑着 —— 这才是骨架一直空着的根。
+   *
+   * 只放行「本会话自己那一份」，不放其它会话的本子，也不放我自己的、小鲸的
+   * （那几份各有各的工具：memory_add / memory_pin）—— 不给她一把能改别人记忆的钥匙。
+   *
+   * 上面 memoryLocked 那道在前面：长期记忆关着时也不能写这个本子，先被拦。
+   */
+  if (isOwnSessionMemory(abs)) return abs;
   const rel = relative(ROOT, abs);
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`path outside workspace is not allowed: ${p}`);
@@ -352,6 +393,21 @@ export function safePath(p, { tool = '' } = {}) {
  * 猜会猜错：grep 读文件，但它的参数能当正则使、也能顺着目录一路翻，
  * 哪天实现一换就成了写口子。宁可白名单短一点：看不全，但不能偷偷写。
  */
+/**
+ * 这个路径是不是「当前这个会话自己的记忆本子」。
+ *
+ * 只认 .state/memory/<本会话 id>.md 这一个形状。别的会话的本子、my-memory、whale-memory 都不算。
+ * 取 sessionId 用 ctxNow()（而不是直接读 CTX）——并发跑两个会话时各认各的。
+ */
+function isOwnSessionMemory(abs) {
+  try {
+    const sid = String(ctxNow()?.sessionId || "");
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(sid)) return false;
+    const want = join(config.dataDir, ".state", "memory", sid + ".md");
+    return resolve(abs) === resolve(want);
+  } catch { return false; }
+}
+
 const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir']);
 
 /**
@@ -1027,6 +1083,8 @@ export const tools = [
   ...browserTools,
   ...videoTools,
   ...screenTools,
+  makeImageTool,
+  ...uiToolDefs,
   /**
    * 往我自己的记忆本里记一条。
    *
@@ -1469,6 +1527,107 @@ export const tools = [
       }
     },
   },
+  {
+    name: 'spawn_worker',
+    description: '派活用的（专业模式里选了「谁动手＝派活」才拿得到）：开一个临时 worker（子智能体），把一件具体的活交给它跑，它跑完把汇报原文带回来给你检查。它有自己的上下文，不占你的。'
+      + '\n\n【每次派活都要说清四样】要它做什么、什么算做成了、在哪儿干、不许碰什么。说不清就别派 —— 说不清说明你自己还没想明白。'
+      + '\n\n【它回来的是汇报，不是结论】拿只读工具核一遍再决定收不收：它说改好了就去读那个文件，它说跑通了就去看日志。别凭一句话采信。'
+      + '\n\n【没干对就退回给同一个 worker】别新开一个重做 —— 新脑子不知道之前踩过的坑。只有「这是另一件事」才新开。'
+      + '\n\n【这一档里你自己不动手】读文件、改代码、跑命令全交给 worker；你手上那几个工具是给你核账和管上下文用的。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: '这件活具体要干什么：哪个文件、改哪一处、跑什么命令。' },
+        name: { type: 'string', description: '给这个 worker 起个名，后面点它的名退回活儿要用。不填就按门牌号叫。' },
+        accept: { type: 'string', description: '什么算做成了 —— 写成能一眼验的条件，比如「npm run check 退出码 0」。' },
+        scope: { type: 'string', description: '在哪儿干：目录或文件。超出这个范围不许它碰。' },
+        forbid: { type: 'string', description: '不许碰什么，比如「别动 git 历史」「别改 public/」。' },
+        maxRounds: { type: 'number', description: '最多让它跑几轮工具循环，默认 60。小事 20 就够。' },
+      },
+      required: ['task'],
+    },
+    async run({ task, name, accept, scope, forbid, maxRounds }) {
+      const sid = ctxNow().sessionId || 'default';
+      const pure = await import('./pure.mjs');
+      if (!pure.pureModeOn(sid) || pure.doerOf(sid) !== 'workers') {
+        return '【现在不是派活档】这个会话没开专业模式，或者专业模式里选的是「自己动手」。'
+          + '要派活得先让主人在顶栏开专业模式、再把「谁动手」改成派活；'
+          + '在那之前你自己动手就行 —— 别装作派过活。';
+      }
+      const body = String(task || '').trim();
+      if (!body) return '没说要干什么（task 是空的）。';
+
+      const brief = [
+        body,
+        '',
+        '【这是派给你的活】',
+        accept ? ('做成什么样算成：' + String(accept).trim()) : '',
+        scope ? ('你只能在 ' + String(scope).trim() + ' 这一带活动，别的地方一律不许碰。') : '',
+        forbid ? ('不许碰：' + String(forbid).trim()) : '',
+      ].filter(Boolean).join('\n');
+
+      const reportAsk = [
+        '',
+        '【干完必须交一份汇报】就写这四行，一行一条，别写成文章：',
+        '做了什么：改了哪些文件、跑了什么命令',
+        '凭什么说成了：证据（输出、退出码、行号、截图路径）',
+        '哪儿没做到 / 我没把握的地方',
+        '还剩什么没干',
+      ].join('\n');
+
+      const nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
+      const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
+
+      const push = ctxNow().pushEvent;
+      if (typeof push === 'function') {
+        try {
+          push({ type: 'whale', who: '主智能体 → ' + nick, text: body, as: 'whale', tag: 'worker' });
+        } catch {}
+      }
+
+      let r;
+      try {
+        const { runSubagent } = await import('./subagent.mjs');
+        r = await runSubagent({
+          task: brief + reportAsk,
+          name: nick,
+          maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60,
+          allowWrite: true,
+        });
+      } catch (e) {
+        r = { ok: false, text: '子智能体没起来：' + String(e?.message ?? e) };
+      }
+
+      const text = String(r?.text || '').trim();
+      finishWorker(sid, w.id, { status: r?.ok ? 'reported' : 'failed', rounds: r?.rounds, tools: r?.tools, said: text });
+
+      if (typeof push === 'function') {
+        try {
+          push({ type: 'whale', who: nick + ' → 主智能体', text: text || '（它没说话）', as: 'whale', tag: 'worker' });
+        } catch {}
+      }
+
+      if (!r?.ok) {
+        return '【' + nick + ' #' + w.id + ' 没干成】它的原话：\n\n' + (text || '（它没说话）')
+          + '\n\n（先分清是活没说清还是真做不到。说得清就退回给它，别自己上手。）';
+      }
+      return '【' + nick + ' #' + w.id + ' 回来了】它的汇报原文（还热着，别急着采信 —— 拿只读工具核一遍再决定收不收）：\n\n' + (text || '（一句汇报都没写 —— 这本身就是问题，退回给它，要它按四行交）')
+        + '\n\n（收了就记一条账，没收就退回给同一个 worker。核账的读数别留太细，上下文本该由你管。）';
+    },
+  },
+  {
+    name: 'list_workers',
+    description: '看这个会话里有哪些 worker、各自什么状态、上次汇报了什么。派活档里退回活儿要认准同一个 worker。',
+    parameters: { type: 'object', properties: {} },
+    async run() {
+      const sid = ctxNow().sessionId || 'default';
+      const ws = listWorkers(sid);
+      if (!ws.length) return '这个会话里还没有 worker。要干活就 spawn_worker 开一个。';
+      const line = (w) => '· #' + w.id + ' ' + String(w.name || '') + ' [' + String(w.status || '') + '] ' + String(w.task || '').slice(0, 60)
+        + (w.said ? ('\n   上次汇报：' + String(w.said).slice(0, 120).replace(/\n/g, ' ')) : '');
+      return '【这个会话的 worker】共 ' + ws.length + ' 个\n' + ws.map(line).join('\n');
+    },
+  },
 ];
 
 /** Very small HTML -> text reducer (good enough for reading articles / docs). */
@@ -1592,13 +1751,18 @@ export async function runTool(name, rawArgs, sessionId) {
     return { ok: false, output: `invalid JSON arguments for ${name}` };
   }
   // 写类工具动手前先留个底，回退时靠它把文件还原回去。
-  if (name === 'write_file' && CTX.snap) {
+  /* 【2026-10-30】原来是 CTX.snap（模块模板，永远空），回退快照可能一直没留上。改成本轮上下文。 */
+  const _snapNow = (() => { try { return ctxNow()?.snap; } catch { return null; } })();
+  if (name === 'write_file' && _snapNow) {
     try {
-      snapshotBeforeWrite(CTX.snap, args?.path);
+      snapshotBeforeWrite(_snapNow, args?.path);
     } catch {}
   }
   try {
-    return { ok: true, output: await tool.run(args, CTX) };
+    /* 【2026-10-30】以前传的是模块顶层那个 CTX 模板，里面 pushEvent/outbox 永远是空的 ——
+     * 所以 send_file 当场推、ask_subagent 那句「我刚派了什么活」全都推不出去。
+     * 现在传本轮真正的上下文。 */
+    return { ok: true, output: await tool.run(args, ctxNow()) };
   } catch (err) {
     return { ok: false, output: String(err?.message ?? err) };
   }

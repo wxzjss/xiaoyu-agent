@@ -349,6 +349,8 @@ function parseRollLine(line) {
 }
 
 /** 拆成四个区。旧格式（没有任何区标题）整篇当固定记忆。 */
+/** 固定区每个小节只吃自己的行：标题一换，上一节的收集就停。 */
+const FIXED_OWN = true;
 export function parseMemory(raw) {
   const text = String(raw ?? '').replace(/\r\n?/g, '\n');
   const zones = { fixed: [], roll: [], detail: [], archive: [] };
@@ -384,6 +386,8 @@ export function parseMemory(raw) {
           const t = l.trim();
           if (t === '') return false;
           if (t.startsWith('>')) return false;
+      // 小节标题原样留：不留给模型看的是「标题没了、条目接在上面一节底下」的错位记忆
+      if (/^##\s+/.test(t)) return true;
           if (/^#\s+/.test(t) && !/^##/.test(t)) return false;
           return true;
         }),
@@ -447,6 +451,140 @@ export function renderMemory({ fixed = '', roll = [], detail = '', archive = [] 
  * 上限两道保险之一（另一道在写盘）：**这里永远只取最近 TURN_LIMIT 条**，
  * 哪怕文件里堆了 500 条，进到眼前的也只有 80 条。
  */
+/**
+ * 固定记忆太长时按「行」退，而且先退非关键小节。
+ *
+ * 【为什么不能直接 slice】
+ * 2026-10-30 实测踩坑：原来是 keptFixed.slice(0, maxChars-320)，
+ * 等于从尾巴一刀切。结果「错误与修复/关键事实」这些长小节原样留着，
+ * 末尾的「待办」被一刀砍光 —— 而且常把一条事实砍成半句继续喂给模型。
+ * 记忆本里实测出现「## 文件/路径/命令」后面一个条目都没有，
+ * 紧接着就是「## 待办」的条目（整段被切没了），模型看到的就是错位的。
+ *
+ * 现在的规矩：
+ *   · 只整行留、整行退，绝不切半行；
+ *   · 先退 PROTECT_SECTIONS 以外的行（从后往前退），它们最后才动；
+ *   · 最后仍超，PROTECT 也从后往前退，但至少留 LABEL_MIN 条，并留一行标记。
+ */
+const PROTECT_SECTIONS = ['## 用户约束/偏好', '## 待办'];
+const LABEL_MIN = 9;
+
+/** 小节之间统一空一行：`## x` 前面保证是空行，这样解析才切得开。 */
+function tidySections(text) {
+  const out = [];
+  for (const line of String(text ?? '').split('\n')) {
+    const isHead = line.trim().startsWith('## ');
+    if (isHead && out.length && out[out.length - 1].trim() !== '') out.push('');
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * 退字数的时候，把某一节整段保住（比如「待办」）。
+ * 做法很土但够用：先把这节摘出来存着，让调用方退完别的，最后再拼回去。
+ * 这里只负责「确保它一定在」，退多少交给 frameFixed 的 budget。
+ */
+function keepSectionIntact(fixed, head, budget) {
+  const text = String(fixed ?? '');
+  const lines = text.split('\n');
+  const at = lines.findIndex((l) => l.trim() === head);
+  if (at < 0) return text;
+  let end = at + 1;
+  while (end < lines.length && !/^##\s/.test(lines[end].trim())) end++;
+  const section = lines.slice(at, end).join('\n').trim();
+  if (section.length <= budget) return text;
+  // 太长就按行夹一下，保留标题和前面几条
+  const cut = section.slice(0, budget).split('\n');
+  const kept = [...lines.slice(0, at), ...cut, '', ...lines.slice(end)];
+  return kept.join('\n');
+}
+
+function frameFixed(fixed, budget) {
+  const text = String(fixed ?? '');
+  const avail = Math.max(0, budget - 40);
+  if (!text || text.length <= avail) return { text, dropped: 0 };
+
+  /**
+   * 【为什么不是「从最后一行往前一行一行退」—— 2026-10-30】
+   *
+   * 以前就是那样：按行从尾巴往前砍。结果「先说坏的、好的垫底」——
+   * 我的本子里「关键事实（已验证）」那一大坨压在最后，一超字数，
+   * 退掉的全是它；而前面那些已经过时的夜班交接（错误与修复、关键决策）
+   * 一字不落地留着，还占着「待办」小节的地盘。提示里看到的就是「被砍一半、还留着一堆废话」。
+   *
+   * 现在改成按小节整体退：从最靠后的非关键小节开始，整节退掉，
+   * 退到够为止；一节退完还不够才动「部分退」，而且有下限（不能只剩个标题）。
+   * 每个小节都留一行「（退掉 N 条，原文在本子里）」—— 让人知道东西没丢，只是没贴进来。
+   */
+  const sections = [];
+  let cur = { label: '', head: [], body: [] };
+  for (const l of text.split('\n')) {
+    const s = l.trim();
+    if (s.startsWith('## ')) {
+      if (cur.head.length || cur.body.length) sections.push(cur);
+      cur = { label: s, head: [l], body: [] };
+    } else if (cur.head.length) cur.body.push(l);
+    else cur.head.push(l);
+  }
+  if (cur.head.length || cur.body.length) sections.push(cur);
+
+  const isProtected = (sec) => PROTECT_SECTIONS.includes(sec.label);
+  /** 每节至少要留几条正文（不多不少：够认出这节是什么就行）。 */
+  const MIN_KEEP = 2;
+  const renderAll = () => sections.map((sec) => [...sec.head, ...sec.body].join('\n')).join('\n');
+  const size = () => tidySections(renderAll()).length;
+
+  /** 从后往前退：先整节退非关键小节，再部分退，最后才碰关键小节。 */
+  const orderIdx = [];
+  for (let i = sections.length - 1; i >= 0; i--) if (!isProtected(sections[i])) orderIdx.push(i);
+  let dropped = 0;
+
+  for (let pass = 0; pass < 3 && size() > avail; pass++) {
+    for (const i of orderIdx) {
+      if (size() <= avail) break;
+      const sec = sections[i];
+      const bodyLines = sec.body.slice();
+      // pass 0：整节退光；pass 1：留 2 条；pass 2：再往下砍到 2 条为止
+      if (pass === 0) {
+        if (!bodyLines.length) continue;
+        const n = bodyLines.length;
+        sec.body = ['（这一节 ' + n + ' 条这次没贴进来，原文还在本子里）'];
+        dropped += n;
+      } else {
+        if (bodyLines.length <= MIN_KEEP) continue;
+        // 从最旧的开始退（本子里越靠前越旧）
+        const cut = Math.min(bodyLines.length - MIN_KEEP, Math.max(1, Math.ceil((bodyLines.length - MIN_KEEP) / 2)));
+        sec.body = ['（这一节最旧的 ' + cut + ' 条没贴进来，原文还在本子里）', ...bodyLines.slice(cut)];
+        dropped += cut;
+      }
+    }
+  }
+
+  const render = () => {
+    let out = tidySections(renderAll());
+    if (dropped) out += '\n\n…（固定记忆超出字数，这次少贴了 ' + dropped + ' 条；本子里一条没删）';
+    return out;
+  };
+
+  let out = render();
+  // 实在还超（关键小节也很大），才动关键小节的部分退，且必须留 LABEL_MIN 条
+  if (out.length > avail) {
+    for (const i of orderIdx.concat(sections.map((_, k) => k).reverse())) {
+      if (out.length <= avail) break;
+      const sec = sections[i];
+      const bodyLines = sec.body.slice();
+      if (bodyLines.length <= LABEL_MIN) continue;
+      const cut = Math.min(bodyLines.length - LABEL_MIN, 10);
+      if (cut <= 0) continue;
+      sec.body = ['（这一节最旧的 ' + cut + ' 条没贴进来，原文还在本子里）', ...bodyLines.slice(cut)];
+      dropped += cut;
+      out = render();
+    }
+  }
+  return { text: out, dropped };
+}
+
 export function composeMemory(maxChars = MAX_CHARS) {
   ensureFile();
   let raw = '';
@@ -468,7 +606,7 @@ export function composeMemory(maxChars = MAX_CHARS) {
   const build = () => [
     `${ZONE_FIXED}（永久保留）`,
     '',
-    keptFixed || '（还没记下固定事实）',
+    String(keptFixed ?? '').trim() || '（还没记下固定事实）',
     '',
     `${ZONE_ROLL}（${keptRoll.length}/${TURN_LIMIT} 条${totalRoll > TURN_LIMIT ? ` · 共 ${totalRoll} 条，更早的已滚出` : ''}）`,
     '',
@@ -480,12 +618,41 @@ export function composeMemory(maxChars = MAX_CHARS) {
     '',
     ZONE_ARCHIVE,
     '',
-    keptArchive.join('\n'),
+    keptArchive.length
+      ? keptArchive.join('\n')
+      : '（暂时没有归档。图上那条「早期对话摘要」是会话压缩的成果，跟这本本子不是一回事）',
   ].join('\n').trim();
 
+  /**
+   * 【超长怎么退】2026-10-30 改过，原来有两处坑：
+   * ① 固定记忆用 slice 一刀切，末尾的「待办」直接被砍光，还把事实切成半句；
+   * ② 退的顺序是「先退滚动 → 再退详细 → 最后固定」，可固定区自己的
+   *    「错误与修复/关键事实」能涨到 12000 字，等于把 80 条滚动几乎全挤掉。
+   * 现在固定区一超过总预算的 62%，就按行退（先退非关键小节），
+   * 剩下的位置留给滚动和详细。
+   */
+  keptFixed = tidySections(keptFixed);
+  const fixedBudget = Math.max(3000, Math.floor(maxChars * 0.62));
+  // 待办是手上的活口，不能因为字数紧就被退光：先单独给它留最多 1800 字（还不占别的预算）
+  keptFixed = keepSectionIntact(keptFixed, '## 待办', 1800);
+  if (keptFixed.length > fixedBudget) {
+    keptFixed = frameFixed(keptFixed, fixedBudget).text;
+  }
   let text = build();
-  // 超长：先丢最旧的滚动条，再丢详细区，最后才动固定记忆
+  /**
+   * 【按字数挤出去的，也得进归档】—— 2026-10-30
+   *
+   * 原来这里只会 `keptRoll.slice(1)` 一直丢到塞得进为止，丢了就没了。
+   * 而 appendRolling 那条路（超 80 条）是会 archiveOverflow 写进 memory-archive 的，
+   * 两条路一个记得留档、一个直接蒸发 —— 结果就是这本子滚动区写着「65 条」，
+   * 实际只剩 46 条能看见，中间 19 条连归档文件都没进去过（memory-archive 目录一直是空的）。
+   *
+   * 现在丢掉之前先把它们攒起来，最后一并归档，并在索引里记一笔。
+   */
+  const evicted = [];
+  // 再兜一层：先丢最旧的滚动条，再丢详细区
   while (keptRoll.length > 0 && text.length > maxChars) {
+    evicted.push(keptRoll[0]);
     keptRoll = keptRoll.slice(1);
     text = build();
   }
@@ -495,11 +662,33 @@ export function composeMemory(maxChars = MAX_CHARS) {
   }
   if (text.length > maxChars) {
     keptArchive = [];
-    keptFixed = `${keptFixed.slice(0, Math.max(0, maxChars - 320))}\n…（固定记忆太长，已截断）`;
+    const framed = frameFixed(keptFixed, maxChars - 320);
+    keptFixed = framed.text;
     text = build();
   }
 
-  return { text, keptRoll: keptRoll.length, totalRoll };
+  /**
+   * 把这次因为字数挤出去的滚动条真正落盘归档。
+   * 只读函数里做写入是没办法的事 —— 不写就等于丢掉，宁可多一个副作用也不让记录蒸发。
+   * 归档失败也不能影响记忆本本身的输出，所以整块包在 try 里。
+   */
+  if (evicted.length) {
+    try {
+      const day = new Date().toISOString().slice(0, 10);
+      const hook = archiveOverflow(evicted, day);
+      if (hook) {
+        // 索引写回文件（下次 read 才看得到「归档里有这几条」）
+        const nextArchive = mergeArchiveIndex(archive, hook);
+        writeFileSync(
+          activeFile(),
+          renderMemory({ fixed, roll: keptRoll, detail: keptDetail, archive: nextArchive }),
+          'utf8',
+        );
+      }
+    } catch {}
+  }
+
+  return { text, keptRoll: keptRoll.length, totalRoll, evicted: evicted.length };
 }
 
 /** 下一个编号：从文件里现有的最大编号 +1，不用模型自己数。 */
@@ -587,7 +776,17 @@ export function appendRolling(summary, extra = {}) {
 export function appendFixed(section, text) {
   if (memoryOff()) throw new Error(OFF_HINT);
   ensureFile();
-  const clean = String(text ?? '').trim();
+  /**
+   * 【别让日期写两遍】—— 2026-10-30
+   *
+   * 这里统一在条目前面盖一个日期，但工具那头（memory_pin）是把 text 原样递进来的。
+   * 我写记忆的时候不知道程序会补日期，自己也顺手写了「2026-10-26 …」，
+   * 结果长成「2026-10-26 2026-10-26 主人说…」，固定记忆里十几条都是这样。
+   * 所以这里把 text 自己带的日期剥掉，只留程序盖的那个。
+   */
+  const stripOwnDate = (s) =>
+    s.replace(/^\d{4}-\d{1,2}-\d{1,2}(\s+\d{1,2}:\d{2})?\s*/u, '').trim();
+  const clean = stripOwnDate(String(text ?? '').trim());
   if (!clean) throw new Error('要记的内容是空的');
 
   let head = String(section ?? '').trim();
@@ -617,7 +816,10 @@ export function appendFixed(section, text) {
   }
 
   const nextFixed = keepPopulatedHeads(nextFixedLines).join('\n').trim();
-  writeFileSync(activeFile(), renderMemory({ fixed: nextFixed, roll, detail, archive }), 'utf8');
+  // 小节之间统一隔一个空行。2026-10-30 加：不隔空行的话，`## 文件/路径/命令`
+  // 会跟下一节的条目粘在一起，parseMemory 按标题切段时整节内容就错位了。
+  const spacedFixed = tidySections(nextFixed);
+  writeFileSync(activeFile(), renderMemory({ fixed: spacedFixed, roll, detail, archive }), 'utf8');
   return { path: activeFile(), section: head };
 }
 

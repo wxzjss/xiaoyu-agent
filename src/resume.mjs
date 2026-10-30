@@ -32,6 +32,7 @@ const MAX_AGE_MS = 24 * 60 * 60 * 1000;
  * @param {string} [info.text]      已经说出来的半截话（给模型看「我刚说到这儿」）
  * @param {string} [info.reason]    为什么死的（给人看）
  * @param {string} [info.taskLine]  这一轮的起点（主人最后说的那句话）
+ * @param {Array}  [info.openSteps]  清单上还没打勾的步骤（重启后照着往下做）
  */
 export function markInterrupted(info = {}) {
   const sessionId = String(info.sessionId || '');
@@ -47,6 +48,9 @@ export function markInterrupted(info = {}) {
           text: String(info.text || '').slice(0, 2000),
           reason: String(info.reason || '进程意外退出').slice(0, 200),
           taskLine: String(info.taskLine || '').slice(0, 500),
+          /* 【2026-10-30】重启要「接着干」，光知道「我断在半句话」不够 ——
+           * 得知道清单上还剩哪几步没打勾，不然起来只能干等主人说「继续」。 */
+          openSteps: Array.isArray(info.openSteps) ? info.openSteps.slice(0, 30) : [],
         },
         null,
         2,
@@ -74,6 +78,7 @@ export function peekInterrupted() {
       text: String(j.text || ''),
       reason: String(j.reason || ''),
       taskLine: String(j.taskLine || ''),
+      openSteps: Array.isArray(j.openSteps) ? j.openSteps : [],
     };
   } catch {
     return null;

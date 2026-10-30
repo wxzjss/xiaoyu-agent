@@ -49,6 +49,21 @@ for (const f of files) {
 }
 if (synOk === files.length) ok(files.length + ' 个文件全过');
 
+// ---------- 1.5 标识符（用了但没 import 的那类） ----------
+head('1.5 标识符：用了却没声明的名字');
+try {
+  const out = execFileSync(process.execPath, [join(ROOT, 'scripts', 'check-identifiers.mjs')], { stdio: 'pipe' });
+  const txt = out.toString('utf8');
+  const m = txt.match(/查出 (\d+) 处/);
+  if (m) no('check-identifiers 报 ' + m[1] + ' 处未定义标识符');
+  else ok((txt.trim().split('\n').pop() || '没有未定义标识符').replace(/^✔\s*/, ''));
+} catch (e) {
+  // 退出码 1 时 stdout 里就是问题清单，逐条摘出来
+  const txt = String(e.stdout || '');
+  const lines = txt.split('\n').filter((l) => /✘/.test(l) || /没用过也没声明过/.test(l));
+  no('check-identifiers 不通过：\n' + (lines.length ? lines.join('\n') : txt || e.message));
+}
+
 // ---------- 2. 页面自检 ----------
 head('2. 页面自检（会白屏的那类错）');
 try {

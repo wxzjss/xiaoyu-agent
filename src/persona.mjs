@@ -1,3 +1,4 @@
+import { renderSelfCompressBlock } from './self-compress.mjs';
 // Persona: composes the system prompt from the persona card + 底线/安全词. No affinity, no state.
 // The persona card itself lives in persona/xiaoyu.md, unless the user edited it in settings,
 // in which case .state/persona.md wins (see persona-store.mjs).
@@ -8,15 +9,18 @@
 import { getSettings, settingsPromptBlock, matchSafeWord, safeWordNoteFor } from './settings.mjs';
 import { personaInfo } from './persona-store.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
-import { readMemory } from './session-memory.mjs';
+import { readMemory, memoryPath } from './session-memory.mjs';
 // 专业模式：开了就一个字系统提示都不发（见 pure.mjs）。
-import { pureModeOn, pureSystemPrompt } from './pure.mjs';
+import { pureModeOn, pureSystemPrompt, doerOf, DOER_WORKERS } from './pure.mjs';
+// 上面那段兜底要用 taskPromptBlock —— 只去掉了 taskOn，别把它一起删了。
+import { taskPromptBlock } from './task-mode.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
 import { fishOn } from './fish-presence.mjs';
 // 会话绑的智能体卡：绑了自定义卡，基线人设就换成那张卡的正文（见 agents.mjs）。
-import { agentForSession, getAgent, groupAgentIds } from './agents.mjs';
+import { agentForSession, getAgent, groupAgentIds, mainAgentId } from './agents.mjs';
 // 管理员权限：这个会话开了那一档就把「整台机器都能动」写进提示词（见 admin-mode.mjs）。
 import { adminPromptBlock } from './admin-mode.mjs';
+
 /**
  * 【这一轮是谁在说话】—— 2026-10-28
  *
@@ -247,6 +251,47 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   if (adm) parts.push(adm);
 
   /**
+   * 【办事模式 · 2026-11-03】
+   *
+   * 老板要的是：开了这一档，这个会话的主智能体不再自己动手 ——
+   * 只拆任务、派活、检查、验收、压上下文，活交给临时 worker。
+   *
+   * 两处必须一起改，少一处就穿帮：
+   *   · 这里加这段规矩（管「她想不想动手」）
+   *   · agent.mjs 的 toolsForTurn 把干活工具收走（管「她能不能动手」）
+   * 只写提示词不收回工具，她总会在某次「顺手改一下」里自己上手。
+   *
+   * 主智能体是谁不写死 —— 按左侧竖列从上往下第一个「开着且没被禁用」的那个人算
+   * （主人 2026-11-03 定的：「主智能体指左侧排序最靠前的已启用且未被禁用的智能体」）。
+   * 只有这一轮说话的正好是这个人，这段才发；否则发了就是在教别人抢活。
+   *
+   * 没开的时候 taskPromptBlock 返回 ""，一个字不花，缓存前缀不动。
+   */
+  /**
+   * 【2026-11-03 主人：「把办事模式并入专业模式里面」】
+   *
+   * 这一段以前挂在独立的 taskOn(sessionId) 上（顶栏第三颗按钮）。
+   * 现在并进专业模式：只有「专业模式开着 + 里面选了派活」才发，
+   * 判断统一走 pure.mjs 的 doerOf —— 那边保证专业模式没开就一定是 'self'，
+   * 这里不再自己看第二个开关（两个开关各自判断，迟早会判出两种结果）。
+   *
+   * 注意还有一条：专业模式开着的时候 buildSystemPrompt 在第 144 行就 return 了，
+   * 根本走不到这里。派活那一档的规矩是在 pureSystemPrompt 里拼的
+   * （见 pure.mjs 末尾那段）。这段留着是给「专业模式关着但 doerOf 返回 workers」
+   * 这种不该出现的情况兜底 —— 以前两个开关是分开的，出现过一次两边不一致。
+   */
+  if (!safeMode && (() => { try { return doerOf(sessionId) === DOER_WORKERS; } catch { return false; } })()) {
+    const who = String(agentId || "").trim();
+    let mainId = "";
+    try { mainId = mainAgentId(sessionId) || ""; } catch { mainId = ""; }
+    if (!mainId || !who || who === mainId) {
+      let name = "";
+      try { name = String(getAgent(mainId)?.name || ""); } catch { name = ""; }
+      const tb = taskPromptBlock(sessionId, name);
+      if (tb) parts.push(tb);
+    }
+  }
+  /**
    * 【这一轮是从哪儿来的】2026-10-30
    *
    * 主人问「QQ 聊天时候你知道自己在 QQ 聊天吗」——原来是不知道的。
@@ -263,6 +308,12 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   // 会话记忆放最后：它是唯一一块每轮变长的，跟读者走，不能渲染前面的每一句。
   const mem = memoryBlock(sessionId);
   if (mem) parts.push(mem);
+  // 压缩规矩：告诉她「上下文太长的时候是您自己挑重点」，不是别人代挑。
+  // 放在记忆后面 —— 她读到本子紧接着读到「该你动手了」，顺序上顺。
+  try {
+    const sc = renderSelfCompressBlock();
+    if (sc) parts.push(sc);
+  } catch { /* 这个模块挂了也不能拖垮整轮提示 */ }
   return parts.join('\n\n');
 }
 
@@ -574,7 +625,21 @@ function memoryBlock(sessionId) {
     me && me.id && me.id !== 'owner'
       ? '读的时候当成「我已经知道」，别复述它，别跟对方说「我看了记忆文件」。'
       : '读的时候当成「我已经知道」，别复述它，别跟主人说「我看了记忆文件」。',
-    '要更新：直接用改文件那几个工具写这个会话的本子（路径用 memoryPath 拿到的那个）。',
+    /**
+     * 【把真实路径给她】—— 2026-11
+     *
+     * 原来这里写的是「路径用 memoryPath 拿到的那个」。
+     * memoryPath 是 session-memory.mjs 的导出函数名，不是给她看的字符串
+     * —— 她手上没有这个函数，也没地方去「拿」。读到这句只能瞪眼。
+     * 直接把绝对路径写进提示词。拿不到就不提这句（宁可不说，也不给一句办不到的指令）。
+     */
+    (() => {
+      try {
+        return "要更新：直接用 write_file 写这个路径「" + memoryPath(sessionId) + "」（本会话自己的本子，路径已经开好了）。";
+      } catch {
+        return null;
+      }
+    })(),
     '',
     /**
      * 【这一条是本子的规矩，不是这一轮的】—— 2026-10-28 补

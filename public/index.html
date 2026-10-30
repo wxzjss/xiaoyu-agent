@@ -2993,6 +2993,7 @@
         <div class="qqSectHead"><b>1.5</b><span>用你自己注册的号（扫码登录 NapCat）</span></div>
         <div class="qqField qqFieldInline">
           <label class="qqCheck"><input type="checkbox" id="obEnabled"><span>走这条道</span></label>
+          <label class="qqCheck" title="小鱼Agent 一起来就把这条道接上；断了/协议端挂了会自己重拨爬起来"><input type="checkbox" id="obAutoStart"><span>开机就连</span></label>
           <span class="qqGrow"></span>
           <span class="qqState" id="obState">没连</span>
           <button type="button" class="ghost" id="obPrepare">准备协议端</button>
@@ -9481,6 +9482,8 @@ async function paintOneBot(obStatus, obPrepare) {
     tok.placeholder = conf.hasToken ? '已经存过；要换就整串重填' : '协议端设了 token 才填，没有就空着';
     if (document.activeElement !== tok) tok.value = '';
   }
+  const auto = qqEl('obAutoStart');
+  if (auto) auto.checked = conf.autoStart === true;
   const st = obStatus || {};
   const stateEl = qqEl('obState');
   const btn = qqEl('obToggle');
@@ -9510,8 +9513,11 @@ async function paintOneBot(obStatus, obPrepare) {
     } else if (st.phase === 'connecting' && st.mode === 'reverse') {
       hint.textContent = `在 ${st.url} 等协议端拨进来（NapCat 里填这个反向地址）。`;
     } else {
+      const pr0 = obPrepare || {};
+      const autoTip = conf.autoStart ? '（开了「开机就连」，断了会自己按 3/6/12/24/30 秒重拨，协议端进程没了也会替你拉起来）' : '';
       hint.textContent = '点「准备协议端」→ 自动装好并拉起（会弹 UAC，点「是」），屏幕上会开一个 QQ 窗口，'
-        + '用手机 QQ 扫那个码登录。WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。';
+        + '用手机 QQ 扫那个码登录。WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。' + autoTip
+        + (pr0.installed ? '' : '（这台机器上还没装协议端）');
     }
   }
   // 「准备协议端」按钮的状态：装没装、跑没跑
@@ -9635,6 +9641,7 @@ async function saveQqBind() {
       mode: String((qqEl('obMode') || {}).value || 'forward'),
       url: String((qqEl('obUrl') || {}).value || '').trim(),
       ownerQq: String((qqEl('qqOwnerQq') || {}).value || '').replace(/[^0-9]/g, ''),
+      autoStart: Boolean((qqEl('obAutoStart') || {}).checked),
     };
     const tok = String((qqEl('obToken') || {}).value || '').trim();
     // 空着就是「不改」—— 跟 AppSecret 一个口径，免得每存一次就把 token 抹掉

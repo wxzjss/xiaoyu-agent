@@ -338,6 +338,21 @@ export function safePath(p, { tool = '' } = {}) {
    *   · CTX.fullAccess —— 小鲸跑那一趟的临时放行（runSubagent 用）
    */
   if (CTX.adminMode === true || CTX.fullAccess === true) return abs;
+  /**
+   * 【本会话自己的记忆本子，放行】—— 2026-11
+   *
+   * 主人问「为什么 154 个本子里 153 个固定记忆是空的」，查出来的真因：
+   * persona.mjs 的提示词明写着「直接用改文件那几个工具写这个会话的本子」，
+   * 可工具这边一律抦的是下面那句「只能写工作区」——而本子在 %APPDATA% 里。
+   * 于是她按提示去写，必定撞一壁 path outside workspace，只能不写了。
+   * 提示词在一个劲儿地叫她写，手却被绑着 —— 这才是骨架一直空着的根。
+   *
+   * 只放行「本会话自己那一份」，不放其它会话的本子，也不放我自己的、小鲸的
+   * （那几份各有各的工具：memory_add / memory_pin）—— 不给她一把能改别人记忆的钥匙。
+   *
+   * 上面 memoryLocked 那道在前面：长期记忆关着时也不能写这个本子，先被拦。
+   */
+  if (isOwnSessionMemory(abs)) return abs;
   const rel = relative(ROOT, abs);
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`path outside workspace is not allowed: ${p}`);
@@ -352,6 +367,21 @@ export function safePath(p, { tool = '' } = {}) {
  * 猜会猜错：grep 读文件，但它的参数能当正则使、也能顺着目录一路翻，
  * 哪天实现一换就成了写口子。宁可白名单短一点：看不全，但不能偷偷写。
  */
+/**
+ * 这个路径是不是「当前这个会话自己的记忆本子」。
+ *
+ * 只认 .state/memory/<本会话 id>.md 这一个形状。别的会话的本子、my-memory、whale-memory 都不算。
+ * 取 sessionId 用 ctxNow()（而不是直接读 CTX）——并发跑两个会话时各认各的。
+ */
+function isOwnSessionMemory(abs) {
+  try {
+    const sid = String(ctxNow()?.sessionId || "");
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(sid)) return false;
+    const want = join(config.dataDir, ".state", "memory", sid + ".md");
+    return resolve(abs) === resolve(want);
+  } catch { return false; }
+}
+
 const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir']);
 
 /**

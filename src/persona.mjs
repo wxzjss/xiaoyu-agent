@@ -8,7 +8,7 @@
 import { getSettings, settingsPromptBlock, matchSafeWord, safeWordNoteFor } from './settings.mjs';
 import { personaInfo } from './persona-store.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
-import { readMemory } from './session-memory.mjs';
+import { readMemory, memoryPath } from './session-memory.mjs';
 // 专业模式：开了就一个字系统提示都不发（见 pure.mjs）。
 import { pureModeOn, pureSystemPrompt } from './pure.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
@@ -574,7 +574,21 @@ function memoryBlock(sessionId) {
     me && me.id && me.id !== 'owner'
       ? '读的时候当成「我已经知道」，别复述它，别跟对方说「我看了记忆文件」。'
       : '读的时候当成「我已经知道」，别复述它，别跟主人说「我看了记忆文件」。',
-    '要更新：直接用改文件那几个工具写这个会话的本子（路径用 memoryPath 拿到的那个）。',
+    /**
+     * 【把真实路径给她】—— 2026-11
+     *
+     * 原来这里写的是「路径用 memoryPath 拿到的那个」。
+     * memoryPath 是 session-memory.mjs 的导出函数名，不是给她看的字符串
+     * —— 她手上没有这个函数，也没地方去「拿」。读到这句只能瞪眼。
+     * 直接把绝对路径写进提示词。拿不到就不提这句（宁可不说，也不给一句办不到的指令）。
+     */
+    (() => {
+      try {
+        return "要更新：直接用 write_file 写这个路径「" + memoryPath(sessionId) + "」（本会话自己的本子，路径已经开好了）。";
+      } catch {
+        return null;
+      }
+    })(),
     '',
     /**
      * 【这一条是本子的规矩，不是这一轮的】—— 2026-10-28 补

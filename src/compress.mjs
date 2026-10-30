@@ -376,6 +376,53 @@ const SUMMARY_INPUT_MAX = 24000;
  * @param {string} inputText renderForSummary 的产物
  * @returns {string}
  */
+/**
+ * 摘要模型撂挑子的时候，自己从原文里刨一份「能看的事实清单」出来。
+ *
+ * 【为什么要有】—— 2026-10-30
+ * 以前这里写死一句「（这段早期对话没有压出可用的事实，原文已折叠）」，
+ * 整段历史就变成一行空话 —— 后面接着干的人（也就是我）完全不知道这几十轮在干嘛，
+ * 表现出来就是「被压傻了」。原文其实一条没丢，全在 folded 里，
+ * 那就把它数出来、把主人的原话摘出来，够自己认出这段活。
+ *
+ * @param {Array} old 被折掉的旧消息
+ * @param {string} segId 原文存档 id（可能为空）
+ * @returns {string}
+ */
+function fallbackSummary(old, segId) {
+  const list = Array.isArray(old) ? old : [];
+  const userSaid = [];
+  const said = [];
+  for (const m of list) {
+    const c = typeof m?.content === 'string' ? m.content.replace(/\s+/g, ' ').trim() : '';
+    if (!c) continue;
+    if (m.role === 'user' && !m.context) userSaid.push(c);
+    else if (m.role === 'assistant' && !(m.tool_calls?.length)) said.push(c);
+  }
+  const clip = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
+  const lines = [];
+  /**
+   * 抬头就写清楚：这份不是摘要，是程序拼的降级清单。
+   * 不写这句的话，后面接手的我会把下面那些「（折叠时没能自动整理」
+   * 当成事实读。
+   */
+  lines.push('（注：这份是压缩没写成时程序拼出来的清单，不是真摘要；细节在原文存档里）');
+  lines.push('主人要什么:');
+  if (userSaid.length) {
+    for (const s of userSaid.slice(-6)) lines.push('- ' + clip(s, 120));
+  } else {
+    lines.push('- （这一段里主人没开过口，全是自己在干）');
+  }
+  lines.push('已经做完:');
+  lines.push('- 这一段共 ' + list.length + ' 条消息，已整段折叠（原文没删）' + (segId ? '，存档 id：' + segId : ''));
+  if (said.length) lines.push('- 自己最后说的：' + clip(said[said.length - 1], 100));
+  lines.push('还没做完:');
+  lines.push('- （折叠时没能自动整理，要接着干就翻原文存档看细节）');
+  lines.push('关键约束:');
+  lines.push('- 摘要这一步这次没写成功，别当这段是空的：原文在 folded 存档里，一条没丢');
+  return lines.join('\n');
+}
+
 function frameSummaryInput(inputText) {
   return [
     String(inputText ?? ''),
@@ -390,11 +437,31 @@ function frameSummaryInput(inputText) {
   ].join('\n');
 }
 
+/**
+ * 工具结果留多长。
+ *
+ * 原来写死 1200。实测下来这是压缩里最伤的一处：真实会话里工具结果占全部上下文的
+ * 53%（1477 条消息、529,785 字符，正文只占 9%），单条最大 11242 字符。而报错原文、
+ * 测试输出、文件内容的关键往往就在尾巴上——1200 字正好砍在中间，摘要那头只能瞎编。
+ *
+ * 改成「掐头不掐尾」：超长就留前 40% + 后 60%，中间用省略号标出来。
+ * 报错通常在尾，文件开头通常是套话，两头都要看到才判断得准。
+ */
+const TOOL_RESULT_CHARS = 3000;
+
+function clipToolResult(s) {
+  const t = String(s ?? '');
+  if (t.length <= TOOL_RESULT_CHARS) return t;
+  const head = Math.floor(TOOL_RESULT_CHARS * 0.4);
+  const tail = TOOL_RESULT_CHARS - head;
+  return `${t.slice(0, head)}\n…（中间省略 ${t.length - TOOL_RESULT_CHARS} 字）…\n${t.slice(-tail)}`;
+}
+
 function renderForSummary(messages) {
   const lines = [];
   for (const m of messages) {
     if (m.role === 'tool') {
-      lines.push(`[工具结果] ${String(m.content ?? '').slice(0, 1200)}`);
+      lines.push(`[工具结果] ${clipToolResult(m.content)}`);
       continue;
     }
     if (m.role === 'assistant') {
@@ -440,13 +507,47 @@ function renderForSummary(messages) {
     const capChars = isOldSummary ? 1200 : 4000;
     lines.push(`${tag} ${one.slice(0, capChars)}`);
   }
-  // 整体超长就从最早的地方裁掉：摘要看最近的就有用，远古的聊天细节不值钱
+  /**
+   * 整体超长怎么办。
+   *
+   * 原来是从开头一刀切：「（更早的部分太长，已裁剪）」+ 保留最后 24000 字。
+   * 问题是每条正文先被 capChars 卡在 4000 字，所以一刀切掉的往往是**整条整条的消息**，
+   * 一段几十轮的历史可能前头二十轮一个字都没进稿，摘要那头就等于没看过。
+   *
+   * 现在分两步，先软的再硬的：
+   *   ① 每条按同一比例压短（人人有份，保留开头），塞得进去就完事；
+   *   ② 压到下限还塞不进，才丢最旧的几条，并把丢了多少条写在稿子开头。
+   */
+  const MIN_LINE = 80;
   let text = lines.join('\n');
   if (text.length > SUMMARY_INPUT_MAX) {
-    text = '（更早的部分太长，已裁剪）\n' + text.slice(text.length - SUMMARY_INPUT_MAX);
+    // ① 人均额度：总预算平摊到每条，按超额比例往下压
+    const budget = SUMMARY_INPUT_MAX - 60; // 给开头那行提示留位置
+    const avg = Math.ceil(text.length / Math.max(1, lines.length));
+    let room = Math.max(MIN_LINE, Math.floor(budget / Math.max(1, lines.length)));
+    if (room < avg) {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].length > room) lines[i] = lines[i].slice(0, room) + '…';
+      }
+      text = lines.join('\n');
+    }
+  }
+  if (text.length > SUMMARY_INPUT_MAX) {
+    // ② 还塞不进：从最旧的开始丢，直到塞得下
+    const total = lines.length;
+    let at = 0;
+    while (at < total - 1 && lines.slice(at).join('\n').length + 60 > SUMMARY_INPUT_MAX) at++;
+    const note = `（前面还有 ${at} 条没进这份稿子，原文都在 folded 存档里）`;
+    text = note + '\n' + lines.slice(at).join('\n');
   }
   return text;
 }
+
+/**
+ * 只给验收脚本用：把内部函数掏出来测。
+ * 前缀用 __for_test，正式代码里没人调，别在这上面搭业务。
+ */
+export const __for_test = { renderForSummary, clipToolResult, TOOL_RESULT_CHARS };
 
 /**
  * 压缩历史。就地改 messages，返回一份压缩前后统计。
@@ -864,6 +965,8 @@ export async function compressHistory({
   const summarySystem = process.env.COMPRESS_HER_SUMMARY === '0' ? SUMMARY_SYSTEM : HER_SUMMARY_SYSTEM;
 
   let summaryText = '';
+  /** 这一轮的摘要是自刨兜底（模型没写出来）。下一轮有正式摘要就换掉它。 */
+  let fallbackUsed = false;
   let error;
   /**
    * 【2026-10-28 改：专业/快速模式也做摘要了】
@@ -1040,7 +1143,16 @@ export async function compressHistory({
    * 所以这里补第三道：洗完之后实体字数不到 SUMMARY_MIN_CHARS，就当没摘出来，
    * 整轮放弃、原文一条不动。宁可上下文大一点，也不能拿一句话换掉几十条原文。
    */
-  if (SUMMARY_MIN_CHARS > 0) {
+  /**
+   * 【两种不同的“太短”】—— 2026-11
+   *
+   * · 真摘要（模型写的）：实字不到 SUMMARY_MIN_CHARS 就不压。
+   * · 程序兜底清单（fallbackSummary）：它本来就是降级方案。
+   *   不管它长短，都得明写「底下没经过模型」。
+   *   否则下一个我读到它，会当成是自己记下的事实 —— 而里面全是
+   *   「（折叠时没能自动整理」这种话。
+   */
+  if (SUMMARY_MIN_CHARS > 0 && !fallbackUsed) {
     const cleaned = cleanSummary(summaryText);
     if (summaryText && cleaned) {
       /** 只算实体字数：去掉空白和纯符号，防止拿一堆横杠和星号凑数。 */
@@ -1057,14 +1169,39 @@ export async function compressHistory({
   }
 
   if (!pure && !summaryText) {
-    return {
-      compressed: false,
-      before,
-      after: before,
-      limit: cap,
-      reason: 'summary-failed-keep-original',
-      error: error || '摘要没生成出来',
-    };
+    /**
+     * 【2026-10-30 改：摘要没写出来，不再整轮放弃】
+     *
+     * 老逻辑是「摘要失败 → 这一轮不压，原文一条不动」。安全，但代价是
+     * 上下文一路涨到顶、每轮白跑一次摘要请求，表现出来就是「该压不压、越跑越傻」。
+     * 现在：自己从原文刨一份事实清单（fallbackSummary）顶上 —— 原文等会儿整段存进
+     * folded，一条不丢，摘要只负责说「这段干过什么」，够用。
+     */
+    /**
+     * 【和镠底清单分清楚】—— 2026-11
+     *
+     * fallbackSummary 拼出来的东西里大半是程序自己的话
+     * （「（这一段里主人没开过口」「（折叠时没能自动整理」），
+     * 一拼就是四五百字 —— 数字上完全过得了上面那道「太短就不压」。
+     * 所以不能拿字数当唯一尺子：它是一个明确的降级，不是一份摘要。
+     * 这里打上 fallbackUsed，后面的日志和返回值都能看出来。
+     */
+    const fb = fallbackSummary(old, sessionId || '');
+    if (fb && cleanSummary(fb)) {
+      summaryText = fb;
+      fallbackUsed = true;
+      error = undefined;
+      console.warn('[compress] 摘要模型没写出来，改用自刨的事实清单顶上（' + String(fb).length + ' 字）');
+    } else {
+      return {
+        compressed: false,
+        before,
+        after: before,
+        limit: cap,
+        reason: 'summary-failed-keep-original',
+        error: error || '摘要没生成出来',
+      };
+    }
   }
 
   /**
@@ -1273,7 +1410,9 @@ function cleanSummary(text) {
     for (let i = start; i < cut; i++) {
       const m = messages[i];
       if (keptText.has(m)) continue;
-      if (m?.summary) continue; // 上一轮的摘要不用再存一遍
+      // 上一轮的摘要不用再存一遍；但「自刨兜底」的摘要要重新摘 ——
+      // 它只是模型没写出来时的代班，留着就把正式摘要堵在门外了（2026-10-30）。
+      if (m?.summary && !m.fallbackSummary) continue;
       lost.push({ msg: m, at: i });
     }
     if (lost.length && sessionId) {
@@ -1289,6 +1428,7 @@ function cleanSummary(text) {
         messages: lost.map((x) => x.msg),
         tokens: estimateTokens(lost.map((x) => x.msg)),
         summary: summaryText,
+      fallbackSummary: fallbackUsed,
         reason: String(trigger || 'compress'),
       });
       if (seg) {

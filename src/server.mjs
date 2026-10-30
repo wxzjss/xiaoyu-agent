@@ -12,7 +12,7 @@ import { whaleOn, setWhaleOn, markWhaleSpoke, whaleSpokeThisTurn } from './whale
 import { fishOn, setFishOn } from './fish-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
-import { checkToolDocs, setPeerWake, runWithToolContext } from './tools.mjs';
+import { checkToolDocs, setPeerWake, setRunningProbe, runWithToolContext } from './tools.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
@@ -5884,8 +5884,34 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: '这条已经删过/退过了' });
     }
 
-    // 要剔的下标：这条自己 + （如果是 assistant）它名下所有 tool 结果
+    // 要剔的下标：这条自己 + 它到「下一条真正的消息」之间挂着的工具
+    //
+    // 【2026-10-30 主人要】删一条就把它到下一个消息之间的工具一起删 ——
+    // 原来只删「这条 + 它自己 tool_calls 名下那几条 tool」，于是删掉 user 那句之后，
+    // 后面那条 assistant 顺手调的一串工具（读文件、跑命令…）还孤零零挂在原地，
+    // 看着像没删干净。现在改成：从这条往后，一路吃到「下一个不是 tool 的消息」为止。
+    //
+    // 【怎么划这刀】一轮的骨架是：user → assistant(调工具) → tool → tool → assistant(总结)
+    // 所以「这条到下一个消息之间」= 吃到**下一条 user** 为止，中间 assistant / tool 全带走。
+    // （早先按「撞上非 tool 就停」，删 user 时第一条 assistant 就把它顶住了，工具一条没删。）
     const drop = new Set([idx]);
+    for (let k = idx + 1; k < all.length; k++) {
+      const m = all[k];
+      if (!m) continue;
+      if (m.role === 'user') break;   // 下一个开口的人 → 到这里为止
+      if (m.role === 'system') break; // 系统提示不动
+      // assistant 分两种：纯调工具的那种（content 是空的）算「经过」，跟着走；
+      // 有字的回答是「她说过的话」，那是下一条消息，不能顺手删掉。
+      if (m.role === 'assistant') {
+        const txt = typeof m.content === 'string' ? m.content.trim() : '';
+        if (txt) break;
+        drop.add(k);
+        continue;
+      }
+      drop.add(k);                    // tool 结果 → 一起走
+    }
+    // 吃到下一个 user 为止
+    // 再兜一层：这条自己如果是 assistant，它 tool_calls 点名的 tool 结果无论隔多远都要删
     const calls = Array.isArray(target.tool_calls) ? target.tool_calls : [];
     for (const c of calls) {
       const cid = String((c && c.id) || '');
@@ -8786,6 +8812,8 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
   // 为什么用注入：wakePeer 要动 runningTurns、要起 runAgent，这些都在本文件里；
   // 而 tools.mjs 反过来 import server.mjs 就成环了。所以在这里塞进去。
   setPeerWake(wakePeer);
+  // 让 list_peers / 重启前自检能看见「此刻谁在跑」（2026-11-04）
+  setRunningProbe(() => [...runningTurns.keys()]);
 
   /**
    * 「重启整个程序」这件事，交给主进程做。

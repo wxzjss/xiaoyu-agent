@@ -357,11 +357,18 @@ async function handleInbound({ msg, bot, deps }) {
       fromQq: { openid, name, isOwner: isOwnerQq(msg?.senderQq) },
       onEvent: async (ev) => {
         if (!ev) return;
-        if (ev.type === 'chunk' && typeof ev.text === 'string') {
+        // 2026-11-04 修：runAgent 吐正文用的是 type:'text'（全项目没有一处 emit 'chunk'），
+        // 老代码只听 'chunk'，所以 QQ 这条路从来没收到过一个字，每轮都回「这一轮她没说话」。
+        // 现在增量认 'text'，done 时再用整段 text 兜底（防漏、防重复）。
+        if ((ev.type === 'text' || ev.type === 'chunk') && typeof ev.text === 'string') {
           out.push(ev.text);
           // 攒够一条就发（别等整轮说完 —— QQ 里等着没反馈很难受）
-          if (out.join('').length - (sentParts ? 0 : 0) > 1200) await flush();
+          if (out.join('').length > 1200) await flush();
         } else if (ev.type === 'done') {
+          // 兜底：这一轮如果一条增量都没收到，但 done 里带了整段正文，就用它
+          if (!out.join('') && typeof ev.text === 'string' && ev.text.trim()) {
+            out.push(ev.text);
+          }
           await flush();
         }
       },
@@ -373,7 +380,10 @@ async function handleInbound({ msg, bot, deps }) {
       await send(bot, msg, parts[i]);
       rt.stats.out += 1;
     }
-    if (!parts.length) await send(bot, msg, '（这一轮她没说话）');
+    if (!parts.length) {
+      log('这一轮模型没吐出任何正文（out 为空），已回兜底一句');
+      await send(bot, msg, '（这一轮我没说出话，你再喊我一声？）(｡•́︿•̀｡)');
+    }
   } catch (err) {
     const m = String(err?.message ?? err);
     log(`这一轮没答完：${m}`);

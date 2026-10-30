@@ -9402,18 +9402,21 @@ function renderQqPanel(st) {
       when.className = 'when';
       when.textContent = p.lastAt ? new Date(p.lastAt).toLocaleString('zh-CN', { hour12: false }) : '';
       row.append(who, tag, grow, when);
-      if (p.role !== 'owner') {
+      // 「认成主人」那颗按钮在 2026-11-03 就撤了 —— 认主只认面板上填的那个号，
+      // 在这里点一下把别人设成主人才是漏子。这里最多给个「填进白名单」的快捷。
+      if (p.role !== 'owner' && p.qq) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'ghost';
-        btn.textContent = '认成主人';
+        btn.textContent = '加进白名单';
         btn.onclick = async () => {
-          // 以前这里打的是 /api/qq/owner —— 服务端压根没这个路由，点了必报 404。
-          // 真正的路由是 /api/qq/peer，用 role:'owner' 指定谁是主人。
-          const r = await qqApi('/api/qq/peer', { openid: p.openid, role: 'owner' });
-          if (!r || r.error) { qqSetHint('没改成：' + ((r && r.error) || '网络错误'), true); return; }
-          qqSetHint('好啦，以后这个人说话她按主人答');
-          await refreshQqPanel();
+          const el = qqEl('qqAllowQq');
+          if (!el) return;
+          const have = String(el.value || '').split(/[\s,，]+/).filter(Boolean);
+          if (have.includes(String(p.qq))) { qqSetHint('已经在白名单里了'); return; }
+          have.push(String(p.qq));
+          el.value = have.join('\n');
+          qqSetHint('填进私聊白名单了，记得点「保存白名单」');
         };
         row.append(btn);
       }

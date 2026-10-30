@@ -505,6 +505,7 @@ export function normalizeInbound(ev) {
   return {
     kind: isGroup ? 'group' : 'private',
     senderId: userId,
+    // 私聊和群里都是「说话那个人的 QQ 号」—— 认主只认号，这个字段是唯一凭据
     senderQq: userId,
     senderName: String(sender.card || sender.nickname || userId),
     groupId,

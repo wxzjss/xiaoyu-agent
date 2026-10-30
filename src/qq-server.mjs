@@ -136,8 +136,11 @@ export async function runQqTurn({ sessionId, text, fromQq, onEvent, replyTarget,
     repairHistory(history);
 
     // 把 QQ 那句当成一句真正的用户消息（带 _who，界面上署名是对方的名字）
+    // 署名只挂 _who —— 千万别顺手挂 _whoId。
+    // _whoId 是「什么身份说的话」的记号（owner / fish / 自定义），界面上有别的用途；
+    // 塞成 'owner' 就等于把 QQ 那头的人一律冒充成主人（2026-11-04 揪出来的旧账）。
     const userMsg = { role: 'user', content: String(text ?? ''), _text: String(text ?? '') };
-    if (fromQq && fromQq.name) { userMsg._who = String(fromQq.name).slice(0, 20); userMsg._whoId = 'owner'; }
+    if (fromQq && fromQq.name) userMsg._who = String(fromQq.name).slice(0, 20);
     history.push(userMsg);
     const firstUserTurn = history.filter((m) => m && m.role === 'user' && !m.context).length === 1;
     if (firstUserTurn && fromQq && fromQq.name) {

@@ -309,7 +309,7 @@ async function handleInbound({ msg, bot, deps }) {
     return;
   }
   const { sessionId } = ensured;
-  noteQqPeer(openid, { sessionId, name });
+  noteQqPeer(openid, { sessionId, name, qq: msg?.senderQq });
 
   // 主人身份：按主人来（安全词、权限都算数）。
   // 2026-11-03 起只认号 —— 面板上「你自己的 QQ 号」填的是哪个号，哪个号的话才按主人处理。
@@ -461,20 +461,37 @@ export async function startQqOneBot(deps = {}) {
   }
 }
 
-/** 给面板用：最近这些人的名字、是不是主人、什么时候来过。 */
+/**
+ * 给面板用：最近这些人的名字、是不是主人、什么时候来过。
+ *
+ * 「是不是主人」这里**不能**看 peers[openid].role —— 那是口令认领时代的旧账，
+ * 口令退休之后 peers 里只剩 sessionId / name / 来没来过，role 永远是 guest。
+ * 现在只认一条：这个号在不在主人那份名单里（面板上那个号 + 私聊白名单）。
+ * 代价是：老 peer 记录里没存号的话，他得再发一句话，面板上才会亮成主人。
+ */
 export function qqPeerList() {
-  const peers = readQq().peers;
-  return Object.entries(peers).map(([openid, p]) => ({
-    openid,
-    short: `${openid.slice(0, 6)}…${openid.slice(-4)}`,
-    role: p.role,
-    isOwner: p.role === 'owner',
-    name: p.name,
-    sessionId: p.sessionId,
-    boundAt: p.boundAt,
-    lastAt: p.lastAt,
-    msgCount: p.msgCount,
-  })).sort((a, b) => b.lastAt - a.lastAt);
+  const data = readQq();
+  const peers = data.peers;
+  const ownerQq = normQqNum((data.gate && data.gate.ownerQq) || '');
+  const allow = Array.isArray(data.gate && data.gate.allowQq)
+    ? data.gate.allowQq.map((x) => normQqNum(x)).filter(Boolean)
+    : [];
+  return Object.entries(peers).map(([openid, p]) => {
+    const qq = normQqNum(p.qq || '');
+    const known = Boolean(qq) && (qq === ownerQq || allow.includes(qq));
+    return {
+      openid,
+      short: `${openid.slice(0, 6)}…${openid.slice(-4)}`,
+      qq,
+      role: known ? 'owner' : 'guest',
+      isOwner: known,
+      name: p.name,
+      sessionId: p.sessionId,
+      boundAt: p.boundAt,
+      lastAt: p.lastAt,
+      msgCount: p.msgCount,
+    };
+  }).sort((a, b) => b.lastAt - a.lastAt);
 }
 
 /** 供测试 / 命令行：把「是不是配好了」打出来。 */

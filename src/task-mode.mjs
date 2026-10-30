@@ -30,6 +30,7 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { config } from './config.mjs';
+import { isToolEnabled } from './features.mjs';
 
 /** 界面上显示的名字。改文案只改这里。 */
 export const MODE_NAME = '办事模式';
@@ -319,9 +320,22 @@ export function forgetSession(sessionId) {
 export function taskInfo(sessionId) {
   const sid = String(sessionId || 'default');
   const list = listWorkers(sid);
+  /**
+   * available = 【功能】面板里这一档还在不在。
+   * 关着的时候这颗按钮要整块拿掉（不是灰掉），跟专业模式一个规矩：
+   * 功能关着＝这个功能不存在，所以 on 也一并按 false 报出去，
+   * 免得界面上一颗看不见的开关还亮着，而服务端其实已经在按「关」办事。
+   */
+  let available = true;
+  try {
+    available = isToolEnabled('spawn_worker') !== false;
+  } catch {
+    available = true;
+  }
   return {
     sessionId: sid,
-    on: taskOn(sid),
+    available,
+    on: available ? taskOn(sid) : false,
     keepTools: [...KEEP_TOOLS],
     workers: list,
     running: list.filter((w) => w.status === 'running').length,

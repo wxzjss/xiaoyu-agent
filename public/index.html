@@ -94,6 +94,13 @@
       color: #0b0e13; background: #7ee0b0; border-color: #7ee0b0; font-weight: 600;
     }
     header button#pureBtn.on:hover { background: #9beac4; border-color: #9beac4; color: #0b0e13; }
+    /* 办事模式：珊瑚橙。
+       三档一眼分开 —— 专业模式绿、办事模式橙、管理员红：
+       绿管「怎么说」、橙管「谁来干」、红管「能碰哪儿」，颜色不撞车。 */
+    header button#taskBtn.on {
+      color: #1a0f06; background: #f0b06a; border-color: #f0b06a; font-weight: 600;
+    }
+    header button#taskBtn.on:hover { background: #f6c489; border-color: #f6c489; color: #1a0f06; }
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
@@ -2282,6 +2289,10 @@
       </button>
     </span>
     <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
+    <!-- 2026-11-03：办事模式。跟专业模式、管理员并列的第三档，管的是「谁来干」。
+         开了之后主智能体不自己动手，只拆任务/派活/检查/验收/压上下文。
+         按会话存，切到别的会话就不算了。功能默认关 —— 【功能】里打开才出现这颗按钮。 -->
+    <button id="taskBtn" title="办事模式：开了之后主智能体不自己动手，只拆任务、派活、检查、验收、管上下文；具体的活交给会话内临时开出来的 worker。按会话开，随时可以关">办事模式</button>
     <!--
       【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
       这两颗按钮连同它们的 JS / CSS 一起撤掉。开关只剩一处：左边「屋里的人」那列牌子，
@@ -5166,7 +5177,135 @@ async function togglePureMode() {
 loadPureState();
 if (pureBtn) pureBtn.onclick = () => togglePureMode();
 /** 切会话之后重拉一次 —— 每个会话的开/关是各自独立的 */
-window.__reloadPureState = loadPureState;
+window.__reloadPureState = loadPureState();
+
+/**
+ * 办事模式（2026-11-03）。
+ *
+ * 跟专业模式、管理员并列的第三档，但它管的是**谁来干**：
+ *   专业模式 = 怎么说（不发人设，换一份干活规范）
+ *   管理员权限 = 能碰哪儿（整台机器）
+ *   办事模式 = 谁来干（主智能体只派活/检查/验收，活交给会话内临时 worker）
+ *
+ * 开了之后服务端会把干活工具从主智能体手里收走（只剩派活/看名册/记事/翻存档），
+ * 所以她连「顺手改一下」的手段都没有 —— 这不只是提示词在劝。
+ *
+ * 状态一样按会话存在盘上（.state/task-mode.json），所以每次切会话都重问一次，
+ * 不在本地变量里记着（同一台机器另一个窗口可能已经关掉了）。
+ *
+ * 【功能默认关】服务端 /api/task-mode 会带 available:false，
+ * 那时这颗按钮整块拿掉 —— 跟专业模式一个规矩：功能关着＝这个功能不存在。
+ */
+const taskBtn = document.getElementById('taskBtn');
+
+/**
+ * 按服务端说的状态刷新按钮。
+ * available 为 false 表示【功能】里「办事模式」被关掉了 —— 按钮直接拿掉。
+ */
+function paintTaskState(j) {
+  const available = !j || j.available !== false;
+  if (taskBtn) taskBtn.hidden = !available;
+  if (!available) return;
+  if (taskBtn) {
+    const on = !!(j && j.on);
+    const workers = Array.isArray(j && j.workers) ? j.workers : [];
+    const running = workers.filter((w) => w && w.status === 'running').length;
+    taskBtn.classList.toggle('on', on);
+    taskBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    // 只三个字不动，开没开看颜色（跟管理员那颗一个规矩）
+    taskBtn.textContent = '办事模式';
+    if (!on) {
+      taskBtn.title = '办事模式：开了之后主智能体不自己动手，只拆任务、派活、检查、验收、管上下文；具体的活交给会话内临时开出来的 worker（只属于这个会话，干完或会话删了就没了）。按会话开，随时可以关';
+    } else {
+      const tail = workers.length
+        ? '；现在手上有 ' + workers.length + ' 个 worker' + (running ? '（' + running + ' 个还在跑）' : '')
+        : '；还没派过活';
+      taskBtn.title = '办事模式开着（只对这个会话）：她只派活、检查、验收、管上下文，不自己动手' + tail + '。点一下关掉。';
+    }
+  }
+}
+
+/** 当前会话 id（跟 pureSid 同一个来源） */
+function taskSid() {
+  try {
+    return typeof sessionId === 'string' ? sessionId : (sessionId && sessionId.id) || '';
+  } catch { return ''; }
+}
+
+/** 拉一次当前会话的办事模式状态 */
+function loadTaskState() {
+  const sid = taskSid();
+  if (!sid) { paintTaskState({ available: true, on: false, workers: [] }); return; }
+  fetch('/api/task-mode?sessionId=' + encodeURIComponent(sid))
+    .then((r) => r.json())
+    .then(paintTaskState)
+    .catch(() => {});
+}
+
+/**
+ * 点一下＝翻当前会话这一格。
+ * 开的时候弹一次确认：这一档会让「她自己动手」这件事彻底停掉，
+ * 主人得知道自己在切什么，别点完发现她不肯干活了以为坏了。
+ */
+async function toggleTaskMode() {
+  const sid = taskSid();
+  if (!sid) {
+    if (typeof addSysNote === 'function') addSysNote('这个会话还没建好，等它落了盘再点。');
+    return;
+  }
+  const wasOn = !!(taskBtn && taskBtn.classList.contains('on'));
+  if (!wasOn) {
+    const yes = await new Promise((resolve) => {
+      const d = document.createElement('dialog');
+      d.className = 'dlg';
+      d.innerHTML = '<div class="dlgHead">开办事模式？</div>' +
+        '<div class="dlgBody" style="line-height:1.8">' +
+        '<p>开了之后，<b>这个会话</b>里的小鱼不再自己干活了 —— 她的活只剩四样：拆任务、派活、检查、给结论。</p>' +
+        '<p>具体的活儿交给会话内临时开出来的 worker：</p>' +
+        '<ul style="margin:6px 0 0 18px;padding:0">' +
+        '<li>worker 只属于这个会话，干完了或者会话删掉，它就没了</li>' +
+        '<li>每个活干完都要给她写一份汇报，她来核、来找问题、决定要不要退回重做</li>' +
+        '<li>她的干活工具会被收走（读写文件、跑命令都不在她手上），这不是提醒，是真收</li>' +
+        '<li>上下文由她管：什么该删、什么该留、什么该压成一句，她替你决定</li>' +
+        '<li>按会话开，切到别的会话就不算，随时可以在顶栏关掉</li>' +
+        '</ul></div>' +
+        '<div class="dlgFoot"><button type="button" class="ghost" id="_tkNo">算了</button>' +
+        '<button type="button" class="primary" id="_tkYes">开吧</button></div>';
+      document.body.appendChild(d);
+      const done = (v) => { try { d.close(); } catch (e) {} d.remove(); resolve(v); };
+      d.querySelector('#_tkNo').onclick = () => done(false);
+      d.querySelector('#_tkYes').onclick = () => done(true);
+      d.oncancel = () => done(false);
+      d.showModal();
+    });
+    if (!yes) return;
+  }
+  paintTaskState({ available: true, on: !wasOn, workers: [] });
+  try {
+    const r = await fetch('/api/task-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, on: !wasOn }),
+    }).then((x) => x.json());
+    if (!r || r.error) {
+      paintTaskState({ available: true, on: wasOn, workers: [] });
+      if (typeof addSysNote === 'function') addSysNote('⚠ ' + (r?.error || '办事模式没切成功'));
+      return;
+    }
+    paintTaskState(r);
+    if (typeof addSysNote === 'function') {
+      if (r.on) addSysNote('办事模式已开（只对这个会话）：她只派活/检查/验收/管上下文，活交给临时 worker。');
+      else addSysNote('办事模式已关（这个会话）：她自己动手的权力回来了，worker 名册也清空了。');
+    }
+  } catch (err) {
+    paintTaskState({ available: true, on: wasOn, workers: [] });
+    if (typeof addSysNote === 'function') addSysNote('⚠ 办事模式没切成功：' + String(err && err.message ? err.message : err));
+  }
+}
+
+if (taskBtn) taskBtn.onclick = () => toggleTaskMode();
+/** 切会话之后重拉一次 —— 每个会话的开关各自独立 */
+window.__reloadTaskState = loadTaskState;
 
 
 /** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */
@@ -13594,6 +13733,8 @@ async function switchSession(id) {
   // 新会话重读 /api/agents/group，服务端把 fish/whale 两套状态并进去了）。
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
+  // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
+  try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   renderTurns(r.session.turns);
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
@@ -13692,6 +13833,8 @@ async function createSessionEx(opts = {}) {
   try { if (typeof refreshWhoRail === 'function') await refreshWhoRail(); } catch {}
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
+  // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
+  try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 新会话是默认档
   try { refreshWhoRail(); } catch { /* 忽略 */ }
   // 【2026-10-29 · 新建的会话必须把开场白画出来】

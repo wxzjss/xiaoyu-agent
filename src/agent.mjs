@@ -25,7 +25,7 @@ import { lastSelfNote, selfCompressHint } from './self-compress.mjs';
 // 工具过程擦成结论：命令和整份代码擦掉，只留调查结果。
 import { thinHistory } from './trim-tools.mjs';
 // 清单：压缩记忆里要带「做到第几步」，所以得把清单读进来。
-import { readPlanTxt, formatPlan } from './plan.mjs';
+import { planTextFor, formatPlan } from './plan.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
@@ -517,8 +517,18 @@ export async function runAgent({
     //      模型一个字都不问（它只在没人写的时候兜底）。
     /** 这一轮我亲手写的压缩记忆（上一轮开头那段），没有就是空。 */
     const selfNote = lastSelfNote();
-    const planTxt = (() => { try { return readPlanTxt(ctxNow()); } catch { return null; } })();
-    const planText = planTxt ? formatPlan(planTxt) : "";
+    /**
+     * 【清单读错了一个函数 —— 2026-10-30 修 · 干活鱼2 的 ⚠】
+     *
+     * 以前这里是 `const planTxt = readPlanTxt(ctxNow()); planTxt ? formatPlan(planTxt) : ''`。
+     * 可 readPlanTxt 是**界面**用的，回的是 `{text, path}`，里面没有 steps ——
+     * formatPlan 一取 `.steps.length` 就抛 `Cannot read properties of undefined (reading 'length')`。
+     *
+     * 这个位置偏偏在压缩前置段，历史一超线（420k token）每一圈都会走到它，
+     * 于是这个会话 16:05 之后一句都答不上来，界面上只剩一行 ⚠。
+     * 现在换成 planTextFor：它就是「给提示用的纯文本」，读不到也只是一句「现在没有清单」。
+     */
+    const planText = (() => { try { return planTextFor(ctxNow()); } catch { return ''; } })();
     thinHistory(messages, { keepRecent: 12, sessionId: ctxNow() });
 
 

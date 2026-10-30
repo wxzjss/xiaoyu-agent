@@ -73,6 +73,29 @@ export function loadPlan(key = 'default') {
   }
 }
 
+/**
+ * 把任何东西整理成一份「能安全读」的清单状态（2026-10-30 修 · 干活鱼2 的 ⚠）。
+ *
+ * 病因：`formatPlan()` 直接吃 `state.steps.length`，可它并不总是拿到 loadPlan() 的结果。
+ * agent.mjs 那一行是 `const planTxt = readPlanTxt(ctxNow())` —— readPlanTxt 返回的是
+ * `{ text, path }`，**根本没有 steps**。于是每一轮走到压缩前置段就当场
+ * `TypeError: Cannot read properties of undefined (reading 'length')`，
+ * 界面只显示一行 ⚠，主人发多少条「继续」都不会有回复（16:05 之后一次都没答上话）。
+ *
+ * 两道保险，哪个先拦都行：
+ *   · 传进来的要是 `{text}` 那种（缺 steps）→ 就把它当空清单，绝不炸；
+ *   · 传进来的 steps / notes 不是数组 → 一律按空数组。
+ * 真正有多少步还是以 loadPlan() 为准，这里只保证「读不到」不会变成「跑不动」。
+ */
+function safeState(state) {
+  const base = state && typeof state === 'object' ? state : {};
+  return {
+    goal: typeof base.goal === 'string' ? base.goal : '',
+    steps: Array.isArray(base.steps) ? base.steps.filter((s) => s && typeof s.text === 'string') : [],
+    notes: Array.isArray(base.notes) ? base.notes : [],
+  };
+}
+
 /** 清单归档目录：每次覆盖/清空前，旧清单原文先扔这儿，谁也别想再「找不回来」 */
 const HISTORY_DIR = join(config.dataDir, '.state', 'plan', '_history');
 
@@ -169,17 +192,38 @@ export function readPlanTxt(key = 'default') {
   }
 }
 
+/**
+ * 给「压缩提示」用的清单文本（2026-10-30 修）。
+ *
+ * 上面那个 readPlanTxt 是**界面**用的，回的是 {text, path} —— 谁要是拿它去喂
+ * formatPlan 就会撞上 `undefined.length`（干活鱼2 就是这么死的）。
+ * 这个函数回的是给人看的纯文本：有清单就格式化，没有就直说没有。
+ * @param {string} key 会话 id
+ * @returns {string} 永远是一段字符串，不会抛
+ */
+export function planTextFor(key = 'default') {
+  try {
+    const state = loadPlan(key);
+    const txt = formatPlan(state);
+    return txt;
+  } catch {
+    return '（现在没有清单）';
+  }
+}
+
 function progress(state) {
-  const total = state.steps.length;
-  const done = state.steps.filter((s) => s.status === 'done').length;
-  return { total, done, left: state.steps.filter((s) => s.status !== 'done' && s.status !== 'skipped') };
+  const { steps } = safeState(state);
+  const total = steps.length;
+  const done = steps.filter((s) => s.status === 'done').length;
+  return { total, done, left: steps.filter((s) => s.status !== 'done' && s.status !== 'skipped') };
 }
 
 export function formatPlan(state) {
-  if (!state.steps.length) return '（现在没有清单）';
-  const { done, total } = progress(state);
-  const lines = state.steps.map((s) => `${s.id}. ${MARK[s.status] || '·'} ${s.text}${s.note ? `（${s.note}）` : ''}`);
-  return `目标：${state.goal || '（没写）'}\n进度：${done}/${total}\n${lines.join('\n')}`;
+  const safe = safeState(state);
+  if (!safe.steps.length) return '（现在没有清单）';
+  const { done, total } = progress(safe);
+  const lines = safe.steps.map((s) => `${s.id}. ${MARK[s.status] || '·'} ${s.text}${s.note ? `（${s.note}）` : ''}`);
+  return `目标：${safe.goal || '（没写）'}\n进度：${done}/${total}\n${lines.join('\n')}`;
 }
 
 // ---- tool actions ---------------------------------------------------------

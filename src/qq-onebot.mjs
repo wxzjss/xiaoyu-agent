@@ -50,6 +50,11 @@ const rt = {
   /** echo -> { resolve, reject, timer } */
   pending: new Map(),
   seq: 0,
+  retryTimer: null,
+  retryIdx: 0,
+  stoppedByUser: false,
+  watchedAt: 0,
+  onEvent: null,
 };
 
 const MAX_LOGS = 60;
@@ -78,6 +83,7 @@ export function oneBotConf() {
     token: String(conf.token || ''),
     /** 主人 QQ 号（白名单那块也有一个；这个优先给 OneBot 认主人用） */
     ownerQq: String(conf.ownerQq || '').trim(),
+    autoStart: conf.autoStart === true,
   };
 }
 
@@ -97,6 +103,7 @@ export function setOneBotConf(patch = {}) {
     if (q && !/^\d{5,12}$/.test(q)) throw Object.assign(new Error('主人 QQ 号得是 5~12 位数字'), { status: 400 });
     next.ownerQq = q;
   }
+  if (patch.autoStart !== undefined) next.autoStart = patch.autoStart === true || patch.autoStart === 'true';
   // writeQq 是「整份写」：把它读出来的东西原样带回去，只换 onebot 那一格。
   const all = readQq();
   writeQq({ ...all, onebot: next });
@@ -106,7 +113,7 @@ export function setOneBotConf(patch = {}) {
 
 export function publicConf() {
   const c = oneBotConf();
-  return { enabled: c.enabled, mode: c.mode, url: c.url, hasToken: Boolean(c.token), ownerQq: c.ownerQq };
+  return { enabled: c.enabled, mode: c.mode, url: c.url, hasToken: Boolean(c.token), ownerQq: c.ownerQq, autoStart: c.autoStart === true };
 }
 
 export function oneBotStatus() {
@@ -169,8 +176,11 @@ function attach(ws, handlers) {
  * 拨号（forward）或监听（reverse）。
  * @param {(inbound:object)=>Promise<void>} onEvent 收到一条事件（已转成 qq-bridge 认的形状）
  */
-export async function startOneBot(onEvent) {
-  await stopOneBot();
+export async function startOneBot(onEvent, opts = {}) {
+  if (typeof onEvent === 'function') rt.onEvent = onEvent;
+  const handler = rt.onEvent;
+  clearRetry();
+  await stopOneBot({ reconnect: true });
   const conf = oneBotConf();
   if (!conf.enabled) {
     rt.phase = 'idle';
@@ -207,7 +217,7 @@ export async function startOneBot(onEvent) {
       const inbound = normalizeInbound(obj);
       if (!inbound) return;
       try {
-        await onEvent?.(inbound);
+        await handler?.(inbound);
       } catch (e) {
         log(`处理消息出错：${String(e?.message ?? e)}`);
       }
@@ -268,6 +278,9 @@ export async function startOneBot(onEvent) {
     open: async () => {
       rt.phase = 'online';
       rt.error = '';
+      rt.retryIdx = 0;
+      rt.stoppedByUser = false;
+      clearRetry();
       log(`连上了 ${conf.url}`);
       try {
         const me = await call('get_login_info');
@@ -280,8 +293,12 @@ export async function startOneBot(onEvent) {
     },
     message: onFrame,
     close: () => {
-      if (rt.phase === 'online') log('连接断了，30 秒后重连');
+      const was = rt.phase;
       rt.phase = rt.phase === 'stopped' ? 'stopped' : 'error';
+      if (was === 'online' || was === 'connecting') {
+        log('连接断了');
+        scheduleReconnect(handler);
+      }
     },
     error: (e) => {
       rt.error = `连不上 ${conf.url}：${String(e?.message ?? e)}。协议端（NapCat）开了吗？地址对吗？`;
@@ -315,6 +332,106 @@ export async function stopOneBot() {
 }
 
 /** 调一个 OneBot API；resolve 出 data。 */
+/** 重拨的间隔：3s / 6s / 12s / 24s，之后一直 30s。 */
+const RETRY_DELAYS = [3000, 6000, 12000, 24000, 30000];
+
+function clearRetry() {
+  if (rt.retryTimer) {
+    try { clearTimeout(rt.retryTimer); } catch {}
+    rt.retryTimer = null;
+  }
+}
+
+/** 3001 有没有人听 —— 没人听说明协议端（NapCat）自己没起来。 */
+async function portAlive(url, ms = 1500) {
+  let host = '127.0.0.1';
+  let port = 3001;
+  try { const u = new URL(url); host = u.hostname || host; port = Number(u.port) || port; } catch {}
+  try {
+    const net = await import('node:net');
+    return await new Promise((resolve) => {
+      const sock = net.connect({ host, port });
+      let done = false;
+      const fin = (v) => { if (done) return; done = true; try { sock.destroy(); } catch {} resolve(v); };
+      sock.setTimeout(ms);
+      sock.once('connect', () => fin(true));
+      sock.once('timeout', () => fin(false));
+      sock.once('error', () => fin(false));
+    });
+  } catch { return false; }
+}
+
+/**
+ * 看门狗：ws 拨不上时先看看协议端进程还在不在，不在就替主人拉起来。
+ * 节流 20 秒一次，免得重拨循环里反复 spawn。
+ */
+async function watchProtocol(conf) {
+  if (process.env.QQ_PROTOCOL_WATCH === '0') return;
+  if (Date.now() - rt.watchedAt < 20_000) return;
+  rt.watchedAt = Date.now();
+  let p = null;
+  try { p = await import('../scripts/qq-protocol.mjs'); } catch (e) {
+    log('协议端模块没加载上：' + String(e?.message ?? e));
+    return;
+  }
+  try {
+    if (!p.installed()) {
+      log('协议端还没装 —— 去 QQ 连接里点「准备协议端」');
+      return;
+    }
+    if (p.running()) {
+      log('协议端进程在，但 3001 还没通 —— 多半在等扫码登录');
+      return;
+    }
+    log('协议端进程不在了，正在替你拉起来…');
+    await p.start();
+  } catch (e) {
+    log('拉协议端失败：' + String(e?.message ?? e));
+  }
+}
+
+/**
+ * 协议端（NapCat）现在什么情况 —— 面板、看门狗、启动时的自愈共用这一份判断。
+ */
+export async function protocolState() {
+  try {
+    const p = await import('../scripts/qq-protocol.mjs');
+    return { installed: p.installed(), running: p.running(), dir: p.DIR };
+  } catch (e) {
+    return { installed: false, running: false, dir: '', error: String(e?.message ?? e) };
+  }
+}
+
+/** 排一次重拨。主人主动停过（stoppedByUser）就不再排。 */
+export function scheduleReconnect(onEvent) {
+  let conf = {};
+  try { conf = oneBotConf(); } catch {}
+  if (rt.stoppedByUser) return false;
+  if (rt.phase === 'stopped' || rt.phase === 'idle') return false;
+  if (conf && conf.enabled === false) return false;
+  if (!rt.onEvent && typeof onEvent === 'function') rt.onEvent = onEvent;
+  const handler = rt.onEvent;
+  clearRetry();
+  const delay = RETRY_DELAYS[Math.min(rt.retryIdx, RETRY_DELAYS.length - 1)];
+  rt.retryIdx = Math.min(rt.retryIdx + 1, RETRY_DELAYS.length - 1);
+  log('将在 ' + Math.round(delay / 1000) + ' 秒后重拨');
+  rt.retryTimer = setTimeout(() => {
+    rt.retryTimer = null;
+    (async () => {
+      try {
+        const alive = await portAlive(conf?.url || 'ws://127.0.0.1:3001');
+        if (!alive) await watchProtocol(conf);
+        if (rt.stoppedByUser) return;
+        await startOneBot(handler, { keepRetry: true });
+      } catch (e) {
+        log('重拨失败：' + String(e?.message ?? e));
+      }
+      if (rt.phase !== 'online' && !rt.stoppedByUser) scheduleReconnect(handler);
+    })();
+  }, delay);
+  try { rt.retryTimer.unref?.(); } catch {}
+  return true;
+}
 export async function call(action, params = {}, timeoutMs = 20_000) {
   const client = rt.client;
   if (!client) throw new Error('OneBot 没连上（先去 QQ 连接里把「自己注册的号」启动起来）');

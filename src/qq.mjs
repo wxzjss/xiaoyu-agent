@@ -88,7 +88,7 @@ function blank() {
     peers: {},
     claim: null,
     // 「自己注册的号」那条道（OneBot v11）。默认没开 —— 没挂协议端就没意义。
-    onebot: { enabled: false, mode: 'forward', url: 'ws://127.0.0.1:3001', token: '', ownerQq: '' },
+    onebot: { enabled: false, mode: 'forward', url: 'ws://127.0.0.1:3001', token: '', ownerQq: '', autoStart: false },
   };
 }
 
@@ -192,6 +192,7 @@ export function readQq() {
           url,
           token: str(o.token, 200),
           ownerQq: normQqNum(o.ownerQq),
+          autoStart: o.autoStart === true,
         };
       })(),
     };
@@ -240,6 +241,7 @@ export function writeQq(data) {
         url: /^wss?:\/\//i.test(rawUrl) ? rawUrl : (mode === 'reverse' ? 'ws://127.0.0.1:8082' : 'ws://127.0.0.1:3001'),
         token: str(o.token, 200),
         ownerQq: normQqNum(o.ownerQq),
+        autoStart: o.autoStart === true,
       };
     })(),
   };

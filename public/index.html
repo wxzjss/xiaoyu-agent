@@ -204,13 +204,6 @@
     .qqState.on { border-color: rgba(140, 220, 210, 0.6); color: #8cdcd2; background: rgba(140, 220, 210, 0.12); }
     .qqState.bad { border-color: rgba(232, 122, 122, 0.55); color: #e87a7a; }
     .qqHint { font-size: 11.5px; color: var(--dim); line-height: 1.7; }
-    .qqClaimLine { display: flex; align-items: center; gap: 10px; }
-    .qqClaimLabel { font-size: 12.5px; color: var(--dim); flex: 0 0 74px; }
-    #qqClaimCode {
-      font-family: ui-monospace, Consolas, monospace; font-size: 20px; letter-spacing: 4px;
-      color: #8cdcd2; background: var(--input-bg); border: 1px solid var(--border);
-      border-radius: 8px; padding: 4px 12px;
-    }
     .qqPeers { display: flex; flex-direction: column; gap: 6px; }
     .qqPeer {
       display: flex; align-items: center; gap: 8px; font-size: 12.5px;
@@ -2966,26 +2959,19 @@
         <div class="qqHint" id="qqHint">凭据去 QQ 开放平台（q.qq.com）建一个机器人拿，沙箱/正式都能用。</div>
       </div>
 
-      <!-- 第二格：认主。没有这一步，谁加了她都能使唤她 -->
+      <!-- 第二格：认主 + 白名单。
+           2026-11-03 主人：「认主口令那个删了，就认我填的号」。
+           现在只有一条判据 —— 号对上就是主人，对不上就是客人。 -->
       <div class="qqSect">
-        <div class="qqSectHead"><b>2</b><span>认出哪个人是你</span></div>
-        <div class="qqClaim" id="qqClaimBox">
-          <div class="qqClaimLine">
-            <span class="qqClaimLabel">认主口令</span>
-            <code id="qqClaimCode">------</code>
-            <button type="button" class="ghost" id="qqClaimNew">换一个</button>
-          </div>
-          <div class="qqHint" id="qqClaimHint">在 QQ 里私聊她，发一句「#我是 123456」（把 123456 换成上面这串）。
-            第一个说对的人就被认成你，之后这个口令作废。</div>
-        </div>
-        <div class="qqPeers" id="qqPeers"></div>
-        <div class="qqHint" id="qqPeersHint">别人加她，她会应，但用的是小鲸那套身份；只有你说话时才按主人答。</div>
-
-        <!-- 你本人的 QQ 号（手动填）+ 白名单。只认白名单里的号，别人一律不回。 -->
+        <div class="qqSectHead"><b>2</b><span>谁是你，谁能跟她说话</span></div>
+        <!-- 你本人的 QQ 号：填了它，这个号说的话她按主人答；别人说话的号一律按客人 -->
         <div class="qqField">
           <label for="qqOwnerQq">你的 QQ 号</label>
           <input id="qqOwnerQq" type="text" spellcheck="false" inputmode="numeric" placeholder="例如 10001，只填数字">
         </div>
+        <div class="qqHint" id="qqOwnerHint">只认这一个号：这个号私聊她、在群里 @ 她，她按主人来答；别的号说破了天也只是客人。</div>
+        <div class="qqPeers" id="qqPeers"></div>
+        <div class="qqHint" id="qqPeersHint">上面这里列的是找过她的人，只是个名单 —— 谁是主人只看你填的那个号。</div>
         <div class="qqField">
           <label for="qqAllowQq">能私聊她的号</label>
           <textarea id="qqAllowQq" rows="2" spellcheck="false" placeholder="一行一个，或者用逗号隔开：10001, 10002"></textarea>
@@ -9258,7 +9244,7 @@ async function importAgentCardFrom(file) {
 /** 最后一次拉到的状态，保存/刷新时都用它，省得每次都等一遍网络。 */
 let qqState = null;
 /** 认主口令：只在打开面板时问一次，不刷新就一直是这一串。 */
-let qqClaimToken = '';
+
 /** 会话清单（第三格那个下拉框要用）。 */
 let qqSessions = [];
 /** 最近一次拿到的白名单（认主人时顺手把它也带一份，省一次网络）。 */
@@ -9341,23 +9327,7 @@ function renderQqPanel(st) {
     }
   }
 
-  // 第二格：认主
-  const codeEl = qqEl('qqClaimCode');
-  if (codeEl) codeEl.textContent = qqClaimToken || '------';
-  const claimBox = qqEl('qqClaimBox');
-  if (claimBox) {
-    const alive = st.claim && st.claim.alive;
-    claimBox.style.opacity = alive ? '1' : '0.72';
-  }
-  const claimHint = qqEl('qqClaimHint');
-  if (claimHint) {
-    claimHint.textContent = st.ownerOpenid
-      ? '已经认出你了 —— 你在 QQ 上说话，她会按主人答；别人说话，她按小鲸那套答。'
-      : `在 QQ 里私聊她，发一句「#我是 ${qqClaimToken || '------'}」。`
-        + '第一个说对的人就被认成你，之后这个口令作废。';
-  }
-
-  // 第二格后半：白名单（手动填的 QQ 号 / 谁的私聊 / 哪个群）
+  // 第二格：主人号 + 白名单（2026-11-03 起不再有口令，只认手填的号）
   const gate = (st.gate && typeof st.gate === 'object') ? st.gate : {};
   const ownerEl = qqEl('qqOwnerQq');
   // 只看「没在打字」的框 —— 否则每两秒刷新一次，主人正在输的号会被抹掉
@@ -9581,9 +9551,7 @@ async function openQqDlg() {
   const dlg = qqEl('qqDlg');
   if (!dlg) return;
   if (typeof closeOtherDialogs === 'function') closeOtherDialogs('qqDlg');
-  // 每次打开换一个新口令：上一轮那串可能已经被人看见了
-  const c = await qqApi('/api/qq/claim', {});
-  qqClaimToken = (c && c.token) ? String(c.token) : '';
+  // 2026-11-03：认主口令那一套撤了，打开面板不再去要口令，只读配置和名单
   qqSessions = [];
   await loadOneBotConf();
   await refreshQqPanel();
@@ -9639,12 +9607,6 @@ async function saveQqBind() {
   wire('qqClose', () => {
     const d = document.getElementById('qqDlg');
     if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } }
-  });
-  wire('qqClaimNew', async () => {
-    const c = await qqApi('/api/qq/claim', {});
-    qqClaimToken = (c && c.token) ? String(c.token) : '';
-    await refreshQqPanel();
-    qqSetHint('换好了，让那个人发新的这串');
   });
   wire('qqGateSave', async () => {
     if (!(await saveQqGate())) return;

@@ -25,7 +25,7 @@
 
 import { join } from 'node:path';
 import {
-  qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, tryClaim, chunkText, isOwnerOpenid, readQq, setQqBot,
+  qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, isOwnerQq, chunkText, isOwnerOpenid, readQq, setQqBot,
   qqGate, qqAllowed, normQqNum,
 } from './qq.mjs';
 import { saveInboundAttachments, describeInbound, transcodeVoiceToMp3 } from './qq-media.mjs';
@@ -236,7 +236,7 @@ async function handleInbound({ msg, bot, deps }) {
       return qqAllowed({
         qqId: msg?.senderQq ?? msg?.userOpenid ?? msg?.senderId,
         groupId: isGroup ? (msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId) : '',
-        isOwner: isOwnerOpenid(openid),
+        isOwner: isOwnerQq(msg?.senderQq),
       });
     } catch {
       return { ok: false, why: 'gate-error' };
@@ -260,15 +260,6 @@ async function handleInbound({ msg, bot, deps }) {
 
   const peer = qqPeer(openid);
   const name = String(msg?.senderName ?? '').trim();
-
-  // ③ 认领口令
-  if (tryClaim(openid, text, name)) {
-    rt.stats.in += 1;
-    log(`「${name || openid.slice(0, 8)}」认成了主人`);
-    await send(bot, msg, '记下了。以后你说的话我按主人来对待。');
-    deps?.onLog?.('认领成功');
-    return;
-  }
 
   // 空话（纯图片/纯表情没文字）不再一棒打死 —— 2026-11-02 起图/语音/文件能收了，
   // 下面统一走「附件先下到本地，再拼一句给她」这条路。
@@ -320,8 +311,9 @@ async function handleInbound({ msg, bot, deps }) {
   const { sessionId } = ensured;
   noteQqPeer(openid, { sessionId, name });
 
-  // 主人身份：按主人来（安全词、权限都算数）
-  if (isOwnerOpenid(openid)) {
+  // 主人身份：按主人来（安全词、权限都算数）。
+  // 2026-11-03 起只认号 —— 面板上「你自己的 QQ 号」填的是哪个号，哪个号的话才按主人处理。
+  if (isOwnerQq(msg?.senderQq)) {
     try { deps?.setSpeakerOwner?.(sessionId);
     } catch {}
   }
@@ -350,7 +342,7 @@ async function handleInbound({ msg, bot, deps }) {
           ? { scope: 'group', targetId: String(msg?.groupOpenid ?? msg?.groupQq ?? ''), msgId: msg?.messageId }
           : { scope: 'c2c', targetId: String(msg?.senderId ?? openid), msgId: msg?.messageId }),
       media: keptMedia,
-      fromQq: { openid, name, isOwner: isOwnerOpenid(openid) },
+      fromQq: { openid, name, isOwner: isOwnerQq(msg?.senderQq) },
       onEvent: async (ev) => {
         if (!ev) return;
         if (ev.type === 'chunk' && typeof ev.text === 'string') {

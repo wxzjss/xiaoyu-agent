@@ -21,11 +21,27 @@
  *
  * 名字：对外一律叫「专业模式」。文件名和函数名还留着 pure，是怕一次性改名
  * 把十几处 import 全炸掉 —— 那是纯风险没有收益；界面上看不到 pure 这个词。
+ *
+ * 【2026-11-03 主人：「把办事模式并入专业模式里面」】
+ *
+ * 原先办事模式是顶栏第三个独立按钮（fe5c7dc / bac0633 做的），主人否掉了那个形态：
+ * 这一档本来就属于「怎么干活」，另开一颗按钮等于让主人多记一个开关。
+ * 现在它不再是独立档位，而是**专业模式里的一个选项**：
+ *   专业模式开着 → 里面挑「谁说了算」：
+ *     · 'self'（默认） 她自己动手 —— 老样子
+ *     · 'workers'       她只派活/检查/验收/管上下文，活交给会话内临时 worker
+ *   专业模式关着 → 这个选项不存在，工具面也不动（人设模式下本来就不该多一档）
+ *
+ * 存哪：还是 .state/pure.json，同一条记录里多一个键：
+ *   { schemaVersion: 2, on: { '<sid>': true }, worker: { '<sid>': true } }
+ * 这样「关掉专业模式」时那个勾也跟着失效 —— 不用另一个文件去对齐两个开关的生命周期，
+ * 少一个能对不齐的东西。真正的花名册仍在 task-mode.mjs（.state/task-workers/）。
  */
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 import { getEnabledMap } from './features.mjs';
+import { taskPromptBlock } from './task-mode.mjs';
 
 /** 界面上显示的名字。改文案只改这里。 */
 export const MODE_NAME = '专业模式';
@@ -125,15 +141,88 @@ export function setPureMode(sessionId, on) {
   const sid = String(sessionId || '').trim();
   if (!sid) return { on: false };
   const st = readRaw();
+  const wk = readDoer();
   const next = Boolean(on);
   if (next) st.on[sid] = true;
-  else delete st.on[sid];
+  else {
+    delete st.on[sid];
+    /**
+     * 关专业模式时把「派活」那个勾一起清掉。
+     * 为什么要在这一刻清：专业模式关着的时候 doerOf 本来就会退回 'self'，
+     * 那个勾是休眠的；可主人下次再开专业模式，它会**悄悄复活** ——
+     * 那时候工具已经被收走了，主人只会觉得「怎么突然不肯干活了」。
+     * 一次性的开关就该一次性，不留休眠的雷。
+     */
+    delete wk[sid];
+  }
   const f = file();
   // 先写临时文件再改名：中途断电也不会留下半个坏文件
   const tmp = f + '.tmp';
-  writeFileSync(tmp, JSON.stringify({ schemaVersion: 2, on: st.on, at: Date.now() }, null, 2), 'utf8');
+  writeFileSync(tmp, JSON.stringify({ schemaVersion: 2, on: st.on, worker: wk, at: Date.now() }, null, 2), 'utf8');
   renameSync(tmp, f);
   return { on: next };
+}
+
+/**
+ * 专业模式里「谁动手」这一档：'self' = 她自己动手（默认），'workers' = 只派活。
+ *
+ * 只有专业模式开着的时候这一档才有意义 —— 关着就一律 'self'，
+ * 免得出现「人设模式却把干活的手收走了」这种谁也想不到的状态。
+ */
+export const DOER_SELF = 'self';
+export const DOER_WORKERS = 'workers';
+
+/** 读盘上那份「谁动手」的表。坏了/读不到一律当空（＝全都自己动手）。 */
+function readDoer() {
+  try {
+    const f = file();
+    if (!existsSync(f)) return {};
+    const j = JSON.parse(readFileSync(f, 'utf8'));
+    if (!j || j.schemaVersion !== 2 || !j.worker || typeof j.worker !== 'object') return {};
+    const out = {};
+    for (const [k, v] of Object.entries(j.worker)) if (v === true) out[String(k)] = true;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 这个会话现在是谁在动手 —— 'self' | 'workers'。
+ *
+ * 三个条件全满足才是 'workers'：功能页里专业模式开着、这个会话专业模式开着、
+ * 这个会话勾了「派活」。少一个都退回 'self'，绝不让残留的一个勾
+ * 在主人关掉专业模式之后还偷偷把工具收走。
+ */
+export function doerOf(sessionId) {
+  const sid = String(sessionId || '').trim();
+  if (!sid) return DOER_SELF;
+  if (!currentMode(sid)) return DOER_SELF;
+  return readDoer()[sid] === true ? DOER_WORKERS : DOER_SELF;
+}
+
+/**
+ * 改「谁动手」。**必须是专业模式开着的会话**才让改 ——
+ * 专业模式关着还给它存一个 workers，等于埋一个看不见的雷。
+ */
+export function setDoer(sessionId, doer) {
+  const sid = String(sessionId || '').trim();
+  if (!sid) return { ok: false, doer: DOER_SELF };
+  if (!currentMode(sid)) return { ok: false, doer: DOER_SELF };
+  const st = readRaw();
+  const wk = readDoer();
+  const want = String(doer || '').trim() === DOER_WORKERS;
+  if (want) wk[sid] = true;
+  else delete wk[sid];
+  const f = file();
+  const tmp = f + '.tmp';
+  writeFileSync(
+    tmp,
+    JSON.stringify({ schemaVersion: 2, on: st.on, worker: wk, at: Date.now() }, null, 2),
+    'utf8',
+  );
+  renameSync(tmp, f);
+  return { ok: true, doer: want ? DOER_WORKERS : DOER_SELF };
 }
 
 /**
@@ -201,17 +290,49 @@ export function pureSystemPrompt(sessionId) {
   if (!mode) return '';
   const name = MODE_NAME;
   const tools = toolNames();
+  /**
+   * 【2026-11-03 办事模式并进来之后】这一档只改一件事：谁动手。
+   *
+   * 'self'    老样子：工具清单照实念一遍，她自己动手。
+   * 'workers' 工具清单换成「派活」那几样，并且追加一段【办事模式】规矩。
+   *
+   * 【为什么要换掉工具清单那一段，而不是留着】
+   * 老文案是「你可以直接用这些工具动手：A、B、C……要读写文件、跑命令就直接调」
+   * —— 收走工具之后这句话就变成了谎话：单子上根本没有 write_file。
+   * 一份说谎的系统提示比没有提示更糟：她会以为自己有手，然后一遍遍调一个不存在的工具。
+   * 所以这里必须整段换掉，让「我现在有几只手」跟她实际拿到的一致。
+   */
+  const who = doerOf(sessionId);
   const lines = [
     '你跑在主人电脑上的「小鱼Agent」程序里，不是网页版聊天窗口。',
-    `现在开着「${name}」：这一轮不套人设、不用特定语气，只说事实、只干活。`,
+    who === DOER_WORKERS
+      ? `现在开着「${name}」，里面选的是「派活」：这一轮不套人设、不用特定语气，只说事实、只派活。`
+      : `现在开着「${name}」：这一轮不套人设、不用特定语气，只说事实、只干活。`,
   ];
-  if (tools.length) {
+  if (who === DOER_WORKERS) {
+    /**
+     * 「派活」这一档：工具单子上只剩派活/名册/清单/记事/翻存档这几样。
+     * 不念具体名字 —— 念了反而像在提示「你还有这么多手」，
+     * 她要的是「这一档你别伸手」，不是「你有五只手」。
+     */
+    lines.push(
+      '这一档里你自己不动手：读写文件、跑命令、上网抓东西都不在你手上，这些活交给子智能体去干。下面的规矩说清楚怎么派、怎么核。',
+    );
+  } else if (tools.length) {
     lines.push(
       `你可以直接用这些工具动手：${tools.join('、')}。要读写文件、跑命令、上网抓东西就直接调，别只在嘴上说。`,
     );
   }
   lines.push('主人问到这个程序的功能、你自己能干什么，就照实说，不要反问「你说的是哪个软件」。');
-  return lines.join('\n') + '\n\n' + STYLE_RESET_RULE + '\n\n' + PRO_MODE_RULE;
+  const head = lines.join('\n') + '\n\n' + STYLE_RESET_RULE + '\n\n' + PRO_MODE_RULE;
+  if (who !== DOER_WORKERS) return head;
+  let task = '';
+  try {
+    task = String(taskPromptBlock(sessionId, '') || '');
+  } catch {
+    task = '';
+  }
+  return task ? head + '\n\n' + task : head;
 }
 
 /** 当前开着哪些工具名，取不到就返回空数组，绝不因为这里出错把对话搞挂。 */

@@ -983,6 +983,11 @@ export async function compressHistory({
       dryRun: true,
       needSelfCompress: foldCount > 0 && t >= Math.max(1, trigger),
       foldCount,
+      // 存档编号先按「真压时会发生的样子」报出去：会话-段号-时间戳，
+      // 这样我写记忆时能直接引用，folded_list 里翻得到。
+      segId: 'seg-' + (sessionId || 'x') + '-' + Date.now(),
+      window: contextWindowOf(model) || 0,
+      ratio: contextWindowOf(model) ? t / contextWindowOf(model) : 0,
       kept: messages.length - cutDry,
       start: startDry,
       cut: cutDry,

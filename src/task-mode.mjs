@@ -10,27 +10,36 @@
  *     如何简洁摘要重要的内容等」
  *   「主智能体指左侧排序最靠前的已启用且未被禁用的智能体」
  *
- * ── 这一档跟「专业模式」「管理员权限」的关系 ─────────────────────────
+ * ── 【2026-11-03 主人：「把办事模式并入专业模式里面」】───────────────
  *
- * 三档各管一件事，可以同时开：
- *   · 专业模式   = 换一套说话方式和作业规范（管「怎么说」）
- *   · 管理员权限 = 放开文件系统的门（管「能碰哪儿」）
- *   · 办事模式   = 换一种干活的组织方式（管「谁来干」）
+ * 原先这一档是顶栏第三颗独立按钮（fe5c7dc 做后端、bac0633 做界面）。
+ * 主人否掉了那个形态：它本来就是「怎么干活」的一部分，另开一颗按钮等于让人
+ * 多记一个开关、还多一处可能对不齐的地方。现在它不再是独立档位，而是
+ * **专业模式里的一个选项**（'self' 自己动手 / 'workers' 派活），
+ * 那个选项的存与读、以及「专业模式关着就一定是 self」这条规矩，
+ * 全在 pure.mjs 里（doerOf / setDoer）。
  *
- * 所以这一档**不改人设、不碰权限**，它只做两件事：
- *   ① 给主智能体换一份「你只派活，别自己动手」的规矩；
- *   ② 把干活用的工具从它手上拿走，换成派活用的那一个。
+ * 于是本文件**不再有开关**：开关表 .state/task-mode.json 退成历史遗留，
+ * 老文件留着不动、也不再读它办事 —— 迁移就是「主人再在专业模式里勾一次」，
+ * 没勾就等于没开，这比自动继承一个已经看不见的开关安全。
  *
- * ── 为什么按会话存 ────────────────────────────────────────────────
+ * ── 这个文件现在还剩什么 ──────────────────────────────────────────
  *
- * 跟小鲸在场、专业模式、管理员权限一个待遇：主人在这个会话里开了才发生，
- * 切到别的会话还是老样子。读盘失败一律当「没开」（fail-closed）——
- * 这是要剥夺她自己动手的能力，宁可开不了，也不能莫名把活全推给子智能体。
+ *   ① 花名册：每个会话开出来的 worker（.state/task-workers/<sid>.json）；
+ *   ② 派活规矩的正文 taskPromptBlock()（由 pure.mjs 在派活那一档拼进提示词）；
+ *   ③ 白名单 KEEP_TOOLS（由 agent.mjs 的 toolsForTurn 用来收工具）。
+ *
+ * 一句话：从「一个模式」降级成「一套给派活用的零件」。
  */
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { config } from './config.mjs';
 import { isToolEnabled } from './features.mjs';
+// doerOf 在 pure.mjs。「谁动手」只认它一个，这里不再自己看开关表。
+// 注意方向：pure.mjs 只 import 了 task-mode 的 taskPromptBlock，这里 import 回去
+// 会不会成环？——不会：ESM 静态成环但两边都只在**函数体里**用对方的导出，
+// 求值阶段不碰，所以安全（跟 tools.mjs ↔ persona.mjs 那个坑不一样，那边是模块级常量）。
+import { doerOf } from './pure.mjs';
 
 /** 界面上显示的名字。改文案只改这里。 */
 export const MODE_NAME = '办事模式';
@@ -100,13 +109,28 @@ function log(line) {
   }
 }
 
-/** 这个会话现在是不是办事模式。读盘失败 = 没开（见文件头）。 */
+/**
+ * 【历史遗留 · 已并入专业模式，别再拿它做判断】
+ *
+ * 2026-11-03 之前这是「办事模式」独立的开关（顶栏第三颗按钮）。
+ * 现在「谁动手」由 pure.mjs 的 doerOf() 说了算，判定链是
+ * 功能页开关 → 这个会话的专业模式 → 这一档勾没勾。
+ *
+ * 这个函数只留给老测试和老数据用，也只在读得到老文件时才可能返回 true。
+ * **新代码一律用 doerOf(sessionId) === DOER_WORKERS** —— 两个开关各自判断，
+ * 迟早会判出两种结果，那正是这次要消掉的东西。
+ */
 export function taskOn(sessionId) {
   const sid = String(sessionId || 'default');
   return readTable()[sid] === true;
 }
 
-/** 开 / 关。返回 { ok, sessionId, on }。 */
+/**
+ * 【历史遗留】开 / 关老开关表。新代码用 pure.mjs 的 setDoer(sessionId, 'workers'|'self')。
+ *
+ * 留着是因为：①老测试还在调它验花名册；②万一主人手上有老版本界面还在打这个接口。
+ * 它现在唯一的真实作用是「关掉时清花名册」这一件事还是对的。
+ */
 export function setTaskOn(sessionId, on) {
   const sid = String(sessionId || 'default');
   const map = readTable();
@@ -254,18 +278,24 @@ export function wipeWorkers(sessionId) {
 }
 
 /**
- * 给系统提示用的一段话。没开的时候返回 ''，一个字不花、缓存前缀不动。
+ * 给系统提示用的一段话。
+ *
+ * 【改过一回】原来开头有一句 `if (!taskOn(sessionId)) return '';` ——
+ * 那是「独立模式」时代的写法。现在该不该发由调用方决定
+ * （pure.mjs 里只有 doerOf 是 workers 时才拼它），这里再判一次等于
+ * 同一个意思有两个地方说了算。所以现在只要调用方拼了它就照发。
+ *
+ * 不拼的时候一个字不花、缓存前缀不动 —— 那份判断在调用方那里。
  *
  * 【为什么要把「不许自己动手」写成正面的行为指令】
  * 光说「你不负责工作」模型会理解成「我可以先查一查再派活」—— 那还是它在干。
  * 所以每一条都写成「该做什么」：先拆任务、派出去、等汇报、检查、给结论。
  */
 export function taskPromptBlock(sessionId, mainAgentName = '') {
-  if (!taskOn(sessionId)) return '';
   const who = String(mainAgentName || '').trim();
   const head = who
-    ? `【办事模式 · 这一轮是开着的】这个会话现在的「主智能体」是 ${who} —— 也就是你。`
-    : '【办事模式 · 这一轮是开着的】你是这个会话的主智能体。';
+    ? `【派活 · 这一轮是这个模式】这个会话现在的「主智能体」是 ${who} —— 也就是你。`
+    : '【派活 · 这一轮是这个模式】你是这个会话的主智能体。';
   return [
     head,
     '从这一轮起，你的活不是自己动手，是**组织别人动手**。',
@@ -332,10 +362,23 @@ export function taskInfo(sessionId) {
   } catch {
     available = true;
   }
+  /**
+   * on 现在报的是「这个会话此刻是不是在派活」—— 跟真正干活的判断同源
+   * （pure.mjs 的 doerOf），而不是老开关表。界面和自检拿到的必须是
+   * 「实际会怎么干」，不是一个已经没人看的勾。
+   */
+  let on = false;
+  if (available) {
+    try {
+      on = doerOf(sid) === 'workers';
+    } catch {
+      on = false;
+    }
+  }
   return {
     sessionId: sid,
     available,
-    on: available ? taskOn(sid) : false,
+    on,
     keepTools: [...KEEP_TOOLS],
     workers: list,
     running: list.filter((w) => w.status === 'running').length,

@@ -77,10 +77,41 @@ export function effectiveIndexes(messages, rewinds) {
   const atSet = new Set();
   for (const r of rewinds) if (Number.isFinite(r.at)) atSet.add(Number(r.at));
 
+  /**
+   * 【砍 assistant 就得连它的 tool 结果一起砍 —— 2026-10-30 修 · 干活鱼2 的 HTTP 400】
+   *
+   * 下标是精确剔的，可「assistant 带 tool_calls」和「它的 tool 结果」是**一对**：
+   * 只剔掉老大、把小跟班留下，发出去就是孤儿 tool，上游当场拒：
+   *   Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+   *
+   * 干活鱼2 里就有这么一条：回退点 at=2 精确命中了
+   *   messages[2] = assistant(tool_calls:[call_…bC1378])
+   * 而 messages[3] = tool(tool_call_id: call_…bC1378) 不在 hidden 里，
+   * 于是每次发请求都带着一个孤儿 tool —— 从 10/27 一直 400 到 10/30。
+   *
+   * 规矩：被剔掉的 assistant 名下的所有 tool_call id，它后面的 tool 结果一律跟着剔。
+   * 反过来（tool 结果被剔、assistant 留着）不用管：那种形状上游是接受的，
+   * 而且 agent.mjs 的 repairHistory / dedupeToolCalls 每轮会再收拾一遍。
+   */
+  const dropped = new Set([...hidden, ...atSet]);
+  const orphanIds = new Set();
+  for (const i of dropped) {
+    const m = list[i];
+    if (m && m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) if (tc && tc.id) orphanIds.add(tc.id);
+    }
+  }
+  if (orphanIds.size) {
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
+      if (!m || m.role !== 'tool') continue;
+      if (orphanIds.has(m.tool_call_id)) dropped.add(i);
+    }
+  }
+
   const keep = [];
   for (let i = head.length; i < list.length; i++) {
-    if (hidden.has(i)) continue;
-    if (atSet.has(i)) continue;
+    if (dropped.has(i)) continue;
     keep.push(i);
   }
   return { head, keep, hidden };

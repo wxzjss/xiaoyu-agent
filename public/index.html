@@ -1510,6 +1510,7 @@
       border-radius: 999px; padding: 0 7px; flex: none;
     }
     .mdlName .badge.env { color: var(--dim); border-color: var(--border); }
+.mdlName .badge.img { color: #c8a34a; border-color: #6b5527; }
     /* 地址 / 模型名：输入框 + 预设下拉并排。输入框仍然能随便写，下拉只是省事 */
     .pickRow { display: flex; gap: 8px; align-items: stretch; }
     .pickRow input { flex: 1 1 auto; min-width: 0; }
@@ -1556,6 +1557,16 @@
     /* 字段之间、标签和输入框之间都松一点 */
     .mdlForm .field { margin-bottom: 16px; }
     .mdlForm .field > label { display: block; margin-bottom: 6px; line-height: 1.5; }
+/* 「说话 / 出图」那两格：并排、能点一大片，别做成小圆点 */
+.mdlKindRow { display: flex; gap: 10px; flex-wrap: wrap; }
+.mdlKind {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 13px; border: 1px solid var(--border); border-radius: 9px;
+  font-size: 13px; cursor: pointer; user-select: none; margin: 0;
+}
+.mdlKind:hover { border-color: var(--accent); }
+.mdlKind input { margin: 0; accent-color: var(--accent); }
+.mdlKind:has(input:checked) { border-color: var(--accent); background: rgba(240,166,160,.13); }
     .mdlForm .hint { display: block; margin-top: 5px; line-height: 1.6; }
     .mdlForm input[type=password] {
       width: 100%; background: #0f1319; color: var(--text); border: 1px solid var(--border);
@@ -2411,6 +2422,18 @@
         </fieldset>
 
         <fieldset>
+          <legend>记账用什么钱</legend>
+          <div class="field">
+            <label>价目表里存的是「元 / 百万 token」。想按美元对账（OpenAI 账单、中转站后台都是美元）就选 $。</label>
+            <div class="mdlKindRow">
+              <label class="mdlKind"><input type="radio" name="moneyCur" value="cny" id="curCny" checked /><span>￥ 元</span></label>
+              <label class="mdlKind"><input type="radio" name="moneyCur" value="usd" id="curUsd" /><span>$ 美元</span></label>
+            </div>
+            <span class="hint" id="curHint">只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
           <legend>上下文自动压缩</legend>
           <div class="field">
             <label>历史涨到多少 token 就把旧对话折成摘要。<br>填 0 自动（小鱼自己看着办：宽裕时不压、占窗口一大半就压、拿不准时问小鲸），填多少压多少，填 off 关闭该功能</label>
@@ -2599,6 +2622,19 @@
           <div class="field">
             <label>给它起个名（随便，方便你认）</label>
             <input type="text" id="mdlName" spellcheck="false" placeholder="不填就跟着模型名走" />
+          </div>
+          <div class="field">
+            <label>这条拿来干嘛</label>
+            <div class="mdlKindRow">
+              <label class="mdlKind"><input type="radio" name="mdlKind" value="chat" id="mdlKindChat" checked /><span>说话 / 干活</span></label>
+              <label class="mdlKind"><input type="radio" name="mdlKind" value="image" id="mdlKindImage" /><span>出图</span></label>
+            </div>
+            <span class="hint" id="mdlKindHint">出图那条走的是 /images/generations，跟聊天模型不是一个端点，别混着填。</span>
+          </div>
+          <div class="field">
+            <label>倍率（走中转站才要填）</label>
+            <input type="number" id="mdlMarkup" step="0.01" min="0.01" max="1000" placeholder="1" spellcheck="false" />
+            <span class="hint" id="mdlMarkupHint">1 = 照官方价算；打八折填 0.8，加价五成填 1.5。官方的直连（DeepSeek 官网、百炼…）不用动它。</span>
           </div>
           <div class="field">
             <label>模型名（API 里的 model）</label>
@@ -7819,6 +7855,9 @@ const elWords = document.getElementById('safeWords');
 const elNote = document.getElementById('safeWordNote');
 const saveHint = document.getElementById('saveHint');
 const bottomLinesHint = document.getElementById('bottomLinesHint');
+const curCny = document.getElementById('curCny');
+const curUsd = document.getElementById('curUsd');
+const curHint = document.getElementById('curHint');
 const elCtxLimit = document.getElementById('contextLimit');
 const contextLimitHint = document.getElementById('contextLimitHint');
 const safeWordsHint = document.getElementById('safeWordsHint');
@@ -10088,6 +10127,15 @@ document.getElementById('personaRename').onclick = async () => {
 
 
 function fillSettings(s) {
+  // 币种：跟着服务端存的走，缺省是元
+  moneyCurrency = s.currency === 'usd' ? 'usd' : 'cny';
+  if (curCny) curCny.checked = moneyCurrency === 'cny';
+  if (curUsd) curUsd.checked = moneyCurrency === 'usd';
+  if (curHint) {
+    curHint.textContent = moneyCurrency === 'usd'
+      ? '现在按美元显示。汇率是 1 元 ≈ ' + (Math.round(moneyFx * 10000) / 10000) + ' 美元，只换显示，价目表不动。'
+      : '只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。';
+  }
   elBottom.value = s.bottomLines.join('\n');
   elWords.value = s.safeWords.join(' / ');
   elNote.value = s.safeWordNote;
@@ -10101,6 +10149,22 @@ function fillSettings(s) {
   paintCtxLimitNote();
 }
 
+/* 币种单选：立刻把预览换过来（钱数要等保存后才真存，这里只是让主人先看见效果） */
+for (const [el, want] of [[curCny, 'cny'], [curUsd, 'usd']]) {
+  if (!el) continue;
+  el.onchange = () => {
+    if (!el.checked) return;
+    moneyCurrency = want;
+    if (curHint) {
+      curHint.textContent = want === 'usd'
+        ? '现在按美元显示。汇率是 1 元 ≈ ' + (Math.round(moneyFx * 10000) / 10000) + ' 美元，只换显示，价目表不动。'
+        : '只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。';
+    }
+    try { paintUsageBox(); } catch {}
+    try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {}
+  };
+}
+
 document.getElementById('openSettings').onclick = async () => {
   saveHint.textContent = '';
   bottomLinesHint.textContent = '';
@@ -10108,6 +10172,8 @@ document.getElementById('openSettings').onclick = async () => {
   const r = await fetch('/api/settings').then(r => r.json()).catch(() => null);
   if (!r) { saveHint.textContent = '读取失败'; return; }
   defaults = r.defaults;
+  // 汇率跟着设置一起下：切了币种也要立刻生效，不能等下次开机才换过来
+  if (r.fx && Number(r.fx.usdPerCny) > 0) moneyFx = Number(r.fx.usdPerCny);
   fillSettings(r.settings);
   const p = await fetch(PERSONA_API('/api/personas')).then(r => r.json()).catch(() => null);
   if (p) fillPersona(p); else personaHint.textContent = '人设读取失败';
@@ -10251,6 +10317,8 @@ document.getElementById('saveSettings').onclick = async () => {
     // 原文交给后端解析：空 -> 默认 128000，0 / auto -> 自动档，off -> 关闭，数字 -> 那个数。
     // 这里不自己 Number()，否则 "off" 会变成 NaN 被后端当成「没填」。
     contextLimit: elCtxLimit.value.trim(),
+    // 记账用什么钱：'cny' / 'usd'。只影响显示，价目表不动。
+    currency: (curUsd && curUsd.checked) ? 'usd' : 'cny',
   };
   const r = await fetch('/api/settings', {
     method: 'POST',
@@ -10259,6 +10327,9 @@ document.getElementById('saveSettings').onclick = async () => {
   }).then(r => r.json()).catch(() => null);
   if (!r) { saveHint.textContent = '保存失败'; return; }
   fillSettings(r.settings);
+  // 币种可能刚改过：把这一屏的钱数当场按新币种重画，别等下一轮对话
+  try { paintUsageBox(); } catch {}
+  try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {}
   saveHint.textContent = '已保存，下一句生效';
   setTimeout(() => dlg.close(), 450);
 };
@@ -11775,6 +11846,28 @@ function fmtTok(n) {
 }
 
 /**
+ * 现在记账用哪种钱。
+ *
+ * 【为什么前端要自己记一份】
+ * 价目表里全是「元 / 百万 token」（照国内官网抄的），可主人可能拿美元对账。
+ * 每次都自己心算汇率太累，所以这里存一个「显示用哪种」，读的是设置里那一格。
+ */
+let moneyCurrency = 'cny';
+let moneyFx = 0.14;
+
+/** 把「元」换成主人现在想看的币种。界面里所有钱数都必须过这一步。 */
+function inMoney(cny) {
+  const v = Number(cny);
+  if (!Number.isFinite(v)) return 0;
+  return moneyCurrency === 'usd' ? v * (Number(moneyFx) > 0 ? Number(moneyFx) : 0.14) : v;
+}
+
+/** 钱的符号：跟着币种走，别让美元的数字后面挂个「元」。 */
+function moneySign() {
+  return moneyCurrency === 'usd' ? '$' : '￥';
+}
+
+/**
  * 钱怎么写：太小的时候多留几位，不然全是「≈0.00」看不出差别。
  * @param {number} c 元
  */
@@ -11908,12 +12001,48 @@ function rateOf(model) {
 }
 
 /**
+ * 这条模型要走几倍价。
+ *
+ * 【为什么前端也得知道】
+ * 中转站（丸子、凌风…）的模型名跟官方一模一样，价目表按名字查只能查到官方价，
+ * 而实际扣的是「官方价 × 它的倍率」。后端把倍率存进每条模型里，这里按
+ * 「模型名 → 那条配置的 markup」对一下。
+ *
+ * 对不上（同一模型名有好几条、或者压根没配）就当 1，照官方价算。
+ * 宁可少算，也不要凭猜乘一个大数把主人吓一跳。
+ */
+function markupOf(modelName) {
+  const name = String(modelName || '').trim();
+  if (!name) return 1;
+  const pick = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  };
+  try {
+    const list = (mdlState && Array.isArray(mdlState.models)) ? mdlState.models : [];
+    // 1) 真名对上，且这条是「说话」用的
+    const hit = list.filter((m) => m && String(m.model || '').trim() === name && m.kind !== 'image');
+    // 2) 好几条同名的（丸子一条、凌风一条），优先「正在用」的那条，否则取倍率最大的
+    //    —— 宁可多算也别少算，主人看到钱比预期多才会去查，看到少就当没事。
+    if (hit.length === 1) return pick(hit[0].markup);
+    if (hit.length > 1) {
+      const cur = hit.find((m) => m.id === mdlState.activeId);
+      if (cur) return pick(cur.markup);
+      return hit.reduce((mx, m) => Math.max(mx, pick(m.markup)), 1);
+    }
+  } catch {}
+  return 1;
+}
+
+/**
  * 估这一轮花了多少钱。
  * @returns {{cost:number, off:boolean}|null} 认不出模型就是 null
  */
 function costOf(model, u, now) {
   const rate = rateOf(model);
   if (!rate || !u) return null;
+  // 中转站的倍率：1 = 照官方价。这个数不来自价目表，来自模型面板里主人填的那一格。
+  const markup = markupOf(model);
   // 分峰谷的：off.when 里那几个时段是「峰」，之外都按 off 那组便宜的算
   const peak = inPeakWindow(rate.off && rate.off.when, now);
   const cur = rate.off && !peak ? rate.off : rate;
@@ -11937,14 +12066,14 @@ function costOf(model, u, now) {
   const missTok = hasReal ? (reportedMiss || Math.max(0, pin - reportedHit)) : Math.max(0, pin - hitTok);
   const per = 1e6;
   const c =
-    (hitTok / per) * Number(cur.hit ?? cur.miss ?? 0) +
-    (missTok / per) * Number(cur.miss ?? 0) +
-    (pout / per) * Number(cur.output ?? 0);
+    ((hitTok / per) * Number(cur.hit ?? cur.miss ?? 0) +
+     (missTok / per) * Number(cur.miss ?? 0) +
+     (pout / per) * Number(cur.output ?? 0)) * markup;
   // est：这一档价格是估的不是官方标价（OpenAI / xAI / Google 那几家抓不到官网），
   // 界面上要标个「估」字，别让人误当准数去对账。
   const est = Boolean(rate.est || (rate.same && RATES[rate.same] && RATES[rate.same].est));
   // cache：命中率是「接口真报的」还是「按 98% 估的」。界面上得说清，别含糊。
-  return { cost: c, off: !peak && Boolean(rate.off), est, cache: hasReal ? 'real' : 'guess', hitTok, missTok };
+  return { cost: c, off: !peak && Boolean(rate.off), est, cache: hasReal ? 'real' : 'guess', hitTok, missTok, markup };
 }
 
 /**
@@ -12115,7 +12244,10 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
   const money = costOf(model, u);
   if (money) {
     row.append(mk('·', 'sep'));
-    const yen = mk('≈' + fmtMoney(money.cost) + ' 元' + (money.est ? '（估）' : '') + (money.off ? '（谷）' : ''), 'cost');
+    // 倍率不是 1 就标出来：主人看到「×1.5」才知道这钱是按中转站的价算的，不是官方价
+    const rateMul = Number(money.markup || 1);
+    const mkTxt = Math.abs(rateMul - 1) > 1e-9 ? '（×' + (Math.round(rateMul * 100) / 100) + '）' : '';
+    const yen = mk('≈' + moneySign() + fmtMoney(inMoney(money.cost)) + mkTxt + (money.est ? '（估）' : '') + (money.off ? '（谷）' : ''), 'cost');
     yen.title =
       '按 ' + model + ' 的公开价估算'
       + (money.cache === 'real'
@@ -12203,7 +12335,7 @@ function paintUsageBox() {
   const mk = (html) => { const s = document.createElement('span'); s.innerHTML = html; return s; };
   tot.append(mk('一共 <b>' + a.rounds + '</b> 轮 · <span class="tok">' + fmtTok(a.total) + '</span> tokens'
     + '（↑' + fmtTok(a.pin) + ' · ↓' + fmtTok(a.pout) + '）'));
-  if (a.cost > 0) tot.append(mk(' · 约花 <b>' + fmtMoney(a.cost) + '</b> 元' + (a.estimated ? '（含估）' : '')));
+  if (a.cost > 0) tot.append(mk(' · 约花 <b>' + moneySign() + fmtMoney(inMoney(a.cost)) + '</b>' + (a.estimated ? '（含估）' : '')));
 
   if (rounds) {
     rounds.textContent = '↑ 是所有请求加起来（一轮里调十几次模型，每次背着全部历史，所以涨得快）'
@@ -13401,6 +13533,21 @@ async function refreshSessions({ silent = false } = {}) {
  * 等于每条消息都强制一次同步布局。会话聊得久了（几百条），
  * 切回来就要卡一秒多，看着像"卡住了"。
  */
+/**
+ * 只重画「钱」这一块：屏幕上这一屏 turns 原样再画一遍。
+ *
+ * 【为什么要个小包装】
+ * 切币种、改倍率之后，聊天区那行「≈￥0.12」得当场换成新的数。
+ * 重画完全部内容没必要（还可能打断正在流式的气泡），但这几个数字在 turns 里，
+ * 只能靠重新渲染那一屏取出来。renderTurns 自己会把 currentTurns 记下来，
+ * 所以这里直接喂回去就行；流式保护在 renderTurns 内部已经做了。
+ */
+function refreshTurnsCost() {
+  const rows = Array.isArray(currentTurns) ? currentTurns : [];
+  if (!rows.length) return;
+  renderTurns(rows);
+}
+
 function renderTurns(turns) {
   hideSending();
   // 记下「屏幕上这一屏是什么」：设置面板里的会话总账要拿它加总（见 paintUsageBox）。
@@ -14199,6 +14346,12 @@ const PROVIDERS = [
     hint: '整合站，一个 key 走很多家。',
   },
   {
+    key: 'lingfeng', name: '凌风', base: 'https://ai.windking.shop',
+    match: /windking/i,
+    models: ['deepseek-v4.1-flash', 'deepseek-v4.1', 'deepseek-v4-pro'],
+    hint: '这一家地址就填到根，别再往后加 /v1（它自己带了）。',
+  },
+  {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
     match: /api\.openai\.com/i,
     models: ['gpt-5', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
@@ -14273,6 +14426,11 @@ function syncNameWithModel() {
 }
 const mdlBase = document.getElementById('mdlBase');
 const mdlKey = document.getElementById('mdlKey');
+const mdlKindChat = document.getElementById('mdlKindChat');
+const mdlKindImage = document.getElementById('mdlKindImage');
+const mdlKindHint = document.getElementById('mdlKindHint');
+const mdlMarkup = document.getElementById('mdlMarkup');
+const mdlMarkupHint = document.getElementById('mdlMarkupHint');
 const mdlFormHint = document.getElementById('mdlFormHint');
 const mdlCount = document.getElementById('mdlCount');
 const mdlNow = document.getElementById('mdlNow');
@@ -14382,6 +14540,16 @@ if (mdlBase) {
   // 手改地址时也跟着换模型下拉
   mdlBase.addEventListener('input', () => {
     mdlBasePreset.value = PROVIDERS.some((p) => p.base === mdlBase.value.trim()) ? mdlBase.value.trim() : '';
+  // 地址一改，是不是官方直连就变了 —— 倍率那格的提示跟着换
+  try {
+    if (mdlMarkupHint) {
+      const p = providerOf(mdlBase.value);
+      const official = p && /^(deepseek|dashscope|zhipu|moonshot|siliconflow|volcengine|minimax|openai|anthropic|hunyuan|baidu)$/.test(p.key);
+      mdlMarkupHint.textContent = official
+        ? '这一家是官方直连，倍率留空（= 1）就行 —— 填了只会把账算错。'
+        : '中转站收的是「官方价 × 它自己的倍率」。不知道填多少就先留空，回头查了它后台再补。';
+    }
+  } catch {}
     paintModelPicker(mdlBase.value);
   });
 }
@@ -14433,6 +14601,24 @@ function openForm(model) {
   mdlBase.value = model ? model.baseURL : (first.base || mdlState.envDefaults?.baseURL || '');
   // 新加的时候，模型名一填上，名字也跟着填好（不用主人再写一遍）
   syncNameWithModel();
+  // 出图那条：单选要跟着这条的 kind 走，不然一编辑就被默默改回「说话」
+  const wantImage = Boolean(model) && model.kind === 'image';
+  if (mdlKindChat) mdlKindChat.checked = !wantImage;
+  if (mdlKindImage) mdlKindImage.checked = wantImage;
+  if (mdlKindHint) {
+    mdlKindHint.textContent = wantImage
+      ? '出图那条：测连通会真画一张小图（要等 30~40 秒），能出图才算通。'
+      : '说话 / 干活那条：测连通发一句 ping 就够，很快。';
+  }
+  if (mdlMarkup) mdlMarkup.value = model && model.markup ? String(model.markup) : '';
+  if (mdlMarkupHint) {
+    // 认得出是官方直连就劝一句「别填」，认不出（中转站）就说明为什么要填
+    const prov = (() => { try { return providerOf(model ? model.baseURL : (mdlBase ? mdlBase.value : '')); } catch { return null; } })();
+    const official = prov && /^(deepseek|dashscope|zhipu|moonshot|siliconflow|volcengine|minimax|openai|anthropic|hunyuan|baidu)$/.test(prov.key);
+    mdlMarkupHint.textContent = official
+      ? '这一家是官方直连，倍率留空（= 1）就行 —— 填了只会把账算错。'
+      : '中转站收的是「官方价 × 它自己的倍率」。不知道填多少就先留空，回头查了它后台再补。';
+  }
   mdlKey.value = '';
   mdlKey.placeholder = model && model.hasKey
     ? `已保存 ${model.keyHint}，不改就留空`
@@ -14473,6 +14659,13 @@ function formPayload() {
   // 编辑时 Key 留空 = 保留原来那个，不能拿空串把已有 Key 洗掉
   if (apiKey) payload.apiKey = apiKey;
   if (mdlEditing) payload.id = mdlEditing;
+  // 生图那条走另一个端点；不带着它，后端只能当聊天模型存，测连通也会问错地方
+  payload.kind = (mdlKindImage && mdlKindImage.checked) ? 'image' : 'chat';
+  // 倍率：空着就是 1（官方原价）。不做四舍五入到整数 —— 0.8 折很常见。
+  if (mdlMarkup) {
+    const mv = Number(String(mdlMarkup.value || '').trim());
+    payload.markup = (Number.isFinite(mv) && mv > 0) ? mv : 1;
+  }
   return payload;
 }
 
@@ -14507,6 +14700,14 @@ function paintModels() {
       const b = document.createElement('span');
       b.className = 'badge env';
       b.textContent = '.env';
+      nameLine.appendChild(b);
+    }
+    // 出图那条标出来：它说不了话，点它「切过去」只会让下一句发不出去
+    const isImage = m.kind === 'image';
+    if (isImage) {
+      const b = document.createElement('span');
+      b.className = 'badge img';
+      b.textContent = '出图';
       nameLine.appendChild(b);
     }
     const sub = document.createElement('div');
@@ -14551,7 +14752,12 @@ function paintModels() {
       row.appendChild(acts);
     }
 
-    row.onclick = async () => {
+    if (isImage) {
+      // 出图那条不参与「正在用哪条」的切换：它没有聊天端点
+      row.title = '这条是出图用的，不参与「用哪条说话」的切换';
+      row.style.cursor = 'default';
+    }
+    row.onclick = isImage ? null : async () => {
       if (m.id === mdlState.activeId) return;
       const r = await fetch('/api/models/select', {
         method: 'POST',

@@ -42,6 +42,8 @@ export const DEFAULT_SETTINGS = {
    * 所以出厂就该是「自动」，让每个模型自己按窗口算。
    */
   contextLimit: 0,
+  /** 记账用什么钱：'cny'（元）或 'usd'（美元）。价目表本身存的是元，界面按汇率换。 */
+  currency: 'cny',
   /**
    * 安全词触发后的行为说明，斜杠分段、第 i 段配第 i 个安全词。
    *
@@ -280,7 +282,18 @@ function normalize(input = {}) {
   );
   // 输入法跟不跟系统语言：只有明确的 false 才算关，其余（没存过、存坏了）都当开。
   const imeMatchSystem = input.imeMatchSystem === false ? false : true;
-  return { bottomLines, safeWords, safeWordNote, contextLimit, imeMatchSystem };
+  /**
+   * 记账用哪种钱。
+   *
+   * 【为什么要这一格】
+   * 价目表里存的都是「元 / 百万 token」（照各家国内官网抄的），
+   * 但主人可能拿美元对账（OpenAI 账单、中转站后台都是美元），
+   * 每次都自己在心里乘一下汇率太累了。这里让他选，界面按选的那一种显示。
+   *
+   * 只认 'cny' 和 'usd'，别的一律当 'cny' —— 存坏了也别让账本哑掉。
+   */
+  const currency = String(input.currency || '').toLowerCase() === 'usd' ? 'usd' : 'cny';
+  return { bottomLines, safeWords, safeWordNote, contextLimit, imeMatchSystem, currency };
 }
 
 export function getSettings() {

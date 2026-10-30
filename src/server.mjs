@@ -4707,6 +4707,9 @@ const server = createServer(async (req, res) => {
     // 界面会把出厂的「停下」当成默认安全词显示出来，主人明明删了它，看着像没生效。
     return json(res, 200, {
       settings: getSettings(),
+      // 记账换币要用的汇率：价目表本身存的是「元 / 百万 token」，用美元看就按它折。
+      // 不联网抓（汇率天天动，抓一次还得为它加一整套失败分支），给个主人自己改的数最实在。
+      fx: { usdPerCny: Number(process.env.XY_USD_PER_CNY || 0.14) },
       defaults: {
         ...DEFAULT_SETTINGS,
         bottomLines: defaultBottomLines(),

@@ -18,6 +18,7 @@ import { browserTools } from './tools-browser.mjs';
 import { videoTools } from './tools-video.mjs';
 import { screenTools } from './tools-screen.mjs';
 import { uiToolDefs } from './tools-ui.mjs';
+import { makeImageTool } from './tools-image.mjs';
 import { adminOn } from './admin-mode.mjs';
 import { isImagePath, readImageDataUrl } from './attach.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
@@ -1059,6 +1060,7 @@ export const tools = [
   ...browserTools,
   ...videoTools,
   ...screenTools,
+  makeImageTool,
   ...uiToolDefs,
   /**
    * 往我自己的记忆本里记一条。

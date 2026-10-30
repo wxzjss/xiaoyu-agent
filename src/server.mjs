@@ -156,7 +156,7 @@ import {
 } from './agents.mjs';
 // 管理员权限：按会话的开关键（见 admin-mode.mjs 文件头）。
 import { adminOn, setAdminOn, adminSessions } from './admin-mode.mjs';
-import { taskOn, setTaskOn, taskInfo, forgetSession as forgetTaskSession } from './task-mode.mjs';
+import { setTaskOn, taskInfo, forgetSession as forgetTaskSession } from './task-mode.mjs';
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames } from './tools-screen.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
@@ -178,7 +178,7 @@ import {
 // 同一个人连着说 → 拼成一段。实现在 merge-voice.mjs，抽出去是为了能真跑一遍验。
 import { mergeSameVoice } from './merge-voice.mjs';
 // 专业模式开关（见 pure.mjs）
-import { pureModeOn, setPureMode, pureSystemPrompt, pureButtonOn, purePressedMode, pureFeatureOn } from './pure.mjs';
+import { pureModeOn, pureFeatureOn, pureButtonOn, purePressedMode, setPureMode, pureSystemPrompt, doerOf, setDoer } from './pure.mjs';
 import { purifyWire } from './compress.mjs';
 import {
   getSkinState,
@@ -1700,6 +1700,49 @@ function json(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(body);
+}
+
+/**
+ * 前情能插在哪儿（只认「安全缝」）。
+ *
+ * 上游网关按 OpenAI 协议验形状，一条死规矩：
+ *   assistant 带 tool_calls 之后，下一个非 tool 消息出现之前，**那批 tool 结果必须到齐**。
+ * 往中间塞任何别的东西（包括我们自己的前情那条 user 消息），直接 400：
+ *   Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+ *
+ * 干活鱼2 就是因为会话压过一次、开头变成
+ *   system → 摘要 → assistant(tc) → tool → …
+ * 前情又硬插在 2 号位，从此每轮必 400（10/27 一直躺到 10/30）。
+ *
+ * 这里从前往后找第一个「安全缝」：缝隙前面的消息里，所有 tool_calls 都已经有结果。
+ * 找不到返回 -1，由调用方把前情挪去设定副本那一格。
+ *
+ * @param {Array} msgs 已经 wire 过、准备发给模型的副本
+ * @returns {number} 可插入的下标；-1 = 没有安全缝
+ */
+function safePreludeSlot(msgs) {
+  if (!Array.isArray(msgs) || msgs.length === 0) return 0;
+  /** 还没拿到结果的 tool_call id */
+  const pending = new Set();
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    // 先记账：这条要是「assistant 带 tool_calls」，插在它前面就已经晚了
+    const opensToolCalls = !!(m && m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length);
+    // 缝：前面没欠账、当前这条也不是工具调用的开头 → 可以插（0 号位是 system，至少从 1 号开始）
+    if (!pending.size && !opensToolCalls && i >= 1) return i;
+    if (opensToolCalls) {
+      for (const tc of m.tool_calls) if (tc && tc.id) pending.add(tc.id);
+      continue;
+    }
+    if (m && m.role === 'tool') {
+      pending.delete(m.tool_call_id);
+      continue;
+    }
+    // 不是 tool 也不是 assistant(tc)，但前面还欠着结果 —— 历史本身已经坏了
+    // （repairHistory 会去修，这里只管别把前情也塞进去），继续往后找。
+  }
+  // 一轮都没还清（比如最后一条 assistant 带 tool_calls、后面还没结果）：没有安全缝
+  return pending.size ? -1 : msgs.length;
 }
 
 async function body(req) {
@@ -3418,12 +3461,29 @@ const server = createServer(async (req, res) => {
     // 【2026-10-28 按会话启用了】问的是哪个会话就答哪个会话的状态。
     // 前端切会话时会带上 ?sessionId=xxx；不带就当没有会话开着（退回人设）。
     const sid = String(url.searchParams.get('sessionId') || '').trim();
+    /**
+     * 【2026-11-03 办事模式并进来了】多带一个 doer。
+     *
+     * doer = 这个会话里「谁动手」：'self'（她自己干）/ 'workers'（只派活）。
+     * 以前这是个独立按钮，现在它是专业模式面板里的一个下拉，
+     * 所以状态必须跟着专业模式一起回 —— 两个接口分开读，中间就会有一段时间
+     * 界面上的勾和真正干活的判断不一致。
+     *
+     * 专业模式没开的时候一律报 'self'（doerOf 保证的），界面据此把那个下拉灰掉。
+     */
+    let doer = 'self';
+    try {
+      doer = available ? doerOf(sid) : 'self';
+    } catch {
+      doer = 'self';
+    }
     return json(res, 200, {
       sessionId: sid || null,
       on: available && pureModeOn(sid),
       pressed: available && pureButtonOn(sid),
       mode: available ? purePressedMode(sid) : null,
       available,
+      doer,
     });
   }
 
@@ -3450,7 +3510,28 @@ const server = createServer(async (req, res) => {
       const cur = pureModeOn(sid);
       const next = typeof payload?.on === 'boolean' ? payload.on : !cur;
       const out = setPureMode(sid, next);
-      return json(res, 200, { sessionId: sid, on: Boolean(out && out.on), mode: out && out.on ? 'pure' : null, available: true });
+      /**
+       * 【2026-11-03】同一个口子顺手管「谁动手」：
+       *   body: { sessionId, doer?: 'self' | 'workers' }
+       * 只有真传了 doer 才动它；不传就是只切专业模式，那一档保持原样。
+       * setDoer 自己会拒掉「专业模式没开的会话」——界面灰了但老版本还能点，
+       * 挡在服务端才挡得住。
+       */
+      let doer = null;
+      if (payload?.doer !== undefined) {
+        const r = setDoer(sid, payload.doer);
+        if (!r.ok) {
+          return json(res, 409, { ok: false, error: '专业模式没开，这一档没地方放', doer: r.doer });
+        }
+        doer = r.doer;
+      } else {
+        try {
+          doer = doerOf(sid);
+        } catch {
+          doer = 'self';
+        }
+      }
+      return json(res, 200, { sessionId: sid, on: Boolean(out && out.on), mode: out && out.on ? 'pure' : null, available: true, doer });
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -3707,15 +3788,16 @@ const server = createServer(async (req, res) => {
   }
 
   /**
-   * 办事模式：按会话存，跟「管理员权限」一个形制。
+   * 【2026-11-03 主人：「把办事模式并入专业模式里面」】
    *
-   * 一句话说清它是干什么的：**换的是「谁来干」**。
-   *   专业模式 = 怎么说（不发人设，换一份干活规范）
-   *   管理员权限 = 能碰哪儿（整台机器）
-   *   办事模式 = 谁来干（主智能体只派活/检查/验收，活交给会话内临时 worker）
+   * 原来这里是一个独立模式的开关（GET 读状态 + POST 翻开关），顶栏还配了颗按钮。
+   * 现在开关搬到 /api/pure 里去了（body 带 doer: 'self' | 'workers'），
+   * 这条接口只剩一个用途：**读这个会话手上的 worker 花名册**。
+   * 界面拿它显示「现在几个活、谁在跑」，跟专业模式那个面板解耦。
    *
-   * 这里只给界面两个能力：读状态（按钮亮不亮）、翻开关。
-   * worker 花名册也一并带出去，界面能显示「现在手上几个活」。
+   * POST 保留但改成转发：老版本界面（或者主人手上前端缓存没刷新）打过来
+   * 也不能让它 404 —— 404 在界面上就是一个莫名其妙的白框。
+   * 它现在做的事等价于「打开专业模式并选派活」，走的是同一套 setDoer。
    */
   if (req.method === 'GET' && url.pathname === '/api/task-mode') {
     const sid = String(url.searchParams.get('sessionId') || '');
@@ -3736,9 +3818,20 @@ const server = createServer(async (req, res) => {
     const sid = String(payload?.sessionId || '').trim();
     if (!sid) return json(res, 400, { error: '得先有会话' });
     try {
-      const r = setTaskOn(sid, payload?.on === true);
-      if (!r.ok) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
-      return json(res, 200, { ok: true, ...r, ...taskInfo(sid) });
+      const want = payload?.on === true;
+      if (!pureFeatureOn()) {
+        return json(res, 403, { ok: false, error: '这个功能在【功能】里是关的，先在【功能】里打开' });
+      }
+      if (want) {
+        // 打开＝「开专业模式 + 选派活」，一步到位，别让老界面停在半个状态上。
+        setPureMode(sid, true);
+        const r = setDoer(sid, 'workers');
+        if (!r.ok) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      } else {
+        setDoer(sid, 'self');
+        setTaskOn(sid, false); // 顺手清老表 + 清花名册（主人要「用完就没」）
+      }
+      return json(res, 200, { ok: true, ...taskInfo(sid) });
     } catch (e) {
       return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }
@@ -6947,11 +7040,37 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 会话里的 system 永远是设置里那套人设，前情一个字都不往里塞。
     {
       const pm = preludeContextMessage();
-      // 专业模式：前情也是「设定」，不发。
-      if (pm && !pureModeOn(sessionId)) wireMessages.splice(2, 0, pm);
+      /**
+       * 【前情不许插进一对 tool 调用中间 —— 2026-10-30 修 · 干活鱼2 的 LLM HTTP 400】
+       *
+       * 真踩过，而且死得很冤：会话历史一旦被压缩，开头就成了
+       *   system → 摘要(带 context) → assistant(tool_calls) → tool → …
+       * 这时把前情硬插在 2 号位，前情（role:'user'）正好卡在
+       * 「assistant(tool_calls)」和「它的 tool 结果」中间：
+       *   system → 摘要 → 前情(user) → assistant(tc) → tool
+       * 上游按 OpenAI 协议一验就拒：
+       *   Messages with role 'tool' must be a response to a preceding message
+       *   with 'tool_calls'
+       * 于是这个会话**每一轮都 400**，主人说多少句「继续」都是石沉大海，
+       * 界面上只剩一行 ⚠（干活鱼2 从 10/27 拖到 10/30 就是这个）。
+       *
+       * 规矩：**前情只能落在「安全缝」里** —— 前面是 system/摘要，或者前面那条
+       * assistant 的 tool_calls 已经全部有了结果。落不进去就把前情送进「设定副本」
+       * 那一格（1 号位，紧挨着 system）：那是它本来就合法的两个位置之一，
+       * 绝不会把一组 tool 调用劈成两半。
+       */
+      if (pm && !pureModeOn(sessionId)) {
+        const at = safePreludeSlot(wireMessages);
+        if (at < 0) {
+          console.log('[prelude] 找不到安全缝（前面是没配齐的 tool_calls），前情改贴到设定副本那一格');
+          wireMessages.splice(1, 0, pm);
+        } else {
+          wireMessages.splice(at, 0, pm);
+        }
+      }
     }
     /** 前情那条消息的引用，日志里好认（专业模式没插，就是 undefined） */
-    const preludeRef = pureModeOn(sessionId) ? undefined : wireMessages[2];
+    const preludeRef = pureModeOn(sessionId) ? undefined : (wireMessages.find((m) => m && m.context && !m._identity) ?? undefined);
 
     /**
      * 【这一轮说话的是谁】—— 身份功能（主人 2026-10-27 定）。
@@ -6991,6 +7110,40 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       '[prelude] 条数=' + wireMessages.length + ' 形状=' +
         wireMessages.map((m) => m.role + (m === preludeRef ? '(前情)' : m.context ? '(规则)' : '')).join(' → '),
     );
+    /**
+     * 【发出去之前最后一道体检 —— 2026-10-30】
+     *
+     * 上游认的是 OpenAI 协议的形状，有两条死规矩，哪条破了都是 HTTP 400：
+     *   ① role:'tool' 前面必须是一条带同 id `tool_calls` 的 assistant；
+     *   ② assistant 带 tool_calls 之后，那批结果必须紧接着到齐，中间不许插别的东西。
+     *
+     * 拼接的地方太多（前情、规则副本、身份说明、同人合并、专业模式清场、
+     * 压缩摘要……），谁往里插一格都可能把一对 tool 调用劈成两半 ——
+     * 干活鱼2 就是这么一句「LLM HTTP 400」躺了三天的。
+     * 与其事后猜，不如出门前照一遍镜子：破了就在日志里指名道姓，
+     * 这样下次再有人动拼接逻辑，一眼就能看出是哪一步弄坏的。
+     */
+    if (process.env.WHALE_DEBUG_WIRE) {
+      const bad = [];
+      const pending = new Set();
+      wireMessages.forEach((m, i) => {
+        if (!m) return;
+        if (m.role === 'tool') {
+          if (!pending.delete(m.tool_call_id)) {
+            bad.push('#' + i + ' tool(' + String(m.tool_call_id ?? '').slice(0, 12) + ') 找不到对应的 tool_calls');
+          }
+          return;
+        }
+        if (pending.size) {
+          bad.push('#' + i + ' ' + m.role + ' 插进了还没配齐的 tool_calls（欠 ' + [...pending].join(',') + '）');
+        }
+        if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+          for (const tc of m.tool_calls) if (tc && tc.id) pending.add(tc.id);
+        }
+      });
+      if (pending.size) bad.push('尾巴上还欠结果：' + [...pending].join(','));
+      console.log('[wire-check] ' + (bad.length ? '⚠ ' + bad.join(' / ') : '形状 OK'));
+    }
     /**
      * wireMessages 是给模型的副本：回退掉的那些不能出现在上下文里。
      * 但模型这一轮新说的话（assistant / tool 轮）是 push 到 wireMessages 上的，

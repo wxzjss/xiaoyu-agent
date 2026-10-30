@@ -11,14 +11,16 @@ import { personaInfo } from './persona-store.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
 import { readMemory, memoryPath } from './session-memory.mjs';
 // 专业模式：开了就一个字系统提示都不发（见 pure.mjs）。
-import { pureModeOn, pureSystemPrompt } from './pure.mjs';
+import { pureModeOn, pureSystemPrompt, doerOf, DOER_WORKERS } from './pure.mjs';
+// 上面那段兜底要用 taskPromptBlock —— 只去掉了 taskOn，别把它一起删了。
+import { taskPromptBlock } from './task-mode.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
 import { fishOn } from './fish-presence.mjs';
 // 会话绑的智能体卡：绑了自定义卡，基线人设就换成那张卡的正文（见 agents.mjs）。
 import { agentForSession, getAgent, groupAgentIds, mainAgentId } from './agents.mjs';
 // 管理员权限：这个会话开了那一档就把「整台机器都能动」写进提示词（见 admin-mode.mjs）。
 import { adminPromptBlock } from './admin-mode.mjs';
-import { taskOn, taskPromptBlock } from './task-mode.mjs';
+
 /**
  * 【这一轮是谁在说话】—— 2026-10-28
  *
@@ -265,7 +267,20 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
    *
    * 没开的时候 taskPromptBlock 返回 ""，一个字不花，缓存前缀不动。
    */
-  if (!safeMode && (() => { try { return taskOn(sessionId); } catch { return false; } })()) {
+  /**
+   * 【2026-11-03 主人：「把办事模式并入专业模式里面」】
+   *
+   * 这一段以前挂在独立的 taskOn(sessionId) 上（顶栏第三颗按钮）。
+   * 现在并进专业模式：只有「专业模式开着 + 里面选了派活」才发，
+   * 判断统一走 pure.mjs 的 doerOf —— 那边保证专业模式没开就一定是 'self'，
+   * 这里不再自己看第二个开关（两个开关各自判断，迟早会判出两种结果）。
+   *
+   * 注意还有一条：专业模式开着的时候 buildSystemPrompt 在第 144 行就 return 了，
+   * 根本走不到这里。派活那一档的规矩是在 pureSystemPrompt 里拼的
+   * （见 pure.mjs 末尾那段）。这段留着是给「专业模式关着但 doerOf 返回 workers」
+   * 这种不该出现的情况兜底 —— 以前两个开关是分开的，出现过一次两边不一致。
+   */
+  if (!safeMode && (() => { try { return doerOf(sessionId) === DOER_WORKERS; } catch { return false; } })()) {
     const who = String(agentId || "").trim();
     let mainId = "";
     try { mainId = mainAgentId(sessionId) || ""; } catch { mainId = ""; }

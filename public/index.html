@@ -94,13 +94,22 @@
       color: #0b0e13; background: #7ee0b0; border-color: #7ee0b0; font-weight: 600;
     }
     header button#pureBtn.on:hover { background: #9beac4; border-color: #9beac4; color: #0b0e13; }
-    /* 办事模式：珊瑚橙。
-       三档一眼分开 —— 专业模式绿、办事模式橙、管理员红：
-       绿管「怎么说」、橙管「谁来干」、红管「能碰哪儿」，颜色不撞车。 */
-    header button#taskBtn.on {
-      color: #1a0f06; background: #f0b06a; border-color: #f0b06a; font-weight: 600;
+    /* 【2026-11-03 主人：「把办事模式并入专业模式里面」】
+       原来这里有一颗珊瑚橙的「办事模式」按钮（管「谁来干」）。
+       现在它并进专业模式了：不再有第三颗按钮，只在专业模式右边多一颗
+       小下拉「谁动手」。颜色规矩因此回到两档：绿=专业模式、红=管理员。 */
+    header button#doerBtn {
+      font-size: 12px; padding: 4px 8px; border-radius: 8px;
+      border: 1px dashed #3a4250; background: transparent; color: #8b94a3;
+      cursor: pointer; white-space: nowrap;
     }
-    header button#taskBtn.on:hover { background: #f6c489; border-color: #f6c489; color: #1a0f06; }
+    header button#doerBtn:hover { border-color: #5b667a; color: #b9c2d0; }
+    /* 改成「派活」之后才上色 —— 一眼看得出现在她自己不干活 */
+    header button#doerBtn.workers {
+      border-style: solid; border-color: #f0b06a; background: #f0b06a;
+      color: #1a0f06; font-weight: 600;
+    }
+    header button#doerBtn.workers:hover { background: #f6c489; border-color: #f6c489; color: #1a0f06; }
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
@@ -2289,10 +2298,14 @@
       </button>
     </span>
     <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
-    <!-- 2026-11-03：办事模式。跟专业模式、管理员并列的第三档，管的是「谁来干」。
-         开了之后主智能体不自己动手，只拆任务/派活/检查/验收/压上下文。
-         按会话存，切到别的会话就不算了。功能默认关 —— 【功能】里打开才出现这颗按钮。 -->
-    <button id="taskBtn" title="办事模式：开了之后主智能体不自己动手，只拆任务、派活、检查、验收、管上下文；具体的活交给会话内临时开出来的 worker。按会话开，随时可以关">办事模式</button>
+    <!-- 2026-11-03【主人的话：「把办事模式并入专业模式里面」】
+         原来这里挂着第三颗按钮（办事模式）。现在它并进专业模式了：
+         这颗小按钮只在专业模式开着的时候出现，管的是「谁动手」——
+           自己动手（默认）＝ 老样子，她自己读写文件、跑命令
+           派活（办事模式）＝ 她只拆任务/派活/检查/验收/压上下文，活交给临时 worker
+         hidden 而不是灰掉：专业模式没开的时候这一档根本不存在，
+         灰着的按钮只会让人一直想点，点下去服务端也只会回一句「没开」。 -->
+    <button id="doerBtn" hidden title="谁动手（属于专业模式）">谁动手：自己</button>
     <!--
       【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
       这两颗按钮连同它们的 JS / CSS 一起撤掉。开关只剩一处：左边「屋里的人」那列牌子，
@@ -5138,7 +5151,15 @@ function loadPureState() {
   if (!sid) { paintPureState({ available: true, on: false, mode: null }); return; }
   fetch('/api/pure?sessionId=' + encodeURIComponent(sid))
     .then((r) => r.json())
-    .then(paintPureState)
+    .then((j) => {
+      paintPureState(j);
+      /**
+       * 同一次响应里就有 doer，顺手把这颗小下拉画了 ——
+       * 不另开一次请求，省得两个按钮先后闪一下。
+       * paintDoerState 定义在这一段下面，函数声明会提升，运行时没问题。
+       */
+      try { paintDoerState(j); } catch {}
+    })
     .catch(() => {});
 }
 
@@ -5165,6 +5186,8 @@ async function togglePureMode() {
     });
     const j = await r.json();
     paintPureState({ available: j && j.available !== false, on: !!(j && j.on) });
+    /* 关掉专业模式时服务端会把「派活」一并清掉（回到 self），这颗下拉跟着重画 */
+    try { paintDoerState(j); } catch {}
     if (typeof addSysNote === 'function') {
       if (j && j.on) addSysNote('专业模式已开（只对这个会话）：接下来只发对话本身，不带人设和规矩，另给她一份「怎么干活」的规范。');
       else addSysNote('专业模式已关（这个会话）：人设和规矩回来了。');
@@ -5175,137 +5198,184 @@ async function togglePureMode() {
   }
 }
 loadPureState();
+/**
+ * 【2026-11-03】专业模式一刀切下去，「谁动手」那颗小下拉要跟着变 ——
+ * 它只在专业模式开着的时候才出现，而 togglePureMode 里已经调了 paintDoerState，
+ * 这里不用再补。留这段注释是因为改这一带时最容易手滑把它俩的顺序搞乱：
+ * 先 paintPureState 再 paintDoerState，反过来会出现「下拉已经显示、专业模式还没亮」的一帧。
+ */
 if (pureBtn) pureBtn.onclick = () => togglePureMode();
 /** 切会话之后重拉一次 —— 每个会话的开/关是各自独立的 */
 window.__reloadPureState = loadPureState();
 
 /**
- * 办事模式（2026-11-03）。
+ * 【谁动手】—— 2026-11-03 主人：「把办事模式并入专业模式里面」。
  *
- * 跟专业模式、管理员并列的第三档，但它管的是**谁来干**：
- *   专业模式 = 怎么说（不发人设，换一份干活规范）
- *   管理员权限 = 能碰哪儿（整台机器）
- *   办事模式 = 谁来干（主智能体只派活/检查/验收，活交给会话内临时 worker）
+ * 以前这是一颗独立的珊瑚橙按钮（办事模式），跟专业模式、管理员并列。
+ * 主人否掉了那个形态：它本来就是「怎么干活」的一部分，另开一颗按钮
+ * 等于让人多记一个开关，还多一处可能对不齐的地方（一个开着一个关着，
+ * 界面就会显示成一个谁也说不清的状态）。
  *
- * 开了之后服务端会把干活工具从主智能体手里收走（只剩派活/看名册/记事/翻存档），
- * 所以她连「顺手改一下」的手段都没有 —— 这不只是提示词在劝。
+ * 现在的形态：
+ *   · 只在专业模式开着的时候出现（专业模式没开 = 这一档不存在）
+ *   · 点一下在两个值之间翻：'self' 自己动手 / 'workers' 派活
+ *   · 状态存在服务端 .state/pure.json 的**同一条记录**里（见 pure.mjs 的 setDoer），
+ *     所以「关掉专业模式」会把它一起清掉，不会留一个休眠的勾下次偷偷复活
  *
- * 状态一样按会话存在盘上（.state/task-mode.json），所以每次切会话都重问一次，
- * 不在本地变量里记着（同一台机器另一个窗口可能已经关掉了）。
- *
- * 【功能默认关】服务端 /api/task-mode 会带 available:false，
- * 那时这颗按钮整块拿掉 —— 跟专业模式一个规矩：功能关着＝这个功能不存在。
+ * 【为什么是「点一下翻」而不是下拉菜单】
+ * 只有两个值。两个值的下拉要点两下、还要多一层浮层的定位和收起，
+ * 而这颗东西在顶栏最右边、旁边就是窗口按钮 —— 浮层一不小心就被裁掉。
+ * 一颗按钮，字面上写清现在是哪个，点一下换另一个，最省事也最不容易点错。
  */
-const taskBtn = document.getElementById('taskBtn');
+const doerBtn = document.getElementById('doerBtn');
 
-/**
- * 按服务端说的状态刷新按钮。
- * available 为 false 表示【功能】里「办事模式」被关掉了 —— 按钮直接拿掉。
- */
-function paintTaskState(j) {
+/** 服务端报来的最新一份状态（切会话/切专业模式都会重拉） */
+let doerLast = { available: true, on: false, doer: 'self', workers: [] };
+
+/** 按状态刷这颗小按钮。 */
+function paintDoerState(j) {
   const available = !j || j.available !== false;
-  if (taskBtn) taskBtn.hidden = !available;
-  if (!available) return;
-  if (taskBtn) {
-    const on = !!(j && j.on);
-    const workers = Array.isArray(j && j.workers) ? j.workers : [];
-    const running = workers.filter((w) => w && w.status === 'running').length;
-    taskBtn.classList.toggle('on', on);
-    taskBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    // 只三个字不动，开没开看颜色（跟管理员那颗一个规矩）
-    taskBtn.textContent = '办事模式';
-    if (!on) {
-      taskBtn.title = '办事模式：开了之后主智能体不自己动手，只拆任务、派活、检查、验收、管上下文；具体的活交给会话内临时开出来的 worker（只属于这个会话，干完或会话删了就没了）。按会话开，随时可以关';
-    } else {
-      const tail = workers.length
-        ? '；现在手上有 ' + workers.length + ' 个 worker' + (running ? '（' + running + ' 个还在跑）' : '')
-        : '；还没派过活';
-      taskBtn.title = '办事模式开着（只对这个会话）：她只派活、检查、验收、管上下文，不自己动手' + tail + '。点一下关掉。';
-    }
+  const pureOn = !!(j && j.on);
+  const doer = (j && j.doer) === 'workers' ? 'workers' : 'self';
+  const workers = Array.isArray(j && j.workers) ? j.workers : (doerLast.workers || []);
+  const running = workers.filter((w) => w && w.status === 'running').length;
+  doerLast = { available, on: pureOn, doer, workers };
+  if (!doerBtn) return;
+  /**
+   * 看不见的两种情况，一次说清为什么要藏：
+   *   ① 功能页里专业模式被关了 → 这一档跟着不存在
+   *   ② 这个会话没开专业模式   → 派活是专业模式里的选项，没开就没地方放
+   * 藏起来而不是「灰着还能点」：灰着的按钮会让人一直想点它，
+   * 而点下去服务端只会回一句「专业模式没开」，那是一次白费的解释。
+   */
+  doerBtn.hidden = !available || !pureOn;
+  doerBtn.classList.toggle('workers', doer === 'workers');
+  doerBtn.textContent = doer === 'workers' ? '谁动手：派活' : '谁动手：自己';
+  if (doer === 'workers') {
+    const tail = workers.length
+      ? '；现在手上有 ' + workers.length + ' 个 worker' + (running ? '（' + running + ' 还在跑）' : '')
+      : '；还没派过活';
+    doerBtn.title = '派活（办事模式）：她只拆任务、派活、检查、验收、管上下文，不自己动手' + tail + '。点一下改回自己动手。';
+  } else {
+    doerBtn.title = '自己动手：读文件、改代码、跑命令都在她手上（老样子）。点一下改成「派活」—— 她只出嘴，活交给会话内临时开出来的 worker。';
   }
 }
 
 /** 当前会话 id（跟 pureSid 同一个来源） */
-function taskSid() {
+function doerSid() {
   try {
     return typeof sessionId === 'string' ? sessionId : (sessionId && sessionId.id) || '';
   } catch { return ''; }
 }
 
-/** 拉一次当前会话的办事模式状态 */
-function loadTaskState() {
-  const sid = taskSid();
-  if (!sid) { paintTaskState({ available: true, on: false, workers: [] }); return; }
-  fetch('/api/task-mode?sessionId=' + encodeURIComponent(sid))
+/**
+ * 拉一次状态。
+ *
+ * 【为什么 worker 名册从 /api/task-mode 拿，而不是跟 /api/pure 一起】
+ * 「谁动手」这个开关属于专业模式（存在 pure.json 里），名册属于 task-mode.mjs
+ * （会话一删就该跟着没的东西）。两者生命周期不同，硬塞进一个响应里，
+ * 迟早会出现「开关还在、名册给人清了」这种半截状态。
+ * 名册只拿来写 title（几个活、几个在跑），拿不到就不写，不影响开关本身。
+ */
+function loadDoerState() {
+  const sid = doerSid();
+  if (!sid) { paintDoerState({ available: true, on: false, doer: 'self' }); return; }
+  fetch('/api/pure?sessionId=' + encodeURIComponent(sid))
     .then((r) => r.json())
-    .then(paintTaskState)
+    .then((j) => {
+      paintDoerState(j);
+      // 专业模式没开就别再去问名册了 —— 那一档不存在，问了也没人看
+      if (!(j && j.on)) return;
+      fetch('/api/task-mode?sessionId=' + encodeURIComponent(sid))
+        .then((r) => r.json())
+        .then((t) => {
+          if (t && t.workers) paintDoerState({ ...(j || {}), workers: t.workers });
+        })
+        .catch(() => {});
+    })
     .catch(() => {});
 }
 
 /**
- * 点一下＝翻当前会话这一格。
- * 开的时候弹一次确认：这一档会让「她自己动手」这件事彻底停掉，
+ * 点一下：'self' ⇄ 'workers'。
+ *
+ * 从「自己动手」改成「派活」时弹一次确认 —— 这一下会把她的干活工具真收走，
  * 主人得知道自己在切什么，别点完发现她不肯干活了以为坏了。
+ * 反方向（派活 → 自己动手）不弹：那是「把权力还回来」，没有风险。
  */
-async function toggleTaskMode() {
-  const sid = taskSid();
+async function toggleDoer() {
+  const sid = doerSid();
   if (!sid) {
     if (typeof addSysNote === 'function') addSysNote('这个会话还没建好，等它落了盘再点。');
     return;
   }
-  const wasOn = !!(taskBtn && taskBtn.classList.contains('on'));
-  if (!wasOn) {
+  const wantWorkers = doerLast.doer !== 'workers';
+  if (wantWorkers) {
     const yes = await new Promise((resolve) => {
       const d = document.createElement('dialog');
       d.className = 'dlg';
-      d.innerHTML = '<div class="dlgHead">开办事模式？</div>' +
+      d.innerHTML = '<div class="dlgHead">改成派活？</div>' +
         '<div class="dlgBody" style="line-height:1.8">' +
-        '<p>开了之后，<b>这个会话</b>里的小鱼不再自己干活了 —— 她的活只剩四样：拆任务、派活、检查、给结论。</p>' +
+        '<p>改完之后，<b>这个会话</b>里的小鱼不再自己干活了 —— 她的活只剩四样：拆任务、派活、检查、给结论。</p>' +
         '<p>具体的活儿交给会话内临时开出来的 worker：</p>' +
         '<ul style="margin:6px 0 0 18px;padding:0">' +
         '<li>worker 只属于这个会话，干完了或者会话删掉，它就没了</li>' +
         '<li>每个活干完都要给她写一份汇报，她来核、来找问题、决定要不要退回重做</li>' +
         '<li>她的干活工具会被收走（读写文件、跑命令都不在她手上），这不是提醒，是真收</li>' +
         '<li>上下文由她管：什么该删、什么该留、什么该压成一句，她替你决定</li>' +
-        '<li>按会话开，切到别的会话就不算，随时可以在顶栏关掉</li>' +
+        '<li>这一档属于专业模式，关掉专业模式它就一起关了</li>' +
         '</ul></div>' +
-        '<div class="dlgFoot"><button type="button" class="ghost" id="_tkNo">算了</button>' +
-        '<button type="button" class="primary" id="_tkYes">开吧</button></div>';
+        '<div class="dlgFoot"><button type="button" class="ghost" id="_doerNo">算了</button>' +
+        '<button type="button" class="primary" id="_doerYes">改成派活</button></div>';
       document.body.appendChild(d);
       const done = (v) => { try { d.close(); } catch (e) {} d.remove(); resolve(v); };
-      d.querySelector('#_tkNo').onclick = () => done(false);
-      d.querySelector('#_tkYes').onclick = () => done(true);
+      d.querySelector('#_doerNo').onclick = () => done(false);
+      d.querySelector('#_doerYes').onclick = () => done(true);
       d.oncancel = () => done(false);
       d.showModal();
     });
     if (!yes) return;
   }
-  paintTaskState({ available: true, on: !wasOn, workers: [] });
+  const next = wantWorkers ? 'workers' : 'self';
+  // 先翻个面，等服务器回话再以它为准 —— 点下去就有反馈
+  paintDoerState({ available: true, on: true, doer: next, workers: doerLast.workers || [] });
   try {
-    const r = await fetch('/api/task-mode', {
+    const r = await fetch('/api/pure', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: sid, on: !wasOn }),
+      body: JSON.stringify({ sessionId: sid, doer: next }),
     }).then((x) => x.json());
     if (!r || r.error) {
-      paintTaskState({ available: true, on: wasOn, workers: [] });
-      if (typeof addSysNote === 'function') addSysNote('⚠ ' + (r?.error || '办事模式没切成功'));
+      /* 409 = 专业模式没开（服务端挡的，说明界面这边状态旧了） */
+      paintDoerState({ available: true, on: true, doer: wantWorkers ? 'self' : 'workers', workers: [] });
+      if (typeof addSysNote === 'function') addSysNote('⚠ ' + (r?.error || '没切成功'));
+      loadPureState();
       return;
     }
-    paintTaskState(r);
+    paintDoerState({ available: true, on: true, doer: r.doer === 'workers' ? 'workers' : 'self', workers: [] });
+    loadDoerState();
     if (typeof addSysNote === 'function') {
-      if (r.on) addSysNote('办事模式已开（只对这个会话）：她只派活/检查/验收/管上下文，活交给临时 worker。');
-      else addSysNote('办事模式已关（这个会话）：她自己动手的权力回来了，worker 名册也清空了。');
+      if (r.doer === 'workers') addSysNote('改成派活了：她只拆任务/派活/检查/验收/管上下文，活交给临时 worker。');
+      else addSysNote('改回自己动手了：她手上的读写、跑命令都回来了，worker 名册也清了。');
     }
   } catch (err) {
-    paintTaskState({ available: true, on: wasOn, workers: [] });
-    if (typeof addSysNote === 'function') addSysNote('⚠ 办事模式没切成功：' + String(err && err.message ? err.message : err));
+    paintDoerState({ available: true, on: true, doer: wantWorkers ? 'self' : 'workers', workers: [] });
+    if (typeof addSysNote === 'function') addSysNote('⚠ 没切成功：' + String(err && err.message ? err.message : err));
   }
 }
 
-if (taskBtn) taskBtn.onclick = () => toggleTaskMode();
-/** 切会话之后重拉一次 —— 每个会话的开关各自独立 */
-window.__reloadTaskState = loadTaskState;
+if (doerBtn) doerBtn.onclick = () => toggleDoer();
+/**
+ * 切会话之后重拉一次 —— 每个会话的档位各自独立。
+ *
+ * 【名字为什么还叫 __reloadTaskState】下面有两处切会话的调用点在等这个名字
+ * （就在 __reloadPureState 旁边）。改名要两处一起动，而这两处离得很远、
+ * 又躺在两段几乎一样的代码里，改错一处就是「切过去之后按钮亮着上一格的状态」——
+ * 那种错最难发现。所以对外保留老名字，内部实现叫 doer。
+ */
+window.__reloadTaskState = loadDoerState;
+/** 给别处用：只看「谁动手」这一个值。 */
+window.__reloadDoerState = loadDoerState;
 
 
 /** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */

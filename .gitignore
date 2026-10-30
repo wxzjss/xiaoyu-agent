@@ -53,3 +53,5 @@ code/
 # 统一存放 *.bak / *.bak-* 备份（人工归档，不进 git）
 backup/
 *.tmp
+
+logs/

@@ -169,11 +169,11 @@ export function checkGuard({ tool, el, text, cfg = {}, snap }) {
     }
   }
 
-  // 密码框：打字一律拒
+  // 密码框：打字一律拒（只判断它「是不是」密码框，绝不读取框里的内容）
   const role = String(el?.role || '');
   const name = String(el?.name || '');
-  const looksPwd = el?.password === true || (tool === 'ui_type' && PASSWORD_ROLE_HINT.test(role + ' ' + name));
-  if (looksPwd && tool === 'ui_type') {
+  const looksSecret = el?.password === true || (tool === 'ui_type' && PASSWORD_ROLE_HINT.test(role + ' ' + name));
+  if (looksSecret && tool === 'ui_type') {
     return { ok: false, reason: '这是一个密码框：密码、密钥这种东西必须主人自己输，我不代打。' };
   }
 

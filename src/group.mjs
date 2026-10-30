@@ -41,15 +41,32 @@ function clip(text) {
 
 /** 这条是谁说的：'me' | '主人' | '小鱼' | 别的名字 */
 function speakerOf(m, meId) {
+  /**
+   * 【这条是谁说的】—— 2026-10-30 修「小鲸的话被当成主人说的」
+   *
+   * 主人报：屏幕上那条带小鲸名字的话，口气却像小鱼、内容还是错的。
+   *
+   * 查到根：群聊卡片存进去的标记是 _card（值是她 id）和 _cardVoice，
+   * 而这里只认 _tale/_whale/_cardName/_who —— _cardName 这个字段根本不存在。
+   * 于是 who 取到空串，落到 role === 'user' ? who || '主人'，
+   * 她那张卡在历史里的 role 正是 user → 被认成了「主人」。
+   *
+   * 后果一串：她看见上下文里「主人」在查日志、在定结论，却不知道那是小鱼干的，
+   * 就顺着那个腔调用自己口吻接一句 —— 读起来就像小鱼披着她的名字说话。
+   *
+   * 改法：把 _card / _cardVoice / _who 都认进来。
+   */
   if (m._card && String(m._card) === String(meId)) return 'me';
   const who = String(
     m._tale?.who
-      || m._whale
       || m._cardName
       || m._who
+      || (m._whale ? '小鲸' : '')
+      || (m._card ? String(m._card) : '')
       || '',
   ).trim();
-  if (m.role === 'user') return who || '主人';
+  // 卡片声音（_cardVoice）也说明这行是别人说的，不该当主人
+  if (m.role === 'user') return who || (m._cardVoice ? '某位同伴' : '主人');
   return who || '小鱼';
 }
 
@@ -107,7 +124,13 @@ export function buildCardMessages({ agent, messages, sessionId = 'default' } = {
    */
   out.push({
     role: 'user',
-    content: `（轮到「${nm}」说话了。接着上面的记录，用你自己的口吻说一句，或者两句。别复述别人说过的，别替别人发言，不用总结，不用说「轮到我说」。）`,
+    content: `（轮到「${nm}」说话了。接着上面的记录，用你自己的口吻说一句，或者两句。别复述别人说过的，别替别人发言，不用总结，不用说「轮到我说」。
+
+  记录里「小鱼」是另一个在干活的人（她负责查代码、看日志、修东西），不是你，也不是主人：
+  · 她的活儿、她的判断、她查到的东西，都算她的，别当成你自己查的，也别替她下结论、别替她报结果；
+  · 也别学她的腔调说话 —— 你按你自己的样子说；
+  · 你自己没真看过的，就别说「我看了一眼」「我去查了」这种话。
+  你只需要作为你自己，说你想说的。`
   });
   return out;
 }

@@ -2436,7 +2436,6 @@
             <textarea id="bottomLines" spellcheck="false"></textarea>
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button type="button" class="ghost" id="setDefaultBottomLines">把这版设为默认</button>
             <button type="button" class="ghost" id="resetBottomLines">恢复默认底线</button>
             <span class="hint" id="bottomLinesHint"></span>
           </div>
@@ -7455,8 +7454,20 @@ function replayInFlight(id) {
       touchStreaming(rec.bubble);
     } else if (kind === 'whale' || kind === 'agent') {
       // 小鲸说的话：单独一个气泡，标上她的名字
-      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
-      if (rec.think) { rec.think.finish(); rec.think = null; }
+      /**
+       * 【别掐断我正在写的那个气泡】—— 2026-10-30 修
+       *
+       * 主人报：小鱼小鲸都启用时，发完消息屏幕上全空，非得 Ctrl+F5 才看得见。
+       *
+       * 原因就是原来这两行：她的话一落，就把 rec.bubble 置空。
+       * 可这一轮我还在往上写字，指针被掐了，后面全写进一个没人认领的地方 ——
+       * 屏幕上就是空白，刷新重拉历史才重新画出来。
+       * 现在改成：只要我这一轮的气泡还挂在页面上，就留着它，
+       * 她的话另起一个气泡，两边各写各的，互不打扰。
+       */
+      const _keepMine = !!(rec.bubble && rec.bubble.isConnected);
+      if (!_keepMine && rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
+      if (!_keepMine && rec.think) { rec.think.finish(); rec.think = null; }
       addWhaleBubble(p.who, p.text);
     } else if (kind === 'whale_start') {
       if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
@@ -10410,39 +10421,6 @@ document.getElementById('resetPersona').onclick = async () => {
   personaHint.textContent = '已恢复成默认内容，上一版留在 .state/persona.backup.md';
 };
 
-/**
- * 「把这版设为默认」—— 把输入框里现在这几条定成新的出厂默认。
- *
- * 2026-11-01 主人提的：「加一条，把设置里我改过的【底线】内容设为默认」。
- * 定完之后：以后再点「恢复默认底线」，回来的就是这一版；
- * 新装的机器、重置过的机器，拿到的也是这一版（存在 .state/defaults.json，不动代码文件）。
- * 空着不让定 —— 一条底线的默认等于没有底线，那比不定更糟。
- */
-document.getElementById('setDefaultBottomLines').onclick = async () => {
-  const btn = document.getElementById('setDefaultBottomLines');
-  const ta = document.getElementById('bottomLines');
-  const lines = String((ta && ta.value) || '')
-    .split('\n').map((s) => s.trim()).filter(Boolean);
-  if (!lines.length) {
-    bottomLinesHint.textContent = '输入框是空的 —— 一条底线都没有，不能把它当默认';
-    return;
-  }
-  btn.disabled = true;
-  bottomLinesHint.textContent = '正在定为默认…';
-  const r = await fetch('/api/settings/default-bottomlines', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bottomLines: lines }),
-  }).then((x) => x.json()).catch(() => null);
-  btn.disabled = false;
-  if (!r || r.error) {
-    bottomLinesHint.textContent = '没定成：' + (r && r.error ? r.error : '网络错误');
-    return;
-  }
-  bottomLinesHint.textContent = r.changed
-    ? '已设为默认（共 ' + r.bottomLines.length + ' 条）。以后「恢复默认底线」回到的就是这一版'
-    : '本来就是默认这一版，没动';
-};
 
 // 只把底线拉回默认那几条，安全词 / 人设 / 模型一概不动。点完立刻生效，不用再点保存。
 document.getElementById('resetBottomLines').onclick = async () => {

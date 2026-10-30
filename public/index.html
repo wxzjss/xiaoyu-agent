@@ -1567,6 +1567,27 @@
 .mdlKind:hover { border-color: var(--accent); }
 .mdlKind input { margin: 0; accent-color: var(--accent); }
 .mdlKind:has(input:checked) { border-color: var(--accent); background: rgba(240,166,160,.13); }
+/* 模型面板里那块「这一条怎么算钱」 */
+.priceBox {
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 9px;
+}
+.priceHead { display: flex; align-items: center; gap: 8px; }
+.priceTitle { font-size: 12.5px; color: var(--dim); }
+.priceGrow { flex: 1; }
+.priceCur { display: inline-flex; gap: 4px; }
+.priceCur label {
+  display: inline-flex; align-items: center; gap: 4px; margin: 0;
+  padding: 3px 9px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12.5px; cursor: pointer; user-select: none;
+}
+.priceCur label:has(input:checked) { border-color: var(--accent); background: rgba(240,166,160,.13); }
+.priceCur input { margin: 0; accent-color: var(--accent); }
+.priceGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.priceCell { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 12px; color: var(--dim); }
+.priceCell input { width: 100%; }
+.priceMul { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--dim); }
+.priceMul input { width: 90px; }
     .mdlForm .hint { display: block; margin-top: 5px; line-height: 1.6; }
     .mdlForm input[type=password] {
       width: 100%; background: #0f1319; color: var(--text); border: 1px solid var(--border);
@@ -2632,9 +2653,33 @@
             <span class="hint" id="mdlKindHint">出图那条走的是 /images/generations，跟聊天模型不是一个端点，别混着填。</span>
           </div>
           <div class="field">
-            <label>倍率（走中转站才要填）</label>
-            <input type="number" id="mdlMarkup" step="0.01" min="0.01" max="1000" placeholder="1" spellcheck="false" />
-            <span class="hint" id="mdlMarkupHint">1 = 照官方价算；打八折填 0.8，加价五成填 1.5。官方的直连（DeepSeek 官网、百炼…）不用动它。</span>
+            <label>这一条怎么算钱</label>
+            <div class="priceBox">
+              <div class="priceHead">
+                <span class="priceTitle">这一条自己填价（每百万 token）</span>
+                <span class="priceGrow"></span>
+                <span class="priceCur">
+                  <label><input type="radio" name="mdlPriceCur" value="cny" id="mdlPriceCny" checked /><span>￥</span></label>
+                  <label><input type="radio" name="mdlPriceCur" value="usd" id="mdlPriceUsd" /><span>$</span></label>
+                </span>
+              </div>
+              <div class="priceGrid">
+                <label class="priceCell"><span>输入 · 未命中缓存</span>
+                  <input type="number" id="mdlPriceIn" step="0.001" min="0" placeholder="留空" spellcheck="false" /></label>
+                <label class="priceCell"><span>输入 · 命中缓存（读缓存）</span>
+                  <input type="number" id="mdlPriceInHit" step="0.001" min="0" placeholder="留空" spellcheck="false" /></label>
+                <label class="priceCell"><span>输出</span>
+                  <input type="number" id="mdlPriceOut" step="0.001" min="0" placeholder="留空" spellcheck="false" /></label>
+                <label class="priceCell"><span>缓存写入（有才算）</span>
+                  <input type="number" id="mdlPriceCW" step="0.001" min="0" placeholder="留空" spellcheck="false" /></label>
+              </div>
+              <div class="priceMul">
+                <span>或者偷懒：填个倍率</span>
+                <input type="number" id="mdlMarkup" step="0.01" min="0.01" max="1000" placeholder="1" spellcheck="false" />
+                <span class="hint" id="mdlMarkupHint">1 = 照官方价算；打八折填 0.8。官方的直连不用动它。</span>
+              </div>
+              <span class="hint" id="mdlPriceHint">四格全空 = 照官方价（× 倍率）。填了哪一格，那一格就按你填的算 —— 填的是**最终价**，不再乘倍率。</span>
+            </div>
           </div>
           <div class="field">
             <label>模型名（API 里的 model）</label>
@@ -12035,12 +12080,78 @@ function markupOf(modelName) {
 }
 
 /**
+ * 找出这一轮该用哪条模型记录（好读它自己填的价目）。
+ *
+ * 跟 markupOf 一样按**真模型名**对，因为价目表也是按真名对的。
+ * 同名的有好几条（丸子一条、凌风一条）时优先「正在用的」那条 ——
+ * 这条的价是主人自己填的，用错一条就是把自己的账算错，所以要挑准。
+ */
+function pricedRow(modelName) {
+  const name = String(modelName || '').trim();
+  if (!name) return null;
+  try {
+    const list = (mdlState && Array.isArray(mdlState.models)) ? mdlState.models : [];
+    const hit = list.filter((m) => m && String(m.model || '').trim() === name && m.kind !== 'image');
+    if (!hit.length) return null;
+    const cur = hit.find((m) => m.id === mdlState.activeId);
+    if (cur) return cur;
+    // 没有「正在用的」（比如刚切过会话），就挑填了价的那条，一条都没填就返回第一条
+    const filled = hit.find((m) => {
+      const p = m.price || {};
+      return ['inMiss', 'inHit', 'out', 'cacheWrite'].some((k) => p[k] !== null && p[k] !== undefined);
+    });
+    return filled || hit[0];
+  } catch { return null; }
+}
+
+/**
+ * 这一条模型自己填的价目，换算成「元 / 每百万 token」。
+ *
+ * 【为什么这里要换算】主人填的时候可以选 ￥ 或 $（他从哪抄的牌价就照哪抄），
+ * 但算钱这一层统一用元。换完再往回显示时，显示层再按记账币种折一次 ——
+ * 中间只认「元」这一种，省得两边各换一次、换回来差一截。
+ *
+ * 四格里没填的保持 null，交给 costOf 回落「价目表 × 倍率」。
+ * @returns {{inMiss:number|null, inHit:number|null, out:number|null, cacheWrite:number|null}|null}
+ *   null = 这条压根没填价
+ */
+function priceOf(modelName) {
+  const row = pricedRow(modelName);
+  if (!row || !row.price) return null;
+  const p = row.price;
+  const filled = ['inMiss', 'inHit', 'out', 'cacheWrite'].some((k) => p[k] !== null && p[k] !== undefined);
+  if (!filled) return null;
+  const usd = String(row.priceCurrency || 'cny').toLowerCase() === 'usd';
+  const fx = Number(moneyFx) > 0 ? Number(moneyFx) : 0.14;
+  // $ → ￥：除以「1 元换多少美元」
+  const toCny = (v) => {
+    if (v === null || v === undefined) return null;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return usd ? n / fx : n;
+  };
+  return {
+    inMiss: toCny(p.inMiss),
+    inHit: toCny(p.inHit),
+    out: toCny(p.out),
+    cacheWrite: toCny(p.cacheWrite),
+  };
+}
+
+/**
  * 估这一轮花了多少钱。
  * @returns {{cost:number, off:boolean}|null} 认不出模型就是 null
  */
 function costOf(model, u, now) {
+  if (!u) return null;
+  // 主人自己填了价 → 那就照他填的算，不再去查价目表、也不再乘倍率。
+  // 他填的是「每百万 token 多少钱」，比官方牌价准 —— 他的账单就是这么结的。
+  const mine = priceOf(model);
+  if (mine && (mine.inMiss !== null || mine.inHit !== null || mine.out !== null)) {
+    return costWithPrice(mine, u, now);
+  }
   const rate = rateOf(model);
-  if (!rate || !u) return null;
+  if (!rate) return null;
   // 中转站的倍率：1 = 照官方价。这个数不来自价目表，来自模型面板里主人填的那一格。
   const markup = markupOf(model);
   // 分峰谷的：off.when 里那几个时段是「峰」，之外都按 off 那组便宜的算
@@ -12074,6 +12185,49 @@ function costOf(model, u, now) {
   const est = Boolean(rate.est || (rate.same && RATES[rate.same] && RATES[rate.same].est));
   // cache：命中率是「接口真报的」还是「按 98% 估的」。界面上得说清，别含糊。
   return { cost: c, off: !peak && Boolean(rate.off), est, cache: hasReal ? 'real' : 'guess', hitTok, missTok, markup };
+}
+
+/**
+ * 按「主人自己填的价」算这一轮的钱（单位：元 / 每百万 token）。
+ *
+ * 跟 costOf 里查价目表那条路是同一个算法，只是价从主人手里来：
+ *   命中缓存的输入用 inHit，没填就用 inMiss（他既然填空了，说明这家不分缓存价）；
+ *   未命中的输入用 inMiss；
+ *   输出用 out。
+ * 缓存写入（cacheWrite）这里算不进去 —— 它发生在「写」的那一刻，
+ * 而 usage 里只报「写入缓存了多少 token」的字段各家都不一样，宁可不算也不乱算。
+ *
+ * @param {{inMiss:number|null,inHit:number|null,out:number|null,cacheWrite:number|null}} p
+ */
+function costWithPrice(p, u, now) {
+  const pin = Number(u.prompt_tokens ?? 0);
+  const pout = Number(u.completion_tokens ?? 0);
+  const reportedHit = Number(u.prompt_cache_hit_tokens ?? u.cached_tokens ?? 0);
+  const reportedMiss = Number(u.prompt_cache_miss_tokens ?? 0);
+  const hasReal = reportedHit > 0 || reportedMiss > 0;
+  // 接口没报命中数时，按 98% 命中估 —— 跟走价目表那条路保持同一套估计，
+  // 免得主人填了价之后数字忽然跳一大截，以为填错了。
+  const hitTok = hasReal ? reportedHit : Math.floor(pin * 0.98);
+  const missTok = hasReal ? (reportedMiss || Math.max(0, pin - reportedHit)) : Math.max(0, pin - hitTok);
+  const per = 1e6;
+  const hitRate = p.inHit !== null ? p.inHit : (p.inMiss !== null ? p.inMiss : 0);
+  const missRate = p.inMiss !== null ? p.inMiss : hitRate;
+  const outRate = p.out !== null ? p.out : 0;
+  const c = (hitTok / per) * hitRate + (missTok / per) * missRate + (pout / per) * outRate;
+  const peak = inPeakWindow(null, now);
+  return {
+    cost: c,
+    off: false,
+    // 主人自己填的价，不是官方标价 —— 但也不是「估」：他自己抄的数最准。
+    est: false,
+    cache: hasReal ? 'real' : 'guess',
+    hitTok,
+    missTok,
+    markup: 1,
+    // 标记一下这条路的钱来自「自己填的价」，界面上那行小字要说清
+    own: true,
+    peak,
+  };
 }
 
 /**
@@ -14431,6 +14585,14 @@ const mdlKindImage = document.getElementById('mdlKindImage');
 const mdlKindHint = document.getElementById('mdlKindHint');
 const mdlMarkup = document.getElementById('mdlMarkup');
 const mdlMarkupHint = document.getElementById('mdlMarkupHint');
+// 「这一条怎么算钱」那四个格 + 币种（2026-11-03）
+const mdlPriceCny = document.getElementById('mdlPriceCny');
+const mdlPriceUsd = document.getElementById('mdlPriceUsd');
+const mdlPriceIn = document.getElementById('mdlPriceIn');
+const mdlPriceInHit = document.getElementById('mdlPriceInHit');
+const mdlPriceOut = document.getElementById('mdlPriceOut');
+const mdlPriceCW = document.getElementById('mdlPriceCW');
+const mdlPriceHint = document.getElementById('mdlPriceHint');
 const mdlFormHint = document.getElementById('mdlFormHint');
 const mdlCount = document.getElementById('mdlCount');
 const mdlNow = document.getElementById('mdlNow');
@@ -14619,7 +14781,32 @@ function openForm(model) {
       ? '这一家是官方直连，倍率留空（= 1）就行 —— 填了只会把账算错。'
       : '中转站收的是「官方价 × 它自己的倍率」。不知道填多少就先留空，回头查了它后台再补。';
   }
-  mdlKey.value = '';
+  // 价目回填：填过的四格 + 当时用的哪种钱。没填过就全空（= 照官方价）
+  {
+    const pr = (model && model.price) || {};
+    const setNum = (el, v) => {
+      if (!el) return;
+      const has = v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
+      el.value = has ? String(v) : '';
+    };
+    setNum(mdlPriceIn, pr.inMiss);
+    setNum(mdlPriceInHit, pr.inHit);
+    setNum(mdlPriceOut, pr.out);
+    setNum(mdlPriceCW, pr.cacheWrite);
+    const usd = String((model && model.priceCurrency) || 'cny').toLowerCase() === 'usd';
+    if (mdlPriceUsd) mdlPriceUsd.checked = usd;
+    if (mdlPriceCny) mdlPriceCny.checked = !usd;
+    paintPriceHint();
+  }
+    // 改动那几格时把提示跟着刷新一遍（oninput 比 onchange 顺手：打字时就变）
+  ['mdlPriceIn', 'mdlPriceInHit', 'mdlPriceOut', 'mdlPriceCW'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.oninput = paintPriceHint;
+  });
+  [mdlPriceCny, mdlPriceUsd].forEach((el) => {
+    if (el) el.onchange = paintPriceHint;
+  });
+    mdlKey.value = '';
   mdlKey.placeholder = model && model.hasKey
     ? `已保存 ${model.keyHint}，不改就留空`
     : 'sk-...';
@@ -14630,6 +14817,47 @@ function openForm(model) {
   paintModelPicker(mdlBase.value);
   mdlBasePreset.value = PROVIDERS.some((p) => p.base === (mdlBase.value || '').trim()) ? (mdlBase.value || '').trim() : '';
   mdlName.focus();
+}
+
+/**
+ * 价目那几格下面那句提示 —— 跟着币种和「填没填」变。
+ *
+ * 三种话：
+ *   1. 一格没填：照官方价（× 倍率），并说清填哪几格才有意义
+ *   2. 填了：说清按主人自己的数算、不再乘倍率
+ *   3. 选了 $ 但记账是 ￥（或反过来）：说清「存的是你填的数，显示时按记账币种折」
+ * 这些话不是装饰 —— 填错币种是最容易让人误解「钱怎么对不上」的一处。
+ */
+function paintPriceHint() {
+  if (!mdlPriceHint) return;
+  const val = (el) => {
+    if (!el) return null;
+    const raw = String(el.value || '').trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const filled = ['mdlPriceIn', 'mdlPriceInHit', 'mdlPriceOut', 'mdlPriceCW']
+    .map((id) => val(document.getElementById(id)))
+    .filter((v) => v !== null);
+  const usd = Boolean(mdlPriceUsd && mdlPriceUsd.checked);
+  const curWord = usd ? '$（美元）' : '￥（元）';
+  if (!filled.length) {
+    mdlPriceHint.textContent = '四格全空 = 照官方价目表算（再乘下面的倍率）。'
+      + '想精确就算一算：从这家的后台或者官网抄「每百万 token 多少钱」填进来。';
+    return;
+  }
+  const parts = ['按你填的 ' + curWord + ' 算（每百万 token），不再乘倍率。'];
+  const miss = val(mdlPriceIn);
+  const hit = val(mdlPriceInHit);
+  const out = val(mdlPriceOut);
+  if (hit === null && miss !== null) parts.push('命中缓存那格空着 → 命中时也按「未命中」的价算。');
+  if (miss === null && hit !== null) parts.push('未命中那格空着 → 没命中的输入按 0 算（便宜了）。');
+  if (out === null) parts.push('输出那格空着 → 输出不算钱（便宜了）。');
+  const bookCny = (typeof moneyCurrency === 'undefined' ? 'cny' : moneyCurrency) !== 'usd';
+  if (usd && bookCny) parts.push('记账用的是 ￥，显示时会按汇率折成元。');
+  if (!usd && !bookCny) parts.push('记账用的是 $，显示时会按汇率折成美元。');
+  mdlPriceHint.textContent = parts.join(' ');
 }
 
 function closeForm() {
@@ -14662,7 +14890,26 @@ function formPayload() {
   // 生图那条走另一个端点；不带着它，后端只能当聊天模型存，测连通也会问错地方
   payload.kind = (mdlKindImage && mdlKindImage.checked) ? 'image' : 'chat';
   // 倍率：空着就是 1（官方原价）。不做四舍五入到整数 —— 0.8 折很常见。
-  if (mdlMarkup) {
+  {
+    // 四格价目：填几格算几格，全空就不发（后端会当成「没填」，照官方价算）
+    const numOrNull = (el) => {
+      if (!el) return null;
+      const raw = String(el.value || '').trim();
+      if (!raw) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    };
+    const price = {
+      inMiss: numOrNull(mdlPriceIn),
+      inHit: numOrNull(mdlPriceInHit),
+      out: numOrNull(mdlPriceOut),
+      cacheWrite: numOrNull(mdlPriceCW),
+    };
+    const any = Object.values(price).some((v) => v !== null);
+    payload.price = any ? price : null;
+    payload.priceCurrency = (mdlPriceUsd && mdlPriceUsd.checked) ? 'usd' : 'cny';
+  }
+    if (mdlMarkup) {
     const mv = Number(String(mdlMarkup.value || '').trim());
     payload.markup = (Number.isFinite(mv) && mv > 0) ? mv : 1;
   }

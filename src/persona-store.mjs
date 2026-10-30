@@ -12,9 +12,12 @@
 // 旧文件原样留着不删（万一搬错了还能捞回来）。
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
 
 const STATE_DIR = join(config.dataDir, '.state');
+/** 小鲸那份出厂人设模板放在源码 src/ 下，跟小鱼的 persona/xiaoyu.md 各管各的 */
+const WHALE_DEFAULT_DIR = fileURLToPath(new URL('.', import.meta.url));
 
 /**
  * 按智能体分·2026-10-30
@@ -53,6 +56,13 @@ function indexFile() {
 }
 
 function baseFile() {
+  // 按谁的人设库取出厂模板·2026-10-30
+  // 小鲸以前借的是小鱼的 persona/xiaoyu.md，所以她那栏「默认人设」一点开满屏是小鱼的口吻。
+  // 现在各用各的：小鲸 → src/whale-default-persona.md，小鱼 → persona/xiaoyu.md。
+  if (_scope) {
+    const whaleDef = join(WHALE_DEFAULT_DIR, 'whale-default-persona.md');
+    if (existsSync(whaleDef)) return whaleDef;
+  }
   return join(config.root, 'persona', 'xiaoyu.md');
 }
 
@@ -70,10 +80,22 @@ const LEGACY_BACKUP = join(STATE_DIR, 'persona.backup.md');
  */
 const DEFAULTS_FILE = join(STATE_DIR, 'defaults.json');
 
+/**
+ * 默认人设也是「谁有谁的」·2026-10-30
+ * 主人报：「在小鲸的多套人设里，默认人设是小鱼」。
+ * 原来 DEFAULTS_FILE 全局就一份（.state/defaults.json，主人定过的小鱼版 973 字），
+ * 小鲸也跟着读那一份 → 她那边「默认人设」永远是小鱼。
+ * 现在：小鱼留老地方（旧数据一字节不搬），小鲸单独一份在自己的库里。
+ */
+function defaultsFile() {
+  const s = personaScope();
+  return s ? join(personasRoot(s), 'defaults.json') : DEFAULTS_FILE;
+}
+
 /** 读主人自定义的默认值；没有 / 坏了都当空对象 */
 function readDefaults() {
   try {
-    const raw = JSON.parse(readFileSync(DEFAULTS_FILE, 'utf8'));
+    const raw = JSON.parse(readFileSync(defaultsFile(), 'utf8'));
     return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   } catch {
     return {};
@@ -479,7 +501,7 @@ export function setPersonaAsBuiltinDefault(id) {
   let backup = null;
   if (before) {
     ensureDirs();
-    backup = join(STATE_DIR, 'persona.default.backup.md');
+    backup = join(personaScope() ? personasRoot(personaScope()) : STATE_DIR, 'persona.default.backup.md');
     try {
       writeFileSync(backup, before, 'utf8');
     } catch {

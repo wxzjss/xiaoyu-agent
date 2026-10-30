@@ -977,6 +977,19 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
 
   const { setFullAccess } = await import('./tools.mjs');
   const { logWhaleAction } = await import('./whale-presence.mjs');
+  // 【上锁】她这一趟还没跑完，就不许再起第二趟（见 __whaleRunning 的注释）
+  if (__whaleRunning.has(sessionId)) {
+    try { logWhaleAction('重复拦下：她这一趟还在跑，第二趟不起了'); } catch {}
+    try { dropWhaleSay(send); } catch {}
+    return;
+  }
+  __whaleRunning.set(sessionId, { at: Date.now() });
+  let __whaleUnlocked = false;
+  const __whaleUnlock = () => {
+    if (__whaleUnlocked) return;
+    __whaleUnlocked = true;
+    __whaleRunning.delete(sessionId);
+  };
   logWhaleAction('开始一次');
 
   /**
@@ -1054,6 +1067,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     dropWhaleSay(send);
   } finally {
     setFullAccess(false);
+    __whaleUnlock();  // 【放锁】她这一趟跑完/抛了都放开，下一轮才能再进
   }
 
   /**
@@ -1396,7 +1410,18 @@ function landWhaleSay({ session, sessionId, text, send = null, live = null }) {
        */
       for (let k = lastUserAt + 1; k < msgs.length; k++) {
         const m = msgs[k];
-        if (m && m.role === 'assistant' && !m._tale
+        /**
+         * 【她的话不能算「主流程已经答过了」】—— 2026-10-30 修
+         *
+         * 主人报：小鱼小鲸都启用时，屏幕上只剩小鲸，我的话一条都不显示。
+         *
+         * 原因就在这一行：判「这一轮有没有人答」时漏了 !m._whale。
+         * 于是她先插一句 → 被判成「主流程答完了」→ 我真正的回答
+         * 反而当成多余、被押到她后面、还挂着她的名字，界面上就只剩她。
+         * 上面 2026-10-27 那段注释本来就写了「以前只认我自己」，
+         * 这一步是漏做了，现在补回来。
+         */
+        if (m && m.role === 'assistant' && !m._tale && !m._whale
             && String(m.content ?? '').trim()) { iAnswered = true; break; }
       }
 
@@ -1595,6 +1620,19 @@ const LIVE_MAX_EVENTS = 20000;
 // In-flight turns: sessionId -> { ac: AbortController, done: Promise<void> }
 // 插话要先 abort，再等这一轮真的收尾（历史写完盘）后才能把新话接上去。
 const runningTurns = new Map();
+/*
+ * 【同一会话，她同一时刻只许跑一趟】—— 2026-10-30 修重复
+ *
+ * 主人报：小鱼小鲸都启用时，同一句话她会答两遍。
+ * 实测 whale-actions.log 20:45:30：两行「开始一次」时间完全相同 →
+ * 两次都「结束一次：成」→ 各说了一句，会话里就成了两条一样的话。
+ * 根因：whaleMaybeReply 有两处调用方（主流程收尾 / 让路分支），
+ * 各自都判「这该她说了」，于是同一轮把她叫起来两遍。
+ *
+ * 这里按会话加一把短锁：她正在跑的时候，第二个进来的直接退出，
+ * 不推流、不落盘、不花 token。锁在下面 finally 里放，抛了也会放。
+ */
+const __whaleRunning = new Map(); // sessionId -> { at }
 
 /**
  * 【押后箱：她说的话等着补】

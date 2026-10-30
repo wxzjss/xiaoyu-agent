@@ -85,7 +85,7 @@ function DEFAULT_DATA_HINT() {
  * 数据目录是不是真的「小鱼Agent 的数据目录」。
  *
  * 为什么加这道：2026-10-30 我在同一个 shell 里跑过测试探针，那探针设了
- *   MINI_AGENT_DATA=C:\Users\35453\AppData\Local\Temp\obprobe1
+ *   MINI_AGENT_DATA=<临时目录>\obprobe1
  * 环境变量留在了 shell 里。之后跑 sync-live，它老老实实照着环境变量算，
  * 把 102 个文件往那个临时目录里同步 —— 真正的安装版一个字节没动，
  * 而屏幕上刷满「差异 102 个」，看起来像正常同步。

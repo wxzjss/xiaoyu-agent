@@ -21,6 +21,7 @@ import { adminOn } from './admin-mode.mjs';
 import { isImagePath, readImageDataUrl } from './attach.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
+import { taskOn, listWorkers, noteWorker, finishWorker } from './task-mode.mjs';
 
 const LIMIT = 20000;
 
@@ -1497,6 +1498,104 @@ export const tools = [
       } catch (e) {
         return '折叠箱读不动：' + String(e?.message ?? e);
       }
+    },
+  },
+  {
+    name: 'spawn_worker',
+    description: '办事模式里派活用的：开一个临时 worker（子智能体），把一件具体的活交给它跑，它跑完把汇报原文带回来给你检查。它有自己的上下文，不占你的。'
+      + '\n\n【每次派活都要说清四样】要它做什么、什么算做成了、在哪儿干、不许碰什么。说不清就别派 —— 说不清说明你自己还没想明白。'
+      + '\n\n【它回来的是汇报，不是结论】拿只读工具核一遍再决定收不收：它说改好了就去读那个文件，它说跑通了就去看日志。别凭一句话采信。'
+      + '\n\n【没干对就退回给同一个 worker】别新开一个重做 —— 新脑子不知道之前踩过的坑。只有「这是另一件事」才新开。'
+      + '\n\n【这一档里你自己不动手】读文件、改代码、跑命令全交给 worker；你手上那几个工具是给你核账和管上下文用的。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: '这件活具体要干什么：哪个文件、改哪一处、跑什么命令。' },
+        name: { type: 'string', description: '给这个 worker 起个名，后面点它的名退回活儿要用。不填就按门牌号叫。' },
+        accept: { type: 'string', description: '什么算做成了 —— 写成能一眼验的条件，比如「npm run check 退出码 0」。' },
+        scope: { type: 'string', description: '在哪儿干：目录或文件。超出这个范围不许它碰。' },
+        forbid: { type: 'string', description: '不许碰什么，比如「别动 git 历史」「别改 public/」。' },
+        maxRounds: { type: 'number', description: '最多让它跑几轮工具循环，默认 60。小事 20 就够。' },
+      },
+      required: ['task'],
+    },
+    async run({ task, name, accept, scope, forbid, maxRounds }) {
+      const sid = ctxNow().sessionId || 'default';
+      if (!taskOn(sid)) {
+        return '【办事模式没开】这个会话现在不在办事模式里。要么让主人把顶栏那个按钮打开，要么你自己动手 —— 别装作派过活。';
+      }
+      const body = String(task || '').trim();
+      if (!body) return '没说要干什么（task 是空的）。';
+
+      const brief = [
+        body,
+        '',
+        '【这是派给你的活】',
+        accept ? ('做成什么样算成：' + String(accept).trim()) : '',
+        scope ? ('你只能在 ' + String(scope).trim() + ' 这一带活动，别的地方一律不许碰。') : '',
+        forbid ? ('不许碰：' + String(forbid).trim()) : '',
+      ].filter(Boolean).join('\n');
+
+      const reportAsk = [
+        '',
+        '【干完必须交一份汇报】就写这四行，一行一条，别写成文章：',
+        '做了什么：改了哪些文件、跑了什么命令',
+        '凭什么说成了：证据（输出、退出码、行号、截图路径）',
+        '哪儿没做到 / 我没把握的地方',
+        '还剩什么没干',
+      ].join('\n');
+
+      const nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
+      const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
+
+      const push = ctxNow().pushEvent;
+      if (typeof push === 'function') {
+        try {
+          push({ type: 'whale', who: '主智能体 → ' + nick, text: body, as: 'whale', tag: 'worker' });
+        } catch {}
+      }
+
+      let r;
+      try {
+        const { runSubagent } = await import('./subagent.mjs');
+        r = await runSubagent({
+          task: brief + reportAsk,
+          name: nick,
+          maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60,
+          allowWrite: true,
+        });
+      } catch (e) {
+        r = { ok: false, text: '子智能体没起来：' + String(e?.message ?? e) };
+      }
+
+      const text = String(r?.text || '').trim();
+      finishWorker(sid, w.id, { status: r?.ok ? 'reported' : 'failed', rounds: r?.rounds, tools: r?.tools, said: text });
+
+      if (typeof push === 'function') {
+        try {
+          push({ type: 'whale', who: nick + ' → 主智能体', text: text || '（它没说话）', as: 'whale', tag: 'worker' });
+        } catch {}
+      }
+
+      if (!r?.ok) {
+        return '【' + nick + ' #' + w.id + ' 没干成】它的原话：\n\n' + (text || '（它没说话）')
+          + '\n\n（先分清是活没说清还是真做不到。说得清就退回给它，别自己上手。）';
+      }
+      return '【' + nick + ' #' + w.id + ' 回来了】它的汇报原文（还热着，别急着采信 —— 拿只读工具核一遍再决定收不收）：\n\n' + (text || '（一句汇报都没写 —— 这本身就是问题，退回给它，要它按四行交）')
+        + '\n\n（收了就记一条账，没收就退回给同一个 worker。核账的读数别留太细，上下文本该由你管。）';
+    },
+  },
+  {
+    name: 'list_workers',
+    description: '看这个会话里有哪些 worker、各自什么状态、上次汇报了什么。办事模式下退回活儿要认准同一个 worker。',
+    parameters: { type: 'object', properties: {} },
+    async run() {
+      const sid = ctxNow().sessionId || 'default';
+      const ws = listWorkers(sid);
+      if (!ws.length) return '这个会话里还没有 worker。要干活就 spawn_worker 开一个。';
+      const line = (w) => '· #' + w.id + ' ' + String(w.name || '') + ' [' + String(w.status || '') + '] ' + String(w.task || '').slice(0, 60)
+        + (w.said ? ('\n   上次汇报：' + String(w.said).slice(0, 120).replace(/\n/g, ' ')) : '');
+      return '【这个会话的 worker】共 ' + ws.length + ' 个\n' + ws.map(line).join('\n');
     },
   },
 ];

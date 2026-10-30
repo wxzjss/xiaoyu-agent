@@ -2391,7 +2391,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>功能</b><span class="meta" id="featHint"></span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="sessTop">
         <span class="hint">关掉的功能，小鱼就拿不到对应的工具；下一句生效</span>
@@ -2410,7 +2410,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>设置</b><span class="meta">人设 · 底线 · 安全词</span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="dlgBody">
         <fieldset>
@@ -2617,7 +2617,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>模型</b><span class="meta" id="mdlCount"></span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="sessTop">
         <button type="button" class="primary" id="mdlAdd">＋ 添加模型</button>
@@ -2665,17 +2665,17 @@
               </div>
               <div class="priceGrid">
                 <label class="priceCell"><span>输入 · 未命中缓存</span>
-                  <input type="number" id="mdlPriceIn" step="0.001" min="0" placeholder="留空" spellcheck="false" /></label>
+                  <input type="number" id="mdlPriceIn" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
                 <label class="priceCell"><span>输入 · 命中缓存（读缓存）</span>
-                  <input type="number" id="mdlPriceInHit" step="0.001" min="0" placeholder="留空" spellcheck="false" /></label>
+                  <input type="number" id="mdlPriceInHit" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
                 <label class="priceCell"><span>输出</span>
-                  <input type="number" id="mdlPriceOut" step="0.001" min="0" placeholder="留空" spellcheck="false" /></label>
+                  <input type="number" id="mdlPriceOut" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
                 <label class="priceCell"><span>缓存写入（有才算）</span>
-                  <input type="number" id="mdlPriceCW" step="0.001" min="0" placeholder="留空" spellcheck="false" /></label>
+                  <input type="number" id="mdlPriceCW" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
               </div>
               <div class="priceMul">
                 <span>或者偷懒：填个倍率</span>
-                <input type="number" id="mdlMarkup" step="0.01" min="0.01" max="1000" placeholder="1" spellcheck="false" />
+                <input type="number" id="mdlMarkup" step="any" min="0.01" max="1000" placeholder="1" spellcheck="false" />
                 <span class="hint" id="mdlMarkupHint">1 = 照官方价算；打八折填 0.8。官方的直连不用动它。</span>
               </div>
               <span class="hint" id="mdlPriceHint">四格全空 = 照官方价（× 倍率）。填了哪一格，那一格就按你填的算 —— 填的是**最终价**，不再乘倍率。</span>
@@ -2799,7 +2799,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>会话</b><span class="meta" id="sessHint"></span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="sessTop">
         <button type="button" class="primary" id="sessNew">＋ 新会话</button>
@@ -2846,7 +2846,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>当前身份</b><span class="meta" id="idWho"></span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="idBody">
         <div class="idList" id="idList"></div>
@@ -2882,7 +2882,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>小鲸的人设</b><span class="meta">改一次，到处都用这一个她</span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="wpBody">
         <div class="wpTop">
@@ -2918,7 +2918,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b id="fpTitle">小鱼的人设</b><span class="meta" id="fpWho">这就是她自己 —— 改一次，全部会话都跟着变</span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="wpBody">
         <div class="wpTop">
@@ -2952,7 +2952,7 @@
     <form method="dialog">
       <div class="dlgHead">
         <b>智能体</b><span class="meta" id="agHeadHint">每个智能体都有自己的名字、人设和模型</span>
-        <button class="x" value="cancel">关闭</button>
+        <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="agBody">
         <div class="agList" id="agList"></div>
@@ -3053,7 +3053,7 @@
   <dialog id="qqDlg" class="dlg qqDlg">
     <div class="dlgHead">
       <b>QQ 小鱼</b><span class="meta" id="qqHeadHint">QQ 上找你说话的人，由她来应</span>
-      <button type="button" class="x" id="qqClose">关闭</button>
+      <button type="button" class="x" id="qqClose" data-close="1">关闭</button>
     </div>
     <div class="dlgBody qqBody">
       <!-- 第一格：连不连得上（凭据 + 开关） -->
@@ -3176,7 +3176,7 @@
   <dialog id="todoDlg" class="todoDlg">
     <div class="dlgHead">
       <b>任务清单</b><span class="meta" id="todoHint">一份 txt，我写，你想看就瞄一眼</span>
-      <button type="button" class="x" id="todoClose">关闭</button>
+      <button type="button" class="x" id="todoClose" data-close="1">关闭</button>
     </div>
     <pre class="todoTxtBox" id="todoTxtBox"></pre>
     <div class="dlgFoot">
@@ -12563,6 +12563,51 @@ function closeOtherDialogs(keepId) {
     if (!open.length) return;
     try { open[open.length - 1].close(); } catch {}
   });
+})();
+
+/**
+ * 面板右上角那个「关闭」。
+ *
+ * 【为什么不能靠表单的隐式提交】
+ * 那些面板的 form 都是 method="dialog"，里面的按钮默认是 submit，
+ * 点一下等于「提交表单然后关闭」。听着挺巧，可浏览器会先跑一遍原生校验：
+ * 只要有一个 input 校验不过（比如价目那格填了 0.0075、而 step 是 0.001），
+ * 这次提交就被拦下，**dialog 也就不关** —— 表现就是「点了没反应」。
+ *
+ * 2026-11-03 主人遇到的就是这个：填完价目点关闭，弹一句
+ * 「请输入有效值。两个最接近的有效值分别为0.007和0.008」，面板还杵在那儿。
+ *
+ * 现在两件事一起改了：
+ *   ① 按钮改成 type="button"，不再是 submit，不吃表单校验；
+ *   ② 点了直接 close() 自己那个 dialog —— 关面板是天经地义的事，
+ *      不该因为它旁边有格填得「不合规矩」就关不掉。
+ */
+(function installCloseButtons() {
+  const wire = () => {
+    document.querySelectorAll('button[data-close]').forEach((btn) => {
+      if (btn.__closeWired) return;
+      btn.__closeWired = true;
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const d = btn.closest('dialog');
+        if (!d) return;
+        try { d.close(); } catch {}
+        // 模型面板是有「关闭 = 收表单」语义的（closeForm 会把编辑态清掉），
+        // 这里补一声，免得下次点「添加模型」还带着上一次的输入。
+        try {
+          if (d.id === 'modelsDlg' && typeof closeForm === 'function') closeForm();
+        } catch {}
+      });
+    });
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire, { once: true });
+  } else {
+    wire();
+  }
+  // 面板是活的（有的地方会重建 DOM），隔一会儿补挂一次也不贵
+  window.__wireCloseButtons = wire;
 })();
 
 (function installDialogGuard() {

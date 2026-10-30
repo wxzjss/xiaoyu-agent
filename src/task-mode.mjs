@@ -109,46 +109,25 @@ function log(line) {
   }
 }
 
-/**
- * 【历史遗留 · 已并入专业模式，别再拿它做判断】
+/*
+ * 【这里原来有两个函数 taskOn / setTaskOn，2026-11-03 删了】
  *
- * 2026-11-03 之前这是「办事模式」独立的开关（顶栏第三颗按钮）。
- * 现在「谁动手」由 pure.mjs 的 doerOf() 说了算，判定链是
- * 功能页开关 → 这个会话的专业模式 → 这一档勾没勾。
+ * 它们是「办事模式」还独立成档时的开关。主人把这一档并进专业模式之后，
+ * 谁动手由 pure.mjs 的 doerOf() 说了算，这两个函数已经没有任何调用方 ——
+ * 留着就是第二套开关，迟早跟真开关判出两种结果。
  *
- * 这个函数只留给老测试和老数据用，也只在读得到老文件时才可能返回 true。
- * **新代码一律用 doerOf(sessionId) === DOER_WORKERS** —— 两个开关各自判断，
- * 迟早会判出两种结果，那正是这次要消掉的东西。
+ * 老数据（.state/task-mode.json）不读了。真要清，那个文件删掉就行，
+ * 删了不影响任何东西 —— 现在没人读它。
  */
-export function taskOn(sessionId) {
-  const sid = String(sessionId || 'default');
-  return readTable()[sid] === true;
-}
-
 /**
- * 【历史遗留】开 / 关老开关表。新代码用 pure.mjs 的 setDoer(sessionId, 'workers'|'self')。
+ * 【已废弃，别再用了】现在没有「哪些会话开着这一档」这回事了。
  *
- * 留着是因为：①老测试还在调它验花名册；②万一主人手上有老版本界面还在打这个接口。
- * 它现在唯一的真实作用是「关掉时清花名册」这一件事还是对的。
+ * 谁动手是 pure.json 里的表，想看就自己读 pure.json，或者对每个会话调 doerOf()。
+ * 这个函数留着只是怕别的地方还在 import（check-identifiers 会报未定义），一律返空。
  */
-export function setTaskOn(sessionId, on) {
-  const sid = String(sessionId || 'default');
-  const map = readTable();
-  const want = on === true;
-  if (want) map[sid] = true;
-  else delete map[sid];
-  const ok = writeTable(map);
-  log(`${want ? '开' : '关'} session=${sid} ok=${ok}`);
-  /* 关掉这一档 = 这个会话的子智能体全部注销（主人要的是「用完就没」）。 */
-  if (!want) wipeWorkers(sid);
-  return { ok, sessionId: sid, on: want && taskOn(sid) };
-}
-
-/** 现在哪些会话开着。 */
 export function taskSessions() {
-  return Object.keys(readTable());
+  return [];
 }
-
 /* ── 子智能体花名册 ────────────────────────────────────────────────
  *
  * 主人要「创建的子智能体仅当前会话可见与使用，用完或会话被删除后自动删除」。

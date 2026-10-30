@@ -156,7 +156,7 @@ import {
 } from './agents.mjs';
 // 管理员权限：按会话的开关键（见 admin-mode.mjs 文件头）。
 import { adminOn, setAdminOn, adminSessions } from './admin-mode.mjs';
-import { setTaskOn, taskInfo, forgetSession as forgetTaskSession } from './task-mode.mjs';
+import { wipeWorkers as wipeTaskWorkers, taskInfo, forgetSession as forgetTaskSession } from './task-mode.mjs';
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames } from './tools-screen.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
@@ -3829,7 +3829,7 @@ const server = createServer(async (req, res) => {
         if (!r.ok) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
       } else {
         setDoer(sid, 'self');
-        setTaskOn(sid, false); // 顺手清老表 + 清花名册（主人要「用完就没」）
+        wipeTaskWorkers(sid); // 主人要「用完就没」：关掉就把这个会话的 worker 名册清干净
       }
       return json(res, 200, { ok: true, ...taskInfo(sid) });
     } catch (e) {

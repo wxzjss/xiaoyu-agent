@@ -3975,6 +3975,61 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /**
+   * 登录二维码：面板上直接看、直接扫。
+   *
+   * 图从协议端自己的 cache/qrcode.png 读（WebUI 那套接口要 HMAC 凭证，外部签不出来），
+   * 状态靠 3001 通不通 + 图新不新来判。?inline=0 就只回时间戳不塞 base64，
+   * 免得面板每两秒轮询一次、每次都拖一张几十 KB 的图。
+   */
+  if (url.pathname === '/api/qq/onebot/qrcode' && req.method === 'GET') {
+    try {
+      const q = await import('./qq-qrcode.mjs');
+      const ob = await import('./qq-onebot.mjs');
+      const inline = new URL(req.url || '/', 'http://x').searchParams.get('inline') !== '0';
+      let protocol = { installed: false, running: false };
+      try {
+        protocol = await ob.protocolState();
+      } catch {}
+      const st = ob.oneBotStatus();
+      const online = st?.phase === 'online';
+      const qr = await q.loginQrcode();
+      const out = {
+        ok: true,
+        online,
+        phase: st?.phase || '',
+        protocol,
+        hint: q.qrcodeHint({ protocol, qr, online }),
+        staleMs: q.QR_STALE_MS,
+        qr: {
+          ok: qr.ok,
+          reason: qr.reason || '',
+          mtime: qr.mtime || 0,
+          ageMs: qr.ageMs ?? null,
+          width: qr.width || 0,
+          height: qr.height || 0,
+          size: qr.size || 0,
+        },
+      };
+      if (inline && qr.ok) out.qr.base64 = qr.base64;
+      return json(res, 200, out);
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  if (url.pathname === '/api/qq/onebot/protocol/qr-refresh' && req.method === 'POST') {
+    try {
+      const p = await import('../scripts/qq-protocol.mjs');
+      p.kill();
+      await new Promise((r) => setTimeout(r, 800));
+      const started = p.start();
+      return json(res, 200, { ok: true, ...started });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/qq/peers') {
     try {
       const { qqPeerList } = await import('./qq-bridge.mjs');

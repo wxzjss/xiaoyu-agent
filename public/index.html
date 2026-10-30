@@ -218,6 +218,19 @@
     .qqPeer .grow { flex: 1 1 auto; }
     .qqPeer .when { font-size: 11px; color: var(--dim); white-space: nowrap; }
 
+    /* 登录二维码那一块：图放中间，白底才扫得动 */
+    .qqQrBox { display: none; flex-direction: column; gap: 8px; margin-top: 4px; }
+    .qqQrBox.on, .qqQrBox.stale { display: flex; }
+    .qqQrBox.stale .qqQrShot { opacity: .45; }
+    .qqQrHead { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); }
+    .qqQrShot {
+      display: flex; align-items: center; justify-content: center;
+      width: 168px; height: 168px; border-radius: 10px; overflow: hidden;
+      background: #fff; border: 1px solid var(--border);
+    }
+    .qqQrShot img { width: 168px; height: 168px; display: block; image-rendering: pixelated; }
+    .qqQrEmpty, .qqQrDone { font-size: 12px; color: #888; padding: 0 10px; text-align: center; }
+
     /* #whaleBtn.on 那段 2026-11-02 随顶栏那颗「小鲸」按钮一起删了：
        小鲸的开关现在只剩左边「屋里的人」那颗牌（.whoBtn）。 */
     /* 顶栏「现在是谁在说话」的牌：青色系，跟小鱼/小鲸两种颜色都错开。
@@ -3018,6 +3031,15 @@
         <div class="qqHint" id="obHint">点「准备协议端」→ 自动装好并拉起，屏幕上会弹一个 QQ 窗口；
           用手机 QQ 扫那个码登录，WebSocket 会自动开在 ws://127.0.0.1:3001，
           再点「连上」就全通了。连上之后戳一戳、表情包、引用、群管理才全有 —— 这些官方接口给不了。</div>
+        <div class="qqQrBox" id="obQrBox">
+          <div class="qqQrHead">
+            <span>登录二维码</span>
+            <span class="qqGrow"></span>
+            <button type="button" class="ghost" id="obQrRefresh">换一张</button>
+          </div>
+          <div class="qqQrShot" id="obQrShot"><span class="qqQrEmpty">还没拿到二维码</span></div>
+          <div class="qqHint" id="obQrHint">扫这张码就行，不用再去找那个弹出来的 QQ 窗口。</div>
+        </div>
       </div>
 
       <!-- 第三格：挂到哪个会话 -->
@@ -9460,6 +9482,72 @@ async function refreshQqPanel() {
   let prep = null;
   try { prep = await qqApi('/api/qq/onebot/protocol'); } catch { prep = null; }
   paintOneBot(st.onebot, prep);
+  paintQrcode().catch(() => {});
+}
+
+/**
+ * 登录二维码 —— 面板上直接看、直接扫。
+ *
+ * 为什么不每次都把图塞回来：轮询两秒一次，图一张几十 KB，
+ * 所以先用 ?inline=0 只看时间戳变没变，变了才回来取一趟图。
+ */
+let qrPaintSeq = 0;
+let qrLastMtime = 0;
+let qrLastOnline = null;
+async function paintQrcode(force) {
+  const box = qqEl('obQrBox');
+  if (!box) return;
+  const seq = ++qrPaintSeq;
+  let info = null;
+  try { info = await qqApi('/api/qq/onebot/qrcode?inline=0'); } catch { info = null; }
+  if (seq !== qrPaintSeq) return;
+  const shot = qqEl('obQrShot');
+  const hint = qqEl('obQrHint');
+  if (!info || info.error) {
+    if (hint) hint.textContent = '读不到二维码：' + ((info && info.error) || '网络错误');
+    return;
+  }
+  if (hint) hint.textContent = info.hint || '';
+  const qr = info.qr || {};
+  const stale = !qr.ok || (qr.ageMs != null && qr.ageMs > (info.staleMs || 180000));
+  box.classList.toggle('on', !!qr.ok && !info.online);
+  box.classList.toggle('stale', !!qr.ok && stale && !info.online);
+  if (info.online) {
+    if (shot) shot.innerHTML = '<span class="qqQrDone">已经登上了</span>';
+    qrLastMtime = qr.mtime || 0;
+    return;
+  }
+  if (!qr.ok) {
+    if (shot) shot.innerHTML = '<span class="qqQrEmpty">还没拿到二维码</span>';
+    qrLastMtime = 0;
+    return;
+  }
+  // 图换了（或者头一次画、或者要求强制重画）才回头取一次 base64
+  if (shot && (force || qr.mtime !== qrLastMtime || !shot.querySelector('img'))) {
+    qrLastMtime = qr.mtime;
+    try {
+      const full = await qqApi('/api/qq/onebot/qrcode');
+      if (seq !== qrPaintSeq) return;
+      if (full && full.qr && full.qr.base64) {
+        shot.innerHTML = `<img alt="登录二维码" src="data:image/png;base64,${full.qr.base64}">`;
+      }
+    } catch {}
+  }
+  qrLastOnline = info.online;
+}
+
+/** 二维码这一块只在弹窗开着、且这条道开着的时候轮询，别在后台空转。 */
+let qrTimer = null;
+function startQrPoll() {
+  if (qrTimer) return;
+  qrTimer = setInterval(() => {
+    const dlg = document.getElementById('qqDlg');
+    if (!dlg || dlg.hidden) { stopQrPoll(); return; }
+    paintQrcode().catch(() => {});
+  }, 3000);
+}
+function stopQrPoll() {
+  if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
 }
 
 /**
@@ -9562,6 +9650,8 @@ async function openQqDlg() {
   await loadOneBotConf();
   await refreshQqPanel();
   if (!dlg.open) dlg.showModal();
+  startQrPoll();
+  paintQrcode().catch(() => {});
 }
 
 /** 第一格 + 第二格后半：凭据和白名单一起存。 */
@@ -9612,6 +9702,7 @@ async function saveQqBind() {
   const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   wire('qqClose', () => {
     const d = document.getElementById('qqDlg');
+    stopQrPoll();
     if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } }
   });
   wire('qqGateSave', async () => {
@@ -9689,9 +9780,36 @@ async function saveQqBind() {
       }
       const s = await qqApi('/api/qq/onebot/protocol/start', {});
       if (!s || s.error) { say('拉不起来：' + ((s && s.error) || '网络错误'), true); return; }
-      say('已经放出去了。看那个新弹出的 QQ 窗口，用手机 QQ 扫码登录；登进去之后回来点「连上」。');
+      say('已经放出去了。二维码就在下面这一格里，用手机 QQ 直接扫；登进去之后回来点「连上」。');
     } finally {
       await refreshQqPanel();
+    }
+  });
+
+  // 「换一张」：把协议端重开一遍，它自己会去要一张新码。
+  // 为什么不调 NapCat 的刷新接口：那套要 HMAC 签的凭证，外面签不出来（详见 src/qq-qrcode.mjs）。
+  wire('obQrRefresh', async () => {
+    const btn = qqEl('obQrRefresh');
+    const hintEl = qqEl('obQrHint');
+    if (btn) btn.disabled = true;
+    if (hintEl) hintEl.textContent = '正在让协议端换一张码…（大概十几秒）';
+    try {
+      const r = await qqApi('/api/qq/onebot/protocol/qr-refresh', {});
+      if (!r || r.error) {
+        if (hintEl) hintEl.textContent = '换不了：' + ((r && r.error) || '网络错误');
+        return;
+      }
+      qrLastMtime = 0;
+      // 给它十几秒重新扫码窗口，这期间每 2 秒看一次
+      let tries = 0;
+      const tick = async () => {
+        tries += 1;
+        await paintQrcode(true);
+        if (tries < 8) setTimeout(tick, 2000);
+      };
+      setTimeout(tick, 2000);
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
 

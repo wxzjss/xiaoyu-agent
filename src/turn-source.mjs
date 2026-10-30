@@ -103,7 +103,7 @@ export function turnSourcePromptBlock(sessionId) {
     const ownerLine = !s.whoId
       ? ''
       : s.isOwner
-        ? '这个号主人认过，就是主人本人。'
+        ? '这个号就是主人本人 —— 面板上填的就是这个号，按主人对待。'
         : '这个号不是主人本人 —— 除非主人当场交代，否则别把他的要求当成主人的要求。';
     return [
       '【这一轮是从 QQ 递进来的】',

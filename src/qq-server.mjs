@@ -139,8 +139,13 @@ export async function runQqTurn({ sessionId, text, fromQq, onEvent, replyTarget,
     // 署名只挂 _who —— 千万别顺手挂 _whoId。
     // _whoId 是「什么身份说的话」的记号（owner / fish / 自定义），界面上有别的用途；
     // 塞成 'owner' 就等于把 QQ 那头的人一律冒充成主人（2026-11-04 揪出来的旧账）。
+    //
+    // _thirdParty 是「这不是电脑前的那个人」的记号，合并相邻消息时按它分嗓子
+    // （见 merge-voice.mjs）。主人自己从 QQ 发的话也算 thirdParty —— 他在 QQ 上说的话
+    // 本来就不该和他在电脑前打的字搅成一句。
     const userMsg = { role: 'user', content: String(text ?? ''), _text: String(text ?? '') };
     if (fromQq && fromQq.name) userMsg._who = String(fromQq.name).slice(0, 20);
+    if (fromQq && (fromQq.openid || fromQq.name)) userMsg._thirdParty = true;
     history.push(userMsg);
     const firstUserTurn = history.filter((m) => m && m.role === 'user' && !m.context).length === 1;
     if (firstUserTurn && fromQq && fromQq.name) {

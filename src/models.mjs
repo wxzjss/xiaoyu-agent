@@ -8,6 +8,43 @@ const FILE = join(config.dataDir, '.state', 'models.json');
 const ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 export const ENV_ID = 'env';
 
+/**
+ * 一条模型是拿来干嘛的。
+ *
+ *   chat  —— 说话、干活（默认，走 /chat/completions）
+ *   image —— 出图（走 /images/generations）
+ *
+ * 为什么要分：生图模型当聊天模型用，上游会回一句人话、状态码 400
+ * （code 是 upstream_text_reply），看着像「坏了」，其实只是问错了端点。
+ * 分清楚之后，「测连通」也知道该去哪儿测。
+ */
+export const MODEL_KINDS = ['chat', 'image'];
+export const KIND_CHAT = 'chat';
+export const KIND_IMAGE = 'image';
+const normKind = (v) => (MODEL_KINDS.includes(String(v || '')) ? String(v) : KIND_CHAT);
+/**
+ * 中转站倍率。
+ *
+ * 【为什么要有这个东西】
+ * 丸子、凌风这类中转站，收的是「官方价 × 它的倍率」。
+ * 模型名跟官方一模一样（deepseek-v4.1-flash），价目表按名字一套就套到官方价上，
+ * 显示出来的钱跟实际扣的钱对不上 —— 有时差一两成，有时差一半。
+ *
+ * 【为什么不自动抓】
+ * 中转站没有统一的价格接口，倍率都在各家自己的后台页面里，抓不到也抓不准。
+ * 主人填一个数最实在：1 = 官方原价，0.8 = 打八折，1.5 = 加价五成。
+ *
+ * 【默认值】
+ * 没填 / 填了看不懂的东西 → 1（照官方价算）。宁可少说，也别瞎乘一个数。
+ */
+export function normMarkup(v) {
+  if (v === undefined || v === null || v === '') return 1;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 1;
+  // 一位小数够用了；上限压一下，免得手滑填个 10000 把账算飞
+  return Math.min(1000, Math.round(n * 1000) / 1000);
+}
+
 function readRaw() {
   try {
     const raw = JSON.parse(readFileSync(FILE, 'utf8'));
@@ -70,6 +107,10 @@ function publicView(m) {
     keyHint: m.apiKey ? `****${String(m.apiKey).slice(-4)}` : '',
     hasKey: Boolean(m.apiKey),
     readonly: false,
+    /** chat = 说话用的，image = 出图用的（界面据此分组、测连通据此挑端点） */
+    kind: normKind(m.kind),
+    /** 中转站倍率：1 = 照官方价，0.8 = 打八折。没填过就是 1 */
+    markup: normMarkup(m.markup),
     createdAt: m.createdAt ?? 0,
     updatedAt: m.updatedAt ?? 0,
   };
@@ -104,7 +145,9 @@ export function listModels() {
 export function activeEndpoint() {
   const { models, activeId } = readRaw();
   const pick = models.find((m) => m && m.id === activeId);
-  if (pick && pick.baseURL && pick.model) {
+  // 生图那条不能拿来「说话」：它没有聊天端点，硬发过去上游只会回一句人话 + 400。
+  // 万一 activeId 真指到它身上（老配置 / 手动改文件），这里退到一条能说话的。
+  if (pick && pick.baseURL && pick.model && normKind(pick.kind) !== KIND_IMAGE) {
     return {
       id: pick.id,
       name: pick.name || pick.model,
@@ -114,10 +157,10 @@ export function activeEndpoint() {
       source: 'user',
     };
   }
-  // 选中的是 .env 那条、可 .env 里没有 key（装成 exe 之后根本没有 .env 文件）：
-  // 这时候别报「API Key 不能为空」，退到界面里已经配好 key 的第一套模型。
-  if (!config.apiKey) {
-    const withKey = models.find((m) => m && m.baseURL && m.model && m.apiKey);
+  // 选中的是 .env 那条、可 .env 里没有 key（装成 exe 之后根本没有 .env 文件），
+  // 或者选中的是生图那条：别报「API Key 不能为空」，退到界面里已经配好 key 的第一套能说话的模型。
+  if (!config.apiKey || !pick) {
+    const withKey = models.find((m) => m && m.baseURL && m.model && m.apiKey && normKind(m.kind) !== KIND_IMAGE);
     if (withKey) {
       return {
         id: withKey.id,
@@ -175,6 +218,7 @@ function normalizeInput(input = {}) {
     baseURL,
     name: String(input.name ?? '').trim() || model,
     apiKey: String(input.apiKey ?? '').trim(),
+    markup: normMarkup(input.markup),
   };
 }
 
@@ -190,8 +234,12 @@ export function saveModel(input = {}) {
   if (id === ENV_ID) {
     const item = { id: newId(), ...fields, createdAt: now, updatedAt: now, fromEnv: true };
     if (!item.apiKey) item.apiKey = config.apiKey;
+    if (input.kind !== undefined) item.kind = normKind(input.kind);
+    // 生图那条不能顶替正在用的聊天模型，否则下一句话就没模型说了
+    const kind = normKind(item.kind);
     data.models.push(item);
-    data.activeId = item.id;
+    if (kind === KIND_CHAT) data.activeId = item.id;
+    else if (!data.activeId) data.activeId = data.models.find((m) => normKind(m.kind) === KIND_CHAT)?.id ?? null;
     data.hideEnv = true; // 存了副本就别再并列显示 .env 那条
     writeRaw(data);
     const view = publicView(item);
@@ -207,6 +255,10 @@ export function saveModel(input = {}) {
       ...fields,
       apiKey: fields.apiKey || prev.apiKey || '',
       id,
+      // kind 没传就保持原样（别把已经标成生图的默默改回聊天）
+      kind: input.kind !== undefined ? normKind(input.kind) : normKind(prev.kind),
+      // 倍率同理：这一版界面还没带这个字段的旧客户端，不该把填好的数冲成 1
+      markup: input.markup !== undefined ? normMarkup(input.markup) : normMarkup(prev.markup),
       updatedAt: now,
     };
     // 不擅自改用户正在用的那颗；只在压根没有指向时才补一个
@@ -216,10 +268,11 @@ export function saveModel(input = {}) {
   }
 
   if (!fields.apiKey) throw Object.assign(new Error('API Key 不能为空'), { status: 400 });
-  const item = { id: newId(), ...fields, createdAt: now, updatedAt: now };
+  const item = { id: newId(), ...fields, kind: normKind(input.kind), createdAt: now, updatedAt: now };
   data.models.push(item);
-  // 一句都没有可用的时候才自动选中新的；.env 能用的场合不偷偷切走用户正在用的那颗
-  if (!data.activeId && !envModel()) data.activeId = item.id;
+  // 一句都没有可用的时候才自动选中新的；.env 能用的场合不偷偷切走用户正在用的那颗。
+  // 生图那条永远不自动选中 —— 它说不了话，选中了下一句就发不出去。
+  if (item.kind === KIND_CHAT && !data.activeId && !envModel()) data.activeId = item.id;
   writeRaw(data);
   return publicView(item);
 }
@@ -266,7 +319,15 @@ export function selectModel(id) {
 
 /**
  * 试一下能不能连通：拿给的表单值优先，没填的用已存的；都不填就用当前生效的那套。
- * 只发一次极短的 chat 请求，不落盘、不影响正在用的模型。
+ * 只发一次极短的请求，不落盘、不影响正在用的模型。
+ *
+ * 两条路分开走（2026-11 加）：
+ *   chat  → /chat/completions 发一句 ping
+ *   image → /images/generations 画一张最小的图（1:1、最低档），能出图才算通
+ *
+ * 为什么生图不能沿用 chat 那条：生图模型往 /chat/completions 打，
+ * 上游会回一句人话 + 400（code=upstream_text_reply），界面就报「连不上」，
+ * 可它明明好好的 —— 只是问错端点了。
  */
 export async function testModel(input = {}) {
   const id = String(input.id ?? '').trim();
@@ -275,6 +336,12 @@ export async function testModel(input = {}) {
     baseURL: trimSlash(input.baseURL),
     apiKey: String(input.apiKey ?? '').trim(),
   };
+  // 表单里没传 kind 时，用那条已存的 kind 顶上（改地址不该把生图默默变回聊天）
+  let kind = input.kind !== undefined ? normKind(input.kind) : KIND_CHAT;
+  if (input.kind === undefined && id && id !== ENV_ID) {
+    const stored = readRaw().models.find((x) => x && x.id === id);
+    kind = normKind(stored?.kind);
+  }
   let ep;
   if (typed.model && typed.baseURL) {
     // 表单里填了新的：优先测表单，key 留空就沿用那条已存的
@@ -293,10 +360,13 @@ export async function testModel(input = {}) {
     ep = { baseURL: m.baseURL, apiKey: m.apiKey, model: m.model };
   } else {
     ep = activeEndpoint();
+    kind = KIND_CHAT;
   }
 
   if (!ep.baseURL || !ep.model) throw Object.assign(new Error('地址和模型名都要填'), { status: 400 });
   if (!ep.apiKey) throw Object.assign(new Error('API Key 不能为空'), { status: 400 });
+
+  if (kind === KIND_IMAGE) return await testImageModel(ep);
 
   const started = Date.now();
   let res;
@@ -313,10 +383,67 @@ export async function testModel(input = {}) {
   const ms = Date.now() - started;
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw Object.assign(new Error(`接口回了 ${res.status}：${text.slice(0, 300)}`), { status: 502 });
+    // 能把人话抠出来就抠出来，别甩一坨 JSON 给主人看
+    throw Object.assign(new Error(humanTextOf(text, `接口回了 ${res.status}`)), { status: 502 });
   }
   await res.text().catch(() => '');
-  return { ok: true, ms, model: ep.model, baseURL: trimSlash(ep.baseURL) };
+  return { ok: true, kind: KIND_CHAT, ms, model: ep.model, baseURL: trimSlash(ep.baseURL) };
+}
+
+/** 上游错误正文里那句人话（抠不出来就原样截一段）。 */
+function humanTextOf(text, fallback) {
+  const raw = String(text || '').trim();
+  if (!raw) return fallback;
+  try {
+    const j = JSON.parse(raw);
+    const msg = String(j?.error?.message ?? j?.message ?? '').trim();
+    const code = String(j?.error?.code ?? j?.code ?? '').trim();
+    if (msg) return code ? `${msg}（${code}）` : msg;
+  } catch {
+    /* 不是 JSON */
+  }
+  return `${fallback}：${raw.slice(0, 300)}`;
+}
+
+/**
+ * 生图那条的「测连通」：真去画一张最小的图。
+ *
+ * 为什么不只探端口：地址通、key 错、模型名错，三种毛病在端口上长得一模一样。
+ * 只有真出图才算通。代价是要等 30~40 秒，所以界面那边得说清楚「正在画」。
+ */
+async function testImageModel(ep) {
+  const started = Date.now();
+  let res;
+  try {
+    res = await fetch(`${trimSlash(ep.baseURL)}/images/generations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ep.apiKey}` },
+      body: JSON.stringify({ model: ep.model, prompt: 'a single blue dot', n: 1, size: '1024x1024' }),
+      signal: AbortSignal.timeout(180_000),
+    });
+  } catch (err) {
+    const msg = err?.name === 'TimeoutError' ? '等了 3 分钟还没出图' : `连不上：${err?.message ?? err}`;
+    throw Object.assign(new Error(msg), { status: 502 });
+  }
+  const ms = Date.now() - started;
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    throw Object.assign(new Error(humanTextOf(text, `接口回了 ${res.status}`)), { status: 502 });
+  }
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw Object.assign(new Error('回了 200，可正文不是 JSON —— 地址可能填到了聊天那面上'), { status: 502 });
+  }
+  const d = Array.isArray(json?.data) ? json.data[0] : null;
+  if (!d || (!d.b64_json && !d.url)) {
+    throw Object.assign(
+      new Error('回了 200，但没有图 —— 这个模型名在 /images/generations 上不出图，换个模型名试试'),
+      { status: 502 },
+    );
+  }
+  return { ok: true, kind: KIND_IMAGE, ms, model: ep.model, baseURL: trimSlash(ep.baseURL) };
 }
 
 /** 给提示词/顶栏用的一句话描述。 */

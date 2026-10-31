@@ -1258,11 +1258,6 @@
       background: transparent; color: var(--dim); cursor: pointer;
     }
     .ghost:hover { color: var(--text); }
-    .compressTag {
-      display: inline-block; font-size: 12px; color: var(--accent);
-      border: 1px solid var(--accent); border-radius: 999px; padding: 1px 9px; margin-left: 8px;
-      vertical-align: middle;
-    }
     .sessTop {
       display: flex; align-items: center; gap: 12px;
       padding: 12px 16px; border-bottom: 1px solid var(--border);
@@ -2379,7 +2374,7 @@
         当前思考强度：<span id="topThinkName">默认</span><span class="caret">▾</span>
       </button>
     </span>
-    <button id="pureBtn" title="专业模式：不发人设、不发规矩、历史涨到上限才压缩（会写摘要），另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
+    <button id="pureBtn" title="专业模式：不发人设、不发规矩，另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
     <!-- 2026-11-03【主人的话：「把办事模式并入专业模式里面」】
          原来这里挂着第三颗按钮（办事模式）。现在它并进专业模式了：
          这颗小按钮只在专业模式开着的时候出现，管的是「谁动手」——
@@ -2501,17 +2496,6 @@
               <label class="mdlKind"><input type="radio" name="moneyCur" value="usd" id="curUsd" /><span>$ 美元</span></label>
             </div>
             <span class="hint" id="curHint">只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。</span>
-          </div>
-        </fieldset>
-
-        <fieldset>
-          <legend>上下文自动压缩</legend>
-          <div class="field">
-            <label>历史涨到多少 token 就把旧对话折成摘要。<br>填 0 自动（小鱼自己看着办：宽裕时不压、占窗口一大半就压、拿不准时问小鲸），填多少压多少，填 off 关闭该功能</label>
-            <input type="text" id="contextLimit" inputmode="numeric" placeholder="0" spellcheck="false" autocomplete="off" />
-          </div>
-          <div class="field">
-            <span class="hint" id="contextLimitHint">改完点「保存」，下一句生效。</span>
           </div>
         </fieldset>
 
@@ -2796,7 +2780,7 @@
         <div class="optRow">
           <div class="optMain">
             <div class="optName">撞 429 自动回退<span class="optVal" id="r429Now">…</span></div>
-            <div class="optDesc">限流了先退避重试；连着撞几次就自动摘要当前会话、换个新会话接着干，不白等。</div>
+            <div class="optDesc">限流了先退避重试；连着撞几次就换个新会话接着干，不白等。</div>
           </div>
           <button type="button" class="switch" id="r429Sw">…</button>
         </div>
@@ -5319,8 +5303,8 @@ if (window.desktop) {
  * 专业模式（原「纯净模式」）。
  *
  * 开了之后服务端那边会：系统提示一个字都不发（人设、思考语言、说话规矩、
- * 安全词、人设档、会话记忆、前情、开场白全免），压缩时不生成摘要、
- * 旧对话直接丢；开场那两条也从发给模型的内容里摘掉。
+ * 安全词、人设档、会话记忆、前情、开场白全免），压缩时一律静默、摘要只由小鱼亲手写
+ * （程序不叫模型、不自刨）；开场那两条也从发给模型的内容里摘掉。
  *
  * 【2026-10-28 改成按会话启用】
  * 以前是全局一个开关，开一次所有会话全变。现在按会话各开各的：
@@ -5345,8 +5329,8 @@ function paintPureState(j) {
     pureBtn.classList.toggle('on', on);
     pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
     pureBtn.title = on
-      ? '专业模式开着（只对这个会话）：只发对话本身 + 一份「怎么干活」的规范，到上限才压缩、会写摘要（再点一下关掉）'
-      : '专业模式：不套人设、不念记忆、到上限才压缩（跟平常同一套压缩规则，会写摘要），还会给她一套「先查再说、找根因不猜、自己造证据」的规范。按会话各开各的 —— 只对这个会话生效（点一下开）';
+      ? '专业模式开着（只对这个会话）：只发对话本身 + 一份「怎么干活」的规范（再点一下关掉）'
+      : '专业模式：不套人设、不念记忆，只给她一套「先查再说、找根因不猜、自己造证据」的规范。按会话各开各的 —— 只对这个会话生效（点一下开）';
   }
 }
 
@@ -7374,19 +7358,9 @@ async function runTurn({ resume = false, text = '' } = {}) {
            * 只管重画表，不碰气泡。
            */
         } else if (ev.type === 'compressed') {
-          /* compressTag·2026-10-31 这个开关关着就把整块咽下去：不弹那一行，
-           * 但数字照旧更新（noteNewContent 还在最外面）。 */
-          if (compressTagOn()) {
-            // 压完上下文小了一截，球的数字得跟着掉下来，别还挂着压之前那个
-            const wrap = addEl('', 'msg user');
-            wrap.innerHTML = '<div class="role">上下文<span class="compressTag">已压缩</span></div>';
-            const b = document.createElement('div');
-            b.className = 'bubble';
-            b.textContent = `旧对话折成摘要了：约 ${ev.before} → ${ev.after} tokens，收起 ${ev.removed} 条`
-              + (ev.limit ? `（上限 ${ev.limit}，到 ${ev.trigger} 就压）` : '')
-              + (ev.error ? `（摘要失败：${ev.error}）` : '');
-            wrap.appendChild(b);
-          }
+          /* 【2026-10-31 · 静默压缩】主人要求：压缩静默，一个字都不弹。
+           * 原来这里会画一行「上下文 · 已压缩 / 旧对话折成摘要了…」。
+           * 现在只把数字刷新一下（球要跟着掉下来），聊天里不出现任何东西。 */
           noteNewContent();
         } else if (ev.type === 'aborted') {
           closeThink();
@@ -8140,7 +8114,9 @@ const parseLines = (s) => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
  * 自己现在到底什么时候会压。
  */
 async function paintCtxLimitNote() {
-  if (!contextLimitHint) return;
+  // 【2026-11-05】主人把「上下文自动压缩」这一栏从设置里删了，elCtxLimit 现在是 null。
+  // 这里两个都判一遍：没有那个输入框就没有「提示」可画，直接回去。
+  if (!contextLimitHint || !elCtxLimit) return;
   const raw = String(elCtxLimit.value || '').trim().toLowerCase();
   const base = '改完点「保存」，下一句生效。';
   try {
@@ -10443,10 +10419,13 @@ function fillSettings(s) {
   //   自动 -> 显示 0
   //   关闭 -> 显示 text（存盘里是 0，但 0 现在归「自动」了，所以关掉得写成 off）
   //   固定 -> 显示那个数字
-  if (s.contextLimit === 0) elCtxLimit.value = '0';
-  else if (s.contextLimit === Infinity) elCtxLimit.value = 'off';
-  else elCtxLimit.value = Number.isFinite(s.contextLimit) ? String(s.contextLimit) : '0';
-  paintCtxLimitNote();
+  // 这一栏已经被主人从设置里删掉了（2026-11-05）：没有输入框就什么都不用回填
+  if (elCtxLimit) {
+    if (s.contextLimit === 0) elCtxLimit.value = '0';
+    else if (s.contextLimit === Infinity) elCtxLimit.value = 'off';
+    else elCtxLimit.value = Number.isFinite(s.contextLimit) ? String(s.contextLimit) : '0';
+    paintCtxLimitNote();
+  }
 }
 
 /* 币种单选：立刻把预览换过来（钱数要等保存后才真存，这里只是让主人先看见效果） */
@@ -10532,9 +10511,15 @@ elWords.addEventListener('blur', () => {
   if (pretty && pretty !== elWords.value) elWords.value = pretty;
 });
 
-// 压缩阈值这栏是自由文本（能填数字、0、off），每改一次就重算一下「这到底是什么意思」
-elCtxLimit.addEventListener('input', () => { paintCtxLimitNote(); });
-elCtxLimit.addEventListener('change', () => { paintCtxLimitNote(); });
+// 压缩阈值这栏是自由文本（能填数字、0、off），每改一次就重算一下「这到底是什么意思」。
+// 【2026-11-05 真凶】这两行是加载时就执行的，而主人已经把那个输入框从设置里删掉了
+// → elCtxLimit 是 null → addEventListener 直接抛 TypeError → 整个脚本从这里停住，
+//   后面所有按钮的回调都没绑上、bootSessions 也没跑，屏幕全空、按钮全点不动。
+//   所以这里必须判一下：没有那个框就不挂监听。
+if (elCtxLimit) {
+  elCtxLimit.addEventListener('input', () => { paintCtxLimitNote(); });
+  elCtxLimit.addEventListener('change', () => { paintCtxLimitNote(); });
+}
 
 /* ---- 会话记忆 ------------------------------------------------------------
    以前顶栏有个「记忆」按钮能直接编辑本子，主人不要那个入口，删掉了。
@@ -10647,7 +10632,8 @@ document.getElementById('saveSettings').onclick = async () => {
     safeWordNote: elNote.value.trim(),
     // 原文交给后端解析：空 -> 默认 128000，0 / auto -> 自动档，off -> 关闭，数字 -> 那个数。
     // 这里不自己 Number()，否则 "off" 会变成 NaN 被后端当成「没填」。
-    contextLimit: elCtxLimit.value.trim(),
+    // 输入框没了（主人 2026-11-05 删的）：不传这一项，服务端按默认（自动档）算
+    contextLimit: elCtxLimit ? elCtxLimit.value.trim() : '0',
     // 记账用什么钱：'cny' / 'usd'。只影响显示，价目表不动。
     currency: (curUsd && curUsd.checked) ? 'usd' : 'cny',
     /* 【2026-10-30】外观：图标用哪套、聊天封面用哪张 */
@@ -11366,23 +11352,6 @@ function renderFeatList() {
   paintFeatNow();
 }
 
-/* compressTag·2026-10-31 功能页里那个「压缩提示」开关：关掉的话，
- * 压缩照常做，只是聊天里不再多出那一行「上下文·已压缩」。
- *
- * 【2026-11-04 修】这里原来读的是 f.on，而 /api/features 给的是 f.enabled ——
- * 两边字段名对不上，f.on 永远是 undefined，于是「!== false」永远成立，
- * 这个开关**从来就没真正关掉过**：关了还是照样弹「旧对话折成摘要了」。
- * 现在读 enabled，并且把两种写法都认一下，免得以后再有人改字段名。
- */
-function compressTagOn() {
-  try {
-    const list = (featState && (featState.features || featState.list)) || [];
-    const f = list.find((x) => x && x.id === 'compressTag');
-    if (!f) return true;                 // 拿不到就当开着，跟默认一致
-    const v = (f.enabled !== undefined) ? f.enabled : f.on;
-    return v !== false;
-  } catch { return true; }
-}
 
 async function loadFeatures() {
   const r = await fetch('/api/features').then((x) => x.json()).catch(() => null);

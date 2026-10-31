@@ -7756,7 +7756,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           } else if (did.length) {
             line += "；这一轮用了 " + did.slice(0, 6).join("、") + (did.length > 6 ? " 等" : "");
           }
-          appendDigest(sessionId, line);
+          if (!/^[【〔\[]/.test(String(said || '').trim())) { appendDigest(sessionId, line); }
           /**
            * 【同时把这一轮收进「当前状态」】—— 2026-11
            *
@@ -7770,11 +7770,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            *
            * 只保留最新的几条：「当前状态」越堆越长就不叫当前了。而且同一句不重复写。
            */
-          try {
-            const label = what.length ? what.slice(0, 3).join("、") : did.slice(0, 4).join("、");
-            const said_ = String(said || "").replace(/\s+/g, " ").trim().slice(0, 60);
-            if (said_) appendFixed(sessionId, "当前状态", said_ + (label ? "（" + label + "）" : ""));
-          } catch {}
+          // （重复的那段过滤已删，上面那处 if 就是唯一入口）
+          
         }
       } catch (e) {
           if (!e?.__skip) console.warn('[memory] 这一轮没记进本子：', String(e?.message ?? e));

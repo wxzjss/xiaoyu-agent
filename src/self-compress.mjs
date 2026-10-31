@@ -19,6 +19,7 @@
  */
 
 import { memoryText } from './my-memory.mjs';
+import { readMemory as readSessionMemory, appendDigest as appendSessionDigest } from './session-memory.mjs';
 
 /** 压缩记忆开头的记号，收的时候靠它认出「这是压缩写的」并取出存档编号。 */
 export const SELF_NOTE_TAG = '【压缩记忆';
@@ -108,15 +109,65 @@ export function acceptSelfNote(raw) {
   return { ok: true, text: body.slice(0, SELF_NOTE_MAX) };
 }
 
-/** 从记忆本里取出最近一条压缩记忆（合并时用）。 */
+/**
+ * 从记忆本里取出最近一条压缩记忆（合并时用）。
+ *
+ * 【2026-11-04 修死循环 · 最重要的那条】
+ *
+ * 这里原来读的是 `memoryText()` —— 那是**我自己**的长期记忆本（my-memory.md），
+ * 可压缩记忆是写进**这个会话自己的本子**（.state/memory/<sid>.md）的。
+ * 两边永远对不上，于是 lastSelfNote 一直返回空串：
+ *   · agent.mjs 每小时都以为「这一轮我还没写过压缩记忆」，把【该你自己压了】
+ *     一遍遍地塞进同一轮对话；
+ *   · 主人看到的正是「压完又超线又压」的死循环，
+ *     而记录里「尾巴最近 5 条」「最旧的 89 条」反复变 —— 因为每一轮都在重新探线。
+ *
+ * 现在改读会话本子。读不到就老实返回空串（也就照老路提醒）。
+ *
+ * @param {string} sessionId 会话 id —— 没有它就没法定位本子，直接返回空
+ */
 export function lastSelfNote(sessionId) {
+  const sid = String(sessionId || '').trim();
+  if (!sid) return '';
   try {
-    const t = memoryText() || '';
+    const t = readSessionMemory(sid) || '';
     const i = t.lastIndexOf(SELF_NOTE_TAG);
     if (i < 0) return '';
     return t.slice(i, Math.min(t.length, i + SELF_NOTE_MAX));
   } catch {
     return '';
+  }
+}
+
+/**
+ * 把我这一轮写的压缩记忆落到这个会话的记忆本里（滚动摘要区）。
+ *
+ * 【为什么需要它】原来只导出 acceptSelfNote（只做校验、不写盘），
+ * 而全项目**一处都没有调用它** —— 也就是说：我写了压缩记忆，程序压根没接，
+ * 下一轮 lastSelfNote 还是空，提醒照旧发。写和读这两头都断了。
+ *
+ * 落盘走 appendSessionDigest：它自带编号（R0001…）、自带查重、满 80 条自动归档，
+ * 而且「## 滚动摘要」本来就是给人回看的那一段，位置正好。
+ *
+ * @returns {{ok:boolean, text?:string, reason?:string, added?:boolean, skipped?:string}}
+ */
+export function saveSelfNote(sessionId, raw) {
+  const got = acceptSelfNote(raw);
+  if (!got.ok) return got;
+  const sid = String(sessionId || '').trim();
+  if (!sid) return { ok: false, reason: '没有会话 id，不知道该写进哪个本子' };
+  try {
+    // 摘要是给人看的一段话，压成一行：标题 + 提纲，别把整块 markdown 塞进一条摘要。
+    const oneLine = String(got.text)
+      .replace(/\r\n?/g, '\n')
+      .replace(/\n+/g, ' ⏎ ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 400);
+    const r = appendSessionDigest(sid, oneLine);
+    return { ok: true, text: got.text, added: r && r.added !== false, skipped: r && r.skipped };
+  } catch (e) {
+    return { ok: false, reason: '写不进本子：' + (e && e.message ? e.message : e) };
   }
 }
 

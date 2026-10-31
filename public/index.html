@@ -14174,7 +14174,22 @@ function renderTurns(turns) {
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         } else {
-          const wrap = addEl('', 'msg assistant', frag);
+          /**
+           * 【2026-11-04 根治「切会话/重启回来屏幕全清空」】
+           *
+           * 这里原来是 `const wrap = addEl(...)`，然后下面 `if (sameStem) { wrap = _contBubble; }`。
+           * 并气泡那次改动把「先建新气泡」写成了 const，可紧接着又要把它换成上一段的气泡 ——
+           * 一给 const 赋值就抛 `TypeError: Assignment to constant variable`。
+           *
+           * 而这个错是从 renderTurns 里抛出来的、没有任何地方接住，于是：
+           *   ① renderTurns 中断在第二条 assistant 上，聊天区只留下前面那一点点；
+           *   ② 异常一路冒到 switchSessionSafe 的 catch，它当成「切会话失败」返回 false；
+           *   ③ bootSessions 三次都失败 → 弹出「刚才没能自动回到上次的会话」，屏幕全空。
+           * 主人的证据也正好对得上：diag.log 里打点只到「解析完」，后面一条都没有。
+           *
+           * 改成 let + 先置空：只有真的不并气泡时才建新节点，省一个白建的 DOM。
+           */
+          let wrap = null;
           // 【2026-10-31 续接进同气泡】
           // 一次工具循环会往历史里写好几条 assistant，看着像「一句话一个气泡」。
           // 这里把同一串（中间没被主人打断）的话接进同一个气泡：话还是那些话，只是不再断开。
@@ -14193,6 +14208,7 @@ function renderTurns(turns) {
             _contBody = b;
             // 后接进来的那段不重复挂按钮，按钮只在第一段上
           } else {
+            wrap = addEl('', 'msg assistant', frag);
             wrap.innerHTML = '<div class="role">小鱼</div>';
             // 搜会话时靠这个下标把命中那条滚到眼前
             if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
@@ -14328,7 +14344,9 @@ if (rwGo) {
     rewindDlg.close();
     if (!r || r.error) { alert('回退失败：' + ((r && r.error) || '网络错误')); return; }
     // 界面按服务端给的有效历史重画
-    renderTurns(r.session.turns);
+    __mark('开始重画');
+  renderTurns(r.session.turns);
+  __mark('重画完');
     // 目标那句话填回输入框，改完再发就是「重新来一遍」
     const back = rwText.textContent;
     if (input && back && back !== '（这条没有文字）') {
@@ -14398,7 +14416,9 @@ async function switchSessionSafe(id) {
   try {
     return await Promise.race([
       switchSession(id),
-      new Promise((r) => setTimeout(() => r(false), 12000)),
+      // 【2026-10-31 修】12 秒太短：186 个 turn 重画 + 260KB 解析真会超。
+      // 慢不等于坏，宽限到 60 秒；真出错走下面的 catch，不打这儿的假失败。
+      new Promise((r) => setTimeout(() => r(false), 60000)),
     ]);
   } catch (e) {
     console.warn('[switchSessionSafe] 切会话出错:', e && e.message ? e.message : e);
@@ -14435,14 +14455,64 @@ async function switchSession(id) {
     } catch {}
   }
 
-  const r = await fetchTimed('/api/sessions/select', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id }),
-  }).then((x) => x.json()).catch((e) => {
-    console.warn('[switchSession] 切会话失败:', e && e.message ? e.message : e);
+  /**
+   * 【2026-10-31 主人报：重启回来弹「没能自动回到上次的会话」，可人其实还在这个会话里】
+   *
+   * 病根两处：
+   *   ① 上面 switchSessionSafe 是 12 秒硬砍，而 186 个 turn 的重画不是网络的活，
+   *      超了照样砍 → 报「没能回去」，可数据早回来了，人看着就是自相矛盾。
+   *   ② 这里 .then(x => x.json()) 把「解析」挂在超时保护外面，而且一有风吹草动
+   *      就 catch 成 null，只往 console 打一行 —— 主人和我都看不见真正的原因。
+   *
+   * 现在：网络给 30 秒；解析单独兜住，失败时把原文前 200 字也带上，能一眼看出
+   * 是服务端返了错页、还是数据太大解析崩了。
+   */
+  const __t0 = performance.now();
+  const __mark = (name) => {
+    const ms = Math.round(performance.now() - __t0);
+    console.log('[switchSession] ' + name + ' @ ' + ms + 'ms');
+    try {
+      fetch('/api/debug-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: 'switchSession', name, ms, sid: id }),
+      }).catch(() => {});
+    } catch {}
+  };
+
+  let __resp = null;
+  try {
+    __resp = await fetchTimed('/api/sessions/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }, 30000);
+  } catch (e) {
+    console.warn('[switchSession] 请求失败:', e && e.message ? e.message : e);
     return null;
-  });
+  }
+  __mark('响应头回来');
+
+  let __raw = '';
+  let r = null;
+  try {
+    __raw = await __resp.text();
+    __mark('读完正文(' + __raw.length + '字符)');
+    r = JSON.parse(__raw);
+    __mark('解析完(' + (r && r.session && r.session.turns ? r.session.turns.length : 0) + '个turn)');
+  } catch (e) {
+    // 这里以前只会静静地返回 null，主人看到的就是「切不过去」却不知道为什么。
+    const why = e && e.message ? e.message : String(e);
+    console.warn('[switchSession] 响应解析失败:', why, '原文前 200 字:', String(__raw).slice(0, 200));
+    try {
+      fetch('/api/debug-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: 'switchSession', name: '解析失败 ' + why + ' 原文:' + String(__raw).slice(0, 120), ms: -1, sid: id }),
+      }).catch(() => {});
+    } catch {}
+    return null;
+  }
   if (!r || r.error) {
     // 打不开这个会话（多半是它已经被删了，或多个窗口共用同一目录时被别的窗口改掉了）。
     // 以前是静默 return，人看着就是"点了一下，会话没了/没反应"。现在说一句、并刷新列表。

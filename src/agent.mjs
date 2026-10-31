@@ -26,7 +26,7 @@ import { pureModeOn, setPureToolLister, doerOf, DOER_WORKERS } from './pure.mjs'
 import { KEEP_TOOLS as TASK_KEEP_TOOLS } from './task-mode.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
-import { lastSelfNote, selfCompressHint } from './self-compress.mjs';
+import { lastSelfNote, saveSelfNote, selfCompressHint } from './self-compress.mjs';
 // 工具过程擦成结论：命令和整份代码擦掉，只留调查结果。
 import { thinHistory } from './trim-tools.mjs';
 // 清单：压缩记忆里要带「做到第几步」，所以得把清单读进来。
@@ -619,7 +619,12 @@ for (let round = 0; round < config.maxRounds; round++) {
       }
     }
 
-    const selfNote = lastSelfNote();
+    /**
+     * 【2026-11-04 修】lastSelfNote 现在必须带会话 id —— 压缩记忆写在本会话自己的
+     * 记忆本（.state/memory/<sid>.md）里，不带 id 就没法定位，只能一律当「没写过」，
+     * 于是每一轮都重复提醒、死循环。
+     */
+    const selfNote = lastSelfNote(sessionId) || lastSelfNote(ctxNow()?.sessionId || '');
     /**
      * 【清单读错了一个函数 —— 2026-10-30 修 · 干活鱼2 的 ⚠】
      *
@@ -995,6 +1000,25 @@ for (let round = 0; round < config.maxRounds; round++) {
         }
       }
       messages.push({ role: 'assistant', content: text });
+      /**
+       * 【2026-11-04 修「压缩死循环」的最后一环 · 写进去】
+       *
+       * 我这一轮要是真写了【压缩记忆·seg-xxx】，得当场落进这个会话的本子。
+       * 否则下一轮 lastSelfNote 还是空 → 又塞一次【该你自己压了】→ 又写一遍 → 又没存，
+       * 主人看到的就是「压完又超线又压」，一轮接一轮停不下来。
+       *
+       * 收不收得上由 acceptSelfNote 判（没编号 / 太短 / 顾问腔 / 没实字 一律不收，
+       * 收错了就是把自己压失忆，比不压更糟）。失败绝不连累这一轮。
+       */
+      try {
+        if (String(text || '').includes('【压缩记忆')) {
+          const sid = sessionId || ctxNow()?.sessionId || '';
+          const saved = saveSelfNote(sid, text);
+          if (!saved.ok && process.env.COMPRESS_DEBUG) {
+            console.log('[compress] 这条压缩记忆没收：' + saved.reason);
+          }
+        }
+      } catch { /* 存不进去就不存，这轮照常返回 */ }
       return { text, usage: usageTotal, lastUsage, files: outbox };
     }
 

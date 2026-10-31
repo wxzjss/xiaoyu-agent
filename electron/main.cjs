@@ -616,12 +616,57 @@ async function createWindow(updated = false) {
     } catch {}
   });
 
-  // 硬刷新兜底：Ctrl+F5 / F5 都能强制重载
+  /**
+   * 重载前先把「我在哪个会话」写死进 localStorage。
+   *
+   * 为什么要抢在 reload 之前做：重载会把页面里所有变量清掉，
+   * 回来时 bootSessions() 只能靠 localStorage 找回会话。
+   * 而 sessionId 是在页面脚本里才赋值的，某些时序下（刚点开一个新会话、
+   * 或者那一轮还在跑）它还没写进 STORE_KEY —— 那时候一重载就真的回不去了，
+   * 屏幕一片空白，主人以为「会话被清了」。
+   */
+  const SAVE_SESSION_SNIPPET = [
+    '(() => {',
+    '  try {',
+    '    const key = "mini-agent.sessionId";',
+    '    let cur = "";',
+    '    try { cur = (typeof sessionId === "string" && sessionId) ? sessionId : ""; } catch (e) {}',
+    '    if (!cur) cur = localStorage.getItem(key) || "";',
+    '    if (cur) localStorage.setItem(key, cur);',
+    '    return cur;',
+    '  } catch (e) { return ""; }',
+    '})()',
+  ].join(' ');
+
+  /**
+   * 键盘闸门。
+   *
+   * 【2026-11-01 主人报】「Ctrl+F5/F6/F7 会把会话和清单清掉」。
+   * 查下来 index.html 里压根没绑 F6/F7，main.cjs 也只拦了 F5 / Ctrl+R。
+   * 所以真凶是「硬重载」—— 重载回来没找回会话 = 屏幕空白 = 看着像被清了。
+   *
+   * 现在：
+   *   F6 / F7（含 Ctrl 组合）—— 一律拦死不做事。它们在这台机器上本来就没用途，
+   *                              拦掉不会少任何功能，却能杜绝手滑白屏。
+   *   F5 / Ctrl+R           —— 照旧硬重载，但先把会话 id 落死再走。
+   */
   win.webContents.on('before-input-event', (event, input) => {
     const key = String(input.key || '');
-    if (key === 'F5' || (input.control && key.toLowerCase() === 'r')) {
+    const low = key.toLowerCase();
+
+    if (low === 'f6' || low === 'f7') {
       event.preventDefault();
-      win.webContents.reloadIgnoringCache();
+      return;
+    }
+
+    if (key === 'F5' || (input.control && low === 'r')) {
+      event.preventDefault();
+      Promise.resolve()
+        .then(() => win.webContents.executeJavaScript(SAVE_SESSION_SNIPPET, true))
+        .catch(() => '')
+        .then(() => {
+          try { win.webContents.reloadIgnoringCache(); } catch (e) {}
+        });
     }
   });
 

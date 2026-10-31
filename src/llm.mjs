@@ -6,6 +6,9 @@ import { compressHistory, noteRealTokens } from './compress.mjs';
 import { endpointFor } from './models.mjs';
 import { getOverride } from './session-overrides.mjs';
 import { withTimeout, stallGuard, guardedStream, LLM_IDLE_MS } from './deadline.mjs';
+import { join } from 'node:path';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { config } from './config.mjs';
 
 /**
  * 这个错误是不是「连接被中途掐断」。
@@ -26,6 +29,118 @@ export function isStreamDropError(err) {
   if (/ECONNRESET|EPIPE|socket hang up|other side closed/i.test(causeMsg)) return true;
   if (/fetch failed/i.test(msg) && !/HTTP \d/.test(msg)) return true;
   return false;
+}
+
+/**
+ * 【上游把一整页 HTML 甩过来的时候，别照着念】
+ *
+ * 真发生过：网关挂了自己先崩，回一个 502 的 Cloudflare 错误页 ——
+ * `<!DOCTYPE html> … <title>windking.shop | 502: Bad gateway</title> …`。
+ * 我们不认识它是网页，截 500 字直接塞进「LLM HTTP 502: ...」抛给界面，
+ * 于是主人看到的是满屏 HTML 源码。既看不出哪家挂了，也不知道该等还是该改配置。
+ *
+ * 这里把 HTML、Cloudflare 那几个特殊码、纯空正文，统统翻成人话；
+ * 认不出来的才原样留着（原文会另存 diag.log，界面上只留短的一截）。
+ */
+
+const CF_REASONS = {
+  520: '网关那边回了个不认识的响应（Cloudflare 520）',
+  521: '网关的源站拒连（Cloudflare 521）',
+  522: '连网关的源站超时（Cloudflare 522）',
+  523: '网关的源站地址找不到（Cloudflare 523）',
+  524: '网关的源站回得太慢，超时了（Cloudflare 524）',
+  525: '和网关的源站 SSL 握手失败（Cloudflare 525）',
+  526: '网关的源站证书不对（Cloudflare 526）',
+};
+
+/**
+ * 网关类错误：这种情况下游一句话都没收到，重试和等往往比查配置有用。
+ * 422 不在此列 —— 那是我们发的东西不合规，得多试也是白试。
+ */
+export function isGatewayStatus(status) {
+  const n = Number(status) || 0;
+  return n === 502 || n === 503 || n === 504 || n === 520 || n === 521
+    || n === 522 || n === 523 || n === 524 || n === 525 || n === 526 || n === 527;
+}
+
+const GATEWAY_HINT = '这多半是那家网关自己挂了，不是你配错了 —— 等一会儿再试，或者先换个模型。';
+
+/** 从一段「可能是 HTML」的正文里，尽量抠出站点名和它自报的毛病。 */
+function htmlFacts(text) {
+  const t = String(text || '');
+  const truthy = [
+    /<title>([^<]{1,200})<\/title>/i.test(t) ? RegExp.$1 : '',
+    /<h1[^>]*>([^<]{1,200})<\/h1>/i.test(t) ? RegExp.$1 : '',
+    /<p[^>]*>([^<]{1,200})<\/p>/i.test(t) ? RegExp.$1 : '',
+  ];
+  const site = (() => {
+    const m = t.match(/\b([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+\.[a-z]{2,})\b/i);
+    return m ? m[1] : '';
+  })();
+  return { lines: truthy, site };
+}
+
+/**
+ * 把「HTTP 状态 + 上游原话」整理成一句能读的结果。
+ * @returns {{ text: string, gateway: boolean, looksHtml: boolean }}
+ */
+/**
+ * 上游报错的原件留一份在 diag.log 里（界面只看人话，但排查还得有原话）。
+ * 写不进去就算了 —— 记日志失败绝不许影响主流程。
+ */
+function noteUpstreamError(status, rawText, ep) {
+  try {
+    const dir = join(config.dataDir, '.state');
+    mkdirSync(dir, { recursive: true });
+    const who = [ep?.name, ep?.baseURL, ep?.model].filter(Boolean).join(' · ');
+    const line = new Date().toISOString() + ' [llm-upstream] HTTP ' + status
+      + (who ? ' ' + who : '') + ' :: ' + String(rawText ?? '').replace(/\s+/g, ' ').slice(0, 600) + NL;
+    appendFileSync(join(dir, 'diag.log'), line, 'utf8');
+  } catch { /* 记不上就算了 */ }
+}
+
+export function humanErrorOfUpstream(status, rawText) {
+  const status2 = Number(status) || 0;
+  const raw = String(rawText ?? '');
+  const gateway = isGatewayStatus(status2);
+  const looksHtml = /<\s*!?\s*DOCTYPE|<\s*html|<\s*head|<\s*title|<\s*style/i.test(raw);
+  // 正文压根没回来（网关连页面都不给）
+  if (!raw.trim()) {
+    return {
+      text: 'HTTP ' + status2 + (status2 ? ' ' : '') + '：上游一个字都没回。' + (gateway ? GATEWAY_HINT : ''),
+      gateway,
+      looksHtml: false,
+    };
+  }
+  // 认得出来是网页：从网页里抠话，抠不出来就报「是一整页 HTML」
+  if (looksHtml) {
+    const { lines, site } = htmlFacts(raw);
+    const said = lines.map((s) => String(s).replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const who = site ? '（' + site + '）' : '';
+    let why = cfReason(status2) || (said[0] || '页面自报了毛病，但抠不出能读的一句');
+    // 标题里常带着「站点 | 502: Bad gateway」这种，重复了就别写两遍
+    if (site && why.includes(site)) why = why.split('|').pop().trim() || why;
+    return {
+      text: 'HTTP ' + status2 + (status2 ? ' ' : '') + who + why + '\n' + GATEWAY_HINT
+        + '\n（上游回的是一整页 HTML 错误页，原文已经存进 diag.log，界面上就不铺开了。）',
+      gateway,
+      looksHtml: true,
+    };
+  }
+  // 普通 JSON / 纯文本：尽量把 error.message 抠出来
+  let said = "";
+  try {
+    const j = JSON.parse(raw);
+    said = String(j?.error?.message || j?.message || j?.detail || '');
+  } catch { said = ''; }
+  if (!said) said = raw.slice(0, 220);
+  const tail = gateway ? '\n' + GATEWAY_HINT : '';
+  return { text: 'HTTP ' + status2 + (status2 ? ' ' : '') + said.trim() + tail, gateway, looksHtml: false };
+}
+
+function cfReason(status) {
+  const n = Number(status) || 0;
+  return CF_REASONS[n] || '';
 }
 
 function headers(ep) {
@@ -171,6 +286,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
    * 压过一次还报同样的错，就不再死循环，老实抛给主人看。
    */
   let overflowTried = false;
+  let gatewayRetried = 0; // 网关 5xx 已经重试过几次（最多 2 次）
   for (let guard = 0; guard < 8; guard++) {
     const payload = withEffort(body, level).body;
     /**
@@ -201,6 +317,24 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
     lastStatus = r.status;
     lastText = await withTimeout(r.text().catch(() => ''), LLM_IDLE_MS, { what: '读上游的错误正文' });
     /**
+     * 【网关自己挂了：等多一两秒再敲一次门，别一次抖动就整轮白跑】
+     *
+     * 502/503/504、Cloudflare 那串 52x，全都是「上游此刻不行」，不是我们发错了。
+     * 实测那家网关抖动十几秒是常事，硬撞一次就报错，等于把主人的一句话白扔了。
+     * 422 不算 —— 那是我们发的东西不合规，重试多少次都一样。
+     */
+    if (isGatewayStatus(r.status)) {
+      noteUpstreamError(r.status, lastText, ep);
+      const tries = (typeof gatewayRetried !== 'undefined' ? gatewayRetried : 0);
+      if (tries < 2 && !overflowTried) {
+        gatewayRetried = tries + 1;
+        const waitMs = 1200 * gatewayRetried;
+        console.warn('[llm] 上游 ' + r.status + '，' + Math.round(waitMs / 100) / 10 + ' 秒后重试（第 ' + gatewayRetried + ' 次）');
+        await new Promise((ok) => setTimeout(ok, waitMs));
+        continue;
+      }
+    }
+    /**
      * 【上下文塞爆：先救一次，别一撞就死】
      * 上游回的窗口大小最可信，按它压一刀再重发；压完还报就认了。
      */
@@ -221,15 +355,16 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       }
     }
     if (!isThinkingUnsupported(r.status, lastText)) {
-      throw new Error(`LLM HTTP ${r.status}: ${lastText.slice(0, 500)}`);
+      const _he = humanErrorOfUpstream(r.status, lastText);
+      throw new Error(`LLM HTTP ${r.status}: ${_he.text}`);
     }
     // 模型不支持思考：退到「什么都不发」
-    if (!level) throw new Error(`LLM HTTP ${lastStatus}: ${lastText.slice(0, 500)}`);
+    if (!level) throw new Error(`LLM HTTP ${lastStatus}: ${humanErrorOfUpstream(lastStatus, lastText).text}`);
     level = null;
   }
 
   if (!res) {
-    throw new Error(`LLM HTTP ${lastStatus}: ${lastText.slice(0, 500)}`);
+    throw new Error(`LLM HTTP ${lastStatus}: ${humanErrorOfUpstream(lastStatus, lastText).text}`);
   }
 
   const acc = new Map(); // index -> {id, name, arguments}
@@ -356,10 +491,10 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
     lastStatus = res.status;
     lastText = await res.text().catch(() => '');
     if (!isThinkingUnsupported(res.status, lastText)) {
-      throw new Error(`LLM HTTP ${lastStatus}: ${lastText.slice(0, 500)}`);
+      throw new Error(`LLM HTTP ${lastStatus}: ${humanErrorOfUpstream(lastStatus, lastText).text}`);
     }
     if (!level) break;
     level = null;
   }
-  throw new Error(`LLM HTTP ${lastStatus}: ${lastText.slice(0, 500)}`);
+  throw new Error(`LLM HTTP ${lastStatus}: ${humanErrorOfUpstream(lastStatus, lastText).text}`);
 }

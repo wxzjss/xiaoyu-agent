@@ -1017,6 +1017,20 @@ export async function compressHistory({
   const summarySystem = process.env.COMPRESS_HER_SUMMARY === '0' ? SUMMARY_SYSTEM : HER_SUMMARY_SYSTEM;
 
   let summaryText = '';
+  /**
+   * 【2026-11-05 修：亲手写的那段为什么没被用上】
+   *
+   * 原来这三行写在上面那个 `if (dryPlan) { ... }` 块**后面**，可那个块是无条件
+   * `return` 的 —— 于是「我亲手写的那段」这一段赋值永远执行不到，
+   * `__selfNoteApplied` 就一直是 false。表现出来就是两件坏事凑在一起：
+   *
+   *   1. 每一轮都还去问摘要模型（主人原话：「不是外包给模型」）；
+   *   2. 摘要模型挂了之后走 fallbackSummary，往历史里塞「（这一段里主人没开过口，
+   *      全是自己在干）」那种程序腔，我亲手写的那份反而被扔了。
+   *
+   * 给它挪到 dryPlan 之前 —— dryPlan 只是探线，本来也不该走到这里来，
+   * 但既然它 return 得这么早，谁也别指望后面还能执行。
+   */
   // 【我亲手压】我的那段直接当摘要用 —— 模型一个字都不问。
   if (__selfNoteApplied) {
     summaryText = myNote;
@@ -1214,9 +1228,21 @@ export async function compressHistory({
   if (SUMMARY_MIN_CHARS > 0 && !fallbackUsed) {
     const cleaned = cleanSummary(summaryText);
     if (summaryText && cleaned) {
-      /** 只算实体字数：去掉空白和纯符号，防止拿一堆横杠和星号凑数。 */
-      const solid = cleaned.replace(/[\s\-*#>|`~]/g, "").length;
-      if (solid < SUMMARY_MIN_CHARS) {
+      /**
+       * 只算实体字数：去掉空白和纯符号，防止拿一堆横杠和星号凑数。
+       *
+       * 【2026-11-05 改：正文 + 标题一起算】
+       * 原来只算 `cleaned`（cleanSummary 洗过的那份）—— 而它会把
+       * 「【压缩记忆·seg-…】」这种标题行当噪声刮掉，于是一份 97 个字、
+       * 内容齐全的压缩记忆只数出 44 个实字，被 80 字的门槛判成「太短，这轮不压」。
+       * 我自己写的这份是 markdown 提纲，标题、`## 目标` 这些就是它的骨架 ——
+       * 数实字时不能只数正文，否则越规整越容易被判太短。
+       */
+      const solid = Math.max(
+        cleaned.replace(/[\s\-*#>|`~]/g, "").length,
+        String(summaryText).replace(/[\s\-*#>|`~【】]/g, "").length,
+      );
+      if (solid < SUMMARY_MIN_CHARS && !__selfNoteApplied) {
         summaryText = "";
         error = error || ("摘要只有 " + solid + " 个实字（少于 " + SUMMARY_MIN_CHARS + "），这轮不压");
       }
@@ -1225,6 +1251,35 @@ export async function compressHistory({
   if (!pure && summaryText && !cleanSummary(summaryText)) {
     summaryText = '';
     error = error || '摘要洗完什么都不剩（模型跑题），这轮不压';
+  }
+
+  /**
+   * 【2026-11-05 再加一道：亲手写的那段，洗空了也得拦】
+   *
+   * 上面那道闸门写的是 `!pure && summaryText && !cleanSummary(summaryText)` ——
+   * 只对「有摘要但洗空了」生效。而我亲手写的那段如果被 cleanSummary 洗空，
+   * 会掉进下面那个 `!summaryText` 的兜底分支，被程序自刨的清单顶掉 ——
+   * 等于「我明确说了不要外包给模型」，最后进历史的还是一份程序腔的东西。
+   * 自己写的不合格就别压（`summary-failed-need-self-note`），
+   * 下一轮重新提醒我写一遍，原文一条不动。
+   */
+  /**
+   * 【2026-11-05 真的抓到了】
+   *
+   * 实测：我亲手写的那段洗完只剩骨架行，正文全没了 —— 拿这个换掉一百多条原文，
+   * 比不压还糟。所以不跟它讲道理：洗完留下的实字不到原来六成，这一轮直接不压，
+   * 原文一条不动，下一轮重新写。
+   */
+  if (__selfNoteApplied && sameSolid(cleanSummary(summaryText), summaryText) < 0.6) {
+    return {
+      compressed: false,
+      before,
+      after: before,
+      limit: cap,
+      trigger,
+      reason: 'summary-failed-need-self-note',
+      error: error || '我亲手写的那段洗完什么都不剩，这轮不压 —— 下一轮重新写一遍',
+    };
   }
 
   if (!pure && !summaryText) {
@@ -1266,8 +1321,6 @@ export async function compressHistory({
   /**
    * 压缩后插进历史的那一条。
    *
-   * 【为什么 role 还是 user，但必须带 context: true】
-   *
    * 以前这条是裸的 `role: 'user'`，结果模型真的把它当成「主人说的话」——
    * 而摘要正文里写的全是上一轮她自己的口吻（「主人，这轮我把你提过的问题全过了一遍…」），
    * 于是模型看到的是「主人告诉我：我把问题过了一遍」。再压几次，历史里就堆了好几条
@@ -1301,7 +1354,45 @@ export async function compressHistory({
 /** 一行是不是「事实」：带数字 / 路径 / 文件名 / 命令的，基本可以信。 */
 /** 顾问腔：即使落在标签下的行里，带这些词的也不要。 */
 
+/**
+ * 洗前 / 洗后的实字比 —— 用来判「这段摘要被洗掉了多少」。
+ *
+ * 【为什么需要】2026-11-05 实测：我亲手写的 255 字压缩记忆进了历史只剩
+ * 「目标 / 清单 / 关键约束」三行，正文全没了。可 cleanSummary 本身对普通
+ * 中文行是原样保留的 —— 说明是别的地方在砍（渲染/落位/后续再洗）。
+ * 与其继续猜，不如在闸门这里量一下：洗完还剩几成，不到六成就当没写，
+ * 宁可这一轮不压，也不拿一副空骨架换掉一百多条原文。
+ *
+ * 传 `after` 为空直接返 0（全洗没了）。
+ */
+function sameSolid(after, before) {
+  const solid = (s) => String(s ?? '').replace(/[\s\-*#>|`~【】]/g, '').length;
+  const b = solid(before);
+  if (b <= 0) return 1;
+  return solid(after) / b;
+}
+
+/**
+ * 【2026-11-05 记一条审计】
+ *
+ * 上一轮实测：我亲手写的 255 字压缩记忆，进历史后只剩「目标 / 清单 / 关键约束」三行。
+ * 可 cleanSummary 对普通中文行明明是原样保留的 —— 说明还有别的东西在砍它。
+ * 把「进什么、出什么」各存一份到 .state/summary-audit/，下次直接对账，别再靠猜。
+ */
 function cleanSummary(text) {
+  const out = cleanSummary0(text);
+  try {
+    if (String(text ?? '').trim()) {
+      const d = join(config.dataDir, '.state', 'summary-audit');
+      mkdirSync(d, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      writeFileSync(join(d, stamp + '.json'), JSON.stringify({ at: stamp, in: String(text), out: String(out) }, null, 2));
+    }
+  } catch { /* 审计失败不许影响压缩 */ }
+  return out;
+}
+
+function cleanSummary0(text) {
   let s = String(text ?? '');
   if (!s) return s;
   // ── 先做通用的干净化 ────────────────────────────────
@@ -1321,13 +1412,43 @@ function cleanSummary(text) {
   // 不守格式 → 宽松模式：只按顾问腔/空话过滤，尽量保事实（老模型/换模型时的退路）。
   const rawLines = s.split('\n').map((l) => l.trim()).filter(Boolean);
   const tagHits = rawLines.filter((l) => SUMMARY_BLOCK_TAG.test(l)).length;
-  const strict = tagHits >= 2;
+  // 【2026-11-05 修】这条「我亲手写的压缩记忆」自己带 `## 目标 / ## 清单 / ## 关键约束`
+  // 这类 markdown 小节，`## ` 已被上面第（2）步剥掉，剩下的「目标」「清单」正好
+  // 撞上 SUMMARY_BLOCK_TAG（它本来是用来认模型那份四标签档案的）。
+  // 于是走「严格模式」，把小节下面的正文当「标签外的行」要求必须带数字 → 全被砍光，
+  // 255 字只剩三行骨架（实测，.state/summary-audit/ 里那份 in/out 对账就是）。
+  // 亲手写的那份**本来就不归它管**：它已经过了 acceptSelfNote 那一套（不许空话、
+  // 不许顾问腔、实字够多）。这里只做「去 markdown 记号 + 限长」，不做结构筛选。
+  /**
+   * 【2026-11-05 修：我亲手写的那份不归它筛】
+   *
+   * `## 目标 / ## 清单 / ## 关键约束` 剥掉 `## ` 之后，剩下的「目标」「清单」
+   * 正好撞上 SUMMARY_BLOCK_TAG（那是给模型那份四标签档案用的），于是走严格模式，
+   * 小节正文被当成「标签外的行」要求必须带数字 → 整行整行地砍掉。
+   * 实测：255 字进去，只剩「目标 / 清单 / 关键约束」三行骨架，
+   * 「- 做完了：探线、定位 renderTurns 的 const 重赋值」这种明明有字的行也没了
+   * （.state/summary-audit/ 里那份 in/out 对账就是铁证）。
+   *
+   * 亲手写的那份**已经**过了 acceptSelfNote（不许空话、不许顾问腔、实字够多），
+   * 这里不该再按别人的格式挑一遍。只做「去 markdown 记号 + 限长」。
+   */
+  const mine = /【压缩记忆/.test(s);
+  const strict = !mine && tagHits >= 2;
 
   /** 明显的「空话」开头：寒暄、评论、复述自己在干什么 */
   const noise = /^(我|你|好的|收到|明白|了解|嗯|当然|另外|不过|但是|同时|此外|所以|因此|总结来说|总的来说|主人说|小鱼回|这说明|这两件事|从第|需要|这种|这样|如果)/;
 
   let kept = [];
-  if (strict) {
+  if (mine) {
+    /**
+     * 【2026-11-05 新增：我亲手写的那份，原样留】
+     *
+     * 只砍「顾问腔」（那是我写歪了的信号），别的一行不许动 ——
+     * 上面那些「标签外的行必须带数字」的规矩是给模型那份档案用的，
+     * 用在我自己的提纲上，砍掉的全是真话。
+     */
+    kept = rawLines.filter((line) => !SUMMARY_ADVISOR.test(line));
+  } else if (strict) {
     // 严格模式：认标签。标签下的每一行都留（只砍顾问腔），
     // 标签外的行必须「像事实」（带数字/路径）才留 —— 那是模型的额外补充。
     // 注意：标签下的行不再要求含数字，否则「合流时排除 system 和 context」这种

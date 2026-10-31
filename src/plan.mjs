@@ -1,13 +1,13 @@
 // Autopilot: the multi-step task board (plan + notes) that survives across turns.
 // Ported from the autopilot skill: plan / note / progress injection.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 
 const DIR = join(config.dataDir, '.state', 'plan');
 // txt 清单目录：每个会话一份（以前是全体共用一份，谁最后动谁说了算）
 const TXT_DIR = join(config.dataDir, '.state', 'plan');
-const MAX_STEPS = 30;
+const MAX_STEPS = 200;   // 【2026-10-31 清单只增不减】：30 步太容易撞顶后被截，放宽到 200
 const MAX_NOTES = 40;
 const MAX_PROMPT_CHARS = 900;
 
@@ -34,6 +34,45 @@ function clean(v, max) {
 function txtFileFor(key) {
   const safe = String(key || 'default').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 80) || 'default';
   return join(TXT_DIR, `${safe}.txt`);
+}
+
+/** 【2026-10-31 清单活档案】
+ * 每个会话一份「活档案」：只追加、永不覆盖。
+ * 主人遇到过清单被一次 create 砍成 6 条（原本 25 条），靠 _history 归档才捞回来。
+ * 从今往后，任何一步的增/改/删都往这份 .board.md 里记一笔，谁砍了都能照它重建。
+ */
+function boardFileFor(key) {
+  const safe = String(key || 'default').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 80) || 'default';
+  return join(DIR, safe + '.board.md');
+}
+
+/** 把这一刻的清单快照追加进活档案（只追加，从不覆盖） */
+function appendBoard(key, state, why) {
+  try {
+    if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+    const f = boardFileFor(key);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+      + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+    const { done, total } = progress(state);
+    let out = '';
+    if (!existsSync(f)) {
+      out += '# 任务清单活档案\n';
+      out += '这份文件只增不删，是清单的最后一道保险。\n';
+      out += '清单要是被谁砍了，照这份从最新一条往上一段一段重建就行。\n';
+    }
+    out += '\n## ' + stamp + ' · ' + (why || 'sync') + ' · ' + done + '/' + total + '\n';
+    out += '目标：' + (state.goal || '（没写）') + '\n';
+    if (!state.steps.length) out += '（此刻清单是空的）\n';
+    for (const st of state.steps) {
+      out += '- [' + (st.status === 'done' ? 'x' : st.status === 'skipped' ? '-' : ' ') + '] '
+        + st.id + '. ' + st.text + (st.note ? '（' + st.note + '）' : '') + '\n';
+    }
+    appendFileSync(f, out, 'utf8');
+  } catch {
+    // 记档案失败不影响主流程
+  }
 }
 
 function fileFor(key) {
@@ -152,6 +191,8 @@ function savePlan(key, state) {
 
 /** 把某个会话的清单同步写成那份共用 txt（谁最后动谁说了算） */
 function syncTxt(key, state) {
+  // 【2026-10-31 清单活档案】：每次落盘顺手往只增不删的 .board.md 记一笔
+  appendBoard(key, state, 'sync');
   try {
     if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
     const { done, total } = progress(state);
@@ -242,12 +283,21 @@ export function planAction(key, args = {}) {
       .filter(Boolean)
       .slice(0, MAX_STEPS);
     if (!steps.length) return { text: 'ERROR：create 需要 steps（字符串数组，一句一步）', state };
-    // 旧清单先留档，再建新的——主人说过「清单不能丢」，不许再无声顶掉
-    if (state.steps.length) archivePlan(key, state, 'create');
-    const fresh = steps.map((text, i) => ({ id: i + 1, text, status: 'pending', note: '' }));
-    // 防丢闸：钉死的老任务自动接驳到新清单后面，不会因为「新建清单」消失
-    const keep = (state.steps || []).filter((st) => st && st.pinned && !fresh.some((f) => f.text === st.text));
-    const merged = [...fresh, ...keep];
+    // 【2026-10-31 清单只增不减】
+    // 主人原话：「清单内容只可增加，无论是否做完，清单内容全部保留，清单内容严禁删除，严禁覆盖」。
+    // 所以 create 不再是「推倒重来」，而是「往后面接」：
+    //   ① 老步骤一条不动，原样留着（完成的也留着，带勾）
+    //   ② 新步骤接在后面，跟老的重复的跳过
+    //   ③ 真的一条都没接上（全重复）就照实说，不假装新建了
+    if (state.steps.length) archivePlan(key, state, 'create-append');
+    const have = new Set((state.steps || []).map((st) => String(st.text || '').trim()));
+    const fresh = steps.filter((t) => !have.has(String(t).trim()));
+    const skipped = steps.length - fresh.length;
+    const base = (state.steps || []).slice();
+    const merged = [...base, ...fresh.map((text) => ({ text, status: 'pending', note: '' }))];
+    if (!fresh.length && base.length) {
+      return { text: ('新给的 ' + steps.length + ' 步清单上全都有了，没有重复记一遍。\n' + formatPlan(state)), state };
+    }
     const next = {
       goal: clean(args.goal, 300) || state.goal,
       createdAt: Date.now(),
@@ -256,8 +306,8 @@ export function planAction(key, args = {}) {
       notes: state.notes,
     };
     savePlan(key, next);
-    const tip = keep.length ? `\n（钉死的 ${keep.length} 条老任务已自动接在后面，没丢）` : '';
-    return { text: `清单建好了：\n${formatPlan(next)}${tip}`, state: next };
+    const tip = skipped > 0 ? `\n（有 ${skipped} 条之前就在清单上，没重复记）` : '';
+    return { text: `清单接上了（老的一步没删）：\n${formatPlan(next)}${tip}`, state: next };
   }
 
   if (action === 'update' || action === 'step' || action === 'mark') {

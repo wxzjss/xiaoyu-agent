@@ -177,6 +177,7 @@ import {
 } from './identity.mjs';
 // 同一个人连着说 → 拼成一段。实现在 merge-voice.mjs，抽出去是为了能真跑一遍验。
 import { mergeSameVoice } from './merge-voice.mjs';
+import { extractInlineImages } from './gen-image.mjs';
 // 专业模式开关（见 pure.mjs）
 import { pureModeOn, pureFeatureOn, pureButtonOn, purePressedMode, setPureMode, pureSystemPrompt, doerOf, setDoer } from './pure.mjs';
 import { purifyWire } from './compress.mjs';
@@ -3141,7 +3142,18 @@ const server = createServer(async (req, res) => {
     // 「还在跑」以真正登记在跑的轮次为准，不能只看这份缓存标记。
     // 缓存只活在内存里：进程一崩/一重启，那份 done=false 就留在了旧对象上；
     // 界面照着它当「还在跑」，就会一直等一条永远不会来的回复。
-    const alive = runningTurns.has(sid);
+    // 【2026-10-31 挂死轮清理】：登记的那一轮其实早就被停掉了（ac 已 abort），
+    // 却因为收尾时判断「不是我登记的」而没删 —— 前端就一直以为她还在干，
+    // 输入框锁着、消息发不出去，非得刷新页面才缓过来。这里顺手清掉。
+    let alive = runningTurns.has(sid);
+    if (alive) {
+      const reg = runningTurns.get(sid);
+      if (reg && reg.ac && reg.ac.signal && reg.ac.signal.aborted) {
+        try { runningTurns.delete(sid); } catch {}
+        alive = false;
+        try { diagLog('stale-turn-cleared', sid); } catch {}
+      }
+    }
     return json(res, 200, {
       sessionId: sid,
       running: alive && !live.done,
@@ -7609,6 +7621,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           // 边收边存草稿：进程被杀 / 断电时，已经说出来的字不至于全丢。
           // 正式历史仍然只在整轮跑完后接（commitWireBack），草稿只是保险。
           if (ev.type === 'text') {
+            // 【2026-10-31 拦截内联大图】
+            // 有的生图模型不在 /images/generations 出图，而是把整张 PNG 的 base64
+            // 塞进聊天正文：![image_1](data:image/png;base64,...) —— 一次能到 266 万字符。
+            // 直接放进 draftText 会：①界面涌出一堆英文字母 ②上下文被撑爆 ③每段都重写盘，卡死。
+            // 这里当场把这种内联图抠出来存文件，正文里只留一句人话。
+            if (ev.text && ev.text.indexOf('data:image/') >= 0) {
+              try {
+                const _ex = extractInlineImages(String(ev.text), 'inline');
+                if (_ex.images.length) {
+                  for (const im of _ex.images) {
+                    try { sentFiles.push({ path: im.path, kind: 'image' }); } catch {}
+                  }
+                  ev = { ...ev, text: _ex.text };
+                }
+              } catch {}
+            }
             draftText += ev.text;
             // 同步到 reg.draft：进程兜底退出前会读它补写最后一份，见 installGuards
             if (reg.draft) reg.draft.text = draftText;
@@ -8652,74 +8680,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
   }
 
 
+  /**
+   * 【2026-10-31 「清空当前」已下线】
+   *
+   * 主人原话：「把【清空当前】按钮以及对应效果删除，我严重怀疑就是因为这个的原因清空的」。
+   * 前端按钮和调用已经整块拆掉；这儿留一个明确的拒绝，
+   * 万一以后有旧页面 / 别的代码还在调它，也不会悄悄把记录清掉。
+   *
+   * 真要清空，去会话面板里删那一整个会话 —— 那一步有确认、看得见。
+   */
   if (req.method === 'POST' && url.pathname === '/api/reset') {
-    const { sessionId = 'default' } = await body(req).catch(() => ({}));
-    /**
-     * 「清空当前」= 原地清空这个会话的聊天记录，只留开场白。
-     *
-     * 主人的原话（2026-10-31）：右上角【清空当前】按下去，要「清空当前会话除开场白以外的
-     * 聊天记录（不清岁月史书），相当于重新开始一个会话」。
-     *
-     * 所以这里不再删会话、不再新建 id：
-     *   · 会话 id、创建时间、标题、记忆本子全都留着（记忆和岁月史书一概不动）；
-     *   · messages 只留下 system 那几条 + 开头那段开场白（openingSpan 按位置认，
-     *     带记号锁：openings.json 里没记过这个会话就一条都不留，绝不误删主人自己的话）；
-     *   · 会话上挂的临时状态（_openingUser / _whale / _openingPending 之类）一起清掉，
-     *     免得清完还拖着上一轮的残影。
-     *
-     * 找不到开场白（没开过场 / 人设没配开场白）就退回成「只留 system」，
-     * 效果仍然是「重新开始一个会话」。
-     */
-    const session = getSession(sessionId);
-    if (!session) return json(res, 404, { error: '会话不存在' });
-
-    // 【先挂记号再动 messages】—— saveSession 的合流逻辑会看 session._wipe，
-    // 而老的临时字段清理在下面才跑，所以必须在这里先置上，免得中途有任何一次
-    // 提前落盘把磁盘上的旧对话当「插话」接回来。
-    // （不加这个记号会翻车：接口回 kept=2 messages=3，磁盘上读回来还是旧的五六条）
-    session._wipe = true;
-
-    const msgs = Array.isArray(session.messages) ? session.messages : [];
-    const span = openingSpan(session.id, msgs);
-    const kept = span ? msgs.slice(span.at, span.at + span.n) : [];
-
-    const sys = msgs.filter((m) => m && m.role === 'system');
-    session.messages = sys.concat(kept);
-
-    /**
-     * 【把被删掉的那些登记下来】—— 2026-10-29
-     *
-     * _wipe 只挡得住「这一次」落盘。之后只要有人再 saveSession 一份**老副本**
-     * （另一轮还没收尾的 session、或者从磁盘重新读进来的），合流又会把磁盘上
-     * 那些旧消息当成「插话新来的」接回末尾 —— 清空白清。
-     *
-     * 所以把这次删掉的消息指纹记在会话上，saveSession 合流时按指纹跳过。
-     */
-    const keptKeys = new Set(session.messages.map((m) => messageKey(m)).filter(Boolean));
-    const dead = msgs.map((m) => messageKey(m)).filter((k) => k && !keptKeys.has(k));
-
-    // 先把临时字段一律清干净（_whale/_openingPending 这些），
-    // 再把 _deletedKeys / _wipe 补回去 —— 顺序反了会被这轮清理顺手删掉，
-    // 等于白登记。（2026-10-29 踩到过）
-    for (const k of Object.keys(session)) {
-      if (k.startsWith('_')) delete session[k];
-    }
-    if (dead.length) session._deletedKeys = dead;
-
-    session.updatedAt = Date.now();
-    if (!session.createdAt) session.createdAt = session.updatedAt;
-    // 上面那轮清理把 _wipe 也删了，这里补回来再落盘
-    session._wipe = true;
-    saveSession(session);
-    delete session._wipe;
-
-    return json(res, 200, {
-      ok: true,
-      id: session.id,
-      kept: kept.length,
-      messages: session.messages.length,
-      session: publicSession(session),
-      memory: memoryInfo(session.id),
+    return json(res, 410, {
+      error: '「清空当前」这个功能已经下线了，会话记录不会再被它清掉。要清空请到会话面板里删掉那一整个会话。',
+      gone: true,
     });
   }
 

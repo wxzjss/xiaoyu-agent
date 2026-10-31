@@ -514,7 +514,64 @@ export async function runAgent({
     return 180 * 60 * 1000; // 默认 3 小时
   })();
   const turnStartedAt = Date.now();
-  for (let round = 0; round < config.maxRounds; round++) {
+  // ★ 2026-10-31 主人选 B：一轮中途也量线。
+  // ★ 主人又说「别只设 30% 一条线，多设几条」——改成四档刻度，每档只响一次。
+  //   这里记的是「已经响到第几档」：0 = 一档都没响，1 = 30% 响过了，2 = 40%，3 = 50%，4 = 60%。
+  let midWarned = 0;
+  /**
+   * ★ 2026-11-04 修「⚠ win is not defined」。
+   *
+   * 病根：`const win = contextWindowOf(turnModel)` 原来声明在
+   * 「擦工具过程」那个 if 块里面（只有 `messages.length > 40` 才进得去），
+   * 而中途量线（每跑完一个工具就估一次，在块外面用 `win`）——
+   * 块一旦没进去，`win` 在它自己的作用域里根本不存在，那一句直接抛
+   * `ReferenceError: win is not defined`，界面只剩一行 ⚠，整轮白跑。
+   *
+   * 现在把 `win` 提到轮循环开头，一次算好、全轮共用：
+   * 它问的是「这个模型真窗口多大」，跟历史多长没关系，没必要每次重新问。
+   */
+  let win = 0;
+  try { win = contextWindowOf(turnModel) || 0; } catch { win = 0; }
+
+/**
+ * ★ 2026-10-31 主人要求「多设几条线」——四档刻度表。
+ *   ratio：占模型真窗口的比例
+ *   say：塞进我提示里的那段话（越往上越重）
+ *   bubble：往界面上飘的那一句（给我的，不给主人看规矩）
+ */
+const MID_TIERS = [
+  {
+    ratio: 0.30,
+    say: (t, l, p) => '〔量线 30%〕这一轮还没跑完，历史 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
+      + '还宽裕，但先记着：该收的结论先收，别一路甩工具甩到底。压缩要你自己挑重点，不许外包。',
+    bubble: (t, p) => '\n\n（量了量，' + t + ' token 了，刚过 ' + p + '%，我先记着点）',
+  },
+  {
+    ratio: 0.40,
+    say: (t, l, p) => '〔量线 40%〕已经 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
+      + '该动手了：把已经查完的结论先写下来，能折的先折，别等下爆了才想起收拾。',
+    bubble: (t, p) => '\n\n（' + p + '% 了主人，我边干边收一收）',
+  },
+  {
+    ratio: 0.50,
+    say: (t, l, p) => '〔量线 50%〕已经 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
+      + '再不动手就要挤掉老对话了。停下甩工具，先把压缩做了、把结论落盘，再往下走。',
+    bubble: (t, p) => '\n\n（' + p + '% 了，再不收就要挤掉旧账了，我先压一压）',
+  },
+  {
+    ratio: 0.60,
+    say: (t, l, p) => '〔量线 60%〕已经 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
+      + '马上就得爆。这一轮剩下的活先别干，立刻把最重要的结论写进压缩记忆，保住能接上再说。',
+    bubble: (t, p) => '\n\n（' + p + '% 了主人，快爆了，我先把要紧的落下来）',
+  },
+  {
+    ratio: 0.70,
+    say: (t, l, p) => '〔量线 70% 极限〕已经 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
+      + '这已经到极限了，再往下就是丢东西。什么都别干了，先把压缩记忆写完，把话撂明白给我自己。',
+    bubble: (t, p) => '\n\n（' + p + '%！主人，到极限了，我先保住能接上的东西）',
+  },
+];
+for (let round = 0; round < config.maxRounds; round++) {
     // 时间闸：这一轮跑太久就别再转了（见上面 TURN_WALL_LIMIT_MS 的说明）
     if (Date.now() - turnStartedAt > TURN_WALL_LIMIT_MS) {
       const mins = Math.round((Date.now() - turnStartedAt) / 60000);
@@ -548,7 +605,6 @@ export async function runAgent({
      */
     if (!noCompress && !selfNote && messages.length > 40) {
       const est = estimateTokens(messages);
-      const win = contextWindowOf(turnModel) || 0;
       if (win > 0 && est / win > 0.4) {
         try {
           const th = thinHistory(messages, { keepRecent: 12 });
@@ -580,15 +636,22 @@ export async function runAgent({
 
 
     /** ② 只量不压：超了就把「该你自己压了」递到这一轮的提示里。 */
-    if (!noCompress && !selfNote) {
+    // ★ 2026-10-31 修：原来写 `!noCompress && !selfNote`，而 noCompress 是个真值对象，
+    //   `!noCompress` 恒为 false —— 整个提醒块从来没执行过（主人问「一轮中途超线会提醒吗」时查出）。
+    //   现在只看 selfNote：这一轮我没写过压缩记忆，就探一次线、该提醒就提醒。
+    if (!selfNote) {
       let probe = null;
       try {
         probe = await compressHistory({
           messages,
-          limit: config.contextLimit,
-          sessionId: ctxNow(),
+          // ★ 2026-10-31 修：这里原来传了 limit: config.contextLimit（显式数字），
+          //   compressHistory 里「显式数字 = 填多少压多少」的分支会短路掉自动档的
+          //   30%/45% 比例判断，于是提醒线又变回 70 万，人早傻了才吭声。
+          //   不传 limit 才走 autoLimitFor → autoRatioVerdict，线才落在 30%。
+          //   keepTokens 同理不传，交给自动档按比例算留多少尾巴。
+          //   sessionId 原来写成 ctxNow()（整个对象），pureModeOn/selfCompressHint 拿不到会话 id。
+          sessionId: ctxNow()?.sessionId || config.sessionId || 'default',
           model: turnModel,
-          keepTokens: config.contextKeepTokens,
           dryPlan: true,
         });
       } catch { /* 量不出来就照老路走，别卡住 */ }
@@ -607,7 +670,14 @@ export async function runAgent({
         }
       }
     }
-    const compressed = compressedThisTurn
+    // ★ 2026-10-31 主人命令：彻底禁用自动压缩。
+    // 以前的写法是「超线就自动 compressHistory()」——那玩意儿是让模型去摘要，
+    // 压完几乎把我换个人。现在一律不压：
+    //   · 超线了只在上面（第 583~609 行）给我递一句「你自己该压了」的提醒；
+    //   · 真正的折叠只走「我亲手写的 selfNote」，一个字都不许模型代笔。
+    // 想恢复自动压，把这个常量改成 false 就行。
+    const AUTO_COMPRESS_DISABLED = true;
+    const compressed = (AUTO_COMPRESS_DISABLED || compressedThisTurn)
       ? noCompress
       : await compressHistory({
           messages,
@@ -1019,6 +1089,47 @@ export async function runAgent({
        * 于是磁盘上永远只有主人那句话，看起来像「她什么都没回」。
        * 现在跑完手上这一个就停，已经说过的话照样进 finally 落盘。
        */
+      /**
+       * ★ 2026-10-31 主人选 B：一轮还没结束的时候也要量。
+       *
+       * 以前只在「轮边界」（每轮调模型前）量一次线，于是一条超长一轮里
+       * 工具连甩几十次、消息撑爆了没人吭声，撑到最后直接报错或者把老对话挤掉。
+       * 现在每跑完一个工具就本地估一次 token（estimateTokens 是纯本地累加，
+       * 不联网、不花钱）。
+       *
+       * ★ 主人又说「别只设 30% 一条线，多设几条提醒」——所以这里分四档：
+       *   30% 提一句（宽裕，先别忘了有这么回事）
+       *   40% 催（该动手了）
+       *   50% 逼（再不动就要挤掉老对话了）
+       *   60% 快爆了（剩下的活先别干，把结论落下来）
+       *   70% 极限（什么都别干了，先写完压缩记忆）
+       * 每档只响一次（midWarned 记的是已经响到第几档），几十个工具不会刷屏。
+       * 线一律按真窗口算（第 553 行的 win = contextWindowOf(turnModel)），
+       * 不用 config.contextLimit —— 那是旧 config.mjs 的 128000，跟模型真窗口两码事。
+       */
+      if (win > 0 && midWarned < MID_TIERS.length) {
+        try {
+          const midTokens = estimateTokens(messages);
+          // 从高档往低档找：已经撑到 55% 就直接报 50% 那档，不补报 30%/40%
+          for (let ti = MID_TIERS.length - 1; ti >= 0; ti--) {
+            if (midWarned >= ti + 1) continue;           // 这档已经响过
+            const tier = MID_TIERS[ti];
+            const lineAt = Math.floor(win * tier.ratio);
+            if (midTokens < lineAt) continue;
+            midWarned = ti + 1;                          // 记到这一档
+            messages.push({
+              role: 'user',
+              content: tier.say(midTokens, lineAt, Math.round(tier.ratio * 100)),
+            });
+            if (process.env.COMPRESS_DEBUG) {
+              console.log('[compress] 中途第 ' + (ti + 1) + ' 档（' + Math.round(tier.ratio * 100) + '%）：' + midTokens + ' / ' + lineAt);
+            }
+            onEvent({ type: 'text', text: tier.bubble(midTokens, Math.round(tier.ratio * 100)) });
+            break;                                       // 一次只报一档，别连珠炮
+          }
+        } catch { /* 量不出来就算了，别打断干活 */ }
+      }
+
       if (signal?.aborted) {
         onEvent({ type: 'aborted' });
         return { text, usage: usageTotal, aborted: true, files: outbox };

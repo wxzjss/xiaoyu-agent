@@ -106,6 +106,33 @@ export function savePng(b64, hint = 'img') {
  * @param {string} [opts.prefix] 文件名前缀，方便在目录里认
  * @returns {Promise<object>} ok:true 时带 path/bytes/width/height，ok:false 时带 error
  */
+/**
+ * 【2026-10-31 认内联图】
+ * 有的生图模型（本机那条 gpt-image-2.5-sunburst 就是）不是走 /images/generations，
+ * 而是把图直接塞进聊天回复的正文里：![image_1](data:image/png;base64,iVBORw0KGgo...)
+ * 实测一次回 266 万字符 —— 界面上是密密麻麻的英文字母，上下文被撑爆，图还看不见。
+ * 这里把这种内联图抠出来存成 png，正文里换成占位记号，剩下的字才是真话。
+ *
+ * 返回 { text, images: [{ path, caption }] }
+ */
+const INLINE_IMG_RE = /!\[[^\]]*\]\(\s*data:(image\/(?:png|jpe?g|webp|gif))\s*;base64,([A-Za-z0-9+/=\s]{200,})\s*\)/g;
+
+export function extractInlineImages(text, prefix = 'inline') {
+  const src = String(text ?? '');
+  if (!src || src.indexOf('data:image/') < 0) return { text: src, images: [] };
+  const images = [];
+  const out = src.replace(INLINE_IMG_RE, (_all, mime, b64) => {
+    try {
+      const { path } = savePng(String(b64).replace(/\s+/g, ''), prefix);
+      images.push({ path, caption: '' });
+      return '（图已取出来，就是上面那张）';
+    } catch {
+      return '（图没取出来）';
+    }
+  });
+  return { text: out, images };
+}
+
 export async function generateImage({ prompt, ep = null, size = DEFAULT_SIZE, prefix = 'img' } = {}) {
   const text = String(prompt || '').trim();
   if (!text) return { ok: false, error: '要画什么？prompt 是空的' };

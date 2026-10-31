@@ -370,6 +370,33 @@
     details.tool summary .status.ok { color: var(--ok); }
     details.tool summary .status.err { color: var(--err); }
     details.tool summary .status.warn { color: #d9a45b; }
+    /* 【2026-10-31 工具折叠样式】 */
+    /* 【2026-10-31 续接段样式】：同一串话接在同一个气泡里的后续段 */
+    .bubble.cont { margin-top: 5px; }
+    details.toolhub {
+      display: block;
+      margin: 2px 0 6px;
+      border-left: 2px solid var(--line, #2a2a2a);
+      padding-left: 8px;
+    }
+    details.toolhub > summary {
+      cursor: pointer;
+      list-style: none;
+      color: var(--muted, #8a8a8a);
+      font-size: 12px;
+      opacity: .72;
+      user-select: none;
+      padding: 2px 0;
+    }
+    details.toolhub > summary::-webkit-details-marker { display: none; }
+    details.toolhub > summary::before {
+      content: '▸ ';
+      display: inline-block;
+      transition: transform .12s ease;
+    }
+    details.toolhub[open] > summary::before { content: '▾ '; }
+    details.toolhub > summary:hover { opacity: 1; color: var(--accent); }
+    details.toolhub[open] > summary { opacity: .9; margin-bottom: 2px; }
     details.tool pre {
       margin: 0; padding: 8px 10px; border-top: 1px solid var(--border);
       font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
@@ -2377,7 +2404,8 @@
     <button id="openFeatures">功能</button>
     <button id="openSettings">设置</button>
     <button id="openModels" title="模型">模型</button>
-    <button id="reset">清空当前</button>
+    <!-- 【2026-10-31 拆掉清空当前按钮】：主人 2026-10-31 说「严重怀疑就是它把会话/清单清空的」。
+         宁可没有这个按钮，也不留一次误点的机会。清空要真需要，去会话面板里删那一整个会话。 -->
   </header>
 
   <!-- agentChip挪出顶栏·2026-10-31 浮在右上、「清空当前」下面（见 CSS #agentChip）。
@@ -4633,7 +4661,9 @@ function reconcileTurnTexts(ev) {
   }
 }
 
-function paintLiveEvents(evs, bubble) {
+function paintLiveEvents(evs, bubble, skipToolIds) {
+  // 【2026-10-31 补画跳重复】：切回来时历史里已经画过的工具，这里不再画第二遍
+  const _skip = skipToolIds instanceof Set ? skipToolIds : null;
   let think = null;
   const toolEls = new Map();
   const closeThink = () => { if (think) { think.finish(); think = null; } };
@@ -4647,6 +4677,9 @@ function paintLiveEvents(evs, bubble) {
       pushStreamText(bubble, ev.text);
       touchStreaming(bubble);
     } else if (ev.type === 'tool_start') {
+      // 【2026-10-31 跳过画过的工具】：这条工具历史里已经有卡片了（切回来时 renderTurns 刚画过），
+      // 这里就不再画第二遍 —— 原来就是它导致「跑命令 完成」连发两条。
+      if (_skip && ev.id && _skip.has(String(ev.id))) { continue; }
       closeThink();
       if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
       const el = addTool();
@@ -4750,7 +4783,18 @@ async function attachLive(id) {
    * 所以这里不再用屏幕上的历史去否定服务端。
    */
 
-  let bubble = paintLiveEvents(evs, null);
+  // 【2026-10-31 收集已画的工具】
+  // 屏幕上已经画过的工具（renderTurns 刚按历史画好的），补画直播时别再画一遍，
+  // 否则就是主人看到的「跑命令 完成」连发两条。
+  const _drawnToolIds = new Set();
+  try {
+    document.querySelectorAll('.log .tool[data-tool-id]').forEach((el) => {
+      const v = el.dataset && el.dataset.toolId;
+      if (v) _drawnToolIds.add(String(v));
+    });
+  } catch {}
+
+  let bubble = paintLiveEvents(evs, null, _drawnToolIds);
 
   /**
    * 【2026-10-28 修：切回来能看见内容，但再切一次就卡死】
@@ -6816,11 +6860,28 @@ function addTool() {
  *
  * ok 三种值：true 完成 / false 失败 / null 没跑完（那一轮被中途打断，结果没落盘）。
  */
-function paintTools(list, target) {
+function paintTools(list, target, group) {
   if (!Array.isArray(list) || !list.length) return;
+  // 【2026-10-31 工具折叠成一行】
+  // 一轮里调了好几次工具时，别一条条摊一屏 —— 收成一行小字「调了 N 次工具」，点开才看。
+  // group 传 { silent: true } 就一条都不折（很少用）；不传就是不折（流式过程中的老路子）。
+  // 折起来的那层只包工具，话和工具前后顺序一律不动。
+  let box = target;
+  let wrap = null;
+  if (group && list.length > 1) {
+    wrap = document.createElement('details');
+    wrap.className = 'toolhub';
+    const sm = document.createElement('summary');
+    sm.textContent = '调了 ' + list.length + ' 次工具';
+    wrap.appendChild(sm);
+    target.appendChild(wrap);
+    box = wrap;
+  }
   for (const t of list) {
     const d = document.createElement('details');
     d.className = 'tool';
+    // 【2026-10-31 工具卡带 id】：让「已画过哪些工具」能被查出来，切回来补画时跳过重复的
+    if (t.id) d.dataset.toolId = String(t.id);
     const sum = document.createElement('summary');
     const nm = document.createElement('span');
     nm.className = 'name';
@@ -6835,7 +6896,7 @@ function paintTools(list, target) {
     if (!body) body = '（这一轮没留下结果）';
     pre.textContent = fixMojibake(body);
     d.append(sum, pre);
-    target.appendChild(d);
+    box.appendChild(d);
   }
 }
 
@@ -8045,53 +8106,9 @@ input.addEventListener('pointerdown', () => {
   if (document.activeElement !== input) return;   // 还没聚焦：交给 focus 那条路
   imeMatchOnce();
 });
-document.getElementById('reset').onclick = async () => {
-  if (!sessionId) return;
-  /**
-   * 「清空当前」= 原地清空这个会话的聊天记录，只留开场白。
-   *
-   * 主人 2026-10-31 的原话：按下去要「清空当前会话除开场白以外的聊天记录
-   * （不清岁月史书），相当于重新开始一个会话」。
-   *
-   * 所以不再是「删掉再新建」—— 会话本身留着：id 不变、标题不变、记忆本子不动、
-   * 岁月史书一条不碰，只是把里面的对话擦干净、把开场白留下。
-   */
-  const ans = await askConfirm({
-    title: '清空当前',
-    body: '这个会话里的聊天记录会被清空，只留下开场白（岁月史书和记忆本子都不动），相当于从头开始。',
-    ok: '清空',
-    danger: true,
-  });
-  if (!ans) return;
-
-  const r = await fetch('/api/reset', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId }),
-  }).then((x) => x.json()).catch(() => null);
-
-  if (!r || r.error || !r.session) {
-    addSysNote('⚠ 清空失败：' + ((r && r.error) || '服务没回应'));
-    settleComposer({ focus: true });
-    return;
-  }
-
-  // 同一个会话、原地重画（switchSession 会把正文和列表都按新的来）
-  try {
-    await switchSessionSafe(r.session.id);
-  } catch (e) {
-    console.warn('[reset] 重画会话出错：', e && e.message ? e.message : e);
-    log.innerHTML = '';
-    // 【清空历史后扫残留光标】
-    // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
-    try { sweepStaleStreaming(); } catch {}
-    usageEl.textContent = '';
-  }
-  await refreshSessions({ silent: true }).catch(() => {});
-  // 清空之后光标给到位，直接接着说话
-  settleComposer({ focus: true });
-  addSysNote('清空啦，开场白留着，咱从头开始 (๑•̀ㅂ•́)و✧');
-};
+// 【2026-10-31 拆掉「清空当前」】主人原话：「把【清空当前】按钮以及对应效果删除，我严重怀疑就是因为这个的原因清空的」。
+// 按钮、确认框、/api/reset 调用、重画那一整套都删了（原来在 8109-8155 行）。
+// 要清空记录的话去会话面板删那一整个会话；清单和记忆本子跟这个按钮本来就无关，但它不该存在。
 input.focus();
 
 // ---- settings: 底线 + 安全词 --------------------------------------------------
@@ -14032,6 +14049,20 @@ function renderTurns(turns) {
   const drawnUsage = new Set();
   // 这一串 assistant 里最后画出来那个气泡（用量行要挂在它下面，悬停它才显形）
   let lastBubbleOfTurn = null;
+  // 【2026-10-31 同轮并气泡】：这一串回复共用的那个气泡，以及它当前那段话的容器
+  let _contBubble = null;   // 上一段话的气泡（同一串里后面的话接进它）
+  let _contBody = null;     // 气泡里最后那个 .cont 容器
+  let _contStem = null;     // 保留字段（服务端暂时没给 stem，判据已改成看 prevRole）
+  // 【2026-10-31 并气泡·改判据】：上一条 turn 是什么角色。连着两条 assistant = 同一串（中间没被主人打断）
+  let prevRole = '';
+  // 【2026-10-31 攒工具再折叠】：同一串对话里的工具先收在这儿，等这一串画完再折叠成一行
+  let _hubTools = [];
+  let _hubKey = null;
+  const flushHub = () => {
+    if (_hubTools.length) paintTools(_hubTools, frag, { fold: true });
+    _hubTools = [];
+    _hubKey = null;
+  };
   /**
    * 【C · 估算用的字数】
    * 这一串回复（可能好几条 assistant）一共写了多少字。
@@ -14060,6 +14091,8 @@ function renderTurns(turns) {
     const nextTurn = list[ti + 1];
     const nextIsAssistant = Boolean(nextTurn && nextTurn.role === 'assistant');
     if (turn.role === 'user') {
+      // 【2026-10-31 user 前 flush】：主人一开口，上一串就结束了，攒着的工具在它后面折叠成一行画出来
+      flushHub();
       const w = addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
       // 每一句都能改：主人说的和我说的一样对待
       attachEdit(w, turn.rewindId);
@@ -14142,14 +14175,37 @@ function renderTurns(turns) {
           lastBubbleOfTurn = wrap;
         } else {
           const wrap = addEl('', 'msg assistant', frag);
-          wrap.innerHTML = '<div class="role">小鱼</div>';
-          // 搜会话时靠这个下标把命中那条滚到眼前
-          if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
-          const b = document.createElement('div');
-          b.className = 'bubble';
-          b.textContent = fixMojibake(turn.text);
-          wrap.appendChild(b);
+          // 【2026-10-31 续接进同气泡】
+          // 一次工具循环会往历史里写好几条 assistant，看着像「一句话一个气泡」。
+          // 这里把同一串（中间没被主人打断）的话接进同一个气泡：话还是那些话，只是不再断开。
+          // 工具一律画在气泡外面、原来的位置，不往里挪 —— 挪了就会全堆到末尾。
+          const stem = String(turn.stem || '');
+          // 判据：上一条也是 assistant ⇒ 这是同一串里接着说的话，并进同一个气泡。
+          // （原来拿 turn.stem 比，可服务端根本不发 stem，永远不相等，等于没合并。）
+          const sameStem = _contBubble && _contBody && _contBody.parentNode && prevRole === 'assistant';
+          let b;
+          if (sameStem) {
+            wrap = _contBubble;
+            b = document.createElement('div');
+            b.className = 'bubble cont';
+            b.textContent = fixMojibake(turn.text);
+            _contBody.appendChild(b);
+            _contBody = b;
+            // 后接进来的那段不重复挂按钮，按钮只在第一段上
+          } else {
+            wrap.innerHTML = '<div class="role">小鱼</div>';
+            // 搜会话时靠这个下标把命中那条滚到眼前
+            if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
+            b = document.createElement('div');
+            b.className = 'bubble';
+            b.textContent = fixMojibake(turn.text);
+            wrap.appendChild(b);
+            _contBubble = wrap;
+            _contBody = b;
+            _contStem = stem;
+          }
           if (outs.length) attachFiles(wrap, outs);
+          if (!sameStem) {
           attachEdit(wrap, turn.rewindId);
           // 她说的话下面也有「分支」：从这句回复往下另开一个会话
           attachBranchBtn(wrap, turn.rewindId);
@@ -14158,13 +14214,19 @@ function renderTurns(turns) {
           attachDelBtn(wrap, turn.rewindId);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
+          }
         }
       } else {
         lastBubbleOfTurn = null;
+        _contBubble = null; _contBody = null; _contStem = null;
       }
+      prevRole = turn.role;
       // 工具调用是这一轮的经过，得跟着回复一起留在界面上
       //（以前只活在「正在跑」的那一屏里，切走再回来就全没了）
-      paintTools(tools, frag);
+      // 【2026-10-31 攒工具·按串分】：先别画，收起来。
+      // 攒的边界＝「这一串」：连着都是 assistant 就继续攒，主人一开口（user）就 flush。
+      // 不能拿 rewindId 当边界 —— 每条 turn 的 rewindId 都不一样，那样永远是一组一个，折叠就没意义了。
+      if (tools.length) _hubTools.push(...tools);
       // 这一轮的 token 用量。
       // 用量存在「主人那句」的 user turn 上（见 server.mjs 的 _usage），
       // 但视觉上它属于这一轮的回复 —— 所以挂在**她说的话**下面，
@@ -14198,6 +14260,8 @@ function renderTurns(turns) {
   pendingTurns.length = 0;
 
   // 一次性替换 + 只滚一次
+  // 【2026-10-31 末尾 flush】：最后那一串还没遇到 user，工具得在收尾前画出来
+  flushHub();
   log.replaceChildren(frag);
   // 渲染完一整屏历史之后，必须无条件跳到最底 —— 你打开会话就是想看最新那句。
   // 这里不能用 noteNewContent()：它会看 stickBottom，而这会儿的 stickBottom
@@ -14680,8 +14744,29 @@ document.getElementById('sessFile').onchange = async (e) => {
 
 // 进平台：自动回到最近一次会话；没有就新建一个
 async function bootSessions() {
-  const r = await fetch('/api/sessions').then((x) => x.json()).catch(() => null);
-  if (!r) { paintSessNow(); return; }
+  /**
+   * 【2026-10-31 开机等服务员醒】
+   *
+   * Ctrl+F5 是「强制清缓存重载」：整页从零再来，而服务那边可能还在起。
+   * 原来这里请求一失败就 `return`，屏幕就那么空着（主人看到的就是「消息全消失」），
+   * 而且不给任何重试 —— 于是下一步又去新建会话。
+   *
+   * 现在：最多试 8 次、间隔逐渐加长（总共约 6 秒），还不行才放弃并说一句，
+   * 绝不留一块白屏在那儿让人以为记录没了。
+   */
+  let r = null;
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    r = await fetch('/api/sessions').then((x) => x.json()).catch(() => null);
+    if (r) break;
+    console.warn('[bootSessions] 服务还没醒(第' + attempt + '次)，等一会儿再试');
+    await new Promise((res) => setTimeout(res, 300 + attempt * 400));
+  }
+  if (!r) {
+    paintSessNow();
+    addSysNote('连不上服务，会话列表暂时没读出来。会话记录都还在硬盘上，稍等一下刷新就好 (｡•́︿•̀｡)');
+    releaseComposer();
+    return;
+  }
   sessionsCache = r.sessions || [];
   /**
    * 先认「这台设备上次看的那个会话」，再退回服务端的 lastSessionId。
@@ -14696,12 +14781,35 @@ async function bootSessions() {
   const pick = localOk
     || r.lastSessionId
     || (sessionsCache[0] ? sessionsCache[0].id : null);
-  try {
-    if (pick && (await switchSessionSafe(pick))) return;
-  } catch (e) {
-    // 切不过去也别把输入区锁着：下面新建一个，界面照样能用
-    console.warn('[bootSessions] 切回上次的会话失败:', e && e.message ? e.message : e);
+  /**
+   * 【2026-10-31 开机不许乱建会话】
+   *
+   * 原来的写法：switchSessionSafe(pick) 一失败（返回 false）就不 return，
+   * 接着往下走 createSessionEx —— 于是 Ctrl+F5 强制重载、界面还没就绪、
+   * 切会话超时的那一刻，程序就悄悄新建一个空会话，主人看到的是新会话的开场白，
+   * 原来那个会话还好端端躺在硬盘上，但界面已经不在它上面了。
+   * 1:42 / 1:46 / 1:54:02 / 1:54:15 那几个 3 条消息的「新会话」全是这么来的。
+   *
+   * 现在：先重试几次（重载后服务刚醒，第一次切失败很正常），
+   * 实在切不过去也**不新建**，留在原地并明说一句，让人自己点会话面板去选。
+   */
+  if (pick) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        if (await switchSessionSafe(pick)) return;
+      } catch (e) {
+        console.warn('[bootSessions] 切回上次的会话失败(第' + attempt + '次):', e && e.message ? e.message : e);
+      }
+      // 退避一下再试：强制重载后服务/前端刚起来，头一次经常白给
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+    // 三次都没切过去：绝不新建，把话说清楚
+    console.warn('[bootSessions] 三次都没切回 ' + pick + '，不新建会话，等主人手动选');
+    addSysNote('刚才没能自动回到上次的会话，会话记录一条没丢，右边「会话」里点一下就能回去 (｡•́︿•̀｡)');
+    releaseComposer();
+    return;
   }
+  // 真的一个会话都没有（头一回用）才新建
   await createSessionEx({ quiet: true });
 }
 

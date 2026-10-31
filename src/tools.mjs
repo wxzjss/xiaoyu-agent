@@ -750,8 +750,15 @@ export const tools = [
     async run(args) {
       // 清单按会话分：必须走这一轮自己的上下文（ctxNow），不能认全局 CTX ——
       // 两个会话同时跑的时候，全局那份早就被后开跑的顶掉了，清单会写进别人的单子。
-      const me = (ctxNow() || CTX).sessionId || 'default';
-      return planAction(me, args).text;
+      // 【2026-10-31 清单必须按会话】
+      // 以前拿不到会话 id 就退成 'default'，结果所有会话的清单挤同一份，互相覆盖。
+      // 现在只要拿不到 id 就直接报错，绝不落进公共格子。
+      const sid = String((ctxNow() || CTX).sessionId || '').trim();
+      if (!sid) {
+        // 只有真的在「会话外」跑（启动自检之类）才放行 default，其余一律不外溢
+        return 'ERROR：这一轮没拿到会话 id，清单不敢写（怕跟别的会话串）。请在这轮里重试一次。';
+      }
+      return planAction(sid, args).text;
     },
   },
   {
@@ -768,8 +775,9 @@ export const tools = [
       required: [],
     },
     async run(args) {
-      // 便签跟清单存在同一块板子上，一样按会话分
-      const me = (ctxNow() || CTX).sessionId || 'default';
+      // 便签跟清单存在同一块板子上，一样按会话分；拿不到 id 就不写，别串到别人板上
+      const me = String((ctxNow() || CTX).sessionId || '').trim();
+      if (!me) return 'ERROR：这一轮没拿到会话 id，便签不敢写（怕跟别的会话串）。请在这轮里重试一次。';
       return noteAction(me, args).text;
     },
   },

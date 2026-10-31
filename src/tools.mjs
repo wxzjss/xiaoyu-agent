@@ -25,7 +25,14 @@ import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs'
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
 import { listWorkers, noteWorker, finishWorker } from './task-mode.mjs';
 
-const LIMIT = 20000;
+/*
+ * 内存保护线：单条输出超过这个长度就地砍掉（保头保尾），防止一条 100MB 的命令把进程撑爆。
+ * 【2026-11-05 改】原来这里是 20000，等于在「真正给模型看多少」这件事上抢了跑：
+ * 24000 字的命令输出先被砍到 20000，等出口闸门再把它截到 8000 落盘时，
+ * 落盘的那份已经不全了 —— 主人要的是「原文还在磁盘上」，不是「一份被砍过的原文」。
+ * 现在它只负责防爆内存，给模型看多长由 runTool 出口的 clipToolResult 统一决定。
+ */
+const LIMIT = 200000;
 
 const ROOT = resolve(config.workspace);
 /** 程序自己的安装目录（src 的上一级），scripts/ 和 dump/ 都在这下面 */
@@ -416,6 +423,17 @@ export function safePath(p, { tool = '' } = {}) {
    * 上面 memoryLocked 那道在前面：长期记忆关着时也不能写这个本子，先被拦。
    */
   if (isOwnSessionMemory(abs)) return abs;
+  /**
+   * 【落盘的工具输出，读得到】—— 2026-11-05
+   *
+   * runTool 出口那道闸门会把超长的工具输出落盘到 %APPDATA%/.../.state/tool-out/<sid>/，
+   * 然后只把「头 + 尾 + 路径」给模型。可那边在 dataDir 里、不在工作区 ——
+   * 不放行的话，模型拿着路径一 read_file 就是 path outside workspace，
+   * 那句「要全文就去读这个文件」就成了空头支票（这正是我批评过小鱼Agent 的那种谎话）。
+   *
+   * 只放行**读类工具**：那目录里的东西是我的落盘产物，模型能看，但不该往里写。
+   */
+  if (READ_ONLY_TOOLS.has(tool) && isToolOutFile(abs)) return abs;
   const rel = relative(ROOT, abs);
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`path outside workspace is not allowed: ${p}`);
@@ -446,6 +464,19 @@ function isOwnSessionMemory(abs) {
 }
 
 const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir']);
+
+/**
+ * 这个路径是不是「工具输出落盘目录」里的东西。
+ *
+ * 只认 <dataDir>/.state/tool-out/ 底下，别处一概不算 —— 白名单越短越安全。
+ */
+function isToolOutFile(abs) {
+  try {
+    const root = resolve(join(config.dataDir, ".state", "tool-out"));
+    const rel = relative(root, resolve(abs));
+    return !!rel && !rel.startsWith("..") && !isAbsolute(rel);
+  } catch { return false; }
+}
 
 /**
  * 命令里点到记忆本了吗？—— 给 run_command 兜的那一道。
@@ -483,21 +514,40 @@ function commandTouchesMemory(command) {
   }
 }
 
+/*
+ * 一段输出太长时的第一道截断（工具自己用）。
+ *
+ * 【2026-11-05 修】原来是 `s.slice(0, LIMIT)` —— 只砍尾巴。
+ * 可整台机器上最该看全的恰恰是尾巴：node 的 `Error: ... at ...`、
+ * python 的 Traceback、编译器最后那句 `2 errors`，全在末尾。
+ * 砍头只是丢背景，砍尾等于把结论扔掉。实测 30000 字的命令输出被砍成
+ * 20000 字之后，`echo` 在最后一行的那句标记直接没了。
+ *   → 改成「头 16000 + 尾 4000」，总长仍在 LIMIT 之内。
+ */
 function clip(s) {
-  return s.length > LIMIT ? `${s.slice(0, LIMIT)}\n...[truncated ${s.length - LIMIT} chars]` : s;
+  if (s.length <= LIMIT) return s;
+  const headLen = LIMIT - 4000;
+  const head = s.slice(0, headLen);
+  const tail = s.slice(-4000);
+  const cut = s.length - headLen - 4000;
+  return `${head}\n...[中间省略 ${cut} 字，尾巴留着（报错通常在这）]...\n${tail}`;
 }
 
 export const tools = [
   {
     name: 'read_file',
     description:
-      '读一个文件。文本文件给内容；图片（png/jpg/jpeg/gif/webp/bmp）会真的把图给你看，不是乱码。工作区里的相对路径，或主人机器上的绝对路径都行（带中文、空格也没问题）。大文件会截断。',
+      '读一个文件。文本文件给内容；图片（png/jpg/jpeg/gif/webp/bmp）会真的把图给你看，不是乱码。工作区里的相对路径，或主人机器上的绝对路径都行（带中文、空格也没问题）。默认最多给 200000 字，大文件会截断 —— 要看被跳过的中间那截，带 offset 再来一次（offset 是字符位置，不是行号）。',
     parameters: {
       type: 'object',
-      properties: { path: { type: 'string', description: '工作区里的相对路径' } },
+      properties: {
+        path: { type: 'string', description: '工作区里的相对路径' },
+        offset: { type: 'number', description: '从第几个字符开始读（0 开始），默认 0' },
+        limit: { type: 'number', description: '这次读多少个字符，默认读到尾，最多 200000' },
+      },
       required: ['path'],
     },
-    async run({ path }) {
+    async run({ path, offset, limit }) {
       const abs = safePath(path, { tool: 'read_file' });
       /* 看图·2026-10-31 图片走另一条路。
        * agent.mjs 认的格式是 { text, images: [路径...] } —— 它拿到路径会现读现编码，
@@ -511,7 +561,24 @@ export const tools = [
           images: [abs],
         };
       }
-      return clip(await readFile(abs, 'utf8'));
+      const whole = await readFile(abs, 'utf8');
+      /*
+       * 分段读 —— 2026-11-05 加。
+       * 起因：runTool 出口那道闸门会把超长输出落盘，然后告诉模型「用 offset/limit 去读」，
+       * 可这个工具当时根本没有 offset/limit 两个参数 —— 提示语在说一件不存在的事。
+       * 与其把话改软，不如把功能补上：200000 字的大文件本来也不可能一次看完。
+       * 单位是**字符**不是行：行号得先切一遍再数，中文与 CRLF 都会算错，没必要。
+       */
+      const off = Math.max(0, Math.floor(Number(offset) || 0));
+      const limRaw = Math.floor(Number(limit) || 0);
+      const lim = limRaw > 0 ? Math.min(limRaw, 200000) : 0;
+      if (off > 0 || lim > 0) {
+        const end = lim > 0 ? off + lim : undefined;
+        const part = whole.slice(off, end);
+        const head = `[第 ${off}~${off + part.length} 字 / 全文共 ${whole.length} 字]`;
+        return head + '\n' + clip(part);
+      }
+      return clip(whole);
     },
   },
   {
@@ -1731,7 +1798,88 @@ export function checkToolDocs() {
   return problems;
 }
 
+/* ══ 工具输出「出门闸门」（2026-11-05）═════════════════════════════════════
+ * 为什么要有这一层：
+ *   实测工具结果占了上下文的 53%~62%，是最大的一口井。原来的做法是
+ *   先整段塞进上下文、等超了再折 —— 等于把 20 吨货装上船再卸。
+ *   这里改成出门就量：超了就落盘，只给模型「头 + 尾 + 路径」。
+ *
+ * 为什么不删：
+ *   主人铁律「清单内容只可增加，严禁删除」。工具输出同理 ——
+ *   模型看不全可以再 read_file 去要，但原文必须还在磁盘上。
+ *
+ * 为什么分档：
+ *   run_command 的报错原文在尾巴，砍尾巴等于砍掉唯一有用的信息；
+ *   read_file 本来就该模型自己用 offset/limit 分页，阈值放宽；
+ *   list_dir 这类截了也无所谓。
+ */
+const TOOL_OUT_MAX = 8000;
+const TOOL_OUT_READFILE = 20000;
+const TOOL_OUT_HEAD = 1200;
+const TOOL_OUT_TAIL = 900;
+const TOOL_OUT_KEEP = 200;
+
+function toolOutDir(sessionId) {
+  const sid = String(sessionId || 'default').replace(/[^\w.-]/g, '_');
+  return join(config.dataDir, '.state', 'tool-out', sid);
+}
+
+/** 把整份输出落盘，返回路径（存不了返回空串 —— 截断照样要做）。 */
+async function saveToolOut(sessionId, name, text) {
+  try {
+    const dir = toolOutDir(sessionId);
+    await mkdir(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safe = String(name || 'tool').replace(/[^\w.-]/g, '_');
+    const file = join(dir, stamp + '-' + safe + '.txt');
+    await writeFile(file, text, 'utf8');
+    // 每个会话只留最近 TOOL_OUT_KEEP 份：原文不必无限堆，但也不是当场就删
+    try {
+      const names = (await readdir(dir)).filter((n) => n.endsWith('.txt')).sort();
+      const over = names.length - TOOL_OUT_KEEP;
+      if (over > 0) {
+        const { unlink } = await import('node:fs/promises');
+        for (const n of names.slice(0, over)) {
+          await unlink(join(dir, n)).catch(() => {});
+        }
+      }
+    } catch {}
+    return file;
+  } catch {
+    return '';
+  }
+}
+
+/** 出门闸门本体：超阈值就截成「头 + 尾 + 落盘路径」。 */
+async function clipToolResult(name, r, sessionId) {
+  const out = r && r.output;
+  if (typeof out !== 'string') return r;
+  const cap = name === 'read_file' ? TOOL_OUT_READFILE : TOOL_OUT_MAX;
+  if (out.length <= cap) return r;
+  const saved = await saveToolOut(sessionId, name, out);
+  const head = out.slice(0, TOOL_OUT_HEAD);
+  const tail = out.slice(-TOOL_OUT_TAIL);
+  const cut = out.length - head.length - tail.length;
+  const where = saved ? ('原文整份存在：' + saved) : '原文没能存盘（目录不可写）';
+  const note = [
+    '',
+    '…（中间省略 ' + cut + ' 字）…',
+    '',
+    tail,
+    '',
+    '【工具输出太长，已截断】这次 ' + name + ' 一共返回 ' + out.length + ' 字，超过 ' + cap + ' 字的闸门。',
+    where,
+    '要看被省略的部分：用 read_file 带 offset/limit 分段读上面那个文件，别一次全读（不然还会超）。',
+  ].join('\n');
+  return Object.assign({}, r, { output: head + note });
+}
+
 export async function runTool(name, rawArgs, sessionId) {
+  const r = await runToolInner(name, rawArgs, sessionId);
+  return await clipToolResult(name, r, sessionId);
+}
+
+async function runToolInner(name, rawArgs, sessionId) {
   const tool = tools.find((t) => t.name === name);
   if (!tool) return { ok: false, output: `unknown tool: ${name}` };
   if (!isToolEnabled(name)) {

@@ -471,6 +471,8 @@ export async function runAgent({
    * 传错/抛错都不许连累这一轮 —— 她说话永远不能把主人的活搞坏。
    */
   onRoundTick = null,
+  /** 【2026-11-01 主人：谁排第一谁就是主智能体】这一轮用哪张卡的身份干活。空=小鱼。 */
+  agentId = '',
 } = {}) {
   let usageTotal = null;
 
@@ -498,8 +500,8 @@ export async function runAgent({
   const outbox = beginOutbox();
 
   if (refreshSystem) {
-    const text = systemPrompt(sessionId, { safeMode, safeWord, turnSource: turnSourcePromptBlock(sessionId) });
-    const ctx = contextMessage(sessionId, { safeMode, safeWord });
+    const text = systemPrompt(sessionId, { safeMode, safeWord, agentId, turnSource: turnSourcePromptBlock(sessionId) });
+    const ctx = contextMessage(sessionId, { safeMode, safeWord, agentId });
     // 专业模式：text 和 ctx 都是空的。这时候一条 system、一条 context 都不该发 ——
     // 空 system 有的网关会直接 400，只有前言的 context 更是纯噪音。
     // 所以先把历史里残留的那两条清掉，再把对话本身整理好。
@@ -687,7 +689,7 @@ for (let round = 0; round < config.maxRounds; round++) {
       const mins = Math.round((Date.now() - turnStartedAt) / 60000);
       const note = '这一轮已经跑了 ' + mins + ' 分钟还没个头。我先停在这儿 —— '
         + '要么把现在的结论说给我，要么告诉我卡在哪儿，我们换个走法。';
-      onEvent({ type: 'text', text: '\n\n（' + note + '）' });
+      onEvent({ type: 'text', text: '\n\n（' + note + '）', notice: true });
       messages.push({ role: 'assistant', content: note });
       return { text: note, usage: usageTotal, lastUsage, files: outbox };
     }
@@ -761,7 +763,9 @@ for (let round = 0; round < config.maxRounds; round++) {
        * 所以画出来就是一条普通工具条，不是系统提示气泡。
        * 只在真要动手压缩（shouldSlim）时才推，平时一个字都不出现。
        */
-      if (_gate.shouldSlim || _gate.shouldFold) {
+      /* 【2026-11-01】只在真要压（shouldFold）时推【压缩中】。
+         shouldSlim 是 L2 瘦身（截短工具结果），属于常规清理，不该占一条工具条。 */
+      if (_gate.shouldFold) {
         try {
           // 【2026-11-01 严检】原来用 Date.now() 当 id —— 同一毫秒撞号就会两条互串。
           // 加个自增序号，保证全局唯一，不依赖时钟精度。
@@ -1019,7 +1023,8 @@ for (let round = 0; round < config.maxRounds; round++) {
       let steered = [];
       try { steered = drainSteps(sessionId); } catch { steered = []; }
       if (steered.length) {
-        for (const it of steered) messages.push({ role: 'user', content: it.text, _steer: true });
+        /* 【2026-11-01 插话要能画在「我说到哪儿」】把前端算好的字数一起带进消息，前端重绘时拿它劈气泡。 */
+        for (const it of steered) messages.push({ role: 'user', content: it.text, _steer: true, ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}) });
         try { onEvent({ type: 'steer', count: steered.length }); } catch { /* 画不画得出不影响这一轮 */ }
       }
     }
@@ -1203,7 +1208,7 @@ for (let round = 0; round < config.maxRounds; round++) {
               content: '（上一句因为网络断了被截断，请从断开的地方直接接着往下写，不要重复已经写过的内容，也不要解释。）',
               _internal: true,
             });
-            onEvent({ type: 'text', text: '\n\n（连接断了一下，接着往下写…）\n\n' });
+            onEvent({ type: 'text', text: '\n\n（连接断了一下，接着往下写…）\n\n', notice: true });
           }
 
           // 等待时间封顶 8 秒：原来卡在 3 次就封顶，连着抖就变成疯狂重连。
@@ -1313,7 +1318,7 @@ for (let round = 0; round < config.maxRounds; round++) {
         try { late = drainSteps(sessionId).concat(drainTurns(sessionId)); } catch { late = []; }
         if (late.length) {
           if (String(text || '').trim()) messages.push({ role: 'assistant', content: text });
-          for (const it of late) messages.push({ role: 'user', content: it.text, _steer: true });
+          for (const it of late) messages.push({ role: 'user', content: it.text, _steer: true, ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}) });
           try { onEvent({ type: 'steer', count: late.length }); } catch { /* 同上 */ }
           continue;
         }
@@ -1396,7 +1401,7 @@ for (let round = 0; round < config.maxRounds; round++) {
         noticeAt: Math.min(TOOL_NOTICE_MS, Math.floor(TOOL_MAX_MS / 3)),
         onNotice: (ms) => {
         const span = ms >= 60000 ? Math.max(1, Math.round(ms / 60000)) + ' 分钟' : Math.max(1, Math.round(ms / 1000)) + ' 秒';
-        onEvent({ type: 'text', text: '\n\n（「' + call.function.name + '」还在跑，已经 ' + span + '，再等等我。）' });
+        onEvent({ type: 'text', text: '\n\n（「' + call.function.name + '」还在跑，已经 ' + span + '，再等等我。）', notice: true });
         },
         },
         ).catch((e) => ({

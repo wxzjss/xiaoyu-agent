@@ -39,6 +39,7 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { config } from './config.mjs';
+import { currentCalibration } from './compress.mjs';
 
 /** 一条消息本身的固定开销（role、分隔符这些），跟老 compress.mjs 保持一个口径。 */
 const PER_MESSAGE_OVERHEAD = 4;
@@ -124,8 +125,24 @@ export const SLIM_KEEP_TOKENS_RATIO = 0.25;
  * 图片单独算：base64 是 dataUrl 就按真实长度，只有路径就按保守常量 ——
  * 这一步以前漏过，带图的会话永远判「没超线」，一路堆到网关打回。
  */
-export function estTokens(messages) {
+export function estTokens(messages, sessionId) {
   let total = 0;
+  /**
+   * 【2026-11-01 严检：判定口径必须和量线一致】
+   *
+   * 原来这里一律按 1.5 字/token 硬算，而 compress.mjs 的 estimateTokens
+   * 会乘一个「拿真实 usage 反校出来的 calibRatio」（实测约 1.6）。
+   * 同一份历史：量线报 69.6%，这里报 43.7% —— 一个说快爆了，一个说还早，
+   * 结果量线一直在催，压缩判定永远 tier=none，**永远不压**，直到撑爆。
+   *
+   * 现在统一走校准口径。拿不到系数就退回 1.5，绝不把这一轮带崩。
+   */
+  let perToken = 1.5;
+  try {
+    const k = Number(currentCalibration(sessionId) || 0);
+    if (Number.isFinite(k) && k >= 1 && k <= 8) perToken = 1.5 / k;
+  } catch { /* 读不到就用 1.5 */ }
+  if (!(perToken > 0.1)) perToken = 1.5;
   for (const m of messages) {
     if (!m) continue;
     total += PER_MESSAGE_OVERHEAD;
@@ -147,8 +164,8 @@ export function estTokens(messages) {
     if (Array.isArray(m._images) && m._images.length) {
       imageChars += m._images.length * IMAGE_ESTIMATE_CHARS;
     }
-    if (textChars) total += Math.ceil(textChars / 1.5);
-    if (imageChars) total += Math.ceil(imageChars / 1.5);
+    if (textChars) total += Math.ceil(textChars / perToken);
+    if (imageChars) total += Math.ceil(imageChars / perToken);
     if (Array.isArray(m.tool_calls)) {
       let callChars = 0;
       for (const tc of m.tool_calls) {
@@ -157,7 +174,7 @@ export function estTokens(messages) {
         if (typeof f.name === 'string') callChars += f.name.length;
         if (typeof f.arguments === 'string') callChars += f.arguments.length;
       }
-      if (callChars) total += Math.ceil(callChars / 1.5);
+      if (callChars) total += Math.ceil(callChars / perToken);
     }
   }
   return total;
@@ -181,8 +198,8 @@ export function headLength(messages) {
  *
  * @returns {{before:number, limit:number, ratio:number, tier:'none'|'slim'|'hard'}}
  */
-export function compactGate(messages, limit) {
-  const before = estTokens(messages);
+export function compactGate(messages, limit, sessionId) {
+  const before = estTokens(messages, sessionId);
   const cap = Number(limit) || 0;
   const ratio = cap > 0 ? before / cap : 0;
   let tier = 'none';
@@ -245,7 +262,7 @@ function clipMiddle(s, head, tail) {
  * @returns {{changed:number, before:number, after:number, saved:string[], keepFrom:number}}
  */
 export function slimHistory(messages, { sessionId = '', keepTail = SLIM_KEEP_TAIL, keepTokens = 0 } = {}) {
-  const before = estTokens(messages);
+  const before = estTokens(messages, sessionId);
   const head = headLength(messages);
 
   /**
@@ -266,7 +283,7 @@ export function slimHistory(messages, { sessionId = '', keepTail = SLIM_KEEP_TAI
     let acc = 0;
     keepFrom = messages.length;
     for (let i = messages.length - 1; i >= head; i--) {
-      const t = estTokens([messages[i]]);
+      const t = estTokens([messages[i]], sessionId);
       // 至少保住最后两条，再多就超预算也不管了 —— 模型下一句全靠它
       if (acc + t > keepTokens && messages.length - i > 2) break;
       acc += t;
@@ -353,7 +370,7 @@ export function slimHistory(messages, { sessionId = '', keepTail = SLIM_KEEP_TAI
     }
   }
 
-  const after = estTokens(messages);
+  const after = estTokens(messages, sessionId);
   return { changed, before, after, saved, keepFrom };
 }
 
@@ -443,6 +460,38 @@ function slimImages(m, sessionId) {
 }
 
 /**
+ * 【图片永不进上下文】2026-11-01 主人拍的板（建议 ②）
+ *
+ * 为什么单独开一个、而不是只靠 slimHistory 里那一处：
+ *   slimHistory 只在「会话超过 55%」时才跑，而图片是**一开始就不该在里面**的东西 ——
+ *   生图那个会话 8 条消息 601K token，其中 99% 是 base64 图，第八张图就该爆了。
+ *   等它涨到 55% 再清，等于让一辆超载车先上路再卸货。
+ *
+ * 所以这个函数不看闸门、不看年龄档、不看近况区：**每一条消息都扫**，
+ * 见到 dataUrl 图就落盘换成一行「图在哪儿、多大」。幂等（换完就不再是 data: 了）。
+ *
+ * 头部的 system 也扫 —— system 里塞图的写法不是没有。
+ *
+ * @param {Array} messages 完整历史
+ * @param {string} sessionId 落盘目录用
+ * @returns {{changed:number, saved:number}} 改了几条消息、落了几张图
+ */
+export function stripImages(messages, sessionId = '') {
+  let changed = 0;
+  let saved = 0;
+  if (!Array.isArray(messages)) return { changed, saved };
+  for (const m of messages) {
+    if (!m || !Array.isArray(m.content)) continue;
+    const n = slimImages(m, sessionId);
+    if (n > 0) {
+      changed++;
+      saved += n;
+    }
+  }
+  return { changed, saved };
+}
+
+/**
  * 【保命】上下文快撑爆、我自己又没顾上写压缩记忆时，程序替我留的底。
  *
  * 三条规矩：
@@ -496,8 +545,8 @@ export function buildRescueNote(messages, { planText = '', segId = '' } = {}) {
  * 老代码里 agent 先探一次线、再自己决定要不要塞提醒、再决定要不要真压，
  * 三处判断各写一遍，任何一处写错就出现「压了没效果」或者「不该压的时候乱压」。
  */
-export function planTurnCompact(messages, limit) {
-  const gate = compactGate(messages, limit);
+export function planTurnCompact(messages, limit, sessionId) {
+  const gate = compactGate(messages, limit, sessionId);
   return {
     ...gate,
     /** 要不要跑 L2（历史瘦身） */

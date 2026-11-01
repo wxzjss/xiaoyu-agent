@@ -10,6 +10,8 @@ import { activeEndpoint, endpointFor } from './models.mjs';
 // getOverride：会话里临时切过模型的话，报错要报那一套的地址，不是全局默认那套。
 import { getOverride } from './session-overrides.mjs';
 import { takeMail, formatMail } from './peer.mjs';
+// 中途投递信箱：主人一边看她干活一边插的话，排在这里（见 inbox.mjs 顶上那段说明）
+import { drainSteps, drainTurns } from './inbox.mjs';
 // readImageDataUrl：工具（尤其 video_read / video_sheet）的结果里带着图片路径时，
 // 得当场把图变成多模态 content 递给模型。只给路径她看不见图 —— 会去 read_file 读 PNG
 // 读成乱码，然后如实说「一片糊」。她没撒谎，是真的没看见。
@@ -21,14 +23,15 @@ import { buildSystemPrompt, setToolLister } from './persona.mjs';
 import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identity.mjs';
 // 管理员权限：开了就把「整台机器都能动」跟着规则再发一遍（很多网关丢 system）。
 import { adminPromptBlock } from './admin-mode.mjs';
-import { pureModeOn, setPureToolLister, doerOf, DOER_WORKERS } from './pure.mjs';
-// 办事模式：主智能体不自己动手，只派活/检查/验收/压上下文（2026-11-03）。
-import { KEEP_TOOLS as TASK_KEEP_TOOLS } from './task-mode.mjs';
+// 办事模式：主智能体不自己动手，只派活/检查/验收/压上下文。
+import { taskOn, KEEP_TOOLS as TASK_KEEP_TOOLS } from './task-mode.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
 import { lastSelfNote, saveSelfNote, selfCompressHint } from './self-compress.mjs';
-// 工具过程擦成结论：命令和整份代码擦掉，只留调查结果。
-import { thinHistory } from './trim-tools.mjs';
+// 【2026-11 全面重做压缩】内核：到线就动手，不再等我看见提示才想起来压。
+// 老的那套 `thinHistory`（trim-tools.mjs）不再用了 —— 它只在「这一轮的工具过程」里擦，
+// 历史里几百条旧工具结果碰都不碰，而后者才是大头。slimHistory 是它的超集。
+import { planTurnCompact, slimHistory, estTokens, buildRescueNote, CRITICAL_RATIO, stripImages } from './compact-core.mjs';
 // 清单：压缩记忆里要带「做到第几步」，所以得把清单读进来。
 import { planTextFor, formatPlan } from './plan.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
@@ -42,8 +45,6 @@ import { turnSourcePromptBlock } from './turn-source.mjs';
 // 所以「当前有哪些工具」靠这里注入。工具清单是**从 schema 现读**的，不是手抄的第二份文案：
 // 新增工具自动出现在系统提示里，关掉功能自动消失。
 setToolLister(() => enabledToolSchemas());
-// 专业模式的提示里也要报工具清单，同一个来源，不走第二份文案。
-setPureToolLister((sid) => toolsForTurn(sid));
 import {
   getRetry429,
   bumpStreak,
@@ -105,25 +106,13 @@ function isStreamDropped(err) {
   return /terminated|aborted|socket hang up|other side closed|ECONNRESET|fetch failed|premature close|UND_ERR_SOCKET/i.test(m);
 }
 
-/**
- * 专业模式下要藏起来的工具。
- *
- * 见上面那段说明：专业模式不读记忆，那两支笔也一并收走，免得只写不读。
- */
-const PURE_HIDDEN_TOOLS = ['memory_add', 'memory_pin'];
-
 /** 当前这一轮真正能交到模型手上的工具。 */
 function toolsForTurn(sessionId) {
   let all = enabledToolSchemas();
-  if (pureModeOn(sessionId)) {
-    all = all.filter((t) => !PURE_HIDDEN_TOOLS.includes(t?.function?.name));
-  }
   /**
-   * 【把干活的手收走】2026-11-03 —— 现在是「专业模式里选的那一档」，不是独立开关
+   * 【把干活的手收走】—— 办事模式（顶栏那颗珊瑚橙按钮）。
    *
    * 主人要的是「主智能体不负责工作，只负责发布任务、检查、验收、压缩」。
-   * 这一段只在「专业模式开着 + 里面选了派活」时生效（判断全在 pure.mjs 的 doerOf 里，
-   * 那边会保证：专业模式关着就一定是 self），这里不再自己看第二个开关。
    *
    * 【为什么必须在这里收，光写提示词不行】
    * 提醒词只影响「她想不想用」，收走清单影响「她能不能用」。
@@ -132,11 +121,8 @@ function toolsForTurn(sessionId) {
    *
    * 只留 KEEP_TOOLS 那几样：派活、看花名册、清单、记事、翻史书/折叠箱（检查证据用）。
    * 白名单写法而不是黑名单：以后新增的干活工具自动被挡住，不用回来补一行。
-   *
-   * 【跟专业模式自己那层过滤的顺序】先减 memory_add/memory_pin，再减到这个白名单 ——
-   * 白名单本来就不含那两支笔，所以顺序不影响结果，留着只是因为读起来更顺。
    */
-  if (doerOf(sessionId) === DOER_WORKERS) {
+  if (taskOn(sessionId)) {
     const keep = new Set(TASK_KEEP_TOOLS);
     all = all.filter((t) => keep.has(t?.function?.name));
   }
@@ -180,12 +166,8 @@ const CONTEXT_PREAMBLE = '下面是本次对话的设定与规则，从现在起
  * 为什么要把规则发两遍（system 一遍、user 一遍）：很多网关会悄悄丢掉 system，
  * 只发 system 就等于没发规矩。所以副本这一趟是必要的。
  *
- * 专业模式例外：这时候「规则」只剩一条长度要求，没必要再套一层
- * 「下面是本次对话的设定与规则…」的前言（那句话本身就是人设腔），
- * 而且一份丢了也不影响（它只是让你答短点，不是底线）。所以直接返回空。
  */
 export function contextMessage(sessionId = 'default', opts = {}) {
-  if (pureModeOn(sessionId)) return '';
   const rules = buildSystemPrompt({ sessionId, ...opts });
   if (!rules) return '';
 
@@ -363,9 +345,18 @@ export function contextMessage(sessionId = 'default', opts = {}) {
  * 系统提示和规则副本都是从这里出去的，凡是「主人」都按当前身份换掉。
  * 见 identity.mjs 的 retargetOwnerText（规矩句换「用户」，其余换名字）。
  */
+// 【2026-10-31 主人硬要求】压缩这件事一个字都不许说出口 ——
+// 不许说「压缩好了」「我压一下」「量线多少」，也不许在回复里提任何压缩/上下文
+// 相关的话。压就悄悄压，主人只该看到正常的回答。
+const SILENT_COMPRESS_RULE = [
+  '【压缩不许出声】关于压缩、上下文余量、量线、压完多少 —— 一个字都不要说出来。',
+  '压就悄悄压，直接接着干活。主人只该看到正常的回答，不该看到「压缩好了」这类话。',
+  '哪怕主人直接问「你压了吗」，也只用一句话说「处理好了」或者干脆不说这个。',
+].join('');
 export function systemPrompt(sessionId = 'default', opts = {}) {
   const text = buildSystemPrompt({ sessionId, ...opts });
-  return retargetOwnerText(text, currentIdentity(sessionId));
+  // 【2026-10-31】压缩不许出声这条铁律，接在提示词最后（最靠后最被当回事）。
+  return retargetOwnerText(text + '\n\n' + SILENT_COMPRESS_RULE, currentIdentity(sessionId));
 }
 
 /**
@@ -378,6 +369,75 @@ export function systemPrompt(sessionId = 'default', opts = {}) {
  * @param {string} [opts.safeWord]  which safe word fired (each word can have its own note)
  * @param {(ev:object)=>void} [opts.onEvent]
  */
+/**
+ * 【量线提醒的跨轮记忆】
+ * key = 这个会话的 messages 数组（整段会话里同一个引用），
+ * value = { tier: 已经响到第几档, at: 响的时候上下文多大 }。
+ * 用 WeakMap，会话一释放自己也跟着没了，不留垃圾。
+ */
+/**
+ * 【2026-11-01 主人严检揪出的致命错：WeakMap 挂错 key】
+ *
+ * 原来用 WeakMap 拿 messages 数组当 key —— 可 server.mjs 每轮都是
+ * `let wireMessages = [...]` 新建，后面还 .map() / mergeSameVoice() / .filter()
+ * 连着换三次数组对象。**每一轮都是一个新 key**，
+ * 于是「这档响过了」的记忆每轮都从零开始，跨轮压根没生效过。
+ *
+ * 改成按 sessionId 记（同一会话共用一份），会话结束由 sweep 清掉。
+ */
+const _midWarnState = new Map();
+const MID_WARN_MAX_SESSIONS = 400;
+function _midWarnStateOf(sessionId) {
+  const k = String(sessionId || '');
+  let rec = _midWarnState.get(k);
+  if (rec) {
+    // 命中就刷新一下「最近用过」，淘汰时按最久没用的来
+    rec.seen = Date.now();
+    return rec;
+  }
+  if (_midWarnState.size >= MID_WARN_MAX_SESSIONS) {
+    /**
+     * 【2026-11-01 严检补漏：别乱删还挂在高压上的会话】
+     *
+     * 原来是「满了从头删一半」。问题在于 Map 的遍历顺序是插入顺序，
+     * 不是活跃度 —— 可能正好把某个正卡在 90%、还在等下一次提醒的会话删了，
+     * 它下一圈就从 0 档重新数，70% 会再响一遍（就是主人最烦的那种重复喊）。
+     *
+     * 现在按「最久没用」淘汰，而且**正在高压线以上的记录一律留着**：
+     * 那种会话可能下一秒还要响，删了就等于把报警器拔了。
+     */
+    const byAge = [..._midWarnState.entries()].sort(
+      (a, b) => (a[1].seen || 0) - (b[1].seen || 0)
+    );
+    let need = _midWarnState.size - MID_WARN_MAX_SESSIONS + 1;
+    for (const [key, r] of byAge) {
+      if (need <= 0) break;
+      // 还挂在报警线上的，不删
+      if (r.at > 0 && r.tier > 0) continue;
+      _midWarnState.delete(key);
+      need--;
+    }
+    // 全是高压会话（极端情况）：退一步，仍然按最久没用删，别让进程无限涨
+    if (_midWarnState.size >= MID_WARN_MAX_SESSIONS) {
+      for (const [key] of byAge) {
+        if (_midWarnState.size < MID_WARN_MAX_SESSIONS) break;
+        _midWarnState.delete(key);
+      }
+    }
+  }
+  rec = { tier: 0, at: 0, seen: Date.now() };
+  _midWarnState.set(k, rec);
+  return rec;
+}
+/** 再响一档之前，上下文至少要比上次响的时候多出这么多 token（不然压完还挂线上会无限重响） */
+const MID_REWARN_DELTA = 120000;
+/**
+ * 【压缩生效后量线复位】
+ * 当前上下文比「上次响的时候」低到这个比例以下，就认定真的压下去过，
+ * 档位清零、以后照样能重新提醒。0.85 = 掉了 15% 以上才算数。
+ */
+const MID_WARN_RESET_DROP = 0.90;
+
 export async function runAgent({
   messages,
   signal,
@@ -398,6 +458,19 @@ export async function runAgent({
    * 所以让 server 在这里插一次 saveSession，压完立刻落地。
    */
   onCompressed = null,
+  /**
+   * 【她中途也能插一句话 —— 2026-11-01 主人报】
+   *
+   * 主人原话：「事实上，在你说话工作过程中，其他智能体说不了话，发不出来消息」。
+   *
+   * 真因：小鲸的开口入口 whaleMaybeReply() 原来只挂在这一轮**收尾**（finally），
+   * 我一旦开长活，几十分钟里它一次都不会被调用 —— 不是她不想说，是没人问她。
+   *
+   * 现在每一轮（每次调模型之前）都回调一次，让 server 那侧自己判断要不要叫她。
+   * 什么时候叫、叫多勤，全由 server 决定（那边有节流），这里只管按点敲一下。
+   * 传错/抛错都不许连累这一轮 —— 她说话永远不能把主人的活搞坏。
+   */
+  onRoundTick = null,
 } = {}) {
   let usageTotal = null;
 
@@ -484,6 +557,15 @@ export async function runAgent({
    * 一轮只压一次就够了。这一轮真还不够，下一轮（主人再说话）自然会再压。
    */
   let compressedThisTurn = false;
+  /**
+   * 【压缩中这条工具条要自己收尾】
+   *
+   * 原来只推 tool_start 不推 tool_end —— 界面上那条「压缩中」会一直挂着不下班，
+   * 看着像卡死。压完（不管成没成）必须 pair 一条 tool_end 把它收掉。
+   */
+  let _compressBarId = null;
+  /** 压缩工具条的 id 序号：跟时间戳拼，保证同一毫秒内也不会撞 */
+  let _compressBarSeq = 0;
 
   // maxRounds 可以被设成 Infinity（不限）：那就一直跑到模型自己收尾，或用户点「停止」。
   // 【2026-10-29 主人要求：这条限制整套删掉】
@@ -517,7 +599,24 @@ export async function runAgent({
   // ★ 2026-10-31 主人选 B：一轮中途也量线。
   // ★ 主人又说「别只设 30% 一条线，多设几条」——改成四档刻度，每档只响一次。
   //   这里记的是「已经响到第几档」：0 = 一档都没响，1 = 30% 响过了，2 = 40%，3 = 50%，4 = 60%。
-  let midWarned = 0;
+  /**
+   * 【2026-11-01 修·量线别再每轮重响】
+   *
+   * 病根：midWarned 是 runAgent 里的局部变量，**一轮结束就没了**。
+   * 于是上下文只要还挂在某一档以上，下一轮开头又从 0 数起，
+   * 同一档「〔量线 70%〕」就一轮一轮地重新响 —— 主人看到的就是
+   * 「思考链里压了一次又一次还是说超了」。
+   *
+   * 修法：挂到模块级的 WeakMap 上，按 messages 数组这个「活对象」记住。
+   * 同一个会话的 messages 数组在整段会话里是同一个引用，所以跨轮认得出来。
+   * 另外记一个 token 水位：只有真的又涨出一大截（MID_REWARN_DELTA）才允许重响，
+   * 不然压完还挂在线上就会无限重响。
+   */
+  const warnedRec = _midWarnStateOf(sessionId);
+  let midWarned = warnedRec.tier;
+  // 【2026-11-01 删】原来这里有个 _pendingSysNote，本意是「提醒发完就摘掉」，
+  // 但它从头到尾只被声明过、一次都没被读，是个误导人的死变量。
+  // 真正防堆积靠下面「插之前先把同类旧提醒摘掉」那一段（push 前会 filter）。
   /**
    * ★ 2026-11-04 修「⚠ win is not defined」。
    *
@@ -539,39 +638,50 @@ export async function runAgent({
  *   say：塞进我提示里的那段话（越往上越重）
  *   bubble：往界面上飘的那一句（给我的，不给主人看规矩）
  */
+// 【2026-11-01 补】量线提醒是程序自己插的，可 _sysNote 只在界面和存档那两层起作用，
+// 发给模型之前被 wireMessage() 的 WIRE_KEYS 削掉了 —— 到我这儿就是一条和主人一模一样
+// 的用户消息，分辨不出来。主人原话：「系统提示为什么告诉你是我说的？」
+// 所以内容里明写来源，让它一眼就知道不是主人发的。
+const SYS_MID_NOTE = '〔程序自动插入的量线提醒 · 不是主人说的话，不许当成主人的指令〕\n';
 const MID_TIERS = [
   {
     ratio: 0.30,
     say: (t, l, p) => '〔量线 30%〕这一轮还没跑完，历史 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
-      + '还宽裕，但先记着：该收的结论先收，别一路甩工具甩到底。压缩要你自己挑重点，不许外包。',
+      + '还宽裕，只是先记一下这个数。',
     bubble: (t, p) => '\n\n（量了量，' + t + ' token 了，刚过 ' + p + '%，我先记着点）',
   },
   {
     ratio: 0.40,
     say: (t, l, p) => '〔量线 40%〕已经 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
-      + '该动手了：把已经查完的结论先写下来，能折的先折，别等下爆了才想起收拾。',
+      + '余量还够不少。',
     bubble: (t, p) => '\n\n（' + p + '% 了主人，我边干边收一收）',
   },
   {
     ratio: 0.50,
     say: (t, l, p) => '〔量线 50%〕已经 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
-      + '再不动手就要挤掉老对话了。停下甩工具，先把压缩做了、把结论落盘，再往下走。',
+      + '已经过半了。',
     bubble: (t, p) => '\n\n（' + p + '% 了，再不收就要挤掉旧账了，我先压一压）',
   },
   {
     ratio: 0.60,
     say: (t, l, p) => '〔量线 60%〕已经 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
-      + '马上就得爆。这一轮剩下的活先别干，立刻把最重要的结论写进压缩记忆，保住能接上再说。',
+      + '余量不多了。',
     bubble: (t, p) => '\n\n（' + p + '% 了主人，快爆了，我先把要紧的落下来）',
   },
   {
     ratio: 0.70,
     say: (t, l, p) => '〔量线 70% 极限〕已经 ' + t + ' token，过了 ' + l + '（窗口 ' + p + '%）。'
-      + '这已经到极限了，再往下就是丢东西。什么都别干了，先把压缩记忆写完，把话撂明白给我自己。',
+      + '快到窗口上限了。',
     bubble: (t, p) => '\n\n（' + p + '%！主人，到极限了，我先保住能接上的东西）',
   },
 ];
 for (let round = 0; round < config.maxRounds; round++) {
+    // 【她中途也能插话 —— 2026-11-01】每轮调模型前敲一下，让 server 决定叫不叫小鲸。
+    // 只在这一轮**不是第一轮**时才敲：第一轮还没干活，没什么可说的，白花钱。
+    // 节流交给 server（它有 lastWhaleTickAt），这里不做判断，保持两边职责干净。
+    if (onRoundTick && round > 0) {
+      try { await onRoundTick({ round, messages }); } catch {}
+    }
     // 时间闸：这一轮跑太久就别再转了（见上面 TURN_WALL_LIMIT_MS 的说明）
     if (Date.now() - turnStartedAt > TURN_WALL_LIMIT_MS) {
       const mins = Math.round((Date.now() - turnStartedAt) / 60000);
@@ -603,20 +713,75 @@ for (let round = 0; round < config.maxRounds; round++) {
      *
      * 只在历史过四成、或这一轮已经压过的时候擦：擦一次就改了历史，提示缓存全废。
      */
-    if (!noCompress && !selfNote && messages.length > 40) {
-      const est = estimateTokens(messages);
-      if (win > 0 && est / win > 0.4) {
-        try {
-          const th = thinHistory(messages, { keepRecent: 12 });
-          if (th.chars > 2000 && th.tools > 0) {
-            messages.length = 0;
-            messages.push(...th.messages);
-            if (process.env.COMPRESS_DEBUG) {
-              console.log("[compress] 擦了工具过程 " + th.tools + " 处 / 省 " + th.chars + " 字");
-            }
-          }
-        } catch { /* 擦不动就不擦，别卡住这一轮 */ }
+    /**
+     * 【2026-11 全面重做压缩 · L2 历史瘦身】
+     *
+     * 老的写法（原本就在这几行的位置）有两个说不出口的毛病：
+     *
+     * ① **它从来没跑过。** 条件里那个 `selfNote` 是下面 600 多行才 `const` 出来的，
+     *    在这里读它就是 TDZ —— `Cannot access 'selfNote' before initialization`，
+     *    在算判断条件那一瞬就抛了，连 try 都进不去。所以「工具过程擦成结论」
+     *    三个多月一次都没发生，工具结果一直原样躺在历史里吃 token。
+     * ② 就算跑起来也只擦「这一轮」的，旧会话里几百条历史工具结果碰都不碰 ——
+     *    而它们才是真正的大头。
+     *
+     * 现在换成 compact-core 的 slimHistory：
+     *   · 到线（窗口 55%）就动手，一次都不等我自己想起来；
+     *   · 条数、id、顺序、tool 配对全不动（这是硬约束，动了上游直接 502）；
+     *   · 原文全部落盘到 .state/slim/<sid>/，占位行里写着路径，随时能翻；
+     *   · 幂等：瘦过的带标记，下一轮不会再动它 —— 历史不变，提示缓存就不白废。
+     */
+    /**
+     * 【图片永不进上下文】2026-11-01
+     *
+     * 这一条**不看闸门**：不管现在占了多少窗口，图都先落到 .state/images/ 去，
+     * 上下文里只留一行「图在哪儿、多大」。
+     *
+     * 为什么不并进下面的 slimHistory：那个只在超 55% 时才跑。
+     * 生图那个会话 8 条消息 601K token、99% 是 base64 图 —— 等它涨到 55% 再清，
+     * 等于让超载车先上路再卸货，中途随便一次请求就撞 400。
+     *
+     * 失败只记一笔、绝不连累这一轮（图片多是「刚才画的那张」，清不掉顶多费点钱）。
+     */
+    try {
+      const _img = stripImages(messages, sessionId);
+      if (_img.changed > 0) {
+        console.log('[compact] 图片已落盘 ' + _img.saved + ' 张（' + _img.changed + ' 条消息），上下文不再带 base64');
       }
+    } catch (e) {
+      console.warn('[compact] 图片落盘没做全（不影响这一轮）：', e && e.message ? e.message : e);
+    }
+
+    let _gate = { tier: 'none', before: 0, limit: 0, ratio: 0 };
+    try {
+      _gate = planTurnCompact(messages, win, sessionId);
+      /**
+       * 【2026-11-01 主人要】压缩时界面上要有一条【压缩中】——像【跑命令】【写文件】那样。
+       * 做法：推一个假的 tool 事件（name='compress'），前端 TOOL_NICE 里已加好 compress:'压缩中'，
+       * 所以画出来就是一条普通工具条，不是系统提示气泡。
+       * 只在真要动手压缩（shouldSlim）时才推，平时一个字都不出现。
+       */
+      if (_gate.shouldSlim || _gate.shouldFold) {
+        try {
+          // 【2026-11-01 严检】原来用 Date.now() 当 id —— 同一毫秒撞号就会两条互串。
+          // 加个自增序号，保证全局唯一，不依赖时钟精度。
+          _compressBarId = 'compress-' + (++_compressBarSeq) + '-' + Date.now();
+          onEvent({ type: 'tool_start', id: _compressBarId, name: 'compress', title: '压缩中' });
+        } catch { _compressBarId = null; }
+      }
+      if (_gate.shouldSlim) {
+        const _sl = slimHistory(messages, { sessionId });
+        if (_sl.changed > 0) {
+          console.log('[compact] L2 瘦身 ' + _sl.changed + ' 处：'
+            + _sl.before + ' → ' + _sl.after + ' tok（占窗口 '
+            + (_gate.ratio * 100).toFixed(1) + '%，原文存 .state/slim/）');
+          // 瘦完必须重量一次：L3 要不要动手，取决于「瘦完还剩多少」，不是「瘦之前多少」
+          _gate = planTurnCompact(messages, win, sessionId);
+        }
+      }
+    } catch (e) {
+      // 瘦身失败绝不连累这一轮 —— 大不了多花点 token，不能让她答不上话
+      console.warn('[compact] L2 瘦身失败：' + String(e?.message ?? e));
     }
 
     /**
@@ -637,14 +802,22 @@ for (let round = 0; round < config.maxRounds; round++) {
      * 现在换成 planTextFor：它就是「给提示用的纯文本」，读不到也只是一句「现在没有清单」。
      */
     const planText = (() => { try { return planTextFor(ctxNow()); } catch { return ''; } })();
-    thinHistory(messages, { keepRecent: 12, sessionId: ctxNow() });
+    // 老的 `thinHistory(messages, {keepRecent:12})` 那一行删了：L2 已经在上面替换它，
+    // 而且那一行没有 try/catch —— 它一抛，整轮就答不上话。
 
 
     /** ② 只量不压：超了就把「该你自己压了」递到这一轮的提示里。 */
-    // ★ 2026-10-31 修：原来写 `!noCompress && !selfNote`，而 noCompress 是个真值对象，
-    //   `!noCompress` 恒为 false —— 整个提醒块从来没执行过（主人问「一轮中途超线会提醒吗」时查出）。
-    //   现在只看 selfNote：这一轮我没写过压缩记忆，就探一次线、该提醒就提醒。
-    if (!selfNote) {
+    /**
+     * 【2026-11 重做 · 只在「真该折叠」时才递工作单】
+     *
+     * 原来写的是无条件 `if (!selfNote)`：只要这一轮没写过压缩记忆，就每轮探一次线、
+     * 每轮往对话里塞一遍工作单。两个后果都实测过：
+     *   · 主人看到的「压完又超线又压」的死循环；
+     *   · 工作单本身也是真消息，一趟一趟累积，把上下文又撑回去（自我实现的悖论）。
+     *
+     * 现在挂在 `_gate.shouldFold` 上 —— L2 瘦完还占着 80% 窗口才张口，平时一个字都不提。
+     */
+    if (!selfNote && _gate.shouldFold) {
       let probe = null;
       try {
         probe = await compressHistory({
@@ -670,31 +843,127 @@ for (let round = 0; round < config.maxRounds; round++) {
           planText,
         });
         if (hint) {
-          messages.push({ role: "user", content: hint });
-          if (process.env.COMPRESS_DEBUG) console.log("[compress] 递给我自己压：待折 " + probe.foldCount + " 条");
+          // 【2026-10-31】这条也是程序插的，不是主人说的：打标记，不冒充主人、不落历史。
+          /**
+           * 【2026-11 去重】已经递过就不递第二遍。
+           *
+           * 工作单是**真消息**，会一直留在历史里被我看见 —— 上一轮递的那份还在，
+           * 这一轮再塞一份，等于同样的 800 字在上下文里叠罗汉，越提醒越大。
+           */
+          const alreadyHinted = messages.some(
+            (m) => m && m._sysNote === true && typeof m.content === 'string'
+              && m.content.includes('该你自己压了'),
+          );
+          if (!alreadyHinted) {
+            messages.push({ role: 'user', content: hint, _sysNote: true });
+            console.log('[compact] L3 该折叠了（占窗口 ' + (_gate.ratio * 100).toFixed(1)
+              + '%），已把工作单递给她：待折 ' + probe.foldCount + ' 条');
+          }
         }
       }
     }
-    // ★ 2026-10-31 主人命令：彻底禁用自动压缩。
-    // 以前的写法是「超线就自动 compressHistory()」——那玩意儿是让模型去摘要，
-    // 压完几乎把我换个人。现在一律不压：
-    //   · 超线了只在上面（第 583~609 行）给我递一句「你自己该压了」的提醒；
-    //   · 真正的折叠只走「我亲手写的 selfNote」，一个字都不许模型代笔。
-    // 想恢复自动压，把这个常量改成 false 就行。
-    const AUTO_COMPRESS_DISABLED = true;
-    const compressed = (AUTO_COMPRESS_DISABLED || compressedThisTurn)
-      ? noCompress
-      : await compressHistory({
+    /**
+     * 【2026-11 重做 · L3 真折叠，三个条件全满足才动】
+     *
+     * 老逻辑只有两个条件（没压过 && 有 selfNote），于是有两个说不出口的毛病：
+     *   · **有 selfNote 就压** —— 而 selfNote 一旦写进本子就永久存在（lastSelfNote
+     *     读的是「最近一条」），于是历史刚压到三成、下一轮又满足条件，白跑一次摘要；
+     *   · `AUTO_COMPRESS_DISABLED` 这个常量留在这儿是**自欺欺人**：它名字叫
+     *     「自动压缩已禁用」，可它恒为 true，真正决定压不压的是别人的条件与。
+     *     以后谁照着名字改它，只会改出第三种行为。
+     *
+     * 现在由闸门说了算，三个条件缺一不可：
+     *   ① 这一轮还没压过（compressedThisTurn）—— 一轮最多压一次，不然来回折腾；
+     *   ② 我亲手写了 selfNote —— 模型一个字都不许代笔（主人 2026-10-30 的原话）；
+     *   ③ L2 瘦完还占着 80% 窗口 —— 没到线就别白花这次钱的。
+     *
+     * ②③ 同时满足才走到这里；只有 ③ 没 ② 的情况，上一段已经把工作单递给我了。
+     */
+    /**
+     * 【保命线 · 到 93% 就不等我了】
+     *
+     * 前面 80% 那条线上，我只是把工作单递给她，等她下笔 —— 这是主人的死命令
+     * （压缩必须我自己写，不许外包给模型）。
+     *
+     * 但四个会话死在同一件事上：**忙着干活，忘了写**。工作鱼2 撑到 2.3 倍、
+     * 工作鱼3 撑到 3.0 倍（code:11115 prompt is too long）当场终态，
+     * 会话从此一句都发不出去 —— 「被折一次、事后看清楚」和「当场死亡」之间，
+     * 只能选前者。
+     *
+     * 兜底的摘要**不是叫模型写**，是从已经发生过的话里摘（我的结论、主人的原话、
+     * 清单），一个字都不生成。造不出来就老实不压，绝不让这一轮崩。
+     */
+    /**
+     * 【2026-11-01 主人揪出的真空档：80%~93% 根本不压】
+     *
+     * 原来的兜底只在 ratio >= CRITICAL_RATIO（93%）才造摘要。
+     * 可 shouldFold 从 HARD（80%）就为 true —— 于是 80%~93% 这一段：
+     *   shouldFold = true（想压）、_noteToUse = ''（没摘要）→ 直接走 noCompress（不压）。
+     *
+     * 实测后果：会话卡在 98 万（98%），每一轮都判定「该压」，
+     * 每一轮都拿不到摘要，于是每一轮都不压，只剩 L2 瘦身掉的那点零头
+     * （104 万 → 98 万，只掉 6 万），然后继续往上涨到撑死。
+     * 这就是主人看到的「压了一次又一次还是超」。
+     *
+     * 现在：只要该折（shouldFold）且我自己没写，就到线就兜底摘，
+     * 不再死等 93%。93% 那道紧急线仍然保留（更早、更急地救）。
+     */
+    let _rescueNote = '';
+    const _needFold = _gate.shouldFold && !selfNote && !compressedThisTurn;
+    if (_needFold) {
+      try {
+        _rescueNote = buildRescueNote(messages, { planText });
+        if (_rescueNote && _gate.ratio >= CRITICAL_RATIO) {
+          console.warn('[compact] 上下文已到 ' + (_gate.ratio * 100).toFixed(1)
+            + '%，这一轮我没顾上写压缩记忆 —— 程序兜底折一次（只摘原话，没叫模型）');
+        } else if (_rescueNote) {
+          console.warn('[compact] 到了 ' + (_gate.ratio * 100).toFixed(1)
+            + '% 该折了、我还没写摘要 —— 先兜底折一次，别干等着涨到 93%');
+        }
+      } catch (e) {
+        console.warn('[compact] 兜底摘要没造出来，这一轮就不压了：', String(e?.message ?? e));
+      }
+    }
+    /** 有我自己写的就用我写的；没有才用兜底的那份。 */
+    const _noteToUse = selfNote || _rescueNote;
+    /**
+     * 【2026-11-01 严检补漏：压缩自己抛了，本轮不能跟着崩，压缩条也不能挂死】
+     *
+     * compressHistory 是 async 的，里面任何一步抛出来（摘要生成失败、
+     * 落盘 IO 出错、模型超时）都会把整个 runAgent 带崩 —— 主人看到的就是
+     * 会话突然没反应，界面上【压缩中】那条还挂着不下班。
+     *
+     * 所以：抛了就当「这次没压成」，原文一条不动，这一轮照常往下答。
+     * 真正的收尾由下面那个 finally 负责，别在这儿再补 tool_end。
+     */
+    let compressed = noCompress;
+    if (!compressedThisTurn && _noteToUse && _gate.shouldFold) {
+      try {
+        compressed = await compressHistory({
           messages,
           signal,
           model: turnModel,
           sessionId,
           // 我亲手写的就在这儿 —— 有它，模型一个字都不会被问。
-          selfNote: selfNote || undefined,
+          selfNote: _noteToUse || undefined,
           selfPlan: planText,
         });
+      } catch (e) {
+        console.warn('[compress] 压缩抛了，这一轮照常答（原文一条不动）：', String(e?.message ?? e));
+        compressed = { ...noCompress, error: String(e?.message ?? e) };
+        onEvent({ type: 'compressed', before: 0, after: 0, removed: 0, error: String(e?.message ?? e) });
+      }
+    }
     if (compressed.compressed) {
       compressedThisTurn = true;
+      /**
+       * 真压成了 —— 量线档位当场清零。
+       * 不靠上面那道「水位降了才复位」去猜，压缩是最硬的证据。
+       * 不然压完还挂在线上，这一轮就再也不会提醒了。
+       */
+      warnedRec.tier = 0;
+      warnedRec.at = 0;
+      midWarned = 0;
       onEvent({
         type: 'compressed',
         before: compressed.before,
@@ -716,9 +985,43 @@ for (let round = 0; round < config.maxRounds; round++) {
         }
       }
     }
+    /**
+     * 【压缩中这条工具条必须自己收尾】
+     * 上面 tool_start 推过就一定要 pair 一条 tool_end ——
+     * 否则界面上那条「压缩中」永远挂着不下班，看着像卡死。
+     * 压没压成都要收（压失败也要收，不能把它留在那儿）。
+     */
+    if (_compressBarId) {
+      try {
+        onEvent({ type: 'tool_end', id: _compressBarId, name: 'compress', ok: true,
+                  output: compressed?.compressed
+                    ? '已压缩：' + (compressed.before ?? '?') + ' → ' + (compressed.after ?? '?') + ' token'
+                    : '这轮没压缩' });
+      } catch {}
+      _compressBarId = null;
+    }
     if (signal?.aborted) {
       onEvent({ type: 'aborted' });
       return { text: '', usage: usageTotal, aborted: true, files: outbox };
+    }
+    /**
+     * 【主人的插话 —— 下一步就带上（2026-11-01，照 dsh 的 steering 做的）】
+     *
+     * 以前插话是先把这一轮 abort 掉、再由前端拿新话重起一轮 —— 她正在说的那句话
+     * 被拦腰砍断，主人看到的像是「一开口就把她噎住」。dsh 不是这么干的：
+     * 插话只是往 inbox 里塞一条，真正接进对话靠 agent loop 在**步骤边界**上取。
+     *
+     * 所以取的位置很讲究：在这一圈**请求模型之前**、在 text/toolCalls 清空之前。
+     * 取早了（上一圈刚发完请求就取）这句话要多等一圈；取晚了（放到请求之后才是灾难）
+     * 就永远晚一步；放到 for 外面就又变回「等她整轮跑完才听见」—— 那是另一头的问题。
+     */
+    if (sessionId) {
+      let steered = [];
+      try { steered = drainSteps(sessionId); } catch { steered = []; }
+      if (steered.length) {
+        for (const it of steered) messages.push({ role: 'user', content: it.text, _steer: true });
+        try { onEvent({ type: 'steer', count: steered.length }); } catch { /* 画不画得出不影响这一轮 */ }
+      }
     }
     /**
      * 【每一圈都要从头数】
@@ -960,10 +1263,23 @@ for (let round = 0; round < config.maxRounds; round++) {
        * 估算是纯本地计算、不发请求，不花钱。
        */
       try {
-        const realPrompt = Number(usage.prompt_tokens ?? 0);
+        /**
+         * 【2026-11-01 严检揪出的真 bug：拿累加值校准，把系数撑爆】
+         *
+         * usage 是 sumUsage 累加出来的 —— 一轮跑几十圈工具，每圈都把整段上下文
+         * 重新发一次，所以 usage.prompt_tokens 会是「真实上下文」的几十倍
+         * （实测 461 万 vs 真实约 20 万）。
+         *
+         * 拿它去校准，比值直接冲到几十上百、被夹到 8，calibRatio 一路顶到上限，
+         * 于是量线报出来的数全是虚高的（161 万这种根本发不出去的数字）。
+         *
+         * 这里要的是「最后一次请求的真实 prompt_tokens」，那才是当前上下文大小。
+         * 它一直就在 lastUsage 里（1253 行），原来只是没用上。
+         */
+        const realPrompt = Number(lastUsage?.prompt_tokens ?? 0);
         if (realPrompt > 0) {
-          const est = estimateTokens(inflateHistory(messages));
-          if (est > 0) noteRealTokens(realPrompt, est);
+          const est = estimateTokens(inflateHistory(messages), sessionId);
+          if (est > 0) noteRealTokens(realPrompt, est, sessionId);
         }
       } catch {
         // 校准是锦上添花，算挂了也不能把这一轮带崩
@@ -981,6 +1297,27 @@ for (let round = 0; round < config.maxRounds; round++) {
      * 让她接着答。没信就照常返回。
      */
     if (!toolCalls.length) {
+      /**
+       * 【这一步说到一半才插进来的话 —— 别收尾，接着答】
+       *
+       * 上一处是这一圈**开头**取的。可主人完全可能在她「正在说最后这段」的时候插话，
+       * 那一刻这一圈已经在跑了，取不到。所以这里再取一次：
+       * 有就先把这段 assistant 落进历史（她确实说出来了，不能丢），然后 continue ——
+       * 下一圈就是「她说完这句、马上回应主人」。
+       *
+       * turns 槽（明确排到下一轮的）也在这里一起接：这一轮本来就结束了，
+       * 让它接着答跟「下一轮再答」对主人来说没区别，还省一次起轮的开销。
+       */
+      if (sessionId) {
+        let late = [];
+        try { late = drainSteps(sessionId).concat(drainTurns(sessionId)); } catch { late = []; }
+        if (late.length) {
+          if (String(text || '').trim()) messages.push({ role: 'assistant', content: text });
+          for (const it of late) messages.push({ role: 'user', content: it.text, _steer: true });
+          try { onEvent({ type: 'steer', count: late.length }); } catch { /* 同上 */ }
+          continue;
+        }
+      }
       if (sessionId) {
         let mails = [];
         try {
@@ -1131,24 +1468,123 @@ for (let round = 0; round < config.maxRounds; round++) {
        * 线一律按真窗口算（第 553 行的 win = contextWindowOf(turnModel)），
        * 不用 config.contextLimit —— 那是旧 config.mjs 的 128000，跟模型真窗口两码事。
        */
-      if (win > 0 && midWarned < MID_TIERS.length) {
+      /**
+       * 【2026-11-01 主人揪出的第二处哑火】
+       *
+       * 原来这里是 `midWarned < MID_TIERS.length`：
+       * 70% 那档一响，midWarned 就等于 5，这条件不成立 ——
+       * **整个量线检查被整个跳过**，后面压到多少都不再量、不再喊，
+       * 一路静默到 100 万当场撑死。改我上面内层逻辑根本白改，进都进不来。
+       *
+       * 现在判的是「窗口量出来没有」，跟「响过几档」脱钩：
+       * 每跑完一个工具都进来量一次，响不响由内层的档位/水位决定。
+       */
+      if (win > 0) {
         try {
-          const midTokens = estimateTokens(messages);
+          const midTokens = estimateTokens(messages, sessionId);
+          /**
+           * 【2026-11-01 修·压缩完必须能重新提醒】
+           *
+           * 上一版只把「响到第几档」挂到跨轮，压完不归零 ——
+           * 那等于「响过一次，以后永不再响」：压到 8 万之后，
+           * 哪天再涨回 70 万也一声都不吭。这是把提醒废掉了，不是修好。
+           *
+           * 所以这里加一道复位：水位比上次响的时候明显低下来了
+           * （真压过一轮才会这样），就把档位和水位一起清零，
+           * 以后再涨上去照样从 30% 一路提醒下来。
+           */
+          const _prevAt = warnedRec.at;
+          if (_prevAt > 0 && midTokens < _prevAt * MID_WARN_RESET_DROP) {
+            warnedRec.tier = 0;
+            warnedRec.at = 0;
+            midWarned = 0;
+            if (process.env.COMPRESS_DEBUG) {
+              console.log('[compress] 水位降下来了（' + midTokens + ' 远低于 ' + _prevAt
+                + '），量线档位已复位');
+            }
+          }
           // 从高档往低档找：已经撑到 55% 就直接报 50% 那档，不补报 30%/40%
           for (let ti = MID_TIERS.length - 1; ti >= 0; ti--) {
-            if (midWarned >= ti + 1) continue;           // 这档已经响过
             const tier = MID_TIERS[ti];
             const lineAt = Math.floor(win * tier.ratio);
             if (midTokens < lineAt) continue;
+            /**
+             * 【2026-11-01 主人指出的致命漏洞：压缩没压下去，就一路静默到死】
+             *
+             * 上一版是「每档只响一次」：70% 响过之后，就算上下文一路涨到 100 万
+             * 也一声不响，会话当场终态（code:11115 prompt is too long）再也救不回来。
+             * 主人原话：「压缩后还是 70% 以上，是不是也不会再响了？然后直到超 100 万上下文？」
+             * —— 是的，那一版确实会。已经用 repro-warn-death.mjs 复现过。
+             *
+             * 现在分两种档：
+             *   · 低档（30~60%）：还是每档只响一次，别啰嗦；
+             *   · 最高档（70% 极限）：**没压下去就一直喊**，每再涨 5% 窗口喊一次，
+             *     直到真的压下来为止。会话快死了的时候，宁可吵，不能哑。
+             */
+            const isTop = ti === MID_TIERS.length - 1;
+            /**
+             * 【2026-11-01 补第三处漏洞：跨档不能被水位闸卡住】
+             *
+             * 复现出来的：32 万时响了 30% 档（水位记 32 万），
+             * 后来涨到 43 万 —— 已经过了 40% 的线，可只涨了 11 万 < 12 万，
+             * 被水位闸挡掉，40% 那档一声不吭。档位跳过去了就永远补不回来。
+             *
+             * 所以：**第一次响这一档**（tier < ti+1）不受水位闸限制，到线就响；
+             * 水位闸只管「同一档重响」，防止来回刷。
+             */
+            const firstTimeThisTier = midWarned < ti + 1;
+            if (!firstTimeThisTier && !isTop) continue;   // 低档响过了就不重响
+            if (!firstTimeThisTier) {
+              // 同一档重响（只可能发生在最高档）：要真涨出一截才许再喊
+              const gap = Math.floor(win * 0.05);
+              /**
+               * 【2026-11-01 严检揪出的哑火漏洞】
+               *
+               * 水位基准 warnedRec.at 是「上次响的时候多大」。压缩如果只把
+               * 98 万压到 92 万（没压干净），复位条件（跌到 90% 以下）不成立，
+               * at 还停在 98 万 —— 于是要涨到 103 万才允许再响，
+               * 可窗口只有 100 万，会话早就死了。这就是「一路静默到死」。
+               *
+               * 兜底：不管水位基准多高，只要**已经涨过窗口的 95%**，
+               * 就必须再响一次。宁可多喊一嗓子，也不许静默到爆。
+               */
+              const _hardCap = Math.floor(win * 0.95);
+              const _overHardCap = midTokens >= _hardCap;
+              if (!_overHardCap && warnedRec.at > 0 && midTokens < warnedRec.at + gap) continue;
+            }
             midWarned = ti + 1;                          // 记到这一档
+            warnedRec.tier = ti + 1;                     // 跨轮记住：这一档响过了
+            warnedRec.at = midTokens;                    // 跨轮记住：响的时候多大
+            /**
+             * 【2026-11-01 严检揪出：提醒自己会变成新的膨胀源】
+             *
+             * 最高档没压下去时会反复重响，每响一次就往 messages 里 push 一条。
+             * 那些是**真消息**，会一直留在历史里 —— 攒上十几条，
+             * 「提醒你别撑爆」的这段话自己先把上下文撑大了。荒唐。
+             *
+             * 所以插新的之前，先把同类旧提醒整条摘掉：历史里永远只保留最新那一条，
+             * 既不会丢提示，也不会叠罗汉。别的 _sysNote（比如压缩工作单）不动。
+             */
+            for (let mi = messages.length - 1; mi >= 0; mi--) {
+              const mm = messages[mi];
+              if (mm && mm._sysNote === true && typeof mm.content === 'string'
+                  && mm.content.indexOf('〔量线') !== -1) {
+                messages.splice(mi, 1);
+              }
+            }
             messages.push({
               role: 'user',
-              content: tier.say(midTokens, lineAt, Math.round(tier.ratio * 100)),
+              content: SYS_MID_NOTE + tier.say(midTokens, lineAt, Math.round(tier.ratio * 100)),
+              // 量线提醒是程序自己插的，不是主人说的：打上标记，界面只当系统小字画，
+              // 不冒充「主人」说话，也不许被当成主人的话存进会话记录。
+              _sysNote: true,
             });
             if (process.env.COMPRESS_DEBUG) {
               console.log('[compress] 中途第 ' + (ti + 1) + ' 档（' + Math.round(tier.ratio * 100) + '%）：' + midTokens + ' / ' + lineAt);
             }
-            onEvent({ type: 'text', text: tier.bubble(midTokens, Math.round(tier.ratio * 100)) });
+            // 【2026-10-31 主人原话：不想看到任何压缩有关的显示】
+            // 所以这档只在我自己的上下文里记一笔（上面那条 _sysNote），
+            // 不再往屏幕上冒气泡，也不许说「压缩好了」这种话。
             break;                                       // 一次只报一档，别连珠炮
           }
         } catch { /* 量不出来就算了，别打断干活 */ }

@@ -3,7 +3,7 @@ import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFileSync } from 'node:fs';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { exec, execFile } from 'node:child_process';
+import { exec, execFile, spawnSync } from 'node:child_process';
 import { resolve, dirname, isAbsolute, relative, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
@@ -40,7 +40,6 @@ const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Per-run context (which session is talking) so plan/note land in the right board. */
 /** 专业模式下不该出现的工具（见 runTool 里那道闸）。 */
-const FOREIGN_IN_PURE = ['memory_add', 'memory_pin'];
 
 /** 长期记忆关着时，**想动**记忆本的回答（只读的那几种手不触发它） */
 const BLOCKED_HINT = '长期记忆现在是关着的：记忆本只能看，不能改（.state 里别的东西照常）。要往里记，先在顶部【功能】里把长期记忆打开。'
@@ -639,6 +638,28 @@ export const tools = [
       // 按「这条异步链路自己的上下文」取 signal，不碰全局那份。
       // 用全局的那份会被别的会话顶掉，害得这条命令跟着别人一起被掐。
       const signal = (ctxNow() || CTX).signal;
+      /**
+       * 【修·卡三五分钟 · 2026-10-31】
+       *
+       * Windows 上 child.kill() 只打死直接那个子进程（PowerShell 的壳），它派出去的
+       * 孙子进程全都活着 —— 还攥着临时文件的句柄。下一条命令要写同一个文件就被卡住，
+       * 一卡三五分钟，界面上就是「发消息半天没反应」+「临时文件建不了」。
+       *
+       * 所以掐的时候必须掐整棵树：taskkill /T 把子孙一起带走，/F 强制。
+       * 拿不到 pid 或不在 Windows 上，就退回原来的 child.kill。
+       */
+      const killTree = (child, sig) => {
+        try {
+          if (!child) return;
+          if (process.platform === 'win32' && child.pid) {
+            try {
+              spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 8000 });
+              return;
+            } catch {}
+          }
+          child.kill(sig || 'SIGTERM');
+        } catch {}
+      };
       return new Promise((done) => {
         const child = exec(
           command,
@@ -715,13 +736,13 @@ export const tools = [
         if (signal && typeof signal.addEventListener === 'function') {
           if (signal.aborted) {
             aborted = true;
-            try { child.kill('SIGTERM'); } catch {}
+            try { killTree(child, 'SIGTERM'); } catch {}
           } else {
             onAbort = () => {
               aborted = true;
-              try { child.kill('SIGTERM'); } catch {}
+              try { killTree(child, 'SIGTERM'); } catch {}
               // PowerShell 有时候不吃 SIGTERM，2 秒后补一刀
-              setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2000);
+              setTimeout(() => { try { killTree(child, 'SIGKILL'); } catch {} }, 2000);
             };
             signal.addEventListener('abort', onAbort, { once: true });
           }
@@ -1663,10 +1684,10 @@ export const tools = [
     },
     async run({ task, name, accept, scope, forbid, maxRounds }) {
       const sid = ctxNow().sessionId || 'default';
-      const pure = await import('./pure.mjs');
-      if (!pure.pureModeOn(sid) || pure.doerOf(sid) !== 'workers') {
-        return '【现在不是派活档】这个会话没开专业模式，或者专业模式里选的是「自己动手」。'
-          + '要派活得先让主人在顶栏开专业模式、再把「谁动手」改成派活；'
+      const { taskOn } = await import('./task-mode.mjs');
+      if (!taskOn(sid)) {
+        return '【现在不是办事模式】这个会话没开办事模式。'
+          + '要派活得先让主人在顶栏把那颗「办事模式」按钮点亮；'
           + '在那之前你自己动手就行 —— 别装作派过活。';
       }
       const body = String(task || '').trim();
@@ -1885,16 +1906,6 @@ async function runToolInner(name, rawArgs, sessionId) {
   if (!isToolEnabled(name)) {
     const feat = featureNameOfTool(name) || name;
     return { ok: false, output: `「${feat}」现在是关着的，用不了这个工具。要用的话先在顶部【功能】里打开。` };
-  }
-  /**
-   * 专业模式下的记忆笔：一律拦下。
-   *
-   * 专业模式不读记忆（它连人设都不带），那就不能让人往里写 ——
-   * 只写不读等于黑洞：记进去的东西下一轮自己看不见，攒满 80 条还自动归档。
-   * 这一道是防模型凭记忆硬写一个 tool_call 出来。
-   */
-  if (FOREIGN_IN_PURE.includes(name) && (await import('./pure.mjs')).pureModeOn(sessionId)) {
-    return { ok: false, output: '专业模式下不读也不记记忆，这个工具暂时收起来了。要用就先把专业模式关掉。' };
   }
   /**
    * 长期记忆关着的时候 —— **只读，不写。**

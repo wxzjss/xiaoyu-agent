@@ -214,8 +214,77 @@ export function wireMessage(m) {
   if (out.role === 'tool' && out.content === undefined) out.content = '';
   return out;
 }
+/**
+ * 【把 tool 消息的配对理顺 —— 2026-11-01 主人报了 400】
+ *
+ * 主人原话：会话名【清单2】报「⚠ LLM HTTP 400: Messages with role 'tool' must be a
+ * response to a preceding message with 'tool_calls'」。
+ *
+ * 真因（实测那个会话 1753 条里有 **668 条**孤儿）：历史被压缩/裁剪时，
+ * 带 tool_calls 的那条 assistant 被整块折走了，可它下面那一大串 tool 响应留下了。
+ * OpenAI 协议要求每条 role:'tool' 必须紧跟在声明它的 tool_calls 后面，
+ * 于是整个请求当场 400，这个会话从此**一句话都发不出去**。
+ *
+ * 这里做两件事，都是「出门前最后一道」：
+ *  ① 孤儿 tool（前面没有认领它的 tool_calls）→ 直接丢掉。它对应的调用都没有了，
+ *     留着只会让整个会话报废；丢掉的只是工具结果文本，不影响对话本身。
+ *  ② 有 tool_calls 但没湊齐响应的 → 补一条占位响应该死，别让模型看到半截。
+ *     （少了响应，网关同样会拒。）
+ *
+ * 只动发出去的这一份，**不动内存里的 messages、不动磁盘上的会话** ——
+ * 主人还能在界面上看见那些工具记录，只是不再发给模型。
+ */
+export function normalizeToolPairing(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const out = [];
+  // 当前这组 tool_calls 里，还没被响应掉的 id
+  let open = null;
+
+  const closeOpen = () => {
+    if (open && open.ids.size) {
+      for (const id of open.ids) {
+        out.push({ role: 'tool', tool_call_id: id, content: '（这条工具结果没有回传）' });
+      }
+    }
+    open = null;
+  };
+
+  for (const raw of arr) {
+    const m = wireMessage(raw);
+    if (!m || typeof m !== 'object') continue;
+
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      // 上一组还没闭合就来了新的一组：把上一组补齐
+      closeOpen();
+      open = { ids: new Set(m.tool_calls.map((c) => c && c.id).filter(Boolean)) };
+      out.push(m);
+      continue;
+    }
+
+    if (m.role === 'tool') {
+      const id = m.tool_call_id;
+      if (open && id && open.ids.has(id)) {
+        open.ids.delete(id);
+        out.push(m);
+        // 这一组都回完了，就关掉，免得后面的 tool 被错认
+        if (!open.ids.size) open = null;
+        continue;
+      }
+      // 孤儿：前面没有认领它的 tool_calls —— 丢掉，不发给模型
+      continue;
+    }
+
+    // 普通消息（user / assistant 纯文本）：它一出现，上一组就算断了
+    closeOpen();
+    out.push(m);
+  }
+  closeOpen();
+  return out;
+}
+
 export function wireMessages(messages) {
-  return Array.isArray(messages) ? messages.map(wireMessage) : messages;
+  if (!Array.isArray(messages)) return messages;
+  return normalizeToolPairing(messages);
 }
 
 /**
@@ -344,7 +413,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       const cap = over > 0 ? Math.floor(over * 0.85) : undefined; // 留 15% 给回话和摘要
       try {
         const cr = await compressHistory({ messages, limit: cap, signal });
-        if (cr && cr.compressed) noteRealTokens(cr.after, cr.after);
+        if (cr && cr.compressed) noteRealTokens(cr.after, cr.after, sessionId);
         console.warn('[llm] 上游说超窗口（' + (over > 0 ? over : '没说大小') + '），压了一刀：' + JSON.stringify({ before: cr?.before, after: cr?.after, kept: cr?.kept }));
         if (cr && cr.compressed) {
           body = { ...body, messages }; // 用压过的历史重发

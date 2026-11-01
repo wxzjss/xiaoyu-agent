@@ -10,36 +10,25 @@
  *     如何简洁摘要重要的内容等」
  *   「主智能体指左侧排序最靠前的已启用且未被禁用的智能体」
  *
- * ── 【2026-11-03 主人：「把办事模式并入专业模式里面」】───────────────
+ * ── 【2026-11-01 主人：「删除专业模式，回滚办事模式」】────────────────
  *
- * 原先这一档是顶栏第三颗独立按钮（fe5c7dc 做后端、bac0633 做界面）。
- * 主人否掉了那个形态：它本来就是「怎么干活」的一部分，另开一颗按钮等于让人
- * 多记一个开关、还多一处可能对不齐的地方。现在它不再是独立档位，而是
- * **专业模式里的一个选项**（'self' 自己动手 / 'workers' 派活），
- * 那个选项的存与读、以及「专业模式关着就一定是 self」这条规矩，
- * 全在 pure.mjs 里（doerOf / setDoer）。
+ * 中间有一段时间这一档被并进了专业模式（当成里面的一个「谁动手」选项）。
+ * 主人否掉了那个形态：专业模式整块删掉，这一档回到独立的开关 —— 顶栏一颗
+ * 「办事模式」按钮，按会话各开各的，存在 .state/task-mode.json。
  *
- * 于是本文件**不再有开关**：开关表 .state/task-mode.json 退成历史遗留，
- * 老文件留着不动、也不再读它办事 —— 迁移就是「主人再在专业模式里勾一次」，
- * 没勾就等于没开，这比自动继承一个已经看不见的开关安全。
+ * ── 这个文件里有什么 ──────────────────────────────────────────────
  *
- * ── 这个文件现在还剩什么 ──────────────────────────────────────────
+ *   ① 开关：taskOn() / setTaskOn() / taskFeatureOn()；
+ *   ② 花名册：每个会话开出来的 worker（.state/task-workers/<sid>.json）；
+ *   ③ 派活规矩的正文 taskPromptBlock()（由 persona.mjs 拼进系统提示）；
+ *   ④ 白名单 KEEP_TOOLS（由 agent.mjs 的 toolsForTurn 用来收工具）。
  *
- *   ① 花名册：每个会话开出来的 worker（.state/task-workers/<sid>.json）；
- *   ② 派活规矩的正文 taskPromptBlock()（由 pure.mjs 在派活那一档拼进提示词）；
- *   ③ 白名单 KEEP_TOOLS（由 agent.mjs 的 toolsForTurn 用来收工具）。
- *
- * 一句话：从「一个模式」降级成「一套给派活用的零件」。
+ * 一句话：开关在这里，规矩在这里，谁动手只认 taskOn 一个来源。
  */
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { config } from './config.mjs';
-import { isToolEnabled } from './features.mjs';
-// doerOf 在 pure.mjs。「谁动手」只认它一个，这里不再自己看开关表。
-// 注意方向：pure.mjs 只 import 了 task-mode 的 taskPromptBlock，这里 import 回去
-// 会不会成环？——不会：ESM 静态成环但两边都只在**函数体里**用对方的导出，
-// 求值阶段不碰，所以安全（跟 tools.mjs ↔ persona.mjs 那个坑不一样，那边是模块级常量）。
-import { doerOf } from './pure.mjs';
+import { getEnabledMap } from './features.mjs';
 
 /** 界面上显示的名字。改文案只改这里。 */
 export const MODE_NAME = '办事模式';
@@ -109,25 +98,52 @@ function log(line) {
   }
 }
 
-/*
- * 【这里原来有两个函数 taskOn / setTaskOn，2026-11-03 删了】
- *
- * 它们是「办事模式」还独立成档时的开关。主人把这一档并进专业模式之后，
- * 谁动手由 pure.mjs 的 doerOf() 说了算，这两个函数已经没有任何调用方 ——
- * 留着就是第二套开关，迟早跟真开关判出两种结果。
- *
- * 老数据（.state/task-mode.json）不读了。真要清，那个文件删掉就行，
- * 删了不影响任何东西 —— 现在没人读它。
- */
 /**
- * 【已废弃，别再用了】现在没有「哪些会话开着这一档」这回事了。
+ * 【这个会话现在是不是办事模式】读盘失败 = 没开（fail-closed）。
  *
- * 谁动手是 pure.json 里的表，想看就自己读 pure.json，或者对每个会话调 doerOf()。
- * 这个函数留着只是怕别的地方还在 import（check-identifiers 会报未定义），一律返空。
+ * 开关就存在 .state/task-mode.json 里那张表 { '<sid>': true }。
+ * 2026-11-01 主人回滚：这一档又是**独立**的一档了，所以开关表重新生效 ——
+ * 不要再去问别处要「谁动手」，那套（pure.mjs 的 doerOf）已经连文件一起删了。
  */
-export function taskSessions() {
-  return [];
+export function taskOn(sessionId) {
+  const sid = String(sessionId || 'default');
+  return readTable()[sid] === true;
 }
+
+/** 开 / 关。返回 { ok, sessionId, on }。 */
+export function setTaskOn(sessionId, on) {
+  const sid = String(sessionId || 'default');
+  const map = readTable();
+  const want = on === true;
+  if (want) map[sid] = true;
+  else delete map[sid];
+  const ok = writeTable(map);
+  log(`${want ? '开' : '关'} session=${sid} ok=${ok}`);
+  /* 关掉这一档 = 这个会话的子智能体全部注销（主人要的是「用完就没」）。 */
+  if (!want) wipeWorkers(sid);
+  return { ok, sessionId: sid, on: want && taskOn(sid) };
+}
+
+/**
+ * 【功能】页里「办事模式」这一档还开着吗。
+ *
+ * 关掉它 = 顶栏那颗按钮整块消失、POST 也拒掉（跟其它功能一个规矩：
+ * 功能关着＝这个功能不存在，不是灰着让你点）。
+ */
+export function taskFeatureOn() {
+  try {
+    const m = getEnabledMap();
+    return m['taskmode'] === true;
+  } catch {
+    return false;
+  }
+}
+
+/** 现在哪些会话开着。 */
+export function taskSessions() {
+  return Object.keys(readTable());
+}
+
 /* ── 子智能体花名册 ────────────────────────────────────────────────
  *
  * 主人要「创建的子智能体仅当前会话可见与使用，用完或会话被删除后自动删除」。
@@ -259,10 +275,10 @@ export function wipeWorkers(sessionId) {
 /**
  * 给系统提示用的一段话。
  *
- * 【改过一回】原来开头有一句 `if (!taskOn(sessionId)) return '';` ——
- * 那是「独立模式」时代的写法。现在该不该发由调用方决定
- * （pure.mjs 里只有 doerOf 是 workers 时才拼它），这里再判一次等于
- * 同一个意思有两个地方说了算。所以现在只要调用方拼了它就照发。
+ * 【改过两回】原来开头有一句 `if (!taskOn(sessionId)) return '';`，一度删掉，
+ * 让调用方（pure.mjs 的 doerOf）去判；现在专业模式删了、开关回到 taskOn，
+ * 判断仍在调用方（persona.mjs：taskOn 为真才拼），这里不再判第二遍 ——
+ * 同一个意思只有一个地方说了算。
  *
  * 不拼的时候一个字不花、缓存前缀不动 —— 那份判断在调用方那里。
  *
@@ -331,25 +347,25 @@ export function taskInfo(sessionId) {
   const list = listWorkers(sid);
   /**
    * available = 【功能】面板里这一档还在不在。
-   * 关着的时候这颗按钮要整块拿掉（不是灰掉），跟专业模式一个规矩：
+   * 关着的时候这颗按钮要整块拿掉（不是灰掉），规矩是：
    * 功能关着＝这个功能不存在，所以 on 也一并按 false 报出去，
    * 免得界面上一颗看不见的开关还亮着，而服务端其实已经在按「关」办事。
    */
   let available = true;
   try {
-    available = isToolEnabled('spawn_worker') !== false;
+    available = taskFeatureOn();
   } catch {
     available = true;
   }
   /**
-   * on 现在报的是「这个会话此刻是不是在派活」—— 跟真正干活的判断同源
-   * （pure.mjs 的 doerOf），而不是老开关表。界面和自检拿到的必须是
+   * on 报的是这个会话真实的开关值（.state/task-mode.json 里那一格），跟真正
+   * 干活的判断同源（taskOn）。界面和自检拿到的必须是
    * 「实际会怎么干」，不是一个已经没人看的勾。
    */
   let on = false;
   if (available) {
     try {
-      on = doerOf(sid) === 'workers';
+      on = taskOn(sid);
     } catch {
       on = false;
     }

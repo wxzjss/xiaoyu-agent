@@ -81,8 +81,8 @@ console.log('【3】普通会话不该平白多出 _deletedKeys 字段');
   ok(!('_deletedKeys' in after), '没删过东西就不写这个字段', JSON.stringify(Object.keys(after)));
 }
 
-// ── 4：真实服务器 /api/reset
-console.log('【4】真实 /api/reset：清完再存几次盘，清掉的对话不许复活');
+// ── 4：/api/reset「清空当前」已下线（2026-10-31 主人要求：前端按钮和 47 行动作全删）
+console.log('【4】/api/reset 应已下线：返回 410 + gone，不再清空任何东西');
 {
   const { startServer } = await import('../src/server.mjs');
   const id = 'smvchk4';
@@ -93,46 +93,40 @@ console.log('【4】真实 /api/reset：清完再存几次盘，清掉的对话�
       { role: 'user', content: '开场白' },
       { role: 'assistant', content: '在' },
       { role: 'user', content: '__probe_interject_test__' },
-      { role: 'assistant', content: '这是一段要被清掉的对话' },
+      { role: 'assistant', content: '这段对话不该被 reset 清掉' },
     ],
   }), 'utf8');
 
-  // startServer 返回的是句柄 { port, url, close() }，不是 node 的 net.Server
   const srv = await startServer({ port: 0, quiet: true, selfCheck: false });
   const base = srv.url;
-
-  const r = await fetch(base + '/api/reset', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sessionId: id }),
-  });
-  const j = await r.json();
-  ok(r.status === 200 && j.ok, '/api/reset 返回 ok', JSON.stringify(j).slice(0, 160));
-
-  const afterReset = JSON.parse(readFileSync(sessFile(id), 'utf8'));
-  ok(!afterReset.messages.some((m) => m.content === '__probe_interject_test__'),
-    '清完当场：测试条没了');
-  ok(Array.isArray(afterReset._deletedKeys) && afterReset._deletedKeys.length > 0,
-    '清完当场：删过的指纹登记进文件了', String(afterReset._deletedKeys && afterReset._deletedKeys.length));
-
-  // 再触发几次存盘（改名 = 每次都会走 saveSession，而且是最原始的那条路）
-  for (let i = 0; i < 3; i++) {
-    await fetch(base + '/api/sessions/rename', {
+  try {
+    const r = await fetch(base + '/api/reset', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, title: '验收' + i }),
+      body: JSON.stringify({ sessionId: id }),
     });
-  }
-  const afterSave = JSON.parse(readFileSync(sessFile(id), 'utf8'));
-  ok(!afterSave.messages.some((m) => m.content === '__probe_interject_test__'),
-    '存盘 3 次之后：测试条还是不在', afterSave.messages.map((m) => String(m.content).slice(0, 12)).join(' / '));
-  ok(!afterSave.messages.some((m) => m.content === '这是一段要被清掉的对话'),
-    '存盘 3 次之后：被清掉的对话也没回来');
+    const j = await r.json();
+    ok(r.status === 410, '/api/reset 返回 410（已下线）', 'status=' + r.status);
+    ok(j && j.gone === true, '/api/reset 带 gone:true 说明', JSON.stringify(j).slice(0, 160));
 
-  await srv.close();
+    const after = JSON.parse(readFileSync(sessFile(id), 'utf8'));
+    ok(after.messages.some((m) => m.content === '__probe_interject_test__'),
+      '下线后：那条探针消息原样还在（没被清）');
+
+    // 再触发几次存盘，确认整条链路都正常、没把消息弄丢
+    for (let i = 0; i < 3; i++) {
+      await fetch(base + '/api/sessions/rename', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, title: '验收' + i }),
+      });
+    }
+    const afterSave = JSON.parse(readFileSync(sessFile(id), 'utf8'));
+    ok(afterSave.messages.some((m) => m.content === '__probe_interject_test__'),
+      '几次存盘之后消息仍在（下线不影响正常存盘）');
+  } finally {
+    try { await srv.close(); } catch {}
+  }
 }
 
-console.log('');
-console.log(fail === 0 ? `PASS 全部通过（${pass} 项）` : `FAIL ${fail} 项没过 / ${pass} 项通过`);
-rmSync(home, { recursive: true, force: true });
 process.exit(fail === 0 ? 0 : 1);

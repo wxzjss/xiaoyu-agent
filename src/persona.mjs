@@ -10,10 +10,8 @@ import { getSettings, settingsPromptBlock, matchSafeWord, safeWordNoteFor } from
 import { personaInfo } from './persona-store.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
 import { readMemory, memoryPath } from './session-memory.mjs';
-// 专业模式：开了就一个字系统提示都不发（见 pure.mjs）。
-import { pureModeOn, pureSystemPrompt, doerOf, DOER_WORKERS } from './pure.mjs';
-// 上面那段兜底要用 taskPromptBlock —— 只去掉了 taskOn，别把它一起删了。
-import { taskPromptBlock } from './task-mode.mjs';
+// 办事模式：开了就追加一段「你只派活、别自己动手」的规矩（见 task-mode.mjs）。
+import { taskOn, taskPromptBlock } from './task-mode.mjs';
 // 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
 import { fishOn } from './fish-presence.mjs';
 // 会话绑的智能体卡：绑了自定义卡，基线人设就换成那张卡的正文（见 agents.mjs）。
@@ -140,11 +138,6 @@ export function personaModeRules(settings = getSettings()) {
  * @param {string} [opts.agentId] 用哪张卡的人设（群聊里替别人说话时用；不传就按会话绑定的那张）
  */
 export function buildSystemPrompt({ sessionId = 'default', safeMode = false, safeWord = "", agentId = "", turnSource = "" } = {}) {
-  // 专业模式：人设、思考语言、说话规矩、安全词、人设档、会话记忆全部不发
-  // —— 主人要的就是「只看对话本身」。这里必须是第一判断，免得后面任何一块漏出去。
-  // 但只发一条「答短点」：系统提示全空的话，模型没有任何长度锚点，会突然拉长篇大论。
-  if (pureModeOn(sessionId)) return pureSystemPrompt(sessionId);
-
   const settings = getSettings();
   const word = String(safeWord ?? '').trim();
   // 「人设」是基线档，不是临时切换：它不覆盖人设档，只是同一条规则换一说法。
@@ -266,21 +259,14 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
    * 只有这一轮说话的正好是这个人，这段才发；否则发了就是在教别人抢活。
    *
    * 没开的时候 taskPromptBlock 返回 ""，一个字不花，缓存前缀不动。
-   */
-  /**
-   * 【2026-11-03 主人：「把办事模式并入专业模式里面」】
    *
-   * 这一段以前挂在独立的 taskOn(sessionId) 上（顶栏第三颗按钮）。
-   * 现在并进专业模式：只有「专业模式开着 + 里面选了派活」才发，
-   * 判断统一走 pure.mjs 的 doerOf —— 那边保证专业模式没开就一定是 'self'，
-   * 这里不再自己看第二个开关（两个开关各自判断，迟早会判出两种结果）。
-   *
-   * 注意还有一条：专业模式开着的时候 buildSystemPrompt 在第 144 行就 return 了，
-   * 根本走不到这里。派活那一档的规矩是在 pureSystemPrompt 里拼的
-   * （见 pure.mjs 末尾那段）。这段留着是给「专业模式关着但 doerOf 返回 workers」
-   * 这种不该出现的情况兜底 —— 以前两个开关是分开的，出现过一次两边不一致。
+   * 【2026-11-01 回滚】中间有一阵子这段被并进专业模式（只有「专业模式开着 +
+   * 里面选了派活」才发，判断走 pure.mjs 的 doerOf）。现在专业模式整块删掉，
+   * 判断回到独立的 taskOn —— 只认一个来源，不再有第二套开关跟着一起判。
    */
-  if (!safeMode && (() => { try { return doerOf(sessionId) === DOER_WORKERS; } catch { return false; } })()) {
+  let _taskModeOn = false;
+  try { _taskModeOn = taskOn(sessionId); } catch { _taskModeOn = false; }
+  if (!safeMode && _taskModeOn) {
     const who = String(agentId || "").trim();
     let mainId = "";
     try { mainId = mainAgentId(sessionId) || ""; } catch { mainId = ""; }

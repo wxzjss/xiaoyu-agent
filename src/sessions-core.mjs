@@ -1,7 +1,7 @@
 // Sessions on disk: .state/sessions/<id>.json + _last.json (最近会话).
 // Every turn writes back to disk, so a reload/power-cut never loses the conversation.
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, writeSync, fsyncSync, closeSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { config } from './config.mjs';
 
 const DIR = join(config.dataDir, '.state', 'sessions');
@@ -24,6 +24,14 @@ function fileFor(id) {
 }
 
 /**
+ * 睡一小会儿（同步版）。给下面的 rename 重试用 —— writeFileAtomic 是同步函数，
+ * 里面不能 await，Atomics.wait 是同步阻塞里最省事、不烧 CPU 的睡法。
+ */
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}
+}
+
+/**
  * 原子写：先写同目录下的 .tmp，fsync 落盘，再 rename 覆盖目标。
  *
  * 【为什么不用 writeFileSync 直接盖】2026-10-29 修。
@@ -31,9 +39,41 @@ function fileFor(id) {
  * 断电、磁盘满，目标文件就停在「空的」或「半截 JSON」的状态 —— 整个会话当场没了，
  * 而且 JSON 坏掉之后 loadSession 只会当「这会话不存在」，连抢救的机会都没有。
  * rename 在同一分区上是原子的：要么还是旧的完整文件，要么就是新的完整文件。
+ *
+ * 【rename 撞 EPERM 不能就此罢手】2026-11-01 修 —— 那次真的丢了内容。
+ *
+ * 主人看到控制台红字：
+ *   EPERM: operation not permitted, rename
+ *   '...\sessions\smvv46rof8ijm.json.tmp-544' -> '...\sessions\smvv46rof8ijm.json'
+ * 会话没写进盘 —— 磁盘上那份停在 00:59:59，进程 01:03 才重启，中间那几分钟的话全没了。
+ *
+ * Windows 上 rename 覆盖一个「正被别的句柄打开着」的文件会回 ERROR_ACCESS_DENIED，
+ * Node 摊成 EPERM。打开它的通常不是我们自己（本项目读会话都是读完即关、不常驻 fd），
+ * 而是杀毒软件扫刚写出来的文件、搜索索引器、备份/同步工具 —— 全是几百毫秒内的短暂占用。
+ * 旧实现一次失败就 throw，撞上一次就丢一轮对话；而它偏偏在「文件刚被写大」时最容易撞上
+ * （杀毒就是见新文件才扫），也就是内容最多的那几轮最危险。
+ *
+ * 现在的做法：
+ *   ① tmp 文件名带 pid + 随机串 —— 同进程两处并发写不会再撞到同一个 tmp 路径；
+ *   ② EPERM / EACCES / EBUSY 重试 6 次，退避 20→120ms（合计约半秒）；
+ *   ③ 还换不上就退回「直接写目标文件」：原子性让一步，但这一轮的话必须留下。
+ *      直接写是「截断再写」，那半毫秒里断电仍可能坏，属于极小概率；
+ *      而 rename 被占是每次杀毒扫描都可能撞上的常事。两害相权，选留下内容。
+ *
+ * @returns {'rename'|'direct'} 怎么落下去的，只为了能记日志
  */
 function writeFileAtomic(file, text) {
-  const tmp = file + '.tmp-' + process.pid;
+  /**
+   * tmp 名字：以 `.` 开头、且不伪装成 `.json` —— 2026-11-01 加。
+   *
+   * 原来叫 `<id>.json.tmp-<pid>`。任何「遍历会话目录」的代码（我们自己、测试、外部工具）
+   * 都会把它当成一个会话文件抓走；等 rename 把它搬走，那边 stat 就 ENOENT。
+   * 实测就是这么挂的：_t_select 复制目录时炸在
+   *   stat ...\smvvr7pdnhyp4.json.tmp-30348-bsp77o
+   * 现在的名字 `.<id>.json.tmp-<pid>-<随机>`：以点开头 —— listSessions 本来就跳过点开头的，
+   * 别人的遍历也天然忽略；后缀不是 .json，认错过一次的东西不会再认错第二次。
+   */
+  const tmp = join(dirname(file), '.tmp-' + basename(file) + '-' + process.pid + '-' + Math.random().toString(36).slice(2, 8));
   let fd = null;
   try {
     fd = openSync(tmp, 'w');
@@ -41,7 +81,27 @@ function writeFileAtomic(file, text) {
     try { fsyncSync(fd); } catch {}
     closeSync(fd);
     fd = null;
-    renameSync(tmp, file);
+
+    let lastErr = null;
+    for (let i = 0; i < 6; i++) {
+      try {
+        renameSync(tmp, file);
+        return 'rename';
+      } catch (e) {
+        lastErr = e;
+        const code = e && e.code;
+        if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY') throw e;
+        sleepSync(20 * (i + 1));
+      }
+    }
+
+    // 重试到底也换不上：别再抛了，直接把内容写进目标文件。
+    try {
+      console.warn('[sessions] rename 连试 6 次都被占（' + String((lastErr && lastErr.code) || lastErr) + '），改为直接写目标文件：' + file);
+    } catch {}
+    writeFileSync(file, text);
+    try { if (existsSync(tmp)) unlinkSync(tmp); } catch {}
+    return 'direct';
   } catch (e) {
     if (fd !== null) { try { closeSync(fd); } catch {} }
     try { if (existsSync(tmp)) unlinkSync(tmp); } catch {}
@@ -104,6 +164,9 @@ function sanitizeLoadedMessages(list) {
         head = t ? t.text : '';
       }
       if (ALERT_USER_RE.test(head)) continue; // 系统告警，不是主人说的话
+      if (m._sysNote === true) continue; // 程序自己插的量线提醒，不是主人说的话
+      // 【2026-10-31 补】老会话里已经写进去的「〔量线／〔压缩」提醒也一并遮掉 —— 那是程序插的，不是主人说的。
+      if (/^\s*〔(量线|压缩|程序自动插入)/.test(String(m.content || ''))) continue;
     }
     out.push(m);
   }

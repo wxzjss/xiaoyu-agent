@@ -9,9 +9,9 @@ import { acceptSelfNote, selfCompressHint } from './self-compress.mjs';
 import { effectiveContextLimit } from './settings.mjs';
 // 【2026-10-28 改】专业/快速模式不再有单独的压缩规则：到水位才压、压就写摘要、
 // 尾巴按 limit 的比例留 —— 跟人设模式一模一样（主人原话「改为正常的压缩规则」）。
-// 下面还有两处残留会问 pureModeOn()（哪几档走得通、条数太少不压），
-// 那两条是「门槛」不是「规则」，留着。
-import { pureModeOn } from './pure.mjs';
+// 【2026-11-01】专业模式整块删掉了，下面 pureNow 恒 false。
+// 那两条门槛（哪几档走得通、条数太少不压）留着没删，只是永远不会命中 ——
+// 删它们要动不少行，而留着不可能再出错，就先留着。
 // 自动档的「拿不准」地带交给小鲸判断（带冷却，不每轮花钱）
 import { autoRatioVerdict, contextWindowOf } from './rates.mjs';
 import { askWhaleCompress } from './whale-judge.mjs';
@@ -116,7 +116,44 @@ export function purifyWire(messages) {
  * （挪一半，别一下跳满 —— 单次用量可能含缓存、复算，不一定干净）。
  * 夹在 1~8 之间：小于 1 说明估高了，那也是毛病；大于 8 基本是数据脏了。
  */
-let calibRatio = 1.6;   // 起点就用实测那个 1.61，别从 1 慢慢爬
+/** 【2026-11-01 严检：校准系数必须按会话隔离】
+ *
+ * 原来这是一个模块级全局变量：任何一个会话（或任何一次脏 usage）都能把它带偏，
+ * 然后所有会话的估算一起跟着错。上面那段注释里写的「826 万 → 24 万」暴力落底，
+ * 就是别的会话把这个系数拖坏之后，本会话估算凭空虚高造成的。
+ *
+ * 现在按 sessionId 各存一份：(sessionId) => ratio。
+ * 不传 sessionId 时退回 '_global'，跟老行为兼容（不会炸）。
+ */
+const _calibBySession = new Map();
+const CALIB_DEFAULT = 1.6;   // 起点就用实测那个 1.61，别从 1 慢慢爬
+const CALIB_MAX_SESSIONS = 200;
+
+function _calibKey(sessionId) {
+  return String(sessionId ?? '_global') || '_global';
+}
+
+function _calibGet(sessionId) {
+  const k = _calibKey(sessionId);
+  let v = _calibBySession.get(k);
+  if (typeof v !== 'number') {
+    if (_calibBySession.size >= CALIB_MAX_SESSIONS) {
+      const oldest = _calibBySession.keys().next().value;
+      if (oldest !== undefined) _calibBySession.delete(oldest);
+    }
+    v = CALIB_DEFAULT;
+    _calibBySession.set(k, v);
+  }
+  return v;
+}
+
+function _calibSet(sessionId, v) {
+  _calibBySession.set(_calibKey(sessionId), v);
+}
+
+// 老代码里还有直接读 calibRatio 的地方：这里留一个 Promise 之外的兼容视图，
+// 指向默认桶，保证不出现「未定义标识符」。
+let calibRatio = CALIB_DEFAULT;
 
 /**
  * 只给了图片路径、还没读成 dataUrl 时，按多少字符估一张图。
@@ -128,7 +165,7 @@ let calibRatio = 1.6;   // 起点就用实测那个 1.61，别从 1 慢慢爬
 const IMAGE_ESTIMATE_CHARS = 10000;
 
 /** 真实用量回来了：校准一下估算系数 */
-export function noteRealTokens(realTokens, estimatedTokens) {
+export function noteRealTokens(realTokens, estimatedTokens, sessionId) {
   const real = Number(realTokens);
   const est = Number(estimatedTokens);
   if (!Number.isFinite(real) || !Number.isFinite(est) || real <= 0 || est <= 0) return;
@@ -149,19 +186,23 @@ export function noteRealTokens(realTokens, estimatedTokens) {
   const raw = real / est;
   if (raw > 6) {
     // 估算明显漏项：保守地抬高一点点，别让判断继续低估，但绝不当真值用
-    calibRatio = Math.min(8, calibRatio + 0.2);
+    _calibSet(sessionId, Math.min(8, _calibGet(sessionId) + 0.2));
     return;
   }
   const ratio = Math.min(8, Math.max(1, raw));
-  calibRatio = calibRatio * 0.5 + ratio * 0.5;
+  const cur = _calibGet(sessionId);
+  _calibSet(sessionId, cur * 0.5 + ratio * 0.5);
 }
 
 /** 现在用的系数是多少（测试/排查用） */
-export function currentCalibration() {
-  return calibRatio;
+export function currentCalibration(sessionId) {
+  return _calibGet(sessionId);
 }
 
-export function estimateTokens(messages) {
+export function estimateTokens(messages, sessionId) {
+  // 【2026-11-01 严检】必须用本会话的校准系数。原来这里读全局 calibRatio ——
+  // 那个值永远停在初值 1.6，按会话隔离形同虚设。
+  const calibRatio = _calibGet(sessionId);
   let total = 0;
   for (const m of messages) {
     total += PER_MESSAGE_OVERHEAD;
@@ -250,7 +291,7 @@ function saveOversize(sessionId, index, text) {
   return file;
 }
 
-function findCut(messages, start, keepTokens) {
+function findCut(messages, start, keepTokens, sessionId) {
   // 至少留最后一个来回：keepTokens 再小也不能把尾巴删空。
   // 以前专业模式把预算夹到 0 的时候，这里返回 start，整段历史全没了 ——
   // 模型拿到的是一个空上下文，等于当场失忆，活干不下去。
@@ -269,7 +310,7 @@ function findCut(messages, start, keepTokens) {
   let taken = 0;
   for (let i = messages.length - 1; i >= start; i--) {
     if (acc >= keepTokens && taken >= floor) break;
-    acc += estimateTokens([messages[i]]);
+    acc += estimateTokens([messages[i]], sessionId);
     cut = i;
     taken++;
   }
@@ -377,52 +418,7 @@ const SUMMARY_INPUT_MAX = 24000;
  * @param {string} inputText renderForSummary 的产物
  * @returns {string}
  */
-/**
- * 摘要模型撂挑子的时候，自己从原文里刨一份「能看的事实清单」出来。
- *
- * 【为什么要有】—— 2026-10-30
- * 以前这里写死一句「（这段早期对话没有压出可用的事实，原文已折叠）」，
- * 整段历史就变成一行空话 —— 后面接着干的人（也就是我）完全不知道这几十轮在干嘛，
- * 表现出来就是「被压傻了」。原文其实一条没丢，全在 folded 里，
- * 那就把它数出来、把主人的原话摘出来，够自己认出这段活。
- *
- * @param {Array} old 被折掉的旧消息
- * @param {string} segId 原文存档 id（可能为空）
- * @returns {string}
- */
-function fallbackSummary(old, segId) {
-  const list = Array.isArray(old) ? old : [];
-  const userSaid = [];
-  const said = [];
-  for (const m of list) {
-    const c = typeof m?.content === 'string' ? m.content.replace(/\s+/g, ' ').trim() : '';
-    if (!c) continue;
-    if (m.role === 'user' && !m.context) userSaid.push(c);
-    else if (m.role === 'assistant' && !(m.tool_calls?.length)) said.push(c);
-  }
-  const clip = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
-  const lines = [];
-  /**
-   * 抬头就写清楚：这份不是摘要，是程序拼的降级清单。
-   * 不写这句的话，后面接手的我会把下面那些「（折叠时没能自动整理」
-   * 当成事实读。
-   */
-  lines.push('（注：这份是压缩没写成时程序拼出来的清单，不是真摘要；细节在原文存档里）');
-  lines.push('主人要什么:');
-  if (userSaid.length) {
-    for (const s of userSaid.slice(-6)) lines.push('- ' + clip(s, 120));
-  } else {
-    lines.push('- （这一段里主人没开过口，全是自己在干）');
-  }
-  lines.push('已经做完:');
-  lines.push('- 这一段共 ' + list.length + ' 条消息，已整段折叠（原文没删）' + (segId ? '，存档 id：' + segId : ''));
-  if (said.length) lines.push('- 自己最后说的：' + clip(said[said.length - 1], 100));
-  lines.push('还没做完:');
-  lines.push('- （折叠时没能自动整理，要接着干就翻原文存档看细节）');
-  lines.push('关键约束:');
-  lines.push('- 摘要这一步这次没写成功，别当这段是空的：原文在 folded 存档里，一条没丢');
-  return lines.join('\n');
-}
+/** 【2026-10-31 已删除 fallbackSummary】程序自己拼摘要这条路也砍了。 */
 
 function frameSummaryInput(inputText) {
   return [
@@ -595,11 +591,11 @@ export async function compressHistory({
   /** 只算「该不该压、能折多少」，不真动手 —— 用来先问我，等我写完再折。 */
   dryPlan = false,
 } = {}) {
-  if (signal?.aborted) return { compressed: false, before: estimateTokens(messages), after: estimateTokens(messages), reason: 'aborted' };
+  if (signal?.aborted) return { compressed: false, before: estimateTokens(messages, sessionId), after: estimateTokens(messages, sessionId), reason: 'aborted' };
 
   // 没显式给 limit 就去设置里问（带上模型名，自动档才能算对）
   const cap = limit === undefined ? effectiveContextLimit(model) : limit;
-  let before = estimateTokens(messages);
+  let before = estimateTokens(messages, sessionId);
   const beforeOrigin = before;
   if (!Number.isFinite(cap) || cap <= 0) {
     return { compressed: false, before, after: before, reason: 'disabled' };
@@ -618,7 +614,7 @@ export async function compressHistory({
    *   · 旧对话直接丢 = 丢的东西找不回来，主人回头翻记录一片空白。
    * 现在跟人设模式走同一套：到水位才压、压就写摘要、按 limit 的比例留尾巴。
    */
-  const pureNow = pureModeOn(sessionId);
+  const pureNow = false; // 专业模式已删除（2026-11-01 回滚），这一档恒不成立
   /**
    * 触发线。这里跟以前不一样了 —— 以前是「涨到 cap 才压」，而 cap 是窗口的 70%，
    * 遇到 100 万窗口的模型就是 70 万，历史涨到六七十万都不动，主人看到的就是
@@ -713,7 +709,7 @@ export async function compressHistory({
 
   const start = headLength(messages);
   // 头部（system + context）本身就要占掉一块，剩下的才是能给「摘要 + 尾巴」的预算
-  const headTokens = estimateTokens(messages.slice(0, start));
+  const headTokens = estimateTokens(messages.slice(0, start), sessionId);
 
   /**
    * 【头部自己就装不下：别再假装能压】
@@ -799,7 +795,7 @@ export async function compressHistory({
     for (let i = 0; i < messages.length; i++) {
       const m = messages[i];
       if (!m || typeof m.content !== "string") continue;
-      const self = estimateTokens([m]);
+      const self = estimateTokens([m], sessionId);
       if (self <= hardCap) continue;
       const keepChars = Math.max(500, Math.floor(m.content.length * (hardCap / self)));
       let savedPath = "";
@@ -818,7 +814,7 @@ export async function compressHistory({
   // 【回填 before】截断改了 messages 的内容，before 还是原来的数。
   // 不重算的话，后面 log 和返回值全是假的 —— 实测就出现过
   // before=729631 而实际已经降到 599425，看着像「压了个寂寞」。
-  const beforeAfterTrim = estimateTokens(messages);
+  const beforeAfterTrim = estimateTokens(messages, sessionId);
   if (beforeAfterTrim < before) {
     if (process.env.COMPRESS_DEBUG) {
       console.log("[compress] 截断单条巨型消息：before " + before + " → " + beforeAfterTrim);
@@ -832,7 +828,16 @@ export async function compressHistory({
     }
     return { compressed: true, before, after: before, limit: cap, trigger, reason: "trimmed-oversize", kept: messages.length };
   }
-  let cut = findCut(messages, start, keepTarget);
+  // 【2026-10-31 · 我自己定切点】
+  // 我写的摘要里只要有一行「切点=N」，就按我说的 N 切，不信程序的预算（边界照样守）。
+  const __myCutMs = String(selfNote ?? "").match(/切点\s*[=:：]\s*(\d+)/);
+  const myCut = __myCutMs ? Number(__myCutMs[1]) : -1;
+  let cut = findCut(messages, start, keepTarget, sessionId);
+  if (myCut > 0) {
+    const guarded = clampCut(messages, start, myCut, MIN_KEEP_MSGS, false);
+    if (guarded !== cut) console.log("[compress] 按我指定的切点: 要 " + myCut + "，夹回 " + guarded + "（程序算的是 " + cut + "）");
+    cut = guarded;
+  }
 
   /**
    * ────────────────────────────────────────────────────────────
@@ -861,32 +866,10 @@ export async function compressHistory({
    * 一律用程序算好的 cut 照压（fail-safe：宁可切得中规中矩，不能卡住不压）。
    * 环境变量 COMPRESS_ASK_CUT=0 可以整个关掉。
    */
-  if (cut > start && process.env.COMPRESS_ASK_CUT !== '0') {
-    try {
-      const asked = await askCutPoint({
-        sessionId,
-        model,
-        messages,
-        start,
-        cut,
-        keepTarget,
-        cap,
-        before,
-        minKeep: MIN_KEEP_MSGS,
-        signal,
-      });
-      if (asked && Number.isFinite(asked.cut) && asked.cut !== cut) {
-        cut = clampCut(messages, start, asked.cut, MIN_KEEP_MSGS, hardTail);
-        if (process.env.COMPRESS_DEBUG || asked.source === 'model') {
-          console.log('[compress] 切点 ' + asked.cut + ' → 夹到 ' + cut
-            + '（她说的：' + (asked.text || '') + ' / ' + asked.source + '）');
-        }
-      }
-    } catch (err) {
-      // 问切点出任何问题都照原计划压，绝不让它挡住压缩
-      console.warn('[compress] 问切点出错（照原计划压）：', String(err?.message ?? err));
-    }
-  }
+  // 【2026-10-31 主人命令：切点也不许问模型】
+  // 原来这里有 askCutPoint —— 又开一次模型问「切哪儿」。主人说「完全靠你自己搞」，
+  // 所以整段砍了。切点先按 token 预算算（findCut），真要调的话，是我亲手写摘要时
+  // 自己决定留到哪儿（见 selfNote 里写的切点说明）。
 
   if (cut <= start) {
     // 兜底：实在没得切，返回 trimmed 的结果而不是谎报 nothing-safe-to-drop
@@ -966,13 +949,22 @@ export async function compressHistory({
    *   ③ 没带 + 没 dryPlan → 才问模型兜底（它只是代班，不是主角）。
    */
   const myNote = String(selfNote ?? '').trim();
-  const __selfNoteApplied = myNote.length > 0;
+  /**
+   * 【2026-11-06 加：太短的不算「我写的」】
+   *
+   * 原来判据是 `myNote.length > 0` —— 哪怕只写「压一下」两个字也当成正式压缩记忆，
+   * 于是拿着两个字换掉一百多条原文。acceptSelfNote 那边本来就有 40 字门槛，
+   * 可它只在 saveSelfNote 那条路上被调用，compressHistory 拿到什么就用什么，
+   * 中间没人拦。这里补上一道，两边口径对齐：太短 = 没写 = 这一轮不压。
+   */
+  const __selfNoteApplied = myNote.length >= 40;
+
 
   if (dryPlan) {
-    const t = estimateTokens(messages);
+    const t = estimateTokens(messages, sessionId);
     const startDry = headLength(messages);
     const keepDry = resolveKeepTokens({ keepTokens, limit: cap, model });
-    const cutDry = findCut(messages, startDry, keepDry);
+    const cutDry = findCut(messages, startDry, keepDry, sessionId);
     const foldCount = Math.max(0, cutDry - startDry);
     return {
       compressed: false,
@@ -1055,42 +1047,7 @@ export async function compressHistory({
    */
   const pure = pureNow;
   void pure;
-  /**
-   * 摘要请求的超时与中断。
-   *
-   * 【关键改动：摘要失败绝不能连累整轮】
-   * 以前超时一到就 abort，整轮跟着断掉，主人连一句话都收不到。
-   * 现在：超时只砍摘要自己；失败了再重试一次（喂更短的输入，快一些）；
-   * 两次都失败也只写占位文案，压缩照做，整轮照跑。
-   */
-  const runSummary = async (inputText, timeoutMs) => {
-    const ac = new AbortController();
-    const onAbort = () => { try { ac.abort(); } catch {} };
-    if (signal) {
-      if (signal.aborted) onAbort();
-      else signal.addEventListener('abort', onAbort, { once: true });
-    }
-    const timer = setTimeout(() => { try { ac.abort(); } catch {} }, timeoutMs);
-    try {
-      const res = await chat({
-        messages: [
-          { role: 'system', content: summarySystem },
-          { role: 'user', content: frameSummaryInput(inputText) },
-        ],
-        // 摘要必须跟当前会话用同一个模型 / 同一套端点：会话切了模型，
-        // 摘要却还拿全局默认去算，压出来的东西对不上那个模型的窗口和风格。
-        model,
-        sessionId,
-        signal: ac.signal,
-      });
-      const t = String(res?.choices?.[0]?.message?.content ?? '').trim();
-      if (!t) throw new Error('摘要回了个空的');
-      return t;
-    } finally {
-      clearTimeout(timer);
-      if (signal) { try { signal.removeEventListener('abort', onAbort); } catch {} }
-    }
-  };
+  /** 【2026-10-31 已删除 runSummary】叫模型写摘要这条路彻底不要了，见上面「彻底删掉自动摘要」。 */
 
   /**
    * 跑题稿先扣在手上 —— 只有「一个标签都没有、里面也没有可用事实行」时才拿来兜底。
@@ -1102,61 +1059,25 @@ export async function compressHistory({
    * 等于拿一句占位符换掉几十条原文。
    */
   let lastJunk = '';
-  /** 我亲手写了就不问模型 —— 整段跳过（主人原话：不许外包给模型）。 */
+  /**
+   * 【2026-10-31 主人命令：彻底删掉自动摘要】
+   *
+   * 主人原话：「能否彻底删除自动压缩摘要，完全靠你自己搞？我已经不相信自动压缩了。」
+   * 「我所想的压缩是，当前会话的ai自己决定是否压，怎么压（要你自己亲手去删去写，
+   *   而不是直接调用工具一键压缩）」
+   *
+   * 所以这里一个模型都不叫了：没拿到我亲手写的 summaryText，就这一轮不压，
+   * 原文一条不动。原来那「问摘要模型 + 两次重试」全删了 —— 那是外包。
+   */
   if (!__selfNoteApplied) {
-    // 第一次：完整输入
-    try {
-      summaryText = await runSummary(renderForSummary(old), SUMMARY_TIMEOUT_MS);
-    } catch (err) {
-      error = String(err?.message ?? err);
-    }
-    // 第二次（主人没喊停才试）：把输入砍短一点，省时间
-    if (!summaryText && !signal?.aborted) {
-      try {
-        const shorter = renderForSummary(old).slice(-Math.floor(SUMMARY_INPUT_MAX * 0.6));
-        summaryText = await runSummary(shorter, SUMMARY_TIMEOUT_MS);
-        error = undefined;
-      } catch (err2) {
-        error = String(err2?.message ?? err2);
-      }
-    }
-    /**
-     * 第三次（重试）：模型没守格式，跑题当顾问了。
-     *
-     * 实测：喂一段机械重复的对话进去，模型经常不写标签，而是回一段
-     * 「这批对话在重复同一个循环…你希望我按哪种情况查？」这种点评。
-     * 那种东西进了历史就是毒 —— 后面接手的模型会以为自己是个顾问。
-     *
-     * 所以先验格式：至少要有两个标签。不合格就把「上次你跑题了，
-     * 只输出四个标签」再要一遍；还不行就干脆不压（见下面 summaryText 为空的分支）。
-     */
-    const looksStructured = (t) => {
-      const ls = String(t || '').split('\n');
-      return ls.filter((l) => SUMMARY_BLOCK_TAG.test(l.trim())).length >= 2;
+    return {
+      compressed: false,
+      before,
+      after: before,
+      limit: cap,
+      reason: 'no-self-note-keep-original',
+      error: '自动摘要已停用：这一轮没有我亲手写的压缩记忆，原文一条不动',
     };
-    /**
-     * 最多再要两次。每次把「上一次错在哪」写得比上次更硬
-     * —— 实测这种模型只加一句「请用标签」是不听的，得点名它错在哪。
-     */
-    const RETRY_HINTS = [
-      '【纠正】你上一次的输出不合格：你没有写那四个标题，而是在跟人说话、在提问、在给建议。'
-      + '现在只输出：主人要什么: / 已经做完: / 还没做完: / 关键约束: 这四行标签，'
-      + '每个标签下面用 "- " 列事实。不许有第五行标签，不许有任何解释、评论、提问、结尾语。',
-      '【最后一次】再重复一遍：输出必须形如\n'
-      + '主人要什么:\n- ...\n已经做完:\n- ...\n还没做完:\n- ...\n关键约束:\n- ...\n'
-      + '只要这四段。不要写"你贴的这段""我先确认""下一步你要哪个"。现在开始输出。',
-    ];
-    for (const hint of RETRY_HINTS) {
-      if (!summaryText || looksStructured(summaryText) || signal?.aborted) break;
-      try {
-        const retry = await runSummary(renderForSummary(old) + '\n\n' + hint, SUMMARY_TIMEOUT_MS);
-        if (looksStructured(retry)) { summaryText = retry; error = undefined; }
-        else { lastJunk = retry || lastJunk; }
-      } catch (err3) {
-        error = String(err3?.message ?? err3);
-        break;
-      }
-    }
   }
 
   /**
@@ -1292,30 +1213,20 @@ export async function compressHistory({
      * folded，一条不丢，摘要只负责说「这段干过什么」，够用。
      */
     /**
-     * 【和镠底清单分清楚】—— 2026-11
+     * 【2026-10-31 主人命令：不许程序自己拼摘要】
      *
-     * fallbackSummary 拼出来的东西里大半是程序自己的话
-     * （「（这一段里主人没开过口」「（折叠时没能自动整理」），
-     * 一拼就是四五百字 —— 数字上完全过得了上面那道「太短就不压」。
-     * 所以不能拿字数当唯一尺子：它是一个明确的降级，不是一份摘要。
-     * 这里打上 fallbackUsed，后面的日志和返回值都能看出来。
+     * 原来这里 fallbackSummary 会从原文刨一份「事实清单」顶上，让压缩看起来成功了。
+     * 主人说「完全靠你自己搞」，所以这条路也砍了：没我亲手写的，就不压，
+     * 原文一条不动 —— 压不压、怎么压、留什么，全归我。
      */
-    const fb = fallbackSummary(old, sessionId || '');
-    if (fb && cleanSummary(fb)) {
-      summaryText = fb;
-      fallbackUsed = true;
-      error = undefined;
-      console.warn('[compress] 摘要模型没写出来，改用自刨的事实清单顶上（' + String(fb).length + ' 字）');
-    } else {
-      return {
-        compressed: false,
-        before,
-        after: before,
-        limit: cap,
-        reason: 'summary-failed-keep-original',
-        error: error || '摘要没生成出来',
-      };
-    }
+    return {
+      compressed: false,
+      before,
+      after: before,
+      limit: cap,
+      reason: 'no-self-note-keep-original',
+      error: error || '这一轮没有我亲手写的压缩记忆，原文不动',
+    };
   }
 
   /**
@@ -1525,7 +1436,15 @@ function cleanSummary0(text) {
    * 模型拿到一个空上下文，当场失忆，活干不下去。
    * 留最后一个来回（最多四条），够它接着往下做。
    */
-  const keepFloor = Math.max(1, Math.min(4, keep.length));
+  /**
+ * 【2026-11-01 严检】保底至少留 8 条，别压到「当场失忆」。
+ *
+ * 原来是 1~4 条：实测压完只剩 4 条（2.9 万 token），
+ * 上一句话、上一步干了什么全没了，接不上活。
+ * 8 条大约是「最后一两个来回」，既省地方又不至于断片。
+ */
+const KEEP_FLOOR_MIN = 8;
+const keepFloor = Math.max(1, Math.min(KEEP_FLOOR_MIN, keep.length));
   while (guard++ < 200) {
     const next = withSummary(keep);
     // 【2026-10-27 补】这里不能拿 trigger 当目标。
@@ -1536,7 +1455,7 @@ function cleanSummary0(text) {
     const landAt = Number.isFinite(targetAfter) && targetAfter > 0
       ? targetAfter
       : (trigger > 0 ? trigger : Math.floor(cap * 0.15));
-    if (estimateTokens(next) <= landAt) break;
+    if (estimateTokens(next, sessionId) <= landAt) break;
     if (keep.length <= keepFloor) break;
     // 一次至少丢一条；保持工具调用和它的结果不拆开
     let cutAt = 1;
@@ -1569,6 +1488,9 @@ function cleanSummary0(text) {
    * 存的是 messages 里「第一条摘要之后、尾巴之前」的那一段：
    * 摘要本身不用存（它是替换品，不是被替换的），尾巴还在上下文里。
    */
+  /** 这一轮真正落盘的折叠存档（让返回值能把编号带出去，见文件末尾的 return） */
+  let segInfo = null;
+
   try {
     /**
      * 【2026-10-29 修 · lost 圈错了范围】
@@ -1606,12 +1528,13 @@ function cleanSummary0(text) {
         fromIndex: lost[0].at,
         toIndex: lost[lost.length - 1].at + 1,
         messages: lost.map((x) => x.msg),
-        tokens: estimateTokens(lost.map((x) => x.msg)),
+        tokens: estimateTokens(lost.map((x) => x.msg), sessionId),
         summary: summaryText,
       fallbackSummary: fallbackUsed,
         reason: String(trigger || 'compress'),
       });
       if (seg) {
+        segInfo = seg;
         console.log('[compress] 折掉的 ' + lost.length + ' 条原文已存盘：' + seg.id);
       }
     }
@@ -1622,7 +1545,7 @@ function cleanSummary0(text) {
   messages.length = 0;
   messages.push(...next);
 
-  const after = estimateTokens(messages);
+  const after = estimateTokens(messages, sessionId);
   // 尾巴被削得太薄 = 近况没了，模型接着干会失忆。不是致命错，但必须留痕。
   const thin = keep.length < MIN_KEEP_MSGS;
   if (thin) {
@@ -1633,9 +1556,20 @@ function cleanSummary0(text) {
   if (process.env.COMPRESS_DEBUG) {
     console.log('[compress] 压了：before=' + before + ' after=' + after + ' trigger=' + trigger + ' cap=' + cap + ' 剩 ' + keep.length + ' 条');
   }
+  /**
+   * 【2026-11-06 修：真压之后调用方拿不到存档编号】
+   *
+   * 原来这里只报 compressed/before/after/removed/kept，`segId` 和 `start` 只有 dryPlan
+   * 那条「探线」分支才有（931/935 行），可真压才是真正存盘的那一次 ——
+   * saveSegment 在 1466 行调了、编号打去控制台了，就是没带出这个函数。
+   * 结果：外面想知道「这一轮压出的存档是哪一份、切点在哪」只能去 grep 日志。
+   * 现在补齐；start 就是切点（历史里第几条之后被折掉）。
+   */
   return {
     compressed: true, before, after, limit: cap, trigger,
     removed: old.length + dropped, kept: keep.length,
+    ...(segInfo ? { segId: segInfo.id } : {}),
+    start: cut,
     ...(thin ? { thinTail: keep.length } : {}),
     ...(after > judgeLine ? { reason: 'still-over-limit' } : {}),
     ...(error ? { error } : {}),
@@ -1652,11 +1586,15 @@ function cleanSummary0(text) {
  * 取 limit 的一半，再用 CONTEXT_KEEP_TOKENS（默认 8000）当下限兜底，
  * 老配置里的 CONTEXT_KEEP_RATIO 只剩最后一道兜底。
  */
+/** 【2026-10-31】压完保留比：原来 0.5（留半个窗口）→ 压完仍高于舒适线，每轮都再压，死循环。
+ *  主人原话「几句话就该概括完」，所以只留两成。 */
+const KEEP_RATIO_DEFAULT = 0.2;
+
 function resolveKeepTokens({ keepTokens, limit }) {
   const direct = Number(keepTokens);
   if (Number.isFinite(direct) && direct > 0) return direct;
   const r = Number(config.contextKeepRatio);
-  const ratio = Number.isFinite(r) && r > 0 && r <= 1 ? r : 0.5;
+  const ratio = Number.isFinite(r) && r > 0 && r <= 1 ? r : KEEP_RATIO_DEFAULT;
   const fromLimit = Math.floor(limit * ratio);
   // 下限：再小也得留够「最近几句」和那两条头部，否则压完等于失忆
   const floorTokens = Number(config.contextKeepTokens);
@@ -1724,109 +1662,4 @@ export function clampCut(messages, start, want, minKeep = 8, hardTail = false) {
   return c;
 }
 
-/**
- * ────────────────────────────────────────────────────────────
- *  问她：这一刀你想切在哪儿
- * ────────────────────────────────────────────────────────────
- *
- * 不是「把压缩交给她」，是「让她对切点说一句」。细节和取舍见调用处注释。
- *
- * 喂给她的东西刻意做小：只给每一段的一句话轮廓（谁说的 + 开头几十字），
- * 不给全文 —— 问一句切点要是先把历史全文发一遍，等于为了省钱先花一笔。
- *
- * 她回什么都行，从里面认第一个「CUT 数字」；认不出就当没问过。
- *
- * @returns {Promise<{cut:number, source:string, text?:string}|null>}
- */
-export async function askCutPoint({
-  sessionId = '',
-  model = '',
-  messages = [],
-  start = 0,
-  cut = 0,
-  keepTarget = 0,
-  cap = 0,
-  before = 0,
-  minKeep = 8,
-  signal = null,
-} = {}) {
-  const TIMEOUT_MS = Number(process.env.COMPRESS_ASK_CUT_MS) > 0
-    ? Number(process.env.COMPRESS_ASK_CUT_MS)
-    : 12000;
-
-  // 轮廓：每条一行，太长就砍。最多给 60 条，够她判断「哪段还有用」。
-  const outline = [];
-  const from = start;
-  const to = Math.min(messages.length, start + 60);
-  for (let i = from; i < to; i++) {
-    const m = messages[i];
-    const role = String(m?.role || '?');
-    const who = role === 'user' ? '主人' : role === 'assistant' ? '我' : role === 'tool' ? '工具' : role === 'system' ? '设定' : role;
-    let text = '';
-    if (typeof m?.content === 'string') text = m.content;
-    else if (Array.isArray(m?.content)) {
-      text = m.content.map((p) => (typeof p === 'string' ? p : p?.text || '')).join(' ');
-    }
-    if (!text && m?.tool_calls?.length) {
-      text = '调用了 ' + m.tool_calls.map((t) => t?.function?.name || t?.name || '?').join('、');
-    }
-    text = String(text).replace(/\s+/g, ' ').trim().slice(0, 60);
-    outline.push('#' + i + ' [' + who + '] ' + text);
-  }
-  if (to < messages.length) outline.push('…（后面还有 ' + (messages.length - to) + ' 条没列）');
-
-  const system = [
-    '你在帮自己决定「压上下文时这一刀切在哪儿」。',
-    '历史是一串带编号的消息。编号比切点小的会被折成一份摘要，比它大的原样留着。',
-    '你来定这个编号：想让近况多留一点就往小改，想多折一点就往大改。',
-    '',
-    '只输出一行：CUT <编号>',
-    '不要解释，不要别的话，不要标点以外的东西。',
-  ].join('\n');
-
-  const user = [
-    '当前：历史约 ' + before + ' token，上限 ' + cap + ' token。',
-    '程序算的切点是 #' + cut + '（尾巴大约要留 ' + keepTarget + ' token）。',
-    '可以选的范围：#' + start + ' ~ #' + Math.max(start, messages.length - minKeep) + '。',
-    '',
-    '各段轮廓：',
-    ...outline,
-    '',
-    '切在哪儿？只回一行 CUT <编号>',
-  ].join('\n');
-
-  // 超时自己掐，失败一律返回 null（照程序原计划压）
-  const ac = new AbortController();
-  const onAbort = () => { try { ac.abort(); } catch {} };
-  if (signal) {
-    if (signal.aborted) return null;
-    signal.addEventListener('abort', onAbort, { once: true });
-  }
-  const timer = setTimeout(onAbort, TIMEOUT_MS);
-  let text = '';
-  try {
-    const res = await chat({
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      model,
-      sessionId,
-      signal: ac.signal,
-    });
-    text = String(res?.choices?.[0]?.message?.content ?? '').trim();
-  } catch (err) {
-    if (process.env.COMPRESS_DEBUG) console.warn('[compress] 问切点失败：', String(err?.message ?? err));
-    return null;
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener?.('abort', onAbort);
-  }
-
-  const m = /\bCUT\s*#?\s*(\d{1,7})\b/i.exec(text);
-  if (!m) {
-    if (process.env.COMPRESS_DEBUG) console.log('[compress] 切点回答认不出：' + JSON.stringify(text.slice(0, 80)));
-    return null;
-  }
-  return { cut: Number(m[1]), source: 'model', text: text.slice(0, 80) };
-}
+/** 【2026-10-31 已删除 askCutPoint】切点不再问任何模型。 */

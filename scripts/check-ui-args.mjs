@@ -1,0 +1,25 @@
+/**
+ * 严检：前端的工具条不许画出「参数：undefined」
+ */
+import fs from 'node:fs';
+
+const files = [
+  'D:\\小鱼Agent\\public\\index.html',
+  'C:\\Users\\35453\\AppData\\Roaming\\小鱼Agent\\data\\public\\index.html',
+];
+
+let pass = 0, total = 0;
+const chk = (l, c) => { total++; c ? (pass++, console.log('  [ok] ' + l)) : console.log('  [FAIL] ' + l); };
+
+for (const p of files) {
+  const s = fs.readFileSync(p, 'utf8');
+  console.log('\n=== ' + p + ' ===');
+  chk('没有无条件拼 参数：+ p.args', !s.includes("el.pre.textContent = '参数：' + p.args;"));
+  chk('有空值保护', s.includes("p.args === undefined"));
+  chk('compress 映射还在', s.includes("compress: '压缩中'"));
+}
+
+console.log('\n------------');
+console.log(`断言：${pass}/${total}`);
+console.log(pass === total ? 'PASS 全部通过' : 'FAIL 有未通过项');
+process.exit(pass === total ? 0 : 1);

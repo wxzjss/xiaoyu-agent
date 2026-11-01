@@ -540,14 +540,22 @@ export function builtinPersonaText() {
  * 删了下次启动又冒出来 —— 那不叫可选，叫删不掉。
  * 所以用一本账记下「哪些官方预设已经铺过了」：铺过的不再自动铺，主人删了就是删了。
  */
-export const PERSONA_PRESETS = [
-  {
-    id: 'xiaoyu-qq',
-    name: '小鱼 / 鲸鱼娘（QQ 版）',
-    file: 'xiaoyu-qq.md',
-    desc: '住在 QQ 里的小鱼：短句、分条、有脾气，先像真人再谈人设。',
-  },
-];
+/**
+ * 官方内置的「可选人设」清单。
+ *
+ * 【2026-11-06 主人要求：删掉「小鱼 / 鲸鱼娘（QQ 版）」】
+ *
+ * 原来这里只有一条 `xiaoyu-qq`（住在 QQ 里的小鱼：短句、分条、有脾气）。
+ * 主人说「删除【多套人设】里的【小鱼/鲸鱼娘（QQ版）】」，所以列表清空。
+ *
+ * 为什么必须连这里一起清：`ensurePresets()` 会按这本清单往人设库里「补铺」，
+ * 只要这一条还留在清单里，主人哪天清了账本（或换 scope）它就又冒出来了 ——
+ * 那就不叫删除，叫「删了还会自己长回来」。
+ *
+ * 素材没销毁：`persona/xiaoyu-qq.md` 与库里那份都备份在
+ * `D:\小鱼Agent\backup-persona-removed-20261106\`，想找回来随时能拿。
+ */
+export const PERSONA_PRESETS = [];
 
 /** 一本账：哪些官方预设已经铺进这个人设库了 */
 function presetLedgerFile() {

@@ -32,6 +32,10 @@
       /* 跟 electron/main.cjs 的 backgroundColor 必须一致：不一致的话淡入时会跳一下色 */
     --bg: #000000;
       --panel: #171a21;
+      /* 【工具折叠条专用】不跟 --panel 走：--panel 是 #171a21 纯黑，
+         拿来当工具条底就是主人说的「那条黑条」。这里用比气泡亮一档的灰。 */
+      --toolhub-bg: #1e232c;
+      --toolhub-bg2: #232935;
       --border: #262b36;
       --text: #e6e9ef;
       --dim: #8b95a7;
@@ -89,27 +93,11 @@
       border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
     }
     header button:hover { color: var(--text); border-color: var(--dim); }
-    /* 专业模式：开着就一直亮着，一眼看得出现在没带人设 */
-    header button#pureBtn.on {
-      color: #0b0e13; background: #7ee0b0; border-color: #7ee0b0; font-weight: 600;
+    /* 办事模式：珊瑚橙。开着就亮着，一眼看得出来她这会儿只动嘴不动手 */
+    header button#taskBtn.on {
+      color: #1a0f06; background: #f0b06a; border-color: #f0b06a; font-weight: 600;
     }
-    header button#pureBtn.on:hover { background: #9beac4; border-color: #9beac4; color: #0b0e13; }
-    /* 【2026-11-03 主人：「把办事模式并入专业模式里面」】
-       原来这里有一颗珊瑚橙的「办事模式」按钮（管「谁来干」）。
-       现在它并进专业模式了：不再有第三颗按钮，只在专业模式右边多一颗
-       小下拉「谁动手」。颜色规矩因此回到两档：绿=专业模式、红=管理员。 */
-    header button#doerBtn {
-      font-size: 12px; padding: 4px 8px; border-radius: 8px;
-      border: 1px dashed #3a4250; background: transparent; color: #8b94a3;
-      cursor: pointer; white-space: nowrap;
-    }
-    header button#doerBtn:hover { border-color: #5b667a; color: #b9c2d0; }
-    /* 改成「派活」之后才上色 —— 一眼看得出现在她自己不干活 */
-    header button#doerBtn.workers {
-      border-style: solid; border-color: #f0b06a; background: #f0b06a;
-      color: #1a0f06; font-weight: 600;
-    }
-    header button#doerBtn.workers:hover { background: #f6c489; border-color: #f6c489; color: #1a0f06; }
+    header button#taskBtn.on:hover { background: #f6c489; border-color: #f6c489; color: #1a0f06; }
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
@@ -315,6 +303,21 @@
  * 只留 white-space / word-break 这两条排版性质的，别的全撤 ——
  * 连 padding-left 也撤，不然她的字会比小鱼的字往右缩 10px，一列看着不齐。
  */
+/* 【自建智能体·2026-11-01】不是小鲸的人说话：名字用它自己卡上的颜色，
+   气泡跟小鱼一样没底没框（主人已经定过「屋里的人说话都长一样」）。 */
+.msg.mate .role {
+  color: var(--whoC, #e6e6e6);
+  font-size: 0.92em;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+.msg.mate .bubble {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: none;
+  border-left: 0;
+  padding-left: 0;
+}
 .whale .bubble {
   white-space: pre-wrap;
   word-break: break-word;
@@ -357,54 +360,207 @@
 .whale .role.whaleSelf::after { content: ' · 姐妹'; opacity: 0.5; font-size: 0.85em; }
     .assistant .bubble.streaming::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
     @keyframes blink { 50% { opacity: 0; } }
-    details.tool {
-      max-width: 900px; width: 100%; margin: 0 auto;
-      border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
-    }
-    details.tool summary {
-      cursor: pointer; padding: 7px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
-      color: var(--dim); list-style: none; display: flex; gap: 8px; align-items: center;
-    }
-    details.tool summary::-webkit-details-marker { display: none; }
-    details.tool summary .name { color: var(--accent); }
-    details.tool summary .status.ok { color: var(--ok); }
-    details.tool summary .status.err { color: var(--err); }
-    details.tool summary .status.warn { color: #d9a45b; }
-    /* 【2026-10-31 工具折叠样式】 */
-    /* 【2026-10-31 续接段样式】：同一串话接在同一个气泡里的后续段 */
-    .bubble.cont { margin-top: 5px; }
+    /* ========== 工具调用显示（2026-10-31 主人要求重写） ==========
+     * 主人原话：「两条线而不是原来那种灰色消息，也点不开」。
+     *
+     * 原来的毛病：
+     *  ① details.tool 自己带 border-left 竖线 —— 一行一个工具就一根线，堆起来就是「好几条线」；
+     *  ② 带线的那个选择器（details.toolhub details.tool）只在 hub 里面才生效，
+     *     工具要是直接挂在 #log 下面，竖线就露出来了；
+     *  ③ 折叠条的箭头样式写了两份（::before content 一份、transform 一份），互相打架。
+     *
+     * 现在的规矩：
+     *  · toolhub = 一条看得见的灰卡（能点、有箭头、写「调了 N 次工具」）；
+     *  · 里面每次工具就是一行，不要自己的框、不要竖线；
+     *  · 干活中 hub 开着、里面也开着；
+     *  · 主人一发下一条消息，foldOldHubs() 把整个 hub 收起来，只剩一条灰。
+     */
+
+    /* —— 折叠条本体 —— */
     details.toolhub {
       display: block;
-      margin: 2px 0 6px;
-      border-left: 2px solid var(--line, #2a2a2a);
-      padding-left: 8px;
+      /* 【2026-10-31 修·黑条】原来 max-width:900px + width:100% + margin:auto，
+         塞进 .msg 里被 flex 拉成一条通栏的暗卡，看着就是屏幕上一根黑条。
+         改成「按内容宽、贴左、不外扩」，就是气泡下面一小条能点的灰。 */
+      width: fit-content;
+      max-width: 100%;
+      align-self: flex-start;
+      margin: 2px 0 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: transparent;   /* 【主人要求】工具条不要底色，透明 */
+      overflow: hidden;
+      box-sizing: border-box;
     }
     details.toolhub > summary {
       cursor: pointer;
       list-style: none;
-      color: var(--muted, #8a8a8a);
-      font-size: 12px;
-      opacity: .72;
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px;
+      font-size: 12.5px;
+      color: var(--dim);
       user-select: none;
-      padding: 2px 0;
     }
     details.toolhub > summary::-webkit-details-marker { display: none; }
+    /* 箭头只有这一处，别的地方不许再写 ::before content */
     details.toolhub > summary::before {
-      content: '▸ ';
+      content: "▸";
       display: inline-block;
-      transition: transform .12s ease;
+      font-size: 11px;
+      color: var(--muted, #8a8a8a);
+      transition: transform .15s ease;
     }
-    details.toolhub[open] > summary::before { content: '▾ '; }
-    details.toolhub > summary:hover { opacity: 1; color: var(--accent); }
-    details.toolhub[open] > summary { opacity: .9; margin-bottom: 2px; }
+    details.toolhub[open] > summary::before { transform: rotate(90deg); }
+    details.toolhub > summary .hubname { color: var(--accent); }
+    details.toolhub > summary:hover { color: var(--accent); }
+
+    /* —— 里面的每一次工具：一行，不是一张卡 —— */
+    details.tool {
+      margin: 0; padding: 0; border: 0; background: none;
+      max-width: 100%; min-width: 0;
+      /* 关键：不给竖线。原来这里 border-left 就是「两条线」的来源 */
+    }
+    details.toolhub details.tool {
+      border-top: 1px solid var(--line, #2a2a2a);
+    }
+    details.toolhub details.tool:first-of-type { border-top: 0; }
+
+    details.tool > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 6px 10px;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12.5px;
+      color: var(--dim);
+      display: flex; gap: 8px; align-items: center;
+    }
+    details.tool > summary::-webkit-details-marker { display: none; }
+    details.tool > summary .name { color: var(--accent); }
+    details.tool > summary .status.ok { color: var(--ok); }
+    details.tool > summary .status.err { color: var(--err); }
+    details.tool > summary .status.warn { color: #d9a45b; }
+
+    /* 【只调一次工具时不套柜子】这时抽屉一个人直挂 #log，得自己有卡的样子 */
+    #log > details.tool {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    /* —— 对齐：跟消息正文同一把尺子 —— */
+    /* 【2026-11-01 主人报：思考链还是黑线、还超出消息左右两侧】
+       思考块也是 #log 的直接子元素 —— 同样是 flex item，同样默认 flex-shrink:1
+       （被压成一条 2px 黑线），而且它只写了 max-width:100%，能长到 1240 宽，
+       比 892 的气泡左右各凸出一截。跟工具条一起塞进这把尺子。 */
+    #log > details.tool, #log > details.toolhub, #log > details.think {
+      /* flex-shrink 必须显式写 0：#log 是 flex 容器，工具条是 flex item，
+         默认 flex-shrink:1 —— 一个 content 超高的 details 会被压成 2px 高的一条黑线，
+         这就是「每条消息下面一条条黑线」的真凶（实测 209 条全是 2px）。 */
+      flex: 0 0 auto;
+      max-width: 892px; width: 100%;
+      /* 跟 .bubble 的左缘对齐（102）：.msg 有 padding-left:8px，气泡因此落在
+         「900 居中后的左边 + 8」= 198。工具条若也居中 900，它的**边框**就停在 190，
+         比气泡凸出 8px —— 没有边框时看不出来，加了边框就露馅。
+         442 = 900/2 - 8：left = 20 + (W-40)/2 - 442，与气泡左缘恒等。 */
+      margin-left: max(0px, calc(50% - 442px));
+      margin-right: auto;
+      padding-left: 0; padding-right: 0;
+      box-sizing: border-box;
+    }
+    #log > details.toolhub { margin-top: 2px; margin-bottom: 6px; }
     details.tool pre {
       margin: 0; padding: 8px 10px; border-top: 1px solid var(--border);
       font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
       white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; color: #c9d1d9;
     }
+
+    /* ══════════ 【2026-10-31 主人：就照 0.9.27 那张卡】══════════
+     * 0.9.27（v0.9.27:public/index.html 182~199）里，工具调用是这么一张卡：
+     *   max-width:900px; width:100%; margin:0 auto;
+     *   border:1px solid var(--border); border-radius:8px; background:var(--panel);
+     * 收起时是带框的一小条，展开时同一张卡往下长、pre 上面一条分隔线。
+     *
+     * 现在的 DOM 是 details.toolhub > div.tool > div.toolHead + pre，
+     * 所以：卡的样子（边框/圆角/底色）必须挂在 details.toolhub 上 ——
+     * 挂在里层 div.tool 上是不行的，<details> 收起时里层根本不渲染，
+     * 屏幕上就只剩一行裸文字，一条边框都看不见（我上一版就栽在这）。
+     * div.tool 退化成卡里的一行，只用 border-top 做分隔。
+     */
+    #log > div.toolFrag {
+      flex: 0 0 auto;
+      max-width: 892px; width: 100%;
+      margin-left: max(0px, calc(50% - 442px));
+      margin-right: auto;
+      padding-left: 0; padding-right: 0;
+      box-sizing: border-box;
+    }
+    /* —— 这张就是 0.9.27 那张卡 —— */
+    details.toolhub {
+      display: block;
+      width: 100%; max-width: 100%;
+      margin: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    details.toolhub > summary {
+      cursor: pointer;
+      padding: 7px 10px;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12.5px;
+      color: var(--dim);
+      list-style: none;
+      display: flex; gap: 8px; align-items: center;
+    }
+    details.toolhub > summary::-webkit-details-marker { display: none; }
+    details.toolhub > summary .name { color: var(--accent); }
+    /* —— 柜子里的每个抽屉：主人要求「背景样式和柜子一样」——
+       原来这里是一行无底无框的分隔线，主人说抽屉也要有卡的样子。 */
+    details.toolhub details.tool {
+      display: block;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 5px 0;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    details.toolhub details.tool > summary.toolHead {
+      cursor: pointer; list-style: none;
+      display: flex; align-items: center; gap: 8px;
+      /* 缩进一点 + 自己的小箭头：一眼看出它是柜门里面的一排抽屉 */
+      padding: 7px 10px 7px 26px;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12.5px; color: var(--dim);
+    }
+    details.toolhub details.tool > summary.toolHead .name { color: var(--accent); }
+    details.toolhub details.tool > summary.toolHead .status.ok { color: var(--ok); }
+    details.toolhub details.tool > summary.toolHead .status.err { color: var(--err); }
+    details.toolhub details.tool > summary.toolHead .status.warn { color: #d9a45b; }
+    details.toolhub details.tool > summary.toolHead::-webkit-details-marker { display: none; }
+    details.toolhub details.tool > summary.toolHead::before {
+      content: '▸'; font-size: 10px; opacity: .55; width: 10px; flex: 0 0 10px;
+    }
+    details.toolhub details.tool[open] > summary.toolHead::before { content: '▾'; }
+    details.toolhub details.tool pre {
+      margin: 0; padding: 8px 10px;
+      border-top: 1px solid var(--border);
+      background: transparent;
+      font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+      white-space: pre-wrap; word-break: break-word;
+      max-height: 320px; overflow: auto; color: #c9d1d9;
+    }
     details.think {
       border: 1px solid var(--border); border-radius: 8px; background: rgba(23, 26, 33, .72);
       font-size: 12.5px;
+      /* 【2026-10-31 修 53】思考链太宽：它原来既没定宽、也不收缩，长路径/长 URL/整段无空格的
+         中文会把这块撑出气泡外，横向滚动条横穿半个屏幕。三件事一起做：
+         ① max-width 压到 100%，② min-width:0 让它肯被父级 flex 挤窄，③ overflow:hidden
+         兜住边框和圆角，内部真正滚动的交给 .thinkBody。 */
+      max-width: 100%; min-width: 0; overflow: hidden;
+      contain: inline-size;
     }
     details.think > summary {
       list-style: none; cursor: pointer; padding: 7px 10px; color: var(--dim);
@@ -421,7 +577,7 @@
     details.think .thinkMeta { flex: none; color: var(--dim); opacity: .65; font-size: 11.5px; }
     details.think .thinkBody {
       padding: 8px 10px 10px; border-top: 1px solid var(--border);
-      color: var(--dim); font-style: italic; white-space: pre-wrap; word-break: break-word;
+      color: var(--dim); font-style: italic; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; min-width: 0;
     }
     /* 历史里的思考（从盘上读回来的）：比实时那块淡一点、窄一点，
        免得满屏旧思考把真正在看的那轮对话挤下去 */
@@ -429,6 +585,9 @@
       background: transparent; border-color: rgba(255, 255, 255, .06);
       margin-bottom: 8px; max-width: 92%;
     }
+    /* 上面 #log > details.think 把 max-width 定成了 892（特异性更高），
+       thinkPast 想要「窄一点」就得按同样的 92% 比例单独说一遍：892 * 0.92 ≈ 820 */
+    #log > details.think.thinkPast { max-width: 820px; }
     details.think.thinkPast > summary { padding: 5px 9px; font-size: 12px; opacity: .8; }
     details.think.thinkPast[open] { background: rgba(23, 26, 33, .72); border-color: var(--border); }
     .interjectTag {
@@ -1455,6 +1614,20 @@
     .sessMain { flex: 1; min-width: 0; }
     .sessTitle { font-size: 13.5px; display: flex; align-items: center; min-width: 0; }
 .sessTitleText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+  /* 【这个会话正在跑】标题前一颗跳动的小绿点 —— 主人 2026-11-01：
+     「会话界面也没显示这个会话在运行」。以前列表里只有头像点（crew），
+     没有任何地方能看出「哪个会话此刻在跑」，只能一个个点进去看。 */
+  .sessLive {
+    width: 7px; height: 7px; border-radius: 50%; background: #4ade80;
+    flex: 0 0 auto; margin-right: 5px;
+    animation: sessLivePulse 1.4s ease-out infinite;
+  }
+  @keyframes sessLivePulse {
+    0%   { box-shadow: 0 0 0 0 rgba(74,222,128,.55); }
+    70%  { box-shadow: 0 0 0 6px rgba(74,222,128,0); }
+    100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
+  }
 /* 会话名旁边的小标签：这个会话是哪张智能体卡在说话（没绑就不显示） */
 .sessAgent {
   flex: 0 0 auto;
@@ -2163,6 +2336,20 @@
     /* 这几处是写死的底色，不跟着透就会是一块块死黑，很扎眼 */
     body.skin .user .bubble { background: rgba(29, 36, 48, calc(var(--surface, .2) + .38)); }
     body.skin details.think { background: rgba(23, 26, 33, calc(var(--surface, .2) + .38)); }
+    /* 【2026-10-31 修·两条消息之间那条黑条】工具折叠条（details.toolhub）跟 think 一样
+       也吃 --panel，但 body.skin 下 --panel 只有 .2 透明度，压在壁纸上就是一条纯黑杠。
+       这里给它补上跟 think 一样的底色，看起来才是跟气泡一致的灰卡，不是黑条。 */
+    /* 【2026-10-31 主人：太黑了】原来是 rgba(30,35,44,.72)，比主人自己的气泡还暗。
+       压在壁纸上就是一块黑卡。调亮一档、再透一点，跟气泡一个量级。 */
+    /* 【2026-10-31 主人：背景要跟 0.9.27 一样】0.9.27 的卡是 background: var(--panel)，
+       skin 下 --panel = rgba(23,26,33,.2)，半透明，壁纸透得出来。
+       这里原来写的是 transparent，把上面那条 var(--panel) 压掉了（特异性更高），
+       结果卡只有一条边框、没有底色。 */
+    body.skin details.toolhub { background: var(--panel); }
+    /* 抽屉跟柜子同一个底（主人要求「抽屉背景和柜子一样」）；
+       原来这里是 rgba(44,54,73,.30) 实心暗色，比柜子还暗，看着像两层。 */
+    body.skin details.toolhub details.tool { background: var(--panel); }
+    body.skin #log > details.tool { background: var(--panel); }
     body.skin .featRow:hover { background: rgba(29, 36, 48, calc(var(--surface, .2) + .3)); }
     /* 对话区垫一层薄纱：图片再花，长句子也有底可读；两头仍能看见画面 */
     body.skin #log { background: rgba(15, 17, 21, calc(var(--surface, .2) * .75)); }
@@ -2374,15 +2561,14 @@
         当前思考强度：<span id="topThinkName">默认</span><span class="caret">▾</span>
       </button>
     </span>
-    <button id="pureBtn" title="专业模式：不发人设、不发规矩，另配一份「怎么干活」的规范。按会话各开各的 —— 只对这个会话生效（点一下开，再点一下关）">专业模式</button>
-    <!-- 2026-11-03【主人的话：「把办事模式并入专业模式里面」】
-         原来这里挂着第三颗按钮（办事模式）。现在它并进专业模式了：
-         这颗小按钮只在专业模式开着的时候出现，管的是「谁动手」——
-           自己动手（默认）＝ 老样子，她自己读写文件、跑命令
-           派活（办事模式）＝ 她只拆任务/派活/检查/验收/压上下文，活交给临时 worker
-         hidden 而不是灰掉：专业模式没开的时候这一档根本不存在，
-         灰着的按钮只会让人一直想点，点下去服务端也只会回一句「没开」。 -->
-    <button id="doerBtn" hidden title="谁动手（属于专业模式）">谁动手：自己</button>
+    <!-- 2026-11-01【主人的话：「删除专业模式，回滚办事模式，然后让【专业模式】按钮变成【办事模式】按钮」】
+         所以这里换成一颗珊瑚橙的「办事模式」。它管的是「谁来干」：
+           关着（默认）＝ 老样子，她自己读写文件、跑命令
+           开着         ＝ 她只拆任务/派活/检查/验收/压上下文，活交给会话内临时开出来的 worker
+         专业模式那颗绿按钮和它右边的「谁动手」下拉一起撤掉了 ——
+         「谁来干」只有这一处开关，不再有两处各判一半。
+         按会话各开各的；【功能】里把「办事模式」关掉，这颗按钮整块消失（不是灰着）。 -->
+    <button id="taskBtn" title="办事模式：开了之后主智能体不自己动手，只拆任务、派活、检查、验收、管上下文；具体的活交给会话内临时开出来的 worker。按会话开，随时可以关">办事模式</button>
     <!--
       【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
       这两颗按钮连同它们的 JS / CSS 一起撤掉。开关只剩一处：左边「屋里的人」那列牌子，
@@ -3248,6 +3434,27 @@
     </div>
   </dialog>
 
+  <style>
+    /**
+     * 【2026-11-01 修·大会话刷新黑屏卡一下】
+     *
+     * 检查鱼 628 轮 / 659KB、干活鱼 801 轮 / 995KB。服务端拉取只要 34ms，
+     * 慢的全在浏览器：一次要建几千个节点、每个都得算布局和绘制，主线程顶住，
+     * 画面就黑一下才出来。
+     *
+     * 解法用浏览器自带的「屏幕外先不算」，不是我自己写分页：
+     *   content-visibility: auto —— 不在视口里的 .msg 直接跳过布局和绘制，
+     *   浏览器只按 contain-intrinsic-size 估个高度占位；滚到那儿才真算。
+     *
+     * 为什么加 .long-list 这个门槛：短会话（几十轮）本来就不卡，
+     * 没必要让它们也吃这套估算高度，免得滚动位置有一点点误差。
+     * 只有超过 150 轮才开。
+     */
+    #log.long-list .msg {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 140px;
+    }
+  </style>
   <div id="log"></div>
 
   <!-- 身份徽标：换成非主人身份时才冒出来。
@@ -3505,6 +3712,7 @@ function stampSpeechNode(node) {
  * 这是「说完一段话」的唯一入口 —— 保证同一段话只涨一次。
  */
 function flushSpeech() {
+  hubReset();   // 新一段话：工具重新归组
   const st = speechMark();
   const b = (typeof bubble !== 'undefined') ? bubble : null;
   const t = (typeof think !== 'undefined') ? think : null;
@@ -3560,18 +3768,33 @@ function resetScrollStick() {
   try {
     window.__imCount = { session: null, counted: new Set(), next: 0 };
   } catch {}
+  /**
+   * 【2026-11-01 修·大会话刷新黑屏卡一下】
+   *
+   * 主人报：「刷新时会话记录过长会卡顿然后黑屏一下，比如【检查鱼】会话」。
+   *
+   * 量过数据：检查鱼 628 轮 / 659KB，干活鱼 801 轮 / 995KB。
+   * 服务端拉取只要 34ms —— 慢的全在浏览器这边。
+   *
+   * 真凶就是下面原来这串：
+   *   hardScrollBottom() 一次，rAF 里再一次、再套一次 rAF 又一次，再加 60ms/220ms 两个 setTimeout
+   * 每次 hardScrollBottom 都读 log.scrollHeight，那是【强制同步重排】。
+   * 659KB 的聊天区被强迫连算 5 次布局 —— 主线程卡住，画面就黑一下，然后才出来。
+   *
+   * 而这一串补滚本来就是「一次不够稳」的土办法。现在换成：
+   * scrollTo 交给浏览器自己合成（behavior:auto 不吃主线程），只调一次；
+   * 再用一次 rAF 兜字体载入后的高度变化。总共 2 次读取，比原来 5 次少一半多。
+   */
   paintToBottom();
-  // 一次不够：历史多的时候，replaceChildren + 字体/图片布局要分几帧才稳，
-  // 只滚一次会停在中间。所以连着补几次，最后再兜一下。
-  hardScrollBottom();
-  requestAnimationFrame(() => {
-    hardScrollBottom();
-    requestAnimationFrame(() => {
-      if (stickBottom) hardScrollBottom();
-    });
-  });
-  setTimeout(() => { if (stickBottom) hardScrollBottom(); }, 60);
-  setTimeout(() => { if (stickBottom) hardScrollBottom(); }, 220);
+  const _scrollOnce = () => {
+    try {
+      if (!stickBottom || !log) return;
+      // scrollTo 走合成线程，不像 scrollTop 那样每次都逼一个同步布局
+      log.scrollTo({ top: log.scrollHeight, behavior: "auto" });
+    } catch { hardScrollBottom(); }
+  };
+  _scrollOnce();
+  requestAnimationFrame(_scrollOnce);
 }
 
 (function wireScroll() {
@@ -4334,6 +4557,10 @@ let stopping = false; // 正在停止，按钮锁住别再点
  */
 var turnsInFlight = new Map();
 
+/** 【2026-11-01】本页是否已经「接管」过一次正在跑的一轮。
+ *  刷新后 turnsInFlight 是空的，第一次得靠它决定「信服务端」而不是「信空 Map」。 */
+let __adoptedRunningOnce = false;
+
 /**
  * 只收拾「输入区能不能点」这件事：关面板、复位 disabled/readOnly/pointerEvents、聚焦。
  *
@@ -4645,6 +4872,24 @@ function reconcileTurnTexts(ev) {
   }
 }
 
+/**
+ * 【2026-10-31 新】屏幕上是不是已经有一模一样的助手气泡了？
+ *
+ * 为什么要有它：切走会话再切回来时，renderTurns 会按历史把这轮说的话整段画出来；
+ * 紧接着 attachLive 又把同一轮的直播事件补画一遍，文字那段就变成连发两遍。
+ * 只比文字、只认助手气泡，比中就不补 —— 宁可少画一句，也不让主人看见重复。
+ */
+function assistantBubbleHas(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  for (const el of document.querySelectorAll('#log .bubble')) {
+    const host = el.closest('.msg, .assistant');
+    if (!host || !host.classList.contains('assistant')) continue;
+    if (String(el.textContent || '').trim() === t) return true;
+  }
+  return false;
+}
+
 function paintLiveEvents(evs, bubble, skipToolIds) {
   // 【2026-10-31 补画跳重复】：切回来时历史里已经画过的工具，这里不再画第二遍
   const _skip = skipToolIds instanceof Set ? skipToolIds : null;
@@ -4656,7 +4901,24 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
       if (!think) think = openThink();
       think.push(ev.text);
     } else if (ev.type === 'text') {
+      // 【主人 2026-11-01】我开口说话了 = 上一段工具到此为止，该合柜子了
+      try { foldLiveTools(); } catch (e) { /* 合并不了不影响说话 */ }
       closeThink();
+      // 【2026-10-31 补画跳重复·文字】历史那一侧（renderTurns）已经把这轮说的话画出来了，
+      // 这里再画就是「同一句话连发两遍」——切走再切回来最先看到的就是它。
+      // 判法：屏幕上已经有一模一样的助手气泡，就直接跳过这段文字。
+      /**
+       * 【2026-11-01 修 Ctrl+F5：这里原来写的是 `!_skipText && ...`，
+       *  而 `_skipText` 这个变量**在函数里根本没定义**（全文只出现这一次）。
+       *  一进 text 分支就抛 ReferenceError → 整个 paintLiveEvents 崩掉，
+       *  外面那个 try 一吞，295 个事件的补画全军覆没。
+       *  主人看到的就是：按钮和「正在发送」都正常了，可这一轮已有的话一条没有，
+       *  只有之后新来的消息才冒出来（那些走的是增量，不经过这里）。
+       *
+       *  去掉这个没定义的开关即可：判据本来就是「屏幕上已经有一模一样的助手气泡」，
+       *  历史里画过的就跳过，没画过的照常补 —— 正是这段注释想要的行为。
+       */
+      if (assistantBubbleHas(ev.text)) { continue; }
       if (!bubble) bubble = addAssistantAuto();
       pushStreamText(bubble, ev.text);
       touchStreaming(bubble);
@@ -4671,12 +4933,20 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
       el.sum.querySelector('.status').textContent = '运行中…';
       el.pre.textContent = '参数：' + ev.args;
       toolEls.set(ev.id, el);
+          el.pre.hidden = false;
+          el.sum.querySelector('.status').className = 'status warn';
+          if (_liveHub) {
+            const _n1 = _liveHub.querySelector('.hubname');
+            if (_n1) _n1.dataset.one = niceTool(ev.name);
+            hubRefreshTitle();
+          }
     } else if (ev.type === 'tool_end') {
       const el = toolEls.get(ev.id);
       if (el) {
         const st = el.sum.querySelector('.status');
         st.textContent = ev.ok ? '完成' : '失败';
         st.className = 'status ' + (ev.ok ? 'ok' : 'err');
+        hubRefreshTitle();
         el.pre.textContent += '\n--- output ---\n' + ev.output;
       }
     } else if (ev.type === 'whale' || ev.type === 'agent') {
@@ -4738,7 +5008,18 @@ async function attachLive(id) {
        * 拿它来决定这一轮算不算在跑，就会把真在跑的一轮判成「跑完了」。
        * 服务端都说在跑了，就以服务端为准 —— 锁输入区，等它吐字。
        */
-      followLive(id, 0);
+      /**
+       * 【2026-11-01 修·切会话回来旧话重复一遍】
+       *
+       * 原来这里写死 followLive(id, 0) —— 从第 0 个事件开始画。
+       * 可 renderTurns 刚刚已经把整屏历史都画好了，于是同一批话又被画一遍：
+       * 主人看到的就是「切回来后一切正常，过好一会儿之前发的话又重复了一遍」。
+       *
+       * 改成：起点推到末尾，只接着画之后的新事件。
+       * 万一 events 取不到（缓存被清），退回 0 也安全 ——
+       * followLive 里每条 text 都会先问 assistantBubbleHas，画过的不会再画第二遍。
+       */
+      followLive(id, Array.isArray(live && live.events) ? live.events.length : 0);
       return true;
     }
     if (!mine) turnsInFlight.delete(id);
@@ -4778,7 +5059,27 @@ async function attachLive(id) {
     });
   } catch {}
 
-  let bubble = paintLiveEvents(evs, null, _drawnToolIds);
+    /**
+     * 【2026-11-01 修 Ctrl+F5：画崩了不许把「还在跑」判成「跑完了」】
+     *
+     * 现场实测（主人刷新时直接打接口）：/api/chat/live 返回 running=True、events=295。
+     * 也就是说服务端明明在跑、字都在缓存里，可界面还是变回【发送】、看不到后续的话。
+     *
+     * 真凶就是这一行：paintLiveEvents 要一口气画 295 个事件，
+     * 中间只要有一个事件的数据形状不对劲（缺 text、少字段、DOM 已经不在），
+     * 异常就一路冒到 switchSession 外面那个 catch —— 而那里面直接 busy=false。
+     *
+     * 注释上写着「补画失败只是少一段内容，绝不能连累输入框」，可它确实连累了：
+     * busy 被清成 false → 按钮从【停止】变【发送】→ 再按就是发新一轮 → 撞 409。
+     *
+     * 所以这里把「画」单独裹一层：画不出来顶多少几段内容，绝不影响「这一轮还在跑」的事实。
+     */
+  let bubble = null;
+  try {
+    bubble = paintLiveEvents(evs, null, _drawnToolIds);
+  } catch (e) {
+    console.warn("[attachLive] 补画直播缓存失败（只少几段内容，不影响运行状态）:", e && e.message ? e.message : e);
+    }
 
   /**
    * 【2026-10-28 修：切回来能看见内容，但再切一次就卡死】
@@ -4907,7 +5208,17 @@ function followLive(id, fromIndex) {
     }
     let live = null;
     try {
-      live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+      /**
+       * 【2026-11-01 修·刷新后发消息一卡一卡的】
+       *
+       * 以前每次都拉全量：服务端回 295 个事件，这里每 1200ms 收一遍、再逐条比一遍，
+       * 长对话里就一顿一顿的。
+       *
+       * 现在带上 since=seen —— 只要「我还没画过的那几条」。服务端另回 nextSince，
+       * 直接拿它当新游标，不用自己数。
+       */
+      live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id) + '&since=' + encodeURIComponent(String(seen || 0)))
+        .then((r) => r.json());
     } catch {
       return;
     }
@@ -4923,7 +5234,14 @@ function followLive(id, fromIndex) {
      *
      * 现在把这两件事拆开：画字看有没有新东西，收尾只看服务端说没说完。
      */
-    if (evs.length > seen) {
+    // 服务端给的权威游标：这批之后该从第几条起（取不到就退回自己数的）
+    const _advance = () => {
+      const n = Number(live.nextSince);
+      if (Number.isFinite(n) && n >= 0) seen = n;
+      else seen = seen + evs.length;
+    };
+
+    if (evs.length > 0) {
       let bubble = null;
       let think = null;
       // 工具块要挂在「这一轮」的记录上，这样 tool_end 回来找得到它
@@ -4968,7 +5286,8 @@ function followLive(id, fromIndex) {
       bubble = cand;
       if (bubble) markStreaming(bubble);
 
-      for (const ev of evs.slice(seen)) {
+      // 【2026-11-01 改用 since 增量】evs 本身已经是「seen 之后的那几条」，再 slice 会漏画
+      for (const ev of evs) {
         if (ev.type === 'reasoning') {
           if (!think) think = openThink();
           think.push(ev.text);
@@ -4993,12 +5312,20 @@ function followLive(id, fromIndex) {
           el.pre.textContent = '参数：' + (ev.args || '');
           if (!turnRecRef.toolEls) turnRecRef.toolEls = new Map();
           if (ev.id) turnRecRef.toolEls.set(ev.id, el);
+          el.pre.hidden = false;
+          el.sum.querySelector('.status').className = 'status warn';
+          if (_liveHub) {
+            const _n1 = _liveHub.querySelector('.hubname');
+            if (_n1) _n1.dataset.one = niceTool(ev.name);
+            hubRefreshTitle();
+          }
         } else if (ev.type === 'tool_end') {
           const el = turnRecRef.toolEls && ev.id ? turnRecRef.toolEls.get(ev.id) : null;
           if (el) {
             const st = el.sum.querySelector('.status');
             st.textContent = ev.ok ? '完成' : '失败';
             st.className = 'status ' + (ev.ok ? 'ok' : 'err');
+            hubRefreshTitle();
             el.pre.textContent += '\n--- output ---\n' + (ev.output || '');
           }
         } else if (ev.type === 'text') {
@@ -5009,7 +5336,7 @@ function followLive(id, fromIndex) {
         }
       }
       closeThink();
-      seen = evs.length;
+      _advance();
       noteNewContent();
     }
 
@@ -5130,8 +5457,57 @@ async function tryHealAfterDisconnect(id) {
   // 万一进程上次是被强杀的，类就留在那儿了 —— 这里扫一遍收干净。
   try { sweepStaleStreaming(); } catch {}
         const stillRunning = await attachLive(id);
-        busy = stillRunning;
-        if (stillRunning) showSending();
+        /**
+         * 【2026-10-31 修 52：切回来按钮变「停止」却发不出话】
+         *
+         * attachLive 判「还在跑」看的是服务端登记，可那份登记有可能是残骸：
+         * 那一轮其实早收尾了，进程还在、登记忘了删。它一返回 true，这里就把 busy 设成
+         * true —— 按钮变「停止」、输入框锁住；可服务端真去跑这一轮时会撞 409，
+         * 主人按下去消息直接发不出去，非得 Ctrl+F5 才缓过来。
+         *
+         * 兜两道：
+         *   ① 本页内存里根本就没在跟这一轮（turnsInFlight 没它）→ 不信服务端那句「在跑」，
+         *      只当它在补画历史，输入区放开；
+         *   ② 真在跑的，补一次 /api/chat/live 复核，服务端说没跑就放开。
+         * 两道都过不了才锁。宁可放过一次「其实在跑」，也别把主人的输入框焊死。
+         */
+        let reallyRunning = Boolean(stillRunning);
+        /**
+         * 【2026-11-01 修：按 Ctrl+F5 刷新后看不到后续的话、按钮变回【发送】】
+         *
+         * 主人原话：「在你工作过程中，我按 Ctrl+F5 刷新屏幕后，就看不到你后续说的话了，
+         * 原来的【停止】按钮也变成【发送】了，也没显示你在发消息，会话界面也没显示你在运行」。
+         *
+         * 真因就是这一行：用 turnsInFlight 去否定服务端。可 turnsInFlight 是**页面内存里的**
+         * Map —— 刷新之后它必然是空的。于是服务端明明还在跑（stillRunning=true），
+         * 这里却一律判成「没在跑」→ busy=false、hideSending()、按钮变回【发送】。
+         * 也就是说：**刷新场景下这一行 100% 误判**，主人报的三连现象全由它一个人造成。
+         *
+         * 那当初为什么写这一行？防「进程崩过留下的登记残骸把输入框焊死」。
+         * 可这件事已经有更好的兜法：/api/stop 现在当场 runningTurns.delete，
+         * 真跑完了 /api/chat/live 的 running 自己就是 false（stillRunning 正是从它来的）。
+         * 所以改成：**本页第一次遇上「服务端说在跑、我内存里没有」时不否决，而是接管下来**
+         * （写进 turnsInFlight，后面 followLive 才能接着把字画出来）。
+         * 之后再遇到同样的，才按老规矩否决 —— 那时内存是可信的。
+         */
+        if (reallyRunning && !turnsInFlight.has(id)) {
+          if (!__adoptedRunningOnce) {
+            // 刷新/首次加载：服务端说的算，接管这一轮，别让写了一半的话断在半路
+            __adoptedRunningOnce = true;
+            turnsInFlight.set(id, { startedAt: Date.now(), adopted: true });
+            console.log('[refresh] 接管了服务端还在跑的这一轮: ' + id);
+          } else {
+            reallyRunning = false;
+          }
+        }
+        if (reallyRunning) {
+          try {
+            const chk = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+            reallyRunning = Boolean(chk && chk.running);
+          } catch { reallyRunning = false; }
+        }
+        busy = reallyRunning;
+        if (reallyRunning) showSending();
         else hideSending();
         syncSendBtn();
       }
@@ -5153,6 +5529,26 @@ async function tryHealAfterDisconnect(id) {
         busy = false;
         hideSending();
         syncSendBtn();
+        /**
+         * 【主人 2026-11-01："刷新后不是停了，是不显示后续进行的内容了"】
+         *
+         * 这条分支（切会话、以及刷新后 boot 恢复会话）原来只画历史，
+         * 从来没问过服务端那一轮还在不在跑。于是刷新之后：
+         *   busy = false、按钮从「停止」变回「发送」、也不启动 followLive，
+         * 而服务端明明还在吐字 —— 实测刷新前直播缓存 23 个事件，
+         * 刷新后 12 秒涨到 56 个，一个字都没丢，只是没人把它画到屏幕上。
+         *
+         * 补一次 attachLive：它自己会看 /api/chat/live 说 running 不 running，
+         * 在跑就顺手把 followLive 挂上，剩下的字会继续长出来。
+         */
+        attachLive(id).then((running) => {
+          if (sessionId !== id) return;      // 中途又切走了，别管了
+          if (running) {
+            busy = true;
+            showSending();
+            syncSendBtn();
+          }
+        }).catch(() => {});
       }
       /**
        * 【这一轮真答完了才算自愈成功】
@@ -5300,278 +5696,111 @@ if (window.desktop) {
  */
 
 /**
- * 专业模式（原「纯净模式」）。
+ * 办事模式（2026-11-01 回滚）。
  *
- * 开了之后服务端那边会：系统提示一个字都不发（人设、思考语言、说话规矩、
- * 安全词、人设档、会话记忆、前情、开场白全免），压缩时一律静默、摘要只由小鱼亲手写
- * （程序不叫模型、不自刨）；开场那两条也从发给模型的内容里摘掉。
+ * 【主人的话】「删除专业模式，回滚办事模式，然后让【专业模式】按钮变成【办事模式】按钮」。
+ * 所以顶栏那颗绿按钮换成了珊瑚橙的「办事模式」，专业模式连同它里面那个「谁动手」
+ * 下拉一起删掉了 —— 「谁来干」现在只有一个开关，不再有两处各判一半。
  *
- * 【2026-10-28 改成按会话启用】
- * 以前是全局一个开关，开一次所有会话全变。现在按会话各开各的：
- * 状态存在服务端 .state/pure.json 里一张表 { on: { '<sid>': true } }，
- * 换设备、换浏览器还是一样的 —— 不能放 localStorage。
- * 所以每次切会话都要重新拉一次状态（见 __reloadPureState）。
+ * 跟管理员权限并列，管的正是「谁来干」：
+ *   管理员权限 = 能碰哪儿（整台机器）
+ *   办事模式   = 谁来干（主智能体只派活/检查/验收，活交给会话内临时 worker）
+ *
+ * 开了之后服务端会把干活工具从主智能体手里收走（只剩派活/看名册/清单/记事/翻存档），
+ * 所以她连「顺手改一下」的手段都没有 —— 这不只是提示词在劝。
+ *
+ * 状态按会话存在盘上（.state/task-mode.json），所以每次切会话都重问一次，
+ * 不在本地变量里记着（同一台机器另一个窗口可能已经关掉了）。
+ *
+ * 【功能默认关】服务端 /api/task-mode 会带 available:false，
+ * 那时这颗按钮整块拿掉 —— 功能关着＝这个功能不存在。
+ *
+ * 【点下去不弹确认框】主人 2026-11-01：「点按钮不弹提示」。一按就切，
+ * 切完只在聊天区留一行系统提示，别用弹窗挡人。
  */
-const pureBtn = document.getElementById('pureBtn');
+const taskBtn = document.getElementById('taskBtn');
 
 /**
  * 按服务端说的状态刷新按钮。
- *
- * available 为 false 表示【功能】里「专业模式」被关掉了 —— 按钮整块拿掉，
- * 不是灰掉也不是藏起来，是当作这个功能不存在。
+ * available 为 false 表示【功能】里「办事模式」被关掉了 —— 按钮直接拿掉。
  */
-function paintPureState(j) {
+function paintTaskState(j) {
   const available = !j || j.available !== false;
-  if (pureBtn) pureBtn.hidden = !available;
-  if (!available) return;
-  if (pureBtn) {
-    const on = !!(j && j.on);
-    pureBtn.classList.toggle('on', on);
-    pureBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
-    pureBtn.title = on
-      ? '专业模式开着（只对这个会话）：只发对话本身 + 一份「怎么干活」的规范（再点一下关掉）'
-      : '专业模式：不套人设、不念记忆，只给她一套「先查再说、找根因不猜、自己造证据」的规范。按会话各开各的 —— 只对这个会话生效（点一下开）';
+  if (taskBtn) taskBtn.hidden = !available;
+  if (!available || !taskBtn) return;
+  const on = !!(j && j.on);
+  const workers = Array.isArray(j && j.workers) ? j.workers : [];
+  const running = workers.filter((w) => w && w.status === 'running').length;
+  taskBtn.classList.toggle('on', on);
+  taskBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  // 只三个字不动，开没开看颜色（跟管理员那颗一个规矩）
+  taskBtn.textContent = '办事模式';
+  if (!on) {
+    taskBtn.title = '办事模式：开了之后主智能体不自己动手，只拆任务、派活、检查、验收、管上下文；具体的活交给会话内临时开出来的 worker（只属于这个会话，干完或会话删了就没了）。按会话开，随时可以关';
+  } else {
+    const tail = workers.length
+      ? '；现在手上有 ' + workers.length + ' 个 worker' + (running ? '（' + running + ' 个还在跑）' : '')
+      : '；还没派过活';
+    taskBtn.title = '办事模式开着（只对这个会话）：她只派活、检查、验收、管上下文，不自己动手' + tail + '。点一下关掉。';
   }
 }
 
-/** 当前会话 id（顶层那个全局变量，切会话时会被改） */
-function pureSid() {
+/** 当前会话 id */
+function taskSid() {
   try {
     return typeof sessionId === 'string' ? sessionId : (sessionId && sessionId.id) || '';
   } catch { return ''; }
 }
 
-/** 拉一次当前会话的专业模式状态 */
-function loadPureState() {
-  const sid = pureSid();
-  if (!sid) { paintPureState({ available: true, on: false, mode: null }); return; }
-  fetch('/api/pure?sessionId=' + encodeURIComponent(sid))
+/** 拉一次当前会话的办事模式状态 */
+function loadTaskState() {
+  const sid = taskSid();
+  if (!sid) { paintTaskState({ available: true, on: false, workers: [] }); return Promise.resolve(); }
+  return fetch('/api/task-mode?sessionId=' + encodeURIComponent(sid))
     .then((r) => r.json())
-    .then((j) => {
-      paintPureState(j);
-      /**
-       * 同一次响应里就有 doer，顺手把这颗小下拉画了 ——
-       * 不另开一次请求，省得两个按钮先后闪一下。
-       * paintDoerState 定义在这一段下面，函数声明会提升，运行时没问题。
-       */
-      try { paintDoerState(j); } catch {}
-    })
+    .then(paintTaskState)
     .catch(() => {});
 }
 
 /**
- * 点专业模式按钮：只翻当前会话这一格。
- *
- * 点一下开、再点一下关。别的会话原样不动 —— 这是「按会话启用」的全部意义。
+ * 点一下＝翻当前会话这一格。**不弹确认框**（主人 2026-11-01 明确要求）。
+ * 先按下去再等回包：点一下必须有反应，不能卡在网络那一两百毫秒上。
  */
-async function togglePureMode() {
-  const sid = pureSid();
+async function toggleTaskMode() {
+  const sid = taskSid();
   if (!sid) {
     if (typeof addSysNote === 'function') addSysNote('这个会话还没建好，等它落了盘再点。');
     return;
   }
-  const wasOn = !!(pureBtn && pureBtn.classList.contains('on'));
+  const wasOn = !!(taskBtn && taskBtn.classList.contains('on'));
   const want = !wasOn;
-  // 先翻个面，等服务器回话再以它为准 —— 点下去就有反馈
-  paintPureState({ available: true, on: want });
+  paintTaskState({ available: true, on: want, workers: [] });
   try {
-    const r = await fetch('/api/pure', {
+    const r = await fetch('/api/task-mode', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId: sid, on: want }),
-    });
-    const j = await r.json();
-    paintPureState({ available: j && j.available !== false, on: !!(j && j.on) });
-    /* 关掉专业模式时服务端会把「派活」一并清掉（回到 self），这颗下拉跟着重画 */
-    try { paintDoerState(j); } catch {}
-    if (typeof addSysNote === 'function') {
-      if (j && j.on) addSysNote('专业模式已开（只对这个会话）：接下来只发对话本身，不带人设和规矩，另给她一份「怎么干活」的规范。');
-      else addSysNote('专业模式已关（这个会话）：人设和规矩回来了。');
-    }
-  } catch (err) {
-    paintPureState({ available: true, on: wasOn });
-    if (typeof addSysNote === 'function') addSysNote('⚠ 模式没切成功：' + String(err && err.message ? err.message : err));
-  }
-}
-loadPureState();
-/**
- * 【2026-11-03】专业模式一刀切下去，「谁动手」那颗小下拉要跟着变 ——
- * 它只在专业模式开着的时候才出现，而 togglePureMode 里已经调了 paintDoerState，
- * 这里不用再补。留这段注释是因为改这一带时最容易手滑把它俩的顺序搞乱：
- * 先 paintPureState 再 paintDoerState，反过来会出现「下拉已经显示、专业模式还没亮」的一帧。
- */
-if (pureBtn) pureBtn.onclick = () => togglePureMode();
-/** 切会话之后重拉一次 —— 每个会话的开/关是各自独立的 */
-window.__reloadPureState = loadPureState();
-
-/**
- * 【谁动手】—— 2026-11-03 主人：「把办事模式并入专业模式里面」。
- *
- * 以前这是一颗独立的珊瑚橙按钮（办事模式），跟专业模式、管理员并列。
- * 主人否掉了那个形态：它本来就是「怎么干活」的一部分，另开一颗按钮
- * 等于让人多记一个开关，还多一处可能对不齐的地方（一个开着一个关着，
- * 界面就会显示成一个谁也说不清的状态）。
- *
- * 现在的形态：
- *   · 只在专业模式开着的时候出现（专业模式没开 = 这一档不存在）
- *   · 点一下在两个值之间翻：'self' 自己动手 / 'workers' 派活
- *   · 状态存在服务端 .state/pure.json 的**同一条记录**里（见 pure.mjs 的 setDoer），
- *     所以「关掉专业模式」会把它一起清掉，不会留一个休眠的勾下次偷偷复活
- *
- * 【为什么是「点一下翻」而不是下拉菜单】
- * 只有两个值。两个值的下拉要点两下、还要多一层浮层的定位和收起，
- * 而这颗东西在顶栏最右边、旁边就是窗口按钮 —— 浮层一不小心就被裁掉。
- * 一颗按钮，字面上写清现在是哪个，点一下换另一个，最省事也最不容易点错。
- */
-const doerBtn = document.getElementById('doerBtn');
-
-/** 服务端报来的最新一份状态（切会话/切专业模式都会重拉） */
-let doerLast = { available: true, on: false, doer: 'self', workers: [] };
-
-/** 按状态刷这颗小按钮。 */
-function paintDoerState(j) {
-  const available = !j || j.available !== false;
-  const pureOn = !!(j && j.on);
-  const doer = (j && j.doer) === 'workers' ? 'workers' : 'self';
-  const workers = Array.isArray(j && j.workers) ? j.workers : (doerLast.workers || []);
-  const running = workers.filter((w) => w && w.status === 'running').length;
-  doerLast = { available, on: pureOn, doer, workers };
-  if (!doerBtn) return;
-  /**
-   * 看不见的两种情况，一次说清为什么要藏：
-   *   ① 功能页里专业模式被关了 → 这一档跟着不存在
-   *   ② 这个会话没开专业模式   → 派活是专业模式里的选项，没开就没地方放
-   * 藏起来而不是「灰着还能点」：灰着的按钮会让人一直想点它，
-   * 而点下去服务端只会回一句「专业模式没开」，那是一次白费的解释。
-   */
-  doerBtn.hidden = !available || !pureOn;
-  doerBtn.classList.toggle('workers', doer === 'workers');
-  doerBtn.textContent = doer === 'workers' ? '谁动手：派活' : '谁动手：自己';
-  if (doer === 'workers') {
-    const tail = workers.length
-      ? '；现在手上有 ' + workers.length + ' 个 worker' + (running ? '（' + running + ' 还在跑）' : '')
-      : '；还没派过活';
-    doerBtn.title = '派活（办事模式）：她只拆任务、派活、检查、验收、管上下文，不自己动手' + tail + '。点一下改回自己动手。';
-  } else {
-    doerBtn.title = '自己动手：读文件、改代码、跑命令都在她手上（老样子）。点一下改成「派活」—— 她只出嘴，活交给会话内临时开出来的 worker。';
-  }
-}
-
-/** 当前会话 id（跟 pureSid 同一个来源） */
-function doerSid() {
-  try {
-    return typeof sessionId === 'string' ? sessionId : (sessionId && sessionId.id) || '';
-  } catch { return ''; }
-}
-
-/**
- * 拉一次状态。
- *
- * 【为什么 worker 名册从 /api/task-mode 拿，而不是跟 /api/pure 一起】
- * 「谁动手」这个开关属于专业模式（存在 pure.json 里），名册属于 task-mode.mjs
- * （会话一删就该跟着没的东西）。两者生命周期不同，硬塞进一个响应里，
- * 迟早会出现「开关还在、名册给人清了」这种半截状态。
- * 名册只拿来写 title（几个活、几个在跑），拿不到就不写，不影响开关本身。
- */
-function loadDoerState() {
-  const sid = doerSid();
-  if (!sid) { paintDoerState({ available: true, on: false, doer: 'self' }); return; }
-  fetch('/api/pure?sessionId=' + encodeURIComponent(sid))
-    .then((r) => r.json())
-    .then((j) => {
-      paintDoerState(j);
-      // 专业模式没开就别再去问名册了 —— 那一档不存在，问了也没人看
-      if (!(j && j.on)) return;
-      fetch('/api/task-mode?sessionId=' + encodeURIComponent(sid))
-        .then((r) => r.json())
-        .then((t) => {
-          if (t && t.workers) paintDoerState({ ...(j || {}), workers: t.workers });
-        })
-        .catch(() => {});
-    })
-    .catch(() => {});
-}
-
-/**
- * 点一下：'self' ⇄ 'workers'。
- *
- * 从「自己动手」改成「派活」时弹一次确认 —— 这一下会把她的干活工具真收走，
- * 主人得知道自己在切什么，别点完发现她不肯干活了以为坏了。
- * 反方向（派活 → 自己动手）不弹：那是「把权力还回来」，没有风险。
- */
-async function toggleDoer() {
-  const sid = doerSid();
-  if (!sid) {
-    if (typeof addSysNote === 'function') addSysNote('这个会话还没建好，等它落了盘再点。');
-    return;
-  }
-  const wantWorkers = doerLast.doer !== 'workers';
-  if (wantWorkers) {
-    const yes = await new Promise((resolve) => {
-      const d = document.createElement('dialog');
-      d.className = 'dlg';
-      d.innerHTML = '<div class="dlgHead">改成派活？</div>' +
-        '<div class="dlgBody" style="line-height:1.8">' +
-        '<p>改完之后，<b>这个会话</b>里的小鱼不再自己干活了 —— 她的活只剩四样：拆任务、派活、检查、给结论。</p>' +
-        '<p>具体的活儿交给会话内临时开出来的 worker：</p>' +
-        '<ul style="margin:6px 0 0 18px;padding:0">' +
-        '<li>worker 只属于这个会话，干完了或者会话删掉，它就没了</li>' +
-        '<li>每个活干完都要给她写一份汇报，她来核、来找问题、决定要不要退回重做</li>' +
-        '<li>她的干活工具会被收走（读写文件、跑命令都不在她手上），这不是提醒，是真收</li>' +
-        '<li>上下文由她管：什么该删、什么该留、什么该压成一句，她替你决定</li>' +
-        '<li>这一档属于专业模式，关掉专业模式它就一起关了</li>' +
-        '</ul></div>' +
-        '<div class="dlgFoot"><button type="button" class="ghost" id="_doerNo">算了</button>' +
-        '<button type="button" class="primary" id="_doerYes">改成派活</button></div>';
-      document.body.appendChild(d);
-      const done = (v) => { try { d.close(); } catch (e) {} d.remove(); resolve(v); };
-      d.querySelector('#_doerNo').onclick = () => done(false);
-      d.querySelector('#_doerYes').onclick = () => done(true);
-      d.oncancel = () => done(false);
-      d.showModal();
-    });
-    if (!yes) return;
-  }
-  const next = wantWorkers ? 'workers' : 'self';
-  // 先翻个面，等服务器回话再以它为准 —— 点下去就有反馈
-  paintDoerState({ available: true, on: true, doer: next, workers: doerLast.workers || [] });
-  try {
-    const r = await fetch('/api/pure', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: sid, doer: next }),
     }).then((x) => x.json());
     if (!r || r.error) {
-      /* 409 = 专业模式没开（服务端挡的，说明界面这边状态旧了） */
-      paintDoerState({ available: true, on: true, doer: wantWorkers ? 'self' : 'workers', workers: [] });
-      if (typeof addSysNote === 'function') addSysNote('⚠ ' + (r?.error || '没切成功'));
-      loadPureState();
+      paintTaskState({ available: true, on: wasOn, workers: [] });
+      if (typeof addSysNote === 'function') addSysNote('⚠ ' + ((r && r.error) || '办事模式没切成功'));
       return;
     }
-    paintDoerState({ available: true, on: true, doer: r.doer === 'workers' ? 'workers' : 'self', workers: [] });
-    loadDoerState();
+    paintTaskState(r);
     if (typeof addSysNote === 'function') {
-      if (r.doer === 'workers') addSysNote('改成派活了：她只拆任务/派活/检查/验收/管上下文，活交给临时 worker。');
-      else addSysNote('改回自己动手了：她手上的读写、跑命令都回来了，worker 名册也清了。');
+      if (r.on) addSysNote('办事模式已开（只对这个会话）：她只派活/检查/验收/管上下文，活交给临时 worker。');
+      else addSysNote('办事模式已关（这个会话）：她自己动手的权力回来了，worker 名册也清空了。');
     }
   } catch (err) {
-    paintDoerState({ available: true, on: true, doer: wantWorkers ? 'self' : 'workers', workers: [] });
-    if (typeof addSysNote === 'function') addSysNote('⚠ 没切成功：' + String(err && err.message ? err.message : err));
+    paintTaskState({ available: true, on: wasOn, workers: [] });
+    if (typeof addSysNote === 'function') addSysNote('⚠ 办事模式没切成功：' + String(err && err.message ? err.message : err));
   }
 }
 
-if (doerBtn) doerBtn.onclick = () => toggleDoer();
-/**
- * 切会话之后重拉一次 —— 每个会话的档位各自独立。
- *
- * 【名字为什么还叫 __reloadTaskState】下面有两处切会话的调用点在等这个名字
- * （就在 __reloadPureState 旁边）。改名要两处一起动，而这两处离得很远、
- * 又躺在两段几乎一样的代码里，改错一处就是「切过去之后按钮亮着上一格的状态」——
- * 那种错最难发现。所以对外保留老名字，内部实现叫 doer。
- */
-window.__reloadTaskState = loadDoerState;
-/** 给别处用：只看「谁动手」这一个值。 */
-window.__reloadDoerState = loadDoerState;
+if (taskBtn) taskBtn.onclick = () => toggleTaskMode();
+/** 切会话之后重拉一次 —— 每个会话的开关各自独立 */
+window.__reloadTaskState = loadTaskState;
+
 
 
 /** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */
@@ -6730,6 +6959,44 @@ function paintWhaleFromLive(ev, sid) {
   }
 }
 
+/**
+ * 【自建智能体的颜色·2026-11-01 主人】
+ * 主人原话：「智能体是像你和小鲸一样是独立的个体」。
+ * 所以自建卡发的话不能穿小鱼的皮（红名）也不能穿小鲸的皮（蓝名），
+ * 得用它自己那张卡的 color（agents.mjs 里存的，默认 #e6e6e6）。
+ *
+ * 颜色从 /api/agents 拿；第一次用的时候顺手抓一次，抓回来把已经画在屏上的
+ * 那些 .msg.mate 重新上一次色 —— 不然首屏那几条会一直是默认灰。
+ */
+const __mateColors = new Map();
+let __mateColorsAsked = false;
+function refreshMateColors() {
+  try {
+    document.querySelectorAll('.msg.mate').forEach((el) => {
+      const nm = String(el.dataset.whoName || '');
+      const c = __mateColors.get(nm);
+      if (c) el.style.setProperty('--whoC', c);
+    });
+  } catch { /* 上不上色都不影响读 */ }
+}
+function mateColorOf(name) {
+  const nm = String(name || '');
+  const hit = __mateColors.get(nm);
+  if (!__mateColorsAsked) {
+    __mateColorsAsked = true;
+    try {
+      fetch('/api/agents').then((x) => x.json()).then((r) => {
+        const list = r && Array.isArray(r.agents) ? r.agents : [];
+        list.forEach((a) => {
+          if (a && a.name && a.color) __mateColors.set(String(a.name), String(a.color));
+        });
+        refreshMateColors();
+      }).catch(() => {});
+    } catch { /* 抓不到就全用默认色，不影响说话 */ }
+  }
+  return hit || '#e6e6e6';
+}
+
 function addWhaleBubble(who, text) {
   if (whaleAlreadyDrawn(who, text)) return null;
   /*
@@ -6749,10 +7016,17 @@ function addWhaleBubble(who, text) {
    * 名字为空时仍当小鲸（沿用旧行为，别把老调用打坏）。
    */
   const isWhale = !who || String(who) === '小鲸';
-  const wrap = addEl('', isWhale ? 'msg whale' : 'msg assistant');
+  const _mateName = String(who || '小鲸');
+  // 【独立个体·2026-11-01】不是小鲸的人（自建卡）走 msg mate：
+  // 不再借 .msg.assistant 那套（那套名字是鱼的红），改用它自己卡上的颜色。
+  const wrap = addEl('', isWhale ? 'msg whale' : 'msg mate');
+  if (!isWhale) {
+    wrap.dataset.whoName = _mateName;
+    try { wrap.style.setProperty('--whoC', mateColorOf(_mateName)); } catch {}
+  }
   const roleEl = document.createElement('div');
   // 【她以自己身份说话 → 加 whaleSelf，CSS 才放行「· 姐妹」；冒充别人时压根不进这路】
-  roleEl.className = isWhale ? 'role whaleSelf' : 'role';
+  roleEl.className = isWhale ? 'role whaleSelf' : 'role mateSelf';
   roleEl.textContent = String(who || '小鲸');
   wrap.appendChild(roleEl);
   const b = document.createElement('div');
@@ -6764,6 +7038,7 @@ function addWhaleBubble(who, text) {
 
 // 工具名说人话：主人一眼看得出她在干嘛，而不是看 run_command 这种英文
 const TOOL_NICE = {
+  compress: '压缩中',
   run_command: '跑命令',
   read_file: '读文件',
   write_file: '写文件',
@@ -6823,16 +7098,135 @@ function niceTool(name) {
   return TOOL_NICE[n] || n;
 }
 
+/**
+ * 开一个工具。同一个「一段话」后面的工具共用一个 details.toolhub，
+ * 标题实时变成「调了 N 次工具」，默认收着 —— 不再一条一折。
+ *【2026-10-31 主人纠正：一条消息下面的几个工具必须折在一起】
+ */
+let _liveHub = null;
+let _liveHubCount = 0;
+/**
+ * 【主人 2026-11-01：不要一出工具就套柜子】
+ * 干活过程中调出来的每一张工具卡，先按顺序记在这儿（它们此刻是直挂 #log 的散卡）。
+ * 等下一个消息弹出来，再回头看这一段有几张：多了才合并成柜子。
+ */
+let _liveToolEls = [];
+
+function hubReset() {
+  _liveHub = null;
+  _liveHubCount = 0;
+  _liveToolEls = [];
+}
+
+/**
+ * 【2026-10-31 主人定：按轮次折】
+ * 主人发下一条消息的那一刻，把这条消息之前画的所有工具调用
+ * （不管是老式零散的 details.tool，还是一整块的 details.toolhub）
+ * 全部收起来，只留标题那条灰的。
+ * 正在干活的时候不折 —— 工具摊开着，主人能看见我在做什么。
+ */
+function foldOldHubs(keepFrom) {
+  /* 【主人要求】主人一发下一条消息，之前的工具调用统统收成一条灰。
+   * 两条规矩：
+   * ① 只收最外层的 toolhub，里面的 details.tool 一律保持摊开 ——
+   *    主人点开那条灰，直接看见每次调用的参数和结果，不用再点第二层。
+   * ② 收完必须把 _liveHub 清掉（hubReset），否则下一次工具还往这条
+   *    收起来的黑盒里塞，界面上就只剩一条，看着像「没分组」。
+   * 内容一个字都不删，只是把 open 设成 false。 */
+  // 【主人 2026-11-01】下一条消息来了 —— 先把干活时散着的那几张卡合并成柜子
+  try { foldLiveTools(); } catch (e) { /* 合并不了也别挡着发话 */ }
+  try {
+    const scope = document.getElementById("log") || document;
+    const hubs = scope.querySelectorAll("details.toolhub");
+    for (const el of hubs) {
+      if (keepFrom && keepFrom.contains && keepFrom.contains(el)) continue;
+      if (el.open) el.open = false;
+    }
+    // 【2026-10-31 主人定：柜子里的抽屉要关着】
+    // 以前这里把每个 tool 都掰开，于是点开柜门看见的是一大片糊在一起的内容。
+    // 现在一律关着：先看见一排工具名，想细看哪个自己拉哪个。
+    const inners = scope.querySelectorAll("details.tool");
+    for (const el of inners) {
+      if (el.open) el.open = false;
+    }
+  } catch (e) { /* 收不起来也不该挡住发话 */ }
+  // 关键：老的收好了，指针必须断开，下一段另起一个 hub
+  try { if (typeof hubReset === "function") hubReset(); } catch {}
+}
+
+function hubRefreshTitle() {
+  if (!_liveHub) return;
+  const n1 = _liveHub.querySelector('.hubname');
+  const n2 = _liveHub.querySelector('.status');
+  if (!n1) return;
+  n1.textContent = _liveHubCount === 1
+    ? (n1.dataset.one || '工具')
+    : '调了 ' + _liveHubCount + ' 次工具';
+  const bad = _liveHub.querySelectorAll('.tool > summary > .status.err').length;
+  const warn = _liveHub.querySelectorAll('.tool > summary > .status.warn').length;
+  if (n2) {
+    n2.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : 'ok'));
+    n2.textContent = bad ? (bad + ' 个失败') : '';
+  }
+}
+
 function addTool() {
-  const d = document.createElement('details');
-  d.className = 'tool';
-  const sum = document.createElement('summary');
+  // 【2026-10-31 主人要求：抽屉不手动点开就始终闭合】
+  // 以前这里是 hub 收着 + 每个 tool 也收着（d.open = false）+ 参数 hidden ——
+  // 三层折在一起，界面上就剩两条竖线，点都点不开。
+  // 现在：hub 开着、每个 tool 也开着、参数直接显示；
+  // 等主人发下一条消息，foldOldHubs() 再把整个 hub 收成一条灰。
+  const d = document.createElement("details");
+  d.className = "tool";
+  // 【主人 2026-10-31：不手动点开就始终闭合】
+  // 以前这里写 true（干活时摊开），结果一屏全是参数和结果，得猛往下翻才看得见进度。
+  // 现在抽屉一律关着：柜门那行「调了 N 次工具」照样实时刷新，想看细节自己拉。
+  d.open = false;
+  const sum = document.createElement("summary");
   sum.innerHTML = '<span class="name"></span><span class="status"></span>';
-  const pre = document.createElement('pre');
+  const pre = document.createElement("pre");
+  pre.hidden = false;            // 内容照旧塞在 <pre> 里，抽屉关着就看不见，拉开才有
   d.append(sum, pre);
+  // 【主人 2026-11-01】干活中先当一张独立的卡挂上去 —— 一眼看得见这次调了什么，
+  // 不用先去点开柜门。合不合并等下一个消息弹出来再说（foldLiveTools）。
   log.appendChild(d);
+  _liveToolEls.push(d);
   noteNewContent();
   return { d, sum, pre };
+}
+
+/**
+ * 把「这一段散着的工具卡」合并成一个柜子。
+ *
+ * 规矩（主人 2026-11-01 定的）：
+ *   · 只有 1 张 —— 不动。柜子里孤零零一个抽屉，白多一次点击。
+ *   · 2 张以上 —— 合成一个 details.toolhub，插回第一张卡原来的位置，
+ *     标题写「调了 N 次工具」，柜门默认收起（点开就是一排抽屉）。
+ * 幂等：调几次都一样，第二次进来 _liveToolEls 已经空了。
+ */
+function foldLiveTools() {
+  const arr = (_liveToolEls || []).filter((el) => el && el.isConnected);
+  _liveToolEls = [];
+  if (arr.length < 2) return;              // 只调一次：不搞柜子
+  const first = arr[0];
+  const parent = first.parentNode;
+  if (!parent) return;
+  const hub = document.createElement('details');
+  hub.className = 'toolhub';
+  hub.open = false;                        // 收起来，主人点开才是一排抽屉
+  const hsum = document.createElement('summary');
+  const n1 = document.createElement('span');
+  n1.className = 'hubname';
+  n1.textContent = '调了 ' + arr.length + ' 次工具';
+  const bad = arr.filter((el) => el.querySelector('.status.err')).length;
+  const warn = arr.filter((el) => el.querySelector('.status.warn')).length;
+  const n2 = document.createElement('span');
+  n2.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : 'ok'));
+  n2.textContent = bad ? (bad + ' 个失败') : '';
+  hsum.append(n1, n2);
+  hub.appendChild(hsum);
+  parent.insertBefore(hub, first);         // 柜子落在第一张卡原来的位置
+  for (const el of arr) hub.appendChild(el);
 }
 
 /**
@@ -6846,42 +7240,81 @@ function addTool() {
  */
 function paintTools(list, target, group) {
   if (!Array.isArray(list) || !list.length) return;
-  // 【2026-10-31 工具折叠成一行】
-  // 一轮里调了好几次工具时，别一条条摊一屏 —— 收成一行小字「调了 N 次工具」，点开才看。
-  // group 传 { silent: true } 就一条都不折（很少用）；不传就是不折（流式过程中的老路子）。
-  // 折起来的那层只包工具，话和工具前后顺序一律不动。
-  let box = target;
-  let wrap = null;
-  if (group && list.length > 1) {
-    wrap = document.createElement('details');
-    wrap.className = 'toolhub';
-    const sm = document.createElement('summary');
-    sm.textContent = '调了 ' + list.length + ' 次工具';
-    wrap.appendChild(sm);
-    target.appendChild(wrap);
-    box = wrap;
+  // 【2026-10-31 主人定：按「轮次」折】
+  //  干活中：工具全部摊开，能看见我在做什么；
+  //  主人一发下一条消息：之前那些旧工具一起收成一条灰（见 foldOldHubs）。
+  //  所以 hub 永远是 <details>：干活时 open，旧了 close。
+  const box = target;
+
+  /**
+   * 【主人 2026-11-01：只调一次工具就不搞柜子】
+   *
+   * 柜子是给「一段话之间调了好几次」用的 —— 一层柜门、里面一排抽屉。
+   * 只调了一次还套一层柜门，就变成「点开柜子，里面孤零零一个抽屉」，
+   * 白多一次点击。这时直接把抽屉画出来。
+   *
+   * 注意单抽屉是**直挂 target**（通常是 #log），所以它得靠
+   * 那条 #log > details.tool 的 CSS 长成一张卡 —— 不然就是一行裸文字。
+   */
+  const single = list.length === 1;
+  const host = document.createElement("details");
+  host.className = "toolhub";
+  host.open = true;   // 干活中摊开
+  if (!single) {
+    const hsum = document.createElement("summary");
+    const n1 = document.createElement("span");
+    n1.className = "hubname";
+    n1.textContent = "调了 " + list.length + " 次工具";
+    const bad = list.filter((t) => t.ok === false).length;
+    const n2 = document.createElement("span");
+    n2.className = "status " + (bad ? "err" : (list.some((t) => t.ok === null) ? "warn" : "ok"));
+    n2.textContent = bad ? (bad + " 个失败") : (list.some((t) => t.ok === null) ? "没跑完" : "");
+    hsum.append(n1, n2);
+    host.appendChild(hsum);
+    box.appendChild(host);
   }
+
   for (const t of list) {
+    // 【2026-10-31 主人定：柜子里一排排抽屉】
+    //   外层 details.toolhub = 柜门（一行「调了 N 次工具」）
+    //   内层 details.tool    = 抽屉（一行工具名 + 状态，点开才看参数和结果）
+    // 原来这里用 div 是因为「<summary> 塞进 div 是无效结构」—— 对，所以得让外层
+    // 也变成 <details>：details > summary + pre 是合法结构，浏览器原生就会开合。
+    // 实时路径 addTool() 本来就是 details.tool，这里补齐，两条路终于长得一样。
     const d = document.createElement('details');
     d.className = 'tool';
-    // 【2026-10-31 工具卡带 id】：让「已画过哪些工具」能被查出来，切回来补画时跳过重复的
+    d.open = false;               // 抽屉默认关着，主人点一下才拉开
     if (t.id) d.dataset.toolId = String(t.id);
-    const sum = document.createElement('summary');
+
+    const head = document.createElement('summary');
+    head.className = 'toolHead';
     const nm = document.createElement('span');
     nm.className = 'name';
     nm.textContent = niceTool(t.name);
     const st = document.createElement('span');
     st.className = 'status ' + (t.ok === null ? 'warn' : t.ok ? 'ok' : 'err');
     st.textContent = t.ok === null ? '没跑完' : t.ok ? '完成' : '失败';
-    sum.append(nm, st);
+    head.append(nm, st);
+
     const pre = document.createElement('pre');
-    let body = t.args ? '参数：' + t.args : '';
+    // 【修·参数显示成 [object Object]】args 是对象，直接字符串拼会变 [object Object]
+    let argText = '';
+    if (t.args && typeof t.args === 'object') {
+      try { argText = Object.keys(t.args).map(function (k) {
+        var v = t.args[k];
+        var s = (v && typeof v === 'object') ? JSON.stringify(v) : String(v);
+        if (s.length > 300) s = s.slice(0, 300) + '…';
+        return k + ': ' + s;
+      }).join('\n'); } catch (e) { argText = String(t.args); }
+    } else if (t.args != null) { argText = String(t.args); }
+    let body = argText ? '参数：\n' + argText : '';
     if (t.output) body += (body ? '\n--- 结果 ---\n' : '--- 结果 ---\n') + t.output;
     if (!body) body = '（这一轮没留下结果）';
     pre.textContent = fixMojibake(body);
-    d.append(sum, pre);
-    box.appendChild(d);
+    d.append(head, pre);
+    (single ? box : host).appendChild(d);
   }
+    // host 已在开头 append 过一次，这里不再重复加
 }
 
 /**
@@ -6985,11 +7418,30 @@ async function stopTurn() {
   stopping = true;
   sendBtn.disabled = true;
   sendBtn.textContent = '停止中…';
-  await fetch('/api/stop', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId }),
-  }).catch(() => {});
+  /**
+   * 【修·说停就停 · 2026-10-31】
+   *
+   * 以前这里只发一个请求就撒手，等后台慢慢收尾、慢慢把 busy 放下来。后台一卡
+   * （工具进程攥着文件、收尾慢），按钮就一直停在「停止中…」，输入框也一起锁着 ——
+   * 主人看着就是「说了停停不下来，接着发消息还要等五分钟」。
+   *
+   * 现在请求一回话就当场解冻界面。真还在跑也不要紧，后台收尾还会再发一次结束
+   * 事件，晚点一致就行。停在「停止中…」比卡死糟得多。
+   */
+  try {
+    await fetch('/api/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId }),
+    }).catch(() => ({}));
+  } catch (e) {}
+  stopping = false;
+  busy = false;
+  try { hideSending(); } catch {}
+  try { turnsInFlight.delete(sessionId); } catch {}
+  try { if (typeof sweepStaleStreaming === 'function') sweepStaleStreaming(); } catch {}
+  try { syncSendBtn(); } catch {}
+  try { releaseComposer({ focus: false }); } catch {}
 }
 
 function autosizeInput() {
@@ -7146,6 +7598,10 @@ async function runTurn({ resume = false, text = '' } = {}) {
   busy = true;
   // 新的一轮：署名重新允许报一次（同一轮里的第 2、3 段不再重报名字）
   try { if (typeof resetRoleOnce === "function") resetRoleOnce(); } catch {}
+  // 【2026-10-31 主人定：发下一条消息时，之前的工具调用统统收成一条灰的】
+  // 顺序很重要：先收旧的，再 hubReset 开新的，否则会把这一轮刚建的也收掉。
+  try { if (typeof foldOldHubs === "function") foldOldHubs(null); } catch {}
+  hubReset();   // 主人这一轮新开口：工具重新归组
   showSending();
   syncSendBtn();
 
@@ -7324,12 +7780,20 @@ async function runTurn({ resume = false, text = '' } = {}) {
           el.sum.querySelector('.status').textContent = '运行中…';
           el.pre.textContent = '参数：' + ev.args;
           toolEls.set(ev.id, el);
+          el.pre.hidden = false;
+          el.sum.querySelector('.status').className = 'status warn';
+          if (_liveHub) {
+            const _n1 = _liveHub.querySelector('.hubname');
+            if (_n1) _n1.dataset.one = niceTool(ev.name);
+            hubRefreshTitle();
+          }
         } else if (ev.type === 'tool_end') {
           const el = toolEls.get(ev.id);
           if (el) {
             const st = el.sum.querySelector('.status');
             st.textContent = ev.ok ? '完成' : '失败';
             st.className = 'status ' + (ev.ok ? 'ok' : 'err');
+            hubRefreshTitle();
             el.pre.textContent += '\n--- output ---\n' + ev.output;
           }
         } else if (ev.type === 'files') {
@@ -7709,7 +8173,11 @@ function replayInFlight(id) {
       const el = addTool();
       el.sum.querySelector('.name').textContent = niceTool(p.name);
       el.sum.querySelector('.status').textContent = '运行中…';
-      el.pre.textContent = '参数：' + p.args;
+      // 【2026-11-01 严检】压缩条这类没有参数的工具事件不带 args，
+            // 原来无条件拼 参数：+ p.args 会画出「参数：undefined」。没有就不画。
+            el.pre.textContent = (p.args === undefined || p.args === null || p.args === '')
+              ? ''
+              : '参数：' + p.args;
       if (!rec.toolEls) rec.toolEls = new Map();
       rec.toolEls.set(p.id, el);
     } else if (kind === 'tool_end') {
@@ -7842,6 +8310,28 @@ async function interject() {
     return;
   }
 
+  /**
+   * ③.6 服务端说「收下了，排在她这一步之后」（steering，2026-11-01）
+   *
+   * 前后对照：老做法是服务端 abort 当前这一轮、前端再拿新话重起一轮 ——
+   * 她正在说的那句话被拦腰砍断。现在服务端只把它排进信箱，
+   * agent loop 在**下一步开头**取走、当成一条真 user 消息接进历史。
+   *
+   * 所以这边什么都不用做：不重发、不 resume、不设 9 秒兜底。
+   * 只把界面按在「还在跑」上，等同一路 SSE 继续往下画。
+   *
+   * 那句「可能要多等一会儿」必须说：她这一轮要是还在跑工具（编译、装依赖、扫目录），
+   * 到「下一步」可能要几十秒。不说清楚，主人会以为这句话又没了 —— 这个误会以前闹过。
+   */
+  if (r && r.steered === true) {
+    pendingResume = false;
+    busy = true;
+    showSending();
+    syncSendBtn();
+    const n = Number(r.count || 1);
+    addSysNote('收下了，排在她这一步之后' + (n > 1 ? '（一共 ' + n + ' 句等着）' : ''));
+    return;
+  }
   /**
    * ④ 正常路径：话已经在服务端落盘，这一轮也被停住了 —— 接着跑。
    *
@@ -11935,12 +12425,9 @@ if (featList) {
       // 之后音乐还会自顾自地放着（refreshMusic 里会把 bound 抹掉、顺手停播）。
       if (typeof refreshMusic === 'function') refreshMusic().catch(() => {});
     }
-    // 专业模式关掉之后顶栏那个按钮要立刻消失（开回来再出现）
-    if (id === 'pure') {
-      fetch('/api/pure')
-        .then((x) => x.json())
-        .then((j) => paintPureState(j))
-        .catch(() => {});
+    // 办事模式关掉之后顶栏那个按钮要立刻消失（开回来再出现）
+    if (id === 'taskmode') {
+      try { loadTaskState(); } catch {}
     }
     const foot = document.getElementById('featFoot');
     if (foot) {
@@ -13263,6 +13750,25 @@ function paintSessNow() {
   if (btn) btn.title = sessionTitle ? '当前会话：' + sessionTitle : '会话';
 }
 
+/**
+ * 【哪些会话此刻在跑】主人 2026-11-01：「会话界面也没显示这个会话在运行」
+ *
+ * 后端 /api/running 一直有这份名单（进程内存里登记着），只是前端从来没人读它。
+ * 这里读过来存一份快照，renderSessList 照它给标题前画一颗跳动的绿点。
+ *
+ * 为什么不直接用 turnsInFlight：那只是「本窗口正在跟的」，
+ * 刷新之后它是空的，而后台真的还在跑 —— 主人看到的正是这种情况。
+ */
+let runningSess = new Set();
+
+async function refreshRunning() {
+  try {
+    const j = await fetch('/api/running').then((r) => r.json());
+    const list = (j && Array.isArray(j.running)) ? j.running : [];
+    runningSess = new Set(list.map((x) => x && x.sessionId).filter(Boolean));
+  } catch { /* 拿不到就当没人在跑，不影响别的 */ }
+}
+
 function renderSessList() {
   sessList.innerHTML = '';
   sessList.classList.toggle('bulk', bulkMode);
@@ -13315,6 +13821,12 @@ function renderSessList() {
     ttxt.className = 'sessTitleText';
     ttxt.textContent = fixMojibake(s.title || '新会话');
     t.appendChild(ttxt);
+    if (runningSess.has(s.id)) {
+      const lv = document.createElement('i');
+      lv.className = 'sessLive';
+      lv.title = '这个会话正在跑';
+      t.insertBefore(lv, ttxt);
+    }
     // 这个会话挂的是哪张智能体卡：挂在标题后面（没绑卡就不显示）
     const agName = String(s.agentName || '').trim();
     if (agName && s.agentId) {
@@ -13932,7 +14444,7 @@ sessList.addEventListener('click', async (e) => {
     return;
   }
 
-  if (id !== sessionId) await switchSessionSafe(id);
+  if (id !== sessionId) await switchSessionSafe(id, { byClick: true });
   sessDlg.close();
   // 人刚点完会话，正打算接着说话 —— 这里明确把焦点送进去
   settleComposer({ focus: true });
@@ -14051,6 +14563,14 @@ function renderTurns(turns) {
   const askQueue = [];
 
   const list = turns || [];
+  /**
+   * 【长会话才开「屏幕外不算」】150 轮以下不动它，短会话本来就秒开。
+   * 阈值挑 150：实测 76 轮/101KB 完全不卡，244 轮/321KB 开始有感，
+   * 628 轮/659KB 明显黑一下 —— 取中间偏安全的 150。
+   */
+  try {
+    if (log) log.classList.toggle("long-list", list.length > 150);
+  } catch {}
   const frag = document.createDocumentFragment();
 
   for (let ti = 0; ti < list.length; ti++) {
@@ -14062,7 +14582,22 @@ function renderTurns(turns) {
     if (turn.role === 'user') {
       // 【2026-10-31 user 前 flush】：主人一开口，上一串就结束了，攒着的工具在它后面折叠成一行画出来
       flushHub();
-      const w = addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
+      // 【2026-10-31 主人原话：压缩相关一个字都不许露】
+      // 程序自己插的压缩提醒（turn.sysNote）在界面上直接不画 ——
+      // 不挂主人的名字（免得看着像主人在提醒压缩），也不画成系统小字（主人说不想看到任何压缩显示）。
+      if (turn.sysNote) continue;
+      /**
+       * 【role 存错的旧消息 —— 2026-11-01 修】
+       *
+       * 主人报：「小鲸的第一句话，名字样式与消息样式和我说话一样，名字白、灰框」。
+       * 真因是服务端群聊那条路把她的话存成了 role:'user'（已改成 assistant+_whale），
+       * 但**已经存进历史的那几条**还是旧样子 —— 而程序正跑着时不能去改会话文件
+       * （saveSession 会拿内存里的原样盖回来），所以在这边兼容：
+       * 一条 user 消息只要带了别人名字（turn.who），就按那个人的样式画，不套主人的气泡。
+       */
+      const w = (turn.who && String(turn.who) !== '主人')
+        ? (addWhaleBubble(turn.who, turn.text) || addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || ''))
+        : addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
       // 每一句都能改：主人说的和我说的一样对待
       attachEdit(w, turn.rewindId);
       // 「分支」也贴着句子放：从这句往下另开一个会话
@@ -14106,6 +14641,22 @@ function renderTurns(turns) {
        */
       if (turn.reasoning && !turn.whale) paintReasoning(turn.reasoning, frag);
       // 只调了工具、一个字没说的那条 assistant（content 是 null）：不画空气泡，只画工具块
+      // 【修·工具调用从来没画出来】只调了工具、一个字没说的那条 assistant（content 是 null），
+      // 原来被下面的 if(hasText||outs.length) 整个跳过 —— 工具就永远不显示了。
+      // 这里单独给它画一条「调了 N 次工具」的灰折叠条：默认摊开（干活时看得见），
+      // 主人发下一条消息时由 foldOldHubs 收起来；点开随时能看参数和结果。
+      // 【2026-10-31 主人：两条消息之间的工具并进同一个柜子】
+      // 这里原来是「只调了工具、一个字没说」当场画一条 div.toolFrag —— 结果是
+      // 连着调 5 个工具画出 5 条「调了 1 次工具」，而且下面 14572 还会再画一遍（画两遍）。
+      // 现在什么都不画，只交给下面的 _hubTools 攒着，凑成一个柜子再说。
+      // 【主人定：柜子要夹在 A 与 B 两条消息之间】
+      // 这条 assistant 说话了 —— 那「这句话之前」攒下的那批工具，现在就折成一个柜子画出去，
+      // 它自然落在这句话前面。下一批工具会攒着，等下一个说话的点再画。
+      // 于是读起来就是：A →【调了 x 次工具】→ B →【调了 y 次工具】→ C。
+      // 先拍快照再 flush：下面的 sameStem 要判「这句之前有没有攒着工具」，
+      // 而 flushHub 会把 _hubTools 清空 —— 顺序反了就会读到永远为 0 的假象。
+      const _hadHubTools = _hubTools.length > 0;
+      if (hasText) flushHub();
       if (hasText || outs.length) {
         /**
          * 小鲸说的话，单独画成她的气泡。
@@ -14118,7 +14669,16 @@ function renderTurns(turns) {
          * 颜色、称呼都不一样，别的照旧（能改、能分支）。
          */
         if (turn.whale) {
-          const wrap = addEl('', 'msg whale whaleSelf', frag);
+          // 【独立个体·2026-11-01】以前这里写死 whale 一套，重启后所有第三方
+          // （包括自建卡）都变成小鲸那个冷蓝。现在按「是谁」分：
+          // 只有小鲸用 whale 那套，别人用它自己卡上的颜色。
+          const __wn = String(turn.whale);
+          const __isWhaleTurn = __wn === '小鲸';
+          const wrap = addEl('', __isWhaleTurn ? 'msg whale whaleSelf' : 'msg mate mateSelf', frag);
+          if (!__isWhaleTurn) {
+            wrap.dataset.whoName = __wn;
+            try { wrap.style.setProperty('--whoC', mateColorOf(__wn)); } catch {}
+          }
           const roleEl = document.createElement('div');
           roleEl.className = 'role';
           roleEl.textContent = String(turn.whale);
@@ -14129,6 +14689,9 @@ function renderTurns(turns) {
           b.textContent = fixMojibake(turn.text);
           wrap.appendChild(b);
           if (outs.length) attachFiles(wrap, outs);
+          // 【修·工具调用从来没画出来】这一条 assistant 带的工具，画在这段话正下方。
+          // 默认摊开（干活时看得见我在做什么）；主人发下一条消息时 foldOldHubs 把它收成一条灰。
+          if (tools.length) paintTools(tools, wrap, { fold: true });
           /*
            * 她的话也能改、也能从这儿分出去。
            *【为什么原先没有】上面注释一直写着「别的照旧（能改、能分支）」，
@@ -14166,7 +14729,12 @@ function renderTurns(turns) {
           const stem = String(turn.stem || '');
           // 判据：上一条也是 assistant ⇒ 这是同一串里接着说的话，并进同一个气泡。
           // （原来拿 turn.stem 比，可服务端根本不发 stem，永远不相等，等于没合并。）
-          const sameStem = _contBubble && _contBody && _contBody.parentNode && prevRole === 'assistant';
+          // 【主人 2026-10-31：柜子要夹在 A 与 B 之间】
+          // 中间攒着工具（_hubTools 非空）时不并气泡 —— A 说完干了活再说 B，
+          // A 和 B 本来就是两段，各自有各自的工具，并成一条消息柜子就无处可夹，
+          // 只能全挤在整条消息后面（实测会连出一串「{柜:1}{柜:1}{柜:1}」）。
+          const sameStem = _contBubble && _contBody && _contBody.parentNode
+            && prevRole === 'assistant' && !_hadHubTools;
           let b;
           if (sameStem) {
             wrap = _contBubble;
@@ -14208,10 +14776,16 @@ function renderTurns(turns) {
       prevRole = turn.role;
       // 工具调用是这一轮的经过，得跟着回复一起留在界面上
       //（以前只活在「正在跑」的那一屏里，切走再回来就全没了）
-      // 【2026-10-31 攒工具·按串分】：先别画，收起来。
-      // 攒的边界＝「这一串」：连着都是 assistant 就继续攒，主人一开口（user）就 flush。
-      // 不能拿 rewindId 当边界 —— 每条 turn 的 rewindId 都不一样，那样永远是一组一个，折叠就没意义了。
-      if (tools.length) _hubTools.push(...tools);
+      // 【2026-10-31 主人纠正：工具要跟着「自己那一段消息」走】
+      // 主人原话：「假如你一轮说了A、B两个消息，每个消息都有工具调用，
+      //   那么 A 说完后 A 底下得有对应的工具调用，而不是全堆到 B 下面。」
+      // 所以不再跨消息往 _hubTools 里攒：每段自己的工具当场折成一处，画在这段话正下方。
+      if (tools.length) {
+        // 【主人原话：A 与 B 之间的工具并进一个「调了 x 次工具」，且夹在 A 与 B 之间】
+        // 只调工具、没说话的那几条，先攒着；等遇到「说了话的 assistant」
+        //（见上面那句 flushHub）或下一条 user，才折成一个柜子画出去。
+        _hubTools.push(...tools);
+      }
       // 这一轮的 token 用量。
       // 用量存在「主人那句」的 user turn 上（见 server.mjs 的 _usage），
       // 但视觉上它属于这一轮的回复 —— 所以挂在**她说的话**下面，
@@ -14248,6 +14822,16 @@ function renderTurns(turns) {
   // 【2026-10-31 末尾 flush】：最后那一串还没遇到 user，工具得在收尾前画出来
   flushHub();
   log.replaceChildren(frag);
+  /* 【2026-10-31 主人定】历史画完了，工具调用统统收成一条灰 —— 不然打开会话就是一整屏参数和结果。
+   * 留最后一个 hub 展开：那可能是正在跑的这一轮，收起来就看不见我在做什么了。
+   * keepFrom 那种「按元素排除」的办法在这儿不好使（最后一个 hub 不一定是我这一轮的），所以自己数。 */
+  try {
+    const _hubs = [...(document.getElementById("log") || document).querySelectorAll("details.toolhub")];
+    // 【主人要求】刷新进来一律收起，不留最后一个 —— 留一条开着像程序自作主张。
+  _hubs.forEach((el) => { el.open = false; });
+    // 【2026-10-31 主人：柜子里的抽屉要关着】点开柜门先看见一排工具名，想细看哪个自己拉哪个
+    _hubs.forEach((el) => { for (const inner of el.querySelectorAll("details.tool")) inner.open = false; });
+  } catch (e) { /* 折不起来也不该让整屏白掉 */ }
   // 渲染完一整屏历史之后，必须无条件跳到最底 —— 你打开会话就是想看最新那句。
   // 这里不能用 noteNewContent()：它会看 stickBottom，而这会儿的 stickBottom
   // 还是上一个会话 / 上一次渲染留下的，一旦是 false 就只加未读数、一次都不滚，
@@ -14311,7 +14895,25 @@ if (rwGo) {
     }).then((x) => x.json()).catch(() => null);
     rwGo.disabled = false;
     rewindDlg.close();
-    if (!r || r.error) { alert('回退失败：' + ((r && r.error) || '网络错误')); return; }
+    /**
+     * 【2026-11-01 修·回退失败后输入框点不动】
+     *
+     * 原来这里直接 alert() 就 return 了。alert 是模态的，会把焦点和事件循环整个抢走；
+     * 而这个回退框本身是 <dialog showModal>，两层模态叠在一起，焦点还回来的时候没落到输入框，
+     * 遮罩层的 pointer-events 还盖着 —— 于是输入框点不动。
+     * 刷新也不管用（遮罩按状态重建又盖回来），只有最小化再恢复（窗口强制重排）才好。
+     *
+     * 现在：①不用 alert，改成把原因写回框里，让主人看见；②无论成败都还输入区。
+     */
+    if (!r || r.error) {
+      const why = (r && r.error) || '网络错误';
+      try { rwText.textContent = '回退失败：' + why; } catch (e) {}
+      try { if (hint2(why)) {} } catch (e) {}
+      try { releaseComposer({ focus: true }); } catch (e) {}
+      busy = false;
+      try { syncSendBtn(); } catch (e) {}
+      return;
+    }
     // 界面按服务端给的有效历史重画
     __mark('开始重画');
   renderTurns(r.session.turns);
@@ -14381,10 +14983,115 @@ async function branchHere(at, btn) {
  * 界面就停在「上一个会话的画面 + 输入框被锁着」的样子，怎么点都没反应。
  * 现在最多等 8 秒，超时就当连不上，走下面那套「说一句 + 把输入区救回来」。
  */
-async function switchSessionSafe(id) {
+/**
+ * 【切换会话后自动刷新·布防】
+ * 0.2 秒后真刷新一次页面。锁写在 sessionStorage，刷新后由 settleReloadAfterSwitch 认账并清掉，
+ * 所以一次切换只会刷一次，绝不会自己套自己。
+ * 返回 true 表示已经布上，false 表示这次不刷（比如刚刷完回来）。
+ */
+const RELOAD_KEY = 'mini-agent.reloadAfterSwitch';
+let _reloadTimer = null;
+/**
+ * 【2026-11-01 二次修·一直在刷新】
+ *
+ * 上一版的病：bootSessions 先调 settleReloadAfterSwitch 把锁清掉，然后才 switchSession；
+ * 而 switchSession → renderTurns → armReloadAfterSwitch 去看锁 —— 锁已经被清空了，
+ * 于是它以为「没刷过」，又布一次防 → 0.2 秒后又 reload → 无限循环。
+ *
+ * 根治办法：锁在**页面一加载的这一瞬间**就消费掉，记在内存 _bootReloadId 里。
+ * 之后这个页面活多久，都不会再因为同一次刷新而布防。内存变量刷新才重置，正好一一对应。
+ */
+let _bootReloadId = null;
+try {
+  _bootReloadId = sessionStorage.getItem(RELOAD_KEY);
+  if (_bootReloadId) sessionStorage.removeItem(RELOAD_KEY);
+} catch {}
+function armReloadAfterSwitch(id, byClick) {
+  try {
+    if (!id) return false;
+    /**
+     * 【只认「人手动点会话」】
+     * 开机启动、导入、分支、删除后的复位也会走 switchSession —— 那些不该刷页面，
+     * 刷了就是开机转圈圈。只有主人真点了会话列表里那一行，才刷。
+     */
+    if (!byClick) return false;
+    if (window.__reloadingSoon) return false;   // 已经在这次刷新的路上，别叠
+    // 同一会话、刚刚才刷过：认账走掉，不再刷
+    /**
+     * 【2026-11-01 三修·刷新后第一次点会话不刷】
+     *
+     * 病根：上面那句 `if (!byClick) return false` 挡在 _bootReloadId 前面，
+     * 于是刷新回来自动切回会话那次（byClick=false）根本走不到消费那行 ——
+     * _bootReloadId 一直挂着，把主人刷新后的【第一次真点击】吃掉了。
+     *
+     * 其实防死循环不需要它：刷新回来的 boot 是 byClick=false，压根不会布防。
+     * 于是把这道判断整个拿掉，只留时间闸 + __armedOnce 兜底。
+     */
+    /**
+     * 【2026-11-01 五修·删掉时间闸】
+     *
+     * 原来这里有一道「上次 reload 不到 0.8 秒就不刷」。它有害无益：
+     * 刷新一次本身要花时间（reload + 重载 + 拉会话），主人刷完立刻点下一个会话，
+     * 距上次 reload 往往还不到 0.8 秒 —— 于是【第二个会话点了不刷】，正是主人报的现象。
+     *
+     * 防连刷其实不需要它：boot 那次是 byClick=false 根本不布防，
+     * 同一个页面里又有 __arming 挡着，两条就够。
+     */
+    /**
+     * 【2026-11-01 四修·切第二个会话就不刷了】
+     *
+     * 原来这里是 window.__armedOnce：「一个页面生命周期只准刷一次」。
+     * 可刷新之后页面是新开的，标志归零，看着没问题 —— 但主人要是连着切好几个会话，
+     * 第一个刷完（页面重载）→ 第二个再切 → 这时 __armedOnce 是新的 false，应该能刷。
+     *
+     * 真正的病根其实在上面那条 _bootReloadId（已删）。
+     * 这里保留一道轻闸就够了：2 秒内不重复布防（防止同一批切换事件连发两三次）。
+     */
+    if (window.__arming) return false;
+    window.__arming = true;
+    try { setTimeout(() => { window.__arming = false; }, 2000); } catch {}
+
+    if (_reloadTimer) { clearTimeout(_reloadTimer); _reloadTimer = null; }
+    _reloadTimer = setTimeout(() => {
+      _reloadTimer = null;
+      try {
+        // 刷新前再确认一次「现在看的还是这个会话」，中途换了就不刷（省一次白刷）
+        if (sessionId !== id) { window.__arming = false; return; }
+        sessionStorage.setItem(RELOAD_KEY, id);
+        try { sessionStorage.setItem('mini-agent.lastReloadAt', String(Date.now())); } catch {}
+        window.__reloadingSoon = true;
+        location.reload();
+      } catch (e) {
+        window.__reloadingSoon = false;
+      }
+    }, 200);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 【切换会话后自动刷新·认账】
+ * 刷新回来了：如果锁里的目标正是「现在这个会话」，说明这次刷新就是刚才那次切换安排的，
+ * 把锁清掉、不做任何事（页面已经是最干净的）。
+ * 如果对不上，也把锁清掉 —— 免得一条陈锁把以后每一次切换都吃掉。
+ */
+function settleReloadAfterSwitch(currentId) {
+  try {
+    let was = null;
+    try { was = sessionStorage.getItem(RELOAD_KEY); } catch {}
+    if (!was) return false;
+    try { sessionStorage.removeItem(RELOAD_KEY); } catch {}
+    return was === currentId;
+  } catch (e) {
+    return false;
+  }
+}
+async function switchSessionSafe(id, opts) {
   try {
     return await Promise.race([
-      switchSession(id),
+      switchSession(id, opts),
       // 【2026-10-31 修】12 秒太短：186 个 turn 重画 + 260KB 解析真会超。
       // 慢不等于坏，宽限到 60 秒；真出错走下面的 catch，不打这儿的假失败。
       new Promise((r) => setTimeout(() => r(false), 60000)),
@@ -14396,7 +15103,7 @@ async function switchSessionSafe(id) {
   }
 }
 
-async function switchSession(id) {
+async function switchSession(id, opts) {
   // 换会话 = 换了一份历史，球的数必须跟着换（先清掉旧数字，别让上一份的残留骗人）
   /**
    * 【2026-10-26 主人报：批量删除开了之后，关掉会话、下次打开还是启用状态】
@@ -14508,11 +15215,29 @@ async function switchSession(id) {
   // 这件事只剩一处要看：左边「屋里的人」那列牌子（refreshWhoRail 会自己按
   // 新会话重读 /api/agents/group，服务端把 fish/whale 两套状态并进去了）。
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
-  try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
   // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
   try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   renderTurns(r.session.turns);
+  /**
+   * 【2026-11-01 主人要：切换会话 0.5 秒后自动刷新一次屏幕（等于按一次 Ctrl+F5）】
+   *
+   * 和上次那个死循环不一样，这次是**真刷新页面**（location.reload），
+   * 不是重画。刷新把整个前端内存清空重建，脏状态全扔掉，页面回来是最干净的。
+   *
+   * 【为什么这次不会无限刷】：真正的闸是 sessionStorage 里那把锁 repoRefreshDone ——
+   *   · 点会话时 → 记下「待刷新目标」，然后 0.2 秒后 reload
+   *   · 刷新回来 → bootSessions 读 localStorage 切回同一个会话 →
+   *     发现锁里的目标正是这个会话 → 认账、把锁删掉、正常往下走
+   *   · 锁删了，这次切换就不会再触发第二次 reload。
+   * 万一刷新回来被带到别的会话（比如会话列表还没加载好），锁里认不出这个 id，
+   * 那就【不刷】，宁可一次不刷，也绝不让它一直刷。
+   *
+   * 另外 500ms 里如果主人手速快又点了别的会话，直接覆盖目标，
+   * 只有最后停下的那个会话会被刷新 —— 不会连刷好几个。
+   */
+  armReloadAfterSwitch(sessionId, opts && opts.byClick === true);
+  // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
 
   // 这个会话还在后台跑吗？
@@ -14527,8 +15252,34 @@ async function switchSession(id) {
         busy = true;
         showSending();
       } else {
-        busy = false;
-        hideSending();
+        /**
+         * 【2026-11-01 修·切会话回来按钮变回【发送】】
+         *
+         * turnsInFlight 是本页面内存的 Map。切会话、Ctrl+F5 之后它一定是空的，
+         * 所以「服务端明明还在跑」也会走到这个 else，把按钮打回【发送】、
+         * 连「正在发送消息」也一起藏了 —— 主人报的正是这个。
+         *
+         * 现在不认内存了，直接再问一次服务端：
+         *   running=true  → 锁着（按钮还是【停止】），并且接着跟直播
+         *   running=false → 才放开
+         */
+        let _stillUp = false;
+        try {
+          const _l = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sessionId)).then((x) => x.json());
+          _stillUp = Boolean(_l && _l.running);
+          if (_stillUp && typeof followLive === 'function') {
+            followLive(sessionId, Array.isArray(_l.events) ? _l.events.length : 0);
+          }
+        } catch {}
+        if (_stillUp) {
+          busy = true;
+          showSending();
+          try { syncSendBtn(); } catch {}
+        } else {
+          busy = false;
+          hideSending();
+          try { syncSendBtn(); } catch {}
+        }
       }
     } else {
       busy = true;
@@ -14536,8 +15287,31 @@ async function switchSession(id) {
     }
   } catch (err) {
     console.warn('[switchSession] 补画后台进度失败（不影响输入）:', err && err.message ? err.message : err);
-    busy = false;
-    hidingSendingSafe();
+    /**
+     * 【2026-11-01 修 Ctrl+F5：补画失手 ≠ 这一轮跑完了】
+     *
+     * 原来这里无脑 busy=false + 藏「正在发送」。可补画失败的原因多半是
+     * 「渲染时 DOM 出岔子」，跟「服务端还在不在跑」毫无关系。
+     * 主人刷新时，服务端 running=True、缓存里 295 个事件，界面却因为这里
+     * 把按钮变回【发送】—— 正是他报的那个现象。
+     *
+     * 现在改成：失败也再问一次服务端，它说在跑就保持锁着（按钮还是【停止】），
+     * 剩下的字照样会通过 followLive 长出来。只有服务端明确说没跑，才放开。
+     */
+    try {
+      const live2 = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sessionId)).then((x) => x.json());
+      if (live2 && live2.running) {
+        busy = true;
+        showSending();
+        try { followLive(sessionId, Array.isArray(live2.events) ? live2.events.length : 0); } catch {}
+      } else {
+        busy = false;
+        hidingSendingSafe();
+      }
+    } catch {
+      busy = false;
+      hidingSendingSafe();
+    }
   }
   stopping = false;
   syncSendBtn();
@@ -14608,7 +15382,6 @@ async function createSessionEx(opts = {}) {
    */
   try { if (typeof refreshWhoRail === 'function') await refreshWhoRail(); } catch {}
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
-  try { if (typeof window.__reloadPureState === 'function') window.__reloadPureState(); } catch {}
   // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
   try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 新会话是默认档
@@ -14833,6 +15606,11 @@ async function bootSessions() {
    * 实在切不过去也**不新建**，留在原地并明说一句，让人自己点会话面板去选。
    */
   if (pick) {
+    /**
+     * 【这里不再调 settleReloadAfterSwitch】
+     * 锁在页面加载那一瞬间就已经被消费进内存 _bootReloadId 了（见 armReloadAfterSwitch 上面那段）。
+     * 这里要是再调一次，等于把保护提前用掉，接下来 switchSession → renderTurns 就又会布防 → 无限刷。
+     */
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         if (await switchSessionSafe(pick)) return;
@@ -15682,6 +16460,20 @@ document.getElementById('mdlSave').onclick = async () => {
 };
 
 const booted = bootSessions();
+
+/**
+ * 每 3 秒问一次「谁在跑」，名单变了才重画会话列表（不变就别重画，省得整列闪）。
+ */
+refreshRunning().then(() => { try { renderSessList(); } catch { /* 画不动就算了 */ } });
+
+setInterval(async () => {
+  const key = () => [...runningSess].sort().join(',');
+  const before = key();
+  await refreshRunning();
+  if (before !== key()) {
+    try { renderSessList(); } catch { /* 画不动就算了 */ }
+  }
+}, 3000);
 
 
 // ---- 视频背景：状态 / 建层 / 右下角小圆钮 ----------------------------------

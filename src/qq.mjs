@@ -547,6 +547,76 @@ export function chunkText(text, limit = 1500) {
   return out.filter(Boolean);
 }
 
+/**
+ * 把她说的一整段话拆成「真人聊天那样的一条一句」。
+ *
+ * 【2026-11-06 主人要求】原话：「连上QQ后和我聊天，我看她都是一个气泡里面装着
+ * 好几句有空行的话，我就在想她就不能分多轮给我发吗」「闲聊时可以发多轮话，
+ * 一轮发一句而不是一轮发多句消息」。
+ *
+ * 为什么不能直接用 chunkText 解决：chunkText 是「撞上限才切」，1200 字以内一条不切，
+ * 于是模型写的一大段（几个空行分隔的段落）整段塞进一个气泡 —— 主人看到的就是那个。
+ * 把上限调小也不行，60 字一截会把一句话拦腰砍断。
+ *
+ * 所以这里是另一套算法：**按「说话的停顿」切，不按字数切**。
+ *   ① 空行分段（模型自己分的段 = 它想分开说的几件事）
+ *   ② 段内句子又长又多时，按句末标点再分，攒够 40 字成一条（一句一条太碎，
+ *      40 字以内能把语气词带上，像真人在说话）
+ *   ③ 太短的（「嗯」「好呀」）并到相邻那条，别刷屏成十个气泡
+ *   ④ 单条仍超过 perMax 的，交给 chunkText 兜底
+ *   ⑤ 条数超过 maxParts 时尾巴合并 —— 一开口二十条比一大段更烦人
+ */
+export function splitSay(text, { maxParts = 8, perMax = 300, minLen = 6 } = {}) {
+  const src = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  if (!src) return [];
+
+  // ① 空行分段
+  let parts = src.split(/\n\s*\n+/).map((s) => s.trim()).filter(Boolean);
+
+  // ② 段内再按句切（只在「这一段明显是好几句话」时动手）
+  //
+  // 【为什么不在这里跨段合并短句】空行是**模型自己划的边界**：「好呀」空行「嗯」空行
+  // 「那我去了」——它就是在分三条说话，并起来又变回一个气泡装好几句了。
+  // 只有「同一段里切出来的最后一小截残渣」才并回本段前一条。
+  const out = [];
+  for (const p of parts) {
+    if (p.length <= 80) { out.push(p); continue; }
+    const sents = p.match(/[^。！？；!?;]+[。！？；!?;]+|[^。！？；!?;]+$/g) || [p];
+    const chunkOfPara = [];
+    let buf = '';
+    for (const s of sents) {
+      buf += s;
+      if (buf.trim().length >= 40) { chunkOfPara.push(buf.trim()); buf = ''; }
+    }
+    if (buf.trim()) chunkOfPara.push(buf.trim());
+    // 本段最后那截太短（「就这些。」之类的残渣）并回本段前一条
+    if (chunkOfPara.length >= 2) {
+      const last = chunkOfPara[chunkOfPara.length - 1];
+      if (last.length < minLen) {
+        chunkOfPara[chunkOfPara.length - 2] += last;
+        chunkOfPara.pop();
+      }
+    }
+    out.push(...chunkOfPara);
+  }
+  parts = out;
+
+  // ③ 单条过长 → chunkText 兜底
+  const sized = [];
+  for (const p of parts) {
+    if (p.length > perMax) sized.push(...chunkText(p, perMax));
+    else sized.push(p);
+  }
+
+  // ④ 条数太多 → 尾巴合并（一开口二十条比一大段更烦人）
+  if (sized.length > maxParts) {
+    const head = sized.slice(0, maxParts - 1);
+    const tail = sized.slice(maxParts - 1).join('\n\n');
+    return [...head, ...chunkText(tail, 1200)].filter(Boolean);
+  }
+  return sized.filter(Boolean);
+}
+
 /** 生成一段随机串（给日志 / 追踪用）。 */
 export function shortId(n = 6) {
   return randomBytes(Math.ceil(n / 2)).toString('hex').slice(0, n);

@@ -25,12 +25,15 @@
 
 import { join } from 'node:path';
 import {
-  qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, isOwnerQq, chunkText, isOwnerOpenid, readQq, setQqBot,
+  qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, isOwnerQq, chunkText, splitSay, isOwnerOpenid, readQq, setQqBot,
   qqGate, qqAllowed, normQqNum,
 } from './qq.mjs';
 import { saveInboundAttachments, describeInbound, transcodeVoiceToMp3 } from './qq-media.mjs';
 
 const SDK_PKG = '@tencent-connect/qqbot-nodejs';
+
+/** 让上下两条之间喘口气 —— 分多条发的时候用（2026-11-06） */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 进程内的那一份运行状态（不是持久化状态，重启就没了） */
 const rt = {
@@ -333,15 +336,78 @@ async function handleInbound({ msg, bot, deps }) {
   // ④ 跑一轮，边跑边发
   const out = [];
   let sentParts = 0;
-  const flush = async () => {
-    const all = out.join('');
-    const parts = chunkText(all, 1200);
-    // 增量发送：只发还没发出去的那几块
-    for (let i = sentParts; i < parts.length - 1; i++) {
-      await send(bot, msg, parts[i]);
-      rt.stats.out += 1;
+  /**
+   * 【2026-11-06 主人报「说了三句话，连发四十多条重复」—— 两个真凶，都在这几行里】
+   *
+   * 真凶一：多个 flush 同时在跑。
+   *   `onEvent` 是 async 的，可 `runAgent` 里是 `onEvent({...})` 直接调、**不等它**。
+   *   里面 `await send(...)` 要等网络（几百毫秒一条），这期间又来二十个 text 事件，
+   *   于是二十个 flush 各自从同一个 sentParts 起步 → 同一条被发二十遍。
+   *
+   * 真凶二：拿「第几条」当进度。
+   *   每次 flush 都把**整段文本**重新 splitSay 一遍。文本一长，切点就变：
+   *   上次第 0 条是「你好主人。」，这次同样的字跟后面粘成了「你好主人。今天……」（一条），
+   *   sentParts=1 于是从第 1 条发 —— 而那其实是已经发过的内容。
+   *
+   * 现在的做法：
+   *   ① 进度改用**原文字符位置** sentChars —— 切点怎么变都不影响「发到哪了」；
+   *   ② flush 串成一条链（flushing），永远只有一队在跑；
+   *   ③ 只对「还没发的那段」切句。
+   */
+  let sentChars = 0;
+  let flushing = Promise.resolve();
+  /**
+   * 找出「可以发出去的」那一截：到最后一个句末标点（或空行）为止。
+   * 一句都没说完就返回 0，等着下一批字；
+   * 太长又死活没有标点（贴代码、长单词）就整段交出去，让 splitSay 用 perMax 兜底切。
+   */
+  const cutReady = (s) => {
+    if (!s) return 0;
+    let cut = 0;
+    const re = /[。！？；!?;~～…][」』"')）]*\s*|\n\s*\n/g;
+    let m;
+    while ((m = re.exec(s))) cut = m.index + m[0].length;
+    if (cut > 0) return cut;
+    return s.length > 600 ? s.length : 0;
+  };
+  const doFlush = async (final) => {
+    const fresh = out.join('').slice(sentChars);
+    if (!fresh) return;
+    let cut;
+    if (final) {
+      cut = fresh.length;
+    } else {
+      cut = cutReady(fresh);
+      if (cut <= 0) return;   // 一句都还没说完，先别发
     }
-    sentParts = Math.max(sentParts, Math.max(0, parts.length - 1));
+    const chunk = fresh.slice(0, cut);
+    const parts = splitSay(chunk);
+    if (!parts.length) { sentChars += cut; return; }
+    const firstEver = sentParts === 0;
+    for (let i = 0; i < parts.length; i++) {
+      await send(bot, msg, parts[i], { quote: firstEver && i === 0 });
+      rt.stats.out += 1;
+      if (i < parts.length - 1) await sleep(320 + Math.floor(Math.random() * 430));
+    }
+    sentParts += parts.length;
+    sentChars += cut;
+  };
+  /**
+   * 【2026-11-06 主人要求：别一个气泡塞好几句，分多轮发、一轮一句】
+   *
+   * 原来是 `chunkText(all, 1200)` —— 那是「撞上限才切」，1200 字以内一条不切，
+   * 于是她写的一大段（几个空行分隔的段落）整段塞进一个 QQ 气泡。
+   * 现在换成 splitSay：按空行/句子切成一条一句，像真人在那边一条条打字。
+   *
+   * `final=false`（话还没说完）时**只发已经说完整的句子** —— 半句话发出去比晚发更难堪；
+   * `final=true`（这一轮结束了）才把剩下的半句也发掉。
+   * 每条之间隔 0.3~0.75 秒，别让 QQ 那边一秒刷出五条。
+   */
+  const flush = (final = false) => {
+    flushing = flushing
+      .then(() => doFlush(final))
+      .catch((e) => { try { log(`[qq] flush 出错：${e?.message || e}`); } catch {} });
+    return flushing;
   };
   try {
     await deps?.runChat?.({
@@ -363,7 +429,11 @@ async function handleInbound({ msg, bot, deps }) {
         if ((ev.type === 'text' || ev.type === 'chunk') && typeof ev.text === 'string') {
           out.push(ev.text);
           // 攒够一条就发（别等整轮说完 —— QQ 里等着没反馈很难受）
-          if (out.join('').length > 1200) await flush();
+          // 【2026-11-06】原来要等 1200 字；现在按句发，攒够一条就试着发一条，
+          // 但每来一个字就重算一遍 splitSay 太浪费 —— 用「已发的字数」做水位，
+          // 新增超过 60 字才重算一次。
+          const _pending = out.join('').length - sentChars;
+          if (_pending > 60) await flush();
         } else if (ev.type === 'done') {
           // 兜底：这一轮如果一条增量都没收到，但 done 里带了整段正文，就用它
           if (!out.join('') && typeof ev.text === 'string' && ev.text.trim()) {
@@ -374,13 +444,9 @@ async function handleInbound({ msg, bot, deps }) {
       },
     });
     rt.stats.turns += 1;
-    // 收尾：把最后那一块发掉
-    const parts = chunkText(out.join(''), 1200);
-    for (let i = sentParts; i < parts.length; i++) {
-      await send(bot, msg, parts[i]);
-      rt.stats.out += 1;
-    }
-    if (!parts.length) {
+    // 收尾：把最后那一条也发掉
+    await flush(true);
+    if (!sentParts) {
       log('这一轮模型没吐出任何正文（out 为空），已回兜底一句');
       await send(bot, msg, '（这一轮我没说出话，你再喊我一声？）(｡•́︿•̀｡)');
     }
@@ -392,15 +458,24 @@ async function handleInbound({ msg, bot, deps }) {
 }
 
 /** 发一条（被动回复优先，没有 msgId 才走主动）。 */
-async function send(bot, msg, content) {
+/**
+ * 发一条。
+ *
+ * `opts.quote` —— 要不要引用着主人那句话回。
+ * 一轮分成好几条发的时候只在第一条引用：每条都挂着同一个引用，
+ * QQ 里看着像她对着同一句话复读了五遍（2026-11-06）。
+ */
+async function send(bot, msg, content, opts = {}) {
   const t = String(content ?? '').trim();
   if (!t) return;
+  const quote = opts.quote !== false;
+  const msgId = quote ? msg?.messageId : undefined;
   try {
-    if (msg?.replyTarget) await bot.sendText(msg.replyTarget, t);
+    if (msg?.replyTarget && quote) await bot.sendText(msg.replyTarget, t);
     else if (msg?.kind === 'group' && msg?.groupOpenid) {
-      await bot.sendText({ scope: 'group', targetId: String(msg.groupOpenid), msgId: msg.messageId }, t);
+      await bot.sendText({ scope: 'group', targetId: String(msg.groupOpenid), msgId }, t);
     } else {
-      await bot.sendText({ scope: 'c2c', targetId: String(msg.senderId), msgId: msg.messageId }, t);
+      await bot.sendText({ scope: 'c2c', targetId: String(msg.senderId), msgId }, t);
     }
   } catch (err) {
     log(`发不出去：${String(err?.message ?? err)}`);

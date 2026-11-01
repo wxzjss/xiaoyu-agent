@@ -471,8 +471,10 @@ const SEND_ACTIONS = new Set([
 ]);
 
 /** 相邻两条之间至少这么久（主人要求 0.5 秒；多一点抖动，看着像人在打字） */
-const MIN_SEND_GAP_MS = 500;
-const SEND_GAP_JITTER_MS = 350;
+// 【2026-11-01 主人】「0.5 秒冷却改为 1 秒」—— 半秒还是像刷屏，一秒才像人在打字。
+const MIN_SEND_GAP_MS = 1000;
+// 抖动：1.0～1.4 秒，别每条都一模一样（那样像机器人定时器）
+const SEND_GAP_JITTER_MS = 400;
 
 let lastSendAt = 0;
 /** 排队用：并发的两条同时到，不能都读到同一个 lastSendAt */

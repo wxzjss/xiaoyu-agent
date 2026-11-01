@@ -592,9 +592,15 @@ export function chunkText(text, limit = 1500) {
  *      40 字以内能把语气词带上，像真人在说话）
  *   ③ 太短的（「嗯」「好呀」）并到相邻那条，别刷屏成十个气泡
  *   ④ 单条仍超过 perMax 的，交给 chunkText 兜底
- *   ⑤ 条数超过 maxParts 时尾巴合并 —— 一开口二十条比一大段更烦人
+ *   ⑤ 条数超过 maxParts 时**均匀合并**成 maxParts 条 ——
+ *      一开口二十条比一大段更烦人；【2026-11-01 主人】「一次性发不要超过三条，
+ *      最好是 1～3 条」，所以默认就是 3。
+ *
+ * 为什么是「均匀合并」而不是「前 n-1 条 + 尾巴一大坨」：
+ * 老写法把剩下的全塞进最后一条，那一条动不动上千字，
+ * 再被 perMax 一卡，又切成好几条 —— 绕一圈还是超了三条。
  */
-export function splitSay(text, { maxParts = 8, perMax = 300, minLen = 6 } = {}) {
+export function splitSay(text, { maxParts = 3, perMax = 300, minLen = 6 } = {}) {
   const src = String(text ?? '').replace(/\r\n/g, '\n').trim();
   if (!src) return [];
 
@@ -636,11 +642,18 @@ export function splitSay(text, { maxParts = 8, perMax = 300, minLen = 6 } = {}) 
     else sized.push(p);
   }
 
-  // ④ 条数太多 → 尾巴合并（一开口二十条比一大段更烦人）
+  // ④ 条数太多 → 均匀合并成 maxParts 条
+  //    第 i 条落到 floor(i * maxParts / n) 号桶里，每条桶里按原来的顺序拼起来。
+  //    合并之后只有「单条超过 QQ 一条消息的安全长度（1200 字）」才再切 ——
+  //    那是协议层面的特例，正常说话到不了那儿。
   if (sized.length > maxParts) {
-    const head = sized.slice(0, maxParts - 1);
-    const tail = sized.slice(maxParts - 1).join('\n\n');
-    return [...head, ...chunkText(tail, 1200)].filter(Boolean);
+    const buckets = Array.from({ length: maxParts }, () => []);
+    sized.forEach((p, i) => {
+      const b = Math.min(maxParts - 1, Math.floor((i * maxParts) / sized.length));
+      buckets[b].push(p);
+    });
+    const merged = buckets.map((arr) => arr.join('\n\n').trim()).filter(Boolean);
+    return merged.flatMap((p) => (p.length > 1200 ? chunkText(p, 1200) : [p])).filter(Boolean);
   }
   return sized.filter(Boolean);
 }

@@ -283,6 +283,8 @@
       white-space: pre-wrap; word-break: break-word;
     }
     .assistant .bubble { white-space: pre-wrap; word-break: break-word; }
+    /* 【2026-11-01】她一段一个气泡之后，相邻气泡之间要有一点缝，不然像一大段 */
+    .msg .bubble + .bubble { margin-top: 6px; }
 
 /**
  * 小鲸的气泡。
@@ -2881,11 +2883,10 @@
                 <label class="priceCell"><span>缓存写入（有才算）</span>
                   <input type="number" id="mdlPriceCW" step="any" min="0" placeholder="留空" spellcheck="false" /></label>
               </div>
-              <div class="priceMul">
-                <span>或者偷懒：填个倍率</span>
-                <input type="number" id="mdlMarkup" step="any" min="0.01" max="1000" placeholder="1" spellcheck="false" />
-                <span class="hint" id="mdlMarkupHint">1 = 照官方价算；打八折填 0.8。官方的直连不用动它。</span>
-              </div>
+              <!-- 【2026-11-01 主人：倍率这栏删了】
+                   它跟价格四格打架：四格填的是最终价、倍率又乘一次，
+                   同一笔账两条口子，算出来的数谁都说不清。
+                   现在只认四格，填多少就是多少。 -->
               <span class="hint" id="mdlPriceHint">四格全空 = 照官方价（× 倍率）。填了哪一格，那一格就按你填的算 —— 填的是**最终价**，不再乘倍率。</span>
             </div>
           </div>
@@ -3225,7 +3226,6 @@
         <button type="button" class="ghost" id="agImport">导入智能体</button>
         <button type="button" class="ghost" id="agExport">导出智能体</button>
         <button type="button" class="ghost" id="agNew">新建智能体</button>
-        <button type="button" class="ghost" id="agNewChat">用她开个新会话</button>
         <button type="button" class="ghost" id="agPanel" hidden>多套人设…</button>
         <button type="button" class="ghost" id="agReset">恢复默认</button>
         <button type="button" class="ghost" id="agDel">删掉这个</button>
@@ -3632,6 +3632,10 @@ function toBottomEl() {
  */
 let selfScrollAt = 0;
 
+/* 【2026-11-01】上一次看到的「内容总高度」。用来分辨「内容长高了」和「主人往上翻了」——
+   只看 gap 会把流式吐字误判成主人翻页，跟随状态自己就断了。 */
+let _lastDocH = 0;
+
 function hardScrollBottom() {
   if (!log) return;
   log.scrollTop = log.scrollHeight;
@@ -3810,7 +3814,8 @@ function resetScrollStick() {
   if (log) {
     // passive：滚动事件里不 preventDefault，别拖慢滚动
     log.addEventListener('scroll', () => {
-      const gap = log.scrollHeight - log.scrollTop - log.clientHeight;
+      const docH = log.scrollHeight;
+      const gap = docH - log.scrollTop - log.clientHeight;
       /**
        * 这一下如果是我们自己滚出来的（跟随、内容变高），就别去改 stickBottom。
        *
@@ -3823,6 +3828,20 @@ function resetScrollStick() {
        */
       const mine = Date.now() - selfScrollAt < 120;
       if (mine) return;
+
+      /*
+       * 【2026-11-01 主人报：我没碰滚轮，自己就不滚了】
+       *
+       * 原来只凭 gap <= 80 就立刻改写跟随状态。可流式吐字的内容一秒钟长好几行，
+       * 网页是先甩 scroll 事件、再把新内容排上去的 —— 那一瞬间 scrollTop 还是老值，
+       * gap 忽然变成几百，就被判成「主人往上翻了」，跟随自己就断了。
+       *
+       * 现在多一道关：**内容高度变了就不算主人翻页**。
+       * 只有「内容高度一点没变，而 scrollTop 真的变小了」才当成主人自己往上滚。
+       */
+      const grew = docH > _lastDocH;
+      _lastDocH = docH;
+      if (grew) return;
 
       const wasStick = stickBottom;
       stickBottom = gap <= SCROLL_STICK_PX;
@@ -4380,13 +4399,70 @@ document.addEventListener("keydown", (e) => {
  * 所以改成：原文只往 _rawText 里攒，每次都拿「全文」重洗、整体覆盖。
  * 一段话通常几十片，重洗几十次的代价可以忽略。
  */
+/**
+ * 【2026-11-01 主人】「说一段空一行再说一段，空行之前的都算一条消息放在一个气泡里」
+ *
+ * 她一个回复里常常是好几段，中间用空行隔开 —— 那就是她自己划的「这是另一句」。
+ * 所以按空行切成几个气泡：一段一个，名字只在最前面报一次（兄弟节点都在同一个 .msg 里）。
+ *
+ * 流式的时候会反复调用：文本只增不减，所以气泡也是「只加不减」；
+ * 万一文本变短（重新生成/回退），多出来的兄弟气泡在这里收掉。
+ *
+ * 返回**最后一个**气泡 —— 光标和后续增量都该落在它身上。
+ */
+function paintSpeech(bubble, raw) {
+  if (!bubble) return bubble;
+  const wrap = bubble.parentNode;
+  const cleaned = fixMojibake(String(raw ?? ''));
+  if (!wrap) { bubble.textContent = cleaned; bubble._tail = bubble; return bubble; }
+  const paras = cleaned.split(/\n[ \t]*\n+/).map((s) => s.trim()).filter(Boolean);
+  if (paras.length <= 1) {
+    bubble.textContent = cleaned;
+    for (const el of [...wrap.querySelectorAll(':scope > .bubble')]) if (el !== bubble) el.remove();
+    bubble._sib = null;
+    bubble._tail = bubble;
+    return bubble;
+  }
+  let prev = null;
+  for (let i = 0; i < paras.length; i += 1) {
+    let el;
+    if (i === 0) el = bubble;
+    else if (prev && prev._sib) el = prev._sib;
+    else {
+      el = document.createElement('div');
+      el.className = 'bubble';
+      if (prev) {
+        if (prev.after) prev.after(el); else wrap.appendChild(el);
+      } else wrap.appendChild(el);
+      el._rawText = '';
+    }
+    el.textContent = paras[i];
+    // 只有真的换了节点才连 _sib —— i=0 那一下 prev 是空的，别自己连自己（会死循环）
+    if (prev && prev !== el) prev._sib = el;
+    prev = el;
+  }
+  // 文本变短时，后面多出来的兄弟气泡收掉
+  let extra = prev._sib;
+  while (extra) { const nx = extra._sib; extra.remove(); extra = nx; }
+  prev._sib = null;
+  bubble._tail = prev;
+  return prev;
+}
+
 function pushStreamText(bubble, text) {
-  if (!bubble) return;
+  if (!bubble) return bubble;
   if (typeof bubble._rawText !== 'string') bubble._rawText = bubble.textContent || '';
   // 防御：气泡被别处清空过（textContent 变短且跟 _rawText 对不上）时，以画面为准重来
   else if (bubble._rawText && !(bubble.textContent || '').length) bubble._rawText = '';
   bubble._rawText += String(text || '');
-  bubble.textContent = fixMojibake(bubble._rawText);
+  // 光标可能已经停在「中间那个」气泡上了 —— 先记下它，画完再搬到新的尾巴上
+  const from = bubble._tail || bubble;
+  const tail = paintSpeech(bubble, bubble._rawText);
+  if (tail !== from && from.classList.contains('streaming')) {
+    from.classList.remove('streaming');
+    tail.classList.add('streaming');
+  }
+  return tail;
 }
 
 function stripMarkdownMarks(text) {
@@ -4871,7 +4947,8 @@ function reconcileTurnTexts(ev) {
     }
 
     const b = addAssistantAuto();
-    b.textContent = fixMojibake(text);
+    // 按空行分段（一段一个气泡）—— 跟流式那条路同一个函数，别两套画法
+    paintSpeech(b, text);
     b.classList.remove('streaming');
     added++;
   }
@@ -8254,6 +8331,21 @@ async function interject() {
   clearDraft();   // 插话发出去也算发了
   autosizeInput();
   // 插话也是「现在这个身份说的话」，署名跟着当前身份走
+  /* 【2026-11-01 主人：插话要插在「我说到哪儿」的位置，别全堆在末尾】
+     算一下此刻我已经说出多少字：找屏幕上最后一个还在流式的助手气泡，
+     拿它的 _rawText 长度当锚点。服务端把它记进消息的 _atChars，
+     重绘时前端按这个数把我那段话劈成两半，把主人的话嵌在中间。
+     找不到（没有正在流的气泡）就给 null，退回老做法排末尾。 */
+  let _atCharsNow = null;
+  try {
+    /* 认准带 _rawText 的那个元素：_rawText 只挂在气泡本体（.bubble.cont）上，
+       外面的 .msg 壳上没有。按 .bubble 选，再挑最后一个带 _rawText 的。 */
+    const _bs = document.querySelectorAll('#log .bubble');
+    for (let i = _bs.length - 1; i >= 0; i--) {
+      const b = _bs[i];
+      if (typeof b._rawText === 'string') { _atCharsNow = b._rawText.length; break; }
+    }
+  } catch {}
   addUser(text, '插话', undefined, undefined, undefined, currentIdentityName);
   pendingResume = true;
   lastInterjectText = text;   // 【必须有】runTurn 收尾时靠它判断「那句到底在不在历史里」
@@ -8261,7 +8353,7 @@ async function interject() {
   const r = await fetch('/api/interject', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, message: text }),
+    body: JSON.stringify({ sessionId, message: text, atChars: _atCharsNow }),
   }).then((x) => x.json()).catch(() => null);
 
   // ② 服务端说：没有在跑的那一轮。界面这边的 busy 是假的，现在纠正它。
@@ -8337,8 +8429,7 @@ async function interject() {
     busy = true;
     showSending();
     syncSendBtn();
-    const n = Number(r.count || 1);
-    addSysNote('收下了，排在她这一步之后' + (n > 1 ? '（一共 ' + n + ' 句等着）' : ''));
+  // 【2026-11-01 主人】插话后那条「收下了，排在她这一步之后」提示删掉，不刷屏。
     return;
   }
   /**
@@ -9314,8 +9405,16 @@ async function refreshAgentChip() {
   const mateNames = loud.map((m) => String(m.name || '')).filter(Boolean);
   // 默认就是小鱼：既没换人、也没别人在场的时候不挂牌（左边标题已经写着「小鱼」）
   const swapped = Boolean(id && id !== 'xiaoyu' && name);
-  if (!swapped && !mates.length) { el.hidden = true; return; }
-  const head = swapped ? name : '小鱼';
+  /* 【2026-11-01】牌子亮不亮也改由名单第一决定：只要第一不是小鱼就亮，
+     哪怕这个人暂时没勾上「接着补一句」—— 那是对「谁先说」的说明，不是对群聊的说明。 */
+  const _first = String((grpMembers[0] && (grpMembers[0].id || '')) || '');
+  if (!swapped && !mates.length && (!_first || _first === 'xiaoyu')) { el.hidden = true; return; }
+  /* 【2026-11-01 主人：牌子跟着「屋里的人」排序第一走】
+     以前牌子上写的是「这个会话绑了哪张卡」，跟左栏的竖列顺序是两回事 ——
+     主人把小白曦拖到第一位，牌子上还是写着小鱼，看着像没生效。
+     现在牌子上的名字 = 名单里排第一的那个（谁排第一谁先说话，说的就是这份名单）。
+     名单里一个人都没有时才退回「当前绑的卡」/小鱼。 */
+  const head = String((grpMembers[0] && grpMembers[0].name) || (swapped ? name : '小鱼'));
   const tail = mates.length ? ' + ' + (mateNames.length ? mateNames.join('、') : String(mates.length)) : '';
   // 屋里有人但要叫名字才应：牌子上标一下，不然主人会觉得「她怎么不吭声」
   const quietN = (grp && !grp.error && Array.isArray(grp.quietIds)) ? grp.quietIds.length : 0;
@@ -9898,10 +9997,10 @@ function renderGroupRow() {
   const hint = document.getElementById('agGroupHint');
   if (!box) return;
   box.innerHTML = '';
-  /* 一起说话去掉小鲸·2026-10-31 只列主人自己建的卡。小鲸不在这儿 ——
-   * 跟「默认不该有主人」一个道理，她不该被当成一张可以随手拉进会话的成员卡。
-   * 她要说话走她自己的路（顶栏那个开关），不经过这张名单。 */
-  const cards = (agentState.agents || []).filter((a) => a.kind === 'custom');
+  /* 【2026-11-01 主人：小鱼、小鲸、自建智能体地位完全平行】
+   * 以前这里只列自建卡，把小鲸和小鱼排除在外 —— 那等于说她们不是「屋里的人」。
+   * 现在三张都能进名单、都能被勾上、都能勾掉。真正谁在场只由这一张名单决定。 */
+  const cards = (agentState.agents || []);
   const hasSession = typeof sessionId === 'string' && !!sessionId;
   if (!hasSession) {
     if (hint) hint.textContent = '先打开一个会话，再挑谁跟她一起说话';
@@ -10028,30 +10127,6 @@ async function bindAgentCard() {
   agHint(r.agentId ? '这个会话从下一句开始就用她说话了' : '这个会话换回小鱼了');
 }
 
-/**
- * 用当前选中的卡开一个新会话（「多开」）。
- *
- * 为什么不只是「绑定到当前会话」：主人想的是「她是另一个角色，跟她另起一摊」。
- * 老会话里塞进另一个人设，前面几十句都是小鱼的口吻，模型会两头看——
- * 所以多开就该是「新会话 + 绑卡」，这是干净的做法。
- */
-async function newChatAsAgent() {
-  if (!agentCur) { agHint('先选一张卡'); return; }
-  agHint('正在开新会话…');
-  const dlg = document.getElementById('agentListDlg');
-  if (dlg && dlg.open) { try { dlg.close(); } catch { /* 忽略 */ } }
-  let ok = false;
-  try {
-    ok = await createSessionEx({ agentId: agentCur.id, title: agentCur.name || '' });
-  } catch (e) {
-    agHint('没开成：' + (e && e.message ? e.message : e));
-    return;
-  }
-  if (!ok) { agHint('没开成'); return; }
-  try { await refreshSessions({ silent: true }); } catch {}
-  settleComposer({ focus: true });
-  agHint('');
-}
 
 async function openAgentDlg() {
   const dlg = document.getElementById('agentListDlg');
@@ -10255,7 +10330,6 @@ async function importAgentCardFrom(file) {
     if (f) f.onchange = () => { const one = f.files && f.files[0]; if (one) importAgentCardFrom(one); };
   }
   wire('agNew', () => newAgentCard());
-  wire('agNewChat', () => newChatAsAgent());
   wire('agReset', () => resetAgentCard());
   wire('agDel', () => delAgentCard());
   wire('agClose', () => { const d = document.getElementById('agentListDlg'); if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } } });
@@ -12606,7 +12680,17 @@ function fmtTok(n) {
   if (!Number.isFinite(v)) return '0';
   const a = Math.abs(v);
   const sign = v < 0 ? '-' : '';
-  if (a >= 1000000) return sign + (a / 1000000).toFixed(1).replace(/\.0$/, '') + '万';
+  /*
+   * 【2026-11-01 主人抓到的大 bug：单位的字写错了】
+   *
+   * 原来写的是：a>=1000000 时 a/1000000 后面也跟一个「万」字。
+   * 12350549 除以一百万 = 12.35，可后面写「万」就成了「12.4万」——
+   * 实际是 1235 万，整整少写了 100 倍。主人看到「↑12.4万 输入」以为是
+   * 12 万 token，拿去对账怎么也对不上，就是这个字害的。
+   *
+   * 现在：百万这一档直接用英文 M（量级一眼就对），万这一档还是「万」。
+   */
+  if (a >= 1000000) return sign + (a / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
   if (a >= 10000) return sign + (a / 10000).toFixed(1).replace(/\.0$/, '') + '万';
   return v.toLocaleString('en-US');
 }
@@ -12688,6 +12772,12 @@ function inPeakWindow(when, now) {
  * 把便宜的谷价写在 off 里（off.when 就是高峰时段）。
  * 价格会变，主人想改直接改这张表就行。
  */
+/* 【2026-11-01 TDZ 修复·紧急】
+   算钱那一段（priceOf / costOf）读到 mdlState.models 时要判「价目表拉到了没」，
+   可 mdlState 原来的声明在文件后面一大截 —— 首屏一画用量行就进暂时性死区直接抛错。
+   这里把它提到最前面声明一次，后面那句原样保留（重复声明 let 会报错，所以改成赋值）。 */
+let mdlState = { models: [], activeId: null, empty: true };
+
 const RATES = {
   // ── DeepSeek 官方（2026-10 核对 api-docs.deepseek.com/zh-cn/quick_start/pricing）──
   // 峰价就是上面那组，谷价是一半（工作日 9-12、14-18 之外，含周末全天）
@@ -12836,7 +12926,29 @@ function pricedRow(modelName) {
  * @returns {{inMiss:number|null, inHit:number|null, out:number|null, cacheWrite:number|null}|null}
  *   null = 这条压根没填价
  */
+let _priceFetching = false;
+
 function priceOf(modelName) {
+  /*
+   * 【2026-11-01 主人报「2 块钱不对」，真凶就在这儿】
+   *
+   * 老毛病：mdlState 只有打开「模型」那张面板才会去 /api/models 拿一次。
+   * 主人平时根本不点那张面板 —— 于是 priceOf 一路返回 null，costOf 就退回去用
+   * 写死在 RATES 里的官方牌价（hit 0.04 / miss 2 / out 8），算出来比主人自己填的
+   * 价贵十倍。2.00 这个数就是这么来的（实测 1.9993）。
+   *
+   * 现在：没拿到价、列表还是空的，就当场补拉一次；拉回来之前先别按官方牌价算，
+   * 宁可这行先不显示钱，也别显示一个错十倍的数骗主人。
+   */
+  if (!mdlState.models || !mdlState.models.length) {
+    if (!_priceFetching) {
+      _priceFetching = true;
+      fetch('/api/models').then((x) => x.json()).then((r) => {
+        if (r && r.models) mdlState = r;
+      }).catch(() => {}).finally(() => { _priceFetching = false; });
+    }
+    return null;   // 还没拿到 → 这一轮先不算钱，别用官方牌价糊弄
+  }
   const row = pricedRow(modelName);
   if (!row || !row.price) return null;
   const p = row.price;
@@ -12871,6 +12983,18 @@ function costOf(model, u, now) {
   if (mine && (mine.inMiss !== null || mine.inHit !== null || mine.out !== null)) {
     return costWithPrice(mine, u, now);
   }
+  /*
+   * 【2026-11-01 主人报「2 块钱不对」的第二道闸】
+   *
+   * 上面 priceOf 要是拿不到（价目还没拉回来），老代码会去做 rateOf → 官方价目表，
+   * 再乘 markup。可主人的价是他从中转站账单上抄的，比官方牌价便宜十倍 ——
+   * 照着官方牌价算，等于给他看一个虚报十倍的钱数（实测 2.00 对 0.18）。
+   *
+   * 所以：只要「模型列表还没拉到」，这段就不许往下走，直接返回 null。
+   * 界面那边认 null，是【不显示钱】—— 不显示，好过显示一个错的让他去对账。
+   */
+  if (!mdlState.models || !mdlState.models.length) return null;
+  // 列表拉到了，但这条模型压根没填价 → 这时候才轮到官方价目表兜底（跟以前一样）
   const rate = rateOf(model);
   if (!rate) return null;
   // 中转站的倍率：1 = 照官方价。这个数不来自价目表，来自模型面板里主人填的那一格。
@@ -14540,6 +14664,10 @@ function renderTurns(turns) {
   // 【2026-10-31 同轮并气泡】：这一串回复共用的那个气泡，以及它当前那段话的容器
   let _contBubble = null;   // 上一段话的气泡（同一串里后面的话接进它）
   let _contBody = null;     // 气泡里最后那个 .cont 容器
+  /* 【2026-11-01 插话嵌中间】主人插话时把我那段话劈成两半：
+     前半截留在原气泡，后半截先存这儿，等后面那段 assistant 进来再接回去。 */
+  let _steerTail = null;    // 被插话劈下来的后半截文字（纯文本）
+  let _steerTailBody = null; // 它原来那个正文容器（接回去要挂它下面）
   let _contStem = null;     // 保留字段（服务端暂时没给 stem，判据已改成看 prevRole）
   // 【2026-10-31 并气泡·改判据】：上一条 turn 是什么角色。连着两条 assistant = 同一串（中间没被主人打断）
   let prevRole = '';
@@ -14569,14 +14697,42 @@ function renderTurns(turns) {
    */
   const askQueue = [];
 
-  const list = turns || [];
+  /**
+   * 【2026-11-01 根治界面卡死：长会话只画最近一段】
+   *
+   * 主人连着两次重启都是因为界面卡死。实测：
+   *   smvmk3dex74g8 → 1.0MB / 801 轮
+   *   smvlz6icxqonx → 770KB / 722 轮
+   * 服务端取回只要 86ms，慢的全在浏览器：801 轮 × 每轮十几个节点 = 上万个节点，
+   * 一次性建完，主线程直接顶住（content-visibility 只管不画，节点还是全建）。
+   *
+   * 现在改成窗口化：第一次只画最后 WINDOW 轮，往上滚到顶再补前面一批。
+   * 用 _histWindow 记住「这个会话还差多少轮没画」，切走再回来就重置。
+   */
+  const WINDOW = 120;
+  const _all = list;
+  let _start = 0;
+  try {
+    /* 【关键】回填时是自己调自己的：这时 _resetWin 为 true，必须沿用已经算好的 start，
+       不能再按「最后 120 轮」重算一遍 —— 否则补完立刻又被切回尾部，白补。 */
+    const _keep = renderTurns._keepStart;
+    renderTurns._keepStart = false;
+    if (typeof _keep === "number" && _keep >= 0 && _keep < _all.length) {
+      _start = _keep;
+    } else if (_all.length > WINDOW) {
+      _start = Math.max(0, _all.length - WINDOW);
+    }
+    renderTurns._pending = { all: _all, start: _start, sessionId };
+  } catch {}
+
+  const list = _all.slice(_start);
   /**
    * 【长会话才开「屏幕外不算」】150 轮以下不动它，短会话本来就秒开。
    * 阈值挑 150：实测 76 轮/101KB 完全不卡，244 轮/321KB 开始有感，
    * 628 轮/659KB 明显黑一下 —— 取中间偏安全的 150。
    */
   try {
-    if (log) log.classList.toggle("long-list", list.length > 150);
+    if (log) log.classList.toggle("long-list", _all.length > 150);
   } catch {}
   const frag = document.createDocumentFragment();
 
@@ -14605,6 +14761,24 @@ function renderTurns(turns) {
       const w = (turn.who && String(turn.who) !== '主人')
         ? (addWhaleBubble(turn.who, turn.text) || addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || ''))
         : addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
+      /* 【2026-11-01 主人：插的话要插在「我说到哪儿」的位置】
+       * 服务端把「他插话那一刻我已经说出多少字」（turn.steerAt）带下来了。
+       * 这里把上一个气泡的文字截断到那个字数，多出来的尾巴先存起来，
+       * 等后面那段 assistant 进来时再接回去 —— 屏幕上就读成：
+       *   我说到一半 → 主人插话 → 我接着说。
+       * 拿不到 steerAt（老会话 / 前端没算出来）就什么都不做，照老样子排末尾。
+       */
+      try {
+        if (turn.steer && Number.isFinite(Number(turn.steerAt)) && _contBody) {
+          const full = String(_contBody.textContent || '');
+          const at = Math.max(0, Math.min(full.length, Number(turn.steerAt)));
+          if (at > 0 && at < full.length) {
+            _steerTail = full.slice(at);
+            _contBody.textContent = fixMojibake(full.slice(0, at));
+            _steerTailBody = _contBody;
+          }
+        }
+      } catch {}
       // 每一句都能改：主人说的和我说的一样对待
       attachEdit(w, turn.rewindId);
       // 「分支」也贴着句子放：从这句往下另开一个会话
@@ -14741,10 +14915,24 @@ function renderTurns(turns) {
           // A 和 B 本来就是两段，各自有各自的工具，并成一条消息柜子就无处可夹，
           // 只能全挤在整条消息后面（实测会连出一串「{柜:1}{柜:1}{柜:1}」）。
           const sameStem = _contBubble && _contBody && _contBody.parentNode
-            && prevRole === 'assistant' && !_hadHubTools;
+            /* 【2026-11-01 插话嵌中间】上一条是主人插话、而我那段话被劈了一半等着接回来时，
+               后面这段也得并进原来那个气泡 —— 不然尾巴没地方接，读起来还是断成两截。 */
+            && (prevRole === 'assistant' || _steerTail !== null) && !_hadHubTools;
           let b;
           if (sameStem) {
             wrap = _contBubble;
+            /* 【2026-11-01 插话嵌中间】先把被插话劈下来的后半截接回原气泡，
+               再接这一段 —— 读到眼睛里就是「我说到一半 → 主人插话 → 我接着说」。 */
+            if (_steerTail) {
+              const tb = document.createElement("div");
+              tb.className = "bubble cont";
+              tb.textContent = fixMojibake(_steerTail);
+              tb._rawText = _steerTail;
+              _contBody.appendChild(tb);
+              _contBody = tb;
+              _steerTail = null;
+              _steerTailBody = null;
+            }
             b = document.createElement('div');
             b.className = 'bubble cont';
             b.textContent = fixMojibake(turn.text);
@@ -14829,6 +15017,30 @@ function renderTurns(turns) {
   // 【2026-10-31 末尾 flush】：最后那一串还没遇到 user，工具得在收尾前画出来
   flushHub();
   log.replaceChildren(frag);
+  /**
+   * 【2026-11-01 往上滚再补前面的】窗口化之后，顶上是空的。
+   * 滚到接近顶部就再往前放一批（一次 BACKFILL 轮），补完把滚动位置还原，
+   * 主人看着就是「往上翻还有」，不会跳。
+   */
+  try {
+    const _pend = renderTurns._pending;
+    if (log && _pend && _pend.start > 0 && !renderTurns._bound) {
+      renderTurns._bound = true;
+      log.addEventListener("scroll", () => {
+        const P = renderTurns._pending;
+        if (!P || P.start <= 0 || log.scrollTop > 240) return;
+        const BACKFILL = 120;
+        const newStart = Math.max(0, P.start - BACKFILL);
+        const keepFrom = P.start - newStart;
+        // 记住原来那一屏顶部是哪个节点，补完之后贴着它还原
+        const oldTop = log.firstElementChild;
+        const keepScroll = log.scrollHeight - log.scrollTop;
+        renderTurns._keepStart = newStart;
+        renderTurns(P.all);
+        try { log.scrollTop = log.scrollHeight - keepScroll; } catch {}
+      }, { passive: true });
+    }
+  } catch {}
   /* 【2026-10-31 主人定】历史画完了，工具调用统统收成一条灰 —— 不然打开会话就是一整屏参数和结果。
    * 留最后一个 hub 展开：那可能是正在跑的这一轮，收起来就看不见我在做什么了。
    * keepFrom 那种「按元素排除」的办法在这儿不好使（最后一个 hub 不一定是我这一轮的），所以自己数。 */
@@ -15814,8 +16026,6 @@ const mdlKey = document.getElementById('mdlKey');
 const mdlKindChat = document.getElementById('mdlKindChat');
 const mdlKindImage = document.getElementById('mdlKindImage');
 const mdlKindHint = document.getElementById('mdlKindHint');
-const mdlMarkup = document.getElementById('mdlMarkup');
-const mdlMarkupHint = document.getElementById('mdlMarkupHint');
 // 「这一条怎么算钱」那四个格 + 币种（2026-11-03）
 const mdlPriceCny = document.getElementById('mdlPriceCny');
 const mdlPriceUsd = document.getElementById('mdlPriceUsd');
@@ -15833,7 +16043,7 @@ const mdlBaseList = document.getElementById('mdlBaseList');
 const mdlModelPreset = document.getElementById('mdlModelPreset');
 const mdlModelHint = document.getElementById('mdlModelHint');
 const mdlModelList = document.getElementById('mdlModelList');
-let mdlState = { models: [], activeId: null, empty: true };
+mdlState = { models: [], activeId: null, empty: true };
 let mdlEditing = null; // null = 新增，否则是正在改的那条的 id
 
 /**
@@ -15933,16 +16143,6 @@ if (mdlBase) {
   // 手改地址时也跟着换模型下拉
   mdlBase.addEventListener('input', () => {
     mdlBasePreset.value = PROVIDERS.some((p) => p.base === mdlBase.value.trim()) ? mdlBase.value.trim() : '';
-  // 地址一改，是不是官方直连就变了 —— 倍率那格的提示跟着换
-  try {
-    if (mdlMarkupHint) {
-      const p = providerOf(mdlBase.value);
-      const official = p && /^(deepseek|dashscope|zhipu|moonshot|siliconflow|volcengine|minimax|openai|anthropic|hunyuan|baidu)$/.test(p.key);
-      mdlMarkupHint.textContent = official
-        ? '这一家是官方直连，倍率留空（= 1）就行 —— 填了只会把账算错。'
-        : '中转站收的是「官方价 × 它自己的倍率」。不知道填多少就先留空，回头查了它后台再补。';
-    }
-  } catch {}
     paintModelPicker(mdlBase.value);
   });
 }
@@ -16003,15 +16203,7 @@ function openForm(model) {
       ? '出图那条：测连通会真画一张小图（要等 30~40 秒），能出图才算通。'
       : '说话 / 干活那条：测连通发一句 ping 就够，很快。';
   }
-  if (mdlMarkup) mdlMarkup.value = model && model.markup ? String(model.markup) : '';
-  if (mdlMarkupHint) {
-    // 认得出是官方直连就劝一句「别填」，认不出（中转站）就说明为什么要填
-    const prov = (() => { try { return providerOf(model ? model.baseURL : (mdlBase ? mdlBase.value : '')); } catch { return null; } })();
-    const official = prov && /^(deepseek|dashscope|zhipu|moonshot|siliconflow|volcengine|minimax|openai|anthropic|hunyuan|baidu)$/.test(prov.key);
-    mdlMarkupHint.textContent = official
-      ? '这一家是官方直连，倍率留空（= 1）就行 —— 填了只会把账算错。'
-      : '中转站收的是「官方价 × 它自己的倍率」。不知道填多少就先留空，回头查了它后台再补。';
-  }
+
   // 价目回填：填过的四格 + 当时用的哪种钱。没填过就全空（= 照官方价）
   {
     const pr = (model && model.price) || {};
@@ -16140,10 +16332,7 @@ function formPayload() {
     payload.price = any ? price : null;
     payload.priceCurrency = (mdlPriceUsd && mdlPriceUsd.checked) ? 'usd' : 'cny';
   }
-    if (mdlMarkup) {
-    const mv = Number(String(mdlMarkup.value || '').trim());
-    payload.markup = (Number.isFinite(mv) && mv > 0) ? mv : 1;
-  }
+    /* 【2026-11-01 倍率栏删了】不再读它。payload.markup 不传，服务端按 1 处理。 */
   return payload;
 }
 
@@ -16471,6 +16660,12 @@ document.getElementById('mdlSave').onclick = async () => {
 };
 
 const booted = bootSessions();
+
+/* 【2026-11-01 钱要算对：开局就把模型价目拉下来】
+   以前只有点开【模型】面板才拉，主人平时根本不点那张面板 ——
+   结果 priceOf 一路返回 null，退回去用写死的官方牌价，比主人自己填的贵十倍。
+   放这儿拉一次，之后每一轮算钱都能拿到他填的那几个数。 */
+loadModels().catch(() => {});
 
 /**
  * 每 3 秒问一次「谁在跑」，名单变了才重画会话列表（不变就别重画，省得整列闪）。

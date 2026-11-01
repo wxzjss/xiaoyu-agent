@@ -405,7 +405,8 @@ export async function handleInbound({ msg, bot, deps }) {
     for (let i = 0; i < parts.length; i++) {
       await send(bot, msg, parts[i], { quote: firstEver && i === 0 });
       rt.stats.out += 1;
-      if (i < parts.length - 1) await sleep(500 + Math.floor(Math.random() * 400));
+      if (i < parts.length - 1) // 【2026-11-01 主人】条与条之间也抬到 1 秒（原来 0.5 秒）
+await sleep(1000 + Math.floor(Math.random() * 400));
     }
     sentParts += parts.length;
     sentChars += cut;

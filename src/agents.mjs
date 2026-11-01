@@ -794,7 +794,10 @@ function cleanGroup(data, ids) {
      主人「小鱼默认第一」说的是**初始**；他要能自由拖，包括把小鱼拖到下面去。
      unshift 会让她每次都跳回第一位 → 拖了也白拖（就是「拖上去又弹回来」那个毛病）。
      只有「名单里压根没写她」时才补进来，位置听天由命 = 排最后，主人想放哪儿拖就是了。 */
-  if (!seen.has(AGENT_XIAOYU)) push(AGENT_XIAOYU);
+  /* 【2026-11-01 主人：小鱼、小鲸、自建智能体地位完全平行】
+     以前这里无条件把小鱼补回来 —— 主人新建会话时明明只选了小白曦，
+     左栏却总有小鱼，就是因为这一行。现在只有「从来没存过名单」才给默认两人；
+     存过的名单一个字都不动，主人想只留一张卡就只留一张卡。 */
   /* 只有当这个会话「从来没存过名单」时（ids 不是数组），才给小鲸补上默认在场。
      存过空数组 = 主人明确清空过，别再补 —— 否则「清空名单」永远清不干净。 */
   if (!seen.has(AGENT_XIAOJING) && !Array.isArray(ids)) {
@@ -941,7 +944,14 @@ export function setSessionGroup(sessionId, ids, { keepWhale = true } = {}) {
    * 想让她别抢话，用「安静」（叫她才应）那个开关，不是把人赶出屋子。
    */
   if (keepWhale && beforeHasXj && !kept.includes(AGENT_XIAOJING) && kept.length < MAX_GROUP) kept.push(AGENT_XIAOJING);
-  if (kept.length) data.groupBySession[sid] = kept;
+  /**
+   * 【2026-11-01】keepWhale:false 是「刚建会话、按主人勾的来」那条路：
+   * 他一张都没勾时要把**空名单存下去**（空数组），不能 delete ——
+   * delete 等于「这个会话从来没设过名单」，下次读又会被默认补回小鱼小鲸，
+   * 空屋一刷新又坐满了人。
+   */
+  if (!keepWhale) data.groupBySession[sid] = kept;
+  else if (kept.length) data.groupBySession[sid] = kept;
   else delete data.groupBySession[sid];
   if (!writeAll(data)) return null;
   return { sessionId: sid, agentIds: kept, max: MAX_GROUP };

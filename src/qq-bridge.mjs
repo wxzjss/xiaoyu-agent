@@ -387,7 +387,7 @@ async function handleInbound({ msg, bot, deps }) {
     for (let i = 0; i < parts.length; i++) {
       await send(bot, msg, parts[i], { quote: firstEver && i === 0 });
       rt.stats.out += 1;
-      if (i < parts.length - 1) await sleep(320 + Math.floor(Math.random() * 430));
+      if (i < parts.length - 1) await sleep(500 + Math.floor(Math.random() * 400));
     }
     sentParts += parts.length;
     sentChars += cut;
@@ -401,7 +401,8 @@ async function handleInbound({ msg, bot, deps }) {
    *
    * `final=false`（话还没说完）时**只发已经说完整的句子** —— 半句话发出去比晚发更难堪；
    * `final=true`（这一轮结束了）才把剩下的半句也发掉。
-   * 每条之间隔 0.3~0.75 秒，别让 QQ 那边一秒刷出五条。
+   * 每条之间隔 0.5~0.9 秒（主人 2026-11-01 要求「至少 0.5 秒」）。
+   * 跨 flush 的间隔由 qq-onebot 的 paceSend 兜底 —— 这里管的是同一次 flush 内的相邻两条。
    */
   const flush = (final = false) => {
     flushing = flushing

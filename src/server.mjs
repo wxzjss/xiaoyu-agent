@@ -7804,7 +7804,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 落盘/推流沿用群聊那套（role:'user' + _who），所以翻历史时看得出是谁说的。
        */
       try {
-        if (process.env.GROUP_CHAT !== '0') {
+        /**
+         * 【resume 时不开口】—— 2026-11-01 严检第二轮
+         *
+         * resume = 接着已经落盘的历史继续跑（插话之后用），主人并没有说新话。
+         * 这时候再把上面的人各喊一遍，等于他们无缘无故又重复一次。
+         * 6728/6769/6802 行都明确写着「resume 不做这些」，这里跟着守同一条规矩。
+         */
+        if (process.env.GROUP_CHAT !== '0' && !resume) {
           const _order = groupAgentIds(sessionId).map((x) => String(x));
           const _fishAt = _order.indexOf(String(AGENT_XIAOYU));
           const _above = _order.filter((id, idx) => {
@@ -7816,10 +7823,37 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             .filter((id) => id !== String(AGENT_XIAOYU))
             .filter((id) => {
               try { return mateSwitchOn(id, sessionId); } catch { return false; }
+            })
+            /**
+             * 【叫才应的人不主动开口】—— 2026-11-01 严检补
+             *
+             * 主人原话：「小鲸性子里没打勾，那么如果开启的话她应该每一轮都说话」
+             * 反过来就是：**打了勾 = 叫才应**，这一句没点她的名，就不该硬拉她上来说话。
+             */
+            .filter((id) => {
+              let q = [];
+              try { q = quietAgentIds(); } catch { return true; }
+              if (!q.includes(String(id))) return true;
+              try {
+                const a = getAgent(id);
+                const nm = String((a && a.name) || '').trim();
+                if (!nm) return false;
+                return String(message || '').includes(nm);
+              } catch { return false; }
+            })
+            /**
+             * 【小鲸刚才要是已经答过，就别再喊她一遍】—— 2026-11-01 严检补
+             *
+             * whaleMaybeReply 在主流程前面就调过了；她要是开了口，
+             * 群聊段靠 whaleSpokeThisTurn 拦住她。我这一段在更后面，
+             * 不做同样的判断，她就会**说两遍**。
+             */
+            .filter((id) => {
+              if (String(id) !== String(AGENT_XIAOJING)) return true;
+              try { return !whaleSpokeThisTurn(sessionId); } catch { return true; }
             });
           if (_cands.length) {
             const { speakAsCard } = await import('./group.mjs');
-            const _heard = String(message || '');
             for (const _id of _cands) {
               if (ac.signal && ac.signal.aborted) break;
               const _agent = getAgent(_id);
@@ -7834,13 +7868,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
                 const _said = String((_out && _out.text) || '').trim();
                 if (!_said) continue;
                 groupSpokeThisTurn.add(String(_id));
-                session.messages.push({
+                /**
+                 * 【落盘标记要跟群聊段一致】—— 2026-11-01 严检补
+                 *
+                 * 群聊段写的是 _card（自建卡的身份证）+ _who（署名）；
+                 * 只有小鲸才写 _whale。上一版不分青红皂白全塞 _whale，
+                 * 会让前端和后续判断把她当成小鲸。
+                 */
+                const _isWhale = String(_id) === String(AGENT_XIAOJING);
+                const _msg = {
                   role: 'user',
                   content: '[' + _agent.name + '] ' + _said,
                   at: Date.now(),
-                  _whale: _agent.name,
                   _who: _agent.name,
-                });
+                };
+                if (_isWhale) _msg._whale = _agent.name;
+                else _msg._card = String(_id);
+                session.messages.push(_msg);
                 try { saveSession(session); } catch {}
                 try { send({ type: 'agent', agentId: _id, who: _agent.name, text: _said }); } catch {}
               } catch (_e) {

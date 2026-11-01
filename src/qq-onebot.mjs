@@ -444,7 +444,58 @@ export function scheduleReconnect(onEvent) {
   try { rt.retryTimer.unref?.(); } catch {}
   return true;
 }
+// ─────────────────── 发消息之间至少隔 0.5 秒（2026-11-01）───────────────────
+/**
+ * 主人原话：「还有QQ小鱼发消息是瞬间发出好几条消息，要求每句消息至少间隔0.5秒」
+ *
+ * 为什么管在这一层（`call`），而不是在 qq-bridge 那个分条循环里：
+ *   一次回答可能从**好几个地方**往外发 —— 分条循环发正文、兜底那句「我没说出话」、
+ *   出错那句「出错了：…」、她调 qq_send 工具发图/表情/戳一戳。
+ *   四处各管各的，就一定有一处漏掉：上一处刚发完，下一处立刻跟上，看着还是「一秒钟刷出三条」。
+ *   `call()` 是**所有要发出去的动作的唯一出口**（发消息、发图、发文件、戳一戳都从这儿走），
+ *   只在出口卡一次，就没有漏网的。
+ *
+ * 只拦「往外发」的动作：`get_login_info`、`get_friend_msg_history` 这类查询不拦 ——
+ * 它们又不会在对方手机上弹东西，拦了只是白白慢半秒。
+ */
+const SEND_ACTIONS = new Set([
+  'send_msg',
+  'send_group_msg',
+  'send_private_msg',
+  'send_group_forward_msg',
+  'send_private_forward_msg',
+  'upload_group_file',
+  'upload_private_file',
+  'group_poke',
+  'friend_poke',
+]);
+
+/** 相邻两条之间至少这么久（主人要求 0.5 秒；多一点抖动，看着像人在打字） */
+const MIN_SEND_GAP_MS = 500;
+const SEND_GAP_JITTER_MS = 350;
+
+let lastSendAt = 0;
+/** 排队用：并发的两条同时到，不能都读到同一个 lastSendAt */
+let sendQueue = Promise.resolve();
+
+/**
+ * 排队 + 间隔。返回的 Promise 完成时「可以发了」。
+ *
+ * 为什么要排队：`Promise.all` 里两条一起发的话，两条都读到同一个 `lastSendAt`、
+ * 都算出「还差 0 秒」，于是同时出去 —— 间隔就没了。
+ */
+function paceSend() {
+  sendQueue = sendQueue.then(async () => {
+    const gap = MIN_SEND_GAP_MS + Math.floor(Math.random() * SEND_GAP_JITTER_MS);
+    const wait = lastSendAt + gap - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastSendAt = Date.now();
+  });
+  return sendQueue;
+}
 export async function call(action, params = {}, timeoutMs = 20_000) {
+  // 往外发的东西先排队、先等够 0.5 秒；查询类不拦
+  if (SEND_ACTIONS.has(String(action))) await paceSend();
   const client = rt.client;
   if (!client) throw new Error('OneBot 没连上（先去 QQ 连接里把「自己注册的号」启动起来）');
   const echo = `xy-${Date.now()}-${rt.seq++}`;

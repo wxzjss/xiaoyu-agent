@@ -5097,7 +5097,14 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
         if (bubble) { try { touchStreaming(bubble); } catch {} }
         continue;
       }
-      if (assistantBubbleHas(_piece)) { continue; }
+      /* 【2026-11-02 主人报「刷新后话中途分段、还消失一部分」】
+       * 真凶：这里原来直接 continue —— 可 _pos 早在上面推到 _to 了。
+       * 于是「这段屏幕上已经有了」被跳过，下一段却从更后面切，中间那截就永远丢了。
+       * 已有就已有，但游标不往回退：把 _claimLen 顶到 _skipTo，后面按整条续，不再切片丢内容。 */
+      if (assistantBubbleHas(_piece)) {
+        if (_skipTo > _claimLen) _claimLen = _skipTo;
+        continue;
+      }
       if (!bubble) bubble = addAssistantAuto();
       pushStreamText(bubble, _piece);
       touchStreaming(bubble);
@@ -5484,7 +5491,9 @@ function followLive(id, fromIndex) {
           const _seen = _raw.trim();
           if (_seen) {
             let _streamText = "";
-            for (const _e of evs) { if (_e && _e.type === "text") _streamText += String(_e.text || ""); }
+            /* 提醒不算正文（跟 paintLiveEvents 里 _allText 同一个口径）—— 排掉它们，
+             * 否则认领用的「开头下标」会被提示语顶偏，判不中就另起气泡。 */
+            for (const _e of evs) { if (_e && _e.type === "text" && !_e.notice) _streamText += String(_e.text || ""); }
             const _at = _streamText.indexOf(_seen);
             if (_at >= 0 && _at < 8) {
               cand = _lastB;
@@ -7229,7 +7238,7 @@ function mateColorOf(name) {
   return hit || '#e6e6e6';
 }
 
-function addWhaleBubble(who, text) {
+function addWhaleBubble(who, text, target) {
   if (whaleAlreadyDrawn(who, text)) return null;
   /*
    * 【谁的样式，看谁的名字】—— 2026-10-29 修
@@ -7251,7 +7260,8 @@ function addWhaleBubble(who, text) {
   const _mateName = String(who || '小鲸');
   // 【独立个体·2026-11-01】不是小鲸的人（自建卡）走 msg mate：
   // 不再借 .msg.assistant 那套（那套名字是鱼的红），改用它自己卡上的颜色。
-  const wrap = addEl('', isWhale ? 'msg whale' : 'msg mate');
+  /* target 是「画进哪儿」：renderTurns 重画历史时传离屏 frag，别画到马上要被换掉的旧屏上 */
+  const wrap = addEl('', isWhale ? 'msg whale' : 'msg mate', target || null);
   if (!isWhale) {
     wrap.dataset.whoName = _mateName;
     try { wrap.style.setProperty('--whoC', mateColorOf(_mateName)); } catch {}
@@ -7559,8 +7569,16 @@ function addSysNote(text) {
   const d = document.createElement('div');
   d.className = 'sysnote';
   d.textContent = text;
-  log.appendChild(d);
-  noteNewContent();
+  /**
+   * 【2026-11-02 自查抓到的漏】renderTurns 是「离屏 frag 画完、最后一次 replaceChildren」。
+   * 重画过程中（followLive 收到 notice、replayInFlight 补 notice）如果 appendChild 到旧屏，
+   * 紧跟着那次 replaceChildren 就把它冲掉了 —— 提示凭空消失，而且很难复现。
+   * 所以重画期间必须挂到 frag 上；拿不到 frag 才退回 log。
+   */
+  let host = log;
+  try { if (window.__renderFrag) host = window.__renderFrag; } catch {}
+  host.appendChild(d);
+  if (host === log) noteNewContent();
   return d;
 }
 
@@ -8398,9 +8416,10 @@ function replayInFlight(id) {
         const _seen = (typeof _lastB._rawText === "string" && _lastB._rawText)
           ? _lastB._rawText : String(_lastB.textContent || "");
         let _partsText = "";
+        /* 提醒不算正文：认领要比的是「她说的那串字」，掺进提示语就会对不上（见下条同样的问题） */
         for (const _p of rec.parts) {
           const _k = _p && (_p.kind || _p.type);
-          if (_k === "text") _partsText += String(_p.text || "");
+          if (_k === "text" && !(_p && _p.notice)) _partsText += String(_p.text || "");
         }
         if (_seen && _partsText && _partsText.indexOf(_seen) === 0) {
           rec.bubble = _lastB;
@@ -8426,6 +8445,11 @@ function replayInFlight(id) {
       if (!rec.think) rec.think = openThink();
       rec.think.push(p.text);
     } else if (kind === 'text') {
+      /* 提醒（连接断了 / 工具还在跑）不进正文，单独一行 —— 否则切回来又是一句劈成两半 */
+      if (p && p.notice) {
+        try { addSysNote(String(p.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {}
+        continue;
+      }
       if (rec.think) { rec.think.finish(); rec.think = null; }
       if (!rec.bubble) rec.bubble = addAssistantAuto();
       /* 补画去重·2026-10-31 只追加「气泡里还没有的那一截」，别再整段塞第二遍。 */
@@ -15017,6 +15041,8 @@ function renderTurns(turns, opts) {
     if (log) log.classList.toggle("long-list", _all.length > 150);
   } catch {}
   const frag = document.createDocumentFragment();
+  /* 重画期间别人（notice 提示）要往里塞东西 —— 塞到旧屏上会被下面的 replaceChildren 冲掉 */
+  try { window.__renderFrag = frag; } catch {}
 
   for (let ti = 0; ti < list.length; ti++) {
     const turn = list[ti];
@@ -15041,7 +15067,7 @@ function renderTurns(turns, opts) {
        * 一条 user 消息只要带了别人名字（turn.who），就按那个人的样式画，不套主人的气泡。
        */
       const w = (turn.who && String(turn.who) !== '主人')
-        ? (addWhaleBubble(turn.who, turn.text) || addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || ''))
+        ? (addWhaleBubble(turn.who, turn.text, frag) || addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || ''))
         : addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
       /* 【2026-11-01 主人：插的话要插在「我说到哪儿」的位置】
        * 服务端把「他插话那一刻我已经说出多少字」（turn.steerAt）带下来了。
@@ -15089,6 +15115,11 @@ function renderTurns(turns, opts) {
         text: String(turn.text || ''),
       });
       turnReplyChars = 0;
+      /* 【2026-11-02】这一句必须在这儿。原来只在 assistant 分支末尾记 prevRole，
+       * user 那一条进来时它不执行，prevRole 就一直停在 'assistant' ——
+       * 紧接着的 assistant 被判成「同一串接着说」，并进上一个气泡，
+       * 屏幕上就成了「回复跑到主人下一句之前、且几段回复挤成一个气泡」。 */
+      prevRole = turn.role;
     } else {
       const hasText = String(turn.text || '').trim().length > 0;
       // 这一串回复写了多少字：接口没报 usage 时拿来估
@@ -15299,6 +15330,7 @@ function renderTurns(turns, opts) {
   // 【2026-10-31 末尾 flush】：最后那一串还没遇到 user，工具得在收尾前画出来
   flushHub();
   log.replaceChildren(frag);
+  try { window.__renderFrag = null; } catch {}
   /**
    * 【2026-11-01 往上滚再补前面的】窗口化之后，顶上是空的。
    * 滚到接近顶部就再往前放一批（一次 BACKFILL 轮），补完把滚动位置还原，

@@ -692,22 +692,6 @@
 
     /* ---- 我发出去的文件：卡片（图片看、视频播、别的下载）---- */
     .fileList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-    /* 【2026-10-30】聊天封面：铺在消息区底下，淡淡的，不挡字。
-       用 ::before 垫一层，z-index 压到底，正文照常在上面。 */
-    .hasCover { position: relative; }
-    .hasCover::before {
-      content: "";
-      position: absolute; inset: 0;
-      background-image: var(--cover-img);
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-      opacity: 0.18;
-      pointer-events: none;
-      z-index: 0;
-      border-radius: inherit;
-    }
-    .hasCover > * { position: relative; z-index: 1; }
     /* 【2026-10-30】send_file 当场推出来的卡片盒子，跟正式 fileList 长得一样 */
     .sentLive { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .fileCard {
@@ -2685,29 +2669,10 @@
           </div>
         </fieldset>
 
-        <fieldset>
-          <legend>外观</legend>
-          <!-- 【2026-10-30】主人夸我画的那只可爱，问能不能当图标和聊天封面。
-               图标只换窗口角上那个（Electron 启动时读，要重启才生效）；
-               桌面快捷方式那个在安装包里烤死了，这里改不到，别写成能改。 -->
-          <div class="field">
-            <label>软件图标</label>
-            <div class="mdlRow" style="display:flex;gap:12px;flex-wrap:wrap">
-              <label class="mdlKind"><input type="radio" name="iconStyle" value="classic" id="iconClassic" /><span>出厂那只</span></label>
-              <label class="mdlKind"><input type="radio" name="iconStyle" value="drawn" id="iconDrawn" /><span>我画的那只</span></label>
-            </div>
-            <span class="hint" id="iconHint">换的是窗口左上角那个小图标，<b>下次启动才看得出</b>。桌面快捷方式上的图标在安装包里，这里改不到。</span>
-          </div>
-          <div class="field">
-            <label>聊天界面封面</label>
-            <div class="mdlRow" style="display:flex;gap:12px;flex-wrap:wrap">
-              <label class="mdlKind"><input type="radio" name="chatCover" value="none" id="coverNone" /><span>不要</span></label>
-              <label class="mdlKind"><input type="radio" name="chatCover" value="whale" id="coverWhale" /><span>我画的那只</span></label>
-            </div>
-            <span class="hint" id="coverHint">铺在消息区底下，淡淡的，不挡字。选完立刻能看到。</span>
-          </div>
-        </fieldset>
-
+        <!-- 【2026-11-01 主人】「把设置里的【外观】分区删了，因为切换没用」
+             查清了确实没用：settings.mjs 的 normalize() 不认 iconStyle / chatCover，
+             存盘时被丢掉，点完保存下次打开还是默认 —— 所以点了也白点。整段删掉，不修。
+             素材（assets/xiaoyu-whale*.ico / cover.png）留着，以后想用还在。 -->
         <fieldset>
           <legend>安全词</legend>
           <div class="field">
@@ -3538,6 +3503,50 @@
   </div>
 
   <script>
+/**
+ * 【2026-11-01 加】脚本出错的兜底提示。
+ *
+ * 为什么要有：这个页面所有交互都挂在同一段 script 里，任何一行在**加载时**抛错，
+ * 后面整段都不再执行 —— 屏幕上就是「全黑 + 按钮全点不动」，一点线索都没有。
+ * （当天就是这么翻车的：一行 elWords.addEventListener 拿到 null，整个界面死掉。）
+ *
+ * 这块故意写得不受任何依赖：内联、只用 document/window 的原生方法，
+ * 就算后面全崩，它也能把「第几行、什么错」摆在屏幕上。
+ */
+(function installErrorBanner() {
+  var shown = false;
+  function paint(msg, line) {
+    if (shown) return;
+    shown = true;
+    try {
+      var box = document.createElement('div');
+      box.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;padding:10px 14px;' +
+        'background:#5b1a1a;color:#ffe9e9;font:13px/1.5 ui-monospace,Consolas,monospace;' +
+        'border-bottom:2px solid #a33;white-space:pre-wrap;max-height:40vh;overflow:auto';
+      box.textContent = '界面脚本出错了（这一行之后的东西都不会生效）：\n' + msg +
+        (line ? '\n位置：第 ' + line + ' 行附近' : '') +
+        '\n\n先把这一整段红字发给小鱼，她照着这行就能修。';
+      (document.body || document.documentElement).appendChild(box);
+    } catch (e) { /* 连提示都画不出来就算了，别二次抛错 */ }
+  }
+  window.addEventListener('error', function (ev) {
+    try {
+      var t = ev && ev.target;
+      if (t && t !== window && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+        paint('资源没加载上：' + (t.src || t.href || t.tagName));
+        return;
+      }
+      paint(String((ev && ev.message) || '未知错误'), ev && ev.lineno);
+    } catch (e) { /* 忽略 */ }
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    try {
+      var r = ev && ev.reason;
+      paint('异步任务出错：' + String((r && (r.message || r)) || '未知'));
+    } catch (e) { /* 忽略 */ }
+  });
+})();
+
 const log = document.getElementById('log');
 
 /**
@@ -10891,15 +10900,7 @@ document.getElementById('personaRename').onclick = async () => {
 
 
 function fillSettings(s) {
-  /* 【2026-10-30】外观回填：图标和封面 */
-  try {
-    const ic = (s && s.iconStyle) || 'classic';
-    const elIc = document.getElementById(ic === 'drawn' ? 'iconDrawn' : 'iconClassic');
-    if (elIc) elIc.checked = true;
-    const cv = (s && s.chatCover) || 'none';
-    const elCv = document.getElementById(cv === 'whale' ? 'coverWhale' : 'coverNone');
-    if (elCv) elCv.checked = true;
-  } catch {}
+  /* 外观（图标 / 聊天封面）那一栏 2026-11-01 被主人整段删了，这里没有要回填的东西 */
   // 币种：跟着服务端存的走，缺省是元
   moneyCurrency = s.currency === 'usd' ? 'usd' : 'cny';
   if (curCny) curCny.checked = moneyCurrency === 'cny';
@@ -10941,37 +10942,7 @@ for (const [el, want] of [[curCny, 'cny'], [curUsd, 'usd']]) {
   };
 }
 
-/**
- * 把聊天封面换上（或撤掉）。
- *
- * 【2026-10-30】主人夸我画的那只可爱，想拿来当封面。铺在消息区底下，
- * 淡淡的、不抢字，用 mask 压住透明度，主题是黑的白的都好看。
- */
-function applyChatCover(which) {
-  try {
-    const host = document.getElementById('log') || document.querySelector('.log') || document.querySelector('main');
-    if (!host) return;
-    const url = (which === 'whale') ? '/assets/xiaoyu-whale-cover.png' : '';
-    if (!url) {
-      host.classList.remove('hasCover');
-      host.style.removeProperty('--cover-img');
-      return;
-    }
-    host.classList.add('hasCover');
-    host.style.setProperty('--cover-img', 'url("' + url + '")');
-  } catch (e) {
-    console.warn('[cover] 换封面失败：', e && e.message);
-  }
-}
-
-// 【封面】开机自动套用（存过的话，一打开就是那张）
-(async () => {
-  try {
-    const r = await fetch('/api/settings').then((x) => x.json());
-    if (r && r.settings) applyChatCover(r.settings.chatCover);
-  } catch {}
-})();
-
+// 聊天封面（applyChatCover）2026-11-01 随「外观」分区一起删了
 document.getElementById('openSettings').onclick = async () => {
   saveHint.textContent = '';
   bottomLinesHint.textContent = '';
@@ -11133,9 +11104,6 @@ document.getElementById('saveSettings').onclick = async () => {
     contextLimit: elCtxLimit ? elCtxLimit.value.trim() : '0',
     // 记账用什么钱：'cny' / 'usd'。只影响显示，价目表不动。
     currency: (curUsd && curUsd.checked) ? 'usd' : 'cny',
-    /* 【2026-10-30】外观：图标用哪套、聊天封面用哪张 */
-    iconStyle: (document.getElementById('iconDrawn') && document.getElementById('iconDrawn').checked) ? 'drawn' : 'classic',
-    chatCover: (document.getElementById('coverWhale') && document.getElementById('coverWhale').checked) ? 'whale' : 'none',
   };
   const r = await fetch('/api/settings', {
     method: 'POST',
@@ -11144,8 +11112,6 @@ document.getElementById('saveSettings').onclick = async () => {
   }).then(r => r.json()).catch(() => null);
   if (!r) { saveHint.textContent = '保存失败'; return; }
   fillSettings(r.settings);
-  /* 封面立刻换，不用等下次刷新 */
-  try { applyChatCover(r.settings && r.settings.chatCover); } catch {}
   // 币种可能刚改过：把这一屏的钱数当场按新币种重画，别等下一轮对话
   try { paintUsageBox(); } catch {}
   try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {}

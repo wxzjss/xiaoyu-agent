@@ -439,27 +439,20 @@ function clearWindowBorderColor(bw) {
 /**
  * 挑窗口/托盘图标。
  *
- * 【2026-10-30 主人要】小鱼自己画的那只鲸鱼娘，也应该能当图标 —— 设置里能切。
- * 设置存在 data/.state/settings.json（跟主程序同一个设置文件），
- * 这里不 import 主程序的模块（那是 ESM，这是 CJS），自己读一遍就够，
- * 读不到就退回原来那张，绝不因为图标把程序搞得起不来。
+ * 【2026-11-01 主人】「把设置里的【外观】分区删了，因为切换没用」
+ *
+ * 原来这里会去 data/.state/settings.json 读一个 iconStyle 决定用不用我画的那只，
+ * 但 settings.mjs 的 normalize() 从来就不认这个键（存盘时被丢掉），所以永远读到 classic ——
+ * 也就是说这段「能切」的代码从来没起过作用。设置里那一栏已经删了，这里一并简化：
+ * 固定用出厂那只（assets/xiaoyu.ico）；读不到就返回空串，让 Electron 自己兜。
+ *
+ * 三个调用点（主窗口 / 托盘 / 内置浏览器窗口）都还在用它，函数留着。
  */
 function pickAppIcon() {
   try {
     const fs2 = require('node:fs');
     const p2 = require('node:path');
-    const dataDir = process.env.MINI_AGENT_DATA || (function () {
-      const base = process.env.APPDATA || p2.join(process.env.USERPROFILE || '', 'AppData', 'Roaming');
-      return p2.join(base, '小鱼Agent', 'data');
-    })();
-    const sp = p2.join(dataDir, '.state', 'settings.json');
-    let style = 'classic';
-    if (fs2.existsSync(sp)) {
-      const j = JSON.parse(fs2.readFileSync(sp, 'utf8'));
-      style = String(j.iconStyle || 'classic');
-    }
-    const name = (style === 'drawn') ? 'xiaoyu-whale.ico' : 'xiaoyu.ico';
-    const full = p2.join(__dirname, '..', 'assets', name);
+    const full = p2.join(__dirname, '..', 'assets', 'xiaoyu.ico');
     if (fs2.existsSync(full)) return full;
     return p2.join(__dirname, '..', 'assets', 'xiaoyu.ico');
   } catch {

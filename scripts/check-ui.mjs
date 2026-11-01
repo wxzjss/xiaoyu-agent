@@ -136,6 +136,35 @@ function checkFile(label, path) {
     }
   }
 
+  // ---------- 1.5 HTML 注释必须成对 ----------
+  // 注释漏一个 `-->`，后面的 HTML 就整段被吞掉，而页面上的现象是「全黑、什么都点不动」——
+  // 排查时很难想到是注释。所以这一关放在结构配对前面，先把它拦下来。
+  console.log('  ── HTML 注释配对');
+  {
+    const opens = (html.match(/<!--/g) || []).length;
+    const closes = (html.match(/-->/g) || []).length;
+    if (opens !== closes) {
+      console.log('    ✘ <!-- ' + opens + ' 个，--> ' + closes + ' 个 —— 有注释没闭合');
+      // 指出第一个没闭合的大概位置：从头扫，遇到 <!-- 就找它后面的 -->
+      let i = 0;
+      let j = 0;
+      const op = [...html.matchAll(/<!--/g)].map((m) => m.index);
+      const cl = [...html.matchAll(/-->/g)].map((m) => m.index);
+      for (; i < op.length; i += 1) {
+        while (j < cl.length && cl[j] < op[i]) j += 1;
+        if (j >= cl.length) break;
+        j += 1;
+      }
+      if (op[i] !== undefined) {
+        const ln = html.slice(0, op[i]).split('\n').length;
+        console.log('       第一个可疑的注释在第 ' + ln + ' 行：' + JSON.stringify(html.slice(op[i], op[i] + 80)));
+      }
+      fatal++;
+    } else {
+      console.log('    ✔ 注释 ' + opens + ' 对');
+    }
+  }
+
   // ---------- 2. HTML 结构配对 ----------
   console.log('  ── 结构配对');
   const VOID = new Set(['br', 'hr', 'img', 'input', 'meta', 'link', 'area', 'base', 'col', 'embed', 'source', 'track', 'wbr']);
@@ -163,7 +192,9 @@ function checkFile(label, path) {
 
   // ---------- 3. 重复 id ----------
   const idCount = new Map();
-  for (const m of html.matchAll(/\bid\s*=\s*["']([^"']+)["']/g)) {
+  // 【2026-11-01】先挖掉注释：注释里写的 id="..." 不算存在（那次黑屏就是栽在这）
+  const htmlNoComments = stripHtmlComments(html);
+  for (const m of htmlNoComments.matchAll(/\bid\s*=\s*["']([^"']+)["']/g)) {
     idCount.set(m[1], (idCount.get(m[1]) || 0) + 1);
   }
   const dups = [...idCount].filter(([, c]) => c > 1);
@@ -295,6 +326,19 @@ function checkFile(label, path) {
  * 注释里写了「独立 <dialog> 在 <body> 下」，结果 body 被数成「开 2 闭 1」，
  * 误报成致命问题）。现在 script 和 style 一起挖掉。
  */
+/**
+ * 把 HTML 注释整段换成空格（保留换行，行号才对得上）。
+ *
+ * 【2026-11-01】加这个是因为踩了一次：我把设置里一段选项删掉时注释忘了写 `-->`，
+ * 后面整段 HTML 都被吞进注释里；而下面数 id 的时候仍然能在注释文本里搜到 `id="..."`，
+ * 于是「JS 引用 vs HTML 存在」那一关认为一切正常 —— 真跑起来才发现 getElementById 是 null，
+ * 一行 addEventListener 把整个脚本带走，屏幕全黑。
+ * 所以：**注释里的东西一律不算存在**。
+ */
+function stripHtmlComments(html) {
+  return String(html).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
+}
+
 function countRealTags(html, tag, kind) {
   // 先把 <script> / <style> 整段挖掉（里面 JS、CSS 注释里常有标签），再挖 HTML 注释。
   // 顺序很关键：先挖 script 再挖 /* */，反过来会把 JS 的正则和字符串破坏掉。

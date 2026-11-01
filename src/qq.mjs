@@ -442,6 +442,15 @@ export function setQqBind({ sessionId, mode } = {}) {
     throw err;
   }
   if (mode === 'shared' || mode === 'per-user') data.bind.mode = mode;
+  /**
+   * 【2026-11-01 主人】「设置每人一个会话，想保存却要求挂到一个会话，
+   *  但挂到一个会话那还是每人一个会话吗」
+   *
+   * 对。per-user 的意思是「每个人各一个会话」，根本不该挂到某一个会话上；
+   * 挂着的那一格只对 shared（都进同一个）有意义。所以这里顺手清掉，
+   * 免得 bind 里留着一个「上次挑的会话」，以后看配置的人以为它还有用。
+   */
+  if (data.bind.mode === 'per-user') data.bind.sessionId = '';
   return writeQq(data).bind;
 }
 

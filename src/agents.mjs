@@ -228,6 +228,11 @@ export function listAgents() {
       modelId: activeModelId(),
       modelFollows: true,
       edited: !!pinfo.custom,
+      /* 【2026-11-01 主人报：小鲸性子里那个勾明明是空的，她却每轮不说话】
+         内置卡以前压根不带 quiet 字段，前端拿到 undefined 就当「没打勾」，
+         可后端 isAgentQuiet() 里小鲸默认就是「叫才应」—— 显示和行为对不上。
+         这里补上真实值，让勾和实际行为一致。 */
+      quiet: Boolean(isAgentQuiet(AGENT_XIAOYU)),
     },
     {
       id: AGENT_XIAOJING,
@@ -240,6 +245,7 @@ export function listAgents() {
       modelId: whaleModelId(),
       modelFollows: !whaleModelId(),
       edited: !!whale.custom || !!whaleModelId(),
+      quiet: Boolean(isAgentQuiet(AGENT_XIAOJING)),
     },
   ];
 
@@ -902,7 +908,19 @@ export function groupAgentMap() {
  * 传空数组就是「只剩小鱼一个人」。超上限不报错，砍掉多的 —— 这是一份名单，
  * 不是一份合同，报错只会让界面多一个弹窗。
  */
-export function setSessionGroup(sessionId, ids) {
+/**
+ * 改这个会话的在场名单。
+ *
+ * 传空数组就是「只剩小鱼一个人」。超上限不报错，砍掉多的 —— 这是一份名单，
+ * 不是一份合同，报错只会让界面多一个弹窗。
+ *
+ * 【2026-11-01 加 keepWhale】主人要求「新建会话时默认都不选」。
+ * 以前这儿有一条硬规矩：小鲸本来在名单里，怎么改都得把她留着；
+ * 那条规矩让「新建时一张都不勾」根本做不到（新会话默认名单里就有她）。
+ * keepWhale:false 只给「刚刚新建、按主人勾的来」那一条路用；
+ * 界面上改名单还是照旧保她（见下），别把老行为改了。
+ */
+export function setSessionGroup(sessionId, ids, { keepWhale = true } = {}) {
   const sid = String(sessionId || '');
   if (!sid) {
     const e = new Error('得先有会话');
@@ -911,6 +929,8 @@ export function setSessionGroup(sessionId, ids) {
   }
   const data = readAll();
   const beforeHasXj = cleanGroup(data, data.groupBySession[sid]).includes(AGENT_XIAOJING);
+  // keepWhale:false 时先把这个会话标成「存过名单」，这样 cleanGroup 不会给她补默认
+  if (!keepWhale && !Array.isArray(data.groupBySession[sid])) data.groupBySession[sid] = [];
   const kept = cleanGroup(data, ids);
   /* 2026-10-31【名单里永远有小鲸】
    *
@@ -920,7 +940,7 @@ export function setSessionGroup(sessionId, ids) {
    * 现在改成：只要小鲸本来就在（默认就在），改名单时就把她原样留着，谁也别想把她挤掉。
    * 想让她别抢话，用「安静」（叫她才应）那个开关，不是把人赶出屋子。
    */
-  if (beforeHasXj && !kept.includes(AGENT_XIAOJING) && kept.length < MAX_GROUP) kept.push(AGENT_XIAOJING);
+  if (keepWhale && beforeHasXj && !kept.includes(AGENT_XIAOJING) && kept.length < MAX_GROUP) kept.push(AGENT_XIAOJING);
   if (kept.length) data.groupBySession[sid] = kept;
   else delete data.groupBySession[sid];
   if (!writeAll(data)) return null;
@@ -940,9 +960,11 @@ export function isAgentQuiet(id) {
   const data = readAll();
   const v = data.quiet[key];
   if (typeof v === 'boolean') return v;
-  // 小鲸默认「叫她才应」：她在屋里，但不抢话。
-  // 主人想让她每轮都接，在智能体面板里把那个勾去掉就行。
-  return key === AGENT_XIAOJING;
+  /* 【2026-11-01 主人原话：小鲸性子里没打勾，那么如果开启的话她应该每一轮都说话】
+     以前这里给小鲸留了个隐式默认（没设过也算安静），结果面板上勾是空的、
+     她却每轮不开口 —— 显示和行为对不上，主人一眼就看出来了。
+     现在一切以那个勾为准：勾没打就是每轮都说话，想让她安静就自己打钩。 */
+  return false;
 }
 
 /** 所有安静的卡（群聊挑发言人时用） */

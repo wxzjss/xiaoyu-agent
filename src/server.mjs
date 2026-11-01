@@ -583,7 +583,7 @@ function publicSession(session) {
        * 这只是给界面用的标记，模型一个字都不该看见（见 server.mjs 里打标记那段注释）。
        * 老消息里可能有 `_whale`，这里一并认下来，不用改旧会话文件。
        */
-      whale: m._tale?.who ? String(m._tale.who) : (m._whale ? String(m._whale) : undefined),
+      whale: m._tale?.who ? String(m._tale.who) : (m._whale ? String(m._whale) : (m._card ? String(m._who || m._card) : undefined)),
       /**
        * 【这句是小鲸并排插进来的，不是这一轮的收尾回答】—— 2026-10-26 补
        *
@@ -2135,10 +2135,34 @@ async function startOpening(sessionId) {
   const session = getSession(sessionId);
   if (!session || hasOpening(session)) return;
   // 文本来自这张卡；空着就真的不开场（小鲸就是这样）
-  const { userMsg, assistantText } = seedOpeningMessages(cardIdOf(sessionId));
+  const __card = cardIdOf(sessionId);
+  const { userMsg, assistantText } = seedOpeningMessages(__card);
   if (!String(assistantText || '').trim()) return;
   const at = session.messages.findIndex((m) => m && m.role !== 'system' && !m.context);
-  const pair = [userMsg, { role: 'assistant', content: assistantText }];
+  /**
+   * 【开场白得认得出是谁说的】—— 2026-11-01 主人报
+   *
+   * 主人原话：「屏幕上出现了小白曦的开场白，但名字以及颜色消息样式都是小鱼的，
+   *           实际上是小鱼在说话」。
+   *
+   * 原来这一条只写 role/content，不带任何记号。前端重绘历史时认不出说话人，
+   * 一律当小鱼 —— 于是小白曦的开场白顶着鱼的名字和鱼的颜色出来了。
+   *
+   * 小鱼自己不用标（她就是默认身份）；别人的卡才标 _card/_who，
+   * 跟群聊段里她们说的话一个口径。
+   */
+  const __say = { role: 'assistant', content: assistantText };
+  if (__card && __card !== AGENT_XIAOYU) {
+    try {
+      const __a = getAgent(__card);
+      if (__a && __a.name) {
+        __say._who = String(__a.name);
+        if (__card === AGENT_XIAOJING) __say._whale = String(__a.name);
+        else __say._card = String(__card);
+      }
+    } catch {}
+  }
+  const pair = [userMsg, __say];
   if (at < 0) session.messages.push(...pair);
   else session.messages.splice(at, 0, ...pair);
   markOpened(session.id);
@@ -4044,6 +4068,28 @@ const server = createServer(async (req, res) => {
       const session = makeSession({ title }, { opening: false });
       // 小鱼就是「没绑卡」，不用写绑定；别的卡才要记一笔
       if (agentId !== AGENT_XIAOYU) setSessionAgent(session.id, agentId);
+      /**
+       * 【用她开的会话，她得在屋里坐着】—— 2026-11-01 主人报
+       *
+       * 主人原话：「自动新建会话后，为什么左侧【屋里的人】没有小白曦？」
+       *
+       * 真因：新会话的「屋里的人」名单从没设置过，cleanGroup 只保底补上
+       * 小鱼和小鲸两个人，绑定的那张卡不会自己进去。
+       * 结果就是：她替这个会话说着话（开场白也是她的），
+       * 可左栏名单里根本没她，主人想给她开关、调顺序都无从下手。
+       *
+       * 所以绑卡的同时把她排进名单。放最后一位：小鱼、小鲸依旧是默认的前两位，
+       * 她是这一摊的「另一个人」，不抢默认位置。
+       */
+      try {
+        const __list = groupAgentIds(session.id).map((x) => String(x));
+        if (!__list.includes(String(agentId))) {
+          __list.push(String(agentId));
+          setSessionGroup(session.id, __list);
+        }
+      } catch (e) {
+        console.warn('[agents] 把她排进屋里没成：', String(e?.message ?? e));
+      }
       startOpening(session.id).catch((err) => console.warn('[opening] 后台开场没跑成：', String(err?.message ?? err)));
       return json(res, 200, {
         ok: true,
@@ -5604,11 +5650,27 @@ const server = createServer(async (req, res) => {
      * 其余的由主人勾。名单存好之后，左上角那竖列按钮和群聊都照它来。
      * 名单有问题也不许把会话弄没了：会话已经建好，名单顶多退回默认。
      */
+    /**
+     * 【2026-11-01 主人】「新建会话的时候，默认都不选，而不是默认选了小鱼又选了小鲸」
+     *
+     * 所以这里的 agentIds 是「主人真勾了谁」的完整清单，**包括小鱼和小鲸**：
+     *   · 勾了小鱼 → 她在这个会话里说话；没勾 → 这屋子她不出声（fishOn=false）
+     *   · 勾了小鲸 → 她在名单里；没勾 → 名单里就是不写她（keepWhale:false）
+     * 一张都没勾 = 屋里没人说话，主人自己再往屋里叫人就是。
+     */
     let group = [];
     try {
-      group = Array.isArray(payload?.agentIds)
-        ? (setSessionGroup(session.id, payload.agentIds)?.agentIds || [])
-        : groupAgentIds(session.id);
+      const picked = Array.isArray(payload?.agentIds) ? payload.agentIds.map((x) => String(x || '')) : null;
+      if (picked) {
+        const wantFish = picked.includes('xiaoyu');
+        const wantWhale = picked.includes('xiaojing');
+        try { setFishOn(session.id, wantFish); } catch {}
+        try { setWhaleOn(session.id, wantWhale); } catch {}
+        const roster = picked.filter((x) => x && x !== 'xiaoyu');
+        group = (setSessionGroup(session.id, roster, { keepWhale: false })?.agentIds || []);
+      } else {
+        group = groupAgentIds(session.id);
+      }
     } catch (err) {
       console.warn('[session/new] 名单没设上：', String(err?.message ?? err));
       try { group = groupAgentIds(session.id); } catch { group = []; }
@@ -6654,6 +6716,15 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         live0ForMates = live0;
         const send0 = (ev) => {
           try { if (live0.events.length < LIVE_MAX_EVENTS) live0.events.push(ev); } catch {}
+          /**
+           * 【2026-11-01 主人报「关掉小鱼后小鲸不说话」】
+           *
+           * 她其实说了 —— 会话文件里有她那条，live 里也有她一个字一个字吐出来的流。
+           * 但这里只往 live 里塞，一个 res.write 都没有：这条 SSE 只发出了 done/fish_off，
+           * 前端当场当然什么都画不出来，主人以为她没吭声。
+           * 现在两句都做：live 留着（切回来补拉用），SSE 也写出去（当场就看得见）。
+           */
+          try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch {}
         };
         try {
         const sessForWhale = getSession(sessionId);
@@ -6671,7 +6742,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            *
            * 小鱼不在屋，这句本来就是冲她说的 —— 直接给 true。
            */
-          whaleMaybeReply({ session: sessForWhale, userText: said, speaksToHer: true, send: send0, sessionId, live: live0,
+          await whaleMaybeReply({ session: sessForWhale, userText: said, speaksToHer: true, send: send0, sessionId, live: live0,
             /**
              * 【小鱼关着的时候，「默认冲小鱼」这条规矩就作废了】—— 2026-10-27 修
              *

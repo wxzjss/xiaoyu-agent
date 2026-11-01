@@ -2588,7 +2588,7 @@
     <div class="dlgHead">
       <b>开一间新会话</b><span class="meta" id="nsHint"></span>
     </div>
-    <p class="nsLead">小鱼和小鲸默认就在这间屋子里，取消不了；下面还能再叫几个。<br>勾上之后可以按住上下拖，勾的先后就是左侧「屋里的人」从上往下的排法，也就是这一轮谁先说。</p>
+    <p class="nsLead">默认一张都不勾 —— 想叫谁进来就勾谁（小鱼、小鲸也在里面）。<br>勾上之后可以按住上下拖，勾的先后就是左侧「屋里的人」从上往下的排法，也就是这一轮谁先说。</p>
     <div class="nsList" id="nsList"></div>
     <div class="nsBar">
       <span class="nsNote" id="nsNote"></span>
@@ -9675,19 +9675,23 @@ async function openNewSessionDlg() {
   const r = await fetch('/api/agents').then((x) => x.json()).catch(() => null);
   const cards = (r && !r.error && Array.isArray(r.agents)) ? r.agents : [];
   if (note) note.textContent = '';
-  const lockedIds = ['xiaoyu', 'xiaojing'];
+  /**
+   * 【2026-11-01 主人】「新建会话的时候，默认都不选，而不是默认选了小鱼又选了小鲸」
+   *
+   * 以前小鱼、小鲸是「默认在场、锁死不能取消」的两行，一打开弹窗就是两个人已经勾好。
+   * 现在一张都不预勾、谁都能勾/取消 —— 想叫谁进来就自己点，顺序还是勾的先后。
+   */
   for (const a of cards) {
     const id = String(a.id || '');
-    const locked = lockedIds.includes(id);
     const row = document.createElement('label');
-    row.className = 'nsRow' + (locked ? ' locked' : '');
+    row.className = 'nsRow';
     row.dataset.id = id;
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = locked;
-    cb.disabled = locked;
+    cb.checked = false;
+    cb.disabled = false;
     cb.dataset.id = id;
-    cb.dataset.locked = locked ? '1' : '';
+    cb.dataset.locked = '';
     const nm = document.createElement('span');
     nm.className = 'nm';
     nm.textContent = String(a.name || '');
@@ -9695,12 +9699,7 @@ async function openNewSessionDlg() {
     ord.className = 'ord';
     ord.textContent = '';
     row.append(cb, nm, ord);
-    if (locked) {
-      const tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = '默认在场';
-      row.append(tag);
-    }
+
     list.append(row);
   }
   /**
@@ -10465,13 +10464,31 @@ function renderQqPanel(st) {
     }
     if (want) selEl.value = want;
   }
+  qqSyncBindUi();
+}
+
+/**
+ * 【2026-11-01】「挂到」那一栏只在「都进同一个会话」时才有意义。
+ * 选了「每人一个会话」还让人去挑一个会话，本身就自相矛盾 ——
+ * 所以那时候把下拉框和「新建会话」变灰，并把说明改成说人话的。
+ */
+function qqSyncBindUi() {
+  const modeEl = qqEl('qqBindMode');
+  const selEl = qqEl('qqBindSession');
+  const newEl = qqEl('qqBindNew');
   const bindHint = qqEl('qqBindHint');
+  const perUser = String((modeEl || {}).value || 'shared') === 'per-user';
+  if (selEl) {
+    selEl.disabled = perUser;
+    selEl.title = perUser ? '每人一个会话：不用挑，来了新人她自己开一个' : '';
+  }
+  if (newEl) newEl.disabled = perUser;
   if (bindHint) {
-    bindHint.textContent = bind.sessionId
-      ? (bind.mode === 'per-user'
-        ? '每个人说的话会各开一个会话，名字是「QQ · 谁」。'
-        : 'QQ 上说的话都进这一个会话，你在电脑上接着说也行 —— 同一段记忆。')
-      : '还没挂会话。选一个下面那栏，再点保存。';
+    bindHint.textContent = perUser
+      ? '每人一个会话：不用挑「挂到」——QQ 上谁来找她，她就给谁开一个「QQ · 谁」；群里各开一个「QQ群 · 群名」。'
+      : (String((selEl || {}).value || '')
+        ? 'QQ 上说的话都进这一个会话，你在电脑上接着说也行 —— 同一段记忆。'
+        : '还没挂会话。选一个下面那栏，再点保存。');
   }
 }
 
@@ -10712,14 +10729,24 @@ async function saveQqGate() {
   return true;
 }
 
-/** 第三格「保存」：把挂哪个会话、各聊各的写下去。 */
+/**
+ * 第三格「保存」：把挂哪个会话、各聊各的写下去。
+ *
+ * 【2026-11-01 主人】「设置每人一个会话，想保存却要求挂到一个会话，
+ *  但挂到一个会话那还是每人一个会话吗」
+ * —— 原来这函数不管哪种模式都要求挑一个会话，per-user 也被拦住了，
+ *    于是「每人一个」这个选项根本存不下去。现在只有「都进同一个」才要挑。
+ */
 async function saveQqBind() {
   const modeEl = qqEl('qqBindMode');
   const selEl = qqEl('qqBindSession');
   const sessionId = String((selEl || {}).value || '');
   const mode = String((modeEl || {}).value || 'shared');
-  if (!sessionId) { qqSetHint('先在「挂到」里选一个会话，或者点「新建一个会话」'); return false; }
-  const r = await qqApi('/api/qq/bind', { sessionId, mode });
+  if (mode === 'shared' && !sessionId) {
+    qqSetHint('「都进同一个会话」得先挑一个会话（或者点「新建一个会话」）；想各聊各的就把上面改成「每人一个会话」，那样不用挑。');
+    return false;
+  }
+  const r = await qqApi('/api/qq/bind', { sessionId: mode === 'per-user' ? '' : sessionId, mode });
   if (!r || r.error) { qqSetHint('挂不上：' + ((r && r.error) || '网络错误'), true); return false; }
   return true;
 }
@@ -10852,6 +10879,11 @@ async function saveQqBind() {
     await refreshQqPanel();
     qqSetHint('存好了');
   });
+  // 切「各聊各的」时立刻把「挂到」那一栏的可用状态换过来（2026-11-01）
+  {
+    const modeEl = qqEl('qqBindMode');
+    if (modeEl) modeEl.onchange = () => qqSyncBindUi();
+  }
   wire('qqBindNew', async () => {
     const name = await askName({
       title: '新会话叫什么', value: 'QQ 小鱼', placeholder: '随便起个名字', maxLength: 40,
@@ -14890,9 +14922,7 @@ if (rwGo) {
       return;
     }
     // 界面按服务端给的有效历史重画
-    __mark('开始重画');
   renderTurns(r.session.turns);
-  __mark('重画完');
     // 目标那句话填回输入框，改完再发就是「重新来一遍」
     const back = rwText.textContent;
     if (input && back && back !== '（这条没有文字）') {
@@ -15695,10 +15725,16 @@ const PROVIDERS = [
     hint: '整合站，一个 key 走很多家。',
   },
   {
-    key: 'lingfeng', name: '凌风', base: 'https://ai.windking.shop',
+    key: 'lingfeng', name: '凌风中转', base: 'https://ai.windking.shop',
     match: /windking/i,
     models: ['deepseek-v4.1-flash', 'deepseek-v4.1', 'deepseek-v4-pro'],
     hint: '这一家地址就填到根，别再往后加 /v1（它自己带了）。',
+  },
+  {
+    key: 'feiyu', name: '飞鱼中转', base: 'https://ai.feiyuapi.top/v1',
+    match: /feiyuapi/i,
+    models: ['deepseek-v4.1-flash'],
+    hint: '飞鱼中转站，地址自带 /v1。',
   },
   {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',

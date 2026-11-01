@@ -14,6 +14,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
+// 【2026-11-01】人设按会话：谁在哪个会话里用了哪一套，记在 persona-session.mjs
+import { sessionPersonaId, setSessionPersona } from './persona-session.mjs';
 
 const STATE_DIR = join(config.dataDir, '.state');
 /** 小鲸那份出厂人设模板放在源码 src/ 下，跟小鱼的 persona/xiaoyu.md 各管各的 */
@@ -243,12 +245,24 @@ function brief(id, meta) {
   };
 }
 
-/** 设置面板要的全部信息 */
-export function personaInfo() {
+/**
+ * 设置面板要的全部信息。
+ *
+ * 【2026-11-01 加 sessionId】传了就看「这个会话用的是哪套」，不传就是老行为（全局那套）。
+ * 会话记过的那套要是已经被删了，就当没记过、回落到全局 —— 不让会话卡在半空。
+ */
+export function personaInfo(sessionId = '') {
   try { ensurePresets(); } catch {}
   const idx = ensureIndex();
   const list = idx.list.map((p) => brief(p.id, p));
-  const current = list.some((p) => p.id === idx.current) ? idx.current : DEFAULT_ID;
+  let current = list.some((p) => p.id === idx.current) ? idx.current : DEFAULT_ID;
+  const _psid = String(sessionId || '').trim();
+  if (_psid) {
+    try {
+      const _ov = sessionPersonaId(_scope, _psid);
+      if (_ov && list.some((p) => p.id === _ov)) current = _ov;
+    } catch { /* 读不出来就用全局那套 */ }
+  }
   const curMeta = idx.list.find((p) => p.id === current) || { id: DEFAULT_ID, name: DEFAULT_NAME, builtin: true };
   const text = textOf(current);
   const isDefault = current === DEFAULT_ID;
@@ -268,13 +282,26 @@ export function personaInfo() {
   };
 }
 
-/** 切到另一套 */
-export function switchPersona(id) {
+/**
+ * 切到另一套。
+ *
+ * 【2026-11-01 主人：「让多套人设里的人设按会话来，而不是全局切换」】
+ * 传了 sessionId 就**只改这个会话**，库的全局 current 一个字都不动 ——
+ * 于是它退回「新会话的起点」这个身份：A 会话换成 QQ 版人设，B 会话照旧是默认。
+ *
+ * 不传 sessionId 时保持老行为（改全局那套），命令行和测试还在用它。
+ */
+export function switchPersona(id, sessionId = '') {
   const idx = ensureIndex();
   if (!isPersonaId(id) || !idx.list.some((p) => p.id === id)) {
     const e = new Error('没有这套人设');
     e.status = 404;
     throw e;
+  }
+  const _ssid = String(sessionId || '').trim();
+  if (_ssid) {
+    setSessionPersona(_scope, _ssid, id);
+    return personaInfo(_ssid);
   }
   idx.current = id;
   writeIndex(idx);
@@ -555,7 +582,19 @@ export function builtinPersonaText() {
  * 素材没销毁：`persona/xiaoyu-qq.md` 与库里那份都备份在
  * `D:\小鱼Agent\backup-persona-removed-20261106\`，想找回来随时能拿。
  */
-export const PERSONA_PRESETS = [];
+/**
+ * 官方预设人设：启动时按 name/file 铺进**小鱼自己那个库**（不带 scope 的那份）。
+ *
+ * 【2026-11-01 主人：「发布时除了默认人设外，把【小鱼/鲸鱼娘（QQ版）】也一起发布」】
+ * 正文放在仓库 `persona/xiaoyu-qq.md`，跟 `persona/xiaoyu.md` 一样是发布物。
+ *
+ * 【为什么以前它会跑到小鲸名下】当初铺预设时两个库都铺了一份、ledger 各记一笔；
+ * 后来删只删了小鱼那份（删接口不带 scope 落在小鱼库），小鲸那份一直留着 ——
+ * 主人就在小鲸的列表里看见了小鱼的 QQ 人设。现在只在小鱼库铺，ledger 也各管各的。
+ */
+export const PERSONA_PRESETS = [
+  { id: 'xiaoyu-qq', name: '小鱼 / 鲸鱼娘（QQ 版）', file: 'xiaoyu-qq.md' },
+];
 
 /** 一本账：哪些官方预设已经铺进这个人设库了 */
 function presetLedgerFile() {

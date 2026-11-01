@@ -117,6 +117,8 @@ import {
   setPersonaAsDefault,
   withPersonaScope,
 } from './persona-store.mjs';
+// 【2026-11-01】人设按会话：会话删了，把「它用哪套人设」这条记录一起清掉
+import { clearSessionPersona } from './persona-session.mjs';
 // 2026-10-29 智能体卡：内置两张（小鱼/小鲸）+ 主人自定义的
 import {
   listAgents,
@@ -5257,9 +5259,14 @@ const server = createServer(async (req, res) => {
     if (!w || w === 'xiaoyu' || w === 'fish') return '';
     return /^[A-Za-z0-9_-]{1,64}$/.test(w) ? w : '';
   };
+  /** 【2026-11-01】sid = 想看「哪个会话」的人设；不传就是全局那套（老行为）。 */
+  const sidOf = (u) => {
+    const s = String(u.searchParams.get('sid') || '').trim();
+    return /^[A-Za-z0-9_-]{1,64}$/.test(s) ? s : '';
+  };
   if (req.method === 'GET' && url.pathname === '/api/personas') {
     try {
-      return json(res, 200, withPersonaScope(scopeOf(url), () => personaInfo()));
+      return json(res, 200, withPersonaScope(scopeOf(url), () => personaInfo(sidOf(url))));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -5281,7 +5288,9 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/personas/switch') {
     try {
       const payload = await body(req);
-      return json(res, 200, withPersonaScope(scopeOf(url), () => switchPersona(payload?.id)));
+      // 带 sessionId → 只切这个会话（主人 2026-11-01 的要求）；不带才是改全局那套
+      const _psid = String(payload?.sessionId || sidOf(url) || '').trim();
+      return json(res, 200, withPersonaScope(scopeOf(url), () => switchPersona(payload?.id, _psid)));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -6162,6 +6171,10 @@ const server = createServer(async (req, res) => {
     // 办事模式开出来的 worker 只属于这个会话，会话没了就该跟着走
     try {
       forgetTaskSession(id);
+    } catch {}
+    // 人设按会话：这条会话没了，它「用过哪套人设」的记录也没意义了
+    try {
+      clearSessionPersona(id);
     } catch {}
     sessions.delete(id);
     const list = listSessions();

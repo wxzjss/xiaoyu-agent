@@ -8724,7 +8724,11 @@ function renderPersonaList(info) {
       if (p.id === info.current) return;
       const r = await fetch(PERSONA_API('/api/personas/switch'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: p.id }),
+        // 小鱼这边：只换「当前这个会话」用的人设，别的会话不动（2026-11-01 主人要的）
+        body: JSON.stringify({
+          id: p.id,
+          ...(personaWho ? {} : { sessionId: (typeof sessionId === 'string' ? sessionId : '') }),
+        }),
       }).then((x) => x.json()).catch(() => null);
       if (!r || r.error) { personaHint.textContent = '切不过去：' + (r && r.error ? r.error : '网络错误'); return; }
       fillPersona(r);
@@ -8753,8 +8757,11 @@ function fillPersona(info) {
 /* 人设带who·2026-10-30 —— 当前正在看谁的人设：'' = 小鱼，'whale' = 小鲸，别的 = 自建卡的 id */
 let personaWho = '';
 function PERSONA_API(path) {
-  const q = personaWho ? ('?who=' + encodeURIComponent(personaWho)) : '';
-  return path + q;
+  const qs = [];
+  if (personaWho) qs.push('who=' + encodeURIComponent(personaWho));
+  // 【2026-11-01】人设按会话：只有小鱼这边用得上（小鲸/自建卡是各自一套身份，不看会话）
+  if (!personaWho && typeof sessionId === 'string' && sessionId) qs.push('sid=' + encodeURIComponent(sessionId));
+  return path + (qs.length ? ('?' + qs.join('&')) : '');
 }
 /* 这次是在给谁改人设：'' = 小鱼，'whale' = 小鲸，别的 = 自建卡的 id */
 let personaSyncWho = '';

@@ -63,8 +63,16 @@ export function safeModeRules(word) {
  * 当前人设文本。每次现读，所以设置里改完下一句就生效。
  * 用户在设置里存过 -> .state/persona.md；没存过 -> persona/xiaoyu.md。
  */
-export function loadPersona() {
-  return personaInfo().text;
+/**
+ * 【2026-11-01 主人：「人设按会话，不按全局」】
+ * 传了 sessionId 就取「这个会话用的那套」；没传就是老行为（全局那套）。
+ */
+export function loadPersona(sessionId = '') {
+  try {
+    return personaInfo(sessionId).text;
+  } catch {
+    return personaInfo().text;
+  }
 }
 
 /**
@@ -181,7 +189,7 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
     : '';
   const parts = [
     PLATFORM_BLOCK,
-    retargetPersona(_cardPersona || loadPersona(), _me),
+    retargetPersona(_cardPersona || loadPersona(sessionId), _me),
     _cardPersona ? agentCardNote(_card) : '',
     REASONING_LANGUAGE_RULE,
     settingsPromptBlock(settings),

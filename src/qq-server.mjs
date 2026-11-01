@@ -80,6 +80,29 @@ export async function groupNameOf(groupId) {
   return '';
 }
 
+/**
+ * 【2026-11-01 主人】「QQ 小鱼在 QQ 说话时，默认是小鱼在说话，
+ *  且默认给该 QQ 会话的小鱼切换【小鱼/鲸鱼娘（QQ版）】人设」
+ *
+ * 只在这个会话**还没选过**的时候挂 —— 主人要是在界面上给这个会话挑过别的，
+ * 每轮都强行改回去，等于把他的选择当耳旁风。
+ * 也只挂在「各聊各的」和「现开一个」这两条路上；「都进这一个」是主人自己挑的会话
+ * （可能是他桌面上的主对话），不硬塞。
+ */
+const QQ_PERSONA_ID = 'xiaoyu-qq';
+async function ensureQqPersona(sessionId) {
+  const id = String(sessionId || '').trim();
+  if (!id) return;
+  try {
+    const ps = await import('./persona-session.mjs');
+    if (ps.sessionPersonaId('', id)) return;   // 已经挑过，别管
+    const store = await import('./persona-store.mjs');
+    const info = store.personaInfo(id);
+    if (!info.list.some((p) => p.id === QQ_PERSONA_ID)) return;  // 这套人设不在了就不挂
+    ps.setSessionPersona('', id, QQ_PERSONA_ID);
+  } catch { /* 挂不上就按默认人设来，不影响聊天 */ }
+}
+
 export async function ensureQqSession({ openid, peer, name = '', isGroup = false, groupId = '' } = {}) {
   const h = need();
   const { qqBind } = await import('./qq.mjs');
@@ -95,7 +118,10 @@ export async function ensureQqSession({ openid, peer, name = '', isGroup = false
   if (bind.mode === 'per-user' && bind.sessionId === undefined) { /* 正常往下走 */ }
   // ② 这人已经有自己的会话了（重启后靠认人表恢复）
   if (peer && peer.sessionId) {
-    if (h.getSession(peer.sessionId)) return { sessionId: peer.sessionId };
+    if (h.getSession(peer.sessionId)) {
+      await ensureQqPersona(peer.sessionId);
+      return { sessionId: peer.sessionId };
+    }
   }
   // ③ 现开一个
   // 【2026-10-30 主人要的】会话名分两种，别一律挂发话人昵称：
@@ -106,6 +132,7 @@ export async function ensureQqSession({ openid, peer, name = '', isGroup = false
     : `QQ · ${String(name || openid.slice(0, 6)).slice(0, 20)}`;
   const made = await h.newSessionFor({ title, agentId: 'xiaoyu' });
   if (!made || !made.id) return null;
+  await ensureQqPersona(made.id);
   return { sessionId: made.id };
 }
 

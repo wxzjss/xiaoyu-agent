@@ -10390,7 +10390,9 @@ function renderQqPanel(st) {
   if (gateHint) {
     const nQq = Array.isArray(gate.allowQq) ? gate.allowQq.length : 0;
     const nGrp = Array.isArray(gate.allowGroup) ? gate.allowGroup.length : 0;
-    if (!gate.ownerQq && !nQq && !nGrp) {
+    if (gate.strict === false) {
+      gateHint.textContent = '「只理白名单」现在是**关着**的 —— 谁私聊她她都会回（群聊仍然要 @ 她）。';
+    } else if (!gate.ownerQq && !nQq && !nGrp) {
       gateHint.textContent = '还没填白名单 —— 现在谁都私聊不了她（门是关着的）。先把你自己的号填上。';
     } else {
       gateHint.textContent = `现在放行：私聊 ${nQq} 个号、群 ${nGrp} 个`

@@ -380,7 +380,12 @@ export function setQqGate({ ownerQq, allowQq, allowGroup, strict } = {}) {
  * 这道门到底放不放这人进来。
  *
  * 参数都是网关给的原始值：QQ 号可能是字符串也可能是数字，
- * 这里统一过一遍 normQqNum 再比。**白名单之外的号一律拒**。
+ * 这里统一过一遍 normQqNum 再比。
+ *
+ * 【2026-11-01 体检补】strict 这一格以前是**死的**：界面上能勾能取消，
+ * 存也存下来了，但这里从来没读过它 —— 勾不勾都一样严守。现在按它说的做：
+ *   strict = true  只理白名单（默认，fail-closed）
+ *   strict = false 不设防，谁都回（群聊仍然要求 @ 她）
  */
 export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
   const g = qqGate();
@@ -396,15 +401,19 @@ export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
    * 不是给「别人」的护栏；主人要她在某个群说话，把群号加进去就是了。
    * 私聊他才一路直通（免得主人自己被自己关在外面）。
    */
+  const strict = g.strict !== false;   // 没写这一格的老文件按「严守」算
   if (grp) {
+    if (!strict) return q ? { ok: true, why: 'loose' } : { ok: false, why: 'group-not-allowed', qq: q, group: grp };
     return g.allowGroup.includes(grp)
       ? { ok: true, why: 'group' }
       : { ok: false, why: 'group-not-allowed', qq: q, group: grp };
   }
-  // 主人的号 —— 不管 strict 关没关，他一定是自己人（认号，不认 openid）
+  // 主人的号 —— 他一定是自己人（认号，不认 openid）
   if (g.ownerQq && q && q === g.ownerQq) return { ok: true, why: 'owner' };
   // isOwner 只剩「早先被设成主人」这一个来源，口令退役后基本用不上，留着不碍事
   if (isOwner) return { ok: true, why: 'owner' };
+  // 主人把「只理白名单」关掉了 → 不设防（但连号都没有的话还是别理，那是垃圾消息）
+  if (!strict) return q ? { ok: true, why: 'loose' } : { ok: false, why: 'not-in-whitelist', qq: q, group: '' };
   if (q && g.allowQq.includes(q)) return { ok: true, why: 'whitelist' };
   return { ok: false, why: 'not-in-whitelist', qq: q, group: '' };
 }

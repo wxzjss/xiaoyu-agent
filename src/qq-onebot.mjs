@@ -550,7 +550,10 @@ export function normalizeInbound(ev) {
     const t = String(seg?.type || '');
     const d = seg?.data || {};
     if (t === 'text') texts.push(String(d.text || ''));
-    else if (t === 'at') texts.push(`@${d.qq === 'all' ? '全体成员' : d.qq}`);
+    // 【2026-11-01 修】at 段不再摊成「@QQ号」塞进正文。
+    // 以前会变成「@1457425801」，她收到就是一句纯数字，回问主人「这是QQ号还是啥」。
+    // 谁被 @ 了看下面的 mentions（结构化、还能判 is_you），正文只留他真说的话。
+    else if (t === 'at') { /* 交给 mentions，别混进正文 */ }
     else if (t === 'reply') replyId = String(d.id || '');
     else if (t === 'image') attachments.push({ kind: 'image', url: d.url || (d.file?.startsWith('http') ? d.file : ''), file: d.file || '', caption: String(d.summary || '') });
     else if (t === 'record' || t === 'voice') attachments.push({ kind: 'voice', url: d.url || d.file || '', file: d.file || '' });

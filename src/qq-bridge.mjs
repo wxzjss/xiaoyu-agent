@@ -223,22 +223,30 @@ export async function stopQq() {
  *   ③ 认领口令「#我是 123456」
  *   ④ 转给会话引擎，边收边发
  */
-async function handleInbound({ msg, bot, deps }) {
+export async function handleInbound({ msg, bot, deps }) {
   const openid = String(msg?.senderId ?? '').trim();
   if (!openid) return;
-  const text = String(msg?.content ?? '').replace(/^<@!?[^>]+>\s*/g, '').trim();
+  // 群号（一次算清，后面三处都用它）：OneBot 给的是 groupQq/groupId，
+  // 官方 SDK 那条路给的是 groupOpenid —— 两个名字都认。
+  const groupId = String(msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId ?? '').trim();
+  const text = String(msg?.content ?? '')
+    // 【2026-11-01 修】旧形态 @段 / 摊平的「@QQ号」都不算话；她不该看到一串数字
+    .replace(/<@!?[^>]+>\s*/g, '')
+    .replace(/(^|\s)@\d{5,12}\s*/g, '$1')
+    .trim();
   const isGroup = msg?.kind === 'group';
 
   // ⓪ 白名单（2026-11-03 主人要的「只允许白名单的 QQ 号私聊、白名单的群号群聊」）
   //
   // 这一层放在最前面，**连 @ 都不看** —— 不在名单里的群，被 @ 了也不吭声。
   // 网关给的号可能是数字也可能是字符串，qq.mjs 的 qqAllowed 会统一归一化再比。
-  // 主人的号（面板上手动填的那个）永远放行，免得主人自己被自己关在外面。
+  // 【2026-11-01 改】群聊只看群号，主人的号也不绕过 —— 主人自己没加群就 @ 她，照样不理。
+  // 私聊那条才「主人的号永远放行」（免得主人自己被自己关在外面）。
   const gateVerdict = (() => {
     try {
       return qqAllowed({
         qqId: msg?.senderQq ?? msg?.userOpenid ?? msg?.senderId,
-        groupId: isGroup ? (msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId) : '',
+        groupId: isGroup ? groupId : '',
         isOwner: isOwnerQq(msg?.senderQq),
       });
     } catch {
@@ -269,7 +277,15 @@ async function handleInbound({ msg, bot, deps }) {
     if (!mentioned && !atRaw) return;
   }
 
-  const peer = qqPeer(openid);
+  /**
+   * 【2026-11-01 修】认人 / 找会话的键：私聊按人，群聊按**群**。
+   *
+   * 以前一律按发话人 openid 找，于是主人在群里的那句话「认识」的是他跟她的私聊会话：
+   * 那句话被塞进私聊会话里，还把私聊会话改名成了「QQ群 · 群名」，
+   * 下一句私聊又把群里的上下文接上 —— 两条线搅成一团。
+   */
+  const peerKey = isGroup ? 'group:' + (groupId || 'unknown') : openid;
+  const peer = qqPeer(peerKey);
   const name = String(msg?.senderName ?? '').trim();
 
   // 空话（纯图片/纯表情没文字）不再一棒打死 —— 2026-11-02 起图/语音/文件能收了，
@@ -314,16 +330,18 @@ async function handleInbound({ msg, bot, deps }) {
   log(`← ${isGroup ? '[群] ' : ''}${name || openid.slice(0, 8)}：${(text || `[${keptMedia.length} 个附件]`).slice(0, 40)}`);
 
   // ① 认人 + ④ 找会话
-  const ensured = await deps?.ensureSession?.({ openid, peer, userText: turnText, isGroup, name, groupId: String(msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId ?? '') });
+  const ensured = await deps?.ensureSession?.({ openid: peerKey, peer, userText: turnText, isGroup, name, groupId });
   if (!ensured || !ensured.sessionId) {
     await send(bot, msg, '这会儿接不上会话（主人还没把 QQ 接好），等我一下。');
     return;
   }
   const { sessionId } = ensured;
-  noteQqPeer(openid, { sessionId, name, qq: msg?.senderQq });
+  // 会话绑在 peerKey 上（群就是群、人就是人）；说话的人另外记一笔（不覆盖他私聊的那条）
+  noteQqPeer(peerKey, { sessionId, name, qq: isGroup ? '' : msg?.senderQq });
+  if (isGroup) noteQqPeer(openid, { name, qq: msg?.senderQq });
   // 【2026-10-30】群聊：会话名改成「群名」，不是发话人的昵称
   if (isGroup) {
-    try { await deps?.renameGroupSession?.({ sessionId, groupId: String(msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId ?? '') }); } catch {}
+    try { await deps?.renameGroupSession?.({ sessionId, groupId }); } catch {}
   }
 
   // 主人身份：按主人来（安全词、权限都算数）。
@@ -466,18 +484,39 @@ async function handleInbound({ msg, bot, deps }) {
  * 一轮分成好几条发的时候只在第一条引用：每条都挂着同一个引用，
  * QQ 里看着像她对着同一句话复读了五遍（2026-11-06）。
  */
+/**
+ * 【2026-11-01 修】「回哪儿」只在一个地方算。
+ *
+ * 以前 send() 里判群用的是 `msg.groupOpenid` —— 那是官方 SDK 时代的字段名，
+ * OneBot 那条路只给 groupQq/groupId，于是：第一条（引用着回）走 replyTarget 进了群，
+ * 第二条起全落到 c2c 分支 → 主人**私聊**也收到一句（他报的「私聊与群聊同时回了一句」）。
+ *
+ * 现在：有 replyTarget 就照它（要不要引用由 quote 决定，**不再因此改发到别处**）；
+ * 没有就按群号/私聊分别兜底。
+ */
+function targetOf(msg) {
+  const rt0 = msg?.replyTarget;
+  if (rt0 && typeof rt0 === 'object') {
+    const scope = String(rt0.scope === 'group' ? 'group' : 'c2c');
+    const targetId = String(rt0.targetId || '');
+    if (targetId) return { scope, targetId, msgId: rt0.msgId };
+  }
+  if (msg?.kind === 'group') {
+    const gid = String(msg?.groupQq ?? msg?.groupOpenid ?? msg?.groupId ?? '');
+    if (gid) return { scope: 'group', targetId: gid, msgId: msg?.messageId };
+  }
+  return { scope: 'c2c', targetId: String(msg?.senderId ?? ''), msgId: msg?.messageId };
+}
+
 async function send(bot, msg, content, opts = {}) {
   const t = String(content ?? '').trim();
   if (!t) return;
   const quote = opts.quote !== false;
-  const msgId = quote ? msg?.messageId : undefined;
+  const base = targetOf(msg);
+  // 引用只用在第一条上；**引用与否绝不改变发到哪儿**
+  const target = { ...base, msgId: quote ? base.msgId : undefined };
   try {
-    if (msg?.replyTarget && quote) await bot.sendText(msg.replyTarget, t);
-    else if (msg?.kind === 'group' && msg?.groupOpenid) {
-      await bot.sendText({ scope: 'group', targetId: String(msg.groupOpenid), msgId }, t);
-    } else {
-      await bot.sendText({ scope: 'c2c', targetId: String(msg.senderId), msgId }, t);
-    }
+    await bot.sendText(target, t);
   } catch (err) {
     log(`发不出去：${String(err?.message ?? err)}`);
   }

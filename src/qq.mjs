@@ -386,15 +386,25 @@ export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
   const g = qqGate();
   const q = normQqNum(qqId);
   const grp = normQqNum(groupId);
-  // 主人的号 —— 不管 strict 关没关，他一定是自己人（认号，不认 openid）
-  if (g.ownerQq && q && q === g.ownerQq) return { ok: true, why: 'owner' };
-  // isOwner 只剩「早先被设成主人」这一个来源，口令退役后基本用不上，留着不碍事
-  if (isOwner) return { ok: true, why: 'owner' };
+  /**
+   * 【2026-11-01 主人报的 bug】「我在QQ群里艾特小鱼，我事先没加这个群号到白名单，
+   *  但她同时在我的私聊与这个群聊回了一句」
+   *
+   * 原来「主人号 → ok」这一条判在最前面，主人在**任何**群 @ 她都放行，
+   * 于是「只允许这些群」这句话等于没写。
+   * 群聊先看群号，主人的号也不例外 —— 白名单是给主人的护栏，
+   * 不是给「别人」的护栏；主人要她在某个群说话，把群号加进去就是了。
+   * 私聊他才一路直通（免得主人自己被自己关在外面）。
+   */
   if (grp) {
     return g.allowGroup.includes(grp)
       ? { ok: true, why: 'group' }
       : { ok: false, why: 'group-not-allowed', qq: q, group: grp };
   }
+  // 主人的号 —— 不管 strict 关没关，他一定是自己人（认号，不认 openid）
+  if (g.ownerQq && q && q === g.ownerQq) return { ok: true, why: 'owner' };
+  // isOwner 只剩「早先被设成主人」这一个来源，口令退役后基本用不上，留着不碍事
+  if (isOwner) return { ok: true, why: 'owner' };
   if (q && g.allowQq.includes(q)) return { ok: true, why: 'whitelist' };
   return { ok: false, why: 'not-in-whitelist', qq: q, group: '' };
 }

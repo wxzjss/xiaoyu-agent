@@ -56,7 +56,7 @@ const CLAIM_TTL_PUB = 10 * 60 * 1000;
  *
  * 现在一律往 .state/diag.log 追加一行带时间的记录，最多留 800 行。
  */
-import { appendFileSync as __diagAppend, mkdirSync as __diagMkdir, readFileSync as __diagRead, writeFileSync as __diagWrite, existsSync as __diagExists, readdirSync as __diagReaddir } from 'node:fs';
+import { unlinkSync as __fsUnlinkSync, appendFileSync as __diagAppend, mkdirSync as __diagMkdir, readFileSync as __diagRead, writeFileSync as __diagWrite, existsSync as __diagExists, readdirSync as __diagReaddir } from 'node:fs';
 import { join as __diagJoin } from 'node:path';
 function diagLog(tag, detail) {
   try {
@@ -2499,6 +2499,11 @@ async function startQueuedTurn(sessionId, queue = null) {
   if (Array.isArray(queue) && queue.length) queue.shift();
 
   const ac = new AbortController();
+  /* 【2026-11-02 修·跟续跑那个 ac is not defined 同一类】**
+   *  下面 runWithToolContext 传了 snap、还读 ac.signal，
+   *  可 snap 在这个函数里从来没声明 —— 一叫醒就抛 ReferenceError，
+   *  被外层 catch 吞掉，表现成「重启后没人叫醒我」。 */
+  const snap = {};
   const turn = { ac, done: null, queuedTurn: true };
   runningTurns.set(sessionId, turn);
 
@@ -2537,7 +2542,12 @@ async function startQueuedTurn(sessionId, queue = null) {
         if (!ev) return;
         if (ev.type === 'error') console.warn('[queued] ' + sessionId + ' 出错：' + String(ev.message ?? ''));
         // 照主轮的样子写进直播缓存，前端 followLive 才画得出来
-        if (ev.type === 'text' || ev.type === 'reasoning' || ev.type === 'tool' || ev.type === 'tool_result' || ev.type === 'whale' || ev.type === 'whale_stream_start' || ev.type === 'whale_delta') {
+        /* 【2026-11-02 揪出来的真 bug：接续轮的工具条全丢】
+         *  这里原来只认 'tool' / 'tool_result' 两个名字，可 runWithToolContext
+         *  实际吐出来的是 'tool_start' / 'tool_end' —— 一个都对不上，
+         *  于是被叫醒的那一轮前端只有字、没有【跑命令】【写文件】那些条。
+         *  现在两边名字都认，以后再加事件名也记得往这儿补。 */
+        if (ev.type === 'text' || ev.type === 'reasoning' || ev.type === 'tool' || ev.type === 'tool_result' || ev.type === 'tool_start' || ev.type === 'tool_end' || ev.type === 'whale' || ev.type === 'whale_stream_start' || ev.type === 'whale_delta' || ev.type === 'notice') {
           send(ev);
         }
       },
@@ -3441,7 +3451,19 @@ const server = createServer(async (req, res) => {
     const sinceRaw = url.searchParams.get('since');
     const since = Number.isFinite(Number(sinceRaw)) && Number(sinceRaw) > 0 ? Math.floor(Number(sinceRaw)) : 0;
     const all = Array.isArray(live.events) ? live.events : [];
-    const tail = since > 0 && since <= all.length ? all.slice(since) : (since > 0 ? [] : all);
+    /* 【2026-11-02 游标修复 · 丢字真凶就在这一行】
+     *  原来 since 是「事件条数」：`since > 0 && since <= all.length ? all.slice(since) : ...`。
+     *  可 send() 会把累积型的 text/reasoning 并进上一条 —— 条数不变、正文却一直在变长。
+     *  前端按条数推进游标，那条被追加的事件就再也拉不到：屏幕停在那一刻不动，
+     *  非得再刷新一次（since=0 走全量）才补回来。
+     *  现在游标换成 rev（每次 push/合并都 +1），被加长的老事件同样能被拉到。 */
+    const _revOf = (e) => (e && typeof e.rev === 'number' ? e.rev : 0);
+    const tail = since > 0 ? all.filter((e) => _revOf(e) > since) : all;
+    /* 【2026-11-02 快照对账】这一轮的正文现在一共多少字（notice 不算正文）。
+     *  前端拿它跟「屏幕上已经画了多少字」对账：短了就说明增量那条路没跟上（游标错位、
+     *  事件被合并、连接断过…），立刻拉一次全量走补画 —— 这是兜底的幂等保证，
+     *  让「刷新之后永远追不上尾巴」在结构上不可能发生。 */
+    const _textLen = all.reduce((a, e) => a + ((e && e.type === 'text' && !e.notice) ? String(e.text || '').length : 0), 0);
     return json(res, 200, {
       sessionId: sid,
       /* 【2026-11-02 主人报「消息被吞、画面固定」】
@@ -3458,7 +3480,8 @@ const server = createServer(async (req, res) => {
       endedAt: live.endedAt ?? null,
       since,
       total: all.length,
-      nextSince: all.length,
+      nextSince: typeof live.rev === 'number' ? live.rev : all.length,
+      textLen: _textLen,
       events: tail,
     });
   }
@@ -6132,7 +6155,7 @@ const server = createServer(async (req, res) => {
       }
     }
     // 顺带把本子的状态带回去，界面不用再单发一次请求就知道有没有记忆
-    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id), recovered, interrupted: peekInterruptedInfo(id) });
+    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id), recovered, interrupted: peekInterruptedInfo(id), running: runningTurns.has(id) });
   }
 
   // ---- 对话回退 ----
@@ -6534,13 +6557,13 @@ const server = createServer(async (req, res) => {
         }
       }
     } catch (e) { console.warn('[quit] 记续跑意图失败：', String(e?.message ?? e)); }
-    /* 【2026-11-01 有活没干完 → 让主进程退了之后自己回来，主人不用再双击 */
-    try {
-      if (__diagExists(join(config.dataDir, '.state', 'resume.json'))) {
-        globalThis.__xyRelaunchOnQuit = true;
-        diagLog('relaunch-armed', '');
-      }
-    } catch {}
+    /* 【2026-11-02 主人要求·修】这里原来干的是「有活没干完就置 __xyRelaunchOnQuit，
+     *  让主进程退了之后自己爬起来」。主人手动退出却自己重开，就是这一行造成的：
+     *  只要 resume.json 里还压着旧账（清单没做完），哪怕是他自己点了退出，
+     *  程序也会偷偷 relaunch。而「重启后自动接着干」那套功能后来已经按主人要求删了，
+     *  这个重开就只剩副作用 —— 所以整段拿掉。
+     *  现在规矩很干脆：主人亲手退出 = 真退出，绝不自己爬起来。
+     *  只有我调 /api/app/restart（带 byTool）时，才由那条路径自己处理重开。 */
     json(res, 200, { ok: true, count: ids.length, ids });
     return;
   }
@@ -6575,9 +6598,12 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 而响应一发出去，这条连接就收尾了，再去读 body 是空的。
      */
     let _resumeSid = '';
+    let _reqSid = '';
+    let _b = {};
     try {
-      const _b = await body(req).catch(() => ({}));
-      const _want = String(_b?.sessionId || '');
+      _b = await body(req).catch(() => ({}));
+      _reqSid = String(_b?.sessionId || '');
+      const _want = _reqSid;
       /**
        * 【认谁在跑，不认谁最后聊过】
        *
@@ -6671,6 +6697,38 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       }
     } catch (e) {
       console.warn('[restart] 记续跑意图失败（不影响重启）：', String(e?.message ?? e));
+    }
+    /* 【2026-11-02 主人要求】
+     *  原话：「重启后让我自动发一句：重启了」，并且
+     *  「必须是你手动调用工具自动重启才会这样，而不是我手动关掉你你还会自动重启」。
+     *
+     *  所以这件事只写在这里 —— /api/app/restart 只有我自己调工具喊得到。
+     *  主人关窗口/托盘退出走的是 electron 那条路，不经过这里，天然不会触发。
+     */
+    let _tellWho = '';
+    try {
+      /* 【2026-11-02 主人报「重启了没被叫醒」的真凶】
+       *  原来只认 _resumeSid 或「此刻恰好只有一个在跑」。
+       *  可最常见的重启时机是：我这一轮刚说完、清单也全打勾了 ——
+       *  那两个来源全是空的，_tellWho 就成了空串，标记根本没写。
+       *  兜底补一路：请求体里带了 sessionId 就用它（tools.mjs 的重启工具会带）。 */
+      _tellWho = String(_resumeSid || _reqSid || (runningTurns.size === 1 ? [...runningTurns.keys()][0] : '') || '');
+    } catch {}
+    /* 【只有我调工具喊的重启才自动说一句】
+     *  主人点界面上的「重启」按钮、或者自己关窗口，都不该触发 ——
+     *  请求体里带 byTool:true 才算数（tools.mjs 的重启工具会带）。
+     */
+    let _byTool = false;
+    try {
+      _byTool = String(_b?.byTool) === 'true' || _b?.byTool === true;
+    } catch {}
+    if (_tellWho && _byTool) {
+      try {
+        __diagMkdir(join(config.dataDir, '.state'), { recursive: true });
+        __diagWrite(join(config.dataDir, '.state', 'after-restart.json'), JSON.stringify({ sessionId: _tellWho, at: Date.now() }), 'utf8');
+      } catch (e) {
+        console.warn('[restart] 记「重启后说一句」失败（不影响重启）：', String(e?.message ?? e));
+      }
     }
     json(res, 200, { ok: true });
     // 回完再退，让界面收到回执。退出码 75 = 「我要重启」，electron/main.cjs 会认。
@@ -7289,16 +7347,31 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        *  这里两道保险：①同一轮里相邻的 reasoning/text 直接并进上一条，
        *  ②超过 SOFT_MAX 就整体「压薄」一次（只留最近的大块）。 */
       try {
-        const _sameKind = (ev && (ev.type === 'reasoning' || ev.type === 'text'))
+        /* 【2026-11-02 只合并 reasoning，text 不再并进上一条】
+         *  合并 text 会让「同一条事件的内容一直变长」，前端每轮按游标要增量时
+         *  就永远追不上那条被加长的老事件（丢字），或者把它整段再画一遍（重复）。
+         *  reasoning 是思考块的碎片、不显示成正文，合并它只省条数、没有这个副作用；
+         *  text 每条都是确定的碎片，送一次画一次，前端不用记账也不会重复。 */
+        const _sameKind = (ev && ev.type === 'reasoning')
           && live.events.length
           && live.events[live.events.length - 1]
           && live.events[live.events.length - 1].type === ev.type;
         if (_sameKind) {
+          const _last0 = live.events[live.events.length - 1];
+          live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
           live.events[live.events.length - 1] = {
-            ...live.events[live.events.length - 1],
-            text: String(live.events[live.events.length - 1].text || '') + String(ev.text || ''),
+            ..._last0,
+            text: String(_last0.text || '') + String(ev.text || ''),
+            rev: live.rev,
           };
         } else if (live.events.length < LIVE_MAX_EVENTS) {
+          /* 【2026-11-02 游标修复】每条事件打上稳定序号 seq（数组下标）与 rev（变更次数）。
+           *  前端原来拿「事件条数」当游标，而 text/reasoning 会被并进上一条（条数不变、内容变长），
+           *  于是被追加的那条永远拉不到 —— 界面停在那一刻，非得再刷新一次才补回来。
+           *  rev 每次 push/合并都 +1，/api/chat/live 用 rev 过滤，加长的老事件也能被拉到。 */
+          live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
+          ev.seq = live.events.length;
+          ev.rev = live.rev;
           live.events.push(ev);
         }
         /* ② 太长了就压薄：把相邻同类合并，实在还超就砍最老的 */
@@ -7306,8 +7379,15 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           const _kept = [];
           for (const e of live.events) {
             const p = _kept[_kept.length - 1];
-            if (p && e && p.type === e.type && (e.type === 'reasoning' || e.type === 'text')) {
-              _kept[_kept.length - 1] = { ...p, text: String(p.text || '') + String(e.text || '') };
+            // 同上：压薄也只合并 reasoning，text 保持一条一条（内容不再变长，前端不会重复画）
+            if (p && e && p.type === e.type && e.type === 'reasoning') {
+              // seq/rev 一并带过去：压薄重组后 seq 会被重排，rev 保持单调（游标据此过滤）
+              _kept[_kept.length - 1] = {
+                ...p,
+                text: String(p.text || '') + String(e.text || ''),
+                seq: typeof p.seq === 'number' ? p.seq : 0,
+                rev: Math.max(typeof p.rev === 'number' ? p.rev : 0, typeof e.rev === 'number' ? e.rev : 0),
+              };
             } else _kept.push(e);
           }
           /* 砍的时候别一视同仁：tool_start/tool_end/done 这些是「骨架」，
@@ -7327,7 +7407,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           const _keptFlesh = _flesh.slice(-_room);
           const _merged = [..._keptFlesh, ..._bones].sort((a, b) => a.i - b.i).map((x) => x.e);
           live.events.length = 0;
-          for (const e of _merged) live.events.push(e);
+          for (const e of _merged) { e.seq = live.events.length; live.events.push(e); }
         }
       } catch {}
 
@@ -9687,6 +9767,50 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
    *   · POST /api/resume 手动续跑接口（主人主动点才跑）；
    *   · resume.mjs 的落盘记录（给上面那个手动接口用）。
    */
+
+  /* 【2026-11-02 主人要求】重启后自动发一句「重启了」
+   *
+   *  原话：「重启后让我自动发一句：重启了」，而且
+   *  「必须是你手动调用工具自动重启才会这样，而不是我手动关掉你你还会自动重启」。
+   *
+   *  凭据只有一个：/api/app/restart 退出前写下的 after-restart.json。
+   *  主人自己关窗口 / 托盘退出，压根不经过那个接口，也就没有这个文件 —— 什么都不会发生。
+   *  用完就删，免得下一次普通启动又冒一句。
+   */
+  setTimeout(() => {
+    let _tell = null;
+    const _mark = join(config.dataDir, '.state', 'after-restart.json');
+    try {
+      if (!__diagExists(_mark)) return;
+      try { _tell = JSON.parse(__diagRead(_mark, 'utf8')); } catch { _tell = null; }
+      try { __fsUnlinkSync(_mark); } catch {}
+    } catch {}
+    if (!_tell || !_tell.sessionId) return;
+    const _sid = String(_tell.sessionId);
+    try {
+      const _s = getSession(_sid);
+      if (!_s) return;
+      // 只说一句「重启了」，不带任何「接着干」的提示（那是主人另外砍掉的东西）
+      /* 主人要的是「自动发一句：重启了」—— 就发这三个字。
+       *  别自作多情加旁白：这句话的作用是把界面顶出一条新消息、
+       *  让主人一眼看到「重启成功、可以接着说了」。 */
+      diagLog('after-restart-told', _sid);
+      /* 主人 2026-11-02：「或者让系统给你发一句重启了，叫醒你」。
+       *  所以这里不去冒充「我自己说话」，而是由系统投一条 user 消息进来 ——
+       *  它既能把界面顶出一条新消息（主人看得见「重启了」），
+       *  又天然触发一轮：我收到这句话，就接着干。 */
+      /* 【2026-11-02 主人要求】这句「重启了」只给我自己看，不许在界面上冒充主人说话。
+       *  做法跟压缩提醒一样：打 _sysNote 标记 ——
+       *    · 前端 renderTurns 里 `if (turn.sysNote) continue;` 直接不画；
+       *    · 但它仍在 wire 里，所以我自己读得到，照样能被这句话叫醒。
+       *  别改成 context:true —— 那样我会连自己该干什么都看不到。 */
+      _s.messages.push({ role: 'user', content: '重启了', _sysNote: true });
+      saveSession(_s);
+      try { startQueuedTurn(_sid, null).catch((e) => console.warn('[restart] 叫醒失败：', String(e?.message ?? e))); } catch {}
+    } catch (e) {
+      console.warn('[restart] 自动说一句失败（不影响使用）：', String(e?.message ?? e));
+    }
+  }, 1500).unref?.();
 
   // 把「叫醒某个会话」交给工具那边用。
   // 为什么用注入：wakePeer 要动 runningTurns、要起 runAgent，这些都在本文件里；

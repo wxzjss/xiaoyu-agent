@@ -2654,7 +2654,7 @@
             <textarea id="bottomLines" spellcheck="false"></textarea>
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button type="button" class="ghost" id="resetBottomLines">恢复默认底线</button>
+            <button type="button" class="ghost" id="resetBottomLines">恢复出厂默认底线</button>
             <span class="hint" id="bottomLinesHint"></span>
           </div>
         </fieldset>
@@ -2686,7 +2686,7 @@
             <textarea id="safeWordNote" spellcheck="false" style="min-height:80px"></textarea>
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button type="button" class="ghost" id="resetSafeWords">恢复默认安全词</button>
+            <button type="button" class="ghost" id="resetSafeWords">恢复出厂默认安全词</button>
             <span class="hint" id="safeWordsHint"></span>
           </div>
         </fieldset>
@@ -2817,7 +2817,7 @@
       </div>
       <div class="dlgFoot">
         <span class="hint" id="saveHint"></span>
-        <button type="button" class="ghost" id="resetDefaults">恢复默认</button>
+        <button type="button" class="ghost" id="resetDefaults">恢复出厂默认</button>
         <button type="button" class="primary" id="saveSettings">保存</button>
       </div>
     </form>
@@ -3079,7 +3079,7 @@
         <span class="hint" id="idTip">选中一个身份点「用这个身份」就立刻生效，下一句就按新身份说话。</span>
         <button type="button" class="ghost" id="idAdd">新建身份</button>
         <button type="button" class="ghost" id="idDel">删掉这个</button>
-        <button type="button" class="ghost" id="idReset" hidden>恢复默认</button>
+        <button type="button" class="ghost" id="idReset" hidden>恢复出厂默认</button>
         <button type="button" class="ghost" id="idSave">保存</button>
         <button type="button" class="primary" id="idUse">用这个身份</button>
         <button type="button" class="ghost" id="idClose">关闭</button>
@@ -3109,8 +3109,8 @@
       </div>
       <div class="dlgFoot">
         <span class="hint" id="wpTip">写完全套替换「她是谁、跟小鱼怎么相处」那一部分；底线、安全词说明、她自己的本子、当前状态都不会被冲掉。</span>
-        <button type="button" class="ghost" id="wpReset">恢复默认</button>
-        <button type="button" class="ghost" id="wpResetAll">人设和模型都恢复默认</button>
+        <button type="button" class="ghost" id="wpReset">恢复出厂默认</button>
+        <button type="button" class="ghost" id="wpResetAll">人设和模型都恢复出厂默认</button>
         <button type="button" class="primary" id="wpSave">保存</button>
         <button type="button" class="ghost" id="wpClose">关闭</button>
       </div>
@@ -3227,7 +3227,7 @@
         <button type="button" class="ghost" id="agExport">导出智能体</button>
         <button type="button" class="ghost" id="agNew">新建智能体</button>
         <button type="button" class="ghost" id="agPanel" hidden>多套人设…</button>
-        <button type="button" class="ghost" id="agReset">恢复默认</button>
+        <button type="button" class="ghost" id="agReset">恢复出厂默认</button>
         <button type="button" class="ghost" id="agDel">删掉这个</button>
         <button type="button" class="ghost" id="agClose">关闭</button>
         <button type="button" class="primary" id="agSave">保存</button>
@@ -5049,22 +5049,40 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
        *  去掉这个没定义的开关即可：判据本来就是「屏幕上已经有一模一样的助手气泡」，
        *  历史里画过的就跳过，没画过的照常补 —— 正是这段注释想要的行为。
        */
-      /* 第一条 text 来时认领「历史里那个半成品气泡」（只认开头对得上的，防止认错上一轮的话） */
+      /* 第一条 text 来时先认领「屏幕上已经有的那一截」（只认开头对得上的，防止认错上一轮的话） */
       if (!_claimDone) {
         _claimDone = true;
         _pos = 0;
         try {
           if (!bubble) {
-            const _bs = document.querySelectorAll(".assistant .bubble");
-            const _lb = _bs.length ? _bs[_bs.length - 1] : null;
-            if (_lb && _lb.isConnected) {
-              const _seen = String((typeof _lb._rawText === "string" && _lb._rawText) ? _lb._rawText : (_lb.textContent || "")).trim();
-              if (_seen && _allText.indexOf(_seen) === 0) {
-                bubble = _lb;
-                _claimLen = _seen.length;
-                if (typeof _lb._rawText !== "string" || !_lb._rawText) _lb._rawText = _seen;
+            /* 【2026-11-02 整轮幂等替换 · 刷新后整轮重复的真凶】
+             *  实测（浏览器里直接连调三次这个函数）：字数 831 → 1792 → 2854 → 3916，
+             *  每调一次就多叠一整份 —— 因为它是「往屏幕上追加」，而这一轮会被补画好几次
+             *  （接上直播一次、3 秒超时复核再一次…）。
+             *  又因为多段正文会被拆进好几个容器，「只删最后一个容器」根本删不全。
+             *  改法：凡是自己直播画出来的容器（带 data-live-turn 标记）一律先清掉；
+             *  再看历史里那个半截容器是不是本轮正文的开头（空白抹掉再比）—— 是就连它一起清
+             *  （它的内容本来就包在本轮全文里）。然后从头画一份：画一次、清一次，恒等于一份。 */
+            const _norm = (s) => String(s || "").replace(/\s+/g, "");
+            for (const _c of document.querySelectorAll('.msg.assistant[data-live-turn="1"]')) {
+              try { _c.remove(); } catch (e) {}
+            }
+            /* 【2026-11-02 全扫】不能只看「最后一个」助手容器：屏幕上可能躺着好几个
+             *  （刷新前的残留、渲染历史留下的半截…），只看最后一个就会漏掉前面那些，
+             *  它们和本轮全文重叠 —— 实测就是这留下的 105 字重复。
+             *  凡是「内容是本轮正文开头」的历史容器，一律清掉（它的内容本来就包在本轮全文里）。 */
+            for (const _lw of document.querySelectorAll(".msg.assistant")) {
+              if (!_lw.isConnected || _lw.dataset.liveTurn === "1") continue;
+              const _bs2 = [..._lw.querySelectorAll(".bubble")];
+              const _joined = _bs2.map((b) => String((typeof b._rawText === "string" && b._rawText) ? b._rawText : (b.textContent || ""))).join("").trim();
+              /* 判据放宽成「包含」：历史里那截是刷新那一刻的落盘半成品，跟本轮事件文本
+               *  未必逐字对齐开头（落盘时会做整理），但只要它的字都在本轮正文里，就是重复的一份。 */
+              if (_joined && _norm(_joined).length >= 8 && _norm(_allText).indexOf(_norm(_joined)) >= 0) {
+                try { _lw.remove(); } catch (e) {}
               }
             }
+            bubble = null;
+            _claimLen = 0;
           }
         } catch {}
       }
@@ -5296,7 +5314,25 @@ async function attachLive(id) {
     turnsInFlight.set(id, rec);
 
     if (bubble) markStreaming(bubble);
-    followLive(id, evs.length);
+    /* 【2026-11-02 游标语义修正 · 重复显示真凶】
+     *  服务端的游标现在是 rev（每次 push / 每次把增量并进上一条都 +1），
+     *  这里原来却传 evs.length（事件条数）——条数比 rev 小，于是「刚刚补画过的那条事件」
+     *  会被当成还没画过的新增，**再整段画一遍**：刷新之后屏幕上就是一轮重复。
+     *  起步用服务端回的 nextSince（rev），增量才是真的增量。 */
+    /* 【2026-11-02 补完记账】刚才这一下补画已经把「这一轮到目前为止的正文」铺到屏幕上了，
+     *  可 followLive 那边的记账本（drawnSeqsBySession）还是空的 —— 它下一轮一旦再拿到同一条
+     *  事件，就会当成没画过、整段又画一遍。这里照着刚拉到的全量事件把账记平。 */
+    try {
+      const _k3 = id + '|' + String(live.startedAt || 0);
+      const _m3 = new Map();
+      for (const _e of (live.events || [])) {
+        if (_e && _e.type === "text" && !_e.notice && typeof _e.seq === "number" && _e.seq >= 0) {
+          _m3.set(_e.seq, String(_e.text || "").length);
+        }
+      }
+      if (_m3.size) drawnSeqsBySession.set(_k3, _m3);
+    } catch {}
+    followLive(id, Number.isFinite(Number(live.nextSince)) ? Number(live.nextSince) : evs.length);
     /**
      * 【只要服务端说这轮还在跑，就返回 true，不管是谁发起的】
      *
@@ -5382,6 +5418,14 @@ function markTailRole(turns) {
  * 接着跟直播：服务端还在跑就隔一会儿拉一次增量，往上追加。
  * 不重新发请求，只把「已经发生过的事」补齐——窗口关多久都不影响。
  */
+/* 【2026-11-02 记账簿：必须活过一轮轮询】
+ *  原来「这一条 text 事件我已经画到第几个字」是记在 turnsInFlight 的轮次记录上的。
+ *  可那份记录随时会被清（3 秒复核收尾 / 切走 / stopFollow），一清就每轮拿到新对象、
+ *  记账归零 → text 分支把整轮全文当成新增又画一遍 → 屏幕上叠成好几份重复。
+ *  改挂在模块级、以「会话 + 这一轮 startedAt」为键：轮次记录怎么清都不影响它。
+ *  一轮跑完 startedAt 换新值 = 天然隔离，不会把上一轮的记账带过来。 */
+const drawnSeqsBySession = new Map();
+
 function followLive(id, fromIndex) {
   // 只清自己这个会话的，别人的别动
   stopFollow(id);
@@ -5421,6 +5465,12 @@ function followLive(id, fromIndex) {
      *
      * 现在把这两件事拆开：画字看有没有新东西，收尾只看服务端说没说完。
      */
+    const _dsKey = id + '|' + String(live.startedAt || 0);
+    if (!drawnSeqsBySession.has(_dsKey)) drawnSeqsBySession.set(_dsKey, new Map());
+    const _ds = drawnSeqsBySession.get(_dsKey);
+    if (drawnSeqsBySession.size > 3) {
+      for (const _k of [...drawnSeqsBySession.keys()]) { if (_k !== _dsKey) { try { drawnSeqsBySession.delete(_k); } catch (e) {} } }
+    }
     // 服务端给的权威游标：这批之后该从第几条起（取不到就退回自己数的）
     const _advance = () => {
       const n = Number(live.nextSince);
@@ -5432,7 +5482,14 @@ function followLive(id, fromIndex) {
       let bubble = null;
       let think = null;
       // 工具块要挂在「这一轮」的记录上，这样 tool_end 回来找得到它
-      const turnRecRef = turnsInFlight.get(id) || {};
+      /* 【2026-11-02 记账必须活过一轮轮询】
+       *  原来这里是 `turnsInFlight.get(id) || {}` —— 只读、不写回。
+       *  Map 里还有这条时没事；可一旦它被清掉（3 秒复核收尾 / 切走），
+       *  之后每一轮轮询都拿到一个**全新的空对象**，drawnBySeq 的记账每 1.2 秒丢一次，
+       *  text 分支就把**整轮全文**当成「新增」又画一遍 —— 屏幕上叠成一串重复。
+       *  改成拿到就用、没有就建好写回去：记账得活过一轮轮询才有意义。 */
+      let turnRecRef = turnsInFlight.get(id);
+      if (!turnRecRef || typeof turnRecRef !== "object") { turnRecRef = {}; turnsInFlight.set(id, turnRecRef); }
       const closeThink = () => { if (think) { think.finish(); think = null; } };
       /**
        * 【2026-10-27 主人报：一句话里连着重复两遍，刷新后只剩一遍；光标还一直闪】
@@ -5555,14 +5612,29 @@ function followLive(id, fromIndex) {
             continue;
           }
           closeThink();
-          if (!bubble) bubble = addAssistantAuto();
+          if (!bubble) {
+            bubble = addAssistantAuto();
+            // 【2026-11-02】直播画出来的容器打标记：重画时靠它认「这是我们自己画的」，
+            //   历史（renderTurns）画的容器永远不带标记，不会被误清。
+            try { const _w = bubble.closest(".msg.assistant"); if (_w) _w.dataset.liveTurn = "1"; } catch (e) {}
+          }
+          /* 【2026-11-02 游标修复 · 前端配套】
+           *  服务端会把后续增量并进上一条 text 事件（条数不变、text 越来越长），
+           *  游标改成 rev 之后，这条被加长的事件会被**重复送到**这里。
+           *  这时 ev.text 是「这一条的累积全文」，不能整段重画（会把同一句话写第二遍），
+           *  得按 seq 记账，只补上次之后新长出来的那几个字。 */
+          const _full = String(ev.text || "");
+          const _seqOk = typeof ev.seq === "number" && ev.seq >= 0;
+          const _prevLen = _seqOk ? Number(_ds.get(ev.seq) || 0) : 0;
           /* 【2026-11-01】认领了历史里已经画过一截的气泡时，前 skipChars 个字不再重复写 */
-          let _add = String(ev.text || "");
+          let _add = _seqOk ? _full.slice(_prevLen) : _full;
           if (skipChars > 0) {
             if (_add.length <= skipChars) { skipChars -= _add.length; _add = ""; }
             else { _add = _add.slice(skipChars); skipChars = 0; }
           }
           if (_add) pushStreamText(bubble, _add);
+          // 记「这一条已经画到第几个字」：两种扣法（seq 增量 / skipChars 认领）都算数
+          if (_seqOk) _ds.set(ev.seq, _full.length - _add.length);
           touchStreaming(bubble);
         }
       }
@@ -8030,7 +8102,10 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           think.push(ev.text);
         } else if (ev.type === 'text') {
           closeThink();
-          if (!bubble) bubble = addAssistantAuto();
+          if (!bubble) {
+          bubble = addAssistantAuto();
+          try { const _w = bubble.closest(".msg.assistant"); if (_w) _w.dataset.liveTurn = "1"; } catch (e) {}
+        }
           pushStreamText(bubble, ev.text);
           touchStreaming(bubble);
           noteNewContent();
@@ -11540,7 +11615,7 @@ document.getElementById('resetBottomLines').onclick = async () => {
   fillSettings(r.settings);
   if (r.changed) {
     bottomLinesHint.textContent =
-      '已恢复默认底线（共 ' + r.settings.bottomLines.length + ' 条）。上一版存在 .state/bottomlines.backup.md';
+      '已恢复出厂默认底线（共 ' + r.settings.bottomLines.length + ' 条）。上一版存在 .state/bottomlines.backup.md';
   } else {
     bottomLinesHint.textContent = '本来就是默认底线，没动';
   }
@@ -11567,7 +11642,7 @@ document.getElementById('resetSafeWords').onclick = async () => {
   fillSettings(r.settings);
   if (r.changed) {
     safeWordsHint.textContent =
-      '已恢复默认安全词（' + r.settings.safeWords.join(' / ') + '）。上一版存在 .state/safewords.backup.md';
+      '已恢复出厂默认安全词（' + r.settings.safeWords.join(' / ') + '）。上一版存在 .state/safewords.backup.md';
   } else {
     safeWordsHint.textContent = '本来就是默认安全词，没动';
   }
@@ -12360,8 +12435,8 @@ function renderIdentityDlg() {
   }
   document.getElementById('idTip').textContent = sel.builtin
     ? (sel.edited
-      ? '这是内置身份，你已经改过一版了；点「恢复默认」能退回出厂的样子。内置身份不能删。'
-      : '这是内置身份，名字/简介/称呼都能改（改的是补丁，出厂那份不动，随时能恢复默认）。内置身份不能删。')
+      ? '这是内置身份，你已经改过一版了；点「恢复出厂默认」能退回出厂的样子。内置身份不能删。'
+      : '这是内置身份，名字/简介/称呼都能改（改的是补丁，出厂那份不动，随时能恢复出厂默认）。内置身份不能删。')
     : '改完点「保存」，再点「用这个身份」就生效。';
 }
 
@@ -12634,7 +12709,7 @@ async function openWhalePersonaDlg() {
   const defaultText = String(prof.defaultPersona || '');
   const ownText = String(prof.persona || '');
   area.value = ownText || defaultText;
-  area.placeholder = defaultText ? '（她的默认人设，点「恢复默认」随时能填回来）' : '（还没写人设）';
+  area.placeholder = defaultText ? '（她的默认人设，点「恢复出厂默认」随时能填回来）' : '（还没写人设）';
   btnSave.disabled = false;
 
   /** 「改过没」按内容算，不看后端那个 personaCustom 标记 —— 打开看看不该算改过 */
@@ -15512,111 +15587,6 @@ async function branchHere(at, btn) {
  * 界面就停在「上一个会话的画面 + 输入框被锁着」的样子，怎么点都没反应。
  * 现在最多等 8 秒，超时就当连不上，走下面那套「说一句 + 把输入区救回来」。
  */
-/**
- * 【切换会话后自动刷新·布防】
- * 0.2 秒后真刷新一次页面。锁写在 sessionStorage，刷新后由 settleReloadAfterSwitch 认账并清掉，
- * 所以一次切换只会刷一次，绝不会自己套自己。
- * 返回 true 表示已经布上，false 表示这次不刷（比如刚刷完回来）。
- */
-const RELOAD_KEY = 'mini-agent.reloadAfterSwitch';
-let _reloadTimer = null;
-/**
- * 【2026-11-01 二次修·一直在刷新】
- *
- * 上一版的病：bootSessions 先调 settleReloadAfterSwitch 把锁清掉，然后才 switchSession；
- * 而 switchSession → renderTurns → armReloadAfterSwitch 去看锁 —— 锁已经被清空了，
- * 于是它以为「没刷过」，又布一次防 → 0.2 秒后又 reload → 无限循环。
- *
- * 根治办法：锁在**页面一加载的这一瞬间**就消费掉，记在内存 _bootReloadId 里。
- * 之后这个页面活多久，都不会再因为同一次刷新而布防。内存变量刷新才重置，正好一一对应。
- */
-let _bootReloadId = null;
-try {
-  _bootReloadId = sessionStorage.getItem(RELOAD_KEY);
-  if (_bootReloadId) sessionStorage.removeItem(RELOAD_KEY);
-} catch {}
-function armReloadAfterSwitch(id, byClick) {
-  try {
-    if (!id) return false;
-    /**
-     * 【只认「人手动点会话」】
-     * 开机启动、导入、分支、删除后的复位也会走 switchSession —— 那些不该刷页面，
-     * 刷了就是开机转圈圈。只有主人真点了会话列表里那一行，才刷。
-     */
-    if (!byClick) return false;
-    if (window.__reloadingSoon) return false;   // 已经在这次刷新的路上，别叠
-    // 同一会话、刚刚才刷过：认账走掉，不再刷
-    /**
-     * 【2026-11-01 三修·刷新后第一次点会话不刷】
-     *
-     * 病根：上面那句 `if (!byClick) return false` 挡在 _bootReloadId 前面，
-     * 于是刷新回来自动切回会话那次（byClick=false）根本走不到消费那行 ——
-     * _bootReloadId 一直挂着，把主人刷新后的【第一次真点击】吃掉了。
-     *
-     * 其实防死循环不需要它：刷新回来的 boot 是 byClick=false，压根不会布防。
-     * 于是把这道判断整个拿掉，只留时间闸 + __armedOnce 兜底。
-     */
-    /**
-     * 【2026-11-01 五修·删掉时间闸】
-     *
-     * 原来这里有一道「上次 reload 不到 0.8 秒就不刷」。它有害无益：
-     * 刷新一次本身要花时间（reload + 重载 + 拉会话），主人刷完立刻点下一个会话，
-     * 距上次 reload 往往还不到 0.8 秒 —— 于是【第二个会话点了不刷】，正是主人报的现象。
-     *
-     * 防连刷其实不需要它：boot 那次是 byClick=false 根本不布防，
-     * 同一个页面里又有 __arming 挡着，两条就够。
-     */
-    /**
-     * 【2026-11-01 四修·切第二个会话就不刷了】
-     *
-     * 原来这里是 window.__armedOnce：「一个页面生命周期只准刷一次」。
-     * 可刷新之后页面是新开的，标志归零，看着没问题 —— 但主人要是连着切好几个会话，
-     * 第一个刷完（页面重载）→ 第二个再切 → 这时 __armedOnce 是新的 false，应该能刷。
-     *
-     * 真正的病根其实在上面那条 _bootReloadId（已删）。
-     * 这里保留一道轻闸就够了：2 秒内不重复布防（防止同一批切换事件连发两三次）。
-     */
-    if (window.__arming) return false;
-    window.__arming = true;
-    try { setTimeout(() => { window.__arming = false; }, 2000); } catch {}
-
-    if (_reloadTimer) { clearTimeout(_reloadTimer); _reloadTimer = null; }
-    _reloadTimer = setTimeout(() => {
-      _reloadTimer = null;
-      try {
-        // 刷新前再确认一次「现在看的还是这个会话」，中途换了就不刷（省一次白刷）
-        if (sessionId !== id) { window.__arming = false; return; }
-        sessionStorage.setItem(RELOAD_KEY, id);
-        try { sessionStorage.setItem('mini-agent.lastReloadAt', String(Date.now())); } catch {}
-        window.__reloadingSoon = true;
-        location.reload();
-      } catch (e) {
-        window.__reloadingSoon = false;
-      }
-    }, 200);
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * 【切换会话后自动刷新·认账】
- * 刷新回来了：如果锁里的目标正是「现在这个会话」，说明这次刷新就是刚才那次切换安排的，
- * 把锁清掉、不做任何事（页面已经是最干净的）。
- * 如果对不上，也把锁清掉 —— 免得一条陈锁把以后每一次切换都吃掉。
- */
-function settleReloadAfterSwitch(currentId) {
-  try {
-    let was = null;
-    try { was = sessionStorage.getItem(RELOAD_KEY); } catch {}
-    if (!was) return false;
-    try { sessionStorage.removeItem(RELOAD_KEY); } catch {}
-    return was === currentId;
-  } catch (e) {
-    return false;
-  }
-}
 async function switchSessionSafe(id, opts) {
   try {
     return await Promise.race([
@@ -15748,25 +15718,6 @@ async function switchSession(id, opts) {
   try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   renderTurns(r.session.turns);
-  /**
-   * 【2026-11-01 主人要：切换会话 0.5 秒后自动刷新一次屏幕（等于按一次 Ctrl+F5）】
-   *
-   * 和上次那个死循环不一样，这次是**真刷新页面**（location.reload），
-   * 不是重画。刷新把整个前端内存清空重建，脏状态全扔掉，页面回来是最干净的。
-   *
-   * 【为什么这次不会无限刷】：真正的闸是 sessionStorage 里那把锁 repoRefreshDone ——
-   *   · 点会话时 → 记下「待刷新目标」，然后 0.2 秒后 reload
-   *   · 刷新回来 → bootSessions 读 localStorage 切回同一个会话 →
-   *     发现锁里的目标正是这个会话 → 认账、把锁删掉、正常往下走
-   *   · 锁删了，这次切换就不会再触发第二次 reload。
-   * 万一刷新回来被带到别的会话（比如会话列表还没加载好），锁里认不出这个 id，
-   * 那就【不刷】，宁可一次不刷，也绝不让它一直刷。
-   *
-   * 另外 500ms 里如果主人手速快又点了别的会话，直接覆盖目标，
-   * 只有最后停下的那个会话会被刷新 —— 不会连刷好几个。
-   */
-  armReloadAfterSwitch(sessionId, opts && opts.byClick === true);
-  // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
 
   // 这个会话还在后台跑吗？
@@ -15796,9 +15747,13 @@ async function switchSession(id, opts) {
         try {
           const _l = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sessionId)).then((x) => x.json());
           _stillUp = Boolean(_l && _l.running);
-          if (_stillUp && typeof followLive === 'function') {
-            followLive(sessionId, Array.isArray(_l.events) ? _l.events.length : 0);
-          }
+        /* 【2026-11-02 修·切过来看不到这轮已经吐出来的字】
+         *
+         * attachLive 内部已经把这一轮画过一遍了，并且按 drawnParts 记好了
+         * 「画到第几个事件」，剩下的字由它挂的轮询接着长 —— 这里再叫一次
+         * followLive 等于同一个会话起两条轮询，后一条会把前一条顶掉，
+         * 起点还用的是 events.length（末尾），中间那一大段就永远画不出来了。
+         */
         } catch {}
         if (_stillUp) {
           busy = true;
@@ -15811,8 +15766,10 @@ async function switchSession(id, opts) {
         }
       }
     } else {
+      /* 【2026-11-02 修·切换会话后按钮还是「发送」】       *       *  attachLive 返回 true 说明服务端这一轮确实还在跑，可这里原来只设了       *  busy 和「正在发送」，**漏了 syncSendBtn()** —— 于是输入框锁着、       *  那行小字也出来了，唯独按钮还停在【发送】。主人一点就是发新一轮，       *  服务端回 409，那句话就石沉大海。       *       *  别的分支（往上一行的 _stillUp、往下的 else）都调了这个，唯独这条主路径漏。       */
       busy = true;
       showSending();
+      try { syncSendBtn(); } catch {}
     }
   } catch (err) {
     console.warn('[switchSession] 补画后台进度失败（不影响输入）:', err && err.message ? err.message : err);
@@ -16135,11 +16092,6 @@ async function bootSessions() {
    * 实在切不过去也**不新建**，留在原地并明说一句，让人自己点会话面板去选。
    */
   if (pick) {
-    /**
-     * 【这里不再调 settleReloadAfterSwitch】
-     * 锁在页面加载那一瞬间就已经被消费进内存 _bootReloadId 了（见 armReloadAfterSwitch 上面那段）。
-     * 这里要是再调一次，等于把保护提前用掉，接下来 switchSession → renderTurns 就又会布防 → 无限刷。
-     */
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         if (await switchSessionSafe(pick)) return;

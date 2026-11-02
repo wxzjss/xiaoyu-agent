@@ -2806,11 +2806,13 @@
         <fieldset>
           <legend>更新</legend>
           <div class="field">
-            <label>程序会自己检查新版本，有就自动换上、重启生效（只换程序文件，会话、人设、模型配置一个都不动）。</label>
+            <label>程序会自己查新版本，发现新版就把官方安装包下下来（下好会告诉你），你点一下才装。装的是官方发布的那一份，代码、依赖、图标一起换 —— 不会出现「代码新了、缺个包一用就崩」。</label>
             <span class="hint" id="updState">…</span>
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="updCheck">马上检查一次</button>
+            <button type="button" class="primary" id="updInstall" hidden>装一下</button>
+            <button type="button" class="ghost" id="updInstallNo" hidden>这次不装</button>
             <button type="button" class="primary" id="updRestart" hidden>重启让它生效</button>
           </div>
         </fieldset>
@@ -3635,10 +3637,24 @@ let selfScrollAt = 0;
 /* 【2026-11-01】上一次看到的「内容总高度」。用来分辨「内容长高了」和「主人往上翻了」——
    只看 gap 会把流式吐字误判成主人翻页，跟随状态自己就断了。 */
 let _lastDocH = 0;
+/* 【2026-11-03 修·跳最新被弹回 / 手动滚到底也弹回】
+ *  上一次的 scrollTop。判「主人自己往上翻」只认一件事：scrollTop 真的变小了。
+ *  内容变高时浏览器只会把 scrollTop 往下推（变大）或不动，绝不会变小 ——
+ *  所以这条判据不会被流式吐字误伤。 */
+let _lastTop = 0;
+/* 【2026-11-03 修·切回一个正在跑的会话，画面停在半路、不跟到底】
+ *  重画（renderTurns / paintSnapshot）是「先删再照清单画」，中间那一瞬内容比原来矮，
+ *  浏览器会把 scrollTop 夹小并甩出 scroll 事件。那个事件可能在重画结束之后才到，
+ *  那时 _lastTop 已经是新值、看起来就像「主人往上翻了」—— 跟随状态被误摘掉，
+ *  后面新消息再也不把他带回底部。
+ *  这里给一个明确的静默窗口：这期间来的 scroll 只同步记认，不碰 stickBottom。 */
+let __ignoreScrollUntil = 0;
+let __touchTop = 0;
 
 function hardScrollBottom() {
   if (!log) return;
   log.scrollTop = log.scrollHeight;
+  try { _lastTop = log.scrollTop; } catch (e) {}
   // 打戳：紧跟着来的那个 scroll 事件是我们自己造成的，不算主人翻页
   selfScrollAt = Date.now();
 }
@@ -3770,12 +3786,37 @@ function jumpToBottom() {
   unseenNew = 0;
   paintToBottom();
   hardScrollBottom();
+  /* 【2026-11-03】点箭头 = 主人明确要看最新。重画/图片撑高可能紧接着发生，
+   *  再补两拍贴底，别让他点了没反应。 */
+  requestAnimationFrame(() => { if (stickBottom) hardScrollBottom(); });
+  setTimeout(() => { try { if (stickBottom) hardScrollBottom(); } catch (e) {} }, 120);
+}
+
+/**
+ * 【2026-11-03 修·切回来画面停在半路、离底两三百像素不跟了】
+ *
+ *  实测：切回一个正在跑的会话，按钮/提示都对，`stickBottom` 也是 true，
+ *  可视口离底 299px 就再也不动了 —— 重画（先删再画）让高度先缩短再长回来，
+ *  而 ResizeObserver 只在高度「变」的那一下贴底；等字体/换行把最后那点高度撑开时，
+ *  高度没再变，就没人管了。
+ *
+ *  这里给一个「只要还在跟随、就贴到底」的小函数：重画收尾补一拍、跟播每拍都调一次。
+ *  不在跟随时它什么都不做 —— 主人在往上翻，绝不能把他拽回来。
+ */
+function stickIfFollowing() {
+  try { if (stickBottom && log) hardScrollBottom(); } catch (e) {}
 }
 
 /** 切会话、清空、重新渲染历史之后调它：无条件回到底部。 */
 function resetScrollStick() {
   stickBottom = true;
   unseenNew = 0;
+  /* 【2026-11-03 修·跳最新被弹回】
+   *  这两个是「上一次看到的」记认，跨会话不重置的话，换会话后第一个 scroll 事件
+   *  一定被判成「内容长高了」而整段跳过，跟随状态就粘死在 true 上：
+   *  主人怎么往上翻都不算脱离跟随，接着任何内容变高都把他拽回底部。 */
+  _lastDocH = 0;
+  _lastTop = 0;
   // 换了一个会话 / 重画了一遍：把「哪段数过了」的记号一起清掉，
   // 不然上个会话的记号会在这边挡着，新说的话数不上。
   try {
@@ -3799,11 +3840,16 @@ function resetScrollStick() {
    * 再用一次 rAF 兜字体载入后的高度变化。总共 2 次读取，比原来 5 次少一半多。
    */
   paintToBottom();
+  /* 历史整屏换掉那一下，高度是从大变小的：浏览器会把 scrollTop 夹小并甩 scroll 事件。
+     那一下绝不能被当成「主人往上翻」—— 开个静默窗口，贴底期间只同步记认。 */
+  __ignoreScrollUntil = Date.now() + 260;
   const _scrollOnce = () => {
     try {
       if (!stickBottom || !log) return;
       // scrollTo 走合成线程，不像 scrollTop 那样每次都逼一个同步布局
       log.scrollTo({ top: log.scrollHeight, behavior: "auto" });
+      _lastDocH = log.scrollHeight;
+      _lastTop = log.scrollTop;
     } catch { hardScrollBottom(); }
   };
   _scrollOnce();
@@ -3816,6 +3862,38 @@ function resetScrollStick() {
     log.addEventListener('scroll', () => {
       const docH = log.scrollHeight;
       const gap = docH - log.scrollTop - log.clientHeight;
+      /* 【2026-11-03 修·跳最新被弹回 / 手动滚到底也弹回】
+       *
+       *  原来这里靠「内容高度变了就跳过」来避免把流式吐字误判成主人翻页。
+       *  可它连 stickBottom 的更新一起跳过了，于是：换会话 / 重画 / 内容一变高，
+       *  第一个 scroll 事件必然走这一条 return —— 跟随状态就停在原来的 true 上。
+       *  后果正是主人报的两件事：①往上翻历史，箭头永远不出现（判定没脱离）；
+       *  ②任何内容变高都走 ResizeObserver 把他拽回底部（看着像「跳到底又被弹回来」）。
+       *
+       *  现在只认一个铁证：scrollTop 真的变小了。内容变高只会让它变大或不动。 */
+      const _topNow = log.scrollTop;
+      /* 【2026-11-03 修·重画期间不许判「主人往上翻」】
+       *  paintSnapshot 是「先删整块、再照清单重画」：中间那一瞬内容比原来矮，
+       *  浏览器会自动把 scrollTop 夹小 —— 光看 scrollTop 变小就会当成主人在往上翻。
+       *  这样「点箭头跳到底」之后新消息一来，跟随立刻断，看着像被弹回原处。
+       *  重画前后由 paintSnapshot 打 __repainting，这里是判据。 */
+      /* 重画刚结束的那一小段：高度还在重排、scrollTop 可能被浏览器临时夹小，
+         此时来的 scroll 事件一律不算主人翻页（见 __ignoreScrollUntil 的说明）。 */
+      if (Date.now() < __ignoreScrollUntil) {
+        _lastDocH = docH;
+        _lastTop = _topNow;
+        return;
+      }
+      let _repainting = false;
+      try { _repainting = Boolean(window.__repainting); } catch (e) {}
+      const _shrank = docH < _lastDocH - 4;
+      const _wentUp = !_repainting && !_shrank && _topNow < _lastTop - 4;
+      _lastDocH = docH;
+      _lastTop = _topNow;
+      if (_wentUp) {
+        if (stickBottom) { stickBottom = false; paintToBottom(); }
+        return;
+      }
       /**
        * 这一下如果是我们自己滚出来的（跟随、内容变高），就别去改 stickBottom。
        *
@@ -3836,12 +3914,22 @@ function resetScrollStick() {
        * 网页是先甩 scroll 事件、再把新内容排上去的 —— 那一瞬间 scrollTop 还是老值，
        * gap 忽然变成几百，就被判成「主人往上翻了」，跟随自己就断了。
        *
-       * 现在多一道关：**内容高度变了就不算主人翻页**。
-       * 只有「内容高度一点没变，而 scrollTop 真的变小了」才当成主人自己往上滚。
+       * 所以这里必须把「内容在长高」和「主人在翻页」分开判：
+       *
+       * 【2026-11-03 修·切回一个正在跑的会话，画面停在半路、箭头一直亮着】
+       *  那一版把「内容长高就跳过」整条删掉了，于是反过来出新毛病：
+       *  切回来时历史很长、贴底那一刻内容还没排完（字体/图片），等排完 gap 变成一千多，
+       *  紧接着来的 scroll 事件就走下面那句 gap<=80 判定 —— 跟随当场被摘掉，
+       *  画面永远停在半路，箭头一直亮。
+       *
+       *  现在：内容长高（docH 变大）**不是**主人翻页 —— 该跟随就补一次贴底再走；
+       *  只有「高度没长高、scrollTop 还真的变小了」才算主人自己往上翻（_wentUp 上面已处理）。
        */
-      const grew = docH > _lastDocH;
-      _lastDocH = docH;
-      if (grew) return;
+      const grew = docH > _lastDocH + 4;
+      if (grew) {
+        if (stickBottom) hardScrollBottom();
+        return;
+      }
 
       const wasStick = stickBottom;
       stickBottom = gap <= SCROLL_STICK_PX;
@@ -3851,6 +3939,29 @@ function resetScrollStick() {
       } else if (!stickBottom && wasStick) {
         paintToBottom();
       }
+    }, { passive: true });
+  }
+
+  /* 【2026-11-03 修·跳最新被弹回】
+   *  滚轮往上、手指往下滑，是主人「我要看上面」最明确的意图。
+   *  这类事件比 scroll 事件早到，先在这儿把跟随状态摘掉，
+   *  流式那边就算紧接着要贴底也不会再拽他。 */
+  if (log) {
+    log.addEventListener('wheel', (ev) => {
+      try {
+        if (ev.deltaY < 0) {
+          if (stickBottom) { stickBottom = false; paintToBottom(); }
+        }
+      } catch (e) {}
+    }, { passive: true });
+    log.addEventListener('touchstart', () => {
+      try { __touchTop = log.scrollTop; } catch (e) {}
+    }, { passive: true });
+    log.addEventListener('touchmove', () => {
+      try {
+        if (log.scrollTop < __touchTop - 6 && stickBottom) { stickBottom = false; paintToBottom(); }
+        __touchTop = log.scrollTop;
+      } catch (e) {}
     }, { passive: true });
   }
 
@@ -4509,6 +4620,39 @@ function snapshotFingerprint(items) {
 const lastSnapFp = new Map();
 
 function paintSnapshot(sid, srcLive) {
+  /* 【2026-11-03】重画期间让滚动那块知道「高度变化是我们自己造成的」 */
+  try { window.__repainting = (Number(window.__repainting) || 0) + 1; } catch (e) {}
+  try {
+    return paintSnapshot0(sid, srcLive);
+  } finally {
+    try {
+      window.__repainting = Math.max(0, (Number(window.__repainting) || 0) - 1);
+      /*
+       * 【2026-11-03 修·切回一个正在跑的会话，画面停在半路不跟到底】
+       *
+       *  重画是「先删整块、再照清单画」，中途内容比原来矮 → 浏览器把 scrollTop 夹小。
+       *  重画一结束就同步记认，会把「被夹小后的位置」当成主人的位置；紧接着来的
+       *  scroll 事件就对不上，跟随状态被摘掉 —— 画面永远停在半路，箭头一直亮着，
+       *  主人报的「切回来没有自动跳到最新消息位置」正是这个。
+       *
+       *  现在：① 结束瞬间开一个 260ms 的静默窗口，期间的 scroll 只同步记认；
+       *        ② 下一帧（布局稳定后）如果还在跟随，就补一次贴底，并把记认对齐。
+       */
+      __ignoreScrollUntil = Date.now() + 260;
+      requestAnimationFrame(() => {
+        try {
+          if (stickBottom && log) hardScrollBottom();
+          _lastDocH = log ? log.scrollHeight : _lastDocH;
+          _lastTop = log ? log.scrollTop : _lastTop;
+        } catch (e) {}
+      });
+      /* 再补一拍：字体/换行把最后那点高度撑开是排在后面的，一帧往往还没到位 */
+      setTimeout(() => { try { if (stickBottom) hardScrollBottom(); } catch (e) {} }, 120);
+    } catch (e) {}
+  }
+}
+
+function paintSnapshot0(sid, srcLive) {
   const items = Array.isArray(srcLive) ? srcLive : (srcLive && Array.isArray(srcLive.items) ? srcLive.items : null);
   if (!items) return null;
   if (typeof sid === 'string' && sessionId !== sid) return null;
@@ -5035,10 +5179,41 @@ function wantFocus(force) {
  */
 function settleComposer(opts) {
   stopping = false;
-  busy = false;
-  hideSending();
+  /**
+   * 【2026-11-03 修·走【会话】面板切回来，按钮变【发送】、提示不见、消息被吞】
+   *
+   *  面板里点一行，收尾是 settleComposer({focus:true})。它原来无条件
+   *  busy=false + hideSending()，而 switchSession 刚按服务端「这一轮还在跑」
+   *  把 busy 设成 true、把「正在发送消息」亮起来 —— 紧接着就这儿被抹平。
+   *
+   *  后果正是主人报的那一串：按钮从【停止】变【发送】、左上角提示没了、
+   *  一按发送就撞服务端 409（这一轮还在跑，不能再开一轮），话就石沉大海；
+   *  必须刷新页面（那条路不经过这里）才恢复正常。
+   *
+   *  现在：不无条件清。先照旧把输入区放开，然后异步问一次服务端 ——
+   *  它说在跑就保持锁着（按钮【停止】+ 提示亮），说没跑才放开。
+   *  问不到也放开（宁可放过一次「其实在跑」，也别把输入框焊死）。
+   */
   syncSendBtn();
   releaseComposer(opts);
+  const _sid = sessionId;
+  setTimeout(() => {
+    const _fin = (up) => {
+      try {
+        if (sessionId !== _sid) return;
+        if (up) { busy = true; showSending(); } else { busy = false; hidingSendingSafe(); }
+        syncSendBtn();
+      } catch (e) {}
+    };
+    let _done = false;
+    try {
+      fetch('/api/chat/live?sessionId=' + encodeURIComponent(_sid))
+        .then((r) => r.json())
+        .then((l) => { _done = true; _fin(Boolean(l && l.running) || turnsInFlight.has(_sid)); })
+        .catch(() => { _done = true; _fin(false); });
+    } catch (e) { _done = true; _fin(false); }
+    setTimeout(() => { if (!_done) { _done = true; _fin(turnsInFlight.has(_sid)); } }, 2500);
+  }, 0);
 }
 
 /**
@@ -9881,8 +10056,12 @@ async function refreshAgentChip() {
      现在牌子上的名字 = 名单里排第一的那个（谁排第一谁先说话，说的就是这份名单）。
      名单里一个人都没有时才退回「当前绑的卡」/小鱼。 */
   const head = String((grpMembers[0] && grpMembers[0].name) || (swapped ? name : '小鱼'));
-  // 气泡署名跟着这个走（见 addAssistant / renderTurns）
-  try { if (head) mainAgentName = head; } catch {}
+  /* 【2026-11-02 修·切到别人的会话再切回来，这边的历史消息名字也被改成别人】
+   * 原来这里把「名单里排第一的名字」赋给全局 mainAgentName，而 mainAgentName 是所有气泡的署名来源。
+   * 于是切到小白曦那边、切回来，这边满屏老消息的署名也跟着变 —— 主人一眼就看出不对。
+   * 现在改用「这个会话自己绑的身份」（没换过就是小鱼），跟名单顺序彻底脱钩。
+   * 牌子上的 head 照旧只用于显示，不再感染气泡署名。 */
+  try { const __bn = String((swapped ? name : '') || '小鱼'); if (__bn) mainAgentName = __bn; } catch {}
   const tail = mates.length ? ' + ' + (mateNames.length ? mateNames.join('、') : String(mates.length)) : '';
   // 屋里有人但要叫名字才应：牌子上标一下，不然主人会觉得「她怎么不吭声」
   const quietN = (grp && !grp.error && Array.isArray(grp.quietIds)) ? grp.quietIds.length : 0;
@@ -10514,7 +10693,7 @@ async function toggleGroupMember(id) {
   agentGroup = Array.isArray(r.agentIds) ? r.agentIds.map(String) : [];
   renderGroupRow();
   try { refreshAgentChip(); } catch { /* 忽略 */ }
-  try { refreshWhoRail(); } catch { /* 忽略 */ }
+  /* 【2026-11-02 删重复】上面第 1 行已经 await 过一次 refreshWhoRail 了，这里再来一次是多余的：第二次不带 await，请求什么时候回来不知道，可能赶在 renderTurns 重建 DOM 的中间 —— 牌子就画进了一个已经被换掉的容器里，看起来就是「屋里的人」那一栏空着。只保留上面那次带 await 的。 */
 }
 
 /**
@@ -10537,7 +10716,6 @@ async function setAgentQuiet(id, quiet) {
   renderAgentList();
   renderGroupRow();
   try { refreshAgentChip(); } catch { /* 忽略 */ }
-  try { refreshWhoRail(); } catch { /* 忽略 */ }
 }
 
 /** 底下那行「这个会话里用谁说话」：按当前选中卡和绑定状态长成该有的样子 */
@@ -12179,7 +12357,27 @@ async function refreshUpdate() {
     const d = new Date(r.nextAt);
     bits.push(`下次自动查是 ${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
   }
+  // 新版安装包已经下好、等人点「装一下」
+  const ib = document.getElementById('updInstall');
+  const nb = document.getElementById('updInstallNo');
+  const ready = r.ready || null;
+  if (ready && ready.to) {
+    bits.unshift(`新版 ${ready.to} 已经下好了（${Math.round((ready.size || 0) / 1048576)}MB，校验过），点「装一下」就换掉`);
+  }
   el.textContent = bits.join('；');
+  if (ib) {
+    ib.hidden = !ready;
+    nb.hidden = !ready;
+    if (ready) {
+      // 装完要重启，正在跑的这一轮会被掐断 ——
+      // 只有「这个会话在跑」才拦；别的会话在跑也让装（服务端那边会再判一次）
+      let busyNow2 = false;
+      const at2 = await fetch('/api/running').then((x) => x.json()).catch(() => null);
+      busyNow2 = Boolean(at2 && at2.running && at2.running.some((x) => x.sessionId === sessionId));
+      ib.disabled = busyNow2;
+      ib.title = busyNow2 ? '这个会话还在跑，等它说完再装' : '关掉程序、装上新版、再打开';
+    }
+  }
   // 已经下好新版等着重启：把重启按钮亮出来。但正在跑对话的时候不给点——
   // 重启会把那一轮掐掉，草稿虽然能救回来，但没必要冒这个险。
   if (btn) {
@@ -12217,9 +12415,12 @@ if (document.getElementById('updCheck')) {
       }).then((x) => x.json());
       if (!r.ok) {
         el.textContent = '查不了：' + (r.error || '未知原因');
+      } else if (r.status === 'ready') {
+        el.textContent = r.detail;
+        addSysNote('新版 ' + r.to + ' 下好啦，在设置里点「装一下」就换掉 (๑•̀ㅂ•́)و✧');
       } else if (r.status === 'updated') {
         el.textContent = r.detail;
-        addSysNote('已经自动更新到 ' + r.to + ' 了，重启一下小鱼Agent 就生效（会话和设置都不动）');
+        addSysNote('已经更新到 ' + r.to + ' 了，重启一下小鱼Agent 就生效（会话和设置都不动）');
       } else if (r.status === 'same') {
         el.textContent = r.detail;
         addSysNote('已经是最新的 ' + (r.from || '') + ' 啦 (๑•̀ㅂ•́)و✧');
@@ -12233,6 +12434,43 @@ if (document.getElementById('updCheck')) {
       btn.disabled = false;
       btn.textContent = old;
     }
+  };
+}
+
+// 「装一下」：真的调用安装脚本，程序会关掉、装完自己再打开
+if (document.getElementById('updInstall')) {
+  document.getElementById('updInstall').onclick = async () => {
+    const btn = document.getElementById('updInstall');
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '正在起安装…';
+    try {
+      const r = await fetch('/api/update/install', { method: 'POST' }).then((x) => x.json()).catch(() => null);
+      if (!r || !r.ok) {
+        addSysNote('装不了：' + ((r && r.error) || '未知原因'));
+        return;
+      }
+      addSysNote('程序这就关掉去装新版，装完会自己打开，稍等十几秒 (๑•̀ㅂ•́)و✧');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  };
+}
+
+// 「这次不装」：把下好的包删掉，别占着 90 多 MB
+if (document.getElementById('updInstallNo')) {
+  document.getElementById('updInstallNo').onclick = async () => {
+    const ans = await askConfirm({
+      title: '这次不装',
+      body: '下好的安装包会删掉，下次启动再重新查、重新下。\n\n（不删也没什么，只是占 90 多 MB 磁盘。）',
+      ok: '删掉',
+      danger: false,
+    });
+    if (!ans) return;
+    await fetch('/api/update/dismiss', { method: 'POST' }).catch(() => null);
+    addSysNote('这次不装，包已经删了');
+    await refreshUpdate();
   };
 }
 
@@ -15484,7 +15722,16 @@ function renderTurns(turns, opts) {
             // 后接进来的那段不重复挂按钮，按钮只在第一段上
           } else {
             wrap = addEl('', 'msg assistant', frag);
-            wrap.innerHTML = '<div class="role">' + (mainAgentName || '小鱼') + '</div>';
+            /* 【2026-11-02 修·切到别人身份后旧消息署名全被刷掉】
+             * 原来这里一律用全局的 mainAgentName —— 那个变量每次切会话都被
+             * 改写成「名单第一是谁」。于是切进一个小白曦排第一的会话，
+             * 满屏历史消息的署名刷地全成了小白曦。
+             * 主人 2026-10-28 就定过：身份名跟着消息一起存，画的时候直接用那份，
+             * 不许看「现在是哪个身份」。所以这里优先用这条消息自带的 who。 */
+            wrap.innerHTML =
+              '<div class="role">' +
+              (turn && turn.who ? String(turn.who) : (mainAgentName || '小鱼')) +
+              '</div>';
             // 搜会话时靠这个下标把命中那条滚到眼前
             if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
             b = document.createElement('div');
@@ -15559,6 +15806,18 @@ function renderTurns(turns, opts) {
   // 一次性替换 + 只滚一次
   // 【2026-10-31 末尾 flush】：最后那一串还没遇到 user，工具得在收尾前画出来
   flushHub();
+  /*
+   * 【2026-11-03 修·切回一个正在跑的会话，画面停在半路、箭头一直亮着】
+   *
+   *  replaceChildren 这一下把整屏历史换掉，高度会骤变，浏览器随即甩一个 scroll 事件。
+   *  可那一刻 _lastTop 还是【上一个会话】的位置（比如 13851），换上来的这屏比它矮，
+   *  scrollTop 被夹到 5746 —— 滚动回调就判成「主人自己往上翻了」，跟随状态被摘掉。
+   *  之后无论怎么跟播、怎么重画，都不会再把他带回底部：画面停在半路，箭头一直亮。
+   *
+   *  所以重画这一整段（含紧接着的 attachLive / paintSnapshot）开一个静默窗口，
+   *  期间的 scroll 只同步记认、不碰 stickBottom。窗口到期后由贴底那一步对齐。
+   */
+  __ignoreScrollUntil = Date.now() + 800;
   log.replaceChildren(frag);
   try { window.__renderFrag = null; } catch {}
   /* 记一笔：这一屏现在是谁的。下次 renderTurns 靠它分辨「同一个会话在重画」还是「换人了」 */
@@ -16041,7 +16300,6 @@ async function createSessionEx(opts = {}) {
   // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
   try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 新会话是默认档
-  try { refreshWhoRail(); } catch { /* 忽略 */ }
   // 【2026-10-29 · 新建的会话必须把开场白画出来】
   // 服务端建会话时已经垫好了开场白（她的第一句），可这一路以前只把聊天区清空、
   // 一条都不画 —— 主人看到的是空会话，还以为设置里填的开场白没生效
@@ -16060,7 +16318,12 @@ async function createSessionEx(opts = {}) {
   } catch (err) {
     console.warn('[createSessionEx] 开场白没画出来（不影响聊天）:', err && err.message ? err.message : err);
   }
-  log.innerHTML = '';
+  /* 【2026-11-02 修·开场白画了又被自己擦掉】
+   * 这里原来是一句 log.innerHTML = ''，偏偏排在 renderTurns 后一行 ——
+   * 刚把开场白画进去，下一行就整个清掉，看起来就像开场白根本没生效。
+   * 现在这句话不删也不清：上面已经画好了，就留着；真要清的地方另有其处。
+   * 顺带删掉上面那个重复的 refreshWhoRail()（前面刚 await 过一次）。
+   */
   // 【清空历史后扫残留光标】
   // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
   // 万一进程上次是被强杀的，类就留在那儿了 —— 这里扫一遍收干净。
@@ -16381,6 +16644,12 @@ const PROVIDERS = [
     match: /feiyuapi/i,
     models: ['deepseek-v4.1-flash'],
     hint: '飞鱼中转站，地址自带 /v1。',
+  },
+  {
+    key: 'beiluo', name: '北洛中转', base: 'https://beiluoxi.xyz/v1',
+    match: /beiluoxi/i,
+    models: ['deepseek-v4.1-flash'],
+    hint: '北洛中转站，地址自带 /v1。',
   },
   {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',

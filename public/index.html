@@ -4797,12 +4797,18 @@ function paintSnapshot0(sid, srcLive) {
       pushStreamText(b, String(it.t || ''));
       lastBubble = b;
     } else if (it.k === 'think') {
-      if (!think) {
-        const _oldThink = takeReuse('think');
-        think = _oldThink ? adoptThink(_oldThink) : openThink();
-        try { if (think && think.el) think.el.dataset.liveTurn = '1'; } catch (e) {}
-      }
-      try { think.push(String(it.t || '')); } catch (e) {}
+      /* 【一段思考一块 —— 2026-11-02 第二次修「抽搐」】
+       *  原来是把清单里连着的好几段思考并进同一块：第一段 set 进去没问题，
+       *  第二段 set 时它不是第一段的「续写」，整块内容被换掉一次 ——
+       *  正在长的思考块每拍被整体重写，看着就是抽搐。
+       *  现在按清单 1:1 画：一段一块，各自照自己的文字更新，谁也不动谁。
+       *  节点照旧优先复用（takeReuse），所以块的「身份」和展开状态都保得住。 */
+      const _oldThink = takeReuse('think');
+      think = _oldThink ? adoptThink(_oldThink) : openThink();
+      try { if (think && think.el) think.el.dataset.liveTurn = '1'; } catch (e) {}
+      try { if (typeof think.set === 'function') think.set(String(it.t || '')); else think.push(String(it.t || '')); } catch (e) {}
+      try { think.finish(); } catch (e) {}
+      think = null;
     } else if (it.k === 'tool') {
       closeThink();
       const _oldTool = takeReuse('tool');
@@ -7903,11 +7909,18 @@ function adoptThink(d) {
   const obj = {
     el: d,
     reused: true,
-    push(text) {
+    push(delta) { this.set((body && body._full ? body._full : '') + String(delta || '')); },
+    set(text) {
       const t = String(text || '');
       if (body && body._full === t) return;          // 和屏幕上一样就别碰 DOM
+      const _cur = body ? (body._full || '') : '';
       if (body) body._full = t;
-      try { if (body) body.textContent = t; } catch (e) { return; }
+      if (body) {
+        try {
+          if (_cur && t.indexOf(_cur) === 0) body.appendChild(document.createTextNode(t.slice(_cur.length)));
+          else body.textContent = t;
+        } catch (e) { return; }
+      }
       const flat = t.replace(/\s+/g, ' ').trim();
       if (title && flat) {
         title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
@@ -7918,8 +7931,7 @@ function adoptThink(d) {
     finish() {
       if (!body || !body.textContent.trim()) { try { d.remove(); } catch (e) {} return; }
       if (meta) meta.textContent = body.textContent.length + ' 字 · 点击展开';
-      /* 主人自己点开的，不许自动收起 —— 他专门报过这条 */
-      try { if (d.open && d.dataset.userOpened !== '1') d.open = false; } catch (e) {}
+      /* 开合状态一个字都不动：主人点开的块，重画多少次都还开着 */
     },
   };
   try { if (body) obj.push(body.textContent); } catch (e) {}   // 让 _full 起点 = 现状
@@ -8150,11 +8162,23 @@ function openThink() {
 
   return {
     el: d,
-    push(text) {
+    /* 【2026-11-02 主人第二次报「还是疯狂抽搐」——这次是我自己弄出来的】
+     * 上一版把 push 从「累加」改成了「整体设置」，可流式那条路（runTurn / SSE）
+     * 传进来的是增量片段：每来一小段就把整块内容换掉一次，字在跳、块在闪，
+     * 看着就是抽搐。现在两个语义分开：
+     *   · push(delta) —— 流式用，往后接；
+     *   · set(full)   —— 整组快照用，一次给全文（内容一样就一个 DOM 都不碰）。 */
+    push(text) { this.set((body._full || '') + String(text || '')); },
+    set(text) {
       const t = String(text || '');
-      if (body._full === t) return;
+      const cur = body._full || '';
+      if (cur === t) return;
+      /* 【只追加，不重排】整组快照给的正文永远是「上一拍的超集」（思考只会越来越长），
+       *  所以差异部分是一段尾巴 —— 往后接一个文本节点就行，
+       *  不用把整块内容换掉（那会让浏览器把这块整个重新排版，看着就是抽搐）。 */
+      if (t.indexOf(cur) === 0) { try { body.appendChild(document.createTextNode(t.slice(cur.length))); } catch (e) { body.textContent = t; } }
+      else { body.textContent = t; }
       body._full = t;
-      body.textContent = t;
       const flat = body.textContent.replace(/\s+/g, ' ').trim();
       if (flat) {
         title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
@@ -8166,8 +8190,10 @@ function openThink() {
     finish() {
       if (!body.textContent.trim()) { d.remove(); return; }
       meta.textContent = body.textContent.length + ' 字 · 点击展开';
-      /* 主人自己点开的块，收尾时不许给他关上 */
-      try { if (d.open && d.dataset.userOpened !== '1') d.open = false; } catch (e) {}
+      /* 【2026-11-02 主人第三次报：展开最新的思考链，一有新内容就自动闭合】
+       *  原因就是原来这里那行 d.open = false：它每一拍都执行一次，把主人刚展开的
+       *  思考链在下一段内容到来时合上了。现在新建时本来就是收起的（不再自动展开），
+       *  收尾就完全不必碰开合 —— 主人点开的那一块，谁来都不许关。 */
     },
   };
 }
@@ -16250,6 +16276,14 @@ async function switchSession(id, opts) {
   // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
   try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
+  /* 【2026-11-02 修·切回来自家会话，历史署名全变成上一个会话的人】
+   * 病根在顺序：renderTurns 先把 578 条历史画出来，而它给每条气泡配署名时
+   * 优先看这条消息自带的名字，老消息没存名字就退回全局 mainAgentName ——
+   * 可这个全局变量要等 refreshAgentChip() 跑完才会改成「这个会话是谁」。
+   * 于是画图时拿到的还是上一个会话的人名，满屏都是他。
+   * 按 F5 重开就正常，正因为那时 chip 早就算完了。
+   * 现在：画之前先把身份算准，算不出来也照画（不能因为一个名字卡住整屏）。 */
+  try { if (typeof refreshAgentChip === 'function') await refreshAgentChip(); } catch { /* 名字算不出来也要画 */ }
   renderTurns(r.session.turns);
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
 

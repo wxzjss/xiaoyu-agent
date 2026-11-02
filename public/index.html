@@ -4512,15 +4512,78 @@ function paintSnapshot(sid, srcLive) {
   const items = Array.isArray(srcLive) ? srcLive : (srcLive && Array.isArray(srcLive.items) ? srcLive.items : null);
   if (!items) return null;
   if (typeof sid === 'string' && sessionId !== sid) return null;
+  /**
+   * 【空清单 = 没有快照，不是「什么都不该有」】—— 2026-11-02 严格自检抓到的真问题
+   *
+   *  实测：一个已经跑完的会话，拿 { items: [] } 调一次，屏幕上那份 4234 字的正文
+   *  当场被清空，只剩开头那条招呼 —— 因为清理那段（①②）先把自己的东西删了，
+   *  然后「照清单从头画」这一遍什么都没画。
+   *
+   *  什么时候会走到：服务端重启后 live 没了、或者这一轮刚开跑一个字还没吐，
+   *  拉回来的 items 就是空的。这时候屏幕上的东西是「上一次画好的」，不该动它 ——
+   *  要更新内容，靠的是「跑完之后按历史对齐（settleFromHistory）」那条路。
+   *
+   *  一句话：空的快照只能说明「我这边没话可说」，不能说明「屏幕上不该有东西」。 */
+  if (!items.length) return null;
+  /**
+   * 【2026-11-02 严格自检抓到的第五个真问题】跑完之后，一个字都不许照直播快照画。
+   *
+   *  直播事件流有上限（服务端 LIVE_SOFT_MAX），长回复会被压薄 —— 正文中间整段丢掉。
+   *  实测：5892 字的长回复，跑完时事件流只剩 5421 字。
+   *
+   *  原来这里有道「信历史」的闸，判据是「屏幕上那个历史正文容器不比快照短」。
+   *  可清理那一段是先跑的（它会把「历史里本轮那半截」删掉交给重画），闸再判时
+   *  那个容器已经没了 —— 于是照压薄的快照重画：完整的历史被短的一版盖掉。
+   *
+   *  根治的办法不是加判据，是划清边界：这一轮结束了，屏幕长什么样由**历史**说了算。
+   *  直播快照只负责「还在跑的那一轮」。跑完的对齐走 settleFromHistory（按历史整屏重画）。
+   */
+  if (srcLive && srcLive.running === false) return null;
   /* 本轮正文（用来判断历史里那块是不是本轮的半截）。洗 markdown + 抹空白，两边同一套口径。 */
   const nrm = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
   let bodyText = '';
   for (const it of items) if (it && it.k === 'text') bodyText += String(it.t || '');
-  /* ① 先清掉自己画过的那一组 */
+  /* ① 先清掉自己画过的那一组（正文容器 + 提示行）
+   *
+   *  【2026-11-02 严格自检抓到的真问题】提示行原来没清理。
+   *  快照里带 note 的那一轮（插话提醒、限流提示），每重画一次就多挂一条：
+   *  实测同一份快照连调三次，屏幕上从 1 条变成 4 条一模一样的提示。
+   *  正文容器有 data-live-turn 标记所以清得掉，提示行当时没标记 —— 现在补上。
+   *  只清带标记的：别处（重发按钮、断线说明）画的提示不带标记，一个都不能动。 */
   try {
     for (const c of document.querySelectorAll('.msg.assistant[data-live-turn="1"]')) {
       try { c.remove(); } catch (e) {}
     }
+    for (const n of document.querySelectorAll('.sysnote[data-live-note="1"]')) {
+      try { n.remove(); } catch (e) {}
+    }
+    /* 【2026-11-02 严格自检抓到的第二个真问题】别人说的话原来也不清。
+     *  小鲸那句正在流式长（「我」→「我来」→「我来说」），每重画一次就多一条：
+     *  实测五个字蹦出来，屏幕上留下五条气泡。
+     *  现在快照画的 say 都带 data-live-turn，重画时一起清；
+     *  流式那条在定稿前不带标记，所以正在写的不会被打断。 */
+    for (const w of document.querySelectorAll('.msg.whale[data-live-turn="1"], .msg.mate[data-live-turn="1"]')) {
+      try { w.remove(); } catch (e) {}
+    }
+    /* 【2026-11-02 严格自检抓到的第三个真问题】思考块和工具卡原来也不清。
+     *  它们不是挂在 .msg.assistant 里面，而是直挂 #log 的 <details>：
+     *  于是每重画一次就多一份「正在想…」和多一张「跑命令 完成」。
+     *  实测连画三次：思考块 1→4、工具卡 1→6。现在一律打标记、一律清。 */
+    /* 注意选择器：聊天区那个容器的 class 是空的，只有个名叫 log 的 id ——
+     * 一开始写成 `.log .tool` 一个都选不中（标记打上了、照样原地叠），别再这么写。 */
+    try {
+      const lg = document.getElementById('log');
+      if (lg) {
+        for (const t of lg.querySelectorAll('.think[data-live-turn="1"], .tool[data-live-turn="1"]')) {
+          try { t.remove(); } catch (e) {}
+        }
+        /* 柜子（foldLiveTools 合出来的 toolhub）自己不带标记 —— 里面被清空了就一起扔掉，
+         * 省得屏幕上留一个「调了 N 次工具」的空柜门。 */
+        for (const h of lg.querySelectorAll('.toolhub')) {
+          try { if (!h.querySelector('.tool')) h.remove(); } catch (e) {}
+        }
+      }
+    } catch (e) {}
     /* ② 再看历史里有没有「本轮那半截」：内容是本轮正文的开头（或整段都在正文里）就交给我们重画。
      *  这一步只在快照有正文时做 —— 空快照不许动历史。 */
     const nb = nrm(bodyText);
@@ -4533,31 +4596,6 @@ function paintSnapshot(sid, srcLive) {
         const nj = nrm(j);
         if (!nj || nj.length < 8) continue;
         if (nb.indexOf(nj) === 0 || nj.indexOf(nb) === 0) { try { c.remove(); } catch (e) {} }
-      }
-    }
-  } catch (e) {}
-  /**
-   * 【2026-11-02 修·跑完之后别拿压薄的直播再盖一遍 —— 「一句话重复两次」的真凶】
-   *
-   *  直播事件流有上限（服务端 LIVE_SOFT_MAX），事件一多，老的那些会被压薄 ——
-   *  正文里丢了中间一段。而这一轮跑完之后，完整的正文已经落进历史了。
-   *
-   *  这时候如果还照直播快照画一遍，屏幕上就是「历史那份（完整）+ 直播那份（缺一段）」：
-   *  主人看到的就是同一句话出现两次，而且后一份还短一截。
-   *  上面②那条判据（内容是本轮开头）也救不了 —— 缺了中间那段，就不是开头了。
-   *
-   *  所以：这一轮已经结束，而历史最后那条助手不比快照短，就信历史，一个字都别再画。
-   *  历史上那份通常更长（压薄丢掉的那段它本来就有），拿短的去盖长的纯属倒退。
-   */
-  try {
-    if (srcLive && srcLive.running === false) {
-      const nb0 = nrm(bodyText);
-      const olds = [...document.querySelectorAll('.msg.assistant')].filter((c) => c.isConnected && c.dataset.liveTurn !== '1');
-      const lastOld = olds[olds.length - 1];
-      if (lastOld && nb0.length >= 8) {
-        let jj = '';
-        for (const b of lastOld.querySelectorAll('.bubble')) jj += String((typeof b._rawText === 'string' && b._rawText) ? b._rawText : (b.textContent || ''));
-        if (nrm(jj).length >= nb0.length) return null;
       }
     }
   } catch (e) {}
@@ -4575,12 +4613,17 @@ function paintSnapshot(sid, srcLive) {
       pushStreamText(b, String(it.t || ''));
       lastBubble = b;
     } else if (it.k === 'think') {
-      if (!think) think = openThink();
+      if (!think) {
+        think = openThink();
+        try { if (think && think.el) think.el.dataset.liveTurn = '1'; } catch (e) {}
+      }
       try { think.push(String(it.t || '')); } catch (e) {}
     } else if (it.k === 'tool') {
       closeThink();
       const el = addTool();
-      try { const w = el.d.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
+      /* 工具卡是直挂 #log 的 <details>，closest('.msg.assistant') 根本取不到东西 ——
+       * 原来那行等于没打标记，重画时就清不掉、越叠越多。现在直接标在它自己身上。 */
+      try { if (el && el.d) el.d.dataset.liveTurn = '1'; } catch (e) {}
       try {
         el.sum.querySelector('.name').textContent = niceTool(it.name);
         const st = el.sum.querySelector('.status');
@@ -4592,12 +4635,29 @@ function paintSnapshot(sid, srcLive) {
       if (it.id) toolEls.set(it.id, el);
     } else if (it.k === 'say') {
       closeThink();
+      /* 照清单画「别人说的话」：
+       *   · 她正说到一半（屏幕上有个流式气泡）→ 先把它定稿到清单这份文字上，别另起一条；
+       *   · 没有流式气泡 → 照清单新建一条（force，别被「这一轮画过」挡住）。
+       *  两种情况都给它打上 data-live-turn：下一次重画连同它一起清，画多少遍都只有一条。 */
       try {
-        if (!whaleStreamFinish(String(it.t || ''), StreamKey(sid, it.who))) addWhaleBubble(it.who, String(it.t || ''));
+        const _t = String(it.t || '');
+        const _fin = whaleStreamFinish(_t, StreamKey(sid, it.who));
+        if (_fin) {
+          let _el2 = null;
+          try { _el2 = _whaleLastFinishEl ? _whaleLastFinishEl.closest('.msg.whale, .msg.mate') : null; } catch (e) {}
+          if (_el2) { try { _el2.dataset.liveTurn = '1'; } catch (e) {} }
+        } else {
+          const _w2 = addWhaleBubble(it.who, _t, null, true);
+          if (_w2) { try { _w2.dataset.liveTurn = '1'; } catch (e) {} }
+        }
       } catch (e) {}
       lastBubble = null;
     } else if (it.k === 'note') {
-      try { addSysNote(String(it.t || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {}
+      /* 照快照画的提示打上标记 —— 下一次重画由上面 ① 一并清掉，不会叠 */
+      try {
+        const nd = addSysNote(String(it.t || '').replace(/^[\s\n]+/, '').trim());
+        if (nd) nd.dataset.liveNote = '1';
+      } catch (e) {}
     }
   }
   closeThink();
@@ -7430,8 +7490,12 @@ function mateColorOf(name) {
   return hit || '#e6e6e6';
 }
 
-function addWhaleBubble(who, text, target) {
-  if (whaleAlreadyDrawn(who, text)) return null;
+function addWhaleBubble(who, text, target, force) {
+  /* 【2026-11-02 · force】快照重画用。
+   *  「这一轮说过的同一句只画一次」这条防重对增量拼画面有用，对整组重画是碍事的：
+   *  先把自己画过的那组清掉、再照清单重画，这条防重会把重画拦下 —— 结果清空了再也画不回来。
+   *  所以快照那条路传 force=true：画不画由「清单里有没有」决定，不由「以前画过没」决定。 */
+  if (!force && whaleAlreadyDrawn(who, text)) return null;
   /*
    * 【谁的样式，看谁的名字】—— 2026-10-29 修
    *
@@ -7612,6 +7676,11 @@ function addTool() {
   // 等主人发下一条消息，foldOldHubs() 再把整个 hub 收成一条灰。
   const d = document.createElement("details");
   d.className = "tool";
+  /* 【2026-11-02 严格自检抓到的第四个真问题】工具卡要能被「整组重画」清掉。
+   *  以前标记打在别处（而且有一处打在 closest('.msg.assistant') 上，工具卡根本没那个容器），
+   *  结果快照重画时清不掉自己画的卡 —— 实测跑三条命令后重画两次，屏幕上从 3 张变 5 张。
+   *  现在就在建卡这一处打，所有调用点一律带上。 */
+  try { d.dataset.liveTurn = "1"; } catch (e) {}
   // 【主人 2026-10-31：不手动点开就始终闭合】
   // 以前这里写 true（干活时摊开），结果一屏全是参数和结果，得猛往下翻才看得见进度。
   // 现在抽屉一律关着：柜门那行「调了 N 次工具」照样实时刷新，想看细节自己拉。
@@ -7647,6 +7716,8 @@ function foldLiveTools() {
   if (!parent) return;
   const hub = document.createElement('details');
   hub.className = 'toolhub';
+  /* 柜子是 foldLiveTools 合出来的，里面装的是直播画的卡 —— 也算「我自己画的」，一并清 */
+  try { hub.dataset.liveTurn = '1'; } catch (e) {}
   hub.open = false;                        // 收起来，主人点开才是一排抽屉
   const hsum = document.createElement('summary');
   const n1 = document.createElement('span');
@@ -8546,7 +8617,56 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
       }
     }
     refreshSessions({ silent: true }).catch(() => {});
+    /* 【2026-11-02 自检抓到的真问题】当场发的这一轮跑完，屏幕上停的是直播快照那份
+     *（少一段），得不刷新就与历史一致。见 settleFromHistory 的注释。 */
+    if (onScreen()) {
+      try { settleFromHistory(turnSession); } catch (e) {}
+    }
   }
+}
+
+/**
+ * 【跑完之后，屏幕以历史为准】—— 2026-11-02 严格自检抓到的真问题
+ *
+ *  实测：当场发的那一轮（走 runTurn 的流式那条路）跑完，屏幕上停的是「直播快照」
+ *  那份 —— 它是照事件流压出来的，而事件流有上限、长回复会被压薄，正文整段少掉。
+ *  历史里那份是完整的（服务端落盘的是全量）。于是：
+ *    屏幕 5806 字 / 历史 6341 字 —— 差 535 字，刷新一下才补回来。
+ *
+ *  followLive 那条路（切回来跟播）早就有这个收尾了，可「当场发」这条不走 followLive。
+ *  所以两处共用一个函数，跑完都调它。
+ *
+ *  为什么要重试：这一轮刚结束时，写盘那一拍可能还没跟上（历史里是半截）。
+ *  每 700ms 再问一次，直到「历史最后那条助手不比直播快照短」为止；最多 6 次。
+ */
+async function settleFromHistory(id) {
+  try {
+    if (!id || sessionId !== id) return;
+    const _nz = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
+    let _wantNz = 0;
+    try {
+      const _lv = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+      for (const _it of (_lv && Array.isArray(_lv.items) ? _lv.items : [])) if (_it && _it.k === 'text') _wantNz += _nz(_it.t).length;
+    } catch (e) {}
+    let _turns = null;
+    for (let _k = 0; _k < 6; _k++) {
+      if (sessionId !== id) return;
+      const sel = await fetch('/api/sessions/select', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      }).then((r) => r.json()).catch(() => null);
+      if (sessionId !== id) return;
+      _turns = (sel && sel.session && Array.isArray(sel.session.turns)) ? sel.session.turns : null;
+      if (_turns) {
+        const _as = _turns.filter((t) => t && t.role === 'assistant' && !t.whale);
+        const _last = _as.length ? _nz(_as[_as.length - 1].text).length : 0;
+        if (_last >= _wantNz) break;
+      }
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    if (sessionId !== id) return;
+    if (_turns) renderTurns(_turns, { force: true });
+  } catch (e) {}
 }
 
 /** 会话 id -> 后台轮次记录（切走也不停，切回来能接着看）。在下面统一初始化。 */

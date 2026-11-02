@@ -4694,6 +4694,20 @@ function paintSnapshot0(sid, srcLive) {
    *  实测同一份快照连调三次，屏幕上从 1 条变成 4 条一模一样的提示。
    *  正文容器有 data-live-turn 标记所以清得掉，提示行当时没标记 —— 现在补上。
    *  只清带标记的：别处（重发按钮、断线说明）画的提示不带标记，一个都不能动。 */
+    /* 整组重画时「复用」自己画的块（而不是删掉重建）——详见下面 adoptThink 的说明。
+     * 这两个声明必须待在函数体里（上一个版本误放在 ① 的 try 块内，导致后面取不到）。 */
+    const _reuseEls = [];
+    const takeReuse = (kind) => {
+      for (let i = 0; i < _reuseEls.length; i++) {
+        const el = _reuseEls[i];
+        const isThink = el.classList.contains('think');
+        if ((kind === 'think' && isThink) || (kind === 'tool' && !isThink)) {
+          _reuseEls.splice(i, 1);
+          return el;
+        }
+      }
+      return null;
+    };
   try {
     for (const c of document.querySelectorAll('.msg.assistant[data-live-turn="1"]')) {
       try { c.remove(); } catch (e) {}
@@ -4715,9 +4729,18 @@ function paintSnapshot0(sid, srcLive) {
      *  实测连画三次：思考块 1→4、工具卡 1→6。现在一律打标记、一律清。 */
     /* 注意选择器：聊天区那个容器的 class 是空的，只有个名叫 log 的 id ——
      * 一开始写成 `.log .tool` 一个都选不中（标记打上了、照样原地叠），别再这么写。 */
+    /* 【2026-11-02 主人报「思考链抽搐、疯狂展开闭合」+「手动打开还会自动闭合」】
+     * 原来这一组一律 remove，紧接着照清单重建 —— 正在想的那一块每秒被删掉重来一次，
+     * 重建出来的是「收起」的新块，视觉上就是抽搐；主人手动点开的那个也一并被换掉，
+     * 看着就是「刚点开又自动闭合」。
+     * 现在改成：先把它们收起来（remove 前记一笔），下面照清单画时按顺序**复用** ——
+     * 内容没变就连一个 DOM 属性都不碰，开合状态（含主人手动开的）自然连续。 */
     try {
       const lg = document.getElementById('log');
       if (lg) {
+        try {
+          for (const t of lg.querySelectorAll('.think[data-live-turn="1"], .tool[data-live-turn="1"]')) _reuseEls.push(t);
+        } catch (e) {}
         for (const t of lg.querySelectorAll('.think[data-live-turn="1"], .tool[data-live-turn="1"]')) {
           try { t.remove(); } catch (e) {}
         }
@@ -4742,6 +4765,23 @@ function paintSnapshot0(sid, srcLive) {
         if (nb.indexOf(nj) === 0 || nj.indexOf(nb) === 0) { try { c.remove(); } catch (e) {} }
       }
     }
+    /* 【同一件事，思考块也要算「本轮那半截」】2026-11-02
+     *  历史重画那块思考走的是 paintReasoning（.think.thinkPast，不带 live-turn 标记），
+     *  上面那一步只清 .msg.assistant —— 于是快照照清单再画一遍思考时，
+     *  屏幕上就出现两块内容一样的思考。实测：切进一个正在想的会话，思考块 1 → 3。
+     *  判据和正文同一套：历史那块的字是清单里某条 think 的开头（或整段都在里面）就交给重画。 */
+    try {
+      const _thinkTexts = items.filter((x) => x && x.k === 'think').map((x) => nrm(x.t));
+      if (_thinkTexts.length) {
+        for (const d of document.querySelectorAll('.think')) {
+          if (d.dataset.liveTurn === '1') continue;
+          const bd = d.querySelector('.thinkBody') || d;
+          const t = nrm(bd.textContent);
+          if (!t || t.length < 8) continue;
+          if (_thinkTexts.some((s) => s && (s.indexOf(t) === 0 || t.indexOf(s) === 0))) { try { d.remove(); } catch (e) {} }
+        }
+      }
+    } catch (e) {}
   } catch (e) {}
   /* ③ 照清单从头画一遍 */
   let lastBubble = null;
@@ -4758,13 +4798,15 @@ function paintSnapshot0(sid, srcLive) {
       lastBubble = b;
     } else if (it.k === 'think') {
       if (!think) {
-        think = openThink();
+        const _oldThink = takeReuse('think');
+        think = _oldThink ? adoptThink(_oldThink) : openThink();
         try { if (think && think.el) think.el.dataset.liveTurn = '1'; } catch (e) {}
       }
       try { think.push(String(it.t || '')); } catch (e) {}
     } else if (it.k === 'tool') {
       closeThink();
-      const el = addTool();
+      const _oldTool = takeReuse('tool');
+      const el = _oldTool ? adoptTool(_oldTool) : addTool();
       /* 工具卡是直挂 #log 的 <details>，closest('.msg.assistant') 根本取不到东西 ——
        * 原来那行等于没打标记，重画时就清不掉、越叠越多。现在直接标在它自己身上。 */
       try { if (el && el.d) el.d.dataset.liveTurn = '1'; } catch (e) {}
@@ -7383,7 +7425,7 @@ function addAssistantAuto(who) {
 
 function addAssistant(who, hideRole) {
   const wrap = addEl('', 'msg assistant');
-  wrap.innerHTML = '<div class="role">' + (who || mainAgentName || '小鱼') + '</div>';
+  wrap.innerHTML = '<div class="role">' + (String(who || '').trim() || String(mainAgentName || '').trim() || '小鱼') + '</div>';
   /**
    * 【hideRole：同一条回复中间换了气泡，不再重报一次名字】
    *
@@ -7843,6 +7885,57 @@ function hubRefreshTitle() {
   }
 }
 
+/**
+ * 整组重画时「认领」屏幕上原来那块思考，而不是删掉重建。
+ *
+ * 【为什么需要它 —— 2026-11-02 主人报的两个毛病】
+ *   · 「思考链抽搐，疯狂展开闭合」：正在想的那块每秒被删掉重来一次，
+ *     重建时是按「新建」的规矩来的，一开一合每拍上演一遍。
+ *   · 「手动打开新发出的思考链消息还是会自动闭合」：主人点开的那个块
+ *     在下一拍就被换成了新的收起块，等于他点了个寂寞。
+ * 复用之后这两条一起消失：块还是那个块，文字就地改，open 状态谁都没动。
+ */
+function adoptThink(d) {
+  try { log.appendChild(d); } catch (e) {}
+  const title = d.querySelector('.thinkTitle');
+  const meta = d.querySelector('.thinkMeta');
+  const body = d.querySelector('.thinkBody');
+  const obj = {
+    el: d,
+    reused: true,
+    push(text) {
+      const t = String(text || '');
+      if (body && body._full === t) return;          // 和屏幕上一样就别碰 DOM
+      if (body) body._full = t;
+      try { if (body) body.textContent = t; } catch (e) { return; }
+      const flat = t.replace(/\s+/g, ' ').trim();
+      if (title && flat) {
+        title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
+        title.title = flat.slice(0, 400);
+      }
+      if (meta) meta.textContent = t.length + ' 字';
+    },
+    finish() {
+      if (!body || !body.textContent.trim()) { try { d.remove(); } catch (e) {} return; }
+      if (meta) meta.textContent = body.textContent.length + ' 字 · 点击展开';
+      /* 主人自己点开的，不许自动收起 —— 他专门报过这条 */
+      try { if (d.open && d.dataset.userOpened !== '1') d.open = false; } catch (e) {}
+    },
+  };
+  try { if (body) obj.push(body.textContent); } catch (e) {}   // 让 _full 起点 = 现状
+  return obj;
+}
+
+/** 工具卡同理：复用那一张，只改字，不再删掉重画（改了内容却整张闪一下也是白闪）。 */
+function adoptTool(d) {
+  try { log.appendChild(d); } catch (e) {}
+  const sum = d.querySelector('summary');
+  const pre = d.querySelector('pre');
+  try { d.dataset.liveTurn = '1'; } catch (e) {}
+  try { _liveToolEls.push(d); } catch (e) {}
+  return { d, sum, pre };
+}
+
 function addTool() {
   // 【2026-10-31 主人要求：抽屉不手动点开就始终闭合】
   // 以前这里是 hub 收着 + 每个 tool 也收着（d.open = false）+ 参数 hidden ——
@@ -8026,7 +8119,17 @@ function addSysNote(text) {
 function openThink() {
   const d = document.createElement('details');
   d.className = 'think';
-  d.open = true;
+  /* 【主人 2026-11-02 定的】思考链不自动展开 —— 想看自己点开，别看个回复先被内心戏糊一脸。
+   * 下面那个 toggle 监听负责记住「这一块是主人自己点开的」，之后就不再自动收起。 */
+  d.open = false;
+  try {
+    d.addEventListener('toggle', () => {
+      try {
+        if (d.open) d.dataset.userOpened = '1';
+        else delete d.dataset.userOpened;
+      } catch (e) {}
+    });
+  } catch (e) {}
 
   const sum = document.createElement('summary');
   const title = document.createElement('span');
@@ -8048,7 +8151,10 @@ function openThink() {
   return {
     el: d,
     push(text) {
-      body.textContent += text;
+      const t = String(text || '');
+      if (body._full === t) return;
+      body._full = t;
+      body.textContent = t;
       const flat = body.textContent.replace(/\s+/g, ' ').trim();
       if (flat) {
         title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
@@ -8060,7 +8166,8 @@ function openThink() {
     finish() {
       if (!body.textContent.trim()) { d.remove(); return; }
       meta.textContent = body.textContent.length + ' 字 · 点击展开';
-      d.open = false;
+      /* 主人自己点开的块，收尾时不许给他关上 */
+      try { if (d.open && d.dataset.userOpened !== '1') d.open = false; } catch (e) {}
     },
   };
 }
@@ -15730,7 +15837,7 @@ function renderTurns(turns, opts) {
              * 不许看「现在是哪个身份」。所以这里优先用这条消息自带的 who。 */
             wrap.innerHTML =
               '<div class="role">' +
-              (turn && turn.who ? String(turn.who) : (mainAgentName || '小鱼')) +
+              (turn && String(turn.who || '').trim() ? String(turn.who).trim() : (String(mainAgentName || '').trim() || '小鱼')) +
               '</div>';
             // 搜会话时靠这个下标把命中那条滚到眼前
             if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));

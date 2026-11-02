@@ -4410,6 +4410,209 @@ document.addEventListener("keydown", (e) => {
  *
  * 返回**最后一个**气泡 —— 光标和后续增量都该落在它身上。
  */
+/**
+ * 【2026-11-02 · 快照整组重画】整个直播显示的唯一的画法。
+ *
+ * 为什么要有这个函数（这是这次重做的核心）：
+ *  原来屏幕上这一轮的话是「边收边拼」出来的，拼的人有五六拨：
+ *  renderTurns（历史）、paintLiveEvents（接上直播补画）、followLive（每 1.2 秒跟播）、
+ *  流式 SSE（当场发的那一轮）、replayInFlight（切回补）。
+ *  每一拨都自己记一套账（_claimDone / _claimLen / seen / drawnBySeq / livePickSeq /
+ *  skipChars / drawnParts），谁记错一次、谁跟谁对不齐，屏幕上就是重复、丢字、串会话。
+ *
+ *  现在改成跟 dsh 一样的体质：服务端给出「这一轮现在该显示成什么样」的完整清单（items），
+ *  这里照着清单把「本轮那一组」整块删掉、从头画一遍。
+ *  画一次、清一次 —— 画一百次结果都一样（幂等），所以重复和丢字在结构上没有地方能发生。
+ *
+ * 只动「自己画的那一组」：
+ *   ① 所有带 data-live-turn 的助手容器（我们直播画出来的）
+ *   ② 历史里那个「内容就是本轮开头」的半截容器（它的字本来就包在本轮清单里）
+ *  历史里别的助手容器一个字都不碰。
+ *
+ * @param {string} sid 会话 id（画的时候必须还是它，否则一个字节都不画）
+ * @param {object} live /api/chat/live 的响应（要带 items）
+ * @returns {object|null} 最后一个正文气泡（外层要接着用就拿着）
+ */
+/**
+ * 【2026-11-02 · 事件流压成「该显示什么」的清单】
+ *
+ * 跟服务端 buildLiveItems（src/server.mjs）是同一套规则的同一份实现：
+ *  · 相邻 text 合成一条正文（这里是内存里合，不涉及网络）
+ *  · reasoning 合成一块「思考」
+ *  · tool_start / tool_end 配对成一张工具卡
+ *  · whale / agent 合成「别人说的话」
+ *  · notice 单独一行系统提示（不进正文）
+ *
+ * 为什么要两份：轮询那趟直接用服务端算好的 items（省一次前端拼装）；
+ * 当场发的那一轮（SSE）拿不到 items，就自己拼 —— 但画的时候是同一个函数，
+ * 所以「当场画」和「切回来画」出来必然一样。规则改动要两边一起改（_t_live_cursor 会盯着）。
+ */
+function itemsFromEvents(events) {
+  const items = [];
+  let cur = null;
+  const flush = () => { if (cur && cur.t) items.push(cur); cur = null; };
+  const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
+  for (const e of (Array.isArray(events) ? events : [])) {
+    if (!e || !e.type) continue;
+    if (e.type === 'text') {
+      if (e.notice) { flush(); items.push({ k: 'note', t: String(e.text || '') }); continue; }
+      if (!cur) cur = { k: 'text', t: '' };
+      cur.t += String(e.text || '');
+    } else if (e.type === 'reasoning') {
+      flush();
+      const last = items[items.length - 1];
+      if (last && last.k === 'think') last.t += String(e.text || '');
+      else items.push({ k: 'think', t: String(e.text || '') });
+    } else if (e.type === 'tool_start') {
+      flush();
+      items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '' });
+    } else if (e.type === 'tool_end') {
+      flush();
+      const id = String(e.id || '');
+      const it = lastOf('tool');
+      if (it && it.id === id) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
+      else items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') });
+    } else if (e.type === 'whale' || e.type === 'agent') {
+      flush();
+      items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+    } else if (e.type === 'whale_stream_start') {
+      flush();
+      items.push({ k: 'say', who: String(e.who || ''), t: '' });
+    } else if (e.type === 'whale_delta') {
+      flush();
+      const it = lastOf('say');
+      if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
+      else items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+    } else if (e.type === 'whale_stream_finish') {
+      const it = lastOf('say');
+      const t = String(e.text || '');
+      if (it && !it.t && t) it.t = t;
+    }
+  }
+  flush();
+  return items;
+}
+
+/** 【2026-11-02】快照指纹：内容变没变，一句话说清楚。变了才重画 DOM。 */
+function snapshotFingerprint(items) {
+  let s = '';
+  for (const it of (Array.isArray(items) ? items : [])) {
+    if (!it) continue;
+    s += it.k + '|' + (it.t ? it.t.length : 0) + '|' + (it.status || '') + '|' + (it.output ? it.output.length : 0) + '|' + (it.who || '') + '\n';
+  }
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h + ':' + String(s.length) + ':' + String((Array.isArray(items) ? items : []).length);
+}
+
+/** 每个会话上一次画出来的快照指纹（没变就不重画） */
+const lastSnapFp = new Map();
+
+function paintSnapshot(sid, srcLive) {
+  const items = Array.isArray(srcLive) ? srcLive : (srcLive && Array.isArray(srcLive.items) ? srcLive.items : null);
+  if (!items) return null;
+  if (typeof sid === 'string' && sessionId !== sid) return null;
+  /* 本轮正文（用来判断历史里那块是不是本轮的半截）。洗 markdown + 抹空白，两边同一套口径。 */
+  const nrm = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
+  let bodyText = '';
+  for (const it of items) if (it && it.k === 'text') bodyText += String(it.t || '');
+  /* ① 先清掉自己画过的那一组 */
+  try {
+    for (const c of document.querySelectorAll('.msg.assistant[data-live-turn="1"]')) {
+      try { c.remove(); } catch (e) {}
+    }
+    /* ② 再看历史里有没有「本轮那半截」：内容是本轮正文的开头（或整段都在正文里）就交给我们重画。
+     *  这一步只在快照有正文时做 —— 空快照不许动历史。 */
+    const nb = nrm(bodyText);
+    if (nb.length >= 8) {
+      for (const c of document.querySelectorAll('.msg.assistant')) {
+        if (!c.isConnected || c.dataset.liveTurn === '1') continue;
+        const bs = [...c.querySelectorAll('.bubble')];
+        let j = '';
+        for (const b of bs) j += String((typeof b._rawText === 'string' && b._rawText) ? b._rawText : (b.textContent || ''));
+        const nj = nrm(j);
+        if (!nj || nj.length < 8) continue;
+        if (nb.indexOf(nj) === 0 || nj.indexOf(nb) === 0) { try { c.remove(); } catch (e) {} }
+      }
+    }
+  } catch (e) {}
+  /**
+   * 【2026-11-02 修·跑完之后别拿压薄的直播再盖一遍 —— 「一句话重复两次」的真凶】
+   *
+   *  直播事件流有上限（服务端 LIVE_SOFT_MAX），事件一多，老的那些会被压薄 ——
+   *  正文里丢了中间一段。而这一轮跑完之后，完整的正文已经落进历史了。
+   *
+   *  这时候如果还照直播快照画一遍，屏幕上就是「历史那份（完整）+ 直播那份（缺一段）」：
+   *  主人看到的就是同一句话出现两次，而且后一份还短一截。
+   *  上面②那条判据（内容是本轮开头）也救不了 —— 缺了中间那段，就不是开头了。
+   *
+   *  所以：这一轮已经结束，而历史最后那条助手不比快照短，就信历史，一个字都别再画。
+   *  历史上那份通常更长（压薄丢掉的那段它本来就有），拿短的去盖长的纯属倒退。
+   */
+  try {
+    if (srcLive && srcLive.running === false) {
+      const nb0 = nrm(bodyText);
+      const olds = [...document.querySelectorAll('.msg.assistant')].filter((c) => c.isConnected && c.dataset.liveTurn !== '1');
+      const lastOld = olds[olds.length - 1];
+      if (lastOld && nb0.length >= 8) {
+        let jj = '';
+        for (const b of lastOld.querySelectorAll('.bubble')) jj += String((typeof b._rawText === 'string' && b._rawText) ? b._rawText : (b.textContent || ''));
+        if (nrm(jj).length >= nb0.length) return null;
+      }
+    }
+  } catch (e) {}
+  /* ③ 照清单从头画一遍 */
+  let lastBubble = null;
+  let toolEls = null;
+  let think = null;
+  const closeThink = () => { if (think) { try { think.finish(); } catch (e) {} think = null; } };
+  for (const it of items) {
+    if (!it || !it.k) continue;
+    if (it.k === 'text') {
+      closeThink();
+      const b = addAssistantAuto();
+      try { const w = b.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
+      pushStreamText(b, String(it.t || ''));
+      lastBubble = b;
+    } else if (it.k === 'think') {
+      if (!think) think = openThink();
+      try { think.push(String(it.t || '')); } catch (e) {}
+    } else if (it.k === 'tool') {
+      closeThink();
+      const el = addTool();
+      try { const w = el.d.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
+      try {
+        el.sum.querySelector('.name').textContent = niceTool(it.name);
+        const st = el.sum.querySelector('.status');
+        st.textContent = it.status === 'ok' ? '完成' : (it.status === 'err' ? '失败' : '运行中…');
+        st.className = 'status ' + (it.status === 'ok' ? 'ok' : (it.status === 'err' ? 'err' : 'warn'));
+        el.pre.textContent = (it.args ? '参数：' + it.args : '') + (it.output ? '\n--- output ---\n' + it.output : '');
+      } catch (e) {}
+      if (!toolEls) toolEls = new Map();
+      if (it.id) toolEls.set(it.id, el);
+    } else if (it.k === 'say') {
+      closeThink();
+      try {
+        if (!whaleStreamFinish(String(it.t || ''), StreamKey(sid, it.who))) addWhaleBubble(it.who, String(it.t || ''));
+      } catch (e) {}
+      lastBubble = null;
+    } else if (it.k === 'note') {
+      try { addSysNote(String(it.t || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {}
+    }
+  }
+  closeThink();
+  /* 收尾：把这一轮的记账写在轮次记录上（tool_end 回来还要找工具块） */
+  try {
+    let rec = turnsInFlight.get(sid);
+    if (!rec || typeof rec !== 'object') { rec = {}; turnsInFlight.set(sid, rec); }
+    rec.bubble = lastBubble;
+    rec.toolEls = toolEls;
+    rec.snapshotAt = Date.now();
+  } catch (e) {}
+  try { noteNewContent(); } catch (e) {}
+  return lastBubble;
+}
+
 function paintSpeech(bubble, raw) {
   if (!bubble) return bubble;
   const wrap = bubble.parentNode;
@@ -5063,24 +5266,26 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
              *  改法：凡是自己直播画出来的容器（带 data-live-turn 标记）一律先清掉；
              *  再看历史里那个半截容器是不是本轮正文的开头（空白抹掉再比）—— 是就连它一起清
              *  （它的内容本来就包在本轮全文里）。然后从头画一份：画一次、清一次，恒等于一份。 */
-            const _norm = (s) => String(s || "").replace(/\s+/g, "");
+            /* 【2026-11-02 比对口径必须一致】
+             *  历史那些容器里的字是 paintSpeech 画出来的 —— 它洗过 markdown（去星号、反引号、井号等）。
+             *  而 _allText 是事件原文，一字未洗。两边直接比，颜文字里的 * 一被抹掉就永远对不上：
+             *  「这一块就是本轮的半成品」明明成立，却判不中 → 清不掉 → 屏幕上一轮话叠两份。
+             *  所以比较前两边都按同一套洗一遍。 */
+            const _norm = (s) => String(fixMojibake(String(s || "")) || "").replace(new RegExp("\\s+", "g"), "");
             for (const _c of document.querySelectorAll('.msg.assistant[data-live-turn="1"]')) {
               try { _c.remove(); } catch (e) {}
             }
-            /* 【2026-11-02 全扫】不能只看「最后一个」助手容器：屏幕上可能躺着好几个
-             *  （刷新前的残留、渲染历史留下的半截…），只看最后一个就会漏掉前面那些，
-             *  它们和本轮全文重叠 —— 实测就是这留下的 105 字重复。
-             *  凡是「内容是本轮正文开头」的历史容器，一律清掉（它的内容本来就包在本轮全文里）。 */
-            for (const _lw of document.querySelectorAll(".msg.assistant")) {
-              if (!_lw.isConnected || _lw.dataset.liveTurn === "1") continue;
-              const _bs2 = [..._lw.querySelectorAll(".bubble")];
-              const _joined = _bs2.map((b) => String((typeof b._rawText === "string" && b._rawText) ? b._rawText : (b.textContent || ""))).join("").trim();
-              /* 判据放宽成「包含」：历史里那截是刷新那一刻的落盘半成品，跟本轮事件文本
-               *  未必逐字对齐开头（落盘时会做整理），但只要它的字都在本轮正文里，就是重复的一份。 */
-              if (_joined && _norm(_joined).length >= 8 && _norm(_allText).indexOf(_norm(_joined)) >= 0) {
-                try { _lw.remove(); } catch (e) {}
-              }
-            }
+            /* 【2026-11-02 修·跑动中切走再切回来，历史会少一块】
+             *
+             *  上面那段原来还会「扫全页所有助手气泡」：只要它的字包含在本轮正文里就删掉。
+             *  真机一测就出事 —— 切走再切回时，renderTurns 刚把这一轮落盘的半截画成历史气泡，
+             *  而还在跑的这轮事件流正文基本就是同一段甚至更长，于是那个历史气泡当场被当成
+             *  「重复的一份」删掉。屏幕上就少一块，怎么切都回不来，只有刷新才长回来。
+             *
+             *  病根：拿「字面重合」当判据去动**不属于自己**的容器。
+             *  现在只清自己画的（上面那个 data-live-turn="1" 的循环），历史容器一律不碰 ——
+             *  它归 renderTurns 管，而 renderTurns 每次切会话都是整块重画，本来就不会叠。
+             */
             bubble = null;
             _claimLen = 0;
           }
@@ -5123,7 +5328,16 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
         if (_skipTo > _claimLen) _claimLen = _skipTo;
         continue;
       }
-      if (!bubble) bubble = addAssistantAuto();
+      /* 【2026-11-02 漏标记 · 切会话重复的真凶】
+       *  这里建出来的容器原来**没打 data-live-turn 标记**，于是下一轮补画清不掉它：
+       *  清的时候只认「带标记的」+「内容是本轮开头的」—— 而这里建出来的第 2、3 个容器
+       *  装的是续段、不是开头，判据不成立 → 清不掉 → 再叠一份。
+       *  实测：跑着的时候切走再切回，屏幕 4 个容器 105/859/238/83 逐次叠加。
+       *  凡是我们自己直播画出来的容器，一律打标记，才能保证「画一次清一次」。 */
+      if (!bubble) {
+        bubble = addAssistantAuto();
+        try { const _w = bubble.closest(".msg.assistant"); if (_w) _w.dataset.liveTurn = "1"; } catch (e) {}
+      }
       pushStreamText(bubble, _piece);
       touchStreaming(bubble);
     } else if (ev.type === 'tool_start') {
@@ -5183,6 +5397,12 @@ async function attachLive(id) {
   } catch {
     return false;
   }
+  /* 【2026-11-02 串会话 · 别的会话的内容跑到这个会话里】
+   *  这一句 await 可能挂好几百毫秒。主人手快，等它回来的时候屏幕上已经是别的会话了，
+   *  而下面那些 paintLiveEvents / followLive 是不认人的 —— 照画不误：
+   *  于是 B 会话说的话就长在了 C 会话的屏幕上。
+   *  这里补一道闸：回来先看主人还在不在这个会话，不在就一个字节都不画。 */
+  if (sessionId !== id) return false;
   const evs = live && Array.isArray(live.events) ? live.events : [];
 
   /**
@@ -5235,6 +5455,16 @@ async function attachLive(id) {
   // 再把缓存里的 text 重画一遍就成了两条一样的回复。
   // 只有「还在跑、历史还没写进去」的才需要补画。
   if (!live.running) {
+    /* 【2026-11-02 跑完也要对一次账 · 切会话丢字的真凶】
+     *  这里原来是「没在跑就直接 return」—— 可落盘的正文有可能比直播事件流短
+     *  （这一轮刚结束、写盘那一拍还没跟上），而 renderTurns 画的正是那份落盘文本。
+     *  于是切回来看到的是半截：实测屏幕上 805 字、事件流里 1637 字，差的那些再也不出现。
+     *  现在跑完也量一下：屏幕上这一轮的字明显比事件流少，就照事件流补画一次（幂等，不会叠）。 */
+    /* 【2026-11-02 · 改成快照对账】
+     *  落盘的正文有可能比直播事件流短（这一轮刚结束、写盘那一拍还没跟上），
+     *  而 renderTurns 画的正是那份落盘文本 —— 切回来就看到半截。
+     *  现在有快照了：直接把这一轮该有的样子画一遍（幂等，画过也不会叠）。 */
+    try { if (Array.isArray(live.items)) paintSnapshot(id, live); } catch (e) {}
     turnsInFlight.delete(id);
     return false;
   }
@@ -5279,12 +5509,21 @@ async function attachLive(id) {
      *
      * 所以这里把「画」单独裹一层：画不出来顶多少几段内容，绝不影响「这一轮还在跑」的事实。
      */
+  /* 【2026-11-02 · 整组快照重画】
+   *  原来这里调 paintLiveEvents(evs, ...) 拿事件碎片往屏幕上拼，还得传一串
+   *  「历史里已经画过的工具 id」去重。现在只认一件事：这一轮现在该长什么样。
+   *  画一次清一次、画一百次一样 —— 重复和丢字在结构上没地方发生。 */
   let bubble = null;
   try {
-    bubble = paintLiveEvents(evs, null, _drawnToolIds);
-  } catch (e) {
-    console.warn("[attachLive] 补画直播缓存失败（只少几段内容，不影响运行状态）:", e && e.message ? e.message : e);
+    if (Array.isArray(live.items)) {
+      lastSnapFp.set(id, snapshotFingerprint(live.items));
+      bubble = paintSnapshot(id, live);
+    } else {
+      bubble = paintLiveEvents(evs, null, _drawnToolIds);
     }
+  } catch (e) {
+    console.warn("[attachLive] 补画失败（只少几段内容，不影响运行状态）:", e && e.message ? e.message : e);
+  }
 
   /**
    * 【2026-10-28 修：切回来能看见内容，但再切一次就卡死】
@@ -5319,19 +5558,7 @@ async function attachLive(id) {
      *  这里原来却传 evs.length（事件条数）——条数比 rev 小，于是「刚刚补画过的那条事件」
      *  会被当成还没画过的新增，**再整段画一遍**：刷新之后屏幕上就是一轮重复。
      *  起步用服务端回的 nextSince（rev），增量才是真的增量。 */
-    /* 【2026-11-02 补完记账】刚才这一下补画已经把「这一轮到目前为止的正文」铺到屏幕上了，
-     *  可 followLive 那边的记账本（drawnSeqsBySession）还是空的 —— 它下一轮一旦再拿到同一条
-     *  事件，就会当成没画过、整段又画一遍。这里照着刚拉到的全量事件把账记平。 */
-    try {
-      const _k3 = id + '|' + String(live.startedAt || 0);
-      const _m3 = new Map();
-      for (const _e of (live.events || [])) {
-        if (_e && _e.type === "text" && !_e.notice && typeof _e.seq === "number" && _e.seq >= 0) {
-          _m3.set(_e.seq, String(_e.text || "").length);
-        }
-      }
-      if (_m3.size) drawnSeqsBySession.set(_k3, _m3);
-    } catch {}
+
     followLive(id, Number.isFinite(Number(live.nextSince)) ? Number(live.nextSince) : evs.length);
     /**
      * 【只要服务端说这轮还在跑，就返回 true，不管是谁发起的】
@@ -5372,20 +5599,7 @@ function historyTailRole() {
  * 要么以为写完了（把还在跑的扔掉），要么以为没写完（把早结束的当成还在跑）。
  */
 let tailRoleOnScreen = '';
-/**
- * 这一轮开跑时，屏幕上最新的气泡序号（imSeq）。
- * 补捞只认比它新的气泡，避免把上一轮写满的气泡当成这一轮的接着写。
- * 由 startTurn / 发消息那处更新，见 setLivePickSeq()。
- */
-let livePickSeq = -1;
-function setLivePickSeq() {
-  let max = 0;
-  for (const el of document.querySelectorAll('.assistant .bubble')) {
-    const n = Number((el.dataset && el.dataset.imSeq) || 0);
-    if (n > max) max = n;
-  }
-  livePickSeq = max;
-}
+
 
 /** 重绘之后记一笔：画完之后屏幕停在谁的话上 */
 function markTailRole(turns) {
@@ -5418,13 +5632,7 @@ function markTailRole(turns) {
  * 接着跟直播：服务端还在跑就隔一会儿拉一次增量，往上追加。
  * 不重新发请求，只把「已经发生过的事」补齐——窗口关多久都不影响。
  */
-/* 【2026-11-02 记账簿：必须活过一轮轮询】
- *  原来「这一条 text 事件我已经画到第几个字」是记在 turnsInFlight 的轮次记录上的。
- *  可那份记录随时会被清（3 秒复核收尾 / 切走 / stopFollow），一清就每轮拿到新对象、
- *  记账归零 → text 分支把整轮全文当成新增又画一遍 → 屏幕上叠成好几份重复。
- *  改挂在模块级、以「会话 + 这一轮 startedAt」为键：轮次记录怎么清都不影响它。
- *  一轮跑完 startedAt 换新值 = 天然隔离，不会把上一轮的记账带过来。 */
-const drawnSeqsBySession = new Map();
+
 
 function followLive(id, fromIndex) {
   // 只清自己这个会话的，别人的别动
@@ -5453,6 +5661,10 @@ function followLive(id, fromIndex) {
     } catch {
       return;
     }
+    /* 【2026-11-02 串会话 · 同一道闸，第二处】
+     *  上面那句「屏幕上换到别的会话了」是在 await 之前判的；这一拍一旦卡在上面的 fetch 里，
+     *  等回来时主人早就切走了，后面的画就全落到新会话的屏幕上。数据回来了再判一次。 */
+    if (sessionId !== id) { stopFollow(id); return; }
     const evs = live.events || [];
     /**
      * 【收尾这件事必须每轮都查，不能只在「有新字」的时候查】
@@ -5465,12 +5677,7 @@ function followLive(id, fromIndex) {
      *
      * 现在把这两件事拆开：画字看有没有新东西，收尾只看服务端说没说完。
      */
-    const _dsKey = id + '|' + String(live.startedAt || 0);
-    if (!drawnSeqsBySession.has(_dsKey)) drawnSeqsBySession.set(_dsKey, new Map());
-    const _ds = drawnSeqsBySession.get(_dsKey);
-    if (drawnSeqsBySession.size > 3) {
-      for (const _k of [...drawnSeqsBySession.keys()]) { if (_k !== _dsKey) { try { drawnSeqsBySession.delete(_k); } catch (e) {} } }
-    }
+
     // 服务端给的权威游标：这批之后该从第几条起（取不到就退回自己数的）
     const _advance = () => {
       const n = Number(live.nextSince);
@@ -5478,174 +5685,84 @@ function followLive(id, fromIndex) {
       else seen = seen + evs.length;
     };
 
+    /* 【2026-11-02 · 改成快照对账】
+     *
+     * 这里原来是「拿这一拍的增量碎片、往屏幕上接着拼」，拼的人还有另外四拨
+     * （attachLive / paintLiveEvents / 流式 SSE / replayInFlight），各记一套账。
+     * 谁记错一次、谁跟谁对不齐，屏幕上就是重复、丢字、串会话 —— 主人报了整整两天。
+     *
+     * 现在：只要这一拍有新东西，就重新问一次「这一轮现在该长什么样」（全量），
+     * 然后整组重画。画一百次结果一样（幂等），所以重复和丢字在结构上没地方发生。
+     * 指纹没变就不动 DOM —— 光有事件、内容没长（比如只多了个 done）时不白重画。
+     */
     if (evs.length > 0) {
-      let bubble = null;
-      let think = null;
-      // 工具块要挂在「这一轮」的记录上，这样 tool_end 回来找得到它
-      /* 【2026-11-02 记账必须活过一轮轮询】
-       *  原来这里是 `turnsInFlight.get(id) || {}` —— 只读、不写回。
-       *  Map 里还有这条时没事；可一旦它被清掉（3 秒复核收尾 / 切走），
-       *  之后每一轮轮询都拿到一个**全新的空对象**，drawnBySeq 的记账每 1.2 秒丢一次，
-       *  text 分支就把**整轮全文**当成「新增」又画一遍 —— 屏幕上叠成一串重复。
-       *  改成拿到就用、没有就建好写回去：记账得活过一轮轮询才有意义。 */
-      let turnRecRef = turnsInFlight.get(id);
-      if (!turnRecRef || typeof turnRecRef !== "object") { turnRecRef = {}; turnsInFlight.set(id, turnRecRef); }
-      const closeThink = () => { if (think) { think.finish(); think = null; } };
-      /**
-       * 【2026-10-27 主人报：一句话里连着重复两遍，刷新后只剩一遍；光标还一直闪】
-       *
-       * 原来这里取「屏幕上最后一个 assistant 气泡」当起点，然后给它 markStreaming。
-       * 两个后果：
-       *   ① 上一轮那个气泡早就写满字了，新的 text 事件往它后面接着追加 ——
-       *      看起来就是「同一句在一句之内说了两遍」。刷新走全量重建、按轮分气泡，
-       *      所以刷新后只剩一遍，正好对上主人看到的现象。
-       *   ② 给一个已经写完的旧气泡挂上 streaming 类，后面若没新字经过、
-       *      或走了别的分支，就没人摘它 —— 那个 ▍ 光标就一直闪。
-       *
-       * 改法：**不再拿最后一个气泡当起点**。补捞这一轮的 text 应当另起气泡，
-       * 上一轮的话只许原样留着、一个字节都不碰。
-       * 唯一例外：这一轮自己刚开过口（turnRec.bubble 是这一轮建的），才接着往里写。
-       */
-      /**
-       * 【这条改动是为了不再把上一轮的话念第二遍】
-       *
-       * 补捞这处够不到流式函数里的局部 turnRec，所以改用气泡自己的 imSeq 判：
-       *   · 每个气泡建出来时 stampSpeechNode 会盖一个递增的 imSeq（见 2458 行）；
-       *   · 这一轮开跑时记下当时的最大 imSeq（livePickSeq），补捞只认**比它新**的气泡；
-       *   · 新气泡是空的才接手写 —— 有字的（上一轮的）一个字都不碰。
-       *
-       * 拿不到序号时退回「只认空气泡」：空气泡接着写不会重复，
-       * 有字的一律跳过，至少不会把上一轮的话再念一遍。
-       */
-      let cand = null;
-      let skipChars = 0;
-      const bubbles = document.querySelectorAll('.assistant .bubble');
-      for (let i = bubbles.length - 1; i >= 0; i--) {
-        const el = bubbles[i];
-        const seq = Number((el.dataset && el.dataset.imSeq) || 0);
-        if (typeof livePickSeq === 'number' && seq && seq <= livePickSeq) continue;  // 上一轮的，跳过
-        if ((el.textContent || '').trim()) continue;                                  // 有字的，不接手
-        cand = el;
-        break;
-      }
-      /**
-       * 【2026-11-01 主人报：刷新后新发的消息一句话被劈成好几个气泡，再刷一次又正常】
-       *
-       * 病根就在上面那两行：补捞只认「空气泡」，历史里有字的全跳过。
-       * 可刷新的时候 renderTurns 已经把这一轮落盘的那一截画成气泡了，
-       * 于是补捞找不到接手的，text 事件一来就 addAssistantAuto() 新建一个 ——
-       * 屏幕上历史一份、补画一份，看着就是一句话中途分段。
-       *
-       * 修法：没有空气泡时，认领「历史最后一个 assistant 气泡」，前提是它的字
-       * 确实出现在 evs 文字流的开头（说明它是本轮的半成品，不是上一轮的话）。
-       * 认领后记下已经画过的字数，text 事件按这个数跳过，只补缺的那一截。
-       */
-      if (!cand && bubbles.length) {
-        try {
-          const _lastB = bubbles[bubbles.length - 1];
-          /* _rawText 在 addAssistant 里初始化成空串，历史气泡上它是空的 —— 必须非空才认，否则永远取到空 */
-          const _raw = String((typeof _lastB._rawText === "string" && _lastB._rawText) ? _lastB._rawText : (_lastB.textContent || ""));
-          const _seen = _raw.trim();
-          if (_seen) {
-            let _streamText = "";
-            /* 提醒不算正文（跟 paintLiveEvents 里 _allText 同一个口径）—— 排掉它们，
-             * 否则认领用的「开头下标」会被提示语顶偏，判不中就另起气泡。 */
-            for (const _e of evs) { if (_e && _e.type === "text" && !_e.notice) _streamText += String(_e.text || ""); }
-            const _at = _streamText.indexOf(_seen);
-            if (_at >= 0 && _at < 8) {
-              cand = _lastB;
-              skipChars = _at + _seen.length;
-              if (typeof _lastB._rawText !== "string") _lastB._rawText = _seen;
-            }
-          }
-        } catch {}
-      }
-      bubble = cand;
-      if (bubble) markStreaming(bubble);
-
-      // 【2026-11-01 改用 since 增量】evs 本身已经是「seen 之后的那几条」，再 slice 会漏画
-      for (const ev of evs) {
-        if (ev.type === 'reasoning') {
-          if (!think) think = openThink();
-          think.push(ev.text);
-        } else if (ev.type === 'whale' || ev.type === 'agent') {
-          // 补画的时候也得认她的话 —— 不然断线重连 / done 后补拉，她的气泡永远补不出来
-          closeThink();
-          whaleStreamFinish(ev.text, StreamKey(id, ev.who)) || addWhaleBubble(ev.who, ev.text);
-          bubble = null;
-        } else if (ev.type === 'whale_stream_start') {
-          closeThink();
-          whaleStreamStart(ev.who, StreamKey(id, ev.who));
-        } else if (ev.type === 'whale_delta') {
-          whaleStreamDelta(ev.text, StreamKey(id, ev.who));
-        } else if (ev.type === 'tool_start') {
-          // followLive 也认工具事件·2026-10-31：这里原来只认 text，
-          // 切走再切回来之后工具调用直接被吞掉 —— 主人看到的就是「切回来工具块全没了」。
-          closeThink();
-          if (bubble) { try { bubble.classList.remove('streaming'); } catch {} bubble = null; }
-          const el = addTool();
-          el.sum.querySelector('.name').textContent = niceTool(ev.name);
-          el.sum.querySelector('.status').textContent = '运行中…';
-          el.pre.textContent = '参数：' + (ev.args || '');
-          if (!turnRecRef.toolEls) turnRecRef.toolEls = new Map();
-          if (ev.id) turnRecRef.toolEls.set(ev.id, el);
-          el.pre.hidden = false;
-          el.sum.querySelector('.status').className = 'status warn';
-          if (_liveHub) {
-            const _n1 = _liveHub.querySelector('.hubname');
-            if (_n1) _n1.dataset.one = niceTool(ev.name);
-            hubRefreshTitle();
-          }
-        } else if (ev.type === 'tool_end') {
-          const el = turnRecRef.toolEls && ev.id ? turnRecRef.toolEls.get(ev.id) : null;
-          if (el) {
-            const st = el.sum.querySelector('.status');
-            st.textContent = ev.ok ? '完成' : '失败';
-            st.className = 'status ' + (ev.ok ? 'ok' : 'err');
-            hubRefreshTitle();
-            el.pre.textContent += '\n--- output ---\n' + (ev.output || '');
-          }
-        } else if (ev.type === 'text') {
-          /* 插话提醒（连接断了 / 工具还在跑）不进气泡正文，单独一行 —— 见 paintLiveEvents 里那段说明 */
-          if (ev.notice) {
-            try { addSysNote(String(ev.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {}
-            continue;
-          }
-          closeThink();
-          if (!bubble) {
-            bubble = addAssistantAuto();
-            // 【2026-11-02】直播画出来的容器打标记：重画时靠它认「这是我们自己画的」，
-            //   历史（renderTurns）画的容器永远不带标记，不会被误清。
-            try { const _w = bubble.closest(".msg.assistant"); if (_w) _w.dataset.liveTurn = "1"; } catch (e) {}
-          }
-          /* 【2026-11-02 游标修复 · 前端配套】
-           *  服务端会把后续增量并进上一条 text 事件（条数不变、text 越来越长），
-           *  游标改成 rev 之后，这条被加长的事件会被**重复送到**这里。
-           *  这时 ev.text 是「这一条的累积全文」，不能整段重画（会把同一句话写第二遍），
-           *  得按 seq 记账，只补上次之后新长出来的那几个字。 */
-          const _full = String(ev.text || "");
-          const _seqOk = typeof ev.seq === "number" && ev.seq >= 0;
-          const _prevLen = _seqOk ? Number(_ds.get(ev.seq) || 0) : 0;
-          /* 【2026-11-01】认领了历史里已经画过一截的气泡时，前 skipChars 个字不再重复写 */
-          let _add = _seqOk ? _full.slice(_prevLen) : _full;
-          if (skipChars > 0) {
-            if (_add.length <= skipChars) { skipChars -= _add.length; _add = ""; }
-            else { _add = _add.slice(skipChars); skipChars = 0; }
-          }
-          if (_add) pushStreamText(bubble, _add);
-          // 记「这一条已经画到第几个字」：两种扣法（seq 增量 / skipChars 认领）都算数
-          if (_seqOk) _ds.set(ev.seq, _full.length - _add.length);
-          touchStreaming(bubble);
+      let _snap = null;
+      try {
+        _snap = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+      } catch (e) {}
+      if (sessionId !== id) { stopFollow(id); return; }
+      if (_snap && Array.isArray(_snap.items)) {
+        const _fp = snapshotFingerprint(_snap.items);
+        if (_fp !== lastSnapFp.get(id)) {
+          lastSnapFp.set(id, _fp);
+          try { paintSnapshot(id, _snap); } catch (e) { console.warn('[followLive] 快照重画失败:', e && e.message ? e.message : e); }
         }
       }
-      closeThink();
-      _advance();
-      noteNewContent();
     }
 
     // 收尾：每轮都看，跟这一轮有没有吐新字无关
     if (!live.running) {
       stopFollow(id);
+      /**
+       * 【2026-11-02 修·跑完之后，屏幕必须以历史为准】
+       *
+       *  直播那份快照是「事件流压出来的」，而服务端的事件流有上限 —— 长回复会把
+       *  中间那些老事件压薄，正文看起来就短了一截。这一轮真正完整的那份，在历史里。
+       *
+       *  所以跑完这一刻不能就停在快照上：主人会看到一句「短一版」的回复，
+       *  而刷新一下又变完整 —— 正是他报的那个「刷新前后不一样」。
+       *
+       *  这里收尾时把历史重新拉一遍、整屏重画。跑完了就没有流式在写，重画不会劈气泡；
+       *  重画之后屏幕＝历史＝唯一权威，跟你按 F5 看到的一模一样。
+       */
+      (async () => {
+        try {
+          turnsInFlight.delete(id);
+          /**
+           * 【为什么最多试 6 次】
+           *
+           *  这一轮刚结束时，写盘那一拍可能还没跟上（落盘的是半截）。
+           *  这时候就按历史重画，屏幕上会永远停在那半截 —— 因为后面不会再有人来补。
+           *  所以每 700ms 再问一次历史，直到「历史那条助手不比直播快照短」为止。
+           *  最多 6 次（约 4 秒），还不齐就直接按历史画 —— 宁可用落盘的，也不用可能被压薄的直播。
+           */
+          const _nz = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
+          let _want = '';
+          try {
+            const _lv = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+            for (const _it of (_lv && Array.isArray(_lv.items) ? _lv.items : [])) if (_it && _it.k === 'text') _want += String(_it.t || '');
+          } catch (e) {}
+          const _wantNz = _nz(_want).length;
+          let _turns = null;
+          for (let _k = 0; _k < 6; _k++) {
+            if (sessionId !== id) return;
+            const sel = await fetch('/api/sessions/select', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id }),
+            }).then((r) => r.json()).catch(() => null);
+            if (sessionId !== id) return;
+            _turns = (sel && sel.session && Array.isArray(sel.session.turns)) ? sel.session.turns : null;
+            if (_turns) {
+              const _as = _turns.filter((t) => t && t.role === 'assistant' && !t.whale);
+              const _last = _as.length ? _nz(_as[_as.length - 1].text).length : 0;
+              if (_last >= _wantNz) break;
+            }
+            await new Promise((r) => setTimeout(r, 700));
+          }
+          if (sessionId !== id) return;
+          if (_turns) renderTurns(_turns, { force: true });
+        } catch (e) {}
+      })();
       /**
        * 这一轮结束，气泡尾巴上的光标必须摘掉。
        *
@@ -5695,6 +5812,9 @@ function followLive(id, fromIndex) {
 }
 
 /** 只停某个会话的轮询；别的会话的定时器一根汗毛都不碰 */
+/** 【2026-11-02】切会话的世代号：只增不减。异步回来时对不上，就说明主人已经切走了。 */
+let __switchGen = 0;
+
 function stopFollow(id) {
   const t = followingBySession.get(id);
   if (t) {
@@ -7828,7 +7948,6 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
    * 不记这一笔的话，补捞会拿上一条写满字的气泡接着写 ——
    * 主人看到的就是「同一句话在一句之内说了两遍」。
    */
-  try { setLivePickSeq(); } catch {}
   let bubble = null;
   const toolEls = new Map();
   let think = null;
@@ -8437,181 +8556,84 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
  */
 function replayInFlight(id) {
   /**
-   * 【2026-10-28 重写：切走再切回来，屏幕上会乱】
+   * 【2026-11-02 · 整组快照重画（原来是「按 parts 增量补」）】
    *
-   * 老版本是「整段重建」：把 rec.parts 从头到尾再画一遍。
-   * 用在「切回一个正在跑的会话」时有两个毛病：
-   *   ① 主人自己那句话根本不在 rec.parts 里 —— 补出来只有她那半边，
-   *      看起来像主人刚才没说话、系统自己冒出一段回答；
-   *   ② 每补一次就从头重画一次，而流式循环还在同一屏上追加，
-   *      来回切两下就是同一段话叠两份。
+   * 原来这里拿着 rec.parts（这一轮攒下来的碎片）去补画，还配套一堆账本：
+   *   userDrawn / drawnParts / _paintBase / 认领最后一个气泡 / 比前缀……
+   * 而 screens 上还有另外四拨人也在画（renderTurns / paintLiveEvents / followLive /
+   * 流式 SSE），各记一套。主人报的「一句话重复两次」「切会话后重复」「内容跑到别的会话」
+   * 全是这些账本互相打架的结果。
    *
-   * 新做法：
-   *   · 主人那句没画过就补画（userDrawn 标记）；
-   *   · parts 只补「还没画过的增量」（drawnParts 游标）；
-   *   · 补完之后把 bubble / think 指针存回 rec，让流式循环接着往活节点上写。
+   * 现在只做一件事：问服务端「这一轮现在该长什么样」，拿回来整组重画。
+   * 画一次清一次、画一百次一样 —— 账本一个都不需要，也就没有记错账这回事。
+   *
+   * 拉不到（服务端没这一轮 / 网络断）才退回老办法，别让屏幕彻底空着。
    */
+  const rec0 = turnsInFlight.get(id);
+  /* 主人那句话：还没画过就补上（切走时它可能还在屏幕上，切会话后被清掉了） */
+  try {
+    if (rec0 && !rec0.userDrawn && (rec0.userText || (rec0.userAttach && rec0.userAttach.length))) {
+      if (sessionId === id) {
+        addUser(rec0.userText || '', undefined, rec0.userAttach && rec0.userAttach.length ? rec0.userAttach : undefined, undefined, undefined, rec0.userIdentity);
+      }
+    }
+    if (rec0) rec0.userDrawn = true;
+  } catch (e) {}
+
+  /* 快照那条路：异步拉、拉回来整组重画 */
+  let _usedSnap = false;
+  try {
+    fetch('/api/chat/live?sessionId=' + encodeURIComponent(id))
+      .then((r) => r.json())
+      .then((live) => {
+        if (!live || !Array.isArray(live.items)) return;
+        if (sessionId !== id) return;      // 拉的过程中主人已经切走了：一个字节都不画
+        lastSnapFp.set(id, snapshotFingerprint(live.items));
+        paintSnapshot(id, live);
+      })
+      .catch(() => {});
+    _usedSnap = true;
+  } catch (e) {}
+
+  /* 退回老办法：服务端连不上时，至少把攒下来的 parts 补出来 */
   const rec = turnsInFlight.get(id);
   if (!rec) return false;
-
-  // ── 主人那句话：没画过就补上（切走时它可能还在屏幕上，切会话后被清掉了） ──
-  if (!rec.userDrawn && (rec.userText || (rec.userAttach && rec.userAttach.length))) {
-    // 附件跟着一起补：只说「主人问了一句」却不显示图，会让人以为附件丢了
-    addUser(rec.userText || '', undefined, rec.userAttach && rec.userAttach.length ? rec.userAttach : undefined,
-      undefined, undefined, rec.userIdentity);
+  if (_usedSnap) {
+    if (!Number.isFinite(rec.drawnParts)) rec.drawnParts = 0;
+    rec.drawnParts = Array.isArray(rec.parts) ? rec.parts.length : 0;
+    return true;
   }
-  rec.userDrawn = true;
-
-  // ── 只补增量 ──
   if (!Number.isFinite(rec.drawnParts)) rec.drawnParts = 0;
-  if (rec.drawnParts > rec.parts.length) rec.drawnParts = 0;   // 记录被重置过，从头补
-  /* 补画去重·2026-10-31 刷新之后那个气泡里可能已经画过一段了（renderTurns 画的历史）。
-   * drawnParts 却是从 0 起算的 —— 硬补就会把同一段话追加第二遍，屏幕上就是重复。
-   * 所以在补画之前先量一下「气泡里现在有多少字」，补的时候跳过这么多，只补缺的那一截。 */
-  rec._paintBase = 0;
-  /**
-   * 【2026-11-01 主人报：刷新后新发的消息一句话被劈成好几个气泡，再刷一次才正常】
-   *
-   * 病根：刷新之后 rec 是全新建的，rec.bubble 是 null。而 renderTurns 已经把
-   * 历史（含这一轮已经落盘的那一截）画成一个气泡了。补画时 rec.bubble 为空，
-   * 22 行那句 `if (!rec.bubble) rec.bubble = addAssistantAuto()` 就又新建一个，
-   * 于是同一段话在屏幕上是「历史上画的一份 + 补画的一份」，看着就是中途分段。
-   * 再刷一次时这一轮已经跑完、历史落盘完整，不再补画，所以又正常了。
-   *
-   * 修法：补画之前先认领「页面上最后一个 assistant 气泡」，只要它的字
-   * 确实是 parts 里文字的前缀（说明它就是这一轮的半成品），就拿它当基线，
-   * 只补缺的那一截。对不上就不认领，避免把这一轮的话追加到上一轮气泡里。
-   */
-  if (!rec.bubble) {
-    try {
-      const _lastWrap = lastAssistantWrap();
-      const _lastB = _lastWrap ? _lastWrap.querySelector(".bubble") : null;
-      if (_lastB && _lastB.isConnected) {
-        /* _rawText 空串时不能拿它当基线（历史气泡就是这样），退回 textContent */
-        const _seen = (typeof _lastB._rawText === "string" && _lastB._rawText)
-          ? _lastB._rawText : String(_lastB.textContent || "");
-        let _partsText = "";
-        /* 提醒不算正文：认领要比的是「她说的那串字」，掺进提示语就会对不上（见下条同样的问题） */
-        for (const _p of rec.parts) {
-          const _k = _p && (_p.kind || _p.type);
-          if (_k === "text" && !(_p && _p.notice)) _partsText += String(_p.text || "");
-        }
-        if (_seen && _partsText && _partsText.indexOf(_seen) === 0) {
-          rec.bubble = _lastB;
-        }
-      }
-    } catch {}
-  }
-  try {
-    // 2026-10-31：气泡里的 textContent 是「洗过 markdown」的，长度跟原始增量不是一回事。
-    // 拿它当基线去比对 parts 里的原文必然错位，所以有 _rawText 就按它量。
-    if (rec.bubble && rec.bubble.isConnected) {
-      rec._paintBase = (typeof rec.bubble._rawText === "string")
-        ? rec.bubble._rawText.length : (rec.bubble.textContent || "").length;
-    }
-  } catch {}
-
+  if (rec.drawnParts > rec.parts.length) rec.drawnParts = 0;
   for (let i = rec.drawnParts; i < rec.parts.length; i++) {
     const p = rec.parts[i];
-    // kind 优先，退回去认 type —— 直播缓存里存的是原始事件（有 type 没 kind），
-    // 主循环 push 进去的是 { kind: ... }。两种都得认，不然补画会漏。
     const kind = p.kind || p.type || '';
     if (kind === 'reasoning') {
       if (!rec.think) rec.think = openThink();
-      rec.think.push(p.text);
+      try { rec.think.push(p.text); } catch (e) {}
     } else if (kind === 'text') {
-      /* 提醒（连接断了 / 工具还在跑）不进正文，单独一行 —— 否则切回来又是一句劈成两半 */
-      if (p && p.notice) {
-        try { addSysNote(String(p.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {}
-        continue;
+      if (p && p.notice) { try { addSysNote(String(p.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {} continue; }
+      if (!rec.bubble || !rec.bubble.isConnected) {
+        rec.bubble = addAssistantAuto();
+        try { const w = rec.bubble.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
       }
-      if (rec.think) { rec.think.finish(); rec.think = null; }
-      if (!rec.bubble) rec.bubble = addAssistantAuto();
-      /* 补画去重·2026-10-31 只追加「气泡里还没有的那一截」，别再整段塞第二遍。 */
-      {
-        const _t = fixMojibake(p.text);
-        let _add = _t;
-        if (rec._paintBase > 0) {
-          if (_t.length <= rec._paintBase) { rec._paintBase -= _t.length; _add = ""; }
-          else { _add = _t.slice(rec._paintBase); rec._paintBase = 0; }
-        }
-        if (_add) pushStreamText(rec.bubble, _add);
-      }
-      touchStreaming(rec.bubble);
-    } else if (kind === 'whale' || kind === 'agent') {
-      // 小鲸说的话：单独一个气泡，标上她的名字
-      /**
-       * 【别掐断我正在写的那个气泡】—— 2026-10-30 修
-       *
-       * 主人报：小鱼小鲸都启用时，发完消息屏幕上全空，非得 Ctrl+F5 才看得见。
-       *
-       * 原因就是原来这两行：她的话一落，就把 rec.bubble 置空。
-       * 可这一轮我还在往上写字，指针被掐了，后面全写进一个没人认领的地方 ——
-       * 屏幕上就是空白，刷新重拉历史才重新画出来。
-       * 现在改成：只要我这一轮的气泡还挂在页面上，就留着它，
-       * 她的话另起一个气泡，两边各写各的，互不打扰。
-       */
-      const _keepMine = !!(rec.bubble && rec.bubble.isConnected);
-      if (!_keepMine && rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
-      if (!_keepMine && rec.think) { rec.think.finish(); rec.think = null; }
-      addWhaleBubble(p.who, p.text);
-    } else if (kind === 'whale_start') {
-      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
-      whaleStreamStart(p.who || '小鲸', StreamKey(rec.sessionId, p.who));
-    } else if (kind === 'whale_delta') {
-      // 还在流式的她：用流式气泡接着写，别每次重建一个新气泡
-      if (!rec.whaleStarted) { whaleStreamStart(p.who || '小鲸', StreamKey(rec.sessionId, p.who)); rec.whaleStarted = true; }
-      whaleStreamDelta(p.text, StreamKey(rec.sessionId, p.who));
-    } else if (kind === 'tool_start') {
-      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
-      const el = addTool();
-      el.sum.querySelector('.name').textContent = niceTool(p.name);
-      el.sum.querySelector('.status').textContent = '运行中…';
-      // 【2026-11-01 严检】压缩条这类没有参数的工具事件不带 args，
-            // 原来无条件拼 参数：+ p.args 会画出「参数：undefined」。没有就不画。
-            el.pre.textContent = (p.args === undefined || p.args === null || p.args === '')
-              ? ''
-              : '参数：' + p.args;
-      if (!rec.toolEls) rec.toolEls = new Map();
-      rec.toolEls.set(p.id, el);
-    } else if (kind === 'tool_end') {
-      const el = rec.toolEls && rec.toolEls.get(p.id);
-      if (el) {
-        const st = el.sum.querySelector('.status');
-        st.textContent = p.ok ? '完成' : '失败';
-        st.className = 'status ' + (p.ok ? 'ok' : 'err');
-        el.pre.textContent += '\n--- output ---\n' + p.output;
-      }
+      try { pushStreamText(rec.bubble, String(p.text || '')); } catch (e) {}
     } else if (kind === 'tool') {
-      // 老格式（parts 里直接存成 kind:'tool' 的那种）
-      if (rec.bubble) { rec.bubble.classList.remove('streaming'); rec.bubble = null; }
-      const el = addTool();
-      el.sum.querySelector('.name').textContent = niceTool(p.name);
-      const st = el.sum.querySelector('.status');
-      st.textContent = p.done ? (p.ok ? '完成' : '失败') : '运行中…';
-      if (p.done) st.className = 'status ' + (p.ok ? 'ok' : 'err');
-      // 【2026-11-02】同上：p.args 缺了会画出「参数：undefined」
-      el.pre.textContent = (p.args == null || p.args === '' ? '（无参数）' : '参数：' + p.args)
-        + (p.done ? '\n--- output ---\n' + (p.output == null ? '' : p.output) : '');
+      try {
+        const el = addTool();
+        el.sum.querySelector('.name').textContent = niceTool(p.name);
+        const st = el.sum.querySelector('.status');
+        st.textContent = p.done ? (p.ok ? '完成' : '失败') : '运行中…';
+        st.className = 'status ' + (p.done ? (p.ok ? 'ok' : 'err') : 'warn');
+        el.pre.textContent = (p.args ? '参数：' + p.args : '') + (p.done && p.output ? '\n--- output ---\n' + p.output : '');
+        if (!rec.toolEls) rec.toolEls = new Map();
+        if (p.id) rec.toolEls.set(p.id, el);
+      } catch (e) {}
+    } else if (kind === 'whale' || kind === 'whale_delta') {
+      try { if (!whaleStreamFinish(String(p.text || ''), StreamKey(id, p.who))) addWhaleBubble(p.who, String(p.text || '')); } catch (e) {}
     }
   }
   rec.drawnParts = rec.parts.length;
-
-  // 把指针存回 rec：主循环 6239 那段就是从 turnRec.bubble / turnRec.think 接回去的。
-  // 不存的话它每次都判「没接上」，一有新事件就再重建一遍 —— 屏幕上反复闪。
-  // 【2026-10-29 多会话并行修 · ③：别把「正在往上写字」的气泡换掉】
-  // 原来这里无条件赋一次值，而 attachLive 那边也会 rec.bubble = bubble ——
-  // 两个地方抢同一个指针，谁后跑谁说了算。流式还往旧节点里写，屏幕上就出现
-  // 两份一样的话、或者一段话说一半停住，非刷新不可。
-  // 规则：原本空着、或者原节点已经不在页面上（孤儿），才认领新节点。
-  if (!rec.bubble || !rec.bubble.isConnected) {
-    const _fresh = lastAssistantWrap();
-    rec.bubble = (_fresh && _fresh.isConnected) ? _fresh : null;
-  }
-  rec.think = rec.think || null;
-
-  if (rec.bubble) markStreaming(rec.bubble);
-  noteNewContent();
   return true;
 }
 
@@ -14994,7 +15016,20 @@ function renderTurns(turns, opts) {
    */
   let _curInFlight = false;
   try { const _r = turnsInFlight.get(sessionId); _curInFlight = !!( _r && (_r.startedAt || _r.adopted) ); } catch {}
-  if (_curInFlight && !(opts && opts.force)) {
+  /**
+   * 【2026-11-02 修·换会话时不许「不画」】
+   *
+   * 上面那条「真在生成中就什么都不动」是为了别把我们自己正在流式写的气泡拆碎，
+   * 它只在「屏幕上这一屏本来就属于这个会话」时成立。
+   * 可切会话也走这里：切到一个正在跑的会话，它照样 return —— 屏幕就留在上一个会话上，
+   * 主人看到的是「别的会话的内容跑到这个会话里了」。这比拆碎气泡严重得多。
+   *
+   * 现在多一个判据：屏幕归谁（window.__turnsOwner）。换人了就必须照画，
+   * 宁可重画一次，也不能让主人对着一屏别人的话。
+   */
+  let _ownerSame = true;
+  try { _ownerSame = (window.__turnsOwner === sessionId); } catch (e) {}
+  if (_curInFlight && _ownerSame && !(opts && opts.force)) {
     try { currentTurns = Array.isArray(turns) ? turns : []; } catch {}
     return;
   }
@@ -15406,6 +15441,8 @@ function renderTurns(turns, opts) {
   flushHub();
   log.replaceChildren(frag);
   try { window.__renderFrag = null; } catch {}
+  /* 记一笔：这一屏现在是谁的。下次 renderTurns 靠它分辨「同一个会话在重画」还是「换人了」 */
+  try { window.__turnsOwner = sessionId; } catch (e) {}
   /**
    * 【2026-11-01 往上滚再补前面的】窗口化之后，顶上是空的。
    * 滚到接近顶部就再往前放一批（一次 BACKFILL 轮），补完把滚动位置还原，
@@ -15642,6 +15679,8 @@ async function switchSession(id, opts) {
    * 现在：网络给 30 秒；解析单独兜住，失败时把原文前 200 字也带上，能一眼看出
    * 是服务端返了错页、还是数据太大解析崩了。
    */
+  __switchGen++;
+  const __switchGenSeen = __switchGen;
   const __t0 = performance.now();
   const __mark = (name) => {
     const ms = Math.round(performance.now() - __t0);
@@ -15705,6 +15744,14 @@ async function switchSession(id, opts) {
     releaseComposer();
     return false;
   }
+  /* 【2026-11-02 串会话 · 第三道闸】
+   *  拉历史这一段也可能很慢（186 个 turn 要几十毫秒甚至更久）。
+   *  等回来时若主人已经又点开了第三个会话，这里再往下画就是拿旧会话的 turns 盖新屏幕。
+   *  判据用一个只增不减的世代号：发起时记一份，回来时对不上就整段作废。 */
+  /* 作废要返回 true —— 这不是「切失败」。主人已经切到别的会话去了，
+   *  这一趟的活儿本来就该扔；返回 false 会让 bootSessions 以为连续三次没切过去，
+   *  再弹出那句「刚才没能自动回到上次的会话」，等于凭空造一个错。 */
+  if (__switchGenSeen !== __switchGen) return true;
   sessionId = r.session.id;
   sessionTitle = r.session.title;
   localStorage.setItem(STORE_KEY, sessionId);
@@ -15835,6 +15882,9 @@ async function createSession() {
  * 等于「用她开一个新会话」（多开）。没给就是普通新会话（小鱼）。
  * @param {{quiet?: boolean, title?: string, agentId?: string, agentIds?: string[]}} opts
  */
+/* 【调试】让外部能把界面切到某个会话，用来复现「跑动中切走再切回」 */
+try { window.__xySwitch = (id) => switchSession(id); } catch {}
+
 async function createSessionEx(opts = {}) {
   const { quiet = false, title = '', agentId = '', agentIds = [] } = opts;
   const useAgent = Boolean(agentId);

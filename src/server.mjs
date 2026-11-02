@@ -1801,6 +1801,120 @@ function startCooldownSafe() {
  */
 const liveLogs = new Map();
 
+/**
+ * 【2026-11-02 · 快照合成】把这一轮的事件流压成「屏幕上该有什么」的一张清单。
+ *
+ * 为什么要这个东西：
+ *  原来前端是「拿一堆增量碎片、边收边拼」，拼的人有七八拨（renderTurns / paintLiveEvents /
+ *  followLive / 流式 / replayInFlight），各记各的账。谁记错一次，屏幕就是重复、丢字、串会话。
+ *  现在服务端直接给出「这一轮现在长什么样」的一份完整清单，前端照着画就行 ——
+ *  画一百次结果一样（幂等），账本也就不需要存在了。
+ *
+ * 输出：
+ *  { k:'text',  t }            正文（相邻 text 已合并成一条）
+ *  { k:'think', t }            思考块
+ *  { k:'tool',  id,name,args,status:'run'|'ok'|'err', output }
+ *  { k:'say',   who, t }       别人说的话（小鲸 / 别的助手）
+ *  { k:'note',  t }            系统提示（不进正文）
+ *
+ * 顺序就是事件原本的顺序（tool 与文字交错也照实排）。
+ */
+/**
+ * 【为什么还要一个「增量版」】
+ *
+ *  上面那个是从事件数组一次性算出来的（打开一个已经跑完的旧轮次时用）。
+ *  可事件数组有上限（LIVE_SOFT_MAX），长回复会被压薄 —— 老的那些正文事件被丢掉，
+ *  于是「照事件算出来的清单」就短了一截（屏幕上是短一版，刷新前后不一样）。
+ *
+ *  所以正在跑的轮次里，清单不从这里算，而是一条事件一条事件地接着长（appendLiveItem）。
+ *  它只增不减、不受压薄影响 —— 服务端手里那份才是「这一轮现在到底长什么样」的真身，
+ *  前端照着它画。压薄只影响「增量游标」（events），不影响画面。
+ */
+function appendLiveItem(items, ev) {
+  if (!items || !ev || !ev.type) return;
+  const last = () => (items.length ? items[items.length - 1] : null);
+  const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
+  if (ev.type === 'text') {
+    const t = String(ev.text || '');
+    if (ev.notice) { items.push({ k: 'note', t }); return; }
+    const p = last();
+    if (p && p.k === 'text') p.t += t;
+    else items.push({ k: 'text', t });
+  } else if (ev.type === 'reasoning') {
+    const t = String(ev.text || '');
+    const p = last();
+    if (p && p.k === 'think') p.t += t;
+    else items.push({ k: 'think', t });
+  } else if (ev.type === 'tool_start') {
+    items.push({ k: 'tool', id: String(ev.id || ''), name: String(ev.name || ''), args: String(ev.args || ''), status: 'run', output: '' });
+  } else if (ev.type === 'tool_end') {
+    const id = String(ev.id || '');
+    const it = lastOf('tool');
+    if (it && it.id === id) { it.status = ev.ok ? 'ok' : 'err'; it.output = String(ev.output || ''); }
+    else items.push({ k: 'tool', id, name: String(ev.name || ''), args: '', status: ev.ok ? 'ok' : 'err', output: String(ev.output || '') });
+  } else if (ev.type === 'whale' || ev.type === 'agent') {
+    items.push({ k: 'say', who: String(ev.who || ''), t: String(ev.text || '') });
+  } else if (ev.type === 'whale_stream_start') {
+    items.push({ k: 'say', who: String(ev.who || ''), t: '' });
+  } else if (ev.type === 'whale_delta') {
+    const who = String(ev.who || '');
+    const it = lastOf('say');
+    if (it && it.who === who) it.t += String(ev.text || '');
+    else items.push({ k: 'say', who, t: String(ev.text || '') });
+  } else if (ev.type === 'whale_stream_finish') {
+    const it = lastOf('say');
+    const t = String(ev.text || '');
+    if (it && !it.t && t) it.t = t;
+  }
+}
+
+function buildLiveItems(events) {
+  const items = [];
+  let cur = null;
+  const flush = () => { if (cur && cur.t) items.push(cur); cur = null; };
+  const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
+  for (const e of (Array.isArray(events) ? events : [])) {
+    if (!e || !e.type) continue;
+    if (e.type === 'text') {
+      if (e.notice) { flush(); items.push({ k: 'note', t: String(e.text || '') }); continue; }
+      if (!cur) cur = { k: 'text', t: '' };
+      cur.t += String(e.text || '');
+    } else if (e.type === 'reasoning') {
+      flush();
+      const last = items[items.length - 1];
+      if (last && last.k === 'think') last.t += String(e.text || '');
+      else items.push({ k: 'think', t: String(e.text || '') });
+    } else if (e.type === 'tool_start') {
+      flush();
+      items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '' });
+    } else if (e.type === 'tool_end') {
+      flush();
+      const id = String(e.id || '');
+      const it = lastOf('tool');
+      if (it && it.id === id) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
+      else items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') });
+    } else if (e.type === 'whale' || e.type === 'agent') {
+      flush();
+      items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+    } else if (e.type === 'whale_stream_start') {
+      flush();
+      items.push({ k: 'say', who: String(e.who || ''), t: '' });
+    } else if (e.type === 'whale_delta') {
+      flush();
+      const it = lastOf('say');
+      if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
+      else items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+    } else if (e.type === 'whale_stream_finish') {
+      // 定稿：把最后那条还没字的 say 补上正文（有字就不动）
+      const it = lastOf('say');
+      const t = String(e.text || '');
+      if (it && !it.t && t) it.t = t;
+    }
+  }
+  flush();
+  return items;
+}
+
 /** 一轮能缓存多少事件（防止超长轮次吃内存） */
 const LIVE_MAX_EVENTS = 20000;
 /** 【2026-11-02】超过这个数就自动压薄 —— 前端扛不住几千次 DOM 重排 */
@@ -3463,7 +3577,10 @@ const server = createServer(async (req, res) => {
      *  前端拿它跟「屏幕上已经画了多少字」对账：短了就说明增量那条路没跟上（游标错位、
      *  事件被合并、连接断过…），立刻拉一次全量走补画 —— 这是兜底的幂等保证，
      *  让「刷新之后永远追不上尾巴」在结构上不可能发生。 */
-    const _textLen = all.reduce((a, e) => a + ((e && e.type === 'text' && !e.notice) ? String(e.text || '').length : 0), 0);
+    /* 【textLen 也要照「真身」算】events 会被压薄，拿它算出来的长度会偏短，
+     *  前端据此对账就会以为「自己画多了」。清单不受压薄影响，长度才是真的。 */
+    const _items0 = (live && Array.isArray(live.items) && live.items.length) ? live.items : buildLiveItems(all);
+    const _textLen = _items0.reduce((a, it) => a + ((it && it.k === 'text') ? String(it.t || '').length : 0), 0);
     return json(res, 200, {
       sessionId: sid,
       /* 【2026-11-02 主人报「消息被吞、画面固定」】
@@ -3482,6 +3599,10 @@ const server = createServer(async (req, res) => {
       total: all.length,
       nextSince: typeof live.rev === 'number' ? live.rev : all.length,
       textLen: _textLen,
+      /* 【2026-11-02 快照】「这一轮现在该显示成什么样」的一份完整清单。
+       *  前端只要照它画一遍就行 —— 不传 since 或传 0 时给（全量那趟），
+       *  增量那趟没必要重复给（items 已经含了全部正文）。 */
+      items: _items0,
       events: tail,
     });
   }
@@ -7320,7 +7441,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       'X-Accel-Buffering': 'no',
     });
     // 这一轮的所有事件都先记进直播缓存，再往连接上写
-    const live = { sessionId, events: [], startedAt: Date.now(), done: false };
+    const live = { sessionId, events: [], items: [], startedAt: Date.now(), done: false };
     liveLogs.set(sessionId, live);
     /**
      * 【2026-11-01 08:45 删掉了一段「send 还没定义就调用它」的残留】
@@ -7347,16 +7468,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        *  这里两道保险：①同一轮里相邻的 reasoning/text 直接并进上一条，
        *  ②超过 SOFT_MAX 就整体「压薄」一次（只留最近的大块）。 */
       try {
-        /* 【2026-11-02 只合并 reasoning，text 不再并进上一条】
-         *  合并 text 会让「同一条事件的内容一直变长」，前端每轮按游标要增量时
-         *  就永远追不上那条被加长的老事件（丢字），或者把它整段再画一遍（重复）。
-         *  reasoning 是思考块的碎片、不显示成正文，合并它只省条数、没有这个副作用；
-         *  text 每条都是确定的碎片，送一次画一次，前端不用记账也不会重复。 */
-        const _sameKind = (ev && ev.type === 'reasoning')
+        /* 【2026-11-02 · text 又改回「并进上一条」了，原因如下】
+         *
+         *  以前不能并：前端拿「事件条数」当游标要增量，被并长的那条再也拉不到（丢字）。
+         *  现在前端不吃增量了 —— 它只要一有新事件就重新拉「这一轮现在长什么样」的全量快照，
+         *  按 rev 过滤（被加长的老事件照样会被带回来），照着整组重画。所以并进上一条没副作用。
+         *
+         *  反而必须并：一条一条送的话，长回复会有几千条事件，撞上 LIVE_SOFT_MAX 压薄，
+         *  老的那些 text 被直接丢掉 —— 屏幕上就成了「短一版」，刷新前跟刷新后不一样。
+         *  并起来事件数就压到几十条，压薄不会再动正文。 */
+        const _sameKind = (ev && (ev.type === 'reasoning' || ev.type === 'text'))
           && live.events.length
           && live.events[live.events.length - 1]
           && live.events[live.events.length - 1].type === ev.type;
         if (_sameKind) {
+          /* 合并进上一条的事件，清单这边也要跟着长（正文就是这么攒起来的） */
+          try { appendLiveItem(live.items, ev); } catch (e) {}
           const _last0 = live.events[live.events.length - 1];
           live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
           live.events[live.events.length - 1] = {
@@ -7373,14 +7500,16 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           ev.seq = live.events.length;
           ev.rev = live.rev;
           live.events.push(ev);
+          /* 【画面真身】清单只增不减 —— 压薄动的是上面那个 events 数组，动不了它 */
+          try { appendLiveItem(live.items, ev); } catch (e) {}
         }
         /* ② 太长了就压薄：把相邻同类合并，实在还超就砍最老的 */
         if (live.events.length > LIVE_SOFT_MAX) {
           const _kept = [];
           for (const e of live.events) {
             const p = _kept[_kept.length - 1];
-            // 同上：压薄也只合并 reasoning，text 保持一条一条（内容不再变长，前端不会重复画）
-            if (p && e && p.type === e.type && e.type === 'reasoning') {
+            // 同上：text 也合并（前端不按增量画了，内容变长没副作用；合并反而省条数、防压薄丢正文）
+            if (p && e && p.type === e.type && (e.type === 'reasoning' || e.type === 'text')) {
               // seq/rev 一并带过去：压薄重组后 seq 会被重排，rev 保持单调（游标据此过滤）
               _kept[_kept.length - 1] = {
                 ...p,

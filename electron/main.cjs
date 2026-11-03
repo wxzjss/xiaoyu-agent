@@ -178,11 +178,84 @@ function codeRoot() {
 }
 
 /**
+ * 读某个 package.json 的 version（读不到给 null）。
+ * @param {string} file
+ */
+function pkgVersionAt(file) {
+  try {
+    const { readFileSync, existsSync } = require('node:fs');
+    if (!existsSync(file)) return null;
+    const j = JSON.parse(readFileSync(file, 'utf8'));
+    return typeof j?.version === 'string' ? j.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 1.2.3 vs 1.10.0 要判对（跟 src/updater.mjs 里那套同一规则） */
+function cmpVersion(a, b) {
+  const norm = (v) => String(v ?? '').replace(/^v/i, '').split(/[.+-]/).slice(0, 3).map((x) => {
+    const n = parseInt(x, 10);
+    return Number.isFinite(n) ? n : 0;
+  });
+  const A = norm(a);
+  const B = norm(b);
+  for (let i = 0; i < 3; i++) {
+    const x = A[i] ?? 0;
+    const y = B[i] ?? 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+/**
+ * code/ 那份代码该不该用？
+ *
+ * 【2026-11-02 修·真凶 B】
+ * 原来 importSrc 是「code/ 里存在就用」，不比新旧。后果：主人装了 0.9.31，
+ * 而 %APPDATA%\小鱼Agent\data\code\ 里还留着 10 月 31 日那份（0.9.28）——
+ * 于是装的是新版、跑的其实是旧代码，界面看着像「更新没成功」。
+ *
+ * 现在比版本号：code/ 的版本**不低于** asar 里的，才用它（持平说明是同一版，
+ * 用 code/ 无所谓；更高说明是热更上去的，当然用它）。
+ * 旧的就让它躺着不动（不删 —— 万一主人还想回去看，或者哪天需要取证）。
+ */
+let _codeDirDecision = null;
+function codeDirUsable() {
+  if (_codeDirDecision !== null) return _codeDirDecision;
+  try {
+    const dir = codeRoot();
+    const { existsSync } = require('node:fs');
+    const overVer = pkgVersionAt(join(dir, 'package.json'));
+    if (!existsSync(dir) || !overVer) {
+      _codeDirDecision = false;
+      return _codeDirDecision;
+    }
+    // asar 里自带的版本（= 这个程序本身发布时的版本）
+    const selfVer = pkgVersionAt(join(__dirname, '..', 'package.json')) || pkgVersionAt(join(app.getAppPath(), 'package.json'));
+    if (!selfVer) {
+      _codeDirDecision = true; // 读不到就退回老行为，别把人挡住
+      return _codeDirDecision;
+    }
+    const c = cmpVersion(overVer, selfVer);
+    _codeDirDecision = c >= 0;
+    if (!_codeDirDecision) {
+      console.warn('[code] 忽略可写目录里那份旧代码（' + overVer + ' < 程序自带 ' + selfVer + '），用程序自带的');
+    }
+    return _codeDirDecision;
+  } catch (e) {
+    console.warn('[code] 判断可写目录版本时出错，按可用来处理：', String(e?.message ?? e));
+    _codeDirDecision = true;
+    return _codeDirDecision;
+  }
+}
+
+/**
  * 从可写代码目录 import，失败就退回 asar。
  * @param {string} rel 形如 'src/server.mjs'
  */
 async function importSrc(rel) {
-  if (app.isPackaged) {
+  if (app.isPackaged && codeDirUsable()) {
     const { existsSync } = require('node:fs');
     const over = join(codeRoot(), rel);
     if (existsSync(over)) {
@@ -276,6 +349,20 @@ async function startServer() {
   globalThis.__xiaoyuRelaunch = () => {
     console.log('[restart] 主进程准备重启（app.relaunch）');
     try { app.relaunch(); } catch (e) { console.warn('[restart] relaunch 失败：', String(e?.message ?? e)); }
+    try { app.exit(0); } catch { process.exit(0); }
+  };
+
+  /**
+   * 装新版时用：**只退，不自动重开**。
+   *
+   * 为什么不复用 __xiaoyuRelaunch：app.relaunch() 是「立刻重开」，
+   * 而覆盖安装要求我们先把文件放掉 —— 重开得太快，NSIS 会撞「文件被占用」，
+   * 装了一半失败，程序还可能回不去。
+   * 装完由那个脱钩的 .cmd 负责把程序拉起来（见 src/updater-installer.mjs）。
+   */
+  globalThis.__xiaoyuQuitForInstall = () => {
+    console.log('[update] 退出，交给安装脚本装新版');
+    quitting = true;
     try { app.exit(0); } catch { process.exit(0); }
   };
 
@@ -641,7 +728,9 @@ async function createWindow(updated = false) {
    * 现在：
    *   F6 / F7（含 Ctrl 组合）—— 一律拦死不做事。它们在这台机器上本来就没用途，
    *                              拦掉不会少任何功能，却能杜绝手滑白屏。
-   *   F5 / Ctrl+R           —— 照旧硬重载，但先把会话 id 落死再走。
+   *   F5 / Ctrl+R           —— 重新刷新屏幕（2026-11-02 主人要求恢复）。
+   *                              刷新前必须先把会话 id 钉进 localStorage，
+   *                              否则重载回来找不回会话 = 白屏。
    */
   win.webContents.on('before-input-event', (event, input) => {
     const key = String(input.key || '');
@@ -652,14 +741,34 @@ async function createWindow(updated = false) {
       return;
     }
 
+    /* 【2026-11-02 主人要求恢复】F5 / Ctrl+R 重新刷新屏幕。
+     *
+     * 但刷之前必须先把当前会话 id 落进 localStorage —— 重载回来找不到会话，
+     * 屏幕一片空白，看着跟「会话被清了」一样（2026-11-01 那个坑的根源）。
+     * 落死之后重载，前端 bootSessions 会自己切回同一个会话，聊天记录照旧。
+     *
+     * 菜单里的「重新载入」和开发者工具不受影响，照旧可用。 */
     if (key === 'F5' || (input.control && low === 'r')) {
       event.preventDefault();
-      Promise.resolve()
-        .then(() => win.webContents.executeJavaScript(SAVE_SESSION_SNIPPET, true))
-        .catch(() => '')
-        .then(() => {
-          try { win.webContents.reloadIgnoringCache(); } catch (e) {}
-        });
+      let done = false;
+      const go = () => {
+        if (done) return;
+        done = true;
+        try { win.webContents.reloadIgnoringCache(); }
+        catch (e1) { try { win.webContents.reload(); } catch (e2) {} }
+      };
+      // 保底：executeJavaScript 万一卡死，1.5 秒后照样重载（不能按 F5 没反应）
+      const guard = setTimeout(go, 1500);
+      try {
+        win.webContents.executeJavaScript(SAVE_SESSION_SNIPPET, true)
+          .catch(() => '')
+          .then(() => { clearTimeout(guard); go(); })
+          .catch(() => { clearTimeout(guard); go(); });
+      } catch (e0) {
+        clearTimeout(guard);
+        go();
+      }
+      return;
     }
   });
 
@@ -826,6 +935,27 @@ app.on('before-quit', async (ev) => {
     });
     await done;
     if (serverInfo && serverInfo.close) serverInfo.close().catch(() => {});
+    /*
+     * 【2026-11-02 主人报「我手动退出，它却自己重启」——已修】
+     *
+     * 原来服务端在 /api/app/quitting 里，只要 resume.json 存在（=清单上还有没做完的），
+     * 就把 __xyRelaunchOnQuit 置 true，于是主人亲手点退出、程序也会自己爬回来。
+     * 那套「有活没干完就自动回来」的意图后来按主人要求撤了，只剩副作用，已整段删掉。
+     *
+     * 现在只有两条路会让程序重新起来，别的都不行：
+     *   · 我调 /api/app/restart → globalThis.__xiaoyuRelaunch() → app.relaunch()
+     *   · 环境变量 XIAOYU_NO_RELAUNCH=1（更新程序换文件时用，换了就别急着回来）
+     * 下面这段留着当保险：万一哪天又有谁想置这个标志，语义仍然是「明确要求才重开」。
+     * 主人亲手退出 = 真退出。
+     */
+    if (globalThis.__xyRelaunchOnQuit === true && process.env.XIAOYU_NO_RELAUNCH !== '1') {
+      try {
+        console.log('[quit] 登记自动重开（relaunch）');
+        app.relaunch();
+      } catch (e) {
+        console.warn('[quit] 登记重开失败：', String(e && e.message ? e.message : e));
+      }
+    }
     app.quit();
     return;
   }

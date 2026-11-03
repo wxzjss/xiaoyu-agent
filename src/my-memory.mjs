@@ -65,6 +65,35 @@ import { getEnabledMap } from './features.mjs';
  * 转头又去写，写不进去还以为是程序坏了。
  * 写死的三个出口（appendRolling / appendFixed / 归档）照旧一律拒绝。
  */
+
+/**
+ * 【2026-11-03 记忆系统严检】原子写：先写 .tmp 再 rename 覆盖。
+ *
+ * 为什么要它：以前我的记忆本、会话本、鲸本全是 writeFileSync 直接整份覆盖。
+ * 写到一半进程被杀 / 磁盘满 / 断电，整份记忆当场变成半截废文件 —— 而且旧内容
+ * 已经没了，救都救不回来。会话正文那边早就有这道保护（sessions-core.mjs 的
+ * writeFileAtomic），偏偏记忆没有。
+ *
+ * 跟会话那边一个路子：tmp 名以 . 开头、不带 .md 后缀，免得被「遍历目录」的
+ * 代码当成一本真记忆抓走；rename 失败（杀毒锁文件之类）就退回去直接写，
+ * 宁可靠内容也不让这次记忆凭空消失。
+ */
+function writeMemAtomic(file, text) {
+  const tmp = String(file).replace(/[^\\/]+$/, '.tmp-mem-' + process.pid + '-' + Math.random().toString(36).slice(2, 8));
+  try {
+    writeFileSync(tmp, text, 'utf8');
+    renameSync(tmp, file);
+    return 'rename';
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch {}
+    // rename 被占（杀毒扫描很常见）：退回直接写，内容比姿势重要
+    try { writeFileSync(file, text, 'utf8'); return 'direct'; } catch (e2) {
+      try { console.warn('[my-memory] 记忆写失败 ' + file + ': ' + (e2 && e2.message)); } catch {}
+      throw e2;
+    }
+  }
+}
+
 function memoryOff() {
   try {
     return getEnabledMap()['memory'] === false;
@@ -707,12 +736,22 @@ function archiveOverflow(overflow, day) {
   const dir = join(config.dataDir, '.state', 'memory-archive');
   try { if (!existsSync(dir)) mkdirSync(dir, { recursive: true }); } catch {}
   const p = archiveFile(day);
-  const lines = overflow.map((r) => (typeof r === 'string' ? r : r.text)).join('\n');
+  // 只收真正有字的条目：以前遇到空条目会写出一个「只有标题」的空归档文件，
+  // 而且写失败被 catch 静默吞掉，事后完全查不出为什么。
+  const rows = overflow
+    .map((r) => (typeof r === 'string' ? r : r && r.text))
+    .filter((x) => typeof x === 'string' && x.trim() !== '');
+  if (!rows.length) return null;
+  const lines = rows.join('\n');
   try {
     if (!existsSync(p)) appendFileSync(p, `# 记忆归档 · ${day}\n\n`, 'utf8');
     appendFileSync(p, lines + '\n', 'utf8');
-  } catch {}
-  return { path: p, count: overflow.length };
+  } catch (e) {
+    // 不再静默失败：写不进去要留个痕，不然归档丢了都不知道
+    try { console.warn('[my-memory] 归档写失败 ' + p + ': ' + (e && e.message)); } catch {}
+    return null;
+  }
+  return { path: p, count: rows.length };
 }
 
 /**
@@ -763,7 +802,7 @@ export function appendRolling(summary, extra = {}) {
     .filter((l) => l !== '');
   const nextDetail = [...prevDetail, detailLine].slice(-DETAIL_LIMIT);
 
-  writeFileSync(activeFile(), renderMemory({ fixed, roll: keptRoll, detail: nextDetail, archive: nextArchive }), 'utf8');
+  writeMemAtomic(activeFile(), renderMemory({ fixed, roll: keptRoll, detail: nextDetail, archive: nextArchive }), 'utf8');
   return { id, path: activeFile(), count: keptRoll.length, limit: TURN_LIMIT, archived: overflow.length };
 }
 
@@ -819,7 +858,7 @@ export function appendFixed(section, text) {
   // 小节之间统一隔一个空行。2026-10-30 加：不隔空行的话，`## 文件/路径/命令`
   // 会跟下一节的条目粘在一起，parseMemory 按标题切段时整节内容就错位了。
   const spacedFixed = tidySections(nextFixed);
-  writeFileSync(activeFile(), renderMemory({ fixed: spacedFixed, roll, detail, archive }), 'utf8');
+  writeMemAtomic(activeFile(), renderMemory({ fixed: spacedFixed, roll, detail, archive }), 'utf8');
   return { path: activeFile(), section: head };
 }
 

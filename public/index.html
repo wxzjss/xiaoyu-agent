@@ -101,6 +101,12 @@
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
+      /* 【2026-11-03 修·翻看历史时画面抽搐一下】
+       * 浏览器默认开着「滚动锚定」：底下的内容一变高，它就自动挪 scrollTop 想保住你
+       * 正在看的那块地方。聊天区底下永远在长新内容，于是主人往上翻着看旧消息时，
+       * 每来一段新字，画面就被这股力拽一下 —— 看着就是「抽搐」。
+       * 这里关掉它，滚动位置只由下面那套 stickBottom 逻辑说了算。 */
+      overflow-anchor: none;
     }
     .msg {
       max-width: 900px; width: 100%; margin: 0 auto;
@@ -1941,6 +1947,8 @@
     /* ---- 会话记忆 ------------------------------------------------------ */
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
     .featList { padding: 8px; }
+  .naLab { display: block; margin: 8px 0; font-size: 13px; }
+  .naLab input, .naLab textarea { display: block; width: 100%; margin-top: 4px; }
     .featRow {
       display: flex; align-items: center; gap: 12px; padding: 11px 12px;
       border: 1px solid transparent; border-radius: 8px;
@@ -2619,7 +2627,6 @@
       </div>
       <div class="dlgFoot">
         <span class="hint" id="featFoot">关掉的功能小鱼就用不了，改了下一句生效。</span>
-        <button type="button" class="ghost" id="featClose">关闭</button>
       </div>
     </form>
   </dialog>
@@ -2642,7 +2649,6 @@
               <!-- 2026-10-29：智能体不止两张了（主人要新建/多开），所以主入口是那张总面板，
                    小鱼的多套人设再给一个直通按钮，省一次点击。 -->
               <button type="button" class="primary" id="openAgentPanelFromSettings">打开智能体面板</button>
-              <button type="button" class="ghost" id="openFishPersonaFromSettings">改小鱼的人设</button>
             </div>
           </div>
         </fieldset>
@@ -2819,7 +2825,6 @@
       </div>
       <div class="dlgFoot">
         <span class="hint" id="saveHint"></span>
-        <button type="button" class="ghost" id="resetDefaults">恢复出厂默认</button>
         <button type="button" class="primary" id="saveSettings">保存</button>
       </div>
     </form>
@@ -2982,6 +2987,29 @@
     </form>
   </dialog>
 
+  <!-- 新建智能体：名字 + 开场白 + 初始人设 -->
+  <dialog id="newAgDlg" class="askDlg">
+    <form method="dialog">
+      <div class="askHead">新建智能体</div>
+      <div class="askBody">
+        <label class="naLab">名字
+          <input id="naName" type="text" autocomplete="off" spellcheck="false" maxlength="24" placeholder="比如：写代码的那个她" />
+        </label>
+        <label class="naLab">开场白（她开口的第一句话）
+          <textarea id="naOpening" rows="3" placeholder="留空就按出厂那两句"></textarea>
+        </label>
+        <label class="naLab">初始人设
+          <textarea id="naPersona" rows="8" placeholder="她是谁、怎么说话、什么脾气、别做什么。留空就是空白人设。"></textarea>
+        </label>
+        <div class="askHint" id="naHint"></div>
+      </div>
+      <div class="askFoot">
+        <button type="button" class="ghost3" id="naCancel">取消</button>
+        <button type="submit" id="naOk">建好了</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- 确认框（代替原生 confirm：Electron 里 confirm 会阻塞渲染线程，见 askConfirm 注释） -->
   <dialog id="confirmDlg" class="askDlg">
     <form method="dialog">
@@ -3081,10 +3109,11 @@
         <span class="hint" id="idTip">选中一个身份点「用这个身份」就立刻生效，下一句就按新身份说话。</span>
         <button type="button" class="ghost" id="idAdd">新建身份</button>
         <button type="button" class="ghost" id="idDel">删掉这个</button>
+        <button type="button" class="ghost" id="idSetDefault" hidden>设为默认</button>
         <button type="button" class="ghost" id="idReset" hidden>恢复出厂默认</button>
         <button type="button" class="ghost" id="idSave">保存</button>
         <button type="button" class="primary" id="idUse">用这个身份</button>
-        <button type="button" class="ghost" id="idClose">关闭</button>
+        <button type="button" class="ghost" id="idClose">返回</button>
       </div>
     </form>
   </dialog>
@@ -3111,10 +3140,11 @@
       </div>
       <div class="dlgFoot">
         <span class="hint" id="wpTip">写完全套替换「她是谁、跟小鱼怎么相处」那一部分；底线、安全词说明、她自己的本子、当前状态都不会被冲掉。</span>
+        <button type="button" class="ghost" id="wpSetDefault">设为默认</button>
         <button type="button" class="ghost" id="wpReset">恢复出厂默认</button>
         <button type="button" class="ghost" id="wpResetAll">人设和模型都恢复出厂默认</button>
         <button type="button" class="primary" id="wpSave">保存</button>
-        <button type="button" class="ghost" id="wpClose">关闭</button>
+        <button type="button" class="ghost" id="wpClose">返回</button>
       </div>
     </form>
   </dialog>
@@ -3142,14 +3172,14 @@
           <button type="button" class="ghost" id="personaNew">新建人设</button>
           <button type="button" class="ghost" id="personaRename">改名</button>
           <!-- 人设设默认按钮·2026-10-30 把当前这套存成默认；以后点「恢复成默认内容」回来的就是这一套 -->
-          <button type="button" class="ghost" id="personaAsDefault" title="把当前这一套存成默认；以后点「恢复成默认内容」回来的就是这一套">设为默认</button>
+          <button type="button" class="ghost" id="personaAsDefault" title="把当前这一套的正文存成它自己的默认；以后点「恢复成默认内容」回来的就是这一套">设为默认</button>
           <button type="button" class="ghost" id="resetPersona">恢复成默认内容</button>
         </div>
         <textarea id="personaText" spellcheck="false"></textarea>
       </div>
       <div class="dlgFoot">
         <span class="hint">改完点「保存」，下一句生效；平台自带那份文件不动。</span>
-        <button type="button" class="ghost" id="fpClose">关闭</button>
+        <button type="button" class="ghost" id="fpClose">返回</button>
         <button type="button" class="primary" id="fpSave">保存</button>
       </div>
     </form>
@@ -3231,7 +3261,7 @@
         <button type="button" class="ghost" id="agPanel" hidden>多套人设…</button>
         <button type="button" class="ghost" id="agReset">恢复出厂默认</button>
         <button type="button" class="ghost" id="agDel">删掉这个</button>
-        <button type="button" class="ghost" id="agClose">关闭</button>
+        <button type="button" class="ghost" id="agClose">返回</button>
         <button type="button" class="primary" id="agSave">保存</button>
       </div>
     </form>
@@ -3249,7 +3279,7 @@
     </div>
     <div class="dlgFoot">
       <span class="hint" id="scrFramesNote"></span>
-      <button type="button" class="ghost2" id="scrFramesClose">关闭</button>
+      <button type="button" class="ghost2" id="scrFramesClose">返回</button>
     </div>
   </dialog>
 
@@ -3417,10 +3447,38 @@
      * 没必要让它们也吃这套估算高度，免得滚动位置有一点点误差。
      * 只有超过 150 轮才开。
      */
-    #log.long-list .msg {
+    /* 【2026-11-03 修·滚动一跳一跳·第二版】
+     *  上一版把估算值分档，实测还是跳：滚到估算区时浏览器一口气补算，
+     *  总高从 8486 直接窜到 14016（+5530px），scrollTop 被夹住不动，
+     *  主人感觉就是「滚轮才动一点，画面跳出去一大截」。
+     *
+     *  根子是 content-visibility: auto 的「先估后算」这个机制本身：
+     *  只要估算值和真实值差得多，跳就躲不掉。而每条消息的真实高度本来就没法估准
+     *  （一条可以是四十字，也可以是两千像素的工具输出）。
+     *
+     *  所以改成：只给「天生特别长」的那几种块开这优化（工具柜、长思考），
+     *  普通对话气泡不开 —— 它们的算量本来就小，开了一点好处没有，只剩挑位置。
+     *  长会话仍然快，滚动也不再跳。 */
+    /* 【2026-11-03 修·我发出去的消息一发就看不见】
+     *  真凶是 content-visibility: auto —— 屏幕外那些块的高度只是「估」的，
+     *  新消息插进来时浏览器按估算值算位置，等真渲染出来高度又变一次，
+     *  气泡就被挪到视口外几千像素。实测抓到 uTop = -5861px。
+     *
+     *  所以这条优化全部撤掉：位置准 > 长会话快那一点。
+     *  长会话真要加速，以后用「只挂最近 N 轮、往上翻再补」来做，不再碰估算高度。 */
+    /*
+    #log.long-list .msg:has(.toolhub),
+    #log.long-list .msg:has(.toolFrag) {
       content-visibility: auto;
-      contain-intrinsic-size: auto 140px;
+      contain-intrinsic-size: auto 900px;
     }
+    #log.long-list .msg:has(.thinkPast) {
+      content-visibility: auto;
+      contain-intrinsic-size: auto 600px;
+    }
+    */
+    /* 下面这行是旧版留下的，留着说明当时为什么这么写，别当成有效样式：
+       #log.long-list .msg { content-visibility: auto; contain-intrinsic-size: auto 320px; } */
   </style>
   <div id="log"></div>
 
@@ -3614,6 +3672,10 @@ let stickBottom = true;
 let unseenNew = 0;
 let stickRaf = 0;
 let stickRo = null;
+/* 【2026-11-03】#log 是固定高度的滚动容器，ResizeObserver 盯它永远不回调（见下面那段注释）。
+   改成 MutationObserver + 250ms 轮询兜底，两路都只读两个数、只在跟随且没到底时才滚。 */
+let stickMo = null;
+let stickPoll = null;
 
 function toBottomEl() {
   return document.getElementById('toBottom');
@@ -3655,18 +3717,66 @@ function hardScrollBottom() {
   if (!log) return;
   log.scrollTop = log.scrollHeight;
   try { _lastTop = log.scrollTop; } catch (e) {}
+  /* 【2026-11-03】顺手把「上次看到的内容高度」对齐。
+   *  ResizeObserver 那边用「比 _lastDocH 高才滚」来防抽搐；这里不跟着更新的话，
+   *  我们自己滚完以后 _lastDocH 还停在旧值，下一秒就是一次多余的跟随。 */
+  try { _lastDocH = log.scrollHeight; } catch (e) {}
   // 打戳：紧跟着来的那个 scroll 事件是我们自己造成的，不算主人翻页
   selfScrollAt = Date.now();
 }
 
-/** 节流：一帧内多次调用只滚一次，别每条事件都做一次布局。 */
+/** 节流：一帧内多次调用只滚一次，别每条事件都做一次布局。
+ *
+ *  【2026-11-03 修·抽搐的最后一个根子】
+ *  上面这套原来只有 rAF 一条腿：浏览器在窗口不可见 / 最小化 / 后台标签页时
+ *  根本不跑 requestAnimationFrame —— 于是 stickRaf 永远停在非零值，
+ *  往后每一次调用都在 `if (stickRaf) return` 那行被挡回去，跟随彻底死掉。
+ *  表现出来的就是：内容一直在长、画面不跟；等某个偶然的 rAF 跑了一次，
+ *  或者用户自己动一下，才「啪」地跳到底 —— 主人看到的就是抽搐。
+ *
+ *  现在补一条 90ms 的看门狗：rAF 到点还没跑，就把它取消、自己接手滚一次。
+ *  两路谁先到谁干活，干过的把另一路作废（done 闸）。 */
+let _stickAid = 0;
+/* 上一次真正滚到底的时间戳：stickToBottom 用它做 60ms 节流 */
+let _stickAt = 0;
 function stickToBottom() {
   if (!stickBottom) return;
-  if (stickRaf) return;
-  stickRaf = requestAnimationFrame(() => {
-    stickRaf = 0;
-    if (stickBottom) hardScrollBottom();
-  });
+  /* 【2026-11-03 修·抽搐·最后一刀（真凶）】
+   *  原来是 if (stickRaf) return; —— 只要有一个 rAF 挂着就再也不往下走。
+   *  可 requestAnimationFrame 在「页面不可见」（document.hidden）时根本不执行：
+   *  窗口最小化、被别的窗口完全盖住、或者切到别的应用，都会让它永远不回调。
+   *  于是 stickRaf 卡在一个非零 handle 上，之后每一次跟随都被这一行直接 return 掉，
+   *  画面就彻底不跟了；等某个别的时机（resize / 重新可见）终于滚一次 ——
+   *  主人看到的就是「抽搐」。
+   *
+   *  现在：不靠 rAF 占坑。改用「时间戳节流 + setTimeout 兜底」：
+   *   · 距上次真正滚过去不足 60ms 就跳过（这就是原来 rAF 想省的重复布局）；
+   *   · 其余情况立刻排一个 setTimeout（页面不可见也照跑），到点就滚。
+   *  这样无论页面可不可见，跟随都不会死。 */
+  /* 【2026-11-03 补·后台页面的坑】
+   *  上面已经躲开了 rAF，可 setTimeout 在「页面不可见」时同样会被浏览器节流
+   *  （Chrome 对后台页最低 1 秒，hidden 久了甚至更狠）。所以：
+   *   · 页面可见 → 走 setTimeout(16) 合并同一帧的多次调用（省重复布局）；
+   *   · 页面不可见 → 立刻直接滚，一次都不等（主人看不见时也不该让它攒着）。 */
+  const now = Date.now();
+  if (now - _stickAt < 60) return;
+  const canSee = (typeof document !== 'undefined') && document.visibilityState === 'visible';
+  if (!canSee) {
+    _stickAt = now;
+    if (!log) return;
+    if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;
+    hardScrollBottom();
+    return;
+  }
+  try { if (_stickAid) clearTimeout(_stickAid); } catch (e) {}
+  _stickAid = setTimeout(() => {
+    _stickAid = 0;
+    _stickAt = Date.now();
+    if (!stickBottom) return;
+    if (!log) return;
+    if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;
+    hardScrollBottom();
+  }, 16);
 }
 
 /** 刷新那个小箭头：脱离跟随 + 有新东西时才露头。 */
@@ -3693,7 +3803,36 @@ function paintToBottom() {
  * 剩下的全走这里，只管滚。
  */
 function noteNewContent() {
-  if (stickBottom) stickToBottom();
+  if (stickBottom) { stickToBottom(); return; }
+  /* 【2026-11-04 主人报·滚轮翻到以前的消息位置时，我发新消息后【回到最新】上面没有数字】
+   *
+   *  原来这里只在"跟随中"顺手滚一下，不是跟随就什么都不做 ——
+   *  数数全靠 flushSpeech 那两处（说完一段话/开始调工具），
+   *  可主人翻上去之后我先吐出来的头几个字，那两处还没被打到，数字一直是 0，
+   *  他看着就像"有新东西但按钮不提醒我"。
+   *
+   *  这里改成：**只要主人不是在底部，屏幕上又多了一块新内容，就把这记为一次"底下多了一件事"**。
+   *  用和 bumpUnseen 一样的节流（同一段话只算一次，靠 speechMark 那张记号表），
+   *  所以不会因为流式吐字被数成几十次。
+   */
+  try { _bumpOncePerSpeech(); } catch (e) {}
+}
+
+/* 同一段话只 +1：拿 flushSpeech 那套 speechKey 记号去重。
+ * 不这么写，流式吐一个字就+1，数字会飙到几十。 */
+function _bumpOncePerSpeech() {
+  if (stickBottom) return;
+  const st = speechMark && speechMark();
+  if (!st) { unseenNew += 1; paintToBottom(); return; }
+  if (st.session !== sessionId) { st.session = sessionId; st.counted.clear(); }
+  const b = (typeof bubble !== 'undefined') ? bubble : null;
+  const t = (typeof think !== 'undefined') ? think : null;
+  const key = 'n|' + speechKey(b, t);
+  if (key === 'n|none') return;
+  if (st.counted.has(key)) return;
+  st.counted.add(key);
+  unseenNew += 1;
+  paintToBottom();
 }
 
 /**
@@ -3786,10 +3925,18 @@ function jumpToBottom() {
   unseenNew = 0;
   paintToBottom();
   hardScrollBottom();
-  /* 【2026-11-03】点箭头 = 主人明确要看最新。重画/图片撑高可能紧接着发生，
-   *  再补两拍贴底，别让他点了没反应。 */
-  requestAnimationFrame(() => { if (stickBottom) hardScrollBottom(); });
-  setTimeout(() => { try { if (stickBottom) hardScrollBottom(); } catch (e) {} }, 120);
+  /* 【2026-11-03 修·每发一条新消息画面抽搐一下】
+   *
+   *  这里原来还补了两拍贴底（下一帧一次、120ms 后一次）。它本意是「主人点了
+   *  右下角箭头，怕内容还没排完显得没反应」，可这个函数在**每次发消息**时也走
+   *  （发消息要先把画面拉到最新）。
+   *
+   *  于是同一次落底被做了三遍：这里两拍 + ResizeObserver 那边内容一长高又是一拍。
+   *  三次 hardScrollBottom 之间内容高度还在变（工具卡被收进柜子、字体换行、
+   *  用量行冒出来），画面就是往上抬一下、再被拽下来 —— 主人看到的就是「抽搐」。
+   *
+   *  现在只滚这一次。真的还没排完也不要紧：内容一长高 ResizeObserver 会自己
+   *  跟上（stickBottom 是 true，走的就是跟随那条路），不需要这里硬补。 */
 }
 
 /**
@@ -3890,8 +4037,27 @@ function resetScrollStick() {
       const _wentUp = !_repainting && !_shrank && _topNow < _lastTop - 4;
       _lastDocH = docH;
       _lastTop = _topNow;
+      /* 【2026-11-03 修·抽搐·内容变矮那一下】
+       *  工具卡被收进柜子、思考链收起来、重画换掉一段 —— 这些都会让内容变矮。
+       *  浏览器为了「别让看到的位置乱跳」会把 scrollTop 往下夹，夹完就停在半路：
+       *  还在跟随（stickBottom 是 true），却离底好几百像素，等下一个事件来才被一把
+       *  拽下去 —— 主人看到的就是画面往回抽一下、再弹回底。
+       *
+       *  这里补一句：变矮了、而且还在跟随，就立刻重新贴底。成本只有一次赋值。 */
+      /* 【2026-11-03 修·【回到最新】数字永远不涨 / 翻上去还被拽回底】
+       *  上一版写成「变矮 + 还在跟随 → 立刻贴底」，没看这一下主人是不是正在往上翻。
+       *  结果：主人往上翻、同时有个工具卡被收进柜子（高度变矮），这句就把他直接
+       *  拽回底部，stickBottom 也一直是 true —— 于是 bumpUnseen 里
+       *  "if (stickBottom) return" 永远命中，数字一个都涨不起来。
+       *  改成：先判主人意图。真的往上翻了就摘跟随（数字才开始涨）；只在没往上翻、
+       *  单纯是我们自己把内容弄矮了的时候，才补一次贴底。 */
       if (_wentUp) {
         if (stickBottom) { stickBottom = false; paintToBottom(); }
+        return;
+      }
+      if (_shrank && stickBottom) {
+        hardScrollBottom();
+        _lastTop = log.scrollTop;
         return;
       }
       /**
@@ -3973,12 +4139,65 @@ function resetScrollStick() {
     });
   }
 
-  // 内容变高（流式输出、插工具块、图片加载完）时也得决定要不要跟
-  if (log && typeof ResizeObserver === 'function') {
-    stickRo = new ResizeObserver(() => {
-      if (stickBottom) hardScrollBottom();
-    });
-    try { stickRo.observe(log); } catch {}
+  /* 内容变高（流式输出、插工具块、图片加载完）时也得决定要不要跟。
+   * 【2026-11-03 修·抽搐】原来这里无脑硬滚：ResizeObserver 每报一次高度变化就
+   * hardScrollBottom()，而滚动本身也可能让布局再变一下 → 再报一次 → 再滚。
+   * 现在只在「真的长高了」时才滚，而且已经在底部就不动（少一次无谓的写入）。 */
+  /* 【2026-11-03 修·抽搐·真凶】
+   *  原来这里是 ResizeObserver.observe(log)。可 #log 是「flex:1 固定高度、overflow-y:auto」
+   *  的滚动容器 —— 它的盒子尺寸永远是那 631px，内容长到一万三它也不变一像素。
+   *  所以那个 ResizeObserver 从来没回调过：流式吐字时高度一路涨，没人跟，
+   *  等到下一个事件（noteNewContent / 收尾）才一把拽到底 —— 主人看到的就是「抽搐」。
+   *
+   *  改成盯「内容真的往后长了」这件事：
+   *    ① MutationObserver —— 子节点一有增删就检查该不该贴底（成本极低，只读两个数）
+   *    ② 一个 250ms 的轻量轮询兜底 —— 文本节点在已有气泡里追加（子节点没增删）也能接住
+   *  两路都只在「还在跟随 且 离底 > 1px」时才滚，所以不会自己滚自己。 */
+  if (log && typeof MutationObserver === 'function') {
+    /* 【2026-11-03 修·抽搐·最后一刀】字一层一层往里加，characterData 每条都回调，
+     * 一帧里可能来七八次 —— 每次都 hardScrollBottom 就是七八次写 scrollTop，
+     * 位置反复微调，屏幕看着就是在抽。现在压到「一帧最多滚一次」：
+     * 回调只排一个 rAF，帧里真滚一下；帧内再来多少次都只是置同一个标记。 */
+    let followRaf = 0;
+    /* 看门狗：rAF 在窗口不可见时可能一直不执行，靠它接手 */
+    let followGuard = 0;
+    /* 【2026-11-03 修·长思考时一直抽搐 / 该滚却不滚】
+     *  上一版用 requestAnimationFrame 压「一帧最多滚一次」，但 rAF 在窗口不可见、
+     *  被最小化、切到后台标签时必须等窗口可见才执行 —— 一旦它没执行，
+     *  followRaf 就永远卡着非 0，后面每一次 followNow 都被 "if (followRaf) return"
+     *  挡回去，画面于是死死停在半路（实测 gap 4416px、stickBottom 还是 true）。
+     *  等某个事件把 rAF 叫醒，才「啪」地一次跳到底 —— 这就是主人在长思考时
+     *  看到的一直抽搐。
+     *  现在：rAF 照用（正常时仍然一帧一次），但配一个 90ms 的看门狗 ——
+     *  到点还没跑就自己接手滚，绝不把跟随状态卡死。 */
+    const followNow = () => {
+      if (!stickBottom || !log) return;
+      if (followRaf) return;
+      const gapNow = log.scrollHeight - log.scrollTop - log.clientHeight;
+      if (gapNow <= 1) return;
+      let done = false;
+      const doIt = () => {
+        if (done) return;
+        done = true;
+        try { if (followGuard) { clearTimeout(followGuard); followGuard = 0; } } catch (e) {}
+        followRaf = 0;
+        try {
+          if (!stickBottom || !log) return;
+          if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;
+          hardScrollBottom();
+        } catch (e) {}
+      };
+      followRaf = requestAnimationFrame(doIt);
+      try { followGuard = setTimeout(doIt, 90); } catch (e) { followGuard = 0; }
+    };
+    try {
+      stickMo = new MutationObserver(followNow);
+      stickMo.observe(log, { childList: true, subtree: true, characterData: true });
+    } catch {}
+    try {
+      if (stickPoll) clearInterval(stickPoll);
+      stickPoll = setInterval(followNow, 250);
+    } catch {}
   }
 })();
 const input = document.getElementById('input');
@@ -4622,8 +4841,25 @@ const lastSnapFp = new Map();
 function paintSnapshot(sid, srcLive) {
   /* 【2026-11-03】重画期间让滚动那块知道「高度变化是我们自己造成的」 */
   try { window.__repainting = (Number(window.__repainting) || 0) + 1; } catch (e) {}
+  /* 【2026-11-03 修·点开的思考链一会儿自己关上了】
+   *  重画是「先删整块、再照清单画」。主人点开的那块 <details open> 也在被删的那一块里，
+   *  重建出来的默认是收起的 —— 于是看着就像「我刚点开，它自己又合上了」。
+   *  这里先在删之前把「哪几块是点开的」记下来，画完之后照着恢复。 */
+  const __openBefore = [];
   try {
-    return paintSnapshot0(sid, srcLive);
+    if (log) {
+      log.querySelectorAll('details.think[open]').forEach((d, i) => __openBefore.push(i));
+    }
+  } catch (e) {}
+  try {
+    const __r = paintSnapshot0(sid, srcLive);
+    try {
+      if (log && __openBefore.length) {
+        const now = Array.from(log.querySelectorAll('details.think'));
+        for (const i of __openBefore) { if (now[i]) now[i].open = true; }
+      }
+    } catch (e) {}
+    return __r;
   } finally {
     try {
       window.__repainting = Math.max(0, (Number(window.__repainting) || 0) - 1);
@@ -4639,6 +4875,15 @@ function paintSnapshot(sid, srcLive) {
        *        ② 下一帧（布局稳定后）如果还在跟随，就补一次贴底，并把记认对齐。
        */
       __ignoreScrollUntil = Date.now() + 260;
+      /* 【2026-11-03 修·发新消息时画面抽搐一下】
+       *  原来这里连着补滚两拍：下一帧一拍、120ms 后再一拍。
+       *  重画本身已经是「先删再建」，中途高度变矮、scrollTop 被夹小，
+       *  然后一拍拉到底、再一拍又拉一次 —— 主人看到的就是「画面抽一下」。
+       *
+       *  现在只留一拍（下一帧，那时布局已经稳定），后面那拍删掉。
+       *  如果字体/图片真把高度又撑开了一点，交给 stickMo / stickPoll 那两条
+       *  跟随通道去补 —— 它们每次只补「差多少」，不会整屏跳。
+       */
       requestAnimationFrame(() => {
         try {
           if (stickBottom && log) hardScrollBottom();
@@ -4646,8 +4891,6 @@ function paintSnapshot(sid, srcLive) {
           _lastTop = log ? log.scrollTop : _lastTop;
         } catch (e) {}
       });
-      /* 再补一拍：字体/换行把最后那点高度撑开是排在后面的，一帧往往还没到位 */
-      setTimeout(() => { try { if (stickBottom) hardScrollBottom(); } catch (e) {} }, 120);
     } catch (e) {}
   }
 }
@@ -4755,7 +4998,15 @@ function paintSnapshot0(sid, srcLive) {
      *  这一步只在快照有正文时做 —— 空快照不许动历史。 */
     const nb = nrm(bodyText);
     if (nb.length >= 8) {
-      for (const c of document.querySelectorAll('.msg.assistant')) {
+      /* 【2026-11-02 主人报「只要出现新消息，上下文就上下抽一下，翻到很久之前也一样」】
+       *  真机实测（会话【抽搐】）：主人盯着的那条旧气泡在每拍重画时被 remove 掉了 ——
+       *  节点一被摘掉浏览器就重排一次，看着就是「抽一下」。实测：
+       *  t 34867→34915、h 35493→35541，而那块气泡的 isConnected 由 true 变 false。
+       *  该交给重画的只有「本轮那半截」，而它只可能是列表**最后一个** assistant 容器；
+       *  视口上方那些旧消息永远不该被这一步碰到。判据收窄成「只检查最后一个」。 */
+      const _cands = [...document.querySelectorAll('.msg.assistant')].filter((c) => c.isConnected && c.dataset.liveTurn !== '1');
+      const _tail = _cands.length ? [_cands[_cands.length - 1]] : [];
+      for (const c of _tail) {
         if (!c.isConnected || c.dataset.liveTurn === '1') continue;
         const bs = [...c.querySelectorAll('.bubble')];
         let j = '';
@@ -6550,6 +6801,9 @@ function addUser(text, tag, atts, target, rewindId, who = '') {
   if (target) {
     // 批量重绘时 target 是 fragment，不需要返回
   }
+  /* 【2026-11-03】画的时候盖个时间戳。renderTurns 那段的「补回差点被洗掉的插话」
+   * 原来拿 data-at（那是数组下标）当时间戳算，判据永远不成立，一次都没生效过。 */
+  wrap.dataset.drawnAt = String(Date.now());
   const hasId = Number.isFinite(Number(rewindId));
   if (hasId) {
     wrap.dataset.rewindId = String(Number(rewindId));
@@ -6814,7 +7068,10 @@ function attachDelBtn(wrap, at) {
         return;
       }
       // 服务端给的是删完之后的有效历史，照它整屏重画，界面上跟盘上对得上
-      if (r.session && Array.isArray(r.session.turns)) renderTurns(r.session.turns);
+      /* 【2026-11-03 主人报·回退确认后没反应】同一个病根：renderTurns 看到「这个会话还在跑」
+       * 就直接 return，于是服务端已经改了、屏幕上一条没变。这类「照盘上重画」一律 force。 */
+      try { turnsInFlight.delete(sessionId); } catch (e) {}
+      if (r.session && Array.isArray(r.session.turns)) { try { renderTurns(r.session.turns, { force: true }); } catch (e) {} }
     } finally {
       db.disabled = false;
     }
@@ -6872,7 +7129,10 @@ async function retryHere(at, askText, btn) {
       return;
     }
     // 服务端给的是退完之后的有效历史，照它重画一遍，界面才跟盘上对得上
-    if (r.session && Array.isArray(r.session.turns)) renderTurns(r.session.turns);
+    /* 【2026-11-03 主人报·回退确认后没反应】同一个病根：renderTurns 看到「这个会话还在跑」
+     * 就直接 return，于是服务端已经改了、屏幕上一条没变。这类「照盘上重画」一律 force。 */
+    try { turnsInFlight.delete(sessionId); } catch (e) {}
+    if (r.session && Array.isArray(r.session.turns)) { try { renderTurns(r.session.turns, { force: true }); } catch (e) {} }
     const f = r.files || {};
     const nFiles = (f.restored || []).length + (f.deleted || []).length;
     if (nFiles) addSysNote("已跟着退回 " + nFiles + " 个文件");
@@ -8140,6 +8400,18 @@ function openThink() {
         if (d.open) d.dataset.userOpened = '1';
         else delete d.dataset.userOpened;
       } catch (e) {}
+      /* 【2026-11-03 修·点开就被重画关掉】把「主人点开的那些」记在一张全局榜上：
+       *  键用这块思考正文的长度（重画时同一条思考内容长度一样，认得回来）。
+       *  paintReasoning 建块时查这张榜，命中就直接展开。 */
+      try {
+        const b = d.querySelector('.thinkBody');
+        const k = b ? String((b.textContent || '').length) : '';
+        if (k) {
+          window.__openedThink = window.__openedThink || new Set();
+          if (d.open) window.__openedThink.add(k);
+          else window.__openedThink.delete(k);
+        }
+      } catch (e) {}
     });
   } catch (e) {}
 
@@ -8176,8 +8448,12 @@ function openThink() {
       /* 【只追加，不重排】整组快照给的正文永远是「上一拍的超集」（思考只会越来越长），
        *  所以差异部分是一段尾巴 —— 往后接一个文本节点就行，
        *  不用把整块内容换掉（那会让浏览器把这块整个重新排版，看着就是抽搐）。 */
-      if (t.indexOf(cur) === 0) { try { body.appendChild(document.createTextNode(t.slice(cur.length))); } catch (e) { body.textContent = t; } }
-      else { body.textContent = t; }
+      /* 【2026-11-03 修·展开只显示几十字、字数却写着几百】
+       *  老写法靠 body._full 记账 + appendChild 追加尾巴。可整组快照送来的全文
+       *  有时不是上一拍的超集（服务端会裁 leading / 归一化），前缀一对不上就整块
+       *  textContent = t —— 但那一次重排会把已经追加的文本节点全扔掉，只剩最后一段。
+       *  改成一律「整块设置」，并且只在真的变了才碰 DOM（内容相同一个节点都不动）。 */
+      body.textContent = t;
       body._full = t;
       const flat = body.textContent.replace(/\s+/g, ' ').trim();
       if (flat) {
@@ -8229,8 +8505,17 @@ function paintReasoning(text, host) {
   const body = document.createElement('div');
   body.className = 'thinkBody';
   body.textContent = body0;
+  body._full = body0;
 
   d.append(sum, body);
+  /* 【2026-11-03 修·思考链点开又被关上】重画（renderTurns / 整组快照）会把 DOM 换掉，
+   *  新建出来的这一块永远是收起的 —— 主人刚点开就被换走。所以按内容认人：
+   *  重画前把「主人自己点开的那些思考链」记下来，重画后遇到同一段内容就替它展开。 */
+  try {
+    const opened = window.__openedThink;
+    if (opened && opened.has(String(body0.length))) d.open = true;
+  } catch (e) {}
+
   (host || log).appendChild(d);
   return d;
 }
@@ -9120,7 +9405,9 @@ async function interject() {
       }
     } catch {}
   }
-  addUser(text, '插话', undefined, undefined, undefined, currentIdentityName);
+  /* 【2026-11-03 严检】插话这条原来没交给 pendingRewindBubble：①它永远拿不到五个按钮；②下一轮 done 会把新 at 挂到上一轮气泡上。 */
+  pendingRewindBubble = addUser(text, undefined, undefined, undefined, undefined, currentIdentityName);
+  try { if (pendingRewindBubble) { const t = document.createElement("span"); t.className = "interjectTag"; t.textContent = "插话"; pendingRewindBubble.appendChild(t); } } catch {}
   pendingResume = true;
   lastInterjectText = text;   // 【必须有】runTurn 收尾时靠它判断「那句到底在不在历史里」
   syncSendBtn();
@@ -9334,9 +9621,18 @@ function clearDraft() {
 function restoreDraft() {
   try {
     const t = localStorage.getItem(draftKey());
-    if (!t) return;
-    // 已经有内容就别覆盖（那是刚恢复出来的别的会话的话）
-    if (input.value && input.value.trim()) return;
+    /* 【2026-11-03 修·切会话输入框串味】原来是「输入框有内容就不覆盖」，
+     *  可切会话时输入框里永远是上一个会话的字 —— 于是新会话的草稿一辈子读不出来，
+     *  在 A 打的字跟着跑进 B，切回 A 又变成 B 的。
+     *  正确做法：没草稿就清空（不能留上一个会话的字），有草稿就写进去。 */
+    if (!t) {
+      if (input.value) {
+        input.value = '';
+        try { autosizeInput(); } catch {}
+        try { syncSendBtn(); } catch {}
+      }
+      return;
+    }
     input.value = t;
     autosizeInput();
     syncSendBtn();
@@ -9722,9 +10018,17 @@ function updatePersonaDlgTitle(who) {
 /** 看这次是从哪儿点进来的（此刻智能体面板还开着 = 从它那儿进来的），顺手把右下角那颗按钮的字换掉 */
 function paletteFromHint() {
   const ad = document.getElementById('agentListDlg');
-  personaFrom = (ad && ad.open) ? 'agent' : '';
+  const sd = document.getElementById('settingsDlg') || document.getElementById('settings');
+  /* 【2026-11-03】来路认三种：智能体面板 → 回它；设置页 → 回设置；都不是 → 只关掉。
+   * 以前只认智能体面板，从设置进来 personaFrom 永远是空，于是「返回」等于「关掉」，
+   * 主人得自己再点一次设置。 */
+  personaFrom = (ad && ad.open) ? 'agent'
+    : ((sd && (sd.open || sd.getAttribute('open') !== null)) ? 'settings' : '');
   const btn = document.getElementById('fpClose');
-  if (btn) btn.textContent = personaFrom === 'agent' ? '返回' : '关闭';
+  /* 【2026-11-03 主人要的】这颗按钮永远叫「返回」，不再按来路变回「关闭」。
+   * 原话：「【多套人设】界面右下角的【关闭】改为【返回】了吗」——
+   * 只改默认文字不够，这里每次打开都会把它改回去，所以一并钉死。 */
+  if (btn) btn.textContent = '返回';
 }
 
 /**
@@ -9732,12 +10036,34 @@ function paletteFromHint() {
  * 人刚改完，得让他一眼看到那张卡现在什么样（所以重开而不是只 close）。
  * 别处进来的还是「关闭」，关掉就完事。
  */
+/* 【2026-11-03 主人要的】这颗永远叫「返回」，点下去也要真的回上一页。
+ *
+ * 以前：只有从智能体面板进来才回上一页，从别处进来就只是关掉（那时候它叫「关闭」）。
+ * 现在按钮统一叫「返回」，那就得按来路回：
+ *   智能体面板 → 回智能体面板
+ *   设置页     → 回设置页
+ *   其它/记不住 → 只关掉（至少不会把人卡住）
+ *
+ * personaFrom 记着来路，closeFishPersonaDlg 之前先捞出来。
+ */
 async function closeOrBackFishPersonaDlg() {
-  const back = personaFrom === 'agent';
+  const from = personaFrom;
   personaFrom = '';
   closeFishPersonaDlg();
-  if (!back) return;
-  try { await openAgentDlg(); } catch { /* 打不开也不能把主人卡在半路 */ }
+  if (!from) return;
+
+  if (from === 'agent') {
+    try { await openAgentDlg(); } catch { /* 打不开也不能把主人卡在半路 */ }
+    return;
+  }
+  if (from === 'settings') {
+    try {
+      const d = document.getElementById('settingsDlg') || document.getElementById('settings');
+      if (d && typeof d.showModal === 'function' && !d.open) d.showModal();
+      else if (d && d.open === false) d.open = true;
+    } catch { /* 同上 */ }
+    return;
+  }
 }
 
 function closeFishPersonaDlg() {
@@ -9766,15 +10092,6 @@ function closeFishPersonaDlg() {
       // 2026-11-03：存完顺手回写给对应身份的档案，【智能体】那边才不会还是老一套
       await syncPersonaToAgent(personaSyncWho);
       personaHint.textContent = '已保存，下一句生效';
-    };
-  }
-  const fromSettings = document.getElementById('openFishPersonaFromSettings');
-  if (fromSettings) {
-    fromSettings.onclick = async () => {
-      // 设置面板是模态的，先关掉它再开人设面板，否则新面板会被压在下面
-      const sd = document.getElementById('settingsDlg') || document.getElementById('settings');
-      if (sd && sd.open) { try { sd.close(); } catch { /* 忽略 */ } }
-      await openFishPersonaDlg();
     };
   }
   const agentFromSettings = document.getElementById('openAgentPanelFromSettings');
@@ -10974,12 +11291,55 @@ async function refreshAgentList() {
   if (agentSel) await selectAgent(agentSel);
 }
 
+
+/** 新建智能体：一次问清名字 / 开场白 / 初始人设。取消回 null。 */
+function askNewAgent() {
+  return new Promise((resolve) => {
+    const dlg = document.getElementById('newAgDlg');
+    const nm = document.getElementById('naName');
+    const op = document.getElementById('naOpening');
+    const pe = document.getElementById('naPersona');
+    const okBtn = document.getElementById('naOk');
+    const cancelBtn = document.getElementById('naCancel');
+    if (!dlg || !nm || !op || !pe) { resolve(null); return; }
+    nm.value = ''; op.value = ''; pe.value = '';
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      try { if (dlg.open) dlg.close(); } catch {}
+      resolve(val);
+    };
+    const syncOk = () => { okBtn.disabled = !nm.value.trim(); };
+    nm.oninput = syncOk;
+    syncOk();
+    cancelBtn.onclick = () => finish(null);
+    dlg.onclose = () => finish(null);
+    dlg.addEventListener('submit', () => {
+      const name = nm.value.trim();
+      if (!name) return;
+      finish({ name, opening: op.value, persona: pe.value });
+    }, { once: true });
+    try { dlg.showModal(); } catch { resolve(null); return; }
+    nm.focus();
+  });
+}
+
 async function newAgentCard() {
-  const name = await askName({ title: '新智能体叫什么名字', value: '', placeholder: '比如：写代码的那个她', maxLength: 24 });
-  if (name === null) return;
+  /* 【2026-11-03 主人问：为什么新建只能填名字？】
+   * 原来这里只弹一个「起个名字」的框，persona 压根没传给后端 →
+   * 新建的智能体人设是空的 → 默认人设回落到全局 defaults.json.persona。 */
+  const form = await askNewAgent();
+  if (form === null) return;
+  const name = form.name;
   const r = await fetch('/api/agents/add', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name.trim() || '新的智能体', desc: '' }),
+    body: JSON.stringify({
+      name: name.trim() || '新的智能体',
+      desc: '',
+      persona: form.persona || '',
+      opening: form.opening || '',
+    }),
   }).then((x) => x.json()).catch(() => null);
   if (!r || r.error) { agHint('建不了：' + ((r && r.error) || '网络错误')); return; }
   agentState = { ...agentState, agents: r.agents || agentState.agents };
@@ -10999,7 +11359,7 @@ async function resetAgentCard() {
   }).then((x) => x.json()).catch(() => null);
   if (!r || r.error) { agHint('恢复不了：' + ((r && r.error) || '网络错误')); return; }
   await refreshAgentList();
-  agHint(agentCur.builtin ? '已退回出厂的默认人设' : '已清空');
+  agHint('已恢复出厂默认');
 }
 
 async function delAgentCard() {
@@ -11110,6 +11470,7 @@ async function importAgentCardFrom(file) {
   }
   wire('agNew', () => newAgentCard());
   wire('agReset', () => resetAgentCard());
+
   wire('agDel', () => delAgentCard());
   wire('agClose', () => { const d = document.getElementById('agentListDlg'); if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } } });
   wire('agPanel', () => {
@@ -11756,16 +12117,27 @@ async function saveQqBind() {
 // ==================== QQ 小鱼 结束 ====================
 
 // ---- 新建 ----
+/* 【2026-11-03 主人报】「新建人设只能填个名字然后自动退出」
+ *
+ * 老写法只问名字，正文没问 → 后端拿到 text=undefined → copyCurrent 复制当前那套。
+ * 主人看到的就是「填完名字就没了」，还以为新套是空的。
+ *
+ * 现在两样一起问（askPersonaNew）：填了正文就用正文；正文留空才复制当前这套，
+ * 而且会明说出来，不让人猜。建完停在这套上，直接就能继续改。 */
 document.getElementById('personaNew').onclick = async () => {
-  const name = await askName({ title: '新人设叫什么名字', value: '', placeholder: '比如：工作人格', maxLength: 40 });
-  if (name === null) return;
+  const got = await askPersonaNew({ name: '', text: '' });
+  if (!got) return;
+  const body = String(got.text || '');
+  const useCopy = !body.trim();
   const r = await fetch(PERSONA_API('/api/personas/new'), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name.trim(), copyCurrent: true }),
+    body: JSON.stringify(useCopy ? { name: got.name, copyCurrent: true } : { name: got.name, text: body, copyCurrent: false }),
   }).then((x) => x.json()).catch(() => null);
   if (!r || r.error) { personaHint.textContent = '建不了：' + (r && r.error ? r.error : '网络错误'); return; }
   fillPersona(r);
-  personaHint.textContent = `建好了「${r.currentName}」，里面是刚才那套的副本，直接改就行`;
+  personaHint.textContent = useCopy
+    ? `建好了「${r.currentName}」，正文是刚才那套的副本，直接改就行`
+    : `建好了「${r.currentName}」，正文就是你填的那些`;
 };
 
 // ---- 改名 ----
@@ -12037,7 +12409,7 @@ document.getElementById("personaAsDefault").onclick = async () => {
 document.getElementById('resetPersona').onclick = async () => {
   const cur = personaInfo;
   if (!cur) return;
-  if (!(await askConfirm({ title: '恢复自带人设', body: `把「${cur.currentName}」的正文恢复成平台自带那份？你改过的会先备份。`, ok: '恢复', danger: true }))) return;
+  if (!(await askConfirm({ title: '恢复成这套的默认', body: `把「${cur.currentName}」的正文恢复成它自己的默认？你改过的会先备份。`, ok: '恢复', danger: true }))) return;
   const r = await fetch(PERSONA_API('/api/personas/reset'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -12045,7 +12417,7 @@ document.getElementById('resetPersona').onclick = async () => {
   }).then((x) => x.json()).catch(() => null);
   if (!r || r.error) { personaHint.textContent = '恢复失败'; return; }
   fillPersona(r);
-  personaHint.textContent = '已恢复成默认内容，上一版留在 .state/persona.backup.md';
+  personaHint.textContent = '已恢复成这套自己的默认，上一版已备份';
 };
 
 
@@ -12101,11 +12473,7 @@ document.getElementById('resetSafeWords').onclick = async () => {
   }
 };
 
-document.getElementById('resetDefaults').onclick = () => {
-  if (!defaults) return;
-  fillSettings(defaults);
-  saveHint.textContent = '已填入默认值，点保存生效';
-};
+/* 【2026-11-03 主人要求】设置界面右下角那颗「恢复出厂默认」已经删掉了，这里一并去掉。 */
 
 // ---- 手机连接 ---------------------------------------------------------------
 const mobToggle = document.getElementById('mobToggle');
@@ -12670,6 +13038,48 @@ function renderFeatList() {
     sw.dataset.id = f.id;
     sw.dataset.on = f.enabled ? '1' : '0';
     sw.textContent = f.enabled ? '停用' : '启用';
+
+    /**
+     * 自动重启续上：多给一个「立即重启」的入口（2026-11-03 主人要的）。
+     *
+     * 以前想主动重启（改完 src 让新代码生效）没有正经入口，只能去杀进程 ——
+     * 那不是重启是退出。现在这里就是唯一那条正经路。
+     *
+     * 带 byOwner:true：这是主人亲手点的，不受那一档开关限制。
+     * 那一档管的是「我（小鱼）能不能自己重启」。
+     */
+    if (f.id === 'selfRestart') {
+      const go = document.createElement('button');
+      go.type = 'button';
+      go.className = 'featEditBtn';
+      go.textContent = '立即重启';
+      go.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const resume = f.enabled === true;
+        const yes = await askConfirm({
+          title: '重启小鱼Agent',
+          body: resume
+            ? '重启一下，新代码就生效了。会话和设置都不动，手上没干完的活重启完我自己接着干。'
+            : '「自动重启续上」现在是关着的：会照常重启，但重启完是干净的冷启动，手上没干完的活不会自己接着干。',
+          okText: '重启',
+        });
+        if (!yes) return;
+        try {
+          const r = await fetch('/api/app/restart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ byOwner: true, sessionId: (typeof sessionId !== 'undefined' ? sessionId : '') }),
+          }).then((x) => x.json());
+          if (!r || !r.ok) throw new Error((r && r.error) || '重启失败');
+        } catch (e) {
+          alert('重启没成功：' + (e && e.message ? e.message : e));
+        }
+      });
+      row.append(main, go, sw);
+      featList.appendChild(row);
+      continue;
+    }
 
     /**
      * 陪看屏幕：多给一个「最近看过」的入口。
@@ -13402,8 +13812,7 @@ if (openFeaturesBtn) {
   };
 }
 if (featDlg) featDlg.addEventListener('cancel', () => featDlg.close());
-const featCloseBtn = document.getElementById('featClose');
-if (featCloseBtn) featCloseBtn.onclick = () => featDlg.close();
+/* 【2026-11-03 主人要求】功能页右下角那颗「关闭」已经删掉了，这里一并去掉。 */
 
 // ---- 小鱼的嗓子：选声音 / 试听 ----
 let voiceOpen = false;
@@ -14591,6 +15000,87 @@ window.addEventListener('resize', () => { if (cfgMenuFor) closeCfgMenu(); });
  * @param {number} [opts.maxLength] 最多几个字
  * @returns {Promise<string|null>} 确定给字符串，取消给 null
  */
+/**
+ * 【2026-11-03 主人报】「多套人设页面的新建人设，只能填个名字然后自动退出」
+ *
+ * 真凶：personaNew 那个 onclick 只调了 askName 拿一个名字，正文根本没问，
+ * 后端 createPersona 拿到的 text 是 undefined → 走 copyCurrent 复制当前这套。
+ * 于是主人以为是「新套」，其实是旧套的复制品，名字还成了唯一能填的东西。
+ *
+ * 这个弹窗把两样一起问了：名字 + 正文。正文留空就明说会复制当前这套。
+ * 跟 askName 一个写法（同一个 askDlg），只是多一个 textarea，复用它不另搭一套。
+ */
+function askPersonaNew({ name = '', text = '' } = {}) {
+  return new Promise((resolve) => {
+    const dlg = document.getElementById('askDlg');
+    const t = document.getElementById('askTitle');
+    const input = document.getElementById('askInput');
+    const hint = document.getElementById('askHint');
+    const okBtn = document.getElementById('askOk');
+    const cancelBtn = document.getElementById('askCancel');
+
+    t.textContent = '新建一套人设';
+    input.value = name;
+    input.placeholder = '这套叫什么（比如：工作模式、深夜版）';
+    input.maxLength = 80;
+    hint.textContent = '';
+
+    /* 正文框：跟输入框同宽，六行高，挂在输入框后面。
+     * 每次用完摘掉，别在 DOM 里留垃圾。 */
+    const old = dlg.querySelector('#askPersonaBodyWrap');
+    if (old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'askPersonaBodyWrap';
+    wrap.style.cssText = 'margin-top:10px';
+    const lab = document.createElement('div');
+    lab.textContent = '这套的正文（可以留空，留空就复制当前这套）';
+    lab.style.cssText = 'font-size:13px;opacity:.75;margin-bottom:6px';
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.rows = 6;
+    ta.spellcheck = false;
+    ta.placeholder = '这里写她是谁、怎么说话……';
+    ta.style.cssText = 'width:100%;box-sizing:border-box;resize:vertical;min-height:110px;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:inherit;font:inherit';
+    wrap.appendChild(lab);
+    wrap.appendChild(ta);
+    input.parentNode.insertBefore(wrap, input.nextSibling);
+
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      input.oninput = null;
+      cancelBtn.onclick = null;
+      okBtn.onclick = null;
+      dlg.onclose = null;
+      try { wrap.remove(); } catch {}
+      try { if (dlg.open) dlg.close(); } catch {}
+      resolve(val);
+    };
+
+    const syncOk = () => {
+      const empty = !input.value.trim();
+      okBtn.disabled = empty;
+      okBtn.style.opacity = empty ? '.5' : '1';
+      okBtn.style.cursor = empty ? 'not-allowed' : 'pointer';
+    };
+    input.oninput = () => { hint.textContent = ''; syncOk(); };
+    cancelBtn.onclick = () => finish(null);
+    dlg.onclose = () => finish(null);
+    okBtn.onclick = (e) => {
+      e.preventDefault();
+      if (!input.value.trim()) return;
+      finish({ name: input.value.trim(), text: ta.value });
+    };
+
+    syncOk();
+    closeOtherDialogs('settingsDlg');
+    dlg.showModal();
+    input.focus();
+    input.select();
+  });
+}
+
 function askName({ title, value = '', placeholder = '', maxLength = 80 } = {}) {
   return new Promise((resolve) => {
     const dlg = document.getElementById('askDlg');
@@ -15524,6 +16014,61 @@ function renderTurns(turns, opts) {
     try { currentTurns = Array.isArray(turns) ? turns : []; } catch {}
     return;
   }
+  /* 【2026-11-03 修·发出去的插话突然消失】
+   *
+   *  主人的插话是先画到屏幕上的（addUser），这一轮跑完才落盘。
+   *  可这一轮刚结束、下一轮还没被判成"在跑"的那个空档里，`_curInFlight` 是 false，
+   *  上面那道保护失效 —— renderTurns 拿着"服务端还没有这句"的 turns 整屏重画，
+   *  刚打出去的那句话就被盖掉，屏幕上"闪一下就没了"。
+   *
+   *  修法：重画之前先把「屏幕上有、服务端 turns 里没有」的用户消息记下来，
+   *  重画完再补回去。判据用"洗完只留字"的正文比对，跟 reconcileTurnTexts 同一套口径。 */
+  /* 【2026-11-04 主人报·新建会话后屏幕上还留着上个会话的话，按 F5 才消失】
+   *
+   *  病根就在下面这段「补回差点被洗掉的插话」：它的前提是「屏幕上这一屏本来就属于这个会话」。
+   *  可新建 / 切会话时屏幕上是【上一个会话】的消息，而服务端 turns 是空的 ——
+   *  于是 _srv 里一条都对不上，那些旧消息全被判成「刚打出去还没落盘的插话」，
+   *  整批补进新会话里。屏幕归属变了的时候，这段补回必须整个跳过。
+   *  判据用上面已经算好的 _ownerSame（换人了就是 false）。 */
+  let _lostUsers = [];
+  try {
+    if (!_ownerSame) throw new Error('owner-changed');
+    const _wash = (s) => String(fixMojibake(String(s || '')) || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+    const _srv = new Set();
+    for (const t of (Array.isArray(turns) ? turns : [])) {
+      if (t && t.role === 'user') { const w = _wash(t.text); if (w) _srv.add(w); }
+    }
+    const _lg0 = document.getElementById('log');
+    if (_lg0) {
+      for (const el of _lg0.querySelectorAll('.msg.user')) {
+        let body = '';
+        try { const b = el.querySelector('.bubble') || el; body = String(b.textContent || ''); } catch (e) {}
+        const w = _wash(body);
+        if (!w) continue;
+        // 服务端已经有这段（或它包含在这段里）就不用补
+        let known = false;
+        for (const sv of _srv) { if (sv === w || sv.includes(w) || w.includes(sv)) { known = true; break; } }
+        if (known) continue;
+        /* 【2026-11-03 补】只认「刚打出去的」那几句 —— 屏幕上因为别的原因残留的旧消息
+         *  （比如服务端删了、本地还挂着）不能每次都补回来，不然越补越多。
+         *  15 分钟以内、而且这一段还没落盘，才算「差点被洗掉的那句」。 */
+        let _fresh = true;
+        try {
+          /* 【2026-11-03 严检抓到的真 bug】data-at 存的是「消息在数组里的下标」
+           * （rewindId，见 6779 / 16276 / 16364 行），不是毫秒时间戳。
+           * 拿 Date.now() 减它永远是天文数字 → _fresh 永远 false →
+           * 这段「补回差点被洗掉的插话」从来没生效过。
+           * 改：认 el.dataset.drawnAt（画的时候打的时间戳）。老气泡没这个标记就当它不新。 */
+          const _drawn = Number(el.dataset.drawnAt);
+          _fresh = Number.isFinite(_drawn) && _drawn > 0 && (Date.now() - _drawn) < 15 * 60 * 1000;
+        } catch (e) { _fresh = true; }
+        if (!_fresh) continue;
+        // 把这条消息的文字记下来（气泡里的工具条之类一并略过，只留正文）
+        _lostUsers.push(String(body).trim());
+      }
+    }
+  } catch (e) { _lostUsers = []; }
+
   hideSending();
   // 记下「屏幕上这一屏是什么」：设置面板里的会话总账要拿它加总（见 paintUsageBox）。
   try { currentTurns = Array.isArray(turns) ? turns : []; } catch {}
@@ -15950,8 +16495,37 @@ function renderTurns(turns, opts) {
    *  所以重画这一整段（含紧接着的 attachLive / paintSnapshot）开一个静默窗口，
    *  期间的 scroll 只同步记认、不碰 stickBottom。窗口到期后由贴底那一步对齐。
    */
+  /* 【2026-11-04 主人报·手动点开的思考链，我一发新消息就自己合上了】
+   *
+   *  【为什么记录要放在 replaceChildren 之前】
+   *  下面那段「收历史工具」也会记录一次展开状态，但那是**重画之后**才去 querySelectorAll 的 ——
+   *  那时候 DOM 已经整块换成新元素了，新建的 <details> 默认都是闭合的，
+   *  所以记下来的永远是空集合，等于没恢复。必须趁旧 DOM 还在的时候先记。
+   *
+   *  记的是「第几个 hub / hub 里第几个 tool」这种位置号：重画会把元素换掉，记元素本身没用。
+   *  换会话（_ownerSame === false）不记 —— 那是老规矩，进新会话一律收起。
+   */
+  let _keepOpenBefore = new Set();
+  if (_ownerSame) {
+    try {
+      const _lgB = document.getElementById('log') || document;
+      [..._lgB.querySelectorAll('details.toolhub')].forEach((el, hi) => {
+        if (el.open) _keepOpenBefore.add('h' + hi);
+        el.querySelectorAll('details.tool').forEach((inner, ti) => {
+          if (inner.open) _keepOpenBefore.add('h' + hi + 't' + ti);
+        });
+      });
+    } catch {}
+  }
   __ignoreScrollUntil = Date.now() + 800;
   log.replaceChildren(frag);
+  /* 【2026-11-03 修·插话闪一下就没】把重画前记下的、还没落盘的那几句主人消息补回去，
+   *  按当时打字的先后顺序接在这一屏的最后（它们本来就是最新的那几句）。 */
+  try {
+    for (const _txt of _lostUsers) {
+      try { addUser(_txt, '', undefined, undefined, undefined, ''); } catch (e) {}
+    }
+  } catch (e) {}
   try { window.__renderFrag = null; } catch {}
   /* 记一笔：这一屏现在是谁的。下次 renderTurns 靠它分辨「同一个会话在重画」还是「换人了」 */
   try { window.__turnsOwner = sessionId; } catch (e) {}
@@ -15981,11 +16555,32 @@ function renderTurns(turns, opts) {
    * 留最后一个 hub 展开：那可能是正在跑的这一轮，收起来就看不见我在做什么了。
    * keepFrom 那种「按元素排除」的办法在这儿不好使（最后一个 hub 不一定是我这一轮的），所以自己数。 */
   try {
-    const _hubs = [...(document.getElementById("log") || document).querySelectorAll("details.toolhub")];
-    // 【主人要求】刷新进来一律收起，不留最后一个 —— 留一条开着像程序自作主张。
-  _hubs.forEach((el) => { el.open = false; });
-    // 【2026-10-31 主人：柜子里的抽屉要关着】点开柜门先看见一排工具名，想细看哪个自己拉哪个
-    _hubs.forEach((el) => { for (const inner of el.querySelectorAll("details.tool")) inner.open = false; });
+    const _lgH = document.getElementById("log") || document;
+    const _hubs = [..._lgH.querySelectorAll("details.toolhub")];
+    /* 【2026-11-04 主人报·手动点开的思考链，我一发新消息就自己合上了】
+     *  原来这里不分场合一律 open=false：只要重画（发消息、切会话、定时对账都算）
+     *  就把主人亲手展开的思考链全收起来，等于程序擅自改主人的阅读状态。
+     *  现在分两种：
+     *    ① 换会话 / 刷新进来（_ownerSame === false）→ 仍然一律收起，这是老规矩；
+     *    ② 同一会话重画 → 先把开着的记下来，画完按原样恢复。
+     *  记的是「第几个 hub / hub 里第几个 tool」这种位置号，不能记元素本身：
+     *  重画会把整块 DOM 换掉，旧元素已经不在树上了。 */
+    /* 【2026-11-04 修】这里原来又记了一遍展开状态 —— 但走到这儿 DOM 已经 replaceChildren 换新了，
+     *  新建的 <details> 全是闭合的，记出来永远是空集合。真正的记录在上面、replaceChildren 之前。
+     *  这里直接用那份。 */
+    const _keepOpen = _keepOpenBefore;
+    /* 上面把该收的收了；同一会话重画时，把主人亲手展开的那几个按位置号恢复回去 */
+    if (!_ownerSame) {
+      _hubs.forEach((el) => { el.open = false; });
+      _hubs.forEach((el) => { for (const inner of el.querySelectorAll("details.tool")) inner.open = false; });
+    } else {
+      _hubs.forEach((el, hi) => {
+        if (_keepOpen.has("h" + hi)) el.open = true;
+        el.querySelectorAll("details.tool").forEach((inner, ti) => {
+          if (_keepOpen.has("h" + hi + "t" + ti)) inner.open = true;
+        });
+      });
+    }
   } catch (e) { /* 折不起来也不该让整屏白掉 */ }
   // 渲染完一整屏历史之后，必须无条件跳到最底 —— 你打开会话就是想看最新那句。
   // 这里不能用 noteNewContent()：它会看 stickBottom，而这会儿的 stickBottom
@@ -16070,7 +16665,13 @@ if (rwGo) {
       return;
     }
     // 界面按服务端给的有效历史重画
-  renderTurns(r.session.turns);
+    /* 【2026-11-03 主人报】「按了回退按钮确认后没反应，那个消息还挂在那里」——
+     * 真凶：这里原来不传 { force: true }。renderTurns 一看到「这个会话还在跑」
+     * （turnsInFlight 里有它）就直接 return，于是服务端已经把后面那些藏起来了，
+     * 屏幕上却一条都没少。回退本来就是整屏重画，必须 force。 */
+    try { turnsInFlight.delete(sessionId); } catch (e) {}
+    try { renderTurns(r.session.turns || [], { force: true }); } catch (e) {}
+    try { resetScrollStick(); } catch (e) {}
     // 目标那句话填回输入框，改完再发就是「重新来一遍」
     const back = rwText.textContent;
     if (input && back && back !== '（这条没有文字）') {
@@ -16264,9 +16865,15 @@ async function switchSession(id, opts) {
    *  这一趟的活儿本来就该扔；返回 false 会让 bootSessions 以为连续三次没切过去，
    *  再弹出那句「刚才没能自动回到上次的会话」，等于凭空造一个错。 */
   if (__switchGenSeen !== __switchGen) return true;
+  /* 【2026-11-03 修·切会话输入框串味】原来这里只给 sessionId 赋新值，
+   *  从没碰过草稿：在 A 里打的字，切到 B 还留在输入框里（切回来又变成 B 的），
+   *  等于草稿根本没按会话分开 —— 可 draftKey() 明明是按 sessionId 存的。
+   *  修法：赋值前先把旧会话的打字存进它自己的格子，赋值后再把新会话的打字捞出来。 */
+  try { if (typeof saveDraft === 'function') saveDraft(); } catch { /* 存不上也不许挡切换 */ }
   sessionId = r.session.id;
   sessionTitle = r.session.title;
   localStorage.setItem(STORE_KEY, sessionId);
+  try { if (typeof restoreDraft === 'function') restoreDraft(); } catch { /* 恢复失败就当空白 */ }
   paintSessNow();
   paintMemoryFlag(r.memory); // 换会话，顶栏的记忆小字也要跟着换
   // 小鱼/小鲸在不在场也是按会话的 —— 但 2026-11-02 顶栏那两颗按钮删了之后，

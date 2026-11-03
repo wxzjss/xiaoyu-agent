@@ -442,16 +442,34 @@ export async function testModel(input = {}) {
   if (kind === KIND_IMAGE) return await testImageModel(ep);
 
   const started = Date.now();
-  let res;
-  try {
-    res = await fetch(`${trimSlash(ep.baseURL)}/chat/completions`, {
+  // 测连通：这家服务商响应飘得厉害（实测最慢飘到 9 秒以上），所以
+  // (1)超时放宽到 45 秒，别卡 20 秒就判死
+  // (2)失败自动重试一次，抖一下就报红太冤
+  // (3)max_tokens 给 16，吐 1 个字反而容易卡住不出
+  const tryOnce = async () => {
+    return await fetch(`${trimSlash(ep.baseURL)}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ep.apiKey}` },
-      body: JSON.stringify({ model: ep.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
-      signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({ model: ep.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 16 }),
+      signal: AbortSignal.timeout(45_000),
     });
-  } catch (err) {
-    throw Object.assign(new Error(`连不上：${err?.message ?? err}`), { status: 502 });
+  };
+  let res;
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      res = await tryOnce();
+      lastErr = undefined;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+  if (!res) {
+    const why = lastErr?.message ?? lastErr;
+    const hint = /abort|timeout/i.test(String(why)) ? '（试了两次，都超时了，可能是服务商在排队）' : '';
+    throw Object.assign(new Error(`连不上：${why}${hint}`), { status: 502 });
   }
   const ms = Date.now() - started;
   if (!res.ok) {

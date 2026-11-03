@@ -106,11 +106,15 @@ try {
 
 } finally {
   for (const s of sids) { try { await post('/api/sessions/delete', { sessionId: s }); } catch {} }
+  /* 【2026-11-03 记忆系统严检】这里原来是直接 fs.unlinkSync 会话文件，
+   * 会话没了、记忆本（.state/memory/<id>.md）却留在那儿，跑一次攒一批孤儿。
+   * 改成走删除接口 —— 接口会把记忆本一起挪进回收站。 */
   const d = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions';
   for (const f of fs.readdirSync(d).filter((x) => x.endsWith('.json'))) {
     try {
       const j = JSON.parse(fs.readFileSync(d + '/' + f, 'utf8'));
-      if (/^__/.test(String(j.title || ''))) fs.unlinkSync(d + '/' + f);
+      const t = String(j.title || '');
+      if (/^__/.test(t)) await post('/api/sessions/delete', { id: j.id, sessionId: j.id });
     } catch {}
   }
   console.log('\n临时会话已清');

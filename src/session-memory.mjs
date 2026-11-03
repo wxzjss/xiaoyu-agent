@@ -39,6 +39,26 @@ export const SKELETON = `# 会话记忆
 
 const isId = (id) => typeof id === 'string' && ID_RE.test(id);
 
+
+/**
+ * 【2026-11-03 记忆系统严检】原子写：先写 .tmp 再 rename 覆盖。
+ * 理由同 my-memory.mjs 的 writeMemAtomic：整份 writeFileSync 写一半挂了就全废。
+ */
+function writeMemAtomic(file, text) {
+  const tmp = String(file).replace(/[^\\/]+$/, '.tmp-mem-' + process.pid + '-' + Math.random().toString(36).slice(2, 8));
+  try {
+    writeFileSync(tmp, text, 'utf8');
+    renameSync(tmp, file);
+    return 'rename';
+  } catch (e) {
+    try { unlinkSync(tmp); } catch {}
+    try { writeMemAtomic(file, text); return 'direct'; } catch (e2) {
+      try { console.warn('[session-memory] 记忆写失败 ' + file + ': ' + (e2 && e2.message)); } catch {}
+      throw e2;
+    }
+  }
+}
+
 function ensureDir() {
   const dir = DIR();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -82,7 +102,7 @@ export function writeMemory(id, text, { force = true } = {}) {
   ensureDir();
   const file = join(DIR(), `${id}.md`);
   if (!force && existsSync(file)) return false;
-  writeFileSync(file, String(text ?? ''), 'utf8');
+  writeMemAtomic(file, String(text ?? ''));
   return true;
 }
 
@@ -102,7 +122,7 @@ export function snapMemory(id, text) {
     ensureDir();
     try {
       const p = join(DIR(), `rewind-${id}-${Date.now()}.md`);
-      writeFileSync(p, cur, 'utf8');
+      writeMemAtomic(p, cur);
       backup = p;
     } catch {
       backup = null;
@@ -355,7 +375,7 @@ export function wipeMemory(id) {
   const dir = ensureDir();
   const backup = join(dir, `wiped-${id}-${Date.now()}.md`);
   try {
-    writeFileSync(backup, cur, 'utf8');
+    writeMemAtomic(backup, cur);
   } catch {
     /* 备份失败也照样清，只是没得回滚 */
   }

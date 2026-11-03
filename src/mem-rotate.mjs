@@ -1,0 +1,107 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import zlib from 'node:zlib';
+import { join } from 'node:path';
+import { config } from './config.mjs';
+
+/**
+ * 【2026-11-03 记忆系统严检 · 归档轮转 + 回收站压缩】
+ *
+ * 两个都是"只增不减"的尾巴，主人让我自己定，我定的方案是：
+ *   —— 不删，只压缩。老的打成一个 .jsonl.gz，要翻还能翻，占的地方小一个量级。
+ *
+ * 1) rotateArchive(days=90)
+ *    memory-archive/*.md 超过 90 天的，合并成一个 year-quarter 的 .gz。
+ *
+ * 2) compactTrash(keepDays=30)
+ *    memory/.trash 和 sessions/.trash 里超过 30 天的，各自打包成 trash-<日期>.tar.gz。
+ *    （用 tar 太重，改成逐文件读出来写进一个 .jsonl.gz，文件名+内容，能还原。）
+ *
+ * 为什么这么保守：这些都是主人能"找回"的东西。真删 = 找不回来；
+ * 压缩 = 找得回来 + 省地方。宁可多留一步，也不少留一步。
+ */
+
+function stateDir() {
+  return join(config.dataDir, '.state');
+}
+
+function walkFiles(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  let list = [];
+  try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of list) {
+    const fp = join(dir, e.name);
+    if (e.isDirectory()) { walkFiles(fp, out); continue; }
+    if (!e.isFile()) continue;
+    try { out.push({ path: fp, name: e.name, size: fs.statSync(fp).size, mtime: fs.statSync(fp).mtimeMs }); } catch {}
+  }
+  return out;
+}
+
+/**
+ * 把一批文件打包成一个 .jsonl.gz（每行 {name, text}），然后删掉原文件。
+ * 打包成功才删 —— 打包失败一个都不动。
+ */
+function packToGz(files, outPath, { encoding = 'utf8' } = {}) {
+  if (!files.length) return { packed: 0, bytes: 0 };
+  const lines = [];
+  for (const f of files) {
+    try {
+      const text = fs.readFileSync(f.path, encoding);
+      lines.push(JSON.stringify({ name: f.name, path: f.path.replace(stateDir(), ''), text }));
+    } catch {}
+  }
+  if (!lines.length) return { packed: 0, bytes: 0 };
+  const raw = lines.join('\n');
+  const gz = zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 9 });
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  // 先写 .tmp 再 rename，别把打包弄成半个
+  const tmp = outPath + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, gz);
+  fs.renameSync(tmp, outPath);
+  // 打包成功才删原件
+  let packed = 0;
+  for (const f of files) {
+    try { fs.unlinkSync(f.path); packed++; } catch {}
+  }
+  return { packed, bytes: gz.length };
+}
+
+/** 归档轮转：memory-archive 里超过 days 天的合并压缩。 */
+export function rotateArchive({ days = 90, dryRun = false } = {}) {
+  const dir = join(stateDir(), 'memory-archive');
+  if (!fs.existsSync(dir)) return { packed: 0, before: 0, after: 0, file: null };
+
+  const cutoff = Date.now() - days * 86400000;
+  const old = walkFiles(dir).filter((f) => f.mtime < cutoff && !f.name.endsWith('.gz'));
+  if (!old.length) return { packed: 0, before: 0, after: 0, file: null };
+
+  const before = old.reduce((s, f) => s + f.size, 0);
+  if (dryRun) return { packed: old.length, before, after: 0, file: '(dryRun)' };
+
+  const tag = new Date().toISOString().slice(0, 7); // 2026-11
+  const out = join(dir, '_packed', 'archive-' + tag + '.jsonl.gz');
+  const r = packToGz(old, out);
+  return { packed: r.packed, before, after: r.bytes, file: out };
+}
+
+/** 回收站压缩：.trash 里超过 days 天的打包。 */
+export function compactTrash({ days = 30, dryRun = false } = {}) {
+  const results = [];
+  for (const rel of ['memory/.trash', 'sessions/.trash']) {
+    const dir = join(stateDir(), rel.replace(/\//g, path.sep));
+    if (!fs.existsSync(dir)) continue;
+    const cutoff = Date.now() - days * 86400000;
+    const old = walkFiles(dir).filter((f) => f.mtime < cutoff && !f.name.endsWith('.gz'));
+    if (!old.length) { results.push({ dir: rel, packed: 0, before: 0, after: 0 }); continue; }
+    const before = old.reduce((s, f) => s + f.size, 0);
+    if (dryRun) { results.push({ dir: rel, packed: old.length, before, after: 0, file: '(dryRun)' }); continue; }
+    const tag = new Date().toISOString().slice(0, 10);
+    const out = join(dir, '_packed', 'trash-' + tag + '.jsonl.gz');
+    const r = packToGz(old, out);
+    results.push({ dir: rel, packed: r.packed, before, after: r.bytes, file: out });
+  }
+  return results;
+}
+
+export default { rotateArchive, compactTrash };

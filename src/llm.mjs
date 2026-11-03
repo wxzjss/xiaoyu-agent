@@ -178,6 +178,28 @@ function epForModelArg(want, fallbackEp) {
   return { ...fallbackEp, model: id };
 }
 
+/**
+ * 【2026-11-01 主人问「价钱到底按哪个模型算」时揪出来的坑】
+ *
+ * 同一个真模型名（deepseek-v4.1-flash）可能在模型面板里有好几条，
+ * 现在就有三条：丸子（人民币）/ 凌风（美元）/ 飞鱼（人民币），价格差十倍。
+ * 光拿模型名去找，找到哪条全凭命。所以给每一轮存量里再加一个 configId：
+ * 它就是「这一轮真正跑的那条配置」的身份证，唯一。
+ * 前端拿它查价，不再拿模型名猜。
+ */
+export function configIdForSession(sessionId) {
+  try {
+    if (sessionId) {
+      const ov = getOverride(sessionId);
+      if (ov && ov.modelId) return String(ov.modelId);
+    }
+    const ep = activeEndpoint();
+    return String(ep?.id ?? '');
+  } catch {
+    return '';
+  }
+}
+
 function endpointForForSession(sessionId) {
   if (!sessionId) return null;
   const ov = getOverride(sessionId);

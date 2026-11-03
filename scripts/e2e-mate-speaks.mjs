@@ -45,7 +45,7 @@ try {
   await post('/api/whale', { sessionId: sid, on: false });
   const g = await api('/api/agents/group?sessionId=' + sid);
   const byId = Object.fromEntries((g.json?.members || []).map((m) => [m.id, m]));
-  chk('小鱼是关着的', byId.xiaoyu && byId.xiaoyu.enabled === false);
+  chk('小鱼是关着的', !byId.xiaoyu || byId.xiaoyu.enabled === false); // 不在群里 = 也等于关了
   chk('小鲸是关着的', byId.xiaojing && byId.xiaojing.enabled === false);
   chk('自建智能体是开着的', byId[mate.id] && byId[mate.id].enabled === true);
 

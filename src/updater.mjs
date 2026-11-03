@@ -15,6 +15,7 @@ import { join, dirname, relative } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { config } from './config.mjs';
+import { latestRelease, pickInstaller, downloadInstaller, spawnSilentInstall } from './updater-installer.mjs';
 import { inflateRawSync } from 'node:zlib';
 
 /**
@@ -137,6 +138,21 @@ export function compareVersion(a, b) {
  * 两个源：raw（不受 API 限额）→ API（备用）
  */
 export async function remoteVersion() {
+  // 【2026-11-02 修·版本号只认发行版 tag】
+  //
+  // 原来这里读的是 branch（main）上的 package.json。而代码一直推在 master，
+  // origin/main 停在 dbb01f1（版本 0.9.28），于是每次检查都判「本地比线上新」，
+  // 静默不更新、不报错、不提示 —— 主人以为自动更新从来没用过。
+  //
+  // 分支名会改名、会落后、会被人忘记同步；tag 是发布时打上的，不会骗人。
+  // 所以先问 releases/latest 的 tag_name，拿不到再退回老的两条路（它们至少还能
+  // 在「手动点了检查更新」时给个像样的错误说明）。
+  try {
+    const rel = await latestRelease();
+    if (rel.ok && rel.version) {
+      return { ok: true, version: rel.version, source: `releases/latest ${rel.tag}` };
+    }
+  } catch {}
   const tryUrls = [
     `${RAW_BASE}/package.json`,
     `https://api.github.com/repos/${REPO}/contents/package.json`,
@@ -629,13 +645,47 @@ export async function checkForUpdate(opts = {}) {
   }
 
   try {
+    // 【2026-11-02 换路：官方安装包，不再逐文件覆盖】
+    //
+    // 老路（下面 `else` 里那段）只在测试显式给 targetDir 时还留着，
+    // 因为逐文件覆盖有三个治不好的毛病（详见 src/updater-installer.mjs 顶部注释）：
+    //   ① 只盖代码不带 node_modules → 新代码 import 一个没装过的包，一用就崩；
+    //   ② 225 个文件、几十次 api.github.com 请求，还撞每小时 60 次的匿名额度；
+    //   ③ 92MB 的安装包走镜像分片 30 秒就下完，比逐文件快一个数量级。
+    // 装官方包的好处：代码/依赖/图标/快捷方式全跟发布那份一致，不会半新半旧。
+    if (!opts.targetDir) {
+      const rel = await latestRelease();
+      if (!rel.ok) throw Object.assign(new Error(rel.reason || '拿不到发行版信息'), { net: true });
+      const asset = pickInstaller(rel.assets);
+      if (!asset) throw new Error('这个发行版里没有安装包');
+      const dl = await downloadInstaller(asset);
+      const at = Date.now();
+      const info = {
+        at,
+        status: 'ready',
+        from: local,
+        to: remote,
+        file: dl.file,
+        size: dl.size,
+        kind: asset.kind,
+        asset: asset.name,
+        sha256: asset.sha256,
+        triedBoot: remote,
+      };
+      try { writeFileSync(UPDATE_INFO, JSON.stringify(info, null, 2), 'utf8'); } catch {}
+      return {
+        status: 'ready',
+        local,
+        remote,
+        detail: `新版 ${remote} 已经下好了（${(dl.size / 1048576).toFixed(0)}MB，校验过），要装的话点一下`,
+        needsRestart: true,
+        installer: dl.file,
+        size: dl.size,
+      };
+    }
+
     let srcDir = opts.targetDir;
     let via = 'provided';
-    if (!srcDir) {
-      const d = await download(remote);
-      srcDir = d.dir;
-      via = d.via;
-    }
 
     // 先看本地哪些文件跟「官方该有的样子」不一样 —— 那就是主人自己改过的
     // （不改它的行为，只做备份 + 如实告诉主人，别让改动悄悄消失）
@@ -696,12 +746,12 @@ export async function checkForUpdate(opts = {}) {
     //   net     —— 根本连不上 GitHub（这台机器 github.com / raw 常年不通），
     //              这种重试到天亮也没用，直接告诉主人「去手动下载」，别再假装能自动更新。
     //   other   —— 连上了但半路出问题（磁盘满、文件对不上），这种可以下次再试。
-    const isNet = /timeout|aborted|ENOTFOUND|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|fetch failed|EAI_AGAIN|socket hang up/i.test(msg);
+    const isNet = Boolean(err?.net) || /timeout|aborted|ENOTFOUND|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|fetch failed|EAI_AGAIN|socket hang up|镜像/i.test(msg);
     const kind = isNet ? 'net' : 'other';
     const REL = `https://github.com/${REPO}/releases`;
     const detail = isNet
-      ? `这台机器连不上 GitHub，自动更新走不通。新版 ${remote} 请到 ${REL} 手动下载（覆盖安装即可，会话和设置都在）。`
-      : `发现新版 ${remote} 但更新失败：${msg.slice(0, 160)}`;
+      ? `新版 ${remote} 下不下来：${msg.slice(0, 120)}。可以到 ${REL} 手动下载（覆盖安装即可，会话和设置都在）。`
+      : `发现新版 ${remote} 但下载失败：${msg.slice(0, 160)}`;
     try {
       writeFileSync(
         UPDATE_INFO,
@@ -774,6 +824,11 @@ export async function quickCheck(opts = {}) {
     return { status: 'throttled', detail: '上次检查失败，先歇会儿再试' };
   }
   const r = await checkForUpdate({ apply: true });
+  if (r.status === 'ready') {
+    // 新版安装包下好、校验过了。**不自己装** —— 安装会重启程序，把主人正在跑的
+    // 那一轮掐掉。等界面上那个「装一下」来确认（POST /api/update/install）。
+    return { status: 'ready', detail: r.detail, from: r.local, to: r.remote, installer: r.installer, size: r.size, needsRestart: false };
+  }
   if (r.status === 'updated') {
     return { status: 'updated', detail: r.detail, needsRestart: true, from: r.local, to: r.remote, files: r.updated };
   }
@@ -795,7 +850,11 @@ export async function updateStatus() {
   const info = lastUpdateInfo();
   return {
     local,
-    last: info && info.status !== 'failed' ? { at: info.at, from: info.from, to: info.to } : null,
+    // 下好了等安装的那一份（界面据此显示「装一下」那个按钮）
+    ready: info && info.status === 'ready' && info.file
+      ? { at: info.at, from: info.from, to: info.to, file: info.file, size: info.size || 0, kind: info.kind || 'setup' }
+      : null,
+    last: info && info.status !== 'failed' && info.status !== 'ready' ? { at: info.at, from: info.from, to: info.to } : null,
     retryAt: info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS ? (info.at || 0) + RETRY_MS : null,
     // 运行中定时查的下一步时间（界面要显示「下次几点查」）
     nextAt: nextPeriodicAt(),
@@ -882,6 +941,8 @@ export async function versionCheckItem() {
       return { id: 'version', name, level: 'ok', detail: `跳过（${r.detail}）` };
     case 'behind':
       return { id: 'version', name, level: 'warn', detail: r.detail, pending: true };
+    case 'ready':
+      return { id: 'version', name, level: 'warn', detail: r.detail, pending: true, ready: true };
     case 'updated':
       return { id: 'version', name, level: 'warn', detail: r.detail, fixed: true, needsRestart: true };
     default:

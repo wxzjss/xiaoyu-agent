@@ -82,7 +82,8 @@ try {
   fail++;
   console.log('  ✘ 异常：' + (e && e.message || e));
 } finally {
-  try { if (existsSync(sessPath(id))) unlinkSync(sessPath(id)); console.log('  清理测试会话 → ok'); } catch {}
+  // 【2026-11-03 记忆系统严检】别直接 unlink 会话文件 —— 那样记忆本会变成孤儿。
+  try { await post('/api/sessions/delete', { id }); console.log('  清理测试会话 → ok（走接口，记忆本一起收）'); } catch {}
 }
 
 console.log('\n结果：' + pass + ' 过 / ' + fail + ' 挂');

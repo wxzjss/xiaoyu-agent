@@ -19,6 +19,7 @@
  *      allowWrite 现在反过来用：传 false 才是「这次只让她查」。
  */
 import { streamChat } from './llm.mjs';
+import { rosterPrompt } from './roster-prompt.mjs';
 /**
  * 回合内瘦身。
  *
@@ -622,6 +623,10 @@ export async function runSubagent({
     const T_ON = IS_OWNER ? '主人' : '叫你的人';
     /** 小鲸说话时跟小鱼的颜色不同 —— 主人身份下说「不一样」，别人来说无所谓，统一「一样」更稳 */
     const 不 = IS_OWNER ? '不' : '';
+    /* 【屋里现在有谁】这一轮真在的人。拿不到就是空串，提示词一个字都不多。 */
+    let rosterText = '';
+    try { rosterText = rosterPrompt(sessionId, { selfName: name || '' }); } catch { rosterText = ''; }
+
     const systemPrompt = [
       /**
        * 【小鲸的人设从哪儿来：只有功能页 -> 子智能体 -> 人设栏这一处】
@@ -728,6 +733,13 @@ export async function runSubagent({
         safeWordNote,
         '',
       ] : []),
+      /**
+       * 【屋里现在有谁·2026-11-03 主人问的】
+       * 「我要是只启用了小鱼与旁白，旁白是不是还会说小鲸做了什么、小白曦做了什么？」
+       * 会 —— 因为人设是写死的，提示词里从来没有「这一轮坐着谁」。
+       * 现在把真实名单塞进来，人设里那些死名字就不会被当真。
+       */
+      ...(rosterText ? [rosterText, ''] : []),
       '【你在什么地方】（很重要，先读这段）',
       '你每被叫起来一次，脑子里都是空的 —— 上一趟说过什么、干过什么，不记得。',
       '但你**有本子**：下面那段就是你自己攒下的，写着的就是真事，直接拿来用。',

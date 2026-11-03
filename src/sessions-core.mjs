@@ -281,6 +281,23 @@ function memStamp(session) {
 export function saveSession(session, _attempt = 0) {
   // 落盘前最后一道：清掉同一次生成被接入多份的重复回复（见 dropRepeatedTurns 上的说明）
   try { if (session && Array.isArray(session.messages)) dropRepeatedTurns(session.messages); } catch {}
+  /**
+   * 【2026-11-02 历史迁移】旧版本投的「重启了」没带 _sysNote 标记，会在界面上冒充主人说话。
+   *  主人要求这条只给我自己看（跟压缩提示同一个待遇）。
+   *  判据：内容正好是「重启了」+ 前面紧跟一条 tool 结果 —— 系统投的那条永远接在
+   *  「重启前最后一步工具」后面；主人自己手打的那两次，前面都是我的 assistant 回复，误伤不到。
+   *  放在落盘前做，写下去的这份就是干净的，不用等重启。
+   */
+  try {
+    const _ms = session && Array.isArray(session.messages) ? session.messages : [];
+    for (let _i = 1; _i < _ms.length; _i++) {
+      const _m = _ms[_i];
+      if (!_m || _m.role !== 'user' || String(_m.content || '') !== '重启了') continue;
+      if (_m._sysNote === true) continue;
+      const _prev = _ms[_i - 1];
+      if (_prev && _prev.role === 'tool') _m._sysNote = true;
+    }
+  } catch {}
   if (!session || !isSessionId(session.id)) return null;
   ensureDir();
   // 【合流之前先记下内存这份的样子】见 memStamp 上的说明（2026-10-29）
@@ -598,6 +615,9 @@ function cleanMessage(m) {
   if (typeof m.toolName === 'string') out.toolName = m.toolName;
   if (m.isError) out.isError = true;
   if (m.context) out.context = true;
+  /* 【2026-11-02】导入会话时别把「这是我插的、别显示」的标记弄丢 —— 丢了就
+   *  会在界面上冒充主人说话（「重启了」「量线提醒」都会露出来）。 */
+  if (m._sysNote === true) out._sysNote = true;
   return out;
 }
 

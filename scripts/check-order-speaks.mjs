@@ -58,6 +58,7 @@ const cases = [
   { name: '小鲸↑小白曦↑小鱼 全开', ids: ['xiaojing', BX.id, 'xiaoyu'], want: ['小鲸', BX.name, '小鱼'] },
 ];
 
+try {
 for (const c of cases) {
   console.log('\n=== ' + c.name + ' ===');
   const sid = await setup(c.ids);
@@ -69,7 +70,13 @@ for (const c of cases) {
   chk('开口顺序 = 竖列顺序', JSON.stringify(r.seq) === JSON.stringify(c.want), JSON.stringify(r.seq) + ' vs ' + JSON.stringify(c.want));
 }
 
-for (const sid of made) await post('/api/sessions/delete', { sessionId: sid, id: sid });
+} finally {
+  // 【2026-11-02】不管上面成功还是中途抛错，测试会话一定要删干净 ——
+  // 不然跑一次就留一堆 __ord__ 空会话，主人的会话列表里全是垃圾。
+  for (const sid of made) {
+    try { await post('/api/sessions/delete', { sessionId: sid, id: sid }); } catch {}
+  }
+}
 
 console.log('\n──────');
 console.log('断言：' + pass + '/' + total);

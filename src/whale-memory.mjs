@@ -24,14 +24,7 @@
  * 跟着主人在会话之间来回切。小鲸不该被这个牵着走 ——
  * 她记的是「我替小鱼查过什么、踩过什么坑」，是她自己的履历。
  */
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  mkdirSync,
-  renameSync,
-  statSync,
-} from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 import { getEnabledMap } from './features.mjs';
@@ -45,6 +38,26 @@ import { getEnabledMap } from './features.mjs';
  *
  * 所以这道闸钉在模块自己身上 —— 每个出口先问一句，堵在门口比堵在路上可靠。
  */
+
+/**
+ * 【2026-11-03 记忆系统严检】原子写：先写 .tmp 再 rename 覆盖。
+ * 理由同 my-memory.mjs 的 writeMemAtomic。
+ */
+function writeMemAtomic(file, text) {
+  const tmp = String(file).replace(/[^\\/]+$/, '.tmp-mem-' + process.pid + '-' + Math.random().toString(36).slice(2, 8));
+  try {
+    writeFileSync(tmp, text, 'utf8');
+    renameSync(tmp, file);
+    return 'rename';
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch {}
+    try { writeMemAtomic(file, text); return 'direct'; } catch (e2) {
+      try { console.warn('[whale-memory] 记忆写失败 ' + file + ': ' + (e2 && e2.message)); } catch {}
+      throw e2;
+    }
+  }
+}
+
 function memoryOff() {
   try {
     return getEnabledMap()['memory'] === false;
@@ -131,7 +144,7 @@ function appendArchive(block, addedItems) {
       kept.unshift('', `（归档超出上限，已清掉最早的 ${dropCount} 条 —— ${new Date().toISOString()}）`);
       body = kept.join('\n');
     }
-    writeFileSync(ARCHIVE, head + body, 'utf8');
+    writeMemAtomic(ARCHIVE, head + body);
     return true;
   } catch {
     return false;
@@ -215,7 +228,7 @@ export function readWhaleMemory() {
     if (!existsSync(FILE)) {
       if (off) return ''; // 关着：不建文件，就当还没记过东西
       ensureDir();
-      writeFileSync(FILE, SKELETON, 'utf8');
+      writeMemAtomic(FILE, SKELETON);
       return SKELETON;
     }
     const text = readFileSync(FILE, 'utf8');
@@ -361,7 +374,7 @@ export function appendWhaleMemory(section, line) {
           ['', `## 结案归档 ${new Date().toISOString()}（这条被「已结」版本顶掉了）`, `- ${gone}`].join('\n'),
           1,
         );
-        writeFileSync(FILE, render(bucket), 'utf8');
+        writeMemAtomic(FILE, render(bucket));
         return 'closed';
       }
     }
@@ -397,7 +410,7 @@ export function appendWhaleMemory(section, line) {
           items.push(`${stamp} · ${clean}`);
           bucket[name] = items;
           ensureDir();
-          writeFileSync(FILE, render(bucket), 'utf8');
+          writeMemAtomic(FILE, render(bucket));
           return 'merged';
         }
       }
@@ -410,7 +423,7 @@ export function appendWhaleMemory(section, line) {
       bucket[name] = compactSection(bucket[name], Math.floor(MAX_PER_SECTION * 0.7));
     }
     ensureDir();
-    writeFileSync(FILE, render(bucket), 'utf8');
+    writeMemAtomic(FILE, render(bucket));
     return true;
   } catch {
     return false;
@@ -534,7 +547,7 @@ export function compactWhaleMemory() {
 
     const out = render(bucket);
     ensureDir();
-    writeFileSync(FILE, out, 'utf8');
+    writeMemAtomic(FILE, out);
     return { compacted: true, before, after: out.length, archived };
   } catch (e) {
     return { compacted: false, before: 0, after: 0, archived: 0, error: String(e?.message ?? e) };
@@ -546,7 +559,7 @@ export function writeWhaleMemory(text) {
   if (memoryOff()) return false; // 关着不许整份覆盖 —— 这条最狠，一写就是把整本换掉
   try {
     ensureDir();
-    writeFileSync(FILE, String(text ?? SKELETON), 'utf8');
+    writeMemAtomic(FILE, String(text ?? SKELETON));
     return true;
   } catch {
     return false;

@@ -361,11 +361,62 @@ export const FEATURES = [
     tools: ['qq_send'],
     defaultOn: false,
   },
+
+  /**
+   * 自动重启续上（2026-11-03 主人要的）
+   *
+   * 主人原话：「你把那个自动重启自动续上的功能放进功能页里，然后想办法堵死
+   * 你刚才重启（实际上是退出）的路，只走你之前做好的那个自动重启续上的路」。
+   *
+   * 为什么单拎一档出来：以前「重启」这件事藏在更新流程里，平时想主动重启一下
+   * （比如改完 src/ 想让新代码生效）没有正经入口，于是就去 Stop-Process 杀进程 ——
+   * 那不叫重启，那是退出：主进程一没，app.relaunch() 没被调过，谁也不会把它
+   * 拉回来，只能等主人自己双击。
+   *
+   * 这一档管的就是那条正规的路：
+   *   · /api/restart → 服务端 exit(75) → 主进程接住 → 重起服务 + 重载窗口
+   *   · 会话、设置、正在打字的草稿全都原样续上，不用重新登录、不用重选会话
+   *
+   * 关掉这一档 = 不许自己重启（要用命令硬杀也照样被 run_command 那道闸拦下）。
+   */
+  {
+    id: 'selfRestart',
+    name: '自动重启续上',
+    desc: '让她能自己把程序重启一遍，而且会话、设置、草稿全都原样接上 —— 不用你重新选会话，也不用手动双击。'
+      + '改完程序里的东西（数据目录下 code/src 那些）要靠重启才会生效，以前只能你亲手关掉再打开；'
+      + '现在她会走「先记下要重开、再退出」这条正规路，主进程会把它自己拉回来。'
+      + '关掉之后她不许自己重启，想用命令硬杀进程也会被拦下（那样只会退出、不会回来）。',
+    /* 【2026-11-03 严检抓到的真 bug】这里原来是 tools: [] —— 一个工具都不声明，
+     * 于是 restart_self 永远进不了启用清单，模型手上根本拿不到它，
+     * 只能拿 run_command 去杀进程，就变成「只退出、不回来」。
+     * 工具在 tools.mjs 第 811 行好好写着，就是没人认领。 */
+    tools: ['restart_self'],
+    defaultOn: true,
+  },
 ];
 
-/** 工具名 -> 所属功能 id */
+/** 工具名 -> 所属功能 id（一个工具被多个功能声明时，记第一个，但判可用看全部） */
 export const TOOL_FEATURE = new Map();
-for (const f of FEATURES) for (const t of f.tools) TOOL_FEATURE.set(t, f.id);
+/**
+ * 【2026-11-03 办事模式严检】一个工具可能被好几个功能同时声明 ——
+ * 比如 spawn_worker / list_workers 既是「办事模式」的派活口，也是「智能体」的。
+ *
+ * 原来这里是一行 `TOOL_FEATURE.set(t, f.id)`，后注册的把先注册的覆盖掉，
+ * 结果 spawn_worker 只认「智能体」这一个功能：主人把「智能体」关掉，
+ * 办事模式虽然还开着，却派不出活 —— 按钮亮着、功能死了，最难查的那种。
+ *
+ * 现在除了 TOOL_FEATURE（兼容老调用，记第一个声明的功能）之外，
+ * 再记一份 TOOL_OWNERS：一个工具 -> 所有声明它的功能 id。
+ * 判「能不能用」改成「任何一个拥有者开着就能用」。
+ */
+export const TOOL_OWNERS = new Map();
+for (const f of FEATURES) {
+  for (const t of f.tools) {
+    if (!TOOL_FEATURE.has(t)) TOOL_FEATURE.set(t, f.id);
+    const arr = TOOL_OWNERS.get(t);
+    if (arr) { if (!arr.includes(f.id)) arr.push(f.id); } else TOOL_OWNERS.set(t, [f.id]);
+  }
+}
 
 function readRaw() {
   try {
@@ -445,7 +496,12 @@ export function getFeatures() {
     features,
     total: features.length,
     enabledCount: features.filter((f) => f.enabled).length,
-    enabledTools: features.filter((f) => f.enabled).flatMap((f) => f.tools),
+    /* 【2026-11-03 办事模式严检】去重。
+     * spawn_worker / list_workers 同时被「办事模式」和「智能体」声明，
+     * 两个功能都开着时 flatMap 会让它们各出现两次（实测 48 个里有 2 组重复）——
+     * 交给网关的 tools 清单里出现同名工具，轻则被上游去重、重则按协议判非法。
+     * 用 Set 保序去重。 */
+    enabledTools: [...new Set(features.filter((f) => f.enabled).flatMap((f) => f.tools))],
   };
 }
 
@@ -474,14 +530,35 @@ export function enabledToolNames() {
 
 /** 这个工具现在能不能用；不认识的工具一律当不能用。 */
 export function isToolEnabled(name) {
-  const id = TOOL_FEATURE.get(String(name ?? ''));
+  const key = String(name ?? '');
+  /* 【2026-11-03】一个工具可能被好几个功能声明（spawn_worker 同时属于办事模式和智能体）。
+   * 只要**任意一个**声明它的功能开着，这个工具就该能用 —— 不然关掉一个功能会把
+   * 另一个功能悄悄弄死。没有 TOOL_OWNERS 记录的（老工具）退回单功能判断。 */
+  const owners = TOOL_OWNERS.get(key);
+  const map = getEnabledMap();
+  if (owners && owners.length) return owners.some((id) => map[id]);
+  const id = TOOL_FEATURE.get(key);
   if (!id) return false;
-  return getEnabledMap()[id];
+  return map[id];
 }
 
-/** 某个工具被关掉时，返回它所属功能的名字，方便报错说清楚。 */
+/**
+ * 某个工具被关掉时，返回它所属功能的名字，方便报错说清楚。
+ *
+ * 【2026-11-03 跟 TOOL_OWNERS 对齐】一个工具可能同时属于好几个功能
+ * （spawn_worker / list_workers 既归办事模式，也归智能体）。只报「第一个」会让
+ * 主人看得一头雾水：他把「智能体」关了，提示却说「办事模式」现在是关着的 ——
+ * 两句话都真，但只说一半。所以这里把所有拥有者的名字都列出来（用「、」连）。
+ * 一个拥有者都没有的老工具，退回 TOOL_FEATURE 那条老路。
+ */
 export function featureNameOfTool(name) {
-  const id = TOOL_FEATURE.get(String(name ?? ''));
+  const key = String(name ?? '');
+  const owners = TOOL_OWNERS.get(key);
+  if (owners && owners.length) {
+    const names = owners.map((id) => BY_ID.get(id)?.name ?? id).filter(Boolean);
+    if (names.length) return names.join('、');
+  }
+  const id = TOOL_FEATURE.get(key);
   return id ? BY_ID.get(id)?.name ?? id : '';
 }
 

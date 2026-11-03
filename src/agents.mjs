@@ -27,6 +27,10 @@ import {
   savePersonaText,
   builtinPersonaText,
   resetPersona,
+  withPersonaScope,
+  createPersona,
+  setOwnDefaultOf,
+  switchPersona,
 } from './persona-store.mjs';
 import {
   whalePersonaForEditor,
@@ -360,7 +364,14 @@ export function addAgent({ name, desc = '', persona = '', modelId = '' } = {}) {
     e.status = 400;
     throw e;
   }
-  const text = String(persona || '');
+  /* 【2026-11-03 主人问：恢复出厂默认不就只能恢复成空白吗？】
+   * 对，以前就是这样：新建只填名字 → persona 是空串 → 这个智能体的「默认人设」
+   * 回落到 builtinPersonaText()（全局 defaults.json.persona，谁的都可能），
+   * 「恢复出厂默认」也就恢复成那份，不是主人填的样子。
+   *
+   * 所以空白人设不再留空：给一句最小骨架，让它自带一个「这是谁的壳」。
+   * 主人以后改了会写进这个智能体自己的 personas 目录，跟全局那份彻底隔开。 */
+  const text = String(persona || '').trim() || `# 待填\n\n## 我是谁\n（这个智能体的人设还没写）\n\n## 怎么说话\n（还没定）`;
   if (text.length > MAX_PERSONA_CHARS) {
     const e = new Error(`人设太长了（${text.length} 字，最多 ${MAX_PERSONA_CHARS} 字）`);
     e.status = 400;
@@ -376,6 +387,44 @@ export function addAgent({ name, desc = '', persona = '', modelId = '' } = {}) {
   };
   data.customs.push(item);
   if (!writeAll(data)) return null;
+
+  /* 【2026-11-03 主人问的两件事】
+   *
+   * 「创建新智能体时填的人设内容，是否会自动创建一个以智能体名字命名的人设预设
+   *   （并把这个内容填进去）设为默认人设？」
+   * 「创建后多套人设里是否还会出现小鱼与小鲸的人设预设？」
+   *
+   * 实测（建完立刻查）：目录都不存在；第一次打开多套人设只有一个 default，
+   * 正文 1891 字 —— 那是全局的小鲸。主人填的人设在多套人设里根本看不见。
+   *
+   * 所以这里补上：
+   *   ① 建卡当场给她建一套「以她的名字命名」的人设，正文就是建卡时填的；
+   *   ② 把这套设成她的默认；
+   *   ③ 不再往她的库里铺 legacy（我的旧人设）/ xiaoyu-qq（小鱼 QQ 版）——
+   *      那两个的根源在 persona-store 的 ensureIndex / ensurePresets，
+   *      现在只对主库铺，她这边天然干净。
+   *
+   * 出错不能把建卡搅崩：建卡成功是主线，人设那一步失败就退回原来的样子（退回来靠
+   * 下面 getAgent 的出厂兜底，不会空白）。
+   */
+  try {
+    const nm = String(item.name || '').trim() || '默认人设';
+    withPersonaScope(item.id, () => {
+      const made = createPersona({ name: nm, text });
+      // createPersona 返回的是 {...personaInfo(), created: 新id} —— 新 id 在 created 上
+      const pid = made && made.created ? String(made.created) : '';
+      if (pid) {
+        switchPersona(pid);
+        /* 【2026-11-03 主人拍板：不搞特殊的「默认人设」槽了】
+         * 这套以她名字命名的人设，就是她自己的第一套；
+         * 顺手把建卡时填的正文定成「这套自己的默认」——
+         * 以后点「恢复默认内容」，回到的就是建卡时填的这段，不是空的、更不是别人的。
+         */
+        try { setOwnDefaultOf(pid, text); } catch { /* 定不成默认也不影响建卡 */ }
+      }
+    });
+  } catch { /* 建卡是主线，这一步失败不回滚 */ }
+
   return getAgent(item.id);
 }
 
@@ -422,6 +471,9 @@ export function removeAgent(id) {
   }
   // 「安静」也是她的属性，人没了这条也该没
   delete data.quiet[key];
+  /* 【2026-11-02】颜色同理。原来漏了这一句，主人反复新建/删除智能体，
+   *  colors 里会攒一堆指向空气的孤儿键（实测已残留 2 个）。 */
+  try { if (data.colors) delete data.colors[key]; } catch {}
   return writeAll(data);
 }
 
@@ -468,11 +520,42 @@ export function resetAgentPersona(id) {
     return getAgent(key);
   }
   if (key === AGENT_XIAOJING) {
-    saveWhaleProfile({ persona: '' });
+    /* 【2026-11-03 主人报】点「恢复出厂默认」，小鲸的人设栏不是退回出厂，
+     * 而是被清空（还会多出一个 【PERSONA_LOAD】 前缀）。因为这里写死 ''。
+     * 现在跟自建卡走同一套：退回她自己的出厂（personas/whale/defaults.json → default.md）。 */
+    const own = factoryPersonaOf('whale');
+    if (own) saveWhaleProfile({ persona: own });
+    else saveWhaleProfile({ persona: '' });
     return getAgent(key);
   }
-  return saveAgentPersona(key, '');
+  return saveAgentPersona(key, factoryPersonaOf(key));
 }
+
+/**
+ * 这个自建智能体「出厂」是什么。
+ * 顺序：主人点过「设为默认」的 → 默认那套正文 → 建卡时那份。都没有才空字符串。
+ * 【2026-11-03 主人报的】自建卡点「恢复出厂默认」，人设栏变空白，什么都没了。
+ */
+export function factoryPersonaOf(id) {
+  const key = String(id || '');
+  const dir = join(config.dataDir, '.state', 'personas', key);
+  try {
+    const d = JSON.parse(readFileSync(join(dir, 'defaults.json'), 'utf8'));
+    const p = String((d && d.persona) || '').trim();
+    if (p) return p;
+  } catch { /* 没有就往下找 */ }
+  try {
+    const p = readFileSync(join(dir, 'default.md'), 'utf8').trim();
+    if (p) return p;
+  } catch { /* 同上 */ }
+  try {
+    const f = JSON.parse(readFileSync(join(dir, '.factory.json'), 'utf8'));
+    const p = String((f && f.persona) || '').trim();
+    if (p) return p;
+  } catch { /* 同上 */ }
+  return '';
+}
+
 
 /**
  * 换模型。'' = 跟主人当前用的一致。
@@ -810,6 +893,11 @@ function cleanGroup(data, ids) {
     const iYu = out.indexOf(AGENT_XIAOYU);
     if (iYu > 0) { out.splice(iYu, 1); out.unshift(AGENT_XIAOYU); }
   }
+
+  /* 【2026-11-03 撤回·今天那条「新建会话只选小白曦，左栏却冒出小鱼」又是它】
+   * 我 2026-11-03 早先按自己的判断把小鱼「无条件补回来」了，这是错的：
+   * 主人 2026-11-01 就定过「存过的名单一个字都不动」，要平行、要能只留一张卡。
+   * 小鱼缺牌子的问题只在「从来没存过名单」那条默认分支里解决（上面那段）。 */
 
   /**
    * 【顺序照存的走，谁也别「钉」在最前·2026-11-03 主人第二次说清：

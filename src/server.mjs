@@ -2,7 +2,7 @@
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, statSync, readFileSync as __rotRead, writeFileSync as __rotWrite } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
@@ -77,7 +77,9 @@ import { getWhaleProfile, saveWhaleProfile, MAX_PERSONA_CHARS, whalePersonaForEd
 // 进程兜底：一处没 catch 的异常不该让整个程序消失。
 import { installGuards, crashSummary } from './crash-guard.mjs';
 // 版本检查：每次启动跑一次（selfcheck 节流也照样查），界面上也能手动点。
-import { quickCheck, updateStatus, startUpdateWatcher } from './updater.mjs';
+import { quickCheck, updateStatus, startUpdateWatcher, lastUpdateInfo } from './updater.mjs';
+// 装机：新版安装包下好之后，人点「装一下」才真装（装完会重启，不能自作主张）
+import { spawnSilentInstall, dropInstaller } from './updater-installer.mjs';
 import { buildSessionLog } from './session-log.mjs';
 import { sessionToText, txtFilenameOf } from './session-text.mjs';
 import { applySafeWord, sessionModeWord, inPersonaMode } from './mode.mjs';
@@ -260,6 +262,9 @@ import {
   lanAddresses,
 } from './mobile.mjs';
 import { qrSvg, pairingUrl } from './qrcode.mjs';
+import { startHealthWatch, pruneOrphans, pruneWorkerFiles } from './state-sweep.mjs';
+import { ensureAgentPresets } from './agent-presets.mjs';
+import { rotateArchive, compactTrash } from './mem-rotate.mjs';
 import {
   isSessionId,
   newSessionId,
@@ -586,6 +591,15 @@ function publicSession(session) {
        * 老消息里可能有 `_whale`，这里一并认下来，不用改旧会话文件。
        */
       whale: m._tale?.who ? String(m._tale.who) : (m._whale ? String(m._whale) : (m._card ? String(m._who || m._card) : undefined)),
+      /**
+       * 【2026-11-02 修·切到别人身份后旧消息署名全被刷掉】
+       * 主人 2026-10-28 定过：身份名跟着消息一起存，画的时候直接用这份，
+       * 不许看「现在是哪个身份」—— 否则一切换满屏旧消息的署名全被刷掉。
+       * 但这条规矩只给 user 消息做了：assistant 消息没带 _card 就交不出 who，
+       * 前端只能退回全局的 mainAgentName，于是切到小白曦后满屏都是小白曦。
+       * 这里补上：只要这条消息自己记着 _who，就照原样交出去。
+       */
+      who: (typeof m._who === 'string' && m._who.trim()) ? m._who.trim() : undefined,
       /**
        * 【这句是小鲸并排插进来的，不是这一轮的收尾回答】—— 2026-10-26 补
        *
@@ -4221,6 +4235,7 @@ const server = createServer(async (req, res) => {
    *
    * 【功能页里关掉时】available:false，界面据此把整颗按钮拿掉 —— 不是灰着让你点。
    */
+
   if (req.method === 'GET' && url.pathname === '/api/task-mode') {
     const sid = String(url.searchParams.get('sessionId') || '');
     try {
@@ -4884,6 +4899,14 @@ const server = createServer(async (req, res) => {
     try {
       const agent = addAgent({ name: payload?.name, desc: payload?.desc, persona: payload?.persona, modelId: payload?.modelId });
       if (!agent) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
+      /* 【2026-11-03 主人要的】新建时能一起填开场白。
+       * addAgent 只管名字/描述/人设，开场白是 opening.mjs 那边按 agentId 存的，
+       * 所以要单独写一次。写失败不该让整个「新建」失败 —— 名字和人设已经建好了，
+       * 开场白留给主人以后在卡片里补。 */
+      try {
+        const __op = String(payload?.opening ?? '').trim();
+        if (__op) setCardOpening(agent.id, __op);
+      } catch { /* 开场白没写进去不影响智能体本身 */ }
       return json(res, 200, { ok: true, agent, agents: listAgents() });
     } catch (e) {
       return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
@@ -5908,7 +5931,18 @@ const server = createServer(async (req, res) => {
         const wantWhale = picked.includes('xiaojing');
         try { setFishOn(session.id, wantFish); } catch {}
         try { setWhaleOn(session.id, wantWhale); } catch {}
-        const roster = picked.filter((x) => x && x !== 'xiaoyu');
+        /* 【2026-11-02 修·新会话屋里的人看不见小鱼】
+         * 这里原来把 xiaoyu 从名单里过滤掉，想靠 cleanGroup 的「没写她就补回来」兜底。
+         * 可那条兜底只在「从来没存过名单」时才生效（!Array.isArray(ids)）；
+         * 这里传进去的是过滤后的真数组 → 兜底被跳过 → 名单里永远没有小鱼，
+         * 左侧「屋里的人」就一条鱼都画不出来。
+         * 现在小鱼照样进名单；她在不在场由 setFishOn 管，小鲸仍按 keepWhale:false 处理。 */
+        /* 【2026-11-02 修·勾了小鲸左栏却看不见她】
+         * 上面的注释写着「勾了小鲸 → 她在名单里」，可代码把小鲸也过滤掉了。
+         * 于是只勾小鲸建会话时，名单被存成空数组 → 左栏一条牌子都没有。
+         * 现在什么都不过滤：勾了谁就写谁。小鲸在不在场另有 setWhaleOn 管，
+         * 小鱼在不在场另有 setFishOn 管，名单只负责「谁在这屋里」。 */
+        const roster = picked.slice();
         group = (setSessionGroup(session.id, roster, { keepWhale: false })?.agentIds || []);
         /* 【2026-11-01 主人：小鱼、小鲸、自建智能体地位完全平行】
            以前这里只设了名单和开关，从来没设「谁是这屋的主声」——
@@ -6156,6 +6190,12 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/sessions/edit-undo') {
     const { id, at } = await body(req).catch(() => ({}));
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    /* 【2026-11-03 严检补的】/edit 有「正在生成就不许改」的保护，撤销却没有 ——
+     * 跑着的时候点撤销，会把正文改回来再 saveSession 写盘，跟正在吐的那一轮打架，
+     * 最后落盘的可能是半截。撤销本质上也是改正文，保护要一样。 */
+    if (runningTurns.get(id)) {
+      return json(res, 409, { error: '这一轮正在生成，等它说完再撤销（不然会写乱）' });
+    }
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
     const out = undoEdit(session, at);
@@ -6319,6 +6359,13 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/sessions/rewind-undo') {
     const { id } = await body(req).catch(() => ({}));
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    /* 【2026-11-03 严检补的】/rewind 有 busy 保护（它还会主动掐断正在跑的那一轮），
+     * 而「撤销回退」这条没有：它同样 saveSession 写盘 + snapMemory 回写记忆，
+     * 跑着的时候点会跟正在吐字的那一轮抢同一条会话，落盘成半截。
+     * 两条路必须是同一把锁，否则前门锁了后门还开着。 */
+    if (runningTurns.get(id)) {
+      return json(res, 409, { error: '这一轮正在生成，等它说完再撤销回退（不然会写乱）' });
+    }
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
     // undoLastRewind 会把被摘掉那个回退点的 mem / ws 一起带回来（它在删之前取的），
@@ -6700,6 +6747,30 @@ const server = createServer(async (req, res) => {
     return json(res, 200, out);
   }
 if (req.method === 'POST' && url.pathname === '/api/app/restart') {
+    /* 【2026-11-03 主人要求】功能页那一档管的是「续不续上」，不是「能不能重启」。
+     *
+     * 主人原话：「如果这个功能被关，那么就改为能自动重启但不能续上」。
+     *
+     * 所以这里**不拦重启**，只降级：
+     *   功能开着 → 正常重启，退出前记 resume 意图，重启完自动接着干（原来那套）
+     *   功能关着 → 照样能重启（否则新代码永远生效不了，只能靠主人手动双击），
+     *              但不写 resume 意图，重启完就是个干净的冷启动。
+     *
+     * 真正堵死的是另一件事：用命令把进程杀掉（run_command 里的 Stop-Process /
+     * taskkill 那些）—— 那不是重启，是退出，主进程没了谁也不会把它拉回来。
+     * 那条路已经在 tools.mjs 里拦死了。
+     */
+    let _resumeAllowed = true;
+    {
+      let _gateBody = {};
+      try { _gateBody = await body(req).catch(() => ({})); } catch { _gateBody = {}; }
+      req.__xyBody = _gateBody;
+      let _feats = null;
+      try { _feats = getFeatures(); } catch { _feats = null; }
+      const _gate = _feats?.features?.find((f) => f.id === 'selfRestart');
+      _resumeAllowed = Boolean(_gate && _gate.enabled === true);
+      if (!_resumeAllowed) console.log('[restart] 「自动重启续上」关着 → 照样重启，但不续上');
+    }
     if (process.env.XIAOYU_DESKTOP !== '1') {
       return json(res, 501, { ok: false, error: '这个窗口不是从桌面图标打开的，没法自己重启' });
     }
@@ -6722,7 +6793,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     let _reqSid = '';
     let _b = {};
     try {
-      _b = await body(req).catch(() => ({}));
+      _b = (req && req.__xyBody) ? req.__xyBody : await body(req).catch(() => ({}));
       _reqSid = String(_b?.sessionId || '');
       const _want = _reqSid;
       /**
@@ -6804,6 +6875,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         } catch {}
         // 没在跑、清单也清完了 → 没什么可接的，跳过
         if (!_live && !_open.length) continue;
+        /* 【2026-11-03 主人要求】功能关着 → 照样重启，但不写续跑意图（干净冷启动） */
+        if (!_resumeAllowed) continue;
         markInterrupted({
           sessionId: _sid,
           text: _live && _live.draft ? _live.draft.text : '',
@@ -6882,6 +6955,67 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     const force = bodyJson?.force !== false;
     const r = await quickCheck({ force });
     return json(res, 200, { ok: true, ...r });
+  }
+
+  /**
+   * 装新版：POST /api/update/install
+   *
+   * 只在「安装包已经下好、校验过」时才动。做的事：
+   *   1. 生成一个脱钩的 .cmd：等本进程退出 → 跑安装包 /S → 装完把程序拉起来
+   *   2. 回 200
+   *   3. 250ms 后 app.relaunch()? 不要 —— 这里必须**真退出**，不然文件被占用装不上。
+   *      所以用 globalThis.__xiaoyuQuitForInstall()（主进程里注册，app.exit(0) 不重启），
+   *      没有就自己 process.exit(0)。
+   *
+   * 为什么不直接在这里 spawn 安装包：NSIS 覆盖安装要求目标程序已退出，我们还活着会撞
+   * 「文件被占用」。所以必须让 .cmd 等着我们死。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/update/install') {
+    const bodyJson = await body(req).catch(() => null);
+    const info = lastUpdateInfo();
+    if (!info || info.status !== 'ready' || !info.file) {
+      return json(res, 400, { ok: false, error: '现在没有下好的新版安装包' });
+    }
+    const running = runningTurns.size;
+    if (running > 0) {
+      // 装完会重启，正在跑的那一轮会被掐断。宁可让人多等一会儿，也不替他决定。
+      return json(res, 409, { ok: false, error: `还有 ${running} 个会话在跑，等它们跑完再装` });
+    }
+    /* 【2026-11-03 回归打脸】_t_update_flow 走到这条会真装新版，把跑着的程序自己弄退。
+       * 验收要能「走到这一步但不真装」，所以给个 dryRun：只回话，不落脚本、不退出。 */
+      if (bodyJson && bodyJson.dryRun === true) {
+        return json(res, 200, { ok: true, dry: true, file: info.file, size: Number(info.size) || 0 });
+      }
+      const appExe = String(process.env.XIAOYU_APP_EXE || process.execPath || '');
+    const r = spawnSilentInstall({ file: info.file, kind: info.kind || 'setup', appExe, pid: process.pid });
+    if (!r.ok) return json(res, 500, { ok: false, error: r.error || '起不来安装脚本' });
+    console.log('[update] 安装脚本已起，程序马上退出交给它装：', r.script);
+    json(res, 200, { ok: true, script: r.script, size: info.size || 0 });
+    setTimeout(() => {
+      const quit = globalThis.__xiaoyuQuitForInstall;
+      if (typeof quit === 'function') {
+        try { quit(); return; } catch (e) { console.warn('[update] 喊主进程退出失败：', String(e?.message ?? e)); }
+      }
+      try { emitExit(0); } catch {}
+      process.exit(0);
+    }, 300);
+    return;
+  }
+
+  /** 不装了：POST /api/update/dismiss → 把下好的包删掉、状态清掉（下次不再提示这一版） */
+  if (req.method === 'POST' && url.pathname === '/api/update/dismiss') {
+    const info = lastUpdateInfo();
+    if (info && info.status === 'ready') {
+      dropInstaller(info.file);
+      try {
+        __diagWrite(
+          join(config.dataDir, '.state', 'update.json'),
+          JSON.stringify({ at: Date.now(), status: 'dismissed', from: info.from, to: info.to }, null, 2),
+          'utf8',
+        );
+      } catch {}
+    }
+    return json(res, 200, { ok: true });
   }
   // 下载整包：GET /api/backup/export
   if (req.method === 'GET' && url.pathname === '/api/backup/export') {
@@ -7328,7 +7462,21 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (wantOpening) {
       // 插在 system（+可能的 context）之后、现有对话之前，顺序才对
       const at = history.findIndex((m) => m && m.role !== 'system' && !m.context);
-      const pair = [openingPack.userMsg, { role: 'assistant', content: openingTextHere }];
+      /* 【2026-11-02 修·切到别人身份后，旧消息署名全被刷掉】
+       * 主人 2026-10-28 定的规矩是「身份名跟着这句消息一起存下来，
+       * 界面画的时候直接用这份」——但这条 assistant 消息当年漏了 _who。
+       * 于是切到小白曦身份后重画历史，满屏都是小白曦。
+       * 现在把这张卡的身份一起存进去。 */
+      const __opCard = cardIdOf(sessionId);
+      const __opName = (() => {
+        try { const __a = getAgent(__opCard); return String((__a && __a.name) || '').trim(); } catch { return ''; }
+      })();
+      const __opMsg = { role: 'assistant', content: openingTextHere };
+      if (__opName) {
+        __opMsg._who = String(__opName);
+        if (__opCard && __opCard !== 'xiaoyu') __opMsg._card = String(__opCard);
+      }
+      const pair = [openingPack.userMsg, __opMsg];
       if (at < 0) history.push(...pair);
       else history.splice(at, 0, ...pair);
       delete session._openingPending;
@@ -7532,8 +7680,33 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            *  事件本来就是按发生顺序进数组的，这才是真顺序。 */
           const _bones = _kept.map((e, i) => ({ e, i })).filter((x) => x.e && x.e.type !== 'reasoning' && x.e.type !== 'text');
           const _flesh = _kept.map((e, i) => ({ e, i })).filter((x) => x.e && (x.e.type === 'reasoning' || x.e.type === 'text'));
-          const _room = Math.max(40, LIVE_SOFT_MAX - _bones.length);
-          const _keptFlesh = _flesh.slice(-_room);
+          /* 【2026-11-03 主人报「思考链只剩二三十字」】原来是 _flesh.slice(-_room)：
+           *  按**条数**砍，前面的事件整条丢掉。可 reasoning/text 早就被并成一条了，
+           *  条数不多、字数巨大 —— 结果就是思考动不动被削到只剩尾巴几十个字。
+           *  改成按**字数额度**留：谁都别整条消失，只把超长的那条按尾巴截短。
+           *  优先保 reasoning（主人最想看的推理），再保 text。 */
+          /* 额度按实际长度给：正常轮次一个字都不砍，只在真的超长时才截尾巴。 */
+          const _lenOf = (arr) => arr.reduce((n, x) => n + String((x.e && x.e.text) || '').length, 0);
+          const _thinkLen = _lenOf(_flesh.filter((x) => x.e && x.e.type === 'reasoning'));
+          const _sayLen = _lenOf(_flesh.filter((x) => x.e && x.e.type === 'text'));
+          const _keepThink = Math.max(80000, Math.min(_thinkLen, 400000));
+          const _keepSay = Math.max(40000, Math.min(_sayLen, 200000));
+          const _cutByChars = (arr, cap) => {
+            let left = cap;
+            const out = [];
+            for (let k = arr.length - 1; k >= 0; k--) {
+              const it = arr[k];
+              const t = String((it.e && it.e.text) || '');
+              if (left <= 0) break;
+              if (t.length <= left) { out.push(it); left -= t.length; }
+              else { out.push({ ...it, e: { ...it.e, text: t.slice(-left) } }); left = 0; }
+            }
+            return out;
+          };
+          const _keptFlesh = [
+            ..._cutByChars(_flesh.filter((x) => x.e && x.e.type === 'reasoning'), _keepThink),
+            ..._cutByChars(_flesh.filter((x) => x.e && x.e.type === 'text'), _keepSay),
+          ];
           const _merged = [..._keptFlesh, ..._bones].sort((a, b) => a.i - b.i).map((x) => x.e);
           live.events.length = 0;
           for (const e of _merged) { e.seq = live.events.length; live.events.push(e); }
@@ -10031,6 +10204,35 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       const actual = server.address().port;
       listeningPort = actual;
       const url = `http://127.0.0.1:${actual}`;
+      /* 【2026-11-03 记忆系统严检】起一个目录体检：超了就在日志里喊一声（不删东西）。
+       * 严检时量到 .state 已经 1GB+，那些目录全是证据/交付物，不能自动删，
+       * 但至少得让主人知道它在长。 */
+      try { startHealthWatch((m) => console.log('  ' + m)); } catch (e) { /* 体检挂了不能拖累服务 */ }
+      /* 【2026-11-03 记忆系统严检】归档轮转 + 回收站压缩：一天最多跑一次。
+       * 不是删，是打包成 .jsonl.gz —— 要翻还能翻，占的地方小一个量级。
+       * 回收站超过 7 天、归档超过 30 天才压，阈值给得够宽。 */
+      try {
+        const mark = join(config.dataDir, '.state', '.last-rotate');
+        let last = 0;
+        try { last = Number(__rotRead(mark, 'utf8')) || 0; } catch {}
+        if (Date.now() - last > 86400000) {
+          const t = compactTrash({ days: 7 });
+          const a = rotateArchive({ days: 30 });
+          const n = t.reduce((s, x) => s + x.packed, 0) + a.packed;
+          if (n) console.log('[rotate] 打包回收 ' + n + ' 个老文件（回收站 7 天 / 归档 30 天）');
+          __rotWrite(mark, String(Date.now()), 'utf8');
+        }
+      } catch (e) { /* 轮转挂了不能拖累服务 */ }
+      /* 【2026-11-03 办事模式严检】会话被删了、名册/记忆本还在的，改名 .gone 收走 */
+      try { pruneOrphans(); } catch { /* 孤儿清理挂了不能拖累服务 */ }
+      try { pruneWorkerFiles(); } catch { /* 同上 */ }
+      /* 【2026-11-03 出厂自建卡】每台机器第一次启动时把小白曦、旁白铺成卡。
+       * 账本在 .state/agent-presets-made.json —— 铺过一次就不再铺，主人删了就是删了。
+       * 人设正文来自包里的 persona/agents/<key>.md（build.files 带着整个 persona 目录）。 */
+      try {
+        const n = ensureAgentPresets();
+        if (n && !quiet) console.log(`[presets] 铺了 ${n} 张出厂智能体卡`);
+      } catch (e) { /* 铺卡失败不能拖累服务 */ }
       if (!quiet) {
         console.log(`小鱼Agent running: ${url}`);
         if (lanOn) {

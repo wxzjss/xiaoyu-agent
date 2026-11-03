@@ -16,7 +16,25 @@ chk('量线整段套了 try/catch（量不出来不打断干活）', /量不出�
 
 console.log('\n=== 真跑异常输入 ===');
 const start = src.indexOf('const _midWarnState = new Map();');
-const end = src.indexOf('\n}\n', src.indexOf('function _midWarnStateOf')) + 3;
+// 【2026-11-01 修】原来按 '\n}\n' 硬切 —— 函数体里只要有空行+} 就切错。
+// 改成：从函数起点往后数花括号，数到配平为止，那样才稳。
+function _fnEnd(text, fnHead) {
+  const i = text.indexOf(fnHead);
+  if (i < 0) return -1;
+  const open = text.indexOf('{', i);
+  if (open < 0) return -1;
+  let depth = 0;
+  for (let k = open; k < text.length; k++) {
+    const c = text[k];
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return k + 1;
+    }
+  }
+  return -1;
+}
+const end = _fnEnd(src, 'function _midWarnStateOf');
 const code = src.slice(start, end);
 
 const fn = new Function(code + '\nreturn { _midWarnStateOf, _midWarnState };');

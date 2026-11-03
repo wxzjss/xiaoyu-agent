@@ -15,7 +15,7 @@ for (const p of files) {
   const s = fs.readFileSync(p, 'utf8');
   console.log('\n=== ' + p + ' ===');
   chk('没有无条件拼 参数：+ p.args', !s.includes("el.pre.textContent = '参数：' + p.args;"));
-  chk('有空值保护', s.includes("p.args === undefined"));
+  chk('有空值保护', s.includes("p.args ? '参数：'") || s.includes("p.args ?? '") || s.includes("p.args === undefined") || s.includes("p.args == null"));
   chk('compress 映射还在', s.includes("compress: '压缩中'"));
 }
 

@@ -66,7 +66,13 @@ export function effectiveIndexes(messages, rewinds) {
   const list = Array.isArray(messages) ? messages : [];
   const head = headIndexes(list);
   const hidden = new Set();
-  for (const r of rewinds) for (const i of r.hidden) hidden.add(i);
+  /* 【2026-11-03 严检】老数据 / 手改过的会话里 r.hidden 可能不是数组，
+   * 原来直接 for...of 会抛 TypeError，整个会话都打不开。 */
+  const rwList = Array.isArray(rewinds) ? rewinds : [];
+  for (const r of rwList) {
+    if (!r || !Array.isArray(r.hidden)) continue;
+    for (const i of r.hidden) if (Number.isInteger(i) && i >= 0) hidden.add(i);
+  }
   // 【回退点自己那条也要藏起来】
   // createRewind 只把 at+1 之后塞进 hidden，at 那条不在里面 —— 因为回退的语义是
   // 「把对话回退到这条之前」，这条问话本身也不该再发给模型。
@@ -75,7 +81,7 @@ export function effectiveIndexes(messages, rewinds) {
   // 表现为「回退之后聊的每一句都石沉大海」。所以只能精确命中 at 那一个下标，
   // 绝不能再按「大于等于」截断尾部。
   const atSet = new Set();
-  for (const r of rewinds) if (Number.isFinite(r.at)) atSet.add(Number(r.at));
+  for (const r of rwList) if (r && Number.isFinite(r.at)) atSet.add(Number(r.at));
 
   /**
    * 【砍 assistant 就得连它的 tool 结果一起砍 —— 2026-10-30 修 · 干活鱼2 的 HTTP 400】
@@ -152,7 +158,7 @@ export function createRewind(session, at) {
   const hidden = new Set();
   const head = headIndexes(messages).length;
   for (let i = idx + 1; i < messages.length; i++) hidden.add(i);
-  for (const r of existing) for (const i of r.hidden) if (i >= idx) hidden.add(i);
+  for (const r of existing) if (r && Array.isArray(r.hidden)) for (const i of r.hidden) if (i >= idx) hidden.add(i);
 
   // 后面那些回退点记下的文件快照要并进来，否则文件会漏还原
   const ws = {};
@@ -285,7 +291,11 @@ export function snapshotBeforeWrite(snap, p) {
   try {
     const st = statSync(hit.abs);
     if (!st.isFile()) return;
-    snap[hit.key] = st.size > MAX_SNAPSHOT_BYTES ? null : readFileSync(hit.abs, 'utf8');
+    /* 【2026-11-03 严检抓到的真 bug】原来超大文件记成 null，
+     * 而 null 在 restoreWorkspace 里的意思是「原来不存在 → 删掉」。
+     * 于是改了一个 >1MB 的文件再回退 → 那个文件被直接删了。
+     * 现在用哨兵 '__TOO_BIG__'，还原时认出这份没备份，跳过不动。 */
+    snap[hit.key] = st.size > MAX_SNAPSHOT_BYTES ? '__TOO_BIG__' : readFileSync(hit.abs, 'utf8');
   } catch {
     snap[hit.key] = null; // 原来不存在 → 回退时删掉
   }
@@ -302,7 +312,11 @@ export function restoreWorkspace(ws = {}) {
     const rel = relative(root, abs);
     if (rel.startsWith('..') || isAbsolute(rel)) continue;
     try {
-      if (content === null) {
+      if (content === '__TOO_BIG__') {
+        /* 这一份当时太大、没备份成。不能当 null 删掉，也不能假装还原了。 */
+        out.tooBig = out.tooBig || [];
+        out.tooBig.push(key);
+      } else if (content === null) {
         if (existsSync(abs)) {
           unlinkSync(abs);
           out.deleted.push(key);

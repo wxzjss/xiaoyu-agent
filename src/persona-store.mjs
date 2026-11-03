@@ -34,9 +34,22 @@ function scopeOk(x) {
 }
 
 /** 临时切到某个智能体的人设库干活，干完切回来（同步函数用） */
+/** 小鱼的几个别名 —— 它们都该落在主库，不该另开一个库 */
+const FISH_SCOPES = new Set(['xiaoyu', 'fish', 'xiaoyu-qq']);
+
 export function withPersonaScope(scope, fn) {
   const prev = _scope;
-  _scope = scopeOk(scope) ? String(scope || '') : '';
+  let s = scopeOk(scope) ? String(scope || '') : '';
+  /* 【2026-11-03 主人报的大 bug】「点小鱼的【恢复出厂默认】后变成小鲸的人设了」
+   *
+   * 真凶：界面那条路把 scope 传成 'xiaoyu'，而小鱼的人设一直住在【主库】
+   * （状态目录下的 personas.json + personas/*.md，scope 为空）。
+   * 传了 'xiaoyu' 就等于另开一个空库 personas/xiaoyu.json（current:"", list:[]），
+   * 里面一套人设都没有 → 一路兜底 → 兜到小鲸那份。主人眼前就"变成小鲸"了。
+   *
+   * 这里把小鱼的所有别名都折回空 scope：她永远只在主库。 */
+  if (FISH_SCOPES.has(s)) s = '';
+  _scope = s;
   try {
     return fn();
   } finally {
@@ -58,13 +71,27 @@ function indexFile() {
 }
 
 function baseFile() {
-  // 按谁的人设库取出厂模板·2026-10-30
-  // 小鲸以前借的是小鱼的 persona/xiaoyu.md，所以她那栏「默认人设」一点开满屏是小鱼的口吻。
-  // 现在各用各的：小鲸 → src/whale-default-persona.md，小鱼 → persona/xiaoyu.md。
-  if (_scope) {
+  /* 按谁的人设库取出厂模板·2026-10-30
+   * 小鲸以前借的是小鱼的 persona/xiaoyu.md，所以她那栏「默认人设」一点开满屏是小鱼的口吻。
+   * 现在各用各的：小鲸 → src/whale-default-persona.md，小鱼 → persona/xiaoyu.md。
+   *
+   * 【2026-11-03 主人报的大 bug】「点小鱼的【恢复出厂默认】后变成小鲸的人设了」
+   *
+   * 真凶就在下面这一行：原来写的是 if (_scope)，只要进了任何一个智能体的作用域
+   * 就返回小鲸那份。可小鱼自己也是会进作用域的（/api/agents/persona/reset 传 scope=xiaoyu，
+   * 或者界面上任何一次 withPersonaScope），于是小鱼一"恢复出厂"，读到的是小鲸。
+   *
+   * 改成只认小鲸自己的 scope。别的智能体各自读自己的目录（见 factoryPersonaOf /
+   * textOf 那几条），小鱼读发布物 persona/xiaoyu.md。 */
+  if (_scope === 'whale') {
     const whaleDef = join(WHALE_DEFAULT_DIR, 'whale-default-persona.md');
     if (existsSync(whaleDef)) return whaleDef;
   }
+  /* 【2026-11-03】别的自建智能体不该借小鱼的发布物当出厂。
+   * 它们自己的出厂在 personas/<id>/defaults.json.persona 或 .factory.json（见 agents.mjs 的
+   * factoryPersonaOf）。这里返回小鱼那份会让"恢复出厂默认"把别人的脸换成小鱼。
+   * 找不到自己的文件时返回空串 —— 上层再兜，总比给错人强。 */
+  if (_scope) return '';
   return join(config.root, 'persona', 'xiaoyu.md');
 }
 
@@ -104,6 +131,61 @@ function readDefaults() {
   }
 }
 
+/* ============================================================
+ * 每套人设「自己的默认」·2026-11-03 主人拍板
+ *
+ * 主人原话：「那就不搞默认人设了，删掉默认人设，改为每个人设预设都可以
+ *   为自己这个预设设置默认并恢复自己这个预设的默认人设。」
+ * 「把默认人设改为智能体自己的名字。」
+ *
+ * 以前：全局只有一份 .state/defaults.json.persona，谁点「设为默认」都写那一条，
+ *      于是小鲸点一下就把小鱼的覆盖了；自建卡更惨，读到的是别人的脸。
+ * 现在：每套套人设自己有 defaults/<套 id>.json。
+ *      「设为默认」= 把当前正文抄进这套自己的默认；
+ *      「恢复默认」= 从这套自己的默认抄回来。
+ *      互不影响，谁也不会变成别人。
+ * ============================================================ */
+
+/** 每套人设自己的默认放在 personas/<库>/defaults/<套 id>.json */
+function ownDefaultsDir() {
+  return join(pDir(), 'defaults');
+}
+function ownDefaultFile(id) {
+  return join(ownDefaultsDir(), String(id || '') + '.json');
+}
+
+/** 这套自己的默认正文；没设过就 '' */
+export function ownDefaultOf(id) {
+  const key = String(id || '');
+  if (!key || !isPersonaId(key)) return '';
+  try {
+    const j = JSON.parse(readFileSync(ownDefaultFile(key), 'utf8'));
+    return String((j && j.persona) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/** 把正文定成「这套自己的默认」 */
+export function setOwnDefaultOf(id, text) {
+  const key = String(id || '');
+  const body = String(text || '').trim();
+  if (!key || !isPersonaId(key) || !body) return false;
+  try {
+    ensureDirs();
+    mkdirSync(ownDefaultsDir(), { recursive: true });
+    writeFileSync(ownDefaultFile(key), JSON.stringify({ persona: body, at: Date.now() }, null, 2), 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 这套有没有自己的默认 */
+export function hasOwnDefault(id) {
+  return ownDefaultOf(id).length > 0;
+}
+
 const DEFAULT_ID = 'default';
 const DEFAULT_NAME = '默认人设';
 const MAX_NAME = 40;
@@ -123,10 +205,17 @@ function ensureDirs() {
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
 }
 
-/** 发布物自带的那份人设原文 */
+/** 发布物自带的那份人设原文
+ *
+ * 【2026-11-03 修】自建卡的库里没有「发布物」这个概念（她的人设是主人建卡时写的），
+ * baseFile() 在那种库会返回空串 —— 老代码直接 throw，整张卡的面板就白屏。
+ * 现在：找不到就当空串，让上层自己的兜底去拿（ownDefaultOf / 建卡正文）。
+ */
 export function readBasePersona() {
-  const text = readFileSafe(baseFile());
-  if (text === null) throw new Error(`persona file missing: ${baseFile()}`);
+  const f = baseFile();
+  if (!f) return '';
+  const text = readFileSafe(f);
+  if (text === null) return '';
   return text.trim();
 }
 
@@ -186,47 +275,86 @@ function writeIndex(idx) {
  */
 function ensureIndex() {
   const existing = readIndex();
-  if (existing) {
-    // 内置那套必须在，被手删了要补回来
-    if (!existing.list.some((p) => p.id === DEFAULT_ID)) {
-      existing.list.unshift({ id: DEFAULT_ID, name: DEFAULT_NAME, builtin: true, updatedAt: Date.now() });
-      writeIndex(existing);
-    }
-    return existing;
-  }
+  if (existing) return existing;
 
   ensureDirs();
-  const idx = {
-    current: DEFAULT_ID,
-    list: [{ id: DEFAULT_ID, name: DEFAULT_NAME, builtin: true, updatedAt: Date.now() }],
-  };
+  /* 【2026-11-03 主人拍板】「那就不搞默认人设了，删掉默认人设，
+   *   改为每个人设预设都可以为自己这个预设设置默认并恢复自己这个预设的默认人设。」
+   * 「把默认人设改为智能体自己的名字。」
+   *
+   * 所以新库空着建：不再塞一个叫「默认人设」的特殊槽。
+   * 第一套由建卡那边按智能体名字建（addAgent → createPersona({ name })），
+   * 主库那边是「小鱼」，小鲸那边是「小鲸」。
+   *
+   * 每套自己的「默认正文」存在 defaults/<套 id>.json，互不覆盖 ——
+   * 见 setPersonaAsOwnDefault / resetPersona。 */
+  const idx = { current: '', list: [] };
 
-  // 旧版单文件人设：搬成一套自己的，别丢
-  const legacy = readFileSafe(LEGACY_FILE);
+  // 旧版单文件人设：只搬给主库（小鱼自己），别人的库里不该有
+  const legacy = personaScope() ? '' : readFileSafe(LEGACY_FILE);
   if (legacy && legacy.trim()) {
-    const id = 'legacy';
     try {
-      writeFileSync(fileFor(id), legacy.trim() + '\n', 'utf8');
-      const when = (() => {
-        try { return Date.now(); } catch { return 0; }
-      })();
-      idx.list.push({ id, name: '我的旧人设', builtin: false, updatedAt: when });
-      idx.current = id; // 主人原来用的就是它，继续用它
-    } catch {
-      // 搬不动就算了，至少默认人设可用
-    }
+      writeFileSync(fileFor('legacy'), legacy.trim() + '\n', 'utf8');
+      idx.list.push({ id: 'legacy', name: '我的旧人设', builtin: false, updatedAt: Date.now() });
+      idx.current = 'legacy';
+    } catch { /* 搬不动就算了 */ }
+  }
+
+  /* 【2026-11-03 换电脑修】「换电脑」严检查出来的：
+   * 新库这里原来就交个空 list 出去，而全项目没有任何代码去建「主库那套小鱼」，
+   * 于是 saveAgentPersona('xiaoyu') / resetAgentPersona('xiaoyu') 在全新机器上一律
+   * 「没有这套人设」404 —— 换台电脑第一次改人设就撞墙。
+   * 现在：新库的第一套就叫这个智能体自己的名字（主库小鱼 / 小鲸库小鲸 / 自建卡库卡名），
+   * 正文走 textOf 的兜底，不需要这里写文件。 */
+  if (!idx.list.length) {
+    idx.list.push({ id: DEFAULT_ID, name: firstSetName(), builtin: true, updatedAt: Date.now() });
+    idx.current = DEFAULT_ID;
   }
 
   writeIndex(idx);
   return idx;
 }
 
+
+/** 新库第一套叫什么名字（换电脑严检：名字取自这个智能体自己） */
+function firstSetName() {
+  const sc = personaScope();
+  if (!sc) return '小鱼';
+  if (sc === 'whale') return '小鲸';
+  try {
+    const j = JSON.parse(readFileSync(join(STATE_DIR, 'agents.json'), 'utf8'));
+    const list = Array.isArray(j && j.customs) ? j.customs : [];
+    const hit = list.find((a) => a && String(a.id) === sc);
+    const nm = hit && String(hit.name || '').trim();
+    if (nm) return nm;
+  } catch { /* 读不出来就用下面的兜底 */ }
+  return '人设';
+}
+
+
 /** 某一套的正文：内置且没改过 -> 发布物那份；否则读文件 */
 function textOf(id) {
-  const own = readFileSafe(fileFor(id));
+  const key = String(id || '');
+  const own = readFileSafe(fileFor(key));
   if (own !== null && own.trim()) return own.trim();
-  // 内置那套没自己的文件时，落到「当前生效的默认」上（主人定过就用主人定的）
-  if (id === DEFAULT_ID) return builtinPersonaText();
+
+  /* 【2026-11-03 主人拍板：不搞特殊的「默认人设」了，每套各自有默认】
+   * 一套人设「没自己的文件」时，先看它自己有没有存过默认（defaults/<套 id>.json）；
+   * 存过就用它 —— 这是主人点「设为默认」定下来的那份，只属于这套。
+   */
+  const selfDef = ownDefaultOf(key);
+  if (selfDef) return selfDef;
+
+  /* 还没定过默认：只有主库的 default 才回落到全局出厂（那是小鱼本身）。
+   * 自建卡一律不许借别人的 —— 以前它借到的是小鲸那 1891 字，脸都串了。 */
+  /* 【2026-11-03 换电脑修】 小鲸库的 default 以前也返回空串（只给主库回落），换台电脑小鲸的人设就是空的。
+   * 改成：default 一律先问 baseFile()（主库=persona/xiaoyu.md，小鲸库=whale-default-persona.md），
+   * 拿不到再回落到为你那套存过的出厂值。自建卡库 baseFile() 是空串，不会借别人的脸。 */
+  if (key === DEFAULT_ID) {
+    const base = readBasePersona();
+    if (base && String(base).trim()) return String(base).trim();
+    return builtinPersonaText();
+  }
   return '';
 }
 
@@ -315,15 +443,30 @@ export function createPersona({ name, text, copyCurrent = true } = {}) {
   const body = typeof text === 'string' && text.trim()
     ? cleanText(text)
     : (copyCurrent ? textOf(idx.current) : '');
-  if (!body) {
-    const e = new Error('新人设内容不能为空');
-    e.status = 400;
-    throw e;
-  }
+  /* 【2026-11-03 主人报】「新建人设只能填个名字然后自动退出」——
+   * 除了前端没问正文，这里也有份：正文为空就直接 400，主人想先起个名字、
+   * 稍后再填都做不到。改成：空的就落一份最小骨架，至少这套能被选中、能编辑。 */
+  const finalBody = body || ('# ' + (cleanName(name) || '新人设') + '\n\n（这套还没写正文，点下面的框直接写）');
   ensureDirs();
-  writeFileSync(fileFor(id), body + '\n', 'utf8');
+  writeFileSync(fileFor(id), finalBody + '\n', 'utf8');
+  /* 【2026-11-03 主人报的】新建一套后点「恢复默认」→ 正文被删光 → 再点这套一片空白。
+   *
+   * 真凶：createPersona 只写正文、不写这套自己的默认。于是「恢复默认」走进
+   * else 分支 rmSync 把文件删了，而 textOf 既没文件也没默认 → 返回空串。
+   *
+   * 修：建的时候就把正文同时定成它自己的默认。这样「恢复默认」永远有东西可回，
+   * 也符合主人的直觉 —— 我刚建好这套时它长什么样，就是它的默认。 */
+  try { setOwnDefaultOf(id, finalBody); } catch { /* 默认写不进去也不该挡住建套 */ }
   const meta = { id, name: cleanName(name) || '新人设', builtin: false, updatedAt: Date.now() };
   idx.list.push(meta);
+  /* 【2026-11-03 主人报】「新建人设填了名字和正文，结果还是原来那套」
+   *
+   * 真凶：这里只 push 进 list，没把 current 切到新 id。
+   * 于是 createPersona 返回的 personaInfo() 还是旧那套 —— 界面显示旧名字、
+   * 随后 savePersonaText(undefined) 也会存到旧那套上，主人白填。
+   *
+   * 建完就停在新套上，这才是「新建」该有的样子。 */
+  idx.current = id;
   writeIndex(idx);
   return { ...personaInfo(), created: id };
 }
@@ -341,6 +484,34 @@ export function savePersonaText(id, text) {
   ensureDirs();
   writeFileSync(fileFor(target), clean + '\n', 'utf8');
   const meta = idx.list.find((p) => p.id === target);
+  meta.updatedAt = Date.now();
+  writeIndex(idx);
+  return personaInfo();
+}
+
+/**
+ * 改某一套人设的名字（id 不动，只改显示名）。
+ *
+ * 【2026-11-03 补回】这个函数之前被我重写 setPersonaAsDefault 时整块吃掉了，
+ * server.mjs 第 114 行 import 它 → 整个服务起不来（check-compress / check-deleted 两个回归挂掉）。
+ * 行为跟原来一致：找不到这套就 404；名字清洗后为空就落回「人设」。
+ */
+export function renamePersona(id, name) {
+  const idx = ensureIndex();
+  const target = id && isPersonaId(id) ? id : idx.current;
+  const meta = idx.list.find((p) => p.id === target);
+  if (!meta) {
+    const e = new Error('没有这套人设');
+    e.status = 404;
+    throw e;
+  }
+  const next = cleanName(name);
+  if (!next) {
+    const e = new Error('名字不能是空的');
+    e.status = 400;
+    throw e;
+  }
+  meta.name = next;
   meta.updatedAt = Date.now();
   writeIndex(idx);
   return personaInfo();
@@ -365,74 +536,57 @@ export function setPersonaAsDefault(id) {
     e.status = 404;
     throw e;
   }
-  const body = cleanText(textOf(from));
-  const oldDefault = readFileSafe(fileFor(DEFAULT_ID));
-  const already =
-    from === DEFAULT_ID &&
-    oldDefault !== null &&
-    oldDefault.trim() === body;
-  if (already) {
-    return { persona: personaInfo(), from, changed: false };
-  }
-  // 旧默认先留一份，手滑能捡回来
-  if (oldDefault && oldDefault.trim()) {
-    try {
-      ensureDirs();
-      writeFileSync(join(STATE_DIR, 'persona.default.backup.md'), oldDefault, 'utf8');
-    } catch {}
-  }
-  ensureDirs();
-  writeFileSync(fileFor(DEFAULT_ID), body + '\n', 'utf8');
-  const meta = idx.list.find((p) => p.id === DEFAULT_ID);
-  if (meta) meta.updatedAt = Date.now();
-  idx.current = DEFAULT_ID;
-  writeIndex(idx);
-  return { persona: personaInfo(), from, changed: true };
-}
 
-/** 改名字 */
-export async function renamePersona(id, name) {
-  const idx = ensureIndex();
-  const meta = idx.list.find((p) => p.id === id);
-  if (!meta) {
-    const e = new Error('没有这套人设');
-    e.status = 404;
-    throw e;
-  }
-  const next = cleanName(name);
-  if (!next) {
-    const e = new Error('名字不能为空');
-    e.status = 400;
-    throw e;
-  }
-  if (meta.builtin || id === DEFAULT_ID) {
-    const e = new Error('默认人设的名字不给改，方便你随时找回来');
-    e.status = 400;
-    throw e;
-  }
-  /**
-   * 记忆本跟着名字搬。
+  /* 【2026-11-03 主人拍板：每套各管各的默认】
    *
-   * 本子是按人设名字放的（同名共用一本）。改名不搬的话，
-   * 下回读的就是另一个路径了 —— 人会觉得自己突然失忆。
-   * 搬失败不能拦着改名本身：名字还得改，本子的问题记一笔日志就行。
+   * 老实现是「把正文抄进 default 那一套」—— 一份全局的，谁点谁覆盖谁。
+   * 主人点小鱼、人设栏变出小鲸，就是这条链当年留下的坑。
+   *
+   * 现在跟 setPersonaAsBuiltinDefault 完全一致：
+   * 写 personas/<库>/defaults/<这套 id>.json，只属于这套自己。
    */
-  const before = meta.name;
-  meta.name = next;
-  meta.updatedAt = Date.now();
-  writeIndex(idx);
-  if (before && before !== next) {
-    try {
-      const { moveMemoryOnRename } = await import('./my-memory.mjs');
-      moveMemoryOnRename(before, { id, name: next });
-    } catch (e) {
-      console.warn('[memory] 人设改名时记忆本没搬成：', String(e?.message ?? e));
-    }
+  const body = cleanText(textOf(from));
+  if (!body) {
+    const e = new Error('这套人设是空的，没东西可以设成默认');
+    e.status = 400;
+    throw e;
   }
-  return personaInfo();
+
+  /* 【2026-11-03 补的保险】把当前正文设成这套自己的默认。
+   *
+   * 踩过的坑：先在编辑框里把正文改烂（比如只剩 4 个字），再点「设为默认」，
+   * 那 4 个字就成了这套的默认 —— 以后「恢复默认」回来的就是这个垃圾。
+   * 所以：① 太短的正文拒收；② 旧默认一定先备份到这套自己的目录里，别只存一份全局的。
+   */
+  const MIN_OWN_DEFAULT = 1;
+  if (body.length < MIN_OWN_DEFAULT) {
+    const e = new Error('这套人设是空的，不设成默认');
+    e.status = 400;
+    throw e;
+  }
+
+  const prev = ownDefaultOf(from);
+  if (prev && prev !== body) {
+    try {
+      const bdir = join(pDir(), 'defaults');
+      mkdirSync(bdir, { recursive: true });
+      writeFileSync(join(bdir, from + '.bak-' + Date.now() + '.json'), JSON.stringify({ persona: prev, at: Date.now() }, null, 2), 'utf8');
+    } catch { /* 备份失败不挡主流程 */ }
+  }
+
+  const ok = setOwnDefaultOf(from, body);
+  if (!ok) {
+    const e = new Error('存不下这次默认（写文件失败）');
+    e.status = 500;
+    throw e;
+  }
+
+  const meta = idx.list.find((p) => p.id === from);
+  if (meta) { meta.updatedAt = Date.now(); writeIndex(idx); }
+
+  return { persona: personaInfo(), from, changed: true, own: true, chars: body.length };
 }
 
-/** 删掉一套（内置那套不许删；删的正好是当前用的就切回默认） */
 export function deletePersona(id) {
   const idx = ensureIndex();
   if (id === DEFAULT_ID) {
@@ -457,6 +611,14 @@ export function deletePersona(id) {
   rmSync(fileFor(id), { force: true });
   idx.list.splice(at, 1);
   if (idx.current === id) idx.current = DEFAULT_ID;
+  /* 【2026-11-03 换电脑修】 删掉的要是出厂预设，立刻记进账本 —— 否则下次启动 ensurePresets 又铺回来，
+   * 主人就会觉得「删了也删不掉」。 */
+  try {
+    if (PERSONA_PRESETS.some((p) => p.id === id)) {
+      const made = readPresetLedger();
+      if (!made.includes(id)) { made.push(id); writePresetLedger(made); }
+    }
+  } catch { /* 记不上就下次再删一遍 */ }
   writeIndex(idx);
   return personaInfo();
 }
@@ -477,8 +639,47 @@ export function resetPersona(id) {
       writeFileSync(LEGACY_BACKUP, own, 'utf8');
     } catch {}
   }
-  // 删掉自己的文件就回到「当前生效的默认」（主人定过的那版，否则是发布物那份）
-  rmSync(fileFor(target), { force: true });
+  /* 【2026-11-03 主人拍板】「恢复默认」= 恢复成这套自己的默认。
+   *
+   * 以前是 rmSync 删文件，再靠 textOf 的兜底去「找默认」——
+   * 兜底一不留神就找到别人头上（主人点小鱼、人设栏变出小鲸，就是这么来的）。
+   *
+   * 现在：这套自己存过默认 → 抄回默认给它；
+   *       没存过 → 才删文件走兜底（等于回到「还没改过」的状态）。
+   */
+  /* 【2026-11-03 主人报的第二个 bug】
+   *
+   * 「在【测试】预设里把内容改为1112后设为默认，然后点恢复默认，
+   *   然后点一下名叫【测试】的人设预设后显示的人设内容空白了」
+   *
+   * 真凶：这一套自己没存过默认 → 走 else → rmSync 把正文删了。
+   * 删完 textOf 既没文件、也没自己的默认 → 返回空串 → 界面一片空白。
+   *
+   * 老注释说「没存过就删文件，等于回到还没改过」——听起来对，但「还没改过」
+   * 对自建套来说就是「什么都没有」，一删就真的没了。
+   *
+   * 现在：没存过默认就不许删。正文还在，就把它本身补记成默认（这是唯一能确定
+   * 「主人当时要的就是这个」的来源）；连正文都没有，才删。 */
+  /* 【2026-11-03 换电脑修】 内置那一套（default = 小鱼/小鲸本身）的「恢复默认」必须回到**发布物**那份，
+   * 而不是「把当前正文记成默认」—— 后者等于什么都没恢复（主人改坏了也回不去）。 */
+  if (target === DEFAULT_ID) {
+    try { rmSync(fileFor(target), { force: true }); } catch {}
+    try { rmSync(ownDefaultFile(target), { force: true }); } catch {}
+    const meta0 = idx.list.find((p) => p.id === target);
+    if (meta0) meta0.updatedAt = Date.now();
+    writeIndex(idx);
+    return personaInfo();
+  }
+  const selfDef = ownDefaultOf(target);
+  if (selfDef) {
+    ensureDirs();
+    writeFileSync(fileFor(target), selfDef + '\n', 'utf8');
+  } else if (own && own.trim()) {
+    // 没有默认、但有正文：把正文本身记成默认，一个字节都不动
+    try { setOwnDefaultOf(target, own); } catch { /* 记不上也不能删正文 */ }
+  } else {
+    rmSync(fileFor(target), { force: true });
+  }
   const meta = idx.list.find((p) => p.id === target);
   meta.updatedAt = Date.now();
   writeIndex(idx);
@@ -518,37 +719,38 @@ export function setPersonaAsBuiltinDefault(id) {
     e.status = 404;
     throw e;
   }
+
+  /* 【2026-11-03 主人拍板】「不要再搞个跟别人绑在一起的默认了」
+   *
+   * 以前：写 .state/defaults.json.persona —— 一份全局的，谁点谁覆盖谁。
+   *       小鲸点一下就顶掉了小鱼的出厂，主人点的「设为默认」也就此失真。
+   *
+   * 现在：写成这套人设自己的默认（personas/<库>/defaults/<套 id>.json），
+   *       只有这套自己能读到，也只影响这套自己。
+   *       「恢复默认」抄回来的就是这一份。
+   */
   const body = textOf(from);
-  if (!body.trim()) {
-    const e = new Error('这套是空的，不能定成默认');
+  if (!body) {
+    const e = new Error('这套人设是空的，没东西可以设成默认');
     e.status = 400;
     throw e;
   }
-  const prev = readDefaults();
-  const before = typeof prev.persona === 'string' ? prev.persona.trim() : '';
-  if (before && before === body.trim()) {
-    return { persona: personaInfo(), from, backup: null, changed: false };
+  const ok = setOwnDefaultOf(from, body);
+  if (!ok) {
+    const e = new Error('存不下这次默认（写文件失败）');
+    e.status = 500;
+    throw e;
   }
-  let backup = null;
-  if (before) {
-    ensureDirs();
-    backup = join(personaScope() ? pDir() : STATE_DIR, 'persona.default.backup.md');
-    try {
-      writeFileSync(backup, before, 'utf8');
-    } catch {
-      backup = null;
-    }
-  }
-  ensureDirs();
-  writeFileSync(
-    DEFAULTS_FILE,
-    JSON.stringify({ ...prev, persona: body }, null, 2),
-    'utf8',
-  );
-  return { persona: personaInfo(), from, backup, changed: true };
+  return {
+    persona: personaInfo(),
+    from,
+    backup: null,
+    changed: true,
+    own: true,
+    chars: body.length,
+  };
 }
 
-/** 主人定过的默认人设正文；没定过就是发布物那份 */
 export function builtinPersonaText() {
   const t = readDefaults().persona;
   if (typeof t === 'string' && t.trim()) return t.trim();
@@ -593,6 +795,9 @@ export function builtinPersonaText() {
  * 主人就在小鲸的列表里看见了小鱼的 QQ 人设。现在只在小鱼库铺，ledger 也各管各的。
  */
 export const PERSONA_PRESETS = [
+  /* 【2026-11-03 换电脑修】 这里一度被清空（注释写「主人要求空着」），但主人 2026-11-03 的原话是
+   * 「（除了小鱼还有一个QQ人设外）」—— 发布版要有这一套。只铺主库（下面的 scope 守卫管着），
+   * 主人删了会记在账本里，不会再自己冒回来。 */
   { id: 'xiaoyu-qq', name: '小鱼 / 鲸鱼娘（QQ 版）', file: 'xiaoyu-qq.md' },
 ];
 
@@ -635,8 +840,32 @@ let _presetsDone = false;
  * 入口在 server.mjs 启动时和读人设列表时各调一次。
  * @returns {number} 这次补了几套
  */
+export /** 这个库是不是「别人的」（小鲸 / 自建卡）。主库和不认识的临时库都算小鱼这边 */
+function isOthersLib() {
+  const sc = personaScope();
+  if (!sc) return false;
+  if (sc === 'whale') return true;
+  try {
+    const j = JSON.parse(readFileSync(join(STATE_DIR, 'agents.json'), 'utf8'));
+    const list = Array.isArray(j && j.customs) ? j.customs : [];
+    return list.some((a) => a && String(a.id) === sc);
+  } catch {
+    return false;
+  }
+}
+
+/* 【2026-11-03 换电脑修】验收脚本要直接调它（测「铺一次就不再铺」），补回 export */
 export function ensurePresets() {
   if (_presetsDone) return 0;
+  /* 【2026-11-03 主人报】「为什么小白曦、小鲸的多套人设里都有【小鱼/鲸鱼娘（QQ版）】？
+   * 是不是以后新建智能体都会有这两个？」
+   * 对，以前就是：这段不看是谁的库，一律往里铺 PERSONA_PRESETS。
+   * 那些是**小鱼自己**的预置人设，别人的库不该有。
+   * 现在只给主库（不带 scope，也就是小鱼自己）铺；自建卡和小鲸都跳过。 */
+  /* 【2026-11-03 换电脑修】 原来这里是「只要在某个 scope 里就一律跳过」，
+   * 结果连「临时库」这种代表小鱼自己的情形也被跳过，预设永远铺不出来。
+   * 现在只跳过**别人的库**：小鲸库、自建卡的库。 */
+  if (isOthersLib()) { _presetsDone = true; return 0; }
   _presetsDone = true;
   let idx;
   try { idx = ensureIndex(); } catch { return 0; }

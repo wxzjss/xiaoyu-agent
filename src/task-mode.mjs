@@ -25,7 +25,7 @@
  *
  * 一句话：开关在这里，规矩在这里，谁动手只认 taskOn 一个来源。
  */
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync, statSync, rmSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { config } from './config.mjs';
 import { getEnabledMap } from './features.mjs';
@@ -89,9 +89,26 @@ function writeTable(map) {
   }
 }
 
+/* 【2026-11-03 办事模式严检】日志超过 512KB 就轮转：老的改名 .1（只留一份），新日志重新开。
+ * 原来这个文件只 append 不轮转，155KB 里 78% 都是「会话没了，忘掉它」这种清理记录，
+ * 攒久了白占地方。只留一档不带时间戳，免得轮转本身又变成只增不减的目录。 */
+const LOG_ROTATE_BYTES = 512 * 1024;
+
+function rotateLogIfBig() {
+  try {
+    const f = logFile();
+    if (!existsSync(f)) return;
+    if (statSync(f).size < LOG_ROTATE_BYTES) return;
+    const old = f + '.1';
+    try { if (existsSync(old)) rmSync(old, { force: true }); } catch {}
+    renameSync(f, old);
+  } catch { /* 轮转失败就算了，绝不能影响功能 */ }
+}
+
 function log(line) {
   try {
     mkdirSync(dirname(logFile()), { recursive: true });
+    rotateLogIfBig();
     appendFileSync(logFile(), `[${new Date().toISOString()}] ${line}\n`, 'utf8');
   } catch {
     /* 日志写不进去不影响功能 */

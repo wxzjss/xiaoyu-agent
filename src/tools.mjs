@@ -635,6 +635,63 @@ export const tools = [
       required: ['command'],
     },
     run({ command }) {
+      /**
+       * 【2026-11-03 主人要求】堵死「用命令把自己弄死」这条路。
+       *
+       * 之前我为了重启，直接去 Stop-Process / taskkill 那个 小鱼Agent.exe ——
+       * 那不是重启，是退出：主进程没了，app.relaunch() 也没被调过，
+       * 谁也不会把它拉回来，只能等主人自己双击。
+       *
+       * 真·重启只有一条路：主进程注入的 globalThis.__xiaoyuRelaunch
+       * （app.relaunch + app.exit），服务端 exit(75) 主进程接住再重起服务。
+       * 所以这里把「杀自己」的命令一律拦下来，并告诉调用方该走哪条路。
+       */
+      {
+        const raw = String(command || '');
+        let self = '';
+        try { self = String(process.execPath || '').toLowerCase(); } catch {}
+        const selfExe = self.split(/[\\/]/).pop() || '';
+        const HITS = [
+          ['stop-process', /stop-process/i],
+          ['taskkill', /taskkill/i],
+          ['kill', /\bkill\b/i],
+          ['wmic.*terminate', /wmic[^\n]*terminate/i],
+        ];
+        const names = [selfExe, '小鱼agent.exe', 'xiaoyu-mini-agent.exe'].filter(Boolean);
+        let hit = '';
+        for (const [label, re] of HITS) {
+          if (!re.test(raw)) continue;
+          const lower = raw.toLowerCase();
+          if (names.some((n) => lower.includes(String(n).toLowerCase()))) { hit = label; break; }
+          if (/%pid%/.test(raw) && /process\.pid/.test(String(raw))) { hit = label; break; }
+          /* 【2026-11-03 根治】原来只按「进程名」认，命令里写 PID 或者 $_.ProcessId 就绕过去了 ——
+           * 我这次就是这么只退出没重启的。下面三条把「说不出名字但只要杀得着」的路也堵上：
+           *   ① 命令里出现 kill/stop 又出现 -Id / ProcessId / OwningProcess / Get-NetTCPConnection
+           *   ② 命令里出现 8788（本服务端口）又出现 kill/stop
+           *   ③ 命令里出现 restart-yu / relaunch 之类的自制重启脚本 */
+          const killVerb = /stop-process|taskkill|\bkill\b|terminate|\bstop\(/i.test(raw);
+          const idHint = /-\s*id\b|processid|owningprocess|get-netTCPConnection|8788/i.test(raw);
+          const selfHint = /restart-yu|relaunch|xiaoyuRelaunch|\u91cd\u542f.*\.ps1/i.test(raw);
+          if (killVerb && idHint) { hit = label + '（按 PID/端口认出来了）'; break; }
+          if (killVerb && selfHint) { hit = label + '（自制重启脚本）'; break; }
+          if (/process\.exit|app\.exit|\$pid\s*\)\s*\{\s*stop-process/i.test(raw) && /8788|8780|8781/.test(raw)) { hit = label + '（按端口）'; break; }
+        }
+        if (hit) {
+          return [
+            '这条路是堵死的：不能用命令去杀小鱼Agent自己。',
+            '',
+            '那样做不是重启，是退出 —— 主进程没了，谁也不会把它拉回来，',
+            '只能等主人自己双击。真的想重启只有一个正经入口：',
+            '',
+            '  · 调 restart_self 工具（背后是 POST /api/app/restart，带 byTool:true）',
+            '  · 它会先把这一轮话落盘，再让主进程 app.relaunch() 把自己拉起来，',
+            '    会话/设置/草稿全自动接上，重启完还会自动说一句「重启了」。',
+            '',
+            '被拦下的命令：' + raw.slice(0, 200),
+          ].join('\n');
+        }
+      }
+
       // 按「这条异步链路自己的上下文」取 signal，不碰全局那份。
       // 用全局的那份会被别的会话顶掉，害得这条命令跟着别人一起被掐。
       const signal = (ctxNow() || CTX).signal;
@@ -784,7 +841,10 @@ export const tools = [
           const r = await fetch('http://127.0.0.1:' + port + '/api/app/restart', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ reason: String(reason || '') }),
+            /* 【2026-11-02】byTool:true 是「重启后自动说一句：重启了」的唯一凭据。
+             *  只有这个工具会带它 —— 主人点界面重启按钮、或者自己关窗口，都不带，
+             *  服务端那边就不会写标记，重启后也不会冒出一句话。 */
+            body: JSON.stringify({ reason: String(reason || ''), byTool: true, sessionId: currentSessionId() }),
           });
           const j = await r.json().catch(() => null);
           if (r.ok && j && j.ok) {
@@ -1722,6 +1782,28 @@ export const tools = [
       }
 
       let r;
+      /* 【2026-11-01 主人：办事模式不再新开临时智能体，改成调动屋里的人】
+         主智能体（屋里排序第一个已启用的）把活派给屋里另一个人；
+         那个人没启用就自动启用；屋里只剩主智能体一个，就按规矩拉人进来
+         （主声小鱼→拉小鲸／主声小鲸→拉小鱼／主声自建卡→拉小鱼）再让她做。 */
+      try {
+        const { pickHelperForTask } = await import('./pick-helper.mjs');
+        const { mainAgentId, mateSwitchOn } = await import('./agents.mjs');
+        const __sid = ctxNow().sessionId || 'default';
+        let __main = '';
+        try { __main = String(mainAgentId(__sid, (id) => mateSwitchOn(id, __sid)) || ''); } catch { __main = ''; }
+        const __h = pickHelperForTask(__sid, __main);
+        if (__h && __h.id) {
+          nick = __h.name || nick;
+          if (typeof push === 'function' && (__h.added || __h.enabled === false)) {
+            try {
+              push({ type: 'note', text: __h.added ? ('屋里没人能派活，我把' + __h.name + '请进来了') : ('把' + __h.name + '的开关打开了') });
+            } catch {}
+          }
+        }
+      } catch (e) {
+        try { console.warn('[spawn_worker] 挑屋里的帮手失败：', String(e?.message ?? e)); } catch {}
+      }
       try {
         const { runSubagent } = await import('./subagent.mjs');
         r = await runSubagent({

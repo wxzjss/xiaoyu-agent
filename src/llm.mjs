@@ -99,6 +99,33 @@ function noteUpstreamError(status, rawText, ep) {
   } catch { /* 记不上就算了 */ }
 }
 
+/**
+ * 【2026-11-03 主人报「办事模式下会报 HTTP 400」】
+ *
+ * 400 是最难查的一类：上游只回一句「Messages with role 'tool' must be ...」，
+ * 或者是 tools 的 schema 不合规，可我们这边根本不知道发出去的是什么形状。
+ * 所以碰上 400/422 就把**这次请求的骨架**（每条消息的 role、正文长度、带不带
+ * tool_calls、tools 有几个）记进 .state/llm-bad.log —— 只记骨架，不记正文，
+ * 既不泄内容，又能一眼看出是哪条消息长歪了。
+ */
+function noteBadRequest(status, payload, ep) {
+  try {
+    const dir = join(config.dataDir, '.state');
+    mkdirSync(dir, { recursive: true });
+    const msgs = Array.isArray(payload?.messages) ? payload.messages : [];
+    const shape = msgs.map((m, i) => i + ':' + String(m?.role || '?')
+      + '/' + (typeof m?.content === 'string' ? m.content.length : (Array.isArray(m?.content) ? 'arr' : '-'))
+      + (m?.tool_calls ? '/tc' + m.tool_calls.length : ''));
+    const tools = Array.isArray(payload?.tools) ? payload.tools.map((t) => String(t?.function?.name || '?')).join(',') : '';
+    const line = new Date().toISOString() + ' [llm-bad] HTTP ' + status
+      + ' ' + [ep?.name, ep?.model].filter(Boolean).join(' · ')
+      + ' tools(' + (Array.isArray(payload?.tools) ? payload.tools.length : 0) + ')=' + tools
+      + ' msgs=' + msgs.length
+      + ' shape=' + shape.join(' | ') + NL;
+    appendFileSync(join(dir, 'llm-bad.log'), line, 'utf8');
+  } catch { /* 记不上就算了 */ }
+}
+
 export function humanErrorOfUpstream(status, rawText) {
   const status2 = Number(status) || 0;
   const raw = String(rawText ?? '');
@@ -447,6 +474,9 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
     }
     if (!isThinkingUnsupported(r.status, lastText)) {
       const _he = humanErrorOfUpstream(r.status, lastText);
+      /* 【2026-11-03】同上：400/422 留原件 + 请求骨架，别只留一句「HTTP 400」 */
+      noteUpstreamError(r.status, lastText, ep);
+      if (r.status === 400 || r.status === 422) noteBadRequest(r.status, payload, ep);
       throw new Error(`LLM HTTP ${r.status}: ${_he.text}`);
     }
     // 模型不支持思考：退到「什么都不发」
@@ -582,6 +612,9 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
     lastStatus = res.status;
     lastText = await res.text().catch(() => '');
     if (!isThinkingUnsupported(res.status, lastText)) {
+      /* 【2026-11-03】抛之前先把「上游原话」和「我们发出去的骨架」各记一份 */
+      noteUpstreamError(lastStatus, lastText, ep);
+      if (lastStatus === 400 || lastStatus === 422) noteBadRequest(lastStatus, payload, ep);
       throw new Error(`LLM HTTP ${lastStatus}: ${humanErrorOfUpstream(lastStatus, lastText).text}`);
     }
     if (!level) break;

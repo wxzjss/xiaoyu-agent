@@ -334,6 +334,35 @@ export function noteWorkerProgress(sessionId, workerId, line) {
 }
 
 /** 读某个 worker 的完整档案（含信箱和进度）。 */
+/* 【2026-11-03 加】把这一轮里「谁干了什么」做成一小份快照，挂到那条助手消息上。
+ * 为什么必须存进历史：办事模式的流水只活在内存事件流里，一轮跑完事件流就换了 ——
+ * 主人看到的就是「派活 运行中…然后没了」，子智能体干活的证据凭空消失。
+ * 存进历史之后，翻回来、刷新、换会话再看，卡都还在（历史是唯一权威）。 */
+export function workersSnapshot(sessionId) {
+  const sid = String(sessionId || 'default');
+  const out = [];
+  for (const w of readWorkers(sid)) {
+    if (!w || !w.id) continue;
+    const steps = Array.isArray(w.progress) ? w.progress.slice(-40).map((x) => ({ kind: 'step', t: String(x).slice(0, 400) })) : [];
+    const st = String(w.status || 'running');
+    /* 【2026-11-03 修·干完了却显示「没干成」/「干活中」】
+     * finishWorker 存的状态是 'reported'（成功汇报完）与 'failed'，不是 'done'/'running'。
+     * 原来只认 'done'，于是每一张成功的卡都永远停在「干活中…」——
+     * 主人看到的正是「明明跑完了，卡上还写着干活中」。 */
+    const _okLike = st === 'done' || st === 'reported' || st === 'ok';
+    // 一步都没走、也没在跑的那种空记录不往历史里写（省得留一堆空卡）
+    if (!steps.length && st !== 'running') continue;
+    out.push({
+      id: String(w.id),
+      name: String(w.name || ('worker-' + w.id)),
+      status: _okLike ? 'ok' : (st === 'failed' || st === 'error' ? 'err' : 'run'),
+      steps,
+      note: String(w.said || w.error || '').slice(0, 400),
+    });
+  }
+  return out.slice(0, 8);
+}
+
 export function workerDetail(sessionId, workerId) {
   const sid = String(sessionId || 'default');
   const key = String(workerId || '').trim();

@@ -264,6 +264,7 @@ import {
 import { qrSvg, pairingUrl } from './qrcode.mjs';
 import { startHealthWatch, pruneOrphans, pruneWorkerFiles } from './state-sweep.mjs';
 import { ensureAgentPresets } from './agent-presets.mjs';
+import { workersSnapshot } from './task-mode.mjs';
 import { rotateArchive, compactTrash } from './mem-rotate.mjs';
 import {
   isSessionId,
@@ -583,6 +584,10 @@ function publicSession(session) {
       edited,
       out: Array.isArray(m._out) ? m._out : [],
       tools,
+      /* 【2026-11-03 加】这一轮里「谁干了什么」（办事模式的子任务流水）。
+       * 它在内存事件流里只有一份，一轮跑完事件流就换了 —— 不存进历史，
+       * 主人看到的就是「派活 运行中…然后没了」。 */
+      workers: Array.isArray(m._workers) ? m._workers : [],
       /**
        * 这条要是第三方（小鲸以自己的身份）说的，带上她的名字和颜色。
        *
@@ -1879,6 +1884,26 @@ function appendLiveItem(items, ev) {
     const it = lastOf('say');
     const t = String(ev.text || '');
     if (it && !it.t && t) it.t = t;
+  } else if (ev.type === 'worker') {
+    /* 【2026-11-03 · 子任务卡（办事模式看不见干活的过程）】
+     *  ★ 同一套规则有三份，改一份必须改全三份：
+     *    ① 这里 appendLiveItem（增量攒清单，界面一直在读的是它）
+     *    ② 下面的 buildLiveItems（从头重算，since=0 那趟、以及 items 空时兜底）
+     *    ③ public/index.html 的 itemsFromEvents（前端镜像）
+     *  漏了 ① 的真实现象：事件流里明明有 worker 的每一步，快照里却一张卡都没有
+     *  —— 屏幕上永远只有那张「派活 · 运行中…」。 */
+    const wid = String(ev.wid || '0');
+    let it = null;
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].k === 'worker' && items[i].id === wid) { it = items[i]; break; }
+    if (!it) { it = { k: 'worker', id: wid, name: String(ev.name || ''), status: 'run', steps: [], note: '' }; items.push(it); }
+    if (ev.name) it.name = String(ev.name);
+    if (ev.status) it.status = String(ev.status);
+    if (ev.note) it.note = String(ev.note);
+    const _st = String(ev.text || '').trim();
+    if (_st && (ev.kind === 'step' || ev.kind === 'start' || ev.kind === 'mail')) {
+      it.steps.push({ kind: String(ev.kind || 'step'), t: _st });
+      if (it.steps.length > 40) it.steps.splice(0, it.steps.length - 40);
+    }
   }
 }
 
@@ -1918,6 +1943,30 @@ function buildLiveItems(events) {
       const it = lastOf('say');
       if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
       else items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+    } else if (e.type === 'worker') {
+      /* 【2026-11-03 主人：办事模式下看不见干活的过程】
+       * 原来 worker 干什么只有主智能体（watch_worker）和文件里的进度知道，
+       * 主人屏幕上只有一张「派活 · 运行中…」的卡，它跑多久都只有那一行。
+       * 现在 worker 的每一步都当成一个事件推给界面，画成一棵可以展开的子任务卡。 */
+      flush();
+      const wid = String(e.wid || '0');
+      let it = null;
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (items[i].k === 'worker' && items[i].id === wid) { it = items[i]; break; }
+      }
+      if (!it) {
+        it = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '' };
+        items.push(it);
+      }
+      if (e.name) it.name = String(e.name);
+      if (e.status) it.status = String(e.status);
+      if (e.note) it.note = String(e.note);
+      const stepText = String(e.text || '').trim();
+      if (stepText && (e.kind === 'step' || e.kind === 'start' || e.kind === 'mail')) {
+        it.steps.push({ kind: String(e.kind || 'step'), t: stepText });
+        /* 只留最近 40 步 —— 一个 worker 跑几十轮，全留着会把整轮事件撑爆 */
+        if (it.steps.length > 40) it.steps.splice(0, it.steps.length - 40);
+      }
     } else if (e.type === 'whale_stream_finish') {
       // 定稿：把最后那条还没字的 say 补上正文（有字就不动）
       const it = lastOf('say');
@@ -3619,6 +3668,22 @@ const server = createServer(async (req, res) => {
       items: _items0,
       events: tail,
     });
+  }
+
+  // ---- 前端打个点（切会话耗时、怪现象现场） ----
+  /**
+   * 【2026-11-03】界面里 __mark() 一直在往这儿 POST（切会话的四个计时点），
+   * 可服务端从来没有这个路由 —— 每次切会话浏览器控制台就红三条 405。
+   * 主人看见的那句「会报 HTTP 400」有一半就是这么来的噪声。
+   * 现在真把它落下来：写进 .state/console.log，查「切会话为什么慢」时直接翻这个。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/debug-log') {
+    try {
+      const b = await body(req).catch(() => null);
+      const line = new Date().toISOString() + ' [web] ' + JSON.stringify(b || {}).slice(0, 800) + '\n';
+      __diagAppend(join(config.dataDir, '.state', 'console.log'), line, 'utf8');
+    } catch { /* 记不上就算了 */ }
+    return json(res, 200, { ok: true });
   }
 
   // ---- 哪些会话正在跑（界面切回来时用得上） ----
@@ -9401,6 +9466,21 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 报给前端的模型名＝这一轮真正在用的那个（上面那一处算过的 turnModel）。
       // 以前这里是 modelUsedThisTurn()，拿到的是「最后一圈」的模型，跟开头未必是同一个，
       // 前端拿它去对价目表就可能对不上 → 只报 token 不报钱。
+      /* 【2026-11-03 加·把这一轮的子任务流水钉进历史】
+       * 办事模式的「谁干了什么」只活在内存事件流里，这一轮一完事件流就换 ——
+       * 主人看到的就是「派活 运行中…然后没了」。这里在收尾那一刻把它写到
+       * 最后一条助手消息上（_workers），历史就成了唯一权威：
+       * 翻回来、刷新、换会话再看，卡都还在。 */
+      try {
+        const _ws = workersSnapshot(sessionId);
+        if (_ws.length) {
+          for (let _q = session.messages.length - 1; _q >= 0; _q--) {
+            const _m = session.messages[_q];
+            if (_m && _m.role === 'assistant' && !_m.context) { _m._workers = _ws; break; }
+          }
+          try { saveSession(session); } catch (e) {}
+        }
+      } catch (e) {}
       send({ type: 'done', usage, at: doneAt, model: turnModel || modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。

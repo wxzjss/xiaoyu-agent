@@ -433,6 +433,49 @@
     }
     details.toolhub details.tool:first-of-type { border-top: 0; }
 
+    /* ========== 子任务卡（办事模式 · worker 的流水） ==========
+     * 【2026-11-03】主人：「办事模式下我看不到干活的过程」「只显示一句派活 运行中…然后没了」。
+     * 所以 worker 每干一步就在屏幕上长一行：一条浅色小卡，summary 写「#1 回声 · 干活中 · 12 步」，
+     * 拉开来是一行一步的流水。默认收起（跟思考链一样：主人要看才拉开）。
+     * 结构和工具柜同族，但它是「一个 worker 一整段」，所以自己带一圈边，不再是里面那行。 */
+    details.wcard {
+      display: block;
+      margin: 6px 0;
+      padding: 0;
+      border: 1px solid var(--line, #2a2a2a);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.02);
+      max-width: 100%; min-width: 0;
+    }
+    details.wcard > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 7px 11px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted, #9a9a9a);
+    }
+    details.wcard > summary::-webkit-details-marker { display: none; }
+    details.wcard > summary:hover { color: var(--accent); }
+    details.wcard > summary .name { font-weight: 600; }
+    details.wcard > summary .status { opacity: 0.75; font-size: 12px; }
+    details.wcard > summary .status.run { color: var(--warn, #d8a13a); }
+    details.wcard > summary .status.ok { color: var(--ok, #55a86a); }
+    details.wcard > summary .status.err { color: var(--bad, #d0564a); }
+    details.wcard > pre {
+      margin: 0;
+      padding: 2px 12px 10px 12px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--muted, #9a9a9a);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 320px;
+      overflow: auto;
+    }
+
     details.tool > summary {
       cursor: pointer;
       list-style: none;
@@ -2661,6 +2704,7 @@
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="resetBottomLines">恢复出厂默认底线</button>
+            <button type="button" class="ghost" id="setDefaultBottomLines" title="把输入框里现在这几条存成这套人设自己的默认；以后点「恢复出厂默认底线」回来的就是它们">设为默认</button>
             <span class="hint" id="bottomLinesHint"></span>
           </div>
         </fieldset>
@@ -2693,6 +2737,7 @@
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="resetSafeWords">恢复出厂默认安全词</button>
+            <button type="button" class="ghost" id="setDefaultSafeWords" title="把输入框里现在这几个词存成这套人设自己的默认；以后点「恢复出厂默认安全词」回来的就是它们">设为默认</button>
             <span class="hint" id="safeWordsHint"></span>
           </div>
         </fieldset>
@@ -3713,6 +3758,49 @@ let _lastTop = 0;
 let __ignoreScrollUntil = 0;
 let __touchTop = 0;
 
+/* 【2026-11-04 主人报·展开卡片/思考链时，下面的消息先被推下去、再整体弹回去】
+ *
+ *  病根：<details> 一展开，内容变高 → 浏览器把下面全往下推 → 同时 MutationObserver
+ *  看见 DOM 变了就叫 followNow()，而 followNow 只要 stickBottom 就 hardScrollBottom()
+ *  一把贴到底 → 视觉上就是「先往下推、再弹回来」。
+ *
+ *  主人要的是：展开这一下别推动下面的消息，只把上面的内容往上推。
+ *  做法 = 经典的「滚动锚定」：量出长高了多少，把这个量直接加进 scrollTop。
+ *  这样视口里看到的东西一个像素都不动，多出来的内容向上撑。
+ */
+let __anchorBusyUntil = 0;
+
+/** 给一个 details 执行「展开/收起时别动视口」的锚定 */
+function anchorToggle(el) {
+  if (!el || !log) return;
+  const inLog = log.contains(el);
+  if (!inLog) return;
+  const before = log.scrollHeight;
+  const topBefore = log.scrollTop;
+  /* 【2026-11-04 主人定的规矩：内容往下长，视角一像素都不动】
+   *  做法：把「锚定窗口」开成待续状态，等 rAF 量完高度再续上；
+   *  窗口里 followNow 和它排进队列的 doIt 都不许滚。
+   *  为什么不在这里 cancelAnimationFrame：followRaf 声明在第 42xx 行，
+   *  在这儿写名字会踩 TDZ，所以在 doIt 里再拦一道更稳。 */
+  __anchorBusyUntil = Date.now() + 600;
+  // 用 rAF 等浏览器把高度算完
+  requestAnimationFrame(() => {
+    try {
+      /* 【2026-11-04 主人定了：往下推动，但不动视角】
+       *  所以这里一个字都不滚 —— scrollTop 原地不动，就是「视角不动」。
+       *  内容自然往下长，下面的消息被往下推，符合主人要的效果。
+       *  要做的只有两件善后：把记录的值对齐，免得下一拍被误判成主人翻页。 */
+      const after = log.scrollHeight;
+      if (after === before) return;
+      /* 续窗口，别缩 —— 原来这里写成 300，比上面那个 600 还短，等于白设。 */
+      __anchorBusyUntil = Math.max(__anchorBusyUntil, Date.now() + 400);
+      _lastTop = log.scrollTop;
+      _lastDocH = after;
+      selfScrollAt = Date.now();
+    } catch (e) {}
+  });
+}
+
 function hardScrollBottom() {
   if (!log) return;
   log.scrollTop = log.scrollHeight;
@@ -4172,6 +4260,9 @@ function resetScrollStick() {
      *  到点还没跑就自己接手滚，绝不把跟随状态卡死。 */
     const followNow = () => {
       if (!stickBottom || !log) return;
+      /* 【2026-11-04】刚展开/收起了一块 details，锚定还没落定 —— 这时别贴底，
+       *  否则就是「先推下去、再弹回来」。等 anchorToggle 那一下 rAF 做完再说。 */
+      try { if (Date.now() < __anchorBusyUntil) return; } catch (e) {}
       if (followRaf) return;
       const gapNow = log.scrollHeight - log.scrollTop - log.clientHeight;
       if (gapNow <= 1) return;
@@ -4183,6 +4274,9 @@ function resetScrollStick() {
         followRaf = 0;
         try {
           if (!stickBottom || !log) return;
+          /* 【2026-11-04 关键】排进队列这一拍到现在，可能正好是一次 details 展开。
+           *  锚定窗口里就别滚 —— 主人要的是「视角一像素都不动」。 */
+          if (Date.now() < __anchorBusyUntil) return;
           if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;
           hardScrollBottom();
         } catch (e) {}
@@ -4191,7 +4285,21 @@ function resetScrollStick() {
       try { followGuard = setTimeout(doIt, 90); } catch (e) { followGuard = 0; }
     };
     try {
-      stickMo = new MutationObserver(followNow);
+      /* 【2026-11-04 主人报·展开卡片/思考链时下面的消息往下推再弹回去】
+     *  在这里统一接管：任何 details 的 toggle 都先锚定视口，别让 followNow 抢着贴底。
+     *  用捕获阶段挂在 log 上，新建的元素不用逐个绑。 */
+    try {
+      if (!log.__anchorBound) {
+        log.__anchorBound = true;
+        log.addEventListener('toggle', (ev) => {
+          const el = ev.target;
+          if (!el || el.tagName !== 'DETAILS') return;
+          anchorToggle(el);
+        }, true);
+      }
+    } catch (e) {}
+
+    stickMo = new MutationObserver(followNow);
       stickMo.observe(log, { childList: true, subtree: true, characterData: true });
     } catch {}
     try {
@@ -4817,6 +4925,23 @@ function itemsFromEvents(events) {
       const it = lastOf('say');
       const t = String(e.text || '');
       if (it && !it.t && t) it.t = t;
+    } else if (e.type === 'worker') {
+      /* 【2026-11-03 主人：办事模式下看不见干活的过程】
+       * 服务端把 worker 的每一步都推成 worker 事件；这里按门牌号并成一张卡。
+       * 和服务端 buildLiveItems 同一套规则（改一边必须改另一边，_t_live_cursor 盯着）。 */
+      flush();
+      const wid = String(e.wid || '0');
+      let wit = null;
+      for (let i = items.length - 1; i >= 0; i--) if (items[i].k === 'worker' && items[i].id === wid) { wit = items[i]; break; }
+      if (!wit) { wit = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '' }; items.push(wit); }
+      if (e.name) wit.name = String(e.name);
+      if (e.status) wit.status = String(e.status);
+      if (e.note) wit.note = String(e.note);
+      const __stepText = String(e.text || '').trim();
+      if (__stepText && (e.kind === 'step' || e.kind === 'start' || e.kind === 'mail')) {
+        wit.steps.push({ kind: String(e.kind || 'step'), t: __stepText });
+        if (wit.steps.length > 40) wit.steps.splice(0, wit.steps.length - 40);
+      }
     }
   }
   flush();
@@ -4828,7 +4953,11 @@ function snapshotFingerprint(items) {
   let s = '';
   for (const it of (Array.isArray(items) ? items : [])) {
     if (!it) continue;
-    s += it.k + '|' + (it.t ? it.t.length : 0) + '|' + (it.status || '') + '|' + (it.output ? it.output.length : 0) + '|' + (it.who || '') + '\n';
+    /* 【2026-11-03】子任务卡也要算进指纹 —— 它没有 t/output，只有 steps 在长；
+     * 不把步数算进去，worker 又跑了一步、指纹却一样，屏幕就不会重画，看着像卡住。 */
+    const __wSteps = (it.k === 'worker' && Array.isArray(it.steps)) ? it.steps.length : 0;
+    const __wLast = (it.k === 'worker' && Array.isArray(it.steps) && it.steps.length) ? String(it.steps[it.steps.length - 1].t || '').length : 0;
+    s += it.k + '|' + (it.t ? it.t.length : 0) + '|' + (it.status || '') + '|' + (it.output ? it.output.length : 0) + '|' + (it.who || '') + '|' + __wSteps + '|' + __wLast + '\n';
   }
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -4839,6 +4968,12 @@ function snapshotFingerprint(items) {
 const lastSnapFp = new Map();
 
 function paintSnapshot(sid, srcLive) {
+  try {
+    const _wl0 = (srcLive && Array.isArray(srcLive.items)) ? srcLive.items.filter((x) => x && x.k === 'worker') : [];
+    window.__liveWorkers = window.__liveWorkers || {};
+    if (_wl0.length) window.__liveWorkers[String(sid || '')] = _wl0;
+    else if (window.__liveWorkers[String(sid || '')]) delete window.__liveWorkers[String(sid || '')];
+  } catch (e) {}
   /* 【2026-11-03】重画期间让滚动那块知道「高度变化是我们自己造成的」 */
   try { window.__repainting = (Number(window.__repainting) || 0) + 1; } catch (e) {}
   /* 【2026-11-03 修·点开的思考链一会儿自己关上了】
@@ -4893,8 +5028,101 @@ function paintSnapshot(sid, srcLive) {
       });
     } catch (e) {}
   }
+  /* 【2026-11-03·卡只增不闪，收尾才回收】
+   * 这一轮清单里已经没有的门牌号，说明那个子任务彻底过去了 —— 现在才把卡删掉。
+   * 只要清单里还有，卡就一直待在原地（内容就地更新，不摘不建，永远不会闪）。 */
+  try {
+    const _alive = new Set();
+    try {
+      for (const _n of document.querySelectorAll('#log details.wcard[data-live-turn="1"]')) {
+        const _k = String((_n.dataset && _n.dataset.wid) || '');
+        const _src = (window.__liveWorkers && window.__liveWorkers[String(sid || '')]) || [];
+        if (_k && !_src.some((x) => String(x.id) === _k)) { try { _n.remove(); } catch (e) {} if (_k) _wcardByWid.delete(_k); }
+        else if (_k) _alive.add(_k);
+      }
+    } catch (e) {}
+  } catch (e) {}
+  /* 【2026-11-03 兜底·子任务卡不许凭空消失】
+   * 重画这条路出口太多（跑完那道闸、空清单、异常……），每个出口都可能把屏幕上的
+   * 子任务卡带走而不再画回来 —— 主人看到的就是「卡闪一下就没了」，办事模式下
+   * 等于「看不见谁在干活」。这里统一收口：画完检查一遍，这个会话事件流里明明有卡、
+   * 屏幕上却一张都没有，那就补回来。历史接管之后（屏幕上有历史卡）这里不动。 */
+  try {
+    const _keep = (window.__liveWorkers && window.__liveWorkers[String(sid || '')]) || null;
+    if (_keep && _keep.length) {
+      const _lg2 = document.getElementById('log');
+      if (_lg2 && !_lg2.querySelector('details.wcard')) for (const _it of _keep) paintWorkerCard(_it, null);
+    }
+  } catch (e) {}
 }
 
+/* 【2026-11-03】子任务卡（办事模式里「谁在干活」）的绘制，抽成函数：
+ * 画快照时要画它，跑完之后要「只留卡、别的不动」也要画它 —— 同一段不能写两份。 */
+/* 【2026-11-03 修·子任务卡一秒有一秒没（闪得像卡死）】
+ * 前面几版都是「清理时摘下来 → 画的时候挂回去」，只要中间有任何一条路径
+ * 没把节点挂回 #log，屏幕上就空一拍，下一拍又建一个 —— 主人看到的就是闪。
+ * 现在换规矩：**清理时不碰子任务卡**，按门牌号收进这张表；画的时候就地改字，
+ * 位置都不动；画完把「这一轮清单里已经没有的」才删掉。
+ * 卡从头到尾都在 DOM 里，从根上不可能闪。 */
+const _wcardByWid = new Map();
+
+function _paintWorkerCardCore(it, take) {
+  /* take 是 paintSnapshot0 里的复用池取件器（它是函数内定义，外面拿不到）。
+   * 传 null 就现建一个新的 —— 跑完那一刻只剩「补一张卡」这一件事，复用没必要。 */
+  const _widKey = String(it.id || '');
+  let _wEl = _wcardByWid.get(_widKey) || null;
+  if (_wEl && !_wEl.d.isConnected) _wEl = null;
+  if (!_wEl) _wEl = (typeof take === 'function' ? take('worker') : null) || addWorkerCard();
+  if (_widKey) _wcardByWid.set(_widKey, _wEl);
+  /* 复用池里那些节点是「先摘下来再放回去」的：清理那一步 remove 了它们，
+   * 拿到手里只改字、忘了挂回 #log —— 那张卡在 DOM 里根本不存在，
+   * 下一拍又照清单从零建一个，屏幕上就成了 有/没有 交替闪。 */
+  try { if (!_wEl.d.isConnected) document.getElementById('log').appendChild(_wEl.d); } catch (e) {}
+  try {
+    _wEl.d.dataset.liveTurn = '1';
+    _wEl.d.dataset.wid = String(it.id || '');
+    const _nm = String(it.name || ('worker ' + it.id));
+    const _stTxt = it.status === 'ok' ? '回来了' : (it.status === 'err' ? '没干成' : '干活中…');
+    _wEl.sum.querySelector('.name').textContent = '#' + it.id + ' ' + _nm;
+    const _st = _wEl.sum.querySelector('.status');
+    _st.textContent = _stTxt + (it.steps.length ? ' · ' + it.steps.length + ' 步' : '');
+    _st.className = 'status ' + (it.status === 'ok' ? 'ok' : (it.status === 'err' ? 'err' : 'warn'));
+    const _lines = it.steps.map((x) => (x.kind === 'mail' ? '  ✉ ' : (x.kind === 'start' ? '  ▶ ' : '  · ')) + x.t);
+    if (it.note) _lines.push('  ⇢ ' + String(it.note).replace(/\n/g, ' '));
+    _wEl.pre.textContent = _lines.join('\n');
+  } catch (e) {}
+  return _wEl;
+}
+/* 【2026-11-03 加】照历史画子任务卡（不带 live-turn 标记：它是历史的一部分，
+ * 不是「这一轮正在画的那组」）。有了它，翻回来 / 刷新 / 换会话，
+ * 办事模式干过什么都能看见 —— 因为历史里真的存下来了。 */
+function paintHistWorkerCard(it) {
+  try {
+    const d = document.createElement('details');
+    d.className = 'wcard';
+    d.dataset.wid = String(it.id || '');
+    const sum = document.createElement('summary');
+    const nm = document.createElement('span');
+    nm.className = 'name';
+    nm.textContent = '#' + it.id + ' ' + String(it.name || '');
+    const st = document.createElement('span');
+    const ok = it.status === 'ok';
+    st.className = 'status ' + (ok ? 'ok' : (it.status === 'err' ? 'err' : 'warn'));
+    st.textContent = (ok ? '回来了' : (it.status === 'err' ? '没干成' : '干活中…')) +
+      (Array.isArray(it.steps) && it.steps.length ? ' · ' + it.steps.length + ' 步' : '');
+    sum.appendChild(nm);
+    sum.appendChild(st);
+    const pre = document.createElement('pre');
+    const lines = (Array.isArray(it.steps) ? it.steps : []).map((x) => '  · ' + String(x.t || ''));
+    if (it.note) lines.push('  ⇢ ' + String(it.note).replace(/\n/g, ' '));
+    pre.textContent = lines.join('\n');
+    d.appendChild(sum);
+    d.appendChild(pre);
+    const lg = document.getElementById('log');
+    if (lg) lg.appendChild(d);
+  } catch (e) {}
+}
+function paintWorkerCard(it, take) { try { _paintWorkerCardCore(it, take); } catch (e) {} }
 function paintSnapshot0(sid, srcLive) {
   const items = Array.isArray(srcLive) ? srcLive : (srcLive && Array.isArray(srcLive.items) ? srcLive.items : null);
   if (!items) return null;
@@ -4925,7 +5153,21 @@ function paintSnapshot0(sid, srcLive) {
    *  根治的办法不是加判据，是划清边界：这一轮结束了，屏幕长什么样由**历史**说了算。
    *  直播快照只负责「还在跑的那一轮」。跑完的对齐走 settleFromHistory（按历史整屏重画）。
    */
-  if (srcLive && srcLive.running === false) return null;
+  /* 【2026-11-03 修·跑完就没了（主人原话：「只显示一句派活 运行中…然后没了」）】
+   * 跑完之后正文由历史说了算（这层闸是对的），但办事模式下「这一轮谁干了什么」
+   * 历史里没有存，它只活在事件流里 —— 一进这层闸，那张子任务卡就跟着被抹掉，
+   * 屏幕上只剩正文，主人以为子智能体白跑了。
+   * 所以：跑完也把子任务卡留住（只留卡，别的一概不管），下一轮开跑时再按标记清掉。 */
+  if (srcLive && srcLive.running === false) {
+    const _wl = (Array.isArray(srcLive.items) ? srcLive.items : []).filter((x) => x && x.k === 'worker');
+    if (!_wl.length) return null;
+    try {
+      const _lg = document.getElementById('log');
+      if (_lg) for (const n of _lg.querySelectorAll('details.wcard[data-live-turn="1"]')) { try { n.remove(); } catch (e) {} }
+      for (const it of _wl) paintWorkerCard(it);
+    } catch (e) {}
+    return null;
+  }
   /* 本轮正文（用来判断历史里那块是不是本轮的半截）。洗 markdown + 抹空白，两边同一套口径。 */
   const nrm = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
   let bodyText = '';
@@ -4944,7 +5186,9 @@ function paintSnapshot0(sid, srcLive) {
       for (let i = 0; i < _reuseEls.length; i++) {
         const el = _reuseEls[i];
         const isThink = el.classList.contains('think');
-        if ((kind === 'think' && isThink) || (kind === 'tool' && !isThink)) {
+        const isWorker = el.classList.contains('wcard');
+        const isTool = !isThink && !isWorker;
+        if ((kind === 'think' && isThink) || (kind === 'tool' && isTool) || (kind === 'worker' && isWorker)) {
           _reuseEls.splice(i, 1);
           return el;
         }
@@ -4983,6 +5227,11 @@ function paintSnapshot0(sid, srcLive) {
       if (lg) {
         try {
           for (const t of lg.querySelectorAll('.think[data-live-turn="1"], .tool[data-live-turn="1"]')) _reuseEls.push(t);
+          /* 子任务卡不走这条路（见 _wcardByWid 的说明）：只登记，不摘下来 */
+          for (const t of lg.querySelectorAll('.wcard[data-live-turn="1"]')) {
+            const _k = String((t.dataset && t.dataset.wid) || '');
+            if (_k) _wcardByWid.set(_k, { d: t, sum: t.querySelector('summary'), pre: t.querySelector('pre') });
+          }
         } catch (e) {}
         for (const t of lg.querySelectorAll('.think[data-live-turn="1"], .tool[data-live-turn="1"]')) {
           try { t.remove(); } catch (e) {}
@@ -5076,6 +5325,9 @@ function paintSnapshot0(sid, srcLive) {
       } catch (e) {}
       if (!toolEls) toolEls = new Map();
       if (it.id) toolEls.set(it.id, el);
+    } else if (it.k === 'worker') {
+      closeThink();
+      _paintWorkerCardCore(it, takeReuse);
     } else if (it.k === 'say') {
       closeThink();
       /* 照清单画「别人说的话」：
@@ -5730,6 +5982,11 @@ function reconcileTurnTexts(ev) {
 function assistantBubbleHas(text) {
   const t = String(text || '').trim();
   if (!t) return false;
+  /* 【2026-11-04 严检抓到的误伤】
+   * 这里必须看「所有」助手气泡 —— 它是防重复用的：切走再切回来时，
+   * 如果只认 data-liveTurn="1"，重画后那条不再带标记，就判不出重复，文字会连发两遍。
+   * 只有 interject() 拿锚点那处才该只认本轮。
+   */
   for (const el of document.querySelectorAll('#log .bubble')) {
     const host = el.closest('.msg, .assistant');
     if (!host || !host.classList.contains('assistant')) continue;
@@ -6229,17 +6486,45 @@ function followLive(id, fromIndex) {
      * 然后整组重画。画一百次结果一样（幂等），所以重复和丢字在结构上没地方发生。
      * 指纹没变就不动 DOM —— 光有事件、内容没长（比如只多了个 done）时不白重画。
      */
-    if (evs.length > 0) {
-      let _snap = null;
-      try {
-        _snap = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
-      } catch (e) {}
-      if (sessionId !== id) { stopFollow(id); return; }
-      if (_snap && Array.isArray(_snap.items)) {
-        const _fp = snapshotFingerprint(_snap.items);
-        if (_fp !== lastSnapFp.get(id)) {
+    /* 【2026-11-03 修·子任务卡再也不长 / 办事模式看不见过程】
+     *
+     * 这里原来写的是「这一拍有新事件，才重新拉一次全量快照重画」。
+     * 结果只要「新事件」这条路哑了，屏幕就冻在第一帧 —— 而 freeze 的理由有好几种：
+     *   ① 服务端的 rev 与 events 条数不是一回事（压薄/合并之后），
+     *      前端拿 nextSince 当游标一追，可能追到 rev 前面去，之后 filter 永远空；
+     *   ② worker 的每一步是「事件」，但它长的是一张卡，不是正文，
+     *      主人看到的就是「派活 运行中… · 1 步」挂在那里一动不动。
+     *
+     * 现在改成「每拍都拿清单对账」。服务端每次都回 items（清单是权威真身），
+     * 指纹变了才重画 —— 跟有没有新事件无关。事件只用来推进游标和判收尾。
+     */
+    /* 【2026-11-03 修·画出来的东西一秒有一秒没（子任务卡闪得像卡死）】
+     * 原来是「有 items 就用这一拍拿回来的那份」。可这一拍拿回来的是**增量响应**，
+     * 它带着的 items 未必是全量（谁知道服务端哪一版只给了尾巴）——
+     * 拿一份不全的清单去重画，清理那一步把卡删了，画的时候清单里没有 worker，
+     * 那张卡就再也回不来了；下一拍又拿回全量、卡又出现 —— 屏幕上就是 有/没有 闪。
+     *
+     * 规矩：**画，永远照全量快照画**（这一路的请求只负责推进游标和判收尾）。
+     * 全量就一个常量请求，不拼游标。 */
+    let _snap = null;
+    try { _snap = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json()); } catch (e) { _snap = null; }
+    if (sessionId !== id) { stopFollow(id); return; }
+    if (_snap && Array.isArray(_snap.items) && _snap.items.length) {
+      const _fp = snapshotFingerprint(_snap.items);
+      if (_fp !== lastSnapFp.get(id)) {
+        /* 【2026-11-03 修·指纹先记、画失败就再也不画】
+         * 原来是先 set 指纹、再 paint。paint 一抛异常（重画这一步本来就不该影响主流程），
+         * 指纹已经前进，下一拍同样的内容就被判「没变」—— 屏幕永远停在失败那一帧。
+         * 实测就是子任务卡写着「16 步」不动，服务端早就 21 步了。
+         * 现在：画成功才记指纹；画失败把原因留在 window.__lastPaintErr，能查。 */
+        try {
+          paintSnapshot(id, _snap);
           lastSnapFp.set(id, _fp);
-          try { paintSnapshot(id, _snap); } catch (e) { console.warn('[followLive] 快照重画失败:', e && e.message ? e.message : e); }
+          try { window.__lastPaintErr = null; } catch (e) {}
+        } catch (e) {
+          const _why = e && e.message ? e.message : String(e);
+          try { window.__lastPaintErr = _why; } catch (e2) {}
+          console.warn('[followLive] 快照重画失败:', _why);
         }
       }
     }
@@ -6295,6 +6580,18 @@ function followLive(id, fromIndex) {
           }
           if (sessionId !== id) return;
           if (_turns) renderTurns(_turns, { force: true });
+          /* 【2026-11-03 修·跑完子任务卡就没了（主人原话：「只显示一句派活 运行中…然后没了」）】
+           * renderTurns 刚把屏幕照历史重画了一遍 —— 可历史里没有「谁干了什么」，
+           * 那份记录只活在事件流（items）里。于是子智能体干完活，证据当场被抹掉。
+           * 这里补回来：只补子任务卡，别的一个字不动（卡带 live-turn 标记，下一轮开跑自然清掉）。 */
+          try {
+            const _wl = (Array.isArray(live.items) ? live.items : []).filter((x) => x && x.k === 'worker');
+            if (_wl.length) {
+              const _lg = document.getElementById('log');
+              if (_lg) for (const _n of _lg.querySelectorAll('details.wcard[data-live-turn="1"]')) { try { _n.remove(); } catch (e) {} }
+              for (const it of _wl) paintWorkerCard(it);
+            }
+          } catch (e) {}
         } catch (e) {}
       })();
       /**
@@ -7071,7 +7368,7 @@ function attachDelBtn(wrap, at) {
       /* 【2026-11-03 主人报·回退确认后没反应】同一个病根：renderTurns 看到「这个会话还在跑」
        * 就直接 return，于是服务端已经改了、屏幕上一条没变。这类「照盘上重画」一律 force。 */
       try { turnsInFlight.delete(sessionId); } catch (e) {}
-      if (r.session && Array.isArray(r.session.turns)) { try { renderTurns(r.session.turns, { force: true }); } catch (e) {} }
+      if (r.session && Array.isArray(r.session.turns)) { try { renderTurns(r.session.turns, { force: true, noCarry: true }); } catch (e) {} }
     } finally {
       db.disabled = false;
     }
@@ -7132,7 +7429,7 @@ async function retryHere(at, askText, btn) {
     /* 【2026-11-03 主人报·回退确认后没反应】同一个病根：renderTurns 看到「这个会话还在跑」
      * 就直接 return，于是服务端已经改了、屏幕上一条没变。这类「照盘上重画」一律 force。 */
     try { turnsInFlight.delete(sessionId); } catch (e) {}
-    if (r.session && Array.isArray(r.session.turns)) { try { renderTurns(r.session.turns, { force: true }); } catch (e) {} }
+    if (r.session && Array.isArray(r.session.turns)) { try { renderTurns(r.session.turns, { force: true, noCarry: true }); } catch (e) {} }
     const f = r.files || {};
     const nFiles = (f.restored || []).length + (f.deleted || []).length;
     if (nFiles) addSysNote("已跟着退回 " + nFiles + " 个文件");
@@ -8239,6 +8536,31 @@ function addTool() {
 }
 
 /**
+ * 子任务卡（办事模式里 worker 的那张）。
+ *
+ * 【2026-11-02/03 主人连着报了三件事】
+ *   ① 「办事模式下我看不到干活的过程」—— 屏幕上一张「派活 · 运行中…」挂在那儿一动不动；
+ *   ② 「只显示一句【派活 运行中…】然后没了」；
+ *   ③ 想知道它第几轮、在跑什么命令。
+ * 所以 worker 每干一步，服务端推一条 worker 事件，这里画成一张卡：
+ *   summary 写「#1 回声 · 干活中 · 12 步」，拉开来是一行一步的流水。
+ * 和工具卡同样打 data-live-turn，整组重画时按门牌号复用（不重建，不然流水会闪）。
+ */
+function addWorkerCard() {
+  const d = document.createElement('details');
+  d.className = 'wcard';
+  try { d.dataset.liveTurn = '1'; } catch (e) {}
+  d.open = false;
+  const sum = document.createElement('summary');
+  sum.innerHTML = '<span class="name"></span><span class="status"></span>';
+  const pre = document.createElement('pre');
+  d.append(sum, pre);
+  log.appendChild(d);
+  noteNewContent();
+  return { d, sum, pre };
+}
+
+/**
  * 把「这一段散着的工具卡」合并成一个柜子。
  *
  * 规矩（主人 2026-11-01 定的）：
@@ -8304,7 +8626,7 @@ function paintTools(list, target, group) {
   const single = list.length === 1;
   const host = document.createElement("details");
   host.className = "toolhub";
-  host.open = true;   // 干活中摊开
+  host.open = false;  // 【2026-11-04 主人要求】默认收着；干活时才由 addTool 摊开，这一轮跑完(done)再收起
   if (!single) {
     const hsum = document.createElement("summary");
     const n1 = document.createElement("span");
@@ -9014,6 +9336,13 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             }
           } catch (e) { console.warn('[sentfile] 当场画失败：', e && e.message); }
         } else if (ev.type === 'done') {
+          /* 【2026-11-04 主人：跑完就该收，别等他发下一条】 */
+          try {
+            foldLiveTools();                        // 散卡先并成一个柜
+            if (_liveHub && _liveHub.open) _liveHub.open = false;
+            if (_liveHub) for (const el of _liveHub.querySelectorAll("details.tool")) el.open = false;
+            hubReset();                             // 指针断开，下一轮另起
+          } catch (e) {}
           /**
            * 【说完就把光标收掉】
            *
@@ -9398,7 +9727,12 @@ async function interject() {
     try {
       /* 兜底：认准带 _rawText 的那个元素：_rawText 只挂在气泡本体（.bubble.cont）上，
          外面的 .msg 壳上没有。按 .bubble 选，再挑最后一个带 _rawText 的。 */
-      const _bs = document.querySelectorAll('#log .bubble');
+      /* 【2026-11-04 主人报：插话跑到上面去了】
+       * 原来捞「#log 里最后一个带 _rawText 的气泡」，可那常常是上一轮早说完的那条 ——
+       * 我在调工具、一个字没说时，锚点就落到它身上，主人的话被劈进旧话中间。
+       * 改成只认本轮正在写的那条（data-liveTurn="1"）；捞不到就不传锚点，让它排到末尾。
+       */
+      const _bs = document.querySelectorAll('#log .msg.assistant[data-liveTurn="1"] .bubble');
       for (let i = _bs.length - 1; i >= 0; i--) {
         const b = _bs[i];
         if (typeof b._rawText === 'string') { _atCharsNow = b._rawText.length; break; }
@@ -10487,6 +10821,32 @@ async function refreshAgentChip() {
    * 一旦主人把她的安静去掉（她会每轮都接），或者勾了别人，牌子才亮。
    */
   const grpMembers = (grp && !grp.error && Array.isArray(grp.members)) ? grp.members : [];
+  /* 【2026-11-03 修·小鱼说的话被顶上别人的名字】主人截图报：红名「小白曦」下面那段，
+   * 其实是我（小鱼）说的话。
+   * 病根：mainAgentName 是所有「没自带署名的消息」的兜底，原来这里把它设成
+   *   「这个会话绑的那张卡」。于是绑了小白曦的会话里，我说的那些话
+   *   （落盘不带 _who —— server.mjs 的约定：空就是小鱼）全被兜底成小白曦。
+   * 修法：兜底 = 「这一轮实际说话的那个人」。名单里排第一、且没被关掉的就是她；
+   *   名单空 / 排第一的被关了 → 小鱼（没人在场时说话的一定是我）。
+   * 放在这里（而不是函数末尾）是有意的：下面 10771 那行有个提前 return
+   *   （不挂牌子的常见情形），放末尾会漏设，切换会话后就留着上一个人的名字。
+   * 消息自己带 _who 的永远优先，这一行只管那些没带署名的。 */
+  try {
+    /* 口径跟后端 agents.mjs 的 mainAgentId 一模一样：从头遍历名单，
+     * 第一个「开着」的就是这一轮说话的人。小鱼/小鲸只要在名单里就算开着
+     * （它们的开关在 presence 里，前端这份名单不区分，按后端默认 true 处理）。
+     * 一个都不在场 → 小鱼（没别人时说话的一定是我）。 */
+    const _isOn = (m) => {
+      if (!m) return false;
+      const mid = String(m.id || '');
+      if (mid === 'xiaoyu' || mid === 'xiaojing') return true;
+      return m.enabled !== false;
+    };
+    let _spk = null;
+    for (const _m of grpMembers) { if (_isOn(_m)) { _spk = _m; break; } }
+    const _spkName = String((_spk && (_spk.name || '')) || '');
+    mainAgentName = _spkName || '小鱼';
+  } catch {}
   /* 2026-11-01：关掉的牌（enabled === false）这一轮一句话都不说，所以算「不在场」；
      「叫才应」的不再当噪音删掉 —— 她们被点名应一句是主人看得见的事，
      但默认那间屋子（小鱼 + 打勾的小鲸）仍然不点亮牌子，免得每个会话都挂一块。 */
@@ -10511,7 +10871,14 @@ async function refreshAgentChip() {
    * 于是切到小白曦那边、切回来，这边满屏老消息的署名也跟着变 —— 主人一眼就看出不对。
    * 现在改用「这个会话自己绑的身份」（没换过就是小鱼），跟名单顺序彻底脱钩。
    * 牌子上的 head 照旧只用于显示，不再感染气泡署名。 */
-  try { const __bn = String((swapped ? name : '') || '小鱼'); if (__bn) mainAgentName = __bn; } catch {}
+  /* 【2026-11-03 修·小鱼说的话被顶上别人的名字】主人截图报：红名「小白曦」下面那段，
+   * 其实是我（小鱼）说的话。
+   * 病根：这一行原来把「这个会话绑的那张卡名」赋给 mainAgentName，而 mainAgentName
+   * 是所有「没自带署名的消息」的兜底。于是绑了小白曦的会话里，我说的那些话
+   * （落盘不带 _who —— server.mjs 的约定：空就是小鱼）全被兜底成小白曦。
+   * 修法：兜底只认「默认身份」。谁说的由消息自己带的 _who 决定；没带 = 小鱼。
+   * 牌子上的 head 照旧显示当前绑的那张卡，只是不再让它参与署名。 */
+
   const tail = mates.length ? ' + ' + (mateNames.length ? mateNames.join('、') : String(mates.length)) : '';
   // 屋里有人但要叫名字才应：牌子上标一下，不然主人会觉得「她怎么不吭声」
   const quietN = (grp && !grp.error && Array.isArray(grp.quietIds)) ? grp.quietIds.length : 0;
@@ -12471,6 +12838,47 @@ document.getElementById('resetSafeWords').onclick = async () => {
   } else {
     safeWordsHint.textContent = '本来就是默认安全词，没动';
   }
+};
+
+// 【2026-11-03 主人要求】底线 / 安全词两块右边各加一颗「设为默认」
+function _reportDefHint(el, ok, msg) {
+  if (!el) return;
+  el.textContent = msg;
+  el.className = ok ? 'hint' : 'hint err';
+}
+document.getElementById('setDefaultBottomLines').onclick = async () => {
+  const btn = document.getElementById('setDefaultBottomLines');
+  const hint = bottomLinesHint;
+  const lines = String(document.getElementById('bottomLines').value || '')
+    .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (!lines.length) { _reportDefHint(hint, false, '一条底线都没有，不能把它设成默认'); return; }
+  btn.disabled = true;
+  _reportDefHint(hint, true, '正在存…');
+  const r = await fetch('/api/settings/defaults', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bottomLines: lines }),
+  }).then((x) => x.json()).catch(() => null);
+  btn.disabled = false;
+  if (!r || r.error) { _reportDefHint(hint, false, '设默认失败：' + (r && r.error ? r.error : '网络错误')); return; }
+  _reportDefHint(hint, true, '已把这 ' + lines.length + ' 条存成默认底线；以后点「恢复出厂默认底线」回来的就是它们');
+};
+document.getElementById('setDefaultSafeWords').onclick = async () => {
+  const btn = document.getElementById('setDefaultSafeWords');
+  const hint = safeWordsHint;
+  const _swDefList = String(document.getElementById('safeWords').value || '')
+    .split(/[\/,，、]/).map((s) => s.trim()).filter(Boolean);
+  if (!_swDefList.length) { _reportDefHint(hint, false, '一个安全词都没有，不能把它设成默认'); return; }
+  btn.disabled = true;
+  _reportDefHint(hint, true, '正在存…');
+  const r = await fetch('/api/settings/defaults', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ safeWords: _swDefList }),
+  }).then((x) => x.json()).catch(() => null);
+  btn.disabled = false;
+  if (!r || r.error) { _reportDefHint(hint, false, '设默认失败：' + (r && r.error ? r.error : '网络错误')); return; }
+  _reportDefHint(hint, true, '已把 ' + _swDefList.join(' / ') + ' 存成默认安全词；以后点「恢复出厂默认安全词」回来的就是它们');
 };
 
 /* 【2026-11-03 主人要求】设置界面右下角那颗「恢复出厂默认」已经删掉了，这里一并去掉。 */
@@ -16033,6 +16441,18 @@ function renderTurns(turns, opts) {
   let _lostUsers = [];
   try {
     if (!_ownerSame) throw new Error('owner-changed');
+    /* 【2026-11-04 主人报·点【回退】后那条消息还挂在屏幕上，得 F5 才消失】
+     *  真凶就在下面这段「补回差点被洗掉的插话」里：
+     *  回退把服务端后面的消息藏掉之后，屏幕上那条刚画过的（drawnAt 在 15 分钟内）
+     *  在服务端 turns 里找不到了 → known=false、_fresh=true → 被当成「还没落盘的插话」
+     *  又补了回来。所以画面看起来「一条没少」。
+     *  【编辑】【删除】【重发】走的是同一套 force 重画，也带着同一个病。
+     *  修：凡是调用方明确要求「照盘上这份重画」（opts.force）的，都不许补回 ——
+     *  那些都是服务端已经改完、我们主动要它重画的场景，补回就是在跟服务端对着干。 */
+    /* 注意：不能用 opts.force 当判据 —— 「这一轮跑完按历史重画」也传 force，
+     * 那种场景恰恰要把主人刚发、还没落盘的那句补回来（见 64xx 行收尾那段）。
+     * 只有「服务端已经明确改完、我只想照盘上这份画」的主动操作才该跳过补回。 */
+    if (opts && opts.noCarry) throw new Error('authoritative-repaint');
     const _wash = (s) => String(fixMojibake(String(s || '')) || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
     const _srv = new Set();
     for (const t of (Array.isArray(turns) ? turns : [])) {
@@ -16529,6 +16949,22 @@ function renderTurns(turns, opts) {
   try { window.__renderFrag = null; } catch {}
   /* 记一笔：这一屏现在是谁的。下次 renderTurns 靠它分辨「同一个会话在重画」还是「换人了」 */
   try { window.__turnsOwner = sessionId; } catch (e) {}
+  /* 【2026-11-03 加】这一轮还在跑：子任务卡只能从事件流里拿（历史里还没有），
+   * 而重画这一下会把它们连根带走 —— 之后 followLive 的指纹没变、不会重画，
+   * 屏幕上就空一大截。所以重画完顺手把「还在跑的那些卡」补回来。 */
+  try {
+    const _lvW = (window.__liveWorkers && window.__liveWorkers[sessionId]) || null;
+    const _runningNow = (() => { try { return turnsInFlight.has(sessionId); } catch (e) { return false; } })();
+    if (_lvW && _lvW.length && _runningNow) for (const _it of _lvW) paintWorkerCard(_it, null);
+  } catch (e) {}
+  /* 【2026-11-03 加】历史里存着子任务流水，就照着画出来（办事模式「谁干了什么」） */
+  try {
+    let _lw = null;
+    for (const _t of (Array.isArray(turns) ? turns : [])) {
+      if (_t && _t.role === 'assistant' && Array.isArray(_t.workers) && _t.workers.length) _lw = _t;
+    }
+    if (_lw) for (const _it of _lw.workers) paintHistWorkerCard(_it);
+  } catch (e) {}
   /**
    * 【2026-11-01 往上滚再补前面的】窗口化之后，顶上是空的。
    * 滚到接近顶部就再往前放一批（一次 BACKFILL 轮），补完把滚动位置还原，
@@ -16670,7 +17106,7 @@ if (rwGo) {
      * （turnsInFlight 里有它）就直接 return，于是服务端已经把后面那些藏起来了，
      * 屏幕上却一条都没少。回退本来就是整屏重画，必须 force。 */
     try { turnsInFlight.delete(sessionId); } catch (e) {}
-    try { renderTurns(r.session.turns || [], { force: true }); } catch (e) {}
+    try { renderTurns(r.session.turns || [], { force: true, noCarry: true }); } catch (e) {}
     try { resetScrollStick(); } catch (e) {}
     // 目标那句话填回输入框，改完再发就是「重新来一遍」
     const back = rwText.textContent;

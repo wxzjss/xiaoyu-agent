@@ -1076,7 +1076,17 @@ export async function runSubagent({
 
       for (const tc of toolCalls) {
         const label = featureNameOfTool(tc.name) || tc.name;
-        onProgress(`[${name}] 调工具：${tc.name}`);
+        /* 【2026-11-03 主人：办事模式下只看得见「派活 · 运行中…」】
+         * 进度原来是「调工具：run_command」这种没有信息量的一行 —— 主人看到也等于没看到。
+         * 现在带上参数摘要；跑完再把结果的头一行补上，屏幕上就是一步一步的流水。 */
+        const __argHint = (() => {
+          try {
+            const raw = String(tc.arguments || '').replace(/\s+/g, ' ').trim();
+            if (!raw || raw === '{}') return '';
+            return ' ' + (raw.length > 100 ? raw.slice(0, 100) + '…' : raw);
+          } catch { return ''; }
+        })();
+        onProgress(`${tc.name}${__argHint}`);
 
         let out;
         if (!allowed.has(tc.name)) {
@@ -1090,6 +1100,11 @@ export async function runSubagent({
         }
 
         trace.push(`${tc.name} → ${out.ok ? '成' : '败'}：${String(out.output).slice(0, 120).replace(/\n/g, ' ')}`);
+        {
+          const __o = String(out.output || '').replace(/\r/g, '');
+          const __first = (__o.split('\n').find((x) => x.trim()) || '').trim();
+          onProgress(`${tc.name} ${out.ok ? '✓' : '✗'} ${__first.slice(0, 110)}${__o.length > 110 ? ' …' : ''}`);
+        }
         toolCount += 1;
 
         messages.push({

@@ -1771,7 +1771,12 @@ export const tools = [
         '还剩什么没干',
       ].join('\n');
 
-      const nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
+      /* 【2026-11-03 修·Assignment to constant variable】
+       * 下面「挑屋里的帮手」那段要按帮手名字改 nick，可这里原来是 const ——
+       * 一进 try 就抛 TypeError，被 catch 吞掉只留一行 warn，看着像「挑帮手没生效」。
+       * 日志原文：[spawn_worker] 挑屋里的帮手失败： Assignment to constant variable.
+       */
+      let nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
       const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
 
       const push = ctxNow().pushEvent;
@@ -1809,16 +1814,25 @@ export const tools = [
         /* 【2026-11-03 · 中途改指令】把它信箱里的新话每轮取一次交给她。
          * 也是在这一趟里记进度，主智能体（或主人）随时能看它干到哪儿了。 */
         const __tid = String(w.id);
+        /* 【2026-11-03 主人：办事模式下看不见干活的过程】
+         * 进度不只写进档案（那是给 watch_worker 和主智能体看的），
+         * 还要当成事件推给界面 —— 主人在屏幕上要能看见她一步一步在干什么。 */
+        const __wPush = (kind, text, extra) => {
+          if (typeof push !== 'function') return;
+          try { push(Object.assign({ type: 'worker', wid: __tid, name: nick, kind, text: String(text || '') }, extra || {})); } catch {}
+        };
+        __wPush('start', '开始干：' + body.slice(0, 120));
         r = await runSubagent({
           task: brief + reportAsk,
           name: nick,
           maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60,
           allowWrite: true,
           pullMails: () => {
-            try { return drainWorkerMail(sid, __tid); } catch { return []; }
+            try { const ms = drainWorkerMail(sid, __tid); if (ms && ms.length) __wPush('mail', '收到补话：' + ms.map((m) => m.text).join(' / ').slice(0, 160)); return ms; } catch { return []; }
           },
           onProgress: (line) => {
             try { noteWorkerProgress(sid, __tid, line); } catch {}
+            __wPush('step', line);
           },
         });
       } catch (e) {
@@ -1827,6 +1841,11 @@ export const tools = [
 
       const text = String(r?.text || '').trim();
       finishWorker(sid, w.id, { status: r?.ok ? 'reported' : 'failed', rounds: r?.rounds, tools: r?.tools, said: text });
+      try {
+        if (typeof push === 'function') {
+          push({ type: 'worker', wid: String(w.id), name: nick, kind: 'end', text: '', status: r?.ok ? 'ok' : 'err', note: text.slice(0, 400) });
+        }
+      } catch {}
 
       if (typeof push === 'function') {
         try {
@@ -1929,22 +1948,30 @@ export const tools = [
       }
 
       const one = async (p) => {
+        /* 每件活各推各的事件：界面上是几张独立的子任务卡，不是混成一片 */
+        const __wPush = (kind, text, extra) => {
+          if (typeof push !== 'function') return;
+          try { push(Object.assign({ type: 'worker', wid: p.id, name: p.nick, kind, text: String(text || '') }, extra || {})); } catch {}
+        };
         try {
           const { runSubagent } = await import('./subagent.mjs');
+          __wPush('start', '开始干：' + String(p.brief || '').slice(0, 120));
           const r = await runSubagent({
             task: p.brief,
             name: p.nick,
             maxRounds: roundMax,
             allowWrite: true,
             pullMails: () => {
-              try { return drainWorkerMail(sid, p.id); } catch { return []; }
+              try { const ms = drainWorkerMail(sid, p.id); if (ms && ms.length) __wPush('mail', '收到补话：' + ms.map((m) => m.text).join(' / ').slice(0, 160)); return ms; } catch { return []; }
             },
             onProgress: (line) => {
               try { noteWorkerProgress(sid, p.id, line); } catch {}
+              __wPush('step', line);
             },
           });
           const text = String(r?.text || '').trim();
           finishWorker(sid, p.id, { status: r?.ok ? 'reported' : 'failed', rounds: r?.rounds, tools: r?.tools, said: text });
+          __wPush('end', '', { status: r?.ok ? 'ok' : 'err', note: text.slice(0, 400) });
           if (typeof push === 'function') {
             try { push({ type: 'whale', who: p.nick + ' → 主智能体', text: text || '（它没说话）', as: 'whale', tag: 'worker' }); } catch {}
           }
@@ -1952,6 +1979,7 @@ export const tools = [
         } catch (e) {
           const msg = '子智能体没起来：' + String(e?.message ?? e);
           finishWorker(sid, p.id, { status: 'failed', said: msg });
+          try { if (typeof push === 'function') push({ type: 'worker', wid: p.id, name: p.nick, kind: 'end', text: '', status: 'err', note: msg.slice(0, 400) }); } catch {}
           return { nick: p.nick, id: p.id, ok: false, text: msg };
         }
       };

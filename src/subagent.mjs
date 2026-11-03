@@ -434,6 +434,14 @@ export async function runSubagent({
    */
   signal = null,
   /**
+   * 【2026-11-03 · 主智能体中途改指令】
+   *
+   * 派活的人（主智能体）在她干活期间补的话，从这儿取。
+   * 每轮工具循环开头调一次，返回 [{ text }]，取完就没。
+   * 不传 = 没人给她补话（老调用方照旧）。
+   */
+  pullMails = null,
+  /**
    * 【现在是谁在跟她说话】—— 身份功能（主人 2026-10-27 定）
    *
    * 她走的是这条 subagent 的路，systemPrompt 跟小鱼不是同一份。
@@ -936,6 +944,23 @@ export async function runSubagent({
           console.log('[subagent] 收到姐妹递来的 ' + mails.length + ' 封信');
         }
       } catch {}
+      /* 【2026-11-03 · 主智能体中途改指令】
+       * 每轮工具循环开头，先把「派活的人后来补的话」取出来当一条 user 消息。
+       * 没有 takeWorkerMail 这个回调就跳过 —— 这条路不能把老的调用方搞挂。 */
+      try {
+        if (typeof pullMails === 'function') {
+          const later = pullMails();
+          if (Array.isArray(later) && later.length) {
+            messages.push({
+              role: 'user',
+              content: '（派活的人在你干活的时候又补了几句，按最新的来。）\n'
+                + later.map((m) => '- ' + String(m.text || '').replace(/\n/g, '\n  ')).join('\n'),
+              context: true,
+            });
+          }
+        }
+      } catch {}
+
       if (abortCtrl.signal.aborted) {
         return { ok: false, text: `超时了（${Math.round(timeoutMs / 1000)} 秒还没查完）。已经查到的：\n${trace.join('\n') || '（无）'}`, timedOut: true };
       }

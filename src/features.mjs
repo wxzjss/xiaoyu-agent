@@ -165,7 +165,7 @@ export const FEATURES = [
     id: 'taskmode',
     name: '办事模式',
     desc: '启用后这个会话的主智能体不再自己动手，只负责拆任务、派活、检查、验收、管上下文；具体的活交给临时开出来的 worker 去干（worker 只属于这个会话，干完或会话删了就没了）。打开之后顶栏会出现「办事模式」按钮，按会话各开各的。关掉这个功能，按钮整块消失。',
-    tools: ['spawn_worker', 'list_workers'],
+    tools: ['spawn_worker', 'spawn_workers', 'list_workers', 'tell_worker', 'watch_worker'],
     // 新增功能，老用户的 features.json 里没有这个键 —— 默认关着，不乱动顶栏。
     defaultOn: false,
   },

@@ -36,6 +36,9 @@ export const MODE_NAME = '办事模式';
 /** 这一档下，主智能体手上**只留**这些工具。别的全拿走。 */
 export const KEEP_TOOLS = [
   'spawn_worker',   // 派活 / 追问 / 收工
+  'spawn_workers',  // 一次派好几件，让它们同时干
+  'tell_worker',    // 干活途中补一句（改方向、加要求）
+  'watch_worker',   // 看它现在干到哪儿了
   'list_workers',   // 看现在有哪几个在跑、干到哪儿了
   'plan',           // 记任务清单
   'note',           // 记事
@@ -245,11 +248,98 @@ export function noteWorker(sessionId, worker) {
     rounds: Number(worker.rounds) || 0,
     tools: Number(worker.tools) || 0,
     said: String(worker.said || ''),
+    /* 没显式传就继承旧记录里的 —— 否则「改个状态」会把信箱和进度一起清掉。 */
+    mails: Array.isArray(worker.mails)
+      ? worker.mails.slice(-8)
+      : (at >= 0 && Array.isArray(list[at].mails) ? list[at].mails.slice(-8) : []),
+    progress: Array.isArray(worker.progress)
+      ? worker.progress.slice(-12)
+      : (at >= 0 && Array.isArray(list[at].progress) ? list[at].progress.slice(-12) : []),
   };
   if (at >= 0) list[at] = rec;
   else list.push(rec);
   writeWorkers(sid, list);
   return rec;
+}
+
+/**
+ * 【2026-11-03 · 多智能体协同：给 worker 递话】
+ *
+ * 主人问：「真的能实现主智能体发号施令，多个子智能体协同工作并实时向主智能体汇报，
+ * 并且主智能体能在子智能体工作过程中随时发布新指令吗？」
+ *
+ * 原来只有一条路：spawn_worker 是同步的 —— 主智能体把活交出去就冻在那儿等，
+ * 等它回来才能说下一句。于是「中途改指令」在结构上不可能：它没机会开口。
+ *
+ * 现在加两样：
+ *   ① 信箱 —— 主智能体（或主人）随时往某个 worker 的信箱塞一句话；
+ *      worker 每轮工具循环开头先看信箱，有新话就当成一条 user 消息吃进去。
+ *   ② 台账 —— worker 每干一步都往 progress 里记一行，主智能体随时能读。
+ *
+ * 信箱跟花名册存在同一个文件里（worker 记录上的 mails 字段），不另起一个文件：
+ * 一个 worker 的「它是谁 / 它在干什么 / 有什么话没吃」本来就是同一件事，
+ * 拆成两个文件迟早对不齐（这一版前面刚因为「账本各记各的」重做过整个显示层）。
+ */
+const MAIL_MAX = 8;          // 一个 worker 最多攒几句没读的话（防主智能体刷屏）
+const PROGRESS_MAX = 12;     // 进度只留最近这些行
+
+/** 往某个 worker 的信箱塞一句话。它会在这轮工具循环的下一个开头吃掉。 */
+export function sendWorkerMail(sessionId, workerId, text, from = '主智能体') {
+  const sid = String(sessionId || 'default');
+  const key = String(workerId || '').trim();
+  const body = String(text || '').trim();
+  if (!key) return { ok: false, error: '没说给哪个 worker' };
+  if (!body) return { ok: false, error: '内容是空的' };
+  const list = readWorkers(sid);
+  const at = list.findIndex((w) => String(w.id) === key);
+  if (at < 0) return { ok: false, error: '这个会话里没有 #' + key + ' 这个 worker' };
+  const mails = Array.isArray(list[at].mails) ? list[at].mails.slice() : [];
+  mails.push({ at: Date.now(), from: String(from || ''), text: body.slice(0, 2000) });
+  while (mails.length > MAIL_MAX) mails.shift();
+  list[at] = { ...list[at], mails };
+  writeWorkers(sid, list);
+  return { ok: true, queued: mails.length };
+}
+
+/** 取走某个 worker 攒着的所有话（取完就清，跟 peer 信箱同一套语义）。 */
+export function drainWorkerMail(sessionId, workerId) {
+  const sid = String(sessionId || 'default');
+  const key = String(workerId || '').trim();
+  if (!key) return [];
+  const list = readWorkers(sid);
+  const at = list.findIndex((w) => String(w.id) === key);
+  if (at < 0) return [];
+  const mails = Array.isArray(list[at].mails) ? list[at].mails : [];
+  if (!mails.length) return [];
+  list[at] = { ...list[at], mails: [] };
+  writeWorkers(sid, list);
+  return mails;
+}
+
+/** worker 每干一步记一行，主智能体随时能读。 */
+export function noteWorkerProgress(sessionId, workerId, line) {
+  const sid = String(sessionId || 'default');
+  const key = String(workerId || '').trim();
+  const body = String(line || '').trim();
+  if (!key || !body) return null;
+  const list = readWorkers(sid);
+  const at = list.findIndex((w) => String(w.id) === key);
+  if (at < 0) return null;
+  const progress = Array.isArray(list[at].progress) ? list[at].progress.slice() : [];
+  progress.push({ at: Date.now(), line: body.slice(0, 300) });
+  while (progress.length > PROGRESS_MAX) progress.shift();
+  list[at] = { ...list[at], progress };
+  writeWorkers(sid, list);
+  return list[at];
+}
+
+/** 读某个 worker 的完整档案（含信箱和进度）。 */
+export function workerDetail(sessionId, workerId) {
+  const sid = String(sessionId || 'default');
+  const key = String(workerId || '').trim();
+  const list = readWorkers(sid);
+  const w = list.find((x) => String(x.id) === key);
+  return w ? JSON.parse(JSON.stringify(w)) : null;
 }
 
 /** 收工时改它的状态（跑完/挂了/超时都走这儿）。 */
@@ -327,7 +417,11 @@ export function taskPromptBlock(sessionId, mainAgentName = '') {
     '   哪一段该压成一句话（摘要）。压的时候只留「结论、约束、走过的死路」这三类，',
     '   中间那些试错的过程不要留 —— 但原文本来就在折叠箱里（folded_list / folded_read），',
     '   删之前先确认真的能翻回来。',
-    '7. 对主人说话还是你自己说。子智能体的干活过程不往主人眼前搬，',
+    '7. **干活途中可以随时改指令**：它跑着的时候你想明白了什么，就用 tell_worker 递进去 ——',
+    '   不必等它回来。想先看它干到哪儿了，watch_worker。',
+    '   互不依赖的几件活要一起开工，用 spawn_workers 一次派出去（它们真的同时干，不是一个一个排队）。',
+    '   多个 worker 可以同时在跑（各自开各自的），你轮流 watch 它们、各自补话，不用排队等。',
+    '8. 对主人说话还是你自己说。子智能体的干活过程不往主人眼前搬，',
     '   你只报三样：做完了什么、还差什么、下一步怎么办。',
     '',
     '一句话：你是这个会话里唯一做判断的人，也是唯一不亲自动手的人。',

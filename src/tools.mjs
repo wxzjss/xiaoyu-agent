@@ -23,7 +23,7 @@ import { adminOn } from './admin-mode.mjs';
 import { isImagePath, readImageDataUrl } from './attach.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
-import { listWorkers, noteWorker, finishWorker } from './task-mode.mjs';
+import { listWorkers, noteWorker, finishWorker, drainWorkerMail, noteWorkerProgress, sendWorkerMail, workerDetail } from './task-mode.mjs';
 
 /*
  * 内存保护线：单条输出超过这个长度就地砍掉（保头保尾），防止一条 100MB 的命令把进程撑爆。
@@ -1806,11 +1806,20 @@ export const tools = [
       }
       try {
         const { runSubagent } = await import('./subagent.mjs');
+        /* 【2026-11-03 · 中途改指令】把它信箱里的新话每轮取一次交给她。
+         * 也是在这一趟里记进度，主智能体（或主人）随时能看它干到哪儿了。 */
+        const __tid = String(w.id);
         r = await runSubagent({
           task: brief + reportAsk,
           name: nick,
           maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60,
           allowWrite: true,
+          pullMails: () => {
+            try { return drainWorkerMail(sid, __tid); } catch { return []; }
+          },
+          onProgress: (line) => {
+            try { noteWorkerProgress(sid, __tid, line); } catch {}
+          },
         });
       } catch (e) {
         r = { ok: false, text: '子智能体没起来：' + String(e?.message ?? e) };
@@ -1831,6 +1840,194 @@ export const tools = [
       }
       return '【' + nick + ' #' + w.id + ' 回来了】它的汇报原文（还热着，别急着采信 —— 拿只读工具核一遍再决定收不收）：\n\n' + (text || '（一句汇报都没写 —— 这本身就是问题，退回给它，要它按四行交）')
         + '\n\n（收了就记一条账，没收就退回给同一个 worker。核账的读数别留太细，上下文本该由你管。）';
+    },
+  },
+  {
+    name: 'spawn_workers',
+    description: '一次派好几件互不依赖的活，让它们**同时**干（不是一个一个排队）。最多 4 件。'
+      + '\n\n【什么时候用】几件事之间不需要别人先说、也不抢同一个文件 —— 比如「查 A 文档」「跑 B 测试」「统计 C 行数」。'
+      + '\n\n【什么时候别用】后一件要看前一件的结果 —— 那就一次派一件，等它回来再说。'
+      + '\n\n【它们同时跑，你也别闲着】等它们的时候可以先 watch_worker 看进度、先 tell_worker 补话。'
+      + '\n\n【回来的是一串汇报】按顺序给你，逐件检查，别一律采信。',
+    parameters: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          description: '要派出去的活，每件一个对象。1~4 件。',
+          items: {
+            type: 'object',
+            properties: {
+              task: { type: 'string', description: '这件活具体干什么' },
+              name: { type: 'string', description: '给这个 worker 起个名' },
+              accept: { type: 'string', description: '什么算做成了' },
+              scope: { type: 'string', description: '在哪儿干' },
+              forbid: { type: 'string', description: '不许碰什么' },
+            },
+            required: ['task'],
+          },
+        },
+        maxRounds: { type: 'number', description: '每个最多跑几轮工具循环，默认 40。' },
+      },
+      required: ['tasks'],
+    },
+    async run({ tasks, maxRounds }) {
+      const sid = ctxNow().sessionId || 'default';
+      const { taskOn } = await import('./task-mode.mjs');
+      if (!taskOn(sid)) {
+        return '【现在不是办事模式】这个会话没开办事模式。要派活得先让主人在顶栏把那颗「办事模式」按钮点亮。';
+      }
+      const list = (Array.isArray(tasks) ? tasks : []).filter((t) => t && String(t.task || '').trim());
+      if (!list.length) return '没说要干什么（tasks 是空的）。';
+      if (list.length > 4) return '一次最多派 4 件。要更多就先派 4 件，等回来再派。';
+      if (list.length === 1) {
+        return '只有一件活就不用这个工具了 —— 用 spawn_worker 就行（说明会清楚得多）。';
+      }
+
+      /* 【2026-11-03 · 真的同时干】
+       * 主智能体的工具调用本身是一条一条等的，所以「同时」只能在工具内部实现：
+       * 这里先同步把每个 worker 都登记进花名册（同步 fs，不会交错），
+       * 再用 Promise.all 一起放出去。
+       *
+       * 登记必须先做完再散出去 —— 反过来的话两个 worker 同时 noteWorker
+       * 会互相覆盖（读-改-写没有中间 await，在 Node 里是安全的，但一起进去
+       * 就有先后问题，宁可先排好队再跑）。 */
+      const roundMax = Number(maxRounds) > 0 ? Number(maxRounds) : 40;
+      const plans = list.map((t, i) => {
+        const nick = String(t.name || '').trim() || ('worker-' + (i + 1));
+        const body = String(t.task || '').trim();
+        const brief = [
+          body,
+          '',
+          '【这是派给你的活】',
+          t.accept ? ('做成什么样算成：' + String(t.accept).trim()) : '',
+          t.scope ? ('你只能在 ' + String(t.scope).trim() + ' 这一带活动，别的地方一律不许碰。') : '',
+          t.forbid ? ('不许碰：' + String(t.forbid).trim()) : '',
+        ].filter(Boolean).join('\n');
+        const reportAsk = [
+          '',
+          '【干完必须交一份汇报】就写这四行，一行一条，别写成文章：',
+          '做了什么：改了哪些文件、跑了什么命令',
+          '凭什么说成了：证据（输出、退出码、行号、截图路径）',
+          '哪儿没做到 / 我没把握的地方',
+          '还剩什么没干',
+        ].join('\n');
+        const w = noteWorker(sid, {
+          name: nick,
+          task: body.slice(0, 200),
+          accept: String(t.accept || '').slice(0, 200),
+          status: 'running',
+        });
+        return { nick, brief: brief + reportAsk, id: String(w.id) };
+      });
+
+      const push = ctxNow().pushEvent;
+      if (typeof push === 'function') {
+        try {
+          push({ type: 'note', text: '同时派了 ' + plans.length + ' 件活：' + plans.map((p) => p.nick).join('、') });
+        } catch {}
+      }
+
+      const one = async (p) => {
+        try {
+          const { runSubagent } = await import('./subagent.mjs');
+          const r = await runSubagent({
+            task: p.brief,
+            name: p.nick,
+            maxRounds: roundMax,
+            allowWrite: true,
+            pullMails: () => {
+              try { return drainWorkerMail(sid, p.id); } catch { return []; }
+            },
+            onProgress: (line) => {
+              try { noteWorkerProgress(sid, p.id, line); } catch {}
+            },
+          });
+          const text = String(r?.text || '').trim();
+          finishWorker(sid, p.id, { status: r?.ok ? 'reported' : 'failed', rounds: r?.rounds, tools: r?.tools, said: text });
+          if (typeof push === 'function') {
+            try { push({ type: 'whale', who: p.nick + ' → 主智能体', text: text || '（它没说话）', as: 'whale', tag: 'worker' }); } catch {}
+          }
+          return { nick: p.nick, id: p.id, ok: !!r?.ok, text };
+        } catch (e) {
+          const msg = '子智能体没起来：' + String(e?.message ?? e);
+          finishWorker(sid, p.id, { status: 'failed', said: msg });
+          return { nick: p.nick, id: p.id, ok: false, text: msg };
+        }
+      };
+
+      const rs = await Promise.all(plans.map(one));
+      const okCount = rs.filter((r) => r.ok).length;
+      return '【' + plans.length + ' 件活都回来了】' + okCount + ' 件成了、' + (plans.length - okCount) + ' 件没成。'
+        + '\n\n' + rs.map((r) => '── ' + r.nick + ' #' + r.id + (r.ok ? '' : '（没干成）') + ' ──\n' + (r.text || '（它没说话）')).join('\n\n')
+        + '\n\n（逐件核，别一律采信。哪件没干对就退回给同一个 worker。）';
+    },
+  },
+  {
+    name: 'tell_worker',
+    description: '给正在干活的 worker 补一句话（改方向、加要求、叫它停手换个做法）。它会在下一个工具循环开头读到。'
+      + '\n\n【什么时候用】活派出去之后你才想明白的、或者主人中途改了主意 —— 别等它跑完再说，那已经白干了。'
+      + '\n\n【说清楚是「改」还是「加」】「刚才那个方案别用了，换 X」比「注意一下」有用得多。'
+      + '\n\n【它可能已经干到一半】补话是「在你原有基础上」追加，不是重来。真要重来就让它停下、退回给它重做。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'worker 的门牌号（list_workers 里那个 #N）' },
+        text: { type: 'string', description: '要跟它说的话。一行说清，别写成一篇。' },
+      },
+      required: ['id', 'text'],
+    },
+    async run({ id, text }) {
+      const sid = ctxNow().sessionId || 'default';
+      const key = String(id || '').trim().replace(/^#/, '');
+      const body = String(text || '').trim();
+      if (!key) return '没说给哪个 worker（id 是空的）。先用 list_workers 看一眼有谁。';
+      if (!body) return '内容是空的。要说什么？';
+      const r = sendWorkerMail(sid, key, body);
+      if (!r.ok) return '没递进去：' + String(r.error || '不知道什么原因');
+      const push = ctxNow().pushEvent;
+      if (typeof push === 'function') {
+        try { push({ type: 'note', text: '给 #' + key + ' 补了一句：' + body.slice(0, 80) }); } catch {}
+      }
+      return '【已经递到 #' + key + ' 的信箱】它下一轮开头就能吃到（现在信箱里还有 ' + String(r.queued) + ' 句）。'
+        + '\n\n它要是已经快跑完了，这句话可能来不及改变什么 —— 需要的话等它回来再退回给它。';
+    },
+  },
+  {
+    name: 'watch_worker',
+    description: '看一眼某个 worker 现在干到哪儿了：状态、已经跑了几轮、用了几个工具、最近几步干了什么。',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'worker 的门牌号；不填就看全部（同 list_workers）' } },
+    },
+    async run({ id }) {
+      const sid = ctxNow().sessionId || 'default';
+      const key = String(id || '').trim().replace(/^#/, '');
+      if (!key) {
+        const ws = listWorkers(sid);
+        if (!ws.length) return '这个会话里还没有 worker。';
+        return ws.map((w) => '· #' + w.id + ' ' + w.name + ' [' + w.status + '] 第 ' + w.rounds + ' 轮 / ' + w.tools + ' 个工具').join('\n');
+      }
+      const d = workerDetail(sid, key);
+      if (!d) return '这个会话里没有 #' + key + ' 这个 worker。';
+      const lines = [
+        '#' + d.id + ' ' + String(d.name || '') + '  [' + String(d.status || '') + ']',
+        '派给它的活：' + String(d.task || '').slice(0, 200),
+        '跑到：第 ' + String(d.rounds || 0) + ' 轮 / 用了 ' + String(d.tools || 0) + ' 个工具',
+      ];
+      const pg = Array.isArray(d.progress) ? d.progress.slice(-8) : [];
+      if (pg.length) {
+        lines.push('最近几步：');
+        for (const p of pg) lines.push('  · ' + String(p.line || '').slice(0, 160));
+      } else {
+        lines.push('（还没记进度）');
+      }
+      const ml = Array.isArray(d.mails) ? d.mails : [];
+      if (ml.length) {
+        lines.push('还没吃的话：' + ml.length + ' 句（它下一轮就会读到）');
+      }
+      if (d.said) lines.push('上次汇报：' + String(d.said).slice(0, 300).replace(/\n/g, ' '));
+      return lines.join('\n');
     },
   },
   {

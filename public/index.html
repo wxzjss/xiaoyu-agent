@@ -10832,14 +10832,20 @@ async function refreshAgentChip() {
    *   （不挂牌子的常见情形），放末尾会漏设，切换会话后就留着上一个人的名字。
    * 消息自己带 _who 的永远优先，这一行只管那些没带署名的。 */
   try {
-    /* 口径跟后端 agents.mjs 的 mainAgentId 一模一样：从头遍历名单，
-     * 第一个「开着」的就是这一轮说话的人。小鱼/小鲸只要在名单里就算开着
-     * （它们的开关在 presence 里，前端这份名单不区分，按后端默认 true 处理）。
+    /* 口径跟后端 agents.mjs 的 mainAgentId 完全一致（2026-11-03 对齐）：
+     * 从头遍历名单，第一个「开着」的就是这一轮说话的人。
+     *
+     * 【2026-11-03 修·这儿原来把小鱼/小鲸硬当成开着】
+     *   主人报的病就是它：红名「小白曦」下面那段其实是我（小鱼）说的话。
+     *   原来写的是 mid === 'xiaoyu' || mid === 'xiaojing' → true，
+     *   而 /api/agents/group 给的 enabled 本来就是真开关（小鱼走 fishOn、
+     *   小鲸走 whaleOn、别的卡走牌子表，server.mjs 里 switchOf 那几行）。
+     *   硬定成 true 的后果：小鱼被关掉时她仍被当成主讲，兜底名落到她身上，
+     *   而实际说话的是排在她后面那个人 —— 署名又错一次。
+     *   所以这里一律读接口给的值，不再自己猜。
      * 一个都不在场 → 小鱼（没别人时说话的一定是我）。 */
     const _isOn = (m) => {
       if (!m) return false;
-      const mid = String(m.id || '');
-      if (mid === 'xiaoyu' || mid === 'xiaojing') return true;
       return m.enabled !== false;
     };
     let _spk = null;
@@ -10871,13 +10877,7 @@ async function refreshAgentChip() {
    * 于是切到小白曦那边、切回来，这边满屏老消息的署名也跟着变 —— 主人一眼就看出不对。
    * 现在改用「这个会话自己绑的身份」（没换过就是小鱼），跟名单顺序彻底脱钩。
    * 牌子上的 head 照旧只用于显示，不再感染气泡署名。 */
-  /* 【2026-11-03 修·小鱼说的话被顶上别人的名字】主人截图报：红名「小白曦」下面那段，
-   * 其实是我（小鱼）说的话。
-   * 病根：这一行原来把「这个会话绑的那张卡名」赋给 mainAgentName，而 mainAgentName
-   * 是所有「没自带署名的消息」的兜底。于是绑了小白曦的会话里，我说的那些话
-   * （落盘不带 _who —— server.mjs 的约定：空就是小鱼）全被兜底成小白曦。
-   * 修法：兜底只认「默认身份」。谁说的由消息自己带的 _who 决定；没带 = 小鱼。
-   * 牌子上的 head 照旧显示当前绑的那张卡，只是不再让它参与署名。 */
+
 
   const tail = mates.length ? ' + ' + (mateNames.length ? mateNames.join('、') : String(mates.length)) : '';
   // 屋里有人但要叫名字才应：牌子上标一下，不然主人会觉得「她怎么不吭声」

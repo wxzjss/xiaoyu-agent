@@ -7988,7 +7988,19 @@ function addAssistantAuto(who) {
 
 function addAssistant(who, hideRole) {
   const wrap = addEl('', 'msg assistant');
-  wrap.innerHTML = '<div class="role">' + (String(who || '').trim() || String(mainAgentName || '').trim() || '小鱼') + '</div>';
+  /* 【2026-11-03 修·实时气泡的名字颜色】历史气泡那边补了「按卡上色」，
+   * 正在流式生成的这一条走的是这里，同样要上色，不然生成时粉、刷新后变灰。
+   * 只有「不是小鱼」才加 .mate + 设 --whoC（小鱼的粉是 .assistant .role 的默认值，别动它）。 */
+  const __whoNow = String(who || '').trim() || String(mainAgentName || '').trim() || '小鱼';
+  wrap.innerHTML = '<div class="role">' + __whoNow + '</div>';
+  if (__whoNow !== '小鱼') {
+    /* same rule as renderTurns: color the role line only, no .mate class */
+    try {
+      wrap.dataset.whoName = __whoNow;
+      const _rl = wrap.querySelector('.role');
+      if (_rl) _rl.style.color = mateColorOf(__whoNow);
+    } catch {}
+  }
   /**
    * 【hideRole：同一条回复中间换了气泡，不再重报一次名字】
    *
@@ -8245,10 +8257,15 @@ const __mateColors = new Map();
 let __mateColorsAsked = false;
 function refreshMateColors() {
   try {
-    document.querySelectorAll('.msg.mate').forEach((el) => {
+    document.querySelectorAll('.msg.mate, [data-whoName]').forEach((el) => {
       const nm = String(el.dataset.whoName || '');
       const c = __mateColors.get(nm);
-      if (c) el.style.setProperty('--whoC', c);
+      if (!c) return;
+      el.style.setProperty('--whoC', c);
+      if (!el.classList.contains('mate')) {
+        const _rl = el.querySelector('.role');
+        if (_rl) _rl.style.color = c;
+      }
     });
   } catch { /* 上不上色都不影响读 */ }
 }
@@ -10797,6 +10814,11 @@ async function toggleAdminBtn() {
 async function refreshAgentChip() {
   const el = document.getElementById('agentChip');
   if (!el) return;
+  /* 【2026-11-04 加固·切会话时先归零】兜底名是「万一某条消息没带署名」时的最后一道
+   * 防线。下面那段赋值包在 try 里，还夹着好几次读数组/读字段，真出异常就跳过去了，
+   * 于是 mainAgentName 会留着上一个会话的名字 —— 那正是主人这次报的那个错。
+   * 先进函数先归零，最坏也只是退回「小鱼」，不会挂着别人的名字。 */
+  try { mainAgentName = '小鱼'; } catch {}
   if (!sessionId) { el.hidden = true; return; }
   /**
    * 2026-10-30【群聊来了以后这块牌要说的不止一个人】
@@ -10812,7 +10834,11 @@ async function refreshAgentChip() {
     fetch('/api/agents/current?sessionId=' + sid).then((x) => x.json()).catch(() => null),
     fetch('/api/agents/group?sessionId=' + sid).then((x) => x.json()).catch(() => null),
   ]);
-  if (!cur || cur.error) { el.hidden = true; return; }
+  /* 【2026-11-04 加固·接口没答上来时，别留着上一个会话的名字】
+   * 这时画不出牌子，但历史还是要画；若兜底名还是上一个会话的人，
+   * 那些没带署名的消息就会顶着别人的名字出来 —— 主人这次报的就是这个。
+   * 归到「小鱼」是最不容易错的那一档（后端约定「空署名=小鱼」）。 */
+  if (!cur || cur.error) { try { mainAgentName = '小鱼'; } catch {} el.hidden = true; return; }
   const id = String(cur.agentId || '');
   const name = String(cur.name || '');
   /**
@@ -12844,7 +12870,8 @@ document.getElementById('resetSafeWords').onclick = async () => {
 function _reportDefHint(el, ok, msg) {
   if (!el) return;
   el.textContent = msg;
-  el.className = ok ? 'hint' : 'hint err';
+  // ok === null 是「正在做」的中性提示：既不是绿的「成了」，也不是红的「错了」
+  el.className = ok === null ? 'hint' : (ok ? 'hint' : 'hint err');
 }
 document.getElementById('setDefaultBottomLines').onclick = async () => {
   const btn = document.getElementById('setDefaultBottomLines');
@@ -12853,7 +12880,7 @@ document.getElementById('setDefaultBottomLines').onclick = async () => {
     .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (!lines.length) { _reportDefHint(hint, false, '一条底线都没有，不能把它设成默认'); return; }
   btn.disabled = true;
-  _reportDefHint(hint, true, '正在存…');
+  _reportDefHint(hint, null, '正在存…');
   const r = await fetch('/api/settings/defaults', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -12870,11 +12897,11 @@ document.getElementById('setDefaultSafeWords').onclick = async () => {
     .split(/[\/,，、]/).map((s) => s.trim()).filter(Boolean);
   if (!_swDefList.length) { _reportDefHint(hint, false, '一个安全词都没有，不能把它设成默认'); return; }
   btn.disabled = true;
-  _reportDefHint(hint, true, '正在存…');
+  _reportDefHint(hint, null, '正在存…');
   const r = await fetch('/api/settings/defaults', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ safeWords: _swDefList }),
+    body: JSON.stringify({ safeWords: _swDefList, safeWordNote: String((document.getElementById('safeWordNote') || {}).value || '').trim() }),
   }).then((x) => x.json()).catch(() => null);
   btn.disabled = false;
   if (!r || r.error) { _reportDefHint(hint, false, '设默认失败：' + (r && r.error ? r.error : '网络错误')); return; }
@@ -16826,10 +16853,26 @@ function renderTurns(turns, opts) {
              * 满屏历史消息的署名刷地全成了小白曦。
              * 主人 2026-10-28 就定过：身份名跟着消息一起存，画的时候直接用那份，
              * 不许看「现在是哪个身份」。所以这里优先用这条消息自带的 who。 */
-            wrap.innerHTML =
-              '<div class="role">' +
-              (turn && String(turn.who || '').trim() ? String(turn.who).trim() : (String(mainAgentName || '').trim() || '小鱼')) +
-              '</div>';
+            /* 【2026-11-03 修·名字对了，颜色却还是小鱼的粉】
+             * 主人截图报：「红色名字的小白曦，其实是你说的话」。
+             * 署名修好之后还差一层：.assistant .role 的颜色写死成 #f0a6a0（小鱼的粉），
+             * 于是小白曦那一句名字写对了、颜色却仍旧是我的。
+             * 修法：这条消息自带 who、且 who 不是小鱼时，只给「名字那一行」设内联颜色
+             * = 她卡上的色（mateColorOf）。
+             * 为什么不挂 .mate：.msg.mate .role 会把字号缩到 0.92em，跟小鱼那一列对不齐；
+             * 气泡本身也不用变（主人早定过「屋里的人说话都长一样」）。
+             * 颜色值等 /api/agents 回来后再刷一遍（refreshMateColors 扫 [data-whoName]）。 */
+            const __wn = (turn && String(turn.who || '').trim()) ? String(turn.who).trim() : (String(mainAgentName || '').trim() || '小鱼');
+            wrap.innerHTML = '<div class="role">' + __wn + '</div>';
+            if (__wn && __wn !== '小鱼') {
+              /* 2026-11-03 严检修：只给名字那行上色，不要挂 .mate ——
+               * .msg.mate .role 会把字号缩到 0.92em，跟小鱼那一列对不齐。 */
+              try {
+                wrap.dataset.whoName = __wn;
+                const _rl = wrap.querySelector('.role');
+                if (_rl) _rl.style.color = mateColorOf(__wn);
+              } catch { /* 上不上色都不影响读 */ }
+            }
             // 搜会话时靠这个下标把命中那条滚到眼前
             if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
             b = document.createElement('div');

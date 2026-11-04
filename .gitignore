@@ -59,3 +59,4 @@ logs/
 # 我（dsh 那边）的临时脚本目录，和发布前归档的备份
 _tmp/
 backup-*/
+.ebcache/

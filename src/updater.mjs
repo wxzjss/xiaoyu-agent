@@ -870,7 +870,9 @@ export async function updateStatus() {
       }
       return { at: info.at, from: info.from, to: info.to, file: info.file, size: info.size || 0, kind: info.kind || 'setup' };
     })(),
-    last: info && info.status !== 'failed' && info.status !== 'ready' ? { at: info.at, from: info.from, to: info.to } : null,
+    // stale 也排除：那是「下过一次、后来发现比现在这份还旧」的包，不算「上次更新过」
+    last: info && info.status !== 'failed' && info.status !== 'ready' && info.status !== 'stale'
+      ? { at: info.at, from: info.from, to: info.to } : null,
     retryAt: info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS ? (info.at || 0) + RETRY_MS : null,
     // 运行中定时查的下一步时间（界面要显示「下次几点查」）
     nextAt: nextPeriodicAt(),

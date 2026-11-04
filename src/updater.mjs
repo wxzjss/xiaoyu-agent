@@ -15,7 +15,7 @@ import { join, dirname, relative } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { config } from './config.mjs';
-import { latestRelease, pickInstaller, downloadInstaller, spawnSilentInstall } from './updater-installer.mjs';
+import { latestRelease, pickInstaller, downloadInstaller, spawnSilentInstall, dropInstaller } from './updater-installer.mjs';
 import { inflateRawSync } from 'node:zlib';
 
 /**
@@ -851,9 +851,25 @@ export async function updateStatus() {
   return {
     local,
     // 下好了等安装的那一份（界面据此显示「装一下」那个按钮）
-    ready: info && info.status === 'ready' && info.file
-      ? { at: info.at, from: info.from, to: info.to, file: info.file, size: info.size || 0, kind: info.kind || 'setup' }
-      : null,
+    //
+    // 【2026-11-04 修·别把「已经过气的安装包」当成新版报上去】
+    // 实测：0.9.35 已经跑起来了，update.json 里还躺着一条 status:'ready'、to:'0.9.34'
+    // 的记录（那是上一版留下的），界面于是显示「新版 0.9.34 已经下好了」——
+    // 主人一点「装一下」就成了降级安装，装完还是旧版，白高兴一场。
+    // 判据：只有「包里的版本比现在这份新」才算 ready；旧的顺手丢包，不留着占 90MB。
+    ready: (() => {
+      if (!info || info.status !== 'ready' || !info.file) return null;
+      const to = String(info.to || '');
+      if (!to || compareVersion(to, local) <= 0) {
+        try { dropInstaller(info.file); } catch { /* 删不掉就留着，下次再说 */ }
+        // 记成 stale：不然每次问状态都去删一次那个不存在的文件，日志全是噪音
+        try {
+          writeFileSync(UPDATE_INFO, JSON.stringify({ at: info.at, status: 'stale', from: info.from, to, triedBoot: info.triedBoot || '' }, null, 2), "utf8");
+        } catch { /* 记不上也无所谓 */ }
+        return null;
+      }
+      return { at: info.at, from: info.from, to: info.to, file: info.file, size: info.size || 0, kind: info.kind || 'setup' };
+    })(),
     last: info && info.status !== 'failed' && info.status !== 'ready' ? { at: info.at, from: info.from, to: info.to } : null,
     retryAt: info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS ? (info.at || 0) + RETRY_MS : null,
     // 运行中定时查的下一步时间（界面要显示「下次几点查」）

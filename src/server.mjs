@@ -8531,6 +8531,29 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          */
         if (alreadyCollected(history, m)) continue;
         if (m.role === 'assistant' && !m._at) m._at = Date.now();
+        /* 【2026-11-03 修·主讲人不是小鱼时，她说的话没署名】
+         * 主人 2026-10-28 定过：身份名跟着消息一起存，画的时候直接用这份，
+         * 不许看「现在是哪个身份」—— 否则一切换，满屏旧消息的署名全被刷掉。
+         * 这条规矩以前只给开场白（2340）、__opMsg（7541）、userMsg（7569）做了，
+         * 主人真正说的那些回复一条都没标 —— 落盘时就光秃秃一个 assistant。
+         * 前端拿不到 who，只能退回「这一轮谁在说话」的兜底；眼下兜底算得对，
+         * 可一旦换人当主讲、或者老消息跨会话重画，旧话就会被顶上新名字。
+         * 这里补上：这一轮是谁当主讲，就把名字一起存进消息。
+         * 小鱼不标（她就是默认身份，空署名＝小鱼，见 576/607 行那两处约定）。
+         */
+        if (m.role === 'assistant' && !m._who && !Array.isArray(m.tool_calls)) {
+          try {
+            const __mid = String(mainAgentId(sessionId, (id) => mateSwitchOn(id, sessionId)) || '');
+            if (__mid && __mid !== AGENT_XIAOYU) {
+              const __ag = getAgent(__mid);
+              if (__ag && __ag.name) {
+                m._who = String(__ag.name);
+                if (__mid === AGENT_XIAOJING) m._whale = String(__ag.name);
+                else m._card = String(__mid);
+              }
+            }
+          } catch { /* 标不上就当小鱼，不影响说话 */ }
+        }
         history.push(m);
         n++;
       }

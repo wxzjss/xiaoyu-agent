@@ -9943,18 +9943,9 @@ function openThink() {
        *  键用这块思考正文的长度（重画时同一条思考内容长度一样，认得回来）。
        *  paintReasoning 建块时查这张榜，命中就直接展开。 */
       try {
-        const b = d.querySelector('.thinkBody');
-        /**
-         * 【2026-11-05 修·点开的思考链还是会被关掉】
-         *
-         * 原来 key 用的是思考正文的**长度**。可思考是流式长的 ——
-         * 主人点开那一刻记下「1200 字」，等工具调用消息一来触发重画，
-         * 这段思考已经长到 2400 字了，key 对不上 → 重建时按默认收起。
-         * 表现就是「刚点开，下一条消息一出来就自己合上」。
-         *
-         * 改成取**前 40 个字**：追加只会动结尾，开头是稳定的，重画认得回来。
-         */
-        const k = b ? String((b.textContent || '').slice(0, 40)) : '';
+        /* 【2026-11-05 改】直接读创建时烧进去的 data-tkey ——
+         * 跟重建那边用同一个来源，不会再因为「渲染后文本 vs 原始文本」对不上。 */
+        const k = String((d.dataset && d.dataset.tkey) || '');
         if (k) {
           window.__openedThink = window.__openedThink || new Set();
           if (d.open) window.__openedThink.add(k);
@@ -10037,6 +10028,39 @@ function paintReasoning(text, host) {
   const body0 = String(text || '').trim();
   if (!body0) return null;
   const d = document.createElement('details');
+  /**
+   * 【2026-11-05 加·展开态的稳定身份】
+   *
+   * 原来 toggle 记 key 用的是 `thinkBody.textContent`（**渲染后**的文本），
+   * 而重建时查 key 用的是 body0（**原始**文本，带 markdown 记号）。
+   * 只要前 40 字有一个记号不一样（`**加粗**` vs `加粗`），就对不上 → 重建后收起。
+   *
+   * 现在创建时就把「原始文本的前 40 字」烧进 data-tkey，两边都读它，
+   * 同一个来源、同一份内容，不可能对不上。
+   */
+  try {
+    d.dataset.tkey = body0.replace(/\s+/g, ' ').trim().slice(0, 40);
+  } catch (e) {}
+  /**
+   * 【2026-11-05 加·这里原来不绑 toggle，展开态根本没被记住】
+   *
+   * openThink（流式那条建的块）绑了 toggle，会把「主人点开的那些」记进
+   * window.__openedThink。可 paintReasoning（重画/历史这条路建的块）**没绑** ——
+   * 于是重画之后再点开，没人记账；下一次重画查榜查不到，就按默认收起了。
+   *
+   * 表现就是主人说的：「展开思维链 → 新工具调用消息一出来 → 又自己闭合了」。
+   */
+  try {
+    d.addEventListener('toggle', () => {
+      try {
+        const k = String((d.dataset && d.dataset.tkey) || '');
+        if (!k) return;
+        window.__openedThink = window.__openedThink || new Set();
+        if (d.open) window.__openedThink.add(k);
+        else window.__openedThink.delete(k);
+      } catch (e) {}
+    });
+  } catch (e) {}
   d.className = 'think thinkPast';
   d.open = false; // 历史里的思考默认收起，不然一打开会话满屏都是内心戏
 
@@ -10062,10 +10086,8 @@ function paintReasoning(text, host) {
    *  重画前把「主人自己点开的那些思考链」记下来，重画后遇到同一段内容就替它展开。 */
   try {
     const opened = window.__openedThink;
-    /* 【2026-11-05 修】写入那边已经改成「前 40 字」当 key 了，这里必须跟着改。
-     * 原来还拿长度去查 —— 两边口径不一致，就永远查不中，
-     * 表现还是「点开就被关掉」。这种一处改一半最坑：看着改了，其实没生效。 */
-    if (opened && opened.has(String(body0 || '').slice(0, 40))) d.open = true;
+    /* 【2026-11-05】读 data-tkey，跟 toggle 记的是同一个值 */
+    if (opened && opened.has(String((d.dataset && d.dataset.tkey) || ''))) d.open = true;
   } catch (e) {}
 
   (host || log).appendChild(d);

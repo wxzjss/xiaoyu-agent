@@ -502,9 +502,11 @@ function saveImageFile(sessionId, b64, mime) {
 }
 
 /** 把一条消息里所有 dataUrl 图换成「图在哪儿」的文字（幂等：换完就不再是 data: 了）。 */
-function slimImages(m, sessionId) {
+function slimImages(m, sessionId, opts = {}) {
   const arr = m.content;
   if (!Array.isArray(arr)) return 0;
+  // maxChars > 0 时只收「大图」：比它小的原样留着（给模型真看）
+  const maxChars = Number(opts.maxChars) > 0 ? Number(opts.maxChars) : 0;
   let hit = 0;
   let imgChars = 0;
   for (let k = 0; k < arr.length; k++) {
@@ -512,6 +514,7 @@ function slimImages(m, sessionId) {
     if (!p || p.type !== 'image_url') continue;
     const url = p.image_url && p.image_url.url;
     if (typeof url !== 'string' || !url.startsWith('data:')) continue; // 外链/已落盘的不动
+    if (maxChars > 0 && url.length <= maxChars) continue; // 小图放行，留给模型看
     const mm = /^data:(image\/(?:png|jpe?g|webp|gif));base64,(.+)$/.exec(url);
     if (!mm) continue;
     imgChars += url.length;
@@ -549,11 +552,34 @@ function slimImages(m, sessionId) {
  * @param {string} sessionId 落盘目录用
  * @returns {{changed:number, saved:number}} 改了几条消息、落了几张图
  */
-export function stripImages(messages, sessionId = '') {
+export function stripImages(messages, sessionId = '', opts = {}) {
   let changed = 0;
   let saved = 0;
   if (!Array.isArray(messages)) return { changed, saved };
-  for (const m of messages) {
+  /**
+   * 【修·2026-11-06 主人发图我看不见】
+   * 原来这里一律全扫全换 —— 主人这一轮刚贴的截图，还没送到模型手上就被换成一行
+   * 「图本身不进上下文」，我永远看不见。防的是 base64 堆在历史里把窗口撑爆，
+   * 不是防「主人现在给我的这张图」。
+   *
+   * 所以：**这一轮（最后一条 user 起往后）原样留着，只换历史里的。**
+   * 下一轮它自己就进了历史，照样会被换掉，不会再堆积。
+   *
+   * opts.keepFromUser = true（默认）就按上面的规矩来；
+   * 传 false 退回老行为（全扫全换）。
+   */
+  const keepFromUser = opts.keepFromUser !== false;
+  let cut = messages.length;
+  if (keepFromUser) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      // 只认真正的主人发言：带 context 的是引子、带 _who 的是别人插话，
+      // 都不能当「这一轮主人给我的图」，否则真正那张又要被换掉。
+      if (m && m.role === 'user' && !m._sysNote && !m.context && !m._who) { cut = i; break; }
+    }
+  }
+  for (let i = 0; i < cut; i++) {
+    const m = messages[i];
     if (!m || !Array.isArray(m.content)) continue;
     const n = slimImages(m, sessionId);
     if (n > 0) {
@@ -561,7 +587,19 @@ export function stripImages(messages, sessionId = '') {
       saved += n;
     }
   }
-  return { changed, saved };
+  /**
+   * 【2026-11-06 本轮的新图也别无限留】
+   * 小截图留着没问题（一张几万字符，值）；可主人要是贴一张几 MB 的照片，
+   * 一轮里工具调十几次，同一张图就被重发十几次 —— 那才是真撑爆窗口的东西。
+   * 所以本轮只留「不算大的」；超大图照样落盘，我照样能用 read_file 打开看。
+   */
+  let bigSaved = 0;
+  for (let i = cut; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || !Array.isArray(m.content)) continue;
+    bigSaved += slimImages(m, sessionId, { maxChars: 4000000 });
+  }
+  return { changed, saved, kept: messages.length - cut, bigSaved };
 }
 
 /**

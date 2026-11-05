@@ -9897,9 +9897,28 @@ function addWorkerCard() {
  * 幂等：调几次都一样，第二次进来 _liveToolEls 已经空了。
  */
 function foldLiveTools() {
-  const arr = (_liveToolEls || []).filter((el) => el && el.isConnected);
+  const _tools = (_liveToolEls || []).filter((el) => el && el.isConnected);
   _liveToolEls = [];
-  if (arr.length < 2) return;              // 只调一次：不搞柜子
+  /**
+   * 【2026-11-05 加·思考链也收进柜子】
+   *
+   * 主人要求：「把所有工具调用以及思考显示放进【调用了x次工具】里面」。
+   *
+   * 原来柜子只装工具卡，思考链在外面单独躺着 —— 一轮里她想了想、调几下、
+   * 再想、再调，屏幕上就是「思考 / 工具 / 思考 / 工具」一路铺下去，很长。
+   *
+   * 现在两者都收进来，按屏幕上的先后顺序排（compareDocumentPosition），
+   * 主人点开柜子还是一条时间线，但收起时只剩一行。
+   */
+  const _thinks = [...(document.getElementById('log') || document).querySelectorAll('details.think[data-live-turn="1"]')]
+    .filter((el) => el && el.isConnected);
+  const arr = [..._tools, ..._thinks].sort((a, b) => {
+    try {
+      if (a === b) return 0;
+      return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
+    } catch (e) { return 0; }
+  });
+  if (arr.length < 2) return;              // 只有一件东西：不搞柜子
   const first = arr[0];
   const parent = first.parentNode;
   if (!parent) return;
@@ -9911,9 +9930,12 @@ function foldLiveTools() {
   const hsum = document.createElement('summary');
   const n1 = document.createElement('span');
   n1.className = 'hubname';
-  n1.textContent = '调了 ' + arr.length + ' 次工具';
-  const bad = arr.filter((el) => el.querySelector('.status.err')).length;
-  const warn = arr.filter((el) => el.querySelector('.status.warn')).length;
+  /* 【2026-11-05 改】标题按真实构成写：调了几次工具、想了多久 */
+  n1.textContent = _thinks.length
+    ? ('调了 ' + _tools.length + ' 次工具 · 想了 ' + _thinks.length + ' 段')
+    : ('调了 ' + _tools.length + ' 次工具');
+  const bad = _tools.filter((el) => el.querySelector('.status.err')).length;
+  const warn = _tools.filter((el) => el.querySelector('.status.warn')).length;
   const n2 = document.createElement('span');
   n2.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : 'ok'));
   n2.textContent = bad ? (bad + ' 个失败') : '';

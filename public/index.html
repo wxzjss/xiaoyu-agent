@@ -11139,6 +11139,20 @@ function replayInFlight(id) {
     const kind = p.kind || p.type || '';
     if (kind === 'reasoning') {
       if (!rec.think) rec.think = openThink();
+      /* 【2026-11-06 主人报·正文被思考链劈成两半】
+       *  原来 openThink() 是 log.appendChild(d)，思考块挂在 #log 末尾、跟气泡平级。
+       *  于是「正文12345 → 思考 → 正文6789」排成：气泡(12345) / 思考块 / 气泡里又冒出6789。
+       *  正文其实一直在同一个 bubble 里长，只是思考块插到了它后面。
+       *  改法：思考块一建出来就塞进 .msg.assistant 容器、放在 .bubble 前面，
+       *  这样正文后面再长多少都长在思考块下面，永远劈不开。 */
+      try {
+        const _th = rec.think && rec.think.el;
+        const _bb = rec.bubble;
+        if (_th && _bb) {
+          const _wrap = _bb.closest && _bb.closest(".msg.assistant");
+          if (_wrap && _th.parentNode !== _wrap) _wrap.insertBefore(_th, _bb);
+        }
+      } catch (e) {}
       try { rec.think.push(p.text); } catch (e) {}
     } else if (kind === 'text') {
       if (p && p.notice) { try { addSysNote(String(p.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {} continue; }
@@ -11146,6 +11160,15 @@ function replayInFlight(id) {
         rec.bubble = addAssistantAuto();
         try { const w = rec.bubble.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
       }
+      /* 【2026-11-06 补】思考先到、正文后到时，上面那次归位 rec.bubble 还是 null，会跳过。
+       *  所以正文气泡一建好，再补一次：把已有的思考块挪进这个气泡的容器、放在正文前面。 */
+      try {
+        const _th2 = rec.think && rec.think.el;
+        if (_th2 && rec.bubble) {
+          const _w2 = rec.bubble.closest && rec.bubble.closest(".msg.assistant");
+          if (_w2 && _th2.parentNode !== _w2) _w2.insertBefore(_th2, rec.bubble);
+        }
+      } catch (e) {}
       try { pushStreamText(rec.bubble, String(p.text || '')); } catch (e) {}
     } else if (kind === 'tool') {
       try {

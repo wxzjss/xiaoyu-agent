@@ -154,7 +154,18 @@ const ALERT_USER_RE = /^\s*⚠/;
 function sanitizeLoadedMessages(list) {
   if (!Array.isArray(list) || !list.length) return list || [];
   const out = [];
-  for (const m of list) {
+  /* 【2026-11-05 修·const 被重新赋值，整个会话读不出来】
+   *
+   * 症状：重启后某个会话从列表里凭空消失（主人报「检查鱼不见了」）。
+   *
+   * 根因：下面为了剥掉正文里的 <thinking> 标签，写了一句 `m = { ...m, content: ... }`，
+   * 可循环变量声明成了 `const m` —— 给常量赋值直接抛 TypeError，
+   * 被 loadSession 的 catch 吞掉 → 返回 null → 界面上就少一条。
+   * 而且**只有历史里带过 <thinking> 的会话才会中招**，所以是「有时候少一个」。
+   *
+   * 改成 let。另外那个 catch 也一并改成会打日志，别再让这种事查半天。
+   */
+  for (let m of list) {
     if (m && m.role === 'user') {
       // content 可能是字符串，也可能是 [{type:'text',text:...}, ...] 这种多段结构
       let head = '';
@@ -194,7 +205,12 @@ export function loadSession(id) {
       // 老会话没有这个字段 -> 当人设档处理，不去补写盘
       mode: raw.mode && typeof raw.mode === 'object' && raw.mode.word ? { word: String(raw.mode.word), since: Number(raw.mode.since) || 0 } : null,
     };
-  } catch {
+  } catch (e) {
+    /* 【2026-11-05 加·别把错误吞掉】
+     * 原来这里 `catch { return null }` —— 一个会话读不出来，界面上就凭空少一条，
+     * 而且一点线索都没有（主人报「重启后某个会话不见了」，我查了半天都没方向）。
+     * 现在至少把 id 和原因打到日志里。 */
+    try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
     return null;
   }
 }

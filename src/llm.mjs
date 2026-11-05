@@ -613,7 +613,11 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       if (delta) {
         const reasoning = delta.reasoning_content ?? delta.reasoning;
         if (reasoning) yield { type: 'reasoning', text: reasoning };
-        if (delta.content) yield { type: 'text', text: delta.content };
+        if (delta.content) {
+          // 有的网关把思考塞进 content，剥掉再发。
+          const cleaned = stripThinkTags(delta.content);
+          if (cleaned) yield { type: 'text', text: cleaned };
+        }
 
         for (const tc of delta.tool_calls ?? []) {
           const idx = tc.index ?? 0;
@@ -700,4 +704,19 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
     level = null;
   }
   throw new Error(`LLM HTTP ${lastStatus}: ${humanErrorOfUpstream(lastStatus, lastText).text}`);
+}
+
+/**
+ * 剥掉正文里的思考标签。
+ * 有的中转网关不把思考放进 delta.reasoning_content，而是塞进 delta.content，
+ * 包成 <thinking>...</thinking> / <reasoning>...</reasoning>。
+ * 不剥的话这些标签会原样进会话、原样画到主人界面上。
+ */
+function stripThinkTags(s) {
+  if (!s || typeof s !== 'string') return s;
+  if (!/<(thinking|think|reasoning)[\s>]/i.test(s)) return s;
+  return s
+    .replace(/<(thinking|think|reasoning)[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(thinking|think|reasoning)[^>]*>[\s\S]*$/gi, '')
+    .replace(/<\/(thinking|think|reasoning)>/gi, '');
 }

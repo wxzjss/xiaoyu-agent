@@ -2829,7 +2829,7 @@
 
 /* 【2026-11-05 加】超长正文先折起来，别让一条回复占满整屏 */
 .bubble.folded {
-  max-height: 460px; overflow: hidden; position: relative;
+  max-height: 900px; overflow: hidden; position: relative;
 }
 .bubble.folded::after {
   /* 【2026-11-05 主人截了图问「这段话上面会有一层阴影」】
@@ -5947,7 +5947,7 @@ function paintSnapshot0(sid, srcLive) {
         const st = el.sum.querySelector('.status');
         st.textContent = it.status === 'ok' ? '完成' : (it.status === 'err' ? '失败' : '运行中…');
         st.className = 'status ' + (it.status === 'ok' ? 'ok' : (it.status === 'err' ? 'err' : 'warn'));
-        el.pre.textContent = (it.args ? '参数：' + it.args : '') + (it.output ? '\n--- output ---\n' + it.output : '');
+        el.pre.textContent = (it.args ? '参数：' + tidyToolText(it.args) : '') + (it.output ? '\n--- output ---\n' + tidyToolText(it.output) : '');
       } catch (e) {}
       if (!toolEls) toolEls = new Map();
       if (it.id) toolEls.set(it.id, el);
@@ -6256,6 +6256,30 @@ const flatSpeechText = (t) => String(t)
   .replace(/[ \t]{2,}/g, ' ')
   .replace(/[ \t]+$/gm, '')
   .trim();
+
+/**
+ * 【2026-11-05 加·工具输出里的大段空行】
+ *
+ * 主人报：「两个工具调用显示中间有时候会空一大行」。
+ *
+ * 工具输出（命令结果、文件内容）经常带连续空行，pre 是 pre-wrap，
+ * 空行原样撑出好几行高度 —— 两个工具卡之间看着像空了一大块。
+ *
+ * 3 个以上连续换行压成 2 个（保留段落感，去掉空档），再去掉首尾空白。
+ * 只动显示，不改落盘数据。
+ */
+
+function tidyToolText(v) {
+  var t = String(v == null ? '' : v);
+  if (!t) return t;
+  var NL = String.fromCharCode(10);
+  var CR = String.fromCharCode(13);
+  t = t.split(CR + NL).join(NL);
+  while (t.indexOf(NL + NL + NL) >= 0) t = t.split(NL + NL + NL).join(NL + NL);
+  while (t.length && (t.charAt(0) === NL || t.charAt(0) === ' ' || t.charAt(0) === '	')) t = t.slice(1);
+  while (t.length && (t.charAt(t.length - 1) === NL || t.charAt(t.length - 1) === ' ' || t.charAt(t.length - 1) === '	')) t = t.slice(0, -1);
+  return t;
+}
 
 function paintSpeech(bubble, raw) {
   if (!bubble) return bubble;
@@ -7106,7 +7130,7 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
       el.sum.querySelector('.name').textContent = niceTool(ev.name);
       el.sum.querySelector('.status').textContent = '运行中…';
       // 【2026-11-02】没参数就别拼 —— 否则画出来是「参数：undefined」
-      el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + ev.args;
+      el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + tidyToolText(ev.args);
       toolEls.set(ev.id, el);
       /* 【2026-11-05 加】记下开始时间，结束时把耗时写在状态上。
        * 以前只有"运行中…/完成/失败"三个字，跑一条三分钟的命令屏幕上完全不动，
@@ -7129,7 +7153,7 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
         st.textContent = (ev.ok ? '完成' : '失败') + _dur;
         st.className = 'status ' + (ev.ok ? 'ok' : 'err');
         hubRefreshTitle();
-        el.pre.textContent += '\n--- output ---\n' + ev.output;
+        el.pre.textContent = tidyToolText(el.pre.textContent + '\n--- output ---\n' + tidyToolText(ev.output));
       }
     } else if (ev.type === 'whale' || ev.type === 'agent') {
       // 她说话了：当场画一个她自己的气泡，不跟我的挤在一起。
@@ -8430,7 +8454,11 @@ function attachTime(wrap, ts) {
 function maybeFoldBubble(el, rawText) {
   if (!el) return;
   const len = String(rawText ?? '').length;
-  if (len < 1200) return;
+  /* 【2026-11-06 主人截图问「你的后面的消息呢？怎么被截断了？」】
+   *  门槛原来是 1200 字 —— 我这种长回复几乎条条都超，等于每一条都被硬切在 460px，
+   *  主人只看到半截，剩下的藏在按钮后面。折叠本来是为了「别让一条占满整屏」，
+   *  结果变成了「看不全」。提高门槛：短中等的回复一律完整展示，只有真的长篇才折。 */
+  if (len < 3000) return;
   if (el.parentNode && el.parentNode.querySelector(':scope > .foldToggle')) return;
   el.classList.add('folded');
   const btn = document.createElement('button');
@@ -10678,7 +10706,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           el.sum.querySelector('.name').textContent = niceTool(ev.name);
           el.sum.querySelector('.status').textContent = '运行中…';
           // 【2026-11-02】没参数就别拼 —— 否则画出来是「参数：undefined」
-          el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + ev.args;
+          el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + tidyToolText(ev.args);
           toolEls.set(ev.id, el);
           el.pre.hidden = false;
           el.sum.querySelector('.status').className = 'status warn';
@@ -10694,7 +10722,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             st.textContent = ev.ok ? '完成' : '失败';
             st.className = 'status ' + (ev.ok ? 'ok' : 'err');
             hubRefreshTitle();
-            el.pre.textContent += '\n--- output ---\n' + ev.output;
+            el.pre.textContent = tidyToolText(el.pre.textContent + '\n--- output ---\n' + tidyToolText(ev.output));
           }
         } else if (ev.type === 'files') {
           // 这一轮我发出去的文件：挂在最后那条回复下面
@@ -11120,7 +11148,7 @@ function replayInFlight(id) {
         const st = el.sum.querySelector('.status');
         st.textContent = p.done ? (p.ok ? '完成' : '失败') : '运行中…';
         st.className = 'status ' + (p.done ? (p.ok ? 'ok' : 'err') : 'warn');
-        el.pre.textContent = (p.args ? '参数：' + p.args : '') + (p.done && p.output ? '\n--- output ---\n' + p.output : '');
+        el.pre.textContent = (p.args ? '参数：' + tidyToolText(p.args) : '') + (p.done && p.output ? '\n--- output ---\n' + tidyToolText(p.output) : '');
         if (!rec.toolEls) rec.toolEls = new Map();
         if (p.id) rec.toolEls.set(p.id, el);
       } catch (e) {}

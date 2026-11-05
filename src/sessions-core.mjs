@@ -168,6 +168,11 @@ function sanitizeLoadedMessages(list) {
       // 【2026-10-31 补】老会话里已经写进去的「〔量线／〔压缩」提醒也一并遮掉 —— 那是程序插的，不是主人说的。
       if (/^\s*〔(量线|压缩|程序自动插入)/.test(String(m.content || ''))) continue;
     }
+    // 【2026-11-05】剥掉正文里的思考标签：有的网关把思考塞进 content，
+    // 老会话里已经躺了一批这样的脏消息，读的时候一并清掉。
+    if (m && typeof m.content === 'string' && /<(thinking|think|reasoning)[\s>]/i.test(m.content)) {
+      m = { ...m, content: stripThinkTags(m.content) };
+    }
     out.push(m);
   }
   return out;
@@ -693,4 +698,14 @@ export function importSessions(drafts) {
     });
   }
   return made;
+}
+
+/** 剥掉正文里的思考标签（网关有时把思考塞进 content 而不是 reasoning_content）。 */
+function stripThinkTags(s) {
+  if (!s || typeof s !== 'string') return s;
+  if (!/<(thinking|think|reasoning)[\s>]/i.test(s)) return s;
+  return s
+    .replace(/<(thinking|think|reasoning)[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(thinking|think|reasoning)[^>]*>[\s\S]*$/gi, '')
+    .replace(/<\/(thinking|think|reasoning)>/gi, '');
 }

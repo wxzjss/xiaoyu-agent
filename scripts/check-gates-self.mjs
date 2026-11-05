@@ -62,14 +62,31 @@ const BAK = ROOT + '/sandbox/_gateself-backup.html';
 if (fs.existsSync(BAK)) {
   const b = fs.readFileSync(BAK, 'utf8');
   const cur = fs.readFileSync(HTML, 'utf8');
-  if (b.length > cur.length) {
+  /* 【2026-11-06 修】原来只在「备份比现在长」时才还原。
+   * 可有些破坏是把字改短（少个右括号、换个符号），那份永远还原不了，
+   * 被 SIGTERM 杀掉之后残骸就留在页面上了。备份在 = 上次没跑完，一律还原。 */
+  if (b !== cur) {
     fs.writeFileSync(HTML, b, 'utf8');
     console.log('⚠ 发现上次被打断留下的备份，已先还原页面');
   }
   fs.unlinkSync(BAK);
 }
 fs.writeFileSync(BAK, orig, 'utf8');
-process.on('SIGINT', () => { try { fs.writeFileSync(HTML, orig, 'utf8'); fs.unlinkSync(BAK); } catch {} process.exit(130); });
+/* 【2026-11-06 修】原来只监听 SIGINT（Ctrl+C）。
+ * 但被「跑命令超时被杀」时收到的是 SIGTERM —— 那条路没人管，
+ * 破坏就留在页面上了：addSysNote 里被塞进 zzzMissingVarX，一调就抛 ReferenceError。
+ * 几种退出方式统一走同一个还原函数，一个都不许漏。 */
+const _restore = (code) => {
+  try { fs.writeFileSync(HTML, orig, 'utf8'); } catch {}
+  try { fs.unlinkSync(BAK); } catch {}
+  process.exit(code);
+};
+process.on('SIGINT', () => _restore(130));
+process.on('SIGTERM', () => _restore(143));
+process.on('SIGBREAK', () => _restore(149));
+process.on('SIGHUP', () => _restore(129));
+process.on('uncaughtException', () => _restore(1));
+process.on('unhandledRejection', () => _restore(1));
 
 const cases = [
   { name: '少一个右括号', apply: (s) => s.replace('function addSysNote(text, actions) {', 'function addSysNote(text, actions) {{') },

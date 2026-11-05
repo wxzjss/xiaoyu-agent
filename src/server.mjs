@@ -10850,7 +10850,16 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         let last = 0;
         try { last = Number(__rotRead(mark, 'utf8')) || 0; } catch {}
         if (Date.now() - last > 86400000) {
-          const t = compactTrash({ days: 7 });
+          /* 【2026-11-05 改·7 天 → 2 天】
+           *
+           * 回收站已经堆到 73MB / 2974 个文件：今天 565 个、1-7 天 2382 个、
+           * 7 天以上只有 24 个。也就是说 7 天这条线几乎不起作用 ——
+           * 该压的早就压完了，剩下的全是「一周内删的」，一直压不动、一直涨。
+           *
+           * 回收站的本意是「手滑删了还能捞回来」，给两天够用了；
+           * 而且压缩是打包成 .tar.gz，不是删除，真要翻还是能翻。
+           */
+          const t = compactTrash({ days: 2 });
           const a = rotateArchive({ days: 30 });
           const n = t.reduce((s, x) => s + x.packed, 0) + a.packed;
           if (n) console.log('[rotate] 打包回收 ' + n + ' 个老文件（回收站 7 天 / 归档 30 天）');

@@ -19539,6 +19539,29 @@ function renderTurns(turns, opts) {
    *
    * 现在记下「它前面最近的那条消息是谁」，换屏后插回那条后面；找不到才退到末尾。
    */
+  /**
+   * 【2026-11-05 加·重画前记下「哪几个柜子是打开的」】
+   *
+   * 主人报：「打开一个柜子，等新的调用消息出来时它会自动闭上」。
+   *
+   * foldOldHubs 那条路已经修好了（带 userOpened 记号的不关，实测通过）。
+   * 但 renderTurns 是**整屏 replaceChildren** —— 所有柜子重建一遍，
+   * 新柜子默认 open=false，记号也没了，于是看着就是「自动闭上」。
+   *
+   * 这里照 think 那套：画之前把打开的那些记下来（用标题文字当身份），画完按同样的标题恢复。
+   */
+  const __openHubs = [];
+  try {
+    if (log) {
+      for (const h of log.querySelectorAll('details.toolhub')) {
+        if (!h.open) continue;
+        const nm = h.querySelector(':scope > summary .hubname');
+        const key = String((nm && nm.textContent) || '').trim();
+        if (key) __openHubs.push(key);
+      }
+    }
+  } catch (e) {}
+
   const __keepThink = [];
   try {
     if (log) {
@@ -19618,6 +19641,21 @@ function renderTurns(turns, opts) {
     __ignoreScrollUntil = Date.now() + 800;
     log.replaceChildren(frag);
   }
+
+  /* 【2026-11-05】把刚才记的「打开着的柜子」恢复回来（按标题认）。
+   * 柜子本身被重建了、内容也更新了，但主人拉开的状态要留着。 */
+  try {
+    if (__openHubs.length) {
+      for (const h of log.querySelectorAll('details.toolhub')) {
+        const nm = h.querySelector(':scope > summary .hubname');
+        const key = String((nm && nm.textContent) || '').trim();
+        if (key && __openHubs.indexOf(key) >= 0) {
+          h.open = true;
+          try { h.dataset.userOpened = '1'; } catch (e) {}
+        }
+      }
+    }
+  } catch (e) {}
 
   /* 【2026-11-05】把摘下来的思考块接回**原来的位置**（前面那条消息之后）。
    * 接末尾会让展开的思维链整块位移，高度分布一变就弹。 */

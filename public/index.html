@@ -4247,6 +4247,25 @@ let _stickAid = 0;
 /* 上一次真正滚到底的时间戳：stickToBottom 用它做 60ms 节流 */
 let _stickAt = 0;
 function stickToBottom() {
+  /**
+   * 【2026-11-05 加·跟随之前先校正状态位】
+   *
+   * 主人判断得很准：「弹到很久以前」和「展开时弹到底」是同一个病根。
+   *
+   * 都出在 stickBottom 这个状态位上：重画后的静默窗口会吞掉 scroll 事件，
+   * 它就一直停在错的值上 ——
+   *   · 错成 true  → 高度一变就滚到底（"展开时弹一下"）
+   *   · 错成 false → 重画把 scrollTop 夹小，没人拉回来（"弹到很久以前"）
+   *
+   * 这里在真正跟随之前，先按**实际位置**校一次。主动跳底走的是 jumpToBottom
+   * （它直接 hardScrollBottom，不经过这里），所以不会把用户的点击干掉。
+   */
+  try {
+    if (stickBottom && log && (log.scrollHeight - log.scrollTop - log.clientHeight) > 4) {
+      stickBottom = false;
+      try { rememberStick(); } catch (e) {}
+    }
+  } catch (e) {}
   if (!stickBottom) return;
   /* 【2026-11-03 修·抽搐·最后一刀（真凶）】
    *  原来是 if (stickRaf) return; —— 只要有一个 rAF 挂着就再也不往下走。
@@ -4279,6 +4298,12 @@ function stickToBottom() {
   _stickAid = setTimeout(() => {
     _stickAid = 0;
     _stickAt = Date.now();
+    /* 【2026-11-05】同样先校正再看 —— 这条延迟路径也是靠状态位判断的 */
+    try {
+      if (stickBottom && log && (log.scrollHeight - log.scrollTop - log.clientHeight) > 4) {
+        stickBottom = false;
+      }
+    } catch (e) {}
     if (!stickBottom) return;
     if (!log) return;
     if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;

@@ -4233,7 +4233,8 @@ function paintToBottom() {
  * 剩下的全走这里，只管滚。
  */
 function noteNewContent() {
-  if (stickBottom) { stickToBottom(); return; }
+  /* 【2026-11-05】同样改用实际位置判断 —— 状态位在静默窗口里会滞后。 */
+  if (_reallyAtBottom()) { stickToBottom(); return; }
   /* 【2026-11-04 主人报·滚轮翻到以前的消息位置时，我发新消息后【回到最新】上面没有数字】
    *
    *  原来这里只在"跟随中"顺手滚一下，不是跟随就什么都不做 ——
@@ -4250,8 +4251,30 @@ function noteNewContent() {
 
 /* 同一段话只 +1：拿 flushSpeech 那套 speechKey 记号去重。
  * 不这么写，流式吐一个字就+1，数字会飙到几十。 */
+/**
+ * 【2026-11-05 加·真的在底部吗】
+ *
+ * 主人报：「她发新消息时【回到最新】上面没有数字」。
+ *
+ * 判据原来用 stickBottom 这个**状态位**。可重画之后有个 800ms 的静默窗口
+ * （__ignoreScrollUntil），期间来的 scroll 只同步记认、不改 stickBottom ——
+ * 主人往上滚的那一下正好落在这个窗口里，就被忽略了，程序还以为他贴着底，
+ * 于是「不数数」，按钮上一直空着。
+ *
+ * 这里直接量实际位置：离底 4px 以内才算「在底部」。
+ * 状态位可能滞后，但 scrollTop 是当下的事实。
+ */
+function _reallyAtBottom() {
+  try {
+    if (!log) return true;
+    return (log.scrollHeight - log.scrollTop - log.clientHeight) <= 4;
+  } catch (e) {
+    return true;
+  }
+}
+
 function _bumpOncePerSpeech() {
-  if (stickBottom) return;
+  if (_reallyAtBottom()) return;
   const st = speechMark && speechMark();
   if (!st) { unseenNew += 1; paintToBottom(); return; }
   if (st.session !== sessionId) { st.session = sessionId; st.counted.clear(); }

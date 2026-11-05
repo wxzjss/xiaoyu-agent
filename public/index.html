@@ -9973,7 +9973,19 @@ function showSending(startAt) {
     /* 【2026-11-05 加】能拿到「这一轮什么时候开始的」就以它为准。
      * 刷新页面后 _turnT0 是空的，但 /api/chat/live 会带 startedAt ——
      * 用它当起点，计时才不会被刷新重置成 0。 */
-    if (Number.isFinite(Number(startAt)) && Number(startAt) > 0) _turnT0 = Number(startAt);
+    /**
+     * 【2026-11-05 修·第三版，这次是对的】
+     *
+     * 前两版都在给调用点传参：6471 / 7533 / 7572 三处。可刷新和切会话真正走的是
+     * switchSession 里那条「补画后台进度」的分支（19042 / 19053 附近），**根本没传参**。
+     * 实测抓到的调用记录就是 `startAt: undefined`，而 __xyLiveStartAt 明明有值。
+     *
+     * 这次换思路：不再挨个调用点补，让这里自己兜底 ——
+     * 没显式给，就用 attachLive 时记下的那个（window.__xyLiveStartAt）。
+     * 一处改，所有调用点全覆盖。新一轮由 send() 把两个都清掉。
+     */
+    const _at = (startAt === undefined || startAt === null) ? window.__xyLiveStartAt : startAt;
+    if (Number.isFinite(Number(_at)) && Number(_at) > 0) _turnT0 = Number(_at);
     else if (!_turnT0) _turnT0 = Date.now();
     /**
      * 【2026-11-05 修·「F5 之后时长永远是 0s」的真凶】
@@ -10841,6 +10853,9 @@ async function send() {
   /* 【2026-11-05 加】真正开口新一轮 —— 计时从这里重新开始。
    * 放在这儿而不是 hideSending：切会话也会 hide，那不是新一轮。 */
   _turnT0 = 0;
+  /* 【2026-11-05 加】全局那个起点也要清 —— 否则 showSending 兜底时会拿上一轮的旧起点，
+   * 新的一轮就从「上一轮开始的时间」算起，数字会大得离谱。 */
+  try { window.__xyLiveStartAt = 0; } catch (e) {}
   const text = input.value.trim();
   if (!text && !attachments.length) return;
   if (!sessionId) {

@@ -18759,8 +18759,44 @@ function renderTurns(turns, opts) {
       });
     } catch {}
   }
+  /**
+   * 【2026-11-05 加·renderTurns 这条路径漏了滚动保护】
+   *
+   * 主人报：「往上翻历史时她发新消息，画面弹到很久远以前」，我改了两版都没用 ——
+   * 因为我改的是 paintSnapshot（直播重画那条），而**历史重画走的是这里**。
+   *
+   * 下面 `log.replaceChildren(frag)` 把整屏换掉，高度骤变的瞬间浏览器会把
+   * scrollTop 夹到新的最大值；而这里只设了 __ignoreScrollUntil（让 scroll 事件
+   * 别改 stickBottom），**没有人把位置还回去**。
+   *
+   * 锚点算法跟 paintSnapshot 那边一致：记「视口顶部那条消息 + 它离视口顶多远」，
+   * 换完下一帧把它挪回原位。用文档坐标算，不能用增量。
+   */
+  const __anchorBefore = (() => {
+    try {
+      if (!log || stickBottom) return null;
+      const base = log.getBoundingClientRect().top;
+      for (const el of log.querySelectorAll('.msg[data-at]')) {
+        const r = el.getBoundingClientRect();
+        if (r.bottom > base + 4) return { at: el.dataset.at, off: r.top - base };
+      }
+    } catch (e) {}
+    return null;
+  })();
   __ignoreScrollUntil = Date.now() + 800;
   log.replaceChildren(frag);
+  if (__anchorBefore) {
+    requestAnimationFrame(() => {
+      try {
+        if (stickBottom) return;
+        const el = log.querySelector('.msg[data-at="' + __anchorBefore.at + '"]');
+        if (!el) return;
+        const base = log.getBoundingClientRect().top;
+        const docTop = el.getBoundingClientRect().top - base + log.scrollTop;
+        log.scrollTop = Math.max(0, docTop - __anchorBefore.off);
+      } catch (e) {}
+    });
+  }
   /* 【2026-11-03 修·插话闪一下就没】把重画前记下的、还没落盘的那几句主人消息补回去，
    *  按当时打字的先后顺序接在这一屏的最后（它们本来就是最新的那几句）。 */
   try {

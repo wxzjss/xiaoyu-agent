@@ -1290,6 +1290,42 @@
       font-variant-numeric: tabular-nums; user-select: text;
       opacity: 0; transition: opacity .14s ease;
     }
+    /**
+     * 【2026-11-05 加·照 DeepSeek Harness 的时间线做】
+     *
+     * 主人让我看 dsh（deepseek-ai/deepseek-harness）的工具/思考怎么显示，
+     * 又让「备份然后改」。备份在 backup-before-dsh-style。
+     *
+     * dsh 那边的做法（dsh-better-tool-ui 插件）：
+     *   · 紧凑时间线，连续工具行之间 **2px** 间距（不是一块块分开的卡）
+     *   · 左侧一条**贯通色轨**，不同类型不同色
+     *   · 思考用**紫色** #8c93f8
+     *
+     * 这里只改观感，不动结构 —— 柜子还是柜子，打开之后是紧凑的一列。
+     */
+    details.toolhub details.tool {
+      border-top: 0;                       /* 2px 间距代替分隔线 */
+      margin: 2px 0;
+      border-left: 2px solid rgba(140, 147, 248, .28);   /* 色轨：工具 */
+      border-radius: 0 6px 6px 0;
+    }
+    details.toolhub details.tool > summary.toolHead {
+      padding: 5px 10px 5px 20px;          /* 比原来紧一点 */
+    }
+    details.toolhub details.tool pre {
+      padding: 6px 10px;
+      border-top: 1px solid rgba(255,255,255,.06);
+    }
+    /* 思考：紫色轨道 + 紧凑间距，和 dsh 的紫色对齐 */
+    details.toolhub details.think {
+      margin: 2px 0;
+      border-left: 2px solid #8c93f8;
+      border-radius: 0 6px 6px 0;
+    }
+    details.toolhub details.think > summary {
+      padding-left: 20px;
+    }
+
     /* 【2026-11-05 加】柜门后面那截灰色小字：正在做什么 / 刚想了什么 */
     .hubpeek {
       display: inline-block; max-width: 62%;
@@ -10147,14 +10183,15 @@ function foldLiveTools() {
    * 折中：**工具展开**（参数、结果一眼看到），**思考仍收着**（本来就长，
    * 想看再点）。这样打开柜子就是一条完整的工作流水，不用点两层。
    */
-  try {
-    hub.addEventListener('toggle', () => {
-      if (!hub.open) return;
-      try {
-        for (const t of hub.querySelectorAll('details.tool')) t.open = true;
-      } catch (e) {}
-    });
-  } catch (e) {}
+  /**
+   * 【2026-11-05 撤·别自动展开工具卡】
+   *
+   * 上一版打开柜子时把里面的工具全摊开 —— 截了一张图才发现：
+   * 一屏全是参数和输出，柜门那行反而被顶出视口，跟 dsh 完全不是一回事。
+   *
+   * dsh 的做法是「一行一条命令，点开才看详情」。所以这里什么都不做，
+   * 保持每张卡默认收起（addTool 里 d.open = false 那条规矩回到本意）。
+   */
   const hsum = document.createElement('summary');
   const n1 = document.createElement('span');
   n1.className = 'hubname';

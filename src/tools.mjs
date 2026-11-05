@@ -444,7 +444,22 @@ export function safePath(p, { tool = '' } = {}) {
    *   · CTX.adminMode —— 每轮开跑时由 agent.mjs 按会话读进来的
    *   · CTX.fullAccess —— 小鲸跑那一趟的临时放行（runSubagent 用）
    */
-  if (CTX.adminMode === true || CTX.fullAccess === true) return abs;
+  /*
+   * 【2026-11-06 修·管理员权限忽有忽无】
+   *
+   * 原来是只看 CTX.adminMode 这个缓存值。可 CTX 是模块级单例，
+   * setToolContext 谁都能覆盖它 —— 跑一个别的会话（比如测试脚本建的临时会话）
+   * 就把当前会话的 true 冲成 false，正在说话的这位当场被关回工作区。
+   *
+   * 现在改成：以 CTX.sessionId 现查一遍盘上那张表为准，缓存只当兜底。
+   * 每次多读一次小 json，这个代价换「权限不会中途变卦」值得。
+   */
+  let _adminNow = CTX.adminMode === true;
+  try {
+    const _sid = ctxNow()?.sessionId || CTX.sessionId;
+    if (_sid) _adminNow = adminOnSync(_sid);
+  } catch {}
+  if (_adminNow || CTX.fullAccess === true) return abs;
   /**
    * 【本会话自己的记忆本子，放行】—— 2026-11
    *

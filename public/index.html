@@ -6155,6 +6155,19 @@ function mdInline(text) {
  * 剥完如果是空的，说明这条消息**只有思考没有正文** —— 返空串，让调用方决定不画，
  * 总比把一堆内心戏糊在屏幕上强。
  */
+/**
+ * 【2026-11-05 加·正文里的「压缩记忆」也切掉】
+ *
+ * 她有时候会把压缩记忆的正文写进回复里（提示词已经禁了，但模型不总听话）。
+ * 后端保存和读取时都剥了，这里再补一道——流式实时显示时数据还没落盘。
+ */
+function stripCompressMemoryText(input) {
+  var s = String(input == null ? '' : input);
+  var i = s.indexOf('【压缩记忆');
+  if (i < 0) return s;
+  return s.slice(0, i).replace(/[ 	]+$/, '');
+}
+
 function stripThinkingTags(input) {
   let s = String(input == null ? '' : input);
   /* 两个标签都要看一眼：只漏了 </thinking> 的也得清（实测会漏）。 */
@@ -6174,7 +6187,7 @@ function stripThinkingTags(input) {
 function mdInto(el, rawText) {
   if (!el) return;
   /* 【2026-11-05】正文里偶尔会混进模型自己的 <thinking> 块，画之前先剥掉。 */
-  const _cleaned = stripThinkingTags(rawText);
+  const _cleaned = stripCompressMemoryText(stripThinkingTags(rawText));
   if (String(rawText || '').trim() && !String(_cleaned || '').trim()) {
     el.classList.remove('md');
     el.textContent = '';
@@ -6362,7 +6375,7 @@ function paintSpeech(bubble, raw) {
    * stripThinkingTags 处理了「只有开头没有结尾」的中间态，
    * 所以打字过程中也不会闪一下标签。
    */
-  const cleaned = fixMojibake(stripThinkingTags(String(raw ?? '')));
+  const cleaned = fixMojibake(stripCompressMemoryText(stripThinkingTags(String(raw ?? ''))));
   if (!wrap) { bubble.textContent = cleaned; bubble._tail = bubble; return bubble; }
   /**
    * 【2026-11-02 主人报：一句话没说完就换行，刷新一次又好了】

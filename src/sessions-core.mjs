@@ -184,6 +184,10 @@ function sanitizeLoadedMessages(list) {
     if (m && typeof m.content === 'string' && /<(thinking|think|reasoning)[\s>]/i.test(m.content)) {
       m = { ...m, content: stripThinkTags(m.content) };
     }
+    /* 【2026-11-05】压缩记忆也不该出现在正文里（她有时候会照写出来）。 */
+    if (m && typeof m.content === 'string' && m.content.indexOf('【压缩记忆') >= 0) {
+      m = { ...m, content: stripCompressMemory(m.content) };
+    }
     out.push(m);
   }
   return out;
@@ -717,6 +721,24 @@ export function importSessions(drafts) {
 }
 
 /** 剥掉正文里的思考标签（网关有时把思考塞进 content 而不是 reasoning_content）。 */
+/**
+ * 【2026-11-05 加·把「压缩记忆」从正文里切掉】
+ *
+ * 主人报：「还是会把【压缩记忆·seg-2-aeeae9ce15】写出来」。
+ *
+ * 提示词第 8 条已经明说「不许复述」，但模型有时候还是照写。
+ * 这种事不能只靠劝 —— 这里做硬剥离：正文里只要出现【压缩记忆…】，从那儿切到结尾。
+ *
+ * 为什么切到结尾而不是精确配对：压缩记忆是她一轮收尾时写的东西，写在最后；
+ * 真出现「压缩记忆 + 后面还有正常内容」的情况极少，宁可少显示，也不让主人看见这堆东西。
+ */
+function stripCompressMemory(s) {
+  if (!s || typeof s !== 'string') return s;
+  const i = s.indexOf('【压缩记忆');
+  if (i < 0) return s;
+  return s.slice(0, i).replace(/\s+$/, '');
+}
+
 function stripThinkTags(s) {
   if (!s || typeof s !== 'string') return s;
   if (!/<(thinking|think|reasoning)[\s>]/i.test(s)) return s;

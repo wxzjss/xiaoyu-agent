@@ -9828,6 +9828,26 @@ function hubReset() {
  * 这里在画完之后扫一遍 log：把**连续相邻**的 details.tool 收进一个 toolhub。
  * 已经收在柜子里的不会再被收（它们不在 log 的直接子节点里），所以可以反复调。
  */
+/**
+ * 【2026-11-05 加·给柜子打「主人自己开的」记号】
+ *
+ * 主人报：「展开柜子后，新消息一来它就自动闭上」。
+ * foldOldHubs 的规矩是「发下一条消息，之前所有柜子一律收起」——
+ * 对翻过去的那几轮是对的，但他正打开看着的这个不该关。
+ *
+ * 所以每个新建的柜子都绑一次：toggle 时记记号，收柜子时跳过带记号的。
+ */
+function markHubUserOpened(hub) {
+  try {
+    hub.addEventListener('toggle', () => {
+      try {
+        if (hub.open) hub.dataset.userOpened = '1';
+        else delete hub.dataset.userOpened;
+      } catch (e) {}
+    });
+  } catch (e) {}
+}
+
 function groupLooseTools() {
   try {
     const lg = document.getElementById('log');
@@ -9858,6 +9878,7 @@ function groupLooseTools() {
       hub.appendChild(sum);
       lg.insertBefore(hub, first);
       for (const el of run) hub.appendChild(el);
+      try { markHubUserOpened(hub); } catch (e) {}
       run = [];
     };
     /* 【2026-11-05 改·先排掉已经是柜子的东西】
@@ -9893,6 +9914,8 @@ function foldOldHubs(keepFrom) {
     const hubs = scope.querySelectorAll("details.toolhub");
     for (const el of hubs) {
       if (keepFrom && keepFrom.contains && keepFrom.contains(el)) continue;
+      /* 【2026-11-05 加】主人自己打开的那个别关 —— 他正在看。 */
+      if (el.dataset && el.dataset.userOpened === '1') continue;
       if (el.open) el.open = false;
     }
     // 【2026-10-31 主人定：柜子里的抽屉要关着】
@@ -10057,6 +10080,7 @@ function addTool() {
       const sum = document.createElement('summary');
       sum.innerHTML = '<span class="hubname"></span><span class="status ok"></span><span class="hubpeek"></span>';
       h.appendChild(sum);
+      try { markHubUserOpened(h); } catch (e) {}
       log.appendChild(h);
       h.appendChild(d);
       /**
@@ -10260,6 +10284,7 @@ function foldLiveTools() {
   /* 柜子是 foldLiveTools 合出来的，里面装的是直播画的卡 —— 也算「我自己画的」，一并清 */
   try { hub.dataset.liveTurn = '1'; } catch (e) {}
   hub.open = false;                        // 收起来，主人点开才是一排抽屉
+  try { markHubUserOpened(hub); } catch (e) {}
   /**
    * 【2026-11-05 改·打开柜子时，里面的工具直接摊开】
    *

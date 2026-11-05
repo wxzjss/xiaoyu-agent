@@ -16367,6 +16367,29 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
    * 而真实请求里带着整份历史（动辄几万 token）。有基数就按基数往上加。 */
   if (typeof window.__xyLastRealTotal === 'undefined') window.__xyLastRealTotal = 0;
 
+  /**
+   * 【2026-11-05 修·还没回就开始显示「用量」】
+   *
+   * 主人报：「发出一条消息、她还没回，切走再切回来，最左下角冒出个错误的用量，
+   * 等她回完才消失」。
+   *
+   * 原因：切回来会重画历史，这时那一轮的 _usage 还不存在（她还没跑完），
+   * 于是走进下面的估算分支，拿「他发的那句话」估了个数出来 ——
+   * 一个凭空的数字挂在还没回的消息底下，当然不对。
+   *
+   * 判据用 replyChars：她一个字都还没说，就说明这一轮还没结束，现在估一定是错的。
+   * 正常跑完的轮次一定有回复文字；真出现「她说空话」的极端情况，
+   * 顶多少一个估算值，比显示一个错数字强。
+   */
+  const _notDoneYet = !u && !(Number(replyChars) > 0);
+  if (_notDoneYet) {
+    /* 她还没说话，分两种情况：
+     *   · 这一轮正在跑（busy）→ 什么都不画，等它跑完自然会有真实用量；
+     *   · 已经结束了却没用量（被打断 / 被关掉）→ 放行，交给下面那段「没记到用量」
+     *     的说明去解释，别让主人对着空地方瞎猜。 */
+    if (typeof busy !== 'undefined' && busy) return;
+  }
+
   if (!u && (Number(replyChars) > 0 || Number(userChars) > 0)) {
     const rc = Number(replyChars) || 0;
     const uc = Number(userChars) || 0;

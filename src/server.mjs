@@ -7798,7 +7798,25 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     const openingAllowedHere = () => {
       const me = currentIdentity(sessionId);
-      return Boolean(me && me.id === 'owner');
+      if (!(me && me.id === 'owner')) return false;
+      /**
+       * 【2026-11-05 修·关掉开场白还是垫】
+       *
+       * 主人报：「切回来发现我的消息前面冒出了小鱼的开场白，可我已经禁用了」。
+       *
+       * 原因是**两条路各判各的**：
+       *   · startOpening（切会话那条）用的是 openingAllowed()，里面查了开关 ✅
+       *   · /api/chat 这条用的是这里，原来**只查了身份**，压根没看开关 ❌
+       *
+       * 于是「卡里写着开场白 + 开关关掉」这种状态，从聊天这条路照样会垫进去。
+       * 而它是在**发消息那一刻**垫的，前端当下不一定画出来 —— 等切走再切回来重绘，
+       * 那句开场白才冒出来。跟主人描述的现象完全对上。
+       */
+      try {
+        return openingEnabled(cardIdOf(sessionId));
+      } catch (e) {
+        return false;
+      }
     };
     /**
      * 已经垫在历史里的那两句，非主人身份时也不发 —— 只在这一份请求里剔掉，

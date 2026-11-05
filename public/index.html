@@ -10022,6 +10022,8 @@ function addTool() {
       const _last = log.lastElementChild;
       if (_last && _last.classList && _last.classList.contains('toolhub')) {
         _last.appendChild(d);
+        /* 【2026-11-05】塞进已有柜子时也把指针接上，标题才会跟着涨 */
+        try { _liveHub = _last; } catch (e) {}
         return _last;
       }
       const h = document.createElement('details');
@@ -10033,6 +10035,15 @@ function addTool() {
       h.appendChild(sum);
       log.appendChild(h);
       h.appendChild(d);
+      /**
+       * 【2026-11-05 修·新柜子顶上光秃秃没字】
+       *
+       * 上面那个 summary 是空壳，等着 hubRefreshTitle 来填。
+       * 可 hubRefreshTitle 只认 `_liveHub` —— 新建柜子时没把指针交过去，
+       * 它就什么都不做，于是柜门那一行永远是空的。
+       * 这里把指针接上，后面 push 完会自然刷出「正在读取…」。
+       */
+      try { _liveHub = h; _liveHubCount = 1; } catch (e) {}
       return h;
     } catch (e) { return null; }
   };
@@ -10051,6 +10062,10 @@ function addTool() {
    * 不想看就是一行。摊开的中间态没有了。
    */
   try { foldLiveTools(); } catch (e) {}
+  /* 【2026-11-05 加】建完立刻把柜门刷一遍 —— 名字这时还是空的（调用方紧接着才填），
+   * 但至少能先把「调了 1 次工具」这个计数写上去，不至于顶着空白柜门。
+   * 调用方填完 name 之后还会再刷一次（见 tool_start 那段）。 */
+  try { hubRefreshTitle(); } catch (e) {}
   return { d, sum, pre };
 }
 

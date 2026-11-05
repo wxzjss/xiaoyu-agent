@@ -5438,10 +5438,23 @@ function paintSnapshot(sid, srcLive) {
             if (__anchor) {
               const el = log.querySelector('.msg[data-at="' + __anchor.at + '"]');
               if (el) {
+                /**
+                 * 【2026-11-05 修·补偿量算反了】
+                 *
+                 * 上一版写的是 `log.scrollTop += (now - want)`，其中
+                 * now = el.getBoundingClientRect().top - log.getBoundingClientRect().top
+                 * 那是**视口坐标**，里面已经含了当前 scrollTop 的影响。
+                 * 而重画刚结束时浏览器把 scrollTop 夹小过，于是 now 偏小 →
+                 * 差值是负的 → 又在已经偏上的位置上**继续往上滚** ——
+                 * 越修越远，正好是主人说的「停在很久远以前」。
+                 *
+                 * 现在用**文档坐标**算绝对位置：
+                 *   锚点的文档位置 = (相对可视区的位置) + scrollTop
+                 *   要让它离视口顶 off 像素 → scrollTop = 文档位置 - off
+                 */
                 const base = log.getBoundingClientRect().top;
-                const want = __anchor.off;
-                const now = el.getBoundingClientRect().top - base;
-                log.scrollTop += (now - want);   // 差多少补多少
+                const docTop = el.getBoundingClientRect().top - base + log.scrollTop;
+                log.scrollTop = Math.max(0, docTop - __anchor.off);
                 return;
               }
             }

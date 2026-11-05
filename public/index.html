@@ -4309,6 +4309,38 @@ function paintToBottom() {
  *   二、说完一段话（气泡收尾）→ +1
  * 剩下的全走这里，只管滚。
  */
+/**
+ * 【2026-11-05 加·用户展开/收起时，重新判断「到底贴不贴底」】
+ *
+ * 主人报：「在新消息位置展开某个东西时会弹一下；如果展开后不在最新位置，会弹到最新位置」。
+ *
+ * 链路：展开 → 高度变了 → ResizeObserver 调 noteNewContent → 看 stickBottom 决定滚不滚。
+ * 而 stickBottom 是**状态位**，重画后的静默窗口（__ignoreScrollUntil）会漏掉一两次 scroll，
+ * 它就一直停在 true。于是主人明明往上翻了，一次展开又把他拽回底部。
+ *
+ * 这里在 log 上挂一个捕获阶段的监听：任何 details 被点开/收起，
+ * 都按**当下真实位置**重算一次 stickBottom。不看状态位，看事实。
+ */
+try {
+  document.addEventListener('click', (ev) => {
+    try {
+      const t = ev.target && ev.target.closest ? ev.target.closest('summary') : null;
+      if (!t) return;
+      const d = t.parentElement;
+      if (!d || d.tagName !== 'DETAILS') return;
+      /* 等浏览器把 open 状态翻过来之后再判 */
+      setTimeout(() => {
+        try {
+          if (!_reallyAtBottom()) {
+            stickBottom = false;
+            try { rememberStick(); } catch (e) {}
+          }
+        } catch (e) {}
+      }, 0);
+    } catch (e) {}
+  }, true);
+} catch (e) {}
+
 function noteNewContent() {
   /* 【2026-11-05】同样改用实际位置判断 —— 状态位在静默窗口里会滞后。 */
   if (_reallyAtBottom()) { stickToBottom(); return; }

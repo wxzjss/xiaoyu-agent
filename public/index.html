@@ -5948,6 +5948,8 @@ function paintSnapshot0(sid, srcLive) {
       const _tk = _o ? adoptThink(_o) : openThink();
       try { if (_tk && _tk.el) _tk.el.dataset.liveTurn = '1'; } catch (e) {}
       try { if (typeof _tk.set === 'function') _tk.set(String(_t.t || '')); else _tk.push(String(_t.t || '')); } catch (e) {}
+      /* 【2026-11-05】延后补画的那块，内容进去也要刷柜门，不然摘要还是空。 */
+      try { hubRefreshTitle(); } catch (e) {}
       try { _tk.finish(); } catch (e) {}
     } catch (e) {}
   };
@@ -5957,8 +5959,20 @@ function paintSnapshot0(sid, srcLive) {
     if (!it || !it.k) continue;
     if (it.k === 'text') {
       closeThink();
-      const b = addAssistantAuto();
-      try { const w = b.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
+      /**
+       * 【2026-11-05 修·一句话被劈成两个气泡】
+       *
+       * 上一版只是把 think 挪了位置，可后面那段文字还是**新建了一个气泡** ——
+       * 屏幕上照样是「前半句 / 后半句」两个框，只是中间没夹思考块了。
+       *
+       * 真正的意思应该是：她"想到一半接着说"，那还是同一句话。
+       * 所以「刚才有一块思考被延后」= 现在这段文字要**接回上一个气泡**。
+       */
+      const _cont = _deferredThink && lastBubble;
+      const b = _cont ? lastBubble : addAssistantAuto();
+      if (!_cont) {
+        try { const w = b.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
+      }
       pushStreamText(b, String(it.t || ''));
       lastBubble = b;
       /* 【2026-11-05】这段文字画完了，把刚才延后的思考补上（它的原意就是「想到这儿」）。 */
@@ -5983,6 +5997,9 @@ function paintSnapshot0(sid, srcLive) {
       think = _oldThink ? adoptThink(_oldThink) : openThink();
       try { if (think && think.el) think.el.dataset.liveTurn = '1'; } catch (e) {}
       try { if (typeof think.set === 'function') think.set(String(it.t || '')); else think.push(String(it.t || '')); } catch (e) {}
+      /* 【2026-11-05 加】内容填进去了才刷柜门 —— 建块那一刻正文还是空的，
+       * 摘要算出来什么都没有，于是「想了 1 段」后面一直是白板。 */
+      try { hubRefreshTitle(); } catch (e) {}
       try { think.finish(); } catch (e) {}
       think = null;
     } else if (it.k === 'tool') {

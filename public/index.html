@@ -18941,6 +18941,36 @@ function renderTurns(turns, opts) {
     }
   } catch (e) {}
 
+  /**
+   * 【2026-11-05 重做·第一刀：同一条消息复用旧节点，不再每轮建新的】
+   *
+   * 现在的做法是「离屏组装一整个 frag，再 replaceChildren 换掉整屏」——
+   * 每条消息都重建，节点身份全丢：展开的思维链收起了、图片重新加载、滚动位置归零。
+   * 前面那一堆补丁（保留 think、锚点还原、展开态记录）都是在给这个病根打补丁。
+   *
+   * 这里做最小但有效的一步：**给每条消息一个稳定 key，换屏时能对上就复用旧节点**。
+   *   · 节点身份保住 → 展开态、内部状态、图片缓存全都自然连续，不用再额外记；
+   *   · 内容不会变旧：流式那条是直接改 DOM 的，旧节点才是最新的。
+   */
+  try {
+    const _seq = Object.create(null);
+    for (const el of frag.querySelectorAll('.msg')) {
+      const at = String(el.dataset.at || 'x');
+      _seq[at] = (_seq[at] || 0) + 1;
+      el.dataset.key = at + '#' + _seq[at];
+    }
+    /* 能对上的，就把旧节点塞进 frag 替掉新造的 —— 位置和身份都保住。 */
+    for (const el of [...frag.children]) {
+      const k = el.dataset && el.dataset.key;
+      if (!k) continue;
+      let old = null;
+      try { old = log.querySelector('.msg[data-key="' + k + '"]'); } catch (e) { old = null; }
+      if (old && old.parentNode === log) {
+        try { frag.replaceChild(old, el); } catch (e) {}
+      }
+    }
+  } catch (e) {}
+
   __ignoreScrollUntil = Date.now() + 800;
   log.replaceChildren(frag);
 

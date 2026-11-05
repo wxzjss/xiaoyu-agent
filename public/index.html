@@ -19551,13 +19551,24 @@ function renderTurns(turns, opts) {
    * 这里照 think 那套：画之前把打开的那些记下来（用标题文字当身份），画完按同样的标题恢复。
    */
   const __openHubs = [];
+  let __hubSeq = 0;
   try {
     if (log) {
       for (const h of log.querySelectorAll('details.toolhub')) {
         if (!h.open) continue;
         const nm = h.querySelector(':scope > summary .hubname');
         const key = String((nm && nm.textContent) || '').trim();
-        if (key) __openHubs.push(key);
+        const idx = __hubSeq++;
+        /**
+         * 【2026-11-05 修·按序号记，不只按标题】
+         *
+         * 主人报「最新消息位置还是这样」。
+         *
+         * 因为最新那个柜子的标题一直在变（调了 1 次 → 调了 2 次 → …），
+         * 按标题匹配，重画后永远对不上。序号是稳的：第几个柜子就是第几个。
+         */
+        if (key) __openHubs.push({ key, idx });
+        else __openHubs.push({ key: '', idx });
       }
     }
   } catch (e) {}
@@ -19646,13 +19657,18 @@ function renderTurns(turns, opts) {
    * 柜子本身被重建了、内容也更新了，但主人拉开的状态要留着。 */
   try {
     if (__openHubs.length) {
+      const _wantIdx = new Set(__openHubs.map((x) => x.idx));
+      const _wantKey = new Set(__openHubs.map((x) => x.key).filter(Boolean));
+      let _i = 0;
       for (const h of log.querySelectorAll('details.toolhub')) {
         const nm = h.querySelector(':scope > summary .hubname');
         const key = String((nm && nm.textContent) || '').trim();
-        if (key && __openHubs.indexOf(key) >= 0) {
+        /* 序号对得上就恢复（最新那个标题变了也认得出来），标题也能兜一层 */
+        if (_wantIdx.has(_i) || (key && _wantKey.has(key))) {
           h.open = true;
           try { h.dataset.userOpened = '1'; } catch (e) {}
         }
+        _i++;
       }
     }
   } catch (e) {}

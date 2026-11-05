@@ -1279,6 +1279,15 @@
       font-variant-numeric: tabular-nums; user-select: text;
       opacity: 0; transition: opacity .14s ease;
     }
+    /* 【2026-11-05 加】「加载更早」按钮：贴在聊天区最上面，细一点别抢戏 */
+    .loadEarlier {
+      display: block; margin: 10px auto 14px; padding: 6px 16px;
+      border: 1px solid var(--border); border-radius: 999px;
+      background: var(--panel); color: var(--dim); font-size: 12.5px;
+      cursor: pointer; font-family: inherit; transition: all .14s ease;
+    }
+    .loadEarlier:hover { color: var(--fg); border-color: var(--dim); background: rgba(255,255,255,.06); }
+
     /* 【2026-11-05 加】tokens 那行最右边的「这一轮跑了多久」。
        用 float 而不是 flex：这行是纯文字流（↑输入 · ↓输出 · N tokens · ￥x），
        改成 flex 会把每个 · 都变成独立 item，间距全变。 */
@@ -18376,7 +18385,19 @@ function renderTurns(turns, opts) {
    * 看着就是"滚不上去、一滚就弹回来"。
    * keepScroll 给这条路开个绿灯：不贴底，也不让后面的定时器贴。 */
   const _keepScroll = !!(opts && opts.keepScroll);
-  const WINDOW = 120;
+  /**
+   * 【2026-11-05 改·120 → 40】
+   *
+   * 主人原话：「要不还是删除我会话久远以前的显示吧（仅删除显示）」。
+   *
+   * 窗口本来就是 120（只画最后 120 轮，往上滚到顶再补前面一批），
+   * 可 120 轮 DOM 太多：每次重画都要重建一百多个节点，高度变化大、耗时长，
+   * 中间任何一处高度对不上都会让画面抖。
+   *
+   * 收到 40 —— 一屏大概能放 8~12 轮，40 轮够看四五屏，往上滚还是照旧自动补。
+   * 数据一条没删，只是少画。
+   */
+  const WINDOW = 40;
   /* 【注意】这里的 turns 就是全部轮次；_all 不能写成 = list —— list 下面才定义，会 TDZ 报错。 */
   const _all = Array.isArray(turns) ? turns : [];
   let _start = 0;
@@ -18405,6 +18426,36 @@ function renderTurns(turns, opts) {
   const frag = document.createDocumentFragment();
   /* 重画期间别人（notice 提示）要往里塞东西 —— 塞到旧屏上会被下面的 replaceChildren 冲掉 */
   try { window.__renderFrag = frag; } catch {}
+
+  /**
+   * 【2026-11-05 加·「加载更早」改成手动点】
+   *
+   * 主人要的：「改成需要手动点击加载才补前面的」。
+   * 原来是滚到离顶 240px 以内就自动补 120 轮 —— 往上翻的时候一碰顶就触发重画，
+   * 重画本身又会动高度，正好和「看着历史」这件事打架。
+   * 现在只在顶上放一颗按钮，点一下补一批，不点就一直是这么多。
+   */
+  try {
+    if (_start > 0) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'loadEarlier';
+      btn.textContent = '↑ 再往前看 100 轮（还有 ' + _start + ' 轮没显示）';
+      btn.onclick = () => {
+        try {
+          const keepFromBottom = log.scrollHeight - log.scrollTop;
+          /* 【2026-11-05】一次 100 轮。40 太少 —— 六百多轮要点十几次，
+           * 而且每点一次都要重画，反而更累。 */
+          renderTurns._keepStart = Math.max(0, _start - 100);
+          renderTurns(_all, { keepScroll: true });
+          requestAnimationFrame(() => {
+            try { log.scrollTop = log.scrollHeight - keepFromBottom; } catch (e) {}
+          });
+        } catch (e) {}
+      };
+      frag.appendChild(btn);
+    }
+  } catch (e) {}
 
   for (let ti = 0; ti < list.length; ti++) {
     const turn = list[ti];
@@ -18858,22 +18909,9 @@ function renderTurns(turns, opts) {
    * 主人看着就是「往上翻还有」，不会跳。
    */
   try {
-    const _pend = renderTurns._pending;
-    if (log && _pend && _pend.start > 0 && !renderTurns._bound) {
-      renderTurns._bound = true;
-      log.addEventListener("scroll", () => {
-        const P = renderTurns._pending;
-        if (!P || P.start <= 0 || log.scrollTop > 240) return;
-        const BACKFILL = 120;
-        const newStart = Math.max(0, P.start - BACKFILL);
-        // 补完把滚动位置还原：记住「离底部多远」，补完照这个换算，看着不跳
-        const keepFromBottom = log.scrollHeight - log.scrollTop;
-        renderTurns._keepStart = newStart;
-        // 【2026-11-05 修】keepScroll：补历史时不许贴底，否则人一往上翻就被弹回去
-        renderTurns(P.all, { keepScroll: true });
-        try { log.scrollTop = log.scrollHeight - keepFromBottom; } catch {}
-      }, { passive: true });
-    }
+    /* 【2026-11-05 改】原来这里挂了个 scroll 监听：滚到离顶 240px 就自动补 120 轮。
+     * 主人要求改成手动 —— 往上翻的时候一碰顶就触发重画，重画又动高度，
+     * 正好和「想安静看历史」打架。现在由顶上那颗「加载更早」按钮负责。 */
   } catch {}
   /* 【2026-10-31 主人定】历史画完了，工具调用统统收成一条灰 —— 不然打开会话就是一整屏参数和结果。
    * 留最后一个 hub 展开：那可能是正在跑的这一轮，收起来就看不见我在做什么了。

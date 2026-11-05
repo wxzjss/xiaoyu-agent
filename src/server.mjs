@@ -7195,6 +7195,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       for (const _sid of new Set(_cands)) {
         const _live = runningTurns.get(_sid);
         let _open = [];
+        /** 【2026-11-06 修】_steps 原来在 try 里声明，出了 try 就取不到 —— 提到这里 */
+        let _steps = [];
+        /** 【2026-11-06 修·同一个坑】_p 也是 try 里声明的，出了 try 取不到 */
+        let _p = null;
         /*
          * 【2026-11-01 这里我自己差点搞错，留个记号】
          *
@@ -7202,8 +7206,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 旁边那个同名的 .txt 只是给人看的渲染版 —— 别拿它当判据，用 TXT 去切只会切出空数组。
          */
         try {
-          const _p = loadPlan(_sid);
-          const _steps = (_p && Array.isArray(_p.steps)) ? _p.steps : [];
+          _p = loadPlan(_sid);
+          _steps = (_p && Array.isArray(_p.steps)) ? _p.steps : [];
           _open = _steps
             .filter((x) => x && x.status !== 'done' && x.status !== 'skipped')
             .map((x, n) => ({ n: (x.id != null ? x.id : n + 1), text: String(x.text || '').slice(0, 200) }));
@@ -7212,6 +7216,26 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         if (!_live && !_open.length) continue;
         /* 【2026-11-03 主人要求】功能关着 → 照样重启，但不写续跑意图（干净冷启动） */
         if (!_resumeAllowed) continue;
+        /* 【2026-11-06 加】把「总目标」和「已经定过的做法」算出来，一起写进断点。
+         *  目标优先取清单上的 goal；清单常常是空的，那就拿「会话标题｜主人最后那句」顶上 ——
+         *  标题本来就是主人那句话的浓缩，两句拼起来足够让醒来的我知道在干什么。 */
+        let _goal = String((_p && _p.goal) || '').trim();
+        if (!_goal) {
+          try {
+            const _sess = getSession(_sid);
+            const _t = String((_sess && _sess.title) || '').trim();
+            const _u = String(lastUserLine(_sid) || '').trim();
+            _goal = (_t && _u && _t !== _u) ? (_t + '｜' + _u) : (_t || _u || '');
+          } catch { /* 取不到就留空，宁可少一段也不带崩重启 */ }
+        }
+        _goal = _goal.slice(0, 300);
+        /* 决定从哪来：清单里已经打勾的步骤 = 已经做完的决定。
+         * 不去猜、不去总结 —— 只抄事实，抄错了比不抄更糟。 */
+        const _decisions = _steps
+          .filter((x) => x && (x.status === 'done' || x.status === 'skipped'))
+          .map((x) => String(x.text || '').slice(0, 160))
+          .filter(Boolean)
+          .slice(-6);
         markInterrupted({
           sessionId: _sid,
           text: _live && _live.draft ? _live.draft.text : '',
@@ -7220,6 +7244,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             : '主人让它重启（这一轮已说完，清单上还有没做完的）',
           taskLine: lastUserLine(_sid),
           openSteps: _open,
+          /* 【2026-11-06 加·5 段式交接】
+           *  原来只记「断在哪、还剩哪几步」—— 醒来知道接着干，但不知道**为什么干**、
+           *  也**已经定过什么主意**，于是要么把做过的重做一遍，要么拐到别的方向去。
+           *  workbuddy 的 session-continuity 把交接写成 5 段：目标/决定/规则/状态/下一步。
+           *  规则（主人原话）本来就在系统提示里，这里只补「目标」和「决定」。 */
+          goal: _goal,
+          decisions: _decisions,
         });
         _resumeSid = _sid;
         break;

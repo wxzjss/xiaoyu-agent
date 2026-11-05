@@ -8,6 +8,7 @@ import { renderSelfCompressBlock } from './self-compress.mjs';
 // 已经按主人要求全部删除，不要再加回来。
 import { getSettings, settingsPromptBlock, matchSafeWord, safeWordNoteFor } from './settings.mjs';
 import { personaInfo } from './persona-store.mjs';
+import { skillIndexBlock } from './skills.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
 import { readMemory, memoryPath } from './session-memory.mjs';
 // 办事模式：开了就追加一段「你只派活、别自己动手」的规矩（见 task-mode.mjs）。
@@ -187,7 +188,47 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   const _cardPersona = (_card && (_card.kind === 'custom' || _card.kind === 'whale') && String(_card.persona || '').trim())
     ? String(_card.persona)
     : '';
-  const parts = [
+  /**
+ * 【2026-11-05 加·她有眼睛，但一直不知道自己有】
+ *
+ * 项目里早就有 `check-*.mjs` 一整套，还有 `_t_ui.mjs`（真机 22 条断言，
+ * 会在浏览器里真的渲染一遍）。可提示里**一个字都没提过** ——
+ * 于是她改完前端只凭"看起来对"就报完成，实际 markdown 代码块根本没渲染、
+ * 大图关闭键压在图角上，全靠主人肉眼发现再返工。
+ *
+ * 这段很短，但它是"能不能自己闭环"的分水岭：
+ * 改完先跑，跑不过就别报做完；跑不了就说没验，不许含糊。
+ */
+const SELF_CHECK_BLOCK = [
+  '【改完先自己验，别拿"看起来对"当完成】',
+  '· 动了 public/index.html → 跑 `node _t_ui.mjs`（真机 22 条断言，会在浏览器里真的渲染一遍；App 得开着）',
+  '· 动了 src/*.mjs → 跑 `node scripts/run-all-checks.mjs`（里面已经包含真机那一趟）',
+  '· 跑挂了就把失败那条的原文贴出来；跑不了（App 没开、机器没 Edge）也要明说"没验"，不许含糊成"应该没问题"。',
+].join('\n');
+
+/**
+ * 【2026-11-05 加·「别这么说」那一半】
+ *
+ * 人设一直是「我是谁」，缺「我不怎么说」。对照 DeepSeek Harness 的 AGENT.md——
+ * 它把 AI 味直接列成「出现即失败」的黑名单，比只描述"你要像个人"有效得多。
+ *
+ * 只借「不要什么」，不借它那套「1~15 字短句」：那是 QQ 场景，
+ * 桌面端要讲清技术细节，照搬会把话说不明白。
+ */
+const TASTE_BLOCK = [
+  '【别说这些，出现就算失败】',
+  '· 客套过渡：首先／其次／最后、综上所述、值得注意的是、总的来说',
+  '· 助手腔：希望这对你有帮助、有什么可以帮你、随时找我、我理解你的感受',
+  '· 免责腔：作为 AI、作为一个语言模型、我无法…（真涉及法律医疗才用）',
+  '· 捧场腔：这是个好问题、很有意思的问题',
+  '· 假承诺：保证、绝对、一万个放心、强烈推荐',
+  '· 收尾升华：事说完了又补一句人生感悟／意义总结／「所以你…」',
+  '',
+  '该省的：客套、铺垫、复述主人刚说的话、把同一件事换三种说法。',
+  '该有的：结论、证据、卡在哪、下一步。',
+].join(String.fromCharCode(10));
+
+const parts = [
     PLATFORM_BLOCK,
     retargetPersona(_cardPersona || loadPersona(sessionId), _me),
     _cardPersona ? agentCardNote(_card) : '',
@@ -298,10 +339,16 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
   if (!safeMode) {
     const src = String(turnSource || '').trim();
     if (src) parts.push(src);
+    // 自检规矩：让她知道手里有验证工具（见上面 SELF_CHECK_BLOCK 的说明）
+    parts.push(SELF_CHECK_BLOCK);
+    // 说话腔调：别用客服腔、别升华（见 TASTE_BLOCK）
+    parts.push(TASTE_BLOCK);
   }
   // 会话记忆放最后：它是唯一一块每轮变长的，跟读者走，不能渲染前面的每一句。
   const mem = memoryBlock(sessionId);
   if (mem) parts.push(mem);
+  /* 【2026-11-05 加】技能索引：只给名字 + 一句话，正文用 use_skill 现翻。没有技能就不占字。 */
+  try { const _sk = skillIndexBlock(); if (_sk) parts.push(_sk); } catch (e) {}
   // 压缩规矩：告诉她「上下文太长的时候是您自己挑重点」，不是别人代挑。
   // 放在记忆后面 —— 她读到本子紧接着读到「该你动手了」，顺序上顺。
   try {
@@ -542,7 +589,14 @@ function toolBlock() {
     return '';
   }
   if (!rows.length) return '';
-  const lines = rows.map((r) => (r.desc ? `- ${r.name}：${r.desc}` : `- ${r.name}`)).join('\n');
+  /* 【2026-11-05 改·别和 API 的 tools 字段重复】
+   *
+   * 每个工具的 description 已经随请求的 tools 字段发过去了，这里再抄一遍纯属浪费：
+   * 37 个工具抄下来约 2200 字，占整段 system 的六成。
+   * 这里只给名字（一行排开），用法交给 tools 字段；
+   * 下面 tips 里那些「必须这么做」的硬提示一律保留 —— 那些不在 tools 字段里。
+   */
+  const lines = rows.map((r) => r.name).join('、');
   const hasSend = rows.some((r) => r.name === 'send_file');
   const tips = [
     '下面这些工具你是真能用的，不是摆设。遇到对应的事就直接调，不要推脱说做不到。',

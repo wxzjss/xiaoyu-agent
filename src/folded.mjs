@@ -33,6 +33,7 @@
  */
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { config } from './config.mjs';
 
 /** 一份会话的折叠目录。会话 id 里可能带奇怪字符（导入的会话、手改过的），一律洗掉。 */
@@ -112,6 +113,40 @@ function renderMessage(m, idx) {
  * @param {string} opt.summary     这段换来的摘要正文
  * @param {string} opt.reason      为什么折（水位/硬线/手动…）
  */
+/**
+ * 【2026-11-05 加·段号必须能复现，否则"按段号校验"是假的】
+ *
+ * 以前段号是 `'seg-' + sessionId + '-' + Date.now()` —— 每次调用现生成一个。
+ * 于是「递工作单时说 seg-A、真压时算 seg-B」，两边永远对不上，
+ * 所谓校验根本无从谈起；上一次写的摘要就一路被复用到后面每一段，
+ * 四道闸门还全过（长度够、不脏、不短），上下文悄悄变成错的。
+ *
+ * 现在用稳定指纹：**段从哪开始 + 那一条说的是什么**。
+ * dryPlan 和真压哪怕隔几个小时、尾部又多聊了几句，只要「要折的这一段」
+ * 起点没变、开头那句没变，算出来就是同一个号。
+ *
+ * 为什么不含结束位置：cut 随窗口预算浮动，拿它算指纹会永远对不上。
+ */
+export function currentSegId(messages, sessionId) {
+  try {
+    const list = Array.isArray(messages) ? messages : [];
+    let head = 0;
+    if (list[0] && list[0].role === 'system') head = 1;
+    if (list[head] && list[head].context && !list[head].summary) head += 1;
+    const m = list[head] || {};
+    const txt = typeof m.content === 'string'
+      ? m.content
+      : JSON.stringify(m.tool_calls || m.content || '');
+    const h = createHash('sha1')
+      .update(String(sessionId || '') + '|' + head + '|' + String(txt).slice(0, 300))
+      .digest('hex')
+      .slice(0, 10);
+    return 'seg-' + head + '-' + h;
+  } catch {
+    return '';
+  }
+}
+
 export function saveSegment({ sessionId, fromIndex, toIndex, messages, tokens, summary, reason }) {
   try {
     const dir = segDir(sessionId);

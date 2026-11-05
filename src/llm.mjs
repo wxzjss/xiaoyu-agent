@@ -227,11 +227,46 @@ export function configIdForSession(sessionId) {
   }
 }
 
+/**
+ * 【2026-11-05 加】这个会话选的模型还在不在？
+ *
+ * 给 agent 用：模型被删/被禁用时，`endpointForForSession` 返回 null，
+ * 调用方就悄悄换成了默认那套 —— 换模型、换 key、换计费、换窗口，一句话都不说。
+ * 有了这个判据，agent 就能在开头给主人递一句提示，而不是让他自己猜「怎么突然变笨了」。
+ *
+ * 没指定过模型（ov.modelId 为空）= 本来就用默认，不算回落，返回 true。
+ */
+export function hasSessionModel(sessionId) {
+  try {
+    const ov = getOverride(sessionId);
+    if (!ov || !ov.modelId) return true;
+    return !!endpointFor(ov.modelId);
+  } catch {
+    return true;
+  }
+}
+
 function endpointForForSession(sessionId) {
   if (!sessionId) return null;
   const ov = getOverride(sessionId);
   if (!ov.modelId) return null;
-  return endpointFor(ov.modelId); // 模型被删了就返回 null，下面会回落到默认那套
+  const ep = endpointFor(ov.modelId);
+  /**
+   * 【2026-11-05 加·别再悄悄换模型】
+   *
+   * 模型被删/被禁用时这里返回 null，调用方 `?? activeEndpoint()` 就换成了默认那套 ——
+   * 换模型、换 key、换计费、换上下文窗口，一句话都不说。
+   * 主人只会觉得「怎么突然变笨了 / 变贵了」。
+   *
+   * 日志至少留一条；真正要提醒到界面上，得由 agent 那边比对 turnModel 再推 notice。
+   */
+  if (!ep) {
+    try {
+      console.warn('[llm] 会话 ' + sessionId + ' 选的模型 ' + ov.modelId
+        + ' 已经不在了，这一轮回落到默认模型 —— 界面上没提示，这是已知的短板');
+    } catch {}
+  }
+  return ep;
 }
 
 /**
@@ -368,7 +403,11 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
   try {
     if (process.env.WHALE_DEBUG || String(model || '').trim()) console.log('[llm] streamChat model参数=' + JSON.stringify(String(model||'')) + ' → 用 ' + ep.name + ' (' + ep.baseURL + ' / ' + ep.model + ')');
   } catch {}
-  const body = {
+  /* 【2026-11-05 修】这里原先是 const。下面「上游说超窗口」的救援分支里
+   * 写了 body = { ...body, messages }，const 一赋值就抛 TypeError，
+   * 又被同一个 catch 吃掉，只留一行「压了也没成」的日志 ——
+   * 于是超窗口这条命，一次都没救回来过。改成 let。 */
+  let body = {
     model: ep.model,
     // 只发模型该看的那几个字段（内部标记一律剥掉，见上方 wireMessage 的注释）
     messages: wireMessages(messages),
@@ -461,7 +500,25 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       overflowTried = true;
       const cap = over > 0 ? Math.floor(over * 0.85) : undefined; // 留 15% 给回话和摘要
       try {
-        const cr = await compressHistory({ messages, limit: cap, signal });
+        /* 【2026-11-05 修】这条救援路径从来没传 selfNote。
+         *
+         * 而 compressHistory 在「没有我亲手写的压缩记忆」时直接返回
+         * no-self-note-keep-original —— 一条原文都不动。
+         * 所以上游一喊 too long，这里写着"压了一刀"，其实一个字没压，
+         * 重发还是超，会话照样死；日志还留一句"压了也没成"，看着像压缩的锅。
+         *
+         * 补一份**程序兜底摘要**（buildRescueNote：只从已经说过的话里摘，不叫模型），
+         * 符合主人 2026-10-30 的死命令「压缩必须我自己写，不许外包给模型」。
+         * 动态 import 是为了不加深 llm ↔ compress 这条已有的循环依赖。
+         */
+        let rescueNote = '';
+        try {
+          const { buildRescueNote } = await import('./compact-core.mjs');
+          rescueNote = buildRescueNote(messages, {});
+        } catch (e) {
+          console.warn('[llm] 兜底摘要没造出来：', String(e?.message ?? e));
+        }
+        const cr = await compressHistory({ messages, limit: cap, signal, selfNote: rescueNote || undefined });
         if (cr && cr.compressed) noteRealTokens(cr.after, cr.after, sessionId);
         console.warn('[llm] 上游说超窗口（' + (over > 0 ? over : '没说大小') + '），压了一刀：' + JSON.stringify({ before: cr?.before, after: cr?.after, kept: cr?.kept }));
         if (cr && cr.compressed) {
@@ -524,28 +581,50 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       buf = buf.slice(nl + 1);
       if (!line.startsWith('data:')) continue;
       const payload = line.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
+      if (!payload || payload === '[DONE]') {
+        /* 【2026-11-05 修】流要结束了还有攒着的 tool_calls —— 说明网关压根没发
+         * finish_reason（或者发在一个我们没收到的帧里）。这里兜底交出去，
+         * 总比让它静默消失强；正常结束时 acc 早被清空了，不会重复交付。 */
+        if (acc.size) {
+          try {
+            yield { type: 'tool_calls', toolCalls: [...acc.values()].filter((t) => t.name) };
+            acc.clear();
+          } catch {}
+        }
+        continue;
+      }
       let json;
       try { json = JSON.parse(payload); } catch { continue; }
 
       if (json.usage) yield { type: 'usage', usage: json.usage };
-      const delta = json.choices?.[0]?.delta;
-      if (!delta) continue;
+      const _choice = json.choices?.[0];
+      const delta = _choice?.delta;
+      const finish = _choice?.finish_reason;
+      /* 【2026-11-05 修·工具调用会凭空消失】
+       *
+       * 原来这里 `if (!delta) continue`，而 finish_reason 是在下面才取的 ——
+       * 有的网关（vLLM / llama.cpp / 部分中转）把 finish_reason 放在
+       * 「只有 finish_reason、没有 delta」的单独一帧里。那一帧被 continue 掉之后，
+       * tool_calls 永远等不到交付 → agent 判定「模型说完了」→ 工具一次都不执行，
+       * 她只回一句话，而日志里一个错都没有。
+       *
+       * 现在：先取 finish，delta 有没有都往下走；帧里没 delta 就只做交付判断。
+       */
+      if (delta) {
+        const reasoning = delta.reasoning_content ?? delta.reasoning;
+        if (reasoning) yield { type: 'reasoning', text: reasoning };
+        if (delta.content) yield { type: 'text', text: delta.content };
 
-      const reasoning = delta.reasoning_content ?? delta.reasoning;
-      if (reasoning) yield { type: 'reasoning', text: reasoning };
-      if (delta.content) yield { type: 'text', text: delta.content };
-
-      for (const tc of delta.tool_calls ?? []) {
-        const idx = tc.index ?? 0;
-        const cur = acc.get(idx) ?? { id: '', name: '', arguments: '' };
-        if (tc.id) cur.id = tc.id;
-        if (tc.function?.name) cur.name += tc.function.name;
-        if (tc.function?.arguments) cur.arguments += tc.function.arguments;
-        acc.set(idx, cur);
+        for (const tc of delta.tool_calls ?? []) {
+          const idx = tc.index ?? 0;
+          const cur = acc.get(idx) ?? { id: '', name: '', arguments: '' };
+          if (tc.id) cur.id = tc.id;
+          if (tc.function?.name) cur.name += tc.function.name;
+          if (tc.function?.arguments) cur.arguments += tc.function.arguments;
+          acc.set(idx, cur);
+        }
       }
 
-      const finish = json.choices?.[0]?.finish_reason;
       if (finish === 'tool_calls' && acc.size) {
         yield { type: 'tool_calls', toolCalls: [...acc.values()].filter((t) => t.name) };
         acc.clear();

@@ -145,7 +145,25 @@ export function withTimeout(work, ms, opts = {}) {
       err.timeoutMs = limit;
       err.what = what;
       try { opts.onTimeout?.(); } catch {}
-      try { opts.ac?.abort('timeout'); } catch {}
+      try {
+        /* 【2026-11-05 修·「认输后顺手掐掉底层连接」从来没生效过】
+         *
+         * 这里注释一直写着 ac 是 AbortController，可调用方（agent.mjs）传的是
+         * **AbortSignal** —— 它没有 .abort()。所以 `ac?.abort('timeout')` 必然抛
+         * TypeError，又被这个空 catch 吞掉，一点痕迹都不留。
+         * 后果：30 分钟到点后 agent 往下走了，但子进程 / 浏览器 / 视频任务还活着，
+         * 继续占 CPU、继续写工作区。
+         *
+         * 现在两种都认：真给了 controller 就掐；只给 signal 就不硬来（标准里
+         * AbortSignal 没有主动中止的入口），但至少不再抛错把后面的清理一起吞掉。
+         * 想把子进程真正干掉，调用方要传 AbortController。
+         */
+        const ac = opts.ac;
+        if (ac && typeof ac.abort === 'function') ac.abort('timeout');
+        else if (ac && process.env.TOOL_DEBUG === '1') {
+          console.warn('[deadline] 只拿到 AbortSignal，没法主动中止（' + what + '）—— 需要调用方传 AbortController');
+        }
+      } catch {}
       reject(err);
     }, limit);
     // 别让这个定时器把进程吊着不退出

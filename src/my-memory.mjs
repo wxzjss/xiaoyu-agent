@@ -276,6 +276,17 @@ export const DETAIL_LIMIT = 5;
 /** 组装进提示的总字数上限。超了先丢最旧的滚动条，最后才动固定记忆。 */
 export const MAX_CHARS = 12000;
 
+/**
+ * 【2026-11-05 加·存得多，注入得少】
+ *
+ * 本子里最多留 80 条（TURN_LIMIT），但**每轮都把这 80 条全塞进提示**是另一回事：
+ * 12000 字 ≈ 7~8k token，跟这轮聊什么完全无关，还挤占真正要看的历史。
+ *
+ * 现在注入只给最近这么多条，更早的留在本子里，她要用 `memory_search` 自己查。
+ * 一句话：**记忆从"每轮背一遍"改成"要用时能翻到"**。
+ */
+export const INJECT_ROLL = 22;
+
 export const ZONE_FIXED = '# 固定记忆';
 export const ZONE_ROLL = '# 滚动摘要';
 export const ZONE_DETAIL = '# 最近详细区';
@@ -614,6 +625,44 @@ function frameFixed(fixed, budget) {
   return { text: out, dropped };
 }
 
+/**
+ * 【2026-11-05 加·记忆检索】
+ *
+ * 现在每轮只注入最近 INJECT_ROLL 条，更早的还在本子里 —— 她想知道
+ * "以前是不是记过这件事"，就用这个查。关键词空格分开即可。
+ *
+ * 打分故意做得很笨：命中几个词就是几分，同样命中时偏爱新的那条。
+ * 不分词、不算相似度 —— 记忆本里本来就是短句，这样够用，而且结果可预测
+ * （不会出现"明明记过却搜不出来"那种玄学）。
+ */
+export function searchMemory(query, limit = 8) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  let raw = '';
+  try { raw = readFileSync(activeFile(), 'utf8'); } catch { return []; }
+  const { fixed, roll, detail } = parseMemory(raw);
+
+  const terms = q.split(/[\s,，、。;；!！?？]+/).filter((t) => t.length >= 1);
+  if (!terms.length) return [];
+
+  const pool = [
+    ...roll.map((r) => ({ kind: '滚动', text: String(r.text || '') })),
+    ...String(detail ?? '').split('\n').filter((l) => l.trim()).map((t) => ({ kind: '详细', text: t })),
+    ...String(fixed ?? '').split('\n').filter((l) => l.trim().startsWith('- ')).map((t) => ({ kind: '固定', text: t })),
+  ];
+
+  const scored = [];
+  for (let i = 0; i < pool.length; i += 1) {
+    const it = pool[i];
+    let hit = 0;
+    for (const t of terms) if (it.text.includes(t)) hit += 1;
+    if (!hit) continue;
+    scored.push({ ...it, score: hit * 10 + Math.round((i / Math.max(1, pool.length)) * 5) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.max(1, Math.min(30, Number(limit) || 8)));
+}
+
 export function composeMemory(maxChars = MAX_CHARS) {
   ensureFile();
   let raw = '';
@@ -627,7 +676,8 @@ export function composeMemory(maxChars = MAX_CHARS) {
   }
 
   const totalRoll = roll.length;
-  let keptRoll = roll.slice(-TURN_LIMIT);
+  // 【2026-11-05】注入只给最近 INJECT_ROLL 条，其余留在本子里等她查
+  let keptRoll = roll.slice(-INJECT_ROLL);
   let keptDetail = detailLines.slice(-DETAIL_LIMIT);
   let keptFixed = fixed;
   let keptArchive = archive;
@@ -637,7 +687,9 @@ export function composeMemory(maxChars = MAX_CHARS) {
     '',
     String(keptFixed ?? '').trim() || '（还没记下固定事实）',
     '',
-    `${ZONE_ROLL}（${keptRoll.length}/${TURN_LIMIT} 条${totalRoll > TURN_LIMIT ? ` · 共 ${totalRoll} 条，更早的已滚出` : ''}）`,
+    `${ZONE_ROLL}（这里只给最近 ${keptRoll.length} 条，共 ${totalRoll} 条`
+      + (totalRoll > keptRoll.length ? ` —— 更早的用 memory_search 查` : '')
+      + '）',
     '',
     keptRoll.map((r) => r.text).join('\n'),
     '',
@@ -780,6 +832,36 @@ export function appendRolling(summary, extra = {}) {
   if (!clean) throw new Error('summary 是空的，没东西可记');
 
   const { fixed, roll, detail, archive } = parseMemory(readFileSync(activeFile(), 'utf8'));
+  /**
+   * 【2026-11-05 加·源头查重】
+   *
+   * 卡在同一个地方反复说同一段话时，来一条记一条 —— 80 条名额很快被同一件事占满，
+   * 真正新的全被挤到归档里。主人看到的「记忆越来越乱」就是这个。
+   * 以前只在 session-memory 那边做了查重，这边一直空着。
+   *
+   * 判据照抄那边：剃掉标点 / 空白 / 编号，比开头 60 字。
+   * 不用相似度算法是怕误伤 —— 两件不同的事，开头很少一模一样。
+   */
+  const _normDup = (t) => String(t ?? '')
+    .replace(/^.*?摘要：/, '')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/[，。、；：！？「」『』（）()【】\[\]…—\-·.,!?;:"']/g, '')
+    .slice(0, 60);
+  const _mine = _normDup(clean);
+  if (_mine) {
+    const _dup = (roll || []).some((r) => {
+      const b = _normDup(r && r.text);
+      return b && (b === _mine
+        || (b.length >= 40 && _mine.length >= 40
+          && (b.startsWith(_mine.slice(0, 40)) || _mine.startsWith(b.slice(0, 40)))));
+    });
+    if (_dup) {
+      return {
+        id: null, path: activeFile(), count: (roll || []).length,
+        limit: TURN_LIMIT, archived: 0, skipped: 'duplicate',
+      };
+    }
+  }
   const id = nextTurnId();
   const now = new Date();
   const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -837,6 +919,24 @@ export function appendFixed(section, text) {
   const raw = readFileSync(activeFile(), 'utf8');
   const { fixed, roll, detail, archive } = parseMemory(raw);
   const lines = fixed ? fixed.split('\n') : [];
+
+  /* 【2026-11-05 加·源头查重】同一句话别钉第二遍 —— 理由同滚动摘要那条。
+   * 固定记忆本来是「不会被 80 条挤掉」的位置，重复钉进去占的是永久名额。 */
+  const _normFix = (t) => String(t ?? '')
+    .replace(/^\d{4}-\d{1,2}-\d{1,2}(\s+\d{1,2}:\d{2})?\s*/u, '')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/[，。、；：！？「」『』（）()【】\[\]…—\-·.,!?;:"']/g, '')
+    .slice(0, 60);
+  const _mineFix = _normFix(clean);
+  if (_mineFix) {
+    const _dupFix = lines.some((l) => {
+      const b = _normFix(String(l).replace(/^-\s*/, ''));
+      return b && (b === _mineFix
+        || (b.length >= 40 && _mineFix.length >= 40
+          && (b.startsWith(_mineFix.slice(0, 40)) || _mineFix.startsWith(b.slice(0, 40)))));
+    });
+    if (_dupFix) return { path: activeFile(), section: head, skipped: 'duplicate' };
+  }
 
   // 找到这个小节的标题，插在它内容的末尾
   const idx = lines.findIndex((l) => l.trim() === head);

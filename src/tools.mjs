@@ -101,7 +101,27 @@ export function runWithToolContext(ctx, fn) {
    * 调用方给什么覆盖什么，没给的沿用全局注入值。
    */
   const merged = (ctx && typeof ctx === 'object') ? { ...CTX, ...ctx } : CTX;
-  return CTX_STORE.run(merged, fn);
+  /**
+   * 【2026-11-05 加·这一轮跑了多久】
+   *
+   * 主人要在 tokens 消耗右边加「这一轮时长」。
+   * 耗时这种东西，一处算一遍最省心 —— runAgent 有 5 个返回点（正常结束、
+   * 被掐、被插话打断……），挨个补容易漏。这里是最外层的统一出口，
+   * 三个调用方（主对话 / 续跑 / 旁听）全从这儿过。
+   *
+   * 补在 usage._ms 上：跟着 usage 一起落盘，重绘历史也还在，不会「切走再回来就没了」。
+   */
+  const _t0 = Date.now();
+  const p = CTX_STORE.run(merged, fn);
+  if (!p || typeof p.then !== 'function') return p;
+  return p.then((r) => {
+    try {
+      if (r && typeof r === 'object' && r.usage && typeof r.usage === 'object' && !Number.isFinite(r.usage._ms)) {
+        r.usage._ms = Math.max(0, Date.now() - _t0);
+      }
+    } catch (e) {}
+    return r;
+  });
 }
 
 const CTX = {
@@ -302,8 +322,26 @@ export function dropSubagentDepth() {
 }
 
 export function beginOutbox() {
-  CTX.outbox = [];
-  return CTX.outbox;
+  /**
+   * 【2026-11-05 修·「这一轮发的文件」永远是空的】
+   *
+   * 这条链路原来断在两处：
+   *   · 这里只写**全局** CTX.outbox；
+   *   · 工具端全部读 ctxNow()（AsyncLocalStorage 里那份快照），
+   *     而 server.mjs 建上下文时显式传了 `outbox: null`。
+   * 于是 send_file / make_image / say / 截屏 登记的东西全进了一个没人看的数组，
+   * runAgent 返回的 files 恒为 [] —— 「把这一轮发的文件挂到回复上、
+   * 往会话记忆里记一笔『发了文件：X』」整段静默失效。
+   *
+   * 现在两份都写：当前异步链路那份（工具真正读的）+ 全局那份（老路径用）。
+   */
+  const box = [];
+  try {
+    const c = CTX_STORE.getStore();
+    if (c /* 可写对象就是 runWithToolContext 里 merge 出来的那份 */) c.outbox = box;
+  } catch {}
+  CTX.outbox = box;
+  return box;
 }
 
 /** Resolve a model-supplied path inside the workspace; refuse escapes. */
@@ -783,8 +821,24 @@ export const tools = [
                 parts.push('[命令被掐掉了，原因：' + whyText + '（不是主人点的停止）]');
               }
             }
-            else if (err && !stdout && !stderr) parts.push(`exit ${err.code}: ${err.message}`);
-            done(clip(parts.join('\n').trim() || '(no output)'));
+            else if (err) {
+              /* 【2026-11-05 修】以前这里写的是 `err && !stdout && !stderr` ——
+               * 只有一个字都没打出来的时候才报退出码。
+               * 可 npm test 失败是「先打一屏日志，再 exit 1」，
+               * stdout 有东西 → 退出码被整个跳过 → 模型只看到一屏日志，
+               * 没有失败标记，就把红的当绿的往下走。
+               * 现在只要有 err 就报。clip() 是保尾的，这句不会被长日志挤掉。 */
+              const _code = err.code === undefined || err.code === null ? '?' : err.code;
+              const _sig = err.signal ? ' / signal ' + err.signal : '';
+              const _msg = (stdout || stderr) ? '' : ': ' + String(err.message || '');
+              parts.push('[exit ' + _code + _sig + ']' + _msg);
+            }
+            const _out = clip(parts.join('\n').trim() || '(no output)');
+            /* 【2026-11-05 修·跑挂了别显示绿 ✓】
+             * 退出码非 0 就是失败：交给 runTool 透传 ok:false，
+             * 界面上是红的、模型收到 ERROR 前缀，不会再拿失败当通过往下编。 */
+            if (!aborted && err) done({ ok: false, output: _out });
+            else done(_out);
           },
         );
         // 主人点停止 / 点退出：立刻把子进程砍掉，别让整轮卡在一个跑不完的命令上。
@@ -851,14 +905,14 @@ export const tools = [
             return '好，正在重启（' + (reason ? '原因：' + reason : '没写原因') + '）。过几秒窗口会重新立起来。';
           }
           if (r.status === 501) {
-            return '这次不行：' + (j && j.error ? j.error : '这个窗口不是从桌面图标打开的，没法自己重启') +
-              '。要从桌面图标打开的那个程序里点才行。';
+            return { ok: false, output: '这次不行：' + (j && j.error ? j.error : '这个窗口不是从桌面图标打开的，没法自己重启') +
+              '。要从桌面图标打开的那个程序里点才行。' };
           }
         } catch {
           // 这个端口不通，换下一个
         }
       }
-      return '没找到能重启的入口（端口都没连上）。可能要主人手动关掉再开一次。';
+      return 'ERROR：没找到能重启的入口（端口都没连上）。可能要主人手动关掉再开一次。';
     },
   },
   {
@@ -969,7 +1023,7 @@ export const tools = [
       if (String(to) === 'whale') {
         const { whaleOn } = await import('./whale-presence.mjs');
         if (!whaleOn(me)) {
-          return '小鲸现在没被放出来（顶栏那颗「小鲸」按钮是关着的），话不能递给她。'
+          return 'ERROR：小鲸现在没被放出来（顶栏那颗「小鲸」按钮是关着的），话不能递给她。'
             + '要跟她说话得先由主人把按钮打开 —— 那是主人的开关，别自己去开。';
         }
       }
@@ -982,7 +1036,7 @@ export const tools = [
         }
       })();
       const r = postMail({ from: me, to: String(to), text, fromTitle: title });
-      if (!r.ok) return '没送出去：' + r.error;
+      if (!r.ok) return 'ERROR：没送出去：' + r.error;
       const head = '话已经放进「' + to + '」的信箱了。';
       if (!wake) {
         return head + '她下次说话时会看到（不打断她现在手上的活）。';
@@ -994,7 +1048,7 @@ export const tools = [
         const out = await hook(String(to));
         return head + (out && out.ok ? '已经叫醒她，她这就去看。' : '叫醒没成功：' + ((out && (out.note || out.error)) || '未知原因'));
       } catch (e) {
-        return head + '叫醒没成功：' + String(e?.message ?? e);
+        return { ok: false, output: head + '叫醒没成功：' + String(e?.message ?? e) };
       }
     },
   },
@@ -1016,7 +1070,7 @@ export const tools = [
       try {
         list = listSessions();
       } catch (e) {
-        return '列不出来：' + String(e?.message ?? e);
+        return { ok: false, output: '列不出来：' + String(e?.message ?? e) };
       }
       /**
        * 【把小鲸也列进来】—— 2026-10-27 新增
@@ -1244,7 +1298,7 @@ export const tools = [
     },
     async run({ text, path, inPlace, from }) {
       const { toSimplified, autoToSimplified, converterReady } = await import('./zh-convert.mjs');
-      if (!converterReady()) return '转简库没装上（缺 opencc-js），先别急着转，跟我说一声。';
+      if (!converterReady()) return 'ERROR：转简库没装上（缺 opencc-js），先别急着转，跟我说一声。';
       if (path) {
         const { resolve, isAbsolute } = await import('node:path');
         // 相对路径按「工作区」算，工作区没设就按程序根目录（dump/txt 就在那儿），
@@ -1268,7 +1322,7 @@ export const tools = [
         return `转好了（没覆盖原文件，要覆盖就加 inPlace=true）：${abs}\n繁体字占比 ${(r.ratio * 100).toFixed(1)}%\n\n--- preview ---\n${r.text.slice(0, 800)}`;
       }
       const src = String(text ?? '');
-      if (!src.trim()) return '没东西可转，把 text 或 path 给我一个。';
+      if (!src.trim()) return 'ERROR：没东西可转，把 text 或 path 给我一个。';
       const out = toSimplified(src, { from });
       return out === src ? `本来就是简体，一字没动：\n${out}` : out;
     },
@@ -1314,10 +1368,15 @@ export const tools = [
       const { appendRolling } = await import('./my-memory.mjs');
       try {
         const r = appendRolling(summary, { detail });
+        // 【2026-11-05】源头查重命中：告诉她没重复记，别让她以为记上了两条
+        if (r && r.skipped === 'duplicate') {
+          return `这条和已有的记忆「够像」，没重复记（现在共 ${r.count}/${r.limit} 条）。`;
+        }
         const arch = r.archived > 0 ? `，${r.archived} 条旧记录已归档` : '';
         return `记下了（${r.id}，现在共 ${r.count}/${r.limit} 条${arch}）。`;
       } catch (e) {
-        return '没记上：' + String(e?.message ?? e);
+        // 【2026-11-05】失败要能让界面变红、让模型看到 ERROR 前缀，不能再返回一句话当成功
+        return { ok: false, output: '没记上：' + String(e?.message ?? e) };
       }
     },
   },
@@ -1327,6 +1386,47 @@ export const tools = [
    * 主人说「以后都」「永远别」「记住」这类话，用这个 —— 写进固定那一格，
    * 永久保留，不会被 80 条的名额挤掉。
    */
+  {
+    name: 'use_skill',
+    description:
+      '把一份「手艺」的全文读进来。system 里只给名字和一句话，真正怎么做得读完才知道 —— 要做那件事之前先读，别凭名字猜。',
+    parameters: {
+      type: 'object',
+      properties: { name: { type: 'string', description: '技能名（system 里那份索引里的名字）' } },
+      required: ['name'],
+    },
+    async run({ name }) {
+      const { readSkill } = await import('./skills.mjs');
+      const r = readSkill(name);
+      if (!r.ok) return { ok: false, output: 'ERROR：' + r.error };
+      return r.text + (r.truncated
+        ? String.fromCharCode(10) + String.fromCharCode(10) + '（这份太长，只给了前 ' + r.text.length + ' 字，全文 ' + r.total + ' 字）'
+        : '');
+    },
+  },
+  {
+    name: 'memory_search',
+    description:
+      '在自己的长期记忆本里搜。平时只看得到最近 22 条，更早的记录要用这个查 —— 想问"以前是不是记过这件事"、想找当初定过的规矩，就搜关键词（空格分开几个词更准）。也会搜到固定记忆里那几条永久事实。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '关键词，空格分开几个词' },
+        limit: { type: 'number', description: '最多给几条，默认 8' },
+      },
+      required: ['query'],
+    },
+    async run({ query, limit }) {
+      const { searchMemory } = await import('./my-memory.mjs');
+      try {
+        const hits = searchMemory(query, limit);
+        if (!hits.length) return '记忆本里没找到跟「' + String(query || '') + '」相关的内容。';
+        return hits.map((h) => '[' + h.kind + '] ' + h.text).join(String.fromCharCode(10));
+      } catch (e) {
+        return { ok: false, output: '搜记忆出错了：' + String(e?.message ?? e) };
+      }
+    },
+  },
   {
     name: 'memory_pin',
     description:
@@ -1356,9 +1456,13 @@ export const tools = [
       const { appendFixed } = await import('./my-memory.mjs');
       try {
         const r = appendFixed(section, text);
+        if (r && r.skipped === 'duplicate') {
+          return `「${r.section}」里已经有一样的话了，没重复钉。`;
+        }
         return `钉住了（${r.section}）。这条不会被淘汰。`;
       } catch (e) {
-        return '没钉上：' + String(e?.message ?? e);
+        // 【2026-11-05】同上：钉失败不是成功
+        return { ok: false, output: '没钉上：' + String(e?.message ?? e) };
       }
     },
   },
@@ -1560,7 +1664,7 @@ export const tools = [
       try {
         return chronicleToc({ byCategory: byCategory === true || byCategory === 'true', limit }).text;
       } catch (e) {
-        return '岁月史书翻不开：' + String(e?.message ?? e);
+        return { ok: false, output: '岁月史书翻不开：' + String(e?.message ?? e) };
       }
     },
   },
@@ -1597,7 +1701,7 @@ export const tools = [
         });
         return r.text;
       } catch (e) {
-        return '岁月史书搜不动：' + String(e?.message ?? e);
+        return { ok: false, output: '岁月史书搜不动：' + String(e?.message ?? e) };
       }
     },
   },
@@ -1620,7 +1724,7 @@ export const tools = [
         const r = chronicleRead({ session, from, to });
         return r.text;
       } catch (e) {
-        return '岁月史书读不动：' + String(e?.message ?? e);
+        return { ok: false, output: '岁月史书读不动：' + String(e?.message ?? e) };
       }
     },
   },
@@ -1662,7 +1766,7 @@ export const tools = [
          * 直接调本模块里已有函数就行，别动态 import 自己。
          */
         const sid = String(session || currentSessionId() || '').trim();
-        if (!sid) return '不知道是哪个会话，没法看折叠箱。';
+        if (!sid) return 'ERROR：不知道是哪个会话，没法看折叠箱。';
         const list = listSegments(sid);
         if (!list.length) {
           return '这个会话还没折过东西（没压缩过，或者压缩时原文都还在尾巴里）。';
@@ -1679,7 +1783,7 @@ export const tools = [
         lines.push('下一步：用 folded_read 传 id（可以只给 seg-12-30 这种前缀）读原文。');
         return lines.join('\n');
       } catch (e) {
-        return '折叠箱打不开：' + String(e?.message ?? e);
+        return { ok: false, output: '折叠箱打不开：' + String(e?.message ?? e) };
       }
     },
   },
@@ -1700,7 +1804,7 @@ export const tools = [
       try {
         // 同上：别 import 自己，直接用本模块的 currentSessionId
         const sid = String(session || currentSessionId() || '').trim();
-        if (!sid) return '不知道是哪个会话，没法读折叠箱。';
+        if (!sid) return 'ERROR：不知道是哪个会话，没法读折叠箱。';
         const r = readSegment(sid, id);
         if (!r.ok) return '读不到：' + r.error;
         const head = '【折叠箱 · ' + r.id + '（第 ' + r.from + '–' + (r.to - 1) + ' 条，' + r.size + ' 字节）】';
@@ -1719,7 +1823,7 @@ export const tools = [
         }
         return head + '\n\n' + r.text;
       } catch (e) {
-        return '折叠箱读不动：' + String(e?.message ?? e);
+        return { ok: false, output: '折叠箱读不动：' + String(e?.message ?? e) };
       }
     },
   },
@@ -1746,12 +1850,12 @@ export const tools = [
       const sid = ctxNow().sessionId || 'default';
       const { taskOn } = await import('./task-mode.mjs');
       if (!taskOn(sid)) {
-        return '【现在不是办事模式】这个会话没开办事模式。'
+        return 'ERROR：【现在不是办事模式】这个会话没开办事模式。'
           + '要派活得先让主人在顶栏把那颗「办事模式」按钮点亮；'
           + '在那之前你自己动手就行 —— 别装作派过活。';
       }
       const body = String(task || '').trim();
-      if (!body) return '没说要干什么（task 是空的）。';
+      if (!body) return 'ERROR：没说要干什么（task 是空的）。';
 
       const brief = [
         body,
@@ -1855,9 +1959,11 @@ export const tools = [
 
       if (!r?.ok) {
         return '【' + nick + ' #' + w.id + ' 没干成】它的原话：\n\n' + (text || '（它没说话）')
-          + '\n\n（先分清是活没说清还是真做不到。说得清就退回给它，别自己上手。）';
+          + '\n\n（先分清是活没说清还是真做不到。说得清就退回给同一个 worker，别自己上手；也别换个新 worker 从头再来。）';
       }
-      return '【' + nick + ' #' + w.id + ' 回来了】它的汇报原文（还热着，别急着采信 —— 拿只读工具核一遍再决定收不收）：\n\n' + (text || '（一句汇报都没写 —— 这本身就是问题，退回给它，要它按四行交）')
+      return '⚑【这一件干完了 —— 现在就接着往下做：核对结果 → 回主人一句话说清做好了什么，'
+        + '要用到的文件当场用 send_file 发出去。别停在这里不说话。】\n\n'
+        + '【' + nick + ' #' + w.id + ' 回来了】它的汇报原文（还热着，别急着采信 —— 拿只读工具核一遍再决定收不收）：\n\n' + (text || '（一句汇报都没写 —— 这本身就是问题，退回给它，要它按四行交）')
         + '\n\n（收了就记一条账，没收就退回给同一个 worker。核账的读数别留太细，上下文本该由你管。）';
     },
   },
@@ -1894,10 +2000,10 @@ export const tools = [
       const sid = ctxNow().sessionId || 'default';
       const { taskOn } = await import('./task-mode.mjs');
       if (!taskOn(sid)) {
-        return '【现在不是办事模式】这个会话没开办事模式。要派活得先让主人在顶栏把那颗「办事模式」按钮点亮。';
+        return 'ERROR：【现在不是办事模式】这个会话没开办事模式。要派活得先让主人在顶栏把那颗「办事模式」按钮点亮。';
       }
       const list = (Array.isArray(tasks) ? tasks : []).filter((t) => t && String(t.task || '').trim());
-      if (!list.length) return '没说要干什么（tasks 是空的）。';
+      if (!list.length) return 'ERROR：没说要干什么（tasks 是空的）。';
       if (list.length > 4) return '一次最多派 4 件。要更多就先派 4 件，等回来再派。';
       if (list.length === 1) {
         return '只有一件活就不用这个工具了 —— 用 spawn_worker 就行（说明会清楚得多）。';
@@ -2009,10 +2115,10 @@ export const tools = [
       const sid = ctxNow().sessionId || 'default';
       const key = String(id || '').trim().replace(/^#/, '');
       const body = String(text || '').trim();
-      if (!key) return '没说给哪个 worker（id 是空的）。先用 list_workers 看一眼有谁。';
+      if (!key) return 'ERROR：没说给哪个 worker（id 是空的）。先用 list_workers 看一眼有谁。';
       if (!body) return '内容是空的。要说什么？';
       const r = sendWorkerMail(sid, key, body);
-      if (!r.ok) return '没递进去：' + String(r.error || '不知道什么原因');
+      if (!r.ok) return 'ERROR：没递进去：' + String(r.error || '不知道什么原因');
       const push = ctxNow().pushEvent;
       if (typeof push === 'function') {
         try { push({ type: 'note', text: '给 #' + key + ' 补了一句：' + body.slice(0, 80) }); } catch {}
@@ -2037,7 +2143,7 @@ export const tools = [
         return ws.map((w) => '· #' + w.id + ' ' + w.name + ' [' + w.status + '] 第 ' + w.rounds + ' 轮 / ' + w.tools + ' 个工具').join('\n');
       }
       const d = workerDetail(sid, key);
-      if (!d) return '这个会话里没有 #' + key + ' 这个 worker。';
+      if (!d) return 'ERROR：这个会话里没有 #' + key + ' 这个 worker。';
       const lines = [
         '#' + d.id + ' ' + String(d.name || '') + '  [' + String(d.status || '') + ']',
         '派给它的活：' + String(d.task || '').slice(0, 200),
@@ -2202,9 +2308,23 @@ async function clipToolResult(name, r, sessionId) {
   return Object.assign({}, r, { output: head + note });
 }
 
-export async function runTool(name, rawArgs, sessionId) {
-  const r = await runToolInner(name, rawArgs, sessionId);
-  return await clipToolResult(name, r, sessionId);
+/**
+ * 【2026-11-05 加·第 4 个参数：这一趟用什么信号】
+ *
+ * 原来工具只能拿到全局/ALS 里那个 signal（整轮的）。可「单个工具超时」需要
+ * 掐掉的**只有这一个工具**，不能连累整轮 —— 所以 agent 那边会给每个工具建一个
+ * 自己的 AbortController，通过这里塞进去。
+ *
+ * 实现上借 runWithToolContext：它会把 override 合并进当前链路那份上下文，
+ * ctxNow() 读到的就是新信号，**不碰全局 CTX**，并发会话也不会串。
+ */
+export async function runTool(name, rawArgs, sessionId, overrideSignal) {
+  const run = async () => {
+    const r = await runToolInner(name, rawArgs, sessionId);
+    return await clipToolResult(name, r, sessionId);
+  };
+  if (overrideSignal) return runWithToolContext({ signal: overrideSignal }, run);
+  return run();
 }
 
 async function runToolInner(name, rawArgs, sessionId) {
@@ -2276,7 +2396,39 @@ async function runToolInner(name, rawArgs, sessionId) {
     /* 【2026-10-30】以前传的是模块顶层那个 CTX 模板，里面 pushEvent/outbox 永远是空的 ——
      * 所以 send_file 当场推、ask_subagent 那句「我刚派了什么活」全都推不出去。
      * 现在传本轮真正的上下文。 */
-    return { ok: true, output: await tool.run(args, ctxNow()) };
+    const r = await tool.run(args, ctxNow());
+    /**
+     * 【2026-11-05 修·失败被当成成功】
+     *
+     * 以前只有**抛异常**才算失败，`return { ok: true }` 是无条件的。
+     * 可大量工具是用「返回一句话」表示失败的：run_command 的退出码、
+     * memory_add 的「没记上」、被安全闸拦下的命令……
+     * 界面上是绿色 ✓，模型收到的也没有 ERROR 前缀 —— 于是它把「没记上」
+     * 当成「记上了」，把跑挂的测试当成通过，接着往下编。
+     *
+     * 现在约定：工具可以自己返回 { ok:false, output }，这里原样透传。
+     * 已经按这个约定改的：run_command。其余工具逐个来，不一次性动几十处。
+     */
+    if (r && typeof r === 'object' && !Array.isArray(r) && r.ok === false && 'output' in r) {
+      return { ok: false, output: String(r.output ?? '') };
+    }
+    /**
+     * 【2026-11-05 加·统一失败约定】
+     *
+     * 工具用 `ERROR：` 开头表示"这件事没办成"。以前只有**抛异常**才算失败，
+     * 于是这些全被当成成功：restart_self 找不到重启入口、ask_peer 话递不出去、
+     * spawn_worker 不是办事模式、folded_list 不知道是哪个会话、
+     * tell_worker 没给 key…… 界面上一片绿 ✓，模型以为办好了，接着往下编。
+     *
+     * 为什么用前缀而不是给每个工具改返回结构：
+     *   · 逐个改要动 16 处 return，其中还有跨行拼接的，改一处错一处；
+     *   · 前缀是**看得见**的约定 —— 下次新加工具，写 `ERROR：` 就自动算失败。
+     * 代价是：真要有工具想返回一句以 "ERROR：" 开头的正常结果，会被误判 —— 可这基本不会发生。
+     */
+    if (typeof r === 'string' && /^\s*ERROR[：:]/.test(r)) {
+      return { ok: false, output: r };
+    }
+    return { ok: true, output: r };
   } catch (err) {
     return { ok: false, output: String(err?.message ?? err) };
   }

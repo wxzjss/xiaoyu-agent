@@ -136,54 +136,14 @@ function checkFile(label, path) {
     }
   }
 
-  // ---------- 1.5 HTML 注释必须成对 ----------
-  // 注释漏一个 `-->`，后面的 HTML 就整段被吞掉，而页面上的现象是「全黑、什么都点不动」——
-  // 排查时很难想到是注释。所以这一关放在结构配对前面，先把它拦下来。
-  console.log('  ── HTML 注释配对');
-  {
-    const opens = (html.match(/<!--/g) || []).length;
-    const closes = (html.match(/-->/g) || []).length;
-    if (opens !== closes) {
-      console.log('    ✘ <!-- ' + opens + ' 个，--> ' + closes + ' 个 —— 有注释没闭合');
-      // 指出第一个没闭合的大概位置：从头扫，遇到 <!-- 就找它后面的 -->
-      let i = 0;
-      let j = 0;
-      const op = [...html.matchAll(/<!--/g)].map((m) => m.index);
-      const cl = [...html.matchAll(/-->/g)].map((m) => m.index);
-      for (; i < op.length; i += 1) {
-        while (j < cl.length && cl[j] < op[i]) j += 1;
-        if (j >= cl.length) break;
-        j += 1;
-      }
-      if (op[i] !== undefined) {
-        const ln = html.slice(0, op[i]).split('\n').length;
-        console.log('       第一个可疑的注释在第 ' + ln + ' 行：' + JSON.stringify(html.slice(op[i], op[i] + 80)));
-      }
-      fatal++;
-    } else {
-      console.log('    ✔ 注释 ' + opens + ' 对');
-    }
-  }
-
   // ---------- 2. HTML 结构配对 ----------
   console.log('  ── 结构配对');
   const VOID = new Set(['br', 'hr', 'img', 'input', 'meta', 'link', 'area', 'base', 'col', 'embed', 'source', 'track', 'wbr']);
   for (const tag of ['html', 'head', 'body', 'form', 'dialog', 'script', 'style', 'select', 'table']) {
     // 去掉注释和字符串里的伪标签：只数「真正在标签位置」的
-    const open = (html.match(new RegExp('<' + tag + '\\b[^>]*>', 'gi')) || []).length;
-    const close = (html.match(new RegExp('</' + tag + '\\s*>', 'gi')) || []).length;
-    if (tag === 'dialog' || tag === 'body') {
-      // 这两个标签名经常被写进注释当说明（`<dialog>.close()`、`独立 <dialog> 在 <body> 下`），
-      // 直接数字面量会误报。统一走 countRealTags：先挖 script/style/注释再数。
-      const realOpen = countRealTags(html, tag, 'open');
-      const realClose = countRealTags(html, tag, 'close');
-      if (realOpen !== realClose) {
-        console.log('    ✘ <' + tag + '> 真正开 ' + realOpen + ' 闭 ' + realClose + '（注释里的不算）');
-        fatal++;
-      } else console.log('    ✔ <' + tag + '> ' + realOpen + ' 对');
-      continue;
-    }
     if (VOID.has(tag)) continue;
+    const open = countRealTags(html, tag, 'open');
+    const close = countRealTags(html, tag, 'close');
     if (open !== close) {
       console.log('    ✘ <' + tag + '> 开 ' + open + ' 闭 ' + close);
       fatal++;
@@ -192,9 +152,7 @@ function checkFile(label, path) {
 
   // ---------- 3. 重复 id ----------
   const idCount = new Map();
-  // 【2026-11-01】先挖掉注释：注释里写的 id="..." 不算存在（那次黑屏就是栽在这）
-  const htmlNoComments = stripHtmlComments(html);
-  for (const m of htmlNoComments.matchAll(/\bid\s*=\s*["']([^"']+)["']/g)) {
+  for (const m of html.matchAll(/\bid\s*=\s*["']([^"']+)["']/g)) {
     idCount.set(m[1], (idCount.get(m[1]) || 0) + 1);
   }
   const dups = [...idCount].filter(([, c]) => c > 1);
@@ -318,36 +276,21 @@ function checkFile(label, path) {
   console.log('  文件 ' + html.length + ' 字符 / ' + allLines.length + ' 行');
 }
 
-/**
- * 数「真正在标签位置」的开标签。
- *
- * 以前只挖掉 <script>，漏了 <style> —— 而我们在 CSS 注释、JS 注释里
- * 写 `<body>` / `<dialog>` 解释事情是常事（2026-10-27 加小鲸人设大面板时，
- * 注释里写了「独立 <dialog> 在 <body> 下」，结果 body 被数成「开 2 闭 1」，
- * 误报成致命问题）。现在 script 和 style 一起挖掉。
- */
-/**
- * 把 HTML 注释整段换成空格（保留换行，行号才对得上）。
- *
- * 【2026-11-01】加这个是因为踩了一次：我把设置里一段选项删掉时注释忘了写 `-->`，
- * 后面整段 HTML 都被吞进注释里；而下面数 id 的时候仍然能在注释文本里搜到 `id="..."`，
- * 于是「JS 引用 vs HTML 存在」那一关认为一切正常 —— 真跑起来才发现 getElementById 是 null，
- * 一行 addEventListener 把整个脚本带走，屏幕全黑。
- * 所以：**注释里的东西一律不算存在**。
- */
-function stripHtmlComments(html) {
-  return String(html).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
+function stripScriptAndComments(html) {
+  let s = html;
+  // 挖掉 <script>...</script> 的内容，但保留 script 标签本身，方便数 script 配对
+  s = s.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gi, (m, body) => m.replace(body, ''));
+  // 挖掉 HTML 注释
+  s = s.replace(/<!--[\s\S]*?-->/g, '');
+  // 挖掉 <style> 内容里的 /* */（style 标签本身保留）
+  s = s.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (m, a, body, b) => a + body.replace(/\/\*[\s\S]*?\*\//g, '') + b);
+  return s;
 }
 
 function countRealTags(html, tag, kind) {
-  // 先把 <script> / <style> 整段挖掉（里面 JS、CSS 注释里常有标签），再挖 HTML 注释。
-  // 顺序很关键：先挖 script 再挖 /* */，反过来会把 JS 的正则和字符串破坏掉。
-  const stripped = html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '<script></script>')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '<style></style>')
-    .replace(/<!--[\s\S]*?-->/g, '');
-  if (kind === 'close') return (stripped.match(new RegExp('</' + tag + '\\s*>', 'gi')) || []).length;
-  return (stripped.match(new RegExp('<' + tag + '\\b[^>]*>', 'gi')) || []).length;
+  const stripped = stripScriptAndComments(html);
+  const re = kind === 'close' ? new RegExp('</' + tag + '\\s*>', 'gi') : new RegExp('<' + tag + '\\b[^>]*>', 'gi');
+  return (stripped.match(re) || []).length;
 }
 
 console.log('前端页面自检');

@@ -30,7 +30,7 @@ export const makeImageTool = {
       return '还没有能出图的模型。让主人在右上角模型面板里加一条，把「这条拿来干嘛」选成「出图」—— 加了之后我才能画。';
     }
     const r = await generateImage({ prompt, size, prefix: 'draw' });
-    if (!r.ok) return '没画成：' + r.error;
+    if (!r.ok) return 'ERROR：没画成：' + r.error;
 
     // 交到主人手上：走 send_file 那条路（登记 outbox，聊天里长卡片）
     const box = Array.isArray(ctx.outbox) ? ctx.outbox : null;

@@ -292,6 +292,7 @@ function normalize(input = {}) {
   );
   // 输入法跟不跟系统语言：只有明确的 false 才算关，其余（没存过、存坏了）都当开。
   const imeMatchSystem = input.imeMatchSystem === false ? false : true;
+  // 主动找我：同样只认明确的 true，其余一律当关（这种要主动发声的，默认必须安全）
   /**
    * 记账用哪种钱。
    *
@@ -522,6 +523,24 @@ export function setDefaultBottomLines(lines) {
  * @param {{bottomLines?: string[], safeWords?: string[], safeWordNote?: string}} input
  * @returns {{ bottomLines: string[], safeWords: string[], safeWordNote: string, backup: string|null, changed: boolean, what: string[] }}
  */
+/* 【2026-11-05 严检抓到的坑·中文被编码弄坏成 ?? 也照样写进默认】
+ *
+ *  经过：我用命令直接 POST /api/settings/defaults 传中文安全词，
+ *  请求体没带对编码，服务端收到的是两个问号 —— 它 trim 一下、非空、就写进去了，
+ *  结果主人配好的安全词默认值被覆盖。
+ *
+ *  这里加一道闸：明显是乱码的值直接拒绝，宁可这一步失败，也不许把好数据冲掉。
+ */
+function looksGarbled(s) {
+  const t = String(s ?? "").trim();
+  if (!t) return false;
+  if (/^[?？]+$/.test(t)) return true;
+  if (t.indexOf(String.fromCharCode(0xfffd)) >= 0) return true;
+  const q = (t.match(/[?？]/g) || []).length;
+  if (t.length >= 2 && q / t.length >= 0.5) return true;
+  return false;
+}
+
 export function setDefaults(input = {}) {
   const prev = readDefaults();
   const next = { ...prev };
@@ -530,6 +549,13 @@ export function setDefaults(input = {}) {
   // 底线
   if (Array.isArray(input.bottomLines)) {
     const list = input.bottomLines.map((x) => String(x).trim()).filter(Boolean);
+    // 乱码闸：中文被编码弄坏后是「??」这种形状，不许写进去把好数据冲掉
+    const badLine = list.find((x) => looksGarbled(x));
+    if (badLine) {
+      const e = new Error('底线里有一条看着是乱码（' + badLine + '），没写入。请检查编码后重试');
+      e.status = 400;
+      throw e;
+    }
     if (!list.length) {
       const e = new Error('一条底线都没有，不能把它设成默认');
       e.status = 400;
@@ -549,6 +575,13 @@ export function setDefaults(input = {}) {
     for (const w of input.safeWords) {
       const s = String(w).trim();
       if (s && !list.includes(s)) list.push(s);
+    }
+    // 乱码闸：同上。这条就是今天真踩到的那个坑
+    const badWord = list.find((x) => looksGarbled(x));
+    if (badWord) {
+      const e = new Error('安全词里有一个看着是乱码（' + badWord + '），没写入。请检查编码后重试');
+      e.status = 400;
+      throw e;
     }
     if (!list.length) {
       const e = new Error('一个安全词都没有，不能把它设成默认');

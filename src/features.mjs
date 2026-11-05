@@ -98,11 +98,27 @@ export const FEATURES = [
     id: 'memory',
     name: '长期记忆',
     desc: '我自己的记忆本：固定记忆永久保留、滚动摘要最多 80 条、最近 5 轮写细、满了自动归档。按人设分开：同名共用一本，不同人设互不相通。关掉之后只读：本子照看得到，但一个字也不许再写，本子本身不删。',
-    tools: ['memory_add', 'memory_pin'],
+    /* 【2026-11-05 修·新工具必须登记，否则她永远用不了】
+     * memory_search 是这一轮新加的：记忆从"每轮全量注入 12000 字"改成
+     * "只注入最近 22 条 + 自己查"。可这个开关表是白名单 ——
+     * 不写进来，工具就是"关着"的状态，她会看到「现在是关着的，用不了」，
+     * 等于把刚装上的眼睛又捂回去。 */
+    tools: ['memory_add', 'memory_pin', 'memory_search'],
     defaultOn: true,
     // 专业模式下这两支笔一并收走：专业模式连人设都不带，记忆也不读，
     // 那就别让人能往本子里写 —— 只写不读＝黑洞。
     offInPure: true,
+  },
+  {
+    /* 【2026-11-05 加·技能本】
+     * 从 WorkBuddy 的 skill 借的：往 data/skills/<名字>/SKILL.md 丢一份「怎么做某件事」，
+     * 她自己会翻，不用改代码、不用改人设。
+     * 平时只在 system 里出现一行索引，真要用时 use_skill 读全文 —— 渐进式披露。 */
+    id: 'skills',
+    name: '技能本',
+    desc: '放在 data/skills/ 里的「手艺」：写周报的格式、剪视频的流程、审稿的规矩……平时只看见标题和一句话，用到时她自己翻开读。关掉之后她翻不了，已经读过的还在上下文里。',
+    tools: ['use_skill'],
+    defaultOn: true,
   },
   {
     id: 'note',
@@ -393,6 +409,26 @@ export const FEATURES = [
     tools: ['restart_self'],
     defaultOn: true,
   },
+  /**
+   * 【主动找我 · selfwake】—— 2026-11-06，对着 DeepSeek Harness 补齐的
+   *
+   * .dsh 有 selfwake：主人很久不来，角色会自己开口说一句。小鱼一条都没有 ——
+   * 人设里写着「被冷落会寂寞」，可她本人一个字都没法先开口，只能等主人说话。
+   *
+   * 它不挂任何工具（tools: []）：这不是给模型的工具，是给她自己的心跳。
+   * 放开时她自己按节奏开口；关掉就彻底不存在，连定时器都不起。
+   * 默认关着 —— 主人自己去功能页把它点亮。
+   */
+  {
+    id: 'selfwake',
+    name: '主动找我',
+    desc: '你很久没说话的时候，她自己开口找你说一句。'
+      + '打开之后：你 20 分钟上下没理她，她会自己冒个泡；半夜 0 点到 7 点不打扰你。'
+      + '你不理她最多叫 7 次，一天最多 12 次，不会刷屏。'
+      + '关掉之后她绝不会主动开口，只在你叫她时才应。',
+    tools: [],
+    defaultOn: false,
+  },
 ];
 
 /** 工具名 -> 所属功能 id（一个工具被多个功能声明时，记第一个，但判可用看全部） */
@@ -468,6 +504,64 @@ export function getEnabledMap() {
  * 表在建模块时算一次，之后只读。
  */
 const BY_ID = new Map(FEATURES.map((f) => [f.id, f]));
+
+/**
+ * 【按会话的功能开关】
+ *
+ * 主人 2026-11-06 原话：「【主动找我】改成按会话生效，我在哪个会话开了就在哪个会话生效，
+ * 不要在别的没开的会话生效」。
+ *
+ * 为什么不能直接塞进 features.json：那张表是全局的，一条 id 只有一个值。
+ * 而这里要的是「A 会话开着、B 会话关着」，只能另存一张表。
+ *
+ * 存法：.state/feature-by-session.json → { "<会话id>": { "<功能id>": true } }
+ * 没记过 = 走功能定义里的 defaultOn（跟全局表一个口径）。
+ */
+const BY_SESSION_FILE = join(config.dataDir, '.state', 'feature-by-session.json');
+
+function readBySession() {
+  try {
+    if (!existsSync(BY_SESSION_FILE)) return {};
+    const raw = JSON.parse(readFileSync(BY_SESSION_FILE, 'utf8'));
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch { return {}; }
+}
+
+/** 某个功能在某个会话里开着没。没记过就走 defaultOn。 */
+export function featureOnFor(sessionId, id) {
+  const key = String(id || '');
+  const f = BY_ID.get(key);
+  const fallback = f && f.defaultOn !== undefined ? Boolean(f.defaultOn) : true;
+  const sid = String(sessionId || '');
+  if (!sid) return fallback;
+  const all = readBySession();
+  const mine = all && all[sid];
+  if (!mine || typeof mine !== 'object' || mine[key] === undefined) return fallback;
+  return Boolean(mine[key]);
+}
+
+/** 开 / 关某个功能在某个会话里的状态。 */
+export function setFeatureFor(sessionId, id, on) {
+  const key = String(id || '');
+  if (!BY_ID.has(key)) {
+    const e = new Error('没有这个功能：' + (key || '(空)'));
+    e.status = 400;
+    throw e;
+  }
+  const sid = String(sessionId || '');
+  if (!sid) {
+    const e = new Error('缺少 sessionId');
+    e.status = 400;
+    throw e;
+  }
+  const all = readBySession();
+  if (!all[sid] || typeof all[sid] !== 'object') all[sid] = {};
+  all[sid][key] = Boolean(on);
+  const dir = join(config.dataDir, '.state');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(BY_SESSION_FILE, JSON.stringify(all, null, 2), 'utf8');
+  return { sessionId: sid, id: key, on: Boolean(on) };
+}
 
 /** 拿某一条功能定义；没有就返回 null（不抛，调用方自己决定 400 还是忽略）。 */
 export function featureById(id) {

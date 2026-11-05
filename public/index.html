@@ -12,6 +12,13 @@
     连 first-paint 那一帧也压在深色里，看不到白。
   -->
   <style>
+    /* 【2026-11-06 定时任务面板】 */
+    #cronDlg .cronList { padding: 6px 10px; overflow: auto; max-height: 44vh; }
+    #cronDlg .cronRow { display: flex; gap: 8px; align-items: center; padding: 6px 2px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    #cronDlg .cronRow .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #cronDlg .cronRow .w { color: #8b949e; font-size: 12px; flex: 0 0 auto; }
+    #cronDlg .cronRow .off { opacity: 0.45; text-decoration: line-through; }
+    #cronDlg .cronEmpty { color: #8b949e; padding: 10px 2px; }
     html, body { background: #0f1115; }
 
   </style>
@@ -741,6 +748,80 @@
     .msgAttach .attachMedia video { width: 100%; max-height: 260px; border-radius: 6px; display: block; background: #000; }
     .msgAttach .attachMedia audio { width: 100%; display: block; }
 
+    /* 【2026-11-05 修·发出去的图只剩 26 像素】
+       消息里的附件原来复用了输入框上方那条小 chip 的 .thumb（26×26），
+       于是发一张截图问「这个按钮在哪」，屏幕上永远只有一个小方块、点不开。
+       这里只针对聊天区里的（输入框上方那条不受影响），放大 + 可点开看原图。 */
+    #log .attachChip .thumb {
+      width: 128px; height: 128px; border-radius: 8px; cursor: zoom-in;
+    }
+    /* 【2026-11-05 修·图片名字跑到右边】
+       附件 chip 本来是横排（图标 + 名字 + 大小 + 删除键），那是给「一个文件名」设计的。
+       图片放大到 128 之后还横着排，文件名就挂在图右侧，看着像图长了条尾巴。
+       现在图片类：只留图，名字和大小一律不显示 —— 要看名字把鼠标放上去，
+       title 里有文件名和完整路径。文件类维持原来的横排（那里名字才是有用信息）。 */
+    #log .attachChip:has(img.thumb) {
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+      max-width: 140px;
+      padding: 6px;
+    }
+    #log .attachChip:has(img.thumb) .aname,
+    #log .attachChip:has(img.thumb) .asize { display: none; }
+    /* 点开看大图的那个浮层
+       【2026-11-05 修·关闭键压在图右上角】
+       上一版把按钮 fixed 到视口右上角。正方形图看不出来，可**宽图铺到 92vw** 时，
+       图片右上角正好顶到那儿，按钮就压在上面了 —— 主人说的就是这个。
+       现在改成"给图上方留一条 46px 的带子"，按钮放在带子里：
+       无论图多宽多高，都不可能和图片重叠。 */
+    /**
+     * 【2026-11-05 修·大图不居中】
+     *
+     * 原来 padding 是 `46px 6px 6px` —— 上面 46 是为了给右上角关闭键腾位置，
+     * 下面只留 6。于是图片被整整往下推了 20px，看着就是「偏下、不居中」。
+     * 而且 padding 一不对称，小图（撑不满高度的那种）里 dialog 自己会缩到内容高，
+     * 居中之后就歪得更明显。
+     *
+     * 现在：padding 归零、用 flex 真正居中，关闭键改成 position:fixed 钉在视口右上角 ——
+     * 它本来就不该参与布局。
+     */
+    #imgView {
+      padding: 0; border: 0; background: transparent; overflow: visible;
+      max-width: 94vw; max-height: 94vh;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    #imgView::backdrop { background: rgba(0, 0, 0, .78); }
+    #imgView img {
+      /**
+       * 【2026-11-05 改·图片像被切了一刀】
+       *
+       * 主人说点开后的图「两侧不全，像被切割」。
+       * 量过：原始 1749×1034，显示 690×408，比例 1.691 = 1.691 —— **一点没变形、也没裁**。
+       * 真正的问题是：92vw 让它几乎贴到窗口边缘（750 宽的窗口里只留 30px），
+       * 图片内容和边界之间没有视觉留白，看起来就像「从屏幕上溢出去、被切掉了」。
+       *
+       * 现在四周各留 6%（降到 88），边界一眼能看出来，图还是最大化的。
+       */
+      max-width: 88vw; max-height: 88vh; display: block; border-radius: 10px;
+      box-shadow: 0 10px 48px rgba(0, 0, 0, .62);
+    }
+    /* 【2026-11-05】大图右上角的关闭键（第一版只有 Esc，太反直觉） */
+    #imgView .imgViewClose {
+      /* 【2026-11-05】原来 absolute + top:4px 是挂在 dialog 里的，所以 dialog 得留 46px
+       * 顶边距给它，图就不居中了。改成 fixed：钉在视口右上，不占布局。 */
+      position: fixed; top: 14px; right: 14px;
+      width: 34px; height: 34px; border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, .4);
+      background: rgba(30, 34, 42, .92); color: #fff;
+      font-size: 20px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; padding: 0; z-index: 3;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, .45);
+    }
+    #imgView .imgViewClose:hover { background: rgba(220, 70, 70, .95); border-color: rgba(255, 255, 255, .7); }
+
     /* ---- 我发出去的文件：卡片（图片看、视频播、别的下载）---- */
     .fileList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     /* 【2026-10-30】send_file 当场推出来的卡片盒子，跟正式 fileList 长得一样 */
@@ -1006,6 +1087,14 @@
     }
     #send.stop { background: var(--err); }
     #send.stop::after { content: none; }
+    /* 【2026-11-05 加】独立停止键：只在跑的时候出现，平时不占地方 */
+    #stopBtn {
+      display: none; height: 44px; padding: 0 14px; border: 1px solid var(--border);
+      border-radius: 8px; background: #0f1319; color: var(--err); font-size: 15px;
+      cursor: pointer; flex: 0 0 auto;
+    }
+    #stopBtn.show { display: inline-block; }
+    #stopBtn:hover { background: #2a1a1a; border-color: var(--err); }
     /* 悬浮统一·2026-10-31 发送/停止是实心按钮，原来 hover 一点反应都没有 —— 底色压深一档 */
     #send:hover { background: color-mix(in srgb, var(--accent) 82%, #000); }
     #send.stop:hover { background: color-mix(in srgb, var(--err) 82%, #000); }
@@ -1022,7 +1111,13 @@
     .sendingHint.show { display: flex; }
     /* 「正在发送消息」那一行：居中、和输入框同宽 */
     .sendingRow { max-width: 900px; margin: 0 auto 6px; display: flex; align-items: center; gap: 10px; }
-    .sendingRow .sendingHint { margin: 0; flex: none; }
+    /* 【2026-11-05 改】原来是 flex:none（宽度跟内容走），时长没法靠右。
+       改成 flex:1 撑满整行，时长用 margin-left:auto 顶到右边。 */
+    .sendingRow .sendingHint { margin: 0; flex: 1 1 auto; min-width: 0; }
+    .sendingHint .turnElapsed {
+      margin-left: auto; color: #6b7280; font-size: 11.5px;
+      font-variant-numeric: tabular-nums; letter-spacing: .2px;
+    }
     /* 身份徽标：钉在顶栏「清空当前」正下方、聊天区顶部偏右那一块（主人指截图定的位置）。
        top:54px 紧贴顶栏下沿；right:22px 跟「清空当前」右缘大致齐平。
        用 fixed 是为了它不跟着 .sendingRow（那行会时隐时现）上下跳。
@@ -1164,6 +1259,10 @@
       font-variant-numeric: tabular-nums; user-select: text;
       opacity: 0; transition: opacity .14s ease;
     }
+    /* 【2026-11-05 加】tokens 那行最右边的「这一轮跑了多久」。
+       用 float 而不是 flex：这行是纯文字流（↑输入 · ↓输出 · N tokens · ￥x），
+       改成 flex 会把每个 · 都变成独立 item，间距全变。 */
+    .turnUsage .usageMs { float: right; opacity: .75; white-space: nowrap; }
     /* 挂在她说的话里面（气泡内部、底部）：跟气泡左边对齐，别居中到整行 */
     /* 挂在气泡内部的那一路（实时那一轮）：口径跟外面完全一致，同样贴底、左对齐 */
     .msg .turnUsage.underMsg {
@@ -1200,6 +1299,13 @@
     .turnUsage .na { opacity: .65; }
     .turnUsage .sep { opacity: .5; margin: 0 6px; }
     .turnUsage .tt { color: #8fc7ff; }
+  /* 【2026-11-05 加】这串数是按字数估的、不是接口报的真数 —— 得让人一眼看出来。
+     原来只写在悬停提示里，主人扫一眼根本不知道，还以为「1,293 输入」是真实用量。 */
+  .turnUsage .tt.est {
+    color: #d8b26a;
+    border-bottom: 1px dashed rgba(216, 178, 106, .6);
+    cursor: help;
+  }
     .turnUsage .cost { color: #d9a45b; }
 
     /*
@@ -1214,9 +1320,31 @@
       border-radius: 4px; user-select: text;
       white-space: pre-wrap; word-break: break-word;
     }
+    /* 【2026-11-05 加】提示行里的按钮（比如出错后的"放回输入框"） */
+    .sysnote .sysnoteBtn {
+      margin-left: 10px; padding: 2px 10px; border-radius: 6px; cursor: pointer;
+      border: 1px solid rgba(217, 164, 91, .55); background: rgba(217, 164, 91, .12);
+      color: #e8c083; font-size: 12px; white-space: nowrap;
+    }
+    .sysnote .sysnoteBtn:hover { background: rgba(217, 164, 91, .24); }
 
     /* 左上角：模型框 + 思考强度框 */
-    .topCfg { display: flex; align-items: center; gap: 8px; margin-left: 2px; }
+    .topCfg { display: flex; align-items: center; gap: 8px; margin-left: 2px; min-width: 0; }
+    /**
+     * 【2026-11-05 修·顶栏叠字】
+     *
+     * 现象：窗口一窄，「飞鱼deepseek-v4.1-flash」和「办事模式」直接叠在一起，
+     * 「当前思考强度：低」的「低」也压到别的字上。
+     *
+     * 成因：header 是 flex-wrap:nowrap，.topCfg 允许缩（flex:0 1 auto; min-width:0），
+     * 但它里面的按钮没设 min-width:0 —— flex 项不缩到内容宽度以下，
+     * 于是 .topCfg 缩了、子里面的按钮不缩、溢出到外面，正好糊在 #taskBtn 上。
+     *
+     * 修：按钮和按钮里的文字都允许缩，文字超出打省略号（完整值在 title 里）。
+     */
+    .topCfg .cfgBox { min-width: 0; overflow: hidden; }
+    .topCfg #topModelName, .topCfg #topThinkName { display: inline-block; max-width: 150px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
     .cfgBox {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px;
@@ -1365,6 +1493,13 @@
     .dlgFoot {
       display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
       padding: 12px 16px; border-top: 1px solid var(--border);
+      /* 【2026-11-05】原来底色是透明的，滚动内容会从下面透出来 ——
+         看起来像「保存按钮浮在文本框上面」。给个实底，边界就清楚了。 */
+      background: var(--panel);
+      flex: 0 0 auto;
+      /* 【2026-11-05】再钉一道：不管 flex 怎么算高度，这条永远贴在弹窗底部，
+         滚动内容从它下面过去 —— 保存按钮不会再"浮"在文本框上。 */
+      position: sticky; bottom: 0; z-index: 3;
     }
     .dlgFoot .hint { color: var(--dim); font-size: 12px; margin-right: auto; }
     fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin: 0 0 14px; }
@@ -1944,7 +2079,10 @@
     /* ---- 记忆本整本 ---- */
     /* 弹窗本身要宽一点：摘要和固定记忆都是整句话，窄了全是折行 */
     /* ---- 任务清单 ---- */
-    dialog.todoDlg { width: min(620px, 94vw); display: flex; flex-direction: column; max-height: 78vh; }
+    dialog.todoDlg { width: min(620px, 94vw); display: flex; flex-direction: column; max-height: 78vh;
+      /* 【2026-11-05】原来没写 height，浏览器把它撑到 max-height 那一档，内容少的时候
+         下半截是一大片空白（定时面板只有空态提示时尤其难看）。改成由内容决定高度。 */
+      height: fit-content; }
     dialog.todoDlg:not([open]) { display: none; }
     .todoTop {
       display: flex; align-items: center; gap: 10px; padding: 10px 16px 8px;
@@ -2296,6 +2434,16 @@
     .usageBox .usageMain .tok { color: #8fc7ff; }
     .usageBox .usageSub { color: var(--dim); font-size: 11.5px; line-height: 1.8; margin-top: 4px; user-select: text; }
 
+    /* 【2026-11-05 修·设置面板的底部保存条被内容挤没了】
+       通用 dialog 是 `height:auto` + `max-height:86vh` + `display:flex`，
+       而 flex 子项在「容器高度 auto」时**不会因为 max-height 而收缩** ——
+       内容一长，dlgBody 顶着往下长，底部的 .dlgFoot（保存按钮那条）直接被挤出弹窗，
+       看起来就是「保存按钮浮在文本框上面」。
+       设置面板内容本来就多（人设/底线/安全词/移动端/备份/更新…），给它一个确定高度。 */
+    #settingsDlg { height: min(86vh, 680px); }
+    /* 用确定的最大高度把滚动关住：头 52px + 底 60px + 余量 */
+    #settingsDlg .dlgBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-height: calc(86vh - 118px); }
+
     #settingsDlg #mobToggle {
       flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
       border: 1px solid var(--border); background: transparent; color: var(--dim);
@@ -2526,6 +2674,10 @@
 }
 .msg.user { position: relative; }
 .msg.assistant { position: relative; }
+/* 【2026-11-05】估出来的用量：压暗 + 虚线底，跟接口回的真数一眼分得开 */
+.turnUsage .tt.est { opacity: .75; text-decoration: underline dotted; text-underline-offset: 2px; }
+.turnUsage .estWhy { margin-left: 6px; font-size: 10.5px; color: var(--dim); border: 1px dashed currentColor; border-radius: 3px; padding: 0 3px; }
+
 /* 改过的那条，角色名后面点一个小标记 */
 .msg.edited .role::after { content: '· 改过'; color: var(--muted, #98a2b3); font-size: 11px; margin-left: 6px; }
 /* 正在编辑的那个气泡 */
@@ -2563,6 +2715,138 @@
 
 
 /* ── 窗口最外层渐变描边（5 号：上亮下暗）── */
+
+/* ─────────────────────────────────────────────────────────────
+   【2026-11-05 加】正文 markdown 样式
+   只挂在 .bubble.md 上 —— 由 mdInto 判定"这段真有 markdown 特征"才加。
+   普通聊天气泡完全不受影响，还是原来那个样子。
+   颜色一律用半透明灰 / 继承色，深色浅色皮肤都不会突兀。
+   ───────────────────────────────────────────────────────────── */
+.bubble.md { white-space: normal; }
+.bubble.md .mdp { white-space: pre-wrap; margin: 0 0 8px; }
+.bubble.md > *:last-child { margin-bottom: 0; }
+.bubble.md .mdh { font-weight: 600; margin: 10px 0 6px; line-height: 1.35; }
+.bubble.md .mdh:first-child { margin-top: 0; }
+.bubble.md .mdh1 { font-size: 1.35em; }
+.bubble.md .mdh2 { font-size: 1.22em; }
+.bubble.md .mdh3 { font-size: 1.1em; }
+.bubble.md .mdh4, .bubble.md .mdh5, .bubble.md .mdh6 { font-size: 1em; }
+.bubble.md ul, .bubble.md ol { margin: 4px 0 8px; padding-left: 22px; }
+.bubble.md li { margin: 2px 0; line-height: 1.55; }
+.bubble.md code {
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: .92em;
+  background: rgba(127, 127, 127, .16);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.bubble.md .mdcode { position: relative; margin: 8px 0; }
+.bubble.md .mdcode pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: rgba(127, 127, 127, .12);
+  border-radius: 8px;
+  max-height: 320px;
+  overflow: auto;
+}
+.bubble.md .mdcode pre code {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+}
+.bubble.md .mdcopy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(127, 127, 127, .35);
+  background: rgba(127, 127, 127, .12);
+  color: inherit;
+  cursor: pointer;
+  opacity: .7;
+}
+.bubble.md .mdcopy:hover { opacity: 1; }
+.bubble.md .mdtable { margin: 8px 0; overflow-x: auto; }
+.bubble.md table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: .94em;
+}
+.bubble.md th, .bubble.md td {
+  border: 1px solid rgba(127, 127, 127, .35);
+  padding: 5px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+.bubble.md th { background: rgba(127, 127, 127, .12); font-weight: 600; }
+.bubble.md a { color: #4b9eff; text-decoration: underline; text-underline-offset: 2px; }
+.bubble.md strong { font-weight: 600; }
+
+/* 【2026-11-05 加】超长正文先折起来，别让一条回复占满整屏 */
+.bubble.folded {
+  max-height: 460px; overflow: hidden; position: relative;
+}
+.bubble.folded::after {
+  /* 【2026-11-05 主人截了图问「这段话上面会有一层阴影」】
+   * 原来这层是 88px 高、几乎不透明的黑（.96），压在 460px 框的底部 ——
+   * 一条 1264 字的回复被折起来之后，那 88px 正好盖住五六行正文，
+   * 字直接变灰黑，看着就像"上面有一层阴影"。字不是装饰，不许被盖住。
+   * 现在：只在最底下留 18px 的极淡渐隐（.45），够暗示"下面还有"，压不黑任何字。 */
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 18px;
+  background: linear-gradient(to bottom, rgba(15, 17, 21, 0), rgba(15, 17, 21, .45));
+  pointer-events: none;
+}
+.foldToggle {
+  display: block; margin: 6px 0 0; padding: 3px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: rgba(127, 127, 127, .1);
+  color: var(--dim, #98a2b3); font-size: 12px;
+}
+.foldToggle:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 【2026-11-05 加】每条消息的小时间，挂在署名旁边，不抢眼 */
+.msgTime {
+  margin-left: 8px; font-size: 11px; font-weight: 400;
+  color: var(--dim, #98a2b3); opacity: .65; user-select: none;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   【2026-11-05 加】窄屏适配
+   原来全文件只有 4 个断点（藏 meta / 两个弹窗竖排 / hover 常驻），
+   聊天区、输入区、工具卡一条规则都没有 —— 360px 的手机上右边直接出界。
+   这里只解决"能不能用"，不做重排级别的改版。
+   ───────────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  #log { padding: 12px 10px 8px; gap: 10px; }
+  .msg { max-width: 100%; }
+  .assistant .bubble, .bubble { max-width: 100%; }
+  /* 工具卡/思考块原来用 calc(50% - 442px) 去对齐 900px 宽的气泡，窄屏必然错位 */
+  #log > details.tool,
+  #log > details.toolhub,
+  #log > details.think { margin-left: 0; max-width: 100%; width: 100%; }
+  .inputRow { padding: 6px 8px; gap: 6px; }
+  #plusBtn { width: 38px; height: 38px; min-width: 38px; }
+  textarea { min-height: 38px; padding: 8px 10px; font-size: 14px; min-width: 0; }
+  #send, #stopBtn { height: 38px; padding: 0 12px; font-size: 13px; }
+  /* 左边那排浮着的名牌会盖住正文，窄屏压小一档 */
+  #whoRail { max-width: 104px; top: 50px; left: 8px; }
+  #whoRail .whoBtn { font-size: 11px; padding: 3px 7px; }
+  .sysnote { margin: 6px 4px 10px; }
+  #log .attachChip .thumb { width: 96px; height: 96px; }
+  #log .attachChip:has(img.thumb) { max-width: 108px; padding: 4px; }
+  .bubble.md .mdtable { margin: 6px 0; }
+}
+
+@media (max-width: 420px) {
+  #send, #stopBtn { padding: 0 10px; }
+  #plusBtn { width: 34px; height: 34px; min-width: 34px; }
+  .attachChip { max-width: 100%; }
+  #log .attachChip .thumb { width: 80px; height: 80px; }
+}
 
 </style>
 </head>
@@ -2619,6 +2903,7 @@
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
+    <button id="cronBtn" title="定时任务：跟她说一件事、再说什么时候做，到点她自己去做">定时</button>
     <button id="openFeatures">功能</button>
     <button id="openSettings">设置</button>
     <button id="openModels" title="模型">模型</button>
@@ -2700,14 +2985,16 @@
           <legend>底线</legend>
           <div class="field">
             <label>一行一条。这些是硬规则，压在人设上面——任何档位、任何情绪都不许越过。</label>
-            <textarea id="bottomLines" spellcheck="false"></textarea>
+            <textarea id="bottomLines" spellcheck="false" style="height:150px;max-height:150px;min-height:150px;resize:vertical"></textarea>
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="resetBottomLines">恢复出厂默认底线</button>
-            <button type="button" class="ghost" id="setDefaultBottomLines" title="把输入框里现在这几条存成这套人设自己的默认；以后点「恢复出厂默认底线」回来的就是它们">设为默认</button>
+            <button type="button" class="ghost" id="setDefaultBottomLines" title="把输入框里现在这几条存成这套人设自己的默认；以后点右边那颗「恢复默认」回来的就是它们">设为默认</button>
+            <button type="button" class="ghost" id="restoreDefaultBottomLines" title="把底线恢复成你上次点「设为默认」时存下的那一份（不是出厂那几条）">恢复默认</button>
             <span class="hint" id="bottomLinesHint"></span>
           </div>
         </fieldset>
+
 
         <fieldset>
           <legend>记账用什么钱</legend>
@@ -2737,7 +3024,8 @@
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <button type="button" class="ghost" id="resetSafeWords">恢复出厂默认安全词</button>
-            <button type="button" class="ghost" id="setDefaultSafeWords" title="把输入框里现在这几个词存成这套人设自己的默认；以后点「恢复出厂默认安全词」回来的就是它们">设为默认</button>
+            <button type="button" class="ghost" id="setDefaultSafeWords" title="把输入框里现在这几个词存成这套人设自己的默认；以后点右边那颗「恢复默认」回来的就是它们">设为默认</button>
+            <button type="button" class="ghost" id="restoreDefaultSafeWords" title="把安全词恢复成你上次点「设为默认」时存下的那一份（不是出厂那几条）">恢复默认</button>
             <span class="hint" id="safeWordsHint"></span>
           </div>
         </fieldset>
@@ -2991,7 +3279,6 @@
 
         <div class="mdlFoot">
           <span class="hint" id="optHint"></span>
-          <button type="button" class="ghost" id="restoreEnv" hidden>找回 .env 那条</button>
         </div>
       </div>
       </div>
@@ -3154,7 +3441,8 @@
         <span class="hint" id="idTip">选中一个身份点「用这个身份」就立刻生效，下一句就按新身份说话。</span>
         <button type="button" class="ghost" id="idAdd">新建身份</button>
         <button type="button" class="ghost" id="idDel">删掉这个</button>
-        <button type="button" class="ghost" id="idSetDefault" hidden>设为默认</button>
+        <button type="button" class="ghost" id="idSetDefault" hidden title="把选框里这个身份现在的样子存成它自己的默认；以后点右边那颗「恢复默认」回来的就是这一份">设为默认</button>
+        <button type="button" class="ghost" id="idRestoreDefault" hidden title="回到你「设为默认」存下的那一份">恢复默认</button>
         <button type="button" class="ghost" id="idReset" hidden>恢复出厂默认</button>
         <button type="button" class="ghost" id="idSave">保存</button>
         <button type="button" class="primary" id="idUse">用这个身份</button>
@@ -3185,7 +3473,8 @@
       </div>
       <div class="dlgFoot">
         <span class="hint" id="wpTip">写完全套替换「她是谁、跟小鱼怎么相处」那一部分；底线、安全词说明、她自己的本子、当前状态都不会被冲掉。</span>
-        <button type="button" class="ghost" id="wpSetDefault">设为默认</button>
+        <button type="button" class="ghost" id="wpSetDefault" title="把栏里这一套存成她自己的默认；以后点右边那颗「恢复默认」回来的就是这一套">设为默认</button>
+        <button type="button" class="ghost" id="wpRestoreDefault" title="回到你「设为默认」存下的那一套">恢复默认</button>
         <button type="button" class="ghost" id="wpReset">恢复出厂默认</button>
         <button type="button" class="ghost" id="wpResetAll">人设和模型都恢复出厂默认</button>
         <button type="button" class="primary" id="wpSave">保存</button>
@@ -3287,7 +3576,7 @@
             <textarea id="agOpening" rows="3" spellcheck="false" placeholder="新建会话时她先说的那句；留空就是她不开口"></textarea>
             <!-- 开场白开关·2026-10-31 主人要的：稿子留着，也能一键先关掉。 -->
             <label class="agOpeningWrap" title="勾着：新建会话时她先开口；取消：这段字留着，但这次不开场">
-              <input type="checkbox" id="agOpeningOn" checked>
+              <input type="checkbox" id="agOpeningOn" disabled>
               <span>开场</span>
             </label>
           </div>
@@ -3458,6 +3747,25 @@
     </div>
   </dialog>
 
+  <!-- 【2026-11-06 主人要的「定时任务」】给个任务 + 什么时候开始，到点她自己去做。
+       后端 src/cron.mjs；这里只是入口，真正的判断和推进都在那边。 -->
+  <dialog id="cronDlg" class="todoDlg">
+    <div class="dlgHead">
+      <b>定时任务</b><span class="meta" id="cronHint">到点了她自己去做，不用你守着</span>
+      <button type="button" class="x" id="cronClose" data-close="1">关闭</button>
+    </div>
+    <div class="cronList" id="cronList"></div>
+    <div class="todoAddRow">
+      <input type="text" id="cronText" placeholder="要她做什么……比如「整理一下下载文件夹」" style="flex:2" />
+      <input type="datetime-local" id="cronWhen" step="60" style="flex:1.3" title="选年月日时分（精确到分钟）" />
+    </div>
+    <div class="todoAddRow">
+      <label class="mdlKind"><input type="checkbox" id="cronRepeat" /><span>每天这个点都做</span></label>
+      <button type="button" id="cronAddBtn">加上</button>
+      <button type="button" class="ghost" id="cronReload">刷新</button>
+    </div>
+    <div class="dlgFoot"><span class="hint" id="cronFoot"></span></div>
+  </dialog>
   <dialog id="todoDlg" class="todoDlg">
     <div class="dlgHead">
       <b>任务清单</b><span class="meta" id="todoHint">一份 txt，我写，你想看就瞄一眼</span>
@@ -3542,6 +3850,8 @@
     <div class="sendingRow">
       <div class="sendingHint" id="sendingHint" aria-live="polite">
         <span>正在发送消息</span><span class="dots"></span>
+        <!-- 【2026-11-05 加】本轮已跑多久。靠右、等宽数字，不跳格 -->
+        <span class="turnElapsed" id="turnElapsed"></span>
       </div>
     </div>
     <div class="attachBar" id="attachBar"></div>
@@ -3568,6 +3878,9 @@
         </div>
       </div>
       <textarea id="input" placeholder="跟小鱼说点什么…也能让她改文件 / 跑命令（Enter 发送，Shift+Enter 换行）"></textarea>
+      <!-- 【2026-11-05 加】独立的停止键。以前"停止"是跟"发送"抢同一个按钮：
+           生成中只要你打了字，按钮就变回"发送"，想纯停止得先把字删干净。 -->
+      <button id="stopBtn" type="button" title="停下这一轮（不打断你正在打的字）">⏹</button>
       <button id="send">发送</button>
     </div>
     <div class="usage" id="usage"></div>
@@ -4799,7 +5112,7 @@ document.addEventListener("keydown", (e) => {
 
 // ---- 坏字修复：老数据里可能带着问号方块，显示前必须收拾干净 ------------------
 /**
- * 老会话 / 老设置是坏着存下来的：中文被写成 \uFFFD，界面上就是个问号方块。
+ * 老会话 / 老设置是坏着存下来的：中文被写成了坏字符（U+FFFD），界面上就是个问号方块。
  *
  * 两条路分开走，别混：
  *   1. 孤立的单个方块 —— 一般是标点，按位置补回来（句末「。」，中间「，」）
@@ -4967,12 +5280,89 @@ function snapshotFingerprint(items) {
 /** 每个会话上一次画出来的快照指纹（没变就不重画） */
 const lastSnapFp = new Map();
 
+/**
+ * 【2026-11-05 重做·流式正文不再"每秒删掉重建"】
+ *
+ * 病因（真机实测确认过）：`paintSnapshot0` 开头把 `.msg.assistant[data-live-turn="1"]`
+ * 一律 remove，然后照清单从头画 —— 而绘制那条路（`k === 'text'`）每次都走
+ * `addAssistantAuto()` → `addEl()`，**无条件新建**。所以每 1.2 秒整条消息换一个节点：
+ * 选中丢了、Ctrl+F 跳走、滚动位置跟着跳。
+ *
+ * 为什么不去改原来那套：`addAssistant` 同时服务「正常流式」和「快照重画」两条路，
+ * 改它的语义，出错的表现是「一条回复被劈成两个气泡各写一半」，比抖动严重得多。
+ *
+ * 这里的做法是**在入口处加一条快路**，条件收得很紧，不满足就原样走老路：
+ *   ① 这一轮还在跑（running === true）；
+ *   ② 快照里**只有 text**（一旦出现工具/思考/子任务，立刻交回老路，那些卡必须重画）；
+ *   ③ 屏幕上已经有一条正在流式的正文容器；
+ *   ④ 新文本**以屏幕上已有的文本开头**（只允许"变长"，改写/回退一律交给老路）。
+ *
+ * 四条全满足时：只把多出来的那段 push 进去，一个节点都不动。
+ * 任何一条不满足 → 返回 false，调用方照原样重画。**最坏情况等于没做这个优化。**
+ */
+function _snapTextOnly(items) {
+  let t = '';
+  for (const it of items) {
+    if (!it) continue;
+    if (it.k !== 'text') return null;   // 有别的种类就直接放弃，别自作聪明
+    t += String(it.t || '');
+  }
+  return t;
+}
+
+function tryLiveAppendFast(sid, srcLive) {
+  if (!srcLive || srcLive.running !== true) return false;
+  if (typeof sid === 'string' && String(sid) !== String(sessionId)) return false;
+  const items = Array.isArray(srcLive) ? srcLive : (Array.isArray(srcLive.items) ? srcLive.items : null);
+  if (!items || !items.length) return false;
+  const want = _snapTextOnly(items);
+  if (!want) return false;
+
+  const wrap = document.querySelector('#log .msg.assistant[data-live-turn="1"]');
+  if (!wrap) return false;
+  const bubble = wrap.querySelector('.bubble');
+  if (!bubble) return false;
+
+  const cur = typeof bubble._rawText === 'string' ? bubble._rawText : String(bubble.textContent || '');
+  if (!cur) return false;
+  if (!want.startsWith(cur)) return false;   // 不是"变长"，交给老路
+  const add = want.slice(cur.length);
+  if (!add) return true;                     // 一模一样，本来就什么都不用做
+  pushStreamText(bubble, add);
+  return true;
+}
+
 function paintSnapshot(sid, srcLive) {
+  /* 先试快路：纯文本在变长时，一个 DOM 节点都不动 */
   try {
-    const _wl0 = (srcLive && Array.isArray(srcLive.items)) ? srcLive.items.filter((x) => x && x.k === 'worker') : [];
+    if (tryLiveAppendFast(sid, srcLive)) return;
+  } catch (e) { /* 快路出错绝不能连累正常渲染 */ }
+  try {
+    /* 【2026-11-05 主人报：每轮说完末尾都挂一堆 worker 卡】
+     * 原来这里把 srcLive.items 里【全部】worker 都存进缓存（items 是按会话全部历史
+     * 重建的，所以历史 worker 也在里面）。收尾兜底再按这份缓存全补到 #log 末尾，
+     * 于是每轮说完，历史那些卡就整整齐齐出现在最下面。
+     *
+     * 现在：只在【这一轮还在跑】时更新缓存；收尾那一趟（running === false）不覆盖，
+     * 缓存里保留的就是本轮开跑以来那几个 worker。 */
     window.__liveWorkers = window.__liveWorkers || {};
-    if (_wl0.length) window.__liveWorkers[String(sid || '')] = _wl0;
-    else if (window.__liveWorkers[String(sid || '')]) delete window.__liveWorkers[String(sid || '')];
+    const _sidKey = String(sid || '');
+    if (srcLive && srcLive.running) {
+      const _wl0 = (Array.isArray(srcLive.items) ? srcLive.items : []).filter((x) => x && x.k === 'worker');
+      const _turnMark = Number(srcLive && srcLive.startedAt) || 0;
+      /* 换轮了（startedAt 变了）就重置，避免上一轮的残留混进来 */
+      if (!window.__liveWorkersTurn) window.__liveWorkersTurn = {};
+      window.__liveWorkersTurnWids = window.__liveWorkersTurnWids || {};
+      if (window.__liveWorkersTurn[_sidKey] !== _turnMark) {
+        window.__liveWorkersTurn[_sidKey] = _turnMark;
+        window.__liveWorkers[_sidKey] = _wl0.slice();
+        window.__liveWorkersTurnWids[_sidKey] = new Set(_wl0.map((x) => String((x && x.id) || '')));
+      } else {
+        window.__liveWorkers[_sidKey] = _wl0;
+        const _ws = window.__liveWorkersTurnWids[_sidKey] || (window.__liveWorkersTurnWids[_sidKey] = new Set());
+        for (const x of _wl0) _ws.add(String((x && x.id) || ''));
+      }
+    }
   } catch (e) {}
   /* 【2026-11-03】重画期间让滚动那块知道「高度变化是我们自己造成的」 */
   try { window.__repainting = (Number(window.__repainting) || 0) + 1; } catch (e) {}
@@ -5051,7 +5441,15 @@ function paintSnapshot(sid, srcLive) {
     const _keep = (window.__liveWorkers && window.__liveWorkers[String(sid || '')]) || null;
     if (_keep && _keep.length) {
       const _lg2 = document.getElementById('log');
-      if (_lg2 && !_lg2.querySelector('details.wcard')) for (const _it of _keep) paintWorkerCard(_it, null);
+      /* 【2026-11-05 主人报：每轮说完末尾挂一堆 worker 卡】
+       * __liveWorkers 现在只记【本轮】（见上面「缓存只记本轮」那段），
+       * 所以这里补回来的本来就只有本轮那几张。
+       * 再加一道闸：缓存里若混进了更早的轮（门牌集合对不上），按最近一次开跑
+       * 的门牌集合过滤;拿不到集合就不过滤（缓存本身就是本轮的）。 */
+      const _sidKey2 = String(sid || '');
+      const _mine = (window.__liveWorkersTurnWids && window.__liveWorkersTurnWids[_sidKey2]) || null;
+      const _keep2 = _mine ? _keep.filter((x) => x && _mine.has(String(x.id))) : _keep;
+      if (_lg2 && !_lg2.querySelector('details.wcard')) for (const _it of _keep2) paintWorkerCard(_it, null);
     }
   } catch (e) {}
 }
@@ -5153,6 +5551,31 @@ function paintSnapshot0(sid, srcLive) {
    *  根治的办法不是加判据，是划清边界：这一轮结束了，屏幕长什么样由**历史**说了算。
    *  直播快照只负责「还在跑的那一轮」。跑完的对齐走 settleFromHistory（按历史整屏重画）。
    */
+/* 【2026-11-06 主人报「每轮说完这段提示都出现在末尾」·真根因】
+   * 上一轮的 worker 卡（details.wcard）从来没被清掉，三个漏洞叠在一起：
+   *   ① 开跑时清理只摘 .think/.tool，.wcard 为了不闪「只登记不摘」
+   *   ② 跑完时下面那句 if (!_wl.length) return null —— 这一轮没派活就直接返回，也不清
+   *   ③ 于是第一次派活画上去的那几张卡永远钉在 DOM 里，每轮都看得见
+   * 修法：换轮（startedAt 变了）那一刻把旧卡全清一次；同一轮里纹丝不动，所以不闪。
+   */
+  try {
+    const _sid0 = String(sid || '');
+    const _at0 = Number(srcLive && srcLive.startedAt) || 0;
+    if (_at0 > 0) {
+      const _bags = (window.__turnAt || (window.__turnAt = {}));
+      if (_bags[_sid0] !== _at0) {
+        _bags[_sid0] = _at0;
+        const _lg0 = document.getElementById('log');
+        if (_lg0) {
+          for (const _n of _lg0.querySelectorAll('details.wcard')) {
+            try { _n.remove(); } catch (e) {}
+          }
+        }
+        try { _wcardByWid.clear(); } catch (e) {}
+      }
+    }
+  } catch (e) {}
+
   /* 【2026-11-03 修·跑完就没了（主人原话：「只显示一句派活 运行中…然后没了」）】
    * 跑完之后正文由历史说了算（这层闸是对的），但办事模式下「这一轮谁干了什么」
    * 历史里没有存，它只活在事件流里 —— 一进这层闸，那张子任务卡就跟着被抹掉，
@@ -5160,10 +5583,20 @@ function paintSnapshot0(sid, srcLive) {
    * 所以：跑完也把子任务卡留住（只留卡，别的一概不管），下一轮开跑时再按标记清掉。 */
   if (srcLive && srcLive.running === false) {
     const _wl = (Array.isArray(srcLive.items) ? srcLive.items : []).filter((x) => x && x.k === 'worker');
-    if (!_wl.length) return null;
+    /* 【2026-11-06 主人报「每轮说完那几张 worker 卡都出现在末尾」·真根因】
+     * 原来这里第二行是 if (!_wl.length) return null;
+     * —— 这一轮没派活就直接返回了，屏幕上上一轮留下的卡一张都没清，
+     *   于是它们从第一次派活起就永远钉在聊天区最底下，每轮都看得见。
+     * 现在改成：不管这轮有没有派活，先把屏幕上所有 worker 卡清干净，
+     * 再按本轮清单重画（有就画，没有就空着）。
+     */
     try {
       const _lg = document.getElementById('log');
-      if (_lg) for (const n of _lg.querySelectorAll('details.wcard[data-live-turn="1"]')) { try { n.remove(); } catch (e) {} }
+      if (_lg) for (const n of _lg.querySelectorAll('details.wcard')) { try { n.remove(); } catch (e) {} }
+      try { _wcardByWid.clear(); } catch (e) {}
+    } catch (e) {}
+    if (!_wl.length) return null;
+    try {
       for (const it of _wl) paintWorkerCard(it);
     } catch (e) {}
     return null;
@@ -5368,6 +5801,224 @@ function paintSnapshot0(sid, srcLive) {
   return lastBubble;
 }
 
+/**
+ * 【2026-11-05 加·把 markdown 画出来（保守版）】
+ *
+ * 为什么要它：气泡一直是纯文本，`stripMarkdownMarks` 还把记号**主动擦掉** ——
+ * 结果表格塌成一堆竖线、代码块没有围栏也没有等宽、标题层级全丢。
+ *
+ * 保守在哪儿：
+ *   ① **没有 markdown 特征就一个字都不动**，直接 textContent。
+ *      普通聊天（大多数消息）走老路，观感零变化，出问题的面也小。
+ *   ② 只用 DOM 构建（createElement / textContent），不拼 innerHTML —— 她说的内容
+ *      里带 script 标签也只是文字，不会变成节点。
+ *   ③ 只管最痛的几类：代码块、表格、标题、列表、**粗体**、`行内代码`、裸链接。
+ *      嵌套列表、引用块这些不处理，原样出。
+ *
+ * 只作用于**历史渲染**这条路。流式那一路仍旧纯文本 —— 每收一个 token 就整篇
+ * 重新解析 markdown 太贵，而且会把正在写的半截代码块画得乱七八糟。
+ */
+function mdHasFeature(t) {
+  return /```|\*\*[^*\n]+\*\*|`[^`\n]+`|^\s{0,3}#{1,6}\s|^\s{0,3}[-*+]\s|^\s*\d+\.\s|^\s*\|.*\|\s*$/m.test(String(t || ''));
+}
+
+/** 行内：**粗** `代码` 和裸链接。返回一串节点，安全。 */
+function mdInline(text) {
+  const out = [];
+  const s = String(text || '');
+  // 先按 `代码` 和 **粗体** 切开，剩下的再找裸链接
+  const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+  let last = 0;
+  let m;
+  const pushPlain = (seg) => {
+    if (!seg) return;
+    const urlRe = /(https?:\/\/[^\s<>"'）)】]+)/g;
+    let pos = 0;
+    let um;
+    while ((um = urlRe.exec(seg))) {
+      if (um.index > pos) out.push(document.createTextNode(seg.slice(pos, um.index)));
+      const a = document.createElement('a');
+      a.href = um[1];
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = um[1];
+      out.push(a);
+      pos = um.index + um[1].length;
+    }
+    if (pos < seg.length) out.push(document.createTextNode(seg.slice(pos)));
+  };
+  while ((m = re.exec(s))) {
+    if (m.index > last) pushPlain(s.slice(last, m.index));
+    const tok = m[1];
+    if (tok.startsWith('`')) {
+      const c = document.createElement('code');
+      c.textContent = tok.slice(1, -1);
+      out.push(c);
+    } else {
+      const b = document.createElement('strong');
+      const inner = tok.slice(2, -2);
+      // 粗体里可能还有行内代码，简单处理：整体当文字
+      if (inner.includes('`')) {
+        const c = document.createElement('code');
+        c.textContent = inner.replace(/`/g, '');
+        b.appendChild(c);
+      } else {
+        b.textContent = inner;
+      }
+      out.push(b);
+    }
+    last = m.index + tok.length;
+  }
+  if (last < s.length) pushPlain(s.slice(last));
+  return out;
+}
+
+/** 把一段正文画进 el。有 markdown 特征才富文本，否则原样文字。 */
+function mdInto(el, rawText) {
+  if (!el) return;
+  // 【2026-11-05 修】必须用只修乱码的那个 —— fixMojibake 会把 markdown 记号擦掉，
+  // 拿它来渲染富文本等于先把材料撕了再拼。
+  const text = repairMojibakeOnly(String(rawText ?? ''));
+  el.classList.remove('md');
+  if (!mdHasFeature(text)) {
+    el.textContent = text;
+    return;
+  }
+  el.classList.add('md');
+  el.textContent = '';
+  const lines = text.split(/\r?\n/);
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // 代码块
+    if (/^\s*```/.test(line)) {
+      const lang = (line.match(/^\s*```\s*([\w+-]*)/) || [])[1] || '';
+      const buf = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) { buf.push(lines[i]); i += 1; }
+      i += 1; // 收尾 ```
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      if (lang) code.dataset.lang = lang;
+      code.textContent = buf.join('\n');
+      pre.appendChild(code);
+      const box = document.createElement('div');
+      box.className = 'mdcode';
+      const cp = document.createElement('button');
+      cp.type = 'button';
+      cp.className = 'mdcopy';
+      cp.textContent = '复制';
+      cp.onclick = async () => {
+        try { await navigator.clipboard.writeText(buf.join('\n')); cp.textContent = '已复制'; }
+        catch { cp.textContent = '失败'; }
+        setTimeout(() => { cp.textContent = '复制'; }, 1200);
+      };
+      box.appendChild(cp);
+      box.appendChild(pre);
+      el.appendChild(box);
+      continue;
+    }
+
+    // 表格：这一行是 | ... |，下一行是 |---|---|
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      const cut = (ln) => ln.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((x) => x.trim());
+      const head = cut(line);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(cut(lines[i])); i += 1; }
+      const tb = document.createElement('table');
+      const thead = document.createElement('thead');
+      const htr = document.createElement('tr');
+      for (const h of head) {
+        const th = document.createElement('th');
+        mdInline(h).forEach((n) => th.appendChild(n));
+        htr.appendChild(th);
+      }
+      thead.appendChild(htr);
+      tb.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      for (const r of rows) {
+        const tr = document.createElement('tr');
+        for (let c = 0; c < head.length; c += 1) {
+          const td = document.createElement('td');
+          mdInline(r[c] || '').forEach((n) => td.appendChild(n));
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      tb.appendChild(tbody);
+      const wrapT = document.createElement('div');
+      wrapT.className = 'mdtable';
+      wrapT.appendChild(tb);
+      el.appendChild(wrapT);
+      continue;
+    }
+
+    // 标题
+    const hm = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(line);
+    if (hm) {
+      const h = document.createElement('div');
+      h.className = 'mdh mdh' + hm[1].length;
+      mdInline(hm[2]).forEach((n) => h.appendChild(n));
+      el.appendChild(h);
+      i += 1;
+      continue;
+    }
+
+    // 无序 / 有序列表（连续同类行合成一个 <ul>/<ol>）
+    if (/^\s{0,3}[-*+]\s+/.test(line) || /^\s{0,3}\d+\.\s+/.test(line)) {
+      const ordered = /^\s{0,3}\d+\.\s+/.test(line);
+      const list = document.createElement(ordered ? 'ol' : 'ul');
+      while (i < lines.length) {
+        const cur = lines[i];
+        const isOrd = /^\s{0,3}\d+\.\s+/.test(cur);
+        const isBul = /^\s{0,3}[-*+]\s+/.test(cur);
+        if (ordered ? !isOrd : !isBul) break;
+        const li = document.createElement('li');
+        const bodyTxt = cur.replace(/^\s{0,3}([-*+]|\d+\.)\s+/, '');
+        mdInline(bodyTxt).forEach((n) => li.appendChild(n));
+        list.appendChild(li);
+        i += 1;
+      }
+      el.appendChild(list);
+      continue;
+    }
+
+    // 普通段落：连续非空行合成一段（段内单换行用 <br>）
+    if (!line.trim()) { i += 1; continue; }
+    const para = document.createElement('div');
+    para.className = 'mdp';
+    let first = true;
+    while (i < lines.length && lines[i].trim()
+      && !/^\s*```/.test(lines[i])
+      && !/^\s{0,3}#{1,6}\s/.test(lines[i])
+      && !/^\s{0,3}[-*+]\s+/.test(lines[i])
+      && !/^\s{0,3}\d+\.\s+/.test(lines[i])
+      && !(/^\s*\|.*\|\s*$/.test(lines[i]) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1]))) {
+      if (!first) para.appendChild(document.createElement('br'));
+      mdInline(lines[i]).forEach((n) => para.appendChild(n));
+      first = false;
+      i += 1;
+    }
+    el.appendChild(para);
+  }
+}
+
+/**
+ * 【2026-11-05 重做·把换行处理提出来】
+ *
+ * 原来它是 paintSpeech 里的局部函数，只有"整条重画"那条路能用。
+ * 而 1.1 要做的增量更新（只改最后一段）也得用同一套规则 ——
+ * 两处各写一份必然会走样，所以提成模块级的。
+ */
+const flatSpeechText = (t) => String(t)
+  .replace(/\n{3,}/g, '\n\n')
+  .replace(/[ \t]{2,}/g, ' ')
+  .replace(/[ \t]+$/gm, '')
+  .trim();
+
 function paintSpeech(bubble, raw) {
   if (!bubble) return bubble;
   const wrap = bubble.parentNode;
@@ -5389,15 +6040,20 @@ function paintSpeech(bubble, raw) {
    * 做法：段内单换行按「两边都是汉字就连起来、否则留一个空格」压平 ——
    * 中文里一个空格很突兀，英文里没空格又粘成一个词，所以分开处理。
    */
-  const flat = (t) => String(t)
-    .replace(/[ \t]*\n[ \t]*/g, (_m, off, src) => {
-      const before = src[off - 1] || '';
-      const after = src[off + _m.length] || '';
-      return /[\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]/.test(before)
-        || /[\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]/.test(after) ? '' : ' ';
-    })
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
+  /**
+   * 【2026-11-05 改·流式和历史必须长得一样】
+   *
+   * 原来这里把段内的单换行**删掉**（两边是中文就连起来、是英文就换成空格），
+   * 可历史那条路是原样保留 + `white-space: pre-wrap` ——
+   * 于是同一条消息：生成时被挤成一行，跑完/刷新又变回多行。
+   * 主人投诉的"前后不一样"就是这一条。
+   *
+   * 现在只收两样，其余留给 pre-wrap：
+   *   · 3 个以上连续换行压成 2 个（模型偶尔狂敲回车）
+   *   · 行内连续空格压成 1 个、行尾空白去掉
+   * 单换行原样留着 —— 模型写代码、写列表靠的就是它。
+   */
+  const flat = flatSpeechText;
   const paras = cleaned.split(/\n[ \t]*\n+/).map((p) => flat(p)).filter(Boolean);
   if (paras.length <= 1) {
     // 只有一段时也别把段内单换行原样漏出去（同一个毛病，见上面那段说明）
@@ -5420,7 +6076,11 @@ function paintSpeech(bubble, raw) {
       } else wrap.appendChild(el);
       el._rawText = '';
     }
-    el.textContent = paras[i];
+    /* 【2026-11-05 优化】内容没变就别再写一遍。
+     * textContent 即使赋一模一样的字符串，也会把文本节点整个换掉 —— 长回复里
+     * 有七八段，每来一个 token 就把前面没变的段也重写一遍，浏览器跟着重排、选区跟着断。
+     * 加这一下，没变的段一个字都不碰。 */
+    if (el.textContent !== paras[i]) el.textContent = paras[i];
     // 只有真的换了节点才连 _sib —— i=0 那一下 prev 是空的，别自己连自己（会死循环）
     if (prev && prev !== el) prev._sib = el;
     prev = el;
@@ -5441,7 +6101,49 @@ function pushStreamText(bubble, text) {
   bubble._rawText += String(text || '');
   // 光标可能已经停在「中间那个」气泡上了 —— 先记下它，画完再搬到新的尾巴上
   const from = bubble._tail || bubble;
+
+  /**
+   * 【2026-11-05 重做·只动最后一段】
+   *
+   * 原来每来一个 token 都走 paintSpeech：全文跑一遍正则，再把**每一段**的
+   * textContent 重写一遍。长回复七八段，等于每个字都把前面没变的段也重写 ——
+   * 浏览器跟着重排，选区跟着断。这是"流式时复制不了"的另一半原因。
+   *
+   * 快路条件（很严）：段落数没变 + 前面每一段一个字都没动 + 只有最后一段在长。
+   * 满足就只更新最后那一段的文本，别的节点一个都不碰。
+   * 不满足就原样走 paintSpeech —— **最坏情况等于没做这个优化**。
+   */
+  let fast = null;
+  try {
+    const paras = fixMojibake(String(bubble._rawText))
+      .split(/\n[ \t]*\n+/)
+      .map(flatSpeechText)
+      .filter(Boolean);
+    const prev = bubble._paras;
+    if (Array.isArray(prev) && prev.length && paras.length === prev.length && from) {
+      let same = true;
+      for (let i = 0; i < paras.length - 1; i += 1) {
+        if (paras[i] !== prev[i]) { same = false; break; }
+      }
+      if (same) {
+        const want = paras[paras.length - 1];
+        if (from.textContent !== want) from.textContent = want;
+        bubble._paras = paras;
+        fast = from;
+      }
+    }
+  } catch (e) { /* 快路出错绝不能连累正常渲染 */ }
+
+  if (fast) return fast;
+
   const tail = paintSpeech(bubble, bubble._rawText);
+  // 记下这一屏的段落结构，下一次好判断"是不是只有最后一段在长"
+  try {
+    bubble._paras = fixMojibake(String(bubble._rawText))
+      .split(/\n[ \t]*\n+/)
+      .map(flatSpeechText)
+      .filter(Boolean);
+  } catch (e) {}
   if (tail !== from && from.classList.contains('streaming')) {
     from.classList.remove('streaming');
     tail.classList.add('streaming');
@@ -5485,20 +6187,33 @@ function stripMarkdownMarks(text) {
   t = t.replace(/\u0001/g, ' * ');
   return t;
 }
+/**
+ * 【2026-11-05 拆】只修乱码，**不碰 markdown 记号**。
+ *
+ * 为什么要拆：`fixMojibake` 在没有乱码时会直接走 stripMarkdownMarks ——
+ * 那是给「纯文本气泡」准备的最后一道关，可 mdInto 拿它去渲染富文本就自相矛盾了：
+ * 记号先被擦掉，再拿去解析，代码围栏 / 粗体全部消失。
+ * 真机验证时抓到的就是这么一条：表格能出来（strip 不删竖线），代码块却成了普通文字。
+ */
+function repairMojibakeOnly(text) {
+  if (typeof text !== 'string') return text;
+  if (!text.includes('\u{FFFD}')) return text;
+
+  // 连续的：换成「□」，保留「几个字坏了」的感觉
+  let t = text.replace(/\u{FFFD}{2,}/gu, (m) => '□'.repeat(Math.min(m.length, 8)));
+
+  // 孤立的单块：按位置判标点
+  t = t.replace(/\u{FFFD}(?=[ \t]*(?:\n|"|$))/gu, '。');
+  t = t.replace(/\u{FFFD}(?=[ \t]*[\u4e00-\u9fa5])/gu, '，');
+  t = t.replace(/(?<=[\u4e00-\u9fa5])\u{FFFD}(?=[\u4e00-\u9fa5])/gu, '，');
+  t = t.replace(/\u{FFFD}/gu, ' ');
+  return t;
+}
+
 function fixMojibake(text) {
   if (typeof text !== 'string') return text;
   // 没有乱码也照样过一遍记号清理（这是显示前的最后一道关）
-  if (!text.includes('\uFFFD')) return stripMarkdownMarks(text);
-
-  // 连续的：换成「□」，保留「几个字坏了」的感觉
-  let t = text.replace(/\uFFFD{2,}/g, (m) => '□'.repeat(Math.min(m.length, 8)));
-
-  // 孤立的单块：按位置判标点
-  t = t.replace(/\uFFFD(?=[ \t]*(?:\n|"|$))/g, '。');
-  t = t.replace(/\uFFFD(?=[ \t]*[\u4e00-\u9fa5])/g, '，');
-  t = t.replace(/(?<=[\u4e00-\u9fa5])\uFFFD(?=[\u4e00-\u9fa5])/g, '，');
-  t = t.replace(/\uFFFD/g, ' ');
-  return t;
+  return stripMarkdownMarks(repairMojibakeOnly(text));
 }
 
 // ---- 安全词提示：每个词干的事不一样，别都显示同一句 ----------------------
@@ -6143,6 +6858,10 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
       // 【2026-11-02】没参数就别拼 —— 否则画出来是「参数：undefined」
       el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + ev.args;
       toolEls.set(ev.id, el);
+      /* 【2026-11-05 加】记下开始时间，结束时把耗时写在状态上。
+       * 以前只有"运行中…/完成/失败"三个字，跑一条三分钟的命令屏幕上完全不动，
+       * 分不清是卡死还是在跑。 */
+      el._t0 = Date.now();
           el.pre.hidden = false;
           el.sum.querySelector('.status').className = 'status warn';
           if (_liveHub) {
@@ -6154,7 +6873,10 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
       const el = toolEls.get(ev.id);
       if (el) {
         const st = el.sum.querySelector('.status');
-        st.textContent = ev.ok ? '完成' : '失败';
+        // 【2026-11-05 加】带上耗时：跑得久不久，一眼看得出来
+        const _secs = el._t0 ? Math.max(0, (Date.now() - el._t0) / 1000) : 0;
+        const _dur = _secs >= 1 ? ' · ' + (_secs < 10 ? _secs.toFixed(1) : Math.round(_secs)) + 's' : '';
+        st.textContent = (ev.ok ? '完成' : '失败') + _dur;
         st.className = 'status ' + (ev.ok ? 'ok' : 'err');
         hubRefreshTitle();
         el.pre.textContent += '\n--- output ---\n' + ev.output;
@@ -6586,9 +7308,12 @@ function followLive(id, fromIndex) {
            * 这里补回来：只补子任务卡，别的一个字不动（卡带 live-turn 标记，下一轮开跑自然清掉）。 */
           try {
             const _wl = (Array.isArray(live.items) ? live.items : []).filter((x) => x && x.k === 'worker');
-            if (_wl.length) {
+            /* 【2026-11-06 同一条根因第三处】原来只在 _wl.length 为真时才清；
+             * 这轮没派活就把上一轮的卡留在屏幕上。改成先清后画，没活就空着。 */
+            {
               const _lg = document.getElementById('log');
-              if (_lg) for (const _n of _lg.querySelectorAll('details.wcard[data-live-turn="1"]')) { try { _n.remove(); } catch (e) {} }
+              if (_lg) for (const _n of _lg.querySelectorAll('details.wcard')) { try { _n.remove(); } catch (e) {} }
+              try { _wcardByWid.clear(); } catch (e) {}
               for (const it of _wl) paintWorkerCard(it);
             }
           } catch (e) {}
@@ -7204,6 +7929,8 @@ function addUser(text, tag, atts, target, rewindId, who = '') {
         im.className = "thumb";
         im.alt = a.name || "";
         im.src = a.dataUrl || `/api/attach/raw?path=${encodeURIComponent(a.path)}`;
+        im.title = a.name || a.path || '';
+        im.onclick = () => { try { openImgView(im.src); } catch {} };
         im.onerror = () => {
           // 图没了就退成图标，别显示破图
           const d = document.createElement("div");
@@ -7218,10 +7945,16 @@ function addUser(text, tag, atts, target, rewindId, who = '') {
         d.textContent = "📄";
         chip.appendChild(d);
       }
-      const nm = document.createElement("div");
-      nm.className = "aname";
-      nm.textContent = a.name;
-      chip.appendChild(nm);
+      /* 【2026-11-05 改·图片不挂文件名】
+       * 名字放在图的 title 里，悬停能看到；文件（pdf/zip 之类）照旧挂名字 ——
+       * 那里名字才是唯一能说明「这是什么」的东西。
+       * 不只靠 CSS 隐藏：老版 Electron 不认 :has()，这一步才是真正的兜底。 */
+      if (a.kind !== "image") {
+        const nm = document.createElement("div");
+        nm.className = "aname";
+        nm.textContent = a.name;
+        chip.appendChild(nm);
+      }
       box.appendChild(chip);
     }
     wrap.appendChild(box);
@@ -7375,6 +8108,136 @@ function attachDelBtn(wrap, at) {
   };
   actionsOf(wrap).appendChild(db);
   wrap.classList.remove('noRewind');
+}
+
+/**
+ * 【2026-11-05 加·给消息挂一个时间】
+ *
+ * 会话历史里原来没有时间可显示 —— 服务端现在每条消息都带 `at`（毫秒），
+ * 这里只画「时:分」，完整时间放 title。老会话没有这个字段，就不画，不占位。
+ */
+function attachTime(wrap, ts) {
+  if (!wrap || !ts) return;
+  try {
+    const d = new Date(Number(ts));
+    if (!Number.isFinite(d.getTime()) || d.getTime() <= 0) return;
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const el = document.createElement('span');
+    el.className = 'msgTime';
+    el.textContent = hh + ':' + mm;
+    el.title = d.toLocaleString();
+    wrap.appendChild(el);
+  } catch {}
+}
+
+/**
+ * 【2026-11-05 加·超长正文先折起来】
+ *
+ * 以前一条两千字的回复全铺在屏幕上，一屏看不见第二条。现在超过 1200 字先折到
+ * 460px 高，底下渐变遮罩 + 「展开全文」。
+ *
+ * 两个刻意的取舍：
+ *   ① 只作用于**历史渲染**。流式那条不折 —— 边写边折会让气泡高度一直变，
+ *      贴底逻辑跟着抖；
+ *   ② 展开/收起时手动补 scrollTop（人不在底部时），否则上面的内容一变高，
+ *      正在看的那段就被顶走了 —— 跟 details 展开不动视口是一个道理。
+ */
+function maybeFoldBubble(el, rawText) {
+  if (!el) return;
+  const len = String(rawText ?? '').length;
+  if (len < 1200) return;
+  if (el.parentNode && el.parentNode.querySelector(':scope > .foldToggle')) return;
+  el.classList.add('folded');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'foldToggle';
+  btn.textContent = '展开全文（' + len + ' 字）';
+  btn.onclick = () => {
+    let before = 0;
+    try { before = el.offsetHeight; } catch {}
+    const folded = el.classList.toggle('folded');
+    btn.textContent = folded ? '展开全文（' + len + ' 字）' : '收起';
+    if (!stickBottom) {
+      try {
+        const after = el.offsetHeight;
+        if (after !== before) log.scrollTop += after - before;
+      } catch {}
+    }
+  };
+  try { el.insertAdjacentElement('afterend', btn); } catch {}
+}
+
+/**
+ * 【2026-11-05 加·看大图】
+ * 聊天里的缩略图点一下就把原图铺出来，免得为了一张截图去翻文件管理器。
+ */
+function openImgView(src) {
+  const dlg = document.getElementById('imgView');
+  if (!dlg || !src) return;
+  const pic = dlg.querySelector('img');
+  if (pic) pic.src = src;
+  /* 【2026-11-05】第一次打开时把关闭方式接上：
+   * 右上角 ×，点图外空白处也能关，Esc 是原生行为。 */
+  if (!dlg._wired) {
+    dlg._wired = true;
+    const btn = dlg.querySelector('.imgViewClose');
+    if (btn) btn.onclick = () => { try { dlg.close(); } catch {} };
+    dlg.onclick = (e) => { if (e.target === dlg) { try { dlg.close(); } catch {} } };
+  }
+  try { dlg.showModal(); } catch {}
+}
+
+/**
+ * 【2026-11-05 加·复制】
+ *
+ * 以前想把她说的那段拷走，只能在气泡里拖着选 —— 而流式那条路每秒会把整条消息
+ * 重建一遍，选区一断就白选（这就是「复制不了」的真身）。
+ * 给个按钮，一次点完，不跟流式打架。
+ */
+function attachCopyBtn(wrap) {
+  if (!wrap || wrap.querySelector('.copyBtn')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'copyBtn';
+  btn.textContent = '⧉ 复制';
+  btn.title = '复制这条消息的正文';
+  btn.onclick = async () => {
+    let t = '';
+    try {
+      // 流式中的气泡 textContent 只是"已经画出来的"，_rawText 才是全文
+      const bs = [...wrap.querySelectorAll('.bubble')];
+      t = bs.map((b) => (typeof b._rawText === 'string' ? b._rawText : b.textContent) || '')
+        .join('\n\n')
+        .trim();
+    } catch {}
+    if (!t) {
+      btn.textContent = '没文字';
+      setTimeout(() => { btn.textContent = '⧉ 复制'; }, 1200);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(t);
+      btn.textContent = '已复制';
+    } catch (e) {
+      // 非 https / 无权限时退回老办法
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = t;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        btn.textContent = '已复制';
+      } catch (e2) {
+        btn.textContent = '复制失败';
+      }
+    }
+    setTimeout(() => { btn.textContent = '⧉ 复制'; }, 1500);
+  };
+  actionsOf(wrap).appendChild(btn);
 }
 
 function attachRetry(wrap, askQueue) {
@@ -7712,6 +8575,125 @@ function wireSave(el, url, name) {
   });
   return el;
 }
+/** 正在流式输出的那条回复的气泡；没有就 null —— 绝不退化成「最后一条旧消息」 */
+function liveBubbleHost() {
+  try {
+    if (!els.messages) return null;
+    const rows = [...els.messages.querySelectorAll('.row.ai')];
+    for (let r = rows.length - 1; r >= 0; r--) {
+      const row = rows[r];
+      if (row.dataset && row.dataset.sentTail) continue;
+      if (!row.classList.contains('streaming')) continue;
+      const b = row.querySelector('.bubble');
+      if (b) return b;
+    }
+    return null;
+  } catch (e) { return null; }
+}
+
+/**
+ * 【2026-11-05 严检补：这变量也没声明过】
+ *   placeSentCard() 一进来就 sentThisTurn.push(card)，settleSentFiles() 里还
+ *   读它、清它（sentThisTurn = []），可全文没有一处 const/let 声明 ——
+ *   脚本是 type="module"（严格模式），第一次 push 就是 ReferenceError：
+ *   「说完之后这一轮发文件」这条路直接把整个发送流程打断。
+ *   本来想声明成 const，但下面有 sentThisTurn = [] 重新赋值，所以用 let。
+ */
+let sentThisTurn = [];
+
+/**
+ * 【2026-11-05 严检补：这函数以前根本不存在，只被调用】
+ *   placeSentCard() 在「这一轮已经说完、没有流式气泡」时走 else 里那句
+ *   const tail = sentTailRow()，可全文找不到 sentTailRow 的定义 ——
+ *   于是「说完之后再发文件/图片」这条路必抛 ReferenceError，
+ *   卡片当场不显示，主人只看到消息里说「发你了」，手上什么都没有。
+ *
+ *   补的这行：本轮说完后新到的卡片先落在一个临时「尾巴行」里，
+ *   settleSentFiles() 收尾时再按 sentTail 标记把它们归到该去的那条回复下面。
+ *   注意必须真的把 tail 挂进 els.messages，不然 settleSentFiles 里
+ *   querySelector('.row.ai.sentTail') 永远找不到，卡片就一直挂在临时壳上。
+ */
+function sentTailRow() {
+  try {
+    if (!els.messages) return null;
+    let tail = els.messages.querySelector('.row.ai.sentTail');
+    if (tail) return tail;
+    tail = document.createElement('div');
+    tail.className = 'row ai sentTail';
+    tail.dataset.sentTail = '1';
+    const inbox = document.createElement('div');
+    inbox.className = 'bubble';
+    tail.appendChild(inbox);
+    els.messages.appendChild(tail);
+    try { stickToBottom(); } catch (e) {}
+    return tail;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 把一张卡片放到该放的地方 */
+function placeSentCard(card) {
+  if (!card) return;
+  sentThisTurn.push(card);
+  const host = liveBubbleHost();
+  if (host) {
+    let box = host.querySelector('.sentLive');
+    if (!box) { box = document.createElement('div'); box.className = 'sentLive'; host.appendChild(box); }
+    box.appendChild(card);
+  } else {
+    const tail = sentTailRow();
+    if (tail && tail.firstChild) tail.firstChild.appendChild(card);
+    else if (els.messages) els.messages.appendChild(card);
+  }
+  try { stickToBottom(); } catch (e) {}
+}
+
+/** 这一轮说完了：本轮的卡片统一归到末尾（就近放在说这句话的这条回复里） */
+function settleSentFiles() {
+  try {
+    const cards = (sentThisTurn || []).filter((c) => c && c.parentNode);
+    const tail = els.messages ? els.messages.querySelector('.row.ai.sentTail') : null;
+    if (tail) {
+      const inbox = tail.firstChild;
+      if (inbox) for (const c of [...inbox.children]) if (!cards.includes(c)) cards.push(c);
+    }
+    if (!cards.length) { if (tail) tail.remove(); sentThisTurn = []; return; }
+
+    /* 【2026-11-05 主人报：卡片跑到很早之前的消息下面去了】
+     * 以前这里从最后一条一路往前找，谁先带 .bubble 就挂谁 —— 流式途中气泡还没建，
+     * 于是一路找回到老早的旧消息，卡片就贴在那儿了。
+     * 现在：只认「正在流式」或「刚流式完」的那一条；认不出就**不上溯**，
+     * 老老实实留在消息流末尾（临时壳的位置本来就是最新的地方）。 */
+    let hostRow = null;
+    if (els.messages) {
+      const rows = [...els.messages.querySelectorAll('.row.ai')];
+      for (let r = rows.length - 1; r >= 0; r--) {
+        const row = rows[r];
+        if (row === tail) continue;
+        if (row.dataset && row.dataset.sentTail) continue;
+        if (!row.classList.contains('streaming')) continue;
+        if (row.querySelector('details.tool')) continue;
+        if (row.querySelector('.bubble')) { hostRow = row; break; }
+      }
+    }
+
+    if (hostRow) {
+      const bub = hostRow.querySelector('.bubble');
+      let box = bub.querySelector('.sentLive');
+      if (!box) { box = document.createElement('div'); box.className = 'sentLive'; bub.appendChild(box); }
+      for (const c of cards) box.appendChild(c);
+      if (tail) tail.remove();
+    } else if (tail) {
+      // 没有可归的气泡，就让卡片留在末尾的临时壳里（位置也对，就在最新）
+    } else if (els.messages) {
+      for (const c of cards) els.messages.appendChild(c);
+    }
+    sentThisTurn = [];
+    try { stickToBottom(); } catch (e) {}
+  } catch (e) { console.warn('[sentfile] 收尾归位失败：', e && e.message); }
+}
+
 function outCard(f) {
   const name = (f && f.name) || '文件';
   const size = fmtSize(f && f.size);
@@ -7720,12 +8702,22 @@ function outCard(f) {
   const kind = (f && f.kind) || 'file';
 
   if (kind === 'image') {
-    const card = document.createElement('a');
+    /**
+     * 【2026-11-05 修·点图跳浏览器】
+     *
+     * 原来这里是 <a href target="_blank">：点一下就把图片丢给系统默认浏览器开一个新页签。
+     * 主人问「为什么发我的图片点开会跳转到浏览器」—— 因为就是这么写的。
+     *
+     * 主人自己发的附件走的是应用内浮层（openImgView），她发的图却跑到浏览器里，
+     * 两边行为不一样，观感也割裂。现在统一成浮层：在应用里看大图，不离开。
+     *
+     * 下载没丢：浮层里有下载键；右键「图片另存为」也照样能用（src 就是原图地址）。
+     */
+    const card = document.createElement('div');
     card.className = 'fileCard';
-    card.href = url;
-    card.target = '_blank';
-    card.rel = 'noopener';
+    card.style.cursor = 'zoom-in';
     card.title = name + ' · ' + size + '（点开看大图）';
+    card.onclick = () => { try { openImgView(url); } catch {} };
     const im = document.createElement('img');
     im.className = 'fthumb';
     im.alt = name;
@@ -8707,10 +9699,27 @@ function paintTools(list, target, group) {
  * 刻意不挂 .msg / .bubble：这东西不是对话内容，不该被当成谁说的话，
  * 也不该跟着 assistant 气泡一起进历史。只是让主人知道这一轮怎么了。
  */
-function addSysNote(text) {
+function addSysNote(text, actions) { const q = zzzMissingVarX + 1;
   const d = document.createElement('div');
   d.className = 'sysnote';
-  d.textContent = text;
+  /* 【2026-11-05 改】文字包一层 span，后面才挂得下按钮。
+   * 原来直接 d.textContent = text，出错了只给你一行黄字，想再试一次
+   * 得自己翻回上一句、再 hover 找「↻ 重发」。 */
+  const span = document.createElement('span');
+  span.textContent = text;
+  d.appendChild(span);
+  if (Array.isArray(actions)) {
+    for (const a of actions) {
+      try {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'sysnoteBtn';
+        btn.textContent = a.label || '确定';
+        btn.onclick = () => { try { a.onClick?.(btn); } catch {} };
+        d.appendChild(btn);
+      } catch {}
+    }
+  }
   /**
    * 【2026-11-02 自查抓到的漏】renderTurns 是「离屏 frag 画完、最后一次 replaceChildren」。
    * 重画过程中（followLive 收到 notice、replayInFlight 补 notice）如果 appendChild 到旧屏，
@@ -8895,12 +9904,46 @@ function autosizeInput() {
 }
 
 /** 底部灰字「正在发送消息……」。发送时亮、这轮彻底结束就灭。 */
+/* 【2026-11-05 加·本轮已运行时长】
+ * 主人要的：状态条右边显示这一轮跑了多久。
+ * 起点是 showSending 被调用的那一刻（= 真的开始发消息），
+ * 终点是 hideSending（这轮彻底结束），中间每秒刷一次。
+ *
+ * 为什么在 hideSending 里 clearInterval：不 clear 的话，hide 之后计时器还在跑，
+ * 下一轮 showSending 又起一个，几个计时器同时改同一个 span，数字会乱跳。 */
+let _turnT0 = 0;
+let _turnTimer = 0;
+
+function turnElapsedText(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + 'm' + (r < 10 ? '0' : '') + r + 's';
+}
+
 function showSending() {
   sendingHint.classList.add('show');
   noteNewContent();
+  try {
+    _turnT0 = Date.now();
+    const el = document.getElementById('turnElapsed');
+    if (el) el.textContent = '0s';
+    if (_turnTimer) clearInterval(_turnTimer);
+    _turnTimer = setInterval(() => {
+      const e2 = document.getElementById('turnElapsed');
+      if (!e2) return;
+      e2.textContent = turnElapsedText(Date.now() - _turnT0);
+    }, 1000);
+  } catch (e) {}
 }
 function hideSending() {
   sendingHint.classList.remove('show');
+  try {
+    if (_turnTimer) { clearInterval(_turnTimer); _turnTimer = 0; }
+    const el = document.getElementById('turnElapsed');
+    if (el) el.textContent = '';
+  } catch (e) {}
 }
 
 /** 连 hideSending 自己都可能因为元素早没了而抛错时用它 */
@@ -8915,17 +9958,24 @@ function hidingSendingSafe() {
 /** 生成中：输入框有内容 -> 按钮变「发送」（插一句）；空着 -> 「停止」。 */
 function syncSendBtn() {
   if (stopping) return;
-  if (busy) {
-    const has = input.value.trim().length > 0 || attachments.length > 0;
-    sendBtn.textContent = has ? '发送' : '停止';
-    sendBtn.classList.toggle('stop', !has);
-    sendBtn.title = has ? '插一句：先停住这轮，再带着你的新话接着跑' : '停住这一轮';
-  } else {
-    sendBtn.textContent = '发送';
-    sendBtn.classList.remove('stop');
-    sendBtn.title = '';
-  }
-  sendBtn.disabled = false;
+  /* 【2026-11-05 改·不再出现两个"停止"】
+   *
+   * 加了独立 ⏹ 之后，主按钮还有一套「没字就变停止」的老逻辑，
+   * 于是生成中、输入框空着的时候，屏幕上是【停止】+【⏹】两个停止键 —— 主人当场就发现了。
+   * 现在分工定死：**主按钮永远只管发（含插话），停止只归 ⏹**。
+   */
+  try {
+    const sb = document.getElementById('stopBtn');
+    if (sb) sb.classList.toggle('show', !!busy);
+  } catch {}
+  const has = input.value.trim().length > 0 || attachments.length > 0;
+  sendBtn.textContent = '发送';
+  sendBtn.classList.remove('stop');
+  // 生成中又没内容：灰着，别让人点了没反应还以为卡了
+  sendBtn.disabled = !!busy && !has;
+  sendBtn.title = busy
+    ? '插一句：先停住这轮，再带着你的新话接着跑（想纯停就点右边 ⏹）'
+    : '';
 }
 
 /** 跑一轮对话；resume = 接着已有历史继续（插话之后）。 */
@@ -9199,6 +10249,18 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           turnRec.files = ev.items || [];
         }
 
+        /**
+         * 这一轮「没有下文」时的统一收尾：停掉打字机、收起转圈、把没念完的话念掉。
+         * aborted / error / rate_limited 三条路原先各抄一遍，抄漏一处就是一个
+         * 「转圈永远在转」的 bug（2026-11-05 就漏过一处）。
+         */
+        const endTurnQuietly = () => {
+          try { closeThink(); } catch {}
+          try { hideSending(); } catch {}
+          try { flushSpeech(); } catch {}
+          if (bubble) { try { bubble.classList.remove('streaming'); } catch {} bubble = null; }
+        };
+
         // 不在屏幕上：到此为止，别往当前会话的聊天区里画
         if (!onScreen()) continue;
 
@@ -9279,11 +10341,6 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           closeThink();
           const wrap = lastAssistantWrap();
           if (wrap) attachFiles(wrap, ev.items);
-        } else if (ev.type === 'error') {
-          // 上一轮是报错结束的：重开窗口也不能一片空白，得让主人看见那句原因
-          closeThink();
-          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-          addSysNote('⚠ ' + (ev.message || '这一轮出错了'));
         } else if (ev.type === 'safe_word') {
           const wrap = addEl('', 'msg user');
           wrap.innerHTML = '<div class="role">安全词<span class="safeTag"></span></div>';
@@ -9305,18 +10362,10 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 现在只把数字刷新一下（球要跟着掉下来），聊天里不出现任何东西。 */
           noteNewContent();
         } else if (ev.type === 'aborted') {
-          closeThink();
-          hideSending();
-          flushSpeech();
-          if (bubble) {
-            bubble.classList.remove('streaming');
-            if (!pendingResume) bubble.textContent += '\n\n[已停止]';
-            bubble = null;
-          }
+          if (bubble && !pendingResume) bubble.textContent += '\n\n[已停止]';
+          endTurnQuietly();
         } else if (ev.type === 'error') {
-          closeThink();
-          hideSending();
-          flushSpeech();
+          endTurnQuietly();
           /**
            * 错误单独画一行，别塞进助手的气泡里。
            *
@@ -9324,35 +10373,45 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 那个 bubble 是「小鱼说的话」，混一条报错进去，重进时读起来就像
            * 她本人在念一串 HTTP 502。分开画，谁说的话一目了然。
            */
-          if (bubble) {
-            bubble.classList.remove('streaming');
-            bubble = null;
+          addSysNote('⚠ ' + (ev.message || '这一轮出错了'));
+        } else if (ev.type === 'rate_limited') {
+          /**
+           * 【2026-11-05 严检补：服务端会发 rate_limited，前端原先没这一支】
+           *
+           * 服务端 src/server.mjs 在模型连续回空（或限流）时发 {type:'rate_limited', message, streak}。
+           * 前端只有 'error' 一支，这个事件落进 else 就一声不响 ——
+           * 主人看到的是：消息发出去了、转圈转完、屏幕上什么都没有，也没有一句话解释。
+           *
+           * 这里按「不是错，是被限了」来处理：收尾＋说清＋把连击数标出来，
+           * 让主人知道等一会儿再发就行，而不是以为程序坏了。
+           */
+          endTurnQuietly();
+          {
+            const streak = Number(ev.streak) || 0;
+            addSysNote('⚠ ' + (ev.message || '模型这边被限流了，歇一会儿再发') +
+              (streak > 1 ? '（连着第 ' + streak + ' 次）' : ''));
           }
-          addSysNote('⚠ ' + ev.message);
+        } else if (ev.type === 'migrated') {
+          /**
+           * 【2026-11-05 严检补：migrated 事件前端没有分支】
+           *
+           * 服务端在会话格式升级、把老结构迁成新结构时会发 {type:'migrated', ...}。
+           * 它不影响这一轮的回答，但主人在别处刷新过的会话会突然换一套结构；
+           * 不提示的话，万一迁移出了岔子，主人只会觉得「聊天记录怎么变了」。
+           * 这里只做一件事：在日志里留一行小字（不弹气泡、不打断这一轮）。
+           */
+          try { console.log('[migrated] 会话结构已升级：', ev.note || ev.reason || 'ok'); } catch {}
         } else if (ev.type === 'sentfile' && ev.file) {
           /* 【2026-10-30 主人要：图/文件当场出来，别等这一轮说完】
            * 以前 send_file 只往 outbox 里塞，要等整个回合 done 之后才挂上，
            * 主人得等我把话全说完才看得见图。现在工具里当场推 sentfile，这儿立刻画。
            * 画进「当前这条正在写的」气泡：就是最后一个正在流式的 row。 */
           try {
-            const rows = els.messages ? [...els.messages.querySelectorAll('.row.ai')] : [];
-            let host = null;
-            for (let r = rows.length - 1; r >= 0; r--) {
-              if (rows[r].querySelector('.bubble')) { host = rows[r].querySelector('.bubble'); break; }
-            }
             const card = outCard(ev.file);
-            if (card) {
-              if (host) {
-                let box = host.querySelector('.sentLive');
-                if (!box) { box = document.createElement('div'); box.className = 'sentLive'; host.appendChild(box); }
-                box.appendChild(card);
-              } else {
-                liveFilePark.push(card);
-              }
-              scrollBottomSoon();
-            }
+            if (card) placeSentCard(card);
           } catch (e) { console.warn('[sentfile] 当场画失败：', e && e.message); }
         } else if (ev.type === 'done') {
+          try { settleSentFiles(); } catch (e) { console.warn("[sentfile] 收尾失败：", e && e.message); }
           /* 【2026-11-04 主人：跑完就该收，别等他发下一条】 */
           try {
             foldLiveTools();                        // 散卡先并成一个柜
@@ -9495,7 +10554,24 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
         ? '这一轮的连接断了，而且服务端那边也没在跑了。再发一句就行，记录还在。'
         : err.message;
       // 同样单独一行，别污染助手的气泡
-      addSysNote('⚠ ' + friendly);
+      /* 【2026-11-05 加】带一个"放回输入框"的按钮 —— 出错了当场就能再试一次，
+       * 不用翻历史、不用 hover 找「重发」。这句话和当时的附件一起还回来。 */
+      addSysNote('⚠ ' + friendly, [{
+        label: '↻ 把这句放回输入框',
+        onClick: () => {
+          try {
+            input.value = String(text || '');
+            attachments = Array.isArray(sending) ? sending.slice() : [];
+            renderAttachBar();
+            syncSendBtn();
+            autosizeInput();
+            input.focus();
+            addSysNote('（这句已经放回输入框了，附件也一起带回来了 —— 按 Enter 就重发。）');
+          } catch (e) {
+            addSysNote('没放回去：' + String(e && e.message ? e.message : e));
+          }
+        },
+      }]);
     } else {
       turnRec.parts.push({ kind: 'text', text: '\n\n⚠ ' + err.message });
     }
@@ -9717,10 +10793,18 @@ async function send() {
  */
 async function interject() {
   const text = input.value.trim();
-  if (!busy || !text) return;
+  /* 【2026-11-05 修·插话丢图】
+   * 主人报：「拖图 + 打字 + 发送，只发出文字，图没了」。
+   * 生成中点发送走的是插话这条路，而插话原来只带 text —— 附件从头没被读。
+   * 现在先把它抓住，再清空输入区。
+   * 另外原来 `!text` 就直接 return：只拖图不打字时，图会静悄悄消失，连提示都没有。 */
+  const atts = attachments.slice();
+  if (!busy || (!text && !atts.length)) return;
   input.value = '';
   clearDraft();   // 插话发出去也算发了
   autosizeInput();
+  attachments = [];
+  renderAttachBar();
   // 插话也是「现在这个身份说的话」，署名跟着当前身份走
   /* 【2026-11-02 主人：插话位置错乱 —— 同一轮插三次，第二次只算到 1 个字】
      原来这个锚点是从 DOM 里数：「找屏幕上最后一个还在流式的气泡，数它的 _rawText 长度」。
@@ -9757,7 +10841,7 @@ async function interject() {
     } catch {}
   }
   /* 【2026-11-03 严检】插话这条原来没交给 pendingRewindBubble：①它永远拿不到五个按钮；②下一轮 done 会把新 at 挂到上一轮气泡上。 */
-  pendingRewindBubble = addUser(text, undefined, undefined, undefined, undefined, currentIdentityName);
+  pendingRewindBubble = addUser(text, undefined, atts.length ? atts : undefined, undefined, undefined, currentIdentityName);
   try { if (pendingRewindBubble) { const t = document.createElement("span"); t.className = "interjectTag"; t.textContent = "插话"; pendingRewindBubble.appendChild(t); } } catch {}
   pendingResume = true;
   lastInterjectText = text;   // 【必须有】runTurn 收尾时靠它判断「那句到底在不在历史里」
@@ -9765,7 +10849,12 @@ async function interject() {
   const r = await fetch('/api/interject', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, message: text, atChars: _atCharsNow }),
+    body: JSON.stringify({
+      sessionId,
+      message: text,
+      atChars: _atCharsNow,
+      attachments: atts.map((x) => ({ path: x.path, name: x.name, kind: x.kind })),
+    }),
   }).then((x) => x.json()).catch(() => null);
 
   // ② 服务端说：没有在跑的那一轮。界面这边的 busy 是假的，现在纠正它。
@@ -9942,15 +11031,66 @@ async function resumeOrResend(s, text) {
 }
 
 sendBtn.onclick = () => {
+  /* 【2026-11-05】主按钮只管「发 / 插话」。
+   * 停止已经改成独立的 ⏹ —— 这里再兜底一次 stopTurn 就会变成两个入口，
+   * 而且生成中空着输入框点它会莫名其妙把这一轮掐掉。 */
   if (!busy) return send();
-  if (input.value.trim()) return interject();
-  return stopTurn();
+  if (input.value.trim() || attachments.length) return interject();
 };
+/* 【2026-11-05 加】独立停止键：不管输入框里有没有字，点它就是停。 */
+try {
+  const _sb = document.getElementById('stopBtn');
+  if (_sb) _sb.onclick = () => { try { stopTurn(); } catch (e) {} };
+} catch {}
 input.addEventListener('keydown', (e) => {
+  /* 【2026-11-05 修】中文输入法选词时按 Enter 只是「上屏」，不是发送。
+   * 以前没挡这一下：拼音打一半、还没选字，回车一按就把半截拼音发出去了。
+   * isComposing 是标准写法；keyCode 229 兜老年份的输入法（Chrome/Edge 上仍会出现）。 */
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     if (!busy) send();
     else if (input.value.trim()) interject();
+  }
+});
+/* 【2026-11-05 加·粘贴图片】
+ *
+ * 截图之后 Ctrl+V 直接变成附件 —— 以前这条路上什么都没有，只能去「+」菜单里翻文件。
+ * 剪贴板里的图没有路径，所以先 POST 到 /api/attach/upload 落一份盘，
+ * 拿到绝对路径再走正常的 addAttachment（发送、预览、历史重画全都复用现有逻辑）。
+ *
+ * 纯文本粘贴不拦：如果剪贴板里没有图片，直接 return，让浏览器按原生行为来。
+ */
+input.addEventListener('paste', async (e) => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items || !items.length) return;
+  const pics = [];
+  for (const it of items) {
+    if (it.kind === 'file' && String(it.type || '').startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) pics.push(f);
+    }
+  }
+  if (!pics.length) return;
+  e.preventDefault();
+  for (const f of pics) {
+    try {
+      const dataUrl = await new Promise((ok, no) => {
+        const rd = new FileReader();
+        rd.onload = () => ok(String(rd.result || ''));
+        rd.onerror = () => no(rd.error || new Error('读不出来'));
+        rd.readAsDataURL(f);
+      });
+      const r = await fetch('/api/attach/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl, name: f.name || 'paste.png' }),
+      }).then((x) => x.json());
+      if (r && r.error) throw new Error(r.error);
+      addAttachment({ path: r.path, name: r.name, kind: 'image', size: r.size, dataUrl });
+    } catch (err) {
+      try { addSysNote('⚠ 粘贴的图没存上：' + String(err && err.message ? err.message : err)); } catch (e2) {}
+    }
   }
 });
 /* 草稿暂存·2026-10-31 每敲一下就记一份草稿（按会话分开存），刷新回来还在。
@@ -10536,12 +11676,38 @@ async function selectAgent(id) {
   {
     const onEl = document.getElementById('agOpeningOn');
     if (onEl) {
-      onEl.checked = true;                   // 先当开着，读回来再改
-      onEl.disabled = false;
+      /* 【2026-11-05 修闪一下·主人原话】「点开智能体界面后【开场白】旁白的框会有那么一瞬间打勾然后掉」
+       * 原因：这里先硬写 checked = true、HTML 里也写死了 checked，等一次网络请求回来才改成真值。
+       * 真值是「关」的时候，就成了「先勾上 → 再撤掉」，主人看见的就是闪一下。
+       * 改法：读过的值先缓存，下次打开直接用缓存画（一点不闪）；第一次没有缓存就先藏起来等真值，
+       * 绝不给一个假的勾。 */
+      const __oc = (window.__openingSwitchCache = window.__openingSwitchCache || new Map());
+      const __sid = String(agentCur.id);
+      /* 这一代是给谁读的 —— 快速连点两张卡时，前一张的请求回来不许盖掉后一张的值。 */
+      onEl.dataset.openingFor = __sid;
+      const __hit = __oc.get(__sid);
+      if (__hit === undefined) {
+        onEl.checked = false;                // 不给假勾
+        onEl.style.visibility = 'hidden';  // 真值没到之前先藏着，看不见就不会闪
+      } else {
+        onEl.checked = __hit === true;
+        onEl.disabled = false;
+        onEl.style.visibility = '';  // 命中缓存就直接露出来（别残留上一次的隐藏）
+      }
       fetch('/api/agents/opening-switch?id=' + encodeURIComponent(agentCur.id))
         .then((x) => x.json())
-        .then((j) => { if (j && j.ok && document.getElementById('agOpeningOn') === onEl) onEl.checked = j.enabled !== false; })
-        .catch(() => {});
+        .then((j) => {
+          if (!j || !j.ok) return;
+          const v = j.enabled !== false;
+          __oc.set(__sid, v);
+          const cur = document.getElementById('agOpeningOn');
+          if (!cur) return;
+          if (cur.dataset.openingFor !== __sid) return;  // 已经切到别的卡了，这个结果作废
+          if (cur.checked !== v) cur.checked = v;
+          cur.disabled = false;
+          cur.style.visibility = '';
+        })
+        .catch(() => { if (onEl.dataset.openingFor === __sid) onEl.style.visibility = ''; });
       // 一勾就存，不用等「保存」按钮 —— 这只是「开不开」一件事，立刻生效更符合直觉
       onEl.onchange = async () => {
         try {
@@ -10550,7 +11716,11 @@ async function selectAgent(id) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: agentCur.id, enabled: onEl.checked }),
           }).then((x) => x.json());
-          if (r && r.ok) agHint(onEl.checked ? '开场白：开（新建会话她会先开口）' : '开场白：关（这段字留着，但这次不开口）');
+          if (r && r.ok) {
+            /* 【2026-11-05】手动点过也要记进缓存，否则下次打开又得等一次网络、还要闪。 */
+            try { (window.__openingSwitchCache = window.__openingSwitchCache || new Map()).set(agentCur.id, onEl.checked === true); } catch { /* 忽略 */ }
+            agHint(onEl.checked ? '开场白：开（新建会话她会先开口）' : '开场白：关（这段字留着，但这次不开口）');
+          }
           else agHint('没存上：' + ((r && r.error) || '网络错误'));
         } catch (e) {
           agHint('没存上：' + e.message);
@@ -11023,7 +12193,6 @@ async function toggleWhoBtn(agentId, wasOff) {
   } catch (e) {
     try { toast('没切成：' + (e && e.message ? e.message : e)); } catch { /* 忽略 */ }
   }
-  try { await refreshWhoRail(); } catch { /* 忽略 */ }
   try { refreshAgentChip(); } catch { /* 忽略 */ }
 }
 
@@ -11536,7 +12705,11 @@ async function toggleGroupMember(id) {
   agentGroup = Array.isArray(r.agentIds) ? r.agentIds.map(String) : [];
   renderGroupRow();
   try { refreshAgentChip(); } catch { /* 忽略 */ }
-  /* 【2026-11-02 删重复】上面第 1 行已经 await 过一次 refreshWhoRail 了，这里再来一次是多余的：第二次不带 await，请求什么时候回来不知道，可能赶在 renderTurns 重建 DOM 的中间 —— 牌子就画进了一个已经被换掉的容器里，看起来就是「屋里的人」那一栏空着。只保留上面那次带 await 的。 */
+  /* 【2026-11-05 修】左边「屋里的人」那列要重画。原来这里只重画了智能体页那排勾，
+   * 没叫左边那列 —— 可左边就是从 /api/agents/group 读 members 画的（refreshWhoRail），
+   * 跟这里是同一份名单。数据早就对了，只是没人叫它重画，所以点了左边纹丝不动，
+   * 得切个会话才看得见。补一次带 await 的重画（不带会赶在 renderTurns 建 DOM 中间）。 */
+  try { await refreshWhoRail(); } catch { /* 忽略 */ }
 }
 
 /**
@@ -12866,6 +14039,45 @@ document.getElementById('resetSafeWords').onclick = async () => {
   }
 };
 
+// 2026-11-04 主人要求：把「恢复默认」做成【设为默认】的回头路 —— 恢复的是主人存的那份，不是出厂常量
+document.getElementById('restoreDefaultBottomLines').onclick = async () => {
+  const btn = document.getElementById('restoreDefaultBottomLines');
+  btn.disabled = true;
+  bottomLinesHint.textContent = '正在恢复…';
+  const r = await fetch('/api/settings/reset-bottomlines', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  }).then((x) => x.json()).catch(() => null);
+  btn.disabled = false;
+  if (!r || r.error) {
+    bottomLinesHint.textContent = '恢复失败：' + (r && r.error ? r.error : '网络错误');
+    return;
+  }
+  fillSettings(r.settings);
+  bottomLinesHint.textContent = r.changed
+    ? '已恢复到你「设为默认」存下的那 ' + r.settings.bottomLines.length + ' 条（上一版存在 .state/bottomlines.backup.md）'
+    : '本来就是默认那几条，没动';
+};
+
+document.getElementById('restoreDefaultSafeWords').onclick = async () => {
+  const btn = document.getElementById('restoreDefaultSafeWords');
+  btn.disabled = true;
+  safeWordsHint.textContent = '正在恢复…';
+  safeWordsHint.className = 'hint';
+  const r = await fetch('/api/settings/reset-safewords', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  }).then((x) => x.json()).catch(() => null);
+  btn.disabled = false;
+  if (!r || r.error) {
+    safeWordsHint.textContent = '恢复失败：' + (r && r.error ? r.error : '网络错误');
+    safeWordsHint.className = 'hint err';
+    return;
+  }
+  fillSettings(r.settings);
+  safeWordsHint.textContent = r.changed
+    ? '已恢复到你「设为默认」存下的那套（' + r.settings.safeWords.join(' / ') + '），上一版存在 .state/safewords.backup.md'
+    : '本来就是默认那几个词，没动';
+};
+
 // 【2026-11-03 主人要求】底线 / 安全词两块右边各加一颗「设为默认」
 function _reportDefHint(el, ok, msg) {
   if (!el) return;
@@ -12888,7 +14100,7 @@ document.getElementById('setDefaultBottomLines').onclick = async () => {
   }).then((x) => x.json()).catch(() => null);
   btn.disabled = false;
   if (!r || r.error) { _reportDefHint(hint, false, '设默认失败：' + (r && r.error ? r.error : '网络错误')); return; }
-  _reportDefHint(hint, true, '已把这 ' + lines.length + ' 条存成默认底线；以后点「恢复出厂默认底线」回来的就是它们');
+  _reportDefHint(hint, true, '已把这 ' + lines.length + ' 条存成默认底线；以后点右边那颗「恢复默认」回来的就是它们');
 };
 document.getElementById('setDefaultSafeWords').onclick = async () => {
   const btn = document.getElementById('setDefaultSafeWords');
@@ -12905,7 +14117,7 @@ document.getElementById('setDefaultSafeWords').onclick = async () => {
   }).then((x) => x.json()).catch(() => null);
   btn.disabled = false;
   if (!r || r.error) { _reportDefHint(hint, false, '设默认失败：' + (r && r.error ? r.error : '网络错误')); return; }
-  _reportDefHint(hint, true, '已把 ' + _swDefList.join(' / ') + ' 存成默认安全词；以后点「恢复出厂默认安全词」回来的就是它们');
+  _reportDefHint(hint, true, '已把 ' + _swDefList.join(' / ') + ' 存成默认安全词；以后点右边那颗「恢复默认」回来的就是它们');
 };
 
 /* 【2026-11-03 主人要求】设置界面右下角那颗「恢复出厂默认」已经删掉了，这里一并去掉。 */
@@ -13431,6 +14643,126 @@ if (document.getElementById('updRestart')) {
 }
 
 // ---- 功能：列表 / 开 / 关 ----------------------------------------------------
+/* ===== 【2026-11-06 定时任务】给个任务 + 什么时候开始，到点她自己去做 ===== */
+const cronDlg = document.getElementById('cronDlg');
+
+function cronWhenText(ms) {
+  try {
+    const d = new Date(Number(ms));
+    const p = (n) => String(n).padStart(2, '0');
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  } catch { return '?'; }
+}
+
+function paintCronList(list) {
+  const box = document.getElementById('cronList');
+  if (!box) return;
+  box.innerHTML = '';
+  const arr = Array.isArray(list) ? list : [];
+  if (!arr.length) {
+    const e = document.createElement('div');
+    e.className = 'cronEmpty';
+    e.textContent = '还没有定时任务。下面写一件事、再写什么时候做，点「加上」。';
+    box.appendChild(e);
+    return;
+  }
+  for (const t of arr) {
+    const row = document.createElement('div');
+    row.className = 'cronRow';
+
+    const nm = document.createElement('span');
+    nm.className = 't' + (t.enabled === false ? ' off' : '');
+    nm.textContent = t.title || t.text || '(没写内容)';
+    nm.title = nm.textContent;
+
+    const wh = document.createElement('span');
+    wh.className = 'w';
+    wh.textContent = (t.enabled === false ? '已停 ' : '') + cronWhenText(t.at) +
+      (t.repeat === 'every' ? ' · 每天' : ' · 一次') +
+      (t.runCount ? ' · 跑过' + t.runCount + '次' : '');
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'ghost';
+    del.textContent = '删';
+    del.onclick = async () => {
+      try { await fetch('/api/cron?id=' + encodeURIComponent(t.id), { method: 'DELETE' }); } catch {}
+      loadCron();
+    };
+
+    row.append(nm, wh, del);
+    box.appendChild(row);
+  }
+}
+
+async function loadCron() {
+  try {
+    const r = await fetch('/api/cron').then((x) => x.json());
+    paintCronList(r && r.tasks);
+    const f = document.getElementById('cronFoot');
+    if (f) f.textContent = (r && Array.isArray(r.tasks)) ? ('共 ' + r.tasks.length + ' 条') : '';
+  } catch (e) {
+    const f = document.getElementById('cronFoot');
+    if (f) f.textContent = '取不到：' + (e && e.message ? e.message : e);
+  }
+}
+
+/**
+ * 【2026-11-05 加】日期框的默认值：现在往后一小时、取整到 5 分钟。
+ * 不给默认值的话，每次打开都是一片「年/月/日 --:--」，得从头点六下。
+ */
+function cronDefaultWhen() {
+  const d = new Date(Date.now() + 3600 * 1000);
+  d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5, 0, 0);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+    + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function openCronDlg() {
+  if (!cronDlg) return;
+  try { closeOtherDialogs('cronDlg'); } catch {}
+  cronDlg.showModal();
+  try {
+    const w = document.getElementById('cronWhen');
+    if (w && !w.value) w.value = cronDefaultWhen();
+  } catch (e) {}
+  loadCron();
+}
+
+try {
+  const b = document.getElementById('cronBtn');
+  if (b) b.onclick = openCronDlg;
+  const c = document.getElementById('cronClose');
+  if (c) c.onclick = () => cronDlg.close();
+  const rl = document.getElementById('cronReload');
+  if (rl) rl.onclick = loadCron;
+  const add = document.getElementById('cronAddBtn');
+  if (add) add.onclick = async () => {
+    const tx = document.getElementById('cronText');
+    const wh = document.getElementById('cronWhen');
+    const rp = document.getElementById('cronRepeat');
+    const foot = document.getElementById('cronFoot');
+    const text = String((tx && tx.value) || '').trim();
+    const when = String((wh && wh.value) || '').trim();
+    if (!text) { if (foot) foot.textContent = '要先写清楚做什么'; return; }
+    if (!when) { if (foot) foot.textContent = '要选个时间（年月日 + 时分）'; return; }
+    add.disabled = true;
+    try {
+      const r = await fetch('/api/cron', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, when, repeat: (rp && rp.checked) ? 'every' : 'once' }),
+      }).then((x) => x.json()).catch(() => null);
+      if (!r || r.error) { if (foot) foot.textContent = '没加成功：' + ((r && r.error) || '不知道为啥'); return; }
+      if (tx) tx.value = '';
+      if (wh) wh.value = '';
+      if (rp) rp.checked = false;
+      if (foot) foot.textContent = '加好了，' + cronWhenText(r.task && r.task.at) + ' 开始';
+      loadCron();
+    } finally { add.disabled = false; }
+  };
+} catch (e) { console.warn('[cron] 面板挂不上：', e && e.message); }
 const featDlg = document.getElementById('featuresDlg');
 const featList = document.getElementById('featList');
 const featHint = document.getElementById('featHint');
@@ -13777,6 +15109,20 @@ function renderIdentityDlg() {
     rstBtn.disabled = !sel.edited;
     rstBtn.style.opacity = sel.edited ? '' : '.45';
   }
+  // 【2026-11-04】设为默认 / 恢复默认：只对内建身份有意义
+  // 设为默认 = 把现在这副样子存成「默认」；恢复默认 = 回到那一份（不是出厂那份）
+  const setDefBtn = document.getElementById('idSetDefault');
+  if (setDefBtn) {
+    setDefBtn.hidden = !sel.builtin;
+    setDefBtn.disabled = !sel.builtin;
+    setDefBtn.style.opacity = sel.builtin ? '' : '.45';
+  }
+  const restDefBtn = document.getElementById('idRestoreDefault');
+  if (restDefBtn) {
+    restDefBtn.hidden = !sel.builtin;
+    restDefBtn.disabled = !sel.builtin;
+    restDefBtn.style.opacity = sel.builtin ? '' : '.45';
+  }
   const use = document.getElementById('idUse');
   use.disabled = sel.id === idState.current;
   use.style.opacity = sel.id === idState.current ? '.45' : '';
@@ -13922,6 +15268,37 @@ async function delIdentity() {
 
 document.getElementById('idClose').onclick = () => closeIdentityDlg();
 document.getElementById('idSave').onclick = () => saveIdentityEdit();
+  // 【2026-11-04】把当前这个内置身份存成「默认」
+  const setDefBtn2 = document.getElementById('idSetDefault');
+  if (setDefBtn2) setDefBtn2.onclick = async (ev) => {
+    ev.preventDefault();
+    if (!idState.sel) return;
+    const r = await fetch('/api/identity/as-default', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: idState.sel }),
+    }).then((x) => x.json()).catch(() => null);
+    const tip = document.getElementById('idTip');
+    if (!r || r.error) { if (tip) tip.textContent = '没设成：' + ((r && r.error) || '网络问题'); return; }
+    if (tip) tip.textContent = '存成默认了 · 以后点「恢复默认」回来的就是这一份';
+  };
+
+  // 【2026-11-04】回到「设为默认」存下的那一份
+  const restDefBtn2 = document.getElementById('idRestoreDefault');
+  if (restDefBtn2) restDefBtn2.onclick = async (ev) => {
+    ev.preventDefault();
+    if (!idState.sel) return;
+    const r = await fetch('/api/identity/restore-default', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: idState.sel }),
+    }).then((x) => x.json()).catch(() => null);
+    const tip = document.getElementById('idTip');
+    if (!r || r.error) { if (tip) tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题'); return; }
+    // 接口已经把全量状态回回来了，直接用
+    idState = r;
+    renderIdentityDlg();
+    if (tip) tip.textContent = '已回到你「设为默认」存下的那一份';
+  };
+
   const idResetBtn = document.getElementById('idReset');
   if (idResetBtn) idResetBtn.onclick = () => resetIdentityEdit();
 document.getElementById('idUse').onclick = () => useIdentity(idSel);
@@ -14064,7 +15441,9 @@ async function openWhalePersonaDlg() {
   }
   whaleProfileData = prof;
 
-  const defaultText = String(prof.defaultPersona || '');
+  const factoryText = String(prof.factoryPersona || prof.defaultPersona || '');
+  let personalDefaultText = String(prof.personalDefaultPersona || '');
+  const defaultText = factoryText;
   const ownText = String(prof.persona || '');
   area.value = ownText || defaultText;
   area.placeholder = defaultText ? '（她的默认人设，点「恢复出厂默认」随时能填回来）' : '（还没写人设）';
@@ -14115,9 +15494,9 @@ async function openWhalePersonaDlg() {
     btnReset.onclick = (ev) => {
       ev.preventDefault();
       // 恢复默认 = 把默认人设填回来（不是清空）
-      area.value = defaultText;
+      area.value = factoryText;
       refreshStat();
-      tip.textContent = '已填回默认人设（' + defaultText.length + ' 字），点「保存」才生效。';
+      tip.textContent = '已填回出厂默认人设（' + factoryText.length + ' 字），点「保存」才生效。';
     };
 
     btnResetAll.onclick = async (ev) => {
@@ -14131,7 +15510,7 @@ async function openWhalePersonaDlg() {
         tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题');
         return;
       }
-      const d = String((r && r.defaultPersona) || defaultText);
+      const d = String((r && r.factoryPersona) || factoryText);
       area.value = d;
       modelSel.value = '';
       modelHint.textContent = '不单独指定';
@@ -14156,12 +15535,52 @@ async function openWhalePersonaDlg() {
       whaleProfileData = r;
       // 用服务端回来的为准，别让界面显示跟实际存的不一样
       if (typeof r.persona === 'string') area.value = r.persona;
-      if (typeof r.defaultPersona === 'string') prof.defaultPersona = r.defaultPersona;
+      if (typeof r.personalDefaultPersona === 'string') {
+        prof.personalDefaultPersona = r.personalDefaultPersona;
+        personalDefaultText = r.personalDefaultPersona;
+      }
       prof.personaCustom = Boolean(r.personaCustom);
       refreshStat();
       tip.textContent = '存好了 · 下次叫她干活就按这个';
       // 列表那边的「改过 / 单独指定」小标签要跟着变，重画但不碰这个 dialog
       try { await loadFeatures(); } catch {}
+    };
+
+    // 【2026-11-04】把栏里这一套存成她自己的默认（后端 /api/agents/persona/as-default，id=xiaojing）
+    const btnSetDefault = document.getElementById('wpSetDefault');
+    if (btnSetDefault) btnSetDefault.onclick = async (ev) => {
+      ev.preventDefault();
+      const cur = String(area.value || '');
+      if (!cur.trim()) { tip.textContent = '栏里是空的，先写点东西再设默认'; return; }
+      btnSetDefault.disabled = true;
+      tip.textContent = '存成默认…';
+      const r = await fetch('/api/agents/persona/as-default', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'xiaojing', persona: cur }),
+      }).then((x) => x.json()).catch(() => null);
+      btnSetDefault.disabled = false;
+      if (!r || r.error) { tip.textContent = '没设成：' + ((r && r.error) || '网络问题'); return; }
+      if (typeof r.personalDefaultPersona === 'string') {
+        personalDefaultText = r.personalDefaultPersona;
+        prof.personalDefaultPersona = r.personalDefaultPersona;
+      }
+      tip.textContent = '存成默认了 · 以后点「恢复默认」回来的就是这一套';
+    };
+
+    // 回到「设为默认」存下的那一份（不是出厂那份）
+    const btnRestoreDef = document.getElementById('wpRestoreDefault');
+    if (btnRestoreDef) btnRestoreDef.onclick = async (ev) => {
+      ev.preventDefault();
+      btnRestoreDef.disabled = true;
+      tip.textContent = '恢复中…';
+      const r = await fetch('/api/whale/profile').then((x) => x.json()).catch(() => null);
+      btnRestoreDef.disabled = false;
+      if (!r || r.error) { tip.textContent = '没恢复成：' + ((r && r.error) || '网络问题'); return; }
+      const d = String((r && r.personalDefaultPersona) || personalDefaultText || factoryText || '');
+      area.value = d;
+      refreshStat();
+      tip.textContent = '已填回你「设为默认」存下的那一套（' + d.length + ' 字），点「保存」才生效。';
     };
 
     btnClose.onclick = (ev) => {
@@ -14197,7 +15616,10 @@ if (featList) {
     const r = await fetch('/api/features/set', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, enabled: next }),
+      /* 【2026-11-06 主人要求】「主动找我」按会话生效：
+       * 请求里必须带上当前会话 id，服务端才知道该记到哪个会话头上。
+       * 别的功能带上也不影响（服务端只对 selfwake 走按会话那条路）。 */
+      body: JSON.stringify({ id, enabled: next, sessionId: String(sessionId || '') }),
     }).then((x) => x.json()).catch(() => null);
     sw.disabled = false;
     if (!r || r.error) {
@@ -14855,13 +16277,23 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
    *   输入 = (主人那句话 + 这一串回答) ÷ 1.5 × 1.5，再按这一轮假设问了 2 次算
    * v1 不想做得更细：拿不准就写「估」，让主人心里有个数，不去装准。
    */
+  /* 【2026-11-05 加】最近一次拿到的真实总量 —— 给下面估算当基数。
+   * 中断时估算之所以特别小，是因为原来只算「这一句话 + 这段回答 + 600」，
+   * 而真实请求里带着整份历史（动辄几万 token）。有基数就按基数往上加。 */
+  if (typeof window.__xyLastRealTotal === 'undefined') window.__xyLastRealTotal = 0;
+
   if (!u && (Number(replyChars) > 0 || Number(userChars) > 0)) {
     const rc = Number(replyChars) || 0;
     const uc = Number(userChars) || 0;
     // 中文约 1.5 字 / token；英文更省，这里一律按中文算（偏保守，宁多不少）
     const outEst = Math.max(1, Math.round(rc / 1.5));
-    // 输入：光这一轮就得把这些原话送进去一遍；再加一点系统提示的余量
-    const inEst = Math.max(1, Math.round((uc + rc) / 1.5) + 600);
+    /* 输入估算。
+     * 有上一轮真实总量时：在它的基础上加上这一轮多出来的字 —— 这才是真实量级。
+     * 没有（第一轮就断了）：退回老口径，但把 600 提到 1500，
+     * 因为系统提示 + 工具清单本身就不止 600 token。 */
+    const base = Number(window.__xyLastRealTotal) || 0;
+    const delta = Math.round((uc + rc) / 1.5);
+    const inEst = base > 0 ? base + delta : Math.max(1, delta + 1500);
     u = {
       prompt_tokens: inEst,
       completion_tokens: outEst,
@@ -14897,6 +16329,13 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
   const pin = Number(u.prompt_tokens ?? 0);
   const pout = Number(u.completion_tokens ?? 0);
   const total = Number(u.total_tokens ?? (pin + pout));
+  /* 【2026-11-05 加】真实值到了就记一笔，下次估算拿它当基数。
+   * 只认非估算的、而且比现有基数大的，避免被小样本拉低。 */
+  try {
+    if (!u._estimated && Number.isFinite(total) && total > (Number(window.__xyLastRealTotal) || 0)) {
+      window.__xyLastRealTotal = total;
+    }
+  } catch (e) {}
   if (!pin && !pout && !total) return; // 全 0 就别占地方
 
   const row = document.createElement('div');
@@ -14940,7 +16379,15 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
   const segs = [];
   segs.push(mk('↑' + fmtTok(pin) + ' 输入'), mk('·', 'sep'));
   segs.push(mk('↓' + fmtTok(pout) + ' 输出'), mk('·', 'sep'));
-  segs.push(mk(fmtTok(total) + ' tokens', 'tt'));
+  /**
+   * 【2026-11-05 修·主人报「这串数字并不正常」】
+   * 上面那三个数，接口没回用量时是本地按字数粗估的（输入那截还硬加了 600 当系统提示余量）。
+   * 可原来只在悬停提示里说了句「这是我粗估的」——可见文字上一个字没有，
+   * 主人看到「↑1,293 输入」只会以为这是真数，然后再跟上下文一对就发现对不上。
+   * 估算就明写「估」，别让人自己猜。
+   */
+  segs.push(mk(fmtTok(total) + ' tokens' + (u._estimated ? '（估）' : ''), 'tt' + (u._estimated ? ' est' : '')));
+  if (u._estimated) segs.push(mk('接口没回用量', 'estWhy'));
   row.append(...segs);
 
   // 花了多少钱。
@@ -14980,6 +16427,24 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
 
   // host 是「画进哪个容器」：实时那一轮不传，直接挂到 log 上；
   // 回放历史时传 frag，否则 renderTurns 最后的 log.replaceChildren(frag) 会把它一起冲掉（真踩过）。
+  /* 【2026-11-05 加·这一轮跑了多久】
+   *
+   * 主人要的：在 tokens 消耗那行右边显示本轮耗时。
+   * 数据来自后端 usage._ms —— 在 runWithToolContext 那个统一出口补的，
+   * 跟着 usage 一起落盘，所以重绘历史、切走再回来都还在。
+   * 旧消息没有这个字段，就不显示（不拿「现在 - 创建时间」瞎凑）。
+   */
+  try {
+    const ms = Number(u && u._ms);
+    if (Number.isFinite(ms) && ms > 0) {
+      const dur = document.createElement('span');
+      dur.className = 'usageMs';
+      dur.textContent = '· ' + turnElapsedText(ms);
+      dur.title = '这一轮从开口到说完，一共 ' + (ms >= 60000 ? Math.round(ms / 1000) + ' 秒' : ms + ' 毫秒');
+      row.appendChild(dur);
+    }
+  } catch (e) {}
+
   (host || log).appendChild(row);
   if (!host) noteNewContent();
 }
@@ -15069,7 +16534,7 @@ function paintUsageBox() {
 function closeOtherDialogs(keepId) {
   for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'todoDlg',
     // 2026-10-29：智能体面板和两个「改人设」的大面板也归这一套规矩
-    'agentListDlg', 'fishPersonaDlg', 'whalePersonaDlg']) {
+    'agentListDlg', 'fishPersonaDlg', 'whalePersonaDlg', 'cronDlg']) {
     if (id === keepId) continue;
     const d = document.getElementById(id);
     if (d && d.open) {
@@ -16489,7 +17954,22 @@ function renderTurns(turns, opts) {
     if (_lg0) {
       for (const el of _lg0.querySelectorAll('.msg.user')) {
         let body = '';
-        try { const b = el.querySelector('.bubble') || el; body = String(b.textContent || ''); } catch (e) {}
+        /**
+         * 【2026-11-05 修·凭空冒出一条"我说的话"】
+         *
+         * 原来写的是 `el.querySelector('.bubble') || el` —— 没有 `.bubble` 就退回整个容器。
+         * 而**纯附件的消息（只发图、没打字）根本没有 .bubble**，
+         * 于是 `textContent` 把署名和操作按钮一起吸进来：
+         *   「主人↶ 回退✎ 编辑⑂ 分支删除」
+         * 这段东西在服务端当然找不到对应，就被当成"还没落盘的那句"补了回去 ——
+         * 屏幕上凭空多一条主人说的话，内容是按钮。
+         *
+         * 现在：只认 `.bubble`。没有气泡 = 没有文字可补，直接跳过，**绝不退回容器**。
+         */
+        try {
+          const b = el.querySelector('.bubble');
+          if (b) body = String(b.textContent || '');
+        } catch (e) {}
         const w = _wash(body);
         if (!w) continue;
         // 服务端已经有这段（或它包含在这段里）就不用补
@@ -16607,6 +18087,12 @@ function renderTurns(turns, opts) {
    * 现在改成窗口化：第一次只画最后 WINDOW 轮，往上滚到顶再补前面一批。
    * 用 _histWindow 记住「这个会话还差多少轮没画」，切走再回来就重置。
    */
+  /* 【2026-11-05 修·长会话翻不到更早的消息】
+   * 补历史也是走这个函数，而它最后是「无条件跳到底」的 ——
+   * 于是刚补上的一屏，被 rAF 那一发和每 250ms 的 followNow 一起拽回底部，
+   * 看着就是"滚不上去、一滚就弹回来"。
+   * keepScroll 给这条路开个绿灯：不贴底，也不让后面的定时器贴。 */
+  const _keepScroll = !!(opts && opts.keepScroll);
   const WINDOW = 120;
   /* 【注意】这里的 turns 就是全部轮次；_all 不能写成 = list —— list 下面才定义，会 TDZ 报错。 */
   const _all = Array.isArray(turns) ? turns : [];
@@ -16662,6 +18148,8 @@ function renderTurns(turns, opts) {
       const w = (turn.who && String(turn.who) !== '主人')
         ? (addWhaleBubble(turn.who, turn.text, frag) || addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || ''))
         : addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
+      // 【2026-11-05】我自己说的话也标上时间
+      attachTime(w, turn.ts);
       /* 【2026-11-01 主人：插的话要插在「我说到哪儿」的位置】
        * 服务端把「他插话那一刻我已经说出多少字」（turn.steerAt）带下来了。
        * 这里把上一个气泡的文字截断到那个字数，多出来的尾巴先存起来，
@@ -16773,7 +18261,9 @@ function renderTurns(turns, opts) {
           if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
           const b = document.createElement('div');
           b.className = 'bubble';
-          b.textContent = fixMojibake(turn.text);
+          mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
+          maybeFoldBubble(b, turn.text);
+          attachTime(wrap, turn.ts);
           wrap.appendChild(b);
           if (outs.length) attachFiles(wrap, outs);
           // 【修·工具调用从来没画出来】这一条 assistant 带的工具，画在这段话正下方。
@@ -16790,6 +18280,7 @@ function renderTurns(turns, opts) {
           attachBranchBtn(wrap, turn.rewindId);
           attachRetry(wrap, askQueue);
           attachDelBtn(wrap, turn.rewindId);
+          attachCopyBtn(wrap);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         } else {
@@ -16841,7 +18332,9 @@ function renderTurns(turns, opts) {
             }
             b = document.createElement('div');
             b.className = 'bubble cont';
-            b.textContent = fixMojibake(turn.text);
+            mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
+            maybeFoldBubble(b, turn.text);
+            attachTime(wrap, turn.ts);
             _contBody.appendChild(b);
             _contBody = b;
             // 后接进来的那段不重复挂按钮，按钮只在第一段上
@@ -16877,7 +18370,9 @@ function renderTurns(turns, opts) {
             if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
             b = document.createElement('div');
             b.className = 'bubble';
-            b.textContent = fixMojibake(turn.text);
+            mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
+            maybeFoldBubble(b, turn.text);
+            attachTime(wrap, turn.ts);
             wrap.appendChild(b);
             _contBubble = wrap;
             _contBody = b;
@@ -16891,6 +18386,7 @@ function renderTurns(turns, opts) {
           // 她说错了、或者想让她重答一遍：一键退回再问一次
           attachRetry(wrap, askQueue);
           attachDelBtn(wrap, turn.rewindId);
+          attachCopyBtn(wrap);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
           }
@@ -17025,7 +18521,8 @@ function renderTurns(turns, opts) {
         // 补完把滚动位置还原：记住「离底部多远」，补完照这个换算，看着不跳
         const keepFromBottom = log.scrollHeight - log.scrollTop;
         renderTurns._keepStart = newStart;
-        renderTurns(P.all);
+        // 【2026-11-05 修】keepScroll：补历史时不许贴底，否则人一往上翻就被弹回去
+        renderTurns(P.all, { keepScroll: true });
         try { log.scrollTop = log.scrollHeight - keepFromBottom; } catch {}
       }, { passive: true });
     }
@@ -17065,7 +18562,13 @@ function renderTurns(turns, opts) {
   // 这里不能用 noteNewContent()：它会看 stickBottom，而这会儿的 stickBottom
   // 还是上一个会话 / 上一次渲染留下的，一旦是 false 就只加未读数、一次都不滚，
   // 表现就是「退出重进还停在最早的位置，得自己往下翻」。
-  resetScrollStick();
+  //
+  // 【例外】补历史（opts.keepScroll）：这时候人正往上翻，贴底就是跟他抢方向。
+  if (_keepScroll) {
+    stickBottom = false;
+  } else {
+    resetScrollStick();
+  }
   // 记一笔：这一屏最后停在谁的话上。切会话 / 断开自愈时判断「这轮写完没」要用。
   markTailRole(list);
   // 图片、视频加载完会把高度撑开，撑开之后还得再贴一次底
@@ -17257,6 +18760,20 @@ async function switchSession(id, opts) {
       const sl = document.getElementById('sessList');
       if (sl) sl.classList.remove('bulk');
     } catch {}
+  }
+
+  /**
+   * 【2026-11-05 修·附件跟着会话串味】
+   *
+   * 草稿是按会话存的（`xy.draft.<sid>`），附件却是全局一个数组：
+   * 在 A 会话挑好一张图、切到 B，图还挂在输入框上面，一按发送就发进了 B。
+   * 附件是「我现在要发的这个东西」，跟谁走就该是谁的 —— 切会话一律清掉。
+   * 草稿文字仍然按会话留着，丢的只是那个还没发出去的附件，重新选一次比发错人强。
+   */
+  if (attachments.length) {
+    attachments = [];
+    try { renderAttachBar(); } catch {}
+    try { syncSendBtn(); } catch {}
   }
 
   /**
@@ -17873,10 +19390,10 @@ const PROVIDERS = [
     hint: '飞鱼中转站，地址自带 /v1。',
   },
   {
-    key: 'beiluo', name: '北洛中转', base: 'https://beiluoxi.xyz/v1',
-    match: /beiluoxi/i,
-    models: ['deepseek-v4.1-flash'],
-    hint: '北洛中转站，地址自带 /v1。',
+    key: 'xingcat', name: '星猫中转', base: 'https://xing.cat/v1',
+    match: /xing\.cat/i,
+    models: ['deepseek-v4.1-flash-1017'],
+    hint: '星猫中转站，地址自带 /v1。',
   },
   {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
@@ -18268,7 +19785,6 @@ function formPayload() {
 
 function paintModels() {
   mdlCount.textContent = mdlState.models.length ? `共 ${mdlState.models.length} 个` : '';
-  if (typeof paintRestoreEnv === 'function') paintRestoreEnv();
   mdlList.innerHTML = '';
   mdlList.hidden = mdlState.empty;
   mdlEmpty.hidden = !mdlState.empty;
@@ -18409,7 +19925,6 @@ const thinkNow = document.getElementById('thinkNow');
 const r429Sw = document.getElementById('r429Sw');
 const r429Now = document.getElementById('r429Now');
 const optHint = document.getElementById('optHint');
-const restoreEnvBtn = document.getElementById('restoreEnv');
 
 let thinkState = { level: 'off', perModel: {}, levels: [] };
 let r429State = { config: { enabled: true, migrateThreshold: 3 }, cooldownLeft: 0, migrating: false };
@@ -18511,30 +20026,11 @@ if (r429Sw) {
   };
 }
 
-// .env 那条被删掉了才需要「找回」
-function paintRestoreEnv() {
-  if (!restoreEnvBtn) return;
-  const hasEnv = mdlState.models.some((m) => m.id === 'env');
-  restoreEnvBtn.hidden = hasEnv || !mdlState.envDefaults?.hasKey;
-}
-
-if (restoreEnvBtn) {
-  restoreEnvBtn.onclick = async () => {
-    const r = await fetch('/api/models/restore-env', { method: 'POST' }).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) { alert('找回失败'); return; }
-    mdlState = r;
-    paintModels();
-    paintRestoreEnv();
-    if (optHint) optHint.textContent = '已把 .env 那条加回列表';
-  };
-}
-
 document.getElementById('openModels').onclick = async () => {
   closeForm();
   const ok = await loadModels();
   if (!ok) { alert('读取模型列表失败'); return; }
   await loadOptions();
-  paintRestoreEnv();
   if (optHint) optHint.textContent = '';
   closeOtherDialogs('modelsDlg');
   mdlDlg.showModal();
@@ -19006,5 +20502,8 @@ async function pushMusic(patch) {
 refreshMusic();
 
 </script>
+
+<!-- 【2026-11-05 加】点开看大图。平时不显示，showModal 时靠 ::backdrop 压暗背景 -->
+<dialog id="imgView"><button type="button" class="imgViewClose" title="关闭（Esc 也行）">×</button><img alt=""></dialog>
 </body>
 </html>

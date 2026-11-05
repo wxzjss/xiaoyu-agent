@@ -165,7 +165,18 @@ export function estTokens(messages, sessionId) {
       imageChars += m._images.length * IMAGE_ESTIMATE_CHARS;
     }
     if (textChars) total += Math.ceil(textChars / perToken);
-    if (imageChars) total += Math.ceil(imageChars / perToken);
+    /* 【2026-11-05 修·两套口径对不上，导致「喊该压、压不动」】
+     *
+     * 图片原来也除 perToken（= 1.5/k），而 compress.mjs 那边明确**不乘**这个系数，
+     * 理由是它拿「文字字符/token」实测反校出来的，套到 base64 上会把系数带偏。
+     * 结果：带图会话里闸门算出的比例比真压判定高约 k 倍（实测 1.6 倍）——
+     * 一边喊「到 80% 该折了」，另一边算出来只有 50%，compressHistory 返回
+     * under-trigger，每轮都判定该压、每轮都压不动。
+     *
+     * 现在图片跟 compress 一样不乘系数：**两边算的是同一件事**。
+     * 文字和 tool_calls 照旧乘（那边也是乘的）。
+     */
+    if (imageChars) total += Math.ceil(imageChars / 1.5);
     if (Array.isArray(m.tool_calls)) {
       let callChars = 0;
       for (const tc of m.tool_calls) {
@@ -245,6 +256,56 @@ function clipMiddle(s, head, tail) {
   if (str.length <= head + tail + 40) return str;
   const cut = str.length - head - tail;
   return str.slice(0, head) + '\n…（中间省略 ' + cut + ' 字）…\n' + str.slice(str.length - tail);
+}
+
+/**
+ * 【2026-11-05 修·会把整个会话钉死的那条】
+ *
+ * tool_calls 的 arguments 本来是**一整段 JSON 字符串**。以前直接对它做 clipMiddle，
+ * 历史里就留下 `{"path":"a.md","content":"abc…（中间省略 12000 字）…xyz` 这种半截 JSON。
+ *
+ * 后果分两种，都不轻：
+ *   · 校验参数的网关（Azure / 部分中转）：整个请求 400，而且**每轮都 400**，
+ *     会话从此发不出话；
+ *   · 不校验的模型：读到自己"参数被撕断"的调用记录，照着编下去。
+ *
+ * 现在：先 JSON.parse，只截那几个可能超长的字段（content / old_string …），
+ * 再 stringify 回去 —— 参数仍然合法，被截的地方带标记，原文还在盘上。
+ * 解析不了（本来就不是 JSON）才退回字符串截断，那种情况本来也没有 JSON 可破坏。
+ */
+const BIG_ARG_KEYS = new Set([
+  'content', 'old_string', 'new_string', 'text', 'body', 'patch',
+  'data', 'value', 'code', 'script', 'prompt', 'html', 'json',
+]);
+
+function slimArgsKeepingJson(orig, { head, tail, note }) {
+  const mark = '\n' + note;
+  let obj = null;
+  try { obj = JSON.parse(orig); } catch { obj = null; }
+  if (!obj || typeof obj !== 'object') return clipMiddle(orig, head, tail) + mark;
+
+  let touched = 0;
+  const walk = (o, depth) => {
+    if (!o || typeof o !== 'object' || depth > 4) return;
+    for (const k of Object.keys(o)) {
+      const v = o[k];
+      if (typeof v === 'string' && BIG_ARG_KEYS.has(k) && v.length > head + tail + 40) {
+        // 截完必须留标记：模型得知道自己看到的是残的，不然会拿半截内容当真
+        o[k] = clipMiddle(v, head, tail) + mark;
+        touched++;
+      } else if (v && typeof v === 'object') {
+        walk(v, depth + 1);
+      }
+    }
+  };
+  walk(obj, 0);
+  // 没有可截的大字段（比如超长内容塞在别的键名里）→ 退回字符串截断
+  if (!touched) return clipMiddle(orig, head, tail) + mark;
+  try {
+    return JSON.stringify(obj);
+  } catch {
+    return clipMiddle(orig, head, tail) + mark;
+  }
 }
 
 /**
@@ -343,14 +404,19 @@ export function slimHistory(messages, { sessionId = '', keepTail = SLIM_KEEP_TAI
     // ② assistant 的长正文：结论通常在前、细节在中、最后的补充在后
     if (m.role === 'assistant' && typeof m.content === 'string') {
       const s = m.content;
-      if (s.length <= SLIM_TEXT_CHARS || s.includes(SLIM_MARK)) continue;
-      const file = saveSlimOriginal(sessionId, i, 'assistant', s);
-      if (file) saved.push(file);
-      m.content =
-        clipMiddle(s, SLIM_TEXT_CHARS - SLIM_TAIL, SLIM_TAIL) +
-        '\n' + SLIM_MARK + ' 原文 ' + s.length + ' 字' + (file ? '，整份在 ' + file : '，存盘失败') + ']';
-      changed++;
-      continue;
+      if (s.length > SLIM_TEXT_CHARS && !s.includes(SLIM_MARK)) {
+        const file = saveSlimOriginal(sessionId, i, 'assistant', s);
+        if (file) saved.push(file);
+        m.content =
+          clipMiddle(s, SLIM_TEXT_CHARS - SLIM_TAIL, SLIM_TAIL) +
+          '\n' + SLIM_MARK + ' 原文 ' + s.length + ' 字' + (file ? '，整份在 ' + file : '，存盘失败') + ']';
+        changed++;
+      }
+      /* 【2026-11-05 修】原来这里是无条件 continue：只要是 assistant 消息，
+       * 正文不长就直接跳下一条。可**带工具调用的 assistant，content 经常是空串**，
+       * 于是下面第 ③ 条（瘦 tool_calls 参数）一次都没执行到 ——
+       * 那条规则写在那儿形同虚设，长参数一直原样占着上下文。
+       * 现在正文和参数各管各的，互不挡路。 */
     }
 
     // ③ tool_calls 的参数：一条 write_file 的参数能有几万字
@@ -363,8 +429,15 @@ export function slimHistory(messages, { sessionId = '', keepTail = SLIM_KEEP_TAI
         const file = saveSlimOriginal(sessionId, i, 'args', orig);
         if (file) saved.push(file);
         const keepHead = isOld ? 200 : SLIM_ARGS_NEAR - 400;
-        f.arguments = clipMiddle(orig, keepHead, isOld ? 100 : 400) +
-          '\n' + SLIM_MARK + ' 参数原文 ' + orig.length + ' 字' + (file ? '，整份在 ' + file : '') + ']';
+        // 【2026-11-05 修】走 slimArgsKeepingJson：先解析再截大字段，
+        // 保证瘦完之后仍然是一段合法 JSON。
+        const argsNote = SLIM_MARK + ' 参数原文 ' + orig.length + ' 字'
+          + (file ? '，整份在 ' + file : '') + ']';
+        f.arguments = slimArgsKeepingJson(orig, {
+          head: keepHead,
+          tail: isOld ? 100 : 400,
+          note: argsNote,
+        });
         changed++;
       }
     }

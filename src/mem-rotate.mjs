@@ -39,6 +39,28 @@ function walkFiles(dir, out = []) {
 }
 
 /**
+ * 【2026-11-05 修·会真的丢数据的那条】
+ *
+ * 打包路径原来是 `archive-<年-月>.jsonl.gz`，而 `fs.renameSync` 遇到同名文件是
+ * **静默覆盖**。同一个月里轮转第二次（定时任务、自检、手动再跑一次），
+ * 第二次的那份就会把第一次的整个盖掉 —— 而第一次的原 .md 在 packToGz 里已经 unlink 了。
+ * 结果：那批记忆彻底消失，且日志里一个字都不会报。
+ *
+ * 现在：目标已存在就往后加序号，绝不覆盖。宁可多几个文件，也不许少一批记忆。
+ */
+function uniqueOutPath(p) {
+  if (!fs.existsSync(p)) return p;
+  const m = /^(.*?)(\.jsonl\.gz)$/.exec(p);
+  const base = m ? m[1] : p;
+  const ext = m ? m[2] : '';
+  for (let i = 2; i < 1000; i++) {
+    const cand = base + '-' + i + ext;
+    if (!fs.existsSync(cand)) return cand;
+  }
+  return base + '-' + Date.now() + ext;
+}
+
+/**
  * 把一批文件打包成一个 .jsonl.gz（每行 {name, text}），然后删掉原文件。
  * 打包成功才删 —— 打包失败一个都不动。
  */
@@ -80,7 +102,7 @@ export function rotateArchive({ days = 90, dryRun = false } = {}) {
   if (dryRun) return { packed: old.length, before, after: 0, file: '(dryRun)' };
 
   const tag = new Date().toISOString().slice(0, 7); // 2026-11
-  const out = join(dir, '_packed', 'archive-' + tag + '.jsonl.gz');
+  const out = uniqueOutPath(join(dir, '_packed', 'archive-' + tag + '.jsonl.gz'));
   const r = packToGz(old, out);
   return { packed: r.packed, before, after: r.bytes, file: out };
 }
@@ -97,7 +119,7 @@ export function compactTrash({ days = 30, dryRun = false } = {}) {
     const before = old.reduce((s, f) => s + f.size, 0);
     if (dryRun) { results.push({ dir: rel, packed: old.length, before, after: 0, file: '(dryRun)' }); continue; }
     const tag = new Date().toISOString().slice(0, 10);
-    const out = join(dir, '_packed', 'trash-' + tag + '.jsonl.gz');
+    const out = uniqueOutPath(join(dir, '_packed', 'trash-' + tag + '.jsonl.gz'));
     const r = packToGz(old, out);
     results.push({ dir: rel, packed: r.packed, before, after: r.bytes, file: out });
   }

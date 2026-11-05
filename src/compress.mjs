@@ -16,7 +16,7 @@ import { effectiveContextLimit } from './settings.mjs';
 import { autoRatioVerdict, contextWindowOf } from './rates.mjs';
 import { askWhaleCompress } from './whale-judge.mjs';
 // 折掉的原文存盘（见 folded.mjs 顶部）。存盘失败不影响压缩，只是少一层保险。
-import { saveSegment } from './folded.mjs';
+import { saveSegment, currentSegId } from './folded.mjs';
 
 /** 摘要消息的标记（只在本地用，不进 API 请求体）。 */
 const SUMMARY_FLAG = 'summary';
@@ -565,6 +565,34 @@ export const __for_test = { renderForSummary, clipToolResult, TOOL_RESULT_CHARS 
  * @param {string} [opts.model] 当前会话用的模型名 —— 自动档要按它的窗口算水位
  * @returns {Promise<{compressed:boolean, before:number, after:number, limit?:number, trigger?:number, removed?:number, kept?:number, reason?:string, error?:string}>}
  */
+/**
+ * 【2026-11-05 加】这份压缩记忆是不是给「这一段」写的？
+ *
+ * note 里本来就带着段号（`【压缩记忆·seg-12-3fa9c1】`），可以前程序只看
+ * 「有没有、够不够长」，从不看这个号是不是这一段的 —— 第一次压完之后，
+ * 本子里那份 note 就永久留着，以后每次涨到 80% 都拿它替换**新的一段**原文，
+ * 四道闸门还全过（长度够、不脏、不短），上下文悄悄变错。
+ *
+ * 现在比对：
+ *   · 号对得上 → 用；
+ *   · 号对不上 → 当没写（这一轮不压，下一轮会重新递工作单）；
+ *   · note 里一个号都没有（老格式）→ 放行一次，靠长度闸兜底，不至于把老会话卡死。
+ */
+function __segMatch(note, messages, sessionId) {
+  try {
+    const got = /【压缩记忆[^】]*?(seg-\d+-[0-9a-f]{6,})/.exec(String(note || ''));
+    if (!got || !got[1]) return true;
+    const want = currentSegId(messages, sessionId);
+    if (!want) return true;
+    if (got[1] === want) return true;
+    console.warn('[compress] 这份压缩记忆是给 ' + got[1] + ' 写的，不是这一段（' + want
+      + '）—— 这一轮不压，等重写');
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export async function compressHistory({
   messages,
   // 默认取「设置面板里填的那个阈值」，没填才回落到 .env 的 CONTEXT_LIMIT。
@@ -957,7 +985,7 @@ export async function compressHistory({
    * 可它只在 saveSelfNote 那条路上被调用，compressHistory 拿到什么就用什么，
    * 中间没人拦。这里补上一道，两边口径对齐：太短 = 没写 = 这一轮不压。
    */
-  const __selfNoteApplied = myNote.length >= 40;
+  const __selfNoteApplied = myNote.length >= 40 && __segMatch(myNote, messages, sessionId);
 
 
   if (dryPlan) {
@@ -977,7 +1005,11 @@ export async function compressHistory({
       foldCount,
       // 存档编号先按「真压时会发生的样子」报出去：会话-段号-时间戳，
       // 这样我写记忆时能直接引用，folded_list 里翻得到。
-      segId: 'seg-' + (sessionId || 'x') + '-' + Date.now(),
+      //
+      // 【2026-11-05 改】换成稳定指纹 —— 原来是 Date.now()，每次调用都是新号，
+      // 于是"按段号校验摘要是不是这一段的"根本无从谈起。指纹只看
+      // 「段从哪开始 + 开头那句话」，dryPlan 和真压算出来必定一致。
+      segId: currentSegId(messages, sessionId) || ('seg-' + (sessionId || 'x') + '-' + Date.now()),
       window: contextWindowOf(model) || 0,
       ratio: contextWindowOf(model) ? t / contextWindowOf(model) : 0,
       kept: messages.length - cutDry,

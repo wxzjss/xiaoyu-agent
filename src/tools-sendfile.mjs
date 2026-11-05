@@ -25,7 +25,7 @@ export const sendFileTool = {
     const r = normalizeSend(typeof path === "string" ? path : (path && path.path));
     const said = String(note || "").trim();
     if (r.skip && !(r.kids && r.kids.length)) {
-      return (r.skip ? r.skip : "这个发不了") + (said ? "\n（" + said + "）" : "");
+      return "ERROR：" + (r.skip ? r.skip : "这个发不了") + (said ? "\n（" + said + "）" : "");
     }
     const items = r.kids && r.kids.length ? r.kids : (r.entry ? [r.entry] : []);
     if (!items.length) return "这个文件夹里没有能发的文件。";

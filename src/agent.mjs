@@ -1,5 +1,5 @@
 // The agent loop: call model -> run tools -> feed results back -> repeat.
-import { streamChat, modelNameForSession } from './llm.mjs';
+import { streamChat, modelNameForSession, hasSessionModel } from './llm.mjs';
 // 窗口预算到底怎么算：contextWindowOf 在 rates.mjs，不在 llm.mjs。
 // 这里漏了 import 整整一周没暴露（标识符自检是 569320e 才加上的，
 // 而这次是它第一次指出它），因为走的是「调一次不存在的函数就抛」那条路，
@@ -15,7 +15,7 @@ import { drainSteps, drainTurns } from './inbox.mjs';
 // readImageDataUrl：工具（尤其 video_read / video_sheet）的结果里带着图片路径时，
 // 得当场把图变成多模态 content 递给模型。只给路径她看不见图 —— 会去 read_file 读 PNG
 // 读成乱码，然后如实说「一片糊」。她没撒谎，是真的没看见。
-import { inflateHistory, readImageDataUrl } from './attach.mjs';
+import { inflateHistory, readImageDataUrl, composeUserContent, isImagePath } from './attach.mjs';
 import { slimRoundMessages, measureMessages } from './turn-slim.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox, ctxNow } from './tools.mjs';
 import { config } from './config.mjs';
@@ -32,6 +32,7 @@ import { lastSelfNote, saveSelfNote, selfCompressHint } from './self-compress.mj
 // 老的那套 `thinHistory`（trim-tools.mjs）不再用了 —— 它只在「这一轮的工具过程」里擦，
 // 历史里几百条旧工具结果碰都不碰，而后者才是大头。slimHistory 是它的超集。
 import { planTurnCompact, slimHistory, estTokens, buildRescueNote, CRITICAL_RATIO, stripImages } from './compact-core.mjs';
+import { currentSegId } from './folded.mjs';
 // 清单：压缩记忆里要带「做到第几步」，所以得把清单读进来。
 import { planTextFor, formatPlan } from './plan.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
@@ -140,20 +141,44 @@ function toolsForTurn(sessionId) {
  * 再执行一次工具、再 push 一条 assistant(tool_calls)。历史里同一个 id 越堆越多，
  * 上游按 OpenAI 协议判定非法，直接 502 —— 主人看到的就是「插完话她就不动了」。
  *
- * 所以按 id 记账，同一个 id 一辈子只认第一次。
+ * 所以按 id 记账 —— 但只在本会话、本轮内记账（见下面 2026-11-05 的说明）。
+ *
+ * 【2026-11-05 修·跨会话串账 + 网关复用 id 导致工具不执行】
+ *
+ * 原来是一个模块级 Set：进程活多久记多久，所有会话共用一份。
+ * 两个真实后果：
+ *   · 网关 / 本地推理服务复用 tool_call id（`call_0`、`0`、`1` 这种串行 id 很常见）时，
+ *     第二个会话、第二个回合的同名调用会被当成「上一轮重播」直接丢掉 →
+ *     toolCalls 变成空数组 → 下面判定「模型说完了」→ 工具一次都没执行，
+ *     她只回一句话，而日志里一个错都没有（这条最难查）。
+ *   · Set 只增不减，长跑一直涨。
+ *
+ * 现在按「会话 + 轮次」分桶：同一轮的同一批才去重，换轮就换一桶。
+ * 这本来就是它想做的事（防同一轮重复交付），不是「一个 id 这辈子只认一次」。
  */
-const seenToolCallIds = new Set();
+const __seenBySession = new Map();
 
-/** 把一批 tool_call 里没见过的挑出来，顺手记进 seenToolCallIds */
-function takeFreshToolCalls(list) {
+/** 把一批 tool_call 里没见过的挑出来，顺手记进本会话本轮的桶 */
+export function takeFreshToolCalls(list, sessionId, roundKey) {
+  const sid = String(sessionId || 'default');
+  const key = String(roundKey === undefined || roundKey === null ? '' : roundKey);
+  let rec = __seenBySession.get(sid);
+  if (!rec || rec.key !== key) {
+    rec = { key, ids: new Set() };
+    __seenBySession.set(sid, rec);
+  }
   const out = [];
   for (const tc of Array.isArray(list) ? list : []) {
     const id = tc && tc.id ? String(tc.id) : '';
     if (id) {
-      if (seenToolCallIds.has(id)) continue;   // 见过 = 上一轮重播的，丢掉
-      seenToolCallIds.add(id);
+      if (rec.ids.has(id)) continue;   // 同一轮里的重复交付，丢掉
+      rec.ids.add(id);
     }
     out.push(tc);
+  }
+  // 保险：会话特别多时别让它无限长（每个会话只留当前轮，正常不会到）
+  if (__seenBySession.size > 300) {
+    for (const k of [...__seenBySession.keys()].slice(0, 100)) __seenBySession.delete(k);
   }
   return out;
 }
@@ -548,6 +573,20 @@ export async function runAgent({
   // 这一轮用的是哪个模型：自动档要按它的窗口算水位，所以先问清楚
   // （会话里切过模型就按那个算，否则按全局默认）。
   const turnModel = modelNameForSession(sessionId);
+  /* 【2026-11-05 加·别再悄悄换模型】
+   * 会话选的模型被删/被禁用时，下面会一路回落到默认那套 —— 换模型、换 key、
+   * 换计费、换上下文窗口，原来一句话都不说，主人只会觉得「怎么突然变笨/变贵了」。
+   * 现在开头就把这句递到界面上（notice 不进正文，不污染她说的话）。 */
+  try {
+    if (!hasSessionModel(sessionId)) {
+      onEvent({
+        type: 'text',
+        notice: true,
+        text: '（这个会话原来选的模型已经不在了，这一轮回落到默认模型「' + turnModel
+          + '」。要换回来，去【模型】里重新选一个。）',
+      });
+    }
+  } catch {}
 
   /**
    * 【这一轮已经压过一次了，就别再压】
@@ -793,7 +832,15 @@ for (let round = 0; round < config.maxRounds; round++) {
      * 记忆本（.state/memory/<sid>.md）里，不带 id 就没法定位，只能一律当「没写过」，
      * 于是每一轮都重复提醒、死循环。
      */
-    const selfNote = lastSelfNote(sessionId) || lastSelfNote(ctxNow()?.sessionId || '');
+    /* 【2026-11-05 修·只认给这一段写的那份压缩记忆】
+     *
+     * 段号现在是可以复现的指纹（currentSegId：段从哪开始 + 开头那句话）。
+     * 带上它去取：对得上才用；对不上返回空 → 下面自然重新递工作单，
+     * 而不是把**上一段**的摘要拿去换**这一段**的原文（四道闸门还全过，最隐蔽的那种坏）。
+     */
+    let _segNow = '';
+    try { _segNow = currentSegId(messages, sessionId); } catch {}
+    const selfNote = lastSelfNote(sessionId, _segNow) || lastSelfNote(ctxNow()?.sessionId || '', _segNow);
     /**
      * 【清单读错了一个函数 —— 2026-10-30 修 · 干活鱼2 的 ⚠】
      *
@@ -1024,7 +1071,23 @@ for (let round = 0; round < config.maxRounds; round++) {
       try { steered = drainSteps(sessionId); } catch { steered = []; }
       if (steered.length) {
         /* 【2026-11-01 插话要能画在「我说到哪儿」】把前端算好的字数一起带进消息，前端重绘时拿它劈气泡。 */
-        for (const it of steered) messages.push({ role: 'user', content: it.text, _steer: true, ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}) });
+        /* 【2026-11-05 修·插话带附件】
+         * 原来只 push content: it.text —— 主人插话时拖进来的图全丢了。
+         * 现在照 /api/chat 那条路的规矩来：正文用 composeUserContent 拼附件说明，
+         * 图片路径单记在 _images，发请求前由 inflateHistory 现读现编码。 */
+        for (const it of steered) {
+          const att = Array.isArray(it.attachments) ? it.attachments.filter((x) => x && x.path) : [];
+          const imgs = att.map((x) => String(x.path)).filter((p) => isImagePath(p));
+          const fls = att.map((x) => String(x.path)).filter((p) => !isImagePath(p));
+          messages.push({
+            role: 'user',
+            content: composeUserContent(it.text, att),
+            _steer: true,
+            ...(imgs.length ? { _images: imgs } : {}),
+            ...(fls.length ? { _files: fls } : {}),
+            ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}),
+          });
+        }
         try { onEvent({ type: 'steer', count: steered.length }); } catch { /* 画不画得出不影响这一轮 */ }
       }
     }
@@ -1108,7 +1171,7 @@ for (let round = 0; round < config.maxRounds; round++) {
             reasoning += ev.text;
             onEvent({ type: 'reasoning', text: ev.text });
           } else if (ev.type === 'tool_calls') {
-            toolCalls = takeFreshToolCalls(ev.toolCalls);
+            toolCalls = takeFreshToolCalls(ev.toolCalls, sessionId, round);
           } else if (ev.type === 'usage') {
             usage = ev.usage;
           }
@@ -1367,6 +1430,8 @@ for (let round = 0; round < config.maxRounds; round++) {
     // （原来这里还有一道「连着 40 轮不出声就停」的闸，2026-10-29 按主人要求删掉了）
     const assistantMsg = {
       role: 'assistant',
+      // 【2026-11-05】记下这条是什么时候说的，界面要显示时间（沿用项目已有的 at）
+      at: Date.now(),
       content: text || null,
       tool_calls: toolCalls.map((tc, i) => ({
         id: tc.id || `call_${round}_${i}`,
@@ -1391,12 +1456,41 @@ for (let round = 0; round < config.maxRounds; round++) {
        * 注意：这里只掐「等」，掐不断已经跑起来的子进程 —— 那是 tools.mjs 自己
        * 的 timeout 负责的（run_command 就有 120 秒）。
        */
+      /**
+       * 【2026-11-05 重做·超时真的能掐断子进程】
+       *
+       * 原来这里把**整轮的 signal** 当成 ac 传给 withTimeout，可 `AbortSignal`
+       * 没有 `.abort()` —— deadline 里那句 `ac?.abort('timeout')` 必然抛 TypeError，
+       * 又被空 catch 吃掉。所以注释里写的"认输后顺手把底层连接掐掉"从来没生效过：
+       * 30 分钟到点，agent 往下走了，子进程 / 浏览器 / 视频任务还活着，
+       * 继续占 CPU、继续改工作区。
+       *
+       * 现在：每个工具一个自己的 controller。
+       *   · 外部中止（主人点停止）→ 同步掐这个工具；
+       *   · 本工具超时 → 只掐它自己，不影响其它工具和下一轮。
+       * 两者用 AbortSignal.any 合起来交给工具，工具那边 exec/browser 都监听这个信号。
+       */
+      const _toolAc = new AbortController();
+      const _onTurnAbort = () => { try { _toolAc.abort(signal && signal.reason); } catch {} };
+      try {
+        if (signal && typeof signal.addEventListener === 'function') {
+          if (signal.aborted) _onTurnAbort();
+          else signal.addEventListener('abort', _onTurnAbort, { once: true });
+        }
+      } catch {}
+      let _toolSignal = _toolAc.signal;
+      try {
+        if (signal && typeof AbortSignal.any === 'function') {
+          _toolSignal = AbortSignal.any([signal, _toolAc.signal]);
+        }
+      } catch { _toolSignal = _toolAc.signal; }
+
       const { ok, output } = await withTimeout(
-        runTool(call.function.name, call.function.arguments, sessionId),
+        runTool(call.function.name, call.function.arguments, sessionId, _toolSignal),
         TOOL_MAX_MS,
         {
         what: '工具「' + call.function.name + '」',
-        ac: signal,
+        ac: _toolAc,   // 这里必须给 controller：deadline 到点会调它的 abort()
         // 跑到 10 分钟先喊一声「还在跑」，别让主人干等。窗口本身不足 30 分钟时按 1/3 算。
         noticeAt: Math.min(TOOL_NOTICE_MS, Math.floor(TOOL_MAX_MS / 3)),
         onNotice: (ms) => {
@@ -1409,7 +1503,9 @@ for (let round = 0; round < config.maxRounds; round++) {
         output: e?.isTimeout
           ? '这个工具超过 ' + (TOOL_MAX_MS >= 60000 ? Math.round(TOOL_MAX_MS / 60000) + ' 分钟' : Math.round(TOOL_MAX_MS / 1000) + ' 秒') + '没返回（' + call.function.name + '），先跳过它，接着往下走。'
           : String(e?.message ?? e),
-      }));
+      })).finally(() => {
+        try { if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', _onTurnAbort); } catch {}
+      });
       /**
        * 【工具结果里带图】
        *

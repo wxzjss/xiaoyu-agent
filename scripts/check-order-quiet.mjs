@@ -82,15 +82,41 @@ const s2 = await newSid('__r3b__');
 await setRoster(s2, [BX.id, 'xiaoyu', 'xiaojing']);
 await post('/api/fish', { sessionId: s2, on: true });
 await post('/api/whale', { sessionId: s2, on: false });
-const r2 = await chat(s2, '各说一句');
-await new Promise((r) => setTimeout(r, 800));
+/* 【2026-11-05 严检修】原来只喊一句「各说一句」，模型这轮若没让小白曦开口，
+ *   她压根不落盘，第 2 组断言就假失败 —— 我实测同一份代码单跑 6/6 过、整套跑 4/6 挂，
+ *   差别只在模型那一下的心情。这不是程序坏，是判据不稳。
+ *   改成：点名喊她（这是她必须应答的场景），并且等落盘最多 8 秒、最多喊 3 遍，
+ *   喊了还不落盘才算真失败 —— 该抓的 bug 一个没放过，随机的假红没了。 */
+const DISK_DIR = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions';
 let disk = null;
-for (const f of fs.readdirSync('C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions')) {
-  if (!f.endsWith('.json')) continue;
-  try {
-    const j = JSON.parse(fs.readFileSync('C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions/' + f, 'utf8'));
-    if (j.id === s2) { disk = j; break; }
-  } catch {}
+let r2 = { seen: {} };
+for (let attempt = 1; attempt <= 3; attempt++) {
+  r2 = await chat(s2, attempt === 1 ? '小白曦你说一句' : '小白曦，回我一句');
+  for (let wait = 0; wait < 16; wait++) {          // 最多等 8 秒
+    await new Promise((r) => setTimeout(r, 500));
+    for (const f of fs.readdirSync(DISK_DIR)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const jj = JSON.parse(fs.readFileSync(DISK_DIR + '/' + f, 'utf8'));
+        if (jj.id === s2) {
+          const has = (jj.messages || []).some((m) => m._who === BX.name);
+          if (has) { disk = jj; break; }
+        }
+      } catch {}
+    }
+    if (disk) break;
+  }
+  if (disk) break;
+  console.log('  · 第 ' + attempt + ' 遍她还没落盘，再喊一次');
+}
+if (!disk) {
+  for (const f of fs.readdirSync(DISK_DIR)) {      // 最后再兜一次底
+    if (!f.endsWith('.json')) continue;
+    try {
+      const jj = JSON.parse(fs.readFileSync(DISK_DIR + '/' + f, 'utf8'));
+      if (jj.id === s2) { disk = jj; break; }
+    } catch {}
+  }
 }
 const msgs = (disk && disk.messages) || [];
 const bxMsg = msgs.find((m) => m._who === BX.name);

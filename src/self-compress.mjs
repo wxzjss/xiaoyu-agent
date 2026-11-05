@@ -130,11 +130,26 @@ export function acceptSelfNote(raw) {
  *
  * @param {string} sessionId 会话 id —— 没有它就没法定位本子，直接返回空
  */
-export function lastSelfNote(sessionId) {
+export function lastSelfNote(sessionId, wantSegId) {
   const sid = String(sessionId || '').trim();
   if (!sid) return '';
   try {
     const t = readSessionMemory(sid) || '';
+    /**
+     * 【2026-11-05 加】按段号取。
+     *
+     * 不传 wantSegId 就照旧取最近一条（兼容老调用）；
+     * 传了就只认「给这一段写的那份」—— 段号对不上就当没写过，
+     * 让调用方重新递工作单，而不是拿上一段的摘要去换这一段原文。
+     */
+    const want = String(wantSegId || '').trim();
+    if (want) {
+      const at = t.lastIndexOf(want);
+      if (at < 0) return '';
+      const tagAt = t.lastIndexOf(SELF_NOTE_TAG, at);
+      if (tagAt < 0) return '';
+      return t.slice(tagAt, Math.min(t.length, tagAt + SELF_NOTE_MAX));
+    }
     const i = t.lastIndexOf(SELF_NOTE_TAG);
     if (i < 0) return '';
     return t.slice(i, Math.min(t.length, i + SELF_NOTE_MAX));

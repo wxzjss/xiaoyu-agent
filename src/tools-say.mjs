@@ -30,7 +30,7 @@ export const sayTool = {
   },
   async run({ text, voice }, ctx = {}) {
     const said = String(text ?? '').trim();
-    if (!said) return '没给要念的话，text 是空的。';
+    if (!said) return 'ERROR：没给要念的话，text 是空的。';
 
     // 颜文字和旁白念出来会很怪，动手前先削掉一层
     const clean = said

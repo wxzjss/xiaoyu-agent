@@ -18,7 +18,7 @@
  * 先让「智能体」这个词有实体，再谈「哪个会话用哪个智能体」。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 import {
@@ -124,7 +124,7 @@ function readAll() {
 function writeAll(data) {
   try {
     if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
-    writeFileSync(FILE, JSON.stringify({
+    const payload = JSON.stringify({
       version: 4,
       customs: data.customs || [],
       bySession: objOf(data.bySession),
@@ -133,7 +133,21 @@ function writeAll(data) {
       quiet: objOf(data.quiet),
       colors: objOf(data.colors),
     allowedBySession: objOf(data.allowedBySession),
-    }, null, 2), 'utf8');
+    }, null, 2);
+    /**
+     * 【2026-11-05 修·写一半崩溃 = 「我自定义的智能体全没了」】
+     *
+     * 原来是直接 writeFileSync 覆盖正式文件。写到一半进程退出（关机、崩溃、
+     * 被杀），文件就成了半截 JSON；readAll 的 catch 会返回 blank ——
+     * 界面上所有自定义智能体、群聊配置、静音、颜色，一次性看起来全消失。
+     *
+     * 现在照 identity.mjs 的做法：先写 .tmp，再 rename 覆盖。
+     * rename 在同一分区上是原子的：要么是旧的完整版，要么是新的完整版，
+     * 绝不会出现半截。
+     */
+    const tmp = FILE + '.tmp-' + process.pid;
+    writeFileSync(tmp, payload, 'utf8');
+    renameSync(tmp, FILE);
     return true;
   } catch {
     return false;

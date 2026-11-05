@@ -95,6 +95,7 @@ export function getWhaleProfile() {
     persona: typeof j.persona === 'string' ? j.persona : '',
     personaCustom: Boolean(j.personaCustom),
     modelId: typeof j.modelId === 'string' ? j.modelId : '',
+    defaultPersona: typeof j.defaultPersona === 'string' ? j.defaultPersona : '',
     path: FILE,
   };
 }
@@ -159,6 +160,7 @@ export function saveWhaleProfile(input = {}) {
     persona: cur.persona,
     personaCustom: cur.personaCustom,
     modelId: cur.modelId,
+    defaultPersona: cur.defaultPersona,
   };
 
   if (input.persona !== undefined) {
@@ -190,11 +192,22 @@ export function saveWhaleProfile(input = {}) {
     out.modelId = String(input.modelId ?? '').trim();
   }
 
+  if (input.defaultPersona !== undefined) {
+    const t = String(input.defaultPersona ?? '').trim();
+    if (t.length > MAX_PERSONA_CHARS) {
+      const e = new Error('默认人设太长了（' + t.length + ' 字，最多 ' + MAX_PERSONA_CHARS + ' 字）');
+      e.status = 400;
+      throw e;
+    }
+    out.defaultPersona = t;
+  }
+
   // 没改过的项不往文件里塞空串，文件读起来干净；全默认时写 {} 也正好
   const clean = {};
   if (out.persona) clean.persona = out.persona;
   if (out.personaCustom) clean.personaCustom = true;
   if (out.modelId) clean.modelId = out.modelId;
+  if (out.defaultPersona) clean.defaultPersona = out.defaultPersona;
 
   if (!writeAll(clean)) {
     const e = new Error('写不进去（磁盘或权限问题）');
@@ -210,20 +223,13 @@ export function saveWhaleProfile(input = {}) {
  * 「现在这份」拿的是 effective —— 改过就用改过的，没改过就是文件本身，写回去等于没动。
  * 写之前留一份 .bak，手滑能捡回来。
  */
-export function setWhalePersonaAsDefault() {
-  const cur = String(whalePersonaForEditor().persona || '').trim();
+export function setWhalePersonaAsDefault(persona) {
+  const cur = String(persona ?? whalePersonaForEditor().persona ?? '').trim();
   if (!cur) {
     const e = new Error('她现在没有可设为默认的人设正文');
     e.status = 400;
     throw e;
   }
-  try {
-    if (existsSync(DEFAULT_PERSONA_FILE)) {
-      const bak = DEFAULT_PERSONA_FILE + '.bak-' + Date.now();
-      writeFileSync(bak, readFileSync(DEFAULT_PERSONA_FILE, 'utf8'), 'utf8');
-    }
-  } catch { /* 备份失败不挡正事 */ }
-  mkdirSync(dirname(DEFAULT_PERSONA_FILE), { recursive: true });
-  writeFileSync(DEFAULT_PERSONA_FILE, cur, 'utf8');
-  return { ok: true, chars: cur.length, path: DEFAULT_PERSONA_FILE };
+  const saved = saveWhaleProfile({ defaultPersona: cur });
+  return { ok: true, chars: cur.length, defaultPersona: saved.defaultPersona, path: FILE };
 }

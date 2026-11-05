@@ -91,9 +91,8 @@ const DEFAULT_STATE = { current: 'owner', customs: [], bySession: {}, edits: {} 
  * listIdentities() 把这份补丁盖在出厂值上 —— 提示词、界外、权限判定读的都是这一份，
  * 所以改完立刻生效，恢复默认就是把这条补丁删掉。
  */
-function readEdits(j) {
+function readIdentityPatches(raw) {
   const out = {};
-  const raw = j && j.edits;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const id of BUILTIN_IDS) {
     const e = raw[id];
@@ -107,11 +106,13 @@ function readEdits(j) {
   }
   return out;
 }
+function readEdits(j) { return readIdentityPatches(j && j.edits); }
+function readIdentityDefaults(j) { return readIdentityPatches(j && j.defaults); }
 
 /** 兜底：文件坏了也不能让程序起不来，回出厂状态 */
 function readState() {
   try {
-    if (!existsSync(FILE)) return { ...DEFAULT_STATE, customs: [], bySession: {}, edits: {} };
+    if (!existsSync(FILE)) return { ...DEFAULT_STATE, customs: [], bySession: {}, edits: {}, defaults: {} };
     const j = JSON.parse(readFileSync(FILE, 'utf8'));
     const current = typeof j.current === 'string' && j.current ? j.current : 'owner';
     const customs = Array.isArray(j.customs)
@@ -136,9 +137,9 @@ function readState() {
         if (typeof sid === 'string' && sid && typeof iid === 'string' && iid) bySession[sid] = iid;
       }
     }
-    return { current, customs, bySession, edits: readEdits(j) };
+    return { current, customs, bySession, edits: readEdits(j), defaults: readIdentityDefaults(j) };
   } catch {
-    return { ...DEFAULT_STATE, customs: [], bySession: {}, edits: {} };
+    return { ...DEFAULT_STATE, customs: [], bySession: {}, edits: {}, defaults: {} };
   }
 }
 
@@ -340,6 +341,48 @@ export function editIdentity(id, { name, desc, address, she } = {}) {
     return writeState(st);
   }
   return updateCustomIdentity(key, { name, desc, address, she });
+}
+
+/**
+ * 把当前这个身份（内置）的样子存成「默认」。
+ *
+ * 【2026-11-04 主人要求】「设为默认」存下的应该就是「恢复默认」回来的那份，
+ * 而不是出厂那份 —— 跟底线 / 安全词同一个规矩。
+ * 存在 st.defaults[id]，跟 st.edits[id]（当前生效的补丁）分开：
+ *   - edits    现在长什么样
+ *   - defaults 主人认定的那副样子，恢复默认时回来
+ */
+export function setIdentityAsDefault(id) {
+  const key = String(id || '');
+  if (!BUILTIN_IDS.includes(key)) return false;
+  const st = readState();
+  const cur = st.edits && st.edits[key] ? { ...st.edits[key] } : {};
+  if (!st.defaults || typeof st.defaults !== 'object') st.defaults = {};
+  st.defaults[key] = cur;
+  return writeState(st);
+}
+
+/**
+ * 回到「设为默认」存下的那副样子。
+ * 没设过默认就先把它设成当前样子（免得点了一次啥反应都没有），再原样回来。
+ */
+export function restoreIdentityDefault(id) {
+  const key = String(id || '');
+  if (!BUILTIN_IDS.includes(key)) return false;
+  const st = readState();
+  if (!st.defaults || typeof st.defaults !== 'object') st.defaults = {};
+  let target = st.defaults[key];
+  if (!target) {
+    // 没存过默认：把现在的样子当成默认存下来（等价于「恢复默认」= 不动），
+    // 这样至少语义一致，不会悄悄把人改回去。
+    target = st.edits && st.edits[key] ? { ...st.edits[key] } : {};
+    st.defaults[key] = target;
+  }
+  if (!st.edits || typeof st.edits !== 'object') st.edits = {};
+  if (Object.keys(target).length) st.edits[key] = { ...target };
+  else delete st.edits[key];
+  if (!Object.keys(st.edits).length) st.edits = {};
+  return writeState(st);
 }
 
 /** 恢复某个内置身份的出厂样子（删掉补丁）。自定义的用 removeCustomIdentity 删整个。 */

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 子智能体：叫一个「小鲸」出来，独立跑一轮完整的干活循环。
  *
  * 跟主人的那个「我」完全分开：
@@ -982,32 +982,57 @@ export async function runSubagent({
       const slimmedSub = slimRoundMessages(messages, { from: 1 });
       const sendSub = slimmedSub.changed ? slimmedSub.messages : messages;
 
-      for await (const ev of streamChat({
-        messages: sendSub,
-        tools: toolSchemas,
-        signal: abortCtrl.signal,
-        sessionId: subSessionId,
-        /**
-         * 【她的模型也从身份卡里取】
-         *
-         * 主人能给她单独选一个模型（功能页 · 子智能体 · 选模型）。
-         * 没选过就是空串，streamChat 会回落到跟主人当前用的那个一致。
-         */
-        model: pickWhaleModel(model),
-      })) {
-        if (ev.type === 'text') {
-          text += ev.text;
-          /**
-           * 边收边吐：主人在屏幕上能看见她正在说这句话。
-           *
-           * 包一层 try：推给界面失败（窗口关了、连接断了）绝不能连累她继续跑，
-           * 顶多是主人这会儿看不见，话最后还是会整段落在历史里。
-           */
-          if (typeof onDelta === 'function') {
-            try { onDelta(ev.text); } catch {}
+      /* 【2026-11-05 加·子代理也要扛得住一次断流】
+       *
+       * 主链路有 30 次断流续读（agent.mjs），可子智能体整个外层只有一个大 try ——
+       * 网络抖一下整趟白跑，主人看到「子智能体出错了」，只能重派。
+       *
+       * 这里只做最安全的那一档：**一个字都还没吐出来就断了**才重试。
+       *   · 已经吐过字的不管 —— 界面上那些字收不回来，重发会出现两遍；
+       *   · 工具绝不重试 —— 重跑一次写文件/跑命令，代价比失败本身大得多。
+       */
+      let _subTry = 0;
+      for (;;) {
+        const _textLenBefore = text.length;
+        try {
+          for await (const ev of streamChat({
+            messages: sendSub,
+            tools: toolSchemas,
+            signal: abortCtrl.signal,
+            sessionId: subSessionId,
+            /**
+             * 【她的模型也从身份卡里取】
+             *
+             * 主人能给她单独选一个模型（功能页 · 子智能体 · 选模型）。
+             * 没选过就是空串，streamChat 会回落到跟主人当前用的那个一致。
+             */
+            model: pickWhaleModel(model),
+          })) {
+            if (ev.type === 'text') {
+              text += ev.text;
+              /**
+               * 边收边吐：主人在屏幕上能看见她正在说这句话。
+               *
+               * 包一层 try：推给界面失败（窗口关了、连接断了）绝不能连累她继续跑，
+               * 顶多是主人这会儿看不见，话最后还是会整段落在历史里。
+               */
+              if (typeof onDelta === 'function') {
+                try { onDelta(ev.text); } catch {}
+              }
+            } else if (ev.type === 'tool_calls') toolCalls = ev.toolCalls;
+            else if (ev.type === 'usage') usage = ev.usage;
           }
-        } else if (ev.type === 'tool_calls') toolCalls = ev.toolCalls;
-        else if (ev.type === 'usage') usage = ev.usage;
+          break; // 这一趟跑完了
+        } catch (e) {
+          _subTry += 1;
+          const _m = String(e && e.message ? e.message : e);
+          const _retriable = !/timed?\s*out|静了超过|认输/i.test(_m)
+            && /terminated|aborted|socket hang up|other side closed|ECONNRESET|fetch failed|premature close|UND_ERR_SOCKET/i.test(_m);
+          const _nothingYet = text.length === _textLenBefore && !toolCalls;
+          if (_subTry > 2 || !_retriable || !_nothingYet) throw e;
+          console.warn('[subagent] 断流（还没吐出字），第 ' + _subTry + ' 次重试：' + _m.slice(0, 80));
+          await new Promise((r) => setTimeout(r, 400 * _subTry));
+        }
       }
 
       if (usage) {
@@ -1115,7 +1140,25 @@ export async function runSubagent({
       }
     }
 
-    // 轮数用完了还没收尾
+    // 轮数用完了 —— 但要看它这一路到底干没干活。
+    // 【2026-11-05 主人报：明明把文件建好、也发出去了，回报还说「没干成」】
+    // 旧逻辑只要没走到「最终总结」就一律 ok:false，害得主会话以为它失败了，
+    // 白重做一遍。现在：只要真动过手（有成功的工具调用），就算完成，只是没来得及总结。
+    // 【2026-11-05 严检补】光调 plan / note / list_dir 不算「把活干出来了」——
+    // 那些是记账和看一眼，真产出得是写过、发过、跑过。
+    const PRODUCTIVE = /^(write_file|send_file|qq_send|run_command|say|make_image|restart_self|spawn_worker|spawn_workers|chrom)/i;
+    const didWork = trace.some((t) => / → 成：/.test(t) && PRODUCTIVE.test(t));
+    if (didWork) {
+      return {
+        ok: true,
+        text: `活已经干出来了，只是轮数用满、没来得及写总结。中间做过：\n${trace.join('\n')}`,
+        rounds: maxRounds,
+        tools: trace.length,
+        usage: totalUsage,
+        sessionId: subSessionId,
+        truncated: true,
+      };
+    }
     return {
       ok: false,
       text: `查了 ${maxRounds} 轮还没得出答案，先停在这儿。中间做过：\n${trace.join('\n') || '（无）'}`,

@@ -1,8 +1,8 @@
-// Minimal web server: static UI + one SSE endpoint that runs the agent.
+﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createReadStream, statSync, readFileSync as __rotRead, writeFileSync as __rotWrite } from 'node:fs';
+import { createReadStream, statSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
@@ -11,8 +11,11 @@ import { whaleOn, setWhaleOn, markWhaleSpoke, whaleSpokeThisTurn } from './whale
 // 顶栏那个「小鱼」按钮：默认在场，禁用后这个会话后面的话她一个字都不发。
 import { fishOn, setFishOn } from './fish-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
+import { startSelfwake, stopSelfwake, noteReplied, shouldFire, getState as selfwakeState } from './selfwake.mjs';
+import { startCron, listTasks, addTask, removeTask, setEnabled as cronSetEnabled, markRan as cronMarkRan, dueTasks } from './cron.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
-import { checkToolDocs, setPeerWake, setRunningProbe, runWithToolContext } from './tools.mjs';
+import { checkToolDocs, setPeerWake, setRunningProbe, runWithToolContext, tools as allTools } from './tools.mjs';
+import { checkSkills } from './skills.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
@@ -174,7 +177,7 @@ import {
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames } from './tools-screen.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
-import { getFeatures, setFeature, featureNameOfTool, getEnabledMap } from './features.mjs';
+import { getFeatures, setFeature, featureNameOfTool, getEnabledMap, featureOnFor, setFeatureFor, TOOL_FEATURE, TOOL_OWNERS } from './features.mjs';
 import {
   identityState,
   currentIdentity,
@@ -186,6 +189,8 @@ import {
   removeCustomIdentity,
   editIdentity,
   resetBuiltinIdentity,
+  setIdentityAsDefault,
+  restoreIdentityDefault,
   identityBlock,
   identityOn,
 } from './identity.mjs';
@@ -575,10 +580,11 @@ function publicSession(session) {
       // who：这句当时是哪个身份说的。没存就是主人（老会话全走这条，显示不变）
       const who = typeof m._who === 'string' && m._who ? m._who : '';
       /* 【2026-11-01 主人：插话要画在「我说到哪儿」的位置】steer=这条是主人生气时半路插进来的话；steerAt=他插话那一刻我已经说出多少字。前端靠这两个数把我那段话劈成两半，把他的话嵌在中间。老会话没有这两个字段，界面照老样子排末尾。 */
-      turns.push({ role: 'user', text: shown, atts, rewindId: i, edited, usage, who, sysNote: m._sysNote === true ? true : undefined,      steer: m._steer === true ? true : undefined,      steerAt: typeof m._atChars === 'number' ? m._atChars : undefined, });
+      turns.push({ role: 'user', ts: typeof m.at === 'number' ? m.at : 0, text: shown, atts, rewindId: i, edited, usage, who, sysNote: m._sysNote === true ? true : undefined,      steer: m._steer === true ? true : undefined,      steerAt: typeof m._atChars === 'number' ? m._atChars : undefined, });
     }
     else if (m.role === 'assistant') turns.push({
       role: 'assistant',
+      ts: typeof m.at === 'number' ? m.at : 0,
       text,
       rewindId: i,
       edited,
@@ -695,7 +701,7 @@ function saveUserMessage(sessionId, message, attachments = null) {
     const last = msgs[msgs.length - 1];
     const dup = Boolean(last && last.role === 'user' && String(last.content ?? '') === said);
     if (!dup) {
-      const uMsg = { role: 'user', content: message };
+      const uMsg = { role: 'user', content: message, at: Date.now() };
       if (Array.isArray(attachments) && attachments.length) uMsg.attachments = attachments;
       msgs.push(uMsg);
     }
@@ -2597,6 +2603,78 @@ function openLiveForQueuedTurn(sessionId) {
  *   传数组 = 收尾那边把整个队列交过来，由这里决定要不要 shift（确定真跑才取走）；
  *   传 null = 「压根没在跑」那种，调用方已经自己管好了。
  */
+/**
+ * 【定时任务】到点跑一条：往目标会话投一句引子，再起一轮。
+ *
+ * 为什么不直接 runAgent：startQueuedTurn 会管排队、锁、前端实时补画、收尾落盘。
+ * 定时任务跑出来的东西主人得能在界面上看见 —— 所以走这条路，跟「重启了」一模一样。
+ *
+ * 引子带 context: true：服务端当作框架消息，前端不画成「主人说的话」。
+ */
+async function runCronTask(task) {
+  if (!task || !task.id) return { ok: false, error: 'no-task' };
+  const text = String(task.text || '').trim();
+  if (!text) return { ok: false, error: 'empty-text' };
+
+  // 挑会话：任务指定的那个；没指定就用最近动过的那个
+  let sid = String(task.sessionId || '').trim();
+  if (!sid) {
+    try {
+      const all = listSessions();
+      const pick = all.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+      sid = pick && pick.id ? String(pick.id) : '';
+    } catch { sid = ''; }
+  }
+  if (!sid || !isSessionId(sid)) {
+    try { cronMarkRan(task.id, false, '没有能跑的会话'); } catch {}
+    return { ok: false, error: 'no-session' };
+  }
+
+  const sess = getSession(sid);
+  if (!sess) {
+    try { cronMarkRan(task.id, false, '会话读不出来：' + sid); } catch {}
+    return { ok: false, error: 'no-session-data' };
+  }
+
+  /*
+   * 投引子。措辞要写清楚「这是你自己定的闹钟」，
+   * 否则她可能以为主人在跟她说话、或者以为时间乱了。
+   */
+  const when = new Date(Number(task.at) || Date.now());
+  const hh = String(when.getHours()).padStart(2, '0');
+  const mm = String(when.getMinutes()).padStart(2, '0');
+  const lead = [
+    '（定时任务到了：' + hh + ':' + mm + '）',
+    '',
+    '这是主人之前给我定下的活：',
+    text,
+    '',
+    '现在就到点了，我直接去做，做完告诉主人结果。',
+  ].join(eol);
+
+  sess.messages = Array.isArray(sess.messages) ? sess.messages : [];
+  sess.messages.push({
+    role: 'user',
+    content: lead,
+    context: true,          // 框架消息：前端不画成主人说的话
+    _sysNote: true,
+    _at: Date.now(),
+    _cron: String(task.id),
+  });
+  try { saveSession(sess); } catch {}
+
+  try {
+    const r = await startQueuedTurn(sid);
+    if (r && (r.skipped || r.error)) {
+      try { cronMarkRan(task.id, false, String(r.skipped || r.error)); } catch {}
+    }
+    return r || { ok: true };
+  } catch (e) {
+    try { cronMarkRan(task.id, false, String(e && e.message || e)); } catch {}
+    throw e;
+  }
+}
+
 async function startQueuedTurn(sessionId, queue = null) {
   const session = getSession(sessionId);
   /**
@@ -3958,6 +4036,23 @@ const server = createServer(async (req, res) => {
     return json(res, 200, identityState());
   }
 
+  // 【2026-11-04 主人要求】「设为默认」存下的就是「恢复默认」回来的那份
+  if (req.method === 'POST' && url.pathname === '/api/identity/as-default') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+    const ok = setIdentityAsDefault(String(payload?.id || ''));
+    if (!ok) return json(res, 400, { error: '只有内建身份能设默认' });
+    return json(res, 200, Object.assign({ ok: true }, identityState()));
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/identity/restore-default') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+    const ok = restoreIdentityDefault(String(payload?.id || ''));
+    if (!ok) return json(res, 400, { error: '只有内建身份能恢复默认' });
+    return json(res, 200, Object.assign({ ok: true }, identityState()));
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/identity/remove') {
     let payload;
     try {
@@ -3972,6 +4067,71 @@ const server = createServer(async (req, res) => {
   }
 
   // ---- 功能：列表 / 开 / 关 ----
+  /* 【2026-11-05 修·这一行原来是块注释开头，把下面 62 行全注释掉了】
+   *
+   * 症状：点【功能】显示「读取功能列表失败」—— /api/features 的路由
+   * 正好落在这段注释里，压根没执行，请求一路掉到静态文件兜底，回 404。
+   * 一起被吞的还有整个 cron（定时任务）的所有路由。
+   *
+   * 成因：这里开了块注释却没在这一段收尾，结束符落到了下面「陪看屏幕」
+   * 那个注释块的末尾 —— 中间所有代码都成了注释正文。JS 语法完全合法，
+   * node --check 一个字都不会报。
+   *
+   * 现在收在正确位置：下面的 cron / features 路由全部恢复生效。
+   */
+  // ===== 定时任务（cron）—— 按主人要求加的 =====
+  if (req.method === 'GET' && url.pathname === '/api/cron') {
+    return json(res, 200, { tasks: listTasks(), limits: { tickMs: 30000 } });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cron') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'bad body' }); }
+    try {
+      const task = addTask(payload || {});
+      return json(res, 200, { ok: true, task, tasks: listTasks() });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cron/remove') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'bad body' }); }
+    const r = removeTask(payload && payload.id);
+    return json(res, 200, { ok: true, ...r, tasks: listTasks() });
+  }
+
+  /* 【2026-11-06 修】前端那颗「删」发的是 DELETE /api/cron?id=xxx，这里原来只有 POST /remove，
+   * 于是界面点删除返回 405，前端拿 try/catch 一裹静默吞掉 —— 看着像「点了没反应」。
+   * 补上 DELETE 这条路（id 从 query 里拿），跟前端已经写好的调用对齐。 */
+  if (req.method === 'DELETE' && url.pathname === '/api/cron') {
+    const id = url.searchParams.get('id');
+    const r = removeTask(id);
+    return json(res, 200, { ok: true, ...r, tasks: listTasks() });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cron/toggle') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'bad body' }); }
+    const r = cronSetEnabled(payload && payload.id, Boolean(payload && payload.on));
+    return json(res, 200, { ok: true, ...r, tasks: listTasks() });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/cron/run') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'bad body' }); }
+    const want = String((payload && payload.id) || '');
+    const hit = listTasks().find((t) => String(t.id) === want);
+    if (!hit) return json(res, 404, { error: '没这个任务' });
+    try {
+      await runCronTask(hit);
+      return json(res, 200, { ok: true, tasks: listTasks() });
+    } catch (err) {
+      return json(res, 500, { error: String(err?.message ?? err) });
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/features') {
     return json(res, 200, getFeatures());
   }
@@ -4031,7 +4191,19 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     try {
-      return json(res, 200, setFeature(payload?.id, payload?.enabled));
+      /* 【2026-11-06 主人要求】「主动找我」改成按会话生效：
+       * 哪个会话开了就只在哪个会话生效，不许牵连别的会话。
+       * 走 setFeatureFor(sessionId, ...)；别的功能照旧全局存 ——
+       * 它们本来就是全局的（关掉就是把工具整个摘掉，没法按会话）。 */
+      const fid = String(payload?.id || '');
+      const sid = String(payload?.sessionId || url.searchParams.get('sessionId') || '') || '';
+      if (fid === 'selfwake') {
+        const target = sid || getLastSessionId() || '';
+        if (!target) throw { status: 400, message: 'selfwake needs sessionId' };
+        const r = setFeatureFor(target, fid, payload?.enabled);
+        return json(res, 200, { ...r, sessionId: target });
+      }
+      return json(res, 200, setFeature(fid, payload?.enabled));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -4157,6 +4329,8 @@ const server = createServer(async (req, res) => {
         persona: ed.persona,
         personaCustom: ed.custom,
         defaultPersona: ed.defaultText,
+        factoryPersona: ed.defaultText,
+        personalDefaultPersona: p.defaultPersona,
         defaultPersonaPath: defaultWhalePersonaPath(),
         defaultPersonaChars: ed.defaultText.length,
         modelId: p.modelId,
@@ -4184,7 +4358,7 @@ const server = createServer(async (req, res) => {
     }
     try {
       const p = saveWhaleProfile(payload || {});
-      return json(res, 200, { ok: true, persona: p.persona, personaCustom: p.personaCustom, modelId: p.modelId });
+      return json(res, 200, { ok: true, persona: p.persona, personaCustom: p.personaCustom, modelId: p.modelId, personalDefaultPersona: p.defaultPersona });
     } catch (e) {
       return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
     }
@@ -4193,7 +4367,8 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/whale/profile/reset') {
     try {
       const p = saveWhaleProfile({ persona: '', modelId: '' });
-      return json(res, 200, { ok: true, persona: p.persona, personaCustom: p.personaCustom, modelId: p.modelId });
+      const ed = whalePersonaForEditor();
+      return json(res, 200, { ok: true, persona: p.persona, personaCustom: p.personaCustom, modelId: p.modelId, personalDefaultPersona: p.defaultPersona, factoryPersona: ed.defaultText });
     } catch (e) {
       return json(res, 500, { error: String(e?.message ?? e) });
     }
@@ -5383,6 +5558,45 @@ const server = createServer(async (req, res) => {
 
   // 只恢复「安全词 + 触发说明」，底线 / 人设 / 模型一概不动
   // ---- 加号附件：只读地列目录 / 取图片预览 ----
+  /* 【2026-11-05 加·粘贴图片】
+   *
+   * 以前只能从「+」菜单选、或者把文件拖进窗口，截图之后 Ctrl+V 什么都不会发生。
+   * 剪贴板里的图没有磁盘路径，而发消息那条链路（/api/chat）只认 { path, name, kind }，
+   * 所以必须先在服务端落一份盘，前端才拿得到能发的东西。
+   *
+   * 落盘位置：工作区下的 attachments/（不是 .state，那是程序自己的地盘，
+   * 而且 sendCheck 会拦机密路径）。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/attach/upload') {
+    try {
+      const payload = await body(req);
+      const dataUrl = String(payload?.dataUrl || '');
+      const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl);
+      if (!m) return json(res, 400, { error: '要 dataUrl（data:image/png;base64,... 这种）' });
+      const mime = String(m[1] || 'application/octet-stream').toLowerCase();
+      // 只收图片：粘贴这条路的用途就是「截图直接问」，别的类型走选文件更清楚
+      if (!mime.startsWith('image/')) return json(res, 400, { error: '只支持粘贴图片' });
+      const buf = Buffer.from(String(m[3] || ''), 'base64');
+      if (!buf.length) return json(res, 400, { error: '内容是空的' });
+      if (buf.length > 32 * 1024 * 1024) return json(res, 413, { error: '太大了（上限 32MB）' });
+      const ext = mime.includes('png') ? 'png'
+        : mime.includes('jpeg') ? 'jpg'
+          : mime.includes('gif') ? 'gif'
+            : mime.includes('webp') ? 'webp'
+              : mime.includes('bmp') ? 'bmp'
+                : 'png';
+      const dir = join(config.workspace || config.dataDir, 'attachments');
+      __mkPaste(dir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const name = 'paste-' + ts + '-' + Math.random().toString(36).slice(2, 7) + '.' + ext;
+      const abs = join(dir, name);
+      __rotWrite(abs, buf);
+      return json(res, 200, { path: abs, name, size: buf.length, kind: 'image' });
+    } catch (err) {
+      return json(res, 500, { error: String(err?.message ?? err) });
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/attach/browse') {
     const target = url.searchParams.get('path') || '';
     const kind = url.searchParams.get('kind') === 'image' ? 'image' : 'file';
@@ -5735,8 +5949,8 @@ const server = createServer(async (req, res) => {
     try {
       const id = String(payload?.id || '');
       if (id === 'xiaojing' || id === 'whale') {
-        const r = setWhalePersonaAsDefault();
-        return json(res, 200, { ok: true, id: 'xiaojing', chars: r.chars, agents: listAgents() });
+        const r = setWhalePersonaAsDefault(payload.persona);
+        return json(res, 200, { ok: true, id: 'xiaojing', chars: r.chars, personalDefaultPersona: r.defaultPersona, agents: listAgents() });
       }
       const r = setPersonaAsBuiltinDefault(id || 'xiaoyu');
       return json(res, 200, { ok: true, id: id || 'xiaoyu', ...(r || {}), agents: listAgents() });
@@ -7263,6 +7477,15 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (!isSessionId(sessionId)) return json(res, 400, { error: 'bad sessionId' });
 
     /**
+     * 【主动找我 · 主人真回来了】把「她不说话我连叫了几次」清零。
+     *
+     * 不清零的后果：叫满 7 次没人理就停手（这是对的），可主人明明回来了、
+     * 只是那 7 次恰好他不在，之后她就永远不再主动开口 —— 一次误伤管一辈子。
+     * 所以只要主人真发了一句，这里就归零。
+     */
+    try { noteReplied(sessionId); } catch {}
+
+    /**
      * 「小鱼」按钮禁用着 = 她不在这个屋。
      *
      * 主人原话：禁用之后小鱼接下来不会再接收到该会话后续的任何消息
@@ -7468,11 +7691,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 存用量那一步就整个跳过 —— 用得越久、插话越多，越多的轮次没用量。
      * 所以从尾部倒着找最后一句主人真说的话。
      */
-    if (resume && Array.isArray(history)) {
-      for (let k = history.length - 1; k >= 0; k--) {
-        const m = history[k];
-        if (m && m.role === 'user' && !m.context && !m.summary) { userMsgRef = m; break; }
-      }
+    /* 【2026-11-05 主人报「重启续上后 tokens 显示是估的、数字还特别小」】
+     *  真因：这里原来只在 resume 模式下回填挂靠点。可重启续上、定时任务、【主动找我】
+     *  这些「系统自己起的一轮」走的不是 resume，是 startQueuedTurn ——
+     *  userMsgRef 稳在 null，用量就被丢进 session._orphanUsage（没人读它），
+     *  前端只能按字数估算，于是显示「（估）接口没回用量」，数字还是照这一轮字数瞎估的小数。
+     *  实测对照：同一轮接口明明回了 prompt_tokens=17353，界面上却是 1,762（估）。
+     *
+     *  改法：除了 resume，**「历史尾巴上那条是系统插的话」也回填**。
+     *  为什么不能干脆去掉 resume 判断：正常发言时这段跑在 history.push(userMsg) 之前，
+     *  无脑回填会挂到上一条主人消息上，用量就记到别人的气泡底下去了。 */
+    if (Array.isArray(history)) {
+      const _tail = history[history.length - 1];
+      /* 尾巴是系统插的话（重启了 / 定时任务 / 主动找我）→ 用量就记在它自己身上。
+       * 这类轮次是本程序自己起的，不存在「主人那句话」可挂；挂它自己不会串到别人气泡底下。
+       * 原来一律不回填，用量全丢进没人读的 _orphanUsage，前端只能瞎估。 */
+      const _sysTail = !!(_tail && _tail.role === 'user' && _tail._sysNote);
+      if (_sysTail) userMsgRef = _tail;
     }
     if (!Array.isArray(history) || !history.length) {
       history.length = 0;
@@ -7547,6 +7782,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       delete session._openingPending;
     }
     if (!resume) {
+      /* 【2026-11-05 主人报·发了一句「继续」，会话名被改成了「继续」】
+       *
+       *  原来只看「历史里有没有 user 消息」就当成第一句、直接改标题。
+       *  可分支出来的 / 压缩过的 / 续跑重建的会话，开头是摘要不是 user，
+       *  于是永远被判成「第一句」，主人随便发个「继续」就把标题覆盖了。
+       *
+       *  现在的判据加一条：当前标题得是空的 / 还是默认名「新会话」/ 或者短得不像名字，
+       *  才允许自动起名。已经有像样标题的，一句话都不许动。
+       *
+       *  （firstUserTurn 原来还兼职判断「这是不是第一句」，所以改名和判第一句要分开：
+       *    判第一句照旧看历史，改标题才加上面的标题守卫。）
+       */
+      const _curTitle = String(session.title || '').trim();
+      const _titleAutoOk = !_curTitle || _curTitle === '新会话' || _curTitle.length < 3;
       const firstUserTurn = !history.some((m) => m.role === 'user' && !m.context);
       const userMsg = { role: 'user', content: composeUserContent(message, attachments) };
       /**
@@ -7579,7 +7828,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       userMsg._text = String(message).trim();
       history.push(userMsg);
       userMsgRef = userMsg;
-      if (firstUserTurn) session.title = titleFromMessage(message);
+      /* 两个条件都要：这是第一句，而且现在的标题还空着/是默认名/短得不像名字。 */
+      if (firstUserTurn && _titleAutoOk) session.title = titleFromMessage(message);
     }
     sessions.set(sessionId, session);
     saveSession(session);
@@ -9879,9 +10129,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
 
   // 生成中插话：先把这句落盘，再停住当前这一轮，让前端带着新话接着跑。
   if (req.method === 'POST' && url.pathname === '/api/interject') {
-    const { sessionId = 'default', message = '', atChars = null } = await body(req).catch(() => ({}));
+    /* 【2026-11-05 修·插话丢附件】
+     *
+     * 主人报的现象：把图片拖进输入框、补一句话、发送 —— 只发出去了文字，图没了。
+     * 根因就在这条接口：生成中点发送走的是「插话」，而插话只传 message，
+     * 服务端也只认 message。附件从头到尾没进过任何一环。
+     *
+     * 更糟的是「只拖图不打字就发」：前端 `if (!busy || !text) return` 直接返回，
+     * 图静悄悄消失，连个提示都没有。所以这里也要允许「只有附件没有字」。 */
+    const { sessionId = 'default', message = '', atChars = null, attachments = [] } =
+      await body(req).catch(() => ({}));
+    const _att = Array.isArray(attachments) ? attachments.filter((a) => a && a.path) : [];
     if (!isSessionId(sessionId)) return json(res, 400, { error: 'bad sessionId' });
-    if (!message.trim()) return json(res, 400, { error: 'empty message' });
+    if (!String(message).trim() && !_att.length) return json(res, 400, { error: 'empty message' });
 
     const session = getSession(sessionId);
     if (!session) return json(res, 404, { error: 'session not found' });
@@ -9961,7 +10221,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       try {
         const __n = Number(atChars);
-        steer(sessionId, message, (Number.isFinite(__n) && __n >= 0) ? { atChars: __n } : {});
+        steer(sessionId, message, Object.assign(
+          (Number.isFinite(__n) && __n >= 0) ? { atChars: __n } : {},
+          _att.length ? { attachments: _att.map((x) => ({ path: String(x.path), name: String(x.name || ''), kind: String(x.kind || '') })) } : {},
+        ));
       } catch (e) {
         return json(res, 500, { ok: false, running: true, error: '话没排进信箱：' + String(e?.message ?? e) });
       }
@@ -10209,7 +10472,40 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
        *    · 前端 renderTurns 里 `if (turn.sysNote) continue;` 直接不画；
        *    · 但它仍在 wire 里，所以我自己读得到，照样能被这句话叫醒。
        *  别改成 context:true —— 那样我会连自己该干什么都看不到。 */
-      _s.messages.push({ role: 'user', content: '重启了', _sysNote: true });
+      /* 【2026-11-05 主人报「重启后没续上」】
+       *  原来这里只塞三个字。我醒来看到「重启了」三个字，只知道「重启过了」，
+       *  不知道断在哪儿、还剩哪些活 —— 结果就是主人还得再说一句「继续」我才动。
+       *  resume.json 里明明记着断点原文、中断原因、没做完的步骤，可这儿压根没读它
+       *  （实测那次重启后 resume.json 原封不动躺在 .state 里，没人消费）。
+       *
+       *  改法：把断点、原因、没做完的步骤一起塞进这条消息 —— 界面照样不画
+       *  （_sysNote 照旧），只是我自己读得到。不自动起新一轮、不冒充主人说话，
+       *  主人 2026-11-02 定的那两条规矩一条没动，只是让这句话自己把话说完。 */
+      let _resumeMsg = '重启了';
+      try {
+        const _ri = peekInterrupted ? peekInterrupted() : null;
+        if (_ri && String(_ri.sessionId || '') === String(_sid || '')) {
+          const _open = Array.isArray(_ri.openSteps) ? _ri.openSteps : [];
+          const _lines = [];
+          if (_ri.taskLine) _lines.push('断在主人这句话上：' + String(_ri.taskLine).slice(0, 200));
+          if (_ri.reason) _lines.push('中断原因：' + String(_ri.reason).slice(0, 120));
+          if (_ri.text) _lines.push('断的那一刻我正说到：' + String(_ri.text).slice(-600));
+          if (_open.length) {
+            _lines.push('清单上还没打勾的 ' + _open.length + ' 步（从断点接着干，别从头重来）：');
+            for (const st of _open.slice(0, 12)) {
+              _lines.push('  ' + (st && st.n ? st.n : '?') + '. ' + String((st && st.text) || '').slice(0, 220));
+            }
+          }
+          if (_lines.length) {
+            _resumeMsg = '重启了。断点在这儿：\n' + _lines.join('\n') +
+              '\n\n（直接从没打勾那步接着干，不用等我再问。）';
+          }
+          /* 读完就把它销掉：断点已经抄进这条消息里了（会话里存得住），
+           * 留着只会让下一次重启又读到同一个旧断点，把老账重念一遍。 */
+          try { dropInterrupted(); } catch {}
+        }
+      } catch (e) { try { console.warn('[restart] 读断点失败（不影响叫醒）：', String(e && e.message)); } catch {} }
+      _s.messages.push({ role: 'user', content: _resumeMsg, _sysNote: true });
       saveSession(_s);
       try { startQueuedTurn(_sid, null).catch((e) => console.warn('[restart] 叫醒失败：', String(e?.message ?? e))); } catch {}
     } catch (e) {
@@ -10241,12 +10537,113 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
   // 这里只在启动时提醒，不抛错、不影响服务起来。
   try {
     const problems = checkToolDocs();
+    /* 【2026-11-05 加·补一类它查不到的】
+     *
+     * 工具**写好了、注册进 tools 数组了，却没登记到 features 的功能白名单** ——
+     * `isToolEnabled()` 对查不到归属的工具直接 `return false`（不是 true），
+     * 于是它会静默变成"关着"的状态：模型拿到的是「现在是关着的，用不了」，
+     * 而代码里明明有这个工具。
+     *
+     * 今天就栽过一次：memory_search 加完、测了、同步了，唯独漏了登记这一道，
+     * 等于给她的眼睛又戴回眼罩，而且**任何检查都不报错**。
+     */
+    const registered = new Set([...TOOL_FEATURE.keys(), ...TOOL_OWNERS.keys()]);
+    for (const t of allTools) {
+      if (!registered.has(t.name)) {
+        problems.push(t.name + ': 没登记到 features 的功能表（会被静默关闭，永远用不了）');
+      }
+    }
     if (problems.length) {
-      console.warn('[tools] 下面这些工具还缺中文说明，模型会看不懂：');
+      console.warn('[tools] 下面这些工具有问题，模型要么看不懂、要么根本用不上：');
       for (const p of problems) console.warn('  · ' + p);
     }
+    /* 【2026-11-05 加】技能本的格式自检：缺 description 的话，
+     * 模型只看得到一个名字、不知道什么时候该翻它 —— 等于白放。 */
+    try {
+      const skProblems = checkSkills();
+      if (skProblems.length) {
+        console.warn('[skills] 这些技能格式不对，她会翻不到或不知道该不该翻：');
+        for (const p of skProblems) console.warn('  · ' + p);
+      }
+    } catch {}
   } catch (e) {
     console.warn('[tools] 文档自检没跑成（不影响使用）：', String(e?.message ?? e));
+  }
+
+  /**
+   * 【主动找我 · selfwake】—— 2026-11-06，对着 DeepSeek Harness 补齐的
+   *
+   * .dsh 有 selfwake：主人很久不来，角色会自己开口说一句。小鱼一点没有 ——
+   * 人设里写着「被冷落会寂寞」，可她本人一个字都没法先开口，只能等主人说话。
+   *
+   * 这里只负责「把 server 那两样东西交给它」：怎么列会话、怎么读会话、到点了怎么起一轮。
+   * 判断节奏（间隔、静默、次数上限）全在 selfwake.mjs 里，那边能单独测。
+   *
+   * 默认关着 —— 要主人在【功能】面板里把「主动找我」点亮才生效。
+   * 出错一律吞：主动唤醒来捣乱，比它不工作糟得多。
+   */
+  try {
+    startSelfwake({
+      listSessions: () => listSessions(),
+      getSession: (id) => getSession(id),
+      // 功能页里那条「主动找我」关着就直接整轮不跑 —— 不是等到要说话时才挡
+      isEnabled: (sid) => featureOnFor(sid, 'selfwake'),
+      onDue: async (sid, session, verdict) => {
+        try {
+          // 关着就别叫（跟 startQueuedTurn 里那道闸同一个口径，这里先挡一道不让它白起）
+          // 功能页里那条「主动找我」关着，就彻底别动（跟顶栏按钮一个口径）
+  /**
+   * 【定时任务 · cron】—— 2026-11-06 主人要求：
+   * 「给他说一个任务，然后再说这个任务什么时候开始，然后他就会在那个时候自动去做」
+   *
+   * 判断「到点没」全在 cron.mjs 里（能单独测），这里只把「怎么起一轮」交过去。
+   * 出错一律吞：定时任务坏了不许连累主流程。
+   */
+  try {
+    startCron({ onDue: (task) => runCronTask(task) });
+  } catch (e) {
+    try { console.warn('[cron] 挂不上（不影响主流程）：', e && e.message); } catch {}
+  }
+
+          if (!featureOnFor(sid, 'selfwake')) return;
+          if (!fishOn(sid)) return;
+
+          /**
+           * 投一条「引子」。
+           *
+           * 为什么是 role:'user' + context：走的是跟「重启了」完全一样的路
+           * （server.mjs 那条注释写着：不去冒充我自己说话，而是由系统投一条 user 进来），
+           * 这样 agent 那边当成「背景」而不是「主人刚发来的话」。
+           *
+           * _sysNote: true → 前端在 renderTurns 里 continue 掉，界面上不画这条。
+           * 主人只看到她回出来的那句话，不会看到自己没说过的话。
+           */
+          const sess = session || getSession(sid);
+          if (!sess) return;
+          const msgs = Array.isArray(sess.messages) ? sess.messages : [];
+          if (!msgs.length) return; // 空会话不自己开口（没上下文，说了也怪）
+
+          msgs.push({
+            role: 'user',
+            context: true,
+            _sysNote: true,
+            _at: Date.now(),
+            content: '（她一个人待了会儿。没人跟她说话，她想主动开口讲一句 —— 就一句，别长篇，别问「在吗」，说点她自己在想的事或者关心主人的话。）',
+          });
+          sess.updatedAt = Date.now();
+          try { saveSession(sess); } catch {}
+
+          const r = await startQueuedTurn(sid, null);
+          if (!r || !r.ok) {
+            console.log('[selfwake] 这一轮没起成：', sid, r && (r.skipped || r.error));
+          }
+        } catch (e) {
+          try { console.warn('[selfwake] 起一轮失败（不影响别的）：', e && e.message); } catch {}
+        }
+      },
+    });
+  } catch (e) {
+    try { console.warn('[selfwake] 挂不上（不影响主流程）：', e && e.message); } catch {}
   }
 
   // 运行中定时查版本。
@@ -10360,6 +10757,36 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
             console.log('             模型地址写错或那台服务没开；打开界面顶部「模型」按钮核对。');
           }
         }).catch(() => {});
+
+        /**
+         * 【2026-11-05 加·重启后自己续上】
+         *
+         * 主人报：「有【自动重启续上】功能，却只做到了自动重启，没做到续上」。
+         *
+         * 查下来是这样：重启前确实写了 .state/resume.json（谁被打断、断在哪、清单还剩几步），
+         * 但是**启动流程里没有任何一行去读它** —— 全项目只有 `POST /api/resume`
+         * 那条手动路径会调 resumeInterruptedTurn()。所以文件躺在盘上，一直到过期都没人碰。
+         *
+         * 现在补上：起来等三秒（让前端把 WebSocket 连上，不然事件发出去没人收），
+         * 如果还压着旧账、而且「自动重启续上」这个开关是开的，就自己接着做。
+         *
+         * 为什么尊重开关：主人关掉它就是要「干净重启」，这时候自作主张爬起来接着干
+         * 比不续还烦人。
+         */
+        setTimeout(() => {
+          try {
+            const f = getFeatures();
+            const on = Boolean(f && f.features && f.features.find((x) => x.id === 'selfRestart')?.enabled);
+            if (!on) { console.log('  resume   : 「自动重启续上」关着，不续'); return; }
+            const pending = peekInterrupted();
+            if (!pending) return;
+            console.log('  resume   : 有没做完的（' + pending.reason + '），自己接着做');
+            resumeInterruptedTurn().catch((e) => console.warn('[resume] 自动续跑失败：', String(e?.message ?? e)));
+          } catch (e) {
+            console.warn('[resume] 开机自续没跑成（不影响使用）：', String(e?.message ?? e));
+          }
+        }, 3000);
+
         {
           // 真正生效的阈值是「设置面板里那个」，不是 config 里的兜底值，日志得说真话。
           // 填多少就是多少，所以不再乘什么比例，直接报 limit。

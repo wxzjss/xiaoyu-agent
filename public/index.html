@@ -18783,8 +18783,37 @@ function renderTurns(turns, opts) {
     } catch (e) {}
     return null;
   })();
+  /**
+   * 【2026-11-05 加·重画会把当前轮的思维链冲掉，高度一塌就把人弹上去】
+   *
+   * 主人描述得非常准：「像是我站在思维链上面，然后思维链突然闭合、弹一下把我弹上去」。
+   *
+   * 查下来：renderTurns 里**根本没有 think 相关代码** —— 历史数据里没有思考过程，
+   * 所以它不重画思考块。而屏幕上那个思维链是 paintSnapshot（直播那条路）画的。
+   * 于是新消息一来 → 这里整屏 replaceChildren → **思维链被冲走** →
+   * 那一整块高度瞬间消失 → 站在它上面的人就被顶到上面去了。
+   *
+   * 修法不重建（重建要拿 reasoning 数据、还要恢复展开态，太绕）：
+   * 重画前把现有的 think 节点**整个摘下来存着**，换屏之后原样接回去。
+   * DOM 节点复用，内容、展开态、滚动位置全都不用管。
+   */
+  const __keepThink = [];
+  try {
+    if (log) {
+      for (const d of log.querySelectorAll('details.think')) {
+        d.remove();          // 先摘下来，免得被 replaceChildren 一起清掉
+        __keepThink.push(d);
+      }
+    }
+  } catch (e) {}
+
   __ignoreScrollUntil = Date.now() + 800;
   log.replaceChildren(frag);
+
+  /* 【2026-11-05】把摘下来的思考块接回屏幕末尾（它们本来就是当前轮最新的东西）。 */
+  try {
+    for (const d of __keepThink) log.appendChild(d);
+  } catch (e) {}
   if (__anchorBefore) {
     requestAnimationFrame(() => {
       try {

@@ -9500,6 +9500,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             total_tokens: Number(usage.total_tokens ?? 0),
             context_tokens: Number(lastUsage?.prompt_tokens ?? usage.prompt_tokens ?? 0),
             calls: Number(usage.last_calls ?? 0),
+            /* 【2026-11-05 加】这一轮跑了多久（毫秒）。
+             * 必须显式列进来：下面这个对象是**逐字段白名单**，不在名单上的字段一律丢掉。
+             * 第一次加的时候漏了这一步，结果只有「刚跑完那一瞬间」有时长，
+             * 一刷新 / 一切会话再回来就没了 —— 因为重绘是从会话文件里的 _usage 读的。 */
+            _ms: Number(usage._ms ?? 0),
             // 缓存命中：以前这里固定取 `usage.prompt_cache_hit_tokens`，最外层那个对象 ——
             // 可 agent.mjs 的 sumUsage 只累加了三个数（prompt/completion/total），
             // 缓存字段压根没往上并，所以这里**永远是 0**。

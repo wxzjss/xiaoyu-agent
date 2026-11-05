@@ -6464,10 +6464,11 @@ function settleComposer(opts) {
   releaseComposer(opts);
   const _sid = sessionId;
   setTimeout(() => {
-    const _fin = (up) => {
+    const _fin = (up, at) => {
       try {
         if (sessionId !== _sid) return;
-        if (up) { busy = true; showSending(); } else { busy = false; hidingSendingSafe(); }
+        /* 【2026-11-05 加】把后端那个 startedAt 传下去 —— 刷新 / 切回来时计时接着走。 */
+        if (up) { busy = true; showSending(at); } else { busy = false; hidingSendingSafe(); }
         syncSendBtn();
       } catch (e) {}
     };
@@ -6475,7 +6476,7 @@ function settleComposer(opts) {
     try {
       fetch('/api/chat/live?sessionId=' + encodeURIComponent(_sid))
         .then((r) => r.json())
-        .then((l) => { _done = true; _fin(Boolean(l && l.running) || turnsInFlight.has(_sid)); })
+        .then((l) => { _done = true; _fin(Boolean(l && l.running) || turnsInFlight.has(_sid), l && l.startedAt); })
         .catch(() => { _done = true; _fin(false); });
     } catch (e) { _done = true; _fin(false); }
     setTimeout(() => { if (!_done) { _done = true; _fin(turnsInFlight.has(_sid)); } }, 2500);
@@ -7485,6 +7486,7 @@ async function tryHealAfterDisconnect(id) {
          *  就再也不会纠正，服务端明明还在跑、这边按钮却变【发送】，
          *  一按就撞 409。②裸 fetch 没超时，请求卡住这段就永远不往下走
          *  ——「画面固定」就是这么来的。改成永远核对 + 3 秒超时兜底。 */
+        let _liveAt = 0;
         {
           try {
             const _ac = new AbortController();
@@ -7493,10 +7495,12 @@ async function tryHealAfterDisconnect(id) {
             clearTimeout(_t);
             const _j = await chk.json();
             reallyRunning = Boolean(_j && _j.running);
+            _liveAt = Number(_j && _j.startedAt) || 0;
           } catch { /* 拿不到就沿用初判，别把输入框焊死 */ }
         }
         busy = reallyRunning;
-        if (reallyRunning) showSending();
+        /* 【2026-11-05 加】把后端 startedAt 传进去，刷新/重连后计时接着走 */
+        if (reallyRunning) showSending(_liveAt);
         else hideSending();
         syncSendBtn();
       }
@@ -9922,11 +9926,24 @@ function turnElapsedText(ms) {
   return m + 'm' + (r < 10 ? '0' : '') + r + 's';
 }
 
-function showSending() {
+function showSending(startAt) {
   sendingHint.classList.add('show');
   noteNewContent();
   try {
-    _turnT0 = Date.now();
+    /* 【2026-11-05 改·别每次都从零开始】
+     * 原来这里无条件 `_turnT0 = Date.now()`。于是「切到别的会话再切回来」时，
+     * showSending 又被调一次，计时直接归零 —— 可那一轮其实一直在跑。
+     *
+     * 现在的规矩：
+     *   · 新一轮（上一轮已经 hideSending 过）→ _turnT0 是 0，从此刻算；
+     *   · 切回来看到还在跑 → 沿用原来的起点，接着算。
+     * 靠 hideSending 里把 _turnT0 清零来区分，不靠猜。
+     */
+    /* 【2026-11-05 加】能拿到「这一轮什么时候开始的」就以它为准。
+     * 刷新页面后 _turnT0 是空的，但 /api/chat/live 会带 startedAt ——
+     * 用它当起点，计时才不会被刷新重置成 0。 */
+    if (Number.isFinite(Number(startAt)) && Number(startAt) > 0) _turnT0 = Number(startAt);
+    else if (!_turnT0) _turnT0 = Date.now();
     const el = document.getElementById('turnElapsed');
     if (el) el.textContent = '0s';
     if (_turnTimer) clearInterval(_turnTimer);
@@ -9941,6 +9958,10 @@ function hideSending() {
   sendingHint.classList.remove('show');
   try {
     if (_turnTimer) { clearInterval(_turnTimer); _turnTimer = 0; }
+    /* 【2026-11-05】这里**不能**清 _turnT0。
+     * 切换会话也会走到 hideSending（见 switchSession 那段注释），
+     * 一清就等于「切走再回来重新计时」，而那一轮其实一直在跑。
+     * 真正的「新一轮」由 send() 里显式清，这里只管停表。 */
     const el = document.getElementById('turnElapsed');
     if (el) el.textContent = '';
   } catch (e) {}
@@ -10774,6 +10795,9 @@ function replayInFlight(id) {
 
 async function send() {
   if (busy) return;
+  /* 【2026-11-05 加】真正开口新一轮 —— 计时从这里重新开始。
+   * 放在这儿而不是 hideSending：切会话也会 hide，那不是新一轮。 */
+  _turnT0 = 0;
   const text = input.value.trim();
   if (!text && !attachments.length) return;
   if (!sessionId) {

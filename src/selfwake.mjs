@@ -203,6 +203,28 @@ export function noteFired(sessionId, now = Date.now()) {
 }
 
 /** 主人回来了，未回计数清零 */
+/**
+ * 【2026-11-05 加·借鉴 dsh 的 lastLine】记住她主动找我时最后说的那句话。
+ *
+ * 为什么要有：原来每次醒来都是同一句干巴巴的引子，她不知道上一回自己说到哪儿了，
+ * 于是要么重复同一个话题，要么前后不接。dsh 的 selfwake/state.json 里存了 lastLine，
+ * 我们这边没有。补上之后，下次醒来的引子里会带上「上一回你主动说的是这句」。
+ *
+ * 只截 120 字 —— 这句是给下一轮当背景的，不是原文存档，存长了只会挤掉真正的上下文。
+ */
+export function noteSpoke(sessionId, text) {
+  const t = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!t) return { ok: false };
+  try {
+    const st = getState(sessionId);
+    st.lastLine = t;
+    saveState(sessionId, st);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
 export function noteReplied(sessionId) {
   try {
     const st = readState(sessionId);
@@ -217,6 +239,7 @@ export function getState(sessionId) {
   const st = readState(sessionId);
   return {
     lastFiredAt: Number(st.lastFiredAt) || 0,
+    lastLine: String(st.lastLine || ''),
     unanswered: Number(st.unanswered) || 0,
     dailyDay: st.dailyDay || '',
     dailyCount: Number(st.dailyCount) || 0,

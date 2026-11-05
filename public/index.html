@@ -18893,12 +18893,26 @@ function renderTurns(turns, opts) {
    * 重画前把现有的 think 节点**整个摘下来存着**，换屏之后原样接回去。
    * DOM 节点复用，内容、展开态、滚动位置全都不用管。
    */
+  /**
+   * 【2026-11-05 改·第二版：要接回原位，不是接回末尾】
+   *
+   * 主人给了一条决定性的线索：「**只在展开思维链时弹**」。
+   *
+   * 第一版是摘下来之后 `log.appendChild(d)` —— 全接到末尾。
+   * 收起状态的思维链只有一行高，挪到末尾影响很小，所以看不出来；
+   * 可**展开的**有几十行高，一挪位置整屏的高度分布就变了，
+   * 锚点算出来的补偿量自然对不上，于是弹。
+   *
+   * 现在记下「它前面最近的那条消息是谁」，换屏后插回那条后面；找不到才退到末尾。
+   */
   const __keepThink = [];
   try {
     if (log) {
       for (const d of log.querySelectorAll('details.think')) {
+        let prev = d.previousElementSibling;
+        while (prev && !(prev.matches && prev.matches('.msg[data-at]'))) prev = prev.previousElementSibling;
+        __keepThink.push({ el: d, afterAt: prev ? String(prev.dataset.at || '') : '' });
         d.remove();          // 先摘下来，免得被 replaceChildren 一起清掉
-        __keepThink.push(d);
       }
     }
   } catch (e) {}
@@ -18906,9 +18920,20 @@ function renderTurns(turns, opts) {
   __ignoreScrollUntil = Date.now() + 800;
   log.replaceChildren(frag);
 
-  /* 【2026-11-05】把摘下来的思考块接回屏幕末尾（它们本来就是当前轮最新的东西）。 */
+  /* 【2026-11-05】把摘下来的思考块接回**原来的位置**（前面那条消息之后）。
+   * 接末尾会让展开的思维链整块位移，高度分布一变就弹。 */
   try {
-    for (const d of __keepThink) log.appendChild(d);
+    for (const it of __keepThink) {
+      const d = it.el;
+      if (it.afterAt) {
+        const anchor = log.querySelector('.msg[data-at="' + it.afterAt + '"]');
+        if (anchor && anchor.parentNode === log) {
+          anchor.after(d);
+          continue;
+        }
+      }
+      log.appendChild(d);   // 找不到那条（被删了/换轮了）才退到末尾
+    }
   } catch (e) {}
   if (__anchorBefore) {
     requestAnimationFrame(() => {

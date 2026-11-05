@@ -5874,8 +5874,50 @@ function mdInline(text) {
 }
 
 /** 把一段正文画进 el。有 markdown 特征才富文本，否则原样文字。 */
+/**
+ * 【2026-11-05 加·剥掉正文里的 <thinking> 标签】
+ *
+ * 主人报：「她发我的消息有时候会显示 <thinking> </thinking>」。
+ *
+ * 来源：有的模型 / 中转站不把思考放进结构化的 reasoning_content，
+ * 而是直接塞进正文 content 里，用 <thinking>…</thinking> 包起来。
+ * 我们这边只认结构化字段，于是这串 XML 被当成正文原样画到了屏幕上。
+ *
+ * 三件事一起处理：
+ *   ① 成对的块整段删；
+ *   ② 流式中还没闭合的（只有 <thinking> 没有 </thinking>）—— 从它开始切到末尾，
+ *      否则一边打字一边就把标签漏出来了；
+ *   ③ 落单的结束标签也删掉。
+ *
+ * 剥完如果是空的，说明这条消息**只有思考没有正文** —— 返空串，让调用方决定不画，
+ * 总比把一堆内心戏糊在屏幕上强。
+ */
+function stripThinkingTags(input) {
+  let s = String(input == null ? '' : input);
+  /* 两个标签都要看一眼：只漏了 </thinking> 的也得清（实测会漏）。 */
+  if (s.indexOf('<thinking') < 0 && s.indexOf('</thinking>') < 0) return s;
+  // ① 成对的整块
+  s = s.replace(/<thinking[^>]*>[\s\S]*?<\/thinking>/gi, '');
+  // ② 没闭合的（流式中）：从最后一个开始切到末尾
+  const open = s.toLowerCase().lastIndexOf('<thinking');
+  if (open >= 0 && s.toLowerCase().indexOf('</thinking>', open) < 0) {
+    s = s.slice(0, open);
+  }
+  // ③ 落单的结束标签
+  s = s.replace(/<\/thinking>/gi, '');
+  return s;
+}
+
 function mdInto(el, rawText) {
   if (!el) return;
+  /* 【2026-11-05】正文里偶尔会混进模型自己的 <thinking> 块，画之前先剥掉。 */
+  const _cleaned = stripThinkingTags(rawText);
+  if (String(rawText || '').trim() && !String(_cleaned || '').trim()) {
+    el.classList.remove('md');
+    el.textContent = '';
+    return;
+  }
+  rawText = _cleaned;
   // 【2026-11-05 修】必须用只修乱码的那个 —— fixMojibake 会把 markdown 记号擦掉，
   // 拿它来渲染富文本等于先把材料撕了再拼。
   const text = repairMojibakeOnly(String(rawText ?? ''));

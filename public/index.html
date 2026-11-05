@@ -9758,6 +9758,8 @@ function groupLooseTools() {
     let run = [];
     const flush = () => {
       if (!run.length) return;
+      /* 【2026-11-05 同一条规矩】只有思考没有工具 → 不建柜，思考块自己待着。 */
+      if (!run.some((el) => el.classList.contains('tool'))) { run = []; return; }
       const first = run[0];
       const hub = document.createElement('details');
       hub.className = 'toolhub';
@@ -10008,7 +10010,18 @@ function foldLiveTools() {
    * 原来这里 `< 2` 就 return，于是只调一次工具的那一轮，
    * 卡片照样大喇喇摊在屏幕上，跟折叠过的那些长得完全不一样。
    */
-  if (arr.length < 1) return;              // 一件都没有才不搞柜子
+  /**
+   * 【2026-11-05 改·没调工具就不建柜】
+   *
+   * 主人要：「只是想了一段没调工具，就不要显示『调用了 0 次工具』」。
+   *
+   * 之前把 think 也算进 arr，于是「只想了想没动手」也会建一个柜子，
+   * 标题写着「调了 0 次工具 · 想了 1 段」—— 那句「调了 0 次」是废话。
+   *
+   * 现在只有真调了工具才建柜；纯思考的轮次，思考块自己本来就是可折叠的，
+   * 单独待着就好。
+   */
+  if (_tools.length < 1) return;           // 没调工具：不搞柜子
   const first = arr[0];
   const parent = first.parentNode;
   if (!parent) return;

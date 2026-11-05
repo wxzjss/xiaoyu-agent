@@ -6064,7 +6064,18 @@ const flatSpeechText = (t) => String(t)
 function paintSpeech(bubble, raw) {
   if (!bubble) return bubble;
   const wrap = bubble.parentNode;
-  const cleaned = fixMojibake(String(raw ?? ''));
+  /**
+   * 【2026-11-05 修·流式时标签照样露出来】
+   *
+   * 主人报「她每一条消息都带 <thinking> </thinking>」。
+   * 上一版只在 mdInto（历史渲染）里剥了，可**流式实时显示走的是这里** ——
+   * paintSpeech 原来只做 fixMojibake。于是同一条消息：边打字时带标签，
+   * 重画历史时才干净；看起来就像「每条都有」，而且是「一直都有」。
+   *
+   * stripThinkingTags 处理了「只有开头没有结尾」的中间态，
+   * 所以打字过程中也不会闪一下标签。
+   */
+  const cleaned = fixMojibake(stripThinkingTags(String(raw ?? '')));
   if (!wrap) { bubble.textContent = cleaned; bubble._tail = bubble; return bubble; }
   /**
    * 【2026-11-02 主人报：一句话没说完就换行，刷新一次又好了】

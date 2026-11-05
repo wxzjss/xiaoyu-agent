@@ -9975,14 +9975,26 @@ function showSending(startAt) {
      * 用它当起点，计时才不会被刷新重置成 0。 */
     if (Number.isFinite(Number(startAt)) && Number(startAt) > 0) _turnT0 = Number(startAt);
     else if (!_turnT0) _turnT0 = Date.now();
-    const el = document.getElementById('turnElapsed');
-    if (el) el.textContent = '0s';
-    if (_turnTimer) clearInterval(_turnTimer);
-    _turnTimer = setInterval(() => {
+    /**
+     * 【2026-11-05 修·「F5 之后时长永远是 0s」的真凶】
+     *
+     * 原来第一句是硬写 `el.textContent = '0s'`，要等 1 秒后的 setInterval 才更新成真实值。
+     *
+     * 问题在于：**窗口不在前台时，Electron / Chrome 会把定时器节流到几乎不跑**
+     * （实测 headless 里 1.6 秒一次都没执行）。于是那一秒永远不到 ——
+     * 时长就死死停在 0s，看起来「刷新后从 0 开始，而且再也不动」。
+     *
+     * 现在先自己算一次再挂定时器：第一眼就是对的（比如 91s），
+     * 之后定时器能不能按时跑都不影响「数值正确」，只影响刷新频率。
+     */
+    const tick = () => {
       const e2 = document.getElementById('turnElapsed');
       if (!e2) return;
-      e2.textContent = turnElapsedText(Date.now() - _turnT0);
-    }, 1000);
+      try { e2.textContent = turnElapsedText(Date.now() - _turnT0); } catch (err) {}
+    };
+    tick();
+    if (_turnTimer) clearInterval(_turnTimer);
+    _turnTimer = setInterval(tick, 1000);
   } catch (e) {}
 }
 function hideSending() {

@@ -5385,6 +5385,31 @@ function paintSnapshot(sid, srcLive) {
    * 还的时候只认「不贴底」的情况：贴底的人本来就该被带到最新。
    */
   const __stBefore = (log && !stickBottom) ? log.scrollTop : -1;
+  /**
+   * 【2026-11-05 加·用「锚点消息」而不是像素位置】
+   *
+   * 主人报：「刷新后往上翻、点开一个思维链，新消息出来时被弹到很久远以前」。
+   *
+   * 上一版记的是 scrollTop 这个**数字**，画完原样设回去。可这招有个硬伤：
+   * 重画前后**内容高度不一样**（思维链展开/收起、工具卡增减、图片加载完），
+   * 同一个 scrollTop 对应的内容就变了 —— 历史越多、差得越远。
+   * 而且点开思维链这个动作本身就会改高度，正好踩在刀口上。
+   *
+   * 现在改成记**人**：视口顶部第一条带 data-at 的消息，以及它离视口顶的偏移。
+   * 画完把同一条消息挪回同样的偏移 —— 内容怎么变都不影响它待在该待的地方。
+   * 找不到那条（被删了 / 换轮了）才退回用 scrollTop。
+   */
+  const __anchor = (() => {
+    try {
+      if (!log || stickBottom) return null;
+      const base = log.getBoundingClientRect().top;
+      for (const el of log.querySelectorAll('.msg[data-at]')) {
+        const r = el.getBoundingClientRect();
+        if (r.bottom > base + 4) return { at: el.dataset.at, off: r.top - base };
+      }
+    } catch (e) {}
+    return null;
+  })();
 
   const __openBefore = [];
   try {
@@ -5406,10 +5431,21 @@ function paintSnapshot(sid, srcLive) {
       window.__repainting = Math.max(0, (Number(window.__repainting) || 0) - 1);
       /* 【2026-11-05 加】把滚动位置还回去（只对「不贴底」的人）。
        * 下一帧再还：那时重画的 DOM 已经布局完，scrollTop 才设得进去。 */
-      if (__stBefore >= 0 && log) {
+      if (log && (__anchor || __stBefore >= 0)) {
         requestAnimationFrame(() => {
           try {
-            if (!stickBottom) log.scrollTop = __stBefore;
+            if (stickBottom) return;   // 贴底的人就该被带到最新
+            if (__anchor) {
+              const el = log.querySelector('.msg[data-at="' + __anchor.at + '"]');
+              if (el) {
+                const base = log.getBoundingClientRect().top;
+                const want = __anchor.off;
+                const now = el.getBoundingClientRect().top - base;
+                log.scrollTop += (now - want);   // 差多少补多少
+                return;
+              }
+            }
+            if (__stBefore >= 0) log.scrollTop = __stBefore;
           } catch (e) {}
         });
       }

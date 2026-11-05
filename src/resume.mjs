@@ -51,6 +51,13 @@ export function markInterrupted(info = {}) {
           /* 【2026-10-30】重启要「接着干」，光知道「我断在半句话」不够 ——
            * 得知道清单上还剩哪几步没打勾，不然起来只能干等主人说「继续」。 */
           openSteps: Array.isArray(info.openSteps) ? info.openSteps.slice(0, 30) : [],
+          /* 【2026-11-06 加·5 段式交接简报】
+           *  原来只存「断在哪、还剩哪几步」—— 醒来只知道接着干，不知道**为什么干**、
+           *  也**已经定过什么主意**，于是把做过的重做一遍，或者拐到别的方向去。
+           *  workbuddy 的 session-continuity 把交接写成 5 段：目标/决定/规则/状态/下一步。
+           *  规则（主人原话）在系统提示里本来就有，这里只补「目标」和「决定」两段。 */
+          goal: String(info.goal || '').slice(0, 300),
+          decisions: Array.isArray(info.decisions) ? info.decisions.slice(0, 8).map((x) => String(x || '').slice(0, 200)) : [],
           /**
            * 【2026-11-05 加·显式意图】
            *
@@ -92,6 +99,11 @@ export function peekInterrupted() {
       reason: String(j.reason || ''),
       taskLine: String(j.taskLine || ''),
       openSteps: Array.isArray(j.openSteps) ? j.openSteps : [],
+      /* 【2026-11-06 加】上面那个 return 是**白名单** —— 没列进来的字段一律读不到。
+       *  所以新存的两段必须在这里也列上，否则写进去了也白写。
+       *  （这个坑刚踩过：markInterrupted 存了，peekInterrupted 读回来是 undefined。） */
+      goal: String(j.goal || ''),
+      decisions: Array.isArray(j.decisions) ? j.decisions : [],
     };
   } catch {
     return null;

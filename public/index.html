@@ -9730,6 +9730,59 @@ function hubReset() {
  * 全部收起来，只留标题那条灰的。
  * 正在干活的时候不折 —— 工具摊开着，主人能看见我在做什么。
  */
+/**
+ * 【2026-11-05 加·历史里的工具卡也收成柜子】
+ *
+ * 主人要「全部折叠成一行标题」。直播那条路 foldLiveTools 已经在做了，
+ * 但**历史重画根本不建柜子** —— paintTools 那个 group 参数从头到尾没被用过，
+ * 于是刷新之后，工具卡又是一排散的大块。
+ *
+ * 这里在画完之后扫一遍 log：把**连续相邻**的 details.tool 收进一个 toolhub。
+ * 已经收在柜子里的不会再被收（它们不在 log 的直接子节点里），所以可以反复调。
+ */
+function groupLooseTools() {
+  try {
+    const lg = document.getElementById('log');
+    if (!lg) return;
+    let run = [];
+    const flush = () => {
+      if (!run.length) return;
+      const first = run[0];
+      const hub = document.createElement('details');
+      hub.className = 'toolhub';
+      hub.open = false;
+      const sum = document.createElement('summary');
+      const name = document.createElement('span');
+      name.className = 'hubname';
+      name.textContent = run.length === 1 ? '调了 1 次工具' : ('调了 ' + run.length + ' 次工具');
+      /* 失败/警告只数工具卡，思考链不参与 */
+      const _toolOnly = run.filter((el) => el.classList.contains('tool'));
+      const _thinkN = run.length - _toolOnly.length;
+      name.textContent = _thinkN
+        ? ('调了 ' + _toolOnly.length + ' 次工具 · 想了 ' + _thinkN + ' 段')
+        : ('调了 ' + _toolOnly.length + ' 次工具');
+      const bad = _toolOnly.filter((el) => el.querySelector('.status.err')).length;
+      const warn = _toolOnly.filter((el) => el.querySelector('.status.warn')).length;
+      const st = document.createElement('span');
+      st.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : 'ok'));
+      st.textContent = bad ? (bad + ' 个失败') : '';
+      sum.append(name, st);
+      hub.appendChild(sum);
+      lg.insertBefore(hub, first);
+      for (const el of run) hub.appendChild(el);
+      run = [];
+    };
+    /* 【2026-11-05 改】think 也收进来。
+     * 屏幕上它们是交错的（工具 / 思考 / 工具 / 思考），只收工具的话，
+     * 每张卡都被 think 隔开、各自成一个「调了 1 次」的柜子，等于没收。 */
+    for (const el of [...lg.children]) {
+      if (el.classList && (el.classList.contains('tool') || el.classList.contains('think'))) run.push(el);
+      else flush();
+    }
+    flush();
+  } catch (e) {}
+}
+
 function foldOldHubs(keepFrom) {
   /* 【主人要求】主人一发下一条消息，之前的工具调用统统收成一条灰。
    * 两条规矩：
@@ -9918,7 +9971,14 @@ function foldLiveTools() {
       return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
     } catch (e) { return 0; }
   });
-  if (arr.length < 2) return;              // 只有一件东西：不搞柜子
+  /**
+   * 【2026-11-05 改·哪怕只有一件也折叠】
+   *
+   * 主人要的是「全部折叠成一行标题」，不是「多了才折」。
+   * 原来这里 `< 2` 就 return，于是只调一次工具的那一轮，
+   * 卡片照样大喇喇摊在屏幕上，跟折叠过的那些长得完全不一样。
+   */
+  if (arr.length < 1) return;              // 一件都没有才不搞柜子
   const first = arr[0];
   const parent = first.parentNode;
   if (!parent) return;
@@ -19243,6 +19303,13 @@ function renderTurns(turns, opts) {
   } else {
     resetScrollStick();
   }
+  /* 【2026-11-05】历史画完了，把散着的工具卡收成柜子（一件也收）。
+   * 延后到下一帧再收：renderTurns 后面还有补画子任务卡之类的追加动作，
+   * 现在收完，后脚就被它们又摊出来了。 */
+  try {
+    requestAnimationFrame(() => { try { groupLooseTools(); } catch (e) {} });
+  } catch (e) {}
+  try { setTimeout(() => { try { groupLooseTools(); } catch (e) {} }, 120); } catch (e) {}
   // 记一笔：这一屏最后停在谁的话上。切会话 / 断开自愈时判断「这轮写完没」要用。
   markTailRole(list);
   // 图片、视频加载完会把高度撑开，撑开之后还得再贴一次底

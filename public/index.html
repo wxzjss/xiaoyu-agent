@@ -9297,6 +9297,17 @@ function addAssistantAuto(who) {
 }
 
 function addAssistant(who, hideRole) {
+  /**
+   * 【2026-11-05 加·她开口说话之前，先把散着的工具收起来】
+   *
+   * 主人要：「实时显示也要折叠，不要一句话说出来就散开」。
+   *
+   * 折叠原来只在轮末 / 发下一条消息时做，于是她说完一段话、屏幕上一排工具卡
+   * 还摊着，得等很久才收 —— 中间这段时间看着就是「散开」。
+   *
+   * 现在每建一个新气泡（= 她要说话了）之前先收一次：干完活说的话，工具一定收着。
+   */
+  try { foldLiveTools(); } catch (e) {}
   const wrap = addEl('', 'msg assistant');
   /* 【2026-11-03 修·实时气泡的名字颜色】历史气泡那边补了「按卡上色」，
    * 正在流式生成的这一条走的是这里，同样要上色，不然生成时粉、刷新后变灰。
@@ -9912,6 +9923,16 @@ function addTool() {
   log.appendChild(d);
   _liveToolEls.push(d);
   noteNewContent();
+  /**
+   * 【2026-11-05 改·建完立刻收进柜子】
+   *
+   * 以前是「干活时先摊着，等下一条消息才收」——本意是让人一眼看见进度。
+   * 但主人要的是**始终折叠**：一句话说完、屏幕上一排卡摊着，看着乱。
+   *
+   * 现在建完就收：柜门那行「调了 N 次工具」实时更新，想看细节点开，
+   * 不想看就是一行。摊开的中间态没有了。
+   */
+  try { foldLiveTools(); } catch (e) {}
   return { d, sum, pre };
 }
 
@@ -9963,8 +9984,17 @@ function foldLiveTools() {
    * 现在两者都收进来，按屏幕上的先后顺序排（compareDocumentPosition），
    * 主人点开柜子还是一条时间线，但收起时只剩一行。
    */
-  const _thinks = [...(document.getElementById('log') || document).querySelectorAll('details.think[data-live-turn="1"]')]
-    .filter((el) => el && el.isConnected);
+  /**
+   * 【2026-11-05 修·只取还没进柜子的】
+   *
+   * 这里原来用的是 log.querySelectorAll —— 那是**递归**查，会把已经在
+   * toolhub 里面的 think 也捞出来，再塞进一个新建的柜子 → 柜子里套柜子，
+   * 每加一张卡就多套一层。必须只看 log 的**直接子节点**。
+   */
+  const _logEl = document.getElementById('log');
+  const _thinks = _logEl
+    ? [..._logEl.children].filter((el) => el && el.classList && el.classList.contains('think'))
+    : [];
   const arr = [..._tools, ..._thinks].sort((a, b) => {
     try {
       if (a === b) return 0;
@@ -9982,6 +10012,33 @@ function foldLiveTools() {
   const first = arr[0];
   const parent = first.parentNode;
   if (!parent) return;
+
+  /**
+   * 【2026-11-05 加·塞进隔壁已经有的柜子，别每次新建】
+   *
+   * 现在 addTool 建完卡就调一次这里，于是连着三次工具 = 三个「调了 1 次工具」。
+   * 主人要的是**一个柜子**，里面装着这一轮干的全部活。
+   *
+   * 判据：紧挨着的那个兄弟是不是本轮的 toolhub —— 是就往里塞、把标题重算。
+   */
+  const _prev = first.previousElementSibling;
+  if (_prev && _prev.classList && _prev.classList.contains('toolhub') && _prev.dataset.liveTurn === '1') {
+    for (const el of arr) { try { _prev.appendChild(el); } catch (e) {} }
+    try {
+      const _t = _prev.querySelectorAll('details.tool').length;
+      const _k = _prev.querySelectorAll('details.think').length;
+      const _nm = _prev.querySelector('.hubname');
+      if (_nm) _nm.textContent = _k ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具');
+      const _bad = _prev.querySelectorAll('details.tool .status.err').length;
+      const _warn = _prev.querySelectorAll('details.tool .status.warn').length;
+      const _st = _prev.querySelector('summary > .status');
+      if (_st) {
+        _st.className = 'status ' + (_bad ? 'err' : (_warn ? 'warn' : 'ok'));
+        _st.textContent = _bad ? (_bad + ' 个失败') : '';
+      }
+    } catch (e) {}
+    return;
+  }
   const hub = document.createElement('details');
   hub.className = 'toolhub';
   /* 柜子是 foldLiveTools 合出来的，里面装的是直播画的卡 —— 也算「我自己画的」，一并清 */
@@ -10180,6 +10237,8 @@ function openThink() {
   // 编个号：只有思考、还没出气泡的时候，「这一段」就靠它认
   stampSpeechNode(d);
   noteNewContent();
+  /* 【2026-11-05】思考块也一样：建完立刻收进柜子，不留摊开的中间态。 */
+  try { foldLiveTools(); } catch (e) {}
 
   return {
     el: d,

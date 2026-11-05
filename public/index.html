@@ -6916,12 +6916,21 @@ async function attachLive(id) {
    *  而下面那些 paintLiveEvents / followLive 是不认人的 —— 照画不误：
    *  于是 B 会话说的话就长在了 C 会话的屏幕上。
    *  这里补一道闸：回来先看主人还在不在这个会话，不在就一个字节都不画。 */
+  /* 【2026-11-05 加·第二版】把这一轮的开始时间记下来，给 showSending 当计时起点。
+   *
+   * 第一版放错位置了：写在下面那句 `if (sessionId !== id) return false` **之后**。
+   * 而刷新的时候，模块级的 sessionId 还没同步过来（boot 是异步的），
+   * 于是这句判断命中、直接 return，赋值那行一次都没执行 ——
+   * 表现出来就是「F5 之后还是从 0 开始」，改了跟没改一样。
+   *
+   * 现在放到 return 之前。放这儿是安全的：id 就是这次请求的会话，
+   * 记它的 startedAt 本来就不该受「屏幕上现在是谁」影响；
+   * 真正用这个值的地方会自己核对 sessionId === id。
+   */
+  try {
+    if (live && live.running) window.__xyLiveStartAt = Number(live.startedAt) || 0;
+  } catch (e) {}
   if (sessionId !== id) return false;
-  /* 【2026-11-05 加】把这一轮的开始时间记下来，给 showSending 当计时起点。
-   * 刷新后是走 attachLive 这条恢复路径的（不是 switchSession），
-   * 原来这里只回一个 boolean，计时只能从此刻算 —— 所以 F5 之后时长从 0 开始，
-   * 而切会话再切回来（走 6470 那条，带了 startedAt）却是对的。 */
-  try { window.__xyLiveStartAt = Number(live && live.startedAt) || 0; } catch (e) {}
   const evs = live && Array.isArray(live.events) ? live.events : [];
 
   /**
@@ -7071,7 +7080,23 @@ async function attachLive(id) {
     rec.running = true;
     turnsInFlight.set(id, rec);
 
-    if (bubble) markStreaming(bubble);
+    /* 【2026-11-05 修·刷新后光标闪在说完的话上】
+     *
+     * 主人问：「F5 刷新时如果正在运行，她发出的消息末端会有个一闪一闪的蓝光标」。
+     * 原因就是这一行——恢复直播缓存时**无条件**把最后一个气泡标成「正在写」。
+     *
+     * 可她那一轮未必在写字：很可能话早说完了，正在调工具。这时候气泡末端挂个光标，
+     * 看起来就是「话说完了还在闪」，很怪。
+     *
+     * 现在看直播缓存的最后一条事件：
+     *   · 最后是工具（tool_start / tool_end / hub）→ 不标，等真的开始吐字再说；
+     *   · 最后是正文 / 没有事件 → 照旧标上，表示「还在写」。
+     */
+    const _lastEv = Array.isArray(evs) && evs.length ? evs[evs.length - 1] : null;
+    const _tooling = Boolean(_lastEv && (
+      _lastEv.type === 'tool_start' || _lastEv.type === 'tool_end' || _lastEv.type === 'hub'
+    ));
+    if (bubble && !_tooling) markStreaming(bubble);
     /* 【2026-11-02 游标语义修正 · 重复显示真凶】
      *  服务端的游标现在是 rev（每次 push / 每次把增量并进上一条都 +1），
      *  这里原来却传 evs.length（事件条数）——条数比 rev 小，于是「刚刚补画过的那条事件」

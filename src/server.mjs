@@ -3056,6 +3056,36 @@ async function resumeInterruptedTurn() {
     }
     session.updatedAt = Date.now();
     saveSession(session);
+    /* 【2026-11-05 修·续跑那一轮没有用量】
+     *
+     * 主人报「自动重启后没显示这一轮时长」。查下来是：续跑这条路跑完只打了日志、
+     * 返回了文字，**从来没把 out.usage 存进会话** —— 而界面上的 tokens 和时长
+     * 都是从会话文件里的 _usage 读的。所以那一轮整行都是空的。
+     *
+     * 字段跟 /api/chat 那条主路保持一致（白名单那几个），_ms 也带上。
+     * 挂到最后一条「主人的话」上，跳过 context 那种临时引子。
+     */
+    if (out && out.usage) {
+      try {
+        const msgs = session.messages;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i];
+          if (m && m.role === 'user' && !m.context) {
+            m._usage = {
+              prompt_tokens: Number(out.usage.prompt_tokens ?? 0),
+              completion_tokens: Number(out.usage.completion_tokens ?? 0),
+              total_tokens: Number(out.usage.total_tokens ?? 0),
+              context_tokens: Number(out.usage.prompt_tokens ?? 0),
+              calls: Number(out.usage.last_calls ?? 0),
+              _ms: Number(out.usage._ms ?? 0),
+            };
+            break;
+          }
+        }
+        saveSession(session);
+      } catch (e) { /* 存不上不影响续跑本身 */ }
+    }
+
     console.log('[resume] 续跑跑完了：', sessionId, out && out.text ? `（${String(out.text).length} 字）` : '');
     diagLog('resume-done', `session=${sessionId} textLen=${out && out.text ? String(out.text).length : 0}`);
     return { ok: true, sessionId, text: out && out.text };

@@ -1290,6 +1290,14 @@
       font-variant-numeric: tabular-nums; user-select: text;
       opacity: 0; transition: opacity .14s ease;
     }
+    /* 【2026-11-05 加】柜门后面那截灰色小字：正在做什么 / 刚想了什么 */
+    .hubpeek {
+      display: inline-block; max-width: 62%;
+      margin-left: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      vertical-align: bottom; color: var(--dim); font-size: 12px; opacity: .85;
+    }
+    .hubpeek:empty { display: none; }
+
     /* 【2026-11-05 加】「加载更早」按钮：贴在聊天区最上面，细一点别抢戏 */
     .loadEarlier {
       display: block; margin: 10px auto 14px; padding: 6px 16px;
@@ -9828,15 +9836,29 @@ function hubRefreshTitle() {
   const n1 = _liveHub.querySelector('.hubname');
   const n2 = _liveHub.querySelector('.status');
   if (!n1) return;
-  n1.textContent = _liveHubCount === 1
-    ? (n1.dataset.one || '工具')
-    : '调了 ' + _liveHubCount + ' 次工具';
+  /**
+   * 【2026-11-05 改·标题跟 foldLiveTools 一个口径，顺带刷新后面的摘要】
+   *
+   * 原来这里只数 _liveHubCount（只算工具），思考链加进来以后数字就对不上了：
+   * 柜子里明明有「想了 2 段」，标题还写「调了 1 次工具」。
+   * 而且工具跑完时状态变了，柜门上那截「正在读文件…」也该跟着变成「读取文件」。
+   */
+  const _t = _liveHub.querySelectorAll('details.tool').length;
+  const _k = _liveHub.querySelectorAll('details.think').length;
+  n1.textContent = (_t && _k)
+    ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
+    : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'));
   const bad = _liveHub.querySelectorAll('.tool > summary > .status.err').length;
   const warn = _liveHub.querySelectorAll('.tool > summary > .status.warn').length;
   if (n2) {
     n2.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : 'ok'));
     n2.textContent = bad ? (bad + ' 个失败') : '';
   }
+  /* 【2026-11-05】柜门后面那截也跟着走 */
+  try {
+    const pk = _liveHub.querySelector('summary > .hubpeek');
+    if (pk) pk.textContent = hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
+  } catch (e) {}
 }
 
 /**
@@ -9970,6 +9992,39 @@ function addWorkerCard() {
  *     标题写「调了 N 次工具」，柜门默认收起（点开就是一排抽屉）。
  * 幂等：调几次都一样，第二次进来 _liveToolEls 已经空了。
  */
+/**
+ * 【2026-11-05 加】柜门后面那截「她在干嘛」。
+ *
+ * 优先显示**正在跑**的工具名（那是当下的状态）；都跑完了，就显示最新一段思考的开头。
+ */
+function hubPeekOf(els) {
+  try {
+    for (let i = els.length - 1; i >= 0; i--) {
+      const el = els[i];
+      if (!el || !el.classList || !el.classList.contains('tool')) continue;
+      const st = el.querySelector('.status');
+      const stText = String((st && st.textContent) || '');
+      if (stText.indexOf('运行') >= 0 || (st && st.classList.contains('run'))) {
+        const nm = el.querySelector('.name');
+        if (nm && nm.textContent) return '正在' + String(nm.textContent).trim() + '…';
+      }
+    }
+    for (let i = els.length - 1; i >= 0; i--) {
+      const el = els[i];
+      if (!el || !el.classList) continue;
+      if (el.classList.contains('think')) {
+        const b = el.querySelector('.thinkBody');
+        const t = String((b && b.textContent) || '').replace(/\s+/g, ' ').trim();
+        if (t) return t.slice(0, 30) + (t.length > 30 ? '…' : '');
+      } else if (el.classList.contains('tool')) {
+        const nm = el.querySelector('.name');
+        if (nm && nm.textContent) return String(nm.textContent).trim();
+      }
+    }
+  } catch (e) {}
+  return '';
+}
+
 function foldLiveTools() {
   const _tools = (_liveToolEls || []).filter((el) => el && el.isConnected);
   _liveToolEls = [];
@@ -10049,6 +10104,9 @@ function foldLiveTools() {
         _st.className = 'status ' + (_bad ? 'err' : (_warn ? 'warn' : 'ok'));
         _st.textContent = _bad ? (_bad + ' 个失败') : '';
       }
+      /* 【2026-11-05】柜门后面那截也跟着刷新 */
+      const _pk = _prev.querySelector('summary > .hubpeek');
+      if (_pk) _pk.textContent = hubPeekOf([..._prev.querySelectorAll('details.tool, details.think')]);
     } catch (e) {}
     return;
   }
@@ -10073,7 +10131,18 @@ function foldLiveTools() {
   const n2 = document.createElement('span');
   n2.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : 'ok'));
   n2.textContent = bad ? (bad + ' 个失败') : '';
-  hsum.append(n1, n2);
+  /**
+   * 【2026-11-05 加·柜门上直接看到「在做什么 / 想了什么」】
+   *
+   * 主人要：「在『调了 x 次工具』与『想了 x 段』后面实时显示一小段内容」。
+   *
+   * 收起状态下只看见一行，以前全是数字、看不出她在干嘛。现在后面挂一小段：
+   * 正在跑工具就显示工具名，否则显示最新那段思考的开头。
+   */
+  const peek = document.createElement('span');
+  peek.className = 'hubpeek';
+  peek.textContent = hubPeekOf(arr);
+  hsum.append(n1, n2, peek);
   hub.appendChild(hsum);
   parent.insertBefore(hub, first);         // 柜子落在第一张卡原来的位置
   for (const el of arr) hub.appendChild(el);

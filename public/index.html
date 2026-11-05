@@ -5370,6 +5370,22 @@ function paintSnapshot(sid, srcLive) {
    *  重画是「先删整块、再照清单画」。主人点开的那块 <details open> 也在被删的那一块里，
    *  重建出来的默认是收起的 —— 于是看着就像「我刚点开，它自己又合上了」。
    *  这里先在删之前把「哪几块是点开的」记下来，画完之后照着恢复。 */
+  /**
+   * 【2026-11-05 加·翻着历史看她新消息，画面被踹到很久以前】
+   *
+   * 主人报：「滚轮往上翻历史时她发新消息，会跳到很久远以前的位置」。
+   *
+   * 根因：重画是「先删整块、再照清单画」。删完那一刻内容高度骤降，
+   * 浏览器会把 scrollTop **夹到新的最大值**（可能就剩几百像素）。
+   * 下面 finally 里只有在 `stickBottom`（贴着底）时才补滚 ——
+   * 而主人正往上翻，stickBottom 是 false，**没有任何人把位置还回去**，
+   * 于是画面就停在夹小之后的那个很靠上的位置。
+   *
+   * 现在记下重画前的 scrollTop，画完原样还回去。
+   * 还的时候只认「不贴底」的情况：贴底的人本来就该被带到最新。
+   */
+  const __stBefore = (log && !stickBottom) ? log.scrollTop : -1;
+
   const __openBefore = [];
   try {
     if (log) {
@@ -5388,6 +5404,15 @@ function paintSnapshot(sid, srcLive) {
   } finally {
     try {
       window.__repainting = Math.max(0, (Number(window.__repainting) || 0) - 1);
+      /* 【2026-11-05 加】把滚动位置还回去（只对「不贴底」的人）。
+       * 下一帧再还：那时重画的 DOM 已经布局完，scrollTop 才设得进去。 */
+      if (__stBefore >= 0 && log) {
+        requestAnimationFrame(() => {
+          try {
+            if (!stickBottom) log.scrollTop = __stBefore;
+          } catch (e) {}
+        });
+      }
       /*
        * 【2026-11-03 修·切回一个正在跑的会话，画面停在半路不跟到底】
        *
@@ -9841,7 +9866,17 @@ function openThink() {
        *  paintReasoning 建块时查这张榜，命中就直接展开。 */
       try {
         const b = d.querySelector('.thinkBody');
-        const k = b ? String((b.textContent || '').length) : '';
+        /**
+         * 【2026-11-05 修·点开的思考链还是会被关掉】
+         *
+         * 原来 key 用的是思考正文的**长度**。可思考是流式长的 ——
+         * 主人点开那一刻记下「1200 字」，等工具调用消息一来触发重画，
+         * 这段思考已经长到 2400 字了，key 对不上 → 重建时按默认收起。
+         * 表现就是「刚点开，下一条消息一出来就自己合上」。
+         *
+         * 改成取**前 40 个字**：追加只会动结尾，开头是稳定的，重画认得回来。
+         */
+        const k = b ? String((b.textContent || '').slice(0, 40)) : '';
         if (k) {
           window.__openedThink = window.__openedThink || new Set();
           if (d.open) window.__openedThink.add(k);
@@ -9949,7 +9984,10 @@ function paintReasoning(text, host) {
    *  重画前把「主人自己点开的那些思考链」记下来，重画后遇到同一段内容就替它展开。 */
   try {
     const opened = window.__openedThink;
-    if (opened && opened.has(String(body0.length))) d.open = true;
+    /* 【2026-11-05 修】写入那边已经改成「前 40 字」当 key 了，这里必须跟着改。
+     * 原来还拿长度去查 —— 两边口径不一致，就永远查不中，
+     * 表现还是「点开就被关掉」。这种一处改一半最坑：看着改了，其实没生效。 */
+    if (opened && opened.has(String(body0 || '').slice(0, 40))) d.open = true;
   } catch (e) {}
 
   (host || log).appendChild(d);

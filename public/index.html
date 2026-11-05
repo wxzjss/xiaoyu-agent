@@ -9990,7 +9990,38 @@ function addTool() {
   d.append(sum, pre);
   // 【主人 2026-11-01】干活中先当一张独立的卡挂上去 —— 一眼看得见这次调了什么，
   // 不用先去点开柜门。合不合并等下一个消息弹出来再说（foldLiveTools）。
-  log.appendChild(d);
+  /**
+   * 【2026-11-05 再改·直接把卡放进柜子，不再走「先 append 再 fold」】
+   *
+   * 主人报：「新的工具调用还是没在柜子里，刷新一下才在」。
+   * 也就是说直播这条路没折上、历史那条（groupLooseTools）折上了。
+   *
+   * 与其继续查 foldLiveTools 为什么没生效（它依赖 _liveToolEls 这张登记表，
+   * 而 hubReset 会在好几个地方把它清空），不如把这一步做死：
+   * **建完卡直接决定它进哪个柜子**，一步到位，没有中间态。
+   */
+  const _attachToHub = () => {
+    try {
+      const _last = log.lastElementChild;
+      if (_last && _last.classList && _last.classList.contains('toolhub')) {
+        _last.appendChild(d);
+        return _last;
+      }
+      const h = document.createElement('details');
+      h.className = 'toolhub';
+      h.open = false;
+      try { h.dataset.liveTurn = '1'; } catch (e) {}
+      const sum = document.createElement('summary');
+      sum.innerHTML = '<span class="hubname"></span><span class="status ok"></span><span class="hubpeek"></span>';
+      h.appendChild(sum);
+      log.appendChild(h);
+      h.appendChild(d);
+      return h;
+    } catch (e) { return null; }
+  };
+  /* 先把还没收的思考块收掉，免得它夹在 log 末尾、导致新柜子开到它后面 */
+  try { foldLiveTools(); } catch (e) {}
+  const _myHub = _attachToHub();
   _liveToolEls.push(d);
   noteNewContent();
   /**

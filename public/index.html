@@ -4055,7 +4055,29 @@ function toast(text) {
 // 以前是 40，太紧：手指滚轮轻轻一抖、或者内容刚好高一像素，就掉出跟随状态，
 // 之后消息再怎么来都不滚了（主人反馈过这个）。放到 80，正常抖动掉不出去。
 const SCROLL_STICK_PX = 80;
-let stickBottom = true;
+/**
+ * 【2026-11-05 修·刷新后「先到中间，再瞬间弹回底部」】
+ *
+ * 主人报：刷新后位置明明恢复到了中间，紧接着又被拽到底部。
+ *
+ * 因为这里写死 `= true`：页面一加载就认为「主人在贴底」，
+ * 于是历史画完就 hardScrollBottom() 一下 —— 浏览器辛苦恢复的位置被一脚踢走。
+ *
+ * 现在从 sessionStorage 里读上次的状态：上次不贴底，这次也不贴底。
+ * sessionStorage 而不是 localStorage：关掉程序重开应该回到干净的默认（贴底），
+ * 只有「同一个窗口里刷新」才需要记住。
+ */
+let stickBottom = (() => {
+  try {
+    const v = sessionStorage.getItem('xy.stickBottom');
+    if (v === '0') return false;
+  } catch (e) {}
+  return true;
+})();
+/* 【2026-11-05】状态变化时随手记一笔，刷新后照它恢复。 */
+function rememberStick() {
+  try { sessionStorage.setItem('xy.stickBottom', stickBottom ? '1' : '0'); } catch (e) {}
+}
 let unseenNew = 0;
 let stickRaf = 0;
 let stickRo = null;
@@ -4552,6 +4574,8 @@ function resetScrollStick() {
 
       const wasStick = stickBottom;
       stickBottom = gap <= SCROLL_STICK_PX;
+      /* 【2026-11-05】记一笔：刷新后照这个恢复，别又无条件贴底。 */
+      rememberStick();
       if (stickBottom && !wasStick) {
         unseenNew = 0;
         paintToBottom();

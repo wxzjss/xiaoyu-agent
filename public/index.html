@@ -5882,7 +5882,34 @@ function paintSnapshot0(sid, srcLive) {
   let toolEls = null;
   let think = null;
   const closeThink = () => { if (think) { try { think.finish(); } catch (e) {} think = null; } };
-  for (const it of items) {
+  /**
+   * 【2026-11-05 加·思维链把一句话劈成两半】
+   *
+   * 主人报：「思考链消息有时会把说的话截断成 —— 消息1234 / 思考链 / 567」。
+   *
+   * 清单是按发生顺序给的：[text, think, text] 就画成「气泡 · 思维链 · 新气泡」，
+   * 同一段话被思维链从中间切开，读起来就是断的。
+   *
+   * 现在：如果一条 think 后面紧跟的还是文字（说明她只是想到一半又接着说），
+   * 就把它**延后**到那段文字之后 —— 文字连成一整段，思考块跟在这段后面。
+   * 其它情况（think 后面是工具调用 / 结尾）照旧就地画。
+   */
+  let _deferredThink = null;
+  const _flushDeferredThink = () => {
+    if (!_deferredThink) return;
+    const _t = _deferredThink;
+    _deferredThink = null;
+    try {
+      const _o = takeReuse('think');
+      const _tk = _o ? adoptThink(_o) : openThink();
+      try { if (_tk && _tk.el) _tk.el.dataset.liveTurn = '1'; } catch (e) {}
+      try { if (typeof _tk.set === 'function') _tk.set(String(_t.t || '')); else _tk.push(String(_t.t || '')); } catch (e) {}
+      try { _tk.finish(); } catch (e) {}
+    } catch (e) {}
+  };
+
+  for (let _ii = 0; _ii < items.length; _ii++) {
+    const it = items[_ii];
     if (!it || !it.k) continue;
     if (it.k === 'text') {
       closeThink();
@@ -5890,7 +5917,12 @@ function paintSnapshot0(sid, srcLive) {
       try { const w = b.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
       pushStreamText(b, String(it.t || ''));
       lastBubble = b;
+      /* 【2026-11-05】这段文字画完了，把刚才延后的思考补上（它的原意就是「想到这儿」）。 */
+      _flushDeferredThink();
     } else if (it.k === 'think') {
+      /* 【2026-11-05】后面紧跟文字 → 先记着，等那段文字画完再画，别把话切断。 */
+      const _nx = items[_ii + 1];
+      if (_nx && _nx.k === 'text') { _deferredThink = it; continue; }
       /* 【一段思考一块 —— 2026-11-02 第二次修「抽搐」】
        *  原来是把清单里连着的好几段思考并进同一块：第一段 set 进去没问题，
        *  第二段 set 时它不是第一段的「续写」，整块内容被换掉一次 ——
@@ -5950,6 +5982,9 @@ function paintSnapshot0(sid, srcLive) {
     }
   }
   closeThink();
+  /* 【2026-11-05 加】清单走完了，延后的思考块（如果有）补画出来 ——
+   * 不补就漏了，只在「think 后面紧跟 text」那种形状下才会走到这里。 */
+  _flushDeferredThink();
   /* 收尾：把这一轮的记账写在轮次记录上（tool_end 回来还要找工具块） */
   try {
     let rec = turnsInFlight.get(sid);

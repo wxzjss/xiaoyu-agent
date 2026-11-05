@@ -7143,6 +7143,9 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
       const el = addTool();
       el.sum.querySelector('.name').textContent = niceTool(ev.name);
       el.sum.querySelector('.status').textContent = '运行中…';
+      /* 【2026-11-05 加】名字填好之后再把柜门刷一遍 ——
+       * addTool 内部那次 fold 时名字还是空的，摘要算出来是空白。 */
+      try { hubRefreshTitle(); } catch (e) {}
       // 【2026-11-02】没参数就别拼 —— 否则画出来是「参数：undefined」
       el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + tidyToolText(ev.args);
       toolEls.set(ev.id, el);
@@ -10089,8 +10092,18 @@ function foldLiveTools() {
    *
    * 判据：紧挨着的那个兄弟是不是本轮的 toolhub —— 是就往里塞、把标题重算。
    */
+  /**
+   * 【2026-11-05 修·别要求前一个柜子带 liveTurn 标记】
+   *
+   * 原来判据是「紧邻的兄弟是 toolhub **且带 data-live-turn="1"**」。
+   * 可历史归拢（groupLooseTools）建的柜子没有这个标记 ——
+   * 于是一个会话里前面那些柜子是归拢出来的，新工具卡一来就判定「没有相邻柜子」，
+   * 自己另开一个散在外面（或者单开一个柜）。
+   *
+   * 改成：只要是柜子就往里塞。反正它是紧挨着的，就是同一段活儿。
+   */
   const _prev = first.previousElementSibling;
-  if (_prev && _prev.classList && _prev.classList.contains('toolhub') && _prev.dataset.liveTurn === '1') {
+  if (_prev && _prev.classList && _prev.classList.contains('toolhub')) {
     for (const el of arr) { try { _prev.appendChild(el); } catch (e) {} }
     try {
       const _t = _prev.querySelectorAll('details.tool').length;

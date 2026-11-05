@@ -18952,6 +18952,19 @@ function renderTurns(turns, opts) {
    *   · 节点身份保住 → 展开态、内部状态、图片缓存全都自然连续，不用再额外记；
    *   · 内容不会变旧：流式那条是直接改 DOM 的，旧节点才是最新的。
    */
+  /**
+   * 【2026-11-05 重做·第二刀：只是追加的时候，一个节点都不换】
+   *
+   * 第一刀保住了节点身份（复用旧 DOM），但整屏还是要 replaceChildren 一次 ——
+   * 那一下会重排、会动滚动位置。
+   *
+   * 这一步做真的增量：先比 key 列表，如果新列表只是「旧列表 + 尾巴」，
+   * 那就只把尾巴 append 进去，已经有的一行都不碰。
+   *
+   * 只有列表真的变了（回退、压缩、换会话、删消息）才退回全量替换。
+   * 全量那条路也还用第一刀的复用，所以最坏情况也不会比原来差。
+   */
+  let _appendedOnly = false;
   try {
     const _seq = Object.create(null);
     for (const el of frag.querySelectorAll('.msg')) {
@@ -18959,20 +18972,42 @@ function renderTurns(turns, opts) {
       _seq[at] = (_seq[at] || 0) + 1;
       el.dataset.key = at + '#' + _seq[at];
     }
-    /* 能对上的，就把旧节点塞进 frag 替掉新造的 —— 位置和身份都保住。 */
-    for (const el of [...frag.children]) {
-      const k = el.dataset && el.dataset.key;
-      if (!k) continue;
-      let old = null;
-      try { old = log.querySelector('.msg[data-key="' + k + '"]'); } catch (e) { old = null; }
-      if (old && old.parentNode === log) {
-        try { frag.replaceChild(old, el); } catch (e) {}
-      }
-    }
-  } catch (e) {}
 
-  __ignoreScrollUntil = Date.now() + 800;
-  log.replaceChildren(frag);
+    const _isMsg = (e) => e && e.classList && e.classList.contains('msg') && e.dataset && e.dataset.key;
+    const _domMsgs = [...log.children].filter(_isMsg);
+    const _fragMsgs = [...frag.children].filter(_isMsg);
+
+    let _same = 0;
+    while (_same < _domMsgs.length && _same < _fragMsgs.length
+      && _domMsgs[_same].dataset.key === _fragMsgs[_same].dataset.key) _same++;
+
+    /* 【判据】旧的那些一条不落、而且顺序一致（_same === 旧总数）→ 就是追加。
+     * 而且真得有新东西（_fragMsgs 更长），否则什么都不用做。 */
+    if (_domMsgs.length > 0 && _same === _domMsgs.length && _fragMsgs.length >= _domMsgs.length) {
+      const _tailNodes = [...frag.children].slice([...frag.children].indexOf(_fragMsgs[_same] || frag.lastElementChild));
+      for (const n of _tailNodes) if (n && n.parentNode === frag) log.appendChild(n);
+      _appendedOnly = true;
+    }
+  } catch (e) {
+    _appendedOnly = false;
+  }
+
+  if (!_appendedOnly) {
+    /* 退回全量：能对上 key 的用旧节点替掉新造的（第一刀那套），再整屏换。 */
+    try {
+      for (const el of [...frag.children]) {
+        const k = el.dataset && el.dataset.key;
+        if (!k) continue;
+        let old = null;
+        try { old = log.querySelector('.msg[data-key="' + k + '"]'); } catch (e) { old = null; }
+        if (old && old.parentNode === log) {
+          try { frag.replaceChild(old, el); } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    __ignoreScrollUntil = Date.now() + 800;
+    log.replaceChildren(frag);
+  }
 
   /* 【2026-11-05】把摘下来的思考块接回**原来的位置**（前面那条消息之后）。
    * 接末尾会让展开的思维链整块位移，高度分布一变就弹。 */

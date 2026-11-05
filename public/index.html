@@ -10040,7 +10040,11 @@ function addTool() {
   const _attachToHub = () => {
     try {
       const _last = log.lastElementChild;
-      if (_last && _last.classList && _last.classList.contains('toolhub')) {
+      /* 【2026-11-05 加】只认「直接挂在 log 上的柜子」——
+       * 如果这个柜子本身已经在别的柜子里，就不要再往里塞，否则会一层套一层。 */
+      const _okHub = _last && _last.classList && _last.classList.contains('toolhub')
+        && !(_last.parentElement && _last.parentElement !== log);
+      if (_okHub) {
         _last.appendChild(d);
         /* 【2026-11-05】塞进已有柜子时也把指针接上，标题才会跟着涨 */
         try { _liveHub = _last; } catch (e) {}

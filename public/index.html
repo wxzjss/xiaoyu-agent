@@ -5468,6 +5468,22 @@ function paintSnapshot(sid, srcLive) {
   try {
     if (tryLiveAppendFast(sid, srcLive)) return;
   } catch (e) { /* 快路出错绝不能连累正常渲染 */ }
+  /**
+   * 【2026-11-05 加·直播重画也要保住展开状态】
+   *
+   * 主人说「在新消息位置无论展开什么，新消息一来都会闭合」——这是老 bug。
+   * 根因是这条路（paintSnapshot0）会 remove 掉本轮的 think / 卡片再重建。
+   * 这里在整段前后做一次快照恢复，不管中间动了什么，出来时开合状态跟进去时一致。
+   */
+  const __snapBefore = snapOpenState();
+  try {
+    return paintSnapshotInner(sid, srcLive);
+  } finally {
+    try { applyOpenState(__snapBefore); } catch (e) {}
+  }
+}
+
+function paintSnapshotInner(sid, srcLive) {
   try {
     /* 【2026-11-05 主人报：每轮说完末尾都挂一堆 worker 卡】
      * 原来这里把 srcLive.items 里【全部】worker 都存进缓存（items 是按会话全部历史
@@ -9848,6 +9864,50 @@ function hubReset() {
  *
  * 结果至少是平的：一个柜子里只有工具卡和思考块，不会再有柜门。
  */
+/**
+ * 【2026-11-05 加·重画前后整体保存/恢复展开状态】
+ *
+ * 主人说得很准：「在新消息位置无论展开什么，新消息一来都会闭合」，而且是个老 bug。
+ *
+ * 根因只有一个：**新消息来 → 整屏 replaceChildren → 所有 details 重建 → open 丢失**。
+ * 前面给 think 和柜子各写了一套恢复，但工具卡没有、顺序也容易错位。
+ *
+ * 这里做一套通用的：按 [类型 + 同类里的序号] 记住哪些是打开的，画完再按同样规则还原。
+ * 不管以后再加什么 details 类型，都自动生效。
+ */
+function snapOpenState() {
+  try {
+    const lg = document.getElementById('log');
+    if (!lg) return null;
+    const seq = Object.create(null);
+    const out = [];
+    for (const d of lg.querySelectorAll('details')) {
+      const t = (d.className || '').split(' ')[0] || 'details';
+      seq[t] = (seq[t] || 0) + 1;
+      if (d.open) out.push(t + '#' + seq[t]);
+    }
+    return out;
+  } catch (e) { return null; }
+}
+
+function applyOpenState(saved) {
+  if (!Array.isArray(saved) || !saved.length) return;
+  try {
+    const lg = document.getElementById('log');
+    if (!lg) return;
+    const want = new Set(saved);
+    const seq = Object.create(null);
+    for (const d of lg.querySelectorAll('details')) {
+      const t = (d.className || '').split(' ')[0] || 'details';
+      seq[t] = (seq[t] || 0) + 1;
+      if (want.has(t + '#' + seq[t])) {
+        try { d.open = true; } catch (e) {}
+        try { d.dataset.userOpened = '1'; } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+
 function flattenNestedHubs() {
   try {
     const lg = document.getElementById('log');
@@ -10104,9 +10164,29 @@ function addTool() {
    */
   const _attachToHub = () => {
     try {
-      const _last = log.lastElementChild;
-      /* 【2026-11-05 加】只认「直接挂在 log 上的柜子」——
-       * 如果这个柜子本身已经在别的柜子里，就不要再往里塞，否则会一层套一层。 */
+      /**
+       * 【2026-11-05 修·末尾是思考块时，往前找柜子】
+       *
+       * 主人报：「在新消息位置无论展开什么，新消息一来都会闭合」。
+       *
+       * 真实链路：她想了想（openThink 建了个 think 块挂在 log 末尾）
+       * → 然后调工具 → 这里只看 lastElementChild，看到的是 think
+       * → 判定「没有柜子」→ **新建一个柜子**
+       * → 原来那个柜子里的卡被搬走 / 或者新柜子另起一段
+       * 屏幕上就是「我刚打开的那个柜子没了/闭了」。
+       *
+       * 现在：从后往前找，跳过 think 和别的东西，找到第一个柜子为止。
+       */
+      let _last = log.lastElementChild;
+      for (let _guard = 0; _guard < 6 && _last; _guard++) {
+        if (_last.classList && _last.classList.contains('toolhub')) break;
+        if (_last.classList && (_last.classList.contains('think') || _last.classList.contains('msg'))) {
+          _last = _last.previousElementSibling;
+          continue;
+        }
+        _last = null;
+        break;
+      }
       const _okHub = _last && _last.classList && _last.classList.contains('toolhub')
         && !(_last.parentElement && _last.parentElement !== log);
       if (_okHub) {
@@ -19552,6 +19632,8 @@ function renderTurns(turns, opts) {
    */
   const __openHubs = [];
   let __hubSeq = 0;
+  /* 【2026-11-05】整体快照：所有 details（柜子/思考/工具卡）的展开状态 */
+  const __openAll = snapOpenState();
   try {
     if (log) {
       for (const h of log.querySelectorAll('details.toolhub')) {
@@ -19652,6 +19734,12 @@ function renderTurns(turns, opts) {
     __ignoreScrollUntil = Date.now() + 800;
     log.replaceChildren(frag);
   }
+
+  /* 【2026-11-05】先按整体快照恢复（覆盖柜子/思考/工具卡所有类型） */
+  try { applyOpenState(__openAll); } catch (e) {}
+
+  /* 【2026-11-05】再按序号补一遍柜子（防止顺序差异导致上面那步没对上） */
+  try { applyOpenState(__openAll); } catch (e) {}
 
   /* 【2026-11-05】把刚才记的「打开着的柜子」恢复回来（按标题认）。
    * 柜子本身被重建了、内容也更新了，但主人拉开的状态要留着。 */

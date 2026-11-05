@@ -9837,6 +9837,46 @@ function hubReset() {
  *
  * 所以每个新建的柜子都绑一次：toggle 时记记号，收柜子时跳过带记号的。
  */
+/**
+ * 【2026-11-05 加·把嵌套的柜子拍平】
+ *
+ * 主人报：「调了 1 次的柜子展开后里面还是一个调了 1 次的柜子」。
+ *
+ * 前面加了三道预防（_pick / _okHub / arr 过滤），实测还能漏 ——
+ * 说明还有我没找到的路径。与其继续追，这里做一道**事后兜底**：
+ * 把柜子里的柜子拆开，里面的卡提出来挂到外层，然后删掉空壳。
+ *
+ * 结果至少是平的：一个柜子里只有工具卡和思考块，不会再有柜门。
+ */
+function flattenNestedHubs() {
+  try {
+    const lg = document.getElementById('log');
+    if (!lg) return;
+    for (let pass = 0; pass < 3; pass++) {
+      const inner = [...lg.querySelectorAll('details.toolhub details.toolhub')];
+      if (!inner.length) return;
+      for (const h of inner) {
+        const outer = h.parentElement && h.parentElement.closest ? h.parentElement.closest('details.toolhub') : null;
+        if (!outer) continue;
+        /* 把里面的卡搬出来，插到这个内层柜子原来的位置 */
+        const kids = [...h.children].filter((c) => c.tagName !== 'SUMMARY');
+        for (const k of kids) {
+          try { outer.insertBefore(k, h); } catch (e) {}
+        }
+        try { h.remove(); } catch (e) {}
+        /* 外层的标题重算一次 */
+        try {
+          const _t = outer.querySelectorAll('details.tool').length;
+          const _k = outer.querySelectorAll('details.think').length;
+          const nm = outer.querySelector(':scope > summary .hubname');
+          if (nm) nm.textContent = (_t && _k) ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
+            : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'));
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+
 function markHubUserOpened(hub) {
   try {
     hub.addEventListener('toggle', () => {
@@ -9896,6 +9936,8 @@ function groupLooseTools() {
       else flush();
     }
     flush();
+    /* 【2026-11-05】归拢完拍平一次，防嵌套 */
+    flattenNestedHubs();
   } catch (e) {}
 }
 
@@ -10114,6 +10156,8 @@ function addTool() {
    * 但至少能先把「调了 1 次工具」这个计数写上去，不至于顶着空白柜门。
    * 调用方填完 name 之后还会再刷一次（见 tool_start 那段）。 */
   try { hubRefreshTitle(); } catch (e) {}
+  /* 【2026-11-05】每次建卡后拍平一次，防嵌套 */
+  try { flattenNestedHubs(); } catch (e) {}
   return { d, sum, pre };
 }
 
@@ -10209,7 +10253,16 @@ function foldLiveTools() {
   const _thinks = _logEl
     ? [..._logEl.children].filter((el) => el && el.classList && el.classList.contains('think'))
     : [];
-  const arr = [..._tools, ..._thinks].sort((a, b) => {
+  /**
+   * 【2026-11-05 加·进柜前再筛一遍】
+   *
+   * 上面 _tools / _thinks 分别来自登记表和 DOM 查询，理论上都不该含柜子。
+   * 但主人确实看到了「调了 1 次的柜子里还有一个调了 1 次的柜子」——
+   * 与其继续追是哪条路径漏的，这里做最后一道：**柜子永远不许被塞进柜子**。
+   */
+  const arr = [..._tools, ..._thinks]
+    .filter((el) => el && el.classList && !el.classList.contains('toolhub'))
+    .sort((a, b) => {
     try {
       if (a === b) return 0;
       return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1;
@@ -10260,7 +10313,10 @@ function foldLiveTools() {
    */
   const _prev = first.previousElementSibling;
   if (_prev && _prev.classList && _prev.classList.contains('toolhub')) {
-    for (const el of arr) { try { _prev.appendChild(el); } catch (e) {} }
+    for (const el of arr) {
+      if (!el || (el.classList && el.classList.contains('toolhub'))) continue;
+      try { _prev.appendChild(el); } catch (e) {}
+    }
     try {
       const _t = _prev.querySelectorAll('details.tool').length;
       const _k = _prev.querySelectorAll('details.think').length;

@@ -9758,8 +9758,6 @@ function groupLooseTools() {
     let run = [];
     const flush = () => {
       if (!run.length) return;
-      /* 【2026-11-05 同一条规矩】只有思考没有工具 → 不建柜，思考块自己待着。 */
-      if (!run.some((el) => el.classList.contains('tool'))) { run = []; return; }
       const first = run[0];
       const hub = document.createElement('details');
       hub.className = 'toolhub';
@@ -9771,9 +9769,9 @@ function groupLooseTools() {
       /* 失败/警告只数工具卡，思考链不参与 */
       const _toolOnly = run.filter((el) => el.classList.contains('tool'));
       const _thinkN = run.length - _toolOnly.length;
-      name.textContent = _thinkN
+      name.textContent = (_toolOnly.length && _thinkN)
         ? ('调了 ' + _toolOnly.length + ' 次工具 · 想了 ' + _thinkN + ' 段')
-        : ('调了 ' + _toolOnly.length + ' 次工具');
+        : (_thinkN ? ('想了 ' + _thinkN + ' 段') : ('调了 ' + _toolOnly.length + ' 次工具'));
       const bad = _toolOnly.filter((el) => el.querySelector('.status.err')).length;
       const warn = _toolOnly.filter((el) => el.querySelector('.status.warn')).length;
       const st = document.createElement('span');
@@ -10021,7 +10019,9 @@ function foldLiveTools() {
    * 现在只有真调了工具才建柜；纯思考的轮次，思考块自己本来就是可折叠的，
    * 单独待着就好。
    */
-  if (_tools.length < 1) return;           // 没调工具：不搞柜子
+  /* 【2026-11-05 再改】只有思考也要折叠 —— 主人要的是「想了 1 段」这一行，
+   * 不是把思考块散着放。标题那边按有无工具分三种写法。 */
+  if (arr.length < 1) return;
   const first = arr[0];
   const parent = first.parentNode;
   if (!parent) return;
@@ -10061,9 +10061,13 @@ function foldLiveTools() {
   const n1 = document.createElement('span');
   n1.className = 'hubname';
   /* 【2026-11-05 改】标题按真实构成写：调了几次工具、想了多久 */
-  n1.textContent = _thinks.length
+  /* 【2026-11-05】三种写法：只有思考 → 只说想了；只有工具 → 只说调了；都有 → 两个都说。
+   * 不再出现「调了 0 次工具」这种废句。 */
+  n1.textContent = (_tools.length && _thinks.length)
     ? ('调了 ' + _tools.length + ' 次工具 · 想了 ' + _thinks.length + ' 段')
-    : ('调了 ' + _tools.length + ' 次工具');
+    : (_thinks.length
+      ? ('想了 ' + _thinks.length + ' 段')
+      : ('调了 ' + _tools.length + ' 次工具'));
   const bad = _tools.filter((el) => el.querySelector('.status.err')).length;
   const warn = _tools.filter((el) => el.querySelector('.status.warn')).length;
   const n2 = document.createElement('span');

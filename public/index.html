@@ -10840,12 +10840,30 @@ async function interject() {
   try {
     const _rec = (typeof turnsInFlight !== "undefined" && turnsInFlight) ? turnsInFlight.get(sessionId) : null;
     if (_rec && Array.isArray(_rec.parts) && _rec.parts.length) {
-      let _n = 0;
-      for (const _p of _rec.parts) {
+      /**
+       * 【2026-11-05 修·插话跑到很早之前】
+       *
+       * 主人报：「插话后，她新的工具调用消息显示出来时，我那句插话会跑到很早之前的位置」。
+       *
+       * 病根是**两边口径不一样**：
+       *   · 这里原来把这一轮所有 text 片段的长度**累加**（段1 + 段2 + 段3…）；
+       *   · 但重绘那边（约 18185 行）拿 steerAt 去劈的是**当前那一个气泡**的正文。
+       * 一轮里只要调过工具，气泡就会被分成好几段，累加值远大于当前气泡的长度，
+       * 重绘时被 `Math.min(full.length, ...)` 一夹，就落到那个气泡的末尾 ——
+       * 而那个气泡可能是一大早说的那句，主人看到的就是「插话跑到上面去了」。
+       *
+       * 现在只取**最后一个** text 片段的长度（parts 里连续的 text 会自动合并，
+       * 遇到 tool_start 才断开），跟重绘劈的那一段是同一段。
+       */
+      for (let i = _rec.parts.length - 1; i >= 0; i--) {
+        const _p = _rec.parts[i];
         const _k = String((_p && (_p.kind || _p.type)) || "");
-        if (_k === "text") _n += String((_p && _p.text) || "").length;
+        if (_k === "text") {
+          const n = String((_p && _p.text) || "").length;
+          if (n > 0) _atCharsNow = n;
+          break;
+        }
       }
-      if (_n > 0) _atCharsNow = _n;
     }
   } catch {}
   if (_atCharsNow === null) {

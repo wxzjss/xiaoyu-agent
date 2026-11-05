@@ -2890,13 +2890,23 @@ function lastUserLine(sessionId) {
  *   - 24 小时以前的意图不认（resume.mjs 里判）
  */
 async function resumeInterruptedTurn() {
-  const info = takeInterrupted();
+  /* 【2026-11-05 改·先取走改成先看一眼】
+   *
+   * takeInterrupted() 是「取出即删」。可续跑路上有好几道闸，任何一道没过
+   * （没配模型 / 屋里的鱼关着 / 那一轮其实已经收尾）都会 return ——
+   * 文件已经被删了，**下一次重启就再也没得续**。
+   * 这解释了「有时候能续、有时候静悄悄」：第一次没续成，机会就用光了。
+   *
+   * 现在改成 peek：只有真的跑完、或者确定不可能再续（会话没了），才 drop。
+   */
+  const info = peekInterrupted();
   diagLog('resume-enter', info ? `session=${info.sessionId}` : 'info=null（没有中断标记）');
   if (!info) return;
   const sessionId = info.sessionId;
   const session = getSession(sessionId);
   if (!session) {
     console.log('[resume] 上次崩的会话已经没了：', sessionId);
+    try { dropInterrupted(); } catch (e) {}   // 会话都没了，留着也没用
   diagLog('resume-skip:no-session', sessionId);
     return;
   }
@@ -2987,10 +2997,23 @@ async function resumeInterruptedTurn() {
     const _steps = (_p && Array.isArray(_p.steps)) ? _p.steps : [];
     _planLeft = _steps.filter((x) => x && x.status !== 'done' && x.status !== 'skipped').length;
   } catch {}
-  if (reallyFinished && !_planLeft) {
+  /* 【2026-11-05 加·有明确意图就不再猜】
+   *
+   * resume.json 是「有活没干完」那一刻写的（写的时候最清楚），
+   * 里面带 intent:'continue'。既然写了，就不该再拿「最后一条消息长得像不像收尾」去推翻它。
+   *
+   * 不加这一条的话，主人让她重启、她刚好说完一句完整的话、清单又是空的 ——
+   * 就会被判成「已完成」直接跳过，表现就是「有时候只是重启，没有续上」。
+   */
+  const _explicitIntent = String(info && info.intent || '') === 'continue';
+  if (reallyFinished && !_planLeft && !_explicitIntent) {
     console.log('[resume] 上一轮说完了、清单也清空了，不用续');
     diagLog('resume-skip:finished', sessionId);
     return;
+  }
+  if (reallyFinished && !_planLeft && _explicitIntent) {
+    console.log('[resume] 上一轮表面说完了，但重启前明确记了「要接着做」—— 照续');
+    diagLog('resume-go:intent', sessionId);
   }
   if (reallyFinished && _planLeft) {
     console.log('[resume] 上一轮说完了，但清单还剩 ' + _planLeft + ' 步没做 —— 接着干');
@@ -3085,6 +3108,9 @@ async function resumeInterruptedTurn() {
         saveSession(session);
       } catch (e) { /* 存不上不影响续跑本身 */ }
     }
+
+    /* 【2026-11-05 加】真跑完了才算用掉这份意图 —— 失败/中途 return 的都留着，下次还能试。 */
+    try { dropInterrupted(); } catch (e) {}
 
     console.log('[resume] 续跑跑完了：', sessionId, out && out.text ? `（${String(out.text).length} 字）` : '');
     diagLog('resume-done', `session=${sessionId} textLen=${out && out.text ? String(out.text).length : 0}`);

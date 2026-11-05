@@ -1,4 +1,4 @@
-/**
+﻿/**
  * selfwake.mjs —— 主动唤醒
  *
  * 【为什么要有这个】
@@ -218,7 +218,7 @@ export function noteSpoke(sessionId, text) {
   try {
     const st = getState(sessionId);
     st.lastLine = t;
-    saveState(sessionId, st);
+    writeState(sessionId, st);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };

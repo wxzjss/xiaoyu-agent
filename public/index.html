@@ -6917,6 +6917,11 @@ async function attachLive(id) {
    *  于是 B 会话说的话就长在了 C 会话的屏幕上。
    *  这里补一道闸：回来先看主人还在不在这个会话，不在就一个字节都不画。 */
   if (sessionId !== id) return false;
+  /* 【2026-11-05 加】把这一轮的开始时间记下来，给 showSending 当计时起点。
+   * 刷新后是走 attachLive 这条恢复路径的（不是 switchSession），
+   * 原来这里只回一个 boolean，计时只能从此刻算 —— 所以 F5 之后时长从 0 开始，
+   * 而切会话再切回来（走 6470 那条，带了 startedAt）却是对的。 */
+  try { window.__xyLiveStartAt = Number(live && live.startedAt) || 0; } catch (e) {}
   const evs = live && Array.isArray(live.events) ? live.events : [];
 
   /**
@@ -7538,7 +7543,8 @@ async function tryHealAfterDisconnect(id) {
           if (sessionId !== id) return;      // 中途又切走了，别管了
           if (running) {
             busy = true;
-            showSending();
+            /* 【2026-11-05 改】带上后端那个 startedAt —— 刷新后计时接着走，不再从 0 开始 */
+            showSending(window.__xyLiveStartAt);
             syncSendBtn();
           }
         }).catch(() => {});

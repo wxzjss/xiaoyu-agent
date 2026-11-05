@@ -11,7 +11,7 @@ import { whaleOn, setWhaleOn, markWhaleSpoke, whaleSpokeThisTurn } from './whale
 // 顶栏那个「小鱼」按钮：默认在场，禁用后这个会话后面的话她一个字都不发。
 import { fishOn, setFishOn } from './fish-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
-import { startSelfwake, stopSelfwake, noteReplied, shouldFire, getState as selfwakeState } from './selfwake.mjs';
+import { startSelfwake, stopSelfwake, noteReplied, noteSpoke, shouldFire, getState as selfwakeState } from './selfwake.mjs';
 import { startCron, listTasks, addTask, removeTask, setEnabled as cronSetEnabled, markRan as cronMarkRan, dueTasks } from './cron.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
 import { checkToolDocs, setPeerWake, setRunningProbe, runWithToolContext, tools as allTools } from './tools.mjs';
@@ -10633,7 +10633,16 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
             context: true,
             _sysNote: true,
             _at: Date.now(),
-            content: '（她一个人待了会儿。没人跟她说话，她想主动开口讲一句 —— 就一句，别长篇，别问「在吗」，说点她自己在想的事或者关心主人的话。）',
+            content: '（她一个人待了会儿。没人跟她说话，她想主动开口讲一句 —— 就一句，别长篇，别问「在吗」，说点她自己在想的事或者关心主人的话。'
+              + (() => {
+                /* 【2026-11-05 加·借鉴 dsh 的 lastLine】
+                 * 原来每次醒来都是同一句干巴巴的引子，她不知道上一回自己说到哪儿了，
+                 * 于是要么重复同一个话题，要么前后不接。带上这句之后至少能接着自己往下说。 */
+                try {
+                  const _prev = String((selfwakeState(sid) || {}).lastLine || '').trim();
+                  return _prev ? ('上一回你主动说的是：「' + _prev + '」—— 别重复它，接着往下说点别的。）') : '）';
+                } catch { return '）'; }
+              })(),
           });
           sess.updatedAt = Date.now();
           try { saveSession(sess); } catch {}
@@ -10641,6 +10650,21 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           const r = await startQueuedTurn(sid, null);
           if (!r || !r.ok) {
             console.log('[selfwake] 这一轮没起成：', sid, r && (r.skipped || r.error));
+          } else {
+            /* 【2026-11-05 加】把这一轮她说出口的话记成 lastLine，供下次醒来当背景。
+             * 只记真正说出口的 assistant 文本，工具调用之类不算。 */
+            try {
+              const _now = getSession(sid);
+              const _ms = Array.isArray(_now && _now.messages) ? _now.messages : [];
+              for (let _i = _ms.length - 1; _i >= 0; _i--) {
+                const _m = _ms[_i];
+                if (!_m || _m.role !== 'assistant') continue;
+                const _t = String(_m.content == null ? '' : _m.content).trim();
+                if (!_t) continue;
+                noteSpoke(sid, _t);
+                break;
+              }
+            } catch {}
           }
         } catch (e) {
           try { console.warn('[selfwake] 起一轮失败（不影响别的）：', e && e.message); } catch {}

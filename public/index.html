@@ -9860,11 +9860,18 @@ function groupLooseTools() {
       for (const el of run) hub.appendChild(el);
       run = [];
     };
+    /* 【2026-11-05 改·先排掉已经是柜子的东西】
+     * 主人报「展开里面还有一个调用 1 次的柜子」—— 柜子套柜子。
+     * 归拢时只看直接子节点里的 tool / think，柜子本身绝不参与。 */
+    const _pick = (el) => el && el.classList
+      && !el.classList.contains('toolhub')
+      && (el.classList.contains('tool') || el.classList.contains('think'))
+      && !el.closest('details.toolhub');
     /* 【2026-11-05 改】think 也收进来。
      * 屏幕上它们是交错的（工具 / 思考 / 工具 / 思考），只收工具的话，
      * 每张卡都被 think 隔开、各自成一个「调了 1 次」的柜子，等于没收。 */
     for (const el of [...lg.children]) {
-      if (el.classList && (el.classList.contains('tool') || el.classList.contains('think'))) run.push(el);
+      if (_pick(el)) run.push(el);
       else flush();
     }
     flush();

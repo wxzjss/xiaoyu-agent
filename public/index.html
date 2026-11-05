@@ -9848,9 +9848,17 @@ function hubRefreshTitle() {
    */
   const _t = _liveHub.querySelectorAll('details.tool').length;
   const _k = _liveHub.querySelectorAll('details.think').length;
-  n1.textContent = (_t && _k)
-    ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
-    : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'));
+  /* 【2026-11-05 同口径】跑着的时候标题就是「正在…」，跑完才退回统计。 */
+  const _runEl = [..._liveHub.querySelectorAll('details.tool')].find((el) => {
+    const st = el.querySelector('.status');
+    const tx = String((st && st.textContent) || '');
+    return tx.indexOf('运行') >= 0 || (st && st.classList.contains('run'));
+  });
+  n1.textContent = _runEl
+    ? ('正在' + String((_runEl.querySelector('.name') || {}).textContent || '干活').trim() + '…')
+    : ((_t && _k)
+      ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
+      : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具')));
   const bad = _liveHub.querySelectorAll('.tool > summary > .status.err').length;
   const warn = _liveHub.querySelectorAll('.tool > summary > .status.warn').length;
   if (n2) {
@@ -9860,7 +9868,8 @@ function hubRefreshTitle() {
   /* 【2026-11-05】柜门后面那截也跟着走 */
   try {
     const pk = _liveHub.querySelector('summary > .hubpeek');
-    if (pk) pk.textContent = hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
+    /* 跑着的时候标题已经是「正在…」，后面不用再重复 */
+    if (pk) pk.textContent = _runEl ? '' : hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
   } catch (e) {}
 }
 
@@ -10150,13 +10159,30 @@ function foldLiveTools() {
   const n1 = document.createElement('span');
   n1.className = 'hubname';
   /* 【2026-11-05 改】标题按真实构成写：调了几次工具、想了多久 */
-  /* 【2026-11-05】三种写法：只有思考 → 只说想了；只有工具 → 只说调了；都有 → 两个都说。
-   * 不再出现「调了 0 次工具」这种废句。 */
-  n1.textContent = (_tools.length && _thinks.length)
+  /**
+   * 【2026-11-05 改·标题跟着眼前的事变】
+   *
+   * 主人提醒：「你折叠的柜子上面的文本会根据内容不断变更」。
+   * 对 —— 柜门那一行本来就该是**眼下正在干什么**，而不是一个统计数。
+   *
+   * 现在分两层：
+   *   · 有工具在跑 → 标题就是「正在读取 index.html…」，一个字都不提数字；
+   *   · 全跑完了   → 才退回统计：「读文件、跑命令 · 3 次」这样的收尾说法。
+   * 后面的 hubpeek 只在「跑完了」时补一句想了什么。
+   */
+  const _running = _tools.find((el) => {
+    const st = el.querySelector('.status');
+    const tx = String((st && st.textContent) || '');
+    return tx.indexOf('运行') >= 0 || (st && st.classList.contains('run'));
+  });
+  const _statLine = (_tools.length && _thinks.length)
     ? ('调了 ' + _tools.length + ' 次工具 · 想了 ' + _thinks.length + ' 段')
     : (_thinks.length
       ? ('想了 ' + _thinks.length + ' 段')
       : ('调了 ' + _tools.length + ' 次工具'));
+  n1.textContent = _running
+    ? ('正在' + String((_running.querySelector('.name') || {}).textContent || '干活').trim() + '…')
+    : _statLine;
   const bad = _tools.filter((el) => el.querySelector('.status.err')).length;
   const warn = _tools.filter((el) => el.querySelector('.status.warn')).length;
   const n2 = document.createElement('span');
@@ -10172,7 +10198,8 @@ function foldLiveTools() {
    */
   const peek = document.createElement('span');
   peek.className = 'hubpeek';
-  peek.textContent = hubPeekOf(arr);
+  /* 在跑的时候标题已经是「正在…」，后面不用再跟一句重复的 */
+  peek.textContent = _running ? '' : hubPeekOf(arr);
   hsum.append(n1, n2, peek);
   hub.appendChild(hsum);
   parent.insertBefore(hub, first);         // 柜子落在第一张卡原来的位置

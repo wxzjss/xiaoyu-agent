@@ -5922,7 +5922,13 @@ function paintSnapshot0(sid, srcLive) {
     } else if (it.k === 'think') {
       /* 【2026-11-05】后面紧跟文字 → 先记着，等那段文字画完再画，别把话切断。 */
       const _nx = items[_ii + 1];
-      if (_nx && _nx.k === 'text') { _deferredThink = it; continue; }
+      if (_nx && _nx.k === 'text') {
+        /* 【2026-11-05 修】连着两条 think 时，前一条会被直接覆盖掉 ——
+         * 先把手里那条画掉，再存新的。 */
+        _flushDeferredThink();
+        _deferredThink = it;
+        continue;
+      }
       /* 【一段思考一块 —— 2026-11-02 第二次修「抽搐」】
        *  原来是把清单里连着的好几段思考并进同一块：第一段 set 进去没问题，
        *  第二段 set 时它不是第一段的「续写」，整块内容被换掉一次 ——

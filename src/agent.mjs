@@ -1441,8 +1441,58 @@ for (let round = 0; round < config.maxRounds; round++) {
     };
     messages.push(assistantMsg);
 
+    /**
+     * 【2026-11-05 加·只读工具并行跑】
+     *
+     * 主人问：「为什么你做任务快、小鱼慢」。查下来一条硬差距：
+     * 这里原来是 `for (const call of ...) { await runTool(...) }` —— **串行**。
+     * 读五个文件 = 五次往返排队；而我那边是一次发出去、等一个最慢的。
+     *
+     * 现在把**连续多个只读工具**预处理成一批并发跑，结果塞进 _poMap；
+     * 下面那个 for 照旧一条条走（事件、超时、落盘都不动），只是命中缓存就别再跑了。
+     *
+     * 为什么只并行只读：read_file / list_dir / search 之间没有先后依赖，
+     * 同时跑不会互相踩。write_file / run_command 必须串行 —— 后一步可能要读前一步的结果。
+     *
+     * 为什么先在这里发 tool_start：并发要等最慢的那个，界面上得先出现卡片，
+     * 否则「什么都看不到」比慢更难受。
+     */
+    const _poMap = new Map();
+    try {
+      const _RO = new Set(['read_file', 'list_dir', 'search_files', 'glob_files', 'web_fetch', 'fetch_url', 'grep_files']);
+      const _calls = Array.isArray(assistantMsg.tool_calls) ? assistantMsg.tool_calls : [];
+      let _i = 0;
+      while (_i < _calls.length) {
+        const _nm = String((_calls[_i].function && _calls[_i].function.name) || '');
+        if (!_RO.has(_nm)) { _i++; continue; }
+        let _j = _i;
+        while (_j < _calls.length && _RO.has(String((_calls[_j].function && _calls[_j].function.name) || ''))) _j++;
+        const _batch = _calls.slice(_i, _j);
+        _i = _j;
+        if (_batch.length < 2) continue;   // 只有一个：没必要并发，走下面原路
+        for (const c of _batch) {
+          onEvent({ type: 'tool_start', id: c.id, name: c.function.name, args: c.function.arguments });
+        }
+        const _outs = await Promise.all(_batch.map(async (c) => {
+          try {
+            const r = await Promise.race([
+              runTool(c.function.name, c.function.arguments, sessionId, signal),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('这个工具等太久了，先跳过')), Math.min(TOOL_MAX_MS, 120000))),
+            ]);
+            return r || { ok: false, output: '（没有返回内容）' };
+          } catch (e) {
+            return { ok: false, output: String((e && e.message) || e) };
+          }
+        }));
+        _batch.forEach((c, k) => _poMap.set(c.id, _outs[k]));
+      }
+    } catch (e) { /* 并发这条路挂了不影响正常执行 */ }
+
     for (const call of assistantMsg.tool_calls) {
-      onEvent({ type: 'tool_start', id: call.id, name: call.function.name, args: call.function.arguments });
+      const _hit = _poMap.get(call.id);
+      if (!_hit) {
+        onEvent({ type: 'tool_start', id: call.id, name: call.function.name, args: call.function.arguments });
+      }
       /**
        * 【工具时间闸】
        *
@@ -1485,7 +1535,13 @@ for (let round = 0; round < config.maxRounds; round++) {
         }
       } catch { _toolSignal = _toolAc.signal; }
 
-      const { ok, output } = await withTimeout(
+      const _pre = _poMap.get(call.id);
+      /* 【2026-11-05】命中并行缓存时，下面那段 withTimeout 的 finally 不会执行 ——
+       * 手动把这次注册的 abort 监听摘掉，别攒着。 */
+      if (_pre) {
+        try { if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', _onTurnAbort); } catch (e) {}
+      }
+      const { ok, output } = _pre ? _pre : await withTimeout(
         runTool(call.function.name, call.function.arguments, sessionId, _toolSignal),
         TOOL_MAX_MS,
         {

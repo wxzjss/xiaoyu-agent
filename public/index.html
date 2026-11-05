@@ -10128,6 +10128,24 @@ function foldLiveTools() {
   /* 柜子是 foldLiveTools 合出来的，里面装的是直播画的卡 —— 也算「我自己画的」，一并清 */
   try { hub.dataset.liveTurn = '1'; } catch (e) {}
   hub.open = false;                        // 收起来，主人点开才是一排抽屉
+  /**
+   * 【2026-11-05 改·打开柜子时，里面的工具直接摊开】
+   *
+   * 主人 2026-10-31 定过「柜子里的抽屉要关着」——那时候柜子里只有工具卡，
+   * 关着还能看到一排工具名。现在思考块也收进来了，全关着就只剩
+   * 「想了 1 段」「读取文件」这些标题，看不出这一轮到底干了什么。
+   *
+   * 折中：**工具展开**（参数、结果一眼看到），**思考仍收着**（本来就长，
+   * 想看再点）。这样打开柜子就是一条完整的工作流水，不用点两层。
+   */
+  try {
+    hub.addEventListener('toggle', () => {
+      if (!hub.open) return;
+      try {
+        for (const t of hub.querySelectorAll('details.tool')) t.open = true;
+      } catch (e) {}
+    });
+  } catch (e) {}
   const hsum = document.createElement('summary');
   const n1 = document.createElement('span');
   n1.className = 'hubname';
@@ -18886,7 +18904,19 @@ function renderTurns(turns, opts) {
       // 【2026-10-31 主人原话：压缩相关一个字都不许露】
       // 程序自己插的压缩提醒（turn.sysNote）在界面上直接不画 ——
       // 不挂主人的名字（免得看着像主人在提醒压缩），也不画成系统小字（主人说不想看到任何压缩显示）。
-      if (turn.sysNote) continue;
+      /* 【2026-11-06 修】系统插的那句话（重启续上 / 定时任务）本身不画，
+       * 但这一轮的用量就挂在它身上 —— 直接 continue 掉，数字永远看不见，
+       * 前端只能退回按字数瞎估（就是主人看到的那种一千多的小数字）。
+       * 这里把它塞进下面那个「待补画」队列，让紧随其后的那条回复去画。
+       * 复用现成队列而不是新造变量：一轮只能有一条待补画，天然不会串到下一轮。 */
+      if (turn.sysNote) {
+        /* 只在队列空着时才接：队列里还有上一条主人消息的用量时不能冲掉它，
+         * 否则那一行就凭空消失了（宁可少露一行，也不能吞掉别人的）。 */
+        if (turn.usage && !pendingTurns.length) {
+          pendingTurns.push({ id: 's' + ti, u: turn.usage, at: undefined, model: (turn.usage && turn.usage.model) || '', replyChars: 0, userChars: 0 });
+        }
+        continue;
+      }
       /**
        * 【role 存错的旧消息 —— 2026-11-01 修】
        *

@@ -61,7 +61,16 @@ const PRIVATE_ONLY = ['.private', '.drafts', '.local'];
 const EXCLUDE_EXT = new Set(['.log', '.bak', '.tmp', '.pyc', '.ps1.txt']);
 
 /** 文件名这些前缀/片段的，一律不发（测试探针、临时文件） */
-const EXCLUDE_PATTERNS = [/^__/, /\.probe\./, /-probe\./, /^\./, /~(\d+)?$/];
+const EXCLUDE_PATTERNS = [
+  /^__/, /\.probe\./, /-probe\./, /^\./, /~(\d+)?$/,
+  /* 【2026-11-07】自测脚本一律不发。两个理由都是硬的：
+   *   ① 里面写死了本机路径（C:\\Users\\<这台机器的用户名>\\...），出门扫描会逐条命中；
+   *   ② 用户拿到的是 exe，这些脚本对他毫无用处。
+   * 发布物里该有的 scripts 是 publish / preflight / sync-live 那几个工具。 */
+  /^check-.*\.mjs$/,
+  /^e2e-.*\.mjs$/,
+  /^run-all-checks\.mjs$/,
+];
 
 // ------------------------------------------------------------------ 敏感信息
 

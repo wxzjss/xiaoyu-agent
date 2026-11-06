@@ -6287,8 +6287,18 @@ function stripCompressMemoryText(input) {
 
 function stripThinkingTags(input) {
   let s = String(input == null ? '' : input);
-  /* 两个标签都要看一眼：只漏了 </thinking> 的也得清（实测会漏）。 */
-  if (s.indexOf('<thinking') < 0 && s.indexOf('</thinking>') < 0) return s;
+  /* 两个标签都要看一眼：只漏了 </thinking> 的也得清（实测会漏）。
+   * 【2026-11-05 修·大写漏出去了】主人报「还是有 <thinking>」。
+   * 这行原来是**大小写敏感**的：模型偶尔吐 <THINKING> / <Thinking>，
+   * 这里直接 return，后面那些 gi 正则一次都轮不到 —— 标签原样留在屏幕上。
+   * 改成转小写再比。 */
+  const _low0 = s.toLowerCase();
+  /* 【2026-11-05】<think> / <reasoning> 也要放进这道门 ——
+   * 不然「<think>x</think>」连这句都过不去，后面 ④ 那堆正则一次都轮不到。 */
+  const _anyTag = ['thinking', 'think', 'reasoning'].some(
+    (t) => _low0.indexOf('<' + t) >= 0 || _low0.indexOf('</' + t + '>') >= 0,
+  );
+  if (!_anyTag) return s;
   // ① 成对的整块
   s = s.replace(/<thinking[^>]*>[\s\S]*?<\/thinking>/gi, '');
   // ② 没闭合的（流式中）：从最后一个开始切到末尾
@@ -6298,6 +6308,21 @@ function stripThinkingTags(input) {
   }
   // ③ 落单的结束标签
   s = s.replace(/<\/thinking>/gi, '');
+  /**
+   * ④ <think> / <reasoning> 短标签（有的模型不用 <thinking> 长的）
+   *
+   * (?![a-z]) 是为了别把 <thinking> 一起吃掉 —— 它的标签名以 think 开头，
+   * 没有这个断言，<think> 的正则会从 <thinking> 的中间切开。
+   */
+  s = s.replace(/<think(?![a-z])[^>]*>[\s\S]*?<\/think>/gi, '');
+  s = s.replace(/<reasoning[^>]*>[\s\S]*?<\/reasoning>/gi, '');
+  const _lo = s.toLowerCase();
+  for (const t of ['think', 'reasoning']) {
+    const op = _lo.lastIndexOf('<' + t);
+    const cl = _lo.lastIndexOf('</' + t + '>');
+    if (op >= 0 && cl < op) s = s.slice(0, op);
+    s = s.replace(new RegExp('<\/' + t + '>', 'gi'), '');
+  }
   return s;
 }
 

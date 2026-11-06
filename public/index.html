@@ -19072,6 +19072,9 @@ function refreshTurnsCost() {
   renderTurns(rows);
 }
 
+/* 【2026-11-05】页面一加载就把标签清洗装上 —— 一处管所有渲染出口。 */
+try { if (typeof installTagCleaner === 'function') installTagCleaner(); } catch (e) {}
+
 function renderTurns(turns, opts) {
   /**
    * 【2026-11-01 主人报：生成中说的话被拆成好几个碎气泡，刷新之后才对】
@@ -19910,28 +19913,11 @@ function renderTurns(turns, opts) {
   }
 
   /**
-   * 【2026-11-05 加·画完再扫一遍残留的 <thinking>】
+   * 【2026-11-05 重做·这里那段清洗撤掉】
    *
-   * 主人报「还是有」。逐条路径都查过：mdInto 里剥了、paintSpeech 里剥了，
-   * 单测也过 —— 但屏幕上仍然有，位置是 .msg.assistant.cont 里的 .bubble。
-   *
-   * 说明有条路径（多半是 _rawText 还原 / 增量快路）把原文又写回去了。
-   * 与其继续追每一条，这里在整屏画完之后做一次最终清洗：
-   * 任何气泡里还带着 <thinking>/<think>/<reasoning> 的，就地剥掉重写。
-   *
-   * 只在**确实含标签**时才动 textContent，别的气泡一个字都不碰。
+   * 它只在 renderTurns 末尾跑，而屏幕上那些脏气泡走的是增量快路，压根不经过这儿。
+   * 改成全局的 DOM 监听（见 installTagCleaner），一处管所有出口。
    */
-  try {
-    const _lowTags = ['<thinking', '<think', '<reasoning'];
-    for (const b of log.querySelectorAll('.bubble')) {
-      const t = b.textContent || '';
-      const low = t.toLowerCase();
-      if (!_lowTags.some((k) => low.indexOf(k) >= 0)) continue;
-      const fixed = stripThinkingTags(t);
-      if (fixed !== t) b.textContent = fixed;
-    }
-  } catch (e) {}
-
   /* 【2026-11-05】先按整体快照恢复（覆盖柜子/思考/工具卡所有类型） */
   try { applyOpenState(__openAll); } catch (e) {}
 

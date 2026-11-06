@@ -10344,10 +10344,27 @@ function addTool() {
        *
        * 现在：从后往前找，跳过 think 和别的东西，找到第一个柜子为止。
        */
+      /**
+       * 【2026-11-06 修·说过话就该另起一个柜子】
+       *
+       * 主人报：「原来是说一段话后调一次工具，然后再说一段话；
+       * 现在是连说几段话挤在一起，不同段话后的工具调用全在一个柜子里」。
+       *
+       * 元凶就是下面这个循环：昨天为了修「展开的柜子被新消息挤掉」，
+       * 让它从后往前跳过 think **和 msg** 去找柜子 ——
+       * 于是她说完一段话（末尾是个 .msg），接着调工具，工具就被塞进了
+       * 那句**之前**的老柜子里。说十段话、调三十次工具，全落进同一个柜子，
+       * 屏幕上自然不会再有「话—柜子—话—柜子」的节奏。
+       *
+       * 正确的边界只有一条：**说过话就另起**。
+       *   · 末尾是 think → 往前找（思考和紧随的工具是同一段活）
+       *   · 末尾是 msg   → 停，另起一个新柜子（我说话了，接下来的活是新的一段）
+       *   · 别的一律停
+       */
       let _last = log.lastElementChild;
       for (let _guard = 0; _guard < 6 && _last; _guard++) {
         if (_last.classList && _last.classList.contains('toolhub')) break;
-        if (_last.classList && (_last.classList.contains('think') || _last.classList.contains('msg'))) {
+        if (_last.classList && _last.classList.contains('think')) {
           _last = _last.previousElementSibling;
           continue;
         }

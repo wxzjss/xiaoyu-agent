@@ -44,6 +44,14 @@ export const KEEP_TOOLS = [
   'note',           // 记事
   'chronicle_toc', 'chronicle_search', 'chronicle_read', // 翻史书（检查子智能体的说法对不对）
   'folded_list', 'folded_read',                          // 翻折叠箱（压上下文前先确认原文在）
+  /* 【2026-11-06 修·自相矛盾：让它去验收，却不给验收工具】
+   *  提示词第 4 条写着「它说改了这个文件，你就真去读那一段」「用只读工具核」，
+   *  可白名单里原来只有派活那几个 —— read_file / list_dir 全被收走了。
+   *  结果是它要么凭汇报空口采信，要么违约自己跑去看（两样都比给只手糟）。
+   *  只放两只「只读的手」回来：读文件、列目录。
+   *  写文件、跑命令、改代码仍旧一概不给 —— 那才是「抢活」。 */
+  'read_file',      // 验收：它说改了哪儿，真去看一眼
+  'list_dir',       // 验收：它说在哪儿干，真去列一下
 ];
 
 function file() {
@@ -63,7 +71,14 @@ function readTable() {
   try {
     const f = file();
     if (!existsSync(f)) return {};
-    const j = JSON.parse(readFileSync(f, 'utf8'));
+    /* 【2026-11-06 修·BOM 会让办事模式开关静默失效】
+     *  PowerShell 的 Set-Content -Encoding utf8 会写 EF BB BF，
+     *  JSON.parse 直接抛错，下面那句 catch 一吞就返回空表 ——
+     *  表现是「明明开了办事模式，重开一次就没了」，还一句日志都没有。
+     *  admin-mode.json 就这么丢过管理员权限。读之前先削 BOM。 */
+    let _raw = readFileSync(f, 'utf8');
+    if (_raw.charCodeAt(0) === 0xfeff) _raw = _raw.slice(1);
+    const j = JSON.parse(_raw);
     if (!j || typeof j !== 'object' || Array.isArray(j)) return {};
     // 两种形态都认：{version,on:{sid:true}} 和早年那版扁平的 {sid:true}。
     const src = (j.on && typeof j.on === 'object' && !Array.isArray(j.on)) ? j.on : j;

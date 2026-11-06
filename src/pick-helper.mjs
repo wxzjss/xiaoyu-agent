@@ -23,6 +23,7 @@ import {
   isGroupMemberEnabled,
   setGroupMemberEnabled,
   setSessionGroup,
+  mainAgentId,
 } from './agents.mjs';
 
 /** 主声不是小鱼时该拉谁进屋里补位 */
@@ -40,7 +41,18 @@ function whoToPull(mainId) {
  */
 export function pickHelperForTask(sessionId, mainId = '') {
   const sid = String(sessionId || 'default');
-  const main = String(mainId || '');
+  /* 【2026-11-06 修·主智能体把活派给自己】
+   *  原来是 const main = String(mainId || '')。mainId 一空（tools.mjs 那边
+   *  mainAgentId() 抛错时 catch 会把它置成 ''），main 就成了空串，
+   *  于是下面 list.filter(id => id !== '') 把「屋里所有人」都当成别人 ——
+   *  包括主智能体自己；而 whoToPull('') 又固定返回小鱼。
+   *  实测：正常时派给小鲸 ✔，传空时派给小鱼 ✘ —— 小鱼正是主智能体本人，
+   *  正好撞上提示词第 1 条「一边当包工头一边抢工人的活」。
+   *  现在 mainId 空就自己算一次（不传 isOn，按 agents.mjs 的默认语义算）。 */
+  let main = String(mainId || '');
+  if (!main) {
+    try { main = String(mainAgentId(sid) || ''); } catch {}
+  }
 
   let list = [];
   try { list = groupAgentIds(sid).map((x) => String(x)); } catch { list = []; }

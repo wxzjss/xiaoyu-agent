@@ -515,7 +515,7 @@ function isOwnSessionMemory(abs) {
   } catch { return false; }
 }
 
-const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir']);
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'search_files']);
 
 /**
  * 这个路径是不是「工具输出落盘目录」里的东西。
@@ -679,15 +679,153 @@ export const tools = [
     },
   },
   {
-    name: 'run_command',
+    name: 'search_files',
     description:
-      '在本机跑一条命令（Windows 上是 PowerShell，工作区当前目录）。装依赖、跑脚本、压包、转格式、调 ffmpeg、查环境全都靠它。返回 stdout 和 stderr 合并的结果。',
+      '在文件里搜文字或正则，直接给「文件路径:行号:那一行」。**找东西一律先用它，别现写 node -e 脚本去读文件。**'
+      + '\n\n· 找某个函数/变量/字符串在哪儿：pattern 给词就行\n'
+      + '· 只想搜某类文件：带 glob（例如 "*.mjs"、"src/**/*.js"）\n'
+      + '· 结果默认最多 60 条，够定位就行；要更多就带 limit\n'
+      + '· 自动跳过 node_modules / .git / dist / 二进制文件和超大文件\n'
+      + '\n\n和 run_command 的分工：**搜用这个，跑用 run_command**。为了搜一个词去 node -e 读一遍全目录，是最慢的做法。',
     parameters: {
       type: 'object',
-      properties: { command: { type: 'string' } },
+      properties: {
+        pattern: { type: 'string', description: '要找的文字或正则（默认按正则解释）' },
+        path: { type: 'string', description: '从哪个目录开始搜，默认工作区根' },
+        glob: { type: 'string', description: '只搜匹配的文件，例如 *.mjs' },
+        limit: { type: 'number', description: '最多返回几条，默认 60' },
+        ignore_case: { type: 'boolean', description: '忽略大小写，默认 false' },
+      },
+      required: ['pattern'],
+    },
+    async run({ pattern, path, glob, limit, ignore_case }) {
+      const root = safePath(path || '.', { tool: 'search_files' });
+      const pat = String(pattern || '');
+      if (!pat) return 'ERROR：pattern 是空的，要搜什么？';
+      const cap = Math.max(1, Math.min(Math.floor(Number(limit) || 60), 400));
+      let re;
+      try {
+        re = new RegExp(pat, ignore_case ? 'i' : '');
+      } catch (e) {
+        return 'ERROR：这个 pattern 不是合法正则（' + String((e && e.message) || e) + '）。要找纯文字的话，把 . * + ( ) [ ] 这些符号转义一下。';
+      }
+      /* 只认简单的 * 和 ? 通配，够用就行 —— 不值得为它引一个 glob 库 */
+      const g = String(glob || '').trim();
+      const gRe = g
+        ? new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').split('**').join('\u0001').split('*').join('[^/]*').split('?').join('.').split('\u0001').join('.*') + '$')
+        : null;
+      const SKIP_DIR = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.cache', 'playground', '.state', 'sandbox']);
+      const BIN_RE = /\.(png|jpe?g|gif|webp|bmp|ico|zip|gz|rar|7z|exe|dll|pdf|mp3|mp4|wav|woff2?|ttf)$/i;
+      const MAX_FILES = 4000;
+      const MAX_BYTES = 1024 * 1024;
+      const hits = [];
+      let scanned = 0;
+      let truncated = false;
+
+      /*
+       * 【2026-11-06 加·先收文件、按深浅排、最后才搜】
+       *
+       * 一开始是边走边搜，结果 sandbox/appsrc/src 里的副本排在前面把 cap 占满了，
+       * 真正在用的 src/ 一条都没进。现在分两步：先列出可搜的文件（带层数），
+       * 浅的排前面 —— 同名文件永远优先给「根上那份」。
+       */
+      const files = [];
+      const walk = async (dir, depth) => {
+        if (truncated || depth > 12) return;
+        let ents;
+        try {
+          ents = await readdir(dir, { withFileTypes: true });
+        } catch { return; }
+        for (const e of ents) {
+          const fp = resolve(dir, e.name);
+          if (e.isDirectory()) {
+            if (SKIP_DIR.has(e.name) || e.name.indexOf('.trash') === 0) continue;
+            await walk(fp, depth + 1);
+            continue;
+          }
+          if (!e.isFile() || BIN_RE.test(e.name)) continue;
+          if (gRe) {
+            const relp = relative(root, fp).split('\\').join('/');
+            if (!gRe.test(e.name) && !gRe.test(relp)) continue;
+          }
+          if (++scanned > MAX_FILES) { truncated = true; return; }
+          files.push({ fp, depth });
+        }
+      };
+
+      const scanOne = async (fp) => {
+        let s;
+        try {
+          const st = await stat(fp);
+          if (st.size > MAX_BYTES) return;
+          s = await readFile(fp, 'utf8');
+        } catch { return; }
+        if (s.indexOf('\u0000') >= 0) return;   // 二进制
+        const ls = s.split(/\r?\n/);
+        for (let i = 0; i < ls.length; i++) {
+          if (hits.length >= cap) return;
+          if (re.test(ls[i])) {
+            const rel = relative(APP_ROOT, fp).split('\\').join('/') || fp;
+            hits.push(rel + ':' + (i + 1) + ': ' + ls[i].trim().slice(0, 220));
+          }
+        }
+      };
+
+      try {
+        const st0 = await stat(root).catch(() => null);
+        if (st0 && st0.isFile()) {
+          await scanOne(root);
+        } else {
+          await walk(root, 0);
+          /* 深浅之外再给 sandbox/ 一份罚分：它是调试副本，不该抢在真代码前面 */
+          const rank = (f) => {
+            const relp = relative(root, f.fp).split(String.fromCharCode(92)).join(String.fromCharCode(47));
+            let r = f.depth;
+            if (relp.indexOf('sandbox/') === 0) r += 6;
+            if (relp.indexOf('docs/') === 0) r += 2;
+            return r;
+          };
+          files.sort((x, y) => rank(x) - rank(y));
+          for (const f of files) {
+            if (hits.length >= cap) break;
+            await scanOne(f.fp);
+          }
+        }
+      } catch (e) {
+        return 'ERROR：搜不动（' + String((e && e.message) || e) + '）';
+      }
+
+      if (!hits.length) return '没搜到「' + pat + '」。（换个词试试；或者文件在 node_modules / .git 里，那些我默认不搜。）';
+      const tail = truncated ? '\n\n（文件太多，只翻了前 ' + MAX_FILES + ' 个。缩小 path 或加 glob 会更准。）' : '';
+      return '搜到 ' + hits.length + ' 条：\n' + hits.join('\n') + tail;
+    },
+  },
+  {
+    name: 'run_command',
+    description:
+      '在本机跑一条命令（Windows 上是 PowerShell，工作区当前目录）。装依赖、跑脚本、压包、转格式、调 ffmpeg、查环境全都靠它。返回 stdout 和 stderr 合并的结果。'
+      + '\n\n【两条能省好几倍时间的规矩】'
+      + '\n· 几件不相干的检查用 ; 串成**一条**命令，别分几次跑 —— 每一次工具调用都是一整趟模型往返。'
+      + '\n  例如：node scripts/check-a.mjs; node scripts/check-b.mjs; node scripts/check-c.mjs'
+      + '\n· **搜东西别用命令**：找函数/字符串在哪，用 search_files，一次就给「路径:行号」。'
+      + '\n  为了搜一个词去 node -e 现写一段读目录的脚本，是最慢的做法。',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+        /**
+         * 【2026-11-06 加·超时可以自己定】
+         *
+         * 默认只给 120 秒 —— 而全量自检要跑 6~8 分钟。
+         * 于是每次跑自检都在 120 秒被掐，日志里只留一句「signal SIGTERM」，
+         * 她就当成「偶发失败」，反复重跑、反复困惑（【检查鱼】里最长一轮 513 秒）。
+         * 现在能自己定：跑长活带个数就行。
+         */
+        timeout_ms: { type: 'number', description: '最多等多少毫秒，默认 120000（2 分钟），最多 900000（15 分钟）' },
+      },
       required: ['command'],
     },
-    run({ command }) {
+    run({ command, timeout_ms }) {
       /**
        * 【2026-11-03 主人要求】堵死「用命令把自己弄死」这条路。
        *
@@ -770,10 +908,11 @@ export const tools = [
           child.kill(sig || 'SIGTERM');
         } catch {}
       };
+      const _TO = Math.max(5000, Math.min(Math.floor(Number(timeout_ms) || 0) || 120000, 900000));
       return new Promise((done) => {
         const child = exec(
           command,
-          { cwd: ROOT, timeout: 120000, maxBuffer: 4 * 1024 * 1024, shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/sh' },
+          { cwd: ROOT, timeout: _TO, maxBuffer: 4 * 1024 * 1024, shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/sh' },
           (err, stdout, stderr) => {
             if (onAbort) signal.removeEventListener('abort', onAbort);
             // 【临时探针】被掐的时候把真实原因落盘，别再靠猜
@@ -846,7 +985,20 @@ export const tools = [
               const _code = err.code === undefined || err.code === null ? '?' : err.code;
               const _sig = err.signal ? ' / signal ' + err.signal : '';
               const _msg = (stdout || stderr) ? '' : ': ' + String(err.message || '');
-              parts.push('[exit ' + _code + _sig + ']' + _msg);
+              /**
+               * 【2026-11-06 加·超时和「命令自己失败」必须分开说】
+               *
+               * Node 的 exec 超时掐掉时只给 killed + signal SIGTERM，一个字都不提超时。
+               * 她看到「signal SIGTERM」只能猜，猜成「偶发失败」，于是反复重跑同一份自检。
+               * 这里说清楚：是等不及被掐的，不是命令有问题；要更久就带 timeout_ms。
+               */
+              const _timedOut = !!(err.killed && _code === '?') || /timed? ?out/i.test(String(err.message || ''));
+              if (_timedOut) {
+                parts.push('[超时掐掉了] 这条命令跑了 ' + Math.round(_TO / 1000) + ' 秒还没结束，被强制停掉 —— **这不是命令本身失败**，是等的时间不够。\n'
+                  + '要跑完就带 timeout_ms 再来一次（最多 900000 毫秒）。能拆小就跑小一点；几条短命令用 ; 串起来，别分几次跑。');
+              } else {
+                parts.push('[exit ' + _code + _sig + ']' + _msg);
+              }
             }
             const _out = clip(parts.join('\n').trim() || '(no output)');
             /* 【2026-11-05 修·跑挂了别显示绿 ✓】

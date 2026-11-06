@@ -70,8 +70,8 @@ export const FEATURES = [
   {
     id: 'listDir',
     name: '看目录',
-    desc: '列工作区里的文件和文件夹。',
-    tools: ['list_dir'],
+    desc: '列工作区里的文件和文件夹，以及在文件里搜内容。',
+    tools: ['list_dir', 'search_files'],
   },
   {
     id: 'shell',

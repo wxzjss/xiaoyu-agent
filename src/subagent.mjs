@@ -82,6 +82,7 @@ import { currentIdentity, isOwnerIdentity } from './identity.mjs';
 const READONLY_TOOLS = new Set([
   'read_file',
   'list_dir',
+  'search_files',   // 2026-11-06：搜东西别再 node -e 现写脚本
   'web_search',
   'fetch_url',
   'fetch_txt',

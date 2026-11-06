@@ -20034,6 +20034,22 @@ function renderTurns(turns, opts) {
         let old = null;
         try { old = log.querySelector('.msg[data-key="' + k + '"]'); } catch (e) { old = null; }
         if (old && old.parentNode === log) {
+          /**
+           * 【2026-11-07 修·删除后老消息「没格式了」】
+           *
+           * 主人报：一轮说完之后点「删除」，前面那些消息的 markdown 全没了，刷新才好。
+           *
+           * 链路：直播时气泡是 paintSpeech 用 textContent 写的（纯文本 + pre-wrap），
+           * 没有 <p>/<strong> 这些子元素；而这里按 data-key 复用的是**旧的那个纯文本气泡**，
+           * 于是刚 mdInto 画好的新节点被扔掉，屏幕上留着纯文本 → 看着就是「没格式了」。
+           * 刷新时屏上气泡本来就是 md 的，复用没差别，所以「刷新一次就好了」。
+           *
+           * 判据：新画的那个有元素子节点（= 走了 markdown），旧的却是光秃秃一段文字
+           * （= 直播写的纯文本）—— 这种不复用，让新的进来。
+           */
+          const oldPlain = old.children.length === 0;
+          const neuRich = el.children.length > 0;
+          if (oldPlain && neuRich) continue;
           try { frag.replaceChild(old, el); } catch (e) {}
         }
       }

@@ -19380,6 +19380,14 @@ function renderTurns(turns, opts) {
       // 【2026-10-31 user 前 flush】：主人一开口，上一串就结束了，攒着的工具在它后面折叠成一行画出来
       flushHub();
       // 【2026-10-31 主人原话：压缩相关一个字都不许露】
+      /**
+       * 【2026-11-05 加·system 消息不画】
+       *
+       * 后端已经过滤了，这里再兜一层 —— 万一是旧数据或者别的接口带过来的。
+       * 人设正文里就有 <thinking> 的示例，画出来就是「屏幕上冒出标签」。
+       */
+      if (turn.role === 'system') continue;
+
       // 程序自己插的压缩提醒（turn.sysNote）在界面上直接不画 ——
       // 不挂主人的名字（免得看着像主人在提醒压缩），也不画成系统小字（主人说不想看到任何压缩显示）。
       /* 【2026-11-06 修】系统插的那句话（重启续上 / 定时任务）本身不画，
@@ -19900,6 +19908,29 @@ function renderTurns(turns, opts) {
     __ignoreScrollUntil = Date.now() + 800;
     log.replaceChildren(frag);
   }
+
+  /**
+   * 【2026-11-05 加·画完再扫一遍残留的 <thinking>】
+   *
+   * 主人报「还是有」。逐条路径都查过：mdInto 里剥了、paintSpeech 里剥了，
+   * 单测也过 —— 但屏幕上仍然有，位置是 .msg.assistant.cont 里的 .bubble。
+   *
+   * 说明有条路径（多半是 _rawText 还原 / 增量快路）把原文又写回去了。
+   * 与其继续追每一条，这里在整屏画完之后做一次最终清洗：
+   * 任何气泡里还带着 <thinking>/<think>/<reasoning> 的，就地剥掉重写。
+   *
+   * 只在**确实含标签**时才动 textContent，别的气泡一个字都不碰。
+   */
+  try {
+    const _lowTags = ['<thinking', '<think', '<reasoning'];
+    for (const b of log.querySelectorAll('.bubble')) {
+      const t = b.textContent || '';
+      const low = t.toLowerCase();
+      if (!_lowTags.some((k) => low.indexOf(k) >= 0)) continue;
+      const fixed = stripThinkingTags(t);
+      if (fixed !== t) b.textContent = fixed;
+    }
+  } catch (e) {}
 
   /* 【2026-11-05】先按整体快照恢复（覆盖柜子/思考/工具卡所有类型） */
   try { applyOpenState(__openAll); } catch (e) {}

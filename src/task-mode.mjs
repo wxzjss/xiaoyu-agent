@@ -52,6 +52,13 @@ export const KEEP_TOOLS = [
    *  写文件、跑命令、改代码仍旧一概不给 —— 那才是「抢活」。 */
   'read_file',      // 验收：它说改了哪儿，真去看一眼
   'list_dir',       // 验收：它说在哪儿干，真去列一下
+  /* 【2026-11-06 修·办事模式把「服务主人」的手也收走了】
+   *  这三个不是「干活工具」，是「听主人话」用的：
+   *   · restart_self —— 主人说重启，得能重启（这是重启的唯一正经入口）
+   *   · send_file    —— 主人要文件，得发得出去
+   *   · ask_peer     —— 要问屋里另一个人，得能问
+   *  收走它们，等于办事模式下主人叫不动她，跟「只派活别动手」不是一回事。 */
+  'restart_self', 'send_file', 'ask_peer',
 ];
 
 function file() {
@@ -200,7 +207,15 @@ function readWorkers(sid) {
   try {
     const f = workerFile(sid);
     if (!f || !existsSync(f)) return [];
-    const j = JSON.parse(readFileSync(f, 'utf8'));
+    /* 【2026-11-06 修·BOM 会让花名册整份读空】
+     *  跟 readTable 同一个毛病：文件头带 UTF-8 BOM（EF BB BF）时
+     *  JSON.parse 直接抛错，下面 catch 一吞就返回 []，
+     *  于是「派出去的人在哪儿」一个都看不见，还没有任何日志。
+     *  写盘用的是 JSON.stringify，不带 BOM；坏的只可能是被人手改过。
+     *  读之前先削掉。 */
+    let _raw = readFileSync(f, 'utf8');
+    if (_raw.charCodeAt(0) === 0xfeff) _raw = _raw.slice(1);
+    const j = JSON.parse(_raw);
     return Array.isArray(j && j.workers) ? j.workers : [];
   } catch {
     return [];

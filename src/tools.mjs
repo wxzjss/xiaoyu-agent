@@ -1896,14 +1896,6 @@ export const tools = [
        * 日志原文：[spawn_worker] 挑屋里的帮手失败： Assignment to constant variable.
        */
       let nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
-      const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
-
-      const push = ctxNow().pushEvent;
-      if (typeof push === 'function') {
-        try {
-          push({ type: 'whale', who: '主智能体 → ' + nick, text: body, as: 'whale', tag: 'worker' });
-        } catch {}
-      }
 
       let r;
       /* 【2026-11-01 主人：办事模式不再新开临时智能体，改成调动屋里的人】
@@ -1927,6 +1919,20 @@ export const tools = [
         }
       } catch (e) {
         try { console.warn('[spawn_worker] 挑屋里的帮手失败：', String(e?.message ?? e)); } catch {}
+
+      /* 【2026-11-06 修·花名册里存的是临时名，不是帮手真名】
+       *  原来 noteWorker 在「挑帮手」之前就按 nick 建了记录，
+       *  而 nick 那时还是 worker-a3f2 这种时间戳临时名。
+       *  挑完帮手才把 nick 改成真名（小鲸 / 小白曦），记录里却已经存了临时名 ——
+       *  界面和花名册都看不出到底是谁在干活。
+       *  改成：挑完帮手、nick 定了之后，再建记录、再推那条「主智能体 → 某某」。 */
+      const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
+      const push = ctxNow().pushEvent;
+      if (typeof push === 'function') {
+        try {
+          push({ type: 'whale', who: '主智能体 → ' + nick, text: body, as: 'whale', tag: 'worker' });
+        } catch {}
+      }
       }
       try {
         const { runSubagent } = await import('./subagent.mjs');

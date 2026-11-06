@@ -85,7 +85,15 @@ function readAll() {
   allowedBySession: {},
 };
   try {
-    const j = JSON.parse(readFileSync(FILE, 'utf8'));
+    /* 【2026-11-06 修·BOM 会让整份花名册读空】
+     *  这份文件是「屋里有哪些人」的底账。带 BOM 时 JSON.parse 抛错，
+     *  下面 catch 一吞就 return blank —— 屋里一个人都没有，
+     *  于是办事模式找不到谁干活，整条派活链路断掉，而且没有任何日志。
+     *  写盘用 JSON.stringify（不带 BOM），坏的只可能是被人手改过。
+     *  读之前先把 BOM 削掉。 */
+    let _raw = readFileSync(FILE, 'utf8');
+    if (_raw.charCodeAt(0) === 0xfeff) _raw = _raw.slice(1);
+    const j = JSON.parse(_raw);
     if (!j || typeof j !== 'object' || Array.isArray(j)) return blank;
     return {
       version: 4,
@@ -554,7 +562,9 @@ export function factoryPersonaOf(id) {
   const key = String(id || '');
   const dir = join(config.dataDir, '.state', 'personas', key);
   try {
-    const d = JSON.parse(readFileSync(join(dir, 'defaults.json'), 'utf8'));
+    let _dr = readFileSync(join(dir, 'defaults.json'), 'utf8');
+    if (_dr.charCodeAt(0) === 0xfeff) _dr = _dr.slice(1); // 防 BOM：带 BOM 会读不出来，白跑一层 fallback
+    const d = JSON.parse(_dr);
     const p = String((d && d.persona) || '').trim();
     if (p) return p;
   } catch { /* 没有就往下找 */ }
@@ -563,7 +573,9 @@ export function factoryPersonaOf(id) {
     if (p) return p;
   } catch { /* 同上 */ }
   try {
-    const f = JSON.parse(readFileSync(join(dir, '.factory.json'), 'utf8'));
+    let _fr = readFileSync(join(dir, '.factory.json'), 'utf8');
+    if (_fr.charCodeAt(0) === 0xfeff) _fr = _fr.slice(1); // 防 BOM，同上
+    const f = JSON.parse(_fr);
     const p = String((f && f.persona) || '').trim();
     if (p) return p;
   } catch { /* 同上 */ }

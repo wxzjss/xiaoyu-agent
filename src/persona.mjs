@@ -315,7 +315,15 @@ const parts = [
    */
   let _taskModeOn = false;
   try { _taskModeOn = taskOn(sessionId); } catch { _taskModeOn = false; }
-  if (!safeMode && _taskModeOn) {
+  /* 【2026-11-06 修·安全词会把办事模式整段吞掉】
+   *  原来这里是 if (!safeMode && _taskModeOn)。
+   *  safeMode 只表示「主人这一轮喊了安全词、我要换个说话方式」，
+   *  跟「这件事谁来动手」是两回事。可它俩一撞，后果是：
+   *    · 提示词这段整段不注入（她不知道该派活）
+   *    · agent.mjs 的 toolsForTurn 却照旧把干活工具收走（只看 taskOn）
+   *  → 她既没有动手的工具，也没被告知该派活，卡在中间什么都不做。
+   *  现在只认 _taskModeOn：安全词只改说话方式，不动工作分工。 */
+  if (_taskModeOn) {
     const who = String(agentId || "").trim();
     let mainId = "";
     try { mainId = mainAgentId(sessionId) || ""; } catch { mainId = ""; }

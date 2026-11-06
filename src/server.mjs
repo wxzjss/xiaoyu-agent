@@ -544,6 +544,14 @@ function publicSession(session) {
     if (!alive.has(i)) continue;
     // 工具结果不进 turns，它的内容会跟着上面那条 assistant 一起交出去
     if (m.role === 'tool') continue;
+    /**
+     * 【2026-11-05 加·system 消息不该出现在对话流里】
+     *
+     * 主人报「还是有 <thinking>」。查数据发现它出在**第 0 条 role:'system'**
+     * （人设正文里有 <thinking> 的示例写法），而这里原来只跳过了 context / tool，
+     * 没跳过 system —— 于是人设整段被当成一条对话交给前端画了出来。
+     */
+    if (m.role === 'system') continue;
     // content 可能是多模态数组（只在内存里出现过），取文字段
     const raw = m.content;
     const text = (Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n') : String(raw ?? '')).trim();

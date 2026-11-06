@@ -60,3 +60,6 @@ logs/
 _tmp/
 backup-*/
 .ebcache/
+
+# 2026-11-05：playground 里是调试用的浏览器 profile，一堆二进制垃圾，不该进仓库
+playground/

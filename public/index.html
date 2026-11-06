@@ -4279,12 +4279,17 @@ function stickToBottom() {
    * 这里在真正跟随之前，先按**实际位置**校一次。主动跳底走的是 jumpToBottom
    * （它直接 hardScrollBottom，不经过这里），所以不会把用户的点击干掉。
    */
-  try {
-    if (stickBottom && log && (log.scrollHeight - log.scrollTop - log.clientHeight) > 4) {
-      stickBottom = false;
-      try { rememberStick(); } catch (e) {}
-    }
-  } catch (e) {}
+  /* 【2026-11-05 撤掉这里的校正】
+   *
+   * 主人报：「我没动滚轮，在最新消息位置，新消息出来时没有往上滚」。
+   *
+   * 上一版在这里按「实际离底 > 4px」把 stickBottom 校正成 false —— 逻辑错了：
+   * 新内容刚 append、还没滚下去，此刻离底当然是远的。于是每一次新消息
+   * 都被判成「用户已经离开了」，跟随彻底失效。
+   *
+   * 校正只能发生在**用户主动动作**上（滚动、点开某个 details），
+   * 不能发生在「内容变高」这一刻 —— 那是结果，不是原因。
+   */
   if (!stickBottom) return;
   /* 【2026-11-03 修·抽搐·最后一刀（真凶）】
    *  原来是 if (stickRaf) return; —— 只要有一个 rAF 挂着就再也不往下走。
@@ -4317,12 +4322,7 @@ function stickToBottom() {
   _stickAid = setTimeout(() => {
     _stickAid = 0;
     _stickAt = Date.now();
-    /* 【2026-11-05】同样先校正再看 —— 这条延迟路径也是靠状态位判断的 */
-    try {
-      if (stickBottom && log && (log.scrollHeight - log.scrollTop - log.clientHeight) > 4) {
-        stickBottom = false;
-      }
-    } catch (e) {}
+    /* 【2026-11-05】同上：这条延迟路径也不做位置校正（见 stickToBottom 里的说明） */
     if (!stickBottom) return;
     if (!log) return;
     if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;

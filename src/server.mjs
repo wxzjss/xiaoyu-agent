@@ -1,4 +1,4 @@
-﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
+// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -9262,6 +9262,18 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               _opLast[_k] = _n;
             }
             }
+          }
+          else if (ev.type === 'sentfile' && ev.file) {
+            /* 【2026-11-06 主人报「文件根本没出现在聊天界面」】
+             *  病根：send_file 工具是往 pushEvent 里推 { type:'sentfile' } 的，
+             *  但上面这张 onEvent 只认 text/reasoning/tool_start/tool_end ——
+             *  sentfile 落到 else 外面，一个分支都不命中，直接被丢掉。
+             *  前端 index.html 里那段 ev.type === 'sentfile' 永远收不到，卡片自然画不出来。
+             *  补上：照样先 flush 攒着的碎片，再原样转给前端。 */
+            for (const _k of ['reasoning', 'text']) {
+              if (_opAcc[_k] && _opAcc[_k].length) { send({ type: _k, text: _opAcc[_k] }); _opAcc[_k] = ''; }
+            }
+            send({ type: 'sentfile', file: ev.file, note: ev.note || '' });
           }
           else if (ev.type === 'tool_start' || ev.type === 'tool_end') {
             /* 【2026-11-02 主人报「消息显示不全、文字和工具条串在一起」】

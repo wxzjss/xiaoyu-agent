@@ -33,7 +33,7 @@ function walkFiles(dir, out = []) {
     const fp = join(dir, e.name);
     if (e.isDirectory()) { walkFiles(fp, out); continue; }
     if (!e.isFile()) continue;
-    try { out.push({ path: fp, name: e.name, size: fs.statSync(fp).size, mtime: fs.statSync(fp).mtimeMs }); } catch {}
+    try { const st = fs.statSync(fp); out.push({ path: fp, name: e.name, size: st.size, mtime: st.mtimeMs }); } catch {}
   }
   return out;
 }
@@ -75,7 +75,7 @@ function packToGz(files, outPath, { encoding = 'utf8' } = {}) {
   }
   if (!lines.length) return { packed: 0, bytes: 0 };
   const raw = lines.join('\n');
-  const gz = zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 9 });
+  const gz = zlib.gzipSync(Buffer.from(raw, 'utf8'), { level: 6  /* 2026-11-05: 9 太慢，2335 个文件跑 7 分钟没完；6 的体积只大 3~5% */ });
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   // 先写 .tmp 再 rename，别把打包弄成半个
   const tmp = outPath + '.tmp-' + process.pid;

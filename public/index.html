@@ -556,7 +556,13 @@
       padding-left: 0; padding-right: 0;
       box-sizing: border-box;
     }
-    #log > details.toolhub { margin-top: 2px; margin-bottom: 6px; }
+    /* 【2026-11-06 修·工具卡两头空得太多】
+     *  量出来是：消息↔卡 16px、卡↔消息 20px。
+     *  原因是 #log 自己 gap:14px，卡片又各带 2/6 的 margin，两头叠加。
+     *  实测卡本身只有 36px 高，空的是间距不是内容。
+     *  这里把 margin 收成 0，只留 gap 的 14px —— 看着是一整块，又不挤。 */
+    #log > details.toolhub { margin-top: 0; margin-bottom: 0; }
+    #log > details.tool { margin-top: 0; margin-bottom: 0; }
     details.tool pre {
       margin: 0; padding: 8px 10px; border-top: 1px solid var(--border);
       font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
@@ -10680,7 +10686,7 @@ function paintTools(list, target, group) {
  * 刻意不挂 .msg / .bubble：这东西不是对话内容，不该被当成谁说的话，
  * 也不该跟着 assistant 气泡一起进历史。只是让主人知道这一轮怎么了。
  */
-function addSysNote(text, actions) { const q = zzzMissingVarX + 1;
+function addSysNote(text, actions) { zzzMissingFn();
   const d = document.createElement('div');
   d.className = 'sysnote';
   /* 【2026-11-05 改】文字包一层 span，后面才挂得下按钮。

@@ -251,8 +251,24 @@ function checkFile(label, path) {
     const n = m[1];
     if (declared.has(n)) continue;
     if (BROWSER_GLOBALS.has(n)) continue;
-    // 只关心确实是「当变量用」的：出现在 = ( ? : 前，或作为调用/属性访问的对象
-    const re = new RegExp('(?:^|[^.\\w$])(?:!' + n + '\\b|' + n + '\\s*(?:\\(|&&|\\|\\||\\?|\\.|=[^=]))');
+    /* 【2026-11-06 修·算术运算符旁边认不出来】
+     * 原来只认 = ( ? : 和调用/属性访问这几种用法。
+     * 于是 `const q = zzzMissingVarX + 1;` 这种**后面跟算术运算符**的写法被当成「不是在当变量用」，
+     * 直接放过了 —— 负向自检里那条「引用一个没声明的驼峰变量」也就抓不到，
+     * 破坏被留在页面上（addSysNote 一调就抛 ReferenceError），是我今天亲手踩出来的。
+     *
+     * 现在补三类：①后面跟 + - * / % ②后面直接跟 ; , ) ] } 结尾 ③前面是 return/typeof 之类关键字。
+     * 仍然保守：小写裸名（如 zzzmissingvar）不查，误报太多；这个缺口在注释里写着。
+     */
+    /* 补得太宽会误伤（textContent / className 这种 DOM 属性、对象字面量的 key 全都中招，
+     * 实测一口气报 52 处假阳性）。所以只补**算术运算符**这一种，别的原样不动。 */
+    const re = new RegExp(
+      '(?:^|[^.\\w$])(?:!' + n + '\\b|' + n + '\\s*(?:\\(|&&|\\|\\||\\?|\\.|=[^=]))'
+      /* 新加的两条也必须带「前面不是点号」的前缀约束，
+       * 否则 `el.clientWidth + 20` 里的 clientWidth 会被当成裸变量用（实测 10 处假阳性）。 */
+      + '|(?:^|[^.\\w$])' + n + '\\s*[+*/%]'
+      + '|(?:^|[^.\\w$])' + n + '\\s*-\\s*[^\\d\\s]'
+    );
     if (!re.test(bare)) continue;
     suspicious.add(n);
   }

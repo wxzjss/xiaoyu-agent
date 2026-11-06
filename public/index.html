@@ -6324,13 +6324,36 @@ function installTagCleaner() {
     const obs = new MutationObserver((muts) => {
       if (busy) return;
       const targets = new Set();
+      const SEL = '.bubble, .thinkBody, .md, pre';
+      const take = (n) => {
+        if (!n || n.nodeType !== 1) return;
+        if (n.closest && n.closest(SEL)) { const box = n.closest(SEL); if (box) targets.add(box); }
+        /* 新插进来的那个元素本身可能就是个气泡（它自己不在别的气泡里） */
+        if (n.matches && n.matches(SEL)) targets.add(n);
+      };
       for (const m of muts) {
         let n = m.target;
         if (n && n.nodeType === 3) n = n.parentElement;
-        if (!n || n.nodeType !== 1) continue;
-        if (n.closest) {
-          const box = n.closest('.bubble, .thinkBody, .md, pre');
-          if (box) targets.add(box);
+        take(n);
+        /**
+         * 【2026-11-06 修·新增的节点以前根本没被查过】
+         *
+         * 严检用探针照出来的洞：往 #log 里 append 一个已经写好脏文字的新气泡，
+         * 观察器收到的那次变动 target 是 **#log**（父容器），不是新气泡本身；
+         * 而 #log 不在 .bubble 里 → targets 为空 → 什么都不做 → 脏字原样留在屏上。
+         *
+         * 也就是说这张「安全网」只兜得住「已有气泡里的文字被改」，
+         * 兜不住「一整个新气泡带着脏字进来」—— 而流式正是后者。
+         * 现在把新加的节点（含它里面的）一起收进来。
+         */
+        if (m.type === 'childList' && m.addedNodes && m.addedNodes.length) {
+          for (const a of m.addedNodes) {
+            if (!a || a.nodeType !== 1) continue;
+            take(a);
+            if (a.querySelectorAll) {
+              for (const d of a.querySelectorAll(SEL)) targets.add(d);
+            }
+          }
         }
       }
       if (!targets.size) return;

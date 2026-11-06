@@ -557,6 +557,23 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
    * 后端原先只认 JSON，于是这串东西被当正文画到屏幕上，工具一次都没执行。
    */
   let _xmlAcc = '';
+  /**
+   * 【2026-11-06 修·流式剥思考不能「一块一块独立剥」】
+   *
+   * 严检翻出来的真漏子：原来每个 delta 都单独调 stripThinkTags(delta.content)。
+   * 可标签会被切在两块中间 ——
+   *   第一块「<thinking>我在想」整段被吃掉；
+   *   第二块「，还没想完</thinking>你好」里已经没有起始标签，只剩一个孤零零的
+   *   </thinking> 被 replace 掉，于是「，还没想完」当成正文漏了出去，还落了盘。
+   * 盘上那 19 条带标签的消息就是这么来的。
+   *
+   * 光靠「收尾再整体剥一次」也救不了：残渣此时已经和正文混在一起，
+   * 谁都分不出哪半句是思考。
+   *
+   * 所以改成**有状态**地剥：记住「现在是否在思考块里」，跨块续上。
+   */
+  const _feedThink = createThinkStripper();
+
 
   /**
    * 断流自愈：一次流式请求最多续 2 次。
@@ -623,8 +640,8 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
         const reasoning = delta.reasoning_content ?? delta.reasoning;
         if (reasoning) yield { type: 'reasoning', text: reasoning };
         if (delta.content) {
-          // 有的网关把思考塞进 content，剥掉再发。
-          const cleaned = stripThinkTags(delta.content);
+          // 有的网关把思考塞进 content，剥掉再发（有状态：标签被切在两块之间也认）。
+          const cleaned = _feedThink(delta.content);
           if (cleaned) { _xmlAcc += cleaned; yield { type: 'text', text: cleaned }; }
         }
 
@@ -779,6 +796,70 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
  * 包成 <thinking>...</thinking> / <reasoning>...</reasoning>。
  * 不剥的话这些标签会原样进会话、原样画到主人界面上。
  */
+/**
+ * 【2026-11-06 加·有状态的流式剥思考】
+ *
+ * stripThinkTags 是无状态的：给它一段文字，它把成对的标签连内容一起去掉。
+ * 但流式是**一块一块**来的，标签会被切在两块之间 ——
+ *
+ *   chunk1: '<thinking>我在想'          → 无状态剥 → ''（成对的其实没闭合）
+ *   chunk2: '，还没想完</thinking>你好' → 无状态剥 → '，还没想完你好'  ← 漏了
+ *
+ * 所以这里维护两个状态：`inThink`（现在是否在思考块里）和 `buf`（末尾可能是半个标签）。
+ * 用法：先 createThinkStripper() 拿一个 feed，然后每个 delta 喂进去，拿回来的才是能显示的。
+ */
+export function createThinkStripper() {
+  const OPEN_RE = /<(thinking|think|reasoning)(?![a-z])/i;
+  const CLOSE_RE = /<\/(thinking|think|reasoning)\s*>/i;
+  const HEADS = ['<thinking', '</thinking>', '<think', '</think>', '<reasoning', '</reasoning>'];
+  let inThink = false;
+  let buf = '';
+
+  /* 末尾这一段是不是「还没写完的标签」，是的话得留到下一块拼起来再判断 */
+  const partialLen = (s) => {
+    const max = Math.min(s.length, 12);
+    for (let k = max; k > 0; k--) {
+      const tail = s.slice(s.length - k).toLowerCase();
+      if (tail[0] !== '<') continue;
+      for (const h of HEADS) if (h.startsWith(tail)) return k;
+    }
+    return 0;
+  };
+
+  return function feed(chunk) {
+    let s = buf + String(chunk || '');
+    buf = '';
+    let out = '';
+    let guard = 0;
+    while (s && guard++ < 200) {
+      if (!inThink) {
+        const m = s.match(OPEN_RE);
+        if (!m) {
+          const keep = partialLen(s);
+          out += keep ? s.slice(0, s.length - keep) : s;
+          buf = keep ? s.slice(s.length - keep) : '';
+          break;
+        }
+        out += s.slice(0, m.index);
+        const gt = s.indexOf('>', m.index);
+        if (gt < 0) { buf = s.slice(m.index); break; }   // 起始标签还没写完
+        s = s.slice(gt + 1);
+        inThink = true;
+      } else {
+        const m = s.match(CLOSE_RE);
+        if (!m) {
+          const keep = partialLen(s);
+          buf = keep ? s.slice(s.length - keep) : '';
+          break;
+        }
+        s = s.slice(m.index + m[0].length);
+        inThink = false;
+      }
+    }
+    return out;
+  };
+}
+
 export function stripThinkTags(s) {
   if (!s || typeof s !== 'string') return s;
   /* 【2026-11-06 修·孤立结束标签】

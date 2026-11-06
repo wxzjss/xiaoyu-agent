@@ -6313,7 +6313,28 @@ function mdInto(el, rawText) {
   rawText = _cleaned;
   // 【2026-11-05 修】必须用只修乱码的那个 —— fixMojibake 会把 markdown 记号擦掉，
   // 拿它来渲染富文本等于先把材料撕了再拼。
-  const text = repairMojibakeOnly(String(rawText ?? ''));
+  let text = repairMojibakeOnly(String(rawText ?? ''));
+  /**
+   * 【2026-11-05 修·她的分段被 markdown 吃掉了】
+   *
+   * 主人报：「她现在说话一堆话挤在一起，像在看一本书」。
+   * 根因：她的发言靠单换行分段，而标准 markdown 里单换行不产生换行，
+   * 一走 mdInto 就被并成一行（实测 3 行进、0 个换行出）。
+   * 修法：进 markdown 之前把段内单换行升级成空行（段落）；代码块不动。
+   *
+   * 注意：这里全部用 fromCharCode 拼，不写正则字面量 ——
+   * 这行改了三遍，每次反斜杠都在写文件那一层被吃掉，正则直接断掉、整页白屏。
+   */
+  var __NL = String.fromCharCode(10);
+  if (text.indexOf(String.fromCharCode(96, 96, 96)) < 0) {
+    var __paras = text.split(__NL + __NL);
+    var __out = [];
+    for (var __i = 0; __i < __paras.length; __i++) {
+      var __ls = __paras[__i].split(__NL).filter(function (x) { return x.trim(); });
+      if (__ls.length) __out.push(__ls.join(__NL + __NL));
+    }
+    text = __out.join(__NL + __NL);
+  }
   el.classList.remove('md');
   if (!mdHasFeature(text)) {
     el.textContent = text;
@@ -8071,7 +8092,15 @@ async function tryHealAfterDisconnect(id) {
  * 这里不再往界面上写，只把信息留在控制台里 —— 真要看地址，
  * 顶部「模型」按钮点开就有。元素可能已经不在了，所以整段都做空保护。
  */
+/** 【2026-11-06 修·healthNow 从未声明】
+ *  17333 行有一段「2) 退回：全局当前生效的模型（/api/health 里的 model 字段）」，
+ *  可是全文没有任何地方声明 healthNow —— 那句 typeof 判断永远走不到，
+ *  界面右上角的模型名就只剩 lastTurnModel 一条路。
+ *  这里把每次拿到的 health 存下来，那段兜底才真的能用。 */
+let healthNow = null;
+
 function paintHealth(h) {
+  try { if (h && typeof h === 'object') healthNow = h; } catch (e) {}
   if (!h) return;
   try {
     if (!h.hasKey) console.warn('[health] 还没配模型，点顶部「模型」填一个');
@@ -10686,7 +10715,7 @@ function paintTools(list, target, group) {
  * 刻意不挂 .msg / .bubble：这东西不是对话内容，不该被当成谁说的话，
  * 也不该跟着 assistant 气泡一起进历史。只是让主人知道这一轮怎么了。
  */
-function addSysNote(text, actions) { zzzMissingFn();
+function addSysNote(text, actions) {
   const d = document.createElement('div');
   d.className = 'sysnote';
   /* 【2026-11-05 改】文字包一层 span，后面才挂得下按钮。

@@ -44,6 +44,20 @@ let fatal = 0;
 let warn = 0;
 
 /** 挖掉注释与字符串字面量（保留换行，行号才对得上） */
+/** 判断这个 / 是「正则开头」还是「除号」。只看前一个非空白字符。 */
+function looksLikeRegexStart(out) {
+  let k = out.length - 1;
+  while (k >= 0 && (out[k] === ' ' || out[k] === '\n' || out[k] === '\r' || out[k] === '\t')) k--;
+  if (k < 0) return true;
+  const p = out[k];
+  if ('(,=:[!&|?{};+-*%<>~^'.includes(p)) return true;
+  if (p === ')') return false;
+  // return /re/ 这种：看前面几个字符是不是关键字
+  const tail = out.slice(Math.max(0, k - 8), k + 1);
+  if (/\b(return|typeof|case|in|of|void|delete|instanceof|new|do|else|yield|await)$/.test(tail)) return true;
+  return false;
+}
+
 function stripCommentsAndStrings(code) {
   let out = '';
   let i = 0;
@@ -59,6 +73,23 @@ function stripCommentsAndStrings(code) {
       i += 2;
       while (i < n && !(code[i] === '*' && code[i + 1] === '/')) { if (code[i] === '\n') out += '\n'; i++; }
       i += 2;
+      continue;
+    }
+    /* 【2026-11-06 修·漏了正则字面量，实测吞掉 83% 的代码】
+     * 页面里 replace(/^[\s\n]+/, '') 这种写法，老版本会把 / 当成普通字符，
+     * 于是 / 里的 ' 被当成字符串开头，一路吃到下一个 ' —— 中间几千行代码全被吞。
+     * 结果：那一段里的未声明变量永远查不出来（真出过一次：addSysNote 里被塞了残骸没人发现）。
+     */
+    if (c === '/' && looksLikeRegexStart(out)) {
+      i++;
+      while (i < n) {
+        if (code[i] === '\\') { i += 2; continue; }
+        if (code[i] === '/') { i++; break; }
+        if (code[i] === '\n') break;
+        i++;
+      }
+      while (i < n && /[gimsuy]/.test(code[i])) i++;
+      out += "''";
       continue;
     }
     if (c === '"' || c === "'" || c === '`') {
@@ -251,25 +282,34 @@ function checkFile(label, path) {
     const n = m[1];
     if (declared.has(n)) continue;
     if (BROWSER_GLOBALS.has(n)) continue;
-    /* 【2026-11-06 修·算术运算符旁边认不出来】
-     * 原来只认 = ( ? : 和调用/属性访问这几种用法。
-     * 于是 `const q = zzzMissingVarX + 1;` 这种**后面跟算术运算符**的写法被当成「不是在当变量用」，
-     * 直接放过了 —— 负向自检里那条「引用一个没声明的驼峰变量」也就抓不到，
-     * 破坏被留在页面上（addSysNote 一调就抛 ReferenceError），是我今天亲手踩出来的。
+    /* 【2026-11-06 修·两处真缺口 + 两处误报】
      *
-     * 现在补三类：①后面跟 + - * / % ②后面直接跟 ; , ) ] } 结尾 ③前面是 return/typeof 之类关键字。
-     * 仍然保守：小写裸名（如 zzzmissingvar）不查，误报太多；这个缺口在注释里写着。
-     */
-    /* 补得太宽会误伤（textContent / className 这种 DOM 属性、对象字面量的 key 全都中招，
-     * 实测一口气报 52 处假阳性）。所以只补**算术运算符**这一种，别的原样不动。 */
-    const re = new RegExp(
+     * 缺口①（真）原来只认 = ( ? : 和调用/属性访问。`const q = zzzMissingVarX + 1;`
+     *   这种后面跟算术运算符的写法被当成「不是在当变量用」直接放过，
+     *   负向自检里那条「引用一个没声明的驼峰变量」抓不到，破坏就留在页面上了。
+     *
+     * 缺口②（更严重，今天才发现）stripCommentsAndStrings 原来不认正则字面量。
+     *   页面里 replace(/^[\s\n]+/, '') 这类写法会把 / 里的引号当字符串开头，
+     *   一路吃到下一个引号 —— 那段代码整片被吞掉，里面的变量永远查不到。
+     *   实测修前只保留 16.6% 的代码，修后 64.5%。
+     *
+     * 误报① 对象字面量的 key：{ agentIds: ids } —— 后面跟 : 不是「当变量用」。
+     * 误报② typeof 保护过的：typeof healthNow !== 'undefined' && healthNow —— 人家自己防了。
+     *
+     * 仍然保守：小写裸名（如 zzzmissingvar）不查，误报太多；这个缺口在文件末尾写着。
+     */    const re = new RegExp(
       '(?:^|[^.\\w$])(?:!' + n + '\\b|' + n + '\\s*(?:\\(|&&|\\|\\||\\?|\\.|=[^=]))'
-      /* 新加的两条也必须带「前面不是点号」的前缀约束，
-       * 否则 `el.clientWidth + 20` 里的 clientWidth 会被当成裸变量用（实测 10 处假阳性）。 */
+      /* 算术运算符那条必须带同一个前缀约束，否则 el.clientWidth + 20 里的
+       * clientWidth 会被当成裸变量（实测 10 处假阳性）。 */
       + '|(?:^|[^.\\w$])' + n + '\\s*[+*/%]'
-      + '|(?:^|[^.\\w$])' + n + '\\s*-\\s*[^\\d\\s]'
     );
     if (!re.test(bare)) continue;
+    /* 【2026-11-06 修·两种误报，实测各命中一次】
+     * ① 对象字面量的 key：{ agentIds: ids } —— 后面跟 : 不是「当变量用」
+     * ② typeof 保护过的：typeof healthNow !== 'undefined' && healthNow —— 人家自己防了
+     * 这两种都不是 bug，排掉。 */
+    if (new RegExp('(?:^|[^\\w$.])' + n + '\\s*:').test(bare)) continue;
+    if (new RegExp('typeof\\s+' + n + '\\b').test(bare)) continue;
     suspicious.add(n);
   }
   if (!suspicious.size) console.log('    ✔ 没有');

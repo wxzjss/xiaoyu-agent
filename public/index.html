@@ -20015,8 +20015,21 @@ function renderTurns(turns, opts) {
       && _domMsgs[_same].dataset.key === _fragMsgs[_same].dataset.key) _same++;
 
     /* 【判据】旧的那些一条不落、而且顺序一致（_same === 旧总数）→ 就是追加。
-     * 而且真得有新东西（_fragMsgs 更长），否则什么都不用做。 */
-    if (_domMsgs.length > 0 && _same === _domMsgs.length && _fragMsgs.length >= _domMsgs.length) {
+     * 而且真得有新东西（_fragMsgs 更长），否则什么都不用做。
+     *
+     * 【2026-11-07 修·force 的时候绝不能走这条快路】
+     * 主人报「点删除之后，前面消息的格式全没了，刷新才好」。
+     * 天真的想法是「按 key 复用旧节点时别复用纯文本的」，可真正的原因在这儿：
+     * 删除走的是 renderTurns(..., {force:true, noCarry:true}) —— 明明要「照盘上重画」，
+     * 可旧 DOM 的消息 key 跟新的一一对得上，于是被判成「只是追加」，
+     * **一条都没替换**，屏幕上那个直播时写的纯文本气泡就原样留着。
+     * 刷新之所以好，是因为刷新时屏上本来就是 md 的。
+     *
+     * 所以：force 一律真重画，不做追加优化。这类调用（删除/回退/编辑/换分支）
+     * 本来就是「我改完了，你照盘上的画一遍」，容不得偷懒。
+     */
+    if (!(opts && opts.force)
+      && _domMsgs.length > 0 && _same === _domMsgs.length && _fragMsgs.length >= _domMsgs.length) {
       const _tailNodes = [...frag.children].slice([...frag.children].indexOf(_fragMsgs[_same] || frag.lastElementChild));
       for (const n of _tailNodes) if (n && n.parentNode === frag) log.appendChild(n);
       _appendedOnly = true;

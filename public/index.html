@@ -8814,7 +8814,7 @@ function maybeFoldBubble(el, rawText) {
    *
    *  取舍：长回复会占屏，但**能滚**；截断是看不到，比占屏糟得多。
    */
-  if (len < 20000) return;
+  if (len < 40000) return;
   if (el.parentNode && el.parentNode.querySelector(':scope > .foldToggle')) return;
   el.classList.add('folded');
   const btn = document.createElement('button');

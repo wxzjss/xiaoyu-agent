@@ -181,7 +181,12 @@ function sanitizeLoadedMessages(list) {
     }
     // 【2026-11-05】剥掉正文里的思考标签：有的网关把思考塞进 content，
     // 老会话里已经躺了一批这样的脏消息，读的时候一并清掉。
-    if (m && typeof m.content === 'string' && /<(thinking|think|reasoning)[\s>]/i.test(m.content)) {
+    /* 【2026-11-06 修·孤立结束标签清不掉】
+     * 入口原来只认「有起始标签」。可逐块剥留下的残渣往往是孤零零一个 </thinking>
+     * （起始标签在前一块已经被整段吃掉了）—— 这种脏消息进不了这道门，一直留着。
+     * 实测盘上就有这样的：6 条有起始标签能清，1 条只剩结束标签清不掉。
+     * 改成「有任一种标签就进」，让 stripThinkTags 自己去判断怎么清。 */
+    if (m && typeof m.content === 'string' && /<\/?(thinking|think|reasoning)[\s>]/i.test(m.content)) {
       m = { ...m, content: stripThinkTags(m.content) };
     }
     /* 【2026-11-05】压缩记忆也不该出现在正文里（她有时候会照写出来）。 */
@@ -741,7 +746,11 @@ function stripCompressMemory(s) {
 
 function stripThinkTags(s) {
   if (!s || typeof s !== 'string') return s;
-  if (!/<(thinking|think|reasoning)[\s>]/i.test(s)) return s;
+  /* 【2026-11-06 修·孤立结束标签】
+   * 入口原来只认起始标签。可逐块剥留下的残渣往往只剩一个孤零零的 </thinking>，
+   * 这种传进来会被这里直接 return 掉，一个字都不剥 —— 上面那道门放宽了也没用。
+   * 改成结束标签也算数。 */
+  if (!/<\/?(thinking|think|reasoning)[\s>]/i.test(s)) return s;
   return s
     .replace(/<(thinking|think|reasoning)[^>]*>[\s\S]*?<\/\1>/gi, '')
     .replace(/<(thinking|think|reasoning)[^>]*>[\s\S]*$/gi, '')

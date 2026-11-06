@@ -779,9 +779,14 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
  * 包成 <thinking>...</thinking> / <reasoning>...</reasoning>。
  * 不剥的话这些标签会原样进会话、原样画到主人界面上。
  */
-function stripThinkTags(s) {
+export function stripThinkTags(s) {
   if (!s || typeof s !== 'string') return s;
-  if (!/<(thinking|think|reasoning)[\s>]/i.test(s)) return s;
+  /* 【2026-11-06 修·孤立结束标签】
+   * 入口原来只认起始标签。可逐块剥留下的残渣往往只剩一个孤零零的 </thinking>，
+   * 这种传进来会被这里直接 return 掉，一个字都不剥。
+   * 而逐块剥恰恰就是产生这种残渣的源头 —— 不修这里，agent.mjs 收尾再剥一遍也白搭。
+   * 实测：' </thinking>正文' 老版原样返回，新版剥成 ' 正文'。 */
+  if (!/<\/?(thinking|think|reasoning)[\s>]/i.test(s)) return s;
   return s
     .replace(/<(thinking|think|reasoning)[^>]*>[\s\S]*?<\/\1>/gi, '')
     .replace(/<(thinking|think|reasoning)[^>]*>[\s\S]*$/gi, '')

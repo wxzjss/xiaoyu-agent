@@ -1,5 +1,5 @@
 // The agent loop: call model -> run tools -> feed results back -> repeat.
-import { streamChat, modelNameForSession, hasSessionModel } from './llm.mjs';
+import { streamChat, modelNameForSession, hasSessionModel, stripThinkTags } from './llm.mjs';
 // 窗口预算到底怎么算：contextWindowOf 在 rates.mjs，不在 llm.mjs。
 // 这里漏了 import 整整一周没暴露（标识符自检是 569320e 才加上的，
 // 而这次是它第一次指出它），因为走的是「调一次不存在的函数就抛」那条路，
@@ -1176,6 +1176,18 @@ for (let round = 0; round < config.maxRounds; round++) {
             usage = ev.usage;
           }
         }
+        /**
+         * 【2026-11-06 修·跨块的思考内容漏进正文】
+         *
+         * llm.mjs 是逐块 stripThinkTags 的。可标签会被切在两块之间：
+         * 第一块「<thinking>我在想」被整段吃掉，第二块「接着想</thinking>你好」
+         * 里已经没有起始标签了，只剩一句孤零零的 </thinking> 被 replace 掉 ——
+         * 于是「接着想」这三个字当成正文漏了出去，还落了盘。
+         *
+         * 实测会话文件里攒了 35 个 <thinking>，就是这么来的。
+         * 所以在累加完整之后、用之前，拿全文再整体剥一次。
+         */
+        text = stripThinkTags(text);
         // 成功了就把连续失败清零
         resetStreak(sessionId);
         resetStreak(sessionId + ':drop');

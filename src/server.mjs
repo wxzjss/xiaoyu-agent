@@ -10899,32 +10899,44 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
        * 但至少得让主人知道它在长。 */
       try { startHealthWatch((m) => console.log('  ' + m)); } catch (e) { /* 体检挂了不能拖累服务 */ }
 
-      /* 【2026-11-06 加·开服先清一遍 BOM】
+      /* 【2026-11-07 修·BOM 根治：扫全 .state 递归，不只根目录的 .json】
+       *
        *  PowerShell 的 Set-Content -Encoding utf8 会加 BOM（EF BB BF）——
-       *  手动改一次配置、或者别的脚本顺手写一下，就会留下它。
-       *  读取方都是 JSON.parse(readFileSync(...,'utf8'))，遇到 BOM 直接抛，
-       *  而几乎所有调用点都 catch 兜成空表 —— 于是「权限全没了」「身份名字丢了」
-       *  这种事故一句日志都不会留，查一整天也查不出来。
-       *  所以开服扫一遍 .state 下的 .json，见到 BOM 就削掉（削完先试解析，坏了不动）。 */
+       *  手动改一次配置、别的脚本顺手写一下，就留下它了。
+       *
+       *  原来只扫 .state 根目录、只认 .json，于是 memory/*.md 这些子目录里的
+       *  本子带 BOM 根本扫不到。2026-11-07 记忆本就被咬过一次：写进去带 BOM，
+       *  读出来开头是 U+FEFF，markdown 的 "# 会话记忆" 不再是标题，整份本子就哑了。
+       *
+       *  现在递归扫 .json / .md / .jsonl：
+       *    .json 削完先 JSON.parse 验一遍，坏了不动（宁可留着也别削坏）；
+       *    .md / .jsonl 是纯文本，直接削。 */
       try {
         const _st = join(config.dataDir, '.state');
-        let _n = 0;
-        for (const _f of __diagReaddir(_st)) {
-          if (!_f.endsWith('.json')) continue;
-          const _p = join(_st, _f);
-          try {
-            if (!statSync(_p).isFile()) continue;
-            const _b = __rotRead(_p);
-            if (_b.length >= 3 && _b[0] === 0xef && _b[1] === 0xbb && _b[2] === 0xbf) {
+        let _bn = 0;
+        const _walkBom = (dir, depth) => {
+          if (depth > 4) return;
+          let _names = [];
+          try { _names = __diagReaddir(dir); } catch { return; }
+          for (const _f of _names) {
+            const _p = join(dir, _f);
+            let _isdir = false;
+            try { _isdir = statSync(_p).isDirectory(); } catch { continue; }
+            if (_isdir) { _walkBom(_p, depth + 1); continue; }
+            if (!/\.(json|md|jsonl)$/i.test(_f)) continue;
+            try {
+              const _b = __rotRead(_p);
+              if (_b.length < 3 || _b[0] !== 0xef || _b[1] !== 0xbb || _b[2] !== 0xbf) continue;
               const _t = _b.slice(3).toString('utf8');
-              JSON.parse(_t);
+              if (/\.json$/i.test(_f)) JSON.parse(_t);
               __rotWrite(_p, _t, 'utf8');
-              _n++;
-            }
-          } catch (e) { /* 单个文件坏了别拦着开服 */ }
-        }
-        if (_n) console.log('  [bom] 开服清掉 ' + _n + ' 个文件上的 BOM');
-      } catch (e) { /* 清扫挂了不能拖累服务 */ }
+              _bn++;
+            } catch (e) { /* 单个文件坏了别拦着服务起来 */ }
+          }
+        };
+        _walkBom(_st, 0);
+        if (_bn) console.log('  [bom] 开服清掉 ' + _bn + ' 个文件上的 BOM');
+      } catch (e) { /* 清扫自己挂了也不能拖累服务 */ }
       /* 【2026-11-03 记忆系统严检】归档轮转 + 回收站压缩：一天最多跑一次。
        * 不是删，是打包成 .jsonl.gz —— 要翻还能翻，占的地方小一个量级。
        * 回收站超过 7 天、归档超过 30 天才压，阈值给得够宽。 */

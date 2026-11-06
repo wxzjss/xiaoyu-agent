@@ -86,7 +86,9 @@ export function readMemory(id) {
   const file = join(DIR(), `${id}.md`);
   if (!existsSync(file)) return null;
   try {
-    return readFileSync(file, 'utf8');
+    const raw = readFileSync(file, 'utf8');
+    // 【2026-11-07 修·BOM 根治】带 BOM 时开头是 U+FEFF，"# 会话记忆" 就不算标题了，整份本子会哑
+    return raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
   } catch {
     return null;
   }
@@ -116,7 +118,8 @@ export function writeMemory(id, text, { force = true } = {}) {
 export function snapMemory(id, text) {
   if (!isId(id)) return { restored: false, removed: false, backup: null };
   const file = join(DIR(), `${id}.md`);
-  const cur = existsSync(file) ? readFileSync(file, 'utf8') : null;
+  const _curRaw = existsSync(file) ? readFileSync(file, 'utf8') : null;
+  const cur = _curRaw && _curRaw.charCodeAt(0) === 0xfeff ? _curRaw.slice(1) : _curRaw;
   let backup = null;
   if (cur !== null && cur !== text) {
     ensureDir();

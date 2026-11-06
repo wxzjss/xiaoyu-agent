@@ -29,6 +29,15 @@ import { join } from 'node:path';
 import { config } from './config.mjs';
 import { getEnabledMap } from './features.mjs';
 
+/* 【2026-11-07 修·BOM 根治】
+ * 读文本一律走这里：带 BOM 就削掉开头那一个 U+FEFF。
+ * 病根是 PowerShell 的 Set-Content -Encoding utf8 会写 EF BB BF，
+ * 而这边全是人/脚本直接改本子，防不住写，就防着读。 */
+function readTextNoBom(p) {
+  const t = readFileSync(p, 'utf8');
+  return t.charCodeAt(0) === 0xfeff ? t.slice(1) : t;
+}
+
 /**
  * 【长期记忆关着吗】—— 2026-10-28，跟 my-memory.mjs 同一道闸
  *
@@ -125,7 +134,7 @@ function appendArchive(block, addedItems) {
     let head = '# 小鲸的记忆 · 归档\n\n旧条目挪到这儿，需要的时候翻。\n';
     let body = '';
     if (existsSync(ARCHIVE)) {
-      const old = readFileSync(ARCHIVE, 'utf8');
+      const old = readTextNoBom(ARCHIVE);
       if (old.trim()) {
         // 去掉原来的头，只留正文，避免头重复
         body = old.replace(/^# 小鲸的记忆 · 归档[\s\S]*?\n\n/, '');
@@ -231,7 +240,7 @@ export function readWhaleMemory() {
       writeMemAtomic(FILE, SKELETON);
       return SKELETON;
     }
-    const text = readFileSync(FILE, 'utf8');
+    const text = readTextNoBom(FILE);
     if (!text.trim()) return off ? '' : SKELETON;
     return text;
   } catch {
@@ -570,14 +579,14 @@ export function writeWhaleMemory(text) {
 export function whaleMemoryInfo() {
   try {
     if (!existsSync(FILE)) return { exists: false, chars: 0, entries: 0, path: FILE, archived: 0 };
-    const text = readFileSync(FILE, 'utf8');
+    const text = readTextNoBom(FILE);
     const bucket = parse(text);
     const entries = SECTIONS.reduce((n, s) => n + bucket[s].length, 0);
     const st = statSync(FILE);
     let archived = 0;
     try {
       if (existsSync(ARCHIVE)) {
-        archived = readFileSync(ARCHIVE, 'utf8').split('\n').filter((l) => l.trim().startsWith('- ')).length;
+        archived = readTextNoBom(ARCHIVE).split('\n').filter((l) => l.trim().startsWith('- ')).length;
       }
     } catch {}
     return {

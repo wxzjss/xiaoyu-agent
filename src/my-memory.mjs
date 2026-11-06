@@ -45,6 +45,15 @@ import { join } from 'node:path';
 import { config } from './config.mjs';
 import { getEnabledMap } from './features.mjs';
 
+/* 【2026-11-07 修·BOM 根治】
+ * 读文本一律走这里：带 BOM 就削掉开头那一个 U+FEFF。
+ * 病根是 PowerShell 的 Set-Content -Encoding utf8 会写 EF BB BF，
+ * 而这边全是人/脚本直接改本子，防不住写，就防着读。 */
+function readTextNoBom(p) {
+  const t = readFileSync(p, 'utf8');
+  return t.charCodeAt(0) === 0xfeff ? t.slice(1) : t;
+}
+
 /**
  * 【长期记忆关着吗】—— 2026-10-28
  *
@@ -177,7 +186,7 @@ export function memoryFileFor(persona) {
  */
 function currentPersona() {
   try {
-    const idx = JSON.parse(readFileSync(join(STATE(), 'personas.json'), 'utf8'));
+    const idx = JSON.parse(readTextNoBom(join(STATE(), 'personas.json')));
     const id = String(idx?.current ?? 'default');
     if (id === 'default') return { id: 'default', name: '默认人设' };
     const meta = Array.isArray(idx?.list) ? idx.list.find((x) => x && x.id === id) : null;
@@ -206,8 +215,8 @@ export function moveMemoryOnRename(fromName, to) {
     if (!existsSync(from)) { ensureFile(); return { moved: false, path: target }; }
     // 目标已经有了：不覆盖，把两本合到一起（目标在前，旧的接在后面）
     if (existsSync(target)) {
-      const older = readFileSync(from, 'utf8');
-      const now = readFileSync(target, 'utf8');
+      const older = readTextNoBom(from);
+      const now = readTextNoBom(target);
       const merged = mergeMemoryText(now, older);
       writeFileSync(target, merged, 'utf8');
       rmSync(from, { force: true });
@@ -639,7 +648,7 @@ export function searchMemory(query, limit = 8) {
   const q = String(query || '').trim();
   if (!q) return [];
   let raw = '';
-  try { raw = readFileSync(activeFile(), 'utf8'); } catch { return []; }
+  try { raw = readTextNoBom(activeFile()); } catch { return []; }
   const { fixed, roll, detail } = parseMemory(raw);
 
   const terms = q.split(/[\s,，、。;；!！?？]+/).filter((t) => t.length >= 1);
@@ -666,7 +675,7 @@ export function searchMemory(query, limit = 8) {
 export function composeMemory(maxChars = MAX_CHARS) {
   ensureFile();
   let raw = '';
-  try { raw = readFileSync(activeFile(), 'utf8'); } catch { return { text: '', keptRoll: 0, totalRoll: 0 }; }
+  try { raw = readTextNoBom(activeFile()); } catch { return { text: '', keptRoll: 0, totalRoll: 0 }; }
 
   const { fixed, roll, detail, archive } = parseMemory(raw);
   const detailLines = String(detail ?? '').split('\n').filter((l) => l.trim() !== '');
@@ -776,7 +785,7 @@ export function composeMemory(maxChars = MAX_CHARS) {
 export function nextTurnId() {
   ensureFile();
   let raw = '';
-  try { raw = readFileSync(activeFile(), 'utf8'); } catch { return 'R0001'; }
+  try { raw = readTextNoBom(activeFile()); } catch { return 'R0001'; }
   const { roll } = parseMemory(raw);
   const max = roll.reduce((m, r) => Math.max(m, Number(r.num) || 0), 0);
   return 'R' + String(max + 1).padStart(4, '0');
@@ -831,7 +840,7 @@ export function appendRolling(summary, extra = {}) {
   const clean = String(summary ?? '').trim();
   if (!clean) throw new Error('summary 是空的，没东西可记');
 
-  const { fixed, roll, detail, archive } = parseMemory(readFileSync(activeFile(), 'utf8'));
+  const { fixed, roll, detail, archive } = parseMemory(readTextNoBom(activeFile()));
   /**
    * 【2026-11-05 加·源头查重】
    *
@@ -916,7 +925,7 @@ export function appendFixed(section, text) {
     head = hit || FIXED_SECTIONS[1];
   }
 
-  const raw = readFileSync(activeFile(), 'utf8');
+  const raw = readTextNoBom(activeFile());
   const { fixed, roll, detail, archive } = parseMemory(raw);
   const lines = fixed ? fixed.split('\n') : [];
 
@@ -1036,7 +1045,7 @@ export function memoryFileOf(who) {
 export function readMemoryFor(who) {
   const f = memoryFileOf(who);
   if (!f) return '';
-  try { return readFileSync(f, 'utf8'); } catch { return ''; }
+  try { return readTextNoBom(f); } catch { return ''; }
 }
 
 /** 这本在不在（判断是不是第一回）。 */
@@ -1053,7 +1062,7 @@ export function appendFixedFor(who, section, text) {
   const clean = String(text == null ? '' : text).trim();
   if (!clean) throw new Error('text 是空的，没东西可记');
   let body = '';
-  try { body = readFileSync(f, 'utf8'); } catch { body = ''; }
+  try { body = readTextNoBom(f); } catch { body = ''; }
   const line = '- ' + new Date().toISOString().slice(0, 10) + ' ' + clean + '\n';
   const sec = '## ' + section + '\n';
   if (body.includes(sec)) {

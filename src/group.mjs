@@ -20,9 +20,20 @@ import { chat } from './llm.mjs';
 import { buildSystemPrompt } from './persona.mjs';
 
 /** 群聊最多带多少条历史：够接上下文，又不至于每说一句都烧一大截钱 */
-const HISTORY_LIMIT = 24;
+/**
+ * 【2026-11-05 调·24 → 16，每条 600 → 400】
+ *
+ * 主人报「办事模式特别慢，还不如不开」。
+ *
+ * 查：每个 speaker 一次 chat()，上下文 = 24 条 × 600 字 + 系统提示（人设四千多）
+ * + earlier 1200 字 ≈ 2 万字（近 3 万 token）。首字延迟自然长，而且 speaker 是串行的。
+ *
+ * 收一收：16 条 × 400 字 ≈ 6400 字。群聊「刚才谁说了什么」这个量已经够用，
+ * 更早的本来就由 earlierSayings 每人留一句兜着。
+ */
+const HISTORY_LIMIT = 16;
 /** 单条历史最多留多少字：很久以前的长篇就别整段搬了 */
-const PER_MSG_LIMIT = 600;
+const PER_MSG_LIMIT = 400;
 
 /** 这条要不要进上下文（工具的空壳、内部标记的都不要） */
 function usable(m) {

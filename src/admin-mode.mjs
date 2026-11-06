@@ -40,14 +40,27 @@ function readTable() {
   try {
     const f = file();
     if (!existsSync(f)) return {};
-    const j = JSON.parse(readFileSync(f, 'utf8'));
+    /* 【2026-11-06 修·BOM 会让整张权限表静默失效】
+     *
+     * 主人报了「管理员权限明明开着，read_file 还是被拦」。真因：
+     * 这个 json 被外部改写过一次，存成了 UTF-8 BOM。JSON.parse 见到
+     * 开头的 \uFEFF 直接抛错，而下面那个 catch 把错吞掉、返回空表 ——
+     * 表现就是「一声不响，权限全没了」，连日志都没有。
+     *
+     * 两道都补上：读之前剥掉 BOM；真解析失败时喊一声，别静默降级。 */
+    let raw = readFileSync(f, 'utf8');
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    const j = JSON.parse(raw);
     if (j && j.on && typeof j.on === 'object' && !Array.isArray(j.on)) {
       const map = {};
       for (const [k, v] of Object.entries(j.on)) if (v === true) map[k] = true;
       return map;
     }
     return {};
-  } catch {
+  } catch (e) {
+    /* 【2026-11-06】以前这里是裸 catch，文件坏了就静默返回空表 ——
+     * 权限一夜之间全没了，还查不出为什么。坏了就得喊一声。 */
+    log('读表失败，按「全都没开」处理：' + (e && e.message ? e.message : e));
     return {};
   }
 }

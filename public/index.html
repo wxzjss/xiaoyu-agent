@@ -6234,6 +6234,31 @@ function mdInline(text) {
  * 她有时候会把压缩记忆的正文写进回复里（提示词已经禁了，但模型不总听话）。
  * 后端保存和读取时都剥了，这里再补一道——流式实时显示时数据还没落盘。
  */
+/**
+ * 【2026-11-05 加·剥离 XML 形态的工具调用】
+ *
+ * 截图里看到屏幕上直接显示着：
+ *   <call><invoke name="run_command">
+ *   <parameter name="command">cd "D:\小鱼Agent"; ...</parameter>
+ *   </invoke></call>
+ *
+ * 有的模型不用 JSON 的 tool_calls，而是把调用写成 XML 塞进正文。
+ * 后端只认 JSON（llm.mjs 里 `m.tool_calls`），于是这串 XML 被当正文画了出来 ——
+ * 既难看，又等于那次工具根本没被调用。
+ *
+ * 这里先做止血：把 <call>…</call> / <invoke>…</invoke> 从显示里拿掉。
+ * （真正要能用，得让后端解析这种 XML 并真的去执行，那是另一件事。）
+ */
+function stripXmlToolCalls(input) {
+  var s = String(input == null ? '' : input);
+  if (s.indexOf('<call') < 0 && s.indexOf('<invoke') < 0) return s;
+  s = s.replace(/<call[\s\S]*?<\/call>/gi, '');
+  s = s.replace(/<invoke[\s\S]*?<\/invoke>/gi, '');
+  s = s.replace(/<call[\s\S]*$/gi, '');
+  s = s.replace(/<invoke[\s\S]*$/gi, '');
+  return s.replace(/^\s+/, '').replace(/\s+$/, '');
+}
+
 function stripCompressMemoryText(input) {
   var s = String(input == null ? '' : input);
   var i = s.indexOf('【压缩记忆');
@@ -6260,7 +6285,7 @@ function stripThinkingTags(input) {
 function mdInto(el, rawText) {
   if (!el) return;
   /* 【2026-11-05】正文里偶尔会混进模型自己的 <thinking> 块，画之前先剥掉。 */
-  const _cleaned = stripCompressMemoryText(stripThinkingTags(rawText));
+  const _cleaned = stripXmlToolCalls(stripCompressMemoryText(stripThinkingTags(rawText)));
   if (String(rawText || '').trim() && !String(_cleaned || '').trim()) {
     el.classList.remove('md');
     el.textContent = '';
@@ -6448,7 +6473,7 @@ function paintSpeech(bubble, raw) {
    * stripThinkingTags 处理了「只有开头没有结尾」的中间态，
    * 所以打字过程中也不会闪一下标签。
    */
-  const cleaned = fixMojibake(stripCompressMemoryText(stripThinkingTags(String(raw ?? ''))));
+  const cleaned = fixMojibake(stripXmlToolCalls(stripCompressMemoryText(stripThinkingTags(String(raw ?? '')))));
   if (!wrap) { bubble.textContent = cleaned; bubble._tail = bubble; return bubble; }
   /**
    * 【2026-11-02 主人报：一句话没说完就换行，刷新一次又好了】

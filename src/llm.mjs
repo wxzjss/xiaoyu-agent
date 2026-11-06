@@ -548,6 +548,15 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
   const acc = new Map(); // index -> {id, name, arguments}
   const decoder = new TextDecoder();
   let buf = '';
+  /**
+   * 【2026-11-05 加·正文累积，用来兜底识别 XML 形态的工具调用】
+   *
+   * 有的模型不吐 JSON 的 tool_calls，而是把调用写成 XML 塞在正文里：
+   *   <call><invoke name="run_command">
+   *   <parameter name="command">ls</parameter></invoke></call>
+   * 后端原先只认 JSON，于是这串东西被当正文画到屏幕上，工具一次都没执行。
+   */
+  let _xmlAcc = '';
 
   /**
    * 断流自愈：一次流式请求最多续 2 次。
@@ -616,7 +625,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
         if (delta.content) {
           // 有的网关把思考塞进 content，剥掉再发。
           const cleaned = stripThinkTags(delta.content);
-          if (cleaned) yield { type: 'text', text: cleaned };
+          if (cleaned) { _xmlAcc += cleaned; yield { type: 'text', text: cleaned }; }
         }
 
         for (const tc of delta.tool_calls ?? []) {
@@ -635,6 +644,21 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       }
     }
     }
+    /**
+     * 【2026-11-05 加·兜底：正文里藏着 XML 工具调用】
+     *
+     * 收完流之后，如果一条正规的 tool_calls 都没有，但正文里出现了 <invoke>，
+     * 就按 XML 解析出来当成工具调用交出去 —— 这样那次调用真的会执行，
+     * 而不是变成屏幕上的一段乱码。
+     *
+     * 只认「有 name 属性的 invoke + 里面的 parameter」，别的一概不动。
+     */
+    try {
+      if (!acc.size && _xmlAcc.indexOf('<invoke') >= 0) {
+        const _xc = parseXmlToolCalls(_xmlAcc);
+        if (_xc.length) yield { type: 'tool_calls', toolCalls: _xc };
+      }
+    } catch (e) { /* 解析失败就当没有，回到原来的行为 */ }
   } catch (err) {
     // 流被掐断了。把已经攒好的 tool_calls 先交出去，别让这一轮白跑；
     // 然后往上抛一个带标记的错，交给 agent 那边决定「续跑」。
@@ -654,6 +678,49 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
     }
     throw err;
   }
+}
+
+/**
+ * 【2026-11-05 加·把正文里的 XML 工具调用解析出来】
+ *
+ * 认这种形状（有的模型 / 网关就这么吐）：
+ *   <call><invoke name="run_command">
+ *   <parameter name="command">ls -la</parameter>
+ *   </invoke></call>
+ *
+ * 也认没有外层 <call> 的、以及自闭合的空参数。
+ * 解析失败一律返回空数组 —— 上层看到空就退回原来的行为，不会更糟。
+ */
+function parseXmlToolCalls(text) {
+  const out = [];
+  try {
+    const src = String(text || '');
+    if (!src) return out;
+    const invokeRe = /<invoke\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)<\/invoke>/gi;
+    let m;
+    let n = 0;
+    while ((m = invokeRe.exec(src)) !== null) {
+      const name = String(m[1] || '').trim();
+      if (!name) continue;
+      const body = m[2] || '';
+      const args = {};
+      const paramRe = /<parameter\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)<\/parameter>/gi;
+      let p;
+      while ((p = paramRe.exec(body)) !== null) {
+        const k = String(p[1] || '').trim();
+        if (!k) continue;
+        args[k] = String(p[2] || '').trim();
+      }
+      out.push({
+        id: 'xmlcall_' + Date.now().toString(36) + '_' + (n++),
+        name,
+        arguments: JSON.stringify(args),
+      });
+    }
+  } catch (e) {
+    return [];
+  }
+  return out;
 }
 
 /**

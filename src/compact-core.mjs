@@ -573,9 +573,19 @@ export function stripImages(messages, sessionId = '', opts = {}) {
   if (keepFromUser) {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
-      // 只认真正的主人发言：带 context 的是引子、带 _who 的是别人插话，
-      // 都不能当「这一轮主人给我的图」，否则真正那张又要被换掉。
-      if (m && m.role === 'user' && !m._sysNote && !m.context && !m._who) { cut = i; break; }
+      /* 【2026-11-06 修·我把主人的话全排掉了】
+       *
+       * 上一版写的是 `!m._who`，本意是「跳过别人插话」。可实际上**主人自己说的每一句
+       * 都带 `_who: '主人'`** —— 于是这个条件把主人全部排掉，cut 退化成 messages.length，
+       * 「保留段」长度为 0，整轮所有消息都被当成历史、图被无门限地全换成文字。
+       * 后果就是：主人发图我看不见，read_file 读图也看不见。
+       *
+       * 正确的判据：只排两类 ——
+       *   · `_sysNote`  ：程序自己插的量线提醒，不是人话
+       *   · `context`   ：程序拼的早期摘要/引子，不是这一轮的新话
+       * 其余 `role === 'user'` 一律算主人的发言（`_who` 是「谁说的」，主人也带）。
+       */
+      if (m && m.role === 'user' && !m._sysNote && !m.context) { cut = i; break; }
     }
   }
   for (let i = 0; i < cut; i++) {

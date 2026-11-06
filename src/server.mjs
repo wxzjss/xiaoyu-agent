@@ -9796,7 +9796,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            */
           try {
             const _ti = taskInfo(sessionId);
-            if (_ti && _ti.on && speakers.length > 2) speakers = speakers.slice(0, 2);
+            if (_ti && _ti.on) {
+              /**
+               * 【2026-11-06 改·办事模式下别人不再挨个补一句】
+               *
+               * 主人要的是「办事模式做事比正常快」。上一版只是把 3 个声音压到 2 个，
+               * 可真正贵的地方在于：**每一个 speaker 都是一次完整 chat()**，
+               * 带着整套人设 + 十几条历史，串行排队。
+               *
+               * 而这一轮本来就有人说过话了 —— 小鱼的回答在群聊这段之前已经完整说完，
+               * worker 的汇报也已经以 worker 事件推给主人看过了。
+               * 再让旁人来补一句，纯属「开完会轮流发言」，一个字的信息都不多，时间却翻倍。
+               *
+               * 所以办事模式下：**只有被 @ 到的人才接话**，其余一律不喊。
+               * 没被 @ 就是零个 speaker —— 这一轮省掉 1~2 次完整的模型调用。
+               */
+              const _named = speakers.filter((a) => {
+                const nm = String(a.name || '').trim();
+                return nm && String(heard || '').includes('@' + nm);
+              });
+              speakers = _named.slice(0, 1);
+            }
           } catch (e) { /* 读不到状态就按原样放行 */ }
           if (speakers.length) {
             try {

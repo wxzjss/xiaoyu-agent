@@ -9233,61 +9233,53 @@ function wireSave(el, url, name) {
   });
   return el;
 }
-/** 正在流式输出的那条回复的气泡；没有就 null —— 绝不退化成「最后一条旧消息」 */
+/** 消息流容器（现在的结构里就是 #log） */
+function sentMsgRoot() {
+  try { return document.getElementById('log'); } catch (e) { return null; }
+}
+
+/**
+ * 【2026-11-06 重写·这一整块以前是照着老的 els.messages / .row.ai 写的】
+ *
+ * 主人让查「发文件」，查出来的是：这套函数全在引用一个**早就不存在的** `els`，
+ * 还有老结构的 `.row.ai`（现在消息是 `.msg.assistant`）。
+ * 结果两条路一起断：
+ *   · liveBubbleHost() 一进门 `els.messages` 就 ReferenceError，被 catch 吃掉 → 返回 null
+ *   · sentTailRow() 同样炸 → 返回 null
+ *   · 于是 placeSentCard 最后落到 `els.messages.appendChild` 那一句，再炸一次
+ *   · SSE 那边 catch 住，只往 console 打一行「当场画失败」—— 主人屏幕上什么都没有
+ *
+ * 现在按真实的 DOM 重写：容器 = #log，活气泡 = 带 .streaming 的那个 .bubble。
+ */
 function liveBubbleHost() {
   try {
-    if (!els.messages) return null;
-    const rows = [...els.messages.querySelectorAll('.row.ai')];
-    for (let r = rows.length - 1; r >= 0; r--) {
-      const row = rows[r];
-      if (row.dataset && row.dataset.sentTail) continue;
-      if (!row.classList.contains('streaming')) continue;
-      const b = row.querySelector('.bubble');
-      if (b) return b;
-    }
+    const root = sentMsgRoot();
+    if (!root) return null;
+    const live = [...root.querySelectorAll('.bubble.streaming')];
+    if (live.length) return live[live.length - 1];
     return null;
   } catch (e) { return null; }
 }
 
-/**
- * 【2026-11-05 严检补：这变量也没声明过】
- *   placeSentCard() 一进来就 sentThisTurn.push(card)，settleSentFiles() 里还
- *   读它、清它（sentThisTurn = []），可全文没有一处 const/let 声明 ——
- *   脚本是 type="module"（严格模式），第一次 push 就是 ReferenceError：
- *   「说完之后这一轮发文件」这条路直接把整个发送流程打断。
- *   本来想声明成 const，但下面有 sentThisTurn = [] 重新赋值，所以用 let。
- */
 let sentThisTurn = [];
 
-/**
- * 【2026-11-05 严检补：这函数以前根本不存在，只被调用】
- *   placeSentCard() 在「这一轮已经说完、没有流式气泡」时走 else 里那句
- *   const tail = sentTailRow()，可全文找不到 sentTailRow 的定义 ——
- *   于是「说完之后再发文件/图片」这条路必抛 ReferenceError，
- *   卡片当场不显示，主人只看到消息里说「发你了」，手上什么都没有。
- *
- *   补的这行：本轮说完后新到的卡片先落在一个临时「尾巴行」里，
- *   settleSentFiles() 收尾时再按 sentTail 标记把它们归到该去的那条回复下面。
- *   注意必须真的把 tail 挂进 els.messages，不然 settleSentFiles 里
- *   querySelector('.row.ai.sentTail') 永远找不到，卡片就一直挂在临时壳上。
- */
+/** 这一轮已经说完、没有活气泡时用的临时壳：卡片先落这儿，收尾再归位 */
 function sentTailRow() {
   try {
-    if (!els.messages) return null;
-    let tail = els.messages.querySelector('.row.ai.sentTail');
+    const root = sentMsgRoot();
+    if (!root) return null;
+    let tail = root.querySelector('[data-sent-tail="1"]');
     if (tail) return tail;
     tail = document.createElement('div');
-    tail.className = 'row ai sentTail';
+    tail.className = 'msg assistant sentTail';
     tail.dataset.sentTail = '1';
     const inbox = document.createElement('div');
     inbox.className = 'bubble';
     tail.appendChild(inbox);
-    els.messages.appendChild(tail);
+    root.appendChild(tail);
     try { stickToBottom(); } catch (e) {}
     return tail;
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
 /** 把一张卡片放到该放的地方 */
@@ -9301,8 +9293,9 @@ function placeSentCard(card) {
     box.appendChild(card);
   } else {
     const tail = sentTailRow();
-    if (tail && tail.firstChild) tail.firstChild.appendChild(card);
-    else if (els.messages) els.messages.appendChild(card);
+    const inbox = tail && tail.firstChild;
+    if (inbox) inbox.appendChild(card);
+    else { const root = sentMsgRoot(); if (root) root.appendChild(card); }
   }
   try { stickToBottom(); } catch (e) {}
 }
@@ -9311,46 +9304,39 @@ function placeSentCard(card) {
 function settleSentFiles() {
   try {
     const cards = (sentThisTurn || []).filter((c) => c && c.parentNode);
-    const tail = els.messages ? els.messages.querySelector('.row.ai.sentTail') : null;
+    const root = sentMsgRoot();
+    const tail = root ? root.querySelector('[data-sent-tail="1"]') : null;
     if (tail) {
       const inbox = tail.firstChild;
       if (inbox) for (const c of [...inbox.children]) if (!cards.includes(c)) cards.push(c);
     }
     if (!cards.length) { if (tail) tail.remove(); sentThisTurn = []; return; }
 
-    /* 【2026-11-05 主人报：卡片跑到很早之前的消息下面去了】
-     * 以前这里从最后一条一路往前找，谁先带 .bubble 就挂谁 —— 流式途中气泡还没建，
-     * 于是一路找回到老早的旧消息，卡片就贴在那儿了。
-     * 现在：只认「正在流式」或「刚流式完」的那一条；认不出就**不上溯**，
-     * 老老实实留在消息流末尾（临时壳的位置本来就是最新的地方）。 */
-    let hostRow = null;
-    if (els.messages) {
-      const rows = [...els.messages.querySelectorAll('.row.ai')];
-      for (let r = rows.length - 1; r >= 0; r--) {
-        const row = rows[r];
-        if (row === tail) continue;
-        if (row.dataset && row.dataset.sentTail) continue;
-        if (!row.classList.contains('streaming')) continue;
-        if (row.querySelector('details.tool')) continue;
-        if (row.querySelector('.bubble')) { hostRow = row; break; }
+    /* 归位顺序：正在流式的气泡 → 最后一条回复的气泡 → 临时壳 → 消息流末尾。
+     * 只往前找「最后一条」，不再上溯老消息 —— 以前一路找回去，卡片会贴到很早的旧消息下面。 */
+    let hostBub = null;
+    if (root) {
+      const live = [...root.querySelectorAll('.bubble.streaming')];
+      if (live.length) hostBub = live[live.length - 1];
+      if (!hostBub) {
+        const bubs = [...root.querySelectorAll('.msg.assistant .bubble')];
+        const last = bubs[bubs.length - 1];
+        if (last && !(last.parentElement && last.parentElement.dataset.sentTail)) hostBub = last;
       }
     }
-
-    if (hostRow) {
-      const bub = hostRow.querySelector('.bubble');
-      let box = bub.querySelector('.sentLive');
-      if (!box) { box = document.createElement('div'); box.className = 'sentLive'; bub.appendChild(box); }
+    if (hostBub) {
+      let box = hostBub.querySelector('.sentLive');
+      if (!box) { box = document.createElement('div'); box.className = 'sentLive'; hostBub.appendChild(box); }
       for (const c of cards) box.appendChild(c);
       if (tail) tail.remove();
-    } else if (tail) {
-      // 没有可归的气泡，就让卡片留在末尾的临时壳里（位置也对，就在最新）
-    } else if (els.messages) {
-      for (const c of cards) els.messages.appendChild(c);
+    } else if (!tail && root) {
+      for (const c of cards) root.appendChild(c);
     }
     sentThisTurn = [];
     try { stickToBottom(); } catch (e) {}
   } catch (e) { console.warn('[sentfile] 收尾归位失败：', e && e.message); }
 }
+
 
 function outCard(f) {
   const name = (f && f.name) || '文件';

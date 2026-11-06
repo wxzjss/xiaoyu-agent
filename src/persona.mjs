@@ -228,6 +228,25 @@ const TASTE_BLOCK = [
   '该有的：结论、证据、卡在哪、下一步。',
 ].join(String.fromCharCode(10));
 
+/**
+ * 【2026-11-07 加·一次发多个工具】
+ *
+ * 查「为什么小鱼慢」时量出来的最大一条：一个工具一次模型往返。
+ * 翻真实会话，555 次模型调用配 593 个工具 —— 差不多一比一，等于每次都排队等 2~3 秒。
+ * 而框架**本来就是支持并发的**（runAgent 里连续只读工具走 Promise.all），
+ * 只是没有一条规矩告诉她要这么发，她就老老实实一轮一个。
+ *
+ * 这段只讲「什么时候合、什么时候不能合」。不教它乱合 ——
+ * 有先后的（先写再验）硬凑成一批，会跑出假结果，比慢糟得多。
+ */
+const PARALLEL_TOOL_BLOCK = [
+  '【能一起做的事，一次发多个 —— 这是最省主人时间的习惯】',
+  '· 同一条响应里可以带好几个 tool_call，它们会**同时**跑，只等最慢那个。',
+  '· 要读三个文件、查两个目录、跑几条互不相干的只读命令 —— 一次全发出来，别一轮一个。',
+  '· 反过来不能合：有先后的（先读再改、先写再验、后一步要用前一步的结果）必须分开。',
+  '· 拿不准就一定一次一个 —— 跑错返工比慢更费时间。',
+].join(String.fromCharCode(10));
+
 const parts = [
     PLATFORM_BLOCK,
     retargetPersona(_cardPersona || loadPersona(sessionId), _me),
@@ -351,6 +370,8 @@ const parts = [
     parts.push(SELF_CHECK_BLOCK);
     // 说话腔调：别用客服腔、别升华（见 TASTE_BLOCK）
     parts.push(TASTE_BLOCK);
+    // 一次发多个工具：这条直接决定「一件小活要几轮」（见 PARALLEL_TOOL_BLOCK）
+    parts.push(PARALLEL_TOOL_BLOCK);
   }
   // 会话记忆放最后：它是唯一一块每轮变长的，跟读者走，不能渲染前面的每一句。
   const mem = memoryBlock(sessionId);

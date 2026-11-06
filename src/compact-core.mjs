@@ -63,8 +63,41 @@ const IMAGE_ESTIMATE_CHARS = 10000;
  * 已经榨干，剩下能动的只有整段对话 —— 那一步必须我亲手写摘要。
  * 留 20% 缓冲给「折叠本身」，折完落回 0.3~0.5 才有意义。
  */
-export const SOFT_RATIO = 0.55;
-export const HARD_RATIO = 0.8;
+/**
+ * 【2026-11-07 根治·把瘦身线提前】
+ *
+ * 原来 SOFT 0.55 / HARD 0.80。实测代价是：大会话一直撑到 40 万 token 才动手，
+ * 而**每一轮、每一次工具调用都要重新背上这一整坨**。翻真实会话，工具结果占了
+ * 上下文的 91%~97% —— 也就是说每多跑一轮，多背的都是旧命令的原文。
+ *
+ * 现在 0.45 / 0.70：
+ *   · SOFT 提前到 45% —— 早一点把旧工具结果擦成结论，别让它们跟着跑一晚上；
+ *   · HARD 提前到 70% —— 留 30% 缓冲给折叠本身（折完落回 0.3~0.5 才有意义）。
+ *
+ * 为什么不怕「改历史废缓存」：slimHistory 是**幂等**的（瘦过的带标记，下一轮不再动）。
+ * 所以它只在跨线那一刻改一次历史、废一次缓存，之后前缀重新稳定、缓存照常命中。
+ * 反过来，拖着不瘦，是每一轮都在为那些旧原文付钱。
+ */
+export const SOFT_RATIO = 0.45;
+export const HARD_RATIO = 0.7;
+
+/**
+ * 【2026-11-07 加·绝对线：不管窗口开多大，背这么多就已经慢了】
+ *
+ * 只按比例判是不够的 —— 主人在界面里把模型切成了「自动档」，
+ * 那个模型窗口 **1,000,000 token**，45% 就是 45 万。
+ * 于是会话一路涨到 43 万 token，按比例算还是很「宽裕」，一次都不瘦身。
+ *
+ * 可「不会死」和「不慢」是两件事：每一轮、每一次工具调用都要把这一整坨
+ * 重新发一遍，token 越多首字越慢、越贵。窗口再大也改不了这件事。
+ *
+ * 所以再加一条按绝对量算的线：
+ *   · 12 万 token 起就开始把旧工具结果擦成结论（SOFT）；
+ *   · 25 万 token 就是「必须折」了（HARD）。
+ * 这两条跟比例取「谁先到」，窗口大也拦不住它提前瘦。
+ */
+export const SOFT_ABS_TOKENS = 120_000;
+export const HARD_ABS_TOKENS = 250_000;
 
 /**
  * 【保命线】到了这条线，就不等我了。
@@ -214,8 +247,10 @@ export function compactGate(messages, limit, sessionId) {
   const cap = Number(limit) || 0;
   const ratio = cap > 0 ? before / cap : 0;
   let tier = 'none';
-  if (ratio >= HARD_RATIO) tier = 'hard';
-  else if (ratio >= SOFT_RATIO) tier = 'slim';
+  /* 【2026-11-07】比例和绝对量取「谁先到」——
+   * 窗口 1M 的时候比例永远到不了，靠的就是下面那两条绝对线（见常量注释）。 */
+  if (ratio >= HARD_RATIO || before >= HARD_ABS_TOKENS) tier = 'hard';
+  else if (ratio >= SOFT_RATIO || before >= SOFT_ABS_TOKENS) tier = 'slim';
   return { before, limit: cap, ratio, tier };
 }
 

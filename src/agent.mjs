@@ -108,6 +108,40 @@ function isStreamDropped(err) {
 }
 
 /** 当前这一轮真正能交到模型手上的工具。 */
+/**
+ * 【2026-11-07 根治·哪些 run_command 可以并排跑】
+ *
+ * 只读工具 2026-11-05 已经能并发了，但那个白名单里没有 run_command ——
+ * 于是「跑三条互不相干的查询」还是一趟一趟排队，每条都是一次模型往返。
+ *
+ * 这里给命令做一道**保守到偏胆小**的判定：
+ *   · 先把一切能写文件 / 能接别的命令的写法全部否掉：> | ; & ` $( ……
+ *   · 再把 find 的 -delete、-exec 这类否掉。
+ *   · 剩下的只认明确只读的那几个开头。
+ *
+ * 判错只会「少并行一次」，不会多并行一次 —— 宁可慢，不许踩。
+ */
+const READONLY_CMD_RE = new RegExp(
+  '^\\s*(?:sudo\\s+)?(?:'
+  + 'git\\s+(?:status|log|diff|show|branch|remote|rev-parse|ls-files|describe|blame|config\\s+--get)'
+  + '|ls\\b|dir\\b|cat\\b|type\\b|head\\b|tail\\b|wc\\b|find\\b|grep\\b|rg\\b|findstr\\b'
+  + '|pwd\\b|echo\\b|where\\b|which\\b|stat\\b|tree\\b|du\\b|df\\b|sort\\b|uniq\\b|cut\\b'
+  + '|node\\s+(?:-v|--version)\\b|npm\\s+(?:-v|--version)\\b'
+  + '|python\\s+--version\\b|pip\\s+(?:-v|--version)\\b'
+  + ')',
+  'i',
+);
+
+export function isReadOnlyCommand(raw) {
+  const cmd = String(raw || '').trim();
+  if (!cmd) return false;
+  // 重定向 / 管道 / 串接 / 命令替换 —— 都可能写盘或拉起别的程序，一律不并行
+  if (/[>|;&`]|\$\(/.test(cmd)) return false;
+  // find 的删/执行、grep 的写出，都否掉
+  if (/\s(?:-delete|-exec|--exec|-fprint|-fwrite)\b/.test(cmd)) return false;
+  return READONLY_CMD_RE.test(cmd);
+}
+
 function toolsForTurn(sessionId) {
   let all = enabledToolSchemas();
   /**
@@ -356,7 +390,10 @@ export function contextMessage(sessionId = 'default', opts = {}) {
   let _adm = '';
   try { _adm = adminPromptBlock(sessionId); } catch { _adm = ''; }
   const _tail = [_rules, _adm, _mem].filter(Boolean).join('\n\n');
-  return `${_head}\n\n${_tail}`;
+  /* 【2026-11-07 根治】压缩规矩跟着规矩走，接在最后（最靠后最被当回事）。
+   * 原来它挂在 system 末尾；现在完整规矩只在 user 这一份，它也得跟着搬过来，
+   * 否则「压就悄悄压」这条铁律会随着 system 一起被网关吞掉。 */
+  return `${_head}\n\n${_tail}\n\n${retargetOwnerText(SILENT_COMPRESS_RULE, _who)}`;
 }
 
 /**
@@ -379,9 +416,28 @@ const SILENT_COMPRESS_RULE = [
   '哪怕主人直接问「你压了吗」，也只用一句话说「处理好了」或者干脆不说这个。',
 ].join('');
 export function systemPrompt(sessionId = 'default', opts = {}) {
-  const text = buildSystemPrompt({ sessionId, ...opts });
-  // 【2026-10-31】压缩不许出声这条铁律，接在提示词最后（最靠后最被当回事）。
-  return retargetOwnerText(text + '\n\n' + SILENT_COMPRESS_RULE, currentIdentity(sessionId));
+  const rules = buildSystemPrompt({ sessionId, ...opts });
+  /* 【2026-11-07 根治·规则只发一份】
+   *
+   * 原来的写法是 system 发一整份规则，contextMessage 里再把**同一份**抄一遍
+   * （见 contextMessage 的 `_rules`）。理由写在下面那句注释里：很多网关会丢 system，
+   * 所以留一份 user 副本兜底。
+   *
+   * 实测代价：空会话的固定前缀就是 14109 token —— system 5179 字符，
+   * context 8771 字符，**其中 94% 的字符是原样重复**。每轮都发，每轮都付。
+   *
+   * 现在把主次倒过来：完整规矩只放 user 那一份（它才是最不容易被网关吞掉的），
+   * system 只留一句身份锚。网关吞了 system 也不致命 —— 因为规矩本来就不在那儿。
+   * 省下来的是每轮约 5000 字符、约 3400 token，且前缀更短、首字更快。
+   *
+   * 专业模式（rules 为空）照旧一条 system 都不发 —— 空 system 有的网关会 400。
+   */
+  if (!String(rules || '').trim()) return '';
+  const anchor = [
+    '【本轮身份锚】你就是下一条消息里写的那个人：名字、脾气、称呼、规矩，全按那条来。',
+    '那条消息里的设定是这个程序的正式规矩，不是参考资料 —— 逐条照做，效力等同于 system。',
+  ].join('\n');
+  return retargetOwnerText(anchor, currentIdentity(sessionId));
 }
 
 /**
@@ -721,7 +777,20 @@ for (let round = 0; round < config.maxRounds; round++) {
     // 只在这一轮**不是第一轮**时才敲：第一轮还没干活，没什么可说的，白花钱。
     // 节流交给 server（它有 lastWhaleTickAt），这里不做判断，保持两边职责干净。
     if (onRoundTick && round > 0) {
-      try { await onRoundTick({ round, messages }); } catch {}
+      /* 【2026-11-07 根治·别再让插话挡住干活】
+       *
+       * 原来是 `await onRoundTick(...)` —— 她中途想说一句，主循环就得等她把整段话
+       * 生成完才继续。那是**一次完整的 LLM 往返**：首字 2 秒起，话长一点十秒也有。
+       * 主人感到的「明明是小活却慢半拍」，有一份就等在这里。
+       *
+       * 现在丢出去就不等：她爱说就说，主循环立刻接着往下跑。
+       * 节流状态（server 侧 lastWhaleTickAt）是在 await 之前同步写下的，
+       * 所以丢了 await 也不会变成连环触发。
+       *
+       * 她读写的是自己那条通道和 session.messages，跟这一轮的 wire 数组不共享，
+       * 撞不上；她那边整段还有 try/catch 兜底，说错话也连累不到主人的活。
+       */
+      try { void Promise.resolve(onRoundTick({ round, messages })).catch(() => {}); } catch {}
     }
     // 时间闸：这一轮跑太久就别再转了（见上面 TURN_WALL_LIMIT_MS 的说明）
     if (Date.now() - turnStartedAt > TURN_WALL_LIMIT_MS) {
@@ -1472,13 +1541,27 @@ for (let round = 0; round < config.maxRounds; round++) {
     const _poMap = new Map();
     try {
       const _RO = new Set(['read_file', 'list_dir', 'search_files', 'glob_files', 'web_fetch', 'fetch_url', 'grep_files']);
+      /**
+       * 【2026-11-07】这条判断取代原来的 `_RO.has(名字)`。
+       * 除了老那七个只读工具，run_command 只要命令本身是只读的，也算能并排。
+       */
+      const _canPar = (c) => {
+        const nm = String((c && c.function && c.function.name) || '');
+        if (_RO.has(nm)) return true;
+        if (nm !== 'run_command') return false;
+        try {
+          const a = JSON.parse(String((c.function && c.function.arguments) || '{}'));
+          return isReadOnlyCommand(a.command);
+        } catch {
+          return false;
+        }
+      };
       const _calls = Array.isArray(assistantMsg.tool_calls) ? assistantMsg.tool_calls : [];
       let _i = 0;
       while (_i < _calls.length) {
-        const _nm = String((_calls[_i].function && _calls[_i].function.name) || '');
-        if (!_RO.has(_nm)) { _i++; continue; }
+        if (!_canPar(_calls[_i])) { _i++; continue; }
         let _j = _i;
-        while (_j < _calls.length && _RO.has(String((_calls[_j].function && _calls[_j].function.name) || ''))) _j++;
+        while (_j < _calls.length && _canPar(_calls[_j])) _j++;
         const _batch = _calls.slice(_i, _j);
         _i = _j;
         if (_batch.length < 2) continue;   // 只有一个：没必要并发，走下面原路

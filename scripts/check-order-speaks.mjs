@@ -22,16 +22,25 @@ async function chat(sid, msg) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 90000);
   let r;
+  let raw;
   try {
     r = await fetch(BASE + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: sid, message: msg }), signal: ac.signal });
+    /**
+     * 【2026-11-06 再修·超时只管了 fetch，没管读流】
+     *
+     * 上面那个 timer 原来在 fetch 一返回就 clearTimeout 了 —— 可真正的等待在
+     * `r.text()`：模型一个字一个字慢慢吐，或者干脆不吐完，读流那一段照样无限等。
+     * 实测整批回归卡在这一条 8 分多钟，前面 20 条全绿也没用。
+     * 现在把「发请求 + 读完」整个盖在同一个超时里。
+     */
+    raw = await r.text();
   } catch (e) {
-    console.log('  ✘ 调用超时（90 秒没回），上游模型太慢或挂了');
+    console.log('  ✘ 调用超时（90 秒没读完），上游模型太慢或挂了');
     process.exitCode = 1;
     throw e;
   } finally {
     clearTimeout(timer);
   }
-  const raw = await r.text();
   const seq = [];
   let fbuf = '';
   const noteFish = () => { if (fbuf.trim() && !seq.includes('小鱼')) seq.push('小鱼'); };

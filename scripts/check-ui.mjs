@@ -297,7 +297,8 @@ function checkFile(label, path) {
      * 误报② typeof 保护过的：typeof healthNow !== 'undefined' && healthNow —— 人家自己防了。
      *
      * 仍然保守：小写裸名（如 zzzmissingvar）不查，误报太多；这个缺口在文件末尾写着。
-     */    const re = new RegExp(
+     */
+    const re = new RegExp(
       '(?:^|[^.\\w$])(?:!' + n + '\\b|' + n + '\\s*(?:\\(|&&|\\|\\||\\?|\\.|=[^=]))'
       /* 算术运算符那条必须带同一个前缀约束，否则 el.clientWidth + 20 里的
        * clientWidth 会被当成裸变量（实测 10 处假阳性）。 */

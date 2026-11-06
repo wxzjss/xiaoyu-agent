@@ -6331,7 +6331,18 @@ function mdInto(el, rawText) {
     var __out = [];
     for (var __i = 0; __i < __paras.length; __i++) {
       var __ls = __paras[__i].split(__NL).filter(function (x) { return x.trim(); });
-      if (__ls.length) __out.push(__ls.join(__NL + __NL));
+      /* 【2026-11-06 修·表格画不出来】
+       *  上面这行是「段内单换行升级成空行」，为了让她的分段真的显示出来。
+       *  但 markdown 表格的每一行也是单换行 —— 升级之后表格被拆成
+       *    | 项 | 值 |  /  空行  /  |---|---|  /  空行  /  | a | 1 |
+       *  表格识别要求「这一行和下一行都是表格行」，中间一插空行就认不出，
+       *  屏幕上只剩一堆竖线。所以：这段里只要有表格行，就整段原样留着。 */
+      var __hasTbl = false;
+      for (var __k = 0; __k < __ls.length; __k++) {
+        var __t = __ls[__k].trim();
+        if (__t.length > 1 && __t.charAt(0) === String.fromCharCode(124) && __t.charAt(__t.length - 1) === String.fromCharCode(124)) { __hasTbl = true; break; }
+      }
+      if (__ls.length) __out.push(__ls.join(__hasTbl ? __NL : __NL + __NL));
     }
     text = __out.join(__NL + __NL);
   }

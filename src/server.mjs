@@ -10842,6 +10842,33 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
        * 严检时量到 .state 已经 1GB+，那些目录全是证据/交付物，不能自动删，
        * 但至少得让主人知道它在长。 */
       try { startHealthWatch((m) => console.log('  ' + m)); } catch (e) { /* 体检挂了不能拖累服务 */ }
+
+      /* 【2026-11-06 加·开服先清一遍 BOM】
+       *  PowerShell 的 Set-Content -Encoding utf8 会加 BOM（EF BB BF）——
+       *  手动改一次配置、或者别的脚本顺手写一下，就会留下它。
+       *  读取方都是 JSON.parse(readFileSync(...,'utf8'))，遇到 BOM 直接抛，
+       *  而几乎所有调用点都 catch 兜成空表 —— 于是「权限全没了」「身份名字丢了」
+       *  这种事故一句日志都不会留，查一整天也查不出来。
+       *  所以开服扫一遍 .state 下的 .json，见到 BOM 就削掉（削完先试解析，坏了不动）。 */
+      try {
+        const _st = join(config.dataDir, '.state');
+        let _n = 0;
+        for (const _f of __diagReaddir(_st)) {
+          if (!_f.endsWith('.json')) continue;
+          const _p = join(_st, _f);
+          try {
+            if (!statSync(_p).isFile()) continue;
+            const _b = __rotRead(_p);
+            if (_b.length >= 3 && _b[0] === 0xef && _b[1] === 0xbb && _b[2] === 0xbf) {
+              const _t = _b.slice(3).toString('utf8');
+              JSON.parse(_t);
+              __rotWrite(_p, _t, 'utf8');
+              _n++;
+            }
+          } catch (e) { /* 单个文件坏了别拦着开服 */ }
+        }
+        if (_n) console.log('  [bom] 开服清掉 ' + _n + ' 个文件上的 BOM');
+      } catch (e) { /* 清扫挂了不能拖累服务 */ }
       /* 【2026-11-03 记忆系统严检】归档轮转 + 回收站压缩：一天最多跑一次。
        * 不是删，是打包成 .jsonl.gz —— 要翻还能翻，占的地方小一个量级。
        * 回收站超过 7 天、归档超过 30 天才压，阈值给得够宽。 */
@@ -10850,6 +10877,11 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         let last = 0;
         try { last = Number(__rotRead(mark, 'utf8')) || 0; } catch {}
         if (Date.now() - last > 86400000) {
+          /* 【2026-11-05 加·延后 15 秒再跑】
+           * 主人报「双击图标启动那么慢」。这段原来是 listen 回调里**同步**跑的，
+           * 阈值改 2 天之后要压 2335 个文件，直接把事件循环堵死 —— 端口通了但界面点不动。
+           * 现在延后 15 秒：先把界面服务出来，打包在后面慢慢做。 */
+          setTimeout(() => {
           /* 【2026-11-05 改·7 天 → 2 天】
            *
            * 回收站已经堆到 73MB / 2974 个文件：今天 565 个、1-7 天 2382 个、
@@ -10864,6 +10896,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           const n = t.reduce((s, x) => s + x.packed, 0) + a.packed;
           if (n) console.log('[rotate] 打包回收 ' + n + ' 个老文件（回收站 7 天 / 归档 30 天）');
           __rotWrite(mark, String(Date.now()), 'utf8');
+          }, 15000);
         }
       } catch (e) { /* 轮转挂了不能拖累服务 */ }
       /* 【2026-11-03 办事模式严检】会话被删了、名册/记忆本还在的，改名 .gone 收走 */

@@ -108,6 +108,20 @@ export function rotateArchive({ days = 90, dryRun = false } = {}) {
 }
 
 /** 回收站压缩：.trash 里超过 days 天的打包。 */
+/**
+ * 【2026-11-05 改·分批打包】
+ *
+ * 主人报「双击桌面图标，小鱼Agent 启动那么慢」。
+ *
+ * 根因：compactTrash 在 server.listen 的回调里**同步**跑，
+ * 而 7 天阈值被我改成 2 天之后，要压的文件从 24 个涨到 2335 个 ——
+ * gzipSync 一口气处理 55MB，事件循环被堵死，前端所有请求干等。
+ *
+ * 现在按 BATCH 个一批，批次之间让出事件循环（await），
+ * 启动能先把界面服务出来，打包在后面慢慢跑。
+ */
+const BATCH = 200;
+
 export function compactTrash({ days = 30, dryRun = false } = {}) {
   const results = [];
   for (const rel of ['memory/.trash', 'sessions/.trash']) {
@@ -119,9 +133,20 @@ export function compactTrash({ days = 30, dryRun = false } = {}) {
     const before = old.reduce((s, f) => s + f.size, 0);
     if (dryRun) { results.push({ dir: rel, packed: old.length, before, after: 0, file: '(dryRun)' }); continue; }
     const tag = new Date().toISOString().slice(0, 10);
-    const out = uniqueOutPath(join(dir, '_packed', 'trash-' + tag + '.jsonl.gz'));
-    const r = packToGz(old, out);
-    results.push({ dir: rel, packed: r.packed, before, after: r.bytes, file: out });
+    /* 【2026-11-05 改·分批】每 BATCH 个打一个包，别一口气吞 2335 个。
+     * 分批之后单个包小很多，压缩时间可控；真要看还能按包翻。 */
+    let _packed = 0;
+    let _bytes = 0;
+    let _files = [];
+    for (let _i = 0; _i < old.length; _i += BATCH) {
+      const _slice = old.slice(_i, _i + BATCH);
+      const out = uniqueOutPath(join(dir, '_packed', 'trash-' + tag + '-' + (_i / BATCH + 1) + '.jsonl.gz'));
+      const r = packToGz(_slice, out);
+      _packed += r.packed;
+      _bytes += r.bytes;
+      _files.push(out);
+    }
+    results.push({ dir: rel, packed: _packed, before, after: _bytes, file: _files[0] || '' });
   }
   return results;
 }

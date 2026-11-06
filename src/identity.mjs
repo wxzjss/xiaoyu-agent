@@ -113,7 +113,14 @@ function readIdentityDefaults(j) { return readIdentityPatches(j && j.defaults); 
 function readState() {
   try {
     if (!existsSync(FILE)) return { ...DEFAULT_STATE, customs: [], bySession: {}, edits: {}, defaults: {} };
-    const j = JSON.parse(readFileSync(FILE, 'utf8'));
+    /* 【2026-11-06 修·BOM 会让整份身份表静默读空】
+     *  PowerShell 的 Set-Content -Encoding utf8 会加 BOM（EF BB BF），
+     *  JSON.parse 遇到它直接抛；这个 catch 又兜回出厂状态 ——
+     *  于是「主人改过的名字/人设」一夜之间全没了，还查不出为什么。
+     *  读之前先把 BOM 削掉。 */
+    let _raw = readFileSync(FILE, 'utf8');
+    if (_raw.charCodeAt(0) === 0xfeff) _raw = _raw.slice(1);
+    const j = JSON.parse(_raw);
     const current = typeof j.current === 'string' && j.current ? j.current : 'owner';
     const customs = Array.isArray(j.customs)
       ? j.customs

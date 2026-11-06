@@ -13,7 +13,24 @@ let pass = 0, total = 0;
 const chk = (name, ok, extra) => { total++; if (ok) { pass++; console.log('  [ok] ' + name + (extra ? '  ' + extra : '')); } else console.log('  [FAIL] ' + name + (extra ? '  ' + extra : '')); };
 
 async function chat(sid, msg) {
-  const r = await fetch(BASE + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: sid, message: msg }) });
+  /* 【2026-11-06 修·没有超时会让整个回归卡死】
+   * 实测：18:33 起卡在这一句足足 4 分半，日志一动不动、node 进程还活着。
+   * 打的是 /api/chat，真在调模型 —— 上游慢或挂了它就无限等，
+   * run-all-checks 永远跑不到最后一行，等于回归没跑。
+   * 给个上限：超时就抛，让这条检查干脆地失败，而不是把整批拖死。
+   */
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 90000);
+  let r;
+  try {
+    r = await fetch(BASE + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: sid, message: msg }), signal: ac.signal });
+  } catch (e) {
+    console.log('  ✘ 调用超时（90 秒没回），上游模型太慢或挂了');
+    process.exitCode = 1;
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   const raw = await r.text();
   const seq = [];
   let fbuf = '';

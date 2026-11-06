@@ -112,7 +112,7 @@ function readDefaults() {
 export function defaultBottomLines() {
   const custom = readDefaults().bottomLines;
   if (Array.isArray(custom)) {
-    const list = custom.map((x) => String(x).trim()).filter(Boolean);
+    const list = normalizeLines(custom);
     if (list.length) return list;
   }
   return [...DEFAULT_SETTINGS.bottomLines];
@@ -125,10 +125,31 @@ export function defaultBottomLines() {
  * 「本来就是默认，没动」，得拿现在生效的这份跟默认那份比，
  * 而不是拿出厂常量比 —— 否则他定过默认之后，这句永远报错。
  */
+/**
+ * 【2026-11-06 修·对象被写成 "[object Object]"】
+ *
+ * 实测踩到：POST /api/settings 时 bottomLines 传了 [{text,color}] 这种对象数组，
+ * String(x) 之后全变成 "[object Object]"，然后把主人 15 条底线整个盖掉。
+ * {"text":"..."} 这种形态进到设置里，界面上就是一行 "[object Object]"，还恢复不回来。
+ *
+ * 所以这里收口：非字符串一律不当底线。对象里恰好有 text 的，取 text（容忍老前端）；
+ * 其余（数字、null、嵌套对象）直接丢掉。
+ */
+function normalizeLines(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((x) => {
+      if (typeof x === 'string') return x.trim();
+      if (x && typeof x === 'object' && typeof x.text === 'string') return x.text.trim();
+      return '';
+    })
+    .filter(Boolean);
+}
+
 export function currentBottomLines() {
   const stored = readRaw();
   const list = Array.isArray(stored?.bottomLines)
-    ? stored.bottomLines.map((x) => String(x).trim()).filter(Boolean)
+    ? normalizeLines(stored?.bottomLines)
     : [];
   return list.length ? list : defaultBottomLines();
 }
@@ -142,7 +163,7 @@ export function currentBottomLines() {
 export function defaultSafeWords() {
   const custom = readDefaults().safeWords;
   if (Array.isArray(custom)) {
-    const list = [...new Set(custom.map((x) => String(x).trim()).filter(Boolean))];
+    const list = [...new Set(normalizeLines(custom))];
     if (list.length) return list;
   }
   return [...DEFAULT_SETTINGS.safeWords];
@@ -267,12 +288,30 @@ function normalize(input = {}) {
   /* 底线：老文件里可能还留着「不可逆的事先问」那一条 —— 在这儿统一筛掉，
    * 这样不管它是从 settings.json、defaults.json 还是出厂值来的，
    * 发到提示词里的都不会再有那句（见上面 dropsAdminAskRule 的注释）。 */
-  const bottomLines = (Array.isArray(input.bottomLines)
-    ? input.bottomLines.map((s) => String(s).trim()).filter(Boolean)
-    : defaultBottomLines()).filter((line) => !dropsAdminAskRule(line));
+  /* 【2026-11-06 修·脏数据会把底线洗光】
+   * 实测：POST { bottomLines: [{a:1}, null, {}] } —— 全是对象/空值，
+   * normalizeLines 洗完剩 []，于是主人 15 条底线被静默清空，界面上一条不剩。
+   *
+   * 但「主动清空」是主人的正当操作（把框里删干净再保存），不能一概拒绝。
+   * 所以只拦一种：**传进来的数组有东西、洗完却是空的** —— 那说明全是脏数据，
+   * 不是主人真想清空。
+   */
+  let bottomLines;
+  if (Array.isArray(input.bottomLines)) {
+    const clean = normalizeLines(input.bottomLines);
+    if (!clean.length && input.bottomLines.length) {
+      const e = new Error('底线里没有一条能认的内容（传进来的都是空值或对象），为免把原有底线清光，这次不保存');
+      e.status = 400;
+      throw e;
+    }
+    bottomLines = clean;
+  } else {
+    bottomLines = defaultBottomLines();
+  }
+  bottomLines = bottomLines.filter((line) => !dropsAdminAskRule(line));
   // 没给就用「默认安全词」——主人点过「设为默认」的话，这里读到的是他定的那份
   let safeWords = Array.isArray(input.safeWords)
-    ? input.safeWords.map((s) => String(s).trim()).filter(Boolean)
+    ? normalizeLines(input.safeWords)
     : [...defaultSafeWords()];
   safeWords = [...new Set(safeWords)];
   const safeWordNote =
@@ -442,7 +481,7 @@ export function resetBottomLines() {
 
   // 2) 当前底线（缺字段就当空；没存过就是默认那份）
   const stored = Array.isArray(raw.bottomLines)
-    ? raw.bottomLines.map((x) => String(x).trim()).filter(Boolean)
+    ? normalizeLines(raw.bottomLines)
     : [];
   const current = stored.length ? stored : defaults;
   const same =
@@ -481,9 +520,7 @@ export function resetBottomLines() {
  * @returns {{ bottomLines: string[], backup: string|null, changed: boolean }}
  */
 export function setDefaultBottomLines(lines) {
-  const list = (Array.isArray(lines) ? lines : [])
-    .map((x) => String(x).trim())
-    .filter(Boolean);
+  const list = normalizeLines(lines);
   if (!list.length) {
     const e = new Error('一条底线都没有，不能把它设成默认');
     e.status = 400;
@@ -549,7 +586,7 @@ export function setDefaults(input = {}) {
 
   // 底线
   if (Array.isArray(input.bottomLines)) {
-    const list = input.bottomLines.map((x) => String(x).trim()).filter(Boolean);
+    const list = normalizeLines(input.bottomLines);
     // 乱码闸：中文被编码弄坏后是「??」这种形状，不许写进去把好数据冲掉
     const badLine = list.find((x) => looksGarbled(x));
     if (badLine) {
@@ -672,9 +709,7 @@ export function resetSafeWords() {
     throw e;
   }
 
-  const curWords = Array.isArray(raw.safeWords)
-    ? raw.safeWords.map((x) => String(x).trim()).filter(Boolean)
-    : [];
+  const curWords = normalizeLines(raw.safeWords);
   const curNote = typeof raw.safeWordNote === 'string' ? raw.safeWordNote.trim() : '';
 
   const same =

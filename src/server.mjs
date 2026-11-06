@@ -9778,10 +9778,26 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * 这一条主流程。所以再看一眼会话上的时间戳（whaleSpokeThisTurn）——
            * 那是她所有说话路的公共出口打的，谁说的都能看见。
            */
-          const speakers = speakers0.filter(
+          let speakers = speakers0.filter(
             (a) => !groupSpokeThisTurn.has(String(a.id))
               && !(String(a.id) === AGENT_XIAOJING && whaleSpokeThisTurn(session)),
           );
+          /**
+           * 【2026-11-05 加·办事模式下最多两个声音】
+           *
+           * 主人报「办事模式特别慢，不如不开」。
+           *
+           * 慢的一半是上下文（已收窄），另一半是**串行**：每个 speaker 一次完整 chat()，
+           * 而且每次都带一整套人设 —— 三个 speaker 就是三次排队。
+           *
+           * 这里不碰顺序（后面的还得看到前面说的），只**限制说话的人数**：
+           * 办事模式本来就是一个主 + 几个干活的，干活的人不需要人人都开口。
+           * 前两个说，剩下的这一轮只听 —— 话少一半，时间也少一半。
+           */
+          try {
+            const _ti = taskInfo(sessionId);
+            if (_ti && _ti.on && speakers.length > 2) speakers = speakers.slice(0, 2);
+          } catch (e) { /* 读不到状态就按原样放行 */ }
           if (speakers.length) {
             try {
               setAllowedSpeakers(sessionId, nextAllowedIds(prevAllowed, heard, roster, quietIds));

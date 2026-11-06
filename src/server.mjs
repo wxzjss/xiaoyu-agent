@@ -10899,16 +10899,24 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           }, 15000);
         }
       } catch (e) { /* 轮转挂了不能拖累服务 */ }
-      /* 【2026-11-03 办事模式严检】会话被删了、名册/记忆本还在的，改名 .gone 收走 */
-      try { pruneOrphans(); } catch { /* 孤儿清理挂了不能拖累服务 */ }
-      try { pruneWorkerFiles(); } catch { /* 同上 */ }
+      /* 【2026-11-05 改·清理也挪到启动之后】
+       *
+       * 主人报启动十几秒，主因是轮转（已延后）。这三个虽然量小，
+       * 但也是同步 IO，一起挪出去 —— 启动路径上不该有「扫目录」这种活。 */
+      setTimeout(() => {
+        try { pruneOrphans(); } catch { /* 孤儿清理挂了不能拖累服务 */ }
+        try { pruneWorkerFiles(); } catch { /* 同上 */ }
+      }, 6000);
       /* 【2026-11-03 出厂自建卡】每台机器第一次启动时把小白曦、旁白铺成卡。
        * 账本在 .state/agent-presets-made.json —— 铺过一次就不再铺，主人删了就是删了。
        * 人设正文来自包里的 persona/agents/<key>.md（build.files 带着整个 persona 目录）。 */
-      try {
-        const n = ensureAgentPresets();
-        if (n && !quiet) console.log(`[presets] 铺了 ${n} 张出厂智能体卡`);
-      } catch (e) { /* 铺卡失败不能拖累服务 */ }
+      /* 【2026-11-05 改】铺卡也延后 —— 第一次启动要写几十个文件，不该占启动时间 */
+      setTimeout(() => {
+        try {
+          const n = ensureAgentPresets();
+          if (n && !quiet) console.log(`[presets] 铺了 ${n} 张出厂智能体卡`);
+        } catch (e) { /* 铺卡失败不能拖累服务 */ }
+      }, 3000);
       if (!quiet) {
         console.log(`小鱼Agent running: ${url}`);
         if (lanOn) {

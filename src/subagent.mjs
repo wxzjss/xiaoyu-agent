@@ -911,10 +911,19 @@ export async function runSubagent({
       { role: 'system', content: systemPrompt },
       {
         role: 'user',
+        /**
+         * 【2026-11-06 改·人设不再塞两遍】
+         *
+         * 原来这里把 systemPrompt 整段又贴了一遍（上面 role:'system' 已经有一份），
+         * 3000 字左右 ≈ 1500 token，而 messages 每轮都整份重发 ——
+         * 一个跑 5 轮的 worker 就白付 7500 token 的输入。
+         *
+         * 主人要「办事模式比正常快」，这是最直接能省的一笔。
+         * 设定本身走 system 那条（模型都认），这里只留一句提醒。
+         */
         content:
-          '下面是你的设定，从现在起一直有效，直到这次任务结束。读完之后，最后那段才是要你办的事。'
-          + '\n\n' + systemPrompt
-          + '\n\n——— 设定结束，下面是这次要办的事 ———\n\n' + cleanTask,
+          '（设定和规矩见上面的 system 消息，一直有效直到这次任务结束。）'
+          + '\n\n——— 下面是这次要办的事 ———\n\n' + cleanTask,
         context: true,
       },
     ];

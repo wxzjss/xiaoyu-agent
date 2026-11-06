@@ -6285,6 +6285,64 @@ function stripCompressMemoryText(input) {
   return s.slice(0, i).replace(/[ 	]+$/, '');
 }
 
+/**
+ * 【2026-11-06 重装·统一的标签清洗出口】
+ *
+ * 这个函数今早写过一版，后来在一次「改坏了回退」里连同文件一起被卷掉了 ——
+ * 现在只剩调用点（`typeof installTagCleaner === 'function'` 永远是 false）
+ * 和两句注释。**安全网其实是空的**，严检才照出来。
+ *
+ * 为什么不能只靠每条渲染路径自己剥：
+ *   渲染出口有五个（renderTurns / paintSnapshot / tryLiveAppendFast /
+ *   pushStreamText / _rawText 还原），每加一处就漏一处，今天已经漏了四次。
+ * 所以反过来做：**盯着 #log 这个容器**，谁变了查谁，落进 DOM 就一定会经过这里。
+ *
+ * 三个设计点：
+ *   · 只扫「这次变动的节点」，不做全量 querySelectorAll（性能）
+ *   · busy + requestAnimationFrame 防循环（改 textContent 会再触发一次观察）
+ *   · 改之前先比一次，真变了才写，没变一个字节都不碰
+ */
+function installTagCleaner() {
+  try {
+    const lg = document.getElementById('log');
+    if (!lg || lg.__tagCleaner) return;
+    lg.__tagCleaner = true;
+    let busy = false;
+    const NEEDS = ['<thinking', '<think', '<reasoning'];
+    const need = (t) => {
+      const low = String(t || '').toLowerCase();
+      for (const k of NEEDS) if (low.indexOf(k) >= 0) return true;
+      return false;
+    };
+    const fix = (el) => {
+      if (!el || el.nodeType !== 1) return;
+      const t = el.textContent || '';
+      if (!need(t)) return;
+      const f = stripThinkingTags(t);
+      if (f !== t) { try { el.textContent = f; } catch (e) {} }
+    };
+    const obs = new MutationObserver((muts) => {
+      if (busy) return;
+      const targets = new Set();
+      for (const m of muts) {
+        let n = m.target;
+        if (n && n.nodeType === 3) n = n.parentElement;
+        if (!n || n.nodeType !== 1) continue;
+        if (n.closest) {
+          const box = n.closest('.bubble, .thinkBody, .md, pre');
+          if (box) targets.add(box);
+        }
+      }
+      if (!targets.size) return;
+      busy = true;
+      requestAnimationFrame(() => {
+        try { for (const el of targets) fix(el); } finally { busy = false; }
+      });
+    });
+    obs.observe(lg, { childList: true, subtree: true, characterData: true });
+  } catch (e) {}
+}
+
 function stripThinkingTags(input) {
   let s = String(input == null ? '' : input);
   /* 两个标签都要看一眼：只漏了 </thinking> 的也得清（实测会漏）。
@@ -19851,11 +19909,46 @@ function renderTurns(turns, opts) {
   } catch (e) {}
 
   const __keepThink = [];
+  /* 这一屏要画的是哪些「消息下标」—— 思考块只跟着自己的那条消息走 */
+  const __incomingAt = new Set(
+    (Array.isArray(turns) ? turns : [])
+      .filter((t) => t && Number.isFinite(Number(t.rewindId)))
+      .map((t) => String(Number(t.rewindId))),
+  );
+  /**
+   * 【2026-11-06 加·这一屏还是不是同一个会话】
+   *
+   * `window.__turnsOwner` 是上一次画完时记下的「这屏是谁的」（文件末尾有赋值）。
+   * 新建会话 / 切会话时 sessionId 已经换成新的，两边对不上 ——
+   * 那就一个思考块都不该留，不管它有没有锚点。
+   * 直播时 sessionId 没变，两边相等，照旧接回原位。
+   */
+  let __sameOwner = true;
+  try {
+    const _cur = (typeof sessionId === 'string' && sessionId) ? sessionId : '';
+    const _own = (typeof window !== 'undefined' && window.__turnsOwner) ? String(window.__turnsOwner) : '';
+    if (_cur && _own && _cur !== _own) __sameOwner = false;
+  } catch (e) {}
   try {
     if (log) {
+      /* 屏上所有消息按文档顺序排好，供「这个思考块前面最近的那条消息是谁」用 */
+      const _msgs = [...log.querySelectorAll('.msg[data-at]')];
       for (const d of log.querySelectorAll('details.think')) {
-        let prev = d.previousElementSibling;
-        while (prev && !(prev.matches && prev.matches('.msg[data-at]'))) prev = prev.previousElementSibling;
+        /**
+         * 【2026-11-06 修·锚点要找「文档里前面最近的那条消息」】
+         *
+         * 以前只顺着 previousElementSibling 找。可思考块常常躺在柜子里面，
+         * 兄弟节点全是工具卡，一路走到柜子边界就断了 → afterAt 记成空串，
+         * 换会话时那一句「找不到就放末尾」就把它塞进了空屏 ——
+         * 新会话冒出【想了 26 段】就是这么来的。
+         */
+        let prev = null;
+        for (const m of _msgs) {
+          if (m === d) continue;
+          const pos = d.compareDocumentPosition(m);
+          if (pos & Node.DOCUMENT_POSITION_PRECEDING) prev = m;   // m 在 d 前面
+          else if (pos & Node.DOCUMENT_POSITION_FOLLOWING) break; // 已经在后面了
+        }
         __keepThink.push({ el: d, afterAt: prev ? String(prev.dataset.at || '') : '' });
         d.remove();          // 先摘下来，免得被 replaceChildren 一起清掉
       }
@@ -19967,6 +20060,25 @@ function renderTurns(turns, opts) {
   try {
     for (const it of __keepThink) {
       const d = it.el;
+      /**
+       * 【2026-11-06 修·新建会话却显示「想了 26 段」】
+       *
+       * 主人报：「点会话 → 新会话 → 选小鱼 → 开一间，屏幕上显示【想了 26 段】」。
+       *
+       * 链路：renderTurns 为了不被 replaceChildren 清掉，先把屏上所有
+       * details.think 摘下来存进 __keepThink，画完再接回去。
+       * 新会话里那些「原来那条消息」早就不在了，锚点找不到，
+       * 于是走最后那句 `log.appendChild(d)` —— 把上一个会话的思考块
+       * 全塞进了空的新会话里，groupAllTools 再把它们拢成一个柜子，
+       * 柜门就写着「想了 26 段」。
+       *
+       * 现在先问一件事：**它挂的那条消息，在这一屏里还有没有？**
+       *   · 有 → 接回原位
+       *   · 没有 → 丢掉（换会话/换分支了，它不属于这一屏）
+       *   · 压根没有锚点（前面一条消息都没有）→ 才退到末尾
+       */
+      if (!__sameOwner) continue;                       // 换会话了：一块都不带过去
+      if (it.afterAt && !__incomingAt.has(String(it.afterAt))) continue;
       if (it.afterAt) {
         const anchor = log.querySelector('.msg[data-at="' + it.afterAt + '"]');
         if (anchor && anchor.parentNode === log) {
@@ -19974,7 +20086,7 @@ function renderTurns(turns, opts) {
           continue;
         }
       }
-      log.appendChild(d);   // 找不到那条（被删了/换轮了）才退到末尾
+      log.appendChild(d);
     }
   } catch (e) {}
   if (__anchorBefore) {
@@ -20571,6 +20683,26 @@ async function createSessionEx(opts = {}) {
     }).then((x) => x.json()).catch(() => null);
     if (rr && rr.session && Array.isArray(rr.session.turns)) {
       try { paintMemoryFlag(rr.memory); } catch {}
+      /**
+       * 【2026-11-06 修·新会话里冒出【想了 26 段】】
+       *
+       * 主人报：「点会话 → 新会话 → 选小鱼 → 开一间，屏幕上显示【想了 26 段】」。
+       *
+       * 链路：新会话本身是空的，可 renderTurns 会先把屏上**上一个会话**的
+       * details.think 摘下来存着、画完再「接回原位」；新会话里那些锚点一个都不在，
+       * 兜底那句就把它们塞回空屏 —— 再被归拢成一个柜子，柜门写着「想了 26 段」。
+       *
+       * 所以新建会话这件事必须**先把屏清干净**，让 renderTurns 根本没东西可捡：
+       *   · 清 #log
+       *   · 断开柜子指针（不然第一批工具会续到上一个会话的柜子里）
+       *   · 收尾滚动状态回到「贴底」
+       */
+      try {
+        const lg = document.getElementById('log');
+        if (lg) lg.replaceChildren();
+        if (typeof hubReset === 'function') hubReset();
+        try { stickBottom = true; } catch {}
+      } catch {}
       renderTurns(rr.session.turns);
     }
   } catch (err) {

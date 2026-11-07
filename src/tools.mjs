@@ -7,6 +7,9 @@ import { exec, execFile, spawnSync } from 'node:child_process';
 import { resolve, dirname, isAbsolute, relative, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
+/* 【2026-11-07 harness 重做 · P5】简单命令不进 PowerShell（省约 300ms/次启动）。
+ * 直接引子模块，不绕 index —— tools.mjs 和 tools-sendfile 是循环依赖，加载链越短越稳。 */
+import { pickShell } from './harness/exec-shell.mjs';
 import { planAction, noteAction } from './plan.mjs';
 import { isToolEnabled, getEnabledMap, featureNameOfTool, enabledToolNames } from './features.mjs';
 import { snapshotBeforeWrite } from './rewind.mjs';
@@ -822,10 +825,12 @@ export const tools = [
          * 现在能自己定：跑长活带个数就行。
          */
         timeout_ms: { type: 'number', description: '最多等多少毫秒，默认 120000（2 分钟），最多 900000（15 分钟）' },
+        /** 默认 auto：简单命令走 cmd（快），带 $ / 引号 / 管道 / cmdlet 的自动回 PowerShell。 */
+        shell_hint: { type: 'string', description: '选壳：auto（默认）/ cmd / powershell。拿不准就别填。' },
       },
       required: ['command'],
     },
-    run({ command, timeout_ms }) {
+    run({ command, timeout_ms, shell_hint }) {
       /**
        * 【2026-11-03 主人要求】堵死「用命令把自己弄死」这条路。
        *
@@ -912,7 +917,9 @@ export const tools = [
       return new Promise((done) => {
         const child = exec(
           command,
-          { cwd: ROOT, timeout: _TO, maxBuffer: 4 * 1024 * 1024, shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/sh' },
+          /* 【P5】简单命令走 cmd，省掉 PowerShell 那 300ms 启动；
+           * 出现 $ / 引号 / 管道 / cmdlet 一律回老路，分错只会慢、不会跑歪。 */
+          { cwd: ROOT, timeout: _TO, maxBuffer: 4 * 1024 * 1024, shell: pickShell(command, shell_hint) },
           (err, stdout, stderr) => {
             if (onAbort) signal.removeEventListener('abort', onAbort);
             // 【临时探针】被掐的时候把真实原因落盘，别再靠猜

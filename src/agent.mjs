@@ -28,7 +28,13 @@ import { taskOn, KEEP_TOOLS as TASK_KEEP_TOOLS } from './task-mode.mjs';
 /* 【2026-11-07 harness 重做 · P2】
  * 只读判定、工具调用累积这两件「能不能并行 / 会不会丢批」的事，收进 src/harness/。
  * 这里保留同名导出，是为了不改动任何已有调用点（以及构建副本里的老引用）。 */
-import { isReadOnlyCommand as harnessIsReadOnlyCommand, createCallAccumulator, executeBatch } from './harness/index.mjs';
+import {
+  isReadOnlyCommand as harnessIsReadOnlyCommand,
+  createCallAccumulator,
+  executeBatch,
+  createTurnMeter,
+  DEADLINES,
+} from './harness/index.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
 import { lastSelfNote, saveSelfNote, selfCompressHint } from './self-compress.mjs';
@@ -63,7 +69,12 @@ import {
   handoffSummary,
   handoffMessage,
 } from './retry429.mjs';
-import { withTimeout, TOOL_MAX_MS, TOOL_NOTICE_MS } from './deadline.mjs';
+import { withTimeout } from './deadline.mjs';
+/* 【2026-11-07 harness 重做 · P4】时间常量改从 harness/recovery 的唯一出口取。
+ * 值一个没变，只是以后不再出现「llm 10 分钟 / 工具 30 分钟 / 整轮 180 分钟」
+ * 三处各写各的。 */
+const TOOL_MAX_MS = DEADLINES.toolMaxMs;
+const TOOL_NOTICE_MS = DEADLINES.toolNoticeMs;
 
 /**
  * Some OpenAI-compatible gateways drop `system` messages entirely (verified against the
@@ -563,6 +574,8 @@ export async function runAgent({
    * 现在每批 merge 进来，同 id 的重复交付变成「补全片段」，永远不会变空。
    */
   const _callAcc = createCallAccumulator();
+  /** 【P4】每轮自己记一笔：以后不用翻会话文件数工具，直接看 .state/harness-metrics.jsonl */
+  const _meter = createTurnMeter(sessionId);
   /**
    * 最后一次请求的原始用量。
    *
@@ -1169,6 +1182,8 @@ for (let round = 0; round < config.maxRounds; round++) {
     reasoning = '';
     toolCalls = [];
     _callAcc.reset();          // 换一圈就换一桶，别把上一圈的工具带过来
+    _meter.startRound();
+    const _streamAt = Date.now();
     let usage = null;
     /**
      * 【只瘦这一轮】
@@ -1503,6 +1518,8 @@ for (let round = 0; round < config.maxRounds; round++) {
           }
         }
       } catch { /* 存不进去就不存，这轮照常返回 */ }
+      /* 正常收尾时落一行指标（异常/中止那几条路不记，指标不该影响干活） */
+      try { _meter.finish({ outcome: 'done' }); } catch {}
       return { text, usage: usageTotal, lastUsage, files: outbox };
     }
 
@@ -1519,6 +1536,12 @@ for (let round = 0; round < config.maxRounds; round++) {
       })),
     };
     messages.push(assistantMsg);
+    /* 这一圈的模型响应结束：记下它花了多久、要了几个工具、真实用量 */
+    _meter.endRound({
+      modelMs: Date.now() - _streamAt,
+      toolCount: assistantMsg.tool_calls.length,
+      usage,
+    });
 
     /**
      * 【2026-11-07 harness 重做 · P3】只读批改由依赖图调度器跑。
@@ -1551,6 +1574,7 @@ for (let round = 0; round < config.maxRounds; round++) {
       /* 调度这条路挂了不影响正常执行 —— 下面那个 for 会一条条自己跑 */
       try { console.warn('[harness] 并行批没跑起来，退回逐条执行：' + String((e && e.message) || e)); } catch {}
     }
+    if (_parallelStats) _meter.noteParallel(_parallelStats);
 
     for (const call of assistantMsg.tool_calls) {
       const _hit = _poMap.get(call.id);

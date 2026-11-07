@@ -7102,6 +7102,9 @@ const server = createServer(async (req, res) => {
             reason: _qlive ? '关窗口退出（这一轮还没跑完）' : '关窗口退出（清单上还有没做完的）',
             taskLine: lastUserLine(_qsid),
             openSteps: _qopen,
+            /* 【2026-11-07】只有「正在跑被打断」才在开机时自动接着干；
+             * 清单老账（人早就不在跑了）只记着，等主人手动点 —— 否则一次能拉起八个会话。 */
+            autoResume: Boolean(_qlive),
           });
           diagLog('quit-resume:' + _qsid + ':' + _qopen.length, _qsid);
         }
@@ -11133,8 +11136,18 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
              * 错开 1.5 秒不是一个一个排队跑，只是别让他们在同一毫秒一起抢模型端点；
              * 真要排队的话，第二个会一直等到第一个（可能十几分钟）跑完，那更糟。
              */
-            const pendingList = listInterrupted();
-            if (!pendingList.length) { diagLog('boot-resume-skip:none', 'no pending'); return; }
+            const pendingAll = listInterrupted();
+            /* 【2026-11-07】只自动续「真的被打断」的；清单老账留在文件里等主人手动点。
+             * 实测退出一次能记出 8 条「清单还有没做完的」，全续会把端点直接打爆。 */
+            const pendingList = pendingAll.filter((x) => x && x.autoResume === true);
+            if (!pendingList.length) {
+              console.log('  resume   : 没有需要自动续的（待续 ' + pendingAll.length + ' 条，都是清单老账）');
+              diagLog('boot-resume-skip:none', 'all=' + pendingAll.length);
+              return;
+            }
+            if (pendingAll.length > pendingList.length) {
+              console.log('  resume   : 另跳过 ' + (pendingAll.length - pendingList.length) + ' 条清单老账（不自动续）');
+            }
             console.log('  resume   : 有 ' + pendingList.length + ' 个会话没做完，逐个接着做');
             diagLog('boot-resume-go', pendingList.map((x) => x.sessionId).join(','));
             pendingList.forEach((it, i) => {

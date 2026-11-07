@@ -96,6 +96,19 @@ function shape(j) {
      * **主人报的「有时候只自动重启、没有续跑」，头号原因就是这一行。**
      */
     intent: String(j.intent || ''),
+    /**
+     * 【2026-11-07 加·该不该开机自动续】
+     *
+     * 退出时会把「正在跑的」和「清单没打勾的」都记下来。可这两件事性质完全不同：
+     *   · 正在跑被打断 → 开机该接着干（那是半截活）
+     *   · 清单留着没做完、但人早就没在跑 → 那是老账，主人可能早就不想干了
+     * 实测：退出一次记出 8 条「清单还有没做完的」，一键自动续会把 8 个会话同时拉起来，
+     * 模型端点直接被我们打爆。
+     *
+     * 所以只给「真的被打断」的那种打 autoResume，开机只自动续这些；
+     * 其余的留在文件里，等主人手动点（POST /api/resume 能指定会话）。
+     */
+    autoResume: j.autoResume === true,
   };
 }
 
@@ -132,6 +145,8 @@ export function markInterrupted(info = {}) {
        * 现在写入时就把意图写死，开机只看它。
        */
       intent: 'continue',
+      /* 只有「这一轮真的在跑、被掐断」才自动续；清单老账不自动续（见 shape 里的说明） */
+      autoResume: info.autoResume === true,
     };
     const others = readAll().filter((x) => String(x.sessionId) !== sessionId);
     others.push(item);

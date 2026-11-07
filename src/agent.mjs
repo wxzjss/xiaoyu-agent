@@ -19,6 +19,9 @@ import { inflateHistory, readImageDataUrl, composeUserContent, isImagePath } fro
 import { slimRoundMessages, measureMessages } from './turn-slim.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox, ctxNow } from './tools.mjs';
 import { config } from './config.mjs';
+/* 瘦身暴涨时要把那一条落到 .state/slim-spike.log（打包版没有控制台） */
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildSystemPrompt, setToolLister } from './persona.mjs';
 import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identity.mjs';
 // 管理员权限：开了就把「整台机器都能动」跟着规则再发一遍（很多网关丢 system）。
@@ -1223,11 +1226,30 @@ for (let round = 0; round < config.maxRounds; round++) {
          */
         const slimmed = slimRoundMessages(messages, { from: turnStart });
         const sendMessages = slimmed.changed ? slimmed.messages : messages;
-        if (process.env.TURN_SLIM_DEBUG === '1') {
+        /**
+         * 【2026-11-07 加·暴涨时无条件留痕】
+         *
+         * 主人问「干活鱼到底修好了没」。查下来：参数瘦身那套是好的（24 项验收全过），
+         * 可 `usage-debug.log` 里今天还有 **27,016,765 token 的单次请求（跑了 41 分钟）**，
+         * 12:08 又有 16,865,734 —— 跟 11-01 记录里那个「坐实不了」的 16,855,447 几乎一样。
+         *
+         * 而所有会话文件里**最大的单条消息才 18 万字符**、最大的会话文件才 2MB ——
+         * 2700 万 token 不可能是历史累积出来的，一定是某一瞬间被塞进去的。
+         * 要抓它，就得让「每圈发出去多少字符」在暴涨时**自动留一条**，
+         * 不能还要人先想起来开 TURN_SLIM_DEBUG。
+         */
+        const _sl = measureMessages(sendMessages);
+        if (process.env.TURN_SLIM_DEBUG === '1' || _sl.chars > 200000) {
           const b4 = measureMessages(messages);
-          const af = measureMessages(sendMessages);
           console.log('[瘦身] 第 ' + (round + 1) + ' 圈：原文 ' + b4.chars + ' 字符 / 工具结果 ' + b4.tools
-            + ' 条 → 发出 ' + af.chars + ' 字符（省 ' + (b4.chars - af.chars) + '，压短 ' + slimmed.changed + ' 条）');
+            + ' 条 → 发出 ' + _sl.chars + ' 字符（省 ' + (b4.chars - _sl.chars) + '，压短 ' + slimmed.changed + ' 条）');
+          try {
+            // 同一份记录也落盘：打包版没有控制台，光 console.log 等于没留
+            const _lp = join(config.dataDir, '.state', 'slim-spike.log');
+            appendFileSync(_lp, new Date().toISOString() + ' session=' + String(sessionId || '')
+              + ' round=' + (round + 1) + ' 发出=' + _sl.chars + ' 原文=' + b4.chars
+              + ' 工具结果=' + b4.tools + ' 条 压短=' + slimmed.changed + ' 条\n', 'utf8');
+          } catch { /* 记不下来也不能影响这一轮 */ }
         }
         for await (const ev of streamChat({
           messages: inflateHistory(sendMessages),

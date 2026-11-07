@@ -26,6 +26,7 @@ import { adminOn } from './admin-mode.mjs';
 import { isImagePath, readImageDataUrl } from './attach.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
+import { addTask, listTasks, removeTask, parseWhen } from './cron.mjs';
 import { listWorkers, noteWorker, finishWorker, drainWorkerMail, noteWorkerProgress, sendWorkerMail, workerDetail } from './task-mode.mjs';
 
 /*
@@ -1110,7 +1111,9 @@ export const tools = [
   {
     name: 'plan',
     description:
-      '维护这次任务的分步清单：多步的活儿开工前先列出 3~8 步，做一步勾一步，随时能读回来。别没计划就开干。',
+      '维护这次任务的分步清单：多步的活儿开工前先列出 3~8 步，做一步勾一步，随时能读回来。别没计划就开干。'
+      + '\n\n【每做完一步立刻 update 勾掉】action:"update" + stepId + status:"done"。'
+      + '别攒着 —— 攒到最后一定忘，主人就得自己提醒你。不勾等于没做完。',
     parameters: {
       type: 'object',
       properties: {
@@ -2373,6 +2376,101 @@ export const tools = [
       const line = (w) => '· #' + w.id + ' ' + String(w.name || '') + ' [' + String(w.status || '') + '] ' + String(w.task || '').slice(0, 60)
         + (w.said ? ('\n   上次汇报：' + String(w.said).slice(0, 120).replace(/\n/g, ' ')) : '');
       return '【这个会话的 worker】共 ' + ws.length + ' 个\n' + ws.map(line).join('\n');
+    },
+  },
+  {
+    name: 'schedule_task',
+    description:
+      '给以后定一件事：到点自动往会话里发一句话，让我自己接着干。主人说「明天九点提醒我」「每小时看一次」「过半小时叫我」就用它。when 写法：2026-11-07 09:30 / 09:30 / +30m / +2h。repeat 默认 once；要重复就给 repeat 传 repeat，再配 everyN + everyUnit（m/h/d，不填按每天）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '到点要干什么（这句话会原样发给会话里的我）' },
+        when: { type: 'string', description: '什么时候：+30m / 09:30 / 2026-11-07 09:30' },
+        title: { type: 'string', description: '给它起个短名，可选' },
+        repeat: { type: 'string', enum: ['once', 'repeat'], description: '只跑一次还是反复跑' },
+        everyN: { type: 'number', description: '每几（配合 everyUnit）' },
+        everyUnit: { type: 'string', enum: ['m', 'h', 'd'], description: '单位：分/时/天' },
+      },
+      required: ['text', 'when'],
+    },
+    async run(args) {
+      const me = String((ctxNow() || CTX).sessionId || '').trim();
+      const when = String(args.when || '').trim();
+      const text = String(args.text || '').trim();
+      if (!text) return 'ERROR：得说到点要干什么（text）。';
+      if (!when) return 'ERROR：得说什么时候（when）。比如 09:30、+30m、2026-11-07 09:30。';
+      try {
+        const t = addTask({
+          text,
+          title: String(args.title || '').trim() || text.slice(0, 24),
+          when,
+          repeat: args.repeat || 'once',
+          everyN: args.everyN,
+          everyUnit: args.everyUnit,
+          sessionId: me,
+        });
+        const whenStr = new Date(t.at).toLocaleString('zh-CN', { hour12: false });
+        const rep = t.repeat === 'every'
+          ? `，之后每隔 ${t.everyMs / 60000 >= 60 ? (t.everyMs / 3600000) + ' 小时' : (t.everyMs / 60000) + ' 分钟'} 再来一次`
+          : '，只来这一次';
+        return `定好了。编号 ${t.id}：${whenStr}${rep}。到点我自己开工。`;
+      } catch (e) {
+        return 'ERROR：没定上 —— ' + (e && e.message ? e.message : e);
+      }
+    },
+  },
+  {
+    name: 'list_schedules',
+    description: '看现在都定了哪些定时任务：编号、什么时候、还开不开、上次跑成没跑成。',
+    parameters: { type: 'object', properties: {} },
+    async run() {
+      let all = [];
+      try { all = listTasks(); } catch (e) { return 'ERROR：读不到任务表 —— ' + e.message; }
+      if (!all.length) return '现在一条定时任务都没有。要定就用 schedule_task。';
+      const lines = all.map((t) => {
+        const when = new Date(t.at).toLocaleString('zh-CN', { hour12: false });
+        const rep = t.repeat === 'every'
+          ? `每 ${t.everyMs / 60000 >= 60 ? (t.everyMs / 3600000) + ' 小时' : (t.everyMs / 60000) + ' 分钟'}`
+          : '一次';
+        const state = t.enabled ? '开' : '关';
+        const last = t.lastRunAt
+          ? `${new Date(t.lastRunAt).toLocaleString('zh-CN', { hour12: false })} ${t.lastOk ? '成功' : '失败'}${t.lastNote ? '（' + t.lastNote + '）' : ''}`
+          : '还没跑过';
+        return `[${t.id}] ${when} · ${rep} · ${state} · ${last} · ${t.title || t.text}`;
+      });
+      return `一共 ${all.length} 条：\n` + lines.join('\n');
+    },
+  },
+  {
+    name: 'cancel_schedule',
+    description: '撤掉一条定时任务。不传 id 就是把所有任务列出来给看，不动手。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '要撤的任务编号（list_schedules 里看到的那个）' },
+        all: { type: 'boolean', description: '传 true 就全撤了，慎用' },
+      },
+    },
+    async run({ id, all }) {
+      try {
+        if (all) {
+          const list = listTasks();
+          if (!list.length) return '本来就没有任务，不用撤。';
+          for (const t of list) removeTask(t.id);
+          return `全撤了，共 ${list.length} 条。`;
+        }
+        const key = String(id || '').trim();
+        if (!key) {
+          const list = listTasks();
+          if (!list.length) return '现在没有任务。要指定撤哪条，先告诉我是哪个编号。';
+          return '要撤哪条？现在的任务是：\n' + list.map((t) => `[${t.id}] ${t.title || t.text}`).join('\n');
+        }
+        removeTask(key);
+        return `撤掉了 ${key}。`;
+      } catch (e) {
+        return 'ERROR：没撤成 —— ' + (e && e.message ? e.message : e);
+      }
     },
   },
 ];

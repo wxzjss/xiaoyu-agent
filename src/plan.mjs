@@ -379,8 +379,19 @@ export function progressBlock(key = 'default') {
   let body = `【正在办】${state.goal || '（没写目标）'}（${done}/${total} 已完成）`;
   if (doing.length) body += `\n在做：${doing.join('；')}`;
   if (pending.length) body += `\n待办：${pending.join('；')}`;
-  body += '\n（接着办就不用重新拆步骤；办完了用 plan 把对应步骤勾成 done，再照清单收尾。）';
-  if (body.length > MAX_PROMPT_CHARS) body = `${body.slice(0, MAX_PROMPT_CHARS)}…`;
+  /**
+   * 【2026-11-08 改硬·主人报「每次做完都不打勾，得我提醒」】
+   *
+   * 实测数据：113 个清单共 984 步，done 只有 584（59%），386 步一直停在 pending ——
+   * 很多清单是 0/5、0/7。她**看得到**这段（真机验过提示词里确实有【正在办】），
+   * 但原来那句「办完了用 plan 把对应步骤勾成 done」读起来像建议，不是规矩。
+   * 现在改成命令语气 + 讲清代价（不勾＝没做，攒着会忘，最后要主人来提醒）。
+   */
+  const TAIL = '\n【打完这一步就勾】每做完一步，**立刻** plan update（stepId + status:"done"）勾掉，别攒着。'
+    + '\n不勾等于没做完：攒到最后一定忘，主人就得自己提醒你。'
+    + '\n主人中途加的要求也要 add 进清单，别只在脑子里记。';
+  if (body.length + TAIL.length > MAX_PROMPT_CHARS) body = body.slice(0, MAX_PROMPT_CHARS - TAIL.length) + '…';
+  body += TAIL;
   return body;
 }
 

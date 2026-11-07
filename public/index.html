@@ -326,7 +326,16 @@
       background: #1d2430; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
       white-space: pre-wrap; word-break: break-word;
     }
-    .assistant .bubble { white-space: pre-wrap; word-break: break-word; }
+    .assistant .bubble {
+      white-space: pre-wrap; word-break: break-word;
+      /* 【2026-11-07 主人报「密密麻麻的话堆一起，看着像一面墙」】
+       * 原来继承 body 的 14px/1.6，892px 宽一行能塞 60 个中文字 ——
+       * 一两段还行，她一口气写几千字技术分析时，就是一块没有缝的砖。
+       * 只动行距和字距，不动字号（字号一动全场排版都跟着变），
+       * 也不动宽度（892 是跟 toolhub 的 442 算式对齐的，改了会错位）。
+       * 空行（\n\n）本来就在，行距一松，段落的分界就看得出来了。 */
+      line-height: 1.86; letter-spacing: .012em;
+    }
     /* 【2026-11-01】她一段一个气泡之后，相邻气泡之间要有一点缝，不然像一大段 */
     .msg .bubble + .bubble { margin-top: 6px; }
 

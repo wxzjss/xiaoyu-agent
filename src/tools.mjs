@@ -1039,15 +1039,23 @@ export const tools = [
     name: 'restart_self',
     description:
       '重启小鱼自己（把程序关掉再拉起来）。改完代码要生效、界面卡住、服务端不听话的时候用。' +
-      '重启前会等最多几秒把这一轮的话落盘。用完就别再指望这一轮还能继续跑工具了。',
+      '重启前会等最多几秒把这一轮的话落盘。用完就别再指望这一轮还能继续跑工具了。' +
+      '【有别的会话在跑时会被挡住】那时服务端会让你「先问主人」，你要真的去问，' +
+      '不要自己替他决定；主人说现在重启，再带 force:true 调一次。',
     parameters: {
       type: 'object',
       properties: {
         reason: { type: 'string', description: '为什么要重启（写给自己以后看，主人也会看到）' },
+        /* 【2026-11-07 主人底线】有别 的会话正在跑时，重启必须主人点头。
+         * 这个参数就是「他已经点头了」的凭据 —— 只有拿到明确回应才传。 */
+        force: {
+          type: 'boolean',
+          description: '只有主人明确说「现在就重启、不管别的会话」时才传 true。别自己默认传。',
+        },
       },
       required: [],
     },
-    async run({ reason = '' } = {}) {
+    async run({ reason = '', force = false } = {}) {
       /**
        * 为什么走 HTTP 调自己，而不是 process.exit(75)：
        * 这一条命令可能正跑在「几秒后要给主人回话」的中间，
@@ -1072,11 +1080,21 @@ export const tools = [
             /* 【2026-11-02】byTool:true 是「重启后自动说一句：重启了」的唯一凭据。
              *  只有这个工具会带它 —— 主人点界面重启按钮、或者自己关窗口，都不带，
              *  服务端那边就不会写标记，重启后也不会冒出一句话。 */
-            body: JSON.stringify({ reason: String(reason || ''), byTool: true, sessionId: currentSessionId() }),
+            body: JSON.stringify({ reason: String(reason || ''), byTool: true, sessionId: currentSessionId(), force: Boolean(force) }),
           });
           const j = await r.json().catch(() => null);
           if (r.ok && j && j.ok) {
             return '好，正在重启（' + (reason ? '原因：' + reason : '没写原因') + '）。过几秒窗口会重新立起来。';
+          }
+          /* 【2026-11-07】有别 的会话在跑 —— 这是「拦一道、让你去问主人」，不是失败。
+           * 用 ok:false 是为了让它看起来像「这件事没做成」，模型才会去说话而不是当成功。 */
+          if (r.status === 409) {
+            return {
+              ok: false,
+              output: (j && j.error)
+                ? j.error
+                : '还有别的会话正在跑，先问主人一句要不要现在重启；他说要，再带 force:true 调一次。',
+            };
           }
           if (r.status === 501) {
             return { ok: false, output: '这次不行：' + (j && j.error ? j.error : '这个窗口不是从桌面图标打开的，没法自己重启') +
@@ -2061,6 +2079,7 @@ export const tools = [
          主智能体（屋里排序第一个已启用的）把活派给屋里另一个人；
          那个人没启用就自动启用；屋里只剩主智能体一个，就按规矩拉人进来
          （主声小鱼→拉小鲸／主声小鲸→拉小鱼／主声自建卡→拉小鱼）再让她做。 */
+      const push = ctxNow().pushEvent;
       try {
         const { pickHelperForTask } = await import('./pick-helper.mjs');
         const { mainAgentId, mateSwitchOn } = await import('./agents.mjs');
@@ -2078,6 +2097,7 @@ export const tools = [
         }
       } catch (e) {
         try { console.warn('[spawn_worker] 挑屋里的帮手失败：', String(e?.message ?? e)); } catch {}
+      }
 
       /* 【2026-11-06 修·花名册里存的是临时名，不是帮手真名】
        *  原来 noteWorker 在「挑帮手」之前就按 nick 建了记录，
@@ -2086,12 +2106,10 @@ export const tools = [
        *  界面和花名册都看不出到底是谁在干活。
        *  改成：挑完帮手、nick 定了之后，再建记录、再推那条「主智能体 → 某某」。 */
       const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
-      const push = ctxNow().pushEvent;
       if (typeof push === 'function') {
         try {
           push({ type: 'whale', who: '主智能体 → ' + nick, text: body, as: 'whale', tag: 'worker' });
         } catch {}
-      }
       }
       try {
         const { runSubagent } = await import('./subagent.mjs');

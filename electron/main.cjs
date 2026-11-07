@@ -322,6 +322,16 @@ let tray = null;
 let quitting = false;
 
 /**
+ * 【2026-11-07 加·重启标记】
+ *
+ * 自己调 relaunch 重开时，新进程会带这个参数。它只干一件事：
+ * 在拿单实例锁之前先等一会儿 —— 老进程刚被我们叫退，
+ * 锁和端口不一定在同一毫秒松开；新进程抢早了就拿不到锁、直接退出，
+ * 表现就是主人说的「说重启，结果只退出，还得我双击」。
+ */
+const RELAUNCH_FLAG = '--xy-relaunch';
+
+/**
  * 启动自检。环境检查交给 AI 自己查（见 src/selfcheck.mjs）。
  * 不阻塞窗口——界面先出来，结果在控制台和 .state/selfcheck.json 里。
  */
@@ -393,9 +403,35 @@ async function startServer() {
    * （main.cjs 自动更新那条路就是这么干的，见 createWindow 里 updated 那段。）
    */
   globalThis.__xiaoyuRelaunch = () => {
-    console.log('[restart] 主进程准备重启（app.relaunch）');
-    try { app.relaunch(); } catch (e) { console.warn('[restart] relaunch 失败：', String(e?.message ?? e)); }
-    try { app.exit(0); } catch { process.exit(0); }
+    console.log('[restart] 主进程准备重启（relaunch + quit）');
+    /**
+     * 【2026-11-07 修·「说是重启，其实只是退出了」】
+     *
+     * 原来是 `app.relaunch(); app.exit(0);`
+     * 两处都有问题：
+     *
+     * ① app.exit(0) 是**硬退** —— 它跳过 before-quit，也就是下面那段
+     *    「让正在跑的那一轮把话说完、把草稿写掉」的 5 秒收尾。
+     *    结果：重启后用来续跑的草稿/清单本来就是残缺的（这条直接坑到续跑）。
+     * ② 硬退还给了新进程一个坏时机：老进程的锁/端口还没松开，
+     *    新进程起来 requestSingleInstanceLock() 拿不到 → 直接 app.quit() → 静默消失。
+     *    **主人看到的就是「说重启，结果窗口没了，还得自己双击」。**
+     *
+     * 现在：登记 relaunch → 走正常 app.quit()（before-quit 会做完收尾再真退）→
+     * 20 秒还没退干净才硬退兜底。新进程那边靠 --xy-relaunch 标记先等一下再拿锁。
+     */
+    try {
+      app.relaunch({ args: process.argv.slice(1).concat(RELAUNCH_FLAG) });
+    } catch (e) {
+      console.warn('[restart] relaunch 登记失败：', String(e?.message ?? e));
+    }
+    quitting = true;
+    try { app.quit(); } catch { try { app.exit(0); } catch { process.exit(0); } }
+    /* 兜底：正常退出被什么东西卡住时，20 秒后硬退，别让窗口吊在那儿 */
+    setTimeout(() => {
+      console.warn('[restart] 正常退出没在 20 秒内完成，硬退');
+      try { app.exit(0); } catch { process.exit(0); }
+    }, 20000).unref?.();
   };
 
   /**
@@ -922,6 +958,17 @@ function createTray() {
 
 // 只允许一个实例：双击多次快捷方式不会开出一堆窗口，第二次只是把原来那个叫到前面。
 // 之前没有这道锁，重复双击会起多个进程、多个端口，关起来也容易搞混。
+/* 【2026-11-07】自己重启起来的那一版，先给老进程让路再抢锁。
+ * 用 Atomics.wait 做同步小睡：主进程这会儿还没起事件循环，
+ * 除了阻塞没有别的办法，1.2 秒是实测「老进程退干净」的余量。 */
+if (process.argv.includes(RELAUNCH_FLAG)) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200);
+    bootMark('重启上来的（等了 1.2s 让老进程退干净）');
+  } catch (e) {
+    console.warn('[restart] 等老进程时出错（不影响启动）：', String(e?.message ?? e));
+  }
+}
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();

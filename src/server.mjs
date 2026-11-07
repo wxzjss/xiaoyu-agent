@@ -38,7 +38,7 @@ import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } fr
 // 中途投递信箱：主人一边看她干活一边插的话排在这里（照 dsh 的 steering，见 inbox.mjs）
 import { steer, clearInbox, inboxCount } from './inbox.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
-import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted } from './resume.mjs';
+import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted, listInterrupted } from './resume.mjs';
 /**
  * 【QQ小鱼】2026-11-01 加。
  *
@@ -2897,7 +2897,16 @@ function lastUserLine(sessionId) {
  *   - 历史最后一句必须是主人的话 —— 否则说明那一轮其实已经收尾了，再补就是重复
  *   - 24 小时以前的意图不认（resume.mjs 里判）
  */
-async function resumeInterruptedTurn() {
+async function resumeInterruptedTurn(onlySessionId) {
+  /* 【2026-11-07 改·可以指定续哪一个】
+   *
+   * 原来只能续「最近那一条」。现在 resume.json 里一个会话一条，
+   * 开机要挨个把每个都起回来 —— 所以这里加个参数：
+   *   给 sessionId → 只续那一个（开机遍历时用）
+   *   不给        → 续最近那一个（POST /api/resume 这类老调用点用）
+   * 不这么改的话，第二次调用永远拿到同一条（因为第一条还没删），
+   * 结果要么重复续同一个、要么把别人漏掉。
+   */
   /* 【2026-11-05 改·先取走改成先看一眼】
    *
    * takeInterrupted() 是「取出即删」。可续跑路上有好几道闸，任何一道没过
@@ -2907,14 +2916,15 @@ async function resumeInterruptedTurn() {
    *
    * 现在改成 peek：只有真的跑完、或者确定不可能再续（会话没了），才 drop。
    */
-  const info = peekInterrupted();
+  const info = peekInterrupted(onlySessionId);
   diagLog('resume-enter', info ? `session=${info.sessionId}` : 'info=null（没有中断标记）');
   if (!info) return;
   const sessionId = info.sessionId;
   const session = getSession(sessionId);
   if (!session) {
     console.log('[resume] 上次崩的会话已经没了：', sessionId);
-    try { dropInterrupted(); } catch (e) {}   // 会话都没了，留着也没用
+    /* 【2026-11-07】只删这一条：别的会话的断点还得留着给下一轮续 */
+    try { dropInterrupted(sessionId); } catch (e) {}
   diagLog('resume-skip:no-session', sessionId);
     return;
   }
@@ -3117,8 +3127,10 @@ async function resumeInterruptedTurn() {
       } catch (e) { /* 存不上不影响续跑本身 */ }
     }
 
-    /* 【2026-11-05 加】真跑完了才算用掉这份意图 —— 失败/中途 return 的都留着，下次还能试。 */
-    try { dropInterrupted(); } catch (e) {}
+    /* 【2026-11-05 加】真跑完了才算用掉这份意图 —— 失败/中途 return 的都留着，下次还能试。
+     * 【2026-11-07 改】只删这一个会话的那条：别的会话还排队等着续，
+     * 原来无参调用会把整个文件端掉，于是第二个会话永远续不上。 */
+    try { dropInterrupted(sessionId); } catch (e) {}
 
     console.log('[resume] 续跑跑完了：', sessionId, out && out.text ? `（${String(out.text).length} 字）` : '');
     diagLog('resume-done', `session=${sessionId} textLen=${out && out.text ? String(out.text).length : 0}`);
@@ -7011,21 +7023,27 @@ const server = createServer(async (req, res) => {
      *   · 都没有             → 不记，安静退出
      */
     try {
-      let _qsid = ids.length ? ids[0] : '';
-      /*
-       * 【2026-11-01 严检补漏】原来只在「没有任何会话在跑」时才去扫清单。
-       * 可 ids[0] 完全可能是「跑完了、清单也清空了」的那个 —— 那时候它既不该
-       * 续跑，又挡住了后面真正还有活的会话。所以改成：先看它有活没活，没活再扫。
+      /* 【2026-11-07 改·每个有活的会话都要记】
+       *
+       * 主人报：「一个会话自动重启续跑了，另一个正在运行的会话就停了没跟着续跑」。
+       *
+       * 原来这段是「找到第一个有活的 _qsid 就 break，只记一条」——
+       * 配上 resume.json 老结构只有一个坑位，两个会话同时跑时，
+       * 重启后必然只续一个，另一个无声无息停了。
+       * （/api/app/restart 那条路早就是多候选了，漏的是这条「关窗口退出」。）
+       *
+       * 现在：把「正在跑的」和「清单没清完的」收成一个集合，一个都不漏地各记一条。
        */
+      const _cand = [];
+      const _pushCand = (sid) => {
+        const s = String(sid || '');
+        if (s && !_cand.includes(s)) _cand.push(s);
+      };
+      /* ① 正在跑的：一个都别落下 */
+      for (const id of ids) { try { if (runningTurns.get(id)) _pushCand(id); } catch {} }
+      try { for (const sid of runningTurns.keys()) _pushCand(sid); } catch {}
+      /* ② 最近 30 个会话里清单还有没打勾的 */
       try {
-        if (_qsid) {
-          const _p0 = loadPlan(_qsid);
-          const _s0 = (_p0 && Array.isArray(_p0.steps)) ? _p0.steps : [];
-          const _o0 = _s0.filter((x) => x && x.status !== 'done' && x.status !== 'skipped');
-          if (!runningTurns.get(_qsid) && !_o0.length) _qsid = '';
-        }
-      } catch { _qsid = ''; }
-      if (!_qsid) {
         const _qdir = join(config.dataDir, '.state', 'sessions');
         if (__diagExists(_qdir)) {
           const _qfiles = __diagReaddir(_qdir).filter((f) => f.endsWith('.json'));
@@ -7039,12 +7057,13 @@ const server = createServer(async (req, res) => {
               const _pq = loadPlan(_sidq);
               const _sq = (_pq && Array.isArray(_pq.steps)) ? _pq.steps : [];
               const _oq = _sq.filter((x) => x && x.status !== 'done' && x.status !== 'skipped');
-              if (_oq.length) { _qsid = _sidq; break; }
+              if (_oq.length) _pushCand(_sidq);
             } catch {}
           }
         }
-      }
-      if (_qsid) {
+      } catch {}
+      /* ③ 逐个写：一个会话一条，互不覆盖 */
+      for (const _qsid of _cand) {
         let _qopen = [];
         try {
           const _qp = loadPlan(_qsid);
@@ -7053,14 +7072,13 @@ const server = createServer(async (req, res) => {
             .filter((x) => x && x.status !== 'done' && x.status !== 'skipped')
             .map((x, n) => ({ n: (x.id != null ? x.id : n + 1), text: String(x.text || '').slice(0, 200) }));
         } catch {}
-        const _qlive = runningTurns.get(_qsid);
+        let _qlive = null;
+        try { _qlive = runningTurns.get(_qsid); } catch {}
         if (_qlive || _qopen.length) {
           markInterrupted({
             sessionId: _qsid,
             text: _qlive && _qlive.draft ? _qlive.draft.text : '',
-            reason: _qlive
-              ? '关窗口退出（这一轮还没跑完）'
-              : '关窗口退出（清单上还有没做完的）',
+            reason: _qlive ? '关窗口退出（这一轮还没跑完）' : '关窗口退出（清单上还有没做完的）',
             taskLine: lastUserLine(_qsid),
             openSteps: _qopen,
           });
@@ -7114,6 +7132,45 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       _resumeAllowed = Boolean(_gate && _gate.enabled === true);
       if (!_resumeAllowed) console.log('[restart] 「自动重启续上」关着 → 照样重启，但不续上');
     }
+    /**
+     * 【2026-11-07 加·主人定的底线：有别 的会话在跑，重启得先问】
+     *
+     * 主人原话：「我加了底线是在有其他会话运行时重启得问主人」。
+     *
+     * 为什么要这道闸：重启会把**所有**正在跑的轮次一起掐断。虽然现在断点一个会话
+     * 一条、起来能全部续上（见 resume.mjs），但被打断一次终归要重来一段，
+     * 主人可能根本不希望这个时候重启。
+     *
+     * 所以这里**不自己重启**，回 409 让模型去问；主人点头后带 force:true 再来一次。
+     * 判断「别的会话」时把当前这个会话排除掉 —— 她自己正跑着、自己要求重启，
+     * 那不叫「别人在跑」。
+     */
+    try {
+      const _force = Boolean(req.__xyBody && req.__xyBody.force);
+      const _cur = String((req.__xyBody && req.__xyBody.sessionId) || '');
+      if (!_force) {
+        const _others = [];
+        for (const sid of runningTurns.keys()) {
+          if (String(sid) === _cur) continue;
+          _others.push(String(sid));
+        }
+        if (_others.length) {
+          const _names = _others.map((sid) => {
+            try { const s = getSession(sid); return String((s && s.title) || sid); } catch { return sid; }
+          });
+          console.log('[restart] 还有 ' + _others.length + ' 个会话在跑，先问主人：', _names.join('、'));
+          return json(res, 409, {
+            ok: false,
+            needConfirm: true,
+            busy: _names,
+            error: '还有 ' + _others.length + ' 个会话正在跑（' + _names.join('、') + '），'
+              + '现在重启会把它们全部掐断。**先问主人一句「现在要不要重启」**；'
+              + '他说要，再带 force:true 调一次。别自己替他决定。',
+          });
+        }
+      }
+    } catch (e) { console.warn('[restart] 检查别的会话时出错（不影响重启）：', String(e?.message ?? e)); }
+
     if (process.env.XIAOYU_DESKTOP !== '1') {
       return json(res, 501, { ok: false, error: '这个窗口不是从桌面图标打开的，没法自己重启' });
     }
@@ -7220,8 +7277,16 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             .filter((x) => x && x.status !== 'done' && x.status !== 'skipped')
             .map((x, n) => ({ n: (x.id != null ? x.id : n + 1), text: String(x.text || '').slice(0, 200) }));
         } catch {}
-        // 没在跑、清单也清完了 → 没什么可接的，跳过
-        if (!_live && !_open.length) continue;
+        // 没在跑、清单也清完了，但会话里说过话 → 照样记一笔断点。
+        // 【2026-11-07 修】原来这里无条件 continue。干完活、清单清空、立刻重启，
+        // 那一刻 runningTurns 空、_open 也空，于是断点一个字不写，起来就接不上。
+        // 而这恰恰是最常见的重启时机 —— 下面那段「清单空了就用会话标题 +
+        // 主人最后那句」的兜底，永远走不到。改成：有话说就记，彻底没话才跳过。
+        if (!_live && !_open.length) {
+          let _hadTalk = false;
+          try { _hadTalk = Boolean(String(lastUserLine(_sid) || '').trim()); } catch { _hadTalk = false; }
+          if (!_hadTalk) continue;
+        }
         /* 【2026-11-03 主人要求】功能关着 → 照样重启，但不写续跑意图（干净冷启动） */
         if (!_resumeAllowed) continue;
         /* 【2026-11-06 加】把「总目标」和「已经定过的做法」算出来，一起写进断点。
@@ -11030,10 +11095,28 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
             const f = getFeatures();
             const on = Boolean(f && f.features && f.features.find((x) => x.id === 'selfRestart')?.enabled);
             if (!on) { console.log('  resume   : 「自动重启续上」关着，不续'); return; }
-            const pending = peekInterrupted();
-            if (!pending) return;
-            console.log('  resume   : 有没做完的（' + pending.reason + '），自己接着做');
-            resumeInterruptedTurn().catch((e) => console.warn('[resume] 自动续跑失败：', String(e?.message ?? e)));
+            /**
+             * 【2026-11-07 改·有几个续几个】
+             *
+             * 原来这里只取一条（peekInterrupted）就起一轮 ——
+             * 可主人常常同时开着两三个会话，一个是【检查鱼】一个是【杂活鱼】，
+             * 重启后只有一个活了，另一个就那么停在那儿。
+             * 现在 resume.json 一个会话一条（见 resume.mjs），这里挨个起回来。
+             *
+             * 错开 1.5 秒不是一个一个排队跑，只是别让他们在同一毫秒一起抢模型端点；
+             * 真要排队的话，第二个会一直等到第一个（可能十几分钟）跑完，那更糟。
+             */
+            const pendingList = listInterrupted();
+            if (!pendingList.length) return;
+            console.log('  resume   : 有 ' + pendingList.length + ' 个会话没做完，逐个接着做');
+            pendingList.forEach((it, i) => {
+              setTimeout(() => {
+                console.log('  resume   : [' + (i + 1) + '/' + pendingList.length + '] '
+                  + it.sessionId + '（' + it.reason + '）');
+                resumeInterruptedTurn(it.sessionId)
+                  .catch((e) => console.warn('[resume] 自动续跑失败：', String(e?.message ?? e)));
+              }, i * 1500);
+            });
           } catch (e) {
             console.warn('[resume] 开机自续没跑成（不影响使用）：', String(e?.message ?? e));
           }

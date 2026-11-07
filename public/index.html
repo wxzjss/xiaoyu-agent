@@ -668,7 +668,9 @@
     }
     details.think[open] > summary::before { transform: rotate(90deg); }
     details.think > summary:hover { color: var(--text); }
-    details.think .thinkTitle { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    /* 【2026-11-07 主人】思考标题不再截成一行：能多长就显示多长。
+       原来 nowrap + ellipsis 会把几百字的思考压成「……」，正文展开也补不回这一眼。 */
+    details.think .thinkTitle { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     details.think .thinkMeta { flex: none; color: var(--dim); opacity: .65; font-size: 11.5px; }
     details.think .thinkBody {
       padding: 8px 10px 10px; border-top: 1px solid var(--border);
@@ -1402,14 +1404,8 @@
     .turnUsage .na { opacity: .65; }
     .turnUsage .sep { opacity: .5; margin: 0 6px; }
     .turnUsage .tt { color: #8fc7ff; }
-  /* 【2026-11-05 加】这串数是按字数估的、不是接口报的真数 —— 得让人一眼看出来。
-     原来只写在悬停提示里，主人扫一眼根本不知道，还以为「1,293 输入」是真实用量。 */
-  .turnUsage .tt.est {
-    color: #d8b26a;
-    border-bottom: 1px dashed rgba(216, 178, 106, .6);
-    cursor: help;
-  }
     .turnUsage .cost { color: #d9a45b; }
+    /* 【2026-11-07 主人】tokens 那行的估算标记、虚线和悬停解释全删了：只留一个干净的数字，别的都不要。 */
 
     /*
      * 系统提示：报错 / 限流 / 断线。
@@ -2777,9 +2773,6 @@
 }
 .msg.user { position: relative; }
 .msg.assistant { position: relative; }
-/* 【2026-11-05】估出来的用量：压暗 + 虚线底，跟接口回的真数一眼分得开 */
-.turnUsage .tt.est { opacity: .75; text-decoration: underline dotted; text-underline-offset: 2px; }
-.turnUsage .estWhy { margin-left: 6px; font-size: 10.5px; color: var(--dim); border: 1px dashed currentColor; border-radius: 3px; padding: 0 3px; }
 
 /* 改过的那条，角色名后面点一个小标记 */
 .msg.edited .role::after { content: '· 改过'; color: var(--muted, #98a2b3); font-size: 11px; margin-left: 6px; }
@@ -10296,11 +10289,16 @@ function hubRefreshTitle() {
     const tx = String((st && st.textContent) || '');
     return tx.indexOf('运行') >= 0 || (st && st.classList.contains('run'));
   });
-  n1.textContent = _runEl
-    ? ('正在' + String((_runEl.querySelector('.name') || {}).textContent || '干活').trim() + '…')
-    : ((_t && _k)
-      ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
-      : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具')));
+  /* 【2026-11-07 主人】跟「正在跑命令…」一个待遇：思考还在流的时候，
+   * 柜门也写「正在思考中…」。thinking-now 由 openThink 挂上、finish 撤掉。 */
+  const _thinking = _liveHub.querySelector('details.think.thinking-now');
+  n1.textContent = _thinking
+    ? '正在思考中…'
+    : (_runEl
+      ? ('正在' + String((_runEl.querySelector('.name') || {}).textContent || '干活').trim() + '…')
+      : ((_t && _k)
+        ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
+        : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'))));
   const bad = _liveHub.querySelectorAll('.tool > summary > .status.err').length;
   const warn = _liveHub.querySelectorAll('.tool > summary > .status.warn').length;
   if (n2) {
@@ -10311,7 +10309,7 @@ function hubRefreshTitle() {
   try {
     const pk = _liveHub.querySelector('summary > .hubpeek');
     /* 跑着的时候标题已经是「正在…」，后面不用再重复 */
-    if (pk) pk.textContent = _runEl ? '' : hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
+    if (pk) pk.textContent = (_thinking || _runEl) ? '' : hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
   } catch (e) {}
 }
 
@@ -10347,14 +10345,17 @@ function adoptThink(d) {
       }
       const flat = t.replace(/\s+/g, ' ').trim();
       if (title && flat) {
-        title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
-        title.title = flat.slice(0, 400);
+        /* 【2026-11-07 主人】跟实时那块一个口径：不截断，能多长显示多长 */
+        title.textContent = flat;
+        title.removeAttribute('title');
       }
       if (meta) meta.textContent = t.length + ' 字';
     },
     finish() {
-      if (!body || !body.textContent.trim()) { try { d.remove(); } catch (e) {} return; }
-      if (meta) meta.textContent = body.textContent.length + ' 字 · 点击展开';
+      if (!body || !body.textContent.trim()) { try { d.remove(); } catch (e) {} }
+      if (meta) meta.textContent = (body ? body.textContent.length : 0) + ' 字 · 点击展开';
+      /* 整组重画收尾：撤掉进行中标记，柜门别一直挂在「正在思考中…」 */
+      try { d.classList.remove('thinking-now'); hubRefreshTitle(); } catch (e) {}
       /* 开合状态一个字都不动：主人点开的块，重画多少次都还开着 */
     },
   };
@@ -10885,7 +10886,8 @@ function addSysNote(text, actions) {
  */
 function openThink() {
   const d = document.createElement('details');
-  d.className = 'think';
+  /* 建块就带上「正在想」的标记：从第一段 reasoning 起，柜门就能显示「正在思考中…」 */
+  d.className = 'think thinking-now';
   /* 【主人 2026-11-02 定的】思考链不自动展开 —— 想看自己点开，别看个回复先被内心戏糊一脸。
    * 下面那个 toggle 监听负责记住「这一块是主人自己点开的」，之后就不再自动收起。 */
   d.open = false;
@@ -10955,15 +10957,24 @@ function openThink() {
       body._full = t;
       const flat = body.textContent.replace(/\s+/g, ' ').trim();
       if (flat) {
-        title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
-        title.title = flat.slice(0, 400);
+        /* 【2026-11-07 主人】不截 38 字、悬停也不截 400 字 —— 能多长就显示多长 */
+        title.textContent = flat;
+        title.removeAttribute('title');
       }
       meta.textContent = body.textContent.length + ' 字';
+      /* 思考还在继续：柜门那行跟着显示「正在思考中…」 */
+      try { d.classList.add('thinking-now'); hubRefreshTitle(); } catch (e) {}
       noteNewContent();
     },
     finish() {
-      if (!body.textContent.trim()) { d.remove(); return; }
+      if (!body.textContent.trim()) {
+        d.remove();
+        try { hubRefreshTitle(); } catch (e) {}
+        return;
+      }
       meta.textContent = body.textContent.length + ' 字 · 点击展开';
+      /* 这段想完了：撤掉进行中标记，柜门退回统计（或交给正在跑的工具） */
+      try { d.classList.remove('thinking-now'); hubRefreshTitle(); } catch (e) {}
       /* 【2026-11-02 主人第三次报：展开最新的思考链，一有新内容就自动闭合】
        *  原因就是原来这里那行 d.open = false：它每一拍都执行一次，把主人刚展开的
        *  思考链在下一段内容到来时合上了。现在新建时本来就是收起的（不再自动展开），
@@ -11026,8 +11037,9 @@ function paintReasoning(text, host) {
   const title = document.createElement('span');
   title.className = 'thinkTitle';
   const flat = body0.replace(/\s+/g, ' ').trim();
-  title.textContent = flat.length > 38 ? flat.slice(0, 38) + '…' : flat;
-  title.title = flat.slice(0, 400);
+  /* 【2026-11-07 主人】历史里的思考也不截 38 字：能多长就显示多长 */
+  title.textContent = flat;
+  title.removeAttribute('title');
   const meta = document.createElement('span');
   meta.className = 'thinkMeta';
   meta.textContent = body0.length + ' 字 · 点击展开';
@@ -17635,12 +17647,6 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
 
   const row = document.createElement('div');
   row.className = cls;
-  // 【2026-11-03】上下文从行里挪进悬停提示（行里放不下，见下面 segs 的注释）
-  const ctxTok = Number(u.context_tokens ?? 0);
-  row.title = (u._estimated
-    ? '这一轮接口没回用量：这些数是我按字数粗估的（中文约 1.5 字 1 token），只能看量级，别拿去对账'
-    : '↑ = 这一轮所有请求加起来的输入（每次调用都背着全部历史，所以远大于上下文）\n↓ = 这一轮所有回答的输出（含思考与工具调用）')
-    + (ctxTok > 0 ? ('\n上下文：最后一次请求真正送进去 ' + fmtTok(ctxTok) + ' tokens（历史有多大）') : '');
 
   const mk = (txt, cls) => {
     const sp = document.createElement('span');
@@ -17675,14 +17681,11 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
   segs.push(mk('↑' + fmtTok(pin) + ' 输入'), mk('·', 'sep'));
   segs.push(mk('↓' + fmtTok(pout) + ' 输出'), mk('·', 'sep'));
   /**
-   * 【2026-11-05 修·主人报「这串数字并不正常」】
-   * 上面那三个数，接口没回用量时是本地按字数粗估的（输入那截还硬加了 600 当系统提示余量）。
-   * 可原来只在悬停提示里说了句「这是我粗估的」——可见文字上一个字没有，
-   * 主人看到「↑1,293 输入」只会以为这是真数，然后再跟上下文一对就发现对不上。
-   * 估算就明写「估」，别让人自己猜。
+   * 【2026-11-07 主人：把「（估）」字、虚线、悬停解释都删掉】
+   * 接口没回用量时，下面几个数仍是本地按字数粗估的，但界面上不再打任何标记、
+   * 也不再挂悬停说明 —— 主人要的就是一个干净的数字。真要核对就翻服务端日志。
    */
-  segs.push(mk(fmtTok(total) + ' tokens' + (u._estimated ? '（估）' : ''), 'tt' + (u._estimated ? ' est' : '')));
-  if (u._estimated) segs.push(mk('接口没回用量', 'estWhy'));
+  segs.push(mk(fmtTok(total) + ' tokens', 'tt'));
   row.append(...segs);
 
   // 花了多少钱。
@@ -17697,15 +17700,7 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
     // 倍率不是 1 就标出来：主人看到「×1.5」才知道这钱是按中转站的价算的，不是官方价
     const rateMul = Number(money.markup || 1);
     const mkTxt = Math.abs(rateMul - 1) > 1e-9 ? '（×' + (Math.round(rateMul * 100) / 100) + '）' : '';
-    const yen = mk('≈' + moneySign() + fmtMoney(inMoney(money.cost)) + mkTxt + (money.est ? '（估）' : '') + (money.off ? '（谷）' : ''), 'cost');
-    yen.title =
-      '按 ' + model + ' 的公开价估算'
-      + (money.cache === 'real'
-        ? '\n输入缓存命中 ' + fmtTok(money.hitTok) + ' / 未命中 ' + fmtTok(money.missTok) + ' tokens —— 这是接口真报的数'
-        : '\n输入缓存命中按 98% 估（接口这轮没报缓存字段，不是真数）')
-      + (money.est ? '（这家官网抓不到，价格是按美元牌价折算的，只能当个大概）' : '')
-      + (money.off ? '（现在是谷价时段，按半价算）' : '')
-      + '\n实际扣费以各家账单为准，这里只是让你心里有数';
+    const yen = mk('≈' + moneySign() + fmtMoney(inMoney(money.cost)) + mkTxt + (money.off ? '（谷）' : ''), 'cost');
     row.append(yen);
   } else if (model) {
     // 【2026-11-02】价目表里没这个模型：别整行不报价让人以为坏了，明说一句为什么。
@@ -17803,7 +17798,7 @@ function paintUsageBox() {
   const mk = (html) => { const s = document.createElement('span'); s.innerHTML = html; return s; };
   tot.append(mk('一共 <b>' + a.rounds + '</b> 轮 · <span class="tok">' + fmtTok(a.total) + '</span> tokens'
     + '（↑' + fmtTok(a.pin) + ' · ↓' + fmtTok(a.pout) + '）'));
-  if (a.cost > 0) tot.append(mk(' · 约花 <b>' + moneySign() + fmtMoney(inMoney(a.cost)) + '</b>' + (a.estimated ? '（含估）' : '')));
+  if (a.cost > 0) tot.append(mk(' · 约花 <b>' + moneySign() + fmtMoney(inMoney(a.cost)) + '</b>'));
 
   if (rounds) {
     rounds.textContent = '↑ 是所有请求加起来（一轮里调十几次模型，每次背着全部历史，所以涨得快）'
@@ -19787,7 +19782,7 @@ function renderTurns(turns, opts) {
           if (drawnUsage.has(p.id)) continue;   // 画过就别再画
           drawnUsage.add(p.id);
           const host = lastBubbleOfTurn || frag;
-          // 把这一轮回复的字数给下去：usage 空的时候好估（标「估」）
+// 把这一轮回复的字数给下去：usage 空的时候按字数粗估（界面上不再标任何字样）
           p.replyChars = turnReplyChars;
           appendTurnUsage(p.u, p.at, p.model, host, true, p.replyChars, p.userChars);
         }

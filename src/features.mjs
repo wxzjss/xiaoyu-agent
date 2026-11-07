@@ -182,8 +182,9 @@ export const FEATURES = [
     name: '办事模式',
     desc: '启用后这个会话的主智能体不再自己动手，只负责拆任务、派活、检查、验收、管上下文；具体的活交给临时开出来的 worker 去干（worker 只属于这个会话，干完或会话删了就没了）。打开之后顶栏会出现「办事模式」按钮，按会话各开各的。关掉这个功能，按钮整块消失。',
     tools: ['spawn_worker', 'spawn_workers', 'list_workers', 'tell_worker', 'watch_worker'],
-    // 新增功能，老用户的 features.json 里没有这个键 —— 默认关着，不乱动顶栏。
-    defaultOn: false,
+    // 【2026-11-07】主人当前开着这一项；为让「换电脑/重装后默认提示词还是同一份」，
+    // 出厂值同步为开。注意：按钮出现 ≠ 会话进入办事模式，taskOn() 仍按会话各开各的。
+    defaultOn: true,
   },
   {
     /**
@@ -297,7 +298,7 @@ export const FEATURES = [
     name: '会话互递话',
     desc: '让不同会话里的我能互相递话：一个在打包、一个在查东西，可以问一句「你那边好了没」。只递话，互相看不到对方的聊天记录和文件；默认只存信箱、不打断对方手上的活，要立刻回才叫醒。',
     tools: ['ask_peer', 'list_peers', 'read_peer_mail'],
-    defaultOn: false,
+    defaultOn: true,
   },
   {
     /**
@@ -355,7 +356,7 @@ export const FEATURES = [
       + '默认「投」点击进窗口，不抢你正在打字的焦点；只有程序不认「投」的时候才动真鼠标。'
       + '动手前必须先看一眼，编号 30 秒就过期；密码框她不代打；要删东西、要花钱、要退出登录这类，会先问你一声。不想要就关掉。',
     tools: ['ui_observe', 'ui_click', 'ui_double_click', 'ui_right_click', 'ui_type', 'ui_key', 'ui_scroll'],
-    defaultOn: false,
+    defaultOn: true,
   },
   /**
    * QQ 小鱼（2026-11-01）
@@ -375,7 +376,7 @@ export const FEATURES = [
     name: 'QQ 小鱼',
     desc: '把 QQ 接过来：别人在 QQ 上跟她说话，她就在你指定的那个会话里回 —— 你在电脑前看得见同一段对话、同一段记忆。认主之后，只有你说话她才按主人的口径答；别人说话她按客人那套应。要填机器人的 AppID / AppSecret，都只存在这台机器上。不想要就关掉。',
     tools: ['qq_send'],
-    defaultOn: false,
+    defaultOn: true,
   },
 
   /**

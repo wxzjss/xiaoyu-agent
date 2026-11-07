@@ -14,7 +14,9 @@
  */
 
 const PS_MARKERS = new RegExp(
-  '[' + String.fromCharCode(36) + '`\'"<>|]'                 // $ ` ' " < > |
+  // ; 是 PowerShell 的分隔符、cmd 里却只是普通字符 —— 提示词教她「用 ; 串几条检查」，
+  // 这种命令必须回 PowerShell，不然在 cmd 里会被当成参数的一部分直接跑挂（2026-11-07 严检发现）。
+  '[' + String.fromCharCode(36) + '`\'"<>|;]'               // $ ` ' " < > | ;
   + '|@\\('
   + '|\\b(?:Get|Set|New|Remove|Write|Select|Where|ForEach|ConvertTo|Out|Test|Join|Resolve|Start|Stop|Invoke|Import|Export)-[A-Za-z]+'
   + '|\\b(?:taskkill|powershell|pwsh)\\b',

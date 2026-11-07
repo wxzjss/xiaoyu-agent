@@ -25,7 +25,20 @@ import { config } from './config.mjs';
 const MAX_BODY = 12000; // 单个 skill 正文最多读这么多字，防止一口气撑爆上下文
 
 function skillsDir() {
-  return join(config.dataDir, 'skills');
+  const user = join(config.dataDir, 'skills');
+  /**
+   * 【2026-11-07 加·出厂默认的一部分】
+   * 技能正文原来只活在 <dataDir>/skills/（运行时数据），换电脑 / 清空 .state
+   * 之后目录是空的，索引整段从提示词里消失 —— 默认提示词就不是同一份了。
+   * 现在随包带一份 skills/，用户目录没内容时自动回落到它。
+   * 用户自己放的技能优先：只要目录里有东西，就用用户那份。
+   */
+  try {
+    if (existsSync(user) && readdirSync(user).length) return user;
+  } catch {}
+  const builtin = join(config.root, 'skills');
+  try { if (existsSync(builtin)) return builtin; } catch {}
+  return user;
 }
 
 /** 名字只许字母数字横线，防路径穿越 */
@@ -150,7 +163,7 @@ export function skillIndexBlock() {
   });
   return [
     '【你还会这些（按需翻）】',
-    '下面这些是「怎么做某件事」的手艺，不是工具。要用的时候先 use_skill 把全文读进来再动手，别凭名字猜。',
+    '下面这些是「怎么做某件事」的手艺，不是工具。要用的时候先 use_skill 把正文读进来再动手，别凭名字猜（正文太长会截断，够用就行）。',
     ...rows,
   ].join('\n');
 }

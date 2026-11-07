@@ -42,6 +42,7 @@
       "src/**/*",
       "public/**/*",
       "persona/**/*",
+      "skills/**/*",
       "assets/**/*",
       "scripts/voice/**/*",
       "scripts/fetch-txt.mjs",

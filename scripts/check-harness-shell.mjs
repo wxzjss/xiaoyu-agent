@@ -13,6 +13,8 @@ const PS = [
   '$env:APPDATA', 'Get-Content x.txt', 'Write-Output "hi"', 'ls | Select-Object Name',
   'node -e "console.log(1)"', 'a > b.txt', 'Start-Process notepad',
   '(Get-ChildItem).Name', 'Stop-Process -Name x',
+  'node -v; node -v',        // ; 是 PowerShell 分隔符，cmd 不认，必须回老路
+
 ];
 for (const c of SIMPLE) t.ok('简单命令走快路 · ' + c, !needsPowerShell(c), shellLabel(c));
 for (const c of PS) t.ok('PowerShell 味道回老路 · ' + c.slice(0, 26), needsPowerShell(c), shellLabel(c));

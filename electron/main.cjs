@@ -84,6 +84,52 @@ const { readFileSync, writeFileSync, existsSync: fsExists } = require('node:fs')
 const { Worker } = require('node:worker_threads');
 
 /**
+ * 【2026-11-07 主人报「启动很慢」—— 先让它可量化】
+ *
+ * 之前「慢」全靠感觉：到底是 Electron 起得慢、服务慢、还是页面画得慢，
+ * 谁都说不清。这里从主进程第一行开始记时，关键节点各打一行：
+ *
+ *   [boot] 主进程起来了            +Xms
+ *   [boot] whenReady                +Xms
+ *   [boot] 服务听上了               +Xms
+ *   [boot] 页面加载完（loadURL）    +Xms
+ *   [boot] 窗口露面（ready-to-show） +Xms
+ *
+ * 看这几行就知道该修哪一段，不用再猜。
+ */
+const BOOT_T0 = Date.now();
+/**
+ * 同时写一行进 `<userData>/data/.state/boot.log`。
+ *
+ * 【为什么要写文件】打包版双击启动，没有控制台，console.log 等于扔进黑洞 ——
+ * 主人报「启动慢」时我连一次数据都拿不到。写进 .state 之后，下次启动完
+ * 直接读那个文件就是每一段的真实毫秒数，不用再靠猜。
+ * 文件超过 64KB 就重开一个，免得越堆越大。
+ */
+const bootLogPath = (() => {
+  try {
+    return require('node:path').join(
+      process.env.APPDATA || require('node:os').homedir(),
+      '小鱼Agent', 'data', '.state', 'boot.log',
+    );
+  } catch { return ''; }
+})();
+const bootMark = (what) => {
+  const ms = Date.now() - BOOT_T0;
+  try { console.log('[boot] ' + what + ' +' + ms + 'ms'); } catch {}
+  if (!bootLogPath) return;
+  try {
+    const fs0 = require('node:fs');
+    const line = new Date().toISOString().slice(0, 19).replace('T', ' ') + '  ' + what + '  +' + ms + 'ms\n';
+    try {
+      if (fs0.statSync(bootLogPath).size > 65536) fs0.writeFileSync(bootLogPath, '', 'utf8');
+    } catch { /* 文件还不存在，正常 */ }
+    fs0.appendFileSync(bootLogPath, line, 'utf8');
+  } catch { /* 写不进去也不能影响启动 */ }
+};
+bootMark('主进程起来了');
+
+/**
  * 【把她要看一眼的界面，隔着线程安全地递给她】2026-11-02
  *
  * 主人要「陪看屏幕」。以前这件事只能主进程自己做 —— 窗口、托盘这些是**句柄**，
@@ -616,6 +662,7 @@ async function createWindow(updated = false) {
 
   // 默认最大化（顺序与原因见下面 ready-to-show 里那段，别改回去）。
   win.once('ready-to-show', () => {
+    bootMark('窗口露面（ready-to-show）');
     // 显示之前先把深色底铺满，别让第一帧露出引擎的缺省白。
     try { win.setBackgroundColor('#000000'); } catch {}
     /**
@@ -677,7 +724,7 @@ async function createWindow(updated = false) {
         setTimeout(() => { try { if (win && !win.isDestroyed()) win.setOpacity(1); } catch {} }, 80);
       }
     } catch {}
-  }, 3000);
+  }, 1400);
 
   // 关窗口 = 收进托盘，服务端和正在跑的那一轮都留着
   win.on('close', (e) => {
@@ -814,7 +861,9 @@ async function createWindow(updated = false) {
 
   try {
     const { url } = await startServer();
+    bootMark('服务听上了');
     await win.loadURL(url);
+    bootMark('页面加载完');
   } catch (err) {
     const html = `<html style="background:#000000"><body style="background:#000000;color:#e6e9ef;font:14px/1.6 'Segoe UI';padding:40px">
         <h2>启动失败</h2><pre style="color:#f85149;white-space:pre-wrap">${String((err && err.stack) || err)}</pre></body>`;
@@ -904,6 +953,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    bootMark('whenReady');
     // 【为什么把自检挪到后面】
     // 以前是 `await selfCheck()` 跑完才开窗口，而自检要联网问一次模型（还可能卡在
     // 「版本检查」那一步）。网不好或者那次请求挂住，窗口就永远不出来 —— 表现是

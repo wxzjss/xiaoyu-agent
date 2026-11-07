@@ -35,7 +35,10 @@ const r2 = parse('<invoke name="read_file"><parameter name="path">a.txt</paramet
 t('没有 <call> 也能解析', r2.length === 1 && r2[0].name === 'read_file');
 
 // 3. 多个 invoke
-const r3 = parse('<invoke name="a"><parameter name="x">1</parameter></invoke>\n<invoke name="b"><parameter name="y">2</parameter></invoke>');
+/* 【2026-11-07】名字换成真实的：新解析器加了一道「工具名像不像话」的校验
+ * （挡的是模型在回复里**讲解**这段格式时被当成真调用执行）。
+ * 这条测的是「多个 invoke 都认」，不是「单字母假名字也认」。 */
+const r3 = parse('<invoke name="read_file"><parameter name="path">1</parameter></invoke>\n<invoke name="write_file"><parameter name="path">2</parameter></invoke>');
 t('多个 invoke 都认', r3.length === 2);
 
 // 4. 没有 invoke 的普通文字

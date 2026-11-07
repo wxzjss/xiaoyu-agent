@@ -6263,9 +6263,19 @@ function mdInline(text) {
  */
 function stripXmlToolCalls(input) {
   var s = String(input == null ? '' : input);
-  if (s.indexOf('<call') < 0 && s.indexOf('<invoke') < 0) return s;
-  s = s.replace(/<call[\s\S]*?<\/call>/gi, '');
-  s = s.replace(/<invoke[\s\S]*?<\/invoke>/gi, '');
+  /* 【2026-11-07 加】DeepSeek 的 DSML 分隔符先当噪声剥掉：
+   *   </｜｜DSML｜｜ parameter>  →  </ parameter>
+   * 不剥的话下面所有闭合标签都对不上。 */
+  if (s.indexOf('DSML') >= 0) s = s.replace(/[|｜]{1,2}\s*DSML\s*[|｜]{0,2}/gi, '');
+  /* 【2026-11-07 加·<tool_call> 这个壳】
+   * 主人会话里漏出来的正是这种：`<tool_call name="plan">` + `<parameter ...>`。
+   * 老版本只认 <call>/<invoke>，于是原样画到气泡里。 */
+  if (s.indexOf('<call') < 0 && s.indexOf('<invoke') < 0 && s.indexOf('<tool_call') < 0) return s;
+  s = s.replace(/<tool_call[\s\S]*?<\/\s*tool_call\s*>/gi, '');
+  s = s.replace(/<call[\s\S]*?<\/(\s*)call\s*>/gi, '');
+  s = s.replace(/<invoke[\s\S]*?<\/\s*invoke\s*>/gi, '');
+  /* 没写完 / 被截断的（实测那次就是缺闭合标签），从标记起全切 */
+  s = s.replace(/<tool_call[\s\S]*$/gi, '');
   s = s.replace(/<call[\s\S]*$/gi, '');
   s = s.replace(/<invoke[\s\S]*$/gi, '');
   return s.replace(/^\s+/, '').replace(/\s+$/, '');

@@ -573,6 +573,18 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
    * 所以改成**有状态**地剥：记住「现在是否在思考块里」，跨块续上。
    */
   const _feedThink = createThinkStripper();
+  /* 【2026-11-07】正文里的工具调用文本：先扣住，别让它流到屏幕上 */
+  const _xmlGuard = createXmlCallGuard();
+  /**
+   * 【白名单挡误判】
+   * 模型有时候会在回复里**讲解**这种格式（主人今天就在问这个）。要是没有白名单，
+   * 讲解文本会被当成真调用执行一遍 —— 比显示乱码更糟。所以只认真实注册过的工具名。
+   */
+  const _toolNames = new Set(
+    (tools || [])
+      .map((t) => String((t && t.function && t.function.name) || (t && t.name) || '').trim())
+      .filter(Boolean),
+  );
 
 
   /**
@@ -642,7 +654,12 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
         if (delta.content) {
           // 有的网关把思考塞进 content，剥掉再发（有状态：标签被切在两块之间也认）。
           const cleaned = _feedThink(delta.content);
-          if (cleaned) { _xmlAcc += cleaned; yield { type: 'text', text: cleaned }; }
+          if (cleaned) {
+            _xmlAcc += cleaned;
+            // 再过一道：看见 <tool_call/<invoke/<call 就扣住，不往屏幕上发
+            const show = _xmlGuard.feed(cleaned);
+            if (show) yield { type: 'text', text: show };
+          }
         }
 
         for (const tc of delta.tool_calls ?? []) {
@@ -671,9 +688,28 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
      * 只认「有 name 属性的 invoke + 里面的 parameter」，别的一概不动。
      */
     try {
-      if (!acc.size && _xmlAcc.indexOf('<invoke') >= 0) {
-        const _xc = parseXmlToolCalls(_xmlAcc);
+      /* 【2026-11-07】先把正常文字的最后一点尾巴放出去（守护器平时会留 24 字符） */
+      const _tail = _xmlGuard.flush();
+      if (_tail) yield { type: 'text', text: _tail };
+
+      /**
+       * 【2026-11-07 修·DSML 形态也要认】
+       * 原来只找 '<invoke'。可实测出现的是 `<tool_call name="plan">`（DeepSeek DSML），
+       * 这条判断直接 false → 后面解析器根本没被调用过 → 工具不执行、文本还画在屏幕上。
+       * 现在两种壳子都算，解析器自己也认 DSML 分隔符。
+       */
+      let _xc = [];
+      if (!acc.size && /<(?:tool_call|invoke)\b/i.test(_xmlAcc)) {
+        _xc = parseXmlToolCalls(_xmlAcc, _toolNames);
         if (_xc.length) yield { type: 'tool_calls', toolCalls: _xc };
+      }
+      /**
+       * 扣住了、却没认成工具调用 —— 那多半是模型在**讲解**这段格式（或者名字不认识）。
+       * 不能吞话：原样补发，让主人看得见。吞掉比显示乱码更糟。
+       */
+      if (_xmlGuard.hit && !_xc.length) {
+        const _held = _xmlGuard.heldText();
+        if (_held) yield { type: 'text', text: _held };
       }
     } catch (e) { /* 解析失败就当没有，回到原来的行为 */ }
   } catch (err) {
@@ -708,31 +744,72 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
  * 也认没有外层 <call> 的、以及自闭合的空参数。
  * 解析失败一律返回空数组 —— 上层看到空就退回原来的行为，不会更糟。
  */
-function parseXmlToolCalls(text) {
+export function parseXmlToolCalls(text, knownNames) {
   const out = [];
   try {
-    const src = String(text || '');
+    let src = String(text || '');
     if (!src) return out;
-    const invokeRe = /<invoke\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)<\/invoke>/gi;
-    let m;
-    let n = 0;
-    while ((m = invokeRe.exec(src)) !== null) {
-      const name = String(m[1] || '').trim();
-      if (!name) continue;
-      const body = m[2] || '';
+
+    /**
+     * 【2026-11-07 加·DSML 分隔符】
+     *
+     * 实测原文（杂活鱼会话第 260 条，77 字符，还是残缺的）：
+     *   <tool_call name="plan">
+     *   <parameter name="action">update</｜｜DSML｜｜ parameter>
+     *
+     * `｜｜DSML｜｜` 是 DeepSeek 的原生标记，被当普通字符吐了出来。
+     * 剥掉之后是 `</ parameter>`（标签名和 > 之间多个空格），
+     * 所以下面所有闭合标签都写成 `<\/\s*xxx\s*>`，忍这个空格。
+     */
+    src = src.replace(/[|｜]{1,2}\s*DSML\s*[|｜]{0,2}/gi, '');
+
+    /* 工具名只认蛇形小写。挡的是「模型在回复里讲解这段格式」被当成真调用。 */
+    const okName = (n) => {
+      const s = String(n || '').trim();
+      if (!s || s.length > 64) return false;
+      if (knownNames && knownNames.size) return knownNames.has(s);
+      return /^[A-Za-z_][A-Za-z0-9_]{1,63}$/.test(s);
+    };
+
+    const readParams = (body) => {
       const args = {};
-      const paramRe = /<parameter\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)<\/parameter>/gi;
+      /* 闭合标签可有可无（流被截断时就没有），非贪婪优先找闭合的那个 */
+      const paramRe = /<parameter\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)(?:<\/\s*parameter\s*>|$)/gi;
       let p;
-      while ((p = paramRe.exec(body)) !== null) {
+      while ((p = paramRe.exec(String(body || ''))) !== null) {
         const k = String(p[1] || '').trim();
         if (!k) continue;
         args[k] = String(p[2] || '').trim();
       }
+      return args;
+    };
+
+    let n = 0;
+    const push = (name, body) => {
       out.push({
         id: 'xmlcall_' + Date.now().toString(36) + '_' + (n++),
         name,
-        arguments: JSON.stringify(args),
+        arguments: JSON.stringify(readParams(body)),
       });
+    };
+
+    /* ① 正常形态：闭合的 <invoke>/<tool_call>（外层可能还裹一层 <call>） */
+    const blockRe = /<(?<tag>invoke|tool_call)\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*?)<\/\s*(?:invoke|tool_call)\s*>/gi;
+    let m;
+    while ((m = blockRe.exec(src)) !== null) {
+      const name = String(m[2] || '').trim();
+      if (!okName(name)) continue;
+      push(name, m[3] || '');
+    }
+
+    /* ② 缺尾形态：流被截断 / 模型没写完闭合标签（实测那次就是这样） */
+    if (!out.length) {
+      const looseRe = /<(?:invoke|tool_call)\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*)$/i;
+      const l = looseRe.exec(src);
+      if (l) {
+        const name = String(l[1] || '').trim();
+        if (okName(name)) push(name, l[2] || '');
+      }
     }
   } catch (e) {
     return [];
@@ -808,6 +885,62 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
  * 所以这里维护两个状态：`inThink`（现在是否在思考块里）和 `buf`（末尾可能是半个标签）。
  * 用法：先 createThinkStripper() 拿一个 feed，然后每个 delta 喂进去，拿回来的才是能显示的。
  */
+/**
+ * 【2026-11-07 加·工具调用文本别流到屏幕上】
+ *
+ * 主人报：会话里冒出一行
+ *   <tool_call name="plan">
+ *   <parameter name="action">update</｜｜DSML｜｜ parameter>
+ *
+ * 那是 DeepSeek 的原生标记（DSML）被当普通文本吐出来了。老兜底只认 `<invoke>`，
+ * 触发条件也只找 `'<invoke'` —— 于是这段一个字符都没被拦，直接画到气泡里；
+ * 更要命的是**那一轮的工具一次都没执行**，她等于白干一轮。
+ *
+ * 这里做的是「先扣住、后判定」：
+ *   · 正常文字照常一块块放出去（尾巴留 24 字符，防止标记被切在两块中间）
+ *   · 一旦看见 <tool_call / <invoke / <call，从那儿起后面全部扣住不再放
+ *   · 流结束时由调用方定：解析成工具调用 → 丢弃；解析不成 → 原样补发
+ *     （不能吞话。万一模型真的在解释这段格式，主人得看得到）
+ */
+export function createXmlCallGuard() {
+  const MARK = /<(?:tool_call|invoke|call)\b/i;
+  const KEEP = 24;
+  let pend = '';
+  let held = '';
+  let hit = false;
+
+  return {
+    feed(chunk) {
+      const s = String(chunk || '');
+      if (!s) return '';
+      if (hit) { held += s; return ''; }
+      pend += s;
+      const m = MARK.exec(pend);
+      if (m) {
+        hit = true;
+        const before = pend.slice(0, m.index);
+        held = pend.slice(m.index);
+        pend = '';
+        return before;
+      }
+      if (pend.length <= KEEP) return '';
+      const out = pend.slice(0, pend.length - KEEP);
+      pend = pend.slice(-KEEP);
+      return out;
+    },
+    /** 流正常结束：把尾巴交出去（命中过就交空的，剩下的交给 held） */
+    flush() {
+      if (hit) return '';
+      const t = pend;
+      pend = '';
+      return t;
+    },
+    get hit() { return hit; },
+    /** 被扣住的原文（判定成工具调用就丢，判定不成要补发） */
+    heldText() { return held; },
+  };
+}
+
 export function createThinkStripper() {
   const OPEN_RE = /<(thinking|think|reasoning)(?![a-z])/i;
   const CLOSE_RE = /<\/(thinking|think|reasoning)\s*>/i;

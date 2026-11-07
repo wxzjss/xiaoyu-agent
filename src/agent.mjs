@@ -577,6 +577,13 @@ export async function runAgent({
   /** 【P4】每轮自己记一笔：以后不用翻会话文件数工具，直接看 .state/harness-metrics.jsonl */
   const _meter = createTurnMeter(sessionId);
   /**
+   * 【幂等键的 run 级隔离】
+   * 外层 round 每次 runAgent 都从 0 重新数，而网关常复用 call_0 这种 id。
+   * 若直接用 round 当幂等键，主人发第二条消息时可能命中上一条的缓存 → 工具不跑。
+   * 加一个本次 run 唯一的 nonce，保证「跨消息绝不误命中，同一消息内断流续传仍幂等」。
+   */
+  const _harnessRunKey = String(Date.now()) + '_' + Math.random().toString(36).slice(2, 7);
+  /**
    * 最后一次请求的原始用量。
    *
    * usageTotal 是累加值（这一轮一共灌进去多少），lastUsage 是最后那一次
@@ -1564,7 +1571,7 @@ for (let round = 0; round < config.maxRounds; round++) {
         emitEvents: false,           // 事件仍由下面主循环一条条发，契约不变
         onlyParallelLayers: true,   // 单个 / 写操作留给主循环
         sessionId,
-        round,
+        round: _harnessRunKey + ':' + round,   // 幂等键带 run nonce，跨消息不串账
         signal,
         timeoutMs: Math.min(TOOL_MAX_MS, 120000),
       });

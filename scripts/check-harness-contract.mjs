@@ -25,6 +25,10 @@ t.ok('每圈开头 reset 累积器', /_callAcc\.reset\(\)/.test(agent));
 t.ok('harness 模块真的被 import', /from '\.\/harness\/index\.mjs'/.test(agent));
 t.ok('createCallAccumulator 已接入', /createCallAccumulator/.test(agent));
 t.ok('executeBatch 已接入主循环', /await executeBatch\(assistantMsg\.tool_calls/.test(agent));
+/* 外层 round 每条用户消息都从 0 重新数，网关又爱复用 call_0 ——
+ * 幂等键必须带 run 级 nonce，否则第二条消息会命中上一条的缓存、工具不跑。 */
+t.ok('幂等键带 run 级 nonce（跨消息不串账）', /_harnessRunKey/.test(agent)
+  && /round: _harnessRunKey \+ ':' \+ round/.test(agent));
 t.ok('旧的 _RO 白名单已删（判定收口到 tool-spec）', !/_RO = new Set/.test(agent));
 t.ok('isReadOnlyCommand 委托给 harness', /return harnessIsReadOnlyCommand\(raw\)/.test(agent));
 

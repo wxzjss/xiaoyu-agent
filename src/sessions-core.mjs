@@ -515,8 +515,35 @@ function previewOf(messages) {
       let text = String(body ?? '').replace(/\s+/g, ' ').trim();
       // 只有图没文字：拿附件名顶一下
       if (!text && Array.isArray(m._images) && m._images.length) text = '[图片] ' + m._images.map((p) => String(p).split(/[\\/]/).pop()).join(' ');
+      /* 【2026-11-07 修·压缩过的会话预览是空的】
+       * 程序自动插的提醒不是主人说的话，这里要跳过，继续往前找，
+       * 不然整条会话的预览会变成「〔量线 30%〕…」这种废话。 */
+      if (!text || /^〔|^【该你自己压了】|^（下面是程序自动生成/.test(text)) continue;
       return text.slice(0, 60);
     }
+  }
+  /**
+   * 【2026-11-07 加·兜底：主人原话被压缩折走之后】
+   *
+   * 上下文压过一次之后，messages 里原来的 user 消息被折叠成一条摘要，
+   * 剩下的 user 全是程序插的量线提醒 —— 上面那圈一个都挑不出来。
+   * 于是 preview 空、count 也是 0，**界面就把它当成「新建的空会话」画成灰的**，
+   * 主人看到的是「我这个会话怎么废了」。
+   *
+   * 兜底：挑最后一条有文字的助手消息（或者那条压缩摘要）当前 60 字。
+   * 会话里明明有一大堆内容，列表上就不该显示成空的。
+   */
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || (m.role !== 'assistant' && m.role !== 'system')) continue;
+    if (Array.isArray(m.tool_calls) && m.tool_calls.length) continue;
+    const raw = m.content;
+    const body = Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join(' ') : raw;
+    const text = String(body ?? '').replace(/\s+/g, ' ').trim();
+    /* 程序自己注入的那几条（身份锚等）不能当预览 —— 列表面上一行小字，
+     * 写「【本轮身份锚】你就是下一条消息里写的那个人…」主人完全看不懂。 */
+    if (!text || /^【本轮身份锚】|^【压缩记忆|^（下面是程序自动生成/.test(text)) continue;
+    return text.slice(0, 60);
   }
   return '';
 }
@@ -545,6 +572,10 @@ export function listSessions() {
       updatedAt: s.updatedAt,
       count: s.messages.filter((m) => m && m.role === 'user' && !m.context).length,
       preview: previewOf(s.messages),
+      /* 【2026-11-07 加】判「空会话」不能只看 count / preview：
+       * 压缩过的会话，主人原话全被折成一条摘要，count 变 0、preview 也得靠兜底 ——
+       * 界面那边要是只认这两个字段，就会把一堆内容的会话画成灰色的「新会话」。 */
+      hasContent: Array.isArray(s.messages) && s.messages.length > 0,
       // 会话列表里带一句当前档位，界面想显示「这会话被叫停过」就有数据可用
       mode: s.mode?.word || null,
     });

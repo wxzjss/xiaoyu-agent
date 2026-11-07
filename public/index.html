@@ -18817,7 +18817,13 @@ function renderSessList() {
   // 展示排序：当前会话永远置顶；一句没说的空会话沉到底。
   // 为什么：空会话 updatedAt 也新，纯按时间排会把正在聊的会话顶到下面，
   // 切走再回来就得往下滚——看着就像"原来的会话没了"。
-  const isEmpty = (x) => !x.count && !x.preview;
+  /* 【2026-11-07 修·压缩过的会话被画成空会话】
+   * 原来只看 count（主人说过几句）和 preview。
+   * 可上下文压过一次之后，主人原话被折成一条摘要，count 就是 0 ——
+   * 于是一堆内容的会话在列表里变成灰色的「新会话」，主人以为它废了。
+   * 现在多认一个 hasContent（服务端给的「有没有消息」）。
+   * 三个都空才算真空。 */
+  const isEmpty = (x) => !x.hasContent && !x.count && !x.preview;
   const view = sessionsCache.slice().sort((a, b) => {
     if (a.id === sessionId) return -1;
     if (b.id === sessionId) return 1;

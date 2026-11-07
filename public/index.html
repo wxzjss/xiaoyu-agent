@@ -12755,20 +12755,30 @@ function imeCancelSoon() {
   if (imeTimer) { try { clearTimeout(imeTimer); } catch {} imeTimer = 0; }
   imeGen += 1;
 }
+/**
+ * 【2026-11-07 主人报「重启后直接点键盘出白框」·最后一道闸】
+ *
+ * 最近 3 秒内打过字，就一次都不许碰输入法。
+ * 重启后人是直接打字的，而「跟系统输入法」这件事本来也不急这一下 ——
+ * 宁可这次不跟随，也绝不能把正在打字的拼音串搅成白框。
+ */
+function imeTypingRecently() {
+  return (Date.now() - (window.__xyImeTypeAt || 0)) < 3000;
+}
 function imeMatchSoon() {
-  if (imeBusy()) return;
+  if (imeBusy() || imeTypingRecently()) return;
   const g = (imeGen += 1);
   if (imeTimer) { try { clearTimeout(imeTimer); } catch {} }
   imeTimer = setTimeout(() => {
     imeTimer = 0;
     if (g !== imeGen) return;         // 期间有人动过键盘：这次不切
-    if (imeBusy()) return;
+    if (imeBusy() || imeTypingRecently()) return;
     imeMatchOnce();
   }, 700);
 }
 
 async function imeMatchOnce() {
-  if (imeBusy()) return;                                             // ★ 拼音没上屏 / 刚上屏：一次都别切，否则搅出白框
+  if (imeBusy() || imeTypingRecently()) return;                       // ★ 拼音没上屏 / 刚上屏 / 刚打过字：一次都别切，否则搅出白框
   if (imeSwitching) return;                                          // 已有一趟在跑，直接让路
   if (!window.desktop || !window.desktop.imeMatchSystem) return;      // 网页版，管不着
   imeSwitching = true;                                               // ★ 先上锁，再做慢的活
@@ -12788,26 +12798,46 @@ async function imeMatchOnce() {
   }
 }
 
-input.addEventListener('focus', () => { imeMatchSoon(); });
 /**
- * 已经聚焦在输入框里、再点一下：focus 不会再来，靠这条兜住。
- * 【2026-11-07】这里也从「按下就切」改成「等一等再切」——
- * 按下那一刻往往就是准备打字的那一刻，立刻切最容易撞上拼音串。
+ * 【2026-11-07 主人报「重启后直接点键盘就出白框」】
+ *
+ * 根因在这一行 focus 监听：**页面加载时程序自己会 input.focus()**
+ * （后面还有好几处程序代 focus：插完附件、切完会话、关掉面板…）。
+ * 那不是「用户想换输入法」，可它照样触发了切换 —— 而重启后人是直接打字的，
+ * 于是那一下 imm32 正好撞在拼音串上，白框又出来了。
+ *
+ * 改法两条：
+ *   ① 只认**用户真的碰过输入框**（按下去过）之后的 focus，程序代 focus 一律不切；
+ *   ② 最近 3 秒内打过字，一律不切（见 imeMatchOnce 里的 imeTypingRecently）。
  */
-input.addEventListener('pointerdown', () => {
-  if (document.activeElement !== input) return;   // 还没聚焦：交给 focus 那条路
+let _imeUserTouchedAt = 0;
+input.addEventListener('focus', () => {
+  if (Date.now() - _imeUserTouchedAt > 1500) return;   // 程序代 focus，不是人点的
   imeMatchSoon();
 });
+/**
+ * 点输入框 —— 不管是「从别处第一次点进来」还是「已经聚焦再点一下」，都走这条。
+ * 【2026-11-07】原来只在「本来就聚焦」时才走，把第一种交给了 focus 那条路；
+ * 可 focus 那条现在只认「刚点过」，所以这里要自己全覆盖。
+ */
+input.addEventListener('pointerdown', () => {
+  _imeUserTouchedAt = Date.now();
+  imeMatchSoon();
+}, true);
 /**
  * 【2026-11-07 加】只要人开始打字，就把待切的那一趟作废。
  * 这四条一起监听：物理按键、输入法预编辑开始、内容变化、粘贴。
  * 少挂一条就有一条缝 —— 比如打拼音是先 compositionstart，不是 keydown 才来。
  */
 try {
-  input.addEventListener('keydown', () => { imeCancelSoon(); }, true);
-  input.addEventListener('compositionstart', () => { imeCancelSoon(); }, true);
-  input.addEventListener('input', () => { imeCancelSoon(); }, true);
-  input.addEventListener('paste', () => { imeCancelSoon(); }, true);
+  const markTyping = () => {
+    window.__xyImeTypeAt = Date.now();
+    imeCancelSoon();
+  };
+  input.addEventListener('keydown', markTyping, true);
+  input.addEventListener('compositionstart', markTyping, true);
+  input.addEventListener('input', markTyping, true);
+  input.addEventListener('paste', markTyping, true);
 } catch {}
 // 【2026-10-31 拆掉「清空当前」】主人原话：「把【清空当前】按钮以及对应效果删除，我严重怀疑就是因为这个的原因清空的」。
 // 按钮、确认框、/api/reset 调用、重画那一整套都删了（原来在 8109-8155 行）。

@@ -22,7 +22,7 @@ t.ok('有 compositionstart 监听', /input\.addEventListener\('compositionstart'
 t.ok('有 compositionend 监听', /input\.addEventListener\('compositionend'/.test(ui));
 t.ok('compositionend 记了时间戳', /__xyImeEndAt = Date\.now\(\)/.test(ui));
 t.ok('imeBusy 覆盖「正在打」+「刚上屏冷却」', /function imeBusy\(\)[\s\S]{0,220}__xyImeComposing[\s\S]{0,220}< 250/.test(ui));
-t.ok('imeMatchOnce 进门第一件事就让路', /async function imeMatchOnce\(\) \{\s*\n\s*if \(imeBusy\(\)\) return;/.test(ui));
+t.ok('imeMatchOnce 进门第一件事就让路', /async function imeMatchOnce\(\) \{\s*\n\s*if \(imeBusy\(\) \|\| imeTypingRecently\(\)\) return;/.test(ui));
 t.ok('await 慢请求之后再查一次', /if \(!\(await imeFeatureOn\(\)\)\) return;[\s\S]{0,340}if \(imeBusy\(\)\) return;/.test(ui));
 t.ok('抢焦点 grab() 也让路', /const grab = \(\) => \{[\s\S]{0,320}imeBusy\(\)/.test(ui));
 t.ok('Enter 选词不发送那条还在', /e\.isComposing \|\| e\.keyCode === 229/.test(ui));
@@ -77,11 +77,13 @@ try {
 } catch { cdp2 = null; }
 t.ok('有「等一等再切」的入口', /function imeMatchSoon\(\)/.test(ui));
 t.ok('有「作废」的入口', /function imeCancelSoon\(\)/.test(ui));
-t.ok('点击/聚焦走的是延迟那条', /input\.addEventListener\('focus', \(\) => \{ imeMatchSoon\(\); \}\)/.test(ui)
-  && /imeMatchSoon\(\);\s*\n\}\);/.test(ui));
-t.ok('没有地方再「点一下立刻切」', !/addEventListener\('focus', \(\) => \{ imeMatchOnce\(\)/.test(ui));
-t.ok('打字会取消待切', /addEventListener\('keydown'[\s\S]{0,80}imeCancelSoon\(\)/.test(ui));
-t.ok('打拼音也会取消', /addEventListener\('compositionstart'[\s\S]{0,80}imeCancelSoon\(\)/.test(ui));
+/* 【2026-11-07】触发点拆成两条：用户按下（pointerdown）才是「他想换输入法」，
+ * 程序自己 focus（页面加载、插完附件）不算 —— 那条正是「重启后直接打字出白框」的根因。 */
+t.ok('用户按下才算要切', /addEventListener\('pointerdown'[\s\S]{0,140}_imeUserTouchedAt = Date\.now\(\)[\s\S]{0,100}imeMatchSoon\(\)/.test(ui));
+t.ok('程序代 focus 不切（要刚点过才认）', /_imeUserTouchedAt > 1500\) return;/.test(ui));
+t.ok('打字会取消待切', /'keydown', markTyping/.test(ui));
+t.ok('打拼音也会取消', /'compositionstart', markTyping/.test(ui));
+t.ok('刚打过字就整段不切', /function imeTypingRecently\(\)/.test(ui) && /imeBusy\(\) \|\| imeTypingRecently\(\)/.test(ui));
 
 if (cdp2) {
   try {
@@ -94,24 +96,51 @@ if (cdp2) {
         imeGateOn = true; imeGateAt = Date.now();
         window.desktop = window.desktop || {};
         window.desktop.imeMatchSystem = async () => { calls += 1; };
-        /* ① 点一下、立刻打字 → 一次都不许切 */
-        calls = 0;
-        inp.focus();
+        const click = () => inp.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+        window.__xyImeTypeAt = 0;
+
+        /* ① 程序自己 focus（页面加载那条路）→ 一次都不许切
+           【2026-11-07 主人】「重启后直接点键盘就出白框」就是被这条坑的 */
+        calls = 0; _imeUserTouchedAt = 0;
+        inp.blur(); inp.focus();
+        await sleep(1000);
+        out.programFocus = calls;
+
+        /* ② 用户点一下、接着打字 → 一次都不许切 */
+        calls = 0; window.__xyImeTypeAt = 0;
+        click();
         inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
-        await sleep(900);
+        await sleep(1000);
         out.typing = calls;
-        /* ② 点一下、一直不动 → 该切（说明延迟不是把功能关掉） */
-        calls = 0;
-        inp.blur();
-        inp.focus();
+
+        /* ③ 用户点一下、一直不打字 → 该切（延迟不是把功能关掉） */
+        calls = 0; window.__xyImeTypeAt = 0; imeCancelSoon();
+        click();
         await sleep(1000);
         out.idle = calls;
+
+        /* ④ 刚打完字（3 秒内）再点 → 也不切 */
+        calls = 0; window.__xyImeTypeAt = Date.now();
+        click();
+        await sleep(1000);
+        out.within3s = calls;
+
+        /* ⑤ 打过字已过 3 秒 → 恢复该切 */
+        calls = 0; window.__xyImeTypeAt = Date.now() - 4000;
+        click();
+        await sleep(1000);
+        out.after3s = calls;
       } catch (e) { out.err = String(e); }
+      window.__xyImeTypeAt = 0;
       return out;
     `);
-    console.log('\n真机（延迟切换）：' + JSON.stringify(r2));
-    t.ok('真机：打完字才开始——一次都没切', r2.typing === 0, String(r2.typing));
+    console.log('');
+    console.log('真机（延迟切换）：' + JSON.stringify(r2));
+    t.ok('真机：程序代 focus 不切（重启后直接打字的根因）', r2.programFocus === 0, String(r2.programFocus));
+    t.ok('真机：点完立刻打字——一次都没切', r2.typing === 0, String(r2.typing));
     t.ok('真机：只点不打字——照旧会切', r2.idle >= 1, String(r2.idle));
+    t.ok('真机：刚打完字再点——不切', r2.within3s === 0, String(r2.within3s));
+    t.ok('真机：过了 3 秒——恢复该切', r2.after3s >= 1, String(r2.after3s));
   } catch (e) {
     t.ok('真机探针（延迟切换）能跑', false, String(e.message).slice(0, 120));
   } finally {

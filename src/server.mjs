@@ -7063,26 +7063,14 @@ const server = createServer(async (req, res) => {
       /* ① 正在跑的：一个都别落下 */
       for (const id of ids) { try { if (runningTurns.get(id)) _pushCand(id); } catch {} }
       try { for (const sid of runningTurns.keys()) _pushCand(sid); } catch {}
-      /* ② 最近 30 个会话里清单还有没打勾的 */
-      try {
-        const _qdir = join(config.dataDir, '.state', 'sessions');
-        if (__diagExists(_qdir)) {
-          const _qfiles = __diagReaddir(_qdir).filter((f) => f.endsWith('.json'));
-          const _qsorted = _qfiles
-            .map((f) => { try { return { f, t: statSync(join(_qdir, f)).mtimeMs }; } catch { return { f, t: 0 }; } })
-            .sort((a, b) => b.t - a.t)
-            .slice(0, 30);
-          for (const { f } of _qsorted) {
-            const _sidq = f.replace(/\.json$/, '');
-            try {
-              const _pq = loadPlan(_sidq);
-              const _sq = (_pq && Array.isArray(_pq.steps)) ? _pq.steps : [];
-              const _oq = _sq.filter((x) => x && x.status !== 'done' && x.status !== 'skipped');
-              if (_oq.length) _pushCand(_sidq);
-            } catch {}
-          }
-        }
-      } catch {}
+      /* ② 【2026-11-07 删·不再扫「清单还有没打勾的」】
+       *
+       * 原来这里会把最近 30 个会话里清单没清完的都收进来 —— 实测一次退出记出
+       * **8 条**老账（都是早就不在跑、主人可能早放弃的活）。
+       * 这些记下来只有一个后果：文件越长越大，还容易在开机时被误续。
+       *
+       * 现在只认「正在跑、被掐断」的那几个。清单老账想接着干，主人手动点
+       * （POST /api/resume 带 sessionId），别替他决定。 */
       /* ③ 逐个写：一个会话一条，互不覆盖 */
       for (const _qsid of _cand) {
         let _qopen = [];

@@ -189,6 +189,17 @@ function sanitizeLoadedMessages(list) {
     if (m && typeof m.content === 'string' && /<\/?(thinking|think|reasoning)[\s>]/i.test(m.content)) {
       m = { ...m, content: stripThinkTags(m.content) };
     }
+    /**
+     * 【2026-11-07 加·角色标签不是正文】
+     *
+     * 实测杂活鱼第 368 条：content 就是 `<assistant>`（11 个字符），
+     * 后面跟着 tool_calls —— 模型调工具前先吐了个角色标签当开头。
+     * 这是训练数据里的对话格式漏出来了，存盘时清掉。
+     * 有 tool_calls 的只清 content，调用本身保留（否则 tool 消息会变成孤儿）。
+     */
+    if (m && typeof m.content === 'string' && /<\/?(assistant|user|system)\s*>/i.test(m.content)) {
+      m = { ...m, content: m.content.replace(/<\/?(?:assistant|user|system)\s*>/gi, '').trim() };
+    }
     /* 【2026-11-05】压缩记忆也不该出现在正文里（她有时候会照写出来）。 */
     if (m && typeof m.content === 'string' && m.content.indexOf('【压缩记忆') >= 0) {
       m = { ...m, content: stripCompressMemory(m.content) };

@@ -6403,6 +6403,18 @@ function stripThinkingTags(input) {
    * 这行原来是**大小写敏感**的：模型偶尔吐 <THINKING> / <Thinking>，
    * 这里直接 return，后面那些 gi 正则一次都轮不到 —— 标签原样留在屏幕上。
    * 改成转小写再比。 */
+  /**
+   * 【2026-11-07 加·角色标签也别显示】
+   *
+   * 主人报：「为什么会发 <assistant>」。实测杂活鱼第 368 条：
+   * 模型调工具前先吐了个 `<assistant>` 当开头，那条 content 只有 11 个字符、
+   * 全是这个标签 —— 屏幕上就多出一行。这是训练数据里的对话格式漏出来了，
+   * 不是正文，一律剥掉；剥完只剩空白就是空消息（空气泡不画）。
+   */
+  if (/<\/?(assistant|user|system)\b/i.test(s)) {
+    s = s.replace(/<\/?(?:assistant|user|system)\s*>/gi, '');
+    if (!s.trim()) return '';
+  }
   const _low0 = s.toLowerCase();
   /* 【2026-11-05】<think> / <reasoning> 也要放进这道门 ——
    * 不然「<think>x</think>」连这句都过不去，后面 ④ 那堆正则一次都轮不到。 */

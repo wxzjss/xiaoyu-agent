@@ -7000,6 +7000,9 @@ function releaseComposer(opts) {
   const grab = () => {
     try {
       if (document.activeElement === input) return; // 已经在里面了，重复 focus 只会打乱 IME
+      /* 【2026-11-07 修·输入法白框】拼音串还在预编辑区时，focus() 会重建 IME
+       * 上下文，把 composition 冲成一块白色预编辑框 —— 这时一次都别抢。 */
+      if (typeof imeBusy === 'function' && imeBusy()) return;
       input.focus({ preventScroll: true });
     } catch {}
   };
@@ -12445,6 +12448,29 @@ input.addEventListener('input', () => {
   _draftTimer = setTimeout(saveDraft, 250);
 });
 /**
+ * 【2026-11-07 修·主人截图里的输入法白框】
+ *
+ * 那串带撇号的拼音是微软拼音的**预编辑串（composition）**。它之所以会卡成
+ * 一块白框，是因为这个程序会在「一点输入框」时走 imm32 翻中英转换状态
+ * （main.cjs 的 ime:matchSystem），还会 focus() 重建 IME 上下文 ——
+ * 打字打到一半点一下输入框，正好在 composition 中途动它，拼音串就残在那儿了。
+ *
+ * 规矩：拼音没上屏、或刚上屏还没稳的这一小段里，既不抢焦点也不切输入法。
+ * 挂 window 上是为了让上面 grab() 那种「定义在前、变量声明在后」的地方也能安全读，
+ * 不会撞上 let 的暂时性死区。
+ */
+window.__xyImeComposing = false;
+window.__xyImeEndAt = 0;
+input.addEventListener('compositionstart', () => { window.__xyImeComposing = true; });
+input.addEventListener('compositionend', () => {
+  window.__xyImeComposing = false;
+  window.__xyImeEndAt = Date.now();
+});
+function imeBusy() {
+  return Boolean(window.__xyImeComposing)
+    || (Date.now() - (window.__xyImeEndAt || 0) < 250);
+}
+/**
  * 一点输入框，输入法就跟着系统语言走。
  *
  * 系统是中文、输入法却在英文上，一点就自动换回中文，省得打了半天
@@ -12509,12 +12535,16 @@ async function imeFeatureOn() {
  * 真跑过的留 600ms 冷却，防手抖连点。
  */
 async function imeMatchOnce() {
+  if (imeBusy()) return;                                             // ★ 拼音没上屏 / 刚上屏：一次都别切，否则搅出白框
   if (imeSwitching) return;                                          // 已有一趟在跑，直接让路
   if (!window.desktop || !window.desktop.imeMatchSystem) return;      // 网页版，管不着
   imeSwitching = true;                                               // ★ 先上锁，再做慢的活
   let keepLock = false;
   try {
     if (!(await imeFeatureOn())) return;                             // 功能页里关掉了（finally 会解锁）
+    /* 上面那个 await 会让出执行权：主人可能就在这几十毫秒里开始打拼音了。
+     * 真正动手之前再查一次，别在慢请求回来时正好撞上 composition。 */
+    if (imeBusy()) return;
     await window.desktop.imeMatchSystem();
     keepLock = true;                                                  // 真跑过一趟：留 600ms 冷却，防连点
   } catch {

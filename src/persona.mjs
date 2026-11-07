@@ -16,7 +16,7 @@ import { skillIndexBlock } from './skills.mjs';
 import { readMemory, memoryPath } from './session-memory.mjs';
 // 办事模式：开了就追加一段「你只派活、别自己动手」的规矩（见 task-mode.mjs）。
 import { taskOn, taskPromptBlock } from './task-mode.mjs';
-// 顶栏「小鱼」按钮：禁用期间她的记忆本子一个字段都不发（见 memoryBlock）。
+import { progressBlock } from './plan.mjs';
 import { fishOn } from './fish-presence.mjs';
 // 会话绑的智能体卡：绑了自定义卡，基线人设就换成那张卡的正文（见 agents.mjs）。
 import { agentForSession, getAgent, groupAgentIds, mainAgentId } from './agents.mjs';
@@ -232,6 +232,10 @@ const TASTE_BLOCK = [
   '',
   '【长回复要分段】一次要说三四件事、或者要连着讲几段，就在段与段之间**空一行**。',
   '一整面墙没人读得下去 —— 分段不是排版讲究，是让人能读进去。',
+  '',
+  '【正文里别写内心独白】想什么放心里（思考区），正文只写主人该看到的话。',
+  '别用括号往正文里塞「（丢脸）」「（我忘了这回事）」「（好的，您说得对）」这类自我吐槽 ——',
+  '主人打开会话是要看结果的，不是看你在那儿嘀咕。',
 ].join(String.fromCharCode(10));
 
 /**
@@ -379,6 +383,15 @@ const parts = [
     const sc = renderSelfCompressBlock();
     if (sc) parts.push(sc);
   } catch { /* 这个模块挂了也不能拖垮整轮提示 */ }
+  /*
+   * 【清单进度 · 每轮提醒】
+   * plan.mjs 的 progressBlock 早就写好了，却一直没人调用 —— 结果是一忙别的清单就丢脑后。
+   * 这里接上：清单有没做完的步骤才发；全做完返回空串，一个字不花。
+   */
+  try {
+    const _pb = progressBlock(sessionId);
+    if (_pb) parts.push(_pb);
+  } catch { /* 进度块挂了也不能拖垮整轮提示 */ }
   return parts.join('\n\n');
 }
 

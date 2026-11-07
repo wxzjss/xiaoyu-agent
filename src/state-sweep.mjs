@@ -134,7 +134,19 @@ export function pruneOrphans({ dryRun = false } = {}) {
   return { moved: moved.length, files: moved, trash };
 }
 
-/** 启动时挂上：先清孤儿，再报一次体检。 */
+/**
+ * 启动时挂上：先清孤儿，再报一次体检。
+ *
+ * 【2026-11-07 修·启动卡 16~35 秒】
+ * 原来这个函数是**同步**跑完才返回的，而 healthReport() 会把整个 .state
+ * 递归走一遍做统计。主人这台机器 .state 到了 1.3GB / 3.4 万个文件，
+ * 光这一步就要十几秒，而且它卡在服务起来之前 —— 表现就是
+ * 「双击图标，进程有了、端口也在听，但窗口十几秒不出来」。
+ *
+ * 现在改成：先同步做那件**必须马上做**的事（清孤儿记忆本，它只读 sessions/ 和
+ * memory/ 两个平铺目录，几百个文件，快），然后体检丢到后台去，
+ * 等主线程闲了再量 —— 量出来只是往日志里写一行，早一秒晚一秒无所谓。
+ */
 export function startHealthWatch() {
   try {
     const r = pruneOrphans();
@@ -142,13 +154,21 @@ export function startHealthWatch() {
   } catch (e) {
     console.warn('[state-sweep] 清孤儿失败:', e && e.message ? e.message : e);
   }
+  // 体检放到后台：它要递归走完整个 .state，是启动阶段最重的一步，别挡着开窗。
+  const runReport = () => {
+    try {
+      const h = healthReport();
+      if (h.stateMB >= 500) {
+        const top = h.items.slice(0, 3).map((x) => x.dir + ' ' + x.mb + 'MB').join('、');
+        console.log('[state-sweep] .state 已经 ' + h.stateMB + 'MB / ' + h.stateFiles + ' 个文件（占地方前几名: ' + top + '）');
+      }
+    } catch {}
+  };
+  // setImmediate 让出一次事件循环 → 服务起来、窗口画出来之后再量。
   try {
-    const h = healthReport();
-    if (h.stateMB >= 500) {
-      const top = h.items.slice(0, 3).map((x) => x.dir + ' ' + x.mb + 'MB').join('、');
-      console.log('[state-sweep] .state 已经 ' + h.stateMB + 'MB / ' + h.stateFiles + ' 个文件（占地方前几名: ' + top + '）');
-    }
-  } catch {}
+    if (typeof setImmediate === 'function') setImmediate(runReport);
+    else setTimeout(runReport, 0);
+  } catch { runReport(); }
 }
 
 export default { healthReport, pruneOrphans, startHealthWatch };

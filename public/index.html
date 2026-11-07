@@ -680,7 +680,12 @@
     /* 【2026-11-07 主人】思考标题不再截成一行：能多长就显示多长。
        原来 nowrap + ellipsis 会把几百字的思考压成「……」，正文展开也补不回这一眼。 */
     details.think .thinkTitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    details.think .thinkMeta { flex: none; color: var(--dim); opacity: .65; font-size: 11.5px; }
+    /* 【2026-11-07 主人】标题要「长到碰到右侧框框边界」。
+       原来这里挂着「52 字 · 点击展开」，占掉右边 45px，标题永远顶不到边。
+       现在：收起时字数不占位（标题一路铺到边框），展开后才把它显示出来
+       —— 展开时你已经在看正文了，字数才有参考价值。 */
+    details.think .thinkMeta { display: none; flex: none; color: var(--dim); opacity: .65; font-size: 11.5px; }
+    details.think[open] .thinkMeta { display: block; }
     details.think .thinkBody {
       padding: 8px 10px 10px; border-top: 1px solid var(--border);
       color: var(--dim); font-style: italic; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; min-width: 0;
@@ -10465,10 +10470,16 @@ function hubRefreshTitle() {
 function thinkTitleOf(flat) {
   const s = String(flat || '').replace(/\s+/g, ' ').trim();
   if (!s) return '';
-  const m = /^[^。！？!?；;]{1,40}[。！？!?；;]?/.exec(s);
-  let head = String((m && m[0]) || s).trim();
-  if (head.length < s.length) return head.replace(/[。！？!?；;]+$/, '') + '…';
-  return head;
+  /* 【2026-11-07 主人】标题要「长到碰到右侧框框边界」。
+   * 原来是「第一句 + 最多 40 字」，可一行能放七十来字 ——
+   * 于是标题后面永远空出一截，看着像被谁掐断了。
+   * 现在只做「取第一句、上限放到 400 字」，视觉上的截断交给 CSS：
+   *   .thinkTitle 是 nowrap + overflow:hidden + text-overflow:ellipsis，
+   *   它会自己在容器的右边界停下，正好是一条铺满的省略。
+   * 400 只是个兜底（防止某个没有句号的超长段把 DOM 撑得没边），
+   * 一行装不下这么多，实际永远轮不到它起作用。 */
+  const m = /^[^。！？!?；;]{1,400}/.exec(s);
+  return String((m && m[0]) || s).trim();
 }
 
 function adoptThink(d) {
@@ -10503,7 +10514,7 @@ function adoptThink(d) {
     },
     finish() {
       if (!body || !body.textContent.trim()) { try { d.remove(); } catch (e) {} }
-      if (meta) meta.textContent = (body ? body.textContent.length : 0) + ' 字 · 点击展开';
+      if (meta) meta.textContent = (body ? body.textContent.length : 0) + ' 字';
       /* 整组重画收尾：撤掉进行中标记，柜门别一直挂在「正在思考中…」 */
       try { d.classList.remove('thinking-now'); hubRefreshTitle(); } catch (e) {}
       /* 开合状态一个字都不动：主人点开的块，重画多少次都还开着 */
@@ -11136,7 +11147,7 @@ function openThink() {
         try { hubRefreshTitle(); } catch (e) {}
         return;
       }
-      meta.textContent = body.textContent.length + ' 字 · 点击展开';
+      meta.textContent = body.textContent.length + ' 字';
       /* 这段想完了：撤掉进行中标记，柜门退回统计（或交给正在跑的工具） */
       try { d.classList.remove('thinking-now'); hubRefreshTitle(); } catch (e) {}
       /* 【2026-11-02 主人第三次报：展开最新的思考链，一有新内容就自动闭合】
@@ -11206,7 +11217,7 @@ function paintReasoning(text, host) {
   title.removeAttribute('title');
   const meta = document.createElement('span');
   meta.className = 'thinkMeta';
-  meta.textContent = body0.length + ' 字 · 点击展开';
+  meta.textContent = body0.length + ' 字';
   sum.append(title, meta);
 
   const body = document.createElement('div');

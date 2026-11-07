@@ -18,7 +18,13 @@ const ui = fs.readFileSync('public/index.html', 'utf8');
 t.ok('没有 38 字标题截断', !ui.includes('slice(0, 38)'));
 t.ok('没有 400 字悬停截断', !ui.includes('slice(0, 400)'));
 t.ok('三处标题都走 thinkTitleOf（实时/复用/历史）', (ui.match(/title\.textContent = thinkTitleOf\(flat\);/g) || []).length === 3);
-t.ok('标题只取第一句，最多 40 字', /function thinkTitleOf\(flat\)/.test(ui) && /\{1,40\}/.test(ui));
+/* 【2026-11-07 改口径】主人要「标题长到碰到右侧框框边界」。
+ * 原来硬截 40 字，可一行能放七十来字 —— 标题后面永远空一截。
+ * 现在只取第一句、上限放到 400（远大于一行），视觉截断交给 CSS 的 ellipsis。 */
+t.ok('标题取第一句，长度交给 CSS 边界截断', /function thinkTitleOf\(flat\)/.test(ui) && /\{1,400\}/.test(ui));
+t.ok('收起时字数不占位（标题才能顶到边框）', /details\.think \.thinkMeta \{ display: none;/.test(ui));
+t.ok('展开后字数才显示', /details\.think\[open\] \.thinkMeta \{ display: block; \}/.test(ui));
+t.ok('标题仍是 nowrap + 省略号', /details\.think \.thinkTitle \{[^}]*white-space: nowrap/.test(ui) && /details\.think \.thinkTitle \{[^}]*text-overflow: ellipsis/.test(ui));
 t.ok('正文不截（thinkBody 写全文）', /body\.textContent = t;/.test(ui) || /_full = t/.test(ui));
 t.ok('标题用一行省略兜底', /details\.think \.thinkTitle \{[^}]*nowrap/.test(ui));
 t.ok('悬停 title 属性被移除', (ui.match(/title\.removeAttribute\('title'\)/g) || []).length >= 3);

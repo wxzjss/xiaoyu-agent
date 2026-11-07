@@ -10762,6 +10762,43 @@ function foldLiveTools() {
   const _tools = (_liveToolEls || []).filter((el) => el && el.isConnected);
   _liveToolEls = [];
   /**
+   * 【2026-11-07 加·合柜子时别把主人正在看的地方拽走】
+   *
+   * 主人报：「返回最新消息位置，此时柜子还是展开的，然后又被弹到很久以前会话位置」。
+   *
+   * 根因：这个函数把散在外面的工具卡/思考块**移进柜子**（appendChild 到别处）。
+   * 柜子收起时高度骤减（几十行变一行），浏览器会把 scrollTop 夹小；
+   * 下一秒新内容又补回来，可 scrollTop 已经停在那个偏小的值上 ——
+   * 视觉上就是「嗖地跳到很早以前」。
+   *
+   * 修法：**柜子展开着的时候**先记住视口顶端那个元素的绝对位置，
+   * 移完在下一帧把它拉回原处。没展开时不记（那时不会有理解上的损失，
+   * 而且每来一张卡都算一遍位置太浪费）。
+   */
+  const _log0 = document.getElementById('log');
+  const _hubOpen = !!(_liveHub && _liveHub.open);
+  let _keep = null;
+  if (_hubOpen && _log0) {
+    try {
+      const base = _log0.getBoundingClientRect().top;
+      for (const el of _log0.children) {
+        const r = el.getBoundingClientRect();
+        if (r.bottom > base + 2) { _keep = { el, off: r.top - base }; break; }
+      }
+    } catch (e) { _keep = null; }
+  }
+  const _restore = () => {
+    if (!_keep || !_log0) return;
+    requestAnimationFrame(() => {
+      try {
+        if (!_keep.el || !_keep.el.isConnected) return;
+        const base = _log0.getBoundingClientRect().top;
+        const docTop = _keep.el.getBoundingClientRect().top - base + _log0.scrollTop;
+        _log0.scrollTop = Math.max(0, docTop - _keep.off);
+      } catch (e) {}
+    });
+  };
+  /**
    * 【2026-11-05 加·思考链也收进柜子】
    *
    * 主人要求：「把所有工具调用以及思考显示放进【调用了x次工具】里面」。
@@ -10875,6 +10912,7 @@ function foldLiveTools() {
         }
       }
     } catch (e) {}
+    _restore();
     return;
   }
   const hub = document.createElement('details');
@@ -10951,6 +10989,7 @@ function foldLiveTools() {
   hub.appendChild(hsum);
   parent.insertBefore(hub, first);         // 柜子落在第一张卡原来的位置
   for (const el of arr) hub.appendChild(el);
+  _restore();
 }
 
 /**

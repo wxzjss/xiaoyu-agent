@@ -57,6 +57,8 @@ const { enabledToolSchemas } = await import('../src/tools.mjs');
 const { buildToolIndex } = await import('../src/harness/tool-spec.mjs');
 const nPar = buildToolIndex(enabledToolSchemas()).filter((x) => x.parallelSafe).length;
 t.ok('提示词里的只读工具数与实际一致', prompt.includes('等 ' + nPar + ' 个只读工具'), '实际 ' + nPar);
+t.ok('「只读命令也算」只在 run_command 真启用时才说',
+  !prompt.includes('只读命令如 git status') || enabledToolSchemas().some((s) => (s.function || s).name === 'run_command'));
 
 // ── 7. 预算 / 红线 ─────────────────────────────────────────────────
 t.ok('提示词在 5500 字预算内', prompt.length <= 5500, prompt.length + ' 字');

@@ -648,7 +648,10 @@ function toolBlock() {
      * 动态算出来，不是手写死，新增只读工具会自动算进那个数里。 */
     const CORE = ['read_file', 'list_dir', 'search_files', 'web_search', 'fetch_url', 'memory_search', 'chronicle_read', 'video_read'];
     const core = CORE.filter((n) => par.includes(n));
-    parLine = '  · 可以一起发：' + core.join('、') + ' 等 ' + par.length + ' 个只读工具（只读命令如 git status / dir 也算）；';
+    /* 「只读命令也算」这句只在 run_command 真在手上时才说 ——
+     * 功能开关把它关了还留着这句，就是提示词与事实对不上（2026-11-07 严检补的）。 */
+    const runHint = rows.some((r) => r.name === 'run_command') ? '（只读命令如 git status / dir 也算）' : '';
+    parLine = '  · 可以一起发：' + core.join('、') + ' 等 ' + par.length + ' 个只读工具' + runHint + '；';
   } catch {}
   tips.push('- 【一起发，别排队】同一条响应里可以带好几个 tool_call；哪些能同时跑、哪些要排队由程序按依赖算，'
     + '你只管把这一轮想做的事一次说全。说多了不会跑错，说少了才要多等一趟完整的模型往返。');

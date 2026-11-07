@@ -766,6 +766,26 @@
     /* 已选附件条：输入框上方，一列小卡片 */
     .attachBar { max-width: 900px; margin: 0 auto 8px; display: none; flex-wrap: wrap; gap: 8px; }
     .attachBar.show { display: flex; }
+    /* 【2026-11-08 加·预发送队列】
+       运行时发的话先在这里保管，等这一轮结束自动发出去。
+       每条可以：直接发送（立刻插进去）／编辑（撤回输入框）／删除。 */
+    .pendingQueue { max-width: 900px; margin: 0 auto 8px; display: flex; flex-direction: column; gap: 6px; }
+    .pendingQueue[hidden] { display: none; }
+    .pendingHead { font-size: 11.5px; color: var(--dim); opacity: .75; padding: 0 2px; }
+    .pendingItem {
+      display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+      border: 1px dashed rgba(240,185,84,.45); border-radius: 8px;
+      background: rgba(240,185,84,.06); font-size: 12.5px; color: var(--dim);
+    }
+    .pendingItem .ptag { flex: none; color: #f0b954; font-size: 11.5px; }
+    .pendingItem .ptext { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); opacity: .9; }
+    .pendingItem button {
+      flex: none; background: transparent; border: 1px solid var(--border); color: var(--dim);
+      border-radius: 6px; padding: 2px 7px; font-size: 11.5px; cursor: pointer;
+    }
+    .pendingItem button:hover { color: var(--text); border-color: rgba(255,255,255,.35); }
+    .pendingItem button.go { color: #f0b954; border-color: rgba(240,185,84,.5); }
+    .pendingItem button.go:hover { background: rgba(240,185,84,.12); }
     .attachChip {
       display: flex; align-items: center; gap: 8px; max-width: 260px; padding: 5px 8px 5px 6px;
       background: #0f1319; border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px;
@@ -3968,6 +3988,7 @@
         <span class="turnElapsed" id="turnElapsed"></span>
       </div>
     </div>
+    <div class="pendingQueue" id="pendingQueue" hidden></div>
     <div class="attachBar" id="attachBar"></div>
     <button id="toBottom" type="button" aria-label="回到最新" title="回到最新" hidden>
       <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -12376,6 +12397,218 @@ function replayInFlight(id) {
   return true;
 }
 
+/* ══════════════════════════════════════════════════════════════
+ * 【预发送队列】—— 2026-11-08 主人要求
+ *
+ * 原话：「增加和 workbuddy 一样的消息预发送机制：运行时发送消息会暂时保管这条消息，
+ * 等一轮结束后自动发送出去，也可手动直接发送或收回编辑或删除这条预发送消息」。
+ *
+ * 以前 busy 时按回车直接走 interject（打断式插话）—— 那是 2026-10-26 主人
+ * 明确要回过「打断式」的，所以**没删它**：现在默认进队列，
+ * 想立刻打断就点队列里那条的「直接发送」，走的还是 interject 那条老路。
+ *
+ * 存在 localStorage（按会话分 key），刷新页面不丢。
+ * ══════════════════════════════════════════════════════════════ */
+let pendingQueue = [];
+let _flushingPending = false;
+
+function pendingStoreKey() {
+  return 'xy_pending_' + (sessionId || 'none');
+}
+
+function loadPendingQueue() {
+  try {
+    const raw = localStorage.getItem(pendingStoreKey());
+    const arr = raw ? JSON.parse(raw) : [];
+    pendingQueue = Array.isArray(arr)
+      ? arr.filter((x) => x && (x.text || (x.atts && x.atts.length)))
+      : [];
+  } catch (e) { pendingQueue = []; }
+  renderPendingQueue();
+}
+
+function savePendingQueue() {
+  try { localStorage.setItem(pendingStoreKey(), JSON.stringify(pendingQueue)); } catch (e) {}
+}
+
+function enqueueMessage(text, atts) {
+  const t = String(text || '').trim();
+  const a = Array.isArray(atts) ? atts.slice() : [];
+  if (!t && !a.length) return false;
+  pendingQueue.push({
+    id: 'pq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+    text: t,
+    atts: a,
+    at: Date.now(),
+  });
+  savePendingQueue();
+  renderPendingQueue();
+  return true;
+}
+
+/** 把输入框里的内容收进队列（busy 时按回车走这条），返回是否收下了 */
+function queueFromInput() {
+  const t = String(input.value || '').trim();
+  const a = attachments.slice();
+  if (!t && !a.length) return false;
+  enqueueMessage(t, a);
+  try {
+    input.value = '';
+    attachments.length = 0;
+    autosizeInput();
+    syncSendBtn();
+    renderAttachBar();
+  } catch (e) {}
+  return true;
+}
+
+function renderPendingQueue() {
+  const box = document.getElementById('pendingQueue');
+  if (!box) return;
+  if (!pendingQueue.length) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = '';
+
+  const head = document.createElement('div');
+  head.className = 'pendingHead';
+  head.textContent = '待发送 ' + pendingQueue.length + ' 条 —— 这一轮结束后自动发出；也可以现在发，或撤回改';
+  box.appendChild(head);
+
+  for (const it of pendingQueue) {
+    const row = document.createElement('div');
+    row.className = 'pendingItem';
+
+    const tag = document.createElement('span');
+    tag.className = 'ptag';
+    tag.textContent = '待发送';
+
+    const tx = document.createElement('span');
+    tx.className = 'ptext';
+    const n = (it.atts || []).length;
+    tx.textContent = (it.text || '（只有附件）') + (n ? '  [' + n + ' 个附件]' : '');
+    tx.title = it.text || '';
+
+    const bGo = document.createElement('button');
+    bGo.type = 'button';
+    bGo.className = 'go';
+    bGo.textContent = '直接发送';
+    bGo.title = '不等这一轮结束，立刻发出去（会打断她现在这轮）';
+    bGo.onclick = () => { sendPendingNow(it.id); };
+
+    const bEdit = document.createElement('button');
+    bEdit.type = 'button';
+    bEdit.textContent = '编辑';
+    bEdit.title = '撤回输入框，改完再发';
+    bEdit.onclick = () => { editPending(it.id); };
+
+    const bDel = document.createElement('button');
+    bDel.type = 'button';
+    bDel.textContent = '删除';
+    bDel.onclick = () => { removePending(it.id); };
+
+    row.append(tag, tx, bGo, bEdit, bDel);
+    box.appendChild(row);
+  }
+}
+
+function removePending(id) {
+  const i = pendingQueue.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  pendingQueue.splice(i, 1);
+  savePendingQueue();
+  renderPendingQueue();
+}
+
+function editPending(id) {
+  const i = pendingQueue.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  const it = pendingQueue[i];
+  pendingQueue.splice(i, 1);
+  savePendingQueue();
+  renderPendingQueue();
+  try {
+    input.value = String(it.text || '');
+    for (const a of (it.atts || [])) { try { attachments.push(a); } catch (e) {} }
+    autosizeInput();
+    syncSendBtn();
+    try { renderAttachBar(); } catch (e) {}
+    input.focus({ preventScroll: true });
+  } catch (e) {}
+}
+
+/** 直接发送一条：不由队列排，立刻发（busy 时走插话，那条是被主人要回来的打断式） */
+async function sendPendingNow(id) {
+  const i = pendingQueue.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  const it = pendingQueue[i];
+  pendingQueue.splice(i, 1);
+  savePendingQueue();
+  renderPendingQueue();
+  const text = String(it.text || '');
+  const atts = Array.isArray(it.atts) ? it.atts : [];
+  if (busy) {
+    /* 复用 interject：它读的是输入框 + attachments，所以先临时换进去再换回来 */
+    let keepV = '';
+    let keepA = [];
+    try {
+      keepV = input.value;
+      keepA = attachments.slice();
+      input.value = text;
+      attachments.length = 0;
+      for (const a of atts) attachments.push(a);
+      await interject();
+    } catch (e) {
+    } finally {
+      try {
+        input.value = keepV;
+        attachments.length = 0;
+        for (const a of keepA) attachments.push(a);
+        autosizeInput();
+        syncSendBtn();
+        try { renderAttachBar(); } catch (e) {}
+      } catch (e) {}
+    }
+  } else {
+    try { await runTurn({ text, attachments: atts }); } catch (e) {}
+  }
+}
+
+/** 一轮真的结束了：把队列里最前面那条发出去（一次一条，发完由下一次 done 继续） */
+async function flushPendingQueue() {
+  if (_flushingPending || busy || !pendingQueue.length) return;
+  _flushingPending = true;
+  try {
+    const next = pendingQueue.shift();
+    savePendingQueue();
+    renderPendingQueue();
+    if (!next) return;
+    await runTurn({ text: String(next.text || ''), attachments: Array.isArray(next.atts) ? next.atts : [] });
+  } catch (e) {
+  } finally {
+    _flushingPending = false;
+  }
+}
+
+/**
+ * 一轮结束后把队首那条发出去 —— 用轮询兜底。
+ *
+ * 【为什么用轮询而不是挂到每个「结束」出口上】
+ * 「这一轮结束」有好几个出口（正常收尾 finally、断流走 followLive 旁路、被打断、切会话），
+ * 一个个去挂，漏一个就永远不发。每 2 秒问一句「闲了吗、队列里还有吗」，最笨也最不会漏。
+ * 闲着且队列空时只做两次判断，开销可以忽略。
+ */
+let _pendingLoadedSid = '';
+setInterval(() => {
+  try {
+    /* 会话一变就把那个会话的队列读出来（首次打开也走这条） */
+    if (sessionId && sessionId !== _pendingLoadedSid) {
+      _pendingLoadedSid = sessionId;
+      loadPendingQueue();
+    }
+    if (!busy && !_flushingPending && pendingQueue.length) flushPendingQueue();
+  } catch (e) {}
+}, 2000);
+
 async function send() {
   if (busy) return;
   /* 【2026-11-05 加】真正开口新一轮 —— 计时从这里重新开始。
@@ -12689,16 +12922,20 @@ input.addEventListener('keydown', (e) => {
   if (_imBlocked) {
     if (e.key === 'Enter' && !e.shiftKey && !String(input.value || '').trim() && attachments.length) {
       e.preventDefault();
+      /* 【2026-11-08 改】运行时按回车不再打断她，先收进预发送队列 */
       if (!busy) send();
-      else interject();
+      else queueFromInput();
     }
     return;
   }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     if (!String(input.value || '').trim() && !attachments.length) return;  // 空消息不发（send 里也挡了一次）
+    /* 【2026-11-08 改·预发送队列】原来 busy 时走 interject（立刻打断这一轮）。
+     * 主人要的是「先保管，这一轮结束自动发」。打断那条没删 ——
+     * 队列里点「直接发送」还是走 interject。 */
     if (!busy) send();
-    else if (input.value.trim()) interject();
+    else queueFromInput();
   }
 });
 /**
@@ -21080,6 +21317,8 @@ async function switchSession(id, opts) {
    */
   try { if (typeof hubReset === 'function') hubReset(); } catch {}
   renderTurns(r.session.turns);
+  /* 【2026-11-08】切会话：把**这个会话**的待发送队列读出来（按会话分 key 存的） */
+  try { loadPendingQueue(); } catch (e) {}
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
 
   // 这个会话还在后台跑吗？

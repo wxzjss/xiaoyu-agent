@@ -1,0 +1,112 @@
+/**
+ * 【消息预发送队列】
+ *
+ * 主人 2026-11-08 要求：
+ *   「增加和 workbuddy 一样的消息预发送机制：运行时发送消息会暂时保管这条消息，
+ *    等一轮结束后自动发送出去，也可手动直接发送或收回编辑或删除这条预发送消息」
+ *
+ * 查了两家的实现（主人说「你也可以看 deepseek harness 是怎么实现的」）：
+ *   · WorkBuddy：只有 IPC 层的 `pendingSendPromptRequests`（没有订阅者就先存着），
+ *     以及 `messageQueueConfig` / `sendQueue` 这类传参和状态名；
+ *     中文语言包里连「排队」「待发送」都没有 —— 没找到完整的 UI 队列实现。
+ *   · DeepSeek Harness：`lib/main.js` 里 `interject` / `排队` 各 0 处，`steer` 只有
+ *     「页面不能导航回本地文件」那个意思 —— 压根没有这个功能。
+ * 所以按需求自己实现，思路照 WorkBuddy 那个「忙就先存着、空了再交付」。
+ *
+ * 设计：
+ *   · 忙时按回车 → 入队（**不再**走 interject 打断；打断那条保留，队列里点「直接发送」用它）
+ *   · 队列按会话分 key 存 localStorage，刷新不丢
+ *   · 每条三个按钮：直接发送 / 编辑（撤回输入框）/ 删除
+ *   · 一轮结束用 2 秒轮询兜底（结束出口有好几个，一个个挂容易漏）
+ */
+import { makeChecker } from './_harness_util.mjs';
+import fs from 'node:fs';
+import { connect } from '../_t_cdp.mjs';
+
+const t = makeChecker('ui / 消息预发送队列');
+const ui = fs.readFileSync('public/index.html', 'utf8');
+
+// ── 1. 源码：零件齐不齐 ────────────────────────────────────────
+t.ok('有队列容器', /id="pendingQueue"/.test(ui));
+t.ok('有金色虚线卡片样式', /\.pendingItem button\.go/.test(ui) && /border: 1px dashed rgba\(240,185,84/.test(ui));
+t.ok('有入队函数', /function enqueueMessage\(/.test(ui));
+t.ok('有「直接发送」', /function sendPendingNow\(/.test(ui));
+t.ok('有「编辑」（撤回输入框）', /function editPending\(/.test(ui));
+t.ok('有「删除」', /function removePending\(/.test(ui));
+t.ok('有一轮结束后的自动发出', /async function flushPendingQueue\(/.test(ui));
+t.ok('用轮询兜底（结束出口有好几个，挂点容易漏）',
+  /setInterval\(\(\) => \{[\s\S]{0,260}_flushingPending && pendingQueue\.length/.test(ui));
+t.ok('按会话分 key 存 localStorage', /'xy_pending_' \+ \(sessionId/.test(ui));
+t.ok('忙时回车入队（不再直接打断）', (ui.match(/else queueFromInput\(\);/g) || []).length >= 2);
+t.ok('打断那条还在（队列里「直接发送」要用）', /async function interject\(\)/.test(ui));
+t.ok('切会话会载入那个会话的队列', /loadPendingQueue\(\);/.test(ui));
+
+// ── 2. 真机 ────────────────────────────────────────────────────
+let cdp = null;
+try { cdp = await connect({ port: 9223, match: '8788' }); } catch { cdp = null; }
+
+if (!cdp) {
+  console.log('\n真机格：SKIP（没连上 9223 的调试浏览器，源码断言已过）');
+} else {
+  await cdp.send('Page.enable');
+  await cdp.send('Page.reload', { ignoreCache: true });
+  await new Promise((r) => setTimeout(r, 12000));
+
+  const r = await cdp.eval(`
+    const out = {};
+    const inp = document.getElementById('input');
+    const box = document.getElementById('pendingQueue');
+    const oldBusy = busy;
+    try {
+      pendingQueue.length = 0; savePendingQueue(); renderPendingQueue();
+      out.startedEmpty = box.hidden === true;
+
+      busy = true;
+      inp.value = '这是排队的第一条';
+      inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      out.queued = pendingQueue.length;
+      out.shown = box.hidden === false;
+      out.cleared = inp.value === '';
+      out.text = (box.querySelector('.pendingItem .ptext') || {}).textContent || '';
+      out.btns = [...box.querySelectorAll('.pendingItem button')].map((b) => b.textContent);
+
+      inp.value = '第二条';
+      inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      out.two = pendingQueue.length;
+
+      box.querySelector('.pendingItem button:last-of-type').click();
+      out.afterDel = pendingQueue.length;
+
+      const bEdit = [...box.querySelectorAll('.pendingItem button')].find((b) => b.textContent === '编辑');
+      bEdit.click();
+      out.afterEdit = pendingQueue.length;
+      out.inputBack = inp.value;
+
+      out.stored = (localStorage.getItem(pendingStoreKey()) || '').length > 0;
+
+      inp.value = '';
+      pendingQueue.length = 0; savePendingQueue(); renderPendingQueue();
+    } catch (e) { out.err = String(e); }
+    busy = oldBusy;
+    return JSON.stringify(out);
+  `);
+  const got = JSON.parse(r);
+  console.log('  真机：' + r);
+
+  t.ok('一开始是空的（不显示）', got.startedEmpty === true);
+  t.ok('忙时按回车 → 进了队列', got.queued === 1, String(got.queued));
+  t.ok('队列卡片显示出来了', got.shown === true);
+  t.ok('输入框被清空', got.cleared === true);
+  t.ok('队列里能看到原文', got.text === '这是排队的第一条', String(got.text));
+  t.ok('三个按钮齐全（直接发送 / 编辑 / 删除）',
+    JSON.stringify(got.btns) === JSON.stringify(['直接发送', '编辑', '删除']), JSON.stringify(got.btns));
+  t.ok('第二条也进得去', got.two === 2, String(got.two));
+  t.ok('删除一条', got.afterDel === 1, String(got.afterDel));
+  t.ok('编辑会出队', got.afterEdit === 0, String(got.afterEdit));
+  t.ok('编辑会把内容放回输入框', got.inputBack === '第二条', String(got.inputBack));
+  t.ok('存进了 localStorage（刷新不丢）', got.stored === true);
+
+  cdp.close();
+}
+
+t.done();

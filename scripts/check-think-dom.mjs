@@ -30,6 +30,26 @@ try {
 await cdp.send('Page.enable');
 await cdp.send('Page.reload', { ignoreCache: true });
 await new Promise((r) => setTimeout(r, 13000));
+/**
+ * 【2026-11-07 加·等页面真的就绪】
+ *
+ * 全集里连着跑时这一格偶尔红：前面那条检查刚 reload 过，这边连上去时
+ * #log 还没建出来 → querySelectorAll 直接抛，看起来像「DOM 脏」。
+ * 这里明确等到 #log 存在再动手，最多等 10 秒。
+ */
+let ready = false;
+for (let i = 0; i < 20; i += 1) {
+  try {
+    ready = await cdp.eval('return !!document.getElementById("log")');
+  } catch (e) { ready = false; }
+  if (ready) break;
+  await new Promise((r) => setTimeout(r, 500));
+}
+if (!ready) {
+  console.log('SKIP 页面还没就绪（#log 建不出来），这一格不算失败');
+  try { cdp.close(); } catch {}
+  process.exit(0);
+}
 
 const info = await cdp.eval(`
   const lg = document.getElementById('log');

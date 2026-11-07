@@ -753,6 +753,18 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       const e = new Error('流被中途掐断（' + (String(err.cause?.code ?? err.message ?? err)) + '）');
       e.streamDropped = true;
       e.received = buf.length;
+      /**
+       * 【2026-11-07 加·一个字节都没收到 = 从没开始，不是断在半路】
+       *
+       * 主人今晚遇到的就是这种：两个会话 running 挂着、events 全是 0，
+       * 一个块都没回来。但这条错误被当成「断流可重试」，
+       * 于是「等 10 分钟 → 续读一次 → 再等 10 分钟 → 再续一次」，
+       * 实际空转了 28 分钟，界面上看着就是「卡死但一直在跑」（绿点亮着）。
+       *
+       * 这两种要分开：中途断（已经收到东西）值得续；
+       * 一个字节都没有，说明上游压根没开始说话，续多少次都一样。
+       */
+      e.noBytes = buf.length === 0;
       throw e;
     }
     throw err;

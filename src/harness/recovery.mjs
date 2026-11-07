@@ -45,6 +45,11 @@ export function classify(err) {
   }
   if (/ECONNREFUSED|connection refused|ENOTFOUND|bad request|400|invalid_request/i.test(msg)
       || code === '400' || code === '404') return FAILURE_KIND.FATAL;
+  /* 【2026-11-07 加·一个字节都没回就别重试了】
+   * 上游压根没开始说话（noBytes），续读和重试都救不了 ——
+   * 实测那种情况会空转：等超时 10 分钟 → 续一次 → 再等 10 分钟，界面一直显示在跑。
+   * 直接归 FATAL，把「上游没回应」这句话交给主人看，比静默重试半小时强。 */
+  if (e.noBytes) return FAILURE_KIND.FATAL;
   if (e.streamDropped || /terminated|ECONNRESET|UND_ERR_SOCKET|fetch failed|timed? ?out|stall|静了太久/i.test(msg)
       || /^5\d\d$/.test(code)) return FAILURE_KIND.RETRYABLE;
   return FAILURE_KIND.FATAL;

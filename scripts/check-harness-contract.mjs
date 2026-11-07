@@ -7,6 +7,7 @@
  */
 import { makeChecker } from './_harness_util.mjs';
 import fs from 'node:fs';
+import { isReadOnlyCommand as harnessReadOnly } from '../src/harness/tool-spec.mjs';
 
 const t = makeChecker('harness / contract');
 const read = (p) => fs.readFileSync(p, 'utf8');
@@ -67,5 +68,21 @@ t.ok('没有「拿不准就一定一次一个」这种自我否定', !/拿不准
 t.ok('没有「写文件和跑命令一次只做一件」', !/写文件和跑命令一次只做一件/.test(personaCode));
 t.ok('调度交给程序这句话真的在提示词里', /程序按依赖算/.test(personaCode));
 t.ok('可并行名单来自 tool-spec 而不是手写', /buildToolIndex\(rawSchemas\)/.test(personaCode));
+
+// ── 运行时加载链：改坏了 import（循环依赖 / 缺文件）重启就白屏 ──────
+const mod = await import('../src/agent.mjs');
+t.ok('agent.mjs 能在运行时真的加载出来', typeof mod.runAgent === 'function');
+t.ok('takeFreshToolCalls 仍导出（兼容老引用）', typeof mod.takeFreshToolCalls === 'function');
+t.ok('agent 的只读判定与 tool-spec 完全一致（只读命令）',
+  mod.isReadOnlyCommand('git status') === harnessReadOnly('git status'));
+t.ok('agent 的只读判定与 tool-spec 完全一致（带管道）',
+  mod.isReadOnlyCommand('ls | findstr x') === harnessReadOnly('ls | findstr x'));
+const toolsMod = await import('../src/tools.mjs');
+const rc = toolsMod.tools.find((x) => x.name === 'run_command');
+t.ok('run_command 仍注册、且 schema 带 shell_hint', Boolean(rc) && Boolean(rc.parameters?.properties?.shell_hint));
+t.ok('run_command 能真跑一条简单命令', /v\d+\./.test(String(await toolsMod.runWithToolContext(
+  { sessionId: '__contract_probe__', pushEvent: () => {}, stashFile: () => {}, outbox: [] },
+  () => rc.run({ command: 'node -v' }),
+))));
 
 t.done();

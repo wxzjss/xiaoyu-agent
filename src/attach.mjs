@@ -262,13 +262,35 @@ export function inflateImages(msg) {
   if (!imgs.length) return msg;
   const textPart = typeof msg.content === 'string' ? msg.content : '';
   const parts = [{ type: 'text', text: textPart }];
-  for (const p of imgs) {
+  /**
+   * 【2026-11-07 加·一条消息最多带几张图】
+   *
+   * 原来这里没有任何上限：`_images` 里有几张就塞几张，每张都可能到 8MB。
+   * 8MB 的图转成 base64 约 1070 万字符（≈300 万 token），
+   * **三张就顶掉一整个上下文窗口**。
+   *
+   * 而且 inflateHistory 是每圈把整个历史重新 inflate 一遍 —— 只要一条老消息里
+   * 挂着好几张图，每一圈都要为它付一次钱、等一次预填充。
+   *
+   * 上限设 4：一般「看这几张图」够用；超出的部分不是丢掉，而是在文字里留一行
+   * 「还有 N 张图没塞进来，路径在 _images 里，要看就 read_file」——
+   * 模型知道自己少了什么，比静悄悄少图强。
+   */
+  const MAX_IMGS = 4;
+  const use = imgs.slice(0, MAX_IMGS);
+  const skipped = imgs.length - use.length;
+  for (const p of use) {
     try {
       const img = readImageDataUrl(p);
       parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
     } catch {
       // 图没了 / 太大 -> 只在文字里留路径
     }
+  }
+  if (skipped > 0) {
+    try {
+      parts.push({ type: 'text', text: '（这条还有 ' + skipped + ' 张图没塞进上下文，控制篇幅；要看就把路径当参数用读文件的工具打开：' + imgs.slice(MAX_IMGS).join('、') + '）' });
+    } catch {}
   }
   if (parts.length === 1) return msg;
   return { ...msg, content: parts };

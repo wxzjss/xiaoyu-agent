@@ -1246,9 +1246,29 @@ for (let round = 0; round < config.maxRounds; round++) {
           try {
             // 同一份记录也落盘：打包版没有控制台，光 console.log 等于没留
             const _lp = join(config.dataDir, '.state', 'slim-spike.log');
+            /**
+             * 【2026-11-07 加·把「谁最大」也记下来】
+             *
+             * 只记一个总数，等于知道「这场火很大」却不知道哪儿着的。
+             * 这里把发出去的那份里**最大的 5 条消息**列出来：角色、字符数、
+             * 是不是带 base64、开头 80 字。下次再爆，一眼就知道是哪条。
+             * 主人在 2026-11-07 说过「你全权」，所以这里按需要记内容片段 ——
+             * 只记开头 80 字，够定位就行。
+             */
+            const _top = messages
+              .map((m, i) => {
+                const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+                return { i, role: String(m.role || ''), n: c.length, b64: c.indexOf('base64,') >= 0, head: c.replace(/\s+/g, ' ').slice(0, 80) };
+              })
+              .sort((a, b) => b.n - a.n)
+              .slice(0, 5);
             appendFileSync(_lp, new Date().toISOString() + ' session=' + String(sessionId || '')
               + ' round=' + (round + 1) + ' 发出=' + _sl.chars + ' 原文=' + b4.chars
               + ' 工具结果=' + b4.tools + ' 条 压短=' + slimmed.changed + ' 条\n', 'utf8');
+            for (const r of _top) {
+              appendFileSync(_lp, '    #' + r.i + ' ' + r.role + ' ' + r.n + '字符'
+                + (r.b64 ? ' [含base64]' : '') + '  ' + r.head + '\n', 'utf8');
+            }
           } catch { /* 记不下来也不能影响这一轮 */ }
         }
         for await (const ev of streamChat({

@@ -31,8 +31,18 @@ t.ok('finish 撤标记并刷新柜门', (ui.match(/d\.classList\.remove\('thinki
 t.ok('hubRefreshTitle 认 thinking-now', /querySelector\('details\.think\.thinking-now'\)/.test(ui));
 t.ok('柜门写「正在思考中…」', ui.includes("'正在思考中…'"));
 t.ok('思考优先于工具状态', /n1\.textContent = _thinking\s*\?\s*'正在思考中…'/.test(ui));
-t.ok('hubpeek 思考时不重复', /\(_thinking \|\| _runEl\) \? ''/.test(ui));
+t.ok('hubpeek：思考给实时灰字、工具留空、结束给摘要',
+  /if \(_thinking\) pk\.textContent = _thinking\.dataset\.peek/.test(ui)
+  && /else if \(_runEl\) pk\.textContent = ''/.test(ui));
 t.ok('「正在跑命令…」没被弄坏', /'正在' \+/.test(ui));
+
+// ── 2b. 柜门右侧「不断变化的思考灰字」 ────────────────────────────
+t.ok('有 thinkPeekTail，且取的是尾部片段', /function thinkPeekTail\(text\)/.test(ui) && /flat\.slice\(-28\)/.test(ui));
+t.ok('实时 set 每拍更新 dataset.peek', /d\.dataset\.peek = thinkPeekTail\(flat\)/.test(ui));
+t.ok('整组重画也更新灰字', (ui.match(/dataset\.peek = thinkPeekTail\(flat\)/g) || []).length >= 2);
+t.ok('灰字三分支：思考 / 工具 / 结束', /if \(_thinking\) pk\.textContent = _thinking\.dataset\.peek/.test(ui)
+  && /else if \(_runEl\) pk\.textContent = ''/.test(ui)
+  && /else pk\.textContent = hubPeekOf\(/.test(ui));
 
 // ── 3. 真机格 ─────────────────────────────────────────────────────
 let cdp = null;
@@ -52,14 +62,22 @@ if (cdp) {
       lg.appendChild(hub);
       const _old = typeof _liveHub !== 'undefined' ? _liveHub : null;
       _liveHub = hub;
+      const thk = hub.querySelector('details.think');
+      thk.dataset.peek = '在捋第一步';
       hubRefreshTitle();
       out.thinking = hub.querySelector('.hubname').textContent;
-      hub.querySelector('details.think').classList.remove('thinking-now');
+      out.peek1 = hub.querySelector('summary > .hubpeek').textContent;
+      thk.dataset.peek = '在捋第二步，越想越多了';
+      hubRefreshTitle();
+      out.peek2 = hub.querySelector('summary > .hubpeek').textContent;
+      thk.classList.remove('thinking-now');
       hubRefreshTitle();
       out.after = hub.querySelector('.hubname').textContent;
+      out.peekAfter = hub.querySelector('summary > .hubpeek').textContent;
       hub.insertAdjacentHTML('beforeend', '<details class="tool"><summary class="toolHead"><span class="name">跑命令</span><span class="status warn">运行中…</span></summary><pre></pre></details>');
       hubRefreshTitle();
       out.tool = hub.querySelector('.hubname').textContent;
+      out.peekTool = hub.querySelector('summary > .hubpeek').textContent;
       _liveHub = _old; hub.remove();
       const th = openThink();
       const long = '主人这件事我得从头捋一遍。'.repeat(25);
@@ -69,6 +87,8 @@ if (cdp) {
       out.flatLen = long.replace(/\\s+/g, ' ').trim().length;
       out.ws = getComputedStyle(ti).whiteSpace;
       out.hover = ti.hasAttribute('title');
+      out.peekTail = String(th.el.dataset.peek || '');
+      out.peekIsTail = long.replace(/\\s+/g, ' ').trim().endsWith(out.peekTail.replace(/^…/, ''));
       th.finish(); th.el.remove();
       try { if (typeof hubReset === 'function') hubReset(); } catch {}
       return out;
@@ -79,6 +99,11 @@ if (cdp) {
     t.ok('真机：长思考标题一字不截', r.titleLen === r.flatLen, r.titleLen + '/' + r.flatLen);
     t.ok('真机：标题 CSS 可换行', r.ws !== 'nowrap', r.ws);
     t.ok('真机：不再挂 400 字悬停', r.hover === false);
+    t.ok('真机：思考中右侧灰字有内容', r.peek1 === '在捋第一步', JSON.stringify(r.peek1));
+    t.ok('真机：灰字跟着流不断变化', r.peek2 !== r.peek1 && r.peek2 === '在捋第二步，越想越多了', JSON.stringify(r.peek2));
+    t.ok('真机：想完退回摘要', r.peekAfter.length > 0 && r.peekAfter !== r.peek2, JSON.stringify(r.peekAfter));
+    t.ok('真机：工具运行时灰字留空', r.peekTool === '', JSON.stringify(r.peekTool));
+    t.ok('真机：长思考的灰字取的是最新尾部', r.peekTail.startsWith('…') && r.peekTail.length <= 29 && r.peekIsTail, JSON.stringify(r.peekTail));
   } catch (e) {
     t.ok('真机探针能跑', false, String(e.message).slice(0, 100));
   } finally {

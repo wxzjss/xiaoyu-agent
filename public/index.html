@@ -10308,8 +10308,14 @@ function hubRefreshTitle() {
   /* 【2026-11-05】柜门后面那截也跟着走 */
   try {
     const pk = _liveHub.querySelector('summary > .hubpeek');
-    /* 跑着的时候标题已经是「正在…」，后面不用再重复 */
-    if (pk) pk.textContent = (_thinking || _runEl) ? '' : hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
+    /* 【2026-11-07 主人】思考中：右侧灰字跟着流不断换成最新一小截；
+       工具在跑：标题已经写了「正在…」，灰字留空别重复；
+       都结束了：退回原来的「刚想了什么 / 刚做了什么」摘要。 */
+    if (pk) {
+      if (_thinking) pk.textContent = _thinking.dataset.peek || '';
+      else if (_runEl) pk.textContent = '';
+      else pk.textContent = hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
+    }
   } catch (e) {}
 }
 
@@ -10350,6 +10356,8 @@ function adoptThink(d) {
         title.removeAttribute('title');
       }
       if (meta) meta.textContent = t.length + ' 字';
+      /* 整组重画送来的是全文快照，灰字也得跟着更新，不然会停在上一拍 */
+      try { d.dataset.peek = thinkPeekTail(flat); } catch (e) {}
     },
     finish() {
       if (!body || !body.textContent.trim()) { try { d.remove(); } catch (e) {} }
@@ -10542,6 +10550,18 @@ function addWorkerCard() {
  *
  * 优先显示**正在跑**的工具名（那是当下的状态）；都跑完了，就显示最新一段思考的开头。
  */
+/**
+ * 【2026-11-07 主人】柜门右侧那截灰字，思考时要跟着流不断变。
+ * 取**尾部**而不是开头：思考是从头往后长的，取开头那几个字永远不变，
+ * 取最后一小截才看得出「她正在想什么」。28 字刚好塞得进 62% 的一行，
+ * 不会被 CSS 的 ellipsis 再切一刀。
+ */
+function thinkPeekTail(text) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  return flat.length > 28 ? '…' + flat.slice(-28) : flat;
+}
+
 function hubPeekOf(els) {
   try {
     for (let i = els.length - 1; i >= 0; i--) {
@@ -10962,6 +10982,8 @@ function openThink() {
         title.removeAttribute('title');
       }
       meta.textContent = body.textContent.length + ' 字';
+      /* 每来一段 reasoning 就换一次柜门右侧灰字（取最新一小截，才会「不断变化」） */
+      try { d.dataset.peek = thinkPeekTail(flat); } catch (e) {}
       /* 思考还在继续：柜门那行跟着显示「正在思考中…」 */
       try { d.classList.add('thinking-now'); hubRefreshTitle(); } catch (e) {}
       noteNewContent();

@@ -52,7 +52,12 @@ check(perChunk.includes('还没想完'), '（对照）逐块剥确实会漏 —�
 // ④ sessions-core 两道门
 const sc = read('../src/sessions-core.mjs');
 const lines = sc.split(/\r?\n/);
-const looseGuard = lines.filter((l) => l.includes('typeof m.content === \'string\'') && l.includes('test(m.content)'));
+/* 【2026-11-08 改准】筛的时候带上 thinking —— 11-07 加了一道「角色标签」的门
+ * （assistant/user/system），它当然不含 thinking，按老写法会一直红。
+ * 这条要守的是「thinking 的门必须认结束标签」。 */
+const looseGuard = lines.filter((l) => l.includes('typeof m.content === \'string\'')
+  && l.includes('test(m.content)')
+  && l.includes('thinking'));
 check(looseGuard.length > 0 && looseGuard.every((l) => l.includes('<\\/?(thinking')), 'sessions-core 读消息的外门认结束标签');
 check(lines.some((l) => /if \(!\/<\\\/\?\(thinking\|think\|reasoning\)\[\\s>\]\/i\.test\(s\)\) return s;/.test(l)),
   'sessions-core 里 stripThinkTags 自己的门也认结束标签');

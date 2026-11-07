@@ -40,7 +40,13 @@ t.ok('① intent 在读取白名单里', /intent: String\(j\.intent \|\| ''\)/.t
 t.ok('① 续跑判定用的是 intent', /String\(info && info\.intent \|\| ''\) === 'continue'/.test(server));
 t.ok('② 记录支持多条（v2 格式）', /v: 2, items/.test(resume));
 t.ok('② 写入是按会话 upsert，不覆盖', /filter\(\(x\) => String\(x\.sessionId\) !== sessionId\)/.test(resume));
-t.ok('② 开机遍历所有待续（不是只取一条）', /const pendingList = listInterrupted\(\)/.test(server));
+/* 【2026-11-07 改口径】现在先取全部、再按 autoResume 过滤：
+ * 只有「真被打断」的自动续，清单老账留着等主人手动点。
+ * （原来的断言是「遍历 listInterrupted」，一字不差地匹配旧写法，改动就报红。） */
+t.ok('② 开机取全部待续，再按 autoResume 过滤',
+  /const pendingAll = listInterrupted\(\)/.test(server)
+  && /pendingAll\.filter\(\(x\) => x && x\.autoResume === true\)/.test(server));
+t.ok('② 只有「真被打断」才标 autoResume', /autoResume: Boolean\(_qlive\)/.test(server));
 t.ok('② 续跑函数能指定会话', /async function resumeInterruptedTurn\(onlySessionId\)/.test(server));
 t.ok('② 跑完只删自己那条', /dropInterrupted\(sessionId\)/.test(server));
 t.ok('② 退出时遍历每个有活的会话', /const _cand = \[\];/.test(server) && /for \(const _qsid of _cand\)/.test(server));

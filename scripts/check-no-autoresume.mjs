@@ -59,9 +59,13 @@ for (const p of FILES) {
   if (!s.includes("'/api/resume'")) no('/api/resume 手动接口被误删');
   else ok('/api/resume 手动接口还在');
 
-  /* ④ 多会话：开机要遍历所有待续（主人 11-07：另一个会话不能停） */
-  if (!s.includes('const pendingList = listInterrupted()')) no('开机只续一个会话（应该遍历 listInterrupted）');
-  else ok('开机遍历所有待续会话');
+  /* ④ 多会话 + 只续该续的（2026-11-07 改口径）
+   *   原来断言「开机遍历 listInterrupted()」；
+   *   现在多了 autoResume 过滤 —— 只有「真被打断」的才自动续，
+   *   清单老账不自动续（实测一次能记出 8 条，全续会把端点打爆）。 */
+  if (!s.includes('const pendingAll = listInterrupted()')) no('开机没读待续列表（应该 listInterrupted）');
+  else if (!/pendingAll\.filter\(\(x\) => x && x\.autoResume === true\)/.test(s)) no('没有按 autoResume 过滤（清单老账会被一起续）');
+  else ok('开机只自动续「真被打断」的会话');
 }
 console.log(bad === 0 ? '\n全部通过' : '\n有 ' + bad + ' 项失败');
 process.exit(bad === 0 ? 0 : 1);

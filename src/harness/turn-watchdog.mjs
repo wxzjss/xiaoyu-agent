@@ -17,11 +17,18 @@
  *
  * 看 live.events 里最后一个带 at 的事件。没有事件就用开跑时间。
  *
- * ── 为什么分两档 ────────────────────────────────────────────────
+ * ── 为什么分三档 ────────────────────────────────────────────────
  *
  * 工具是允许跑很久的（跑整套回归、装依赖、转视频，实测 20 分钟都有）。
- * 那种时候事件流里只有一条 tool_start，之后再无事件 —— 按「整轮 5 分钟」判会误杀。
- * 所以：正在等工具 → 用工具上限；其余（等模型、等写盘、等任何东西）→ 用整轮上限。
+ * 那种时候事件流里只有一条 tool_start，之后再无事件 —— 按「整轮」判会误杀。
+ * 所以：正在等工具 → 用工具上限。
+ *
+ * 【2026-11-08 加第三档】「等模型」也得单独一档。
+ * 上游在思考阶段一个字都不吐，事件流同样不动，可按「整轮 12 分钟」量它
+ * 就变成「谁想得久谁死」—— 主人凌晨六个会话全这么死的。
+ * 最后一条事件是模型吐的字（或工具刚回来）→ 说明马上去调模型 → 用 LLM 那档。
+ *
+ * 只剩「真·什么都不在等」才吃整轮上限，那才是真卡死。
  *
  * ── 掐不死怎么办 ────────────────────────────────────────────────
  *
@@ -53,13 +60,52 @@ function isWaitingTool(events) {
 }
 
 /**
+ * 【2026-11-08 加·「正在等模型」要单独认出来】
+ *
+ * 现场：00:53~01:07 六个会话轮着被掐，日志写着「静了 306 秒（整轮上限 300 秒）」。
+ * 可它们不是在空转 —— 是**上游在思考、一个字都没吐**，事件流当然不动。
+ * 用「整轮静默」那把尺子量「等模型」，等于谁想得久谁死。
+ *
+ * 怎么认：最后一条事件如果是模型吐出来的字（正文字/思考块），
+ * 说明这一圈模型刚说完、马上要发下一次请求 —— 此刻就是在等模型。
+ * 工具刚回来的那一刻（tool_end）也一样：下一步必然是调模型。
+ */
+function looksLikeWaitingModel(events) {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const ty = events[i] && events[i].type;
+    if (!ty) continue;
+    if (ty === 'tool_start') return false;
+    if (ty === 'tool_end') return true;
+    if (ty === 'text' || ty === 'reasoning' || ty === 'whisper') return true;
+    /* 超时重试时我们自己推的那句「再要一次」、以及 retry 提示，
+     * 都表示「请求已经发出去、正在等上游」—— 归到等模型这一档。 */
+    if (ty === 'notice' || ty === 'retry') return true;
+    if (ty === 'done' || ty === 'error' || ty === 'aborted') return false;
+  }
+  return false;
+}
+
+/** 这一刻该拿哪把尺子（返回上限 + 人话说明，日志要用） */
+function pickLimit(events, limits) {
+  if (isWaitingTool(events)) {
+    return { ms: limits.toolIdleMs, why: '在等工具，上限 ' + Math.round(limits.toolIdleMs / 1000) };
+  }
+  if (looksLikeWaitingModel(events)) {
+    return { ms: limits.llmIdleMs, why: '在等模型回话，上限 ' + Math.round(limits.llmIdleMs / 1000) };
+  }
+  return { ms: limits.idleMs, why: '整轮上限 ' + Math.round(limits.idleMs / 1000) };
+}
+
+/**
  * @param {object} opts
  * @param {() => Iterable<[string, object]>} opts.turns       runningTurns 的条目
  * @param {(sid: string) => object|undefined} opts.liveOf     拿 live（events 在那）
  * @param {(sid: string) => void} opts.abort                  软掐
  * @param {(sid: string) => void} opts.forceClean             硬清（删条目 + 标 done）
- * @param {number} [opts.idleMs]       整轮静默上限（默认 5 分钟）
+ * @param {number} [opts.idleMs]       真空转时的上限（默认 12 分钟）
  * @param {number} [opts.toolIdleMs]   等工具时的上限（默认 31 分钟）
+ * @param {number} [opts.llmIdleMs]    等模型回话时的上限（默认 5 分钟）
+ * @param {(sid: string, info: object) => void} [opts.onStuck] 掐之前敲一下（自动续跑用）
  * @param {number} [opts.hardAfterMs]  软掐后再等多久强清（默认 60 秒）
  * @param {number} [opts.tickMs]       扫的间隔（默认 15 秒）
  * @param {(tag: string, detail: string) => void} [opts.onLog]
@@ -69,11 +115,15 @@ export function createTurnWatchdog(opts = {}) {
   const liveOf = opts.liveOf || (() => undefined);
   const abort = opts.abort || (() => {});
   const forceClean = opts.forceClean || (() => {});
-  const idleMs = Number(opts.idleMs) > 0 ? Number(opts.idleMs) : 5 * 60 * 1000;
+  const idleMs = Number(opts.idleMs) > 0 ? Number(opts.idleMs) : 12 * 60 * 1000;
   const toolIdleMs = Number(opts.toolIdleMs) > 0 ? Number(opts.toolIdleMs) : 31 * 60 * 1000;
+  const llmIdleMs = Number(opts.llmIdleMs) > 0 ? Number(opts.llmIdleMs) : 5 * 60 * 1000;
   const hardAfterMs = Number(opts.hardAfterMs) > 0 ? Number(opts.hardAfterMs) : 60 * 1000;
   const tickMs = Number(opts.tickMs) > 0 ? Number(opts.tickMs) : 15000;
   const onLog = typeof opts.onLog === 'function' ? opts.onLog : () => {};
+  /** 真要放弃一个会话之前敲一下（给「自动续跑」用） */
+  const onStuck = typeof opts.onStuck === 'function' ? opts.onStuck : () => {};
+  const limits = { idleMs, toolIdleMs, llmIdleMs };
 
   let timer = null;
   /** sid → 软掐的时间戳（已经掐过、等它退） */
@@ -85,13 +135,22 @@ export function createTurnWatchdog(opts = {}) {
       seen.add(sid);
       const live = liveOf(sid);
       const events = (live && Array.isArray(live.events)) ? live.events : [];
-      const last = lastActivityAt(events, t && t.startedAt);
+      /* 【2026-11-08 加·live 被重建时别把账算到很久以前】
+       * 现场出现过「静了 700 秒才报」，可上限只有 300 秒 —— 按 15 秒一扫，
+       * 第一次超限最多报 315 秒，不可能报 700。
+       * 唯一说得通的解释：这个 live 是刚重建的（events 空），
+       * 而回退用的 startedAt 是这一轮很早以前的开始时间。
+       * 两个开始时间里取**更晚**的那个：宁可晚一点判它卡住，也不要误杀。 */
+      const bornAt = Math.max(
+        Number(t && t.startedAt) || 0,
+        Number(live && live.startedAt) || 0,
+      );
+      const last = lastActivityAt(events, bornAt);
       if (!last) continue;
       const idle = now - last;
-      const waitingTool = isWaitingTool(events);
-      const limit = waitingTool ? toolIdleMs : idleMs;
+      const pick = pickLimit(events, limits);
 
-      if (idle <= limit) {
+      if (idle <= pick.ms) {
         softAt.delete(sid);
         continue;
       }
@@ -99,8 +158,8 @@ export function createTurnWatchdog(opts = {}) {
       if (!softAt.has(sid)) {
         softAt.set(sid, now);
         onLog('turn-idle-abort', sid + ' 静了 ' + Math.round(idle / 1000) + ' 秒'
-          + '（' + (waitingTool ? '在等工具，上限 ' + Math.round(toolIdleMs / 1000) : '整轮上限 ' + Math.round(idleMs / 1000))
-          + ' 秒），掐掉');
+          + '（' + pick.why + ' 秒），掐掉');
+        try { onStuck(sid, { idleMs: idle }); } catch (e) {}
         try { abort(sid); } catch (e) { /* 掐不掉就等硬清 */ }
         continue;
       }
@@ -119,7 +178,14 @@ export function createTurnWatchdog(opts = {}) {
     /** 开始定时扫（重复 start 无副作用） */
     start() {
       if (timer) return;
-      timer = setInterval(() => { try { scan(); } catch (e) {} }, tickMs);
+      /* 【2026-11-08 改·扫的时候出事要留痕】
+       * 原来是 `try { scan() } catch {}` —— 万一某个会话让 scan 抛了，
+       * 那一次扫描就整个中断，后面的会话一个都没检查。
+       * 现场出现过「静了 700 秒才报」（上限 300 秒），很可能就是这种静默中断。
+       * 现在至少落一行 diag，下次再看到这种跳数就能对上号。 */
+      timer = setInterval(() => {
+        try { scan(); } catch (e) { try { onLog('watchdog-scan-error', String((e && e.message) || e)); } catch {} }
+      }, tickMs);
       if (typeof timer.unref === 'function') timer.unref();
     },
     stop() {
@@ -130,6 +196,6 @@ export function createTurnWatchdog(opts = {}) {
     scan,
     /** 现在有几个在等它掐 */
     pending() { return [...softAt.keys()]; },
-    limits() { return { idleMs, toolIdleMs, hardAfterMs, tickMs }; },
+    limits() { return { idleMs, toolIdleMs, llmIdleMs, hardAfterMs, tickMs }; },
   };
 }

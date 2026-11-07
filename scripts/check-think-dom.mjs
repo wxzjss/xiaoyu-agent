@@ -21,7 +21,7 @@ if (typeof connect !== 'function') {
 
 let cdp;
 try {
-  cdp = await connect({ port: 9223, match: '8788' });
+  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
 } catch (e) {
   console.log('SKIP 没有可连的调试浏览器（先开 app，再把无头浏览器指到 9223）');
   process.exit(0);

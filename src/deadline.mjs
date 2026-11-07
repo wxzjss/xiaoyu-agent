@@ -88,7 +88,21 @@ function msOr(raw, fallback, floorMs, name) {
  * 2 分钟：正常首字 1~3 秒，长思考也一直在吐块；两分钟一个字节都没有，
  * 基本可以确定是上游挂了。下限降到 30 秒（`LLM_IDLE_TIMEOUT_MS` 设得比这更小才视为误配）。
  */
-export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 2 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 30 * 1000, 'LLM_IDLE_TIMEOUT_MS');
+/**
+ * 【2026-11-08 再改·2 分钟 → 4 分钟】
+ *
+ * 主人 11-08 凌晨问「为什么会话总是做任务做着做着自己停了」。
+ * 查 diag.log：00:53~01:07 这十几分钟里，**六个会话轮着被掐**：
+ *   静了 700 秒 / 325 秒 / 443 秒 / 306 秒 / 310 秒 / 305 秒 —— 全是撞 5 分钟那条线。
+ *
+ * 再往回看，2 分钟这条线也在误杀：`等上游开始回话静了超过 2 分钟，我认输`。
+ * DeepSeek 在大上下文 + 长思考时，首字三五分钟很常见，两分钟就认输等于
+ * 「每次想得久一点就自己断」，主人看到的就是「做着做着自己停了」。
+ *
+ * 4 分钟：正常首字 1~3 秒，长思考也一直在吐块；四分钟一个字节都没有，
+ * 才是真挂了。真挂的时候下面 recovery 还会再给一次机会（见 classify 的 isTimeout 分支）。
+ */
+export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 4 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 30 * 1000, 'LLM_IDLE_TIMEOUT_MS');
 
 /** 单个工具从开跑到返回的忍耐上限（默认 30 分钟，最少给 3 分钟；跑整套回归、装依赖都够） */
 export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 3 * 60 * 1000, 'TOOL_MAX_TIMEOUT_MS');
@@ -118,8 +132,20 @@ export const TOOL_NOTICE_MS = msOr(process.env.TOOL_NOTICE_TIMEOUT_MS, 10 * 60 *
  * 现在由 `harness/turn-watchdog.mjs` 真正执行它：
  * 整轮静默超过这个数就掐；正在等工具的那段时间另算（TOOL_MAX_MS + 1 分钟），
  * 因为工具本来就允许跑很久。
+ *
+ * 【2026-11-08 再改·5 分钟 → 12 分钟，而且「等模型」另立一档】
+ *
+ * 5 分钟这条线是照「界面卡住」定的，可它把**正在正常思考**也算进去了：
+ * 只要上游在思考阶段不吐字，事件流就不动，5 分钟一到照样掐。
+ * 主人凌晨那六个被掐的会话，全都是这么死的。
+ *
+ * 现在分三档（见 turn-watchdog 的 pickLimit）：
+ *   · 最后一条事件是模型吐字 → 用 LLM_IDLE_MS + 1 分钟（等模型，本来就该由 LLM 层管）
+ *   · 最后一条是 tool_start     → 用 TOOL_MAX_MS + 1 分钟（工具允许跑很久）
+ *   · 其余（真·什么都不在等）  → 用这个 12 分钟
+ * 只有第三档才是「真空转」，那才是真卡死，12 分钟已经够狠了。
  */
-export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 5 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 30 * 1000, 'TURN_IDLE_MAX_MS');
+export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 12 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 30 * 1000, 'TURN_IDLE_MAX_MS');
 
 function fmtMins(ms) {
   const m = ms / 60000;

@@ -23,14 +23,19 @@ const server = fs.readFileSync('src/server.mjs', 'utf8');
 const dl = fs.readFileSync('src/deadline.mjs', 'utf8');
 
 // ── 1. 源码守卫 ────────────────────────────────────────────────
-t.ok('TURN_IDLE_MAX_MS 默认 5 分钟', /TURN_IDLE_MAX_MS = msOr\([^)]*5 \* 60 \* 1000/.test(dl));
+/* 【2026-11-08 改】5 分钟 → 12 分钟。
+ * 5 分钟那条线把「正在思考」也算进去了，主人凌晨六个会话全撞在这上面。 */
+t.ok('TURN_IDLE_MAX_MS 默认 12 分钟', /TURN_IDLE_MAX_MS = msOr\([^)]*12 \* 60 \* 1000/.test(dl));
+t.ok('LLM_IDLE_MS 默认 4 分钟（2 分钟会误杀长思考）', /LLM_IDLE_MS = msOr\([^)]*4 \* 60 \* 1000/.test(dl));
 t.ok('server 里真的启动了看门狗', /globalThis\.__xyTurnWatchdog = createTurnWatchdog\(/.test(server));
 t.ok('看门狗用了整轮上限（不再是摆设）', /idleMs:\s*TURN_IDLE_MAX_MS/.test(server));
 t.ok('等工具时放宽（不误杀长工具）', /toolIdleMs:\s*TOOL_MAX_MS \+ 60000/.test(server));
+t.ok('等模型另立一档（不吃整轮上限）', /llmIdleMs:\s*LLM_IDLE_MS \+ 60000/.test(server));
 t.ok('软掐 + 硬清两段都接上了',
   /abort:\s*\(sid\)[\s\S]{0,200}ac\.abort\('turn-idle'\)/.test(server)
   && /forceClean:\s*\(sid\)[\s\S]{0,240}runningTurns\.delete\(sid\)/.test(server));
 t.ok('掐的时候写 diag（可追溯）', /diagLog\('watchdog-start'/.test(server));
+t.ok('掐之前敲 onStuck（好让自动续跑接住）', /onStuck:\s*\(sid, info\)/.test(server));
 
 // ── 2. 行为 ────────────────────────────────────────────────────
 const { createTurnWatchdog } = await import('../src/harness/turn-watchdog.mjs');
@@ -54,8 +59,9 @@ function makeWorld({ modelIdleMin = 18, toolIdleMin = 18, healthyIdleSec = 30 } 
     liveOf: (sid) => lives.get(sid),
     abort: (sid) => aborted.push(sid),
     forceClean: (sid) => cleaned.push(sid),
-    idleMs: 5 * 60 * 1000,
+    idleMs: 12 * 60 * 1000,
     toolIdleMs: 31 * 60 * 1000,
+    llmIdleMs: 5 * 60 * 1000,
   });
   return { wd, now, aborted, cleaned };
 }
@@ -93,11 +99,87 @@ function makeWorld({ modelIdleMin = 18, toolIdleMin = 18, healthyIdleSec = 30 } 
     turns: () => turns.entries(),
     liveOf: (sid) => lives.get(sid),
     abort: (sid) => aborted.push(sid),
-    idleMs: 5 * 60 * 1000,
+    idleMs: 12 * 60 * 1000,
     toolIdleMs: 31 * 60 * 1000,
+    llmIdleMs: 5 * 60 * 1000,
   });
   wd.scan(now);
   t.ok('事件没有 at 时退回开跑时间判（不会漏判）', aborted.includes('noAt'), aborted.join(','));
+}
+
+/* ── 【2026-11-08 核心修复】别再把「想得久」当成「卡死了」 ──────────
+ *
+ * 主人报「做任务做着做着自己停了」，diag.log 里六个会话全是撞 5 分钟那条线。
+ * 下面两条守的就是这个：静默很久但**还在正常等模型**的，不能掐。 */
+{
+  const now = Date.now();
+  const turns = new Map([['thinking', { startedAt: now - 9 * 60 * 1000 }]]);
+  /* 最后一条是模型吐的字（4 分钟前）→ 此刻在等它回下一句 → 走 llm 档（5 分钟），4 < 5 不掐 */
+  const lives = new Map([['thinking', { events: [{ type: 'text', at: now - 4 * 60 * 1000 }] }]]);
+  const aborted = [];
+  const wd = createTurnWatchdog({
+    turns: () => turns.entries(),
+    liveOf: (sid) => lives.get(sid),
+    abort: (sid) => aborted.push(sid),
+    idleMs: 12 * 60 * 1000,
+    toolIdleMs: 31 * 60 * 1000,
+    llmIdleMs: 5 * 60 * 1000,
+  });
+  wd.scan(now);
+  t.ok('在等模型、静了 4 分钟 → 不掐', !aborted.includes('thinking'), aborted.join(','));
+}
+{
+  const now = Date.now();
+  /* 整轮已经 9 分钟，但最后一条事件不带 at，算下来「静默」按开跑时间 = 9 分钟。
+   * 修复前整轮档是 5 分钟 → 必掐；现在 12 分钟 → 不该掐。 */
+  const turns = new Map([['quiet9', { startedAt: now - 9 * 60 * 1000 }]]);
+  const lives = new Map([['quiet9', { events: [{ type: 'whale' }] }]]);
+  const aborted = [];
+  const wd = createTurnWatchdog({
+    turns: () => turns.entries(),
+    liveOf: (sid) => lives.get(sid),
+    abort: (sid) => aborted.push(sid),
+    idleMs: 12 * 60 * 1000,
+    toolIdleMs: 31 * 60 * 1000,
+    llmIdleMs: 5 * 60 * 1000,
+  });
+  wd.scan(now);
+  t.ok('静了 9 分钟但不是真空转 → 不掐（修复前 5 分钟就误杀）', !aborted.includes('quiet9'), aborted.join(','));
+}
+{
+  /* 反过来：真·真空转（一直没有像样的事件）也要在 12 分钟后动手，不能变成永不管 */
+  const now = Date.now();
+  const turns = new Map([['dead', { startedAt: now - 13 * 60 * 1000 }]]);
+  const lives = new Map([['dead', { events: [{ type: 'whale' }] }]]);
+  const aborted = [];
+  const wd = createTurnWatchdog({
+    turns: () => turns.entries(),
+    liveOf: (sid) => lives.get(sid),
+    abort: (sid) => aborted.push(sid),
+    idleMs: 12 * 60 * 1000,
+    toolIdleMs: 31 * 60 * 1000,
+    llmIdleMs: 5 * 60 * 1000,
+  });
+  wd.scan(now);
+  t.ok('真·真空转 13 分钟 → 还是要掐', aborted.includes('dead'), aborted.join(','));
+}
+{
+  /* onStuck：掐之前要先敲一下（自动续跑靠它） */
+  const now = Date.now();
+  const turns = new Map([['x', { startedAt: now - 20 * 60 * 1000 }]]);
+  const lives = new Map([['x', { events: [{ type: 'tool_start', at: now - 40 * 60 * 1000 }] }]]);
+  const stuck = [];
+  const wd = createTurnWatchdog({
+    turns: () => turns.entries(),
+    liveOf: (sid) => lives.get(sid),
+    abort: () => {},
+    onStuck: (sid, info) => stuck.push({ sid, info }),
+    idleMs: 12 * 60 * 1000,
+    toolIdleMs: 31 * 60 * 1000,
+    llmIdleMs: 5 * 60 * 1000,
+  });
+  wd.scan(now);
+  t.ok('掐之前先敲 onStuck（自动续跑接得住）', stuck.length === 1 && stuck[0].sid === 'x', JSON.stringify(stuck));
 }
 
 t.done();

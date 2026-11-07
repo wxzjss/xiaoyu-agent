@@ -1202,6 +1202,18 @@ for (let round = 0; round < config.maxRounds; round++) {
     let handedOff = false;
     /** 这一轮里「流断掉又续上」了几次，别无限续 */
     let dropRetries = 0;
+    /**
+     * 【2026-11-08 加·一个字节都没回来时，再要一次】
+     *
+     * 主人凌晨问「为什么总是做任务做着做着自己停了」。除了看门狗掐轮，
+     * 还有一条路：上游静默到 LLM_IDLE_MS（4 分钟）→ isTimeout → 直接抛 →
+     * 整轮失败 → 停在半路。可这种静默十有八九是网关抽了一下，
+     * 再要一次通常就回来了（实测 ECONNRESET / 502 之后重试都能出字）。
+     *
+     * 只给一次机会、而且只在**一个字都没吐**的时候用：
+     * 吐过字再重来会把那半截话重复一遍，那种情况交给外面的自动续跑接。
+     */
+    let timeoutRetries = 0;
     // 本轮开头的旧账清掉：上一次回答没成功就走了（用户打断、程序关了、报错退出），
     // 那个 streak 会一直挂在内存里，等下一次抖动时直接顶到 5，报「连接一直断」。
     // 每轮重来都从 0 数，才符合「连续 5 次都断」的本意 —— 2026-10-26 踩过。
@@ -1347,6 +1359,20 @@ for (let round = 0; round < config.maxRounds; round++) {
          * ECONNREFUSED 被当成断流反复重试，主人只看到「卡在发送中」和
          * 「连接一直断」，完全看不出真正的原因是地址填错了。
          */
+        /* 【2026-11-08 加·上游静默超时：一个字都没回就再要一次】
+         * 放在「连不上」和「断流」前面判：这既不是地址错，也不是流中途断，
+         * 而是「请求发出去了，上游一个字都不给」。
+         * 只在 text 还是空的时候重来，免得把已经吐出来的半截话重复一遍。 */
+        if ((err?.isTimeout || err?.name === 'TimeoutError') && timeoutRetries < 1 && !String(text).trim()) {
+          timeoutRetries += 1;
+          try {
+            onEvent({ type: 'notice', text: '\n\n（上游静了太久，一个字都没回来，我再要一次…）\n\n' });
+          } catch {}
+          console.warn('[timeout] 上游静默超时，重试一次：session=' + sessionId);
+          await sleep(1500);
+          continue;
+        }
+
         if (isConnectionRefused(err)) {
           let where = '';
           try {

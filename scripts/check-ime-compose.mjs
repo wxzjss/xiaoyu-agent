@@ -32,7 +32,7 @@ t.ok('状态挂 window 上，避开 let 暂时性死区', /window\.__xyImeCompos
 let cdp = null;
 try {
   const m = await import('../_t_cdp.mjs');
-  cdp = await m.connect({ port: 9223, match: '8788' });
+  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
 } catch { /* 没开调试浏览器 */ }
 if (cdp) {
   try {
@@ -73,7 +73,7 @@ if (cdp) {
 let cdp2 = null;
 try {
   const { connect } = await import('../_t_cdp.mjs');
-  cdp2 = await connect({ port: 9223, match: '8788' });
+  cdp2 = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
 } catch { cdp2 = null; }
 t.ok('有「等一等再切」的入口', /function imeMatchSoon\(\)/.test(ui));
 t.ok('有「作废」的入口', /function imeCancelSoon\(\)/.test(ui));

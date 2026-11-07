@@ -7,7 +7,7 @@ import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 /* 【2026-11-08 加·整轮空闲看门狗】以前只有「等模型」那层有超时，卡在别处没人管 */
 import { createTurnWatchdog } from './harness/turn-watchdog.mjs';
-import { TURN_IDLE_MAX_MS, TOOL_MAX_MS } from './deadline.mjs';
+import { TURN_IDLE_MAX_MS, TOOL_MAX_MS, LLM_IDLE_MS } from './deadline.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
 // 出了分支 whaleOn 就没了，而每轮收尾那句 if (whaleOn()) 还在 —— 每轮都崩。
 import { whaleOn, setWhaleOn, markWhaleSpoke, whaleSpokeThisTurn } from './whale-presence.mjs';
@@ -10646,6 +10646,77 @@ export function __emitExitForTest(code = 75) {
   emitExit(code);
 }
 
+/* ────────────────────────────────────────────────────────────────
+ * 【掐轮之后，自己接回来】
+ *
+ * 主人 2026-11-08 凌晨问：「为什么小鱼Agent里面的会话总是做任务做着做着自己停了」。
+ *
+ * diag.log 里 00:53~01:07 这十四分钟，六个会话轮着被看门狗掐：
+ *   静了 700 秒 / 325 秒 / 443 秒 / 306 秒 / 310 秒 / 305 秒
+ * 掐掉之后**没有任何人接** —— 界面就那样停在半路，主人只能自己再打一句。
+ * 「自己停了」这四个字，指的就是这一段。
+ *
+ * 掐本身不算错（真卡死的时候总得有人动手），错在**掐完就撒手**。
+ * 现在掐完做三件事：
+ *   ① 等旧轮真的退干净（不然两轮同时改同一个 messages 数组）；
+ *   ② 往会话里补一句框架消息，说清楚「刚才怎么了、现在重来」——
+ *      前端不画成主人说的话，但主人回来看得见原因；
+ *   ③ 用接续轮把活接上（跟定时任务走同一条路：startQueuedTurn）。
+ *
+ * 还要防死循环：上游真挂了的时候，「掐 → 接 → 再掐」能转到天亮。
+ * 所以同一会话半小时内最多自动接 2 次，第 3 次就老实停下，把话说清楚。
+ * ──────────────────────────────────────────────────────────────── */
+const stuckRetryBook = new Map(); // sid → { n, lastAt }
+const STUCK_RETRY_MAX = 2;        // 半小时内最多自动接几次
+const STUCK_RETRY_WINDOW = 30 * 60 * 1000;
+
+function scheduleStuckRetry(sid, info = {}) {
+  const sessionId = String(sid || '');
+  if (!sessionId) return;
+  const now = Date.now();
+  const rec = stuckRetryBook.get(sessionId) || { n: 0, lastAt: 0 };
+  if (now - rec.lastAt > STUCK_RETRY_WINDOW) rec.n = 0;
+
+  if (rec.n >= STUCK_RETRY_MAX) {
+    diagLog('stuck-retry-give-up', sessionId + ' 半小时内已经自动接过 ' + rec.n + ' 次还是停，不再硬接了');
+    return;
+  }
+  rec.n += 1;
+  rec.lastAt = now;
+  stuckRetryBook.set(sessionId, rec);
+
+  const idleSec = Math.max(0, Math.round(Number(info.idleMs || 0) / 1000));
+  let waited = 0;
+  const timer = setInterval(() => {
+    waited += 4000;
+    const t = runningTurns.get(sessionId);
+    const stillAlive = Boolean(t && t.ac && !t.ac.signal.aborted);
+    /* 旧轮还在退 —— 再等等；最多等 90 秒，等不到也不管了，硬接 */
+    if (stillAlive && waited < 90000) return;
+    clearInterval(timer);
+    (async () => {
+      try {
+        const sess = getSession(sessionId);
+        if (!sess) return;
+        sess.messages = Array.isArray(sess.messages) ? sess.messages : [];
+        sess.messages.push({
+          role: 'user',
+          context: true,      // 框架消息：前端不画成「主人说的话」
+          _sysNote: true,
+          _at: Date.now(),
+          content: '（刚才那一轮静了 ' + (idleSec || 60) + ' 秒没有动静，我把它掐断，重来一次——接着做。）',
+        });
+        try { saveSession(sess); } catch {}
+        diagLog('stuck-retry', sessionId + ' 第 ' + rec.n + ' 次自动接回（静了 ' + idleSec + ' 秒）');
+        await startQueuedTurn(sessionId, null);
+      } catch (e) {
+        diagLog('stuck-retry-fail', sessionId + ' ' + String((e && e.message) || e));
+      }
+    })();
+  }, 4000);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
 export function startServer({ port = config.port, quiet = false, selfCheck = true } = {}) {
   /**
    * 【2026-11-08 加·整轮空闲看门狗（主人说「根治」）】
@@ -10678,7 +10749,9 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
             const lv = liveLogs.get(sid);
             if (lv) {
               if (!Array.isArray(lv.events)) lv.events = [];
-              lv.events.push({ type: 'error', text: '这一轮空了太久，已经中止。可以重新发一句接着做。', at: Date.now() });
+              /* 【2026-11-08 改】以前写完这句就完了，主人还得自己打一句「接着做」。
+               * 现在 onStuck 已经在排队接回了，所以这句话要跟实际行为对上。 */
+              lv.events.push({ type: 'error', text: '这一轮卡得太久，我先把它强行收掉，马上重新接一次——你不用管。', at: Date.now() });
               lv.done = true;
               lv.endedAt = Date.now();
             }
@@ -10686,13 +10759,20 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         },
         idleMs: TURN_IDLE_MAX_MS,
         toolIdleMs: TOOL_MAX_MS + 60000,
+        /* 等模型那一档：比 LLM 自己的空闲超时再宽 1 分钟 —— 让它先自己报错、走重试，
+         * 别跟看门狗抢着动手。 */
+        llmIdleMs: LLM_IDLE_MS + 60000,
+        /* 【2026-11-08 加】真要掐的时候先记一笔，掐完自动接回来 */
+        onStuck: (sid, info) => { try { scheduleStuckRetry(sid, info); } catch {} },
         onLog: (tag, detail) => diagLog(tag, detail),
       });
       globalThis.__xyTurnWatchdog.start();
-      diagLog('watchdog-start', 'idle=' + Math.round(TURN_IDLE_MAX_MS / 1000) + 's tool=' + Math.round((TOOL_MAX_MS + 60000) / 1000) + 's');
+      diagLog('watchdog-start', 'idle=' + Math.round(TURN_IDLE_MAX_MS / 1000) + 's tool='
+        + Math.round((TOOL_MAX_MS + 60000) / 1000) + 's llm=' + Math.round((LLM_IDLE_MS + 60000) / 1000) + 's');
       if (!quiet) {
-        console.log('  watchdog : 整轮静默 ' + Math.round(TURN_IDLE_MAX_MS / 1000) + 's 就掐（等工具时放宽到 '
-          + Math.round((TOOL_MAX_MS + 60000) / 1000) + 's）');
+        console.log('  watchdog : 真空转 ' + Math.round(TURN_IDLE_MAX_MS / 1000) + 's / 等工具 '
+          + Math.round((TOOL_MAX_MS + 60000) / 1000) + 's / 等模型 '
+          + Math.round((LLM_IDLE_MS + 60000) / 1000) + 's，超了掐掉并自动接回来');
       }
     }
   } catch (e) {

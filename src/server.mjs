@@ -11062,46 +11062,13 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           if (n && !quiet) console.log(`[presets] 铺了 ${n} 张出厂智能体卡`);
         } catch (e) { /* 铺卡失败不能拖累服务 */ }
       }, 3000);
-      if (!quiet) {
-        console.log(`小鱼Agent running: ${url}`);
-        if (lanOn) {
-          for (const h of lanAddresses()) console.log(`  手机访问 : http://${h.address}:${actual}/  （配对码在 设置→手机连接）`);
-          if (!lanAddresses().length) console.log('  手机访问 : 没找到局域网 IPv4 地址，检查 Wi-Fi/网线');
-        }
-        const bootEp = activeEndpoint();
-        console.log(`  model    : ${bootEp.model}${bootEp.source === 'user' ? '（界面里选的）' : '（.env）'}`);
-        console.log(`  endpoint : ${bootEp.baseURL}`);
-        console.log(`  workspace: ${config.workspace}`);
-        console.log(`  api key  : ${bootEp.apiKey ? 'loaded' : 'MISSING -> 打开界面顶部「模型」按钮配置'}`);
-        console.log(`  rounds   : ${Number.isFinite(config.maxRounds) ? config.maxRounds : 'unlimited'}`);
-        // 启动体检：地址填错了不用等主人发一条消息才发现（2026-10-26 那次
-        // models.json 被写成 127.0.0.1:18599，界面上一切正常，一发就是
-        // 「连接一直断」，卡了整整一上午）。这里只探端口，不发请求，几百毫秒内出结果。
-        probeEndpoint(bootEp.baseURL, { timeoutMs: 3000 }).then((r) => {
-          lastProbe = { ...r, baseURL: bootEp.baseURL, at: Date.now() };
-          if (r.ok) {
-            console.log(`  probe    : ok（${r.host}:${r.port}，${r.ms}ms）`);
-          } else {
-            console.log(`  probe    : ✗ ${r.host}:${r.port} 连不上 —— ${r.reason}`);
-            console.log('             模型地址写错或那台服务没开；打开界面顶部「模型」按钮核对。');
-          }
-        }).catch(() => {});
-
-        /**
-         * 【2026-11-05 加·重启后自己续上】
-         *
-         * 主人报：「有【自动重启续上】功能，却只做到了自动重启，没做到续上」。
-         *
-         * 查下来是这样：重启前确实写了 .state/resume.json（谁被打断、断在哪、清单还剩几步），
-         * 但是**启动流程里没有任何一行去读它** —— 全项目只有 `POST /api/resume`
-         * 那条手动路径会调 resumeInterruptedTurn()。所以文件躺在盘上，一直到过期都没人碰。
-         *
-         * 现在补上：起来等三秒（让前端把 WebSocket 连上，不然事件发出去没人收），
-         * 如果还压着旧账、而且「自动重启续上」这个开关是开的，就自己接着做。
-         *
-         * 为什么尊重开关：主人关掉它就是要「干净重启」，这时候自作主张爬起来接着干
-         * 比不续还烦人。
-         */
+      /* 【2026-11-07 修·这段原来在 if (!quiet) 里面，从来没执行过】
+       *
+       * 主进程调 startServer 时传的是 `quiet: true`（见 electron/main.cjs），
+       * 于是整个 `if (!quiet) { ... }` 块被跳过 —— 开机续跑的调度从来就没注册过。
+       * 这是「有时只重启不续跑」的第三层原因（前两层：intent 读不到、3 秒 < 启动 62 秒）。
+       * 续跑跟「要不要打印启动日志」毫无关系，搬出来。
+       */
         setTimeout(() => {
           try {
             /* 【2026-11-07 加·这条链路以前一声不响】
@@ -11154,6 +11121,46 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
             diagLog('boot-resume-error', String(e?.message ?? e));
           }
         }, 8000);
+      if (!quiet) {
+        console.log(`小鱼Agent running: ${url}`);
+        if (lanOn) {
+          for (const h of lanAddresses()) console.log(`  手机访问 : http://${h.address}:${actual}/  （配对码在 设置→手机连接）`);
+          if (!lanAddresses().length) console.log('  手机访问 : 没找到局域网 IPv4 地址，检查 Wi-Fi/网线');
+        }
+        const bootEp = activeEndpoint();
+        console.log(`  model    : ${bootEp.model}${bootEp.source === 'user' ? '（界面里选的）' : '（.env）'}`);
+        console.log(`  endpoint : ${bootEp.baseURL}`);
+        console.log(`  workspace: ${config.workspace}`);
+        console.log(`  api key  : ${bootEp.apiKey ? 'loaded' : 'MISSING -> 打开界面顶部「模型」按钮配置'}`);
+        console.log(`  rounds   : ${Number.isFinite(config.maxRounds) ? config.maxRounds : 'unlimited'}`);
+        // 启动体检：地址填错了不用等主人发一条消息才发现（2026-10-26 那次
+        // models.json 被写成 127.0.0.1:18599，界面上一切正常，一发就是
+        // 「连接一直断」，卡了整整一上午）。这里只探端口，不发请求，几百毫秒内出结果。
+        probeEndpoint(bootEp.baseURL, { timeoutMs: 3000 }).then((r) => {
+          lastProbe = { ...r, baseURL: bootEp.baseURL, at: Date.now() };
+          if (r.ok) {
+            console.log(`  probe    : ok（${r.host}:${r.port}，${r.ms}ms）`);
+          } else {
+            console.log(`  probe    : ✗ ${r.host}:${r.port} 连不上 —— ${r.reason}`);
+            console.log('             模型地址写错或那台服务没开；打开界面顶部「模型」按钮核对。');
+          }
+        }).catch(() => {});
+
+        /**
+         * 【2026-11-05 加·重启后自己续上】
+         *
+         * 主人报：「有【自动重启续上】功能，却只做到了自动重启，没做到续上」。
+         *
+         * 查下来是这样：重启前确实写了 .state/resume.json（谁被打断、断在哪、清单还剩几步），
+         * 但是**启动流程里没有任何一行去读它** —— 全项目只有 `POST /api/resume`
+         * 那条手动路径会调 resumeInterruptedTurn()。所以文件躺在盘上，一直到过期都没人碰。
+         *
+         * 现在补上：起来等三秒（让前端把 WebSocket 连上，不然事件发出去没人收），
+         * 如果还压着旧账、而且「自动重启续上」这个开关是开的，就自己接着做。
+         *
+         * 为什么尊重开关：主人关掉它就是要「干净重启」，这时候自作主张爬起来接着干
+         * 比不续还烦人。
+         */
 
         {
           // 真正生效的阈值是「设置面板里那个」，不是 config 里的兜底值，日志得说真话。

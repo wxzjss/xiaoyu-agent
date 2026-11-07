@@ -652,15 +652,19 @@ function toolBlock() {
    * 现在调度由 src/harness/scheduler.mjs 按依赖图算，模型只负责把意图说全。
    * 「能一起发」的工具名直接从 tool-spec 那张表生成，不再手写、不会漂移。
    */
-  let parNames = '';
+  let parLine = '';
   try {
-    parNames = buildToolIndex(rawSchemas).filter((x) => x.parallelSafe).map((x) => x.name).join('、');
+    const par = buildToolIndex(rawSchemas).filter((x) => x.parallelSafe).map((x) => x.name);
+    /* 全列出来 351 字，会把 system 顶过 5500 预算（_t_prompt 会拦）。
+     * 只点出最常用的几个当「样板」，其余用数量带过 —— 名单仍由 tool-spec
+     * 动态算出来，不是手写死，新增只读工具会自动算进那个数里。 */
+    const CORE = ['read_file', 'list_dir', 'search_files', 'web_search', 'fetch_url', 'memory_search', 'chronicle_read', 'video_read'];
+    const core = CORE.filter((n) => par.includes(n));
+    parLine = '  · 可以一起发：' + core.join('、') + ' 等 ' + par.length + ' 个只读工具（只读命令如 git status / dir 也算）；';
   } catch {}
   tips.push('- 【一次把这一轮要做的事说全】哪些能同时跑、哪些要排队，程序按依赖算，不用你判断。'
     + '说多了不会跑错，说少了才要多等一趟完整的模型往返。');
-  if (parNames) {
-    tips.push('  · 这些可以一起发：' + parNames + '（只读命令如 git status / dir 也算）；');
-  }
+  if (parLine) tips.push(parLine);
   tips.push('  · 只有「后一步要用前一步结果」才分开；写文件、发消息、重启这类会改东西的，一次一件。');
   tips.push('  · 一条命令里能串起来的几项检查用 ; 串成一条，比分几次调还快；');
   /**

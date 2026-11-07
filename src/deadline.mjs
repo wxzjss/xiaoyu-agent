@@ -73,8 +73,22 @@ function msOr(raw, fallback, floorMs, name) {
  *
  * 所以宁可 10 分钟才认输（那时基本可以确定是真卡死了），
  * 也不要为了「反应快」在正常人身上误报。
+ *
+ * 【2026-11-07 改·10 分钟 → 2 分钟】
+ *
+ * 上面那个理由成立的前提是「长时间没有块 = 模型在憋大招」。可实测不是这样：
+ *   · 真在思考时，reasoning 是**一块一块流回来**的 —— 每块都会 beat 看门狗；
+ *   · 真卡住时，是**一个块都没有**（events = 0）。
+ * 这两件事在「有没有 chunk」上分得很干净，所以空闲阈值只该按「多久没收到一个字节」算。
+ *
+ * 主人今晚遇到的就是后者：两个会话 running 挂着、events 全是 0，
+ * 界面一动不动，可程序认为「还在正常等」，要等满 10 分钟才认输。
+ * 10 分钟对使用者来说就是「卡死了」，等它自己恢复之前人早就烦了。
+ *
+ * 2 分钟：正常首字 1~3 秒，长思考也一直在吐块；两分钟一个字节都没有，
+ * 基本可以确定是上游挂了。下限降到 30 秒（`LLM_IDLE_TIMEOUT_MS` 设得比这更小才视为误配）。
  */
-export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 10 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 3 * 60 * 1000, 'LLM_IDLE_TIMEOUT_MS');
+export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 2 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 30 * 1000, 'LLM_IDLE_TIMEOUT_MS');
 
 /** 单个工具从开跑到返回的忍耐上限（默认 30 分钟，最少给 3 分钟；跑整套回归、装依赖都够） */
 export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 3 * 60 * 1000, 'TOOL_MAX_TIMEOUT_MS');

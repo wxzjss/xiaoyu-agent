@@ -555,6 +555,18 @@ function publicSession(session) {
      * 没跳过 system —— 于是人设整段被当成一条对话交给前端画了出来。
      */
     if (m.role === 'system') continue;
+    /**
+     * 【2026-11-08 加·草稿回灌不画给主人看】
+     *
+     * 主人问：「重启后【杂活鱼】会发出一大段话，是说给我看的吗？」
+     * 不是。那是 `_recovered` —— 重启时把上一轮没说完的半截话从草稿补回来，
+     * 目的是「别丢了她说的话、让她接着往下说」。实测那条 1079 字，
+     * 里面全是括号里的内心独白（「丢脸」「我手上没工具调它」），还带着 `<assistant>` 标签。
+     *
+     * 这功能要留（删了她会从断点前重说一遍），但它**不该当正文画出来** ——
+     * 跟压缩摘要一个待遇：留在 messages 里（她自己读得到），界面上不显示。
+     */
+    if (m._recovered) continue;
     // content 可能是多模态数组（只在内存里出现过），取文字段
     const raw = m.content;
     const text = (Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n') : String(raw ?? '')).trim();

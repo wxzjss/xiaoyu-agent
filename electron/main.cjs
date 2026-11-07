@@ -536,18 +536,26 @@ function clearWindowBorderColor(bw) {
  * 三个调用点（主窗口 / 托盘 / 内置浏览器窗口）都还在用它，函数留着。
  */
 function pickAppIcon() {
+  // 【为什么写成这样】原来这里 existsSync 失败了还照样 return 同一个路径，
+  // 而 assets 又没打进 app.asar —— 托盘拿到一个不存在的文件，Windows 上就是一片透明，
+  // 所以右下角那一格里什么也看不见（2026-11-06 查出来的）。
+  // 现在：按候选顺序找，找到第一个真存在的；一个都没有就返回空串，交给调用方兜底。
   try {
     const fs2 = require('node:fs');
     const p2 = require('node:path');
-    const full = p2.join(__dirname, '..', 'assets', 'xiaoyu.ico');
-    if (fs2.existsSync(full)) return full;
-    return p2.join(__dirname, '..', 'assets', 'xiaoyu.ico');
-  } catch {
+    const cands = [
+      p2.join(__dirname, '..', 'assets', 'xiaoyu.ico'),            // 包内（pack.mjs 现在会打进去）
+      p2.join(__dirname, '..', '..', 'assets', 'xiaoyu.ico'),      // resources/assets 外置
+    ];
     try {
-      const p2 = require('node:path');
-      return p2.join(__dirname, '..', 'assets', 'xiaoyu.ico');
-    } catch { return ''; }
-  }
+      const { app } = require('electron');
+      cands.push(p2.join(app.getPath('userData'), 'data', 'assets', 'xiaoyu.ico'));
+    } catch { /* 拿不到 userData 就算了 */ }
+    for (const c of cands) {
+      try { if (c && fs2.existsSync(c)) return c; } catch { /* 下一个 */ }
+    }
+    return '';
+  } catch { return ''; }
 }
 
 async function createWindow(updated = false) {
@@ -818,12 +826,24 @@ async function createWindow(updated = false) {
 /** 托盘图标：点一下把窗口叫回来 */
 function createTray() {
   try {
+    // 【2026-11-06 修】原来图读不出来就 createEmpty() —— 托盘照建，但那一格是透明的，
+    // 主人看到的就是「右下角有个位置，但什么也没有」。现在三级兜底：
+    //   ① 磁盘上的 .ico   ② 包内/外置路径   ③ 下面这段内嵌的 32px PNG（永远不会没有）
+    let img = nativeImage.createEmpty();
     const iconPath = pickAppIcon();
-    let img = nativeImage.createFromPath(iconPath);
-    if (img.isEmpty()) {
-      // 图标读不出来也别让程序起不来
-      img = nativeImage.createEmpty();
+    if (iconPath) {
+      try {
+        const fromFile = nativeImage.createFromPath(iconPath);
+        if (fromFile && !fromFile.isEmpty()) img = fromFile;
+      } catch { /* 落到兜底 */ }
     }
+    if (img.isEmpty()) {
+      try {
+        const embedded = nativeImage.createFromDataURL('data:image/png;base64,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');
+        if (embedded && !embedded.isEmpty()) img = embedded;
+      } catch { /* 真没办法了 */ }
+    }
+    if (img.isEmpty()) { console.warn('[tray] 图标一个都拿不到，托盘可能不可见'); }
     tray = new Tray(img);
     tray.setToolTip('小鱼Agent');
     const menu = Menu.buildFromTemplate([
@@ -858,10 +878,26 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    /**
+     * 【2026-11-07 主人报「双击起不来」—— 单实例这条路要更狠一点】
+     *
+     * 真实情形：程序本来就在跑（服务端常驻、关窗口只是收进托盘），
+     * 再双击一次时第二个进程拿不到单实例锁，直接 app.quit() 退出 ——
+     * 主人看到的就是「双击，什么都没发生」。
+     * 这时唯一该发生的事是：把已经存在的那个窗口**拽到眼前**。
+     *
+     * 原来只有 restore/show/focus 三下，遇到这几种状态还是会「看不见」：
+     *   · 窗口被 setSkipTaskbar(true) 藏了任务栏按钮
+     *   · 窗口在屏幕外 / 被其它窗口压着
+     *   · 窗口是显示状态但其实被最小化到托盘
+     * 所以补齐：先强制回到任务栏、unmaximize 不用管、再 moveTop。
+     */
     if (win && !win.isDestroyed()) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
+      try { win.setSkipTaskbar(false); } catch { /* 老版本没有这个方法 */ }
+      try { if (win.isMinimized()) win.restore(); } catch {}
+      try { win.show(); } catch {}
+      try { if (typeof win.moveTop === 'function') win.moveTop(); } catch {}
+      try { win.focus(); } catch {}
     } else {
       createWindow();
     }

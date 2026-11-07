@@ -3868,8 +3868,19 @@ const server = createServer(async (req, res) => {
       const evCount = live ? live.events.length : 0;
       let lastEventAt = Number(t.startedAt) || 0;
       if (live && evCount) {
-        const lastEv = live.events[evCount - 1];
-        lastEventAt = Number(lastEv && lastEv.at) || lastEventAt;
+        /**
+         * 【2026-11-07 修·事件不一定都有 at】
+         *
+         * 主路径 push({ ...ev, at: Date.now() }) 带 at，但小鲸那条
+         * （live.events.push({ type:'whale', who, text })）不带。
+         * 最早写成「取最后一个的 at，没有就退回开跑时间」——
+         * 一旦最后一个恰好是没 at 的那种，idleMs 就变成「从开跑算起」，
+         * 实测把一个刚在动的会话报成「卡住 17 分钟」。往前找最近一个带 at 的。
+         */
+        for (let i = evCount - 1; i >= 0 && i >= evCount - 8; i -= 1) {
+          const a = Number(live.events[i] && live.events[i].at);
+          if (Number.isFinite(a) && a > 0) { lastEventAt = a; break; }
+        }
       }
       list.push({
         sessionId: id,
@@ -6132,11 +6143,26 @@ const server = createServer(async (req, res) => {
       }
     };
     const list = listSessions().map((s) => {
-      const agentId = String(boundMap[s.id] || '');
+      /**
+       * 【2026-11-07 改·主人要的是「现在谁在说话」，不是「绑了哪张卡」】
+       *
+       * 原来这里是 `boundMap[s.id]` —— 那是**手动绑的卡**，绑一次就不动了。
+       * 主人原话：「我一开始要求的是，会话里【屋里的人】里排最上面的启用智能体
+       * 是哪个就用哪个标志，是动态变化的」。
+       *
+       * 所以改成按顺序算出来的主智能体（mainAgentId：屋里排最上面、且开着的那个）。
+       * 判据用 mateSwitchOn —— 它已经处理了小鱼/小鲸的 presence（不在牌子表里）。
+       * 绑卡信息不丢，另给一个 boundAgentId 字段备用。
+       */
+      let agentId = '';
+      try {
+        agentId = String(mainAgentId(s.id, (id) => mateSwitchOn(id, s.id)) || '');
+      } catch { agentId = ''; }
       return {
         ...s,
         agentId,
-        agentName: agentId ? (nameOf.get(agentId) || '') : '',
+        agentName: agentId ? (nameOf.get(String(agentId)) || '') : '',
+        boundAgentId: String(boundMap[s.id] || ''),
         crew: groupOf(s.id),
       };
     });

@@ -18945,13 +18945,14 @@ function renderSessList() {
         : '这个会话正在跑';
       t.insertBefore(lv, ttxt);
     }
-    // 这个会话挂的是哪张智能体卡：挂在标题后面（没绑卡就不显示）
+    /* 【2026-11-07 改】这里显示的现在是「谁在说话」，不是「绑了哪张卡」——
+       屋里的人排最上面、且开着的那个，随时会变（主人要的就是动态）。 */
     const agName = String(s.agentName || '').trim();
     if (agName && s.agentId) {
       const chip = document.createElement('span');
       chip.className = 'sessAgent';
       chip.textContent = agName;
-      chip.title = `这个会话用「${agName}」说话`;
+      chip.title = `现在这个会话由「${agName}」说话（屋里的人里排最前、且开着的那位，会随开关和顺序变）`;
       t.appendChild(chip);
     }
     /**

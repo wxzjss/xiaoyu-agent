@@ -49,6 +49,12 @@ export function classify(err) {
    * 上游压根没开始说话（noBytes），续读和重试都救不了 ——
    * 实测那种情况会空转：等超时 10 分钟 → 续一次 → 再等 10 分钟，界面一直显示在跑。
    * 直接归 FATAL，把「上游没回应」这句话交给主人看，比静默重试半小时强。 */
+  /* 【2026-11-07 加·超时不再重试】
+   * 已经等满整整一个窗口（现在 2 分钟）一个字节都没回来，再等一轮只是把
+   * 「卡住」延长成「卡更久」。主人要的是尽快知道「上游挂了」，不是十分钟后才知道。
+   * 实测：检查鱼续跑 → 等 120 秒超时 → 归类成「可重试」→ 又等 120 秒 …
+   * 界面上的表现就是「一直挂着不动」，跟他报的现象一模一样。 */
+  if (e.isTimeout) return FAILURE_KIND.FATAL;
   if (e.noBytes) return FAILURE_KIND.FATAL;
   if (e.streamDropped || /terminated|ECONNRESET|UND_ERR_SOCKET|fetch failed|timed? ?out|stall|静了太久/i.test(msg)
       || /^5\d\d$/.test(code)) return FAILURE_KIND.RETRYABLE;

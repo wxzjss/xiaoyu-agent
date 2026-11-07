@@ -35,7 +35,7 @@
  * 而其中九成以上是「三个月前跑的一条命令」—— 我根本不会再去看它，
  * 但它每一轮都在吃 token 和钱。
  */
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { config } from './config.mjs';
@@ -263,6 +263,31 @@ function slimDir(sessionId) {
 }
 
 /**
+ * 【2026-11-07 根治·瘦身只落盘不清理】
+ *
+ * 以前每个会话的 slim 原文只增不减，单会话能攒到 7695 个文件、拖慢启动扫描。
+ * 现在每写一条就顺手裁：每个会话只留最近 SLIM_KEEP_MAX 个原文文件（按 mtime 取最新），
+ * 旧的删掉。删的是「已瘦身的旧工具输出副本」，会话 json 里本来就有截断版，
+ * 工具重跑也能重生 —— 不会丢失任何对话内容。
+ */
+const SLIM_KEEP_MAX = 300;
+function pruneSlimDir(sessionId) {
+  try {
+    const dir = slimDir(sessionId);
+    if (!existsSync(dir)) return;
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith('.txt'))
+      .map((f) => ({ f, m: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => a.m - b.m)
+      .map((x) => x.f);
+    if (files.length <= SLIM_KEEP_MAX) return;
+    for (const f of files.slice(0, files.length - SLIM_KEEP_MAX)) {
+      try { unlinkSync(join(dir, f)); } catch {}
+    }
+  } catch {}
+}
+
+/**
  * 把要被换掉的那段原文存盘，返回可读路径。
  *
  * 存不下来也照样瘦 —— 存盘是加分项，不能因为它失败就把整轮卡住。
@@ -274,6 +299,7 @@ function saveSlimOriginal(sessionId, index, role, text) {
     mkdirSync(dir, { recursive: true });
     const file = join(dir, String(index).padStart(4, '0') + '-' + role + '-' + Date.now() + '.txt');
     writeFileSync(file, String(text), 'utf8');
+    pruneSlimDir(sessionId);
     return file;
   } catch {
     return '';

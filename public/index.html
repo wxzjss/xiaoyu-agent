@@ -670,7 +670,7 @@
     details.think > summary:hover { color: var(--text); }
     /* 【2026-11-07 主人】思考标题不再截成一行：能多长就显示多长。
        原来 nowrap + ellipsis 会把几百字的思考压成「……」，正文展开也补不回这一眼。 */
-    details.think .thinkTitle { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    details.think .thinkTitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     details.think .thinkMeta { flex: none; color: var(--dim); opacity: .65; font-size: 11.5px; }
     details.think .thinkBody {
       padding: 8px 10px 10px; border-top: 1px solid var(--border);
@@ -10088,27 +10088,40 @@ const TOOL_NICE = {
 function niceCommand(raw) {
   const c = String(raw || '');
   if (!c.trim()) return '跑命令';
-  /* ① 回归 / 自检：这是主人最常让我干、也最想一眼看出来的那一类。
-   *    cd 到哪都无所谓，只要命令里有这些文件名就算。 */
-  if (/run-all-checks|check-[a-z0-9-]+\.mjs|_t_[a-z0-9-]+\.mjs/i.test(c)) return '跑回归';
+  /**
+   * 【2026-11-07 收窄·只是「提到」文件名不等于「跑」】
+   *
+   * 第一版写得太松：命令里只要出现 `check-xxx.mjs` 就判「跑回归」。
+   * 主人随即问「她每次都跑一次回归吗」—— 翻真实会话一看，
+   *   `git checkout -- scripts/check-x.mjs`  → 跑回归 ✘（那是恢复文件）
+   *   `Select-String -Path scripts/check-x.mjs` → 跑回归 ✘（那是查文本）
+   *   `[System.IO.File]::ReadAllBytes('...check-x.mjs')` → 跑回归 ✘（那是读字节）
+   * 全被判错了。现在只认「node 真的在执行它」，而且查语法单独算一类。
+   */
+  if (/\bnode\s+--check\b/i.test(c)) return '查语法';
+  if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?(?:run-all-checks|check-[a-z0-9-]+|_t_[a-z0-9-]+)\.mjs/i.test(c)) return '跑回归';
   if (/\b(npm\s+(run\s+)?test|node\s+--test|pytest|vitest|jest)\b/i.test(c)) return '跑测试';
   /* ② 装依赖 */
   if (/\b(npm\s+(install|i)|pnpm\s+(install|i|add)|yarn(\s+add)?|pip\s+install)\b/i.test(c)) return '装依赖';
   /* ③ 打包 */
   if (/electron-builder|electron-packager|npm\s+run\s+build|vite\s+build|node-gyp/i.test(c)) return '打包';
-  /* ④ git 三档 */
+  /* ④ git 四档 */
   if (/\bgit\s+commit/i.test(c)) return '提交代码';
   if (/\bgit\s+(push|pull|fetch|clone)\b/i.test(c)) return '同步仓库';
   if (/\bgit\s+(checkout|reset|stash|merge|rebase|cherry-pick|clean)\b/i.test(c)) return '改仓库';
   if (/\bgit\s+(status|diff|log|show|branch|remote|rev-parse|ls-files|describe|blame)\b/i.test(c)) return '看仓库';
-  /* ⑤ 进程 / 网络 */
+  /* ⑤ 只是「看内容」：读文件、查文本、列目录 —— 这一类最容易被上面几条误抢，
+   * 所以放在中间，先把「看」认出来。 */
+  if (/\b(ReadAllLines|ReadAllBytes|ReadAllText|Get-Content|Select-String|Get-ChildItem)\b/i.test(c)
+    || /\b(cat|type|head|tail|less|more|grep|rg|findstr|wc|ls|dir|tree|stat)\b/i.test(c)) return '看文件';
+  /* ⑥ 进程 / 网络 */
   if (/\b(taskkill|Stop-Process|kill)\b/i.test(c)) return '停进程';
   if (/\b(tasklist|Get-Process|netstat|ps)\b/i.test(c)) return '看进程';
   if (/\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod)\b/i.test(c)) return '抓网址';
-  /* ⑥ 写脚本现算一段 */
-  if (/\bnode\s+-e\b|\bnode\s+[^\s]+\.m?js\b|\bpython[23]?\b|\bpwsh\b|\bpowershell\b/i.test(c)) return '跑脚本';
   /* ⑦ 动文件 */
-  if (/\b(rm|del|Remove-Item|mv|Move-Item|cp|Copy-Item)\b/i.test(c)) return '理文件';
+  if (/\b(rm|del|Remove-Item|mv|Move-Item|cp|Copy-Item|mkdir|New-Item)\b/i.test(c)) return '理文件';
+  /* ⑧ 写脚本现算一段 */
+  if (/\bnode\s+-e\b|\bnode\s+[^\s]+\.m?js\b|\bpython[23]?\b|\bpwsh\b|\bpowershell\b/i.test(c)) return '跑脚本';
   return '跑命令';
 }
 
@@ -10415,6 +10428,29 @@ function hubRefreshTitle() {
  *     在下一拍就被换成了新的收起块，等于他点了个寂寞。
  * 复用之后这两条一起消失：块还是那个块，文字就地改，open 状态谁都没动。
  */
+/**
+ * 【2026-11-07 · 思考块的「标题」只放一句，全文放正文】
+ *
+ * 主人报：「展开柜子后思考链那条那么多灰字显示？不应该是一条吗？」
+ *
+ * 上一轮他要「能多长就显示多长」，我把标题截断整个去掉了 —— 过头了：
+ * 实测他那条会话里 42 个思考块，**标题平均 263 字、最长 3017 字**，
+ * 于是展开柜子满屏都是灰字。
+ *
+ * 现在分工明确：
+ *   · 标题：**第一句话**（到句号/分号/换行为止，最多 40 字），一行，用来认出这是哪一段
+ *   · 正文：**一个字都不删的全量**，点开就是全文
+ * 这样「内容能多长显示多长」仍然成立（在正文里），而柜子不再糊成一片。
+ */
+function thinkTitleOf(flat) {
+  const s = String(flat || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  const m = /^[^。！？!?；;]{1,40}[。！？!?；;]?/.exec(s);
+  let head = String((m && m[0]) || s).trim();
+  if (head.length < s.length) return head.replace(/[。！？!?；;]+$/, '') + '…';
+  return head;
+}
+
 function adoptThink(d) {
   try { log.appendChild(d); } catch (e) {}
   const title = d.querySelector('.thinkTitle');
@@ -10438,7 +10474,7 @@ function adoptThink(d) {
       const flat = t.replace(/\s+/g, ' ').trim();
       if (title && flat) {
         /* 【2026-11-07 主人】跟实时那块一个口径：不截断，能多长显示多长 */
-        title.textContent = flat;
+        title.textContent = thinkTitleOf(flat);
         title.removeAttribute('title');
       }
       if (meta) meta.textContent = t.length + ' 字';
@@ -11064,7 +11100,7 @@ function openThink() {
       const flat = body.textContent.replace(/\s+/g, ' ').trim();
       if (flat) {
         /* 【2026-11-07 主人】不截 38 字、悬停也不截 400 字 —— 能多长就显示多长 */
-        title.textContent = flat;
+        title.textContent = thinkTitleOf(flat);
         title.removeAttribute('title');
       }
       meta.textContent = body.textContent.length + ' 字';
@@ -11146,7 +11182,7 @@ function paintReasoning(text, host) {
   title.className = 'thinkTitle';
   const flat = body0.replace(/\s+/g, ' ').trim();
   /* 【2026-11-07 主人】历史里的思考也不截 38 字：能多长就显示多长 */
-  title.textContent = flat;
+  title.textContent = thinkTitleOf(flat);
   title.removeAttribute('title');
   const meta = document.createElement('span');
   meta.className = 'thinkMeta';

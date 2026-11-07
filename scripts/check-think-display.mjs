@@ -17,12 +17,16 @@ const ui = fs.readFileSync('public/index.html', 'utf8');
 // ── 1. 不截断 ─────────────────────────────────────────────────────
 t.ok('没有 38 字标题截断', !ui.includes('slice(0, 38)'));
 t.ok('没有 400 字悬停截断', !ui.includes('slice(0, 400)'));
-t.ok('三处标题都改成全文（实时/复用/历史）', (ui.match(/title\.textContent = flat;/g) || []).length === 3);
+t.ok('三处标题都走 thinkTitleOf（实时/复用/历史）', (ui.match(/title\.textContent = thinkTitleOf\(flat\);/g) || []).length === 3);
+t.ok('标题只取第一句，最多 40 字', /function thinkTitleOf\(flat\)/.test(ui) && /\{1,40\}/.test(ui));
+t.ok('正文不截（thinkBody 写全文）', /body\.textContent = t;/.test(ui) || /_full = t/.test(ui));
+t.ok('标题用一行省略兜底', /details\.think \.thinkTitle \{[^}]*nowrap/.test(ui));
 t.ok('悬停 title 属性被移除', (ui.match(/title\.removeAttribute\('title'\)/g) || []).length >= 3);
 const cssLine = (ui.split(/\r?\n/).find((l) => l.includes('details.think .thinkTitle {')) || '');
-t.ok('标题 CSS 不再 nowrap', !/nowrap/.test(cssLine), cssLine.trim().slice(0, 90));
-t.ok('标题 CSS 不再 ellipsis', !/text-overflow:\s*ellipsis/.test(cssLine));
-t.ok('标题 CSS 允许换行', /white-space:\s*pre-wrap/.test(cssLine));
+/* 【2026-11-07 再改】标题回到「一行 + 省略」，全文放正文 —— 见 thinkTitleOf 的说明。 */
+t.ok('标题 CSS 一行不换行', /white-space:\s*nowrap/.test(cssLine), cssLine.trim().slice(0, 90));
+t.ok('标题 CSS 溢出用省略号', /text-overflow:\s*ellipsis/.test(cssLine));
+t.ok('正文 CSS 允许换行（全文照旧全显示）', /\.thinkBody\s*\{[^}]*pre-wrap/.test(ui));
 
 // ── 2. 柜门三态链路 ───────────────────────────────────────────────
 t.ok('openThink 建块就挂 thinking-now', /d\.className = 'think thinking-now'/.test(ui));
@@ -86,6 +90,8 @@ if (cdp) {
       out.titleLen = String(ti.textContent).length;
       out.flatLen = long.replace(/\\s+/g, ' ').trim().length;
       out.ws = getComputedStyle(ti).whiteSpace;
+      const bd = th.el.querySelector('.thinkBody');
+      out.bodyLen = String((bd && bd.textContent) || '').length;
       out.hover = ti.hasAttribute('title');
       out.peekTail = String(th.el.dataset.peek || '');
       out.peekIsTail = long.replace(/\\s+/g, ' ').trim().endsWith(out.peekTail.replace(/^…/, ''));
@@ -96,10 +102,10 @@ if (cdp) {
     t.ok('真机：思考中柜门写「正在思考中…」', r.thinking === '正在思考中…', JSON.stringify(r.thinking));
     t.ok('真机：想完退回统计', r.after === '想了 1 段', JSON.stringify(r.after));
     t.ok('真机：工具运行仍写「正在跑命令…」', r.tool === '正在跑命令…', JSON.stringify(r.tool));
-    t.ok('真机：长思考标题一字不截', r.titleLen === r.flatLen, r.titleLen + '/' + r.flatLen);
-    t.ok('真机：标题 CSS 可换行', r.ws !== 'nowrap', r.ws);
-    t.ok('真机：不再挂 400 字悬停', r.hover === false);
-    t.ok('真机：思考中右侧灰字有内容', r.peek1 === '在捋第一步', JSON.stringify(r.peek1));
+    t.ok('真机：标题只放第一句（短）', r.titleLen > 0 && r.titleLen <= 44, String(r.titleLen));
+    t.ok('真机：标题一行不换行', r.ws === 'nowrap', r.ws);
+    t.ok('真机：正文仍是全文', r.bodyLen === r.flatLen, String(r.bodyLen) + '/' + String(r.flatLen));
+        t.ok('真机：思考中右侧灰字有内容', r.peek1 === '在捋第一步', JSON.stringify(r.peek1));
     t.ok('真机：灰字跟着流不断变化', r.peek2 !== r.peek1 && r.peek2 === '在捋第二步，越想越多了', JSON.stringify(r.peek2));
     t.ok('真机：想完退回摘要', r.peekAfter.length > 0 && r.peekAfter !== r.peek2, JSON.stringify(r.peekAfter));
     t.ok('真机：工具运行时灰字留空', r.peekTool === '', JSON.stringify(r.peekTool));

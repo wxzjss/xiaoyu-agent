@@ -1568,7 +1568,15 @@ for (let round = 0; round < config.maxRounds; round++) {
     try {
       const _batched = await executeBatch(assistantMsg.tool_calls, {
         runTool: (name, args, sid, sig) => runTool(name, args, sid, sig),
-        emitEvents: false,           // 事件仍由下面主循环一条条发，契约不变
+        emitEvents: false,           // tool_end 仍由下面主循环一条条发，契约不变
+        /* 并行批必须在开跑之前先报 tool_start，否则前端柜门不会显示「正在跑命令…」；
+         * 下面主循环命中 _poMap 时会跳过重复发，正好一人一次。 */
+        onStart: (c) => onEvent({
+          type: 'tool_start',
+          id: c.id,
+          name: c.function.name,
+          args: c.function.arguments,
+        }),
         onlyParallelLayers: true,   // 单个 / 写操作留给主循环
         sessionId,
         round: _harnessRunKey + ':' + round,   // 幂等键带 run nonce，跨消息不串账

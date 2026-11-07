@@ -67,6 +67,9 @@ function withTimeout(p, ms) {
  *   signal / timeoutMs
  *   onlyParallelLayers     只预跑「层内 ≥2 个」的只读批；单个调用和写操作留给
  *                          调用方自己跑（它那边有更精细的超时/中止/图片处理）
+ *   onStart(call)          emitEvents:false 时，在**真正开跑之前**报一次「开始了」。
+ *                          调用方拿它发 tool_start —— 前端柜门靠这条把标题刷成
+ *                          「正在跑命令…」，缺了就只剩 tool_end，过程整片看不见。
  *   onResult(call, result) 每跑完一个的钩子（可选）
  * @returns {{ results: Map<id,result>, byIndex: Array, stats: object }}
  */
@@ -81,6 +84,7 @@ export async function executeBatch(calls, opts = {}) {
     signal,
     timeoutMs = 0,
     onlyParallelLayers = false,
+    onStart = () => {},
     onResult = () => {},
   } = opts;
 
@@ -107,6 +111,16 @@ export async function executeBatch(calls, opts = {}) {
 
       if (emitEvents) {
         try { onEvent({ type: 'tool_start', id: c.id, name, args }); } catch {}
+      } else {
+        /**
+         * 【2026-11-07 修·并行批的过程显示整片消失】
+         * emitEvents:false 时 tool_end 由老主循环发，但 tool_start 原来两边都没发：
+         * 老窄补丁是在 Promise.all 之前先发一批 start 的，换成调度器后这段被删了，
+         * 主循环命中 _poMap 又跳过补发 —— 结果前端只收到 end，建不出「运行中…」卡，
+         * 柜门就不会从「调了 N 次工具」变成「正在跑命令…」。
+         * 这里在**开跑之前**补一次，顺序和老行为一致。
+         */
+        try { onStart(c); } catch {}
       }
       let r;
       try {

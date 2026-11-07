@@ -18,3 +18,4 @@ export * from './recovery.mjs';
 export * from './context-budget.mjs';
 export * from './telemetry.mjs';
 export * from './exec-shell.mjs';
+export * from './turn-watchdog.mjs';

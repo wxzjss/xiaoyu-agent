@@ -106,7 +106,20 @@ export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000,
 export const TOOL_NOTICE_MS = msOr(process.env.TOOL_NOTICE_TIMEOUT_MS, 10 * 60 * 1000, DEADLINE_TEST_MODE ? 100 : 30 * 1000, 'TOOL_NOTICE_TIMEOUT_MS');
 
 /** 整轮允许的最长静默（默认 60 分钟，最少给 10 分钟）—— 这个管「完全不动」（哑转闸 2026-10-29 已删） */
-export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 60 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 10 * 60 * 1000, 'TURN_IDLE_MAX_MS');
+/**
+ * 整轮静默上限（这一轮里一直没有任何事件）。
+ *
+ * 【2026-11-08 改·60 分钟 → 5 分钟，而且这次真的有人用它】
+ *
+ * 这个常量以前只是躺在表里：`harness/recovery.mjs` 的 DEADLINES 引了一下，
+ * **没有任何代码真的按它去判**。所以卡住的轮次可以挂到天荒地老 ——
+ * 实测三个会话同时卡着、events 不动、会话文件十几分钟不写，界面一直显示「正在跑」。
+ *
+ * 现在由 `harness/turn-watchdog.mjs` 真正执行它：
+ * 整轮静默超过这个数就掐；正在等工具的那段时间另算（TOOL_MAX_MS + 1 分钟），
+ * 因为工具本来就允许跑很久。
+ */
+export const TURN_IDLE_MAX_MS = msOr(process.env.TURN_IDLE_MAX_MS, 5 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 30 * 1000, 'TURN_IDLE_MAX_MS');
 
 function fmtMins(ms) {
   const m = ms / 60000;

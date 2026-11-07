@@ -5,6 +5,9 @@ import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
+/* 【2026-11-08 加·整轮空闲看门狗】以前只有「等模型」那层有超时，卡在别处没人管 */
+import { createTurnWatchdog } from './harness/turn-watchdog.mjs';
+import { TURN_IDLE_MAX_MS, TOOL_MAX_MS } from './deadline.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
 // 出了分支 whaleOn 就没了，而每轮收尾那句 if (whaleOn()) 还在 —— 每轮都崩。
 import { whaleOn, setWhaleOn, markWhaleSpoke, whaleSpokeThisTurn } from './whale-presence.mjs';
@@ -10632,6 +10635,58 @@ export function __emitExitForTest(code = 75) {
 }
 
 export function startServer({ port = config.port, quiet = false, selfCheck = true } = {}) {
+  /**
+   * 【2026-11-08 加·整轮空闲看门狗（主人说「根治」）】
+   *
+   * 现场：三个会话同时卡住 —— events 不动、会话文件十几分钟不写，
+   * 界面上却一直显示「正在跑」。查下来只有「等模型」那层有 2 分钟超时，
+   * 卡在别处（工具、写盘、某个没人 resolve 的 await）完全没人管；
+   * `TURN_IDLE_MAX_MS` 更是只躺在常量表里，一行执行的代码都没有。
+   *
+   * 这个看门狗按「整轮静默」判：
+   *   · 正在等工具 → 按工具上限 +1 分钟（工具本来就允许跑二十分钟）
+   *   · 其余情况   → 5 分钟
+   * 超了先软掐（abort），60 秒还没退就强制清理（删条目 + 把 live 标 done），
+   * 让界面解冻 —— 主人至少能在会话里接着说话，而不是对着一个永远转圈的界面。
+   */
+  try {
+    if (!globalThis.__xyTurnWatchdog) {
+      globalThis.__xyTurnWatchdog = createTurnWatchdog({
+        turns: () => runningTurns.entries(),
+        liveOf: (sid) => liveLogs.get(sid),
+        abort: (sid) => {
+          try {
+            const t = runningTurns.get(sid);
+            if (t && t.ac && typeof t.ac.abort === 'function') t.ac.abort('turn-idle');
+          } catch (e) {}
+        },
+        forceClean: (sid) => {
+          try { runningTurns.delete(sid); } catch (e) {}
+          try {
+            const lv = liveLogs.get(sid);
+            if (lv) {
+              if (!Array.isArray(lv.events)) lv.events = [];
+              lv.events.push({ type: 'error', text: '这一轮空了太久，已经中止。可以重新发一句接着做。', at: Date.now() });
+              lv.done = true;
+              lv.endedAt = Date.now();
+            }
+          } catch (e) {}
+        },
+        idleMs: TURN_IDLE_MAX_MS,
+        toolIdleMs: TOOL_MAX_MS + 60000,
+        onLog: (tag, detail) => diagLog(tag, detail),
+      });
+      globalThis.__xyTurnWatchdog.start();
+      diagLog('watchdog-start', 'idle=' + Math.round(TURN_IDLE_MAX_MS / 1000) + 's tool=' + Math.round((TOOL_MAX_MS + 60000) / 1000) + 's');
+      if (!quiet) {
+        console.log('  watchdog : 整轮静默 ' + Math.round(TURN_IDLE_MAX_MS / 1000) + 's 就掐（等工具时放宽到 '
+          + Math.round((TOOL_MAX_MS + 60000) / 1000) + 's）');
+      }
+    }
+  } catch (e) {
+    console.warn('[watchdog] 起不来（不影响主流程）：', String(e?.message ?? e));
+  }
+
   // 返回一个「服务句柄」：{ port, url, close(), on/once/off('exit') }。
   //
   // 【为什么要 on('exit')】electron/main.cjs 里早就写着「服务端因为重启自己退了

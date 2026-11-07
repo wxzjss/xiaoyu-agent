@@ -533,6 +533,21 @@
       display: flex; gap: 8px; align-items: center;
     }
     details.tool > summary::-webkit-details-marker { display: none; }
+    /* 【2026-11-08 加·工具卡也补三角（主人问「为什么有的有、有的没有」）】
+     *
+     * 上面那句注释「箭头只有这一处」是早先的限制，可后来思考块（think）也加了箭头，
+     * 唯独工具卡没有 —— 三样都是能展开的 details，只有它看着像「不能点」。
+     * 主人截图里一眼就看出来了：柜门有 ▾，下面一排工具卡光秃秃。
+     * 这里补齐，三个统一。 */
+    details.tool > summary::before {
+      content: "▸";
+      display: inline-block;
+      font-size: 11px;
+      color: var(--muted, #8a8a8a);
+      transition: transform .15s ease;
+      flex: none;
+    }
+    details.tool[open] > summary::before { transform: rotate(90deg); }
     details.tool > summary .name { color: var(--accent); }
     details.tool > summary .status.ok { color: var(--ok); }
     details.tool > summary .status.err { color: var(--err); }

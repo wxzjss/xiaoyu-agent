@@ -24,6 +24,17 @@ t.ok('压缩条变量已删干净', !/_compressBarId/.test(agent));
 t.ok('静默压完仍打日志（可查）', /静默压完/.test(agent));
 t.ok('compressed 事件仍在（数字要跟着掉）', /type: 'compressed'/.test(agent));
 
+/**
+ * ── 1b. 前端最后一刀：不管谁发来的 compress，都不许画
+ * 【2026-11-07 主人报「展开柜子一堆【压缩中】、写着『这轮没压缩』」】
+ * 那些卡是**旧后端进程**推出来的（我删了，但要重启才生效）。
+ * 所以前端也得认这个记号 —— 以后不管版本对不对，界面都不会出现压缩条。
+ */
+const ghost = (ui.match(/String\(ev\.name\) === 'compress'\) continue;/g) || []).length;
+t.ok('前端拦住 compress 的 tool_start / tool_end', ghost >= 4, ghost + ' 处');
+t.ok('压缩条不进 turnRec.parts（切回来也造不出来）', /String\(ev\.name\) === 'compress'\) continue;[\s\S]{0,160}turnRec\.parts\.push/.test(ui));
+t.ok('parts 重画也跳过 compress', /String\(p\.name\) === 'compress'\) return true;/.test(ui));
+
 // ── 2. 前端流式：压缩记忆一出现就永久截断 ────────────────────────
 t.ok('流式里截压缩记忆', /【压缩记忆/.test(ui));
 t.ok('截断后上锁，后面的字不再收', /_compressMuted/.test(ui));

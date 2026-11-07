@@ -7483,6 +7483,7 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
       pushStreamText(bubble, _piece);
       touchStreaming(bubble);
     } else if (ev.type === 'tool_start') {
+      if (String(ev.name) === 'compress') continue;   // 压缩条一律不画
       // 【2026-10-31 跳过画过的工具】：这条工具历史里已经有卡片了（切回来时 renderTurns 刚画过），
       // 这里就不再画第二遍 —— 原来就是它导致「跑命令 完成」连发两条。
       if (_skip && ev.id && _skip.has(String(ev.id))) { continue; }
@@ -11618,6 +11619,9 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           if (last && last.kind === 'whale_delta') last.text += ev.text;
           else turnRec.parts.push({ kind: 'whale_delta', text: ev.text });
         } else if (ev.type === 'tool_start') {
+          /* 【2026-11-07 真静默压缩】压缩条是界面上的一条假工具；
+           * 记进 parts 就会被「切走再回来重画」重新造出来 —— 直接不收。 */
+          if (String(ev.name) === 'compress') continue;
           turnRec.parts.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, done: false });
         } else if (ev.type === 'tool_end') {
           const tp = turnRec.parts.find((p) => p.kind === 'tool' && p.id === ev.id);
@@ -11689,6 +11693,9 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
         } else if (ev.type === 'whale_delta') {
           whaleStreamDelta(ev.text, StreamKey(turnSession, ev.who));
         } else if (ev.type === 'tool_start') {
+          /* 【2026-11-07】压缩条不画。后端已经不推这两条了，但旧进程 / 旧重放里还有 ——
+           * 这里是最后一道：不管谁发来的 compress，屏幕上一个像素都不出现。 */
+          if (String(ev.name) === 'compress') continue;
           closeThink();
           // 一段话到此为止（后面接着干工具），先把这段落记上
           flushSpeech();
@@ -11709,6 +11716,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             hubRefreshTitle();
           }
         } else if (ev.type === 'tool_end') {
+          if (String(ev.name) === 'compress') continue;   // 压缩条没有卡，也不补
           const el = toolEls.get(ev.id);
           if (el) {
             const st = el.sum.querySelector('.status');
@@ -12183,6 +12191,7 @@ function replayInFlight(id) {
       } catch (e) {}
       try { pushStreamText(rec.bubble, String(p.text || '')); } catch (e) {}
     } else if (kind === 'tool') {
+      if (String(p.name) === 'compress') return true;   // 压缩条不重画
       try {
         const el = addTool();
         el.sum.querySelector('.name').textContent = niceTool(p.name, p.args);
@@ -12498,14 +12507,58 @@ try {
 input.addEventListener('keydown', (e) => {
   /* 【2026-11-05 修】中文输入法选词时按 Enter 只是「上屏」，不是发送。
    * 以前没挡这一下：拼音打一半、还没选字，回车一按就把半截拼音发出去了。
-   * isComposing 是标准写法；keyCode 229 兜老年份的输入法（Chrome/Edge 上仍会出现）。 */
-  if (e.isComposing || e.keyCode === 229) return;
+   * isComposing 是标准写法；keyCode 229 兜老年份的输入法（Chrome/Edge 上仍会出现）。
+   */
+  /**
+   * 【2026-11-07 主人报：插了图片按回车发不出去，得点【发送】】
+   *
+   * 卡的就是上面这道门：插完附件、输入框是**空的**，人只是想把图发出去，
+   * 可有些输入法在空输入框里也照样给 229（或者 composition 状态没干净），
+   * 于是这一下 Enter 被当成「选词」吞掉了。
+   *
+   * 判据很干脆：**输入框一个字都没有、手上又有附件** —— 那这个 Enter
+   * 不可能是选词，只可能是「发出去」。这种情况下照发不误。
+   */
+  const _imBlocked = e.isComposing || e.keyCode === 229;
+  if (_imBlocked) {
+    if (e.key === 'Enter' && !e.shiftKey && !String(input.value || '').trim() && attachments.length) {
+      e.preventDefault();
+      if (!busy) send();
+      else interject();
+    }
+    return;
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
+    if (!String(input.value || '').trim() && !attachments.length) return;  // 空消息不发（send 里也挡了一次）
     if (!busy) send();
     else if (input.value.trim()) interject();
   }
 });
+/**
+ * 【2026-11-07 加·焦点不在输入框时，回车也该能发附件】
+ *
+ * 插完附件、或者刚点过附件条上的小叉，焦点有可能落在 body / 按钮上。
+ * 那时 Enter 根本到不了上面那个监听，人只能去点【发送】—— 就是主人遇到的情形。
+ * 这里兜一层：焦点不在任何输入控件里、没开面板、手上有附件，就照发。
+ * 条件卡得很死，宁可漏一次也不乱发。
+ */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey || e.defaultPrevented) return;
+  if (e.isComposing || e.keyCode === 229) return;
+  if (!attachments.length || busy) return;
+  try {
+    if (document.querySelector('dialog[open]')) return;         // 面板开着，回车是面板的
+    if (document.querySelector('.pickMask.open')) return;       // 选文件那一层还开着
+    const ae = document.activeElement;
+    const tag = String((ae && ae.tagName) || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;  // 在别的输入框里
+    if (ae && ae.isContentEditable) return;
+    if (typeof pick !== 'undefined' && pick.open) return;
+  } catch { return; }
+  e.preventDefault();
+  send();
+}, true);
 /* 【2026-11-05 加·粘贴图片】
  *
  * 截图之后 Ctrl+V 直接变成附件 —— 以前这条路上什么都没有，只能去「+」菜单里翻文件。

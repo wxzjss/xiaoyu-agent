@@ -1,4 +1,7 @@
 import { renderSelfCompressBlock } from './self-compress.mjs';
+/* 【2026-11-07 harness 重做 · L7】「哪些工具能一起发」不再手写一份名单，
+ * 直接问 tool-spec 那张唯一的依赖表，免得提示词和执行层各说各话。 */
+import { buildToolIndex } from './harness/tool-spec.mjs';
 // Persona: composes the system prompt from the persona card + 底线/安全词. No affinity, no state.
 // The persona card itself lives in persona/xiaoyu.md, unless the user edited it in settings,
 // in which case .state/persona.md wins (see persona-store.mjs).
@@ -241,10 +244,12 @@ const TASTE_BLOCK = [
  */
 const PARALLEL_TOOL_BLOCK = [
   '【能一起做的事，一次发多个 —— 这是最省主人时间的习惯】',
-  '· 同一条响应里可以带好几个 tool_call，它们会**同时**跑，只等最慢那个。',
+  '· 同一条响应里可以带好几个 tool_call，程序会把互不依赖的那几个**同时**跑，只等最慢那个。',
   '· 要读三个文件、查两个目录、跑几条互不相干的只读命令 —— 一次全发出来，别一轮一个。',
-  '· 反过来不能合：有先后的（先读再改、先写再验、后一步要用前一步的结果）必须分开。',
-  '· 拿不准就一定一次一个 —— 跑错返工比慢更费时间。',
+  '· **哪些能同时跑、哪些要排队，是程序按依赖关系算的，不用你拿不准。**'
+    + '你只管把这一轮想做的事一次说全；说多了不会跑错，说少了才要多等一趟。',
+  '· 反过来不能合：后一步要用前一步的结果（先读再改、先写再验）。'
+    + '写文件、发消息、重启这类会改东西的，一次一件。',
 ].join(String.fromCharCode(10));
 
 const parts = [
@@ -600,8 +605,10 @@ function oneLine(text, max = 120) {
 function toolBlock() {
   if (!_listTools) return '';
   let rows = [];
+  let rawSchemas = [];
   try {
-    rows = _listTools()
+    rawSchemas = _listTools() || [];
+    rows = rawSchemas
       .map((s) => {
         const f = (s && s.function) || s || {};
         const name = f.name || '';
@@ -635,22 +642,27 @@ function toolBlock() {
     tips.push('- 视频里的小字（字幕、水印、角标、时间码）一定要走 video_read 放大再读。原帧里认不出的字，硬猜出来的不是「差一点」，是编；');
   }
   /**
-   * 【2026-11-06 加·能并行的一次全发出去】
+   * 【2026-11-07 harness 重做 · L7】把「判断」从模型身上卸下来。
    *
-   * 主人拍板「能并行的一起发」。
+   * 原来这里写着「拿不准就一定一次一个」「写文件和跑命令一次只做一件」
+   * 「否则老实分开」，跟 PARALLEL_TOOL_BLOCK 的「能一起做的一次全发出去」
+   * 正面打架 —— 模型不确定时必定选保守那条，这就是【检查鱼】265 轮
+   * 每轮只发 1 个工具的直接成因（分布 {1:265}）。
    *
-   * 数据摆着：她在【检查鱼】那个会话里 265 轮、**每轮只发 1 个工具**（分布 {1:265}），
-   * 三件不相干的事就排三趟队，纯模型往返累计 122 分钟。
-   * 而 agent.mjs 早就支持「连续多个只读工具并发跑」——机器这边是通的，
-   * 缺的只是**她从来不一次发两个**。
-   *
-   * 所以这条写死在「怎么用工具」的总纲里：不是建议，是规矩。
+   * 现在调度由 src/harness/scheduler.mjs 按依赖图算，模型只负责把意图说全。
+   * 「能一起发」的工具名直接从 tool-spec 那张表生成，不再手写、不会漂移。
    */
-  tips.push('- 【能一起做的，一次全发出去】互不相干的几件事别一件一件来：**一次把多个工具调用一起发**，它们会同时跑。');
-  tips.push('  · 能一起发：读几个文件、列几个目录、搜几个词、查几处代码 —— 这些互不依赖；');
-  tips.push('  · 必须分开：后一步要用前一步的结果（先看目录再读文件、先写再跑、先跑再看输出）；写文件和跑命令一次只做一件；');
-  tips.push('  · 一句话判断：**我不看第一个结果，也知道第二个该怎么做** → 那就一起发；否则老实分开。');
-  tips.push('  · 一条命令里能串起来的事（几项检查、几个文件统计）用 ; 串成一条，比分几次调还快；');
+  let parNames = '';
+  try {
+    parNames = buildToolIndex(rawSchemas).filter((x) => x.parallelSafe).map((x) => x.name).join('、');
+  } catch {}
+  tips.push('- 【一次把这一轮要做的事说全】哪些能同时跑、哪些要排队，程序按依赖算，不用你判断。'
+    + '说多了不会跑错，说少了才要多等一趟完整的模型往返。');
+  if (parNames) {
+    tips.push('  · 这些可以一起发：' + parNames + '（只读命令如 git status / dir 也算）；');
+  }
+  tips.push('  · 只有「后一步要用前一步结果」才分开；写文件、发消息、重启这类会改东西的，一次一件。');
+  tips.push('  · 一条命令里能串起来的几项检查用 ; 串成一条，比分几次调还快；');
   /**
    * 【2026-11-07 加·别用费劲的手干简单的事】
    *

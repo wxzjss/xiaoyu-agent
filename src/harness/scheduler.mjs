@@ -65,6 +65,8 @@ function withTimeout(p, ms) {
  *   emitEvents  默认 true；接进老主循环时传 false，事件仍由主循环一条条发
  *   sessionId / round      幂等键用
  *   signal / timeoutMs
+ *   onlyParallelLayers     只预跑「层内 ≥2 个」的只读批；单个调用和写操作留给
+ *                          调用方自己跑（它那边有更精细的超时/中止/图片处理）
  *   onResult(call, result) 每跑完一个的钩子（可选）
  * @returns {{ results: Map<id,result>, byIndex: Array, stats: object }}
  */
@@ -78,6 +80,7 @@ export async function executeBatch(calls, opts = {}) {
     round = 0,
     signal,
     timeoutMs = 0,
+    onlyParallelLayers = false,
     onResult = () => {},
   } = opts;
 
@@ -91,6 +94,9 @@ export async function executeBatch(calls, opts = {}) {
 
   for (const layer of layers) {
     if (signal && signal.aborted) break;
+    /* 接进老主循环时只接管「真能同时跑」的那一层；
+     * 单个工具、写操作交给主循环，它那边的超时/中止/图片处理更细。 */
+    if (onlyParallelLayers && layer.length < 2) continue;
     const outs = await Promise.all(layer.map(async (c) => {
       const fn = c.function || c;
       const name = String(fn.name || '');

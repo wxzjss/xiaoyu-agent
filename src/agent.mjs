@@ -25,6 +25,10 @@ import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identi
 import { adminPromptBlock } from './admin-mode.mjs';
 // 办事模式：主智能体不自己动手，只派活/检查/验收/压上下文。
 import { taskOn, KEEP_TOOLS as TASK_KEEP_TOOLS } from './task-mode.mjs';
+/* 【2026-11-07 harness 重做 · P2】
+ * 只读判定、工具调用累积这两件「能不能并行 / 会不会丢批」的事，收进 src/harness/。
+ * 这里保留同名导出，是为了不改动任何已有调用点（以及构建副本里的老引用）。 */
+import { isReadOnlyCommand as harnessIsReadOnlyCommand, createCallAccumulator, executeBatch } from './harness/index.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
 import { lastSelfNote, saveSelfNote, selfCompressHint } from './self-compress.mjs';
@@ -109,37 +113,17 @@ function isStreamDropped(err) {
 
 /** 当前这一轮真正能交到模型手上的工具。 */
 /**
- * 【2026-11-07 根治·哪些 run_command 可以并排跑】
+ * 【2026-11-07 harness 重做 · P2】哪些 run_command 可以并排跑，判定搬到
+ * src/harness/tool-spec.mjs 了 —— 那里是「能不能并行」的唯一真相，
+ * scheduler / tool-spec / 这里的导出全走同一套，不再各写一份正则。
  *
- * 只读工具 2026-11-05 已经能并发了，但那个白名单里没有 run_command ——
- * 于是「跑三条互不相干的查询」还是一趟一趟排队，每条都是一次模型往返。
+ * 判据没变（保守到偏胆小）：> | ; & ` $( 一律否掉，find -delete/-exec 否掉，
+ * 只认明确只读的那几个开头。判错只会「少并行一次」，不会多并行一次。
  *
- * 这里给命令做一道**保守到偏胆小**的判定：
- *   · 先把一切能写文件 / 能接别的命令的写法全部否掉：> | ; & ` $( ……
- *   · 再把 find 的 -delete、-exec 这类否掉。
- *   · 剩下的只认明确只读的那几个开头。
- *
- * 判错只会「少并行一次」，不会多并行一次 —— 宁可慢，不许踩。
+ * 保留这个导出名，是为了不改动已有调用点。
  */
-const READONLY_CMD_RE = new RegExp(
-  '^\\s*(?:sudo\\s+)?(?:'
-  + 'git\\s+(?:status|log|diff|show|branch|remote|rev-parse|ls-files|describe|blame|config\\s+--get)'
-  + '|ls\\b|dir\\b|cat\\b|type\\b|head\\b|tail\\b|wc\\b|find\\b|grep\\b|rg\\b|findstr\\b'
-  + '|pwd\\b|echo\\b|where\\b|which\\b|stat\\b|tree\\b|du\\b|df\\b|sort\\b|uniq\\b|cut\\b'
-  + '|node\\s+(?:-v|--version)\\b|npm\\s+(?:-v|--version)\\b'
-  + '|python\\s+--version\\b|pip\\s+(?:-v|--version)\\b'
-  + ')',
-  'i',
-);
-
 export function isReadOnlyCommand(raw) {
-  const cmd = String(raw || '').trim();
-  if (!cmd) return false;
-  // 重定向 / 管道 / 串接 / 命令替换 —— 都可能写盘或拉起别的程序，一律不并行
-  if (/[>|;&`]|\$\(/.test(cmd)) return false;
-  // find 的删/执行、grep 的写出，都否掉
-  if (/\s(?:-delete|-exec|--exec|-fprint|-fwrite)\b/.test(cmd)) return false;
-  return READONLY_CMD_RE.test(cmd);
+  return harnessIsReadOnlyCommand(raw);
 }
 
 function toolsForTurn(sessionId) {
@@ -568,6 +552,17 @@ export async function runAgent({
   let text = '';
   let reasoning = '';
   let toolCalls = [];
+  /**
+   * 【2026-11-07 harness 重做 · P2】工具调用改用**累积器**，不再覆盖赋值。
+   *
+   * 原来那行是「拿去重结果直接覆盖 toolCalls」：
+   * 同一 round 里只要出现第二次 tool_calls 事件（断流续传、[DONE] 与
+   * finish_reason 双触发），去重函数返回空数组，把第一批**冲掉**，
+   * 模型判定「说完了」→ 一个工具都不执行，日志里还没有错（:180-191 记过事故）。
+   *
+   * 现在每批 merge 进来，同 id 的重复交付变成「补全片段」，永远不会变空。
+   */
+  const _callAcc = createCallAccumulator();
   /**
    * 最后一次请求的原始用量。
    *
@@ -1173,6 +1168,7 @@ for (let round = 0; round < config.maxRounds; round++) {
     text = '';
     reasoning = '';
     toolCalls = [];
+    _callAcc.reset();          // 换一圈就换一桶，别把上一圈的工具带过来
     let usage = null;
     /**
      * 【只瘦这一轮】
@@ -1240,7 +1236,9 @@ for (let round = 0; round < config.maxRounds; round++) {
             reasoning += ev.text;
             onEvent({ type: 'reasoning', text: ev.text });
           } else if (ev.type === 'tool_calls') {
-            toolCalls = takeFreshToolCalls(ev.toolCalls, sessionId, round);
+            /* 累积，不覆盖。第二次交付是补充，不是「把第一批冲掉」。 */
+            _callAcc.merge(ev.toolCalls);
+            toolCalls = _callAcc.values();
           } else if (ev.type === 'usage') {
             usage = ev.usage;
           }
@@ -1523,65 +1521,36 @@ for (let round = 0; round < config.maxRounds; round++) {
     messages.push(assistantMsg);
 
     /**
-     * 【2026-11-05 加·只读工具并行跑】
+     * 【2026-11-07 harness 重做 · P3】只读批改由依赖图调度器跑。
      *
-     * 主人问：「为什么你做任务快、小鱼慢」。查下来一条硬差距：
-     * 这里原来是 `for (const call of ...) { await runTool(...) }` —— **串行**。
-     * 读五个文件 = 五次往返排队；而我那边是一次发出去、等一个最慢的。
+     * 原来这里是一块窄补丁：只认「连续 ≥2 个只读」，写类永久串行，
+     * 还自己维护一份 _RO 白名单（和 tool-spec 那套会漂移）。
      *
-     * 现在把**连续多个只读工具**预处理成一批并发跑，结果塞进 _poMap；
-     * 下面那个 for 照旧一条条走（事件、超时、落盘都不动），只是命中缓存就别再跑了。
+     * 现在 plan() 按依赖元数据切层：层内真并行、有副作用的分层串行，
+     * [读,读,写,读,读] 这种「中间夹一个写」也能把前后两批读都并起来。
      *
-     * 为什么只并行只读：read_file / list_dir / search 之间没有先后依赖，
-     * 同时跑不会互相踩。write_file / run_command 必须串行 —— 后一步可能要读前一步的结果。
-     *
-     * 为什么先在这里发 tool_start：并发要等最慢的那个，界面上得先出现卡片，
-     * 否则「什么都看不到」比慢更难受。
+     * 只把「层内 ≥2 个」的层交给调度器预跑 —— 单个工具和写操作仍走
+     * 下面那个 for，它那边的独立 AbortController / 超时提醒 / 图片编码 /
+     * 逐条落盘一个字都没动，**事件序列与改前完全一致**。
      */
     const _poMap = new Map();
+    let _parallelStats = null;
     try {
-      const _RO = new Set(['read_file', 'list_dir', 'search_files', 'glob_files', 'web_fetch', 'fetch_url', 'grep_files']);
-      /**
-       * 【2026-11-07】这条判断取代原来的 `_RO.has(名字)`。
-       * 除了老那七个只读工具，run_command 只要命令本身是只读的，也算能并排。
-       */
-      const _canPar = (c) => {
-        const nm = String((c && c.function && c.function.name) || '');
-        if (_RO.has(nm)) return true;
-        if (nm !== 'run_command') return false;
-        try {
-          const a = JSON.parse(String((c.function && c.function.arguments) || '{}'));
-          return isReadOnlyCommand(a.command);
-        } catch {
-          return false;
-        }
-      };
-      const _calls = Array.isArray(assistantMsg.tool_calls) ? assistantMsg.tool_calls : [];
-      let _i = 0;
-      while (_i < _calls.length) {
-        if (!_canPar(_calls[_i])) { _i++; continue; }
-        let _j = _i;
-        while (_j < _calls.length && _canPar(_calls[_j])) _j++;
-        const _batch = _calls.slice(_i, _j);
-        _i = _j;
-        if (_batch.length < 2) continue;   // 只有一个：没必要并发，走下面原路
-        for (const c of _batch) {
-          onEvent({ type: 'tool_start', id: c.id, name: c.function.name, args: c.function.arguments });
-        }
-        const _outs = await Promise.all(_batch.map(async (c) => {
-          try {
-            const r = await Promise.race([
-              runTool(c.function.name, c.function.arguments, sessionId, signal),
-              new Promise((_, rej) => setTimeout(() => rej(new Error('这个工具等太久了，先跳过')), Math.min(TOOL_MAX_MS, 120000))),
-            ]);
-            return r || { ok: false, output: '（没有返回内容）' };
-          } catch (e) {
-            return { ok: false, output: String((e && e.message) || e) };
-          }
-        }));
-        _batch.forEach((c, k) => _poMap.set(c.id, _outs[k]));
-      }
-    } catch (e) { /* 并发这条路挂了不影响正常执行 */ }
+      const _batched = await executeBatch(assistantMsg.tool_calls, {
+        runTool: (name, args, sid, sig) => runTool(name, args, sid, sig),
+        emitEvents: false,           // 事件仍由下面主循环一条条发，契约不变
+        onlyParallelLayers: true,   // 单个 / 写操作留给主循环
+        sessionId,
+        round,
+        signal,
+        timeoutMs: Math.min(TOOL_MAX_MS, 120000),
+      });
+      for (const [id, r] of _batched.results) _poMap.set(id, r);
+      _parallelStats = _batched.stats;
+    } catch (e) {
+      /* 调度这条路挂了不影响正常执行 —— 下面那个 for 会一条条自己跑 */
+      try { console.warn('[harness] 并行批没跑起来，退回逐条执行：' + String((e && e.message) || e)); } catch {}
+    }
 
     for (const call of assistantMsg.tool_calls) {
       const _hit = _poMap.get(call.id);

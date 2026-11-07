@@ -76,4 +76,26 @@ t.ok('plan 切成 3 层', layers.length === 3, JSON.stringify(layers.map((l) => 
 t.ok('layerStats 算得出命中率', layerStats(layers).parallelHitRate === 0.5);
 t.ok('幂等账本有上限', idempotencySize() < 500, String(idempotencySize()));
 
+// 7) onlyParallelLayers：接进老主循环时，只接管「真能同时跑」的层
+clearIdempotency('chk');
+let runs7 = 0;
+const r7 = await executeBatch([
+  C('k1', 'read_file'), C('k2', 'list_dir'), C('k3', 'write_file'), C('k4', 'read_file'), C('k5', 'search_files'),
+], {
+  runTool: async (n) => { runs7++; await sleep(20); return { ok: true, output: n }; },
+  emitEvents: false, onlyParallelLayers: true, sessionId: 'chk', round: 7,
+});
+t.ok('只预跑两个并行读层（4 次），写和单个读留给主循环', runs7 === 4, 'runs=' + runs7);
+t.ok('写操作没有结果（主循环自己跑）', !r7.results.has('k3'));
+t.ok('两个读层都并起来了', r7.stats.parallelLayers === 2, JSON.stringify(r7.stats));
+
+// 8) 契约守卫：主循环里事件仍一条条发，调度器关掉了自己的事件
+clearIdempotency('chk');
+let ev8 = 0;
+await executeBatch([C('m1', 'read_file'), C('m2', 'list_dir')], {
+  runTool: async () => ({ ok: true, output: 'x' }),
+  onEvent: () => ev8++, emitEvents: false, onlyParallelLayers: true, sessionId: 'chk', round: 8,
+});
+t.ok('emitEvents:false + onlyParallelLayers 时事件归零', ev8 === 0);
+
 t.done();

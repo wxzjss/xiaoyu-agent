@@ -10771,6 +10771,10 @@ function hubPeekOf(els) {
 }
 
 function foldLiveTools() {
+  /* 【2026-11-07】第一次合柜时顺手把「散卡自愈守卫」装上（只装一次）。
+   * 挂在这里而不是启动流程里：启动那段在闭包深处，改起来容易碰坏别的东西；
+   * 而合柜这件事本身就是「工具卡要进柜」这条链的入口，挂这儿最贴题。 */
+  try { installToolLeakGuard(); } catch (e) {}
   const _tools = (_liveToolEls || []).filter((el) => el && el.isConnected);
   _liveToolEls = [];
   /**
@@ -11002,6 +11006,60 @@ function foldLiveTools() {
   parent.insertBefore(hub, first);         // 柜子落在第一张卡原来的位置
   for (const el of arr) hub.appendChild(el);
   _restore();
+}
+
+/**
+ * 【2026-11-07 加·兜底：任何路径漏出来的散卡，立刻收回去】
+ *
+ * 主人要求严检「调用工具显示会不会跑到柜子外面」。
+ * 实测静态是干净的（38 个柜子 / 116 张工具 / 34 段思考，散卡 0、溢出 0、
+ * 柜套柜 0、空柜 0），建卡那一刻也已经在柜里。
+ *
+ * 但这套东西历史上反复漏过（散卡、柜套柜、展开被挤掉），
+ * 而直播那零点几秒的中间态我没法用探针抓住。与其赌「现在是对的」，
+ * 不如装一道自愈：只要有工具卡/思考块直接挂在 log 上，立刻合回柜子。
+ *
+ * 为什么用 MutationObserver 而不是每个调用点都补一句：
+ *   调用点有七八处，以后再加一处就容易忘；盯着 DOM 本身最保险。
+ * 为什么不会死循环：foldLiveTools 跑完散卡就没了，observer 再触发时
+ *   「有没有散卡」这一问直接为 false，不会再合一次。
+ */
+let _leakGuardBusy = false;
+function installToolLeakGuard() {
+  const logEl = document.getElementById('log');
+  if (!logEl || logEl.__leakGuard) return;
+  logEl.__leakGuard = true;
+  try {
+    const mo = new MutationObserver(() => {
+      if (_leakGuardBusy) return;
+      try {
+        /* 【2026-11-07 修·野卡不在登记表里，foldLiveTools 根本看不见它】
+         * 实测：造一张直接 append 到 log 的 details.tool，调 foldLiveTools 也没用 ——
+         * 它只处理 `_liveToolEls` 里登记过的卡 + log 直接子节点的 .think。
+         * 所以兜底时要先把散卡补登进表，再合。 */
+        const looseTools = [...logEl.children].filter((el) => el && el.tagName === 'DETAILS'
+          && el.classList.contains('tool'));
+        const looseThinks = [...logEl.children].filter((el) => el && el.tagName === 'DETAILS'
+          && el.classList.contains('think'));
+        if (!looseTools.length && !looseThinks.length) return;
+        _leakGuardBusy = true;
+        if (looseTools.length) {
+          try {
+            if (!Array.isArray(_liveToolEls)) _liveToolEls = [];
+            for (const el of looseTools) if (!_liveToolEls.includes(el)) _liveToolEls.push(el);
+          } catch (e) {}
+        }
+        foldLiveTools();
+        _leakGuardBusy = false;
+        /* 【2026-11-07 留痕】真漏过就记一笔，下次一眼看得出是哪条路漏的 */
+        try { console.warn('[guard] 发现有卡片不在柜子里，已自动收回：tool=' + looseTools.length + ' think=' + looseThinks.length); } catch (e) {}
+      } catch (e) { _leakGuardBusy = false; }
+    });
+    mo.observe(logEl, { childList: true });
+    logEl.__leakGuardMo = mo;
+  } catch (e) {
+    /* 装不上就算了，别影响正常使用 */
+  }
 }
 
 /**

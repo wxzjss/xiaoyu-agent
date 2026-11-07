@@ -11092,9 +11092,15 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
          */
         setTimeout(() => {
           try {
+            /* 【2026-11-07 加·这条链路以前一声不响】
+             * 实测：开机续跑一次都没触发，可哪儿都没日志 ——
+             * 因为这个 try 里的几个 return 和 catch 只往 console 打，
+             * 而安装版没有控制台，等于什么都没留下。
+             * 现在每一道闸都写 diag.log，下次一看就知道卡在哪一步。 */
+            diagLog('boot-resume-enter', 'start');
             const f = getFeatures();
             const on = Boolean(f && f.features && f.features.find((x) => x.id === 'selfRestart')?.enabled);
-            if (!on) { console.log('  resume   : 「自动重启续上」关着，不续'); return; }
+            if (!on) { console.log('  resume   : 「自动重启续上」关着，不续'); diagLog('boot-resume-skip:switch', 'off'); return; }
             /**
              * 【2026-11-07 改·有几个续几个】
              *
@@ -11107,20 +11113,25 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
              * 真要排队的话，第二个会一直等到第一个（可能十几分钟）跑完，那更糟。
              */
             const pendingList = listInterrupted();
-            if (!pendingList.length) return;
+            if (!pendingList.length) { diagLog('boot-resume-skip:none', 'no pending'); return; }
             console.log('  resume   : 有 ' + pendingList.length + ' 个会话没做完，逐个接着做');
+            diagLog('boot-resume-go', pendingList.map((x) => x.sessionId).join(','));
             pendingList.forEach((it, i) => {
               setTimeout(() => {
                 console.log('  resume   : [' + (i + 1) + '/' + pendingList.length + '] '
                   + it.sessionId + '（' + it.reason + '）');
                 resumeInterruptedTurn(it.sessionId)
-                  .catch((e) => console.warn('[resume] 自动续跑失败：', String(e?.message ?? e)));
+                  .catch((e) => {
+                    console.warn('[resume] 自动续跑失败：', String(e?.message ?? e));
+                    diagLog('boot-resume-fail', it.sessionId + ' ' + String(e?.message ?? e));
+                  });
               }, i * 1500);
             });
           } catch (e) {
             console.warn('[resume] 开机自续没跑成（不影响使用）：', String(e?.message ?? e));
+            diagLog('boot-resume-error', String(e?.message ?? e));
           }
-        }, 3000);
+        }, 8000);
 
         {
           // 真正生效的阈值是「设置面板里那个」，不是 config 里的兜底值，日志得说真话。

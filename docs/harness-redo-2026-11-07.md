@@ -340,3 +340,18 @@ D:\小鱼AgentBackup\2026-11-07-harness\  # 整目录快照（含 .git 与 data 
 ### 顺手修的遗留
 `check-live-sync` 报 `compact-core.mjs` 两边不一致 —— 是 01:32 那次 `2917532` 提交漏同步运行版，不是本次改动。已补齐，`100 个 .mjs 两边一致`。
 
+### 严检照出的一个真隐患（`f0cd910`）
+调度器幂等键原为 `sessionId|round|call.id`。可外层 `round` **每条用户消息都从 0 重新数**，而网关常复用 `call_0` 这种 id —— 主人发第二条消息时会命中上一条的缓存，**工具一次都不跑**。
+修：每次 `runAgent` 生成一个 nonce，传给调度器 `runKey:round`。跨消息绝不误命中，同一消息内断流续传仍幂等。`check-harness-contract` 补了源码守卫（53/53）。
+
+### 验证方式
+- **运行时加载链**：真的 `import('../src/agent.mjs')`，断言 `runAgent` 可调用、`isReadOnlyCommand` 与 `tool-spec` 判定一致 —— 防止改坏 import 后重启白屏。
+- **真跑**：`run_command` 工具实跑 `node -v` 返回 `v22.22.2`；cmd 与 PowerShell 双通道都跑通。
+- **真并行**：`check-harness-scheduler` 用假 `runTool` 计时，3 个读 55ms、读写读 94ms，不是只看代码在不在。
+- **契约冻结**：`check-harness-contract` 53 项逐条守着 SSE 字段、会话结构、人设/底线/安全词符号。
+- **生效同步**：`check-live-sync` 3/3，`100 个 .mjs 两边一致`。
+
+### 回归环境的一个说明
+全套回归里有几条脚本默认打 `8787`，而当天只有 `8788` 在听 —— 它们报 `ECONNREFUSED`，与本次改动无关。用 `BASE=http://127.0.0.1:8788` 单跑 `check-agent-identity` 是 13/13 全过。
+**没有改这些脚本、也没有把回归自动引到主人正在用的实例上** —— 这是我拍的板：回归脚本会创建/删除会话，不该为了「报告好看」去动主人正在开的那个 app。
+

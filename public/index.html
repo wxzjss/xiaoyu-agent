@@ -18789,15 +18789,26 @@ function paintSessNow() {
  * 为什么不直接用 turnsInFlight：那只是「本窗口正在跟的」，
  * 刷新之后它是空的，而后台真的还在跑 —— 主人看到的正是这种情况。
  */
-let runningSess = new Set();
+/* 【2026-11-07】改成 Map：id → {idleMs, events}。
+   光有 id 分不出「她正在想」和「她卡死了」—— 主人报的就是这个。 */
+let runningSess = new Map();
 
 async function refreshRunning() {
   try {
     const j = await fetch('/api/running').then((r) => r.json());
     const list = (j && Array.isArray(j.running)) ? j.running : [];
-    runningSess = new Set(list.map((x) => x && x.sessionId).filter(Boolean));
+    /* 【2026-11-07 改·从「有没有」变成「还动不动」】
+     * 主人报：「列表显示她在跑（绿点），点进去发现她早停了」。
+     * 服务端那边是真挂着，可一个字都没回 —— 绿点只表示「挂着」，
+     * 分不出「正在想」和「卡死了」。现在存整条，不只看 id。 */
+    runningSess = new Map(
+      list.filter((x) => x && x.sessionId).map((x) => [x.sessionId, x]),
+    );
   } catch { /* 拿不到就当没人在跑，不影响别的 */ }
 }
+
+/* 静默超过这么久没有任何事件 → 认为可能卡住了（模型一个字都没回） */
+const RUNNING_STALL_MS = 90000;
 
 function renderSessList() {
   sessList.innerHTML = '';
@@ -18859,8 +18870,13 @@ function renderSessList() {
     t.appendChild(ttxt);
     if (runningSess.has(s.id)) {
       const lv = document.createElement('i');
-      lv.className = 'sessLive';
-      lv.title = '这个会话正在跑';
+      const info = runningSess.get(s.id) || {};
+      /* 静默太久 = 挂着但没回音。绿点是「在她那儿有动静」，黄点是「可能卡死了」 */
+      const stalled = Number(info.idleMs || 0) > RUNNING_STALL_MS;
+      lv.className = 'sessLive' + (stalled ? ' stalled' : '');
+      lv.title = stalled
+        ? ('已经 ' + Math.round(Number(info.idleMs || 0) / 1000) + ' 秒没有任何回音，可能卡住了')
+        : '这个会话正在跑';
       t.insertBefore(lv, ttxt);
     }
     // 这个会话挂的是哪张智能体卡：挂在标题后面（没绑卡就不显示）
@@ -22158,7 +22174,7 @@ loadModels().catch(() => {});
 refreshRunning().then(() => { try { renderSessList(); } catch { /* 画不动就算了 */ } });
 
 setInterval(async () => {
-  const key = () => [...runningSess].sort().join(',');
+  const key = () => [...runningSess.keys()].sort().join(',');
   const before = key();
   await refreshRunning();
   if (before !== key()) {

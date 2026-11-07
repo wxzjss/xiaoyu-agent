@@ -3853,10 +3853,31 @@ const server = createServer(async (req, res) => {
       }
       const live = liveLogs.get(id);
       if (live && live.done) continue;
+      /**
+       * 【2026-11-07 加·「在跑」和「卡住了」得能分开】
+       *
+       * 主人报：「会话列表显示她在跑（小绿点），点进去发现她早停了」。
+       * 查下来两边都是真的：runningTurns 里确实挂着这条，可 events=0、
+       * 会话文件好几分钟没动 —— 请求发出去了，模型一个字都没回。
+       *
+       * 界面只拿得到 startedAt 和 events，分不出「正在想」和「卡死了」。
+       * 这里补三个量：最后一次事件的时间、已经等了多久、有没有在动。
+       * 前端就能把绿点变成「回过字没」的绿 / 「超过 90 秒没动静」的黄。
+       */
+      const now = Date.now();
+      const evCount = live ? live.events.length : 0;
+      let lastEventAt = Number(t.startedAt) || 0;
+      if (live && evCount) {
+        const lastEv = live.events[evCount - 1];
+        lastEventAt = Number(lastEv && lastEv.at) || lastEventAt;
+      }
       list.push({
         sessionId: id,
         startedAt: t.startedAt ?? 0,
-        events: live ? live.events.length : 0,
+        events: evCount,
+        lastEventAt,
+        /* 从「最后一次有动静」算起静了多久；一个事件都没有时从开跑算起 */
+        idleMs: Math.max(0, now - lastEventAt),
       });
     }
     return json(res, 200, { running: list });

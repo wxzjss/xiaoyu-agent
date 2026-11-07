@@ -117,10 +117,36 @@ function noteBadRequest(status, payload, ep) {
       + '/' + (typeof m?.content === 'string' ? m.content.length : (Array.isArray(m?.content) ? 'arr' : '-'))
       + (m?.tool_calls ? '/tc' + m.tool_calls.length : ''));
     const tools = Array.isArray(payload?.tools) ? payload.tools.map((t) => String(t?.function?.name || '?')).join(',') : '';
+    /**
+     * 【2026-11-07 加·总量】
+     *
+     * 原来只记每条消息的长度骨架，400 的时候看不出「这一次到底多大」——
+     * 办事鱼那次报「请减少对话或附件」，可会话文件只有 4 万 token，
+     * 到底是一次真的很大、还是上游按别的算，没有数据就说不清。
+     * 现在把总字符数、图片张数、工具 schema 的字符数一起记下来。
+     */
+    let totalChars = 0;
+    let imgCount = 0;
+    for (const m of msgs) {
+      const c = m?.content;
+      if (typeof c === 'string') totalChars += c.length;
+      else if (Array.isArray(c)) {
+        for (const p of c) {
+          if (!p) continue;
+          if (typeof p.text === 'string') totalChars += p.text.length;
+          if (p.type === 'image_url') { imgCount += 1; totalChars += 12000; }   // base64 按经验折算
+        }
+      }
+      if (Array.isArray(m?._images)) imgCount += m._images.length;
+    }
+    const toolsChars = Array.isArray(payload?.tools) ? JSON.stringify(payload.tools).length : 0;
     const line = new Date().toISOString() + ' [llm-bad] HTTP ' + status
       + ' ' + [ep?.name, ep?.model].filter(Boolean).join(' · ')
-      + ' tools(' + (Array.isArray(payload?.tools) ? payload.tools.length : 0) + ')=' + tools
       + ' msgs=' + msgs.length
+      + ' totalChars=' + totalChars
+      + ' ≈tok=' + Math.round(totalChars / 3.5)
+      + ' images=' + imgCount
+      + ' tools(' + (Array.isArray(payload?.tools) ? payload.tools.length : 0) + ',' + toolsChars + 'chars)=' + tools
       + ' shape=' + shape.join(' | ') + NL;
     appendFileSync(join(dir, 'llm-bad.log'), line, 'utf8');
   } catch { /* 记不上就算了 */ }

@@ -670,14 +670,16 @@ export async function runAgent({
    */
   let compressedThisTurn = false;
   /**
-   * 【压缩中这条工具条要自己收尾】
+   * 【2026-11-07 主人要·真静默压缩】
    *
-   * 原来只推 tool_start 不推 tool_end —— 界面上那条「压缩中」会一直挂着不下班，
-   * 看着像卡死。压完（不管成没成）必须 pair 一条 tool_end 把它收掉。
+   * 原来这里有一套「压缩中就推一条假工具条（name='compress'）」的做法 ——
+   * 那是 2026-11-01 的要求，想让压缩像【跑命令】一样看得见。可实际观感是：
+   * 标题闪一下就没，摘要正文反倒一个字一个字流在屏幕上。
+   *
+   * 主人这次说清了：「我的要求是真做到静默压缩」。
+   * 所以这套 tool_start / tool_end 全删了 —— 压缩过程在界面上**一个像素都不出现**，
+   * 数字（球）照旧跟着掉，日志照旧走 console。
    */
-  let _compressBarId = null;
-  /** 压缩工具条的 id 序号：跟时间戳拼，保证同一毫秒内也不会撞 */
-  let _compressBarSeq = 0;
 
   // maxRounds 可以被设成 Infinity（不限）：那就一直跑到模型自己收尾，或用户点「停止」。
   // 【2026-10-29 主人要求：这条限制整套删掉】
@@ -880,22 +882,10 @@ for (let round = 0; round < config.maxRounds; round++) {
     let _gate = { tier: 'none', before: 0, limit: 0, ratio: 0 };
     try {
       _gate = planTurnCompact(messages, win, sessionId);
-      /**
-       * 【2026-11-01 主人要】压缩时界面上要有一条【压缩中】——像【跑命令】【写文件】那样。
-       * 做法：推一个假的 tool 事件（name='compress'），前端 TOOL_NICE 里已加好 compress:'压缩中'，
-       * 所以画出来就是一条普通工具条，不是系统提示气泡。
-       * 只在真要动手压缩（shouldSlim）时才推，平时一个字都不出现。
-       */
-      /* 【2026-11-01】只在真要压（shouldFold）时推【压缩中】。
-         shouldSlim 是 L2 瘦身（截短工具结果），属于常规清理，不该占一条工具条。 */
-      if (_gate.shouldFold) {
-        try {
-          // 【2026-11-01 严检】原来用 Date.now() 当 id —— 同一毫秒撞号就会两条互串。
-          // 加个自增序号，保证全局唯一，不依赖时钟精度。
-          _compressBarId = 'compress-' + (++_compressBarSeq) + '-' + Date.now();
-          onEvent({ type: 'tool_start', id: _compressBarId, name: 'compress', title: '压缩中' });
-        } catch { _compressBarId = null; }
-      }
+      /* 【2026-11-07 主人要·真静默压缩】
+       * 这里原来会推一条假的 tool_start（name='compress'）画成【压缩中】工具条。
+       * 现在整条**不发任何事件** —— 压缩在界面上不留痕迹。
+       * 想看过程就开 COMPRESS_DEBUG，日志里都有。 */
       if (_gate.shouldSlim) {
         const _sl = slimHistory(messages, { sessionId });
         if (_sl.changed > 0) {
@@ -1120,20 +1110,14 @@ for (let round = 0; round < config.maxRounds; round++) {
         }
       }
     }
-    /**
-     * 【压缩中这条工具条必须自己收尾】
-     * 上面 tool_start 推过就一定要 pair 一条 tool_end ——
-     * 否则界面上那条「压缩中」永远挂着不下班，看着像卡死。
-     * 压没压成都要收（压失败也要收，不能把它留在那儿）。
-     */
-    if (_compressBarId) {
+    /* 【2026-11-07 主人要·真静默压缩】原来这里要 pair 一条 tool_end 收掉「压缩中」那条条。
+     * 现在上面根本不推 tool_start 了，这里也不推任何事件。
+     * compressed / before / after 这些数字照旧走 console 和指标，界面静默。 */
+    if (compressed?.compressed) {
       try {
-        onEvent({ type: 'tool_end', id: _compressBarId, name: 'compress', ok: true,
-                  output: compressed?.compressed
-                    ? '已压缩：' + (compressed.before ?? '?') + ' → ' + (compressed.after ?? '?') + ' token'
-                    : '这轮没压缩' });
+        console.log('[compress] 静默压完：'
+          + (compressed.before ?? '?') + ' → ' + (compressed.after ?? '?') + ' token');
       } catch {}
-      _compressBarId = null;
     }
     if (signal?.aborted) {
       onEvent({ type: 'aborted' });

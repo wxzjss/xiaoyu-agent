@@ -1,0 +1,127 @@
+/**
+ * 【工具卡片 / 柜门 该叫什么名字】
+ *
+ * 主人 2026-11-07 两条：
+ *   ① 「跑回归时显示的也是【跑命令】，这个改一下」→ 按命令内容细分名字
+ *   ② 「调用工具时【调了 x 次工具】不会变成【跑命令】」
+ *      → 柜门要能变成「正在跑回归…」，切会话之后也要能变
+ *
+ * 源码断言 + 真机格。连不上调试浏览器就 SKIP（不算失败），
+ * 但源码那一半必须全过 —— 命名这件事本身不需要浏览器。
+ */
+import { makeChecker } from './_harness_util.mjs';
+import fs from 'node:fs';
+
+const t = makeChecker('ui / 工具命名与柜门');
+const ui = fs.readFileSync('public/index.html', 'utf8');
+
+// ── 1. niceCommand 存在，且从具体到宽泛 ────────────────────────────
+t.ok('有 niceCommand', /function niceCommand\(raw\)/.test(ui));
+t.ok('niceTool 收 args', /function niceTool\(name, args\)/.test(ui));
+t.ok('run_command 走内容判定', /if \(n === 'run_command'\)/.test(ui));
+
+const RULES = [
+  ['跑回归', /run-all-checks\|check-\[a-z0-9-\]\+\\\.mjs/],
+  ['跑测试', /npm\\s\+\(run\\s\+\)\?test/],
+  ['装依赖', /npm\\s\+\(install\|i\)/],
+  ['打包', /electron-builder/],
+  ['提交代码', /git\\s\+commit/],
+  ['同步仓库', /git\\s\+\(push\|pull\|fetch\|clone\)/],
+  ['看仓库', /git\\s\+\(status\|diff\|log/],
+  ['看进程', /tasklist\|Get-Process\|netstat/],
+  ['抓网址', /curl\|wget/],
+  ['跑脚本', /node\\s\+-e/],
+];
+for (const [label, re] of RULES) t.ok('识别「' + label + '」', re.test(ui));
+
+t.ok('兜底还是「跑命令」', /return '跑命令';/.test(ui));
+
+// ── 2. 六处调用点都传了 args（少一处历史卡就还是写死） ────────────
+const calls = ui.match(/niceTool\([^)]*\)/g) || [];
+const withArgs = calls.filter((c) => /,\s*[a-zA-Z_.]+\.args\)/.test(c));
+t.ok('调用点都带 args', withArgs.length >= 5, withArgs.length + ' 处');
+
+// ── 3. 参数两种形态都认（历史快照是 JSON 串） ─────────────────────
+t.ok('toolArgsOf 兼容串和对象', /typeof args === 'object'/.test(ui) && /JSON\.parse\(String\(args\)\)/.test(ui));
+
+// ── 4. 柜门：运行中要变成「正在X…」 ──────────────────────────────
+t.ok('柜门找「运行中…」那张卡', /indexOf\('运行'\) >= 0/.test(ui));
+t.ok('柜门写「正在…」', /'正在' \+/.test(ui));
+t.ok('跑完退回统计', /次工具/.test(ui) && /调了 ' \+ /.test(ui));
+
+// ── 5. 切会话要断开柜子指针（主人怀疑的那条） ────────────────────
+const sw = ui.slice(ui.indexOf('async function switchSession(id, opts)'), ui.indexOf('async function switchSession(id, opts)') + 9000);
+t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,120}renderTurns\(r\.session\.turns\)/.test(sw));
+
+// ── 5b. 万一 tool_start 丢了，也不能让话和工具全挤一起 ────────────
+const te = ui.slice(ui.indexOf("} else if (ev.type === 'tool_end') {", ui.indexOf('function paintLiveEvents')));
+t.ok('tool_end 找不到卡时补建', /补一张卡/.test(ui) || /补画失败也不能连累这一轮/.test(ui));
+t.ok('补建前先断气泡', /flushSpeech\(\);[\s\S]{0,200}bubble = null;[\s\S]{0,200}addTool\(\)/.test(ui));
+
+// ── 6. 真机 ──────────────────────────────────────────────────────
+let cdp = null;
+try { ({ connect: (o) => (cdp = connect(o)) }); } catch { /* 下面统一 try */ }
+try {
+  const { connect } = await import('../_t_cdp.mjs');
+  cdp = await connect({ port: 9223, match: '8788' });
+} catch (e) { cdp = null; }
+
+if (!cdp) {
+  console.log('\n真机格：SKIP（没连上 9223 的调试浏览器，源码断言已全过）');
+} else {
+  /* 先刷新一次：运行版 index.html 可能刚被同步过，页面里还是旧代码。
+   * 不刷新就验等于验了个假的。 */
+  try {
+    await cdp.send('Page.enable');
+    await cdp.send('Page.reload', { ignoreCache: true });
+    await new Promise((r) => setTimeout(r, 15000));
+  } catch (e) { console.log('（刷新失败，下面按当前页面验）'); }
+  const r = await cdp.eval(`
+      const out = {};
+      const log = document.getElementById('log');
+      const start = (name, args) => {
+        const el = addTool();
+        el.sum.querySelector('.name').textContent = niceTool(name, args);
+        el.sum.querySelector('.status').textContent = '运行中…';
+        el.pre.hidden = false;
+        el.sum.querySelector('.status').className = 'status warn';
+        if (_liveHub) {
+          const n1 = _liveHub.querySelector('.hubname');
+          if (n1) n1.dataset.one = niceTool(name, args);
+          hubRefreshTitle();
+        }
+        return el;
+      };
+      try {
+        out.names = [
+          niceTool('run_command', JSON.stringify({ command: 'node scripts/run-all-checks.mjs' })),
+          niceTool('run_command', JSON.stringify({ command: 'git commit -m x' })),
+          niceTool('run_command', JSON.stringify({ command: 'ls -la' })),
+          niceTool('read_file', JSON.stringify({ path: 'a.txt' })),
+        ];
+        out.namesObj = niceTool('run_command', { command: 'node _t_ui.mjs' });
+        const el = start('run_command', JSON.stringify({ command: 'node scripts/run-all-checks.mjs' }));
+        out.title = _liveHub ? _liveHub.querySelector('.hubname').textContent : '(null)';
+        out.inDom = _liveHub ? document.contains(_liveHub) : false;
+        const st = el.sum.querySelector('.status');
+        st.textContent = '完成'; st.className = 'status ok';
+        hubRefreshTitle();
+        out.after = _liveHub ? _liveHub.querySelector('.hubname').textContent : '(null)';
+        el.d.closest('details.toolhub')?.remove();
+        hubReset();
+      } catch (e) { out.err = String(e); }
+      return out;
+  `);
+  console.log('\n真机：' + JSON.stringify(r));
+  t.ok('真机：跑回归命名对', r.names && r.names[0] === '跑回归', String(r.names && r.names[0]));
+  t.ok('真机：提交代码命名对', r.names && r.names[1] === '提交代码', String(r.names && r.names[1]));
+  t.ok('真机：普通命令兜底「跑命令」', r.names && r.names[2] === '跑命令', String(r.names && r.names[2]));
+  t.ok('真机：非命令工具不受影响', r.names && r.names[3] === '读文件', String(r.names && r.names[3]));
+  t.ok('真机：对象形态参数也认', r.namesObj === '跑回归', String(r.namesObj));
+  t.ok('真机：柜门变「正在跑回归…」', r.title === '正在跑回归…', String(r.title));
+  t.ok('真机：柜子在屏上', r.inDom === true);
+  t.ok('真机：跑完退回统计', /^调了 \d+ 次工具/.test(String(r.after)), String(r.after));
+  cdp.close();
+}
+
+t.done();

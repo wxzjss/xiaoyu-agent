@@ -69,4 +69,54 @@ if (cdp) {
   console.log('  [skip] 没连上调试浏览器，真机那几格跳过（不算失败）');
 }
 
+// ── 【2026-11-07 主人定位后的修法】点击不立刻切，人一动手就作废 ──────────
+let cdp2 = null;
+try {
+  const { connect } = await import('../_t_cdp.mjs');
+  cdp2 = await connect({ port: 9223, match: '8788' });
+} catch { cdp2 = null; }
+t.ok('有「等一等再切」的入口', /function imeMatchSoon\(\)/.test(ui));
+t.ok('有「作废」的入口', /function imeCancelSoon\(\)/.test(ui));
+t.ok('点击/聚焦走的是延迟那条', /input\.addEventListener\('focus', \(\) => \{ imeMatchSoon\(\); \}\)/.test(ui)
+  && /imeMatchSoon\(\);\s*\n\}\);/.test(ui));
+t.ok('没有地方再「点一下立刻切」', !/addEventListener\('focus', \(\) => \{ imeMatchOnce\(\)/.test(ui));
+t.ok('打字会取消待切', /addEventListener\('keydown'[\s\S]{0,80}imeCancelSoon\(\)/.test(ui));
+t.ok('打拼音也会取消', /addEventListener\('compositionstart'[\s\S]{0,80}imeCancelSoon\(\)/.test(ui));
+
+if (cdp2) {
+  try {
+    const r2 = await cdp2.eval(`
+      const out = {};
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const inp = document.getElementById('input') || document.querySelector('textarea');
+      let calls = 0;
+      try {
+        imeGateOn = true; imeGateAt = Date.now();
+        window.desktop = window.desktop || {};
+        window.desktop.imeMatchSystem = async () => { calls += 1; };
+        /* ① 点一下、立刻打字 → 一次都不许切 */
+        calls = 0;
+        inp.focus();
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+        await sleep(900);
+        out.typing = calls;
+        /* ② 点一下、一直不动 → 该切（说明延迟不是把功能关掉） */
+        calls = 0;
+        inp.blur();
+        inp.focus();
+        await sleep(1000);
+        out.idle = calls;
+      } catch (e) { out.err = String(e); }
+      return out;
+    `);
+    console.log('\n真机（延迟切换）：' + JSON.stringify(r2));
+    t.ok('真机：打完字才开始——一次都没切', r2.typing === 0, String(r2.typing));
+    t.ok('真机：只点不打字——照旧会切', r2.idle >= 1, String(r2.idle));
+  } catch (e) {
+    t.ok('真机探针（延迟切换）能跑', false, String(e.message).slice(0, 120));
+  } finally {
+    try { cdp2.close(); } catch {}
+  }
+}
+
 t.done();

@@ -6095,7 +6095,7 @@ function paintSnapshot0(sid, srcLive) {
        * 原来那行等于没打标记，重画时就清不掉、越叠越多。现在直接标在它自己身上。 */
       try { if (el && el.d) el.d.dataset.liveTurn = '1'; } catch (e) {}
       try {
-        el.sum.querySelector('.name').textContent = niceTool(it.name);
+        el.sum.querySelector('.name').textContent = niceTool(it.name, it.args);
         const st = el.sum.querySelector('.status');
         st.textContent = it.status === 'ok' ? '完成' : (it.status === 'err' ? '失败' : '运行中…');
         st.className = 'status ' + (it.status === 'ok' ? 'ok' : (it.status === 'err' ? 'err' : 'warn'));
@@ -6301,7 +6301,11 @@ function installTagCleaner() {
     if (!lg || lg.__tagCleaner) return;
     lg.__tagCleaner = true;
     let busy = false;
-    const NEEDS = ['<thinking', '<think', '<reasoning'];
+    /**
+     * 【2026-11-07 主人要·真静默压缩】压缩记忆正文也得进这道门。
+     * 这张网原来只盯 <thinking/<think/<reasoning —— 实测压缩摘要正是从这儿漏出去的。
+     */
+    const NEEDS = ['<thinking', '<think', '<reasoning', '【压缩记忆'];
     const need = (t) => {
       const low = String(t || '').toLowerCase();
       for (const k of NEEDS) if (low.indexOf(k) >= 0) return true;
@@ -6311,7 +6315,12 @@ function installTagCleaner() {
       if (!el || el.nodeType !== 1) return;
       const t = el.textContent || '';
       if (!need(t)) return;
-      const f = stripThinkingTags(t);
+      let f = stripThinkingTags(t);
+      /* 压缩记忆：从记号起全切。切完是空的说明这整段就是摘要 —— 藏起来，不留空壳。 */
+      if (String(f).indexOf('【压缩记忆') >= 0) {
+        f = stripCompressMemoryText(f);
+        try { el.style.display = f.trim() ? '' : 'none'; } catch (e) {}
+      }
       if (f !== t) { try { el.textContent = f; } catch (e) {} }
     };
     const obs = new MutationObserver((muts) => {
@@ -6699,7 +6708,29 @@ function pushStreamText(bubble, text) {
   if (typeof bubble._rawText !== 'string') bubble._rawText = bubble.textContent || '';
   // 防御：气泡被别处清空过（textContent 变短且跟 _rawText 对不上）时，以画面为准重来
   else if (bubble._rawText && !(bubble.textContent || '').length) bubble._rawText = '';
-  bubble._rawText += String(text || '');
+  /**
+   * 【2026-11-07 主人要·真静默压缩】
+   *
+   * 主人报：「压缩记忆写摘要时内容还是会显示出来」。根因就在这一行：
+   * `_rawText` 是**原样累积**的，而压缩记忆（`【压缩记忆·seg-xxx】正文…`）
+   * 是模型以普通正文吐出来的 —— 于是一个字一个字流到屏幕上。
+   * 事后那两道 strip 只在重画时生效，直播这条路根本没经过。
+   *
+   * 这里做成**不可逆的截断**：一旦这段文字里出现了「【压缩记忆」，
+   * 就从那个记号起永久截掉，后面再来的字一个都不收。
+   * 比「每次显示前过一遍正则」稳 —— 那种做法在流式中途仍会露出前半截。
+   */
+  {
+    const _inc = String(text || '');
+    const _mark = '【压缩记忆';
+    const _at = _inc.indexOf(_mark);
+    if (_at >= 0) {
+      bubble._rawText += _inc.slice(0, _at);
+      bubble._compressMuted = true;      // 上了锁：这段之后不再收任何字
+    } else if (!bubble._compressMuted) {
+      bubble._rawText += _inc;
+    }
+  }
   // 光标可能已经停在「中间那个」气泡上了 —— 先记下它，画完再搬到新的尾巴上
   const from = bubble._tail || bubble;
 
@@ -7458,7 +7489,7 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
       closeThink();
       if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
       const el = addTool();
-      el.sum.querySelector('.name').textContent = niceTool(ev.name);
+      el.sum.querySelector('.name').textContent = niceTool(ev.name, ev.args);
       el.sum.querySelector('.status').textContent = '运行中…';
       /* 【2026-11-05 加】名字填好之后再把柜门刷一遍 ——
        * addTool 内部那次 fold 时名字还是空的，摘要算出来是空白。 */
@@ -7474,7 +7505,7 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
           el.sum.querySelector('.status').className = 'status warn';
           if (_liveHub) {
             const _n1 = _liveHub.querySelector('.hubname');
-            if (_n1) _n1.dataset.one = niceTool(ev.name);
+            if (_n1) _n1.dataset.one = niceTool(ev.name, ev.args);
             hubRefreshTitle();
           }
     } else if (ev.type === 'tool_end') {
@@ -10041,9 +10072,61 @@ const TOOL_NICE = {
   spawn_worker: '派活',
   list_workers: '看派了几个人',
 };
-function niceTool(name) {
+/**
+ * 【2026-11-07 主人要·别什么都叫「跑命令」】
+ *
+ * 主人原话：「小鱼Agent 跑回归时显示的也是【跑命令】而不是【跑回归】，这个改一下。」
+ *
+ * 原来 `niceTool` 只认工具名，`run_command` 一律翻译成「跑命令」——
+ * 可她一天里干的活差得远：跑回归、跑构建、提交代码、装依赖、看进程……
+ * 全都叫「跑命令」等于没信息。
+ *
+ * 现在按**命令内容**再分一层。判错的代价只是标题丑一点，不会影响执行
+ * （这条链只负责显示，一个字都不会回传给后端）。
+ * 顺序是从具体到宽泛：先认「跑回归」，最后才落到「跑命令」。
+ */
+function niceCommand(raw) {
+  const c = String(raw || '');
+  if (!c.trim()) return '跑命令';
+  /* ① 回归 / 自检：这是主人最常让我干、也最想一眼看出来的那一类。
+   *    cd 到哪都无所谓，只要命令里有这些文件名就算。 */
+  if (/run-all-checks|check-[a-z0-9-]+\.mjs|_t_[a-z0-9-]+\.mjs/i.test(c)) return '跑回归';
+  if (/\b(npm\s+(run\s+)?test|node\s+--test|pytest|vitest|jest)\b/i.test(c)) return '跑测试';
+  /* ② 装依赖 */
+  if (/\b(npm\s+(install|i)|pnpm\s+(install|i|add)|yarn(\s+add)?|pip\s+install)\b/i.test(c)) return '装依赖';
+  /* ③ 打包 */
+  if (/electron-builder|electron-packager|npm\s+run\s+build|vite\s+build|node-gyp/i.test(c)) return '打包';
+  /* ④ git 三档 */
+  if (/\bgit\s+commit/i.test(c)) return '提交代码';
+  if (/\bgit\s+(push|pull|fetch|clone)\b/i.test(c)) return '同步仓库';
+  if (/\bgit\s+(checkout|reset|stash|merge|rebase|cherry-pick|clean)\b/i.test(c)) return '改仓库';
+  if (/\bgit\s+(status|diff|log|show|branch|remote|rev-parse|ls-files|describe|blame)\b/i.test(c)) return '看仓库';
+  /* ⑤ 进程 / 网络 */
+  if (/\b(taskkill|Stop-Process|kill)\b/i.test(c)) return '停进程';
+  if (/\b(tasklist|Get-Process|netstat|ps)\b/i.test(c)) return '看进程';
+  if (/\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod)\b/i.test(c)) return '抓网址';
+  /* ⑥ 写脚本现算一段 */
+  if (/\bnode\s+-e\b|\bnode\s+[^\s]+\.m?js\b|\bpython[23]?\b|\bpwsh\b|\bpowershell\b/i.test(c)) return '跑脚本';
+  /* ⑦ 动文件 */
+  if (/\b(rm|del|Remove-Item|mv|Move-Item|cp|Copy-Item)\b/i.test(c)) return '理文件';
+  return '跑命令';
+}
+
+/** 参数可能是 JSON 串（历史快照）也可能是对象（直播事件），两种都认。 */
+function toolArgsOf(args) {
+  if (!args) return {};
+  if (typeof args === 'object') return args;
+  try { const o = JSON.parse(String(args)); return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
+}
+
+function niceTool(name, args) {
   const n = String(name || '').trim();
   if (!n) return '工具';
+  if (n === 'run_command') {
+    const a = toolArgsOf(args);
+    const cmd = a && (a.command != null ? a.command : a.cmd);
+    if (cmd) return niceCommand(cmd);
+  }
   return TOOL_NICE[n] || n;
 }
 
@@ -10837,7 +10920,7 @@ function paintTools(list, target, group) {
     head.className = 'toolHead';
     const nm = document.createElement('span');
     nm.className = 'name';
-    nm.textContent = niceTool(t.name);
+    nm.textContent = niceTool(t.name, t.args);
     const st = document.createElement('span');
     st.className = 'status ' + (t.ok === null ? 'warn' : t.ok ? 'ok' : 'err');
     st.textContent = t.ok === null ? '没跑完' : t.ok ? '完成' : '失败';
@@ -11577,7 +11660,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           // 开始调一个工具 → 数字 +1
           bumpUnseen();
           const el = addTool();
-          el.sum.querySelector('.name').textContent = niceTool(ev.name);
+          el.sum.querySelector('.name').textContent = niceTool(ev.name, ev.args);
           el.sum.querySelector('.status').textContent = '运行中…';
           // 【2026-11-02】没参数就别拼 —— 否则画出来是「参数：undefined」
           el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + tidyToolText(ev.args);
@@ -11586,7 +11669,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           el.sum.querySelector('.status').className = 'status warn';
           if (_liveHub) {
             const _n1 = _liveHub.querySelector('.hubname');
-            if (_n1) _n1.dataset.one = niceTool(ev.name);
+            if (_n1) _n1.dataset.one = niceTool(ev.name, ev.args);
             hubRefreshTitle();
           }
         } else if (ev.type === 'tool_end') {
@@ -11597,6 +11680,31 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             st.className = 'status ' + (ev.ok ? 'ok' : 'err');
             hubRefreshTitle();
             el.pre.textContent = tidyToolText(el.pre.textContent + '\n--- output ---\n' + tidyToolText(ev.output));
+          } else {
+            /**
+             * 【2026-11-07 主人问「为什么有时候所有工具挤一个柜子、一堆话也挤一起」】
+             *
+             * 那种情况是 `tool_start` 没到前端（并行批走过一次 emitEvents:false 的回归）。
+             * 少了 start，前端就不知道「这里该断一下」：
+             *   · 气泡不断 → 后面的话全堆进同一个气泡
+             *   · 柜子不分段 → 后面的工具全塞进同一个柜子
+             *
+             * 这里做兜底：只有结果的工具，也当一次边界处理 —— 先把话说清、
+             * 把气泡断开、补一张卡。这样就算 start 丢了，节奏也不会塌。
+             */
+            try {
+              closeThink();
+              flushSpeech();
+              if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+              const mk = addTool();
+              mk.sum.querySelector('.name').textContent = niceTool(ev.name, ev.args) || '工具';
+              const st2 = mk.sum.querySelector('.status');
+              st2.textContent = ev.ok ? '完成' : '失败';
+              st2.className = 'status ' + (ev.ok ? 'ok' : 'err');
+              mk.pre.textContent = ev.output ? tidyToolText(ev.output) : '';
+              toolEls.set(ev.id, mk);
+              hubRefreshTitle();
+            } catch (e2) { /* 补画失败也不能连累这一轮 */ }
           }
         } else if (ev.type === 'files') {
           // 这一轮我发出去的文件：挂在最后那条回复下面
@@ -12041,7 +12149,7 @@ function replayInFlight(id) {
     } else if (kind === 'tool') {
       try {
         const el = addTool();
-        el.sum.querySelector('.name').textContent = niceTool(p.name);
+        el.sum.querySelector('.name').textContent = niceTool(p.name, p.args);
         const st = el.sum.querySelector('.status');
         st.textContent = p.done ? (p.ok ? '完成' : '失败') : '运行中…';
         st.className = 'status ' + (p.done ? (p.ok ? 'ok' : 'err') : 'warn');
@@ -12534,6 +12642,42 @@ async function imeFeatureOn() {
  * 两条路共用同一把锁 imeSwitching，同一瞬间只会有一次在跑；
  * 真跑过的留 600ms 冷却，防手抖连点。
  */
+/**
+ * 【2026-11-07 主人定位之后的真正修法】
+ *
+ * 主人原话：「点击输入框后此时输入框有四周蓝边时点键盘才是正常的输入法；
+ * 点击别的地方后输入框没有焦点蓝边也消失后，此时点键盘时会出现白框输入法。」
+ *
+ * 这句话把病根说透了：**白框只发生在「输入框没焦点 → 点它 → 马上打字」这一下**。
+ * 因为 focus 那条路会立刻去调 imm32 改 IME 转换状态，而人手比它快 ——
+ * 拼音串已经在预编辑区了，状态被改，串就卡成那块白框。
+ * 有蓝边时再打反而正常，正是因为那时 focus 早跑完、没人再动 IME 了。
+ *
+ * 所以不再「点一下就切」，改成**等一等再切**：
+ *   · 点击 / 聚焦 → 起一个 700ms 的定时器
+ *   · 期间只要敲了键、开始打拼音、或者输入框内容变了 → 立刻作废，这次不切
+ *   · 真的只是点一下、一直没动键盘 → 700ms 后才切（这种情况本来也不着急）
+ *
+ * 判据很简单：**人一动手打字，就不许程序再碰输入法**。
+ */
+let imeTimer = 0;
+let imeGen = 0;
+function imeCancelSoon() {
+  if (imeTimer) { try { clearTimeout(imeTimer); } catch {} imeTimer = 0; }
+  imeGen += 1;
+}
+function imeMatchSoon() {
+  if (imeBusy()) return;
+  const g = (imeGen += 1);
+  if (imeTimer) { try { clearTimeout(imeTimer); } catch {} }
+  imeTimer = setTimeout(() => {
+    imeTimer = 0;
+    if (g !== imeGen) return;         // 期间有人动过键盘：这次不切
+    if (imeBusy()) return;
+    imeMatchOnce();
+  }, 700);
+}
+
 async function imeMatchOnce() {
   if (imeBusy()) return;                                             // ★ 拼音没上屏 / 刚上屏：一次都别切，否则搅出白框
   if (imeSwitching) return;                                          // 已有一趟在跑，直接让路
@@ -12555,18 +12699,27 @@ async function imeMatchOnce() {
   }
 }
 
-input.addEventListener('focus', () => { imeMatchOnce(); });
+input.addEventListener('focus', () => { imeMatchSoon(); });
 /**
  * 已经聚焦在输入框里、再点一下：focus 不会再来，靠这条兜住。
- * 用 pointerdown 而不是 click —— click 要等松手才发，人点了半天没反应会以为坏了；
- * pointerdown 一按下就切，手感跟「点一下就换」一致。
- * 只在「本来就聚焦」时才走：从别处第一次点进来是 focus 那条路的活，这里让开，
- * 免得同一次点击把切换做两遍（虽然锁会挡住第二遍，但少跑一趟总是好）。
+ * 【2026-11-07】这里也从「按下就切」改成「等一等再切」——
+ * 按下那一刻往往就是准备打字的那一刻，立刻切最容易撞上拼音串。
  */
 input.addEventListener('pointerdown', () => {
   if (document.activeElement !== input) return;   // 还没聚焦：交给 focus 那条路
-  imeMatchOnce();
+  imeMatchSoon();
 });
+/**
+ * 【2026-11-07 加】只要人开始打字，就把待切的那一趟作废。
+ * 这四条一起监听：物理按键、输入法预编辑开始、内容变化、粘贴。
+ * 少挂一条就有一条缝 —— 比如打拼音是先 compositionstart，不是 keydown 才来。
+ */
+try {
+  input.addEventListener('keydown', () => { imeCancelSoon(); }, true);
+  input.addEventListener('compositionstart', () => { imeCancelSoon(); }, true);
+  input.addEventListener('input', () => { imeCancelSoon(); }, true);
+  input.addEventListener('paste', () => { imeCancelSoon(); }, true);
+} catch {}
 // 【2026-10-31 拆掉「清空当前」】主人原话：「把【清空当前】按钮以及对应效果删除，我严重怀疑就是因为这个的原因清空的」。
 // 按钮、确认框、/api/reset 调用、重画那一整套都删了（原来在 8109-8155 行）。
 // 要清空记录的话去会话面板删那一整个会话；清单和记忆本子跟这个按钮本来就无关，但它不该存在。
@@ -20608,6 +20761,16 @@ async function switchSession(id, opts) {
    * 按 F5 重开就正常，正因为那时 chip 早就算完了。
    * 现在：画之前先把身份算准，算不出来也照画（不能因为一个名字卡住整屏）。 */
   try { if (typeof refreshAgentChip === 'function') await refreshAgentChip(); } catch { /* 名字算不出来也要画 */ }
+  /**
+   * 【2026-11-07 主人问「切了会话柜门就不变了？」—— 查下来确实少了这一句】
+   *
+   * 切会话时 #log 会被 renderTurns 整个重画，`_liveHub` 却还指着**原来那个柜子**。
+   * 后面再有 tool_start 进来，hubRefreshTitle 刷的是那个已经不在屏幕上的节点 ——
+   * 眼前这个柜子的柜门就一直停在「调了 N 次工具」。
+   * 新建会话那条路早就 hubReset 了，切会话这条路漏了，补上。
+   * （工具卡自己会重新接柜子：_attachToHub 里会把指针再交过去。）
+   */
+  try { if (typeof hubReset === 'function') hubReset(); } catch {}
   renderTurns(r.session.turns);
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
 

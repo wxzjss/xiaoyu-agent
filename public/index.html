@@ -1368,6 +1368,10 @@
       vertical-align: bottom; color: var(--dim); font-size: 12px; opacity: .85;
     }
     .hubpeek:empty { display: none; }
+    /* 【2026-11-07 主人要的金色「运行中」】
+       工具在跑的时候柜门右边写「运行中」，用工具卡标题那个金色（#f0b954），
+       比灰字亮一档，扫一眼就知道「现在有东西在动」。跑完自动退回灰字摘要。 */
+    .hubpeek.live { color: #f0b954; opacity: 1; font-weight: 500; }
 
     /* 【2026-11-05 加】「加载更早」按钮：贴在聊天区最上面，细一点别抢戏 */
     .loadEarlier {
@@ -10436,9 +10440,20 @@ function hubRefreshTitle() {
        工具在跑：标题已经写了「正在…」，灰字留空别重复；
        都结束了：退回原来的「刚想了什么 / 刚做了什么」摘要。 */
     if (pk) {
-      if (_thinking) pk.textContent = _thinking.dataset.peek || '';
-      else if (_runEl) pk.textContent = '';
-      else pk.textContent = hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
+      /* 【2026-11-07 主人要的金色「运行中」】
+       * 他看中工具卡标题右侧那个金色「运行中」，想让它也出现在柜门灰字那截。
+       * 现在工具在跑时，柜门右边就写金色的「运行中」；思考时仍是实时片段；
+       * 都结束了才退回摘要。 */
+      if (_thinking) {
+        pk.textContent = _thinking.dataset.peek || '';
+        pk.classList.remove('live');
+      } else if (_runEl) {
+        pk.textContent = '运行中';
+        pk.classList.add('live');
+      } else {
+        pk.textContent = hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
+        pk.classList.remove('live');
+      }
     }
   } catch (e) {}
 }
@@ -10846,7 +10861,19 @@ function foldLiveTools() {
       }
       /* 【2026-11-05】柜门后面那截也跟着刷新 */
       const _pk = _prev.querySelector('summary > .hubpeek');
-      if (_pk) _pk.textContent = hubPeekOf([..._prev.querySelectorAll('details.tool, details.think')]);
+      if (_pk) {
+        /* 【2026-11-07】还在跑的时候不能退回摘要 —— 跟实时那条路一个口径：金色「运行中」 */
+        const _running = [..._prev.querySelectorAll('details.tool')].some((el) => {
+          const st = el.querySelector('.status');
+          const tx = String((st && st.textContent) || '');
+          return tx.indexOf('运行') >= 0 || (st && st.classList.contains('run'));
+        });
+        if (_running) { _pk.textContent = '运行中'; _pk.classList.add('live'); }
+        else {
+          _pk.textContent = hubPeekOf([..._prev.querySelectorAll('details.tool, details.think')]);
+          _pk.classList.remove('live');
+        }
+      }
     } catch (e) {}
     return;
   }

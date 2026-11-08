@@ -13307,6 +13307,53 @@ async function imeMatchOnce() {
 }
 
 /**
+ * 【2026-11-08 修·重启后点输入框直接打字，出来全是英文】
+ *
+ * 主人报：「重启后点输入框要输入时，点键盘却输入英文，而不是中文」。
+ *
+ * 这不是切换坏了，是两套规矩撞在一起：
+ *   · 重启后系统 IME 停在英文状态，得靠 imeMatchSystem() 切回中文；
+ *   · 可 11-07 为了根治「白框」，定了「人一动手打字就作废这次切换」
+ *     （keydown / compositionstart → imeCancelSoon，另有 3 秒内打过字一律不碰）。
+ * 重启后人是「点一下 → 立刻敲键盘」，700ms 的待切定时器还没到就被作废了，
+ * 于是那一趟永远没跑，输入法留在英文上，第一句全是字母。
+ *
+ * 放宽「打字时不切」会立刻把白框招回来 —— 不能动那条。
+ * 正确做法是**抢在打字之前切好**：页面起来 1.8 秒后，趁还没人碰键盘，
+ * 后台静默把系统输入法对回中文。那时候没有拼音串，切是安全的；
+ * 之后人点输入框、立刻打字，已经不需要再切，中文照常，白框也不会来。
+ *
+ * 三道闸，缺一不可：
+ *   · 窗口不在前台（document.hasFocus() false）→ 不切。小鱼Agent 在后台启动、
+ *     主人正在别的窗口打英文时，不能隔空把人家的输入法改了。
+ *   · 已经在 composing / 刚上屏 / 3 秒内打过字 → 不切，这次让给人。
+ *   · imeMatchOnce 内部还会再查一遍「功能开关」和 imeBusy，慢请求回来也不撞拼音。
+ * 只跑一次（_imePrimed），刷新页面才再来。
+ */
+let _imePrimed = false;
+async function imePrimeOnBoot() {
+  if (_imePrimed) return;
+  _imePrimed = true;
+  /** 真要动手之前再看一眼：人已经在打字了就让给他，这次不碰 */
+  const prime = () => {
+    if (imeBusy() || imeTypingRecently()) return;
+    try { imeMatchOnce(); } catch {}
+  };
+  try {
+    await new Promise((r) => setTimeout(r, 1800));   // 等窗口露面、服务起来、IME 就绪
+    if (typeof document !== 'undefined' && document.hasFocus && document.hasFocus()) {
+      prime();
+      return;
+    }
+    /* 【别漏了这一下】重启后窗口常常还没被激活（1.8 秒时 hasFocus=false），
+     * 要是就此放弃，主人点进来照样是英文。挂一个一次性的 focus 监听：
+     * 等窗口真被激活、人还没开始打字时再切。仍然不隔空改后台的别人。 */
+    window.addEventListener('focus', prime, { once: true });
+  } catch {}
+}
+try { imePrimeOnBoot(); } catch {}
+
+/**
  * 【2026-11-07 主人报「重启后直接点键盘就出白框」】
  *
  * 根因在这一行 focus 监听：**页面加载时程序自己会 input.focus()**

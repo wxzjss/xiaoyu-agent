@@ -85,6 +85,21 @@ t.ok('打字会取消待切', /'keydown', markTyping/.test(ui));
 t.ok('打拼音也会取消', /'compositionstart', markTyping/.test(ui));
 t.ok('刚打过字就整段不切', /function imeTypingRecently\(\)/.test(ui) && /imeBusy\(\) \|\| imeTypingRecently\(\)/.test(ui));
 
+/* 【2026-11-08 加·重启后第一句打出来是英文】
+ *
+ * 「打字时不许碰输入法」这条保护不能松（松了白框就回来），
+ * 但重启后系统 IME 停在英文、人点完立刻敲键盘 → 待切那趟被作废 → 全是字母。
+ * 解法是抢在打字之前切：页面起来 1.8 秒后，窗口在前台且没人打字时静默切一次。
+ * 下面四条盯住它别被删回去。 */
+t.ok('有「开机先切好」的入口', /async function imePrimeOnBoot\(\)/.test(ui));
+t.ok('开机切只跑一次', /_imePrimed\) return;[\s\S]{0,80}_imePrimed = true;/.test(ui));
+t.ok('窗口不在前台不隔空改别人的输入法', /document\.hasFocus\(\)/.test(ui));
+t.ok('窗口还没激活时，等它拿到焦点再补切一次',
+  /addEventListener\('focus', prime, \{ once: true \}\)/.test(ui));
+t.ok('开机切也要让给正在打字的人', /if \(imeBusy\(\) \|\| imeTypingRecently\(\)\) return;[\s\S]{0,120}imeMatchOnce\(\)/.test(ui));
+t.ok('原来的「打字不许切」保护还在（不能为修这个把白框招回来）',
+  /if \(imeBusy\(\) \|\| imeTypingRecently\(\)\) return;/.test(ui) && /'keydown', markTyping/.test(ui));
+
 if (cdp2) {
   try {
     const r2 = await cdp2.eval(`

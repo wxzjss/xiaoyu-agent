@@ -10456,7 +10456,7 @@ function groupLooseTools() {
         return /运行/.test(String((s && s.textContent) || '')) || (s && s.classList.contains('run'));
       });
       const st = document.createElement('span');
-      st.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : (_runCard ? 'run live' : 'ok')));
+      st.className = 'status ' + (bad ? 'err' : (_runCard ? 'run live' : (warn ? 'warn' : 'ok')));
       st.textContent = bad ? (bad + ' 个失败') : (_runCard ? '运行中' : '');
       sum.append(name, st);
       hub.appendChild(sum);
@@ -10641,7 +10641,7 @@ function hubRefreshTitle() {
      * 这块上一次加过，被后来的一次提交冲掉了 —— 这次连同断言一起守。
      */
     const _live2 = Boolean(_runEl) || Boolean(_thinking);
-    n2.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : (_live2 ? 'run live' : 'ok')));
+    n2.className = 'status ' + (bad ? 'err' : (_live2 ? 'run live' : (warn ? 'warn' : 'ok')));
     n2.textContent = bad ? (bad + ' 个失败') : (_live2 ? '运行中' : '');
   }
   /* 【2026-11-05】柜门后面那截也跟着走 */
@@ -11149,7 +11149,7 @@ function foldLiveTools() {
       const _warn = _prev.querySelectorAll('details.tool .status.warn').length;
       const _st = _prev.querySelector('summary > .status');
       if (_st) {
-        _st.className = 'status ' + (_bad ? 'err' : (_warn ? 'warn' : (_liveRun ? 'run live' : 'ok')));
+        _st.className = 'status ' + (_bad ? 'err' : (_liveRun ? 'run live' : (_warn ? 'warn' : 'ok')));
         _st.textContent = _bad ? (_bad + ' 个失败') : (_liveRun ? '运行中' : '');
       }
       /* 【2026-11-05】柜门后面那截也跟着刷新 */

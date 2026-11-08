@@ -11123,25 +11123,40 @@ function foldLiveTools() {
     try {
       const _t = _prev.querySelectorAll('details.tool').length;
       const _k = _prev.querySelectorAll('details.think').length;
+      /**
+       * 【2026-11-08 补·第三条路：卡塞进「已经有柜子」的时候】
+       *
+       * 前面两处都改过了（hubRefreshTitle 的直播柜、groupLooseTools 的归拢柜），
+       * 唯独这条漏了 —— 而直播时最常见的就是它：柜子已经在屏幕上，
+       * 新工具卡往里塞，标题只写「调了 N 次工具 · 想了 N 段」，
+       * 状态只写失败数。于是主人截图里看到的就是
+       * 「里面【跑全量】运行中，柜门还是『调了 1 次工具』、右边空的」。
+       *
+       * 三处现在同一个口径：有卡在跑就写「调了 N 次 · 正在X…」+ 金色「运行中」。
+       */
+      const _liveRun = [..._prev.querySelectorAll('details.tool')].find((el) => {
+        const s = el.querySelector('.status');
+        const tx = String((s && s.textContent) || '');
+        return tx.indexOf('运行') >= 0 || (s && s.classList.contains('run'));
+      });
       const _nm = _prev.querySelector('.hubname');
-      if (_nm) _nm.textContent = _k ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具');
+      if (_nm) {
+        _nm.textContent = _liveRun
+          ? ('调了 ' + _t + ' 次 · 正在' + String((_liveRun.querySelector('.name') || {}).textContent || '干活').trim() + '…')
+          : (_k ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'));
+      }
       const _bad = _prev.querySelectorAll('details.tool .status.err').length;
       const _warn = _prev.querySelectorAll('details.tool .status.warn').length;
       const _st = _prev.querySelector('summary > .status');
       if (_st) {
-        _st.className = 'status ' + (_bad ? 'err' : (_warn ? 'warn' : 'ok'));
-        _st.textContent = _bad ? (_bad + ' 个失败') : '';
+        _st.className = 'status ' + (_bad ? 'err' : (_warn ? 'warn' : (_liveRun ? 'run live' : 'ok')));
+        _st.textContent = _bad ? (_bad + ' 个失败') : (_liveRun ? '运行中' : '');
       }
       /* 【2026-11-05】柜门后面那截也跟着刷新 */
       const _pk = _prev.querySelector('summary > .hubpeek');
       if (_pk) {
         /* 【2026-11-07】还在跑的时候不能退回摘要 —— 跟实时那条路一个口径：金色「运行中」 */
-        const _running = [..._prev.querySelectorAll('details.tool')].some((el) => {
-          const st = el.querySelector('.status');
-          const tx = String((st && st.textContent) || '');
-          return tx.indexOf('运行') >= 0 || (st && st.classList.contains('run'));
-        });
-        if (_running) { _pk.textContent = '运行中'; _pk.classList.add('live'); }
+        if (_liveRun) { _pk.textContent = '运行中'; _pk.classList.add('live'); }
         else {
           _pk.textContent = hubPeekOf([..._prev.querySelectorAll('details.tool, details.think')]);
           _pk.classList.remove('live');

@@ -183,9 +183,20 @@ t.ok('柜门有「运行中」',
   /_live2 \? '运行中' : ''/.test(ui) && /status ' \+ \(bad \? 'err' : \(warn \? 'warn' : \(_live2 \? 'run live' : 'ok'\)\)\)/.test(ui));
 t.ok('塞进已有柜子后接上 _liveHub',
   /_prev\.appendChild\(el\);[\s\S]{0,600}_liveHub = _prev;/.test(ui));
-/* 【2026-11-08 加】历史归拢那条路（groupLooseTools）也要给柜门挂「运行中」，
- * 光改标题不够 —— 主人截图里柜门右边是空的。 */
-t.ok('归拢出来的柜子也有「运行中」',
-  /_runCard \? '运行中' : ''/.test(ui) && /_runCard \? 'run live' : 'ok'/.test(ui));
+/* 【2026-11-08 加】柜门「运行中」现在有**三条路**都要写，缺一条就露馅：
+ *   ① hubRefreshTitle      直播柜（_live2）
+ *   ② groupLooseTools      历史归拢柜（_runCard）
+ *   ③ foldLiveTools._prev  新卡塞进已有柜（_liveRun）
+ * 主人截图那次就是③漏了 —— 前两条改好、他刷新后还是一样。 */
+t.ok('三条路都写「运行中」',
+  /\(_live2 \? '运行中' : ''\)/.test(ui)
+  && /\(_runCard \? '运行中' : ''\)/.test(ui)
+  && /\(_liveRun \? '运行中' : ''\)/.test(ui));
+t.ok('三条路的状态都给金色类 run live',
+  /_live2 \? 'run live' : 'ok'/.test(ui)
+  && /_runCard \? 'run live' : 'ok'/.test(ui)
+  && /_liveRun \? 'run live' : 'ok'/.test(ui));
+t.ok('第三条路的标题也写「正在X…」',
+  /_liveRun[\s\S]{0,260}次 · 正在/.test(ui));
 
 t.done();

@@ -1,4 +1,4 @@
-// Built-in tools. Each tool: { name, description, parameters(JSON Schema), run(args) }
+﻿// Built-in tools. Each tool: { name, description, parameters(JSON Schema), run(args) }
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFileSync } from 'node:fs';
@@ -2645,7 +2645,19 @@ export async function runTool(name, rawArgs, sessionId, overrideSignal) {
     const r = await runToolInner(name, rawArgs, sessionId);
     return await clipToolResult(name, r, sessionId);
   };
-  if (overrideSignal) return runWithToolContext({ sessionId, signal: overrideSignal }, run);
+  // 【2026-11-08 严检补】sessionId 可能是空的（会话外跑、启动自检）。空的时候别往 ctx 里塞
+  // 一个 undefined —— runWithToolContext 里是 { ...CTX, ...ctx }，塞进去会把全局那份好值盖成空。
+  // 有值才传，没值就让它按老规矩退回全局 CTX。
+  // 【2026-11-08 根治】光是 overrideSignal 有值才进隔离，是不够的：
+  // 没传 signal（比如子智能体那条路）时下面直接 run()，sessionId 跟着白传，
+  // 工具里 ctxNow() 退回全局 CTX —— 清单就写到「最后开跑的那个会话」头上去了。
+  // 现在只要有 sessionId 就进隔离，signal 有就带上。
+  if (overrideSignal || sessionId) {
+    const _ctx = {};
+    if (overrideSignal) _ctx.signal = overrideSignal;
+    if (sessionId) _ctx.sessionId = sessionId;
+    if (Object.keys(_ctx).length) return runWithToolContext(_ctx, run);
+  }
   return run();
 }
 

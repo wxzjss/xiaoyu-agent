@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 【2026-11-08 加】清单不许跑到别的会话头上 —— 站岗
  *
  * 主人原话：「这个也不是一次两次了，是压根没生效过，我要求根治」
@@ -69,14 +69,14 @@ if (fs.existsSync(PLAN_DIR) && fs.existsSync(SESS_DIR)) {
     if (alive.has(b)) continue;
     // 刚写出来的先放过：全量回归里别的检查脚本正拿着临时会话写清单，
     // 那时会话文件还没落盘，看着像孤儿，其实人家正用着。3 分钟后再算数。
-    try { if (nowMs - fs.statSync(path.join(PLAN_DIR, f)).mtimeMs < 180000) continue; } catch {}
+    // 【2026-11-08 改】光按时间放过不够：另一个会话（workbuddy / 检查鱼）跑一趟能跑十几分钟，
+    // 它的清单一直活着，超过 3 分钟就被当孤儿了。真孤儿是「会话文件早没了、清单还躺着」，
+    // 那种一般是很久以前留下的。所以 30 分钟内的都在跑，不冤枉。
+    try { if (nowMs - fs.statSync(path.join(PLAN_DIR, f)).mtimeMs < 1800000) continue; } catch {}
     orphans.push(b);
   }
   ok('plan 目录没有孤儿清单', orphans.length === 0,
     orphans.length ? ('有 ' + orphans.length + ' 份：' + orphans.slice(0, 5).join(',')) : '');
-  for (const b of probes) {
-    try { fs.unlinkSync(path.join(PLAN_DIR, b + '.json')); } catch {}
-  }
   const probesLeft = probes.filter((b) => fs.existsSync(path.join(PLAN_DIR, b + '.json')));
   ok('plan 目录没有探针残留', probesLeft.length === 0,
     probesLeft.length ? ('剩 ' + probesLeft.length + ' 份：' + probesLeft.slice(0, 5).join(',')) : '');
@@ -97,7 +97,7 @@ if (fs.existsSync(liveTools)) {
   const liveSrc = fs.readFileSync(liveTools, 'utf8');
   ok(
     '生效那份也传了 sessionId',
-    /if \(overrideSignal\) return runWithToolContext\(\{\s*sessionId,\s*signal: overrideSignal\s*\}/.test(
+    /if \(overrideSignal \|\| sessionId\) \{[\s\S]{0,900}?_ctx\.sessionId = sessionId/.test(
       liveSrc,
     ),
   );

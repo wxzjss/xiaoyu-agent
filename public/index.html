@@ -1196,6 +1196,9 @@
       display: none; align-items: center; gap: 6px;
     }
     .sendingHint.show { display: flex; }
+    /* 【2026-11-08】超过 90 秒没回音：提示改口 + 变金色，别再假装「正在发送」 */
+    .sendingHint.stalled { color: #f0b954; }
+    .sendingHint.stalled .dots { display: none; }
     /* 「正在发送消息」那一行：居中、和输入框同宽 */
     .sendingRow { max-width: 900px; margin: 0 auto 6px; display: flex; align-items: center; gap: 10px; }
     /* 【2026-11-05 改】原来是 flex:none（宽度跟内容走），时长没法靠右。
@@ -23095,6 +23098,38 @@ setInterval(async () => {
       try { hidingSendingSafe(); } catch (e) {}
       try { syncSendBtn(); } catch (e) {}
     }
+    /**
+     * 【2026-11-08 加·90 秒这个阈值终于有用了】
+     *
+     * 主人问：「不是说阈值 90 秒吗？那超过阈值什么事都没发生，
+     * 那设这个 90 秒阈值有什么用」。
+     *
+     * 他说得对：在这之前 RUNNING_STALL_MS 只把会话列表那颗绿点变黄，
+     * 而聊天区里「正在发送消息」照样一行灰字转圈，看着跟正常一模一样。
+     * 真正掐轮的是后端 300 秒那道闸 —— 也就是说 90 到 300 秒这段，
+     * 界面在骗人说「在正常干活」。
+     *
+     * 现在 90 秒一到，聊天区那条提示直接改口 + 变金色：
+     * 「已经 N 秒没有回音，可能卡住了（点右侧 ⏹ 停）」，
+     * 不用去会话列表找，也不用心算时间。
+     */
+    try {
+      const _hh = document.getElementById('sendingHint');
+      const _sp = _hh && _hh.querySelector('span');
+      const _info = sid ? runningSess.get(sid) : null;
+      const _idle = Number((_info && _info.idleMs) || 0);
+      if (_hh && _sp && busy) {
+        if (_idle > RUNNING_STALL_MS) {
+          _sp.textContent = '已经 ' + Math.round(_idle / 1000) + ' 秒没有回音，可能卡住了（点 ⏹ 停）';
+          _hh.classList.add('stalled');
+        } else {
+          _sp.textContent = '正在发送消息';
+          _hh.classList.remove('stalled');
+        }
+      } else if (_hh) {
+        _hh.classList.remove('stalled');
+      }
+    } catch (e) {}
   } catch (e) {}
 }, 3000);
 

@@ -10166,7 +10166,33 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         if (isRateLimited(status, text)) {
           send({ type: 'rate_limited', message: String(err?.message ?? err), streak: err?.streak ?? 0 });
         } else {
-          send({ type: 'error', message: String(err?.message ?? err) });
+
+          /* 【2026-11-08 根治「消息半路断了」】
+           * 出错这句话原来只 send 出去，不进 session.messages。
+           * 后果：前端不在这个会话上（切走了 / 断线 / 重启过）就永远看不到 ——
+           * 主人看到的画面就停在「我上一条说的话」，后面全丢。
+           * 2026-11-08 实测：12:14 跑完全量回归后这一轮被掐，
+           * 04:19:55 turn-idle-abort → 04:19:59 stuck-retry（前端不在，没人收）
+           * → 04:31:52 重试又撞 HTTP 502 抛到这里。整段十二分钟，界面一个字都没有。
+           * 所以：这句话必须落盘。落进历史的东西切会话、刷新、重启都在。
+           */
+          const errText = String(err?.message ?? err);
+          try {
+            const _s = getSession(sessionId);
+            const _last = (_s && Array.isArray(_s.messages) && _s.messages.length) ? _s.messages[_s.messages.length - 1] : null;
+            const _already = !!(_last && _last.__turnErr);
+            if (_s && !_already) {
+              _s.messages.push({
+                role: 'assistant',
+                content: '⚠️ 这一轮断在这儿了：' + errText
+                  + '\n\n（这一轮没说完，工具结果还在。换个模型试试，或者跟我说一声「接着办」，我照清单往下走。）',
+                at: Date.now(),
+                __turnErr: true,
+              });
+              saveSession(_s);
+            }
+          } catch {}
+          send({ type: 'error', message: errText });
         }
       }
     } finally {
@@ -10819,6 +10845,22 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
               /* 【2026-11-08 改】以前写完这句就完了，主人还得自己打一句「接着做」。
                * 现在 onStuck 已经在排队接回了，所以这句话要跟实际行为对上。 */
               lv.events.push({ type: 'error', text: '这一轮卡得太久，我先把它强行收掉，马上重新接一次——你不用管。', at: Date.now() });
+              /* 【2026-11-08 加·主人说「根治」】光写 live.events 只在内存里，
+               * 切会话/刷新/重启就没了——主人就是这么丢了一整段话的。
+               * 所以同一句也落进会话历史，一定能看见。 */
+              try {
+                const _s = getSession(sid);
+                const _last = (_s && Array.isArray(_s.messages) && _s.messages.length) ? _s.messages[_s.messages.length - 1] : null;
+                if (_s && !(_last && _last.__turnErr)) {
+                  _s.messages.push({
+                    role: 'assistant',
+                    content: '⚠️ 这一轮卡太久，我先强行收掉、马上重接——你不用管。\\n\\n（要是没接回来，跟我说一声「接着办」，我照清单往下走。）',
+                    at: Date.now(),
+                    __turnErr: true,
+                  });
+                  saveSession(_s);
+                }
+              } catch {}
               lv.done = true;
               lv.endedAt = Date.now();
             }

@@ -27,6 +27,17 @@ const cfg = await import('file:///' + ROOT.replace(/\\/g, '/') + '/src/config.mj
 
 const HIST = path.join(cfg.config.dataDir, '.state', 'plan', '_history');
 
+// 【2026-11-08 加·自愈】以前只在正常跑完时清自己的探针，中途被打断（重启/掐掉）就留残骸，
+// 日积月累攒了 140 份。现在开跑先把历史残骸扫干净，跑完再清一次。
+{
+  try {
+    const dir = path.join(cfg.config.dataDir, '.state', 'plan');
+    for (const f of fs.readdirSync(dir)) {
+      if (/^__/.test(f)) fs.unlinkSync(path.join(dir, f));
+    }
+  } catch {}
+}
+
 function histTexts() {
   const out = [];
   try {

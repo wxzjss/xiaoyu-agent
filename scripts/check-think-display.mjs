@@ -51,7 +51,7 @@ t.ok('hubpeek：思考给实时灰字、工具写金色「运行中」、结束�
 t.ok('「正在跑命令…」没被弄坏', /'正在' \+/.test(ui));
 
 // ── 2b. 柜门右侧「不断变化的思考灰字」 ────────────────────────────
-t.ok('有 thinkPeekTail，且取的是尾部片段', /function thinkPeekTail\(text\)/.test(ui) && /flat\.slice\(-28\)/.test(ui));
+t.ok('有 thinkPeekTail，且取的是尾部片段', /function thinkPeekTail\(text\)/.test(ui) && /flat\.slice\(-160\)/.test(ui));
 t.ok('实时 set 每拍更新 dataset.peek', /d\.dataset\.peek = thinkPeekTail\(flat\)/.test(ui));
 t.ok('整组重画也更新灰字', (ui.match(/dataset\.peek = thinkPeekTail\(flat\)/g) || []).length >= 2);
 t.ok('灰字三分支：思考 / 工具(运行中) / 结束', /if \(_thinking\) \{[\s\S]{0,80}pk\.textContent = _thinking\.dataset\.peek/.test(ui)
@@ -121,7 +121,7 @@ if (cdp) {
     t.ok('真机：灰字跟着流不断变化', r.peek2 !== r.peek1 && r.peek2 === '在捋第二步，越想越多了', JSON.stringify(r.peek2));
     t.ok('真机：想完退回摘要', r.peekAfter.length > 0 && r.peekAfter !== r.peek2, JSON.stringify(r.peekAfter));
     t.ok('真机：工具运行时灰字是金色「运行中」', r.peekTool === '运行中', JSON.stringify(r.peekTool));
-    t.ok('真机：长思考的灰字取的是最新尾部', r.peekTail.startsWith('…') && r.peekTail.length <= 29 && r.peekIsTail, JSON.stringify(r.peekTail));
+    t.ok('真机：长思考的灰字取的是最新尾部', r.peekTail.startsWith('…') && r.peekTail.length <= 161 && r.peekIsTail, JSON.stringify(r.peekTail));
   } catch (e) {
     t.ok('真机探针能跑', false, String(e.message).slice(0, 100));
   } finally {

@@ -20,6 +20,20 @@ import { makeChecker } from './_harness_util.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const t = makeChecker('清单缺失看守');
 
+// 【2026-11-08 加·自愈】中途被打断会留 __gate_probe_* 残骸，开跑先扫干净。
+{
+  try {
+    const dir = path.join(ROOT, "..", ".state", "plan");
+    const dir2 = path.join(ROOT, ".state", "plan");
+    for (const d of [dir, dir2]) {
+      if (!fs.existsSync(d)) continue;
+      for (const f of fs.readdirSync(d)) {
+        if (/^__/.test(f)) fs.unlinkSync(path.join(d, f));
+      }
+    }
+  } catch {}
+}
+
 // ── 1. 三个函数都在 ─────────────────────────────────────────────
 const planPath = path.join(ROOT, 'src', 'plan.mjs');
 const planSrc = fs.readFileSync(planPath, 'utf8');

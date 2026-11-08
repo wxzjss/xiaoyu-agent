@@ -696,6 +696,35 @@ async function createWindow(updated = false) {
     },
   });
 
+  /**
+   * 【2026-11-08 加·把「只往中文掰」那一下真正接上】
+   *
+   * 主人：「重启后输入法默认是英文的问题还没解决，而且当前会话 Ctrl+空格
+   * 切中文后，切换其他会话输入法又默认切回英文了。」
+   *
+   * 上午我把整套自动掰输入法停用了 —— 那解决了「被掰成英文」，但**什么都没做**
+   * 也意味着「重启后默认英文」没人管：Windows 按窗口记 IME 状态，
+   * 这个窗口上一次是英文，下次起来还是英文。
+   *
+   * matchImeToSystem() 已经写死 wantZh=true（只往中文掰，绝不会把中文掰走），
+   * 但停用之后没人调它。这里挂到窗口 focus：
+   *   · 启动后窗口一露面 → 立刻是中文
+   *   · 切去别的应用再切回来 → 若被系统改成英文，顺手掰回中文
+   * 已经是中文时 C# 那边 cur==1 直接返回，一次都不写，所以不会干扰你打字。
+   * 节流 1.5 秒，避免频繁 focus 堆进程。
+   */
+  try {
+    let _imeFocusAt = 0;
+    const _imeOnFocus = () => {
+      const t = Date.now();
+      if (t - _imeFocusAt < 1500) return;
+      _imeFocusAt = t;
+      try { matchImeToSystem().catch(() => {}); } catch (e) {}
+    };
+    win.on('focus', _imeOnFocus);
+    win.once('ready-to-show', () => { setTimeout(_imeOnFocus, 600); });
+  } catch (e) {}
+
   // 默认最大化（顺序与原因见下面 ready-to-show 里那段，别改回去）。
   win.once('ready-to-show', () => {
     bootMark('窗口露面（ready-to-show）');

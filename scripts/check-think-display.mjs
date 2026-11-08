@@ -39,23 +39,27 @@ t.ok('正文 CSS 允许换行（全文照旧全显示）', /\.thinkBody\s*\{[^}]
 t.ok('openThink 建块就挂 thinking-now', /d\.className = 'think thinking-now'/.test(ui));
 t.ok('思考流式中刷新柜门', /d\.classList\.add\('thinking-now'\); hubRefreshTitle\(\)/.test(ui));
 t.ok('finish 撤标记并刷新柜门', (ui.match(/d\.classList\.remove\('thinking-now'\); hubRefreshTitle\(\)/g) || []).length >= 2);
-t.ok('hubRefreshTitle 认 thinking-now', /querySelector\('details\.think\.thinking-now'\)/.test(ui));
+/* 【2026-11-08 重构后】柜门文案搬到 syncHubHead；找 thinking-now 那段还留在
+ * hubRefreshTitle（柜子外面那块只有它能找）。 */
+t.ok('柜门认 thinking-now', /details\.think\.thinking-now/.test(ui));
 t.ok('柜门写「正在思考中…」', ui.includes("'正在思考中…'"));
 /* 【2026-11-08 改口径】主人要「调了 x 次」跟着实时动，所以柜门运行中是
  * 「调了 N 次 · 正在思考中…」/「调了 N 次 · 正在跑命令…」，计数是可选前缀。 */
-t.ok('思考优先于工具状态', /n1\.textContent = _thinking\s*\?\s*\(_cnt \+ '正在思考中…'\)/.test(ui));
+t.ok('思考优先于工具状态', /if \(thinking\) \{[\s\S]{0,160}'正在思考中…'/.test(ui));
 /* 【2026-11-07 改口径】工具在跑时灰字不再是空的，写金色「运行中」（主人要的那个） */
-t.ok('hubpeek：思考给实时灰字、工具写金色「运行中」、结束给摘要',
-  /if \(_thinking\) \{[\s\S]{0,80}pk\.textContent = _thinking\.dataset\.peek/.test(ui)
-  && /else if \(_runEl\) \{[\s\S]{0,80}pk\.textContent = '运行中'/.test(ui));
+/* 【2026-11-08 主人】柜门右侧状态已经有金色「运行中」了，
+ * 那截灰字不再重复写一遍 —— 运行中时清空（:empty 会自己隐藏）。 */
+t.ok('hubpeek：思考给实时灰字、工具运行中清空、结束给摘要',
+  /if \(thinking\) \{[\s\S]{0,160}pk\.textContent = thinking\.dataset\.peek/.test(ui)
+  && /else if \(runCard\) \{[\s\S]{0,160}pk\.textContent = ''/.test(ui));
 t.ok('「正在跑命令…」没被弄坏', /'正在' \+/.test(ui));
 
 // ── 2b. 柜门右侧「不断变化的思考灰字」 ────────────────────────────
 t.ok('有 thinkPeekTail，且取的是尾部片段', /function thinkPeekTail\(text\)/.test(ui) && /flat\.slice\(-160\)/.test(ui));
 t.ok('实时 set 每拍更新 dataset.peek', /d\.dataset\.peek = thinkPeekTail\(flat\)/.test(ui));
 t.ok('整组重画也更新灰字', (ui.match(/dataset\.peek = thinkPeekTail\(flat\)/g) || []).length >= 2);
-t.ok('灰字三分支：思考 / 工具(运行中) / 结束', /if \(_thinking\) \{[\s\S]{0,80}pk\.textContent = _thinking\.dataset\.peek/.test(ui)
-  && /else if \(_runEl\) \{[\s\S]{0,80}pk\.textContent = '运行中'/.test(ui)
+t.ok('灰字三分支：思考 / 工具(运行中清空) / 结束', /if \(thinking\) \{[\s\S]{0,160}thinking\.dataset\.peek/.test(ui)
+  && /else if \(runCard\) \{[\s\S]{0,160}pk\.textContent = ''/.test(ui)
   && /pk\.textContent = hubPeekOf\(/.test(ui));
 t.ok('金色「运行中」有对应样式', /\.hubpeek\.live \{ color: #f0b954/.test(ui));
 
@@ -120,7 +124,9 @@ if (cdp) {
         t.ok('真机：思考中右侧灰字有内容', r.peek1 === '在捋第一步', JSON.stringify(r.peek1));
     t.ok('真机：灰字跟着流不断变化', r.peek2 !== r.peek1 && r.peek2 === '在捋第二步，越想越多了', JSON.stringify(r.peek2));
     t.ok('真机：想完退回摘要', r.peekAfter.length > 0 && r.peekAfter !== r.peek2, JSON.stringify(r.peekAfter));
-    t.ok('真机：工具运行时灰字是金色「运行中」', r.peekTool === '运行中', JSON.stringify(r.peekTool));
+    /* 【2026-11-08 改口径】工具运行时灰字不再写「运行中」（那会和柜门右侧
+     * 的金色「运行中」重复，主人要求删右边那个），所以这里期望是空串。 */
+    t.ok('真机：工具运行时灰字为空（运行中在柜门右侧）', r.peekTool === '', JSON.stringify(r.peekTool));
     t.ok('真机：长思考的灰字取的是最新尾部', r.peekTail.startsWith('…') && r.peekTail.length <= 161 && r.peekIsTail, JSON.stringify(r.peekTail));
   } catch (e) {
     t.ok('真机探针能跑', false, String(e.message).slice(0, 100));

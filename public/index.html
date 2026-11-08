@@ -10451,49 +10451,18 @@ function groupLooseTools() {
       const sum = document.createElement('summary');
       const name = document.createElement('span');
       name.className = 'hubname';
-      name.textContent = run.length === 1 ? '调了 1 次工具' : ('调了 ' + run.length + ' 次工具');
-      /* 失败/警告只数工具卡，思考链不参与 */
-      const _toolOnly = run.filter((el) => el.classList.contains('tool'));
-      const _thinkN = run.length - _toolOnly.length;
-      name.textContent = (_toolOnly.length && _thinkN)
-        ? ('调了 ' + _toolOnly.length + ' 次工具 · 想了 ' + _thinkN + ' 段')
-        : (_thinkN ? ('想了 ' + _thinkN + ' 段') : ('调了 ' + _toolOnly.length + ' 次工具'));
-      const bad = _toolOnly.filter((el) => el.querySelector('.status.err')).length;
-      const warn = _toolOnly.filter((el) => el.querySelector('.status.warn')).length;
-      /* 【2026-11-08 加·柜门也要有「运行中」】先找出还在跑的那张卡，
-       * 标题和右侧状态要用同一个判断，别各算一套。 */
-      const _runCard = _toolOnly.find((el) => {
-        const s = el.querySelector('.status');
-        return /运行/.test(String((s && s.textContent) || '')) || (s && s.classList.contains('run'));
-      });
-      const st = document.createElement('span');
-      st.className = 'status ' + (bad ? 'err' : (_runCard ? 'run live' : (warn ? 'warn' : 'ok')));
-      st.textContent = bad ? (bad + ' 个失败') : (_runCard ? '运行中' : '');
+      /* 【2026-11-08 重构】柜门头部交给唯一出口 syncHubHead。
+       *
+       * 这里原来自己数工具、自己数思考段、自己判断有没有在跑、自己拼文案、
+       * 自己给状态定色 —— 而 hubRefreshTitle 和 foldLiveTools 里又各有一份。
+       * 今天柜门那个 bug 我改了四轮才全中，就是因为改一处、另两处照旧。 */
+      const st = document.createElement("span");
+      st.className = "status ok";
       sum.append(name, st);
       hub.appendChild(sum);
       lg.insertBefore(hub, first);
       for (const el of run) hub.appendChild(el);
-      /* 【2026-11-08 修·历史重绘的柜子不认「运行中」】
-       *
-       * 主人报：「点开柜子看到【跑回归】旁边有【运行中】，
-       * 为什么柜子标题还是【调了 x 次工具】而不是【正在跑回归】」。
-       *
-       * 因为这张柜是 renderTurns 重画历史时由这里新建的 ——
-       * 上面只按「有几张卡」算标题，压根没看柜里有没有卡在跑。
-       * 而会写「正在X…」的 hubRefreshTitle 只认 `_liveHub`（直播那个柜），
-       * 重绘时 hubReset 已经把它清空了，没人来刷历史柜。
-       *
-       * 现在建完柜也按同一口径查一次：有「运行中」的卡就写
-       * 「调了 N 次 · 正在<工具名>…」，跟直播柜一致。
-       */
-      try {
-        /* _runCard 在上面已经算好了（标题和状态共用同一个判断），这里直接用 */
-        if (_runCard) {
-          const _nm = _runCard.querySelector('.name');
-          name.textContent = '调了 ' + _toolOnly.length + ' 次 · 正在'
-            + String((_nm && _nm.textContent) || '干活').trim() + '…';
-        }
-      } catch (e) {}
+      try { syncHubHead(hub); } catch (e) {}
       try { markHubUserOpened(hub); } catch (e) {}
       run = [];
     };
@@ -10548,164 +10517,122 @@ function foldOldHubs(keepFrom) {
   try { if (typeof hubReset === "function") hubReset(); } catch {}
 }
 
+/**
+ * 【2026-11-08 重构·柜门头部只留一个出口】
+ *
+ * 为什么做这个：今天一整天，柜门(标题/状态/灰字)这一小块我改了**四轮**才对。
+ *
+ *   ① 标题不涨   → 只改了直播柜，漏了归拢柜
+ *   ② 仍不涨     → 归拢柜补了，漏了「新卡塞进已有柜」
+ *   ③ 有了但灰   → 文字对了，class 被 warn 抢走，不是 run live
+ *   ④ 两个「运行中」→ status 一个、hubpeek 又一个
+ *
+ * 四轮、四个不同症状，根子是同一件事：**柜门头部在三个函数里各写一遍**
+ *   · hubRefreshTitle   直播柜
+ *   · groupLooseTools   历史归拢柜
+ *   · foldLiveTools     新卡塞进已有柜
+ * 每处都自己数工具、自己判断在不在跑、自己拼文案 —— 改一处，另两处照旧。
+ *
+ * 现在统一成这一个函数，三处只管调它。以后要改柜门长什么样，只改这里。
+ *
+ * @param {HTMLElement} hub   柜子（details.toolhub）
+ * @param {object} opts
+ * @param {HTMLElement|null} opts.thinking  柜子外面那块正在想的（没有就传 null）
+ */
+function syncHubHead(hub, opts) {
+  if (!hub) return;
+  const o = opts || {};
+  const sum = hub.querySelector('summary') || hub;
+  const name = sum.querySelector('.hubname');
+  const st = sum.querySelector('.status');
+  const pk = sum.querySelector('.hubpeek');
+  const tools = [...hub.querySelectorAll('details.tool')];
+  const thinks = [...hub.querySelectorAll('details.think')];
+  const t = tools.length;
+  const k = thinks.length;
+  /* 哪张卡还在跑（status 文本带「运行」或挂 run 类）*/
+  const runCard = tools.find((el) => {
+    const s = el.querySelector('.status');
+    const tx = String((s && s.textContent) || '');
+    return tx.indexOf('运行') >= 0 || Boolean(s && s.classList.contains('run'));
+  }) || null;
+  const bad = hub.querySelectorAll('details.tool .status.err').length;
+  /* 警告要排除「正在跑」那种 —— 运行中挂的就是 warn 类，混进来会被当成警告 */
+  const warn = tools.filter((el) => {
+    const s = el.querySelector('.status');
+    if (!s || !s.classList.contains('warn')) return false;
+    return String(s.textContent || '').indexOf('运行') < 0;
+  }).length;
+  const thinking = o.thinking || null;
+  const runName = runCard
+    ? String((runCard.querySelector('.name') || {}).textContent || '干活').trim()
+    : '';
+
+  if (name) {
+    if (thinking) {
+      name.textContent = (t ? ('调了 ' + t + ' 次 · ') : '') + '正在思考中…';
+    } else if (runCard) {
+      name.textContent = (t ? ('调了 ' + t + ' 次 · ') : '') + '正在' + runName + '…';
+    } else if (t && k) {
+      name.textContent = '调了 ' + t + ' 次工具 · 想了 ' + k + ' 段';
+    } else if (k) {
+      name.textContent = '想了 ' + k + ' 段';
+    } else {
+      name.textContent = '调了 ' + t + ' 次工具';
+    }
+  }
+  if (st) {
+    const live = Boolean(runCard) || Boolean(thinking);
+    st.className = 'status ' + (bad ? 'err' : (live ? 'run live' : (warn ? 'warn' : 'ok')));
+    st.textContent = bad ? (bad + ' 个失败') : (live ? '运行中' : '');
+  }
+  if (pk) {
+    if (thinking) {
+      pk.textContent = thinking.dataset.peek || '';
+      pk.classList.remove('live');
+    } else if (runCard) {
+      /* 标题已经写了「正在X…」、status 已经是金色「运行中」，
+       * 这截灰字再写一遍就成了两个「运行中」—— 清空，:empty 会自己隐藏 */
+      pk.textContent = '';
+      pk.classList.remove('live');
+    } else {
+      pk.textContent = hubPeekOf([...tools, ...thinks]);
+      pk.classList.remove('live');
+    }
+  }
+}
+
 function hubRefreshTitle() {
   if (!_liveHub) return;
-  /* 【2026-11-08 修·柜子里来新内容时，主人展开的柜子又自己合上】
-   *
-   * 11-05 已经有两层保护：renderTurns 重画前按序号记下展开的柜子、
-   * 画完恢复；foldOldHubs 收旧柜时跳过带 userOpened 记号的。
-   * 但「直播来了一张新工具卡」这条路两边都不经过：addTool 在 log 末尾
-   * 另起柜子时写死 h.open=false，foldLiveTools 搬卡时也会动 details。
-   * 这里每次工具事件都会跑到，正好做最后一道兜底 —— 主人亲手拉开过的
-   * 柜子，谁都不许替他合上。
-   */
-  try {
-    if (_liveHub.dataset && _liveHub.dataset.userOpened === '1' && !_liveHub.open) {
-      /* 用户刚关掉的（2 秒内）绝不替他拉开 —— 见 markHubUserOpened 里那段说明：
-       * toggle 异步派发，标记清得晚，没有这条兜底就会「关了又被自己打开」。 */
-      const _closedAt = Number(_liveHub.dataset.userClosedAt || 0);
-      if (!_closedAt || Date.now() - _closedAt > 2000) _liveHub.open = true;
-    }
-  } catch (e) {}
-  const n1 = _liveHub.querySelector('.hubname');
-  const n2 = _liveHub.querySelector('.status');
-  if (!n1) return;
   /**
-   * 【2026-11-05 改·标题跟 foldLiveTools 一个口径，顺带刷新后面的摘要】
+   * 【2026-11-08 重构·这里原来一百二十多行】
    *
-   * 原来这里只数 _liveHubCount（只算工具），思考链加进来以后数字就对不上了：
-   * 柜子里明明有「想了 2 段」，标题还写「调了 1 次工具」。
-   * 而且工具跑完时状态变了，柜门上那截「正在读文件…」也该跟着变成「读取文件」。
-   */
-  const _t = _liveHub.querySelectorAll('details.tool').length;
-  const _k = _liveHub.querySelectorAll('details.think').length;
-  /* 【2026-11-05 同口径】跑着的时候标题就是「正在…」，跑完才退回统计。 */
-  const _runEl = [..._liveHub.querySelectorAll('details.tool')].find((el) => {
-    const st = el.querySelector('.status');
-    const tx = String((st && st.textContent) || '');
-    return tx.indexOf('运行') >= 0 || (st && st.classList.contains('run'));
-  });
-  /* 【2026-11-07 主人】跟「正在跑命令…」一个待遇：思考还在流的时候，
-   * 柜门也写「正在思考中…」。thinking-now 由 openThink 挂上、finish 撤掉。 */
-  /**
-   * 【2026-11-08 修·「工具跑完、模型在想」这段柜门是空的】
+   * 它自己数工具、自己判断有没有在跑、自己拼三种文案、自己给状态定色 ——
+   * 而同样的逻辑在 groupLooseTools 和 foldLiveTools 里又各有一份。
+   * 今天柜门那个 bug 我改了四轮才对，就是因为改一处、另两处照旧。
    *
-   * 主人问：「比如【写文件】过程中，为什么【调了 x 次工具】不会变成【写文件】？」
-   *
-   * 拆开看是三段，代码只在一段里做对了：
-   *   ① 写文件真在跑      → 柜门写「正在写文件…」（这段是对的，真机验过）
-   *   ② 写文件跑完、模型在想要不要写下一个 → **柜门退回「调了 N 次工具」**
-   *   ③ 模型决定再调一个  → 又变「正在X…」
-   * 写文件往往零点几秒就完，人眼看到的绝大多数时间正好落在 ② 上，
-   * 所以观感就是「一直写着调了 x 次工具，从来没变成写文件」。
-   *
-   * ② 为什么会空：这里原来只在 `_liveHub` **里面**找思考块，
-   * 可 openThink 是把思考块挂在 #log 末尾的（柜子外面）。于是永远找不到，
-   * `_thinking` 永远是 null，柜门就一直掉到最底下那个「调了 N 次工具」分支。
-   *
-   * 现在两条路都认：柜子里有就用柜子里的；没有就往后找 ——
-   * 柜子之后、还标着 thinking-now 的那块，就是这一轮正在想的东西。
+   * 现在这里只做一件柜内查不到的事：找到「正在想的那块」——
+   * 它挂在柜子**外面**（openThink 追到 #log 末尾），柜内 querySelector 找不到。
+   * 剩下的交给 syncHubHead，柜门长什么样只在那一个地方定义。
    */
   const _thinking = (() => {
     try {
-      const inside = _liveHub.querySelector('details.think.thinking-now');
+      const inside = _liveHub.querySelector("details.think.thinking-now");
       if (inside) return inside;
-      const lg = document.getElementById('log');
+      const lg = document.getElementById("log");
       if (!lg) return null;
       const kids = [...lg.children];
       const ix = kids.indexOf(_liveHub);
       for (let i = kids.length - 1; i > ix; i -= 1) {
         const k = kids[i];
-        if (k && k.classList && k.classList.contains('think') && k.classList.contains('thinking-now')) return k;
+        if (k && k.classList && k.classList.contains("think") && k.classList.contains("thinking-now")) return k;
       }
     } catch (e) {}
     return null;
   })();
-  /* 【2026-11-08 修·计数要跟着工具数一起涨】
-   *
-   * 主人问：「为什么柜子上的【调了 x 次工具】不会在调用过程中随调用变化？」
-   *
-   * 原因不是没重算 —— tool_start / tool_end 都调了这个函数，数（_t）每次都是新的。
-   * 是**跑着的时候标题被「正在…」整段顶掉了**：只要有一个工具在跑，
-   * 就只写「正在跑命令…」，一个数字都不带。于是主人从头到尾看不见那个数在涨，
-   * 跑完才「啪」一下跳到最终统计，看着像从来没更新过。
-   *
-   * 现在两个一起给：`调了 3 次 · 正在跑命令…`。
-   * 「正在…」照旧保留（主人说过这个做得好），计数也跟着实时动。
-   * 一次都还没调的时候（纯思考）不写「调了 0 次」，只写「正在思考中…」。
-   */
-  const _cnt = _t ? ('调了 ' + _t + ' 次 · ') : '';
-  n1.textContent = _thinking
-    ? (_cnt + '正在思考中…')
-    : (_runEl
-      ? (_cnt + '正在' + String((_runEl.querySelector('.name') || {}).textContent || '干活').trim() + '…')
-      : ((_t && _k)
-        ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
-        : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'))));
-  const bad = _liveHub.querySelectorAll('.tool > summary > .status.err').length;
-  const warn = _liveHub.querySelectorAll('.tool > summary > .status.warn').length;
-  if (n2) {
-    /**
-     * 【2026-11-08 重新加回·被覆盖过一次】
-     * 主人：「柜子里只要有工具调用的标题旁边写有【运行中】，
-     * 那么柜子的标题旁边就必须也要有【运行中】」。
-     * 这块上一次加过，被后来的一次提交冲掉了 —— 这次连同断言一起守。
-     */
-    const _live2 = Boolean(_runEl) || Boolean(_thinking);
-    n2.className = 'status ' + (bad ? 'err' : (_live2 ? 'run live' : (warn ? 'warn' : 'ok')));
-    n2.textContent = bad ? (bad + ' 个失败') : (_live2 ? '运行中' : '');
-  }
-  /* 【2026-11-05】柜门后面那截也跟着走 */
-  try {
-    const pk = _liveHub.querySelector('summary > .hubpeek');
-    /* 【2026-11-07 主人】思考中：右侧灰字跟着流不断换成最新一小截；
-       工具在跑：标题已经写了「正在…」，灰字留空别重复；
-       都结束了：退回原来的「刚想了什么 / 刚做了什么」摘要。 */
-    if (pk) {
-      /* 【2026-11-07 主人要的金色「运行中」】
-       * 他看中工具卡标题右侧那个金色「运行中」，想让它也出现在柜门灰字那截。
-       * 现在工具在跑时，柜门右边就写金色的「运行中」；思考时仍是实时片段；
-       * 都结束了才退回摘要。 */
-      if (_thinking) {
-        pk.textContent = _thinking.dataset.peek || '';
-        pk.classList.remove('live');
-      } else if (_runEl) {
-        /* 【2026-11-08 主人】柜门已经有「正在跑X…」+ 右边金色「运行中」了，
-         * 这截灰字再写一遍「运行中」就成了两个 —— 清空（:empty 会自动隐藏）。 */
-        pk.textContent = '';
-        pk.classList.remove('live');
-      } else {
-        pk.textContent = hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
-        pk.classList.remove('live');
-      }
-    }
-  } catch (e) {}
+  syncHubHead(_liveHub, { thinking: _thinking });
 }
 
-/**
- * 整组重画时「认领」屏幕上原来那块思考，而不是删掉重建。
- *
- * 【为什么需要它 —— 2026-11-02 主人报的两个毛病】
- *   · 「思考链抽搐，疯狂展开闭合」：正在想的那块每秒被删掉重来一次，
- *     重建时是按「新建」的规矩来的，一开一合每拍上演一遍。
- *   · 「手动打开新发出的思考链消息还是会自动闭合」：主人点开的那个块
- *     在下一拍就被换成了新的收起块，等于他点了个寂寞。
- * 复用之后这两条一起消失：块还是那个块，文字就地改，open 状态谁都没动。
- */
-/**
- * 【2026-11-07 · 思考块的「标题」只放一句，全文放正文】
- *
- * 主人报：「展开柜子后思考链那条那么多灰字显示？不应该是一条吗？」
- *
- * 上一轮他要「能多长就显示多长」，我把标题截断整个去掉了 —— 过头了：
- * 实测他那条会话里 42 个思考块，**标题平均 263 字、最长 3017 字**，
- * 于是展开柜子满屏都是灰字。
- *
- * 现在分工明确：
- *   · 标题：**第一句话**（到句号/分号/换行为止，最多 40 字），一行，用来认出这是哪一段
- *   · 正文：**一个字都不删的全量**，点开就是全文
- * 这样「内容能多长显示多长」仍然成立（在正文里），而柜子不再糊成一片。
- */
 function thinkTitleOf(flat) {
   const s = String(flat || '').replace(/\s+/g, ' ').trim();
   if (!s) return '';
@@ -11133,49 +11060,10 @@ function foldLiveTools() {
      * 塞完就把指针接上来，跟 _attachToHub 那条路一个规矩。
      */
     try { _liveHub = _prev; } catch (e) {}
-    try {
-      const _t = _prev.querySelectorAll('details.tool').length;
-      const _k = _prev.querySelectorAll('details.think').length;
-      /**
-       * 【2026-11-08 补·第三条路：卡塞进「已经有柜子」的时候】
-       *
-       * 前面两处都改过了（hubRefreshTitle 的直播柜、groupLooseTools 的归拢柜），
-       * 唯独这条漏了 —— 而直播时最常见的就是它：柜子已经在屏幕上，
-       * 新工具卡往里塞，标题只写「调了 N 次工具 · 想了 N 段」，
-       * 状态只写失败数。于是主人截图里看到的就是
-       * 「里面【跑全量】运行中，柜门还是『调了 1 次工具』、右边空的」。
-       *
-       * 三处现在同一个口径：有卡在跑就写「调了 N 次 · 正在X…」+ 金色「运行中」。
-       */
-      const _liveRun = [..._prev.querySelectorAll('details.tool')].find((el) => {
-        const s = el.querySelector('.status');
-        const tx = String((s && s.textContent) || '');
-        return tx.indexOf('运行') >= 0 || (s && s.classList.contains('run'));
-      });
-      const _nm = _prev.querySelector('.hubname');
-      if (_nm) {
-        _nm.textContent = _liveRun
-          ? ('调了 ' + _t + ' 次 · 正在' + String((_liveRun.querySelector('.name') || {}).textContent || '干活').trim() + '…')
-          : (_k ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'));
-      }
-      const _bad = _prev.querySelectorAll('details.tool .status.err').length;
-      const _warn = _prev.querySelectorAll('details.tool .status.warn').length;
-      const _st = _prev.querySelector('summary > .status');
-      if (_st) {
-        _st.className = 'status ' + (_bad ? 'err' : (_liveRun ? 'run live' : (_warn ? 'warn' : 'ok')));
-        _st.textContent = _bad ? (_bad + ' 个失败') : (_liveRun ? '运行中' : '');
-      }
-      /* 【2026-11-05】柜门后面那截也跟着刷新 */
-      const _pk = _prev.querySelector('summary > .hubpeek');
-      if (_pk) {
-        /* 【2026-11-07】还在跑的时候不能退回摘要 —— 跟实时那条路一个口径：金色「运行中」 */
-        if (_liveRun) { _pk.textContent = ''; _pk.classList.remove('live'); }
-        else {
-          _pk.textContent = hubPeekOf([..._prev.querySelectorAll('details.tool, details.think')]);
-          _pk.classList.remove('live');
-        }
-      }
-    } catch (e) {}
+    /* 【2026-11-08 重构】同样是交给唯一出口。
+     * 这里原来是第三份手写逻辑（数工具、判运行中、拼三种文案、定色），
+     * 也是主人几轮截图里最常走到的那个柜子 —— 卡一张张往里塞，标题却不动。 */
+    try { syncHubHead(_prev); } catch (e) {}
     _restore();
     return;
   }

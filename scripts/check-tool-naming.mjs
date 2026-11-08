@@ -164,46 +164,26 @@ if (!cdp) {
   cdp.close();
 }
 
-/* 【2026-11-08 加·历史重绘的柜子也要认「运行中」】
- * 主人点开柜子看见里面「跑回归｜运行中」，柜门却还写「调了 x 次工具」。
- * 因为历史柜是 groupLooseTools 新建的，只按数量算标题；
- * 会写「正在X…」的 hubRefreshTitle 只管 _liveHub，重绘后已被 hubReset 清掉。 */
-/* 【2026-11-08 改】_runCard 提到 st 之前算了（标题和状态共用同一个判断），
- * 原来咬死「在 appendChild 之后 900 字符内」会误伤。守的是「有算、且被用上」。 */
-t.ok('历史柜建完会查有没有「运行中」的卡',
-  /const _runCard = _toolOnly\.find/.test(ui) && /if \(_runCard\) \{[\s\S]{0,200}_runCard\.querySelector\('\.name'\)/.test(ui));
-t.ok('历史柜运行中也写「调了 N 次 · 正在X…」',
-  /调了 ' \+ _toolOnly\.length \+ ' 次 · 正在'/.test(ui));
-
-/* 【2026-11-08 加·这两块被覆盖过一次，必须钉住】
- * ① 柜门也要有金色「运行中」—— 上次加过，被后来的一次提交冲掉了。
- * ② 卡塞进已有柜子后要把 _liveHub 指过去 —— 否则后续标题刷新打在空指针上，
- *    表现就是「柜子标题始终不随调用变化」。 */
-t.ok('柜门有「运行中」',
-  /_live2 \? '运行中' : ''/.test(ui) && /_live2 \? 'run live'/.test(ui));
 t.ok('塞进已有柜子后接上 _liveHub',
   /_prev\.appendChild\(el\);[\s\S]{0,600}_liveHub = _prev;/.test(ui));
-/* 【2026-11-08 加】柜门「运行中」现在有**三条路**都要写，缺一条就露馅：
- *   ① hubRefreshTitle      直播柜（_live2）
- *   ② groupLooseTools      历史归拢柜（_runCard）
- *   ③ foldLiveTools._prev  新卡塞进已有柜（_liveRun）
- * 主人截图那次就是③漏了 —— 前两条改好、他刷新后还是一样。 */
-t.ok('三条路都写「运行中」',
-  /\(_live2 \? '运行中' : ''\)/.test(ui)
-  && /\(_runCard \? '运行中' : ''\)/.test(ui)
-  && /\(_liveRun \? '运行中' : ''\)/.test(ui));
-t.ok('三条路的状态都给金色类 run live',
-  /_live2 \? 'run live'/.test(ui)
-  && /_runCard \? 'run live'/.test(ui)
-  && /_liveRun \? 'run live'/.test(ui));
-t.ok('第三条路的标题也写「正在X…」',
-  /_liveRun[\s\S]{0,260}次 · 正在/.test(ui));
-
-/* 【2026-11-08 加】「运行中」必须优先于「警告」。
- * 工具卡跑着的时候挂的是 status.warn（黄色），warn 若判在前面，
- * 柜门就被算成「警告」而不是金色「运行中」—— 实测踩过：
- * 标题和文字都对了，颜色还是灰的。三处都要「先认运行中，再认警告」。 */
-const _runFirst = (ui.match(/run live' : \((?:_)?warn \? 'warn' : 'ok'\)/g) || []).length;
-t.ok('运行中优先于警告（三处都是）', _runFirst >= 3, '找到 ' + _runFirst + ' 处');
+/* 【2026-11-08 重构后：柜门头部只有一个出口】
+ *
+ * 今天柜门那块改了四轮才对，根子是同一件事在三个函数里各写一遍
+ * （hubRefreshTitle / groupLooseTools / foldLiveTools），改一处另两处照旧。
+ * 现在统一到 syncHubHead，这里守三件事，防止以后又被复制成一团：
+ *   ① 只允许有一个 syncHubHead 定义
+ *   ② 三条路都必须调它，不许自己再拼一遍
+ *   ③ 文案（「运行中」/「run live」）只许在出口里出现，别处不许再写
+ */
+const _hdDefs = (ui.match(/function syncHubHead\(/g) || []).length;
+t.ok('柜门头部只有一个出口（syncHubHead 定义一次）', _hdDefs === 1, '找到 ' + _hdDefs + ' 处');
+t.ok('三条路都走那个出口',
+  /syncHubHead\(_liveHub,/.test(ui)
+  && /syncHubHead\(hub\)/.test(ui)
+  && /syncHubHead\(_prev\)/.test(ui));
+const _liveWord = (ui.match(/'运行中'/g) || []).length;
+const _runCls = (ui.match(/'run live'/g) || []).length;
+t.ok('「运行中」只在出口里写', _liveWord <= 2, '出现 ' + _liveWord + ' 次');
+t.ok('金色类 run live 只在出口里给', _runCls <= 2, '出现 ' + _runCls + ' 次');
 
 t.done();

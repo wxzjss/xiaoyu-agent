@@ -56,35 +56,26 @@ if (fs.existsSync(PLAN_DIR) && fs.existsSync(SESS_DIR)) {
   );
   const orphans = [];
   const probes = [];
+  const nowMs = Date.now();
   for (const f of fs.readdirSync(PLAN_DIR)) {
     if (!f.endsWith('.json')) continue;
     const b = f.replace(/\.json$/, '');
     if (b.startsWith('_')) continue;
-    if (b.startsWith('__')) {
-      probes.push(b);
-      continue;
-    }
-    if (!alive.has(b)) orphans.push(b);
+    if (b.startsWith('__')) { probes.push(b); continue; }
+    if (alive.has(b)) continue;
+    // 刚写出来的先放过：全量回归里别的检查脚本正拿着临时会话写清单，
+    // 那时会话文件还没落盘，看着像孤儿，其实人家正用着。3 分钟后再算数。
+    try { if (nowMs - fs.statSync(path.join(PLAN_DIR, f)).mtimeMs < 180000) continue; } catch {}
+    orphans.push(b);
   }
-  /* 【2026-11-08 改·站岗检查要会自愈，不能只报红】
-   * 孤儿清单的来源是「测试会话被删了、清单还留着」——
-   * 而跑一次全量回归就会制造几个（新会话 → 写清单 → 删会话）。
-   * 只报红的话，每次跑完都得人工手删，而且下一轮又冒出来。
-   * 现在：发现孤儿当场删掉，再复检一次；删干净就算过，删不掉才报红。 */
-  for (const b of orphans) {
-    try { fs.unlinkSync(path.join(PLAN_DIR, b + '.json')); } catch { /* 删不掉下面照样报 */ }
-  }
-  const orphansLeft = orphans.filter((b) => fs.existsSync(path.join(PLAN_DIR, b + '.json')));
-  ok('plan 目录没有孤儿清单', orphansLeft.length === 0,
-    orphans.length
-      ? ('清掉 ' + (orphans.length - orphansLeft.length) + ' 份，剩 ' + orphansLeft.length + ' 份：' + orphansLeft.slice(0, 5).join(', '))
-      : '');
+  ok('plan 目录没有孤儿清单', orphans.length === 0,
+    orphans.length ? ('有 ' + orphans.length + ' 份：' + orphans.slice(0, 5).join(',')) : '');
   for (const b of probes) {
-    try { fs.unlinkSync(path.join(PLAN_DIR, b + '.json')); } catch { /* 同上 */ }
+    try { fs.unlinkSync(path.join(PLAN_DIR, b + '.json')); } catch {}
   }
   const probesLeft = probes.filter((b) => fs.existsSync(path.join(PLAN_DIR, b + '.json')));
   ok('plan 目录没有探针残留', probesLeft.length === 0,
-    probes.length ? ('清掉 ' + (probes.length - probesLeft.length) + ' 份') : '');
+    probesLeft.length ? ('剩 ' + probesLeft.length + ' 份：' + probesLeft.slice(0, 5).join(',')) : '');
 } else {
   console.log('[skip] 找不到 plan 或 sessions 目录，跳过数据检查');
 }

@@ -31,7 +31,7 @@ const CASES = [
    * 现在 run-all-checks / check-smoke / check-changed / check-core 各有各的名字。 */
   ['node scripts/run-all-checks.mjs', '跑全量'],
   ['node scripts/check-smoke.mjs', '跑冒烟'],
-  ['node scripts/check-changed.mjs', '跑变更'],
+  ['node scripts/check-changed.mjs', '跑增量'],
   ['node scripts/check-core.mjs', '跑核心'],
   ['cd D:/x; node scripts/check-ui.mjs 2>&1', '跑回归'],
   ['cd D:/x; node _t_ui.mjs', '跑回归'],

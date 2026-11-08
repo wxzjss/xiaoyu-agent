@@ -1396,10 +1396,14 @@
     }
 
     /* 【2026-11-05 加】柜门后面那截灰色小字：正在做什么 / 刚想了什么 */
+    /* 【2026-11-08 主人】灰字要「延长到最右侧」。
+       原来是 max-width: 62% + 只取尾部 28 字 —— 双重掐短，右边空一大块。
+       现在让它吃掉柜门剩下的全部宽度、右对齐贴到边框；字数由 CSS 省略号兜，
+       不再在前端硬截 28 字（见 thinkPeekTail）。 */
     .hubpeek {
-      display: inline-block; max-width: 62%;
+      display: inline-block; flex: 1 1 auto; min-width: 0; max-width: none;
       margin-left: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      vertical-align: bottom; color: var(--dim); font-size: 12px; opacity: .85;
+      vertical-align: bottom; color: var(--dim); font-size: 12px; opacity: .85; text-align: right;
     }
     .hubpeek:empty { display: none; }
     /* 【2026-11-07 主人要的金色「运行中」】
@@ -10187,7 +10191,7 @@ function niceCommand(raw) {
    * 【2026-11-08 主人要求·回归要分得清，别一律叫「跑回归」】
    *
    * 主人原话：「跑回归怎么只显示一个【跑回归】？回归有那么多种类，
-   * 比如说【跑冒烟】【跑测试】【跑变更】【跑增量】【跑核心】【跑全量】……
+   * 比如说【跑冒烟】【跑测试】【跑增量】【跑增量】【跑核心】【跑全量】……
    * 具体你自己看着办，但要求不要搞混了」。
    *
    * 以前一条正则把所有 check-*.mjs / run-all-checks / _t_*.mjs 都吞成「跑回归」，
@@ -10195,7 +10199,7 @@ function niceCommand(raw) {
    *
    * 现在按入口分档（顺序从具体到宽泛，先认档位再落到单体）：
    *   跑冒烟  check-smoke.mjs     纯源码断言
-   *   跑变更  check-changed.mjs   按 git diff 反查受影响检查
+   *   跑增量  check-changed.mjs   按 git diff 反查受影响检查
    *   跑核心  check-core.mjs      固定核心链路子集
    *   跑全量  run-all-checks.mjs  全部 + 真机格 + 接口扫描
    *   跑回归  单个 check-*.mjs / _t_*.mjs
@@ -10203,11 +10207,11 @@ function niceCommand(raw) {
    * 为什么没有「跑测试」和「跑增量」：
    *   · 测试：这个项目**没有单元测试层**（没有 tests/、没有 node:test/vitest/jest），
    *     70 个 check 全是集成/真机检查。挂个「跑测试」标签只会让人以为有单测。
-   *   · 增量：语义和「跑变更」重叠（变更=按影响面选，增量=按时间选），
+   *   · 增量：语义和「跑增量」重叠（变更=按影响面选，增量=按时间选），
    *     两个并存正是主人担心的「搞混」，只留更准的那个。
    */
   if (/[\\/]?check-smoke\.mjs/i.test(c)) return '跑冒烟';
-  if (/[\\/]?check-changed\.mjs/i.test(c)) return '跑变更';
+  if (/[\\/]?check-changed\.mjs/i.test(c)) return '跑增量';
   if (/[\\/]?check-core\.mjs/i.test(c)) return '跑核心';
   if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?run-all-checks\.mjs/i.test(c)) return '跑全量';
   if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?(?:check-[a-z0-9-]+|_t_[a-z0-9-]+)\.mjs/i.test(c)) return '跑回归';
@@ -10894,7 +10898,10 @@ function addWorkerCard() {
 function thinkPeekTail(text) {
   const flat = String(text || '').replace(/\s+/g, ' ').trim();
   if (!flat) return '';
-  return flat.length > 28 ? '…' + flat.slice(-28) : flat;
+  /* 【2026-11-08 主人】28 字太短，灰字右边明明还有一大片空。
+   * 现在放到 160 字，真正显示多长交给 CSS 的 ellipsis 按容器宽度决定 ——
+   * 容器宽就多显示，窄就自动截，不用前端猜。 */
+  return flat.length > 160 ? '…' + flat.slice(-160) : flat;
 }
 
 function hubPeekOf(els) {

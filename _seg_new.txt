@@ -1,0 +1,10 @@
+// 2. 数据这一关：plan 目录里不许有孤儿
+if (fs.existsSync(PLAN_DIR) && fs.existsSync(SESS_DIR)) {
+  const alive = new Se
+…（中间省略 700 字）…
+('清掉 ' + (probes.length - probesLeft.length) + ' 份，剩 ' + probesLeft.length + ' 份') : '');
+} else {
+  console.log('[skip] 找不到 plan 或 sessions 目录，跳过数据检查');
+}
+
+[已瘦身·原文 参数原文 1218 字，整份在 C:\Users\35453\AppData\Roaming\小鱼Agent\data\.state\slim\smw0jyzki7gbc\0658-args-1794133482998.txt]

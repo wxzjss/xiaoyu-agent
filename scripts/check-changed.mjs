@@ -1,7 +1,7 @@
 /**
- * 【变更回归 · 2026-11-08 加】
+ * 【增量回归 · 2026-11-08 加】
  *
- * 主人：「回归有那么多种类……【跑变更】指的是跑基于变更/影响的回归」，
+ * 主人：「回归有那么多种类……【跑增量】指的是跑基于变更/影响的回归」，
  * 而且要求「不要搞混了」。
  *
  * 这一档和「冒烟」「核心」「全量」的区别：
@@ -127,7 +127,7 @@ function pick(changed) {
 }
 
 const changed = changedFiles();
-console.log('=== 变更回归 ===');
+console.log('=== 增量回归 ===');
 if (!changed.length) {
   console.log('  工作区没有改动。要看别的：--staged / --base origin/master');
   console.log('  什么都不跑是**对的** —— 没有变更就没有「基于变更的回归」。');
@@ -169,7 +169,7 @@ for (const f of r.list) {
     console.log(String(x.stderr || '').trim().split('\n').slice(-6).join('\n'));
   }
 }
-console.log('———— 变更回归：' + (r.list.length - fail) + '/' + r.list.length
+console.log('———— 增量回归：' + (r.list.length - fail) + '/' + r.list.length
   + ' 通过，' + ((Date.now() - t0) / 1000).toFixed(1) + 's ————');
-console.log('注意：变更回归只覆盖「可能被影响」的那些。发布前仍要跑 run-all-checks.mjs 全量。');
+console.log('注意：增量回归只覆盖「可能被影响」的那些。发布前仍要跑 run-all-checks.mjs 全量。');
 process.exit(fail ? 1 : 0);

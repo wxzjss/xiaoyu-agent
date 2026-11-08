@@ -10183,7 +10183,34 @@ function niceCommand(raw) {
    * 全被判错了。现在只认「node 真的在执行它」，而且查语法单独算一类。
    */
   if (/\bnode\s+--check\b/i.test(c)) return '查语法';
-  if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?(?:run-all-checks|check-[a-z0-9-]+|_t_[a-z0-9-]+)\.mjs/i.test(c)) return '跑回归';
+  /**
+   * 【2026-11-08 主人要求·回归要分得清，别一律叫「跑回归」】
+   *
+   * 主人原话：「跑回归怎么只显示一个【跑回归】？回归有那么多种类，
+   * 比如说【跑冒烟】【跑测试】【跑变更】【跑增量】【跑核心】【跑全量】……
+   * 具体你自己看着办，但要求不要搞混了」。
+   *
+   * 以前一条正则把所有 check-*.mjs / run-all-checks / _t_*.mjs 都吞成「跑回归」，
+   * 屏幕上根本看不出跑的是 15 秒的冒烟还是 9 分钟的全量。
+   *
+   * 现在按入口分档（顺序从具体到宽泛，先认档位再落到单体）：
+   *   跑冒烟  check-smoke.mjs     纯源码断言
+   *   跑变更  check-changed.mjs   按 git diff 反查受影响检查
+   *   跑核心  check-core.mjs      固定核心链路子集
+   *   跑全量  run-all-checks.mjs  全部 + 真机格 + 接口扫描
+   *   跑回归  单个 check-*.mjs / _t_*.mjs
+   *
+   * 为什么没有「跑测试」和「跑增量」：
+   *   · 测试：这个项目**没有单元测试层**（没有 tests/、没有 node:test/vitest/jest），
+   *     70 个 check 全是集成/真机检查。挂个「跑测试」标签只会让人以为有单测。
+   *   · 增量：语义和「跑变更」重叠（变更=按影响面选，增量=按时间选），
+   *     两个并存正是主人担心的「搞混」，只留更准的那个。
+   */
+  if (/[\\/]?check-smoke\.mjs/i.test(c)) return '跑冒烟';
+  if (/[\\/]?check-changed\.mjs/i.test(c)) return '跑变更';
+  if (/[\\/]?check-core\.mjs/i.test(c)) return '跑核心';
+  if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?run-all-checks\.mjs/i.test(c)) return '跑全量';
+  if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?(?:check-[a-z0-9-]+|_t_[a-z0-9-]+)\.mjs/i.test(c)) return '跑回归';
   if (/\b(npm\s+(run\s+)?test|node\s+--test|pytest|vitest|jest)\b/i.test(c)) return '跑测试';
   /* ② 装依赖 */
   if (/\b(npm\s+(install|i)|pnpm\s+(install|i|add)|yarn(\s+add)?|pip\s+install)\b/i.test(c)) return '装依赖';

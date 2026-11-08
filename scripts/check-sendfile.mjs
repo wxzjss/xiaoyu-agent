@@ -55,7 +55,10 @@ try {
   chk('outbox 里真有一份副本', false, String(e.message).slice(0, 50));
 }
 
-fs.unlinkSync(tmp);
+/* 【2026-11-08 修】清理不能裸奔：某些环境会给 fs.unlinkSync 套一层
+ * 安全删除 shim，删不掉就抛异常 —— 那会把整个检查脚本带崩，
+ * 报成「check-sendfile 失败」，可被测的功能其实全过了。包起来。 */
+try { fs.unlinkSync(tmp); } catch {}
 try { fs.unlinkSync(zero); } catch {}
 
 console.log('');

@@ -21592,7 +21592,21 @@ async function switchSession(id, opts) {
    * 屏幕上已经有内容时保持原样，不打断正在流式的气泡。
    */
   const _emptyScreen = !(log && (log.querySelector('.msg') || log.querySelector('details.toolhub')));
-  renderTurns(r.session.turns, _emptyScreen ? { force: true } : undefined);
+  /* 【2026-11-08 修·「多段消息堆在一起」又回来了】
+   *
+   * 今天为了修「重启后历史不画」加了上面这个 force:true，可它只看了 DOM 空不空，
+   * 没看这一轮有没有被流式接管。重启后 3 秒轮询会先把 turnsInFlight 记上、
+   * 起 followLive 画新事件；这时 switchSession 再拿整份历史 force 重画一遍，
+   * 两套画法叠在同一屏上 —— 就是主人说的「多段话又挤在一起」。
+   *
+   * 现在多一道：这一轮已经被流式接管了，就别再整屏强插，交给 followLive。
+   * 屏幕空 + 没人在画，才强制补历史（那正是「重启后一片空白」要救的场景）。
+   */
+  const _inFlightHere = (() => {
+    try { const r = turnsInFlight.get(sessionId); return !!(r && (r.startedAt || r.adopted)); }
+    catch { return false; }
+  })();
+  renderTurns(r.session.turns, (_emptyScreen && !_inFlightHere) ? { force: true } : undefined);
   /* 【2026-11-08】切会话：把**这个会话**的待发送队列读出来（按会话分 key 存的） */
   try { loadPendingQueue(); } catch (e) {}
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次

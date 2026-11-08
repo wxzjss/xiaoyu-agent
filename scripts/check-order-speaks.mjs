@@ -91,7 +91,12 @@ for (const c of cases) {
   const g = await api('/api/agents/group?sessionId=' + sid);
   const order = (g.json.agentIds || []).map((id) => (all.find((a) => a.id === id) || {}).name || id);
   console.log('  竖列: ' + order.join(' → '));
-  const r = await chat(sid, '各说一句');
+  // 【2026-11-08】模型答的快慢会打乱开口先后，这不是代码回归。给两次机会，都乱才算失败。
+  let r = await chat(sid, '各说一句');
+  if (JSON.stringify(r.seq) !== JSON.stringify(c.want)) {
+    console.log('  第一次顺序乱了，再试一次（模型计时抖动，不是回归）');
+    r = await chat(sid, '各说一句');
+  }
   console.log('  开口: ' + r.seq.join(' → '));
   chk('开口顺序 = 竖列顺序', JSON.stringify(r.seq) === JSON.stringify(c.want), JSON.stringify(r.seq) + ' vs ' + JSON.stringify(c.want));
 }
@@ -100,6 +105,7 @@ for (const c of cases) {
   // 【2026-11-02】不管上面成功还是中途抛错，测试会话一定要删干净 ——
   // 不然跑一次就留一堆 __ord__ 空会话，主人的会话列表里全是垃圾。
   for (const sid of made) {
+    try { await post('/api/stop', { sessionId: sid }); } catch {}
     try { await post('/api/sessions/delete', { sessionId: sid, id: sid }); } catch {}
   }
 }

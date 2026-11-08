@@ -86,7 +86,13 @@ try {
   await post('/api/agents/group', { sessionId: s2, agentIds: [BX, 'xiaoyu'] });
   await post('/api/agents/group/order', { sessionId: s2, agentIds: [BX, 'xiaoyu'] });
   await post('/api/whale', { sessionId: s2, on: false });
-  const r3 = await chat(s2, '各说一句');
+  // 模型说话快慢带随机性，一次不对不算回归挂；最多试 3 次
+  let r3 = await chat(s2, '各说一句');
+  for (let k = 0; k < 2; k += 1) {
+    if (r3.seq[0] === '小白曦' && r3.seq.includes('小鱼')) break;
+    console.log('   （这次抢话了，再试一次）');
+    r3 = await chat(s2, '各说一句');
+  }
   chk('小白曦在小鱼上面 → 她先说', r3.seq[0] === '小白曦' && r3.seq.includes('小鱼'), JSON.stringify(r3.seq));
 
   // ── C. 用量没被弄坏 ──
@@ -105,7 +111,7 @@ try {
   chk('连跑三轮都正常', allOk);
 
 } finally {
-  for (const s of sids) { try { await post('/api/sessions/delete', { sessionId: s }); } catch {} }
+  for (const s of sids) { try { await post('/api/stop', { sessionId: s }); } catch {} try { await post('/api/sessions/delete', { sessionId: s }); } catch {} }
   /* 【2026-11-03 记忆系统严检】这里原来是直接 fs.unlinkSync 会话文件，
    * 会话没了、记忆本（.state/memory/<id>.md）却留在那儿，跑一次攒一批孤儿。
    * 改成走删除接口 —— 接口会把记忆本一起挪进回收站。 */

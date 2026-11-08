@@ -144,6 +144,6 @@ const r4 = await chat(s4, '各说一句');
 chk('小白曦在上 → 她先说', r4.order[0] === BX.name, JSON.stringify(r4.order));
 
 // 清理
-for (const sid of [s1, s2, s3, s4]) { try { await post('/api/sessions/delete', { sessionId: sid }); } catch {} }
+for (const sid of [s1, s2, s3, s4]) { try { await post('/api/stop', { sessionId: sid }); } catch {} try { await post('/api/sessions/delete', { sessionId: sid }); } catch {} }
 console.log('\n── 断言：' + pass + '/' + total + ' ──');
 process.exit(pass === total ? 0 : 1);

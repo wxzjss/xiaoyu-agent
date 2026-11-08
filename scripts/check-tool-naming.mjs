@@ -82,7 +82,7 @@ const _swClean = sw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, ""
 /* 【2026-11-08 放宽】hubReset 与 renderTurns 之间现在有「空屏强制补历史」
  * 和「已被流式接管就别强插」两段判断，200 字符的窗口不够了。
  * 要守的是「切会话先 hubReset，再画历史」这个先后顺序，不是它俩挨多近。 */
-t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,1800}renderTurns\(r\.session\.turns/.test(_swClean));
+t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,1800}renderTurns\(\s*r\.session\.turns/.test(_swClean));
 // ── 5b. 万一 tool_start 丢了，也不能让话和工具全挤一起 ────────────
 const te = ui.slice(ui.indexOf("} else if (ev.type === 'tool_end') {", ui.indexOf('function paintLiveEvents')));
 t.ok('tool_end 找不到卡时补建', /补一张卡/.test(ui) || /补画失败也不能连累这一轮/.test(ui));
@@ -172,5 +172,14 @@ t.ok('历史柜建完会查有没有「运行中」的卡',
   /for \(const el of run\) hub\.appendChild\(el\);[\s\S]{0,900}const _runCard = _toolOnly\.find/.test(ui));
 t.ok('历史柜运行中也写「调了 N 次 · 正在X…」',
   /调了 ' \+ _toolOnly\.length \+ ' 次 · 正在'/.test(ui));
+
+/* 【2026-11-08 加·这两块被覆盖过一次，必须钉住】
+ * ① 柜门也要有金色「运行中」—— 上次加过，被后来的一次提交冲掉了。
+ * ② 卡塞进已有柜子后要把 _liveHub 指过去 —— 否则后续标题刷新打在空指针上，
+ *    表现就是「柜子标题始终不随调用变化」。 */
+t.ok('柜门有「运行中」',
+  /_live2 \? '运行中' : ''/.test(ui) && /status ' \+ \(bad \? 'err' : \(warn \? 'warn' : \(_live2 \? 'run live' : 'ok'\)\)\)/.test(ui));
+t.ok('塞进已有柜子后接上 _liveHub',
+  /_prev\.appendChild\(el\);[\s\S]{0,600}_liveHub = _prev;/.test(ui));
 
 t.done();

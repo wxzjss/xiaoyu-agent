@@ -10631,8 +10631,15 @@ function hubRefreshTitle() {
   const bad = _liveHub.querySelectorAll('.tool > summary > .status.err').length;
   const warn = _liveHub.querySelectorAll('.tool > summary > .status.warn').length;
   if (n2) {
-    n2.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : 'ok'));
-    n2.textContent = bad ? (bad + ' 个失败') : '';
+    /**
+     * 【2026-11-08 重新加回·被覆盖过一次】
+     * 主人：「柜子里只要有工具调用的标题旁边写有【运行中】，
+     * 那么柜子的标题旁边就必须也要有【运行中】」。
+     * 这块上一次加过，被后来的一次提交冲掉了 —— 这次连同断言一起守。
+     */
+    const _live2 = Boolean(_runEl) || Boolean(_thinking);
+    n2.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : (_live2 ? 'run live' : 'ok')));
+    n2.textContent = bad ? (bad + ' 个失败') : (_live2 ? '运行中' : '');
   }
   /* 【2026-11-05】柜门后面那截也跟着走 */
   try {
@@ -11099,6 +11106,17 @@ function foldLiveTools() {
       if (!el || (el.classList && el.classList.contains('toolhub'))) continue;
       try { _prev.appendChild(el); } catch (e) {}
     }
+    /**
+     * 【2026-11-08 修·「柜子标题始终不随调用变化」】
+     *
+     * 这条分支把新卡塞进**已经存在的柜子**（历史归拢出来的那个也算），
+     * 可接手之后没把 `_liveHub` 指过去 —— 于是后面每一次 hubRefreshTitle()
+     * 都打在旧指针（或者是 null）上，标题/状态/灰字全都不动。
+     * 主人看到的「始终是调了 x 次工具、从来不涨」就是这个。
+     *
+     * 塞完就把指针接上来，跟 _attachToHub 那条路一个规矩。
+     */
+    try { _liveHub = _prev; } catch (e) {}
     try {
       const _t = _prev.querySelectorAll('details.tool').length;
       const _k = _prev.querySelectorAll('details.think').length;

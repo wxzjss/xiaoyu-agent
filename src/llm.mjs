@@ -392,9 +392,71 @@ export function normalizeToolPairing(list) {
   return out;
 }
 
+/**
+ * 【2026-11-09 加·「无论说什么都只回我在」的根治】
+ *
+ * 主人原话：「感觉不是模型的问题，飞鱼模型在之前一直是好好的，
+ *   自从 11 月 8 号你的某次更新后就突然这样了」「我要求根治」。
+ *
+ * 抓了真实请求做对照实验（同一个会话、同一个接入点、只改一处）：
+ *
+ *   | 变体                        | 结果                     |
+ *   |-----------------------------|--------------------------|
+ *   | 原样 281 条（含 124 条 tool）| 0 字思考 → 「嗯，我在。」 |
+ *   | 只留最后 40 条（含 tool）    | 0 字思考 → 「嗯，我在。」 |
+ *   | 去掉所有 role:'tool' 消息    | **132 字思考，正常回答**  |
+ *   | tool 内容换成占位符（结构留着）| 0 字思考 → 还是敷衍      |
+ *   | 把工具结构整段抹平成文字      | **203 字思考，正常回答**  |
+ *
+ * 结论：**跟长度、档位、接入点都无关，是这个网关碰到历史里的
+ * `role:'tool'` 结构就退化**（内容多大都不影响，结构在就废）。
+ * 「11-08 之后才出现」是因为那天之后会话里的工具调用越攒越多 —— 同一个坑，
+ * 只是终于跨过了它的阈值。
+ *
+ * 所以：**发出去之前，把旧的工具结构抹平成一句人话**。
+ * 只保留**最后一组**工具往返（当前这一轮还在用，必须原样给模型看，
+ * 否则它没法接着链式调用），再往前的全压成「（用过工具：xxx）」。
+ *
+ * 只动发出去的那一份，内存和磁盘上的会话一个字不改 ——
+ * 界面上照样能看见每一次工具调用。
+ */
+export function flattenOldToolTurns(list) {
+  const arr = Array.isArray(list) ? list : [];
+  if (!arr.length) return arr;
+
+  const isToolish = (m) => m && (m.role === 'tool'
+    || (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length));
+
+  /* 从尾巴往前，找出「最后一段连续的工具往返」的起点 */
+  let keepFrom = arr.length;
+  for (let i = arr.length - 1; i >= 0; i -= 1) {
+    if (isToolish(arr[i])) { keepFrom = i; continue; }
+    break;
+  }
+  if (keepFrom === 0) return arr;   // 整段都是工具往返（刚开始干活）：不动
+
+  const out = [];
+  for (let i = 0; i < arr.length; i += 1) {
+    const m = arr[i];
+    if (i >= keepFrom) { out.push(m); continue; }
+    if (m && m.role === 'tool') continue;   // 旧的工具结果：整条丢掉
+    if (m && m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      const names = m.tool_calls.map((c) => (c && c.function && c.function.name) || '工具').join('/');
+      const body = String(m.content || '').trim();
+      out.push({
+        role: 'assistant',
+        content: (body ? body + '\n' : '') + '（用过工具：' + names + '）',
+      });
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+}
+
 export function wireMessages(messages) {
   if (!Array.isArray(messages)) return messages;
-  return normalizeToolPairing(messages);
+  return normalizeToolPairing(flattenOldToolTurns(messages));
 }
 
 /**

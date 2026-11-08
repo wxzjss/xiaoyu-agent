@@ -68,3 +68,7 @@ playground/
 /_q[0-9]*.cjs
 /_r[0-9]*.cjs
 /_p[0-9]*.cjs
+
+# 提交说明临时文件（git commit -F _m.txt 用）
+/_m.txt
+/_msg.txt

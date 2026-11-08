@@ -7857,7 +7857,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         liveLogs.set(sessionId, live0);
         live0ForMates = live0;
         const send0 = (ev) => {
-          try { if (live0.events.length < LIVE_MAX_EVENTS) live0.events.push(ev); } catch {}
+          /**
+           * 【2026-11-08 修·「正常运行一直计数」的真凶】
+           *
+           * 主人：「为什么正常运行了一直在计数，而且计数是从当前轮总用时多久来的」。
+           *
+           * 因为这里 push 事件时**没带 at** —— 而 /api/running 算 idleMs 靠
+           * 「往前找最近一个带 at 的事件」。一条都找不到就退回 startedAt，
+           * 于是 idleMs 恒等于「这一轮跑了多久」，90 秒一到就误报「没有回音」。
+           * （同一个坑 11-07 在小鲸那条上踩过，当时只补了注释，主路径漏了。）
+           *
+           * 现在补上 at：idleMs 才是真正的「距上一次有动静」。
+           */
+          try {
+            if (live0.events.length < LIVE_MAX_EVENTS) {
+              live0.events.push({ ...ev, at: (ev && ev.at) || Date.now() });
+            }
+          } catch {}
           /**
            * 【2026-11-01 主人报「关掉小鱼后小鲸不说话」】
            *

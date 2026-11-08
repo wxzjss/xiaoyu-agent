@@ -13485,7 +13485,7 @@ try { imePrimeOnBoot(); } catch {}
 window._imeUserTouchedAt = window._imeUserTouchedAt || 0;
 input.addEventListener('focus', () => {
   if (Date.now() - window._imeUserTouchedAt > 1500) return;   // 程序代 focus，不是人点的
-  imeMatchSoon();
+  /* 【2026-11-08 主人】输入法一律不碰 —— 跟 WorkBuddy 一样，完全交给 Windows。 */
 });
 /**
  * 点输入框 —— 不管是「从别处第一次点进来」还是「已经聚焦再点一下」，都走这条。
@@ -13494,7 +13494,7 @@ input.addEventListener('focus', () => {
  */
 input.addEventListener('pointerdown', () => {
   window._imeUserTouchedAt = Date.now();
-  imeMatchSoon();
+  /* 【2026-11-08】不再切输入法（原因见 electron/main.cjs 里那段说明） */
 }, true);
 /**
  * 【2026-11-07 加】只要人开始打字，就把待切的那一趟作废。
@@ -19480,8 +19480,12 @@ async function refreshRunning() {
   } catch { /* 拿不到就保留上一次的名单，别把绿点抹掉 */ }
 }
 
-/* 静默超过这么久没有任何事件 → 认为可能卡住了（模型一个字都没回） */
-const RUNNING_STALL_MS = 90000;
+/* 【2026-11-08 主人】静默超过这么久没有任何事件 → 认为可能卡住了。
+ * 从 90 秒改成 300 秒，跟后端那道「等模型上限 300 秒就掐」对齐：
+ *   90 秒太早 —— 模型长思考时本来就不吐字，正常也被判成卡住；
+ *   300 秒才是真正该报、而且同一时刻后端也要动手了。
+ * 提示文案和会话列表的绿点变黄用的是同一个常量，所以两处一起变。 */
+const RUNNING_STALL_MS = 300000;
 
 function renderSessList() {
   sessList.innerHTML = '';

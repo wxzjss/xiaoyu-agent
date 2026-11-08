@@ -1286,6 +1286,10 @@ function ensureImeScript() {
 
 /** 掰输入法。返回 { ok, lang, chinese }，失败也不影响聊天。 */
 function matchImeToSystem() {
+  /* 【2026-11-08 主人·彻底停用】主人要求「全删了，和 WorkBuddy 一模一样」。
+   * WorkBuddy 什么都不做，所以这里也一行都不许执行 —— 直接返回，
+   * 底下那套 imm32 + C# 只作为存档留着（删掉整段风险大，但**永远不会被跑到**）。 */
+  return 0;
   /**
    * 【2026-11-08 修·重启后中文输入法被自动切成英文】
    *

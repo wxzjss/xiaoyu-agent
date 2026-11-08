@@ -88,7 +88,8 @@ t.ok('有「等一等再切」的入口', /function imeMatchSoon\(\)/.test(ui));
 t.ok('有「作废」的入口', /function imeCancelSoon\(\)/.test(ui));
 /* 【2026-11-07】触发点拆成两条：用户按下（pointerdown）才是「他想换输入法」，
  * 程序自己 focus（页面加载、插完附件）不算 —— 那条正是「重启后直接打字出白框」的根因。 */
-t.ok('用户按下才算要切', /addEventListener\('pointerdown'[\s\S]{0,140}_imeUserTouchedAt = Date\.now\(\)[\s\S]{0,100}imeMatchSoon\(\)/.test(ui));
+/* 【2026-11-08 改口径】自动切输入法整套停用，pointerdown 只记时间、不再 imeMatchSoon */
+t.ok('用户按下才记时间（不再切输入法）', /addEventListener\('pointerdown'[\s\S]{0,140}_imeUserTouchedAt = Date\.now\(\)/.test(ui));
 t.ok('程序代 focus 不切（要刚点过才认）', /_imeUserTouchedAt > 1500\) return;/.test(ui));
 t.ok('打字会取消待切', /'keydown', markTyping/.test(ui));
 t.ok('打拼音也会取消', /'compositionstart', markTyping/.test(ui));

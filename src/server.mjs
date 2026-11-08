@@ -11178,6 +11178,24 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
        *  现在递归扫 .json / .md / .jsonl：
        *    .json 削完先 JSON.parse 验一遍，坏了不动（宁可留着也别削坏）；
        *    .md / .jsonl 是纯文本，直接削。 */
+      /* 【2026-11-08 修·「服务听上了」有时 2 秒、有时 54 秒】
+       *
+       * 主人报「手动重启与自动重启速度有时快有时慢，多是慢的」。
+       * boot.log 给出实证：
+       *   05:19:43 起 → 服务听上了 +1711ms   （快）
+       *   05:20:42 起 → 服务听上了 +5494ms   （中）
+       *   05:42:42 起 → 服务听上了 +53893ms  （慢，54 秒）
+       * 窗口露面跟着一起慢（+2.8s / +10.8s / +60s），慢的**不是窗口、是开服**。
+       *
+       * 元凶就是这段 BOM 清扫：它在 listen 回调里**同步递归**扫 `.state` 下
+       * 所有 .json/.md/.jsonl，每个都 statSync + readFileSync。.state 里堆着
+       * 几千个文件（会话、记忆本、归档、回收站…），同步读一遍就是几十秒；
+       * 文件越堆越多，所以「有时快、多是慢」。
+       *
+       * 它只是「顺手削一下 BOM」，完全不阻塞对外服务。
+       * 跟下面的归档轮转、孤儿清理一样，挪到启动之后 15 秒再跑。
+       */
+      setTimeout(() => {
       try {
         const _st = join(config.dataDir, '.state');
         let _bn = 0;
@@ -11204,6 +11222,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         _walkBom(_st, 0);
         if (_bn) console.log('  [bom] 开服清掉 ' + _bn + ' 个文件上的 BOM');
       } catch (e) { /* 清扫自己挂了也不能拖累服务 */ }
+      }, 15000);
       /* 【2026-11-03 记忆系统严检】归档轮转 + 回收站压缩：一天最多跑一次。
        * 不是删，是打包成 .jsonl.gz —— 要翻还能翻，占的地方小一个量级。
        * 回收站超过 7 天、归档超过 30 天才压，阈值给得够宽。 */

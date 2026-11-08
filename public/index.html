@@ -16064,11 +16064,22 @@ document.getElementById('saveSettings').onclick = async () => {
    * 外加把流式的 bubble 指针清成 null —— 正在生成的时候一保存，等于把这一轮掐了：
    * 提示没了、还没落进历史的字也画不出来了，只能刷新。
    *
-   * 所以：这一轮正在生成时，钱数等它说完自己会重画，别在这儿抢着重绘。
+   * 【2026-11-08 补·再干脆一点：保存根本不重绘聊天区】
+   *
+   * 主人报：「在设置里点一次【保存】，界面上就冒出一个写着【调用了1次工具】的新柜子，
+   * 打开看是【重启自己】」。
+   *
+   * 那不是新调用 —— 是历史里本来就有 `restart_self` 这条工具记录，
+   * 保存后这行 `refreshTurnsCost()` 把整屏历史重画了一遍，
+   * 于是它按「历史工具」的规矩被折成一个柜子，看着像凭空多调了一次工具。
+   * 上次只挡住「正在生成时」，闲着的时候照样重绘，所以主人一按保存就看见它。
+   *
+   * 保存只是把配置落盘，聊天区一个字都不该动。
+   * 钱数要换币种看效果：上面那个币种单选的 onchange 里已经调了 refreshTurnsCost()，
+   * 那是主人主动切币种时的即时预览，保留；保存这一步就不跟着重画了。
+   * saveHint 本来就写「下一句生效」，钱数等下一轮自然跟上，不亏。
    */
-  let _busyNow = false;
-  try { _busyNow = Boolean(sending || (turnsInFlight && turnsInFlight.size)); } catch {}
-  if (!_busyNow) { try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {} }
+  /* 保存后不再整屏重绘：try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {} */
   saveHint.textContent = '已保存，下一句生效';
   setTimeout(() => dlg.close(), 450);
 };
@@ -21423,7 +21434,24 @@ async function switchSession(id, opts) {
    * （工具卡自己会重新接柜子：_attachToHub 里会把指针再交过去。）
    */
   try { if (typeof hubReset === 'function') hubReset(); } catch {}
-  renderTurns(r.session.turns);
+  /* 【2026-11-08 修·自动重启后历史一条都不画】
+   *
+   * 主人报：「办事鱼做完自动重启后，只显示我说的一句以及她说的第一句话，
+   * 后面其他说过的话都没了」。
+   *
+   * 数据其实全在：会话 265 条消息（97 条可见），服务端给了 95 个 turn / 10.8 万字符，
+   * 前端日志也写着「解析完(95个turn)」——**是这一步没把它们画出来**。
+   *
+   * renderTurns 开头有一道保护：这个会话在 turnsInFlight 里（自动续跑已经开跑）
+   * 且屏幕归属没变，就直接 return，DOM 交给流式那条路自己长。
+   * 自动重启恰好撞上它：开机 8 秒后服务端就把续跑轮起起来了，前端来取历史时
+   * 那一轮已经在跑 —— 于是整屏历史被跳过，屏幕上只剩续跑轮刚画的两条。
+   *
+   * 现在：屏幕本来就是空的（重启后的新窗口）→ 强制画历史。
+   * 屏幕上已经有内容时保持原样，不打断正在流式的气泡。
+   */
+  const _emptyScreen = !(log && (log.querySelector('.msg') || log.querySelector('details.toolhub')));
+  renderTurns(r.session.turns, _emptyScreen ? { force: true } : undefined);
   /* 【2026-11-08】切会话：把**这个会话**的待发送队列读出来（按会话分 key 存的） */
   try { loadPendingQueue(); } catch (e) {}
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次

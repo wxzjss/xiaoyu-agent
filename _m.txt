@@ -1,0 +1,31 @@
+fix(reasoning): 思考过程落盘的条件太苛刻 —— 这真因让「柜子里没有思考链」
+
+主人反复问：「柜子里没有思考链，柜子上却写『想了 1 段』」。
+之前一直以为是历史不存思考，查下去发现**是存了、但写入条件太苛刻**。
+
+链路本来是全的：
+  模型返回 reasoning → agent 累积 draftReasoning → server 挂到
+  assistant 的 _reasoning → publicSession 转成 turn.reasoning →
+  前端 renderTurns 里 paintReasoning 画折叠块
+
+断在第三步：
+  for (从后往前找 assistant) {
+    if (seenBefore.has(m)) break;   ← 这一脚
+    m._reasoning = ...; break;
+  }
+
+它只认「这一轮**新加**的 assistant」。可一轮里很常见只有工具调用、没有新的说话，
+或者最后那条早就在 seenBefore 里 —— 循环第一脚就 break，target 永远是 null，
+整段思考丢掉。实测那个 99 条 assistant 的会话，**一条 reasoning 都没有**。
+
+修法：
+· 找不到「这一轮新的」，就挂到当前会话最后一条非 context 的 assistant 上
+  （位置可能不完美，但比丢掉强 —— 前端就认这个字段）
+· 两个分支都打日志：[reasoning] 已存 N 字 / 没找到可挂的
+
+验证：
+· 造一个带 reasoning 的 turn 调 renderTurns，思考块画出来了，
+  文字是「主人来了，先应一声。要不要问他今天想做什么？嗯，」
+· 预检通过、语法通过
+
+要重启才生效（src 改动）。

@@ -53,9 +53,15 @@ function sweep(tag) {
  * 这三个是**入口**，不是单项，全量只跑真正的一条条检查。
  */
 const TIER_ENTRY = new Set(['check-smoke.mjs', 'check-changed.mjs', 'check-core.mjs']);
+/* 【2026-11-08 加】check-gates-self 不进全量回归。
+ * 它会把 public/index.html 改坏再还原（验证检查器抓得住），
+ * 跑的那几秒里别的脚本读到的是坏文件 —— 全量回归里反复因此爆假红。
+ * 它验的是「检查器本身」，属于元测试，单独跑：node scripts/check-gates-self.mjs */
+const META_ONLY = new Set(["check-gates-self.mjs"]);
+
 const scripts = fs
   .readdirSync(path.join(process.cwd(), 'scripts'))
-  .filter((f) => /^check-.*\.mjs$/.test(f) && !TIER_ENTRY.has(f))
+  .filter((f) => /^check-.*\.mjs$/.test(f) && !TIER_ENTRY.has(f) && !META_ONLY.has(f))
   .sort();
 
 console.log('=== 开始前先清一遍 ===');

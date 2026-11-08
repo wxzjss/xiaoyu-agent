@@ -7,6 +7,7 @@ import { config } from './config.mjs';
 const DIR = join(config.dataDir, '.state', 'sessions');
 const TRASH = join(DIR, '.trash');
 const LAST = join(DIR, '_last.json');
+const PLAN_DIR = join(config.dataDir, '.state', 'plan');
 const MAX_TITLE = 40;
 
 const ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -602,6 +603,13 @@ export function deleteSession(id) {
   if (!existsSync(file)) return false;
   ensureDir(TRASH);
   renameSync(file, join(TRASH, `${id}-${Date.now()}.json`));
+  /* 【2026-11-08】会话没了，它的分步清单也得跟着走 ——
+   * 否则 .state/plan 里会攒一堆指不到任何会话的孤儿清单，
+   * check-plan-session 一跑就红，看着像代码坏了，其实是垃圾没清。 */
+  try {
+    const pf = join(PLAN_DIR, `${id}.json`);
+    if (existsSync(pf)) renameSync(pf, join(TRASH, `${id}-plan-${Date.now()}.json`));
+  } catch {}
   const last = getLastSessionId();
   if (last === id) {
     const rest = listSessions();

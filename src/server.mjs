@@ -9629,13 +9629,42 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       if (draftReasoning && draftReasoning.trim()) {
         try {
+          let target = null;
           for (let i = history.length - 1; i >= 0; i--) {
             const m = history[i];
             if (!m || m.role !== 'assistant' || m.context) continue;
             // 只挂这一轮新接进来的那条，别糊到上一轮的回复上
             if (seenBefore.has(m)) break;
-            m._reasoning = draftReasoning.trim();
+            target = m;
             break;
+          }
+          /**
+           * 【2026-11-08 修·「柜子里没有思考链」的真因】
+           *
+           * 主人反复问：「柜子里没有思考链，柜子上却写『想了 1 段』」。
+           *
+           * 查下来：写入条件太苛刻 —— 只认「这一轮**新加**的 assistant 消息」。
+           * 可一轮里很常见只有工具调用、没有新的说话（或者最后那条早就在
+           * seenBefore 里），循环第一脚就 break，`target` 一直是 null，
+           * 思考整段丢掉。实测那个 99 条 assistant 的会话，**一条 reasoning 都没有**。
+           *
+           * 退一步：找不到「这一轮新的」，就挂到当前会话最后一条非 context 的
+           * assistant 上。位置可能不完美，但比丢掉强 —— 界面上那个折叠块
+           * 就是根据这个字段画的，没有字段就整块消失。
+           */
+          if (!target) {
+            for (let i = history.length - 1; i >= 0; i--) {
+              const m = history[i];
+              if (!m || m.role !== 'assistant' || m.context) continue;
+              target = m;
+              break;
+            }
+          }
+          if (target) {
+            target._reasoning = draftReasoning.trim();
+            try { console.log('[reasoning] 已存 ' + target._reasoning.length + ' 字'); } catch {}
+          } else {
+            try { console.warn('[reasoning] 没找到可挂的 assistant，' + draftReasoning.length + ' 字丢掉'); } catch {}
           }
         } catch (e) {
           console.warn('[reasoning] 没存下来：', String(e?.message ?? e));

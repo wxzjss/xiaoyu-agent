@@ -1,24 +1,18 @@
-refactor: 把输入法相关代码从 index.html 和主进程里彻底删掉
+refactor(ui): 柜子那组函数全部搬进 ui/hub.js（657 行 / 10 个函数）
 
-主人：「把小鱼Agent 有关输入法的修改全删了」—— 不是停用，是真删。
+第二项继续：把柜子相关的剩下 6 个函数也搬出 index.html
+· groupLooseTools  历史归拢成柜
+· thinkTitleOf / adoptThink / adoptTool
+· addTool          建工具卡
+· foldLiveTools    合柜
 
-删掉的（前端，共 7301 字符）：
-· imeBusy / imeSwitching / imeFeatureOn / imeMatchOnce / imeMatchSoon
-  / imeCancelSoon / imeTypingRecently 整群
-· imePrimeOnBoot 开机预切（连它的调用）
-· 输入框上的三个监听：focus / pointerdown / markTyping（keydown、
-  compositionstart、input、paste 四条一起挂的那套）
-· 相关全局：__xyImeComposing / __xyImeEndAt / __xyImeTypeAt / _imeUserTouchedAt
+ui/hub.js 现在有 10 个函数、657 行：
+  thinkPeekTail / hubPeekOf / syncHubHead / hubRefreshTitle
+  groupLooseTools / thinkTitleOf / adoptThink / adoptTool / addTool / foldLiveTools
 
-删掉的（主进程，上一次提交已做）：
-· IME_CS_LINES（C# 源码）/ IME_NATIVE_SRC / systemLangCode
-  / ensureImeScript / matchImeToSystem / 两个 ime:xxx IPC
+搬运脚本 v3 换了定界方式：**顶格 function 找起点、行首单独一个 } 找终点**。
+上一版用括号配对，被函数体里的正则字面量骗了（groupLooseTools 第一次就切出语法错）。
+三关自检不变：函数本身、拆完主脚本、拼进目标文件 —— 任何一关不过就不写盘。
 
-结果：两边残留提及 0 处。输入法完全交给 Windows 和主人自己。
-
-过程记录（怕以后又踩）：
-· 第一次删完 preflight 和语法都过了，我去浏览器验证页面，看到
-  输入框 false、syncHubHead undefined，误判成「删坏了」并 git 回退。
-· 实际是**应用被关掉了**（8788 连不上、进程列表为空、页面是
-  chrome-error://chromewebdata）—— 那是错误页的 DOM，不是我们的页面。
-· 教训：以后验证页面先确认服务活着（curl 8788），再看 DOM。
+验证：预检通过、check-ui 通过、工具命名 49/49（含真机格）、
+思考显示 37/37（含真机格）。

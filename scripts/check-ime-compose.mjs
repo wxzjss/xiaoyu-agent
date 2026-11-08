@@ -35,6 +35,13 @@ let cdp = null;
 try {
   const m = await import('../_t_cdp.mjs');
   cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
+  // 刚打开/刚切过去时页面可能自己重载一次，CDP 会报 navigated or closed。先等它稳住。
+  for (let i = 0; i < 12; i++) {
+    const ready = await cdp.eval('document.readyState');
+    if (ready === 'complete') break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  await new Promise((r) => setTimeout(r, 800));
 } catch { /* 没开调试浏览器 */ }
 if (cdp) {
   try {

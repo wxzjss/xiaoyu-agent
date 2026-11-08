@@ -143,7 +143,9 @@ if (!cdp) {
       return out;
   `);
   console.log('\n真机：' + JSON.stringify(r));
-  t.ok('真机：跑回归命名对', r.names && r.names[0] === '跑回归', String(r.names && r.names[0]));
+  /* 【2026-11-08 改·回归分档】真机格造的命令是 run-all-checks，
+   * 分档之后它该显示「跑全量」而不是笼统的「跑回归」。 */
+  t.ok('真机：跑全量命名对', r.names && r.names[0] === '跑全量', String(r.names && r.names[0]));
   t.ok('真机：提交代码命名对', r.names && r.names[1] === '提交代码', String(r.names && r.names[1]));
   t.ok('真机：ls -la 判成看文件', r.names && r.names[2] === '看文件', String(r.names && r.names[2]));
   t.ok('真机：非命令工具不受影响', r.names && r.names[3] === '读文件', String(r.names && r.names[3]));

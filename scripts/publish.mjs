@@ -70,6 +70,19 @@ const EXCLUDE_PATTERNS = [
   /^check-.*\.mjs$/,
   /^e2e-.*\.mjs$/,
   /^run-all-checks\.mjs$/,
+  /* 【2026-11-08 加·名字中间带 .bak 的备份会绕过扩展名规则】
+   *
+   * EXCLUDE_EXT 只认「扩展名恰好是 .bak」。可实际备份长这样：
+   *   src/config.mjs.bak-env
+   *   persona/FACTORY-PROMPT.md.bak-bottombase-20261108
+   *   scripts/check-tool-naming.mjs.bak-hubreset-20261108
+   * 它们的 extname() 分别是 .bak-env / .bak-bottombase-...，一个都不命中，
+   * 于是白名单目录里的备份会被原样推上 GitHub。
+   * 其中 FACTORY-PROMPT.md.bak-* 里就是主人私设人设的原文 —— 今天刚被
+   * local-persona-* 规则拦过一次的那个，换个文件名就漏了。
+   *
+   * 现在按「文件名里出现 .bak 就不发」一刀切，不看它在哪个位置。 */
+  /\.bak/i,
   /* 【2026-11-08 加·出厂提示词快照不外发】
    *
    * `persona/FACTORY-PROMPT.md` 是**本机**的出厂定稿快照（重装/换电脑时用它

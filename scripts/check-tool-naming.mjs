@@ -73,8 +73,8 @@ t.ok('跑完退回统计', /次工具/.test(ui) && /调了 ' \+ /.test(ui));
 
 // ── 5. 切会话要断开柜子指针（主人怀疑的那条） ────────────────────
 const sw = ui.slice(ui.indexOf('async function switchSession(id, opts)'), ui.indexOf('async function switchSession(id, opts)') + 9000);
-t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,120}renderTurns\(r\.session\.turns\)/.test(sw));
-
+const _swClean = sw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,200}renderTurns\(r\.session\.turns/.test(_swClean));
 // ── 5b. 万一 tool_start 丢了，也不能让话和工具全挤一起 ────────────
 const te = ui.slice(ui.indexOf("} else if (ev.type === 'tool_end') {", ui.indexOf('function paintLiveEvents')));
 t.ok('tool_end 找不到卡时补建', /补一张卡/.test(ui) || /补画失败也不能连累这一轮/.test(ui));
@@ -153,5 +153,14 @@ if (!cdp) {
   if (/^调了 \d+ 次工具/.test(String(r.after))) { t.ok('真机：跑完退回统计', true, String(r.after)); } else { t.skip('真机：跑完退回统计', '页面正有一轮在跑（柜门停在「正在…」），这条测不了'); }
   cdp.close();
 }
+
+/* 【2026-11-08 加·历史重绘的柜子也要认「运行中」】
+ * 主人点开柜子看见里面「跑回归｜运行中」，柜门却还写「调了 x 次工具」。
+ * 因为历史柜是 groupLooseTools 新建的，只按数量算标题；
+ * 会写「正在X…」的 hubRefreshTitle 只管 _liveHub，重绘后已被 hubReset 清掉。 */
+t.ok('历史柜建完会查有没有「运行中」的卡',
+  /for \(const el of run\) hub\.appendChild\(el\);[\s\S]{0,900}const _runCard = _toolOnly\.find/.test(ui));
+t.ok('历史柜运行中也写「调了 N 次 · 正在X…」',
+  /调了 ' \+ _toolOnly\.length \+ ' 次 · 正在'/.test(ui));
 
 t.done();

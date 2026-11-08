@@ -10399,6 +10399,30 @@ function groupLooseTools() {
       hub.appendChild(sum);
       lg.insertBefore(hub, first);
       for (const el of run) hub.appendChild(el);
+      /* 【2026-11-08 修·历史重绘的柜子不认「运行中」】
+       *
+       * 主人报：「点开柜子看到【跑回归】旁边有【运行中】，
+       * 为什么柜子标题还是【调了 x 次工具】而不是【正在跑回归】」。
+       *
+       * 因为这张柜是 renderTurns 重画历史时由这里新建的 ——
+       * 上面只按「有几张卡」算标题，压根没看柜里有没有卡在跑。
+       * 而会写「正在X…」的 hubRefreshTitle 只认 `_liveHub`（直播那个柜），
+       * 重绘时 hubReset 已经把它清空了，没人来刷历史柜。
+       *
+       * 现在建完柜也按同一口径查一次：有「运行中」的卡就写
+       * 「调了 N 次 · 正在<工具名>…」，跟直播柜一致。
+       */
+      try {
+        const _runCard = _toolOnly.find((el) => {
+          const s = el.querySelector('.status');
+          return /运行/.test(String((s && s.textContent) || '')) || (s && s.classList.contains('run'));
+        });
+        if (_runCard) {
+          const _nm = _runCard.querySelector('.name');
+          name.textContent = '调了 ' + _toolOnly.length + ' 次 · 正在'
+            + String((_nm && _nm.textContent) || '干活').trim() + '…';
+        }
+      } catch (e) {}
       try { markHubUserOpened(hub); } catch (e) {}
       run = [];
     };

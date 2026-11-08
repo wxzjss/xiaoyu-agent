@@ -22,8 +22,9 @@ t.ok('三处标题都走 thinkTitleOf（实时/复用/历史）', (ui.match(/tit
  * 原来硬截 40 字，可一行能放七十来字 —— 标题后面永远空一截。
  * 现在只取第一句、上限放到 400（远大于一行），视觉截断交给 CSS 的 ellipsis。 */
 t.ok('标题取第一句，长度交给 CSS 边界截断', /function thinkTitleOf\(flat\)/.test(ui) && /\{1,400\}/.test(ui));
-t.ok('收起时字数不占位（标题才能顶到边框）', /details\.think \.thinkMeta \{ display: none;/.test(ui));
-t.ok('展开后字数才显示', /details\.think\[open\] \.thinkMeta \{ display: block; \}/.test(ui));
+/* 【2026-11-08 改口径】这两条守的是 11-07 的旧取舍「收起不占位、展开才显示字数」。
+ * 主人今天明确要「展开前就显示字数」，旧断言与需求相反，删掉，
+ * 由文件末尾那两条新断言接管（收起也显示 + 直播时就更新）。 */
 t.ok('标题仍是 nowrap + 省略号', /details\.think \.thinkTitle \{[^}]*white-space: nowrap/.test(ui) && /details\.think \.thinkTitle \{[^}]*text-overflow: ellipsis/.test(ui));
 t.ok('正文不截（thinkBody 写全文）', /body\.textContent = t;/.test(ui) || /_full = t/.test(ui));
 t.ok('标题用一行省略兜底', /details\.think \.thinkTitle \{[^}]*nowrap/.test(ui));

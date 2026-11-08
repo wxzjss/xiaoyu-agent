@@ -1951,13 +1951,21 @@
   .sessLive {
     width: 7px; height: 7px; border-radius: 50%; background: #4ade80;
     flex: 0 0 auto; margin-right: 5px;
-    animation: sessLivePulse 1.4s ease-out infinite;
-  }
+    animation: sessLivePulse 1.4s ease-out infinite;  }
   @keyframes sessLivePulse {
     0%   { box-shadow: 0 0 0 0 rgba(74,222,128,.55); }
     70%  { box-shadow: 0 0 0 6px rgba(74,222,128,0); }
     100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
   }
+  /* 【2026-11-08】会话列表里那个「停」：只在该会话跑着时出现 */
+  .sessStop {
+    flex: 0 0 auto; margin-left: auto; width: 18px; height: 18px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 5px; border: 1px solid rgba(127,127,127,.30);
+    background: transparent; color: var(--dim); font-size: 10px;
+    cursor: pointer; padding: 0;
+  }
+  .sessStop:hover { color: var(--err); border-color: var(--err); }
 /* 会话名旁边的小标签：这个会话是哪张智能体卡在说话（没绑就不显示） */
 .sessAgent {
   flex: 0 0 auto;
@@ -19650,6 +19658,34 @@ function renderSessList() {
         ? ('已经 ' + Math.round(Number(info.idleMs || 0) / 1000) + ' 秒没有任何回音，可能卡住了')
         : '这个会话正在跑';
       t.insertBefore(lv, ttxt);
+      /**
+       * 【2026-11-08 加·列表里直接停】
+       *
+       * 主人：「压根没有 ⏹」—— 翻了才发现：停止键只长在**当前会话**的输入框旁边。
+       * 后台在跑的是别的会话（那次是杂活鱼 + 卡了 126 秒的办事鱼），
+       * 不一个个切过去，根本停不掉。
+       * 跑着的这一行给一个 ⏹，点一下停那个会话，不用切过去。
+       */
+      try {
+        const sp = document.createElement('button');
+        sp.type = 'button';
+        sp.className = 'sessStop';
+        sp.textContent = '⏹';
+        sp.title = '停掉这个会话正在跑的那一轮';
+        sp.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          try {
+            await fetch('/api/stop', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId: s.id }),
+            });
+          } catch (e) {}
+          try { await refreshRunning(); renderSessList(); } catch (e) {}
+        });
+        t.appendChild(sp);
+      } catch (e) {}
     }
     /* 【2026-11-07 改】这里显示的现在是「谁在说话」，不是「绑了哪张卡」——
        屋里的人排最上面、且开着的那个，随时会变（主人要的就是动态）。 */

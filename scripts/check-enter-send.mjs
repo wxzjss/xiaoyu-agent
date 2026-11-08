@@ -15,10 +15,11 @@
  * 真机段会把 send 换成一个计数器，验完还原 —— 不会真发消息。
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 
 const t = makeChecker('ui / 回车发送附件');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const ui = readUISource();
 
 // ── 源码 ─────────────────────────────────────────────────────────
 t.ok('229/选词那道门还在', /e\.isComposing \|\| e\.keyCode === 229/.test(ui));

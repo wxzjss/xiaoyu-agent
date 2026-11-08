@@ -10,6 +10,7 @@
  * 这一格守的是「每个工具在开始跑之前，必须恰好收到一次 tool_start」。
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 import { executeBatch, clearIdempotency } from '../src/harness/scheduler.mjs';
 
@@ -62,7 +63,7 @@ t.ok('同一批重发不重复报 start', nStart === 2, 'nStart=' + nStart);
 
 // ── 4. 源码链路：后端有发、前端有收 ────────────────────────────────
 const agent = fs.readFileSync('src/agent.mjs', 'utf8');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const ui = readUISource();
 const sched = fs.readFileSync('src/harness/scheduler.mjs', 'utf8');
 const server = fs.readFileSync('src/server.mjs', 'utf8');
 t.ok('调度器在 runTool 之前调 onStart', /try \{ onStart\(c\); \} catch \{\}/.test(sched));

@@ -18,11 +18,12 @@
  *   ④ 前端清洗也认 <tool_call>，历史重画同样不漏
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 
 const t = makeChecker('llm / 工具调用文本（含 DSML）');
 const llmSrc = fs.readFileSync('src/llm.mjs', 'utf8');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const ui = readUISource();
 
 const L = await import('../src/llm.mjs');
 

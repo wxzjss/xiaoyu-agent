@@ -11,10 +11,11 @@
  *   ③ DOM 安全网 NEEDS 也要认「【压缩记忆」，历史重画/快照路径同样静默
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 
 const t = makeChecker('ui / 静默压缩');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const ui = readUISource();
 const agent = fs.readFileSync('src/agent.mjs', 'utf8');
 
 // ── 1. 后端：不再有假的 compress 工具条 ──────────────────────────

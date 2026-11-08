@@ -22,6 +22,7 @@
  * 这个检查盯的是「行为」，不只是代码在不在 —— 续跑那部分用独立数据目录真跑一遍。
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -94,7 +95,7 @@ if (got) {
   t.ok('点重启时：目标会话排在第一个（优先续）',
     /\[_want,\s*\.\.\.\[\.\.\.runningTurns\.keys\(\)\]\.filter\(\(x\) => x !== _want\)\]/.test(srv));
   /* 前端那条路必须还在带 sessionId —— 上面那条断言的存在意义就靠它 */
-  const ui = fs.readFileSync('public/index.html', 'utf8');
+  const ui = readUISource();
   t.ok('前端点重启确实会带 sessionId（所以上面那条才必须）',
     /api\/app\/restart',\s*\{[\s\S]{0,200}sessionId:/.test(ui));
 }

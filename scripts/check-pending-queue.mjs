@@ -20,11 +20,12 @@
  *   · 一轮结束用 2 秒轮询兜底（结束出口有好几个，一个个挂容易漏）
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 import { connect } from '../_t_cdp.mjs';
 
 const t = makeChecker('ui / 消息预发送队列');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const ui = readUISource();
 
 // ── 1. 源码：零件齐不齐 ────────────────────────────────────────
 t.ok('有队列容器', /id="pendingQueue"/.test(ui));

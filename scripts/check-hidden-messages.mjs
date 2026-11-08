@@ -13,12 +13,13 @@
  * 谁漏了就在这儿红。
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 
 const t = makeChecker('sessions / 不该显示的消息');
 const server = fs.readFileSync('src/server.mjs', 'utf8');
 const core = fs.readFileSync('src/sessions-core.mjs', 'utf8');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const ui = readUISource();
 
 /** publicSession 里那段循环（从 for 到 turns.push 之前） */
 const a = server.indexOf('function publicSession(session)');

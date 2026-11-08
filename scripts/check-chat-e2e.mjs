@@ -14,6 +14,7 @@
  * 临时会话用完就删。
  */
 import { readFileSync, existsSync } from 'node:fs';
+import { readUISource } from './_ui-src.mjs';
 
 const BASE = process.env.BASE || 'http://127.0.0.1:8788';
 const SESS = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions';
@@ -155,7 +156,7 @@ console.log('\n─────────────────────�
  * 刷新瞬间正常、轮询一转起来就叠，正是主人反复看到的那个现象。
  * 铁律：跑完之后屏幕长什么样由历史说了算，不许再照直播快照画。
  * 判据用那行独有的调用形状（注释里不会出现），不去猜整段代码。 */
-const _uiSrc = readFileSync('public/index.html', 'utf8');
+const _uiSrc = readUISource();
 ok(
   '跑完的轮次不再照快照重画（历史+直播会叠成两份）',
   _uiSrc.indexOf('Array.isArray(live.items)) paintSnapshot(id, live)') < 0,

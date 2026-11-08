@@ -13,11 +13,12 @@
  *      （这条是保底 —— 以后哪条路忘了合柜，用户也不会真的看到散卡）
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 import { connect } from '../_t_cdp.mjs';
 
 const t = makeChecker('ui / 工具卡别跑出柜子');
-const _uiHtml = fs.readFileSync('public/index.html', 'utf8');
+const _uiHtml = readUISource();
 // 【2026-11-08】柜子那组函数已搬进 ui/hub.js（commit c001137），守卫要跟着去新家找
 const _hubJs = fs.existsSync('public/ui/hub.js') ? fs.readFileSync('public/ui/hub.js', 'utf8') : '';
 const ui = _uiHtml + '\n' + _hubJs;

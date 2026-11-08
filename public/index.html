@@ -11513,6 +11513,29 @@ input.addEventListener('input', () => {
   _draftTimer = setTimeout(saveDraft, 250);
 });
 /**
+ * 点输入框 —— 不管是「从别处第一次点进来」还是「已经聚焦再点一下」，都走这条。
+ * 【2026-11-07】原来只在「本来就聚焦」时才走，把第一种交给了 focus 那条路；
+ * 可 focus 那条现在只认「刚点过」，所以这里要自己全覆盖。
+ */
+input.addEventListener('pointerdown', () => {
+  window._imeUserTouchedAt = Date.now();
+  /* 【2026-11-08】不再切输入法（原因见 electron/main.cjs 里那段说明） */
+}, true);
+/**
+ * 【2026-11-08 修·作废入口补回】自动切输入法虽然停了，但「人一打字就作废待切那趟」这条闸必须留着 ——
+ * 以后哪怕恢复切换，也不会在打拼音的时候动 IME。少挂一条就有一条缝。
+ */
+try {
+  const markTyping = () => {
+    window.__xyImeTypeAt = Date.now();
+    try { if (typeof imeCancelSoon === 'function') imeCancelSoon(); } catch {}
+  };
+  input.addEventListener('keydown', markTyping, true);
+  input.addEventListener('compositionstart', markTyping, true);
+  input.addEventListener('input', markTyping, true);
+  input.addEventListener('paste', markTyping, true);
+} catch {}
+/**
  * 【2026-11-07 修·主人截图里的输入法白框】
  *
  * 那串带撇号的拼音是微软拼音的**预编辑串（composition）**。它之所以会卡成

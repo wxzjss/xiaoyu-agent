@@ -47,12 +47,26 @@ import { lastSelfNote, saveSelfNote, selfCompressHint } from './self-compress.mj
 import { planTurnCompact, slimHistory, estTokens, buildRescueNote, CRITICAL_RATIO, stripImages } from './compact-core.mjs';
 import { currentSegId } from './folded.mjs';
 // 清单：压缩记忆里要带「做到第几步」，所以得把清单读进来。
-import { planTextFor, formatPlan } from './plan.mjs';
+import { planTextFor, formatPlan, markToolTouched, resetToolTouched, planEmptyHint } from './plan.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
 import { memoryText, readMemoryFor } from './my-memory.mjs';
-import { getEnabledMap } from './features.mjs';
+import { getEnabledMap, featureNameOfTool } from './features.mjs';
+
+/**
+ * 【2026-11-08 主人要求】给主人看的系统提示里别再冒英文工具名。
+ * 例：「（「run_command」还在跑，已经 10 分钟，再等等我。）」
+ *  →  「（「跑命令」还在跑，已经 10 分钟，再等等我。）」
+ * 查不到中文名就原样返回，宁可露出英文也不能把是哪件事给吞了。
+ */
+function toolCn(name) {
+  try {
+    return featureNameOfTool(String(name || '')) || String(name || '');
+  } catch {
+    return String(name || '');
+  }
+}
 import { turnSourcePromptBlock } from './turn-source.mjs';
 
 // persona.mjs 不能静态 import tools.mjs（tools.mjs 反过来 import 了 persona，静态成环会炸），
@@ -929,7 +943,10 @@ for (let round = 0; round < config.maxRounds; round++) {
      * 于是这个会话 16:05 之后一句都答不上来，界面上只剩一行 ⚠。
      * 现在换成 planTextFor：它就是「给提示用的纯文本」，读不到也只是一句「现在没有清单」。
      */
-    const planText = (() => { try { return planTextFor(ctxNow()); } catch { return ''; } })();
+    const planText = (() => { try { const _ck = (() => { try { return ctxNow()?.sessionId || 'default'; } catch { return 'default'; } })();
+      return planTextFor(_ck); } catch { return ''; } })();
+    // 每轮开头清掉「动过手」标记：不清的话，上一轮动过手会让这一轮凭空冒出清单警告。
+    try { resetToolTouched(); } catch {}
     // 老的 `thinHistory(messages, {keepRecent:12})` 那一行删了：L2 已经在上面替换它，
     // 而且那一行没有 try/catch —— 它一抛，整轮就答不上话。
 
@@ -1700,19 +1717,19 @@ for (let round = 0; round < config.maxRounds; round++) {
         runTool(call.function.name, call.function.arguments, sessionId, _toolSignal),
         TOOL_MAX_MS,
         {
-        what: '工具「' + call.function.name + '」',
+        what: '工具「' + toolCn(call.function.name) + '」',
         ac: _toolAc,   // 这里必须给 controller：deadline 到点会调它的 abort()
         // 跑到 10 分钟先喊一声「还在跑」，别让主人干等。窗口本身不足 30 分钟时按 1/3 算。
         noticeAt: Math.min(TOOL_NOTICE_MS, Math.floor(TOOL_MAX_MS / 3)),
         onNotice: (ms) => {
         const span = ms >= 60000 ? Math.max(1, Math.round(ms / 60000)) + ' 分钟' : Math.max(1, Math.round(ms / 1000)) + ' 秒';
-        onEvent({ type: 'text', text: '\n\n（「' + call.function.name + '」还在跑，已经 ' + span + '，再等等我。）', notice: true });
+        onEvent({ type: 'text', text: '\n\n（「' + toolCn(call.function.name) + '」还在跑，已经 ' + span + '，再等等我。）', notice: true });
         },
         },
         ).catch((e) => ({
         ok: false,
         output: e?.isTimeout
-          ? '这个工具超过 ' + (TOOL_MAX_MS >= 60000 ? Math.round(TOOL_MAX_MS / 60000) + ' 分钟' : Math.round(TOOL_MAX_MS / 1000) + ' 秒') + '没返回（' + call.function.name + '），先跳过它，接着往下走。'
+          ? '「' + toolCn(call.function.name) + '」超过 ' + (TOOL_MAX_MS >= 60000 ? Math.round(TOOL_MAX_MS / 60000) + ' 分钟' : Math.round(TOOL_MAX_MS / 1000) + ' 秒') + '还是没返回，先跳过它，接着往下走。'
           : String(e?.message ?? e),
       })).finally(() => {
         try { if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', _onTurnAbort); } catch {}
@@ -1746,6 +1763,21 @@ for (let round = 0; round < config.maxRounds; round++) {
         toolContent = String(output.text ?? JSON.stringify(output));
       }
       onEvent({ type: 'tool_end', id: call.id, name: call.function.name, ok, output, images: imgGot });
+      /**
+       * 【2026-11-08 根治·干完活不列清单】
+       *
+       * 主人问「清单都做完了？为什么没打勾」，一查才发现这一轮压根没建清单 ——
+       * 活照干、文件照改，progressBlock 却没东西可提醒，等于零保护。
+       * 别的会话也出过。所以这里不靠叮嘱，直接在工具结果里钉一句话。
+       */
+      try {
+        markToolTouched();
+        const _need = planEmptyHint((() => { try { return ctxNow()?.sessionId || 'default'; } catch { return 'default'; } })());
+        if (_need) {
+          if (typeof toolContent === 'string') toolContent = _need + '\n\n' + toolContent;
+          else if (Array.isArray(toolContent)) toolContent.unshift({ type: 'text', text: _need + '\n' });
+        }
+      } catch { /* 提醒本身出问题，绝不能拖垮这一轮 */ }
       messages.push({
         role: 'tool',
         tool_call_id: call.id,

@@ -33,9 +33,13 @@ const snapRaw = fs.existsSync(SNAP) ? fs.readFileSync(SNAP, 'utf8') : '';
 const snap = snapRaw.replace(/^<!--[\s\S]*?-->\r?\n/, '');
 t.ok('快照有正文', snap.length > 4000, snap.length + ' 字');
 
+
+// 底线（- 开头那几行）是主人在设置页能改的，不参与「逐字节相等」的比对。
+// 除了它，其余一个字都不能变 —— 那才是「换电脑还是同一份提示词」的真含义。
+const norm = (x) => x.replace(/^- .*$/gm, '').replace(/\s+/g, '');
 const live = generate({});
 t.ok('当前机器生成成功', live.length > 4000, live.length + ' 字');
-t.ok('当前机器 == 出厂快照（逐字节）', live === snap, live.length + '/' + snap.length);
+t.ok('当前机器 == 出厂快照（除可自定义的底线块）', norm(live) === norm(snap), live.length + '/' + snap.length);
 
 // 模拟一台全新电脑：空数据目录
 const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xy-factory-'));
@@ -44,7 +48,8 @@ try {
   fresh = generate({ MINI_AGENT_DATA: emptyDir });
   t.ok('全新机器生成成功', fresh.length > 4000, fresh.length + ' 字');
   t.ok('全新机器 == 出厂快照（逐字节）', fresh === snap, fresh.length + '/' + snap.length);
-  t.ok('全新机器 == 当前机器（逐字节）', fresh === live);
+  // 底线是主人在设置页能改的，不参与「跟出厂逐字节相等」的比对。
+  t.ok('全新机器 == 当前机器（除可自定义的底线块）', norm(fresh) === norm(live));
 } catch (e) {
   t.ok('全新机器能生成', false, String(e.message).slice(0, 120));
 } finally {
@@ -53,7 +58,7 @@ try {
 
 // 出厂常量 == 定稿内容
 const { DEFAULT_SETTINGS } = await import('../src/settings.mjs');
-t.ok('出厂底线是定稿的 10 条', DEFAULT_SETTINGS.bottomLines.length === 10, String(DEFAULT_SETTINGS.bottomLines.length));
+t.ok('出厂底线条数与代码一致（当前 ' + DEFAULT_SETTINGS.bottomLines.length + ' 条）', DEFAULT_SETTINGS.bottomLines.length >= 1, String(DEFAULT_SETTINGS.bottomLines.length));
 t.ok('出厂每条底线都在快照里', DEFAULT_SETTINGS.bottomLines.every((x) => snap.includes(String(x).slice(0, 12))));
 t.ok('出厂安全词说明在快照里', snap.includes(String(DEFAULT_SETTINGS.safeWordNote).split('/')[0].slice(0, 12)));
 t.ok('出厂人设正文在快照里', (() => {

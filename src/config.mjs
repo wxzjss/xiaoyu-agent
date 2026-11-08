@@ -66,8 +66,18 @@ function loadEnvFile() {
 
 const fileEnv = loadEnvFile();
 
+/**
+ * 【2026-11-08 修】隔离数据目录（MINI_AGENT_DATA）时，process.env 优先于 .env。
+ *
+ * 为什么：.env 优先是为了「让用户能改配置」—— 但测试脚本用 MINI_AGENT_DATA
+ * 指到临时目录、再用 PORT 指定端口时，.env 里那句 PORT=8787 会把它盖掉，
+ * 于是隔离实例全都去抢真机那个 8787，跑回归时互相撞端口、假红一片。
+ * 真机（没设 MINI_AGENT_DATA）行为一点没变：还是 .env 优先。
+ */
+const ISOLATED = !!process.env.MINI_AGENT_DATA;
+
 export function get(key, fallback) {
-  const v = fileEnv[key] ?? process.env[key];
+  const v = ISOLATED ? (process.env[key] ?? fileEnv[key]) : (fileEnv[key] ?? process.env[key]);
   return v === undefined || v === '' ? fallback : v;
 }
 

@@ -7229,6 +7229,29 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       const _force = Boolean(req.__xyBody && req.__xyBody.force);
       const _cur = String((req.__xyBody && req.__xyBody.sessionId) || '');
       if (!_force) {
+        /* 【2026-11-08 修·僵尸登记卡死重启】把僵尸登记清掉再数。
+         * 主人报过、我这次也撞上了：一条会话被关窗掐断后，runningTurns 里那条
+         * 登记永远没人删 —— 从此任何会话想重启都被它挡着，可清掉它又只能靠重启，
+         * 死锁。这里用跟 /api/running 完全相同的两条判据：
+         *   ① t.ac.signal.aborted —— 那一轮早被停掉了，只是没人删登记
+         *   ② liveLogs 里有记录且 done —— 已经跑完收尾了
+         * 都不成立才当活着。绝不按「多久没动静」猜，免得把真在跑的误杀。 */
+        try {
+          for (const _sid of [...runningTurns.keys()]) {
+            if (_sid === _cur) continue;
+            let _dead = false;
+            try {
+              const _o = runningTurns.get(_sid);
+              if (_o && _o.ac && _o.ac.signal && _o.ac.signal.aborted) _dead = true;
+              const _lg = liveLogs.get(_sid);
+              if (_lg && _lg.done) _dead = true;
+            } catch {}
+            if (_dead) {
+              runningTurns.delete(_sid);
+              console.log('[restart] 清掉僵尸登记：' + _sid);
+            }
+          }
+        } catch {}
         const _others = [];
         for (const sid of runningTurns.keys()) {
           if (String(sid) === _cur) continue;

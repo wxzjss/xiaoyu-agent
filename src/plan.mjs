@@ -1,6 +1,6 @@
 // Autopilot: the multi-step task board (plan + notes) that survives across turns.
 // Ported from the autopilot skill: plan / note / progress injection.
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 
@@ -96,7 +96,8 @@ export function loadPlan(key = 'default') {
         .filter((s) => s && typeof s.text === 'string')
         .slice(0, MAX_STEPS)
         .map((s, i) => ({
-          id: i + 1,
+          // 【2026-11-08 修】id 不许按位置重算：归档删掉前面几条后，后面 id 会整体前移，stepId 就打勾到别人头上。
+          id: (Number.isInteger(Number(s.id)) && Number(s.id) > 0) ? Number(s.id) : (i + 1),
           text: clean(s.text, 300),
           status: STATUSES.includes(s.status) ? s.status : 'pending',
           note: clean(s.note, 300),
@@ -150,7 +151,15 @@ function archivePlan(key, state, reason = 'overwrite') {
     const pad = (n) => String(n).padStart(2, '0');
     const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
     const safeKey = String(key || 'default').replace(/[^\w.-]/g, '_');
-    const f = join(HISTORY_DIR, `${safeKey}-${stamp}-${reason}.json`);
+    // 【2026-11-08 修】文件名原来只精确到秒：同一秒里归档两次就撞名，
+    // 后一次直接把前一次覆盖掉 —— 归档的作用就是「原件别丢」，撞名就等于白存。
+    // 所以撞名时往后加序号。
+    let f = join(HISTORY_DIR, `${safeKey}-${stamp}-${reason}.json`);
+    let _n = 1;
+    while (existsSync(f)) {
+      f = join(HISTORY_DIR, `${safeKey}-${stamp}-${reason}-${_n}.json`);
+      _n++;
+    }
     writeFileSync(f, JSON.stringify(state, null, 2), 'utf8');
     // 顺手留一份人眼能读的 txt
     const { done, total } = progress(state);
@@ -170,18 +179,93 @@ function archivePlan(key, state, reason = 'overwrite') {
     }
     writeFileSync(f.replace(/\.json$/, '.txt'), lines.join('\n'), 'utf8');
   } catch { /* 留档失败不影响主流程 */ }
+  try { pruneSaveArchives(); } catch {}
 }
 
 /**
  * 防丢闸：主人钉死的老任务不许被「新建清单」悄悄顶掉。
  * pinned=true 的步在 create 时自动接驳到新清单后面。
  */
+/**
+ * 【2026-11-08 加·底线第8条】已完成超过十条就归档并删掉这十条
+ *
+ * 背景：底线里早就写着这条，但代码里从来没人去数过 —— 规矩只印在纸上。
+ * 结果清单一路涨到 64 条，还得主人自己来问「你清单多少了」。
+ *
+ * 现在让机器自己管：每次落盘前数一遍 done。
+ * 超过 10 条就把最老的那一批（凑够 10 条）搬进 _history，再从当前清单里删掉。
+ * 只搬 done 和 skipped；没做完的一个都不许动；pinned 的也不搬。
+ *
+ * 跟「清单只增不减」（MAX_STEPS=200）不冲突：那条管的是不许因为撞顶把步骤截掉，
+ * 这里是主动归档，原文照样在 _history 里翻得到。
+ */
+const ARCHIVE_KEEP_DONE = 10;
+
+/** 只清 'save' 这类自动存档，按时间倒序留最近 50 份（含 .json 和 .txt 成对）。 */
+function pruneSaveArchives() {
+  try {
+    if (!existsSync(HISTORY_DIR)) return 0;
+    const files = readdirSync(HISTORY_DIR).filter((n) => /-save\.(json|txt)$/.test(n));
+    if (files.length <= 50 * 2) return 0;
+    const withTime = files.map((n) => {
+      let t = 0;
+      try { t = statSync(join(HISTORY_DIR, n)).mtimeMs; } catch {}
+      return { n, t };
+    });
+    withTime.sort((a, b) => b.t - a.t);
+    const drop = withTime.slice(50 * 2);
+    for (const d of drop) {
+      try { unlinkSync(join(HISTORY_DIR, d.n)); } catch {}
+    }
+    return drop.length;
+  } catch {
+    return 0;
+  }
+}
+
+function archiveFinishedSteps(key, state) {
+  try {
+    const steps = Array.isArray(state.steps) ? state.steps : [];
+    const finished = steps.filter((st) => st && (st.status === 'done' || st.status === 'skipped'));
+    if (finished.length <= ARCHIVE_KEEP_DONE) return 0;
+
+    // 按在清单里出现的先后排（不按 id：老清单删过步，id 会有空洞）
+    const ranked = finished
+      .map((st) => ({ st, idx: steps.indexOf(st) }))
+      .sort((a, b) => a.idx - b.idx);
+
+    // 【2026-11-08 修】原来这里一次只收 10 条、然后循环。
+    // 循环会把「最新做完的那几条」也当成最老的收走，而且收完还重编号，
+    // 外面拿着的 stepId 全错位 —— 打勾会改到别的步骤上。
+    //
+    // 现在：只收一批，收「最老的 10 条」，剩下的（包括最新的）一条不动；
+    // 收完绝对不重编号 —— id 就是身份证，动了就没人认得出谁是谁。
+    const take = ranked.slice(0, finished.length - ARCHIVE_KEEP_DONE).map((x) => x.st);
+    const takeSet = new Set(take);
+
+    // pinned 的留下：主人钉死的任务不许自动消失
+    const movable = take.filter((st) => !st.pinned);
+    if (!movable.length) return 0;
+    const movableSet = new Set(movable);
+
+    // 先单独存一份档：只放这批，别把没做完的也写进去
+    archivePlan(key, { ...state, steps: movable, notes: [] }, 'done-over');
+
+    // 从当前清单摘掉（id 原样保留，绝不重编号）
+    state.steps = steps.filter((st) => !movableSet.has(st));
+    return movable.length;
+  } catch {
+    return 0;
+  }
+}
+
 function pinnedSteps(state) {
   return (state.steps || []).filter((st) => st && st.pinned);
 }
 
 function savePlan(key, state) {
   if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+  archiveFinishedSteps(key, state);   // 底线第8条：done 超十条先归档再落盘
   try { const prev = loadPlan(key); if (prev && prev.steps && prev.steps.length) archivePlan(key, prev, 'save'); } catch { /* 忽略 */ }
   state.updatedAt = Date.now();
   if (!state.createdAt) state.createdAt = state.updatedAt;
@@ -420,4 +504,45 @@ export function planUiAction(key, { action, stepId, status, text, note, pin } = 
 export function planHasOpenSteps(key = 'default') {
   const state = loadPlan(key);
   return progress(state).left.length > 0;
+}
+
+/**
+ * 【2026-11-08 根治·干完活不列清单】
+ *
+ * 真出过的事：主人问「清单都做完了？」，我一查才发现这一轮压根没建清单 ——
+ * 活照干、文件照改、回归照跑，但清单是空的，progressBlock 没东西可提醒，
+ * 等于零保护。别的会话也出过同样的事，所以这里不能只靠提示词叮嘱。
+ *
+ * 做法：由 agent 那边在每次工具跑完后调 markToolTouched()，
+ * 只要这一轮动过手、而清单为空，就返回一句硬提醒，
+ * 由调用方塞进工具结果里 —— 下一轮我一定读得到。
+ */
+let _toolTouched = false;
+
+/** agent 那边每跑完一个工具就喊一声。onlyWrite=true 表示这是会改东西的工具。 */
+export function markToolTouched() {
+  _toolTouched = true;
+}
+
+/** 每轮开头复位。 */
+export function resetToolTouched() {
+  _toolTouched = false;
+}
+
+/** 动过手但清单是空的 → 返回一句警告；其它情况一律返回空串。 */
+export function planEmptyHint(key = 'default') {
+  if (!_toolTouched) return '';
+  try {
+    const state = loadPlan(key);
+    const steps = Array.isArray(state.steps) ? state.steps : [];
+    if (steps.length) return '';
+    return (
+      '【清单缺失·硬规矩】你这一轮已经在动手了，但清单一条都没列。' +
+      '立刻用 plan create 把这次真正要做的事列成清单（一步一句，说人话），' +
+      '然后把已经做完的那几步 update 成 done。' +
+      '没列清单就等于没做，别等主人问。'
+    );
+  } catch {
+    return '';
+  }
 }

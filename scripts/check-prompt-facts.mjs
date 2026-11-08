@@ -71,6 +71,8 @@ const xiaoyu = fs.readFileSync(path.join(ROOT, 'persona', 'xiaoyu.md'), 'utf8');
 t.ok('出厂人设是定稿（含「对主人的称呼」）', xiaoyu.includes('对主人的称呼：主人'));
 t.ok('出厂人设不含旧的 PERSONA_LOAD 头', !xiaoyu.includes('【PERSONA_LOAD】'));
 const { DEFAULT_SETTINGS } = await import('../src/settings.mjs');
-t.ok('出厂底线 10 条（不是旧长版 15 条）', DEFAULT_SETTINGS.bottomLines.length === 10);
+// 2026-11-08：主人把设置里那一版（9 条）设成了出厂默认，所以这里是 9。
+// 别再写成 10 —— 条数以 DEFAULT_SETTINGS 为唯一真相，这里只是钉住「不是旧长版 15 条」。
+t.ok('出厂底线 9 条（不是旧长版 15 条）', DEFAULT_SETTINGS.bottomLines.length === 9);
 
 t.done();

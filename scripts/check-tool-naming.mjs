@@ -168,8 +168,10 @@ if (!cdp) {
  * 主人点开柜子看见里面「跑回归｜运行中」，柜门却还写「调了 x 次工具」。
  * 因为历史柜是 groupLooseTools 新建的，只按数量算标题；
  * 会写「正在X…」的 hubRefreshTitle 只管 _liveHub，重绘后已被 hubReset 清掉。 */
+/* 【2026-11-08 改】_runCard 提到 st 之前算了（标题和状态共用同一个判断），
+ * 原来咬死「在 appendChild 之后 900 字符内」会误伤。守的是「有算、且被用上」。 */
 t.ok('历史柜建完会查有没有「运行中」的卡',
-  /for \(const el of run\) hub\.appendChild\(el\);[\s\S]{0,900}const _runCard = _toolOnly\.find/.test(ui));
+  /const _runCard = _toolOnly\.find/.test(ui) && /if \(_runCard\) \{[\s\S]{0,200}_runCard\.querySelector\('\.name'\)/.test(ui));
 t.ok('历史柜运行中也写「调了 N 次 · 正在X…」',
   /调了 ' \+ _toolOnly\.length \+ ' 次 · 正在'/.test(ui));
 

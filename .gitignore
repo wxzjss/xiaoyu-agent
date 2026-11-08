@@ -1,0 +1,12 @@
+# 私有数据，绝不提交
+.env
+.state/
+sandbox/
+dist/
+
+# 依赖与产物
+node_modules/
+run*.log
+desktop-shot.png
+*.bak
+*.tmp

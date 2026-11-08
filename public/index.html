@@ -19503,10 +19503,30 @@ async function refreshRunning() {
      * 主人报：「列表显示她在跑（绿点），点进去发现她早停了」。
      * 服务端那边是真挂着，可一个字都没回 —— 绿点只表示「挂着」，
      * 分不出「正在想」和「卡死了」。现在存整条，不只看 id。 */
-    runningSess = new Map(
+    const next = new Map(
       list.filter((x) => x && x.sessionId).map((x) => [x.sessionId, x]),
     );
-  } catch { /* 拿不到就当没人在跑，不影响别的 */ }
+    /**
+     * 【2026-11-08 修·「其他会话的【正在跑】提示会消失」】
+     *
+     * 主人：「多个会话在跑时，会话页每个名字下都有提示，
+     * 但我在一个会话待久了，其他会话的提示会消失。」
+     *
+     * 因为这里是**整体替换**名单：服务端哪一次回答里漏了某个会话
+     * （忙、刚重启、那一瞬间 runningTurns 被换过），这个名字的绿点立刻就没了，
+     * 而且不会自己回来 —— 下一次回来时 key 没变、renderSessList 不重画。
+     *
+     * 加一层防抖：这次没出现、但上一次还在 → 先留一票，连续两次缺席才真摘掉。
+     * 真跑完的会话第一次也会留 3 秒，那点延迟比「绿点乱闪」可接受得多。
+     */
+    for (const [id, info] of runningSess) {
+      if (!next.has(id)) {
+        const miss = (Number(info && info._miss) || 0) + 1;
+        if (miss < 2) next.set(id, { ...(info || {}), sessionId: id, _miss: miss });
+      }
+    }
+    runningSess = next;
+  } catch { /* 拿不到就保留上一次的名单，别把绿点抹掉 */ }
 }
 
 /* 静默超过这么久没有任何事件 → 认为可能卡住了（模型一个字都没回） */
@@ -22941,7 +22961,12 @@ loadModels().catch(() => {});
 refreshRunning().then(() => { try { renderSessList(); } catch { /* 画不动就算了 */ } });
 
 setInterval(async () => {
-  const key = () => [...runningSess.keys()].sort().join(',');
+  /* 【2026-11-08 改】判据里带上「是不是卡住了」——
+   * 原来只比 id 集合，某个会话从「正在跑」变成「静默太久」时不会重画，
+   * 绿点该变黄却一直绿着。 */
+  const key = () => [...runningSess.entries()]
+    .map(([id, x]) => id + ':' + (Number(x && x.idleMs || 0) > RUNNING_STALL_MS ? 's' : 'r'))
+    .sort().join(',');
   const before = key();
   await refreshRunning();
   if (before !== key()) {

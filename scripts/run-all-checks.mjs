@@ -42,9 +42,20 @@ function sweep(tag) {
   return n;
 }
 
+/**
+ * 【2026-11-08 修·分档入口不能被当成单项检查】
+ *
+ * 主人要「跑冒烟 / 跑变更 / 跑核心 / 跑全量」四档分清楚。
+ * 可 check-smoke / check-changed / check-core 也长成 check-*.mjs 的样子，
+ * 于是全量会**把它们当普通检查再跑一遍**：
+ *   全量 → check-core → 里面又跑 11 个 → 56 秒白花，还跟正在跑的服务抢资源
+ * （实测那 4 个红里有 2 个就是这么撞出来的）。
+ * 这三个是**入口**，不是单项，全量只跑真正的一条条检查。
+ */
+const TIER_ENTRY = new Set(['check-smoke.mjs', 'check-changed.mjs', 'check-core.mjs']);
 const scripts = fs
   .readdirSync(path.join(process.cwd(), 'scripts'))
-  .filter((f) => /^check-.*\.mjs$/.test(f))
+  .filter((f) => /^check-.*\.mjs$/.test(f) && !TIER_ENTRY.has(f))
   .sort();
 
 console.log('=== 开始前先清一遍 ===');

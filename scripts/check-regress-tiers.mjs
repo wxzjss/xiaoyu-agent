@@ -83,4 +83,13 @@ if (core) {
     String(r2.stderr || '').slice(0, 120));
 }
 
+// ── 5. 全量不许把三个入口当单项再跑一遍（会嵌套、会抢资源） ──
+{
+  const fullSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'run-all-checks.mjs'), 'utf8');
+  t.ok('全量排除三个分档入口（不嵌套）',
+    /TIER_ENTRY/.test(fullSrc) && /check-smoke\.mjs'/.test(fullSrc)
+    && /check-changed\.mjs'/.test(fullSrc) && /check-core\.mjs'/.test(fullSrc)
+    && /!TIER_ENTRY\.has\(f\)/.test(fullSrc));
+}
+
 t.done();

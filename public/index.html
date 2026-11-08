@@ -10449,9 +10449,15 @@ function groupLooseTools() {
         : (_thinkN ? ('想了 ' + _thinkN + ' 段') : ('调了 ' + _toolOnly.length + ' 次工具'));
       const bad = _toolOnly.filter((el) => el.querySelector('.status.err')).length;
       const warn = _toolOnly.filter((el) => el.querySelector('.status.warn')).length;
+      /* 【2026-11-08 加·柜门也要有「运行中」】先找出还在跑的那张卡，
+       * 标题和右侧状态要用同一个判断，别各算一套。 */
+      const _runCard = _toolOnly.find((el) => {
+        const s = el.querySelector('.status');
+        return /运行/.test(String((s && s.textContent) || '')) || (s && s.classList.contains('run'));
+      });
       const st = document.createElement('span');
-      st.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : 'ok'));
-      st.textContent = bad ? (bad + ' 个失败') : '';
+      st.className = 'status ' + (bad ? 'err' : (warn ? 'warn' : (_runCard ? 'run live' : 'ok')));
+      st.textContent = bad ? (bad + ' 个失败') : (_runCard ? '运行中' : '');
       sum.append(name, st);
       hub.appendChild(sum);
       lg.insertBefore(hub, first);
@@ -10470,10 +10476,7 @@ function groupLooseTools() {
        * 「调了 N 次 · 正在<工具名>…」，跟直播柜一致。
        */
       try {
-        const _runCard = _toolOnly.find((el) => {
-          const s = el.querySelector('.status');
-          return /运行/.test(String((s && s.textContent) || '')) || (s && s.classList.contains('run'));
-        });
+        /* _runCard 在上面已经算好了（标题和状态共用同一个判断），这里直接用 */
         if (_runCard) {
           const _nm = _runCard.querySelector('.name');
           name.textContent = '调了 ' + _toolOnly.length + ' 次 · 正在'

@@ -181,5 +181,9 @@ t.ok('柜门有「运行中」',
   /_live2 \? '运行中' : ''/.test(ui) && /status ' \+ \(bad \? 'err' : \(warn \? 'warn' : \(_live2 \? 'run live' : 'ok'\)\)\)/.test(ui));
 t.ok('塞进已有柜子后接上 _liveHub',
   /_prev\.appendChild\(el\);[\s\S]{0,600}_liveHub = _prev;/.test(ui));
+/* 【2026-11-08 加】历史归拢那条路（groupLooseTools）也要给柜门挂「运行中」，
+ * 光改标题不够 —— 主人截图里柜门右边是空的。 */
+t.ok('归拢出来的柜子也有「运行中」',
+  /_runCard \? '运行中' : ''/.test(ui) && /_runCard \? 'run live' : 'ok'/.test(ui));
 
 t.done();

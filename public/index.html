@@ -10670,8 +10670,10 @@ function hubRefreshTitle() {
         pk.textContent = _thinking.dataset.peek || '';
         pk.classList.remove('live');
       } else if (_runEl) {
-        pk.textContent = '运行中';
-        pk.classList.add('live');
+        /* 【2026-11-08 主人】柜门已经有「正在跑X…」+ 右边金色「运行中」了，
+         * 这截灰字再写一遍「运行中」就成了两个 —— 清空（:empty 会自动隐藏）。 */
+        pk.textContent = '';
+        pk.classList.remove('live');
       } else {
         pk.textContent = hubPeekOf([..._liveHub.querySelectorAll('details.tool, details.think')]);
         pk.classList.remove('live');
@@ -11167,7 +11169,7 @@ function foldLiveTools() {
       const _pk = _prev.querySelector('summary > .hubpeek');
       if (_pk) {
         /* 【2026-11-07】还在跑的时候不能退回摘要 —— 跟实时那条路一个口径：金色「运行中」 */
-        if (_liveRun) { _pk.textContent = '运行中'; _pk.classList.add('live'); }
+        if (_liveRun) { _pk.textContent = ''; _pk.classList.remove('live'); }
         else {
           _pk.textContent = hubPeekOf([..._prev.querySelectorAll('details.tool, details.think')]);
           _pk.classList.remove('live');

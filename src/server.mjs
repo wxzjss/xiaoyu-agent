@@ -11030,9 +11030,41 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           try { dropInterrupted(); } catch {}
         }
       } catch (e) { try { console.warn('[restart] 读断点失败（不影响叫醒）：', String(e && e.message)); } catch {} }
+      /**
+       * 【2026-11-08 加·「她在，但答非所问」】
+       *
+       * 主人 19:46 截图：检查鱼连问三次「自动重启能给她们续上吗」，
+       * 她三次都只回「嗯，我在。」—— 因为她醒来看到的是我们投的
+       * 「重启了」，那句话盖在主人问题**后面**，成了最后一条输入。
+       * 于是她以为主人只是在确认她在不在。
+       *
+       * 规矩：**主人有话还没人答**（最后一条普通 user 消息排在最后一条
+       * assistant 之后）时，别再投叫醒语、也别再塞一条新 user 消息 ——
+       * 直接跑那一轮，让她正面回答主人的问题。
+       * 只有主人的话已经答过了（重启只是补一句"我回来了"）才投「重启了」。
+       */
+      let _ownerWaiting = false;
+      try {
+        const _ms = Array.isArray(_s.messages) ? _s.messages : [];
+        let _lastU = -1;
+        let _lastA = -1;
+        for (let i = _ms.length - 1; i >= 0; i--) {
+          const mm = _ms[i];
+          if (!mm || mm.context) continue;
+          if (_lastU < 0 && mm.role === 'user' && !mm._sysNote) _lastU = i;
+          if (_lastA < 0 && mm.role === 'assistant') _lastA = i;
+          if (_lastU >= 0 && _lastA >= 0) break;
+        }
+        _ownerWaiting = _lastU > _lastA;
+      } catch (e) {}
+      if (_ownerWaiting) {
+        try { console.log('[restart] 主人有话没答，直接跑那一轮，不投「重启了」：' + _sid); } catch (e) {}
+        try { startQueuedTurn(_sid, null).catch((e) => console.warn('[restart] 接着答失败：', String(e?.message ?? e))); } catch (e) {}
+      } else {
       _s.messages.push({ role: 'user', content: _resumeMsg, _sysNote: true });
       saveSession(_s);
       try { startQueuedTurn(_sid, null).catch((e) => console.warn('[restart] 叫醒失败：', String(e?.message ?? e))); } catch {}
+      }
     } catch (e) {
       console.warn('[restart] 自动说一句失败（不影响使用）：', String(e?.message ?? e));
     }

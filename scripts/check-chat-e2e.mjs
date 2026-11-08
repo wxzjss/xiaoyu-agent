@@ -148,6 +148,19 @@ for (const id of created) {
 }
 
 console.log('\n──────────────────────');
+
+/* 【2026-11-08 加·「多段消息堆在一起」第三次才挖到的真凶】
+ * attachLive 在「这一轮已经跑完」的分支里调过 paintSnapshot 对账，
+ * 可 renderTurns 刚用落盘历史画好整屏 —— 同一段话画两份。
+ * 刷新瞬间正常、轮询一转起来就叠，正是主人反复看到的那个现象。
+ * 铁律：跑完之后屏幕长什么样由历史说了算，不许再照直播快照画。
+ * 判据用那行独有的调用形状（注释里不会出现），不去猜整段代码。 */
+const _uiSrc = readFileSync('public/index.html', 'utf8');
+ok(
+  '跑完的轮次不再照快照重画（历史+直播会叠成两份）',
+  _uiSrc.indexOf('Array.isArray(live.items)) paintSnapshot(id, live)') < 0,
+);
+
 console.log('断言：' + pass + '/' + (pass + fail));
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }
 console.log('PASS 发消息链路端到端通过');

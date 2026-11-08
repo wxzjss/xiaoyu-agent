@@ -69,8 +69,14 @@ const info = await cdp.eval(`
   lg.appendChild(probe);
   await new Promise(r => setTimeout(r, 600));
   const probeAfter = probe.textContent;
+  /* 【2026-11-08 修·探针等得不够】
+   * 清洗器是在 requestAnimationFrame 里干活的（见 index.html 里那段的 finally），
+   * 探针 append 完立刻读 textContent，那一帧还没跑，读到的必然是脏的 —— 假红。
+   * 这里等两帧再去读。 */
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const probeAfter2 = probe.textContent || "";
   probe.remove();
-  return { 脏叶子数: dirty.length, 样例: dirty.slice(0, 3), 清洗器已装: hasCleaner, 注入后变成: probeAfter };
+  return { 脏叶子数: dirty.length, 样例: dirty.slice(0, 3), 清洗器已装: hasCleaner, 注入后变成: probeAfter2 };
 `);
 cdp.close();
 

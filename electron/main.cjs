@@ -1269,8 +1269,30 @@ function ensureImeScript() {
 
 /** 掰输入法。返回 { ok, lang, chinese }，失败也不影响聊天。 */
 function matchImeToSystem() {
+  /**
+   * 【2026-11-08 修·重启后中文输入法被自动切成英文】
+   *
+   * 主人报：「重启后我的中文输入法自动切换英文，Ctrl+空格也切不回中文，
+   * 切到 WorkBuddy 窗口反而变回中文」。
+   *
+   * 根因就是下面原来那行 `const wantZh = lang === 'zh'`：
+   * 它拿 **Electron 的界面语言**（app.getLocale()）当成「主人想打什么字」。
+   * 这台机器界面是 en → wantZh=false → Apply("en") → imm32 把
+   * IME_CMODE_NATIVE 那一位从 1 翻成 0，中文当场变英文。
+   * WorkBuddy 什么都不做，Windows 本来就按窗口各自记 IME 状态 ——
+   * 所以切回那个窗口自然还是中文，看着像「它实现了什么」，其实它没碰。
+   *
+   * 系统界面语言 ≠ 打字语言。这个功能的**唯一**用途是
+   * 「输入法不小心停在英文时帮主人切回中文」，反向没有任何需求。
+   *
+   * 现在写死只往中文掰：
+   *   · 当前已经是中文 → Apply("zh") 里 cur==1 直接返回，一次都不写
+   *   · 当前是英文     → 翻回中文
+   *   · 永远不可能再把中文掰成英文
+   * 没装中文键盘时 C# 那边返回 2，什么都不动。
+   */
   const lang = systemLangCode();
-  const wantZh = lang === 'zh';
+  const wantZh = true;
   const { execFile } = require('child_process');
   let script;
   try {

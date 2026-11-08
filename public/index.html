@@ -13286,6 +13286,28 @@ function imeMatchSoon() {
 }
 
 async function imeMatchOnce() {
+  /**
+   * 【2026-11-08 停用·整套「自动掰输入法」撤了】
+   *
+   * 主人报：「重启后我的中文输入法自动切换英文了，Ctrl+空格也切不回中文；
+   * 切到 WorkBuddy 窗口反而变回中文。看看 WorkBuddy 是怎么实现的」。
+   *
+   * 答案有点反直觉：**WorkBuddy 什么都没实现**。它压根不碰系统输入法，
+   * Windows 本来就按窗口/线程各自记住 IME 转换状态，所以切过去自然还是中文。
+   *
+   * 而我们这套从 10-27 起一路在坑人：
+   *   · 一开始临时挂美式键盘，把中文冲掉
+   *   · 改成 imm32 只翻 NATIVE 位之后，又拿 `app.getLocale()`（这台机器是 en）
+   *     当「主人想打什么字」→ Apply("en") → 把中文掰成英文
+   *   · 14:20 我加的「开机先切好」把这一下提前到启动瞬间，还挂了 focus 监听反复切
+   * 系统界面语言 ≠ 打字语言。这个自动掰方向的功能本身就是错的。
+   *
+   * 现在整个停用：输入法交给 Windows 和主人自己（Shift / Ctrl+Space）。
+   * 白框、被切成英文、切不回来，一次解决。
+   * 底下的实现留着作存档，主进程那侧也已把方向写死成「只往中文掰」，
+   * 以后真要恢复也不至于再把中文掰走。
+   */
+  return;
   if (imeBusy() || imeTypingRecently()) return;                       // ★ 拼音没上屏 / 刚上屏 / 刚打过字：一次都别切，否则搅出白框
   if (imeSwitching) return;                                          // 已有一趟在跑，直接让路
   if (!window.desktop || !window.desktop.imeMatchSystem) return;      // 网页版，管不着
@@ -13332,6 +13354,10 @@ async function imeMatchOnce() {
  */
 let _imePrimed = false;
 async function imePrimeOnBoot() {
+  /* 自动掰输入法整套已停用（见 imeMatchOnce 里的说明），开机预切也不再跑。
+   * 留着函数体是存档，别再往里加 focus 监听了 —— 每切回窗口动一次 IME，
+   * 正是主人「切到别的窗口是中文、切回来又变英文」的来源。 */
+  return;
   if (_imePrimed) return;
   _imePrimed = true;
   /** 真要动手之前再看一眼：人已经在打字了就让给他，这次不碰 */

@@ -22,7 +22,9 @@ t.ok('有 compositionstart 监听', /input\.addEventListener\('compositionstart'
 t.ok('有 compositionend 监听', /input\.addEventListener\('compositionend'/.test(ui));
 t.ok('compositionend 记了时间戳', /__xyImeEndAt = Date\.now\(\)/.test(ui));
 t.ok('imeBusy 覆盖「正在打」+「刚上屏冷却」', /function imeBusy\(\)[\s\S]{0,220}__xyImeComposing[\s\S]{0,220}< 250/.test(ui));
-t.ok('imeMatchOnce 进门第一件事就让路', /async function imeMatchOnce\(\) \{\s*\n\s*if \(imeBusy\(\) \|\| imeTypingRecently\(\)\) return;/.test(ui));
+/* 【2026-11-08 整套停用】让路逻辑留着作存档，进门第一行是 return。 */
+t.ok('imeMatchOnce 进门第一件事就让路（现为整套停用，让路逻辑留作存档）',
+  /async function imeMatchOnce\(\) \{[\s\S]{0,1200}if \(imeBusy\(\) \|\| imeTypingRecently\(\)\) return;/.test(ui));
 t.ok('await 慢请求之后再查一次', /if \(!\(await imeFeatureOn\(\)\)\) return;[\s\S]{0,340}if \(imeBusy\(\)\) return;/.test(ui));
 t.ok('抢焦点 grab() 也让路', /const grab = \(\) => \{[\s\S]{0,320}imeBusy\(\)/.test(ui));
 t.ok('Enter 选词不发送那条还在', /e\.isComposing \|\| e\.keyCode === 229/.test(ui));
@@ -85,20 +87,22 @@ t.ok('打字会取消待切', /'keydown', markTyping/.test(ui));
 t.ok('打拼音也会取消', /'compositionstart', markTyping/.test(ui));
 t.ok('刚打过字就整段不切', /function imeTypingRecently\(\)/.test(ui) && /imeBusy\(\) \|\| imeTypingRecently\(\)/.test(ui));
 
-/* 【2026-11-08 加·重启后第一句打出来是英文】
+/* 【2026-11-08 停用整套自动掰输入法】
  *
- * 「打字时不许碰输入法」这条保护不能松（松了白框就回来），
- * 但重启后系统 IME 停在英文、人点完立刻敲键盘 → 待切那趟被作废 → 全是字母。
- * 解法是抢在打字之前切：页面起来 1.8 秒后，窗口在前台且没人打字时静默切一次。
- * 下面四条盯住它别被删回去。 */
-t.ok('有「开机先切好」的入口', /async function imePrimeOnBoot\(\)/.test(ui));
-t.ok('开机切只跑一次', /_imePrimed\) return;[\s\S]{0,80}_imePrimed = true;/.test(ui));
-t.ok('窗口不在前台不隔空改别人的输入法', /document\.hasFocus\(\)/.test(ui));
-t.ok('窗口还没激活时，等它拿到焦点再补切一次',
-  /addEventListener\('focus', prime, \{ once: true \}\)/.test(ui));
-t.ok('开机切也要让给正在打字的人', /if \(imeBusy\(\) \|\| imeTypingRecently\(\)\) return;[\s\S]{0,120}imeMatchOnce\(\)/.test(ui));
-t.ok('原来的「打字不许切」保护还在（不能为修这个把白框招回来）',
-  /if \(imeBusy\(\) \|\| imeTypingRecently\(\)\) return;/.test(ui) && /'keydown', markTyping/.test(ui));
+ * 主人报「重启后中文变英文、Ctrl+空格切不回、切到 WorkBuddy 反而中文」。
+ * WorkBuddy 根本不碰系统输入法 —— Windows 本来按窗口各自记 IME 状态。
+ * 我们这套先造白框、又拿 app.getLocale()（本机 en）当打字语言把中文掰成英文，
+ * 开机预切还把这个错误提前到启动瞬间、并挂 focus 监听反复切。整个撤掉。
+ *
+ * 断言改成守「不许再放回来」。 */
+t.ok('自动掰输入法整套停用（imeMatchOnce 第一行就 return）',
+  /async function imeMatchOnce\(\) \{[\s\S]{0,900}?\n  return;/.test(ui));
+t.ok('开机预切也停用，不再挂 focus 反复动 IME',
+  /async function imePrimeOnBoot\(\) \{[\s\S]{0,400}?\n  return;/.test(ui));
+const mainSrc = fs.readFileSync('electron/main.cjs', 'utf8');
+t.ok('主进程方向写死只往中文掰（防御：以后恢复也不许掰成英文）',
+  /const wantZh = true;/.test(mainSrc)
+  && !/^\s*const wantZh = lang === 'zh';/m.test(mainSrc));
 
 if (cdp2) {
   try {

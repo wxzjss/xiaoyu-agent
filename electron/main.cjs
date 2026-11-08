@@ -697,32 +697,83 @@ async function createWindow(updated = false) {
   });
 
   /**
-   * 【2026-11-08 加·把「只往中文掰」那一下真正接上】
+   * 【2026-11-08 重写·输入法「默认英文」彻底根治】
    *
-   * 主人：「重启后输入法默认是英文的问题还没解决，而且当前会话 Ctrl+空格
-   * 切中文后，切换其他会话输入法又默认切回英文了。」
+   * 主人第三次报：「重启后，我的输入法怎么又默认给我从中文变为英文了？
+   * 能不能彻底根治」。
    *
-   * 上午我把整套自动掰输入法停用了 —— 那解决了「被掰成英文」，但**什么都没做**
-   * 也意味着「重启后默认英文」没人管：Windows 按窗口记 IME 状态，
-   * 这个窗口上一次是英文，下次起来还是英文。
+   * 之前那条路（matchImeToSystem）走的是 `execFile('powershell', ...)` + C# Add-Type，
+   * 三个硬伤，注定治不好：
+   *   ① 起一个 PowerShell 要 0.5~2 秒，等它跑到 imm32 时前台窗口早变了；
+   *   ② 它的 C# 里用 GetForegroundWindow() —— 作用在「当时的前台」，
+   *      而不是**我们自己的窗口**，窗口一失焦就上错人；
+   *   ③ **有些环境的安全策略直接禁掉 Add-Type**（实测 PowerShell 报
+   *      "Command blocked for security: Add-Type compiles and loads .NET code"），
+   *      整段脚本静默失败 —— 看起来「加了」，实际一次都没执行过。
    *
-   * matchImeToSystem() 已经写死 wantZh=true（只往中文掰，绝不会把中文掰走），
-   * 但停用之后没人调它。这里挂到窗口 focus：
-   *   · 启动后窗口一露面 → 立刻是中文
-   *   · 切去别的应用再切回来 → 若被系统改成英文，顺手掰回中文
-   * 已经是中文时 C# 那边 cur==1 直接返回，一次都不写，所以不会干扰你打字。
-   * 节流 1.5 秒，避免频繁 focus 堆进程。
+   * 现在直接走 koffi 加载 user32/imm32，主进程里同步调用：
+   *   · 毫秒级，不经过任何子进程；
+   *   · 显式传**我们窗口**的 hwnd，不看谁在前台；
+   *   · 只翻 IME_CMODE_NATIVE 那一位（全角/标点/软键盘原样保留）；
+   *   · 已经是中文就一次都不写。
    */
+  let _imeNat = null;
+  const imeNative = () => {
+    if (_imeNat !== null) return _imeNat;
+    try {
+      const koffi = require('koffi');
+      const u32 = koffi.load('user32.dll');
+      const im32 = koffi.load('imm32.dll');
+      _imeNat = {
+        GetForegroundWindow: u32.func('void *GetForegroundWindow()'),
+        ImmGetDefaultIMEWnd: im32.func('void *ImmGetDefaultIMEWnd(void *)'),
+        SendMessageW: u32.func('intptr_t SendMessageW(void *, uint32, intptr_t, intptr_t)'),
+      };
+    } catch (e) {
+      _imeNat = false;
+      try { console.warn('[ime] koffi 不可用，输入法跟随交给系统：', String(e && e.message)); } catch {}
+    }
+    return _imeNat;
+  };
+  /** 把某个窗口的输入法掰到中文。返回 1=已是中文 / 0=掰过去了 / <0=失败原因 */
+  const imeForceChinese = (hwnd) => {
+    const n = imeNative();
+    if (!n) return -9;
+    try {
+      const h = hwnd || n.GetForegroundWindow();
+      if (!h) return -2;
+      const def = n.ImmGetDefaultIMEWnd(h);
+      if (!def) return -1;
+      const WM_IME_CONTROL = 0x0283;
+      const GET = 0x0001;
+      const SET = 0x0002;
+      const st = BigInt(n.SendMessageW(def, WM_IME_CONTROL, GET, 0));
+      if (st < 0n) return -3;
+      const want = st | 1n;              // IME_CMODE_NATIVE = 0x0001
+      if (want === st) return 1;         // 已经是中文：一次都不写
+      n.SendMessageW(def, WM_IME_CONTROL, SET, Number(want));
+      return 0;
+    } catch (e) {
+      return -4;
+    }
+  };
+  const imeHwndOf = (w) => {
+    try {
+      const buf = w.getNativeWindowHandle();
+      return buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : Number(buf.readUInt32LE(0));
+    } catch (e) { return 0; }
+  };
   try {
-    let _imeFocusAt = 0;
-    const _imeOnFocus = () => {
+    let _imeAt = 0;
+    const _imeKick = () => {
       const t = Date.now();
-      if (t - _imeFocusAt < 1500) return;
-      _imeFocusAt = t;
-      try { matchImeToSystem().catch(() => {}); } catch (e) {}
+      if (t - _imeAt < 800) return;
+      _imeAt = t;
+      const r = imeForceChinese(imeHwndOf(win));
+      try { console.log('[ime] 掰到中文：' + r + '（1=本来就是 0=掰过去了 <0=失败）'); } catch {}
     };
-    win.on('focus', _imeOnFocus);
-    win.once('ready-to-show', () => { setTimeout(_imeOnFocus, 600); });
+    win.on('focus', _imeKick);
+    win.once('ready-to-show', () => { setTimeout(_imeKick, 300); setTimeout(_imeKick, 1500); });
   } catch (e) {}
 
   // 默认最大化（顺序与原因见下面 ready-to-show 里那段，别改回去）。

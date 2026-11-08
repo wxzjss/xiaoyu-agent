@@ -1,19 +1,16 @@
-fix(retry429): 冷却改成按会话 —— 一个会话限流不再冻住全屋
+refactor(ui): 会话列表那组也搬出去（新建 ui/sessions.js）
 
-之前留下的隐患：cooldownUntil 是一个裸 let 数值，任何会话迁移完都写它。
-于是 A 会话撞 429 迁移了，B 会话明明好好的也跟着「冷却中」不能回退 ——
-一个会话的限流把全屋冻住。
+第二项继续：
+· refreshRunning   每 3 秒问服务端谁在跑（含防抖）
+· renderSessList   画会话列表（绿点、运行中、停止键、智能体标签）
 
-现在：
-· cooldowns 改成 Map（sessionId → 截止时间）
-· inCooldown(sessionId) / startCooldown(ms, sessionId) 都带会话参数，
-  不传时退回空桶（老调用点行为不变）
-· 迁移完把冷却挂在**新会话**上（它才是接着跑的那个）
-· retryState 里问的是「这个会话还要等多久」，不再是全局倒计时
+现在页面脚本分三块：
+  index.html          主脚本 65 万字符（还剩聊天流、设置面板等）
+  ui/hub.js           柜子 10 个函数 / 657 行
+  ui/sessions.js      会话列表 2 个函数 / 209 行
 
-实测：
-  startCooldown(60000, 'A')
-  → A 冷却 60 秒
-  → B 冷却 0 秒   ← 不再被 A 拖累
+索引 HTML 里加了一行 <script src="/ui/sessions.js">，位置在 hub.js 之后、
+主脚本之前 —— 这样主脚本执行时两个文件的函数都已经在全局了。
 
-check-chat-e2e 加了断言钉住（26/26 通过）。
+验证：预检通过、真机格实测 —— 输入框在、会话列表 32 行、
+renderSessList / refreshRunning / syncHubHead 三个都是 function。

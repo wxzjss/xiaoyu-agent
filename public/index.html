@@ -22832,6 +22832,44 @@ setInterval(async () => {
   if (before !== key()) {
     try { renderSessList(); } catch { /* 画不动就算了 */ }
   }
+  /* 【2026-11-08 修·绿点亮着，按钮却是【发送】】
+   *
+   * 主人 15:16 截图：会话列表「办事鱼」旁边小绿点在，聊天区却
+   * 「正在发送消息」没了、按钮变回发送、话也停在那儿。
+   *
+   * 两套状态各走各的：
+   *   · 绿点 = 这里每 3 秒读一次 /api/running（服务端名单，准）
+   *   · busy / 提示 / 按钮 = 只在 switchSession、settleComposer 里判一次
+   * 看门狗掐掉旧轮、stuck-retry 又自动接回一轮时，服务端名单跟着变、
+   * 绿点跟着亮，可 busy 那次判成 false 之后**再没人纠正**，
+   * 于是前端既不显示「正在发送」，也不 followLive 补画新事件。
+   *
+   * 现在借这趟 3 秒轮询把当前会话对齐一次：
+   * 服务端说在跑、本页说闲 → 复核 /api/chat/live，真在跑就接管回来
+   * （亮提示、锁按钮、从当前事件数续画，不从 0 重放）。
+   * 服务端说没跑、本页还锁着 → 放开。turnsInFlight 防重复接管。
+   */
+  try {
+    const sid = sessionId;
+    const r = sid ? runningSess.get(sid) : null;
+    if (r && !busy) {
+      const j = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sid))
+        .then((x) => x.json()).catch(() => null);
+      if (j && j.running) {
+        if (!turnsInFlight.has(sid)) {
+          turnsInFlight.set(sid, { startedAt: Number(j.startedAt) || Date.now(), adopted: true });
+          try { followLive(sid, (Array.isArray(j.events) ? j.events.length : 0)); } catch (e) {}
+        }
+        busy = true;
+        try { showSending(Number(j.startedAt) || 0); } catch (e) {}
+        try { syncSendBtn(); } catch (e) {}
+      }
+    } else if (!r && busy && sid && !turnsInFlight.has(sid)) {
+      busy = false;
+      try { hidingSendingSafe(); } catch (e) {}
+      try { syncSendBtn(); } catch (e) {}
+    }
+  } catch (e) {}
 }, 3000);
 
 

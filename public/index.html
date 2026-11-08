@@ -10475,11 +10475,58 @@ function hubRefreshTitle() {
   });
   /* 【2026-11-07 主人】跟「正在跑命令…」一个待遇：思考还在流的时候，
    * 柜门也写「正在思考中…」。thinking-now 由 openThink 挂上、finish 撤掉。 */
-  const _thinking = _liveHub.querySelector('details.think.thinking-now');
+  /**
+   * 【2026-11-08 修·「工具跑完、模型在想」这段柜门是空的】
+   *
+   * 主人问：「比如【写文件】过程中，为什么【调了 x 次工具】不会变成【写文件】？」
+   *
+   * 拆开看是三段，代码只在一段里做对了：
+   *   ① 写文件真在跑      → 柜门写「正在写文件…」（这段是对的，真机验过）
+   *   ② 写文件跑完、模型在想要不要写下一个 → **柜门退回「调了 N 次工具」**
+   *   ③ 模型决定再调一个  → 又变「正在X…」
+   * 写文件往往零点几秒就完，人眼看到的绝大多数时间正好落在 ② 上，
+   * 所以观感就是「一直写着调了 x 次工具，从来没变成写文件」。
+   *
+   * ② 为什么会空：这里原来只在 `_liveHub` **里面**找思考块，
+   * 可 openThink 是把思考块挂在 #log 末尾的（柜子外面）。于是永远找不到，
+   * `_thinking` 永远是 null，柜门就一直掉到最底下那个「调了 N 次工具」分支。
+   *
+   * 现在两条路都认：柜子里有就用柜子里的；没有就往后找 ——
+   * 柜子之后、还标着 thinking-now 的那块，就是这一轮正在想的东西。
+   */
+  const _thinking = (() => {
+    try {
+      const inside = _liveHub.querySelector('details.think.thinking-now');
+      if (inside) return inside;
+      const lg = document.getElementById('log');
+      if (!lg) return null;
+      const kids = [...lg.children];
+      const ix = kids.indexOf(_liveHub);
+      for (let i = kids.length - 1; i > ix; i -= 1) {
+        const k = kids[i];
+        if (k && k.classList && k.classList.contains('think') && k.classList.contains('thinking-now')) return k;
+      }
+    } catch (e) {}
+    return null;
+  })();
+  /* 【2026-11-08 修·计数要跟着工具数一起涨】
+   *
+   * 主人问：「为什么柜子上的【调了 x 次工具】不会在调用过程中随调用变化？」
+   *
+   * 原因不是没重算 —— tool_start / tool_end 都调了这个函数，数（_t）每次都是新的。
+   * 是**跑着的时候标题被「正在…」整段顶掉了**：只要有一个工具在跑，
+   * 就只写「正在跑命令…」，一个数字都不带。于是主人从头到尾看不见那个数在涨，
+   * 跑完才「啪」一下跳到最终统计，看着像从来没更新过。
+   *
+   * 现在两个一起给：`调了 3 次 · 正在跑命令…`。
+   * 「正在…」照旧保留（主人说过这个做得好），计数也跟着实时动。
+   * 一次都还没调的时候（纯思考）不写「调了 0 次」，只写「正在思考中…」。
+   */
+  const _cnt = _t ? ('调了 ' + _t + ' 次 · ') : '';
   n1.textContent = _thinking
-    ? '正在思考中…'
+    ? (_cnt + '正在思考中…')
     : (_runEl
-      ? ('正在' + String((_runEl.querySelector('.name') || {}).textContent || '干活').trim() + '…')
+      ? (_cnt + '正在' + String((_runEl.querySelector('.name') || {}).textContent || '干活').trim() + '…')
       : ((_t && _k)
         ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
         : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'))));

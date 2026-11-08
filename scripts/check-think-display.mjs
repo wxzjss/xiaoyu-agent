@@ -40,7 +40,9 @@ t.ok('思考流式中刷新柜门', /d\.classList\.add\('thinking-now'\); hubRef
 t.ok('finish 撤标记并刷新柜门', (ui.match(/d\.classList\.remove\('thinking-now'\); hubRefreshTitle\(\)/g) || []).length >= 2);
 t.ok('hubRefreshTitle 认 thinking-now', /querySelector\('details\.think\.thinking-now'\)/.test(ui));
 t.ok('柜门写「正在思考中…」', ui.includes("'正在思考中…'"));
-t.ok('思考优先于工具状态', /n1\.textContent = _thinking\s*\?\s*'正在思考中…'/.test(ui));
+/* 【2026-11-08 改口径】主人要「调了 x 次」跟着实时动，所以柜门运行中是
+ * 「调了 N 次 · 正在思考中…」/「调了 N 次 · 正在跑命令…」，计数是可选前缀。 */
+t.ok('思考优先于工具状态', /n1\.textContent = _thinking\s*\?\s*\(_cnt \+ '正在思考中…'\)/.test(ui));
 /* 【2026-11-07 改口径】工具在跑时灰字不再是空的，写金色「运行中」（主人要的那个） */
 t.ok('hubpeek：思考给实时灰字、工具写金色「运行中」、结束给摘要',
   /if \(_thinking\) \{[\s\S]{0,80}pk\.textContent = _thinking\.dataset\.peek/.test(ui)
@@ -60,7 +62,7 @@ t.ok('金色「运行中」有对应样式', /\.hubpeek\.live \{ color: #f0b954/
 let cdp = null;
 try {
   const m = await import('../_t_cdp.mjs');
-  cdp = await m.connect({ port: 9223, match: '8788' });
+  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
 } catch { /* 没开调试浏览器 */ }
 if (cdp) {
   try {
@@ -109,7 +111,8 @@ if (cdp) {
     `);
     t.ok('真机：思考中柜门写「正在思考中…」', r.thinking === '正在思考中…', JSON.stringify(r.thinking));
     t.ok('真机：想完退回统计', r.after === '想了 1 段', JSON.stringify(r.after));
-    t.ok('真机：工具运行仍写「正在跑命令…」', r.tool === '正在跑命令…', JSON.stringify(r.tool));
+    t.ok('真机：工具运行仍写「（调了 N 次 · ）正在跑命令…」',
+      /(调了 \d+ 次 · )?正在跑命令…$/.test(String(r.tool)), JSON.stringify(r.tool));
     t.ok('真机：标题只放第一句（短）', r.titleLen > 0 && r.titleLen <= 44, String(r.titleLen));
     t.ok('真机：标题一行不换行', r.ws === 'nowrap', r.ws);
     t.ok('真机：正文仍是全文', r.bodyLen === r.flatLen, String(r.bodyLen) + '/' + String(r.flatLen));

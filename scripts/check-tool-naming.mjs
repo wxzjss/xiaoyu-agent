@@ -85,7 +85,7 @@ let cdp = null;
 try { ({ connect: (o) => (cdp = connect(o)) }); } catch { /* 下面统一 try */ }
 try {
   const { connect } = await import('../_t_cdp.mjs');
-  cdp = await connect({ port: 9223, match: '8788' });
+  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
 } catch (e) { cdp = null; }
 
 if (!cdp) {
@@ -141,8 +141,14 @@ if (!cdp) {
   t.ok('真机：非命令工具不受影响', r.names && r.names[3] === '读文件', String(r.names && r.names[3]));
   t.ok('真机：对象形态参数也认', r.namesObj === '跑回归', String(r.namesObj));
   /* 柜门取的是柜子里**第一张**运行中的卡；历史里若有卡住的卡，显示的是它的名字。
-   * 所以这里只要求「能变成 正在XXX…」，且名字取自工具卡，不要求恰好是我造的那张。 */
-  t.ok('真机：柜门变成「正在X…」', /^正在.+…$/.test(String(r.title)), String(r.title));
+   * 所以这里只要求「能变成 正在XXX…」，且名字取自工具卡，不要求恰好是我造的那张。
+   *
+   * 【2026-11-08 改】主人问「为什么柜子上的【调了 x 次工具】不会随调用变化」——
+   * 查出来是「正在…」把计数整段顶掉了。现在两个一起给：
+   * `调了 2 次 · 正在跑命令…`，所以断言从 ^正在 放到「含 正在… 结尾」。 */
+  t.ok('真机：柜门变成「（调了 N 次 · ）正在X…」',
+    /(调了 \d+ 次 · )?正在.+…$/.test(String(r.title)), String(r.title));
+  t.ok('真机：跑着的时候标题里带着实时计数', /调了 \d+ 次 · 正在/.test(String(r.title)), String(r.title));
   t.ok('真机：柜子在屏上', r.inDom === true);
   if (/^调了 \d+ 次工具/.test(String(r.after))) { t.ok('真机：跑完退回统计', true, String(r.after)); } else { t.skip('真机：跑完退回统计', '页面正有一轮在跑（柜门停在「正在…」），这条测不了'); }
   cdp.close();

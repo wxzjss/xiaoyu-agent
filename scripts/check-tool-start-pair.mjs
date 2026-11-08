@@ -77,7 +77,7 @@ t.ok('前端跑完 hubRefreshTitle 会退回计数', /hubRefreshTitle\(\);/.test
 let cdp = null;
 try {
   const m = await import('../_t_cdp.mjs');
-  cdp = await m.connect({ port: 9223, match: '8788' });
+  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
 } catch { /* 没开调试浏览器 */ }
 if (cdp) {
   try {
@@ -101,7 +101,10 @@ if (cdp) {
       hub.remove();
       return out;
     `);
-    t.ok('真机：运行中柜门写「正在跑命令…」', r && r.running === '正在跑命令…', JSON.stringify(r));
+    /* 【2026-11-08 改】主人要「调了 x 次」也跟着实时动，
+     * 现在运行中是「调了 1 次 · 正在跑命令…」。断言放宽成「以 正在… 结尾、前面可带计数」。 */
+    t.ok('真机：运行中柜门写「（调了 N 次 · ）正在跑命令…」',
+      r && /(调了 \d+ 次 · )?正在跑命令…$/.test(String(r.running)), JSON.stringify(r));
     t.ok('真机：跑完退回「调了 1 次工具」', r && r.after === '调了 1 次工具', JSON.stringify(r));
   } catch (e) {
     t.ok('真机柜门探针能跑', false, String(e.message).slice(0, 100));

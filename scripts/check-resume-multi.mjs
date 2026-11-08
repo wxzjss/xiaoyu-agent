@@ -79,4 +79,24 @@ if (got) {
   t.ok('探针内部无失败项', got.ok === true, (got.steps || []).join(' | ').slice(0, 200));
 }
 
+/* 【2026-11-08 加·点重启时别把别的会话丢下】
+ *
+ * 主人问：「A 会话自动重启续上时，另一个正在运行中的 B 会话在自动重启后也会续上吗？」
+ * 查下来原来答案是「不会」：前端那个重启按钮一定带 sessionId，
+ * 后端 `_cands = _want ? [_want] : [...runningTurns.keys()]` 于是只记当前这一个，
+ * 同时跑的 B 连续跑意图都没写。
+ *
+ * 现在要求：带 id 时，_want 排第一，其余 running 的一个不落跟在后面。 */
+{
+  const srv = fs.readFileSync('src/server.mjs', 'utf8');
+  t.ok('点重启时：其余正在跑的会话也跟着记',
+    /_want\s*\n?\s*\?\s*\[_want,\s*\.\.\.\[\.\.\.runningTurns\.keys\(\)\]/.test(srv));
+  t.ok('点重启时：目标会话排在第一个（优先续）',
+    /\[_want,\s*\.\.\.\[\.\.\.runningTurns\.keys\(\)\]\.filter\(\(x\) => x !== _want\)\]/.test(srv));
+  /* 前端那条路必须还在带 sessionId —— 上面那条断言的存在意义就靠它 */
+  const ui = fs.readFileSync('public/index.html', 'utf8');
+  t.ok('前端点重启确实会带 sessionId（所以上面那条才必须）',
+    /api\/app\/restart',\s*\{[\s\S]{0,200}sessionId:/.test(ui));
+}
+
 t.done();

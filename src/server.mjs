@@ -7278,7 +7278,24 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 所以再补一路：扫一遍会话清单，谁的 plan 上还有没打勾的，就把谁当候选。
          * 不翻 lastSessionId：它是「最后聊过的」，不代表还有活没干。
          */
-        let _cands = _want ? [_want] : [...runningTurns.keys()];
+        /**
+         * 【2026-11-08 修·A 续上了、B 却被丢下】
+         *
+         * 主人问：「A 会话自动重启续上时，另一个正在运行中的 B 会话在自动重启后也会续上吗？」
+         * 查下来答案是**不会**。原来这一行是：
+         *     let _cands = _want ? [_want] : [...runningTurns.keys()];
+         * 而前端那个「重启让它生效」按钮**一定会带 sessionId**（public/index.html:16910），
+         * 于是 _want 永远有值 → 候选永远只有那一个 → 同时在跑的 B 连一条续跑意图都没记，
+         * 重启完就静悄悄地停在那儿。
+         *
+         * 这跟 11-01「一次只续一个」是同一个形状的坑，只是那次修的是「不带 id 时」，
+         * 没管「带了 id 时」。
+         *
+         * 现在：点重启的那个排最前面（优先续），**其余正在跑的一个不落跟在后面**。
+         */
+        let _cands = _want
+          ? [_want, ...[...runningTurns.keys()].filter((x) => x !== _want)]
+          : [...runningTurns.keys()];
         if (!_want) {
           try {
               const _dir = join(config.dataDir, '.state', 'sessions');

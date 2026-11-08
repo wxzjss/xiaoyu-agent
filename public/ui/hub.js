@@ -1,3 +1,7 @@
+// @ts-check
+/* 【2026-11-08】加了 @ts-check：编辑器里能对这里做类型推断。
+ * 注意：项目没有 tsc 构建，这一行不影响运行；它只让 IDE 给出提示。
+ * 全局函数之间互相调用会被标成「未声明」—— 那是拆分后共享全局作用域的代价，忽略即可。 */
 /**
  * 【2026-11-08 第二项·从 index.html 里搬出来的第一块】
  *
@@ -70,33 +74,51 @@ function hubPeekOf(els) {
  * @param {object} opts
  * @param {HTMLElement|null} opts.thinking  柜子外面那块正在想的（没有就传 null）
  */
+/**
+ * 【2026-11-08·DOM class 名收成常量】
+ *
+ * 柜门这套 class 名原来散在十几个地方写死字符串。好处是改错一处不会有提示，
+ * 坏处是改错一处不会有提示 —— 今天已经因为「同一件事写几遍」踩过四轮。
+ * 收成常量后，改名字只改这里，IDE 也能跳转。
+ */
+const HUB_SEL = {
+  sum: 'summary',
+  name: '.hubname',
+  status: '.status',
+  peek: '.hubpeek',
+  tool: 'details.tool',
+  think: 'details.think',
+  cardName: '.name',
+  errInHub: 'details.tool .status.err',
+};
+
 function syncHubHead(hub, opts) {
   if (!hub) return;
   const o = opts || {};
-  const sum = hub.querySelector('summary') || hub;
-  const name = sum.querySelector('.hubname');
-  const st = sum.querySelector('.status');
-  const pk = sum.querySelector('.hubpeek');
-  const tools = [...hub.querySelectorAll('details.tool')];
-  const thinks = [...hub.querySelectorAll('details.think')];
+  const sum = hub.querySelector(HUB_SEL.sum) || hub;
+  const name = sum.querySelector(HUB_SEL.name);
+  const st = sum.querySelector(HUB_SEL.status);
+  const pk = sum.querySelector(HUB_SEL.peek);
+  const tools = [...hub.querySelectorAll(HUB_SEL.tool)];
+  const thinks = [...hub.querySelectorAll(HUB_SEL.think)];
   const t = tools.length;
   const k = thinks.length;
   /* 哪张卡还在跑（status 文本带「运行」或挂 run 类）*/
   const runCard = tools.find((el) => {
-    const s = el.querySelector('.status');
+    const s = el.querySelector(HUB_SEL.status);
     const tx = String((s && s.textContent) || '');
     return tx.indexOf('运行') >= 0 || Boolean(s && s.classList.contains('run'));
   }) || null;
-  const bad = hub.querySelectorAll('details.tool .status.err').length;
+  const bad = hub.querySelectorAll(HUB_SEL.errInHub).length;
   /* 警告要排除「正在跑」那种 —— 运行中挂的就是 warn 类，混进来会被当成警告 */
   const warn = tools.filter((el) => {
-    const s = el.querySelector('.status');
+    const s = el.querySelector(HUB_SEL.status);
     if (!s || !s.classList.contains('warn')) return false;
     return String(s.textContent || '').indexOf('运行') < 0;
   }).length;
   const thinking = o.thinking || null;
   const runName = runCard
-    ? String((runCard.querySelector('.name') || {}).textContent || '干活').trim()
+    ? String((runCard.querySelector(HUB_SEL.cardName) || {}).textContent || '干活').trim()
     : '';
 
   if (name) {

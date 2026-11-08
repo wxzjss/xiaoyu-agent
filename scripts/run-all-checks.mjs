@@ -102,7 +102,10 @@ if (rp.status === 0) {
   failed.push('_t_post.mjs');
   console.log(' FAIL');
   const po = String(rp.stdout || '') + String(rp.stderr || '');
-  const pt = po.trim().split(String.fromCharCode(10)).filter((l) => l.includes("✘") || l.includes("共测")).join(String.fromCharCode(10));
+  const _head = '_t_post status=' + rp.status + ' signal=' + rp.signal;
+  const _lines = po.trim() ? po.trim().split(String.fromCharCode(10)) : [];
+  const _pick = _lines.filter((l) => l.includes("✘") || l.includes("共测") || l.includes("Error"));
+  const pt = [_head].concat(_pick.length ? _pick : _lines.slice(-12)).join(String.fromCharCode(10));
   tails.push('──── _t_post.mjs ────' + String.fromCharCode(10) + pt);
 }
 

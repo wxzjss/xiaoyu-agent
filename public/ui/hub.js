@@ -13,7 +13,7 @@
  * 选这两个当第一块，因为最干净：纯函数，不碰状态、不发请求，
  * 只吃 DOM 元素、吐字符串。搬错了最多灰字不对，不会连累别处。
  */
-function thinkPeekTail(text) {
+export function thinkPeekTail(text) {
   const flat = String(text || '').replace(/\s+/g, ' ').trim();
   if (!flat) return '';
   /* 【2026-11-08 主人】28 字太短，灰字右边明明还有一大片空。
@@ -22,7 +22,7 @@ function thinkPeekTail(text) {
   return flat.length > 160 ? '…' + flat.slice(-160) : flat;
 }
 
-function hubPeekOf(els) {
+export function hubPeekOf(els) {
   try {
     for (let i = els.length - 1; i >= 0; i--) {
       const el = els[i];
@@ -92,7 +92,7 @@ const HUB_SEL = {
   errInHub: 'details.tool .status.err',
 };
 
-function syncHubHead(hub, opts) {
+export function syncHubHead(hub, opts) {
   if (!hub) return;
   const o = opts || {};
   const sum = hub.querySelector(HUB_SEL.sum) || hub;
@@ -155,8 +155,8 @@ function syncHubHead(hub, opts) {
   }
 }
 
-function hubRefreshTitle() {
-  if (!_liveHub) return;
+export function hubRefreshTitle() {
+  if (!window._liveHub) return;
   /**
    * 【2026-11-08 重构·这里原来一百二十多行】
    *
@@ -170,12 +170,12 @@ function hubRefreshTitle() {
    */
   const _thinking = (() => {
     try {
-      const inside = _liveHub.querySelector("details.think.thinking-now");
+      const inside = window._liveHub.querySelector("details.think.thinking-now");
       if (inside) return inside;
       const lg = document.getElementById("log");
       if (!lg) return null;
       const kids = [...lg.children];
-      const ix = kids.indexOf(_liveHub);
+      const ix = kids.indexOf(window._liveHub);
       for (let i = kids.length - 1; i > ix; i -= 1) {
         const k = kids[i];
         if (k && k.classList && k.classList.contains("think") && k.classList.contains("thinking-now")) return k;
@@ -183,12 +183,12 @@ function hubRefreshTitle() {
     } catch (e) {}
     return null;
   })();
-  syncHubHead(_liveHub, { thinking: _thinking });
+  syncHubHead(window._liveHub, { thinking: _thinking });
 }
 
 
 /* ── 从 index.html 搬来 ─────────────────────────────── */
-function groupLooseTools() {
+export function groupLooseTools() {
   try {
     const lg = document.getElementById('log');
     if (!lg) return;
@@ -214,7 +214,7 @@ function groupLooseTools() {
       lg.insertBefore(hub, first);
       for (const el of run) hub.appendChild(el);
       try { syncHubHead(hub); } catch (e) {}
-      try { markHubUserOpened(hub); } catch (e) {}
+      try { window.markHubUserOpened(hub); } catch (e) {}
       run = [];
     };
     /* 【2026-11-05 改·先排掉已经是柜子的东西】
@@ -233,11 +233,11 @@ function groupLooseTools() {
     }
     flush();
     /* 【2026-11-05】归拢完拍平一次，防嵌套 */
-    flattenNestedHubs();
+    window.flattenNestedHubs();
   } catch (e) {}
 }
 
-function thinkTitleOf(flat) {
+export function thinkTitleOf(flat) {
   const s = String(flat || '').replace(/\s+/g, ' ').trim();
   if (!s) return '';
   /* 【2026-11-07 主人】标题要「长到碰到右侧框框边界」。
@@ -252,8 +252,8 @@ function thinkTitleOf(flat) {
   return String((m && m[0]) || s).trim();
 }
 
-function adoptThink(d) {
-  try { log.appendChild(d); } catch (e) {}
+export function adoptThink(d) {
+  try { window.log.appendChild(d); } catch (e) {}
   const title = d.querySelector('.thinkTitle');
   const meta = d.querySelector('.thinkMeta');
   const body = d.querySelector('.thinkBody');
@@ -295,18 +295,18 @@ function adoptThink(d) {
 }
 
 /** 工具卡同理：复用那一张，只改字，不再删掉重画（改了内容却整张闪一下也是白闪）。 */
-function adoptTool(d) {
-  try { log.appendChild(d); } catch (e) {}
+export function adoptTool(d) {
+  try { window.log.appendChild(d); } catch (e) {}
   const sum = d.querySelector('summary');
   const pre = d.querySelector('pre');
   try { d.dataset.liveTurn = '1'; } catch (e) {}
-  try { _liveToolEls.push(d); } catch (e) {}
+  try { window._liveToolEls.push(d); } catch (e) {}
   return { d, sum, pre };
 }
 
 
 /* ── 从 index.html 搬来 ─────────────────────────────── */
-function addTool() {
+export function addTool() {
   // 【2026-10-31 主人要求：抽屉不手动点开就始终闭合】
   // 以前这里是 hub 收着 + 每个 tool 也收着（d.open = false）+ 参数 hidden ——
   // 三层折在一起，界面上就剩两条竖线，点都点不开。
@@ -372,7 +372,7 @@ function addTool() {
        *   · 末尾是 msg   → 停，另起一个新柜子（我说话了，接下来的活是新的一段）
        *   · 别的一律停
        */
-      let _last = log.lastElementChild;
+      let _last = window.log.lastElementChild;
       for (let _guard = 0; _guard < 6 && _last; _guard++) {
         if (_last.classList && _last.classList.contains('toolhub')) break;
         if (_last.classList && _last.classList.contains('think')) {
@@ -383,11 +383,11 @@ function addTool() {
         break;
       }
       const _okHub = _last && _last.classList && _last.classList.contains('toolhub')
-        && !(_last.parentElement && _last.parentElement !== log);
+        && !(_last.parentElement && _last.parentElement !== window.log);
       if (_okHub) {
         _last.appendChild(d);
         /* 【2026-11-05】塞进已有柜子时也把指针接上，标题才会跟着涨 */
-        try { _liveHub = _last; } catch (e) {}
+        try { window._liveHub = _last; } catch (e) {}
         return _last;
       }
       const h = document.createElement('details');
@@ -397,8 +397,8 @@ function addTool() {
       const sum = document.createElement('summary');
       sum.innerHTML = '<span class="hubname"></span><span class="status ok"></span><span class="hubpeek"></span>';
       h.appendChild(sum);
-      try { markHubUserOpened(h); } catch (e) {}
-      log.appendChild(h);
+      try { window.markHubUserOpened(h); } catch (e) {}
+      window.log.appendChild(h);
       h.appendChild(d);
       /**
        * 【2026-11-05 修·新柜子顶上光秃秃没字】
@@ -408,15 +408,15 @@ function addTool() {
        * 它就什么都不做，于是柜门那一行永远是空的。
        * 这里把指针接上，后面 push 完会自然刷出「正在读取…」。
        */
-      try { _liveHub = h; _liveHubCount = 1; } catch (e) {}
+      try { window._liveHub = h; window._liveHubCount = 1; } catch (e) {}
       return h;
     } catch (e) { return null; }
   };
   /* 先把还没收的思考块收掉，免得它夹在 log 末尾、导致新柜子开到它后面 */
   try { foldLiveTools(); } catch (e) {}
   const _myHub = _attachToHub();
-  _liveToolEls.push(d);
-  noteNewContent();
+  window._liveToolEls.push(d);
+  window.noteNewContent();
   /**
    * 【2026-11-05 改·建完立刻收进柜子】
    *
@@ -432,7 +432,7 @@ function addTool() {
    * 调用方填完 name 之后还会再刷一次（见 tool_start 那段）。 */
   try { hubRefreshTitle(); } catch (e) {}
   /* 【2026-11-05】每次建卡后拍平一次，防嵌套 */
-  try { flattenNestedHubs(); } catch (e) {}
+  try { window.flattenNestedHubs(); } catch (e) {}
   return { d, sum, pre };
 }
 
@@ -446,13 +446,13 @@ function addTool() {
 
 
 
-function foldLiveTools() {
+export function foldLiveTools() {
   /* 【2026-11-07】第一次合柜时顺手把「散卡自愈守卫」装上（只装一次）。
    * 挂在这里而不是启动流程里：启动那段在闭包深处，改起来容易碰坏别的东西；
    * 而合柜这件事本身就是「工具卡要进柜」这条链的入口，挂这儿最贴题。 */
-  try { installToolLeakGuard(); } catch (e) {}
-  const _tools = (_liveToolEls || []).filter((el) => el && el.isConnected);
-  _liveToolEls = [];
+  try { window.installToolLeakGuard(); } catch (e) {}
+  const _tools = (window._liveToolEls || []).filter((el) => el && el.isConnected);
+  window._liveToolEls = [];
   /**
    * 【2026-11-07 加·合柜子时别把主人正在看的地方拽走】
    *
@@ -468,7 +468,7 @@ function foldLiveTools() {
    * 而且每来一张卡都算一遍位置太浪费）。
    */
   const _log0 = document.getElementById('log');
-  const _hubOpen = !!(_liveHub && _liveHub.open);
+  const _hubOpen = !!(window._liveHub && window._liveHub.open);
   let _keep = null;
   if (_hubOpen && _log0) {
     try {
@@ -487,7 +487,7 @@ function foldLiveTools() {
      * 看着就是「弹一下再弹回来」。
      * 用户本来就贴着底看（stickBottom）时，跟着到底才是他要的，
      * 这时候就别做位置补偿了。 */
-    try { if (typeof stickBottom !== 'undefined' && stickBottom) return; } catch (e) {}
+    try { if (typeof window.stickBottom !== 'undefined' && window.stickBottom) return; } catch (e) {}
     requestAnimationFrame(() => {
       try {
         if (!_keep.el || !_keep.el.isConnected) return;
@@ -593,7 +593,7 @@ function foldLiveTools() {
      *
      * 塞完就把指针接上来，跟 _attachToHub 那条路一个规矩。
      */
-    try { _liveHub = _prev; } catch (e) {}
+    try { window._liveHub = _prev; } catch (e) {}
     /* 【2026-11-08 重构】同样是交给唯一出口。
      * 这里原来是第三份手写逻辑（数工具、判运行中、拼三种文案、定色），
      * 也是主人几轮截图里最常走到的那个柜子 —— 卡一张张往里塞，标题却不动。 */
@@ -606,7 +606,7 @@ function foldLiveTools() {
   /* 柜子是 foldLiveTools 合出来的，里面装的是直播画的卡 —— 也算「我自己画的」，一并清 */
   try { hub.dataset.liveTurn = '1'; } catch (e) {}
   hub.open = false;                        // 收起来，主人点开才是一排抽屉
-  try { markHubUserOpened(hub); } catch (e) {}
+  try { window.markHubUserOpened(hub); } catch (e) {}
   /**
    * 【2026-11-05 改·打开柜子时，里面的工具直接摊开】
    *
@@ -677,3 +677,10 @@ function foldLiveTools() {
   for (const el of arr) hub.appendChild(el);
   _restore();
 }
+
+
+/* 经典脚本（index.html 里那段）还要按名字直接调这些函数 ——
+   模块有独立作用域，不挂回 window 它们就找不到了。 */
+Object.assign(window, {
+  thinkPeekTail, hubPeekOf, syncHubHead, hubRefreshTitle, groupLooseTools, thinkTitleOf, adoptThink, adoptTool, addTool, foldLiveTools,
+});

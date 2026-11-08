@@ -5,7 +5,7 @@
 
 
 /* ── 从 index.html 搬来 ─────────────────────────────── */
-async function refreshRunning() {
+export async function refreshRunning() {
   try {
     const j = await fetch('/api/running').then((r) => r.json());
     const list = (j && Array.isArray(j.running)) ? j.running : [];
@@ -29,31 +29,31 @@ async function refreshRunning() {
      * 加一层防抖：这次没出现、但上一次还在 → 先留一票，连续两次缺席才真摘掉。
      * 真跑完的会话第一次也会留 3 秒，那点延迟比「绿点乱闪」可接受得多。
      */
-    for (const [id, info] of runningSess) {
+    for (const [id, info] of window.runningSess) {
       if (!next.has(id)) {
         const miss = (Number(info && info._miss) || 0) + 1;
         if (miss < 2) next.set(id, { ...(info || {}), sessionId: id, _miss: miss });
       }
     }
-    runningSess = next;
+    window.runningSess = next;
   } catch { /* 拿不到就保留上一次的名单，别把绿点抹掉 */ }
 }
 
-function renderSessList() {
-  sessList.innerHTML = '';
-  sessList.classList.toggle('bulk', bulkMode);
-  document.getElementById('sessBulkBar').hidden = !bulkMode;
+export function renderSessList() {
+  window.sessList.innerHTML = '';
+  window.sessList.classList.toggle('bulk', window.bulkMode);
+  document.getElementById('sessBulkBar').hidden = !window.bulkMode;
   const bulkBtn = document.getElementById('sessBulk');
-  if (bulkBtn) bulkBtn.classList.toggle('on', bulkMode);
-  if (!sessionsCache.length) {
+  if (bulkBtn) bulkBtn.classList.toggle('on', window.bulkMode);
+  if (!window.sessionsCache.length) {
     const e = document.createElement('div');
     e.className = 'sessEmpty';
     e.textContent = '还没有会话，点上面的「＋ 新会话」开一个吧';
-    sessHint.textContent = '';
-    leaveBulkIfEmpty();
+    window.sessHint.textContent = '';
+    window.leaveBulkIfEmpty();
     return;
   }
-  sessHint.textContent = `${sessionsCache.length} 个`;
+  window.sessHint.textContent = `${sessionsCache.length} 个`;
   // 展示排序：当前会话永远置顶；一句没说的空会话沉到底。
   // 为什么：空会话 updatedAt 也新，纯按时间排会把正在聊的会话顶到下面，
   // 切走再回来就得往下滚——看着就像"原来的会话没了"。
@@ -64,9 +64,9 @@ function renderSessList() {
    * 现在多认一个 hasContent（服务端给的「有没有消息」）。
    * 三个都空才算真空。 */
   const isEmpty = (x) => !x.hasContent && !x.count && !x.preview;
-  const view = sessionsCache.slice().sort((a, b) => {
-    if (a.id === sessionId) return -1;
-    if (b.id === sessionId) return 1;
+  const view = window.sessionsCache.slice().sort((a, b) => {
+    if (a.id === window.sessionId) return -1;
+    if (b.id === window.sessionId) return 1;
     const ea = isEmpty(a) ? 1 : 0;
     const eb = isEmpty(b) ? 1 : 0;
     if (ea !== eb) return ea - eb;      // 有内容的在前，空的在后
@@ -74,15 +74,15 @@ function renderSessList() {
   });
   for (const s of view) {
     const row = document.createElement('div');
-    row.className = 'sessRow' + (s.id === sessionId ? ' current' : '') + (isEmpty(s) ? ' sessEmptyRow' : '');
+    row.className = 'sessRow' + (s.id === window.sessionId ? ' current' : '') + (isEmpty(s) ? ' sessEmptyRow' : '');
     row.dataset.id = s.id;
-    if (bulkMode && picked.has(s.id)) row.classList.add('picked');
+    if (window.bulkMode && window.picked.has(s.id)) row.classList.add('picked');
 
-    if (bulkMode) {
+    if (window.bulkMode) {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.className = 'sessPick';
-      cb.checked = picked.has(s.id);
+      cb.checked = window.picked.has(s.id);
       cb.dataset.pick = s.id;
       cb.setAttribute('aria-label', '选中这个会话');
       row.appendChild(cb);
@@ -95,13 +95,13 @@ function renderSessList() {
     // 标题文字和「挂的哪张卡」分开装：标题能被省略号截，卡名标签永远露在外面
     const ttxt = document.createElement('span');
     ttxt.className = 'sessTitleText';
-    ttxt.textContent = fixMojibake(s.title || '新会话');
+    ttxt.textContent = window.fixMojibake(s.title || '新会话');
     t.appendChild(ttxt);
-    if (runningSess.has(s.id)) {
+    if (window.runningSess.has(s.id)) {
       const lv = document.createElement('i');
-      const info = runningSess.get(s.id) || {};
+      const info = window.runningSess.get(s.id) || {};
       /* 静默太久 = 挂着但没回音。绿点是「在她那儿有动静」，黄点是「可能卡死了」 */
-      const stalled = Number(info.idleMs || 0) > RUNNING_STALL_MS;
+      const stalled = Number(info.idleMs || 0) > window.RUNNING_STALL_MS;
       lv.className = 'sessLive' + (stalled ? ' stalled' : '');
       lv.title = stalled
         ? ('已经 ' + Math.round(Number(info.idleMs || 0) / 1000) + ' 秒没有任何回音，可能卡住了')
@@ -184,10 +184,10 @@ function renderSessList() {
     }
     const sub = document.createElement('div');
     sub.className = 'sessSub';
-    const runningNow = typeof turnsInFlight !== 'undefined' && turnsInFlight.has(s.id);
+    const runningNow = typeof window.turnsInFlight !== 'undefined' && window.turnsInFlight.has(s.id);
     sub.textContent = [
       runningNow ? '⏳ 还在跑' : '',
-      relTime(s.updatedAt),
+      window.relTime(s.updatedAt),
       s.count ? `${s.count} 句` : '',
       s.preview || '',
     ].filter(Boolean).join(' · ');
@@ -207,7 +207,14 @@ function renderSessList() {
     del.textContent = '删除';
 
     row.append(main, ren, del);
-    sessList.appendChild(row);
+    window.sessList.appendChild(row);
   }
-  paintBulkCount();
+  window.paintBulkCount();
 }
+
+
+/* 经典脚本（index.html 里那段）还要按名字直接调这些函数 ——
+   模块有独立作用域，不挂回 window 它们就找不到了。 */
+Object.assign(window, {
+  refreshRunning, renderSessList,
+});

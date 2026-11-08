@@ -4108,9 +4108,9 @@
     </div>
   </div>
 
-  <script src="/ui/hub.js"></script>
-  <script src="/ui/sessions.js"></script>
-  <script src="/ui/chat.js"></script>
+  <script type="module" src="/ui/hub.js"></script>
+  <script type="module" src="/ui/sessions.js"></script>
+  <script type="module" src="/ui/chat.js"></script>
   <script>
 /**
  * 【2026-11-01 加】脚本出错的兜底提示。
@@ -19301,7 +19301,82 @@ document.getElementById('mdlSave').onclick = async () => {
   }
 };
 
-const booted = bootSessions();
+/**
+ * 【2026-11-08 模块桥 —— ui/*.js 变成 ES 模块之后必须有的那扇门】
+ *
+ * `ui/hub.js` / `ui/sessions.js` / `ui/chat.js` 现在是 `<script type="module">`。
+ * 模块**有自己的作用域**：上面这些用 `let` / `const` 声明的东西**不在 window 上**，
+ * 模块里直接写 `sessionId` 会当场 ReferenceError。
+ *
+ * 所以给它们开一扇门：把模块要用的那些用 accessor 挂到 window。
+ * 关键点是**读写的还是同一个绑定**（不是复制一份值）——
+ * 模块那边 `window.sessionId = x` 走 setter，改的就是这里那个 `sessionId`。
+ *
+ * `let` 的给 get + set（会话要切、状态要变）；
+ * `const` 的只给 get（它本来就不许改）。
+ *
+ * 什么时候执行：这段在经典脚本里，跑在 deferred 的模块**之前**，
+ * 所以模块第一次读的时候门已经开好了。
+ */
+(function bridgeGlobalsForModules() {
+  const bind = (name, get, set) => {
+    try {
+      Object.defineProperty(window, name, { configurable: true, enumerable: false, get, set });
+    } catch (e) {
+      try { console.warn('[模块桥] 挂不上 ' + name + '：' + (e && e.message)); } catch (e2) {}
+    }
+  };
+  /* let：get + set（读写同一个绑定） */
+  bind('__ignoreScrollUntil', () => __ignoreScrollUntil, (v) => { __ignoreScrollUntil = v; });
+  bind('__switchGen', () => __switchGen, (v) => { __switchGen = v; });
+  bind('_lastDocH', () => _lastDocH, (v) => { _lastDocH = v; });
+  bind('_lastTop', () => _lastTop, (v) => { _lastTop = v; });
+  bind('_liveHub', () => _liveHub, (v) => { _liveHub = v; });
+  bind('_liveHubCount', () => _liveHubCount, (v) => { _liveHubCount = v; });
+  bind('_liveToolEls', () => _liveToolEls, (v) => { _liveToolEls = v; });
+  bind('_whaleLastFinishEl', () => _whaleLastFinishEl, (v) => { _whaleLastFinishEl = v; });
+  bind('attachments', () => attachments, (v) => { attachments = v; });
+  bind('bulkMode', () => bulkMode, (v) => { bulkMode = v; });
+  bind('busy', () => busy, (v) => { busy = v; });
+  bind('currentTurns', () => currentTurns, (v) => { currentTurns = v; });
+  bind('lastInterjectText', () => lastInterjectText, (v) => { lastInterjectText = v; });
+  bind('runningSess', () => runningSess, (v) => { runningSess = v; });
+  bind('sessionId', () => sessionId, (v) => { sessionId = v; });
+  bind('sessionTitle', () => sessionTitle, (v) => { sessionTitle = v; });
+  bind('sessionsCache', () => sessionsCache, (v) => { sessionsCache = v; });
+  bind('stickBottom', () => stickBottom, (v) => { stickBottom = v; });
+  bind('stopping', () => stopping, (v) => { stopping = v; });
+  /* const：只给 get */
+  bind('RUNNING_STALL_MS', () => RUNNING_STALL_MS);
+  bind('STORE_KEY', () => STORE_KEY);
+  bind('_wcardByWid', () => _wcardByWid);
+  bind('input', () => input);
+  bind('lastSnapFp', () => lastSnapFp);
+  bind('log', () => log);
+  bind('picked', () => picked);
+  bind('sessHint', () => sessHint);
+  bind('sessList', () => sessList);
+  bind('usageEl', () => usageEl);
+})();
+
+/**
+ * 【2026-11-08 模块化之后，开机得等模块先就位】
+ *
+ * 模块脚本是 deferred：它们在**整段经典脚本跑完之后**才执行。
+ * 而 bootSessions 里会调 renderSessList / switchSession / renderTurns（现在都在模块里），
+ * 模块还没跑就调 = undefined → 白屏。
+ *
+ * DOMContentLoaded 在所有 deferred 脚本之后才触发，所以等它最稳。
+ * 返回的仍然是一个 Promise（下面 `await booted` 的用法不变）。
+ */
+const booted = (async () => {
+  if (document.readyState === 'loading') {
+    await new Promise((r) => document.addEventListener('DOMContentLoaded', r, { once: true }));
+  } else {
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return bootSessions();
+})();
 
 /* 【2026-11-01 钱要算对：开局就把模型价目拉下来】
    以前只有点开【模型】面板才拉，主人平时根本不点那张面板 ——
@@ -19792,47 +19867,8 @@ async function pushMusic(patch) {
 
 refreshMusic();
 
-/* #region 灰字（从 HEAD 找回） */
-/* #region 灰字（从 HEAD 找回：2026-11-08 工作区改动误删） */
-function thinkPeekTail(text) {
-  const flat = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!flat) return '';
-  /* 【2026-11-08 主人】28 字太短，灰字右边明明还有一大片空。
-   * 现在放到 160 字，真正显示多长交给 CSS 的 ellipsis 按容器宽度决定 ——
-   * 容器宽就多显示，窄就自动截，不用前端猜。 */
-  return flat.length > 160 ? '…' + flat.slice(-160) : flat;
-}
-
-
-function hubPeekOf(els) {
-  try {
-    for (let i = els.length - 1; i >= 0; i--) {
-      const el = els[i];
-      if (!el || !el.classList || !el.classList.contains('tool')) continue;
-      const st = el.querySelector('.status');
-      const stText = String((st && st.textContent) || '');
-      if (stText.indexOf('运行') >= 0 || (st && st.classList.contains('run'))) {
-        const nm = el.querySelector('.name');
-        if (nm && nm.textContent) return '正在' + String(nm.textContent).trim() + '…';
-      }
-    }
-    for (let i = els.length - 1; i >= 0; i--) {
-      const el = els[i];
-      if (!el || !el.classList) continue;
-      if (el.classList.contains('think')) {
-        const b = el.querySelector('.thinkBody');
-        const t = String((b && b.textContent) || '').replace(/\s+/g, ' ').trim();
-        if (t) return t.slice(0, 30) + (t.length > 30 ? '…' : '');
-      } else if (el.classList.contains('tool')) {
-        const nm = el.querySelector('.name');
-        if (nm && nm.textContent) return String(nm.textContent).trim();
-      }
-    }
-  } catch (e) {}
-  return '';
-}
-
-/* #endregion */
+/* 灰字那两个函数已经搬进 public/ui/hub.js（2026-11-08 模块化），
+   这里原来留着一份从 HEAD 找回的副本 —— 同名两份，容易改错地方，删掉。 */
 
 
 

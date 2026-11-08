@@ -3,6 +3,15 @@
  * 注意：项目没有 tsc 构建，这一行不影响运行；它只让 IDE 给出提示。
  * 全局函数之间互相调用会被标成「未声明」—— 那是拆分后共享全局作用域的代价，忽略即可。 */
 
+import { thinkPeekTail, hubPeekOf, syncHubHead, hubRefreshTitle, groupLooseTools, thinkTitleOf, adoptThink, adoptTool, addTool, foldLiveTools } from './hub.js';
+import { refreshRunning, renderSessList } from './sessions.js';
+
+/* 【2026-11-08 模块化】`log` 是主脚本里的 const（#log 那个元素）。
+ * 这个文件里有些函数自己 `const log = document.getElementById('log')` —— 那些是局部同名，
+ * 不冲突；没有自己取的，用这里的。 */
+const log = window.log;
+
+
 
 /**
  * 【2026-11-08 加·「一条轮次只能有一个主人」】
@@ -22,18 +31,18 @@
  *
  * 它幂等、只删「确定重复」的东西，所以每次画完都可以放心跑一遍。
  */
-function logSettle() {
+export function logSettle() {
   const lg = document.getElementById('log');
   if (!lg) return 0;
   const norm = (s) => {
-    try { return String(fixMojibake(String(s || ''))).replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); }
+    try { return String(window.fixMojibake(String(s || ''))).replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); }
   };
   let fixed = 0;
 
   /* ① 没有在跑的轮次 → 直播气泡要么是重复的，要么是空壳 */
   let running = false;
   try {
-    const r = (typeof turnsInFlight !== 'undefined') && turnsInFlight.get(sessionId);
+    const r = (typeof window.turnsInFlight !== 'undefined') && window.turnsInFlight.get(window.sessionId);
     running = !!(r && (r.startedAt || r.adopted));
   } catch (e) { running = false; }
   if (!running) {
@@ -106,7 +115,7 @@ const LOG_STATE = {
 };
 
 /** 这一屏换主人了 */
-function logSetHistory(sid, turns) {
+export function logSetHistory(sid, turns) {
   const _sid = String(sid || '');
   if (LOG_STATE.sid !== _sid) {
     LOG_STATE.sid = _sid;
@@ -120,7 +129,7 @@ function logSetHistory(sid, turns) {
 }
 
 /** 这一轮现在长什么样（传 null = 它跑完了） */
-function logSetLive(sid, live) {
+export function logSetLive(sid, live) {
   if (String(sid || '') !== LOG_STATE.sid) return false;   // 不是这一屏的，别污染
   LOG_STATE.live = live || null;
   if (!live) {
@@ -131,7 +140,7 @@ function logSetLive(sid, live) {
 }
 
 /** 历史指纹：只关心「画出来会不一样」的那几个量 */
-function logHistoryFp(turns) {
+export function logHistoryFp(turns) {
   const n = turns.length;
   const last = turns[n - 1] || {};
   return n + '|' + String(last.ts || '') + '|' + String(last.text || '').length
@@ -142,11 +151,11 @@ function logHistoryFp(turns) {
  * **唯一的画入口。** 除了用户操作（删除/回退/编辑那种「照盘上重画」）会带 force，
  * 其余所有路径都只改 LOG_STATE，然后叫这里一声。
  */
-function renderLog(opts) {
+export function renderLog(opts) {
   const o = opts || {};
   const sid = LOG_STATE.sid;
   if (!sid) return false;
-  try { if (typeof sessionId !== 'undefined' && sessionId !== sid) return false; } catch (e) {}
+  try { if (typeof window.sessionId !== 'undefined' && window.sessionId !== sid) return false; } catch (e) {}
 
   const live = LOG_STATE.live;
   const running = !!(live && live.running !== false && Array.isArray(live.items) && live.items.length);
@@ -163,12 +172,12 @@ function renderLog(opts) {
 
   /* ② 直播：指纹没变就不动 DOM（keyed diff 在 paintSnapshot 里按 key 复用节点） */
   if (running) {
-    const lf = snapshotFingerprint(live.items);
+    const lf = window.snapshotFingerprint(live.items);
     if (o.forceLive || !LOG_STATE.liveFp || lf !== LOG_STATE.liveFp) {
       try {
         LOG_STATE.bubble = paintSnapshot(sid, live);
         LOG_STATE.liveFp = lf;
-        try { lastSnapFp.set(sid, lf); } catch (e) {}
+        try { window.lastSnapFp.set(sid, lf); } catch (e) {}
       } catch (e) {
         try { window.__lastPaintErr = e && e.message ? e.message : String(e); } catch (e2) {}
         console.warn('[renderLog] 直播重画失败:', e && e.message ? e.message : e);
@@ -184,10 +193,10 @@ function renderLog(opts) {
 }
 
 /* ── 从 index.html 搬来 ─────────────────────────────── */
-function paintSnapshot(sid, srcLive) {
+export function paintSnapshot(sid, srcLive) {
   /* 先试快路：纯文本在变长时，一个 DOM 节点都不动 */
   try {
-    if (tryLiveAppendFast(sid, srcLive)) return;
+    if (window.tryLiveAppendFast(sid, srcLive)) return;
   } catch (e) { /* 快路出错绝不能连累正常渲染 */ }
   /**
    * 【2026-11-05 加·直播重画也要保住展开状态】
@@ -196,16 +205,16 @@ function paintSnapshot(sid, srcLive) {
    * 根因是这条路（paintSnapshot0）会 remove 掉本轮的 think / 卡片再重建。
    * 这里在整段前后做一次快照恢复，不管中间动了什么，出来时开合状态跟进去时一致。
    */
-  const __snapBefore = snapOpenState();
+  const __snapBefore = window.snapOpenState();
   try {
     return paintSnapshotInner(sid, srcLive);
   } finally {
-    try { applyOpenState(__snapBefore); } catch (e) {}
+    try { window.applyOpenState(__snapBefore); } catch (e) {}
     try { logSettle(); } catch (e) {}
   }
 }
 
-function paintSnapshotInner(sid, srcLive) {
+export function paintSnapshotInner(sid, srcLive) {
   try {
     /* 【2026-11-05 主人报：每轮说完末尾都挂一堆 worker 卡】
      * 原来这里把 srcLive.items 里【全部】worker 都存进缓存（items 是按会话全部历史
@@ -253,7 +262,7 @@ function paintSnapshotInner(sid, srcLive) {
    * 现在记下重画前的 scrollTop，画完原样还回去。
    * 还的时候只认「不贴底」的情况：贴底的人本来就该被带到最新。
    */
-  const __stBefore = (log && !stickBottom) ? log.scrollTop : -1;
+  const __stBefore = (log && !window.stickBottom) ? log.scrollTop : -1;
   /**
    * 【2026-11-05 加·用「锚点消息」而不是像素位置】
    *
@@ -270,7 +279,7 @@ function paintSnapshotInner(sid, srcLive) {
    */
   const __anchor = (() => {
     try {
-      if (!log || stickBottom) return null;
+      if (!log || window.stickBottom) return null;
       const base = log.getBoundingClientRect().top;
       for (const el of log.querySelectorAll('.msg[data-at]')) {
         const r = el.getBoundingClientRect();
@@ -303,7 +312,7 @@ function paintSnapshotInner(sid, srcLive) {
       if (log && (__anchor || __stBefore >= 0)) {
         requestAnimationFrame(() => {
           try {
-            if (stickBottom) return;   // 贴底的人就该被带到最新
+            if (window.stickBottom) return;   // 贴底的人就该被带到最新
             if (__anchor) {
               const el = log.querySelector('.msg[data-at="' + __anchor.at + '"]');
               if (el) {
@@ -342,7 +351,7 @@ function paintSnapshotInner(sid, srcLive) {
        *  现在：① 结束瞬间开一个 260ms 的静默窗口，期间的 scroll 只同步记认；
        *        ② 下一帧（布局稳定后）如果还在跟随，就补一次贴底，并把记认对齐。
        */
-      __ignoreScrollUntil = Date.now() + 260;
+      window.__ignoreScrollUntil = Date.now() + 260;
       /* 【2026-11-03 修·发新消息时画面抽搐一下】
        *  原来这里连着补滚两拍：下一帧一拍、120ms 后再一拍。
        *  重画本身已经是「先删再建」，中途高度变矮、scrollTop 被夹小，
@@ -354,9 +363,9 @@ function paintSnapshotInner(sid, srcLive) {
        */
       requestAnimationFrame(() => {
         try {
-          if (stickBottom && log) hardScrollBottom();
-          _lastDocH = log ? log.scrollHeight : _lastDocH;
-          _lastTop = log ? log.scrollTop : _lastTop;
+          if (window.stickBottom && log) window.hardScrollBottom();
+          window._lastDocH = log ? log.scrollHeight : window._lastDocH;
+          window._lastTop = log ? log.scrollTop : window._lastTop;
         } catch (e) {}
       });
     } catch (e) {}
@@ -370,7 +379,7 @@ function paintSnapshotInner(sid, srcLive) {
       for (const _n of document.querySelectorAll('#log details.wcard[data-live-turn="1"]')) {
         const _k = String((_n.dataset && _n.dataset.wid) || '');
         const _src = (window.__liveWorkers && window.__liveWorkers[String(sid || '')]) || [];
-        if (_k && !_src.some((x) => String(x.id) === _k)) { try { _n.remove(); } catch (e) {} if (_k) _wcardByWid.delete(_k); }
+        if (_k && !_src.some((x) => String(x.id) === _k)) { try { _n.remove(); } catch (e) {} if (_k) window._wcardByWid.delete(_k); }
         else if (_k) _alive.add(_k);
       }
     } catch (e) {}
@@ -392,15 +401,15 @@ function paintSnapshotInner(sid, srcLive) {
       const _sidKey2 = String(sid || '');
       const _mine = (window.__liveWorkersTurnWids && window.__liveWorkersTurnWids[_sidKey2]) || null;
       const _keep2 = _mine ? _keep.filter((x) => x && _mine.has(String(x.id))) : _keep;
-      if (_lg2 && !_lg2.querySelector('details.wcard')) for (const _it of _keep2) paintWorkerCard(_it, null);
+      if (_lg2 && !_lg2.querySelector('details.wcard')) for (const _it of _keep2) window.paintWorkerCard(_it, null);
     }
   } catch (e) {}
 }
 
-function paintSnapshot0(sid, srcLive) {
+export function paintSnapshot0(sid, srcLive) {
   const items = Array.isArray(srcLive) ? srcLive : (srcLive && Array.isArray(srcLive.items) ? srcLive.items : null);
   if (!items) return null;
-  if (typeof sid === 'string' && sessionId !== sid) return null;
+  if (typeof sid === 'string' && window.sessionId !== sid) return null;
   /**
    * 【空清单 = 没有快照，不是「什么都不该有」】—— 2026-11-02 严格自检抓到的真问题
    *
@@ -447,7 +456,7 @@ function paintSnapshot0(sid, srcLive) {
             try { _n.remove(); } catch (e) {}
           }
         }
-        try { _wcardByWid.clear(); } catch (e) {}
+        try { window._wcardByWid.clear(); } catch (e) {}
       }
     }
   } catch (e) {}
@@ -469,16 +478,16 @@ function paintSnapshot0(sid, srcLive) {
     try {
       const _lg = document.getElementById('log');
       if (_lg) for (const n of _lg.querySelectorAll('details.wcard')) { try { n.remove(); } catch (e) {} }
-      try { _wcardByWid.clear(); } catch (e) {}
+      try { window._wcardByWid.clear(); } catch (e) {}
     } catch (e) {}
     if (!_wl.length) return null;
     try {
-      for (const it of _wl) paintWorkerCard(it);
+      for (const it of _wl) window.paintWorkerCard(it);
     } catch (e) {}
     return null;
   }
   /* 本轮正文（用来判断历史里那块是不是本轮的半截）。洗 markdown + 抹空白，两边同一套口径。 */
-  const nrm = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
+  const nrm = (s) => { try { return String(window.fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
   let bodyText = '';
   for (const it of items) if (it && it.k === 'text') bodyText += String(it.t || '');
   /* ① 先清掉自己画过的那一组（正文容器 + 提示行）
@@ -539,7 +548,7 @@ function paintSnapshot0(sid, srcLive) {
           /* 子任务卡不走这条路（见 _wcardByWid 的说明）：只登记，不摘下来 */
           for (const t of lg.querySelectorAll('.wcard[data-live-turn="1"]')) {
             const _k = String((t.dataset && t.dataset.wid) || '');
-            if (_k) _wcardByWid.set(_k, { d: t, sum: t.querySelector('summary'), pre: t.querySelector('pre') });
+            if (_k) window._wcardByWid.set(_k, { d: t, sum: t.querySelector('summary'), pre: t.querySelector('pre') });
           }
         } catch (e) {}
         for (const t of lg.querySelectorAll('.think[data-live-turn="1"], .tool[data-live-turn="1"]')) {
@@ -616,7 +625,7 @@ function paintSnapshot0(sid, srcLive) {
     _deferredThink = null;
     try {
       const _o = takeReuse('think');
-      const _tk = _o ? adoptThink(_o) : openThink();
+      const _tk = _o ? adoptThink(_o) : window.openThink();
       try { if (_tk && _tk.el) _tk.el.dataset.liveTurn = '1'; } catch (e) {}
       try { if (typeof _tk.set === 'function') _tk.set(String(_t.t || '')); else _tk.push(String(_t.t || '')); } catch (e) {}
       /* 【2026-11-05】延后补画的那块，内容进去也要刷柜门，不然摘要还是空。 */
@@ -640,11 +649,11 @@ function paintSnapshot0(sid, srcLive) {
        * 所以「刚才有一块思考被延后」= 现在这段文字要**接回上一个气泡**。
        */
       const _cont = _deferredThink && lastBubble;
-      const b = _cont ? lastBubble : addAssistantAuto();
+      const b = _cont ? lastBubble : window.addAssistantAuto();
       if (!_cont) {
         try { const w = b.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
       }
-      pushStreamText(b, String(it.t || ''));
+      window.pushStreamText(b, String(it.t || ''));
       lastBubble = b;
       /* 【2026-11-05】这段文字画完了，把刚才延后的思考补上（它的原意就是「想到这儿」）。 */
       _flushDeferredThink();
@@ -665,7 +674,7 @@ function paintSnapshot0(sid, srcLive) {
        *  现在按清单 1:1 画：一段一块，各自照自己的文字更新，谁也不动谁。
        *  节点照旧优先复用（takeReuse），所以块的「身份」和展开状态都保得住。 */
       const _oldThink = takeReuse('think');
-      think = _oldThink ? adoptThink(_oldThink) : openThink();
+      think = _oldThink ? adoptThink(_oldThink) : window.openThink();
       try { if (think && think.el) think.el.dataset.liveTurn = '1'; } catch (e) {}
       try { if (typeof think.set === 'function') think.set(String(it.t || '')); else think.push(String(it.t || '')); } catch (e) {}
       /* 【2026-11-05 加】内容填进去了才刷柜门 —— 建块那一刻正文还是空的，
@@ -681,17 +690,17 @@ function paintSnapshot0(sid, srcLive) {
        * 原来那行等于没打标记，重画时就清不掉、越叠越多。现在直接标在它自己身上。 */
       try { if (el && el.d) el.d.dataset.liveTurn = '1'; } catch (e) {}
       try {
-        el.sum.querySelector('.name').textContent = niceTool(it.name, it.args);
+        el.sum.querySelector('.name').textContent = window.niceTool(it.name, it.args);
         const st = el.sum.querySelector('.status');
         st.textContent = it.status === 'ok' ? '完成' : (it.status === 'err' ? '失败' : '运行中…');
         st.className = 'status ' + (it.status === 'ok' ? 'ok' : (it.status === 'err' ? 'err' : 'warn'));
-        el.pre.textContent = (it.args ? '参数：' + tidyToolText(it.args) : '') + (it.output ? '\n--- output ---\n' + tidyToolText(it.output) : '');
+        el.pre.textContent = (it.args ? '参数：' + window.tidyToolText(it.args) : '') + (it.output ? '\n--- output ---\n' + window.tidyToolText(it.output) : '');
       } catch (e) {}
       if (!toolEls) toolEls = new Map();
       if (it.id) toolEls.set(it.id, el);
     } else if (it.k === 'worker') {
       closeThink();
-      _paintWorkerCardCore(it, takeReuse);
+      window._paintWorkerCardCore(it, takeReuse);
     } else if (it.k === 'say') {
       closeThink();
       /* 照清单画「别人说的话」：
@@ -700,13 +709,13 @@ function paintSnapshot0(sid, srcLive) {
        *  两种情况都给它打上 data-live-turn：下一次重画连同它一起清，画多少遍都只有一条。 */
       try {
         const _t = String(it.t || '');
-        const _fin = whaleStreamFinish(_t, StreamKey(sid, it.who));
+        const _fin = window.whaleStreamFinish(_t, window.StreamKey(sid, it.who));
         if (_fin) {
           let _el2 = null;
-          try { _el2 = _whaleLastFinishEl ? _whaleLastFinishEl.closest('.msg.whale, .msg.mate') : null; } catch (e) {}
+          try { _el2 = window._whaleLastFinishEl ? window._whaleLastFinishEl.closest('.msg.whale, .msg.mate') : null; } catch (e) {}
           if (_el2) { try { _el2.dataset.liveTurn = '1'; } catch (e) {} }
         } else {
-          const _w2 = addWhaleBubble(it.who, _t, null, true);
+          const _w2 = window.addWhaleBubble(it.who, _t, null, true);
           if (_w2) { try { _w2.dataset.liveTurn = '1'; } catch (e) {} }
         }
       } catch (e) {}
@@ -714,7 +723,7 @@ function paintSnapshot0(sid, srcLive) {
     } else if (it.k === 'note') {
       /* 照快照画的提示打上标记 —— 下一次重画由上面 ① 一并清掉，不会叠 */
       try {
-        const nd = addSysNote(String(it.t || '').replace(/^[\s\n]+/, '').trim());
+        const nd = window.addSysNote(String(it.t || '').replace(/^[\s\n]+/, '').trim());
         if (nd) nd.dataset.liveNote = '1';
       } catch (e) {}
     }
@@ -725,17 +734,17 @@ function paintSnapshot0(sid, srcLive) {
   _flushDeferredThink();
   /* 收尾：把这一轮的记账写在轮次记录上（tool_end 回来还要找工具块） */
   try {
-    let rec = turnsInFlight.get(sid);
-    if (!rec || typeof rec !== 'object') { rec = {}; turnsInFlight.set(sid, rec); }
+    let rec = window.turnsInFlight.get(sid);
+    if (!rec || typeof rec !== 'object') { rec = {}; window.turnsInFlight.set(sid, rec); }
     rec.bubble = lastBubble;
     rec.toolEls = toolEls;
     rec.snapshotAt = Date.now();
   } catch (e) {}
-  try { noteNewContent(); } catch (e) {}
+  try { window.noteNewContent(); } catch (e) {}
   return lastBubble;
 }
 
-async function attachLive(id) {
+export async function attachLive(id) {
   let live = null;
   try {
     live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
@@ -761,7 +770,7 @@ async function attachLive(id) {
   try {
     if (live && live.running) window.__xyLiveStartAt = Number(live.startedAt) || 0;
   } catch (e) {}
-  if (sessionId !== id) return false;
+  if (window.sessionId !== id) return false;
   const evs = live && Array.isArray(live.events) ? live.events : [];
 
   /**
@@ -775,7 +784,7 @@ async function attachLive(id) {
    *     服务端那份 running 只是上次进程留下的残骸（它就存在内存里，进程一崩就停在那儿），
    *     再拿它当准就会一直显示「还在跑」：气泡空着、输入框锁着、问什么都像没人应。
    */
-  const mine = turnsInFlight.has(id) || (sessionId === id && busy);
+  const mine = window.turnsInFlight.has(id) || (window.sessionId === id && window.busy);
 
   // 一条事件都没有：没东西可补画。是不是还在跑，照上面那套判断说回去。
   if (!evs.length) {
@@ -806,7 +815,7 @@ async function attachLive(id) {
       followLive(id, Array.isArray(live && live.events) ? live.events.length : 0);
       return true;
     }
-    if (!mine) turnsInFlight.delete(id);
+    if (!mine) window.turnsInFlight.delete(id);
     return false;
   }
 
@@ -833,7 +842,7 @@ async function attachLive(id) {
      * 现在：跑完就到此为止，什么都不重画。历史是唯一的真相。
      * 落盘偏短的极端情况，下一次刷新自然对齐，代价远小于屏幕上多一份。
      */
-    turnsInFlight.delete(id);
+    window.turnsInFlight.delete(id);
     return false;
   }
 
@@ -889,7 +898,7 @@ async function attachLive(id) {
       renderLog();
       bubble = LOG_STATE.bubble;
     } else {
-      bubble = paintLiveEvents(evs, null, _drawnToolIds);
+      bubble = window.paintLiveEvents(evs, null, _drawnToolIds);
     }
   } catch (e) {
     console.warn("[attachLive] 补画失败（只少几段内容，不影响运行状态）:", e && e.message ? e.message : e);
@@ -910,7 +919,7 @@ async function attachLive(id) {
    * 并把 bubble 指针一起存进去 —— 后续流式追加和下一次重画都能接上。
    */
   if (live.running) {
-    const rec = turnsInFlight.get(id) || {
+    const rec = window.turnsInFlight.get(id) || {
       sessionId: id, parts: [], running: true, startedAt: Date.now(), fishOff: false,
       userText: '', userAttach: [], userDrawn: true,   // 历史里已经有了，不用再补主人那句
       bubble: null, drawnParts: 0,
@@ -920,7 +929,7 @@ async function attachLive(id) {
     rec.drawnParts = rec.parts.length;
     rec.bubble = bubble || null;
     rec.running = true;
-    turnsInFlight.set(id, rec);
+    window.turnsInFlight.set(id, rec);
 
     /* 【2026-11-05 修·刷新后光标闪在说完的话上】
      *
@@ -938,7 +947,7 @@ async function attachLive(id) {
     const _tooling = Boolean(_lastEv && (
       _lastEv.type === 'tool_start' || _lastEv.type === 'tool_end' || _lastEv.type === 'hub'
     ));
-    if (bubble && !_tooling) markStreaming(bubble);
+    if (bubble && !_tooling) window.markStreaming(bubble);
     /* 【2026-11-02 游标语义修正 · 重复显示真凶】
      *  服务端的游标现在是 rev（每次 push / 每次把增量并进上一条都 +1），
      *  这里原来却传 evs.length（事件条数）——条数比 rev 小，于是「刚刚补画过的那条事件」
@@ -972,15 +981,15 @@ async function attachLive(id) {
  */
 
 
-function followLive(id, fromIndex) {
+export function followLive(id, fromIndex) {
   // 只清自己这个会话的，别人的别动
-  stopFollow(id);
+  window.stopFollow(id);
   let seen = fromIndex;
 
   const timer = setInterval(async () => {
     // 屏幕上换到别的会话了：这个会话的轮询留着没意义，停掉（只停自己）
-    if (sessionId !== id) {
-      stopFollow(id);
+    if (window.sessionId !== id) {
+      window.stopFollow(id);
       return;
     }
     let live = null;
@@ -1002,7 +1011,7 @@ function followLive(id, fromIndex) {
     /* 【2026-11-02 串会话 · 同一道闸，第二处】
      *  上面那句「屏幕上换到别的会话了」是在 await 之前判的；这一拍一旦卡在上面的 fetch 里，
      *  等回来时主人早就切走了，后面的画就全落到新会话的屏幕上。数据回来了再判一次。 */
-    if (sessionId !== id) { stopFollow(id); return; }
+    if (window.sessionId !== id) { window.stopFollow(id); return; }
     const evs = live.events || [];
     /**
      * 【收尾这件事必须每轮都查，不能只在「有新字」的时候查】
@@ -1055,7 +1064,7 @@ function followLive(id, fromIndex) {
      * 全量就一个常量请求，不拼游标。 */
     let _snap = null;
     try { _snap = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json()); } catch (e) { _snap = null; }
-    if (sessionId !== id) { stopFollow(id); return; }
+    if (window.sessionId !== id) { window.stopFollow(id); return; }
     /* 【2026-11-08 收口】不再自己比指纹、自己判要不要画 ——
      * 只把「这一轮现在长什么样」交给 state，画由 renderLog 一个人做。 */
     if (_snap && Array.isArray(_snap.items)) {
@@ -1065,7 +1074,7 @@ function followLive(id, fromIndex) {
 
     // 收尾：每轮都看，跟这一轮有没有吐新字无关
     if (!live.running) {
-      stopFollow(id);
+      window.stopFollow(id);
       /**
        * 【2026-11-02 修·跑完之后，屏幕必须以历史为准】
        *
@@ -1080,7 +1089,7 @@ function followLive(id, fromIndex) {
        */
       (async () => {
         try {
-          turnsInFlight.delete(id);
+          window.turnsInFlight.delete(id);
           /**
            * 【为什么最多试 6 次】
            *
@@ -1089,7 +1098,7 @@ function followLive(id, fromIndex) {
            *  所以每 700ms 再问一次历史，直到「历史那条助手不比直播快照短」为止。
            *  最多 6 次（约 4 秒），还不齐就直接按历史画 —— 宁可用落盘的，也不用可能被压薄的直播。
            */
-          const _nz = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
+          const _nz = (s) => { try { return String(window.fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
           let _want = '';
           try {
             const _lv = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
@@ -1098,12 +1107,12 @@ function followLive(id, fromIndex) {
           const _wantNz = _nz(_want).length;
           let _turns = null;
           for (let _k = 0; _k < 6; _k++) {
-            if (sessionId !== id) return;
+            if (window.sessionId !== id) return;
             const sel = await fetch('/api/sessions/select', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ id }),
             }).then((r) => r.json()).catch(() => null);
-            if (sessionId !== id) return;
+            if (window.sessionId !== id) return;
             _turns = (sel && sel.session && Array.isArray(sel.session.turns)) ? sel.session.turns : null;
             if (_turns) {
               const _as = _turns.filter((t) => t && t.role === 'assistant' && !t.whale);
@@ -1112,7 +1121,7 @@ function followLive(id, fromIndex) {
             }
             await new Promise((r) => setTimeout(r, 700));
           }
-          if (sessionId !== id) return;
+          if (window.sessionId !== id) return;
           /* 【2026-11-08 收口】跑完了 → 这一轮归历史：先换 state，再画。
            * 原来直接 renderTurns 不改 state，下次谁叫一声 renderLog 就会拿旧历史覆盖回来。 */
           if (_turns) { logSetHistory(id, _turns); logSetLive(id, null); renderLog({ force: true }); }
@@ -1127,8 +1136,8 @@ function followLive(id, fromIndex) {
             {
               const _lg = document.getElementById('log');
               if (_lg) for (const _n of _lg.querySelectorAll('details.wcard')) { try { _n.remove(); } catch (e) {} }
-              try { _wcardByWid.clear(); } catch (e) {}
-              for (const it of _wl) paintWorkerCard(it);
+              try { window._wcardByWid.clear(); } catch (e) {}
+              for (const it of _wl) window.paintWorkerCard(it);
             }
           } catch (e) {}
         } catch (e) {}
@@ -1148,10 +1157,10 @@ function followLive(id, fromIndex) {
           b.classList.remove('streaming');
         }
       } catch {}
-      busy = false;
-      hideSending();
-      syncSendBtn();
-      refreshSessions({ silent: true }).catch(() => {});
+      window.busy = false;
+      window.hideSending();
+      window.syncSendBtn();
+      window.refreshSessions({ silent: true }).catch(() => {});
       /**
        * 这一轮结束了，而主人插的那句话还挂着 → 现在就该接着答。
        *
@@ -1160,31 +1169,31 @@ function followLive(id, fromIndex) {
        * pendingResume 就没人管 —— 界面上按了插话、话也进历史了，
        * 却永远等不到回应，按钮还卡着。这里补上同一个出口。
        */
-      if (pendingResume) {
-        pendingResume = false;
-        const t = String(lastInterjectText || '').trim();
+      if (window.pendingResume) {
+        window.pendingResume = false;
+        const t = String(window.lastInterjectText || '').trim();
         const sid = id;
         setTimeout(() => {
-          resumeOrResend(sid, t).catch((e) => {
-            busy = false;
-            syncSendBtn();
-            if (input && !input.value.trim() && t) { input.value = t; autosizeInput(); }
-            addSysNote('⚠ 插的这句没接上：' + (e && e.message ? e.message : '未知错误') + '，已经放回输入框');
+          window.resumeOrResend(sid, t).catch((e) => {
+            window.busy = false;
+            window.syncSendBtn();
+            if (window.input && !window.input.value.trim() && t) { window.input.value = t; window.autosizeInput(); }
+            window.addSysNote('⚠ 插的这句没接上：' + (e && e.message ? e.message : '未知错误') + '，已经放回输入框');
           });
         }, 30);
       }
     }
   }, 1200);
 
-  followingBySession.set(id, timer);
+  window.followingBySession.set(id, timer);
   // 兼容旧变量：让它指着「最近一次开起来的那个」，只读它的人也还能用
-  following = timer;
+  window.following = timer;
 }
 
 /**
  * 把一个还在跑的会话「补画」到屏幕上：先把已收到的内容摆出来，后面新来的接着追加。
  */
-function replayInFlight(id) {
+export function replayInFlight(id) {
   /**
    * 【2026-11-02 · 整组快照重画（原来是「按 parts 增量补」）】
    *
@@ -1199,12 +1208,12 @@ function replayInFlight(id) {
    *
    * 拉不到（服务端没这一轮 / 网络断）才退回老办法，别让屏幕彻底空着。
    */
-  const rec0 = turnsInFlight.get(id);
+  const rec0 = window.turnsInFlight.get(id);
   /* 主人那句话：还没画过就补上（切走时它可能还在屏幕上，切会话后被清掉了） */
   try {
     if (rec0 && !rec0.userDrawn && (rec0.userText || (rec0.userAttach && rec0.userAttach.length))) {
-      if (sessionId === id) {
-        addUser(rec0.userText || '', undefined, rec0.userAttach && rec0.userAttach.length ? rec0.userAttach : undefined, undefined, undefined, rec0.userIdentity);
+      if (window.sessionId === id) {
+        window.addUser(rec0.userText || '', undefined, rec0.userAttach && rec0.userAttach.length ? rec0.userAttach : undefined, undefined, undefined, rec0.userIdentity);
       }
     }
     if (rec0) rec0.userDrawn = true;
@@ -1217,7 +1226,7 @@ function replayInFlight(id) {
       .then((r) => r.json())
       .then((live) => {
         if (!live || !Array.isArray(live.items)) return;
-        if (sessionId !== id) return;      // 拉的过程中主人已经切走了：一个字节都不画
+        if (window.sessionId !== id) return;      // 拉的过程中主人已经切走了：一个字节都不画
         logSetLive(id, live);
         renderLog();
       })
@@ -1226,7 +1235,7 @@ function replayInFlight(id) {
   } catch (e) {}
 
   /* 退回老办法：服务端连不上时，至少把攒下来的 parts 补出来 */
-  const rec = turnsInFlight.get(id);
+  const rec = window.turnsInFlight.get(id);
   if (!rec) return false;
   if (_usedSnap) {
     if (!Number.isFinite(rec.drawnParts)) rec.drawnParts = 0;
@@ -1239,7 +1248,7 @@ function replayInFlight(id) {
     const p = rec.parts[i];
     const kind = p.kind || p.type || '';
     if (kind === 'reasoning') {
-      if (!rec.think) rec.think = openThink();
+      if (!rec.think) rec.think = window.openThink();
       /* 【2026-11-06 主人报·正文被思考链劈成两半】
        *  原来 openThink() 是 log.appendChild(d)，思考块挂在 #log 末尾、跟气泡平级。
        *  于是「正文12345 → 思考 → 正文6789」排成：气泡(12345) / 思考块 / 气泡里又冒出6789。
@@ -1256,9 +1265,9 @@ function replayInFlight(id) {
       } catch (e) {}
       try { rec.think.push(p.text); } catch (e) {}
     } else if (kind === 'text') {
-      if (p && p.notice) { try { addSysNote(String(p.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {} continue; }
+      if (p && p.notice) { try { window.addSysNote(String(p.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {} continue; }
       if (!rec.bubble || !rec.bubble.isConnected) {
-        rec.bubble = addAssistantAuto();
+        rec.bubble = window.addAssistantAuto();
         try { const w = rec.bubble.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
       }
       /* 【2026-11-06 补】思考先到、正文后到时，上面那次归位 rec.bubble 还是 null，会跳过。
@@ -1270,34 +1279,34 @@ function replayInFlight(id) {
           if (_w2 && _th2.parentNode !== _w2) _w2.insertBefore(_th2, rec.bubble);
         }
       } catch (e) {}
-      try { pushStreamText(rec.bubble, String(p.text || '')); } catch (e) {}
+      try { window.pushStreamText(rec.bubble, String(p.text || '')); } catch (e) {}
     } else if (kind === 'tool') {
       if (String(p.name) === 'compress') return true;   // 压缩条不重画
       try {
         const el = addTool();
-        el.sum.querySelector('.name').textContent = niceTool(p.name, p.args);
+        el.sum.querySelector('.name').textContent = window.niceTool(p.name, p.args);
         const st = el.sum.querySelector('.status');
         st.textContent = p.done ? (p.ok ? '完成' : '失败') : '运行中…';
         st.className = 'status ' + (p.done ? (p.ok ? 'ok' : 'err') : 'warn');
-        el.pre.textContent = (p.args ? '参数：' + tidyToolText(p.args) : '') + (p.done && p.output ? '\n--- output ---\n' + tidyToolText(p.output) : '');
+        el.pre.textContent = (p.args ? '参数：' + window.tidyToolText(p.args) : '') + (p.done && p.output ? '\n--- output ---\n' + window.tidyToolText(p.output) : '');
         if (!rec.toolEls) rec.toolEls = new Map();
         if (p.id) rec.toolEls.set(p.id, el);
       } catch (e) {}
     } else if (kind === 'whale' || kind === 'whale_delta') {
-      try { if (!whaleStreamFinish(String(p.text || ''), StreamKey(id, p.who))) addWhaleBubble(p.who, String(p.text || '')); } catch (e) {}
+      try { if (!window.whaleStreamFinish(String(p.text || ''), window.StreamKey(id, p.who))) window.addWhaleBubble(p.who, String(p.text || '')); } catch (e) {}
     }
   }
   rec.drawnParts = rec.parts.length;
   return true;
 }
 
-function renderTurns(turns, opts) {
+export function renderTurns(turns, opts) {
   /* 【2026-11-08 收口】不管是 renderLog 叫的，还是外面那些「用户操作后照盘重画」
    * 直接叫的（删除 / 回退 / 编辑 / 分支 / 刷新费用），画完之后**这一屏的 state
    * 必须跟着更新**。否则下一次 renderLog 会拿旧历史把屏幕覆盖回去 ——
    * 那正是「删完过了一会儿又回来了」这类怪事的来源。 */
   try {
-    LOG_STATE.sid = (typeof sessionId !== 'undefined' ? sessionId : LOG_STATE.sid);
+    LOG_STATE.sid = (typeof window.sessionId !== 'undefined' ? sessionId : LOG_STATE.sid);
     LOG_STATE.turns = Array.isArray(turns) ? turns : [];
     LOG_STATE.painted = true;
     const _ht = (opts && opts.dropTail && LOG_STATE.turns.length)
@@ -1328,7 +1337,7 @@ function renderTurns(turns, opts) {
    *  画出来永远比让主人盯着一屏旧东西安全。
    */
   let _curInFlight = false;
-  try { const _r = turnsInFlight.get(sessionId); _curInFlight = !!( _r && (_r.startedAt || _r.adopted) ); } catch {}
+  try { const _r = window.turnsInFlight.get(window.sessionId); _curInFlight = !!( _r && (_r.startedAt || _r.adopted) ); } catch {}
   /**
    * 【2026-11-08 修·「多段消息堆在一起」，尤其是切走再切回来】
    *
@@ -1362,9 +1371,9 @@ function renderTurns(turns, opts) {
    * 宁可重画一次，也不能让主人对着一屏别人的话。
    */
   let _ownerSame = true;
-  try { _ownerSame = (window.__turnsOwner === sessionId); } catch (e) {}
+  try { _ownerSame = (window.__turnsOwner === window.sessionId); } catch (e) {}
   if (_curInFlight && _ownerSame && !(opts && opts.force)) {
-    try { currentTurns = Array.isArray(turns) ? turns : []; } catch {}
+    try { window.currentTurns = Array.isArray(turns) ? turns : []; } catch {}
     return;
   }
   /* 【2026-11-03 修·发出去的插话突然消失】
@@ -1398,7 +1407,7 @@ function renderTurns(turns, opts) {
      * 那种场景恰恰要把主人刚发、还没落盘的那句补回来（见 64xx 行收尾那段）。
      * 只有「服务端已经明确改完、我只想照盘上这份画」的主动操作才该跳过补回。 */
     if (opts && opts.noCarry) throw new Error('authoritative-repaint');
-    const _wash = (s) => String(fixMojibake(String(s || '')) || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+    const _wash = (s) => String(window.fixMojibake(String(s || '')) || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
     const _srv = new Set();
     for (const t of (Array.isArray(turns) ? turns : [])) {
       if (t && t.role === 'user') { const w = _wash(t.text); if (w) _srv.add(w); }
@@ -1449,9 +1458,9 @@ function renderTurns(turns, opts) {
     }
   } catch (e) { _lostUsers = []; }
 
-  hideSending();
+  window.hideSending();
   // 记下「屏幕上这一屏是什么」：设置面板里的会话总账要拿它加总（见 paintUsageBox）。
-  try { currentTurns = Array.isArray(turns) ? turns : []; } catch {}
+  try { window.currentTurns = Array.isArray(turns) ? turns : []; } catch {}
   /**
    * 【2026-10-28 修：重画之后流式追加写进了「孤儿节点」，界面就卡住不动】
    *
@@ -1466,7 +1475,7 @@ function renderTurns(turns, opts) {
     // 两个会话同时跑的时候，谁最后重画一次，谁就把另一边的进度抹掉 ——
     // 切回去那边只剩半截、或者整片空白，非要刷新页面才回来。
     // 重画只影响当前这一屏，所以只清当前这一步正在跑的记录。
-    const _curRec = turnsInFlight.get(sessionId);
+    const _curRec = window.turnsInFlight.get(window.sessionId);
     if (_curRec) {
       _curRec.bubble = null; _curRec.drawnParts = 0; _curRec.userDrawn = false;
       // 2026-10-31：重画会把聊天区整个换掉，旧 DOM 全成了孤儿。
@@ -1476,7 +1485,7 @@ function renderTurns(turns, opts) {
     }
   } catch {}
 
-  usageEl.textContent = '';
+  window.usageEl.textContent = '';
   // 回放历史时用：最近几句主人说的话上带着的用量，轮到画它们回复时批量补上去。
   // 用队列而不是单个变量：连着好几条 user 的情况太常见（催促、中途打断），
   // 单个变量会把前一句直接覆盖掉，那条用量行和分支按钮就没了。
@@ -1506,7 +1515,7 @@ function renderTurns(turns, opts) {
   let _hubTools = [];
   let _hubKey = null;
   const flushHub = () => {
-    if (_hubTools.length) paintTools(_hubTools, frag, { fold: true });
+    if (_hubTools.length) window.paintTools(_hubTools, frag, { fold: true });
     _hubTools = [];
     _hubKey = null;
   };
@@ -1572,7 +1581,7 @@ function renderTurns(turns, opts) {
     } else if (_all.length > WINDOW) {
       _start = Math.max(0, _all.length - WINDOW);
     }
-    renderTurns._pending = { all: _all, start: _start, sessionId };
+    renderTurns._pending = { all: _all, start: _start, sessionId: window.sessionId };
   } catch {}
 
   const list = _all.slice(_start);
@@ -1666,10 +1675,10 @@ function renderTurns(turns, opts) {
        * 一条 user 消息只要带了别人名字（turn.who），就按那个人的样式画，不套主人的气泡。
        */
       const w = (turn.who && String(turn.who) !== '主人')
-        ? (addWhaleBubble(turn.who, turn.text, frag) || addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || ''))
-        : addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
+        ? (window.addWhaleBubble(turn.who, turn.text, frag) || window.addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || ''))
+        : window.addUser(turn.text, undefined, turn.atts, frag, turn.rewindId, turn.who || '');
       // 【2026-11-05】我自己说的话也标上时间
-      attachTime(w, turn.ts);
+      window.attachTime(w, turn.ts);
       /* 【2026-11-01 主人：插的话要插在「我说到哪儿」的位置】
        * 服务端把「他插话那一刻我已经说出多少字」（turn.steerAt）带下来了。
        * 这里把上一个气泡的文字截断到那个字数，多出来的尾巴先存起来，
@@ -1683,16 +1692,16 @@ function renderTurns(turns, opts) {
           const at = Math.max(0, Math.min(full.length, Number(turn.steerAt)));
           if (at > 0 && at < full.length) {
             _steerTail = full.slice(at);
-            _contBody.textContent = fixMojibake(full.slice(0, at));
+            _contBody.textContent = window.fixMojibake(full.slice(0, at));
             _steerTailBody = _contBody;
           }
         }
       } catch {}
       // 每一句都能改：主人说的和我说的一样对待
-      attachEdit(w, turn.rewindId);
+      window.attachEdit(w, turn.rewindId);
       // 「分支」也贴着句子放：从这句往下另开一个会话
-      attachBranchBtn(w, turn.rewindId);
-      attachDelBtn(w, turn.rewindId);
+      window.attachBranchBtn(w, turn.rewindId);
+      window.attachDelBtn(w, turn.rewindId);
       if (turn.edited) w.classList.add('edited');
       // 【用量要在 user 之后立刻入队】
       // 以前放在循环末尾，而「补画」又发生在 user 分支里 —— 也就是先补画、后入队，
@@ -1734,7 +1743,7 @@ function renderTurns(turns, opts) {
        * 只画给我自己的回放：小鲸说的话（turn.whale）没有思考过程，
        * 那是另一个人的话，别把她的思考算到别人头上。
        */
-      if (turn.reasoning && !turn.whale) paintReasoning(turn.reasoning, frag);
+      if (turn.reasoning && !turn.whale) window.paintReasoning(turn.reasoning, frag);
       // 只调了工具、一个字没说的那条 assistant（content 是 null）：不画空气泡，只画工具块
       // 【修·工具调用从来没画出来】只调了工具、一个字没说的那条 assistant（content 是 null），
       // 原来被下面的 if(hasText||outs.length) 整个跳过 —— 工具就永远不显示了。
@@ -1769,10 +1778,10 @@ function renderTurns(turns, opts) {
           // 只有小鲸用 whale 那套，别人用它自己卡上的颜色。
           const __wn = String(turn.whale);
           const __isWhaleTurn = __wn === '小鲸';
-          const wrap = addEl('', __isWhaleTurn ? 'msg whale whaleSelf' : 'msg mate mateSelf', frag);
+          const wrap = window.addEl('', __isWhaleTurn ? 'msg whale whaleSelf' : 'msg mate mateSelf', frag);
           if (!__isWhaleTurn) {
             wrap.dataset.whoName = __wn;
-            try { wrap.style.setProperty('--whoC', mateColorOf(__wn)); } catch {}
+            try { wrap.style.setProperty('--whoC', window.mateColorOf(__wn)); } catch {}
           }
           const roleEl = document.createElement('div');
           roleEl.className = 'role';
@@ -1781,14 +1790,14 @@ function renderTurns(turns, opts) {
           if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
           const b = document.createElement('div');
           b.className = 'bubble';
-          mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
-          maybeFoldBubble(b, turn.text);
-          attachTime(wrap, turn.ts);
+          window.mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
+          window.maybeFoldBubble(b, turn.text);
+          window.attachTime(wrap, turn.ts);
           wrap.appendChild(b);
-          if (outs.length) attachFiles(wrap, outs);
+          if (outs.length) window.attachFiles(wrap, outs);
           // 【修·工具调用从来没画出来】这一条 assistant 带的工具，画在这段话正下方。
           // 默认摊开（干活时看得见我在做什么）；主人发下一条消息时 foldOldHubs 把它收成一条灰。
-          if (tools.length) paintTools(tools, wrap, { fold: true });
+          if (tools.length) window.paintTools(tools, wrap, { fold: true });
           /*
            * 她的话也能改、也能从这儿分出去。
            *【为什么原先没有】上面注释一直写着「别的照旧（能改、能分支）」，
@@ -1796,11 +1805,11 @@ function renderTurns(turns, opts) {
            * 后端 /api/sessions/edit 本来就允许改 assistant（她就是 assistant + _whale），
            * 缺的只是这里的按钮。回退不挂：退到「主人那句话之前」挂在她身上会误伤。
            */
-          attachEdit(wrap, turn.rewindId);
-          attachBranchBtn(wrap, turn.rewindId);
-          attachRetry(wrap, askQueue);
-          attachDelBtn(wrap, turn.rewindId);
-          attachCopyBtn(wrap);
+          window.attachEdit(wrap, turn.rewindId);
+          window.attachBranchBtn(wrap, turn.rewindId);
+          window.attachRetry(wrap, askQueue);
+          window.attachDelBtn(wrap, turn.rewindId);
+          window.attachCopyBtn(wrap);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
         } else {
@@ -1843,7 +1852,7 @@ function renderTurns(turns, opts) {
             if (_steerTail) {
               const tb = document.createElement("div");
               tb.className = "bubble cont";
-              tb.textContent = fixMojibake(_steerTail);
+              tb.textContent = window.fixMojibake(_steerTail);
               tb._rawText = _steerTail;
               _contBody.appendChild(tb);
               _contBody = tb;
@@ -1852,14 +1861,14 @@ function renderTurns(turns, opts) {
             }
             b = document.createElement('div');
             b.className = 'bubble cont';
-            mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
-            maybeFoldBubble(b, turn.text);
-            attachTime(wrap, turn.ts);
+            window.mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
+            window.maybeFoldBubble(b, turn.text);
+            window.attachTime(wrap, turn.ts);
             _contBody.appendChild(b);
             _contBody = b;
             // 后接进来的那段不重复挂按钮，按钮只在第一段上
           } else {
-            wrap = addEl('', 'msg assistant', frag);
+            wrap = window.addEl('', 'msg assistant', frag);
             /* 【2026-11-02 修·切到别人身份后旧消息署名全被刷掉】
              * 原来这里一律用全局的 mainAgentName —— 那个变量每次切会话都被
              * 改写成「名单第一是谁」。于是切进一个小白曦排第一的会话，
@@ -1875,7 +1884,7 @@ function renderTurns(turns, opts) {
              * 为什么不挂 .mate：.msg.mate .role 会把字号缩到 0.92em，跟小鱼那一列对不齐；
              * 气泡本身也不用变（主人早定过「屋里的人说话都长一样」）。
              * 颜色值等 /api/agents 回来后再刷一遍（refreshMateColors 扫 [data-whoName]）。 */
-            const __wn = (turn && String(turn.who || '').trim()) ? String(turn.who).trim() : (String(mainAgentName || '').trim() || '小鱼');
+            const __wn = (turn && String(turn.who || '').trim()) ? String(turn.who).trim() : (String(window.mainAgentName || '').trim() || '小鱼');
             wrap.innerHTML = '<div class="role">' + __wn + '</div>';
             if (__wn && __wn !== '小鱼') {
               /* 2026-11-03 严检修：只给名字那行上色，不要挂 .mate ——
@@ -1883,30 +1892,30 @@ function renderTurns(turns, opts) {
               try {
                 wrap.dataset.whoName = __wn;
                 const _rl = wrap.querySelector('.role');
-                if (_rl) _rl.style.color = mateColorOf(__wn);
+                if (_rl) _rl.style.color = window.mateColorOf(__wn);
               } catch { /* 上不上色都不影响读 */ }
             }
             // 搜会话时靠这个下标把命中那条滚到眼前
             if (Number.isFinite(Number(turn.rewindId))) wrap.dataset.at = String(Number(turn.rewindId));
             b = document.createElement('div');
             b.className = 'bubble';
-            mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
-            maybeFoldBubble(b, turn.text);
-            attachTime(wrap, turn.ts);
+            window.mdInto(b, turn.text); // 【2026-11-05】正文走 markdown（没特征就原样文字）
+            window.maybeFoldBubble(b, turn.text);
+            window.attachTime(wrap, turn.ts);
             wrap.appendChild(b);
             _contBubble = wrap;
             _contBody = b;
             _contStem = stem;
           }
-          if (outs.length) attachFiles(wrap, outs);
+          if (outs.length) window.attachFiles(wrap, outs);
           if (!sameStem) {
-          attachEdit(wrap, turn.rewindId);
+          window.attachEdit(wrap, turn.rewindId);
           // 她说的话下面也有「分支」：从这句回复往下另开一个会话
-          attachBranchBtn(wrap, turn.rewindId);
+          window.attachBranchBtn(wrap, turn.rewindId);
           // 她说错了、或者想让她重答一遍：一键退回再问一次
-          attachRetry(wrap, askQueue);
-          attachDelBtn(wrap, turn.rewindId);
-          attachCopyBtn(wrap);
+          window.attachRetry(wrap, askQueue);
+          window.attachDelBtn(wrap, turn.rewindId);
+          window.attachCopyBtn(wrap);
           if (turn.edited) wrap.classList.add('edited');
           lastBubbleOfTurn = wrap;
           }
@@ -1944,7 +1953,7 @@ function renderTurns(turns, opts) {
           const host = lastBubbleOfTurn || frag;
 // 把这一轮回复的字数给下去：usage 空的时候按字数粗估（界面上不再标任何字样）
           p.replyChars = turnReplyChars;
-          appendTurnUsage(p.u, p.at, p.model, host, true, p.replyChars, p.userChars);
+          window.appendTurnUsage(p.u, p.at, p.model, host, true, p.replyChars, p.userChars);
         }
         pendingTurns.length = 0;
       }
@@ -1956,7 +1965,7 @@ function renderTurns(turns, opts) {
   for (const p of pendingTurns) {
     if (drawnUsage.has(p.id)) continue;
     drawnUsage.add(p.id);
-    appendTurnUsage(p.u, p.at, p.model, frag, false, p.replyChars, p.userChars);
+    window.appendTurnUsage(p.u, p.at, p.model, frag, false, p.replyChars, p.userChars);
   }
   pendingTurns.length = 0;
 
@@ -2011,7 +2020,7 @@ function renderTurns(turns, opts) {
    */
   const __anchorBefore = (() => {
     try {
-      if (!log || stickBottom) return null;
+      if (!log || window.stickBottom) return null;
       const base = log.getBoundingClientRect().top;
       for (const el of log.querySelectorAll('.msg[data-at]')) {
         const r = el.getBoundingClientRect();
@@ -2060,7 +2069,7 @@ function renderTurns(turns, opts) {
   const __openHubs = [];
   let __hubSeq = 0;
   /* 【2026-11-05】整体快照：所有 details（柜子/思考/工具卡）的展开状态 */
-  const __openAll = snapOpenState();
+  const __openAll = window.snapOpenState();
   try {
     if (log) {
       for (const h of log.querySelectorAll('details.toolhub')) {
@@ -2099,7 +2108,7 @@ function renderTurns(turns, opts) {
    */
   let __sameOwner = true;
   try {
-    const _cur = (typeof sessionId === 'string' && sessionId) ? sessionId : '';
+    const _cur = (typeof window.sessionId === 'string' && window.sessionId) ? sessionId : '';
     const _own = (typeof window !== 'undefined' && window.__turnsOwner) ? String(window.__turnsOwner) : '';
     if (_cur && _own && _cur !== _own) __sameOwner = false;
   } catch (e) {}
@@ -2222,7 +2231,7 @@ function renderTurns(turns, opts) {
         }
       }
     } catch (e) {}
-    __ignoreScrollUntil = Date.now() + 800;
+    window.__ignoreScrollUntil = Date.now() + 800;
     log.replaceChildren(frag);
   }
 
@@ -2233,10 +2242,10 @@ function renderTurns(turns, opts) {
    * 改成全局的 DOM 监听（见 installTagCleaner），一处管所有出口。
    */
   /* 【2026-11-05】先按整体快照恢复（覆盖柜子/思考/工具卡所有类型） */
-  try { applyOpenState(__openAll); } catch (e) {}
+  try { window.applyOpenState(__openAll); } catch (e) {}
 
   /* 【2026-11-05】再按序号补一遍柜子（防止顺序差异导致上面那步没对上） */
-  try { applyOpenState(__openAll); } catch (e) {}
+  try { window.applyOpenState(__openAll); } catch (e) {}
 
   /* 【2026-11-05】把刚才记的「打开着的柜子」恢复回来（按标题认）。
    * 柜子本身被重建了、内容也更新了，但主人拉开的状态要留着。 */
@@ -2295,7 +2304,7 @@ function renderTurns(turns, opts) {
   if (__anchorBefore) {
     requestAnimationFrame(() => {
       try {
-        if (stickBottom) return;
+        if (window.stickBottom) return;
         const el = log.querySelector('.msg[data-at="' + __anchorBefore.at + '"]');
         if (!el) return;
         const base = log.getBoundingClientRect().top;
@@ -2308,19 +2317,19 @@ function renderTurns(turns, opts) {
    *  按当时打字的先后顺序接在这一屏的最后（它们本来就是最新的那几句）。 */
   try {
     for (const _txt of _lostUsers) {
-      try { addUser(_txt, '', undefined, undefined, undefined, ''); } catch (e) {}
+      try { window.addUser(_txt, '', undefined, undefined, undefined, ''); } catch (e) {}
     }
   } catch (e) {}
   try { window.__renderFrag = null; } catch {}
   /* 记一笔：这一屏现在是谁的。下次 renderTurns 靠它分辨「同一个会话在重画」还是「换人了」 */
-  try { window.__turnsOwner = sessionId; } catch (e) {}
+  try { window.__turnsOwner = window.sessionId; } catch (e) {}
   /* 【2026-11-03 加】这一轮还在跑：子任务卡只能从事件流里拿（历史里还没有），
    * 而重画这一下会把它们连根带走 —— 之后 followLive 的指纹没变、不会重画，
    * 屏幕上就空一大截。所以重画完顺手把「还在跑的那些卡」补回来。 */
   try {
-    const _lvW = (window.__liveWorkers && window.__liveWorkers[sessionId]) || null;
-    const _runningNow = (() => { try { return turnsInFlight.has(sessionId); } catch (e) { return false; } })();
-    if (_lvW && _lvW.length && _runningNow) for (const _it of _lvW) paintWorkerCard(_it, null);
+    const _lvW = (window.__liveWorkers && window.__liveWorkers[window.sessionId]) || null;
+    const _runningNow = (() => { try { return window.turnsInFlight.has(window.sessionId); } catch (e) { return false; } })();
+    if (_lvW && _lvW.length && _runningNow) for (const _it of _lvW) window.paintWorkerCard(_it, null);
   } catch (e) {}
   /* 【2026-11-03 加】历史里存着子任务流水，就照着画出来（办事模式「谁干了什么」） */
   try {
@@ -2328,7 +2337,7 @@ function renderTurns(turns, opts) {
     for (const _t of (Array.isArray(turns) ? turns : [])) {
       if (_t && _t.role === 'assistant' && Array.isArray(_t.workers) && _t.workers.length) _lw = _t;
     }
-    if (_lw) for (const _it of _lw.workers) paintHistWorkerCard(_it);
+    if (_lw) for (const _it of _lw.workers) window.paintHistWorkerCard(_it);
   } catch (e) {}
   /**
    * 【2026-11-01 往上滚再补前面的】窗口化之后，顶上是空的。
@@ -2377,9 +2386,9 @@ function renderTurns(turns, opts) {
   //
   // 【例外】补历史（opts.keepScroll）：这时候人正往上翻，贴底就是跟他抢方向。
   if (_keepScroll) {
-    stickBottom = false;
+    window.stickBottom = false;
   } else {
-    resetScrollStick();
+    window.resetScrollStick();
   }
   /* 【2026-11-05】历史画完了，把散着的工具卡收成柜子（一件也收）。
    * 延后到下一帧再收：renderTurns 后面还有补画子任务卡之类的追加动作，
@@ -2399,14 +2408,14 @@ function renderTurns(turns, opts) {
   } catch (e) {}
   try { setTimeout(() => { try { groupLooseTools(); } catch (e) {} }, 120); } catch (e) {}
   // 记一笔：这一屏最后停在谁的话上。切会话 / 断开自愈时判断「这轮写完没」要用。
-  markTailRole(list);
+  window.markTailRole(list);
   // 图片、视频加载完会把高度撑开，撑开之后还得再贴一次底
   if (log) {
     for (const el of log.querySelectorAll('img, video')) {
       if (el.complete === undefined) {
-        el.addEventListener('loadedmetadata', () => { if (stickBottom) hardScrollBottom(); }, { once: true });
+        el.addEventListener('loadedmetadata', () => { if (window.stickBottom) window.hardScrollBottom(); }, { once: true });
       } else if (!el.complete) {
-        el.addEventListener('load', () => { if (stickBottom) hardScrollBottom(); }, { once: true });
+        el.addEventListener('load', () => { if (window.stickBottom) window.hardScrollBottom(); }, { once: true });
       }
     }
   }
@@ -2421,7 +2430,7 @@ function renderTurns(turns, opts) {
  * 界面就停在「上一个会话的画面 + 输入框被锁着」的样子，怎么点都没反应。
  * 现在最多等 8 秒，超时就当连不上，走下面那套「说一句 + 把输入区救回来」。
  */
-async function switchSessionSafe(id, opts) {
+export async function switchSessionSafe(id, opts) {
   try {
     return await Promise.race([
       switchSession(id, opts),
@@ -2431,12 +2440,12 @@ async function switchSessionSafe(id, opts) {
     ]);
   } catch (e) {
     console.warn('[switchSessionSafe] 切会话出错:', e && e.message ? e.message : e);
-    releaseComposer();
+    window.releaseComposer();
     return false;
   }
 }
 
-async function switchSession(id, opts) {
+export async function switchSession(id, opts) {
   // 换会话 = 换了一份历史，球的数必须跟着换（先清掉旧数字，别让上一份的残留骗人）
   /**
    * 【2026-10-26 主人报：批量删除开了之后，关掉会话、下次打开还是启用状态】
@@ -2451,9 +2460,9 @@ async function switchSession(id, opts) {
    * 注意必须在 start 就清，不能等 renderSessList 之后再清 ——
    * 那样中间会闪一下批量界面。
    */
-  if (bulkMode || picked.size) {
-    bulkMode = false;
-    picked.clear();
+  if (window.bulkMode || window.picked.size) {
+    window.bulkMode = false;
+    window.picked.clear();
     try {
       const bar = document.getElementById('sessBulkBar');
       if (bar) bar.hidden = true;
@@ -2472,10 +2481,10 @@ async function switchSession(id, opts) {
    * 附件是「我现在要发的这个东西」，跟谁走就该是谁的 —— 切会话一律清掉。
    * 草稿文字仍然按会话留着，丢的只是那个还没发出去的附件，重新选一次比发错人强。
    */
-  if (attachments.length) {
-    attachments = [];
-    try { renderAttachBar(); } catch {}
-    try { syncSendBtn(); } catch {}
+  if (window.attachments.length) {
+    window.attachments = [];
+    try { window.renderAttachBar(); } catch {}
+    try { window.syncSendBtn(); } catch {}
   }
 
   /**
@@ -2490,8 +2499,8 @@ async function switchSession(id, opts) {
    * 现在：网络给 30 秒；解析单独兜住，失败时把原文前 200 字也带上，能一眼看出
    * 是服务端返了错页、还是数据太大解析崩了。
    */
-  __switchGen++;
-  const __switchGenSeen = __switchGen;
+  window.__switchGen++;
+  const __switchGenSeen = window.__switchGen;
   const __t0 = performance.now();
   const __mark = (name) => {
     const ms = Math.round(performance.now() - __t0);
@@ -2507,7 +2516,7 @@ async function switchSession(id, opts) {
 
   let __resp = null;
   try {
-    __resp = await fetchTimed('/api/sessions/select', {
+    __resp = await window.fetchTimed('/api/sessions/select', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
@@ -2544,15 +2553,15 @@ async function switchSession(id, opts) {
     const why = r && r.error ? String(r.error) : '连不上服务';
     console.warn('[switchSession] 打不开会话', id, why);
     try {
-      if (sessHint) {
-        sessHint.textContent = why.includes('not found') ? '这个会话已经不在了，列表已刷新' : ('打不开：' + why);
-        sessHint.classList.add('sessWarn');
-        setTimeout(() => { try { sessHint.classList.remove('sessWarn'); } catch {} }, 4000);
+      if (window.sessHint) {
+        window.sessHint.textContent = why.includes('not found') ? '这个会话已经不在了，列表已刷新' : ('打不开：' + why);
+        window.sessHint.classList.add('sessWarn');
+        setTimeout(() => { try { window.sessHint.classList.remove('sessWarn'); } catch {} }, 4000);
       }
     } catch {}
-    await refreshSessions({ silent: true });
+    await window.refreshSessions({ silent: true });
     // 切不过去也别把输入区锁着
-    releaseComposer();
+    window.releaseComposer();
     return false;
   }
   /* 【2026-11-02 串会话 · 第三道闸】
@@ -2562,25 +2571,25 @@ async function switchSession(id, opts) {
   /* 作废要返回 true —— 这不是「切失败」。主人已经切到别的会话去了，
    *  这一趟的活儿本来就该扔；返回 false 会让 bootSessions 以为连续三次没切过去，
    *  再弹出那句「刚才没能自动回到上次的会话」，等于凭空造一个错。 */
-  if (__switchGenSeen !== __switchGen) return true;
+  if (__switchGenSeen !== window.__switchGen) return true;
   /* 【2026-11-03 修·切会话输入框串味】原来这里只给 sessionId 赋新值，
    *  从没碰过草稿：在 A 里打的字，切到 B 还留在输入框里（切回来又变成 B 的），
    *  等于草稿根本没按会话分开 —— 可 draftKey() 明明是按 sessionId 存的。
    *  修法：赋值前先把旧会话的打字存进它自己的格子，赋值后再把新会话的打字捞出来。 */
-  try { if (typeof saveDraft === 'function') saveDraft(); } catch { /* 存不上也不许挡切换 */ }
-  sessionId = r.session.id;
-  sessionTitle = r.session.title;
-  localStorage.setItem(STORE_KEY, sessionId);
-  try { if (typeof restoreDraft === 'function') restoreDraft(); } catch { /* 恢复失败就当空白 */ }
-  paintSessNow();
-  paintMemoryFlag(r.memory); // 换会话，顶栏的记忆小字也要跟着换
+  try { if (typeof window.saveDraft === 'function') window.saveDraft(); } catch { /* 存不上也不许挡切换 */ }
+  window.sessionId = r.session.id;
+  window.sessionTitle = r.session.title;
+  localStorage.setItem(window.STORE_KEY, window.sessionId);
+  try { if (typeof window.restoreDraft === 'function') window.restoreDraft(); } catch { /* 恢复失败就当空白 */ }
+  window.paintSessNow();
+  window.paintMemoryFlag(r.memory); // 换会话，顶栏的记忆小字也要跟着换
   // 小鱼/小鲸在不在场也是按会话的 —— 但 2026-11-02 顶栏那两颗按钮删了之后，
   // 这件事只剩一处要看：左边「屋里的人」那列牌子（refreshWhoRail 会自己按
   // 新会话重读 /api/agents/group，服务端把 fish/whale 两套状态并进去了）。
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
   try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
-  loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
+  window.loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
   /* 【2026-11-02 修·切回来自家会话，历史署名全变成上一个会话的人】
    * 病根在顺序：renderTurns 先把 578 条历史画出来，而它给每条气泡配署名时
    * 优先看这条消息自带的名字，老消息没存名字就退回全局 mainAgentName ——
@@ -2588,7 +2597,7 @@ async function switchSession(id, opts) {
    * 于是画图时拿到的还是上一个会话的人名，满屏都是他。
    * 按 F5 重开就正常，正因为那时 chip 早就算完了。
    * 现在：画之前先把身份算准，算不出来也照画（不能因为一个名字卡住整屏）。 */
-  try { if (typeof refreshAgentChip === 'function') await refreshAgentChip(); } catch { /* 名字算不出来也要画 */ }
+  try { if (typeof window.refreshAgentChip === 'function') await window.refreshAgentChip(); } catch { /* 名字算不出来也要画 */ }
   /**
    * 【2026-11-07 主人问「切了会话柜门就不变了？」—— 查下来确实少了这一句】
    *
@@ -2598,7 +2607,7 @@ async function switchSession(id, opts) {
    * 新建会话那条路早就 hubReset 了，切会话这条路漏了，补上。
    * （工具卡自己会重新接柜子：_attachToHub 里会把指针再交过去。）
    */
-  try { if (typeof hubReset === 'function') hubReset(); } catch {}
+  try { if (typeof window.hubReset === 'function') window.hubReset(); } catch {}
   /* 【2026-11-08 修·自动重启后历史一条都不画】
    *
    * 主人报：「办事鱼做完自动重启后，只显示我说的一句以及她说的第一句话，
@@ -2627,7 +2636,7 @@ async function switchSession(id, opts) {
    * 屏幕空 + 没人在画，才强制补历史（那正是「重启后一片空白」要救的场景）。
    */
   const _inFlightHere = (() => {
-    try { const r = turnsInFlight.get(sessionId); return !!(r && (r.startedAt || r.adopted)); }
+    try { const r = window.turnsInFlight.get(window.sessionId); return !!(r && (r.startedAt || r.adopted)); }
     catch { return false; }
   })();
   /* 【2026-11-08 收口·切会话只做两件事：改 state、叫一次 renderLog】
@@ -2635,23 +2644,23 @@ async function switchSession(id, opts) {
    * 这段原来自己算 dropTail、自己传 force —— 和 attachLive、followLive 各判一套。
    * 判错一次就是「切回来还画着上一个会话」（实测 45 条 → 切走 → 切回还是别人的）。
    * 现在屏幕归谁、这一轮归谁，全由 LOG_STATE + renderLog 一个地方决定。 */
-  logSetHistory(sessionId, r.session.turns);
+  logSetHistory(window.sessionId, r.session.turns);
   renderLog({ force: true });
   /* 【2026-11-08】切会话：把**这个会话**的待发送队列读出来（按会话分 key 存的） */
-  try { loadPendingQueue(); } catch (e) {}
+  try { window.loadPendingQueue(); } catch (e) {}
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
 
   // 这个会话还在后台跑吗？
   // 先问服务端（窗口关过也能补回来），再退回本页内存里的记录。
   // 整段包 try：补画失败只是少一段内容，绝不能连累输入框。
   try {
-    const liveRunning = typeof attachLive === 'function' ? await attachLive(sessionId) : false;
+    const liveRunning = typeof attachLive === 'function' ? await attachLive(window.sessionId) : false;
     if (!liveRunning) {
-      const stillRunning = typeof turnsInFlight !== 'undefined' && turnsInFlight.has(sessionId);
+      const stillRunning = typeof window.turnsInFlight !== 'undefined' && window.turnsInFlight.has(window.sessionId);
       if (stillRunning && typeof replayInFlight === 'function') {
-        replayInFlight(sessionId);
-        busy = true;
-        showSending();
+        replayInFlight(window.sessionId);
+        window.busy = true;
+        window.showSending();
       } else {
         /**
          * 【2026-11-01 修·切会话回来按钮变回【发送】】
@@ -2666,7 +2675,7 @@ async function switchSession(id, opts) {
          */
         let _stillUp = false;
         try {
-          const _l = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sessionId)).then((x) => x.json());
+          const _l = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(window.sessionId)).then((x) => x.json());
           _stillUp = Boolean(_l && _l.running);
         /* 【2026-11-02 修·切过来看不到这轮已经吐出来的字】
          *
@@ -2677,20 +2686,20 @@ async function switchSession(id, opts) {
          */
         } catch {}
         if (_stillUp) {
-          busy = true;
-          showSending();
-          try { syncSendBtn(); } catch {}
+          window.busy = true;
+          window.showSending();
+          try { window.syncSendBtn(); } catch {}
         } else {
-          busy = false;
-          hideSending();
-          try { syncSendBtn(); } catch {}
+          window.busy = false;
+          window.hideSending();
+          try { window.syncSendBtn(); } catch {}
         }
       }
     } else {
       /* 【2026-11-02 修·切换会话后按钮还是「发送」】       *       *  attachLive 返回 true 说明服务端这一轮确实还在跑，可这里原来只设了       *  busy 和「正在发送」，**漏了 syncSendBtn()** —— 于是输入框锁着、       *  那行小字也出来了，唯独按钮还停在【发送】。主人一点就是发新一轮，       *  服务端回 409，那句话就石沉大海。       *       *  别的分支（往上一行的 _stillUp、往下的 else）都调了这个，唯独这条主路径漏。       */
-      busy = true;
-      showSending();
-      try { syncSendBtn(); } catch {}
+      window.busy = true;
+      window.showSending();
+      try { window.syncSendBtn(); } catch {}
     }
   } catch (err) {
     console.warn('[switchSession] 补画后台进度失败（不影响输入）:', err && err.message ? err.message : err);
@@ -2706,22 +2715,22 @@ async function switchSession(id, opts) {
      * 剩下的字照样会通过 followLive 长出来。只有服务端明确说没跑，才放开。
      */
     try {
-      const live2 = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sessionId)).then((x) => x.json());
+      const live2 = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(window.sessionId)).then((x) => x.json());
       if (live2 && live2.running) {
-        busy = true;
-        showSending();
-        try { followLive(sessionId, Array.isArray(live2.events) ? live2.events.length : 0); } catch {}
+        window.busy = true;
+        window.showSending();
+        try { followLive(window.sessionId, Array.isArray(live2.events) ? live2.events.length : 0); } catch {}
       } else {
-        busy = false;
-        hidingSendingSafe();
+        window.busy = false;
+        window.hidingSendingSafe();
       }
     } catch {
-      busy = false;
-      hidingSendingSafe();
+      window.busy = false;
+      window.hidingSendingSafe();
     }
   }
-  stopping = false;
-  syncSendBtn();
+  window.stopping = false;
+  window.syncSendBtn();
 
   renderSessList();
   /**
@@ -2736,10 +2745,17 @@ async function switchSession(id, opts) {
    *   closeSessPanel 只做该做的事：收面板、放开输入框、还焦点，一个 busy 都不碰。
    *   （settleComposer 的注释里也写着这一条，只是这个调用点以前漏改了。）
    */
-  closeSessPanel();
-  if (typeof input !== 'undefined' && input) {
-    try { input.disabled = false; input.readOnly = false; if (input.dataset) delete input.dataset.locked; } catch {}
+  window.closeSessPanel();
+  if (typeof window.input !== 'undefined' && window.input) {
+    try { window.input.disabled = false; window.input.readOnly = false; if (window.input.dataset) delete window.input.dataset.locked; } catch {}
   }
   // focus:false 的理由跟以前一样：切会话时人不一定想打字，抢焦点会把输入法冲回英文。
   return true;
 }
+
+
+/* 经典脚本（index.html 里那段）还要按名字直接调这些函数 ——
+   模块有独立作用域，不挂回 window 它们就找不到了。 */
+Object.assign(window, {
+  logSettle, logSetHistory, logSetLive, logHistoryFp, renderLog, paintSnapshot, paintSnapshotInner, paintSnapshot0, attachLive, followLive, replayInFlight, renderTurns, switchSessionSafe, switchSession,
+});

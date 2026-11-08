@@ -86,7 +86,7 @@ const _swClean = sw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, ""
 /* 【2026-11-08 改口径】切会话现在不再直接调 renderTurns，而是
  * 「logSetHistory + renderLog」—— 屏幕归谁由唯一 state 说了算。
  * 要守的仍然是那个先后顺序：先 hubReset，再按新会话画。 */
-t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,1800}(renderTurns\(\s*r\.session\.turns|logSetHistory\(sessionId, r\.session\.turns\))/.test(_swClean));
+t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,1800}(renderTurns\(\s*r\.session\.turns|logSetHistory\((?:window\.)?sessionId, r\.session\.turns\))/.test(_swClean));
 // ── 5b. 万一 tool_start 丢了，也不能让话和工具全挤一起 ────────────
 const te = ui.slice(ui.indexOf("} else if (ev.type === 'tool_end') {", ui.indexOf('function paintLiveEvents')));
 t.ok('tool_end 找不到卡时补建', /补一张卡/.test(ui) || /补画失败也不能连累这一轮/.test(ui));
@@ -182,7 +182,9 @@ t.ok('塞进已有柜子后接上 _liveHub',
 const _hdDefs = (ui.match(/function syncHubHead\(/g) || []).length;
 t.ok('柜门头部只有一个出口（syncHubHead 定义一次）', _hdDefs === 1, '找到 ' + _hdDefs + ' 处');
 t.ok('三条路都走那个出口',
-  /syncHubHead\(_liveHub,/.test(ui)
+  /* 【2026-11-08 模块化】ui/*.js 成了 ES 模块，主脚本的全局改成 window.xxx ——
+   * 断言的写法跟着放宽，守的语义没变：三条路都必须经过 syncHubHead。 */
+  /syncHubHead\((?:window\.)?_liveHub,/.test(ui)
   && /syncHubHead\(hub\)/.test(ui)
   && /syncHubHead\(_prev\)/.test(ui));
 const _liveWord = (ui.match(/'运行中'/g) || []).length;

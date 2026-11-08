@@ -33,11 +33,26 @@ if (!fs.existsSync(DATA)) {
   process.exit(0);
 }
 
+/* 【2026-11-08 加】全量回归里有脚本会临时把文件改坏再还原（check-gates-self），
+ * 那一小段时间正好被这里读到，就会假红。不一致时等 300ms 重读一次，
+ * 仍不一致才判真不一致 —— 别把别人的中间态当成自己的错。 */
 function same(a, b) {
   if (!fs.existsSync(a) || !fs.existsSync(b)) return null;
-  const x = fs.readFileSync(a);
-  const y = fs.readFileSync(b);
-  return x.length === y.length && x.equals(y);
+  const eq = () => {
+    try {
+      const x = fs.readFileSync(a);
+      const y = fs.readFileSync(b);
+      return x.length === y.length && x.equals(y);
+    } catch {
+      return null;
+    }
+  };
+  if (eq()) return true;
+  /* 真睡 300ms：Atomics.wait 不烧 CPU（while 空转会顶满一个核） */
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  } catch {}
+  return eq();
 }
 
 console.log('\n=== 1. 前端页面 ===');

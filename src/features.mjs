@@ -127,6 +127,27 @@ export const FEATURES = [
     tools: ['note'],
   },
   {
+    /**
+     * 【2026-11-08 补·定时任务这一项一直没登记，等于从来没开过】
+     *
+     * 现场：跑回归时 `_t_agents2` 报
+     *   「schedule_task: 没登记到 features 的功能表（会被静默关闭，永远用不了）」
+     * 一查是真的 —— tools.mjs 里 schedule_task / list_schedules / cancel_schedule
+     * 三个工具写得整整齐齐（描述里连「明天九点提醒我」都举了），
+     * 可 FEATURES 里没有任何一项把它们收进去。
+     *
+     * 而 features 的规矩是「不在任何功能的 tools 里 → 从模型手里拿掉」，
+     * 所以这三个工具**一次都没能真的被调用过**。主人要是说过「明天提醒我」，
+     * 她只能嘴上答应，手上根本没法落地。
+     *
+     * defaultOn 不写 = 默认开（见文件头那条规矩）。想关就在功能面板里关。
+     */
+    id: 'cron',
+    name: '定时任务',
+    desc: '给以后定一件事：到点自动往会话里发一句，我接着干。「明天九点提醒我」「每小时看一次」「过半小时叫我」都靠它。关掉之后建不了也改不了闹钟。',
+    tools: ['schedule_task', 'list_schedules', 'cancel_schedule'],
+  },
+  {
     id: 'webFetchTxt',
     name: '联网抓取文本',
     desc: '给一个链接，把网页正文抓下来存进 dump/txt，再拿回来读。',

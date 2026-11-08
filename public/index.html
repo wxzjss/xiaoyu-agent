@@ -10148,6 +10148,14 @@ const TOOL_NICE = {
   ui_scroll: '滚一下',
   spawn_worker: '派活',
   list_workers: '看派了几个人',
+  use_skill: '看手艺',
+  memory_search: '翻记性',
+  spawn_workers: '派好几件活',
+  tell_worker: '给干活的人补话',
+  watch_worker: '看干活进度',
+  schedule_task: '定时任务',
+  list_schedules: '看定时任务',
+  cancel_schedule: '撤定时任务',
 };
 /**
  * 【2026-11-07 主人要·别什么都叫「跑命令」】
@@ -12589,18 +12597,49 @@ async function sendPendingNow(id) {
 }
 
 /** 一轮真的结束了：把队列里最前面那条发出去（一次一条，发完由下一次 done 继续） */
+/**
+ * 【2026-11-08 修·发失败别把主人那句话弄丢】
+ *
+ * 老写法是「先 shift + savePendingQueue()，再 runTurn」——
+ * runTurn 一抛错（服务没起、401、400、网络断），那条消息**已经从队列里拿走了、
+ * 盘上也删了**，而 catch 是空的。主人看到的是：预发送队列里那条自己消失了，
+ * 会话里也没有。等于把话吞了。
+ *
+ * 这跟服务端 `pending.shift()` 那个丢话坑是同一个形状（那段注释写过一模一样的话），
+ * 现在这边也照着改：**发成功才取走**。
+ *
+ * 为什么放回不会重复发：runTurn 只在「res 不 ok」或「fetch 本身抛」时抛错，
+ * 那两种都是服务端没接、消息没落盘（看 throw new Error(why) 那段），
+ * 所以放回去是安全的。
+ *
+ * 为什么还要 _tries：服务真的挂了的时候，2 秒一次会转到天亮。
+ * 试满 3 次就不再自动重试，但**条目留在队列里不删** —— 主人能看见、
+ * 能自己点「直接发送」，也能删。宁可留着让他决定，不能替他丢掉。
+ */
 async function flushPendingQueue() {
   if (_flushingPending || busy || !pendingQueue.length) return;
+  const next = pendingQueue[0];
+  if (!next) return;
+  if ((Number(next._tries) || 0) >= 3) return;   // 试满了，等主人自己处理
   _flushingPending = true;
+  let sent = false;
   try {
-    const next = pendingQueue.shift();
-    savePendingQueue();
     renderPendingQueue();
-    if (!next) return;
     await runTurn({ text: String(next.text || ''), attachments: Array.isArray(next.atts) ? next.atts : [] });
+    sent = true;
   } catch (e) {
+    next._tries = (Number(next._tries) || 0) + 1;
+    try { savePendingQueue(); } catch (_) {}
+    try { console.warn('[预发送] 这条没发出去，留在队列里（第 ' + next._tries + ' 次）：', String(e && e.message || e)); } catch (_) {}
   } finally {
     _flushingPending = false;
+    if (sent) {
+      /* 只有真的发出去了才取走。按 id 找，别用 shift —— 中途主人可能编辑或删过 */
+      const ix = pendingQueue.findIndex((x) => x && x.id === next.id);
+      if (ix >= 0) pendingQueue.splice(ix, 1);
+      try { savePendingQueue(); } catch (_) {}
+    }
+    renderPendingQueue();
   }
 }
 
@@ -13085,6 +13124,8 @@ function imeBusy() {
   return Boolean(window.__xyImeComposing)
     || (Date.now() - (window.__xyImeEndAt || 0) < 250);
 }
+/* 【2026-11-08 修·探针】<script> 里的函数声明只有脚本自己的作用域能看见，CDP 的 Runtime.evaluate 在全局作用域里跑、评估不到它，真机探针会报「imeBusy is not defined」。挂到 window 上，探针和别的脚本都能用。 */
+try { window.imeBusy = imeBusy; } catch {}
 /**
  * 一点输入框，输入法就跟着系统语言走。
  *
@@ -13183,6 +13224,8 @@ function imeCancelSoon() {
 function imeTypingRecently() {
   return (Date.now() - (window.__xyImeTypeAt || 0)) < 3000;
 }
+try { window.imeTypingRecently = imeTypingRecently; } catch {}
+try { window.imeCancelSoon = imeCancelSoon; } catch {}
 function imeMatchSoon() {
   if (imeBusy() || imeTypingRecently()) return;
   const g = (imeGen += 1);
@@ -13228,9 +13271,11 @@ async function imeMatchOnce() {
  *   ① 只认**用户真的碰过输入框**（按下去过）之后的 focus，程序代 focus 一律不切；
  *   ② 最近 3 秒内打过字，一律不切（见 imeMatchOnce 里的 imeTypingRecently）。
  */
-let _imeUserTouchedAt = 0;
+/* 【2026-11-08 修-探针】let 声明的变量不挂 window，CDP 的 Runtime.evaluate
+   在全局作用域里跑、拿不到它，真机探针就报 not defined。改成挂在 window 上。 */
+window._imeUserTouchedAt = window._imeUserTouchedAt || 0;
 input.addEventListener('focus', () => {
-  if (Date.now() - _imeUserTouchedAt > 1500) return;   // 程序代 focus，不是人点的
+  if (Date.now() - window._imeUserTouchedAt > 1500) return;   // 程序代 focus，不是人点的
   imeMatchSoon();
 });
 /**
@@ -13239,7 +13284,7 @@ input.addEventListener('focus', () => {
  * 可 focus 那条现在只认「刚点过」，所以这里要自己全覆盖。
  */
 input.addEventListener('pointerdown', () => {
-  _imeUserTouchedAt = Date.now();
+  window._imeUserTouchedAt = Date.now();
   imeMatchSoon();
 }, true);
 /**

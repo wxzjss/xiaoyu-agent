@@ -41,9 +41,22 @@ t.ok('忙时回车入队（不再直接打断）', (ui.match(/else queueFromInpu
 t.ok('打断那条还在（队列里「直接发送」要用）', /async function interject\(\)/.test(ui));
 t.ok('切会话会载入那个会话的队列', /loadPendingQueue\(\);/.test(ui));
 
+/* 【2026-11-08 加·别再把主人的话吞了】
+ *
+ * 老写法 `const next = pendingQueue.shift(); savePendingQueue(); await runTurn(...)`
+ * —— runTurn 一抛错，那条已经不在队列、盘上也删了，catch 又是空的，消息就这么没了。
+ * 这跟服务端 `pending.shift()` 提前取走那个坑同一形状。
+ * 现在要求：先发，成功才按 id 取走；失败留着并记次数。
+ */
+t.ok('不是先 shift 再发（那样一抛错就丢话）',
+  !/pendingQueue\.shift\(\);\s*\n\s*savePendingQueue\(\);[\s\S]{0,200}await runTurn/.test(ui));
+t.ok('发出去了才把那条取走', /if \(sent\)[\s\S]{0,260}findIndex[\s\S]{0,120}splice\(ix, 1\)/.test(ui));
+t.ok('发失败留在队列里（不删）', /next\._tries = \(Number\(next\._tries\) \|\| 0\) \+ 1/.test(ui));
+t.ok('失败有上限，不会每 2 秒转到天亮', /\(Number\(next\._tries\) \|\| 0\) >= 3\) return/.test(ui));
+
 // ── 2. 真机 ────────────────────────────────────────────────────
 let cdp = null;
-try { cdp = await connect({ port: 9223, match: '8788' }); } catch { cdp = null; }
+try { cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' }); } catch { cdp = null; }
 
 if (!cdp) {
   console.log('\n真机格：SKIP（没连上 9223 的调试浏览器，源码断言已过）');

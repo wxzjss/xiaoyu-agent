@@ -74,7 +74,10 @@ t.ok('跑完退回统计', /次工具/.test(ui) && /调了 ' \+ /.test(ui));
 // ── 5. 切会话要断开柜子指针（主人怀疑的那条） ────────────────────
 const sw = ui.slice(ui.indexOf('async function switchSession(id, opts)'), ui.indexOf('async function switchSession(id, opts)') + 9000);
 const _swClean = sw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
-t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,200}renderTurns\(r\.session\.turns/.test(_swClean));
+/* 【2026-11-08 放宽】hubReset 与 renderTurns 之间现在有「空屏强制补历史」
+ * 和「已被流式接管就别强插」两段判断，200 字符的窗口不够了。
+ * 要守的是「切会话先 hubReset，再画历史」这个先后顺序，不是它俩挨多近。 */
+t.ok('切会话前 hubReset', /hubReset\(\)[\s\S]{0,1800}renderTurns\(r\.session\.turns/.test(_swClean));
 // ── 5b. 万一 tool_start 丢了，也不能让话和工具全挤一起 ────────────
 const te = ui.slice(ui.indexOf("} else if (ev.type === 'tool_end') {", ui.indexOf('function paintLiveEvents')));
 t.ok('tool_end 找不到卡时补建', /补一张卡/.test(ui) || /补画失败也不能连累这一轮/.test(ui));

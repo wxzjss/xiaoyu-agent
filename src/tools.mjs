@@ -41,6 +41,27 @@ const LIMIT = 200000;
 const ROOT = resolve(config.workspace);
 /** 程序自己的安装目录（src 的上一级），scripts/ 和 dump/ 都在这下面 */
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * 【2026-11-08 加·开发仓库也算工作区】
+ *
+ * 办事鱼报「权限出问题」，会话 #635 的原话是：
+ *   ERROR: path outside workspace is not allowed: D:\小鱼Agent\_patch_archive.mjs
+ * 不是系统权限，是这里的沙箱：打包版 ROOT = <数据目录>/workspace，
+ * 而主人一直让智能体在 D:\小鱼Agent 这个源码仓库里干活。
+ * run_command 能 cd 过去绕过，write_file / read_file 就会被挡，看着像「权限」。
+ *
+ * 放行规则：只有这台机器上**确实存在**这个仓库（src/server.mjs 在）才加，
+ * 别的电脑检测不到就自动不启用，不影响发布版的安全边界。
+ * 想换位置/彻底关掉：设 XY_DEV_REPO 环境变量（空串 = 不加）。
+ */
+const DEV_REPO = (() => {
+  try {
+    const v = String(process.env.XY_DEV_REPO ?? 'D:/小鱼Agent').trim();
+    if (!v) return '';
+    const r = resolve(v);
+    return existsSync(join(r, 'src', 'server.mjs')) ? r : '';
+  } catch { return ''; }
+})();
 
 /** Per-run context (which session is talking) so plan/note land in the right board. */
 /** 专业模式下不该出现的工具（见 runTool 里那道闸）。 */
@@ -492,6 +513,11 @@ export function safePath(p, { tool = '' } = {}) {
   if (READ_ONLY_TOOLS.has(tool) && isToolOutFile(abs)) return abs;
   const rel = relative(ROOT, abs);
   if (rel.startsWith('..') || isAbsolute(rel)) {
+    /* 不在主工作区，但落在这台机器的开发仓库里 → 放行（见上面 DEV_REPO 的说明） */
+    if (DEV_REPO) {
+      const r2 = relative(DEV_REPO, abs);
+      if (!r2.startsWith('..') && !isAbsolute(r2)) return abs;
+    }
     throw new Error(`path outside workspace is not allowed: ${p}`);
   }
   return abs;

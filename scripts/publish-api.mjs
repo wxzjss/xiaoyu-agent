@@ -112,6 +112,29 @@ export async function publishViaApi(dir, token, message) {
    * 带上 base_tree 之后语义变成「在现有树上覆盖/新增这些文件」，
    * 不在这次上传范围内的路径原样保留。
    */
+  /**
+   * 【2026-11-08 加·清掉远端遗留的备份文件】
+   *
+   * base_tree 的语义是「覆盖/新增」，**不会删除**远端多余文件。
+   * 于是历史上那些绕过排除规则的 `.bak-*` 一旦推上去就永远留着
+   * （实测 44 个，其中 persona/FACTORY-PROMPT.md.bak-* 含本机内容）。
+   *
+   * 现在列一次远端树，把名字里带 .bak 的 blob 用 `sha: null` 标成删除，
+   * 跟要上传的文件一起提交。GitHub Git Trees API 支持这个写法。
+   * 只删 .bak，别的远端文件一律不动 —— 那条「带 base_tree 别误删 58 个
+   * 文件」的坑不会再踩。
+   */
+  if (baseTree) {
+    try {
+      const remote = await api(token, `/repos/${REPO}/git/trees/${baseTree}?recursive=1`);
+      const stale = (remote && Array.isArray(remote.tree) ? remote.tree : [])
+        .filter((x) => x && x.type === 'blob' && x.path && /\.bak/i.test(x.path));
+      for (const x of stale) {
+        entries.push({ path: x.path, mode: '100644', type: 'blob', sha: null });
+      }
+      if (stale.length) console.log(`  [publish] 顺手清掉远端 ${stale.length} 个遗留备份`);
+    } catch (e) { /* 列不动就不删，别把发布卡住 */ }
+  }
   const treeBody = { tree: entries };
   if (baseTree) treeBody.base_tree = baseTree;
   const tree = await api(token, `/repos/${REPO}/git/trees`, {

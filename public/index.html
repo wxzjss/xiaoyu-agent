@@ -10479,6 +10479,20 @@ function foldOldHubs(keepFrom) {
 
 function hubRefreshTitle() {
   if (!_liveHub) return;
+  /* 【2026-11-08 修·柜子里来新内容时，主人展开的柜子又自己合上】
+   *
+   * 11-05 已经有两层保护：renderTurns 重画前按序号记下展开的柜子、
+   * 画完恢复；foldOldHubs 收旧柜时跳过带 userOpened 记号的。
+   * 但「直播来了一张新工具卡」这条路两边都不经过：addTool 在 log 末尾
+   * 另起柜子时写死 h.open=false，foldLiveTools 搬卡时也会动 details。
+   * 这里每次工具事件都会跑到，正好做最后一道兜底 —— 主人亲手拉开过的
+   * 柜子，谁都不许替他合上。
+   */
+  try {
+    if (_liveHub.dataset && _liveHub.dataset.userOpened === '1' && !_liveHub.open) {
+      _liveHub.open = true;
+    }
+  } catch (e) {}
   const n1 = _liveHub.querySelector('.hubname');
   const n2 = _liveHub.querySelector('.status');
   if (!n1) return;

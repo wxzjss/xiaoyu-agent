@@ -3094,7 +3094,15 @@ async function resumeInterruptedTurn(onlySessionId) {
       safeWord: session.mode?.word || '',
       /* 【2026-11-01 谁排第一谁干活】续跑也走主声，不能固定成默认人设 */
       agentId: (() => { try { return String(mainAgentId(sessionId, (id) => mateSwitchOn(id, sessionId)) || ''); } catch { return ''; } })(),
-      onEvent: () => {},
+      /* 【2026-11-08 修·自动续跑那一轮是「哑」的】
+       *
+       * 原来是 `onEvent: () => {}` —— 续跑轮吐的字、调的工具、报的错，
+       * 一个都不往 live 推。于是界面上「什么都没发生」，/api/running
+       * 一直显示 events:0，主人发消息只看见自己那句，没人回、也没开工。
+       * 更要命的是看门狗：没有事件就判「真空转」，得等 12 分钟才掐。
+       *
+       * 现在跟主轮一样接上 send()。看得见，看门狗也能按「等模型」那档早点管。 */
+      onEvent: (ev) => { try { send(ev); } catch {} },
     }));
     repairHistory(history);
     for (const m of wire) {

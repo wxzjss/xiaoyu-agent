@@ -90,6 +90,20 @@ function pickLimit(events, limits) {
   if (isWaitingTool(events)) {
     return { ms: limits.toolIdleMs, why: '在等工具，上限 ' + Math.round(limits.toolIdleMs / 1000) };
   }
+  /* 【2026-11-08 修·续跑轮一个事件都不推，能空挂 12 分钟】
+   *
+   * 现场：办事鱼 06:04 自动续跑起了一轮，/api/running 显示
+   * `events:0, idleMs:415000`，界面一个字都没有、主人发消息也没人答。
+   * 查下来那一轮 `onEvent: () => {}` 把事件全丢了（已改成 send），
+   * 于是这里看不到任何事件 → 判「真空转」→ 要等 12 分钟才掐。
+   * 而 12 分钟里主人发的话全被 /api/interject 当成插话塞进这个死轮，
+   * 就是「说了一句，也没回我，也没开始工作」。
+   *
+   * 一个事件都没有、又没在等工具 —— 不管是不是续跑，都不是「正常静默」。
+   * 用等模型那档（5 分钟），别让它空挂 12 分钟。 */
+  if (!events.length) {
+    return { ms: limits.llmIdleMs, why: '一个事件都没有，上限 ' + Math.round(limits.llmIdleMs / 1000) };
+  }
   if (looksLikeWaitingModel(events)) {
     return { ms: limits.llmIdleMs, why: '在等模型回话，上限 ' + Math.round(limits.llmIdleMs / 1000) };
   }

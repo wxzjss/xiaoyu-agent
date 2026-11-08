@@ -182,4 +182,30 @@ function makeWorld({ modelIdleMin = 18, toolIdleMin = 18, healthyIdleSec = 30 } 
   t.ok('掐之前先敲 onStuck（自动续跑接得住）', stuck.length === 1 && stuck[0].sid === 'x', JSON.stringify(stuck));
 }
 
+{
+  /* 【2026-11-08 核心现场】续跑轮一个事件都不推，能空挂 12 分钟 */
+  const now = Date.now();
+  const turns = new Map([['empty', { startedAt: now - 6 * 60 * 1000 }]]);
+  const lives = new Map([['empty', { events: [] }]]);
+  const aborted = [];
+  const wd = createTurnWatchdog({
+    turns: () => turns.entries(),
+    liveOf: (sid) => lives.get(sid),
+    abort: (sid) => aborted.push(sid),
+    idleMs: 12 * 60 * 1000,
+    toolIdleMs: 31 * 60 * 1000,
+    llmIdleMs: 5 * 60 * 1000,
+  });
+  wd.scan(now);
+  t.ok('一个事件都没有 → 5 分钟档，不再空挂 12 分钟', aborted.includes('empty'), aborted.join(','));
+}
+
+/* 源码守卫：续跑轮不许再把事件吞掉 */
+const serverSrc = fs.readFileSync('src/server.mjs', 'utf8');
+/* 判据认「续跑轮」这个函数体：它后面紧接着 repairHistory(history)。
+ * 不能写「全文件不许有 onEvent: () => {}」——别的路径（小鲸、子智能体）
+ * 有意用空回调，一刀切会冤枉它们。 */
+t.ok('续跑轮的事件接上了 send（不是空的 onEvent）',
+  /onEvent: \(ev\) => \{ try \{ send\(ev\); \} catch \{\} \},[\s\S]{0,120}repairHistory\(history\)/.test(serverSrc));
+
 t.done();

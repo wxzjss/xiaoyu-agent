@@ -1,16 +1,28 @@
-refactor(ui): 会话列表那组也搬出去（新建 ui/sessions.js）
+refactor+cleanup: 聊天流搬出去 / IME 删到 0 处 / 清依赖和临时文件
 
-第二项继续：
-· refreshRunning   每 3 秒问服务端谁在跑（含防抖）
-· renderSessList   画会话列表（绿点、运行中、停止键、智能体标签）
+这一轮四件事：
 
-现在页面脚本分三块：
-  index.html          主脚本 65 万字符（还剩聊天流、设置面板等）
-  ui/hub.js           柜子 10 个函数 / 657 行
-  ui/sessions.js      会话列表 2 个函数 / 209 行
+① 聊天流搬进 public/ui/chat.js（9 个函数 / 97236 字符 / 2559 行）
+   paintSnapshot / paintSnapshotInner / paintSnapshot0 / attachLive /
+   followLive / replayInFlight / renderTurns / switchSessionSafe / switchSession
 
-索引 HTML 里加了一行 <script src="/ui/sessions.js">，位置在 hub.js 之后、
-主脚本之前 —— 这样主脚本执行时两个文件的函数都已经在全局了。
+② IME 代码**真的删到 0 处**
+   之前两次删除都只删到一份副本 —— 文件里有两套几乎一样的 IME 代码，
+   用固定行号删掉前面那段后，后面的往前移，下一份就露出来了。
+   这次改成循环：每次扫当前第一个 IME 块删掉，删完重扫，直到 grep 为 0。
+   共删 7 块。真机验证 typeof imeMatchOnce === 'undefined'。
 
-验证：预检通过、真机格实测 —— 输入框在、会话列表 32 行、
-renderSessList / refreshRunning / syncHubHead 三个都是 function。
+③ 删掉 koffi 依赖（IME 撤掉后没有任何引用了，deps 只剩 opencc-js / ws）
+
+④ 清掉被 git 跟踪的临时探针文件：
+   .tmp_probe_ui*.mjs / _p2.cjs / _p3.cjs / _p5.cjs / _p6.cjs / _patch_selfheal.cjs
+
+页面脚本现在分四块：
+  index.html   主脚本（设置面板、清单、输入框等）
+  ui/hub.js    柜子 10 个函数 / 657 行
+  ui/sessions.js 会话列表 2 个函数 / 209 行
+  ui/chat.js   聊天流 9 个函数 / 2559 行
+
+验证：预检通过、真机实测 —— 输入框在、会话 28 行、
+renderTurns / switchSession / followLive / syncHubHead / renderSessList 全是 function、
+imeMatchOnce 已是 undefined。

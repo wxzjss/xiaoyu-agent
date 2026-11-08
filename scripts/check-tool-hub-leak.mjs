@@ -17,7 +17,10 @@ import fs from 'node:fs';
 import { connect } from '../_t_cdp.mjs';
 
 const t = makeChecker('ui / 工具卡别跑出柜子');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const _uiHtml = fs.readFileSync('public/index.html', 'utf8');
+// 【2026-11-08】柜子那组函数已搬进 ui/hub.js（commit c001137），守卫要跟着去新家找
+const _hubJs = fs.existsSync('public/ui/hub.js') ? fs.readFileSync('public/ui/hub.js', 'utf8') : '';
+const ui = _uiHtml + '\n' + _hubJs;
 
 // ── 1. 源码守卫 ────────────────────────────────────────────────
 t.ok('有自愈守卫 installToolLeakGuard', /function installToolLeakGuard\(\)/.test(ui));

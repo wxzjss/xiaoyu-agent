@@ -18,6 +18,17 @@ import fs from 'node:fs';
 const t = makeChecker('ui / 输入法白框');
 const ui = fs.readFileSync('public/index.html', 'utf8');
 
+/* 【2026-11-08 退役】主人后来让把「掰输入法」那套从 index.html 和主进程里
+ * 彻底删掉（commit e5bee55）。前端没有 composition 监听了，本脚本守的东西
+ * 已经不存在 —— 再跑只会一片红。检测到确实删干净了就宣告跳过，不算失败；
+ * 哪天这套功能回来（又出现 compositionstart），自动恢复全部断言。 */
+const _imeGone = !ui.includes('compositionstart') && !ui.includes('imeMatchOnce');
+if (_imeGone) {
+  t.ok('输入法掰弯那套已按主人要求彻底删除（本脚本退役）', true);
+  t.done();
+  process.exit(0);
+}
+
 t.ok('有 compositionstart 监听', /input\.addEventListener\('compositionstart'/.test(ui));
 t.ok('有 compositionend 监听', /input\.addEventListener\('compositionend'/.test(ui));
 t.ok('compositionend 记了时间戳', /__xyImeEndAt = Date\.now\(\)/.test(ui));

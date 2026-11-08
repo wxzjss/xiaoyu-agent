@@ -67,7 +67,12 @@ const EXCLUDE_PATTERNS = [
    *   ① 里面写死了本机路径（C:\\Users\\<这台机器的用户名>\\...），出门扫描会逐条命中；
    *   ② 用户拿到的是 exe，这些脚本对他毫无用处。
    * 发布物里该有的 scripts 是 publish / preflight / sync-live 那几个工具。 */
-  /^check-.*\.mjs$/,
+  /^(?!check-smoke\.mjs$)check-.*\.mjs$/,
+  /* 【2026-11-08 修·冒烟入口必须跟着发布】
+   * 出厂底线第 7 条让「单文件/纯文案改动跑 node scripts/check-smoke.mjs」，
+   * 可上面那条把所有 check-*.mjs 都排除了 —— 发布版里压根没这个脚本，
+   * 换台机器照底线做就会「文件不存在」。check-smoke.mjs 是给人用的工具，
+   * 不是自测脚本，单独放行。 */
   /^e2e-.*\.mjs$/,
   /^run-all-checks\.mjs$/,
   /* 【2026-11-08 加·名字中间带 .bak 的备份会绕过扩展名规则】

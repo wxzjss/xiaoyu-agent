@@ -2447,9 +2447,17 @@ async function switchSession(id, opts) {
   })();
   renderTurns(
     r.session.turns,
-    (_emptyScreen && !_inFlightHere)
-      ? { force: true, dropTail: _runningNow }
-      : { dropTail: _runningNow },
+    /**
+     * 【2026-11-08 修·「切回来看到的是别人/混在一起」】
+     *
+     * 实测：A 会话 8 条消息 → 切到 B（11 条）→ 切回 A，屏幕上还是 11 条。
+     * 因为这里只在「屏幕空」时才传 force，屏幕不空就交给 renderTurns 自己判断，
+     * 而它有一条「这个会话正在生成中就什么都别动」的早退 —— 于是 B 的内容一直留着。
+     *
+     * 切会话这件事本身就意味着**屏幕归属换了**，必须照新的会话整屏重画。
+     * 所以 force 永远给上；dropTail 仍然只在「这个会话真在跑」时生效。
+     */
+    { force: true, dropTail: _runningNow },
   );
   /* 【2026-11-08】切会话：把**这个会话**的待发送队列读出来（按会话分 key 存的） */
   try { loadPendingQueue(); } catch (e) {}

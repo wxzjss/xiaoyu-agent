@@ -466,7 +466,18 @@
       transition: transform .15s ease;
     }
     details.toolhub[open] > summary::before { transform: rotate(90deg); }
-    details.toolhub > summary .hubname { color: var(--accent); }
+    /* 【2026-11-08 主人】思考灰字一长，柜门标题被挤成**一个字一行**（竖排）。
+     * 原因：hubname 没有任何 flex 控制，而 hubpeek 是 flex:0 1 auto 且内容很长，
+     * 收缩压力全落在 hubname 上 —— 它没有 nowrap，就被压成一列。
+     * 现在：标题不参与收缩、不换行、超长用省略号；灰字那边 min-width:0 自己让路。 */
+    details.toolhub > summary .hubname {
+      color: var(--accent);
+      flex: 0 0 auto;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 62%;
+    }
     details.toolhub > summary:hover { color: var(--accent); }
 
     /* —— 里面的每一次工具：一行，不是一张卡 —— */

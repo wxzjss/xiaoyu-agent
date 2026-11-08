@@ -84,11 +84,43 @@ function emptyState() {
   return { goal: '', createdAt: 0, updatedAt: 0, steps: [], notes: [] };
 }
 
+/**
+ * 【2026-11-08 加】清单的主人会话没了，就接到最近的活会话上。
+ *
+ * 老 bug：跑测试时临时会话（__ord__ 之类）会把清单抢过去，测试一结束会话就删了，
+ * 清单变成没主的孤儿，谁也不再管。现在读的时候兜一层：发现没主，就接给最近改过的那个会话。
+ */
+function adoptPlanIfOrphan(key, state) {
+  try {
+    if (SESS_DIR === null) return null;
+    if (fs.existsSync(join(SESS_DIR, key + ".json"))) return null;
+    const files = fs
+      .readdirSync(SESS_DIR)
+      .filter((f) => f.endsWith(".json") && !f.startsWith("_"))
+      .map((f) => ({ id: f.slice(0, -5), t: fs.statSync(join(SESS_DIR, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    if (!files.length) return null;
+    const last = files[0].id;
+    if (last === key) return null;
+    const st = state || emptyState();
+    if (!st.steps.length) return null;
+    savePlan(last, { ...st, sessionId: last });
+    return last;
+  } catch {
+    return null;
+  }
+}
+
+let SESS_DIR = null;
+try {
+  SESS_DIR = join(config.dataDir, ".state", "sessions");
+} catch {}
+
 export function loadPlan(key = 'default') {
   try {
     const data = JSON.parse(readFileSync(fileFor(key), 'utf8'));
     if (!data || typeof data !== 'object') return emptyState();
-    return {
+    const st = {
       goal: clean(data.goal, 300),
       createdAt: Number(data.createdAt) || 0,
       updatedAt: Number(data.updatedAt) || 0,
@@ -108,6 +140,8 @@ export function loadPlan(key = 'default') {
         .slice(-MAX_NOTES)
         .map((n, i) => ({ id: i + 1, text: String(n.text).slice(0, 1200), tag: clean(n.tag, 40) })),
     };
+    try { adoptPlanIfOrphan(key, st); } catch {}
+    return st;
   } catch {
     return emptyState();
   }

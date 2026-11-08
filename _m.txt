@@ -1,0 +1,24 @@
+refactor: 把输入法相关代码从 index.html 和主进程里彻底删掉
+
+主人：「把小鱼Agent 有关输入法的修改全删了」—— 不是停用，是真删。
+
+删掉的（前端，共 7301 字符）：
+· imeBusy / imeSwitching / imeFeatureOn / imeMatchOnce / imeMatchSoon
+  / imeCancelSoon / imeTypingRecently 整群
+· imePrimeOnBoot 开机预切（连它的调用）
+· 输入框上的三个监听：focus / pointerdown / markTyping（keydown、
+  compositionstart、input、paste 四条一起挂的那套）
+· 相关全局：__xyImeComposing / __xyImeEndAt / __xyImeTypeAt / _imeUserTouchedAt
+
+删掉的（主进程，上一次提交已做）：
+· IME_CS_LINES（C# 源码）/ IME_NATIVE_SRC / systemLangCode
+  / ensureImeScript / matchImeToSystem / 两个 ime:xxx IPC
+
+结果：两边残留提及 0 处。输入法完全交给 Windows 和主人自己。
+
+过程记录（怕以后又踩）：
+· 第一次删完 preflight 和语法都过了，我去浏览器验证页面，看到
+  输入框 false、syncHubHead undefined，误判成「删坏了」并 git 回退。
+· 实际是**应用被关掉了**（8788 连不上、进程列表为空、页面是
+  chrome-error://chromewebdata）—— 那是错误页的 DOM，不是我们的页面。
+· 教训：以后验证页面先确认服务活着（curl 8788），再看 DOM。

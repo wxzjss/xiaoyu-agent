@@ -10255,7 +10255,9 @@ function niceTool(name, args) {
     const cmd = a && (a.command != null ? a.command : a.cmd);
     if (cmd) return niceCommand(cmd);
   }
-  return TOOL_NICE[n] || n;
+  if (TOOL_NICE[n]) return TOOL_NICE[n];
+  // 表里没有的，绝不把英文原名甩到界面上
+  return n.replace(/_/g, ' ');
 }
 
 /**
@@ -10392,8 +10394,19 @@ function markHubUserOpened(hub) {
   try {
     hub.addEventListener('toggle', () => {
       try {
-        if (hub.open) hub.dataset.userOpened = '1';
-        else delete hub.dataset.userOpened;
+        if (hub.open) {
+          hub.dataset.userOpened = '1';
+          delete hub.dataset.userClosedAt;
+        } else {
+          delete hub.dataset.userOpened;
+          /* 【2026-11-08 加】记下「用户刚把它关掉」的时刻。
+           * toggle 是**异步派发**的：用户点完 summary 的同一轮里 open 已经是 false，
+           * 但这里要等下一个任务才跑到。中间只要来一个工具事件，hubRefreshTitle
+           * 就会看到「userOpened 还是 1、open 却是 false」，于是把柜子又拉开 ——
+           * 这正是主人说的「打开又关上之后，新调用出现时柜子会自动打开」。
+           * 有了这个时间戳，兜底那侧就能认出「这是刚被关的，别动」。 */
+          hub.dataset.userClosedAt = String(Date.now());
+        }
       } catch (e) {}
     });
   } catch (e) {}
@@ -10520,7 +10533,10 @@ function hubRefreshTitle() {
    */
   try {
     if (_liveHub.dataset && _liveHub.dataset.userOpened === '1' && !_liveHub.open) {
-      _liveHub.open = true;
+      /* 用户刚关掉的（2 秒内）绝不替他拉开 —— 见 markHubUserOpened 里那段说明：
+       * toggle 异步派发，标记清得晚，没有这条兜底就会「关了又被自己打开」。 */
+      const _closedAt = Number(_liveHub.dataset.userClosedAt || 0);
+      if (!_closedAt || Date.now() - _closedAt > 2000) _liveHub.open = true;
     }
   } catch (e) {}
   const n1 = _liveHub.querySelector('.hubname');
@@ -10967,6 +10983,13 @@ function foldLiveTools() {
   }
   const _restore = () => {
     if (!_keep || !_log0) return;
+    /* 【2026-11-08 修·工具完成时画面「弹一下再弹回来」】
+     * 这里的补偿是「把视口拉回移动前的位置」，而工具收尾那边还会 noteNewContent()
+     * → followNow() → 滚到底。两套一起动：先被拉回原位、下一帧又被蹬到底，
+     * 看着就是「弹一下再弹回来」。
+     * 用户本来就贴着底看（stickBottom）时，跟着到底才是他要的，
+     * 这时候就别做位置补偿了。 */
+    try { if (typeof stickBottom !== 'undefined' && stickBottom) return; } catch (e) {}
     requestAnimationFrame(() => {
       try {
         if (!_keep.el || !_keep.el.isConnected) return;

@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS = {
     "找问题不许猜，必须真看日志再下结论",
     "做任务先列清单；主人插话的新要求也写进清单；做完一条必须先打勾，开新任务前必须先看已做完的有没有打勾",
     "临时测试会话用完就删",
-    "任务做完按改动范围选回归：单文件或纯文案 → node scripts/check-smoke.mjs 冒烟；日常改完 → node scripts/check-changed.mjs 变更（按 git diff 反查受影响的检查）；动到核心链路 → node scripts/check-core.mjs 核心；发布前或大改 → node scripts/run-all-checks.mjs 全量。本项目没有单元测试层，「跑测试」不存在；「增量」与「变更」重叠，只用变更。跑完再做严检，严检查出问题修完重走这条底线",
+    "任务做完按范围选回归：单文件/文案→check-smoke.mjs；日常→check-changed.mjs；核心→check-core.mjs；发布前→run-all-checks.mjs。无单测层不跑「测试」，增量并入变更。跑完严检，查出问题修完重走",
     "已完成清单超过十条就归档并删掉最旧的那条，已完成的清单最多保留10条",
     "只认主人的命令"
   ],

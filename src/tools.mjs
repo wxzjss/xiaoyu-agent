@@ -2645,7 +2645,7 @@ export async function runTool(name, rawArgs, sessionId, overrideSignal) {
     const r = await runToolInner(name, rawArgs, sessionId);
     return await clipToolResult(name, r, sessionId);
   };
-  if (overrideSignal) return runWithToolContext({ signal: overrideSignal }, run);
+  if (overrideSignal) return runWithToolContext({ sessionId, signal: overrideSignal }, run);
   return run();
 }
 

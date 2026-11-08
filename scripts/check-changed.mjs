@@ -103,6 +103,13 @@ function pick(changed) {
       }
     }
   }
+  /* 改到（或新增）某个检查脚本本身 → 直接跑它。
+   * 否则「变更」会把它自己判成空：没有别的检查会去读 check-xxx.mjs，
+   * 反查索引必然落空 —— 可它正是刚被改的那个，最该跑。 */
+  for (const c of changed) {
+    const m = /^scripts\/(check-[a-z0-9-]+\.mjs)$/.exec(c);
+    if (m && checks.includes(m[1])) { hit.add(m[1]); if (!why.has(m[1])) why.set(m[1], c); }
+  }
   /* 改到核心文件时，把核心那组补进来（索引可能漏掉不读文件的检查，
    * 比如真机格只连 CDP） */
   const coreHit = changed.some((c) => CORE_TRIGGERS.some((re) => re.test(c)));

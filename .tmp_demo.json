@@ -1,0 +1,26 @@
+{
+  "title": "小鱼 Agent 能力自查",
+  "theme": "dark",
+  "slides": [
+    { "type": "cover", "title": "小鱼 Agent 能力自查", "subtitle": "2026-11-09 · 对照 WorkBuddy 5.9.3 补短板" },
+    { "type": "bullets", "title": "已有的本事", "items": [
+      "看视频：量切点、铺图版、放大读小字",
+      "看屏幕、点界面、打字按键",
+      "读文件 / 写文件 / 跑命令，整台机器都能碰",
+      "管清单、定时任务、记忆本",
+      "发文件、发语音、发 QQ"
+    ] },
+    { "type": "bullets", "title": "本来没有的", "items": [
+      "做 PPT —— 今天补上了",
+      "做 Word 文档",
+      "做 Excel 表格",
+      "没装 Python，能用的库很少"
+    ] },
+    { "type": "table", "title": "补完之后", "head": ["能力", "状态", "用什么"], "rows": [
+      ["PPT", "能用", "pptxgenjs"],
+      ["Word", "待办", "—"],
+      ["Excel", "待办", "—"]
+    ] },
+    { "type": "section", "title": "先拿 PPT 开刀" }
+  ]
+}

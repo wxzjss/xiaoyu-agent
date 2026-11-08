@@ -2854,6 +2854,24 @@ async function startQueuedTurn(sessionId, queue = null) {
     return { ok: true, text: out && out.text, rest: rest() };
   } catch (e) {
     console.warn('[queued] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
+    /* 【2026-11-09 补】排队轮（setImmediate 起来的那种）出错也要落盘。
+     * 以前这里只 send({type:"error"})，事件一走就没了：切会话、刷新、重启全都看不见。
+     * 跟主轮那处一个套路，先落历史再发事件，并且去重。 */
+    try {
+      const _s = getSession(sessionId);
+      const _last = (_s && Array.isArray(_s.messages) && _s.messages.length) ? _s.messages[_s.messages.length - 1] : null;
+      const errText = String(e?.message ?? e);
+      if (_s && !(_last && _last.__turnErr)) {
+        _s.messages.push({
+          role: 'assistant',
+          content: '⚠️ 这一轮断在这儿了：' + errText
+            + '\n\n（这一轮没说完，工具结果还在。换个模型试试，或者跟我说一声「接着办」，我照清单往下走。）',
+          at: Date.now(),
+          __turnErr: true,
+        });
+        saveSession(_s);
+      }
+    } catch {}
     if (ac.signal.aborted) send({ type: 'aborted', reason: String(ac.signal.reason ?? '') });
     else send({ type: 'error', message: String(e?.message ?? e) });
     throw e;
@@ -10971,7 +10989,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
                 if (_s && !(_last && _last.__turnErr)) {
                   _s.messages.push({
                     role: 'assistant',
-                    content: '⚠️ 这一轮卡太久，我先强行收掉、马上重接——你不用管。\\n\\n（要是没接回来，跟我说一声「接着办」，我照清单往下走。）',
+                    content: '⚠️ 这一轮卡太久，我先强行收掉、马上重接——你不用管。\n\n（要是没接回来，跟我说一声「接着办」，我照清单往下走。）',
                     at: Date.now(),
                     __turnErr: true,
                   });

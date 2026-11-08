@@ -113,9 +113,28 @@ if (cdp) {
       out.peekIsTail = long.replace(/\\s+/g, ' ').trim().endsWith(out.peekTail.replace(/^…/, ''));
       th.finish(); th.el.remove();
       try { if (typeof hubReset === 'function') hubReset(); } catch {}
+      /* 【2026-11-09 主人】思考灰字一长，柜门的【运行中】被挤成竖排（一个字一行）。
+       * 根子和 11-08 那次「标题被挤成竖排」一样：那个元素没有 flex 约束。
+       * 这里拿真实 DOM 量高度 —— 竖排时高度会翻好几倍，一眼就能看出来。 */
+      {
+        const h2 = document.createElement('details');
+        h2.className = 'toolhub';
+        h2.innerHTML = '<summary><span class="hubname">调了 3 次 · 正在跑全量…</span>'
+          + '<span class="status run live">运行中</span>'
+          + '<span class="hubpeek">' + '很长很长的思考内容'.repeat(20) + '</span></summary>';
+        document.getElementById('log').appendChild(h2);
+        const s2 = h2.querySelector('.status').getBoundingClientRect();
+        out.statusH = Math.round(s2.height);
+        out.statusW = Math.round(s2.width);
+        out.statusWs = getComputedStyle(h2.querySelector('.status')).whiteSpace;
+        h2.remove();
+      }
       return out;
     `);
     t.ok('真机：思考中柜门写「正在思考中…」', r.thinking === '正在思考中…', JSON.stringify(r.thinking));
+    t.ok('真机：思考灰字再长，柜门【运行中】也不竖排',
+      r.statusH <= 30 && r.statusW > 18 && r.statusWs === 'nowrap',
+      '高=' + r.statusH + ' 宽=' + r.statusW + ' ws=' + r.statusWs);
     t.ok('真机：想完退回统计', r.after === '想了 1 段', JSON.stringify(r.after));
     t.ok('真机：工具运行仍写「（调了 N 次 · ）正在跑命令…」',
       /(调了 \d+ 次 · )?正在跑命令…$/.test(String(r.tool)), JSON.stringify(r.tool));

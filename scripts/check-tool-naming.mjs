@@ -193,4 +193,9 @@ const _runCls = (ui.match(/'run live'/g) || []).length;
 t.ok('「运行中」只在出口里写', _liveWord <= 2, '出现 ' + _liveWord + ' 次');
 t.ok('金色类 run live 只在出口里给', _runCls <= 2, '出现 ' + _runCls + ' 次');
 
+/* 【2026-11-09 主人】柜门三个部分各就各位：标题不收缩、状态不收缩、灰字自己让路。
+ * 之前只给 .hubname 加了 flex，收缩压力就全转到 .status 上，把它挤成竖排（一个字一行）。 */
+t.ok('柜门 .status 不参与收缩、不换行',
+  /details\.toolhub > summary \.status \{[\s\S]{0,120}flex: 0 0 auto[\s\S]{0,80}white-space: nowrap/.test(ui));
+
 t.done();

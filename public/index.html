@@ -1428,6 +1428,21 @@
        而柜门的 status 之前**没有自己的颜色** —— 工具卡那边一直有
        （details.tool > summary .status.xxx），柜门这条漏了，于是「N 个失败」
        跟着整行一起变蓝。现在补齐 ok / err / warn，运行中的金色在下面单列。 */
+    /* 【2026-11-09 主人】柜门的【运行中】被思考灰字挤成竖排。
+     *
+     * 跟 11-08 那次是同一个病根的第二个受害者：上回是 .hubname 被压成竖排，
+     * 给它加了 flex:0 0 auto + nowrap 之后，收缩压力就全转到 .status 上了 ——
+     * 而 .status **一条 flex 规则都没有**，也没有 nowrap，于是被压成一列。
+     *
+     * 现在三个部分各就各位：
+     *   .hubname 不收缩、不换行（最多 62%，超了省略号）
+     *   .status  不收缩、不换行（「运行中」「3 个失败」都是短词，永远完整显示）
+     *   .hubpeek 唯一可伸缩的那个，宽度不够时它自己让路 + 省略号
+     */
+    details.toolhub > summary .status {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
     details.toolhub > summary .status.ok { color: var(--ok); }
     details.toolhub > summary .status.err { color: var(--err); }
     details.toolhub > summary .status.warn { color: #d9a45b; }

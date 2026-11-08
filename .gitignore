@@ -72,3 +72,6 @@ playground/
 # 提交说明临时文件（git commit -F _m.txt 用）
 /_m.txt
 /_msg.txt
+
+# check-sendfile 自己生成、自己删的测试文件（删不掉就留在这儿）
+/_sf_*.txt

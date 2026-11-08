@@ -10,10 +10,11 @@
  * 但源码那一半必须全过 —— 命名这件事本身不需要浏览器。
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 
 const t = makeChecker('ui / 工具命名与柜门');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const ui = readUISource();
 
 // ── 1. niceCommand 存在，且从具体到宽泛 ────────────────────────────
 t.ok('有 niceCommand', /function niceCommand\(raw\)/.test(ui));

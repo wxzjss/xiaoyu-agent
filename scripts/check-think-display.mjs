@@ -9,10 +9,11 @@
  * 源码断言 + 真机格一起守：连不上调试浏览器就 SKIP，不算失败。
  */
 import { makeChecker } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 
 const t = makeChecker('ui / 思考显示');
-const ui = fs.readFileSync('public/index.html', 'utf8');
+const ui = readUISource();
 
 // ── 1. 不截断 ─────────────────────────────────────────────────────
 t.ok('没有 38 字标题截断', !ui.includes('slice(0, 38)'));

@@ -209,6 +209,19 @@ try {
     /logSetHistory\(id, _turns\); logSetLive\(id, null\); renderLog\(\{ force: true \}\)/.test(_c));
 } catch (e) { ok('唯一 state + 唯一画入口', false); }
 
+/* 【2026-11-09 加】点停止时，压着的插话必须**落进历史**，不能丢。
+ * 主人原话：「为什么在调用工具中途停止后，插话的消息不在插话时的位置？」
+ * 原来的做法是直接 clearInbox —— 那句只在屏幕上画了一下，历史里根本没有，
+ * 刷新就没了，或者下次发消息时被当成新的一句跑到最末尾。
+ * 现在：不自动跑（点了停就别自己动），但要按顺序写进历史。 */
+try {
+  const _srv = readFileSync('src/server.mjs', 'utf8');
+  const _at = _srv.indexOf("url.pathname === '/api/stop'");
+  const _seg = _at >= 0 ? _srv.slice(_at, _at + 4000) : '';
+  ok('停止时把插话落进历史（不丢话）', /_keptOnStop/.test(_seg) && /peekInbox\(sessionId\)/.test(_seg));
+  ok('停止时仍然不自动起轮（点了停就别自己动）', !/startQueuedTurn\(\s*sessionId/.test(_seg));
+} catch (e) { ok('停止时把插话落进历史', false); }
+
 console.log('断言：' + pass + '/' + (pass + fail));
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }
 console.log('PASS 发消息链路端到端通过');

@@ -473,6 +473,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
   for (let guard = 0; guard < 8; guard++) {
     const payload = withEffort(body, level).body;
     /**
+    /**
      * 【静默闸：建了连接却一个字节都不吐，不能永远等】
      *
      * 真发生过：网关接了连接、握手也成了，然后就没有然后了 —— 不报错、不断开、

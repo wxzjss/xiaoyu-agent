@@ -17,26 +17,39 @@ const FILE = join(config.dataDir, '.state', 'thinking.json');
 /**
  * 能手动选的档位。auto 是「按工具历史自动调度」，不发这个值出去。
  *
- * 档位集合对齐 dsh-thinking-levels 的八个标准档：off / on / minimal / low / medium / high / xhigh / max，
- * 外加 auto 调度哨兵。其中：
- *   - off 是**手动档，自动调度永远不会挑它**（跟 dsh 插件一个约定）。
- *   - on 是「打开思考、用模型默认强度」的开关档，不是 wire 值。
+ * 【2026-11-09 主人定·只留官方三档：低 / 高 / 最高，默认高】
+ *
+ * 原来抄了 dsh 的八档（off/on/minimal/low/medium/high/xhigh/max + auto）。
+ * 实测下来两件事：
+ *   · 「关」「开」不是真正的强度值，行为全看接入点 —— 有的接入点把「开」
+ *     当成不思考，长会话里就退化成整整一轮只回一句「嗯，我在」；
+ *   · minimal / medium / xhigh 跟相邻档实测没区别，纯属选项太多。
+ *
+ * 主人原话：「把思考档位只保留 deepseek 官方的那种低、高与最高」「默认档位为高」。
  */
 export const LEVELS = [
   { id: 'off', name: '关', desc: '完全不思考，直接把答案说出来' },
-  { id: 'on', name: '开', desc: '思考打开，用模型默认强度' },
-  { id: 'minimal', name: '最低', desc: '极轻任务，几乎不思考' },
   { id: 'low', name: '低', desc: '简单对话，便宜又快' },
-  { id: 'medium', name: '中', desc: '中等强度' },
-  { id: 'high', name: '高', desc: '官方默认档，稳' },
-  { id: 'xhigh', name: '特高', desc: '更狠一点' },
+  { id: 'high', name: '高', desc: '官方默认档，稳（默认用这个）' },
   { id: 'max', name: '最高', desc: '重任务，舍得花时间' },
-  { id: 'auto', name: '自动', desc: '按这轮要不要调工具，自己挑档' },
 ];
 
+/**
+ * 老配置里的档位怎么落到这四档上。
+ * 会话/模型里存着 on、minimal、medium、xhigh 的，读到就当场换算，不用主人手动改一遍。
+ */
+export function normalizeLevel(v) {
+  const s = String(v ?? '').trim();
+  if (s === 'off' || s === 'low' || s === 'high' || s === 'max') return s;
+  if (s === 'minimal') return 'low';
+  if (s === 'xhigh') return 'max';
+  /* on / medium / auto / 空 / 认不出的，一律落到默认的「高」 */
+  return 'high';
+}
+
 const LEVEL_IDS = new Set(LEVELS.map((l) => l.id));
-/** 强度梯度（不含 off / on / auto）。off 和 on 不是 wire 强度值。 */
-const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+/** 强度梯度（off 不是强度值，单独处理） */
+const EFFORT_ORDER = ['low', 'high', 'max'];
 
 /** 一次请求最多试几次（降档用的） */
 const MAX_ATTEMPTS = 3;
@@ -60,17 +73,20 @@ function writeRaw(data) {
 export function getThinking() {
   const raw = readRaw();
   /**
-   * 默认值是 off，也就是「不发 reasoning_effort」。
+   * 【2026-11-09 改】默认「高」。
    *
-   * 踩过坑：这个网关对不认识的字段不会好好回 400，而是直接把流掐断，
-   * 前端只能看到 terminated。所以默认最保守——不主动加字段，
-   * 主人在面板里自己选了档位，才认为「这个模型是支持的」。
+   * 原来的默认是 off（完全不思考），理由是「网关对不认识的字段会掐流」。
+   * 可实测发现另一头更糟：不思考 + 长会话 = 整轮只回一句「嗯，我在」。
+   * 现在只有三档，且默认高 —— 稳比省那点 token 重要。
+   *
+   * 老配置里存的 off/on/minimal… 在这里**当场换算**，不用主人挨个改。
    */
-  const level = LEVEL_IDS.has(raw.level) ? raw.level : 'off';
+  const level = normalizeLevel(raw.level);
   const perModel = raw.perModel && typeof raw.perModel === 'object' ? raw.perModel : {};
   const clean = {};
   for (const [k, v] of Object.entries(perModel)) {
-    if (LEVEL_IDS.has(v)) clean[k] = v;
+    if (v === null || v === '') continue;
+    clean[k] = normalizeLevel(v);
   }
   return { level, perModel: clean };
 }
@@ -81,20 +97,25 @@ export function setThinking(input = {}) {
   const next = { level: cur.level, perModel: { ...cur.perModel } };
 
   if (input.level !== undefined) {
-    if (!LEVEL_IDS.has(input.level)) {
+    /* 先换算再校验：老值（off/on/minimal/medium/xhigh）不该报错，
+     * 它们都还能落到「低/高/最高」里的某一档。 */
+    const lv = normalizeLevel(input.level);
+    if (!LEVEL_IDS.has(lv)) {
       const e = new Error(`没有这个思考档位：${input.level}`);
       e.status = 400;
       throw e;
     }
-    next.level = input.level;
+    /* 老档位（off/on/minimal/medium/xhigh）一律换算成三档之一，不报错 ——
+     * 界面上还有旧缓存、或者外部脚本还在传老值时，不该因此改不动设置。 */
+    next.level = normalizeLevel(input.level);
   }
 
   if (input.modelId !== undefined) {
     const id = String(input.modelId);
     if (input.modelLevel === null || input.modelLevel === '') {
       delete next.perModel[id];
-    } else if (LEVEL_IDS.has(input.modelLevel)) {
-      next.perModel[id] = input.modelLevel;
+    } else if (LEVEL_IDS.has(input.modelLevel) || normalizeLevel(input.modelLevel)) {
+      next.perModel[id] = normalizeLevel(input.modelLevel);
     } else {
       const e = new Error(`没有这个思考档位：${input.modelLevel}`);
       e.status = 400;
@@ -109,7 +130,7 @@ export function setThinking(input = {}) {
 /** 某个模型现在该用哪个档位（模型自己的设置优先，否则用全局） */
 export function levelFor(modelId) {
   const t = getThinking();
-  return t.perModel[modelId] ?? t.level;
+  return normalizeLevel(t.perModel[modelId] ?? t.level);
 }
 
 /**
@@ -124,11 +145,11 @@ export function levelFor(modelId) {
  * @param {{hasTools?:boolean, toolHeavy?:boolean}} ctx
  */
 export function resolveLevel(level, ctx = {}) {
-  if (!level) return 'off'; // 没设过就是关（原样返回 off，由 fieldsForLevel 翻成 disabled）
-  if (level !== 'auto') return level;
-  // auto：有工具要干 → high；纯聊天 → low。永远不挑 off（跟 dsh 插件一个约定）。
-  if (ctx.toolHeavy || ctx.hasTools) return 'high';
-  return 'low';
+  /* 【2026-11-09 简化】只有 关/低/高/最高 四档，不再有 auto 调度。
+   * 老值（on/medium/minimal/xhigh/auto）由 normalizeLevel 统一换算 ——
+   * ctx 留着是为了兼容旧调用点，暂时不用。 */
+  void ctx;
+  return normalizeLevel(level);
 }
 
 /**
@@ -157,10 +178,6 @@ export function fieldsForLevel(level) {
     // 两条路一起发：thinking.type 是官方语义，reasoning_effort:"none" 是兜底。
     // 实测两条都有效，同时发也不冲突（网关都接受）。
     return { fields: { thinking: { type: 'disabled' }, reasoning_effort: 'none' }, mode: 'off' };
-  }
-  if (level === 'on') {
-    // 「开」= 打开思考、强度交给模型默认。显式 enabled 比省略字段更明确。
-    return { fields: { thinking: { type: 'enabled' } }, mode: 'on' };
   }
   return { fields: { reasoning_effort: level }, mode: 'effort' };
 }

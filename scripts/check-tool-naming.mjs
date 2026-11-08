@@ -182,9 +182,10 @@ t.ok('塞进已有柜子后接上 _liveHub',
 const _hdDefs = (ui.match(/function syncHubHead\(/g) || []).length;
 t.ok('柜门头部只有一个出口（syncHubHead 定义一次）', _hdDefs === 1, '找到 ' + _hdDefs + ' 处');
 t.ok('三条路都走那个出口',
-  /* 【2026-11-08 模块化】ui/*.js 成了 ES 模块，主脚本的全局改成 window.xxx ——
-   * 断言的写法跟着放宽，守的语义没变：三条路都必须经过 syncHubHead。 */
-  /syncHubHead\((?:window\.)?_liveHub,/.test(ui)
+  /* 【2026-11-08 模块化】ui/*.js 成了 ES 模块，主脚本的全局改成 window.xxx。
+   * 【2026-11-09 再放宽】直播柜那条不再自带参数（思考块改成出口自己找），
+   * 所以只要求「经过 syncHubHead(_liveHub)」，不再咬死后面必须跟逗号。 */
+  /syncHubHead\((?:window\.)?_liveHub\b/.test(ui)
   && /syncHubHead\(hub\)/.test(ui)
   && /syncHubHead\(_prev\)/.test(ui));
 const _liveWord = (ui.match(/'运行中'/g) || []).length;

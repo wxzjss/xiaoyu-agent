@@ -92,6 +92,37 @@ const HUB_SEL = {
   errInHub: 'details.tool .status.err',
 };
 
+/**
+ * 找出「正在想的那块」。
+ *
+ * 它可能挂在两处：
+ *   ① 柜子里面（已经收进柜子的思考块）
+ *   ② 柜子**外面** —— openThink 把「正在想」追到 #log 末尾，柜内 querySelector 查不到
+ *
+ * 【为什么要放在出口里，而不是让调用方各自去找】
+ * 主人报过：「柜子标题上有思考链内容时，文本一闪一闪，像在和【运行中】争着出现」。
+ * 原因就是三个调用方各说各话 —— 直播柜知道去哪找（传了进来），
+ * 归拢柜 / 塞卡柜不知道（传 null），它们每跑一次就把灰字清空一次。
+ * 同一个元素被两拨人轮流写，屏幕上就是闪。
+ * 现在只有出口这一个地方做判断，谁来问都是同一个答案。
+ */
+function findThinkingFor(hub) {
+  try {
+    const inside = hub.querySelector('details.think.thinking-now');
+    if (inside) return inside;
+    const lg = document.getElementById('log');
+    if (!lg) return null;
+    const kids = [...lg.children];
+    const ix = kids.indexOf(hub);
+    if (ix < 0) return null;   // 不是 #log 直下的柜子：别乱猜，免得认错别人的思考块
+    for (let i = kids.length - 1; i > ix; i -= 1) {
+      const k = kids[i];
+      if (k && k.classList && k.classList.contains('think') && k.classList.contains('thinking-now')) return k;
+    }
+  } catch (e) {}
+  return null;
+}
+
 export function syncHubHead(hub, opts) {
   if (!hub) return;
   const o = opts || {};
@@ -116,7 +147,9 @@ export function syncHubHead(hub, opts) {
     if (!s || !s.classList.contains('warn')) return false;
     return String(s.textContent || '').indexOf('运行') < 0;
   }).length;
-  const thinking = o.thinking || null;
+  /* 【2026-11-08 修·灰字闪烁】思考块**由出口自己找**，不再依赖调用方有没有传。
+   * 传进来的（o.thinking）优先，没传就自己找 —— 三个调用方从此拿到同一个答案。 */
+  const thinking = o.thinking || findThinkingFor(hub);
   const runName = runCard
     ? String((runCard.querySelector(HUB_SEL.cardName) || {}).textContent || '干活').trim()
     : '';
@@ -164,26 +197,15 @@ export function hubRefreshTitle() {
    * 而同样的逻辑在 groupLooseTools 和 foldLiveTools 里又各有一份。
    * 今天柜门那个 bug 我改了四轮才对，就是因为改一处、另两处照旧。
    *
-   * 现在这里只做一件柜内查不到的事：找到「正在想的那块」——
-   * 它挂在柜子**外面**（openThink 追到 #log 末尾），柜内 querySelector 找不到。
-   * 剩下的交给 syncHubHead，柜门长什么样只在那一个地方定义。
+   * 现在只剩一句：把「直播柜」交给唯一出口。
+   *
+   * 【再砍一刀·主人报「灰字一闪一闪」】
+   * 原来这里还自己去找「正在想的那块」（它挂在柜子外面，#log 末尾），
+   * 再作为参数传给出口 —— 可另外两个调用方（归拢柜、塞卡柜）**不传**，
+   * 于是它们每跑一次就把灰字抹一次，屏幕上就是「思考内容 / 空」来回闪。
+   * 现在出口自己找，三个调用方拿到的是同一个答案，闪不起来。
    */
-  const _thinking = (() => {
-    try {
-      const inside = window._liveHub.querySelector("details.think.thinking-now");
-      if (inside) return inside;
-      const lg = document.getElementById("log");
-      if (!lg) return null;
-      const kids = [...lg.children];
-      const ix = kids.indexOf(window._liveHub);
-      for (let i = kids.length - 1; i > ix; i -= 1) {
-        const k = kids[i];
-        if (k && k.classList && k.classList.contains("think") && k.classList.contains("thinking-now")) return k;
-      }
-    } catch (e) {}
-    return null;
-  })();
-  syncHubHead(window._liveHub, { thinking: _thinking });
+  syncHubHead(window._liveHub);
 }
 
 

@@ -1,0 +1,10 @@
+﻿const fs = require("fs");
+const P = "src/agent.mjs";
+let t = fs.readFileSync(P, "utf8");
+const OLD = "(你继续说|继续说|你说|在的)?";
+const NEW = "(你继续说|继续说|你说|在的|我在的)?";
+console.log("找到=" + t.includes(OLD));
+t = t.replace(OLD, NEW);
+fs.writeFileSync(P, t, "utf8");
+const L = t.split(/\r?\n/);
+L.forEach((l, i) => { if (l.includes("FILLER_RE =")) console.log((i + 1) + "|" + l.trim()); });

@@ -39,7 +39,7 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 // 进行中那一轮的草稿：边跑边落，进程被杀也不会把已经说出来的话全丢。
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 中途投递信箱：主人一边看她干活一边插的话排在这里（照 dsh 的 steering，见 inbox.mjs）
-import { steer, clearInbox, inboxCount } from './inbox.mjs';
+import { steer, clearInbox, inboxCount, peekInbox } from './inbox.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted, listInterrupted } from './resume.mjs';
 /**
@@ -10535,7 +10535,46 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (turn?.ac) turn.ac.abort('stop');
     // 停手就连压着的插话一起清：主人点停止的意思是「这一轮到此为止」，
     // 停完还让排着的插话自动跑起来，会变成「明明点了停还在动」。
-    try { clearInbox(sessionId); } catch { /* 清不掉不影响停止 */ }
+    /**
+     * 【2026-11-09 主人报·「调用工具中途停止后，插话的消息不在插话时的位置」】
+     *
+     * 原来的做法是**直接丢掉**压着的那几句。于是：
+     *   · 主人插话时界面上画出来的那个气泡，其实只在屏幕上，历史里没有；
+     *   · 刷新一次它就没了，或者下一次发消息时被当成新的一句，跑到最末尾去。
+     * 换句话说，「点了停止」顺带把主人刚打的那句话也删了 —— 这不是他要的。
+     *
+     * 现在改成：**不跑，但落盘**。把压着的插话按顺序写进历史（就是停下来的那个位置），
+     * 不自动起轮（守住「点了停就别自己动」），主人再发一句就接着用。
+     */
+    try {
+      const _left = peekInbox(sessionId);
+      const _queued = [...(_left.steps || []), ...(_left.turns || [])];
+      clearInbox(sessionId);
+      if (_queued.length) {
+        const _s = getSession(sessionId);
+        if (_s) {
+          _s.messages = Array.isArray(_s.messages) ? _s.messages : [];
+          let _added = 0;
+          for (const it of _queued) {
+            const _t = String((it && it.text) || '').trim();
+            if (!_t) continue;
+            /* 已经在这一轮里被取走、落过盘的，别再来一条 */
+            let _dup = false;
+            for (let k = _s.messages.length - 1; k >= 0 && k >= _s.messages.length - 6; k -= 1) {
+              const _m = _s.messages[k];
+              if (_m && _m.role === 'user' && String(_m.content || '').trim() === _t) { _dup = true; break; }
+            }
+            if (_dup) continue;
+            _s.messages.push({ role: 'user', content: _t, at: Date.now(), _keptOnStop: true });
+            _added += 1;
+          }
+          if (_added) {
+            try { saveSession(_s); } catch (e) {}
+            try { console.log('[stop] 把压着的 ' + _added + ' 句插话落进历史（不自动跑）'); } catch (e) {}
+          }
+        }
+      }
+    } catch { /* 清不掉不影响停止 */ }
     /**
      * 【修·说停就停 · 2026-10-31】
      *
@@ -11085,6 +11124,8 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
        *  （_sysNote 照旧），只是我自己读得到。不自动起新一轮、不冒充主人说话，
        *  主人 2026-11-02 定的那两条规矩一条没动，只是让这句话自己把话说完。 */
       let _resumeMsg = '重启了';
+      /* 有没有真断点（要接着干的事）。没有的话，这句话只会换来一句「嗯，我在」。 */
+      let _hasBreakpoint = false;
       try {
         const _ri = peekInterrupted ? peekInterrupted() : null;
         if (_ri && String(_ri.sessionId || '') === String(_sid || '')) {
@@ -11100,8 +11141,9 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
             }
           }
           if (_lines.length) {
+            _hasBreakpoint = true;
             _resumeMsg = '重启了。断点在这儿：\n' + _lines.join('\n') +
-              '\n\n（直接从没打勾那步接着干，不用等我再问。）';
+              '\n\n（直接从没打勾那步接着干，不用等我再问。别回「我在」这种话。）';
           }
           /* 读完就把它销掉：断点已经抄进这条消息里了（会话里存得住），
            * 留着只会让下一次重启又读到同一个旧断点，把老账重念一遍。 */
@@ -11138,10 +11180,26 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       if (_ownerWaiting) {
         try { console.log('[restart] 主人有话没答，直接跑那一轮，不投「重启了」：' + _sid); } catch (e) {}
         try { startQueuedTurn(_sid, null).catch((e) => console.warn('[restart] 接着答失败：', String(e?.message ?? e))); } catch (e) {}
+      } else if (!_hasBreakpoint) {
+        /**
+         * 【2026-11-09 加·「她们没被叫也说了句『嗯，我在』」】
+         *
+         * 主人 00:02 报：检查鱼、杂活鱼也各说了一句「嗯，我在。」，
+         * 「可是我分明什么都没干啊，她们原本应该在做任务来着」。
+         *
+         * 查清了：不是她们自己开口，是**重启叫醒**。今晚重启了好几次，
+         * 每次对「没有断点」的会话只投三个字「重启了」，再起一轮 ——
+         * 她看到一句「重启了」，没有活可干，只能应一声「嗯，我在。」。
+         *
+         * 没有断点 = 没有要接着做的事。这句话除了换来一句废话，没有任何信息量，
+         * 还会在会话里留下一条垃圾。所以**干脆不叫醒**，安静等着。
+         * 有断点才叫（那种才真的需要"接着干"），主人有话没答才叫（那种要正面回答）。
+         */
+        try { console.log('[restart] 没有断点，不叫醒（免得换来一句「我在」）：' + _sid); } catch (e) {}
       } else {
-      _s.messages.push({ role: 'user', content: _resumeMsg, _sysNote: true });
-      saveSession(_s);
-      try { startQueuedTurn(_sid, null).catch((e) => console.warn('[restart] 叫醒失败：', String(e?.message ?? e))); } catch {}
+        _s.messages.push({ role: 'user', content: _resumeMsg, _sysNote: true });
+        saveSession(_s);
+        try { startQueuedTurn(_sid, null).catch((e) => console.warn('[restart] 叫醒失败：', String(e?.message ?? e))); } catch {}
       }
     } catch (e) {
       console.warn('[restart] 自动说一句失败（不影响使用）：', String(e?.message ?? e));

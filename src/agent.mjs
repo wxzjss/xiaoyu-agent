@@ -806,6 +806,52 @@ const MID_TIERS = [
     bubble: (t, p) => '\n\n（' + p + '%！主人，到极限了，我先保住能接上的东西）',
   },
 ];
+/**
+ * 【2026-11-08 加·「嗯，我在」敷衍闸】
+ *
+ * 主人反复报：「办事鱼为什么还是在说【嗯，我在，你继续说。】」
+ *
+ * 查清楚了，不是管道坏了 —— 我往那个会话发「只回一个数字：3+7 等于几？」，
+ * 她老老实实回了「10」（prompt 98573 token，5 秒）。**消息是能读到的。**
+ * 坏在她对开放式问题偷懒：整轮就蹦一句「嗯，我在，你继续说。」，一个字都不答。
+ * 而这种句子一旦进历史，下几轮她更容易照着抄 —— 那个会话里已经攒了 5 条。
+ *
+ * 所以加一道闸：一整轮只说了这么一句占位话、而主人明明是在问事（或者说了
+ * 一句十来字以上的话），就**不收尾**，塞一条框架提示让她重答一次。
+ *
+ * 一道闸只管一次：重答之后还是敷衍，就随她去 —— 不能无限重试把 token 烧光。
+ */
+const FILLER_RE = /^(嗯+[，,]?)?(我)?在(在)?[，,。.！!~～]?\s*(你继续说|继续说|你说|在的|我在的)?[。.！!~～]?$/;
+/**
+ * 【2026-11-08 加】宽松版的占位判定：剥掉标点和语气词之后，
+ * 只剩「恩/嗯/我/在/的/你/继/续/说/好/啊/呀」这几个字 —— 那就是一句占位废话，
+ * 不管它怎么组合（「嗯，我在的」「我在的呀」「嗯嗯我在」都算）。
+ */
+const FILLER_LOOSE = (s) => {
+  const t = String(s || '').replace(/[\s，,。.！!~～、？?…·]/g, '');
+  if (!t) return true;
+  if (t.length > 12) return false;
+  return /^[嗯恩我在的呀啊哦好你继续说行]+$/.test(t) && /在/.test(t);
+};
+/** 剥掉「（尾巴一摆）」这种括号旁白再看 */
+const stripAside = (s) => String(s || '').replace(/^[（(][^）)]{0,40}[）)]\s*/, '').replace(/\s+/g, '');
+const isFillerReply = (s) => {
+  const t = stripAside(s);
+  if (!t || t.length > 18) return false;
+  return FILLER_RE.test(t) || t.indexOf('你继续说') >= 0 || FILLER_LOOSE(t);
+};
+/** 「你在吗 / 人呢」这种纯点名，回「我在」是对的，别拦 */
+const isCheckIn = (s) => /^(在吗|你在吗|在不在|人呢|喂)/.test(String(s || '').trim());
+const needsRealReply = (s) => {
+  const t = String(s || '').trim();
+  if (!t || isCheckIn(t)) return false;
+  if (/[？?]/.test(t)) return true;
+  if (/(吗|什么|怎么|为什么|哪|几|是不是|有没有|能不能|干嘛|做什么)/.test(t)) return true;
+  /* 不是问句，但说了十来字 —— 那是在跟你讲话，不该拿「你继续说」打发 */
+  return t.length >= 12;
+};
+let _fillerRetried = false;
+
 for (let round = 0; round < config.maxRounds; round++) {
     /**
      * 【2026-11-08 修·「点了停止，她还要再说一句」】
@@ -1568,7 +1614,12 @@ for (let round = 0; round < config.maxRounds; round++) {
         let late = [];
         try { late = drainSteps(sessionId).concat(drainTurns(sessionId)); } catch { late = []; }
         if (late.length) {
-          if (String(text || '').trim()) messages.push({ role: 'assistant', content: text });
+          /* 【2026-11-08 修「嗯，我在」自我强化】
+           * 原来这里无条件把她这句话落进历史 —— 后来发现模型只说一句「嗯，我在」时，
+           * 这句也照样落进去了。攒到二十来条之后，模型看着前面清一色「嗯，我在」，
+           * 就跟着学，越回越短、越回越敷衍，拦都拦不住。
+           * 所以：敷衍话一律不落历史，交给下面那道闸去重答。 */
+          if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: text });
           for (const it of late) messages.push({ role: 'user', content: it.text, _steer: true, ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}) });
           try { onEvent({ type: 'steer', count: late.length }); } catch { /* 同上 */ }
           continue;
@@ -1582,7 +1633,7 @@ for (let round = 0; round < config.maxRounds; round++) {
           mails = [];
         }
         if (mails.length) {
-          messages.push({ role: 'assistant', content: text });
+          if (String(text || "").trim() && !isFillerReply(text)) messages.push({ role: "assistant", content: text });
           messages.push({ role: 'user', content: formatMail(mails) });
           onEvent({
             type: 'peer_mail',
@@ -1592,7 +1643,36 @@ for (let round = 0; round < config.maxRounds; round++) {
           continue;
         }
       }
-      messages.push({ role: 'assistant', content: text });
+      /**
+       * 【敷衍闸】整轮只蹦一句「嗯，我在」——而主人是在问事/在说话，就别收尾，让她重答一次。
+       * 判据见循环前那段（isFillerReply / needsRealReply）。只重答一次。
+       */
+      if (!_fillerRetried && isFillerReply(text)) {
+        let _lastUser = '';
+        for (let _i = messages.length - 1; _i >= 0; _i -= 1) {
+          const _m = messages[_i];
+          if (!_m || _m.role !== 'user' || _m.context) continue;
+          _lastUser = String(_m.content || '');
+          break;
+        }
+        if (needsRealReply(_lastUser)) {
+          _fillerRetried = true;
+          try {
+            console.warn('[filler] 只回了「' + stripAside(text).slice(0, 12) + '」，主人说的是「' + _lastUser.replace(/\s+/g, ' ').slice(0, 30) + '」→ 重问一次');
+          } catch (e) {}
+          messages.push({
+            role: 'user',
+            context: true,
+            _sysNote: true,
+            content: '（刚才那句「我在」是敷衍，不算回答，别写进记录。\n'
+              + '主人刚刚说的是：' + _lastUser.replace(/\s+/g, ' ').slice(0, 300) + '\n'
+              + '现在正面接这句话：问什么答什么，要干活就去干。'
+              + '不许再用「我在」「你继续说」这类占位话。）',
+          });
+          continue;
+        }
+      }
+      if (!isFillerReply(text)) messages.push({ role: 'assistant', content: text });
       /**
        * 【2026-11-04 修「压缩死循环」的最后一环 · 写进去】
        *

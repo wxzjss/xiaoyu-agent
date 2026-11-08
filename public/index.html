@@ -695,12 +695,11 @@
     /* 【2026-11-07 主人】思考标题不再截成一行：能多长就显示多长。
        原来 nowrap + ellipsis 会把几百字的思考压成「……」，正文展开也补不回这一眼。 */
     details.think .thinkTitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    /* 【2026-11-07 主人】标题要「长到碰到右侧框框边界」。
-       原来这里挂着「52 字 · 点击展开」，占掉右边 45px，标题永远顶不到边。
-       现在：收起时字数不占位（标题一路铺到边框），展开后才把它显示出来
-       —— 展开时你已经在看正文了，字数才有参考价值。 */
-    details.think .thinkMeta { display: none; flex: none; color: var(--dim); opacity: .65; font-size: 11.5px; }
-    details.think[open] .thinkMeta { display: block; }
+    /* 【2026-11-08 主人改口】字数要**收起时也看得见**。
+       11-07 那版是「收起不占位、展开才显示」，为的是让标题一路顶到右边框。
+       主人现在要的是「不用展开就知道想了多少字」—— 那点宽度让给字数更值。
+       标题仍是 flex:1 + ellipsis，会自动缩一点，撞不到边。 */
+    details.think .thinkMeta { flex: none; margin-left: 8px; color: var(--dim); opacity: .65; font-size: 11.5px; }
     details.think .thinkBody {
       padding: 8px 10px 10px; border-top: 1px solid var(--border);
       color: var(--dim); font-style: italic; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; min-width: 0;

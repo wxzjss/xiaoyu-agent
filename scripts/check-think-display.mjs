@@ -130,4 +130,14 @@ if (cdp) {
   console.log('  [skip] 没连上调试浏览器，真机那几格跳过（不算失败）');
 }
 
+/* 【2026-11-08 加·字数要收起时也看得见】
+ * 主人：「柜子里的思考链需要展开后才在右侧显示有多少字，改成展开前就显示」。
+ * 原 CSS 是 `display:none` + `[open] display:block`，直播那边其实一直在写
+ * `meta.textContent = N 字`，只是被藏了。这里守两件事：不再藏、也不再只认展开态。 */
+t.ok('思考字数收起时也显示（不再靠 [open] 才出现）',
+  !/details\.think \.thinkMeta \{ display: none/.test(ui)
+  && !/details\.think\[open\] \.thinkMeta/.test(ui)
+  && /details\.think \.thinkMeta \{[^}]*flex: none/.test(ui));
+t.ok('直播过程中就在更新字数', /meta\.textContent = body\.textContent\.length \+ ' 字'/.test(ui));
+
 t.done();

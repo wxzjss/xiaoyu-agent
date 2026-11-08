@@ -63,3 +63,8 @@ backup-*/
 
 # 2026-11-05：playground 里是调试用的浏览器 profile，一堆二进制垃圾，不该进仓库
 playground/
+
+# 办事鱼/临时脚本随手建的编号文件（_q1.cjs / _r3.cjs 这类），不该进仓库
+/_q[0-9]*.cjs
+/_r[0-9]*.cjs
+/_p[0-9]*.cjs

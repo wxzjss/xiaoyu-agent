@@ -69,6 +69,120 @@ function logSettle() {
   return fixed;
 }
 
+/* ══════════════════════════════════════════════════════════════
+ * 【2026-11-08 主人要求·唯一 state + render(state)】
+ *
+ * 主人问：「turns + live 合并 / 唯一的 state / render(state) + keyed diff /
+ * 只按 state 画一次，只改变化的节点 —— 不存在『两份』可以打架。做完了吗？」
+ *
+ * 诚实回答：之前只做了「兜底不变式」（logSettle），没做真正的统一。
+ * 那时的样子是：**五六个地方各自决定「该不该画、画哪一半」**——
+ * 切会话那边判一次 dropTail、attachLive 判一次、followLive 又判一次，
+ * 每处判断还带着自己的指纹和 force 规则。判断分散，就必然有一次判错。
+ *
+ * 现在收成一个：**这一屏长什么样，只由 LOG_STATE 说了算，只有 renderLog 能画。**
+ *
+ *   LOG_STATE = { sid, turns, live }
+ *     sid    这一屏属于哪个会话（换了就整套重置）
+ *     turns  落盘历史（服务端权威）
+ *     live   正在跑的那一轮快照；没在跑就是 null
+ *
+ *   renderLog(opts)
+ *     ① 历史：指纹没变就不重画（换会话 / 用户操作 force 才强制）
+ *     ② 直播：指装没变就不重画（keyed diff：同一个 key 复用旧节点）
+ *     ③ 没在跑：收掉所有直播节点，屏幕上只剩历史那一条路
+ *
+ * 「两份」在结构上没地方发生：**同一时刻，某一轮要么归历史、要么归直播**，
+ * 由 running 这一个布尔量决定，不再由五处各判一次。
+ * ══════════════════════════════════════════════════════════════ */
+const LOG_STATE = {
+  sid: '',
+  turns: null,
+  live: null,
+  historyFp: '',
+  liveFp: '',
+  painted: false,
+  bubble: null,
+};
+
+/** 这一屏换主人了 */
+function logSetHistory(sid, turns) {
+  const _sid = String(sid || '');
+  if (LOG_STATE.sid !== _sid) {
+    LOG_STATE.sid = _sid;
+    LOG_STATE.live = null;
+    LOG_STATE.liveFp = '';
+    LOG_STATE.historyFp = '';
+    LOG_STATE.painted = false;
+    LOG_STATE.bubble = null;
+  }
+  LOG_STATE.turns = Array.isArray(turns) ? turns : [];
+}
+
+/** 这一轮现在长什么样（传 null = 它跑完了） */
+function logSetLive(sid, live) {
+  if (String(sid || '') !== LOG_STATE.sid) return false;   // 不是这一屏的，别污染
+  LOG_STATE.live = live || null;
+  if (!live) {
+    LOG_STATE.liveFp = '';
+    LOG_STATE.bubble = null;
+  }
+  return true;
+}
+
+/** 历史指纹：只关心「画出来会不一样」的那几个量 */
+function logHistoryFp(turns) {
+  const n = turns.length;
+  const last = turns[n - 1] || {};
+  return n + '|' + String(last.ts || '') + '|' + String(last.text || '').length
+    + '|' + String(last.reasoning || '').length;
+}
+
+/**
+ * **唯一的画入口。** 除了用户操作（删除/回退/编辑那种「照盘上重画」）会带 force，
+ * 其余所有路径都只改 LOG_STATE，然后叫这里一声。
+ */
+function renderLog(opts) {
+  const o = opts || {};
+  const sid = LOG_STATE.sid;
+  if (!sid) return false;
+  try { if (typeof sessionId !== 'undefined' && sessionId !== sid) return false; } catch (e) {}
+
+  const live = LOG_STATE.live;
+  const running = !!(live && live.running !== false && Array.isArray(live.items) && live.items.length);
+  const turns = LOG_STATE.turns || [];
+
+  /* ① 历史：在跑的时候最后一条归直播，这里只画它前面的部分（dropTail） */
+  const histTurns = running && turns.length ? turns.slice(0, turns.length - 1) : turns;
+  const hp = logHistoryFp(histTurns);
+  if (o.force || !LOG_STATE.painted || hp !== LOG_STATE.historyFp) {
+    renderTurns(turns, Object.assign({}, o, { dropTail: running }));
+    LOG_STATE.historyFp = hp;
+    LOG_STATE.painted = true;
+  }
+
+  /* ② 直播：指纹没变就不动 DOM（keyed diff 在 paintSnapshot 里按 key 复用节点） */
+  if (running) {
+    const lf = snapshotFingerprint(live.items);
+    if (o.forceLive || !LOG_STATE.liveFp || lf !== LOG_STATE.liveFp) {
+      try {
+        LOG_STATE.bubble = paintSnapshot(sid, live);
+        LOG_STATE.liveFp = lf;
+        try { lastSnapFp.set(sid, lf); } catch (e) {}
+      } catch (e) {
+        try { window.__lastPaintErr = e && e.message ? e.message : String(e); } catch (e2) {}
+        console.warn('[renderLog] 直播重画失败:', e && e.message ? e.message : e);
+      }
+    }
+  } else {
+    /* ③ 没在跑：这一轮的 DOM 必须归历史，直播节点一个都不许留 */
+    LOG_STATE.liveFp = '';
+    LOG_STATE.bubble = null;
+    try { logSettle(); } catch (e) {}
+  }
+  return true;
+}
+
 /* ── 从 index.html 搬来 ─────────────────────────────── */
 function paintSnapshot(sid, srcLive) {
   /* 先试快路：纯文本在变长时，一个 DOM 节点都不动 */
@@ -770,8 +884,10 @@ async function attachLive(id) {
   let bubble = null;
   try {
     if (Array.isArray(live.items)) {
-      lastSnapFp.set(id, snapshotFingerprint(live.items));
-      bubble = paintSnapshot(id, live);
+      /* 【2026-11-08 收口】只改 state，画由 renderLog 一个人做 */
+      logSetLive(id, live);
+      renderLog();
+      bubble = LOG_STATE.bubble;
     } else {
       bubble = paintLiveEvents(evs, null, _drawnToolIds);
     }
@@ -940,24 +1056,11 @@ function followLive(id, fromIndex) {
     let _snap = null;
     try { _snap = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json()); } catch (e) { _snap = null; }
     if (sessionId !== id) { stopFollow(id); return; }
-    if (_snap && Array.isArray(_snap.items) && _snap.items.length) {
-      const _fp = snapshotFingerprint(_snap.items);
-      if (_fp !== lastSnapFp.get(id)) {
-        /* 【2026-11-03 修·指纹先记、画失败就再也不画】
-         * 原来是先 set 指纹、再 paint。paint 一抛异常（重画这一步本来就不该影响主流程），
-         * 指纹已经前进，下一拍同样的内容就被判「没变」—— 屏幕永远停在失败那一帧。
-         * 实测就是子任务卡写着「16 步」不动，服务端早就 21 步了。
-         * 现在：画成功才记指纹；画失败把原因留在 window.__lastPaintErr，能查。 */
-        try {
-          paintSnapshot(id, _snap);
-          lastSnapFp.set(id, _fp);
-          try { window.__lastPaintErr = null; } catch (e) {}
-        } catch (e) {
-          const _why = e && e.message ? e.message : String(e);
-          try { window.__lastPaintErr = _why; } catch (e2) {}
-          console.warn('[followLive] 快照重画失败:', _why);
-        }
-      }
+    /* 【2026-11-08 收口】不再自己比指纹、自己判要不要画 ——
+     * 只把「这一轮现在长什么样」交给 state，画由 renderLog 一个人做。 */
+    if (_snap && Array.isArray(_snap.items)) {
+      logSetLive(id, _snap);
+      renderLog();
     }
 
     // 收尾：每轮都看，跟这一轮有没有吐新字无关
@@ -1010,7 +1113,9 @@ function followLive(id, fromIndex) {
             await new Promise((r) => setTimeout(r, 700));
           }
           if (sessionId !== id) return;
-          if (_turns) renderTurns(_turns, { force: true });
+          /* 【2026-11-08 收口】跑完了 → 这一轮归历史：先换 state，再画。
+           * 原来直接 renderTurns 不改 state，下次谁叫一声 renderLog 就会拿旧历史覆盖回来。 */
+          if (_turns) { logSetHistory(id, _turns); logSetLive(id, null); renderLog({ force: true }); }
           /* 【2026-11-03 修·跑完子任务卡就没了（主人原话：「只显示一句派活 运行中…然后没了」）】
            * renderTurns 刚把屏幕照历史重画了一遍 —— 可历史里没有「谁干了什么」，
            * 那份记录只活在事件流（items）里。于是子智能体干完活，证据当场被抹掉。
@@ -1105,7 +1210,7 @@ function replayInFlight(id) {
     if (rec0) rec0.userDrawn = true;
   } catch (e) {}
 
-  /* 快照那条路：异步拉、拉回来整组重画 */
+  /* 快照那条路：异步拉、拉回来交给 state + renderLog */
   let _usedSnap = false;
   try {
     fetch('/api/chat/live?sessionId=' + encodeURIComponent(id))
@@ -1113,8 +1218,8 @@ function replayInFlight(id) {
       .then((live) => {
         if (!live || !Array.isArray(live.items)) return;
         if (sessionId !== id) return;      // 拉的过程中主人已经切走了：一个字节都不画
-        lastSnapFp.set(id, snapshotFingerprint(live.items));
-        paintSnapshot(id, live);
+        logSetLive(id, live);
+        renderLog();
       })
       .catch(() => {});
     _usedSnap = true;
@@ -1187,6 +1292,19 @@ function replayInFlight(id) {
 }
 
 function renderTurns(turns, opts) {
+  /* 【2026-11-08 收口】不管是 renderLog 叫的，还是外面那些「用户操作后照盘重画」
+   * 直接叫的（删除 / 回退 / 编辑 / 分支 / 刷新费用），画完之后**这一屏的 state
+   * 必须跟着更新**。否则下一次 renderLog 会拿旧历史把屏幕覆盖回去 ——
+   * 那正是「删完过了一会儿又回来了」这类怪事的来源。 */
+  try {
+    LOG_STATE.sid = (typeof sessionId !== 'undefined' ? sessionId : LOG_STATE.sid);
+    LOG_STATE.turns = Array.isArray(turns) ? turns : [];
+    LOG_STATE.painted = true;
+    const _ht = (opts && opts.dropTail && LOG_STATE.turns.length)
+      ? LOG_STATE.turns.slice(0, LOG_STATE.turns.length - 1)
+      : LOG_STATE.turns;
+    LOG_STATE.historyFp = logHistoryFp(_ht);
+  } catch (e) {}
   /**
    * 【2026-11-01 主人报：生成中说的话被拆成好几个碎气泡，刷新之后才对】
    *
@@ -2512,25 +2630,13 @@ async function switchSession(id, opts) {
     try { const r = turnsInFlight.get(sessionId); return !!(r && (r.startedAt || r.adopted)); }
     catch { return false; }
   })();
-  /* 【2026-11-08】这个会话真在跑 → 历史别画最后那条 assistant，
-   * 那段交给 attachLive 的直播去长，否则同一段话被画两遍（切走再切回特别明显）。 */
-  const _runningNow = (() => {
-    try { return Boolean(runningSess && runningSess.has(sessionId)); } catch { return false; }
-  })();
-  renderTurns(
-    r.session.turns,
-    /**
-     * 【2026-11-08 修·「切回来看到的是别人/混在一起」】
-     *
-     * 实测：A 会话 8 条消息 → 切到 B（11 条）→ 切回 A，屏幕上还是 11 条。
-     * 因为这里只在「屏幕空」时才传 force，屏幕不空就交给 renderTurns 自己判断，
-     * 而它有一条「这个会话正在生成中就什么都别动」的早退 —— 于是 B 的内容一直留着。
-     *
-     * 切会话这件事本身就意味着**屏幕归属换了**，必须照新的会话整屏重画。
-     * 所以 force 永远给上；dropTail 仍然只在「这个会话真在跑」时生效。
-     */
-    { force: true, dropTail: _runningNow },
-  );
+  /* 【2026-11-08 收口·切会话只做两件事：改 state、叫一次 renderLog】
+   *
+   * 这段原来自己算 dropTail、自己传 force —— 和 attachLive、followLive 各判一套。
+   * 判错一次就是「切回来还画着上一个会话」（实测 45 条 → 切走 → 切回还是别人的）。
+   * 现在屏幕归谁、这一轮归谁，全由 LOG_STATE + renderLog 一个地方决定。 */
+  logSetHistory(sessionId, r.session.turns);
+  renderLog({ force: true });
   /* 【2026-11-08】切会话：把**这个会话**的待发送队列读出来（按会话分 key 存的） */
   try { loadPendingQueue(); } catch (e) {}
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次

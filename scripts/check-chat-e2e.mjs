@@ -191,6 +191,23 @@ try {
     '只收「空壳」或「历史里已有同一段」的');
 } catch (e) { ok('logSettle 不变式存在', false); }
 
+/* 【2026-11-08 加·主人要的那套架构：唯一 state + render(state)】
+ * 以前「该不该画、画哪一半」散在五六个地方各判一次（切会话判 dropTail、
+ * attachLive 判一次、followLive 又判一次），判错一次就是「切回来还是别人的」。
+ * 现在只有 LOG_STATE 一个状态、renderLog 一个画入口。下面四条钉住它别退回去。 */
+try {
+  const _c = readFileSync('public/ui/chat.js', 'utf8');
+  ok('唯一 state：LOG_STATE 四个字段齐', /const LOG_STATE = \{[\s\S]{0,220}sid:[\s\S]{0,120}turns:[\s\S]{0,120}live:/.test(_c));
+  ok('唯一画入口：renderLog 存在且收编直播', /function renderLog\(opts\)[\s\S]{0,1600}paintSnapshot\(sid, live\)/.test(_c));
+  /* 直播只有 renderLog 一个地方能画 —— 多一处就是又开了第二条路 */
+  const _paintCalls = (_c.match(/[^n]paintSnapshot\(/g) || []).length;
+  ok('paintSnapshot 只被 renderLog 调用', _paintCalls === 1, '调用点 ' + _paintCalls + ' 处');
+  ok('切会话不再自己判 dropTail/force',
+    /logSetHistory\(sessionId, r\.session\.turns\);\s*\n\s*renderLog\(\{ force: true \}\)/.test(_c));
+  ok('跑完归历史：先换 state 再画',
+    /logSetHistory\(id, _turns\); logSetLive\(id, null\); renderLog\(\{ force: true \}\)/.test(_c));
+} catch (e) { ok('唯一 state + 唯一画入口', false); }
+
 console.log('断言：' + pass + '/' + (pass + fail));
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }
 console.log('PASS 发消息链路端到端通过');

@@ -1,26 +1,42 @@
-refactor(ui): 加一条不变式 logSettle —— 「一条轮次只能有一个主人」
+refactor(ui): 唯一 state + render(state) —— 「两份」在结构上没有位置了
 
-主人问：「为什么切个会话都有这么多消息显示的问题？根本原因是什么？我想要根治」。
+主人追问：「turns + live 合并 / 唯一的 state / render(state) + keyed diff /
+只按 state 画一次，只改变化的节点 —— 做完了吗？没做完就继续做。」
 
-根子是**同一轮有两套画法**：历史一套（renderTurns）、直播一套（paintSnapshot），
-两条路互相不知道对方画了什么。今天在三条具体路径上都堵过
-（dropTail / 跑完不照快照重画 / 切会话强制重画），但那种修法只能堵住
-「想得到的那三条」，下一条还会冒出来。
+诚实交代：之前只做了兜底不变式（logSettle），没做真正的统一。
+那时的样子是**五六个地方各自决定「该不该画、画哪一半」**：
+切会话判一次 dropTail、attachLive 判一次、followLive 又判一次，
+每处还各带自己的指纹和 force 规则 —— 判断分散，就必然有一次判错。
 
-这次补的是**不变式**，把这一类堵死。logSettle() 在两条画法之后都跑一遍：
+现在收成一个：
 
-  ① 这个会话没有在跑的轮次时，屏幕上不许留直播气泡
-     · 空壳 → 收掉
-     · 历史里已经有同样一段 → 收掉（重复）
-     · **历史还没跟上、内容独有 → 留着**（宁可多一条也不丢字）
-  ② 同一个 data-key 只许出现一次，多出来的收掉
+  LOG_STATE = { sid, turns, live, historyFp, liveFp, painted, bubble }
+    sid    这一屏属于哪个会话（换了整套重置，上一屏的直播绝不跟过去）
+    turns  落盘历史（服务端权威）
+    live   正在跑的那一轮快照；没在跑就是 null
 
-幂等，画一百次结果一样，所以每次画完都能放心跑。
+  renderLog(opts) —— 唯一的画入口
+    ① 历史：指纹（条数/ts/正文长度/思考长度）没变就不重画
+    ② 直播：指纹没变就不动 DOM；变了才按 key 复用节点更新
+    ③ 没在跑：收掉所有直播节点，这一轮归历史
 
-真机实测四条：
-  A 历史 + 直播同一段 → 直播气泡 1 → 0，历史那条还在
-  B 直播独有内容      → 保留（不丢字）
-  C 空壳直播气泡      → 删
-  D 同 key 两个       → 剩 1，留的是第一个
+同一时刻某一轮**要么归历史、要么归直播**，由 running 一个布尔量决定，
+不再由五处各判一次 —— 「两份」在结构上没有位置。
 
-验证：发消息链路 28/28（新增 2 条钉住不变式）、柜门 49/49、思考显示 37/37、预检通过。
+改动的四处调用点（原来各判一套）：
+  · switchSession  → logSetHistory(sid, turns) + renderLog({force:true})
+  · attachLive     → logSetLive(id, live) + renderLog()
+  · followLive     → logSetLive(id, snap) + renderLog()（删掉自己那套指纹）
+  · 跑完归历史     → logSetHistory + logSetLive(null) + renderLog({force:true})
+  · replayInFlight → logSetLive + renderLog()
+另外 renderTurns 开头补一句「画完同步 state」——外面那些用户操作
+（删除/回退/编辑/分支/刷新费用）直接调它的路径，也不会再把 state 留旧。
+
+真机实测：
+  切会话 A13 条 → B10 条 → A 回去 13 条，第一条一致
+  造一个在跑的轮次：直播节点 1、气泡 1；字长了一截仍是 1（更新不新增）；
+  跑完直播节点 0；换会话时 LOG_STATE.live 立刻清空（不跟过去）
+  真实发一条：过程中最多 1 个气泡，跑完 1 条、直播节点 0
+
+断言（check-chat-e2e 33/33）：LOG_STATE 字段齐、paintSnapshot 全局只有
+renderLog 一个调用点、切会话不再自己判 dropTail、跑完先换 state 再画。

@@ -75,3 +75,6 @@ playground/
 
 # check-sendfile 自己生成、自己删的测试文件（删不掉就留在这儿）
 /_sf_*.txt
+
+# 临时编号脚本（_a1.cjs / _b2.cjs 这类），不该进仓库
+/_[a-z][0-9]*.cjs

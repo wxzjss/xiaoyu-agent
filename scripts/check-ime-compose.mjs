@@ -41,13 +41,13 @@ if (cdp) {
       const inp = document.getElementById('input');
       window.__xyImeComposing = false;
       window.__xyImeEndAt = 0;
-      imeSwitching = false;
+      window.imeSwitching = false;
       out.idle = imeBusy();
       inp.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
       out.composing = imeBusy();
       /* 正在打拼音时点输入框：imeMatchOnce 应该第一行就退，连锁都不上 */
       imeMatchOnce();
-      out.lockedWhileComposing = imeSwitching;
+      out.lockedWhileComposing = window.imeSwitching;
       inp.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
       out.justEnded = imeBusy();
       window.__xyImeEndAt = Date.now() - 400;
@@ -90,10 +90,11 @@ if (cdp2) {
     const r2 = await cdp2.eval(`
       const out = {};
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-      const inp = document.getElementById('input') || document.querySelector('textarea');
+      const inp = document.getElementById('input') || document.querySelector('textarea') || document.getElementById('msg') || document.querySelector('[contenteditable="true"]');
       let calls = 0;
+      if (!inp) { out.err = 'NO_INPUT_EL'; out.box = document.querySelectorAll('textarea,input,[contenteditable]').length; return out; }
       try {
-        imeGateOn = true; imeGateAt = Date.now();
+        window.imeGateOn = true; window.imeGateAt = Date.now();
         window.desktop = window.desktop || {};
         window.desktop.imeMatchSystem = async () => { calls += 1; };
         const click = () => inp.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
@@ -101,7 +102,7 @@ if (cdp2) {
 
         /* ① 程序自己 focus（页面加载那条路）→ 一次都不许切
            【2026-11-07 主人】「重启后直接点键盘就出白框」就是被这条坑的 */
-        calls = 0; _imeUserTouchedAt = 0;
+        calls = 0; window._imeUserTouchedAt = 0;
         inp.blur(); inp.focus();
         await sleep(1000);
         out.programFocus = calls;
@@ -114,7 +115,7 @@ if (cdp2) {
         out.typing = calls;
 
         /* ③ 用户点一下、一直不打字 → 该切（延迟不是把功能关掉） */
-        calls = 0; window.__xyImeTypeAt = 0; imeCancelSoon();
+        calls = 0; window.__xyImeTypeAt = 0; window.imeCancelSoon();
         click();
         await sleep(1000);
         out.idle = calls;

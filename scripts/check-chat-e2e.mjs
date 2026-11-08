@@ -161,6 +161,17 @@ ok(
   _uiSrc.indexOf('Array.isArray(live.items)) paintSnapshot(id, live)') < 0,
 );
 
+
+/* 【2026-11-08 加】429 回退的冷却必须按会话。
+ * 原来是一个裸 let 数值：任何会话迁移完都写它，别的会话明明好好的也跟着
+ * 「冷却中」不能回退 —— 一个会话的限流把全屋冻住。 */
+try {
+  const _r4 = readFileSync('src/retry429.mjs', 'utf8');
+  ok('429 冷却按会话隔离',
+    _r4.indexOf('cooldowns.set(String(sessionId)') >= 0
+    && _r4.indexOf('let cooldownUntil') < 0);
+} catch (e) { ok('429 冷却按会话隔离', false); }
+
 console.log('断言：' + pass + '/' + (pass + fail));
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }
 console.log('PASS 发消息链路端到端通过');

@@ -71,8 +71,15 @@ export function setRetry429(input = {}) {
 
 /** 一个会话的连续失败计数 */
 const streaks = new Map();
-/** 全局冷却截止时间 */
-let cooldownUntil = 0;
+/**
+ * 冷却截止时间 —— **按会话**，不是一个全局值。
+ *
+ * 【2026-11-08 修】原来这里是一个 let 数值：任何会话迁移完都写它，
+ * 于是 A 会话撞限流迁移了，B 会话明明好好的也跟着「冷却中」不能回退 ——
+ * 一个会话的限流把全屋都冻住。现在按 sessionId 分开记，
+ * 不传 sessionId 时退回空桶（老调用点行为不变）。
+ */
+const cooldowns = new Map();
 /** 正在迁移的会话（互斥，同刻只允许一个） */
 let migrating = null;
 /** 最近一次迁移的记录 */
@@ -93,13 +100,15 @@ export function bumpStreak(sessionId) {
   return n;
 }
 
-export function inCooldown() {
-  const left = cooldownUntil - Date.now();
+export function inCooldown(sessionId = '') {
+  const until = cooldowns.get(String(sessionId)) || 0;
+  const left = until - Date.now();
+  if (left <= 0 && until) cooldowns.delete(String(sessionId));   // 过期就顺手清
   return left > 0 ? Math.ceil(left / 1000) : 0;
 }
 
-export function startCooldown(ms) {
-  cooldownUntil = Date.now() + ms;
+export function startCooldown(ms, sessionId = '') {
+  cooldowns.set(String(sessionId), Date.now() + ms);
 }
 
 export function getMigrating() {
@@ -125,7 +134,8 @@ export function retryState(sessionId) {
     config: getRetry429(),
     sessionId,
     streak: sessionId ? streakOf(sessionId) : 0,
-    cooldownLeft: inCooldown(),
+    /* 【2026-11-08 修】界面问的是「**这个会话**还要等多久」，不是全局倒计时 */
+    cooldownLeft: inCooldown(sessionId || ''),
     migrating: Boolean(migrating),
     lastMigration,
   };

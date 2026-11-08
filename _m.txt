@@ -1,18 +1,19 @@
-refactor(ui): 柜子那组函数全部搬进 ui/hub.js（657 行 / 10 个函数）
+fix(retry429): 冷却改成按会话 —— 一个会话限流不再冻住全屋
 
-第二项继续：把柜子相关的剩下 6 个函数也搬出 index.html
-· groupLooseTools  历史归拢成柜
-· thinkTitleOf / adoptThink / adoptTool
-· addTool          建工具卡
-· foldLiveTools    合柜
+之前留下的隐患：cooldownUntil 是一个裸 let 数值，任何会话迁移完都写它。
+于是 A 会话撞 429 迁移了，B 会话明明好好的也跟着「冷却中」不能回退 ——
+一个会话的限流把全屋冻住。
 
-ui/hub.js 现在有 10 个函数、657 行：
-  thinkPeekTail / hubPeekOf / syncHubHead / hubRefreshTitle
-  groupLooseTools / thinkTitleOf / adoptThink / adoptTool / addTool / foldLiveTools
+现在：
+· cooldowns 改成 Map（sessionId → 截止时间）
+· inCooldown(sessionId) / startCooldown(ms, sessionId) 都带会话参数，
+  不传时退回空桶（老调用点行为不变）
+· 迁移完把冷却挂在**新会话**上（它才是接着跑的那个）
+· retryState 里问的是「这个会话还要等多久」，不再是全局倒计时
 
-搬运脚本 v3 换了定界方式：**顶格 function 找起点、行首单独一个 } 找终点**。
-上一版用括号配对，被函数体里的正则字面量骗了（groupLooseTools 第一次就切出语法错）。
-三关自检不变：函数本身、拆完主脚本、拼进目标文件 —— 任何一关不过就不写盘。
+实测：
+  startCooldown(60000, 'A')
+  → A 冷却 60 秒
+  → B 冷却 0 秒   ← 不再被 A 拖累
 
-验证：预检通过、check-ui 通过、工具命名 49/49（含真机格）、
-思考显示 37/37（含真机格）。
+check-chat-e2e 加了断言钉住（26/26 通过）。

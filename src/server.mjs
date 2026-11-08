@@ -1831,10 +1831,12 @@ function dropWhaleSay(send = null) {
   try { if (typeof send === 'function') send({ type: 'whale_stream_finish', text: '' }); } catch {}
 }
 
-function startCooldownSafe() {
+function startCooldownSafe(sessionId) {
   try {
     const ms = getRetry429().cooldownMs;
-    if (ms > 0 && typeof startCooldown === 'function') startCooldown(ms);
+    /* 【2026-11-08 修】冷却按会话记 —— 一个会话撞限流迁移了，别的会话不该跟着冻住。
+     * 迁移完挂在**新会话**上（它才是接着跑的那个）。 */
+    if (ms > 0 && typeof startCooldown === 'function') startCooldown(ms, sessionId);
   } catch {}
 }
 
@@ -3990,7 +3992,7 @@ const server = createServer(async (req, res) => {
       sessions.set(newId, fresh);
       saveSession(fresh);
       setLastSessionId(newId);
-      startCooldownSafe();
+      startCooldownSafe(newId);
       const info = recordMigration({ from: sid, to: newId, manual: true, summaryChars: summaryText.length });
       return json(res, 200, { ok: true, from: sid, to: newId, session: publicSession(fresh), migration: info });
     } catch (err) {
@@ -10148,7 +10150,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           sessions.set(newId, fresh);
           saveSession(fresh);
           setLastSessionId(newId);
-          startCooldownSafe();
+          startCooldownSafe(newId);
 
           const info = recordMigration({
             from: oldId,

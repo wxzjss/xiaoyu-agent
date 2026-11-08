@@ -12539,9 +12539,12 @@ function renderPendingQueue() {
   box.hidden = false;
   box.innerHTML = '';
 
+  const _uncertain = pendingQueue.some((x) => x && x._uncertain);
   const head = document.createElement('div');
   head.className = 'pendingHead';
-  head.textContent = '待发送 ' + pendingQueue.length + ' 条 —— 这一轮结束后自动发出；也可以现在发，或撤回改';
+  head.textContent = _uncertain
+    ? '有消息状态不确定 —— 可能已经发出去了，先确认下再点「直接发送」，别重复发'
+    : '待发送 ' + pendingQueue.length + ' 条 —— 这一轮结束后自动发出；也可以现在发，或撤回改';
   box.appendChild(head);
 
   for (const it of pendingQueue) {
@@ -12550,7 +12553,8 @@ function renderPendingQueue() {
 
     const tag = document.createElement('span');
     tag.className = 'ptag';
-    tag.textContent = '待发送';
+    /* 【2026-11-08】发到一半断掉的那条：不知道服务端收没收到，不猜、不重发 */
+    tag.textContent = it._uncertain ? '可能已发出' : '待发送';
 
     const tx = document.createElement('span');
     tx.className = 'ptext';
@@ -12667,6 +12671,26 @@ async function flushPendingQueue() {
   if (_flushingPending || busy || !pendingQueue.length) return;
   const next = pendingQueue[0];
   if (!next) return;
+  /**
+   * 【2026-11-08 修·「已经发出去一份，还有一份看着像没发」】
+   *
+   * 主人问：「预发送机制真的有生效吗？还是已经发送出去了一份，
+   * 还有一份是显示着看上去没发送」。这个怀疑是对的，确实有这条缝：
+   *
+   * `runTurn` 会先把话 POST 给服务端落盘，然后才接流式。
+   * 要是流式中途断了 / 页面刷新 / 被 abort，`runTurn` 抛错，
+   * 可服务端**那句话已经收下了** —— 而 catch 里我们只认「抛错=没发出」，
+   * 于是队列里那条留着，屏幕上就出现主人说的「一份发了、一份还挂着」。
+   * 更糟的是下次轮询会再发一遍，真的变成两条。
+   *
+   * 不能靠「比对文本」猜（会话里「继续」这种短句本来就重复过三次，会误删），
+   * 也不能直接删（万一真没发出去就丢了）。
+   *
+   * 现在：这条标成 `_uncertain`，**不删、也不再自动重发**，
+   * 界面上写「可能已发出」并提示先确认 —— 交给主人点「直接发送」或「删除」。
+   * 既不重复发，也不替他丢。
+   */
+  if (next._uncertain) return;
   if ((Number(next._tries) || 0) >= 3) return;   // 试满了，等主人自己处理
   _flushingPending = true;
   let sent = false;
@@ -12675,9 +12699,11 @@ async function flushPendingQueue() {
     await runTurn({ text: String(next.text || ''), attachments: Array.isArray(next.atts) ? next.atts : [] });
     sent = true;
   } catch (e) {
+    /* 抛错不等于没发出去（见上面的说明）：标成「可能已发出」，不再自动重发 */
+    next._uncertain = true;
     next._tries = (Number(next._tries) || 0) + 1;
     try { savePendingQueue(); } catch (_) {}
-    try { console.warn('[预发送] 这条没发出去，留在队列里（第 ' + next._tries + ' 次）：', String(e && e.message || e)); } catch (_) {}
+    try { console.warn('[预发送] 这条状态不确定（可能已经发出去了），留在队列里等主人确认，不自动重发'); } catch (_) {}
   } finally {
     _flushingPending = false;
     if (sent) {

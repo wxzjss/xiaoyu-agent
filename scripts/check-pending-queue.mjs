@@ -54,6 +54,14 @@ t.ok('发出去了才把那条取走', /if \(sent\)[\s\S]{0,260}findIndex[\s\S]{
 t.ok('发失败留在队列里（不删）', /next\._tries = \(Number\(next\._tries\) \|\| 0\) \+ 1/.test(ui));
 t.ok('失败有上限，不会每 2 秒转到天亮', /\(Number\(next\._tries\) \|\| 0\) >= 3\) return/.test(ui));
 
+/* 【2026-11-08 加·「一份发了、一份还挂着」】
+ * runTurn 是先落盘再接流式；流断了会抛错，可服务端已经收下那句话。
+ * 不能靠文本比对猜（短句本来就重复），也不能直接删（万一真没发就丢）。
+ * 现在标成不确定：不删、不自动重发、界面提示主人自己决定。 */
+t.ok('抛错时标成「可能已发出」', /next\._uncertain = true/.test(ui));
+t.ok('不确定的那条不再自动重发', /if \(next\._uncertain\) return/.test(ui));
+t.ok('界面明确写出这个状态', /可能已发出/.test(ui) && /_uncertain \? '可能已发出'/.test(ui));
+
 // ── 2. 真机 ────────────────────────────────────────────────────
 let cdp = null;
 try { cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' }); } catch { cdp = null; }

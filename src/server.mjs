@@ -11203,7 +11203,20 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
        * 它只是「顺手削一下 BOM」，完全不阻塞对外服务。
        * 跟下面的归档轮转、孤儿清理一样，挪到启动之后 15 秒再跑。
        */
-      setTimeout(() => {
+      /* 【2026-11-08 停用·这段清扫不能再跑了】
+       *
+       * 半小时前我把它从 listen 回调挪到「启动后 15 秒」，以为解决了启动慢。
+       * 结果是更坏的回归：它**仍然是同步递归**读 .state 下所有 .json/.md/.jsonl，
+       * 14:27:21 启动 → 15 秒后开始扫 → 主进程被堵住几分钟，
+       * 窗口标题变成「未响应」、整屏盖白、8788 端口在听却一个请求都答不了。
+       * 主人 14:27:59 的截图就是这个。
+       *
+       * 它本来只是「顺手削掉历史遗留的 BOM」，不是开服必需。
+       * 正解是在**写入侧**保证不写 BOM（Node 的 writeFileSync utf8 本来就不会加），
+       * 而不是每次启动把整盘翻一遍。真要清理，单独跑个脚本、手动执行一次就够。
+       *
+       * 下面整段保留作存档，用 if (false) 封住 —— 不编译执行，也不许有人手滑放回来。 */
+      if (false) {
       try {
         const _st = join(config.dataDir, '.state');
         let _bn = 0;
@@ -11230,7 +11243,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         _walkBom(_st, 0);
         if (_bn) console.log('  [bom] 开服清掉 ' + _bn + ' 个文件上的 BOM');
       } catch (e) { /* 清扫自己挂了也不能拖累服务 */ }
-      }, 15000);
+      }
       /* 【2026-11-03 记忆系统严检】归档轮转 + 回收站压缩：一天最多跑一次。
        * 不是删，是打包成 .jsonl.gz —— 要翻还能翻，占的地方小一个量级。
        * 回收站超过 7 天、归档超过 30 天才压，阈值给得够宽。 */
@@ -11243,7 +11256,11 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
            * 主人报「双击图标启动那么慢」。这段原来是 listen 回调里**同步**跑的，
            * 阈值改 2 天之后要压 2335 个文件，直接把事件循环堵死 —— 端口通了但界面点不动。
            * 现在延后 15 秒：先把界面服务出来，打包在后面慢慢做。 */
-          setTimeout(() => {
+          /* 【2026-11-08 停用】这三段延后任务仍然全是同步 IO，
+           * 启动后 6 秒 / 15 秒接连连跑，跟 BOM 清扫一起把主进程堵成「未响应」。
+           * 「延后」只是把卡顿挪到窗口露面之后，并没有解决堵死。
+           * 维护类批处理不该跑在 Electron 主进程里 —— 要跑就单独起脚本/子进程。 */
+          if (false) {
           /* 【2026-11-05 改·7 天 → 2 天】
            *
            * 回收站已经堆到 73MB / 2974 个文件：今天 565 个、1-7 天 2382 个、
@@ -11258,17 +11275,18 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           const n = t.reduce((s, x) => s + x.packed, 0) + a.packed;
           if (n) console.log('[rotate] 打包回收 ' + n + ' 个老文件（回收站 7 天 / 归档 30 天）');
           __rotWrite(mark, String(Date.now()), 'utf8');
-          }, 15000);
+          }
         }
       } catch (e) { /* 轮转挂了不能拖累服务 */ }
       /* 【2026-11-05 改·清理也挪到启动之后】
        *
        * 主人报启动十几秒，主因是轮转（已延后）。这三个虽然量小，
        * 但也是同步 IO，一起挪出去 —— 启动路径上不该有「扫目录」这种活。 */
-      setTimeout(() => {
+      /* 同上：孤儿清理也停用，别在启动后再来一波同步扫目录。 */
+      if (false) {
         try { pruneOrphans(); } catch { /* 孤儿清理挂了不能拖累服务 */ }
         try { pruneWorkerFiles(); } catch { /* 同上 */ }
-      }, 6000);
+      }
       /* 【2026-11-03 出厂自建卡】每台机器第一次启动时把小白曦、旁白铺成卡。
        * 账本在 .state/agent-presets-made.json —— 铺过一次就不再铺，主人删了就是删了。
        * 人设正文来自包里的 persona/agents/<key>.md（build.files 带着整个 persona 目录）。 */

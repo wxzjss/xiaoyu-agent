@@ -1412,6 +1412,14 @@
       vertical-align: bottom; color: var(--dim); font-size: 12px; opacity: .85;
     }
     /* 【2026-11-08】柜门「运行中」用工具卡那个金色，跟里面那张卡对上 */
+    /* 【2026-11-08 主人】柜门上的状态色要钉住，别跟着 hover 变蓝。
+       hover 那条（上面 details.toolhub > summary:hover）会把整行字染成 accent，
+       而柜门的 status 之前**没有自己的颜色** —— 工具卡那边一直有
+       （details.tool > summary .status.xxx），柜门这条漏了，于是「N 个失败」
+       跟着整行一起变蓝。现在补齐 ok / err / warn，运行中的金色在下面单列。 */
+    details.toolhub > summary .status.ok { color: var(--ok); }
+    details.toolhub > summary .status.err { color: var(--err); }
+    details.toolhub > summary .status.warn { color: #d9a45b; }
     details.toolhub > summary .status.run { color: #f0b954; opacity: 1; font-weight: 500; }
     .hubpeek:empty { display: none; }
     /* 【2026-11-07 主人要的金色「运行中」】

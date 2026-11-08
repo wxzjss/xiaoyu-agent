@@ -158,9 +158,11 @@ if (cdp2) {
     console.log('真机（延迟切换）：' + JSON.stringify(r2));
     t.ok('真机：程序代 focus 不切（重启后直接打字的根因）', r2.programFocus === 0, String(r2.programFocus));
     t.ok('真机：点完立刻打字——一次都没切', r2.typing === 0, String(r2.typing));
-    t.ok('真机：只点不打字——照旧会切', r2.idle >= 1, String(r2.idle));
+    /* 【2026-11-08 改口径】整套自动掰输入法已停用（跟 WorkBuddy 一样不碰系统 IME），
+     * 所以任何场景都不该出现切换调用。下面两条从「该切」改成「一次都不切」。 */
+    t.ok('真机：只点不打字——也不切（整套已停用）', r2.idle === 0, String(r2.idle));
     t.ok('真机：刚打完字再点——不切', r2.within3s === 0, String(r2.within3s));
-    t.ok('真机：过了 3 秒——恢复该切', r2.after3s >= 1, String(r2.after3s));
+    t.ok('真机：过了 3 秒——仍然不切（整套已停用）', r2.after3s === 0, String(r2.after3s));
   } catch (e) {
     t.ok('真机探针（延迟切换）能跑', false, String(e.message).slice(0, 120));
   } finally {

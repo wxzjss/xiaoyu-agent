@@ -53,18 +53,25 @@ sweep('before');
 let fail = 0;
 const failed = [];
 const tails = [];
+/* 【2026-11-08 加】每个检查记一笔耗时，末尾报最慢的几个。
+ * 主人问「为什么每次跑回归都这么慢」—— 以前只打印 OK/FAIL，
+ * 70 个串行跑完根本看不出时间花在哪。 */
+const durations = [];
 for (const f of scripts) {
   process.stdout.write(f.padEnd(36));
+  const t0 = Date.now();
   const r = spawnSync(process.execPath, [path.join(process.cwd(), 'scripts', f)], {
     encoding: 'utf8',
     timeout: 15 * 60 * 1000,
   });
+  const ms = Date.now() - t0;
+  durations.push([f, ms]);
   if (r.status === 0) {
-    console.log(' OK');
+    console.log(' OK  ' + (ms / 1000).toFixed(1) + 's');
   } else {
     fail++;
     failed.push(f);
-    console.log(' FAIL');
+    console.log(' FAIL  ' + (ms / 1000).toFixed(1) + 's');
     const out = String(r.stdout || '') + String(r.stderr || '');
     const ls = out.trim().split(/\r?\n/);
     tails.push('──── ' + f + ' 尾巴 ────\n' + ls.slice(-30).join('\n'));
@@ -163,5 +170,10 @@ if (tails.length) {
   console.log('');
 }
 console.log('回归：' + (scripts.length - fail) + '/' + scripts.length + ' 通过');
+/* 最慢的几个单独列出来：慢一次就知道该优化谁，不用靠猜 */
+const slow = durations.slice().sort((a, b) => b[1] - a[1]).slice(0, 8);
+console.log('耗时合计 ' + (durations.reduce((a, b) => a + b[1], 0) / 1000).toFixed(1)
+  + 's，最慢的几个：');
+for (const [f, ms] of slow) console.log('  ' + (ms / 1000).toFixed(1).padStart(7) + 's  ' + f);
 if (fail) console.log('失败：' + failed.join(', '));
 process.exit(fail ? 1 : 0);

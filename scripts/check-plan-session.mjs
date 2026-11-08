@@ -38,11 +38,15 @@ const ok = (name, cond, extra) => {
 
 // 1. 源码这一关：runTool 必须把 sessionId 传进去
 const toolsSrc = fs.readFileSync(path.join(ROOT, 'src', 'tools.mjs'), 'utf8');
+/* 【2026-11-08 改口径】原来的写法是 `{ sessionId, signal }` 一起给，
+ * 后来发现 sessionId 可能是空的（会话外跑 / 启动自检），塞个 undefined 进去
+ * 会把全局 CTX 里那份好值盖掉。现在改成「有值才塞」：
+ *   if (sessionId) _ctx.sessionId = sessionId;
+ * 要守的语义没变：有 sessionId 时必须传进去，别让清单跑到别的会话头上。 */
 ok(
   'runTool 把 sessionId 传进 runWithToolContext',
-  /if \(overrideSignal\) return runWithToolContext\(\{\s*sessionId,\s*signal: overrideSignal\s*\}/.test(
-    toolsSrc,
-  ),
+  /if \(sessionId\) _ctx\.sessionId = sessionId;/.test(toolsSrc)
+    || /runWithToolContext\(\{\s*sessionId,/.test(toolsSrc),
   '漏传 sessionId 的话，清单会跑到最后开跑的那个会话头上',
 );
 

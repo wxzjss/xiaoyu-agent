@@ -32,7 +32,7 @@ t.ok('兜底会避开面板和别的输入框', /dialog\[open\][\s\S]{0,400}tag 
 let cdp = null;
 try {
   const { connect } = await import('../_t_cdp.mjs');
-  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
+  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
 } catch { cdp = null; }
 
 if (!cdp) {

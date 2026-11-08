@@ -19386,8 +19386,32 @@ loadModels().catch(() => {});
 
 /**
  * 每 3 秒问一次「谁在跑」，名单变了才重画会话列表（不变就别重画，省得整列闪）。
+ *
+ * 【2026-11-08 模块化抓到的真错·主人截图报的就是这里】
+ *
+ * 这行原来是 `refreshRunning().then(...)` 直接写在顶层。
+ * 模块化之后 refreshRunning 住在 ui/sessions.js，而模块脚本是 **deferred ——
+ * 比这段经典脚本晚执行**。于是解析到这里时 refreshRunning 还是 undefined：
+ *
+ *   Uncaught ReferenceError: refreshRunning is not defined（第 19390 行附近）
+ *
+ * 后果比报错本身更坏：**这一行之后的整段脚本全都不执行**（绿点那条定时器就没了），
+ * 但页面看着还行（因为开机是挂在 DOMContentLoaded 上的，不受影响）——
+ * 于是「有时候会话列表不刷新」这种毛病会以最难查的方式出现。
+ *
+ * 规矩：**顶层不许直接调用模块里的函数**。一律包一层等模块就位。
  */
-refreshRunning().then(() => { try { renderSessList(); } catch { /* 画不动就算了 */ } });
+function whenModulesReady(fn) {
+  const run = () => {
+    try { return fn(); } catch (e) { try { console.warn('[等模块] 出错：' + (e && e.message)); } catch (e2) {} }
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run, { once: true });
+  else setTimeout(run, 0);
+}
+
+whenModulesReady(() => {
+  refreshRunning().then(() => { try { renderSessList(); } catch { /* 画不动就算了 */ } });
+});
 
 setInterval(async () => {
   /* 【2026-11-08 改】判据里带上「是不是卡住了」——

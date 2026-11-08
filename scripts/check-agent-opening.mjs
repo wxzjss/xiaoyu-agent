@@ -1,4 +1,4 @@
-const BASE = process.env.BASE || 'http://127.0.0.1:8788';
+const BASE = detectBase();
 const api = async (p, o) => {
   const r = await fetch(BASE + p, o);
   const t = await r.text();
@@ -34,6 +34,7 @@ const mk = async (agentId) => {
  * 小白曦那两条照旧（他没关）。
  */
 import fs from 'node:fs';
+import { detectBase } from './_base.mjs';
 import path from 'node:path';
 
 let xiaoyuOpeningOn = true;

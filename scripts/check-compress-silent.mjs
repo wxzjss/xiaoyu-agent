@@ -54,7 +54,7 @@ t.ok('没有任何地方真的画「已压缩」', !/addSysNote\([^)]*已压缩/
 let cdp = null;
 try {
   const { connect } = await import('../_t_cdp.mjs');
-  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
+  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
 } catch (e) { cdp = null; }
 
 if (!cdp) {

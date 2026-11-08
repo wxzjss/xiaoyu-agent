@@ -97,7 +97,7 @@ let cdp = null;
 try { ({ connect: (o) => (cdp = connect(o)) }); } catch { /* 下面统一 try */ }
 try {
   const { connect } = await import('../_t_cdp.mjs');
-  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
+  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
 } catch (e) { cdp = null; }
 
 if (!cdp) {

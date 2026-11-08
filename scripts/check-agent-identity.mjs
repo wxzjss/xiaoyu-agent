@@ -1,4 +1,5 @@
-const BASE = process.env.BASE || 'http://127.0.0.1:8788';
+import { detectBase } from './_base.mjs';
+const BASE = detectBase();
 const api = async (p, o) => {
   const r = await fetch(BASE + p, o);
   const t = await r.text();

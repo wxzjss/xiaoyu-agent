@@ -1,4 +1,5 @@
-const BASE = process.env.BASE || 'http://127.0.0.1:8788';
+import { detectBase } from './_base.mjs';
+const BASE = detectBase();
 import fs from 'node:fs';
 
 const api = async (p, o) => {

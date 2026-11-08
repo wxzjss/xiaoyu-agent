@@ -10,9 +10,10 @@
  *      默认 8788（本机实际端口），端口不对就用 BASE 覆盖。
  */
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { detectBase } from './_base.mjs';
 import { join } from 'node:path';
 
-const BASE = process.env.BASE || 'http://127.0.0.1:8788';
+const BASE = detectBase();
 const DATA = join(process.env.APPDATA || '', '小鱼Agent', 'data');
 
 let pass = 0, fail = 0;

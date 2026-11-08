@@ -14,9 +14,10 @@
  * 临时会话用完就删。
  */
 import { readFileSync, existsSync } from 'node:fs';
+import { detectBase } from './_base.mjs';
 import { readUISource } from './_ui-src.mjs';
 
-const BASE = process.env.BASE || 'http://127.0.0.1:8788';
+const BASE = detectBase();
 const SESS = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions';
 
 let pass = 0, fail = 0;

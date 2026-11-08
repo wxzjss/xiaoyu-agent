@@ -35,7 +35,7 @@ t.ok('有防重入标志（避免 fold → 触发 → 再 fold）', /_leakGuardB
 
 // ── 2. 真机 ────────────────────────────────────────────────────
 let cdp = null;
-try { cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' }); } catch { cdp = null; }
+try { cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223) }); } catch { cdp = null; }
 
 if (!cdp) {
   console.log('\n真机格：SKIP（没连上 9223 的调试浏览器，源码断言已过）');

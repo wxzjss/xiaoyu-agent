@@ -68,7 +68,7 @@ t.ok('金色「运行中」有对应样式', /\.hubpeek\.live \{ color: #f0b954/
 let cdp = null;
 try {
   const m = await import('../_t_cdp.mjs');
-  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
+  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
 } catch { /* 没开调试浏览器 */ }
 if (cdp) {
   try {

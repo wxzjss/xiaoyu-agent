@@ -78,7 +78,7 @@ t.ok('前端跑完 hubRefreshTitle 会退回计数', /hubRefreshTitle\(\);/.test
 let cdp = null;
 try {
   const m = await import('../_t_cdp.mjs');
-  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' });
+  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
 } catch { /* 没开调试浏览器 */ }
 if (cdp) {
   try {

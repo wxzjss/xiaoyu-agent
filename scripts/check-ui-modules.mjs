@@ -78,4 +78,43 @@ t.ok('开机等模块就位（DOMContentLoaded 之后再 bootSessions）',
   /document\.addEventListener\('DOMContentLoaded', r, \{ once: true \}\)[\s\S]{0,120}bootSessions\(\)/.test(html)
   && !/\nconst booted = bootSessions\(\);/.test(html));
 
+/* ── ⑤ 顶层不许直接调用模块里的函数 ─────────────────────────────
+ * 主人 2026-11-08 截图报的就是这个：
+ *   Uncaught ReferenceError: refreshRunning is not defined（第 19390 行附近）
+ *
+ * 模块是 deferred，比经典脚本晚执行。顶层写 `refreshRunning()` 就是拿 undefined 当函数。
+ * 更坏的是**这一行之后整段脚本都不执行**，可页面看着还行 —— 最难查的那种坏法。
+ * 这里把主脚本里所有「顶格调用模块函数」的地方全揪出来。 */
+const MOD_FNS = [
+  'renderTurns', 'switchSession', 'switchSessionSafe', 'renderLog', 'logSettle',
+  'logSetHistory', 'logSetLive', 'paintSnapshot', 'paintSnapshotInner', 'paintSnapshot0',
+  'attachLive', 'followLive', 'replayInFlight', 'syncHubHead', 'hubRefreshTitle',
+  'groupLooseTools', 'addTool', 'foldLiveTools', 'adoptThink', 'adoptTool',
+  'thinkPeekTail', 'hubPeekOf', 'thinkTitleOf', 'refreshRunning', 'renderSessList',
+];
+const mainScript = [...html.matchAll(/<script(?![^>]*src)(?![^>]*type="module")[^>]*>([\s\S]*?)<\/script>/g)]
+  .map((m) => m[1])
+  .sort((a, b) => b.length - a.length)[0] || '';
+const offenders = [];
+for (const line of mainScript.split('\n')) {
+  if (!line.trim()) continue;
+  if (/^[\s\t]/.test(line)) continue;            // 缩进 = 在函数/回调里，那时模块已经就位
+  if (/^(\/\/|\*|\/\*)/.test(line)) continue;    // 注释
+  for (const n of MOD_FNS) {
+    const at = line.indexOf(n);
+    if (at < 0) continue;
+    if (new RegExp('[^.\\w$]' + n + '\\b').test(line) === false && at !== 0) continue;
+    /* 同一行里在它之前出现了 => 或 function，说明这是**定义**一个稍后才跑的闭包
+     * （例如 window.__xySwitch = (id) => switchSession(id)）—— 那是安全的。 */
+    const before = line.slice(0, at);
+    if (/=>|\bfunction\b/.test(before)) continue;
+    offenders.push(n);
+    break;
+  }
+}
+t.ok('顶层没有裸调模块函数（会 ReferenceError 并让后面整段不执行）',
+  offenders.length === 0,
+  offenders.join(', ') + '  ← 包一层 whenModulesReady');
+t.ok('有 whenModulesReady 兜底', /function whenModulesReady\(fn\)/.test(html));
+
 t.done();

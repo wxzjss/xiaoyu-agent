@@ -1,3 +1,4 @@
+import { detectBase } from './_base.mjs';
 /**
  * 端到端回归：关小鱼 + 关小鲸，只留自建智能体，必须有人开口，
  * 而且那句话必须真的通过 SSE 推到前端（不是只躺在 live 里）。
@@ -5,7 +6,7 @@
  * 用法：node scripts/e2e-mate-speaks.mjs
  * 自查：临时建会话 → 测 → 删会话、还原开关。不碰主人的正式会话。
  */
-const BASE = process.env.BASE || 'http://127.0.0.1:8788';
+const BASE = detectBase();
 
 let pass = 0, total = 0;
 const chk = (label, cond, extra = '') => {

@@ -20270,6 +20270,27 @@ function renderTurns(turns, opts) {
   let _curInFlight = false;
   try { const _r = turnsInFlight.get(sessionId); _curInFlight = !!( _r && (_r.startedAt || _r.adopted) ); } catch {}
   /**
+   * 【2026-11-08 修·「多段消息堆在一起」，尤其是切走再切回来】
+   *
+   * 主人：「不同段消息在我这里还是会堆在一块（特别是切换会话后再切换回来
+   * 大概率出现）。刷新后有那么一瞬间是恢复正常的，但马上又变成堆在一块。」
+   *
+   * 链路是这样叠起来的：
+   *   ① switchSession 先 renderTurns 画历史 —— 里面**已经包含本轮落盘的回复**
+   *   ② 紧接着 attachLive 把 /api/chat/live 的事件从头重放一遍
+   *   → 同一段话，历史画一份、直播再画一份，挤在屏幕上。
+   * 刷新那一瞬间正常，是因为第 ② 步还没跑；轮询一转起来就又叠上了。
+   *
+   * 修法：调用方知道「这个会话此刻真在跑」时传 dropTail，
+   * 历史就先别画最后那条 assistant —— 那段交给直播去长。
+   */
+  if (opts && opts.dropTail && Array.isArray(turns)) {
+    turns = turns.slice();
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i] && turns[i].role === 'assistant') { turns.splice(i, 1); break; }
+    }
+  }
+  /**
    * 【2026-11-02 修·换会话时不许「不画」】
    *
    * 上面那条「真在生成中就什么都不动」是为了别把我们自己正在流式写的气泡拆碎，
@@ -21676,7 +21697,17 @@ async function switchSession(id, opts) {
     try { const r = turnsInFlight.get(sessionId); return !!(r && (r.startedAt || r.adopted)); }
     catch { return false; }
   })();
-  renderTurns(r.session.turns, (_emptyScreen && !_inFlightHere) ? { force: true } : undefined);
+  /* 【2026-11-08】这个会话真在跑 → 历史别画最后那条 assistant，
+   * 那段交给 attachLive 的直播去长，否则同一段话被画两遍（切走再切回特别明显）。 */
+  const _runningNow = (() => {
+    try { return Boolean(runningSess && runningSess.has(sessionId)); } catch { return false; }
+  })();
+  renderTurns(
+    r.session.turns,
+    (_emptyScreen && !_inFlightHere)
+      ? { force: true, dropTail: _runningNow }
+      : { dropTail: _runningNow },
+  );
   /* 【2026-11-08】切会话：把**这个会话**的待发送队列读出来（按会话分 key 存的） */
   try { loadPendingQueue(); } catch (e) {}
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次

@@ -27,7 +27,10 @@ const DIR = path.join(process.cwd(), 'scripts');
 /** 会拖时间的特征：连调试浏览器、起子进程、打网络、长等待 */
 const HEAVY = /_t_cdp|\bconnect\(|Page\.reload|\bfetch\(|spawnSync\(|setTimeout\([^,]+,\s*[1-9]\d{3,}\)/;
 /** 实测会卡到 60s 超时的：它走的是隔离实例那条路，源码里看不出 spawn 字样 */
-const SKIP = new Set(['check-bom.mjs']);
+/* check-live-sync 专管「仓库那份和生效那份是不是同一份」，它跟代码质量无关，
+ * 而且只要有人（我或智能体）刚改完没同步就红 —— 放进冒烟只会误导。
+ * 真要查同步，单独跑 node scripts/check-live-sync.mjs。 */
+const SKIP = new Set(['check-bom.mjs', 'check-live-sync.mjs']);
 
 const all = readdirSync(DIR)
   .filter((f) => /^check-.*\.mjs$/.test(f) && f !== 'check-smoke.mjs' && !SKIP.has(f))

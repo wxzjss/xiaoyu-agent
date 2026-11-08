@@ -173,6 +173,24 @@ try {
     && _r4.indexOf('let cooldownUntil') < 0);
 } catch (e) { ok('429 冷却按会话隔离', false); }
 
+/* 【2026-11-08 加】「一条轮次只能有一个主人」这条不变式必须一直挂着。
+ * 主人反复报的「多段消息堆在一起 / 切回来还堆着」根子都是同一轮被画两遍：
+ * 历史一套（renderTurns）、直播一套（paintSnapshot）。今天在三条具体路径上堵过，
+ * 但那种修法只能堵住想得到的那几条 —— logSettle 是兜底的那道不变式：
+ *   ① 没有在跑的轮次时，屏幕上不许留直播气泡（历史已含同样内容 / 空壳 → 收掉）
+ *   ② 同一个 data-key 只许出现一次
+ * 它必须在两条画法之后都跑一遍，少一处就等于没兜住。 */
+try {
+  const _chat = readFileSync('public/ui/chat.js', 'utf8');
+  const _def = _chat.indexOf('function logSettle()');
+  const _calls = (_chat.match(/logSettle\(\);/g) || []).length;
+  ok('logSettle 不变式存在且两条画法后都跑', _def >= 0 && _calls >= 2,
+    '定义 @' + _def + '，调用 ' + _calls + ' 处');
+  ok('logSettle 不许删掉「直播独有内容」',
+    /histTexts\.has\(t\)/.test(_chat) && /!t \|\| histTexts\.has\(t\)/.test(_chat),
+    '只收「空壳」或「历史里已有同一段」的');
+} catch (e) { ok('logSettle 不变式存在', false); }
+
 console.log('断言：' + pass + '/' + (pass + fail));
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }
 console.log('PASS 发消息链路端到端通过');

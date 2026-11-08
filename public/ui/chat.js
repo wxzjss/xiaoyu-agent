@@ -4,6 +4,71 @@
  * 全局函数之间互相调用会被标成「未声明」—— 那是拆分后共享全局作用域的代价，忽略即可。 */
 
 
+/**
+ * 【2026-11-08 加·「一条轮次只能有一个主人」】
+ *
+ * 主人问过：「为什么切个会话都有这么多消息显示的问题？根本原因是什么？」
+ *
+ * 根因是**同一轮有两套画法**：历史一套（renderTurns）、直播一套（paintSnapshot），
+ * 两条路互相不知道对方画了什么。于是同一段话被画两遍就成了「堆在一起」，
+ * 切回来还留着上一个会话的成了「串会话」。
+ *
+ * 今天在三条具体路径上都堵过了（dropTail / 跑完不照快照重画 / 切会话强制重画），
+ * 但那种修法只能堵住「想得到的那三条」。这里补一条**不变式**，把这一类堵死：
+ *
+ *   ① 这个会话**没有在跑的轮次**时，屏幕上不许留任何直播气泡
+ *      （除非历史还没把它写进去 —— 那种情况留着，宁可多一条也不丢字）
+ *   ② 同一个 data-key 只许出现一次，多出来的当场收掉
+ *
+ * 它幂等、只删「确定重复」的东西，所以每次画完都可以放心跑一遍。
+ */
+function logSettle() {
+  const lg = document.getElementById('log');
+  if (!lg) return 0;
+  const norm = (s) => {
+    try { return String(fixMojibake(String(s || ''))).replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); }
+  };
+  let fixed = 0;
+
+  /* ① 没有在跑的轮次 → 直播气泡要么是重复的，要么是空壳 */
+  let running = false;
+  try {
+    const r = (typeof turnsInFlight !== 'undefined') && turnsInFlight.get(sessionId);
+    running = !!(r && (r.startedAt || r.adopted));
+  } catch (e) { running = false; }
+  if (!running) {
+    const histTexts = new Set();
+    for (const n of lg.querySelectorAll('.msg.assistant')) {
+      if (n.dataset && n.dataset.liveTurn === '1') continue;
+      const t = norm(n.textContent);
+      if (t) histTexts.add(t);
+    }
+    for (const n of [...lg.querySelectorAll('[data-live-turn="1"]')]) {
+      const t = norm(n.textContent);
+      /* 空壳，或者历史里已经有同样一段 —— 都是重复 */
+      if (!t || histTexts.has(t)) {
+        try { n.remove(); fixed += 1; } catch (e) {}
+      }
+    }
+  }
+
+  /* ② 同一个 key 出现两次 → 只留第一个（后面的必定是重画时多加的） */
+  try {
+    const seen = new Set();
+    for (const n of [...lg.children]) {
+      const k = n && n.dataset && n.dataset.key;
+      if (!k) continue;
+      if (seen.has(k)) { try { n.remove(); fixed += 1; } catch (e) {} }
+      else seen.add(k);
+    }
+  } catch (e) {}
+
+  if (fixed) {
+    try { console.warn('[log] 收掉 ' + fixed + ' 个多余的块（同一轮被画了两次）'); } catch (e) {}
+  }
+  return fixed;
+}
+
 /* ── 从 index.html 搬来 ─────────────────────────────── */
 function paintSnapshot(sid, srcLive) {
   /* 先试快路：纯文本在变长时，一个 DOM 节点都不动 */
@@ -22,6 +87,7 @@ function paintSnapshot(sid, srcLive) {
     return paintSnapshotInner(sid, srcLive);
   } finally {
     try { applyOpenState(__snapBefore); } catch (e) {}
+    try { logSettle(); } catch (e) {}
   }
 }
 
@@ -2226,6 +2292,8 @@ function renderTurns(turns, opts) {
       }
     }
   }
+  /* 画完这一屏，按不变式收一遍（见 logSettle 那段说明）。幂等，画一百次也一样。 */
+  try { logSettle(); } catch (e) {}
 }
 
 /**

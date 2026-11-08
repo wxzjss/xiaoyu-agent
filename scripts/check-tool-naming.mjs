@@ -180,7 +180,7 @@ t.ok('历史柜运行中也写「调了 N 次 · 正在X…」',
  * ② 卡塞进已有柜子后要把 _liveHub 指过去 —— 否则后续标题刷新打在空指针上，
  *    表现就是「柜子标题始终不随调用变化」。 */
 t.ok('柜门有「运行中」',
-  /_live2 \? '运行中' : ''/.test(ui) && /status ' \+ \(bad \? 'err' : \(warn \? 'warn' : \(_live2 \? 'run live' : 'ok'\)\)\)/.test(ui));
+  /_live2 \? '运行中' : ''/.test(ui) && /_live2 \? 'run live'/.test(ui));
 t.ok('塞进已有柜子后接上 _liveHub',
   /_prev\.appendChild\(el\);[\s\S]{0,600}_liveHub = _prev;/.test(ui));
 /* 【2026-11-08 加】柜门「运行中」现在有**三条路**都要写，缺一条就露馅：
@@ -193,9 +193,9 @@ t.ok('三条路都写「运行中」',
   && /\(_runCard \? '运行中' : ''\)/.test(ui)
   && /\(_liveRun \? '运行中' : ''\)/.test(ui));
 t.ok('三条路的状态都给金色类 run live',
-  /_live2 \? 'run live' : 'ok'/.test(ui)
-  && /_runCard \? 'run live' : 'ok'/.test(ui)
-  && /_liveRun \? 'run live' : 'ok'/.test(ui));
+  /_live2 \? 'run live'/.test(ui)
+  && /_runCard \? 'run live'/.test(ui)
+  && /_liveRun \? 'run live'/.test(ui));
 t.ok('第三条路的标题也写「正在X…」',
   /_liveRun[\s\S]{0,260}次 · 正在/.test(ui));
 

@@ -3060,6 +3060,25 @@ async function resumeInterruptedTurn(onlySessionId) {
   const snap = {};
   const turn = { ac, done: null, resumeTurn: true, startedAt: Date.now() };
   runningTurns.set(sessionId, turn);
+  /**
+   * 【2026-11-08 真修·续跑轮要有自己的事件出口】
+   *
+   * 昨天我把 `onEvent: () => {}` 改成 `send(ev)` 就以为修好了 —— 其实没有：
+   * `send` 不是模块级函数，它只在 /api/chat（8181）和 startQueuedTurn（2789）
+   * 里各自局部定义。这里一调就抛 ReferenceError，被 try/catch 吞掉，
+   * 事件照样一个都进不了 live。主人问「自动重启续上是不是会导致
+   * 在运行但我看不到在运行」——答案是**会，而且昨天那次没修动**。
+   *
+   * 现在照 startQueuedTurn 的样子补齐：开一个 live，定义局部 send。
+   * 这样 pushEvent（工具事件）和 onEvent（正文/报错）两条路都能写进
+   * live.events，前端 followLive 画得出来，/api/running 的 events 也会涨，
+   * 看门狗不再把它误判成「真空转空挂 12 分钟」。
+   */
+  const live = openLiveForQueuedTurn(sessionId);
+  const send = (ev) => {
+    if (!live) return;
+    try { live.events.push({ ...ev, at: Date.now() }); } catch {}
+  };
   try {
     const history = session.messages;
     repairHistory(history);

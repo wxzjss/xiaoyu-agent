@@ -83,17 +83,20 @@ const EXCLUDE_PATTERNS = [
    *
    * 现在按「文件名里出现 .bak 就不发」一刀切，不看它在哪个位置。 */
   /\.bak/i,
-  /* 【2026-11-08 加·出厂提示词快照不外发】
+  /* 【2026-11-08 改回·出厂默认本来就该发布】
    *
-   * `persona/FACTORY-PROMPT.md` 是**本机**的出厂定稿快照（重装/换电脑时用它
-   * 把默认提示词对回去，由 check-factory-prompt.mjs 逐字节校验）。
+   * 主人 11-08 明确：「所有出厂默认人设、底线、安全词等都是可以发布出去的，
+   * 不然也不会分出厂默认与普通默认了。」
    *
-   * 它里面必然含本机私设人设的原文 —— 整个 PERSONA_LOAD 块、颜文字库、
-   * 专属称呼都在。2026-11-08 发布时被 local-persona-* 规则逐条命中 21 处，
-   * 这正是那道门该干的事。**不该靠改扫描规则放行，而该别把它装进去。**
-   * 发布物里给的是 `persona/xiaoyu.md`（通用示例人设），够别人跑起来。
+   * 我上午误把 `persona/FACTORY-PROMPT.md` 当私设排掉了 —— 搞混了：
+   *   · 出厂默认（FACTORY-PROMPT.md / whale-default-persona.md / xiaoyu.md）
+   *     = 别人装机时看到的那套，**本来就是给人看的**，必须发
+   *   · 普通默认 / 本机私设（.state/whale-profile.json）= 主人自己改的，才不能发
+   * 出厂定稿里那些 PERSONA_LOAD 块、底线、安全词、颜文字库，
+   * 命中 local-persona-* 只是因为它本来就是从主人那套定稿来的，
+   * 不是泄露 —— 下面 scanRules 里已经把这份文件加进 skipFiles 放行。
+   * 备份（FACTORY-PROMPT.md.bak-*）仍然是备份，靠上面 /\.bak/i 挡住。
    */
-  /^FACTORY-PROMPT\.md$/,
 ];
 
 // ------------------------------------------------------------------ 敏感信息
@@ -170,6 +173,13 @@ function scanRules(extraNames) {
   if (personaFileIsPublic && process.env.DEBUG_PERSONA_SCAN) {
     console.error('[persona-scan] 默认人设文件声明为公开默认人设，跳过本文件的私设比对');
   }
+  /* 【2026-11-08 加】出厂默认三份都放行：它们是给人装机用的公开内容，
+   * 命中私设片段只说明出厂定稿沿用了主人那套，不是泄露。
+   * 主人原话：「不然也不会分出厂默认与普通默认了」。 */
+  const personaPublic = [
+    'scripts/publish.mjs', 'scripts/auto-publish.mjs', 'persona/xiaoyu.md',
+    'persona/FACTORY-PROMPT.md',
+  ];
   for (const [i, frag] of mine.entries()) {
     const esc = frag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     rules.push({
@@ -184,8 +194,8 @@ function scanRules(extraNames) {
       // OBEY_MASTER_ALWAYS…）和颜文字表这类通用素材，不含私设独有正文。
       // 2026-10-27 主人看过全部 21 处后点头发布。
       skipFiles: personaFileIsPublic
-        ? ['scripts/publish.mjs', 'scripts/auto-publish.mjs', 'src/whale-default-persona.md', 'persona/xiaoyu.md']
-        : ['scripts/publish.mjs', 'scripts/auto-publish.mjs', 'persona/xiaoyu.md'],
+        ? [...personaPublic, 'src/whale-default-persona.md']
+        : personaPublic,
     });
   }
 

@@ -207,5 +207,12 @@ const serverSrc = fs.readFileSync('src/server.mjs', 'utf8');
  * 有意用空回调，一刀切会冤枉它们。 */
 t.ok('续跑轮的事件接上了 send（不是空的 onEvent）',
   /onEvent: \(ev\) => \{ try \{ send\(ev\); \} catch \{\} \},[\s\S]{0,120}repairHistory\(history\)/.test(serverSrc));
+/* 【2026-11-08 补】光把 onEvent 改成 send 是不够的：
+ * send 只在 /api/chat 和 startQueuedTurn 里局部定义，续跑函数里调它会抛
+ * ReferenceError 被吞掉，事件照样全丢。必须连 live 和局部 send 一起补齐。 */
+t.ok('续跑轮有自己的 live（事件要有地方落）',
+  /runningTurns\.set\(sessionId, turn\);[\s\S]{0,900}const live = openLiveForQueuedTurn\(sessionId\)/.test(serverSrc));
+t.ok('续跑轮有自己的局部 send（不是引用别人作用域的）',
+  /const live = openLiveForQueuedTurn\(sessionId\);\s*\n\s*const send = \(ev\) =>/.test(serverSrc));
 
 t.done();

@@ -4089,6 +4089,7 @@
     </div>
   </div>
 
+  <script src="/ui/hub.js"></script>
   <script>
 /**
  * 【2026-11-01 加】脚本出错的兜底提示。
@@ -10875,42 +10876,9 @@ function addWorkerCard() {
  * 取最后一小截才看得出「她正在想什么」。28 字刚好塞得进 62% 的一行，
  * 不会被 CSS 的 ellipsis 再切一刀。
  */
-function thinkPeekTail(text) {
-  const flat = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!flat) return '';
-  /* 【2026-11-08 主人】28 字太短，灰字右边明明还有一大片空。
-   * 现在放到 160 字，真正显示多长交给 CSS 的 ellipsis 按容器宽度决定 ——
-   * 容器宽就多显示，窄就自动截，不用前端猜。 */
-  return flat.length > 160 ? '…' + flat.slice(-160) : flat;
-}
 
-function hubPeekOf(els) {
-  try {
-    for (let i = els.length - 1; i >= 0; i--) {
-      const el = els[i];
-      if (!el || !el.classList || !el.classList.contains('tool')) continue;
-      const st = el.querySelector('.status');
-      const stText = String((st && st.textContent) || '');
-      if (stText.indexOf('运行') >= 0 || (st && st.classList.contains('run'))) {
-        const nm = el.querySelector('.name');
-        if (nm && nm.textContent) return '正在' + String(nm.textContent).trim() + '…';
-      }
-    }
-    for (let i = els.length - 1; i >= 0; i--) {
-      const el = els[i];
-      if (!el || !el.classList) continue;
-      if (el.classList.contains('think')) {
-        const b = el.querySelector('.thinkBody');
-        const t = String((b && b.textContent) || '').replace(/\s+/g, ' ').trim();
-        if (t) return t.slice(0, 30) + (t.length > 30 ? '…' : '');
-      } else if (el.classList.contains('tool')) {
-        const nm = el.querySelector('.name');
-        if (nm && nm.textContent) return String(nm.textContent).trim();
-      }
-    }
-  } catch (e) {}
-  return '';
-}
+
+
 
 function foldLiveTools() {
   /* 【2026-11-07】第一次合柜时顺手把「散卡自愈守卫」装上（只装一次）。
@@ -20246,6 +20214,48 @@ function refreshTurnsCost() {
 
 /* 【2026-11-05】页面一加载就把标签清洗装上 —— 一处管所有渲染出口。 */
 try { if (typeof installTagCleaner === 'function') installTagCleaner(); } catch (e) {}
+
+
+/* #region 灰字（从 HEAD 找回：2026-11-08 工作区改动误删） */
+function thinkPeekTail(text) {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  /* 【2026-11-08 主人】28 字太短，灰字右边明明还有一大片空。
+   * 现在放到 160 字，真正显示多长交给 CSS 的 ellipsis 按容器宽度决定 ——
+   * 容器宽就多显示，窄就自动截，不用前端猜。 */
+  return flat.length > 160 ? '…' + flat.slice(-160) : flat;
+}
+
+
+function hubPeekOf(els) {
+  try {
+    for (let i = els.length - 1; i >= 0; i--) {
+      const el = els[i];
+      if (!el || !el.classList || !el.classList.contains('tool')) continue;
+      const st = el.querySelector('.status');
+      const stText = String((st && st.textContent) || '');
+      if (stText.indexOf('运行') >= 0 || (st && st.classList.contains('run'))) {
+        const nm = el.querySelector('.name');
+        if (nm && nm.textContent) return '正在' + String(nm.textContent).trim() + '…';
+      }
+    }
+    for (let i = els.length - 1; i >= 0; i--) {
+      const el = els[i];
+      if (!el || !el.classList) continue;
+      if (el.classList.contains('think')) {
+        const b = el.querySelector('.thinkBody');
+        const t = String((b && b.textContent) || '').replace(/\s+/g, ' ').trim();
+        if (t) return t.slice(0, 30) + (t.length > 30 ? '…' : '');
+      } else if (el.classList.contains('tool')) {
+        const nm = el.querySelector('.name');
+        if (nm && nm.textContent) return String(nm.textContent).trim();
+      }
+    }
+  } catch (e) {}
+  return '';
+}
+
+/* #endregion */
 
 function renderTurns(turns, opts) {
   /**

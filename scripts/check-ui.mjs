@@ -26,7 +26,7 @@
  *
  * 退出码：0 = 干净；1 = 有致命问题（会让页面白屏）。
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = 'D:\\小鱼Agent';
@@ -249,7 +249,23 @@ function checkFile(label, path) {
   // ---------- 5. 顶层脚本里用到但既没声明也没定义的标识符 ----------
   // 只查 todo 这类明显遗漏：形如 `todoXxx` / `planXxx` 的自由标识符
   console.log('  ── 疑似未定义变量');
-  const code = scripts.map((s) => s.code).join('\n');
+  /**
+   * 【2026-11-08 拆分配套】public/ui/*.js 也是页面脚本的一部分
+   * —— 普通 <script> 引进来、定义在全局。这里把它们并进「已声明」的扫描范围，
+   * 否则主脚本里调 hubPeekOf 会被判成「被当变量用但没声明」，
+   * 而那正是我们刚拆出去的那个函数（拆之前当然也在主脚本里）。
+   * 只用来收声明，不参与「用法」分析 —— 用法的判断仍然只看主脚本。
+   */
+  let _uiCode = '';
+  try {
+    const _uiDir = join(process.cwd(), 'public', 'ui');
+    if (existsSync(_uiDir)) {
+      for (const f of readdirSync(_uiDir)) {
+        if (f.endsWith('.js')) _uiCode += '\n' + readFileSync(join(_uiDir, f), 'utf8');
+      }
+    }
+  } catch (e) {}
+  const code = scripts.map((s) => s.code).join('\n') + _uiCode;
   const declared = new Set();
   for (const m of code.matchAll(/\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g)) declared.add(m[1]);
   for (const m of code.matchAll(/\b(?:const|let|var)\s*\{([^}]+)\}/g)) {

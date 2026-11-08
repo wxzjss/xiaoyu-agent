@@ -485,14 +485,43 @@ export async function testModel(input = {}) {
 function humanTextOf(text, fallback) {
   const raw = String(text || '').trim();
   if (!raw) return fallback;
+  let msg = '';
+  let code = '';
   try {
     const j = JSON.parse(raw);
-    const msg = String(j?.error?.message ?? j?.message ?? '').trim();
-    const code = String(j?.error?.code ?? j?.code ?? '').trim();
-    if (msg) return code ? `${msg}（${code}）` : msg;
+    const e = j?.error;
+    /* 【2026-11-09】很多中转站把错误直接写成 {"error":"一句话"}（字符串），
+     * 以前只认 {error:{message}}，这种就整个掉到 fallback，界面上只剩
+     * 「接口回了 400：{"error":"insufficient balance"}」—— 主人看了以为是「测不了」。 */
+    if (typeof e === 'string') msg = e.trim();
+    else {
+      msg = String(e?.message ?? j?.message ?? '').trim();
+      code = String(e?.code ?? j?.code ?? '').trim();
+    }
   } catch {
     /* 不是 JSON */
   }
+  /* 认毛病的时候要**连 code 一起看**：有的中转站把关键信息只放在 code 里
+   * （实测 {"error":{"message":"The image generation tool encountered an error","code":"no_available_account"}}），
+   * 只看 message 会漏掉。 */
+  const whole = String(msg || raw) + ' ' + code;
+  /* 常见毛病翻成人话，并且**带上下一步该干什么** —— 光说「失败」等于没说 */
+  if (/insufficient\s*balance|quota|余额不足|欠费|not enough/i.test(whole)) {
+    return '这个接入点说「余额不足」—— 去那边充点钱，或者换一个接入点';
+  }
+  if (/no_available_account|no\s+available\s+account|无可用账号|no_available_channel/i.test(whole)) {
+    return '这个接入点「没有可用账号」—— 多半是那条线路没给这个模型开，换个接入点或换个模型名';
+  }
+  if (/invalid.*(api.?key|token)|unauthorized|401/i.test(whole)) {
+    return 'Key 不对（401）—— 检查 API Key 有没有复制全、有没有多一个空格';
+  }
+  if (/model.*(not\s*found|not\s*exist|invalid)|unknown\s*model/i.test(whole)) {
+    return '这个模型名对方不认 —— 核对一下模型名（大小写、版本号都算）';
+  }
+  if (/rate\s*limit|429|too\s*many\s*requests/i.test(whole)) {
+    return '被限流了（429）—— 等一会儿再测';
+  }
+  if (msg) return code ? `${msg}（${code}）` : msg;
   return `${fallback}：${raw.slice(0, 300)}`;
 }
 

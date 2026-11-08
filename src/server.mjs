@@ -10501,6 +10501,37 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     const had = runningTurns.delete(sessionId);
     try { const lv = liveLogs && liveLogs.get && liveLogs.get(sessionId); if (lv && !lv.done) { lv.done = true; lv.endedAt = Date.now(); } } catch {}
+    /**
+     * 【2026-11-08 加·停止要在上下文里留个收口】
+     *
+     * 主人：「重启后给她发消息，她回我的还是【嗯，我在。】」
+     *
+     * 查下来：这里只掐信号、清插话、划掉 runningTurns，**啥都不落盘**。
+     * 于是历史尾部停在 `assistant(tool_calls) → tool([主人点了停止，命令被掐掉])`——
+     * 一组不齐的工具调用。下一次主人发话时，repairHistory 会把这一组整个砍掉，
+     * 她看到的是一段**被掐断的**上下文，再看到「继续」两个字，
+     * 只能顺着「你还在吗」去理解，于是回一句「嗯，我在。」
+     *
+     * 修法：停的时候补一条 sysNote 的 assistant 痕迹（界面上不画），
+     * 让上下文干净收口 —— 下一句「继续」就是正常的续接，不用她猜。
+     */
+    try {
+      const _s = getSession(sessionId);
+      const _m = _s && Array.isArray(_s.messages) ? _s.messages : null;
+      if (_m && _m.length) {
+        const _last = _m[_m.length - 1];
+        const _tailIsTool = _last && (_last.role === 'tool' || (_last.role === 'assistant' && _last.tool_calls?.length));
+        if (_tailIsTool) {
+          _m.push({
+            role: 'assistant',
+            content: '（主人把这一轮停掉了，活停在这儿，没做完。）',
+            at: Date.now(),
+            _sysNote: true,
+          });
+          try { saveSession(_s); } catch (e) {}
+        }
+      }
+    } catch (e) {}
     return json(res, 200, { ok: true, stopped: Boolean(turn?.ac) || had, running: false });
   }
 

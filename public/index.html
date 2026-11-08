@@ -12552,6 +12552,16 @@ function queueFromInput() {
     autosizeInput();
     syncSendBtn();
     renderAttachBar();
+    /* 【2026-11-08 修·删掉的预发送消息重启后又跑回输入框】
+     *
+     * 草稿（xy.draft.<sid>）和队列（xy_pending_<sid>）是两个独立的 key。
+     * 这里以前只用程序把 input.value 清空了 —— 程序改 value 不会触发 input 事件，
+     * 于是节流版的 saveDraft() 根本没跑，草稿里那句话**还原封不动躺着**。
+     * 主人把队列里那条删掉、重启，restoreDraft() 读草稿又把它写回输入框，
+     * 看着就像「删掉的消息自己跑回来了」。
+     *
+     * 话已经进队列了，草稿这份就该当场作废。 */
+    try { clearDraft(); } catch (e) {}
   } catch (e) {}
   return true;
 }
@@ -12610,10 +12620,18 @@ function renderPendingQueue() {
 }
 
 function removePending(id) {
-  const i = pendingQueue.findIndex((x) => x.id === id);
+  const i = pendingQueue.findIndex((x) => x && x.id === id);
   if (i < 0) return;
+  const dead = pendingQueue[i];
   pendingQueue.splice(i, 1);
   savePendingQueue();
+  /* 【2026-11-08 补】清掉历史残留的草稿：老版本入队时没清草稿，
+   * 那份文本可能还躺在 xy.draft.<sid> 里。只在这条文本和它完全一样时才清，
+   * 别把主人正在输入框里打的别的话一起抹了。 */
+  try {
+    const t = localStorage.getItem(draftKey());
+    if (t && String(t).trim() === String(dead.text || '').trim()) clearDraft();
+  } catch (e) {}
   renderPendingQueue();
 }
 

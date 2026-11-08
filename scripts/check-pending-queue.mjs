@@ -62,6 +62,15 @@ t.ok('抛错时标成「可能已发出」', /next\._uncertain = true/.test(ui))
 t.ok('不确定的那条不再自动重发', /if \(next\._uncertain\) return/.test(ui));
 t.ok('界面明确写出这个状态', /可能已发出/.test(ui) && /_uncertain \? '可能已发出'/.test(ui));
 
+/* 【2026-11-08 加·删掉的预发送消息重启后跑回输入框】
+ * 草稿 xy.draft.<sid> 和队列 xy_pending_<sid> 是两个独立 key。
+ * 入队时只把 input.value 清空（程序改 value 不触发 input 事件，草稿没清），
+ * 主人删了队列项、重启后 restoreDraft() 又把草稿写回输入框。
+ * 真实 leveldb 里那个草稿 key 出现 98 次、最后一份仍有内容 —— 实证。 */
+t.ok('入队时同步作废草稿', /enqueueMessage\(t, a\);[\s\S]{0,900}clearDraft\(\)/.test(ui));
+t.ok('删除队列项时按文本比对清掉历史残留草稿',
+  /function removePending\(id\)[\s\S]{0,400}localStorage\.getItem\(draftKey\(\)\)[\s\S]{0,200}clearDraft\(\)/.test(ui));
+
 // ── 2. 真机 ────────────────────────────────────────────────────
 let cdp = null;
 try { cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223), match: '8788' }); } catch { cdp = null; }

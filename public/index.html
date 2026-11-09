@@ -3772,14 +3772,10 @@
             <label style="margin-left:8px">模型</label>
             <select id="agModel"></select>
           </div>
-          <div class="agRow">
-            <!-- 2026-10-29：主人说「把【一句话】删掉」。
-                 本来那一栏就是让人手写一遍「这人是谁」，可人设正文第一句早说了；
-                 现在列表里的副标题直接从正文抠（服务端给的 snippet），少一栏要填的。 -->
-            <label>这个会话里</label>
-            <span id="agBindState" style="flex:1 1 160px;color:var(--dim)"></span>
-            <button type="button" class="ghost" id="agBind">让这个会话用她说话</button>
-          </div>
+          <!-- 【2026-11-09 主人：把智能体页的【这个会话由她说话】按钮删了】
+               这行是旧口径「给会话手动绑一张卡」的入口。现在主智能体 =
+               【屋里的人】从上往下第一个开着的（动态），排序/开关就是唯一开关；
+               再留一颗「让这个会话用她说话」只会跟它打架，也让主人以为是它没生效。 -->
           <div class="agRow">
             <!-- 2026-10-30【群聊：一个会话里好几个人说话】
                  主人要「多开智能体」。上面那行管「谁替我说话」（一个人），
@@ -8876,7 +8872,23 @@ function addAssistant(who, hideRole) {
   /* 【2026-11-03 修·实时气泡的名字颜色】历史气泡那边补了「按卡上色」，
    * 正在流式生成的这一条走的是这里，同样要上色，不然生成时粉、刷新后变灰。
    * 只有「不是小鱼」才加 .mate + 设 --whoC（小鱼的粉是 .assistant .role 的默认值，别动它）。 */
-  const __whoNow = String(who || '').trim() || String(mainAgentName || '').trim() || '小鱼';
+  /* 【2026-11-09 主人报·关小鱼开小白曦，直播时显示「小鱼」、发完才变小白曦】
+   * 以前这里 who 为空就退回 mainAgentName；而 mainAgentName 是**历史消息署名兜底**
+   * （后端约定空 _who = 小鱼，必须固定），流式那一条根本没带 who，于是屏幕上
+   * 先写「小鱼」，等这一轮落盘补了 _who、重画之后才变成真正的主智能体。
+   *
+   * 现在直播气泡的名字直接读【屋里的人】那列牌子：第一个没被关掉的就是
+   * 这一轮的主智能体（动态，跟后端 mainAgentId 同源），同步读 DOM、零延迟。
+   * who 参数（群聊里别人接话自带名字）永远优先；历史重画不走这里。 */
+  const __liveName = (() => {
+    try {
+      const b = document.querySelector('#whoRail .whoBtn:not(.off)');
+      return b ? String(b.textContent || '').trim() : '';
+    } catch { return ''; }
+  })();
+  const __whoNow = String(who || '').trim() || __liveName
+    || String(window.__turnSpeakerName || '').trim()
+    || String(mainAgentName || '').trim() || '小鱼';
   wrap.innerHTML = '<div class="role">' + __whoNow + '</div>';
   if (__whoNow !== '小鱼') {
     /* same rule as renderTurns: color the role line only, no .mate class */
@@ -12267,7 +12279,6 @@ async function selectAgent(id) {
       + '下面写的是当前这套「' + (agentCur.personaSetName || '默认人设') + '」的正文；模型空着就跟当前模型一致。';
     }
   }
-  syncBindRow();
   renderGroupRow();
   agHint('');
 }
@@ -12502,6 +12513,8 @@ async function refreshAgentChip() {
     const _isOn = (m) => Boolean(m) && m.enabled !== false;
     const _firstOn = grpMembers.find(_isOn);
     _speakerName = String((_firstOn && _firstOn.name) || '').trim() || '小鱼';
+    /* 流式气泡创建是同步的，来不及等接口；这里存一份给 addAssistant 兜底。 */
+    try { window.__turnSpeakerName = _speakerName; } catch {}
   } catch {}
   /* 2026-11-01：关掉的牌（enabled === false）这一轮一句话都不说，所以算「不在场」；
      「叫才应」的不再当噪音删掉 —— 她们被点名应一句是主人看得见的事，
@@ -12540,8 +12553,8 @@ async function refreshAgentChip() {
    * 「本会话」三个字把「谁在说话」和左上角「当前查看的卡」区分开。 */
   el.textContent = '本会话 · ' + _speakerName;
   el.title = (mates.length
-    ? `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— ${mates.length} 个还会接着补一句，点一下换人或换回小鱼`
-    : `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— 不是小鱼，点一下换人或换回小鱼`);
+    ? `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— ${mates.length} 个还会接着补一句，点一下打开智能体面板，排序和开关都在里面`
+    : `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— 不是小鱼，点一下打开智能体面板，排序和开关都在里面`);
   el.hidden = false;
 }
 
@@ -13212,62 +13225,6 @@ async function setAgentQuiet(id, quiet) {
   try { refreshAgentChip(); } catch { /* 忽略 */ }
 }
 
-/** 底下那行「这个会话里用谁说话」：按当前选中卡和绑定状态长成该有的样子 */
-function syncBindRow() {
-  const btn = document.getElementById('agBind');
-  const st = document.getElementById('agBindState');
-  if (!btn || !st) return;
-  const bound = String(agentState.boundAgentId || 'xiaoyu');
-  const cur = agentCur ? agentCur.id : '';
-  const hasSession = typeof sessionId === 'string' && !!sessionId;
-
-  if (!hasSession) {
-    st.textContent = '还没打开会话，先聊起来再回来挑';
-    btn.hidden = true;
-    return;
-  }
-  // 2026-10-31 主人：「每个智能体都是像小鱼一样的独立个体」。
-  // 小鲸也能替一个会话说话 —— 原来那句「不能挂到会话上」是把她当工具时留下的规矩。
-  btn.hidden = false;
-  if (cur === 'xiaoyu') {
-    st.textContent = bound === 'xiaoyu' ? '就是她（默认）' : '这个会话现在用的是别的卡';
-    btn.textContent = bound === 'xiaoyu' ? '已经就是她' : '换回小鱼';
-    btn.disabled = bound === 'xiaoyu';
-    btn.style.opacity = bound === 'xiaoyu' ? '.5' : '';
-    return;
-  }
-  if (bound === cur) {
-    st.textContent = '这个会话正在用她说话';
-    btn.textContent = '换回小鱼';
-    btn.disabled = false;
-    btn.style.opacity = '';
-  } else {
-    const nm = (agentState.agents || []).find((a) => a.id === bound)?.name || '小鱼';
-    st.textContent = `现在用的是「${nm}」`;
-    btn.textContent = '让这个会话用她说话';
-    btn.disabled = false;
-    btn.style.opacity = '';
-  }
-}
-
-/** 把当前选中的卡绑到当前会话（小鱼卡 = 解绑） */
-async function bindAgentCard() {
-  if (!agentCur) return;
-  if (typeof sessionId !== 'string' || !sessionId) { agHint('还没有会话，先在聊天里说一句'); return; }
-  const target = (agentCur.id === 'xiaoyu') ? '' : agentCur.id;
-  const r = await fetch('/api/agents/bind', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, agentId: target }),
-  }).then((x) => x.json()).catch(() => null);
-  if (!r || r.error) { agHint('换不了：' + ((r && r.error) || '网络错误')); return; }
-  agentState.boundAgentId = String(r.boundAgentId || 'xiaoyu');
-  syncBindRow();
-  try { refreshAgentChip(); } catch { /* 忽略 */ }
-  try { refreshWhoRail(); } catch { /* 忽略 */ }
-  agHint(r.agentId ? '这个会话从下一句开始就用她说话了' : '这个会话换回小鱼了');
-}
-
-
 async function openAgentDlg() {
   const dlg = document.getElementById('agentListDlg');
   if (!dlg) return;
@@ -13503,8 +13460,7 @@ async function importAgentCardFrom(file) {
 {
   const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   wire('agSave', () => saveAgentCard());
-  wire('agBind', () => bindAgentCard());
-  // 顶栏那枚「现在是谁在说话」的牌：点一下直接进智能体面板（换人 / 换回小鱼）
+  // 顶栏那枚「本会话 · X」的牌：点一下打开智能体面板（看/调【屋里的人】的排序和开关）
   wire('agentChip', () => openAgentDlg());
   wire('agImport', () => pickAgentCardFile());
   wire('agExport', () => exportAgentCard());

@@ -37,6 +37,17 @@ t.ok('绑定卡取自本轮接口返回值，不用可能过期的 agentState',
   !/agentState\.boundAgentId/.test(ui.slice(ui.indexOf('async function refreshAgentChip'), ui.indexOf('async function refreshAgentChip') + 6500)));
 t.ok('名单判据仍尊重「关掉的不在场」', /m\.enabled !== false/.test(ui));
 
+/* 【2026-11-09 主人：把智能体页的【这个会话由她说话】按钮删了】
+ * 那是旧口径「给会话手动绑一张卡」的入口。现在主智能体 =【屋里的人】
+ * 从上往下第一个开着的（动态），排序/开关是唯一开关；再留一颗手动绑卡按钮
+ * 只会跟它打架。后端接口和数据保留（老会话的绑定别动），但前端一律不许再有入口。 */
+t.ok('智能体页不再有「这个会话由她说话」按钮',
+  !/id="agBind"|id="agBindState"/.test(ui));
+t.ok('绑卡的前端逻辑整个删掉',
+  !/function syncBindRow|function bindAgentCard|wire\('agBind'/.test(ui));
+t.ok('顶栏牌子提示不再说「换人或换回小鱼」',
+  !/换人或换回小鱼/.test(ui));
+
 /* ── 行为层：隔离实例里真绑一张卡，看接口给界面的到底是谁 ──────────
  * 这里刻意**不碰 CDP**：隔离实例的浏览器页面还被别的真机检查用着，
  * 抢同一个 page 会互相卡住（2026-11-09 实测卡了 15 分钟）。

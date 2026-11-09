@@ -977,36 +977,46 @@ export function groupAgentIds(sessionId) {
  *        用来跟界面/server 的那份状态对齐（不传就用本文件自己的判据）。
  * @returns {string|null} agentId
  */
-export function mainAgentId(sessionId, isOn = null) {
+/**
+ * 【2026-11-09 主人重做·唯一真源】这个会话这一轮「从上往下所有启用的人」。
+ *
+ * 新口径三句话：
+ *   ① 第 0 个 = 主智能体 = **唯一有 Agent 工作能力**的人（跑工具循环、派活）；
+ *   ② 其余的按名单顺序依次接话，**一律没有 Agent 工作能力**（只能说一句话）；
+ *   ③ 接话是链式的：A 看到主人原话，B 看到「主人 + A」，C 看到「主人 + A + B」……
+ *
+ * 以前 `mainAgentId` 自己遍历、`runMateRound` 写死排除小鱼、界面按 idx===0 高亮，
+ * 三处各算各的 —— 主智能体不是小鱼时立刻对不上。现在全都从这里取。
+ *
+ * @param {(id:string)=>boolean} [isOn] 跟 server 的 mateSwitchOn 对齐；不传就用本文件判据
+ * @returns {string[]} 按竖列从上到下的 id
+ */
+export function activeAgentIds(sessionId, isOn = null) {
   const sid = String(sessionId || '');
-  if (!sid) return null;
+  if (!sid) return [];
   let ids = [];
-  try { ids = groupAgentIds(sid); } catch { return null; }
+  try { ids = groupAgentIds(sid); } catch { return []; }
   const onMap = (() => { try { return groupEnabledMap(sid); } catch { return {}; } })();
-  /**
-   * 小鱼、小鲸的「开着没」在 fish-presence / whale-presence 里，
-   * 不在上面那张牌子表里（牌子表只管自定义卡）。
-   *
-   * 【为什么不在文件顶 import】
-   * fish-presence / whale-presence 会反过来碰 agents（初始化时要读名单），
-   * 静态成环会炸。所以这里**同步**读：用 createRequire 不行（是 ESM），
-   * 于是改成「调用方传判据」为主 —— 不传的时候，只认牌子表 + 默认开着。
-   * 也就是说：不传 isOn 时，小鱼/小鲸按「开着」算（它们的 presence 文件读不到
-   * 就默认 true，跟 server.mjs 里 try/catch 兜底的语义一致）。
-   */
+  /* 【2026-11-09】默认判据也尊重「这一轮被关掉」这件事。
+   * 旧版不传 isOn 时把小鱼/小鲸硬当 true —— 可界面把她们关掉时，
+   * toggleWhoBtn 会往 groupEnabledBySession 里写 false，这里却还当她开着，
+   * 主智能体就跟屏上那颗灰掉的牌对不上了。表里有明确记录就照表；
+   * 没记过（undefined）才按开着算，跟 server 的 try/catch 兜底一个语义。 */
   const judge = typeof isOn === 'function'
     ? isOn
-    : (id) => {
-      if (id === AGENT_XIAOYU || id === AGENT_XIAOJING) return true;
-      return onMap[id] !== false;
-    };
-  for (const id of ids) {
-    let on = false;
-    try { on = judge(id) !== false; } catch { on = true; }
-    if (on) return String(id);
-  }
-  return null;
+    : (id) => onMap[id] !== false;
+  return ids.map((id) => String(id)).filter((id) => {
+    try { return judge(id) !== false; } catch { return true; }
+  });
 }
+
+export function mainAgentId(sessionId, isOn = null) {
+  /* 【2026-11-09】不再自己遍历一遍 —— 跟接话名单、界面高亮共用 activeAgentIds，
+   * 免得三处判据稍微不一样，主智能体又跟屏上那颗牌子对不上。 */
+  const alive = activeAgentIds(sessionId, isOn);
+  return alive.length ? alive[0] : null;
+}
+
 
 /** 一次读出「每个会话分别有谁在场」（给会话列表/顶栏用，跟 sessionAgentMap 一个口径） */
 export function groupAgentMap() {

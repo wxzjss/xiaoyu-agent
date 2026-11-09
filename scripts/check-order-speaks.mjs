@@ -13,7 +13,7 @@ const post = (p, b) => api(p, { method: 'POST', headers: { 'Content-Type': 'appl
 let pass = 0, total = 0;
 const chk = (name, ok, extra) => { total++; if (ok) { pass++; console.log('  [ok] ' + name + (extra ? '  ' + extra : '')); } else console.log('  [FAIL] ' + name + (extra ? '  ' + extra : '')); };
 
-async function chat(sid, msg) {
+async function chat(sid, msg, mainName = '小鱼') {
   /* 【2026-11-06 修·没有超时会让整个回归卡死】
    * 实测：18:33 起卡在这一句足足 4 分半，日志一动不动、node 进程还活着。
    * 打的是 /api/chat，真在调模型 —— 上游慢或挂了它就无限等，
@@ -44,7 +44,7 @@ async function chat(sid, msg) {
   }
   const seq = [];
   let fbuf = '';
-  const noteFish = () => { if (fbuf.trim() && !seq.includes('小鱼')) seq.push('小鱼'); };
+  const noteFish = () => { if (fbuf.trim() && !seq.includes(mainName)) seq.push(mainName); };
   for (const blk of raw.split('\n\n')) {
     const l = blk.split('\n').find((x) => x.startsWith('data:'));
     if (!l) continue;
@@ -60,6 +60,8 @@ const ag = await api('/api/agents');
 const all = ag.json.agents || [];
 const BX = all.filter((a) => !a.builtin && a.name === '小白曦')[0] || all.filter((a) => !a.builtin)[0];
 if (!BX) { console.log('没有自建智能体，跳过'); process.exit(0); }
+const nameOf = (id) => (all.find((a) => a.id === id) || {}).name
+  || (id === 'xiaoyu' ? '小鱼' : id === 'xiaojing' ? '小鲸' : id);
 
 const made = [];
 async function setup(ids) {
@@ -93,10 +95,12 @@ for (const c of cases) {
   const order = (g.json.agentIds || []).map((id) => (all.find((a) => a.id === id) || {}).name || id);
   console.log('  竖列: ' + order.join(' → '));
   // 【2026-11-08】模型答的快慢会打乱开口先后，这不是代码回归。给两次机会，都乱才算失败。
-  let r = await chat(sid, '各说一句');
+  /* 新口径：主智能体 = 竖列第一个开着的，她的文本回复算她说的 */
+  const mainName = nameOf(c.ids[0]);
+  let r = await chat(sid, '各说一句', mainName);
   if (JSON.stringify(r.seq) !== JSON.stringify(c.want)) {
     console.log('  第一次顺序乱了，再试一次（模型计时抖动，不是回归）');
-    r = await chat(sid, '各说一句');
+    r = await chat(sid, '各说一句', mainName);
   }
   console.log('  开口: ' + r.seq.join(' → '));
   chk('开口顺序 = 竖列顺序', JSON.stringify(r.seq) === JSON.stringify(c.want), JSON.stringify(r.seq) + ' vs ' + JSON.stringify(c.want));

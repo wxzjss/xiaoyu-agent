@@ -278,8 +278,10 @@ const parts = [
   if (_crowd.length) {
     const others = _crowd.filter((a) => !_card || String(a.id) !== String(_card.id));
     const names = others.map((a) => String(a.name || '').trim()).filter(Boolean);
-    // 说话的是小鱼的卡时，别的卡都在「别人」那栏；说话的是别的卡时，小鱼也在场
-    const list = _card && String(_card.id) !== 'xiaoyu' ? ['小鱼', ...names] : names;
+    /* 【2026-11-09 主人重做】不再写死「说话的是别的卡时把小鱼补进来」。
+     * others 已经是「屋里除这一轮说话者以外的全部人」，小鱼只要在名单里就在里面；
+     * 再补一次会重复，而且主智能体根本未必是小鱼。 */
+    const list = names;
     if (list.length) parts.push(agentGroupNote(list));
   }
   /**

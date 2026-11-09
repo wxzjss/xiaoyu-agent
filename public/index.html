@@ -12606,17 +12606,23 @@ async function refreshWhoRail() {
    * 真正把她们拦在门外的是服务端那两条 presence 状态，
    * toggleWhoBtn → POST /api/agents/group/toggle 会把它一起改掉。
    */
+  /* 【2026-11-09 主人重做】「主智能体」= 从上往下**第一个开着的**，
+   * 不是写死的 idx===0。第一个被关掉时，高亮要跟着挪到下一个开着的人身上。
+   * 她也是这一轮唯一有 Agent 工作能力的人；下面的人按顺序接话。 */
+  const firstOn = members.findIndex((x) => x && x.enabled !== false);
   const mk = (m, idx) => {
     const b = document.createElement('button');
     b.type = 'button';
     const id = String(m.id || '');
     const off = m.enabled === false;
-    b.className = 'whoBtn' + (idx === 0 ? ' first' : '') + (off ? ' off' : '');
+    const isMain = idx === firstOn;
+    b.className = 'whoBtn' + (isMain ? ' first' : '') + (off ? ' off' : '');
     b.textContent = String(m.name || '她');
     b.dataset.agentId = id;
     b.style.setProperty('--whoC', String(m.color || ''));
     b.title = [
-      idx === 0 ? '排第一个 —— 这一轮她先说' : `第 ${idx + 1} 个说话（顺序从上往下）`,
+      isMain ? '主智能体 —— 这一轮唯一有 Agent 工作能力：她先说，下面的人依次接话'
+        : `第 ${idx + 1} 个（顺序从上往下）：接话的人，没有 Agent 工作能力`,
       off ? '现在是关着的：这一轮她一句话都不说（点一下打开）' : '点一下关掉她这一轮；长按可上下拖动换顺序',
       m.quiet ? '个性打了勾：只有你叫她的名字（@她）才答' : '个性没打勾：每轮都会说一句',
       '长按可上下拖动换顺序；双击 = 在输入框里叫她的名字',

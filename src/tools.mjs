@@ -2108,29 +2108,16 @@ export const tools = [
       let nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
 
       let r;
-      /* 【2026-11-01 主人：办事模式不再新开临时智能体，改成调动屋里的人】
-         主智能体（屋里排序第一个已启用的）把活派给屋里另一个人；
-         那个人没启用就自动启用；屋里只剩主智能体一个，就按规矩拉人进来
-         （主声小鱼→拉小鲸／主声小鲸→拉小鱼／主声自建卡→拉小鱼）再让她做。 */
+      /* 【2026-11-09 主人重做 · 这条覆盖 2026-11-01 的旧裁决】
+       * 旧规矩：派活优先挑「屋里除主智能体之外的人」，没启用就自动启用，
+       *   屋里只剩一个就拉人进来 —— 等于把主人手动关掉的开关又打开。
+       * 新规矩：从上往下第一个开着的 = 唯一有 Agent 工作能力的主智能体，
+       *   排在她下面的一律**禁用 Agent 工作能力**（只能说话，不能干活）。
+       *   所以不能再借她们的名字当 worker，也不能自动启用/拉人进屋。
+       * worker 本来就是 runSubagent 派出的执行体，不是屋里的人；
+       *   名字用调用方给的 name，没给就用 worker-xxx。
+       */
       const push = ctxNow().pushEvent;
-      try {
-        const { pickHelperForTask } = await import('./pick-helper.mjs');
-        const { mainAgentId, mateSwitchOn } = await import('./agents.mjs');
-        const __sid = ctxNow().sessionId || 'default';
-        let __main = '';
-        try { __main = String(mainAgentId(__sid, (id) => mateSwitchOn(id, __sid)) || ''); } catch { __main = ''; }
-        const __h = pickHelperForTask(__sid, __main);
-        if (__h && __h.id) {
-          nick = __h.name || nick;
-          if (typeof push === 'function' && (__h.added || __h.enabled === false)) {
-            try {
-              push({ type: 'note', text: __h.added ? ('屋里没人能派活，我把' + __h.name + '请进来了') : ('把' + __h.name + '的开关打开了') });
-            } catch {}
-          }
-        }
-      } catch (e) {
-        try { console.warn('[spawn_worker] 挑屋里的帮手失败：', String(e?.message ?? e)); } catch {}
-      }
 
       /* 【2026-11-06 修·花名册里存的是临时名，不是帮手真名】
        *  原来 noteWorker 在「挑帮手」之前就按 nick 建了记录，

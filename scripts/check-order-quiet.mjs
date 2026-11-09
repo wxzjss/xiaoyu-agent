@@ -27,7 +27,7 @@ async function setRoster(sid, ids) {
   await post('/api/agents/group', { sessionId: sid, agentIds: ids });
   await post('/api/agents/group/order', { sessionId: sid, agentIds: ids });
 }
-function chat(sid, text) {
+function chat(sid, text, mainName = '小鱼') {
   return new Promise((resolve) => {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 90000);
@@ -50,13 +50,13 @@ function chat(sid, text) {
           let ev; try { ev = JSON.parse(ln.slice(6)); } catch { continue; }
           if (ev.type === 'text' && typeof ev.text === 'string') { fbuf += ev.text; continue; }
           if (ev.type === 'agent' && ev.who) {
-            if (fbuf.trim() && !order.includes('小鱼')) order.push('小鱼');
+            if (fbuf.trim() && !order.includes(mainName)) order.push(mainName);
             seen[ev.who] = (seen[ev.who] || 0) + 1;
             if (seen[ev.who] > 1) otherDup++;
             if (!order.includes(ev.who)) order.push(ev.who);
             continue;
           }
-          if (ev.type === 'done') { if (fbuf.trim() && !order.includes('小鱼')) order.push('小鱼'); }
+          if (ev.type === 'done') { if (fbuf.trim() && !order.includes(mainName)) order.push(mainName); }
         }
       }
       clearTimeout(timer);
@@ -143,7 +143,8 @@ const s4 = await newSid('__r3d__');
 await setRoster(s4, [BX.id, 'xiaoyu']);
 await post('/api/fish', { sessionId: s4, on: true });
 await post('/api/whale', { sessionId: s4, on: false });
-const r4 = await chat(s4, '各说一句');
+/* 新口径：竖列第一个开着的 = 主智能体，她的文本回复算她说的，不再写死小鱼 */
+const r4 = await chat(s4, '各说一句', BX.name);
 chk('小白曦在上 → 她先说', r4.order[0] === BX.name, JSON.stringify(r4.order));
 
 // 清理

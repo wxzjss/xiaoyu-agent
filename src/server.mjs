@@ -143,6 +143,7 @@ import {
   groupAgentIds,
   setSessionGroup,
   mainAgentId,
+  activeAgentIds,   /* 2026-11-09 重做：主智能体 + 接话名单的唯一真源 */
   /* 屋里的人·2026-11-01：顺序（拖）与开关（启用才说话） */
   setSessionGroupOrder,
   isGroupMemberEnabled,
@@ -823,14 +824,17 @@ async function runMateRound({ sessionId, heard, send, excludeIds = [], signal = 
     const sess = session || getSession(sessionId);
     if (!sess) return 0;
     const skip = new Set((Array.isArray(excludeIds) ? excludeIds : []).map((x) => String(x)));
-    const roster = groupAgentIds(sessionId)
+    /* 【2026-11-09 重做】跟主流程末尾同一套口径：主智能体以下的人按竖列顺序接话。 */
+    const _alive = activeAgentIds(sessionId, (id) => mateSwitchOn(id, sessionId));
+    const _mainId = String(_alive[0] || '');
+    let _mainName = '';
+    try { _mainName = String((getAgent(_mainId) || {}).name || '').trim(); } catch {}
+    const roster = _alive.slice(1)
       .map((id) => getAgent(id))
       .filter(Boolean)
-      /* 小鱼是这一轮的主声，不算「补一句的人」 */
-      .filter((a) => String(a.id) !== AGENT_XIAOYU)
       .filter((a) => !skip.has(String(a.id)));
     if (!roster.length) return 0;
-    const enabledIds = roster.map((a) => String(a.id)).filter((id) => mateSwitchOn(id, sessionId));
+    const enabledIds = roster.map((a) => String(a.id));
     const { speakAsCard, pickSpeakers } = await import('./group.mjs');
     const prevAllowed = allowedSpeakersOf(sessionId);
     const quietIds = quietAgentIds();
@@ -840,6 +844,7 @@ async function runMateRound({ sessionId, heard, send, excludeIds = [], signal = 
       quietIds,
       allowedIds: prevAllowed,
       enabledIds,
+      keepOrder: true,   /* 新口径：严格 A→B→C，不被 @ 的出现顺序打乱 */
     });
     try { console.log("[DBG-mate] roster=" + roster.map(a=>a.name).join(",") + " enabled=" + enabledIds.join(",") + " speakers=" + (speakers||[]).map(a=>a.name).join(",") + " msgs=" + (sess.messages||[]).length); } catch {}
     if (!speakers || !speakers.length) return 0;
@@ -850,7 +855,7 @@ async function runMateRound({ sessionId, heard, send, excludeIds = [], signal = 
       const nm = String(mate.name || '').trim();
       let out = null;
       try {
-        out = await speakAsCard({ agent: mate, messages: sess.messages, sessionId, signal });
+        out = await speakAsCard({ agent: mate, messages: sess.messages, sessionId, signal, mainName: _mainName });
       } catch {
         out = null;
       }
@@ -9276,7 +9281,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 这时候再把上面的人各喊一遍，等于他们无缘无故又重复一次。
          * 6728/6769/6802 行都明确写着「resume 不做这些」，这里跟着守同一条规矩。
          */
-        if (process.env.GROUP_CHAT !== '0' && !resume) {
+        /* 【2026-11-09 主人重做·这段整个停用】
+         * 旧口径是「排在小鱼上面的人先开口」，因为小鱼写死当主声。
+         * 新口径：名单第一个开着的**就是**主智能体 A，她必须最先说
+         * （A 看主人 → B 看主人+A → C 看主人+A+B）。A 上面没人，
+         * 所以这段没有存在意义，留着只会让 B 抢在 A 前面、破坏链式可见。
+         * 真要回退用 XY_LEGACY_ABOVE=1，默认永不触发。 */
+        if (process.env.XY_LEGACY_ABOVE === '1' && process.env.GROUP_CHAT !== '0' && !resume) {
           const _order = groupAgentIds(sessionId).map((x) => String(x));
           const _fishAt = _order.indexOf(String(AGENT_XIAOYU));
           const _above = _order.filter((id, idx) => {
@@ -10013,14 +10024,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
              旧的「小鲸不再看 whaleOn、只看她屋里那颗牌」作废 —— 那颗钥匙原来被当成
              「能不能叫出去干活」，主人从来没这么用，她指的是「她在不在场」。
 
-             【小鱼不算「补一句的人」】—— 2026-11-01 主人：「为什么小鱼每次说完一轮都要
-             再多说一句？是不是智能体的问题？改」。小鱼本来就是这轮正主，她的回答在群聊
-             这段**之前**已经完整说完了；名单里再带上她，就是让她对着自己的话再补一句
-             —— 看着像「智能体有问题」的那种多余。所以这里把小鱼剔掉，只剩「别人」。 */
-          const roster = groupAgentIds(sessionId)
+             【2026-11-09 主人重做·接话名单动态化】
+             以前写死「排除小鱼」—— 可主智能体是「从上往下第一个开着的」，
+             她未必是小鱼。主智能体换成别人时，小鱼被白白剔掉、
+             而真正的主智能体又被当成「补一句的人」再说一遍。
+             现在统一：接话名单 = activeAgentIds() 里主智能体**以下**的那些，
+             按竖列顺序（A→B→C）依次接话。主智能体这一轮已在上面完整答完。 */
+          const _alive = activeAgentIds(sessionId, (id) => mateSwitchOn(id, sessionId));
+          const _mainId = String(_alive[0] || '');
+          let _mainName = '';
+          try { _mainName = String((getAgent(_mainId) || {}).name || '').trim(); } catch {}
+          const roster = _alive.slice(1)
             .map((id) => getAgent(id))
-            .filter(Boolean)
-            .filter((a) => String(a.id) !== AGENT_XIAOYU);
+            .filter(Boolean);
           const switchOn = (id) => {
             if (id === AGENT_XIAOJING) {
               try { return whaleOn(sessionId); } catch { return false; }
@@ -10041,7 +10057,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           const prevAllowed = allowedSpeakersOf(sessionId);
           const quietIds = quietAgentIds();
           const speakers0 = roster.length
-            ? pickSpeakers({ roster, userText: heard, quietIds, allowedIds: prevAllowed, enabledIds })
+            ? pickSpeakers({ roster, userText: heard, quietIds, allowedIds: prevAllowed, enabledIds, keepOrder: true })
             : [];
           /**
            * 【这一轮已经开过口的人，群聊不再喊一遍】—— 2026-11-03
@@ -10113,6 +10129,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
                   messages: session.messages,
                   sessionId,
                   signal: ac.signal,
+                  mainName: _mainName,
                 });
               } catch {
                 out = null;

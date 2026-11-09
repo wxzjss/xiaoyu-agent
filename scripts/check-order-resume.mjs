@@ -35,7 +35,7 @@ function diskMsgs(sid) {
 }
 
 // 发一句，按事件真实到达先后记说话人
-async function chat(sid, text, opt = {}) {
+async function chat(sid, text, opt = {}, mainName = '小鱼') {
   const r = await fetch(BASE + '/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -50,7 +50,7 @@ async function chat(sid, text, opt = {}) {
     let ev = null; try { ev = JSON.parse(line.slice(6)); } catch { continue; }
     if (ev.type === 'text' && typeof ev.text === 'string') {
       fishChars += ev.text.length;
-      if (!seq.includes('小鱼')) seq.push('小鱼');
+      if (!seq.includes(mainName)) seq.push(mainName);
     } else if (ev.type === 'agent' && ev.who) {
       if (!seq.includes(ev.who)) seq.push(ev.who);
     }
@@ -90,11 +90,11 @@ try {
   await post('/api/agents/group/order', { sessionId: s2, agentIds: [BX, 'xiaoyu'] });
   await post('/api/whale', { sessionId: s2, on: false });
   // 模型说话快慢带随机性，一次不对不算回归挂；最多试 3 次
-  let r3 = await chat(s2, '各说一句');
+  let r3 = await chat(s2, '各说一句', {}, '小白曦');
   for (let k = 0; k < 2; k += 1) {
     if (r3.seq[0] === '小白曦' && r3.seq.includes('小鱼')) break;
     console.log('   （这次抢话了，再试一次）');
-    r3 = await chat(s2, '各说一句');
+    r3 = await chat(s2, '各说一句', {}, '小白曦');
   }
   chk('小白曦在小鱼上面 → 她先说', r3.seq[0] === '小白曦' && r3.seq.includes('小鱼'), JSON.stringify(r3.seq));
 

@@ -51,7 +51,7 @@ function clip(text) {
 }
 
 /** 这条是谁说的：'me' | '主人' | '小鱼' | 别的名字 */
-function speakerOf(m, meId) {
+function speakerOf(m, meId, mainName = '') {
   /**
    * 【这条是谁说的】—— 2026-10-30 修「小鲸的话被当成主人说的」
    *
@@ -78,7 +78,7 @@ function speakerOf(m, meId) {
   ).trim();
   // 卡片声音（_cardVoice）也说明这行是别人说的，不该当主人
   if (m.role === 'user') return who || (m._cardVoice ? '某位同伴' : '主人');
-  return who || '小鱼';
+  return who || String(mainName || '').trim() || '小鱼';
 }
 
 /**
@@ -88,7 +88,7 @@ function speakerOf(m, meId) {
  * @param {Array} p.messages 会话的原始消息数组
  * @param {string} p.sessionId
  */
-export function buildCardMessages({ agent, messages, sessionId = 'default' } = {}) {
+export function buildCardMessages({ agent, messages, sessionId = 'default', mainName = '' } = {}) {
   const meId = String(agent?.id || '');
   const nm = String(agent?.name || '').trim() || '她';
   const all = (Array.isArray(messages) ? messages : []).filter(usable);
@@ -109,7 +109,7 @@ export function buildCardMessages({ agent, messages, sessionId = 'default' } = {
    * 这块放在正文最前面，用【更早的时候】框起来，读起来像「前言，不是刚才说的」。
    */
   const olderRaw = all.slice(0, Math.max(0, all.length - HISTORY_LIMIT));
-  const earlier = earlierSayings(olderRaw, meId);
+  const earlier = earlierSayings(olderRaw, meId, mainName);
   const out = [{ role: 'system', content: buildSystemPrompt({ sessionId, agentId: meId }) }];
   if (earlier.length) {
     out.push({
@@ -120,10 +120,10 @@ export function buildCardMessages({ agent, messages, sessionId = 'default' } = {
   for (const m of pick) {
     const text = clip(typeof m._text === 'string' ? m._text : m.content);
     if (!text) continue;
-    if (speakerOf(m, meId) === 'me') {
+    if (speakerOf(m, meId, mainName) === 'me') {
       out.push({ role: 'assistant', content: text });
     } else {
-      const who = speakerOf(m, meId);
+      const who = speakerOf(m, meId, mainName);
       out.push({ role: 'user', content: `${who}：${text}` });
     }
   }
@@ -137,10 +137,16 @@ export function buildCardMessages({ agent, messages, sessionId = 'default' } = {
     role: 'user',
     content: `（轮到「${nm}」说话了。接着上面的记录，用你自己的口吻说一句，或者两句。别复述别人说过的，别替别人发言，不用总结，不用说「轮到我说」。
 
-  记录里「小鱼」是另一个在干活的人（她负责查代码、看日志、修东西），不是你，也不是主人：
+  【2026-11-09 主人重做 · 链式接话】上面这段记录是**这一轮**按说话先后排下来的：
+  主人先说，然后主智能体答，再然后排在她下面的人一个接一个说。
+  你现在能看到的就是「主人 + 排在你前面那些人刚说完的话」—— 后面的人还没开口，所以别提前替她们说。
+  每行开头那个名字就是说话的人，别把别人的话认成自己说的。
+
+  记录里「${mainName || '小鱼'}」是这一轮的主智能体（**唯一有 Agent 工作能力**的那个，
+  负责查代码、看日志、修东西、派活），不是你，也不是主人：
   · 她的活儿、她的判断、她查到的东西，都算她的，别当成你自己查的，也别替她下结论、别替她报结果；
   · 也别学她的腔调说话 —— 你按你自己的样子说；
-  · 你自己没真看过的，就别说「我看了一眼」「我去查了」这种话。
+  · 你这一轮**没有工具、不能干活**，你自己没真看过的，就别说「我看了一眼」「我去查了」这种话。
   你只需要作为你自己，说你想说的。`
   });
   return out;
@@ -160,7 +166,7 @@ const EARLIER_TOTAL = 1200;
  * 收满 EARLIER_PER_WHO 就跳过这个人。这样越近的越优先，远的自然被挤掉。
  * @returns {Array<{who:string, text:string}>}
  */
-function earlierSayings(older, meId) {
+function earlierSayings(older, meId, mainName = '') {
   const picked = new Map(); // who -> [text]
   for (let i = older.length - 1; i >= 0; i--) {
     const m = older[i];
@@ -168,7 +174,7 @@ function earlierSayings(older, meId) {
       .replace(/\s+/g, ' ')
       .trim();
     if (!text) continue;
-    const who = speakerOf(m, meId) === 'me' ? '你' : speakerOf(m, meId);
+    const who = speakerOf(m, meId, mainName) === 'me' ? '你' : speakerOf(m, meId, mainName);
     const bucket = picked.get(who) || [];
     if (bucket.length >= EARLIER_PER_WHO) continue;
     // 同一句话（前 20 字一样）就别再收一遍
@@ -195,12 +201,16 @@ function earlierSayings(older, meId) {
  * 失败一律返回空话 —— 群聊里少一个人说话是小事，把整轮聊天搞崩是大事。
  * @returns {Promise<{text: string, usage: object|null}>}
  */
-export async function speakAsCard({ agent, messages, sessionId = 'default', signal } = {}) {
+export async function speakAsCard({ agent, messages, sessionId = 'default', signal, mainName = '' } = {}) {
   if (!agent || !String(agent.name || '').trim()) return { text: '', usage: null };
-  const msgs = buildCardMessages({ agent, messages, sessionId });
+  const msgs = buildCardMessages({ agent, messages, sessionId, mainName });
   const model = String(agent.modelId || '').trim();
   let res = null;
   try {
+    /* 【2026-11-09 主人重做·排在下面的智能体一律禁用 Agent 工作能力】
+     * 这里**永远不传 tools**，也不跑 runAgent 的工具循环 —— 只有主智能体
+     * （从上往下第一个开着的）有工具、能派活。其余的人只能说一句话。
+     * 这条不是「暂时没给」，是口径：别哪天顺手把 tools 加回来。 */
     res = await chat({ messages: msgs, model, sessionId, signal });
   } catch {
     return { text: '', usage: null };
@@ -268,7 +278,7 @@ export function cleanReply(text, agent) {
  * @param {Array<string>|null} p.allowedIds 【已停用】旧「锁场」名单，传了也不看
  * @param {Array<string>} p.enabledIds 这一轮开着的牌（不给就是全开）
  */
-export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowedIds = null, enabledIds = null } = {}) {
+export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowedIds = null, enabledIds = null, keepOrder = false } = {}) {
   void allowedIds; // 旧锁场名单：2026-11-02 起不再参与，保留形参只为兼容老调用方
   const mates = (Array.isArray(roster) ? roster : []).filter((a) => a && a.id);
   if (!mates.length) return [];
@@ -302,7 +312,8 @@ export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowe
    * AliveHits 已经是「按出现位置排好的」（parseMentions 按 text.indexOf 排），
    * 所以直接拿它当序号表用。
    */
-  if (aliveHits.length && picked.length) {
+  /* 【2026-11-09 主人重做】keepOrder = 严格按竖列 A→B→C，不让 @ 的出现顺序插队。 */
+  if (!keepOrder && aliveHits.length && picked.length) {
     const rank = new Map(aliveHits.map((id, i) => [String(id), i]));
     const said = (a) => (rank.has(String(a.id)) ? rank.get(String(a.id)) : Number.MAX_SAFE_INTEGER);
     // sort 是稳定的：所有没被点的人都拿 MAX_SAFE_INTEGER，它们的相对次序原样保留

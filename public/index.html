@@ -12482,52 +12482,26 @@ async function refreshAgentChip() {
    * 一旦主人把她的安静去掉（她会每轮都接），或者勾了别人，牌子才亮。
    */
   const grpMembers = (grp && !grp.error && Array.isArray(grp.members)) ? grp.members : [];
-  /* 【2026-11-09】本会话到底谁在说话，整页只用这一个值（牌子、气泡兜底署名）。 */
+  /* 【2026-11-09 二修 · 主人报：以前小鱼干的活全署名成了小白曦】
+   *
+   * 我上一版把两件事合成了一个 _speakerName，正好踩中 11-03 这条警告。
+   * 这两件事**必须彻底分开**：
+   *
+   * ① mainAgentName = 历史气泡的署名兜底。后端约定「落盘 _who 为空 = 小鱼」
+   *    （server.mjs commitWireBack 里那段注释），老消息绝大多数都是小鱼干的活。
+   *    它要是跟着当前会话 / 绑定卡 / 名单变，满屏老消息就会被集体改署名。
+   *    → **永远固定 '小鱼'**，谁在说话都不影响它。消息自带 _who 的永远优先。
+   *
+   * ② _speakerName = 这一轮谁在说话，只给右侧「本会话 · X」这块牌子用。
+   *    口径跟后端 mainAgentId 完全一致：【屋里的人】从上往下**第一个开着的**，
+   *    动态 —— 主人关掉小鱼、开小白曦，牌子就得立刻变成小白曦。
+   *    不再看 /api/agents/current 的绑定卡（那是「会话挂了哪张卡」，不是排序）。 */
   let _speakerName = '小鱼';
-  /* 【2026-11-03 修·小鱼说的话被顶上别人的名字】主人截图报：红名「小白曦」下面那段，
-   * 其实是我（小鱼）说的话。
-   * 病根：mainAgentName 是所有「没自带署名的消息」的兜底，原来这里把它设成
-   *   「这个会话绑的那张卡」。于是绑了小白曦的会话里，我说的那些话
-   *   （落盘不带 _who —— server.mjs 的约定：空就是小鱼）全被兜底成小白曦。
-   * 修法：兜底 = 「这一轮实际说话的那个人」。名单里排第一、且没被关掉的就是她；
-   *   名单空 / 排第一的被关了 → 小鱼（没人在场时说话的一定是我）。
-   * 放在这里（而不是函数末尾）是有意的：下面 10771 那行有个提前 return
-   *   （不挂牌子的常见情形），放末尾会漏设，切换会话后就留着上一个人的名字。
-   * 消息自己带 _who 的永远优先，这一行只管那些没带署名的。 */
   try {
-    /* 口径跟后端 agents.mjs 的 mainAgentId 完全一致（2026-11-03 对齐）：
-     * 从头遍历名单，第一个「开着」的就是这一轮说话的人。
-     *
-     * 【2026-11-03 修·这儿原来把小鱼/小鲸硬当成开着】
-     *   主人报的病就是它：红名「小白曦」下面那段其实是我（小鱼）说的话。
-     *   原来写的是 mid === 'xiaoyu' || mid === 'xiaojing' → true，
-     *   而 /api/agents/group 给的 enabled 本来就是真开关（小鱼走 fishOn、
-     *   小鲸走 whaleOn、别的卡走牌子表，server.mjs 里 switchOf 那几行）。
-     *   硬定成 true 的后果：小鱼被关掉时她仍被当成主讲，兜底名落到她身上，
-     *   而实际说话的是排在她后面那个人 —— 署名又错一次。
-     *   所以这里一律读接口给的值，不再自己猜。
-     * 一个都不在场 → 小鱼（没别人时说话的一定是我）。 */
-    const _isOn = (m) => {
-      if (!m) return false;
-      return m.enabled !== false;
-    };
-    /* 【2026-11-09 主人报·「办事鱼会话里她用小白曦的口吻说话」】
-     *
-     * 不是串台：那个会话**绑的就是小白曦那张卡**（/api/agents/current 返回的是
-     * sessionAgentId，buildSystemPrompt 的兜底也是 agentForSession），
-     * 所以她按小白曦说话是符合设定的。
-     *
-     * 真正让人误判的是界面：顶栏牌子只写「当前智能体」五个字、名字藏在悬停里，
-     * 左上角那颗「小鱼（鲸鱼娘）」是「当前查看的卡」不是「本会话谁在说话」，
-     * 名单第一又恰好是小鱼 —— 三处都指向小鱼，只有嘴是小白曦的。
-     *
-     * 现在统一一个口径：绑定卡 → 名单第一个开着的 → 小鱼。
-     * cur 是这一轮刚从接口拿的，不会像 agentState 那样切会话时还留着上一个人的值。 */
-    let _spk = null;
-    for (const _m of grpMembers) { if (_isOn(_m)) { _spk = _m; break; } }
-    const _spkName = String((_spk && (_spk.name || '')) || '');
-    _speakerName = (id && id !== 'xiaoyu' && name) ? name : (_spkName || '小鱼');
-    mainAgentName = _speakerName;
+    mainAgentName = '小鱼';
+    const _isOn = (m) => Boolean(m) && m.enabled !== false;
+    const _firstOn = grpMembers.find(_isOn);
+    _speakerName = String((_firstOn && _firstOn.name) || '').trim() || '小鱼';
   } catch {}
   /* 2026-11-01：关掉的牌（enabled === false）这一轮一句话都不说，所以算「不在场」；
      「叫才应」的不再当噪音删掉 —— 她们被点名应一句是主人看得见的事，
@@ -12536,12 +12510,12 @@ async function refreshAgentChip() {
   const loud = alive.filter((m) => !(m.quiet && String(m.id) === 'xiaojing'));
   const mates = loud.map((m) => String(m.id));
   const mateNames = loud.map((m) => String(m.name || '')).filter(Boolean);
-  // 默认就是小鱼：既没换人、也没别人在场的时候不挂牌（左边标题已经写着「小鱼」）
-  const swapped = Boolean(id && id !== 'xiaoyu' && name);
-  /* 【2026-11-01】牌子亮不亮也改由名单第一决定：只要第一不是小鱼就亮，
-     哪怕这个人暂时没勾上「接着补一句」—— 那是对「谁先说」的说明，不是对群聊的说明。 */
-  const _first = String((grpMembers[0] && (grpMembers[0].id || '')) || '');
-  if (!swapped && !mates.length && (!_first || _first === 'xiaoyu')) { el.hidden = true; return; }
+  /* 【2026-11-09 二修】牌子亮不亮也只看动态主智能体：她不是小鱼就亮。
+   * 以前这里掺了 /api/agents/current 的绑定卡（swapped），
+   * 于是「关小鱼、开小白曦」这种纯排序变化时牌子纹丝不动 —— 主人报的第三个问题。 */
+  const _mainIsFish = !grpMembers.some((m) => m && m.enabled !== false)
+    || String((grpMembers.find((m) => m && m.enabled !== false) || {}).id || '') === 'xiaoyu';
+  if (_mainIsFish && !mates.length) { el.hidden = true; return; }
   /* 【2026-11-01 主人：牌子跟着「屋里的人」排序第一走】
      以前牌子上写的是「这个会话绑了哪张卡」，跟左栏的竖列顺序是两回事 ——
      主人把小白曦拖到第一位，牌子上还是写着小鱼，看着像没生效。

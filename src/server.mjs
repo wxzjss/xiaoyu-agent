@@ -7822,7 +7822,21 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     /** 小鱼不在时，群聊那一趟也要把事件写进 live，界面才看得见自建卡说的话 */
     let live0ForMates = null;
-    if (!resume && !fishOn(sessionId)) {
+    /* 【2026-11-09 修·关掉小鱼、开小白曦，说话没回应】
+     * 主人报的：关小鱼 / 开小白曦，发一句只有 done + fish_off，零回复。
+     * 实测四种配置，凡小鱼关掉都 text=0。
+     *
+     * 病根就是下面这个 early return：它把「小鱼不在」当成「这一轮没人干活」，
+     * 直接收口，只留小鲸补一句 + runMateRound 群聊接话。
+     * 可新口径里小鱼只是【屋里的人】之一，主智能体 = 从上往下第一个开着的；
+     * 关掉她，小白曦就成了主智能体，**应该走完整主流程 runAgent**
+     * （有工具、能派活、完整回复），而不是被塞进「别人补一句」那条旁支。
+     * 更糟的是我上一版把 runMateRound 的名单改成 activeAgentIds().slice(1)，
+     * 此时名单只有 [小白曦]，slice(1) 为空 —— 连补一句的人都没有，彻底静默。
+     *
+     * 现在：只有**一个启用者都不剩**才走这条「屋里没人应」的收口支线。 */
+    const _aliveForTurn = activeAgentIds(sessionId, (id) => mateSwitchOn(id, sessionId));
+    if (!resume && !fishOn(sessionId) && _aliveForTurn.length === 0) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache, no-transform',

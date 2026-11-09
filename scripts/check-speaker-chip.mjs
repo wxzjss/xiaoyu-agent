@@ -9,8 +9,8 @@
  *   · 左上角那颗是「当前查看的卡」，不是「本会话谁在说话」；
  *   · 牌子名字取名单第一（小鱼），气泡兜底署名也是它。
  *
- * 现在整页只用一个 _speakerName：绑定卡 → 名单第一个开着的 → 小鱼，
- * 牌子直接写「本会话 · X」，气泡兜底署名也用它。
+ * 【二修】把两件事拆开：历史署名兜底固定「小鱼」；牌子 _speakerName 动态取
+ * 【屋里的人】第一个开着的，直接写「本会话 · X」。
  */
 import { makeChecker } from './_harness_util.mjs';
 import fs from 'node:fs';
@@ -20,10 +20,19 @@ const ui = fs.readFileSync('public/index.html', 'utf8');
 
 t.ok('顶栏牌子直接带名字（不再只写「当前智能体」）',
   /el\.textContent = '本会话 · ' \+ _speakerName;/.test(ui));
-t.ok('牌子名字和气泡兜底署名同源',
-  /const head = _speakerName;/.test(ui) && /mainAgentName = _speakerName;/.test(ui));
-t.ok('说话人口径：绑定卡优先 → 名单第一 → 小鱼',
-  /_speakerName = \(id && id !== 'xiaoyu' && name\) \? name : \(_spkName \|\| '小鱼'\)/.test(ui));
+/* 【2026-11-09 二修】主人在「办事鱼」里报：以前小鱼干的活全署名小白曦、
+ * 右侧「本会话 xxx」也不跟着【屋里的人】排序/开关变。
+ * 根因是我上一版把「历史署名兜底」和「当前谁在说话」合成了一个值。
+ * 这两件事必须分开：兜底永远是「小鱼」（后端约定空 _who = 小鱼），
+ * 牌子才是动态的（第一个开着的）。 */
+t.ok('历史消息署名兜底固定为小鱼，不跟当前说话人变',
+  /mainAgentName = '小鱼';/.test(ui) && !/mainAgentName = _speakerName/.test(ui));
+t.ok('牌子名字 = 屋里从上往下第一个开着的（动态）',
+  /const _firstOn = grpMembers\.find\(_isOn\)/.test(ui)
+  && /_speakerName = String\(\(_firstOn && _firstOn\.name\)/.test(ui)
+  && /const head = _speakerName;/.test(ui));
+t.ok('牌子亮不亮也只看动态主智能体，不看绑定卡',
+  /const _mainIsFish = !grpMembers\.some/.test(ui) && !/const swapped = Boolean\(id/.test(ui));
 t.ok('绑定卡取自本轮接口返回值，不用可能过期的 agentState',
   !/agentState\.boundAgentId/.test(ui.slice(ui.indexOf('async function refreshAgentChip'), ui.indexOf('async function refreshAgentChip') + 6500)));
 t.ok('名单判据仍尊重「关掉的不在场」', /m\.enabled !== false/.test(ui));

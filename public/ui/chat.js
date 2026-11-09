@@ -1576,12 +1576,33 @@ export function renderTurns(turns, opts) {
        不能再按「最后 120 轮」重算一遍 —— 否则补完立刻又被切回尾部，白补。 */
     const _keep = renderTurns._keepStart;
     renderTurns._keepStart = false;
-    if (typeof _keep === "number" && _keep >= 0 && _keep < _all.length) {
+    /* 【2026-11-09 加·重画不许把窗口弹回尾部】
+     *
+     * 主人：「展开柜子会把当前会话窗口撑大，容易触发只显示多少轮的问题」。
+     *
+     * 「只显示 40 轮」本来只是个没人注意的实现细节，可它每次重画都被重算成
+     * 「最后 40 轮」—— 只要有什么动作触发一次重画（展开柜子、切主题、
+     * 任何一次 notice），主人刚翻上去的历史就整段消失，看起来像「被删了」。
+     *
+     * 现在把「这个会话翻到哪了」记在 window.__histWin[sid] 上：
+     *   · 同一个会话重画 → 沿用上次的起点（新来的轮次本来就接在后面，不会漏）
+     *   · 换会话 / 第一次进来 → 还是从最后 40 轮起
+     *   · 点「加载更早」→ 由 _keepStart 显式指定，优先级最高
+     * 只有数据真的变短了（压缩、删消息）才退回尾部。
+     */
+    const _sidNow = window.sessionId;
+    if (!window.__histWin || typeof window.__histWin !== 'object') window.__histWin = {};
+    const _mem = Number(window.__histWin[_sidNow]);
+    if (typeof _keep === 'number' && _keep >= 0 && _keep < _all.length) {
       _start = _keep;
+    } else if (Number.isFinite(_mem) && _mem >= 0 && _all.length - _mem >= WINDOW) {
+      /* 记住的起点还有至少一屏的量，接着用它 */
+      _start = Math.min(_mem, Math.max(0, _all.length - 1));
     } else if (_all.length > WINDOW) {
       _start = Math.max(0, _all.length - WINDOW);
     }
-    renderTurns._pending = { all: _all, start: _start, sessionId: window.sessionId };
+    window.__histWin[_sidNow] = _start;
+    renderTurns._pending = { all: _all, start: _start, sessionId: _sidNow };
   } catch {}
 
   const list = _all.slice(_start);

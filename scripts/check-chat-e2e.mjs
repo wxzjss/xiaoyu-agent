@@ -239,6 +239,17 @@ try {
   ok('/api/chat/live 的 running 也不看 live.done', _liveAt >= 0 && !/running: alive && !live\.done/.test(_liveSeg));
 } catch (e) { ok('还在干不许被 live.done 冒充', false); }
 
+/* 【2026-11-09 加·重画不许把「翻到哪了」弹回尾部】
+ * 主人：「展开柜子会把当前会话窗口撑大，容易触发只显示多少轮的问题」。
+ * 窗口本来只画最后 40 轮，可每次重画都重算成「最后 40 轮」—— 只要有个动作
+ * 触发一次重画（展开柜子、切主题、任一 notice），刚翻上去的历史就整段消失。
+ * 现在记在 window.__histWin[sid] 上，同会话重画沿用上次起点。 */
+try {
+  const _c = readFileSync('public/ui/chat.js', 'utf8');
+  ok('窗口起点按会话记住（重画不再弹回尾部）', /window\.__histWin\[_sidNow\]\s*=\s*_start/.test(_c)
+    && /Number\.isFinite\(_mem\)\s*&&\s*_mem\s*>=\s*0/.test(_c));
+} catch (e) { ok('窗口起点按会话记住', false); }
+
 console.log('断言：' + pass + '/' + (pass + fail));
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }
 console.log('PASS 发消息链路端到端通过');

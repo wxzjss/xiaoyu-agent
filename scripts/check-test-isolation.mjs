@@ -54,4 +54,27 @@ t.ok('检查脚本不再写死主人数据目录', hardCoded.length === 0, hardC
  * （退出码 127、零输出、catch 接不到）。改用逐文件复制。 */
 t.ok('不用会被垫片拦掉的递归复制', !/cpSync\(join\(/.test(iso) && /copyFileSync\(sp, dp\)/.test(iso));
 
+/* 【2026-11-09 主人：删测试会话】查出来垃圾来自 check-reset.mjs：
+ * 它直接 writeFileSync 造「下线验收」假会话，末尾却用 HTTP 接口删；
+ * 隔离回归里文件写主人目录、接口删临时目录，每跑一轮就多留一个。 */
+const reset = read('scripts/check-reset.mjs');
+t.ok('check-reset 的数据目录跟着实例走（用 MINI_AGENT_DATA）',
+  /const DATA = process\.env\.MINI_AGENT_DATA/.test(reset));
+t.ok('check-reset 有本地兜底清理，接口没删到也不会留孤儿',
+  /existsSync\(sessPath\(id\)\)[\s\S]{0,120}unlinkSync\(sessPath\(id\)\)/.test(reset));
+/* 按环境变量拼，别写死字面串 —— 上面那条「检查脚本不许写死主人目录」会连自己一起抓 */
+const realSess = [process.env.APPDATA || '', '小鱼Agent', 'data', '.state', 'sessions'].join('/');
+const junk = [];
+try {
+  for (const f of fs.readdirSync(realSess)) {
+    if (!f.endsWith('.json') || f.includes('.bak')) continue;
+    if (f.startsWith('smvchkreset')) { junk.push(f); continue; }
+    try {
+      const jj = JSON.parse(fs.readFileSync(realSess + '/' + f, 'utf8'));
+      if (String(jj.title || '') === '下线验收') junk.push(f);
+    } catch {}
+  }
+} catch {}
+t.ok('主人会话目录里没有测试脚本残留的垃圾', junk.length === 0, junk.join(', '));
+
 t.done();

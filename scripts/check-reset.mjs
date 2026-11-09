@@ -9,12 +9,19 @@
  * 跑法：先起服务，再 `BASE=http://127.0.0.1:8788 node scripts/check-reset.mjs`
  *      默认 8788（本机实际端口），端口不对就用 BASE 覆盖。
  */
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
 import { detectBase } from './_base.mjs';
 import { join } from 'node:path';
 
 const BASE = detectBase();
-const DATA = join(process.env.APPDATA || '', '小鱼Agent', 'data');
+/* 【2026-11-09 修·每跑一轮全量就在主人目录留一个「下线验收」垃圾】
+ * 这条检查直接 writeFileSync 造假会话，末尾却用 /api/sessions/delete 接口删。
+ * 现在全量回归跑在隔离实例上（BASE=8795、MINI_AGENT_DATA=临时目录），
+ * 原来 DATA 写死 APPDATA（主人目录）→ 文件写主人那份、接口删隔离那份，
+ * 于是主人会话列表里每次多一个删不掉的「下线验收」。
+ * 现在 DATA 跟实例走：隔离回归里就是临时目录，写和删在同一处。 */
+const DATA = process.env.MINI_AGENT_DATA
+  || join(process.env.APPDATA || '', '小鱼Agent', 'data');
 
 let pass = 0, fail = 0;
 const ok = (cond, label, got) => {
@@ -32,6 +39,8 @@ const j = async (path, init) => {
 const post = (p, o) => j(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(o ?? {}) });
 
 const sessPath = (id) => join(DATA, '.state', 'sessions', id + '.json');
+/* 隔离实例刚起时这个目录可能还没建，先保一道，写文件才不会炸。 */
+try { mkdirSync(join(DATA, '.state', 'sessions'), { recursive: true }); } catch {}
 const readSess = (id) => JSON.parse(readFileSync(sessPath(id), 'utf8'));
 
 const id = 'smvchkreset' + Date.now().toString(36);
@@ -84,7 +93,17 @@ try {
   console.log('  ✘ 异常：' + (e && e.message || e));
 } finally {
   // 【2026-11-03 记忆系统严检】别直接 unlink 会话文件 —— 那样记忆本会变成孤儿。
-  try { await post('/api/sessions/delete', { id }); console.log('  清理测试会话 → ok（走接口，记忆本一起收）'); } catch {}
+  try { await post('/api/sessions/delete', { id }); } catch {}
+  /* 双保险：这是凭空造的假会话（没有记忆本，不会造成孤儿），
+   * 万一接口删的是另一个实例、文件还留在 DATA 里，自己收掉，绝不留给主人。 */
+  try {
+    if (existsSync(sessPath(id))) {
+      unlinkSync(sessPath(id));
+      console.log('  清理测试会话 → 本地兜底（接口没删到这份文件）');
+    } else {
+      console.log('  清理测试会话 → ok（走接口）');
+    }
+  } catch {}
 }
 
 console.log('\n结果：' + pass + ' 过 / ' + fail + ' 挂');

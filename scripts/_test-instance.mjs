@@ -31,6 +31,8 @@ function seedConfig(dst) {
   const srcState = join(USER_DATA, '.state');
   const dstState = join(dst, '.state');
   mkdirSync(dstState, { recursive: true });
+  /* 空目录，但得存在：有些检查（check-reset）直接 writeFileSync 造测试会话。 */
+  mkdirSync(join(dstState, 'sessions'), { recursive: true });
   if (!existsSync(srcState)) return 0;
   let n = 0;
   for (const name of readdirSync(srcState)) {

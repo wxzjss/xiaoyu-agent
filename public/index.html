@@ -12625,6 +12625,18 @@ async function refreshWhoRail() {
 async function toggleWhoBtn(agentId, wasOff) {
   const sid = (typeof sessionId === 'string' && sessionId) ? sessionId : '';
   if (!sid || !agentId) return;
+  /* 【2026-11-09 主人报·「点左侧屋里的人点不动」】
+   *
+   * 真是冤枉它了：点击**是**生效的，接口也返回 ok。
+   * 问题是这里只调了 refreshAgentChip() —— 那是顶栏那颗身份标记，
+   * 跟左边这列牌子不是同一个东西。牌子自己的类（.off / 划掉 / 变暗）
+   * 从来没被重画过，所以点完屏幕上一点变化都没有，看着就像「点不动」。
+   *
+   * 更麻烦的是：牌子的 onclick 里用的是**渲染那一刻**的 off 值，
+   * 界面不刷新 → 下次再点还是按老状态算 → 主人连点两下就把服务端来回翻，
+   * 屏幕上却始终一个样。现在点完立刻重画这列牌子。
+   */
+  let ok = false;
   try {
     const r = await fetch('/api/agents/group/toggle', {
       method: 'POST',
@@ -12632,10 +12644,14 @@ async function toggleWhoBtn(agentId, wasOff) {
       body: JSON.stringify({ sessionId: sid, id: agentId, enabled: wasOff }),
     }).then((x) => x.json());
     if (r && r.error) throw new Error(r.error);
+    ok = true;
   } catch (e) {
     try { toast('没切成：' + (e && e.message ? e.message : e)); } catch { /* 忽略 */ }
   }
+  if (!ok) return;
   try { refreshAgentChip(); } catch { /* 忽略 */ }
+  /* 关键的一行：牌子自己得重画，否则屏幕上看不出任何变化 */
+  try { await refreshWhoRail(); } catch { /* 忽略 */ }
 }
 
 /**

@@ -34,7 +34,7 @@ if (!inFile) {
   console.error('用法: node scripts/make-docx.mjs <输入.json> [输出.docx]');
   process.exit(1);
 }
-const spec = JSON.parse(fs.readFileSync(path.resolve(inFile), 'utf8'));
+const spec = JSON.parse(fs.readFileSync(path.resolve(inFile), 'utf8').replace(/^\uFEFF/, ''));
 const blocks = spec.blocks || [];
 
 const kids = [];

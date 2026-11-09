@@ -222,6 +222,23 @@ try {
   ok('停止时仍然不自动起轮（点了停就别自己动）', !/startQueuedTurn\(\s*sessionId/.test(_seg));
 } catch (e) { ok('停止时把插话落进历史', false); }
 
+/* 【2026-11-09 加】「还在干」不许被直播流的死活冒充。
+ * 主人报：「同一个工具调用一段时间没变化后，【正在发送消息】自动消失，
+ * 柜门【运行中】也从此不再出现，接着多段消息堆一块。」
+ * 真因：/api/running 和 /api/chat/live 都拿 live.done 判「还在不在跑」，
+ * 可 live.done 只表示**直播流关了**（切页面、连接抖一下就会），
+ * 那一轮其实还在跑。于是一边隐藏提示、一边把后面积下来的事件全堆到下次刷新。
+ * 现在只认运行登记（runningTurns 里还挂着、且没被 abort）。 */
+try {
+  const _srv = readFileSync('src/server.mjs', 'utf8');
+  const _runAt = _srv.indexOf("url.pathname === '/api/running'");
+  const _runSeg = _runAt >= 0 ? _srv.slice(_runAt, _runAt + 3000) : '';
+  ok('/api/running 不再拿 live.done 当「没在跑」', !/if \(live && live\.done\) continue;/.test(_runSeg));
+  const _liveAt = _srv.indexOf('running: alive &&');
+  const _liveSeg = _liveAt >= 0 ? _srv.slice(_liveAt, _liveAt + 400) : '';
+  ok('/api/chat/live 的 running 也不看 live.done', _liveAt >= 0 && !/running: alive && !live\.done/.test(_liveSeg));
+} catch (e) { ok('还在干不许被 live.done 冒充', false); }
+
 console.log('断言：' + pass + '/' + (pass + fail));
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }
 console.log('PASS 发消息链路端到端通过');

@@ -3868,7 +3868,9 @@ const server = createServer(async (req, res) => {
        *  这里就永远报 running:true → 前端 busy 锁死、按钮变【停止】、
        *  切回来发消息撞 /api/chat 的 409，主人看到的就是「话被吞」。
        *  口径跟 /api/running（3468 行）对齐：ac 已 abort 的残骸不算在跑。 */
-      running: alive && !live.done && !(() => {
+      /* 【2026-11-09 改】同 /api/running：live.done 不等于「这一轮结束了」，
+       * 它只是「直播流关了」。只认运行登记 + 没被 abort。 */
+      running: alive && !(() => {
         const t0 = runningTurns.get(sid);
         return !!(t0 && t0.ac && t0.ac.signal && t0.ac.signal.aborted);
       })(),
@@ -3914,7 +3916,23 @@ const server = createServer(async (req, res) => {
         continue;
       }
       const live = liveLogs.get(id);
-      if (live && live.done) continue;
+      /**
+       * 【2026-11-09 修·主人报「工具跑着跑着，【正在发送消息】和柜门【运行中】一起消失，而且不再回来」】
+       *
+       * 原来这里有一句 `if (live && live.done) continue;`。
+       * 问题在于 **live.done 只表示「这条直播流关了」，不表示「这一轮结束了」**：
+       * 页面切走、连接断一下、客户端为了重连把流掐掉，都会让它变 true，
+       * 而服务端那一轮**照样还在跑**（工具还在跑、模型还在想）。
+       * 于是 /api/running 把它报成「没在跑」→ 前端隐藏提示 → 这一轮后面的
+       * 事件全堆在 live 里没人画，等下次刷新一次性铺出来（就是「多段消息堆一块」）。
+       *
+       * 现在只看**运行登记本身**：runningTurns 里还挂着、而且没被 abort，就是在跑。
+       * 登记由这一轮自己删（收尾的 finally），那才是唯一权威的生命周期；
+       * 直播流的死活是传输层的事，不该拿它判业务。
+       */
+      const _t0 = runningTurns.get(id);
+      if (_t0 && _t0.ac && _t0.ac.signal && _t0.ac.signal.aborted) continue;
+      if (live && live.done && !_t0) continue;   // 只剩个关掉的直播壳、连登记都没有：别报
       /**
        * 【2026-11-07 加·「在跑」和「卡住了」得能分开】
        *

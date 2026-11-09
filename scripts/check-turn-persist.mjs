@@ -70,14 +70,18 @@ async function main() {
   const srvSrc = readFileSync(join(REPO, 'src', 'server.mjs'), 'utf8');
   const lines = srvSrc.split(/\r?\n/);
 
-  const errIdx = lines.findIndex((l) => /type:\s*'error'/.test(l));
-  if (errIdx < 0) {
+  // 落盘可能写在 send 之前（先落盘、再发事件），所以不能只看"往后 60 行"。
+  // 改成：每一处 error 出口前后 80 行内都必须有 __turnErr。
+  const errIdxs = lines.map((l, i) => (/type:\s*'error'/.test(l) ? i : -1)).filter((i) => i >= 0);
+  if (!errIdxs.length) {
     bad('server.mjs 里找不到 send({type:"error"}) 那一处');
   } else {
-    // 往后 60 行内必须出现 __turnErr
-    const win = lines.slice(errIdx, errIdx + 60).join('\n');
-    if (/__turnErr/.test(win)) ok('上游报错那一路：send error 之后 60 行内落了 __turnErr');
-    else bad('上游报错那一路没落盘', '在 L' + (errIdx + 1) + ' 附近找不到 __turnErr');
+    const MISSING = errIdxs.filter((i) => {
+      const win = lines.slice(Math.max(0, i - 80), i + 80).join('\n');
+      return !/__turnErr/.test(win);
+    });
+    if (!MISSING.length) ok('上游报错那一路：每个 error 出口前后 80 行内都有 __turnErr（共 ' + errIdxs.length + ' 处）');
+    else bad('有一处 error 出口没落盘', 'L' + MISSING.map((i) => i + 1).join(', L'));
   }
 
   const cleanIdx = lines.findIndex((l) => /forceClean:\s*\(sid\)/.test(l));
@@ -96,9 +100,9 @@ async function main() {
     bad('没有去重逻辑，一轮断了可能堆好几条');
   }
 
-  // 转义：content 里不能出现字面的 \n\n
-  const literalN = lines.filter((l) => /\\n\\n/.test(l) && /content:/.test(l));
-  if (literalN.length) bad('有 content 字符串把换行写成了字面 \\n\\n', literalN.join('\n'));
+  // 转义：content 里不能出现「双反斜杠 + n」—— 那才会显示成字面 \n
+  const literalN = lines.filter((l) => /\\\\n/.test(l) && /content:/.test(l));
+  if (literalN.length) bad('有 content 字符串把换行写成了字面双反斜杠 n', literalN.join('\n'));
   else ok('提示文案里的换行是真换行，不会显示成反斜杠 n');
 
   // ── 二、行为层：真起一个隔离实例，真让它断一次 ────────────────
@@ -168,7 +172,7 @@ async function main() {
         let msgs = null;
         for (let i = 0; i < 80; i++) {
           await wait(500);
-          const f = join(dataDir, 'sessions', sid + '.json');
+          const f = join(dataDir, '.state', 'sessions', sid + '.json');
           if (!existsSync(f)) continue;
           try { msgs = JSON.parse(readFileSync(f, 'utf8')); } catch (e) { continue; }
           const arr = msgs?.messages || [];

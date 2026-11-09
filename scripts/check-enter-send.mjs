@@ -100,6 +100,59 @@ if (!cdp) {
   t.ok('真机：正在打拼音（有字）→ 不发', r.composingWithText === 0, String(r.composingWithText));
   t.ok('真机：焦点在页面空白处 + 有附件 → 也能发', r.fromBody === 1, String(r.fromBody));
   t.ok('真机：面板开着 → 不发', r.dialogOpen === 0, String(r.dialogOpen));
+
+  /* 【2026-11-09 加】输入法「上屏那一下」+ 不再用原生 alert
+   *
+   * 主人要求先看 WorkBuddy 和 dsh 怎么做输入法。两边（WorkBuddy 的 renderer、
+   * dsh-client-ui-conversation）都是自己维护 compositionstart/compositionend 状态，
+   * 判回车时看的是那个状态而不是那一瞬间的 e.isComposing —— 因为有的输入法
+   * 上屏时先 compositionend、再发 Enter，那时 isComposing 已经是 false 了。
+   *
+   * 另：删除失败那条分支原来走原生 alert，它是模态的，窗口不在最前时会变成
+   * 一块看不见的挡板（主人报的「输入框变灰、点不动」）。现在换页内提示条。 */
+  const r2 = await cdp.eval(`
+    const out = {};
+    const inp = document.getElementById('input');
+    const realSend = window.send;
+    let n = 0;
+    window.send = function () { n += 1; };
+    const comp = (type) => inp.dispatchEvent(new CompositionEvent(type, { bubbles: true }));
+    const enter = () => inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+
+    comp('compositionstart');
+    inp.value = 'nihao';
+    enter();
+    out.中途 = n;
+
+    comp('compositionend');
+    enter();               // 上屏同一次事件里的回车
+    out.上屏同刻 = n;
+
+    await new Promise((r) => setTimeout(r, 40));
+    inp.value = '你好';
+    enter();
+    out.正常 = n;
+
+    window.alert('测试：删不掉');
+    await new Promise((r) => setTimeout(r, 120));
+    const toast = document.querySelector('#xyToasts .xyToast');
+    out.是提示条 = Boolean(toast);
+    out.提示层不吃点击 = toast ? getComputedStyle(document.getElementById('xyToasts')).pointerEvents : '';
+    inp.focus();
+    out.输入框还能聚焦 = document.activeElement === inp;
+
+    window.send = realSend;
+    inp.value = '';
+    try { if (toast) toast.remove(); } catch {}
+    return out;
+  `);
+  t.ok('真机：输入法打一半按回车 → 不发', r2.中途 === 0, String(r2.中途));
+  t.ok('真机：上屏那一下的回车 → 不发（这一条只有 composition 状态才拦得住）',
+    r2.上屏同刻 === 0, String(r2.上屏同刻));
+  t.ok('真机：选完字再按回车 → 照发', r2.正常 === 1, String(r2.正常));
+  t.ok('真机：alert 变成页内提示条（不再模态）', r2.是提示条 === true);
+  t.ok('真机：提示条不吃点击、不抢焦点', r2.提示层不吃点击 === 'none' && r2.输入框还能聚焦 === true,
+    r2.提示层不吃点击 + ' / ' + r2.输入框还能聚焦);
   cdp.close();
 }
 

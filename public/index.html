@@ -1509,6 +1509,33 @@
      * 系统提示：报错 / 限流 / 断线。
      * 居中、细、暗，一眼看得出「这不是谁说的话」，而是这台机器出了点状况。
      */
+    /* 【2026-11-09 主人】页内提示条 —— 替代原生 alert()。
+     *
+     * 原生 alert 是**模态**的：它弹出来的时候整个窗口被冻住。
+     * 更坑的是窗口不在最前时，那个弹窗可能根本看不见 ——
+     * 主人看到的就只是「界面突然点不动了、输入框像变灰了」。
+     * 删除失败正好走这条路（alert('删不掉：…')），所以他报的是「删除失败后输入框变灰」。
+     *
+     * 提示条不抢焦点、不拦点击、几秒自己走 —— 输入框该有焦点还是有焦点。
+     */
+    #xyToasts {
+      position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      z-index: 9999; pointer-events: none; max-width: min(720px, 88vw);
+    }
+    .xyToast {
+      pointer-events: auto; cursor: pointer;
+      padding: 9px 14px; border-radius: 8px;
+      background: rgba(32, 36, 44, .97); color: var(--text, #e6e9ef);
+      border: 1px solid rgba(255, 255, 255, .12);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+      font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+      animation: xyToastIn .16s ease-out;
+    }
+    .xyToast.warn { border-color: rgba(217, 164, 91, .55); color: #f0c987; }
+    .xyToast.out { opacity: 0; transform: translateY(6px); transition: all .18s ease; }
+    @keyframes xyToastIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
     .sysnote {
       max-width: 900px; margin: 6px auto 14px; padding: 6px 12px;
       color: #d9a45b; font-size: 12px; line-height: 1.6;
@@ -5628,7 +5655,12 @@ function tryLiveAppendFast(sid, srcLive) {
   const want = _snapTextOnly(items);
   if (!want) return false;
 
-  const wrap = document.querySelector('#log .msg.assistant[data-live-turn="1"]');
+  /* 【2026-11-09 修】屏幕上同时有多轮在跑时，querySelector 取到的「第一个」
+   * 未必是这一轮 —— 往别人那轮里追加文字就是串写。拿不准就放弃快路，
+   * 交回整块重画：慢一点，但绝不会画错。 */
+  const wraps = document.querySelectorAll('#log .msg.assistant[data-live-turn="1"]');
+  if (wraps.length !== 1) return false;
+  const wrap = wraps[0];
   if (!wrap) return false;
   const bubble = wrap.querySelector('.bubble');
   if (!bubble) return false;
@@ -9696,6 +9728,60 @@ function paintTools(list, target, group) {
 }
 
 /**
+ * 【2026-11-09 加】页内提示条 showToast —— 同时把原生 alert() 全换掉。
+ *
+ * 主人原话：「【删除】消息失败时，输入框会变灰，鼠标点击输入框不会有光标，
+ * 点不动，改成让输入框始终有焦点且不会变灰。」
+ *
+ * 真凶就是删除失败那条分支里的 `alert('删不掉：…')`。原生 alert 是模态的：
+ *   · 弹出来的时候整个窗口被冻住，输入框点不动、看不到光标；
+ *   · 窗口不在最前时，那个弹窗可能根本看不见 —— 主人只看到「界面废了」。
+ * 所以不是输入框自己变灰，是**被一个看不见的模态框压住了**。
+ *
+ * 现在 window.alert 被换成这条不抢焦点、不拦点击、几秒自己走的提示条。
+ * 25 处 alert 全都自动受益，不用一处一处改。
+ */
+let _xyToastHost = null;
+function showToast(msg, opts = {}) {
+  try {
+    const text = String(msg ?? '').trim();
+    if (!text) return;
+    if (!_xyToastHost || !_xyToastHost.isConnected) {
+      _xyToastHost = document.createElement('div');
+      _xyToastHost.id = 'xyToasts';
+      document.body.appendChild(_xyToastHost);
+    }
+    // 同一句连点几次只留一条，别刷屏
+    for (const old of [..._xyToastHost.children]) {
+      if (old.dataset && old.dataset.text === text) old.remove();
+    }
+    const el = document.createElement('div');
+    el.className = 'xyToast' + (opts.warn ? ' warn' : '');
+    el.dataset.text = text;
+    el.textContent = text;
+    const kill = () => {
+      try {
+        el.classList.add('out');
+        setTimeout(() => { try { el.remove(); } catch {} }, 220);
+      } catch {}
+    };
+    el.onclick = kill;
+    _xyToastHost.appendChild(el);
+    while (_xyToastHost.children.length > 3) _xyToastHost.firstChild.remove();
+    setTimeout(kill, Number(opts.ms) > 0 ? Number(opts.ms) : 5000);
+  } catch {}
+  /* 提示条不抢焦点 —— 主人可能正在打字，光标不许被拽走 */
+  try {
+    if (document.activeElement && document.activeElement.id === 'input') {
+      /* 什么都不做，焦点本来就在 */
+    }
+  } catch {}
+}
+try {
+  window.alert = function (msg) { showToast(msg, { warn: true }); };
+} catch {}
+
+/**
  * 一行系统提示（报错、限流、断线）。
  *
  * 刻意不挂 .msg / .bubble：这东西不是对话内容，不该被当成谁说的话，
@@ -11393,6 +11479,42 @@ try {
   const _sb = document.getElementById('stopBtn');
   if (_sb) _sb.onclick = () => { try { stopTurn(); } catch (e) {} };
 } catch {}
+/**
+ * 【2026-11-09 加·输入法「上屏那一下」】
+ *
+ * 主人要求：先真看 WorkBuddy 和 DeepSeek Harness 怎么写输入法，再动小鱼的。
+ * 两边都读了（WorkBuddy 的 renderer 包、dsh 的 dsh-client-ui-conversation），
+ * 做法一模一样，而且跟小鱼现在这版有一处**关键差别**：
+ *
+ *   · 它们都自己挂 compositionstart / compositionend，维护一个「正在输入」的状态
+ *     （WorkBuddy: imeSessionInProgress；dsh: isComposing() 这个 session 标志）；
+ *   · 判回车时用的是**这个状态**，不是那一瞬间的 e.isComposing。
+ *
+ * 为什么这个区别是致命的：中文输入法「上屏」这一步，有的实现是先
+ * compositionend、再发 keydown Enter —— 等到 keydown 跑起来时，
+ * e.isComposing 已经是 false 了。小鱼之前只认 e.isComposing（加 keyCode 229），
+ * 于是那一下 Enter 被当成「发送」：半截拼音连同还没选的字一起发出去。
+ * 229 只兜得住老输入法，兜不住这个时序。
+ *
+ * 所以补上这个状态机；两个回车入口（输入框自己的、和「焦点不在输入框」那个兜底）
+ * 都用它。顺便把 compositionend 的时间记下来，同一次事件循环里的 Enter 也不放行。
+ */
+let _imeComposing = false;
+let _imeEndAt = 0;
+try {
+  input.addEventListener('compositionstart', () => { _imeComposing = true; });
+  input.addEventListener('compositionend', () => { _imeComposing = false; _imeEndAt = Date.now(); });
+  input.addEventListener('blur', () => { _imeComposing = false; });
+} catch {}
+/** 这一下回车是不是「输入法上屏」，不该当发送 */
+function imeSwallowsEnter(e) {
+  if (_imeComposing) return true;
+  if (e && (e.isComposing || e.keyCode === 229)) return true;
+  /* 刚 compositionend 的同一次事件里来的回车：那是上屏，不是发送 */
+  if (_imeEndAt && Date.now() - _imeEndAt <= 0) return true;
+  return false;
+}
+
 input.addEventListener('keydown', (e) => {
   /* 【2026-11-05 修】中文输入法选词时按 Enter 只是「上屏」，不是发送。
    * 以前没挡这一下：拼音打一半、还没选字，回车一按就把半截拼音发出去了。
@@ -11408,7 +11530,7 @@ input.addEventListener('keydown', (e) => {
    * 判据很干脆：**输入框一个字都没有、手上又有附件** —— 那这个 Enter
    * 不可能是选词，只可能是「发出去」。这种情况下照发不误。
    */
-  const _imBlocked = e.isComposing || e.keyCode === 229;
+  const _imBlocked = imeSwallowsEnter(e);
   if (_imBlocked) {
     if (e.key === 'Enter' && !e.shiftKey && !String(input.value || '').trim() && attachments.length) {
       e.preventDefault();
@@ -11438,7 +11560,7 @@ input.addEventListener('keydown', (e) => {
  */
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' || e.shiftKey || e.defaultPrevented) return;
-  if (e.isComposing || e.keyCode === 229) return;
+  if (imeSwallowsEnter(e)) return;
   if (!attachments.length || busy) return;
   try {
     if (document.querySelector('dialog[open]')) return;         // 面板开着，回车是面板的

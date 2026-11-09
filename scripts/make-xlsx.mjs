@@ -30,7 +30,7 @@ if (!inFile) {
   console.error('用法: node scripts/make-xlsx.mjs <输入.json> [输出.xlsx]');
   process.exit(1);
 }
-const spec = JSON.parse(fs.readFileSync(path.resolve(inFile), 'utf8'));
+const spec = JSON.parse(fs.readFileSync(path.resolve(inFile), 'utf8').replace(/^\uFEFF/, ''));
 const sheets = spec.sheets || [];
 if (!sheets.length) {
   console.error('没有 sheets，什么都没做');

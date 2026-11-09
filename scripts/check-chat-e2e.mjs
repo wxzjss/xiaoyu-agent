@@ -132,8 +132,15 @@ await new Promise((r) => setTimeout(r, 2500));
 await api('/api/stop', { method: 'POST', body: JSON.stringify({ sessionId: s2 }) });
 ac.abort();
 await p;
-await new Promise((r) => setTimeout(r, 1200));
-const d2 = onDisk(s2);
+/* 【2026-11-09 修·全量回归里这两条偶发挂】
+ * 原来固定等 1200ms 就读盘、看 running。机器一忙（同时跑别的检查）收尾要一两秒，
+ * 于是「中断后会话还在」「停止后 running 被清掉」双双误报。改成轮询，最多 10 秒。 */
+let d2 = null;
+for (let k = 0; k < 50; k++) {
+  d2 = onDisk(s2);
+  if (d2 && d2.running !== true) break;
+  await new Promise((r) => setTimeout(r, 200));
+}
 ok(!!d2, '中断后会话还在');
 ok(!!d2 && d2.running !== true, '停止后 running 被清掉');
 
@@ -249,6 +256,15 @@ try {
   ok('窗口起点按会话记住（重画不再弹回尾部）', /window\.__histWin\[_sidNow\]\s*=\s*_start/.test(_c)
     && /Number\.isFinite\(_mem\)\s*&&\s*_mem\s*>=\s*0/.test(_c));
 } catch (e) { ok('窗口起点按会话记住', false); }
+
+/* 【2026-11-09 主人】「切到别的窗口再切回来，多段消息堆在一起」。
+ * 补画那条路上工具事件没断当前气泡，后台节流攒一批、切回来一口气补时，
+ * 正文/工具/正文 全灌进同一个气泡。现在工具一出现就断气泡。 */
+try {
+  const _c2 = readFileSync('public/ui/chat.js', 'utf8');
+  ok('补画时工具事件会断开当前气泡（不再堆成一坨）',
+    /if \(String\(p\.name\) === 'compress'\) return true;[\s\S]{0,900}rec\.bubble = null;/.test(_c2));
+} catch (e) { ok('补画时工具事件会断开当前气泡', false); }
 
 console.log('断言：' + pass + '/' + (pass + fail));
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }

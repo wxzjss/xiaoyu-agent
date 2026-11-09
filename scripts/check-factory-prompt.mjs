@@ -47,6 +47,13 @@ let fresh = '';
 try {
   fresh = generate({ MINI_AGENT_DATA: emptyDir });
   t.ok('全新机器生成成功', fresh.length > 4000, fresh.length + ' 字');
+  // 【重做快照】改过功能开关说明、提示词正文变了之后，用 XY_REGEN_SNAPSHOT=1 跑一次，
+  // 把这份快照重写成当前代码生成的正文（开头那行注释头保留）。
+  if (process.env.XY_REGEN_SNAPSHOT === '1') {
+    const head = (snapRaw.match(/^<!--[\s\S]*?-->\s*\r?\n/) || [''])[0];
+    fs.writeFileSync(SNAP, head + fresh, 'utf8');
+    console.log('快照已重写为 ' + fresh.length + ' 字');
+  }
   t.ok('全新机器 == 出厂快照（逐字节）', fresh === snap, fresh.length + '/' + snap.length);
   // 底线是主人在设置页能改的，不参与「跟出厂逐字节相等」的比对。
   t.ok('全新机器 == 当前机器（除可自定义的底线块）', norm(fresh) === norm(live));

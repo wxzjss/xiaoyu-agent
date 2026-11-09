@@ -51,18 +51,27 @@ t.ok('思考优先于工具状态', /if \(thinking\) \{[\s\S]{0,160}'正在思�
 /* 【2026-11-08 主人】柜门右侧状态已经有金色「运行中」了，
  * 那截灰字不再重复写一遍 —— 运行中时清空（:empty 会自己隐藏）。 */
 t.ok('hubpeek：思考给实时灰字、工具运行中清空、结束给摘要',
-  /if \(thinking\) \{[\s\S]{0,160}pk\.textContent = thinking\.dataset\.peek/.test(ui)
-  && /else if \(runCard\) \{[\s\S]{0,160}pk\.textContent = ''/.test(ui));
+  /const want = thinking\.dataset\.peek/.test(ui)
+  && /if \(thinking\) \{/.test(ui)
+  && /else if \(runCard\) \{[\s\S]{0,300}setText\(pk, ''\)/.test(ui)
+  && /setText\(pk, hubPeekOf\(/.test(ui));
 t.ok('「正在跑命令…」没被弄坏', /'正在' \+/.test(ui));
 
 // ── 2b. 柜门右侧「不断变化的思考灰字」 ────────────────────────────
 t.ok('有 thinkPeekTail，且取的是尾部片段', /function thinkPeekTail\(text\)/.test(ui) && /flat\.slice\(-160\)/.test(ui));
 t.ok('实时 set 每拍更新 dataset.peek', /d\.dataset\.peek = thinkPeekTail\(flat\)/.test(ui));
 t.ok('整组重画也更新灰字', (ui.match(/dataset\.peek = thinkPeekTail\(flat\)/g) || []).length >= 2);
-t.ok('灰字三分支：思考 / 工具(运行中清空) / 结束', /if \(thinking\) \{[\s\S]{0,160}thinking\.dataset\.peek/.test(ui)
-  && /else if \(runCard\) \{[\s\S]{0,160}pk\.textContent = ''/.test(ui)
-  && /pk\.textContent = hubPeekOf\(/.test(ui));
+t.ok('灰字三分支：思考 / 工具(运行中清空) / 结束', /const want = thinking\.dataset\.peek/.test(ui)
+  && /else if \(runCard\) \{[\s\S]{0,300}setText\(pk, ''\)/.test(ui)
+  && /setText\(pk, hubPeekOf\(/.test(ui));
 t.ok('金色「运行中」有对应样式', /\.hubpeek\.live \{ color: #f0b954/.test(ui));
+
+/* 【2026-11-09 主人】柜门标题「抽搞抖动」和「一闪而过」两条。
+ *   · 灰字逐字变长时，省略号一直挪 → 看着像抖：现在 150ms 才换一次；
+ *   · 文案换得太快读不到：现在 1.2 秒内变三句以上就进「停留模式」，每句 ≥400ms。 */
+t.ok('灰字有节流（不会逐字重排）', /peekAt/.test(ui) && /150/.test(ui));
+t.ok('名字有最短停留（快切也读得到）', /NAME_MIN_MS/.test(ui) && /_xyHits/.test(ui) && /400/.test(ui));
+t.ok('名字只在真变了才写 DOM', /setText = \(el, txt\)/.test(ui) || /el\.textContent !== s/.test(ui));
 
 // ── 3. 真机格 ─────────────────────────────────────────────────────
 let cdp = null;
@@ -82,20 +91,27 @@ if (cdp) {
       lg.appendChild(hub);
       const _old = typeof _liveHub !== 'undefined' ? _liveHub : null;
       _liveHub = hub;
+      /* 【2026-11-09】柜门文案现在有节流（灰字 150ms）和最短停留（400ms），
+       * 改完立刻读会读到旧值。等一小会儿再读 —— 测的是内容，不是延迟。 */
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms || 200));
       const thk = hub.querySelector('details.think');
       thk.dataset.peek = '在捋第一步';
       hubRefreshTitle();
+      await settle();
       out.thinking = hub.querySelector('.hubname').textContent;
       out.peek1 = hub.querySelector('summary > .hubpeek').textContent;
       thk.dataset.peek = '在捋第二步，越想越多了';
       hubRefreshTitle();
+      await settle();
       out.peek2 = hub.querySelector('summary > .hubpeek').textContent;
       thk.classList.remove('thinking-now');
       hubRefreshTitle();
+      await settle();
       out.after = hub.querySelector('.hubname').textContent;
       out.peekAfter = hub.querySelector('summary > .hubpeek').textContent;
       hub.insertAdjacentHTML('beforeend', '<details class="tool"><summary class="toolHead"><span class="name">跑命令</span><span class="status warn">运行中…</span></summary><pre></pre></details>');
       hubRefreshTitle();
+      await settle();
       out.tool = hub.querySelector('.hubname').textContent;
       out.peekTool = hub.querySelector('summary > .hubpeek').textContent;
       _liveHub = _old; hub.remove();

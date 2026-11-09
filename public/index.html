@@ -1443,6 +1443,11 @@
       flex: 0 0 auto;
       white-space: nowrap;
     }
+    /* 【2026-11-09 主人】这一轮还在跑时，状态位宽度钉死。
+     * 状态在 '' 和「运行中」之间切换（思考块一出现/一消失就会翻），
+     * 空的时候宽度是 0，后面的灰字就被整体推走一个身位 —— 看着像抽搐。
+     * 跑的时候给它一个固定槽位，空着也占位，灰字就不会横着跳。 */
+    details.toolhub > summary .status.live { min-width: 3.6em; }
     details.toolhub > summary .status.ok { color: var(--ok); }
     details.toolhub > summary .status.err { color: var(--err); }
     details.toolhub > summary .status.warn { color: #d9a45b; }

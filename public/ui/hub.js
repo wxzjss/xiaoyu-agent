@@ -154,35 +154,141 @@ export function syncHubHead(hub, opts) {
     ? String((runCard.querySelector(HUB_SEL.cardName) || {}).textContent || '干活').trim()
     : '';
 
-  if (name) {
-    if (thinking) {
-      name.textContent = (t ? ('调了 ' + t + ' 次 · ') : '') + '正在思考中…';
-    } else if (runCard) {
-      name.textContent = (t ? ('调了 ' + t + ' 次 · ') : '') + '正在' + runName + '…';
-    } else if (t && k) {
-      name.textContent = '调了 ' + t + ' 次工具 · 想了 ' + k + ' 段';
-    } else if (k) {
-      name.textContent = '想了 ' + k + ' 段';
-    } else {
-      name.textContent = '调了 ' + t + ' 次工具';
+  /**
+   * 【2026-11-09 主人报·「思考时柜门标题的文字会抽搐抖动」】
+   *
+   * 病根不是某一处写错，是**每次思考增量都重写标题三块**：
+   *   ① 灰字（.hubpeek）逐字变长 —— 它带 text-overflow:ellipsis，
+   *      每加一个字，省略号的位置就往前挪一截，屏幕上看着就是「文字在抖」；
+   *   ② 状态在 '' 和「运行中」之间来回切（thinking / runCard 判据一抖就翻），
+   *      它一出现/消失，后面的灰字就整体左右平移一个身位；
+   *   ③ 三块都是无条件 `textContent = ...`，即使内容一模一样也会重建文本节点，
+   *      每次重排都能让浏览器算一遍布局。
+   *
+   * 三条对应三个改法：
+   *   · 只在**真的变了**的时候才写 DOM（下面 setText）；
+   *   · 灰字节流到 150ms 一次，逐字增长变成「一小段一小段」地爬；
+   *   · 状态在「这一轮还在跑」时**宽度固定**（CSS 的 .status.live），
+   *     空着的时候不再把灰字推走。
+   */
+  const setText = (el, txt) => {
+    if (!el) return;
+    const s = String(txt == null ? '' : txt);
+    if (el.textContent !== s) el.textContent = s;
+  };
+
+  /**
+   * 【2026-11-09 主人】「标题文本会快速闪过一道变化，还没看清就没了，
+   * 希望哪怕再快也能停留零点几秒」。
+   *
+   * 一轮里标题会连着变好几次：正在思考 → 正在读文件 → 正在跑命令 → 想完。
+   * 工具很快时，中间那几帧只活几十毫秒，眼睛根本抓不住，屏幕只看到「闪了一下」。
+   *
+   * 现在给名字加**最短停留时间**（400ms）：
+   *   · 上一段文案没站满 400ms，就先不动；
+   *   · 期间又来了新文案 → 只记「最后想要的那一句」（合并，不排队堆一长串）；
+   *   · 到点把最新的那句换上去；
+   *   · 这一轮已经结束（!live）→ 立刻上，不拖 —— 收尾不能延迟。
+   * 这样每一句都就读得到，而且不会因为压缩而漏掉最终状态。
+   */
+  const NAME_MIN_MS = 400;
+  const applyName = (el, txt, live) => {
+    if (!el) return;
+    const want = String(txt == null ? '' : txt);
+    const cur = el.textContent;
+    if (want === cur) { el._xyPending = null; return; }
+    const now = Date.now();
+    /**
+     * 【2026-11-09 自适应·只治「太快」】
+     *
+     * 一开始是无条件停留 400ms，结果历史重画、删除后重画也被拖慢半拍；
+     * 后来改成「这一轮在跑才停留」，可那个判断在直播和检查里都成立，等于没拦住。
+     *
+     * 现在换个思路：**看它变得到底多快**。
+     *   · 1.2 秒内只变一两句 → 人看得清，立刻上，不拖；
+     *   · 1.2 秒内已经变了三句以上 → 就是在闪，进入停留模式，每句至少 400ms。
+     * 这样「慢慢说」的场景零延迟，「飞快切」的场景才被按住 —— 正好是主人要的。
+     */
+    if (!el._xyHits) el._xyHits = [];
+    el._xyHits = el._xyHits.filter((t) => now - t < 1200);
+    el._xyHits.push(now);
+    const _dwell = (el._xyHits.length >= 3 && live) ? NAME_MIN_MS : 0;
+    const lastAt = Number(el.dataset && el.dataset.nameAt || 0);
+    const wait = _dwell - (now - lastAt);
+    /* 不直播（历史重画、收尾之后）或没必要停留 → 立刻上 */
+    if (!live || _dwell <= 0 || wait <= 0) {
+      if (el._xyTimer) { clearTimeout(el._xyTimer); el._xyTimer = 0; }
+      el._xyPending = null;
+      el.textContent = want;
+      try { el.dataset.nameAt = String(now); } catch (e) {}
+      return;
     }
+    el._xyPending = want;
+    if (el._xyTimer) return;              // 已经有一个到点的闹钟在等，别再挂
+    el._xyTimer = setTimeout(() => {
+      el._xyTimer = 0;
+      const w = el._xyPending;
+      el._xyPending = null;
+      if (!w || w === el.textContent) return;
+      el.textContent = w;
+      try { el.dataset.nameAt = String(Date.now()); } catch (e) {}
+    }, wait);
+  };
+
+  if (name) {
+    let _wantName;
+    if (thinking) {
+      _wantName = (t ? ('调了 ' + t + ' 次 · ') : '') + '正在思考中…';
+    } else if (runCard) {
+      _wantName = (t ? ('调了 ' + t + ' 次 · ') : '') + '正在' + runName + '…';
+    } else if (t && k) {
+      _wantName = '调了 ' + t + ' 次工具 · 想了 ' + k + ' 段';
+    } else if (k) {
+      _wantName = '想了 ' + k + ' 段';
+    } else {
+      _wantName = '调了 ' + t + ' 次工具';
+    }
+    /* 「这一轮还在跑」的判据不能只看 thinking/runCard —— 它们会一抖一抖地翻
+     * （思考块刚建、工具刚结束那一瞬间两者都可能为空），一翻就跳过最短停留，
+     * 又变成「闪一下」。所以再问一句「这个会话这会儿是不是还有一轮在跑」。 */
+    /* 【2026-11-09 收窄】最短停留只在「这一轮确实在直播」时生效。
+     * 无条件开的话，历史重画（切会话、刷新、删除后重画）也会被拖 400ms，
+     * 标题慢半拍才更新 —— 那是另一种毛病。判据两路取并集，都是稳定的
+     * （不会一抖一抖地翻）：① 柜子里有直播标记；② 这个会话在 turnsInFlight 里。 */
+    let _turnLive = false;
+    try {
+      _turnLive = Boolean(hub.dataset && hub.dataset.liveTurn === '1')
+        || Boolean(hub.querySelector && hub.querySelector('[data-live-turn="1"]'))
+        || Boolean(window.turnsInFlight && window.turnsInFlight.has(window.sessionId));
+    } catch (e) {}
+    applyName(name, _wantName, _turnLive);
   }
   if (st) {
     const live = Boolean(runCard) || Boolean(thinking);
-    st.className = 'status ' + (bad ? 'err' : (live ? 'run live' : (warn ? 'warn' : 'ok')));
-    st.textContent = bad ? (bad + ' 个失败') : (live ? '运行中' : '');
+    /* 类名也只在变了的时候改 —— 原来每次都重写，等于每帧让浏览器重算一次样式 */
+    const wantCls = 'status ' + (bad ? 'err' : (live ? 'run live' : (warn ? 'warn' : 'ok')));
+    if (st.className !== wantCls) st.className = wantCls;
+    setText(st, bad ? (bad + ' 个失败') : (live ? '运行中' : ''));
   }
   if (pk) {
     if (thinking) {
-      pk.textContent = thinking.dataset.peek || '';
+      /* 灰字节流：同一段思考里每 150ms 最多换一次。
+       * 不节流的话，模型每吐几个字就重排一次，省略号跟着乱跳。 */
+      const want = thinking.dataset.peek || '';
+      const now = Date.now();
+      const lastAt = Number(pk.dataset.peekAt || 0);
+      if (pk.textContent !== want && now - lastAt >= 150) {
+        pk.textContent = want;
+        try { pk.dataset.peekAt = String(now); } catch {}
+      }
       pk.classList.remove('live');
     } else if (runCard) {
       /* 标题已经写了「正在X…」、status 已经是金色「运行中」，
        * 这截灰字再写一遍就成了两个「运行中」—— 清空，:empty 会自己隐藏 */
-      pk.textContent = '';
+      setText(pk, '');
       pk.classList.remove('live');
     } else {
-      pk.textContent = hubPeekOf([...tools, ...thinks]);
+      setText(pk, hubPeekOf([...tools, ...thinks]));
       pk.classList.remove('live');
     }
   }

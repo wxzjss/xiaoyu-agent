@@ -359,6 +359,23 @@ export const FEATURES = [
     defaultOn: true,
   },
   /**
+   * 做文档（2026-11-09）
+   *
+   * 【这一档干什么】让她真的把文件做出来：PPT（.pptx）、Word（.docx）、Excel（.xlsx）。
+   * 不是写一段代码让主人自己去跑，是她自己做、做完直接把文件推给主人。
+   *
+   * 【为什么单列一档】只出文件、不碰网络、不碰桌面，风险最小；
+   * 但要装三个包（pptxgenjs / docx / exceljs），所以给主人一个能关的开关。
+   */
+  {
+    id: 'officeDocs',
+    name: '做文档',
+    desc: '让她直接把文件做出来：说「做份 PPT」就给 .pptx，「写个 Word」就给 .docx，「拉个表格」就给 .xlsx，'
+      + '做完文件直接出现在聊天里，能点开保存。内容结构说清楚就行，不用管排版细节。不想要就关掉。',
+    tools: ['make_pptx', 'make_docx', 'make_xlsx'],
+    defaultOn: true,
+  },
+  /**
    * 操作桌面（2026-11-03）
    *
    * 【为什么要单列一档、默认关】

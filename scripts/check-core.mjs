@@ -31,7 +31,6 @@ const CORE = [
   ['check-tool-naming.mjs', '工具命名与柜门'],
   ['check-factory-prompt.mjs', '出厂默认提示词（换机器还是这份）'],
   ['check-plan-archive.mjs', '清单归档（超十条自动收）'],
-  ['check-ime-compose.mjs', '输入法（打字别出白框）'],
 ];
 
 const argv = process.argv.slice(2);

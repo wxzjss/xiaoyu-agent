@@ -1282,6 +1282,19 @@ export function replayInFlight(id) {
       try { window.pushStreamText(rec.bubble, String(p.text || '')); } catch (e) {}
     } else if (kind === 'tool') {
       if (String(p.name) === 'compress') return true;   // 压缩条不重画
+      /* 【2026-11-09 主人报·「切到别的窗口再切回来，多段消息堆在一起」】
+       *
+       * 补画这条路上，工具事件**没有把当前气泡断开** —— rec.bubble 一直指着
+       * 调用工具之前那个气泡。于是「正文 → 工具 → 正文 → 工具 → 正文」
+       * 后面几段全灌进第一个气泡里，屏幕上就是一大坨。
+       *
+       * 平时每来一条事件就画一次，这个洞不明显；一旦窗口被切到后台、
+       * 定时器被节流，事件在服务端攒住，切回来一口气补 —— 整段对话就挤成一团。
+       *
+       * 快照那条路（buildLiveItems）本来就是「工具事件即分段」，一条正文一个气泡；
+       * 这里对齐：工具一出现就断掉当前气泡，后面那段新建。
+       */
+      rec.bubble = null;
       try {
         const el = addTool();
         el.sum.querySelector('.name').textContent = window.niceTool(p.name, p.args);
@@ -2243,9 +2256,15 @@ export function renderTurns(turns, opts) {
     const _norm = (n) => {
       try {
         const c = n.cloneNode(true);
+        /* 展开态、直播标记、流式类，都是「运行时状态」不是内容 —— 比内容时一律抹掉，
+         * 否则同一个气泡会被判成「变了」，白白重建（节点身份一丢，
+         * 流式那边手里的 bubble 指针就成了野指针，又得新开一个）。 */
         for (const d of c.querySelectorAll('details[open]')) d.removeAttribute('open');
         for (const x of c.querySelectorAll('.streaming')) x.classList.remove('streaming');
-        /* data-key 里可能带「这一轮跑到第几版」之类的时间戳，比内容时不算它 */
+        for (const a of ['data-live-turn', 'data-streaming']) {
+          if (c.hasAttribute && c.hasAttribute(a)) c.removeAttribute(a);
+          for (const el of c.querySelectorAll('[' + a + ']')) el.removeAttribute(a);
+        }
         c.removeAttribute('data-streaming');
         return c.outerHTML;
       } catch (e) { return ''; }

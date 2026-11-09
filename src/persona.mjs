@@ -634,16 +634,16 @@ function toolBlock() {
   const lines = rows.map((r) => r.name).join('、');
   const hasSend = rows.some((r) => r.name === 'send_file');
   const tips = [
-    '下面这些工具你是真能用的，不是摆设。遇到对应的事就直接调，不要推脱说做不到。',
+    '这些工具你真能用，遇到对应的事直接调，别说做不到。',
   ];
   if (hasSend) {
-    tips.push('- 要让主人拿到文件（图、视频、声音、压缩包、报告……），就用 send_file，别只把路径打出来；');
+    tips.push('- 要发文件给主人（图、视频、声音、压缩包、报告…）用 send_file，别只报路径；');
   }
   const hasVideo = rows.some((r) => r.name === 'video_probe');
   if (hasVideo) {
-    tips.push('- 主人给你一个视频、或者问「这视频里是什么 / 讲了什么 / 有没有说到 X」，别说自己看不了 —— video_probe 先把切点、冻结、静音量成时间轴，video_sheet 把关键处铺成图版你直接看，video_read 把小字裁开放大读。这套全是本地程序跑的，不传网；');
-    tips.push('- 看完视频要发给主人看的图，用 send_file 发图版，别只丢路径；');
-    tips.push('- 视频里的小字（字幕、水印、角标、时间码）一定要走 video_read 放大再读。原帧里认不出的字，硬猜出来的不是「差一点」，是编；');
+    tips.push('- 主人给视频、或问「这视频讲了什么 / 有没有说到 X」，别说自己看不了 —— video_probe 先量时间轴，video_sheet 铺图版直接看，video_read 把小字裁开放大读。全是本地跑，不传网；');
+    tips.push('- 要发给主人看的图版，用 send_file 发，别只丢路径；');
+    tips.push('- 字幕、水印、角标、时间码必须 video_read 放大再读。认不出的字硬猜＝编；');
   }
   /**
    * 【2026-11-07 harness 重做 · L7】把「判断」从模型身上卸下来。
@@ -667,14 +667,14 @@ function toolBlock() {
     const core = CORE.filter((n) => par.includes(n));
     /* 「只读命令也算」这句只在 run_command 真在手上时才说 ——
      * 功能开关把它关了还留着这句，就是提示词与事实对不上（2026-11-07 严检补的）。 */
-    const runHint = rows.some((r) => r.name === 'run_command') ? '（只读命令如 git status / dir 也算）' : '';
+    const runHint = rows.some((r) => r.name === 'run_command') ? '（只读命令也算）' : '';
     parLine = '  · 可以一起发：' + core.join('、') + ' 等 ' + par.length + ' 个只读工具' + runHint + '；';
   } catch {}
   tips.push('- 【一起发，别排队】同一条响应里可以带好几个 tool_call；哪些能同时跑、哪些要排队由程序按依赖算，'
-    + '你只管把这一轮想做的事一次说全。说多了不会跑错，说少了才要多等一趟完整的模型往返。');
+    + '你只管把这一轮想做的事一次说全。');
   if (parLine) tips.push(parLine);
-  tips.push('  · 只有「后一步要用前一步结果」才分开；写文件、发消息、重启这类会改东西的，一次一件。');
-  tips.push('  · 一条命令里能串起来的几项检查用 ; 串成一条，比分几次调还快；');
+  tips.push('  · 只有后一步要用前一步结果才分开；会改东西的一次一件。');
+  tips.push('  · 一条命令能串起来的几项用 ; 串成一条，比分几次调快；');
   /**
    * 【2026-11-07 加·别用费劲的手干简单的事】
    *
@@ -683,10 +683,10 @@ function toolBlock() {
    * 是几乎一模一样的一条 —— 她想读一个 settings.json，却拿命令去拼路径：
    * 变量 + 引号 + 中文目录一凑就挂；挂了又不知道挂在哪，就改一点点再试，一路磨下去。
    */
-  tips.push('- 【读文件用 read_file、搜内容用 search_files、列目录用 list_dir】这三样一次就成；拿命令拼路径/变量/引号，十次有两三次会挂。');
-  tips.push('- 【同一条命令失败两次就换路子，不许原样再试第三次】连着几条几乎一样的调用＝在原地打转。换个工具、换种写法，或者直接问主人。');
-  tips.push('- 要查新东西、要下载、要装依赖、要算数，先调工具再回答，别凭印象编；');
-  tips.push('- 不确定某个工具怎么用，就先调用一次看报错，报错里通常写着该传什么。');
+  tips.push('- 读文件用 read_file、搜内容用 search_files、列目录用 list_dir，一次就成；拿命令拼路径容易挂。');
+  tips.push('- 【同一条命令失败两次就换路子，不许原样再试第三次】连着几条一样的＝原地打转。换工具、换写法，或者问主人。');
+  tips.push('- 查新东西、下载、装依赖、算数，先调工具再答，别凭印象编；');
+  tips.push('- 不确定工具怎么用，就先调一次看报错，报错通常写着该传什么。');
   return ['【你手上有什么】', ...tips, '', lines].join('\n');
 }
 

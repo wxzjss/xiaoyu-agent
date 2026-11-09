@@ -12459,6 +12459,8 @@ async function refreshAgentChip() {
    * 一旦主人把她的安静去掉（她会每轮都接），或者勾了别人，牌子才亮。
    */
   const grpMembers = (grp && !grp.error && Array.isArray(grp.members)) ? grp.members : [];
+  /* 【2026-11-09】本会话到底谁在说话，整页只用这一个值（牌子、气泡兜底署名）。 */
+  let _speakerName = '小鱼';
   /* 【2026-11-03 修·小鱼说的话被顶上别人的名字】主人截图报：红名「小白曦」下面那段，
    * 其实是我（小鱼）说的话。
    * 病根：mainAgentName 是所有「没自带署名的消息」的兜底，原来这里把它设成
@@ -12486,10 +12488,23 @@ async function refreshAgentChip() {
       if (!m) return false;
       return m.enabled !== false;
     };
+    /* 【2026-11-09 主人报·「办事鱼会话里她用小白曦的口吻说话」】
+     *
+     * 不是串台：那个会话**绑的就是小白曦那张卡**（/api/agents/current 返回的是
+     * sessionAgentId，buildSystemPrompt 的兜底也是 agentForSession），
+     * 所以她按小白曦说话是符合设定的。
+     *
+     * 真正让人误判的是界面：顶栏牌子只写「当前智能体」五个字、名字藏在悬停里，
+     * 左上角那颗「小鱼（鲸鱼娘）」是「当前查看的卡」不是「本会话谁在说话」，
+     * 名单第一又恰好是小鱼 —— 三处都指向小鱼，只有嘴是小白曦的。
+     *
+     * 现在统一一个口径：绑定卡 → 名单第一个开着的 → 小鱼。
+     * cur 是这一轮刚从接口拿的，不会像 agentState 那样切会话时还留着上一个人的值。 */
     let _spk = null;
     for (const _m of grpMembers) { if (_isOn(_m)) { _spk = _m; break; } }
     const _spkName = String((_spk && (_spk.name || '')) || '');
-    mainAgentName = _spkName || '小鱼';
+    _speakerName = (id && id !== 'xiaoyu' && name) ? name : (_spkName || '小鱼');
+    mainAgentName = _speakerName;
   } catch {}
   /* 2026-11-01：关掉的牌（enabled === false）这一轮一句话都不说，所以算「不在场」；
      「叫才应」的不再当噪音删掉 —— 她们被点名应一句是主人看得见的事，
@@ -12509,7 +12524,7 @@ async function refreshAgentChip() {
      主人把小白曦拖到第一位，牌子上还是写着小鱼，看着像没生效。
      现在牌子上的名字 = 名单里排第一的那个（谁排第一谁先说话，说的就是这份名单）。
      名单里一个人都没有时才退回「当前绑的卡」/小鱼。 */
-  const head = String((grpMembers[0] && grpMembers[0].name) || (swapped ? name : '小鱼'));
+  const head = _speakerName;
   /* 【2026-11-02 修·切到别人的会话再切回来，这边的历史消息名字也被改成别人】
    * 原来这里把「名单里排第一的名字」赋给全局 mainAgentName，而 mainAgentName 是所有气泡的署名来源。
    * 于是切到小白曦那边、切回来，这边满屏老消息的署名也跟着变 —— 主人一眼就看出不对。
@@ -12524,7 +12539,9 @@ async function refreshAgentChip() {
    * 而不是一句含糊的「现在：」。 */
   /* 牌子只留五字·2026-10-31：牌子上只留这五个字，谁在说话挪到 title（悬停可见），
      不然名字一长整块牌子就被顶出去，还显得暗。 */
-  el.textContent = '当前智能体';
+  /* 【2026-11-09】名字藏 title 里，主人根本看不见 —— 直接摆到牌子上。
+   * 「本会话」三个字把「谁在说话」和左上角「当前查看的卡」区分开。 */
+  el.textContent = '本会话 · ' + _speakerName;
   el.title = (mates.length
     ? `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— ${mates.length} 个还会接着补一句，点一下换人或换回小鱼`
     : `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— 不是小鱼，点一下换人或换回小鱼`);

@@ -1,6 +1,10 @@
 import fs from 'node:fs';
-const s = fs.readFileSync('C:/Users/35453/AppData/Roaming/小鱼Agent/data/code/src/server.mjs', 'utf8');
-const f = fs.readFileSync('C:/Users/35453/AppData/Roaming/小鱼Agent/data/public/index.html', 'utf8');
+/* 【2026-11-09】隔离全量回归时这两份文件在临时目录里，不能再写死主人那份 */
+const DATA = process.env.XY_TEST_DATA || process.env.MINI_AGENT_DATA || 'C:/Users/35453/AppData/Roaming/小鱼Agent/data';
+/* 隔离实例跑的就是仓库这份 src/server.mjs（spawn 时直接指它），
+   临时数据目录里没有 code/ 那份运行版副本，读仓库才是同一份代码。 */
+const s = fs.readFileSync('src/server.mjs', 'utf8');
+const f = fs.readFileSync(DATA + '/public/index.html', 'utf8');
 
 const R = [];
 const add = (sym, ok, why) => R.push({ sym, ok: ok ? 'OK' : '!!', why });

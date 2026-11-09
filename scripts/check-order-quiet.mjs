@@ -88,7 +88,9 @@ await post('/api/whale', { sessionId: s2, on: false });
  *   差别只在模型那一下的心情。这不是程序坏，是判据不稳。
  *   改成：点名喊她（这是她必须应答的场景），并且等落盘最多 8 秒、最多喊 3 遍，
  *   喊了还不落盘才算真失败 —— 该抓的 bug 一个没放过，随机的假红没了。 */
-const DISK_DIR = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions';
+/* 【2026-11-09】隔离回归时读临时数据目录 */
+const DATA = process.env.XY_TEST_DATA || process.env.MINI_AGENT_DATA || 'C:/Users/35453/AppData/Roaming/小鱼Agent/data';
+const DISK_DIR = DATA + '/.state/sessions';
 let disk = null;
 let r2 = { seen: {} };
 for (let attempt = 1; attempt <= 3; attempt++) {

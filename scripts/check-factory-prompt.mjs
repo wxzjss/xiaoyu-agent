@@ -37,7 +37,12 @@ t.ok('快照有正文', snap.length > 4000, snap.length + ' 字');
 // 底线（- 开头那几行）是主人在设置页能改的，不参与「逐字节相等」的比对。
 // 除了它，其余一个字都不能变 —— 那才是「换电脑还是同一份提示词」的真含义。
 const norm = (x) => x.replace(/^- .*$/gm, '').replace(/\s+/g, '');
-const live = generate({});
+/* 【2026-11-09 修·隔离回归里这条假红】
+ * runner 给所有子进程设了 MINI_AGENT_DATA=临时目录，generate({}) 会继承它，
+ * 于是「当前机器」其实是台空机器，生成 4384 字、跟出厂 5351 字对不上。
+ * 这条检查的语义就是「主人这台机器」，显式指回真实数据目录（只读，不发请求、
+ * 不改任何东西，也不碰会话文件）。 */
+const live = generate({ MINI_AGENT_DATA: 'C:/Users/35453/AppData/Roaming/小鱼Agent/data' });
 t.ok('当前机器生成成功', live.length > 4000, live.length + ' 字');
 t.ok('当前机器 == 出厂快照（除可自定义的底线块）', norm(live) === norm(snap), live.length + '/' + snap.length);
 

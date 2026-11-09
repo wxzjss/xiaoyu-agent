@@ -17,8 +17,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
+import { startIsolated } from './_test-instance.mjs';
 
-const DATA = process.env.MINI_AGENT_DATA || 'C:/Users/35453/AppData/Roaming/小鱼Agent/data';
+/* 【2026-11-09 闸】全量回归只在隔离实例上跑。
+ * 以前默认连 8788 —— 那正是主人开着的窗口，检查会在他的会话里发消息、
+ * 造会话、开关智能体。现在临时目录 + 独立端口 + 独立浏览器，用完就删。
+ * 起不来直接抛错退出，绝不退回主人实例。 */
+let iso;
+try {
+  iso = await startIsolated();
+} catch (e) {
+  console.error('起隔离实例失败（绝不回落到主人实例）：', (e && e.stack) || e);
+  process.exit(2);
+}
+console.log('隔离自检实例 ' + iso.base + '（配置副本 ' + iso.copied + ' 份，不含任何会话）');
+
+/* sweep 也只准扫隔离目录。以前这里读 MINI_AGENT_DATA（没设就落回主人 data），
+ * 等于每次回归都在主人的会话目录里删文件 —— 光是「会删」这件事就不该发生。 */
+const DATA = iso.dataDir;
 const SESS_DIR = path.join(DATA, '.state', 'sessions');
 
 function sweep(tag) {
@@ -80,6 +96,7 @@ for (const f of scripts) {
   const r = spawnSync(process.execPath, [path.join(process.cwd(), 'scripts', f)], {
     encoding: 'utf8',
     timeout: 15 * 60 * 1000,
+    env: iso.env,
   });
   const ms = Date.now() - t0;
   durations.push([f, ms]);
@@ -111,6 +128,7 @@ process.stdout.write('_t_post.mjs（POST）'.padEnd(36));
 const rp = spawnSync(process.execPath, [path.join(process.cwd(), '_t_post.mjs')], {
   encoding: 'utf8',
   timeout: 6 * 60 * 1000,
+  env: iso.env,
 });
 if (rp.status === 0) {
   console.log(' OK');
@@ -130,7 +148,7 @@ if (!process.argv.includes('--no-ui')) {
   let alive = false;
   try {
     execFileSync(process.execPath, ['-e',
-      "fetch('http://127.0.0.1:8788/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"],
+      "fetch('" + iso.base + "/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"],
       { timeout: 6000, stdio: 'ignore' });
     alive = true;
   } catch { alive = false; }
@@ -138,13 +156,14 @@ if (!process.argv.includes('--no-ui')) {
   if (!alive) {
     console.log('');
     for (const _f of ['_t_ui.mjs（真机）', '_t_api.mjs（接口）', '_t_tools.mjs（工具）', '_t_write.mjs（写类）', '_t_agents2.mjs（办事/智能体）', '_t_prompt.mjs（system 预算）']) {
-      console.log(_f.padEnd(36) + ' 跳过：App 没在跑（8788 连不上）');
+      console.log(_f.padEnd(36) + ' 跳过：隔离实例没在跑（' + iso.base + ' 连不上）');
     }
   } else {
     process.stdout.write('_t_ui.mjs（真机）'.padEnd(36));
     const rui = spawnSync(process.execPath, [path.join(process.cwd(), '_t_ui.mjs')], {
       encoding: 'utf8',
       timeout: 4 * 60 * 1000,
+      env: iso.env,
     });
     if (rui.status === 0) {
       console.log(' OK');
@@ -163,6 +182,7 @@ if (!process.argv.includes('--no-ui')) {
       const _rr = spawnSync(process.execPath, [path.join(process.cwd(), _extra)], {
         encoding: 'utf8',
         timeout: 3 * 60 * 1000,
+        env: iso.env,
       });
       if (_rr.status === 0) {
         console.log(' OK');
@@ -196,4 +216,6 @@ console.log('耗时合计 ' + (durations.reduce((a, b) => a + b[1], 0) / 1000).t
   + 's，最慢的几个：');
 for (const [f, ms] of slow) console.log('  ' + (ms / 1000).toFixed(1).padStart(7) + 's  ' + f);
 if (fail) console.log('失败：' + failed.join(', '));
+await iso.stop();
+console.log('隔离实例已关闭，临时数据已删除');
 process.exit(fail ? 1 : 0);

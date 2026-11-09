@@ -1,4 +1,6 @@
 import { detectBase } from './_base.mjs';
+/* 【2026-11-09】隔离回归时读临时数据目录 */
+const DATA = process.env.XY_TEST_DATA || process.env.MINI_AGENT_DATA || 'C:/Users/35453/AppData/Roaming/小鱼Agent/data';
 const BASE = detectBase();
 import fs from 'node:fs';
 
@@ -27,7 +29,7 @@ async function makeSid(tag) {
 // 直接读磁盘，不经 peek（peek 会裁字段）
 function diskMsgs(sid) {
   try {
-    const p = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions/' + sid + '.json';
+    const p = DATA + '/.state/sessions/' + sid + '.json';
     return JSON.parse(fs.readFileSync(p, 'utf8')).messages || [];
   } catch { return []; }
 }
@@ -116,7 +118,7 @@ try {
   /* 【2026-11-03 记忆系统严检】这里原来是直接 fs.unlinkSync 会话文件，
    * 会话没了、记忆本（.state/memory/<id>.md）却留在那儿，跑一次攒一批孤儿。
    * 改成走删除接口 —— 接口会把记忆本一起挪进回收站。 */
-  const d = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions';
+  const d = DATA + '/.state/sessions';
   for (const f of fs.readdirSync(d).filter((x) => x.endsWith('.json'))) {
     try {
       const j = JSON.parse(fs.readFileSync(d + '/' + f, 'utf8'));

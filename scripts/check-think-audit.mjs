@@ -160,7 +160,9 @@ yes('清洗覆盖 bubble/thinkBody/md/pre', /SEL = '\.bubble, \.thinkBody, \.md,
 yes('清洗器会查「新加进来的节点」', /m\.addedNodes/.test(ui));
 
 // ── 盘上的真实会话：一条不留 ──────────────
-const sessDir = path.join('C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state/sessions');
+/* 【2026-11-09】隔离回归时扫临时目录，别去翻主人的会话 */
+const DATA = process.env.XY_TEST_DATA || process.env.MINI_AGENT_DATA || 'C:/Users/35453/AppData/Roaming/小鱼Agent/data';
+const sessDir = path.join(DATA, '.state', 'sessions');
 let dirty = 0, scanned = 0;
 const dirtySamples = [];
 try {

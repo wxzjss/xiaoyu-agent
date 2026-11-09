@@ -6658,12 +6658,33 @@ function releaseComposer(opts) {
       input.focus({ preventScroll: true });
     } catch {}
   };
-  if (!noFocus && (forceFocus || wantFocus())) {
+  /* 【2026-11-09 主人报·双击 exe 进来输入法被切成英文】
+   * Windows 上 input.focus() 会重建 IME 上下文；连着三次（立即 + rAF + 60ms）
+   * 就会把主人刚在任务栏切好的「中」冲回系统默认的「英」。
+   * 应用从来没有主动调过系统输入法 API，但这一下等效于「动了他的输入法」。
+   *
+   * 现在两道闸：开机 3 秒内一次都不抢；之后也只有在主人刚点过/敲过
+   * （2 秒内有真实手势）才允许。页面自己切会话、拉历史、补画，一律不碰焦点。 */
+  const _gestureAt = Number(window._xyLastGesture || 0);
+  const _bootAt = Number(window._xyBootAt || 0);
+  const _now = Date.now();
+  const _mayFocus = (_now - _bootAt >= 3000) || (_now - _gestureAt < 2000);
+  if (!noFocus && _mayFocus && (forceFocus || wantFocus())) {
     grab();
     requestAnimationFrame(grab);
     setTimeout(grab, 60);
   }
 }
+
+/* 记录「主人真的动过手」和「页面刚起来」两个时间点，供上面那道闸用。
+   capture 阶段挂，冒泡被 stopPropagation 挡掉也照样记得住。 */
+try {
+  window._xyBootAt = Date.now();
+  for (const _ev of ['pointerdown', 'keydown', 'touchstart']) {
+    document.addEventListener(_ev, () => { window._xyLastGesture = Date.now(); },
+      { capture: true, passive: true });
+  }
+} catch {}
 
 /**
  * 现在该不该把焦点抢到输入框。
@@ -6675,6 +6696,8 @@ function releaseComposer(opts) {
  */
 function wantFocus(force) {
   if (force === true) return true;
+  /* 页面刚起来别抢焦点：focus() 重建 IME 上下文会把输入法冲回默认英文。 */
+  try { if (Date.now() - Number(window._xyBootAt || 0) < 3000) return false; } catch {}
   try {
     if (document.hidden) return false;              // 窗口在后台，抢焦点没意义
     const ae = document.activeElement;
@@ -16121,7 +16144,6 @@ if (featList) {
     }
     featState = r;
     renderFeatList();
-    // 输入法跟随系统是纯界面的开关，改完立刻按新的来，别等那 5 秒缓存
     // 视频背景是纯界面开关，改完立刻生效，不用等下一句
     if (id === 'videoBg') {
       if (typeof window.__applySkin === 'function') window.__applySkin();

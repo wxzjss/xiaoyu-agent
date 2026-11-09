@@ -5,16 +5,9 @@ contextBridge.exposeInMainWorld('desktop', {
   info: () => ipcRenderer.invoke('app:info'),
   openWorkspace: () => ipcRenderer.invoke('app:openWorkspace'),
 
-  /**
-   * 点了聊天输入框，把系统输入法切到「系统语言」那一种。
-   *
-   * 为什么放主进程：渲染进程管不了系统输入法，只有主进程能问 Windows
-   * 要列表、能点那个输入法。win 是当前窗口句柄，Windows 就在这个窗口
-   * 上换输入法，跟人手点任务栏那一下是一回事。
-   */
-  imeMatchSystem: () => ipcRenderer.invoke('ime:matchSystem'),
-  imeSystemLang: () => ipcRenderer.invoke('ime:systemLang'),
-
+  /* 【2026-11-09】输入法相关的 IPC 全删了。应用一行都不碰系统输入法，
+   * 交给 Windows 和主人自己（Shift / Ctrl+Space）。留着两个没人接的
+   * invoke 只会让设置页以为还能「跟随系统」，误导人。 */
   /**
    * 拖进来的文件，拿它在本机上的真实路径。
    *

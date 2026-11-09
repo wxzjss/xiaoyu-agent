@@ -50,14 +50,6 @@ export const DEFAULT_SETTINGS = {
    * 并从训练里抖出一个自我描述（实测会说自己是别的家的模型）。只描述「怎么说话」。
    */
   safeWordNote: "停止：切回平时说话，一句话说清，不撒娇、不用颜文字、不绕弯子，先问清要什么再动手/命令：执行模式，不寒暄不铺垫直接做，做完再报结果；做不了的优先写新功能去做到/人设：把注意力拉回角色设定，按人设说话",
-  /**
-   * 点聊天输入框时，把系统输入法掰到「系统语言」那一边。
-   *
-   * 系统是中文、输入法却停在英文 —— 一点就自动回中文，省得打一屏字母。
-   * 反过来系统是英文也一样。只管桌面版（网页版够不着系统输入法）。
-   * 默认开着；主人要嫌它碍事，功能页里能关。
-   */
-  imeMatchSystem: true,
   // 【2026-11-01 主人】「可以整个把设置里的【外观】分区删了，因为切换没用」
   // 查清了为什么没用：下面 normalize() 的白名单里根本没有 iconStyle / chatCover，
   // 接口存盘时这两个键被直接丢掉 —— 界面上点了、保存了，下次打开还是默认值。
@@ -321,8 +313,6 @@ function normalize(input = {}) {
     input.contextLimit === undefined ? DEFAULT_SETTINGS.contextLimit : input.contextLimit,
     DEFAULT_SETTINGS.contextLimit,
   );
-  // 输入法跟不跟系统语言：只有明确的 false 才算关，其余（没存过、存坏了）都当开。
-  const imeMatchSystem = input.imeMatchSystem === false ? false : true;
   // 主动找我：同样只认明确的 true，其余一律当关（这种要主动发声的，默认必须安全）
   /**
    * 记账用哪种钱。
@@ -335,7 +325,7 @@ function normalize(input = {}) {
    * 只认 'cny' 和 'usd'，别的一律当 'cny' —— 存坏了也别让账本哑掉。
    */
   const currency = String(input.currency || '').toLowerCase() === 'usd' ? 'usd' : 'cny';
-  return { bottomLines, safeWords, safeWordNote, contextLimit, imeMatchSystem, currency };
+  return { bottomLines, safeWords, safeWordNote, contextLimit, currency };
 }
 
 export function getSettings() {

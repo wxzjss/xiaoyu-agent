@@ -708,8 +708,10 @@ async function createWindow(updated = false) {
    * 「系统界面语言」和「主人想打什么字」根本是两件事。
    *
    * 现在：**一行都不碰**。输入法完全交给 Windows 和主人自己（Shift / Ctrl+Space）。
-   * 下面那套 imm32 脚本和 ime:matchSystem 这个 IPC 保留（功能面板的手动开关还要用），
-   * 但**不再在任何时机自动调用**。
+   * 【2026-11-09 补】imm32 脚本、ime:matchSystem IPC、preload 里的桥、
+   * 功能页和设置页那两个开关，现在也一并删干净了 —— 留着只会让人以为
+   * 还有个「默认英文」的开关在管他输入法。连开机那一下 input.focus() 也堵住了：
+   * Windows 上 focus() 会重建 IME 上下文，等效于把人手切好的「中」冲回「英」。
    */
   // 默认最大化（顺序与原因见下面 ready-to-show 里那段，别改回去）。
   win.once('ready-to-show', () => {

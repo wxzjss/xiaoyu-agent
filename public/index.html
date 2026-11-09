@@ -11510,8 +11510,14 @@ try {
 function imeSwallowsEnter(e) {
   if (_imeComposing) return true;
   if (e && (e.isComposing || e.keyCode === 229)) return true;
-  /* 刚 compositionend 的同一次事件里来的回车：那是上屏，不是发送 */
-  if (_imeEndAt && Date.now() - _imeEndAt <= 0) return true;
+  /* 刚 compositionend 就来的回车：那是上屏，不是发送。
+   *
+   * 【2026-11-09 修·0 毫秒太苛刻】一开始写的是「同一次事件循环」（差 <= 0ms），
+   * 结果全量回归里翻车：compositionend 和 keydown 实际差 1 毫秒，
+   * 判断落空 —— 那一版等于没写。改成 150ms 的窗口：
+   * 人不可能在上屏后 0.15 秒内又想发一条，而输入法的「上屏回车」一定落在这窗口里
+   * （WorkBuddy / dsh 用编辑器自己的 composing 状态挡，效果等价）。 */
+  if (_imeEndAt && Date.now() - _imeEndAt <= 150) return true;
   return false;
 }
 

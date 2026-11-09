@@ -119,22 +119,25 @@ if (!cdp) {
     const comp = (type) => inp.dispatchEvent(new CompositionEvent(type, { bubbles: true }));
     const enter = () => inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
 
+    /* 【顺序很重要，而且全程不许用 setTimeout】
+     * headless 里窗口不在前台，定时器会被节流到几乎不跑 —— 之前这里写了
+     * await 220ms，结果 CDP 一直等不到 Promise，整条检查卡死 20 秒。
+     * 所以改成：先测「正常回车」，再测两种「输入法里」的情况，全靠事件顺序，
+     * 一个定时器都不用。 */
+    inp.value = '你好';
+    enter();                       // ① 没在输入法里 → 该发
+    out.正常 = n;
+
     comp('compositionstart');
     inp.value = 'nihao';
-    enter();
+    enter();                       // ② 拼音没选完 → 不发
     out.中途 = n;
 
     comp('compositionend');
-    enter();               // 上屏同一次事件里的回车
+    enter();                       // ③ 上屏那一下的回车 → 不发
     out.上屏同刻 = n;
 
-    await new Promise((r) => setTimeout(r, 40));
-    inp.value = '你好';
-    enter();
-    out.正常 = n;
-
     window.alert('测试：删不掉');
-    await new Promise((r) => setTimeout(r, 120));
     const toast = document.querySelector('#xyToasts .xyToast');
     out.是提示条 = Boolean(toast);
     out.提示层不吃点击 = toast ? getComputedStyle(document.getElementById('xyToasts')).pointerEvents : '';
@@ -146,10 +149,11 @@ if (!cdp) {
     try { if (toast) toast.remove(); } catch {}
     return out;
   `);
-  t.ok('真机：输入法打一半按回车 → 不发', r2.中途 === 0, String(r2.中途));
+  /* 三次是**累计计数**：①发出去一次(n=1)，②③都不许让 n 再涨 */
+  t.ok('真机：没在输入法里按回车 → 照发', r2.正常 === 1, String(r2.正常));
+  t.ok('真机：输入法打一半按回车 → 不发', r2.中途 === 1, String(r2.中途));
   t.ok('真机：上屏那一下的回车 → 不发（这一条只有 composition 状态才拦得住）',
-    r2.上屏同刻 === 0, String(r2.上屏同刻));
-  t.ok('真机：选完字再按回车 → 照发', r2.正常 === 1, String(r2.正常));
+    r2.上屏同刻 === 1, String(r2.上屏同刻));
   t.ok('真机：alert 变成页内提示条（不再模态）', r2.是提示条 === true);
   t.ok('真机：提示条不吃点击、不抢焦点', r2.提示层不吃点击 === 'none' && r2.输入框还能聚焦 === true,
     r2.提示层不吃点击 + ' / ' + r2.输入框还能聚焦);

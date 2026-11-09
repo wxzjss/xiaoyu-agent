@@ -19,17 +19,96 @@ if (typeof connect !== 'function') {
   process.exit(0);
 }
 
-let cdp;
-try {
-  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
-} catch (e) {
-  console.log('SKIP 没有可连的调试浏览器（先开 app，再把无头浏览器指到 9223）');
+/**
+ * 【2026-11-09 修·不许去碰主人自己开的浏览器】
+ *
+ * 原来这里直接连 9223。9223 往往是主人日常那个 Edge（AdGuard、DownThemAll、
+ * Bitwarden 一堆标签页），脚本一上来就 Page.reload —— 等于把主人的浏览器刷了，
+ * 而那条 target 一销毁就报 "Inspected target navigated or closed"，判成假红。
+ * 实测过：连上去看到的是 welcome.adguard.info / about.downthemall.org 那些页面。
+ *
+ * 现在学 _t_ui：自己起一个 headless Edge、用自己的端口和临时 profile，跑完自己关。
+ * 主人桌面上那个浏览器一个字节都不动。
+ */
+import { spawn } from 'node:child_process';
+import { existsSync, rmSync } from 'node:fs';
+
+const PORT = Number(process.env.XY_CDP_PORT || 9225);
+const PROFILE = 'C:/Users/35453/AppData/Local/Temp/edge-xy-think-dom';
+const BASE = (await import('./_base.mjs')).detectBase().replace(/\/+$/, '');
+
+const EDGE = [
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+].find((p) => existsSync(p));
+if (!EDGE) {
+  console.log('SKIP 找不到 Edge，跑不了真机 DOM 检查');
   process.exit(0);
 }
 
-await cdp.send('Page.enable');
-await cdp.send('Page.reload', { ignoreCache: true });
-await new Promise((r) => setTimeout(r, 13000));
+try { rmSync(PROFILE, { recursive: true, force: true }); } catch {}
+const child = spawn(EDGE, [
+  '--headless=new', '--disable-gpu', '--no-first-run', '--mute-audio',
+  /* 【2026-11-09 加】headless 窗口默认会被当成「不在前台」，Chrome 就把页内的
+   * setTimeout 节流到几乎不跑。这条检查里有 500ms / 600ms 的等待，
+   * 于是整条卡死（实测 322 秒甚至 600 秒超时），看着像脚本坏了。
+   * 这三个开关是官方给这条路用的：不按后台/遮挡降频、不节流定时器。 */
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--remote-debugging-port=' + PORT, '--user-data-dir=' + PROFILE, BASE + '/',
+], { stdio: 'ignore' });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let ready0 = false;
+for (let i = 0; i < 40; i += 1) {
+  try {
+    const list = await fetch('http://127.0.0.1:' + PORT + '/json').then((r) => r.json());
+    if (list.some((t) => t.type === 'page' && String(t.url).includes('127.0.0.1'))) { ready0 = true; break; }
+  } catch {}
+  await sleep(300);
+}
+const cleanup = () => {
+  try { child.kill(); } catch {}
+  try { rmSync(PROFILE, { recursive: true, force: true }); } catch {}
+};
+process.on('exit', cleanup);
+if (!ready0) {
+  console.log('SKIP 无头浏览器没起来，这一格不算失败');
+  cleanup();
+  process.exit(0);
+}
+
+let cdp;
+try {
+  cdp = await connect({ port: PORT, match: '127.0.0.1' });
+} catch (e) {
+  console.log('SKIP 连不上自己起的无头浏览器');
+  cleanup();
+  process.exit(0);
+}
+
+/**
+ * 【2026-11-09 修·别把「页面正在被关」当成「DOM 脏」】
+ *
+ * 全集里这一格跟 _t_ui 前后脚跑：_t_ui 收尾会把自己的无头 Edge 关掉，
+ * 而 9223 上留着的那条 page target 正处在销毁过程中。这时发 Page.reload
+ * 会拿到「Inspected target navigated or closed」—— 那是**浏览器没了**，
+ * 不是页面有 bug，判红就是假红。
+ *
+ * 现在的做法：reload 失败就当成「这台机器没有可用的无头窗口」，SKIP。
+ * 真正的 DOM 脏由下面的扫描断言负责，不靠 reload 撑。
+ */
+/* 自己起的干净窗口，reload 是正路；等 #log 出现就够，不用干等 13 秒。 */
+try {
+  await cdp.send('Page.enable');
+  await cdp.send('Page.reload', { ignoreCache: true });
+} catch (e) {
+  console.log('SKIP 自己起的窗口 reload 失败：' + e.message);
+  try { cdp.close(); } catch {}
+  cleanup();
+  process.exit(0);
+}
 /**
  * 【2026-11-07 加·等页面真的就绪】
  *
@@ -48,6 +127,7 @@ for (let i = 0; i < 20; i += 1) {
 if (!ready) {
   console.log('SKIP 页面还没就绪（#log 建不出来），这一格不算失败');
   try { cdp.close(); } catch {}
+  cleanup();
   process.exit(0);
 }
 
@@ -92,4 +172,5 @@ chk('新插进来的脏气泡会被清掉', info.注入后变成 === '甲乙', J
 console.log('');
 if (fail) { console.log('★ 失败 ' + fail + ' 条'); process.exit(1); }
 console.log('PASS 真机 DOM 干净');
+cleanup();
 process.exit(0);

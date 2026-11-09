@@ -2225,6 +2225,31 @@ export function renderTurns(turns, opts) {
 
   if (!_appendedOnly) {
     /* 退回全量：能对上 key 的用旧节点替掉新造的（第一刀那套），再整屏换。 */
+    /**
+     * 【2026-11-09 改·这才算真的 keyed diff】
+     *
+     * 原来这里只认 key：`el.dataset.key` 对得上，就把**旧的节点**塞回 frag，
+     * 新造的扔掉 —— 内容一个字都没比过。后果是：
+     *   · 改过的消息永远显示旧的（后来只拿「md vs 纯文本」这一条窄判据补了个漏）；
+     *   · 任何「同一轮内容变了」的情况（编辑、附件补上、工具状态从跑变停）
+     *     都得靠别处的补丁兜，兜不住就表现为「显示不对 / 刷新才好」。
+     *
+     * 现在的判据是**内容**，不是 key：
+     *   · 内容一样（抹掉展开态、streaming 这些运行时状态后逐字节相同）→ 复用旧节点，
+     *     展开的柜子、滚动锚、选中的文字全都保住，一个 DOM 都不重建；
+     *   · 内容变了 → 让新节点进来，该改的改。
+     * 这才是「只改变化的节点」。
+     */
+    const _norm = (n) => {
+      try {
+        const c = n.cloneNode(true);
+        for (const d of c.querySelectorAll('details[open]')) d.removeAttribute('open');
+        for (const x of c.querySelectorAll('.streaming')) x.classList.remove('streaming');
+        /* data-key 里可能带「这一轮跑到第几版」之类的时间戳，比内容时不算它 */
+        c.removeAttribute('data-streaming');
+        return c.outerHTML;
+      } catch (e) { return ''; }
+    };
     try {
       for (const el of [...frag.children]) {
         const k = el.dataset && el.dataset.key;
@@ -2235,19 +2260,16 @@ export function renderTurns(turns, opts) {
           /**
            * 【2026-11-07 修·删除后老消息「没格式了」】
            *
-           * 主人报：一轮说完之后点「删除」，前面那些消息的 markdown 全没了，刷新才好。
-           *
-           * 链路：直播时气泡是 paintSpeech 用 textContent 写的（纯文本 + pre-wrap），
-           * 没有 <p>/<strong> 这些子元素；而这里按 data-key 复用的是**旧的那个纯文本气泡**，
-           * 于是刚 mdInto 画好的新节点被扔掉，屏幕上留着纯文本 → 看着就是「没格式了」。
-           * 刷新时屏上气泡本来就是 md 的，复用没差别，所以「刷新一次就好了」。
-           *
-           * 判据：新画的那个有元素子节点（= 走了 markdown），旧的却是光秃秃一段文字
-           * （= 直播写的纯文本）—— 这种不复用，让新的进来。
+           * 直播时气泡是 paintSpeech 用 textContent 写的（纯文本 + pre-wrap），
+           * 没有 <p>/<strong> 这些子元素；而按 key 复用的是**旧的那个纯文本气泡**，
+           * 于是刚 mdInto 画好的新节点被扔掉，屏幕上留着纯文本 → 「没格式了」。
+           * 这一条保留：新的是富文本、旧的是纯文本，一律让新的进来。
            */
           const oldPlain = old.children.length === 0;
           const neuRich = el.children.length > 0;
           if (oldPlain && neuRich) continue;
+          /* 【2026-11-09】内容变了就必须换新 —— 这是 keyed diff 的核心一句 */
+          if (_norm(old) !== _norm(el)) continue;
           try { frag.replaceChild(old, el); } catch (e) {}
         }
       }

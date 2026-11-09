@@ -22,7 +22,7 @@
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -114,6 +114,39 @@ async function main() {
   let upstream = null;
   let child = null;
 
+  /* 【2026-11-09 修·这条检查之前根本没在测它以为在测的东西】
+   *
+   * 原来只靠 spawn 时给 BASE_URL / API_KEY / MODEL 三个环境变量。
+   * 可服务端取接入点是 `activeEndpoint()`：**先看 models.json**，只有那儿是空的
+   * 才退回环境变量。而真实机器上 models.json 里躺着一堆真 key ——
+   * 隔离实例一启动就照它连了真上游，于是「502」那条永远等不到，
+   * 反而收到一句正常的回复，检查就报「断了之后历史里什么都没有」。
+   *
+   * 实测：失败时打印出来的最后一条 assistant 是「在的在的！(≧▽≦)」——
+   * 真人真模型答的，说明它压根没走假上游。
+   *
+   * 现在把 models.json 直接写进这个临时数据目录，activeId 指向假上游。
+   * 环境变量留着（当兜底），但真正说了算的是这份文件。
+   */
+  try {
+    const stateDir = join(dataDir, '.state');
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(join(stateDir, 'models.json'), JSON.stringify({
+      activeId: 'gate-test',
+      models: [{
+        id: 'gate-test',
+        name: '假上游（测断轮）',
+        model: 'test-model',
+        baseURL: 'http://127.0.0.1:' + upPort + '/v1',
+        apiKey: 'test-key',
+        kind: 'chat',
+        active: true,
+      }],
+    }, null, 2), 'utf8');
+  } catch (e) {
+    console.log('  [!!] 写隔离 models.json 失败：' + e.message);
+  }
+
   try {
     upstream = await fakeUpstream(upPort, '502');
 
@@ -165,7 +198,7 @@ async function main() {
         await fetch('http://127.0.0.1:' + appPort + '/api/chat', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sessionId: sid, text: '这一句会撞上游 502' }),
+          body: JSON.stringify({ sessionId: sid, message: '这一句会撞上游 502' }),
         }).catch(() => null);
 
         // 等它把这一轮走完（撞 502 应该很快，留足 40 秒余量）

@@ -86,7 +86,8 @@ function buildIndex() {
 /** 3) 改动的文件 → 受影响检查 */
 const CORE = [
   'check-chat-e2e.mjs', 'check-live-sync.mjs', 'check-turn-watchdog.mjs',
-  'check-stuck-autoresume.mjs', 'check-pending-queue.mjs', 'check-think-display.mjs',
+  'check-stuck-autoresume.mjs', 'check-pending-queue.mjs', 'check-pending-hint.mjs',
+  'check-think-display.mjs',
   'check-tool-naming.mjs', 'check-factory-prompt.mjs',
 ];
 /** 改到这些「基础设施」文件时，光靠索引不够，直接补一组核心 */

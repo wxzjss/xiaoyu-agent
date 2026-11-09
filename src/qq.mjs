@@ -350,6 +350,25 @@ export function qqGate() {
 }
 
 /**
+ * 【2026-11-09 修·主人号存了两个格子，只认其中一个】
+ *
+ * 面板上「你的 QQ 号」只有**一个**输入框，可它被两个按钮分别存到了两处：
+ *   · 第 2 格「保存」 → gate.ownerQq        ← 准入 / 认主真正读的是这个
+ *   · 1.5「连上自己注册的号」 → onebot.ownerQq ← 只有这里写了，那边还是空
+ *
+ * 于是走 1.5 一路配下来的人：号填了、也连上了，可 gate.ownerQq 是空 →
+ * 认不出他是主人，而且 strict 默认开 → **他自己私聊也被挡**（实测复现：
+ * isOwnerQq=false、qqAllowed=not-in-whitelist）。看着就是「连上了但她不理我」。
+ *
+ * 现在：准入一律走这里取号 —— 两边哪边有就用哪边，gate 优先（它是真身）。
+ * 写入时（setOneBotConf）也把号同步进 gate，新配的人不会再有这个割裂。
+ */
+export function ownerQqOf() {
+  const d = readQq();
+  return normQqNum(d.gate.ownerQq) || normQqNum(d.onebot && d.onebot.ownerQq);
+}
+
+/**
  * 改白名单。
  *
  * 这里故意不校验「主人号必须在私聊白名单里」——写的时候自动帮你并进去，
@@ -408,8 +427,10 @@ export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
       ? { ok: true, why: 'group' }
       : { ok: false, why: 'group-not-allowed', qq: q, group: grp };
   }
-  // 主人的号 —— 他一定是自己人（认号，不认 openid）
-  if (g.ownerQq && q && q === g.ownerQq) return { ok: true, why: 'owner' };
+  // 主人的号 —— 他一定是自己人（认号，不认 openid）。
+  // 号从 ownerQqOf() 取：gate 没填但 1.5 那格填了，也算数（2026-11-09 修）。
+  const _owner = normQqNum(g.ownerQq) || ownerQqOf();
+  if (_owner && q && q === _owner) return { ok: true, why: 'owner' };
   // isOwner 只剩「早先被设成主人」这一个来源，口令退役后基本用不上，留着不碍事
   if (isOwner) return { ok: true, why: 'owner' };
   // 主人把「只理白名单」关掉了 → 不设防（但连号都没有的话还是别理，那是垃圾消息）
@@ -483,7 +504,7 @@ export function isOwnerOpenid(openid) {
 export function isOwnerQq(qqId) {
   const q = normQqNum(qqId);
   if (!q) return false;
-  const owner = normQqNum(qqGate().ownerQq);
+  const owner = ownerQqOf();   // gate 空时回退 onebot.ownerQq，见 ownerQqOf 的注释
   return Boolean(owner) && q === owner;
 }
 

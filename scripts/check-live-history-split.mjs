@@ -1,0 +1,87 @@
+#!/usr/bin/env node
+/**
+ * 【2026-11-09 主人报·调用工具/思考/发消息过程中按 F5，又多段消息堆一块】
+ *
+ * 病根：开跑时历史只砍**最后一条** assistant。可一轮只要
+ * 「说一段 → 调工具 → 再说一段」，历史里已经落了 3 条；
+ * 只砍最后一条，前两条留在屏上，直播快照又整轮重画一遍 → 屏幕上两份。
+ *
+ * 这条检查把 trimTurnsForLive 抽出来真跑，钉住「砍到这一轮主人开口为止」。
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+
+const ROOT = path.resolve(import.meta.dirname, '..');
+const CHAT = fs.readFileSync(path.join(ROOT, 'public/ui/chat.js'), 'utf8').replace(/\r\n/g, '\n');
+
+let pass = 0;
+let fail = 0;
+const t = {
+  ok(name, cond, extra) {
+    if (cond) { pass++; console.log('  OK  ' + name); }
+    else { fail++; console.log('  [!!] ' + name + (extra ? '  →  ' + extra : '')); }
+  },
+};
+
+function grab(src, name) {
+  const i = src.indexOf('function ' + name + '(');
+  if (i < 0) throw new Error('找不到 ' + name);
+  const j = src.indexOf('{', i);
+  let d = 0;
+  for (let k = j; k < src.length; k++) {
+    if (src[k] === '{') d++;
+    else if (src[k] === '}') { d--; if (d === 0) return src.slice(i, k + 1); }
+  }
+  throw new Error(name + ' 大括号没配平');
+}
+
+const { trimTurnsForLive } = new Function(grab(CHAT, 'trimTurnsForLive') + '\nreturn { trimTurnsForLive };')();
+
+const U = (text) => ({ role: 'user', text });
+const A = (text, tools = null) => (tools ? { role: 'assistant', text: '', tools } : { role: 'assistant', text });
+
+console.log('\n一、一轮跑到一半（说→工具→说）：历史只留到主人那句话');
+
+{
+  const turns = [U('帮我看看'), A('我看看'), A('', [{ name: 'read_file' }]), A('找到了')];
+  const kept = trimTurnsForLive(turns);
+  t.ok('只留主人那句，后半轮全交给直播', kept.length === 1 && kept[0].role === 'user', '剩 ' + kept.length + ' 条');
+}
+
+{
+  /* 多轮历史 + 最后一轮在跑：前面几轮要留着，不能被一起砍掉 */
+  const turns = [U('第一句'), A('第一轮的回答'), U('第二句'), A('我查查'), A('', [{ name: 'run' }]), A('查完了')];
+  const kept = trimTurnsForLive(turns);
+  t.ok('前面的完整轮次原样保留', kept.length === 3 && kept[2].role === 'user', JSON.stringify(kept.map((x) => x.role)));
+  t.ok('砍的位置正好是「最后一条主人说的话」之后', kept[2].text === '第二句');
+}
+
+console.log('\n二、没有主人那句话时，退回老口径（只砍最后一条）');
+
+{
+  const turns = [A('续跑前说的'), A('续跑接着说的')];
+  const kept = trimTurnsForLive(turns);
+  t.ok('没有 user → 只砍最后一条 assistant', kept.length === 1 && kept[0].text === '续跑前说的');
+}
+
+{
+  const turns = [];
+  t.ok('空历史不出错', Array.isArray(trimTurnsForLive(turns)) && trimTurnsForLive(turns).length === 0);
+  t.ok('非数组不出错', trimTurnsForLive(null) === null);
+}
+
+console.log('\n三、源码层面钉住「别再退回只砍一条」');
+
+{
+  t.ok('renderLog 用 trimTurnsForLive 算历史指纹',
+    /const histTurns = \(running && turns\.length\) \? trimTurnsForLive\(turns\) : turns;/.test(CHAT));
+  t.ok('renderTurns 真正裁 DOM 时也用它',
+    /if \(opts && opts\.dropTail && Array\.isArray\(turns\)\) \{[\s\S]{0,160}trimTurnsForLive\(turns\)/.test(CHAT));
+  t.ok('renderTurns 更新 state 时也用它',
+    /trimTurnsForLive\(LOG_STATE\.turns\)/.test(CHAT));
+  t.ok('老写法「只 splice 最后一条 assistant」已经不在',
+    !/turns\[i\]\.role === 'assistant'\) \{ turns\.splice\(i, 1\); break; \}/.test(CHAT));
+}
+
+console.log('\n结果: ' + pass + ' 过 / ' + fail + ' 挂\n');
+process.exit(fail ? 1 : 0);

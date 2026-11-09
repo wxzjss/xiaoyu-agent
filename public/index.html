@@ -5620,8 +5620,218 @@ function snapshotFingerprint(items) {
   return h + ':' + String(s.length) + ':' + String((Array.isArray(items) ? items : []).length);
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+ * 【2026-11-09 根治·「屏幕该长什么样」只有一个来源、一个出口】
+ *
+ * 主人报的症状：「好几段话堆进一个气泡」「按 F5 之后又堆一块」。根因不是某条路径
+ * 漏了去重，而是**同一轮有两套画法、各记各的账**：
+ *   ① 老路：SSE 收到 text / reasoning / tool_start 就 addAssistantAuto /
+ *      pushStreamText / openThink / addTool **直接建节点**；
+ *   ② 新路：服务端 live.items 到位后，renderLog → paintSnapshot 照清单先删后画。
+ * 两条路对「一段话算一段」的判据不同，任何一处不一致，屏幕上就是两份 / 多段挤一块。
+ * F5、切会话、补拉只是把两条路撞在一起的时机变得更容易命中。
+ *
+ * 从今天起只留一条路。下面三条是**不变式**，动这块代码之前先读一遍：
+ *   A. 唯一权威 = 清单（items）：服务端算好的 live.items，和前端这份按
+ *      「同一条合并规则」长出来的 items，形状语义完全一样（见 itemsFromEvents）。
+ *   B. 唯一出口 = renderLog()（public/ui/chat.js）：**只有它能建/删 #log 里的对话节点**。
+ *      SSE、补捞、轮询一律「只更新清单」，然后叫它一声。
+ *   C. 幂等：同一份清单画一百次结果一样；同一段文字在屏幕上只出现一次。
+ *
+ * 所以本文件那条 SSE 循环只做两件事：喂清单、节流叫一次 renderLog。
+ * **那里不许再出现 addAssistantAuto / pushStreamText / openThink / addTool /
+ *   whaleStream* / addWhaleBubble。**（scripts/check-no-dup-render.mjs 盯着这一条。）
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/** 会话 -> 这一轮「屏幕上该有什么」的清单（SSE 建、补捞往里喂、renderLog 只管画） */
+const liveModels = new Map();
+
+/** 取这一轮在跑的清单（没有就是没在跑 —— 那屏幕上由历史说了算） */
+function liveModelGet(sid) {
+  return liveModels.get(String(sid || '')) || null;
+}
+
+/**
+ * 开一轮：清单从空开始。
+ *
+ * 空清单只是「我这边没话可说」，不是「屏幕上该清空」——
+ * 这一点和 paintSnapshot0 的口径一致（空快照不动屏幕）。
+ */
+function liveModelOpen(sid, startedAt) {
+  const _sid = String(sid || '');
+  const m = { sid: _sid, items: [], open: false, startedAt: Number(startedAt) || Date.now() };
+  liveModels.set(_sid, m);
+  /* 新的一轮：把「上一轮最后一段正文长到哪儿」的记账清掉，
+   * 否则这一段的第一句会被当成「上一段还在变长」，接进上一轮那个气泡里。 */
+  try { if (window.__liveHeadFp) window.__liveHeadFp.delete(_sid); } catch (e) {}
+  return m;
+}
+
+/**
+ * 喂一条事件进清单（就地改，返回 items）。
+ *
+ * 规则与 itemsFromEvents **逐条同源**：改一处必须改另一处，
+ * `scripts/check-no-dup-render.mjs` 会把两份对跑，一条不一致都算挂。
+ * 为什么要有两份：itemsFromEvents 是「一次算完」（补拉 / 老进程用），
+ * 这里是「一条一条接着长」（SSE 用）—— 长轮次里不能每来一个字就从头算一遍。
+ *
+ * 状态 st = { items, open }：
+ *   open 记的是「上一段正文还收不收字」。轮末 / 换种类时关掉，
+ *   下一段正文就一定另起一条 —— 这就是「done 是分段线」在前端的落点。
+ */
+function liveItemsFeed(st, e) {
+  if (!st || !e || !e.type) return st ? st.items : [];
+  const items = st.items;
+  const last = () => (items.length ? items[items.length - 1] : null);
+  const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
+
+  /* 轮末就是分段线：排队轮（插话 / 定时任务 / 续跑）是「另一段话」。 */
+  if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') { st.open = false; return items; }
+
+  if (e.type === 'text') {
+    /* notice 是「连接断了」「工具还在跑」这类提示，不进正文 */
+    if (e.notice) { items.push({ k: 'note', t: String(e.text || '') }); st.open = false; return items; }
+    const p = last();
+    if (st.open && p && p.k === 'text') p.t += String(e.text || '');
+    else { items.push({ k: 'text', t: String(e.text || '') }); st.open = true; }
+  } else if (e.type === 'reasoning') {
+    st.open = false;
+    const p = last();
+    if (p && p.k === 'think') p.t += String(e.text || '');
+    else items.push({ k: 'think', t: String(e.text || '') });
+  } else if (e.type === 'tool_start') {
+    st.open = false;
+    /* 压缩条一律不画。后端已经不推了，旧进程 / 旧重放里还有 —— 屏幕上一个像素都不出现 */
+    if (String(e.name) === 'compress') return items;
+    items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '' });
+  } else if (e.type === 'tool_end') {
+    st.open = false;
+    if (String(e.name) === 'compress') return items;
+    const id = String(e.id || '');
+    const it = lastOf('tool');
+    if (it && it.id === id) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
+    /* 【2026-11-07 那道兜底，结构上留在这儿】tool_start 丢了（并行批走过一次 emitEvents:false）
+     * 也要能补上：清单里补一条 tool 就自动把正文断成两段，后面的话不会全堆进一个气泡。 */
+    else items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') });
+  } else if (e.type === 'whale' || e.type === 'agent') {
+    st.open = false;
+    items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+  } else if (e.type === 'whale_stream_start') {
+    st.open = false;
+    items.push({ k: 'say', who: String(e.who || ''), t: '' });
+  } else if (e.type === 'whale_delta') {
+    st.open = false;
+    const it = lastOf('say');
+    if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
+    else items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+  } else if (e.type === 'whale_stream_finish') {
+    const it = lastOf('say');
+    const t = String(e.text || '');
+    if (it && !it.t && t) it.t = t;
+  } else if (e.type === 'worker') {
+    st.open = false;
+    const wid = String(e.wid || '0');
+    let wit = null;
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].k === 'worker' && items[i].id === wid) { wit = items[i]; break; }
+    if (!wit) { wit = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '' }; items.push(wit); }
+    if (e.name) wit.name = String(e.name);
+    if (e.status) wit.status = String(e.status);
+    if (e.note) wit.note = String(e.note);
+    const _st = String(e.text || '').trim();
+    if (_st && (e.kind === 'step' || e.kind === 'start' || e.kind === 'mail')) {
+      wit.steps.push({ kind: String(e.kind || 'step'), t: _st });
+      if (wit.steps.length > 40) wit.steps.splice(0, wit.steps.length - 40);
+    }
+  }
+  return items;
+}
+
+/** 节流记账：16ms 一帧，或者攒够 8 条事件 —— 不为一个字重排一次屏幕 */
+const _livePaint = { at: 0, dirty: 0, timer: 0, sid: '' };
+
+/**
+ * **把清单交出去画。** 自己一个节点都不建 —— 只调 logSetLive + renderLog。
+ * 返回 false 说明这一屏不是这个会话的（或模块还没就位），画不了也不该画。
+ */
+function liveModelPaint(sid, opts) {
+  const m = liveModelGet(sid);
+  if (!m) return false;
+  try { if (String(window.sessionId) !== m.sid) return false; } catch (e) { return false; }
+  try {
+    window.logSetLive(m.sid, { running: true, items: m.items, startedAt: m.startedAt });
+  } catch (e) { return false; }
+  try { window.renderLog((opts && opts.forceLive) ? { forceLive: true } : undefined); } catch (e) {}
+  /* 光标：最后一段是正文才算「还在写」。工具 / 思考期间不挂 ▍（不然像话说完了还在闪） */
+  try {
+    const rec = window.turnsInFlight && window.turnsInFlight.get(m.sid);
+    const b = rec && rec.bubble;
+    const lastItem = m.items.length ? m.items[m.items.length - 1] : null;
+    if (b && b.isConnected && lastItem && lastItem.k === 'text') {
+      window.markStreaming(b);
+      window.touchStreaming(b);
+    }
+  } catch (e) {}
+  return true;
+}
+
+/** 节流版（SSE 每个事件调一次，真正重画最多 60 次/秒，通常是攒 8 条才画一次） */
+function liveModelPaintThrottled(sid) {
+  _livePaint.sid = String(sid || '');
+  _livePaint.dirty += 1;
+  const now = Date.now();
+  if (_livePaint.dirty < 8 && (now - _livePaint.at) < 16) {
+    if (!_livePaint.timer) {
+      _livePaint.timer = setTimeout(() => {
+        _livePaint.timer = 0;
+        liveModelPaint(_livePaint.sid);
+      }, 16);
+    }
+    return;
+  }
+  if (_livePaint.timer) { clearTimeout(_livePaint.timer); _livePaint.timer = 0; }
+  _livePaint.dirty = 0;
+  _livePaint.at = now;
+  liveModelPaint(_livePaint.sid);
+}
+
+/**
+ * 收尾时的那一次「对齐」：把攒着没画的一起画掉。
+ * 只在 done / aborted / error 用 —— **不清清单**：清掉就是「话说到一半画面空一截」。
+ */
+function liveModelFlush(sid) {
+  if (_livePaint.timer) { clearTimeout(_livePaint.timer); _livePaint.timer = 0; }
+  _livePaint.dirty = 0;
+  _livePaint.at = Date.now();
+  _livePaint.sid = String(sid || '');
+  return liveModelPaint(_livePaint.sid, { forceLive: true });
+}
+
 /** 每个会话上一次画出来的快照指纹（没变就不重画） */
 const lastSnapFp = new Map();
+
+/**
+ * 【2026-11-09 补账】把服务端那份清单取回来，喂进这一轮的模型。
+ *
+ * 服务端的 items 是「这一轮现在该长什么样」的唯一权威；SSE 中途断过、
+ * 或者本地清单少了几条，用它对齐一次就齐了。
+ * **只喂模型，不建节点** —— 画由 renderLog 一个人做，画一百次也只有一份。
+ */
+function refreshLiveModel(sid) {
+  const _sid = String(sid || '');
+  if (!_sid) return Promise.resolve(false);
+  return fetch('/api/chat/live?sessionId=' + encodeURIComponent(_sid))
+    .then((r) => r.json())
+    .then((live) => {
+      if (!live || !Array.isArray(live.items) || !live.items.length) return false;
+      if (String(sessionId) !== _sid) return false;      // 主人已经切走了：一个字都不许画
+      const m = liveModelGet(_sid) || liveModelOpen(_sid, live.startedAt);
+      m.items.length = 0;                                 // 就地换内容：LOG_STATE 里是同一个数组
+      for (const it of live.items) { if (it && it.k) m.items.push(it); }
+      m.open = false;
+      return liveModelPaint(_sid, { forceLive: true });
+    })
+    .catch(() => false);
+}
 
 /**
  * 【2026-11-05 重做·流式正文不再"每秒删掉重建"】
@@ -5643,40 +5853,58 @@ const lastSnapFp = new Map();
  * 四条全满足时：只把多出来的那段 push 进去，一个节点都不动。
  * 任何一条不满足 → 返回 false，调用方照原样重画。**最坏情况等于没做这个优化。**
  */
-function _snapTextOnly(items) {
-  let t = '';
-  for (const it of items) {
-    if (!it) continue;
-    if (it.k !== 'text') return null;   // 有别的种类就直接放弃，别自作聪明
-    t += String(it.t || '');
-  }
-  return t;
+/**
+ * 【2026-11-09 改口径·快路只负责「最后一段正文在变长」】
+ *
+ * 原来这里要求「整份清单只有 text」，然后把这些 text **拼成一条**再去比对：
+ * 清单是 [text A, text B] 时它拼成「AB」，正好把两段话塞进同一个气泡 ——
+ * 这就是「多段消息堆一块」的另一半来源（快路自己也在合并段）。
+ *
+ * 现在只认一种形状：**最后一条是正文，它前面的清单一个字都没变**。
+ * 判定靠 paintSnapshot0 画完之后留下的一枚指纹（`window.__liveHeadFp`）：
+ * 前缀清单的指纹跟屏幕上那份一样 → 屏幕上的分段结构就是对的，
+ * 只有尾巴那段在长，那就只往**最后那个**气泡里追加。
+ * 任何一条不满足 → 返回 false，交回整组重画（那段路一段一个容器，绝不会合并）。
+ */
+function _liveHeadFpOf(items) {
+  try { return snapshotFingerprint(Array.isArray(items) ? items.slice(0, -1) : []); } catch (e) { return ''; }
 }
 
 function tryLiveAppendFast(sid, srcLive) {
   if (!srcLive || srcLive.running !== true) return false;
-  if (typeof sid === 'string' && String(sid) !== String(sessionId)) return false;
+  /* 「没有会话」的几种写法要算同一个：null / undefined / ''。
+   * 会话被删掉、或者页面刚起还没选中时，sessionId 就是 null ——
+   * 这时候 String(null) === 'null' 跟 String('') 对不上，会白白放弃增量、
+   * 整块重画一次（屏幕抖一下）。它们本来指的都是「没有」。 */
+  const _sidOf = (v) => String(v == null ? '' : v);
+  if (typeof sid === 'string' && _sidOf(sid) !== _sidOf(sessionId)) return false;
   const items = Array.isArray(srcLive) ? srcLive : (Array.isArray(srcLive.items) ? srcLive.items : null);
   if (!items || !items.length) return false;
-  const want = _snapTextOnly(items);
-  if (!want) return false;
+  const lastItem = items[items.length - 1];
+  if (!lastItem || lastItem.k !== 'text') return false;   // 尾巴不是正文 → 结构变了，交给老路
 
-  /* 【2026-11-09 修】屏幕上同时有多轮在跑时，querySelector 取到的「第一个」
-   * 未必是这一轮 —— 往别人那轮里追加文字就是串写。拿不准就放弃快路，
-   * 交回整块重画：慢一点，但绝不会画错。 */
+  const textCount = items.filter((x) => x && x.k === 'text').length;
   const wraps = document.querySelectorAll('#log .msg.assistant[data-live-turn="1"]');
-  if (wraps.length !== 1) return false;
-  const wrap = wraps[0];
-  if (!wrap) return false;
-  const bubble = wrap.querySelector('.bubble');
+  if (!wraps.length || wraps.length !== textCount) return false;   // 分段结构对不上，交给老路
+
+  const fp = _liveHeadFpOf(items);
+  /* 清单里不止一段正文时，前缀必须跟「屏幕上这份」一模一样（靠画完留下的指纹判）。
+   * 只有一段正文（前缀为空）时不需要这枚指纹 —— 屏幕上就那一个容器，接上去就是对的。
+   * 这一条不能省：省了会把新一段正文接进上一轮那个气泡里（同一句越接越长）。 */
+  if (items.length > 1) {
+    const prev = (window.__liveHeadFp && window.__liveHeadFp.get(String(sid || ''))) || '';
+    if (!prev || prev !== fp) return false;   // 前缀变了（或还没画过）→ 整组重画
+  }
+
+  const wrap = wraps[wraps.length - 1];
+  const bubble = wrap && wrap.querySelector('.bubble');
   if (!bubble) return false;
 
   const cur = typeof bubble._rawText === 'string' ? bubble._rawText : String(bubble.textContent || '');
-  if (!cur) return false;
-  if (!want.startsWith(cur)) return false;   // 不是"变长"，交给老路
-  const add = want.slice(cur.length);
-  if (!add) return true;                     // 一模一样，本来就什么都不用做
-  pushStreamText(bubble, add);
+  const want = String(lastItem.t || '');
+  if (want === cur) return true;             // 一模一样，本来就什么都不用做
+  if (!cur || !want.startsWith(cur)) return false;   // 不是"变长"，交给老路
+  pushStreamText(bubble, want.slice(cur.length));
   return true;
 }
 
@@ -7156,7 +7384,33 @@ function paintLiveEvents(evs, bubble, skipToolIds) {
           }
     } else if (ev.type === 'tool_end') {
       const el = toolEls.get(ev.id);
-      if (el) {
+      if (!el) {
+        /**
+         * 【2026-11-07 那道兜底，这条老路上也得留着】
+         *
+         * tool_start 丢了（并行批走过一次 emitEvents:false 的回归）时这里原本一声不响，
+         * 于是前端不知道「这里该断一下」：后面的话全挤进同一个气泡、工具也塞进同一个柜子。
+         * 现在补一张卡 —— 先把这段话说清、把气泡断开，再补卡，节奏就不会塌。
+         *
+         * （注：这是老路的兜底。现在正常路径走 items，工具事件本身就是分段线，
+         *   见 liveItemsFeed 的 tool_start / tool_end。）
+         */
+        try {
+          closeThink();
+          flushSpeech();
+          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
+          const mk = addTool();
+          mk.sum.querySelector('.name').textContent = niceTool(ev.name, ev.args) || '工具';
+          const st2 = mk.sum.querySelector('.status');
+          st2.textContent = ev.ok ? '完成' : '失败';
+          st2.className = 'status ' + (ev.ok ? 'ok' : 'err');
+          mk.pre.textContent = ev.output ? tidyToolText(ev.output) : '';
+          toolEls.set(ev.id, mk);
+          hubRefreshTitle();
+        } catch (e2) { /* 补画失败也不能连累这一轮 */ }
+        continue;
+      }
+      {
         const st = el.sum.querySelector('.status');
         // 【2026-11-05 加】带上耗时：跑得久不久，一眼看得出来
         const _secs = el._t0 ? Math.max(0, (Date.now() - el._t0) / 1000) : 0;
@@ -8808,6 +9062,26 @@ function touchStreaming(bubble) {
   try { bubble.dataset.streamAt = String(Date.now()); } catch {}
 }
 
+/**
+ * 【2026-11-09 收口】「这一轮不往下想了」—— 语义留着，实现空了。
+ *
+ * 思考块现在跟正文一样：由 renderLog 照清单画，也由它收尾（chat.js 的
+ * paintSnapshot0 里 think 那一段，带 reuse 池，开合状态不丢）。
+ * SSE 那条路再也没有「局部 think 句柄」可以 finish 了 —— 那正是以前
+ * 「两套账」的一半。收尾那几条路（aborted / error / rate_limited / catch / finally）
+ * 仍然调它，是为了让「这一轮结束了」这件事在代码里只有一种说法。
+ */
+function closeThink() { /* 由 renderLog 统一管；见 public/ui/chat.js 的 paintSnapshot0 */ }
+
+/** 摘掉这一轮直播气泡尾巴上那个 ▍（说完了 / 停了就别再闪） */
+function unstreamLiveBubbles() {
+  try {
+    for (const b of document.querySelectorAll('#log .msg.assistant[data-live-turn="1"] .bubble.streaming')) {
+      b.classList.remove('streaming');
+    }
+  } catch (e) {}
+}
+
 function armStreamingTimeout(bubble) {
   try {
     setTimeout(() => {
@@ -9110,40 +9384,39 @@ function whaleAlreadyDrawn(who, text) {
  */
 const _whalePainted = new Map();
 
-/** 从 live 里捞到一条 whale 事件 -> 认领它该去哪个气泡，绝不重复新建 */
+/** 从 live 里捞到一条 whale 事件 -> 只更新清单，画交给 renderLog */
 function paintWhaleFromLive(ev, sid) {
+  /**
+   * 【2026-11-09 根治·「她说的那句」也走清单，不再单独建节点】
+   *
+   * 原来这条路是 whaleStreamStart / Delta / Finish + addWhaleBubble 三件套，
+   * 而 renderLog 那条路又照清单里的 k:'say' 画一遍 —— 同一句话两套画法，
+   * 补捞醒一次画一个，主人看到的就是「小鲸一句话冒出三四个气泡」。
+   *
+   * 现在：把事件喂进这一轮那份清单（跟正文同一套形状），画由 renderLog 一个人画。
+   * 没有在跑的一轮（清单都没有）→ 什么都不做：那种时候屏幕上由历史说了算。
+   */
   if (!ev) return;
-  const who = String(ev.who || '小鲸');
+  const _sid = String(sid || '');
+  const m = liveModelGet(_sid);
+  if (!m) return;
+  /* 碎片（start / delta）只用来推进「正在长的那一句」；补捞时靠定稿兜底 ——
+   * 否则同一条定稿被反复捞到，就会把同一句拼两遍。 */
   if (ev.type === 'whale_stream_start' || ev.type === 'whale_delta') {
-    // 碎片只在真流式里用。补捞时靠定稿兜底 —— 这一句已经定稿了，再来碎片没有意义。
     const given = String(ev.text || '');
-    if (ev.type === 'whale_delta' && (!given || !_whaleStreams.get(StreamKey(sid, who)))) return;
-    if (given) whaleStreamDelta(given, StreamKey(sid, who));
+    if (ev.type === 'whale_stream_start' || !given) return;
+    if (!m.items.some((x) => x && x.k === 'say')) return;   // 没在说的那句，碎片没有意义
+    liveItemsFeed(m, { type: 'whale_delta', who: String(ev.who || '小鲸'), text: given });
+    liveModelPaint(_sid);
     return;
   }
+  const who = String(ev.who || '小鲸');
   const text = String(ev.text || '').trim();
-  const key = String(sid || '') + '\u0000' + who + '\u0000' + text;
-  // ① 这句已经画过了：只把文本对齐（以定稿为准），不再新建气泡
-  const seen = _whalePainted.get(key);
-  if (seen && seen.isConnected) {
-    if (text && String(seen.textContent || '').trim() !== text) {
-      seen.textContent = text;
-      noteNewContent();
-    }
-    return;
-  }
-  // ② 有正在流的气泡：把它定稿，并登记句柄
-  if (whaleStreamFinish(text, StreamKey(sid, who))) {
-    const el = _whaleLastFinishEl;
-    if (el && el.isConnected && text) _whalePainted.set(key, el);
-    return;
-  }
-  // ③ 真的没有：画一个新的，并登记句柄
-  const wrap = addWhaleBubble(who, text);
-  if (wrap) {
-    const b = wrap.querySelector('.bubble');
-    if (b && text) _whalePainted.set(key, b);
-  }
+  if (!text) return;
+  /* 幂等：同一句已经在清单里（补捞会重复捞到同一条）就不再追加一条 */
+  if (m.items.some((x) => x && x.k === 'say' && String(x.who || '') === who && String(x.t || '').trim() === text)) return;
+  liveItemsFeed(m, { type: 'whale', who, text });
+  liveModelPaint(_sid, { forceLive: true });
 }
 
 /**
@@ -10247,8 +10520,11 @@ function syncSendBtn() {
 /** 跑一轮对话；resume = 接着已有历史继续（插话之后）。 */
 // 这一轮刚画出来的用户气泡，等 done 回包再补「↶ 回退」
 let pendingRewindBubble = null;
-/** 上一轮被插话打断时保留下来的思考块（<details>），下一轮接着往里写 */
-let savedOpenThink = null;
+/* 【2026-11-09 删掉 savedOpenThink】
+ * 它原来是「上一轮被插话打断时留下来的思考块 <details>，下一轮接着往里写」。
+ * 那是「局部句柄」时代的产物：SSE 自己攥着 DOM 节点。现在思考块由 renderLog
+ * 照清单画、照清单收，开合状态由 snapOpenState/applyOpenState 保 —— 没有句柄可传。
+ */
 
 /* 【2026-11-01 主人报】截图和文字一起发，只发出文字、截图留在输入框。
    原来签名里没有 attachments —— 函数体里用的是外层那个全局变量，send() 传进来也不认。
@@ -10260,30 +10536,28 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
      下面一律读写这个局部变量，别再摸全局 —— 全局那份会被 send() 收尾时清空。 */
   const _pics = Array.isArray(_att) ? _att.slice() : (Array.isArray(attachments) ? attachments.slice() : []);
   /**
-   * 【2026-10-27】记下这一轮开跑时屏幕上最新的气泡序号。
+   * 【2026-11-09 根治·局部句柄全下线】
    *
-   * 补捞事件（断线重连、跑完补拉）要靠它分辨「哪些气泡是这一轮的」：
-   * 序号不大于这个数的，都是上一轮留下的，不许挂光标、不许往里追加。
-   * 不记这一笔的话，补捞会拿上一条写满字的气泡接着写 ——
-   * 主人看到的就是「同一句话在一句之内说了两遍」。
+   * 原来这里有三个局部变量：`bubble`（当前这段正文的 DOM）、`think`（思考块句柄）、
+   * `toolEls`（工具卡）。它们就是「同一轮第二套记账」—— 事件来了自己建节点、
+   * 自己记住画到哪儿，而 renderLog 那边又照清单画一遍。
+   *
+   * 现在一个都不留：屏幕上有什么只由清单（liveModels）+ renderLog 说了算。
+   * 需要「这一轮最后那个正文气泡」时（挂用量行、挂重发按钮、放文件卡），
+   * 从 turnRec.bubble 取 —— 那是 paintSnapshot0 画完之后写回轮次记录的那一个，
+   * 也就是屏幕上货真价实的那一条。
    */
-  let bubble = null;
-  const toolEls = new Map();
-  let think = null;
-  // 上一轮被插话打断、思考块还摊着 —— 接着往那块里写，别另开一个
-  if (savedOpenThink && savedOpenThink.el && savedOpenThink.el.isConnected) {
-    think = savedOpenThink;
-    savedOpenThink = null;
-  }
-  const closeThink = () => { if (think) { think.finish(); think = null; } };
+  const liveBubble = () => {
+    try { const b = turnRec.bubble; return (b && b.isConnected) ? b : null; } catch (e) { return null; }
+  };
   /**
    * 【插话打断时别折叠思考块】
    *
    * 实测：主人正看着它边想边跑，一插话，整段思考"唰"地收起来，
    * 主人说"屏幕折叠了"。
-   * 原因就是收尾那句无条件 closeThink() —— finish() 会把 details 的 open 关掉。
-   * 所以先记一笔"这一轮是不是被插话掐断的"，是的话就别收，
-   * 让 think 留在屏幕上，下一轮接着往里写。
+   * 根因是老代码收尾那句无条件 closeThink() —— finish() 会把 details 的 open 关掉。
+   * 现在思考块由 renderLog 自己按「重画前后展开状态一致」那套逻辑管（snapOpenState
+   * / applyOpenState），这里只留这个标记给收尾判断用。
    */
   let interruptedByInterject = false;
 
@@ -10335,6 +10609,22 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
     drawnParts: 0,      // parts 里已经画到第几个 —— 补画只补增量，不整段重来
   };
   turnsInFlight.set(turnSession, turnRec);
+
+  /**
+   * 【2026-11-09 根治】这一轮的清单（「屏幕上这一段该有什么」的真身）+ 把这一屏交给 state。
+   *
+   * 清单只往这里写；画交给 liveModelPaint → logSetLive + renderLog（唯一出口）。
+   * 必须等 turnRec 登记完再建（清单的 startedAt 就是这一轮的开始时间，
+   * renderLog 那边要靠它对「换轮了没有」）。
+   */
+  const model = liveModelOpen(turnSession, turnRec.startedAt);
+  /**
+   * logBeginTurn 只摆 state、**不重画历史** —— 屏幕上现在这份就是它（主人那句话、
+   * 上一条回复都在）。重画一次反而会把它洗掉：跑着的时候历史只画到「最后一条 user」，
+   * 而 currentTurns 里未必已经有这一句。换主人了（sid 变了）它会让它照常重画，
+   * 绝不能把上一个会话的话留在这一屏上。
+   */
+  try { window.logBeginTurn(turnSession, currentTurns); } catch (e) {}
 
   // 这一轮要带上的附件：先快照，再清空界面上的附件条
   const sending = resume ? [] : _pics.slice();
@@ -10508,6 +10798,8 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           if (String(ev.name) === 'compress') continue;
           turnRec.parts.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, done: false });
         } else if (ev.type === 'tool_end') {
+          /* 压缩条不该在界面上留下任何痕迹 —— 连「这一轮的记录」里都不收（同 tool_start 那条） */
+          if (String(ev.name) === 'compress') continue;
           const tp = turnRec.parts.find((p) => p.kind === 'tool' && p.id === ev.id);
           if (tp) {
             tp.done = true;
@@ -10519,128 +10811,71 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
         }
 
         /**
+         * 【2026-11-09 根治】清单在这里喂 —— **不管在不在屏幕上**。
+         *
+         * 不在屏幕上也要喂：切回来那一刻 renderLog 拿这份清单一次画出整轮，
+         * 不用再去服务端重拉（那正是以前「补拉 + 流式」两套账打架的地方）。
+         * 往下只做「叫画入口」，一个节点都不建。
+         */
+        liveItemsFeed(model, ev);
+
+        /**
          * 这一轮「没有下文」时的统一收尾：停掉打字机、收起转圈、把没念完的话念掉。
          * aborted / error / rate_limited 三条路原先各抄一遍，抄漏一处就是一个
          * 「转圈永远在转」的 bug（2026-11-05 就漏过一处）。
          */
         const endTurnQuietly = () => {
+          /* 思考块 / 气泡都由 renderLog 统一收尾（这里没有局部句柄可收） */
           try { closeThink(); } catch {}
           /* 别立刻灭灯：rate_limited 之后服务端可能重试接着跑，aborted 也可能
            * 只是这一条流断了。交给延迟复核问服务端，别自作主张。 */
           try { scheduleSendingRecheck(sessionId); } catch {}
           try { flushSpeech(); } catch {}
-          if (bubble) { try { bubble.classList.remove('streaming'); } catch {} bubble = null; }
+          /* 光标先摘掉：这一轮没有下文了，别再闪着「我还在说」 */
+          try {
+            for (const _b of document.querySelectorAll('#log .msg.assistant[data-live-turn="1"] .bubble.streaming')) {
+              _b.classList.remove('streaming');
+            }
+          } catch (_e) {}
         };
 
-        // 不在屏幕上：到此为止，别往当前会话的聊天区里画
+        /**
+         * ══【2026-11-09 根治】从这一行往下：**只叫画入口，一个节点都不建** ══
+         *
+         * 老代码这里是「收到 text 就 addAssistantAuto + pushStreamText、收到 reasoning
+         * 就 openThink、收到 tool_start 就 addTool」—— 直接建 DOM。而 renderLog 那条路
+         * 又照服务端清单把同一轮先删后画。两套账各按各的判据分段，屏幕上就是
+         * 两份 / 多段挤一块（F5、切会话、补拉只是让它更容易撞上）。
+         *
+         * 现在：清单上面已经喂好了（liveItemsFeed，合并规则与 itemsFromEvents 逐条同源），
+         * 这里只负责叫一次画入口：liveModelPaint → logSetLive + renderLog（唯一出口），
+         * 节流 16ms / 8 条。要加新事件？在上面认，同时补 itemsFromEvents 与 liveItemsFeed。
+         * 这一段里再出现 addAssistantAuto / pushStreamText / openThink / addTool /
+         * whaleStream* / addWhaleBubble 就是回退，check-no-dup-render.mjs 会挂。
+         */
         if (!onScreen()) continue;
 
-        /**
-         * 屏幕上可能被清空过（切走再切回来，renderTurns 已经把 log 洗了）。
-         * 这时候局部 bubble 指向的是已经被摘掉的旧元素，往里写等于写进黑洞。
-         * 发现失效就按 turnRec 的记录全量重建一次，之后照常增量追加。
-         */
-        if (bubble && !bubble.isConnected) {
-          bubble = null;
-          think = null;
-          replayInFlight(turnSession);
-          bubble = turnRec.bubble || null;
-          think = turnRec.think || null;
-        } else if (!bubble && turnRec.bubble && turnRec.bubble.isConnected) {
-          // 之前重建过，接上现有的
-          bubble = turnRec.bubble;
-          think = turnRec.think || null;
+        if (ev.type === 'text' || ev.type === 'reasoning'
+          || ev.type === 'tool_start' || ev.type === 'tool_end'
+          || ev.type === 'whale' || ev.type === 'agent'
+          || ev.type === 'whale_stream_start' || ev.type === 'whale_delta'
+          || ev.type === 'whale_stream_finish' || ev.type === 'worker') {
+          /* 压缩条一律不画。后端已经不推了，旧进程 / 旧重放里还有 —— 一个像素都不出现 */
+          if (String(ev.name) === 'compress') continue;
+          const _et = ev.type;
+          /* 开始调一个工具 → 右下那个数字 +1（只是数字，不碰对话节点） */
+          if (_et === 'tool_start') { try { bumpUnseen(); } catch {} }
+          liveModelPaintThrottled(turnSession);
+          if (_et === 'text') { try { noteNewContent(); } catch {} }
+          continue;
         }
 
-        if (ev.type === 'reasoning') {
-          if (!think) think = openThink();
-          think.push(ev.text);
-        } else if (ev.type === 'text') {
-          closeThink();
-          if (!bubble) {
-          bubble = addAssistantAuto();
-          try { const _w = bubble.closest(".msg.assistant"); if (_w) _w.dataset.liveTurn = "1"; } catch (e) {}
-        }
-          pushStreamText(bubble, ev.text);
-          touchStreaming(bubble);
-          noteNewContent();
-        } else if (ev.type === 'whale' || ev.type === 'agent') {
-          // 她说话了：当场画一个她自己的气泡。
-          // 先把我这段收尾，再另起一个——她是她，我是我。
-          closeThink();
-          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-          // 有流式临时气泡就定稿到它上面，别再画第二个
-          if (!whaleStreamFinish(ev.text, StreamKey(turnSession, ev.who))) addWhaleBubble(ev.who, ev.text);
-          noteNewContent();
-        } else if (ev.type === 'whale_stream_start') {
-          closeThink();
-          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-          whaleStreamStart(ev.who, StreamKey(turnSession, ev.who));
-        } else if (ev.type === 'whale_delta') {
-          whaleStreamDelta(ev.text, StreamKey(turnSession, ev.who));
-        } else if (ev.type === 'tool_start') {
-          /* 【2026-11-07】压缩条不画。后端已经不推这两条了，但旧进程 / 旧重放里还有 ——
-           * 这里是最后一道：不管谁发来的 compress，屏幕上一个像素都不出现。 */
-          if (String(ev.name) === 'compress') continue;
-          closeThink();
-          // 一段话到此为止（后面接着干工具），先把这段落记上
-          flushSpeech();
-          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-          // 开始调一个工具 → 数字 +1
-          bumpUnseen();
-          const el = addTool();
-          el.sum.querySelector('.name').textContent = niceTool(ev.name, ev.args);
-          el.sum.querySelector('.status').textContent = '运行中…';
-          // 【2026-11-02】没参数就别拼 —— 否则画出来是「参数：undefined」
-          el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + tidyToolText(ev.args);
-          toolEls.set(ev.id, el);
-          el.pre.hidden = false;
-          el.sum.querySelector('.status').className = 'status warn';
-          if (_liveHub) {
-            const _n1 = _liveHub.querySelector('.hubname');
-            if (_n1) _n1.dataset.one = niceTool(ev.name, ev.args);
-            hubRefreshTitle();
-          }
-        } else if (ev.type === 'tool_end') {
-          if (String(ev.name) === 'compress') continue;   // 压缩条没有卡，也不补
-          const el = toolEls.get(ev.id);
-          if (el) {
-            const st = el.sum.querySelector('.status');
-            st.textContent = ev.ok ? '完成' : '失败';
-            st.className = 'status ' + (ev.ok ? 'ok' : 'err');
-            hubRefreshTitle();
-            el.pre.textContent = tidyToolText(el.pre.textContent + '\n--- output ---\n' + tidyToolText(ev.output));
-          } else {
-            /**
-             * 【2026-11-07 主人问「为什么有时候所有工具挤一个柜子、一堆话也挤一起」】
-             *
-             * 那种情况是 `tool_start` 没到前端（并行批走过一次 emitEvents:false 的回归）。
-             * 少了 start，前端就不知道「这里该断一下」：
-             *   · 气泡不断 → 后面的话全堆进同一个气泡
-             *   · 柜子不分段 → 后面的工具全塞进同一个柜子
-             *
-             * 这里做兜底：只有结果的工具，也当一次边界处理 —— 先把话说清、
-             * 把气泡断开、补一张卡。这样就算 start 丢了，节奏也不会塌。
-             */
-            try {
-              closeThink();
-              flushSpeech();
-              if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-              const mk = addTool();
-              mk.sum.querySelector('.name').textContent = niceTool(ev.name, ev.args) || '工具';
-              const st2 = mk.sum.querySelector('.status');
-              st2.textContent = ev.ok ? '完成' : '失败';
-              st2.className = 'status ' + (ev.ok ? 'ok' : 'err');
-              mk.pre.textContent = ev.output ? tidyToolText(ev.output) : '';
-              toolEls.set(ev.id, mk);
-              hubRefreshTitle();
-            } catch (e2) { /* 补画失败也不能连累这一轮 */ }
-          }
-        } else if (ev.type === 'files') {
-          // 这一轮我发出去的文件：挂在最后那条回复下面
-          closeThink();
-          const wrap = lastAssistantWrap();
-          if (wrap) attachFiles(wrap, ev.items);
+        if (ev.type === 'files') {
+          /* 这一轮我发出去的文件：挂在最后那条回复下面。
+           * 文件卡不是「对话节点」（它不长在清单里），但也不自己找气泡 ——
+           * 认的还是 renderLog 画出来的那一条。 */
+          const wrapNow = lastAssistantWrap();
+          if (wrapNow) attachFiles(wrapNow, ev.items);
         } else if (ev.type === 'safe_word') {
           const wrap = addEl('', 'msg user');
           wrap.innerHTML = '<div class="role">安全词<span class="safeTag"></span></div>';
@@ -10662,9 +10897,20 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 现在只把数字刷新一下（球要跟着掉下来），聊天里不出现任何东西。 */
           noteNewContent();
         } else if (ev.type === 'aborted') {
-          if (bubble && !pendingResume) bubble.textContent += '\n\n[已停止]';
+          /**
+           * 【2026-11-09】「停下来」这件事也进清单，但**不进正文**。
+           *
+           * 老代码是 `bubble.textContent += '\n\n[已停止]'` —— 直接改一个 DOM 节点。
+           * 现在交回模型：一条 note（系统提示，独立一行），画还是 renderLog 画。
+           * 塞进正文的话，重进时会读成「她本人说了句『已停止』」。
+           */
+          if (!pendingResume) {
+            liveItemsFeed(model, { type: 'text', notice: true, text: '[已停止]' });
+          }
+          liveModelFlush(turnSession);
           endTurnQuietly();
         } else if (ev.type === 'error') {
+          liveModelFlush(turnSession);
           endTurnQuietly();
           /**
            * 错误单独画一行，别塞进助手的气泡里。
@@ -10685,6 +10931,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 这里按「不是错，是被限了」来处理：收尾＋说清＋把连击数标出来，
            * 让主人知道等一会儿再发就行，而不是以为程序坏了。
            */
+          liveModelFlush(turnSession);
           endTurnQuietly();
           {
             const streak = Number(ev.streak) || 0;
@@ -10711,6 +10958,10 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             if (card) placeSentCard(card);
           } catch (e) { console.warn('[sentfile] 当场画失败：', e && e.message); }
         } else if (ev.type === 'done') {
+          /* 【2026-11-09】先把模型 flush 一次：SSE 这一路是节流画的，
+           * 最后 16ms 里到的字还在模型里没上屏。这里补齐，**不清清单** ——
+           * 清掉就是「话说到一半屏幕空一截」，历史还没落盘顶上呢。 */
+          liveModelFlush(turnSession);
           try { settleSentFiles(); } catch (e) { console.warn("[sentfile] 收尾失败：", e && e.message); }
           /* 【2026-11-04 主人：跑完就该收，别等他发下一条】 */
           try {
@@ -10726,8 +10977,6 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            *
            * 那个蓝光标是 .bubble.streaming::after 的 ▍。说完了还得挂着 streaming，
            * 它就永远闪 —— 因为 done 这条路上从前没人把类摘掉。
-           * （error 那条路摘了、finally 也摘了，可 done 之后 bubble 可能已经被
-           *  换成了新的一段，finally 手里攥的是老引用，摘不到它。）
            *
            * 这里干脆把屏幕上所有还挂着的 streaming 全收掉：
            *   · 这一轮已经说完了，任何气泡都不该还在「正在打字」的状态；
@@ -10736,7 +10985,6 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           try {
             const stillStreaming = log ? log.querySelectorAll('.msg.assistant .bubble.streaming') : [];
             for (const el2 of stillStreaming) el2.classList.remove('streaming');
-            if (bubble) bubble.classList.remove('streaming');
           } catch {}
           closeThink();
           scheduleSendingRecheck(sessionId);
@@ -10763,11 +11011,15 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 而 done 之后这里原本只补拉小鲸的话（whale），**正文一概不补**，
            * 所以屏幕上就停在最后收到的那半句，后面写多少主人都看不到。
            *
-           * 这里补一手：拿历史里「主人那句话之后」的 assistant 条目，
-           * 跟屏幕上已经画出来的比一比，少了就把缺的补上。
-           * 只补这一轮（at 之后的），不碰历史，不会把旧话重画一遍。
+           * 这里补一手：拿服务端算好的清单（唯一权威）重新喂一遍模型。
+           *
+           * 【2026-11-09 改口径】原来这活儿是 reconcileTurnTexts 干的：
+           * 拿 done.turnTexts 一段段 addAssistantAuto() 补画 —— 那是**第二套画法**，
+           * 补出来的节点不带 data-live-turn，下一次重画清不掉，
+           * 于是屏幕上多出一条一模一样的（主人报的「一句话出现两遍」）。
+           * 现在只做「把权威清单取回来喂进模型」，画还是 renderLog 一个人画。
            */
-          reconcileTurnTexts(ev);
+          refreshLiveModel(turnSession);
           // 这一轮说完了：最后那段话收尾 → 数字 +1
           finishSpeech();
           if (pendingRewindBubble && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
@@ -10783,11 +11035,16 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           // 平时要等下次 renderTurns（切会话、刷新）才由 attachRetry 补上 ——
           // 结果是刚答完这一句想让她重答，偏偏没有按钮可点。这里当场挂。
           // ev.at 就是这一轮那句 user 的下标，重发需要它来定位退回到哪。
-          if (bubble && bubble.isConnected && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
-            try {
-              attachRetry(bubble, [{ at: Number(ev.at), text: String(text || "") }]);
-              attachDelBtn(bubble, ev.at);
-            } catch {}
+          // 【2026-11-09】气泡从 turnRec.bubble 取（renderLog 画完写回来的那个），
+          // 不再是 SSE 自己攥着的局部引用 —— 那个引用在重画之后就指向孤儿节点了。
+          {
+            const _b = liveBubble();
+            if (_b && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
+              try {
+                attachRetry(_b, [{ at: Number(ev.at), text: String(text || "") }]);
+                attachDelBtn(_b, ev.at);
+              } catch {}
+            }
           }
           if (ev.usage) {
             // 服务端会把这一轮真用的模型名一起送过来（不是主人起的外号），
@@ -10795,8 +11052,10 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             if (ev.model) lastTurnModel = String(ev.model);
             // 这一轮的 token 明细和花费，挂在**她说的话**下面
             // （平时不显示，鼠标悬停那句话才淡出来）。找不到气泡就退回画在 log 里。
-            const under = bubble && bubble.isConnected ? bubble : null;
-            appendTurnUsage(ev.usage, ev.at, '', under, Boolean(under));
+            {
+              const _under = liveBubble();
+              appendTurnUsage(ev.usage, ev.at, '', _under, Boolean(_under));
+            }
             // 设置里那块「会话总账」要是开着，顺手刷新一下，别等下次打开面板
             try {
               const sll = document.getElementById('settingsDlg');
@@ -10847,8 +11106,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
     } else if (onScreen()) {
       closeThink();
       scheduleSendingRecheck(sessionId);
-      const b = bubble;
-      if (b) b.classList.remove('streaming');
+      try { unstreamLiveBubbles(); } catch {}
       // 说人话，不甩英文栈
       const friendly = /terminated|aborted|fetch failed|network|ECONN|socket hang up/i.test(String(err.message))
         ? '这一轮的连接断了，而且服务端那边也没在跑了。再发一句就行，记录还在。'
@@ -10880,18 +11138,14 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
     turnsInFlight.delete(turnSession);
 
     // 收尾一定要复位，不然按钮永远卡在「停止」、输入框像死了一样
-    // 但「被插话掐断」的那一轮例外：思考块保持展开，下一轮接着往里写
+    /* 【2026-11-09】思考块不再有「局部句柄要留着给下一轮」这回事 ——
+     * 它由 renderLog 照清单画、照清单收，开合状态由 snapOpenState/applyOpenState 保。
+     * interruptedByInterject 只留着表达「这一轮是被插话掐断的」，给下面的判断用。 */
     interruptedByInterject = Boolean(pendingResume);
-    if (interruptedByInterject && think) {
-      // 留着这块，下一轮接着写。push 追加到同一个 body，主人在屏幕上看到的是连续的
-      savedOpenThink = think;
-      think = null;
-    } else if (!interruptedByInterject) {
-      closeThink();
-    }
+    closeThink();
     scheduleSendingRecheck(sessionId);
     flushSpeech();
-    if (bubble) bubble.classList.remove('streaming');
+    try { unstreamLiveBubbles(); } catch {}
     stopping = false;
     // 只有「屏幕上确实是这个会话」时才把 busy 放下；
     // 但如果是同一个会话的下一轮在跑，别互相踩
@@ -10980,7 +11234,18 @@ async function settleFromHistory(id) {
       await new Promise((r) => setTimeout(r, 700));
     }
     if (sessionId !== id) return;
-    if (_turns) renderTurns(_turns, { force: true });
+    /**
+     * 【2026-11-09 收口】跑完了 → 这一轮归历史。
+     *
+     * 必须走 state（logSetHistory + logSetLive(null) + renderLog），不能只调 renderTurns：
+     * 只换 DOM 不换 state 的话，LOG_STATE.live 里那份「running: true 的清单」还在，
+     * 下一次谁叫一声 renderLog（比如来了条 whale），它就会把这一轮**再画一遍**——
+     * 「刷新后有那么一瞬间正常，马上又堆一块」正是这个。
+     */
+    if (_turns) {
+      try { window.logSetHistory(id, _turns); window.logSetLive(id, null); window.renderLog({ force: true }); }
+      catch (e) { renderTurns(_turns, { force: true }); }
+    }
   } catch (e) {}
 }
 
@@ -11232,14 +11497,23 @@ async function flushPendingQueue() {
   if ((Number(next._tries) || 0) >= 3) return;   // 试满了，等主人自己处理
   _flushingPending = true;
   let sent = false;
+  /* 【2026-11-09 修·「明明发出去了一份，界面还挂着待发送」】
+   * 原来这条要从队列里摘掉，得等 runTurn 整轮跑完（实测挂过 1 分 34 秒）。
+   * 可 runTurn 一进去消息就交给服务端了 —— 主人眼里就是「发出去了还挂着待发送」。
+   * 所以改成：交给 runTurn 之前先摘队、先重画。真失败了 catch 里再放回去。 */
+  const _takenOut = pendingQueue.findIndex((x) => x && x.id === next.id);
+  if (_takenOut >= 0) pendingQueue.splice(_takenOut, 1);
+  try { savePendingQueue(); } catch (_) {}
+  try { renderPendingQueue(); } catch (_) {}
   try {
-    renderPendingQueue();
     await runTurn({ text: String(next.text || ''), attachments: Array.isArray(next.atts) ? next.atts : [] });
     sent = true;
   } catch (e) {
     /* 抛错不等于没发出去（见上面的说明）：标成「可能已发出」，不再自动重发 */
     next._uncertain = true;
     next._tries = (Number(next._tries) || 0) + 1;
+    /* 上面已经把它摘出队列了，这儿放回去 —— 不能让主人那句话凭空消失 */
+    if (!pendingQueue.some((x) => x && x.id === next.id)) pendingQueue.unshift(next);
     try { savePendingQueue(); } catch (_) {}
     try { console.warn('[预发送] 这条状态不确定（可能已经发出去了），留在队列里等主人确认，不自动重发'); } catch (_) {}
   } finally {
@@ -19673,7 +19947,14 @@ setInterval(async () => {
       const _hh = document.getElementById('sendingHint');
       const _sp = _hh && _hh.querySelector('span');
       const _info = sid ? runningSess.get(sid) : null;
-      const _idle = Number((_info && _info.idleMs) || 0);
+      /* 【2026-11-09 修·「发消息瞬间左上角闪一下超时提示」】
+       * 原来只看服务端的 idleMs —— 那是**上一轮**留下的旧数（这一轮卡过 528 秒）。
+       * 新一轮刚发出去那几秒，busy 已经是 true，可服务端还没刷新这个数，
+       * 于是界面先闪一句「已经 528 秒没有回音」，下一拍刷回来又正常。
+       * 现在两个都算，取小的那个：本轮自己的计时（_turnT0）说话才算数。 */
+      const _srvIdle = Number((_info && _info.idleMs) || 0);
+      const _myIdle = Number(_turnT0) > 0 ? (Date.now() - Number(_turnT0)) : 0;
+      const _idle = (_srvIdle > 0 && _myIdle > 0) ? Math.min(_srvIdle, _myIdle) : (_myIdle || _srvIdle);
       if (_hh && _sp && busy) {
         if (_idle > RUNNING_STALL_MS) {
           _sp.textContent = '已经 ' + Math.round(_idle / 1000) + ' 秒没有回音，可能卡住了（点 ⏹ 停）';

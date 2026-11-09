@@ -11771,6 +11771,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       // 「自己注册的号」那条道如果开了「开机就连」，这里替主人接上。
       // 不 await：连不上也不该拖住启动（自愈和重拨都在 qq-onebot 里）。
       bootAutoStartOneBot(quiet);
+      bootPruneQqMedia(quiet);
     });
 
   });
@@ -11778,6 +11779,31 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
 
 // Auto-start when launched directly (node src/server.js).
 const isDirectRun = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('src/server.mjs');
+
+/**
+ * 【2026-11-09 加·QQ 收到的图/语音/文件从来不删，硬盘只涨不落】
+ *
+ * qq-media.mjs 里早就写好了 pruneMediaDir(keepDays) —— 但**没有任何地方调用它**，
+ * 于是 data/qq-media 只会越堆越大（图片视频都往那儿落）。主人用久了就是几个 G。
+ *
+ * 现在开机先等 20 秒（别跟启动抢 IO），清一次「7 天前的」；之后每 24 小时一次。
+ * 定时器 unref，不拦着进程退出。删不掉的（正被占用）跳过，不抛。
+ */
+async function bootPruneQqMedia(quiet) {
+  const run = async (why) => {
+    try {
+      const m = await import('./qq-media.mjs');
+      const n = m.pruneMediaDir(7);
+      if (n && !quiet) console.log(`  qq-media : 清掉 ${n} 个超过 7 天的附件`);
+      if (n) diagLog('qq-media-prune', why + ' ' + n);
+    } catch (e) {
+      if (!quiet) console.log(`  qq-media : 清理跳过（${String(e?.message ?? e)}）`);
+    }
+  };
+  setTimeout(() => { run('boot'); }, 20_000).unref?.();
+  const timer = setInterval(() => { run('daily'); }, 24 * 3600_000);
+  timer.unref?.();
+}
 
 /**
  * 【开机自动连上「自己注册的号」】2026-11-03

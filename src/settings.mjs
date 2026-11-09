@@ -25,7 +25,8 @@ export const DEFAULT_SETTINGS = {
     "临时测试会话用完就删",
     "任务做完按范围选回归：单文件/文案→check-smoke.mjs；日常→check-changed.mjs 增量；核心→check-core.mjs；发布前→run-all-checks.mjs。无单测层不跑「测试」，增量只此一档。跑完严检，查出问题修完重走",
     "已完成清单超过十条就归档并删掉最旧的那条，已完成的清单最多保留10条",
-    "只认主人的命令"
+    "只认主人的命令",
+    "闲聊时一段话不超过50字，工作时一段话不超过200字"
   ],
   /** 安全词列表：任意一个出现在消息里，即刻暂停人设演出，回到正经模式。 */
   safeWords: [...DEFAULT_SAFE_WORDS],

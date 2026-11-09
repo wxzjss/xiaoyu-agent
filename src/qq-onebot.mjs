@@ -91,6 +91,9 @@ export function oneBotConf() {
 export function setOneBotConf(patch = {}) {
   const conf = oneBotConf();
   const next = { ...conf };
+  /* 整份状态先读出来：下面可能要顺手改 gate 那一格（主人号）。
+   * writeQq 是整份写，所以「只换 onebot」就得原样带回去别的。 */
+  const all = readQq();
   if (patch.enabled !== undefined) next.enabled = patch.enabled === true || patch.enabled === 'true';
   if (patch.mode !== undefined) next.mode = patch.mode === 'reverse' ? 'reverse' : 'forward';
   if (patch.url !== undefined) {
@@ -103,10 +106,26 @@ export function setOneBotConf(patch = {}) {
     const q = String(patch.ownerQq || '').trim();
     if (q && !/^\d{5,12}$/.test(q)) throw Object.assign(new Error('主人 QQ 号得是 5~12 位数字'), { status: 400 });
     next.ownerQq = q;
+    /**
+     * 【2026-11-09 修·这里只写 onebot 那格，可认主和白名单读的是 gate】
+     *
+     * 面板上「你的 QQ 号」只有一个输入框，1.5 那个「连上」按钮把它存到了
+     * onebot.ownerQq —— 而 qqAllowed / isOwnerQq 读的是 gate.ownerQq。
+     * 于是从 1.5 一路配下来的人：号填了、连上了，可他自己私聊照样被白名单挡住，
+     * 界面上还看不出为什么（实测复现：gate.ownerQq=''、isOwnerQq=false）。
+     *
+     * 现在两处一起写：填了号就同步进 gate（并自动并进私聊白名单，跟第 2 格一致）。
+     */
+    if (q) {
+      all.gate = all.gate || {};
+      if (!all.gate.ownerQq) all.gate.ownerQq = q;
+      const allow = Array.isArray(all.gate.allowQq) ? all.gate.allowQq.slice() : [];
+      if (!allow.includes(q)) allow.unshift(q);
+      all.gate.allowQq = allow;
+    }
   }
   if (patch.autoStart !== undefined) next.autoStart = patch.autoStart === true || patch.autoStart === 'true';
-  // writeQq 是「整份写」：把它读出来的东西原样带回去，只换 onebot 那一格。
-  const all = readQq();
+  // writeQq 是「整份写」：把上面读出来的东西带回去，只换 onebot（必要时连带 gate）。
   writeQq({ ...all, onebot: next });
   log(`配置已存：${next.mode} ${next.url}${next.token ? '（带 token）' : ''}`);
   return publicConf();

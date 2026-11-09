@@ -386,6 +386,18 @@ export function normalizeToolPairing(list) {
 
     // 普通消息（user / assistant 纯文本）：它一出现，上一组就算断了
     closeOpen();
+
+    /* 【2026-11-09 主人报「你又停了」的根因】
+       会话里留过一条 {"role":"assistant","content":""} 的空壳消息（某次中断的残渣）。
+       wireMessage 会把 content:null 补成空串，而这分支又原样 push 出去 ——
+       上游每次收到都回 400 [invalid_argument]「请求形状不合法」，整轮当场断。
+       空 shell 既没内容也没工具调用，留着一点用没有，出门前直接丢掉。 */
+    if (m.role === 'assistant'
+        && !(Array.isArray(m.tool_calls) && m.tool_calls.length)
+        && !String(m.content == null ? '' : m.content).trim()) {
+      continue;
+    }
+
     out.push(m);
   }
   closeOpen();

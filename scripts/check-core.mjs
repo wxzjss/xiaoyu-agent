@@ -35,6 +35,11 @@ const CORE = [
   ['check-ime-no-top-focus.mjs', '启动不许有裸 focus 把中打回英'],
   ['check-sending-hint.mjs', '「正在发送消息」不许自己灭掉再不回来'],
   ['check-segment-split.mjs', '轮末必须分段，几轮的话不许堆一个气泡'],
+  ['check-think-peek.mjs', '思考完了柜门灰字不许缩回一小截'],
+  ['check-qq-core.mjs', 'QQ：主人号/附件清理/发送失败/错误脱敏'],
+  ['check-live-history-split.mjs', 'F5/切回来：历史只画到这一轮开头'],
+  ['check-think-peek.mjs', '思考完了柜门灰字不许缩回一小截'],
+  ['check-qq-core.mjs', 'QQ：主人号/附件清理/发送失败/错误脱敏'],
 ];
 
 const argv = process.argv.slice(2);

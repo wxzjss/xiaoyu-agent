@@ -31,6 +31,35 @@ const log = window.log;
  *
  * 它幂等、只删「确定重复」的东西，所以每次画完都可以放心跑一遍。
  */
+/**
+ * 【2026-11-09 主人报·调用工具/思考/发消息过程中按 F5，又出现「多段消息堆一块」】
+ *
+ * 病根：开跑时历史只砍**最后一条** assistant（dropTail 的老实现）。
+ * 可一轮只要「说一段 → 调工具 → 再说一段」，历史里早就落了 3 条
+ * （assistant 正文 / assistant + tool_calls / assistant 正文）——
+ * 只砍最后一条，前两条还留在屏上；服务端那份直播快照又把整轮重画一遍，
+ * 于是同一段话在屏幕上出现两份，看着就是「多段堆在一块」。
+ *
+ * 正确的边界不是「最后一条」，而是**这一轮从哪儿开始**：
+ * 直播快照覆盖的是「从主人这句话到现在」的全部内容，
+ * 所以历史只该画到「最后一条主人说的话」为止，后面全交给直播。
+ *
+ * 找不到主人那句话（续跑 / 定时任务 / 群聊插入）→ 退回老口径，只砍最后一条，
+ * 宁可多留一条也不整屏不画。
+ */
+function trimTurnsForLive(turns) {
+  if (!Array.isArray(turns) || !turns.length) return turns;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i] && turns[i].role === 'user') return turns.slice(0, i + 1);
+  }
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i] && turns[i].role === 'assistant') {
+      return turns.slice(0, i).concat(turns.slice(i + 1));
+    }
+  }
+  return turns;
+}
+
 export function logSettle() {
   const lg = document.getElementById('log');
   if (!lg) return 0;
@@ -139,6 +168,30 @@ export function logSetLive(sid, live) {
   return true;
 }
 
+/**
+ * 【2026-11-09 根治·开跑那一刻：把「这一屏属于谁、历史是什么」摆好，但**不重画历史**。**
+ *
+ * 为什么不能顺手重画一次：跑着的时候历史只画到「最后一条 role:'user' 的 turn」为止，
+ * 而刚发出去的那句话此刻还不在 currentTurns 里（要等服务端落盘）——
+ * 这时候重画，等于把上一条回复和主人刚发的那句一起从屏幕上洗掉。
+ *
+ * 所以：同一屏（sid 没变、而且已经画过）→ 只把历史指纹对齐成「屏幕上现在这份」，
+ * 让下一次 renderLog 别多洗一遍；换主人了（sid 变了，或者屏幕本来就没画过）→
+ * 老老实实照常重画，绝不能把上一个会话的话留在这一屏上。
+ */
+export function logBeginTurn(sid, turns) {
+  const _sid = String(sid || '');
+  const sameScreen = (LOG_STATE.sid === _sid) && LOG_STATE.painted;
+  logSetHistory(_sid, turns);
+  if (sameScreen) {
+    try { LOG_STATE.historyFp = logHistoryFp(trimTurnsForLive(LOG_STATE.turns)); } catch (e) {}
+  } else {
+    LOG_STATE.painted = false;
+    LOG_STATE.historyFp = '';
+  }
+  return sameScreen;
+}
+
 /** 历史指纹：只关心「画出来会不一样」的那几个量 */
 export function logHistoryFp(turns) {
   const n = turns.length;
@@ -162,12 +215,21 @@ export function renderLog(opts) {
   const turns = LOG_STATE.turns || [];
 
   /* ① 历史：在跑的时候最后一条归直播，这里只画它前面的部分（dropTail） */
-  const histTurns = running && turns.length ? turns.slice(0, turns.length - 1) : turns;
+  const histTurns = (running && turns.length) ? trimTurnsForLive(turns) : turns;
   const hp = logHistoryFp(histTurns);
+  let _histPainted = false;
   if (o.force || !LOG_STATE.painted || hp !== LOG_STATE.historyFp) {
-    renderTurns(turns, Object.assign({}, o, { dropTail: running }));
+    /* 【2026-11-09 根治·这里必须带 force】
+     * renderTurns 自己有一道闸：「这个会话真有一轮在跑就别动 DOM」（免得把它正在写的
+     * 气泡拆碎）。可那道闸在「直播已经接管这一轮」的时候就错了 ——
+     * 它会让整条历史（包括上一轮那条 assistant）原样留在屏上，
+     * 直播再把同一段画一遍，主人看到的就是「多段消息堆一块」。
+     * 既然走到这一行就说明「历史确实该重画了」（指纹变了 / 调用方要求），
+     * 那就带上 force，让它真的照 dropTail 之后的那份画出来。 */
+    renderTurns(turns, Object.assign({}, o, { dropTail: running, force: true }));
     LOG_STATE.historyFp = hp;
     LOG_STATE.painted = true;
+    _histPainted = true;
   }
 
   /* ② 直播：指纹没变就不动 DOM（keyed diff 在 paintSnapshot 里按 key 复用节点） */
@@ -183,10 +245,22 @@ export function renderLog(opts) {
         console.warn('[renderLog] 直播重画失败:', e && e.message ? e.message : e);
       }
     }
+    /**
+     * 【2026-11-09 修·「正在发送消息」自己消失且不再回来】
+     *
+     * 历史重画那条路（renderTurns）里有一句 hideSending()，跑着的时候它会把
+     * 那颗提示一起收掉 —— 而这一轮其实还在跑，提示却再也不回来。
+     * 既然这一屏还在跑，画完就把它补回去（服务端说真结束了自然有别处灭灯）。
+     */
+    if (_histPainted) {
+      try { if (window.busy) window.showSending(Number(live.startedAt) || undefined); } catch (e) {}
+    }
   } else {
     /* ③ 没在跑：这一轮的 DOM 必须归历史，直播节点一个都不许留 */
     LOG_STATE.liveFp = '';
     LOG_STATE.bubble = null;
+    /* 这一轮的「最后一段正文长到哪儿」也一起作废 —— 下一轮第一句要另起气泡 */
+    try { if (window.__liveHeadFp) window.__liveHeadFp.delete(String(sid)); } catch (e) {}
     try { logSettle(); } catch (e) {}
   }
   return true;
@@ -409,7 +483,12 @@ export function paintSnapshotInner(sid, srcLive) {
 export function paintSnapshot0(sid, srcLive) {
   const items = Array.isArray(srcLive) ? srcLive : (srcLive && Array.isArray(srcLive.items) ? srcLive.items : null);
   if (!items) return null;
-  if (typeof sid === 'string' && window.sessionId !== sid) return null;
+  /* 【2026-11-09】「没有会话」的几种写法算同一个（null / undefined / ''）：
+   * 会话被删掉、页面刚起还没选中时，sessionId 是 null 而调用方传的是 ''，
+   * 严格比会把「本来该画的一轮」整条挡掉。真正的串会话（A 的 id 画到 B 上）照样挡。
+   * 见 index.html 里 tryLiveAppendFast 的同一条说明。 */
+  const _sameSid = (a, b) => String(a == null ? '' : a) === String(b == null ? '' : b);
+  if (typeof sid === 'string' && !_sameSid(window.sessionId, sid)) return null;
   /**
    * 【空清单 = 没有快照，不是「什么都不该有」】—— 2026-11-02 严格自检抓到的真问题
    *
@@ -422,7 +501,11 @@ export function paintSnapshot0(sid, srcLive) {
    *  要更新内容，靠的是「跑完之后按历史对齐（settleFromHistory）」那条路。
    *
    *  一句话：空的快照只能说明「我这边没话可说」，不能说明「屏幕上不该有东西」。 */
-  if (!items.length) return null;
+  if (!items.length) {
+    /* 空清单：把「最后一段正文长到哪儿」的记账也作废 —— 下一次真有正文，那才算新的一段 */
+    try { if (window.__liveHeadFp) window.__liveHeadFp.delete(String(sid || '')); } catch (e) {}
+    return null;
+  }
   /**
    * 【2026-11-02 严格自检抓到的第五个真问题】跑完之后，一个字都不许照直播快照画。
    *
@@ -739,6 +822,18 @@ export function paintSnapshot0(sid, srcLive) {
     rec.bubble = lastBubble;
     rec.toolEls = toolEls;
     rec.snapshotAt = Date.now();
+  } catch (e) {}
+  /**
+   * 【2026-11-09 加·「只有尾巴那段在变长」这件事要记一笔】
+   *
+   * 流式的时候屏幕上只有一段话在长，整组重画会把节点换掉（选区丢、Ctrl+F 跳走、
+   * 滚动跳）。index.html 的 tryLiveAppendFast 靠这枚指纹判断「前缀清单没变，
+   * 只有最后那段正文在长」—— 是的话只往最后一个气泡里追加，一个节点都不动。
+   * 放在这里（画完之后），是因为只有画过的那份前缀才算「屏幕上这份」。
+   */
+  try {
+    if (!window.__liveHeadFp) window.__liveHeadFp = new Map();
+    window.__liveHeadFp.set(String(sid || ''), window.snapshotFingerprint(items.slice(0, -1)));
   } catch (e) {}
   try { window.noteNewContent(); } catch (e) {}
   return lastBubble;
@@ -1234,7 +1329,7 @@ export function replayInFlight(id) {
     _usedSnap = true;
   } catch (e) {}
 
-  /* 退回老办法：服务端连不上时，至少把攒下来的 parts 补出来 */
+  /* 退回老办法：服务端连不上时，至少把攒下来的 parts 交回清单（**不建节点**） */
   const rec = window.turnsInFlight.get(id);
   if (!rec) return false;
   if (_usedSnap) {
@@ -1242,74 +1337,52 @@ export function replayInFlight(id) {
     rec.drawnParts = Array.isArray(rec.parts) ? rec.parts.length : 0;
     return true;
   }
-  if (!Number.isFinite(rec.drawnParts)) rec.drawnParts = 0;
-  if (rec.drawnParts > rec.parts.length) rec.drawnParts = 0;
-  for (let i = rec.drawnParts; i < rec.parts.length; i++) {
-    const p = rec.parts[i];
-    const kind = p.kind || p.type || '';
-    if (kind === 'reasoning') {
-      if (!rec.think) rec.think = window.openThink();
-      /* 【2026-11-06 主人报·正文被思考链劈成两半】
-       *  原来 openThink() 是 log.appendChild(d)，思考块挂在 #log 末尾、跟气泡平级。
-       *  于是「正文12345 → 思考 → 正文6789」排成：气泡(12345) / 思考块 / 气泡里又冒出6789。
-       *  正文其实一直在同一个 bubble 里长，只是思考块插到了它后面。
-       *  改法：思考块一建出来就塞进 .msg.assistant 容器、放在 .bubble 前面，
-       *  这样正文后面再长多少都长在思考块下面，永远劈不开。 */
-      try {
-        const _th = rec.think && rec.think.el;
-        const _bb = rec.bubble;
-        if (_th && _bb) {
-          const _wrap = _bb.closest && _bb.closest(".msg.assistant");
-          if (_wrap && _th.parentNode !== _wrap) _wrap.insertBefore(_th, _bb);
-        }
-      } catch (e) {}
-      try { rec.think.push(p.text); } catch (e) {}
-    } else if (kind === 'text') {
-      if (p && p.notice) { try { window.addSysNote(String(p.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {} continue; }
-      if (!rec.bubble || !rec.bubble.isConnected) {
-        rec.bubble = window.addAssistantAuto();
-        try { const w = rec.bubble.closest('.msg.assistant'); if (w) w.dataset.liveTurn = '1'; } catch (e) {}
-      }
-      /* 【2026-11-06 补】思考先到、正文后到时，上面那次归位 rec.bubble 还是 null，会跳过。
-       *  所以正文气泡一建好，再补一次：把已有的思考块挪进这个气泡的容器、放在正文前面。 */
-      try {
-        const _th2 = rec.think && rec.think.el;
-        if (_th2 && rec.bubble) {
-          const _w2 = rec.bubble.closest && rec.bubble.closest(".msg.assistant");
-          if (_w2 && _th2.parentNode !== _w2) _w2.insertBefore(_th2, rec.bubble);
-        }
-      } catch (e) {}
-      try { window.pushStreamText(rec.bubble, String(p.text || '')); } catch (e) {}
-    } else if (kind === 'tool') {
-      if (String(p.name) === 'compress') return true;   // 压缩条不重画
-      /* 【2026-11-09 主人报·「切到别的窗口再切回来，多段消息堆在一起」】
-       *
-       * 补画这条路上，工具事件**没有把当前气泡断开** —— rec.bubble 一直指着
-       * 调用工具之前那个气泡。于是「正文 → 工具 → 正文 → 工具 → 正文」
-       * 后面几段全灌进第一个气泡里，屏幕上就是一大坨。
-       *
-       * 平时每来一条事件就画一次，这个洞不明显；一旦窗口被切到后台、
-       * 定时器被节流，事件在服务端攒住，切回来一口气补 —— 整段对话就挤成一团。
-       *
-       * 快照那条路（buildLiveItems）本来就是「工具事件即分段」，一条正文一个气泡；
-       * 这里对齐：工具一出现就断掉当前气泡，后面那段新建。
-       */
-      rec.bubble = null;
-      try {
-        const el = addTool();
-        el.sum.querySelector('.name').textContent = window.niceTool(p.name, p.args);
-        const st = el.sum.querySelector('.status');
-        st.textContent = p.done ? (p.ok ? '完成' : '失败') : '运行中…';
-        st.className = 'status ' + (p.done ? (p.ok ? 'ok' : 'err') : 'warn');
-        el.pre.textContent = (p.args ? '参数：' + window.tidyToolText(p.args) : '') + (p.done && p.output ? '\n--- output ---\n' + window.tidyToolText(p.output) : '');
-        if (!rec.toolEls) rec.toolEls = new Map();
-        if (p.id) rec.toolEls.set(p.id, el);
-      } catch (e) {}
+  /**
+   * 【2026-11-09 根治·这条兜底也不许自己建节点】
+   *
+   * 原来这里拿 rec.parts 一段一段 addAssistantAuto / openThink / addTool /
+   * addWhaleBubble —— 又是第二套画法（而且它自己就有个坑：工具事件不断气泡，
+   * 「正文→工具→正文」后面几段全灌进第一个气泡，主人报的「多段堆一块」正是它）。
+   *
+   * 现在只做一件事：把 parts 翻成事件，喂进这一轮的清单，画交给 renderLog。
+   * 画一百次结果一样，所以「重复」在结构上没地方发生。
+   */
+  const evs2 = [];
+  /**
+   * 这一段要不要跳过：压缩条一律不画。
+   *
+   * 后端已经不再推 compress 了，但旧记录、旧进程、旧重放里还有 ——
+   * 以前这个判断散在三条路上（tool_start / tool_end / parts 重画），漏一处就会
+   * 在界面上闪一下「压缩中」。这里收成一处。
+   */
+  const _skipPart = (p) => {
+    if (!p) return false;
+    if (String(p.name) === 'compress') return true;
+    return false;
+  };
+  for (const p of (Array.isArray(rec.parts) ? rec.parts : [])) {
+    if (_skipPart(p)) continue;
+    const kind = String((p && (p.kind || p.type)) || '');
+    if (kind === 'reasoning') evs2.push({ type: 'reasoning', text: String(p.text || '') });
+    else if (kind === 'text') evs2.push({ type: 'text', text: String(p.text || ''), notice: Boolean(p.notice) });
+    else if (kind === 'tool') {
+      /* 参数可能缺（老记录、被掐断的那一轮）—— 这里统一成空串：
+       * 少它一个，画出来就是「参数：undefined」那种天书。 */
+      const _args = (p.args == null ? '' : String(p.args));
+      evs2.push({ type: 'tool_start', id: p.id, name: p.name, args: _args });
+      if (p.done) evs2.push({ type: 'tool_end', id: p.id, name: p.name, ok: p.ok !== false, output: p.output });
     } else if (kind === 'whale' || kind === 'whale_delta') {
-      try { if (!window.whaleStreamFinish(String(p.text || ''), window.StreamKey(id, p.who))) window.addWhaleBubble(p.who, String(p.text || '')); } catch (e) {}
+      evs2.push({ type: 'whale', who: p.who, text: String(p.text || '') });
     }
   }
-  rec.drawnParts = rec.parts.length;
+  try {
+    const m = window.liveModelOpen(id, rec.startedAt || Date.now());
+    for (const e of evs2) window.liveItemsFeed(m, e);
+    window.liveModelPaint(id, { forceLive: true });
+  } catch (e) {
+    console.warn('[replayInFlight] 交回清单失败（只少几段内容）:', e && e.message ? e.message : e);
+  }
+  rec.drawnParts = Array.isArray(rec.parts) ? rec.parts.length : 0;
   return true;
 }
 
@@ -1323,7 +1396,7 @@ export function renderTurns(turns, opts) {
     LOG_STATE.turns = Array.isArray(turns) ? turns : [];
     LOG_STATE.painted = true;
     const _ht = (opts && opts.dropTail && LOG_STATE.turns.length)
-      ? LOG_STATE.turns.slice(0, LOG_STATE.turns.length - 1)
+      ? trimTurnsForLive(LOG_STATE.turns)
       : LOG_STATE.turns;
     LOG_STATE.historyFp = logHistoryFp(_ht);
   } catch (e) {}
@@ -1367,10 +1440,8 @@ export function renderTurns(turns, opts) {
    * 历史就先别画最后那条 assistant —— 那段交给直播去长。
    */
   if (opts && opts.dropTail && Array.isArray(turns)) {
-    turns = turns.slice();
-    for (let i = turns.length - 1; i >= 0; i--) {
-      if (turns[i] && turns[i].role === 'assistant') { turns.splice(i, 1); break; }
-    }
+    /* 【2026-11-09】不再只砍最后一条：见 trimTurnsForLive 的注释 */
+    turns = trimTurnsForLive(turns);
   }
   /**
    * 【2026-11-02 修·换会话时不许「不画」】
@@ -2819,5 +2890,5 @@ export async function switchSession(id, opts) {
 /* 经典脚本（index.html 里那段）还要按名字直接调这些函数 ——
    模块有独立作用域，不挂回 window 它们就找不到了。 */
 Object.assign(window, {
-  logSettle, logSetHistory, logSetLive, logHistoryFp, renderLog, paintSnapshot, paintSnapshotInner, paintSnapshot0, attachLive, followLive, replayInFlight, renderTurns, switchSessionSafe, switchSession,
+  logSettle, logSetHistory, logBeginTurn, logSetLive, logHistoryFp, renderLog, paintSnapshot, paintSnapshotInner, paintSnapshot0, attachLive, followLive, replayInFlight, renderTurns, switchSessionSafe, switchSession,
 });

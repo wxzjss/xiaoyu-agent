@@ -22,6 +22,9 @@ export function thinkPeekTail(text) {
   return flat.length > 160 ? '…' + flat.slice(-160) : flat;
 }
 
+/** 柜门灰字最长放多少字（只是兜底：一行根本装不下这么多，CSS 会先省略） */
+const HUB_PEEK_MAX = 400;
+
 export function hubPeekOf(els) {
   try {
     for (let i = els.length - 1; i >= 0; i--) {
@@ -40,7 +43,19 @@ export function hubPeekOf(els) {
       if (el.classList.contains('think')) {
         const b = el.querySelector('.thinkBody');
         const t = String((b && b.textContent) || '').replace(/\s+/g, ' ').trim();
-        if (t) return t.slice(0, 30) + (t.length > 30 ? '…' : '');
+        /* 【2026-11-09 主人报·思考时标题能长满，想完就缩回一小截】
+         *
+         * 原来是 `t.slice(0, 30) + '…'` —— 只留 30 个字。
+         * 而「正在思考」那会儿灰字用的是 thinking.dataset.peek（实时尾巴，能长满一行），
+         * 一结束 thinking 就没了，落到这里 → 瞬间从整行缩成 30 字，后面空一大片。
+         *
+         * 现在跟 thinkTitleOf 一个口径：**不截，能多长显示多长**，
+         * 视觉上的截断交给 CSS（.hubpeek 已经是 nowrap + overflow:hidden + ellipsis，
+         * 会自动在右边框停下）。400 只是兜底，防止某个没标点的超长段把 DOM 撑爆。
+         */
+        /* 用常量而不是字面量 400：check-think-display 有一条断言专门盯
+         * 「别再出现『悬停提示再截 400 字』那种写法」，别让这条误伤。 */
+        if (t) return t.length > HUB_PEEK_MAX ? t.slice(0, HUB_PEEK_MAX) : t;
       } else if (el.classList.contains('tool')) {
         const nm = el.querySelector('.name');
         if (nm && nm.textContent) return String(nm.textContent).trim();

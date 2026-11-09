@@ -48,6 +48,20 @@ const rt = {
 
 const LOG_MAX = 120;
 
+/**
+ * 【2026-11-09 加·把「可能带密钥的文字」擦一遍再往外说】
+ *
+ * 给主人回的那句原因是从原始报错里截的，而报错里常常带着
+ * `apiKey=sk-xxxx`、`Authorization: Bearer xxx`、或一整串 32 位以上的随机 token。
+ * QQ 那边是聊天窗口（群里谁都看得见），这些东西不该出现在那儿。
+ */
+function scrubSecrets(input) {
+  return String(input ?? '')
+    .replace(/(sk-|Bearer\s+)[A-Za-z0-9._-]{6,}/gi, '$1***')
+    .replace(/(api[-_]?key|token|secret|passwd|password|authorization)\s*[:=]\s*\S+/gi, '$1=***')
+    .replace(/[A-Za-z0-9_-]{32,}/g, '***');
+}
+
 function log(line) {
   const s = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${String(line ?? '')}`;
   rt.log.push(s);
@@ -257,7 +271,15 @@ export async function handleInbound({ msg, bot, deps }) {
     // 不在白名单 —— 一个字都不回（回了就等于告诉对方「这里有人」，
     // 主人要的是「清净」，不是「礼貌地拒绝」）。
     rt.stats.blocked = (Number(rt.stats.blocked) || 0) + 1;
-    log(`挡掉一条（${gateVerdict.why}）${isGroup ? '[群] ' : ''}${gateVerdict.qq || openid.slice(0, 8)}`);
+    /* 【2026-11-09 加】「挡掉」也要说清为什么挡。
+     * 官方机器人那条道拿不到 QQ 号（接口只给 openid），而白名单是按**号**比的 ——
+     * 于是 strict 一开，私聊全被挡，屏面上只看到「她不回我」。
+     * 这种时候日志必须点明是「没号可比」，否则主人只会以为程序坏了。 */
+    const _noNum = !normQqNum(msg?.senderQq);
+    log(`挡掉一条（${gateVerdict.why}）${isGroup ? '[群] ' : ''}${gateVerdict.qq || openid.slice(0, 8)}`
+      + (_noNum && !isGroup
+        ? ' —— 这条机器人拿不到说话人的 QQ 号（官方接口只给 openid），「只理白名单」按号比不了；要用私聊请走「自己注册的号」，或把「只理白名单」关掉'
+        : ''));
     return;
   }
 
@@ -473,7 +495,18 @@ await sleep(1000 + Math.floor(Math.random() * 400));
   } catch (err) {
     const m = String(err?.message ?? err);
     log(`这一轮没答完：${m}`);
-    await send(bot, msg, `出错了：${m}`);
+    /* 【2026-11-09 改·别把技术细节甩到 QQ】
+     * 原来一律回「出错了：<原始错误>」，可能把接口地址、报错栈、甚至 key 的片段
+     * 发给对面（群里谁都看得见）。现在：
+     *   · 会话正忙（409）→ 说人话，让她知道等一会儿；
+     *   · 主人本人 → 附一句简短原因，他好排查；客人 → 只说「出了点问题」；
+     *   · 完整原因一律留在面板日志里。 */
+    const code = Number(err?.status) || 0;
+    const isOwner = isOwnerQq(msg?.senderQq);
+    const say = code === 409
+      ? '我这边手上还有一件没收尾，等我说完这句就来，你别急 (´｡• ᵕ •｡`)'
+      : (isOwner ? `这一轮没跑通（${scrubSecrets(m).slice(0, 80)}），你回头看下日志。` : '我这边出了点小问题，过一会儿再喊我一声。');
+    await send(bot, msg, say);
   }
 }
 
@@ -516,10 +549,31 @@ async function send(bot, msg, content, opts = {}) {
   const base = targetOf(msg);
   // 引用只用在第一条上；**引用与否绝不改变发到哪儿**
   const target = { ...base, msgId: quote ? base.msgId : undefined };
+  /* 【2026-11-09 改·发不出去原来只有一行日志，主人永远不知道】
+   *
+   * 真实场景里失败的大头是「消息发送频率超限」「被动回复过期（msgId 太久）」——
+   * 都是**等一下再发就好**的那种。原来一次失败就整条丢了，QQ 那头只看到少一句，
+   * 面板上也只会看到一行没人看的灰字。
+   *
+   * 现在：① 失败先摘掉引用、隔 700ms 重试一次（很多失败就是引用带不动）；
+   *      ② 还不行就记进 stats.fail，面板/状态里能看见「有 N 条没发出去」；
+   *      ③ 日志里写清原因，不再只有一句「发不出去」。
+   */
+  const attempt = async (tgt) => bot.sendText(tgt, t);
   try {
-    await bot.sendText(target, t);
-  } catch (err) {
-    log(`发不出去：${String(err?.message ?? err)}`);
+    await attempt(target);
+    return;
+  } catch (err1) {
+    const m1 = String(err1?.message ?? err1);
+    log(`发不出去（${m1}），摘掉引用再试一次`);
+    await sleep(700);
+    try {
+      await attempt({ ...base, msgId: undefined });
+      return;
+    } catch (err2) {
+      rt.stats.fail = (Number(rt.stats.fail) || 0) + 1;
+      log(`还是发不出去（${String(err2?.message ?? err2)}）—— 这一条没能送到 QQ`);
+    }
   }
 }
 

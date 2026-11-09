@@ -82,8 +82,7 @@
           ]
         }
       ],
-      "icon": "assets/xiaoyu.ico",
-      "artifactName": "小鱼Agent-${version}-${arch}.${ext}"
+      "icon": "assets/xiaoyu.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -95,10 +94,11 @@
       "installerIcon": "assets/xiaoyu.ico",
       "uninstallerIcon": "assets/xiaoyu.ico",
       "installerHeaderIcon": "assets/xiaoyu.ico",
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "XiaoyuAgent-${version}-Setup-${arch}.${ext}"
     },
     "portable": {
-      "artifactName": "小鱼Agent-免安装版-${version}.${ext}"
+      "artifactName": "XiaoyuAgent-${version}-Portable.${ext}"
     }
   },
   "dependencies": {

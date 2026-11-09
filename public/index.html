@@ -5543,6 +5543,11 @@ function itemsFromEvents(events) {
   const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
   for (const e of (Array.isArray(events) ? events : [])) {
     if (!e || !e.type) continue;
+    /* 【2026-11-09 主人报·多段消息堆一块】
+     * 后端排队轮复用同一份 live 续写（openLiveForQueuedTurn），`done` 就是两轮的分界。
+     * 这里原来不认 done —— 下一轮的正文接着上一轮最后那段拼，屏幕上好几轮的话
+     * 堆进一个气泡。服务端两份规则（appendLiveItem / buildLiveItems）同步改了。 */
+    if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') { flush(); continue; }
     if (e.type === 'text') {
       if (e.notice) { flush(); items.push({ k: 'note', t: String(e.text || '') }); continue; }
       if (!cur) cur = { k: 'text', t: '' };
@@ -10174,6 +10179,48 @@ function hidingSendingSafe() {
   }
 }
 
+/**
+ * 【2026-11-09 主人报·做任务做着做着「正在发送消息」消失了，再也不回来】
+ *
+ * 现场实测：服务端 /api/running 与 /api/chat/live 都报 running:true、544 个事件还在涨，
+ * 可前端那行提示没了。查下来是这两条撞在一起：
+ *   · SSE 的 done 分支和 finally 都无条件 hideSending()；
+ *   · 服务端收尾常用 setImmediate 接着跑队列里的下一轮（那一轮不是前端发起的），
+ *     前端这条流却已经 done —— 灯灭了，没人再 showSending；
+ *   · 3 秒巡检只在「服务端在跑 且 busy=false」时纠正，而此时 busy 常常还是 true，
+ *     条件不成立 → 灯永久熄灭。
+ *
+ * 所以：流结束不再立刻灭灯，而是等一小会儿问一次服务端（唯一权威）。
+ * 还在跑 → 把灯和 busy 都保持住；真结束了才灭。切会话了就什么都不做。
+ */
+let _sendingRecheckTimer = 0;
+function scheduleSendingRecheck(sid) {
+  const _sid = String(sid || sessionId || '');
+  if (!_sid) { hidingSendingSafe(); return; }
+  if (_sendingRecheckTimer) clearTimeout(_sendingRecheckTimer);
+  _sendingRecheckTimer = setTimeout(async () => {
+    _sendingRecheckTimer = 0;
+    if (String(sessionId || '') !== _sid) return;   // 中途切了会话，别动别人的灯
+    let still = false;
+    let at = 0;
+    try {
+      const j = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(_sid))
+        .then((r) => r.json()).catch(() => null);
+      still = Boolean(j && j.running);
+      at = Number(j && j.startedAt) || 0;
+    } catch {}
+    if (still || turnsInFlight.has(_sid)) {
+      busy = true;
+      try { showSending(at || undefined); } catch {}
+      try { syncSendBtn(); } catch {}
+      return;
+    }
+    busy = false;
+    hidingSendingSafe();
+    try { syncSendBtn(); } catch {}
+  }, 900);
+}
+
 /** 生成中：输入框有内容 -> 按钮变「发送」（插一句）；空着 -> 「停止」。 */
 function syncSendBtn() {
   if (stopping) return;
@@ -10478,7 +10525,9 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
          */
         const endTurnQuietly = () => {
           try { closeThink(); } catch {}
-          try { hideSending(); } catch {}
+          /* 别立刻灭灯：rate_limited 之后服务端可能重试接着跑，aborted 也可能
+           * 只是这一条流断了。交给延迟复核问服务端，别自作主张。 */
+          try { scheduleSendingRecheck(sessionId); } catch {}
           try { flushSpeech(); } catch {}
           if (bubble) { try { bubble.classList.remove('streaming'); } catch {} bubble = null; }
         };
@@ -10690,7 +10739,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             if (bubble) bubble.classList.remove('streaming');
           } catch {}
           closeThink();
-          hideSending();
+          scheduleSendingRecheck(sessionId);
           // 这一轮刚答完，主人最想看数字跳一下 —— 服务端在 done 里就把表带过来了
           /**
            * 【这一轮说完了，可队列里还有话排着】
@@ -10797,7 +10846,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
       turnRec.parts.length = 0;
     } else if (onScreen()) {
       closeThink();
-      hideSending();
+      scheduleSendingRecheck(sessionId);
       const b = bubble;
       if (b) b.classList.remove('streaming');
       // 说人话，不甩英文栈
@@ -10840,7 +10889,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
     } else if (!interruptedByInterject) {
       closeThink();
     }
-    hideSending();
+    scheduleSendingRecheck(sessionId);
     flushSpeech();
     if (bubble) bubble.classList.remove('streaming');
     stopping = false;
@@ -11711,7 +11760,6 @@ input.addEventListener('input', () => {
 // 【2026-10-31 拆掉「清空当前」】主人原话：「把【清空当前】按钮以及对应效果删除，我严重怀疑就是因为这个的原因清空的」。
 // 按钮、确认框、/api/reset 调用、重画那一整套都删了（原来在 8109-8155 行）。
 // 要清空记录的话去会话面板删那一整个会话；清单和记忆本子跟这个按钮本来就无关，但它不该存在。
-input.focus();
 
 // ---- settings: 底线 + 安全词 --------------------------------------------------
 const dlg = document.getElementById('settingsDlg');
@@ -19583,7 +19631,13 @@ setInterval(async () => {
   try {
     const sid = sessionId;
     const r = sid ? runningSess.get(sid) : null;
-    if (r && !busy) {
+    /* 【2026-11-09 修】原来只认 !busy。可 SSE 收尾把灯灭了、busy 却还留着 true 时，
+     * 服务端明明在跑，这个条件不成立 → 灯再也没人点回来。
+     * 现在：服务端说在跑，就同时核对 busy 和「灯本身亮不亮」，任何一个不对都纠正。 */
+    const _hintOn = (() => {
+      try { return !!document.getElementById('sendingHint')?.classList.contains('show'); } catch { return false; }
+    })();
+    if (r && (!busy || !_hintOn)) {
       const j = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sid))
         .then((x) => x.json()).catch(() => null);
       if (j && j.running) {

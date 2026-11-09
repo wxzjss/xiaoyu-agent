@@ -24,7 +24,7 @@ t.ok('临时数据目录不带任何会话', /name === 'sessions'\)\s*continue/.
 t.ok('隔离实例用独立端口（不是主人那个）', /appPort\s*=\s*8795/.test(iso));
 t.ok('浏览器打开的是隔离实例页面', /--remote-debugging-port=/.test(iso) && /\bbase,\r?\n/.test(iso));
 t.ok('实例没起来直接抛错，不静默回落', /throw new Error\('隔离实例没起来/.test(iso));
-t.ok('调试端口被占就拒绝复用（怕连到主人窗口）', /拒绝复用/.test(iso));
+t.ok('调试端口被占就换空闲端口（不碰主人窗口）', /pickFree/.test(iso) && /portFreeProbe/.test(iso));
 t.ok('stop() 会删掉临时目录', /rmSync\(dataDir, \{ recursive: true, force: true \}\)/.test(iso));
 
 t.ok('全量回归确实调用了隔离模块', /await startIsolated\(\)/.test(runner));

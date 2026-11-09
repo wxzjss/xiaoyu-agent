@@ -95,12 +95,21 @@ async function portFree(port) {
  * @returns {Promise<{base:string, dataDir:string, env:object, stop:()=>Promise<void>}>}
  */
 export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
-  if (!(await portFree(appPort))) {
-    throw new Error('端口 ' + appPort + ' 已被占用，拒绝在别人的实例上跑自检');
-  }
-  if (!(await portFreeProbe(cdpPort))) {
-    throw new Error('调试端口 ' + cdpPort + ' 已被占用（可能连着主人窗口），拒绝复用');
-  }
+  /* 【2026-11-09 加·上一轮没退干净，下一轮整个跑不起来】
+   * 自检中途被打断（Ctrl+C、被停、进程被强杀）时，临时实例和它的无头浏览器
+   * 会活下来占着 8795 / 9223。以前这里直接抛「端口被占用」→ 后面每一轮回归
+   * 都起不来，只能手工去杀进程。
+   *
+   * 现在：**换一个空闲端口**（8795→8796→…），既不碰别人的实例，也不卡死自己。
+   * 只有整段都被占满才报错 —— 那说明真有问题，该人来看。 */
+  const pickFree = async (start, probe) => {
+    for (let p = start; p < start + 12; p++) {
+      if (await probe(p)) return p;
+    }
+    throw new Error('端口 ' + start + '~' + (start + 11) + ' 全被占用，没法起隔离实例');
+  };
+  appPort = await pickFree(appPort, portFree);
+  cdpPort = await pickFree(cdpPort, portFreeProbe);
 
   const dataDir = mkdtempSync(join(tmpdir(), 'xy-check-'));
   const copied = seedConfig(dataDir);

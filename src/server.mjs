@@ -1885,15 +1885,44 @@ const liveLogs = new Map();
  *  它只增不减、不受压薄影响 —— 服务端手里那份才是「这一轮现在到底长什么样」的真身，
  *  前端照着它画。压薄只影响「增量游标」（events），不影响画面。
  */
+/* 【2026-11-09 主人报·多段消息堆一块】
+ *
+ * 病根：排队轮（插话 / 定时任务 / 续跑）**复用同一份 live**（openLiveForQueuedTurn
+ * 直接把上一轮的缓存接过来续写，见上面那段注释），可 `done` 不是分段线 ——
+ * appendLiveItem 只看「最后一条是不是 text」，于是下一轮的第一段正文会接着
+ * 上一轮最后那段往下拼，屏幕上就是「好几轮的话堆在一个气泡里」。
+ * 这跟「正在发送消息」消失是同一个根：都发生在流断了、服务端自己接着跑下一轮时。
+ *
+ * 修法：`done` / `aborted` / `error` 三个轮末事件算**硬分段**。
+ * 用 Symbol 打标记（JSON 序列化看不见、不会漏给前端，也不污染 items 的形状），
+ * 下一段 text 就一定会新起一个 item。
+ * `rate_limited` 不算 —— 那是同一轮里的重试，断开反而会把一句话劈成两个气泡。
+ */
 function appendLiveItem(items, ev) {
   if (!items || !ev || !ev.type) return;
+  /* 轮末：把最后那段正文「封口」，下一轮的话不许再拼上去。
+   *
+   * 标记用**不可枚举属性**，不是 Symbol 常量 —— 因为 _t_live_cursor.mjs 和
+   * check-segment-split.mjs 会把这两个函数抽出来单独跑（new Function），
+   * 引用模块级常量会直接 ReferenceError。不可枚举 → JSON.stringify 看不见，
+   * 发给前端的 items 仍是干净的原样。 */
+  if (ev.type === 'done' || ev.type === 'aborted' || ev.type === 'error') {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (!it) continue;
+      if (it.k !== 'text') break;          // 最后一条不是正文，本来就已经断开
+      try { Object.defineProperty(it, '__segEnd', { value: true, enumerable: false, configurable: true }); } catch { it.__segEnd = true; }
+      break;
+    }
+    return;
+  }
   const last = () => (items.length ? items[items.length - 1] : null);
   const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
   if (ev.type === 'text') {
     const t = String(ev.text || '');
     if (ev.notice) { items.push({ k: 'note', t }); return; }
     const p = last();
-    if (p && p.k === 'text') p.t += t;
+    if (p && p.k === 'text' && !p.__segEnd) p.t += t;
     else items.push({ k: 'text', t });
   } else if (ev.type === 'reasoning') {
     const t = String(ev.text || '');
@@ -1950,6 +1979,8 @@ function buildLiveItems(events) {
   const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
   for (const e of (Array.isArray(events) ? events : [])) {
     if (!e || !e.type) continue;
+    /* 轮末就是分段线：排队的下一轮是「另一段话」，不能跟上一轮拼一个气泡。 */
+    if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') { flush(); continue; }
     if (e.type === 'text') {
       if (e.notice) { flush(); items.push({ k: 'note', t: String(e.text || '') }); continue; }
       if (!cur) cur = { k: 'text', t: '' };

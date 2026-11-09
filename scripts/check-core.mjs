@@ -31,6 +31,10 @@ const CORE = [
   ['check-tool-naming.mjs', '工具命名与柜门'],
   ['check-factory-prompt.mjs', '出厂默认提示词（换机器还是这份）'],
   ['check-plan-archive.mjs', '清单归档（超十条自动收）'],
+  ['check-ime-untouched.mjs', '输入法：应用一行都不碰'],
+  ['check-ime-no-top-focus.mjs', '启动不许有裸 focus 把中打回英'],
+  ['check-sending-hint.mjs', '「正在发送消息」不许自己灭掉再不回来'],
+  ['check-segment-split.mjs', '轮末必须分段，几轮的话不许堆一个气泡'],
 ];
 
 const argv = process.argv.slice(2);

@@ -126,9 +126,18 @@ for (const t of ['aborted', 'error', 'rate_limited']) {
   ok(!!chunk, t + ' — 有分支');
   if (!chunk) continue;
   const usesHelper = helperName && new RegExp(helperName + '\\s*\\(').test(chunk);
+  /* 【2026-11-09 口径更新】「收掉提示」不再只有 hideSending() 一种写法。
+   * scheduleSendingRecheck() 先问服务端：还在跑就保持灯亮，真结束才
+   * hidingSendingSafe()。这比无条件灭灯更对（见 check-sending-hint.mjs），
+   * 所以把它也算「灯有人管」，别逼着代码退回旧 bug。 */
+  const hasCleanup = (body, fn) => {
+    if (new RegExp(fn + '\s*[.(]').test(body)) return true;
+    if (fn === 'hideSending' && /scheduleSendingRecheck\s*\(/.test(body)) return true;
+    return false;
+  };
   for (const fn of CLEANUP) {
-    const inChunk = new RegExp(fn + '\\s*[.(]').test(chunk);
-    const inHelper = usesHelper && new RegExp(fn + '\\s*[.(]').test(helperBody);
+    const inChunk = hasCleanup(chunk, fn);
+    const inHelper = usesHelper && hasCleanup(helperBody, fn);
     const label = t + ' 收掉了「' + fn + '」';
     if (inChunk || inHelper) ok(true, label + (inHelper && !inChunk ? '（经由 ' + helperName + '）' : ''));
     else ok(false, label);

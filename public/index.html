@@ -1656,7 +1656,13 @@
      *
      * 修：按钮和按钮里的文字都允许缩，文字超出打省略号（完整值在 title 里）。
      */
-    .topCfg .cfgBox { min-width: 0; overflow: hidden; }
+    /* 【2026-11-11 修·900px 思考值变 0】无下限的 min-width 让文字能一直缩到看不见
+       （900px 时「当前思考强度」值可视只剩 4px）。96px 够放「▾」+2~3 字，
+       窄窗时该让位的是右侧按钮组，不是这里。 */
+    .topCfg .cfgBox { min-width: 96px; overflow: hidden; }
+    /* 【同条·窄窗时前缀让位，只留值本身】760px 那种「中间地带」宽度下，
+       96px 装不下前缀+值，前缀会把值挤成 0 —— 前缀直接藏掉。 */
+    @media (max-width: 1000px) { .topCfg .cfgThink .thinkPrefix { display: none; } }
     .topCfg #topModelName, .topCfg #topThinkName { display: inline-block; max-width: 150px;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
     .cfgBox {
@@ -3326,7 +3332,7 @@
         <span id="topModelName">…</span><span class="caret">▾</span>
       </button>
       <button type="button" class="cfgBox cfgThink" id="topThink" title="点一下换思考强度（只影响这个会话）">
-        当前思考强度：<span id="topThinkName">默认</span><span class="caret">▾</span>
+        <span class="thinkPrefix">当前思考强度：</span><span id="topThinkName">默认</span><span class="caret">▾</span>
       </button>
     </span>
     <!-- 2026-11-01【主人的话：「删除专业模式，回滚办事模式，然后让【专业模式】按钮变成【办事模式】按钮」】
@@ -8365,6 +8371,37 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           }
         } else if (ev.type === 'files') {
           turnRec.files = ev.items || [];
+        } else if (ev.type === 'ask_approval') {
+          /**
+           * 【2026-11-11 加·危险动作真弹窗】
+           *
+           * server 把「她要点危险按钮 / 删除键」这件事推过来（ask_approval 事件），
+           * 这里弹一个确认框问主人，把答复 POST 回去。超时 / 关掉 = 不许
+           * （服务端 60 秒兜底也按不许算 —— 问不到主人就不动，宁可不动不许瞎动）。
+           * 复用 askConfirm 的风格（应用内异步弹框，不阻塞渲染线程）。
+           * 放在 onScreen() 判断**之前**：就算主人切到别的会话，弹窗也得出，
+           * 不然她干等 60 秒然后什么都不做。
+           */
+          (async () => {
+            const _tool = String(ev.toolName || '桌面操作');
+            const _reason = String(ev.reason || '').replace(/\s+/g, ' ').trim();
+            let yes = false;
+            try {
+              yes = await askConfirm({
+                title: '她要动：' + _tool,
+                body: '她要【' + _tool + '】来' + _reason + '。允许吗？',
+                ok: '允许',
+                cancel: '不许',
+              });
+            } catch { yes = false; }
+            try {
+              await fetch('/api/ask-approval', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requestId: ev.requestId, yes: yes === true }),
+              });
+            } catch { /* 服务端 60 秒超时会自己按「不许」兜底 */ }
+          })();
         }
 
         /**

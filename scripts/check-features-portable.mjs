@@ -109,7 +109,7 @@ check('agent.mjs：提示词里的工具清单也按会话（setToolLister 带 s
 check('subagent.mjs：子任务用派活会话，不用 subSessionId', /const gateSessionId = sessionId \|\| ownerSessionId/.test(subSrc));
 check('subagent.mjs：工具清单按 gateSessionId 取', /enabledToolSchemas\(gateSessionId\)/.test(subSrc));
 check('subagent.mjs：记忆判据也按 gateSessionId', /featureOnFor\(gateSessionId, 'memory'\)/.test(subSrc));
-check('task-mode.mjs：办事模式可用性按会话', /taskFeatureOn\(sessionId = ''\)/.test(taskSrc) && /featureOnFor\(sessionId \|\| '', 'taskmode'\)/.test(taskSrc));
+check('task-mode.mjs：办事模式已删，taskOn 不再读功能表', !/featureOnFor\(sessionId \|\| '', 'taskmode'\)/.test(taskSrc));
 check('persona.mjs：toolBlock 收 sessionId', /function toolBlock\(sessionId = ''\)/.test(personaSrc) && /_listTools\(sessionId\)/.test(personaSrc));
 check('server.mjs：GET 按 sessionId 算', /getFeatures\(sid\)/.test(srv));
 check('server.mjs：set 走 setFeatureScoped（不再直接写全局）', /setFeatureScoped\(fid, payload\?\.enabled, target\)/.test(srv));

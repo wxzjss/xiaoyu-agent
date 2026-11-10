@@ -16,8 +16,8 @@ const src = fs.readFileSync(path.join(ROOT, 'src', 'persona.mjs'), 'utf8');
 const skillsSrc = fs.readFileSync(path.join(ROOT, 'src', 'skills.mjs'), 'utf8');
 
 // ── 1. 已经删掉的功能，不许再出现在提示词里 ────────────────────────
-t.ok('不提「专业模式」（功能已删，改叫办事模式）', !prompt.includes('专业模式'));
-t.ok('提的是「办事模式」', prompt.includes('办事模式'));
+t.ok('不提「专业模式」（功能已删）', !prompt.includes('专业模式'));
+t.ok('不提「办事模式」（2026-11-11 整档删除）', !prompt.includes('办事模式'));
 t.ok('「开场白」说成卡上的一句话，不是功能开关', /「开场白」是每张智能体卡上的一句话/.test(prompt));
 
 // ── 2. 数字 / 条件不能再写错 ───────────────────────────────────────

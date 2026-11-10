@@ -44,28 +44,22 @@ t.ok('提示词要求退回同一个 worker（不新开）', /同一个子智能
 t.ok('提示词没写「你必须全部派出去」这种一刀切',
   !/你不动手|一律派出去/.test(prompt));
 
-// ── 3. 行为：开关真的开/关/落盘/不串会话/BOM ────────────────
-const __dir = dirname(fileURLToPath(import.meta.url));
-const tmpData = mkdtempSync(join(tmpdir(), 'task-probe-'));
-const probe = spawnSync(process.execPath, [join(__dir, 'task-probe.mjs')], {
-  cwd: join(__dir, '..'),
-  env: { ...process.env, MINI_AGENT_DATA: tmpData },
-  encoding: 'utf8',
-  timeout: 60000,
-});
-try { rmSync(tmpData, { recursive: true, force: true }); } catch {}
-
-let got = null;
-try { got = JSON.parse(String(probe.stdout || '').trim().split('\n').pop()); } catch {}
-t.ok('探针跑起来了', probe.status === 0 && !!got, String(probe.status) + ' ' + String(probe.stderr || '').slice(0, 160));
-if (got) {
-  t.ok('默认是关的', got.defaultOff === true);
-  t.ok('开了之后读得到', got.afterOn === true);
-  t.ok('开 A 不会把 B 也带开', got.otherOff === true);
-  t.ok('真的落盘了（不只是内存）', got.fileExists === true && String(got.fileBody || '').includes('sidA'));
-  t.ok('关了之后读不到', got.afterOff === true);
-  t.ok('带 BOM 的文件照样读得出来', got.bomRead === true);
-  t.ok('探针内部无失败项', got.ok === true, (got.steps || []).join(' | ').slice(0, 200));
-}
+// ── 3. 删除契约：办事模式已整档删除（2026-11-11 主人指令）────
+/* 原来这里探测「开关开/关/落盘/不串会话」—— 功能删了，探针换成
+ * 「闸门必须钉死 + 派活工具必须拒 + 功能表里没有这个键」。
+ * 为什么要钉死：老机器功能表里残留 taskmode:true，featureOnFor 对
+ * 不认识的 id 按「记过就按记的」会返回 true —— 光删定义关不掉它，
+ * taskOn() 里必须显式 return false。 */
+t.ok('taskOn() 恒为 false（任意会话）',
+  tm.taskOn('probe-a') === false && tm.taskOn('') === false && tm.taskOn('default') === false);
+const __F = await import('../src/features.mjs');
+t.ok('功能表里没有 taskmode 这个键', !__F.allFeatures().some((f) => f.id === 'taskmode'));
+const __refuse = await tl.runTool('spawn_worker', { task: '随便什么活' }, 'probe-a');
+t.ok('spawn_worker 被闸死且说人话（不是提已删的按钮）',
+  __refuse && __refuse.ok === false && /派活功能正在重做/.test(String(__refuse.output || ''))
+    && !/办事模式/.test(String(__refuse.output || '')),
+  String((__refuse && __refuse.output) || '').slice(0, 80));
+t.ok('task-mode.mjs 不再读功能表的 taskmode 键',
+  !/featureOnFor\([^)]*taskmode/.test(src));
 
 t.done();

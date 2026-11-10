@@ -7750,7 +7750,7 @@
     const all = running ? trimTurnsForLive(snap.turns) : snap.turns;
     const sid = snap.sid;
     let start = Number(getWindowStart(sid)) || 0;
-    if (!(start >= 0 && all.length - start >= WINDOW)) start = Math.max(0, all.length - WINDOW);
+    if (!(start > 0)) start = Math.max(0, all.length - WINDOW);
     start = Math.max(0, Math.min(start, all.length));
     const items = [];
     let lastUserChars = 0;

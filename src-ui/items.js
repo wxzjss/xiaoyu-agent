@@ -339,7 +339,11 @@ export function buildMerged(snap) {
 
   /* 窗口：只画最近 WINDOW 轮（长会话一次性建上万个节点会把主线程顶住） */
   let start = Number(getWindowStart(sid)) || 0;
-  if (!(start >= 0 && all.length - start >= WINDOW)) start = Math.max(0, all.length - WINDOW);
+  /* 【2026-11-11 修·虚拟化恒不生效】原条件 `start >= 0 && all.length - start >= WINDOW`
+     在用户没往前翻过（start=0）且会话够长时恒为真 → start 保持 0 → 整个会话全画，
+     300 轮切过去卡 6.8 秒。窗口的语义是「用户手动往前翻过就尊重他的位置，
+     否则只留最近 WINDOW 轮」—— 判据应该是 start > 0。 */
+  if (!(start > 0)) start = Math.max(0, all.length - WINDOW);
   start = Math.max(0, Math.min(start, all.length));
 
   const items = [];

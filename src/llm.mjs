@@ -525,8 +525,14 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
    * 这个网关省略字段就是默认开思考（详见 thinking.mjs 的 fieldsForLevel）。
    */
   const ov = sessionId ? getOverride(sessionId) : {};
-  // 会话自己设了强度就用它；没设就跟这个模型在右上角里的设置走
-  const cfgLevel = ov.level || levelFor(ep.id ?? 'env');
+  /**
+   * 会话自己设了强度就用它；没设就跟这个模型在右上角里的设置走。
+   *
+   * 【2026-11-09 改】以前传的是 `ep.id`，现在把**整个接入点**传进去 ——
+   * 档位要按这家的方言翻译（见 thinking.mjs 的 thinkingFormatOf），
+   * 而且 perModel 的稳定键要 address + 模型名，光有 id 算不出来。
+   */
+  const cfgLevel = ov.level || levelFor(ep);
   const effort = resolveLevel(cfgLevel, { hasTools: Boolean(tools?.length) });
 
   // 只有「模型不支持思考」才降；key 错 / 网络断 / 值不合法都直接抛。
@@ -545,7 +551,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
   let overflowTried = false;
   let gatewayRetried = 0; // 网关 5xx 已经重试过几次（最多 2 次）
   for (let guard = 0; guard < 8; guard++) {
-    const payload = withEffort(body, level).body;
+    const payload = withEffort(body, level, ep).body;
     /**
     /**
      * 【静默闸：建了连接却一个字节都不吐，不能永远等】
@@ -953,12 +959,13 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
   // 只能吞成"摘要生成失败"的降级文案；「测连通」也一起报错。
   // 不传就当没有会话级覆盖，退回全局档位。
   const ov2 = sessionId ? getOverride(sessionId) : {};
-  const effort = resolveLevel(ov2.level || levelFor(ep.id ?? 'env'), { hasTools: Boolean(tools?.length) });
+  // 同上：传整个接入点，档位才能按这家的方言翻译（稳定键也要地址+模型名）
+  const effort = resolveLevel(ov2.level || levelFor(ep), { hasTools: Boolean(tools?.length) });
   let lastStatus = 0;
   let lastText = '';
   let level = effort;
   for (let guard = 0; guard < 8; guard++) {
-    const payload = withEffort(body, level).body;
+    const payload = withEffort(body, level, ep).body;
     const res = await fetch(ep.baseURL + '/chat/completions', {
       method: 'POST',
       headers: headers(ep),

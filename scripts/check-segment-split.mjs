@@ -47,13 +47,17 @@ const srvMod = new Function(
   grab(SRV, 'appendLiveItem') + '\n' + grab(SRV, 'buildLiveItems')
   + '\nreturn { appendLiveItem, buildLiveItems };',
 )();
-const uiMod = new Function(grab(UI, 'itemsFromEvents') + '\nreturn { itemsFromEvents };')();
+/* 【2026-11-09 换框架】前端那份 itemsFromEvents 已经**删掉**了 ——
+ * 那是「同一件事两边各算一遍」的第二本账：段落划分稍有不同，屏幕上就是
+ * 「跑着的时候三个气泡、刷新一下变两个」。现在前端只用服务端给的 items，
+ * 所以这条检查只剩服务端两份实现要对齐，外加一条「前端别再长出第三份」的守卫。 */
+const FE_MIRROR_GONE = !/function\s+itemsFromEvents\s*\(/.test(UI);
 
 const textsOf = (items) => items.filter((x) => x && x.k === 'text').map((x) => x.t);
 const buildBoth = (evs) => {
   const inc = [];
   for (const e of evs) srvMod.appendLiveItem(inc, e);
-  return { inc, one: srvMod.buildLiveItems(evs), fe: uiMod.itemsFromEvents(evs) };
+  return { inc, one: srvMod.buildLiveItems(evs) };
 };
 
 console.log('\n一、轮末就是分段线');
@@ -64,37 +68,36 @@ const twoRounds = [
   { type: 'text', text: '插话之后的第二轮' },
 ];
 {
-  const { inc, one, fe } = buildBoth(twoRounds);
+  const { inc, one } = buildBoth(twoRounds);
   t.ok('增量版：两轮的正文分成两条', textsOf(inc).length === 2, JSON.stringify(textsOf(inc)));
   t.ok('一次性版：两轮分成两条', textsOf(one).length === 2, JSON.stringify(textsOf(one)));
-  t.ok('前端镜像：两轮分成两条', textsOf(fe).length === 2, JSON.stringify(textsOf(fe)));
+  t.ok('前端不再自己合成 items（只有服务端算一遍）', FE_MIRROR_GONE);
   t.ok('分段后正文一个字都没丢',
     textsOf(inc).join('') === '第一轮说的话插话之后的第二轮'
-    && textsOf(one).join('') === textsOf(inc).join('')
-    && textsOf(fe).join('') === textsOf(inc).join(''));
+    && textsOf(one).join('') === textsOf(inc).join(''));
 }
 
 {
   const evs = [{ type: 'text', text: 'A' }, { type: 'aborted' }, { type: 'text', text: 'B' }];
-  const { inc, one, fe } = buildBoth(evs);
-  t.ok('aborted 也分段（三份一致）',
-    textsOf(inc).length === 2 && textsOf(one).length === 2 && textsOf(fe).length === 2);
+  const { inc, one } = buildBoth(evs);
+  t.ok('aborted 也分段（两份一致）',
+    textsOf(inc).length === 2 && textsOf(one).length === 2);
 }
 
 {
   const evs = [{ type: 'text', text: 'A' }, { type: 'error', message: 'x' }, { type: 'text', text: 'B' }];
-  const { inc, one, fe } = buildBoth(evs);
-  t.ok('error 也分段（三份一致）',
-    textsOf(inc).length === 2 && textsOf(one).length === 2 && textsOf(fe).length === 2);
+  const { inc, one } = buildBoth(evs);
+  t.ok('error 也分段（两份一致）',
+    textsOf(inc).length === 2 && textsOf(one).length === 2);
 }
 
 {
   /* rate_limited 是同一轮里的重试：不许断开，否则一句话被劈成两个气泡 */
   const evs = [{ type: 'text', text: '前半句' }, { type: 'rate_limited', streak: 1 }, { type: 'text', text: '后半句' }];
-  const { inc, one, fe } = buildBoth(evs);
+  const { inc, one } = buildBoth(evs);
   t.ok('rate_limited 不断开（同一轮重试）',
-    textsOf(inc).length === 1 && textsOf(one).length === 1 && textsOf(fe).length === 1,
-    JSON.stringify([textsOf(inc), textsOf(one), textsOf(fe)]));
+    textsOf(inc).length === 1 && textsOf(one).length === 1,
+    JSON.stringify([textsOf(inc), textsOf(one)]));
 }
 
 console.log('\n二、一轮之内：工具卡该断，正文不该丢');
@@ -108,11 +111,10 @@ console.log('\n二、一轮之内：工具卡该断，正文不该丢');
     { type: 'done' },
     { type: 'text', text: '下一轮' },
   ];
-  const { inc, one, fe } = buildBoth(evs);
+  const { inc, one } = buildBoth(evs);
   const want = ['先说话', '再说一句', '下一轮'];
   t.ok('工具隔开的正文分段 + 轮末再分段（增量）', JSON.stringify(textsOf(inc)) === JSON.stringify(want), JSON.stringify(textsOf(inc)));
   t.ok('工具隔开的正文分段 + 轮末再分段（一次性）', JSON.stringify(textsOf(one)) === JSON.stringify(want));
-  t.ok('工具隔开的正文分段 + 轮末再分段（前端）', JSON.stringify(textsOf(fe)) === JSON.stringify(want));
   t.ok('顺序仍是「正文→工具→正文」，没被重排',
     inc.map((x) => x.k).join(',') === 'text,tool,text,text');
 }
@@ -128,9 +130,8 @@ console.log('\n三、两份合成器长期等价（含轮末事件）');
     if (n % 40 === 0) evs.push({ type: 'reasoning', text: '想' + n });
     if (n % 17 === 0) evs.push({ type: 'text', notice: true, text: '（还在跑）' });
   }
-  const { inc, one, fe } = buildBoth(evs);
+  const { inc, one } = buildBoth(evs);
   t.ok('增量版 == 一次性版（JSON 逐字相等）', JSON.stringify(inc) === JSON.stringify(one), inc.length + ' vs ' + one.length);
-  t.ok('前端镜像 == 一次性版（正文逐条相等）', JSON.stringify(textsOf(fe)) === JSON.stringify(textsOf(one)));
   /* 8 个 done → 至少 8 条正文段 */
   t.ok('8 次轮末真的断出了 8 段以上正文', textsOf(inc).length >= 8, String(textsOf(inc).length));
   t.ok('正文首尾都在（不受压薄影响）',
@@ -144,8 +145,10 @@ console.log('\n四、源码层面钉住「这个洞别再开」');
     /if \(ev\.type === 'done' \|\| ev\.type === 'aborted' \|\| ev\.type === 'error'\)/.test(SRV));
   t.ok('服务端一次性版认轮末',
     /if \(e\.type === 'done' \|\| e\.type === 'aborted' \|\| e\.type === 'error'\) \{ flush\(\); continue; \}/.test(SRV));
-  t.ok('前端镜像认轮末',
-    /if \(e\.type === 'done' \|\| e\.type === 'aborted' \|\| e\.type === 'error'\) \{ flush\(\); continue; \}/.test(UI));
+  /* 【2026-11-09 判据改口径】原来这条查「前端镜像也认轮末」。
+   * 前端那份合成器已经整段删了，所以该守的变成**反面**：
+   * 别再长出第三份（那正是这一轮要根治的东西）。 */
+  t.ok('前端不再有第三份合成器（itemsFromEvents 已删）', FE_MIRROR_GONE);
   t.ok('轮末标记不会被 JSON 带出去（不可枚举）',
     /Object\.defineProperty\(it, '__segEnd', \{ value: true, enumerable: false/.test(SRV));
 }

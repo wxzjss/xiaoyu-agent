@@ -45,6 +45,11 @@
       --toolhub-bg2: #232935;
       --border: #262b36;
       --text: #e6e9ef;
+      /* 【2026-11-10 B1】补两个语义别名 + 圆角常量：老样式里散着写 var(--text) / 8px，
+         统一走这两个名字，改主题只改一处。 */
+      --fg: var(--text);
+      --muted: var(--dim);
+      --radius: 8px;
       --dim: #8b95a7;
       --accent: #4f8cff;
       --ok: #3fb950;
@@ -56,6 +61,31 @@
       --input-bg: rgba(10, 12, 17, .55);
     }
     * { box-sizing: border-box; }
+    /* 【2026-11-10 B7·键盘焦点兜底】
+     * 全局 :focus-visible：键盘导航（Tab / 方向键）走到哪都有清楚的一圈，
+     鼠标点击不触发（focus-visible 只对键盘出现）—— 主人不再「盲飞」。
+     这条是兜底：组件自己写了 focus 样式的照旧用组件的。 */
+    :focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px;
+    }
+    /* 思考块的 <details>/<summary>：浏览器给它们的是原生蓝色 focus ring，
+       流式重渲染时节点重建、焦点瞬间丢又回来，主人看到的就是
+       「蓝色光标一闪一闪」。鼠标点它不该出现任何圈；
+       键盘导航走到它时仍给一圈（用主题色，不用原生蓝）。 */
+    details:focus, summary:focus { outline: none; }
+    details:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px;
+    }
+    /* 【2026-11-10 B9·跑动期高危按钮禁用态】
+     * 一轮正在跑的时候，header 上那几颗会改变这一轮行为的按钮
+     * （管理员——开着就能动整机文件；办事模式——改这一轮谁来干活；
+     *   会话——清空/删除的入口都在那个面板里）
+     * 视觉禁用：变暗 + pointer-events:none，轮末恢复。
+     * 挂钩点在 syncSendBtn（所有 busy 状态变化后都会调它，一处管齐）。 */
+    header .busyLock {
+      opacity: .45; cursor: not-allowed;
+      pointer-events: none; filter: grayscale(.4);
+    }
     body {
       margin: 0; height: 100vh; display: flex; flex-direction: column;
       background: var(--bg); color: var(--text);
@@ -112,7 +142,7 @@
        * 浏览器默认开着「滚动锚定」：底下的内容一变高，它就自动挪 scrollTop 想保住你
        * 正在看的那块地方。聊天区底下永远在长新内容，于是主人往上翻着看旧消息时，
        * 每来一段新字，画面就被这股力拽一下 —— 看着就是「抽搐」。
-       * 这里关掉它，滚动位置只由下面那套 stickBottom 逻辑说了算。 */
+       * 这里关掉它，滚动位置只由 React（LogView 的贴底 effect）说了算。 */
       overflow-anchor: none;
     }
     /**
@@ -462,7 +492,7 @@
       content: "▸";
       display: inline-block;
       font-size: 11px;
-      color: var(--muted, #8a8a8a);
+      color: var(--muted);
       transition: transform .15s ease;
     }
     details.toolhub[open] > summary::before { transform: rotate(90deg); }
@@ -513,7 +543,7 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      color: var(--muted, #9a9a9a);
+      color: var(--muted);
     }
     details.wcard > summary::-webkit-details-marker { display: none; }
     details.wcard > summary:hover { color: var(--accent); }
@@ -527,7 +557,7 @@
       padding: 2px 12px 10px 12px;
       font-size: 12px;
       line-height: 1.6;
-      color: var(--muted, #9a9a9a);
+      color: var(--muted);
       white-space: pre-wrap;
       word-break: break-word;
       max-height: 320px;
@@ -554,7 +584,7 @@
       content: "▸";
       display: inline-block;
       font-size: 11px;
-      color: var(--muted, #8a8a8a);
+      color: var(--muted);
       transition: transform .15s ease;
       flex: none;
     }
@@ -703,9 +733,11 @@
     }
     details.think[open] > summary::before { transform: rotate(90deg); }
     details.think > summary:hover { color: var(--text); }
-    /* 【2026-11-07 主人】思考标题不再截成一行：能多长就显示多长。
-       原来 nowrap + ellipsis 会把几百字的思考压成「……」，正文展开也补不回这一眼。 */
-    details.think .thinkTitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* 【2026-11-10 A7 修·截断方式与灰字同款】
+       标题是 flex:1 那个可伸缩的，一行装不下时必然要截 —— 但 ellipsis 每次都要
+       重新算「省略号放哪」，文字变长就重排、就抖（和 .hubpeek 当年同一个病根）。
+       改成 clip：尾巴直接切掉，已渲染字形的宽度不受影响。 */
+    details.think .thinkTitle { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: clip; }
     /* 【2026-11-08 主人改口】字数要**收起时也看得见**。
        11-07 那版是「收起不占位、展开才显示」，为的是让标题一路顶到右边框。
        主人现在要的是「不用展开就知道想了多少字」—— 那点宽度让给字数更值。
@@ -1248,17 +1280,47 @@
     }
     #whoRail[hidden] { display: none; }
     /**
-     * 【2026-11-05 加·窗口不够宽时把头像栏收起来】
+     * 【2026-11-10 B6·窄窗口折叠态（原来 ≤1100px 直接 display:none 整列消失）】
      *
-     * 截图里看到它压在柜门和正文上。正文里的气泡 / 工具柜是 max-width 居中，
-     * 正常情况下左边有 170+ 的空白，正好放这一列；
-     * 但窗口一窄（或者缩放到 1000 以下），空白不够，它就压在内容上了。
+     * 主人报：窗口一窄「屋里的人」整列不见了 —— 入口没了。
+     * 原因：气泡最宽 900、柜门 892，左侧空白 = (宽-892)/2，
+     * 放下 left 14 + 名牌宽 72 ≈ 96 要窗口 ≥1100，再窄就压正文，当初图省事直接藏了。
      *
-     * 气泡最宽 900、柜门 892，左侧空白 = (宽 - 892) / 2。
-     * 要放下 left 14 + 宽 72 + 一点间隔 ≈ 96，所以窗口 < 1100 时就没地方了。
+     * 现在改成**折叠态**：只留一列 44px 宽的首字圆圈（不压正文也认得出是谁），
+     * 整列 hover 时展开回全名牌看清全名，点击开/关那个人说话的行为照旧 ——
+     * 「屋里的人」入口不再消失。
      */
     @media (max-width: 1100px) {
-      #whoRail { display: none; }
+      #whoRail {
+        max-width: 44px; left: 8px; padding: 5px;
+        align-items: center;
+        background: rgba(23, 26, 33, .88);
+        border: 1px solid var(--border); border-radius: 10px;
+      }
+      #whoRail .whoCap { display: none; }
+      /* 名字藏进 font-size:0，只露 ::first-letter 的首字当头像；
+         不用 flex 居中 —— flex 容器不生成 ::first-letter */
+      #whoRail .whoBtn {
+        font-size: 0;
+        width: 32px; height: 32px; max-width: none; padding: 0;
+        text-align: center; line-height: 30px;
+        border-radius: 50%;
+        overflow: hidden; text-overflow: clip;
+      }
+      #whoRail .whoBtn::first-letter { font-size: 13px; font-weight: 600; }
+      /* 整列 hover：展开回全名牌，看清全名也好点 */
+      #whoRail:hover {
+        max-width: 160px; background: rgba(23, 26, 33, .95);
+        align-items: flex-start;
+      }
+      #whoRail:hover .whoBtn {
+        font-size: 12px; width: auto; height: auto;
+        padding: 3px 10px; line-height: 1.6;
+        border-radius: 8px; white-space: nowrap;
+        max-width: 152px; text-overflow: ellipsis;
+      }
+      #whoRail:hover .whoBtn::first-letter { font-size: inherit; font-weight: inherit; }
+      #whoRail:hover .whoCap { display: block; }
     }
     /* 圆圈底色跟左侧会话方块（.sessRow）统一成同一档：
        平时透明，悬停/当前态 #1d2430 + var(--border)。
@@ -1457,6 +1519,20 @@
        工具在跑的时候柜门右边写「运行中」，用工具卡标题那个金色（#f0b954），
        比灰字亮一档，扫一眼就知道「现在有东西在动」。跑完自动退回灰字摘要。 */
     .hubpeek.live { color: #f0b954; opacity: 1; font-weight: 500; }
+    /* 【2026-11-09 换框架·灰字不抖（规格 4.5）】
+     *
+     * 老实现里这一小截灰字**每秒被整体重写一次**，而它带着
+     * `text-overflow: ellipsis` —— 每次重写浏览器都要重新算「从哪儿截、
+     * 省略号放哪」，于是一行字的宽度来回变，鼠标停上去看着就是「抖」。
+     *
+     * 现在两件事一起改：
+     *   ① 渲染层：文案不变就一个字节都不碰（React 按 key 复用节点 + memo）；
+     *   ② 样式层：**不画省略号**（clip），也就不存在「为了省略号重新测量」。
+     * 尾巴被切掉是必然的（一行装不下），但它不再影响已渲染字形的宽度。
+     */
+    .hubpeek, details.think .thinkMeta, details.toolhub > summary .hubname {
+      white-space: nowrap; overflow: hidden; text-overflow: clip;
+    }
 
     /* 【2026-11-05 加】「加载更早」按钮：贴在聊天区最上面，细一点别抢戏 */
     .loadEarlier {
@@ -1527,6 +1603,13 @@
       position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
       display: flex; flex-direction: column; align-items: center; gap: 8px;
       z-index: 9999; pointer-events: none; max-width: min(720px, 88vw);
+    }
+    /* 【2026-11-10 加】提示条落在 <dialog> 里时：top-layer 的层叠跟页面不是一套，
+       外面的元素 z-index 再大也压不过它。所以宿主跟着 dialog 走，位置改成右下角，
+       免得挡住对话框中间那颗按钮。 */
+    dialog #xyToasts {
+      position: fixed; left: auto; right: 18px; bottom: 18px; transform: none;
+      align-items: flex-end; z-index: 2147483000;
     }
     .xyToast {
       pointer-events: auto; cursor: pointer;
@@ -2832,7 +2915,7 @@
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(20, 24, 31, 0.86);
-  color: var(--muted, #98a2b3);
+  color: var(--muted);
   cursor: pointer;
   opacity: 0;
   transform: translateX(100%);
@@ -2892,7 +2975,7 @@
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(20, 24, 31, 0.86);
-  color: var(--muted, #98a2b3);
+  color: var(--muted);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s, color 0.12s, border-color 0.12s;
@@ -2913,7 +2996,7 @@
 .msg.assistant { position: relative; }
 
 /* 改过的那条，角色名后面点一个小标记 */
-.msg.edited .role::after { content: '· 改过'; color: var(--muted, #98a2b3); font-size: 11px; margin-left: 6px; }
+.msg.edited .role::after { content: '· 改过'; color: var(--muted); font-size: 11px; margin-left: 6px; }
 /* 正在编辑的那个气泡 */
 .bubble.editing { outline: 1px dashed var(--accent, #4d8dff); outline-offset: 2px; }
 .bubble textarea.editArea {
@@ -2935,7 +3018,7 @@
   max-height: 96px;
   overflow: auto;
   font-size: 12px;
-  color: var(--muted, #98a2b3);
+  color: var(--muted);
   background: rgba(0, 0, 0, 0.24);
   border-radius: 8px;
   padding: 8px 10px;
@@ -2943,7 +3026,7 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-#rewindDlg .rwFiles { font-size: 12px; color: var(--muted, #98a2b3); margin-bottom: 10px; }
+#rewindDlg .rwFiles { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
 #rewindDlg .rwFiles code { color: var(--fg, #e6eaf2); }
 #rewindDlg .rwRow { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 
@@ -3527,7 +3610,7 @@
       <div class="askBody">
         <div class="rwText" id="rwText"></div>
         <div class="rwFiles" id="rwFiles"></div>
-        <div style="font-size:12px;color:var(--muted,#98a2b3);line-height:1.7">
+        <div style="font-size:12px;color:var(--muted);line-height:1.7">
           这条之后的内容会从对话里撤掉，模型下一轮就看不到了。老消息不会真的删——<b>只是藏起来</b>，随时能撤销回退。
         </div>
       </div>
@@ -4014,55 +4097,10 @@
     </div>
   </dialog>
 
-  <style>
-    /**
-     * 【2026-11-01 修·大会话刷新黑屏卡一下】
-     *
-     * 检查鱼 628 轮 / 659KB、干活鱼 801 轮 / 995KB。服务端拉取只要 34ms，
-     * 慢的全在浏览器：一次要建几千个节点、每个都得算布局和绘制，主线程顶住，
-     * 画面就黑一下才出来。
-     *
-     * 解法用浏览器自带的「屏幕外先不算」，不是我自己写分页：
-     *   content-visibility: auto —— 不在视口里的 .msg 直接跳过布局和绘制，
-     *   浏览器只按 contain-intrinsic-size 估个高度占位；滚到那儿才真算。
-     *
-     * 为什么加 .long-list 这个门槛：短会话（几十轮）本来就不卡，
-     * 没必要让它们也吃这套估算高度，免得滚动位置有一点点误差。
-     * 只有超过 150 轮才开。
-     */
-    /* 【2026-11-03 修·滚动一跳一跳·第二版】
-     *  上一版把估算值分档，实测还是跳：滚到估算区时浏览器一口气补算，
-     *  总高从 8486 直接窜到 14016（+5530px），scrollTop 被夹住不动，
-     *  主人感觉就是「滚轮才动一点，画面跳出去一大截」。
-     *
-     *  根子是 content-visibility: auto 的「先估后算」这个机制本身：
-     *  只要估算值和真实值差得多，跳就躲不掉。而每条消息的真实高度本来就没法估准
-     *  （一条可以是四十字，也可以是两千像素的工具输出）。
-     *
-     *  所以改成：只给「天生特别长」的那几种块开这优化（工具柜、长思考），
-     *  普通对话气泡不开 —— 它们的算量本来就小，开了一点好处没有，只剩挑位置。
-     *  长会话仍然快，滚动也不再跳。 */
-    /* 【2026-11-03 修·我发出去的消息一发就看不见】
-     *  真凶是 content-visibility: auto —— 屏幕外那些块的高度只是「估」的，
-     *  新消息插进来时浏览器按估算值算位置，等真渲染出来高度又变一次，
-     *  气泡就被挪到视口外几千像素。实测抓到 uTop = -5861px。
-     *
-     *  所以这条优化全部撤掉：位置准 > 长会话快那一点。
-     *  长会话真要加速，以后用「只挂最近 N 轮、往上翻再补」来做，不再碰估算高度。 */
-    /*
-    #log.long-list .msg:has(.toolhub),
-    #log.long-list .msg:has(.toolFrag) {
-      content-visibility: auto;
-      contain-intrinsic-size: auto 900px;
-    }
-    #log.long-list .msg:has(.thinkPast) {
-      content-visibility: auto;
-      contain-intrinsic-size: auto 600px;
-    }
-    */
-    /* 下面这行是旧版留下的，留着说明当时为什么这么写，别当成有效样式：
-       #log.long-list .msg { content-visibility: auto; contain-intrinsic-size: auto 320px; } */
-  </style>
+  <!-- 【2026-11-10 B8】这里原来有个第二个 <style> 块，整段是注释尸体
+       （content-visibility 优化试了两版都撤了，剩下的全是历史说明），
+       已整段删除。历史结论留档：content-visibility: auto 的「先估后算」
+       会把新消息顶出视口几千像素，位置准 > 长会话快那一点，别再开。 -->
   <div id="log"></div>
 
   <!-- 身份徽标：换成非主人身份时才冒出来。
@@ -4151,6 +4189,10 @@
     </div>
   </div>
 
+  <!-- 【2026-11-09 换框架】对话区（#log）改由 React 渲染。
+       产物是预构建好、**跟着仓库一起发**的单文件（发布物不带 node_modules）。
+       放在模块脚本前面：经典脚本立刻执行，所以 chat.js 起来之前 store 就已经在了。 -->
+  <script src="/ui/log.bundle.js"></script>
   <script type="module" src="/ui/hub.js"></script>
   <script type="module" src="/ui/sessions.js"></script>
   <script type="module" src="/ui/chat.js"></script>
@@ -4241,333 +4283,44 @@ function toast(text) {
 }
 
 
-/* ------------------------------------------------------------------
-   滚动跟随
+/* ════════════════════════════════════════════════════════════════════
+   滚动（2026-11-10 A3：旧滚动机制整段删除，规格 4.4 明令）
 
-   以前是「每来一个新事件就 log.scrollTop = log.scrollHeight」——
-   你往上翻看历史的时候，她吐一个字就把你拽回底部，翻不了。
+   删掉的是一整族：stickBottom 状态位 / sessionStorage 持久化 / hardScrollBottom /
+   stickToBottom（60ms 节流 + 后台兜底）/ anchorToggle 锚定补偿 /
+   scroll·wheel·touchstart·touchmove 监听 / MutationObserver + ResizeObserver +
+   250ms 轮询的「双观察器」/ summary 点击的贴底复核。
+   它们存在的唯一理由是对冲「先删后建造成的高度骤降」—— 换 React 之后节点按
+   key 复用，高度只会因为真的多了内容而变，这套补丁失去了靶子，
+   自己反倒成了「切会话回顶部」和「贴底不跟」两大类竞态的源头。
 
-   现在跟聊天软件一个规矩：
-     - 贴着底（差 40px 以内）→ 跟随，新内容自动往下滚
-     - 往上翻超过 40px → 停止跟随，新内容在底下攒着，不拽你
-     - 自己滚回底部 → 恢复跟随
-     - 你自己发消息 → 强制跟随（你肯定想看回答）
-     - 切会话 / 清空 → 强制跟随（不然会停在顶部）
-
-   右下角那 13 处调用全换成 stickToBottom()，行为由这里统一决定。
------------------------------------------------------------------- */
-// 离底多近算「还贴着底」。
-// 以前是 40，太紧：手指滚轮轻轻一抖、或者内容刚好高一像素，就掉出跟随状态，
-// 之后消息再怎么来都不滚了（主人反馈过这个）。放到 80，正常抖动掉不出去。
-const SCROLL_STICK_PX = 80;
-/**
- * 【2026-11-05 修·刷新后「先到中间，再瞬间弹回底部」】
- *
- * 主人报：刷新后位置明明恢复到了中间，紧接着又被拽到底部。
- *
- * 因为这里写死 `= true`：页面一加载就认为「主人在贴底」，
- * 于是历史画完就 hardScrollBottom() 一下 —— 浏览器辛苦恢复的位置被一脚踢走。
- *
- * 现在从 sessionStorage 里读上次的状态：上次不贴底，这次也不贴底。
- * sessionStorage 而不是 localStorage：关掉程序重开应该回到干净的默认（贴底），
- * 只有「同一个窗口里刷新」才需要记住。
- */
-let stickBottom = (() => {
-  try {
-    const v = sessionStorage.getItem('xy.stickBottom');
-    if (v === '0') return false;
-  } catch (e) {}
-  return true;
-})();
-/* 【2026-11-05】状态变化时随手记一笔，刷新后照它恢复。 */
-function rememberStick() {
-  try { sessionStorage.setItem('xy.stickBottom', stickBottom ? '1' : '0'); } catch (e) {}
-}
+   现在的规矩（唯一写口在 src-ui/LogView.jsx，规格 4.4 的标准做法）：
+     · #log 的 scrollTop 只有两个写点：LogView 的贴底 effect、下面这个跳底按钮；
+     · 这里只剩两个幸存者：
+         noteNewContent —— 纯计数器（「底下压了几条」），不碰滚动位置。
+           LogView 在「不贴底且内容变长」时通过 window.noteNewContent 叫它；
+         跳底按钮 —— onclick 直接 scrollTop = scrollHeight，不判断、不动画。
+   ════════════════════════════════════════════════════════════════════ */
 let unseenNew = 0;
-let stickRaf = 0;
-let stickRo = null;
-/* 【2026-11-03】#log 是固定高度的滚动容器，ResizeObserver 盯它永远不回调（见下面那段注释）。
-   改成 MutationObserver + 250ms 轮询兜底，两路都只读两个数、只在跟随且没到底时才滚。 */
-let stickMo = null;
-let stickPoll = null;
 
 function toBottomEl() {
   return document.getElementById('toBottom');
 }
 
-/**
- * 把视口拉到最底。**只负责滚**，不判 stickBottom、不攒未读数。
- * 这行以前被误写成 noteNewContent()，导致「跟随中」也会走到 noteNewContent
- * 再调回 stickToBottom，绕圈子却一次都没真滚 —— 表现就是发新消息画面不动、
- * 打开会话停在最早的位置。
- */
-/**
- * 我们自己刚滚过一次底的凭证。
- *
- * 为什么需要它：scroll 事件分不清「主人自己往上滚」和「内容变高把视口顶下去了」。
- * 前者该停止跟随，后者不该。以前不分，结果流式吐字时经常被误判，
- * 好好的跟随状态自己就断了 —— 主人看到的就是「不滚了，得手动拉」。
- */
-let selfScrollAt = 0;
-
-/* 【2026-11-01】上一次看到的「内容总高度」。用来分辨「内容长高了」和「主人往上翻了」——
-   只看 gap 会把流式吐字误判成主人翻页，跟随状态自己就断了。 */
-let _lastDocH = 0;
-/* 【2026-11-03 修·跳最新被弹回 / 手动滚到底也弹回】
- *  上一次的 scrollTop。判「主人自己往上翻」只认一件事：scrollTop 真的变小了。
- *  内容变高时浏览器只会把 scrollTop 往下推（变大）或不动，绝不会变小 ——
- *  所以这条判据不会被流式吐字误伤。 */
-let _lastTop = 0;
-/* 【2026-11-03 修·切回一个正在跑的会话，画面停在半路、不跟到底】
- *  重画（renderTurns / paintSnapshot）是「先删再照清单画」，中间那一瞬内容比原来矮，
- *  浏览器会把 scrollTop 夹小并甩出 scroll 事件。那个事件可能在重画结束之后才到，
- *  那时 _lastTop 已经是新值、看起来就像「主人往上翻了」—— 跟随状态被误摘掉，
- *  后面新消息再也不把他带回底部。
- *  这里给一个明确的静默窗口：这期间来的 scroll 只同步记认，不碰 stickBottom。 */
-let __ignoreScrollUntil = 0;
-let __touchTop = 0;
-
-/* 【2026-11-04 主人报·展开卡片/思考链时，下面的消息先被推下去、再整体弹回去】
- *
- *  病根：<details> 一展开，内容变高 → 浏览器把下面全往下推 → 同时 MutationObserver
- *  看见 DOM 变了就叫 followNow()，而 followNow 只要 stickBottom 就 hardScrollBottom()
- *  一把贴到底 → 视觉上就是「先往下推、再弹回来」。
- *
- *  主人要的是：展开这一下别推动下面的消息，只把上面的内容往上推。
- *  做法 = 经典的「滚动锚定」：量出长高了多少，把这个量直接加进 scrollTop。
- *  这样视口里看到的东西一个像素都不动，多出来的内容向上撑。
- */
-let __anchorBusyUntil = 0;
-
-/** 给一个 details 执行「展开/收起时别动视口」的锚定 */
-function anchorToggle(el) {
-  if (!el || !log) return;
-  const inLog = log.contains(el);
-  if (!inLog) return;
-  const before = log.scrollHeight;
-  const topBefore = log.scrollTop;
-  /* 【2026-11-04 主人定的规矩：内容往下长，视角一像素都不动】
-   *  做法：把「锚定窗口」开成待续状态，等 rAF 量完高度再续上；
-   *  窗口里 followNow 和它排进队列的 doIt 都不许滚。
-   *  为什么不在这里 cancelAnimationFrame：followRaf 声明在第 42xx 行，
-   *  在这儿写名字会踩 TDZ，所以在 doIt 里再拦一道更稳。 */
-  __anchorBusyUntil = Date.now() + 600;
-  // 用 rAF 等浏览器把高度算完
-  requestAnimationFrame(() => {
-    try {
-      /* 【2026-11-04 主人定了：往下推动，但不动视角】
-       *  所以这里一个字都不滚 —— scrollTop 原地不动，就是「视角不动」。
-       *  内容自然往下长，下面的消息被往下推，符合主人要的效果。
-       *  要做的只有两件善后：把记录的值对齐，免得下一拍被误判成主人翻页。 */
-      const after = log.scrollHeight;
-      if (after === before) return;
-      /* 续窗口，别缩 —— 原来这里写成 300，比上面那个 600 还短，等于白设。 */
-      __anchorBusyUntil = Math.max(__anchorBusyUntil, Date.now() + 400);
-      _lastTop = log.scrollTop;
-      _lastDocH = after;
-      selfScrollAt = Date.now();
-    } catch (e) {}
-  });
-}
-
-function hardScrollBottom() {
-  if (!log) return;
-  log.scrollTop = log.scrollHeight;
-  try { _lastTop = log.scrollTop; } catch (e) {}
-  /* 【2026-11-03】顺手把「上次看到的内容高度」对齐。
-   *  ResizeObserver 那边用「比 _lastDocH 高才滚」来防抽搐；这里不跟着更新的话，
-   *  我们自己滚完以后 _lastDocH 还停在旧值，下一秒就是一次多余的跟随。 */
-  try { _lastDocH = log.scrollHeight; } catch (e) {}
-  // 打戳：紧跟着来的那个 scroll 事件是我们自己造成的，不算主人翻页
-  selfScrollAt = Date.now();
-}
-
-/** 节流：一帧内多次调用只滚一次，别每条事件都做一次布局。
- *
- *  【2026-11-03 修·抽搐的最后一个根子】
- *  上面这套原来只有 rAF 一条腿：浏览器在窗口不可见 / 最小化 / 后台标签页时
- *  根本不跑 requestAnimationFrame —— 于是 stickRaf 永远停在非零值，
- *  往后每一次调用都在 `if (stickRaf) return` 那行被挡回去，跟随彻底死掉。
- *  表现出来的就是：内容一直在长、画面不跟；等某个偶然的 rAF 跑了一次，
- *  或者用户自己动一下，才「啪」地跳到底 —— 主人看到的就是抽搐。
- *
- *  现在补一条 90ms 的看门狗：rAF 到点还没跑，就把它取消、自己接手滚一次。
- *  两路谁先到谁干活，干过的把另一路作废（done 闸）。 */
-let _stickAid = 0;
-/* 上一次真正滚到底的时间戳：stickToBottom 用它做 60ms 节流 */
-let _stickAt = 0;
-function stickToBottom() {
-  /**
-   * 【2026-11-05 加·跟随之前先校正状态位】
-   *
-   * 主人判断得很准：「弹到很久以前」和「展开时弹到底」是同一个病根。
-   *
-   * 都出在 stickBottom 这个状态位上：重画后的静默窗口会吞掉 scroll 事件，
-   * 它就一直停在错的值上 ——
-   *   · 错成 true  → 高度一变就滚到底（"展开时弹一下"）
-   *   · 错成 false → 重画把 scrollTop 夹小，没人拉回来（"弹到很久以前"）
-   *
-   * 这里在真正跟随之前，先按**实际位置**校一次。主动跳底走的是 jumpToBottom
-   * （它直接 hardScrollBottom，不经过这里），所以不会把用户的点击干掉。
-   */
-  /* 【2026-11-05 撤掉这里的校正】
-   *
-   * 主人报：「我没动滚轮，在最新消息位置，新消息出来时没有往上滚」。
-   *
-   * 上一版在这里按「实际离底 > 4px」把 stickBottom 校正成 false —— 逻辑错了：
-   * 新内容刚 append、还没滚下去，此刻离底当然是远的。于是每一次新消息
-   * 都被判成「用户已经离开了」，跟随彻底失效。
-   *
-   * 校正只能发生在**用户主动动作**上（滚动、点开某个 details），
-   * 不能发生在「内容变高」这一刻 —— 那是结果，不是原因。
-   */
-  if (!stickBottom) return;
-  /* 【2026-11-03 修·抽搐·最后一刀（真凶）】
-   *  原来是 if (stickRaf) return; —— 只要有一个 rAF 挂着就再也不往下走。
-   *  可 requestAnimationFrame 在「页面不可见」（document.hidden）时根本不执行：
-   *  窗口最小化、被别的窗口完全盖住、或者切到别的应用，都会让它永远不回调。
-   *  于是 stickRaf 卡在一个非零 handle 上，之后每一次跟随都被这一行直接 return 掉，
-   *  画面就彻底不跟了；等某个别的时机（resize / 重新可见）终于滚一次 ——
-   *  主人看到的就是「抽搐」。
-   *
-   *  现在：不靠 rAF 占坑。改用「时间戳节流 + setTimeout 兜底」：
-   *   · 距上次真正滚过去不足 60ms 就跳过（这就是原来 rAF 想省的重复布局）；
-   *   · 其余情况立刻排一个 setTimeout（页面不可见也照跑），到点就滚。
-   *  这样无论页面可不可见，跟随都不会死。 */
-  /* 【2026-11-03 补·后台页面的坑】
-   *  上面已经躲开了 rAF，可 setTimeout 在「页面不可见」时同样会被浏览器节流
-   *  （Chrome 对后台页最低 1 秒，hidden 久了甚至更狠）。所以：
-   *   · 页面可见 → 走 setTimeout(16) 合并同一帧的多次调用（省重复布局）；
-   *   · 页面不可见 → 立刻直接滚，一次都不等（主人看不见时也不该让它攒着）。 */
-  const now = Date.now();
-  if (now - _stickAt < 60) return;
-  const canSee = (typeof document !== 'undefined') && document.visibilityState === 'visible';
-  if (!canSee) {
-    _stickAt = now;
-    if (!log) return;
-    if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;
-    hardScrollBottom();
-    return;
-  }
-  try { if (_stickAid) clearTimeout(_stickAid); } catch (e) {}
-  _stickAid = setTimeout(() => {
-    _stickAid = 0;
-    _stickAt = Date.now();
-    /* 【2026-11-05】同上：这条延迟路径也不做位置校正（见 stickToBottom 里的说明） */
-    if (!stickBottom) return;
-    if (!log) return;
-    if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;
-    hardScrollBottom();
-  }, 16);
-}
-
-/** 刷新那个小箭头：脱离跟随 + 有新东西时才露头。 */
+/** 跳底按钮的可见性与未读数：只在计数变化的那一刻算一次，没有监听器。 */
 function paintToBottom() {
   const btn = toBottomEl();
   if (!btn) return;
-  const need = !stickBottom;
+  let need = false;
+  try { need = !!(log && log.scrollHeight - log.scrollTop - log.clientHeight > 120); } catch (e) {}
   btn.classList.toggle('show', need);
   if (need) btn.hidden = false;
   const badge = document.getElementById('toBottomBadge');
   if (badge) badge.textContent = unseenNew > 0 ? String(unseenNew > 99 ? '99+' : unseenNew) : '';
 }
 
-/**
- * 界面长高了（流式吐字、插工具块、图片加载完、用量行……）：跟着滚就行，**不数数**。
- *
- * 以前这里叫 noteNewContent()，只要 DOM 多出一块就 unseenNew += 1 ——
- * 结果流式输出每刷新一次、思考块每吐几个字、连「正在发送」那行灰字都算一条，
- * 数字一路飙到 99+，主人根本不知道那个数在数什么。
- *
- * 现在数数只认两种真事情（见 bumpUnseen）：
- *   一、开始调一个工具     → +1
- *   二、说完一段话（气泡收尾）→ +1
- * 剩下的全走这里，只管滚。
- */
-/**
- * 【2026-11-05 加·用户展开/收起时，重新判断「到底贴不贴底」】
- *
- * 主人报：「在新消息位置展开某个东西时会弹一下；如果展开后不在最新位置，会弹到最新位置」。
- *
- * 链路：展开 → 高度变了 → ResizeObserver 调 noteNewContent → 看 stickBottom 决定滚不滚。
- * 而 stickBottom 是**状态位**，重画后的静默窗口（__ignoreScrollUntil）会漏掉一两次 scroll，
- * 它就一直停在 true。于是主人明明往上翻了，一次展开又把他拽回底部。
- *
- * 这里在 log 上挂一个捕获阶段的监听：任何 details 被点开/收起，
- * 都按**当下真实位置**重算一次 stickBottom。不看状态位，看事实。
- */
-try {
-  document.addEventListener('click', (ev) => {
-    try {
-      const t = ev.target && ev.target.closest ? ev.target.closest('summary') : null;
-      if (!t) return;
-      const d = t.parentElement;
-      if (!d || d.tagName !== 'DETAILS') return;
-      /* 等浏览器把 open 状态翻过来之后再判 */
-      setTimeout(() => {
-        try {
-          if (!_reallyAtBottom()) {
-            stickBottom = false;
-            try { rememberStick(); } catch (e) {}
-          }
-        } catch (e) {}
-      }, 0);
-    } catch (e) {}
-  }, true);
-} catch (e) {}
-
+/** 【幸存者一】纯计数器：底下又压了一件新东西。不碰 log.scrollTop。 */
 function noteNewContent() {
-  /* 【2026-11-05】同样改用实际位置判断 —— 状态位在静默窗口里会滞后。 */
-  if (_reallyAtBottom()) { stickToBottom(); return; }
-  /* 【2026-11-04 主人报·滚轮翻到以前的消息位置时，我发新消息后【回到最新】上面没有数字】
-   *
-   *  原来这里只在"跟随中"顺手滚一下，不是跟随就什么都不做 ——
-   *  数数全靠 flushSpeech 那两处（说完一段话/开始调工具），
-   *  可主人翻上去之后我先吐出来的头几个字，那两处还没被打到，数字一直是 0，
-   *  他看着就像"有新东西但按钮不提醒我"。
-   *
-   *  这里改成：**只要主人不是在底部，屏幕上又多了一块新内容，就把这记为一次"底下多了一件事"**。
-   *  用和 bumpUnseen 一样的节流（同一段话只算一次，靠 speechMark 那张记号表），
-   *  所以不会因为流式吐字被数成几十次。
-   */
-  try { _bumpOncePerSpeech(); } catch (e) {}
-}
-
-/* 同一段话只 +1：拿 flushSpeech 那套 speechKey 记号去重。
- * 不这么写，流式吐一个字就+1，数字会飙到几十。 */
-/**
- * 【2026-11-05 加·真的在底部吗】
- *
- * 主人报：「她发新消息时【回到最新】上面没有数字」。
- *
- * 判据原来用 stickBottom 这个**状态位**。可重画之后有个 800ms 的静默窗口
- * （__ignoreScrollUntil），期间来的 scroll 只同步记认、不改 stickBottom ——
- * 主人往上滚的那一下正好落在这个窗口里，就被忽略了，程序还以为他贴着底，
- * 于是「不数数」，按钮上一直空着。
- *
- * 这里直接量实际位置：离底 4px 以内才算「在底部」。
- * 状态位可能滞后，但 scrollTop 是当下的事实。
- */
-function _reallyAtBottom() {
-  try {
-    if (!log) return true;
-    return (log.scrollHeight - log.scrollTop - log.clientHeight) <= 4;
-  } catch (e) {
-    return true;
-  }
-}
-
-function _bumpOncePerSpeech() {
-  if (_reallyAtBottom()) return;
-  const st = speechMark && speechMark();
-  if (!st) { unseenNew += 1; paintToBottom(); return; }
-  if (st.session !== sessionId) { st.session = sessionId; st.counted.clear(); }
-  const b = (typeof bubble !== 'undefined') ? bubble : null;
-  const t = (typeof think !== 'undefined') ? think : null;
-  const key = 'n|' + speechKey(b, t);
-  if (key === 'n|none') return;
-  if (st.counted.has(key)) return;
-  st.counted.add(key);
   unseenNew += 1;
   paintToBottom();
 }
@@ -4642,323 +4395,33 @@ function finishSpeech() {
   flushSpeech();
 }
 
-/**
- * 真·攒计数：只有「调工具」「说完一段话」这两个语义事件能涨数字。
- *
- * 跟随中就顺手滚下去；主人翻着历史才真的累加，让他知道底下还压着几件事。
- */
+/** 工具开始调那一类「真事情」+1（口径沿用旧 bumpUnseen，行为同样纯计数） */
 function bumpUnseen() {
-  if (stickBottom) {
-    stickToBottom();
-    return;
-  }
   unseenNew += 1;
   paintToBottom();
 }
 
-/** 回到最新（点箭头、或自己滚到底都会走到这儿）。 */
+/** 【幸存者二】回到最新：直接跳底，不判断、不动画。 */
 function jumpToBottom() {
-  stickBottom = true;
   unseenNew = 0;
+  try { if (log) log.scrollTop = log.scrollHeight; } catch (e) {}
   paintToBottom();
-  hardScrollBottom();
-  /* 【2026-11-03 修·每发一条新消息画面抽搐一下】
-   *
-   *  这里原来还补了两拍贴底（下一帧一次、120ms 后一次）。它本意是「主人点了
-   *  右下角箭头，怕内容还没排完显得没反应」，可这个函数在**每次发消息**时也走
-   *  （发消息要先把画面拉到最新）。
-   *
-   *  于是同一次落底被做了三遍：这里两拍 + ResizeObserver 那边内容一长高又是一拍。
-   *  三次 hardScrollBottom 之间内容高度还在变（工具卡被收进柜子、字体换行、
-   *  用量行冒出来），画面就是往上抬一下、再被拽下来 —— 主人看到的就是「抽搐」。
-   *
-   *  现在只滚这一次。真的还没排完也不要紧：内容一长高 ResizeObserver 会自己
-   *  跟上（stickBottom 是 true，走的就是跟随那条路），不需要这里硬补。 */
 }
 
-/**
- * 【2026-11-03 修·切回来画面停在半路、离底两三百像素不跟了】
- *
- *  实测：切回一个正在跑的会话，按钮/提示都对，`stickBottom` 也是 true，
- *  可视口离底 299px 就再也不动了 —— 重画（先删再画）让高度先缩短再长回来，
- *  而 ResizeObserver 只在高度「变」的那一下贴底；等字体/换行把最后那点高度撑开时，
- *  高度没再变，就没人管了。
- *
- *  这里给一个「只要还在跟随、就贴到底」的小函数：重画收尾补一拍、跟播每拍都调一次。
- *  不在跟随时它什么都不做 —— 主人在往上翻，绝不能把他拽回来。
- */
-function stickIfFollowing() {
-  try { if (stickBottom && log) hardScrollBottom(); } catch (e) {}
-}
-
-/** 切会话、清空、重新渲染历史之后调它：无条件回到底部。 */
+/** 切会话 / 回退重画之后调它：无条件回到底部（名字沿用，行为已收简）。 */
 function resetScrollStick() {
-  stickBottom = true;
-  unseenNew = 0;
-  /* 【2026-11-03 修·跳最新被弹回】
-   *  这两个是「上一次看到的」记认，跨会话不重置的话，换会话后第一个 scroll 事件
-   *  一定被判成「内容长高了」而整段跳过，跟随状态就粘死在 true 上：
-   *  主人怎么往上翻都不算脱离跟随，接着任何内容变高都把他拽回底部。 */
-  _lastDocH = 0;
-  _lastTop = 0;
-  // 换了一个会话 / 重画了一遍：把「哪段数过了」的记号一起清掉，
-  // 不然上个会话的记号会在这边挡着，新说的话数不上。
-  try {
-    window.__imCount = { session: null, counted: new Set(), next: 0 };
-  } catch {}
-  /**
-   * 【2026-11-01 修·大会话刷新黑屏卡一下】
-   *
-   * 主人报：「刷新时会话记录过长会卡顿然后黑屏一下，比如【检查鱼】会话」。
-   *
-   * 量过数据：检查鱼 628 轮 / 659KB，干活鱼 801 轮 / 995KB。
-   * 服务端拉取只要 34ms —— 慢的全在浏览器这边。
-   *
-   * 真凶就是下面原来这串：
-   *   hardScrollBottom() 一次，rAF 里再一次、再套一次 rAF 又一次，再加 60ms/220ms 两个 setTimeout
-   * 每次 hardScrollBottom 都读 log.scrollHeight，那是【强制同步重排】。
-   * 659KB 的聊天区被强迫连算 5 次布局 —— 主线程卡住，画面就黑一下，然后才出来。
-   *
-   * 而这一串补滚本来就是「一次不够稳」的土办法。现在换成：
-   * scrollTo 交给浏览器自己合成（behavior:auto 不吃主线程），只调一次；
-   * 再用一次 rAF 兜字体载入后的高度变化。总共 2 次读取，比原来 5 次少一半多。
-   */
-  paintToBottom();
-  /* 历史整屏换掉那一下，高度是从大变小的：浏览器会把 scrollTop 夹小并甩 scroll 事件。
-     那一下绝不能被当成「主人往上翻」—— 开个静默窗口，贴底期间只同步记认。 */
-  __ignoreScrollUntil = Date.now() + 260;
-  const _scrollOnce = () => {
-    try {
-      if (!stickBottom || !log) return;
-      // scrollTo 走合成线程，不像 scrollTop 那样每次都逼一个同步布局
-      log.scrollTo({ top: log.scrollHeight, behavior: "auto" });
-      _lastDocH = log.scrollHeight;
-      _lastTop = log.scrollTop;
-    } catch { hardScrollBottom(); }
-  };
-  _scrollOnce();
-  requestAnimationFrame(_scrollOnce);
+  jumpToBottom();
 }
 
-(function wireScroll() {
-  if (log) {
-    // passive：滚动事件里不 preventDefault，别拖慢滚动
-    log.addEventListener('scroll', () => {
-      const docH = log.scrollHeight;
-      const gap = docH - log.scrollTop - log.clientHeight;
-      /* 【2026-11-03 修·跳最新被弹回 / 手动滚到底也弹回】
-       *
-       *  原来这里靠「内容高度变了就跳过」来避免把流式吐字误判成主人翻页。
-       *  可它连 stickBottom 的更新一起跳过了，于是：换会话 / 重画 / 内容一变高，
-       *  第一个 scroll 事件必然走这一条 return —— 跟随状态就停在原来的 true 上。
-       *  后果正是主人报的两件事：①往上翻历史，箭头永远不出现（判定没脱离）；
-       *  ②任何内容变高都走 ResizeObserver 把他拽回底部（看着像「跳到底又被弹回来」）。
-       *
-       *  现在只认一个铁证：scrollTop 真的变小了。内容变高只会让它变大或不动。 */
-      const _topNow = log.scrollTop;
-      /* 【2026-11-03 修·重画期间不许判「主人往上翻」】
-       *  paintSnapshot 是「先删整块、再照清单重画」：中间那一瞬内容比原来矮，
-       *  浏览器会自动把 scrollTop 夹小 —— 光看 scrollTop 变小就会当成主人在往上翻。
-       *  这样「点箭头跳到底」之后新消息一来，跟随立刻断，看着像被弹回原处。
-       *  重画前后由 paintSnapshot 打 __repainting，这里是判据。 */
-      /* 重画刚结束的那一小段：高度还在重排、scrollTop 可能被浏览器临时夹小，
-         此时来的 scroll 事件一律不算主人翻页（见 __ignoreScrollUntil 的说明）。 */
-      if (Date.now() < __ignoreScrollUntil) {
-        _lastDocH = docH;
-        _lastTop = _topNow;
-        return;
-      }
-      let _repainting = false;
-      try { _repainting = Boolean(window.__repainting); } catch (e) {}
-      const _shrank = docH < _lastDocH - 4;
-      const _wentUp = !_repainting && !_shrank && _topNow < _lastTop - 4;
-      _lastDocH = docH;
-      _lastTop = _topNow;
-      /* 【2026-11-03 修·抽搐·内容变矮那一下】
-       *  工具卡被收进柜子、思考链收起来、重画换掉一段 —— 这些都会让内容变矮。
-       *  浏览器为了「别让看到的位置乱跳」会把 scrollTop 往下夹，夹完就停在半路：
-       *  还在跟随（stickBottom 是 true），却离底好几百像素，等下一个事件来才被一把
-       *  拽下去 —— 主人看到的就是画面往回抽一下、再弹回底。
-       *
-       *  这里补一句：变矮了、而且还在跟随，就立刻重新贴底。成本只有一次赋值。 */
-      /* 【2026-11-03 修·【回到最新】数字永远不涨 / 翻上去还被拽回底】
-       *  上一版写成「变矮 + 还在跟随 → 立刻贴底」，没看这一下主人是不是正在往上翻。
-       *  结果：主人往上翻、同时有个工具卡被收进柜子（高度变矮），这句就把他直接
-       *  拽回底部，stickBottom 也一直是 true —— 于是 bumpUnseen 里
-       *  "if (stickBottom) return" 永远命中，数字一个都涨不起来。
-       *  改成：先判主人意图。真的往上翻了就摘跟随（数字才开始涨）；只在没往上翻、
-       *  单纯是我们自己把内容弄矮了的时候，才补一次贴底。 */
-      if (_wentUp) {
-        if (stickBottom) { stickBottom = false; paintToBottom(); }
-        return;
-      }
-      if (_shrank && stickBottom) {
-        hardScrollBottom();
-        _lastTop = log.scrollTop;
-        return;
-      }
-      /**
-       * 这一下如果是我们自己滚出来的（跟随、内容变高），就别去改 stickBottom。
-       *
-       * 不这么写的话，流式吐字时内容一变高，浏览器会先甩一个 scroll 事件，
-       * 那会儿 scrollTop 还是老值、gap 突然很大，就被判成「主人往上翻了」，
-       * 跟随状态自己就断了 —— 主人看到的就是「我什么都没做，它不滚了」。
-       *
-       * 120ms 够覆盖「设完 scrollTop 到浏览器回调」这段延迟，
-       * 又不至于把主人真·往上滚误认成自己人。
-       */
-      const mine = Date.now() - selfScrollAt < 120;
-      if (mine) return;
-
-      /*
-       * 【2026-11-01 主人报：我没碰滚轮，自己就不滚了】
-       *
-       * 原来只凭 gap <= 80 就立刻改写跟随状态。可流式吐字的内容一秒钟长好几行，
-       * 网页是先甩 scroll 事件、再把新内容排上去的 —— 那一瞬间 scrollTop 还是老值，
-       * gap 忽然变成几百，就被判成「主人往上翻了」，跟随自己就断了。
-       *
-       * 所以这里必须把「内容在长高」和「主人在翻页」分开判：
-       *
-       * 【2026-11-03 修·切回一个正在跑的会话，画面停在半路、箭头一直亮着】
-       *  那一版把「内容长高就跳过」整条删掉了，于是反过来出新毛病：
-       *  切回来时历史很长、贴底那一刻内容还没排完（字体/图片），等排完 gap 变成一千多，
-       *  紧接着来的 scroll 事件就走下面那句 gap<=80 判定 —— 跟随当场被摘掉，
-       *  画面永远停在半路，箭头一直亮。
-       *
-       *  现在：内容长高（docH 变大）**不是**主人翻页 —— 该跟随就补一次贴底再走；
-       *  只有「高度没长高、scrollTop 还真的变小了」才算主人自己往上翻（_wentUp 上面已处理）。
-       */
-      const grew = docH > _lastDocH + 4;
-      if (grew) {
-        if (stickBottom) hardScrollBottom();
-        return;
-      }
-
-      const wasStick = stickBottom;
-      stickBottom = gap <= SCROLL_STICK_PX;
-      /* 【2026-11-05】记一笔：刷新后照这个恢复，别又无条件贴底。 */
-      rememberStick();
-      if (stickBottom && !wasStick) {
-        unseenNew = 0;
-        paintToBottom();
-      } else if (!stickBottom && wasStick) {
-        paintToBottom();
-      }
-    }, { passive: true });
-  }
-
-  /* 【2026-11-03 修·跳最新被弹回】
-   *  滚轮往上、手指往下滑，是主人「我要看上面」最明确的意图。
-   *  这类事件比 scroll 事件早到，先在这儿把跟随状态摘掉，
-   *  流式那边就算紧接着要贴底也不会再拽他。 */
-  if (log) {
-    log.addEventListener('wheel', (ev) => {
-      try {
-        if (ev.deltaY < 0) {
-          if (stickBottom) { stickBottom = false; paintToBottom(); }
-        }
-      } catch (e) {}
-    }, { passive: true });
-    log.addEventListener('touchstart', () => {
-      try { __touchTop = log.scrollTop; } catch (e) {}
-    }, { passive: true });
-    log.addEventListener('touchmove', () => {
-      try {
-        if (log.scrollTop < __touchTop - 6 && stickBottom) { stickBottom = false; paintToBottom(); }
-        __touchTop = log.scrollTop;
-      } catch (e) {}
-    }, { passive: true });
-  }
-
+(function wireToBottom() {
   const btn = toBottomEl();
-  if (btn) {
-    btn.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      jumpToBottom();
-    });
-  }
-
-  /* 内容变高（流式输出、插工具块、图片加载完）时也得决定要不要跟。
-   * 【2026-11-03 修·抽搐】原来这里无脑硬滚：ResizeObserver 每报一次高度变化就
-   * hardScrollBottom()，而滚动本身也可能让布局再变一下 → 再报一次 → 再滚。
-   * 现在只在「真的长高了」时才滚，而且已经在底部就不动（少一次无谓的写入）。 */
-  /* 【2026-11-03 修·抽搐·真凶】
-   *  原来这里是 ResizeObserver.observe(log)。可 #log 是「flex:1 固定高度、overflow-y:auto」
-   *  的滚动容器 —— 它的盒子尺寸永远是那 631px，内容长到一万三它也不变一像素。
-   *  所以那个 ResizeObserver 从来没回调过：流式吐字时高度一路涨，没人跟，
-   *  等到下一个事件（noteNewContent / 收尾）才一把拽到底 —— 主人看到的就是「抽搐」。
-   *
-   *  改成盯「内容真的往后长了」这件事：
-   *    ① MutationObserver —— 子节点一有增删就检查该不该贴底（成本极低，只读两个数）
-   *    ② 一个 250ms 的轻量轮询兜底 —— 文本节点在已有气泡里追加（子节点没增删）也能接住
-   *  两路都只在「还在跟随 且 离底 > 1px」时才滚，所以不会自己滚自己。 */
-  if (log && typeof MutationObserver === 'function') {
-    /* 【2026-11-03 修·抽搐·最后一刀】字一层一层往里加，characterData 每条都回调，
-     * 一帧里可能来七八次 —— 每次都 hardScrollBottom 就是七八次写 scrollTop，
-     * 位置反复微调，屏幕看着就是在抽。现在压到「一帧最多滚一次」：
-     * 回调只排一个 rAF，帧里真滚一下；帧内再来多少次都只是置同一个标记。 */
-    let followRaf = 0;
-    /* 看门狗：rAF 在窗口不可见时可能一直不执行，靠它接手 */
-    let followGuard = 0;
-    /* 【2026-11-03 修·长思考时一直抽搐 / 该滚却不滚】
-     *  上一版用 requestAnimationFrame 压「一帧最多滚一次」，但 rAF 在窗口不可见、
-     *  被最小化、切到后台标签时必须等窗口可见才执行 —— 一旦它没执行，
-     *  followRaf 就永远卡着非 0，后面每一次 followNow 都被 "if (followRaf) return"
-     *  挡回去，画面于是死死停在半路（实测 gap 4416px、stickBottom 还是 true）。
-     *  等某个事件把 rAF 叫醒，才「啪」地一次跳到底 —— 这就是主人在长思考时
-     *  看到的一直抽搐。
-     *  现在：rAF 照用（正常时仍然一帧一次），但配一个 90ms 的看门狗 ——
-     *  到点还没跑就自己接手滚，绝不把跟随状态卡死。 */
-    const followNow = () => {
-      if (!stickBottom || !log) return;
-      /* 【2026-11-04】刚展开/收起了一块 details，锚定还没落定 —— 这时别贴底，
-       *  否则就是「先推下去、再弹回来」。等 anchorToggle 那一下 rAF 做完再说。 */
-      try { if (Date.now() < __anchorBusyUntil) return; } catch (e) {}
-      if (followRaf) return;
-      const gapNow = log.scrollHeight - log.scrollTop - log.clientHeight;
-      if (gapNow <= 1) return;
-      let done = false;
-      const doIt = () => {
-        if (done) return;
-        done = true;
-        try { if (followGuard) { clearTimeout(followGuard); followGuard = 0; } } catch (e) {}
-        followRaf = 0;
-        try {
-          if (!stickBottom || !log) return;
-          /* 【2026-11-04 关键】排进队列这一拍到现在，可能正好是一次 details 展开。
-           *  锚定窗口里就别滚 —— 主人要的是「视角一像素都不动」。 */
-          if (Date.now() < __anchorBusyUntil) return;
-          if (log.scrollHeight - log.scrollTop - log.clientHeight <= 1) return;
-          hardScrollBottom();
-        } catch (e) {}
-      };
-      followRaf = requestAnimationFrame(doIt);
-      try { followGuard = setTimeout(doIt, 90); } catch (e) { followGuard = 0; }
-    };
-    try {
-      /* 【2026-11-04 主人报·展开卡片/思考链时下面的消息往下推再弹回去】
-     *  在这里统一接管：任何 details 的 toggle 都先锚定视口，别让 followNow 抢着贴底。
-     *  用捕获阶段挂在 log 上，新建的元素不用逐个绑。 */
-    try {
-      if (!log.__anchorBound) {
-        log.__anchorBound = true;
-        log.addEventListener('toggle', (ev) => {
-          const el = ev.target;
-          if (!el || el.tagName !== 'DETAILS') return;
-          anchorToggle(el);
-        }, true);
-      }
-    } catch (e) {}
-
-    stickMo = new MutationObserver(followNow);
-      stickMo.observe(log, { childList: true, subtree: true, characterData: true });
-    } catch {}
-    try {
-      if (stickPoll) clearInterval(stickPoll);
-      stickPoll = setInterval(followNow, 250);
-    } catch {}
-  }
+  if (!btn) return;
+  btn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    jumpToBottom();
+  });
 })();
+
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const meta = document.getElementById('meta');
@@ -5448,536 +4911,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && pick.open) closePicker();
 });
 
-// ---- 坏字修复：老数据里可能带着问号方块，显示前必须收拾干净 ------------------
-/**
- * 老会话 / 老设置是坏着存下来的：中文被写成了坏字符（U+FFFD），界面上就是个问号方块。
- *
- * 两条路分开走，别混：
- *   1. 孤立的单个方块 —— 一般是标点，按位置补回来（句末「。」，中间「，」）
- *   2. 连着两个以上 —— 整段文字当年就毁了，猜不回来。硬猜会把原文改错，
- *      所以只把它换成看得懂的「□」，一眼就知道「这里原本有字，坏了」。
- *
- * @param {string} text
- * @returns {string}
- */
-/**
- * 把 markdown 记号剥掉，只留干净的纯文本。
- *
- * 为什么要这一步：气泡里是纯文本（textContent），不认 markdown。
- * 模型一旦打出两个星号括字、井号标题、反引号，屏幕上就原样露出这些符号，
- * 看着像乱码。与其祈祷它每句都记得不打，不如在显示前统一清一遍 —— 稳。
- *
- * 只剥「看起来像 markdown」的，正常文字一个不动：
- *   两个星号括住的一段     -> 只留里面的字
- *   行首一到六个井号 + 空格 -> 去掉井号，留文字
- *   行首的减号/星号 + 空格（列表） -> 换成「· 」
- *   反引号（含三个的那种代码块标记） -> 去掉符号，留内容
- *   下划线包住 / 波浪线包住的字 -> 只留里面的字
- * @param {string} text
- * @returns {string}
- */
-/**
- * 往流式气泡里追加一段文字 —— 【整段重洗】，不逐片洗。
- *
- * 【2026-10-31 主人报：一句话还没说完就中途换行】
- * 原来这里是 bubble.textContent += fixMojibake(ev.text)，
- * 每个网络分片单独过一遍 stripMarkdownMarks。分片的切点是随机的：
- *   · 切在 ** 中间 → 拼出「加粗 和 斜体·」这种多出来的字符
- *   · 切在行首 # 之前 → ^ 认不出行首，井号留在屏幕上
- *   · 切在 ``` 中间 → 代码块标记漏出来
- * 所以改成：原文只往 _rawText 里攒，每次都拿「全文」重洗、整体覆盖。
- * 一段话通常几十片，重洗几十次的代价可以忽略。
- */
-/**
- * 【2026-11-01 主人】「说一段空一行再说一段，空行之前的都算一条消息放在一个气泡里」
- *
- * 她一个回复里常常是好几段，中间用空行隔开 —— 那就是她自己划的「这是另一句」。
- * 所以按空行切成几个气泡：一段一个，名字只在最前面报一次（兄弟节点都在同一个 .msg 里）。
- *
- * 流式的时候会反复调用：文本只增不减，所以气泡也是「只加不减」；
- * 万一文本变短（重新生成/回退），多出来的兄弟气泡在这里收掉。
- *
- * 返回**最后一个**气泡 —— 光标和后续增量都该落在它身上。
- */
-/**
- * 【2026-11-02 · 快照整组重画】整个直播显示的唯一的画法。
- *
- * 为什么要有这个函数（这是这次重做的核心）：
- *  原来屏幕上这一轮的话是「边收边拼」出来的，拼的人有五六拨：
- *  renderTurns（历史）、paintLiveEvents（接上直播补画）、followLive（每 1.2 秒跟播）、
- *  流式 SSE（当场发的那一轮）、replayInFlight（切回补）。
- *  每一拨都自己记一套账（_claimDone / _claimLen / seen / drawnBySeq / livePickSeq /
- *  skipChars / drawnParts），谁记错一次、谁跟谁对不齐，屏幕上就是重复、丢字、串会话。
- *
- *  现在改成跟 dsh 一样的体质：服务端给出「这一轮现在该显示成什么样」的完整清单（items），
- *  这里照着清单把「本轮那一组」整块删掉、从头画一遍。
- *  画一次、清一次 —— 画一百次结果都一样（幂等），所以重复和丢字在结构上没有地方能发生。
- *
- * 只动「自己画的那一组」：
- *   ① 所有带 data-live-turn 的助手容器（我们直播画出来的）
- *   ② 历史里那个「内容就是本轮开头」的半截容器（它的字本来就包在本轮清单里）
- *  历史里别的助手容器一个字都不碰。
- *
- * @param {string} sid 会话 id（画的时候必须还是它，否则一个字节都不画）
- * @param {object} live /api/chat/live 的响应（要带 items）
- * @returns {object|null} 最后一个正文气泡（外层要接着用就拿着）
- */
-/**
- * 【2026-11-02 · 事件流压成「该显示什么」的清单】
- *
- * 跟服务端 buildLiveItems（src/server.mjs）是同一套规则的同一份实现：
- *  · 相邻 text 合成一条正文（这里是内存里合，不涉及网络）
- *  · reasoning 合成一块「思考」
- *  · tool_start / tool_end 配对成一张工具卡
- *  · whale / agent 合成「别人说的话」
- *  · notice 单独一行系统提示（不进正文）
- *
- * 为什么要两份：轮询那趟直接用服务端算好的 items（省一次前端拼装）；
- * 当场发的那一轮（SSE）拿不到 items，就自己拼 —— 但画的时候是同一个函数，
- * 所以「当场画」和「切回来画」出来必然一样。规则改动要两边一起改（_t_live_cursor 会盯着）。
- */
-function itemsFromEvents(events) {
-  const items = [];
-  let cur = null;
-  const flush = () => { if (cur && cur.t) items.push(cur); cur = null; };
-  const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
-  for (const e of (Array.isArray(events) ? events : [])) {
-    if (!e || !e.type) continue;
-    /* 【2026-11-09 主人报·多段消息堆一块】
-     * 后端排队轮复用同一份 live 续写（openLiveForQueuedTurn），`done` 就是两轮的分界。
-     * 这里原来不认 done —— 下一轮的正文接着上一轮最后那段拼，屏幕上好几轮的话
-     * 堆进一个气泡。服务端两份规则（appendLiveItem / buildLiveItems）同步改了。 */
-    if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') { flush(); continue; }
-    if (e.type === 'text') {
-      if (e.notice) { flush(); items.push({ k: 'note', t: String(e.text || '') }); continue; }
-      if (!cur) cur = { k: 'text', t: '' };
-      cur.t += String(e.text || '');
-    } else if (e.type === 'reasoning') {
-      flush();
-      const last = items[items.length - 1];
-      if (last && last.k === 'think') last.t += String(e.text || '');
-      else items.push({ k: 'think', t: String(e.text || '') });
-    } else if (e.type === 'tool_start') {
-      flush();
-      items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '' });
-    } else if (e.type === 'tool_end') {
-      flush();
-      const id = String(e.id || '');
-      const it = lastOf('tool');
-      if (it && it.id === id) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
-      else items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') });
-    } else if (e.type === 'whale' || e.type === 'agent') {
-      flush();
-      items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
-    } else if (e.type === 'whale_stream_start') {
-      flush();
-      items.push({ k: 'say', who: String(e.who || ''), t: '' });
-    } else if (e.type === 'whale_delta') {
-      flush();
-      const it = lastOf('say');
-      if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
-      else items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
-    } else if (e.type === 'whale_stream_finish') {
-      const it = lastOf('say');
-      const t = String(e.text || '');
-      if (it && !it.t && t) it.t = t;
-    } else if (e.type === 'worker') {
-      /* 【2026-11-03 主人：办事模式下看不见干活的过程】
-       * 服务端把 worker 的每一步都推成 worker 事件；这里按门牌号并成一张卡。
-       * 和服务端 buildLiveItems 同一套规则（改一边必须改另一边，_t_live_cursor 盯着）。 */
-      flush();
-      const wid = String(e.wid || '0');
-      let wit = null;
-      for (let i = items.length - 1; i >= 0; i--) if (items[i].k === 'worker' && items[i].id === wid) { wit = items[i]; break; }
-      if (!wit) { wit = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '' }; items.push(wit); }
-      if (e.name) wit.name = String(e.name);
-      if (e.status) wit.status = String(e.status);
-      if (e.note) wit.note = String(e.note);
-      const __stepText = String(e.text || '').trim();
-      if (__stepText && (e.kind === 'step' || e.kind === 'start' || e.kind === 'mail')) {
-        wit.steps.push({ kind: String(e.kind || 'step'), t: __stepText });
-        if (wit.steps.length > 40) wit.steps.splice(0, wit.steps.length - 40);
-      }
-    }
-  }
-  flush();
-  return items;
-}
-
-/** 【2026-11-02】快照指纹：内容变没变，一句话说清楚。变了才重画 DOM。 */
-function snapshotFingerprint(items) {
-  let s = '';
-  for (const it of (Array.isArray(items) ? items : [])) {
-    if (!it) continue;
-    /* 【2026-11-03】子任务卡也要算进指纹 —— 它没有 t/output，只有 steps 在长；
-     * 不把步数算进去，worker 又跑了一步、指纹却一样，屏幕就不会重画，看着像卡住。 */
-    const __wSteps = (it.k === 'worker' && Array.isArray(it.steps)) ? it.steps.length : 0;
-    const __wLast = (it.k === 'worker' && Array.isArray(it.steps) && it.steps.length) ? String(it.steps[it.steps.length - 1].t || '').length : 0;
-    s += it.k + '|' + (it.t ? it.t.length : 0) + '|' + (it.status || '') + '|' + (it.output ? it.output.length : 0) + '|' + (it.who || '') + '|' + __wSteps + '|' + __wLast + '\n';
-  }
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return h + ':' + String(s.length) + ':' + String((Array.isArray(items) ? items : []).length);
-}
-
-/* ══════════════════════════════════════════════════════════════════════
- * 【2026-11-09 根治·「屏幕该长什么样」只有一个来源、一个出口】
- *
- * 主人报的症状：「好几段话堆进一个气泡」「按 F5 之后又堆一块」。根因不是某条路径
- * 漏了去重，而是**同一轮有两套画法、各记各的账**：
- *   ① 老路：SSE 收到 text / reasoning / tool_start 就 addAssistantAuto /
- *      pushStreamText / openThink / addTool **直接建节点**；
- *   ② 新路：服务端 live.items 到位后，renderLog → paintSnapshot 照清单先删后画。
- * 两条路对「一段话算一段」的判据不同，任何一处不一致，屏幕上就是两份 / 多段挤一块。
- * F5、切会话、补拉只是把两条路撞在一起的时机变得更容易命中。
- *
- * 从今天起只留一条路。下面三条是**不变式**，动这块代码之前先读一遍：
- *   A. 唯一权威 = 清单（items）：服务端算好的 live.items，和前端这份按
- *      「同一条合并规则」长出来的 items，形状语义完全一样（见 itemsFromEvents）。
- *   B. 唯一出口 = renderLog()（public/ui/chat.js）：**只有它能建/删 #log 里的对话节点**。
- *      SSE、补捞、轮询一律「只更新清单」，然后叫它一声。
- *   C. 幂等：同一份清单画一百次结果一样；同一段文字在屏幕上只出现一次。
- *
- * 所以本文件那条 SSE 循环只做两件事：喂清单、节流叫一次 renderLog。
- * **那里不许再出现 addAssistantAuto / pushStreamText / openThink / addTool /
- *   whaleStream* / addWhaleBubble。**（scripts/check-no-dup-render.mjs 盯着这一条。）
- * ══════════════════════════════════════════════════════════════════════ */
-
-/** 会话 -> 这一轮「屏幕上该有什么」的清单（SSE 建、补捞往里喂、renderLog 只管画） */
-const liveModels = new Map();
-
-/** 取这一轮在跑的清单（没有就是没在跑 —— 那屏幕上由历史说了算） */
-function liveModelGet(sid) {
-  return liveModels.get(String(sid || '')) || null;
-}
-
-/**
- * 开一轮：清单从空开始。
- *
- * 空清单只是「我这边没话可说」，不是「屏幕上该清空」——
- * 这一点和 paintSnapshot0 的口径一致（空快照不动屏幕）。
- */
-function liveModelOpen(sid, startedAt) {
-  const _sid = String(sid || '');
-  const m = { sid: _sid, items: [], open: false, startedAt: Number(startedAt) || Date.now() };
-  liveModels.set(_sid, m);
-  /* 新的一轮：把「上一轮最后一段正文长到哪儿」的记账清掉，
-   * 否则这一段的第一句会被当成「上一段还在变长」，接进上一轮那个气泡里。 */
-  try { if (window.__liveHeadFp) window.__liveHeadFp.delete(_sid); } catch (e) {}
-  return m;
-}
-
-/**
- * 喂一条事件进清单（就地改，返回 items）。
- *
- * 规则与 itemsFromEvents **逐条同源**：改一处必须改另一处，
- * `scripts/check-no-dup-render.mjs` 会把两份对跑，一条不一致都算挂。
- * 为什么要有两份：itemsFromEvents 是「一次算完」（补拉 / 老进程用），
- * 这里是「一条一条接着长」（SSE 用）—— 长轮次里不能每来一个字就从头算一遍。
- *
- * 状态 st = { items, open }：
- *   open 记的是「上一段正文还收不收字」。轮末 / 换种类时关掉，
- *   下一段正文就一定另起一条 —— 这就是「done 是分段线」在前端的落点。
- */
-function liveItemsFeed(st, e) {
-  if (!st || !e || !e.type) return st ? st.items : [];
-  const items = st.items;
-  const last = () => (items.length ? items[items.length - 1] : null);
-  const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
-
-  /* 轮末就是分段线：排队轮（插话 / 定时任务 / 续跑）是「另一段话」。 */
-  if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') { st.open = false; return items; }
-
-  if (e.type === 'text') {
-    /* notice 是「连接断了」「工具还在跑」这类提示，不进正文 */
-    if (e.notice) { items.push({ k: 'note', t: String(e.text || '') }); st.open = false; return items; }
-    const p = last();
-    if (st.open && p && p.k === 'text') p.t += String(e.text || '');
-    else { items.push({ k: 'text', t: String(e.text || '') }); st.open = true; }
-  } else if (e.type === 'reasoning') {
-    st.open = false;
-    const p = last();
-    if (p && p.k === 'think') p.t += String(e.text || '');
-    else items.push({ k: 'think', t: String(e.text || '') });
-  } else if (e.type === 'tool_start') {
-    st.open = false;
-    /* 压缩条一律不画。后端已经不推了，旧进程 / 旧重放里还有 —— 屏幕上一个像素都不出现 */
-    if (String(e.name) === 'compress') return items;
-    items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '' });
-  } else if (e.type === 'tool_end') {
-    st.open = false;
-    if (String(e.name) === 'compress') return items;
-    const id = String(e.id || '');
-    const it = lastOf('tool');
-    if (it && it.id === id) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
-    /* 【2026-11-07 那道兜底，结构上留在这儿】tool_start 丢了（并行批走过一次 emitEvents:false）
-     * 也要能补上：清单里补一条 tool 就自动把正文断成两段，后面的话不会全堆进一个气泡。 */
-    else items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') });
-  } else if (e.type === 'whale' || e.type === 'agent') {
-    st.open = false;
-    items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
-  } else if (e.type === 'whale_stream_start') {
-    st.open = false;
-    items.push({ k: 'say', who: String(e.who || ''), t: '' });
-  } else if (e.type === 'whale_delta') {
-    st.open = false;
-    const it = lastOf('say');
-    if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
-    else items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
-  } else if (e.type === 'whale_stream_finish') {
-    const it = lastOf('say');
-    const t = String(e.text || '');
-    if (it && !it.t && t) it.t = t;
-  } else if (e.type === 'worker') {
-    st.open = false;
-    const wid = String(e.wid || '0');
-    let wit = null;
-    for (let i = items.length - 1; i >= 0; i--) if (items[i].k === 'worker' && items[i].id === wid) { wit = items[i]; break; }
-    if (!wit) { wit = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '' }; items.push(wit); }
-    if (e.name) wit.name = String(e.name);
-    if (e.status) wit.status = String(e.status);
-    if (e.note) wit.note = String(e.note);
-    const _st = String(e.text || '').trim();
-    if (_st && (e.kind === 'step' || e.kind === 'start' || e.kind === 'mail')) {
-      wit.steps.push({ kind: String(e.kind || 'step'), t: _st });
-      if (wit.steps.length > 40) wit.steps.splice(0, wit.steps.length - 40);
-    }
-  }
-  return items;
-}
-
-/** 节流记账：16ms 一帧，或者攒够 8 条事件 —— 不为一个字重排一次屏幕 */
-const _livePaint = { at: 0, dirty: 0, timer: 0, sid: '' };
-
-/**
- * **把清单交出去画。** 自己一个节点都不建 —— 只调 logSetLive + renderLog。
- * 返回 false 说明这一屏不是这个会话的（或模块还没就位），画不了也不该画。
- */
-function liveModelPaint(sid, opts) {
-  const m = liveModelGet(sid);
-  if (!m) return false;
-  try { if (String(window.sessionId) !== m.sid) return false; } catch (e) { return false; }
-  try {
-    window.logSetLive(m.sid, { running: true, items: m.items, startedAt: m.startedAt });
-  } catch (e) { return false; }
-  try { window.renderLog((opts && opts.forceLive) ? { forceLive: true } : undefined); } catch (e) {}
-  /* 光标：最后一段是正文才算「还在写」。工具 / 思考期间不挂 ▍（不然像话说完了还在闪） */
-  try {
-    const rec = window.turnsInFlight && window.turnsInFlight.get(m.sid);
-    const b = rec && rec.bubble;
-    const lastItem = m.items.length ? m.items[m.items.length - 1] : null;
-    if (b && b.isConnected && lastItem && lastItem.k === 'text') {
-      window.markStreaming(b);
-      window.touchStreaming(b);
-    }
-  } catch (e) {}
-  return true;
-}
-
-/** 节流版（SSE 每个事件调一次，真正重画最多 60 次/秒，通常是攒 8 条才画一次） */
-function liveModelPaintThrottled(sid) {
-  _livePaint.sid = String(sid || '');
-  _livePaint.dirty += 1;
-  const now = Date.now();
-  if (_livePaint.dirty < 8 && (now - _livePaint.at) < 16) {
-    if (!_livePaint.timer) {
-      _livePaint.timer = setTimeout(() => {
-        _livePaint.timer = 0;
-        liveModelPaint(_livePaint.sid);
-      }, 16);
-    }
-    return;
-  }
-  if (_livePaint.timer) { clearTimeout(_livePaint.timer); _livePaint.timer = 0; }
-  _livePaint.dirty = 0;
-  _livePaint.at = now;
-  liveModelPaint(_livePaint.sid);
-}
-
-/**
- * 收尾时的那一次「对齐」：把攒着没画的一起画掉。
- * 只在 done / aborted / error 用 —— **不清清单**：清掉就是「话说到一半画面空一截」。
- */
-function liveModelFlush(sid) {
-  if (_livePaint.timer) { clearTimeout(_livePaint.timer); _livePaint.timer = 0; }
-  _livePaint.dirty = 0;
-  _livePaint.at = Date.now();
-  _livePaint.sid = String(sid || '');
-  return liveModelPaint(_livePaint.sid, { forceLive: true });
-}
-
-/** 每个会话上一次画出来的快照指纹（没变就不重画） */
-const lastSnapFp = new Map();
-
-/**
- * 【2026-11-09 补账】把服务端那份清单取回来，喂进这一轮的模型。
- *
- * 服务端的 items 是「这一轮现在该长什么样」的唯一权威；SSE 中途断过、
- * 或者本地清单少了几条，用它对齐一次就齐了。
- * **只喂模型，不建节点** —— 画由 renderLog 一个人做，画一百次也只有一份。
- */
-function refreshLiveModel(sid) {
-  const _sid = String(sid || '');
-  if (!_sid) return Promise.resolve(false);
-  return fetch('/api/chat/live?sessionId=' + encodeURIComponent(_sid))
-    .then((r) => r.json())
-    .then((live) => {
-      if (!live || !Array.isArray(live.items) || !live.items.length) return false;
-      if (String(sessionId) !== _sid) return false;      // 主人已经切走了：一个字都不许画
-      const m = liveModelGet(_sid) || liveModelOpen(_sid, live.startedAt);
-      m.items.length = 0;                                 // 就地换内容：LOG_STATE 里是同一个数组
-      for (const it of live.items) { if (it && it.k) m.items.push(it); }
-      m.open = false;
-      return liveModelPaint(_sid, { forceLive: true });
-    })
-    .catch(() => false);
-}
-
-/**
- * 【2026-11-05 重做·流式正文不再"每秒删掉重建"】
- *
- * 病因（真机实测确认过）：`paintSnapshot0` 开头把 `.msg.assistant[data-live-turn="1"]`
- * 一律 remove，然后照清单从头画 —— 而绘制那条路（`k === 'text'`）每次都走
- * `addAssistantAuto()` → `addEl()`，**无条件新建**。所以每 1.2 秒整条消息换一个节点：
- * 选中丢了、Ctrl+F 跳走、滚动位置跟着跳。
- *
- * 为什么不去改原来那套：`addAssistant` 同时服务「正常流式」和「快照重画」两条路，
- * 改它的语义，出错的表现是「一条回复被劈成两个气泡各写一半」，比抖动严重得多。
- *
- * 这里的做法是**在入口处加一条快路**，条件收得很紧，不满足就原样走老路：
- *   ① 这一轮还在跑（running === true）；
- *   ② 快照里**只有 text**（一旦出现工具/思考/子任务，立刻交回老路，那些卡必须重画）；
- *   ③ 屏幕上已经有一条正在流式的正文容器；
- *   ④ 新文本**以屏幕上已有的文本开头**（只允许"变长"，改写/回退一律交给老路）。
- *
- * 四条全满足时：只把多出来的那段 push 进去，一个节点都不动。
- * 任何一条不满足 → 返回 false，调用方照原样重画。**最坏情况等于没做这个优化。**
- */
-/**
- * 【2026-11-09 改口径·快路只负责「最后一段正文在变长」】
- *
- * 原来这里要求「整份清单只有 text」，然后把这些 text **拼成一条**再去比对：
- * 清单是 [text A, text B] 时它拼成「AB」，正好把两段话塞进同一个气泡 ——
- * 这就是「多段消息堆一块」的另一半来源（快路自己也在合并段）。
- *
- * 现在只认一种形状：**最后一条是正文，它前面的清单一个字都没变**。
- * 判定靠 paintSnapshot0 画完之后留下的一枚指纹（`window.__liveHeadFp`）：
- * 前缀清单的指纹跟屏幕上那份一样 → 屏幕上的分段结构就是对的，
- * 只有尾巴那段在长，那就只往**最后那个**气泡里追加。
- * 任何一条不满足 → 返回 false，交回整组重画（那段路一段一个容器，绝不会合并）。
- */
-function _liveHeadFpOf(items) {
-  try { return snapshotFingerprint(Array.isArray(items) ? items.slice(0, -1) : []); } catch (e) { return ''; }
-}
-
-function tryLiveAppendFast(sid, srcLive) {
-  if (!srcLive || srcLive.running !== true) return false;
-  /* 「没有会话」的几种写法要算同一个：null / undefined / ''。
-   * 会话被删掉、或者页面刚起还没选中时，sessionId 就是 null ——
-   * 这时候 String(null) === 'null' 跟 String('') 对不上，会白白放弃增量、
-   * 整块重画一次（屏幕抖一下）。它们本来指的都是「没有」。 */
-  const _sidOf = (v) => String(v == null ? '' : v);
-  if (typeof sid === 'string' && _sidOf(sid) !== _sidOf(sessionId)) return false;
-  const items = Array.isArray(srcLive) ? srcLive : (Array.isArray(srcLive.items) ? srcLive.items : null);
-  if (!items || !items.length) return false;
-  const lastItem = items[items.length - 1];
-  if (!lastItem || lastItem.k !== 'text') return false;   // 尾巴不是正文 → 结构变了，交给老路
-
-  const textCount = items.filter((x) => x && x.k === 'text').length;
-  const wraps = document.querySelectorAll('#log .msg.assistant[data-live-turn="1"]');
-  if (!wraps.length || wraps.length !== textCount) return false;   // 分段结构对不上，交给老路
-
-  const fp = _liveHeadFpOf(items);
-  /* 清单里不止一段正文时，前缀必须跟「屏幕上这份」一模一样（靠画完留下的指纹判）。
-   * 只有一段正文（前缀为空）时不需要这枚指纹 —— 屏幕上就那一个容器，接上去就是对的。
-   * 这一条不能省：省了会把新一段正文接进上一轮那个气泡里（同一句越接越长）。 */
-  if (items.length > 1) {
-    const prev = (window.__liveHeadFp && window.__liveHeadFp.get(String(sid || ''))) || '';
-    if (!prev || prev !== fp) return false;   // 前缀变了（或还没画过）→ 整组重画
-  }
-
-  const wrap = wraps[wraps.length - 1];
-  const bubble = wrap && wrap.querySelector('.bubble');
-  if (!bubble) return false;
-
-  const cur = typeof bubble._rawText === 'string' ? bubble._rawText : String(bubble.textContent || '');
-  const want = String(lastItem.t || '');
-  if (want === cur) return true;             // 一模一样，本来就什么都不用做
-  if (!cur || !want.startsWith(cur)) return false;   // 不是"变长"，交给老路
-  pushStreamText(bubble, want.slice(cur.length));
-  return true;
-}
-
-
-
-/* 【2026-11-03】子任务卡（办事模式里「谁在干活」）的绘制，抽成函数：
- * 画快照时要画它，跑完之后要「只留卡、别的不动」也要画它 —— 同一段不能写两份。 */
-/* 【2026-11-03 修·子任务卡一秒有一秒没（闪得像卡死）】
- * 前面几版都是「清理时摘下来 → 画的时候挂回去」，只要中间有任何一条路径
- * 没把节点挂回 #log，屏幕上就空一拍，下一拍又建一个 —— 主人看到的就是闪。
- * 现在换规矩：**清理时不碰子任务卡**，按门牌号收进这张表；画的时候就地改字，
- * 位置都不动；画完把「这一轮清单里已经没有的」才删掉。
- * 卡从头到尾都在 DOM 里，从根上不可能闪。 */
-const _wcardByWid = new Map();
-
-function _paintWorkerCardCore(it, take) {
-  /* take 是 paintSnapshot0 里的复用池取件器（它是函数内定义，外面拿不到）。
-   * 传 null 就现建一个新的 —— 跑完那一刻只剩「补一张卡」这一件事，复用没必要。 */
-  const _widKey = String(it.id || '');
-  let _wEl = _wcardByWid.get(_widKey) || null;
-  if (_wEl && !_wEl.d.isConnected) _wEl = null;
-  if (!_wEl) _wEl = (typeof take === 'function' ? take('worker') : null) || addWorkerCard();
-  if (_widKey) _wcardByWid.set(_widKey, _wEl);
-  /* 复用池里那些节点是「先摘下来再放回去」的：清理那一步 remove 了它们，
-   * 拿到手里只改字、忘了挂回 #log —— 那张卡在 DOM 里根本不存在，
-   * 下一拍又照清单从零建一个，屏幕上就成了 有/没有 交替闪。 */
-  try { if (!_wEl.d.isConnected) document.getElementById('log').appendChild(_wEl.d); } catch (e) {}
-  try {
-    _wEl.d.dataset.liveTurn = '1';
-    _wEl.d.dataset.wid = String(it.id || '');
-    const _nm = String(it.name || ('worker ' + it.id));
-    const _stTxt = it.status === 'ok' ? '回来了' : (it.status === 'err' ? '没干成' : '干活中…');
-    _wEl.sum.querySelector('.name').textContent = '#' + it.id + ' ' + _nm;
-    const _st = _wEl.sum.querySelector('.status');
-    _st.textContent = _stTxt + (it.steps.length ? ' · ' + it.steps.length + ' 步' : '');
-    _st.className = 'status ' + (it.status === 'ok' ? 'ok' : (it.status === 'err' ? 'err' : 'warn'));
-    const _lines = it.steps.map((x) => (x.kind === 'mail' ? '  ✉ ' : (x.kind === 'start' ? '  ▶ ' : '  · ')) + x.t);
-    if (it.note) _lines.push('  ⇢ ' + String(it.note).replace(/\n/g, ' '));
-    _wEl.pre.textContent = _lines.join('\n');
-  } catch (e) {}
-  return _wEl;
-}
-/* 【2026-11-03 加】照历史画子任务卡（不带 live-turn 标记：它是历史的一部分，
- * 不是「这一轮正在画的那组」）。有了它，翻回来 / 刷新 / 换会话，
- * 办事模式干过什么都能看见 —— 因为历史里真的存下来了。 */
-function paintHistWorkerCard(it) {
-  try {
-    const d = document.createElement('details');
-    d.className = 'wcard';
-    d.dataset.wid = String(it.id || '');
-    const sum = document.createElement('summary');
-    const nm = document.createElement('span');
-    nm.className = 'name';
-    nm.textContent = '#' + it.id + ' ' + String(it.name || '');
-    const st = document.createElement('span');
-    const ok = it.status === 'ok';
-    st.className = 'status ' + (ok ? 'ok' : (it.status === 'err' ? 'err' : 'warn'));
-    st.textContent = (ok ? '回来了' : (it.status === 'err' ? '没干成' : '干活中…')) +
-      (Array.isArray(it.steps) && it.steps.length ? ' · ' + it.steps.length + ' 步' : '');
-    sum.appendChild(nm);
-    sum.appendChild(st);
-    const pre = document.createElement('pre');
-    const lines = (Array.isArray(it.steps) ? it.steps : []).map((x) => '  · ' + String(x.t || ''));
-    if (it.note) lines.push('  ⇢ ' + String(it.note).replace(/\n/g, ' '));
-    pre.textContent = lines.join('\n');
-    d.appendChild(sum);
-    d.appendChild(pre);
-    const lg = document.getElementById('log');
-    if (lg) lg.appendChild(d);
-  } catch (e) {}
-}
-function paintWorkerCard(it, take) { try { _paintWorkerCardCore(it, take); } catch (e) {} }
-
 /**
  * 【2026-11-05 加·把 markdown 画出来（保守版）】
  *
@@ -6116,95 +5049,28 @@ function stripCompressMemoryText(input) {
   if (i < 0) return s;
   return s.slice(0, i).replace(/[ 	]+$/, '');
 }
-
 /**
- * 【2026-11-06 重装·统一的标签清洗出口】
+ * 【已废·2026-11-09 换框架】
  *
- * 这个函数今早写过一版，后来在一次「改坏了回退」里连同文件一起被卷掉了 ——
- * 现在只剩调用点（`typeof installTagCleaner === 'function'` 永远是 false）
- * 和两句注释。**安全网其实是空的**，严检才照出来。
+ * 这张「安全网」原来盯着 #log，谁把文字写进去就把 <thinking> / <reasoning> /
+ * 「【压缩记忆」擦掉。它存在的理由很实在：那时候**渲染出口有五个**
+ * （renderTurns / paintSnapshot / tryLiveAppendFast / pushStreamText / _rawText 还原），
+ * 每加一处就漏一处标签。
  *
- * 为什么不能只靠每条渲染路径自己剥：
- *   渲染出口有五个（renderTurns / paintSnapshot / tryLiveAppendFast /
- *   pushStreamText / _rawText 还原），每加一处就漏一处，今天已经漏了四次。
- * 所以反过来做：**盯着 #log 这个容器**，谁变了查谁，落进 DOM 就一定会经过这里。
+ * 现在只剩一个出口（React 渲染 → window.mdInto），而 mdInto 内部已经连着调
+ * stripThinkingTags / stripXmlToolCalls / stripCompressMemoryText ——
+ * 安全网要兜的东西在入口就没了。
  *
- * 三个设计点：
- *   · 只扫「这次变动的节点」，不做全量 querySelectorAll（性能）
- *   · busy + requestAnimationFrame 防循环（改 textContent 会再触发一次观察）
- *   · 改之前先比一次，真变了才写，没变一个字节都不碰
+ * 更要紧的是：**它现在会直接把屏幕搞空**。它会 `el.textContent = f`，
+ * 而 .bubble 里的文字是 React 托管的文本节点 —— 被它换掉之后，
+ * React 再去删那个旧节点就成了 `NotFoundError: removeChild`，
+ * 一抛就等于整棵树渲染失败（实测：一次 renderTurns 之后 #log 整个空掉）。
+ *
+ * 所以这里只留空壳：不装观察器、不碰任何节点。
+ * 真要再有一层兜底，就兜在数据上（服务端落盘前剥），不要兜在 DOM 上。
  */
 function installTagCleaner() {
-  try {
-    const lg = document.getElementById('log');
-    if (!lg || lg.__tagCleaner) return;
-    lg.__tagCleaner = true;
-    let busy = false;
-    /**
-     * 【2026-11-07 主人要·真静默压缩】压缩记忆正文也得进这道门。
-     * 这张网原来只盯 <thinking/<think/<reasoning —— 实测压缩摘要正是从这儿漏出去的。
-     */
-    const NEEDS = ['<thinking', '<think', '<reasoning', '【压缩记忆'];
-    const need = (t) => {
-      const low = String(t || '').toLowerCase();
-      for (const k of NEEDS) if (low.indexOf(k) >= 0) return true;
-      return false;
-    };
-    const fix = (el) => {
-      if (!el || el.nodeType !== 1) return;
-      const t = el.textContent || '';
-      if (!need(t)) return;
-      let f = stripThinkingTags(t);
-      /* 压缩记忆：从记号起全切。切完是空的说明这整段就是摘要 —— 藏起来，不留空壳。 */
-      if (String(f).indexOf('【压缩记忆') >= 0) {
-        f = stripCompressMemoryText(f);
-        try { el.style.display = f.trim() ? '' : 'none'; } catch (e) {}
-      }
-      if (f !== t) { try { el.textContent = f; } catch (e) {} }
-    };
-    const obs = new MutationObserver((muts) => {
-      if (busy) return;
-      const targets = new Set();
-      const SEL = '.bubble, .thinkBody, .md, pre';
-      const take = (n) => {
-        if (!n || n.nodeType !== 1) return;
-        if (n.closest && n.closest(SEL)) { const box = n.closest(SEL); if (box) targets.add(box); }
-        /* 新插进来的那个元素本身可能就是个气泡（它自己不在别的气泡里） */
-        if (n.matches && n.matches(SEL)) targets.add(n);
-      };
-      for (const m of muts) {
-        let n = m.target;
-        if (n && n.nodeType === 3) n = n.parentElement;
-        take(n);
-        /**
-         * 【2026-11-06 修·新增的节点以前根本没被查过】
-         *
-         * 严检用探针照出来的洞：往 #log 里 append 一个已经写好脏文字的新气泡，
-         * 观察器收到的那次变动 target 是 **#log**（父容器），不是新气泡本身；
-         * 而 #log 不在 .bubble 里 → targets 为空 → 什么都不做 → 脏字原样留在屏上。
-         *
-         * 也就是说这张「安全网」只兜得住「已有气泡里的文字被改」，
-         * 兜不住「一整个新气泡带着脏字进来」—— 而流式正是后者。
-         * 现在把新加的节点（含它里面的）一起收进来。
-         */
-        if (m.type === 'childList' && m.addedNodes && m.addedNodes.length) {
-          for (const a of m.addedNodes) {
-            if (!a || a.nodeType !== 1) continue;
-            take(a);
-            if (a.querySelectorAll) {
-              for (const d of a.querySelectorAll(SEL)) targets.add(d);
-            }
-          }
-        }
-      }
-      if (!targets.size) return;
-      busy = true;
-      requestAnimationFrame(() => {
-        try { for (const el of targets) fix(el); } finally { busy = false; }
-      });
-    });
-    obs.observe(lg, { childList: true, subtree: true, characterData: true });
-  } catch (e) {}
+  return false;
 }
 
 function stripThinkingTags(input) {
@@ -6467,171 +5333,6 @@ function tidyToolText(v) {
   while (t.length && (t.charAt(0) === NL || t.charAt(0) === ' ' || t.charAt(0) === '	')) t = t.slice(1);
   while (t.length && (t.charAt(t.length - 1) === NL || t.charAt(t.length - 1) === ' ' || t.charAt(t.length - 1) === '	')) t = t.slice(0, -1);
   return t;
-}
-
-function paintSpeech(bubble, raw) {
-  if (!bubble) return bubble;
-  const wrap = bubble.parentNode;
-  /**
-   * 【2026-11-05 修·流式时标签照样露出来】
-   *
-   * 主人报「她每一条消息都带 <thinking> </thinking>」。
-   * 上一版只在 mdInto（历史渲染）里剥了，可**流式实时显示走的是这里** ——
-   * paintSpeech 原来只做 fixMojibake。于是同一条消息：边打字时带标签，
-   * 重画历史时才干净；看起来就像「每条都有」，而且是「一直都有」。
-   *
-   * stripThinkingTags 处理了「只有开头没有结尾」的中间态，
-   * 所以打字过程中也不会闪一下标签。
-   */
-  const cleaned = fixMojibake(stripXmlToolCalls(stripCompressMemoryText(stripThinkingTags(String(raw ?? '')))));
-  if (!wrap) { bubble.textContent = cleaned; bubble._tail = bubble; return bubble; }
-  /**
-   * 【2026-11-02 主人报：一句话没说完就换行，刷新一次又好了】
-   *
-   * 病根有两层：
-   *   ① 段落**内部**的单换行一直原样留着（.bubble 是 white-space: pre-wrap）。
-   *      模型有时候写着写着就软换行一下，屏幕上就成了「半句 / 换行 / 半句」。
-   *   ② 更要命的是流式那条路：她一句话说到一半，服务端插进来一条提醒
-   *      （「连接断了一下」「工具还在跑」「量了量 token」），那条提醒带 \n\n，
-   *      paintSpeech 一按空行切，就把她这句切成了两段 —— 后半句另起一个气泡。
-   *      刷新之后走历史重画，正文里根本没有那些提醒，所以又接成一整句。
-   *      （提醒现在在服务端就被摘出去了，见 server.mjs 与 agent.mjs 的 notice；
-   *       这里再把段内单换行压掉，两条一起兜住。）
-   *
-   * 做法：段内单换行按「两边都是汉字就连起来、否则留一个空格」压平 ——
-   * 中文里一个空格很突兀，英文里没空格又粘成一个词，所以分开处理。
-   */
-  /**
-   * 【2026-11-05 改·流式和历史必须长得一样】
-   *
-   * 原来这里把段内的单换行**删掉**（两边是中文就连起来、是英文就换成空格），
-   * 可历史那条路是原样保留 + `white-space: pre-wrap` ——
-   * 于是同一条消息：生成时被挤成一行，跑完/刷新又变回多行。
-   * 主人投诉的"前后不一样"就是这一条。
-   *
-   * 现在只收两样，其余留给 pre-wrap：
-   *   · 3 个以上连续换行压成 2 个（模型偶尔狂敲回车）
-   *   · 行内连续空格压成 1 个、行尾空白去掉
-   * 单换行原样留着 —— 模型写代码、写列表靠的就是它。
-   */
-  const flat = flatSpeechText;
-  const paras = cleaned.split(/\n[ \t]*\n+/).map((p) => flat(p)).filter(Boolean);
-  if (paras.length <= 1) {
-    // 只有一段时也别把段内单换行原样漏出去（同一个毛病，见上面那段说明）
-    bubble.textContent = flat(cleaned);
-    for (const el of [...wrap.querySelectorAll(':scope > .bubble')]) if (el !== bubble) el.remove();
-    bubble._sib = null;
-    bubble._tail = bubble;
-    return bubble;
-  }
-  let prev = null;
-  for (let i = 0; i < paras.length; i += 1) {
-    let el;
-    if (i === 0) el = bubble;
-    else if (prev && prev._sib) el = prev._sib;
-    else {
-      el = document.createElement('div');
-      el.className = 'bubble';
-      if (prev) {
-        if (prev.after) prev.after(el); else wrap.appendChild(el);
-      } else wrap.appendChild(el);
-      el._rawText = '';
-    }
-    /* 【2026-11-05 优化】内容没变就别再写一遍。
-     * textContent 即使赋一模一样的字符串，也会把文本节点整个换掉 —— 长回复里
-     * 有七八段，每来一个 token 就把前面没变的段也重写一遍，浏览器跟着重排、选区跟着断。
-     * 加这一下，没变的段一个字都不碰。 */
-    if (el.textContent !== paras[i]) el.textContent = paras[i];
-    // 只有真的换了节点才连 _sib —— i=0 那一下 prev 是空的，别自己连自己（会死循环）
-    if (prev && prev !== el) prev._sib = el;
-    prev = el;
-  }
-  // 文本变短时，后面多出来的兄弟气泡收掉
-  let extra = prev._sib;
-  while (extra) { const nx = extra._sib; extra.remove(); extra = nx; }
-  prev._sib = null;
-  bubble._tail = prev;
-  return prev;
-}
-
-function pushStreamText(bubble, text) {
-  if (!bubble) return bubble;
-  if (typeof bubble._rawText !== 'string') bubble._rawText = bubble.textContent || '';
-  // 防御：气泡被别处清空过（textContent 变短且跟 _rawText 对不上）时，以画面为准重来
-  else if (bubble._rawText && !(bubble.textContent || '').length) bubble._rawText = '';
-  /**
-   * 【2026-11-07 主人要·真静默压缩】
-   *
-   * 主人报：「压缩记忆写摘要时内容还是会显示出来」。根因就在这一行：
-   * `_rawText` 是**原样累积**的，而压缩记忆（`【压缩记忆·seg-xxx】正文…`）
-   * 是模型以普通正文吐出来的 —— 于是一个字一个字流到屏幕上。
-   * 事后那两道 strip 只在重画时生效，直播这条路根本没经过。
-   *
-   * 这里做成**不可逆的截断**：一旦这段文字里出现了「【压缩记忆」，
-   * 就从那个记号起永久截掉，后面再来的字一个都不收。
-   * 比「每次显示前过一遍正则」稳 —— 那种做法在流式中途仍会露出前半截。
-   */
-  {
-    const _inc = String(text || '');
-    const _mark = '【压缩记忆';
-    const _at = _inc.indexOf(_mark);
-    if (_at >= 0) {
-      bubble._rawText += _inc.slice(0, _at);
-      bubble._compressMuted = true;      // 上了锁：这段之后不再收任何字
-    } else if (!bubble._compressMuted) {
-      bubble._rawText += _inc;
-    }
-  }
-  // 光标可能已经停在「中间那个」气泡上了 —— 先记下它，画完再搬到新的尾巴上
-  const from = bubble._tail || bubble;
-
-  /**
-   * 【2026-11-05 重做·只动最后一段】
-   *
-   * 原来每来一个 token 都走 paintSpeech：全文跑一遍正则，再把**每一段**的
-   * textContent 重写一遍。长回复七八段，等于每个字都把前面没变的段也重写 ——
-   * 浏览器跟着重排，选区跟着断。这是"流式时复制不了"的另一半原因。
-   *
-   * 快路条件（很严）：段落数没变 + 前面每一段一个字都没动 + 只有最后一段在长。
-   * 满足就只更新最后那一段的文本，别的节点一个都不碰。
-   * 不满足就原样走 paintSpeech —— **最坏情况等于没做这个优化**。
-   */
-  let fast = null;
-  try {
-    const paras = fixMojibake(String(bubble._rawText))
-      .split(/\n[ \t]*\n+/)
-      .map(flatSpeechText)
-      .filter(Boolean);
-    const prev = bubble._paras;
-    if (Array.isArray(prev) && prev.length && paras.length === prev.length && from) {
-      let same = true;
-      for (let i = 0; i < paras.length - 1; i += 1) {
-        if (paras[i] !== prev[i]) { same = false; break; }
-      }
-      if (same) {
-        const want = paras[paras.length - 1];
-        if (from.textContent !== want) from.textContent = want;
-        bubble._paras = paras;
-        fast = from;
-      }
-    }
-  } catch (e) { /* 快路出错绝不能连累正常渲染 */ }
-
-  if (fast) return fast;
-
-  const tail = paintSpeech(bubble, bubble._rawText);
-  // 记下这一屏的段落结构，下一次好判断"是不是只有最后一段在长"
-  try {
-    bubble._paras = fixMojibake(String(bubble._rawText))
-      .split(/\n[ \t]*\n+/)
-      .map(flatSpeechText)
-      .filter(Boolean);
-  } catch (e) {}
-  if (tail !== from && from.classList.contains('streaming')) {
-    from.classList.remove('streaming');
-    tail.classList.add('streaming');
-  }
-  return tail;
 }
 
 function stripMarkdownMarks(text) {
@@ -7079,121 +5780,23 @@ function __washForCompare(s) {
     .replace(/[\s\p{P}\p{S}]/gu, '')
     .toLowerCase();
 }
-
+/**
+ * 【2026-11-09 换框架·已废】
+ *
+ * 原来这是「拿 done.turnTexts 去屏幕上对账、缺的补一条、残的就地补全」——
+ * 也就是**第二套画法**。它补出来的节点不带任何标记，下一次整屏重画清不掉，
+ * 屏幕上就是主人反复报的「一句话出现两遍」。
+ *
+ * 现在这条账没有存在的必要：屏幕 = f(服务端 items / 历史)，同一段数据
+ * 只可能画成一个节点。真正需要「对一次账」的时刻（这一轮刚跑完、
+ * 落盘可能还慢半拍）由 followLive 的收尾那条路负责重拉历史。
+ *
+ * 保留空壳：SSE 的 done 分支还在调它（改成调 nudgeLive 更彻底，
+ * 但留着这层壳能让「谁还在指望对账」一眼可见）。
+ */
 function reconcileTurnTexts(ev) {
-  const want = Array.isArray(ev && ev.turnTexts) ? ev.turnTexts : [];
-  if (!want.length) return;
-
-  // 比对时把鲸气泡也算进来：她的话和我的话可能内容相同，只认 .msg.assistant
-  // 会把她的气泡当成「没画过」，于是再补一条重复的。
-  const allBubbles = () => Array.from(document.querySelectorAll('.msg.assistant .bubble, .msg.whale .bubble'));
-  const textOf = (el) => String(el.textContent || '');
-  let added = 0, fixed = 0;
-
-  /**
-   * 【2026-10-27 主人报：一句话有时候在这一句之内连着重复两遍，刷新后只剩一遍】
-   *
-   * 冲刷前先做一件「自愈」的事：屏幕上如果有一条气泡，它的正文正好是
-   * 同一段话的两份首尾相接（A+A），那说明之前有路径把它追加过一遍
-   * （补捞拿了上一轮写满的气泡接着写，就会这样）。这里就地砍回一份。
-   *
-   * 判定要严：必须**恰好**是两份相同、而且长度够长，免得把正常的重复用词
-   * （「好的好的」「对对对」）误砍。所以要求单份长度 >= 20 字。
-   */
-  try {
-    const cands = Array.from(document.querySelectorAll('.msg.assistant .bubble'));
-    for (const el of cands) {
-      const t = String(el.textContent || '');
-      if (t.length < 40) continue;
-      const half = Math.floor(t.length / 2);
-      // 长度是偶数才可能是 A+A
-      if (t.length % 2 !== 0) continue;
-      const a = t.slice(0, half), b = t.slice(half);
-      if (a === b && a.trim().length >= 20) {
-        el.textContent = a;
-        fixed++;
-      }
-    }
-  } catch {}
-
-  for (const raw of want) {
-    const text = String(raw || '').replace(/\r/g, '');
-    if (!text.trim()) continue;
-    const head = text.slice(0, 40).trim();
-    const tail = text.slice(-40).trim();
-    if (!tail || !head) continue;
-
-    const bubbles = allBubbles();
-    const full = bubbles.find((el) => {
-      /**
-       * 【判据改成洗完了再比】—— 2026-10-26 修「说两遍」
-       *
-       * 原来：t.includes(tail)，tail 是原文最后 40 字，差一个标点就不认，
-       * 于是判成「没画过」又补一条。
-       * 现在：两边都洗掉空白和标点，只留字，再看是不是同一段话。
-       */
-      const t = textOf(el);
-      const washEl = __washForCompare(t);
-      const washText = __washForCompare(text);
-      if (!washEl || !washText) return false;
-      // 屏幕上这段已经包含正文全部（洗完比）→ 画过了
-      if (washEl.includes(washText)) return true;
-      // 正文包含屏幕上这段，且长度差得不多（末尾几个标点不同）→ 也算画过了
-      if (washText.includes(washEl) && washEl.length >= Math.floor(washText.length * 0.9)) return true;
-      // 老判据留着兜底：整段结尾对得上
-      return t.includes(tail) || (t.length >= text.length - 8 && t.includes(head));
-    });
-    if (full) continue;
-
-    // 半句对得上：屏幕上有一段是这段的开头，但结尾没到 —— 残句，删了重画
-    const partial = bubbles.find((el) => {
-      const t = textOf(el).trim();
-      if (!t || t.length < 6) return false;
-      // 只认「屏幕上那段是这段的开头」才算残句。
-      // 以前还写了 || t.includes(head)，可 head 是从这段正文自己头上切的，
-      // 对任何 text 都恒为真 —— 于是每处理一段就把上一段误判成残句删掉重画，
-      // 一轮说七段，屏幕上最后只剩一小段。别再加回去。
-      /**
-       * 【2026-10-26 补：改成洗完再比】
-       * 免得「标点不同」把完整的一段当成残句删了重画。
-       */
-      const washEl = __washForCompare(t);
-      const washTxt = __washForCompare(text);
-      if (!washEl || washEl.length < 6) return false;
-      return washTxt.length > washEl.length && washTxt.startsWith(washEl);
-    });
-    if (partial) {
-      /**
-       * 【残句就地补全，绝不新开气泡 —— 2026-10-28 主人报的「一条回复被劈成两个气泡」】
-       *
-       * 主人原话（截图）：「（坐好，看着主人）这回」断了，下面又冒一个「小鱼」，
-       *                  接着才是「是真点过的」。
-       *
-       * 病根就在这儿：原来这里调 addAssistant() 新建一个气泡写完整正文，
-       * 再把旧的删掉。可 addAssistant() 的署名是写死「小鱼」的 ——
-       * 新气泡一建，名字就重来一次；旧气泡要是有哪条路没删干净，
-       * 屏幕上就变成「上半截 + 小鱼 + 下半截」。
-       *
-       * 现在：残句还在屏幕上，就【接着往里写】，一个字都不新建。
-       * 气泡是同一个，署名只有开头那一个。这样无论怎么补画，
-       * 一条回复永远只有一个气泡、一次署名。
-       */
-      partial.textContent = fixMojibake(text);
-      partial.classList.remove('streaming');
-      fixed++;
-      continue;
-    }
-
-    const b = addAssistantAuto();
-    // 按空行分段（一段一个气泡）—— 跟流式那条路同一个函数，别两套画法
-    paintSpeech(b, text);
-    b.classList.remove('streaming');
-    added++;
-  }
-  if (added || fixed) {
-    console.warn('[turn-reconcile] 这一轮补画了 ' + added + ' 段、修好 ' + fixed + ' 段残缺');
-    finishSpeech();
-  }
+  void ev;
+  return 0;
 }
 
 /**
@@ -7217,230 +5820,6 @@ function assistantBubbleHas(text) {
     if (String(el.textContent || '').trim() === t) return true;
   }
   return false;
-}
-
-function paintLiveEvents(evs, bubble, skipToolIds) {
-  // 【2026-10-31 补画跳重复】：切回来时历史里已经画过的工具，这里不再画第二遍
-  const _skip = skipToolIds instanceof Set ? skipToolIds : null;
-  let think = null;
-  const toolEls = new Map();
-  const closeThink = () => { if (think) { think.finish(); think = null; } };
-  /**
-   * 【2026-11-01 主人报：刷新后新发的消息，一句话被劈成好几个气泡】
-   *
-   * 病根：下面原来只认「屏幕上已经有一模一样的整段」（assistantBubbleHas）。
-   * 可刷新时 renderTurns 只画了服务端已落盘的那半截，接上来的增量当然不等于那半截 ——
-   * 判成「没画过」，addAssistantAuto() 另起一个气泡，屏幕上就是一段话拆成两块。
-   *
-   * 修法：先把这一轮所有 text 拼成一条流，再看屏幕上最后一个助手气泡的字
-   * 是不是这条流的开头。是的话它就是这个半成品，认领它、记下已经画了几个字，
-   * 后面按字数偏移接着写 —— 这样无论增量怎么切条，都续在同一个气泡里。
-   */
-  let _allText = "";
-  try {
-    // 【2026-11-02】notice 是「连接断了」「工具还在跑」这类插话提醒，不属于她说的正文，
-    // 拼进 _allText 会污染「认领半成品气泡」的比对（正文里凭空多出几行）。
-    for (const _e of evs) { if (_e && _e.type === "text" && !_e.notice) _allText += String(_e.text || ""); }
-  } catch {}
-  let _claimDone = false;
-  let _claimLen = 0;
-  let _pos = 0;
-  for (const ev of evs) {
-    if (ev.type === 'reasoning') {
-      if (!think) think = openThink();
-      think.push(ev.text);
-    } else if (ev.type === 'text') {
-      // 【主人 2026-11-01】我开口说话了 = 上一段工具到此为止，该合柜子了
-      try { foldLiveTools(); } catch (e) { /* 合并不了不影响说话 */ }
-      closeThink();
-      // 【2026-10-31 补画跳重复·文字】历史那一侧（renderTurns）已经把这轮说的话画出来了，
-      // 这里再画就是「同一句话连发两遍」——切走再切回来最先看到的就是它。
-      // 判法：屏幕上已经有一模一样的助手气泡，就直接跳过这段文字。
-      /**
-       * 【2026-11-01 修 Ctrl+F5：这里原来写的是 `!_skipText && ...`，
-       *  而 `_skipText` 这个变量**在函数里根本没定义**（全文只出现这一次）。
-       *  一进 text 分支就抛 ReferenceError → 整个 paintLiveEvents 崩掉，
-       *  外面那个 try 一吞，295 个事件的补画全军覆没。
-       *  主人看到的就是：按钮和「正在发送」都正常了，可这一轮已有的话一条没有，
-       *  只有之后新来的消息才冒出来（那些走的是增量，不经过这里）。
-       *
-       *  去掉这个没定义的开关即可：判据本来就是「屏幕上已经有一模一样的助手气泡」，
-       *  历史里画过的就跳过，没画过的照常补 —— 正是这段注释想要的行为。
-       */
-      /* 第一条 text 来时先认领「屏幕上已经有的那一截」（只认开头对得上的，防止认错上一轮的话） */
-      if (!_claimDone) {
-        _claimDone = true;
-        _pos = 0;
-        try {
-          if (!bubble) {
-            /* 【2026-11-02 整轮幂等替换 · 刷新后整轮重复的真凶】
-             *  实测（浏览器里直接连调三次这个函数）：字数 831 → 1792 → 2854 → 3916，
-             *  每调一次就多叠一整份 —— 因为它是「往屏幕上追加」，而这一轮会被补画好几次
-             *  （接上直播一次、3 秒超时复核再一次…）。
-             *  又因为多段正文会被拆进好几个容器，「只删最后一个容器」根本删不全。
-             *  改法：凡是自己直播画出来的容器（带 data-live-turn 标记）一律先清掉；
-             *  再看历史里那个半截容器是不是本轮正文的开头（空白抹掉再比）—— 是就连它一起清
-             *  （它的内容本来就包在本轮全文里）。然后从头画一份：画一次、清一次，恒等于一份。 */
-            /* 【2026-11-02 比对口径必须一致】
-             *  历史那些容器里的字是 paintSpeech 画出来的 —— 它洗过 markdown（去星号、反引号、井号等）。
-             *  而 _allText 是事件原文，一字未洗。两边直接比，颜文字里的 * 一被抹掉就永远对不上：
-             *  「这一块就是本轮的半成品」明明成立，却判不中 → 清不掉 → 屏幕上一轮话叠两份。
-             *  所以比较前两边都按同一套洗一遍。 */
-            const _norm = (s) => String(fixMojibake(String(s || "")) || "").replace(new RegExp("\\s+", "g"), "");
-            for (const _c of document.querySelectorAll('.msg.assistant[data-live-turn="1"]')) {
-              try { _c.remove(); } catch (e) {}
-            }
-            /* 【2026-11-02 修·跑动中切走再切回来，历史会少一块】
-             *
-             *  上面那段原来还会「扫全页所有助手气泡」：只要它的字包含在本轮正文里就删掉。
-             *  真机一测就出事 —— 切走再切回时，renderTurns 刚把这一轮落盘的半截画成历史气泡，
-             *  而还在跑的这轮事件流正文基本就是同一段甚至更长，于是那个历史气泡当场被当成
-             *  「重复的一份」删掉。屏幕上就少一块，怎么切都回不来，只有刷新才长回来。
-             *
-             *  病根：拿「字面重合」当判据去动**不属于自己**的容器。
-             *  现在只清自己画的（上面那个 data-live-turn="1" 的循环），历史容器一律不碰 ——
-             *  它归 renderTurns 管，而 renderTurns 每次切会话都是整块重画，本来就不会叠。
-             */
-            bubble = null;
-            _claimLen = 0;
-          }
-        } catch {}
-      }
-
-      /**
-       * 【2026-11-02 主人报：一句话没说完就换行，刷新之后又好了】
-       *
-       * 病根：服务端有几处「插话提醒」是当成 type:'text' 发出来的
-       *   （「连接断了一下，接着往下写…」「工具还在跑，再等等我。」「量了量 token」），
-       * 而它们前面带着 \n\n。前端把每一条 text 都往同一个气泡的 _rawText 里追加、
-       * 再按空行重画 —— 于是她说到半句就被这段提醒切断，屏幕上成了「一句话中途换行」。
-       * 刷新之后走的是历史重画，正文里根本没有这些提醒，所以换行消失了；
-       * 可下一轮新消息又会带上，于是「后续依旧有」。
-       *
-       * 现在：带 notice 的不进正文，单独画一行系统提示。
-       */
-      if (ev.notice) {
-        try { addSysNote(String(ev.text || '').replace(/^[\s\n]+/, '').trim()); } catch (e) {}
-        continue;
-      }
-      const _t = String(ev.text || "");
-      const _from = _pos;
-      const _to = _pos + _t.length;
-      _pos = _to;
-      /* 已经画出去的那一截（_claimLen 之内的）不再重复写 */
-      const _skipTo = _from < _claimLen ? _claimLen : _from;
-      const _piece = _skipTo < _to ? _allText.slice(_skipTo, _to) : "";
-      if (!_piece) {
-        /* 这一条全在已画范围内：什么都不用写，但光标还得亮着 */
-        if (bubble) { try { touchStreaming(bubble); } catch {} }
-        continue;
-      }
-      /* 【2026-11-02 主人报「刷新后话中途分段、还消失一部分」】
-       * 真凶：这里原来直接 continue —— 可 _pos 早在上面推到 _to 了。
-       * 于是「这段屏幕上已经有了」被跳过，下一段却从更后面切，中间那截就永远丢了。
-       * 已有就已有，但游标不往回退：把 _claimLen 顶到 _skipTo，后面按整条续，不再切片丢内容。 */
-      if (assistantBubbleHas(_piece)) {
-        if (_skipTo > _claimLen) _claimLen = _skipTo;
-        continue;
-      }
-      /* 【2026-11-02 漏标记 · 切会话重复的真凶】
-       *  这里建出来的容器原来**没打 data-live-turn 标记**，于是下一轮补画清不掉它：
-       *  清的时候只认「带标记的」+「内容是本轮开头的」—— 而这里建出来的第 2、3 个容器
-       *  装的是续段、不是开头，判据不成立 → 清不掉 → 再叠一份。
-       *  实测：跑着的时候切走再切回，屏幕 4 个容器 105/859/238/83 逐次叠加。
-       *  凡是我们自己直播画出来的容器，一律打标记，才能保证「画一次清一次」。 */
-      if (!bubble) {
-        bubble = addAssistantAuto();
-        try { const _w = bubble.closest(".msg.assistant"); if (_w) _w.dataset.liveTurn = "1"; } catch (e) {}
-      }
-      pushStreamText(bubble, _piece);
-      touchStreaming(bubble);
-    } else if (ev.type === 'tool_start') {
-      if (String(ev.name) === 'compress') continue;   // 压缩条一律不画
-      // 【2026-10-31 跳过画过的工具】：这条工具历史里已经有卡片了（切回来时 renderTurns 刚画过），
-      // 这里就不再画第二遍 —— 原来就是它导致「跑命令 完成」连发两条。
-      if (_skip && ev.id && _skip.has(String(ev.id))) { continue; }
-      closeThink();
-      if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-      const el = addTool();
-      el.sum.querySelector('.name').textContent = niceTool(ev.name, ev.args);
-      el.sum.querySelector('.status').textContent = '运行中…';
-      /* 【2026-11-05 加】名字填好之后再把柜门刷一遍 ——
-       * addTool 内部那次 fold 时名字还是空的，摘要算出来是空白。 */
-      try { hubRefreshTitle(); } catch (e) {}
-      // 【2026-11-02】没参数就别拼 —— 否则画出来是「参数：undefined」
-      el.pre.textContent = (ev.args == null || ev.args === '') ? '（无参数）' : '参数：' + tidyToolText(ev.args);
-      toolEls.set(ev.id, el);
-      /* 【2026-11-05 加】记下开始时间，结束时把耗时写在状态上。
-       * 以前只有"运行中…/完成/失败"三个字，跑一条三分钟的命令屏幕上完全不动，
-       * 分不清是卡死还是在跑。 */
-      el._t0 = Date.now();
-          el.pre.hidden = false;
-          el.sum.querySelector('.status').className = 'status warn';
-          if (_liveHub) {
-            const _n1 = _liveHub.querySelector('.hubname');
-            if (_n1) _n1.dataset.one = niceTool(ev.name, ev.args);
-            hubRefreshTitle();
-          }
-    } else if (ev.type === 'tool_end') {
-      const el = toolEls.get(ev.id);
-      if (!el) {
-        /**
-         * 【2026-11-07 那道兜底，这条老路上也得留着】
-         *
-         * tool_start 丢了（并行批走过一次 emitEvents:false 的回归）时这里原本一声不响，
-         * 于是前端不知道「这里该断一下」：后面的话全挤进同一个气泡、工具也塞进同一个柜子。
-         * 现在补一张卡 —— 先把这段话说清、把气泡断开，再补卡，节奏就不会塌。
-         *
-         * （注：这是老路的兜底。现在正常路径走 items，工具事件本身就是分段线，
-         *   见 liveItemsFeed 的 tool_start / tool_end。）
-         */
-        try {
-          closeThink();
-          flushSpeech();
-          if (bubble) { bubble.classList.remove('streaming'); bubble = null; }
-          const mk = addTool();
-          mk.sum.querySelector('.name').textContent = niceTool(ev.name, ev.args) || '工具';
-          const st2 = mk.sum.querySelector('.status');
-          st2.textContent = ev.ok ? '完成' : '失败';
-          st2.className = 'status ' + (ev.ok ? 'ok' : 'err');
-          mk.pre.textContent = ev.output ? tidyToolText(ev.output) : '';
-          toolEls.set(ev.id, mk);
-          hubRefreshTitle();
-        } catch (e2) { /* 补画失败也不能连累这一轮 */ }
-        continue;
-      }
-      {
-        const st = el.sum.querySelector('.status');
-        // 【2026-11-05 加】带上耗时：跑得久不久，一眼看得出来
-        const _secs = el._t0 ? Math.max(0, (Date.now() - el._t0) / 1000) : 0;
-        const _dur = _secs >= 1 ? ' · ' + (_secs < 10 ? _secs.toFixed(1) : Math.round(_secs)) + 's' : '';
-        st.textContent = (ev.ok ? '完成' : '失败') + _dur;
-        st.className = 'status ' + (ev.ok ? 'ok' : 'err');
-        hubRefreshTitle();
-        el.pre.textContent = tidyToolText(el.pre.textContent + '\n--- output ---\n' + tidyToolText(ev.output));
-      }
-    } else if (ev.type === 'whale' || ev.type === 'agent') {
-      // 她说话了：当场画一个她自己的气泡，不跟我的挤在一起。
-      // agent = 群聊里别的智能体卡说的（2026-10-30）：同一件事 —— 别人开口，
-      // 名字由 ev.who 带着，画法跟小鲸一样，别塞进我这条气泡里。
-      // 如果刚才有流式的临时气泡，就【定稿】到那上面，别再画第二个
-      if (whaleStreamFinish(ev.text, StreamKey(id, ev.who))) {
-        // 已经写进流式那个气泡了，不用再建
-      } else {
-        addWhaleBubble(ev.who, ev.text);
-      }
-    } else if (ev.type === 'whale_stream_start') {
-          whaleStreamStart(ev.who, StreamKey(id, ev.who));
-    } else if (ev.type === 'whale_delta') {
-          whaleStreamDelta(ev.text, StreamKey(id, ev.who));
-    } else if (ev.type === 'files') {
-      const wrap = lastAssistantWrap();
-      if (wrap) attachFiles(wrap, ev.items);
-    }
-  }
-  closeThink();
-  return bubble;
 }
 
 /** 屏幕上历史最后一条是谁说的：'user' / 'assistant'，一条都没有就空串 */
@@ -7555,7 +5934,14 @@ async function tryHealAfterDisconnect(id) {
        */
       turnMark = await markHistoryLength(id);
       if (sessionId === id) {
-        log.innerHTML = '';
+        /**
+         * 【2026-11-09 换框架】原来是 `log.innerHTML = ''`（把屏幕清空再重画）。
+         *
+         * 清空 DOM 这件事现在只有 React 能做 —— 直接抹容器会留下 React 记着的旧节点，
+         * 下一次渲染就按错位插入。这里改成清**数据**：历史置空、叫一次画，
+         * 屏幕自然变空；紧接着 attachLive 会把「这一轮现在长什么样」送进来。
+         */
+        try { window.logSetHistory(id, []); window.logSetLive(id, null); window.renderLog({ force: true }); } catch (e) {}
   // 【清空历史后扫残留光标】
   // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
   // 万一进程上次是被强杀的，类就留在那儿了 —— 这里扫一遍收干净。
@@ -7939,173 +6325,62 @@ function syncHealth() {
     .catch(() => {});
 }
 
+/* 【2026-11-10 收编】addEl（(target||log).appendChild 那条路）整段删除：
+ * #log 里的每一个节点都归 React 按 key 画 —— 「建一个气泡并挂上去」这种
+ * 手写 DOM 入口就是「两套账」的种子。它最后两个调用点（安全词提示、
+ * 插话失败提示）都已改走 addSysNote（store → React SysNote）。
+ * scripts/check-log-no-manual-dom.mjs 钉住它不许复活。 */
 /**
- * 建一个气泡并挂上去。
+ * 主人说的一句话（含附件、插话标记、署名）。
  *
- * target 允许传 DocumentFragment：批量重绘历史时先离屏建好、最后一次性挂载，
- * 避免每加一条都触发一次强制同步布局（那是切会话卡顿的真凶）。
+ * 【2026-11-09 换框架】这里不再建任何节点 —— 只往 store 里塞一条
+ * 「还没落盘的主人消息」，屏幕由 React 按 key `p-<id>` 画出来。
+ *
+ * 返回值：原来调用方拿到的是那个 DOM（`pendingRewindBubble` 攒着它，
+ * 等服务端把落盘下标 `at` 告诉我之后再补「回退/编辑/分支/删除」四个按钮）。
+ * 现在返回一个**句柄** `{ __pendingId }`，那几处调用点改成拿句柄去 store 里
+ * 补下标（setPendingRewind）或撤掉这条（dropPending）——
+ * 按钮本身由 React 根据 rewindId 渲染，不需要谁来 append。
+ *
+ * `target`（离屏 fragment）这条参数留着只是为了签名兼容：
+ * 批量重画那条路（renderTurns）已经删了，不会再有 fragment 传进来。
  */
-function addEl(html, cls, target) {
-  const d = document.createElement('div');
-  d.className = cls;
-  d.innerHTML = html;
-  (target || log).appendChild(d);
-  // 只有真的在往屏幕上加才滚动；往 fragment 里建的时候滚了也没意义
-  if (!target) noteNewContent();
-  return d;
-}
-
 function addUser(text, tag, atts, target, rewindId, who = '') {
-  const wrap = addEl('', 'msg user', target);
-  if (target) {
-    // 批量重绘时 target 是 fragment，不需要返回
-  }
-  /* 【2026-11-03】画的时候盖个时间戳。renderTurns 那段的「补回差点被洗掉的插话」
-   * 原来拿 data-at（那是数组下标）当时间戳算，判据永远不成立，一次都没生效过。 */
-  wrap.dataset.drawnAt = String(Date.now());
-  const hasId = Number.isFinite(Number(rewindId));
-  if (hasId) {
-    wrap.dataset.rewindId = String(Number(rewindId));
-    // 搜会话时靠这个下标把命中那条滚到眼前（回退按钮和它同一个号）
-    wrap.dataset.at = String(Number(rewindId));
-  }
-  // 注意顺序：必须先 innerHTML 建骨架，再挂按钮 —— 反过来的话 innerHTML 会把按钮一起抹掉（踩过）。
-  wrap.innerHTML = '<div class="role"></div>';
-  // 这句是哪个身份说的就写哪个 —— 存了就用存的，没存（老消息）才用当前身份。
-  // 2026-10-28 主人：「切换身份后不动以前的消息，上一句显示依旧是主人」。
-  {
-    const roleEl = wrap.querySelector('.role');
-    // 没存 who 的老消息：一律当「主人」说的。
-    // 为什么不用 currentIdentityName：身份功能是后来才有的，在那之前的消息和
-    // 主人身份下发的消息本来就没记号 —— 它们必然是主人说的。用「当前身份」去补，
-    // 一旦当时正切在小鲸上，满屏主人说的话就全变成小鲸了，正好是主人不要的效果。
-    const nm = (typeof who === 'string' && who) ? who : '主人';
-    roleEl.textContent = nm;
-    // 只有「这句话真的存过身份」才钉死它。
-    // 老会话里那些没存的（who 为空）不打标记 —— 切身份时补成当前名字，
-    // 但一旦补过也就钉住了，不会来回跳。
-    if (typeof who === 'string' && who) roleEl.dataset.who = nm;
-  }
-  if (tag) {
-    const tg = document.createElement('span');
-    tg.className = 'interjectTag';
-    tg.textContent = tag;
-    wrap.querySelector('.role').appendChild(tg);
-  }
-  if (tag) wrap.querySelector('.interjectTag').textContent = tag;
-  // 鼠标移到这条上会浮出「↶ 回退」：撤回这条以及它后面的一切
-  if (hasId) {
-    const rb = document.createElement('button');
-    rb.type = 'button';
-    rb.className = 'rewindBtn';
-    rb.textContent = '↶ 回退';
-    rb.title = '把对话回退到这条之前';
-    rb.onclick = () => openRewind(Number(rewindId));
-    wrap.appendChild(rb);
-  }
-  const list = Array.isArray(atts) ? atts.filter((a) => a && a.path) : [];
-  // 附件先显示，气泡里只写打的字
-  if (list.length) {
-    const box = document.createElement('div');
-    box.className = 'msgAttach';
-    for (const a of list) {
-      // 视频 / 音频要能直接播，不能缩成一个纸片图标——
-      // 主人重进会话后还指望点一下就能看，缩成图标等于「东西没了」。
-      const ext = String(a.path || '').split('.').pop().toLowerCase();
-      const mediaKind =
-        a.kind === 'video' || ['mp4', 'webm', 'mkv', 'mov', 'm4v', 'flv'].includes(ext)
-          ? 'video'
-          : a.kind === 'audio' || ['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac'].includes(ext)
-            ? 'audio'
-            : '';
-      if (mediaKind) {
-        // 直接复用她「发文件」那套卡片样式（.fileRow）：播放器 + 一行「名字 · 大小 · 下载」。
-        // 两边长一样，主人就不用适应两种观感。
-        const box2 = document.createElement('div');
-        box2.className = 'fileRow';
-        const m = document.createElement(mediaKind);
-        m.controls = true;
-        m.preload = 'metadata';
-        m.src = `/api/attach/raw?path=${encodeURIComponent(a.path)}`;
-        const dlHref = `/api/attach/raw?path=${encodeURIComponent(a.path)}&download=1`;
-        m.onerror = () => {
-          // 文件被挪走/删了，退成一行说明，别留个坏播放器
-          box2.innerHTML = '';
-          const e = document.createElement('div');
-          e.className = 'finfo';
-          const t = document.createElement('div');
-          t.className = 'fname';
-          t.textContent = '⚠ ' + (a.name || '文件') + ' 打不开了（可能被移走或删了）';
-          e.appendChild(t);
-          box2.appendChild(e);
-        };
-        const info = document.createElement('div');
-        info.className = 'finfo';
-        const nm = document.createElement('div');
-        nm.className = 'fname';
-        nm.textContent = (mediaKind === 'video' ? '🎬 ' : '🎵 ') + (a.name || '');
-        const sz = document.createElement('div');
-        sz.className = 'fsize';
-        sz.textContent = a.size ? fmtSize(a.size) : '';
-        const dlink = document.createElement('a');
-        dlink.className = 'fdl';
-        dlink.textContent = '下载';
-        wireSave(dlink, dlHref, a.name || '');
-        info.append(nm, sz, dlink);
-        box2.append(m, info);
-        box.appendChild(box2);
-        continue;
-      }
-
-      const chip = document.createElement("div");
-      chip.className = "attachChip";
-      chip.title = a.path;
-      if (a.kind === "image") {
-        // 刚选的带 dataUrl；刷历史时只有路径，就用预览接口拉
-        const im = document.createElement("img");
-        im.className = "thumb";
-        im.alt = a.name || "";
-        im.src = a.dataUrl || `/api/attach/raw?path=${encodeURIComponent(a.path)}`;
-        im.title = a.name || a.path || '';
-        im.onclick = () => { try { openImgView(im.src); } catch {} };
-        im.onerror = () => {
-          // 图没了就退成图标，别显示破图
-          const d = document.createElement("div");
-          d.className = "ficon";
-          d.textContent = "🖼";
-          im.replaceWith(d);
-        };
-        chip.appendChild(im);
-      } else {
-        const d = document.createElement("div");
-        d.className = "ficon";
-        d.textContent = "📄";
-        chip.appendChild(d);
-      }
-      /* 【2026-11-05 改·图片不挂文件名】
-       * 名字放在图的 title 里，悬停能看到；文件（pdf/zip 之类）照旧挂名字 ——
-       * 那里名字才是唯一能说明「这是什么」的东西。
-       * 不只靠 CSS 隐藏：老版 Electron 不认 :has()，这一步才是真正的兜底。 */
-      if (a.kind !== "image") {
-        const nm = document.createElement("div");
-        nm.className = "aname";
-        nm.textContent = a.name;
-        chip.appendChild(nm);
-      }
-      box.appendChild(chip);
-    }
-    wrap.appendChild(box);
-  }
-  if (text) {
-    const b = document.createElement('div');
-    b.className = 'bubble';
-    b.textContent = text;
-    wrap.appendChild(b);
-  }
-  return wrap;
+  void target;
+  const s = window.__logStore;
+  if (!s || typeof s.pushPendingUser !== 'function') return null;
+  const id = s.pushPendingUser({ text: String(text || ''), atts, who, tag, rewindId });
+  return { __pendingId: id };
 }
 
 /** 给刚画出来的用户气泡补上「↶ 回退」（下标要等服务端落盘才知道） */
+/* ════════════════════════════════════════════════════════════════════
+   【2026-11-10 A5 · attach* 装饰器族白名单（短期容忍，下轮收编）】
+
+   规格书的总原则是「屏幕 = f(数据)」，#log 内不许手写 DOM。attach* 这一族
+   是唯一的例外区：它们由 React 组件的 useEffect 调用，往 React 画好的 .msg
+   节点上**追加**小装饰（按钮、时间戳、用量行）。因为 key 稳定、React 从不
+   重建这些节点，追加的东西不会被冲掉 —— 这就是「短期容忍」的依据。
+
+   本轮已收编的：attachFiles（→ items.js 直出 + FileCard）、addEl（已删）、
+   startEdit（→ store 编辑态 + EditArea）。
+
+   下面这几个是本轮**登记在案**的存量（数据不经过它们的路径已断，
+   只做纯装饰，不参与「这一轮长什么样」的任何决策）：
+     · attachRewind      —— 回退按钮（.rewindBtn，挂 .msg 右上）
+     · attachEdit        —— 编辑按钮（.editBtn，.msgActions 容器；点击进 React 编辑态）
+     · attachBranchBtn   —— 分支按钮（.branchBtn，.msgActions 容器）
+     · attachDelBtn      —— 删除按钮（.delBtn，.msgActions 容器）
+     · attachCopyBtn     —— 复制按钮（.copyBtn，.msgActions 容器）
+     · attachRetry       —— 重发按钮（.retryBtn，.msgActions 容器）
+     · attachTime        —— 时间戳（.msgTime，挂 .msg）
+     · maybeFoldBubble   —— 超长正文折叠（.foldToggle，插在 .bubble 之后）
+     · appendTurnUsage   —— 用量行（.turnUsage，挂 .msg 底部）
+     · actionsOf         —— 按钮容器（.msgActions，上面几个的宿主）
+   scripts/check-log-no-manual-dom.mjs 以注释登记它们：白名单外的 attach 系
+   函数一律算违规。下轮收编方向：按钮族改 React 渲染。
+   ════════════════════════════════════════════════════════════════════ */
+
 /**
  * 取这条消息的按钮容器，没有就造一个。
  *
@@ -8150,18 +6425,28 @@ function attachRewind(wrap, at) {
    editMessage → 找到本子里提到这句话的那一行，换成新的）。
    还能「撤销」，退回上一次改之前的样子。 */
 
-/** 把某一轮（用回退点下标定位）挂上编辑能力 */
-function attachEdit(wrap, at) {
+/** 把某一轮（用回退点下标定位）挂上编辑能力。
+ *
+ * 【2026-11-10 A1】编辑态进了 React：点「✎ 编辑」不再就地建手写 textarea
+ * （旧 startEdit 一开就把 bubble.textContent 清空，React 重渲染一来，
+ * 输入框连着原内容一起被冲掉 —— 审查实测）。现在组件传进 onEdit 回调，
+ * 回调里把 editKey 记进 store，textarea 由 React 受控渲染（src-ui/EditArea.jsx）。
+ * 编辑按钮本身的样式靠上面 .msgActions > button 容器规则，收编后不变。 */
+function attachEdit(wrap, at, onEdit) {
   if (!wrap || !Number.isFinite(Number(at))) { if (wrap) wrap.classList.add('noRewind'); return; }
   wrap.dataset.editAt = String(Number(at));
-  if (wrap.querySelector('.editBtn')) return;
-  const eb = document.createElement('button');
-  eb.type = 'button';
-  eb.className = 'editBtn';
-  eb.textContent = '✎ 编辑';
-  eb.title = '改这句话的内容（会同步改这个会话的记忆）';
-  eb.onclick = () => startEdit(wrap, Number(at));
-  actionsOf(wrap).appendChild(eb);
+  let eb = wrap.querySelector('.editBtn');
+  if (!eb) {
+    eb = document.createElement('button');
+    eb.type = 'button';
+    eb.className = 'editBtn';
+    eb.textContent = '✎ 编辑';
+    eb.title = '改这句话的内容（会同步改这个会话的记忆）';
+    actionsOf(wrap).appendChild(eb);
+  }
+  eb.onclick = () => {
+    if (typeof onEdit === 'function') onEdit();
+  };
   if (!wrap.querySelector('.rewindBtn')) wrap.classList.add('noRewind');
 }
 
@@ -8305,16 +6590,11 @@ function maybeFoldBubble(el, rawText) {
   btn.className = 'foldToggle';
   btn.textContent = '展开全文（' + len + ' 字）';
   btn.onclick = () => {
-    let before = 0;
-    try { before = el.offsetHeight; } catch {}
     const folded = el.classList.toggle('folded');
     btn.textContent = folded ? '展开全文（' + len + ' 字）' : '收起';
-    if (!stickBottom) {
-      try {
-        const after = el.offsetHeight;
-        if (after !== before) log.scrollTop += after - before;
-      } catch {}
-    }
+    /* 【2026-11-10 A3】原来这里在「不在底部」时手动补 scrollTop —— 那是给
+     * 旧滚动机制擦屁股的。现在 #log 的 scrollTop 只归 LogView 管展开高度
+     * 引起的位移由 React 的贴底 effect 兜底，这里一个像素都不碰。 */
   };
   try { el.insertAdjacentElement('afterend', btn); } catch {}
 }
@@ -8457,524 +6737,22 @@ async function retryHere(at, askText, btn) {
     if (btn) btn.disabled = false;
   }
 }
-/** 原地进入编辑：气泡换成 textarea + 存/撤销/取消 */
-function startEdit(wrap, at) {
-  if (!wrap || wrap.querySelector('.editArea')) return;
-  const bubble = wrap.querySelector('.bubble');
-  if (!bubble) return;
-  const before = bubble.textContent || '';
-  bubble.classList.add('editing');
-  wrap.classList.add('editing');
-  bubble.textContent = '';
-
-  const ta = document.createElement('textarea');
-  ta.className = 'editArea';
-  ta.value = before;
-  ta.spellcheck = false;
-  const acts = document.createElement('div');
-  acts.className = 'editActions';
-  const okBtn = document.createElement('button');
-  okBtn.type = 'button';
-  okBtn.className = 'primary';
-  okBtn.textContent = '存上';
-  const undoBtn = document.createElement('button');
-  undoBtn.type = 'button';
-  undoBtn.textContent = '撤销上次修改';
-  const noBtn = document.createElement('button');
-  noBtn.type = 'button';
-  noBtn.textContent = '不改了';
-  acts.append(okBtn, undoBtn, noBtn);
-  bubble.append(ta, acts);
-
-  const leave = (text) => {
-    bubble.classList.remove('editing');
-    wrap.classList.remove('editing');
-    bubble.textContent = text;
-    // 同上：别让 focus 把滚动带跑
-    try { ta.focus({ preventScroll: true }); } catch {}
-  };
-
-  /** 重画这一条（就地替换成新的文本/气泡） */
-  const repaint = (text, edited) => {
-    bubble.classList.remove('editing');
-    wrap.classList.remove('editing');
-    bubble.textContent = text;
-    wrap.classList.toggle('edited', Boolean(edited));
-  };
-
-  const save = async () => {
-    const next = ta.value;
-    if (!next.trim()) { addSysNote('不能改成空的。'); return; }
-    if (next === before) { repaint(before, wrap.classList.contains('edited')); return; }
-    okBtn.disabled = true; undoBtn.disabled = true; noBtn.disabled = true;
-    const r = await fetch('/api/sessions/edit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: sessionId, at, text: next }),
-    }).then((x) => x.json()).catch(() => null);
-    okBtn.disabled = false; undoBtn.disabled = false; noBtn.disabled = false;
-    if (!r || r.error) { addSysNote('改不了：' + ((r && r.error) || '网络错误')); return; }
-    repaint(next, true);
-    const md = r.memory;
-    addSysNote(md && md.changed
-      ? `改好了，下一句就按新的来。记忆本子也跟着改了 ${md.lines || 1} 处。`
-      : '改好了，下一句就按新的来。记忆本子里没找到提到这句的地方，本子没动。');
-  };
-
-  const undo = async () => {
-    okBtn.disabled = true; undoBtn.disabled = true; noBtn.disabled = true;
-    const r = await fetch('/api/sessions/edit-undo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: sessionId, at }),
-    }).then((x) => x.json()).catch(() => null);
-    okBtn.disabled = false; undoBtn.disabled = false; noBtn.disabled = false;
-    if (!r || r.error) { addSysNote('撤销不了：' + ((r && r.error) || '网络错误')); return; }
-    if (r.unchanged) { addSysNote('这句没改过，没得撤销。'); return; }
-    repaint(r.text || '', false);
-    addSysNote(r.memory && r.memory.changed ? '撤销了，记忆本子也一起退回去了。' : '撤销了。');
-  };
-
-  okBtn.onclick = save;
-  undoBtn.onclick = undo;
-  noBtn.onclick = () => repaint(before, wrap.classList.contains('edited'));
-  ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { e.preventDefault(); noBtn.onclick(); }
-    // Ctrl/Cmd + Enter 存上，普通回车是换行（一句话可能有好几段）
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); save(); }
-  });
-  /*
-   * 【2026-10-27 主人报：点了【编辑】，界面一下子跳回会话开头】
-   *
-   * 病根：这行 ta.focus()。浏览器为了让「光标可见」，会自己把最近的滚动容器
-   * （#log）滚到它觉得合适的位置 —— 编辑框一下从一行变成一大块，位置又变了，
-   * 就一路滚到开头附近去了。滚回去时鼠标恰好压在最上面那条消息上，那排
-   * 「编辑/分支」顺势淡出来，看着就像「会话开头的按钮跑到了右上角」。
-   *
-   * 改法：进编辑前记下 #log 的 scrollTop，focus 之后立刻还原。
-   * focus({preventScroll:true}) 是标准做法（Chrome/Electron 都认），
-   * 两边一起上：认得就压根不滚，不认得也有还原兜底。
-   */
-  const scroller = document.getElementById('log');
-  const keepTop = scroller ? scroller.scrollTop : 0;
-  setTimeout(() => {
-    try { ta.focus({ preventScroll: true }); } catch { try { ta.focus(); } catch {} }
-    ta.selectionStart = ta.selectionEnd = ta.value.length;
-    // 不认 preventScroll 的环境会滚一下，这里立刻掰回去
-    if (scroller) scroller.scrollTop = keepTop;
-    // 再补一帧：有些环境在 focus 之后才做滚动补偿
-    if (scroller) requestAnimationFrame(() => { scroller.scrollTop = keepTop; });
-  }, 0);
-}
-
-/**
- * 我发出去的文件画像。
- * 服务端每条助手消息会带 _out：[{path,name,size,kind,mime,key}]。
- * 图片给缩略图（点开看大图），视频直接能播，别的就是一行「点一下下载」。
- * 路径没了还有 key：兜底箱里抄了一份，照样下得回来。
- */
-function outUrl(f, download) {
-  if (f && f.key) return '/api/attach/outbox-out?key=' + encodeURIComponent(f.key);
-  const p = (f && f.path) || '';
-  if (!p) return '';
-  return '/api/attach/raw?path=' + encodeURIComponent(p) + (download ? '&download=1' : '');
-}
-function iconOf(f) {
-  const k = (f && f.kind) || 'file';
-  if (k === 'video') return '🎬';
-  if (k === 'image') return '🖼';
-  if (k === 'audio') return '🎵';
-  if (k === 'pdf') return '📕';
-  if (k === 'text') return '📝';
-  const ext = String((f && f.name) || '').split('.').pop().toLowerCase();
-  if (ext === 'zip' || ext === 'rar' || ext === '7z') return '🗜';
-  return '📄';
-}
-/** 语音气泡：点一下响，再点一下停。长得像聊天软件那种语音条，不是大播放器 */
-function voiceBubble(f, name, size, url, dl) {
-  const row = document.createElement('div');
-  row.className = 'msgVoice';
-
-  const b = document.createElement('div');
-  b.className = 'vbub';
-  b.title = '点一下听，再点一下停';
-
-  const wave = document.createElement('div');
-  wave.className = 'vwave';
-  for (let i = 0; i < 5; i++) wave.appendChild(document.createElement('i'));
-
-  const sec = document.createElement('span');
-  sec.className = 'vsec';
-  sec.textContent = '0\u2033';
-
-  const tag = document.createElement('span');
-  tag.className = 'vtag';
-  tag.textContent = '语音';
-
-  const prog = document.createElement('div');
-  prog.className = 'vprog';
-  const bar = document.createElement('b');
-  prog.appendChild(bar);
-
-  const a = document.createElement('a');
-  a.className = 'vdl';
-  a.textContent = '\u2193';
-  a.href = dl;
-  a.title = '存下来';
-  wireSave(a, dl, name);
-  a.addEventListener('click', (e) => e.stopPropagation());
-
-  b.append(wave, sec, tag, a, prog);
-
-  const au = document.createElement('audio');
-  au.preload = 'metadata';
-  au.src = url;
-  au.style.display = 'none';
-  b.appendChild(au);
-
-  au.addEventListener('loadedmetadata', () => {
-    const d = isFinite(au.duration) ? au.duration : 0;
-    sec.textContent = (d > 0 ? Math.max(1, Math.round(d)) : '\u2013') + '\u2033';
-  });
-  au.addEventListener('timeupdate', () => {
-    if (!au.duration) return;
-    bar.style.width = Math.min(100, (au.currentTime / au.duration) * 100) + '%';
-    sec.textContent = Math.max(1, Math.round(au.duration - au.currentTime)) + '\u2033';
-  });
-  au.addEventListener('play', () => { b.classList.add('playing'); b.classList.remove('paused'); });
-  au.addEventListener('pause', () => {
-    b.classList.remove('playing');
-    if (!au.ended) b.classList.add('paused');
-  });
-  au.addEventListener('ended', () => {
-    b.classList.remove('playing', 'paused');
-    bar.style.width = '0%';
-    sec.textContent = (au.duration ? Math.max(1, Math.round(au.duration)) : '\u2013') + '\u2033';
-  });
-
-  b.addEventListener('click', () => {
-    if (au.paused) {
-      document.querySelectorAll('.vbub audio').forEach((x) => {
-        if (x !== au && !x.paused) { try { x.pause(); } catch (e) {} }
-      });
-      try { au.play(); } catch (e) {}
-    } else {
-      try { au.pause(); } catch (e) {}
-    }
-  });
-
-  row.appendChild(b);
-  return row;
-}
-
-/**
- * 存文件：抓下来自己写盘，页面原地不动。
+/* ══【2026-11-10 A2 收编·她发的文件整段下岗】══
  *
- * 以前直接给 <a href="...download=1">，浏览器拿 Content-Disposition: attachment
- * 就整页去「下载」，在 Electron 里就是开一个新页或者把当前页顶掉，
- * 主人回不来只能退出重进。改成 fetch → Blob → a[download]，
- * 全程在当前页里完成，点完还是聊天界面。
- */
-async function saveFile(url, name) {
-  const tip = (txt) => {
-    try {
-      let t = document.getElementById('saveTip');
-      if (!t) {
-        t = document.createElement('div');
-        t.id = 'saveTip';
-        t.style.cssText = 'position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:9999;'
-          + 'padding:8px 16px;border-radius:10px;background:rgba(26,32,41,.95);color:#e8eefb;'
-          + 'font-size:13px;border:1px solid #2b3341;transition:opacity .25s;pointer-events:none';
-        document.body.appendChild(t);
-      }
-      t.textContent = txt;
-      t.style.opacity = '1';
-      clearTimeout(t._h);
-      t._h = setTimeout(() => { t.style.opacity = '0'; }, 2200);
-    } catch (e) {}
-  };
-  tip('正在存 ' + (name || '文件') + ' …');
-  try {
-    const r = await fetch(url, { credentials: 'same-origin' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const blob = await r.blob();
-    const href = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = href;
-    a.download = name || 'download';
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      try { URL.revokeObjectURL(href); } catch (e) {}
-      try { a.remove(); } catch (e) {}
-    }, 1500);
-    tip('已存好：' + (name || '文件'));
-  } catch (e) {
-    tip('存不下来：' + String(e && e.message || e));
-  }
-}
-/** 给一个 <a> 挂上「点了就存，不跳页」 */
-function wireSave(el, url, name) {
-  if (!el) return el;
-  el.setAttribute('href', url || '#');
-  el.setAttribute('download', name || '');
-  el.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    saveFile(url, name);
-  });
-  return el;
-}
-/** 消息流容器（现在的结构里就是 #log） */
-function sentMsgRoot() {
-  try { return document.getElementById('log'); } catch (e) { return null; }
-}
-
-/**
- * 【2026-11-06 重写·这一整块以前是照着老的 els.messages / .row.ai 写的】
+ * 这里原来是文件卡的手写 DOM 一族：outUrl / iconOf / voiceBubble / saveFile /
+ * wireSave / sentMsgRoot / liveBubbleHost / sentTailRow / placeSentCard /
+ * settleSentFiles / outCard / attachFiles / lastAssistantWrap。
  *
- * 主人让查「发文件」，查出来的是：这套函数全在引用一个**早就不存在的** `els`，
- * 还有老结构的 `.row.ai`（现在消息是 `.msg.assistant`）。
- * 结果两条路一起断：
- *   · liveBubbleHost() 一进门 `els.messages` 就 ReferenceError，被 catch 吃掉 → 返回 null
- *   · sentTailRow() 同样炸 → 返回 null
- *   · 于是 placeSentCard 最后落到 `els.messages.appendChild` 那一句，再炸一次
- *   · SSE 那边 catch 住，只往 console 打一行「当场画失败」—— 主人屏幕上什么都没有
- *
- * 现在按真实的 DOM 重写：容器 = #log，活气泡 = 带 .streaming 的那个 .bubble。
+ * 下岗原因：文件现在是**清单条目**，不是「挂在他人口气泡上的装饰」——
+ *   · 服务端 appendLiveItem / buildLiveItems 把 sentfile / files 事件合成
+ *     k:'file' 的 item（带文件名 / 大小 / kind / 路径 / outbox key）；
+ *   · src-ui/items.js 同一条目直出，src-ui/FileCard.jsx 渲染（CSS 类名照搬，
+ *     fileCard / fileRow / vidBox / msgVoice… 全是旧的，没新写一行样式）；
+ *   · 旧路中最致命的一条是 placeSentCard 把卡片塞进 .bubble.streaming ——
+ *     那是 React 的 MdDiv，mdInto 每个流式 tick 都重写 innerHTML，
+ *     谁挂进去谁下一个 tick 就没了（审查实测「文件卡一闪就没」）。
+ * scripts/check-log-no-manual-dom.mjs 钉住：这一族函数名不许复活。
  */
-function liveBubbleHost() {
-  try {
-    const root = sentMsgRoot();
-    if (!root) return null;
-    const live = [...root.querySelectorAll('.bubble.streaming')];
-    if (live.length) return live[live.length - 1];
-    return null;
-  } catch (e) { return null; }
-}
-
-let sentThisTurn = [];
-
-/** 这一轮已经说完、没有活气泡时用的临时壳：卡片先落这儿，收尾再归位 */
-function sentTailRow() {
-  try {
-    const root = sentMsgRoot();
-    if (!root) return null;
-    let tail = root.querySelector('[data-sent-tail="1"]');
-    if (tail) return tail;
-    tail = document.createElement('div');
-    tail.className = 'msg assistant sentTail';
-    tail.dataset.sentTail = '1';
-    const inbox = document.createElement('div');
-    inbox.className = 'bubble';
-    tail.appendChild(inbox);
-    root.appendChild(tail);
-    try { stickToBottom(); } catch (e) {}
-    return tail;
-  } catch (e) { return null; }
-}
-
-/** 把一张卡片放到该放的地方 */
-function placeSentCard(card) {
-  if (!card) return;
-  sentThisTurn.push(card);
-  const host = liveBubbleHost();
-  if (host) {
-    let box = host.querySelector('.sentLive');
-    if (!box) { box = document.createElement('div'); box.className = 'sentLive'; host.appendChild(box); }
-    box.appendChild(card);
-  } else {
-    const tail = sentTailRow();
-    const inbox = tail && tail.firstChild;
-    if (inbox) inbox.appendChild(card);
-    else { const root = sentMsgRoot(); if (root) root.appendChild(card); }
-  }
-  try { stickToBottom(); } catch (e) {}
-}
-
-/** 这一轮说完了：本轮的卡片统一归到末尾（就近放在说这句话的这条回复里） */
-function settleSentFiles() {
-  try {
-    const cards = (sentThisTurn || []).filter((c) => c && c.parentNode);
-    const root = sentMsgRoot();
-    const tail = root ? root.querySelector('[data-sent-tail="1"]') : null;
-    if (tail) {
-      const inbox = tail.firstChild;
-      if (inbox) for (const c of [...inbox.children]) if (!cards.includes(c)) cards.push(c);
-    }
-    if (!cards.length) { if (tail) tail.remove(); sentThisTurn = []; return; }
-
-    /* 归位顺序：正在流式的气泡 → 最后一条回复的气泡 → 临时壳 → 消息流末尾。
-     * 只往前找「最后一条」，不再上溯老消息 —— 以前一路找回去，卡片会贴到很早的旧消息下面。 */
-    let hostBub = null;
-    if (root) {
-      const live = [...root.querySelectorAll('.bubble.streaming')];
-      if (live.length) hostBub = live[live.length - 1];
-      if (!hostBub) {
-        const bubs = [...root.querySelectorAll('.msg.assistant .bubble')];
-        const last = bubs[bubs.length - 1];
-        if (last && !(last.parentElement && last.parentElement.dataset.sentTail)) hostBub = last;
-      }
-    }
-    if (hostBub) {
-      let box = hostBub.querySelector('.sentLive');
-      if (!box) { box = document.createElement('div'); box.className = 'sentLive'; hostBub.appendChild(box); }
-      for (const c of cards) box.appendChild(c);
-      if (tail) tail.remove();
-    } else if (!tail && root) {
-      for (const c of cards) root.appendChild(c);
-    }
-    sentThisTurn = [];
-    try { stickToBottom(); } catch (e) {}
-  } catch (e) { console.warn('[sentfile] 收尾归位失败：', e && e.message); }
-}
-
-
-function outCard(f) {
-  const name = (f && f.name) || '文件';
-  const size = fmtSize(f && f.size);
-  const url = outUrl(f, false);
-  const dl = outUrl(f, true);
-  const kind = (f && f.kind) || 'file';
-
-  if (kind === 'image') {
-    /**
-     * 【2026-11-05 修·点图跳浏览器】
-     *
-     * 原来这里是 <a href target="_blank">：点一下就把图片丢给系统默认浏览器开一个新页签。
-     * 主人问「为什么发我的图片点开会跳转到浏览器」—— 因为就是这么写的。
-     *
-     * 主人自己发的附件走的是应用内浮层（openImgView），她发的图却跑到浏览器里，
-     * 两边行为不一样，观感也割裂。现在统一成浮层：在应用里看大图，不离开。
-     *
-     * 下载没丢：浮层里有下载键；右键「图片另存为」也照样能用（src 就是原图地址）。
-     */
-    const card = document.createElement('div');
-    card.className = 'fileCard';
-    card.style.cursor = 'zoom-in';
-    card.title = name + ' · ' + size + '（点开看大图）';
-    card.onclick = () => { try { openImgView(url); } catch {} };
-    const im = document.createElement('img');
-    im.className = 'fthumb';
-    im.alt = name;
-    im.src = url;
-    im.onerror = () => {
-      card.className = 'fileCard';
-      card.innerHTML = '';
-      const ic = document.createElement('div'); ic.className = 'fk'; ic.textContent = '🖼';
-      const meta = document.createElement('div'); meta.className = 'fmeta';
-      const nm = document.createElement('div'); nm.className = 'fname'; nm.textContent = name;
-      const sz = document.createElement('div'); sz.className = 'fsize'; sz.textContent = size + ' · 打不开了';
-      meta.append(nm, sz);
-      card.append(ic, meta);
-    };
-    card.appendChild(im);
-    return card;
-  }
-
-  // 语音一律走小语音条。
-  // 以前只认 say_ 开头和 _v4_/_v6_ 这种命名，换个文件名（比如试音 cand/N4_xxx.mp3）
-  // 就掉到下面的「文件卡片」里，变成一个大播放器——主人要的是气泡，不是文件。
-  // 名字像语音、或者本来就在 voice 目录里的音频，一律按语音条画。
-  const rawPath = String((f && f.path) || '').replace(/\\/g, '/');
-  const looksVoice =
-    /(^|\/)(say_|voice_)[^\/]*\.(mp3|m4a|wav|ogg|aac)$/i.test(rawPath) ||
-    /[\/\\]voice[\/\\][^\/\\]*\.(mp3|m4a|wav|ogg|aac)$/i.test(rawPath) ||
-    /_v[0-9]+_[^\/]*\.(mp3|m4a|wav|ogg|aac)$/i.test(rawPath);
-  if (kind === 'audio' && (looksVoice || !f || !f.path)) {
-    return voiceBubble(f, name, size, url, dl);
-  }
-  // 剩下在语音目录/像语音但 kind 没认出来的，也走语音条
-  if (kind !== 'video' && kind !== 'image' && looksVoice) {
-    return voiceBubble(f, name, size, url, dl);
-  }
-
-  if (kind === 'video') {
-    // 视频给足地方：以前锁死在 300×220，小人儿一样，看着憋屈。
-    // 现在单独一个宽屏样式 .vidBox，能撑到聊天区宽度，右上角还能一键放大。
-    const box = document.createElement('div');
-    box.className = 'fileRow vidBox';
-    const media = document.createElement('video');
-    media.controls = true;
-    media.preload = 'metadata';
-    media.src = url;
-    media.playsInline = true;
-    // 双击视频 = 全屏，跟平时看视频的习惯一样
-    media.addEventListener('dblclick', () => {
-      try {
-        if (media.requestFullscreen) media.requestFullscreen();
-        else if (media.webkitEnterFullscreen) media.webkitEnterFullscreen();
-      } catch (e) {}
-    });
-    box.appendChild(media);
-    // 底下那行「🎬 文件名 · 大小 · 下载」主人嫌碍眼，整行不要了。
-    // 下载换个不占地方的办法：鼠标移到视频上，右上角浮出一个小箭头。
-    const saver = document.createElement('a');
-    saver.className = 'vidSave';
-    saver.textContent = '↓';
-    saver.title = '存下来：' + name;
-    wireSave(saver, dl, name);
-    box.appendChild(saver);
-    box.title = name + ' · ' + size;
-    return box;
-  }
-
-  const card = document.createElement('a');
-  card.className = 'fileCard';
-  card.title = name + ' · ' + size + '（点一下下载）';
-  wireSave(card, dl, name);
-  const ic = document.createElement('div');
-  ic.className = 'fk';
-  ic.textContent = iconOf(f);
-  const meta = document.createElement('div');
-  meta.className = 'fmeta';
-  const nm = document.createElement('div'); nm.className = 'fname'; nm.textContent = name;
-  const sz = document.createElement('div'); sz.className = 'fsize'; sz.textContent = size + ' · 点一下存下来';
-  meta.append(nm, sz);
-  const ar = document.createElement('div'); ar.className = 'fdl'; ar.textContent = '⬇';
-  card.append(ic, meta, ar);
-  return card;
-}
-/** 把一串文件挂在某条消息下面（重复调用不会叠两层） */
-function attachFiles(wrap, items) {
-  const list = Array.isArray(items) ? items.filter((x) => x && (x.path || x.key)) : [];
-  if (!wrap || !list.length) return null;
-  let box = wrap.querySelector(':scope > .fileList');
-  if (!box) {
-    box = document.createElement('div');
-    box.className = 'fileList';
-    wrap.appendChild(box);
-  }
-  box.innerHTML = '';
-  for (const f of list) box.appendChild(outCard(f));
-  /* 【2026-10-30】工具当场推出来的图，气泡还没建好时先存在 liveFilePark。
-   * 这里补画一遍，画完就清空，不会跟正式的叠两层（同样的 path/key 只留一份）。 */
-  try {
-    const park = window.liveFilePark || [];
-    if (park.length) {
-      const seen = new Set(list.map((x) => String((x && (x.key || x.path)) || '')));
-      for (const f of park) {
-        const k = String((f && (f.dataset && f.dataset.k)) || '');
-        if (k && seen.has(k)) continue;
-        box.appendChild(f);
-      }
-      window.liveFilePark = [];
-    }
-  } catch {}
-  if (log) noteNewContent();
-  return box;
-}
-
-/**
- * 聊天区里最后一条「小鱼的回复」的外壳。
- * 文件卡片要挂在我说的话下面，不能挂在工具折叠块或者系统提示后面。
- */
-function lastAssistantWrap() {
-  const wraps = log ? log.querySelectorAll('.msg.assistant') : [];
-  return wraps.length ? wraps[wraps.length - 1] : null;
-}
-
 
 /** 一个流式气泡最长能挂多久（毫秒）。超过就当它断了，光标摘掉。 */
 const STREAMING_MAX_MS = 90000;
@@ -9073,12 +6851,15 @@ function touchStreaming(bubble) {
  */
 function closeThink() { /* 由 renderLog 统一管；见 public/ui/chat.js 的 paintSnapshot0 */ }
 
-/** 摘掉这一轮直播气泡尾巴上那个 ▍（说完了 / 停了就别再闪） */
+/** 摘掉这一轮直播气泡尾巴上那个 ▍（说完了 / 停了就别再闪）
+ *
+ * 【2026-11-10 A4 清理】原来只摘带 data-live-turn="1" 的 —— 那是手写 DOM
+ * 时代的记号，React 行上根本没有这个属性，这函数早就空转了。
+ * 现在照 done 分支同一口径：摘所有 assistant 气泡上还挂着的 streaming。 */
 function unstreamLiveBubbles() {
   try {
-    for (const b of document.querySelectorAll('#log .msg.assistant[data-live-turn="1"] .bubble.streaming')) {
-      b.classList.remove('streaming');
-    }
+    const els = log ? log.querySelectorAll('.msg.assistant .bubble.streaming') : [];
+    for (const b of els) b.classList.remove('streaming');
   } catch (e) {}
 }
 
@@ -9128,103 +6909,6 @@ function armStreamingTimer(bubble) {
 let roleShownThisTurn = false;
 function resetRoleOnce() { roleShownThisTurn = false; }
 
-/** 建气泡的包装：自动决定要不要写名字，别处一律用它，别直接调 addAssistant */
-function addAssistantAuto(who) {
-  const hide = roleShownThisTurn;
-  if (!roleShownThisTurn) roleShownThisTurn = true;
-  return addAssistant(who, hide);
-}
-
-function addAssistant(who, hideRole) {
-  /**
-   * 【2026-11-05 加·她开口说话之前，先把散着的工具收起来】
-   *
-   * 主人要：「实时显示也要折叠，不要一句话说出来就散开」。
-   *
-   * 折叠原来只在轮末 / 发下一条消息时做，于是她说完一段话、屏幕上一排工具卡
-   * 还摊着，得等很久才收 —— 中间这段时间看着就是「散开」。
-   *
-   * 现在每建一个新气泡（= 她要说话了）之前先收一次：干完活说的话，工具一定收着。
-   */
-  try { foldLiveTools(); } catch (e) {}
-  const wrap = addEl('', 'msg assistant');
-  /* 【2026-11-03 修·实时气泡的名字颜色】历史气泡那边补了「按卡上色」，
-   * 正在流式生成的这一条走的是这里，同样要上色，不然生成时粉、刷新后变灰。
-   * 只有「不是小鱼」才加 .mate + 设 --whoC（小鱼的粉是 .assistant .role 的默认值，别动它）。 */
-  /* 【2026-11-09 主人报·关小鱼开小白曦，直播时显示「小鱼」、发完才变小白曦】
-   * 以前这里 who 为空就退回 mainAgentName；而 mainAgentName 是**历史消息署名兜底**
-   * （后端约定空 _who = 小鱼，必须固定），流式那一条根本没带 who，于是屏幕上
-   * 先写「小鱼」，等这一轮落盘补了 _who、重画之后才变成真正的主智能体。
-   *
-   * 现在直播气泡的名字直接读【屋里的人】那列牌子：第一个没被关掉的就是
-   * 这一轮的主智能体（动态，跟后端 mainAgentId 同源），同步读 DOM、零延迟。
-   * who 参数（群聊里别人接话自带名字）永远优先；历史重画不走这里。 */
-  const __liveName = (() => {
-    try {
-      const b = document.querySelector('#whoRail .whoBtn:not(.off)');
-      return b ? String(b.textContent || '').trim() : '';
-    } catch { return ''; }
-  })();
-  const __whoNow = String(who || '').trim() || __liveName
-    || String(window.__turnSpeakerName || '').trim()
-    || String(mainAgentName || '').trim() || '小鱼';
-  wrap.innerHTML = '<div class="role">' + __whoNow + '</div>';
-  if (__whoNow !== '小鱼') {
-    /* same rule as renderTurns: color the role line only, no .mate class */
-    try {
-      wrap.dataset.whoName = __whoNow;
-      const _rl = wrap.querySelector('.role');
-      if (_rl) _rl.style.color = mateColorOf(__whoNow);
-    } catch {}
-  }
-  /**
-   * 【hideRole：同一条回复中间换了气泡，不再重报一次名字】
-   *
-   * 2026-10-28 主人拿着截图报：一条回复被劈成两个气泡，下面那个又冒出一行「小鱼」。
-   *
-   * 病根：我这一轮说完一段就去调工具，工具回来接着说，前端按「一段一个气泡」画，
-   * 每个气泡都从头建，于是每段都带一次署名。可那本来就是同一轮、同一个人说的话，
-   * 署名只该在最前面出现一次。
-   *
-   * 用法：同一条回复的第 2 段起传 hideRole=true，只留气泡不写名字，
-   * 视觉上接着上一段往下写。切会话重画历史时仍由 renderTurns 自己决定署名。
-   */
-  if (hideRole) {
-    const r = wrap.querySelector('.role');
-    if (r) r.style.display = 'none';
-    wrap.classList.add('cont');
-  }
-  const b = document.createElement('div');
-  /* 光标收尾·2026-10-31 原来一建就是 'bubble streaming'，每个新气泡天生带一个闪烁的 ▍，
-   * 全靠 90 秒定时器收。刷新把这一轮打断时没人收它 —— 屏幕上就是一串光标在闪。
-   * 现在建出来是「死」的，真收到第一段字才由 markStreaming 点亮。 */
-  b.className = 'bubble';
-  /**
-   * 【2026-10-27 主人报：每句话后面都跟着一闪一闪的蓝光标】
-   *
-   * 原来这个气泡一建出来就带 streaming，可**没记 streamAt**。
-   * 而 sweepStaleStreaming 是「按时间戳判」的兜底 —— 没时间戳它永远判不到，
-   * 这条气泡要是走了哪条不收尾的路，光标就一直闪在那儿，90 秒闹钟也挂不上
-   * （那闹钟在 armStreamingTimer 里，只有 markStreaming 会调）。
-   *
-   * 这里补记一笔，让它至少能被巡检和闹钟兜住。
-   */
-  /* 流式原文累积区·2026-10-31
-   * 主人报「一句话还没说完就中途换行」。根因：每个增量都单独过一遍
-   * stripMarkdownMarks，而增量的切点是任意的 —— 切在 ** 中间会拼出「·」，
-   * 切在行首 # 之前会让 ^ 认不出行首。所以以后只往 _rawText 里攒原文，
-   * 每次都拿全文重新洗一遍再整体写回，绝不逐片洗。 */
-  b._rawText = '';
-  b.dataset.streamAt = String(Date.now());
-  wrap.appendChild(b);
-  // 编个号：这是本轮「第几段说的话」，用来防同一段被数两遍
-  stampSpeechNode(b);
-  // 光标最多亮 90 秒：一句话流不了那么久，真流那么久是断了，别闪一整天
-  armStreamingTimeout(b);
-  try { armStreamingTimer(b); } catch {}
-  return b;
-}
-
 /**
  * 画小鲸的气泡。
  *
@@ -9268,58 +6952,8 @@ function StreamKey(sid, who) {
 const _whaleStreams = new Map();   // 流名 -> { wrap, bubble, who }
 let _whaleStreamCur = null;         // 最近一次开流的流名 —— 兼容只有 who 没 sessionId 的调用
 
-/** 她开口了：建一个空气泡等着往里加字 */
-function whaleStreamStart(who, streamKey) {
-  // 流名：调用方给了就用它（一个会话一个 / 一张卡一个）；没给就退回「谁在说」
-  const key = String(streamKey || who || '小鲸');
-  // 同一条流上一次没定稿就跑了（连接断了之类），先把它收干净，别留着
-  const prev = _whaleStreams.get(key);
-  if (prev && prev.bubble) { try { prev.bubble.classList.remove('streaming'); } catch {} }
-  const wrap = addWhaleBubble(who, '');
-  const bubble = wrap.querySelector('.bubble');
-  if (bubble) markStreaming(bubble);
-  const st = { wrap, bubble, who: who || '小鲸', key };
-  _whaleStreams.set(key, st);
-  _whaleStreamCur = key;
-  whaleStreamingEl = st;   // 兼容：别处还在读这个全局
-  noteNewContent();
-  return wrap;
-}
-
-/** 她吐了一点字：往「这一条流」自己的那个气泡里追加 */
-function whaleStreamDelta(text, streamKey) {
-  const key = String(streamKey || _whaleStreamCur || '');
-  const st = _whaleStreams.get(key) || whaleStreamingEl;
-  if (!st || !st.bubble) return;
-  // 防御：万一这个气泡已经被别的东西移出画面了，就把它从表里摘掉
-  if (!st.bubble.isConnected) { _whaleStreams.delete(st.key); if (whaleStreamingEl === st) whaleStreamingEl = null; return; }
-  pushStreamText(st.bubble, String(text || ''));
-  touchStreaming(st.bubble);
-  noteNewContent();
-}
-
 /** 她这轮说完了：把整段定稿塞进「这一条流」的气泡里 */
 let _whaleLastFinishEl = null;
-function whaleStreamFinish(text, streamKey) {
-  const key = String(streamKey || _whaleStreamCur || '');
-  const st = _whaleStreams.get(key) || whaleStreamingEl;
-  if (!st) return false;
-  _whaleStreams.delete(st.key);
-  if (whaleStreamingEl === st) whaleStreamingEl = null;
-  if (!st.bubble) return false;
-  if (!st.bubble.isConnected) return false;
-  st.bubble.classList.remove('streaming');
-  const full = String(text || '').trim();
-  // 定稿有内容就用定稿；没有（她其实没想说话）就把这个空泡删掉
-  if (!full) {
-    try { st.wrap.remove(); } catch {}
-    return true;
-  }
-  st.bubble.textContent = full;
-  _whaleLastFinishEl = st.bubble;
-  noteNewContent();
-  return true;
-}
 
 /**
  * 她一句话会被塞两次：send 一次进 SSE，live.events 里再补一份兜底。
@@ -9383,40 +7017,23 @@ function whaleAlreadyDrawn(who, text) {
  * 补捞时先问「这句是不是已经画完了」，画完了就原地对齐文本，绝不新建。
  */
 const _whalePainted = new Map();
-
-/** 从 live 里捞到一条 whale 事件 -> 只更新清单，画交给 renderLog */
+/**
+ * 从 live 里捞到一条「别人说的话」事件。
+ *
+ * 【2026-11-09 换框架】原来这里是 whaleStreamStart / Delta / Finish +
+ * addWhaleBubble 三件套（各自建节点、各自去重），而清单那条路又照着
+ * `k:'say'` 画一遍 —— 同一句话两套画法，补捞醒一次画一个，
+ * 主人看到的就是「小鲸一句话冒出三四个气泡」。
+ *
+ * 现在：**只当信号**。服务端的 items 里本来就有这一句（appendLiveItem 会合），
+ * 这里叫一声「去拉最新快照」，画由 React 一个地方画。
+ * 幂等由服务端那份清单保证（同一句只会是一条 say）。
+ */
 function paintWhaleFromLive(ev, sid) {
-  /**
-   * 【2026-11-09 根治·「她说的那句」也走清单，不再单独建节点】
-   *
-   * 原来这条路是 whaleStreamStart / Delta / Finish + addWhaleBubble 三件套，
-   * 而 renderLog 那条路又照清单里的 k:'say' 画一遍 —— 同一句话两套画法，
-   * 补捞醒一次画一个，主人看到的就是「小鲸一句话冒出三四个气泡」。
-   *
-   * 现在：把事件喂进这一轮那份清单（跟正文同一套形状），画由 renderLog 一个人画。
-   * 没有在跑的一轮（清单都没有）→ 什么都不做：那种时候屏幕上由历史说了算。
-   */
   if (!ev) return;
-  const _sid = String(sid || '');
-  const m = liveModelGet(_sid);
-  if (!m) return;
-  /* 碎片（start / delta）只用来推进「正在长的那一句」；补捞时靠定稿兜底 ——
-   * 否则同一条定稿被反复捞到，就会把同一句拼两遍。 */
-  if (ev.type === 'whale_stream_start' || ev.type === 'whale_delta') {
-    const given = String(ev.text || '');
-    if (ev.type === 'whale_stream_start' || !given) return;
-    if (!m.items.some((x) => x && x.k === 'say')) return;   // 没在说的那句，碎片没有意义
-    liveItemsFeed(m, { type: 'whale_delta', who: String(ev.who || '小鲸'), text: given });
-    liveModelPaint(_sid);
-    return;
-  }
-  const who = String(ev.who || '小鲸');
-  const text = String(ev.text || '').trim();
-  if (!text) return;
-  /* 幂等：同一句已经在清单里（补捞会重复捞到同一条）就不再追加一条 */
-  if (m.items.some((x) => x && x.k === 'say' && String(x.who || '') === who && String(x.t || '').trim() === text)) return;
-  liveItemsFeed(m, { type: 'whale', who, text });
-  liveModelPaint(_sid, { forceLive: true });
+  const _sid = String(sid || sessionId || '');
+  if (!_sid || sessionId !== _sid) return;
+  try { nudgeLive(_sid); } catch (e) {}
 }
 
 /**
@@ -9460,50 +7077,6 @@ function mateColorOf(name) {
     } catch { /* 抓不到就全用默认色，不影响说话 */ }
   }
   return hit || '#e6e6e6';
-}
-
-function addWhaleBubble(who, text, target, force) {
-  /* 【2026-11-02 · force】快照重画用。
-   *  「这一轮说过的同一句只画一次」这条防重对增量拼画面有用，对整组重画是碍事的：
-   *  先把自己画过的那组清掉、再照清单重画，这条防重会把重画拦下 —— 结果清空了再也画不回来。
-   *  所以快照那条路传 force=true：画不画由「清单里有没有」决定，不由「以前画过没」决定。 */
-  if (!force && whaleAlreadyDrawn(who, text)) return null;
-  /*
-   * 【谁的样式，看谁的名字】—— 2026-10-29 修
-   *
-   * 以前这里把根节点写死成 'msg whale'：不管 who 是什么，一律套小鲸的冷蓝竖线
-   * + 冷底，只把名字换掉。于是主人看到「名字写着小鱼、其余跟小鲸一模一样」的怪东西。
-   * 触发路径：agent 事件会带别人的名字（ask_peer / ask_subagent 里那人叫「小鱼」时），
-   * 而 whale 事件的 who 恒为「小鲸」，两者走的是同一个 addWhaleBubble。
-   *
-   * 实测（Electron 真页面量 getComputedStyle）：
-   *   真小鱼 msg assistant → roleColor rgb(240,166,160)，borderLeft 0px none，底透明
-   *   真小鲸 msg whale     → roleColor rgb(122,168,232)，borderLeft 2px solid rgb(91,143,214)
-   *   修前 addWhaleBubble('小鱼') → 除名字外全部等于小鲸
-   *
-   * 现在按名字定样式：说「小鲸」的才用小鲸那套，别人的名字走普通助手气泡。
-   * 名字为空时仍当小鲸（沿用旧行为，别把老调用打坏）。
-   */
-  const isWhale = !who || String(who) === '小鲸';
-  const _mateName = String(who || '小鲸');
-  // 【独立个体·2026-11-01】不是小鲸的人（自建卡）走 msg mate：
-  // 不再借 .msg.assistant 那套（那套名字是鱼的红），改用它自己卡上的颜色。
-  /* target 是「画进哪儿」：renderTurns 重画历史时传离屏 frag，别画到马上要被换掉的旧屏上 */
-  const wrap = addEl('', isWhale ? 'msg whale' : 'msg mate', target || null);
-  if (!isWhale) {
-    wrap.dataset.whoName = _mateName;
-    try { wrap.style.setProperty('--whoC', mateColorOf(_mateName)); } catch {}
-  }
-  const roleEl = document.createElement('div');
-  // 【她以自己身份说话 → 加 whaleSelf，CSS 才放行「· 姐妹」；冒充别人时压根不进这路】
-  roleEl.className = isWhale ? 'role whaleSelf' : 'role mateSelf';
-  roleEl.textContent = String(who || '小鲸');
-  wrap.appendChild(roleEl);
-  const b = document.createElement('div');
-  b.className = 'bubble';
-  b.textContent = String(text || '');
-  wrap.appendChild(b);
-  return wrap;
 }
 
 // 工具名说人话：主人一眼看得出她在干嘛，而不是看 run_command 这种英文
@@ -9676,216 +7249,73 @@ function niceTool(name, args) {
  * 标题实时变成「调了 N 次工具」，默认收着 —— 不再一条一折。
  *【2026-10-31 主人纠正：一条消息下面的几个工具必须折在一起】
  */
-let _liveHub = null;
-let _liveHubCount = 0;
-/**
- * 【主人 2026-11-01：不要一出工具就套柜子】
- * 干活过程中调出来的每一张工具卡，先按顺序记在这儿（它们此刻是直挂 #log 的散卡）。
- * 等下一个消息弹出来，再回头看这一段有几张：多了才合并成柜子。
- */
+/* 【2026-11-10 A4 清理】_liveHub / _liveHubCount 两个指针删除：
+ * 它们只服务 done 分支那段「把直播柜子收起来」的手写 DOM 折叠（已删）。
+ * 柜子现在是渲染层照数据画的（LogView 的 toRows → ToolGroup），
+ * 「哪个柜子还开着」由 useOpen 按 key 记，不存在要人肉断开的指针。
+ * 【主人 2026-11-01：不要一出工具就套柜子】的规矩没变 ——
+ * 一段活里只有一张卡时不套柜门，这在 ToolGroup 里实现。 */
+/** 直播散卡的登记表（installToolLeakGuard 的兜底在用；照旧保留） */
 let _liveToolEls = [];
-
+/**
+ * 【2026-11-09 换框架·已废】hubReset
+ *
+ * 原来在这里扫 #log 里的 details、就地搬节点（那是为了让手写 DOM 不闪）。
+ * 现在柜子怎么分组、柜门写什么字、哪块开着 —— 全由渲染层从**数据**算，
+ * 这一层没有活儿干了。调用点已清（A4）；空壳留着，谁误调也不炸。
+ */
 function hubReset() {
-  _liveHub = null;
-  _liveHubCount = 0;
-  _liveToolEls = [];
+  return 0;
 }
-
 /**
- * 【2026-10-31 主人定：按轮次折】
- * 主人发下一条消息的那一刻，把这条消息之前画的所有工具调用
- * （不管是老式零散的 details.tool，还是一整块的 details.toolhub）
- * 全部收起来，只留标题那条灰的。
- * 正在干活的时候不折 —— 工具摊开着，主人能看见我在做什么。
- */
-/**
- * 【2026-11-05 加·历史里的工具卡也收成柜子】
+ * 【2026-11-09 换框架·已废】snapOpenState
  *
- * 主人要「全部折叠成一行标题」。直播那条路 foldLiveTools 已经在做了，
- * 但**历史重画根本不建柜子** —— paintTools 那个 group 参数从头到尾没被用过，
- * 于是刷新之后，工具卡又是一排散的大块。
- *
- * 这里在画完之后扫一遍 log：把**连续相邻**的 details.tool 收进一个 toolhub。
- * 已经收在柜子里的不会再被收（它们不在 log 的直接子节点里），所以可以反复调。
- */
-/**
- * 【2026-11-05 加·给柜子打「主人自己开的」记号】
- *
- * 主人报：「展开柜子后，新消息一来它就自动闭上」。
- * foldOldHubs 的规矩是「发下一条消息，之前所有柜子一律收起」——
- * 对翻过去的那几轮是对的，但他正打开看着的这个不该关。
- *
- * 所以每个新建的柜子都绑一次：toggle 时记记号，收柜子时跳过带记号的。
- */
-/**
- * 【2026-11-05 加·把嵌套的柜子拍平】
- *
- * 主人报：「调了 1 次的柜子展开后里面还是一个调了 1 次的柜子」。
- *
- * 前面加了三道预防（_pick / _okHub / arr 过滤），实测还能漏 ——
- * 说明还有我没找到的路径。与其继续追，这里做一道**事后兜底**：
- * 把柜子里的柜子拆开，里面的卡提出来挂到外层，然后删掉空壳。
- *
- * 结果至少是平的：一个柜子里只有工具卡和思考块，不会再有柜门。
- */
-/**
- * 【2026-11-05 加·重画前后整体保存/恢复展开状态】
- *
- * 主人说得很准：「在新消息位置无论展开什么，新消息一来都会闭合」，而且是个老 bug。
- *
- * 根因只有一个：**新消息来 → 整屏 replaceChildren → 所有 details 重建 → open 丢失**。
- * 前面给 think 和柜子各写了一套恢复，但工具卡没有、顺序也容易错位。
- *
- * 这里做一套通用的：按 [类型 + 同类里的序号] 记住哪些是打开的，画完再按同样规则还原。
- * 不管以后再加什么 details 类型，都自动生效。
+ * 原来在这里扫 #log 里的 details、就地搬节点（那是为了让手写 DOM 不闪）。
+ * 现在柜子怎么分组、柜门写什么字、哪块开着 —— 全由渲染层从**数据**算，
+ * 这一层没有活儿干了。保留空壳：调用点有十几处，删了会 ReferenceError。
  */
 function snapOpenState() {
-  try {
-    const lg = document.getElementById('log');
-    if (!lg) return null;
-    const seq = Object.create(null);
-    const out = [];
-    for (const d of lg.querySelectorAll('details')) {
-      const t = (d.className || '').split(' ')[0] || 'details';
-      seq[t] = (seq[t] || 0) + 1;
-      if (d.open) out.push(t + '#' + seq[t]);
-    }
-    return out;
-  } catch (e) { return null; }
+  return 0;
 }
-
-function applyOpenState(saved) {
-  if (!Array.isArray(saved) || !saved.length) return;
-  try {
-    const lg = document.getElementById('log');
-    if (!lg) return;
-    const want = new Set(saved);
-    const seq = Object.create(null);
-    for (const d of lg.querySelectorAll('details')) {
-      const t = (d.className || '').split(' ')[0] || 'details';
-      seq[t] = (seq[t] || 0) + 1;
-      if (want.has(t + '#' + seq[t])) {
-        try { d.open = true; } catch (e) {}
-        try { d.dataset.userOpened = '1'; } catch (e) {}
-      }
-    }
-  } catch (e) {}
-}
-
-function flattenNestedHubs() {
-  try {
-    const lg = document.getElementById('log');
-    if (!lg) return;
-    for (let pass = 0; pass < 3; pass++) {
-      const inner = [...lg.querySelectorAll('details.toolhub details.toolhub')];
-      if (!inner.length) return;
-      for (const h of inner) {
-        const outer = h.parentElement && h.parentElement.closest ? h.parentElement.closest('details.toolhub') : null;
-        if (!outer) continue;
-        /* 把里面的卡搬出来，插到这个内层柜子原来的位置 */
-        const kids = [...h.children].filter((c) => c.tagName !== 'SUMMARY');
-        for (const k of kids) {
-          try { outer.insertBefore(k, h); } catch (e) {}
-        }
-        try { h.remove(); } catch (e) {}
-        /* 外层的标题重算一次 */
-        try {
-          const _t = outer.querySelectorAll('details.tool').length;
-          const _k = outer.querySelectorAll('details.think').length;
-          const nm = outer.querySelector(':scope > summary .hubname');
-          if (nm) nm.textContent = (_t && _k) ? ('调了 ' + _t + ' 次工具 · 想了 ' + _k + ' 段')
-            : (_k ? ('想了 ' + _k + ' 段') : ('调了 ' + _t + ' 次工具'));
-        } catch (e) {}
-      }
-    }
-  } catch (e) {}
-}
-
-function markHubUserOpened(hub) {
-  try {
-    hub.addEventListener('toggle', () => {
-      try {
-        if (hub.open) {
-          hub.dataset.userOpened = '1';
-          delete hub.dataset.userClosedAt;
-        } else {
-          delete hub.dataset.userOpened;
-          /* 【2026-11-08 加】记下「用户刚把它关掉」的时刻。
-           * toggle 是**异步派发**的：用户点完 summary 的同一轮里 open 已经是 false，
-           * 但这里要等下一个任务才跑到。中间只要来一个工具事件，hubRefreshTitle
-           * 就会看到「userOpened 还是 1、open 却是 false」，于是把柜子又拉开 ——
-           * 这正是主人说的「打开又关上之后，新调用出现时柜子会自动打开」。
-           * 有了这个时间戳，兜底那侧就能认出「这是刚被关的，别动」。 */
-          hub.dataset.userClosedAt = String(Date.now());
-        }
-      } catch (e) {}
-    });
-  } catch (e) {}
-}
-
-
-function foldOldHubs(keepFrom) {
-  /* 【主人要求】主人一发下一条消息，之前的工具调用统统收成一条灰。
-   * 两条规矩：
-   * ① 只收最外层的 toolhub，里面的 details.tool 一律保持摊开 ——
-   *    主人点开那条灰，直接看见每次调用的参数和结果，不用再点第二层。
-   * ② 收完必须把 _liveHub 清掉（hubReset），否则下一次工具还往这条
-   *    收起来的黑盒里塞，界面上就只剩一条，看着像「没分组」。
-   * 内容一个字都不删，只是把 open 设成 false。 */
-  // 【主人 2026-11-01】下一条消息来了 —— 先把干活时散着的那几张卡合并成柜子
-  try { foldLiveTools(); } catch (e) { /* 合并不了也别挡着发话 */ }
-  try {
-    const scope = document.getElementById("log") || document;
-    const hubs = scope.querySelectorAll("details.toolhub");
-    for (const el of hubs) {
-      if (keepFrom && keepFrom.contains && keepFrom.contains(el)) continue;
-      /* 【2026-11-05 加】主人自己打开的那个别关 —— 他正在看。 */
-      if (el.dataset && el.dataset.userOpened === '1') continue;
-      if (el.open) el.open = false;
-    }
-    // 【2026-10-31 主人定：柜子里的抽屉要关着】
-    // 以前这里把每个 tool 都掰开，于是点开柜门看见的是一大片糊在一起的内容。
-    // 现在一律关着：先看见一排工具名，想细看哪个自己拉哪个。
-    const inners = scope.querySelectorAll("details.tool");
-    for (const el of inners) {
-      if (el.open) el.open = false;
-    }
-  } catch (e) { /* 收不起来也不该挡住发话 */ }
-  // 关键：老的收好了，指针必须断开，下一段另起一个 hub
-  try { if (typeof hubReset === "function") hubReset(); } catch {}
-}
-
-
-
-
-
-
-
-
-
 /**
- * 子任务卡（办事模式里 worker 的那张）。
+ * 【2026-11-09 换框架·已废】applyOpenState
  *
- * 【2026-11-02/03 主人连着报了三件事】
- *   ① 「办事模式下我看不到干活的过程」—— 屏幕上一张「派活 · 运行中…」挂在那儿一动不动；
- *   ② 「只显示一句【派活 运行中…】然后没了」；
- *   ③ 想知道它第几轮、在跑什么命令。
- * 所以 worker 每干一步，服务端推一条 worker 事件，这里画成一张卡：
- *   summary 写「#1 回声 · 干活中 · 12 步」，拉开来是一行一步的流水。
- * 和工具卡同样打 data-live-turn，整组重画时按门牌号复用（不重建，不然流水会闪）。
+ * 原来在这里扫 #log 里的 details、就地搬节点（那是为了让手写 DOM 不闪）。
+ * 现在柜子怎么分组、柜门写什么字、哪块开着 —— 全由渲染层从**数据**算，
+ * 这一层没有活儿干了。保留空壳：调用点有十几处，删了会 ReferenceError。
  */
-function addWorkerCard() {
-  const d = document.createElement('details');
-  d.className = 'wcard';
-  try { d.dataset.liveTurn = '1'; } catch (e) {}
-  d.open = false;
-  const sum = document.createElement('summary');
-  sum.innerHTML = '<span class="name"></span><span class="status"></span>';
-  const pre = document.createElement('pre');
-  d.append(sum, pre);
-  log.appendChild(d);
-  noteNewContent();
-  return { d, sum, pre };
+function applyOpenState() {
+  return 0;
+}
+/**
+ * 【2026-11-09 换框架·已废】flattenNestedHubs
+ *
+ * 原来在这里扫 #log 里的 details、就地搬节点（那是为了让手写 DOM 不闪）。
+ * 现在柜子怎么分组、柜门写什么字、哪块开着 —— 全由渲染层从**数据**算，
+ * 这一层没有活儿干了。保留空壳：调用点有十几处，删了会 ReferenceError。
+ */
+function flattenNestedHubs() {
+  return 0;
+}
+/**
+ * 【2026-11-09 换框架·已废】markHubUserOpened
+ *
+ * 原来在这里扫 #log 里的 details、就地搬节点（那是为了让手写 DOM 不闪）。
+ * 现在柜子怎么分组、柜门写什么字、哪块开着 —— 全由渲染层从**数据**算，
+ * 这一层没有活儿干了。保留空壳：调用点有十几处，删了会 ReferenceError。
+ */
+function markHubUserOpened() {
+  return 0;
+}
+/**
+ * 【2026-11-09 换框架·已废】foldOldHubs
+ *
+ * 原来在这里扫 #log 里的 details、就地搬节点（那是为了让手写 DOM 不闪）。
+ * 现在柜子怎么分组、柜门写什么字、哪块开着 —— 全由渲染层从**数据**算，
+ * 这一层没有活儿干了。保留空壳：调用点有十几处，删了会 ReferenceError。
+ */
+function foldOldHubs() {
+  return 0;
 }
 
 /**
@@ -10064,10 +7494,16 @@ function showToast(msg, opts = {}) {
   try {
     const text = String(msg ?? '').trim();
     if (!text) return;
-    if (!_xyToastHost || !_xyToastHost.isConnected) {
+    // 【2026-11-10 改】有 <dialog> 打开时，宿主挂进那个 dialog：
+    // 它在 top-layer 里，挂 body 上的提示条会被整个盖住（删完看不见「已删除」）。
+    const openDlg = document.querySelector('dialog[open]');
+    const wantHost = openDlg || document.body;
+    if (!_xyToastHost) {
       _xyToastHost = document.createElement('div');
       _xyToastHost.id = 'xyToasts';
-      document.body.appendChild(_xyToastHost);
+    }
+    if (!_xyToastHost.isConnected || _xyToastHost.parentNode !== wantHost) {
+      wantHost.appendChild(_xyToastHost);
     }
     // 同一句连点几次只留一条，别刷屏
     for (const old of [..._xyToastHost.children]) {
@@ -10100,228 +7536,73 @@ try {
 } catch {}
 
 /**
+ * 【2026-11-09 换框架·SSE 只当信号】
+ *
+ * 流式那条 SSE 每收到一个 text/reasoning/tool 事件，就在这里叫一声。
+ * 它**不画任何东西**，只做一件事：80ms 内合并成一次「去问服务端：
+ * 这一轮现在该长什么样」，拿回来塞进 LOG_STATE，React 自己渲染。
+ *
+ * 为什么这么绕而不是「收到字就 append 到气泡上」：
+ *   那样前端就又有了一份自己的合成结果（第二个账本）。服务端 /api/chat/live
+ *   给的 items 是权威真身，前端只负责显示 —— 段落划分、合并规则、worker 卡、
+ *   「别人说的话」，一处口径，改一次只改一个地方。
+ *
+ * 80ms 的合并：一句话流式能到几十片，每片都发一次请求没必要；
+ * 体感上仍然是一秒十几个字地长，不会「一顿一顿」。
+ */
+let __nudgeTimer = 0;
+let __nudgeSid = '';
+function nudgeLive(sid) {
+  try {
+    const id = String(sid || sessionId || '');
+    if (!id) return;
+    __nudgeSid = id;
+    if (__nudgeTimer) return;
+    __nudgeTimer = setTimeout(async () => {
+      __nudgeTimer = 0;
+      const want = __nudgeSid;
+      if (sessionId !== want) return;              // 主人在等的这一拍里切走了
+      let live = null;
+      try {
+        live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(want)).then((r) => r.json());
+      } catch (e) {
+        return;                                    // 网络抖一下，下一次事件会再来
+      }
+      if (sessionId !== want) return;
+      try {
+        logSetLive(want, live);
+        renderLog();
+      } catch (e) { /* 单个事件画不出来不能连累这一轮 */ }
+    }, 80);
+  } catch (e) {}
+}
+
+/**
  * 一行系统提示（报错、限流、断线）。
  *
  * 刻意不挂 .msg / .bubble：这东西不是对话内容，不该被当成谁说的话，
  * 也不该跟着 assistant 气泡一起进历史。只是让主人知道这一轮怎么了。
+ *
+ * 【2026-11-09 换框架】实现改成「往 store 里塞一条 note」，屏幕由 React 画。
+ * 保留函数名和签名：外面有五十多处在调它（导出日志失败、语音装好了、
+ * 办事模式切换、升级提示……），逐个改调用点纯粹是自找风险。
+ *
+ * `actions`（提示后面挂按钮）目前只有「重发」那一处在用：
+ * 按钮真的被点的时候才会执行，所以这里把回调连同文字一起交给 store，
+ * 由 SysNote 组件渲染成按钮 —— 一个 DOM 都不在这里建。
  */
 function addSysNote(text, actions) {
-  const d = document.createElement('div');
-  d.className = 'sysnote';
-  /* 【2026-11-05 改】文字包一层 span，后面才挂得下按钮。
-   * 原来直接 d.textContent = text，出错了只给你一行黄字，想再试一次
-   * 得自己翻回上一句、再 hover 找「↻ 重发」。 */
-  const span = document.createElement('span');
-  span.textContent = text;
-  d.appendChild(span);
-  if (Array.isArray(actions)) {
-    for (const a of actions) {
-      try {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'sysnoteBtn';
-        btn.textContent = a.label || '确定';
-        btn.onclick = () => { try { a.onClick?.(btn); } catch {} };
-        d.appendChild(btn);
-      } catch {}
+  const t = String(text == null ? '' : text);
+  try {
+    const s = window.__logStore;
+    if (s && typeof s.pushNote === 'function') {
+      s.pushNote(t, Array.isArray(actions) ? actions : null);
+      return null;
     }
-  }
-  /**
-   * 【2026-11-02 自查抓到的漏】renderTurns 是「离屏 frag 画完、最后一次 replaceChildren」。
-   * 重画过程中（followLive 收到 notice、replayInFlight 补 notice）如果 appendChild 到旧屏，
-   * 紧跟着那次 replaceChildren 就把它冲掉了 —— 提示凭空消失，而且很难复现。
-   * 所以重画期间必须挂到 frag 上；拿不到 frag 才退回 log。
-   */
-  let host = log;
-  try { if (window.__renderFrag) host = window.__renderFrag; } catch {}
-  host.appendChild(d);
-  if (host === log) noteNewContent();
-  return d;
-}
-
-/**
- * 一整段思考折叠成一块：默认撑开边想边看，想完自动收起；点标题随时展开。
- */
-function openThink() {
-  const d = document.createElement('details');
-  /* 建块就带上「正在想」的标记：从第一段 reasoning 起，柜门就能显示「正在思考中…」 */
-  d.className = 'think thinking-now';
-  /* 【主人 2026-11-02 定的】思考链不自动展开 —— 想看自己点开，别看个回复先被内心戏糊一脸。
-   * 下面那个 toggle 监听负责记住「这一块是主人自己点开的」，之后就不再自动收起。 */
-  d.open = false;
-  try {
-    d.addEventListener('toggle', () => {
-      try {
-        if (d.open) d.dataset.userOpened = '1';
-        else delete d.dataset.userOpened;
-      } catch (e) {}
-      /* 【2026-11-03 修·点开就被重画关掉】把「主人点开的那些」记在一张全局榜上：
-       *  键用这块思考正文的长度（重画时同一条思考内容长度一样，认得回来）。
-       *  paintReasoning 建块时查这张榜，命中就直接展开。 */
-      try {
-        /* 【2026-11-05 改】直接读创建时烧进去的 data-tkey ——
-         * 跟重建那边用同一个来源，不会再因为「渲染后文本 vs 原始文本」对不上。 */
-        const k = String((d.dataset && d.dataset.tkey) || '');
-        if (k) {
-          window.__openedThink = window.__openedThink || new Set();
-          if (d.open) window.__openedThink.add(k);
-          else window.__openedThink.delete(k);
-        }
-      } catch (e) {}
-    });
-  } catch (e) {}
-
-  const sum = document.createElement('summary');
-  const title = document.createElement('span');
-  title.className = 'thinkTitle';
-  title.textContent = '正在想…';
-  const meta = document.createElement('span');
-  meta.className = 'thinkMeta';
-  sum.append(title, meta);
-
-  const body = document.createElement('div');
-  body.className = 'thinkBody';
-
-  d.append(sum, body);
-  log.appendChild(d);
-  // 编个号：只有思考、还没出气泡的时候，「这一段」就靠它认
-  stampSpeechNode(d);
-  noteNewContent();
-  /* 【2026-11-05】思考块也一样：建完立刻收进柜子，不留摊开的中间态。 */
-  try { foldLiveTools(); } catch (e) {}
-
-  return {
-    el: d,
-    /* 【2026-11-02 主人第二次报「还是疯狂抽搐」——这次是我自己弄出来的】
-     * 上一版把 push 从「累加」改成了「整体设置」，可流式那条路（runTurn / SSE）
-     * 传进来的是增量片段：每来一小段就把整块内容换掉一次，字在跳、块在闪，
-     * 看着就是抽搐。现在两个语义分开：
-     *   · push(delta) —— 流式用，往后接；
-     *   · set(full)   —— 整组快照用，一次给全文（内容一样就一个 DOM 都不碰）。 */
-    push(text) { this.set((body._full || '') + String(text || '')); },
-    set(text) {
-      const t = String(text || '');
-      const cur = body._full || '';
-      if (cur === t) return;
-      /* 【只追加，不重排】整组快照给的正文永远是「上一拍的超集」（思考只会越来越长），
-       *  所以差异部分是一段尾巴 —— 往后接一个文本节点就行，
-       *  不用把整块内容换掉（那会让浏览器把这块整个重新排版，看着就是抽搐）。 */
-      /* 【2026-11-03 修·展开只显示几十字、字数却写着几百】
-       *  老写法靠 body._full 记账 + appendChild 追加尾巴。可整组快照送来的全文
-       *  有时不是上一拍的超集（服务端会裁 leading / 归一化），前缀一对不上就整块
-       *  textContent = t —— 但那一次重排会把已经追加的文本节点全扔掉，只剩最后一段。
-       *  改成一律「整块设置」，并且只在真的变了才碰 DOM（内容相同一个节点都不动）。 */
-      body.textContent = t;
-      body._full = t;
-      const flat = body.textContent.replace(/\s+/g, ' ').trim();
-      if (flat) {
-        /* 【2026-11-07 主人】不截 38 字、悬停也不截 400 字 —— 能多长就显示多长 */
-        title.textContent = thinkTitleOf(flat);
-        title.removeAttribute('title');
-      }
-      meta.textContent = body.textContent.length + ' 字';
-      /* 每来一段 reasoning 就换一次柜门右侧灰字（取最新一小截，才会「不断变化」） */
-      try { d.dataset.peek = thinkPeekTail(flat); } catch (e) {}
-      /* 思考还在继续：柜门那行跟着显示「正在思考中…」 */
-      try { d.classList.add('thinking-now'); hubRefreshTitle(); } catch (e) {}
-      noteNewContent();
-    },
-    finish() {
-      if (!body.textContent.trim()) {
-        d.remove();
-        try { hubRefreshTitle(); } catch (e) {}
-        return;
-      }
-      meta.textContent = body.textContent.length + ' 字';
-      /* 这段想完了：撤掉进行中标记，柜门退回统计（或交给正在跑的工具） */
-      try { d.classList.remove('thinking-now'); hubRefreshTitle(); } catch (e) {}
-      /* 【2026-11-02 主人第三次报：展开最新的思考链，一有新内容就自动闭合】
-       *  原因就是原来这里那行 d.open = false：它每一拍都执行一次，把主人刚展开的
-       *  思考链在下一段内容到来时合上了。现在新建时本来就是收起的（不再自动展开），
-       *  收尾就完全不必碰开合 —— 主人点开的那一块，谁来都不许关。 */
-    },
-  };
-}
-
-/**
- * 回放历史时把她当时想过的东西画出来。
- *
- * 【为什么不直接复用 openThink】
- * 那个函数是「正在想」用的：它 open=true、往 log 里 append、每次 push 都
- * noteNewContent 抢滚动条。回放历史要的是反过来的 —— 默认收起、画进 frag、
- * 一次性填满、不碰滚动位置。
- *
- * 挂的位置和实时流一致：在她说的话**上面**（想在前、说在后）。
- */
-function paintReasoning(text, host) {
-  const body0 = String(text || '').trim();
-  if (!body0) return null;
-  const d = document.createElement('details');
-  /**
-   * 【2026-11-05 加·展开态的稳定身份】
-   *
-   * 原来 toggle 记 key 用的是 `thinkBody.textContent`（**渲染后**的文本），
-   * 而重建时查 key 用的是 body0（**原始**文本，带 markdown 记号）。
-   * 只要前 40 字有一个记号不一样（`**加粗**` vs `加粗`），就对不上 → 重建后收起。
-   *
-   * 现在创建时就把「原始文本的前 40 字」烧进 data-tkey，两边都读它，
-   * 同一个来源、同一份内容，不可能对不上。
-   */
-  try {
-    d.dataset.tkey = body0.replace(/\s+/g, ' ').trim().slice(0, 40);
-  } catch (e) {}
-  /**
-   * 【2026-11-05 加·这里原来不绑 toggle，展开态根本没被记住】
-   *
-   * openThink（流式那条建的块）绑了 toggle，会把「主人点开的那些」记进
-   * window.__openedThink。可 paintReasoning（重画/历史这条路建的块）**没绑** ——
-   * 于是重画之后再点开，没人记账；下一次重画查榜查不到，就按默认收起了。
-   *
-   * 表现就是主人说的：「展开思维链 → 新工具调用消息一出来 → 又自己闭合了」。
-   */
-  try {
-    d.addEventListener('toggle', () => {
-      try {
-        const k = String((d.dataset && d.dataset.tkey) || '');
-        if (!k) return;
-        window.__openedThink = window.__openedThink || new Set();
-        if (d.open) window.__openedThink.add(k);
-        else window.__openedThink.delete(k);
-      } catch (e) {}
-    });
-  } catch (e) {}
-  d.className = 'think thinkPast';
-  d.open = false; // 历史里的思考默认收起，不然一打开会话满屏都是内心戏
-
-  const sum = document.createElement('summary');
-  const title = document.createElement('span');
-  title.className = 'thinkTitle';
-  const flat = body0.replace(/\s+/g, ' ').trim();
-  /* 【2026-11-07 主人】历史里的思考也不截 38 字：能多长就显示多长 */
-  title.textContent = thinkTitleOf(flat);
-  title.removeAttribute('title');
-  const meta = document.createElement('span');
-  meta.className = 'thinkMeta';
-  meta.textContent = body0.length + ' 字';
-  sum.append(title, meta);
-
-  const body = document.createElement('div');
-  body.className = 'thinkBody';
-  body.textContent = body0;
-  body._full = body0;
-
-  d.append(sum, body);
-  /* 【2026-11-03 修·思考链点开又被关上】重画（renderTurns / 整组快照）会把 DOM 换掉，
-   *  新建出来的这一块永远是收起的 —— 主人刚点开就被换走。所以按内容认人：
-   *  重画前把「主人自己点开的那些思考链」记下来，重画后遇到同一段内容就替它展开。 */
-  try {
-    const opened = window.__openedThink;
-    /* 【2026-11-05】读 data-tkey，跟 toggle 记的是同一个值 */
-    if (opened && opened.has(String((d.dataset && d.dataset.tkey) || ''))) d.open = true;
-  } catch (e) {}
-
-  (host || log).appendChild(d);
-  return d;
+  } catch (e) { /* 落不下去也不能让调用方崩 */ }
+  /* store 还没起来（极早期的报错）：退到控制台，屏幕上宁可少一行黄字 */
+  try { console.warn('[note] ' + t); } catch (e2) {}
+  return null;
 }
 
 async function stopTurn() {
@@ -10496,6 +7777,16 @@ function scheduleSendingRecheck(sid) {
 
 /** 生成中：输入框有内容 -> 按钮变「发送」（插一句）；空着 -> 「停止」。 */
 function syncSendBtn() {
+  /* 【2026-11-10 B9】跑动期间锁住 header 高危按钮。
+   * 放在最前面：后面的 stopping 早退不该挡住这把锁的开关 ——
+   * 全部 busy 赋值点后面都跟着 syncSendBtn()，这里就是唯一挂钩处。 */
+  try {
+    const lock = Boolean(busy);
+    for (const id of ['adminBtn', 'taskBtn', 'openSessions']) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('busyLock', lock);
+    }
+  } catch (e) {}
   if (stopping) return;
   /* 【2026-11-05 改·不再出现两个"停止"】
    *
@@ -10611,13 +7902,13 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
   turnsInFlight.set(turnSession, turnRec);
 
   /**
-   * 【2026-11-09 根治】这一轮的清单（「屏幕上这一段该有什么」的真身）+ 把这一屏交给 state。
+   * 【2026-11-09 换框架】这一轮不再有「前端自己那份清单」。
    *
-   * 清单只往这里写；画交给 liveModelPaint → logSetLive + renderLog（唯一出口）。
-   * 必须等 turnRec 登记完再建（清单的 startedAt 就是这一轮的开始时间，
-   * renderLog 那边要靠它对「换轮了没有」）。
+   * 原来这里 liveModelOpen 建一份本地的 items、SSE 收到什么就往里喂，
+   * 而 /api/chat/live 的 items 是服务端另外算的一份 —— 两份账，段落划分稍有不同
+   * 就是「跑着时三个气泡、刷新一下变两个」。
+   * 现在只有服务端那份：SSE 只当「有新东西了」的信号，去拉一次快照。
    */
-  const model = liveModelOpen(turnSession, turnRec.startedAt);
   /**
    * logBeginTurn 只摆 state、**不重画历史** —— 屏幕上现在这份就是它（主人那句话、
    * 上一条回复都在）。重画一次反而会把它洗掉：跑着的时候历史只画到「最后一条 user」，
@@ -10625,6 +7916,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
    * 绝不能把上一个会话的话留在这一屏上。
    */
   try { window.logBeginTurn(turnSession, currentTurns); } catch (e) {}
+  try { nudgeLive(turnSession); } catch (e) {}
 
   // 这一轮要带上的附件：先快照，再清空界面上的附件条
   const sending = resume ? [] : _pics.slice();
@@ -10642,9 +7934,9 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
       // 取不到（还没拉到身份）就留空，addUser 会当「主人」处理 —— 这是最不容易吓到人的默认值。
       pendingRewindBubble = addUser(text, undefined, sending, undefined, undefined, currentIdentityName);
       turnRec.userDrawn = true;   // 记一笔：主人这句已经画在屏幕上了
-      // 我自己刚发的话，必须看得见 —— 不管你刚才是不是正往上翻，
-      // 发消息就等于「我要看最新的」，所以这里无条件贴底，
-      // 不能交给 noteNewContent()（那个会看 stickBottom，翻了历史就不滚）。
+      // 我自己刚发的话，必须看得见 —— 发消息就等于「我要看最新的」，
+      // 这里无条件跳底（A3：jumpToBottom 直接 scrollTop = scrollHeight，
+      // 不判断、不动画；noteNewContent 现在是纯计数器，不管滚动）。
       jumpToBottom();
     }
     attachments = [];
@@ -10654,10 +7946,9 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
   busy = true;
   // 新的一轮：署名重新允许报一次（同一轮里的第 2、3 段不再重报名字）
   try { if (typeof resetRoleOnce === "function") resetRoleOnce(); } catch {}
-  // 【2026-10-31 主人定：发下一条消息时，之前的工具调用统统收成一条灰的】
-  // 顺序很重要：先收旧的，再 hubReset 开新的，否则会把这一轮刚建的也收掉。
-  try { if (typeof foldOldHubs === "function") foldOldHubs(null); } catch {}
-  hubReset();   // 主人这一轮新开口：工具重新归组
+  /* 【2026-11-10 A4 清理】foldOldHubs / hubReset 两句删除：
+   * 柜子怎么分组是数据的事（连续几条 tool → 一个柜子，LogView 的 toRows 算），
+   * 跑新一轮不存在「把散卡收进柜子」这个 DOM 动作了。 */
   showSending();
   syncSendBtn();
 
@@ -10811,13 +8102,12 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
         }
 
         /**
-         * 【2026-11-09 根治】清单在这里喂 —— **不管在不在屏幕上**。
+         * 【2026-11-09 换框架】不再往「前端那份清单」里喂事件。
          *
-         * 不在屏幕上也要喂：切回来那一刻 renderLog 拿这份清单一次画出整轮，
-         * 不用再去服务端重拉（那正是以前「补拉 + 流式」两套账打架的地方）。
-         * 往下只做「叫画入口」，一个节点都不建。
+         * 服务端的 live.items 就是唯一真身；这里只当信号。
+         * 不在屏幕上就别叫（拉了也没人看，白费流量）。
          */
-        liveItemsFeed(model, ev);
+        if (onScreen()) nudgeLive(turnSession);
 
         /**
          * 这一轮「没有下文」时的统一收尾：停掉打字机、收起转圈、把没念完的话念掉。
@@ -10831,12 +8121,9 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 只是这一条流断了。交给延迟复核问服务端，别自作主张。 */
           try { scheduleSendingRecheck(sessionId); } catch {}
           try { flushSpeech(); } catch {}
-          /* 光标先摘掉：这一轮没有下文了，别再闪着「我还在说」 */
-          try {
-            for (const _b of document.querySelectorAll('#log .msg.assistant[data-live-turn="1"] .bubble.streaming')) {
-              _b.classList.remove('streaming');
-            }
-          } catch (_e) {}
+          /* 【2026-11-10 A4 清理】原来这里按 data-live-turn 摘 .streaming 类 ——
+           * 那是手写 DOM 时代的记号，React 行上根本没有这个属性；
+           * 光标的生杀由 streaming prop + 90 秒巡检管（见 markStreaming 一族）。 */
         };
 
         /**
@@ -10847,11 +8134,10 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
          * 又照服务端清单把同一轮先删后画。两套账各按各的判据分段，屏幕上就是
          * 两份 / 多段挤一块（F5、切会话、补拉只是让它更容易撞上）。
          *
-         * 现在：清单上面已经喂好了（liveItemsFeed，合并规则与 itemsFromEvents 逐条同源），
-         * 这里只负责叫一次画入口：liveModelPaint → logSetLive + renderLog（唯一出口），
-         * 节流 16ms / 8 条。要加新事件？在上面认，同时补 itemsFromEvents 与 liveItemsFeed。
-         * 这一段里再出现 addAssistantAuto / pushStreamText / openThink / addTool /
-         * whaleStream* / addWhaleBubble 就是回退，check-no-dup-render.mjs 会挂。
+         * 现在：SSE 只当信号去拉一次最新快照（上面那句 nudgeLive），
+         * 画只由 React 一处画。这一段里再出现 addAssistantAuto / pushStreamText /
+         * openThink / addTool / addWhaleBubble 就是回退，
+         * check-no-dup-render.mjs 会挂。
          */
         if (!onScreen()) continue;
 
@@ -10865,26 +8151,21 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           const _et = ev.type;
           /* 开始调一个工具 → 右下那个数字 +1（只是数字，不碰对话节点） */
           if (_et === 'tool_start') { try { bumpUnseen(); } catch {} }
-          liveModelPaintThrottled(turnSession);
+          nudgeLive(turnSession);
           if (_et === 'text') { try { noteNewContent(); } catch {} }
           continue;
         }
 
-        if (ev.type === 'files') {
-          /* 这一轮我发出去的文件：挂在最后那条回复下面。
-           * 文件卡不是「对话节点」（它不长在清单里），但也不自己找气泡 ——
-           * 认的还是 renderLog 画出来的那一条。 */
-          const wrapNow = lastAssistantWrap();
-          if (wrapNow) attachFiles(wrapNow, ev.items);
+        if (ev.type === 'files' || ev.type === 'sentfile') {
+          /* 【2026-11-10 A2 收编】她发的文件不再由前端画卡片：
+           * 服务端 appendLiveItem / buildLiveItems 已把它合成 k:'file' 的 item，
+           * 屏幕由 FileCard 照清单画（旧路 attachFiles / placeSentCard / outCard
+           * 已删 —— mdInto 每个流式 tick 都重写 .bubble 的 innerHTML，谁挂谁没）。
+           * 这里只剩信号：快照在上面那句 nudgeLive 已经拉过了。 */
         } else if (ev.type === 'safe_word') {
-          const wrap = addEl('', 'msg user');
-          wrap.innerHTML = '<div class="role">安全词<span class="safeTag"></span></div>';
-          // 切回「人设」档时说明一下：这是回到基线，不是又触发了什么
-          wrap.querySelector('.safeTag').textContent = ev.back ? ev.word + '（回到默认档）' : ev.word;
-          const b = document.createElement('div');
-          b.className = 'bubble';
-          b.textContent = safeWordHint(ev.word, ev.note);
-          wrap.appendChild(b);
+          /* 【2026-11-10 收编】安全词提示不再手写 DOM（addEl 那条路已删）：
+           * 走系统提示（store → React SysNote），信息照样在屏幕上。 */
+          addSysNote('安全词「' + ev.word + (ev.back ? '（回到默认档）' : '') + '」' + safeWordHint(ev.word, ev.note));
         } else if (ev.type === 'whale_usage') {
           /**
            * 小鲸自己那一轮烧的 token（服务端直接推来的）。
@@ -10905,12 +8186,11 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 塞进正文的话，重进时会读成「她本人说了句『已停止』」。
            */
           if (!pendingResume) {
-            liveItemsFeed(model, { type: 'text', notice: true, text: '[已停止]' });
+            /* 【2026-11-09 换框架】一条 note 走 store，屏幕由 React 画 */
+            try { addSysNote('[已停止]'); } catch (e) {}
           }
-          liveModelFlush(turnSession);
           endTurnQuietly();
         } else if (ev.type === 'error') {
-          liveModelFlush(turnSession);
           endTurnQuietly();
           /**
            * 错误单独画一行，别塞进助手的气泡里。
@@ -10931,7 +8211,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 这里按「不是错，是被限了」来处理：收尾＋说清＋把连击数标出来，
            * 让主人知道等一会儿再发就行，而不是以为程序坏了。
            */
-          liveModelFlush(turnSession);
+          nudgeLive(turnSession);
           endTurnQuietly();
           {
             const streak = Number(ev.streak) || 0;
@@ -10949,27 +8229,17 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            */
           try { console.log('[migrated] 会话结构已升级：', ev.note || ev.reason || 'ok'); } catch {}
         } else if (ev.type === 'sentfile' && ev.file) {
-          /* 【2026-10-30 主人要：图/文件当场出来，别等这一轮说完】
-           * 以前 send_file 只往 outbox 里塞，要等整个回合 done 之后才挂上，
-           * 主人得等我把话全说完才看得见图。现在工具里当场推 sentfile，这儿立刻画。
-           * 画进「当前这条正在写的」气泡：就是最后一个正在流式的 row。 */
-          try {
-            const card = outCard(ev.file);
-            if (card) placeSentCard(card);
-          } catch (e) { console.warn('[sentfile] 当场画失败：', e && e.message); }
+          /* 【2026-11-10 A2 收编】与 files 同一支：sentfile 也只是信号，
+           * 文件卡由服务端清单（k:'file'）→ FileCard 画，见上面的分支说明。 */
         } else if (ev.type === 'done') {
           /* 【2026-11-09】先把模型 flush 一次：SSE 这一路是节流画的，
            * 最后 16ms 里到的字还在模型里没上屏。这里补齐，**不清清单** ——
            * 清掉就是「话说到一半屏幕空一截」，历史还没落盘顶上呢。 */
-          liveModelFlush(turnSession);
-          try { settleSentFiles(); } catch (e) { console.warn("[sentfile] 收尾失败：", e && e.message); }
-          /* 【2026-11-04 主人：跑完就该收，别等他发下一条】 */
-          try {
-            foldLiveTools();                        // 散卡先并成一个柜
-            if (_liveHub && _liveHub.open) _liveHub.open = false;
-            if (_liveHub) for (const el of _liveHub.querySelectorAll("details.tool")) el.open = false;
-            hubReset();                             // 指针断开，下一轮另起
-          } catch (e) {}
+          nudgeLive(turnSession);
+          /* 【2026-11-10 A4 清理】settleSentFiles / foldLiveTools / _liveHub 折叠 /
+           * hubReset 这一段全删：文件卡进清单了（A2），柜子由渲染层从数据算
+           * （ToolGroup），屏幕上没有「散卡」可收 —— 这些调用在 React 行上
+           * 已经无的放矢。 */
           /**
            * 【说完就把光标收掉】
            *
@@ -11019,17 +8289,16 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
            * 于是屏幕上多出一条一模一样的（主人报的「一句话出现两遍」）。
            * 现在只做「把权威清单取回来喂进模型」，画还是 renderLog 一个人画。
            */
-          refreshLiveModel(turnSession);
+          /* 【2026-11-09 换框架】把最新快照/历史对齐一次（服务端那份才是权威） */
+          try { nudgeLive(turnSession); } catch (e) {}
           // 这一轮说完了：最后那段话收尾 → 数字 +1
-          finishSpeech();
-          if (pendingRewindBubble && Number.isFinite(Number(ev.at)) && Number(ev.at) >= 0) {
-            attachRewind(pendingRewindBubble, ev.at);
-            // 这一轮刚落地，主人在这一轮说的话立刻就能改（下标要等服务端给）
-            attachEdit(pendingRewindBubble, ev.at);
-            attachBranchBtn(pendingRewindBubble, ev.at);
-          attachDelBtn(pendingRewindBubble, ev.at);
+          /* 【2026-11-09 换框架】这一轮说完了：把落盘下标（ev.at）交给 store，
+           * 主人刚说的那句立刻就能「回退 / 编辑 / 分支 / 删除」——
+           * 四个按钮由 React 按 rewindId 渲染，这里一个节点都不建。 */
+          try { if (pendingRewindBubble && pendingRewindBubble.__pendingId) {
+            window.__logStore.setPendingRewind(pendingRewindBubble.__pendingId, Number(ev.at));
             pendingRewindBubble = null;
-          }
+          } } catch (e) {}
           // 【实时跑完这一轮，也要能一键重发】
           // 上面那段只给「主人刚说的那句」挂按钮；她说的话走的是流式气泡，
           // 平时要等下次 renderTurns（切会话、刷新）才由 attachRetry 补上 ——
@@ -11050,12 +8319,17 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             // 服务端会把这一轮真用的模型名一起送过来（不是主人起的外号），
             // 算钱要用它去对价目表。存一份，appendTurnUsage 直接读。
             if (ev.model) lastTurnModel = String(ev.model);
-            // 这一轮的 token 明细和花费，挂在**她说的话**下面
-            // （平时不显示，鼠标悬停那句话才淡出来）。找不到气泡就退回画在 log 里。
-            {
-              const _under = liveBubble();
-              appendTurnUsage(ev.usage, ev.at, '', _under, Boolean(_under));
-            }
+            /**
+             * 【2026-11-09 换框架】用量行改由 React 画。
+             *
+             * 原来这里直接 appendTurnUsage(...) 往那个气泡里塞节点 ——
+             * 可那个气泡是 React 管的，#log 更是 React 管的容器，
+             * 谁在中间插一手，下一次重渲染就把它变成孤儿。
+             *
+             * 现在：这一轮落盘之后 finishTurn 会重拉历史，历史里每条 turn 都带着
+             * usage，React 渲染那条回复时把用量行挂上去（悬停才显示，样式不变）。
+             * 这里只留「模型名存一份」——算钱要用它去对价目表。
+             */
             // 设置里那块「会话总账」要是开着，顺手刷新一下，别等下次打开面板
             try {
               const sll = document.getElementById('settingsDlg');
@@ -11641,8 +8915,9 @@ async function interject() {
     } catch {}
   }
   /* 【2026-11-03 严检】插话这条原来没交给 pendingRewindBubble：①它永远拿不到五个按钮；②下一轮 done 会把新 at 挂到上一轮气泡上。 */
-  pendingRewindBubble = addUser(text, undefined, atts.length ? atts : undefined, undefined, undefined, currentIdentityName);
-  try { if (pendingRewindBubble) { const t = document.createElement("span"); t.className = "interjectTag"; t.textContent = "插话"; pendingRewindBubble.appendChild(t); } } catch {}
+  /* 【2026-11-09 换框架】「插话」这颗小标签改成 addUser 的参数：气泡由 React 画，
+   * 往它身上 appendChild 是往 React 管的节点里塞东西（下一次重渲染就成孤儿）。 */
+  pendingRewindBubble = addUser(text, '插话', atts.length ? atts : undefined, undefined, undefined, currentIdentityName);
   pendingResume = true;
   lastInterjectText = text;   // 【必须有】runTurn 收尾时靠它判断「那句到底在不在历史里」
   syncSendBtn();
@@ -11668,7 +8943,9 @@ async function interject() {
     turnsInFlight.delete(sessionId);
     syncSendBtn();
     // 刚画的那条「插话」气泡是假的（那句没进历史），撤掉再正常发
-    try { if (pendingRewindBubble && pendingRewindBubble.parentNode) pendingRewindBubble.parentNode.removeChild(pendingRewindBubble); } catch {}
+    /* 【2026-11-09 换框架】撤掉改成「让 store 忘掉这条乐观气泡」——
+     * 气泡本身是 React 画的，摘节点等于让 React 的账本对不上。 */
+    try { if (pendingRewindBubble && pendingRewindBubble.__pendingId) window.__logStore.dropPending(pendingRewindBubble.__pendingId); } catch {}
     pendingRewindBubble = null;
     if (input.value.trim() === '') input.value = text;
     return runTurn({ text });
@@ -11680,12 +8957,9 @@ async function interject() {
     busy = false;
     turnsInFlight.delete(sessionId);
     syncSendBtn();
-    const wrap = addEl('', 'msg user');
-    wrap.innerHTML = '<div class="role">系统</div>';
-    const b = document.createElement('div');
-    b.className = 'bubble';
-    b.textContent = '⚠ 这句没插进去：' + (r && r.error ? r.error : '网络错误');
-    wrap.appendChild(b);
+    /* 【2026-11-10 收编】这里原来 addEl 手搓一颗 .msg user —— 那是往 #log
+     * 里手写 DOM（两套账的种子）。现在走系统提示：store → React SysNote。 */
+    addSysNote('⚠ 这句没插进去：' + (r && r.error ? r.error : '网络错误'));
     // 话给回主人，别让他白打一遍
     if (!input.value.trim()) { input.value = text; autosizeInput(); }
     return;
@@ -16015,7 +13289,12 @@ async function addIdentity() {
 async function delIdentity() {
   const sel = idState && idState.identities.find((x) => x.id === idSel);
   if (!sel || sel.builtin) return;
-  if (!confirm('删掉身份「' + sel.name + '」？删了就没这个身份了。')) return;
+  if (!(await askConfirm({
+    title: '删掉这个身份',
+    body: `「${sel.name}」删了就没这个身份了。`,
+    ok: '删掉',
+    danger: true,
+  }))) return;
   try {
     const r = await fetch('/api/identity/remove', {
       method: 'POST',
@@ -18477,12 +15756,30 @@ sessList.addEventListener('click', async (e) => {
   settleComposer({ focus: true });
 });
 
+/* 【2026-11-10 B5】/api/sessions 的 rev 指纹缓存（存 sessionStorage）：
+ * 列表没变时服务端直接回 {rev, unchanged:true}，前端不再重算 sessionsCache、
+ * 也不再重渲染 —— 空轮询的成本归零。 */
+let sessListRev = null;
+try { sessListRev = sessionStorage.getItem('sessListRev') || null; } catch (e) {}
+function rememberSessListRev(rev) {
+  if (!rev) return;
+  if (rev === sessListRev) return;
+  sessListRev = String(rev);
+  try { sessionStorage.setItem('sessListRev', sessListRev); } catch (e) {}
+}
+
 async function refreshSessions({ silent = false } = {}) {
-  const r = await fetch('/api/sessions').then((x) => x.json()).catch(() => null);
+  const url = sessListRev
+    ? '/api/sessions?rev=' + encodeURIComponent(sessListRev)
+    : '/api/sessions';
+  const r = await fetch(url).then((x) => x.json()).catch(() => null);
   if (!r) {
     if (!silent) sessHint.textContent = '读取失败';
     return null;
   }
+  /* 指纹没变：缓存还是那份、列表还是那份，什么都不用动 */
+  if (r.unchanged) { rememberSessListRev(r.rev); return r; }
+  rememberSessListRev(r.rev);
   sessionsCache = r.sessions || [];
   const cur = sessionsCache.find((s) => s.id === sessionId);
   if (cur) { sessionTitle = cur.title; paintSessNow(); }
@@ -18729,10 +16026,24 @@ async function createSessionEx(opts = {}) {
        *   · 收尾滚动状态回到「贴底」
        */
       try {
-        const lg = document.getElementById('log');
-        if (lg) lg.replaceChildren();
-        if (typeof hubReset === 'function') hubReset();
-        try { stickBottom = true; } catch {}
+        /**
+         * 【2026-11-09 换框架·这里不能再直接抹 DOM】
+         *
+         * 原来是 `lg.replaceChildren()` 把 #log 掏空。换 React 之后那是致命的：
+         * 屏幕上的节点由 React 记账，被外面掏空之后，React 下一次提交
+         * 会去删「它以为还在」的节点，抛
+         * `removeChild: The node to be removed is not a child of this node`。
+         * 那个异常发生在**提交阶段**，错误边界接不住 —— 整棵树被卸载，
+         * 屏幕上一条不剩（实测：新建会话必现空白）。
+         *
+         * 改成清**数据**：历史置空 + 叫一次画。React 会把这一屏真的清干净，
+         * 紧接着 renderTurns 把新会话（含开场白）画上去 —— 意图一模一样。
+         */
+        window.logSetHistory(sessionId, []);
+        window.logSetLive(sessionId, null);
+        window.renderLog({ force: true });
+        /* 【2026-11-10 A4 清理】hubReset / stickBottom 两句删除：
+         * 柜子归渲染层管（数据算）；滚动归 LogView 管（见 A3）。 */
       } catch {}
       renderTurns(rr.session.turns);
     }
@@ -19786,13 +17097,10 @@ document.getElementById('mdlSave').onclick = async () => {
       try { console.warn('[模块桥] 挂不上 ' + name + '：' + (e && e.message)); } catch (e2) {}
     }
   };
-  /* let：get + set（读写同一个绑定） */
-  bind('__ignoreScrollUntil', () => __ignoreScrollUntil, (v) => { __ignoreScrollUntil = v; });
+  /* let：get + set（读写同一个绑定）
+   * 【2026-11-10 A3】__ignoreScrollUntil / _lastDocH / _lastTop / stickBottom
+   * 四个绑定随旧滚动机制一起删除（变量已不存在）。 */
   bind('__switchGen', () => __switchGen, (v) => { __switchGen = v; });
-  bind('_lastDocH', () => _lastDocH, (v) => { _lastDocH = v; });
-  bind('_lastTop', () => _lastTop, (v) => { _lastTop = v; });
-  bind('_liveHub', () => _liveHub, (v) => { _liveHub = v; });
-  bind('_liveHubCount', () => _liveHubCount, (v) => { _liveHubCount = v; });
   bind('_liveToolEls', () => _liveToolEls, (v) => { _liveToolEls = v; });
   bind('_whaleLastFinishEl', () => _whaleLastFinishEl, (v) => { _whaleLastFinishEl = v; });
   bind('attachments', () => attachments, (v) => { attachments = v; });
@@ -19804,14 +17112,11 @@ document.getElementById('mdlSave').onclick = async () => {
   bind('sessionId', () => sessionId, (v) => { sessionId = v; });
   bind('sessionTitle', () => sessionTitle, (v) => { sessionTitle = v; });
   bind('sessionsCache', () => sessionsCache, (v) => { sessionsCache = v; });
-  bind('stickBottom', () => stickBottom, (v) => { stickBottom = v; });
   bind('stopping', () => stopping, (v) => { stopping = v; });
   /* const：只给 get */
   bind('RUNNING_STALL_MS', () => RUNNING_STALL_MS);
   bind('STORE_KEY', () => STORE_KEY);
-  bind('_wcardByWid', () => _wcardByWid);
   bind('input', () => input);
-  bind('lastSnapFp', () => lastSnapFp);
   bind('log', () => log);
   bind('picked', () => picked);
   bind('sessHint', () => sessHint);

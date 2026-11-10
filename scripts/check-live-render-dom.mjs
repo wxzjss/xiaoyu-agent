@@ -23,10 +23,56 @@
  * 用法：node scripts/check-live-render-dom.mjs
  * 不碰主人正在跑的实例（自起隔离实例，结束全杀）。
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { startIsolated } from './_test-instance.mjs';
 import { connect } from '../_t_cdp.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ── 用**真服务端**的两份合成器算出「服务端此刻会给出什么清单」 ──────────
+ * F5 之后前端画的就是 /api/chat/live 的 items；这里直接跑线上那两个函数，
+ * 不自己编数据 —— 否则「刷新后段数对不对」验的是我的假设，不是代码。
+ */
+const SRV_SRC = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src/server.mjs'), 'utf8').replace(/\r\n/g, '\n');
+function grabFn(src, name) {
+  const i = src.indexOf('function ' + name + '(');
+  if (i < 0) throw new Error('src/server.mjs 里找不到 ' + name);
+  const j = src.indexOf('{', i);
+  let d = 0;
+  for (let k = j; k < src.length; k++) {
+    if (src[k] === '{') d++;
+    else if (src[k] === '}') { d--; if (d === 0) return src.slice(i, k + 1); }
+  }
+  throw new Error(name + ' 大括号没配平');
+}
+const srvItems = new Function(
+  grabFn(SRV_SRC, 'appendLiveItem') + '\n' + grabFn(SRV_SRC, 'buildLiveItems')
+  + '\nreturn { appendLiveItem, buildLiveItems };',
+)();
+/** 服务端收到这串事件之后，live.items 会是什么（增量那份 = /api/chat/live 的 items） */
+function serverLiveItems(events) {
+  const a = [];
+  for (const e of events) srvItems.appendLiveItem(a, e);
+  return a;
+}
+
+/**
+ * 【2026-11-09 换框架】事件 → **每一步之后**的 items 清单。
+ *
+ * 前端不再自己合成 items（那正是「两套账」的来源），屏幕完全由服务端给的 items 决定。
+ * 所以桩要像真服务端那样「边跑边长」：第 k 条事件推完之后，/api/chat/live 该回
+ * steps[k]。第一个元素是空清单（还没开始跑）。
+ */
+function stepsOf(events) {
+  const steps = [[]];
+  const bag = [];
+  for (const e of events) {
+    srvItems.appendLiveItem(bag, e);
+    steps.push(JSON.parse(JSON.stringify(bag)));
+  }
+  return steps;
+}
 
 let pass = 0;
 let fail = 0;
@@ -55,8 +101,15 @@ const INSTALL = `(function(){
       var enc = new TextEncoder();
       var stream = new ReadableStream({
         async pull(c){
-          if (i >= evs.length) { try { c.close(); } catch(e){} return; }
+          if (i >= evs.length) {
+            /* holdOpen：事件发完了也不许关流 —— 这一轮要「一直在跑」，
+             * 这样刷新才是「正在流式输出的中途按 F5」。 */
+            if (qa.holdOpen) { await new Promise(function(){}); return; }
+            try { c.close(); } catch(e){}
+            return;
+          }
           var e = evs[i++];
+          qa.i = i;   /* 【换框架】让 /api/chat/live 知道推到第几条了 */
           c.enqueue(enc.encode('data: ' + JSON.stringify(e) + '\\n\\n'));
           await new Promise(function(r){ setTimeout(r, gap); });
         }
@@ -64,6 +117,19 @@ const INSTALL = `(function(){
       return Promise.resolve(new Response(stream, {status:200, headers:{'content-type':'text/event-stream'}}));
     }
     if (url.indexOf('/api/chat/live') >= 0) {
+      /* 【2026-11-09 换框架】前端不再自己合成 items —— 屏幕完全由服务端给的
+       * items 决定。所以这个桩必须像真服务端一样「边跑边长清单」：
+       * qa.steps 是事件前缀算出来的若干份 items（用 src/server.mjs 的真函数算的），
+       * 按已经推给页面的 SSE 条数取当前那一份。 */
+      if (qa.steps && qa.steps.length) {
+        var last = qa.steps.length - 1;
+        var k = Math.max(0, Math.min(Number(qa.i) || 0, last));
+        /* 还在跑吗？口径跟真服务端一致：不看「事件推完没」，看这一轮**有没有收尾**。
+         * 最后一条事件不是 done/aborted/error（比如排队轮后面还跟着一句），
+         * 就说明这一轮仍在跑 —— 保持 running:true，屏幕上那几段才来得及被看见。 */
+        var stillRunning = (Number(qa.i) || 0) < last || !qa.endEvent;
+        return Promise.resolve(jsonRes({ sessionId: qa.sid, running: stillRunning, items: qa.steps[k], events: [], startedAt: qa.startedAt || Date.now(), nextSince: 0 }));
+      }
       var L = qa.live;
       if (!L) return Promise.resolve(jsonRes({ running:false, items:[], events:[], nextSince:0 }));
       return Promise.resolve(jsonRes({ running: L.running !== false, items: L.items || [], events: L.events || [], startedAt: L.startedAt || Date.now(), nextSince: 0 }));
@@ -78,10 +144,17 @@ const INSTALL = `(function(){
     var lg = document.getElementById('log');
     var tx = function(el){ return String((el && el.textContent) || '').replace(/\\s+/g,''); };
     var q = function(sel){ return [].slice.call(lg.querySelectorAll(sel)); };
+    /* 【2026-11-09 换框架·判据改口径】
+     * 对话区已经改成 React 渲染，屏幕上不再有 data-live-turn 这种「这是直播画的那一份」
+     * 的内部标记 —— 那条判据过时了（它验的是实现，不是行为）。
+     *
+     * 现在改成行为口径：**屏幕上有几段正文**（.msg.assistant 里每个 .bubble 算一段），
+     * 以及它们各自出现在哪个气泡里。一段一个 .bubble，正是主人眼睛看到的东西。
+     * 所以 liveCount = 正文段数，live = 每段的文字（按阅读顺序）。 */
     return {
-      liveCount: q('.msg.assistant[data-live-turn="1"]').length,
+      liveCount: q('.msg.assistant .bubble').length,
       allCount: q('.msg.assistant').length,
-      live: q('.msg.assistant[data-live-turn="1"]').map(tx),
+      live: q('.msg.assistant .bubble').map(tx),
       text: tx(lg),
       think: q('details.think').length,
       thinkTitle: q('details.think summary').map(tx).join('|'),
@@ -125,6 +198,13 @@ async function arm(payload, { persist = false } = {}) {
   await cdp.eval(INSTALL + '\nreturn 1;');
   const sid = await cdp.eval('return window.sessionId || "";');
   const p = Object.assign({ sid, gap: 400 }, payload);
+  /* 【换框架】按事件前缀算出每一步的 items，桩照它一节一节地给 */
+  if (Array.isArray(p.events) && p.events.length) {
+    p.steps = stepsOf(p.events);
+    const _lastEv = p.events[p.events.length - 1] || {};
+    p.endEvent = ['done', 'aborted', 'error'].includes(String(_lastEv.type || ''));
+  }
+  p.i = 0;
   await cdp.eval('window.__qa = Object.assign(window.__qa || {}, ' + JSON.stringify(p) + '); return 1;');
   if (persist) {
     await cdp.eval('localStorage.setItem("__qa_payload", ' + JSON.stringify(JSON.stringify(p)) + '); return 1;');
@@ -222,7 +302,9 @@ async function caseSegments() {
   }
   await sleep(1200);
   const fin = await snap();
-  ok(fin.liveCount === 0, '跑完直播节点全部收掉（交给历史）', '还剩 ' + fin.liveCount + ' 个');
+  /* 【改判据】原来是「直播节点全收掉」——那验的是实现（data-live-turn 标记消失）。
+   * 现在验行为：跑完屏幕上就是历史那一轮，一段正文，三段文字各在里面出现一次。 */
+  ok(fin.liveCount === 1, '跑完只留历史画的那一段（直播那一份不另留）', '实际 ' + fin.liveCount + ' 段');
   for (const [name, mark] of [['甲', A], ['乙', B], ['丙', C]]) {
     ok(cnt(fin.text, mark) === 1, '跑完落历史后「' + name + '」只出现一次', '出现 ' + cnt(fin.text, mark) + ' 次');
   }
@@ -344,6 +426,78 @@ async function caseReload() {
 }
 
 /* ══════════════════════════════════════════════════════════════════
+ * 六：口径定案后最重要的一条 —— 跑着 3 个气泡 → 刷新之后仍然 3 个
+ * ══════════════════════════════════════════════════════════════════ */
+async function caseThreeToThree() {
+  console.log('\n六、跑着 3 个气泡 → 中途 F5 → 刷新之后仍然 3 个');
+  const S1 = 'QA三段甲她说了一句';
+  const S2 = 'QA三段乙工具跑完接着说';
+  const S3 = 'QA三段丙轮末之后又是另一段';
+  const events = [
+    { type: 'text', text: S1 },
+    { type: 'tool_start', id: 'z1', name: 'run_command', args: '{}' },
+    { type: 'tool_end', id: 'z1', ok: true, output: 'o' },
+    { type: 'text', text: S2 },
+    { type: 'done' },
+    { type: 'text', text: S3 },
+  ];
+
+  /* ① 真跑起来：流不关（holdOpen），所以这一轮一直是「正在跑」 */
+  await arm({ gap: 320, holdOpen: true, events, live: null, turns: null });
+  await cdp.eval('window.__qaTurnP = window.runTurn({ text: "QA 三段" }); return 1;');
+  const series = await watch(50, 100);
+  const maxLive = Math.max(0, ...series.map((s) => s.liveCount || 0));
+  ok(maxLive === 3, '跑着的时候屏幕上 3 个气泡', '最多见到 ' + maxLive + ' 个');
+  const atThree = series.find((s) => s.liveCount === 3) || null;
+  ok(!!atThree && [S1, S2, S3].every((x) => cnt(atThree.text, x) === 1),
+    '跑着的时候三段各一份', atThree ? JSON.stringify(atThree.live) : '没抓到 3 个那一刻');
+
+  /* ② 服务端此刻手里的清单 —— 用线上那两个合成器真跑一遍，不自己编 */
+  const sv = serverLiveItems(events);
+  const svTexts = sv.filter((x) => x.k === 'text').map((x) => String(x.t || ''));
+  ok(svTexts.length === 3, '服务端清单里也是 3 段正文（' + svTexts.length + '）', JSON.stringify(svTexts));
+
+  /* ③ 真 F5：把服务端这份清单当成 /api/chat/live 的 items 交给刷新后的页面 */
+  const payload = {
+    gap: 320,
+    live: { running: true, startedAt: Date.now(), items: sv, events: [] },
+    turns: [
+      { role: 'user', text: 'QA 三段' },
+      { role: 'assistant', text: S1 },      // 服务端边跑边落盘：历史里已经有第一段
+    ],
+    sid: SID_BOOT,
+  };
+  if (!cdp.__qaAdded) {
+    await cdp.send('Page.enable', {});
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INSTALL });
+    cdp.__qaAdded = true;
+  }
+  await cdp.eval('localStorage.setItem("__qa_payload", ' + JSON.stringify(JSON.stringify(payload)) + '); return 1;');
+  await cdp.eval('location.reload(); return 1;').catch(() => {});
+
+  let ready = false;
+  for (let i = 0; i < 80; i++) {
+    await sleep(300);
+    try {
+      const v = await cdp.eval('return { ok: !!document.getElementById("log"), sid: window.sessionId || "", n: document.querySelectorAll("#log .msg").length };');
+      if (v && v.ok && v.sid && v.n > 0) { ready = true; break; }
+    } catch (e) { /* 重载中 */ }
+  }
+  ok(ready, 'F5 之后页面重新画出来了');
+  if (!ready) return;
+  await sleep(1500);
+
+  const after = await snap();
+  ok(after.liveCount === 3, 'F5 之后仍然是 3 个气泡', '实际 ' + after.liveCount + ' 个');
+  for (const [nm, mark] of [['甲', S1], ['乙', S2], ['丙', S3]]) {
+    ok(cnt(after.text, mark) === 1, 'F5 之后「' + nm + '」只出现一次', '出现 ' + cnt(after.text, mark) + ' 次');
+  }
+  ok(after.allCount === 3, 'F5 之后历史里那半截没有另外画一份（assistant 容器总数 3）', '实际 ' + after.allCount + ' 个');
+  /* 收尾：把这个 payload 清掉，别影响后面的 case */
+  await cdp.eval('localStorage.removeItem("__qa_payload"); return 1;').catch(() => {});
+}
+
+/* ══════════════════════════════════════════════════════════════════
  * 主线
  * ══════════════════════════════════════════════════════════════════ */
 try {
@@ -353,6 +507,7 @@ try {
   await caseSegments();
   await caseAborted();
   await caseReload();
+  await caseThreeToThree();
 } catch (e) {
   fail++;
   console.log('  [!!] 跑挂了：' + (e && e.stack ? e.stack : e));

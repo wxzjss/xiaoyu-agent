@@ -2,7 +2,8 @@
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createReadStream, statSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
+import { createReadStream, statSync, readdirSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 /* 【2026-11-08 加·整轮空闲看门狗】以前只有「等模型」那层有超时，卡在别处没人管 */
@@ -75,7 +76,9 @@ function diagLog(tag, detail) {
     // 太长就砍掉前面：只留最后 800 行
     const p = path.join(dir, 'diag.log');
     const all = fs.readFileSync(p, 'utf8').split('\n');
-    if (all.length > 800) fs.writeFileSync(p, all.slice(-800).join('\n'), 'utf8');
+    /* 【2026-11-10 D2·原子写】diag.log 是排障的命根子，轮转那一刀要是停在半截，
+     * 前面的历史就全没了。走 writeFileAtomic（rename 原子换），不再直接盖。 */
+    if (all.length > 800) writeFileAtomic(p, all.slice(-800).join('\n'));
   } catch { /* 日志写不了也不能影响主流程 */ }
 }
 
@@ -214,7 +217,7 @@ import {
 import { getTTSState, writeTTS, speak } from './tts.mjs';
 import { runtimeInfo, installRuntime, removeRuntime, readyPythons, readyFfmpeg, ensureVoiceRuntimeInBackground } from './voice-runtime.mjs';
 import { postMail, peekMail, takeMail, formatMail, peerInfo, mailCount } from './peer.mjs';
-import { getThinking, setThinking, LEVELS } from './thinking.mjs';
+import { getThinking, setThinking, LEVELS, levelFor } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
 import {
   getRetry429,
@@ -292,6 +295,10 @@ import {
   parseImport,
   importSessions,
   sessionPath,
+  /* 【2026-11-10 D2·原子写】diag.log 轮转、after-restart.json 这类状态文件
+   * 之前用裸 writeFileSync 直接盖，进程被杀那一刻会留半截 JSON。
+   * 统一走 sessions-core 的 writeFileAtomic（tmp+fsync+rename+EPERM 重试）。 */
+  writeFileAtomic,
 } from './sessions-core.mjs';
 
 /**
@@ -1857,6 +1864,116 @@ function startCooldownSafe(sessionId) {
 const liveLogs = new Map();
 
 /**
+ * 【2026-11-10 D3·liveLogs 生命周期】
+ *
+ * 原状：轮次 done 之后整份缓存**永久驻留** —— 单轮 events 上限 20000 条事件对象，
+ * 加上 items 真身，一个长轮次能占几 MB～几十 MB。会话开得多、跑得久，内存慢性泄漏。
+ *
+ * 改法：done 之后**保留 10 分钟**（前端切回来 / 刷新还要靠它对账补画），之后清掉
+ * events / items 数组，只留一份轻量摘要（有没有错、事件计数、起止时间）。
+ * 清扫用**惰性触发**：新轮次进入、前端轮询直播缓存时顺手扫一遍过期项 ——
+ * 不起定时器，就不会有定时器堆积 / 泄漏的问题。
+ *
+ * 摘要态的兼容（前端 src-ui/store.js 的消费口径）：
+ *   · /api/chat/live 里 running 以 runningTurns 为准（本来就不看 live.done）→ 摘要态必然 false；
+ *   · items 为空数组 → store.setLive 照收，但 buildMerged 的 isRunning 判 items.length
+ *     为 0 → live 不参与绘制，跟「没在跑」完全一致；
+ *   · 响应里带 summary 字段，前端想显示「那一轮的账」有据可查。
+ */
+const LIVE_RETAIN_MS = 10 * 60 * 1000;
+
+/** 把一份 done 的直播缓存清成轻量摘要（幂等：清过就不再动） */
+function summarizeLiveLog(live) {
+  if (!live || live._summarized) return;
+  live._summarized = true;
+  const events = Array.isArray(live.events) ? live.events : [];
+  const items = Array.isArray(live.items) ? live.items : [];
+  live.summary = {
+    turnId: Number(live.startedAt) || 0,
+    startedAt: Number(live.startedAt) || 0,
+    endedAt: Number(live.endedAt) || 0,
+    eventCount: events.length,
+    itemCount: items.length,
+    textLen: items.reduce((n, it) => n + ((it && it.k === 'text') ? String(it.t || '').length : 0), 0),
+    hasError: events.some((e) => e && (e.type === 'error' || e.type === 'aborted')),
+  };
+  live.events = [];
+  live.items = [];
+  /* rev 照常 +1：/api/chat/live 的游标语义（nextSince）不因清扫而错位 */
+  live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
+}
+
+/** 惰性清扫：把 done 超过 10 分钟的缓存清成摘要。便宜（Map 通常只有几条），随处可调。 */
+function sweepLiveLogs() {
+  const now = Date.now();
+  for (const live of liveLogs.values()) {
+    if (live && live.done && !live._summarized
+      && Number(live.endedAt) > 0 && now - Number(live.endedAt) > LIVE_RETAIN_MS) {
+      summarizeLiveLog(live);
+    }
+  }
+}
+
+/**
+ * 【2026-11-10 D1·会话列表增量协议】
+ *
+ * 病根：/api/sessions 每次都 listSessions() —— 把每个会话文件**整个读出来**解析一遍
+ * （四十多个会话 × 每个几百 KB），前端列表轮询一次就是一轮全量 IO。
+ *
+ * 改法：先算一个**便宜**的指纹（只 readdir + stat 会话文件，不读内容）：
+ *   会话集拓扑（哪些文件在）+ 每会话文件 mtime/size（内容一变 mtime 必变，消息数/标题跟着变）
+ *   + 在跑集合（哪些会话正有轮次在跑）+ 智能体卡/设置文件 mtime（列表里的 agentId/crew 依赖它们）
+ *   + 最近会话 id（_last.json 切换会话就变）。
+ *
+ * 指纹没变 → 绝不重算 sessions 数组：
+ *   · 客户端带了 ?rev= 且等于当前指纹 → 轻量响应 { rev, unchanged:true, lastSessionId }，
+ *     不带 sessions 数组（304 语义）；
+ *   · 客户端没带 rev（老前端 / 首拉）→ 直接回缓存的上一份完整 payload，listSessions 一次都不跑。
+ * 指纹变了 → 照常全量计算，并把结果连同指纹一起缓存。
+ *
+ * 向后兼容：rev / unchanged 是新增字段，老前端不认识也不会读 —— 没带 rev 的请求
+ * 拿到的 sessions / lastSessionId 跟以前一模一样。
+ */
+const SESSIONS_DIR_FINGERPRINT = join(config.dataDir, '.state', 'sessions');
+/** 上一份完整响应的缓存：{ fp, payload }。指纹变了才重建。 */
+let __sessionsCache = { fp: '', payload: null };
+
+function sessionsFingerprint() {
+  const parts = [];
+  try {
+    const names = readdirSync(SESSIONS_DIR_FINGERPRINT);
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      if (name.startsWith('_') || name.startsWith('.')) continue;
+      try {
+        const st = statSync(join(SESSIONS_DIR_FINGERPRINT, name));
+        parts.push(name + ':' + st.mtimeMs + ':' + st.size);
+      } catch { /* stat 的那一刻刚好被删了：文件集变化本身就该反映在指纹里 */ }
+    }
+    parts.sort();
+  } catch { /* 目录还不存在：空列表也算一个稳定状态 */ }
+  /* 在跑集合：轮次开跑 / 收尾都会改变它 */
+  try {
+    const running = [];
+    for (const [id, t] of runningTurns.entries()) {
+      if (t && t.ac && t.ac.signal && t.ac.signal.aborted) continue;
+      running.push(id);
+    }
+    parts.push('running=' + running.sort().join(','));
+  } catch {}
+  /* 列表里的 agentId / crew / agentName 依赖智能体卡和设置（开没开、谁排前面） */
+  for (const f of ['agents.json', 'settings.json']) {
+    try {
+      const st = statSync(join(config.dataDir, '.state', f));
+      parts.push(f + ':' + st.mtimeMs + ':' + st.size);
+    } catch { parts.push(f + ':absent'); }
+  }
+  /* 最近会话：切会话不改会话文件，但它属于列表响应 */
+  try { parts.push('last=' + String(getLastSessionId() || '')); } catch {}
+  return createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 20);
+}
+
+/**
  * 【2026-11-02 · 快照合成】把这一轮的事件流压成「屏幕上该有什么」的一张清单。
  *
  * 为什么要这个东西：
@@ -1920,10 +2037,13 @@ function appendLiveItem(items, ev) {
   const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
   if (ev.type === 'text') {
     const t = String(ev.text || '');
-    if (ev.notice) { items.push({ k: 'note', t }); return; }
+    if (ev.notice) { if (t) items.push({ k: 'note', t }); return; }
     const p = last();
-    if (p && p.k === 'text' && !p.__segEnd) p.t += t;
-    else items.push({ k: 'text', t });
+    if (p && p.k === 'text' && !p.__segEnd) { p.t += t; return; }
+    /* 【2026-11-10 修·空气泡（A6）】源头不落空 text：内容还是空就先不建条目，
+     * 等真有字了再建 —— 不然 F5 之后屏幕会比清单多一个空气泡。 */
+    if (!t) return;
+    items.push({ k: 'text', t });
   } else if (ev.type === 'reasoning') {
     const t = String(ev.text || '');
     const p = last();
@@ -1937,8 +2057,18 @@ function appendLiveItem(items, ev) {
     if (it && it.id === id) { it.status = ev.ok ? 'ok' : 'err'; it.output = String(ev.output || ''); }
     else items.push({ k: 'tool', id, name: String(ev.name || ''), args: '', status: ev.ok ? 'ok' : 'err', output: String(ev.output || '') });
   } else if (ev.type === 'whale' || ev.type === 'agent') {
-    items.push({ k: 'say', who: String(ev.who || ''), t: String(ev.text || '') });
+    /* 【2026-11-10 修·空气泡（A6）】空 say 不落清单（源头不产生）。
+     * 注意 whale_stream_start 的空占位**不在此列**（见下）：它是分段语义的一部分。 */
+    const _t = String(ev.text || '');
+    if (_t) items.push({ k: 'say', who: String(ev.who || ''), t: _t });
   } else if (ev.type === 'whale_stream_start') {
+    /* 【2026-11-10 A6 复核后保留】这条空 say 占位**必须留**：
+     * 它是「小鲸开口了」的分段记号 —— 后面她插进来的 delta 字都拼在它身上，
+     * 主智能体被打断前后两截话才能并回同一个气泡（parity 检查的 ①/⑤ 两案
+     * 钉的就是这个：占位一删，一句话就被插话劈成两个气泡）。
+     * 屏幕那半边的口径：items.js 对 say 与 text 对称滤空 —— 占位还没等到字
+     * 就被 F5 / 对账撞上时，前端不画空气泡；两份实现（增量 / 从头重算）
+     * 都带着同一个占位，清单仍然逐字相等。 */
     items.push({ k: 'say', who: String(ev.who || ''), t: '' });
   } else if (ev.type === 'whale_delta') {
     const who = String(ev.who || '');
@@ -1949,6 +2079,38 @@ function appendLiveItem(items, ev) {
     const it = lastOf('say');
     const t = String(ev.text || '');
     if (it && !it.t && t) it.t = t;
+  } else if (ev.type === 'sentfile' || ev.type === 'files') {
+    /* 【2026-11-10 收编（A2）】她发的文件进清单 —— 前端不再自己画文件卡。
+     *
+     * 旧路是前端两条：attachFiles 往 .msg 塞 fileList、placeSentCard 往
+     * .bubble.streaming 里塞卡片 —— 而那是 React 的 MdDiv，mdInto 每个
+     * 流式 tick 都重写 innerHTML，谁挂进去谁下一个 tick 就没了
+     * （审查实测「文件卡一闪就没」）。现在文件和工具卡一样是清单条目，
+     * 屏幕由 FileCard 照它画。
+     *
+     * 折叠规则照工具卡的口径：同一份文件（key/path 相同）只留一条，
+     * 重复的事件更新原条目、不新增；新文件 = 新条目 = 分段线
+     * （appendLiveItem 这边 push 进 items 之后，正文拼接自然断开）。
+     * flush / 分段规则本身一个字没动。 */
+    const _list = ev.type === 'sentfile' ? [ev.file] : (Array.isArray(ev.items) ? ev.items : []);
+    for (const _f of _list) {
+      if (!_f || (!String(_f.path || '') && !String(_f.key || ''))) continue;
+      const _fk = String(_f.key || _f.path || '');
+      let _dup = null;
+      for (let _i = items.length - 1; _i >= 0; _i--) {
+        if (items[_i].k === 'file' && items[_i].fkey === _fk) { _dup = items[_i]; break; }
+      }
+      if (_dup) continue;
+      items.push({
+        k: 'file',
+        fkey: _fk,
+        name: String(_f.name || '文件'),
+        size: Number(_f.size) || 0,
+        kind: String(_f.kind || 'file'),
+        path: String(_f.path || ''),
+        dir: 'out',
+      });
+    }
   } else if (ev.type === 'worker') {
     /* 【2026-11-03 · 子任务卡（办事模式看不见干活的过程）】
      *  ★ 同一套规则有三份，改一份必须改全三份：
@@ -1970,6 +2132,10 @@ function appendLiveItem(items, ev) {
       if (it.steps.length > 40) it.steps.splice(0, it.steps.length - 40);
     }
   }
+  /* 【2026-11-10 D7·file/sentfile 合成】由上面「收编（A2）」那个分支承担
+   * （sentfile / files → k:'file'，字段 fkey/name/size/kind/path/dir，
+   * 与 src-ui/FileCard.jsx、src-ui/items.js 同一口径）。这里不再重复落第二个
+   * file 分支 —— 两份形状并存必然算出两份清单，parity 必红。 */
 }
 
 function buildLiveItems(events) {
@@ -1977,12 +2143,33 @@ function buildLiveItems(events) {
   let cur = null;
   const flush = () => { if (cur && cur.t) items.push(cur); cur = null; };
   const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
+  /**
+   * 【2026-11-09 QA 复核抓到的真缺陷·两份实现对「分段线」判据不同】
+   *
+   *  `appendLiveItem`（增量，/api/chat/live 有 items 时走它）只看「最后一条 item 是不是 text」；
+   *  这里原来**见到任何非 text 事件都 flush()**，包括那些**只更新已有条目、不新增条目**的
+   *  （`tool_end` 改已有工具卡、`worker` 更新已有卡、`whale_delta` 补已有 say）。
+   *  于是同一条事件流：
+   *    appendLiveItem → [text 'B', worker, text 'CD']
+   *    buildLiveItems → [text 'B', worker, text 'C', text 'D']
+   *  `/api/chat/live` 在不同时刻（items 有 / items 空）给出**段数不同**的清单 ——
+   *  屏幕上就是「跑着的时候 3 个气泡，对个账 / 刷新一下变 2 个」。
+   *
+   *  口径（一边定死，四份实现都照这个来）：
+   *    **只有「新增一条条目」的事件才是分段线**；只更新已有条目的不算。
+   *  理由：那两种事件在屏幕上没有多出任何东西（只改状态 / 只给已有的卡补一句），
+   *  把一段话在这里劈开，主人看到的就是「一句话莫名断成两个气泡」。
+   *
+   *  所以下面 `flush()` 一律挪进「真要 push 一条新条目」的那一支：
+   *   `tool_end` / `whale_delta` / `worker` 命中已有条目时**不 flush**，正文接着长。
+   *  （`whale_stream_finish` 本来就只补字、不 push，所以它一直是对的。）
+   */
   for (const e of (Array.isArray(events) ? events : [])) {
     if (!e || !e.type) continue;
     /* 轮末就是分段线：排队的下一轮是「另一段话」，不能跟上一轮拼一个气泡。 */
     if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') { flush(); continue; }
     if (e.type === 'text') {
-      if (e.notice) { flush(); items.push({ k: 'note', t: String(e.text || '') }); continue; }
+      if (e.notice) { flush(); const _nt = String(e.text || ''); if (_nt) items.push({ k: 'note', t: _nt }); continue; }
       if (!cur) cur = { k: 'text', t: '' };
       cur.t += String(e.text || '');
     } else if (e.type === 'reasoning') {
@@ -1991,37 +2178,65 @@ function buildLiveItems(events) {
       if (last && last.k === 'think') last.t += String(e.text || '');
       else items.push({ k: 'think', t: String(e.text || '') });
     } else if (e.type === 'tool_start') {
+      /* 新卡 = 新条目 → 分段线 */
       flush();
       items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '' });
     } else if (e.type === 'tool_end') {
-      flush();
       const id = String(e.id || '');
       const it = lastOf('tool');
+      /* 改已有那张卡：屏幕上没多出东西，**不算分段线**（不 flush） */
       if (it && it.id === id) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
-      else items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') });
+      else { flush(); items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') }); }
     } else if (e.type === 'whale' || e.type === 'agent') {
-      flush();
-      items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+      const t = String(e.text || '');
+      /* 【2026-11-10 修·空气泡（A6）】空 say 不落清单（与 appendLiveItem 同口径） */
+      if (t) { flush(); items.push({ k: 'say', who: String(e.who || ''), t }); }
     } else if (e.type === 'whale_stream_start') {
+      /* 【2026-11-10 A6 复核后保留】空 say 占位是分段记号（见 appendLiveItem 同支）；
+       * 两份实现都带着它，清单逐字相等；屏幕半边由 items.js 对称滤空。 */
       flush();
       items.push({ k: 'say', who: String(e.who || ''), t: '' });
     } else if (e.type === 'whale_delta') {
-      flush();
       const it = lastOf('say');
+      /* 她那一句已经在屏幕上长着：只是接着长，**不算分段线** */
       if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
-      else items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') });
+      else { flush(); items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') }); }
+    } else if (e.type === 'sentfile' || e.type === 'files') {
+      /* 【2026-11-10 收编（A2）】她发的文件进清单（与 appendLiveItem 同一口径：
+       * 同一份文件只留一条；新文件 = 新条目 = 分段线）。 */
+      const list = e.type === 'sentfile' ? [e.file] : (Array.isArray(e.items) ? e.items : []);
+      for (const f of list) {
+        if (!f || (!String(f.path || '') && !String(f.key || ''))) continue;
+        const fk = String(f.key || f.path || '');
+        let dup = null;
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (items[i].k === 'file' && items[i].fkey === fk) { dup = items[i]; break; }
+        }
+        if (dup) continue;
+        flush();
+        items.push({
+          k: 'file',
+          fkey: fk,
+          name: String(f.name || '文件'),
+          size: Number(f.size) || 0,
+          kind: String(f.kind || 'file'),
+          path: String(f.path || ''),
+          dir: 'out',
+        });
+      }
     } else if (e.type === 'worker') {
       /* 【2026-11-03 主人：办事模式下看不见干活的过程】
        * 原来 worker 干什么只有主智能体（watch_worker）和文件里的进度知道，
        * 主人屏幕上只有一张「派活 · 运行中…」的卡，它跑多久都只有那一行。
        * 现在 worker 的每一步都当成一个事件推给界面，画成一棵可以展开的子任务卡。 */
-      flush();
       const wid = String(e.wid || '0');
       let it = null;
       for (let i = items.length - 1; i >= 0; i--) {
         if (items[i].k === 'worker' && items[i].id === wid) { it = items[i]; break; }
       }
       if (!it) {
+        /* 第一张卡 = 新条目 → 分段线；后面只是往这张卡上补一步，屏幕没多东西，不算 */
+        flush();
         it = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '' };
         items.push(it);
       }
@@ -2040,6 +2255,9 @@ function buildLiveItems(events) {
       const t = String(e.text || '');
       if (it && !it.t && t) it.t = t;
     }
+    /* 【2026-11-10 D7·file/sentfile 合成】由上面「收编（A2）」的分支承担
+     * （sentfile / files → k:'file'，fkey/name/size/kind/path/dir，与
+     * src-ui/FileCard.jsx、src-ui/items.js 同一口径），此处不再重复落第二个分支。 */
   }
   flush();
   return items;
@@ -2049,6 +2267,13 @@ function buildLiveItems(events) {
 const LIVE_MAX_EVENTS = 20000;
 /** 【2026-11-02】超过这个数就自动压薄 —— 前端扛不住几千次 DOM 重排 */
 const LIVE_SOFT_MAX = 600;
+/**
+ * 【2026-11-10 D5·封顶可感知】events 撞到 LIVE_MAX_EVENTS 之后，再进来的事件原本
+ * 被**静默丢弃** —— 界面上后半段凭空消失，主人还以为是程序坏了。现在第一次封顶时
+ * 向流内推一条 notice（前端有现成的 note 渲染路径，appendLiveItem 也认 notice text
+ * → { k:'note' }），明说「细节省略了」，之后的事件才静默放行丢弃。
+ */
+const LIVE_CAP_NOTICE_TEXT = '本轮内容太多（超过 ' + LIVE_MAX_EVENTS + ' 条），后面的细节先省略了；事情还在照常做，结果不受影响。';
 
 // In-flight turns: sessionId -> { ac: AbortController, done: Promise<void> }
 // 插话要先 abort，再等这一轮真的收尾（历史写完盘）后才能把新话接上去。
@@ -2643,6 +2868,8 @@ async function startPeerTurn(sessionId) {
  * 直接把这份缓存接过来续写。
  */
 function openLiveForQueuedTurn(sessionId) {
+  /* 【2026-11-10 D3】新轮次进入时顺手扫一遍过期缓存（惰性清扫，不起定时器） */
+  try { sweepLiveLogs(); } catch {}
   try {
     const prev = liveLogs.get(sessionId);
     if (prev && prev.pendingNext && !prev.done) {
@@ -3850,8 +4077,10 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/chat/live') {
     const sid = url.searchParams.get('sessionId') || '';
     if (!isSessionId(sid)) return json(res, 400, { error: 'bad sessionId' });
+    /* 【2026-11-10 D3】前端轮询顺手清一遍过期缓存（惰性清扫） */
+    try { sweepLiveLogs(); } catch {}
     const live = liveLogs.get(sid);
-    if (!live) return json(res, 200, { sessionId: sid, running: false, events: [] });
+    if (!live) return json(res, 200, { sessionId: sid, running: false, events: [], summary: null });
     // 「还在跑」以真正登记在跑的轮次为准，不能只看这份缓存标记。
     // 缓存只活在内存里：进程一崩/一重启，那份 done=false 就留在了旧对象上；
     // 界面照着它当「还在跑」，就会一直等一条永远不会来的回复。
@@ -3921,6 +4150,10 @@ const server = createServer(async (req, res) => {
        *  增量那趟没必要重复给（items 已经含了全部正文）。 */
       items: _items0,
       events: tail,
+      /* 【2026-11-10 D3】缓存被清成摘要后（done 超 10 分钟），这里给出摘要标记。
+       *  此时 running=false、items=[]、events=[]，前端照旧画不出任何直播内容；
+       *  想知道那一轮的结局（有没有错、事件计数）看这个字段。 */
+      summary: live.summary || null,
     });
   }
 
@@ -6022,7 +6255,9 @@ const server = createServer(async (req, res) => {
       // 给下拉用
       models: listModels().models.map((m) => ({ id: m.id, name: m.name || m.model, active: m.active })),
       levels: LEVELS.map((l) => ({ id: l.id, name: l.name, desc: l.desc })),
-      defaultLevelName: LEVELS.find((l) => l.id === (th.perModel[epNow.id] ?? th.level))?.name || '默认',
+      /* 【2026-11-09 改】perModel 的键现在优先是「地址/模型名」的稳定键，
+       * 直接拿 epNow.id 去查会漏。统一走 levelFor（它内部两个键都认）。 */
+      defaultLevelName: LEVELS.find((l) => l.id === levelFor(epNow))?.name || '默认',
     });
   }
 
@@ -6218,6 +6453,22 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
+    /* 【2026-11-10 D1·增量协议】先算便宜指纹（readdir+stat，不读会话内容）。
+     *  指纹没变：绝不重算 sessions 数组 —— 带了 rev 且相等就回轻量 304 语义响应；
+     *  没带 rev（老前端 / 首拉）回缓存的上一份完整 payload。
+     *  指纹变了：照常全量计算并刷新缓存。 */
+    const fp = sessionsFingerprint();
+    const clientRev = String(url.searchParams.get('rev') || '');
+    if (__sessionsCache.fp === fp && __sessionsCache.payload) {
+      if (clientRev && clientRev === fp) {
+        return json(res, 200, {
+          rev: fp,
+          unchanged: true,
+          lastSessionId: __sessionsCache.payload.lastSessionId,
+        });
+      }
+      return json(res, 200, { ...__sessionsCache.payload, unchanged: false });
+    }
     // 每条会话顺手带上「它现在是哪张智能体卡在说话」。
     // 为什么放在服务端算而不是让界面自己去问：会话一多（主人四十多个），
     // 界面要为每一条发一次请求，列表打开就得等一整圈；这里一次带回去。
@@ -6284,10 +6535,14 @@ const server = createServer(async (req, res) => {
     });
     const last = getLastSessionId();
     const fallback = list.length ? list[0].id : null;
-    return json(res, 200, {
+    const payload = {
+      rev: fp,
+      unchanged: false,
       sessions: list,
       lastSessionId: last && list.some((s) => s.id === last) ? last : fallback,
-    });
+    };
+    __sessionsCache = { fp, payload };
+    return json(res, 200, payload);
   }
 
   /**
@@ -7552,7 +7807,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (_tellWho && _byTool) {
       try {
         __diagMkdir(join(config.dataDir, '.state'), { recursive: true });
-        __diagWrite(join(config.dataDir, '.state', 'after-restart.json'), JSON.stringify({ sessionId: _tellWho, at: Date.now() }), 'utf8');
+        writeFileAtomic(join(config.dataDir, '.state', 'after-restart.json'), JSON.stringify({ sessionId: _tellWho, at: Date.now() }));
       } catch (e) {
         console.warn('[restart] 记「重启后说一句」失败（不影响重启）：', String(e?.message ?? e));
       }
@@ -7641,10 +7896,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (info && info.status === 'ready') {
       dropInstaller(info.file);
       try {
-        __diagWrite(
+        writeFileAtomic(
           join(config.dataDir, '.state', 'update.json'),
           JSON.stringify({ at: Date.now(), status: 'dismissed', from: info.from, to: info.to }, null, 2),
-          'utf8',
         );
       } catch {}
     }
@@ -7960,6 +8214,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           try {
             if (live0.events.length < LIVE_MAX_EVENTS) {
               live0.events.push({ ...ev, at: (ev && ev.at) || Date.now() });
+            } else if (!live0.__capNoticed) {
+              /* 【2026-11-10 D5·封顶可感知】第一次封顶推一条 notice，之后才静默丢弃 */
+              live0.__capNoticed = true;
+              live0.events.push({ type: 'text', notice: true, text: LIVE_CAP_NOTICE_TEXT, at: Date.now() });
+              ev = { type: 'text', notice: true, text: LIVE_CAP_NOTICE_TEXT };
+            } else {
+              return; // 已经提醒过了：后续事件连 SSE 都不再发，别把连接刷爆
             }
           } catch {}
           /**
@@ -8042,6 +8303,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             try {
               if (live0ForMates && live0ForMates.events.length < LIVE_MAX_EVENTS) {
                 live0ForMates.events.push(ev);
+              } else if (live0ForMates && !live0ForMates.__capNoticed) {
+                /* 【2026-11-10 D5·封顶可感知】同主路：第一次封顶推 notice */
+                live0ForMates.__capNoticed = true;
+                const _capEv = { type: 'text', notice: true, text: LIVE_CAP_NOTICE_TEXT, at: Date.now() };
+                live0ForMates.events.push(_capEv);
+                ev = _capEv;
+              } else {
+                return; // 封顶后静默丢弃，SSE 也不再发
               }
             } catch {}
             try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch {}
@@ -8306,6 +8575,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       'X-Accel-Buffering': 'no',
     });
     // 这一轮的所有事件都先记进直播缓存，再往连接上写
+    /* 【2026-11-10 D3】开新一轮前顺手扫一遍过期缓存（惰性清扫） */
+    try { sweepLiveLogs(); } catch {}
     const live = { sessionId, events: [], items: [], startedAt: Date.now(), done: false };
     liveLogs.set(sessionId, live);
     /**
@@ -8343,6 +8614,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          *  老的那些 text 被直接丢掉 —— 屏幕上就成了「短一版」，刷新前跟刷新后不一样。
          *  并起来事件数就压到几十条，压薄不会再动正文。 */
         const _sameKind = (ev && (ev.type === 'reasoning' || ev.type === 'text'))
+          && !live.__capNoticed   /* 【2026-11-10 D5】封顶后不许再合并：否则正文会被并进封顶 notice 里 */
           && live.events.length
           && live.events[live.events.length - 1]
           && live.events[live.events.length - 1].type === ev.type;
@@ -8367,6 +8639,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           live.events.push(ev);
           /* 【画面真身】清单只增不减 —— 压薄动的是上面那个 events 数组，动不了它 */
           try { appendLiveItem(live.items, ev); } catch (e) {}
+        } else if (!live.__capNoticed) {
+          /* 【2026-11-10 D5·封顶可感知】第一次封顶向流内推一条 notice（带 seq/rev 照常进清单），
+           *  让界面明说「细节省略了」，而不是无声消失；之后的事件才静默丢弃（连 SSE 都不发）。 */
+          live.__capNoticed = true;
+          live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
+          ev = {
+            type: 'text',
+            notice: true,
+            text: LIVE_CAP_NOTICE_TEXT,
+            at: Date.now(),
+            seq: live.events.length,
+            rev: live.rev,
+          };
+          live.events.push(ev);
+          try { appendLiveItem(live.items, ev); } catch (e) {}
+        } else {
+          return; // 已经提醒过了：后续事件静默丢弃，SSE 也不再发
         }
         /* ② 太长了就压薄：把相邻同类合并，实在还超就砍最老的 */
         if (live.events.length > LIVE_SOFT_MAX) {

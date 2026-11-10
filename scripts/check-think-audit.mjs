@@ -152,12 +152,36 @@ yes('sessions-core 读盘外门认结束标签', guardLines.length > 0 && guardL
 // ── 前端：三处渲染出口都要套上 ──────────────
 const ui = read('public/index.html');
 yes('前端 mdInto 里剥了', /stripXmlToolCalls\(stripCompressMemoryText\(stripThinkingTags\(rawText\)\)\)/.test(ui));
-yes('前端 paintSpeech 里剥了', /stripThinkingTags\(String\(raw \?\? ''\)\)/.test(ui));
-yes('前端装了 DOM 监听清洗', /function installTagCleaner\(\)/.test(ui));
-yes('监听真的被调起来', /installTagCleaner\(\);\s*\}\s*catch/.test(ui));
-yes('清洗覆盖 bubble/thinkBody/md/pre', /SEL = '\.bubble, \.thinkBody, \.md, pre'/.test(ui));
-/* 严检探针照出来的洞：新插进来的气泡，变动 target 是父容器 #log，老逻辑看不到它 */
-yes('清洗器会查「新加进来的节点」', /m\.addedNodes/.test(ui));
+/* 【2026-11-09 换框架】原来这里断言 `paintSpeech` 里也剥一遍 —— paintSpeech 已删。
+ * 换成断言**行为等价物**：React 那一侧的每个正文气泡都必须走同一条渲染入口
+ * （MdDiv → window.mdInto），也就是「没有第二个绕过剥标签的出口」。 */
+const mdDiv = read('src-ui/MdDiv.jsx');
+yes('React 正文只有一个渲染入口（MdDiv → mdInto）',
+  /mdInto\(inner\.current, text\)/.test(mdDiv) && /from '\.\.\/ui\/bridge\.js'|from '\.\/bridge\.js'/.test(mdDiv));
+{
+  /* 没有人绕开 MdDiv 直接塞 innerHTML/textContent 画正文 */
+  const uiFiles = fs.readdirSync('src-ui').filter((f) => /\.(jsx|js)$/.test(f));
+  const raw = uiFiles.filter((f) => /dangerouslySetInnerHTML/.test(read('src-ui/' + f)));
+  yes('src-ui 里没有 dangerouslySetInnerHTML（正文字节都走 mdInto）', raw.length === 0, raw.join(','));
+}
+/* 【2026-11-09 换框架·这条也退化了】
+ * 原来这里有四格在验「DOM 监听清洗器」：装没装、调没调、覆盖哪些选择器、认不认新增节点。
+ * 换 React 之后，`installTagCleaner()` 已经变成 `return false;` 的**空壳**（正文只走 mdInto，
+ * 浏览器里再也不会有「手写插进来的节点」需要扫）。所以：
+ *   · 如果它还是空壳 —— 不假装「清洗器在工作」，如实记 skip，并说明防护只剩 mdInto 一条；
+ *   · 如果将来有人把它真装回来 —— 那四格照旧要过（选择器 + addedNodes 一个都不能少）。
+ * 这样这条检查既不会因为「删了死代码」而假红，也不会因为「空壳还在」而假绿。 */
+{
+  const stub = /function installTagCleaner\(\)\s*\{\s*return false;\s*\}/.test(ui);
+  if (stub) {
+    console.log('  [--] DOM 监听清洗器已退化为空壳（正文只走 mdInto，防护只剩一条）');
+  } else {
+    yes('前端装了 DOM 监听清洗', /function installTagCleaner\(\)/.test(ui));
+    yes('监听真的被调起来', /installTagCleaner\(\);\s*\}\s*catch/.test(ui));
+    yes('清洗覆盖 bubble/thinkBody/md/pre', /SEL = '\.bubble, \.thinkBody, \.md, pre'/.test(ui));
+    yes('清洗器会查「新加进来的节点」', /m\.addedNodes/.test(ui));
+  }
+}
 
 // ── 盘上的真实会话：一条不留 ──────────────
 /* 【2026-11-09】隔离回归时扫临时目录，别去翻主人的会话 */

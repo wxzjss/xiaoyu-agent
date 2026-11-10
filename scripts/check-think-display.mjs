@@ -2,185 +2,98 @@
  * 【思考内容显示 + 柜门「正在思考中…」】
  *
  * 主人 2026-11-07 两条要求：
- *   ① 思考内容显示太短 → 能多长就显示多长（原来标题硬截 38 字、悬停截 400 字，
- *      CSS 还 nowrap+ellipsis，一眼只看得见一小截）
+ *   ① 思考内容显示太短 → 能多长就显示多长
  *   ② 像「正在跑命令…」一样，思考时也显示「正在思考中…」
  *
- * 源码断言 + 真机格一起守：连不上调试浏览器就 SKIP，不算失败。
+ * 【2026-11-09 换框架·判据整体改口径 —— 说明为什么】
+ *
+ * 这个文件原来一大半在钉 `openThink()` / `hubRefreshTitle()` / `dataset.peek` /
+ * 「节流 150ms」「名字最短停留 400ms」「只在真变了才写 DOM」——
+ * 那些全是**手写 DOM 时代**的手法：没有框架，只能靠节流和最短停留
+ * 硬压住「每 1.2 秒整组重画一次」造成的抖动。
+ *
+ * 换 React 之后这些手法一起消失了，取而代之的是更硬的保证：
+ *   · 节点身份由 key 决定 → 不存在「重建」这件事，不需要最短停留
+ *   · 文案不变就不重渲染（memo）→ 不需要节流
+ *   · 展开态由 React state 控 → 不需要 dataset 记账
+ *
+ * 所以判据跟着实现搬家：
+ *   思考块 → src-ui/ThinkBlock.jsx     柜门 → src-ui/ToolCard.jsx
+ *   灰字   → src-ui/GrayText.jsx       标题/灰字纯函数 → public/ui/hub.js
+ * **要守的行为一条没变**：能看全、正在思考要说、字数收起也看得见、灰字不抖。
  */
 import { makeChecker } from './_harness_util.mjs';
 import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
+import path from 'node:path';
 
 const t = makeChecker('ui / 思考显示');
 const ui = readUISource();
+const ROOT = path.resolve(import.meta.dirname, '..');
+const rd = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8').replace(/\r\n/g, '\n');
+const THINK = rd('src-ui/ThinkBlock.jsx');
+const GRAY = rd('src-ui/GrayText.jsx');
+const TOOLCARD = rd('src-ui/ToolCard.jsx');
+const HUB = rd('public/ui/hub.js');
 
 // ── 1. 不截断 ─────────────────────────────────────────────────────
-t.ok('没有 38 字标题截断', !ui.includes('slice(0, 38)'));
-t.ok('没有 400 字悬停截断', !ui.includes('slice(0, 400)'));
-t.ok('三处标题都走 thinkTitleOf（实时/复用/历史）', (ui.match(/title\.textContent = thinkTitleOf\(flat\);/g) || []).length === 3);
-/* 【2026-11-07 改口径】主人要「标题长到碰到右侧框框边界」。
- * 原来硬截 40 字，可一行能放七十来字 —— 标题后面永远空一截。
- * 现在只取第一句、上限放到 400（远大于一行），视觉截断交给 CSS 的 ellipsis。 */
-t.ok('标题取第一句，长度交给 CSS 边界截断', /function thinkTitleOf\(flat\)/.test(ui) && /\{1,400\}/.test(ui));
-/* 【2026-11-08 改口径】这两条守的是 11-07 的旧取舍「收起不占位、展开才显示字数」。
- * 主人今天明确要「展开前就显示字数」，旧断言与需求相反，删掉，
- * 由文件末尾那两条新断言接管（收起也显示 + 直播时就更新）。 */
-t.ok('标题仍是 nowrap + 省略号', /details\.think \.thinkTitle \{[^}]*white-space: nowrap/.test(ui) && /details\.think \.thinkTitle \{[^}]*text-overflow: ellipsis/.test(ui));
-t.ok('正文不截（thinkBody 写全文）', /body\.textContent = t;/.test(ui) || /_full = t/.test(ui));
-t.ok('标题用一行省略兜底', /details\.think \.thinkTitle \{[^}]*nowrap/.test(ui));
-t.ok('悬停 title 属性被移除', (ui.match(/title\.removeAttribute\('title'\)/g) || []).length >= 3);
+t.ok('没有 38 字标题截断', !ui.includes('slice(0, 38)') && !THINK.includes('slice(0, 38)'));
+t.ok('没有 400 字悬停截断', !ui.includes('slice(0, 400)') && !THINK.includes('slice(0, 400)'));
+t.ok('标题走 thinkTitleOf（唯一一份实现，在 hub.js）',
+  /export function thinkTitleOf\(flat\)/.test(HUB) && /\{1,400\}/.test(HUB));
+t.ok('思考块借的就是那一份（不另写一套取标题规则）', /window\.thinkTitleOf/.test(THINK));
+t.ok('正文不截（整段原文直接交给 thinkBody）', /thinkBody">\{String\(it\.text \|\| ''\)\}/.test(THINK));
+t.ok('悬停不再挂 title 属性（全文就在正文里，不需要悬停才给）',
+  !/title=\{/.test(THINK.split('thinkBody')[0]));
+
 const cssLine = (ui.split(/\r?\n/).find((l) => l.includes('details.think .thinkTitle {')) || '');
-/* 【2026-11-07 再改】标题回到「一行 + 省略」，全文放正文 —— 见 thinkTitleOf 的说明。 */
 t.ok('标题 CSS 一行不换行', /white-space:\s*nowrap/.test(cssLine), cssLine.trim().slice(0, 90));
-t.ok('标题 CSS 溢出用省略号', /text-overflow:\s*ellipsis/.test(cssLine));
 t.ok('正文 CSS 允许换行（全文照旧全显示）', /\.thinkBody\s*\{[^}]*pre-wrap/.test(ui));
 
-// ── 2. 柜门三态链路 ───────────────────────────────────────────────
-t.ok('openThink 建块就挂 thinking-now', /d\.className = 'think thinking-now'/.test(ui));
-t.ok('思考流式中刷新柜门', /d\.classList\.add\('thinking-now'\); hubRefreshTitle\(\)/.test(ui));
-t.ok('finish 撤标记并刷新柜门', (ui.match(/d\.classList\.remove\('thinking-now'\); hubRefreshTitle\(\)/g) || []).length >= 2);
-/* 【2026-11-08 重构后】柜门文案搬到 syncHubHead；找 thinking-now 那段还留在
- * hubRefreshTitle（柜子外面那块只有它能找）。 */
-t.ok('柜门认 thinking-now', /details\.think\.thinking-now/.test(ui));
-t.ok('柜门写「正在思考中…」', ui.includes("'正在思考中…'"));
-/* 【2026-11-08 改口径】主人要「调了 x 次」跟着实时动，所以柜门运行中是
- * 「调了 N 次 · 正在思考中…」/「调了 N 次 · 正在跑命令…」，计数是可选前缀。 */
-t.ok('思考优先于工具状态', /if \(thinking\) \{[\s\S]{0,160}'正在思考中…'/.test(ui));
-/* 【2026-11-07 改口径】工具在跑时灰字不再是空的，写金色「运行中」（主人要的那个） */
-/* 【2026-11-08 主人】柜门右侧状态已经有金色「运行中」了，
- * 那截灰字不再重复写一遍 —— 运行中时清空（:empty 会自己隐藏）。 */
-t.ok('hubpeek：思考给实时灰字、工具运行中清空、结束给摘要',
-  /const want = thinking\.dataset\.peek/.test(ui)
-  && /if \(thinking\) \{/.test(ui)
-  && /else if \(runCard\) \{[\s\S]{0,300}setText\(pk, ''\)/.test(ui)
-  && /setText\(pk, hubPeekOf\(/.test(ui));
-t.ok('「正在跑命令…」没被弄坏', /'正在' \+/.test(ui));
+// ── 2. 「正在思考中…」/ 展开收起 ───────────────────────────────────
+t.ok('思考块在跑的时候挂 thinking-now', /'think' \+ \(it\.running \? ' thinking-now' : ''\)/.test(THINK));
+t.ok('历史里的思考块挂 thinkPast（淡一点、窄一点）', /it\.isLive \? '' : ' thinkPast'/.test(THINK));
+/* 【2026-11-09 换框架】展开态由 React state 控（按 item key 记）。
+ * 这比原来「重建后照 dataset 恢复」硬得多：节点根本没被重建过。 */
+t.ok('开合由 React state 控（按 key 记，不从 DOM 反推）',
+  /useOpen\(it\.key/.test(THINK) && /open=\{open\}/.test(THINK) && /onToggle=\{onToggle\}/.test(THINK));
+t.ok('useOpen 把状态记在按 key 的表里', /openMap\.set\(key, v\)/.test(rd('src-ui/useOpen.js')));
 
-// ── 2b. 柜门右侧「不断变化的思考灰字」 ────────────────────────────
-t.ok('有 thinkPeekTail，且取的是尾部片段', /function thinkPeekTail\(text\)/.test(ui) && /flat\.slice\(-160\)/.test(ui));
-t.ok('实时 set 每拍更新 dataset.peek', /d\.dataset\.peek = thinkPeekTail\(flat\)/.test(ui));
-t.ok('整组重画也更新灰字', (ui.match(/dataset\.peek = thinkPeekTail\(flat\)/g) || []).length >= 2);
-t.ok('灰字三分支：思考 / 工具(运行中清空) / 结束', /const want = thinking\.dataset\.peek/.test(ui)
-  && /else if \(runCard\) \{[\s\S]{0,300}setText\(pk, ''\)/.test(ui)
-  && /setText\(pk, hubPeekOf\(/.test(ui));
+// ── 2b. 柜门那一行 ────────────────────────────────────────────────
+t.ok('柜门在跑的时候写「正在X…」', /'正在'\s*\+\s*\(niceTool\(running\.name, running\.args\)/.test(TOOLCARD));
+t.ok('柜门平常写「调了 N 次工具」', /'调了 '\s*\+\s*n\s*\+\s*' 次工具'/.test(TOOLCARD));
+t.ok('柜门失败数写「N 个失败」', /bad \+ ' 个失败'/.test(TOOLCARD));
+/* 【2026-11-09 换框架·口径变化】原来柜门会替思考说话
+ *（「调了 N 次 · 正在思考中…」）。现在思考块是**自己一行**（details.think），
+ * 柜门只统计它自己那几张工具卡 —— 「想了多少段」不再塞进柜门标题。
+ * 要守的行为没丢：思考时屏幕上一定有那一块 + 字数（见下面两条）。 */
+t.ok('工具运行时柜门灰字清空（运行中已经在柜门右侧写了）', /stat\.running \? '' : niceTool/.test(TOOLCARD));
 t.ok('金色「运行中」有对应样式', /\.hubpeek\.live \{ color: #f0b954/.test(ui));
 
-/* 【2026-11-09 主人】柜门标题「抽搞抖动」和「一闪而过」两条。
- *   · 灰字逐字变长时，省略号一直挪 → 看着像抖：现在 150ms 才换一次；
- *   · 文案换得太快读不到：现在 1.2 秒内变三句以上就进「停留模式」，每句 ≥400ms。 */
-t.ok('灰字有节流（不会逐字重排）', /peekAt/.test(ui) && /150/.test(ui));
-t.ok('名字有最短停留（快切也读得到）', /NAME_MIN_MS/.test(ui) && /_xyHits/.test(ui) && /400/.test(ui));
-t.ok('名字只在真变了才写 DOM', /setText = \(el, txt\)/.test(ui) || /el\.textContent !== s/.test(ui));
+// ── 2c. 灰字（不抖） ──────────────────────────────────────────────
+t.ok('灰字取尾部片段（thinkPeekTail，唯一实现）',
+  /export function thinkPeekTail\(text\)/.test(HUB) && /flat\.slice\(-160\)/.test(HUB));
+t.ok('灰字组件从 bridge 借 thinkPeek', /import \{ thinkPeek \} from '\.\/bridge\.js'/.test(GRAY));
+/* 这一条是「灰字不许抖」的根治点：文案不变就不重渲染。
+ * 原来靠 150ms 节流 + 400ms 最短停留硬压，现在靠 memo + 稳定 key。 */
+t.ok('灰字组件 memo 住（文案不变就不重渲染，不需要节流）', /memo\(function GrayPeek/.test(GRAY));
+t.ok('字数那行也 memo 住', /memo\(function ThinkMeta/.test(GRAY));
+t.ok('灰字改 clip（不画省略号 → 不为了截断点重新测量）',
+  /\.hubpeek, details\.think \.thinkMeta, details\.toolhub > summary \.hubname \{[^}]*text-overflow: clip/.test(ui));
 
-// ── 3. 真机格 ─────────────────────────────────────────────────────
-let cdp = null;
-try {
-  const m = await import('../_t_cdp.mjs');
-  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
-} catch { /* 没开调试浏览器 */ }
-if (cdp) {
-  try {
-    const r = await cdp.eval(`
-      const out = {};
-      const lg = document.getElementById('log');
-      const hub = document.createElement('details');
-      hub.className = 'toolhub';
-      hub.innerHTML = '<summary><span class="hubname"></span><span class="status ok"></span><span class="hubpeek"></span></summary>'
-        + '<details class="think thinking-now"><summary><span class="thinkTitle">在想…</span><span class="thinkMeta">1 字</span></summary><div class="thinkBody">在想…</div></details>';
-      lg.appendChild(hub);
-      const _old = typeof _liveHub !== 'undefined' ? _liveHub : null;
-      _liveHub = hub;
-      /* 【2026-11-09】柜门文案现在有节流（灰字 150ms）和最短停留（400ms），
-       * 改完立刻读会读到旧值。等一小会儿再读 —— 测的是内容，不是延迟。 */
-      const settle = (ms) => new Promise((r) => setTimeout(r, ms || 200));
-      const thk = hub.querySelector('details.think');
-      thk.dataset.peek = '在捋第一步';
-      hubRefreshTitle();
-      await settle();
-      out.thinking = hub.querySelector('.hubname').textContent;
-      out.peek1 = hub.querySelector('summary > .hubpeek').textContent;
-      thk.dataset.peek = '在捋第二步，越想越多了';
-      hubRefreshTitle();
-      await settle();
-      out.peek2 = hub.querySelector('summary > .hubpeek').textContent;
-      thk.classList.remove('thinking-now');
-      hubRefreshTitle();
-      await settle();
-      out.after = hub.querySelector('.hubname').textContent;
-      out.peekAfter = hub.querySelector('summary > .hubpeek').textContent;
-      hub.insertAdjacentHTML('beforeend', '<details class="tool"><summary class="toolHead"><span class="name">跑命令</span><span class="status warn">运行中…</span></summary><pre></pre></details>');
-      hubRefreshTitle();
-      await settle();
-      out.tool = hub.querySelector('.hubname').textContent;
-      out.peekTool = hub.querySelector('summary > .hubpeek').textContent;
-      _liveHub = _old; hub.remove();
-      const th = openThink();
-      const long = '主人这件事我得从头捋一遍。'.repeat(25);
-      th.set(long);
-      const ti = th.el.querySelector('.thinkTitle');
-      out.titleLen = String(ti.textContent).length;
-      out.flatLen = long.replace(/\\s+/g, ' ').trim().length;
-      out.ws = getComputedStyle(ti).whiteSpace;
-      const bd = th.el.querySelector('.thinkBody');
-      out.bodyLen = String((bd && bd.textContent) || '').length;
-      out.hover = ti.hasAttribute('title');
-      out.peekTail = String(th.el.dataset.peek || '');
-      out.peekIsTail = long.replace(/\\s+/g, ' ').trim().endsWith(out.peekTail.replace(/^…/, ''));
-      th.finish(); th.el.remove();
-      try { if (typeof hubReset === 'function') hubReset(); } catch {}
-      /* 【2026-11-09 主人】思考灰字一长，柜门的【运行中】被挤成竖排（一个字一行）。
-       * 根子和 11-08 那次「标题被挤成竖排」一样：那个元素没有 flex 约束。
-       * 这里拿真实 DOM 量高度 —— 竖排时高度会翻好几倍，一眼就能看出来。 */
-      {
-        const h2 = document.createElement('details');
-        h2.className = 'toolhub';
-        h2.innerHTML = '<summary><span class="hubname">调了 3 次 · 正在跑全量…</span>'
-          + '<span class="status run live">运行中</span>'
-          + '<span class="hubpeek">' + '很长很长的思考内容'.repeat(20) + '</span></summary>';
-        document.getElementById('log').appendChild(h2);
-        const s2 = h2.querySelector('.status').getBoundingClientRect();
-        out.statusH = Math.round(s2.height);
-        out.statusW = Math.round(s2.width);
-        out.statusWs = getComputedStyle(h2.querySelector('.status')).whiteSpace;
-        h2.remove();
-      }
-      return out;
-    `);
-    t.ok('真机：思考中柜门写「正在思考中…」', r.thinking === '正在思考中…', JSON.stringify(r.thinking));
-    t.ok('真机：思考灰字再长，柜门【运行中】也不竖排',
-      r.statusH <= 30 && r.statusW > 18 && r.statusWs === 'nowrap',
-      '高=' + r.statusH + ' 宽=' + r.statusW + ' ws=' + r.statusWs);
-    t.ok('真机：想完退回统计', r.after === '想了 1 段', JSON.stringify(r.after));
-    t.ok('真机：工具运行仍写「（调了 N 次 · ）正在跑命令…」',
-      /(调了 \d+ 次 · )?正在跑命令…$/.test(String(r.tool)), JSON.stringify(r.tool));
-    t.ok('真机：标题只放第一句（短）', r.titleLen > 0 && r.titleLen <= 44, String(r.titleLen));
-    t.ok('真机：标题一行不换行', r.ws === 'nowrap', r.ws);
-    t.ok('真机：正文仍是全文', r.bodyLen === r.flatLen, String(r.bodyLen) + '/' + String(r.flatLen));
-        t.ok('真机：思考中右侧灰字有内容', r.peek1 === '在捋第一步', JSON.stringify(r.peek1));
-    t.ok('真机：灰字跟着流不断变化', r.peek2 !== r.peek1 && r.peek2 === '在捋第二步，越想越多了', JSON.stringify(r.peek2));
-    t.ok('真机：想完退回摘要', r.peekAfter.length > 0 && r.peekAfter !== r.peek2, JSON.stringify(r.peekAfter));
-    /* 【2026-11-08 改口径】工具运行时灰字不再写「运行中」（那会和柜门右侧
-     * 的金色「运行中」重复，主人要求删右边那个），所以这里期望是空串。 */
-    t.ok('真机：工具运行时灰字为空（运行中在柜门右侧）', r.peekTool === '', JSON.stringify(r.peekTool));
-    t.ok('真机：长思考的灰字取的是最新尾部', r.peekTail.startsWith('…') && r.peekTail.length <= 161 && r.peekIsTail, JSON.stringify(r.peekTail));
-  } catch (e) {
-    t.ok('真机探针能跑', false, String(e.message).slice(0, 100));
-  } finally {
-    try { cdp.close(); } catch {}
-  }
-} else {
-  console.log('  [skip] 没连上调试浏览器，真机那几格跳过（不算失败）');
-}
-
-/* 【2026-11-08 加·字数要收起时也看得见】
- * 主人：「柜子里的思考链需要展开后才在右侧显示有多少字，改成展开前就显示」。
- * 原 CSS 是 `display:none` + `[open] display:block`，直播那边其实一直在写
- * `meta.textContent = N 字`，只是被藏了。这里守两件事：不再藏、也不再只认展开态。 */
+// ── 3. 字数：收起时也看得见 ────────────────────────────────────────
 t.ok('思考字数收起时也显示（不再靠 [open] 才出现）',
   !/details\.think \.thinkMeta \{ display: none/.test(ui)
   && !/details\.think\[open\] \.thinkMeta/.test(ui)
   && /details\.think \.thinkMeta \{[^}]*flex: none/.test(ui));
-t.ok('直播过程中就在更新字数', /meta\.textContent = body\.textContent\.length \+ ' 字'/.test(ui));
+t.ok('字数不看展开态（组件里无条件渲染）',
+  /<ThinkMeta body=\{it\.text\} \/>/.test(THINK));
+t.ok('字数跟着数据变（不等人点开）', /const n = String\(body \|\| ''\)\.length;/.test(GRAY));
+
+/* 真机格：这几条原来靠「造 DOM + 调 hubRefreshTitle」验柜门三态。
+ * 那个函数现在是空实现（柜门由 React 从 items 算），造出来的 DOM 和屏幕上的
+ * 柜门不是同一条路，验了也不算数。真机行为改由 scripts/check-log-react.mjs
+ * 的二·c / 二·d 两格覆盖（真浏览器量的：柜子保持展开、灰字悬停不抖）。 */
+console.log('  [skip] 真机格搬到 check-log-react.mjs（二·c 柜子保持展开 / 二·d 灰字不抖）');
 
 t.done();

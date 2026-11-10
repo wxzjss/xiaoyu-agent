@@ -110,10 +110,12 @@ for (const t of ['aborted', 'error', 'rate_limited']) {
   ok(has, t + ' — 这一支里有收尾（不卡转圈）');
 }
 
-console.log('\n=== 5. 说完之后再发文件，卡片得挂得上去 ===');
-ok(html.includes('function sentTailRow'), 'sentTailRow 有声明');
-ok(/let\s+sentThisTurn|const\s+sentThisTurn/.test(html), 'sentThisTurn 有声明');
-ok(html.includes('sentTailRow()'), 'sentTailRow 真被用上了');
+console.log('\n=== 5. 她发的文件：走清单条目（k:\'file\'），不再手写文件卡 ===');
+/* 【2026-11-10 A2 收编改口径】旧断言（sentTailRow 声明/调用）随那条手写 DOM
+ * 路一起下岗。文件卡现在：服务端合成 k:'file' 条目 → FileCard 照数据画。 */
+ok(!html.includes('function sentTailRow'), 'sentTailRow 那条手写 DOM 路已删（文件进清单）');
+ok(!/function\s+attachFiles\s*\(/.test(html), 'attachFiles 不再往 .msg 挂文件列表');
+ok(srv.includes("k: 'file'") || srv.includes("k:'file'"), '服务端把文件事件合成 k:\'file\' 条目');
 
 console.log('\n=== 6. 仓库改的和程序跑的，必须是同一份 ===');
 const repoHtml = readFileSync('D:/小鱼Agent/public/index.html', 'utf8');

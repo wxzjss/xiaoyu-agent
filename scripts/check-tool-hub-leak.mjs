@@ -1,102 +1,120 @@
 /**
- * 【工具卡会不会跑到柜子外面】
+ * 【工具卡会不会跑到柜子外面】—— 2026-11-09 换框架后重写
  *
- * 主人 2026-11-08：「严检调用工具显示是否会跑到柜子外面」。
+ * 主人 2026-11-01：「不要一出工具就套柜子」；后来又报过「展开柜子一堆散卡漏在外面」。
+ * 旧实现为此装了一个 MutationObserver 自愈守卫（`installToolLeakGuard`），
+ * 专门把「漏在 #log 外面的散卡」搬回柜子里 —— 因为手写 DOM 会漏。
  *
- * 这个现象历史上反复出现过（散卡、柜套柜、展开被挤掉、话和工具挤一起），
- * 每次都靠事后一个个调用点补 foldLiveTools —— 调用点有七八处，加一处就容易忘。
+ * ══ 换 React 之后这条为什么还留着、但换个验法 ══
+ * 柜子不再「搬节点」，而是**从数据折出来**：`LogView.jsx` 的 `toRows()` 把
+ * 连续的 tool item 收成一个 `{type:'tools'}` 行，再交给 `ToolGroup` 画。
+ * 也就是说「散卡漏在外面」「柜套柜」在结构上不可能发生 —— 这是要验的**行为**，
+ * 而不是「守卫函数还在不在」（守卫已经不需要了）。
  *
- * 现在分两层守：
- *   ① 静态：历史重画出来的 DOM 里，不许有散在 log 上的 tool / think，
- *      不许柜套柜、不许空柜、内部元素不许溢出柜子边界
- *   ② 自愈：随便造一张「野卡」直接挂到 log 上，MutationObserver 必须把它收进柜子
- *      （这条是保底 —— 以后哪条路忘了合柜，用户也不会真的看到散卡）
+ * 所以现在验：
+ *   ① 源码：只有一个「折行」的地方（toRows），柜子由它产生；
+ *   ② 真机：连续 N 张工具 → 恰好 1 个柜子、柜外 0 张散卡、无柜套柜、无空柜；
+ *           单张 → 1 张卡 0 个柜子；中间隔一段话 → 分开成两组。
  */
-import { makeChecker } from './_harness_util.mjs';
-import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
-import { connect } from '../_t_cdp.mjs';
+import { makeChecker, ensureLogStore } from './_harness_util.mjs';
+import { readUISource } from './_ui-src.mjs';
 
-const t = makeChecker('ui / 工具卡别跑出柜子');
-const _uiHtml = readUISource();
-// 【2026-11-08】柜子那组函数已搬进 ui/hub.js（commit c001137），守卫要跟着去新家找
-const _hubJs = fs.existsSync('public/ui/hub.js') ? fs.readFileSync('public/ui/hub.js', 'utf8') : '';
-const ui = _uiHtml + '\n' + _hubJs;
+const t = makeChecker('ui / 工具卡不漏在外面');
+const ui = readUISource();
+const logView = fs.readFileSync('src-ui/LogView.jsx', 'utf8');
+const toolCard = fs.readFileSync('src-ui/ToolCard.jsx', 'utf8');
 
-// ── 1. 源码守卫 ────────────────────────────────────────────────
-t.ok('有自愈守卫 installToolLeakGuard', /function installToolLeakGuard\(\)/.test(ui));
-t.ok('守卫挂在 foldLiveTools 上（首次合柜时装）',
-  /function foldLiveTools\(\) \{[\s\S]{0,260}installToolLeakGuard\(\)/.test(ui));
-t.ok('守卫用 MutationObserver 盯 log 的直接子节点',
-  /new MutationObserver\(/.test(ui) && /mo\.observe\(logEl, \{ childList: true \}\)/.test(ui));
-t.ok('守卫会先把散卡补登进 _liveToolEls（不然 foldLiveTools 看不见它）',
-  /_liveToolEls\.push\(el\)/.test(ui));
-t.ok('有防重入标志（避免 fold → 触发 → 再 fold）', /_leakGuardBusy/.test(ui));
+/* ── 源码：柜子只由「折行」产生 ─────────────────────────────────── */
+t.ok('LogView 里有唯一的分组逻辑 toRows', /function toRows\(items\)/.test(logView));
+t.ok('toRows 把连续的 tool 收成一组', /if \(it\.kind === 'tool'\)[\s\S]{0,200}run\.items\.push\(it\)/.test(logView));
+t.ok('柜子组件 ToolGroup 在（≥2 张才成柜）', /list\.length === 1\) return <ToolCard it=\{list\[0\]\} \/>/.test(toolCard) && /className="toolhub"/.test(toolCard));
+/* 【别死抠「函数还在不在」】那台「搬节点自愈守卫」还留着定义（死代码，无害），
+ * 但**没有任何调用点** —— 也就是它根本没装。断言「没装」而不是「不存在」，
+ * 这样将来谁把死代码删干净了也不会误报。 */
+{
+  const calls = (ui.match(/installToolLeakGuard\s*\(\)/g) || []).length;
+  const defs = (ui.match(/function\s+installToolLeakGuard\s*\(/g) || []).length;
+  t.ok('旧的「搬节点自愈守卫」没有装（React 下不需要）', calls === 0 || calls === defs,
+    '定义 ' + defs + ' 处 / 调用 ' + calls + ' 处');
+}
 
-// ── 2. 真机 ────────────────────────────────────────────────────
+/* ── 真机 ───────────────────────────────────────────────────────── */
 let cdp = null;
-try { cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223) }); } catch { cdp = null; }
-
-if (!cdp) {
-  console.log('\n真机格：SKIP（没连上 9223 的调试浏览器，源码断言已过）');
+if (!process.env.XY_CDP_PORT) {
+  console.log('\n真机格：SKIP（没有 XY_CDP_PORT，不是隔离实例；源码断言已过）');
 } else {
-  await cdp.send('Page.enable');
-  await cdp.send('Page.reload', { ignoreCache: true });
-  await new Promise((r) => setTimeout(r, 12000));
+  try { const { connect } = await import('../_t_cdp.mjs'); cdp = await connect({ port: Number(process.env.XY_CDP_PORT) }); } catch (e) { cdp = null; }
+  if (!cdp) console.log('\n真机格：SKIP（连不上隔离实例的调试端口）');
+}
 
-  // 2a. 历史 DOM 干净吗
-  const stat = await cdp.eval(`
-    const log = document.getElementById('log');
-    if (!log) return { err: 'no log' };
-    const kids = [...log.children];
-    const looseTool = kids.filter((el) => el.tagName === 'DETAILS' && el.classList.contains('tool')).length;
-    const looseThink = kids.filter((el) => el.tagName === 'DETAILS' && el.classList.contains('think')).length;
-    const hubs = kids.filter((el) => el.tagName === 'DETAILS' && el.classList.contains('toolhub'));
-    const emptyHubs = hubs.filter((h) => !h.querySelector('details.tool, details.think')).length;
-    let overflow = 0;
-    for (const hub of hubs) {
-      const hr = hub.getBoundingClientRect();
-      for (const kid of hub.querySelectorAll('details.tool, details.think, pre, .thinkBody, summary')) {
-        const kr = kid.getBoundingClientRect();
-        if (kr.right > hr.right + 2 || kr.left < hr.left - 2) overflow += 1;
-      }
-    }
-    return {
-      looseTool, looseThink,
-      hubs: hubs.length,
-      emptyHubs,
-      nestedHub: log.querySelectorAll('details.toolhub details.toolhub').length,
-      overflow,
+if (cdp) {
+  if (!(await ensureLogStore(cdp))) console.log('  （页面 store 一直没就绪，真机格按空处理）');
+
+  /* ① 连续 3 张工具 → 1 个柜子，柜外 0 张散卡 */
+  const r1 = await cdp.eval(`
+    const sid = window.sessionId;
+    try { window.__logStore.setHistory(sid, []); } catch (e) {}
+    window.__logStore.setLive(sid, { running: true, startedAt: Date.now(), items: [
+      { k: 'tool', id: 'a', name: 'run_command', args: '{}', status: 'ok', output: '' },
+      { k: 'tool', id: 'b', name: 'read_file', args: '{}', status: 'ok', output: '' },
+      { k: 'tool', id: 'c', name: 'list_dir', args: '{}', status: 'ok', output: '' },
+    ]});
+    const lg = document.getElementById('log');
+    let tries = 0;
+    while (tries++ < 20 && !lg.querySelector('details.toolhub')) { await new Promise(function(r){ setTimeout(r, 150); }); }
+    const out = {
+      hubs: lg.querySelectorAll('details.toolhub').length,
+      looseTool: lg.querySelectorAll(':scope > details.tool').length,
+      nestedHub: lg.querySelectorAll('details.toolhub details.toolhub').length,
+      emptyHubs: [].slice.call(lg.querySelectorAll('details.toolhub')).filter(function(h){ return !h.querySelector('details.tool'); }).length,
+      cardsInside: [].slice.call(lg.querySelectorAll('details.toolhub')).map(function(h){ return h.querySelectorAll('details.tool').length; }),
     };
+    try { window.__logStore.setLive(sid, null); } catch (e) {}
+    return out;
   `);
-  console.log('  历史 DOM：' + JSON.stringify(stat));
-  t.ok('历史里没有散在外面的工具卡', stat.looseTool === 0, String(stat.looseTool));
-  t.ok('历史里没有散在外面的思考块', stat.looseThink === 0, String(stat.looseThink));
-  t.ok('没有柜套柜', stat.nestedHub === 0, String(stat.nestedHub));
-  t.ok('没有空柜子', stat.emptyHubs === 0, String(stat.emptyHubs));
-  t.ok('柜内元素没有溢出柜子边界', stat.overflow === 0, String(stat.overflow));
+  t.ok('真机：连续 3 张 → 恰好 1 个柜子', r1 && r1.hubs === 1, JSON.stringify(r1));
+  t.ok('真机：柜外一张散卡都没有', r1 && r1.looseTool === 0, JSON.stringify(r1));
+  t.ok('真机：柜子里有 3 张卡', r1 && r1.cardsInside[0] === 3, JSON.stringify(r1));
+  t.ok('真机：没有柜套柜', r1 && r1.nestedHub === 0, JSON.stringify(r1));
+  t.ok('真机：没有空柜子', r1 && r1.emptyHubs === 0, JSON.stringify(r1));
 
-  // 2b. 自愈：造一张野卡，必须被收走
-  const guard = await cdp.eval(`
-    const log = document.getElementById('log');
-    try { foldLiveTools(); } catch (e) {}
-    const installed = !!log.__leakGuard;
-    const d = document.createElement('details');
-    d.className = 'tool';
-    d.innerHTML = '<summary class="toolHead"><span class="name">野卡</span><span class="status ok">完成</span></summary><pre>x</pre>';
-    log.appendChild(d);
-    const rightAfter = [...log.children].filter((x) => x.classList && x.classList.contains('tool')).length;
-    await new Promise((r) => setTimeout(r, 400));
-    const after = [...log.children].filter((x) => x.classList && x.classList.contains('tool')).length;
-    const movedIn = !!d.closest('details.toolhub');
-    d.remove();
-    return { installed, rightAfter, after, movedIn };
+  /* ② 单张 → 1 张卡、0 个柜子（不套柜） */
+  const r2 = await cdp.eval(`
+    const sid = window.sessionId;
+    window.__logStore.setLive(sid, { running: true, startedAt: Date.now(), items: [
+      { k: 'tool', id: 'z', name: 'run_command', args: '{}', status: 'ok', output: '' },
+    ]});
+    const lg = document.getElementById('log');
+    let tries = 0;
+    while (tries++ < 20 && !lg.querySelector('details.tool')) { await new Promise(function(r){ setTimeout(r, 150); }); }
+    const out = { tools: lg.querySelectorAll('details.tool').length, hubs: lg.querySelectorAll('details.toolhub').length };
+    try { window.__logStore.setLive(sid, null); } catch (e) {}
+    return out;
   `);
-  console.log('  自愈格：' + JSON.stringify(guard));
-  t.ok('守卫装上了', guard.installed === true);
-  t.ok('野卡刚挂上去时确实是散的（说明测试有效）', guard.rightAfter >= 1, String(guard.rightAfter));
-  t.ok('自愈：散卡被自动收回', guard.after === 0, String(guard.after));
-  t.ok('自愈：卡真的进了柜子', guard.movedIn === true);
+  t.ok('真机：单张工具不套柜子（1 张卡 0 个柜）', r2 && r2.tools === 1 && r2.hubs === 0, JSON.stringify(r2));
+
+  /* ③ 中间隔一段话 → 分成两组，各 1 张 */
+  const r3 = await cdp.eval(`
+    const sid = window.sessionId;
+    window.__logStore.setLive(sid, { running: true, startedAt: Date.now(), items: [
+      { k: 'tool', id: 'p', name: 'run_command', args: '{}', status: 'ok', output: '' },
+      { k: 'text', t: '中间说一句' },
+      { k: 'tool', id: 'q', name: 'read_file', args: '{}', status: 'ok', output: '' },
+    ]});
+    const lg = document.getElementById('log');
+    let tries = 0;
+    while (tries++ < 20 && lg.querySelectorAll('details.tool').length < 2) { await new Promise(function(r){ setTimeout(r, 150); }); }
+    const out = {
+      tools: lg.querySelectorAll('details.tool').length,
+      hubs: lg.querySelectorAll('details.toolhub').length,
+      order: [].slice.call(lg.children).map(function(el){ return el.className || el.tagName; }).join('|'),
+    };
+    try { window.__logStore.setLive(sid, null); } catch (e) {}
+    return out;
+  `);
+  t.ok('真机：隔一句话就是两组（2 张卡 / 0 个柜）', r3 && r3.tools === 2 && r3.hubs === 0, JSON.stringify(r3));
+  t.ok('真机：顺序是「卡 → 话 → 卡」（没被搬乱）', r3 && /details|tool/.test(r3.order) && r3.order.indexOf('assistant') > -1, r3 && r3.order);
 
   cdp.close();
 }

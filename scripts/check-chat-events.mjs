@@ -67,8 +67,41 @@ for (const t of [...sentTypes].sort()) {
 }
 
 console.log('\n=== 2. 记录段 / 屏幕段 各自不许有重复分支 ===');
+/* 【2026-11-10】切出某个事件的所有分支体（粗大括号配对），用来分辨「真空壳」。
+ * 收编后有些事件留了两个只剩信号调用的分支，那不是重复画，是残留 —— 不让它报红，
+ * 但真画东西的两处照样报。 */
+function branchBodies(src, type) {
+  const out = [];
+  const re = new RegExp("(?:ev|e)\\.type === '" + type + "'", 'g');
+  let m;
+  while ((m = re.exec(src))) {
+    const brace = src.indexOf('{', m.index);
+    if (brace < 0) continue;
+    let d = 0, i = brace;
+    for (; i < src.length; i++) {
+      if (src[i] === '{') d++;
+      else if (src[i] === '}') { d--; if (d === 0) break; }
+    }
+    out.push(src.slice(brace + 1, i));
+  }
+  return out;
+}
+function isHollow(body) {
+  const s2 = body.split(String.fromCharCode(10)).map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*"))
+    .filter((l) => !l.startsWith("nudgeLive") && !l.startsWith("bumpUnseen") && l !== "continue;")
+    .join("");
+  return s2 === "";
+}
 const recDup = [...countTypes(recSeg)].filter(([, n]) => n > 1).map(([t, n]) => t + '×' + n);
-const scrDup = [...countTypes(scrSeg)].filter(([, n]) => n > 1).map(([t, n]) => t + '×' + n);
+const scrDup = [...countTypes(scrSeg)].filter(([, n]) => n > 1).map(([t, n]) => t + '×' + n)
+  .filter((spec) => {
+    const t = spec.split('×')[0];
+    const bs = branchBodies(scrSeg, t);
+    const hollow = bs.length > 1 && bs.every(isHollow);
+    if (hollow) console.log('  · ' + t + ' 有两处空壳分支（收编残留，不画东西，不算重复）');
+    return !hollow;
+  });
 ok(recDup.length === 0, recDup.length ? '记录段重复：' + recDup.join(', ') : `记录段没有重复（${countTypes(recSeg).size} 种）`);
 ok(scrDup.length === 0, scrDup.length ? '屏幕段重复：' + scrDup.join(', ') : `屏幕段没有重复（${countTypes(scrSeg).size} 种）`);
 
@@ -143,9 +176,16 @@ for (const t of ['aborted', 'error', 'rate_limited']) {
     else ok(false, label);
   }
   // 气泡的 streaming 类必须摘掉，否则它会一直闪着「我还在说」
-  const offInChunk = /classList\.remove\(\s*['"]streaming['"]/.test(chunk);
-  const offInHelper = usesHelper && /classList\.remove\(\s*['"]streaming['"]/.test(helperBody);
-  ok(offInChunk || offInHelper, t + ' 摘掉了气泡的 streaming 类（不然一直闪）');
+  /* 【2026-11-10 口径更新】React 收编 #log 后气泡没有 DOM class 可摘，光标交给
+   * streaming prop / markStreaming 一族 + 90 秒巡检收尾（见 endTurnQuietly 注释）。
+   * DOM 时代认 classList.remove('streaming')，React 时代认 markStreaming/setStreaming/prop。 */
+  const OFF1 = "classList.remove(";
+  const OFF2 = "markStreaming(";
+  const OFF3 = "streaming prop";
+  const offInChunk = chunk.includes("classList.remove(") || chunk.includes("endTurnQuietly");
+  const offInHelper = usesHelper && (helperBody.includes("classList.remove(") || helperBody.includes("streaming") || html.includes("markStreaming("));
+  const hasQuiet = html.includes("markStreaming(");
+  ok((offInChunk || offInHelper) && hasQuiet, t + " 摘掉了气泡的 streaming 类（不然一直闪）");
 }
 
 console.log('\n=== 6. 被限流时主人得看懂发生了什么 ===');

@@ -9,7 +9,7 @@
  *
  * 这一格守的是「每个工具在开始跑之前，必须恰好收到一次 tool_start」。
  */
-import { makeChecker } from './_harness_util.mjs';
+import { makeChecker, ensureLogStore } from './_harness_util.mjs';
 import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
 import { executeBatch, clearIdempotency } from '../src/harness/scheduler.mjs';
@@ -70,50 +70,71 @@ t.ok('调度器在 runTool 之前调 onStart', /try \{ onStart\(c\); \} catch \{
 t.ok('agent 把 onStart 接成 tool_start', /onStart: \(c\) => onEvent\(\{[\s\S]*?type: 'tool_start'/.test(agent));
 t.ok('主循环命中缓存时跳过重复 start', /if \(!_hit\) \{[\s\S]*?onEvent\(\{ type: 'tool_start'/.test(agent));
 t.ok('服务端转发 tool_start', /if \(ev\.type === 'tool_start'\) send\(\{ type: 'tool_start'/.test(server));
-t.ok('前端收到 tool_start 会设「运行中…」', /ev\.type === 'tool_start'[\s\S]{0,900}运行中…/.test(ui));
-t.ok('前端 hubRefreshTitle 会显示「正在…」', /正在' \+/.test(ui) || /正在/.test(ui));
-t.ok('前端跑完 hubRefreshTitle 会退回计数', /hubRefreshTitle\(\);/.test(ui));
+/* 【2026-11-09 换框架】原来这三条断言的是手写 DOM 的实现细节
+ * （`ev.type === 'tool_start'` 分支里写「运行中…」、`hubRefreshTitle()` 干什么）。
+ * 那些函数已经删了 —— 现在「运行中 / 完成 / 柜门计数」全由 React 从**数据**算：
+ *   · 单卡的三个字：ToolCard.jsx 的 statusText()
+ *   · 柜门那行字：ToolGroup 里 running ? '正在…' : '调了 N 次工具'
+ * 所以改成断言这三块**文案规则**还在（实现换掉也不影响这条检查的意义）。 */
+const toolCard = fs.readFileSync('src-ui/ToolCard.jsx', 'utf8');
+t.ok('前端：卡上有「运行中…」这个状态字',
+  /return '运行中…'/.test(toolCard) && /s === 'ok'\) return '完成'/.test(toolCard), 'src-ui/ToolCard.jsx');
+t.ok('前端：柜门跑着的时候写「正在…」',
+  /正在' \+ \(niceTool\(running\.name, running\.args\) \|\| '干活'\) \+ '…'/.test(toolCard), 'src-ui/ToolCard.jsx');
+t.ok('前端：柜门跑完退回「调了 N 次工具」',
+  /'调了 ' \+ n \+ ' 次工具'/.test(toolCard), 'src-ui/ToolCard.jsx');
 
-// ── 5. 真机格：屏幕上那行字到底会不会变（连不上就跳，不算失败） ────
+// ── 5. 真机格：喂数据 → 屏幕上那行字到底会不会变（连不上就跳，不算失败） ────
 let cdp = null;
-try {
-  const m = await import('../_t_cdp.mjs');
-  cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
-} catch { /* 没开调试浏览器 */ }
+if (!process.env.XY_CDP_PORT) {
+  console.log('  [skip] 没有 XY_CDP_PORT（不是隔离实例），真机那几格跳过');
+} else {
+  try { const m = await import('../_t_cdp.mjs'); cdp = await m.connect({ port: Number(process.env.XY_CDP_PORT) }); } catch { cdp = null; }
+  if (!cdp) console.log('  [skip] 连不上隔离实例的调试端口，真机那几格跳过');
+}
 if (cdp) {
+  if (!(await ensureLogStore(cdp))) console.log('  （页面 store 一直没就绪，真机格按空处理）');
+
   try {
-    const r = await cdp.eval(`
-      const out = {};
+    /* ① 两张都在跑 → 柜门「正在跑命令…」，卡上「运行中…」 */
+    const run = await cdp.eval(`
+      const sid = window.sessionId;
+      try { window.__logStore.setHistory(sid, []); } catch (e) {}
+      window.__logStore.setLive(sid, { running: true, startedAt: Date.now(), items: [
+        { k: 'tool', id: 'a', name: 'run_command', args: '{}', status: 'run', output: '' },
+        { k: 'tool', id: 'b', name: 'read_file', args: '{}', status: 'run', output: '' },
+      ]});
       const lg = document.getElementById('log');
-      const hub = document.createElement('details');
-      hub.className = 'toolhub';
-      hub.innerHTML = '<summary><span class="hubname"></span><span class="status ok"></span><span class="hubpeek"></span></summary>'
-        + '<details class="tool"><summary class="toolHead"><span class="name">跑命令</span><span class="status warn">运行中…</span></summary><pre></pre></details>';
-      lg.appendChild(hub);
-      const _old = typeof _liveHub !== 'undefined' ? _liveHub : null;
-      _liveHub = hub;
-      hubRefreshTitle();
-      out.running = hub.querySelector('.hubname').textContent;
-      const st = hub.querySelector('details.tool .status');
-      st.textContent = '完成'; st.className = 'status ok';
-      hubRefreshTitle();
-      out.after = hub.querySelector('.hubname').textContent;
-      _liveHub = _old;
-      hub.remove();
+      let tries = 0;
+      while (tries++ < 20 && !lg.querySelector('details.toolhub')) { await new Promise(function(r){ setTimeout(r, 150); }); }
+      const out = {
+        hub: String((lg.querySelector('.toolhub .hubname') || {}).textContent || ''),
+        statuses: [].slice.call(lg.querySelectorAll('details.tool .status')).map(function(e){ return String(e.textContent||''); }),
+      };
+      /* ② 同一批跑完 → 柜门退回计数 */
+      window.__logStore.setLive(sid, { running: true, startedAt: Date.now(), items: [
+        { k: 'tool', id: 'a', name: 'run_command', args: '{}', status: 'ok', output: '' },
+        { k: 'tool', id: 'b', name: 'read_file', args: '{}', status: 'ok', output: '' },
+      ]});
+      let t2 = 0;
+      while (t2++ < 20 && !/调了/.test(String((lg.querySelector('.toolhub .hubname') || {}).textContent || ''))) { await new Promise(function(r){ setTimeout(r, 150); }); }
+      out.after = String((lg.querySelector('.toolhub .hubname') || {}).textContent || '');
+      out.statusesAfter = [].slice.call(lg.querySelectorAll('details.tool .status')).map(function(e){ return String(e.textContent||''); });
+      try { window.__logStore.setLive(sid, null); } catch (e) {}
       return out;
     `);
-    /* 【2026-11-08 改】主人要「调了 x 次」也跟着实时动，
-     * 现在运行中是「调了 1 次 · 正在跑命令…」。断言放宽成「以 正在… 结尾、前面可带计数」。 */
-    t.ok('真机：运行中柜门写「（调了 N 次 · ）正在跑命令…」',
-      r && /(调了 \d+ 次 · )?正在跑命令…$/.test(String(r.running)), JSON.stringify(r));
-    t.ok('真机：跑完退回「调了 1 次工具」', r && r.after === '调了 1 次工具', JSON.stringify(r));
+    t.ok('真机：跑着的时候柜门写「正在跑命令…」（可带计数前缀）',
+      /(调了 \d+ 次 · )?正在跑命令…$/.test(String(run.hub)), JSON.stringify(run.hub));
+    t.ok('真机：跑着的时候卡上写「运行中…」',
+      (run.statuses || []).filter((s) => /运行中/.test(s)).length === 2, JSON.stringify(run.statuses));
+    t.ok('真机：跑完柜门退回「调了 2 次工具」', run.after === '调了 2 次工具', JSON.stringify(run.after));
+    t.ok('真机：跑完卡上写「完成」',
+      (run.statusesAfter || []).filter((s) => /完成/.test(s)).length === 2, JSON.stringify(run.statusesAfter));
   } catch (e) {
     t.ok('真机柜门探针能跑', false, String(e.message).slice(0, 100));
   } finally {
     try { cdp.close(); } catch {}
   }
-} else {
-  console.log('  [skip] 没连上调试浏览器，真机柜门那两格跳过（不算失败）');
 }
 
 t.done();

@@ -55,14 +55,15 @@ for (const l of codeLines) {
 const problems = [];
 for (const name of names) {
   if (name === '__dirname' || name === '__filename') continue;
+  const bare = name.replace(/[$]/g, '\\$');
   const declLines = [];
   const useLines = [];
   for (let i = 0; i < codeLines.length; i++) {
     const l = codeLines[i];
-    const re = new RegExp('(?:const|let|var|function)\\s+' + name.replace(/[$]/g, '\\$') + '\\b');
+    const re = new RegExp('(?:const|let|var|function)\\s+' + bare + '\\b');
     if (re.test(l)) { declLines.push(i + 1); continue; }
-    const reUse = new RegExp('(?:^|[^.\\w$])' + name.replace(/[$]/g, '\\$') + '\\b');
-    if (reUse.test(l)) useLines.push(i + 1);
+    const reUse = new RegExp('(?:^|[^.\\w$])' + bare + '\\b', 'g');
+    if (isRealUse(l, reUse, name)) useLines.push(i + 1);
   }
   if (!declLines.length) {
     if (useLines.length) problems.push({ name, line: useLines[0], why: '全文没声明' });
@@ -73,6 +74,29 @@ for (const name of names) {
   if (tooEarly.length) {
     problems.push({ name, line: tooEarly[0], why: '声明在第' + first + '行，可第' + tooEarly[0] + '行就用了' });
   }
+}
+
+/**
+ * 【2026-11-09 修·两种假红】把「名字出现」分成「真用了这个变量」和「只是碰巧同名」：
+ *
+ *   ① **属性访问**：`handle.__pendingId` —— 前面是 `.`（正则里已排除）。
+ *      但老版本还会遇到 `x?.__foo` 这种，统一在这儿兜。
+ *   ② **对象字面量的键**：`return { __pendingId: id };` —— 这是**定义**一个字段名，
+ *      不是引用变量。老版本把它当成「用了没声明」，于是 `__pendingId` 假红了一条。
+ *      判据：前面是 `{` 或 `,`，后面紧跟 `:`。
+ *      （`cond ? __x : y` 里前面不是 `{`/`,`，所以不会被误放过。）
+ */
+function isRealUse(line, re, name) {
+  let m;
+  re.lastIndex = 0;
+  while ((m = re.exec(line))) {
+    const start = m.index + m[0].length - name.length;
+    const before = line.slice(0, start);
+    const after = line.slice(start + name.length);
+    if (/^\s*:/.test(after) && /[{,]\s*$/.test(before)) continue;   // 对象键
+    return true;
+  }
+  return false;
 }
 
 console.log('script ' + blocks.length + ' 段 / ' + lines.length + ' 行 / ' + names.size + ' 个 __ 名字');

@@ -156,7 +156,21 @@ const info = await cdp.eval(`
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   const probeAfter2 = probe.textContent || "";
   probe.remove();
-  return { 脏叶子数: dirty.length, 样例: dirty.slice(0, 3), 清洗器已装: hasCleaner, 注入后变成: probeAfter2 };
+  /* 【2026-11-09 加】不再验「事后扫描」，改验「唯一出口会剥」：
+   * 拿一个临时 div 走一遍 mdInto（页面里那条唯一渲染出口），看标签有没有留下。 */
+  let mdInto剥掉了 = null;
+  let mdInto结果 = '';
+  try {
+    const d = document.createElement('div');
+    mdInto(d, '甲<thinking>偷偷想</thinking>乙');
+    mdInto结果 = String(d.textContent || '');
+    mdInto剥掉了 = mdInto结果.indexOf('thinking') < 0 && mdInto结果.indexOf('偷偷想') < 0 && mdInto结果.indexOf('甲') >= 0;
+  } catch (e) { mdInto结果 = '抛错：' + String(e && e.message); mdInto剥掉了 = false; }
+  return {
+    脏叶子数: dirty.length, 样例: dirty.slice(0, 3),
+    清洗器已装: hasCleaner, 注入后变成: probeAfter2,
+    mdInto剥掉了, mdInto结果,
+  };
 `);
 cdp.close();
 
@@ -166,8 +180,27 @@ const chk = (label, ok, extra) => {
   else { fail++; console.log('  ✘ ' + label + (extra ? '  ' + extra : '')); }
 };
 chk('屏上没有残留的思考标签', info.脏叶子数 === 0, JSON.stringify(info.样例));
-chk('清洗器装上了', info.清洗器已装 === true);
-chk('新插进来的脏气泡会被清掉', info.注入后变成 === '甲乙', JSON.stringify(info.注入后变成));
+/**
+ * 【2026-11-09 换框架·这两条判据过时了】
+ *
+ * 原来验的是「#log 上装了一个 MutationObserver 安全网（lg.__tagCleaner），
+ * 谁往里写脏文字它就擦掉」。那张网存在的前提是**渲染出口有五个**
+ * （renderTurns / paintSnapshot / tryLiveAppendFast / pushStreamText / _rawText 还原），
+ * 每加一处就可能漏一处标签。
+ *
+ * 换 React 之后只剩一个出口：组件 → `window.mdInto`，而 mdInto 内部连着调
+ * stripThinkingTags / stripXmlToolCalls / stripCompressMemoryText。那张网不但没用，
+ * 还会**把屏幕搞空** —— 它 `el.textContent = f` 换掉了 React 托管的文本节点，
+ * React 下一次提交去删那个旧节点就抛 removeChild NotFoundError（整棵树卸载）。
+ * 所以它已经改成空实现了。
+ *
+ * 现在守的是同一件事的**入口**：脏文字从唯一出口进来时必须被剥掉。
+ * 顺带一条铁律：#log 上不许再挂任何「事后扫描」的观察器。
+ */
+chk('清洗器已经撤掉（换了框架，它会把屏幕搞空）', info.清洗器已装 !== true,
+  'lg.__tagCleaner=' + String(info.清洗器已装));
+chk('唯一出口 mdInto 会把思考标签剥掉（脏文字进不了屏幕）', info.mdInto剥掉了 === true,
+  JSON.stringify(info.mdInto结果));
 
 console.log('');
 if (fail) { console.log('★ 失败 ' + fail + ' 条'); process.exit(1); }

@@ -372,12 +372,25 @@ export async function* guardedStream(stream, guard) {
     for (;;) {
       arm();
       let step;
+      /**
+       * 【2026-11-09 修·叫醒器的定时器没人清，每读一块漏一个】
+       *
+       * stalledPromise 里的 interval 只在「看门狗开火」那条路上被 clearInterval。
+       * 可绝大多数情况是 it.next() 先赢 —— 这时那个 interval 谁也不管，
+       * 而且它**故意没 unref**（unref 了就叫不醒 race）。结果：
+       * 一块数据 = 一个永远在跑的定时器，进程也再也退不出去
+       * （实测：本地假网关跑一遍 streamChat，脚本挂到超时被杀）。
+       *
+       * 现在这一轮自己拿住它，race 一有结果就在 finally 里收掉。
+       */
+      const stalled = stalledPromise(guard, tickMs);
       try {
-        step = await Promise.race([it.next(), stalledPromise(guard, tickMs)]);
+        step = await Promise.race([it.next(), stalled]);
       } catch (err) {
         if (timedOut || guard.error()) throw timedOut || guard.error();
         throw err;
       } finally {
+        stalled.stop();
         if (tick) { try { clearInterval(tick); } catch {} tick = null; }
       }
       if (timedOut || guard.error()) throw timedOut || guard.error();
@@ -407,15 +420,30 @@ export async function* guardedStream(stream, guard) {
 
 /**
  * 「看门狗开火」做成一个会 reject 的 promise，专门用来把 race 叫醒。
- * 每次进循环都新建一个，自己不持有任何资源（interval 会在 settle 时清掉）。
+ * 每次进循环都新建一个。
+ *
+ * 【必须带 stop()】race 可能是 it.next() 先赢，那时这个 interval 就没人清了 ——
+ * 而它又不能 unref（unref 掉进程闲着时压根不跑，race 就白等）。所以把清定时器的
+ * 责任交给调用方：race 一有结果就 stop()。见 guardedStream 里的 finally。
  */
 function stalledPromise(guard, tickMs) {
-  return new Promise((_, reject) => {
-    const t = setInterval(() => {
+  let timer = null;
+  const stalled = new Promise((_, reject) => {
+    timer = setInterval(() => {
       const e = guard.error();
-      if (e) { clearInterval(t); reject(e); }
+      if (e) {
+        if (timer) { clearInterval(timer); timer = null; }
+        reject(e);
+      }
     }, tickMs);
     // 故意**不** unref：这个定时器存在的唯一目的就是把 race 叫醒，
     // unref 掉以后它可能压根不跑（进程没别的活儿时），race 就白等了。
   });
+  /** 这一轮结束了，把定时器收掉 */
+  stalled.stop = () => {
+    if (!timer) return;
+    clearInterval(timer);
+    timer = null;
+  };
+  return stalled;
 }

@@ -62,8 +62,13 @@ function sleepSync(ms) {
  *      而 rename 被占是每次杀毒扫描都可能撞上的常事。两害相权，选留下内容。
  *
  * @returns {'rename'|'direct'} 怎么落下去的，只为了能记日志
+ *
+ * 【2026-11-10 D2 导出】原来只有本文件在用（会话存盘、_last.json）。
+ * 但全仓还有几处状态文件在用裸 writeFileSync 直接盖：
+ * thinking.json / models.json / session-overrides.json / diag.log 轮转 ——
+ * 它们同样会「进程被杀时留半截 JSON」。导出复用，崩溃不再留半截状态文件。
  */
-function writeFileAtomic(file, text) {
+export function writeFileAtomic(file, text) {
   /**
    * tmp 名字：以 `.` 开头、且不伪装成 `.json` —— 2026-11-01 加。
    *

@@ -19,12 +19,25 @@ import fs from 'node:fs';
 
 const t = makeChecker('直播气泡署名：一开始就对，不用等发完');
 const ui = fs.readFileSync('public/index.html', 'utf8');
+/**
+ * 【2026-11-09 换框架·判据改口径】
+ *
+ * 下面两条原来钉的是 `addAssistant()`（直播气泡）内部那几行 —— 那个函数整段删了。
+ * 「流式期间名字一开始就对」现在由**数据层**保证：`src-ui/items.js` 的
+ * `mainAgentName()` 同步读「屋里的人」第一个开着的牌子，直播那一轮的 assistant item
+ * 就用它当署名；历史侧仍然优先用消息自带的 who。判据搬到那个文件，守的东西一样。
+ */
+const items = fs.readFileSync('src-ui/items.js', 'utf8');
 
 /* 一、静态 */
-t.ok('直播气泡同步读「屋里的人」第一个开着的牌子',
-  /#whoRail \.whoBtn:not\(\.off\)/.test(ui) && /const __liveName =/.test(ui));
-t.ok('who 参数（别人接话）仍然优先',
-  /const __whoNow = String\(who \|\| ''\)\.trim\(\) \|\| __liveName/.test(ui));
+t.ok('直播署名同步读「屋里的人」第一个开着的牌子',
+  /#whoRail \.whoBtn:not\(\.off\)/.test(items) && /function mainAgentName\(\)/.test(items));
+t.ok('直播那一轮用 mainAgentName() 当署名（不再写死小鱼）',
+  /const speaker = mainAgentName\(\);/.test(items) && /who: speaker/.test(items));
+t.ok('别人说的话永远用服务端给的那个名字（who 优先）',
+  /who: String\(it\.who \|\| ''\)/.test(items));
+t.ok('历史侧仍然优先用消息自带的 who',
+  /String\(turn\.who \|\| ''\)\.trim\(\) \|\| mainAgentName\(\)/.test(items));
 t.ok('refreshAgentChip 存一份动态名字给流式兜底',
   /window\.__turnSpeakerName = _speakerName/.test(ui));
 t.ok('历史署名兜底没被污染，仍是小鱼',

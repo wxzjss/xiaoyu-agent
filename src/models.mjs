@@ -1,8 +1,11 @@
 // 模型配置：用户可以在界面里添加多个 OpenAI 兼容端点，并指定当前用哪一个。
 // 存在 .state/models.json；.env 里的那套永远作为一条只读的「env」来源显示，删不掉。
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
+/* 【2026-11-10 D2·原子写】models.json 坏一行，整个模型面板就空了 ——
+ * 落盘统一走 sessions-core 的 writeFileAtomic（tmp+fsync+rename，进程被杀不留半截）。 */
+import { writeFileAtomic } from './sessions-core.mjs';
 
 const FILE = join(config.dataDir, '.state', 'models.json');
 const ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -127,10 +130,9 @@ function readRaw() {
 function writeRaw(data) {
   const dir = join(config.dataDir, '.state');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(
+  writeFileAtomic(
     FILE,
     JSON.stringify({ models: data.models, activeId: data.activeId, hideEnv: Boolean(data.hideEnv) }, null, 2),
-    'utf8',
   );
 }
 
@@ -223,6 +225,9 @@ export function activeEndpoint() {
       baseURL: trimSlash(pick.baseURL),
       apiKey: pick.apiKey || '',
       source: 'user',
+      /* 少数自建/中转接入点说不清是哪家的「思考方言」，允许在 models.json 里直接写死。
+       * 认得的四种取值见 thinking.mjs 的 THINKING_FORMATS；不写就按地址自动判断。 */
+      thinkingFormat: String(pick.thinkingFormat ?? ''),
     };
   }
   // 选中的是 .env 那条、可 .env 里没有 key（装成 exe 之后根本没有 .env 文件），
@@ -237,6 +242,7 @@ export function activeEndpoint() {
         baseURL: trimSlash(withKey.baseURL),
         apiKey: withKey.apiKey,
         source: 'user',
+        thinkingFormat: String(withKey.thinkingFormat ?? ''),
       };
     }
   }
@@ -271,6 +277,8 @@ export function endpointFor(id) {
     baseURL: trimSlash(pick.baseURL),
     apiKey: pick.apiKey || '',
     source: 'user',
+    /* 见 activeEndpoint 里的说明：这一条说的是哪家的思考方言（可不填） */
+    thinkingFormat: String(pick.thinkingFormat ?? ''),
   };
 }
 

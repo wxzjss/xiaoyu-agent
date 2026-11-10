@@ -28,8 +28,18 @@ for (const f of UI) {
   t.ok(f + ' 用 type="module" 加载',
     new RegExp('<script type="module" src="/ui/' + f.replace('.', '\\.') + '"></script>').test(html));
 }
-t.ok('没有残留的普通 <script src="/ui/…">',
-  !/<script src="\/ui\/[^"]+\.js"><\/script>/.test(html));
+/* 【2026-11-09 换框架】允许构建产物用普通 <script> 加载。
+ * `public/ui/log.bundle.js` 是 esbuild 打出来的 IIFE（不是 ES 模块），
+ * 它就该用普通 script 引入 —— 这不是「残留」，是构建产物的正确加载方式。
+ * 仍然禁止的是：把**模块源**（chat/hub/sessions）用普通 script 引进来（那样会把
+ * 模块作用域搞混、函数变成 undefined）。
+ * 判据：所有普通 `/ui/*.js` 的引用，必须都是 `*.bundle.js`。 */
+const plainUi = [...html.matchAll(/<script src="\/ui\/([^"]+\.js)"><\/script>/g)].map((m) => m[1]);
+const plainBad = plainUi.filter((f) => !/\.bundle\.js$/.test(f));
+t.ok('没有残留的普通 <script src="/ui/…">（构建产物除外）', plainBad.length === 0,
+  '这些还用普通 script 引：' + plainBad.join(', '));
+t.ok('构建产物是普通 script 引入的（bundle 不是 ES 模块）',
+  plainUi.includes('log.bundle.js'), '实际普通引入：' + (plainUi.join(',') || '(无)'));
 
 // ── ② 每个模块都有 export，并且挂回 window ───────────────────────
 for (const f of UI) {
@@ -40,9 +50,9 @@ for (const f of UI) {
 }
 
 // ── ③ 模块里不许裸用主脚本的 let/const ──────────────────────────
-/* 这几个是最容易裸用的：会话 id / 在跑的轮次 / 谁在跑 / 滚动贴底。
- * 出现一次没加 window. 就是一条只在特定路径上才炸的 ReferenceError。 */
-const WATCH = ['sessionId', 'turnsInFlight', 'runningSess', 'stickBottom', 'sessionsCache', 'bulkMode'];
+/* 这几个是最容易裸用的：会话 id / 在跑的轮次 / 谁在跑。
+ * 【2026-11-10 A3】stickBottom 随旧滚动机制删除，移出监视名单。 */
+const WATCH = ['sessionId', 'turnsInFlight', 'runningSess', 'sessionsCache', 'bulkMode'];
 for (const f of UI) {
   const src = read(f);
   const code = src
@@ -69,7 +79,7 @@ for (const f of UI) {
 
 // ── ④ 模块桥 + 开机等模块 ───────────────────────────────────────
 t.ok('index.html 有「模块桥」', /function bridgeGlobalsForModules\(\)/.test(html));
-for (const n of ['sessionId', 'runningSess', 'stickBottom', 'log', 'input', 'turnsInFlight']) {
+for (const n of ['sessionId', 'runningSess', 'log', 'input', 'turnsInFlight']) {
   const direct = new RegExp("bind\\('" + n + "'").test(html);
   /* turnsInFlight 是 var，本来就在 window 上，不用桥 */
   t.ok('模块桥覆盖 ' + n, direct || n === 'turnsInFlight');

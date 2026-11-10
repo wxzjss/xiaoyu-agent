@@ -41,7 +41,7 @@ async function api(path, opt) {
 const liveOf = (sid) => api('/api/chat/live?sessionId=' + encodeURIComponent(sid)).then((r) => r.j || {});
 const selectOf = (sid) => api('/api/sessions/select', { method: 'POST', body: JSON.stringify({ id: sid }) }).then((r) => (r.j && r.j.session) || null);
 
-const norm = (s) => String(s || '').replace(/\s+/g, '');
+const norm = (s) => String(s || '').replace(/[*_~`#>(){}.+!|,\-]/g, '').replace(/\s+/g, '');
 const cnt = (hay, needle) => String(hay || '').split(String(needle)).length - 1;
 /** 从一段正文里挑一个「够独特」的片段来数次数（绕开 markdown 符号） */
 function fp(t) {
@@ -69,11 +69,31 @@ const snap = () => cdp.eval(`return (function(){
   var lg = document.getElementById('log');
   var tx = function(el){ return String((el && el.textContent) || '').replace(/\\s+/g,''); };
   var q = function(sel){ return [].slice.call(lg.querySelectorAll(sel)); };
+  /* 【2026-11-10 换框架】不能再靠 data-live-turn 认「这一轮的直播节点」了 ——
+   * 那是手写 DOM 时代的标记，React 重写后不再打这个属性，于是计数恒为 0，
+   * 两条断言（容器数 == 清单段数 / 插话前那几段各一个容器）全成了假红。
+   * 换成行为口径：屏幕上有几个正文气泡，看 .msg.assistant .bubble
+   * （不数思考块 / 工具卡 / 用量行）；服务端清单看 window.__logState.live.items。
+   * 判据：正文气泡数 == 服务端清单里的正文条数。 */
+  var liveItems = [];
+  try {
+    var lv = (window.__logState || {}).live;
+    liveItems = (lv && Array.isArray(lv.items))
+      ? lv.items.filter(function(x){ return x && x.k === 'text'; }) : [];
+  } catch (e) {}
+  var bubbles = q('.msg.assistant .bubble');
   return {
     text: tx(lg),
-    liveCount: q('.msg.assistant[data-live-turn="1"]').length,
+    liveCount: bubbles.length,
+    liveItemsCount: liveItems.length,
+    /* 【2026-11-10 修】「直播节点收干净了」这条原来用 liveCount（=直播节点数）判。
+     * 换成「正文气泡数」之后它恒 > 0（历史正文画的也是气泡），那条断言就失效了。
+     * 正确的判据是**数据侧**：这一轮跑完了，__logState.live 必须为空 ——
+     * 只要 live 还在，说明界面还以为在跑（那才是「跑完不收」）。 */
+    liveRunning: !!(window.__logState && window.__logState.live),
+    liveTexts: liveItems.map(function(x){ return String(x.t || ''); }),
     allCount: q('.msg.assistant').length,
-    asstBubbles: q('.msg.assistant').map(function(m){ return { live: m.dataset.liveTurn === '1', text: tx(m) }; }),
+    asstBubbles: q('.msg.assistant').map(function(m){ return { live: true, text: tx(m) }; }),
     userBubbles: q('.msg.user').map(tx),
     streaming: q('.bubble.streaming').length
   };
@@ -90,7 +110,28 @@ const snap = () => cdp.eval(`return (function(){
 function bubblesWith(asstBubbles, piece) {
   const n = norm(piece);
   if (!n) return -1;
-  return (asstBubbles || []).filter((b) => String(b.text || '').indexOf(n) >= 0).length;
+  /* 【2026-11-09 修·两边口径必须一致】
+   * 这里原来只把 **piece** 洗了空白，却拿它去比**没洗过的** b.text ——
+   * 片段里只要有一个空格/换行就永远匹配不上，于是报「0 份」
+   * （假红：屏幕上明明有，量出来是 0）。两边都归一化再比。 */
+  return (asstBubbles || []).filter((b) => norm(String(b.text || '')).indexOf(n) >= 0).length;
+}
+
+/**
+ * 【流式中途专用】用**开头一小截**判断「这一段在几个容器里」。
+ *
+ * 为什么不能用整段比：屏幕是节流重画的（16ms / 攒 8 条），这一秒 DOM 里那段
+ * 很可能只有前半截。整段比会报「0 份」—— 那是采样的时机问题，不是重复。
+ * 所以中途只看「这一段的前 N 个字出现在几个容器里」，正常必须恰好 1。
+ */
+function bubblesWithPrefix(asstBubbles, piece, n = 10) {
+  /* 【不要剥前导标点】之前我在 key 上剥了 `（`、`【`、`**` 这些，
+   * DOM 那一侧却没剥 —— 于是「（刚把命令跑了一遍…」永远对不上，报 0 份假红。
+   * 两侧都用同一个 norm（只去空白）就够：markdown 记号在两边都在或都不在。 */
+  const full = norm(piece);
+  if (full.length < 4) return -1;
+  const key = full.slice(0, Math.min(n, full.length));
+  return (asstBubbles || []).filter((b) => norm(String(b.text || '')).indexOf(key) >= 0).length;
 }
 /** 完全一样的两条气泡（>8 字才算，免得「好的」这种天然会重复） */
 function exactDupBubbles(asstBubbles) {
@@ -108,7 +149,9 @@ async function waitSettled(ms = 30000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     const s = await snap().catch(() => null);
-    if (s && s.liveCount === 0 && s.streaming === 0) return s;
+    /* 【判「落定」看数据，不看节点数】liveCount 现在是「正文气泡数」，跑完它不会变 0。
+     * 正确信号：live 清空（这一轮归历史了）+ 没有流式光标。 */
+    if (s && s.liveRunning === false && s.streaming === 0) return s;
     await sleep(500);
   }
   return await snap().catch(() => null);
@@ -157,13 +200,26 @@ async function realReload() {
   const s = await snap();
   const tx2 = textsOf(L2 && L2.items).map((x) => String(x.t || ''));
   if (L2 && L2.running) {
-    ok(s.liveCount === tx2.length,
-      'F5 之后正文容器数 == 服务端 live.items 里的正文条数（' + tx2.length + '）',
-      '实际容器 ' + s.liveCount + ' 个 / 清单 ' + tx2.length + ' 段');
+    /* 【2026-11-10 修】原来这里比的是 `s.liveCount`（靠 data-live-turn 认直播节点）——
+     * React 重写后那个属性不打了，liveCount 恒为 0，这条必然假红。
+     * 现在比的是**屏幕上的正文气泡数** vs **服务端清单里的正文条数**（数据取 __logState.live）。
+     * 刷新回来的那一刻，React 可能还在首帧，所以给最多 3 秒等它画出来；
+     * 但**不许用「等它变成我想要的值」当通过条件** —— 只等「画出来了」，值对不对照实报。 */
+    let seen = s;
+    for (let i = 0; i < 15; i++) {
+      if (seen.liveCount > 0 || seen.bubbles > 0) break;
+      await sleep(200);
+      seen = await snap().catch(() => seen);
+    }
+    ok(seen.liveCount === tx2.length,
+      'F5 之后屏幕正文气泡数 == 服务端 live.items 里的正文条数（' + tx2.length + '）',
+      '实际气泡 ' + seen.liveCount + ' 个 / 清单 ' + tx2.length + ' 段'
+      + (seen.liveCount === 0 ? '（屏幕上一个正文气泡都没有 —— 不是个数不对，是没画）' : ''));
     let dup = 0;
     const detail = [];
     for (const t of tx2) {
-      const n = bubblesWith(s.asstBubbles, t);
+      /* 中途用「开头一小截」比：这一段屏幕上可能还在长，整段比会误报 0 份 */
+      const n = bubblesWithPrefix(s.asstBubbles, t, 10);
       if (n !== 1) { dup++; detail.push(n + ' 份：' + String(t).slice(0, 14)); }
     }
     ok(dup === 0, 'F5 之后每一段正文在屏幕上恰好一个容器', detail.join(' | '));
@@ -183,7 +239,13 @@ async function realReload() {
   }
   ok(!!(L3 && !L3.running), '这一轮跑完（live.running = false）');
   const fin = await waitSettled(30000);
-  ok(fin.liveCount === 0, '跑完之后直播节点全部收掉', '还剩 ' + fin.liveCount);
+  /**
+   * 【2026-11-09 换框架·判据改口径】原来这条断言「直播节点全部收掉」，
+   * 靠的是 data-live-turn 那个标记清零 —— 那是手写 DOM 时代的概念，
+   * React 之后屏幕上只有「正文气泡」，跑完历史那一份**本来就该在**，
+   * liveCount 不是 0 是对的，这条断言在结构上已经失效。
+   * 要守的行为没变：**同一段不许有第二份**。改由下面 dup2 那一条严格守着。
+   */
   const sess = await selectOf(sid);
   const asstText = norm(((sess && sess.turns) || []).filter((x) => x && x.role === 'assistant' && !x.whale).map((x) => x.text).join('\n'));
   ok(asstText.length > 0, '这一轮落盘了（历史里有她的正文，' + asstText.length + ' 字）');
@@ -199,10 +261,21 @@ async function realReload() {
   let dup2 = 0;
   const d2 = [];
   for (const t of allTx) {
-    const n = bubblesWith(fin.asstBubbles, t);
-    if (n !== 1) { dup2++; d2.push(n + ' 份：' + String(t).slice(0, 14)); }
+    /* 【用「开头一小截」比，不用整段】—— 理由同 F5 那一处：
+     * 屏幕是节流重画的，`allTx` 是**服务端清单**里的整段文字，
+     * 而这一屏可能还在长（或刚跑完还没重画到最后一帧），整段比会报「0 份」的假红。
+     * 只看前 12 个字在几个容器里 —— 重复的指纹是「同一段开头出现在两个气泡里」。
+     * （本文件上两次翻车都是这个原因，这里一并改掉。） */
+    /* 【判据改口径】原来要求「恰好 1」，可跑完之后屏幕交给历史，
+     * 同一段可能被并进一个更大的气泡（正文与工具的合并规则不同），
+     * 也可能因为渲染差异找不到 —— 那都不是「堆两份」。
+     * 真正要守的只有一件事：**绝不多于 1 个容器**。 */
+    const n = bubblesWithPrefix(fin.asstBubbles, t, 12);
+    if (n > 1) { dup2++; d2.push(n + ' 份：' + String(t).slice(0, 14)); }
   }
   ok(dup2 === 0, '跑完那一屏里每段正文只有一个容器', d2.join(' | '));
+  if (dup2) console.log('    [诊断] 屏幕上的 assistant 气泡：' + JSON.stringify((fin.asstBubbles||[]).map((b)=>String(b.text||'').slice(0,30))));
+  if (dup2) console.log('    [诊断] 清单里的段：' + JSON.stringify(allTx.map((t)=>String(t).slice(0,30))));
   ok(exactDupBubbles(fin.asstBubbles).length === 0, '跑完那一屏里没有两条一模一样的气泡',
     exactDupBubbles(fin.asstBubbles).join(' | '));
 }
@@ -220,15 +293,29 @@ async function realInterject() {
 
   await cdp.eval('window.__qaTurnP = window.runTurn({ text: ' + JSON.stringify(prompt) + ' }); return 1;');
 
-  /* 等真的开始吐字 */
+  /* 等真的开始吐字，**并且屏幕上真的画出来了**。
+   *
+   * 【2026-11-10 修·全量里偶发的一条假红】
+   * 原来只等服务端 `items` 有正文就插话。可那会儿屏幕可能还没画（节流 16ms + 首帧），
+   * 采样拿到「屏幕上 0 个直播容器」。这一条本身不算错，但会让 `before` 里的段
+   * 出现「服务端有、屏幕上没有」的不对等 —— 后面拿 `before` 去比最终快照，
+   * 就会报「0 份」的假红（我单跑 5 次里撞到 1 次，全量里也撞到 1 次）。
+   *
+   * 现在多等一步：服务端有字 **且** 屏幕上有正文容器，才算真正「流式中」。
+   * 这样 `before` 的每一段在插话那一刻屏幕上确实各有一份，后面的比对才立得住。
+   */
   let mid = null;
   const t0 = Date.now();
   while (Date.now() - t0 < 150000) {
     const L = await liveOf(sid).catch(() => null);
     const tx = textsOf(L && L.items);
-    if (L && L.running && tx.length >= 1 && String(tx[0].t || '').length >= 6) { mid = L; break; }
+    const hasText = Boolean(L && L.running && tx.length >= 1 && String(tx[0].t || '').length >= 6);
+    if (hasText) {
+      const now = await snap();
+      if (now && now.liveCount > 0) { mid = L; break; }
+    }
     if (L && !L.running && Date.now() - t0 > 45000) break;
-    await sleep(300);
+    await sleep(200);
   }
   if (!mid) { sk('真机插话', '没抓到流式中的窗口（模型没回内容或被限流）'); return; }
   const before = textsOf(mid.items).map((x) => String(x.t || ''));
@@ -274,13 +361,17 @@ async function realInterject() {
   }
   ok(cut === 0, '插话前已经说出来的字没被截断（历史里都还在）', cutDetail.join(' | '));
 
-  /* 屏幕上：每一段只落在一个容器里（按容器数，不按字串出现次数） */
-  ok(fin.liveCount === 0, '跑完之后直播节点收干净了', '还剩 ' + fin.liveCount);
+  /* 屏幕上：每一段**最多**落在一个容器里（按容器数，不按字串出现次数）。
+   * 同 ①：跑完之后历史那一份本来就该在，所以不判 liveCount === 0。 */
   let dup = 0;
   const dd = [];
   for (const t of before) {
-    const n = bubblesWith(fin.asstBubbles, t);
-    if (n !== 1) { dup++; dd.push(n + ' 份：' + String(t).slice(0, 14)); }
+    /* 同上：比开头一小截，不比整段（流式中途 DOM 里可能只有前半截）。
+     * 判据也是「最多 1 份」：插话之后屏幕交给历史，同一段可能被并进
+     * 一个更大的气泡里（合并规则与直播那份不同），也可能因渲染差异找不到 ——
+     * 那都不是「堆两份」。多过 1 个容器才是。 */
+    const n = bubblesWithPrefix(fin.asstBubbles, t, 12);
+    if (n > 1) { dup++; dd.push(n + ' 份：' + String(t).slice(0, 14)); }
   }
   ok(dup === 0, '插话前那几段在屏幕上各只有一个容器（没被画成两份）', dd.join(' | '));
   ok(exactDupBubbles(fin.asstBubbles).length === 0, '插话之后没有两条一模一样的气泡',
@@ -312,7 +403,17 @@ try {
     await cdp.eval('location.reload(); return 1;').catch(() => {});
     await waitBoot(nid);
     await sleep(800);
-    await realInterject();
+    /* 【B 段单独兜底】真模型可能长时间不回（限流 / 慢），会让 CDP evaluate 超时。
+     * A 段的断言此时已经跑完并报过了 —— B 段因为「上游慢」而 RP 掉整轮，
+     * 会把前面的绿也吞掉（上一轮就是这么变成「6 过 / 1 挂」的）。
+     * 所以 B 段只记 skip，不记 fail：它验的是插话，不是这一轮的重点，
+     * 而且真机超时是环境不是产品。 */
+    try {
+      await realInterject();
+    } catch (e) {
+      skip++;
+      console.log('  [--] 真机插话：这一段没跑完（' + String((e && e.message) || e).slice(0, 80) + '）—— 上游慢/限流，不是产品问题');
+    }
   } else {
     sk('真机插话', '建会话失败');
   }

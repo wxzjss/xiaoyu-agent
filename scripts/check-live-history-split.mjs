@@ -13,6 +13,10 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const CHAT = fs.readFileSync(path.join(ROOT, 'public/ui/chat.js'), 'utf8').replace(/\r\n/g, '\n');
+/* 【2026-11-09 换框架】trimTurnsForLive 搬到了 src-ui/items.js ——
+ * 那里是「turns + liveItems → 屏幕上那几段」的唯一算法（React 渲染层的输入）。
+ * 判据跟着算法走：谁在算分段就查谁，不查已经不存在的 DOM 路径。 */
+const ITEMS = fs.readFileSync(path.join(ROOT, 'src-ui/items.js'), 'utf8').replace(/\r\n/g, '\n');
 
 let pass = 0;
 let fail = 0;
@@ -35,7 +39,7 @@ function grab(src, name) {
   throw new Error(name + ' 大括号没配平');
 }
 
-const { trimTurnsForLive } = new Function(grab(CHAT, 'trimTurnsForLive') + '\nreturn { trimTurnsForLive };')();
+const { trimTurnsForLive } = new Function(grab(ITEMS, 'trimTurnsForLive') + '\nreturn { trimTurnsForLive };')();
 
 const U = (text) => ({ role: 'user', text });
 const A = (text, tools = null) => (tools ? { role: 'assistant', text: '', tools } : { role: 'assistant', text });
@@ -72,15 +76,23 @@ console.log('\n二、没有主人那句话时，退回老口径（只砍最后�
 
 console.log('\n三、源码层面钉住「别再退回只砍一条」');
 
+/**
+ * 【2026-11-09 判据改口径 —— 为什么这三条过时了】
+ *
+ * 原来钉的是「chat.js 的 renderLog / renderTurns 里调了 trimTurnsForLive」。
+ * 那是**实现位置**，不是行为：换 React 之后那两条手写 DOM 路径整个删了，
+ * 「历史画到哪儿为止」只在 src-ui/items.js 的 buildMerged 里算一次。
+ *
+ * 所以改成钉「算分段的那一处真的用了它，而且别处不再各算一遍」——
+ * 这正是原来那三条想守住的东西（别再退回「只砍最后一条」）。
+ */
 {
-  t.ok('renderLog 用 trimTurnsForLive 算历史指纹',
-    /const histTurns = \(running && turns\.length\) \? trimTurnsForLive\(turns\) : turns;/.test(CHAT));
-  t.ok('renderTurns 真正裁 DOM 时也用它',
-    /if \(opts && opts\.dropTail && Array\.isArray\(turns\)\) \{[\s\S]{0,160}trimTurnsForLive\(turns\)/.test(CHAT));
-  t.ok('renderTurns 更新 state 时也用它',
-    /trimTurnsForLive\(LOG_STATE\.turns\)/.test(CHAT));
+  t.ok('分段边界只有一处：src-ui/items.js 的 buildMerged 在跑着的时候调用 trimTurnsForLive',
+    /const all = running \? trimTurnsForLive\(snap\.turns\) : snap\.turns;/.test(ITEMS));
+  t.ok('chat.js 不再自己算这份边界（DOM 路径已删，不会两处各判一次）',
+    !/trimTurnsForLive\(/.test(CHAT));
   t.ok('老写法「只 splice 最后一条 assistant」已经不在',
-    !/turns\[i\]\.role === 'assistant'\) \{ turns\.splice\(i, 1\); break; \}/.test(CHAT));
+    !/turns\[i\]\.role === 'assistant'\) \{ turns\.splice\(i, 1\); break; \}/.test(CHAT + ITEMS));
 }
 
 console.log('\n结果: ' + pass + ' 过 / ' + fail + ' 挂\n');

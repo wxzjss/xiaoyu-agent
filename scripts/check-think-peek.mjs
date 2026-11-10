@@ -5,12 +5,17 @@
  * 现象：思考过程中，柜门（toolhub）标题后面那段灰字会一路长到右边框；
  * 思考一结束，它立刻缩成短短一小截，后面空一大片。
  *
- * 病根：思考中那段灰字取 `thinking.dataset.peek`（实时尾巴，能长满一行），
- * 思考结束 `thinking-now` 一撤，就落到 `hubPeekOf()` —— 那里写死
- * `t.slice(0, 30) + '…'`，**只留 30 个字**。
+ * 【2026-11-09 换框架·判据改口径 —— 为什么老判据过时了】
  *
- * 这条检查把 hubPeekOf 抽出来真跑（造假的 think/tool 元素），并钉住 CSS 那边
- * 仍然是「一行 + 省略号」（不截字之后必须靠它收边，否则会换行把柜门撑成两行）。
+ * 老判据把 `hubPeekOf()` 抽出来跑：那个函数是**扫 DOM**（找 .think / .tool 元素、
+ * 读它们的 textContent）来算灰字的。换 React 之后柜门由 `src-ui/ToolCard.jsx`
+ * 从**数据**算，扫 DOM 那条路已经整个删掉了 —— 再去跑它，验的是一个不存在的实现。
+ *
+ * 现在按三处新家分别钉：
+ *   ① 灰字长度：`public/ui/hub.js` 的 `thinkPeekTail`（纯函数，抽出来真跑）
+ *   ② 柜门「正在X…」「调了 N 次工具」：`src-ui/ToolCard.jsx` 由 items 算
+ *   ③ 收边方式：CSS 从 ellipsis 改成 clip（**这一轮的根治点**：
+ *      省略号要重新测量截断点，文字一变就重排 → 鼠标停在灰字上会抖）
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,6 +23,8 @@ import path from 'node:path';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const HUB = fs.readFileSync(path.join(ROOT, 'public/ui/hub.js'), 'utf8').replace(/\r\n/g, '\n');
 const UI = fs.readFileSync(path.join(ROOT, 'public/index.html'), 'utf8').replace(/\r\n/g, '\n');
+const TOOLCARD = fs.readFileSync(path.join(ROOT, 'src-ui/ToolCard.jsx'), 'utf8').replace(/\r\n/g, '\n');
+const GRAY = fs.readFileSync(path.join(ROOT, 'src-ui/GrayText.jsx'), 'utf8').replace(/\r\n/g, '\n');
 
 let pass = 0;
 let fail = 0;
@@ -40,26 +47,7 @@ function grab(src, name) {
   throw new Error(name + ' 大括号没配平');
 }
 
-/* 只跑 hubPeekOf；它只用到 el.classList / el.querySelector，假元素够用 */
-/* hubPeekOf 依赖模块级常量 HUB_PEEK_MAX —— 抽出来单跑时要一起带上，
- * 否则 ReferenceError。值从源码里读，别在测试里写死一份（改了就对不上）。 */
-const peekMax = Number((/const HUB_PEEK_MAX = (\d+);/.exec(HUB) || [])[1]) || 400;
-const { hubPeekOf } = new Function(
-  'const HUB_PEEK_MAX = ' + peekMax + ';\n' + grab(HUB, 'hubPeekOf') + '\nreturn { hubPeekOf };',
-)();
-
-/** 造一个假元素：classList + querySelector（按 selector 找子元素） */
-function fakeEl(cls, kids = {}) {
-  const set = new Set(String(cls).split(/\s+/).filter(Boolean));
-  return {
-    classList: { contains: (c) => set.has(c) },
-    querySelector: (sel) => {
-      const key = String(sel).replace(/^\./, '');
-      return kids[key] || null;
-    },
-  };
-}
-const textEl = (text) => ({ textContent: String(text) });
+const { thinkPeekTail } = new Function(grab(HUB, 'thinkPeekTail') + '\nreturn { thinkPeekTail };')();
 
 console.log('\n一、思考完了，灰字必须还是长的（不许缩回 30 字）');
 
@@ -68,51 +56,49 @@ const longThought = '我先看看这个文件里到底有没有那段逻辑，�
   + '接着我要确认一下服务端那边是不是也有同样的分支，不然只改前端等于没改。';
 
 {
-  const think = fakeEl('think', { thinkBody: textEl(longThought) });
-  const peek = hubPeekOf([think]);
+  const peek = thinkPeekTail(longThought);
   t.ok('长思考 → 灰字是长的（>60 字）', peek.length > 60, '实际 ' + peek.length + ' 字：' + peek.slice(0, 40) + '…');
-  t.ok('内容就是思考正文，没被加省略号', !peek.endsWith('…') || longThought.endsWith('…'));
-  t.ok('正文一个字都没被改写', longThought.replace(/\s+/g, ' ').trim().startsWith(peek));
+  t.ok('正文一个字都没被改写（最多前面加一个 …）',
+    longThought.replace(/\s+/g, ' ').trim().endsWith(peek.replace(/^…/, '')));
 }
 
 {
-  /* 换行要压成一行 —— 柜门只有一行，多行会把标题撑高 */
-  const think = fakeEl('think', { thinkBody: textEl('第一行\n\n第二行   第三行') });
-  t.ok('换行/多空格被压成一行', hubPeekOf([think]) === '第一行 第二行 第三行');
+  t.ok('换行/多空格被压成一行', thinkPeekTail('第一行\n\n第二行   第三行') === '第一行 第二行 第三行');
+  t.ok('空文本 → 空串（不画空壳）', thinkPeekTail('   ') === '');
 }
 
 {
-  /* 超长（没标点的整段）只兜底 400 字，不能把 DOM 撑爆 */
+  /* 超长只取尾巴 160 字：柜门只有一行，前面那些字本来也显示不出来 */
   const huge = '啊'.repeat(1200);
-  const think = fakeEl('think', { thinkBody: textEl(huge) });
-  const peek = hubPeekOf([think]);
-  t.ok('超长正文兜底 ' + peekMax + ' 字', peek.length === peekMax, String(peek.length));
+  const peek = thinkPeekTail(huge);
+  t.ok('超长正文取尾巴 160 字（前面加 …）', peek.length === 161 && peek.startsWith('…'), String(peek.length));
 }
 
-console.log('\n二、工具/思考混在一起时，取「最后那一条」');
+console.log('\n二、柜门那一行由数据算（ToolCard.jsx），不再扫 DOM');
 
 {
-  const tool = fakeEl('tool', { name: textEl('读取 index.html') });
-  const think = fakeEl('think', { thinkBody: textEl(longThought) });
-  t.ok('末尾是思考 → 取思考', hubPeekOf([tool, think]).startsWith('我先看看'));
-  t.ok('末尾是工具 → 取工具名', hubPeekOf([think, tool]) === '读取 index.html');
+  t.ok('柜门标题：在跑的时候写「正在X…」', /'正在'\s*\+\s*\(niceTool\(running\.name, running\.args\)/.test(TOOLCARD));
+  t.ok('柜门标题：平常写「调了 N 次工具」', /'调了 '\s*\+\s*n\s*\+\s*' 次工具'/.test(TOOLCARD));
+  t.ok('柜门状态：失败数写「N 个失败」', /bad \+ ' 个失败'/.test(TOOLCARD));
+  t.ok('灰字组件从 bridge 借 thinkPeek（同一个来源，不会两处各算一套）',
+    /import \{ thinkPeek \} from '\.\/bridge\.js'/.test(GRAY) && /thinkPeek\(flat\)/.test(GRAY));
+  t.ok('灰字组件 memo 住了（文案不变就不重渲染）', /memo\(function GrayPeek/.test(GRAY));
+  t.ok('hub.js 里扫 DOM 的 hubPeekOf 已经空了（不再参与渲染）',
+    /function hubPeekOf\(\)\s*\{\s*return '';\s*\}/.test(HUB));
 }
 
-{
-  /* 工具在跑：柜门标题已经写「正在…」，灰字应该让位（返回「正在X…」） */
-  const running = fakeEl('tool', { name: textEl('跑命令'), status: textEl('运行中') });
-  t.ok('工具在跑 → 返回「正在X…」', hubPeekOf([running]) === '正在跑命令…');
-}
-
-console.log('\n三、样式那头必须还是「一行 + 省略号」');
+console.log('\n三、收边方式：一行 + clip（不再是 ellipsis）');
 
 {
-  const m = /\.hubpeek\s*\{([^}]*)\}/.exec(UI);
+  /* 换框架后的覆盖规则：灰字与柜门标题一律 nowrap + hidden + clip */
+  const m = /\.hubpeek,\s*details\.think\s+\.thinkMeta,\s*details\.toolhub\s*>\s*summary\s+\.hubname\s*\{([^}]*)\}/.exec(UI);
   const css = m ? m[1] : '';
-  t.ok('.hubpeek 是单行省略（nowrap + hidden + ellipsis）',
-    /white-space:\s*nowrap/.test(css) && /overflow:\s*hidden/.test(css) && /text-overflow:\s*ellipsis/.test(css), css.trim().slice(0, 80));
-  t.ok('.hubpeek 允许被压缩（min-width:0），长文本才能在右边框停下',
-    /min-width:\s*0/.test(css));
+  t.ok('灰字/柜门标题统一成 nowrap + hidden + clip（不画省略号）',
+    /white-space:\s*nowrap/.test(css) && /overflow:\s*hidden/.test(css) && /text-overflow:\s*clip/.test(css),
+    css.replace(/\s+/g, ' ').trim().slice(0, 90) || '没找到覆盖规则');
+  t.ok('这条覆盖规则排在 .hubpeek 原规则之后（后写的才生效）',
+    // 取最后一处 clip：前面思考标题也有一处，第一处不代表覆盖规则的位置
+    UI.lastIndexOf('text-overflow: clip') > UI.indexOf('.hubpeek {') + 30);
 }
 
 {

@@ -38,6 +38,21 @@
  * 那个真卡住的 promise 会变成孤儿，但总比让人对着一个永远转圈的界面强。
  */
 
+/**
+ * 【2026-11-10 D4·默认值单一来源】
+ *
+ * 三档默认值原来是本文件里的字面量（12min / 31min / 5min），而 server.mjs 起看门狗时
+ * 又用 deadline.mjs 的常量 +60s 算了一遍 —— 同一件事两把尺子，哪天一边改了另一边忘改，
+ * 「默认值」和「实际生效值」就会悄悄分家。
+ *
+ * 现在默认值一律从 ../deadline.mjs 派生（+60 秒的规矩跟 server.mjs 保持一致）：
+ *   · 等模型   → LLM_IDLE_MS  + 60s（让 LLM 层自己先认输、走重试）
+ *   · 等工具   → TOOL_MAX_MS  + 60s（工具本来就允许跑很久）
+ *   · 真空转   → TURN_IDLE_MAX_MS（它本来就是 deadline.mjs 里的整轮上限）
+ * 显式传参依然优先 —— 行为测试压秒级窗口就是靠这个。
+ */
+import { LLM_IDLE_MS, TOOL_MAX_MS, TURN_IDLE_MAX_MS } from '../deadline.mjs';
+
 function lastActivityAt(events, startedAt) {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const a = Number(events[i] && events[i].at);
@@ -116,9 +131,9 @@ function pickLimit(events, limits) {
  * @param {(sid: string) => object|undefined} opts.liveOf     拿 live（events 在那）
  * @param {(sid: string) => void} opts.abort                  软掐
  * @param {(sid: string) => void} opts.forceClean             硬清（删条目 + 标 done）
- * @param {number} [opts.idleMs]       真空转时的上限（默认 12 分钟）
- * @param {number} [opts.toolIdleMs]   等工具时的上限（默认 31 分钟）
- * @param {number} [opts.llmIdleMs]    等模型回话时的上限（默认 5 分钟）
+ * @param {number} [opts.idleMs]       真空转时的上限（默认 TURN_IDLE_MAX_MS，见 deadline.mjs）
+ * @param {number} [opts.toolIdleMs]   等工具时的上限（默认 TOOL_MAX_MS + 60s）
+ * @param {number} [opts.llmIdleMs]    等模型回话时的上限（默认 LLM_IDLE_MS + 60s）
  * @param {(sid: string, info: object) => void} [opts.onStuck] 掐之前敲一下（自动续跑用）
  * @param {number} [opts.hardAfterMs]  软掐后再等多久强清（默认 60 秒）
  * @param {number} [opts.tickMs]       扫的间隔（默认 15 秒）
@@ -129,9 +144,10 @@ export function createTurnWatchdog(opts = {}) {
   const liveOf = opts.liveOf || (() => undefined);
   const abort = opts.abort || (() => {});
   const forceClean = opts.forceClean || (() => {});
-  const idleMs = Number(opts.idleMs) > 0 ? Number(opts.idleMs) : 12 * 60 * 1000;
-  const toolIdleMs = Number(opts.toolIdleMs) > 0 ? Number(opts.toolIdleMs) : 31 * 60 * 1000;
-  const llmIdleMs = Number(opts.llmIdleMs) > 0 ? Number(opts.llmIdleMs) : 5 * 60 * 1000;
+  /* 【2026-11-10 D4】默认值不再写字面量，从 deadline.mjs 派生（+60s，与 server.mjs 同一规矩） */
+  const idleMs = Number(opts.idleMs) > 0 ? Number(opts.idleMs) : TURN_IDLE_MAX_MS;
+  const toolIdleMs = Number(opts.toolIdleMs) > 0 ? Number(opts.toolIdleMs) : TOOL_MAX_MS + 60000;
+  const llmIdleMs = Number(opts.llmIdleMs) > 0 ? Number(opts.llmIdleMs) : LLM_IDLE_MS + 60000;
   const hardAfterMs = Number(opts.hardAfterMs) > 0 ? Number(opts.hardAfterMs) : 60 * 1000;
   const tickMs = Number(opts.tickMs) > 0 ? Number(opts.tickMs) : 15000;
   const onLog = typeof opts.onLog === 'function' ? opts.onLog : () => {};

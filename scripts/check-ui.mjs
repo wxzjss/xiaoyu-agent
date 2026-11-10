@@ -271,6 +271,62 @@ function checkFile(label, path) {
   for (const m of code.matchAll(/\b(?:const|let|var)\s*\{([^}]+)\}/g)) {
     for (const p of m[1].split(',')) declared.add(p.trim().split(':').pop().trim());
   }
+  /**
+   * 【2026-11-09 修·数组解构没被算成「已声明」→ 假红】
+   *
+   * 这条是 #15「对话区改 React 声明式重写」逼出来的：React 里满屏都是
+   *   const [open, setOpen] = useState(false);
+   * 而上面那两条只认 `const x` 和 `const {a, b}`，**不认 `const [a, b]`** ——
+   * 于是 setOpen 被判成「被当变量用但没声明」，preflight 整条红，
+   * 报的还是「这个页面打开会白屏」，纯粹冤枉（bundle 是能跑的）。
+   *
+   * 实测 2026-11-09：public/ui/log.bundle.js 里 5 处数组解构，
+   * 修前 preflight ✘ 致命 2 处，修后 ✔。
+   *
+   * 注意：只把方括号里那些**裸标识符**登记成声明；`[k, v]`、`[a = 1]`、
+   * `[...rest]` 都要认，嵌套的 `[[x, y]]` 也过一遍（递归展开）。
+   */
+  const addArrayPattern = (inner) => {
+    // 展开嵌套：[ [a, b], c ] → 一段一段剥
+    let s = inner;
+    let prev = '';
+    while (s !== prev) { prev = s; s = s.replace(/\[([^[\]]*)\]/g, '$1'); }
+    for (const p of s.split(',')) {
+      const nm = p.trim().replace(/^\.\.\./, '').split(/[=:]/)[0].trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(nm)) declared.add(nm);
+    }
+  };
+  /**
+   * 【找数组解构的方括号必须配平，不能用 /\[([^\]]*)\]/】
+   *
+   * 2026-11-09 第一版就是那么写的，`const [outerX, [innerY, innerZ]] = ...`
+   * 会在**内层**第一个 `]` 处截断，拿到的是 `outerX, [innerY, innerZ` ——
+   * 内层名字全成了垃圾串，`innerY` 照样被判未声明。
+   * 写成嵌套解构的检查（check-ui-destructuring 的 ⑥）当场就抓到了。
+   *
+   * 现在手工配平：从 `[` 往后数方括号深度，回到 0 才算这一段结束。
+   */
+  const scanArrayPatterns = (text) => {
+    const re = /\b(?:const|let|var)\s*\[/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const open = m.index + m[0].length - 1;
+      let depth = 0;
+      let end = -1;
+      for (let i = open; i < text.length; i++) {
+        const c = text[i];
+        if (c === '[') depth++;
+        else if (c === ']') { depth--; if (depth === 0) { end = i; break; } }
+        else if (c === '\n' && depth === 0) break; // 没闭合就别跨行瞎抓
+      }
+      if (end > open) addArrayPattern(text.slice(open + 1, end));
+    }
+  };
+  scanArrayPatterns(code);
+  /* 函数参数里的数组解构：function f([a, b]) / ([a, b]) => 也要认 */
+  for (const m of code.matchAll(/\(([^()]*)\)\s*=>/g)) {
+    for (const mm of m[1].matchAll(/\[([^[\]]*)\]/g)) addArrayPattern(mm[1]);
+  }
   for (const m of code.matchAll(/^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/gm)) declared.add(m[1]);
   // 函数参数（含箭头函数、方法、catch）
   for (const m of code.matchAll(/(?:function\s*[\w$]*|catch)\s*\(([^)]*)\)/g)) {
@@ -291,6 +347,35 @@ function checkFile(label, path) {
   for (const m of code.matchAll(/for\s*\(\s*(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s+(?:of|in)\b/g)) declared.add(m[1]);
   // class 方法里的字段
   for (const m of code.matchAll(/\bthis\.([A-Za-z_$][\w$]*)\s*=/g)) declared.add(m[1]);
+  /**
+   * 【2026-11-09 加·class 的方法名不算「未声明的变量」】
+   *
+   * 用例：React 的错误边界
+   *   class RowBoundary extends React.Component {
+   *     static getDerivedStateFromError(err) { … }
+   *     componentDidCatch(err, info) { … }
+   *   }
+   * 这两个是**方法定义**（`名字(...) {`），不是变量用法。
+   * 收集器只认 `function name(` / `const x =` / 参数 / 箭头函数，于是把它们
+   * 报成「被当变量用但全文没有声明」→ preflight 判「页面会白屏」，冤枉。
+   *
+   * 修法：把 `class ... { … }` 整块按大括号配平抠出来，只在这块里认
+   * `^\s*(?:static\s+)?(?:async\s+)?(?:get\s+|set\s+)?名字\s*\(`。
+   * 限定在 class 体内是刻意的 —— 全局范围这么认会把普通调用当成定义（那就把检查改哑了）。
+   */
+  for (const m of code.matchAll(/class\s+[A-Za-z_$][\w$]*[^{]*\{/g)) {
+    const from = m.index + m[0].length - 1;
+    let d = 0;
+    let to = from;
+    for (let k = from; k < code.length; k++) {
+      if (code[k] === '{') d++;
+      else if (code[k] === '}') { d--; if (d === 0) { to = k; break; } }
+    }
+    const body = code.slice(from, to + 1);
+    for (const mm of body.matchAll(/^[ \t]*(?:static\s+)?(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\(/gm)) {
+      declared.add(mm[1]);
+    }
+  }
   // 先把注释和字符串字面量挖掉，剩下的才是真·标识符用法
   const bare = stripCommentsAndStrings(code);
   const suspicious = new Set();

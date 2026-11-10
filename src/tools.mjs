@@ -2099,9 +2099,8 @@ export const tools = [
       const sid = ctxNow().sessionId || 'default';
       const { taskOn } = await import('./task-mode.mjs');
       if (!taskOn(sid)) {
-        return 'ERROR：【现在不是办事模式】这个会话没开办事模式。'
-          + '要派活得先让主人在顶栏把那颗「办事模式」按钮点亮；'
-          + '在那之前你自己动手就行 —— 别装作派过活。';
+        /* 【2026-11-11 办事模式整档删除，等【团队模式】上线换新闸】 */
+        return 'ERROR：【派活功能正在重做】办事模式已经删掉，团队模式还没上线 —— 现在用不了派活，你自己动手就行，别装作派过活。';
       }
       const body = String(task || '').trim();
       if (!body) return 'ERROR：没说要干什么（task 是空的）。';
@@ -2244,7 +2243,7 @@ export const tools = [
       const sid = ctxNow().sessionId || 'default';
       const { taskOn } = await import('./task-mode.mjs');
       if (!taskOn(sid)) {
-        return 'ERROR：【现在不是办事模式】这个会话没开办事模式。要派活得先让主人在顶栏把那颗「办事模式」按钮点亮。';
+        return 'ERROR：【派活功能正在重做】办事模式已经删掉，团队模式还没上线 —— 现在用不了派活。';
       }
       const list = (Array.isArray(tasks) ? tasks : []).filter((t) => t && String(t.task || '').trim());
       if (!list.length) return 'ERROR：没说要干什么（tasks 是空的）。';

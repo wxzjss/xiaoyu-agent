@@ -76,16 +76,13 @@
     details:focus-visible, summary:focus-visible {
       outline: 2px solid var(--accent); outline-offset: 2px;
     }
-    /* 【2026-11-10 B9·跑动期高危按钮禁用态】
-     * 一轮正在跑的时候，header 上那几颗会改变这一轮行为的按钮
-     * （管理员——开着就能动整机文件；办事模式——改这一轮谁来干活；
-     *   会话——清空/删除的入口都在那个面板里）
-     * 视觉禁用：变暗 + pointer-events:none，轮末恢复。
-     * 挂钩点在 syncSendBtn（所有 busy 状态变化后都会调它，一处管齐）。 */
-    header .busyLock {
-      opacity: .45; cursor: not-allowed;
-      pointer-events: none; filter: grayscale(.4);
-    }
+    /* 【2026-11-11 主人要求：删掉忙碌锁】原话：
+     * 「删掉【管理员】与【会话】的无法点击状态，我要的就是能够做任务过程中
+     *   开管理员权限以及切换会话，多个会话做不同的 Agent 任务」
+     * 原来 .busyLock（2026-11-10 B9 加的）= opacity:.45 + pointer-events:none，
+     * 跑动期间把【管理员】【会话】钉死。现在整个锁不要了 —— 多会话并行
+     * 本来就是这个程序支持的能力（2026-11-07 修过「两个会话同时跑」），
+     * 锁它反而碍事。.busyLock 类不再有人往按钮上贴（syncSendBtn 那段已删）。 */
     body {
       margin: 0; height: 100vh; display: flex; flex-direction: column;
       background: var(--bg); color: var(--text);
@@ -3323,7 +3320,10 @@
          整排顶到右边。以前这股推力挂在「管理员」身上，开机头一秒它被
          refreshAdminBtn 藏掉，整排就当着主人的面跳到左边 —— 就是那次闪变。 -->
     <span id="hdrPush" aria-hidden="true"></span>
-    <button id="taskBtn" title="办事模式：开了之后主智能体不自己动手，只拆任务、派活、检查、验收、管上下文；具体的活交给会话内临时开出来的 worker。按会话开，随时可以关">办事模式</button>
+    <!-- 【2026-11-11 主人：「办事模式……删了」】顶栏【办事模式】按钮连同它的
+         JS（paintTaskState / toggleTaskMode / loadTaskState）与 CSS 一起撤。
+         那些函数现在 getElementById 拿到 null、全部守卫早退，等【团队模式】
+         上线时整块清掉（计划 A5）。 -->
     <!--
       【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
       这两颗按钮连同它们的 JS / CSS 一起撤掉。开关只剩一处：左边「屋里的人」那列牌子，
@@ -8025,16 +8025,9 @@ function scheduleSendingRecheck(sid) {
 
 /** 生成中：输入框有内容 -> 按钮变「发送」（插一句）；空着 -> 「停止」。 */
 function syncSendBtn() {
-  /* 【2026-11-10 B9】跑动期间锁住 header 高危按钮。
-   * 放在最前面：后面的 stopping 早退不该挡住这把锁的开关 ——
-   * 全部 busy 赋值点后面都跟着 syncSendBtn()，这里就是唯一挂钩处。 */
-  try {
-    const lock = Boolean(busy);
-    for (const id of ['adminBtn', 'taskBtn', 'openSessions']) {
-      const el = document.getElementById(id);
-      if (el) el.classList.toggle('busyLock', lock);
-    }
-  } catch (e) {}
+  /* 【2026-11-11 主人要求：忙碌锁整个删掉】管理员/会话在任务跑动期间保持可点，
+   * 多个会话并行做不同的活。原来这里会把 busyLock 类贴到
+   * adminBtn/taskBtn/openSessions 上（变暗 + 点不动），已删。 */
   if (stopping) return;
   /* 【2026-11-05 改·不再出现两个"停止"】
    *

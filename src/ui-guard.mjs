@@ -245,7 +245,42 @@ function hitTitleDanger(text) {
    * 这个词表刻意窄，只放「动词+对象」的完整短语，不放单个动词。
    */
   const _HARD_IRREVERSIBLE = /(清空回收站|清倒回收站|格式化磁盘|格式化硬盘|empty (the )?(trash|recycle ?bin)|format (disk|drive|volume|hard ?drive))/i.test(s);
-  if (_DOC_END && !_SEC_WORD && !_ASK_WORD && !_HARD_IRREVERSIBLE) return null;
+  /**
+   * 【2026-11-10 补·「动作+对象」完整短语出现时，文档豁免一律不生效】
+   *
+   * 漏洞实测（我自己复现的）：
+   *   `Delete File`        → 拦 ✅
+   *   `Delete File - Help` → 放 ❌  ← 加个 "- Help" 就绕过了
+   *   `删除文件 - 帮助`      → 放 ❌
+   *   `卸载程序 - 帮助`      → 放 ❌
+   *
+   * **这是绕过路径**：任何删除确认框只要标题结尾带「- 帮助」就放行。
+   * 而我加文档豁免的初衷是为了 `Delete log history - Help`（讲怎么删日志的文档）——
+   * 那类标题的特征是「动作词 + **历史/记录/日志**」，宾语是文档内容，不是真文件。
+   *
+   * 所以判据改成：**标题里有「动作 + 真对象（文件/文件夹/程序/磁盘）」时，文档豁免失效。**
+   * 真文档（讲「怎么删日志」）的宾语是「日志/记录/历史」，不在这个表里，仍然放行。
+   */
+  /**
+   * 【2026-11-10 三修·最后定型，判据是「动作词在标题的什么位置」】
+   *
+   * 踩过的三种写法（都有实测反例）：
+   *   ① 无条件放行文档后缀     → `Delete File - Help` 漏拦（绕过路径）
+   *   ② 加 SEC/ASK 排除         → 仍漏 `Delete File - Help`（它没有安全/确认词）
+   *   ③ 加「动作+对象」排除      → 又误拦 `Delete log history - Help`（history 被当对象）
+   *
+   * 真正能分开两类的是**位置**：
+   *   · `Delete File - Help`        ← 动作词在**最开头**，宾语紧跟其后 → 这是**操作窗口**
+   *   · `Delete log history - Help` ← 动作词开头，但宾语是「log history」，讲的是**这条记录** → 文档
+   *   · `Delete User - Help`        ← 动作词开头 + 宾语 User → 操作窗口
+   *
+   * 所以判据：**如果标题以「动作词 + 单个具体名词」开头（不超过 2 个词），就不当文档看。**
+   * 「log history」是两个词 → 更像"关于日志历史"这个主题 → 仍按文档放行。
+   */
+  /* 英文要空格分词；中文不需要。所以两套分开写。 */
+  const _LEAD_VERB_NOUN_EN = /^\s*(?:delete|remove|erase|uninstall|wipe|purge|empty|format)\s+(?:user|users|account|accounts|profile|file|files|folder|folders|program|app|disk|drive|volume|directory)\s*(?:[-–—]|$)/i.test(s);
+  const _LEAD_VERB_NOUN_CN = /^\s*(?:删除|移除|卸载|清空|格式化)(?:用户|账号|账户|文件|文件夹|程序|目录|磁盘|全部)/.test(s);
+  if (_DOC_END && !_SEC_WORD && !_ASK_WORD && !_HARD_IRREVERSIBLE && !_LEAD_VERB_NOUN_EN && !_LEAD_VERB_NOUN_CN) return null;
   for (const d of DANGER_TITLE_WORDS) {
     /* 第 1 类（系统动作）要求**标题以动作开头**；文件名类标题跳过这一层 */
     const m = d.re.exec(s);

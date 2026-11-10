@@ -223,6 +223,37 @@ const DANGER_DOC_LOOKING = [
   ['Delete File - Security Help', '安全警告（不是文档）'],
   ['Delete File - Security Warning', '安全警告'],
   ['清空回收站 - 帮助', '不可逆动作 + Help 后缀'],
+  /**
+   * 【2026-11-11 加·71% 覆盖率的真洞（arch-auditor 抓的）】
+   *
+   * 上面那几条靠 `_SEC_WORD`（Security）或 `_ASK_WORD`（Confirm）挡住，
+   * 但**「危险动作 + 纯 Help 后缀、既没 Security 也没 Confirm」这一类完全没测**。
+   *
+   * 实测（当前代码 00:16:07 版本）：
+   *   Delete File          → 拦 ✅
+   *   Delete File - Help   → 放 ❌   ← 同一个操作，加个后缀就穿过去了
+   *
+   * 规模：7 动词 × 10 对象 × 5 文档后缀 = 350 条，**漏拦 300 条 = 86%**。
+   *
+   * 根因：文档豁免只排除了「安全警告/确认框/清空回收站/格式化磁盘」四类，
+   * 而「删除 X」这类最常见的删除动作不在排除名单里。
+   *
+   * ⚠️ 这几条和下面「真文档要放行」是**同一个正则的两侧**：
+   *    Delete File - Help        → 拦（对象是被删的东西）
+   *    Delete log history - Help → 放（对象是「关于删除的记录」）
+   * 区别在**对象词**，不在后缀。谁改文档豁免，必须两组同时过。
+   */
+  ['Delete File - Help', '危险动作 + 纯 Help（物件）'],
+  ['Delete Folder - Help', '危险动作 + 纯 Help（文件夹）'],
+  ['Delete User - Help', '危险动作 + 纯 Help（用户）'],
+  ['Delete Account - Help', '危险动作 + 纯 Help（账号）'],
+  ['Remove File - Guide', 'Remove + 物件 + Guide'],
+  ['Uninstall Program - Help', '卸载程序 + Help'],
+  ['卸载程序 - 帮助', '中文：卸载 + 程序'],
+  ['删除文件 - 帮助', '中文：删除 + 文件'],
+  ['删除文件夹 - 帮助', '中文：删除 + 文件夹'],
+  ['删除用户 - 帮助', '中文：删除 + 用户'],
+  ['清空数据 - 帮助', '清空 + 数据'],
 ];
 for (const [title, note] of DANGER_DOC_LOOKING) {
   const r = needAsk({ el: { name: 'OK' }, title, app: 'explorer' });

@@ -186,7 +186,17 @@ export function taskFeatureOn(sessionId = '') {
     /* 没有 sessionId 就传空串：三级回退会自动跳过会话表，直接看全局值、再退 defaultOn。
      * 跟原来 `getEnabledMap()['taskmode']` 逐字等价，但不再出现「裸读全局表」这种写法
      * （check-feature-readpaths 会把裸读当成假关的源头，一律不许）。 */
-    return featureOnFor(sessionId || '', 'taskmode') === true;
+    /* 【2026-11-11 主人：「办事模式……删了」】
+     *
+     * 【办事模式】功能整档删掉了（features.mjs 里那份定义已删）。
+     * 但主人机器上的功能表里还残留着 `taskmode: true` 这个键 ——
+     * featureOnFor 对「不认识的 id」按老行为「记过就按记的」，会照旧返回 true，
+     * 所以这里必须显式钉死 false，不能靠功能表。
+     *
+     * 派活工具（spawn_worker / spawn_workers）从此闸死，等【团队模式】
+     * 上线后换新的闸。worker 花名册（writeWorkers 那套）保留不动 ——
+     * 团队模式直接复用这层。 */
+    return false;
   } catch {
     return false;
   }

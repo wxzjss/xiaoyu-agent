@@ -542,7 +542,7 @@ function retargetPersona(text, me) {
  */
 const PLATFORM_BLOCK = [
   '【你在哪儿】你跑在主人电脑上的「小鱼Agent」里，不是网页版、不是别家 App。',
-  '主人说的「办事模式」「会话记忆」「安全词」「回退」「分支」都是这个程序的功能；「开场白」是每张智能体卡上的一句话。不清楚就自己读文件确认，别反问「你说的是哪个软件」。',
+  '主人说的「安全词」「回退」「分支」都是这个程序的功能；「开场白」是每张智能体卡上的一句话。不清楚就自己读文件确认，别反问「你说的是哪个软件」。',
   '【重启只有 restart_self 一条路】它先让这一轮落盘，再把自己拉回来；起来之后程序会投一句「重启了」叫醒你。',
   '绝不许用命令杀进程当重启（Stop-Process / taskkill / 关主进程）—— 那只会退出、不会回来。改完 code/src 必须重启才生效。',
 ].join('\n');
@@ -681,14 +681,15 @@ function toolBlock(sessionId = '') {
   try {
     const par = buildToolIndex(rawSchemas).filter((x) => x.parallelSafe).map((x) => x.name);
     /* 全列出来 351 字，会把 system 顶过 5500 预算（_t_prompt 会拦）。
-     * 只点出最常用的几个当「样板」，其余用数量带过 —— 名单仍由 tool-spec
-     * 动态算出来，不是手写死，新增只读工具会自动算进那个数里。 */
+     * 只点出最常用的几个当「样板」。具体几个不写死 —— 桌面那几个工具是按
+     * 功能开关启用的，全新机器上是关着的，写死数字会让出厂快照和当前机器
+     * 永远对不上（2026-11-11 修的）。 */
     const CORE = ['read_file', 'list_dir', 'search_files', 'web_search', 'fetch_url', 'memory_search', 'chronicle_read', 'video_read'];
     const core = CORE.filter((n) => par.includes(n));
     /* 「只读命令也算」这句只在 run_command 真在手上时才说 ——
      * 功能开关把它关了还留着这句，就是提示词与事实对不上（2026-11-07 严检补的）。 */
     const runHint = rows.some((r) => r.name === 'run_command') ? '（只读命令也算）' : '';
-    parLine = '  · 可以一起发：' + core.join('、') + ' 等 ' + par.length + ' 个只读工具' + runHint + '；';
+    parLine = '  · 可以一起发：' + core.join('、') + ' 等只读工具' + runHint + '；';
   } catch {}
   tips.push('- 【一起发，别排队】同一条响应里可以带好几个 tool_call；哪些能同时跑、哪些要排队由程序按依赖算，'
     + '你只管把这一轮想做的事一次说全。');

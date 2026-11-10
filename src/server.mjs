@@ -5812,7 +5812,7 @@ const server = createServer(async (req, res) => {
           try { __headOn = isGroupMemberEnabled(__head, sid); } catch { __headOn = true; }
           if (!__headOn) {
             const __now = groupAgentIds(sid).map((x) => String(x));
-            return json(res, 200, { ok: true, refused: true, agentIds: __now, why: '办事模式开着，没启用的卡不能排在第一位' });
+            return json(res, 200, { ok: true, refused: true, agentIds: __now, why: '没启用的卡不能排在第一位' });
           }
         }
       } catch { /* 查不动就放行，别把排序整个卡死 */ }

@@ -62,11 +62,18 @@ for (const n of ['send_file', 'video_probe', 'video_sheet', 'video_read', 'use_s
   t.ok('手写提到的 ' + n + ' 存在', prompt.includes(n) ? registered.has(n) : true);
 }
 
-// ── 6. 只读工具数量是动态的，别写死 ────────────────────────────────
+// ── 6. 只读工具那一行：别写死数量，也别点名不存在的 ──────────────
+// 桌面那几个工具（ui_*）是按功能开关启用的：全新机器默认关着、当前机器开着。
+// 所以在提示词里写死「等 25 个只读工具」必然和出厂快照对不上 —— 2026-11-11 改成
+// 不带数字的写法，这里只核对「点名的样板工具确实都是只读的」。
 const { enabledToolSchemas } = await import('../src/tools.mjs');
 const { buildToolIndex } = await import('../src/harness/tool-spec.mjs');
-const nPar = buildToolIndex(enabledToolSchemas()).filter((x) => x.parallelSafe).length;
-t.ok('提示词里的只读工具数与实际一致', prompt.includes('等 ' + nPar + ' 个只读工具'), '实际 ' + nPar);
+const parNames = new Set(buildToolIndex(enabledToolSchemas()).filter((x) => x.parallelSafe).map((x) => x.name));
+t.ok('只读工具那一行不带写死数量', !/等 \d+ 个只读工具/.test(prompt), '提示词里仍有「等 N 个只读工具」');
+const parLine = (prompt.split(/\r?\n/).find((l) => l.includes('可以一起发：')) || '');
+const named = parLine.replace(/^.*可以一起发：/, '').split(/等只读工具|；/)[0].split('、').map((x) => x.trim()).filter(Boolean);
+t.ok('只读样板工具名都真实存在且只读', named.length >= 3 && named.every((n) => parNames.has(n)),
+  named.join('、') + ' → 不在只读表里的：' + named.filter((n) => !parNames.has(n)).join('、'));
 t.ok('「只读命令也算」只在 run_command 真启用时才说',
   !prompt.includes('只读命令如 git status') || enabledToolSchemas().some((s) => (s.function || s).name === 'run_command'));
 
@@ -81,8 +88,8 @@ const xiaoyu = fs.readFileSync(path.join(ROOT, 'persona', 'xiaoyu.md'), 'utf8');
 t.ok('出厂人设是定稿（含「对主人的称呼」）', xiaoyu.includes('对主人的称呼：主人'));
 t.ok('出厂人设不含旧的 PERSONA_LOAD 头', !xiaoyu.includes('【PERSONA_LOAD】'));
 const { DEFAULT_SETTINGS } = await import('../src/settings.mjs');
-// 2026-11-08：主人把设置里那一版（9 条）设成了出厂默认；2026-11-09 又加了一条（闲聊 50 字 / 工作 200 字），变成 10。
-// 别再写成 10 —— 条数以 DEFAULT_SETTINGS 为唯一真相，这里只是钉住「不是旧长版 15 条」。
-t.ok('出厂底线 10 条（不是旧长版 15 条）', DEFAULT_SETTINGS.bottomLines.length === 10);
+// 2026-11-11：主人把设置里那一版（11 条，含「修bug时必须实测」）设成了出厂默认。
+// 条数以 .state/defaults.json 为真相，这里钉住它没被回退成旧长版 15 条。
+t.ok('出厂底线 11 条（不是旧长版 15 条）', DEFAULT_SETTINGS.bottomLines.length === 11);
 
 t.done();

@@ -14536,6 +14536,9 @@ async function openFeatExport() {
   renderFeatOutList();
   if (featOutDone) featOutDone.hidden = true;
   if (featOutNote) featOutNote.textContent = '';
+  /* 【2026-11-11 修·两个「关闭」叠加】先关父面板（功能页）再开导出面板，
+     不然右上并排两颗关闭，点偏左那颗只剩一个孤零零的导出面板卡在那。 */
+  if (typeof featDlg !== 'undefined' && featDlg && featDlg.open) { try { featDlg.close(); } catch { /* 忽略 */ } }
   if (featOutDlg) featOutDlg.showModal();
 }
 

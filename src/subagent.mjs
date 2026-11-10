@@ -32,7 +32,7 @@ import { rosterPrompt } from './roster-prompt.mjs';
  * 主流程那套（agent.mjs）早就有了，这里照同一份规矩来，别再写第二套。
  */
 import { slimRoundMessages } from './turn-slim.mjs';
-import { enabledToolSchemas, runTool, pushToolContext, setToolContext, subagentDepth, bumpSubagentDepth, dropSubagentDepth, MAX_SUBAGENT_DEPTH, currentSessionId } from './tools.mjs';
+import { enabledToolSchemas, runTool, runWithToolContext, ctxNow, subagentDepth, MAX_SUBAGENT_DEPTH, currentSessionId } from './tools.mjs';
 import { featureNameOfTool, featureOnFor } from './features.mjs';
 // 底线要从设置里读 —— 主人定的那几条对她也生效（主人 2026-10-25 明确要求）
 import { getSettings } from './settings.mjs';
@@ -467,12 +467,15 @@ export async function runSubagent({
     };
   }
 
-  // 子智能体用自己的一套上下文。跑完必须还原，否则主人的工具调用会落到这里来。
+  // 子智能体用自己的一套上下文 —— 现在是真正开一条自己的 ALS（见下面的
+  // runWithToolContext），跑完随 ALS 出栈自动「还原」，不存在忘了还原的泄漏。
   //
   // 先把「主人那个会话的 id」记下来：一会儿要把她说的话投回这个会话的信箱。
-  // 不记的话，pushToolContext 之后 CTX 里就全是子智能体自己的 id 了。
   const ownerSessionId = currentSessionId();
-  const restoreCtx = pushToolContext();
+  // 【2026-11-10 审计修】父层上下文要先抓下来 —— 进了自己的 ALS 就读不到了。
+  // snap / pushEvent / stashFile 要跟着她走（worker 是父会话的手），深度要从父层往上加。
+  const parent = ctxNow();
+  const parentDepth = subagentDepth();
   const subSessionId = sessionId || `sub-${name}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   /**
    * 【2026-11-10 按会话】功能开关该听谁的？听**派活那个会话**的，不听子任务自己的。
@@ -484,8 +487,12 @@ export async function runSubagent({
    * ownerSessionId（推上下文之前抓下来的父会话），绝不拿 subSessionId 当判据。
    */
   const gateSessionId = sessionId || ownerSessionId || '';
-  setToolContext(subSessionId, null, null);
-  bumpSubagentDepth();
+  // 【2026-11-10 审计修】不再调 setToolContext() / pushToolContext()：那两个只写
+  // 全局 CTX，而读侧 ctxNow() 优先 AsyncLocalStorage —— 真实链路里（server 早已把
+  // 整轮包进 ALS）这次「切换」整个是空操作，并发时 worker 会兜到**别的会话**的
+  // snap/signal（实测：B 会话点停止 → taskkill 杀掉 A 会话 worker 正在跑的命令）。
+  // 改成下面用 runWithToolContext 开真正属于自己的 ALS，六处字段显式传。
+  // 详见 scripts/check-signal-isolation.mjs。
 
   const abortCtrl = new AbortController();
   // 把主人的「请她出去」接到这一轮的信号上：外面一掐，这里立刻跟着断
@@ -519,7 +526,30 @@ export async function runSubagent({
   let finishedOk = false;
   let outcomeText = '';
 
-
+  /* 【2026-11-10 审计修·核心】她这一轮跑在自己的 ALS 里，六处字段显式传：
+   *   sessionId      —— 她自己的；计划、便签落她名下，不串到主人板上。
+   *   snap / pushEvent / stashFile —— 继承父层（worker 是父会话的手，
+   *                      她发的文件要能挂上回复、事件要能推到界面）。
+   *   signal         —— 这一轮自己的 abortCtrl：父轮被掐 / 超时，工具立刻跟着断。
+   *   outbox         —— 全新一根，她发的文件不混进主人的箱子。
+   *   subagentDepth  —— 父层 + 1，显式传。**不再**调 bumpSubagentDepth()：
+   *                      ctx 里已经给了 parentDepth + 1，再 bump 会把第一层
+   *                      worker 体内的深度顶到父层 + 2，嵌套 spawn 会被上面
+   *                      那道深度闸误杀；而且深度记在 ALS store 上，store 随
+   *                      她这一轮消亡，原来「bump 在 try 外、中途抛错就永久
+   *                      泄一个 depth」的隐患连根消失。
+   * 下面主体一行逻辑没动（缩进维持原样），只是整体搬进这个闭包。 */
+  return runWithToolContext(
+    {
+      sessionId: subSessionId,
+      snap: parent?.snap ?? null,
+      signal: abortCtrl.signal,
+      outbox: [],
+      pushEvent: parent?.pushEvent ?? null,
+      stashFile: parent?.stashFile ?? null,
+      subagentDepth: parentDepth + 1,
+    },
+    async () => {
   try {
     // ---- 工具白名单 ----
     /**
@@ -1138,7 +1168,10 @@ export async function runSubagent({
           out = { ok: false, output: `「${tc.name}」不在你这个子智能体的权限里（只能查、不能改）。` };
         } else {
           try {
-            out = await runTool(tc.name, tc.arguments);
+            /* 【2026-11-10 审计修】补传 gateSessionId + signal：
+             * 不传 sessionId 的话工具绕过按会话的功能开关（isToolEnabled 落到全局兜底）；
+             * 不传 signal 的话工具收不到「主人点停止 / 超时」的中断信号。 */
+            out = await runTool(tc.name, tc.arguments, gateSessionId, abortCtrl.signal);
           } catch (e) {
             out = { ok: false, output: String(e?.message ?? e) };
           }
@@ -1196,7 +1229,10 @@ export async function runSubagent({
     if (lastSaid && !saidDelivered) {
       try { pushWhaleSays(ownerSessionId, lastSaid, name); } catch {}
     }
-    dropSubagentDepth();
-    restoreCtx();
+    /* 【2026-11-10 审计修】dropSubagentDepth() / restoreCtx() 都不用了：
+     * 深度在 ctx 里显式传（parentDepth + 1），上下文随 ALS 出栈自动还原 ——
+     * 这个 store 整个就是她这一轮的，出了 runWithToolContext 什么都不剩。 */
   }
+  },
+  );
 }

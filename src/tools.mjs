@@ -123,10 +123,18 @@ export function runWithToolContext(ctx, fn) {
    * ctxNow().wakePeer 永远是 undefined，ask_peer 的 wake 一直失效
    * （实测：小鲸信箱里 10-29 的三封信压了一整天没人读）。
    *
-   * 修法不挨个补调用点（5 处、以后还会加）：在这里统一继承全局 CTX，
-   * 调用方给什么覆盖什么，没给的沿用全局注入值。
+   * 【2026-11-10 审计修·基底改成继承外层 ALS】
+   *
+   * 原来从全局 CTX 兜底 —— 嵌套调用（子智能体自己开一条 ALS）时，内层只传
+   * sessionId 的话：snap / signal 会从全局兜到**别的会话**的（实测 P0：B 会话点
+   * 停止 → taskkill /T /F 杀掉 A 会话 worker 正在跑的命令树）；outbox / stashFile /
+   * subagentDepth 则全局初值是 null，兜都兜不到。
+   * 现在基底取当前异步链路那份（CTX_STORE.getStore()，没有才退全局），
+   * 调用方给什么覆盖什么。现有调用点要么在最外层（基底=全局，行为不变），
+   * 要么显式传全字段，都不受影响。见 scripts/check-signal-isolation.mjs。
    */
-  const merged = (ctx && typeof ctx === 'object') ? { ...CTX, ...ctx } : CTX;
+  const base = CTX_STORE.getStore() || CTX;
+  const merged = (ctx && typeof ctx === 'object') ? { ...base, ...ctx } : base;
   /**
    * 【2026-11-05 加·这一轮跑了多久】
    *
@@ -338,13 +346,27 @@ export function currentSessionId() {
 }
 
 export function subagentDepth() {
-  return Number(CTX.subagentDepth) || 0;
+  /* 【2026-11-10 审计修】先读本异步链路那份，读不到再退全局 CTX。
+   * 原来只读全局：4 个并发兄弟 worker 各 bump 一次全局计数器，被算成 4 层嵌套
+   * （MAX=2），spawn_workers 派 3/4 件必拒 2 件，报错还冒充「套娃超限」。
+   * 深度跟着各自的 ALS 走，兄弟互不污染。 */
+  const c = ctxNow();
+  return Number(c?.subagentDepth) || Number(CTX.subagentDepth) || 0;
 }
 export function bumpSubagentDepth() {
-  CTX.subagentDepth = subagentDepth() + 1;
+  /* 【2026-11-10 审计修】写 ctxNow() 那份 —— ALS store 是可写对象（beginOutbox
+   * 有先例：tools.mjs 里 c.outbox = box）；没有本链路 store 时退回写全局 CTX，
+   * 保持老路径（cli / 自检）兼容。 */
+  const c = ctxNow();
+  const d = subagentDepth() + 1;
+  if (c && typeof c === 'object' && c !== CTX) c.subagentDepth = d;
+  else CTX.subagentDepth = d;
 }
 export function dropSubagentDepth() {
-  CTX.subagentDepth = Math.max(0, subagentDepth() - 1);
+  const c = ctxNow();
+  const d = Math.max(0, subagentDepth() - 1);
+  if (c && typeof c === 'object' && c !== CTX) c.subagentDepth = d;
+  else CTX.subagentDepth = d;
 }
 
 export function beginOutbox() {

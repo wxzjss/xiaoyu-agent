@@ -2891,7 +2891,47 @@ async function startPeerTurn(sessionId) {
     /** 【2026-10-31 修】这一行是从别处复制来的，snap 没定义过（报 snap is not defined）。
      *  叫她起来这一轮没有「主人手上的那句消息」可以挂回滚点，跟 QQ 那边一样给空快照。 */
     const snap = {};
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
+    /* 【2026-11-11 修·stashFile 不许挂到上一轮】本轮起点：此刻最后一条正主 user 消息的下标。
+     * 闭包创建时取一次就够 —— runAgent 的 refreshSystem 重建的是 wire（history.slice() 副本），
+     * session.messages 不动，这个下标全程安全（scripts/check-stashfile-turn.mjs 第三组钉的就是这条）。
+     * 往回找 assistant 时以它封底：本轮还没有自己的回复就老老实实新建一条，
+     * 绝不把 worker 发的文件挂到上一轮那句去。 */
+    const turnStart = (() => {
+      try {
+        const ms = session.messages;
+        for (let q = ms.length - 1; q >= 0; q--) {
+          const m = ms[q];
+          if (m && m.role === 'user' && !m.context) return q;
+        }
+      } catch {}
+      return -1;
+    })();
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
+        try {
+          const ss = (typeof session !== 'undefined' && session) ? session : null;
+          if (ss && Array.isArray(ss.messages) && f) {
+            /* 【2026-11-11 修·不许挂到上一轮】倒着找 + 以本轮起点封底：
+             * turnStart 是闭包创建时记下的「本轮起点」下标。本轮还没有 assistant
+             * 就回 -1，走下面「新建一条」的分支。（scripts/check-stashfile-turn.mjs
+             * 实测四种判据里只有这个写法 4/4 全对。）
+             * 不能用「最后一条 user 之后」——主人中途插话（steer 会 push 一条 user）
+             * 会把本轮最终回复排除掉；也不能从 turnStart 往后找第一条——
+             * 会命中工具调用那条哑巴 assistant。 */
+            let ix = -1;
+            for (let q = ss.messages.length - 1; q >= Math.max(0, turnStart); q--) {
+              const m2 = ss.messages[q];
+              if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; }
+            }
+            if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; }
+            const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : [];
+            if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) {
+              pv.push(f);
+              ss.messages[ix]._out = pv;
+              try { saveSession(ss); } catch {}
+            }
+          }
+        } catch {}
+      } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -3195,7 +3235,47 @@ async function startQueuedTurn(sessionId, queue = null) {
     collapseOldToolBodies(wire, 6);
     const seen = new Set(history);
 
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
+    /* 【2026-11-11 修·stashFile 不许挂到上一轮】本轮起点：此刻最后一条正主 user 消息的下标。
+     * 闭包创建时取一次就够 —— runAgent 的 refreshSystem 重建的是 wire（history.slice() 副本），
+     * session.messages 不动，这个下标全程安全（scripts/check-stashfile-turn.mjs 第三组钉的就是这条）。
+     * 往回找 assistant 时以它封底：本轮还没有自己的回复就老老实实新建一条，
+     * 绝不把 worker 发的文件挂到上一轮那句去。 */
+    const turnStart = (() => {
+      try {
+        const ms = session.messages;
+        for (let q = ms.length - 1; q >= 0; q--) {
+          const m = ms[q];
+          if (m && m.role === 'user' && !m.context) return q;
+        }
+      } catch {}
+      return -1;
+    })();
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
+        try {
+          const ss = (typeof session !== 'undefined' && session) ? session : null;
+          if (ss && Array.isArray(ss.messages) && f) {
+            /* 【2026-11-11 修·不许挂到上一轮】倒着找 + 以本轮起点封底：
+             * turnStart 是闭包创建时记下的「本轮起点」下标。本轮还没有 assistant
+             * 就回 -1，走下面「新建一条」的分支。（scripts/check-stashfile-turn.mjs
+             * 实测四种判据里只有这个写法 4/4 全对。）
+             * 不能用「最后一条 user 之后」——主人中途插话（steer 会 push 一条 user）
+             * 会把本轮最终回复排除掉；也不能从 turnStart 往后找第一条——
+             * 会命中工具调用那条哑巴 assistant。 */
+            let ix = -1;
+            for (let q = ss.messages.length - 1; q >= Math.max(0, turnStart); q--) {
+              const m2 = ss.messages[q];
+              if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; }
+            }
+            if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; }
+            const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : [];
+            if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) {
+              pv.push(f);
+              ss.messages[ix]._out = pv;
+              try { saveSession(ss); } catch {}
+            }
+          }
+        } catch {}
+      } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -3510,7 +3590,47 @@ async function resumeInterruptedTurn(onlySessionId) {
     // 正在干的最近几条保持完整。只改 wire 里的副本，history 原样不动。
     collapseOldToolBodies(wire, 6);
     const seen = new Set(history);
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
+    /* 【2026-11-11 修·stashFile 不许挂到上一轮】本轮起点：此刻最后一条正主 user 消息的下标。
+     * 闭包创建时取一次就够 —— runAgent 的 refreshSystem 重建的是 wire（history.slice() 副本），
+     * session.messages 不动，这个下标全程安全（scripts/check-stashfile-turn.mjs 第三组钉的就是这条）。
+     * 往回找 assistant 时以它封底：本轮还没有自己的回复就老老实实新建一条，
+     * 绝不把 worker 发的文件挂到上一轮那句去。 */
+    const turnStart = (() => {
+      try {
+        const ms = session.messages;
+        for (let q = ms.length - 1; q >= 0; q--) {
+          const m = ms[q];
+          if (m && m.role === 'user' && !m.context) return q;
+        }
+      } catch {}
+      return -1;
+    })();
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
+        try {
+          const ss = (typeof session !== 'undefined' && session) ? session : null;
+          if (ss && Array.isArray(ss.messages) && f) {
+            /* 【2026-11-11 修·不许挂到上一轮】倒着找 + 以本轮起点封底：
+             * turnStart 是闭包创建时记下的「本轮起点」下标。本轮还没有 assistant
+             * 就回 -1，走下面「新建一条」的分支。（scripts/check-stashfile-turn.mjs
+             * 实测四种判据里只有这个写法 4/4 全对。）
+             * 不能用「最后一条 user 之后」——主人中途插话（steer 会 push 一条 user）
+             * 会把本轮最终回复排除掉；也不能从 turnStart 往后找第一条——
+             * 会命中工具调用那条哑巴 assistant。 */
+            let ix = -1;
+            for (let q = ss.messages.length - 1; q >= Math.max(0, turnStart); q--) {
+              const m2 = ss.messages[q];
+              if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; }
+            }
+            if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; }
+            const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : [];
+            if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) {
+              pv.push(f);
+              ss.messages[ix]._out = pv;
+              try { saveSession(ss); } catch {}
+            }
+          }
+        } catch {}
+      } }, () => runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId,
@@ -10052,7 +10172,47 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           /* 2026-11-02 前端卡死修复：碎片合并累加器（本轮专用） */
           const _opAcc = Object.create(null);
           const _opLast = Object.create(null);
-      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => { try { const ss = (typeof session !== 'undefined' && session) ? session : null; if (ss && Array.isArray(ss.messages) && f) { let ix = -1; for (let q = ss.messages.length - 1; q >= 0; q--) { const m2 = ss.messages[q]; if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; } } if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; } const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : []; if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) { pv.push(f); ss.messages[ix]._out = pv; try { saveSession(ss); } catch {} } } } catch {} } }, () => runAgent({
+      /* 【2026-11-11 修·stashFile 不许挂到上一轮】本轮起点：此刻最后一条正主 user 消息的下标。
+       * 闭包创建时取一次就够 —— runAgent 的 refreshSystem 重建的是 wire（history.slice() 副本），
+       * session.messages 不动，这个下标全程安全（scripts/check-stashfile-turn.mjs 第三组钉的就是这条）。
+       * 往回找 assistant 时以它封底：本轮还没有自己的回复就老老实实新建一条，
+       * 绝不把 worker 发的文件挂到上一轮那句去。 */
+      const turnStart = (() => {
+        try {
+          const ms = session.messages;
+          for (let q = ms.length - 1; q >= 0; q--) {
+            const m = ms[q];
+            if (m && m.role === 'user' && !m.context) return q;
+          }
+        } catch {}
+        return -1;
+      })();
+      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
+        try {
+          const ss = (typeof session !== 'undefined' && session) ? session : null;
+          if (ss && Array.isArray(ss.messages) && f) {
+            /* 【2026-11-11 修·不许挂到上一轮】倒着找 + 以本轮起点封底：
+             * turnStart 是闭包创建时记下的「本轮起点」下标。本轮还没有 assistant
+             * 就回 -1，走下面「新建一条」的分支。（scripts/check-stashfile-turn.mjs
+             * 实测四种判据里只有这个写法 4/4 全对。）
+             * 不能用「最后一条 user 之后」——主人中途插话（steer 会 push 一条 user）
+             * 会把本轮最终回复排除掉；也不能从 turnStart 往后找第一条——
+             * 会命中工具调用那条哑巴 assistant。 */
+            let ix = -1;
+            for (let q = ss.messages.length - 1; q >= Math.max(0, turnStart); q--) {
+              const m2 = ss.messages[q];
+              if (m2 && m2.role === 'assistant' && !m2.context) { ix = q; break; }
+            }
+            if (ix < 0) { ss.messages.push({ role: 'assistant', content: '', at: Date.now() }); ix = ss.messages.length - 1; }
+            const pv = Array.isArray(ss.messages[ix]._out) ? ss.messages[ix]._out : [];
+            if (!pv.some((x) => x && x.key && f.key && x.key === f.key)) {
+              pv.push(f);
+              ss.messages[ix]._out = pv;
+              try { saveSession(ss); } catch {}
+            }
+          }
+        } catch {}
+      } }, () => runAgent({
         messages: wireMessages,
         sessionId,
         snap,

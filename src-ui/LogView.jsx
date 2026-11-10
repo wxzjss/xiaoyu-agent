@@ -91,6 +91,10 @@ export default function LogView() {
        * 现在滚回底部就复位 —— 「人在底部」才是要不要跟随的唯一事实。 */
       if (d <= 24) userScrolledRef.current = false;
       lastScrollTopRef.current = el.scrollTop;
+      /* 【2026-11-11 修·跳底按钮】滚动位置变化要驱动右下角按钮的显隐/未读清零。
+       * 原来只有 noteNewContent/bumpUnseen/jumpToBottom 三个调用点，没有 scroll 监听 ——
+       * 人滚回底部后按钮和角标还挂着，且往上滚远时按钮从不出现。 */
+      try { window.paintToBottom && window.paintToBottom(); } catch (e) {}
     };
     /* 只有这几种「他自己动手」的动作才把人标记成「在翻历史」 */
     const onUserIntent = () => { userScrolledRef.current = true; };

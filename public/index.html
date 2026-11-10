@@ -4497,8 +4497,12 @@ function paintToBottom() {
   if (!btn) return;
   let need = false;
   try { need = !!(log && log.scrollHeight - log.scrollTop - log.clientHeight > 120); } catch (e) {}
+  /* 【2026-11-11 修·跳底按钮双向】原来只有 hidden=false 一个方向（classList.toggle('show')
+     只是改透明度），人滚回底部后按钮和角标永远挂着；LogView.onScroll 现在会驱动这里，
+     回到底部时把按钮真藏起来、连未读计数一起清零。 */
+  btn.hidden = !need;
   btn.classList.toggle('show', need);
-  if (need) btn.hidden = false;
+  if (!need) unseenNew = 0;
   const badge = document.getElementById('toBottomBadge');
   if (badge) badge.textContent = unseenNew > 0 ? String(unseenNew > 99 ? '99+' : unseenNew) : '';
 }

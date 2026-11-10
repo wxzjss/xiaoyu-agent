@@ -8763,6 +8763,10 @@
         atBottomRef.current = d <= 24;
         if (d <= 24) userScrolledRef.current = false;
         lastScrollTopRef.current = el.scrollTop;
+        try {
+          window.paintToBottom && window.paintToBottom();
+        } catch (e) {
+        }
       };
       const onUserIntent = () => {
         userScrolledRef.current = true;

@@ -139,6 +139,10 @@
     header button#taskBtn.on:hover { background: #f6c489; border-color: #f6c489; color: #1a0f06; }
     #log {
       flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+      /* 【2026-11-11 修·横向可滚 32px】.rewindBtn 平时停在 .msg 右边界外侧
+         （right:0 + translateX(100%)），opacity:0 但仍撑出横向滚动宽度，
+         窄窗时聊天区能左右滑、每行第一个字被切。纵向照旧滚，横向锁死。 */
+      overflow-x: hidden;
       padding: 20px; display: flex; flex-direction: column; gap: 14px;
       /* 【2026-11-03 修·翻看历史时画面抽搐一下】
        * 浏览器默认开着「滚动锚定」：底下的内容一变高，它就自动挪 scrollTop 想保住你

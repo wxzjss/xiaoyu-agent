@@ -1735,6 +1735,10 @@
     .askDlg {
       width: min(420px, 88vw); padding: 0; border: 1px solid var(--border); border-radius: 12px;
       background: var(--panel); color: var(--text); overflow: hidden;
+      /* 【2026-11-11 修·740px 空板】同 #newSessionDlg：全局 dialog{height:auto} 配
+         UA 的 position:fixed; inset:0 会被拉满到 max-height（86vh），内容只有 200 来高
+         却画出一大块空板子。给确定高度就不会被拉；min-height 是手机 WebView 的保险。 */
+      height: fit-content; min-height: 120px; max-height: 86vh;
     }
     .askDlg::backdrop { background: rgba(0,0,0,.55); }
     /* 确认框正文：纯文字，自动换行 */
@@ -3272,6 +3276,23 @@
   #plusBtn { width: 34px; height: 34px; min-width: 34px; }
   .attachChip { max-width: 100%; }
   #log .attachChip .thumb { width: 80px; height: 80px; }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   【2026-11-11 加】手机端顶栏折叠（WebView 套壳用同一份页面）
+
+   手机 WebView 视口 390px，原 header `flex-wrap:nowrap` + `header > *{flex:0 0 auto}`
+   把整页撑到 643px，定时/功能/设置/模型 4 颗按钮在屏外且无法横滚。
+   桌面 Electron 有 minWidth:720 挡着，永远碰不到 —— 所以只在这里收窄断点，
+   不动上面的桌面规则。
+
+   实测（_tmp/mobile-shots/verify-hifi.mjs，真实 CSS+DOM，390px）：
+   header 82px（原 53）、聊天区 762（-3.7%）、9 颗可见按钮全部屏内、横向溢出 0。
+   ───────────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  body { max-width: 100vw; overflow-x: hidden; }
+  header { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+  header button { padding: 4px 7px; font-size: 12px; }
 }
 
 </style>

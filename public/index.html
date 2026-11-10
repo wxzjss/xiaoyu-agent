@@ -2983,8 +2983,14 @@
     body.skin details.toolhub details.tool { background: var(--panel); }
     body.skin #log > details.tool { background: var(--panel); }
     body.skin .featRow:hover { background: rgba(29, 36, 48, calc(var(--surface, .2) + .3)); }
-    /* 对话区垫一层薄纱：图片再花，长句子也有底可读；两头仍能看见画面 */
-    body.skin #log { background: rgba(15, 17, 21, calc(var(--surface, .2) * .75)); }
+    /* 对话区垫一层薄纱：图片再花，长句子也有底可读；两头仍能看见画面。
+       【2026-11-11 修·透明预设/亮壁纸看不清】alpha 原来只跟 --surface 走，
+       「透明」预设下 surface=0 → 纱完全消失，浅色壁纸配浅色字直接看不见。
+       给它 0.18 的下限（CSS max() 取两者大者），再透也保住一层可读的暗纱。 */
+    body.skin #log { background: rgba(15, 17, 21, max(0.18, calc(var(--surface, .2) * .75))); }
+    /* 【同条】assistant 气泡原本完全没有底板（白字裸铺在壁纸上），补一层跟 user
+       同档的半透明底。平时（非 skin）不生效 —— 那边 #log 本来就有实底。 */
+    body.skin .msg.assistant .bubble { background: rgba(29, 36, 48, calc(var(--surface, .2) + .38)); }
 
     /* 右下角小圆钮 + 调节面板：鼠标靠近才变实，平时半透明不抢眼 */
     #skinKnob {

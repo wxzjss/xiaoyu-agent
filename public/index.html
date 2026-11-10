@@ -8007,6 +8007,14 @@ function scheduleSendingRecheck(sid) {
       busy = true;
       try { showSending(at || undefined); } catch {}
       try { syncSendBtn(); } catch {}
+      /* 【2026-11-11 修·按钮锁死不解】主人报：自动掐断弹【停止】时，
+       * 【管理员】【会话】全变灰点不动。原因：这里原来只查一次 ——
+       * 900ms 时看门狗那轮还没退干净、或者 stuck-retry 刚把新一轮排上，
+       * 查到「还在跑」就再也没人复查了；万一那轮的 done/error 又没送到
+       * （真机日志里就有 502 失败），busy 永远 true，按钮锁到刷新为止。
+       * 现在继续每 2 秒问一次服务端，确认「没有在跑的轮次」才解锁 ——
+       * 解锁不再依赖任何一个事件恰好送到。 */
+      _sendingRecheckTimer = setTimeout(() => scheduleSendingRecheck(_sid), 2000);
       return;
     }
     busy = false;

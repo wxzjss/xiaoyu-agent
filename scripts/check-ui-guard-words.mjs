@@ -18,6 +18,7 @@
  * 跑法：node scripts/check-ui-guard-words.mjs
  */
 import { checkGuard } from '../src/ui-guard.mjs';
+import { tools } from '../src/tools.mjs';
 
 let pass = 0;
 const fails = [];
@@ -96,6 +97,38 @@ t('拒绝理由不是「是在干掉东西的」这种病句',
   String(r1.reason).slice(0, 50));
 const r2 = click('OK', '', 'Explorer');
 t('窗口没标题时不留空括号', !/（）|\(\s*\)/.test(String(r2.reason || '')), String(r2.reason || '').slice(0, 50));
+
+console.log('');
+console.log('=== D. 硬拒绝键 + ui_type 判控件 + cancel_schedule（2026-11-11 补） ===');
+/* Alt+F4 / Ctrl+W / Ctrl+Shift+W：按下去就是关窗口，没保存的东西直接没。
+ * 这类**不走询问**直接拒 —— 弹窗抢焦点，比误按还烦；且没有例外场景。 */
+for (const keys of ['Alt+F4', 'alt+f4', 'Alt + F4', 'Ctrl+W', 'ctrl+w', 'Ctrl+Shift+W', 'ctrl+shift+w']) {
+  const r = checkGuard({ tool: 'ui_key', text: keys, snap: { app: 'x', title: 'Notepad' } });
+  t(keys + ' → 硬拒（不问，直接 ✗）', r.ok === false && !r.needAsk, String(r.reason || '').slice(0, 40));
+}
+/* 日常键不许被误伤 —— 剪贴板、切窗口、回车都是正常操作 */
+for (const keys of ['Ctrl+C', 'Ctrl+V', 'Ctrl+X', 'Alt+Tab', 'enter', 'ctrl+s']) {
+  const r = checkGuard({ tool: 'ui_key', text: keys, snap: { app: 'x', title: 'Notepad' } });
+  t(keys + ' → 放行', r.ok === true, r.needAsk ? '误拦了' : '');
+}
+/* ui_type 原来只判密码框：目标是「删除」类控件也要问（打完一个回车可能就真删了）。
+ * 【故意不判输入内容】'yes' 在搜索框里是正常词，判内容会误伤一片。 */
+{
+  const r = checkGuard({ tool: 'ui_type', el: { name: '删除确认', role: 'button' }, text: 'y', snap: { app: 'x', title: 'Notepad' } });
+  t('ui_type 目标控件叫「删除确认」→ 要问', Boolean(r.needAsk), String(r.reason || '').slice(0, 40));
+  const r2 = checkGuard({ tool: 'ui_type', el: { name: '卸载程序', role: 'button' }, text: 'y', snap: { app: 'x', title: 'Notepad' } });
+  t('ui_type 目标控件叫「卸载程序」→ 要问', Boolean(r2.needAsk), String(r2.reason || '').slice(0, 40));
+  const r3 = checkGuard({ tool: 'ui_type', el: { name: '搜索框', role: 'edit' }, text: 'yes', snap: { app: 'x', title: 'Notepad' } });
+  t('ui_type 往搜索框打「yes」→ 放（不判输入内容）', r3.ok === true && !r3.needAsk, r3.needAsk ? '误拦了' : '');
+}
+/* cancel_schedule：撤不存在的编号不许说「撤掉了」（2026-11-10 审计抓到的说谎点） */
+{
+  const cancel = tools.find((x) => x.name === 'cancel_schedule');
+  const out = await cancel.run({ id: '__no_such_id__' });
+  const s = typeof out === 'string' ? out : String((out && out.output) || '');
+  t('cancel_schedule 假 id → 报 ERROR 不说「撤掉了」',
+    s.startsWith('ERROR：') && /没有/.test(s) && !/撤掉了/.test(s), s.slice(0, 60));
+}
 
 console.log('');
 console.log('────────────────────────────────');

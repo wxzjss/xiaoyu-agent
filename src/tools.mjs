@@ -2510,7 +2510,18 @@ export const tools = [
           if (!list.length) return '现在没有任务。要指定撤哪条，先告诉我是哪个编号。';
           return '要撤哪条？现在的任务是：\n' + list.map((t) => `[${t.id}] ${t.title || t.text}`).join('\n');
         }
-        removeTask(key);
+        /* 【2026-11-11 修·返回值原来被丢了】removeTask 没删到东西时返回 {removed:0}，
+         * 原来不看返回值直接说「撤掉了 N」—— 撤一个不存在的编号也报成功（说谎）。
+         * 现在接住返回值：真删掉了才说撤掉了；没删到就报 ERROR 并把现有任务列出来，
+         * 让她（和主人）看清到底有哪些编号可以撤。 */
+        const r = removeTask(key);
+        if (!r || !r.removed) {
+          const list = listTasks();
+          const body = list.length
+            ? list.map((t) => `[${t.id}] ${t.title || t.text}`).join('\n')
+            : '（现在一条定时任务都没有）';
+          return 'ERROR：没有 #' + key + ' 这条定时任务。现在的任务是：\n' + body;
+        }
         return `撤掉了 ${key}。`;
       } catch (e) {
         return 'ERROR：没撤成 —— ' + (e && e.message ? e.message : e);

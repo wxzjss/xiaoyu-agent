@@ -114,6 +114,27 @@ export const DANGER_BTN_EN = [
 export const DANGER_KEYS_EN = /\b(delete|backspace)\b/i;
 
 /**
+ * 【2026-11-11 加·硬拒绝的危险键组合 —— 不走询问，直接拒】
+ *
+ * Alt+F4 / Ctrl+W / Ctrl+Shift+W 按下去就是**关窗口**，没保存的东西直接没了。
+ * 为什么不弹窗问（跟危险按钮的处理不一样）：
+ *   · 弹窗本身要抢焦点 —— 主人正在打字写东西，弹一下比误按还烦；
+ *   · 「她不该按 Alt+F4」找不到任何例外场景 —— 要关窗口，主人自己按就是了。
+ *   · 所以这三个组合没有 needAsk，直接 { ok:false, needAsk:false }，
+ *     tools-ui 那条 `✗ ` 前缀路径会把它判成失败，主人看得见「没按」。
+ *
+ * 键名匹配前先规范化（小写、统一加分隔符、去空白）：
+ * Alt+F4 / alt+f4 / Alt + F4 / ctrl+shift+w 这些写法都得拦住。
+ */
+export function normalizeKeys(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[＋]/g, '+')
+    .replace(/\s+/g, '');
+}
+const DANGER_KEYS_HARD = new Set(['alt+f4', 'ctrl+w', 'ctrl+shift+w']);
+
+/**
  * 【2026-11-10 定稿·标题/应用名的判定，一类一类说清为什么这么写】
  *
  * 我在这个地方翻过三次车，每次都是"一条规则盖住两种语义"。现在定型成三条，各有各的理由：
@@ -447,6 +468,34 @@ export function checkGuard({ tool, el, text, cfg = {}, snap }) {
   const looksSecret = el?.password === true || (tool === 'ui_type' && PASSWORD_ROLE_HINT.test(role + ' ' + name));
   if (looksSecret && tool === 'ui_type') {
     return { ok: false, reason: '这是一个密码框：密码、密钥这种东西必须主人自己输，我不代打。' };
+  }
+
+  /* ui_type 的目标控件判定 —— 原来只判密码框，「删除」按钮、危险窗口里的输入框全放过去。
+   * 现在控件名/角色命中危险词就要问主人。
+   * 【故意不判输入内容】'yes' / 'confirm' 在搜索框里是正常词，判内容会误伤一片（2026-11-10 实测结论）。 */
+  if (tool === 'ui_type') {
+    const d = hitDanger(name + ' ' + role);
+    if (d) {
+      return {
+        ok: false,
+        needAsk: true,
+        reason: `要打字的目标控件叫「${d.word}」（${d.why}）—— 打完一个回车可能就真删了，先问过主人再动。`,
+      };
+    }
+  }
+
+  /* 危险键组合（Alt+F4 / Ctrl+W / Ctrl+Shift+W）：不看窗口、不看场合，一律硬拒。
+   * 放在标题危险判定**之前** —— 即使窗口本来就危险，也不该走「问一问」，
+   * 理由见 DANGER_KEYS_HARD 的注释（弹窗抢焦点 + 没有例外场景）。 */
+  if (tool === 'ui_key') {
+    const nk = normalizeKeys(text);
+    if (DANGER_KEYS_HARD.has(nk)) {
+      return {
+        ok: false,
+        needAsk: false,
+        reason: `「${String(text || '').trim()}」会直接关掉整个窗口，没保存的东西就没了 —— 这个键我不代按，主人要关自己按。`,
+      };
+    }
   }
 
   // 危险词：要看主人点头

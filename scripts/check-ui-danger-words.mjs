@@ -395,4 +395,35 @@ t.ok('至少有「按钮名」和「窗口」两条判据', typeof checkGuard ==
   t.ok('空标题 / 空控件名不许抛异常', !threw, threw ? String(threw.message) : '');
 }
 
+/* ================================================================== */
+/* 七、硬拒绝键组合（Alt+F4 / Ctrl+W）—— 2026-11-11 补                    */
+/* ================================================================== */
+
+/**
+ * 【这组跟上面的 needAsk 判据不同类】
+ *
+ * 上面的键位用例（Ctrl+Delete / Shift+Delete）是「要问主人」；
+ * 这一组是「**连问都不问**，直接拒」—— Alt+F4 / Ctrl+W / Ctrl+Shift+W
+ * 按下去就是关窗口，弹窗反而抢主人正在打字的焦点，而且没有例外场景。
+ * 判据是 `ok:false && !needAsk`：要是哪天被人改成了 needAsk:true，
+ * 这里会红 —— 改回去之前先想想为什么当初不走询问。
+ */
+const HARD_REJECT_KEYS = [
+  ['Alt+F4', '关窗口（标准写法）'],
+  ['alt+f4', '关窗口（小写）'],
+  ['Alt + F4', '关窗口（带空格）'],
+  ['Ctrl+W', '关标签页'],
+  ['ctrl+w', '关标签页（小写）'],
+  ['Ctrl+Shift+W', '关整个窗口'],
+];
+for (const [keys, note] of HARD_REJECT_KEYS) {
+  const r = checkGuard({ tool: 'ui_key', text: keys, snap: { title: 'Notepad', app: 'notepad' }, cfg: {} });
+  t.ok(`硬拒键不许问要直接拒：${keys}（${note}）`, r.ok === false && !r.needAsk, r.needAsk ? '走了询问，应该直接拒' : (r.ok ? '放行了' : ''));
+}
+const SAFE_KEYS = [['Ctrl+C', '复制'], ['Ctrl+V', '粘贴'], ['Alt+Tab', '切窗口'], ['ctrl+s', '保存']];
+for (const [keys, note] of SAFE_KEYS) {
+  const r = checkGuard({ tool: 'ui_key', text: keys, snap: { title: 'Notepad', app: 'notepad' }, cfg: {} });
+  t.ok(`日常键要放行：${keys}（${note}）`, r.ok === true, r.needAsk ? '误拦了（' + (r.reason || '') + '）' : '');
+}
+
 t.done();

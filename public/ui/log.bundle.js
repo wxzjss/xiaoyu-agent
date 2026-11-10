@@ -8749,6 +8749,7 @@
     const listRef = (0, import_react13.useRef)(null);
     const atBottomRef = (0, import_react13.useRef)(true);
     const userScrolledRef = (0, import_react13.useRef)(false);
+    const lastScrollTopRef = (0, import_react13.useRef)(0);
     const keepFromBottom = (0, import_react13.useRef)(null);
     if (!listRef.current) listRef.current = document.getElementById("log");
     (0, import_react13.useLayoutEffect)(() => {
@@ -8758,7 +8759,10 @@
       atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
       const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
       const onScroll = () => {
-        atBottomRef.current = dist() <= 24;
+        const d = dist();
+        atBottomRef.current = d <= 24;
+        if (d <= 24) userScrolledRef.current = false;
+        lastScrollTopRef.current = el.scrollTop;
       };
       const onUserIntent = () => {
         userScrolledRef.current = true;
@@ -8826,6 +8830,11 @@
       if (!userScrolledRef.current || atBottomRef.current) {
         el.scrollTop = el.scrollHeight;
         return;
+      }
+      try {
+        const want = lastScrollTopRef.current;
+        if (want > 0 && Math.abs(el.scrollTop - want) > 4) el.scrollTop = want;
+      } catch (e) {
       }
       try {
         if (window.noteNewContent) window.noteNewContent();

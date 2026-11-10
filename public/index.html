@@ -8423,16 +8423,17 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           noteNewContent();
         } else if (ev.type === 'aborted') {
           /**
-           * 【2026-11-09】「停下来」这件事也进清单，但**不进正文**。
+           * 【2026-11-11 改·主人要求：停止要安静】主人原话：
+           * 「我不想看到这个提示，也不想看到屏幕上下文出现这种变化」
            *
-           * 老代码是 `bubble.textContent += '\n\n[已停止]'` —— 直接改一个 DOM 节点。
-           * 现在交回模型：一条 note（系统提示，独立一行），画还是 renderLog 画。
-           * 塞进正文的话，重进时会读成「她本人说了句『已停止』」。
+           * 以前这里会 addSysNote('[已停止]') 弹一条提示。现在不弹了 ——
+           * 屏幕上她说到哪儿就停在哪儿，一个字不少（服务端现在会把
+           * 已流出的半截话落进历史，见 server.mjs 的 aborted 分支）。
+           *
+           * 下面的 settleFromHistory 照常走：把屏幕对齐到历史。
+           * 以前这条会「整屏一变」是因为历史里没有她的半截话（服务端没落），
+           * 重画完就只剩主人的问题 —— 现在历史里有，重画前后内容一致，看不出跳。
            */
-          if (!pendingResume) {
-            /* 【2026-11-09 换框架】一条 note 走 store，屏幕由 React 画 */
-            try { addSysNote('[已停止]'); } catch (e) {}
-          }
           endTurnQuietly();
         } else if (ev.type === 'error') {
           endTurnQuietly();

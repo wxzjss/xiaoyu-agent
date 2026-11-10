@@ -99,10 +99,16 @@ function msOr(raw, fallback, floorMs, name) {
  * DeepSeek 在大上下文 + 长思考时，首字三五分钟很常见，两分钟就认输等于
  * 「每次想得久一点就自己断」，主人看到的就是「做着做着自己停了」。
  *
- * 4 分钟：正常首字 1~3 秒，长思考也一直在吐块；四分钟一个字节都没有，
- * 才是真挂了。真挂的时候下面 recovery 还会再给一次机会（见 classify 的 isTimeout 分支）。
+ * 【2026-11-11 放宽 4 分钟 → 8 分钟】真机 diag.log 实测（11-10 16:39）：
+ *   [turn-idle-abort] 静了 313 秒（在等模型回话，上限 300 秒），掐掉
+ * 「长思考一直在吐块」在这个网关上不成立 —— 推理型模型 + 网关缓冲，
+ * 想复杂任务时可以整整五分钟一个字节都不吐，然后照样把活干完。
+ * 4 分钟会把她正在进行的思考掐死在半路（主人 11-11 又报了一次同款：
+ * 「做着做着系统突然显示【停止】」）。8 分钟仍然能抓住真挂死
+ * （挂死是真的一动不动，8 分钟照旧一个字节都没有），但不再误杀长思考。
+ * 真挂的时候下面 recovery 还会再给一次机会（见 classify 的 isTimeout 分支）。
  */
-export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 4 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 30 * 1000, 'LLM_IDLE_TIMEOUT_MS');
+export const LLM_IDLE_MS = msOr(process.env.LLM_IDLE_TIMEOUT_MS, 8 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 30 * 1000, 'LLM_IDLE_TIMEOUT_MS');
 
 /** 单个工具从开跑到返回的忍耐上限（默认 30 分钟，最少给 3 分钟；跑整套回归、装依赖都够） */
 export const TOOL_MAX_MS = msOr(process.env.TOOL_MAX_TIMEOUT_MS, 30 * 60 * 1000, DEADLINE_TEST_MODE ? 1 : 3 * 60 * 1000, 'TOOL_MAX_TIMEOUT_MS');

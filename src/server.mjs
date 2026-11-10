@@ -10886,6 +10886,53 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {
+        /**
+         * 【2026-11-11 修·点停止把她已经说出来的话整段抹掉】主人原话：
+         * 「出现【停止】的系统提示后，整个上下文会突然一变，我说的话会出现在最下方，
+         *   我说的话后面没有她说的话，就好像只有我说了话而她之前说过的话都被吞了一样」
+         *
+         * 病根：正常收尾那三步（flush 碎片 → commitWireBack → saveSession）在
+         * `await runAgent(...)` **之后**；而停止是 agent 抛异常跳到这里 ——
+         * 三步全被跳过，历史里只剩主人的问题，磁盘上一个字都没有。
+         * 屏幕上那 350 字本来是 SSE 推出来的，前端随后用历史整屏重画，
+         * 历史里没有 → 全消失。主人看到的就是「她说过的话都被吞了」。
+         *
+         * 修法：停止也走同样的收尾 ——
+         *   ① 剩下的碎片补发给前端（屏幕不缺尾巴）
+         *   ② wire 里已经齐的照常接回历史
+         *   ③ wire 没接到的（模型正吐字就被掐）从草稿接 —— 草稿（draftText）
+         *      每个流出的字都进了，是这一轮最完整的记录
+         *   ④ 落盘 + 清草稿
+         */
+        try { commitWireBack(); } catch {}
+        try {
+          /* 半截话从草稿接回历史 —— 跟「关机后恢复」是同一条路（:7418 那段）。
+           * 只在「这一轮还没有任何 assistant 落过历史」时才接，避免跟
+           * commitToolsNow 已落的前几段拼成重复。 */
+          const _d = readDraft(sessionId);
+          const _body = String((_d && _d.text) || '').trim();
+          if (_body) {
+            const _s = getSession(sessionId);
+            if (_s && Array.isArray(_s.messages)) {
+              // 本轮起点 = 最后一条非 context 的 user
+              let _lastUser = -1;
+              for (let _q = _s.messages.length - 1; _q >= 0; _q--) {
+                const _um = _s.messages[_q];
+                if (_um && _um.role === 'user' && !_um.context) { _lastUser = _q; break; }
+              }
+              let _landed = false;
+              for (let _q = _s.messages.length - 1; _q > _lastUser; _q--) {
+                const _am = _s.messages[_q];
+                if (_am && _am.role === 'assistant' && !_am.context) { _landed = true; break; }
+              }
+              if (!_landed) {
+                _s.messages.push({ role: 'assistant', content: _body, _text: _body, _stopped: true, at: Date.now() });
+                saveSession(_s);
+              }
+            }
+          }
+          dropDraft(sessionId);
+        } catch {}
         send({ type: 'aborted' });
       } else if (err?.handoff) {
         // 撞限流太多次 → 换一个新会话接着干（交接，不并行）

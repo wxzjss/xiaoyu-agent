@@ -66,6 +66,11 @@ export default function LogView() {
    * 重画一瞬间高度变矮、浏览器把 scrollTop 夹小，滚动事件一响就被当成「他在往上翻」，
    * 从此再也不跟随。（实测离底 251px 那个数就是这么攒出来的。） */
   const userScrolledRef = useRef(false);
+  /* 【2026-11-11 加·重画锚点】整屏重画（发消息/轮次收尾）会把 DOM 换一遍，
+   * 浏览器在换的瞬间把 scrollTop 夹成 0 —— 主人正在看的那段直接飞到顶上
+   * （「发消息后弹到很久以前的位置」就是它）。这里持续记着主人最后停在哪，
+   * 重画完把他还回去。 */
+  const lastScrollTopRef = useRef(0);
   const keepFromBottom = useRef(null);
 
   /* #log 是页面里现成的那个容器（React 只接管它的内容） */
@@ -79,7 +84,13 @@ export default function LogView() {
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
     const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
     const onScroll = () => {
-      atBottomRef.current = dist() <= 24;
+      const d = dist();
+      atBottomRef.current = d <= 24;
+      /* 【2026-11-11 修·userScrolledRef 永不复位】原主人报「发消息后弹到很久以前」：
+       * 这 个 ref 只要滚过一次就永远 true，之后每次整屏重画都放弃钉底。
+       * 现在滚回底部就复位 —— 「人在底部」才是要不要跟随的唯一事实。 */
+      if (d <= 24) userScrolledRef.current = false;
+      lastScrollTopRef.current = el.scrollTop;
     };
     /* 只有这几种「他自己动手」的动作才把人标记成「在翻历史」 */
     const onUserIntent = () => { userScrolledRef.current = true; };
@@ -159,7 +170,15 @@ export default function LogView() {
       el.scrollTop = el.scrollHeight;
       return;
     }
-    /* 不贴底的人：只更新「底下多了几条」那颗提醒（不抢滚动位置） */
+    /* 【2026-11-11 修·重画把人甩到顶上】真在翻历史的人：整屏重画换 DOM 的瞬间
+     * 浏览器把 scrollTop 夹成 0，画面就跳到最老的消息 —— 主人报的「发消息后
+     * 弹到很久以前」正是这条。现在把他还回他刚才看的地方（往底部加新内容
+     * 不挪旧内容的位置，所以按 scrollTop 还原是准的）。 */
+    try {
+      const want = lastScrollTopRef.current;
+      if (want > 0 && Math.abs(el.scrollTop - want) > 4) el.scrollTop = want;
+    } catch (e) {}
+    /* 只更新「底下多了几条」那颗提醒 */
     try { if (window.noteNewContent) window.noteNewContent(); } catch (e) {}
   }, [count, lastLen]);
 

@@ -2098,7 +2098,11 @@
     .sessRow.picked { background: rgba(226, 96, 96, .08); border-color: rgba(226, 96, 96, .45); }
     .sessRow.picked .sessTitle { color: #ffb3b3; }
     .sessList.bulk .sessRow .mini { display: none; }
-    .sessList { max-height: 52vh; overflow-y: auto; flex: 1 1 auto; min-height: 0; padding: 8px; }
+    .sessList { max-height: 52vh; overflow-y: auto; flex: 1 1 auto; min-height: 120px; padding: 8px; }
+    /* 【2026-11-11 修·69% 空板】同 .askDlg/#newSessionDlg：全局 dialog{height:auto} 被拉满 86vh，
+       只有一条会话时列表 76 高、下面 510px 空板。面板贴着内容画；列表给 120px 下限
+       兜住「一条会话也别太瘪」，会话多时照旧 52vh 内滚。 */
+    #sessionsDlg { height: fit-content; min-height: 240px; max-height: 86vh; }
     .sessRow {
       display: flex; align-items: center; gap: 8px; padding: 9px 10px;
       border: 1px solid transparent; border-radius: 8px; cursor: pointer;

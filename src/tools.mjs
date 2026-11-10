@@ -29,6 +29,7 @@ import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs'
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
 import { addTask, listTasks, removeTask, parseWhen } from './cron.mjs';
 import { listWorkers, noteWorker, finishWorker, drainWorkerMail, noteWorkerProgress, sendWorkerMail, workerDetail } from './task-mode.mjs';
+import { teamOn, dispatchWorker } from './team.mjs';
 
 /*
  * 内存保护线：单条输出超过这个长度就地砍掉（保头保尾），防止一条 100MB 的命令把进程撑爆。
@@ -2100,11 +2101,15 @@ export const tools = [
   },
   {
     name: 'spawn_worker',
-    description: '派活用的（专业模式里选了「谁动手＝派活」才拿得到）：开一个临时 worker（子智能体），把一件具体的活交给它跑，它跑完把汇报原文带回来给你检查。它有自己的上下文，不占你的。'
+    /* 【2026-11-11 团队模式完整版】办事模式那套「你自己不动手」全删了 ——
+     * 团队模式里你的手是全的，派活是**加速手段**，不是义务。
+     * 后台化一起做：background:true 派出去立刻回来，别再阻塞等它。 */
+    description: '派一个临时 worker（子智能体）去干一件具体的活。默认你在这等它干完、拿到汇报再继续；background:true 时它去后台跑、你立刻拿到门牌号接着干自己的，它干完会主动把汇报递回来。它有自己的上下文，不占你的。'
+      + '\n\n【先判断要不要派】派出去省下的时间比来回交接花掉的多，才派：一步能完的（读一个文件、跑一条命令）你自己做；要同时推进几件互不相干的事、或者一件活会跑很多轮占满上下文，才派。'
       + '\n\n【每次派活都要说清四样】要它做什么、什么算做成了、在哪儿干、不许碰什么。说不清就别派 —— 说不清说明你自己还没想明白。'
       + '\n\n【它回来的是汇报，不是结论】拿只读工具核一遍再决定收不收：它说改好了就去读那个文件，它说跑通了就去看日志。别凭一句话采信。'
       + '\n\n【没干对就退回给同一个 worker】别新开一个重做 —— 新脑子不知道之前踩过的坑。只有「这是另一件事」才新开。'
-      + '\n\n【这一档里你自己不动手】读文件、改代码、跑命令全交给 worker；你手上那几个工具是给你核账和管上下文用的。',
+      + '\n\n【后台的活不用你惦记着报信】它干完会自己把汇报递回来；你手里有别的活就接着干，中途想改方向用 tell_worker。',
     parameters: {
       type: 'object',
       properties: {
@@ -2114,15 +2119,16 @@ export const tools = [
         scope: { type: 'string', description: '在哪儿干：目录或文件。超出这个范围不许它碰。' },
         forbid: { type: 'string', description: '不许碰什么，比如「别动 git 历史」「别改 public/」。' },
         maxRounds: { type: 'number', description: '最多让它跑几轮工具循环，默认 60。小事 20 就够。' },
+        background: { type: 'boolean', description: 'true = 后台跑：立刻返回门牌号，你接着干别的，它干完主动递汇报回来。不填 = 你在这等它干完（同步）。' },
       },
       required: ['task'],
     },
-    async run({ task, name, accept, scope, forbid, maxRounds }) {
+    async run({ task, name, accept, scope, forbid, maxRounds, background }) {
       const sid = ctxNow().sessionId || 'default';
-      const { taskOn } = await import('./task-mode.mjs');
-      if (!taskOn(sid)) {
-        /* 【2026-11-11 办事模式整档删除，等【团队模式】上线换新闸】 */
-        return 'ERROR：【派活功能正在重做】派活暂时用不了（正在换成团队模式）。你自己动手就行，别装作派过活。';
+      /* 【2026-11-11 换闸】办事模式整档删除（taskOn 已钉死 false），
+       * 派活的闸换成【团队模式】的按会话开关。 */
+      if (!teamOn(sid)) {
+        return 'ERROR：【团队模式】现在是关着的，派不了活。要用就在功能页里打开「团队模式」；这件活现在你自己动手做。';
       }
       const body = String(task || '').trim();
       if (!body) return 'ERROR：没说要干什么（task 是空的）。';
@@ -2145,14 +2151,6 @@ export const tools = [
         '还剩什么没干',
       ].join('\n');
 
-      /* 【2026-11-03 修·Assignment to constant variable】
-       * 下面「挑屋里的帮手」那段要按帮手名字改 nick，可这里原来是 const ——
-       * 一进 try 就抛 TypeError，被 catch 吞掉只留一行 warn，看着像「挑帮手没生效」。
-       * 日志原文：[spawn_worker] 挑屋里的帮手失败： Assignment to constant variable.
-       */
-      let nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
-
-      let r;
       /* 【2026-11-09 主人重做 · 这条覆盖 2026-11-01 的旧裁决】
        * 旧规矩：派活优先挑「屋里除主智能体之外的人」，没启用就自动启用，
        *   屋里只剩一个就拉人进来 —— 等于把主人手动关掉的开关又打开。
@@ -2162,14 +2160,19 @@ export const tools = [
        * worker 本来就是 runSubagent 派出的执行体，不是屋里的人；
        *   名字用调用方给的 name，没给就用 worker-xxx。
        */
+      const nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
       const push = ctxNow().pushEvent;
 
-      /* 【2026-11-06 修·花名册里存的是临时名，不是帮手真名】
-       *  原来 noteWorker 在「挑帮手」之前就按 nick 建了记录，
-       *  而 nick 那时还是 worker-a3f2 这种时间戳临时名。
-       *  挑完帮手才把 nick 改成真名（小鲸 / 小白曦），记录里却已经存了临时名 ——
-       *  界面和花名册都看不出到底是谁在干活。
-       *  改成：挑完帮手、nick 定了之后，再建记录、再推那条「主智能体 → 某某」。 */
+      /* 【2026-11-11 后台派发】登记花名册 → 交给 team.mjs 放到后台 → 立刻回来。
+       * 门牌号在登记那一刻就定了，返回文案里直接用它。 */
+      if (background === true) {
+        const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
+        dispatchWorker({ sessionId: sid, wid: String(w.id), name: nick, brief: brief + reportAsk, maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60 });
+        return '【#' + w.id + ' 派出去了，正在后台干】\n'
+          + '它跑它的，你别停 —— 有别的活就接着做；想看看进度用 watch_worker ' + w.id + '；想补话用 tell_worker ' + w.id + '。\n'
+          + '干完我会主动告诉你。';
+      }
+
       const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
       if (typeof push === 'function') {
         try {
@@ -2234,11 +2237,13 @@ export const tools = [
   },
   {
     name: 'spawn_workers',
-    description: '一次派好几件互不依赖的活，让它们**同时**干（不是一个一个排队）。最多 4 件。'
+    /* 【2026-11-11 团队模式完整版】删掉「等它们的时候可以先 watch_worker」这句
+     * 假话 —— 现在派出去立刻回来，不是「等它们」。（设计文档 §三 验收点名） */
+    description: '一次派好几件互不依赖的活，让它们**同时**跑（不是一个一个排队），派完立刻回来，你去干自己的 —— 它们干完会各自把汇报递回来。最多 4 件。'
       + '\n\n【什么时候用】几件事之间不需要别人先说、也不抢同一个文件 —— 比如「查 A 文档」「跑 B 测试」「统计 C 行数」。'
       + '\n\n【什么时候别用】后一件要看前一件的结果 —— 那就一次派一件，等它回来再说。'
-      + '\n\n【它们同时跑，你也别闲着】等它们的时候可以先 watch_worker 看进度、先 tell_worker 补话。'
-      + '\n\n【回来的是一串汇报】按顺序给你，逐件检查，别一律采信。',
+      + '\n\n【派完别停】它们跑它们的，你接着做自己的事；别因为派了活就停下来干等，也别在主人面前装作已经做完了。'
+      + '\n\n【回来的是一串汇报】逐件检查，别一律采信；哪件没干对就退回给同一个 worker。',
     parameters: {
       type: 'object',
       properties: {
@@ -2258,14 +2263,15 @@ export const tools = [
           },
         },
         maxRounds: { type: 'number', description: '每个最多跑几轮工具循环，默认 40。' },
+        background: { type: 'boolean', description: 'true = 全部后台跑：立刻返回各件的门牌号，你接着干自己的。不填 = 你在这等全部干完（同步）。' },
       },
       required: ['tasks'],
     },
-    async run({ tasks, maxRounds }) {
+    async run({ tasks, maxRounds, background }) {
       const sid = ctxNow().sessionId || 'default';
-      const { taskOn } = await import('./task-mode.mjs');
-      if (!taskOn(sid)) {
-        return 'ERROR：【派活功能正在重做】派活暂时用不了（正在换成团队模式）。';
+      /* 【2026-11-11 换闸】同 spawn_worker：闸换成【团队模式】的按会话开关。 */
+      if (!teamOn(sid)) {
+        return 'ERROR：【团队模式】现在是关着的，派不了活。要用就在功能页里打开「团队模式」；这些活现在你自己动手做。';
       }
       const list = (Array.isArray(tasks) ? tasks : []).filter((t) => t && String(t.task || '').trim());
       if (!list.length) return 'ERROR：没说要干什么（tasks 是空的）。';
@@ -2310,6 +2316,18 @@ export const tools = [
         });
         return { nick, brief: brief + reportAsk, id: String(w.id) };
       });
+
+      /* 【2026-11-11 后台派发】每件都登记好了，一起放到后台，立刻返回门牌号。
+       * 事件与汇报全由 team.mjs 管（liveLogs 落缓存 + followup 回传），
+       * 这里一根线都不挂 —— 挂了就成了同步等待。 */
+      if (background === true) {
+        for (const p of plans) {
+          dispatchWorker({ sessionId: sid, wid: p.id, name: p.nick, brief: p.brief, maxRounds: roundMax });
+        }
+        return '【' + plans.length + ' 件都派出去了，正在后台干】\n'
+          + plans.map((p) => '· #' + p.id + ' ' + p.nick).join('\n')
+          + '\n\n它们跑它们的，你别停 —— 有别的活就接着做；看进度用 watch_worker，补话用 tell_worker，干完我会主动告诉你。';
+      }
 
       const push = ctxNow().pushEvent;
       if (typeof push === 'function') {

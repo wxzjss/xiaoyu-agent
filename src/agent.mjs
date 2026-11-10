@@ -1641,7 +1641,19 @@ for (let round = 0; round < config.maxRounds; round++) {
            * 就跟着学，越回越短、越回越敷衍，拦都拦不住。
            * 所以：敷衍话一律不落历史，交给下面那道闸去重答。 */
           if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: text });
-          for (const it of late) messages.push({ role: 'user', content: it.text, _steer: true, ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}) });
+          for (const it of late) {
+            /* 【2026-11-11 团队模式】turns 槽里带 _sysNote 的条目（worker 干完的汇报）
+             * 是程序递的背景，不是主人说话 —— 落成 context + _sysNote，
+             * 前端画成系统提示；不能打 _steer（那会冒充主人插话，还永久占历史）。
+             * 真正的主人插话（steps 槽 / 没带标记的）照旧走 _steer。 */
+            const _isSys = it && it._sysNote === true;
+            messages.push({
+              role: 'user',
+              content: it.text,
+              ...(_isSys ? { _sysNote: true, context: true } : { _steer: true }),
+              ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}),
+            });
+          }
           try { onEvent({ type: 'steer', count: late.length }); } catch { /* 同上 */ }
           continue;
         }

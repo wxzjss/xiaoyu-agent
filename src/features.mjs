@@ -186,9 +186,30 @@ export const FEATURES = [
    *      因为老机器功能表里残留的 taskmode:true 键会被 featureOnFor 按
    *      「记过就按记的」返回 true，光删定义关不掉它。
    *   ② 派活工具（spawn_worker / spawn_workers / list_workers / tell_worker /
-   *      watch_worker）随之闸死，等【团队模式】上线换新闸；
-   *      worker 花名册（task-mode.mjs 的 writeWorkers 那套）保留复用。
+   *      watch_worker）换到下面【团队模式】的新闸；worker 花名册
+   *      （task-mode.mjs 的 writeWorkers 那套）保留复用。
    * 功能表里残留的键无害 —— 没人再读它。 */
+  {
+    /**
+     * 【团队模式】2026-11-10 定稿（docs/design-team-mode.md），替代办事模式。
+     *
+     * 跟办事模式的根本区别：主智能体的手**留着**（write_file / run_command
+     * 照常用），派活是**后台**的 —— spawn 出去立刻拿到门牌号就继续干自己的，
+     * worker 干完了主动把汇报递回来。没有顶栏按钮，入口只有功能页这一个开关。
+     *
+     * 【为什么 defaultOn: false】新功能默认关（2026-11-10 定的规矩）：
+     * 它一开就是「她会同时开几路活」，主人得自己决定哪个会话让她拉小队。
+     *
+     * 【工具归属】这五个工具同时被「智能体」声明过两个（spawn_worker /
+     * list_workers），isToolEnabled 按「任一拥有者开着就能用」判 ——
+     * 关掉「智能体」不影响团队模式，反之亦然（TOOL_OWNERS 机制，见下）。
+     */
+    id: 'team',
+    name: '团队模式',
+    defaultOn: false,
+    tools: ['spawn_worker', 'spawn_workers', 'list_workers', 'tell_worker', 'watch_worker'],
+    desc: '开了之后我干活时可以拉一支小队一起上：你说一句「帮我查三份资料」，我自己判断要不要拆、拆几份、派给谁。派出去之后我不停下来等——它们跑它们的，我该干别的干别的，想起来就看看进度、补两句话。所有子智能体只属于这个会话，干完或会话删了就没了。这个开关没有顶栏按钮，全程我说了算；关掉之后我只会一个人干活。',
+  },
   {
     /**
      * 岁月史书。

@@ -147,15 +147,19 @@ function log(line) {
 }
 
 /**
- * 【这个会话现在是不是办事模式】读盘失败 = 没开（fail-closed）。
+ * 【这个会话现在是不是办事模式】—— 【2026-11-11 整档删除·这里显式钉死 false】
  *
- * 开关就存在 .state/task-mode.json 里那张表 { '<sid>': true }。
- * 2026-11-01 主人回滚：这一档又是**独立**的一档了，所以开关表重新生效 ——
- * 不要再去问别处要「谁动手」，那套（pure.mjs 的 doerOf）已经连文件一起删了。
+ * features.mjs 里那份「办事模式」定义已删，但主人机器上 .state/task-mode.json
+ * 还可能残留着 `"<sid>": true` —— 下面的 readTable 对「记过就按记的」会照旧
+ * 返回 true，光删定义关不掉它（老机器会诈尸：persona 又把「你只派活别动手」
+ * 拼回提示词、agent.mjs 的 toolsForTurn 又把干活工具收走）。
+ *
+ * 团队模式有自己的闸（features.mjs 的 team 功能 + team.mjs 的 teamOn()），
+ * 跟这张旧表再无关系。这里永远 false —— 想恢复办事模式，先把团队模式那套
+ * 整个想清楚再动，别偷偷把这张表接回去。
  */
 export function taskOn(sessionId) {
-  const sid = String(sessionId || 'default');
-  return readTable()[sid] === true;
+  return false;
 }
 
 /** 开 / 关。返回 { ok, sessionId, on }。 */
@@ -319,6 +323,12 @@ export function listWorkers(sessionId) {
       rounds: Number(w.rounds) || 0,
       tools: Number(w.tools) || 0,
       said: String(w.said || ''),
+      /* 【2026-11-11 团队模式】进度行和信箱一起带出去 —— /api/team/workers
+       * 的轮询要靠它画卡片上的「干到第几步」，不能再让前端一个一个 workerDetail。 */
+      progress: Array.isArray(w.progress)
+        ? w.progress.map((x) => ({ at: Number(x && x.at) || 0, line: String((x && x.line) || '') }))
+        : [],
+      mails: Array.isArray(w.mails) ? w.mails.length : 0,
     }))
     .filter((w) => w.id);
 }
@@ -449,12 +459,21 @@ export function workersSnapshot(sessionId) {
      * 原来只认 'done'，于是每一张成功的卡都永远停在「干活中…」——
      * 主人看到的正是「明明跑完了，卡上还写着干活中」。 */
     const _okLike = st === 'done' || st === 'reported' || st === 'ok';
+    /* 【2026-11-11 团队模式加两档】stopped = 主人手动停的；interrupted = 程序
+     * 重启时它还在跑（进程没了，活断在半路）。前端要分别画「停了」「中断了」。 */
+    let status = _okLike ? 'ok' : (st === 'failed' || st === 'error' ? 'err' : 'run');
+    if (st === 'stopped') status = 'stopped';
+    if (st === 'interrupted') status = 'interrupted';
     // 一步都没走、也没在跑的那种空记录不往历史里写（省得留一堆空卡）
     if (!steps.length && st !== 'running') continue;
     out.push({
       id: String(w.id),
       name: String(w.name || ('worker-' + w.id)),
-      status: _okLike ? 'ok' : (st === 'failed' || st === 'error' ? 'err' : 'run'),
+      status,
+      /* 【2026-11-11 团队模式】卡片要显示「跑了多久」「几轮几次工具」，没有时间算不了 */
+      startedAt: Number(w.startedAt) || 0,
+      rounds: Number(w.rounds) || 0,
+      tools: Number(w.tools) || 0,
       steps,
       note: String(w.said || w.error || '').slice(0, 400),
     });

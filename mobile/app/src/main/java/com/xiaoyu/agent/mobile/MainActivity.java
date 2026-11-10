@@ -3,14 +3,20 @@ package com.xiaoyu.agent.mobile;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.DownloadManager;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Insets;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
+import android.util.Base64;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -19,9 +25,12 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
+import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -37,6 +46,10 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
 
 import com.xiaoyu.agent.mobile.ui.Ui;
 
@@ -105,8 +118,28 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         Window w = getWindow();
-        w.setStatusBarColor(Ui.BG);
-        w.setNavigationBarColor(Ui.BG);
+        /**
+         * 【2026-11-11 加】安全区：targetSdk 34 起在 Android 15 设备上窗口默认
+         * edge-to-edge，状态栏会直接压住页面顶栏（审计实测全工程 0 处 WindowInsets）。
+         * 项目零 AndroidX（build.gradle dependencies 为空，故意的），所以用平台 API：
+         * API 30+ 关掉 decor 的自动适配，把 systemBars / displayCutout 的 inset 作为
+         * root 的 padding；ime 也参与底边（decorFits(false) 之后 adjustResize 不再生效，
+         * 不补这条软键盘会盖住输入框）。
+         * API 30 以下没有强制 edge-to-edge，维持原来的「状态栏着色」方案。
+         */
+        if (Build.VERSION.SDK_INT >= 30) {
+            w.setDecorFitsSystemWindows(false);
+            root.setOnApplyWindowInsetsListener((v, insets) -> {
+                Insets bars = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                Insets ime = insets.getInsets(WindowInsets.Type.ime());
+                v.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, ime.bottom));
+                return WindowInsets.CONSUMED;
+            });
+        } else {
+            w.setStatusBarColor(Ui.BG);
+            w.setNavigationBarColor(Ui.BG);
+        }
         w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
         root = new FrameLayout(this);
@@ -590,6 +623,8 @@ public class MainActivity extends Activity {
             public void onPageStarted(WebView v, String url, android.graphics.Bitmap favicon) {
                 super.onPageStarted(v, url, favicon);
                 injectToken(v, pairToken);
+                // blob: 下载桥要赶在页面脚本开跑前装好（导出按钮一点就得用）
+                injectDownloadBridge(v);
             }
 
             @Override
@@ -598,8 +633,9 @@ public class MainActivity extends Activity {
                 lastError = "";
                 notifBridge(v);
                 // 再注入一次只是兜底：页面若有二次导航 / 软路由，早点晚点都得有。
-                // injectToken 里有 __xyWrapped 幂等标记，重复调用是空的。
+                // injectToken 里有 __xyWrapped 幂等标记，重复调用是空的；桥同理（__xyDlReady）。
                 injectToken(v, pairToken);
+                injectDownloadBridge(v);
             }
 
             @Override
@@ -658,6 +694,55 @@ public class MainActivity extends Activity {
             }
         });
 
+        /**
+         * 【2026-11-11 加】下载导出不再全哑。
+         *
+         * 电脑端页面的「会话导出 / 数据备份 / 日志导出」都是 a[download] 触发下载，
+         * WebView 默认没有任何下载处理 —— 手机上点了毫无反应、也不报错（审计实测
+         * MainActivity 里 0 处 setDownloadListener）。这里分两类：
+         *
+         *  1) http(s) 直链（如 /api/sessions/export?...）：交给系统 DownloadManager，
+         *     落进系统「下载」，通知栏可见。认证双保险：页面用相对路径发起下载时
+         *     URL 天然带着继承的 ?token=（见上面 openChat 的注释）；另外把 WebView
+         *     手上的 Cookie（服务端在页面响应里种的 xy_token，server.mjs）原样注入请求头。
+         *  2) blob: 链接（页面用 URL.createObjectURL 生成的）：DownloadManager 够不着
+         *     JS 内存里的 Blob，只能由页面自己读出来传回来 —— 见 injectDownloadBridge()
+         *     注入的 XyDl 桥：页面把 Blob 读成 base64 交给原生，原生落盘进系统「下载」。
+         *     注意大文件（几十 MB 的备份）走 base64 会吃内存，超大的导出可能失败，
+         *     失败会有 toast，不至于毫无反应。
+         */
+        web.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
+            try {
+                if (url.startsWith("blob:")) {
+                    // blob: 别在这里猜，交给页面桥（injectDownloadBridge 装的 __xyDlGrab）
+                    if (web != null) {
+                        web.evaluateJavascript(
+                                "window.__xyDlGrab && window.__xyDlGrab(" + jsStr(url) + ");", null);
+                    }
+                    return;
+                }
+                String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
+                DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+                String cookie = CookieManager.getInstance().getCookie(url);
+                if (cookie != null && !cookie.isEmpty()) req.addRequestHeader("Cookie", cookie);
+                String tok = Prefs.token(this);
+                if (!tok.isEmpty()) req.addRequestHeader("x-mobile-token", tok);
+                req.setMimeType(mimeType == null || mimeType.isEmpty()
+                        ? "application/octet-stream" : mimeType);
+                req.setTitle(name);
+                req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                if (dm == null) throw new IllegalStateException("DownloadManager 不可用");
+                dm.enqueue(req);
+                Toast.makeText(this, "开始下载：" + name, Toast.LENGTH_SHORT).show();
+            } catch (Exception e) {
+                Toast.makeText(this, "下载失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        });
+        // blob: 下载的落盘桥（injectDownloadBridge 注入的页面 JS 调它）
+        web.addJavascriptInterface(new DlBridge(), "XyDl");
+
         root.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
@@ -711,6 +796,114 @@ public class MainActivity extends Activity {
             v.evaluateJavascript(js, null);
         } catch (Exception ignore) {
         }
+    }
+
+    /**
+     * 给页面装 blob: 下载桥（配合上面的 setDownloadListener）。
+     *
+     * 页面里「数据备份」这类导出走 URL.createObjectURL(blob) + a.download：
+     * DownloadManager 够不着 JS 内存里的 Blob。这里在页面脚本开跑之前装三样东西（幂等）：
+     *  - 包一层 URL.createObjectURL，把 Blob 留个引用（页面导完可能 revokeObjectURL，
+     *    不留引用的话 fetch 就拿不到内容了）；
+     *  - 捕获阶段的 click 监听：记下 a[download] 里的文件名，下载开始时按 blob: 地址取回；
+     *  - window.__xyDlGrab(blobUrl)：onDownloadStart 收到 blob: 下载时由原生调它，
+     *    把 Blob 读成 base64 交给原生 XyDl.saveBlob 落盘。
+     */
+    private void injectDownloadBridge(WebView v) {
+        String js =
+                "(function(){"
+                        + "if(window.__xyDlReady)return;window.__xyDlReady=1;"
+                        + "var blobs={};"
+                        + "var oc=URL.createObjectURL;"
+                        + "URL.createObjectURL=function(b){var u=oc.apply(URL,arguments);try{blobs[u]=b;}catch(e){}return u;};"
+                        + "var names={};"
+                        + "document.addEventListener('click',function(e){"
+                        + "  try{var el=e.target;while(el&&el.tagName!=='A')el=el.parentElement;"
+                        + "    if(el&&el.download&&el.href)names[el.href]=el.download;}catch(err){}"
+                        + "},true);"
+                        + "window.__xyDlGrab=function(u){"
+                        + "  try{"
+                        + "    var done=function(b){"
+                        + "      var fr=new FileReader();"
+                        + "      fr.onload=function(){var s=String(fr.result);"
+                        + "        XyDl.saveBlob(u,names[u]||'',b.type||'',s.substring(s.indexOf(',')+1));};"
+                        + "      fr.onerror=function(){XyDl.fail(u,'读 Blob 失败');};"
+                        + "      fr.readAsDataURL(b);"
+                        + "    };"
+                        + "    if(blobs[u]){done(blobs[u]);return;}"
+                        + "    fetch(u).then(function(r){return r.blob();}).then(done)"
+                        + "      .catch(function(){XyDl.fail(u,'Blob 已失效');});"
+                        + "  }catch(e){XyDl.fail(u,String(e&&e.message||e));}"
+                        + "};"
+                        + "})();";
+        try {
+            v.evaluateJavascript(js, null);
+        } catch (Exception ignore) {
+        }
+    }
+
+    /**
+     * blob: 下载的落盘桥。injectDownloadBridge() 注入的页面 JS 在读到 Blob 后调它。
+     * 只开两个方法，别多 —— 这个 WebView 里跑的是主人自己的页面，但口子能小就小。
+     */
+    private class DlBridge {
+        /** @param name 页面 a[download] 里记的文件名，可能为空串 */
+        @android.webkit.JavascriptInterface
+        public void saveBlob(String blobUrl, String name, String mime, String b64) {
+            try {
+                byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
+                String used = writeDownload(safeName(name),
+                        mime == null || mime.isEmpty() ? "application/octet-stream" : mime, bytes);
+                ui.post(() -> Toast.makeText(MainActivity.this,
+                        "已保存到下载：" + used, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                ui.post(() -> Toast.makeText(MainActivity.this,
+                        "下载失败：" + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        public void fail(String blobUrl, String why) {
+            ui.post(() -> Toast.makeText(MainActivity.this,
+                    "下载失败：" + why, Toast.LENGTH_LONG).show());
+        }
+    }
+
+    /**
+     * 把字节写进系统「下载」。
+     * API 29+ 走 MediaStore.Downloads（不用任何存储权限，文件管理器直接看得见）；
+     * 更老的版本写进应用专属外部目录（同样免权限 —— 那时的公共「下载」要运行时授权，
+     * 壳里没有那套流程，先落这里再提示完整路径，绝不能静默失败）。
+     */
+    private String writeDownload(String name, String mime, byte[] bytes) throws Exception {
+        if (Build.VERSION.SDK_INT >= 29) {
+            ContentValues cv = new ContentValues();
+            cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+            cv.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+            cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            Uri item = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+            if (item == null) throw new IllegalStateException("MediaStore 建文件失败");
+            try (OutputStream os = getContentResolver().openOutputStream(item)) {
+                if (os == null) throw new IllegalStateException("打开输出流失败");
+                os.write(bytes);
+            }
+            return Environment.DIRECTORY_DOWNLOADS + "/" + name;
+        }
+        File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (dir == null) dir = new File(getFilesDir(), Environment.DIRECTORY_DOWNLOADS);
+        if (!dir.exists()) dir.mkdirs();
+        File f = new File(dir, name);
+        try (FileOutputStream os = new FileOutputStream(f)) {
+            os.write(bytes);
+        }
+        return f.getAbsolutePath();
+    }
+
+    /** 文件名兜底：页面没给 a[download] 时按时间戳起名，顺手剥掉路径分隔符。 */
+    private static String safeName(String raw) {
+        String s = raw == null ? "" : raw.trim();
+        if (s.isEmpty()) s = "xiaoyu-export-" + System.currentTimeMillis() + ".bin";
+        return s.replace('/', '_').replace('\\', '_').replace(':', '_');
     }
 
     /** 把字符串安全地塞进 JS 字面量（配对码是 base64url，理论上没有引号，但还是转义一遍）。 */

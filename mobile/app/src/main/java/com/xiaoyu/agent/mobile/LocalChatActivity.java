@@ -4,8 +4,10 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.media.MediaPlayer;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -18,6 +20,7 @@ import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -115,11 +118,31 @@ public class LocalChatActivity extends Activity {
         store = new File(getFilesDir(), "local-chat.json");
 
         Window w = getWindow();
-        w.setStatusBarColor(Ui.BG);
-        w.setNavigationBarColor(Ui.BG);
+        /**
+         * 【2026-11-11 加】安全区（跟 MainActivity 同一套）：
+         * API 30+ edge-to-edge 后状态栏/手势条会压住顶栏和输入框，把 inset 作为 root 的
+         * padding；ime 参与底边（decorFits(false) 之后 adjustResize 不再生效）。
+         * API 30 以下维持原来的着色方案。零 AndroidX，全平台 API。
+         */
+        if (Build.VERSION.SDK_INT >= 30) {
+            w.setDecorFitsSystemWindows(false);
+        } else {
+            w.setStatusBarColor(Ui.BG);
+            w.setNavigationBarColor(Ui.BG);
+        }
         w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
         buildUi();
+        // root 在 buildUi() 里创建，listener 只能建完再挂
+        if (Build.VERSION.SDK_INT >= 30) {
+            root.setOnApplyWindowInsetsListener((v, insets) -> {
+                Insets bars = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                Insets ime = insets.getInsets(WindowInsets.Type.ime());
+                v.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, ime.bottom));
+                return WindowInsets.CONSUMED;
+            });
+        }
         loadHistory();
         render();
     }

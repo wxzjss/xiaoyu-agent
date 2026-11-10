@@ -2233,6 +2233,15 @@
     }
     .pickSel:disabled { opacity: .5; }
     .pickSel option { background: var(--panel); color: var(--fg); }
+    /* 【2026-11-10】模型名那行的「拉一下」：点了就问服务商要真实模型列表 */
+    .miniPick {
+      flex: none; height: 34px; padding: 0 10px;
+      background: var(--input-bg); color: var(--fg);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      font-size: 12.5px; cursor: pointer; white-space: nowrap;
+    }
+    .miniPick:hover { border-color: var(--accent); color: var(--accent); }
+    .miniPick:disabled { opacity: .5; cursor: default; }
     .mdlSub { color: var(--dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .mdlRow .mini {
       /* 原来 2px 8px / 12px，量出来只有 41×23，两个字贴着边很挤。
@@ -3321,7 +3330,7 @@
               <label class="mdlKind"><input type="radio" name="moneyCur" value="cny" id="curCny" checked /><span>￥ 元</span></label>
               <label class="mdlKind"><input type="radio" name="moneyCur" value="usd" id="curUsd" /><span>$ 美元</span></label>
             </div>
-            <span class="hint" id="curHint">只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。</span>
+            <span class="hint" id="curHint">只换显示，价目表不动。按 1 元 ≈ 0.14 美元折算，这个值在配置里定死，界面上改不了。</span>
           </div>
         </fieldset>
 
@@ -3369,7 +3378,7 @@
           </div>
           <div id="mobBody" hidden>
             <div class="field">
-              <label>手机装好 APK，点「扫一下」对着其中一个码就行；也能手填下面的地址和配对码。</label>
+              <label>用手机上的小鱼 App 扫下面这几张码，任一张都行；扫不出来也能手填下面的地址和配对码。</label>
               <div id="mobQr" class="mobQrWrap"></div>
               <div class="mobLine"><span class="hint">配对码</span><code id="mobToken">—</code>
                 <button type="button" class="ghost" id="mobCopy">复制</button>
@@ -3433,7 +3442,7 @@
             <span class="hint" id="vrBarText"></span>
           </div>
           <div class="field">
-            <span class="hint">从国内镜像下（python.org 实测只有 74 KB/s，npmmirror 有 5 MB/s，差 70 倍）。装好后放在数据目录的 <code>runtime\</code> 里，大约 108 MB；删掉不影响别的功能，下次用会重装。</span>
+            <span class="hint">从国内镜像下（python.org 实测只有 74 KB/s，npmmirror 有 5 MB/s，差 70 倍）。默认会装到数据目录的 <code>runtime\</code> 下，约 100 MB 以上；你机器上本来就有 Python + edge_tts + ffmpeg 的话就直接用现成的，不额外占空间。删掉不影响别的功能，下次用会重装。</span>
           </div>
         </fieldset>
 
@@ -3552,6 +3561,9 @@
             <div class="pickRow">
               <input type="text" id="mdlModel" spellcheck="false" placeholder="deepseek-chat" list="mdlModelList" />
               <select id="mdlModelPreset" class="pickSel" title="先选接口地址，这里会列出那家的模型"></select>
+              <!-- 【2026-11-10 主人钦点】「选一个」不再只有写死的预设：
+                   填好地址和 key 后点这里，直接问服务商要真实模型列表（v1/models）。 -->
+              <button type="button" id="mdlDiscoverBtn" class="miniPick" title="用上面的地址和 Key 问服务商要真实的模型列表">拉一下</button>
               <datalist id="mdlModelList"></datalist>
             </div>
             <span class="hint" id="mdlModelHint"></span>
@@ -7804,7 +7816,7 @@ function syncSendBtn() {
   // 生成中又没内容：灰着，别让人点了没反应还以为卡了
   sendBtn.disabled = !!busy && !has;
   sendBtn.title = busy
-    ? '插一句：先停住这轮，再带着你的新话接着跑（想纯停就点右边 ⏹）'
+    ? '插一句：先停住这轮，再带着你的新话接着跑（想纯停就点旁边 ⏹）'
     : '';
 }
 
@@ -8027,7 +8039,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           if (ev.nobodyHome) {
             turnRec.fishOffNobody = true;
             try {
-              addSysNote('小鱼和小鲸这会儿都关着 —— 这一句没人应。想让她回，先按下顶栏那颗按钮。');
+              addSysNote('小鱼和小鲸这会儿都关着 —— 这一句没人应。想让她回，去左边「屋里的人」那列把牌子点开。');
             } catch { /* 忽略 */ }
           }
           /**
@@ -8145,7 +8157,11 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           || ev.type === 'tool_start' || ev.type === 'tool_end'
           || ev.type === 'whale' || ev.type === 'agent'
           || ev.type === 'whale_stream_start' || ev.type === 'whale_delta'
-          || ev.type === 'whale_stream_finish' || ev.type === 'worker') {
+          || ev.type === 'whale_stream_finish' || ev.type === 'worker'
+          /* 【2026-11-10 主人钦点·插话进对话流中间】steer 也是信号：
+           * 服务端把它合成成 live 清单里的 k:'user' 条目（位置＝真实顺序），
+           * 前端只负责「快照又变了，重画一次」—— 不建任何节点。 */
+          || ev.type === 'steer') {
           /* 压缩条一律不画。后端已经不推了，旧进程 / 旧重放里还有 —— 一个像素都不出现 */
           if (String(ev.name) === 'compress') continue;
           const _et = ev.type;
@@ -8193,13 +8209,24 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
         } else if (ev.type === 'error') {
           endTurnQuietly();
           /**
-           * 错误单独画一行，别塞进助手的气泡里。
+           * 【2026-11-10 修·错误提示画两遍（owner 报「一颗变两颗」）】
            *
-           * 以前是 bubble.textContent += '\n\n⚠ ' + ev.message：
-           * 那个 bubble 是「小鱼说的话」，混一条报错进去，重进时读起来就像
-           * 她本人在念一串 HTTP 502。分开画，谁说的话一目了然。
+           * 以前这里 addSysNote('⚠ ' + ev.message) 画一颗；
+           * 而服务端在出错时**已经往历史里落了一条**
+           * 「⚠️ 这一轮断在这儿了：<原因>」（server.mjs 的主轮与排队轮两处）。
+           * 两句话都以 ⚠ 开头、意思一样 —— 屏幕上就是两颗几乎一样的提示，
+           * 轮末换成历史时还会闪一下（一颗消失、另一颗留）。
+           *
+           * 现在屏幕只认**落盘的那一条**：它既是历史、也是清单唯一真身，
+           * 刷新 / 切会话 / 重启全都在。这里只负责收尾 + 叫一次重画。
+           *
+           * 服务端没落盘（极少数路径：还没拿到 session 就崩了）时，
+           * 前端才补一颗，避免主人看到「转圈停了但什么都没有」。
            */
-          addSysNote('⚠ ' + (ev.message || '这一轮出错了'));
+          nudgeLive(turnSession);
+          if (!ev.persisted) {
+            addSysNote('⚠ ' + (ev.message || '这一轮出错了'));
+          }
         } else if (ev.type === 'rate_limited') {
           /**
            * 【2026-11-05 严检补：服务端会发 rate_limited，前端原先没这一支】
@@ -8914,10 +8941,20 @@ async function interject() {
       }
     } catch {}
   }
-  /* 【2026-11-03 严检】插话这条原来没交给 pendingRewindBubble：①它永远拿不到五个按钮；②下一轮 done 会把新 at 挂到上一轮气泡上。 */
-  /* 【2026-11-09 换框架】「插话」这颗小标签改成 addUser 的参数：气泡由 React 画，
-   * 往它身上 appendChild 是往 React 管的节点里塞东西（下一次重渲染就成孤儿）。 */
-  pendingRewindBubble = addUser(text, '插话', atts.length ? atts : undefined, undefined, undefined, currentIdentityName);
+  /* 【2026-11-10 主人钦点·插话不再画乐观气泡】
+   *
+   * 以前这里 addUser(text,'插话',...) 先往屏上画一颗，等服务端回 steered 就
+   * 一直挂着 —— 而合并公式是「turns + pend + live」，pend 排在 live **之后**，
+   * 于是插话永远卡在屏幕最底（她正在说的话、后面说的话全排在它上面），
+   * 主人看到的根本不是「消息1 和消息2 中间」。
+   *
+   * 现在服务端 /api/interject 在 steer 成功那一刻就把这句话推进当前轮的
+   * 直播清单（k:'user'），位置＝事件真实顺序，前端 liveToItems 直出成气泡。
+   * 所以这里**不再画乐观气泡**，一颗都不画 —— 画了就是双画。
+   *
+   * pendingRewindBubble 也一并清零：它原本是给这颗乐观气泡挂「撤回」用的，
+   * 现在没有这颗气泡，留着它只会把下一轮 done 的 at 挂到别人的气泡上。 */
+  pendingRewindBubble = null;
   pendingResume = true;
   lastInterjectText = text;   // 【必须有】runTurn 收尾时靠它判断「那句到底在不在历史里」
   syncSendBtn();
@@ -11171,8 +11208,11 @@ function renderQqPanel(st) {
   const hint = qqEl('qqHint');
   if (hint) {
     if (st.sdk === false) {
+      /* 【2026-11-10】这里原来写死「在 D:\小鱼Agent 里跑一次 npm i …」——
+       * 那是作者本机的目录名，跟着源码发布出去别人照着做根本找不到。
+       * 改成「程序所在目录」，谁装在哪都对。 */
       hint.textContent = '没找到 @tencent-connect/qqbot-nodejs。'
-        + '在 D:\\小鱼Agent 里跑一次 npm i @tencent-connect/qqbot-nodejs 就有了。';
+        + '在程序所在的目录（package.json 那一层）跑一次 npm i @tencent-connect/qqbot-nodejs 就有了。';
     } else if (st.lastError) {
       hint.textContent = '上次出错：' + st.lastError;
     } else {
@@ -11298,7 +11338,7 @@ function qqSyncBindUi() {
       ? '每人一个会话：不用挑「挂到」——QQ 上谁来找她，她就给谁开一个「QQ · 谁」；群里各开一个「QQ群 · 群名」。'
       : (String((selEl || {}).value || '')
         ? 'QQ 上说的话都进这一个会话，你在电脑上接着说也行 —— 同一段记忆。'
-        : '还没挂会话。选一个下面那栏，再点保存。');
+        : '还没挂会话。选一个上面「挂到」那栏，再点保存。');
   }
 }
 
@@ -11455,7 +11495,11 @@ async function paintOneBot(obStatus, obPrepare) {
       hint.textContent = `在 ${st.url} 等协议端拨进来（NapCat 里填这个反向地址）。`;
     } else {
       const pr0 = obPrepare || {};
-      const autoTip = conf.autoStart ? '（开了「开机就连」，断了会自己按 3/6/12/24/30 秒重拨，协议端进程没了也会替你拉起来）' : '';
+      /* 【2026-11-10 文案审查】原来这里写「按 3/6/12/24/30 秒重拨」——
+       * 那串具体退避序列在代码里根本不存在（重连是协议端 SDK 自己管的，
+       * 见 src/qq-bridge.mjs:190「连接断了，SDK 自己在重连……」）。
+       * 编一组精确数字让主人产生「我可以算得出多久恢复」的错觉，比不说更糟。 */
+      const autoTip = conf.autoStart ? '（开了「开机就连」，断了它会自己重连接上，协议端进程没了也会替你拉起来）' : '';
       hint.textContent = '点「准备协议端」→ 自动装好并拉起（会弹 UAC，点「是」），屏幕上会开一个 QQ 窗口，'
         + '用手机 QQ 扫那个码登录。WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。' + autoTip
         + (pr0.installed ? '' : '（这台机器上还没装协议端）');
@@ -11636,7 +11680,9 @@ async function saveQqBind() {
       const cur = await qqApi('/api/qq/onebot/protocol');
       if (!cur || cur.error) { say('读不到协议端状态：' + ((cur && cur.error) || '网络错误'), true); return; }
       if (!cur.installed) {
-        say('正在准备协议端（第一次要下载，大概 34MB，走国内镜像）…');
+        /* 【2026-11-10 文案审查】原来写「大概 34MB」—— 这个数代码里从来没校验过，
+       * 写死一个具体数字等于承诺一个我们不知道的量。改成「几十 MB」这种诚实区间。 */
+        say('正在准备协议端（第一次要下载，几十 MB，走国内镜像）…');
         const r = await qqApi('/api/qq/onebot/protocol/deploy', {});
         if (!r || r.error) { say('装失败了：' + ((r && r.error) || '网络错误'), true); return; }
         say('装好了。现在启动它 —— 会弹一个 UAC 窗口，请点「是」。');
@@ -11763,7 +11809,7 @@ function fillSettings(s) {
   if (curHint) {
     curHint.textContent = moneyCurrency === 'usd'
       ? '现在按美元显示。汇率是 1 元 ≈ ' + (Math.round(moneyFx * 10000) / 10000) + ' 美元，只换显示，价目表不动。'
-      : '只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。';
+      : '只换显示，价目表不动。按 1 元 ≈ 0.14 美元折算，这个值在配置里定死，界面上改不了。';
   }
   elBottom.value = s.bottomLines.join('\n');
   elWords.value = s.safeWords.join(' / ');
@@ -11790,7 +11836,7 @@ for (const [el, want] of [[curCny, 'cny'], [curUsd, 'usd']]) {
     if (curHint) {
       curHint.textContent = want === 'usd'
         ? '现在按美元显示。汇率是 1 元 ≈ ' + (Math.round(moneyFx * 10000) / 10000) + ' 美元，只换显示，价目表不动。'
-        : '只换显示，价目表不动。汇率读的是设置里那个数（默认 1 元 ≈ 0.14 美元）。';
+        : '只换显示，价目表不动。按 1 元 ≈ 0.14 美元折算，这个值在配置里定死，界面上改不了。';
     }
     try { paintUsageBox(); } catch {}
     try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {}
@@ -12303,7 +12349,7 @@ function mobCopyText(t) {
 }
 
 // ---- 语音引擎 ----
-// 「小鱼说话」要 python + edge_tts + ffmpeg，安装包里不带（带齐 +108MB）。
+// 「小鱼说话」要 python + edge_tts + ffmpeg，安装包里不带（带齐要 100MB 以上）。
 // 服务端开机会自己静默装，这里只是让人能看见进度、能手动重来、能删掉省空间。
 let vrTimer = 0;
 
@@ -12317,14 +12363,33 @@ function vrPaint(info) {
   const r = info || {};
   const p = r.progress || null;
   const mb = (n) => Math.round((Number(n) || 0) / 1048576);
+  // 路径既可能是绝对路径，也可能只是 PATH 里命中的命令名（ffmpeg 常常就是后者）
+  const short = (s) => {
+    const t = String(s || '');
+    if (!t) return '路径没记下来';
+    return /[\\/]/.test(t) ? t : `PATH 里的 ${t}`;
+  };
+  // 【2026-11-10 主人问「为什么是 0MB」】后端现在会给 using：
+  //   using==='本机已有的' → 一份东西都没往 runtime 里放，bytes 恒为 0，
+  //   绝不能说「都在 <dir>，占 0 MB」（那个目录可能压根不存在）。
+  //   老标记文件没有 using，只能按 bytes 兜底。
+  const external = r.using === '本机已有的';
+  const ownBytes = Number(r.bytes) || 0;
   if (r.busy && p) {
     st.textContent = `正在装…… ${p.msg || ''}（${p.pct}%）`;
+  } else if (r.installed && external) {
+    st.textContent = `✅ 能用了：直接用这台机器上已有的 Python（${short(r.pythonRealPath)}）和 ffmpeg（${short(r.ffmpegRealPath)}），没额外占空间。「小鱼说话」随时能用。`;
+  } else if (r.installed && ownBytes > 0) {
+    st.textContent = `✅ 装好了：Python 和 ffmpeg 装在 ${r.dir}，占 ${mb(ownBytes)} MB。「小鱼说话」随时能用。`;
   } else if (r.installed) {
-    st.textContent = `✅ 装好了：Python 和 ffmpeg 都在 ${r.dir}，占 ${mb(r.bytes)} MB。「小鱼说话」随时能用。`;
+    // 有「装好了」的记录，但既不是本机已有的、也量不出体积 —— 十有八九是被清理过。
+    // 这种情况只说能用了是在骗人，得让人知道可以重装。
+    st.textContent = '⚠️ 记录里写着装好了，但没找到装的东西（可能被清理过）。点「装/修复」重来一遍。';
   } else if (p && p.phase === 'error') {
     st.textContent = `上次装到 ${p.pct}% 时出错了：${p.msg}。点「装/修复」再试一次。`;
   } else if (r.hasPython && r.hasFfmpeg) {
-    st.textContent = `✅ 环境齐了（${r.dir}），占 ${mb(r.bytes)} MB。`;
+    // 有 python + ffmpeg 但没装好记录：可能也是本机已有的（判定还没落盘）
+    st.textContent = `✅ 环境齐了：Python（${short(r.pythonRealPath)}）和 ffmpeg（${short(r.ffmpegRealPath)}）都在，不用再装。`;
   } else {
     st.textContent = '还没装。开着小鱼Agent 一会儿它会自己悄悄装，也可以现在点「装/修复」。';
   }
@@ -12393,9 +12458,23 @@ async function refreshVoiceRuntime() {
     }
   };
   rem.onclick = async () => {
+    // 先查一次状态再问人：本机已有的那种，「删掉」只是把标记记录抹掉，
+    // 机器上原有的 Python / ffmpeg 一个字节都不动，也腾不出空间 —— 不能报个假体积。
+    let cur = null;
+    try {
+      cur = await fetch('/api/voice-runtime').then((x) => x.json());
+    } catch {}
+    const external = cur && cur.using === '本机已有的';
+    const ownBytes = cur ? Number(cur.bytes) || 0 : 0;
+    const mbTxt = Math.round(ownBytes / 1048576);
+    const body = external
+      ? '删掉的是「用本机已有的」这条记录，你机器上原有的 Python 和 ffmpeg 不会动，也不会腾出磁盘空间。「小鱼说话」下次要用时会自己再查一遍。'
+      : ownBytes > 0
+        ? `会删掉装在 runtime 下的 Python 和 ffmpeg（约 ${mbTxt} MB），「小鱼说话」就暂时用不了了。下次要用会重新装。`
+        : '会删掉语音引擎的记录，「小鱼说话」就暂时用不了了。下次要用会重新装。';
     const ans = await askConfirm({
       title: '删掉语音引擎',
-      body: '会删掉 Python 和 ffmpeg（约 108 MB），「小鱼说话」就暂时用不了了。下次要用会重新装。',
+      body,
       ok: '删掉',
       danger: true,
     });
@@ -12403,7 +12482,13 @@ async function refreshVoiceRuntime() {
     try {
       const r = await fetch('/api/voice-runtime', { method: 'DELETE' }).then((x) => x.json());
       vrPaint(r.runtime || r);
-      addSysNote('删掉了，省了 108 MB 左右。');
+      addSysNote(
+        external
+          ? '删掉了记录，你机器上原有的 Python 和 ffmpeg 没动。'
+          : ownBytes > 0
+            ? `删掉了，腾出约 ${mbTxt} MB。`
+            : '删掉了。',
+      );
     } catch (e) {
       addSysNote('⚠ 删不掉：' + e.message);
     }
@@ -16480,6 +16565,58 @@ const mdlModelHint = document.getElementById('mdlModelHint');
 const mdlModelList = document.getElementById('mdlModelList');
 mdlState = { models: [], activeId: null, empty: true };
 let mdlEditing = null; // null = 新增，否则是正在改的那条的 id
+/**
+ * 【2026-11-10 主人钦点】「拉一下」拉回来的真实模型列表。
+ /**
+ *   base —— 拉的时候用的地址（地址一变就作废，换家了旧列表必错）
+ *   ids  —— 服务商返回的模型 id
+ * 空对象 = 没拉过，此时下拉回落到 PROVIDERS 预设表。
+ *
+ * 【2026-11-10 主人问「拉取成功后有保存到模型名称预设吗」—— 原来没有】
+ * 原来这只是个内存变量：关掉面板、刷新一下、重启程序就没了，
+ * 下次打开又只剩写死的几个名字。主人要的是「拉过一次，以后就在」。
+ *
+ * 现在拉成功就写进 localStorage（按规范化地址当 key）：
+ *   · 下次打开面板自动读回来，不用再点「拉一下」
+ *   · 地址一改自然用不上（key 变了），不会张冠李戴
+ *   · 每家的列表分开存，最多留最近 30 家，不让 localStorage 无限涨
+ * localStorage 挂了（隐私模式/配额满）只是没缓存，不影响当次使用。
+ */
+const MDL_CACHE_KEY = 'xy.modelIds.v1';
+function normBaseForCache(u) {
+  return String(u || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '').toLowerCase();
+}
+function readModelIdCache() {
+  try {
+    const raw = localStorage.getItem(MDL_CACHE_KEY);
+    if (!raw) return {};
+    const j = JSON.parse(raw);
+    return j && typeof j === 'object' ? j : {};
+  } catch (e) { return {}; }
+}
+function saveModelIdCache(base, ids) {
+  try {
+    if (!base || !Array.isArray(ids) || !ids.length) return;
+    const all = readModelIdCache();
+    all[normBaseForCache(base)] = { ids: ids.slice(0, 500), at: Date.now() };
+    /* 只留最近 30 家，别让这个缓存无限长 */
+    const keys = Object.keys(all);
+    if (keys.length > 30) {
+      keys.sort((a, b) => (all[b].at || 0) - (all[a].at || 0));
+      for (const k of keys.slice(30)) delete all[k];
+    }
+    localStorage.setItem(MDL_CACHE_KEY, JSON.stringify(all));
+  } catch (e) { /* 存不上不影响当次 */ }
+}
+function getCachedIds(base) {
+  try {
+    const hit = readModelIdCache()[normBaseForCache(base)];
+    return hit && Array.isArray(hit.ids) ? hit.ids : [];
+  } catch (e) { return []; }
+}
+
+let mdlDiscovered = { base: '', ids: [] };
+const mdlDiscoverBtn = document.getElementById('mdlDiscoverBtn');
 
 /**
  * 地址下拉：第一项永远是「手动填」，后面是各家。
@@ -16517,31 +16654,51 @@ function paintBasePicker() {
 function paintModelPicker(base) {
   const p = providerOf(base);
   const hintEl = mdlModelHint;
+  /**
+   * 【2026-11-10 主人钦点：「选一个」不要写死的】
+   *
+   * 优先用「问服务商拉回来的真实列表」（mdlDiscovered）。它比预设表准得多：
+   * 预设是写死的几个常见名字，而拉回来的是这个 key 真正能用的那些。
+   * 拉回来之后，地址一改就作废（换家了，旧列表一定不对）。
+   */
+  const _list = (mdlDiscovered && mdlDiscovered.base === String(base || '').trim() && mdlDiscovered.ids.length)
+    ? mdlDiscovered.ids
+    : (getCachedIds(base).length ? getCachedIds(base) : (p ? p.models : []));
+  /* 缓存里有 = 上次拉过，提示条也照这个说，别让主人以为只有预设表 */
+  const _fromCache = !(mdlDiscovered && mdlDiscovered.base === String(base || '').trim() && mdlDiscovered.ids.length)
+    && getCachedIds(base).length > 0;
+  const _has = _list.length > 0;
   if (mdlModelPreset) {
     mdlModelPreset.innerHTML = '';
     const opt0 = document.createElement('option');
     opt0.value = '';
-    opt0.textContent = p ? '选一个…（或手填）' : '先选地址';
+    opt0.textContent = _has ? '选一个…（或手填）' : '先选地址';
     mdlModelPreset.appendChild(opt0);
-    for (const m of (p ? p.models : [])) {
+    for (const m of _list) {
       const o = document.createElement('option');
       o.value = m;
       o.textContent = m;
       mdlModelPreset.appendChild(o);
     }
-    mdlModelPreset.disabled = !p;
+    mdlModelPreset.disabled = !_has;
   }
   if (mdlModelList) {
     mdlModelList.innerHTML = '';
-    for (const m of (p ? p.models : [])) {
+    for (const m of _list) {
       const o = document.createElement('option');
       o.value = m;
       mdlModelList.appendChild(o);
     }
   }
   if (hintEl) {
-    if (!p) {
-      hintEl.textContent = String(base || '').trim() ? '这家认不出来，模型名照文档手填就行。' : '';
+    if (mdlDiscovered && mdlDiscovered.base === String(base || '').trim() && mdlDiscovered.ids.length) {
+      /* 拉到了真列表：告诉主人这是真数据，不是预设那几个 */
+      hintEl.textContent = `拉到了 ${mdlDiscovered.ids.length} 个模型（这是这个 Key 真正能用的）`;
+    } else if (_fromCache) {
+      /* 上次拉过，这次直接从缓存来 —— 说清楚，别让主人以为「怎么自动有了」 */
+      hintEl.textContent = `${_list.length} 个模型（上次拉到的，已记住；不对就再点一次「拉一下」）`;
+    } else if (!p) {
+      hintEl.textContent = String(base || '').trim() ? '这家认不出来。填好 Key 后点「拉一下」，直接问它要模型列表。' : '';
     } else {
       hintEl.textContent = p.hint || '';
     }
@@ -16561,8 +16718,16 @@ if (mdlBasePreset) {
     const oldModel = (mdlModel.value || '').trim();
     const sameProvider = p ? p.models.includes(oldModel) : false;
     mdlBase.value = v;
+    /* 从下拉换了家：之前拉回来的列表是上一家的，必须作废 */
+    if (mdlDiscovered.base && mdlDiscovered.base !== v) mdlDiscovered = { base: '', ids: [] };
     paintModelPicker(v);
-    if (!sameProvider) mdlModel.value = p && p.models[0] ? p.models[0] : '';
+    /* 换了家：如果拉回来的列表还在（同一家），优先用它给第一个 */
+    if (!sameProvider) {
+      const _first = (mdlDiscovered.base === v && mdlDiscovered.ids.length)
+        ? mdlDiscovered.ids[0]
+        : (p && p.models[0] ? p.models[0] : '');
+      mdlModel.value = _first || '';
+    }
     syncNameWithModel();
   };
 }
@@ -16572,14 +16737,166 @@ if (mdlModelPreset) {
     if (!v) return;
     mdlModel.value = v;
     syncNameWithModel();
+    /**
+     * 【2026-11-10 修·主人报了两次：「选了后测连通不通过」】
+     *
+     * 预设表里的名字是**写着好看**的，跟服务商真实能用的 id 未必一样。
+     * 实测丸子那家：/v1/models 回 ids = [deepseek-v4-flash, deepseek-v4-pro,
+     * deepseek-v4.1-flash, deepseek-v4.1-flash-1017]，但直接调
+     * `deepseek-v4.1-flash` → HTTP 502（上游那条通道挂了），而
+     * `deepseek-v4.1-flash-1017` → HTTP 200。预设表偏偏给的是前一个。
+     *
+     * 所以：选中后自动探一下。通了就静静标绿；不通就**自动去拉真实列表**
+     * 并提示换个名字 —— 而不是让主人自己点一次「测一下」才发现是红的。
+     * 静默做，不弹窗、不拦截，主人该填什么继续填。
+     */
+    if (String(v).trim()) {
+      setTimeout(() => {
+        try {
+          if (typeof window.__mdlQuietProbe === 'function') window.__mdlQuietProbe(v);
+        } catch (e) { /* 探测挂了不影响填表 */ }
+      }, 80);
+    }
   };
 }
 if (mdlBase) {
   // 手改地址时也跟着换模型下拉
   mdlBase.addEventListener('input', () => {
     mdlBasePreset.value = PROVIDERS.some((p) => p.base === mdlBase.value.trim()) ? mdlBase.value.trim() : '';
+    /* 地址一动，之前拉回来的列表就作废（换家了，那份列表一定不对） */
+    if (mdlDiscovered.base && mdlDiscovered.base !== mdlBase.value.trim()) mdlDiscovered = { base: '', ids: [] };
     paintModelPicker(mdlBase.value);
   });
+}
+
+/**
+ * 【2026-11-10 主人钦点：「拉一下」——用真实接口要模型列表】
+ *
+ * 主人原话：「添加模型的『选一个』不要写死的」。
+ * 以前那颗下拉只列 PROVIDERS 里写死的几个名字，换分组/新模型/小众家就空白。
+ * 现在点这颗按钮 → POST /api/models/discover（服务端 GET {base}/v1/models）
+ * → 拿到这个 Key 真正能用的 id 填进下拉；失败才回落到预设表，并把原因说清楚。
+ */
+if (mdlDiscoverBtn) {
+  /**
+   * 【2026-11-10 修·「拉一下」拉不到 + 选了测不通（主人两条都报了）】
+   *
+   * 病根两处，都在这一条链上：
+   *
+   * ① **拉不到**：这里传的 key 来自 mdlKey.value，而编辑已有模型时那个框是空的
+   *    （后端只回 hasKey/keyHint，从不把 key 发回前端 —— 这是对的）。
+   *    于是不带 Authorization 去问 /v1/models → 401 → 主人看到「没拉到」。
+   *    修法：前端照常传空，**服务端用这个地址已保存的 key 兜底**（见 server.mjs
+   *    的 models-discover-keyfallback）。
+   *
+   * ② **选了测不通**：预设表写的是 deepseek-v4.1-flash，而这家真实可用的 id 是
+   *    deepseek-v4.1-flash-1017（差个后缀）。实测：前者 502、后者 200。
+   *    下拉里放一个调不通的名字，主人当然一点就红。
+   *    修法：只要拉到过真列表，下拉就**只用真 id**（paintModelPicker 已优先用
+   *    mdlDiscovered）；另外地址填完自动拉一次，省得主人还得先想到点按钮。
+   */
+  const runDiscover = async (opts = {}) => {
+    const base = (mdlBase && mdlBase.value ? mdlBase.value : '').trim();
+    const key = (mdlKey && mdlKey.value ? mdlKey.value : '').trim();
+    if (!base) {
+      if (!opts.silent && mdlModelHint) mdlModelHint.textContent = '先填接口地址，再来拉模型列表。';
+      if (!opts.silent) { try { mdlBase.focus(); } catch {} }
+      return false;
+    }
+    if (mdlDiscoverBtn.disabled && !opts.force) return false;
+    const oldText = mdlDiscoverBtn.textContent;
+    mdlDiscoverBtn.disabled = true;
+    mdlDiscoverBtn.textContent = '拉取中…';
+    if (mdlModelHint) mdlModelHint.textContent = '正在问服务商要模型列表…';
+    try {
+      const r = await fetch('/api/models/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base, key }),
+      }).then((x) => x.json()).catch(() => null);
+      if (r && r.ok && Array.isArray(r.ids) && r.ids.length) {
+        mdlDiscovered = { base, ids: r.ids };
+        /* 【2026-11-10 主人问「拉取成功后有没有保存成预设」】存下来：
+         * 下次打开面板、刷新、重启都还在（按规范化地址当 key，一家一份）。
+         * 局部改动：id 排序保持服务商给的顺序（toSorted 不一定有，用 slice）。 */
+        saveModelIdCache(base, r.ids);
+        paintModelPicker(base);
+        /* 拉到了就顺手填第一个 —— 主人一般就是想要个能用的，省一次点击 */
+        if (mdlModel && !(mdlModel.value || '').trim()) {
+          mdlModel.value = r.ids[0];
+          syncNameWithModel();
+        }
+        return true;
+      }
+      /* 拉不到不算错：预设表还在，把原因说清楚就行 */
+      mdlDiscovered = { base: '', ids: [] };
+      paintModelPicker(base);
+      if (mdlModelHint && !opts.silent) {
+        mdlModelHint.textContent = '没拉到：' + ((r && r.error) ? r.error : '网络错误') + '（下面还是预设表，也可以手填）';
+      }
+      return false;
+    } catch (e) {
+      if (mdlModelHint && !opts.silent) mdlModelHint.textContent = '没拉到：' + ((e && e.message) || '网络错误');
+      return false;
+    } finally {
+      mdlDiscoverBtn.disabled = false;
+      mdlDiscoverBtn.textContent = oldText;
+    }
+  };
+  mdlDiscoverBtn.onclick = () => runDiscover({ force: true });
+  /* 地址填完（失焦）自动拉一次：主人不用先想到点按钮 */
+  if (mdlBase) {
+    mdlBase.addEventListener('change', () => {
+      const v = String(mdlBase.value || '').trim();
+      if (!v) return;
+      setTimeout(() => { try { runDiscover({ silent: true }); } catch (e) {} }, 60);
+    });
+  }
+
+  /**
+   * 选中模型后静默探一次连通（只在表单里跑，不弹窗）。
+   *
+   * 【2026-11-10 主人报「选了后测连通不通过」】
+   * 预设表的名字不一定等于服务商真实 id（实测丸子：预设的 deepseek-v4.1-flash
+   * 调下去 502，真实的 deepseek-v4.1-flash-1017 才 200）。
+   * 这里悄悄打一次 /api/models/test：
+   *   · 通了 → 提示条写「这个名字能通」，什么都不拦
+   *   · 不通 → 自动去拉真实列表（runDiscover），并把原因写清楚，
+   *     让主人一点下拉就能选到能用的那个，而不是自己去猜后缀
+   */
+  window.__mdlQuietProbe = async (model) => {
+    const base = (mdlBase && mdlBase.value ? mdlBase.value : '').trim();
+    if (!base || !model) return;
+    const key = (mdlKey && mdlKey.value ? mdlKey.value : '').trim();
+    if (mdlModelHint) mdlModelHint.textContent = '探一下「' + model + '」能不能通…';
+    try {
+      const body = { baseURL: base, model };
+      if (key) body.apiKey = key;
+      const r = await fetch('/api/models/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then((x) => x.json()).catch(() => null);
+      if (r && r.ok) {
+        if (mdlModelHint) mdlModelHint.textContent = '「' + model + '」能通（' + (r.ms || 0) + 'ms）';
+        return true;
+      }
+      /* 不通：先把原因说清楚，再去问服务商要真名 */
+      const why = (r && (r.error || r.message)) ? String(r.error || r.message) : '连不上';
+      if (mdlModelHint) mdlModelHint.textContent = '「' + model + '」不通：' + why.slice(0, 70) + '，正在问服务商要真名…';
+      await runDiscover({ silent: true, force: true });
+      if (mdlModelHint) {
+        const n = mdlDiscovered && mdlDiscovered.ids ? mdlDiscovered.ids.length : 0;
+        mdlModelHint.textContent = n
+          ? '「' + model + '」不通（' + why.slice(0, 50) + '）。已拉到 ' + n + ' 个真名，下拉里换一个试试'
+          : '「' + model + '」不通：' + why.slice(0, 90);
+      }
+      return false;
+    } catch (e) {
+      if (mdlModelHint) mdlModelHint.textContent = '探测失败：' + ((e && e.message) || '网络错误');
+      return false;
+    }
+  };
 }
 // 手打模型名也要带着名字走
 if (mdlModel) {
@@ -16635,7 +16952,11 @@ function openForm(model) {
   if (mdlKindImage) mdlKindImage.checked = wantImage;
   if (mdlKindHint) {
     mdlKindHint.textContent = wantImage
-      ? '出图那条：测连通会真画一张小图（要等 30~40 秒），能出图才算通。'
+      /* 【2026-11-10 文案审查】原来写「要等 30~40 秒」—— 与实现不符。
+       * src/models.mjs:594 给生图测连通的超时是 180 秒，代码里自己还会说
+       * 「等了 3 分钟还没出图」。真实等待通常在几十秒到几分钟之间，写 30~40 秒
+       * 会让人在 40 秒时以为卡死了。 */
+      ? '出图那条：测连通会真画一张小图（慢的时候要等一两分钟，最多等 3 分钟），能出图才算通。'
       : '说话 / 干活那条：测连通发一句 ping 就够，很快。';
   }
 

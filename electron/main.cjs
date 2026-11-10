@@ -752,7 +752,25 @@ async function createWindow(updated = false) {
         if (!win.isMaximized()) win.maximize();
       } catch {}
     }, 60);
-    // 后台自动更新过 → 重启一次让新代码生效（防抖在 src/updater.mjs 里，不会无限重启）
+    /**
+     * 【2026-11-10 查清·这段现在是死代码，留着当「以后要自动重启」的开关】
+     *
+     * 主人问「自动更新是否存在问题」，逐条查过：
+     *
+     *   · 现在 `createWindow()` 的 6 个调用点**全都不传参数** → updated 恒为 false
+     *     → 这个分支一次都没跑过。它不是坏掉，是没接线。
+     *   · 为什么没接线：0.9.32 起自动更新换了路线（见 src/updater.mjs 顶部）：
+     *     不再逐文件覆盖，而是下官方安装包 → 主人点「装一下」→ 退出、静默装、自动拉起。
+     *     「装」这一步本来就要退出进程，所以「更新完自动重启」这件事已经由
+     *     安装器那条路做完了，这里再重启一次反而会撞。
+     *
+     * 所以：**不动它**（删了可惜、留着不跑）。真要改回「自动更新后自动重启」，
+     * 就在 selfCheck 判定 needsRestart 的地方调 createWindow(true)，
+     * 同时把 src/updater.mjs 的 shouldRestartForUpdate 接上（一问即消费）。
+     *
+     * 教训记一笔：死代码最贵的不是占那几行，是让人误判「这功能是有的」。
+     * 上次排查「自动更新没用」就差点指错方向。
+     */
     if (updated) {
       console.log('[update] 已自动更新，2 秒后重启生效…');
       setTimeout(() => {

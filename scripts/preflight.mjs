@@ -19,7 +19,9 @@ import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = 'D:\\小鱼Agent';
+/* 【2026-11-10 修】原来写死 'D:\\小鱼Agent'，别人 clone 下来跑 preflight 全报「找不到文件」。
+ * 从脚本位置向上推一层（scripts/ 的上一级 = 仓库根），谁放哪都对。 */
+const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 let bad = 0;
 
 function head(t) { console.log('\n──── ' + t + ' ' + '─'.repeat(Math.max(0, 56 - t.length))); }

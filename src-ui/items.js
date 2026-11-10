@@ -292,6 +292,34 @@ function liveToItems(items, running) {
         dir: String(it.dir || 'out'),
         isLive: true,
       });
+    } else if (it.k === 'user') {
+      /**
+       * 【2026-11-10 主人钦点·插话显示在对话流中间】
+       *
+       * 服务端 /api/interject 在 steer 成功那一刻就往当前轮的直播清单推一条
+       * `{k:'user', t, steer:true, ts}` —— 它的位置就是事件真实顺序：
+       * 她消息1（含工具）之后、消息2 之前。
+       *
+       * 这里直出成主人气泡（跟历史里的 user turn 同一种画法），
+       * 不再走 pushPendingUser 的乐观气泡 —— 那条路会把插话画到 live 之后
+       * ＝屏幕最底，正是主人不满意的地方。轮末落盘换历史时，
+       * 这句已经在 turns 里了，key 从 l-N 换成 t-N，内容一致、位置不跳。
+       */
+      const _t = String(it.t || '');
+      if (!_t.trim()) continue;
+      out.push({
+        kind: 'user',
+        key,
+        text: _t,
+        atts: Array.isArray(it.atts) ? it.atts : [],
+        who: String(it.who || '主人'),
+        tag: '插话',
+        steer: true,
+        ts: Number(it.ts) || null,
+        rewindId: it.rewindId != null ? it.rewindId : null,
+        edited: false,
+        isLive: true,
+      });
     } else if (it.k === 'note') {
       out.push({ kind: 'note', key, text: String(it.t || ''), isLive: true });
     }

@@ -193,7 +193,15 @@ function recentlyUpdated(targetVersion, withinMs = 10 * 60 * 1000) {
   return Date.now() - (info.at || 0) < withinMs;
 }
 
-/** 这次启动已经尝试过更新同一版本了吗（防止无限重启） */
+/**
+ * 这次启动已经尝试过更新同一版本了吗（防止无限重启）。
+ *
+ * 【2026-11-10 查清：目前无人调用，留着备用】
+ * 它配的是「更新完自动重启」那条路（Electron 主进程的 createWindow(updated) 分支）。
+ * 现在那条线没接线（自动更新改成「下官方安装包 → 主人点装一下」，装的时候本来就要退出），
+ * 所以这个防抖用不上。**但如果以后把自动重启接回去，必须一起用上它** ——
+ * 否则版本号对不上时会变成「起来就更新、更新完就重启」的死循环。
+ */
 function alreadyTriedThisBoot(targetVersion) {
   return lastUpdateInfo()?.triedBoot === targetVersion;
 }
@@ -785,6 +793,33 @@ export function shouldRestartForUpdate() {
   return true;
 }
 
+/**
+ * 【2026-11-10 修·定时查把「重启许可」白白吃掉】
+ *
+ * 上面那个 shouldRestartForUpdate() 名字像「查」，其实是**确认并消费**：
+ * 一问就把 restarted:true 写进 update.json，第二次问永远 false。
+ *
+ * 而 startUpdateWatcher 的定时 tick 里原来写的是
+ *     if (shouldRestartForUpdate()) return;
+ * 意思是「刚更新完等着重启呢，这一轮就别查了」——
+ * 后果有两个，都是暗的：
+ *   ① 那一趟把重启许可消费掉了。将来真有人问「该不该重启」时永远是 false，
+ *      主人明明刚更新过，程序却一声不吭地跑着旧代码。
+ *   ② watcher 的 return 只跳出 try，没有 `continue` 那种语义 ——
+ *      好在 finally 还在，定时器能续上（这一条没坏，但当时是运气）。
+ *
+ * 现在把「看」和「拿」分开：peekPendingRestart() 只看不写，
+ * 给 watcher 这种「我只是想知道要不要让路」的地方用；
+ * shouldRestartForUpdate() 保留给真正要重启的那一处（一问即消费，语义正确）。
+ */
+export function peekPendingRestart() {
+  const info = lastUpdateInfo();
+  if (!info) return false;
+  if (!info.at || Date.now() - info.at > 5 * 60 * 1000) return false;
+  if (info.restarted) return false;
+  return true;
+}
+
 const RETRY_MS = 6 * 60 * 60 * 1000; // 上次失败的话，6 小时内不再试
 
 /**
@@ -918,8 +953,8 @@ export function startUpdateWatcher(opts = {}) {
   const tick = async () => {
     try {
       const info = lastUpdateInfo();
-      // 已经因为更新过、等着重启了，就别再查
-      if (shouldRestartForUpdate()) return;
+      // 已经因为更新过、等着重启了，就别再查（【2026-11-10】只用 peek，不消费许可）
+      if (peekPendingRestart()) return;
       if (info && info.status === 'failed' && Date.now() - (info.at || 0) < RETRY_MS) return;
       const r = await quickCheck({ apply: true });
       if (r.status === 'updated' || r.status === 'failed') {

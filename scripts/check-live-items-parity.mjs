@@ -106,7 +106,10 @@ const ALL_KINDS = ['text', 'text', 'text', 'reasoning', 'tool_start', 'tool_end'
   'error', 'notice', 'whale', 'whale_delta', 'whale_stream_start', 'whale_stream_finish', 'worker',
   /* 【2026-11-10 A2】文件事件也在训练集里：sentfile / files 必须在两份实现里
    * 合成出逐字相同的 k:'file' 条目（折叠：同一份文件只留一条）。 */
-  'sentfile', 'files', 'sentfile'];
+  'sentfile', 'files', 'sentfile',
+  /* 【2026-11-10 主人钦点·插话】steer 事件必须在两份实现里都合成出
+   * k:'user' 条目（独立条目 = 分段线，不许并进正文）。 */
+  'steer'];
 
 function genEvents(seed, n, pool) {
   const r = rng(seed);
@@ -135,6 +138,7 @@ function genEvents(seed, n, pool) {
     else if (t === 'worker') last = { type: 'worker', wid: 'w' + (i % 2), name: '干活', status: pick(['run', 'ok']), kind: pick(['step', 'start', 'mail', 'note']), text: pick(words) };
     else if (t === 'sentfile') last = { type: 'sentfile', file: { path: 'D:/out/文件' + (i % 3) + '.png', name: '文件' + (i % 3) + '.png', size: 1024 * (i % 3 + 1), kind: 'image', key: 'k' + (i % 3) }, note: '' };
     else if (t === 'files') last = { type: 'files', items: [{ path: 'D:/out/文件' + (i % 3) + '.png', name: '文件' + (i % 3) + '.png', size: 1024 * (i % 3 + 1), kind: 'image', key: 'k' + (i % 3) }], at: i };
+    else if (t === 'steer') last = { type: 'steer', text: pick(['插一句', '等一下', '先跑这个']), ts: 1700000000000 + i };
     if (last) out.push(last);
     if (burst && last) {
       if (last.type === 'worker') out.push({ type: 'worker', wid: last.wid, name: '干活', status: 'ok', kind: 'note', text: pick(words) });
@@ -297,6 +301,40 @@ console.log('\n六、屏幕段数 == 清单正文条数；同一份数据画 100
   for (let i = 0; i < 100; i++) if (J(screenOf(c.svInc).texts) !== first) { same = false; break; }
   ok(same, '同一份清单画 100 次，屏幕内容完全一样（幂等）');
   ok(scr.texts.join('') === textsOf(c.svInc).join(''), '屏幕上正文一个字不丢、顺序不乱');
+}
+
+console.log('\n七、插话位置：消息1 → 插话 → 消息2（主人钦点的形态）');
+{
+  /* 主人 2026-11-10 的原话：「消息1，调用工具，在插话预发送阶段【直接发送】后
+   * 并将插话显示在这个位置，收到插话内容然后消息2，调用工具」。
+   * 这里钉死三件事：
+   *   ① 服务端两份实现都产出 k:'user' 条目（增量 == 从头重算）
+   *   ② 插话是独立分段线，不并进她正在说的正文
+   *   ③ 屏幕顺序：她消息1 → 工具 → 插话 → 她消息2 → 工具
+   */
+  const STEER = [
+    { type: 'text', text: '消息1' },
+    { type: 'tool_start', id: 't1', name: 'run_command', args: '{}' },
+    { type: 'tool_end', id: 't1', ok: true, output: 'o' },
+    { type: 'steer', text: '插一句：先跑这个', ts: 1700000000000 },
+    { type: 'text', text: '消息2' },
+    { type: 'tool_start', id: 't2', name: 'run_command', args: '{}' },
+    { type: 'tool_end', id: 't2', ok: true, output: 'o' },
+  ];
+  const c = compose(STEER);
+  ok(J(c.svInc) === J(c.svOne), '插话：服务端增量 == 从头重算', diffSummary(c.svInc, c.svOne));
+  ok(kindsOf(c.svInc) === 'text,tool,user,text,tool', '种类顺序：正文1 → 工具 → 插话(user) → 正文2 → 工具', kindsOf(c.svInc));
+  ok(textsOf(c.svInc).join('|') === '消息1|消息2', '正文被插话劈成两段（插话是分段线）', textsOf(c.svInc).join('|'));
+
+  /* 屏幕顺序：把清单当直播跑一遍 buildMerged，取出「正文 / 插话」的先后 */
+  const scr = screenOf(c.svInc);
+  const seq = (scr.res.items || [])
+    .filter((x) => x && (x.kind === 'assistant' || (x.kind === 'user' && x.steer)))
+    .map((x) => (x.kind === 'assistant' ? 'A:' + (x.bubbles || []).join('') : 'U:' + String(x.text || '')));
+  ok(J(seq) === J(['A:消息1', 'U:插一句：先跑这个', 'A:消息2']),
+    '屏幕顺序：消息1 → 插话 → 消息2', J(seq));
+  ok(scr.res.items.filter((x) => x && x.kind === 'user' && x.steer).length === 1,
+    '插话在屏幕上恰好一颗气泡（不双画）');
 }
 
 console.log('\n结果: ' + pass + ' 过 / ' + fail + ' 挂\n');

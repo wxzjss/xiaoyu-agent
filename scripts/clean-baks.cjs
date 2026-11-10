@@ -8,8 +8,27 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-const ROOT = 'D:/小鱼Agent';
-const BAK = path.join(ROOT, 'backup');
+/**
+ * 【2026-11-10 修·别把本机路径写死在发布出去的文件里】
+ *
+ * 主人问「在你的电脑上能正常运行的在别人电脑上会不会出问题」。
+ * 这个脚本原来第一行就是 `const ROOT = 'D:/小鱼Agent'` —— 别人 clone 下来
+ * 一跑就 ENOENT（目录不存在），而且这句还跟着源码发布出去了，
+ * 等于把本机目录名告诉了所有人。
+ *
+ * 现在从脚本自己的位置往上推一层（scripts/ 的上一级 = 仓库根），
+ * 谁 clone 到哪都算得对。想指定别的目录就设 XY_REPO。
+ */
+const path0 = require('path');
+const ROOT = process.env.XY_REPO
+  ? path0.resolve(process.env.XY_REPO)
+  : path0.resolve(__dirname, '..');
+const BAK = path0.join(ROOT, 'backup');
+
+if (!require('fs').existsSync(BAK)) {
+  console.log('没有 backup/ 目录（' + BAK + '），没什么可清的。');
+  process.exit(0);
+}
 
 const tracked = new Set(
   execSync('git ls-files backup', { cwd: ROOT, encoding: 'utf8' })

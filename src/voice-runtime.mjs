@@ -331,27 +331,57 @@ async function installWheel(name, version, fromPct, toPct) {
 /* ------------------------------------------------------------------ */
 /* 主流程                                                              */
 /* ------------------------------------------------------------------ */
+/**
+ * 给设置页看的运行环境状态。
+ *
+ * 【2026-11-10 主人问「为什么是 0MB」】根因：这台机器本来就有 python+ffmpeg，
+ * 静默安装走了「本机已有的」短路，一份东西都没往 runtime 目录里放，标记文件里
+ * bytes 是硬编码的 0；而这里又把 RUNTIME 当成「Python 和 ffmpeg 所在目录」报出去，
+ * 前端照着拼就变成「都在 <不存在的目录>，占 0 MB」。
+ *
+ * 所以三个字段各管各的，别再混：
+ *   · using          —— 空 = 我们自己装的；'本机已有的' = 用的是系统里现成那套。
+ *   · pythonRealPath —— 真正在用的解释器（本机已有就是本机路径，不是 runtime 下的）。
+ *   · dir / bytes    —— **只描述我们自己的 runtime 目录**。本机已有的时候这个目录
+ *                       可能压根不存在，前端必须按 using 换话术，绝不能把它当路径报出去。
+ * pythonPath / ffmpegPath 保留老语义（runtime 下那两份的路径，没有就是空串）。
+ */
 export function runtimeInfo() {
   const hasPy = existsSync(PY_EXE);
   const hasFf = existsSync(FF_EXE);
-  let installed = false;
+  let mark = null;
   try {
-    installed = Boolean(JSON.parse(readFileSync(MARK, 'utf8')).ok);
+    mark = JSON.parse(readFileSync(MARK, 'utf8'));
   } catch {}
+  const installed = Boolean(mark && mark.ok);
+  // 老标记文件没有 using 字段 → 空串，前端按 bytes 兜底
+  const using = installed && mark.using ? String(mark.using) : '';
+  const external = using === '本机已有的';
   let progress = null;
   try {
     progress = JSON.parse(readFileSync(PROGRESS, 'utf8'));
   } catch {}
+  const pyReal = external
+    ? String(mark.python || '')
+    : hasPy ? PY_EXE.split('\\').join('/') : '';
+  const ffReal = external
+    ? String(mark.ffmpeg || '')
+    : hasFf ? FF_EXE.split('\\').join('/') : '';
   return {
     busy,
     installed,
+    using,
     hasPython: hasPy,
     hasFfmpeg: hasFf,
     pythonPath: hasPy ? PY_EXE : '',
     ffmpegPath: hasFf ? FF_EXE : '',
+    pythonRealPath: pyReal,
+    ffmpegRealPath: ffReal,
     progress,
+    // 我们自己装东西的位置。本机已有时这里可能根本不存在 —— 前端别拿去当「Python 的路径」。
     dir: RUNTIME,
-    bytes: hasPy || hasFf ? dirSize(RUNTIME) : 0,
+    // 只有我们真往 runtime 里放过东西才统计；本机已有的必须是 0 且带 using 标记。
+    bytes: external ? 0 : hasPy || hasFf ? dirSize(RUNTIME) : 0,
   };
 }
 

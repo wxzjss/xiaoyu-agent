@@ -13,7 +13,7 @@
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync, readdirSync, statSync,
 } from 'node:fs';
-import { join, dirname, relative, extname, basename } from 'node:path';
+import { join, dirname, relative, extname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -21,7 +21,17 @@ import { publishViaApi } from './publish-api.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
-const DIST = join(ROOT, 'dist', 'release');
+/**
+ * 发布物落在哪。
+ *
+ * 【2026-11-10 加环境变量覆盖】`check-release-boundary.mjs` 会在回归里跑一次
+ * `publish --dry` 来验发布边界。它和别的检查并行时，两边都往 dist/release 写，
+ * 谁先谁后就把对方踩了（实测回归冤枉过它一次红）。给它一个自己专属的目录，
+ * 从此井水不犯河水：`XY_PUBLISH_DIST=... node scripts/publish.mjs --dry`
+ */
+const DIST = process.env.XY_PUBLISH_DIST
+  ? resolve(process.env.XY_PUBLISH_DIST)
+  : join(ROOT, 'dist', 'release');
 const TOKEN_FILE = 'C:\\GitHub仓库\\ghp.txt';
 
 const REPO_NAME = 'xiaoyu-agent';
@@ -30,8 +40,23 @@ const BRANCH = 'main';
 
 // ------------------------------------------------------------------ 白名单
 
-/** 要发布的目录（整个搬过去） */
-const INCLUDE_DIRS = ['src', 'public', 'electron', 'persona', 'assets', 'scripts'];
+/**
+ * 要发布的目录（整个搬过去）
+ *
+ * 【2026-11-10 补 skills —— 主人问「该发布的有没有漏发」查出来的】
+ * src/skills.mjs 的 skillsDir() 明写着：用户目录 <dataDir>/skills 没内容时
+ * 回落到 <root>/skills（随包带的那份）。注释还专门点了这个坑：
+ * 「换电脑 / 清空 .state 之后目录是空的，索引整段从提示词里消失 ——
+ *   默认提示词就不是同一份了」。
+ *
+ * 而这里原来没有 skills → GitHub 源码发布出去的那份**不带出厂技能**：
+ * 别人 clone 下来跑，data/skills 空、root/skills 也不存在 → 五个出厂技能全消失，
+ * 提示词少一大段，行为跟他这台机器上完全不是一回事。
+ *
+ * （Electron 安装包那边 package.json 的 build.files 里一直有 "skills/**\/*"，
+ *   所以只有「源码发布」这条路漏了 —— 两边得一致。）
+ */
+const INCLUDE_DIRS = ['src', 'public', 'electron', 'persona', 'skills', 'assets', 'scripts'];
 
 /** 要发布的单文件 */
 const INCLUDE_FILES = [
@@ -117,11 +142,16 @@ function scanRules(extraNames) {
       id: 'win-user',
       re: /C:[\\/]+Users[\\/]+(?!<|\{|\$|你|用户名|username|user\b)[A-Za-z0-9_.\-]+/gi,
       why: 'Windows 用户目录里的真实用户名',
+      /* 【2026-11-10】测试基建脚本里写死本机路径是它的职责（隔离实例按真实
+       * 数据目录建副本），跟 check-*.mjs 一样：用户拿 exe 用不上，不外发。
+       * 它已经在 EXCLUDE_PATTERNS 讨论过，这里豁免扫描防止误伤中止。 */
+      skipFiles: ['scripts/_test-instance.mjs'],
     },
     {
       id: 'win-user-any',
       re: /[Cc]:[\\/]Users[\\/](?!<|\{|%|\$|你|用户名|username)[^\s"'`<>)\]]{1,60}/g,
       why: '写死的 Windows 用户绝对路径',
+      skipFiles: ['scripts/_test-instance.mjs'],
     },
     {
       id: 'gh-token',
@@ -140,7 +170,9 @@ function scanRules(extraNames) {
     },
     {
       id: 'password',
-      re: /(密码|password|passwd|pwd)\s*[:=：]\s*['"]?[^\s'"]{4,}/gi,
+      /* 【2026-11-10 修·布尔值误报】字段值是 true/false/null/undefined 这类
+       * 关键字（比如 src-ui 编译产物里的 `password: true`）不是密码，跳过。 */
+      re: /(密码|password|passwd|pwd)\s*[:=：]\s*['"]?(?!(?:true|false|null|undefined)\b)[^\s'"]{4,}/gi,
       why: '疑似明文密码',
     },
     {
@@ -209,6 +241,8 @@ function scanRules(extraNames) {
       id: 'known-name',
       re: new RegExp(nameAlt, 'g'),
       why: '本机用户名',
+      /* 【2026-11-10】同 win-user：测试基建按本机真实环境建隔离副本，不外发 */
+      skipFiles: ['scripts/_test-instance.mjs'],
     });
   }
   return rules;
@@ -366,27 +400,42 @@ function scan(extraNames = []) {
 // ------------------------------------------------------------------ 打包
 
 /** 发布用的 .env.example（默认配置，不带任何人的 key） */
-const ENV_EXAMPLE = `# 小鱼的模型配置。第一次用：把 WANZI_API_KEY 填上（或用界面顶部【模型】按钮）。
+/* 【2026-11-10 修·这里原来是一份写死的副本，把作者在用的服务商带出去了】
+ * 主人问「发布会不会把我的东西发出去」，查出来两条泄漏都在这：
+ *   BASE_URL 写死 https://napi.wanzij.cn/v1、MODEL 写死 deepseek-v4.1-flash。
+ * 而且它跟仓库的 .env.example 是两份维护 —— 改了仓库那份这边根本不生效
+ * （实测：仓库那份已改成占位，dist/release 里还是老地址）。
+ * 现在改为直接读仓库那份（单一真源），读不到才用下面最小兜底；
+ * 读到的 BASE_URL 若是真实服务商则强制换成占位（安全闸）。 */
+const ENV_FALLBACK = `# 小鱼的模型配置。第一次用：填上 API Key（或用界面顶部【模型】按钮配）
 # 也可以换成任何 OpenAI 兼容的接口：BASE_URL 指到 .../v1 就行。
 WANZI_API_KEY=
-BASE_URL=https://napi.wanzij.cn/v1
-MODEL=deepseek-v4.1-flash
+BASE_URL=
+MODEL=
 
 # 网页版端口（桌面版自动挑空端口，不受影响）
 PORT=8787
 
-# 工作目录：不写就用项目里的 sandbox/
-# WORKSPACE=
-
-# 单轮工具调用上限。unlimited / 0 / inf = 不限（默认），只在点「停止」或模型自己收尾时结束。
+# 单轮工具调用上限。unlimited / 0 / inf = 不限（默认）。
 MAX_ROUNDS=unlimited
 
-# 上下文压缩：历史超过这么多 token 就把旧对话折成一条摘要，最近的尾巴原样保留。
-# off / 0 / none 关闭；默认 120000。
+# 上下文压缩阈值（token）。off / 0 / none 关闭。
 CONTEXT_LIMIT=120000
-# 压缩后保留的尾部比例（占 CONTEXT_LIMIT），默认留最近四分之一。
 CONTEXT_KEEP_RATIO=0.25
 `;
+const ENV_EXAMPLE = (() => {
+  try {
+    const src = readFileSync(join(ROOT, '.env.example'), 'utf8');
+    const m = /^\s*BASE_URL\s*=\s*(\S+)/m.exec(src);
+    if (m && m[1] && !/example\.com|your-|xxx|placeholder|localhost|127\.0\.0\.1/i.test(m[1])) {
+      console.warn('… .env.example 的 BASE_URL 像是真实服务商（' + m[1] + '），发布改用占位版本');
+      return ENV_FALLBACK;
+    }
+    return src;
+  } catch {
+    return ENV_FALLBACK;
+  }
+})();
 
 /** 发布用的 .gitignore */
 const GITIGNORE = `# 私有数据，绝不提交
@@ -607,3 +656,50 @@ try {
 try {
   git(['remote', 'set-url', 'origin', `https://github.com/${repo.owner}/${REPO_NAME}.git`]);
 } catch {}
+
+/**
+ * 【2026-11-10 主人钦点：发布时 main 分支也要带上新版】
+ *
+ * 以前这里只把「发布物快照」推进远端 main —— 那是**单提交**（每次 force 覆盖），
+ * 远端 main 上看不到任何开发历史，clone 下来也没法接着改。
+ * 本地这条 master 分支攒了 500 多个提交从来没上去过。
+ *
+ * 现在补一趟：把**本地仓库当前分支**也推到远端 main，让远端 main
+ * 就是一条能看、能改、能 clone 的真代码分支。
+ *
+ * 顺序讲究：先推快照（上面那趟，保证发布物一定最新），再推源码历史
+ * （这趟是 force，会把 snapshot 那条盖掉 —— 但源码树本来就是超集，
+ * 发布物该有的文件一个不少，只是多了提交历史与开发文件）。
+ * 所以这趟必须放在最后，且失败不判死：快照已经上去了，发布就算成了。
+ */
+const SYNC_MAIN = !DRY && !argv.includes('--no-source-sync');
+if (SYNC_MAIN) {
+  try {
+    /* 当前分支名（通常 master；也可能是别人临时开的分支） */
+    const cur = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
+    if (cur && cur !== 'HEAD') {
+      console.log(`\n… 同步源码分支到远端 main（本地 ${cur} → origin/main）`);
+      const attempts = [
+        ['-c', 'http.version=HTTP/1.1', 'push', '-u', 'origin', `${cur}:${BRANCH}`, '--force'],
+        ['-c', 'http.version=HTTP/1.1', '-c', 'http.postBuffer=524288000', 'push', '-u', 'origin', `${cur}:${BRANCH}`, '--force'],
+        ['-c', 'http.version=HTTP/1.1', 'push', '-u', 'origin', `${cur}:${BRANCH}`, '--force'],
+      ];
+      let ok = false;
+      for (const [i, args] of attempts.entries()) {
+        try {
+          execFileSync('git', args, { cwd: ROOT, stdio: 'pipe' });
+          ok = true;
+          break;
+        } catch (e) {
+          const m = String(e?.stderr || e?.message || '').split('\n').filter(Boolean).pop() || '';
+          console.log(`… 源码同步第 ${i + 1} 次失败：${m.slice(0, 110)}`);
+          if (i < attempts.length - 1) execFileSync(process.execPath, ['-e', 'setTimeout(()=>{}, 4000)']);
+        }
+      }
+      if (ok) console.log(`✓ 远端 ${BRANCH} 已是本地 ${cur} 的完整历史`);
+      else console.log(`… 源码历史没推上去（发布物已经上去了，不影响使用）：下次网络好时重跑 publish 即可`);
+    }
+  } catch (e) {
+    console.log(`… 源码分支同步跳过：${String(e?.message ?? e).slice(0, 120)}`);
+  }
+}

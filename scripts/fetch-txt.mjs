@@ -1,8 +1,12 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const url = process.argv[2];
-const outDir = process.argv[3] || 'D:\\小鱼Agent\\dump\\txt';
+/* 【2026-11-10 修】默认输出目录原来写死 'D:\\小鱼Agent\\dump\\txt'（作者本机）。
+ * 现在默认落在仓库自己的 dump/txt（脚本位置向上推一层），谁放哪都对。 */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const outDir = process.argv[3] || join(REPO_ROOT, 'dump', 'txt');
 if (!url) { console.error('用法: node fetch-txt.mjs <url> [输出目录]'); process.exit(1); }
 mkdirSync(outDir, { recursive: true });
 

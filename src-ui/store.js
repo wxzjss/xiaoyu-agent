@@ -290,6 +290,48 @@ function dropLandedPending(list, turns) {
   return keep.length === list.length ? list : keep;
 }
 
+/**
+ * 清掉**本屏**所有乐观气泡（不管有没有历史可对账）。
+ *
+ * 【2026-11-10 加·上游失败那一路的收尾】
+ * 正常收尾走 setHistory → dropLandedPending（拿历史去比对，最准）。
+ * 但上游失败时这一轮可能**没有历史可拿**（assistant 一条都没有），
+ * 那时 setHistory 不会被调用，乐观气泡就永远挂在屏幕上 ——
+ * 实测每失败一轮多一颗，连跑三次屏幕上三颗一样的主人气泡。
+ *
+ * 触发条件很明确：只有「这一轮真的结束了」才会调它，
+ * 而话在开跑前就已 saveUserMessage 落过盘 —— 屏幕上不该再有「未落盘」的账。
+ * 只清本屏（按 sid 过滤），别的会话的账原样留着（切回去还要用）。
+ */
+export function dropPendingForScreen() {
+  const _sid = String(logState().sid || '');
+  const before = pendingUser.length;
+  pendingUser = pendingUser.filter((p) => p.sid && p.sid !== _sid);
+  const dropped = before - pendingUser.length;
+  if (dropped) bump();
+  return dropped;
+}
+
+/**
+ * 按文字撤掉一条乐观气泡（不看历史）。
+ *
+ * 窄口子：只按文本精确匹配（归一化后相同或结尾相同），不碰别人的账。
+ * 留给「知道具体是哪句话」的调用方用。
+ */
+export function dropPendingByText(text) {
+  const n = norm(text);
+  if (!n) return 0;
+  const before = pendingUser.length;
+  pendingUser = pendingUser.filter((p) => {
+    const pn = norm(p.text);
+    if (!pn) return false;
+    return !(pn === n || pn.endsWith(n) || n.endsWith(pn));
+  });
+  const dropped = before - pendingUser.length;
+  if (dropped) bump();
+  return dropped;
+}
+
 /* ── 暴露给 chat.js / index.html（它们在 React 之外） ───────── */
 
 window.__logStore = {
@@ -300,6 +342,8 @@ window.__logStore = {
   pushPendingUser,
   setPendingRewind,
   dropPending,
+  dropPendingForScreen,
+  dropPendingByText,
   pushNote,
   setWindowStart,
   getWindowStart,

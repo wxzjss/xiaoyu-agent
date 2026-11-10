@@ -14,11 +14,48 @@ const REPO = 'wxzjss/xiaoyu-agent';
 const BRANCH = 'main';
 const API = 'https://api.github.com';
 
-const token = readFileSync('C:/GitHub仓库/ghp.txt', 'utf8')
-  .split(/\r?\n/)
-  .map((s) => s.trim())
-  .filter((s) => s.startsWith('ghp_'))[0];
-if (!token) throw new Error('ghp.txt 里找不到 ghp_ 开头的 token');
+/**
+ * 【2026-11-10 修·本机路径写死，别人一跑就崩】
+ *
+ * 主人问「在我的电脑上能跑的在别人电脑上会不会出问题」——这个脚本就是例子：
+ * 原来四处 cwd 都写死 'D:/小鱼Agent'，token 写死 'C:/GitHub仓库/ghp.txt'。
+ * 别人 clone 下来跑：目录不存在（ENOENT）+ 找不到 token，直接用不了；
+ * 而且这两条路径跟着源码发布出去了，等于把本机目录结构告诉了所有人。
+ *
+ * 现在：
+ *   · ROOT 从脚本位置向上推（scripts/ 的上一级），谁 clone 到哪都对
+ *   · token 优先读环境变量 GITHUB_TOKEN（推荐），再试几个常见位置，都没有就明确报错
+ */
+import path1 from 'node:path';
+import { fileURLToPath } from 'node:url';
+const ROOT = process.env.XY_REPO
+  ? path1.resolve(process.env.XY_REPO)
+  : path1.resolve(path1.dirname(fileURLToPath(import.meta.url)), '..');
+
+function findToken() {
+  const env = String(process.env.GITHUB_TOKEN || '').trim();
+  if (env.startsWith('ghp_') || env.startsWith('github_pat_')) return env;
+  const cands = [
+    process.env.GH_TOKEN_FILE,
+    path1.join(ROOT, '.ghp.txt'),
+    path1.join(ROOT, 'ghp.txt'),
+    path1.join(process.env.USERPROFILE || process.env.HOME || '', 'ghp.txt'),
+  ].filter(Boolean);
+  for (const f of cands) {
+    try {
+      const t = readFileSync(f, 'utf8').split(/\r?\n/).map((s) => s.trim())
+        .filter((s) => s.startsWith('ghp_') || s.startsWith('github_pat_'))[0];
+      if (t) return t;
+    } catch { /* 这个位置没有，试下一个 */ }
+  }
+  return '';
+}
+
+const token = findToken();
+if (!token) {
+  throw new Error('找不到 GitHub token：设环境变量 GITHUB_TOKEN，或把 ghp_xxx 放进 '
+    + path1.join(ROOT, '.ghp.txt') + '（该文件已在 .gitignore 里，不会被发布）');
+}
 
 const H = {
   Authorization: `token ${token}`,
@@ -45,7 +82,7 @@ async function api(path, opts = {}) {
 
 /** 本地 HEAD 的文件清单：路径 / 模式 / blob sha */
 function localTree() {
-  const out = execSync('git ls-tree -r HEAD', { cwd: 'D:/小鱼Agent', encoding: 'utf8' });
+  const out = execSync('git ls-tree -r HEAD', { cwd: ROOT, encoding: 'utf8' });
   return out
     .split('\n')
     .filter(Boolean)
@@ -56,8 +93,8 @@ function localTree() {
     });
 }
 
-const localHead = execSync('git rev-parse HEAD', { cwd: 'D:/小鱼Agent', encoding: 'utf8' }).trim();
-const localMsg = execSync('git log -1 --pretty=%B', { cwd: 'D:/小鱼Agent', encoding: 'utf8' }).trim();
+const localHead = execSync('git rev-parse HEAD', { cwd: ROOT, encoding: 'utf8' }).trim();
+const localMsg = execSync('git log -1 --pretty=%B', { cwd: ROOT, encoding: 'utf8' }).trim();
 const files = localTree();
 console.log('本地 HEAD      :', localHead);
 console.log('本地文件数      :', files.length);
@@ -87,7 +124,7 @@ for (const f of files) {
   } else {
     // 本地 git 里有、但工作区可能读不到（理论上不会），用 git cat-file 取原始字节
     const buf = execSync(`git cat-file blob ${f.sha}`, {
-      cwd: 'D:/小鱼Agent',
+      cwd: ROOT,
       maxBuffer: 64 * 1024 * 1024,
     });
     const blob = await api(`/repos/${REPO}/git/blobs`, {

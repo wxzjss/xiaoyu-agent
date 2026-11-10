@@ -7296,6 +7296,8 @@
     beginEdit: () => beginEdit,
     bump: () => bump,
     dropPending: () => dropPending,
+    dropPendingByText: () => dropPendingByText,
+    dropPendingForScreen: () => dropPendingForScreen,
     endEdit: () => endEdit,
     getEdit: () => getEdit,
     getSnapshot: () => getSnapshot,
@@ -7480,6 +7482,27 @@
     });
     return keep.length === list.length ? list : keep;
   }
+  function dropPendingForScreen() {
+    const _sid = String(logState().sid || "");
+    const before = pendingUser.length;
+    pendingUser = pendingUser.filter((p) => p.sid && p.sid !== _sid);
+    const dropped = before - pendingUser.length;
+    if (dropped) bump();
+    return dropped;
+  }
+  function dropPendingByText(text) {
+    const n = norm(text);
+    if (!n) return 0;
+    const before = pendingUser.length;
+    pendingUser = pendingUser.filter((p) => {
+      const pn = norm(p.text);
+      if (!pn) return false;
+      return !(pn === n || pn.endsWith(n) || n.endsWith(pn));
+    });
+    const dropped = before - pendingUser.length;
+    if (dropped) bump();
+    return dropped;
+  }
   window.__logStore = {
     bump,
     notify,
@@ -7488,6 +7511,8 @@
     pushPendingUser,
     setPendingRewind,
     dropPending,
+    dropPendingForScreen,
+    dropPendingByText,
     pushNote,
     setWindowStart,
     getWindowStart,
@@ -7698,6 +7723,22 @@
           dir: String(it.dir || "out"),
           isLive: true
         });
+      } else if (it.k === "user") {
+        const _t = String(it.t || "");
+        if (!_t.trim()) continue;
+        out.push({
+          kind: "user",
+          key,
+          text: _t,
+          atts: Array.isArray(it.atts) ? it.atts : [],
+          who: String(it.who || "\u4E3B\u4EBA"),
+          tag: "\u63D2\u8BDD",
+          steer: true,
+          ts: Number(it.ts) || null,
+          rewindId: it.rewindId != null ? it.rewindId : null,
+          edited: false,
+          isLive: true
+        });
       } else if (it.k === "note") {
         out.push({ kind: "note", key, text: String(it.t || ""), isLive: true });
       }
@@ -7885,7 +7926,22 @@
       const r = await fetch("/api/sessions/edit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: window.sessionId, text: next })
+        /* 【2026-11-10 修·编辑保存必失败（真 bug，主人报「编辑有没有问题」查出来的）】
+         *
+         * 这里原来只传 { id, text } —— **漏了 at**。
+         * 后端 editMessage(session, at, text) 要靠 at 定位改哪一句：
+         *   const n = Number(idx);  // idx = undefined → NaN
+         *   if (!Number.isInteger(n) || ...) return null;  → 「这句不能改（系统消息、或者已经不存在了）」
+         * 于是主人点「存上」必然失败，还以为是这句话本身不能改。
+         * 实测对比：不传 at → error；传正确的 at → ok:true, unchanged:false。
+         *
+         * 注意 at 可能为 0（下标 0 是合法的），所以用 Number.isFinite 判而不是真值判。
+         */
+        body: JSON.stringify({
+          id: window.sessionId,
+          ...Number.isFinite(Number(at)) ? { at: Number(at) } : {},
+          text: next
+        })
       }).then((x) => x.json()).catch(() => null);
       setBusy(false);
       if (!r || r.error) {

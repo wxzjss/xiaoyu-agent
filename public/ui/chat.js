@@ -293,10 +293,36 @@ async function finishTurn(id, snap, startedAt) {
     }
     if (window.sessionId !== id) return;
     /* 这一轮归历史：先换 state，再叫一次画。顺序反了就会被旧历史盖回去。 */
-    if (turns) {
+    /**
+     * 【2026-11-10 修·空历史把乐观气泡留成孤儿（真 bug）】
+     *
+     * 这里原来是 `if (turns)`。而 **空数组是真值** —— `if ([])` 为 true。
+     * 于是「服务端这条历史是空的」会走进 logSetHistory(id, [])，
+     * 把 store 的历史设成空；接着 setHistory 里的 dropLandedPending 拿空数组
+     * 去清乐观气泡 —— 一条都匹配不上 → 主人那颗气泡永久留在屏幕上。
+     *
+     * 什么情况下历史会空？上游失败（402/502/断网）时：主人那句话是落了盘，
+     * 但 assistant 一条都没有，而 finishTurn 拉到的 turns 可能是 []（服务端还没
+     * 写完 / 读到了半截）。实测：每跑一次这种失败轮，屏幕上就多一颗叠着，
+     * 连跑三次变三颗（check-pending-user-dedupe 就是这么红的）。
+     *
+     * 现在：只有**真的拿到了历史**（非空数组）才换屏。空数组一律按「这次没拿到」
+     * 处理 —— 保持原屏不动，等下一次刷新自己对齐。宁可用旧屏，也不用空屏。
+     */
+    if (Array.isArray(turns) && turns.length) {
       logSetHistory(id, turns);
       logSetLive(id, null);
       renderLog({ force: true });
+    } else {
+      /* 拿不到历史也要把本屏的乐观气泡清掉：
+       * 这一轮已经结束了（running=false 才走到 finishTurn），而话早在开跑前
+       * 就 saveUserMessage 落过盘了 —— 屏幕上不该再留一颗「还没落盘」的气泡。
+       * 不清它就会永远叠着：实测上游失败（402/502）那条路每轮多一颗，
+       * 连跑三次屏幕上三颗一模一样的主人气泡。
+       *
+       * 只清**本屏**的账（dropPendingForScreen 内部按 sid 过滤），
+       * 别的会话的账原样留着（切回去还要用）。 */
+      try { window.__logStore && window.__logStore.dropPendingForScreen && window.__logStore.dropPendingForScreen(); } catch (e) {}
     }
   } catch (e) {
     try { console.warn('[finishTurn] 收尾对账失败（不影响屏幕，历史下次刷新会自己对齐）:', e && e.message ? e.message : e); } catch (e2) {}

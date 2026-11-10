@@ -252,6 +252,7 @@ import {
 } from './opening.mjs';
 import {
   listModels,
+  keyForBaseURL,
   saveModel,
   deleteModel,
   selectModel,
@@ -2079,6 +2080,32 @@ function appendLiveItem(items, ev) {
     const it = lastOf('say');
     const t = String(ev.text || '');
     if (it && !it.t && t) it.t = t;
+  } else if (ev.type === 'steer') {
+    /* 【2026-11-10 主人钦点·插话显示进对话流中间】
+     *
+     * 主人要的形态：她「消息1 → 工具」的时候插话发出去，
+     * 插话就显示在**消息1 之后、消息2 之前**的对话流位置。
+     *
+     * 数据层早就对了（steer 进 inbox、agent loop 下一步取走当 user 消息），
+     * 错的是屏幕：前端把插话画成乐观气泡，合并公式是「turns + pend + live」——
+     * pend 排在 live **之后** = 屏幕最底，她后面说的话又跟在后面长，
+     * 于是插话永远卡在最底下，轮末落盘重画才回到正确位置。
+     *
+     * 现在插话自己就是 live 清单里的**一条独立条目**（k:'user'），
+     * 位置 = 事件真实发生的顺序 —— 分段线，绝不并进她正在说的那段正文。
+     * 前端 liveToItems 认它、直出成主人气泡，乐观气泡那条路随之退役。 */
+    const _t = String(ev.text || '');
+    if (_t || (Array.isArray(ev.atts) && ev.atts.length)) {
+      items.push({
+        k: 'user',
+        t: _t,
+        steer: true,
+        ts: Number(ev.ts) || 0,
+        who: String(ev.who || ''),
+        ...(Array.isArray(ev.atts) && ev.atts.length ? { atts: ev.atts } : {}),
+        ...(ev.rewindId != null ? { rewindId: ev.rewindId } : {}),
+      });
+    }
   } else if (ev.type === 'sentfile' || ev.type === 'files') {
     /* 【2026-11-10 收编（A2）】她发的文件进清单 —— 前端不再自己画文件卡。
      *
@@ -2201,6 +2228,23 @@ function buildLiveItems(events) {
       /* 她那一句已经在屏幕上长着：只是接着长，**不算分段线** */
       if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
       else { flush(); items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') }); }
+    } else if (e.type === 'steer') {
+      /* 【2026-11-10 主人钦点·插话进对话流中间】与 appendLiveItem 同一口径：
+       * 插话是独立条目 = 分段线（flush 前置，不并进她正在说的正文）。
+       * 这是「从头重算」那条路，两份实现必须算出逐字相等的清单。 */
+      const _t = String(e.text || '');
+      if (_t || (Array.isArray(e.atts) && e.atts.length)) {
+        flush();
+        items.push({
+          k: 'user',
+          t: _t,
+          steer: true,
+          ts: Number(e.ts) || 0,
+          who: String(e.who || ''),
+          ...(Array.isArray(e.atts) && e.atts.length ? { atts: e.atts } : {}),
+          ...(e.rewindId != null ? { rewindId: e.rewindId } : {}),
+        });
+      }
     } else if (e.type === 'sentfile' || e.type === 'files') {
       /* 【2026-11-10 收编（A2）】她发的文件进清单（与 appendLiveItem 同一口径：
        * 同一份文件只留一条；新文件 = 新条目 = 分段线）。 */
@@ -3136,7 +3180,9 @@ async function startQueuedTurn(sessionId, queue = null) {
       }
     } catch {}
     if (ac.signal.aborted) send({ type: 'aborted', reason: String(ac.signal.reason ?? '') });
-    else send({ type: 'error', message: String(e?.message ?? e) });
+    /* 【2026-11-10 修·错误提示画两遍】落盘过就打 persisted，
+     * 前端便不再补画一颗（屏幕只认历史那一条）。见前端 error 分支注释。 */
+    else send({ type: 'error', message: String(e?.message ?? e), persisted: true });
     throw e;
   } finally {
     if (live) { live.done = true; live.endedAt = Date.now(); }
@@ -4040,6 +4086,121 @@ const server = createServer(async (req, res) => {
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
+  }
+
+  /**
+   * 【2026-11-10 主人钦点：「添加模型」的「选一个」不要写死的】
+   *
+   * 以前那颗下拉是前端写死的一张 PROVIDERS 预设表（按 base host 认出哪家，
+   * 列出那家的常用模型名）。缺点很直接：换了个分组 / 新模型上线 / 小众家，
+   * 下拉里一个字都没有，还得自己照着文档手打。
+   *
+   * 现在这里直接问服务商：GET {base}/models（OpenAI 兼容），把真实可用的 id 拿回来。
+   * 前端点「拉一下」调它，成功就填下拉、失败才回落到预设表。
+   *
+   * 几条硬规矩：
+   *   · **key 绝不进日志**（这不是可选要求，写日志时只能提长度/是否为空）
+   *   · 超时 10 秒就认输 —— 主人正在填表，不能让他干等
+   *   · base 规整：末尾斜杠去掉；已经带 /v1 就直接拼 /models，
+   *     否则按常见形态先试 /v1/models，再退一步试 /models（有些家两种都挂）
+   */
+  if (req.method === 'POST' && url.pathname === '/api/models/discover') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { ok: false, error: 'invalid JSON body' });
+    }
+    const _base0 = String((payload && payload.base) || '').trim();
+    let _key0 = String((payload && payload.key) || '').trim();
+    if (!_base0) return json(res, 400, { ok: false, error: '先填接口地址' });
+    if (!/^https?:\/\//i.test(_base0)) return json(res, 400, { ok: false, error: '接口地址要以 http:// 或 https:// 开头' });
+
+    /**
+     * 【2026-11-10 修·「拉一下」永远 401（主人报「拉一下会没拉到」）】
+     *
+     * 前端编辑已有模型时，Key 输入框是**空的**（后端只回 hasKey:true / keyHint，
+     * 从不把 key 发回前端，这是对的）。而「拉一下」原来只读那个空输入框 →
+     * 不带 Authorization 去问 /v1/models → 服务商回 401 → 主人看到「没拉到」。
+     * 实测就是这样：同一个地址同一个 key，命令行带上就 200 拉到 4 个模型，
+     * 界面上点就 401。
+     *
+     * 现在：前端没填 key 时，服务端**用这个地址已保存的那个 key** 兜底
+     * （按 baseURL 归一化后匹配，忽略末尾斜杠和 /v1 差异）。
+     * 主人没填就代表「用已保存的那个」，这正是他的意思。
+     */
+    if (!_key0) {
+      try {
+        /* 注意：不能用 listModels() 的返回去找 key（它只回 hasKey，从来不带 apiKey）。
+         * 必须走 keyForBaseURL —— 它是专门为这件事开的口子。 */
+        const _found = keyForBaseURL(_base0);
+        if (_found) {
+          _key0 = _found;
+          try { diagLog('models-discover-keyfallback', '按地址找到已保存的 key（长度 ' + _key0.length + '）'); } catch {}
+        } else {
+          try { diagLog('models-discover-nokey', 'base=' + _base0 + ' 没有已保存的 key，按无 key 请求'); } catch {}
+        }
+      } catch (e) { /* 拿不到就用空 key 去试（有些自建站不校验） */ }
+    }
+
+    const _trimSlash = (s) => String(s ?? '').trim().replace(/\/+$/, '');
+    const _b = _trimSlash(_base0);
+    /* 候选 URL：带 /v1 的原样 > 补 /v1 > 就是 /models（少数家这么挂） */
+    const _cands = /\/v1$/i.test(_b)
+      ? [`${_b}/models`]
+      : [`${_b}/v1/models`, `${_b}/models`];
+
+    const _headers = { Accept: 'application/json' };
+    if (_key0) _headers.Authorization = `Bearer ${_key0}`;
+
+    let _lastErr = '';
+    for (const _u of _cands) {
+      try {
+        const _res = await fetch(_u, { method: 'GET', headers: _headers, signal: AbortSignal.timeout(10_000) });
+        if (!_res.ok) {
+          /* 别把响应体整段塞回前端（可能有内部地址/调试信息），只留一行 */
+          const _txt = await _res.text().catch(() => '');
+          _lastErr = `HTTP ${_res.status}` + (_txt ? '：' + String(_txt).slice(0, 160).replace(/\s+/g, ' ') : '');
+          continue;
+        }
+        const _j = await _res.json().catch(() => null);
+        /* OpenAI 兼容形状：{data:[{id:'...'}]}；少数家直接给数组或 {models:[...]} */
+        let _arr = null;
+        if (_j && Array.isArray(_j.data)) _arr = _j.data;
+        else if (Array.isArray(_j)) _arr = _j;
+        else if (_j && Array.isArray(_j.models)) _arr = _j.models;
+        if (!_arr) { _lastErr = '返回里没有模型列表（不是 OpenAI 兼容格式）'; continue; }
+        const _ids = [];
+        for (const _m of _arr) {
+          const _id = String((_m && (_m.id || _m.name || _m.model)) || '').trim();
+          if (_id && !_ids.includes(_id)) _ids.push(_id);
+        }
+        if (!_ids.length) { _lastErr = '拉到了列表，但里面没有可用的模型名'; continue; }
+        _ids.sort((a, b) => a.localeCompare(b));
+        try { diagLog('models-discover', `ok base=${_b} keyLen=${_key0.length} count=${_ids.length}`); } catch {}
+        return json(res, 200, { ok: true, ids: _ids, url: _u });
+      } catch (e) {
+        /* 网络层的错误对主人没意义（"fetch failed" / ECONNREFUSED），翻成人话 */
+        const _n = String(e?.name || '');
+        const _m = String(e?.message || '');
+        let _h = _m;
+        if (_n === 'TimeoutError' || /timeout/i.test(_m)) {
+          _h = '等太久了（10 秒没回话），地址或网络可能不对';
+        } else if (/ECONNREFUSED/i.test(_m)) {
+          _h = '连不上这个地址（服务没开 / 端口不对）';
+        } else if (/ENOTFOUND|getaddrinfo/i.test(_m)) {
+          _h = '找不到这个域名，地址可能写错了';
+        } else if (/certificate|SSL|TLS/i.test(_m)) {
+          _h = '证书有问题，试试 http:// 而不是 https://';
+        } else if (!_m || _m === 'fetch failed') {
+          _h = '连不上：地址不对，或者这个服务不接 /v1/models';
+        }
+        _lastErr = _h.slice(0, 180);
+      }
+    }
+    /* 日志里只记地址和失败原因 —— key 一个字都不写 */
+    try { diagLog('models-discover-fail', `base=${_b} keyLen=${_key0.length} err=${_lastErr}`); } catch {}
+    return json(res, 200, { ok: false, error: _lastErr || '拉不到模型列表' });
   }
 
   // ---- 聊天风格：少说教开关 ----
@@ -10626,7 +10787,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               saveSession(_s);
             }
           } catch {}
-          send({ type: 'error', message: errText });
+          /* 【2026-11-10 修·错误提示画两遍】persisted=true 告诉前端
+           * 「这条已经落进历史了，你别再自己补一颗」—— 屏幕只认落盘的那一条，
+           * 轮末换历史时不闪、不双画。 */
+          send({ type: 'error', message: errText, persisted: true });
         }
       }
     } finally {
@@ -11110,6 +11274,46 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         return json(res, 500, { ok: false, running: true, error: '话没排进信箱：' + String(e?.message ?? e) });
       }
       diagLog('interject-steered', 'session=' + sessionId + ' pending=' + inboxCount(sessionId));
+      /**
+       * 【2026-11-10 主人钦点·插话立刻出现在对话流中间】
+       *
+       * 主人原话：「消息1，调用工具，在插话预发送阶段【直接发送】后并将插话
+       * 显示在这个位置，收到插话内容然后消息2，调用工具」。
+       *
+       * 数据层本来就是对的（steer 进 inbox，agent loop 下一步取走当 user 消息），
+       * 错的只有屏幕：前端把插话画成乐观 pend，合并公式 turns+pend+live 把 pend
+       * 排在 live 后面 = 永远卡在屏幕最底，轮末重画才归位。
+       *
+       * 现在把它作为一条真事件推进**当前这一轮的直播清单**：
+       * 位置 = 事件真实顺序（她消息1 的正文/工具之后、消息2 之前），
+       * 前端 liveToItems 认出 k:'user' 直出成主人气泡 —— 不再有乐观气泡。
+       *
+       * events 与 items 两边都落，保证「增量攒」和「从头重算」算出来一模一样
+       * （check-live-items-parity 钉的就是这两份逐字相等）。
+       */
+      try {
+        const lv = liveLogs.get(sessionId);
+        if (lv && !lv.done) {
+          const _steerEv = {
+            type: 'steer',
+            text: String(message || ''),
+            ts: Date.now(),
+            at: Date.now(),
+            ...(_att.length ? { atts: _att.map((x) => ({ path: String(x.path), name: String(x.name || ''), kind: String(x.kind || '') })) } : {}),
+          };
+          lv.rev = (typeof lv.rev === 'number' ? lv.rev : 0) + 1;
+          _steerEv.rev = lv.rev;
+          if (!Array.isArray(lv.items)) lv.items = [];
+          if (Array.isArray(lv.events) && lv.events.length < LIVE_MAX_EVENTS) {
+            _steerEv.seq = lv.events.length;
+            lv.events.push(_steerEv);
+          }
+          appendLiveItem(lv.items, _steerEv);
+        }
+      } catch (e) {
+        /* 推不进直播清单不算插话失败：话已经进信箱、落盘了，轮末照样能看到 */
+        try { diagLog('interject-steer-item-fail', String(e?.message ?? e)); } catch {}
+      }
       return json(res, 200, {
         ok: true,
         running: true,

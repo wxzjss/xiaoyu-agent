@@ -1,6 +1,6 @@
 {
   "name": "xiaoyu-mini-agent",
-  "version": "0.9.45",
+  "version": "0.9.46",
   "private": true,
   "description": "小鱼Agent —— 一个自用的极简 Agent 平台：Electron 桌面版 + OpenAI 兼容 API + 工具循环",
   "main": "electron/main.cjs",
@@ -24,7 +24,9 @@
     "preflight": "node scripts/preflight.mjs",
     "check:id": "node scripts/check-identifiers.mjs",
     "check:live": "node scripts/sync-live.mjs --check",
-    "build:ui": "node esbuild.config.mjs"
+    "build:ui": "node esbuild.config.mjs",
+    "models:check": "node scripts/refresh-model-presets.mjs",
+    "models:fix": "node scripts/refresh-model-presets.mjs --apply"
   },
   "devDependencies": {
     "electron": "33.4.11",

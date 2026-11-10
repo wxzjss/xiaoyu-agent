@@ -183,7 +183,7 @@ for (const sub of ['src', 'public', 'electron', 'persona', 'assets', 'scripts', 
 }
 if (existsSync(join(ROOT, 'package.json'))) targets.push('package.json');
 
-const report = { same: 0, written: 0, diff: 0 };
+const report = { same: 0, written: 0, diff: 0, writtenList: [] };
 
 /**
  * 把一个文件从源目录同步到目标目录。
@@ -218,6 +218,8 @@ function syncTo(destRoot, rel, opts = {}) {
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, readFileSync(srcFile));
   report.written++;
+  /* 记下写了哪些（相对源根）。末尾要据此判断「这次动没动后端代码，需不需要重启」。 */
+  report.writtenList.push(rel);
 }
 
 console.log('源码目录: ' + ROOT);
@@ -275,3 +277,22 @@ if (CHECK) {
 console.log('');
 console.log('提醒：同步只是让「已经装好的程序」立刻用上新代码；');
 console.log('      要发版还是要重新打 asar（npm run pack:exe）。');
+
+/**
+ * 【2026-11-10 加·后端改动必须重启才生效，别让人白等】
+ *
+ * 踩过的坑：改完 src/server.mjs（模型列表拉取兜底），sync-live 同步过去了，
+ * 文件确实是新的，但**正在跑的进程还持有旧模块**（Node 的 ESM 加载一次就缓存，
+ * 不重启不会重新读盘）。结果界面上点「拉一下」还是 401，
+ * 查了半天代码都对 —— 因为跑的根本不是那份代码。
+ *
+ * 所以：同步里只要动了 src/ 或 electron/ 下的 .mjs/.cjs，就必须明确喊一声
+ * 「要重启才生效」，别让主人以为改失败了。
+ */
+const needRestart = (report.writtenList || []).some((f) => /^(src|electron)[\\/].*\.(mjs|cjs)$/i.test(String(f)));
+if (needRestart) {
+  console.log('');
+  console.log('⚠️ 这次改了后端代码（src/ 或 electron/ 下的 .mjs/.cjs）：');
+  console.log('   文件已经是新的了，但**正在跑的那个进程还在用内存里的旧代码**。');
+  console.log('   要让改动生效，得重启一次小鱼Agent（关掉窗口不算，要从托盘退出或重开程序）。');
+}

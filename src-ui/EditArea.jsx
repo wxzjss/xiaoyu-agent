@@ -56,7 +56,22 @@ export default function EditArea({ text, at }) {
     const r = await fetch('/api/sessions/edit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: window.sessionId, text: next }),
+      /* 【2026-11-10 修·编辑保存必失败（真 bug，主人报「编辑有没有问题」查出来的）】
+       *
+       * 这里原来只传 { id, text } —— **漏了 at**。
+       * 后端 editMessage(session, at, text) 要靠 at 定位改哪一句：
+       *   const n = Number(idx);  // idx = undefined → NaN
+       *   if (!Number.isInteger(n) || ...) return null;  → 「这句不能改（系统消息、或者已经不存在了）」
+       * 于是主人点「存上」必然失败，还以为是这句话本身不能改。
+       * 实测对比：不传 at → error；传正确的 at → ok:true, unchanged:false。
+       *
+       * 注意 at 可能为 0（下标 0 是合法的），所以用 Number.isFinite 判而不是真值判。
+       */
+      body: JSON.stringify({
+        id: window.sessionId,
+        ...(Number.isFinite(Number(at)) ? { at: Number(at) } : {}),
+        text: next,
+      }),
     }).then((x) => x.json()).catch(() => null);
     setBusy(false);
     if (!r || r.error) { note('改不了：' + ((r && r.error) || '网络错误')); return; }

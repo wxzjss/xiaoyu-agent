@@ -282,6 +282,31 @@ export function endpointFor(id) {
   };
 }
 
+/**
+ * 【2026-11-10 加】按接口地址找「已保存的那把 key」（只给服务端内部用，不下发前端）。
+ *
+ * 为什么需要它：`listModels()` 出于安全只回 hasKey/keyHint，**从不带 apiKey**。
+ * 而「拉一下模型列表」在编辑已有模型时 Key 框是空的（主人不可能每次重打一遍），
+ * 那时候必须用这个地址已存的那把 key 去问 /v1/models。
+ * 我第一版写成 `_hit.apiKey`（拿 listModels 的返回去找）——它永远是 undefined，
+ * 于是照样拿空 key 去问、照样 401。实测就在这儿栽的。
+ *
+ * 归一化规则：去尾斜杠 + 去尾部 /v1 + 小写，这样
+ * `https://x.com`、`https://x.com/`、`https://x.com/v1` 认为是同一家。
+ */
+export function keyForBaseURL(baseURL) {
+  const norm = (u) => String(u || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '').toLowerCase();
+  const want = norm(baseURL);
+  if (!want) return '';
+  try {
+    const { models } = readRaw();
+    const hit = (Array.isArray(models) ? models : []).find((m) => m && m.apiKey && norm(m.baseURL) === want);
+    return hit ? String(hit.apiKey) : '';
+  } catch {
+    return '';
+  }
+}
+
 function normalizeInput(input = {}) {
   const model = String(input.model ?? '').trim();
   const baseURL = trimSlash(input.baseURL);
@@ -430,6 +455,25 @@ export async function testModel(input = {}) {
     if (!apiKey && id && id !== ENV_ID) {
       const stored = readRaw().models.find((x) => x && x.id === id);
       apiKey = stored?.apiKey || '';
+    }
+    /**
+     * 【2026-11-10 加·新增模型时 key 留空就测不了】
+     *
+     * 前端编辑已有模型时 Key 框是空的（后端只回 hasKey/keyHint，这是对的），
+     * 原来只有「带 id」才沿用已存的 key。而主人点「选一个」测连通时
+     * 多半是在**新增**表单里（没有 id）→ apiKey 空 → 直接 400「API Key 不能为空」
+     * → 界面上就是「测连通不通过」，可 key 明明早就存过了。
+     *
+     * 现在补一条：按 baseURL 归一化去已存列表里找同地址的那条，
+     * 用它的 key。找不到才真的报「key 不能为空」。
+     */
+    if (!apiKey) {
+      try {
+        const _norm = (u) => String(u || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '').toLowerCase();
+        const _want = _norm(typed.baseURL);
+        const _hit = readRaw().models.find((x) => x && x.apiKey && _norm(x.baseURL) === _want);
+        if (_hit) apiKey = _hit.apiKey;
+      } catch { /* 读不到就按空处理，下面的校验会给出人话 */ }
     }
     if (!apiKey && id === ENV_ID) apiKey = config.apiKey;
     ep = { baseURL: typed.baseURL, apiKey, model: typed.model };

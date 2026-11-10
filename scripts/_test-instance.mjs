@@ -22,8 +22,37 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const ROOT = resolve(process.cwd());
-const USER_DATA = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data';
-const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
+/**
+ * 【2026-11-10 修·本机路径写死】
+ *
+ * 原来 USER_DATA 写死 'C:/Users/35453/AppData/Roaming/小鱼Agent/data'，
+ * EDGE 写死 'C:/Program Files (x86)/...'。
+ * 主人问「我这台能跑的在别人电脑上会不会有问题」——这就是典型：
+ * 别人机器上用户名不是 35453，路径不存在 → 隔离实例起不来、所有 CDP 检查全废。
+ * 而且这两个路径跟着源码发布出去了。
+ *
+ * 现在：
+ *   · USER_DATA 从 %APPDATA% 推（Windows 上就是 C:\Users\<谁>\AppData\Roaming）
+ *   · EDGE 依次找常见安装位置，都没有就留空（调用方自己报「没找到浏览器」）
+ *   · 都支持环境变量覆盖：XY_USER_DATA / XY_EDGE
+ */
+const USER_DATA = process.env.XY_USER_DATA
+  || join(process.env.APPDATA || join(process.env.USERPROFILE || process.env.HOME || '', 'AppData', 'Roaming'), '小鱼Agent', 'data');
+
+const EDGE = (() => {
+  if (process.env.XY_EDGE) return process.env.XY_EDGE;
+  const cands = [
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+    join(process.env.LOCALAPPDATA || '', 'Microsoft/Edge/Application/msedge.exe'),
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  ];
+  for (const c of cands) {
+    try { if (c && existsSync(c)) return c; } catch { /* 试下一个 */ }
+  }
+  return '';
+})();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 只带配置、不带任何会话：主人的聊天记录一个字节都不进临时目录 */

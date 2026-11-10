@@ -89,6 +89,28 @@ if (!process.env.XY_CDP_PORT) {
   ok(up, '页面 store 就绪（__logState.sid 有值）');
 
   if (up) {
+    /**
+     * 【2026-11-10 加·每次新建一个会话再发】
+     *
+     * 原来直接用当前会话发，断言「盘上 1 条 / 屏幕 1 颗」——
+     * 只要这个会话之前跑过就必然假红（历史里本来就有好几条 user）。
+     * 回归里同一实例反复跑、或者人手动点过几次，都会命中。
+     *
+     * 新建会话 + 只发一句 = 「双画」这个 bug 才有唯一确定的判据。
+     * 用完把这个会话删掉，不给别人留垃圾。
+     */
+    const madeSid = await cdp.eval(`return (async function(){
+      try {
+        var r = await fetch('/api/sessions/new', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ title: '__dedupe_check__' }) });
+        var j = await r.json();
+        var id = (j && j.session && j.session.id) || '';
+        if (id && typeof window.switchSession === 'function') { await window.switchSession(id); }
+        return id;
+      } catch (e) { return ''; }
+    })()`);
+    ok(!!madeSid, '新建了一个干净会话（只发一句才判得准）', String(madeSid));
+    await sleep(1200);
+
     const P = '就用一句话回我：收到。';
     await cdp.eval('window.__t = window.runTurn({ text: ' + JSON.stringify(P) + ' }); return 1;').catch(() => {});
     let done = false;
@@ -107,22 +129,53 @@ if (!process.env.XY_CDP_PORT) {
         return nrm((m.querySelector('.bubble') || {}).textContent);
       });
       var turns = (window.__logState.turns || []);
+      var diskUsers = turns.filter(function(t){ return t && t.role === 'user'; }).map(function(t){ return nrm(t.text); });
+      /* 本次刚发的那句话，在屏幕与历史里各出现几次？这才是「有没有双画」的判据。 */
+      var mine = nrm(${JSON.stringify(P)});
+      var screenMine = users.filter(function(u){ return u === mine; }).length;
+      var diskMine = diskUsers.filter(function(u){ return u === mine; }).length;
       return {
         userCount: users.length,
         users: users.map(function(u){ return u.slice(0, 24); }),
-        diskUser: nrm((turns.filter(function(t){ return t && t.role === 'user'; })[0] || {}).text),
-        diskUserCount: turns.filter(function(t){ return t && t.role === 'user'; }).length,
+        diskUser: diskUsers[0] || '',
+        diskUserCount: diskUsers.length,
+        screenMine: screenMine,
+        diskMine: diskMine,
       };
     })();`);
 
     console.log('    屏幕上主人气泡 ' + r.userCount + ' 个：' + JSON.stringify(r.users));
-    console.log('    盘上主人消息 ' + r.diskUserCount + ' 条：' + JSON.stringify(String(r.diskUser).slice(0, 24)));
-    ok(r.diskUserCount === 1, '盘上只有 1 条主人消息', '实际 ' + r.diskUserCount);
-    ok(r.userCount === 1, '屏幕上主人气泡恰好 1 个（没被留成两颗）',
-      '实际 ' + r.userCount + ' 个：' + JSON.stringify((r.users || []).map((u) => String(u).slice(0, 16))));
-    ok(!!r.users[0] && r.users[0] === String(r.diskUser).slice(0, 24),
-      '那唯一一颗气泡的文字 == 盘上那条（没串、没截）',
-      '气泡 ' + (r.users[0] || '') + ' / 盘上 ' + String(r.diskUser).slice(0, 24));
+    console.log('    盘上主人消息 ' + r.diskUserCount + ' 条');
+    console.log('    本次那句话 → 屏幕 ' + r.screenMine + ' 次 / 盘上 ' + r.diskMine + ' 次');
+    /**
+     * 【2026-11-10 判据修正·原来这条会假红】
+     *
+     * 本脚本**不新建会话**，直接在当前会话里发一句。原来断言「盘上只有 1 条
+     * 主人消息 / 屏幕恰好 1 颗」—— 只要这个会话之前跑过（回归里同一实例
+     * 反复跑、或人手动点过几次），历史里就有好几条 user，屏幕上自然也有好几颗。
+     * 那不是双画，是**本来就说了好几句话**。
+     *
+     * 真正要抓的 bug 只有一个：**同一句话被画了两遍**。
+     * 所以判据改成「本次这句在屏幕上的次数 == 它在历史里的次数」，且不多于 1。
+     */
+    ok(r.diskMine === 1, '本次那句话在盘上只有 1 条', '实际 ' + r.diskMine);
+    ok(r.screenMine === r.diskMine, '本次那句话在屏幕上的次数 == 盘上次数（没多画）',
+      '屏幕 ' + r.screenMine + ' / 盘上 ' + r.diskMine + '（屏幕共 ' + r.userCount + ' 颗）');
+    ok(r.screenMine <= 1, '本次那句话没有在屏幕上留成两颗', '实际 ' + r.screenMine + ' 颗');
+    ok(r.users.slice(-1)[0] === String(r.diskUser).slice(0, 24) || !r.diskUser,
+      '屏幕上最后那颗气泡的文字与盘上首条对得上（没串、没截）',
+      '气泡 ' + (r.users.slice(-1)[0] || '') + ' / 盘上 ' + String(r.diskUser).slice(0, 24));
+
+    /* 临时会话用完就删（主人的规矩），不留垃圾给别人 */
+    if (madeSid) {
+      try {
+        await cdp.eval(`return (async function(){
+          try { await fetch('/api/sessions/delete', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: ${JSON.stringify(madeSid)} }) }); } catch(e){}
+          return 1;
+        })()`);
+        console.log('    · 临时会话 ' + String(madeSid).slice(0, 12) + ' 已删');
+      } catch (e) { /* 删不掉不影响断言 */ }
+    }
   }
   try { cdp.close(); } catch {}
 }

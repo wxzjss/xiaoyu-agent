@@ -11392,11 +11392,14 @@ async function importAgentCardFrom(file) {
     const kind = agentCur && agentCur.extra && agentCur.extra.personaPanel;
     const who = id === 'xiaoyu' ? '' : (id === 'xiaojing' ? 'whale' : id);
     const d = document.getElementById('agentListDlg');
+    /* 【2026-11-11 修·「返回」回不来】顺序不能反：openFishPersonaDlg 里的 paletteFromHint()
+       靠 agentListDlg 还开着判断「从哪儿进来的」来定「返回」回哪 —— 先关再开，
+       来路永远判成「别处」，人设面板点「返回」两边一起消失。先开再关。 */
+    openFishPersonaDlg(who);
     if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } }
     /* 小鱼、小鲸、自建卡 —— 全走同一个面板，只是 who 不同。
        小鲸原来那个「人设与模型」面板还留着（模型下拉在那儿），
        但「多套人设…」这个按钮统一打开多套人设面板。 */
-    openFishPersonaDlg(who);
   });
 }
 

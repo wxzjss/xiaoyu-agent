@@ -18431,19 +18431,14 @@ setInterval(async () => {
       try { syncSendBtn(); } catch (e) {}
     }
     /**
-     * 【2026-11-08 加·90 秒这个阈值终于有用了】
+     * 【2026-11-11 主人要求：删掉聊天区的「已经 N 秒没有回音」改口】
      *
-     * 主人问：「不是说阈值 90 秒吗？那超过阈值什么事都没发生，
-     * 那设这个 90 秒阈值有什么用」。
-     *
-     * 他说得对：在这之前 RUNNING_STALL_MS 只把会话列表那颗绿点变黄，
-     * 而聊天区里「正在发送消息」照样一行灰字转圈，看着跟正常一模一样。
-     * 真正掐轮的是后端 300 秒那道闸 —— 也就是说 90 到 300 秒这段，
-     * 界面在骗人说「在正常干活」。
-     *
-     * 现在 90 秒一到，聊天区那条提示直接改口 + 变金色：
-     * 「已经 N 秒没有回音，可能卡住了（点右侧 ⏹ 停）」，
-     * 不用去会话列表找，也不用心算时间。
+     * 原来 90 秒一到聊天区那条提示会变金色改口成
+     * 「已经 N 秒没有回音，可能卡住了（点 ⏹ 停）」—— 主人看不惯，删了。
+     * 现在 90 秒阈值只剩一个用途：会话列表那颗绿点变黄（RUNNING_STALL_MS）。
+     * 那 90 秒的静默多半是模型在憋工具参数（LLM 层 tool_calls 增量
+     * 到 finish 才交付，生成期间一个字都不吐 —— 看着像卡住在干活），
+     * 不是真卡；真卡由后端看门狗 8 分钟那道闸管。
      */
     try {
       const _hh = document.getElementById('sendingHint');
@@ -18454,17 +18449,13 @@ setInterval(async () => {
        * 新一轮刚发出去那几秒，busy 已经是 true，可服务端还没刷新这个数，
        * 于是界面先闪一句「已经 528 秒没有回音」，下一拍刷回来又正常。
        * 现在两个都算，取小的那个：本轮自己的计时（_turnT0）说话才算数。 */
-      const _srvIdle = Number((_info && _info.idleMs) || 0);
-      const _myIdle = Number(_turnT0) > 0 ? (Date.now() - Number(_turnT0)) : 0;
-      const _idle = (_srvIdle > 0 && _myIdle > 0) ? Math.min(_srvIdle, _myIdle) : (_myIdle || _srvIdle);
+      /* 【2026-11-11 主人要求：删掉「已经 N 秒没有回音，可能卡住了」的改口】
+       * 原来 90 秒没动静就变金色改口 —— 但那 90 秒多半是模型在憋工具参数
+       *（看着像卡住，其实在干活），现在看门狗 8 分钟才真掐，这句话只会添乱。
+       * 会话列表的绿点变黄那套（RUNNING_STALL_MS）保留不动。 */
       if (_hh && _sp && busy) {
-        if (_idle > RUNNING_STALL_MS) {
-          _sp.textContent = '已经 ' + Math.round(_idle / 1000) + ' 秒没有回音，可能卡住了（点 ⏹ 停）';
-          _hh.classList.add('stalled');
-        } else {
-          _sp.textContent = '正在发送消息';
-          _hh.classList.remove('stalled');
-        }
+        _sp.textContent = '正在发送消息';
+        _hh.classList.remove('stalled');
       } else if (_hh) {
         _hh.classList.remove('stalled');
       }

@@ -2337,7 +2337,7 @@
     .hint.err { color: var(--err); }
 
     /* ---- 模型面板底部的选项 ---- */
-    .mdlOpts { border-top: 1px solid var(--border); padding: 6px 8px 0; }
+    .mdlOpts { border-top: 1px solid var(--border); padding: 6px 8px 0; flex: 0 0 auto; }
     .optRow {
       display: flex; align-items: center; gap: 12px; padding: 10px 12px;
       border-radius: 8px;
@@ -3768,6 +3768,7 @@
           <button type="button" class="primary" id="mdlSave">保存</button>
           </div>
         </div>
+      </div>
       <div class="mdlOpts" id="mdlOpts">
         <div class="optRow">
           <div class="optMain">
@@ -3788,7 +3789,6 @@
         <div class="mdlFoot">
           <span class="hint" id="optHint"></span>
         </div>
-      </div>
       </div>
 
     </form>

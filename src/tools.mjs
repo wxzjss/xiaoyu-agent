@@ -2191,7 +2191,7 @@ export const tools = [
           if (typeof push !== 'function') return;
           try { push(Object.assign({ type: 'worker', wid: __tid, name: nick, kind, text: String(text || '') }, extra || {})); } catch {}
         };
-        __wPush('start', '开始干：' + body.slice(0, 120));
+        __wPush('start', '开始干：' + body.slice(0, 120), { startedAt: Date.now() });
         r = await runSubagent({
           task: brief + reportAsk,
           name: nick,
@@ -2344,7 +2344,7 @@ export const tools = [
         };
         try {
           const { runSubagent } = await import('./subagent.mjs');
-          __wPush('start', '开始干：' + String(p.brief || '').slice(0, 120));
+          __wPush('start', '开始干：' + String(p.brief || '').slice(0, 120), { startedAt: Date.now() });
           const r = await runSubagent({
             task: p.brief,
             name: p.nick,

@@ -6,6 +6,7 @@ import AssistantBubble from './AssistantBubble.jsx';
 import MateBubble from './MateBubble.jsx';
 import ThinkBlock from './ThinkBlock.jsx';
 import WorkerCard from './WorkerCard.jsx';
+import TeamBar, { teamStopWorker } from './TeamBar.jsx';
 import SysNote from './SysNote.jsx';
 import FileCard from './FileCard.jsx';
 import { ToolGroup } from './ToolCard.jsx';
@@ -210,8 +211,10 @@ export default function LogView() {
         </button>
       ) : null}
       {rows.map((r) => (
-        <RowBoundary key={r.key}>{renderRow(r, merged.running, lastItem)}</RowBoundary>
+        <RowBoundary key={r.key}>{renderRow(r, merged.running, lastItem, snap.sid)}</RowBoundary>
       ))}
+      {/* 【团队模式】顶部轻提示 + 流外的 running 卡（按 wid 与流内去重） */}
+      <TeamBar sid={snap.sid} items={merged.items} />
     </>
   );
 }
@@ -222,7 +225,7 @@ export default function LogView() {
  * 【抽出来的理由】每一行都套一层 RowBoundary（见那个文件顶上的说明）——
  * 换 React 之后，「一条坏数据毁掉整屏」这件事必须堵掉。
  */
-function renderRow(r, running, lastItem) {
+function renderRow(r, running, lastItem, sid) {
   {
         if (r.type === 'tools') return <ToolGroup items={r.items} />;
         const it = r.it;
@@ -236,7 +239,15 @@ function renderRow(r, running, lastItem) {
           return <AssistantBubble it={it} ask={r.ask} streaming={streaming} />;
         }
         if (it.kind === 'think') return <ThinkBlock it={it} />;
-        if (it.kind === 'worker') return <WorkerCard it={it} />;
+        /* 【团队模式】跑着的卡带上「停掉」；历史收尾卡没有这个按钮 */
+        if (it.kind === 'worker') {
+          return (
+            <WorkerCard
+              it={it}
+              onStop={sid && it.status === 'run' ? (wid) => { teamStopWorker(sid, wid); } : undefined}
+            />
+          );
+        }
         if (it.kind === 'note') return <SysNote it={it} />;
         /* 她发的文件（A2 收编后）：独立一行，跟工具卡一个节奏 */
         if (it.kind === 'file') return <FileCard it={it} />;

@@ -7283,12 +7283,12 @@
   });
 
   // src-ui/main.jsx
-  var import_react14 = __toESM(require_react());
+  var import_react15 = __toESM(require_react());
   var import_client = __toESM(require_client());
   var import_react_dom = __toESM(require_react_dom());
 
   // src-ui/LogView.jsx
-  var import_react13 = __toESM(require_react());
+  var import_react14 = __toESM(require_react());
 
   // src-ui/store.js
   var store_exports = {};
@@ -7647,8 +7647,18 @@
         name: String(w.name || ""),
         status: String(w.status || "run"),
         steps: Array.isArray(w.steps) ? w.steps : [],
-        note: String(w.note || "")
+        note: String(w.note || ""),
+        /* 【2026-11-11 团队模式】卡上要显示「跑了多久」「几轮几次工具」 */
+        startedAt: Number(w.startedAt) || 0,
+        endedAt: Number(w.endedAt) || 0,
+        rounds: Number(w.rounds) || 0,
+        tools: Number(w.tools) || 0
       });
+    }
+    if (workers.length > 1) {
+      const _run = workers.filter((w) => String(w.status || "run") === "run").length;
+      const _ok = workers.filter((w) => String(w.status) === "ok").length;
+      out.push({ kind: "note", key: key + "-wsum", text: _run + " \u4E2A\u5728\u8DD1 \xB7 " + _ok + " \u4E2A\u56DE\u6765\u4E86", isLive: false });
     }
     return out;
   }
@@ -7695,6 +7705,12 @@
           status: String(it.status || "run"),
           steps: Array.isArray(it.steps) ? it.steps : [],
           note: String(it.note || ""),
+          /* 【2026-11-11 团队模式】耗时用：startedAt 来自 start 事件，
+           * endedAt 由服务端在 end 事件那刻补（appendLiveItem）。 */
+          startedAt: Number(it.startedAt) || 0,
+          endedAt: Number(it.endedAt) || 0,
+          rounds: Number(it.rounds) || 0,
+          tools: Number(it.tools) || 0,
           isLive: true
         });
       } else if (it.k === "say") {
@@ -8360,37 +8376,183 @@
   var import_react9 = __toESM(require_react());
   var import_jsx_runtime8 = __toESM(require_jsx_runtime());
   var PREFIX = { mail: "  \u2709 ", start: "  \u25B6 " };
-  function WorkerCard({ it }) {
+  function fmtDur(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return "";
+    const s = Math.floor(ms / 1e3);
+    if (s < 60) return s + "\u79D2";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "\u5206" + s % 60 + "\u79D2";
+    return Math.floor(m / 60) + "\u65F6" + m % 60 + "\u5206";
+  }
+  function WorkerCard({ it, onStop }) {
     const [open, onToggle] = useOpen(it.key, false);
+    const [, tick] = (0, import_react9.useState)(0);
+    const running = it.status === "run";
+    (0, import_react9.useEffect)(() => {
+      if (!running || !it.startedAt) return void 0;
+      const t = setInterval(() => tick((x) => x + 1), 1e3);
+      return () => clearInterval(t);
+    }, [running, it.startedAt]);
     const steps = Array.isArray(it.steps) ? it.steps : [];
     const st = (0, import_react9.useMemo)(() => {
       if (it.status === "ok") return { txt: "\u56DE\u6765\u4E86", cls: "status ok" };
       if (it.status === "err") return { txt: "\u6CA1\u5E72\u6210", cls: "status err" };
-      return { txt: "\u5E72\u6D3B\u4E2D\u2026", cls: "status warn" };
+      if (it.status === "stopped") return { txt: "\u505C\u4E86", cls: "status stopped" };
+      if (it.status === "interrupted") return { txt: "\u4E2D\u65AD\u4E86\uFF08\u7A0B\u5E8F\u91CD\u542F\u8FC7\uFF09", cls: "status stopped" };
+      return { txt: "\u5E72\u6D3B\u4E2D\u2026", cls: "status run" };
     }, [it.status]);
     const body = (0, import_react9.useMemo)(() => {
       const lines = steps.map((x) => (PREFIX[x && x.kind] || "  \xB7 ") + String(x && x.t || ""));
       if (it.note) lines.push("  \u21E2 " + String(it.note).replace(/\n/g, " "));
       return lines.join("\n");
     }, [steps, it.note]);
+    const dur = it.startedAt ? fmtDur((it.endedAt || (running ? Date.now() : 0)) - it.startedAt) : "";
+    const cnt = (steps.length ? " \xB7 " + steps.length + " \u6B65" : "") + (Number(it.rounds) || Number(it.tools) ? " \xB7 " + (it.rounds || 0) + "\u8F6E/" + (it.tools || 0) + "\u6B21\u5DE5\u5177" : "") + (dur ? " \xB7 " + dur : "");
     const name = "#" + it.id + " " + String(it.name || "");
-    const cnt = steps.length ? " \xB7 " + steps.length + " \u6B65" : "";
     return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("details", { className: "wcard", open, onToggle, "data-wid": it.id || void 0, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("style", { children: `
+        details.wcard > summary .status.stopped { color: var(--muted, #9a9a9a); }
+        details.wcard > summary .wstop {
+          margin-left: auto;
+          display: none;
+          border: 1px solid var(--line, #2a2a2a);
+          background: transparent;
+          color: var(--muted, #9a9a9a);
+          border-radius: 6px;
+          font-size: 11px;
+          padding: 1px 7px;
+          cursor: pointer;
+        }
+        details.wcard > summary:hover .wstop { display: inline-block; }
+        details.wcard > summary .wstop:hover { color: var(--bad, #d0564a); border-color: var(--bad, #d0564a); }
+      ` }),
       /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("summary", { children: [
         /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "name", children: name }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: st.cls, children: st.txt + cnt })
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: st.cls, children: st.txt + cnt }),
+        running && onStop ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "wstop",
+            title: "\u505C\u6389\u8FD9\u4E2A worker\uFF08\u5B83\u624B\u4E0A\u7684\u547D\u4EE4\u4F1A\u7ACB\u523B\u65AD\uFF09",
+            onClick: (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onStop(String(it.id));
+            },
+            children: "\u2715 \u505C\u6389"
+          }
+        ) : null
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("pre", { children: body })
     ] });
   }
 
-  // src-ui/SysNote.jsx
+  // src-ui/TeamBar.jsx
+  var import_react10 = __toESM(require_react());
   var import_jsx_runtime9 = __toESM(require_jsx_runtime());
+  async function teamStopWorker(sid, wid) {
+    try {
+      await fetch("/api/team/stop", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: sid, wid })
+      });
+    } catch {
+    }
+  }
+  function TeamBar({ sid, items }) {
+    const [ws, setWs] = (0, import_react10.useState)([]);
+    const aliveRef = (0, import_react10.useRef)(true);
+    (0, import_react10.useEffect)(() => {
+      aliveRef.current = true;
+      let timer = null;
+      const poll = async () => {
+        if (!aliveRef.current) return;
+        try {
+          const r = await fetch("/api/team/workers?sessionId=" + encodeURIComponent(String(sid || "")));
+          const j = await r.json();
+          if (!aliveRef.current) return;
+          const list = Array.isArray(j && j.workers) ? j.workers : [];
+          setWs(list);
+          timer = setTimeout(poll, list.some((w) => w && w.status === "running") ? 3e3 : 1e4);
+        } catch {
+          if (aliveRef.current) timer = setTimeout(poll, 8e3);
+        }
+      };
+      if (sid) poll();
+      return () => {
+        aliveRef.current = false;
+        if (timer) clearTimeout(timer);
+      };
+    }, [sid]);
+    (0, import_react10.useEffect)(() => {
+      setWs([]);
+    }, [sid]);
+    const running = ws.filter((w) => w && w.status === "running");
+    const inFlowRunning = (0, import_react10.useMemo)(
+      () => new Set((items || []).filter((x) => x && x.kind === "worker" && x.status === "run").map((x) => String(x.id))),
+      [items]
+    );
+    const extra = running.filter((w) => !inFlowRunning.has(String(w.id)));
+    const onStop = (wid) => {
+      teamStopWorker(sid, wid);
+    };
+    const jumpToLatest = () => {
+      try {
+        const el = document.getElementById("log");
+        if (el) el.scrollTop = el.scrollHeight;
+      } catch {
+      }
+    };
+    if (!running.length && !extra.length) return null;
+    return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "teamBar", "data-team-sid": String(sid || ""), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("style", { children: `
+        .teamBar .teamHint {
+          position: sticky; top: 0; z-index: 6;
+          margin: 4px 0 6px 0;
+          padding: 4px 12px;
+          font-size: 12px;
+          color: var(--warn, #d8a13a);
+          background: color-mix(in srgb, var(--warn, #d8a13a) 10%, transparent);
+          border: 1px solid color-mix(in srgb, var(--warn, #d8a13a) 35%, transparent);
+          border-radius: 999px;
+          width: fit-content;
+          cursor: pointer;
+          backdrop-filter: blur(4px);
+        }
+        .teamBar .teamTail { margin: 2px 0 8px 0; }
+      ` }),
+      running.length ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { type: "button", className: "teamHint", onClick: jumpToLatest, children: "\u2691 " + running.length + " \u4E2A\u5728\u540E\u53F0\u5E72\u6D3B\u2026" }) : null,
+      extra.length ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "teamTail", children: extra.map((w) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+        WorkerCard,
+        {
+          it: {
+            key: "team-" + w.id,
+            id: String(w.id),
+            name: String(w.name || ""),
+            status: "run",
+            steps: (Array.isArray(w.progress) ? w.progress : []).map((p) => ({ kind: "step", t: String(p && p.line || "") })),
+            note: String(w.said || ""),
+            startedAt: Number(w.startedAt) || 0,
+            endedAt: 0,
+            rounds: Number(w.rounds) || 0,
+            tools: Number(w.tools) || 0
+          },
+          onStop
+        },
+        "team-" + w.id
+      )) }) : null
+    ] });
+  }
+
+  // src-ui/SysNote.jsx
+  var import_jsx_runtime10 = __toESM(require_jsx_runtime());
   function SysNote({ it }) {
     const acts = Array.isArray(it.actions) ? it.actions : [];
-    return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "sysnote", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { children: String(it.text || "") }),
-      acts.map((a, i) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "sysnote", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { children: String(it.text || "") }),
+      acts.map((a, i) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
         "button",
         {
           type: "button",
@@ -8409,8 +8571,8 @@
   }
 
   // src-ui/FileCard.jsx
-  var import_react10 = __toESM(require_react());
-  var import_jsx_runtime10 = __toESM(require_jsx_runtime());
+  var import_react11 = __toESM(require_react());
+  var import_jsx_runtime11 = __toESM(require_jsx_runtime());
   function fileUrl(f, download) {
     if (f.fkey) return "/api/attach/outbox-out?key=" + encodeURIComponent(f.fkey) + (download ? "&download=1" : "");
     const p = String(f.path || "");
@@ -8434,14 +8596,14 @@
   function VoiceRow({ f }) {
     const url = fileUrl(f, false);
     const dl = fileUrl(f, true);
-    return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "msgVoice", children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(Vbub, { url, dl, name: String(f.name || "\u8BED\u97F3") }) });
+    return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "msgVoice", children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(Vbub, { url, dl, name: String(f.name || "\u8BED\u97F3") }) });
   }
   function Vbub({ url, dl, name }) {
-    const au = (0, import_react10.useRef)(null);
-    const [dur, setDur] = (0, import_react10.useState)(0);
-    const [left, setLeft] = (0, import_react10.useState)(0);
-    const [playing, setPlaying] = (0, import_react10.useState)(false);
-    const [paused, setPaused] = (0, import_react10.useState)(false);
+    const au = (0, import_react11.useRef)(null);
+    const [dur, setDur] = (0, import_react11.useState)(0);
+    const [left, setLeft] = (0, import_react11.useState)(0);
+    const [playing, setPlaying] = (0, import_react11.useState)(false);
+    const [paused, setPaused] = (0, import_react11.useState)(false);
     const secs = (n) => (n > 0 ? Math.max(1, Math.round(n)) : "\u2013") + "\u2033";
     const toggle = () => {
       const a = au.current;
@@ -8467,17 +8629,17 @@
       }
     };
     const pct = dur > 0 ? Math.min(100, (dur - left) / dur * 100) : 0;
-    return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(
       "div",
       {
         className: "vbub" + (playing ? " playing" : "") + (paused ? " paused" : ""),
         title: "\u70B9\u4E00\u4E0B\u542C\uFF0C\u518D\u70B9\u4E00\u4E0B\u505C",
         onClick: toggle,
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "vwave", children: [0, 1, 2, 3, 4].map((i) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("i", {}, i)) }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "vsec", children: left > 0 ? secs(left) : secs(dur) }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { className: "vtag", children: "\u8BED\u97F3" }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "vwave", children: [0, 1, 2, 3, 4].map((i) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("i", {}, i)) }),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "vsec", children: left > 0 ? secs(left) : secs(dur) }),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "vtag", children: "\u8BED\u97F3" }),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             "a",
             {
               className: "vdl",
@@ -8488,8 +8650,8 @@
               children: "\u2193"
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "vprog", children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("b", { style: { width: pct + "%" } }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "vprog", children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("b", { style: { width: pct + "%" } }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
             "audio",
             {
               ref: au,
@@ -8530,7 +8692,7 @@
   function ImageCard({ f }) {
     const url = fileUrl(f, false);
     const size = fmtSize(f.size);
-    return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
       "div",
       {
         className: "fileCard",
@@ -8542,7 +8704,7 @@
           } catch (e) {
           }
         },
-        children: /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+        children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
           "img",
           {
             className: "fthumb",
@@ -8584,8 +8746,8 @@
     const dl = fileUrl(f, true);
     const size = fmtSize(f.size);
     const name = String(f.name || "\u89C6\u9891");
-    return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "fileRow vidBox", title: name + " \xB7 " + size, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+    return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "fileRow vidBox", title: name + " \xB7 " + size, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
         "video",
         {
           controls: true,
@@ -8602,7 +8764,7 @@
           }
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("a", { className: "vidSave", href: dl, download: name, title: "\u5B58\u4E0B\u6765\uFF1A" + name, children: "\u2193" })
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("a", { className: "vidSave", href: dl, download: name, title: "\u5B58\u4E0B\u6765\uFF1A" + name, children: "\u2193" })
     ] });
   }
   function DownCard({ f }) {
@@ -8610,28 +8772,28 @@
     const dl = fileUrl(f, true);
     const size = fmtSize(f.size);
     const name = String(f.name || "\u6587\u4EF6");
-    return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("a", { className: "fileCard", href: dl, download: name, title: name + " \xB7 " + size + "\uFF08\u70B9\u4E00\u4E0B\u4E0B\u8F7D\uFF09", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "fk", children: iconOf(f.fkind, name) }),
-      /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "fmeta", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "fname", children: name }),
-        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "fsize", children: size + " \xB7 \u70B9\u4E00\u4E0B\u5B58\u4E0B\u6765" })
+    return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("a", { className: "fileCard", href: dl, download: name, title: name + " \xB7 " + size + "\uFF08\u70B9\u4E00\u4E0B\u4E0B\u8F7D\uFF09", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "fk", children: iconOf(f.fkind, name) }),
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "fmeta", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "fname", children: name }),
+        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "fsize", children: size + " \xB7 \u70B9\u4E00\u4E0B\u5B58\u4E0B\u6765" })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "fdl", children: "\u2B07" })
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "fdl", children: "\u2B07" })
     ] });
   }
   function FileCardInner({ it }) {
     const f = it || {};
     const isVoice = f.fkind === "audio" && (looksVoice(f) || !f.path) || f.fkind !== "video" && f.fkind !== "image" && looksVoice(f);
-    if (isVoice) return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(VoiceRow, { f });
-    if (f.fkind === "image") return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ImageCard, { f });
-    if (f.fkind === "video") return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(VideoRow, { f });
-    return /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(DownCard, { f });
+    if (isVoice) return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(VoiceRow, { f });
+    if (f.fkind === "image") return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ImageCard, { f });
+    if (f.fkind === "video") return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(VideoRow, { f });
+    return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(DownCard, { f });
   }
-  var FileCard_default = (0, import_react10.memo)(FileCardInner);
+  var FileCard_default = (0, import_react11.memo)(FileCardInner);
 
   // src-ui/ToolCard.jsx
-  var import_react11 = __toESM(require_react());
-  var import_jsx_runtime11 = __toESM(require_jsx_runtime());
+  var import_react12 = __toESM(require_react());
+  var import_jsx_runtime12 = __toESM(require_jsx_runtime());
   function statusText(s) {
     if (s === "ok") return "\u5B8C\u6210";
     if (s === "err") return "\u5931\u8D25";
@@ -8644,25 +8806,25 @@
   }
   function ToolCard({ it }) {
     const [open, onToggle] = useOpen(it.key, false);
-    const name = (0, import_react11.useMemo)(() => niceTool(it.name, it.args) || "\u5DE5\u5177", [it.name, it.args]);
-    const body = (0, import_react11.useMemo)(() => {
+    const name = (0, import_react12.useMemo)(() => niceTool(it.name, it.args) || "\u5DE5\u5177", [it.name, it.args]);
+    const body = (0, import_react12.useMemo)(() => {
       const args = formatArgs(it.args);
       let s = args ? "\u53C2\u6570\uFF1A" + tidyToolText(args) : "\uFF08\u65E0\u53C2\u6570\uFF09";
       if (it.output) s += "\n--- output ---\n" + tidyToolText(it.output);
       return s;
     }, [it.args, it.output]);
-    return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("details", { className: "tool", open, onToggle, "data-tool-id": it.id || void 0, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("summary", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "name", children: name }),
-        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: statusClass(it.status), children: statusText(it.status) })
+    return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "tool", open, onToggle, "data-tool-id": it.id || void 0, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "name", children: name }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: statusClass(it.status), children: statusText(it.status) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("pre", { children: body })
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("pre", { children: body })
     ] });
   }
   function ToolGroup({ items }) {
     const list = Array.isArray(items) ? items : [];
     const [open, onToggle] = useOpen("hub-" + (list[0] ? list[0].key : "x"), false);
-    const stat = (0, import_react11.useMemo)(() => {
+    const stat = (0, import_react12.useMemo)(() => {
       const n = list.length;
       const running = list.find((t) => t.status === "run") || null;
       const bad = list.filter((t) => t.status === "err").length;
@@ -8673,22 +8835,22 @@
       const statusTxt = bad ? bad + " \u4E2A\u5931\u8D25" : "";
       return { name, statusCls, statusTxt, running };
     }, [list]);
-    if (list.length === 1) return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ToolCard, { it: list[0] });
+    if (list.length === 1) return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: list[0] });
     const last = list[list.length - 1];
-    return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("details", { className: "toolhub", open, onToggle, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("summary", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: "hubname", children: stat.name }),
-        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
-        /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(GrayPeek, { text: stat.running ? "" : niceTool(last.name, last.args) })
+    return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "toolhub", open, onToggle, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubname", children: stat.name }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(GrayPeek, { text: stat.running ? "" : niceTool(last.name, last.args) })
       ] }),
-      list.map((t) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ToolCard, { it: t }, t.key))
+      list.map((t) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: t }, t.key))
     ] });
   }
 
   // src-ui/RowBoundary.jsx
-  var import_react12 = __toESM(require_react());
-  var import_jsx_runtime12 = __toESM(require_jsx_runtime());
-  var RowBoundary = class extends import_react12.default.Component {
+  var import_react13 = __toESM(require_react());
+  var import_jsx_runtime13 = __toESM(require_jsx_runtime());
+  var RowBoundary = class extends import_react13.default.Component {
     constructor(props) {
       super(props);
       this.state = { err: null };
@@ -8705,14 +8867,14 @@
     render() {
       if (this.state.err) {
         const msg = String(this.state.err && this.state.err.message || this.state.err || "\u672A\u77E5\u9519\u8BEF");
-        return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "sysnote", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { children: "\u26A0 \u8FD9\u4E00\u6761\u6E32\u67D3\u51FA\u9519\u4E86\uFF1A" + msg }) });
+        return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "sysnote", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: "\u26A0 \u8FD9\u4E00\u6761\u6E32\u67D3\u51FA\u9519\u4E86\uFF1A" + msg }) });
       }
       return this.props.children;
     }
   };
 
   // src-ui/LogView.jsx
-  var import_jsx_runtime13 = __toESM(require_jsx_runtime());
+  var import_jsx_runtime14 = __toESM(require_jsx_runtime());
   function tailLen(items) {
     if (!items || !items.length) return 0;
     const it = items[items.length - 1];
@@ -8742,17 +8904,17 @@
     return rows;
   }
   function LogView() {
-    (0, import_react13.useSyncExternalStore)(subscribe, getVersion, getVersion);
+    (0, import_react14.useSyncExternalStore)(subscribe, getVersion, getVersion);
     const snap = getSnapshot();
-    const merged = (0, import_react13.useMemo)(() => buildMerged(snap), [snap.sid, snap.turns, snap.live, snap.pendingUser, snap.notes, snap.windowStart]);
-    const rows = (0, import_react13.useMemo)(() => toRows(merged.items), [merged]);
-    const listRef = (0, import_react13.useRef)(null);
-    const atBottomRef = (0, import_react13.useRef)(true);
-    const userScrolledRef = (0, import_react13.useRef)(false);
-    const lastScrollTopRef = (0, import_react13.useRef)(0);
-    const keepFromBottom = (0, import_react13.useRef)(null);
+    const merged = (0, import_react14.useMemo)(() => buildMerged(snap), [snap.sid, snap.turns, snap.live, snap.pendingUser, snap.notes, snap.windowStart]);
+    const rows = (0, import_react14.useMemo)(() => toRows(merged.items), [merged]);
+    const listRef = (0, import_react14.useRef)(null);
+    const atBottomRef = (0, import_react14.useRef)(true);
+    const userScrolledRef = (0, import_react14.useRef)(false);
+    const lastScrollTopRef = (0, import_react14.useRef)(0);
+    const keepFromBottom = (0, import_react14.useRef)(null);
     if (!listRef.current) listRef.current = document.getElementById("log");
-    (0, import_react13.useLayoutEffect)(() => {
+    (0, import_react14.useLayoutEffect)(() => {
       const el = listRef.current || document.getElementById("log");
       if (!el) return;
       listRef.current = el;
@@ -8817,7 +8979,7 @@
         }
       };
     }, []);
-    (0, import_react13.useLayoutEffect)(() => {
+    (0, import_react14.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el) return;
       try {
@@ -8827,7 +8989,7 @@
     }, [merged.totalTurns]);
     const count = merged.items.length;
     const lastLen = tailLen(merged.items);
-    (0, import_react13.useLayoutEffect)(() => {
+    (0, import_react14.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el) return;
       if (keepFromBottom.current != null) return;
@@ -8845,7 +9007,7 @@
       } catch (e) {
       }
     }, [count, lastLen]);
-    (0, import_react13.useLayoutEffect)(() => {
+    (0, import_react14.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el || keepFromBottom.current == null) return;
       el.scrollTop = el.scrollHeight - keepFromBottom.current;
@@ -8857,31 +9019,42 @@
       setWindowStart(snap.sid, Math.max(0, merged.start - 100));
     };
     const lastItem = merged.items.length ? merged.items[merged.items.length - 1] : null;
-    return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(import_jsx_runtime13.Fragment, { children: [
-      merged.start > 0 ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("button", { type: "button", className: "loadEarlier", onClick: onLoadEarlier, children: "\u2191 \u518D\u5F80\u524D\u770B 100 \u8F6E\uFF08\u8FD8\u6709 " + merged.start + " \u8F6E\u6CA1\u663E\u793A\uFF09" }) : null,
-      rows.map((r) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(RowBoundary, { children: renderRow(r, merged.running, lastItem) }, r.key))
+    return /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)(import_jsx_runtime14.Fragment, { children: [
+      merged.start > 0 ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("button", { type: "button", className: "loadEarlier", onClick: onLoadEarlier, children: "\u2191 \u518D\u5F80\u524D\u770B 100 \u8F6E\uFF08\u8FD8\u6709 " + merged.start + " \u8F6E\u6CA1\u663E\u793A\uFF09" }) : null,
+      rows.map((r) => /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(RowBoundary, { children: renderRow(r, merged.running, lastItem, snap.sid) }, r.key)),
+      /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(TeamBar, { sid: snap.sid, items: merged.items })
     ] });
   }
-  function renderRow(r, running, lastItem) {
+  function renderRow(r, running, lastItem, sid) {
     {
-      if (r.type === "tools") return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(ToolGroup, { items: r.items });
+      if (r.type === "tools") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ToolGroup, { items: r.items });
       const it = r.it;
-      if (it.kind === "user") return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(UserBubble, { it });
-      if (it.kind === "say" || it.kind === "mate") return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(MateBubble, { it, ask: r.ask });
+      if (it.kind === "user") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(UserBubble, { it });
+      if (it.kind === "say" || it.kind === "mate") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(MateBubble, { it, ask: r.ask });
       if (it.kind === "assistant") {
         const streaming = Boolean(running && it.isLive && lastItem && lastItem.key === it.key);
-        return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(AssistantBubble, { it, ask: r.ask, streaming });
+        return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(AssistantBubble, { it, ask: r.ask, streaming });
       }
-      if (it.kind === "think") return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(ThinkBlock, { it });
-      if (it.kind === "worker") return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(WorkerCard, { it });
-      if (it.kind === "note") return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(SysNote, { it });
-      if (it.kind === "file") return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(FileCard_default, { it });
+      if (it.kind === "think") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ThinkBlock, { it });
+      if (it.kind === "worker") {
+        return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(
+          WorkerCard,
+          {
+            it,
+            onStop: sid && it.status === "run" ? (wid) => {
+              teamStopWorker(sid, wid);
+            } : void 0
+          }
+        );
+      }
+      if (it.kind === "note") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(SysNote, { it });
+      if (it.kind === "file") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(FileCard_default, { it });
       return null;
     }
   }
 
   // src-ui/main.jsx
-  var import_jsx_runtime14 = __toESM(require_jsx_runtime());
+  var import_jsx_runtime15 = __toESM(require_jsx_runtime());
   function mount() {
     const el = document.getElementById("log");
     if (!el) return false;
@@ -8893,7 +9066,7 @@
     }
     const root = (0, import_client.createRoot)(el);
     window.__logRoot = root;
-    (0, import_react_dom.flushSync)(() => root.render(/* @__PURE__ */ (0, import_jsx_runtime14.jsx)(LogView, {})));
+    (0, import_react_dom.flushSync)(() => root.render(/* @__PURE__ */ (0, import_jsx_runtime15.jsx)(LogView, {})));
     try {
       console.info("[log] React \u5DF2\u63A5\u7BA1 #log");
     } catch (e) {
@@ -8903,5 +9076,5 @@
   if (!mount()) {
     document.addEventListener("DOMContentLoaded", mount, { once: true });
   }
-  window.__logDebug = { React: import_react14.default, createRoot: import_client.createRoot, LogView, store: store_exports };
+  window.__logDebug = { React: import_react15.default, createRoot: import_client.createRoot, LogView, store: store_exports };
 })();

@@ -165,7 +165,7 @@ function turnToItems(turn, abs, userChars) {
     });
   }
 
-  /* 办事模式：这一轮谁在干活（历史里也存了，刷新/翻回来照样看得见） */
+  /* 【团队模式】这一轮谁在干活（历史里也存了，刷新/翻回来照样看得见） */
   const workers = Array.isArray(turn.workers) ? turn.workers : [];
   for (let i = 0; i < workers.length; i++) {
     const w = workers[i] || {};
@@ -177,7 +177,19 @@ function turnToItems(turn, abs, userChars) {
       status: String(w.status || 'run'),
       steps: Array.isArray(w.steps) ? w.steps : [],
       note: String(w.note || ''),
+      /* 【2026-11-11 团队模式】卡上要显示「跑了多久」「几轮几次工具」 */
+      startedAt: Number(w.startedAt) || 0,
+      endedAt: Number(w.endedAt) || 0,
+      rounds: Number(w.rounds) || 0,
+      tools: Number(w.tools) || 0,
     });
+  }
+  /* 【2026-11-11 团队模式】同一轮有多张卡时，在最后一张后面补一行小字，
+   * 主人扫一眼就知道全局：不用一张张点开看状态。 */
+  if (workers.length > 1) {
+    const _run = workers.filter((w) => (String(w.status || 'run')) === 'run').length;
+    const _ok = workers.filter((w) => String(w.status) === 'ok').length;
+    out.push({ kind: 'note', key: key + '-wsum', text: _run + ' 个在跑 · ' + _ok + ' 个回来了', isLive: false });
   }
   return out;
 }
@@ -246,6 +258,12 @@ function liveToItems(items, running) {
         status: String(it.status || 'run'),
         steps: Array.isArray(it.steps) ? it.steps : [],
         note: String(it.note || ''),
+        /* 【2026-11-11 团队模式】耗时用：startedAt 来自 start 事件，
+         * endedAt 由服务端在 end 事件那刻补（appendLiveItem）。 */
+        startedAt: Number(it.startedAt) || 0,
+        endedAt: Number(it.endedAt) || 0,
+        rounds: Number(it.rounds) || 0,
+        tools: Number(it.tools) || 0,
         isLive: true,
       });
     } else if (it.k === 'say') {

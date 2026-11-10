@@ -248,107 +248,59 @@ export function cleanReply(text, agent) {
 /**
  * 【谁该开口】挑出这一轮要说话的人。
  *
- * 主人原话（2026-11-02，第三版，**以这一版为准**）：
- *   「现在艾特只与个性是否打勾有关，个性打勾的角色只要左侧按钮开启了那么只有艾特时开口说话，
- *    个性没打勾的角色只要左侧按钮开启了无论是否被艾特每轮都会说话」
- *   「如果左侧按钮没开启，那么是否被艾特都不会开口说话」
+ * 【2026-11-10 主人钦点：艾特（@）功能整个删掉】
  *
- * 于是规矩只剩两层，先粗后细：
+ * 主人原话：「把【屋里的人】艾特功能删除」。
  *
- *   ① **左侧按钮（开关）是最硬的一层**：牌子关着的人，这一轮一句话都不说 ——
- *      被 @ 也不说。她不在场，主人叫她的名字，那就是没人在应。
- *   ② **开关开着的人，谁说只看「个性」那个勾**：
- *        · 个性打了勾 → 只有这一句 @ 了她，她才说（不 @ 就把嘴闭上）；
- *        · 个性没打勾 → 开着就每轮都说，@ 不 @ 都挡不住。
- *   ③ 被 @ 却是关着的牌 → 这一轮没人因这句话开麦（其余人照 ② 算），
- *      免得主人明明在叫一个不在场的人，屏幕上却是别人抢着回。
+ * 在此之前有三版规矩叠在一起（被 @ 才说 / @ 了谁就只留谁 / @ 的顺序决定开口顺序），
+ * 靠 `parseMentions` 从主人这句话里抠 `@名字`。现在一概不认了：
  *
- * 【作废的老规矩·别再翻】2026-10-29 那版「点谁的名字才让谁接」、2026-11-01 那版
- * 「@ 了没打勾的人 → 从此只留他们说话（锁场）」全部作废。主人这次说得很直：
- * 打不答一句话只看两件事 —— 按钮开没开、个性打没打勾。`allowedIds` 参数
- * 保留只为不让老调用方炸掉，**已经不再影响结果**。
+ *   ① **左侧按钮（开关）是唯一的一层**：牌子开着的，这一轮都说一句；
+ *      牌子关着的，一个字都不说。就这样，没有第二层。
+ *   ② 「个性打勾＝叫才应」跟着作废 —— 那条规则的全部意义就是「等我 @ 你」，
+ *      @ 没了它就成了「永远不说话」，留着只是个坑。勾选框也从界面上撤掉了。
+ *   ③ 说话顺序 = 「屋里的人」竖列从上到下（主人自己摆的顺序）。
  *
- * 为什么认 `@名字` 而不认「句子里出现名字」：「阿绿昨天说的那个办法」会把她拽出来重答。
- * 名字里带空格/符号也照配（先长后短，免得「阿蓝」把「阿蓝二号」抢了）。
+ * 主人现在想指定谁说话，用左侧按钮开关就行 —— 关掉不想听的那个。
+ * 一句话里写 `@阿蓝` 现在就是普通文字，会原样交给她看，不会再有人因为这个被拽出来。
+ *
+ * `quietIds` / `allowedIds` 形参保留只为不让老调用方炸掉，**已经不再影响结果**。
  *
  * @param {object} p
  * @param {Array} p.roster 屋里的卡（顺序 = 说话顺序，谁前谁先说）
- * @param {string} p.userText 主人这句原话
- * @param {Array<string>} p.quietIds 「个性打勾」的卡 = 叫才应
- * @param {Array<string>|null} p.allowedIds 【已停用】旧「锁场」名单，传了也不看
+ * @param {string} p.userText 主人这句原话（已不再解析，保留形参兼容）
+ * @param {Array<string>} p.quietIds 【已停用】个性打勾名单
+ * @param {Array<string>|null} p.allowedIds 【已停用】
  * @param {Array<string>} p.enabledIds 这一轮开着的牌（不给就是全开）
+ * @param {boolean} p.keepOrder 保留形参；现在本来就严格按竖列顺序
  */
 export function pickSpeakers({ roster = [], userText = '', quietIds = [], allowedIds = null, enabledIds = null, keepOrder = false } = {}) {
-  void allowedIds; // 旧锁场名单：2026-11-02 起不再参与，保留形参只为兼容老调用方
+  void userText;    // 2026-11-10 起不再解析 @，留着只为兼容老调用方
+  void quietIds;
+  void allowedIds;
+  void keepOrder;
   const mates = (Array.isArray(roster) ? roster : []).filter((a) => a && a.id);
   if (!mates.length) return [];
-  const text = String(userText || '');
-  const quiet = new Set((Array.isArray(quietIds) ? quietIds : []).map((x) => String(x)));
   /* 关掉的牌：不说话。不传就是全开（老调用方/测试不用跟着改）。 */
   const on = Array.isArray(enabledIds) ? new Set(enabledIds.map((x) => String(x))) : null;
   const alive = on ? mates.filter((a) => on.has(String(a.id))) : mates;
-  if (!alive.length) return [];
-  const hits = parseMentions(text, mates);
-  /* 点了名但点的是关掉的牌：这一轮谁都不因这句话开麦（其余照第二层算） */
-  const aliveHits = hits.filter((id) => alive.some((a) => String(a.id) === String(id)));
-  const askedOffOnly = hits.length > 0 && !aliveHits.length;
-  if (askedOffOnly) return [];
-  const hitSet = new Set(aliveHits.map((id) => String(id)));
-  // 开关开着的人：打勾的（叫才应）看有没有被叫，没打勾的一律说
-  const picked = alive.filter((a) => {
-    const id = String(a.id);
-    if (!quiet.has(id)) return true;
-    return hitSet.has(id);
-  });
-  /**
-   * 【@ 的顺序就是这轮谁先开口】—— 2026-11-02 主人：「根据艾特的顺序可以决定本轮智能体说话顺序」。
-   *
-   * 被 @ 到的、这一轮真要说话的人，按 `@` 在句子里出现的先后排到最前面
-   * （主人打的第一个名字先说），剩下没被点的照「屋里的人」竖列从上往下的老顺序跟在后头。
-   *
-   * 为什么只搬被 @ 到的：主人打的字是他心里的顺序；竖列顺序是他早上摆好的默认顺序。
-   * 一句 @ 了三个人，这三人当然按他打的先后说 —— 但没被点的人没理由插到中间去。
-   *
-   * AliveHits 已经是「按出现位置排好的」（parseMentions 按 text.indexOf 排），
-   * 所以直接拿它当序号表用。
-   */
-  /* 【2026-11-09 主人重做】keepOrder = 严格按竖列 A→B→C，不让 @ 的出现顺序插队。 */
-  if (!keepOrder && aliveHits.length && picked.length) {
-    const rank = new Map(aliveHits.map((id, i) => [String(id), i]));
-    const said = (a) => (rank.has(String(a.id)) ? rank.get(String(a.id)) : Number.MAX_SAFE_INTEGER);
-    // sort 是稳定的：所有没被点的人都拿 MAX_SAFE_INTEGER，它们的相对次序原样保留
-    return picked.slice().sort((a, b) => said(a) - said(b));
-  }
-  return picked;
+  /* 开着的就都说，顺序照竖列原样 —— 没有别的判断了 */
+  return alive;
 }
 
 /**
- * 从这句话里认出被点了名的卡（返回 id 数组，**按 @ 在句子里出现的先后排**）。
+ * 【已停用】从这句话里认出被点了名的卡。
  *
- * 【2026-11-02 主人：「根据艾特的顺序可以决定本轮智能体说话顺序」】
+ * 2026-11-10 主人钦点删掉艾特功能，这个函数不再被调用，但**保留导出**：
+ * 老调用方 / 老测试 / 第三方脚本 import 它不会炸。
+ * 新代码不许再用它 —— check-group-no-mention.mjs 会拦。
  *
- * 上一版是「先按名字长度从长到短试一遍」，所以返回的是**名字长度序**，
- * 不是 @ 出现的位置序 —— 主人打「@阿紫 先说，然后 @阿蓝」，她俩的顺序是随机的。
- * 现在先按位置收齐，再按位置排；名字长短只用来防「阿蓝」抢「阿蓝二号」，
- * 不再决定谁先说。
+ * 真要恢复艾特（主人哪天改主意），git 历史里 v0.9.46 那份是完整的。
  */
 export function parseMentions(text, roster = []) {
-  const arr = (Array.isArray(roster) ? roster : [])
-    .map((a) => ({ id: String(a?.id || ''), name: String(a?.name || '').trim() }))
-    .filter((a) => a.id && a.name);
-  if (!arr.length) return [];
-  const text0 = String(text || '');
-  // 长的名字先试，否则「阿蓝」会把「阿蓝二号」那一半抢走（只影响匹配，不影响顺序）
-  arr.sort((a, b) => b.name.length - a.name.length);
-  const posOf = new Map(); // id -> 第一次被 @ 的位置
-  for (const a of arr) {
-    const esc = a.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // @名字 / @ 名字 / ＠名字（全角）都算；后面不能紧跟文字，避免「@阿蓝二号」被当成「@阿蓝」
-    const m = new RegExp(`[@＠]\\s*${esc}(?![\\u4e00-\\u9fa5A-Za-z0-9_])`).exec(text0);
-    if (m && !posOf.has(a.id)) posOf.set(a.id, m.index);
-  }
-  // 按出现位置排 —— 这就是主人打字的顺序，也是这一轮开口的顺序
-  return [...posOf.entries()].sort((x, y) => x[1] - y[1]).map(([id]) => id);
+  void text;
+  void roster;
+  return [];
 }
 
 

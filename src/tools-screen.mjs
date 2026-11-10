@@ -29,7 +29,9 @@ import { ctxNow } from './tools.mjs';
 /** 这个功能开着没（关掉的时候工具根本不在她手上，这里是兜底）。 */
 function senseOn() {
   try {
-    return enabledToolNames().includes('look_screen');
+    /* 【2026-11-10 按会话】带上当前会话（陪看屏幕本身是机器级功能，走全局兜底，
+     * 这里带 sessionId 只是让判据跟别的工具一致，将来真改口径也不用回来改这里）。 */
+    return enabledToolNames(ctxNow().sessionId || '').includes('look_screen');
   } catch {
     return true;
   }

@@ -112,11 +112,16 @@ function readAll() {
       // 「屋里的人」每张牌的开/关（见 blank 里那段注释）
       groupEnabledBySession: objOf(j.groupEnabledBySession),
       /**
-       * 「安静」的卡：只在被点名（`@她`）的时候才开口。
+       * 【已停用 · 2026-11-10】「安静」的卡：以前是「只在被点名（`@她`）的时候才开口」。
        *
        * 主人原话：「让群聊别一直全员齐发」。三张卡每轮都说，一长就吵，
        * 而且烧的是他的钱。所以给每张卡一个「只在叫名字时才说话」的开关 ——
        * 是这张卡的性格，不是这个会话的规矩，所以按卡存，换屋子照样记得。
+       *
+       * 2026-11-10 主人钦点删掉艾特功能，这个开关的判据（@）没了，它就成了
+       * 「永远不说话」的坑 —— 界面入口已撤、pickSpeakers 也不再读它。
+       * **字段照旧读写成对比存下来**（老 agents.json 里还留着，删字段会让老文件
+       * 解析出错），但任何人都不要拿它当「谁该说话」的判据。
        */
       quiet: objOf(j.quiet),
       /* 颜色与顺序·2026-10-29 每张卡的颜色。没记过就按默认：小鱼红、小鲸蓝、其余白。 */
@@ -760,10 +765,20 @@ export function importCard(raw) {
 
   const agent = addAgent({ name, persona: c.persona, modelId: c.modelId });
   if (!agent) return { ok: false, error: '写盘失败，没存下来' };
-  // 颜色、开场白、安静这几样是「跟着她走」的，一并搬过去
+  // 颜色、开场白是「跟着她走」的，一并搬过去
   if (c.color) { try { setAgentColor(agent.id, c.color); } catch { /* 颜色不合法就当没填 */ } }
   if (c.opening) { try { setCardOpening(agent.id, c.opening); } catch { /* 开场白太长也不至于整张卡丢掉 */ } }
-  if (c.quiet) { try { setAgentQuiet(agent.id, true); } catch { /* 自定义卡不该抛，兜底 */ } }
+  /**
+   * 【2026-11-10 删】原来这里还有一行 `if (c.quiet) setAgentQuiet(agent.id, true)`。
+   *
+   * 主人当天钦点删掉艾特功能之后，quiet（＝「只在被 @ 时说话」）成了一条死规则：
+   * @ 不再解析，勾了就等于**永远不说话**。这行是从自定义卡搬过来的，
+   * 一旦有哪张出厂卡自带 quiet:true，主人装上新版就会发现「那个人一直不吭声」，
+   * 而且界面上一个开关都找不到（勾选框已撤）—— 排查成本极高。
+   *
+   * 所以这条搬运直接掐掉。字段本身、以及读它的老接口都留着（老会话文件里还存着），
+   * 只是没有任何地方再写它。要恢复艾特时连这行一起从 git 历史拿回来。
+   */
   return { ok: true, agent: getAgent(agent.id) || agent, renamed };
 }
 
@@ -947,7 +962,7 @@ function cleanGroup(data, ids) {
  * 这个会话里在场说话的卡（小鱼不在里面 —— 她一直在，不用点）。
  *
  * 2026-10-31 主人定：「默认选择小鱼与小鲸，不能改」。所以一个从没设置过名单的
- * 会话，名单里也有小鲸 —— 她在屋里坐着，只是默认「叫她才应」（见 isAgentQuiet）。
+ * 会话，名单里也有小鲸 —— 她在屋里坐着，默认每轮都会接一句。
  */
 export function groupAgentIds(sessionId) {
   const sid = String(sessionId || '');
@@ -1065,7 +1080,7 @@ export function setSessionGroup(sessionId, ids, { keepWhale = true } = {}) {
    * 补上；主人一旦点过任何一个人进名单，小鲸就从此消失了 —— 于是「小鲸不能改」
    * 这条规矩只在新会话的头一秒成立，端到端测试也一直在报「名单里只剩小鱼」。
    * 现在改成：只要小鲸本来就在（默认就在），改名单时就把她原样留着，谁也别想把她挤掉。
-   * 想让她别抢话，用「安静」（叫她才应）那个开关，不是把人赶出屋子。
+   * 想让她别抢话，就把左侧那颗牌关掉，不是把人赶出屋子。
    */
   if (keepWhale && beforeHasXj && !kept.includes(AGENT_XIAOJING) && kept.length < MAX_GROUP) kept.push(AGENT_XIAOJING);
   /**
@@ -1082,32 +1097,43 @@ export function setSessionGroup(sessionId, ids, { keepWhale = true } = {}) {
 }
 
 /**
- * 【安静开关】这张卡是不是「只在被点名时才说话」。
+ * 【已停用 · 2026-11-10】这张卡是不是「只在被点名时才说话」。
  *
- * 为什么按卡存而不是按会话存：
- * 这是她的性格（「阿绿话少，叫她才说」），不是这个屋子的规矩。主人给阿绿定了
- * 这个性子，换个会话她该还是这样。按会话存的话，每开一间屋子都得重新设一遍。
+ * 以前按卡存（是她的性格，不是屋子的规矩）。2026-11-10 主人钦点删掉艾特功能，
+ * 「等我 @ 你」这个判据不存在了 —— 勾过的人现在只剩「永远不说话」这一个效果，
+ * 而界面上再也找不到那个开关（勾选框已撤）→ 典型的「查不出来的哑巴」。
+ *
+ * **所以这里恒返回 false**：不管 agents.json 里 quiet 残留着什么值，
+ * 谁问都答「她不安静、每轮都该说话」。字段本身照旧读写（老文件要能解析），
+ * 但**任何读它的人都不会再得到「要叫才应」这个答案**。
+ * 要恢复艾特时，连这个函数一起从 git 历史（v0.9.46）拿回来。
+ *
+ * @returns {false} 永远 false
  */
 export function isAgentQuiet(id) {
-  const key = String(id || '');
-  if (!key) return false;
-  const data = readAll();
-  const v = data.quiet[key];
-  if (typeof v === 'boolean') return v;
-  /* 【2026-11-01 主人原话：小鲸性子里没打勾，那么如果开启的话她应该每一轮都说话】
-     以前这里给小鲸留了个隐式默认（没设过也算安静），结果面板上勾是空的、
-     她却每轮不开口 —— 显示和行为对不上，主人一眼就看出来了。
-     现在一切以那个勾为准：勾没打就是每轮都说话，想让她安静就自己打钩。 */
+  void id;
   return false;
 }
 
-/** 所有安静的卡（群聊挑发言人时用） */
+/**
+ * 【已停用 · 2026-11-10】所有安静的卡（群聊挑发言人时用）。
+ *
+ * 主人删掉艾特功能后，`pickSpeakers` 已不再读 quietIds，「安静」这个词没有任何行为含义了。
+ * 函数留着只为不炸老调用方 / 老脚本；**恒返回空数组** —— 就算 agents.json 里
+ * 还留着 quiet:true，也不许有人从这里拿到一份「这些人要叫才说话」的名单。
+ */
 export function quietAgentIds() {
-  const data = readAll();
-  return Object.keys(data.quiet || {}).filter((k) => data.quiet[k]);
+  return [];
 }
 
-/** 改一张卡的安静开关。传假就是「还是照常每次都接」。 */
+/**
+ * 改一张卡的安静开关。
+ *
+ * 【已停用 · 2026-11-10】艾特删除后没有入口会调它（界面勾选框已撤）。
+ * 函数体和 /api/agents/quiet 一起留着：老会话文件里还存着 quiet 字段，
+ * 真要恢复艾特时连这一步一起从 git 历史拿回来。
+ * **不要再从任何 UI 调它** —— 设了也不会有效果，只会让人以为「设成了」。
+ */
 export function setAgentQuiet(id, quiet) {  const key = String(id || '');
   if (!key) {
     const e = new Error('没说要改哪张卡');

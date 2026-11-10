@@ -50,8 +50,13 @@ t.ok('提示词明说这一轮没有工具、不能干活',
 /* ── 三、链式顺序与可见 ─────────────────────────────────────── */
 t.ok('「排在小鱼上面的人先开口」默认停用',
   /XY_LEGACY_ABOVE === '1'/.test(server));
-t.ok('pickSpeakers 支持严格名单顺序',
-  /keepOrder = false/.test(group) && /!keepOrder && aliveHits\.length/.test(group));
+/* 【2026-11-10 改·主人钦点删掉艾特功能】
+ * 原来这两条钉的是「@ 能插队」：不传 keepOrder 时 @C 排到最前。
+ * @ 已经删了，pickSpeakers 只剩「开着的都说、顺序照竖列」一条规矩 ——
+ * 再照着旧口径断言，等于让回归一直红着去维护一个不存在的功能。
+ * 现在钉的是新口径：传不传 keepOrder 都严格 A→B→C，写在句子里不起作用。 */
+t.ok('pickSpeakers 严格按名单顺序（@ 已不参与判断）',
+  /keepOrder = false/.test(group) && !/aliveHits/.test(group));
 t.ok('两条接话路径都开了 keepOrder',
   (server.match(/keepOrder: true/g) || []).length >= 2);
 
@@ -66,8 +71,8 @@ t.ok('keepOrder 时严格 A→B→C（@ 不插队）',
 const reordered = pickSpeakers({
   roster, userText: '@C 你先说 @A 然后你', quietIds: [], enabledIds: ['a', 'b', 'c'],
 });
-t.ok('不传 keepOrder 时旧行为没被改坏（@ 仍可插队）',
-  reordered[0] && reordered[0].id === 'c', reordered.map((x) => x.id).join(','));
+t.ok('不传 keepOrder 时同样严格 A→B→C（@ 不再插队）',
+  reordered.map((x) => x.id).join(',') === 'a,b,c', reordered.map((x) => x.id).join(','));
 
 /* 真正拼一次 C 的请求：主人 + A + B 都得在，且标清是谁说的 */
 const msgs = [

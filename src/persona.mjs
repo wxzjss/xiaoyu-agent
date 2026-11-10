@@ -255,7 +255,9 @@ const parts = [
     REASONING_LANGUAGE_RULE,
     settingsPromptBlock(settings),
     personaModeRules(settings),
-    toolBlock(),
+    /* 【2026-11-10 按会话】工具清单按这个会话给 —— 不然提示词里写着「你能用 X」，
+     * 而 API 的 tools 字段里没有 X（会话里关掉了），她就会一本正经地说做不到。 */
+    toolBlock(sessionId),
   ].filter(Boolean);
   if (switched) parts.push(safeModeRules(word));
   /**
@@ -608,12 +610,12 @@ function oneLine(text, max = 120) {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
-function toolBlock() {
+function toolBlock(sessionId = '') {
   if (!_listTools) return '';
   let rows = [];
   let rawSchemas = [];
   try {
-    rawSchemas = _listTools() || [];
+    rawSchemas = _listTools(sessionId) || [];
     rows = rawSchemas
       .map((s) => {
         const f = (s && s.function) || s || {};

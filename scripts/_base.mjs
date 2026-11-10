@@ -29,11 +29,25 @@ function listeningPorts() {
   return [...new Set(out)].filter((p) => p >= 8700 && p <= 8799).sort();
 }
 
-/** 这个端口上跑的是不是小鱼（/api/sessions 回 2xx/4xx 都算活着） */
+/**
+ * 这个端口上跑的是不是小鱼。
+ *
+ * 【2026-11-10 修·把别的服务认成了小鱼】
+ *
+ * 原来探的是 `/api/sessions`，判据是 `status < 500` —— 于是**任何返回 404 的服务都算「活着」**。
+ * 实测踩到：本机 8791 上有个不相干的进程，`/api/sessions` 和 `/api/sessions/new` 都回 404，
+ * 却被认成小鱼 → `detectBase()` 挑中它 → `check-chat-e2e` 报「建会话失败: 404」，
+ * 看着像我们把路由改坏了，其实连的根本不是我们的服务。
+ *
+ * 现在探 `/api/health`，要求**200 且 JSON 里带 version**：
+ *   · 小鱼自己的健康接口一定回 200 + 版本号；
+ *   · 陌生服务要么 404、要么回的 JSON 里没有 version，一律不算。
+ * 宁可探不到退回 8788（行为跟以前一样），也不能把假货当真。
+ */
 function alive(port) {
   try {
     execSync(
-      `node -e "fetch('http://127.0.0.1:${port}/api/sessions').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"`,
+      `node -e "fetch('http://127.0.0.1:${port}/api/health').then(async r=>{if(r.status!==200)process.exit(1);const j=await r.json().catch(()=>null);process.exit(j&&j.version?0:1)}).catch(()=>process.exit(1))"`,
       { stdio: 'pipe', timeout: 5000 },
     );
     return true;

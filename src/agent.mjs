@@ -52,7 +52,7 @@ import { planTextFor, formatPlan, markToolTouched, resetToolTouched, planEmptyHi
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
 import { memoryText, readMemoryFor } from './my-memory.mjs';
-import { getEnabledMap, featureNameOfTool } from './features.mjs';
+import { featureOnFor, featureNameOfTool } from './features.mjs';
 
 /**
  * 【2026-11-08 主人要求】给主人看的系统提示里别再冒英文工具名。
@@ -72,7 +72,9 @@ import { turnSourcePromptBlock } from './turn-source.mjs';
 // persona.mjs 不能静态 import tools.mjs（tools.mjs 反过来 import 了 persona，静态成环会炸），
 // 所以「当前有哪些工具」靠这里注入。工具清单是**从 schema 现读**的，不是手抄的第二份文案：
 // 新增工具自动出现在系统提示里，关掉功能自动消失。
-setToolLister(() => enabledToolSchemas());
+/* 【2026-11-10 按会话】清单要按「这个会话」给 —— 不然系统提示里写着有的工具、
+ * API 的 tools 字段里却没有（或者反过来），模型会一本正经地说「我不能」。 */
+setToolLister((sid) => enabledToolSchemas(sid));
 import {
   getRetry429,
   bumpStreak,
@@ -155,7 +157,8 @@ export function isReadOnlyCommand(raw) {
 }
 
 function toolsForTurn(sessionId) {
-  let all = enabledToolSchemas();
+  /* 【2026-11-10 按会话】按会话取：这个会话关掉的工具，连 schema 都不交给模型（不是靠提示词劝） */
+  let all = enabledToolSchemas(sessionId);
   /**
    * 【把干活的手收走】—— 办事模式（顶栏那颗珊瑚橙按钮）。
    *
@@ -272,7 +275,8 @@ export function contextMessage(sessionId = 'default', opts = {}) {
    *   · write_file / run_command 碰记忆本那几份文件 → safePath 直接抛
    *   · 本子内容自己带一句「现在只能看」，她知道自己在做什么
    */
-  const __memOn = getEnabledMap()['memory'] !== false;
+  /* 【2026-11-10 按会话】记忆关没关问这个会话（三级回退：会话表 → 全局 → 出厂） */
+  const __memOn = featureOnFor(sessionId, 'memory') !== false;
   try {
     /* 【2026-10-31 主人要】自建智能体读自己的本子 ——
        当前说话的身份要是「自建」的（identity 里 customs，就是没有 builtin 标记的那些），

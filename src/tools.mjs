@@ -11,7 +11,7 @@ import { config } from './config.mjs';
  * 直接引子模块，不绕 index —— tools.mjs 和 tools-sendfile 是循环依赖，加载链越短越稳。 */
 import { pickShell } from './harness/exec-shell.mjs';
 import { planAction, noteAction } from './plan.mjs';
-import { isToolEnabled, getEnabledMap, featureNameOfTool, enabledToolNames } from './features.mjs';
+import { isToolEnabled, featureOnFor, featureNameOfTool, enabledToolNames } from './features.mjs';
 import { snapshotBeforeWrite } from './rewind.mjs';
 import { webSearch, formatResults } from './search.mjs';
 import { sendFileTool } from './tools-sendfile.mjs';
@@ -435,7 +435,10 @@ function stateBlocked(abs) {
  */
 function memoryLocked(abs) {
   try {
-    if (getEnabledMap()['memory'] !== false) return false; // 开着：随便
+    /* 【2026-11-10 按会话】记忆关没关改成问「这个会话」（三级回退）。
+     * 这里没有 sessionId 参数，但工具执行时 runTool 已经把会话塞进 CTX，
+     * currentSessionId() 拿得到 —— 不用为了这一行改一串函数签名。 */
+    if (featureOnFor(currentSessionId(), 'memory') !== false) return false; // 开着：随便
     return stateBlocked(abs);
   } catch { return false; }
 }
@@ -584,7 +587,7 @@ function isToolOutFile(abs) {
  */
 function commandTouchesMemory(command) {
   try {
-    if (getEnabledMap()['memory'] !== false) return false; // 开着：随便
+    if (featureOnFor(currentSessionId(), 'memory') !== false) return false; // 开着：随便
     const s = String(command ?? '');
     if (!s) return false;
     if (/my-memory/i.test(s)) return true;
@@ -1776,6 +1779,8 @@ export const tools = [
       const r = await runSubagent({
         task,
         name: nick,
+        /* 【2026-11-10 按会话】把这一轮的会话带下去：子任务要听这个会话的功能开关 */
+        sessionId: currentSessionId(),
         allowWrite: allowWrite === true || allowWrite === 'true',
         // 主人要她像我一样：干多久干多久。这里不再写死 12 轮，用 subagent 的默认。
         maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 200,
@@ -2147,6 +2152,8 @@ export const tools = [
         r = await runSubagent({
           task: brief + reportAsk,
           name: nick,
+          /* 【2026-11-10 按会话】同上：子任务按派活会话的功能开关干活 */
+          sessionId: sid,
           maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60,
           allowWrite: true,
           pullMails: () => {
@@ -2283,6 +2290,8 @@ export const tools = [
           const r = await runSubagent({
             task: p.brief,
             name: p.nick,
+            /* 【2026-11-10 按会话】同上 */
+            sessionId: sid,
             maxRounds: roundMax,
             allowWrite: true,
             pullMails: () => {
@@ -2518,8 +2527,10 @@ export const toolSchemas = tools.map((t) => ({
 }));
 
 /** 只把【功能】面板里开着的工具交出去。关掉的功能，模型连看都看不到。 */
-export function enabledToolSchemas() {
-  const on = new Set(enabledToolNames());
+export function enabledToolSchemas(sessionId = '') {
+  /* 【2026-11-10 按会话】给了 sessionId 就只交这个会话开着的工具 ——
+   * 主人在 A 会话关掉的工具，在 A 的请求里连 schema 都不出现。 */
+  const on = new Set(enabledToolNames(sessionId));
   return toolSchemas.filter((t) => on.has(t.function.name));
 }
 
@@ -2655,7 +2666,7 @@ export async function runTool(name, rawArgs, sessionId, overrideSignal) {
 async function runToolInner(name, rawArgs, sessionId) {
   const tool = tools.find((t) => t.name === name);
   if (!tool) return { ok: false, output: `unknown tool: ${name}` };
-  if (!isToolEnabled(name)) {
+  if (!isToolEnabled(name, sessionId)) {
     const feat = featureNameOfTool(name) || name;
     return { ok: false, output: `「${feat}」现在是关着的，用不了这个工具。要用的话先在顶部【功能】里打开。` };
   }
@@ -2680,7 +2691,7 @@ async function runToolInner(name, rawArgs, sessionId) {
    * 是「假装没记过」。主人要的是前者。
    */
   const memoryReadOnlyHint = '长期记忆现在是关着的（只读）：记忆本能看，但不能往里写。要记就先在顶部【功能】里把长期记忆打开。';
-  if (['memory_add', 'memory_pin'].includes(name) && getEnabledMap()['memory'] === false) {
+  if (['memory_add', 'memory_pin'].includes(name) && featureOnFor(sessionId, 'memory') === false) {
     return { ok: false, output: memoryReadOnlyHint };
   }
   /**

@@ -219,6 +219,39 @@ console.log('\n三、最小形状：口径 + 屏幕段数');
   }
 }
 
+console.log('\n三·二、小鲸一句话只许一个气泡（2026-11-10 主人报「说两遍」）');
+{
+  /* 现场：她一句话在事件流里是 start(空占位) → delta×N(拼字) → finish → whale(整句)。
+   * 最后那条 whale 原来无条件 push 一条新 say，于是清单里两条一模一样的，
+   * 屏幕就是「小鲸把同一句话说两遍」——刷新前后都在，不是前端重画的锅。
+   * 这里把四种真实到达形态各钉一条，少一条都算复发。 */
+  const SENT = '（尾鳍轻轻搭在地上，没动）没干啥，就在这儿待着。';
+  const FLOWS = [
+    ['① 纯整句（没有流式）：只出一条', [{ type: 'whale', who: '小鲸', text: SENT }], 1],
+    ['② start → delta 拼满 → finish → whale 整句：只出一条',
+      [{ type: 'whale_stream_start', who: '小鲸' },
+        { type: 'whale_delta', who: '小鲸', text: SENT.slice(0, 10) },
+        { type: 'whale_delta', who: '小鲸', text: SENT.slice(10) },
+        { type: 'whale_stream_finish', who: '小鲸', text: SENT },
+        { type: 'whale', who: '小鲸', text: SENT }], 1],
+    ['③ start → finish 直接给整句 → whale 整句：只出一条',
+      [{ type: 'whale_stream_start', who: '小鲸' },
+        { type: 'whale_stream_finish', who: '小鲸', text: SENT },
+        { type: 'whale', who: '小鲸', text: SENT }], 1],
+    ['④ 她真说了两句不一样的话：必须两条',
+      [{ type: 'whale', who: '小鲸', text: '第一句。' },
+        { type: 'whale', who: '小鲸', text: '第二句。' }], 2],
+  ];
+  for (const [name, evs, wantSay] of FLOWS) {
+    const c = compose(evs);
+    const incSay = (c.svInc || []).filter((x) => x && x.k === 'say').length;
+    const oneSay = (c.svOne || []).filter((x) => x && x.k === 'say').length;
+    ok(incSay === wantSay, name + ' → 增量清单 ' + wantSay + ' 条 say', '实际 ' + incSay);
+    ok(oneSay === wantSay, name + ' → 重算清单 ' + wantSay + ' 条 say', '实际 ' + oneSay);
+    ok(J(c.svInc) === J(c.svOne), name + ' → 服务端两份逐字相等', diffSummary(c.svInc, c.svOne));
+  }
+}
+
 console.log('\n四、守卫：前端不许再长出第三份合成器');
 {
   /* 【2026-11-09 收口后加】

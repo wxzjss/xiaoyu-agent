@@ -6,8 +6,8 @@
 //   - 老版本留下的开关文件里缺了新功能的键，也当成开（新加的功能自动生效，
 //     不用等用户去点，也不会出现「代码里默认开、实际却显示关」这种自相矛盾）。
 // 想真的关掉，就得在 features.json 里明确写 false —— 那只有用户点「停用」才会发生。
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { join, isAbsolute, resolve as resolvePath } from 'node:path';
 import { config } from './config.mjs';
 
 const FILE = join(config.dataDir, '.state', 'features.json');
@@ -262,6 +262,11 @@ export const FEATURES = [
   },
   {
     // 纯界面功能，不带工具。默认开着，素材就在 assets/background.mp4。
+    /**
+     * 【机器级，不是会话级】2026-11-10
+     * 视频背景铺的是这台电脑的界面，不是「这个对话」的界面 ——
+     * 所以它在 GLOBAL_ONLY_FEATURES 里，开关只写全局表，不跟会话走。
+     */
     id: 'videoBg',
     name: '视频背景',
     desc: '把一段短片铺成聊天背景（循环播放），右下角小圆钮调透明度。不想要就关掉。',
@@ -270,6 +275,12 @@ export const FEATURES = [
   },
   {
     // 小鱼的嗓子：念出来给主人听。四档声音在【功能】里挑。
+    /**
+     * 【机器级，不是会话级】2026-11-10
+     * 声音是从**这台机器的喇叭**出来的：同一个我在 A 会话要出声、B 会话不要，
+     * 说不通，而且两个会话同时说话会叠成一团。所以它进 GLOBAL_ONLY_FEATURES，
+     * 开关只写全局表 —— tts.mjs 的 getTTSState() 读的也是全局，两边一致。
+     */
     id: 'ttsVoice',
     name: '小鱼说话',
     desc: '让小鱼开口：把要说的话念成语音发过来，四档嗓音随便挑（活泼甜 / 软糯最软 / 软糯偏甜 / 连读自然）。点「选声音」就能换，改完下一句生效。',
@@ -284,6 +295,12 @@ export const FEATURES = [
      * 换身份不是换个称呼：她们会真的以为说话的不是主人，可以拒绝听命令；
      * 安全词也只有主人说得才算数（判定在 server.mjs 的 __speakerIsOwner）。
      * 关掉这个开关 = 身份功能整个失效，回到「永远都是主人在说话」。
+     *
+     * 【机器级，不是会话级】2026-11-10
+     * 身份/权限是**进程级**概念，不能随会话漂移（同一个进程里「我是谁」只能有一个答案）。
+     * 更硬的理由：`isOwnerIdentity()` 是权限判定，不能依赖「每个调用方都记得传
+     * sessionId」—— 漏一个就会变成「永远算主人」，那比假关危险得多。
+     * 所以它进 GLOBAL_ONLY_FEATURES，identity.mjs 读全局表也算对得上。
      */
     id: 'identity',
     name: '当前身份',
@@ -322,6 +339,10 @@ export const FEATURES = [
      * 那是这个程序从第一天起就在忍的事。给了眼睛她也不会自己乱看 ——
      * tools-screen.mjs 的 description 里已经写清「别每轮都看，那是他的隐私」。
      * 主人要是嫌吵，关掉这一栏，两个工具就都不在她手上了。
+     *
+     * 【机器级，不是会话级】2026-11-10
+     * 「要不要让这台电脑的屏幕被看见」是机器的事，不是某个对话的事 ——
+     * 所以它在 GLOBAL_ONLY_FEATURES 里，开关只写全局表。
      */
     id: 'screenSense',
     name: '陪看屏幕',
@@ -424,6 +445,13 @@ export const FEATURES = [
    * 关掉这一档 = 不许自己重启（要用命令硬杀也照样被 run_command 那道闸拦下）。
    */
   {
+    /**
+     * 【机器级，不是会话级】2026-11-10
+     * 开机续跑发生的时候**还没有任何会话被打开** —— 进程启动那一刻去哪找 sessionId？
+     * 硬按会话判，机器重启后该续的不续（主人会看到「明明开着，怎么没接着干」），
+     * 比假关更糟。所以它进 GLOBAL_ONLY_FEATURES，两处判定
+     * （server.mjs 的 restart 闸 / 开机续跑闸）继续读全局表。
+     */
     id: 'selfRestart',
     name: '自动重启续上',
     desc: '让她能自己把程序重启一遍，而且会话、设置、草稿全都原样接上 —— 不用你重新选会话，也不用手动双击。'
@@ -474,21 +502,212 @@ export const TOOL_FEATURE = new Map();
  * 判「能不能用」改成「任何一个拥有者开着就能用」。
  */
 export const TOOL_OWNERS = new Map();
-for (const f of FEATURES) {
-  for (const t of f.tools) {
-    if (!TOOL_FEATURE.has(t)) TOOL_FEATURE.set(t, f.id);
-    const arr = TOOL_OWNERS.get(t);
-    if (arr) { if (!arr.includes(f.id)) arr.push(f.id); } else TOOL_OWNERS.set(t, [f.id]);
+
+/**
+ * 【2026-11-10 加·功能可以导入了】索引改成**可以重建**的。
+ *
+ * 原来这两张表在模块加载时 for 一遍 FEATURES 就再也不动了 ——
+ * 那会儿功能清单只可能来自代码。现在自定义功能是运行时从
+ * .state/features-custom.json 读出来的，导入一条新功能之后，
+ * 不重建索引的话 isToolEnabled() 会认不出它管的工具（功能亮着、工具用不了）。
+ *
+ * 注意：这里清空再填，**不换对象** —— server.mjs 等模块拿的是同一个 Map 引用。
+ */
+export function rebuildToolIndex(list) {
+  TOOL_FEATURE.clear();
+  TOOL_OWNERS.clear();
+  for (const f of list) {
+    for (const t of f.tools) {
+      if (!TOOL_FEATURE.has(t)) TOOL_FEATURE.set(t, f.id);
+      const arr = TOOL_OWNERS.get(t);
+      if (arr) { if (!arr.includes(f.id)) arr.push(f.id); } else TOOL_OWNERS.set(t, [f.id]);
+    }
+  }
+}
+rebuildToolIndex(FEATURES);
+
+/**
+ * ===== 自定义功能（2026-11-10 主人要的「导入 / 导出 / 删除」）=====
+ *
+ * 为什么放 <dataDir>/.state/ 而不是代码里：装官方安装包更新时整个 app.asar 被替换，
+ * src/ 里的东西全被覆盖。只有 .state/ 不会动 —— 主人自己导进来的功能不能一升级就没。
+ *
+ * 文件格式（schemaVersion 1）：
+ *   { "schemaVersion": 1, "features": [ { id, name, desc, tools, defaultOn } ] }
+ */
+const CUSTOM_FILE = join(config.dataDir, '.state', 'features-custom.json');
+const CUSTOM_SCHEMA_VERSION = 1;
+/** 导出目录默认落在 <dataDir>/features-export/<时间戳>/ */
+const EXPORT_ROOT = join(config.dataDir, 'features-export');
+
+const BUILTIN_IDS = new Set(FEATURES.map((f) => f.id));
+
+/** id 会直接变成文件名（<id>.feature.json），所以只许这些字符。 */
+const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+
+/**
+ * 把一条来路不明的功能对象收拾干净。收拾不出来就返回 null（调用方记 skipped）。
+ *
+ * 故意**不**因为 tools 里有不认识的名字就整条拒绝：主人可能先导进来、
+ * 等以后装上对应的工具再用。这里只如实收集成 unknownTools 交给调用方去提醒。
+ */
+function normalizeFeature(input, { knownTools } = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const id = String(input.id ?? '').trim();
+  if (!id || !ID_RE.test(id)) return null;
+  const name = String(input.name ?? '').trim() || id;
+  const desc = String(input.desc ?? '').trim();
+  const rawTools = Array.isArray(input.tools) ? input.tools : [];
+  const tools = [...new Set(rawTools.map((t) => String(t ?? '').trim()).filter(Boolean))];
+  const defaultOn = input.defaultOn === undefined ? true : Boolean(input.defaultOn);
+  const unknownTools = knownTools ? tools.filter((t) => !knownTools.has(t)) : [];
+  return { id, name, desc, tools, defaultOn, unknownTools };
+}
+
+/** 读自定义文件里的清单。（坏文件当空处理，不抛 —— 界面不能因为一个坏文件整页打不开） */
+function readCustomFeatures() {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(CUSTOM_FILE, 'utf8'));
+  } catch {
+    return [];
+  }
+  const arr = Array.isArray(raw) ? raw : (Array.isArray(raw?.features) ? raw.features : []);
+  const out = [];
+  const seen = new Set();
+  for (const item of arr) {
+    const f = normalizeFeature(item);
+    if (!f) continue;
+    if (seen.has(f.id)) continue;       // 文件自己写重了：留第一条
+    seen.add(f.id);
+    out.push({ id: f.id, name: f.name, desc: f.desc, tools: f.tools, defaultOn: f.defaultOn });
+  }
+  return out;
+}
+
+/**
+ * 合并后的清单缓存。
+ *
+ * 为什么要缓存：getEnabledMap() / isToolEnabled() 在**每次工具调用**都会走一遍，
+ * 每次都 stat + 读文件能明显拖慢一轮对话。用 mtime+size 当指纹，
+ * 只在文件真的变了才重新解析。
+ */
+let _snap = { key: null, list: null, byId: null, custom: [] };
+
+function customFileKey() {
+  try {
+    const st = statSync(CUSTOM_FILE);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return 'none';           // 没有这个文件 —— 也是一种合法状态（没有自定义功能）
   }
 }
 
+function snapshot() {
+  const key = customFileKey();
+  if (_snap.key === key && _snap.list) return _snap;
+  const customRaw = readCustomFeatures();
+  const custom = [];
+  const skipped = [];
+  for (const f of customRaw) {
+    /* 【id 冲突以内置为准】
+     * 不许自定义静默覆盖内置 —— 内置是「已经发布出去的」那份，随版本走；
+     * 让一个本地文件就能改掉「跑命令」的定义，等于让主人以为在加功能、实际在拆地基。
+     *
+     * 【2026-11-10 主人澄清】只保「本地自制、没进 GitHub 发布的功能」，
+     * 内置功能照常跟着版本更新、被覆盖是正常的。所以这里**只跳合并，不动文件**：
+     * 如果哪天新版本把这条内置功能删了（GitHub 上没有了），文件里那条同名自定义
+     * 就会自动重新出现在清单里 —— 万一主人手上有这么一条，不偷偷删他的东西。 */
+    if (BUILTIN_IDS.has(f.id)) {
+      skipped.push({ id: f.id, reason: '和内置功能重名，跳过' });
+      continue;
+    }
+    custom.push({ ...f, custom: true });
+  }
+  const list = [
+    ...FEATURES.map((f) => ({ ...f, custom: false })),
+    ...custom,
+  ];
+  const byId = new Map(list.map((f) => [f.id, f]));
+  _snap = { key, list, byId, custom, skipped };
+  rebuildToolIndex(list);
+  return _snap;
+}
+
+/** 让缓存立刻失效（导入 / 删除写盘之后必须调，否则要等 mtime 变化才生效） */
+function invalidateSnapshot() {
+  _snap = { key: null, list: null, byId: null, custom: [] };
+}
+
+/** 合并后的完整清单（内置在前、自定义在后），每条带 custom 标记。 */
+export function allFeatures() {
+  return snapshot().list;
+}
+
+/** 自定义文件路径（守卫脚本 / 导入导出要用，别在外面手拼字符串）。 */
+export function customFeaturesFile() {
+  return CUSTOM_FILE;
+}
+
+function writeCustomFeatures(list) {
+  const dir = join(config.dataDir, '.state');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const clean = list.map((f) => ({
+    id: f.id,
+    name: f.name,
+    desc: f.desc ?? '',
+    tools: [...(f.tools ?? [])],
+    defaultOn: f.defaultOn === undefined ? true : Boolean(f.defaultOn),
+  }));
+  writeFileSync(CUSTOM_FILE, JSON.stringify({ schemaVersion: CUSTOM_SCHEMA_VERSION, features: clean }, null, 2), 'utf8');
+  invalidateSnapshot();
+}
+
+/**
+ * 读全局开关表（features.json）。
+ *
+ * 【2026-11-10 加缓存·为什么】功能改成按会话之后，`featureOnFor()` 成了热路径：
+ * 每次判「这个工具能不能用」、每轮「主动找我」的心跳都要走一遍。
+ * 每次都 readFileSync + JSON.parse 一盘小文件，一轮对话里能被调几十次。
+ *
+ * 缓存键用 mtime+size —— 文件被别处（另一个进程 / 主人手改）动了就自动失效，
+ * 不需要谁记得来通知我。自己写盘的那几处会显式清掉缓存（见 writeFileSync 之后）。
+ */
+let _rawCache = { key: null, val: null };
+
 function readRaw() {
+  let key = 'none';
   try {
-    const raw = JSON.parse(readFileSync(FILE, 'utf8'));
-    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const st = statSync(FILE);
+    key = `${st.mtimeMs}:${st.size}`;
   } catch {
     return {};
   }
+  if (_rawCache.key === key && _rawCache.val) return _rawCache.val;
+  let val = {};
+  try {
+    const raw = JSON.parse(readFileSync(FILE, 'utf8'));
+    val = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch {
+    val = {};
+  }
+  _rawCache = { key, val };
+  return val;
+}
+
+function dropRawCache() {
+  _rawCache = { key: null, val: null };
+}
+
+/**
+ * 写全局开关表。所有写 features.json 的地方都走这里 ——
+ * 顺手把读缓存清掉，免得「刚存完又读回老值」这种最气人的 bug。
+ */
+function writeRawFile(obj) {
+  const dir = join(config.dataDir, '.state');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(FILE, JSON.stringify(obj, null, 2), 'utf8');
+  dropRawCache();
 }
 
 /**
@@ -506,16 +725,15 @@ export function getEnabledMap() {
   const raw = readRaw();
   const out = {};
   const missing = [];
-  for (const f of FEATURES) {
+  // 内置 + 自定义一起算（自定义的开关也存在同一张 features.json 里）
+  for (const f of allFeatures()) {
     if (raw[f.id] === undefined) missing.push(f.id);
     const fallback = f.defaultOn === undefined ? true : Boolean(f.defaultOn);
     out[f.id] = raw[f.id] === undefined ? fallback : Boolean(raw[f.id]);
   }
   if (missing.length && raw.schemaVersion !== SCHEMA_VERSION) {
     try {
-      const dir = join(config.dataDir, '.state');
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(FILE, JSON.stringify({ schemaVersion: SCHEMA_VERSION, ...out }, null, 2), 'utf8');
+      writeRawFile({ schemaVersion: SCHEMA_VERSION, ...out });
     } catch {
       // 写不进去也不影响这次读数，下次再补
     }
@@ -529,9 +747,13 @@ export function getEnabledMap() {
  *
  * 【为什么单独建表】列表只有 24 条，每次 setFeature 都线性找一遍也不算慢，
  * 但 id 不存在时要能**立刻**判出来给 400，而不是让调用方自己 for 一遍。
- * 表在建模块时算一次，之后只读。
+ *
+ * 【2026-11-10 改】改成跟着 snapshot() 走 —— 自定义功能也能按 id 查到，
+ * 不然导入的功能在 setFeature / featureOnFor 里会被当成「没这个功能」。
  */
-const BY_ID = new Map(FEATURES.map((f) => [f.id, f]));
+function byIdMap() {
+  return snapshot().byId;
+}
 
 /**
  * 【按会话的功能开关】
@@ -555,25 +777,100 @@ function readBySession() {
   } catch { return {}; }
 }
 
-/** 某个功能在某个会话里开着没。没记过就走 defaultOn。 */
-export function featureOnFor(sessionId, id) {
-  const key = String(id || '');
-  const f = BY_ID.get(key);
-  const fallback = f && f.defaultOn !== undefined ? Boolean(f.defaultOn) : true;
-  const sid = String(sessionId || '');
-  if (!sid) return fallback;
-  const all = readBySession();
-  const mine = all && all[sid];
-  if (!mine || typeof mine !== 'object' || mine[key] === undefined) return fallback;
-  return Boolean(mine[key]);
+/**
+ * 【2026-11-10 按会话】这些功能**故意**不跟会话走，只看全局。
+ *
+ * 判据一句话：**关掉它，是「少一个本事」，还是「这台机器变了」？**
+ * 前者按会话（跑命令、读文件、看视频…），后者进这张名单。
+ *
+ *   - videoBg   视频背景：换的是这台机器的壁纸层，跟哪个对话没关系
+ *   - screenSense 陪看屏幕：机器在不在看屏幕，是机器的事
+ *   - ttsVoice  语音朗读：这台机器要不要出声。同一个我在 A 会话要声音、
+ *               B 会话不要，说不通（声音是从这台机器的喇叭出来的）
+ *   - selfRestart 自动重启续上：开机续跑发生在「还没进任何会话」的时候，
+ *               本来就没有会话可言；硬按会话判，机器重启后该续的不续，更糟
+ *   - identity  身份/权限：进程级概念，不能随会话漂移。更硬的理由 ——
+ *               `isOwnerIdentity()` 是**权限判定**，不能依赖「每个调用方都记得
+ *               传 sessionId」，漏一个就是「永远算主人」，比假关危险得多
+ *
+ * 【这张名单是唯一真相】加进来 = 读写都走全局表 + 每条 scope 报 'global'。
+ * 要动它，先回答上面那个判据，别凭手感。
+ */
+export const GLOBAL_ONLY_FEATURES = new Set(['videoBg', 'screenSense', 'ttsVoice', 'selfRestart', 'identity']);
+
+/**
+ * 一个功能在某个会话里到底开没开 —— 三级回退，顺序不能变。
+ *
+ *   ① 会话表 feature-by-session.json 里记过 → 用它（唯一真相）
+ *   ② 没记过 → 用**全局 features.json** 的值（**不是 defaultOn**）
+ *   ③ 全局也没写过这一格 → 才按 defaultOn
+ *
+ * 【为什么②必须是全局值】
+ * 主人这台机器上本来就有些功能是他自己关掉的。如果②直接跳到 defaultOn，
+ * 他一升级就会发现「没点过的地方全都自己开了」—— 比原来的 bug 更烦人。
+ * 用全局值兜底，升级那一刻行为**一模一样**，之后从第一次点开关开始才分叉。
+ */
+function resolveEnabled(f, sid, bySession, raw) {
+  const key = f.id;
+  if (sid && !GLOBAL_ONLY_FEATURES.has(key)) {
+    const mine = bySession ? bySession[sid] : null;
+    if (mine && typeof mine === 'object' && mine[key] !== undefined) return Boolean(mine[key]);
+  }
+  if (raw[key] !== undefined) return Boolean(raw[key]);
+  return f.defaultOn === undefined ? true : Boolean(f.defaultOn);
 }
 
-/** 开 / 关某个功能在某个会话里的状态。 */
+/** 某个功能在某个会话里开着没。三级回退见 resolveEnabled。 */
+export function featureOnFor(sessionId, id) {
+  const key = String(id || '');
+  const sid = String(sessionId || '');
+  const raw = readRaw();
+  const bySession = sid ? readBySession() : {};
+  const f = byIdMap().get(key);
+  if (!f) {
+    /* 不认识的 id（老开关表里残留的、或者工具侧问了个不存在的功能）：
+     * 照老行为 —— 记过就按记的，没记过当开。别因为查不到定义就把它判死。 */
+    const mine = sid ? bySession[sid] : null;
+    if (mine && typeof mine === 'object' && mine[key] !== undefined) return Boolean(mine[key]);
+    return raw[key] === undefined ? true : Boolean(raw[key]);
+  }
+  return resolveEnabled(f, sid, bySession, raw);
+}
+
+/**
+ * 一整个会话快照：所有功能在这个会话里是开是关。
+ * 比起一个个调 featureOnFor()，这样只读一次文件（界面一次要 30 多条）。
+ */
+export function enabledMapFor(sessionId = '') {
+  const sid = String(sessionId || '');
+  if (!sid) return getEnabledMap();
+  const raw = readRaw();
+  const bySession = readBySession();
+  const out = {};
+  for (const f of allFeatures()) out[f.id] = resolveEnabled(f, sid, bySession, raw);
+  return out;
+}
+
+/**
+ * 开 / 关某个功能在某个会话里的状态。
+ *
+ * 【2026-11-10 加：白名单 id 拒写】GLOBAL_ONLY_FEATURES 里那 5 条是整台机器的开关，
+ * 不能按会话记。以前的做法是「照写，读的时候忽略」—— 那等于给下一个人留个坑：
+ * 他明明写进去了、为什么不生效？而且会话表里会攒一堆永远没人读的死数据，
+ * 将来做清理/迁移全是噪音。所以这里**直接抛 400**，让人当场知道走错门了。
+ * 界面点开关走 setFeatureScoped()，它会把这 5 条自动转成全局写，不受这条影响。
+ */
 export function setFeatureFor(sessionId, id, on) {
   const key = String(id || '');
-  if (!BY_ID.has(key)) {
+  if (!byIdMap().has(key)) {
     const e = new Error('没有这个功能：' + (key || '(空)'));
     e.status = 400;
+    throw e;
+  }
+  if (GLOBAL_ONLY_FEATURES.has(key)) {
+    const e = new Error(`「${byIdMap().get(key)?.name ?? key}」是整台机器的开关，不能按会话设`);
+    e.status = 400;
+    e.globalOnly = true;
     throw e;
   }
   const sid = String(sessionId || '');
@@ -591,14 +888,38 @@ export function setFeatureFor(sessionId, id, on) {
   return { sessionId: sid, id: key, on: Boolean(on) };
 }
 
-/** 拿某一条功能定义；没有就返回 null（不抛，调用方自己决定 400 还是忽略）。 */
-export function featureById(id) {
-  return BY_ID.get(String(id || '')) || null;
+/**
+ * 界面上点开关走这里：**该按会话的按会话，该全局的全局**（GLOBAL_ONLY_FEATURES）。
+ *
+ * 缺 sessionId 时 setFeatureFor 会抛 400 —— 不许偷偷写全局。
+ * 但视频背景 / 陪看屏幕这种机器级的，本来就没有「会话」这回事，照旧写全局。
+ */
+export function setFeatureScoped(id, on, sessionId) {
+  const key = String(id ?? '').trim();
+  if (!byIdMap().has(key)) {
+    const e = new Error(`没有这个功能：${key || '(空)'}`);
+    e.status = 400;
+    throw e;
+  }
+  if (GLOBAL_ONLY_FEATURES.has(key)) {
+    setFeature(key, on);
+    return { id: key, on: Boolean(on), scope: 'global', sessionId: '' };
+  }
+  const r = setFeatureFor(sessionId, key, on);
+  return { ...r, scope: 'session' };
 }
 
-export function getFeatures() {
-  const enabled = getEnabledMap();
-  const features = FEATURES.map((f) => ({
+/** 拿某一条功能定义；没有就返回 null（不抛，调用方自己决定 400 还是忽略）。 */
+export function featureById(id) {
+  return byIdMap().get(String(id || '')) || null;
+}
+
+export function getFeatures(sessionId = '') {
+  const sid = String(sessionId || '');
+  /* 【2026-11-10 按会话】给了 sessionId 就按这个会话算（三级回退），
+   * 没给就退回全局表 —— 只为兼容老前端 / 老脚本，别再往这条路上加新调用。 */
+  const enabled = sid ? enabledMapFor(sid) : getEnabledMap();
+  const features = snapshot().list.map((f) => ({
     id: f.id,
     name: f.name,
     desc: f.desc,
@@ -613,24 +934,46 @@ export function getFeatures() {
      * 界面和验收都需要分清这两种，否则「默认关着」没法验。
      */
     defaultOn: f.defaultOn === undefined ? true : f.defaultOn === true,
+    /* 【2026-11-10 加】这条是主人导进来的（true）还是代码里带的（false）。
+     * 界面靠它决定显示不显示「删除」按钮 —— 内置的只许停用，不许删。 */
+    custom: f.custom === true,
+    /**
+     * 【2026-11-10 加】这条功能**该按什么口径生效**（不是「这次的数字从哪来的」）。
+     *   'global'  = 整台机器的开关（GLOBAL_ONLY_FEATURES 那 5 条）
+     *   'session' = 这个会话的开关
+     * 前端靠它给那 5 条标「整台机器」，否则主人会以为在自己会话里关掉就有用。
+     * 注意：不传 sessionId 时（兼容老前端）数值来自全局表，但每条的口径不变 ——
+     * 口径是功能本身的属性，不随调用方式变。
+     */
+    scope: GLOBAL_ONLY_FEATURES.has(f.id) ? 'global' : 'session',
   }));
   return {
     features,
     total: features.length,
     enabledCount: features.filter((f) => f.enabled).length,
+    /** 其中几条是主人自己导进来的（前端显示「其中 N 个是自定义的」） */
+    customCount: features.filter((f) => f.custom).length,
     /* 【2026-11-03 办事模式严检】去重。
      * spawn_worker / list_workers 同时被「办事模式」和「智能体」声明，
      * 两个功能都开着时 flatMap 会让它们各出现两次（实测 48 个里有 2 组重复）——
      * 交给网关的 tools 清单里出现同名工具，轻则被上游去重、重则按协议判非法。
      * 用 Set 保序去重。 */
     enabledTools: [...new Set(features.filter((f) => f.enabled).flatMap((f) => f.tools))],
+    /** 这批 enabled 是按哪一层算的（session = 这个会话；global = 老前端没带 sessionId 的兜底） */
+    scope: sid ? 'session' : 'global',
+    sessionId: sid || null,
   };
 }
 
-/** 开 / 关一个功能，写盘后返回最新状态。 */
+/**
+ * 开 / 关一个功能，写**全局**表。
+ *
+ * 【2026-11-10 起】界面不再直接走这条 —— 界面上点开关走 setFeatureScoped()。
+ * 这个函数留给：老脚本、测试、以及 GLOBAL_ONLY_FEATURES 里那些机器级功能。
+ */
 export function setFeature(id, on) {
   const key = String(id ?? '').trim();
-  const f = BY_ID.get(key);
+  const f = byIdMap().get(key);
   if (!f) {
     const e = new Error(`没有这个功能：${key || '(空)'}`);
     e.status = 400;
@@ -638,30 +981,30 @@ export function setFeature(id, on) {
   }
   const map = getEnabledMap();
   map[f.id] = Boolean(on);
-  if (!existsSync(join(config.dataDir, '.state'))) {
-    mkdirSync(join(config.dataDir, '.state'), { recursive: true });
-  }
-  writeFileSync(FILE, JSON.stringify({ schemaVersion: SCHEMA_VERSION, ...map }, null, 2), 'utf8');
+  writeRawFile({ schemaVersion: SCHEMA_VERSION, ...map });
   return getFeatures();
 }
 
-/** 现在能用的工具名。 */
-export function enabledToolNames() {
-  return getFeatures().enabledTools;
+/** 现在能用的工具名。给了 sessionId 就按会话算，没给退回全局。 */
+export function enabledToolNames(sessionId = '') {
+  return getFeatures(sessionId).enabledTools;
 }
 
 /** 这个工具现在能不能用；不认识的工具一律当不能用。 */
-export function isToolEnabled(name) {
+export function isToolEnabled(name, sessionId = '') {
   const key = String(name ?? '');
+  const sid = String(sessionId || '');
   /* 【2026-11-03】一个工具可能被好几个功能声明（spawn_worker 同时属于办事模式和智能体）。
    * 只要**任意一个**声明它的功能开着，这个工具就该能用 —— 不然关掉一个功能会把
-   * 另一个功能悄悄弄死。没有 TOOL_OWNERS 记录的（老工具）退回单功能判断。 */
+   * 另一个功能悄悄弄死。没有 TOOL_OWNERS 记录的（老工具）退回单功能判断。
+   *
+   * 【2026-11-10 按会话】给了 sessionId 就按会话判（三级回退）。
+   * 道理：主人在这个会话里把工具关了，这一轮 / 子任务里就不能还照跑 —— 那是假关。 */
   const owners = TOOL_OWNERS.get(key);
-  const map = getEnabledMap();
-  if (owners && owners.length) return owners.some((id) => map[id]);
+  if (owners && owners.length) return owners.some((fid) => featureOnFor(sid, fid));
   const id = TOOL_FEATURE.get(key);
   if (!id) return false;
-  return map[id];
+  return featureOnFor(sid, id);
 }
 
 /**
@@ -677,14 +1020,276 @@ export function featureNameOfTool(name) {
   const key = String(name ?? '');
   const owners = TOOL_OWNERS.get(key);
   if (owners && owners.length) {
-    const names = owners.map((id) => BY_ID.get(id)?.name ?? id).filter(Boolean);
+    const names = owners.map((id) => byIdMap().get(id)?.name ?? id).filter(Boolean);
     if (names.length) return names.join('、');
   }
   const id = TOOL_FEATURE.get(key);
-  return id ? BY_ID.get(id)?.name ?? id : '';
+  return id ? byIdMap().get(id)?.name ?? id : '';
 }
 
-/** 关掉的功能名单，给系统提示用。 */
-export function disabledFeatureNames() {
-  return getFeatures().features.filter((f) => !f.enabled).map((f) => f.name);
+/** 关掉的功能名单，给系统提示用。给了 sessionId 就按会话算。 */
+export function disabledFeatureNames(sessionId = '') {
+  return getFeatures(sessionId).features.filter((f) => !f.enabled).map((f) => f.name);
+}
+
+/* ============================================================
+ * 导出 / 导入 / 删除（2026-11-10 主人要的）
+ *
+ * 三个动作都在**功能定义**这一层，不碰开关状态：
+ * 导出的是「这个功能是什么、管哪些工具」，不带 enabled ——
+ * 那是本机的使用状态，导给别的机器没有意义，导回来还会把开关搅乱。
+ * ============================================================ */
+
+/** 导出格式里的一条。字段固定，导入端就认这几个。 */
+function exportShape(f) {
+  return {
+    id: f.id,
+    name: f.name,
+    desc: f.desc ?? '',
+    tools: [...(f.tools ?? [])],
+    defaultOn: f.defaultOn === undefined ? true : f.defaultOn === true,
+    custom: f.custom === true,
+  };
+}
+
+function httpError(status, message) {
+  const e = new Error(message);
+  e.status = status;
+  return e;
+}
+
+/** ids 省略 / 空数组 = 全部。 */
+export function exportFeatures(ids) {
+  const all = allFeatures();
+  const want = Array.isArray(ids) && ids.length ? new Set(ids.map((x) => String(x).trim()).filter(Boolean)) : null;
+  const picked = want ? all.filter((f) => want.has(f.id)) : all;
+  return {
+    ok: true,
+    version: '1',
+    exportedAt: new Date().toISOString(),
+    features: picked.map(exportShape),
+  };
+}
+
+function timeStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/**
+ * 导出到磁盘。
+ *
+ * 不给 dir 就落到 <dataDir>/features-export/<yyyyMMdd-HHmmss>/（自己的地盘，一定写得进去）；
+ * 给了 dir 就照主人选的写。相对路径按 dataDir 解 —— 传 '桌面' 这种相对名不会掉进 System32。
+ *
+ * 多个功能时额外写一份 _all.featurepack.json：主人想「拖回去批量导入」时，
+ * 直接把这一份拖回界面就行，不用一个个挑。
+ */
+export function exportFeaturesTo({ ids, dir } = {}) {
+  const pack = exportFeatures(ids);
+  if (!pack.features.length) throw httpError(400, '没有可导出的功能（ids 是不是写错了？）');
+  let target = String(dir ?? '').trim();
+  if (target) {
+    if (!isAbsolute(target)) target = resolvePath(config.dataDir, target);
+  } else {
+    target = join(EXPORT_ROOT, timeStamp());
+  }
+  mkdirSync(target, { recursive: true });
+  const files = [];
+  for (const f of pack.features) {
+    const name = `${f.id}.feature.json`;
+    writeFileSync(join(target, name), JSON.stringify(f, null, 2), 'utf8');
+    files.push(name);
+  }
+  if (pack.features.length > 1) {
+    const name = '_all.featurepack.json';
+    writeFileSync(join(target, name), JSON.stringify(pack, null, 2), 'utf8');
+    files.push(name);
+  }
+  return { ok: true, path: target, files };
+}
+
+/** JSON 解析失败时说人话：哪个文件、哪一行哪一列。 */
+function parseJsonDoc(text, label) {
+  const body = String(text ?? '').replace(/^\uFEFF/, '');
+  try {
+    return JSON.parse(body);
+  } catch (err) {
+    const msg = String(err?.message ?? err);
+    const m = /line (\d+) column (\d+)/i.exec(msg);
+    /* 被截断的文件 Node 只给一句 "Unexpected end of JSON input"，没有行列。
+     * 那种情况最像「文件没下完 / 拖了一半」，就直说，别硬编一个行号骗人。 */
+    const where = m
+      ? `第 ${m[1]} 行第 ${m[2]} 列`
+      : (/unexpected end/i.test(msg) ? '文件末尾（看起来是被截断了）' : '（位置不明）');
+    throw new Error(`${label} 不是合法的 JSON：${where} —— ${msg}`);
+  }
+}
+
+/**
+ * 导入。接受三种来路，全部按「文档 → 若干条功能」摊平后逐条处理：
+ *   files   前端用 FileReader 读出来的字符串
+ *   bundle  / features  直接给对象（脚本 / 测试用）
+ *
+ * 规矩（主人问过「会不会把我内置的功能搞坏」—— 不会，见下面 skipped）：
+ *   1. 和内置重名 → 跳过，告诉他为什么
+ *   2. 和已有自定义重名 → 覆盖，记进 updated
+ *   3. 引用了不存在的工具 → **照样导入**，但要如实提醒（imported:true）
+ *   4. 坏 JSON → 跳过，指名道姓说是第几个文件、错在第几行
+ */
+export function importFeatures(payload, { knownTools } = {}) {
+  const added = [];
+  const updated = [];
+  const skipped = [];
+  /* 【为什么单开一个 ignored】
+   * 主人「导出全部」再「拖回来」是最正常的操作 —— 包里必然带着 31 条内置功能。
+   * 要是把它们全塞进 skipped，界面会刷出 31 条红字「跳过」，看着像整包都失败了，
+   * 其实一个字没丢。所以：**和内置一模一样**的，静静记一笔 ignored；
+   * 只有「想用文件里的同名条目顶掉内置」才真的报错。 */
+  const ignored = [];
+  const known = knownTools instanceof Set ? knownTools : (Array.isArray(knownTools) ? new Set(knownTools) : null);
+  const docs = [];
+
+  const takeDoc = (doc, label) => {
+    if (Array.isArray(doc)) {
+      for (const d of doc) docs.push({ d, label });
+      return;
+    }
+    if (doc && typeof doc === 'object' && Array.isArray(doc.features)) {
+      for (const d of doc.features) docs.push({ d, label });
+      return;
+    }
+    docs.push({ d: doc, label });
+  };
+
+  const files = Array.isArray(payload?.files) ? payload.files : [];
+  for (let i = 0; i < files.length; i++) {
+    const one = files[i] || {};
+    const label = String(one.name || `第 ${i + 1} 个文件`);
+    const content = typeof one.content === 'string' ? one.content : JSON.stringify(one.content ?? null);
+    if (!content.trim()) {
+      skipped.push({ id: '', reason: `${label} 是空的`, imported: false });
+      continue;
+    }
+    try {
+      takeDoc(parseJsonDoc(content, label), label);
+    } catch (err) {
+      skipped.push({ id: '', reason: String(err?.message ?? err), imported: false });
+    }
+  }
+  if (payload?.bundle) takeDoc(payload.bundle, 'bundle');
+  if (Array.isArray(payload?.features)) takeDoc(payload.features, 'features');
+
+  const current = readCustomFeatures();
+  const byId = new Map(current.map((f) => [f.id, f]));
+  const touched = new Set();
+  const bump = (arr, id) => { if (!arr.includes(id)) arr.push(id); };
+
+  for (const { d, label } of docs) {
+    const f = normalizeFeature(d, { knownTools: known });
+    if (!f) {
+      skipped.push({
+        id: String(d?.id ?? ''),
+        reason: `${label}：不是一条有效的功能（id 只能用字母数字和 _ . -，且不能为空）`,
+        imported: false,
+      });
+      continue;
+    }
+    if (BUILTIN_IDS.has(f.id)) {
+      const built = byIdMap().get(f.id);
+      const sameTools = JSON.stringify([...(built?.tools ?? [])].sort()) === JSON.stringify([...f.tools].sort());
+      const sameDefault = (built?.defaultOn === undefined ? true : built.defaultOn === true) === f.defaultOn;
+      const identical = Boolean(built)
+        && built.name === f.name
+        && String(built.desc ?? '') === f.desc
+        && sameTools
+        && sameDefault;
+      if (identical) {
+        // 包里带的本来就是内置那一条（最常见的「导出全部 → 拖回来」）—— 不算错
+        if (!ignored.includes(f.id)) ignored.push(f.id);
+      } else {
+        skipped.push({
+          id: f.id,
+          reason: `想用文件里的「${f.name}」顶掉内置功能「${built?.name ?? f.id}」，跳过（内置定义写在代码里，只能停用不能改）`,
+          imported: false,
+          builtin: true,
+        });
+      }
+      continue;
+    }
+    const existed = byId.has(f.id);
+    byId.set(f.id, { id: f.id, name: f.name, desc: f.desc, tools: f.tools, defaultOn: f.defaultOn });
+    touched.add(f.id);
+    bump(existed ? updated : added, f.id);
+    if (f.unknownTools.length) {
+      /* 不整条拒绝，但必须让主人看见 —— 用 imported:true 跟真被拒的区分开，
+       * 前端可以据此显示成「导入成功，但有警告」而不是红条错误。 */
+      skipped.push({
+        id: f.id,
+        reason: `已导入，但引用了不存在的工具：${f.unknownTools.join('、')}。这个功能现在开着也用不了，等那个工具装上之后重开一次就行。`,
+        imported: true,
+        unknownTools: f.unknownTools,
+      });
+    }
+  }
+
+  if (touched.size) writeCustomFeatures([...byId.values()]);
+  const latest = getFeatures();
+  return {
+    ok: true, added, updated, skipped, ignored,
+    /* 顺手把汇总数带上：前端导完可以直接刷新「共 N 个，其中 M 个自定义」，
+     * 不用自己再数一遍 features（数错的人一定会有）。 */
+    total: latest.total,
+    customCount: latest.customCount,
+    features: latest.features,
+  };
+}
+
+/**
+ * 删一个自定义功能。
+ *
+ * 内置的**删不掉**，只能停用 —— 内置定义的代码在 app.asar 里，
+ * 从清单里抹掉它等于让一个按钮控制不了任何东西，下次启动又会长回来，
+ * 主人会以为「删了又回来了」。直说比装作删掉好。
+ */
+export function removeCustomFeature(id) {
+  const key = String(id ?? '').trim();
+  if (!key) throw httpError(400, '缺少 id');
+  if (BUILTIN_IDS.has(key)) {
+    throw httpError(400, '内置功能只能停用（在功能页点那个开关），不能删');
+  }
+  const list = readCustomFeatures();
+  const idx = list.findIndex((f) => f.id === key);
+  if (idx < 0) throw httpError(404, `没有这个自定义功能：${key}`);
+  list.splice(idx, 1);
+  writeCustomFeatures(list);
+  /* 顺手把它留下的开关状态清干净：
+   *   - 全局 features.json 里那一格
+   *   - 各会话 feature-by-session.json 里的那一格
+   * 不清的话，删掉再重新导入同一个 id，会继承上一次的开关（主人会莫名其妙）。 */
+  try {
+    const raw = readRaw();
+    if (Object.prototype.hasOwnProperty.call(raw, key)) {
+      delete raw[key];
+      writeRawFile(raw);
+    }
+  } catch { /* 清不掉也不影响功能已经被删的事实 */ }
+  try {
+    const all = readBySession();
+    let touched = false;
+    for (const sid of Object.keys(all)) {
+      const mine = all[sid];
+      if (mine && typeof mine === 'object' && Object.prototype.hasOwnProperty.call(mine, key)) {
+        delete mine[key];
+        touched = true;
+      }
+    }
+    if (touched) writeFileSync(BY_SESSION_FILE, JSON.stringify(all, null, 2), 'utf8');
+  } catch { /* 同上 */ }
+  return { ok: true, removed: key };
+}
+
+/** 自定义清单里被内置 id 挡掉的条目（给守卫 / 诊断用）。 */
+export function customConflicts() {
+  return snapshot().skipped ?? [];
 }

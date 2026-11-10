@@ -302,6 +302,21 @@ function collectDeclared(code, raw, noComment) {
   for (const m of code.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g)) add(m[1]);
   // 标签 label:
   for (const m of code.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*:\s*(?:for|while|do)\b/gm)) add(m[1]);
+  /**
+   * 【2026-11-10 补·for...of / for...in 的循环变量】
+   *
+   * 原来没这一条，于是 `for (const k of xs) { M.has(k) }` 里的 k
+   * 在「实参扫描」加进来之后会被当成未定义（30 处误报全是这个形态）。
+   * 这是 collectDeclared 的缺口，不是检查思路的错 —— 补上循环变量即可。
+   */
+  for (const m of code.matchAll(/\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s+(?:of|in)\b/g)) add(m[1]);
+  // 解构形态：for (const [a, b] of ...) / for (const { x } of ...)
+  for (const m of code.matchAll(/\bfor\s*\(\s*(?:const|let|var)\s*[\[{]([^\]}]*)[\]}]\s+(?:of|in)\b/g)) {
+    for (const p of m[1].split(',')) {
+      const nm = p.split(':').pop().trim().replace(/=[\s\S]*$/, '').trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(nm)) add(nm);
+    }
+  }
 
   return names;
 }
@@ -324,6 +339,53 @@ for (const file of files) {
     // 那是「定义」不是「调用」，不该当未定义标识符报（run / beat / constructor 全是这种）。
     const methodDef = line.match(/^\s*(?:async\s+)?(?:\*\s*)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/);
     const methodName = methodDef ? methodDef[1] : null;
+    /**
+     * 【2026-11-10 补·实参里的裸标识符也要查】
+     *
+     * 原来只匹配 `name(` 和 `name.` 两种形态 —— 于是 `f(quietIds)` 里那个
+     * **quietIds 根本不会被看到**：quietIds 被删掉之后，这行每轮静默抛
+     * ReferenceError（外面套着 try/catch），setAllowedSpeakers 一次都没执行过，
+     * 而 check-identifiers 报「101 个文件全干净」。
+     *
+     * 教训：查「用了但没声明」，光看调用位置不够，得看实参。
+     * 做法：把每个调用括号里的内容单独扫一遍，取其中「裸标识符」形态的
+     * （前后不是 . 不是引号、不是对象键、不是数字），再走同一套 declared/GLOBALS 判定。
+     */
+    const argChunks = [];
+    /* 模板字符串那一行不扫实参：strip() 会把 `${why}${hint}` 剥成 `whyhint`
+     * 这种拼接残渣，逐个当标识符查全是误报（实测为什么会有 `whyhint`）。
+     * 判据要看**原始行**——strip 之后反引号已经被挖掉，看 line 永远不成立。 */
+    if (!String(rawLines[ln] || '').includes('`')) {
+      for (const m of line.matchAll(/[A-Za-z_$][\w$]*\s*\(([^()]*)\)/g)) argChunks.push(m[1]);
+    }
+    for (const chunk of argChunks) {
+      for (const a of chunk.matchAll(/(^|[,(\s])([A-Za-z_$][\w$]*)(?=\s*[,)]|$)/g)) {
+        const name = a[2];
+        if (!name) continue;
+        if (GLOBALS.has(name) || declared.has(name)) continue;
+        /* 实参里的字面量与关键字：true/false/null/undefined 等已在 GLOBALS，
+         * 这里再兜一层，免得把 `{ a: 1 }` 的键、以及 typeof 之类误报。 */
+        if (/^(true|false|null|undefined|this|typeof|new|await|yield|async|function|void|in|of|instanceof|delete)$/.test(name)) continue;
+        /**
+         * 【宽判：这个名字在文件里出现过「name = …」或「name, …」就当它是形参/解构来的】
+         *
+         * 为什么需要这道宽判：函数形参写成跨行解构时（`async function f({\n  snap = null,\n})`），
+         * collectDeclared 那几条正则抓不到，于是 snap / atChars 这类**明明声明过**的
+         * 会被当成未定义（实测 4 处误报全是这个形态）。
+         *
+         * 代价：理论上「A 函数里 `x = 1` 赋值、B 函数里裸用 x」这种会被放过。
+         * 但那种写法在这个项目里不存在（全是严格声明），而误报会让整条检查失去信任
+         * —— 一条总在喊狼来了的检查，最后没人看。
+         */
+        if (new RegExp('\\b' + name.replace(/\$/g, '\\$') + '\\s*(?:=[^=]|,)').test(code)) continue;
+        const key = ln + ':' + name + ':arg';
+        if (reported.has(key)) continue;
+        reported.add(key);
+        bad++;
+        console.log('  ✘ ' + relative(ROOT, file) + ':' + (ln + 1) + '  「' + name + '」出现在实参里，但没用过也没声明过');
+        console.log('      ' + (rawLines[ln] || '').trim().slice(0, 120));
+      }
+    }
     for (const m of line.matchAll(/(^|[^\w$.])([A-Za-z_$][\w$]*)\s*(\(|\.)/g)) {
       const name = m[2];
       // 只查「函数调用」形态 name(

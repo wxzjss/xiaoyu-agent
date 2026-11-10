@@ -43,7 +43,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
-import { getEnabledMap } from './features.mjs';
+import { featureOnFor } from './features.mjs';
 
 /* 【2026-11-07 修·BOM 根治】
  * 读文本一律走这里：带 BOM 就削掉开头那一个 U+FEFF。
@@ -105,7 +105,17 @@ function writeMemAtomic(file, text) {
 
 function memoryOff() {
   try {
-    return getEnabledMap()['memory'] === false;
+    /* 【2026-11-10 说明】这里读的是**全局兜底**，故意没改成按会话。
+     * 主闸（工具侧 memory_add/pin、safePath 的记忆文件锁、run_command 的
+     * 命令文本闸）都已经按会话判了，这个函数只是本模块内部写盘前的二次兜底。
+     * 为「彻底一致」去改它要动一串签名，而这两块历史上出过事 —— 收益远小于风险。
+     * 如果哪天发现会话里关了记忆本子还在被写，先查工具侧那三道闸，不是这里。 */
+    /* 【2026-11-10】换成 featureOnFor('', 'memory')：**行为逐字等价**
+     * （全局表有值就用它，没有就 defaultOn），只是不再写「裸读全局表」那种形式 ——
+     * 那种写法是假关的温床，check-feature-readpaths 一律禁止。
+     * 注意：这里**故意不传会话**，兜底仍按全局；主闸（工具侧 memory_add/pin、
+     * safePath 记忆锁、run_command 命令闸）已经按会话判了。 */
+    return featureOnFor('', 'memory') === false;
   } catch {
     return false; // 读不到开关就当开着（宁可多记，也不因为一个异常把记忆整个锁死）
   }

@@ -156,11 +156,9 @@ import {
   agentColor,
   agentColorMap,
   setAgentColor,
-  quietAgentIds,
   allowedSpeakersOf,
   setAllowedSpeakers,
   setAgentQuiet,
-  isAgentQuiet,
   MAX_GROUP,
   AGENT_XIAOYU,
   AGENT_XIAOJING,
@@ -184,7 +182,7 @@ import {
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames } from './tools-screen.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
-import { getFeatures, setFeature, featureNameOfTool, getEnabledMap, featureOnFor, setFeatureFor, TOOL_FEATURE, TOOL_OWNERS } from './features.mjs';
+import { getFeatures, featureNameOfTool, getEnabledMap, featureOnFor, setFeatureScoped, GLOBAL_ONLY_FEATURES, TOOL_FEATURE, TOOL_OWNERS, exportFeatures, exportFeaturesTo, importFeatures, removeCustomFeature } from './features.mjs';
 import {
   identityState,
   currentIdentity,
@@ -845,14 +843,13 @@ async function runMateRound({ sessionId, heard, send, excludeIds = [], signal = 
     const enabledIds = roster.map((a) => String(a.id));
     const { speakAsCard, pickSpeakers } = await import('./group.mjs');
     const prevAllowed = allowedSpeakersOf(sessionId);
-    const quietIds = quietAgentIds();
+    /* 2026-11-10 艾特删除：quietIds 已不参与判断，不再取也不再传 */
     const speakers = pickSpeakers({
       roster,
       userText: String(heard || ''),
-      quietIds,
       allowedIds: prevAllowed,
       enabledIds,
-      keepOrder: true,   /* 新口径：严格 A→B→C，不被 @ 的出现顺序打乱 */
+      keepOrder: true,   /* 固定口径：严格按竖列 A→B→C（@ 顺序已废） */
     });
     try { console.log("[DBG-mate] roster=" + roster.map(a=>a.name).join(",") + " enabled=" + enabledIds.join(",") + " speakers=" + (speakers||[]).map(a=>a.name).join(",") + " msgs=" + (sess.messages||[]).length); } catch {}
     if (!speakers || !speakers.length) return 0;
@@ -1255,6 +1252,8 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     r = await runSubagent({
       task,
       name: '小鲸',
+      /* 【2026-11-10 按会话】她干活也要听这个会话的功能开关 */
+      sessionId,
       safeWord: __swWord,
       safeWordNote: __swNote,
       allowWrite: true,
@@ -2061,7 +2060,47 @@ function appendLiveItem(items, ev) {
     /* 【2026-11-10 修·空气泡（A6）】空 say 不落清单（源头不产生）。
      * 注意 whale_stream_start 的空占位**不在此列**（见下）：它是分段语义的一部分。 */
     const _t = String(ev.text || '');
-    if (_t) items.push({ k: 'say', who: String(ev.who || ''), t: _t });
+    const _who = String(ev.who || '');
+    if (_t) {
+      /**
+       * 【2026-11-10 主人报·小鲸的话说两遍（同一句挨着出现两条）】
+       *
+       * 她一句话在直播清单里实际走**两条事件**：
+       *   whale_stream_start → 建一条空 say 占位
+       *   whale_delta×N      → 把字拼在那条占位上
+       *   whale_stream_finish → 占位补字（通常这时已经拼满了）
+       *   whale              → **整句又来一遍**
+       *
+       * 最后这条原来无条件 push 一条新 say —— 于是清单里就有两条一模一样的。
+       * 屏幕上是「小鲸把同一句话说两遍」，刷新前后都在（不是前端重画的锅）。
+       *
+       * 收口规矩：整句到达时，若最后一条就是同一个人的 say，
+       *   · 内容完全相同 → 认成同一次发言，什么都不做（最多把占位补全）
+       *   · 占位还空着   → 直接把整句填进去（占位本来就在等这句）
+       *   · 占位已有别的内容（她被打断过、后面又接了一句）→ 那确实是新的一句，照常 push
+       * 这样「流式 + 定稿整句」永远只落一条气泡，而真接着说的第二句不会被误吞。
+       */
+      const _lastSay = (() => {
+        for (let i = items.length - 1; i >= 0; i--) if (items[i] && items[i].k === 'say') return items[i];
+        return null;
+      })();
+      const _norm = (s) => String(s || '').replace(/\s+/g, '');
+      if (_lastSay && _lastSay.who === _who) {
+        if (!String(_lastSay.t || '').trim()) {
+          _lastSay.t = _t;                       // 占位等着这句：填进去
+        } else if (_norm(_lastSay.t) === _norm(_t)) {
+          /* 同一句：已经拼满了，收口时把标点/空白对齐到定稿版本 */
+          _lastSay.t = _t;
+        } else if (_norm(_t).startsWith(_norm(_lastSay.t))) {
+          /* 定稿比流式那份长（尾部补全）：以定稿为准，别留半句 */
+          _lastSay.t = _t;
+        } else {
+          items.push({ k: 'say', who: _who, t: _t });
+        }
+      } else {
+        items.push({ k: 'say', who: _who, t: _t });
+      }
+    }
   } else if (ev.type === 'whale_stream_start') {
     /* 【2026-11-10 A6 复核后保留】这条空 say 占位**必须留**：
      * 它是「小鲸开口了」的分段记号 —— 后面她插进来的 delta 字都拼在它身上，
@@ -2216,8 +2255,24 @@ function buildLiveItems(events) {
       else { flush(); items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') }); }
     } else if (e.type === 'whale' || e.type === 'agent') {
       const t = String(e.text || '');
+      const who = String(e.who || '');
       /* 【2026-11-10 修·空气泡（A6）】空 say 不落清单（与 appendLiveItem 同口径） */
-      if (t) { flush(); items.push({ k: 'say', who: String(e.who || ''), t }); }
+      if (t) {
+        /* 【2026-11-10 修·小鲸的话说两遍】与 appendLiveItem 同一个口径：
+         * 整句事件到达时，若最后一条就是同一人的 say，同句/占位/前缀补全 → 收口不新增。
+         * 两份实现必须算出逐字相等的清单（check-live-items-parity 钉的就是这个）。 */
+        const lastSay = lastOf('say');
+        const norm = (s) => String(s || '').replace(/\s+/g, '');
+        if (lastSay && lastSay.who === who) {
+          if (!String(lastSay.t || '').trim()) lastSay.t = t;
+          else if (norm(lastSay.t) === norm(t)) lastSay.t = t;
+          else if (norm(t).startsWith(norm(lastSay.t))) lastSay.t = t;
+          else { flush(); items.push({ k: 'say', who, t }); }
+        } else {
+          flush();
+          items.push({ k: 'say', who, t });
+        }
+      }
     } else if (e.type === 'whale_stream_start') {
       /* 【2026-11-10 A6 复核后保留】空 say 占位是分段记号（见 appendLiveItem 同支）；
        * 两份实现都带着它，清单逐字相等；屏幕半边由 items.js 对称滤空。 */
@@ -2982,13 +3037,34 @@ async function runCronTask(task) {
     text,
     '',
     '现在就到点了，我直接去做，做完告诉主人结果。',
-  ].join(eol);
+    /* 【2026-11-10 修·定时任务从来没成功跑过】
+     * 这里原来是 `.join(eol)`，而 **eol 这个变量在整个项目里从来没定义过**。
+     * 于是每次到点都在这一行抛 ReferenceError → 被 cron.mjs 那个 catch 吞掉，
+     * 只在任务列表留一句「这一趟没跑起来」+ 一行 console.warn。
+     * 表现就是：定时任务配了、时间也对，但到点什么都不发生，翻遍界面看不出原因。
+     *
+     * 引子本来就是几行文本，按 '\n' 拼就是本意（Windows 显示换行照样正常）。 */
+  ].join('\n');
 
   sess.messages = Array.isArray(sess.messages) ? sess.messages : [];
   sess.messages.push({
     role: 'user',
     content: lead,
-    context: true,          // 框架消息：前端不画成主人说的话
+    /**
+     * 【2026-11-10 修·引子被「设定副本」吃掉，定时任务等于没跑】
+     *
+     * 原来这里写的是 `context: true`。可 agent.mjs 每轮开头有一段重建逻辑：
+     * 只要 `messages[1]` 是 `role:'user' + context:true` 且不是摘要，
+     * 就直接 `messages[1].content = ctx`（把这一轮的设定副本写进去）。
+     *
+     * 新建会话的消息序列正好是：[system] + 这条引子 → 引子落在 index 1 →
+     * 下一轮开头被整段替换成设定副本，**主人的任务正文一个字都不剩**。
+     * 实测取证：会话里那条 `_cron` 消息的 content 是 4735 字的设定，
+     * 含「定时任务到了」= false，而任务状态还是「跑过了」。
+     *
+     * 现在只用 `_sysNote`（前端据此画成一条系统提示，不画成主人说的话），
+     * 不再打 context —— context 是「每轮重算的设定副本」专用的记号，借它当地位会打架。
+     */
     _sysNote: true,
     _at: Date.now(),
     _cron: String(task.id),
@@ -4750,8 +4826,16 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /**
+   * 【2026-11-10 按会话】功能开关从「全局」改成「按会话」。
+   *
+   * 读：带 sessionId 就按这个会话算（三级回退：会话表 → 全局表 → defaultOn）；
+   *     不带就退回全局 —— **只为兼容老前端/老脚本**，新代码一律带 sessionId。
+   * 写：见下面的 /api/features/set，一律 setFeatureScoped()，缺 sessionId 直接 400。
+   */
   if (req.method === 'GET' && url.pathname === '/api/features') {
-    return json(res, 200, getFeatures());
+    const sid = String(url.searchParams.get('sessionId') || '') || '';
+    return json(res, 200, getFeatures(sid));
   }
 
   /**
@@ -4809,19 +4893,98 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     try {
-      /* 【2026-11-06 主人要求】「主动找我」改成按会话生效：
-       * 哪个会话开了就只在哪个会话生效，不许牵连别的会话。
-       * 走 setFeatureFor(sessionId, ...)；别的功能照旧全局存 ——
-       * 它们本来就是全局的（关掉就是把工具整个摘掉，没法按会话）。 */
+      /**
+       * 【2026-11-10 主人要求：功能仅当前会话，不是全局】
+       *
+       * 原来这里只有 selfwake 一条走会话，其余 30 个都写全局表 ——
+       * 结果主人在 A 会话把「跑命令」关了，B 会话也跟着没了。
+       *
+       * 现在一律 setFeatureScoped()：
+       *   - 普通功能 → 写会话表（feature-by-session.json），**缺 sessionId 就 400**，
+       *     绝不偷偷写全局；
+       *   - GLOBAL_ONLY_FEATURES（videoBg / screenSense）→ 仍写全局，
+       *     那两条是「这台机器在不在做」，本来就没有会话这回事。
+       *
+       * 返回体保留老的 features/total/enabledCount/enabledTools（老前端在读），
+       * 但数值是按**这个会话**算的；另外补 ok / id / on / scope 方便新前端直接用。
+       */
       const fid = String(payload?.id || '');
       const sid = String(payload?.sessionId || url.searchParams.get('sessionId') || '') || '';
-      if (fid === 'selfwake') {
-        const target = sid || getLastSessionId() || '';
-        if (!target) throw { status: 400, message: 'selfwake needs sessionId' };
-        const r = setFeatureFor(target, fid, payload?.enabled);
-        return json(res, 200, { ...r, sessionId: target });
+      /* selfwake 的老行为：没带 sessionId 就落到「最后一次用过的会话」。
+       * 它本来就靠会话活着，退到那个会话比直接 400 有用得多（且不会写全局）。 */
+      const target = (fid === 'selfwake' && !sid) ? String(getLastSessionId() || '') : sid;
+      /* 机器级那 5 条（GLOBAL_ONLY_FEATURES）本来就没有会话可言，不要求 sessionId；
+       * 别在这里重新手写一份 id 名单 —— 名单只有 features.mjs 一处，抄第二份迟早对不上。 */
+      if (!target && !GLOBAL_ONLY_FEATURES.has(fid)) {
+        return json(res, 400, { error: '缺少 sessionId：功能开关现在按会话生效，必须告诉我是哪个会话' });
       }
-      return json(res, 200, setFeature(fid, payload?.enabled));
+      const r = setFeatureScoped(fid, payload?.enabled, target);
+      /* 机器级那条不报 sessionId（它就是没有会话）—— 报个 SESS_A 出去，
+       * 前端很容易当成「这是 A 的私有状态」。 */
+      const echoSid = r.scope === 'global' ? null : (r.sessionId || target || null);
+      /* features 清单永远按这个会话给（机器级那 5 条本来就走全局，不受影响）；
+       * 只把 sessionId 回显置空，免得前端把那 5 条当成「A 的私有状态」。 */
+      return json(res, 200, { ...getFeatures(target), ok: true, id: fid, on: r.on, scope: r.scope, sessionId: echoSid });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  /* ===== 功能：导出 / 导入 / 删除（2026-11-10 主人要的） =====
+   *
+   * 定义存哪、为什么更新不丢：见 src/features.mjs 顶部「自定义功能」那段。
+   * 这里只做 HTTP 这层：收 id 列表、落盘、把结果原样回给前端。
+   *
+   * 内置工具名清单从 allTools 现取（它已经含 ui_*）——
+   * 用它判断「导入的功能引用了不存在的工具」，只提醒、不拦。
+   */
+  const knownToolNameSet = () => {
+    const out = new Set();
+    for (const t of (Array.isArray(allTools) ? allTools : [])) {
+      const n = String(t?.name || '');
+      if (n) out.add(n);
+    }
+    return out;
+  };
+
+  // GET /api/features/export?ids=a,b,c —— 不落盘，直接把清单回给前端（可以当场预览）
+  if (req.method === 'GET' && url.pathname === '/api/features/export') {
+    const raw = String(url.searchParams.get('ids') || '');
+    const ids = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    return json(res, 200, exportFeatures(ids));
+  }
+
+  // POST /api/features/export-to { ids?, dir? } —— 真的写到磁盘上
+  if (req.method === 'POST' && url.pathname === '/api/features/export-to') {
+    let payload = {};
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+    try {
+      const ids = Array.isArray(payload?.ids)
+        ? payload.ids.map((x) => String(x))
+        : (typeof payload?.ids === 'string' ? payload.ids.split(',').map((s) => s.trim()).filter(Boolean) : []);
+      return json(res, 200, exportFeaturesTo({ ids, dir: payload?.dir }));
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // POST /api/features/import { files?, bundle?, features? }
+  if (req.method === 'POST' && url.pathname === '/api/features/import') {
+    let payload = {};
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+    try {
+      return json(res, 200, importFeatures(payload, { knownTools: knownToolNameSet() }));
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // POST /api/features/remove { id } —— 只许删自定义
+  if (req.method === 'POST' && url.pathname === '/api/features/remove') {
+    let payload = {};
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+    try {
+      return json(res, 200, removeCustomFeature(payload?.id ?? url.searchParams.get('id')));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -5596,7 +5759,10 @@ const server = createServer(async (req, res) => {
           id,
           name: String(a.name || ''),
           kind: String(a.kind || ''),
-          quiet: isAgentQuiet(id),
+          /* 2026-11-10 艾特删除：quiet 不再有任何行为含义（pickSpeakers 不读它了），
+             这里恒报 false —— 免得新前端照旧画一个「叫她才应」的小点，
+             让主人以为那个人要喊才说话。字段留着不删，老客户端读它也不会崩。 */
+          quiet: false,
           // 「屋里的人」那颗牌子开没开：关掉的人这一轮一句话都不说（点名也不应）
           // 小鱼/小鲸只认她们自己那套状态（上面 switchOf），别的卡认牌子表
           enabled: (sw === null) ? (onMap[id] !== false) : sw,
@@ -5610,8 +5776,9 @@ const server = createServer(async (req, res) => {
         max: MAX_GROUP,
         members,
         names: members.map((m) => m.name),
-        // 谁「只在叫名字时才说话」——顶栏牌子和名册都要用它画那个小点
-        quietIds: ids.filter((id) => isAgentQuiet(id)),
+        /* 2026-11-10 艾特删除：恒空。老前端读这个数组画「叫才应」的小点，
+             报非空就会画出不存在的状态。 */
+        quietIds: [],
         // 谁被关掉了
         offIds: members.filter((m) => m.enabled === false).map((m) => m.id),
       });
@@ -5685,9 +5852,13 @@ const server = createServer(async (req, res) => {
   }
 
   /**
-   * 【安静开关】某张卡改成「只在叫名字时才说话」。
+   * 【已停用 · 2026-11-10】安静开关：某张卡改成「只在叫名字时才说话」。
    *
-   * 主人原话：「让群聊别一直全员齐发」。三张卡每轮都开口，一长就吵，还烧钱。
+   * 主人当天删掉艾特功能，界面上那个勾选框已撤、`pickSpeakers` 也不读 quiet
+   * —— 这个接口现在**设了没有任何效果**。
+   *
+   * 接口本身留着（不删路由）：老客户端 / 老脚本还在打它，直接 404 会让它们
+   * 弹一堆「没存上」的错。改成「照收，但明说已经不起作用」，比假装成功诚实。
    */
   if (req.method === 'POST' && url.pathname === '/api/agents/quiet') {
     let payload;
@@ -5696,13 +5867,21 @@ const server = createServer(async (req, res) => {
     } catch {
       return json(res, 400, { error: 'invalid JSON body' });
     }
+    /* 仍把值写下去（老会话文件里本来就有这个字段，写空也无害），
+       但响应里带上说明 —— 前端若还在用，会看见 retired 而不是假装成功。 */
     try {
-      const r = setAgentQuiet(String(payload?.id || ''), payload?.quiet !== false);
-      if (!r) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
-      return json(res, 200, { ok: true, ...r });
+      setAgentQuiet(String(payload?.id || ''), payload?.quiet !== false);
     } catch (e) {
-      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+      /* 找不到那张卡之类：本来就没用了，不因为写不进去而报错 */
+      void e;
     }
+    return json(res, 200, {
+      ok: true,
+      id: String(payload?.id || ''),
+      quiet: payload?.quiet !== false,
+      retired: true,
+      note: '艾特功能已删除，「叫她才应」不再生效；现在只说左侧开关决定说不说。',
+    });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/agents/group') {
@@ -9796,22 +9975,17 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               try { return mateSwitchOn(id, sessionId); } catch { return false; }
             })
             /**
-             * 【叫才应的人不主动开口】—— 2026-11-01 严检补
+             * 【2026-11-10 拆·艾特删除后这条成了坑】
              *
-             * 主人原话：「小鲸性子里没打勾，那么如果开启的话她应该每一轮都说话」
-             * 反过来就是：**打了勾 = 叫才应**，这一句没点她的名，就不该硬拉她上来说话。
+             * 原来这里：quiet 名单里的人，只有这句话里**出现她的名字**才让她开口。
+             * 主人当天删掉艾特功能，界面上那个勾选框也撤了 —— 于是这条规则只剩半个身子：
+             * 主人再也设不了它，但老配置里勾过的人会**永远不说话**，
+             * 而且他在界面上找不到任何开关可以打开（勾选框没了）→ 典型的「查不出来的哑巴」。
+             *
+             * 现在直接放行：开着的牌都说话。字段留着不删（老会话文件里还有），但不再挡人。
+             * 要恢复艾特时，从 git 历史（v0.9.46）把这段拿回来即可。
              */
-            .filter((id) => {
-              let q = [];
-              try { q = quietAgentIds(); } catch { return true; }
-              if (!q.includes(String(id))) return true;
-              try {
-                const a = getAgent(id);
-                const nm = String((a && a.name) || '').trim();
-                if (!nm) return false;
-                return String(message || '').includes(nm);
-              } catch { return false; }
-            })
+            .filter(() => true)
             /**
              * 【小鲸刚才要是已经答过，就别再喊她一遍】—— 2026-11-01 严检补
              *
@@ -10070,8 +10244,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 300 字上限，appendDigest 里自动截；满了会把最旧的挪进归档段，一条不丢。
        */
       try {
-        /* 【功能开关：长期记忆】关着就不写。关掉之后既不该读也不该记 —— 只写不读就是黑洞，本子还会被悄悄改动。 */
-        if (getEnabledMap()['memory'] === false) throw { __skip: 1 };
+        /* 【功能开关：长期记忆】关着就不写。关掉之后既不该读也不该记 —— 只写不读就是黑洞，本子还会被悄悄改动。
+         * 【2026-11-10 按会话】改成问**这个会话**。原来读全局：主人在会话里把记忆关了，
+         * 工具层已经拦住 memory_add，可这道 digest 闸还认为「开着」，
+         * 每轮照样往本子里写 —— 主人以为关干净了，本子还在被悄悄改。 */
+        if (featureOnFor(sessionId, 'memory') === false) throw { __skip: 1 };
         /**
          * 这一轮干了什么：从历史里捞刚发生的工具调用。
          * 只记工具名，不记参数、不记结果正文（那些太长，也都不是「话」）。
@@ -10312,7 +10489,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           msgs[idx]._out = merged;
           // 顺手在会话记忆本子里记一笔：消息万一丢了，记忆里还留着
           try {
-            if (getEnabledMap()['memory'] === false) throw { __skip: 1 };
+            /* 【2026-11-10 按会话】同上：发文件补记也按这个会话的记忆开关 */
+            if (featureOnFor(sessionId, 'memory') === false) throw { __skip: 1 };
             const names = sent.map((x) => String(x?.name || '文件')).join('、');
             appendDigest(sessionId, `发了文件：${names}`);
           } catch (e) {
@@ -10550,9 +10728,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           /* 记住@的人·2026-10-29 / 2026-11-01 改口径：@ 了没打勾的人 → 之后一直只留他们；
              @ 的只是打勾的人 → 说完这句就撤，不立规矩。 */
           const prevAllowed = allowedSpeakersOf(sessionId);
-          const quietIds = quietAgentIds();
+          /* 2026-11-10 艾特删除：quietIds 已不参与判断，不再取也不再传 */
           const speakers0 = roster.length
-            ? pickSpeakers({ roster, userText: heard, quietIds, allowedIds: prevAllowed, enabledIds, keepOrder: true })
+            ? pickSpeakers({ roster, userText: heard, allowedIds: prevAllowed, enabledIds, keepOrder: true })
             : [];
           /**
            * 【这一轮已经开过口的人，群聊不再喊一遍】—— 2026-11-03
@@ -10599,19 +10777,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
                * worker 的汇报也已经以 worker 事件推给主人看过了。
                * 再让旁人来补一句，纯属「开完会轮流发言」，一个字的信息都不多，时间却翻倍。
                *
-               * 所以办事模式下：**只有被 @ 到的人才接话**，其余一律不喊。
-               * 没被 @ 就是零个 speaker —— 这一轮省掉 1~2 次完整的模型调用。
+               * 【2026-11-10 艾特删除后的修正 · 这条不改就是永久静音】
+               * 原来判据是「只有被 @ 到的人才接话」，而 @ 已经不认了 ——
+               * `_named` 会恒空、speakers 归零，**办事模式下屋里其他人永远不说话**，
+               * 不报错、没日志，主人只会觉得「她们怎么突然不理我了」。
+               * 现在按新口径：只留一个声音（竖列顺序第一个），其余不喊。
                */
-              const _named = speakers.filter((a) => {
-                const nm = String(a.name || '').trim();
-                return nm && String(heard || '').includes('@' + nm);
-              });
-              speakers = _named.slice(0, 1);
+              speakers = speakers.slice(0, 1);
             }
           } catch (e) { /* 读不到状态就按原样放行 */ }
           if (speakers.length) {
             try {
-              setAllowedSpeakers(sessionId, nextAllowedIds(prevAllowed, heard, roster, quietIds));
+              /* 2026-11-10 艾特删除：nextAllowedIds 已不再需要 quietIds
+               * （原来这里还传了一个 quietIds，而那个变量在同一次改动里被删掉了，
+               *   于是这一行每轮静默抛 ReferenceError —— 被 catch 吞掉，
+               *   setAllowedSpeakers 一次都没执行过，agents.json 里的旧名单永远清不掉。）
+               * 形参有默认值，少传就是 []，行为不变。 */
+              setAllowedSpeakers(sessionId, nextAllowedIds(prevAllowed, heard, roster));
             } catch { /* 存不上不影响这一轮 */ }
             let burned = 0;
             for (const mate of speakers) {

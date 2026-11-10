@@ -33,7 +33,7 @@ import { rosterPrompt } from './roster-prompt.mjs';
  */
 import { slimRoundMessages } from './turn-slim.mjs';
 import { enabledToolSchemas, runTool, pushToolContext, setToolContext, subagentDepth, bumpSubagentDepth, dropSubagentDepth, MAX_SUBAGENT_DEPTH, currentSessionId } from './tools.mjs';
-import { featureNameOfTool, getEnabledMap } from './features.mjs';
+import { featureNameOfTool, featureOnFor } from './features.mjs';
 // 底线要从设置里读 —— 主人定的那几条对她也生效（主人 2026-10-25 明确要求）
 import { getSettings } from './settings.mjs';
 import { config } from './config.mjs';
@@ -474,6 +474,16 @@ export async function runSubagent({
   const ownerSessionId = currentSessionId();
   const restoreCtx = pushToolContext();
   const subSessionId = sessionId || `sub-${name}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  /**
+   * 【2026-11-10 按会话】功能开关该听谁的？听**派活那个会话**的，不听子任务自己的。
+   *
+   * 子任务有独立的 subSessionId（计划、便签落它名下，免得串到主人板上）——
+   * 但「主人关掉了跑命令」这件事是主人的会话状态，不是子任务的。
+   * 要是拿 subSessionId 去查，永远查不到记录 → 落回全局 → 主人在自己会话里关掉的
+   * 功能，子任务照样拿着跑（假关）。所以这里用 sessionId（调用方给的）或者
+   * ownerSessionId（推上下文之前抓下来的父会话），绝不拿 subSessionId 当判据。
+   */
+  const gateSessionId = sessionId || ownerSessionId || '';
   setToolContext(subSessionId, null, null);
   bumpSubagentDepth();
 
@@ -545,20 +555,20 @@ export async function runSubagent({
     if (allowWrite) {
       // 全套：小鱼有什么她有什么，只扣掉递归那一个
       allowedWhale = new Set(
-        enabledToolSchemas()
+        enabledToolSchemas(gateSessionId)
           .map((t) => t.function.name)
           .filter((n) => !DENIED_FOR_WHALE.has(n)),
       );
     } else {
       // 调用方明确收窄成只读
       allowedWhale = new Set(
-        enabledToolSchemas()
+        enabledToolSchemas(gateSessionId)
           .map((t) => t.function.name)
           .filter((n) => ALLOWED_FOR_WHALE.has(n) && !WRITE_TOOLS.has(n) && !DENIED_FOR_WHALE.has(n)),
       );
     }
     const allowed = allowedWhale;
-    const toolSchemas = noTools ? [] : enabledToolSchemas().filter((t) => allowed.has(t.function.name));
+    const toolSchemas = noTools ? [] : enabledToolSchemas(gateSessionId).filter((t) => allowed.has(t.function.name));
 
 
     /**
@@ -755,7 +765,7 @@ export async function runSubagent({
       '所以规矩是：脑子里空不是问题，翻本子就行 —— 别装成记得，也别明明本子里写着还当没发生。',
       '',
       '【你的本子】（你自己攒的，换多少会话都在这儿）',
-      ...(getEnabledMap()['memory'] === false ? [
+      ...(featureOnFor(gateSessionId, 'memory') === false ? [
         '⚠ 长期记忆现在是**关着**的：这本子你只能看，不能往里写 —— 最后那行「记下：…」写了也不会进本子。',
         '',
       ] : []),
@@ -763,7 +773,7 @@ export async function runSubagent({
       '',
       '这次的事要是跟本子里记过的有关，直接用，别重头查。',
       '',
-      ...(getEnabledMap()['memory'] === false ? [
+      ...(featureOnFor(gateSessionId, 'memory') === false ? [
         '这次别写「记下：」那行 —— 记忆关着，写了进不去，别白费力气也别以为自己记下了。',
         '',
         '',

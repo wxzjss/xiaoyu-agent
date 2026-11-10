@@ -43,7 +43,10 @@ const KEEP_FILES = [
   'model.json',               // 老版本的单模型配置，别丢
   'persona.md',               // 当前用的人设正文
   'personas.json',            // 人设列表
-  'features.json',            // 功能开关
+  'features.json',            // 功能开关（全局表，老会话的兜底）
+  'feature-by-session.json',  // 按会话的功能开关（新）
+  'features-custom.json',     // 本机自己加的功能定义（导入进来的，不带它换机器就没了）
+  'agents.json',              // 智能体卡（主人新建的那些）
   'skin.json',                // 皮肤
   'thinking.json',            // 思考强度
   'chatstyle.json',           // 聊天样式

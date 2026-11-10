@@ -28,7 +28,7 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync, statSync, rmSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { config } from './config.mjs';
-import { getEnabledMap } from './features.mjs';
+import { featureOnFor } from './features.mjs';
 
 /** 界面上显示的名字。改文案只改这里。 */
 export const MODE_NAME = '办事模式';
@@ -178,10 +178,15 @@ export function setTaskOn(sessionId, on) {
  * 关掉它 = 顶栏那颗按钮整块消失、POST 也拒掉（跟其它功能一个规矩：
  * 功能关着＝这个功能不存在，不是灰着让你点）。
  */
-export function taskFeatureOn() {
+export function taskFeatureOn(sessionId = '') {
   try {
-    const m = getEnabledMap();
-    return m['taskmode'] === true;
+    /* 【2026-11-10 按会话】功能开关改成按会话之后，这一档也得问会话 ——
+     * 不然主人在这个会话里已经把「办事模式」关掉，按钮还亮着（假关）。
+     * 不带 sessionId 时走三级回退的第二级（全局值），老调用照样成立。 */
+    /* 没有 sessionId 就传空串：三级回退会自动跳过会话表，直接看全局值、再退 defaultOn。
+     * 跟原来 `getEnabledMap()['taskmode']` 逐字等价，但不再出现「裸读全局表」这种写法
+     * （check-feature-readpaths 会把裸读当成假关的源头，一律不许）。 */
+    return featureOnFor(sessionId || '', 'taskmode') === true;
   } catch {
     return false;
   }
@@ -535,7 +540,7 @@ export function taskInfo(sessionId) {
    */
   let available = true;
   try {
-    available = taskFeatureOn();
+    available = taskFeatureOn(sid);
   } catch {
     available = true;
   }

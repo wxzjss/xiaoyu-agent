@@ -2471,6 +2471,11 @@
       color: var(--ok); border: 1px solid var(--ok);
     }
     .featName .badge.off { color: var(--dim); border-color: var(--border); }
+    /* 「自定义」小标：一眼看出哪些行是主人自己导进来的（也就是能删的那几行） */
+    .featName .badge.own { color: var(--accent); border-color: rgba(79, 140, 255, .5); }
+    /* 「整台机器」小标：这两条开关不跟会话走（视频背景 / 陪看屏幕）。
+       用虚线圈，跟按会话的那些区分开，又不至于太抢眼。 */
+    .featName .badge.mach { color: var(--dim); border-color: var(--border); border-style: dashed; }
     .featDesc { color: var(--dim); font-size: 11.5px; line-height: 1.7; margin-top: 2px; }
     .featRow .switch {
       flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
@@ -2495,6 +2500,104 @@
     .featRow .featEditBtn:hover { border-color: var(--accent); color: var(--accent); }
     /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
     .featRow .featEditGroup { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+
+    /* ---- 功能页：导入 / 导出 / 删掉自己导进来的（2026-11-10） --------------
+     * 这一排照抄会话面板那排的手感：同一套 .sessTop.sessTools 的尺寸，
+     * 颜色也同一套意思（导入=往里进，描边蓝；导出=往外拿，安静灰）。
+     * 两个面板长得一样，主人就不用学两遍。 */
+    #featImport { border: 1px solid rgba(79, 140, 255, .55); background: rgba(79, 140, 255, .10); color: #9dbcff; font-weight: 600; }
+    #featImport:hover { background: rgba(79, 140, 255, .20); border-color: var(--accent); color: #cfe0ff; }
+    #featExport { border: 1px solid var(--border); background: transparent; color: var(--dim); }
+    #featExport:hover { border-color: #3a4252; background: #1b1f28; color: var(--text); }
+
+    /* 行尾那颗「删除」：只有主人自己导入进来的功能才有。
+     * 平时整颗藏着（opacity:0），鼠标落到这一行才露头 ——
+     * 常驻的话一整列都是红的，天天勾人去点，容易误删。 */
+    .featRow .featDelBtn {
+      flex: none; height: 30px; border-radius: 999px; cursor: pointer;
+      border: 1px solid transparent; background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 10px; opacity: 0;
+      transition: opacity .12s ease;
+    }
+    /* 键盘 Tab 走过来也得看得见，不然纯键盘操作时它就是个隐形按钮 */
+    .featRow:hover .featDelBtn, .featRow .featDelBtn:focus-visible { opacity: 1; }
+    .featRow .featDelBtn:hover { border-color: var(--err); color: var(--err); }
+
+    /* 拖文件到面板上：面板描一圈亮边，再盖一层提示。
+     * 盖层 pointer-events:none —— 它要接住鼠标的话，拖到一半元素就"换了个人"，
+     * 拖拽事件会断，drop 永远不来。
+     * 注意：只给 form 加 position:relative，**别给 dialog 加** ——
+     * 模态 dialog 靠 UA 的 position:fixed 才居中，一改成 relative 就跑回文档流里去了。 */
+    #featuresDlg > form { position: relative; }
+    #featuresDlg.dropping { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+    .featDrop {
+      position: absolute; inset: 0; z-index: 6; pointer-events: none;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+      border: 2px dashed var(--accent); border-radius: 12px;
+      background: rgba(23, 26, 33, .94); color: var(--accent);
+    }
+    /* [hidden] 是 display:none，可上面那条 display:flex 会把它盖掉，得显式补回来 */
+    .featDrop[hidden] { display: none; }
+    .featDrop b { font-size: 16px; }
+    .featDrop span { font-size: 12px; color: var(--dim); }
+
+    /* 一条功能都读不到时的空态。以前这里就是一块空白，主人只会觉得面板坏了。 */
+    .featEmpty { padding: 30px 14px; text-align: center; font-size: 13px; color: var(--dim); line-height: 1.8; }
+    .featEmpty .t { margin-bottom: 10px; word-break: break-word; }
+    .featEmpty .btn {
+      border: 1px solid var(--border); background: transparent; color: var(--text);
+      border-radius: 8px; padding: 5px 14px; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .featEmpty .btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ---- 导入结果：一条条摊开说，黄=进来了但有提醒，红=真被拒 --------------
+     * 只用 alert 说不清「哪条是黄哪条是红」—— 那是这一次操作的账本，
+     * 摆回面板上、分颜色写，主人一眼就能挑出要处理的那几条。 */
+    .featReport { border-top: 1px solid var(--border); background: #14171d; flex: 0 0 auto; max-height: 34vh; overflow-y: auto; }
+    .featReport[hidden] { display: none; }
+    .featReport .frHead {
+      display: flex; align-items: center; gap: 8px; padding: 8px 16px 4px;
+      font-size: 12.5px; color: var(--text);
+    }
+    .featReport .frHead .grow { flex: 1 1 auto; min-width: 0; }
+    .featReport .frHead button {
+      flex: none; border: 1px solid var(--border); background: transparent; color: var(--dim);
+      border-radius: 6px; padding: 1px 8px; font: inherit; font-size: 11.5px; cursor: pointer;
+    }
+    .featReport .frHead button:hover { color: var(--text); border-color: var(--dim); }
+    .featReport .frBody { padding: 0 16px 10px; }
+    .featReport .frLine { font-size: 12px; line-height: 1.75; word-break: break-word; }
+    .featReport .frLine.warn { color: #e0b072; }
+    .featReport .frLine.err { color: #ff8b8b; }
+    .featReport .frLine.ok { color: var(--ok); }
+    .featReport .frLine.grey { color: var(--dim); }
+    .featReport .frLine b { font-weight: 600; }
+
+    /* ---- 导出功能那张面板 ---------------------------------------------- */
+    #featExportDlg { width: min(520px, 92vw); }
+    #featExportDlg .featOutList {
+      display: flex; flex-direction: column; gap: 6px; padding: 12px 16px;
+      overflow-y: auto; min-height: 0; flex: 1 1 auto; overscroll-behavior: contain;
+    }
+    #featExportDlg .featOutRow {
+      display: flex; align-items: center; gap: 9px; padding: 7px 9px;
+      border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+    }
+    #featExportDlg .featOutRow:hover { border-color: var(--accent); }
+    #featExportDlg .featOutRow input[type="checkbox"] { flex: 0 0 auto; width: 14px; height: 14px; margin: 0; }
+    #featExportDlg .featOutRow .nm { flex: 1 1 auto; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #featExportDlg .featOutRow .tag {
+      flex: 0 0 auto; font-size: 10.5px; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 4px; padding: 0 4px;
+    }
+    /* 导出完才出现的那块：说清导去哪儿了。路径整段折行显示，不截断。 */
+    #featExportDlg .featOutDone { flex: 0 0 auto; padding: 10px 16px; border-top: 1px solid var(--border); background: rgba(63, 185, 80, .07); }
+    #featExportDlg .featOutDone[hidden] { display: none; }
+    #featExportDlg .featOutDone .t { font-size: 13px; color: var(--ok); margin-bottom: 6px; }
+    #featExportDlg .featOutDone .p {
+      font: 12px/1.75 ui-monospace, Consolas, monospace; color: var(--text);
+      word-break: break-all; user-select: all; cursor: text;
+    }
     /* 2026-10-29：原来那套「开场白编辑器」的样式（.openingBox/.openingField/.openingArea/.openingBar）
        随功能页那个入口一起删掉了 —— 开场白现在在智能体面板里改，只用人设框那套样式。 */
 
@@ -2631,17 +2734,12 @@
       color: var(--text); border-color: var(--accent); background: rgba(140, 220, 210, .16);
     }
     #agentListDlg .agGroupHint { flex: 1 1 100%; font-size: 11.5px; color: var(--dim); }
-  /* 「只在叫名字时才说话」那类：名字后面挂个「·静」，颜色压暗一点 */
-  #agentListDlg .agGroup .agMem.quiet { border-style: dashed; color: var(--dim); }
-  #agentListDlg .agGroup .agMem.quiet.on { color: var(--text); }
-    #agentListDlg .agQuietWrap {
-      display: flex; align-items: center; gap: 8px;
-      flex: 0 1 auto; margin-right: auto;
-      font-size: 12.5px; color: var(--dim); cursor: pointer;
-    }
+  /* 2026-11-10 艾特删了，「叫她才应」那一档（虚线框 + 压暗）一并撤掉 ——
+     .agMem.quiet 这两条规则已无任何元素会挂上，留着是死代码。 */
+    /* 2026-11-10 撤掉「个性（叫才应）」那个勾 —— .agQuietWrap 那一组样式一并删了。
+       下面这些自绘方块样式保留，因为【开场白】那个勾还在用（.agOpeningWrap）。 */
     /* 方块自绘·2026-10-31 原来只用 accent-color，没勾的时候还是浏览器默认的亮白方块，
        在深色面板上特别刺眼。改成自绘：深底细边，勾上变强调色 + 白对勾。 */
-    #agentListDlg .agQuietWrap input[type="checkbox"],
     #agentListDlg .agOpeningWrap input[type="checkbox"] {
       flex: 0 0 auto; appearance: none; -webkit-appearance: none;
       width: 15px; height: 15px; padding: 0; margin: 0;
@@ -2650,27 +2748,22 @@
       cursor: pointer; position: relative;
       transition: background .12s, border-color .12s;
     }
-    #agentListDlg .agQuietWrap input[type="checkbox"]:hover,
     #agentListDlg .agOpeningWrap input[type="checkbox"]:hover {
       border-color: var(--dim);
     }
-    #agentListDlg .agQuietWrap input[type="checkbox"]:checked,
     #agentListDlg .agOpeningWrap input[type="checkbox"]:checked {
       background: var(--accent); border-color: var(--accent);
     }
     /* 勾上之后那个白色对勾：用旋转的两条边拼出来，不依赖字体图标 */
-    #agentListDlg .agQuietWrap input[type="checkbox"]:checked::after,
     #agentListDlg .agOpeningWrap input[type="checkbox"]:checked::after {
       content: ""; position: absolute; left: 4px; top: 1px;
       width: 4px; height: 8px;
       border: solid #fff; border-width: 0 2px 2px 0;
       transform: rotate(45deg);
     }
-    #agentListDlg .agQuietWrap input[type="checkbox"]:disabled,
     #agentListDlg .agOpeningWrap input[type="checkbox"]:disabled {
       opacity: .45; cursor: not-allowed;
     }
-    #agentListDlg .agQuietWrap span { flex: 0 0 auto; white-space: nowrap; }
     @media (max-width: 760px) {
       #agentListDlg .agBody { flex-direction: column; }
       #agentListDlg .agList {
@@ -3276,11 +3369,58 @@
       <div class="sessTop">
         <span class="hint">关掉的功能，小鱼就拿不到对应的工具；下一句生效</span>
       </div>
+      <!-- 2026-11-10 主人要的：功能能导入、能挑着导出、自己导进来的能删掉。
+           导入=描边蓝、导出=安静灰，跟【会话】面板那排一模一样，别长两副脸。 -->
+      <div class="sessTop sessTools">
+        <button type="button" class="ghost3" id="featImport" title="选一个或多个功能文件导进来；也能直接把文件拖到这个面板上">导入</button>
+        <button type="button" class="ghost3" id="featExport" title="挑几个功能导出成文件，能带走、能挪到别的机器">导出</button>
+        <input type="file" id="featFile" multiple accept=".json,application/json" hidden />
+      </div>
+      <!-- 导入结果：黄=进来了但有提醒，红=真被拒。一次导入的账本，摆在列表上面。 -->
+      <div class="featReport" id="featReport" hidden>
+        <div class="frHead">
+          <span class="grow" id="featReportHead"></span>
+          <button type="button" id="featReportClose">收起</button>
+        </div>
+        <div class="frBody" id="featReportBody"></div>
+      </div>
       <div class="featScroll">
         <div class="featList" id="featList"></div>
       </div>
       <div class="dlgFoot">
         <span class="hint" id="featFoot">关掉的功能小鱼就用不了，改了下一句生效。</span>
+      </div>
+      <!-- 拖文件进来时盖在上面那层（平时 hidden）。不吃鼠标，见 CSS 里那条说明。 -->
+      <div class="featDrop" id="featDrop" hidden>
+        <b>松手就导入</b>
+        <span>一次拖几个都行 · 只认功能文件（.json）</span>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 导出功能：先把「导哪些」摆出来让人勾，再问往哪儿放。
+       2026-11-10 主人：「点击后出现一个新界面上面罗列所有功能名，可以自由选择导出哪些功能」 -->
+  <dialog id="featExportDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>导出功能</b><span class="meta" id="featOutMeta"></span>
+        <button type="button" class="x" data-close="1">关闭</button>
+      </div>
+      <div class="sessTop">
+        <button type="button" class="ghost3" id="featOutAll">全选</button>
+        <button type="button" class="ghost3" id="featOutNone">全不选</button>
+        <span class="hint">导出的是功能定义，不包含开关状态</span>
+      </div>
+      <div class="featOutList" id="featOutList"></div>
+      <div class="featOutDone" id="featOutDone" hidden>
+        <div class="t" id="featOutDoneT"></div>
+        <div class="p" id="featOutPath"></div>
+        <span class="hint">点一下路径就整段选中，可以直接复制</span>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint" id="featOutNote"></span>
+        <button type="button" class="primary" id="featOutDefault">导出到默认位置</button>
+        <button type="button" class="ghost" id="featOutPick">选个位置…</button>
       </div>
     </form>
   </dialog>
@@ -3880,18 +4020,11 @@
             <div id="agGroup" class="agGroup"></div>
             <span id="agGroupHint" class="agGroupHint"></span>
           </div>
-          <div class="agRow">
-            <!-- 个性·2026-11-01（主人原话）：「个性如果没打勾的话，所有没打勾的已启用角色
-                 每一轮都会说话，直到我主动艾特某个或多个人，从艾特那一刻开始接下来只有那些
-                 角色说话，直到我再次艾特……如果个性打勾了，那么仅艾特时说一轮话且后续不再说话」。
-                 所以：不勾＝每轮都接一句（默认）；勾上＝叫才应，而且只应那一次，之后不再霸场。
-                 这是她的性子（阿绿话少），所以存在卡上，换个会话照样记得。 -->
-            <label>个性</label>
-            <label class="agQuietWrap">
-              <input type="checkbox" id="agQuiet">
-              <span>勾上＝只有你叫她的名字（@她）才应一句，应完就住口；不勾＝每轮都说一句</span>
-            </label>
-          </div>
+          <!-- 2026-11-10 主人钦点：「把【屋里的人】艾特功能删除」。
+               于是「个性＝叫才应」这一项整条撤掉：它的全部意义就是「等我 @ 你」，
+               @ 不认了，勾上就等于「永远不说话」，留着只是个坑。
+               现在谁说不说只看左侧那颗开关；说话顺序＝竖列从上到下。
+               （原来这一行还留着一个空 .agRow，会在面板里多出一条 10px 空档，一并删了。） -->
           <div class="agRow">
             <!-- 2026-10-29 主人：「把原来删掉的【一句话】回滚回去，但改名为【开场白】…
                  创建会话时智能体会默认自动发送该内容」。
@@ -4466,7 +4599,12 @@ let attachments = [];
  * 这就是 dsh 那种栏式浏览的骨架 —— 路径本身就是界面，不用另做面包屑跳转表。
  * sel 记的是选中的文件（path -> 文件信息），Map 是为了顺手去重。
  */
-const pick = { open: false, kind: "file", levels: [], sel: new Map(), hidden: false, dir: "", lastDir: "" };
+const pick = { open: false, kind: "file", levels: [], sel: new Map(), hidden: false, dir: "", lastDir: "",
+  /* 【2026-11-10 加】这一层除了挑附件，还要借去「选一个文件夹」（导出功能时用）。
+   * onDir：kind==='dir' 时，用户点「就这儿」把选中的目录交给它；
+   * onCancel：浮层被直接关掉（Esc / 点外面 / 关闭按钮）时通知它一声，
+   *           不然等回话的那个 Promise 永远悬着，导出面板就再也开不起来了。 */
+  onDir: null, onCancel: null };
 
 const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|avif|svg)$/i;
 function isImg(p) { return IMG_EXT.test(String(p || "")); }
@@ -4620,6 +4758,9 @@ function childDirs(lv) {
 async function openPicker(kind) {
   setMenu(false);
   pick.open = true;
+  // 走附件这条老路时先把「选目录」那两个回调摘干净，免得上一轮的回话被这条误触发
+  pick.onDir = null;
+  pick.onCancel = null;
   pick.kind = kind === "image" ? "image" : "file";
   pick.sel = new Map();
   pick.hidden = false;
@@ -4640,6 +4781,39 @@ async function openPicker(kind) {
   }
 }
 
+/**
+ * 【2026-11-10 加】同一个浮层，换个用法：只挑一个文件夹（导出功能时选路径）。
+ *
+ * 为什么复用而不是新做一个：盘符、面包屑、隐藏项、多栏横向滚动全在这套里，
+ * 另做一套等于重写一个文件管理器，还长两张不一样的脸。
+ * 这里只多两件事：① 标题/按钮换个说法；② 点确定时把 pick.dir 交给 onDir。
+ *
+ * @param {(dir:string)=>void} onDir    点「就这儿」时回调，给的是完整路径
+ * @param {()=>void} [onCancel]         浮层被直接关掉时回调（算取消）
+ */
+async function openDirPicker(onDir, onCancel) {
+  setMenu(false);
+  pick.open = true;
+  pick.kind = "dir";
+  pick.onDir = onDir || null;
+  pick.onCancel = onCancel || null;
+  pick.sel = new Map();
+  pick.dir = "";
+  pick.hidden = false;
+  pickHidden.checked = false;
+  pickTitle.textContent = "选个放哪儿";
+  pickOk.textContent = "就这儿";
+  pickCols.innerHTML = '<div class="pickEmpty">正在读取…</div>';
+  pickMask.classList.add("open");
+  try {
+    pick.levels = await chainTo(pick.lastDir || "");
+    renderCols();
+    pickCols.scrollLeft = pickCols.scrollWidth;
+  } catch (err) {
+    pickCols.innerHTML = `<div class="pickEmpty">读不了这个目录：${String(err.message || err)}</div>`;
+  }
+}
+
 /** 面包屑跳转：只留「盘根 → 这一层」的链 */
 async function jumpTo(dir) {
   return chainTo(dir);
@@ -4652,10 +4826,20 @@ function closePicker() {
   pickMask.classList.remove("open");
   pickCols.innerHTML = "";
   pickCrumbs.textContent = "";
+  /* 选目录这条路：浮层被直接关掉 = 取消，得回一声 ——
+   * 不然等回话的 Promise 永远悬着，导出面板下次点开也没反应（看着像坏了）。 */
+  const bye = pick.onCancel;
+  pick.onDir = null;
+  pick.onCancel = null;
+  if (bye) {
+    try { bye(); } catch {}
+  }
 }
 
 /** 选 / 取消选一个文件；图片模式是单选 */
 function toggleFile(f, forceOn) {
+  // 选文件夹这条路：文件根本不该被选中（这里选的是「放到哪个目录」）
+  if (pick.kind === "dir") return;
   const on = pick.sel.has(f.path);
   if (pick.kind === "image") {
     pick.sel.clear();
@@ -4870,6 +5054,16 @@ if (!pickCols.dataset.leftHint) {
 }
 
 function updatePickNote() {
+  // 选目录这条路：看的是「点了哪个文件夹」，不是选了几个文件
+  if (pick.kind === "dir") {
+    pickNote.textContent = pick.dir
+      ? `就选这儿：${pick.dir}`
+      : "点左边一个文件夹选中它，再点右下角那颗按钮";
+    pickOk.disabled = !pick.dir;
+    pickOk.style.opacity = pick.dir ? "1" : ".5";
+    pickOk.style.cursor = pick.dir ? "pointer" : "not-allowed";
+    return;
+  }
   const n = pick.sel.size;
   pickNote.textContent = n
     ? `已选 ${n} 个`
@@ -4882,6 +5076,22 @@ function updatePickNote() {
 }
 
 async function commitPick() {
+  /* 选文件夹这条路：把选中的那个目录交出去，不回附件条。
+   * 先把回调摘下来再 closePicker —— 否则 closePicker 会当成「取消」再回一声。 */
+  if (pick.kind === "dir") {
+    const dir = pick.dir;
+    const cb = pick.onDir;
+    pick.onDir = null;
+    pick.onCancel = null;
+    if (!dir) return;
+    const lastLv = pick.levels[pick.levels.length - 1];
+    if (lastLv && lastLv.dir) pick.lastDir = lastLv.dir;
+    closePicker();
+    if (cb) {
+      try { cb(dir); } catch {}
+    }
+    return;
+  }
   const picked = [...pick.sel.values()];
   if (!picked.length) return;
   const lastLv = pick.levels[pick.levels.length - 1];
@@ -9840,20 +10050,12 @@ async function selectAgent(id) {
   }
 
   /**
-   * 「只在叫名字时才说话」：自建卡和小鲸都能设。
-   * 2026-10-31 主人纠正「每个智能体都是像小鱼一样的独立个体」以后，
-   * 小鲸和小鱼一样是屋里的一个人 —— 她能进来、能自己开口，也能被设成「要叫才应」。
-   * 只有小鱼不能设：她是这个会话的主声。
+   * 【2026-11-10 撤掉】「只在叫名字（@她）时才说话」那个勾。
+   *
+   * 主人钦点删掉艾特功能，这个勾的判据（`@她的名字`）已经不认了 ——
+   * 勾着就等于「永远不说话」，比不勾更糟。界面上那个 checkbox 也一起撤了。
+   * 老配置里存的 quiet 值不再读取（字段留着不删，免得老会话文件解析出错）。
    */
-  const quietEl = document.getElementById('agQuiet');
-  if (quietEl) {
-    /* 个性改版·2026-10-30 小鱼也能点 —— 屋里的一个人，不是特例 */
-    const canQuiet = true;
-    quietEl.checked = canQuiet && !!agentCur.quiet;
-    quietEl.disabled = !canQuiet;
-    quietEl.parentElement.style.opacity = canQuiet ? '' : '.45';
-    quietEl.onchange = () => setAgentQuiet(agentCur.id, quietEl.checked);
-  }
 
   // 模型下拉：第一项永远是「跟当前模型一致」
   const sel = document.getElementById('agModel');
@@ -10149,13 +10351,12 @@ async function refreshAgentChip() {
     /* 流式气泡创建是同步的，来不及等接口；这里存一份给 addAssistant 兜底。 */
     try { window.__turnSpeakerName = _speakerName; } catch {}
   } catch {}
-  /* 2026-11-01：关掉的牌（enabled === false）这一轮一句话都不说，所以算「不在场」；
-     「叫才应」的不再当噪音删掉 —— 她们被点名应一句是主人看得见的事，
-     但默认那间屋子（小鱼 + 打勾的小鲸）仍然不点亮牌子，免得每个会话都挂一块。 */
+  /* 2026-11-01：关掉的牌（enabled === false）这一轮一句话都不说，所以算「不在场」。
+     2026-11-10 艾特删除后不再有「叫才应」这一档（后端 /api/agents/group 的 quiet
+     已恒为 false），开着的牌一律算在场 —— 这里不再按 quiet 剔人。 */
   const alive = grpMembers.filter((m) => m.enabled !== false);
-  const loud = alive.filter((m) => !(m.quiet && String(m.id) === 'xiaojing'));
-  const mates = loud.map((m) => String(m.id));
-  const mateNames = loud.map((m) => String(m.name || '')).filter(Boolean);
+  const mates = alive.map((m) => String(m.id));
+  const mateNames = alive.map((m) => String(m.name || '')).filter(Boolean);
   /* 【2026-11-09 二修】牌子亮不亮也只看动态主智能体：她不是小鱼就亮。
    * 以前这里掺了 /api/agents/current 的绑定卡（swapped），
    * 于是「关小鱼、开小白曦」这种纯排序变化时牌子纹丝不动 —— 主人报的第三个问题。 */
@@ -10176,8 +10377,6 @@ async function refreshAgentChip() {
 
 
   const tail = mates.length ? ' + ' + (mateNames.length ? mateNames.join('、') : String(mates.length)) : '';
-  // 屋里有人但要叫名字才应：牌子上标一下，不然主人会觉得「她怎么不吭声」
-  const quietN = (grp && !grp.error && Array.isArray(grp.quietIds)) ? grp.quietIds.length : 0;
   /* 当前智能体按钮·2026-10-31 固定写「当前智能体」，后面跟名字 —— 说清楚这个按钮是什么，
    * 而不是一句含糊的「现在：」。 */
   /* 牌子只留五字·2026-10-31：牌子上只留这五个字，谁在说话挪到 title（悬停可见），
@@ -10186,13 +10385,17 @@ async function refreshAgentChip() {
    * 「本会话」三个字把「谁在说话」和左上角「当前查看的卡」区分开。 */
   el.textContent = '本会话 · ' + _speakerName;
   el.title = (mates.length
-    ? `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— ${mates.length} 个还会接着补一句，点一下打开智能体面板，排序和开关都在里面`
-    : `当前智能体：${head}${tail}${quietN ? `（${quietN} 个要叫才应）` : ''} —— 不是小鱼，点一下打开智能体面板，排序和开关都在里面`);
+    ? `当前智能体：${head}${tail} —— ${mates.length} 个还会接着补一句，点一下打开智能体面板，排序和开关都在里面`
+    : `当前智能体：${head}${tail} —— 不是小鱼，点一下打开智能体面板，排序和开关都在里面`);
   el.hidden = false;
 }
 
 /**
- * 往输入框里塞「@名字」——点左上角那列按钮就是干这个。
+ * 把她的名字填进输入框 —— 双击 / 右键「屋里的人」那颗牌就是干这个。
+ *
+ * 【2026-11-10 改】原来填的是「@名字」，因为那时 @ 能指定谁说话。
+ * 主人当天把艾特功能删了 —— @ 现在就是普通文字，还留着只会让主人
+ * 以为「@ 了就会应」，所以只填名字，不再带 @。
  *
  * 为什么不直接发出去：主人常常是「先叫她一声，后面还有话说」，
  * 直接发就成了半句话。所以只填不发送，光标留在后面。
@@ -10201,7 +10404,7 @@ function callIntoRoom(name) {
   const nm = String(name || '').trim();
   const ta = document.getElementById('input');
   if (!nm || !ta) return;
-  const tag = '@' + nm + ' ';
+  const tag = nm + ' ';
   const cur = String(ta.value || '');
   ta.value = cur && !/\s$/.test(cur) ? cur + ' ' + tag : cur + tag;
   try { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } catch { /* 忽略 */ }
@@ -10267,8 +10470,7 @@ async function refreshWhoRail() {
       isMain ? '主智能体 —— 这一轮唯一有 Agent 工作能力：她先说，下面的人依次接话'
         : `第 ${idx + 1} 个（顺序从上往下）：接话的人，没有 Agent 工作能力`,
       off ? '现在是关着的：这一轮她一句话都不说（点一下打开）' : '点一下关掉她这一轮；长按可上下拖动换顺序',
-      m.quiet ? '个性打了勾：只有你叫她的名字（@她）才答' : '个性没打勾：每轮都会说一句',
-      '长按可上下拖动换顺序；双击 = 在输入框里叫她的名字',
+      '长按可上下拖动换顺序；双击 = 把她的名字填进输入框',
     ].join('\n');
     b.onclick = () => {
       const dragged = b._dragged;
@@ -10797,22 +10999,20 @@ function renderGroupRow() {
     const on = agentGroup.includes(String(a.id));
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'agMem' + (on ? ' on' : '') + (a.quiet ? ' quiet' : '');
-    /* 2026-11-01：名字只留名字，不再挂「·静」；有没有打勾看虚线框和 tooltip 就够了 */
+    b.className = 'agMem' + (on ? ' on' : '');
+    /* 2026-11-10 艾特删了，a.quiet 不再读：牌子只有「开 / 关」两态，
+       不再有「虚线框 + @她才应」那一档。老配置里的 quiet 字段留着不解析。 */
     b.textContent = String(a.name || '她');
     b.title = on
-      ? (a.quiet
-        ? '她在屋里，但只有你叫她的名字（@她）才应一句 —— 点一下让她出去'
-        : '她在屋里，每轮都接一句 —— 点一下让她出去')
+      ? '她在屋里，每轮都接一句 —— 点一下让她出去'
       : '点一下：让她也在这个会话里说话';
     b.onclick = () => toggleGroupMember(String(a.id));
     box.appendChild(b);
   }
   if (hint) {
     const n = agentGroup.length;
-    const quiets = cards.filter((a) => a.quiet && agentGroup.includes(String(a.id))).length;
     hint.textContent = n
-      ? `这个会话里小鱼 + ${n} 个还会接着说话${quiets ? `（其中 ${quiets} 个叫名字才应）` : ''}；写「@名字」就只让被叫的人接`
+      ? `这个会话里小鱼 + ${n} 个还会接着说话；点了谁，谁就在每一轮都接一句；再点一下让她出去`
       : '只有小鱼一个人说话。点了谁，小鱼答完她就会接着补一句';
   }
 }
@@ -10842,21 +11042,14 @@ async function toggleGroupMember(id) {
  * 为什么不跟人名一起在保存时提交：主人拨一下就想立刻生效，
  * 不该还要记得按「保存」。存完顺手把本地清单改掉，列表和名册的小点立刻跟上。
  */
-async function setAgentQuiet(id, quiet) {
-  if (!id) return;
-  const r = await fetch('/api/agents/quiet', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, quiet: !!quiet }),
-  }).then((x) => x.json()).catch(() => null);
-  if (!r || r.error) { agHint('没存上：' + ((r && r.error) || '网络错误')); return; }
-  const hit = (agentState.agents || []).find((a) => String(a.id) === String(id));
-  if (hit) hit.quiet = !!r.quiet;
-  if (agentCur && String(agentCur.id) === String(id)) agentCur.quiet = !!r.quiet;
-  agHint(quiet ? '她以后只在你叫名字（@她）的时候说话' : '她会跟往常一样，每轮都接一句');
-  renderAgentList();
-  renderGroupRow();
-  try { refreshAgentChip(); } catch { /* 忽略 */ }
-}
+/**
+ * 【2026-11-10 删掉】setAgentQuiet(id, quiet) —— 「她只在被 @ 时才说话」的开关。
+ *
+ * 主人钦点删掉艾特功能，这个开关的判据（@她的名字）已经不认了，
+ * 留着它只会让「设了却没效果」成为一个新的坑。界面上入口已撤、函数体一并删。
+ * 后端 /api/agents/quiet 与 quiet 字段保留（老会话文件里存着，删了会解析出错），
+ * 但不再有任何地方写它。
+ */
 
 async function openAgentDlg() {
   const dlg = document.getElementById('agentListDlg');
@@ -12894,21 +13087,98 @@ const featList = document.getElementById('featList');
 const featHint = document.getElementById('featHint');
 let featState = { features: [], enabledCount: 0, total: 0 };
 
+/**
+ * 【2026-11-10】这一份状态随时可能是「坏的」—— 后端返回结构在动，
+ * 只要 features 不是数组，下面任何一句 `.length` / `.filter` 都会当场 TypeError，
+ * 而这个页面所有交互挂在同一段脚本里：抛一次，后面全不执行 = 整个功能页白屏。
+ *
+ * 所以定下一条死规矩：**读功能列表只能走 featRows()**，它保证一定给你一个数组；
+ * 拿不到的状态用 featTakeState() 收，坏消息留在 featState.error 里，由界面画出来。
+ * 宁可显示「没读到，点重试」，也不能白屏，更不能悄悄什么都不发生。
+ */
+function featRows() {
+  return Array.isArray(featState.features) ? featState.features : [];
+}
+
+/** 收下一份服务端回来的状态；形状不对就归一成「空列表 + 一句 error」，永远不把 undefined 攥在手里。 */
+function featTakeState(r, fallbackError) {
+  const okShape = Boolean(r) && !r.error && Array.isArray(r.features);
+  featState = okShape
+    ? r
+    : { features: [], enabledCount: 0, total: 0, error: (r && r.error) || fallbackError || '没读到功能列表' };
+  return okShape;
+}
+
+/**
+ * 现在这个页面对应哪个会话。
+ *
+ * 功能开关从 2026-11-10 起按会话存（A 会话关掉「跑命令」不该影响 B 会话），
+ * 所以读写都得带上它。取值优先用页面自己的 sessionId —— 跟聊天那边是同一个，
+ * 万一还没落定（刚启动那一瞬），再问 chat.js 的 store 兜一下。
+ */
+function featSid() {
+  try {
+    const sid = String(typeof sessionId !== 'undefined' ? (sessionId || '') : '');
+    if (sid) return sid;
+  } catch { /* TDZ 之类，往下兜 */ }
+  try {
+    const alt = window.__logState && window.__logState.sid;
+    if (alt) return String(alt);
+  } catch { /* 无所谓 */ }
+  return '';
+}
+
 // 功能按钮上只留「功能」两个字，开关状态看面板或悬停提示。
 function paintFeatNow() {
   const btn = document.getElementById('openFeatures');
   if (!btn) return;
-  const off = featState.features.filter((f) => !f.enabled).map((f) => f.name);
+  const rows = featRows();
+  if (!rows.length) { btn.title = featState.error ? '功能列表没读到' : '功能全开'; return; }
+  const off = rows.filter((f) => !f.enabled).map((f) => f.name);
   btn.title = off.length ? '关着的：' + off.join('、') : '功能全开';
+}
+
+/** 一条都拿不到时画在列表里的那块：说清原因，给一颗重试。 */
+function featPaintEmpty() {
+  const box = document.createElement('div');
+  box.className = 'featEmpty';
+  const t = document.createElement('div');
+  t.className = 't';
+  t.textContent = featState.error
+    ? '没读到功能列表：' + featState.error
+    : '这里一条功能都没有 —— 功能清单是空的。';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn';
+  btn.textContent = '点这里重试';
+  btn.addEventListener('click', () => { loadFeatures(); });
+  box.append(t, btn);
+  featList.appendChild(box);
 }
 
 function renderFeatList() {
   if (!featList) return;
   featList.innerHTML = '';
-  for (const f of featState.features) {
+  const rows = featRows();
+  if (!rows.length) {
+    featPaintEmpty();
+    if (featHint) featHint.textContent = featState.error ? '没读到' : '0 个功能';
+    paintFeatNow();
+    return;
+  }
+  for (const f of rows) {
     const row = document.createElement('div');
     row.className = 'featRow';
     row.dataset.id = f.id;
+    /* 2026-11-10：「整台机器」的功能（后端 GLOBAL_ONLY_FEATURES，现在 5 条：
+     * 视频背景 / 陪看屏幕 / 小鱼说话 / 自动重启续上 / 当前身份）。
+     * 它们的开关写全局表，一个会话关掉所有会话都关，所以行上必须标出来 ——
+     * 不标的话主人会以为它也跟会话走，切过去发现「自己又开了」，一头雾水。
+     *
+     * 【为什么不在这里写死 id 数组】口径是**功能自己的属性**，后端已经随每条
+     * 一起发 `scope` 了。写死一份 2 个 id 的清单，后端下次再加例外就悄悄漏标 ——
+     * 这种「两处各记一份、迟早不一样」的账，不留。 */
+    const isMach = f.scope === 'global';
 
     const main = document.createElement('div');
     main.className = 'featMain';
@@ -12920,6 +13190,21 @@ function renderFeatList() {
     badge.className = 'badge' + (f.enabled ? '' : ' off');
     badge.textContent = f.enabled ? '已启用' : '已停用';
     name.append(nm, badge);
+    /* 2026-11-10：导入进来的功能给个小标。删按钮平时藏着（见 CSS），
+       没有这个标，主人就得逐行悬停才知道哪些是自己加的。 */
+    if (f.custom) {
+      const own = document.createElement('span');
+      own.className = 'badge own';
+      own.textContent = '自定义';
+      name.append(own);
+    }
+    if (isMach) {
+      const mach = document.createElement('span');
+      mach.className = 'badge mach';
+      mach.textContent = '整台机器';
+      mach.title = '这个开关不跟会话走：关掉之后所有会话都关';
+      name.append(mach);
+    }
     const desc = document.createElement('div');
     desc.className = 'featDesc';
     desc.textContent = f.desc;
@@ -12931,6 +13216,7 @@ function renderFeatList() {
     sw.dataset.id = f.id;
     sw.dataset.on = f.enabled ? '1' : '0';
     sw.textContent = f.enabled ? '停用' : '启用';
+    if (isMach) sw.title = '整台机器的开关：点了所有会话一起变';
 
     /**
      * 自动重启续上：多给一个「立即重启」的入口（2026-11-03 主人要的）。
@@ -13068,21 +13354,47 @@ function renderFeatList() {
 
     // 2026-10-29 主人：「删除功能页原来的【开场白】功能」——
     // 开场白已经搬到智能体面板里（每张卡自己一句），这里那行「改开场白」入口跟着撤掉。
-    row.append(main, sw);
+    //
+    // 2026-11-10：主人自己导入进来的功能（custom:true）多给一颗「删除」。
+    // 内置的不给 —— 那些是跟着代码走的，删了下次启动又会回来，而且会连累工具链；
+    // 内置功能想不要，停用就够了（开关就在旁边）。
+    if (f.custom) {
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'featDelBtn';
+      del.dataset.del = f.id;
+      del.title = '把这个功能的定义删掉（它管的工具不受影响）';
+      del.textContent = '删除';
+      row.append(main, del, sw);
+    } else {
+      row.append(main, sw);
+    }
     featList.appendChild(row);
   }
-  const off = featState.features.filter((f) => !f.enabled).length;
-  if (featHint) featHint.textContent = off ? `${featState.total} 个功能 · ${off} 个关着` : `${featState.total} 个功能 · 全开`;
+  const off = rows.filter((f) => !f.enabled).length;
+  /* 总数一律从 features 现算，不读 featState.total —— 后端那份 total 会随
+   * 「按会话 / 带自定义」变（31 → 33），写死或另取一处必然对不上。
+   * customCount 后端有就用它的，没有就自己数一遍。 */
+  const own = Number.isFinite(featState.customCount) ? featState.customCount : rows.filter((f) => f.custom).length;
+  if (featHint) {
+    const head = own ? `${rows.length} 个功能（${own} 个自己加的）` : `${rows.length} 个功能`;
+    featHint.textContent = off ? `${head} · ${off} 个关着` : `${head} · 全开`;
+  }
   paintFeatNow();
 }
 
 
 async function loadFeatures() {
-  const r = await fetch('/api/features').then((x) => x.json()).catch(() => null);
-  if (!r || r.error) return false;
-  featState = r;
+  /* 【2026-11-10 按会话】开关状态是按会话算的，所以读的时候必须点名是哪个会话，
+   * 否则后端只能退回全局表，显示的就不是主人这个会话的真实状态。 */
+  const sid = featSid();
+  const url = sid ? '/api/features?sessionId=' + encodeURIComponent(sid) : '/api/features';
+  const r = await fetch(url).then((x) => x.json()).catch(() => null);
+  /* 以前这里失败就 return false，面板保持上一次的样子（常常是空白）；
+   * 现在把「没读到」也画进列表里，给一颗重试 —— 不许静默。 */
+  const ok = featTakeState(r, '没读到功能列表');
   renderFeatList();
-  return true;
+  return ok;
 }
 
 // ---- 小鲸的人设与模型 ----
@@ -13736,6 +14048,38 @@ async function openWhalePersonaDlg() {
 // 这里原来那套「两段隐藏对话」的编辑器（openingBox / toggleOpeningEditor / openOpeningEditor）
 // 已经删掉，别再从这里改开场白。
 
+/** 发一次开关请求。sid 为空就不带 —— 那是给老后台留的退路。 */
+async function featPostSet(id, next, sid) {
+  const payload = { id, enabled: next };
+  if (sid) payload.sessionId = sid;
+  return fetch('/api/features/set', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then((x) => x.json().catch(() => null)).catch(() => null);
+}
+
+/**
+ * 点一个开关。
+ *
+ * 【2026-11-10 按会话】服务端对普通功能缺 sessionId 直接 400 —— 这是对的，
+ * 不能让它「不知道是谁」就偷偷写全局。可是升级是分先后的：
+ * 如果这台机器上跑的还是老后台，它压根不认这回事，可能连 400 都不给。
+ *
+ * 所以：先按新规矩带 sessionId 发；**只有**碰到「400 且 error 里点到了 sessionId」
+ * 才退一步不带重发一次，并在控制台留一行说明。别的错一律不重试 ——
+ * 不能因为一次失败就偷偷改走另一条语义不同的路。
+ */
+async function featSetFeature(id, next) {
+  const sid = featSid();
+  let r = await featPostSet(id, next, sid);
+  if (sid && r && r.error && /session\s*id/i.test(String(r.error))) {
+    console.warn('[features] 后台还不认 sessionId，退一步按全局重发一次：', r.error);
+    r = await featPostSet(id, next, '');
+  }
+  return r;
+}
+
 if (featList) {
   featList.addEventListener('click', async (e) => {
     const sw = e.target.closest('button.switch[data-id]');
@@ -13744,18 +14088,14 @@ if (featList) {
     const next = sw.dataset.on !== '1';
     sw.disabled = true;
     sw.textContent = '…';
-    const r = await fetch('/api/features/set', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      /* 【2026-11-06 主人要求】「主动找我」按会话生效：
-       * 请求里必须带上当前会话 id，服务端才知道该记到哪个会话头上。
-       * 别的功能带上也不影响（服务端只对 selfwake 走按会话那条路）。 */
-      body: JSON.stringify({ id, enabled: next, sessionId: String(sessionId || '') }),
-    }).then((x) => x.json()).catch(() => null);
+    const r = await featSetFeature(id, next);
     sw.disabled = false;
-    if (!r || r.error) {
+    if (!r || r.error || !Array.isArray(r.features)) {
       sw.textContent = next ? '启用' : '停用';
       if (featHint) featHint.textContent = '操作失败：' + (r && r.error ? r.error : '网络错误');
+      /* 200 但没有 features（老后台结构）说明「这次是写成功了、只是没回清单」——
+       * 那就重新拉一遍，别把一份形状不对的东西当状态用。 */
+      if (r && !r.error) await loadFeatures();
       return;
     }
     featState = r;
@@ -13773,7 +14113,7 @@ if (featList) {
     }
     const foot = document.getElementById('featFoot');
     if (foot) {
-      const f = featState.features.find((x) => x.id === id);
+      const f = featRows().find((x) => x.id === id);
       if (f && id === 'videoBg') {
         // 视频背景是纯界面的，改完立刻看得见，别跟着说「下一句生效」
         foot.textContent = f.enabled ? '已启用「视频背景」，马上生效' : '已停用「视频背景」，背景已撤掉';
@@ -13791,14 +14131,435 @@ if (featList) {
 const openFeaturesBtn = document.getElementById('openFeatures');
 if (openFeaturesBtn) {
   openFeaturesBtn.onclick = async () => {
-    const ok = await loadFeatures();
-    if (!ok) { alert('读取功能列表失败'); return; }
+    /* 【2026-11-10】以前读失败就 alert 一句然后不打开面板 ——
+     * 主人点了一下，弹个「读取功能列表失败」，面板还是没出来，等于白点。
+     * 现在无论如何都打开：读不到就在列表位置写清原因 + 给一颗重试。 */
+    await loadFeatures();
+    featHideReport();   // 上一次导入的账本别在新一次打开时还杵着
     closeOtherDialogs('featuresDlg');
-    featDlg.showModal();
+    /* 已经开着就别再 showModal() —— 对开着的 dialog 再调一次会抛 InvalidStateError，
+     * 白白在控制台留一条红字。 */
+    if (featDlg && !featDlg.open) featDlg.showModal();
   };
 }
 if (featDlg) featDlg.addEventListener('cancel', () => featDlg.close());
 /* 【2026-11-03 主人要求】功能页右下角那颗「关闭」已经删掉了，这里一并去掉。 */
+
+/* ===== 功能页：导入 / 导出 / 删掉自己导进来的（2026-11-10） =====================
+ *
+ * 主人原话：「给功能页增加导入（支持直接拖动功能文件导入，支持批量导入）与导出
+ * （点击后出现一个新界面上面罗列所有功能名，可以自由选择导出哪些功能并点击确认后
+ * 导出某个功能到默认或自定义路径里），支持删除某个功能」。
+ *
+ * 三条路都一个规矩：界面只负责问清楚，后台只负责做，回来的话**照实说**
+ * —— 导了几个、盖了几个、跳过哪几个为什么，一个都不藏。
+ */
+const featFile = document.getElementById('featFile');
+const featDrop = document.getElementById('featDrop');
+
+/**
+ * 一次「导入 / 导出 / 删除」的请求。
+ *
+ * 为什么要包这一层：这三个接口是跟界面一起加的，老版本后台根本没有它们。
+ * 那时候 fetch 拿到的是 404 或者一整页 HTML，直接 .json() 当场抛，
+ * 整个 await 链断在那里 —— 界面上什么都没变，主人只会觉得「点了没反应」。
+ * 所以这里统一收口：不管收到什么，一律回 { ok:false, error:'人话' }，
+ * 上层只管把 error 摆出来。绝静默，绝不白屏。
+ */
+async function featApi(path, payload) {
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    const raw = await res.text();
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch { data = null; }
+    if (!data) {
+      return {
+        ok: false,
+        error: res.status === 404
+          ? '这一步后台还没有（现在跑的还是老版本），重启一次小鱼再来'
+          : '后台没给回话（HTTP ' + res.status + '）',
+      };
+    }
+    if (!data.ok) return { ok: false, error: data.error || '后台说不行，但没说是为什么' };
+    return data;
+  } catch (e) {
+    return { ok: false, error: '连不上后台：' + (e && e.message ? e.message : e) };
+  }
+}
+
+/** 读一个本地文件成文本。FileReader 是回调式的，包成 Promise 才好在循环里等。 */
+function featReadFile(f) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result == null ? '' : fr.result));
+    fr.onerror = () => reject(fr.error || new Error('读不出来'));
+    fr.readAsText(f);
+  });
+}
+
+/** 面板底部那行小字。说完过一会儿自己退回原话，不用等下一次操作才刷新。 */
+let featFootTimer = 0;
+const FEAT_FOOT_DEFAULT = '关掉的功能小鱼就用不了，改了下一句生效。';
+function featSay(text, keep) {
+  const foot = document.getElementById('featFoot');
+  if (!foot) return;
+  foot.textContent = text;
+  clearTimeout(featFootTimer);
+  if (!keep) featFootTimer = setTimeout(() => { foot.textContent = FEAT_FOOT_DEFAULT; }, 6000);
+}
+
+/**
+ * 把一次导入的账本摆到列表上面。
+ *
+ * 为什么不用 alert：这一屏必须分两种颜色 ——
+ *   黄 = 进来了，但有件事你得知道（比如引用了还没装的工具，现在开着也用不了）；
+ *   红 = 真的没进来（坏 JSON、想顶掉内置功能）。
+ * alert 只有一种颜色，主人分不出哪条该慌、哪条可以不管。
+ */
+function featShowReport(title, lines) {
+  const box = document.getElementById('featReport');
+  const head = document.getElementById('featReportHead');
+  const body = document.getElementById('featReportBody');
+  if (!box || !head || !body) return;
+  head.textContent = title || '';
+  body.innerHTML = '';
+  for (const ln of (lines || [])) {
+    const d = document.createElement('div');
+    const k = ln.k || 'grey';
+    d.className = 'frLine ' + k;
+    d.textContent = (k === 'warn' ? '提醒 · ' : k === 'err' ? '没进 · ' : '· ') + ln.t;
+    body.appendChild(d);
+  }
+  box.hidden = false;
+}
+
+function featHideReport() {
+  const box = document.getElementById('featReport');
+  if (box) box.hidden = true;
+}
+
+/**
+ * 导入一批文件。
+ *
+ * 支持一次拖/选多个：逐个读成文本，一个文件一个 {name, content}，整包发过去。
+ * 单条 <id>.feature.json 和汇总包 _all.featurepack.json 后台都认得，这里不用分。
+ */
+async function featImportFiles(list) {
+  const files = Array.from(list || []);
+  if (!files.length) return;
+  const picked = [];
+  const bad = [];
+  for (const f of files) {
+    try {
+      const text = await featReadFile(f);
+      if (!text.trim()) { bad.push(f.name + '（是空的）'); continue; }
+      picked.push({ name: f.name, content: text });
+    } catch {
+      bad.push(f.name + '（读不出来）');
+    }
+  }
+  if (!picked.length) {
+    featSay('这几个文件都没读出来');
+    featShowReport('这几个文件都没读出来', bad.map((n) => ({ k: 'err', t: n + '　要的是从【导出】那儿拿到的功能文件（.json）' })));
+    return;
+  }
+
+  featSay('正在导入 ' + picked.length + ' 个文件…', true);
+  const r = await featApi('/api/features/import', { files: picked });
+  if (!r.ok) {
+    featSay('导入没成功：' + r.error);
+    featShowReport('导入没成功', [{ k: 'err', t: r.error }]);
+    return;
+  }
+
+  const added = (r.added || []).length;
+  const updated = (r.updated || []).length;
+  const allSkipped = r.skipped || [];
+  /* 后台把「导进来了，但引用了还没装的工具」也塞在 skipped 里（带 imported:true）——
+   * 那不是失败，是提醒。混在一起报「跳过 N 个」会把人吓一跳：明明能用，怎么说跳过了。
+   * 所以按 imported 拆成两摞，颜色也不一样。 */
+  const warned = allSkipped.filter((s) => s && s.imported === true);
+  const refused = allSkipped.filter((s) => !(s && s.imported === true));
+  const ignored = (r.ignored || []).length;
+
+  /* 导入接口会连最新全量清单一起回来，直接拿它重画，不再多问一次 GET。
+   * 万一这版后台没回 features，就老老实实重新读一遍。 */
+  if (!featTakeState(r, '导入完了，但没拿回最新清单')) await loadFeatures();
+  else renderFeatList();
+
+  const bits = [];
+  if (added) bits.push('新加了 ' + added + ' 个');
+  if (updated) bits.push('覆盖更新 ' + updated + ' 个');
+  if (warned.length) bits.push(warned.length + ' 个带着提醒进来了');
+  if (refused.length) bits.push('跳过 ' + refused.length + ' 个');
+
+  const who = (s) => (s && (s.id || s.name)) || '那一条';
+  const lines = [];
+  for (const s of warned) lines.push({ k: 'warn', t: who(s) + '：' + ((s && s.reason) || '没说原因') });
+  for (const s of refused) lines.push({ k: 'err', t: who(s) + '：' + ((s && s.reason) || '后台没说原因') });
+  for (const n of bad) lines.push({ k: 'err', t: n });
+  if (ignored) lines.push({ k: 'grey', t: ignored + ' 条内置已存在，跳过（原样没动，没坏也没变）' });
+
+  if (!bits.length) {
+    featSay('这几个文件里没有能导入的功能');
+    featShowReport('这几个文件里没有能导入的功能', lines);
+    return;
+  }
+  featSay('导入完成：' + bits.join('，'));
+  if (!lines.length) lines.push({ k: 'ok', t: '全部进来了，没有要处理的' });
+  featShowReport('导入完成：' + bits.join('，'), lines);
+  toast('导入完成：' + bits.join('，'));
+}
+
+/* ---- 导入：点按钮选文件（可多选） ---- */
+const featImportBtn = document.getElementById('featImport');
+const featReportClose = document.getElementById('featReportClose');
+if (featReportClose) featReportClose.addEventListener('click', () => { featHideReport(); });
+if (featImportBtn && featFile) {
+  featImportBtn.addEventListener('click', () => {
+    featFile.value = '';   // 清一下：同一个文件第二次选也能触发 change
+    featFile.click();
+  });
+}
+if (featFile) {
+  featFile.addEventListener('change', async () => {
+    const picked = Array.from(featFile.files || []);
+    featFile.value = '';
+    await featImportFiles(picked);
+  });
+}
+
+/**
+ * ---- 导入：把文件直接拖到【功能】面板上 ----
+ *
+ * 三个坑都在这儿：
+ *  ① 页面上本来就有一条「拖文件进来加附件」的全局监听，还配一层全屏遮罩。
+ *     拖到功能面板上时它先跳出来喊「加进输入框」，松手还会把文件塞进附件条 ——
+ *     明明想导功能，结果变成给下一条消息挂了个附件。所以这里必须 stopPropagation。
+ *  ② 子元素之间来回穿会连发 enter/leave，用层数计数挡掉闪烁。
+ *  ③ 提示层不能吃鼠标（CSS 里 pointer-events:none），否则 drop 落不到面板上。
+ */
+if (featDlg) {
+  let featDragDepth = 0;
+  const paintDrop = (on) => {
+    if (!on) featDragDepth = 0;
+    featDlg.classList.toggle('dropping', on);
+    if (featDrop) featDrop.hidden = !on;
+  };
+  featDlg.addEventListener('dragenter', (e) => {
+    if (!featDlg.open || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    featDragDepth++;
+    if (featDragDepth === 1) paintDrop(true);
+  });
+  featDlg.addEventListener('dragover', (e) => {
+    if (!featDlg.open || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  featDlg.addEventListener('dragleave', (e) => {
+    if (!featDlg.open || !dragHasFiles(e)) return;
+    e.stopPropagation();
+    featDragDepth = Math.max(0, featDragDepth - 1);
+    if (!featDragDepth) paintDrop(false);
+  });
+  featDlg.addEventListener('drop', (e) => {
+    if (!featDlg.open || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    paintDrop(false);
+    const dropped = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (!dropped.length) {
+      // 拖进来的是文件夹时 files 是空的。别静默，说一句，不然像卡住了。
+      toast('文件夹拖不进来，点「导入」进去挑文件');
+      return;
+    }
+    featImportFiles(dropped);
+  });
+}
+
+/* ---- 导出：打开那张「罗列所有功能、随便勾」的面板 ---- */
+const featOutDlg = document.getElementById('featExportDlg');
+const featOutList = document.getElementById('featOutList');
+const featOutMeta = document.getElementById('featOutMeta');
+const featOutNote = document.getElementById('featOutNote');
+const featOutDone = document.getElementById('featOutDone');
+const featOutDoneT = document.getElementById('featOutDoneT');
+const featOutPath = document.getElementById('featOutPath');
+
+function featOutBoxes() {
+  return featOutList ? Array.from(featOutList.querySelectorAll('input[type="checkbox"]')) : [];
+}
+function featOutIds() {
+  return featOutBoxes().filter((c) => c.checked).map((c) => c.value);
+}
+function featOutPaintCount() {
+  const total = featOutBoxes().length;
+  const on = featOutIds().length;
+  if (featOutMeta) featOutMeta.textContent = on ? `勾了 ${on} / ${total} 个` : `${total} 个功能`;
+}
+
+function renderFeatOutList() {
+  if (!featOutList) return;
+  featOutList.innerHTML = '';
+  for (const f of featRows()) {
+    const row = document.createElement('label');
+    row.className = 'featOutRow';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = f.id;                      // 默认一个都不勾：导哪些由主人自己说
+    cb.addEventListener('change', featOutPaintCount);
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = f.name;
+    nm.title = f.desc || f.name;
+    row.append(cb, nm);
+    if (f.custom) {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = '自定义';
+      row.append(tag);
+    }
+    featOutList.append(row);
+  }
+  featOutPaintCount();
+}
+
+async function openFeatExport() {
+  // 先把最新的一份读回来：主人可能刚导入完，手里这份还是旧的
+  await loadFeatures();
+  if (!featRows().length) {
+    featSay(featState.error ? '没读到功能列表，先重试一下' : '还没有能导的功能');
+    if (featState.error) featShowReport('没读到功能列表', [{ k: 'err', t: featState.error + '　点列表里的「重试」再来一次' }]);
+    return;
+  }
+  renderFeatOutList();
+  if (featOutDone) featOutDone.hidden = true;
+  if (featOutNote) featOutNote.textContent = '';
+  if (featOutDlg) featOutDlg.showModal();
+}
+
+/**
+ * 真的去写文件。dir 留空 = 让后台挑默认位置（数据目录里那块）。
+ * 目录整段折行显示在面板里，不截断 —— 主人要的是「我知道它去哪了」。
+ */
+async function featRunExport(ids, dir) {
+  const btns = [document.getElementById('featOutDefault'), document.getElementById('featOutPick')].filter(Boolean);
+  btns.forEach((b) => { b.disabled = true; });
+  if (featOutDone) featOutDone.hidden = true;
+  if (featOutNote) featOutNote.textContent = '正写着呢…';
+  const r = await featApi('/api/features/export-to', dir ? { ids, dir } : { ids });
+  btns.forEach((b) => { b.disabled = false; });
+  if (!r.ok) {
+    if (featOutNote) featOutNote.textContent = '没导出来：' + r.error;
+    alert('没导出来：' + r.error);
+    return;
+  }
+  const n = ids.length;
+  if (featOutNote) featOutNote.textContent = '';
+  if (featOutDoneT) featOutDoneT.textContent = '导出好了 · ' + n + ' 个功能';
+  if (featOutPath) featOutPath.textContent = r.path || '（后台没说是哪个目录）';
+  if (featOutDone) featOutDone.hidden = false;
+  featSay('导出好了，' + n + ' 个功能');
+}
+
+/**
+ * 借加号那套栏式浏览挑一个放哪儿。
+ *
+ * 为什么挑目录这步要把面板全收起来：<dialog> 一旦 showModal 就进了浏览器最顶层，
+ * z-index 再大也压不住它 —— 选目录那层是普通定位元素，不收起面板就等于点了个寂寞。
+ * 收起来之前勾选状态都在 DOM 里，再开回来一个都不丢。
+ */
+function featAskDir() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (dir) => {
+      if (settled) return;
+      settled = true;
+      resolve(dir || '');
+    };
+    try {
+      openDirPicker(done, () => done(''));
+    } catch {
+      done('');
+    }
+  });
+}
+
+const featExportBtn = document.getElementById('featExport');
+if (featExportBtn) featExportBtn.addEventListener('click', () => { openFeatExport(); });
+
+const featOutAll = document.getElementById('featOutAll');
+if (featOutAll) featOutAll.onclick = () => {
+  featOutBoxes().forEach((c) => { c.checked = true; });
+  featOutPaintCount();
+};
+const featOutNone = document.getElementById('featOutNone');
+if (featOutNone) featOutNone.onclick = () => {
+  featOutBoxes().forEach((c) => { c.checked = false; });
+  featOutPaintCount();
+};
+
+const featOutDefault = document.getElementById('featOutDefault');
+if (featOutDefault) featOutDefault.onclick = () => {
+  const ids = featOutIds();
+  if (!ids.length) { if (featOutNote) featOutNote.textContent = '先勾上要导出的功能'; return; }
+  featRunExport(ids, '');
+};
+
+const featOutPick = document.getElementById('featOutPick');
+if (featOutPick) featOutPick.onclick = async () => {
+  const ids = featOutIds();
+  if (!ids.length) { if (featOutNote) featOutNote.textContent = '先勾上要导出的功能'; return; }
+  if (featOutDlg) featOutDlg.close();
+  if (featDlg) featDlg.close();
+  const dir = await featAskDir();
+  if (featDlg) featDlg.showModal();
+  if (featOutDlg) featOutDlg.showModal();
+  if (!dir) return;                       // 取消了就回到刚才那样，什么都不做
+  await featRunExport(ids, dir);
+};
+
+/* ---- 删除：只有自定义功能才有这颗按钮，内置的只能停用 ---- */
+if (featList) {
+  featList.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button.featDelBtn[data-del]');
+    if (!btn || btn.disabled) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const id = btn.dataset.del;
+    const f = featRows().find((x) => x.id === id);
+    const nm = (f && f.name) || id;
+    // 确认框会把【功能】面板一起收起来（全局面板互斥的老规矩），记一下状态，删完开回来
+    const wasOpen = Boolean(featDlg && featDlg.open);
+
+    const yes = await askConfirm({
+      title: '删掉「' + nm + '」？',
+      body: '删掉的是这个功能的定义，不是它管的那些工具 —— 工具都还在，只是小鱼以后看不到这个功能了。'
+        + '内置功能不在这儿删，只能停用；这一条删了，想再要回来得重新导入一次。',
+      ok: '删掉',
+      danger: true,
+    });
+    if (!yes) { if (wasOpen && featDlg) featDlg.showModal(); return; }
+
+    const r = await featApi('/api/features/remove', { id });
+    await loadFeatures();
+    if (wasOpen && featDlg) featDlg.showModal();
+    if (!r.ok) {
+      featSay('没删掉：' + r.error);
+      alert('没删掉：' + r.error);
+      return;
+    }
+    featSay('已删掉「' + nm + '」');
+    toast('已删掉「' + nm + '」');
+  });
+}
 
 // ---- 小鱼的嗓子：选声音 / 试听 ----
 let voiceOpen = false;

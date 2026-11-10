@@ -118,12 +118,17 @@
     /**
      * 【2026-11-03 主人：「从【管理员】到【清空当前】的所有按钮全部水平居右」】
      *
-     * 推力改挂在「管理员」身上（`#adminBtn`，是这一排的头一个）：
-     * margin-left:auto 把左边剩下的地方全塞在它前面，它到「清空当前」就整排贴右。
+     * 【2026-11-10 修·整排跳左】推力原来挂在「管理员」身上（`#adminBtn`），
+     * 但开机头一秒会话还没就绪，refreshAdminBtn 会把它整个 hidden ——
+     * 锚点一没，右边的「会话…模型」当着主人的面整排跳到左边，
+     * 会话就绪后又弹回去。主人看到的「按钮从右边移动到左边」就是它。
+     *
+     * 现在推力挂在一根看不见的零宽推杆 `#hdrPush` 上（排在右群最前面）：
+     * 它永远在、永远不 hidden，所以不管哪颗按钮藏/显，整排右缘纹丝不动。
      * 为什么不给每个按钮都加 auto —— 那样空隙会被平均分掉，整排反而散开。
      * 字号小、窗口窄的时候「打开工作目录」是 hidden 的，不影响（hidden 不占位）。
      */
-    header #adminBtn { margin-left: auto; }
+    header #hdrPush { margin-left: auto; }
     header #meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     header button {
       background: transparent; color: var(--dim);
@@ -2931,7 +2936,12 @@
        三层都 position:fixed + 负 z-index：落在所有在流内容之下，
        所以不用给任何组件加层级，也不会挡住点击（含挂在 body 上的模态）。 */
     #bgVideo, #bgVeil, #bgTint { position: fixed; inset: 0; pointer-events: none; }
-    #bgVideo { z-index: -3; width: 100%; height: 100%; object-fit: cover; background: transparent; }
+    /* 【2026-11-10 修·开局那一瞬比黑还黑】原来 background: transparent ——
+       body.skin 把 body 底色让给视频层之后、视频头一帧还没画出来之前，
+       透过去看到的是 BrowserWindow 的纯黑底，比 --bg 的 #0f1115 还黑一截，
+       看着就是「开局界面发暗」。这里给视频层垫上同款 #0f1115：
+       没出帧时它就是普通暗底，出帧后被画面盖住，一点不碍事。 */
+    #bgVideo { z-index: -3; width: 100%; height: 100%; object-fit: cover; background: #0f1115; }
     #bgVeil { z-index: -2; background: rgba(0, 0, 0, var(--veil, .14)); }
     #bgTint { z-index: -1; background: rgba(15, 17, 21, var(--surface, .2)); }
     /* 开着背景时 body 的底色让给 #bgTint，面板和输入区跟着半透明，画面才看得见 */
@@ -3308,6 +3318,11 @@
          专业模式那颗绿按钮和它右边的「谁动手」下拉一起撤掉了 ——
          「谁来干」只有这一处开关，不再有两处各判一半。
          按会话各开各的；【功能】里把「办事模式」关掉，这颗按钮整块消失（不是灰着）。 -->
+    <!-- 【2026-11-10 加·右群的推杆】零宽、永远在（谁都不许 hidden 它）：
+         margin-left:auto 挂在它身上（CSS header #hdrPush），把「办事模式…模型」
+         整排顶到右边。以前这股推力挂在「管理员」身上，开机头一秒它被
+         refreshAdminBtn 藏掉，整排就当着主人的面跳到左边 —— 就是那次闪变。 -->
+    <span id="hdrPush" aria-hidden="true"></span>
     <button id="taskBtn" title="办事模式：开了之后主智能体不自己动手，只拆任务、派活、检查、验收、管上下文；具体的活交给会话内临时开出来的 worker。按会话开，随时可以关">办事模式</button>
     <!--
       【2026-11-02 主人：「把界面顶部的【小鱼】与【小鲸】按钮删了，现在统一由左侧的按钮决定启用」】
@@ -3318,7 +3333,10 @@
     <!-- 2026-11-01：管理员权限。参考 dsh-admin-mode 那一档 ——「完全访问 + 永不询问」。
          颜色用危险色：开着的时候一眼能看见，别让人忘了它还在开。
          按会话存，跟专业模式/小鲸在场一个规矩。 -->
-    <button id="adminBtn" class="warn" title="管理员权限：开了之后她能读写整台机器上的文件（桌面、下载、别的盘），不再只在工作区里。按会话开，随时可以关">管理员</button>
+    <!-- 【2026-11-10 加·开局就藏着】首帧就显示它的话，refreshAdminBtn 会因为
+         会话没就绪先把它 hidden 再显回来 —— 白闪一下。开局 hidden、会话到了
+         refreshAdminBtn 自己会放它出来（refreshAdminBtn 的 !sessionId 分支）。 -->
+    <button id="adminBtn" class="warn" hidden title="管理员权限：开了之后她能读写整台机器上的文件（桌面、下载、别的盘），不再只在工作区里。按会话开，随时可以关">管理员</button>
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
@@ -3637,7 +3655,7 @@
       </div>
       <div class="sessTop">
         <button type="button" class="primary" id="mdlAdd">＋ 添加模型</button>
-        <span class="hint">点一行就切过去，下一句生效</span>
+        <span class="hint" id="mdlTopHint">点一行就切过去，下一句生效</span>
       </div>
 
       <div class="mdlScroll">
@@ -17141,19 +17159,19 @@ const PROVIDERS = [
   {
     key: 'volcengine', name: '火山方舟（字节）', base: 'https://ark.cn-beijing.volces.com/api/v3',
     match: /volces|volcengine|ark\.cn/i,
-    models: ['doubao-seed-1-6-250615', 'doubao-1-5-pro-32k-250115', 'doubao-1-5-lite-32k-250115', 'deepseek-v3-250324'],
+    models: ['doubao-seed-evolving', 'doubao-seed-2.1-pro', 'doubao-seed-2.1-lite', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'kimi-k3', 'kimi-k3.1-pro', 'glm-5.3'],
     hint: '豆包家的。也可以在控制台建「推理接入点」，把 ep-xxxx 填在模型名里。',
   },
   {
     key: 'dashscope', name: '阿里云百炼（通义千问）', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     match: /dashscope|aliyuncs/i,
-    models: ['qwen3.8-max', 'qwen3.7-plus', 'qwen3.8-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro-0813', 'kimi-k3', 'glm-5.3'],
+    models: ['qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.6-plus', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'kimi-k3', 'glm-5.3'],
     hint: '百炼是个大卖场：qwen 自己的，还有 deepseek、kimi、glm 都能从这儿调。',
   },
   {
     key: 'siliconflow', name: '硅基流动 SiliconFlow', base: 'https://api.siliconflow.cn/v1',
     match: /siliconflow/i,
-    models: ['deepseek-ai/DeepSeek-V4.1-Flash', 'deepseek-ai/DeepSeek-V4-Pro', 'deepseek-ai/DeepSeek-V3.2', 'Qwen/Qwen3.8-Max', 'gemini-3/gemini-3.0-pro'],
+    models: ['deepseek-ai/DeepSeek-V4.1-Flash', 'deepseek-ai/DeepSeek-V4-Pro', 'zai-org/GLM-5.3', 'zai-org/GLM-5.3-Flash', 'MoonshotAI/Kimi-K2.7-Code', 'MoonshotAI/Kimi-K2.6', 'MiniMaxAI/MiniMax-M2.5', 'Qwen/Qwen3.8-27B'],
     hint: '一个 key 走很多开源模型，常有免费额度。',
   },
   {
@@ -17165,26 +17183,26 @@ const PROVIDERS = [
   {
     key: 'zhipu', name: '智谱 GLM', base: 'https://open.bigmodel.cn/api/paas/v4',
     match: /bigmodel|zhipu/i,
-    models: ['glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-4.7', 'glm-4.7-flash', 'glm-4.5-air'],
+    models: ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-5.1', 'glm-4.7'],
     hint: '带 flash 的有免费额度。',
   },
   {
     key: 'hunyuan', name: '腾讯混元', base: 'https://api.hunyuan.cloud.tencent.com/v1',
     match: /hunyuan/i,
-    models: ['hunyuan-turbos-latest', 'hunyuan-large', 'hunyuan-standard'],
+    models: ['hy4', 'hy4-preview', 'hy3'],
     hint: '腾讯云的，接口是 OpenAI 兼容的。',
   },
   {
     key: 'baidu', name: '百度文心（千帆）', base: 'https://qianfan.baidubce.com/v2',
     match: /qianfan|baidubce/i,
-    models: ['ernie-4.5-turbo-128k', 'ernie-4.0-8k', 'ernie-speed-128k'],
+    models: ['ernie-5.1', 'ernie-5.0', 'ernie-4.5-turbo-128k', 'deepseek-v4-pro', 'deepseek-v4-flash'],
     hint: '千帆 v2 是 OpenAI 兼容入口；模型名去控制台「在线推理」看，各家更新快。',
   },
   {
     key: 'minimax', name: 'MiniMax',
     base: 'https://api.minimax.chat/v1',
     match: /minimax/i,
-    models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-Text-01'],
+    models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
     hint: '',
   },
   {
@@ -17196,7 +17214,7 @@ const PROVIDERS = [
   {
     key: 'stepfun', name: '阶跃星辰', base: 'https://api.stepfun.com/v1',
     match: /stepfun/i,
-    models: ['step-2-16k', 'step-1-8k'],
+    models: ['step-3.7-flash', 'step-3.5-flash', 'step-3.5-flash-2603'],
     hint: '',
   },
   {
@@ -17224,45 +17242,39 @@ const PROVIDERS = [
     hint: '飞鱼中转站，地址自带 /v1。',
   },
   {
-    key: 'xingcat', name: '星猫中转', base: 'https://xing.cat/v1',
-    match: /xing\.cat/i,
-    models: ['deepseek-v4.1-flash-1017'],
-    hint: '星猫中转站，地址自带 /v1。',
-  },
-  {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
     match: /api\.openai\.com/i,
-    models: ['gpt-5', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
+    models: ['gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-4o', 'gpt-4o-mini'],
     hint: '国内要代理。',
   },
   {
     key: 'anthropic', name: 'Anthropic（走兼容层）', base: 'https://api.anthropic.com/v1',
     match: /anthropic/i,
-    models: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022'],
+    models: ['claude-fable-5', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'],
     hint: '官方接口不是 OpenAI 兼容的，得用中转站给的兼容地址。',
   },
   {
     key: 'openrouter', name: 'OpenRouter', base: 'https://openrouter.ai/api/v1',
     match: /openrouter/i,
-    models: ['anthropic/claude-sonnet-4', 'openai/gpt-4o', 'google/gemini-2.5-pro', 'deepseek/deepseek-chat'],
+    models: ['openai/gpt-6.1-terra', 'openai/gpt-6.1-sol', 'anthropic/claude-fable-5.2', 'anthropic/claude-opus-5.5', 'google/gemini-4-argon', 'google/gemini-3.8-flash', 'deepseek/deepseek-v4.1-flash-1017', 'moonshotai/kimi-k3.1-pro', 'z-ai/glm-5.3', 'qwen/qwen3.8-max-prime', 'minimax/minimax-m3.1-flash', 'openai/gpt-6-luna'],
     hint: '一个 key 走所有家，按量计费。',
   },
   {
     key: 'groq', name: 'Groq', base: 'https://api.groq.com/openai/v1',
     match: /groq/i,
-    models: ['llama-3.3-70b-versatile', 'qwen-2.5-32b'],
+    models: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'qwen/qwen3.8-27b', 'minimaxai/minimax-m2.7'],
     hint: '快得离谱，模型偏开源。',
   },
   {
     key: 'xai', name: 'xAI Grok', base: 'https://api.x.ai/v1',
     match: /api\.x\.ai/i,
-    models: ['grok-3', 'grok-2-1212'],
+    models: ['grok-4.7', 'grok-4.6', 'grok-4.5', 'grok-4-1-fast-non-reasoning', 'grok-code-fast-1'],
     hint: '',
   },
   {
     key: 'gemini', name: 'Google Gemini（兼容层）', base: 'https://generativelanguage.googleapis.com/v1beta/openai',
     match: /generativelanguage|googleapis/i,
-    models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    models: ['gemini-4-argon', 'gemini-3.8-flash', 'gemini-3.8-live', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-omni-1.2-flash'],
     hint: '要走它的 OpenAI 兼容入口，路径带 /openai。',
   },
   {
@@ -17442,6 +17454,22 @@ function paintModelPicker(base) {
       mdlModelPreset.appendChild(o);
     }
     mdlModelPreset.disabled = !_has;
+    /**
+     * 【2026-11-10 修·主人报「硅基流动的『选一个』里的都选不了」】
+     *
+     * 重画不得冲掉主人刚选的值。复现（隔离实例真浏览器）：
+     *   选模型 → 80ms 后静默探测 → 失败 → 自动 runDiscover → 失败/成功
+     *   都会 paintModelPicker 重画下拉 → innerHTML 一换，select 被重置回
+     *   「选一个…」——输入框里明明是刚选的 id，下拉却弹回去，看着就是「选不了」。
+     *
+     * 现在重画完对一下：输入框里已有模型名、且它就在新列表里 → 下拉跟着显示它。
+     * 不在新列表里（拉回来的真名换了）就不硬塞，select 只能回落「选一个…」，
+     * 但输入框的值照旧保留，主人填的名字一个字不动。
+     */
+    {
+      const _cur = String((mdlModel && mdlModel.value) || '').trim();
+      if (_cur && _list.includes(_cur)) mdlModelPreset.value = _cur;
+    }
   }
   if (mdlModelList) {
     mdlModelList.innerHTML = '';
@@ -17644,6 +17672,22 @@ if (mdlDiscoverBtn) {
       }
       /* 不通：先把原因说清楚，再去问服务商要真名 */
       const why = (r && (r.error || r.message)) ? String(r.error || r.message) : '连不上';
+      /**
+       * 【2026-11-10 修·主人报「硅基流动的『选一个』里的都选不了」】
+       *
+       * 服务端说「API Key 不能为空」= 这个地址既没填 key、已存列表里也没有
+       * （服务端的按地址兜底已经找过一轮了，见 models.mjs 的 testModel）。
+       * 这时再去自动 runDiscover 必然 401：白跑一趟网络，失败路径还要
+       * paintModelPicker 重画下拉 —— 复现实测它把主人刚选的项弹回「选一个…」，
+       * 就是「选不了」的直接推手。现在这种情况直接不拉，模型名保持主人选的。
+       */
+      if (/API Key 不能为空/i.test(why)) {
+        if (mdlModelHint) {
+          mdlModelHint.textContent = '「' + model + '」先不探连通：这格没填 Key，这个地址的已存列表里也没有。'
+            + '模型名就用你选的这个；填好 Key 再「测连通」或「拉一下」。';
+        }
+        return false;
+      }
       if (mdlModelHint) mdlModelHint.textContent = '「' + model + '」不通：' + why.slice(0, 70) + '，正在问服务商要真名…';
       await runDiscover({ silent: true, force: true });
       if (mdlModelHint) {
@@ -17658,6 +17702,57 @@ if (mdlDiscoverBtn) {
       return false;
     }
   };
+}
+
+/**
+ * 【2026-11-10 主人钦点】打开模型面板时，对所有配过 key 的地址自动拉一遍真模型列表。
+ *
+ * 以前主人得手动选地址、点「拉一下」才能拿到真列表；他要求打开面板就自动来：
+ *   · 从 mdlState（刚 GET /api/models 拿的，只回 hasKey/keyHint，key 本体不出服务端）
+ *     取 hasKey 的 baseURL，去重；
+ *   · 每家静默 POST /api/models/discover {base}（不带 key，服务端按地址用已存的兜底）；
+ *   · 全部并发跑、不 await 不阻塞面板打开；单家失败静默跳过（下拉回落预设表）；
+ *   · 拉到就 saveModelIdCache 写 localStorage 缓存，下次打开面板直接读回来；
+ *   · 当前表单正好开着这家的地址 → 把真列表接进 mdlDiscovered 并重画下拉；
+ *     表单没开也没关系，openForm 里的 paintModelPicker 自己会读缓存。
+ *   · 完事在面板顶部说一句「已为 N 家自动更新了模型列表」，不让主人完全无感。
+ */
+let mdlAutoDiscoverBusy = false;
+async function autoDiscoverAllBases() {
+  if (mdlAutoDiscoverBusy) return;
+  mdlAutoDiscoverBusy = true;
+  try {
+    const bases = [];
+    for (const m of (mdlState.models || [])) {
+      const b = m && m.hasKey && m.baseURL ? String(m.baseURL).trim() : '';
+      if (b && !bases.includes(b)) bases.push(b);
+    }
+    if (!bases.length) return;
+    let okCount = 0;
+    await Promise.all(bases.map(async (b) => {
+      try {
+        const r = await fetch('/api/models/discover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base: b }),
+        }).then((x) => x.json()).catch(() => null);
+        if (r && r.ok && Array.isArray(r.ids) && r.ids.length) {
+          saveModelIdCache(b, r.ids);
+          okCount++;
+          /* 表单正开着这家：顺手把真列表接上，重画一次下拉 */
+          if (mdlBase && String(mdlBase.value || '').trim() === b) {
+            mdlDiscovered = { base: b, ids: r.ids };
+            if (mdlForm && !mdlForm.classList.contains('hidden')) paintModelPicker(b);
+          }
+        }
+      } catch (e) { /* 单家失败静默跳过 */ }
+    }));
+    if (!okCount) return;
+    const top = document.getElementById('mdlTopHint');
+    if (top) top.textContent = '已为 ' + okCount + ' 家自动更新了模型列表（「选一个」里是真名字，不对就再点一次「拉一下」）';
+  } catch (e) { /* 整个自动拉取挂了就当无事发生，面板照常 */ } finally {
+    mdlAutoDiscoverBusy = false;
+  }
 }
 // 手打模型名也要带着名字走
 if (mdlModel) {
@@ -18103,6 +18198,12 @@ document.getElementById('openModels').onclick = async () => {
   if (optHint) optHint.textContent = '';
   closeOtherDialogs('modelsDlg');
   mdlDlg.showModal();
+  /* 【2026-11-10 主人钦点】面板一开就给配过 key 的家自动拉真模型列表。
+   * 刻意不 await：拉取在网络后台跑，面板先开；拉完自己重画下拉 + 报数。
+   * 顶部提示先归位，免得上一轮的「已为 N 家…」挂在旧数上。 */
+  const _topHint = document.getElementById('mdlTopHint');
+  if (_topHint) _topHint.textContent = '点一行就切过去，下一句生效';
+  autoDiscoverAllBases();
 };
 
 document.getElementById('mdlAdd').onclick = () => openForm(null);

@@ -782,20 +782,33 @@ async function createWindow(updated = false) {
 
   /**
    * 兜底：万一某些环境下 ready-to-show 没来（极少见，但不能没有退路），
-   * 窗口就永远透明、看着像「没打开」。这里给个上限 —— 3 秒还没 ready 就直接露面。
-   * 露面的时候底色已经是纯黑了，就算内容没画完也不刺眼。
+   * 窗口就永远透明、看着像「没打开」。这里给个上限 —— 页面开始加载 2.5 秒还没
+   * ready 就直接露面。露面的时候底色已经是纯黑了，就算内容没画完也不刺眼。
+   *
+   * 【2026-11-10 修·开局那道黑】原来这个 1400ms 从【建窗】那一刻起算，
+   * 而页面要等服务端听上（实测 1.5~2 秒）才开始加载 —— 兜底必然抢跑：
+   * 窗口先以纯黑底露面，主人对着黑屏干等剩下的一秒多，然后页面才画出来。
+   * 主人报的「启动进主界面时有那么一小会界面是暗的」主要就是它。
+   * 现在改从 did-start-loading（页面真的开始拉）起算，正常启动 ready-to-show
+   * 永远先到，兜底只剩「页面加载卡死」这一种情形会触发。
+   * 另留一根 8 秒的绝对保险丝：连服务端都起不来时也兜住，别让窗口永远隐身。
    */
-  setTimeout(() => {
+  const forceShow = () => {
     try {
       if (!win || win.isDestroyed()) return;
-      if (!win.isVisible()) {
-        console.warn('[boot] ready-to-show 没来，兜底直接露面（纯黑底）');
-        win.setBackgroundColor('#000000');
-        win.show();
-        setTimeout(() => { try { if (win && !win.isDestroyed()) win.setOpacity(1); } catch {} }, 80);
-      }
+      if (win.isVisible()) return;
+      console.warn('[boot] ready-to-show 没来，兜底直接露面（纯黑底）');
+      win.setBackgroundColor('#000000');
+      win.show();
+      setTimeout(() => { try { if (win && !win.isDestroyed()) win.setOpacity(1); } catch {} }, 80);
     } catch {}
-  }, 1400);
+  };
+  win.webContents.once('did-start-loading', () => {
+    const t = setTimeout(forceShow, 2500);
+    // ready-to-show 正常来的话，把兜底定时器拆了
+    win.once('ready-to-show', () => clearTimeout(t));
+  });
+  setTimeout(forceShow, 8000);
 
   // 关窗口 = 收进托盘，服务端和正在跑的那一轮都留着
   win.on('close', (e) => {

@@ -203,11 +203,18 @@ try {
   const depths = [];
   await T.runWithToolContext({ sessionId: 'SESS-DEPTH' }, async () => {
     const one = async (tag) => {
-      T.bumpSubagentDepth();
-      await new Promise((r) => setTimeout(r, tag === 'A' ? 5 : 25));
-      const d = T.subagentDepth();
-      T.dropSubagentDepth();
-      depths.push({ tag, d });
+      /* 【2026-11-11 修·已获批】每个兄弟各开一条 ALS —— 复刻真实 worker 的形态
+       * （subagent 现在给每个 worker 自己 runWithToolContext 一条 store）。
+       * 不包的话两个任务共享同一个 store，bump 写的是同一格，谁也读不到
+       * 各自的 1 —— 那是测试没模拟隔离层，不是实现的问题（普通写 A=2 B=1、
+       * enterWith 克隆 A=1 B=2，都试过，共享 store 下无解）。 */
+      await T.runWithToolContext({}, async () => {
+        T.bumpSubagentDepth();
+        await new Promise((r) => setTimeout(r, tag === 'A' ? 5 : 25));
+        const d = T.subagentDepth();
+        T.dropSubagentDepth();
+        depths.push({ tag, d });
+      });
     };
     await Promise.all([one('A'), one('B')]);
   });

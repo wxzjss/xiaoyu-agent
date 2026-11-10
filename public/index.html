@@ -13233,7 +13233,12 @@ function renderFeatList() {
     sw.className = 'switch' + (f.enabled ? ' on' : '');
     sw.dataset.id = f.id;
     sw.dataset.on = f.enabled ? '1' : '0';
-    sw.textContent = f.enabled ? '停用' : '启用';
+    /* 【2026-11-10 改·「已启用」+ 按钮「停用」看着像两个开关】
+     *
+     * 原来按钮文字是「停用 / 启用」—— 跟左边那颗绿徽章「已启用 / 已停用」并排，
+     * 第一眼会以为是两个不同的开关（一个说状态、一个说动作，但长得一样）。
+     * 现在按钮改成「点一下关 / 点一下开」，把「状态」和「动作」的措辞彻底分开。 */
+    sw.textContent = f.enabled ? '点一下关' : '点一下开';
     if (isMach) sw.title = '整台机器的开关：点了所有会话一起变';
 
     /**

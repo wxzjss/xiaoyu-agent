@@ -158,7 +158,18 @@ function actionTool({ name, desc, params, needsElement = true, impl }) {
       if (!g.ok) {
         if (!g.needAsk) return { text: '✗ ' + g.reason };
         const yes = await askApproval({ exec: ctx, toolName: name, reason: g.reason });
-        if (!yes) return { text: '没动：' + g.reason + '。主人没有点头，就先不动。' };
+        /**
+         * 【2026-11-10 修·这句原来没打 ✗，会被当成成功】
+         *
+         * 原文是 `return { text: '没动：… 主人没有点头，就先不动。' }`。
+         * 而 runToolInner 的失败判定认的是「✗ 或 ERROR：开头」——
+         * 「没动：」三个字不在其中，于是**被拦下来的动作反而显示绿 ✓**。
+         * 主人看到的是「她做成了」，实际什么都没动 —— 比原来（假绿）更误导，
+         * 因为现在连"被拦"这件事都看不见了。
+         *
+         * 加 ✗ 前缀 + 显式 ok:false，两处都标上，走哪条判定都不会错。
+         */
+        if (!yes) return { ok: false, text: '✗ 没动：' + g.reason + '。主人没有点头，就先不动。' };
       }
 
       try {

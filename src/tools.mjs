@@ -1088,20 +1088,27 @@ export const tools = [
     },
     async run({ reason = '', force = false } = {}) {
       /**
-       * 为什么走 HTTP 调自己，而不是 process.exit(75)：
-       * 这一条命令可能正跑在「几秒后要给主人回话」的中间，
-       * 直接把自己的进程干掉，那条回话就没了、草稿也落不干净。
-       * 走接口让 server 那边按它的规矩收尾（先回执、再退），稳当。
+       * 端口从环境变量拿，拿不到就**拒绝执行**。
        *
-       * 端口从环境变量拿，拿不到就用常见默认；再不行把几个端口都试一遍。
+       * 【2026-11-10 修·隔离实例能重启主人的真机】
+       *
+       * 原来这里写死 `[8788, 8787, 8790, 8791]` 当兜底 —— 问题在于它**不校验
+       * 那个端口上的服务是不是"我这个数据目录的"**。
+       * 实测：隔离实例（8850 + 临时数据目录）里调 restart_self，
+       *   8850 不在候选列表里 → 它转头去连 8788 → **主人正在用的窗口被重启了**。
+       * 也就是说"隔离测试"这个承诺在 restart_self 面前是假的，
+       * 任何自动化回归只要模型顺手调一次，就会打断主人。
+       *
+       * 现在：只认 process.env.PORT / XIAOYU_PORT（server 启动时按自己的真实端口注入）。
+       * 拿不到就明确拒绝，让它去问主人，而不是猜一个端口去连。
+       * 猜错的代价是"重启了一台不该重启的机器"，比"没重启成"严重得多。
        */
-      const tryPorts = () => {
-        const out = [];
-        const p = Number(process.env.PORT || process.env.XIAOYU_PORT || 0);
-        if (p) out.push(p);
-        for (const c of [8788, 8787, 8790, 8791]) if (!out.includes(c)) out.push(c);
-        return out;
-      };
+      const ownPort = Number(process.env.PORT || process.env.XIAOYU_PORT || 0);
+      if (!ownPort) {
+        throw new Error('不知道自己是哪个端口起的，不敢乱重启（怕重启错机器）。'
+          + '让主人从托盘退出再打开一次就行。');
+      }
+      const tryPorts = () => [ownPort];
 
       for (const port of tryPorts()) {
         try {
@@ -1375,7 +1382,19 @@ export const tools = [
     async run({ url }) {
       if (!/^https?:\/\//i.test(url)) throw new Error('only http(s) URLs are allowed');
       const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (小鱼Agent)' },
+        /**
+         * 【2026-11-10 修·这个 UA 让 fetch_url 100% 必挂】
+         *
+         * 原来写的是 `'Mozilla/5.0 (小鱼Agent)'` —— HTTP 头是 ByteString，
+         * 只许 0-255 的字符，中文「小」是 23567，构造请求时就抛：
+         *   Cannot convert argument to a ByteString because the character at index 13…
+         * 这个错发生在**建请求阶段**，跟网络通不通无关，所以不存在"偶尔能用"。
+         * 实测所有 URL 全挂（`https://example.com/` 也一样）——
+         * 「搜索 → 打开网页看细节」这条路整条是死的，她一直只吃搜索摘要。
+         *
+         * 改纯 ASCII。顺带带上平台标识，比伪装成普通浏览器更老实。
+         */
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) xiaoyu-agent/0.9' },
         signal: AbortSignal.timeout(30000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2744,9 +2763,18 @@ async function runToolInner(name, rawArgs, sessionId) {
      *
      * 现在约定：工具可以自己返回 { ok:false, output }，这里原样透传。
      * 已经按这个约定改的：run_command。其余工具逐个来，不一次性动几十处。
+     *
+     * 【2026-11-10 补·对象里只有 text 没有 output 的情况】
+     *
+     * 上面只认 `'output' in r`。而 `src/tools-ui.mjs` 的返回是 `{ text: '…' }` ——
+     * 没有 output 字段，于是这一支不进，落到下面去重判。
+     * 更坑的是：如果有人照着"加个 ok:false"改成 `{ text, ok:false, output:'…' }`，
+     * 反而会**把 text 丢给界面、output 丢给模型** —— 两边看到的不一样。
+     * 所以这里统一收口：对象里有 text 就当 output 用。
      */
-    if (r && typeof r === 'object' && !Array.isArray(r) && r.ok === false && 'output' in r) {
-      return { ok: false, output: String(r.output ?? '') };
+    if (r && typeof r === 'object' && !Array.isArray(r) && r.ok === false) {
+      const _out = ('output' in r) ? r.output : (r.text != null ? r.text : '');
+      return { ok: false, output: String(_out ?? '') };
     }
     /**
      * 【2026-11-05 加·统一失败约定】
@@ -2761,6 +2789,33 @@ async function runToolInner(name, rawArgs, sessionId) {
      *   · 前缀是**看得见**的约定 —— 下次新加工具，写 `ERROR：` 就自动算失败。
      * 代价是：真要有工具想返回一句以 "ERROR：" 开头的正常结果，会被误判 —— 可这基本不会发生。
      */
+    /**
+     * 【2026-11-10 修·对象型返回的三连坑，一次收掉】
+     *
+     * `src/tools-ui.mjs` 的 13 处是 `return { text: '…' }`（对象，不是字符串）。
+     * 下面那行判定写的是 `typeof r === 'string'`，对象直接被挡在门外，于是三件事同时发生：
+     *
+     *   ① 失败被当成成功：`{text:'✗ 还没观察过界面…'}` → ok:true → 界面一片绿 ✓
+     *   ② 界面显示 `[object Object]`：对象一路传到 server.mjs:2254 / items.js:164 的
+     *      `String(t.output || '')` —— 主人展开工具抽屉想核对"她点了哪个元素"，
+     *      看到的是一坨 `[object Object]`，操作记录完全不可读。
+     *      （模型那边反而是好的：agent.mjs:1881 有 `String(output.text ?? JSON.stringify)` 兜底。
+     *       所以是"只有人看不见，她自己看得见"。）
+     *   ③ 绕过截断闸门：clipToolResult:2613 也有同一句 `typeof out !== 'string'` return，
+     *      对象整段不截，ui_observe 上千字直接怼进上下文。
+     *
+     * 修法：判之前先把 `r.text` 提出来看。**不能只在下面那个 if 上加 `✗`** ——
+     * 对象根本进不去那个分支，加了也白加（实测过 `{text, ok:false}` 仍判成功）。
+     *
+     * ⚠️ 边界：`tools-screen.mjs` / `tools-video.mjs` 返回的 `{text, images:[…]}` 必须保住 ——
+     * agent.mjs:1870 靠 `output.images` 把图拼进多模态 content。
+     * 所以这里只做"判定"，不改 `output` 的形状（output 仍是原对象）。
+     */
+    const _failText = (r && typeof r === 'object' && r.text != null) ? String(r.text) : r;
+    if (typeof _failText === 'string' && /^\s*(ERROR[：:]|✗)/.test(_failText)) {
+      /* 对象形态的失败要把 text 提到 output 上，否则界面还是 [object Object] */
+      return { ok: false, output: (r && typeof r === 'object' && r.text != null) ? String(r.text) : r };
+    }
     if (typeof r === 'string' && /^\s*ERROR[：:]/.test(r)) {
       return { ok: false, output: r };
     }

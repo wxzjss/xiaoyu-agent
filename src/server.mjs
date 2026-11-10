@@ -12058,19 +12058,6 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         try {
           // 关着就别叫（跟 startQueuedTurn 里那道闸同一个口径，这里先挡一道不让它白起）
           // 功能页里那条「主动找我」关着，就彻底别动（跟顶栏按钮一个口径）
-  /**
-   * 【定时任务 · cron】—— 2026-11-06 主人要求：
-   * 「给他说一个任务，然后再说这个任务什么时候开始，然后他就会在那个时候自动去做」
-   *
-   * 判断「到点没」全在 cron.mjs 里（能单独测），这里只把「怎么起一轮」交过去。
-   * 出错一律吞：定时任务坏了不许连累主流程。
-   */
-  try {
-    startCron({ onDue: (task) => runCronTask(task) });
-  } catch (e) {
-    try { console.warn('[cron] 挂不上（不影响主流程）：', e && e.message); } catch {}
-  }
-
           if (!featureOnFor(sid, 'selfwake')) return;
           if (!fishOn(sid)) return;
 
@@ -12134,6 +12121,37 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     });
   } catch (e) {
     try { console.warn('[selfwake] 挂不上（不影响主流程）：', e && e.message); } catch {}
+  }
+
+  /**
+   * 【定时任务 · cron】—— 2026-11-06 主人要求：
+   * 「给他说一个任务，然后再说这个任务什么时候开始，然后他就会在那个时候自动去做」
+   *
+   * 判断「到点没」全在 cron.mjs 里（能单独测），这里只把「怎么起一轮」交过去。
+   * 出错一律吞：定时任务坏了不许连累主流程。
+   *
+   * 【2026-11-10 修·整块被粘进 selfwake 回调里，导致定时任务一条都不响】
+   *
+   * 病根：这段原本该在 `startSelfwake({...})` 的**外面**，跟它并列。
+   * 但 2eeceff 那次提交（注释还写着「修·定时任务从来没成功跑过」，就是在修 eol 那次）
+   * 把它整块粘进了 `onDue: async (sid, session, verdict) => { try {` 的函数体里，
+   * 位置正好在「关着就别叫」那两行注释之后、真正的 `if (!featureOnFor(...))` 之前。
+   *
+   * 后果：`startCron` 是模块级启动代码，**躲在回调里 → 模块加载时从不执行**
+   *   → cron.mjs 的 started 永远 false → tick 永不起 → 一条定时任务都不会响。
+   * 实测取证：`POST /api/cron {when:'+1m'}` 过期 386 秒后
+   *   `lastRunAt=0, runCount=0, lastNote=""`，而手动 `POST /api/cron/run` 是好的
+   *   （说明 runCronTask 没坏，坏的是调度器根本没启动）。
+   * 界面还会显示那行任务孤零零挂着「11/10 20:45 · 一次」，没有任何"已执行/失败"标记 ——
+   * 主人只会以为「她没听见我的闹钟」。
+   *
+   * 以后改这段请盯住：`startCron(` 必须在 `startSelfwake(` 的 try 外面。
+   * scripts/check-cron-fires.mjs 有静态哨兵按括号深度算，粘错了会红。
+   */
+  try {
+    startCron({ onDue: (task) => runCronTask(task) });
+  } catch (e) {
+    try { console.warn('[cron] 挂不上（不影响主流程）：', e && e.message); } catch {}
   }
 
   // 运行中定时查版本。

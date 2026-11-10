@@ -26,7 +26,7 @@
  * 一句话：开关在这里，规矩在这里，谁动手只认 taskOn 一个来源。
  */
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync, statSync, rmSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, basename } from 'node:path';
 import { config } from './config.mjs';
 import { featureOnFor } from './features.mjs';
 
@@ -233,12 +233,60 @@ function readWorkers(sid) {
   }
 }
 
+/**
+ * 【2026-11-10 加·花名册的读改写要串行化】
+ *
+ * 病根不是「没加锁」，是**更简单也更致命的一条**：`writeWorkers` 会
+ * `JSON.stringify(整个列表)` 整份覆盖。而每个写函数的模式都是
+ * 「readWorkers() → 改 → writeWorkers()」——
+ * 两个 worker 并发 noteWorkerProgress 的时序：
+ *   A 读（5 条）→ B 读（还是 5 条）→ A 写（6 条）→ B 写（6 条，A 那条被覆盖）
+ * 结果：**后写的把先写的整个覆盖掉**。
+ *
+ * 实测复现（50 个并发 noteWorkerProgress，真时间错位）：
+ *   progress 数组长度 = 1（期望 >0）、sendWorkerMail({to:'#9'}) → notHere=true
+ * 也就是说「A 收尾后写回旧列表 → 覆盖掉 B 新写的进度/信件」。
+ *
+ * 为什么不用文件锁：Node 是单线程，进程内串行化就够，而且这个项目本来就单进程。
+ * 跨进程（dev + 安装版同时开）情况下面这层也保不住，但那是另一个问题
+ * （config.dataDir 不同就各跑各的；同 dataDir 双开本来就不该发生）。
+ *
+ * 修法：每个会话一条 promise 链，后一个写等前一个写完。
+ *   · 失败也继续（`prev.then(fn, fn)`）—— 一个写挂了不能把整条队列堵死
+ *   · 写完删 key，别让 Map 无限涨
+ */
+const _writeChain = new Map();
+function withWriteLock(sid, fn) {
+  const key = String(sid || 'default');
+  const prev = _writeChain.get(key) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  _writeChain.set(key, next.catch(() => {}).then(() => {
+    if (_writeChain.get(key) === next) _writeChain.delete(key);
+  }));
+  return next;
+}
+
 function writeWorkers(sid, list) {
   const f = workerFile(sid);
   if (!f) return false;
   try {
     mkdirSync(dirname(f), { recursive: true });
-    const tmp = f + '.tmp';
+    /**
+     * 【2026-11-10 修·并发写会撞同一个临时文件名】
+     *
+     * 原来是 `const tmp = f + '.tmp'` —— **固定名字**。
+     * 多个 worker 同时 `noteWorkerProgress` 时，两个写会抢同一个 tmp：
+     *   A 写 tmp → B 写 tmp（覆盖 A）→ A rename 走（搬走的是 B 的内容）→ B rename 时 tmp 已不存在 → ENOENT
+     * 结果就是「进度丢行」+ 偶发写盘失败，而且丢了不报错。
+     *
+     * 照 sessions-core.mjs 的 `writeFileAtomic` 模板改：
+     *   · 名字带 pid + 随机后缀 → 两个写天然分开
+     *   · 以点开头 → listSessions 那类遍历天然跳过，不会把 tmp 当数据
+     *   · 后缀不是 .json → 认错过的东西不会再认错
+     *
+     * ⚠️ 这只解决「撞 tmp 名」，**不解决「整份覆盖丢更新」** —— 后者靠上面的 withWriteLock。
+     */
+    const tmp = dirname(f) + '/.tmp-' + basename(f) + '-' + process.pid + '-' + Math.random().toString(36).slice(2, 8);
     writeFileSync(tmp, JSON.stringify({ sessionId: String(sid), workers: list }, null, 2), 'utf8');
     renameSync(tmp, f);
     return true;

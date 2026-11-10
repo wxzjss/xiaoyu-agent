@@ -40,7 +40,35 @@ const CORE = [
   ['check-live-history-split.mjs', 'F5/切回来：历史只画到这一轮开头'],
   ['check-think-peek.mjs', '思考完了柜门灰字不许缩回一小截'],
   ['check-qq-core.mjs', 'QQ：主人号/附件清理/发送失败/错误脱敏'],
+  /* 【2026-11-10 加·P0 级数据污染】
+   * 子智能体的 signal / snap 会串到别的会话 —— B 会话点「停止」会 taskkill 掉
+   * A 会话正在跑的命令树。这类必须每次提交都跑，不能只在发版前跑一次。
+   *
+   * 【为什么它现在是红的还要加进来】
+   * 修之前是红的，这是设计：红着比悄悄错着好（这个 bug 的表现是「另一个会话
+   * 点停止，这边的命令莫名被杀」，不写脚本根本复现不了）。
+   * 已经登记进 KNOWN_RED，所以核心回归不会因为它变红而失败 —— 但它每次都会
+   * 被跑一遍并打印出来，修好的那一刻会立刻出现在输出里。 */
+  ['check-signal-isolation.mjs', '子智能体上下文隔离（signal 串会话会杀别人的命令）'],
 ];
+
+/**
+ * 【已知红 · 2026-11-10】
+ *
+ * 这些检查钉的是「应该是什么样」，而现在还没修到那儿 —— 所以它红是**预期**的。
+ *
+ * 为什么要留这么一张表，而不是把它们从 CORE 里摘掉：
+ *   · 摘掉 = 没人再跑，修到哪儿了也不知道；
+ *   · 一直当失败 = 核心回归永远红，红久了就没人看了（这才是最危险的）。
+ * 所以：**照跑、照打印，但不算失败**，输出里标「已知红 + 原因」。
+ *
+ * 修好之后必须把它从这张表里删掉 —— 那时候它要是红了，就是真的坏了。
+ */
+const KNOWN_RED = new Map([
+  ['check-signal-isolation.mjs',
+    'P0 待修：subagent 的上下文切换只写全局 CTX，signal/snap 会串到别的会话。'
+    + '修法见脚本末尾。'],
+]);
 
 const argv = process.argv.slice(2);
 const DRY = argv.includes('--dry');
@@ -53,6 +81,7 @@ if (DRY) {
 }
 
 let fail = 0;
+let knownRed = 0;
 const t0 = Date.now();
 const slow = [];
 for (const [f, why] of CORE) {
@@ -62,8 +91,22 @@ for (const [f, why] of CORE) {
   });
   const ms = Date.now() - one;
   slow.push([f, ms]);
+  const isKnownRed = x.status !== 0 && KNOWN_RED.has(f);
   if (x.status === 0) {
-    console.log('  OK   ' + f.padEnd(32) + (ms / 1000).toFixed(1) + 's   ' + why);
+    if (KNOWN_RED.has(f)) {
+      /* 从「已知红」转绿了 —— 这是好事，但必须提醒去把白名单删掉，
+       * 否则以后它真坏了会被当成「已知红」放过去。 */
+      console.log('  OK   ' + f.padEnd(32) + (ms / 1000).toFixed(1) + 's   ' + why);
+      console.log('       ⚠ 它原来是「已知红」，现在绿了 —— 请把它从 KNOWN_RED 里删掉，'
+        + '否则以后真坏了会被放过。');
+      knownRed++;
+    } else {
+      console.log('  OK   ' + f.padEnd(32) + (ms / 1000).toFixed(1) + 's   ' + why);
+    }
+  } else if (isKnownRed) {
+    knownRed++;
+    console.log('  已知红 ' + f.padEnd(28) + (ms / 1000).toFixed(1) + 's   ' + why);
+    console.log('       原因：' + KNOWN_RED.get(f));
   } else {
     fail++;
     console.log('  FAIL ' + f.padEnd(32) + (ms / 1000).toFixed(1) + 's   ' + why);
@@ -71,8 +114,9 @@ for (const [f, why] of CORE) {
     console.log(String(x.stderr || '').trim().split('\n').slice(-6).join('\n'));
   }
 }
-console.log('———— 核心回归：' + (CORE.length - fail) + '/' + CORE.length
-  + ' 通过，' + ((Date.now() - t0) / 1000).toFixed(1) + 's ————');
+console.log('———— 核心回归：' + (CORE.length - fail - knownRed) + '/' + (CORE.length - knownRed)
+  + ' 通过、' + knownRed + ' 项已知红、失败 ' + fail
+  + '，' + ((Date.now() - t0) / 1000).toFixed(1) + 's ————');
 const top = slow.sort((a, b) => b[1] - a[1]).slice(0, 4);
 for (const [f, ms] of top) console.log('  ' + (ms / 1000).toFixed(1).padStart(6) + 's  ' + f);
 console.log('注意：核心回归不覆盖全部。动到偏僻模块或发布前，仍要跑 run-all-checks.mjs 全量。');

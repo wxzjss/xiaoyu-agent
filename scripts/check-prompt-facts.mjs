@@ -43,11 +43,21 @@ t.ok('简单命令仍走快路', shellLabel('node -v') === 'cmd');
 // ── 5. 提示词里提到的工具，必须真的注册 ────────────────────────────
 const { tools } = await import('../src/tools.mjs');
 const registered = new Set(tools.map((x) => x.name));
-const listLine = (prompt.split(/\r?\n/).find((l) => l.startsWith('read_file、write_file、')) || '');
-const listed = listLine.split('、').map((x) => x.trim()).filter(Boolean);
-t.ok('能解析出工具清单那一行', listed.length > 30, listed.length + ' 个');
-t.ok('清单里每个工具都真的注册了', listed.every((n) => registered.has(n)),
-  listed.filter((n) => !registered.has(n)).join(',') || '全部存在');
+/* 【2026-11-10 改·工具名长名单已经删了】
+ *
+ * 原来的断言是「解析提示词里那行 `read_file、write_file、…`，逐个查有没有注册」。
+ * 但那行是纯冗余（每个工具的 name 都随 tools 字段逐条发过去了），11-10 已删，
+ * 断言随之失去对象（会红在「能解析出工具清单那一行」）。
+ *
+ * 现在改成查**真数据源**：`tools` 注册表本身。
+ * 这比原来更硬 —— 原来查的是「提示词抄的名单对不对」，现在直接查「注册表有没有坏」。
+ */
+t.ok('工具注册表非空', tools.length > 30, tools.length + ' 个');
+t.ok('工具名唯一（没有重复注册）', new Set(tools.map((x) => x.name)).size === tools.length,
+  tools.length + ' 个名字 / ' + new Set(tools.map((x) => x.name)).size + ' 个唯一');
+t.ok('提示词里没再抄工具全名单（省了 687 字预算）',
+  !/^read_file、write_file、/m.test(prompt),
+  '提示词里仍有以 read_file、write_file、 开头的名单行');
 for (const n of ['send_file', 'video_probe', 'video_sheet', 'video_read', 'use_skill', 'restart_self', 'read_file', 'search_files']) {
   t.ok('手写提到的 ' + n + ' 存在', prompt.includes(n) ? registered.has(n) : true);
 }

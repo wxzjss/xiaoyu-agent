@@ -115,7 +115,7 @@ function pushWorkerEvent(sid, ev) {
  * 【事件走哪条路】不用 ctxNow().pushEvent —— 那是主轮的 live 缓冲，主轮一收尾
  * 就没了；走注入进来的 pushWorkerEvent（liveLogs），主轮结束后前端照样收得到。
  */
-export function dispatchWorker({ sessionId, wid, name, brief, maxRounds }) {
+export function dispatchWorker({ sessionId, wid, name, brief, maxRounds, timeoutMs }) {
   const sid = String(sessionId || 'default');
   const key = String(wid);
   const nick = String(name || ('worker-' + key));
@@ -136,6 +136,7 @@ export function dispatchWorker({ sessionId, wid, name, brief, maxRounds }) {
         name: nick,
         sessionId: sid,
         maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60,
+        timeoutMs: Number(timeoutMs) > 0 ? Number(timeoutMs) : undefined,
         allowWrite: true,
         signal: ac.signal,
         pullMails: () => {

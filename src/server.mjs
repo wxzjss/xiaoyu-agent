@@ -1,10 +1,10 @@
 // Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { createReadStream, statSync, readdirSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
+import { readFile, open as pvOpen } from 'node:fs/promises';
+import { createReadStream, statSync, readFileSync as pvReadFileSync, readdirSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, isAbsolute as isAbsolutePath } from 'node:path';
+import { join, resolve, relative, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 /* 【2026-11-08 加·整轮空闲看门狗】以前只有「等模型」那层有超时，卡在别处没人管 */
 import { createTurnWatchdog } from './harness/turn-watchdog.mjs';
@@ -2100,12 +2100,14 @@ function appendLiveItem(items, ev) {
     if (p && p.k === 'think') p.t += t;
     else items.push({ k: 'think', t });
   } else if (ev.type === 'tool_start') {
-    items.push({ k: 'tool', id: String(ev.id || ''), name: String(ev.name || ''), args: String(ev.args || ''), status: 'run', output: '' });
+    /* 【2026-11-11 加】startedAt 从事件上读（agent 发 tool_start 时带 ts）——
+     * 前端工具卡「正在跑 · Xs」的动态耗时靠它。旧事件没带就是 0，前端不画耗时。 */
+    items.push({ k: 'tool', id: String(ev.id || ''), name: String(ev.name || ''), args: String(ev.args || ''), status: 'run', output: '', startedAt: Number(ev.ts) || 0 });
   } else if (ev.type === 'tool_end') {
     const id = String(ev.id || '');
     const it = lastOf('tool');
     if (it && it.id === id) { it.status = ev.ok ? 'ok' : 'err'; it.output = String(ev.output || ''); }
-    else items.push({ k: 'tool', id, name: String(ev.name || ''), args: '', status: ev.ok ? 'ok' : 'err', output: String(ev.output || '') });
+    else items.push({ k: 'tool', id, name: String(ev.name || ''), args: '', status: ev.ok ? 'ok' : 'err', output: String(ev.output || ''), startedAt: 0 });
   } else if (ev.type === 'whale' || ev.type === 'agent') {
     /* 【2026-11-10 修·空气泡（A6）】空 say 不落清单（源头不产生）。
      * 注意 whale_stream_start 的空占位**不在此列**（见下）：它是分段语义的一部分。 */
@@ -2305,14 +2307,15 @@ function buildLiveItems(events) {
       else items.push({ k: 'think', t: String(e.text || '') });
     } else if (e.type === 'tool_start') {
       /* 新卡 = 新条目 → 分段线 */
+      /* 【2026-11-11 加】startedAt 与 appendLiveItem 同一口径：从事件上读，不就地取钟 */
       flush();
-      items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '' });
+      items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '', startedAt: Number(e.ts) || 0 });
     } else if (e.type === 'tool_end') {
       const id = String(e.id || '');
       const it = lastOf('tool');
       /* 改已有那张卡：屏幕上没多出东西，**不算分段线**（不 flush） */
       if (it && it.id === id) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
-      else { flush(); items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || '') }); }
+      else { flush(); items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || ''), startedAt: 0 }); }
     } else if (e.type === 'whale' || e.type === 'agent') {
       const t = String(e.text || '');
       const who = String(e.who || '');
@@ -4190,6 +4193,103 @@ function currentPort() {
   return listeningPort || config.port;
 }
 
+/* ---- 文件预览 + 改动 diff（preview-fixer · 2026-11-11）----
+ * 两条只读小接口，给界面的预览抽屉（#fileView）和气泡上的「查看改动」用。
+ *
+ * 【安全边界】抄 tools.mjs safePath 的工作区那一道（relative 不越界才算数），
+ * 但比它更严：HTTP 请求没有会话上下文，管理员模式、本会话记忆本子、
+ * tool-out 落盘目录那些例外**一律不给** —— 只认工作区里。
+ * rewind 快照的键（pvSnapshotKey）当初就是 resolveInsideWorkspace 算出来的，
+ * 这里用同一套判法再验一遍，双保险。
+ */
+const PV_IMAGE_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+};
+const PV_TEXT_CAP = 200 * 1024;      // 文本预览最多给前 200KB（对齐 read_file 的 20 万字符量级）
+const PV_STREAM_OVER = 4 * 1024 * 1024; // 超过 4MB 不整份拉进内存，只读头一段
+
+function pvInsideWorkspace(p) {
+  const root = resolve(config.workspace);
+  const abs = isAbsolutePath(p) ? resolve(p) : resolve(root, p);
+  const rel = relative(root, abs);
+  if (rel.startsWith('..') || isAbsolutePath(rel)) return null;
+  return abs;
+}
+
+function pvRelPath(abs) {
+  try {
+    const r = relative(resolve(config.workspace), abs).replace(/\\/g, '/');
+    return r || abs;
+  } catch { return abs; }
+}
+
+/* 行级 diff：先掐公共前后缀，中间做 LCS 动态规划（滚动展平一维表，省内存）。
+ * 任一边超过 1200 行就不再求最优，整段当「替换」输出 —— 预览用，不追求完美。
+ * 输出 ops：{ t: '='|'-'|'+', s: 行内容 }。 */
+function pvDiffOps(aText, bText) {
+  const a = String(aText ?? '').split(/\r?\n/);
+  const b = String(bText ?? '').split(/\r?\n/);
+  const ops = [];
+  let pre = 0;
+  while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+  let suf = 0;
+  while (suf < a.length - pre && suf < b.length - pre && a[a.length - 1 - suf] === b[b.length - 1 - suf]) suf++;
+  const am = a.slice(pre, a.length - suf);
+  const bm = b.slice(pre, b.length - suf);
+  const CAP = 1200;
+  if (am.length > CAP || bm.length > CAP) {
+    for (let i = 0; i < am.length; i++) ops.push({ t: '-', s: am[i] });
+    for (let j = 0; j < bm.length; j++) ops.push({ t: '+', s: bm[j] });
+    return ops;
+  }
+  const n = am.length, m = bm.length;
+  const dp = new Int32Array((n + 1) * (m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * (m + 1) + j] = am[i] === bm[j]
+        ? dp[(i + 1) * (m + 1) + j + 1] + 1
+        : Math.max(dp[(i + 1) * (m + 1) + j], dp[i * (m + 1) + j + 1]);
+    }
+  }
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (am[i] === bm[j]) { ops.push({ t: '=', s: am[i] }); i++; j++; }
+    else if (dp[(i + 1) * (m + 1) + j] >= dp[i * (m + 1) + j + 1]) { ops.push({ t: '-', s: am[i] }); i++; }
+    else { ops.push({ t: '+', s: bm[j] }); j++; }
+  }
+  while (i < n) { ops.push({ t: '-', s: am[i] }); i++; }
+  while (j < m) { ops.push({ t: '+', s: bm[j] }); j++; }
+  return ops;
+}
+
+/* ops → 带 3 行上下文的 hunk（行号在 ops 上补出来后按窗口裁） */
+function pvDiffHunks(ops) {
+  let an = 0, bn = 0;
+  const rows = ops.map((o) => {
+    const r = { t: o.t, s: o.s };
+    if (o.t === '=') { an++; bn++; r.an = an; r.bn = bn; }
+    else if (o.t === '-') { an++; r.an = an; }
+    else { bn++; r.bn = bn; }
+    return r;
+  });
+  const keep = new Array(rows.length).fill(false);
+  for (let k = 0; k < rows.length; k++) {
+    if (rows[k].t === '=') continue;
+    for (let x = Math.max(0, k - 3); x <= Math.min(rows.length - 1, k + 3); x++) keep[x] = true;
+  }
+  const hunks = [];
+  let cur = null;
+  for (let k = 0; k < rows.length; k++) {
+    if (!keep[k]) { if (cur) { hunks.push(cur); cur = null; } continue; }
+    if (!cur) cur = { lines: [] };
+    cur.lines.push(rows[k]);
+  }
+  if (cur) hunks.push(cur);
+  return hunks;
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
@@ -4310,6 +4410,115 @@ const server = createServer(async (req, res) => {
       });
     }
     return json(res, 404, { error: 'no such mobile endpoint' });
+  }
+
+  // ---- 文件预览：GET /api/file?path=（preview-fixer · 2026-11-11）----
+  // 只读。路径必须在 config.workspace 里；图片回 base64，文本截 200KB，二进制直接说不行。
+  if (req.method === 'GET' && url.pathname === '/api/file') {
+    const p = String(url.searchParams.get('path') || '').trim();
+    if (!p) return json(res, 400, { error: '没给 path 参数' });
+    const abs = pvInsideWorkspace(p);
+    if (!abs) return json(res, 403, { error: '这个路径不在工作区里，不给预览' });
+    let st = null;
+    try { st = statSync(abs); } catch {
+      return json(res, 404, { error: '文件不存在或打不开：' + pvRelPath(abs) });
+    }
+    if (!st.isFile()) return json(res, 400, { error: '这不是一个普通文件（可能是目录）' });
+    const ext = (abs.match(/\.[^.\\\/]+$/) || [''])[0].toLowerCase();
+    if (PV_IMAGE_MIME[ext]) {
+      if (st.size > 8 * 1024 * 1024) {
+        return json(res, 200, { ok: true, kind: 'image', path: pvRelPath(abs), tooBig: true, size: st.size });
+      }
+      try {
+        const buf = await readFile(abs);
+        return json(res, 200, { ok: true, kind: 'image', path: pvRelPath(abs), mime: PV_IMAGE_MIME[ext], data: buf.toString('base64'), size: st.size });
+      } catch {
+        return json(res, 404, { error: '图片读不出来（可能正被别的程序占用）' });
+      }
+    }
+    // 文本：先探测二进制（头 8KB 里出现 NUL 就当二进制，别让主人看一屏乱码）
+    let buf = null;
+    let headOnly = false;
+    try {
+      if (st.size <= PV_STREAM_OVER) {
+        buf = await readFile(abs);
+      } else {
+        const fh = await pvOpen(abs, 'r');
+        try {
+          const got = await fh.read(Buffer.alloc(PV_TEXT_CAP + 4096), 0, PV_TEXT_CAP + 4096, 0);
+          buf = got.buffer.subarray(0, got.bytesRead);
+        } finally { try { await fh.close(); } catch {} }
+        headOnly = true;
+      }
+    } catch {
+      return json(res, 404, { error: '文件读不出来（可能正被别的程序占用）' });
+    }
+    if (buf.subarray(0, 8192).includes(0)) {
+      return json(res, 200, { ok: true, kind: 'binary', path: pvRelPath(abs), size: st.size });
+    }
+    let text = buf.toString('utf8');
+    let truncated = headOnly;
+    if (text.length > PV_TEXT_CAP) { text = text.slice(0, PV_TEXT_CAP); truncated = true; }
+    return json(res, 200, { ok: true, kind: 'text', path: pvRelPath(abs), text, truncated, size: st.size, ext });
+  }
+
+  // ---- 改动 diff：GET /api/turn/:at/diff?id=（preview-fixer · 2026-11-11）----
+  // 取那一轮（anchor = 这条 user 消息）登记的写文件快照（messages[at]._ws），
+  // 跟当前磁盘内容比一遍，回 unified 风格的行数组。只读，不动任何文件。
+  if (req.method === 'GET' && /^\/api\/turn\/\d+\/diff$/.test(url.pathname)) {
+    const at = Number(url.pathname.match(/^\/api\/turn\/(\d+)\/diff$/)[1]);
+    const id = String(url.searchParams.get('id') || '');
+    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
+    const session = getSession(id);
+    if (!session) return json(res, 404, { error: 'session not found' });
+    const msgs = Array.isArray(session.messages) ? session.messages : [];
+    if (at >= msgs.length) return json(res, 200, { ok: false, error: '这条消息已经不在了' });
+    // 锚点：传进来的这条自己（user），不然往前找最近的一问 ——
+    // 这样 assistant 气泡直接带自己的下标来问也能落到同一轮。
+    let anchor = at;
+    if (!(msgs[anchor] && msgs[anchor].role === 'user' && !msgs[anchor].context)) {
+      let found = -1;
+      for (let i = Math.min(at, msgs.length - 1); i >= 0; i--) {
+        if (msgs[i] && msgs[i].role === 'user' && !msgs[i].context) { found = i; break; }
+      }
+      if (found < 0) return json(res, 200, { ok: false, error: '找不到这一轮对应的那一问' });
+      anchor = found;
+    }
+    const raw = msgs[anchor]._ws;
+    const ws = raw && typeof raw === 'object' ? raw : null;
+    const keys = ws ? Object.keys(ws) : [];
+    if (!keys.length) return json(res, 200, { ok: true, at: anchor, files: [] });
+    const files = [];
+    for (const key of keys) {
+      const abs = pvInsideWorkspace(key);
+      if (!abs) continue; // 快照键本来就在工作区内产生，这里再验一道，双保险
+      const before = ws[key];
+      let nowText = null;
+      let exists = false;
+      try {
+        const st2 = statSync(abs);
+        if (st2.isFile()) {
+          exists = true;
+          if (st2.size <= 1024 * 1024) nowText = pvReadFileSync(abs, 'utf8'); // 现文件超 1MB 就不比了
+        }
+      } catch {}
+      const f = { path: key };
+      if (before === '__TOO_BIG__') { f.status = 'tooBig'; files.push(f); continue; }
+      if (!exists) {
+        if (before === null) { f.status = 'absent'; files.push(f); continue; } // 那一轮建的、后来又被删了
+        f.status = 'deleted';
+        f.hunks = pvDiffHunks(pvDiffOps(before, ''));
+        files.push(f);
+        continue;
+      }
+      if (before === null) { f.status = 'created'; f.hunks = pvDiffHunks(pvDiffOps('', nowText ?? '')); files.push(f); continue; }
+      if (typeof before !== 'string' || nowText === null) { f.status = 'tooBig'; files.push(f); continue; }
+      if (nowText === before) { f.status = 'unchanged'; files.push(f); continue; }
+      f.status = 'modified';
+      f.hunks = pvDiffHunks(pvDiffOps(before, nowText));
+      files.push(f);
+    }
+    return json(res, 200, { ok: true, at: anchor, files });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -6838,6 +7047,63 @@ const server = createServer(async (req, res) => {
     } catch (err) {
       return json(res, 400, { error: String(err?.message ?? err) });
     }
+  }
+
+  // ---- 输入框 @ 提及：列工作区里的文件 / 目录 ----
+  /* 【2026-11-11 加·@ 提及】界面输入框打 @ 弹文件浮层，数据源就是这条。
+   *
+   * 为什么不复用 /api/attach/browse：那条是「+」选附件的路，故意放开到全盘
+   * （主人要从 C 盘随便挑）。@ 提及不一样 —— 它插的是给模型看的工作区路径，
+   * 必须钉死在 config.workspace 里：照 tools.mjs safePath 的核心判据
+   * （resolve 后 relative 出 .. 或绝对路径就拒），一寸都不多给。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/files/mention') {
+    const root = resolve(config.workspace || '.');
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const dirParam = String(url.searchParams.get('dir') || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const startAbs = dirParam ? resolve(root, dirParam) : root;
+    const rel0 = relative(root, startAbs);
+    if (rel0.startsWith('..') || isAbsolutePath(rel0)) {
+      return json(res, 400, { error: 'path outside workspace is not allowed' });
+    }
+    /* 跟 search_files 一个规矩：重目录不进去翻 */
+    const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.cache', 'playground', '.state', 'sandbox', 'attachments', 'logs', 'dump', 'backup', 'voice']);
+    const LIMIT = 20;
+    const hits = [];
+    let scanned = 0;
+    /* 只打了 @ 还没打字：列一层就好，别把半个工作区都灌进浮层 */
+    const shallow = !q;
+    /* 广度优先：浅的永远排前面 —— 深度优先的话，a-test-data 里几千个文件
+       能把扫描预算吃光，主人根目录下那个真想要的文件永远轮不上。 */
+    const queue = [[startAbs, dirParam, 0]];
+    while (queue.length && hits.length < LIMIT && scanned <= 3000) {
+      const [abs, rel, depth] = queue.shift();
+      if (depth > 6) continue;
+      let ents;
+      try { ents = readdirSync(abs, { withFileTypes: true }); } catch { continue; }
+      for (const e of ents) {
+        if (hits.length >= LIMIT || scanned > 3000) break;
+        scanned++;
+        const name = e.name;
+        if (name.startsWith('.trash')) continue;
+        const r = rel ? rel + '/' + name : name;
+        if (e.isDirectory()) {
+          if (SKIP.has(name) || name.startsWith('.')) continue;
+          if (!q || name.toLowerCase().includes(q) || r.toLowerCase().includes(q)) {
+            hits.push({ name: r, dir: true });
+          }
+          if (!shallow) queue.push([join(abs, name), r, depth + 1]);
+        } else {
+          if (name.startsWith('.')) continue;
+          if (!q || name.toLowerCase().includes(q) || r.toLowerCase().includes(q)) {
+            hits.push({ name: r, dir: false });
+          }
+        }
+      }
+    }
+    /* 目录排前面，同类按名字排 */
+    hits.sort((a, b) => (a.dir !== b.dir) ? (a.dir ? -1 : 1) : a.name.localeCompare(b.name, 'zh'));
+    return json(res, 200, { ok: true, items: hits.slice(0, LIMIT) });
   }
   // 出件箱兜底：/api/attach/outbox-out?key=xxx
   // 发出去的文件都会往 .state/outbox 抄一份；消息里的路径没了（换了机器、原文件删了）就点这个。
@@ -10805,7 +11071,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             for (const _k of ['reasoning', 'text']) {
               if (_opAcc[_k] && _opAcc[_k].length) { send({ type: _k, text: _opAcc[_k] }); _opAcc[_k] = ''; }
             }
-            if (ev.type === 'tool_start') send({ type: 'tool_start', id: ev.id, name: ev.name, args: ev.args });
+            /* 【2026-11-11 加】ts 跟着转发：前端实时流的工具卡也算耗时 */
+            if (ev.type === 'tool_start') send({ type: 'tool_start', id: ev.id, name: ev.name, args: ev.args, ts: ev.ts });
             else send({ type: 'tool_end', id: ev.id, name: ev.name, ok: ev.ok, output: ev.output, images: ev.images || 0 });
           }
         },

@@ -5102,14 +5102,24 @@ const server = createServer(async (req, res) => {
     let payload = {};
     try { payload = await body(req); } catch { payload = {}; }
     const sid = String(payload?.sessionId || url.searchParams.get('sessionId') || '') || '';
-    try {
-      if (featureOnFor(sid, 'screenOff') === false) {
-        return json(res, 403, { error: '「关闭显示屏」这个功能被关掉了，去【功能】里打开再试。' });
-      }
-    } catch { /* 查不到开关就当开着，别把人挡在门外 */ }
+    /* 只有「关」受功能开关管；「开」一律放行 ——
+       否则主人一关功能、屏幕又正好黑着，就再也开不回来了（虽然物理按键还能救，
+       但那是把功能开关变成了惩罚）。 */
+    if (url.pathname === '/api/screen/off') {
+      try {
+        if (featureOnFor(sid, 'screenOff') === false) {
+          return json(res, 403, { error: '「关闭显示屏」这个功能被关掉了，去【功能】里打开再试。' });
+        }
+      } catch { /* 查不到开关就当开着，别把人挡在门外 */ }
+    }
     try {
       if (url.pathname === '/api/screen/off') {
-        const r = await turnOffScreen({ keepBrightness: Boolean(payload?.keepBrightness) });
+        const r = await turnOffScreen({
+          keepBrightness: Boolean(payload?.keepBrightness),
+          /* 默认跟独立小工具一致：先变暗 3 秒做预告，再彻底熄屏。
+             传 0 可以跳过预告直接黑。 */
+          armSeconds: Number.isFinite(Number(payload?.armSeconds)) ? Number(payload.armSeconds) : 3,
+        });
         if (!r.ok) return json(res, 500, { error: r.error || '关屏失败' });
         return json(res, 200, { ok: true, note: '显示器已关闭，电脑仍在运行' });
       }
@@ -9689,7 +9699,28 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 立场（__speaksToHer）照旧传下去 —— 她真开口时，仍然知道自己是在跟谁说话。
      */
     const __whaleCalledToSpeak = __speaksToHer || __whaleIsSomeone;
-    if (whaleOn(sessionId) && __whaleCalledToSpeak && !__quiet && !__busyTurn) {
+    /**
+     * 【2026-11-11 修·主人报「只开小鲸时，我发一条她连回两条」】
+     *
+     * 截图实证：一条「（愣了一下，尾巴尖慢慢翘起来）主人……突然这么说」，
+     * 紧跟着又一条「（听到这三个字，顿了一下）嗯……我记下了」——
+     * 两次**不同的生成**，不是重复落盘。
+     *
+     * 根因：主人是在顶栏【屋里的人】里关掉小鱼、把小鲸往上挪的，
+     * **会话绑定的卡没变**，所以上面 `sessionAgentId(sessionId) === AGENT_XIAOJING`
+     * 那行不命中；插话闸于是照开 → 她以主智能体身份答完一次，
+     * 收尾又被叫去「说一句」→ 屏幕上两条。
+     *
+     * 判据改成**这一轮真正的主智能体**（屋里第一个开着的），
+     * 口径跟 runAgent 的 `__mainIdForTurn` 一致：
+     * 她自己就是主声时，她的回答由主声那条路负责，插话闸必须关。
+     */
+    const __mainIsWhale = (() => {
+      try {
+        return String(mainAgentId(sessionId, (id) => mateSwitchOn(id, sessionId)) || '') === AGENT_XIAOJING;
+      } catch { return false; }
+    })();
+    if (whaleOn(sessionId) && __whaleCalledToSpeak && !__quiet && !__busyTurn && !__mainIsWhale) {
       const userTextNow = lastUserTextOf(session);
       if (userTextNow) {
         (async () => {
@@ -10454,6 +10485,16 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         onRoundTick: async ({ round }) => {
           try {
             if (!whaleOn(sessionId)) return;
+            /**
+             * 【2026-11-11 修·主人报「只开小鲸时她连回两条」】
+             *
+             * 这一轮的主智能体本来就是她的时候，她正在正常回答，
+             * 再叫她「看进度说一句」= 让她自己跟自己说第二轮，屏幕上就是两条
+             * （截图：一条「愣了一下，尾巴尖慢慢翘起来」，一条「听到这三个字，顿了一下」）。
+             *
+             * 口径跟收尾那个插话闸、跟 runAgent 的 agentId 用同一个 __mainIdForTurn。
+             */
+            if (String(__mainIdForTurn || '') === AGENT_XIAOJING) return;
             const now = Date.now();
             // 节流：至少隔 120 秒，且最多每 3 轮敲一次 —— 别每轮都叫她（烧钱又吵）。
             if (now - lastWhaleTickAt < 120000) return;

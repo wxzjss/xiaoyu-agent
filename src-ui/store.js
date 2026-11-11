@@ -25,6 +25,12 @@ export const openMap = new Map();
 
 /** 还没落盘的那句主人消息（乐观插入，落盘后自动消失） */
 let pendingUser = [];
+/**
+ * running true→false 翻转拍的缓冲（见 setLive 内注释）：
+ * 待落的 false 快照 + 定时器句柄。
+ */
+let _falseWritePending = null;
+let _falseWriteTimer = 0;
 /** 系统提示（报错 / 限流 / 断线）。老实现里它挂在屏幕末尾，下次整屏重画时被冲掉 —— 口径照旧。 */
 let notes = [];
 /** 历史窗口起点（只画最近 N 轮）。key 是 sid。 */
@@ -184,6 +190,50 @@ export function setHistory(sid, turns) {
 export function setLive(sid, live) {
   const st = logState();
   if (String(sid || '') !== String(st.sid || '')) return false;
+  /**
+   * 【2026-11-11 修·收尾那一帧塌缩（steer-fixer）】
+   *
+   * followLive 每一拍是「先写快照、再看收尾」：running:false 的快照一进 store，
+   * buildMerged 当场丢掉整个 live 段，而 finishTurn 的历史还在路上
+   * （select 往返几十上百毫秒）——中间这几帧屏幕塌回旧历史，
+   * 主人看到的就是「她说的话闪一下又没了」（检查鱼场景逐帧抓到：
+   * 回复1 与插话气泡在收尾那一拍集体消失一帧）。
+   *
+   * 其实服务端在摘登记（running 翻 false）**之前**就已经
+   * commitWireBack + saveSession，历史此刻必然是齐的。
+   * 所以 running 从 true 翻 false 的这一拍，缓 250ms 再落账：
+   * 这段时间里 finishTurn 的 setHistory + setLive(null) 几乎必然先到，
+   * 屏幕从「直播」直接切到「历史」，中间没有空帧。
+   * 缓冲期内来了更新的写（新一轮 running:true、setLive(null)）就作废缓冲。
+   * 250ms 后才落账也没关系：那时要么历史已接管（running:false 本来就不画
+   * live 段），要么屏上已有更新的 running:true 快照（落账前会再查一次）。
+   */
+  const _nowFalse = !!(live && live.running === false);
+  const _wasRunning = !!(st.live && st.live.running !== false);
+  if (_nowFalse && (_wasRunning || _falseWriteTimer)) {
+    _falseWritePending = live;
+    if (!_falseWriteTimer) {
+      const _sid0 = sid;
+      _falseWriteTimer = setTimeout(() => {
+        _falseWriteTimer = 0;
+        const _p = _falseWritePending;
+        _falseWritePending = null;
+        if (!_p) return;
+        const _st = logState();
+        if (String(_sid0 || '') !== String(_st.sid || '')) return;
+        /* 屏上已经有更新的在跑快照（新一轮接上了）—— 别拿旧的 running:false 盖 */
+        if (_st.live && _st.live.running !== false) return;
+        _st.live = _p;
+        bump();
+      }, 250);
+    }
+    return true;
+  }
+  if (_falseWriteTimer) {
+    clearTimeout(_falseWriteTimer);
+    _falseWriteTimer = 0;
+    _falseWritePending = null;
+  }
   st.live = live && Array.isArray(live.items) ? live : null;
   if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
   bump();

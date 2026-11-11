@@ -540,6 +540,84 @@ async function caseThreeToThree() {
 }
 
 /* ══════════════════════════════════════════════════════════════════
+ * 七：工具密集轮里插话（检查鱼形态）—— steer-fixer 2026-11-11
+ *
+ * 主人报的形态：插话后，插话之前她已经显示出来的「回复1」也从屏幕上消失。
+ * 事件形态照检查鱼：正文 → 一串工具 → **中途插话（steer）** → 又一串工具
+ * → 正文 → done → 轮末之后还跟着一段（排队轮续写）。
+ *
+ * 钉死的不变式：回复1 与插话气泡一旦出现在屏幕上，整条时间线里
+ * **每一帧都得在**（各恰好一份），直到收尾换历史也一样。
+ * ══════════════════════════════════════════════════════════════════ */
+async function caseSteerMidTools() {
+  console.log('\n七、工具密集轮里插话：回复1 与插话气泡全程不许消失');
+  const R1 = 'QA回复1先说一句准备开工';
+  const R2 = 'QA回复2工具跑完接着汇报';
+  const R3 = 'QA回复3轮末之后排队轮续写';
+  const B = 'QA插话B做完第二个就停';
+  const events = [
+    { type: 'text', text: R1 },
+    { type: 'tool_start', id: 's1', name: 'run_command', args: '{"cmd":"echo 1"}' },
+    { type: 'tool_end', id: 's1', ok: true, output: '1' },
+    { type: 'tool_start', id: 's2', name: 'run_command', args: '{"cmd":"echo 2"}' },
+    { type: 'tool_end', id: 's2', ok: true, output: '2' },
+    { type: 'steer', text: B, ts: Date.now() },
+    { type: 'tool_start', id: 's3', name: 'run_command', args: '{"cmd":"echo 3"}' },
+    { type: 'tool_end', id: 's3', ok: true, output: '3' },
+    { type: 'text', text: R2 },
+    { type: 'done' },
+    { type: 'text', text: R3 },
+  ];
+  await arm({
+    gap: 320,
+    events,
+    live: null,
+    /* 落盘历史（照真实流程：回复落在 assistant turn 里，插话 B 是一条 user turn） */
+    turns: [
+      { role: 'user', text: 'QA 检查一句' },
+      { role: 'user', text: B },
+      { role: 'assistant', text: R1 + '\n\n' + R2 + '\n\n' + R3 },
+    ],
+  });
+  await cdp.eval('window.__qaTurnP = window.runTurn({ text: "QA 检查一句" }); return 1;');
+  const series = await watch(55, 100);
+
+  /* 不变式：R1 一旦出现就每一帧都在；B 同理（出现之后不许再消失） */
+  const firstR1 = series.findIndex((s) => cnt(s.text, R1) > 0);
+  const firstB = series.findIndex((s) => cnt(s.text, B) > 0);
+  ok(firstR1 >= 0, '回复1 上屏了', firstR1 < 0 ? '全程没出现' : '');
+  ok(firstB >= 0, '插话气泡上屏了', firstB < 0 ? '全程没出现' : '');
+  if (firstR1 >= 0) {
+    const lost = series.slice(firstR1).map((s, i) => ({ i: i + firstR1, n: cnt(s.text, R1) }))
+      .filter((x) => x.n !== 1);
+    ok(lost.length === 0, '回复1 出现之后每一帧都在（恰好一份）',
+      lost.length ? '异常帧 ' + lost.length + ' 个（如 +' + (lost[0].i * 100) + 'ms 出现 ' + lost[0].n + ' 次）' : '');
+  }
+  if (firstB >= 0) {
+    const lost = series.slice(firstB).map((s, i) => ({ i: i + firstB, n: cnt(s.text, B) }))
+      .filter((x) => x.n !== 1);
+    ok(lost.length === 0, '插话气泡出现之后每一帧都在（恰好一份）',
+      lost.length ? '异常帧 ' + lost.length + ' 个' : '');
+  }
+  /* 工具卡全程不重不漏（检查鱼形态的回归面：三张卡不许翻倍重画） */
+  ok(Math.max(0, ...series.map((s) => s.tool || 0)) <= 3 && series.some((s) => (s.tool || 0) >= 1),
+    '工具卡出现了且没有失控重画',
+    '最多 ' + Math.max(0, ...series.map((s) => s.tool || 0)) + ' 张');
+  /* 收尾对账 */
+  for (let i = 0; i < 60; i++) {
+    const b = await cdp.eval('return !!window.busy;');
+    if (!b) break;
+    await sleep(200);
+  }
+  await sleep(1200);
+  const fin = await snap();
+  ok(fin.liveCount === 1, '跑完只留历史画的那一段', '实际 ' + fin.liveCount + ' 段');
+  for (const [nm, mark] of [['回复1', R1], ['回复2', R2], ['回复3', R3], ['插话', B]]) {
+    ok(cnt(fin.text, mark) === 1, '跑完落历史后「' + nm + '」只出现一次', '出现 ' + cnt(fin.text, mark) + ' 次');
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
  * 主线
  * ══════════════════════════════════════════════════════════════════ */
 try {
@@ -550,6 +628,7 @@ try {
   await caseAborted();
   await caseReload();
   await caseThreeToThree();
+  await caseSteerMidTools();
 } catch (e) {
   fail++;
   console.log('  [!!] 跑挂了：' + (e && e.stack ? e.stack : e));

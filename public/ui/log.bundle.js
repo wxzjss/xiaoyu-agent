@@ -7317,6 +7317,8 @@
   var version = 0;
   var openMap = /* @__PURE__ */ new Map();
   var pendingUser = [];
+  var _falseWritePending = null;
+  var _falseWriteTimer = 0;
   var notes = [];
   var histWin = /* @__PURE__ */ new Map();
   var seq = 0;
@@ -7402,6 +7404,31 @@
   function setLive(sid, live) {
     const st = logState();
     if (String(sid || "") !== String(st.sid || "")) return false;
+    const _nowFalse = !!(live && live.running === false);
+    const _wasRunning = !!(st.live && st.live.running !== false);
+    if (_nowFalse && (_wasRunning || _falseWriteTimer)) {
+      _falseWritePending = live;
+      if (!_falseWriteTimer) {
+        const _sid0 = sid;
+        _falseWriteTimer = setTimeout(() => {
+          _falseWriteTimer = 0;
+          const _p = _falseWritePending;
+          _falseWritePending = null;
+          if (!_p) return;
+          const _st = logState();
+          if (String(_sid0 || "") !== String(_st.sid || "")) return;
+          if (_st.live && _st.live.running !== false) return;
+          _st.live = _p;
+          bump();
+        }, 250);
+      }
+      return true;
+    }
+    if (_falseWriteTimer) {
+      clearTimeout(_falseWriteTimer);
+      _falseWriteTimer = 0;
+      _falseWritePending = null;
+    }
     st.live = live && Array.isArray(live.items) ? live : null;
     if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
     bump();

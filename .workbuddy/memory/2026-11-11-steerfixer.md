@@ -53,6 +53,25 @@ scheduleSendingRecheck 只管灯和 busy、settleFromHistory 只拉历史不看 
   服务端历史里插话出现两遍。数据层双写，需另开任务查 /api/interject 的
   wasRunning 判据与预发送队列的 409 重发路径。
 
+## 第二轮（lead 补充：检查鱼场景 + 既有回复1 也消失）
+- 真实数据：办事鱼 smw0jyzki7gbc 连发 4 次「你好」，3 条 STEER 相邻 [246][247][248]
+  才换来一条回复 —— 主人反复重发正是因为屏幕上什么都看不见。
+  检查鱼 smvwf26l5ap3c：steer [273] 后她继续跑工具，550 秒无动静被看门狗掐 →
+  stuck-retry 起排队轮。
+- **服务端实锤**：注释许诺的「主轮收尾标 pendingNext、排队轮续用同一份直播缓存」
+  全库搜不到一处 `pendingNext = true` —— openLiveForQueuedTurn 的复用分支永不命中，
+  每个排队轮都拿全新空缓存，主轮攒的正文/工具/插话条目从 live 整段蒸发。
+  修：主轮 finally 里 inboxCount>0 → live.done=false + pendingNext=true（排队轮
+  续写缓存）；附带修复 interject 推插话条目的 `!lv.done` 在收尾窗口失效的问题。
+- **前端收尾空帧**：followLive 每拍「先写快照再看收尾」，running:false 一进 store
+  buildMerged 就丢整段 live，而 finishTurn 的历史还在路上 → 回复1 与插话气泡
+  在收尾那一拍集体消失一帧（新加的 dom 检查场景七逐帧抓到）。
+  修：store.setLive 把 running true→false 翻转拍缓冲 250ms 再落账
+  （服务端摘登记前必已 commit，历史此刻必然齐，缓冲期内历史接管，无空帧）。
+- 新增 check-live-render-dom 场景七「工具密集轮里插话」：正文→两工具→steer→
+  两工具→正文→done→轮末续说，逐帧断言回复1/插话气泡出现后每一帧都在
+  （恰好一份），跑完落历史各一次。48/0 全绿。
+
 ## 已知残留（上报待协调）
 - chat.js finishTurn 的收尾对账有同款「sum ≥ last」判据（chat.js:288-290），
   排队轮答完后的收尾仍会空等 ~4.2 秒再落历史。chat.js 不在我的允许清单里没动，

@@ -11908,7 +11908,28 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 所以：队列还有话，就把 done 留在 false，events 留着，让排队轮
        * 直接往这份缓存里续写，前端那条轮询自然就接上了。
        */
-      live.done = true;
+      /* 【2026-11-11 修·插话后「她已说过的回复」整段消失（steer-fixer）】
+       *
+       * 上面这段注释许诺的「主轮收尾时标 pendingNext」**从来没有实现过** ——
+       * 全库搜不到一处 `pendingNext = true`，于是 openLiveForQueuedTurn 的
+       * 复用分支永远不命中，每个排队轮（看门狗掐轮后的 stuck-retry、
+       * selfwake、团队派活……）都拿到**全新空缓存**：主轮攒下来的正文
+       * （回复1）、工具卡、插话条目从 live 里整段蒸发，而历史那一侧
+       * 在跑着时靠直播清单补 —— 两边一衔接，主人看到的就是
+       * 「插话之后，插话前她已经说出来的话也没了」。
+       *
+       * 判据用信箱：收尾这一刻信箱里还压着主人的插话（steer 没能在这轮
+       * 被取走 —— 最后一圈收尾才插进来的、轮被看门狗掐了……），
+       * 说明马上有人会来接（stuck-retry / 队列 / 下一轮开头 drainSteps），
+       * 缓存必须留着续写。没有压话就照旧收缓存。
+       * 附带修复：/api/interject 推插话条目要求 `!lv.done` —— 缓存不收，
+       * 收尾窗口里插进来的话也还能推进 live，排队轮一接上就能看见。 */
+      if (inboxCount(sessionId) > 0) {
+        live.done = false;
+        live.pendingNext = true;
+      } else {
+        live.done = true;
+      }
       live.endedAt = Date.now();
       // 收尾时把自己这一条登记摘掉（提前登记过、ac 可能还是 null，所以认对象不认 ac）
       {

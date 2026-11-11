@@ -162,9 +162,29 @@ export default function LogView() {
    * 重画完把他还回去。 */
   const lastScrollTopRef = useRef(0);
   const keepFromBottom = useRef(null);
+  /**
+   * 【2026-11-11 再修·还原位置的锚点不能慢半拍】
+   *
+   * 上面那个 lastScrollTopRef 是 onScroll 记的，而 **scroll 事件要到下一帧才派发**；
+   * 流式内容一到，React 当场同步重画并跑 useLayoutEffect —— 那一刻记账还停在
+   * 「上一帧的位置」。主人刚往上滚了 5px，effect 一看视口不在这笔账上，
+   * 就当成「被重画夹掉了」把他还原回去 = 每一格上滚都被弹回最新 → 「不断抖动」。
+   * （探针逐帧抓到的就是它：roll 5px 之后 1ms 有一笔 scrollTop 写回 scrollHeight，
+   *   调用栈落在 React commit → 这个 effect，不是 pin。）
+   *
+   * render 阶段（React 还没换 DOM）读到的 scrollTop 才是他真正停的地方 ——
+   * 滚轮一滚浏览器当场就把 scrollTop 改了，不等 scroll 事件。
+   */
+  const preSwapScrollTop = useRef(0);
 
   /* #log 是页面里现成的那个容器（React 只接管它的内容） */
   if (!listRef.current) listRef.current = document.getElementById('log');
+  /* 只在「位置归主人」的时候读 —— 跟随最新时根本用不上这笔账，
+   * 少一次强制布局（流式吐字每帧都在 render）。 */
+  if (userScrolledRef.current && listRef.current) {
+    const t = listRef.current.scrollTop;
+    if (typeof t === 'number' && t >= 0) preSwapScrollTop.current = t;
+  }
 
   /* 是不是贴着底：只认「用户真的往上滚了」 */
   useLayoutEffect(() => {
@@ -186,17 +206,35 @@ export default function LogView() {
       const shrank = h < lastHeightRef.current;
       lastHeightRef.current = h;
       if (!shrank) {
-        /* 【2026-11-11 改·阈值 24 → 8】主人报「向上小幅滚动就被弹回最新消息」：
-         * 原来离底 24px 以内都算「在底部」，往上滚一小格（20px 左右）根本不算数，
-         * pin/effect 照样贴底（探针实测：滚 20px + 追加一条内容 → 立刻弹回底部）。
-         * 8px 只留物理贴底的那点余量，滚 10px 就已经算「在翻历史」。 */
-        atBottomRef.current = d <= 8;
+        /**
+         * 【2026-11-11 再修·「8px 以内的上滚仍然被拽回」的真正根因】
+         *
+         * 上一版把阈值 24 → 8，只解决了「滚 20px 被弹回」。
+         * 可 8px 以内的上滚还是同一个病，而且**光改 wheel handler 治不好**：
+         * onWheel 确实把 atBottomRef 置成了 false，但浏览器紧接着为这一发滚轮
+         * 发出的 **scroll 事件**又跑回这里，用 `d <= 8` 把它写回 true。
+         * 于是 pin / 滚动 effect 一看「在底部」，立刻把屏幕拽回最新 ——
+         * 主人手指还在往上滚，每一格都被拽一次，看着就是「不断抖动」。
+         *
+         * 探针逐帧抓到的正是这一刻（_t_scroll_jitter.mjs 场景 A2）：
+         *   滚轮上移 5px → 5ms 后有一笔 scrollTop 写回 scrollHeight。
+         *
+         * 所以判据不能只看「离底多远」，必须看 **scrollTop 往哪边动**：
+         *   · scrollTop 变小 = 视口在往更早的内容走 = 他不想贴底，不管只走了 1px；
+         *   · d 变大还有另一种来源（内容长高，scrollTop 一点没动），那种绝不能误判。
+         */
+        const st = el.scrollTop;
+        const wentUp = st < lastScrollTopRef.current - 0.5;
+        atBottomRef.current = wentUp ? false : (d <= 8);
+        /* 往上走这一下本身就是「他自己动的手」，记账（收缩 clamp 不会走到这里） */
+        if (wentUp) userScrolledRef.current = true;
         /* 滚回底部就复位「在翻历史」——但只认「连续两次都贴底」：
-         * 单独一发 d 很小的 scroll 可能是收缩夹出来的，不许凭它清账。 */
+         * 单独一发 d 很小的 scroll 可能是收缩夹出来的，不许凭它清账。
+         * 刚往上走过（wentUp）更不能清：那一发 d 天然就小。 */
         const prevDist = lastDistRef.current;
         lastDistRef.current = d;
-        if (d <= 8 && prevDist <= 8) userScrolledRef.current = false;
-        lastScrollTopRef.current = el.scrollTop;
+        if (!wentUp && d <= 8 && prevDist <= 8) userScrolledRef.current = false;
+        lastScrollTopRef.current = st;
       }
       /* 【2026-11-11 修·跳底按钮】滚动位置变化要驱动右下角按钮的显隐/未读清零。
        * 原来只有 noteNewContent/bumpUnseen/jumpToBottom 三个调用点，没有 scroll 监听 ——
@@ -205,11 +243,35 @@ export default function LogView() {
     };
     /* 只有这几种「他自己动手」的动作才把人标记成「在翻历史」 */
     const onUserIntent = () => { userScrolledRef.current = true; };
+    /**
+     * 【2026-11-11 修·主人报「小幅往上滚会不断抖动、把我拉回最新消息」】
+     *
+     * 上一版把阈值从 24px 收到 8px，解决了「滚 20px 就被弹回」；
+     * 但**8px 以内的上滚**还有同一个病：那一发 scroll 里 d 仍 <= 8，
+     * atBottomRef 被写成 true → 下面的 pin（内容一变就贴底）立刻执行 →
+     * 屏幕弹回底部；弹回底部又发一发 scroll（d=0）→ 更容易判成贴底。
+     * 主人看到的就是「抖动 + 被拽回最新」。
+     *
+     * 判据本来就不该只看距离：**用户往上滚**这件事本身就是「他不想贴底」的最强信号，
+     * 不管只滚了 1px 还是 20px。所以滚轮/键盘方向键往上 → 当场取消「在底部」，
+     * 不等那一发 scroll 的 d 值。滚回底部时 onScroll 会再把 atBottom 置回 true
+     * （连续两次贴底还会清掉「在翻历史」的账），跟随自然恢复。
+     */
+    const onWheel = (e) => {
+      userScrolledRef.current = true;
+      /* deltaY < 0 = 往上（看更早的内容）。触控板惯性里也有 deltaY>0 的帧，别误伤 */
+      if (e && Number(e.deltaY) < 0) atBottomRef.current = false;
+    };
+    const onKey = (e) => {
+      userScrolledRef.current = true;
+      const k = e && e.key;
+      if (k === 'ArrowUp' || k === 'PageUp' || k === 'Home') atBottomRef.current = false;
+    };
     el.addEventListener('scroll', onScroll, { passive: true });
-    el.addEventListener('wheel', onUserIntent, { passive: true });
+    el.addEventListener('wheel', onWheel, { passive: true });
     el.addEventListener('touchmove', onUserIntent, { passive: true });
     el.addEventListener('pointerdown', onUserIntent, { passive: true });
-    el.addEventListener('keydown', onUserIntent);
+    el.addEventListener('keydown', onKey);
 
     /**
      * 【贴底要跟着「内容后来才长高」走】
@@ -247,10 +309,10 @@ export default function LogView() {
 
     return () => {
       el.removeEventListener('scroll', onScroll);
-      el.removeEventListener('wheel', onUserIntent);
+      el.removeEventListener('wheel', onWheel);
       el.removeEventListener('touchmove', onUserIntent);
       el.removeEventListener('pointerdown', onUserIntent);
-      el.removeEventListener('keydown', onUserIntent);
+      el.removeEventListener('keydown', onKey);
       try { if (mo) mo.disconnect(); } catch (e) {}
       try { if (ro) ro.disconnect(); } catch (e) {}
     };
@@ -284,9 +346,12 @@ export default function LogView() {
     /* 【2026-11-11 修·重画把人甩到顶上】真在翻历史的人：整屏重画换 DOM 的瞬间
      * 浏览器把 scrollTop 夹成 0，画面就跳到最老的消息 —— 主人报的「发消息后
      * 弹到很久以前」正是这条。现在把他还回他刚才看的地方（往底部加新内容
-     * 不挪旧内容的位置，所以按 scrollTop 还原是准的）。 */
+     * 不挪旧内容的位置，所以按 scrollTop 还原是准的）。
+     *
+     * 【2026-11-11 再修】锚点用 preSwapScrollTop（render 阶段读的），不用
+     * lastScrollTopRef（onScroll 记的，慢一帧）—— 见那个 ref 上面的长注释。 */
     try {
-      const want = lastScrollTopRef.current;
+      const want = preSwapScrollTop.current;
       if (want > 0 && Math.abs(el.scrollTop - want) > 4) el.scrollTop = want;
     } catch (e) {}
     /* 只更新「底下多了几条」那颗提醒 */

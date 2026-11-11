@@ -13433,7 +13433,11 @@ document.getElementById('resetBottomLines').onclick = async () => {
   const btn = document.getElementById('resetBottomLines');
   btn.disabled = true;
   bottomLinesHint.textContent = '正在恢复…';
-  const r = await fetch('/api/settings/reset-bottomlines', {
+  /* 【2026-11-11 修·这颗按钮以前打的是 reset-bottomlines】
+   * 那颗回的是「主人自己『设为默认』存下的那份」（defaults.json），
+   * 也就是旁边那颗【恢复默认】该干的事 —— 于是「恢复出厂默认」和「恢复默认」
+   * 干的是同一件事，怎么点都回不到代码里写死的那份。现在打专门的出厂接口。 */
+  const r = await fetch('/api/settings/reset-bottomlines-factory', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
@@ -13447,9 +13451,9 @@ document.getElementById('resetBottomLines').onclick = async () => {
   fillSettings(r.settings);
   if (r.changed) {
     bottomLinesHint.textContent =
-      '已恢复出厂默认底线（共 ' + r.settings.bottomLines.length + ' 条）。上一版存在 .state/bottomlines.backup.md';
+      '已恢复出厂默认底线（共 ' + r.settings.bottomLines.length + ' 条）。上一版存在 .state/bottomlines.factory.backup.md';
   } else {
-    bottomLinesHint.textContent = '本来就是默认底线，没动';
+    bottomLinesHint.textContent = '本来就是出厂默认底线，没动';
   }
 };
 
@@ -13459,7 +13463,9 @@ document.getElementById('resetSafeWords').onclick = async () => {
   btn.disabled = true;
   safeWordsHint.textContent = '正在恢复…';
   safeWordsHint.className = 'hint';
-  const r = await fetch('/api/settings/reset-safewords', {
+  /* 【2026-11-11 修·同底线那颗】这条才是真回出厂（代码里写死的那份），
+   * 隔壁【恢复默认】回的是主人自己「设为默认」存下的那套。 */
+  const r = await fetch('/api/settings/reset-safewords-factory', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
@@ -13474,7 +13480,7 @@ document.getElementById('resetSafeWords').onclick = async () => {
   fillSettings(r.settings);
   if (r.changed) {
     safeWordsHint.textContent =
-      '已恢复出厂默认安全词（' + r.settings.safeWords.join(' / ') + '）。上一版存在 .state/safewords.backup.md';
+      '已恢复出厂默认安全词（' + r.settings.safeWords.join(' / ') + '）。上一版存在 .state/safewords.factory.backup.md';
   } else {
     safeWordsHint.textContent = '本来就是默认安全词，没动';
   }

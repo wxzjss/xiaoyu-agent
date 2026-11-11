@@ -9000,31 +9000,36 @@
   }
   function ToolGroup({ items }) {
     const list = Array.isArray(items) ? items : [];
+    const tools = list.filter((t) => t && t.kind === "tool");
+    const thinks = list.filter((t) => t && t.kind === "think");
     const [open, onToggle] = useOpen("hub-" + (list[0] ? list[0].key : "x"), false);
-    const _running0 = list.find((t) => t.status === "run" && (Number(t.startedAt) || 0) > 0) || null;
+    const _running0 = tools.find((t) => t.status === "run" && (Number(t.startedAt) || 0) > 0) || null;
     const tick = useRunTicker(Boolean(_running0));
     const stat = (0, import_react12.useMemo)(() => {
-      const n = list.length;
-      const running = list.find((t) => t.status === "run") || null;
-      const bad = list.filter((t) => t.status === "err").length;
-      const warn = list.filter((t) => t.status !== "ok" && t.status !== "err").length;
+      const n = tools.length;
+      const running = tools.find((t) => t.status === "run") || null;
+      const bad = tools.filter((t) => t.status === "err").length;
+      const warn = tools.filter((t) => t.status !== "ok" && t.status !== "err").length;
       let name = "\u8C03\u4E86 " + n + " \u6B21\u5DE5\u5177";
       if (running) name = "\u6B63\u5728" + (niceTool(running.name, running.args) || "\u5E72\u6D3B") + "\u2026";
       const statusCls = "status " + (bad ? "err" : warn ? "warn" : "ok") + (running ? " run live" : "");
       const statusTxt = bad ? bad + " \u4E2A\u5931\u8D25" : "";
-      return { name, statusCls, statusTxt, running };
+      return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
     }, [list]);
     const doorName = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? stat.name.replace(/…$/, "") + " \xB7 " + Math.max(1, Math.round((Date.now() - Number(stat.running.startedAt)) / 1e3)) + "s\u2026" : stat.name;
     const doorSpin = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? SPIN[tick % SPIN.length] + " " + doorName : doorName;
-    if (list.length === 1) return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: list[0] });
-    const last = list[list.length - 1];
+    if (!tools.length) {
+      return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(import_jsx_runtime12.Fragment, { children: thinks.map((t) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ThinkBlock, { it: t }, t.key)) });
+    }
+    if (tools.length === 1 && !thinks.length) return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: tools[0] });
+    const last = tools[tools.length - 1];
     return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "toolhub", open, onToggle, children: [
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubname", children: doorSpin }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(GrayPeek, { text: stat.running ? "" : niceTool(last.name, last.args) })
       ] }),
-      list.map((t) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: t }, t.key))
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "hubBody", children: list.map((t) => t.kind === "think" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ThinkBlock, { it: t }, t.key) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: t }, t.key)) })
     ] });
   }
 
@@ -9063,15 +9068,45 @@
     if (Array.isArray(it.bubbles)) return it.bubbles.join("").length;
     return String(it.text || "").length;
   }
+  function turnTagOf(it) {
+    const k = String(it && it.key || "");
+    const m = /^(t-\d+)(?:-|$)/.exec(k);
+    if (m) return m[1];
+    if (/^l-\d+$/.test(k)) return "live";
+    return "";
+  }
+  function hoistTurnThinks(rows) {
+    const drop = /* @__PURE__ */ new Set();
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || r.type !== "group" || drop.has(r)) continue;
+      const tag = r.tag || "";
+      if (!/^t-\d+$/.test(tag)) continue;
+      if (r.items.some((x) => x && x.kind === "tool")) continue;
+      for (let j = i + 1; j < rows.length; j++) {
+        const n = rows[j];
+        if (!n || drop.has(n)) continue;
+        const nTag = n.type === "group" ? n.tag || "" : turnTagOf(n.it);
+        if (nTag !== tag) break;
+        if (n.type !== "group" || !n.items.some((x) => x && x.kind === "tool")) continue;
+        n.items = r.items.concat(n.items);
+        drop.add(r);
+        break;
+      }
+    }
+    return drop.size ? rows.filter((r) => !drop.has(r)) : rows;
+  }
   function toRows(items) {
     const rows = [];
     let run = null;
     let lastAsk = null;
     for (const it of items) {
-      if (it.kind === "tool") {
+      if (it.kind === "tool" || it.kind === "think") {
+        const tag = turnTagOf(it);
+        if (run && tag && run.tag && tag !== run.tag) run = null;
         if (run) run.items.push(it);
         else {
-          run = { type: "tools", key: "hub-" + it.key, items: [it] };
+          run = { type: "group", key: "hub-" + it.key, tag, items: [it] };
           rows.push(run);
         }
         continue;
@@ -9082,7 +9117,7 @@
       }
       rows.push({ type: "item", key: it.key, it, ask: lastAsk });
     }
-    return rows;
+    return hoistTurnThinks(rows);
   }
   function LogView() {
     (0, import_react14.useSyncExternalStore)(subscribe, getVersion, getVersion);
@@ -9096,7 +9131,12 @@
     const lastDistRef = (0, import_react14.useRef)(0);
     const lastScrollTopRef = (0, import_react14.useRef)(0);
     const keepFromBottom = (0, import_react14.useRef)(null);
+    const preSwapScrollTop = (0, import_react14.useRef)(0);
     if (!listRef.current) listRef.current = document.getElementById("log");
+    if (userScrolledRef.current && listRef.current) {
+      const t = listRef.current.scrollTop;
+      if (typeof t === "number" && t >= 0) preSwapScrollTop.current = t;
+    }
     (0, import_react14.useLayoutEffect)(() => {
       const el = listRef.current || document.getElementById("log");
       if (!el) return;
@@ -9110,11 +9150,14 @@
         const shrank = h < lastHeightRef.current;
         lastHeightRef.current = h;
         if (!shrank) {
-          atBottomRef.current = d <= 8;
+          const st = el.scrollTop;
+          const wentUp = st < lastScrollTopRef.current - 0.5;
+          atBottomRef.current = wentUp ? false : d <= 8;
+          if (wentUp) userScrolledRef.current = true;
           const prevDist = lastDistRef.current;
           lastDistRef.current = d;
-          if (d <= 8 && prevDist <= 8) userScrolledRef.current = false;
-          lastScrollTopRef.current = el.scrollTop;
+          if (!wentUp && d <= 8 && prevDist <= 8) userScrolledRef.current = false;
+          lastScrollTopRef.current = st;
         }
         try {
           window.paintToBottom && window.paintToBottom();
@@ -9124,11 +9167,20 @@
       const onUserIntent = () => {
         userScrolledRef.current = true;
       };
+      const onWheel = (e) => {
+        userScrolledRef.current = true;
+        if (e && Number(e.deltaY) < 0) atBottomRef.current = false;
+      };
+      const onKey = (e) => {
+        userScrolledRef.current = true;
+        const k = e && e.key;
+        if (k === "ArrowUp" || k === "PageUp" || k === "Home") atBottomRef.current = false;
+      };
       el.addEventListener("scroll", onScroll, { passive: true });
-      el.addEventListener("wheel", onUserIntent, { passive: true });
+      el.addEventListener("wheel", onWheel, { passive: true });
       el.addEventListener("touchmove", onUserIntent, { passive: true });
       el.addEventListener("pointerdown", onUserIntent, { passive: true });
-      el.addEventListener("keydown", onUserIntent);
+      el.addEventListener("keydown", onKey);
       let pending = false;
       const pin = () => {
         if (pending) return;
@@ -9156,10 +9208,10 @@
       }
       return () => {
         el.removeEventListener("scroll", onScroll);
-        el.removeEventListener("wheel", onUserIntent);
+        el.removeEventListener("wheel", onWheel);
         el.removeEventListener("touchmove", onUserIntent);
         el.removeEventListener("pointerdown", onUserIntent);
-        el.removeEventListener("keydown", onUserIntent);
+        el.removeEventListener("keydown", onKey);
         try {
           if (mo) mo.disconnect();
         } catch (e) {
@@ -9189,7 +9241,7 @@
         return;
       }
       try {
-        const want = lastScrollTopRef.current;
+        const want = preSwapScrollTop.current;
         if (want > 0 && Math.abs(el.scrollTop - want) > 4) el.scrollTop = want;
       } catch (e) {
       }
@@ -9218,7 +9270,7 @@
   }
   function renderRow(r, running, lastItem, sid) {
     {
-      if (r.type === "tools") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ToolGroup, { items: r.items });
+      if (r.type === "group") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ToolGroup, { items: r.items });
       const it = r.it;
       if (it.kind === "user") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(UserBubble, { it });
       if (it.kind === "say" || it.kind === "mate") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(MateBubble, { it, ask: r.ask });

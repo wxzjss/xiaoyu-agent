@@ -30,7 +30,17 @@ const t = {
 function grab(src, name) {
   const i = src.indexOf('function ' + name + '(');
   if (i < 0) throw new Error('找不到 ' + name);
-  const j = src.indexOf('{', i);
+  // 先跳过参数括号：签名里可能有 opts = {} 这种默���值，直接找 '{' 会把参数里的花括号当成函数体
+  const pOpen = src.indexOf('(', i);
+  let pd = 0, pClose = -1;
+  for (let k = pOpen; k < src.length; k++) {
+    if (src[k] === '(') pd++;
+    else if (src[k] === ')') { pd--; if (pd === 0) { pClose = k; break; } }
+  }
+  if (pClose < 0) throw new Error(name + ' 参数括号没配平');
+  // 参数括号之后第一个 '{' 才是函数体
+  const j = src.indexOf('{', pClose);
+  if (j < 0) throw new Error(name + ' 后面没有函数体');
   let d = 0;
   for (let k = j; k < src.length; k++) {
     if (src[k] === '{') d++;
@@ -87,8 +97,15 @@ console.log('\n三、源码层面钉住「别再退回只砍一条」');
  * 这正是原来那三条想守住的东西（别再退回「只砍最后一条」）。
  */
 {
+  /* 【2026-11-11 修·断言跟上新签名】
+   * trimTurnsForLive 现在多收一个 opts（hasPending / pendingLanded）——
+   * 原来的正则是 `trimTurnsForLive\(snap\.turns\)`，加参数后就匹配不上了。
+   * 断言的**本意**是「分段边界只有一处、跑着的时候才裁」，这里改成
+   * 只要求「running ? 调 trimTurnsForLive(snap.turns」这个前缀，不管后面带几个参数。
+   * 没有放宽：仍然要求它必须在 buildMerged 里、必须由 running 决定、必须传 snap.turns。
+   */
   t.ok('分段边界只有一处：src-ui/items.js 的 buildMerged 在跑着的时候调用 trimTurnsForLive',
-    /const all = running \? trimTurnsForLive\(snap\.turns\) : snap\.turns;/.test(ITEMS));
+    /const all = running \? trimTurnsForLive\(snap\.turns[,)]/.test(ITEMS));
   t.ok('chat.js 不再自己算这份边界（DOM 路径已删，不会两处各判一次）',
     !/trimTurnsForLive\(/.test(CHAT));
   t.ok('老写法「只 splice 最后一条 assistant」已经不在',

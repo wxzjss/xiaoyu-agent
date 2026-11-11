@@ -177,7 +177,25 @@ for (const sub of ['src', 'public', 'electron', 'persona', 'assets', 'scripts', 
   const abs = join(ROOT, sub);
   if (!existsSync(abs)) continue;
   for (const f of walk(abs)) {
-    if (sub === 'scripts' && !f.includes(join('scripts', 'voice'))) continue;
+    /**
+     * 【2026-11-11 修·主人报「点关闭显示屏没反应」】
+     *
+     * 原来 `scripts/` 只同步 `scripts/voice/**` 一件东西：
+     *   if (sub === 'scripts' && !f.includes(join('scripts','voice'))) continue;
+     * 于是 `scripts/screen-off.ps1`（关闭显示屏真正干活的那个 PowerShell）
+     * **从来没被同步到生效目录** —— 接口里 existsSync 判不到文件，
+     * 一路返回「找不到 scripts/screen-off.ps1」，主人点按钮就像点了块木头。
+     *
+     * 现在放行两类：`scripts/voice/**` 和 `scripts/` 顶层的 .ps1。
+     * 不整个放行 scripts/ 的原因：里面还有几十个 check-*.mjs / 一次性探针，
+     * 同步过去只会让生效目录越来越脏，而且它们跟运行时无关。
+     */
+    if (sub === 'scripts') {
+      const relF = relative(ROOT, f).replace(/\\/g, '/');
+      const isVoice = relF.startsWith('scripts/voice/');
+      const isTopPs1 = /^scripts\/[^/]+\.ps1$/i.test(relF);
+      if (!isVoice && !isTopPs1) continue;
+    }
     targets.push(relative(ROOT, f).replace(/\\/g, '/'));
   }
 }

@@ -448,6 +448,28 @@ export function buildMerged(snap) {
   const _pendingLanded = (() => {
     try {
       const t = Array.isArray(snap.turns) ? snap.turns : [];
+      /**
+       * 【2026-11-11 修·判据错了：把「上一轮已答完」当成了「这条 pending 已答完」】
+       *
+       * 旧判据只看「历史最后一条 assistant 的下标 > 最后一条 user 的下标」。
+       * 可 pending 是**乐观插入**的 —— 服务端历史里根本没有它，那条「最后一条 user」
+       * 是**上一轮**的主人的话。于是这个判据在任何「已经结束过一轮」的会话里恒为真，
+       * `trimTurnsForLive` 每次都把上一轮的回复当成「与 live 重复」剪掉：
+       *   历史 [U1, A1] + pending(U2) → 裁成 [U1] → 屏幕上只剩「消息1 / 消息2」。
+       *
+       * 真机实测（隔离实例 + headless Edge + CDP 60ms 连拍，发第二句后 +3506ms）：
+       *   turns=3 running=true 屏幕 = [开场白, U1, U2]  ← A1「我是第一轮」被剪。
+       * 而 A1 此刻只能从 live 来，`items.concat(pend, live)` 又把 live 排在 pend 之后，
+       * 于是屏幕上就是「消息1 / 消息2 / 回复1」—— 主人报的错序就是这一帧。
+       *
+       * 正确判据是「**这条 pending 自己**落盘了、并且被答了」，三条缺一不可：
+       *   ① 末尾有一条 assistant 排在最后一条 user 之后（被答了）；
+       *   ② 那条 user 的正文与某条 pending 对得上（落盘了，是本轮这句）；
+       *   ③ 对不上就说明那条 user 是上一轮的话，跟本轮 pending 无关 → 不许裁。
+       */
+      const _pendingNorm = (x) => {
+        try { return String(x == null ? '' : x).replace(/\s+/g, ''); } catch (e) { return ''; }
+      };
       /* 【写法说明】两个变量分开声明 —— scripts/check-ui.mjs 的「未定义变量」扫描
        * 认不出 `let a = -1, b = -1` 这种一行多声明，会把 b 误判成未定义。
        * 为了不给自己添一道假红线，这里写成两行。 */
@@ -459,7 +481,16 @@ export function buildMerged(snap) {
         if (lastA < 0 && r === 'assistant') lastA = i;
         if (lastU >= 0 && lastA >= 0) break;
       }
-      return lastU >= 0 && lastA > lastU;
+      /* ① 我得被答过，才谈得上「已答完」 */
+      if (lastU < 0 || lastA <= lastU) return false;
+      /* ② 末尾那条 user 得是本轮这句（跟某条 pending 对得上） */
+      const _uTxt = _pendingNorm(t[lastU] && t[lastU].text);
+      if (!_uTxt) return false;
+      const _pendList = Array.isArray(snap.pendingUser) ? snap.pendingUser : [];
+      return _pendList.some((p) => {
+        const _pn = _pendingNorm(p && p.text);
+        return Boolean(_pn) && (_pn === _uTxt || _uTxt.endsWith(_pn) || _pn.endsWith(_uTxt));
+      });
     } catch { return false; }
   })();
   const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded }) : snap.turns;

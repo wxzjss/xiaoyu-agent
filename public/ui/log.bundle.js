@@ -7770,6 +7770,13 @@
     const _pendingLanded = (() => {
       try {
         const t = Array.isArray(snap.turns) ? snap.turns : [];
+        const _pendingNorm = (x) => {
+          try {
+            return String(x == null ? "" : x).replace(/\s+/g, "");
+          } catch (e) {
+            return "";
+          }
+        };
         let lastU = -1;
         let lastA = -1;
         for (let i = t.length - 1; i >= 0; i--) {
@@ -7778,7 +7785,14 @@
           if (lastA < 0 && r === "assistant") lastA = i;
           if (lastU >= 0 && lastA >= 0) break;
         }
-        return lastU >= 0 && lastA > lastU;
+        if (lastU < 0 || lastA <= lastU) return false;
+        const _uTxt = _pendingNorm(t[lastU] && t[lastU].text);
+        if (!_uTxt) return false;
+        const _pendList = Array.isArray(snap.pendingUser) ? snap.pendingUser : [];
+        return _pendList.some((p) => {
+          const _pn = _pendingNorm(p && p.text);
+          return Boolean(_pn) && (_pn === _uTxt || _uTxt.endsWith(_pn) || _pn.endsWith(_uTxt));
+        });
       } catch {
         return false;
       }

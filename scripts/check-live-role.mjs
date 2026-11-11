@@ -32,8 +32,8 @@ const items = fs.readFileSync('src-ui/items.js', 'utf8');
 /* 一、静态 */
 t.ok('直播署名同步读「屋里的人」第一个开着的牌子',
   /#whoRail \.whoBtn:not\(\.off\)/.test(items) && /function mainAgentName\(\)/.test(items));
-t.ok('直播那一轮用 mainAgentName() 当署名（不再写死小鱼）',
-  /const speaker = mainAgentName\(\);/.test(items) && /who: speaker/.test(items));
+t.ok('直播那一轮用 turnSpeaker() 当署名（本轮谁在说话就署谁）',
+  /const speaker = turnSpeaker\(\);/.test(items) && /who: speaker/.test(items));
 t.ok('别人说的话永远用服务端给的那个名字（who 优先）',
   /who: String\(it\.who \|\| ''\)/.test(items));
 t.ok('历史侧仍然优先用消息自带的 who',

@@ -329,6 +329,9 @@ function liveToItems(items, running) {
         args: it.args,
         status: String(it.status || 'run'),
         output: String(it.output || ''),
+        /* 【2026-11-11 加】开跑时刻（tool_start 事件带的 ts）：
+         * 跑着的卡上用它算「已耗时秒数」。没有就是 0，卡片不画耗时。 */
+        startedAt: Number(it.startedAt) || 0,
         isLive: true,
       });
     } else if (it.k === 'worker') {

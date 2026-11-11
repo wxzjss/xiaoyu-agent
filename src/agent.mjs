@@ -1798,6 +1798,10 @@ for (let round = 0; round < config.maxRounds; round++) {
           id: c.id,
           name: c.function.name,
           args: c.function.arguments,
+          /* 【2026-11-11 加】开跑时刻：前端工具卡用它算「已耗时秒数」。
+           * 从事件上读、不许前端就地取钟（buildLiveItems 与 appendLiveItem 两份
+           * 实现要算出逐字相等的清单，就地取钟会让重算路径对不上）。 */
+          ts: Date.now(),
         }),
         onlyParallelLayers: true,   // 单个 / 写操作留给主循环
         sessionId,
@@ -1816,7 +1820,8 @@ for (let round = 0; round < config.maxRounds; round++) {
     for (const call of assistantMsg.tool_calls) {
       const _hit = _poMap.get(call.id);
       if (!_hit) {
-        onEvent({ type: 'tool_start', id: call.id, name: call.function.name, args: call.function.arguments });
+        /* 【2026-11-11 加】ts 同上：工具卡的动态耗时从事件上读 */
+        onEvent({ type: 'tool_start', id: call.id, name: call.function.name, args: call.function.arguments, ts: Date.now() });
       }
       /**
        * 【工具时间闸】

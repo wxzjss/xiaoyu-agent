@@ -7697,6 +7697,9 @@
           args: it.args,
           status: String(it.status || "run"),
           output: String(it.output || ""),
+          /* 【2026-11-11 加】开跑时刻（tool_start 事件带的 ts）：
+           * 跑着的卡上用它算「已耗时秒数」。没有就是 0，卡片不画耗时。 */
+          startedAt: Number(it.startedAt) || 0,
           isLive: true
         });
       } else if (it.k === "worker") {
@@ -8925,6 +8928,27 @@
     if (s === "err") return "status err";
     return "status warn";
   }
+  var SPIN = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
+  function useRunTicker(active) {
+    const [tick, setTick] = (0, import_react12.useState)(0);
+    (0, import_react12.useEffect)(() => {
+      if (!active) return void 0;
+      const t = setInterval(() => {
+        try {
+          setTick((x) => x + 1);
+        } catch {
+        }
+      }, 500);
+      return () => clearInterval(t);
+    }, [active]);
+    return tick;
+  }
+  function runStatus(startedAt, spinChar) {
+    const s0 = Number(startedAt) || 0;
+    if (!s0) return "\u8FD0\u884C\u4E2D\u2026";
+    const sec = Math.max(1, Math.round((Date.now() - s0) / 1e3));
+    return spinChar + " \u6B63\u5728\u8DD1 \xB7 " + sec + "s";
+  }
   function ToolCard({ it }) {
     const [open, onToggle] = useOpen(it.key, false);
     const name = (0, import_react12.useMemo)(() => niceTool(it.name, it.args) || "\u5DE5\u5177", [it.name, it.args]);
@@ -8934,10 +8958,14 @@
       if (it.output) s += "\n--- output ---\n" + tidyToolText(it.output);
       return s;
     }, [it.args, it.output]);
+    const running = String(it.status || "run") === "run";
+    const tick = useRunTicker(running && (Number(it.startedAt) || 0) > 0);
+    const status = running ? runStatus(it.startedAt, SPIN[tick % SPIN.length]) : statusText(it.status);
+    const cls = running ? statusClass("run") + " live" : statusClass(it.status);
     return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "tool", open, onToggle, "data-tool-id": it.id || void 0, children: [
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "name", children: name }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: statusClass(it.status), children: statusText(it.status) })
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: cls, children: status })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("pre", { children: body })
     ] });
@@ -8945,6 +8973,8 @@
   function ToolGroup({ items }) {
     const list = Array.isArray(items) ? items : [];
     const [open, onToggle] = useOpen("hub-" + (list[0] ? list[0].key : "x"), false);
+    const _running0 = list.find((t) => t.status === "run" && (Number(t.startedAt) || 0) > 0) || null;
+    const tick = useRunTicker(Boolean(_running0));
     const stat = (0, import_react12.useMemo)(() => {
       const n = list.length;
       const running = list.find((t) => t.status === "run") || null;
@@ -8956,11 +8986,13 @@
       const statusTxt = bad ? bad + " \u4E2A\u5931\u8D25" : "";
       return { name, statusCls, statusTxt, running };
     }, [list]);
+    const doorName = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? stat.name.replace(/…$/, "") + " \xB7 " + Math.max(1, Math.round((Date.now() - Number(stat.running.startedAt)) / 1e3)) + "s\u2026" : stat.name;
+    const doorSpin = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? SPIN[tick % SPIN.length] + " " + doorName : doorName;
     if (list.length === 1) return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: list[0] });
     const last = list[list.length - 1];
     return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "toolhub", open, onToggle, children: [
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubname", children: stat.name }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubname", children: doorSpin }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(GrayPeek, { text: stat.running ? "" : niceTool(last.name, last.args) })
       ] }),

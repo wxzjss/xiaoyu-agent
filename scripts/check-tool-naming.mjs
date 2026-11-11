@@ -37,6 +37,110 @@ t.ok('柜门写「调了 N 次工具」',
   '（在 src-ui/ToolCard.jsx 里找）');
 t.ok('跑着的时候柜门写「正在…」', /正在/.test(toolCard) && /'正在' \+/.test(toolCard));
 
+/* ── 命令 → 人话 的分类表（真跑 niceCommand）───────────────────────
+ * 【2026-11-11 加·主人报「我让你跑回归，卡片上写的却是【看文件】」】
+ *
+ * 病根是 niceCommand 里「跑回归」那条正则的字符类写成 `[a-z0-9-]`，
+ * **不含下划线** → `_t_inbox_stale.mjs`、`_t_ui_desktop.mjs` 这类名字一条都认不出，
+ * 往下掉到「看文件」那档（命令行末尾的 `| tail` / `grep` 正好命中）。
+ *
+ * 这里把分类结果钉死：以后谁再动那段正则，改错一条就红。
+ * 提取方式：从 UI 源码里抠出 niceCommand 整个函数体，new Function 跑起来。
+ */
+function grabNiceCommand(src) {
+  const i = src.indexOf('function niceCommand(');
+  if (i < 0) return null;
+  const open = src.indexOf('{', i);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let k = open; k < src.length; k++) {
+    const ch = src[k];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return new Function(src.slice(i, k + 1) + '; return niceCommand;')();
+        } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+const niceCommand = grabNiceCommand(ui);
+t.ok('niceCommand 能取出来（后续分类断言的前提）', typeof niceCommand === 'function');
+if (typeof niceCommand === 'function') {
+  /* [期望标签, 命令] —— 左边是屏幕上该写的字 */
+  const CMDS = [
+    /* 回归：名字里带下划线的探针也必须认出来 */
+    ['跑回归', 'cd /d/小鱼Agent && timeout 60 node scripts/_t_inbox_stale.mjs 2>&1 | tail -20'],
+    ['跑回归', 'node scripts/_t_ui_desktop.mjs 2>&1 | tail -5'],
+    ['跑回归', 'node scripts/_t_task_mode.mjs'],
+    ['跑回归', 'node scripts/check-live-render-dom.mjs 2>&1 | grep 结果'],
+    ['跑回归', 'node scripts/check-live-history-split.mjs'],
+    ['跑回归', 'timeout 90 node scripts/_t_scrollfix.mjs 2>&1 | tail -4'],
+    /* npm 入口的回归：命令行里没有 node ... check-*.mjs 字样，也得认出来 */
+    ['跑回归', 'npm run check:ui'],
+    ['跑回归', 'npm run check:id'],
+    ['跑回归', 'npm run preflight'],
+    /* 其它档位不能被带歪 */
+    ['跑全量', 'node scripts/run-all-checks.mjs'],
+    ['跑冒烟', 'node scripts/check-smoke.mjs'],
+    ['查语法', 'node --check src/server.mjs'],
+    ['跑脚本', 'node scripts/refresh-model-presets.mjs | tail -3'],
+    ['跑脚本', 'node -e "console.log(1)"'],
+    /* 「写文件」必须认得出来（主人 2026-11-11 问「为什么从来没见过写文件」）*/
+    ['写文件', "Set-Content -Path scripts/x.mjs -Value 'hi'"],
+    ['写文件', 'echo hi > out.txt'],
+    ['写文件', "cat > a.txt <<'EOF'"],
+    ['写文件', "printf 'x' >> a.txt"],
+    ['写文件', 'Add-Content log.txt x'],
+    /* 「看文件」只在真的在看内容时出现 —— 不许抢跑脚本的命令 */
+    ['看文件', 'ls scripts | grep -i inbox'],
+    ['看文件', 'cat package.json | head -5'],
+    ['看文件', 'Get-Content log.txt -Tail 20'],
+    ['看文件', 'cat a.txt | grep hi'],
+    ['看仓库', 'git status --short'],
+    ['跑命令', 'echo hi'],
+  ];
+  for (const [want, cmd] of CMDS) {
+    const got = String(niceCommand(cmd) || '');
+    t.ok('分类「' + want + '」← ' + cmd.slice(0, 52), got === want, '实际=' + got);
+  }
+  /* 重定向不能把 `2>&1` / `2>/dev/null` 当成「写文件」 */
+  t.ok('分类「跑脚本」← node x.mjs 2>&1 | tail -3（2>&1 不算写文件）',
+    String(niceCommand('node x.mjs 2>&1 | tail -3')) === '跑脚本');
+  t.ok('分类「跑脚本」← node x.mjs 2>/dev/null（丢垃圾桶不算写文件）',
+    String(niceCommand('node x.mjs 2>/dev/null')) === '跑脚本');
+}
+
+/* ── 注册表审计：界面上不许再露英文原名 ────────────────────────────
+ * 【2026-11-11 加·主人问「是不是还有别的显示不对」】
+ *
+ * 扫 src/*.mjs 里所有 `name: 'xxx'`（工具注册），逐个问 TOOL_NICE 有没有中文名。
+ * 没有的话 niceTool 会把下划线换成空格直接把英文甩到界面上 ——
+ * 这正是 make_docx / screen_off / probe_files 那一批当时的状态。
+ */
+const ni = ui.indexOf('TOOL_NICE = {');
+let TOOL_NICE = null;
+if (ni >= 0) {
+  const no = ui.indexOf('\n};', ni);
+  try {
+    TOOL_NICE = new Function('return (' + ui.slice(ui.indexOf('{', ni), no + 2) + ');')();
+  } catch { TOOL_NICE = null; }
+}
+t.ok('TOOL_NICE 表能取出来', TOOL_NICE && typeof TOOL_NICE === 'object');
+if (TOOL_NICE) {
+  const registered = new Set();
+  for (const f of fs.readdirSync('src')) {
+    if (!f.endsWith('.mjs')) continue;
+    const s = fs.readFileSync('src/' + f, 'utf8');
+    for (const m of s.matchAll(/\bname:\s*'([a-z][a-z0-9_]*)'/g)) registered.add(m[1]);
+  }
+  const missing = [...registered].filter((n) => !TOOL_NICE[n]).sort();
+  t.ok('注册的工具都有中文名（不许露英文）', missing.length === 0, '漏: ' + JSON.stringify(missing));
+}
+
 /* ── 真机：喂数据 → 看屏幕上的字 ─────────────────────────────── */
 let cdp = null;
 if (!process.env.XY_CDP_PORT) {

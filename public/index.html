@@ -8069,6 +8069,28 @@ const TOOL_NICE = {
   schedule_task: '定时任务',
   list_schedules: '看定时任务',
   cancel_schedule: '撤定时任务',
+  /**
+   * 【2026-11-11 补·主人问「是不是还有别的显示不对」——扫注册表对出来的漏网之鱼】
+   *
+   * 下面这些工具在 src/ 里真注册着，可 TOOL_NICE 里一条都没有 →
+   * niceTool 的兜底是把下划线换成空格（`make_docx` → 「make docx」），
+   * 界面上就这么露着英文。一次补齐。
+   */
+  make_docx: '做 Word',
+  make_pptx: '做幻灯片',
+  make_xlsx: '做表格',
+  /* 自检那套：名字分别对应「看文件在不在 / 探命令 / 探端口 / 试读一下」 */
+  probe_files: '看文件在不在',
+  probe_cmd: '探命令',
+  probe_port: '探端口',
+  probe_read: '试读一下',
+  /* 关屏/亮屏：主人 2026-11-11 刚改过解除键的那套，别在界面上露 screen_off */
+  screen_off: '关屏',
+  screen_on: '亮屏',
+  /* 三个搜索引擎：都是「上网查」，带上是谁家的，好区分 */
+  baidu: '用百度查',
+  bing: '用必应查',
+  sogou: '用搜狗查',
 };
 /**
  * 【2026-11-07 主人要·别什么都叫「跑命令」】
@@ -8124,8 +8146,27 @@ function niceCommand(raw) {
   if (/[\\/]?check-changed\.mjs/i.test(c)) return '跑增量';
   if (/[\\/]?check-core\.mjs/i.test(c)) return '跑核心';
   if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?run-all-checks\.mjs/i.test(c)) return '跑全量';
-  if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?(?:check-[a-z0-9-]+|_t_[a-z0-9-]+)\.mjs/i.test(c)) return '跑回归';
+  /**
+   * 【2026-11-11 修·主人报「我让你跑回归，卡片上写的却是【看文件】」】
+   *
+   * 病根在这个字符类：`[a-z0-9-]` **不含下划线**。
+   * 于是 `_t_inbox_stale.mjs`、`_t_ui_desktop.mjs`、`_t_task_mode.mjs` 这一类
+   * （名字里除 `_t_` 前缀外还带下划线的探针）一条都匹配不上，往下掉；
+   * 而它们的命令行常常长这样：
+   *     node scripts/_t_inbox_stale.mjs 2>&1 | tail -20
+   * 掉到下面第 ⑤ 档时，`tail` / `grep` / `head` 命中「看文件」的正则 ——
+   * 屏幕上就成了「看文件」/「正在看文件」，主人当然觉得莫名其妙。
+   *
+   * 修法：字符类补上 `_`（`[a-z0-9_-]`）。`check-*` 同理（有些名字也带下划线）。
+   */
+  if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*[\\/]?(?:check-[a-z0-9_-]+|_t_[a-z0-9_-]+)\.mjs/i.test(c)) return '跑回归';
   if (/\b(npm\s+(run\s+)?test|node\s+--test|pytest|vitest|jest)\b/i.test(c)) return '跑测试';
+  /**
+   * 【2026-11-11 加】`npm run check:ui` / `npm run check:id` / `npm run check:live`
+   * / `npm run preflight` 这些入口命令里没有 `node ... check-*.mjs` 的字样，
+   * 上面那条认不出来 —— 原来一路掉到最后一档「跑命令」。它们跑的就是回归，直说。
+   */
+  if (/\bnpm\s+run\s+(?:check(?::[a-z0-9:-]+)?|preflight|sync:check)\b/i.test(c)) return '跑回归';
   /* ② 装依赖 */
   if (/\b(npm\s+(install|i)|pnpm\s+(install|i|add)|yarn(\s+add)?|pip\s+install)\b/i.test(c)) return '装依赖';
   /* ③ 打包 */
@@ -8135,6 +8176,33 @@ function niceCommand(raw) {
   if (/\bgit\s+(push|pull|fetch|clone)\b/i.test(c)) return '同步仓库';
   if (/\bgit\s+(checkout|reset|stash|merge|rebase|cherry-pick|clean)\b/i.test(c)) return '改仓库';
   if (/\bgit\s+(status|diff|log|show|branch|remote|rev-parse|ls-files|describe|blame)\b/i.test(c)) return '看仓库';
+  /**
+   * 【2026-11-11 加·「看文件」不许抢「真的在跑一个脚本」】
+   *
+   * 下面第 ⑤ 档靠 `tail` / `grep` / `head` / `wc` 这些词判「在看内容」。
+   * 可 `node scripts/xxx.mjs 2>&1 | tail -20` 里的 tail 是在**裁输出**，
+   * 不是在读文件 —— 以前这种命令会被整条误判成「看文件」。
+   * 所以在第 ⑤ 档之前先认一句：命令行里**真的有个 node 在跑 .mjs/.js**，
+   * 那就归「跑脚本」（走到这儿说明它不属于上面任何一档回归/测试）。
+   */
+  if (/\bnode\s+(?:--[a-z-]+\s+)*["']?[^\s"';|&]*\.m?js\b/i.test(c)) return '跑脚本';
+  /**
+   * 【2026-11-11 加·主人问「为什么从来没见过【写文件】」】
+   *
+   * 因为「写文件」这个标签以前只挂在 `write_file` 这个工具上 ——
+   * 可她真正干活时绝大多数文件是用 **shell 写的**：
+   *     Set-Content / Out-File / Add-Content / tee / heredoc（cat > x <<'EOF'）/ echo x > f
+   * 这些命令以前一条都认不出来：`echo hi > out.txt` → 「跑命令」，
+   * `cat > a.txt <<'EOF'` 更离谱 —— 被下面的 `cat` 抢成了「看文件」。
+   * 于是屏幕上**永远看不到「写文件」**，主人以为这个标签根本没做。
+   *
+   * 放在「看文件」之前是关键：heredoc 那形态开头就是 cat，
+   * 但它其实是在写。判据只认「真的往外吐字节」：
+   *   · 重定向 `>` / `>>`，但排掉 `2>&1`（前一个是数字）和 `> /dev/null`（丢垃圾桶）
+   *   · PowerShell 的 Set-Content / Out-File / Add-Content、Unix 的 tee
+   */
+  if (/\b(?:Set-Content|Add-Content|Out-File|tee)\b/i.test(c)
+    || /(?:^|[\s;&|(])>>?\s*(?!\/dev\/null\b|NUL\b)[^\s&|]/i.test(c)) return '写文件';
   /* ⑤ 只是「看内容」：读文件、查文本、列目录 —— 这一类最容易被上面几条误抢，
    * 所以放在中间，先把「看」认出来。 */
   if (/\b(ReadAllLines|ReadAllBytes|ReadAllText|Get-Content|Select-String|Get-ChildItem)\b/i.test(c)

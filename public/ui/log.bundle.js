@@ -7303,6 +7303,7 @@
     getSnapshot: () => getSnapshot,
     getVersion: () => getVersion,
     getWindowStart: () => getWindowStart,
+    isWindowTouched: () => isWindowTouched,
     notify: () => notify,
     openMap: () => openMap,
     pushNote: () => pushNote,
@@ -7507,6 +7508,7 @@
     pendingUser = mine.concat(others);
     if (changedScreen) {
       histWin.delete(_sid);
+      histTouched.delete(_sid);
       edit = null;
     }
     bump();
@@ -7610,15 +7612,20 @@
     if (notes.length > 50) notes = notes.slice(-50);
     bump();
   }
+  var histTouched = /* @__PURE__ */ new Set();
   function setWindowStart(sid, start) {
     const _sid = String(sid || "") || effectiveSid();
     const n = Math.max(0, Number(start) || 0);
+    histTouched.add(_sid);
     if (histWin.get(_sid) === n) return;
     histWin.set(_sid, n);
     bump();
   }
   function getWindowStart(sid) {
     return histWin.get(String(sid || "")) || 0;
+  }
+  function isWindowTouched(sid) {
+    return histTouched.has(String(sid || ""));
   }
   function norm(s) {
     try {
@@ -7682,6 +7689,7 @@
     pushNote,
     setWindowStart,
     getWindowStart,
+    isWindowTouched,
     beginEdit,
     endEdit,
     getEdit
@@ -8028,7 +8036,7 @@
     const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded }) : snap.turns;
     const sid = snap.sid;
     let start = Number(getWindowStart(sid)) || 0;
-    if (!(start > 0)) start = Math.max(0, all.length - WINDOW);
+    if (!isWindowTouched(sid)) start = Math.max(0, all.length - WINDOW);
     start = Math.max(0, Math.min(start, all.length));
     const items = [];
     let lastUserChars = 0;

@@ -362,6 +362,7 @@ export function setHistory(sid, turns) {
      * 切回去主人还想看到自己刚才看开的那个柜子；串开合由 key 前缀 + 行 key 解决。
      */
     histWin.delete(_sid);
+    histTouched.delete(_sid);
     edit = null;
   }
   bump();
@@ -529,10 +530,24 @@ export function pushNote(text, actions) {
   bump();
 }
 
-/** 历史窗口：只画最近 N 轮，往上翻再补 */
+/**
+ * 历史窗口：只画最近 N 轮，往上翻再补。
+ *
+ * 【2026-11-12 加·「翻到最顶」不再被打回最新】
+ *
+ * 原来 0 有两种含义：**从没翻过**（该只画最近 40 轮）和**翻到最顶**（该全画）。
+ * 两者同一个值，于是主人一路点「↑ 再往前看」点到 0 时，buildMerged 一瞅
+ * 「start 不大于 0」就把窗口重置回「最近 40 轮」——他刚翻到的位置当场丢了，
+ * 屏幕跳回最新（探针实测：300 轮会话，翻到 0 之后 start 又变回 260）。
+ *
+ * 所以另记一笔「这个会话他手动翻过没有」：翻过就尊重他的位置（哪怕是 0）。
+ */
+const histTouched = new Set();
+
 export function setWindowStart(sid, start) {
   const _sid = String(sid || '') || effectiveSid();
   const n = Math.max(0, Number(start) || 0);
+  histTouched.add(_sid);
   if (histWin.get(_sid) === n) return;
   histWin.set(_sid, n);
   bump();
@@ -540,6 +555,11 @@ export function setWindowStart(sid, start) {
 
 export function getWindowStart(sid) {
   return histWin.get(String(sid || '')) || 0;
+}
+
+/** 这个会话的历史窗口是「他手动翻出来的」吗（翻过就尊重到底，含 0） */
+export function isWindowTouched(sid) {
+  return histTouched.has(String(sid || ''));
 }
 
 /* ── 内部：落盘之后把乐观气泡收掉 ─────────────────────────── */
@@ -648,6 +668,7 @@ window.__logStore = {
   pushNote,
   setWindowStart,
   getWindowStart,
+  isWindowTouched,
   beginEdit,
   endEdit,
   getEdit,

@@ -11,7 +11,7 @@
  *     （下标是**绝对**的，往前补历史也不会让已有的 key 平移）。
  */
 
-import { getWindowStart } from './store.js';
+import { getWindowStart, isWindowTouched } from './store.js';
 
 /** 长会话只画最近这么多轮，往上翻再补（沿用原来的 40） */
 export const WINDOW = 40;
@@ -647,7 +647,11 @@ export function buildMerged(snap) {
      在用户没往前翻过（start=0）且会话够长时恒为真 → start 保持 0 → 整个会话全画，
      300 轮切过去卡 6.8 秒。窗口的语义是「用户手动往前翻过就尊重他的位置，
      否则只留最近 WINDOW 轮」—— 判据应该是 start > 0。 */
-  if (!(start > 0)) start = Math.max(0, all.length - WINDOW);
+  /* 【2026-11-12 改·把「翻到最顶」和「从没翻过」分开】
+   * 判据从「start 大于 0」换成「这个会话他手动翻过没有」：
+   *   从没翻过 → 只画最近 WINDOW 轮（虚拟化照旧，300 轮不会卡）；
+   *   翻过（哪怕翻到 0）→ 老老实实尊重他的位置，一路看到最顶也不跳回最新。 */
+  if (!isWindowTouched(sid)) start = Math.max(0, all.length - WINDOW);
   start = Math.max(0, Math.min(start, all.length));
 
   const items = [];

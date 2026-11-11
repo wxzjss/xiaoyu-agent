@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useOpen } from './useOpen.js';
 import { GrayPeek } from './GrayText.jsx';
 import { formatArgs, niceTool, tidyToolText } from './bridge.js';
+import ThinkBlock from './ThinkBlock.jsx';
 
 function statusText(s) {
   if (s === 'ok') return '完成';
@@ -86,24 +87,52 @@ export function ToolCard({ it }) {
  * 柜门那一行（`.hubname` / `.status` / `.hubpeek`）由 React 按数据算，
  * 不再靠 hubRefreshTitle 去扫 DOM —— 灰色摘要因此不会再因为「每秒重算一次」
  * 而把整行推来推去。
+ *
+ * 【2026-11-11 改·主人问「柜子为什么夹在思考链中间 / 思考链不该在柜子里吗」】
+ *
+ * 现在柜子里除了工具卡，还可能装着**思考块**（分组逻辑在 LogView 的 toRows）：
+ * 一段活的事件顺序本来就是「想一下 → 调工具 → 再想一下 → 再调」，把思考留在柜子外面，
+ * 柜子就会被思考块切成一截一截、夹在思考链中间。收进柜子之后：
+ *   · 屏幕上的节奏回到「主人的话 → 一个柜子 → 她的回答」；
+ *   · 思考默认收着（跟原来一样），要看点开柜子再点开那一条。
+ * 三种形态：
+ *   全是思考（一个工具都没有）→ 直接画思考块，不套柜门（柜子里只有内心戏没意义）
+ *   只有一个工具、且没思考     → 直挂单卡（老规矩，不套柜门）
+ *   其余                       → 柜门 + 里面（思考块 / 工具卡按原顺序）
+ *
+ * 【2026-11-11 修·hooks 必须挂在分派之前（真机踩过的坑）】
+ *
+ * 三种形态是在**函数体里 return** 的，可这段组件的 hooks（useOpen / useRunTicker /
+ * useMemo）原来写在第一个 return 后面。直播时一段活的事件是一条一条到的：
+ *   第 1 帧 items = [think]      → 走「全是思考」那条 return，**一个 hook 都没挂**
+ *   第 2 帧 items = [think,tool] → 同一行、同一个 key、同一个组件实例
+ *                                → 这次挂了 4 个 hook → React 抛
+ *                                  「Rendered more hooks than during the
+ *                                   previous render.」
+ * 后果不是掉一张卡，而是这一整行被 RowBoundary 换成「⚠ 这一条渲染出错了」——
+ * 思考刚到、工具刚开跑的那一瞬间，柜子就变成一行报错。
+ * 所以：**hooks 全部无条件挂在函数最上面**，形态分派一律放在 hooks 之后。
  */
 export function ToolGroup({ items }) {
   const list = Array.isArray(items) ? items : [];
+  const tools = list.filter((t) => t && t.kind === 'tool');
+  const thinks = list.filter((t) => t && t.kind === 'think');
+
   const [open, onToggle] = useOpen('hub-' + (list[0] ? list[0].key : 'x'), false);
   /* 柜门上也要走秒：有跑着的卡就挂计时器（hooks 规矩：无条件挂，内部自己判） */
-  const _running0 = list.find((t) => t.status === 'run' && (Number(t.startedAt) || 0) > 0) || null;
+  const _running0 = tools.find((t) => t.status === 'run' && (Number(t.startedAt) || 0) > 0) || null;
   const tick = useRunTicker(Boolean(_running0));
 
   const stat = useMemo(() => {
-    const n = list.length;
-    const running = list.find((t) => t.status === 'run') || null;
-    const bad = list.filter((t) => t.status === 'err').length;
-    const warn = list.filter((t) => t.status !== 'ok' && t.status !== 'err').length;
+    const n = tools.length;
+    const running = tools.find((t) => t.status === 'run') || null;
+    const bad = tools.filter((t) => t.status === 'err').length;
+    const warn = tools.filter((t) => t.status !== 'ok' && t.status !== 'err').length;
     let name = '调了 ' + n + ' 次工具';
     if (running) name = '正在' + (niceTool(running.name, running.args) || '干活') + '…';
     const statusCls = 'status ' + (bad ? 'err' : warn ? 'warn' : 'ok') + (running ? ' run live' : '');
     const statusTxt = bad ? bad + ' 个失败' : '';
-    return { name, statusCls, statusTxt, running };
+    return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
   }, [list]);
 
   /* 跑着的卡带 startedAt 时，柜门名后面跟着已耗时秒数（没有就维持原样） */
@@ -114,9 +143,15 @@ export function ToolGroup({ items }) {
     ? SPIN[tick % SPIN.length] + ' ' + doorName
     : doorName;
 
-  if (list.length === 1) return <ToolCard it={list[0]} />;
+  /* ── 形态分派（一律放在 hooks 之后，见函数头那段注释） ── */
+  /* 只有思考、没有工具：不套柜门，直接把思考块摆出来 */
+  if (!tools.length) {
+    return <>{thinks.map((t) => <ThinkBlock key={t.key} it={t} />)}</>;
+  }
+  /* 单卡且没夹思考：维持老样子（单抽屉直挂） */
+  if (tools.length === 1 && !thinks.length) return <ToolCard it={tools[0]} />;
 
-  const last = list[list.length - 1];
+  const last = tools[tools.length - 1];
   return (
     <details className="toolhub" open={open} onToggle={onToggle}>
       <summary>
@@ -124,9 +159,16 @@ export function ToolGroup({ items }) {
         <span className={stat.statusCls}>{stat.statusTxt}</span>
         <GrayPeek text={stat.running ? '' : niceTool(last.name, last.args)} />
       </summary>
-      {list.map((t) => (
-        <ToolCard key={t.key} it={t} />
-      ))}
+      {/* 【2026-11-11 加·hubBody】柜子里可能塞很多东西（思考块 + 十几张工具卡），
+          以前是「内容多长柜子就多高」，长活一张柜子能顶满几屏。
+          现在套一层 .hubBody，CSS 给它封顶 + 内部滚动（跟思考链的框一个规矩）。 */}
+      <div className="hubBody">
+        {list.map((t) => (
+          t.kind === 'think'
+            ? <ThinkBlock key={t.key} it={t} />
+            : <ToolCard key={t.key} it={t} />
+        ))}
+      </div>
     </details>
   );
 }

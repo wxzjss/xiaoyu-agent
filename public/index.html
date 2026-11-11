@@ -529,6 +529,22 @@
       border-top: 1px solid var(--line, #2a2a2a);
     }
     details.toolhub details.tool:first-of-type { border-top: 0; }
+    /**
+     * 【2026-11-11 加·柜子也要限高（主人要求：跟思考链的框一个规矩）】
+     *
+     * 以前柜子是「里面有多少东西就多高」：一段长活能塞十几张工具卡 + 几段思考，
+     * 一张柜子顶满好几屏，点开就把聊天区顶飞。而每张卡自己的 pre 明明已经封了
+     * 320px（见下面 details.tool pre）—— 封的是单个抽屉，柜子整体没人管。
+     *
+     * 现在柜子的内容区（.hubBody，由 src-ui/ToolCard.jsx 画）也封顶，超出的在框内滚。
+     * overscroll-behavior: contain —— 滚到底不要把滚动传给外层聊天区（否则
+     * 一撸到底就顺带把整个对话滚上去了，跟思考链那个框当初踩的坑一样）。
+     */
+    details.toolhub > .hubBody {
+      max-height: 340px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
 
     /* ========== 子任务卡（办事模式 · worker 的流水） ==========
      * 【2026-11-03】主人：「办事模式下我看不到干活的过程」「只显示一句派活 运行中…然后没了」。

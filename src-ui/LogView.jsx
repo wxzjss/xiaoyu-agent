@@ -22,19 +22,103 @@ function tailLen(items) {
 }
 
 /**
+ * 这个 item 属于「哪一段活」。
+ *
+ * 【2026-11-11 加·分组不许跨消息】
+ *
+ * 把 think 和 tool 收成一串之后，光按「相邻」分组还不够 —— 历史里一条 turn 的
+ * 数据顺序是 `思考 → 她的正文 → 工具`（见 items.js 的 turnToItems），
+ * 于是「上一轮的工具」和「下一轮的思考」在清单里是**相邻**的，会被折进同一个柜子：
+ * 实测 ⑤b 那个形状（两条 assistant turn 各带 reasoning + text + tools）就是
+ * 柜子里装着「上一轮的工具 + 下一轮的思考」，而上一轮自己的思考反而孤零零在外面。
+ * 柜子的语义是「一段活」，跨了消息就不是一段活了。
+ *
+ * key 里本来就带着归属（items.js：历史 `t-<轮次>-…`、直播 `l-<下标>`），
+ * 所以直接读出来当边界；读不出来的（乐观气泡 p- / 系统提示 n-）返回空串 = 不设边界。
+ */
+function turnTagOf(it) {
+  const k = String((it && it.key) || '');
+  const m = /^(t-\d+)(?:-|$)/.exec(k);
+  if (m) return m[1];
+  if (/^l-\d+$/.test(k)) return 'live';
+  return '';
+}
+
+/**
+ * 把「只有思考」的那一行并进**同一轮**的工具柜。
+ *
+ * 【2026-11-11 加·为什么非要挪】
+ *
+ * 主人要的是「思考链内容在柜子里」。可历史里一条 turn 的顺序是
+ * `思考 → 正文 → 工具`：思考在她的话**上面**，工具在她的话**下面**，
+ * 中间隔着一条 assistant 气泡 —— 只要不挪，思考永远进不了自己那一轮的工具柜，
+ * 屏幕上就还是「思考块 / 她的话 / 柜子」三块，柜子依旧夹在两条思考之间。
+ *
+ * 所以：一段「只有思考」的行，只要后面**同一轮**（tag 相同、中间只隔着这一轮自己的
+ * 正文/文件）还有一条带工具的柜子，就把这堆思考挪到那个柜子的最前面。
+ * 挪完屏幕上的节奏就是「主人的话 → 一个柜子（思考 + 工具）→ 她的回答」。
+ *
+ * 三条安全线：
+ *   · 只对历史（`t-<n>`）生效 —— 直播 `l-<n>` 的 key 不带轮次，不动它（直播本来就是
+ *     思考/工具交替、天然相邻，挪了反而打乱她正在干活的实时顺序）；
+ *   · 中间只要出现**别的轮次**或者主人/别人说的话，立刻放弃（不跨消息）；
+ *   · 那一轮压根没调工具 —— 思考照旧独立显示（柜子里只有内心戏没意义）。
+ */
+function hoistTurnThinks(rows) {
+  const drop = new Set();
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || r.type !== 'group' || drop.has(r)) continue;
+    const tag = r.tag || '';
+    if (!/^t-\d+$/.test(tag)) continue;
+    if (r.items.some((x) => x && x.kind === 'tool')) continue;   // 本身就是柜子，不用挪
+    for (let j = i + 1; j < rows.length; j++) {
+      const n = rows[j];
+      if (!n || drop.has(n)) continue;
+      const nTag = n.type === 'group' ? (n.tag || '') : turnTagOf(n.it);
+      if (nTag !== tag) break;                                   // 出了这一轮，收手
+      if (n.type !== 'group' || !n.items.some((x) => x && x.kind === 'tool')) continue;
+      n.items = r.items.concat(n.items);
+      drop.add(r);
+      break;
+    }
+  }
+  return drop.size ? rows.filter((r) => !drop.has(r)) : rows;
+}
+
+/**
  * 把 item 清单折成「一行一行要画的东西」：
- *   · 连续的几张工具卡 → 一个柜子（跟原来「话—柜子—话—柜子」的节奏一致）
+ *   · 连续的「思考块 / 工具卡」→ 一个柜子（跟原来「话—柜子—话—柜子」的节奏一致）
  *   · 每条 assistant 记住「它前面最近的那句主人话」，重发按钮要用
+ *
+ * 【2026-11-11 改·主人问「柜子为什么夹在思考链中间，而不是夹在消息中间」】
+ *
+ * 以前这里只把**连续的 tool** 收成一个柜子，思考块（think）一出现就把这串打断。
+ * 可直播事件和落盘历史里的顺序常常是：
+ *     思考1 → 工具A → 思考2 → 工具B → 她的话
+ * 于是每一段「思考夹着一次工具」都成了一个独立的小柜子，屏幕上看着就是
+ * 「柜子夹在思考链中间」，一段活被切得七零八落。
+ *
+ * 现在把 think 和 tool 一起收进同一串：一段活 = 一个柜子（思考折在柜子里），
+ * 柜子整体摆在「主人的话」和「她的回答」之间。只有真的一个工具都没有时，
+ * 思考块才照旧单独画（柜子里全是思考没意义，见 ToolGroup 里的分派）。
+ *
+ * 分组的两条补充规矩（都在下面两个函数里）：
+ *   · 一段活不跨消息（turnTagOf 当边界，见 hoistTurnThinks 上面那段）；
+ *   · 同一轮里「思考在她的话上面、工具在她的话下面」时，把思考挪进那个柜子。
  */
 function toRows(items) {
   const rows = [];
   let run = null;
   let lastAsk = null;
   for (const it of items) {
-    if (it.kind === 'tool') {
+    if (it.kind === 'tool' || it.kind === 'think') {
+      const tag = turnTagOf(it);
+      /* 换了轮次就不再往同一个柜子里塞（tag 读不出来的不当边界） */
+      if (run && tag && run.tag && tag !== run.tag) run = null;
       if (run) run.items.push(it);
       else {
-        run = { type: 'tools', key: 'hub-' + it.key, items: [it] };
+        run = { type: 'group', key: 'hub-' + it.key, tag, items: [it] };
         rows.push(run);
       }
       continue;
@@ -45,7 +129,7 @@ function toRows(items) {
     }
     rows.push({ type: 'item', key: it.key, it, ask: lastAsk });
   }
-  return rows;
+  return hoistTurnThinks(rows);
 }
 
 /**
@@ -249,7 +333,7 @@ export default function LogView() {
  */
 function renderRow(r, running, lastItem, sid) {
   {
-        if (r.type === 'tools') return <ToolGroup items={r.items} />;
+        if (r.type === 'group') return <ToolGroup items={r.items} />;
         const it = r.it;
         if (it.kind === 'user') return <UserBubble it={it} />;
         /* 'say' 是服务端 items 里的「别人说的话」，'mate' 是历史里 role:user 带 who 的老数据，

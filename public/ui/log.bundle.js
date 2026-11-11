@@ -7536,7 +7536,7 @@
   }
   function isRunning(snap) {
     const lv = snap && snap.live;
-    return !!(lv && lv.running !== false && Array.isArray(lv.items) && lv.items.length);
+    return !!(lv && lv.running !== false);
   }
   function mainAgentName() {
     return "\u5C0F\u9C7C";
@@ -7824,7 +7824,8 @@
       edited: false,
       isLive: true
     }));
-    const live = running ? liveToItems(snap.live.items, true) : [];
+    const _liveItems = snap.live && Array.isArray(snap.live.items) ? snap.live.items : [];
+    const live = running ? liveToItems(_liveItems, true) : [];
     const noteItems = (snap.notes || []).map((n) => ({ kind: "note", key: n.id, text: n.text, actions: n.actions || null }));
     return {
       running,
@@ -8306,14 +8307,15 @@
     })();
     const isWhale = who === "\u5C0F\u9CB8";
     const cls = (isWhale ? "msg whale whaleSelf" : "msg mate mateSelf") + (it.edited ? " edited" : "") + (editing ? " editing" : "");
-    const color = isWhale ? "" : mateColorOf(who);
+    const color = mateColorOf(who);
+    const colorStyle = color && color !== "#e6e6e6" ? { "--whoC": color } : void 0;
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
       "div",
       {
         className: cls,
         ref: wrap,
         "data-who-name": isWhale ? void 0 : who,
-        style: color ? { "--whoC": color } : void 0,
+        style: colorStyle,
         "data-rewind-id": it.rewindId == null ? void 0 : String(it.rewindId),
         "data-at": it.rewindId == null ? void 0 : String(it.rewindId),
         children: [

@@ -72,10 +72,25 @@ export function trimTurnsForLive(turns, opts = {}) {
   return turns;
 }
 
-/** 这一轮是不是还在跑 */
+/**
+ * 这一轮是不是还在跑。
+ *
+ * 【2026-11-11 修·主人报「发到一半突然消失一下，然后再全发出来」】
+ *
+ * 原来最后一个条件是 `lv.items.length` —— 要求清单里**已经有东西**才算在跑。
+ * 于是新一轮刚开始、第一个字还没吐出来的那一两百毫秒里：
+ *   items = [] → isRunning 判 false → 下面 buildMerged 里 `live` 整段被丢掉
+ *   → 屏幕上瞬间只剩「历史 + 你刚发的那条」→ 看起来像"发到一半消失了"
+ * 第一个字一到，items 非空 → 判 true → live 整段**一次性全冒出来**。
+ * 主人看到的「消失一下再全发出来」就是这一帧。
+ *
+ * 判据只该看**服务端说没在跑**（`running === false`）：
+ * 那时才是真结束了。清单空只是"还没开始说话"，不等于"没在跑"。
+ * 空清单本身也不会画出任何东西，保留 running=true 是安全的。
+ */
 export function isRunning(snap) {
   const lv = snap && snap.live;
-  return !!(lv && lv.running !== false && Array.isArray(lv.items) && lv.items.length);
+  return !!(lv && lv.running !== false);
 }
 
 /**
@@ -506,7 +521,10 @@ export function buildMerged(snap) {
     isLive: true,
   }));
 
-  const live = running ? liveToItems(snap.live.items, true) : [];
+  /* 【2026-11-11】isRunning 现在只要服务端说在跑就算 —— 清单可能还是空的（第一个字没到），
+   * 这里加一道数组保护，空清单就当一个都不画，不会画出空气泡。 */
+  const _liveItems = (snap.live && Array.isArray(snap.live.items)) ? snap.live.items : [];
+  const live = running ? liveToItems(_liveItems, true) : [];
   const noteItems = (snap.notes || []).map((n) => ({ kind: 'note', key: n.id, text: n.text, actions: n.actions || null }));
 
   return {

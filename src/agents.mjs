@@ -308,6 +308,29 @@ export function listAgents() {
  * 取一张卡的全文（含人设正文）。
  * 内置的两张从老地方现读，自定义的从 agents.json 读。
  */
+/**
+ * 【小鲸的默认颜色】2026-11-11 主人问「她的名字为什么是白色的」
+ *
+ * 以前这张内置卡**没有 color**，前端 mateColorOf() 拿不到就退回
+ * #e6e6e6（灰白）—— 而小白曦、旁白都有色，只有她显得像"没有身份"。
+ * 给一个默认蓝：跟她在界面上的定位（水里那条鲸）一致。
+ */
+const WHALE_DEFAULT_COLOR = '#5b9bd5';
+
+/**
+ * 内置卡的颜色：主人可以在智能体面板里给她改色，改过就存进 data.colors[id]。
+ * 这里要**优先用主人改过的那个**，没有才用默认 —— 不然改完色不生效。
+ */
+function resolveBuiltinColor(id) {
+  try {
+    const data = readAll();
+    const c = data && data.colors ? String(data.colors[String(id)] || '').trim() : '';
+    return /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : '';
+  } catch {
+    return '';
+  }
+}
+
 export function getAgent(id) {
   const key = String(id || '');
   if (!key) return null;
@@ -340,9 +363,24 @@ export function getAgent(id) {
   if (key === AGENT_XIAOJING) {
     let w = { persona: '', custom: false, defaultText: '' };
     try { w = whalePersonaForEditor(); } catch { /* 同上 */ }
+    /**
+     * 【2026-11-11 补·主人问「小鲸的名字为什么是白色的不是蓝色的」】
+     *
+     * 根因：小鲸这张内置卡**从来没有 color 字段**，于是前端 mateColorOf()
+     * 拿不到值，一律退回默认色 #e6e6e6（灰白）——
+     * 而小白曦、旁白都有各自的颜色，所以只有她的署名是白的。
+     *
+     * 这里给一个默认蓝。主人要是自己在智能体面板里改过色，
+     * 下面的 readAll().customs 分支会覆盖不到内置卡 —— 所以要从
+     * 已存的自定义颜色里优先取一次（见 resolveBuiltinColor）。
+     */
+    const _c = (() => {
+      try { return resolveBuiltinColor(AGENT_XIAOJING); } catch { return ''; }
+    })();
     return {
       id: AGENT_XIAOJING,
       name: '小鲸',
+      color: _c || WHALE_DEFAULT_COLOR,
       desc: '一个独立的人：有自己的名字、脾气和习惯；人设有内置默认，改了就是私设。跑出去查事情只是她的一项本事。',
       builtin: true,
       kind: 'whale',

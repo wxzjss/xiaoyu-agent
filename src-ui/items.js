@@ -40,13 +40,39 @@ export function isRunning(snap) {
   return !!(lv && lv.running !== false && Array.isArray(lv.items) && lv.items.length);
 }
 
+/**
+ * 【历史气泡的署名兜底 · 2026-11-11 修主人报的错】
+ *
+ * 主人报：「关掉小鱼、启用小鲸后，小鱼一开始那句话被署名成【小鲸】，名字颜色也变白」。
+ *
+ * 根因就在这里：这个函数原来读的是 `#whoRail .whoBtn:not(.off)`——
+ * 也就是**当前**屋里第一个开着的人。于是主人一切换身份，
+ * **所有没有 `_who` 的老消息**就集体改署名了：小鱼干的活全变成小鲸的，
+ * 颜色也跟着当前卡变。
+ *
+ * 正确口径（index.html:10631 那段注释早就写清了）：
+ *   后端约定「落盘 `_who` 为空 = 小鱼」——老消息绝大多数都是小鱼干的活。
+ *   所以历史气泡的兜底**必须永远固定 '小鱼'**，谁在场都不影响它。
+ *
+ * 本轮谁在说话是另一件事，用 turnSpeaker() 取（读 window.__turnSpeakerName）。
+ */
 function mainAgentName() {
+  return '小鱼';
+}
+
+/**
+ * 这一轮谁在说话 —— **只给流式气泡用**。
+ *
+ * 跟 mainAgentName 彻底分开（11-03 那条警告、11-09 二修、11-11 三修都是栽在
+ * 把这两件事合成一个变量上）。流式气泡创建得同步，来不及等接口，
+ * 所以读 index.html 在拉名单时存下的那份快照。
+ */
+function turnSpeaker() {
   try {
-    const b = document.querySelector('#whoRail .whoBtn:not(.off)');
-    const n = b ? String(b.textContent || '').trim() : '';
+    const n = String(window.__turnSpeakerName || '').trim();
     if (n) return n;
   } catch (e) { /* 拿不到就用下面的兜底 */ }
-  return String((window.__turnSpeakerName || window.mainAgentName || '')).trim() || '小鱼';
+  return '小鱼';
 }
 
 function hasText(s) {
@@ -197,7 +223,10 @@ function turnToItems(turn, abs, userChars) {
 /** 服务端的 liveItems → item。一个字段都不改，只补 key 和「谁说的」。 */
 function liveToItems(items, running) {
   const out = [];
-  const speaker = mainAgentName();
+  /* 【2026-11-11】流式气泡的署名用 turnSpeaker()（本轮谁在说话），
+   * **不是** mainAgentName()（历史兜底固定小鱼）—— 切到小鲸时她正在说的话
+   * 必须署小鲸，否则屏幕上会出现"小鲸在说、署名却是小鱼"。 */
+  const speaker = turnSpeaker();
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (!it || !it.k) continue;

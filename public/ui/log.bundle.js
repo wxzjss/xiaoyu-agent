@@ -7538,13 +7538,15 @@
     return !!(lv && lv.running !== false && Array.isArray(lv.items) && lv.items.length);
   }
   function mainAgentName() {
+    return "\u5C0F\u9C7C";
+  }
+  function turnSpeaker() {
     try {
-      const b = document.querySelector("#whoRail .whoBtn:not(.off)");
-      const n = b ? String(b.textContent || "").trim() : "";
+      const n = String(window.__turnSpeakerName || "").trim();
       if (n) return n;
     } catch (e) {
     }
-    return String(window.__turnSpeakerName || window.mainAgentName || "").trim() || "\u5C0F\u9C7C";
+    return "\u5C0F\u9C7C";
   }
   function hasText(s) {
     return String(s == null ? "" : s).trim().length > 0;
@@ -7664,7 +7666,7 @@
   }
   function liveToItems(items, running) {
     const out = [];
-    const speaker = mainAgentName();
+    const speaker = turnSpeaker();
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (!it || !it.k) continue;

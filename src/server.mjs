@@ -618,7 +618,9 @@ function publicSession(session) {
       // who：这句当时是哪个身份说的。没存就是主人（老会话全走这条，显示不变）
       const who = typeof m._who === 'string' && m._who ? m._who : '';
       /* 【2026-11-01 主人：插话要画在「我说到哪儿」的位置】steer=这条是主人生气时半路插进来的话；steerAt=他插话那一刻我已经说出多少字。前端靠这两个数把我那段话劈成两半，把他的话嵌在中间。老会话没有这两个字段，界面照老样子排末尾。 */
-      turns.push({ role: 'user', ts: typeof m.at === 'number' ? m.at : 0, text: shown, atts, rewindId: i, edited, usage, who, sysNote: m._sysNote === true ? true : undefined,      steer: m._steer === true ? true : undefined,      steerAt: typeof m._atChars === 'number' ? m._atChars : undefined, });
+      /* 【2026-11-11】ts 兜底 _at：主流程的 userMsg 现在都带 at；老消息只有 assistant 补过 _at。
+       * 老的 user 消息两个都没有 → 还是 0，前端就不画时间，历史数据不动。 */
+      turns.push({ role: 'user', ts: typeof m.at === 'number' ? m.at : (typeof m._at === 'number' ? m._at : 0), text: shown, atts, rewindId: i, edited, usage, who, sysNote: m._sysNote === true ? true : undefined,      steer: m._steer === true ? true : undefined,      steerAt: typeof m._atChars === 'number' ? m._atChars : undefined, });
     }
     else if (m.role === 'assistant') turns.push({
       role: 'assistant',
@@ -9194,7 +9196,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       const _curTitle = String(session.title || '').trim();
       const _titleAutoOk = !_curTitle || _curTitle === '新会话' || _curTitle.length < 3;
       const firstUserTurn = !history.some((m) => m.role === 'user' && !m.context);
-      const userMsg = { role: 'user', content: composeUserContent(message, attachments) };
+      const userMsg = { role: 'user', content: composeUserContent(message, attachments), at: Date.now() };
       /**
        * 【这句话是哪个身份说的 —— 2026-10-28 主人定的】
        *
@@ -9223,8 +9225,46 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       if (filePaths.length) userMsg._files = filePaths;
       // 主人原话单独留一份：气泡只显示这句，附件说明不往气泡里塞
       userMsg._text = String(message).trim();
-      history.push(userMsg);
-      userMsgRef = userMsg;
+      /* 【2026-11-11 插话防重：同一句话别落盘两次】
+       *
+       *  场景：主人插话后 watchdog 把这轮掐了（userMsg 已 push 且落盘，但还没补 _ws/_mem），
+       *  前端兜底重发同一句（interject 见 running===false 转 runTurn / resumeOrResend 9 秒兜底），
+       *  第二次 POST /api/chat 又走一遍这里 → 历史里出现两条一模一样的话。
+       *
+       *  闸门（push 前扫尾部 6 条）：
+       *    同 content + 同 _who + 不是 _steer，且这中间她没真答过话（没有不带 tool_calls 的 assistant）
+       *    → 判定为「同一轮的兜底重发」，不 push 新记录，userMsgRef 直接挂到旧那条上。
+       *    这样后面 _ws/_mem/_usage 照常补在原来那条身上，不会长出第二条。
+       *
+       *  两个条件都不能丢，否则会吞掉主人的真发言：
+       *    · 「中间没有 assistant 人话」——她答过话了，主人再发同样的就是有意重发，必须两条都落；
+       *    · 「同 _who」——群聊里别的成员发同样内容，是别人的话，不能当成重发吞掉。
+       */
+      let __dupUserRef = null;
+      for (let __k = history.length - 1, __seen = 0; __k >= 0 && __seen < 6; __k--) {
+        const __pm = history[__k];
+        if (!__pm || typeof __pm !== 'object') continue;
+        if (__pm.role === 'assistant') {
+          // 她真的说过话（不带工具调用的 assistant）→ 之后再发同样的话是有意重发，停。
+          if (!__pm.tool_calls) break;
+          continue; // 带工具调用的中间过程不算「答过话」
+        }
+        __seen++;
+        if (__pm.role !== 'user') continue; // tool 结果等中间记录，跳过
+        if (__pm._steer) continue; // 插话不算同轮重发的对照物
+        if (String(__pm.content ?? '') !== String(userMsg.content)) continue;
+        const __pmWho = typeof __pm._who === 'string' ? __pm._who : '';
+        const __myWho = typeof userMsg._who === 'string' ? userMsg._who : '';
+        if (__pmWho !== __myWho) continue;
+        __dupUserRef = __pm;
+        break;
+      }
+      if (__dupUserRef) {
+        userMsgRef = __dupUserRef;
+      } else {
+        history.push(userMsg);
+        userMsgRef = userMsg;
+      }
       /* 两个条件都要：这是第一句，而且现在的标题还空着/是默认名/短得不像名字。 */
       if (firstUserTurn && _titleAutoOk) session.title = titleFromMessage(message);
     }

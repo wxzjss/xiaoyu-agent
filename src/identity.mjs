@@ -358,12 +358,34 @@ export function editIdentity(id, { name, desc, address, she } = {}) {
  * 存在 st.defaults[id]，跟 st.edits[id]（当前生效的补丁）分开：
  *   - edits    现在长什么样
  *   - defaults 主人认定的那副样子，恢复默认时回来
+ *
+ * 【2026-11-11 主人报「设为默认会把恢复出厂默认设成默认」】
+ *
+ * 根因在下面 `st.edits[key]` 这一行：它存的是**磁盘上已经保存的补丁**，
+ * 不是**主人此刻在输入框里看到的样子**。两道口子：
+ *
+ * ① 主人改了名字/简介但还没点「保存」就点「设为默认」→ 存进去的是**上一次**的旧值。
+ *   主人以为「我把现在这版设成默认了」，实际存的是旧版。
+ *
+ * ② 主人从来没保存过（edits 为空）→ `cur` 是个**空对象** `{}`，
+ *   `defaults[key] = {}`。之后点「恢复出厂默认」（删掉 edits）再点「恢复默认」，
+ *   拿回来的是空对象 —— 屏幕上就表现为**「设为默认」把出厂那版设成了默认**，
+ *   因为空补丁 = 出厂原样。
+ *
+ * 修法：接受 `patch` 参数。有就**按它存**（前端把输入框里的值传进来）；
+ * 没有才退回读盘上那份（老调用方 / 脚本还能用）。
+ * 这样「设为默认」存下的永远是**主人眼睛看到的那一版**。
+ *
+ * @param {string} id
+ * @param {object} [patch] 可选：{ name, desc, address }——主人此刻在框里的值
  */
-export function setIdentityAsDefault(id) {
+export function setIdentityAsDefault(id, patch = null) {
   const key = String(id || '');
   if (!BUILTIN_IDS.includes(key)) return false;
   const st = readState();
-  const cur = st.edits && st.edits[key] ? { ...st.edits[key] } : {};
+  const cur = (patch && typeof patch === 'object' && !Array.isArray(patch))
+    ? { ...patch }
+    : (st.edits && st.edits[key] ? { ...st.edits[key] } : {});
   if (!st.defaults || typeof st.defaults !== 'object') st.defaults = {};
   st.defaults[key] = cur;
   return writeState(st);
@@ -378,13 +400,26 @@ export function restoreIdentityDefault(id) {
   if (!BUILTIN_IDS.includes(key)) return false;
   const st = readState();
   if (!st.defaults || typeof st.defaults !== 'object') st.defaults = {};
-  let target = st.defaults[key];
-  if (!target) {
-    // 没存过默认：把现在的样子当成默认存下来（等价于「恢复默认」= 不动），
+  /**
+   * 【2026-11-11 补】`st.defaults[key]` 是空对象时**不能当成"没设过"**。
+   *
+   * 老版本「设为默认」在「从没保存过」的情况下会存一个 `{}` 进来，
+   * 于是这里 `if (!target)` 判不出区别 —— 但现在我们已经知道：
+   * 主人点过「设为默认」，就意味着那个空就是他确认过的样子（出厂原样）。
+   *
+   * 判「有没有设过」必须用 hasOwnProperty，不能用真假值：
+   *   没设过   → 键不存在 → 把当前样子存成默认（原来那套语义，不动）
+   *   设过（哪怕空）→ 尊重它，回到那份
+   */
+  const _hasDefault = Object.prototype.hasOwnProperty.call(st.defaults, key);
+  let target = _hasDefault ? st.defaults[key] : null;
+  if (!_hasDefault) {
+    // 真没存过默认：把现在的样子当成默认存下来（等价于「恢复默认」= 不动），
     // 这样至少语义一致，不会悄悄把人改回去。
     target = st.edits && st.edits[key] ? { ...st.edits[key] } : {};
     st.defaults[key] = target;
   }
+  target = target || {};
   if (!st.edits || typeof st.edits !== 'object') st.edits = {};
   if (Object.keys(target).length) st.edits[key] = { ...target };
   else delete st.edits[key];

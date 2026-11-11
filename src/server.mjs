@@ -635,8 +635,27 @@ function publicSession(session) {
        * 【为什么字段名叫 tale 而不是 whale】
        * 这只是给界面用的标记，模型一个字都不该看见（见 server.mjs 里打标记那段注释）。
        * 老消息里可能有 `_whale`，这里一并认下来，不用改旧会话文件。
+       *
+       * 【2026-11-11 修·主人报「一个小鲸白名字、一个小鲸蓝名字，然后都不见了」】
+       *
+       * 主智能体就是小鲸时，她的正常回答也会被落上 `_whale: '小鲸'`（那是标记「谁说的」），
+       * 于是这里一律判成 `whale` → 前端走 MateBubble（**署名白**）。
+       * 可直播清单里同一句话是 `k:'text'` → 走 assistant（**署名蓝**）。
+       * 一句话两个身份、两种颜色，主人看到的就是「两个小鲸」。
+       *
+       * 判据要看清 `_whaleSide`：
+       *   `_whaleSide: true` = 她**并排插的一句**，确实该走 MateBubble；
+       *   没有 `_whaleSide`      = 她就是这一轮的主声，回答该走 assistant。
        */
-      whale: m._tale?.who ? String(m._tale.who) : (m._whale ? String(m._whale) : (m._card ? String(m._who || m._card) : undefined)),
+      whale: (() => {
+        if (m._whaleSide === true) {
+          return m._tale?.who ? String(m._tale.who) : (m._whale ? String(m._whale) : undefined);
+        }
+        /* 主声的话：`_tale` 是「冒充某人说话」的标记，仍然要尊重；
+         * 单纯 `_whale` 但没有 `_whaleSide` → 不当作插话。 */
+        if (m._tale?.who) return String(m._tale.who);
+        return m._card ? String(m._who || m._card) : undefined;
+      })(),
       /**
        * 【2026-11-02 修·切到别人身份后旧消息署名全被刷掉】
        * 主人 2026-10-28 定过：身份名跟着消息一起存，画的时候直接用这份，
@@ -4975,7 +4994,25 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/identity/as-default') {
     let payload;
     try { payload = await body(req); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
-    const ok = setIdentityAsDefault(String(payload?.id || ''));
+    /**
+     * 【2026-11-11 修·主人报「设为默认会把恢复出厂默认设成默认」】
+     *
+     * 前端现在把**输入框里的值**一起送过来（name/desc/address）。
+     * 以前这里只传 id，后端只能读磁盘上已保存的补丁 —— 于是
+     * 「改了没保存就点设为默认」存的是旧版；「从没保存过」存的是空对象（= 出厂原样）。
+     * 有 patch 就按 patch 存；没有（老脚本/老前端）仍退回读盘上那份。
+     */
+    const raw = (payload && typeof payload === 'object') ? payload : {};
+    let patch = null;
+    if (raw.patch && typeof raw.patch === 'object' && !Array.isArray(raw.patch)) {
+      patch = raw.patch;
+    } else if (raw.name !== undefined || raw.desc !== undefined || raw.address !== undefined) {
+      patch = {};
+      if (raw.name !== undefined) patch.name = String(raw.name);
+      if (raw.desc !== undefined) patch.desc = String(raw.desc);
+      if (raw.address !== undefined) patch.address = String(raw.address);
+    }
+    const ok = setIdentityAsDefault(String(raw.id || ''), patch);
     if (!ok) return json(res, 400, { error: '只有内建身份能设默认' });
     return json(res, 200, Object.assign({ ok: true }, identityState()));
   }

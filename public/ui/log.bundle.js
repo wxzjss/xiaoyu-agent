@@ -7525,7 +7525,7 @@
   var WINDOW = 40;
   function trimTurnsForLive(turns, opts = {}) {
     if (!Array.isArray(turns) || !turns.length) return turns;
-    if (opts && opts.hasPending) return turns;
+    if (opts && opts.hasPending && !opts.pendingLanded) return turns;
     for (let i = turns.length - 1; i >= 0; i--) {
       if (turns[i] && turns[i].role === "user") return turns.slice(0, i + 1);
     }
@@ -7767,7 +7767,23 @@
   function buildMerged(snap) {
     const running = isRunning(snap);
     const _hasPending = Array.isArray(snap.pendingUser) && snap.pendingUser.length > 0;
-    const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending }) : snap.turns;
+    const _pendingLanded = (() => {
+      try {
+        const t = Array.isArray(snap.turns) ? snap.turns : [];
+        let lastU = -1;
+        let lastA = -1;
+        for (let i = t.length - 1; i >= 0; i--) {
+          const r = t[i] && t[i].role;
+          if (lastU < 0 && r === "user") lastU = i;
+          if (lastA < 0 && r === "assistant") lastA = i;
+          if (lastU >= 0 && lastA >= 0) break;
+        }
+        return lastU >= 0 && lastA > lastU;
+      } catch {
+        return false;
+      }
+    })();
+    const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded }) : snap.turns;
     const sid = snap.sid;
     let start = Number(getWindowStart(sid)) || 0;
     if (!(start > 0)) start = Math.max(0, all.length - WINDOW);

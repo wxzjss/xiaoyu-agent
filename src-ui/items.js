@@ -41,12 +41,28 @@ export const WINDOW = 40;
  * 等消息2 真落进历史了，再按原规则裁（那才是与 live 重复的部分）。
  *
  * @param {Array} turns
- * @param {{hasPending?: boolean}} [opts]
+ * @param {{hasPending?: boolean, pendingLanded?: boolean}} [opts]
+ *   hasPending     pendingUser 里有东西（刚发、还没进历史）
+ *   pendingLanded  那条 pending **服务端已经答完了**（history 里最后一条 assistant
+ *                  比它新）—— 这时候不能留历史里的那份，否则和 live 重复
  */
 export function trimTurnsForLive(turns, opts = {}) {
   if (!Array.isArray(turns) || !turns.length) return turns;
-  /* 刚发的那条还没进历史 → 历史里的「最后一条 user」是上一轮的，剪了就是把上一轮的回复抹掉 */
-  if (opts && opts.hasPending) return turns;
+  /**
+   * 【2026-11-11 再修·主人报「一个小鲸白名字、一个小鲸蓝名字，然后都不见了」】
+   *
+   * 上午那版写成「有 pending 就一律不裁」，放得太宽了：
+   * 主人发完消息、**回复已经出来了**的那一两秒里，pendingUser 还在
+   * （清理是异步的），于是历史里上一轮的回复留着（白名字的那条），
+   * live 里同一句话又画一份（蓝名字的那条）→ **两个小鲸**；
+   * 等 pending 清掉、历史重画，两条一起消失，再过一秒才回来新的 ——
+   * 正是主人描述的「两条消失 → 两秒后重出一条」。
+   *
+   * 正确的判据：**只有"这条 pending 还没有对应的回答"时才不裁**。
+   * 一旦历史里最后一条 assistant 比 pending 新（说明服务端已经答完），
+   * 就得照原规则裁掉，让 live 那份接管，不能两边都留。
+   */
+  if (opts && opts.hasPending && !opts.pendingLanded) return turns;
   for (let i = turns.length - 1; i >= 0; i--) {
     if (turns[i] && turns[i].role === 'user') return turns.slice(0, i + 1);
   }
@@ -403,10 +419,35 @@ function liveToItems(items, running) {
  */
 export function buildMerged(snap) {
   const running = isRunning(snap);
-  /* 刚发的那条还在 pending（服务端历史里还没它）—— 见 trimTurnsForLive 的注释：
-   * 这种情况下历史里「最后一条 user」是上一轮的，裁剪会抹掉上一轮的回复。 */
+  /* 刚发的那条还在 pending（服务端历史里还没它）—— 见 trimTurnsForLive 的注释。 */
   const _hasPending = Array.isArray(snap.pendingUser) && snap.pendingUser.length > 0;
-  const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending }) : snap.turns;
+  /**
+   * pending **已经落进历史并被答完**了吗？
+   *
+   * 判据：历史里最后一条 assistant 的下标 > 最后一条 user 的下标。
+   * 说明服务端已经针对最后那条 user 答过了 —— 那份回答历史里有、live 里也有，
+   * 这时候必须照原规则裁（让 live 接管），否则同一句话会被画两遍：
+   * 历史那份走 MateBubble（署名白）、live 那份走 assistant（署名蓝）=「两个小鲸」，
+   * 然后 pending 一清、历史重画，两条一起消失又重出一条。主人报的就是这个。
+   */
+  const _pendingLanded = (() => {
+    try {
+      const t = Array.isArray(snap.turns) ? snap.turns : [];
+      /* 【写法说明】两个变量分开声明 —— scripts/check-ui.mjs 的「未定义变量」扫描
+       * 认不出 `let a = -1, b = -1` 这种一行多声明，会把 b 误判成未定义。
+       * 为了不给自己添一道假红线，这里写成两行。 */
+      let lastU = -1;
+      let lastA = -1;
+      for (let i = t.length - 1; i >= 0; i--) {
+        const r = t[i] && t[i].role;
+        if (lastU < 0 && r === 'user') lastU = i;
+        if (lastA < 0 && r === 'assistant') lastA = i;
+        if (lastU >= 0 && lastA >= 0) break;
+      }
+      return lastU >= 0 && lastA > lastU;
+    } catch { return false; }
+  })();
+  const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded }) : snap.turns;
   const sid = snap.sid;
 
   /* 窗口：只画最近 WINDOW 轮（长会话一次性建上万个节点会把主线程顶住） */

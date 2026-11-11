@@ -3459,14 +3459,12 @@
       <div class="sessTop sessTools">
         <button type="button" class="ghost3" id="featImport" title="选一个或多个功能文件导进来；也能直接把文件拖到这个面板上">导入</button>
         <button type="button" class="ghost3" id="featExport" title="挑几个功能导出成文件，能带走、能挪到别的机器">导出</button>
+        <!-- 2026-11-11 主人要的：这两颗紧跟在【导入】【导出】右边，同一排。
+             关屏走 /api/screen/off（和工具 screen_off 同一套实现，先变暗 3 秒再熄屏），
+             提示词是主人出门时常用的那一段，一键复制带走。 -->
+        <button type="button" class="ghost3" id="featScreenOff" title="立刻关闭显示器：先是 3 秒变暗预告，随后彻底熄屏；电脑照常运行，不睡眠不锁屏。回来按鼠标右键或 Esc 就恢复">关闭显示屏</button>
+        <button type="button" class="ghost3" id="featCopyPrompt" title="复制「暂时外出」那段关屏提示词，粘到对话框就能让小鱼照着做">复制关屏提示词</button>
         <input type="file" id="featFile" multiple accept=".json,application/json" hidden />
-      </div>
-      <!-- 2026-11-11 主人要的：【关闭显示屏】+【复制默认提示词】。
-           关屏走 /api/screen/off（和工具 screen_off 同一套实现），
-           提示词是主人出门时常用的那一段，一键复制带走。 -->
-      <div class="sessTop sessTools">
-        <button type="button" class="ghost3" id="featScreenOff" title="立刻关闭显示器：电脑照常运行，不睡眠不锁屏；回来按鼠标右键或 Esc 就恢复">关闭显示屏</button>
-        <button type="button" class="ghost3" id="featCopyPrompt" title="复制「暂时外出」那段默认提示词，粘到对话框就能让小鱼照着做">复制默认提示词</button>
       </div>
       <!-- 导入结果：黄=进来了但有提醒，红=真被拒。一次导入的账本，摆在列表上面。 -->
       <div class="featReport" id="featReport" hidden>
@@ -14020,12 +14018,29 @@ document.getElementById('idSave').onclick = () => saveIdentityEdit();
   if (setDefBtn2) setDefBtn2.onclick = async (ev) => {
     ev.preventDefault();
     if (!idState.sel) return;
+    /**
+     * 【2026-11-11 修·主人报「设为默认会把恢复出厂默认设成默认」】
+     *
+     * 以前这里只发 id，后端就去读**磁盘上已保存的补丁**存成默认。两道口子：
+     *   · 改了没点保存 → 存的是旧版（主人以为存的是眼前这版）
+     *   · 从没保存过   → 存的是空对象，而空补丁 = 出厂原样，
+     *                    所以之后「恢复默认」拿到的是出厂那版
+     * 现在把**输入框里的值**一起发过去 —— 主人点「设为默认」，
+     * 存下的必须是**他眼睛看到的这一版**。
+     */
+    const _patch = {
+      name: String((document.getElementById('idName') || {}).value || '').trim(),
+      desc: String((document.getElementById('idDesc') || {}).value || ''),
+      address: String((document.getElementById('idAddr') || {}).value || ''),
+    };
     const r = await fetch('/api/identity/as-default', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: idState.sel }),
+      body: JSON.stringify({ id: idState.sel, patch: _patch }),
     }).then((x) => x.json()).catch(() => null);
     const tip = document.getElementById('idTip');
     if (!r || r.error) { if (tip) tip.textContent = '没设成：' + ((r && r.error) || '网络问题'); return; }
+    /* 接口把全量状态回回来了 —— 顺手刷一遍，让「当前样子」也跟着是这一版 */
+    idState = r;
     if (tip) tip.textContent = '存成默认了 · 以后点「恢复默认」回来的就是这一份';
   };
 
@@ -14637,8 +14652,8 @@ if (featFile) {
   });
 }
 
-/* ---- 2026-11-11 主人要的两颗按钮：关屏 / 复制默认提示词 ---- */
-/* 出门前的默认提示词：一字不改照主人给的原话存着，复制走就能直接发给小鱼。 */
+/* ---- 2026-11-11 主人要的两颗按钮：关闭显示屏 / 复制关屏提示词 ---- */
+/* 出门用的关屏提示词：一字不改照主人给的原话存着，复制走就能直接发给小鱼。 */
 const DEFAULT_OUT_PROMPT = '我要暂时外出，请按以下要求处理：现在立即关闭我的显示屏；'
   + '如遇到需要验证或找问题之类的的环节，可临时开启显示屏完成该操作，操作结束后立刻重新关闭。'
   + '全部任务处理完成后，请进行一次严格、全面的检查，确认每个步骤均已正确执行、没有遗漏或异常；'
@@ -14702,7 +14717,7 @@ if (featCopyPromptBtn) {
         host.removeChild(ta);
       } catch { ok = false; }
     }
-    toast(ok ? '默认提示词已复制，粘到对话框就能发' : '复制失败，请手动选中下面这段：\n' + DEFAULT_OUT_PROMPT);
+    toast(ok ? '关屏提示词已复制，粘到对话框就能发' : '复制失败，请手动选中下面这段：\n' + DEFAULT_OUT_PROMPT);
   });
 }
 

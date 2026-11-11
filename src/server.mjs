@@ -40,7 +40,7 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 // 进行中那一轮的草稿：边跑边落，进程被杀也不会把已经说出来的话全丢。
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 中途投递信箱：主人一边看她干活一边插的话排在这里（照 dsh 的 steering，见 inbox.mjs）
-import { steer, clearInbox, inboxCount, peekInbox } from './inbox.mjs';
+import { steer, clearInbox, inboxCount, peekInbox, purgeStale as purgeStaleInbox } from './inbox.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted, listInterrupted } from './resume.mjs';
 /**
@@ -13214,6 +13214,27 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       const actual = server.address().port;
       listeningPort = actual;
       const url = `http://127.0.0.1:${actual}`;
+      /**
+       * 【2026-11-11 加·「干活中途退出重启后，我很早以前发过的消息跑到聊天最底下」】
+       *
+       * 病根在信箱的落盘：插话（steer）是排给「当时那一轮」的，靠 atChars 和那一轮绑定。
+       * 进程一重启，那一轮就没了 —— 可那条插话还躺在 .state/inbox/<sid>.json 里，
+       * 等下**下一轮的第一圈**才被 drainSteps 取走，当成一条**全新的 user 消息**
+       * push 到历史末尾。主人看到的就是「陈年那句话冒到了聊天最下面」，她还会再答一遍。
+       *
+       * 开服先清一遍过期的（默认 30 分钟）：久了的那句早已失去语境，丢掉并记日志；
+       * 刚打完字就重启的（几秒、几分钟）留着照送 —— 那条路本来就是对的。
+       * 顺手也把这堆陈年文件从盘上清掉，免得越攒越多。
+       */
+      try {
+        const _pi = purgeStaleInbox(30 * 60 * 1000);
+        if (_pi && (_pi.dropped > 0 || _pi.kept > 0)) {
+          diagLog('inbox-stale-purge',
+            '扫了 ' + _pi.scanned + ' 个文件，丢掉过期 ' + _pi.dropped + ' 条，留着 ' + _pi.kept + ' 条');
+        }
+      } catch (e) {
+        try { diagLog('inbox-stale-purge-fail', String(e?.message ?? e)); } catch {}
+      }
       /* 【2026-11-03 记忆系统严检】起一个目录体检：超了就在日志里喊一声（不删东西）。
        * 严检时量到 .state 已经 1GB+，那些目录全是证据/交付物，不能自动删，
        * 但至少得让主人知道它在长。 */

@@ -159,3 +159,61 @@ export function clearInbox(sessionId) {
   boxes.set(sidSafe(sessionId), emptyBox());
   save(sessionId, emptyBox());
 }
+
+/**
+ * 【2026-11-11 加·「重启后我很早以前发过的那句话又冒到聊天最底下」的病根】
+ *
+ * 信箱是**落盘**的（.state/inbox/<sid>.json），重启还认得 —— 这一半是对的：
+ * 刚打完字就重启，那句话不该丢。
+ *
+ * 但「过期」的那种必须扔。原因：
+ *   · 插话（steer）的语义是「插在她这一句话说到一半的位置」——它靠 `atChars`
+ *     和「当时那一轮」绑定。进程一重启，那一轮没了，这个语境也就没了。
+ *   · 而 agent loop 是在**下一轮的第一圈开头**才 drainSteps 的（agent.mjs:1249）。
+ *     也就是说这条陈年插话会被当成一条**全新的 user 消息**，push 到历史**末尾**。
+ *   · 主人重启后看到的就是：「我很早以前发过的一句话，怎么跑到聊天最下面来了」，
+ *     而且她还会把这句当新话再答一遍。
+ *
+ * 所以开服时按时间清一遍：`at` 早于 maxAgeMs 的丢掉（丢弃量写日志，不静默）；
+ * 新鲜的留着照送（「关掉几秒又打开」那条路不受影响）。
+ *
+ * @param {number} maxAgeMs 多久算过期。默认 30 分钟。
+ * @returns {{scanned:number, dropped:number, kept:number}}
+ */
+export function purgeStale(maxAgeMs = 30 * 60 * 1000) {
+  const out = { scanned: 0, dropped: 0, kept: 0 };
+  const cutoff = Date.now() - Math.max(0, Number(maxAgeMs) || 0);
+  let names = [];
+  try {
+    names = fs.readdirSync(DIR());
+  } catch {
+    return out;   // 目录都还没有 = 从来没插过话
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    out.scanned += 1;
+    const f = join(DIR(), name);
+    let j = null;
+    try {
+      j = JSON.parse(fs.readFileSync(f, 'utf8'));
+    } catch {
+      continue;   // 坏文件不碰（跟 load 一致：宁可留着也别削坏）
+    }
+    const pick = (arr) => (Array.isArray(arr) ? arr.filter((x) => x && typeof x.text === 'string') : []);
+    const steps = pick(j?.steps);
+    const turns = pick(j?.turns);
+    /* 没有 at 的老条目：当年写盘时就没记时间，无从判断 → 当过期处理（宁可丢一句
+     * 陈年插话，也别让它几年后突然冒到聊天最底下） */
+    const fresh = (x) => Number.isFinite(Number(x.at)) && Number(x.at) > cutoff;
+    const steps2 = steps.filter(fresh);
+    const turns2 = turns.filter(fresh);
+    out.dropped += (steps.length - steps2.length) + (turns.length - turns2.length);
+    out.kept += steps2.length + turns2.length;
+    if (steps2.length === steps.length && turns2.length === turns.length) continue;
+    const sid = String(j?.sessionId || '');
+    const box = { steps: steps2, turns: turns2 };
+    boxes.set(sidSafe(sid), box);
+    save(sid, box);   // 空的两槽 → save 会把文件删掉
+  }
+  return out;
+}

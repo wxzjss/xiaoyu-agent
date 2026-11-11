@@ -23,8 +23,30 @@ export const WINDOW = 40;
  * 找不到主人那句话（续跑 / 定时任务 / 群聊插入）就退回「砍最后一条 assistant」，
  * 宁可多留一条也不整屏不画。
  */
-export function trimTurnsForLive(turns) {
+/**
+ * 【本轮还没落盘的回复先留着 —— 2026-11-11 修主人报的「发消息一瞬间回复消失」】
+ *
+ * 病根就是下面这个裁剪：它的假设是「历史里最后一条 user = 当前这一轮」，
+ * 于是把「最后一条 user 之后的内容」剪掉（因为那部分 live 会重新提供，不剪会重复）。
+ *
+ * 但这个假设在**刚发消息那一瞬间**是错的：
+ *   主人发消息2 → 前端先乐观插一条 pendingUser，**服务端历史里还没有消息2**
+ *   → 历史 = [消息1, 回复1]，最后一条 user 仍是**消息1**
+ *   → 裁成 [消息1] → **回复1 被剪掉**
+ *   → 屏幕上是「消息1 / 消息2」，正好是主人描述的「一瞬间折叠」。
+ *   一秒后消息2 落进历史，最后一条 user 变成消息2，回复1 又回来了 —— 所以只闪一下。
+ *
+ * 修法：**有 pendingUser（刚发的那条还没进历史）时一律不裁。**
+ * 这时候 live 提供的是**新消息**的回复，跟历史里的回复1 根本不在一个位置，不冲突；
+ * 等消息2 真落进历史了，再按原规则裁（那才是与 live 重复的部分）。
+ *
+ * @param {Array} turns
+ * @param {{hasPending?: boolean}} [opts]
+ */
+export function trimTurnsForLive(turns, opts = {}) {
   if (!Array.isArray(turns) || !turns.length) return turns;
+  /* 刚发的那条还没进历史 → 历史里的「最后一条 user」是上一轮的，剪了就是把上一轮的回复抹掉 */
+  if (opts && opts.hasPending) return turns;
   for (let i = turns.length - 1; i >= 0; i--) {
     if (turns[i] && turns[i].role === 'user') return turns.slice(0, i + 1);
   }
@@ -381,7 +403,10 @@ function liveToItems(items, running) {
  */
 export function buildMerged(snap) {
   const running = isRunning(snap);
-  const all = running ? trimTurnsForLive(snap.turns) : snap.turns;
+  /* 刚发的那条还在 pending（服务端历史里还没它）—— 见 trimTurnsForLive 的注释：
+   * 这种情况下历史里「最后一条 user」是上一轮的，裁剪会抹掉上一轮的回复。 */
+  const _hasPending = Array.isArray(snap.pendingUser) && snap.pendingUser.length > 0;
+  const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending }) : snap.turns;
   const sid = snap.sid;
 
   /* 窗口：只画最近 WINDOW 轮（长会话一次性建上万个节点会把主线程顶住） */

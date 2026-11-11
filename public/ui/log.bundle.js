@@ -7523,8 +7523,9 @@
 
   // src-ui/items.js
   var WINDOW = 40;
-  function trimTurnsForLive(turns) {
+  function trimTurnsForLive(turns, opts = {}) {
     if (!Array.isArray(turns) || !turns.length) return turns;
+    if (opts && opts.hasPending) return turns;
     for (let i = turns.length - 1; i >= 0; i--) {
       if (turns[i] && turns[i].role === "user") return turns.slice(0, i + 1);
     }
@@ -7765,7 +7766,8 @@
   }
   function buildMerged(snap) {
     const running = isRunning(snap);
-    const all = running ? trimTurnsForLive(snap.turns) : snap.turns;
+    const _hasPending = Array.isArray(snap.pendingUser) && snap.pendingUser.length > 0;
+    const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending }) : snap.turns;
     const sid = snap.sid;
     let start = Number(getWindowStart(sid)) || 0;
     if (!(start > 0)) start = Math.max(0, all.length - WINDOW);

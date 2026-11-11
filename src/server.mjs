@@ -727,6 +727,26 @@ function publicSession(session) {
       reasoning: typeof m._reasoning === 'string' && m._reasoning.trim() ? m._reasoning : undefined,
     });
   }
+  /**
+   * 【2026-11-12 加·「上一轮断在半路」要在屏幕上留一句交代】
+   *
+   * `_recovered` 那条（重启后从草稿接回来的半截话）按设计不画成正文 —— 她读得到，
+   * 界面不显示。可这样主人重启后只看到历史停在一半，屏幕上没有任何说明，
+   * 以为「她的回答丢了」或「程序坏了」（真机检查 check-restart-cold-start 抓的就是这条）。
+   *
+   * 所以：只要**最后一条**消息是接回来的半截话（它后面还没有新的对话），
+   * 就在 turns 末尾补一条 `note: true` 的记账行，前端画成一行系统提示
+   *（items.js 的 turnToItems 认这个标记，不挂气泡、不冒充谁说话）。
+   * 主人接着说下一句时它自然就不在末尾了，提示自动消失，不用另存状态。
+   */
+  const _lastRaw = Array.isArray(session.messages) ? session.messages[session.messages.length - 1] : null;
+  if (_lastRaw && _lastRaw._recovered === true) {
+    turns.push({
+      role: 'assistant',
+      note: true,
+      text: '上一轮断在半路（程序被关或被掐了）。她那半截话我接回历史了，接着做跟我说一声。',
+    });
+  }
   // 撤回记录本身也交出去，界面才能提示「还能撤销回退」
   const rewinds = loadRewinds(session);
   return {

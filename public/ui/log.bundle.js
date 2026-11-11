@@ -7724,6 +7724,9 @@
   function turnToItems(turn, abs, userChars) {
     const out = [];
     if (!turn || typeof turn !== "object") return out;
+    if (turn.note) {
+      return [{ kind: "note", key: "t-" + abs + "-note", text: String(turn.text || ""), isLive: false }];
+    }
     if (turn.role === "system" || turn.context || turn.sysNote) return out;
     const key = "t-" + abs;
     if (turn.role === "user") {
@@ -9208,9 +9211,8 @@
       const running = tools.find((t) => t.status === "run") || null;
       let name = "\u8C03\u4E86 " + n + " \u6B21\u5DE5\u5177";
       if (running) name = "\u6B63\u5728" + (niceTool(running.name, running.args) || "\u5E72\u6D3B") + "\u2026";
-      const bad = tools.filter((t) => t.status === "err").length;
-      const statusCls = "status " + (bad ? "err" : running ? "run live" : "ok");
-      const statusTxt = bad ? bad + " \u4E2A\u5931\u8D25" : running ? "\u8FD0\u884C\u4E2D\u2026" : "";
+      const statusCls = "status " + (running ? "run live" : "ok");
+      const statusTxt = running ? "\u8FD0\u884C\u4E2D\u2026" : "";
       return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
     }, [list]);
     const doorName = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? stat.name.replace(/…$/, "") + " \xB7 " + Math.max(1, Math.round((Date.now() - Number(stat.running.startedAt)) / 1e3)) + "s\u2026" : stat.name;

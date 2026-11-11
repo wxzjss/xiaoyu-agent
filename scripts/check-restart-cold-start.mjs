@@ -265,9 +265,22 @@ try {
     s1.msgCount > 0 && s1.streaming === 0, 'msg=' + s1.msgCount + ' streaming=' + s1.streaming);
   c.ok('屏幕贴在底部（不是停在很早以前的位置）', s1.dist <= 8,
     '离底 ' + s1.dist + 'px（scrollTop ' + s1.st + ' / sh ' + s1.sh + ' / ch ' + s1.ch + '）');
-  c.ok('最底下那一行是本轮最后那句问话（不是很早的消息）',
-    !!s1.lastRow && String(s1.lastRow.text || '').indexOf('QA重启最后一句问话') >= 0,
-    '最后一行 ' + JSON.stringify(s1.lastRow && s1.lastRow.kind) + '：' + String((s1.lastRow || {}).text || '').slice(0, 30));
+  /* 【2026-11-12 改·提示行出现后这条要按「最后一行对话内容」判】
+   * 现在断在半路会在历史末尾补一条 note（「她那半截话我接回历史了」），
+   * 它本来就该在**最底下** —— 所以不能拿「最后一行必须是问句」去判，
+   * 要跳过提示行，看最后一条真正的对话内容是不是那句问话。
+   * 注意 rows 是字符串数组（'kind:text'），不是对象。 */
+  const __lastTalks1 = (() => {
+    const rows = Array.isArray(s1.rows) ? s1.rows : [];
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = String(rows[i] || '');
+      if (row.indexOf('note:') === 0) continue;   // 提示行本来就该在最底下，跳过它
+      return row;
+    }
+    return '';
+  })();
+  c.ok('最后一条对话内容是本轮那句问话（提示行不算，它本来就该在最底下）',
+    __lastTalks1.indexOf('QA重启最后一句问话') >= 0, '最后一条对话：' + __lastTalks1.slice(0, 30));
   /* 【屏幕层·交代】这一轮断在半路，屏幕上总得看得出「发生过什么」：
    * 要么半截话可见，要么有一条提示（sysnote / 提示条 / 待续按钮）。
    * 现在两者都没有 —— 主人看到的就是「我问了一句，她一个字没回」，跟没发生过一样。 */
@@ -298,9 +311,17 @@ try {
   c.ok('第二次冷启动：不会重复回灌（_recovered 仍只有 1 条）', s2.recovered === 1,
     '盘上 _recovered ' + s2.recovered + ' 条 / messages ' + s2.selTurns);
   c.ok('第二次冷启动：贴在底部', s2.dist <= 8, '离底 ' + s2.dist + 'px');
-  c.ok('第二次冷启动：最底下一行仍是本轮最后那句问话',
-    !!s2.lastRow && String(s2.lastRow.text || '').indexOf('QA重启最后一句问话') >= 0,
-    '最后一行：' + String((s2.lastRow || {}).text || '').slice(0, 30));
+  const __lastTalks2 = (() => {
+    const rows = Array.isArray(s2.rows) ? s2.rows : [];
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const row = String(rows[i] || '');
+      if (row.indexOf('note:') === 0) continue;   // 提示行本来就该在最底下，跳过它
+      return row;
+    }
+    return '';
+  })();
+  c.ok('第二次冷启动：最后一条对话内容仍是本轮那句问话',
+    __lastTalks2.indexOf('QA重启最后一句问话') >= 0, '最后一条对话：' + __lastTalks2.slice(0, 30));
   c.ok('两次冷启动的 DOM 阅读顺序一致（没有一次比一次多/少）',
     JSON.stringify(s1.rows) === JSON.stringify(s2.rows),
     '第一次 ' + s1.rows.length + ' 行 / 第二次 ' + s2.rows.length + ' 行');

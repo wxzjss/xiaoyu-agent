@@ -231,7 +231,14 @@ async function caseOne() {
   const first = await snap();
   const earlyUser = first.kinds.indexOf('user');
   c.ok('60ms 内我这句话已经在屏幕上（乐观气泡）', earlyUser >= 0 && cnt(first.text, U) === 1,  '行数 ' + first.rows.length + ' 顺序 ' + JSON.stringify(first.rows));
-  c.ok('刚发出去那一刻，我这句话是屏幕上最后一行', earlyUser >= 0 && earlyUser === first.kinds.length - 1,  '下标 ' + earlyUser + '/' + (first.kinds.length - 1));
+  /* 【2026-11-12 改·这条天生有竞态】桩在同一帧就把她的第一段送来了，
+   * 拿「我是最后一行」去判会随机红。真正要守的是：我这句话**在屏幕上**，
+   * 且**在她的第一行之前**（不许堆到轮末）—— 这两条任何一帧都必须成立。 */
+  const _u = first.kinds.indexOf('user');
+  const _her = first.kinds.findIndex((k) => k === 'assistant' || k === 'hub' || k === 'tool');
+  c.ok('刚发出去那一刻，我这句话已经上屏、且排在她的第一行之前',
+    _u >= 0 && (_her < 0 || _u < _her),
+    '我@' + _u + ' 她第一行@' + _her + ' 顺序 ' + JSON.stringify(first.rows));
 
   const series = await watch(40, 100);
 

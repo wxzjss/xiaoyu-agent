@@ -6709,6 +6709,23 @@ async function tryHealAfterDisconnect(id) {
       if (sessionId === id) {
         renderTurns(sel.session.turns);
         restoreDraft();   // 切过来了，这个会话原来打的字接着写
+        /**
+         * 【2026-11-12 加·「断在半路」必须有一句交代（主人重启后看到的那一幕）】
+         *
+         * 服务端 select 其实一直在回两个字段，前端**从来没读过**：
+         *   · `recovered`  —— 它刚刚把上一轮没说完的半截话从草稿接回历史了；
+         *   · `interrupted` —— 有断点记录（那一轮是被掐掉/进程被杀掉的）。
+         * 结果就是：重启后只看到历史停在一半，屏幕上没有任何说明，
+         * 主人以为「她的回答丢了」或者「程序坏了」。
+         *
+         * 这里落一条系统提示（只提醒，不冒充谁说话，也不进正文）。
+         * 注意顺序：必须在 renderTurns（= setHistory）**之后** —— setHistory 会清空旧提示。
+         */
+        if (sel.recovered) {
+          addSysNote('上一轮断在半路（进程被关或被杀），她没说完的那半截话已经接回历史了。');
+        } else if (sel.interrupted) {
+          addSysNote('上一轮是被中断的（没跑完）。要接着做就跟我说一声。');
+        }
         busy = false;
         hideSending();
         syncSendBtn();

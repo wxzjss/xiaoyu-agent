@@ -622,8 +622,22 @@ export async function switchSession(id, opts) {
    * 现在屏幕归谁、这一轮归谁，全由 LOG_STATE + renderLog 一个地方决定。 */
   logSetHistory(window.sessionId, r.session.turns);
   renderLog({ force: true });
-  /* 【2026-11-08】切会话：把**这个会话**的待发送队列读出来（按会话分 key 存的） */
-  try { window.loadPendingQueue(); } catch (e) {}
+  /**
+   * 【2026-11-12 加·「上一轮断在半路」必须有一句交代】
+   *
+   * 服务端 select 早就回了两个字段，前端一直没读：
+   *   · `recovered`   —— 它刚把上一轮没说完的半截话从草稿接回历史了；
+   *   · `interrupted` —— 有断点记录（那一轮被掐掉 / 进程被杀）。
+   * 不提示的话，重启后只看到历史停在一半，屏幕上没有任何说明，
+   * 主人以为「她的回答丢了」。这里落一条系统提示（只提醒，不冒充谁说话）。
+   * 顺序必须在 logSetHistory 之后 —— setHistory 会清空上一屏的提示行。
+   */
+  try {
+    if (r.recovered) window.addSysNote('上一轮断在半路（进程被关或被杀），她没说完的那半截话已经接回历史了。');
+    else if (r.interrupted) window.addSysNote('上一轮是被中断的（没跑完）。要接着做就跟我说一声。');
+  } catch (e) {}
+  /* 【2026-11-12 删】这里原来还有 `window.loadPendingQueue()` ——
+   * 预发送队列整套已按主人要求删除，这句现在只会静默抛错，清掉。 */
   // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
 
   // 这个会话还在后台跑吗？

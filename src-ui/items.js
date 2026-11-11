@@ -145,6 +145,13 @@ function numOrNull(v) {
 function turnToItems(turn, abs, userChars) {
   const out = [];
   if (!turn || typeof turn !== 'object') return out;
+  /* 【2026-11-12 加·「上一轮断在半路」的历史提示行】
+   * 服务端 publicSession 会在历史末尾补一条 `note: true` 的 turn（见 restoreDraftHalfTurn
+   * 那段注释）：她半路被杀、半截话被接回历史这件事，以前屏幕上一个字都不提，
+   * 主人以为是「回答丢了」。这里把它画成一行系统提示 —— 不是谁说的话，不挂气泡。 */
+  if (turn.note) {
+    return [{ kind: 'note', key: 't-' + abs + '-note', text: String(turn.text || ''), isLive: false }];
+  }
   if (turn.role === 'system' || turn.context || turn.sysNote) return out;
   const key = 't-' + abs;
 

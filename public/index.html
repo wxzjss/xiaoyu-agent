@@ -7372,34 +7372,68 @@ const __mateColors = new Map();
 let __mateColorsAsked = false;
 function refreshMateColors() {
   try {
-    document.querySelectorAll('.msg.mate, [data-whoName]').forEach((el) => {
-      const nm = String(el.dataset.whoName || '');
+    /**
+     * 【2026-11-11 修·主人报「重启后历史里小鲸的名字还是白的」】
+     *
+     * 实测证据（CDP 查 DOM）：同一个「小鲸」两种气泡颜色不同 ——
+     *   `msg whale whaleSelf` → rgb(122,168,232) 蓝（CSS 里 .whale .role 写死的）
+     *   `msg assistant` + data-who-name="小鲸" → rgb(230,230,230) 白
+     * 而且 `__mateColors` 那个 Map 还是空的（mapHas: no-map）——
+     * mateColorOf() 第一次调用时"发起请求 + 立刻返回默认色 230"，
+     * 等数据回来，这里却没把 assistant 气泡补上色：
+     *
+     *   原来：`document.querySelectorAll('.msg.mate, [data-whoName]')`
+     *         —— 属性名写成了 `data-whoName`（驼峰），
+     *            而 JSX 里是 `data-who-name`，DOM 里实际属性就是 `data-who-name`。
+     *            选择器永远匹配不到 → 补色这一步从来没生效过。
+     *   还有第二处：assistant 气泡的颜色是**内联 style.color 写在 .role 上**，
+     *        而这个函数只设 `--whoC` 变量。就算选择器对了，也改不到那个内联色。
+     *
+     * 现在：选择器改成 `[data-who-name]`，并且对 .role 直接写内联 color。
+     */
+    document.querySelectorAll('.msg.mate, .msg.whale, [data-who-name]').forEach((el) => {
+      const nm = String(el.dataset.whoName || '').trim();
+      if (!nm) return;
       const c = __mateColors.get(nm);
       if (!c) return;
       el.style.setProperty('--whoC', c);
-      if (!el.classList.contains('mate')) {
-        const _rl = el.querySelector('.role');
-        if (_rl) _rl.style.color = c;
-      }
+      /* assistant 气泡：名字是内联色，必须直接写 style.color */
+      const _rl = el.querySelector('.role');
+      if (_rl) _rl.style.color = c;
     });
   } catch { /* 上不上色都不影响读 */ }
 }
 function mateColorOf(name) {
   const nm = String(name || '');
   const hit = __mateColors.get(nm);
-  if (!__mateColorsAsked) {
-    __mateColorsAsked = true;
-    try {
-      fetch('/api/agents').then((x) => x.json()).then((r) => {
-        const list = r && Array.isArray(r.agents) ? r.agents : [];
-        list.forEach((a) => {
-          if (a && a.name && a.color) __mateColors.set(String(a.name), String(a.color));
-        });
-        refreshMateColors();
-      }).catch(() => {});
-    } catch { /* 抓不到就全用默认色，不影响说话 */ }
-  }
+  primeMateColors();     // 没拉过就顺手拉一次（第一次同步返回默认色，回来后 refresh 补上）
   return hit || '#e6e6e6';
+}
+
+/**
+ * 【2026-11-11 加·颜色预热】
+ *
+ * 主人报「重启后历史里小鲸的名字是白的」。根因是颜色表**懒加载**：
+ * 以前只有「第一次有人问颜色」时才去拉 /api/agents，
+ * 拉回来之前画出来的气泡全是默认色 #e6e6e6（白）。
+ * 更糟的是重启后打开一个**已有历史**的会话时，
+ * 气泡是直接画出来的、没人问过颜色 → 请求根本没被触发 → 一直白着。
+ *
+ * 现在改成页面启动就预热一次，并且放在最早的时机：
+ * 拉回来之后 refreshMateColors 会给屏幕上已有的节点补色。
+ */
+function primeMateColors() {
+  if (__mateColorsAsked) return;
+  __mateColorsAsked = true;
+  try {
+    fetch('/api/agents').then((x) => x.json()).then((r) => {
+      const list = r && Array.isArray(r.agents) ? r.agents : [];
+      list.forEach((a) => {
+        if (a && a.name && a.color) __mateColors.set(String(a.name), String(a.color));
+      });
+      refreshMateColors();
+    }).catch(() => { /* 抓不到就全用默认色，不影响说话 */ });
+  } catch { /* 同上 */ }
 }
 
 // 工具名说人话：主人一眼看得出她在干嘛，而不是看 run_command 这种英文
@@ -18704,6 +18738,12 @@ const booted = (async () => {
    结果 priceOf 一路返回 null，退回去用写死的官方牌价，比主人自己填的贵十倍。
    放这儿拉一次，之后每一轮算钱都能拿到他填的那几个数。 */
 loadModels().catch(() => {});
+
+/* 【2026-11-11 加·颜色表预热】主人报「重启后历史里小鲸的名字是白的」。
+   原因：颜色表懒加载 —— 只有第一次有人问颜色时才去拉 /api/agents。
+   重启后打开一个已有历史的会话，气泡直接画出来、没人问过颜色 → 请求压根没发
+   → 一直是默认色（白）。这里跟模型价目一个道理：开局就拉一次。 */
+try { primeMateColors(); } catch (e) {}
 
 /**
  * 每 3 秒问一次「谁在跑」，名单变了才重画会话列表（不变就别重画，省得整列闪）。

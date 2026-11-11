@@ -350,7 +350,7 @@ function tailLines(text, n = 4) {
  * powershell 静默退出也报成功，屏幕根本没黑。现在**必须等到日志里出现
  * 「全屏黑遮罩已铺上」+「已生效」才算关掉**，最多等 6 秒；等不到就如实失败。
  */
-export async function turnOffScreen({ keepBrightness = false, armSeconds = 0, timeoutSec = 43200, waitMs = 6000 } = {}) {
+export async function turnOffScreen({ keepBrightness = false, armSeconds = 3, timeoutSec = 43200, waitMs = 10000 } = {}) {
   if (!existsSync(SCREEN_OFF_SCRIPT)) {
     return { ok: false, error: '找不到 scripts/screen-off.ps1' };
   }

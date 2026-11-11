@@ -4607,6 +4607,27 @@ const server = createServer(async (req, res) => {
      *  前端据此对账就会以为「自己画多了」。清单不受压薄影响，长度才是真的。 */
     const _items0 = (live && Array.isArray(live.items) && live.items.length) ? live.items : buildLiveItems(all);
     const _textLen = _items0.reduce((a, it) => a + ((it && it.k === 'text') ? String(it.t || '').length : 0), 0);
+    /**
+     * 【2026-11-11 修·主人报「发消息后消失一下再冒出来」—— 实测抓到的现场】
+     *
+     * 用 CDP 打桩 logSetLive 连拍，抓到发消息后 **+1419ms** 那一次：
+     *     items = 0 条（空数组）   running = true
+     * 前端 setLive 收到 `{items:[], running:true}` 就把 st.live 整个换成空清单
+     * → 屏幕上这一轮的正文**整段消失**；等 items 长出内容，又**一次性全冒出来**。
+     * 主人看到的「消失一下再冒出来」就是这一帧。
+     *
+     * 空清单怎么来的：新一轮刚开，`live.items` 还是 `[]`、事件也还没进 `all`，
+     * `buildLiveItems([])` 自然是 `[]`。但「清单还是空」**不等于「没有内容」**，
+     * 只是**还没开始说话**。这种时候不该交出一份空清单 —— 前端会拿它当权威真身覆盖。
+     *
+     * 修：空清单 + 还在跑 → **连 items 字段都不给**（跟上面 `if (!live)` 那个分支一致；
+     * 前端 `Array.isArray(live.items)` 为假 → 不覆盖现有快照，屏幕保持原样）。
+     */
+    const _runningNow = alive && !(() => {
+      const t0 = runningTurns.get(sid);
+      return !!(t0 && t0.ac && t0.ac.signal && t0.ac.signal.aborted);
+    })();
+    const _giveItems = _items0.length > 0 || !_runningNow;
     return json(res, 200, {
       sessionId: sid,
       /* 【2026-11-02 主人报「消息被吞、画面固定」】
@@ -4630,7 +4651,7 @@ const server = createServer(async (req, res) => {
       /* 【2026-11-02 快照】「这一轮现在该显示成什么样」的一份完整清单。
        *  前端只要照它画一遍就行 —— 不传 since 或传 0 时给（全量那趟），
        *  增量那趟没必要重复给（items 已经含了全部正文）。 */
-      items: _items0,
+      items: _giveItems ? _items0 : undefined,
       events: tail,
       /* 【2026-11-10 D3】缓存被清成摘要后（done 超 10 分钟），这里给出摘要标记。
        *  此时 running=false、items=[]、events=[]，前端照旧画不出任何直播内容；

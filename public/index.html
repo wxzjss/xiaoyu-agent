@@ -20502,7 +20502,11 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (document.querySelector('dialog[open]')) return;
     if (typeof pick !== 'undefined' && pick.open) return;   // 选文件那层自己有 Esc
-    if (busy) { e.preventDefault(); e.stopPropagation(); try { stopTurn(); } catch (err) {} return; }
+    /* 【2026-11-11 移除·主人报 Esc 冲突】原来这里 busy 时 Esc 会 stopTurn() ——
+     * 但「关屏」的解除键也是 Esc（黑屏时电脑照跑、Agent 常在干活），
+     * 主人回座按 Esc 解除黑屏，焦点一回窗口就把她正在跑的活停了，两个功能撞车。
+     * 停止的入口仍然充足：顶栏 ⏹ 按钮、Ctrl+K 命令面板「停止生成」。
+     * 解除键保持 Esc / 右键不变（Ctrl 单键会和 Ctrl+C/V 这类组合键天天误触，更糟）。 */
     if (document.activeElement === input) { try { input.blur(); } catch (err) {} }
     return;
   }

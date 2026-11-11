@@ -127,7 +127,23 @@ const INSTALL = `(function(){
         /* 还在跑吗？口径跟真服务端一致：不看「事件推完没」，看这一轮**有没有收尾**。
          * 最后一条事件不是 done/aborted/error（比如排队轮后面还跟着一句），
          * 就说明这一轮仍在跑 —— 保持 running:true，屏幕上那几段才来得及被看见。 */
-        var stillRunning = (Number(qa.i) || 0) < last || !qa.endEvent;
+        /* 【2026-11-11 修·steer-fixer】补上「流已收尾」的口径：
+         * 真服务端的 running 看的是轮登记（runningTurns），SSE 流关掉（轮跑完了）
+         * 之后登记就摘了，running 一定回 false —— 哪怕最后一条事件不是 done
+         * （排队轮补答的场景，事件流末尾就是一句正文）。前端（settleFromHistory
+         * 的 running 复核、done 后的 attachLive 跟播）现在是按这个契约工作的。
+         * 桩原来在「事件全部发完且不 holdOpen」之后还永远回 running:true，
+         * 桩自己跟真服务端不一致。修法：holdOpen = 还在跑 → true；
+         * 否则事件没发完 → true；发完了 → 再留一小段「收尾尾窗」
+         * （真服务端发完最后一段正文还要 flush/落盘几百毫秒才摘登记，
+         *  这段时间 running 仍是 true，最后一段正文得来得及被画出来），
+         * 尾窗过了才回 false —— 跟真轮收尾的节奏对齐。 */
+        var _qaLen = Array.isArray(qa.events) ? qa.events.length : 0;
+        var _qaI = Number(qa.i) || 0;
+        if (_qaI >= _qaLen && _qaLen > 0 && !qa.endAt) qa.endAt = Date.now();
+        var stillRunning = qa.holdOpen
+          ? true
+          : (_qaI < _qaLen || (_qaLen > 0 && qa.endAt && (Date.now() - qa.endAt) < 1200));
         return Promise.resolve(jsonRes({ sessionId: qa.sid, running: stillRunning, items: qa.steps[k], events: [], startedAt: qa.startedAt || Date.now(), nextSince: 0 }));
       }
       var L = qa.live;

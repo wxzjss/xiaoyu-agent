@@ -8734,6 +8734,21 @@ function scheduleSendingRecheck(sid) {
       busy = true;
       try { showSending(at || undefined); } catch {}
       try { syncSendBtn(); } catch {}
+      /* 【2026-11-11 修·排队轮无人跟播（steer-fixer）】
+       * 服务端还在跑、这条页面的 SSE 已经结束（streamDone）、又没有任何
+       * followLive 在跟 —— 典型形态：插话后的排队轮、看门狗的自动接回。
+       * 没人跟播 = 排队轮说的每个字都上不了屏（主人报的「插话后看不到
+       * 她的回复」的根子）。这里把 attachLive 接上（快照 + followLive），
+       * 跟到它答完由 finishTurn 按历史收尾。
+       * 还在走 SSE 的轮（streamDone 没标）不动 —— 那条流自己会叫 nudgeLive，
+       * 再挂一个 follow 纯属双份轮询。每 2 秒巡检都查一遍，晚起的排队轮
+       * （起轮闸最多等 90 秒那种）也接得住。 */
+      if (still && !followingBySession.get(_sid)) {
+        const _recR = turnsInFlight.get(_sid);
+        if (!_recR || _recR.streamDone) {
+          try { attachLive(_sid); } catch {}
+        }
+      }
       /* 【2026-11-11 修·按钮锁死不解】主人报：自动掐断弹【停止】时，
        * 【管理员】【会话】全变灰点不动。原因：这里原来只查一次 ——
        * 900ms 时看门狗那轮还没退干净、或者 stuck-retry 刚把新一轮排上，
@@ -9160,6 +9175,12 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
         const endTurnQuietly = () => {
           /* 思考块 / 气泡都由 renderLog 统一收尾（这里没有局部句柄可收） */
           try { closeThink(); } catch {}
+          /* 【2026-11-11 修·排队轮无人跟播（steer-fixer）】aborted / error 这几条路
+           * 收尾之后，服务端还可能自己起排队轮（看门狗的 stuck-retry 等）。
+           * 给轮次记录留个「这条流的 SSE 已经结束」的记号，scheduleSendingRecheck
+           * 看到服务端还在跑时才敢把 attachLive 接过来（还在走 SSE 的轮不动，
+           * 那条流自己会叫 nudgeLive）。 */
+          try { const _recQ = turnsInFlight.get(turnSession || sessionId); if (_recQ) _recQ.streamDone = true; } catch {}
           /* 别立刻灭灯：rate_limited 之后服务端可能重试接着跑，aborted 也可能
            * 只是这一条流断了。交给延迟复核问服务端，别自作主张。 */
           try { scheduleSendingRecheck(sessionId); } catch {}
@@ -9317,6 +9338,39 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           } catch {}
           closeThink();
           scheduleSendingRecheck(sessionId);
+          /**
+           * 【2026-11-11 修·插话后她的回复整段不上屏（steer-fixer）】
+           *
+           * 主人报的形态：消息A → 她回复中 → 消息B（插话）→ 屏幕上只剩
+           * 「消息A / 消息B」，她后面说的（含对消息A 的收尾）一行都不出现。
+           *
+           * 实测（隔离实例 + CDP 连拍，_tmp/probe-steer.mjs）：插话进来时她正在说
+           * 最后一段话，agent 末尾把信箱接走后这一圈出了岔子，轮在排队轮补答前
+           * 就 done 了。done 之后：SSE 死了（nudgeLive 没人叫）、followLive 没挂、
+           * scheduleSendingRecheck 只管灯和 busy —— **排队轮（处理插话的那轮）
+           * 全程无人跟播**。屏幕塌缩成旧历史（实测塌了 4.4 秒才被 settleFromHistory
+           * 的重试碰巧救回）；排队轮跑工具/长回复时重试全部落空 → 她的回复
+           * 永远不上屏，直到刷新。会话数据里回复都在（[401][404]），纯粹是渲染层丢。
+           *
+           * 修法：done 之后短时间内盯几眼 /api/chat/live —— 服务端说还在跑
+           * （排队轮已经接上）就 attachLive 把跟播挂上：快照进 store、
+           * followLive 逐拍画，排队轮答完由 finishTurn 按历史收尾。
+           * 这正是 attachLive 的本职（「补画后台进度」），server.mjs 3136 行注释
+           * 「前端靠 followLive / attachLive 补画」指的就是这条路 —— 主轮收尾
+           * 只标了 pendingNext，从来没人来挂。
+           */
+          try { const _recD = turnsInFlight.get(turnSession || sessionId); if (_recD) _recD.streamDone = true; } catch {}
+          (async () => {
+            const sidDone = turnSession || sessionId;
+            for (const _w of [250, 800, 1800]) {
+              await new Promise((r) => setTimeout(r, _w));
+              if (String(sessionId || '') !== sidDone) return;
+              if (followingBySession.get(sidDone)) return;   // 已经有人在跟了
+              let _j = null;
+              try { _j = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(sidDone)).then((r) => r.json()); } catch { return; }
+              if (_j && _j.running) { try { attachLive(sidDone); } catch {} return; }
+            }
+          })();
           // 这一轮刚答完，主人最想看数字跳一下 —— 服务端在 done 里就把表带过来了
           /**
            * 【这一轮说完了，可队列里还有话排着】
@@ -9554,11 +9608,32 @@ async function settleFromHistory(id) {
   try {
     if (!id || sessionId !== id) return;
     const _nz = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
-    let _wantNz = 0;
+    let _lv0 = null;
+    /* 【2026-11-11 修·收尾对账空等 4.2 秒（steer-fixer）】
+     * 原判据是「历史最后一条 assistant 的长度 ≥ 直播正文总长」。多段轮里它恒不成立：
+     * want 是几段正文之和，last 只是最后一段 —— 六次重试（约 4.2 秒）必然全部落空，
+     * 期间屏幕塌缩成旧历史，主人看到的就是「她说的话消失了好几秒才回来」。
+     * 其实服务端在摘登记（running 翻 false）**之前**就已经 commitWireBack + saveSession，
+     * 历史此刻必然是完整的。判据改成「直播里的**最后一段正文**能在历史正文里找到」：
+     * 找得到 = 历史齐了，立刻收尾；找不到才是真没写完，照旧重试兜底。 */
+    let _lastSeg = '';
     try {
-      const _lv = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
-      for (const _it of (_lv && Array.isArray(_lv.items) ? _lv.items : [])) if (_it && _it.k === 'text') _wantNz += _nz(_it.t).length;
+      _lv0 = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+      for (const _it of (_lv0 && Array.isArray(_lv0.items) ? _lv0.items : [])) {
+        if (_it && _it.k === 'text') {
+          const _seg = _nz(_it.t);
+          if (_seg) _lastSeg = _seg;
+        }
+      }
     } catch (e) {}
+    /* 【2026-11-11 修·排队轮跑动时别抢着收尾（steer-fixer）】
+     * 这一轮的 SSE 结束、但服务端还在跑（插话的排队轮已经接上）时，
+     * 这里**不能**按历史收尾：排队轮的回答还在长，重试 6 次也等不到
+     * 「历史不比清单短」，最后会把 live 清成 null、拿旧历史盖掉
+     * followLive 正在画的排队轮内容 —— 主人看着就是「她的回复闪一下又没了」。
+     * 这次对账让给跟播那边：attachLive 挂上的 followLive 在排队轮答完时
+     * 会走 finishTurn，把历史和屏幕都收干净。 */
+    if (_lv0 && _lv0.running) return;
     let _turns = null;
     for (let _k = 0; _k < 6; _k++) {
       if (sessionId !== id) return;
@@ -9569,9 +9644,12 @@ async function settleFromHistory(id) {
       if (sessionId !== id) return;
       _turns = (sel && sel.session && Array.isArray(sel.session.turns)) ? sel.session.turns : null;
       if (_turns) {
-        const _as = _turns.filter((t) => t && t.role === 'assistant' && !t.whale);
-        const _last = _as.length ? _nz(_as[_as.length - 1].text).length : 0;
-        if (_last >= _wantNz) break;
+        const _allA = _nz(_turns
+          .filter((t) => t && t.role === 'assistant' && !t.whale)
+          .map((t) => String(t.text || ''))
+          .join('\n'));
+        /* 历史里找得到「直播的最后一段正文」= 历史齐了（判据见上面 _lastSeg 的注释） */
+        if (!_lastSeg || _allA.indexOf(_lastSeg) >= 0) break;
       }
       await new Promise((r) => setTimeout(r, 700));
     }

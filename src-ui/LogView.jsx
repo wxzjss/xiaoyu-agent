@@ -114,8 +114,22 @@ function toRows(items) {
   for (const it of items) {
     if (it.kind === 'tool' || it.kind === 'think') {
       const tag = turnTagOf(it);
-      /* 换了轮次就不再往同一个柜子里塞（tag 读不出来的不当边界） */
-      if (run && tag && run.tag && tag !== run.tag) run = null;
+      /**
+       * 【2026-11-11 再修·主人报「柜子突然没了、工具全跑出来了」】
+       *
+       * 上一版把「轮次变了」一律当边界，结果把**同一段活**切碎了：
+       * 干活时一条 assistant 常常只装一次工具调用（没有正文、没有思考），
+       * 落盘后就是 `tool(A) / tool(B) / tool(C) …` 一路相邻 —— 它们本来就是一段活，
+       * 却因为分属不同 turn 被切成一堆「单工具」→ 单工具不成柜 → 屏幕上全是裸卡。
+       * 实测「小鲸鱼」那个会话：185 条 assistant 里 168 条是「1 个工具、无正文、无思考」，
+       * 按轮次切之后 168 张裸卡，一个柜子都成不了。
+       *
+       * 真正需要切的只有一种形态：**下一轮的思考**。
+       * 历史里一条 turn 的顺序是 `思考 → 正文 → 工具`（items.js 的 turnToItems），
+       * 所以「上一轮的工具」和「下一轮的思考」在清单里相邻 —— 那才是跨消息。
+       * 工具之间即便跨 turn 也照旧并进同一个柜子（那正是「一段活」的形状）。
+       */
+      if (run && it.kind === 'think' && tag && run.tag && tag !== run.tag) run = null;
       if (run) run.items.push(it);
       else {
         run = { type: 'group', key: 'hub-' + it.key, tag, items: [it] };
@@ -257,12 +271,33 @@ export default function LogView() {
      * 不等那一发 scroll 的 d 值。滚回底部时 onScroll 会再把 atBottom 置回 true
      * （连续两次贴底还会清掉「在翻历史」的账），跟随自然恢复。
      */
+    /**
+     * 【2026-11-11 加·柜子/思考框内部滚动，不许算成「他去翻聊天记录」】
+     *
+     * wheel 事件是从子节点冒泡上来的：#log 里既有柜子内容区（.hubBody，340px 内部滚），
+     * 也有思考框（.thinkBody，320px 内部滚），还有工具结果（pre）。
+     * 人只是在柜子里往上滚看卡，事件一样会到 #log —— 以前就直接把聊天区标成
+     * 「他在翻历史」，于是聊天区不再跟随最新消息（看着像「滚了柜子聊天就不动了」）。
+     * 现在：事件目标落在「内部真能滚的那个盒子」里就整条忽略，交给它自己滚
+     * （那两个盒子都上了 overscroll-behavior: contain，滚到边也不会传给聊天区）。
+     */
+    const fromInnerScroller = (e) => {
+      try {
+        const t = e && e.target;
+        if (!t || t === el || !el.contains(t)) return false;
+        const box = t.closest && t.closest('.hubBody, .thinkBody, details.tool > pre');
+        if (!box) return false;
+        return box.scrollHeight > box.clientHeight + 1;
+      } catch (err) { return false; }
+    };
     const onWheel = (e) => {
+      if (fromInnerScroller(e)) return;      // 内部滚自己的，别惊动聊天区
       userScrolledRef.current = true;
       /* deltaY < 0 = 往上（看更早的内容）。触控板惯性里也有 deltaY>0 的帧，别误伤 */
       if (e && Number(e.deltaY) < 0) atBottomRef.current = false;
     };
     const onKey = (e) => {
+      if (fromInnerScroller(e)) return;
       userScrolledRef.current = true;
       const k = e && e.key;
       if (k === 'ArrowUp' || k === 'PageUp' || k === 'Home') atBottomRef.current = false;

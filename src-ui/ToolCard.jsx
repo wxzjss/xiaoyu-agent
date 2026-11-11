@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useOpen } from './useOpen.js';
 import { GrayPeek } from './GrayText.jsx';
 import { formatArgs, niceTool, tidyToolText } from './bridge.js';
@@ -143,6 +143,40 @@ export function ToolGroup({ items }) {
     ? SPIN[tick % SPIN.length] + ' ' + doorName
     : doorName;
 
+  /**
+   * 【2026-11-11 加·柜子展开后要跟着新工具走】
+   *
+   * 主人：「展开柜子并滚轮到最底部后，新出来的工具调用消息也应该能自动滚动到最底部」。
+   *
+   * 柜子内容区（.hubBody）是限高 + 内部滚动的（340px），新卡片是**追加在末尾**的；
+   * 没有这段逻辑的话，人明明停在柜底，新卡却在他看不见的下方悄悄长出来 ——
+   * 跟聊天区「贴着底就跟着长」是同一个期望，只是坐标系换成了柜子内部。
+   *
+   * 判据故意跟聊天区一致：
+   *   · followRef 默认 true（跟聊天区「没动过就跟随」同口径）；
+   *   · 只有「他自己把柜子滚离底部」才停（离底 > 8px）；
+   *   · 再滚回底部就恢复跟随；
+   *   · 收起柜子时什么也不做（收起态内容不渲染，scrollTop 无意义）。
+   */
+  const bodyRef = useRef(null);
+  const followRef = useRef(true);
+  const onBodyScroll = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
+  };
+  /* 末尾那条的文字长度也当依赖 —— 工具输出是在同一条卡上变长的（条数不变） */
+  const _lastOfList = list.length ? list[list.length - 1] : null;
+  const tailSig = _lastOfList
+    ? String(_lastOfList.output || '').length + String(_lastOfList.text || '').length
+    : 0;
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || !open) return;
+    if (!followRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [open, list.length, tailSig]);
+
   /* ── 形态分派（一律放在 hooks 之后，见函数头那段注释） ── */
   /* 只有思考、没有工具：不套柜门，直接把思考块摆出来 */
   if (!tools.length) {
@@ -162,7 +196,7 @@ export function ToolGroup({ items }) {
       {/* 【2026-11-11 加·hubBody】柜子里可能塞很多东西（思考块 + 十几张工具卡），
           以前是「内容多长柜子就多高」，长活一张柜子能顶满几屏。
           现在套一层 .hubBody，CSS 给它封顶 + 内部滚动（跟思考链的框一个规矩）。 */}
-      <div className="hubBody">
+      <div className="hubBody" ref={bodyRef} onScroll={onBodyScroll}>
         {list.map((t) => (
           t.kind === 'think'
             ? <ThinkBlock key={t.key} it={t} />

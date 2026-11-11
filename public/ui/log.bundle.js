@@ -9027,6 +9027,21 @@
     }, [list]);
     const doorName = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? stat.name.replace(/…$/, "") + " \xB7 " + Math.max(1, Math.round((Date.now() - Number(stat.running.startedAt)) / 1e3)) + "s\u2026" : stat.name;
     const doorSpin = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? SPIN[tick % SPIN.length] + " " + doorName : doorName;
+    const bodyRef = (0, import_react12.useRef)(null);
+    const followRef = (0, import_react12.useRef)(true);
+    const onBodyScroll = () => {
+      const el = bodyRef.current;
+      if (!el) return;
+      followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
+    };
+    const _lastOfList = list.length ? list[list.length - 1] : null;
+    const tailSig = _lastOfList ? String(_lastOfList.output || "").length + String(_lastOfList.text || "").length : 0;
+    (0, import_react12.useLayoutEffect)(() => {
+      const el = bodyRef.current;
+      if (!el || !open) return;
+      if (!followRef.current) return;
+      el.scrollTop = el.scrollHeight;
+    }, [open, list.length, tailSig]);
     if (!tools.length) {
       return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(import_jsx_runtime12.Fragment, { children: thinks.map((t) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ThinkBlock, { it: t }, t.key)) });
     }
@@ -9038,7 +9053,7 @@
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(GrayPeek, { text: stat.running ? "" : niceTool(last.name, last.args) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "hubBody", children: list.map((t) => t.kind === "think" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ThinkBlock, { it: t }, t.key) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: t }, t.key)) })
+      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "hubBody", ref: bodyRef, onScroll: onBodyScroll, children: list.map((t) => t.kind === "think" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ThinkBlock, { it: t }, t.key) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: t }, t.key)) })
     ] });
   }
 
@@ -9112,7 +9127,7 @@
     for (const it of items) {
       if (it.kind === "tool" || it.kind === "think") {
         const tag = turnTagOf(it);
-        if (run && tag && run.tag && tag !== run.tag) run = null;
+        if (run && it.kind === "think" && tag && run.tag && tag !== run.tag) run = null;
         if (run) run.items.push(it);
         else {
           run = { type: "group", key: "hub-" + it.key, tag, items: [it] };
@@ -9176,11 +9191,24 @@
       const onUserIntent = () => {
         userScrolledRef.current = true;
       };
+      const fromInnerScroller = (e) => {
+        try {
+          const t = e && e.target;
+          if (!t || t === el || !el.contains(t)) return false;
+          const box = t.closest && t.closest(".hubBody, .thinkBody, details.tool > pre");
+          if (!box) return false;
+          return box.scrollHeight > box.clientHeight + 1;
+        } catch (err) {
+          return false;
+        }
+      };
       const onWheel = (e) => {
+        if (fromInnerScroller(e)) return;
         userScrolledRef.current = true;
         if (e && Number(e.deltaY) < 0) atBottomRef.current = false;
       };
       const onKey = (e) => {
+        if (fromInnerScroller(e)) return;
         userScrolledRef.current = true;
         const k = e && e.key;
         if (k === "ArrowUp" || k === "PageUp" || k === "Home") atBottomRef.current = false;

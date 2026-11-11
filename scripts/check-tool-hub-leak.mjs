@@ -28,11 +28,18 @@ const toolCard = fs.readFileSync('src-ui/ToolCard.jsx', 'utf8');
 
 /* ── 源码：柜子只由「折行」产生 ─────────────────────────────────── */
 t.ok('LogView 里有唯一的分组逻辑 toRows', /function toRows\(items\)/.test(logView));
-/* 【2026-11-11 改·思考块也进柜子】主人问「柜子为什么夹在思考链中间 / 思考链不该在柜子里吗」，
- * 而 v0.9.46 及以前确实是这么做的（旧代码里专门收集散落的 details.think 折进柜子）。
- * 0.9.47 换 React 重写时这条丢了。现在 toRows 把 tool **和 think** 一起收成一串。 */
+/* 【2026-11-11 改·思考块也进柜子 + 只在「下一段的思考」处切边界】
+ * 主人问「柜子为什么夹在思考链中间 / 思考链不该在柜子里吗」（v0.9.46 及以前确实是这么做的），
+ * 0.9.47 换 React 重写时这条丢了。现在 toRows 把 tool **和 think** 一起收成一串。
+ *
+ * 边界规矩后来又按主人的报障收窄了一次（「柜子突然没了、工具全跑出来了」）：
+ * 干活时一条 assistant 常常只装一次工具，落盘后是 tool(A)/tool(B)/tool(C) 一路相邻 ——
+ * 那是同一段活，不许按轮次切开（切开就全成裸卡）。真正要切的只有「下一段的思考」
+ * （历史里顺序是 思考→正文→工具，所以「上一轮工具 + 下一轮思考」才是跨消息的相邻形态）。 */
 t.ok('toRows 把连续的 tool / think 收成一组',
-  /if \(it\.kind === 'tool' \|\| it\.kind === 'think'\)[\s\S]{0,220}run\.items\.push\(it\)/.test(logView));
+  /if \(it\.kind === 'tool' \|\| it\.kind === 'think'\)[\s\S]{0,1400}run\.items\.push\(it\)/.test(logView));
+t.ok('只在「换段的思考」处切边界（工具之间不切）',
+  /if \(run && it\.kind === 'think' && tag && run\.tag && tag !== run\.tag\) run = null;/.test(logView));
 t.ok('柜子组件 ToolGroup 在（单卡不成柜 / 只有思考时直画思考块）',
   /tools\.length === 1 && !thinks\.length\) return <ToolCard it=\{tools\[0\]\} \/>/.test(toolCard)
   && /if \(!tools\.length\)/.test(toolCard)

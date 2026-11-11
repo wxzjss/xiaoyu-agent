@@ -7315,16 +7315,49 @@
   });
   var listeners = /* @__PURE__ */ new Set();
   var version = 0;
-  var openMap = /* @__PURE__ */ new Map();
+  var OPEN_PREFIX_SEP = "\0";
+  var openRaw = /* @__PURE__ */ new Map();
+  var openMap = {
+    get(key) {
+      return openRaw.get(screenSid() + OPEN_PREFIX_SEP + String(key));
+    },
+    has(key) {
+      return openRaw.has(screenSid() + OPEN_PREFIX_SEP + String(key));
+    },
+    set(key, v) {
+      openRaw.set(screenSid() + OPEN_PREFIX_SEP + String(key), v);
+      return openMap;
+    },
+    delete(key) {
+      return openRaw.delete(screenSid() + OPEN_PREFIX_SEP + String(key));
+    },
+    /* 清空是「全清」（所有会话）。切会话时**不**调它 —— 别的会话的展开态要留着。 */
+    clear() {
+      openRaw.clear();
+    },
+    get size() {
+      return openRaw.size;
+    }
+  };
+  function screenSid() {
+    return effectiveSid();
+  }
   var pendingUser = [];
   var _falseWritePending = null;
   var _falseWriteTimer = 0;
+  var _falseWriteSid = "";
+  var _falseWritePrevLive = null;
+  var _falseWritePrevTurns = 0;
   var notes = [];
   var histWin = /* @__PURE__ */ new Map();
   var seq = 0;
   var edit = null;
   function beginEdit(key, at) {
-    edit = { key: String(key || ""), at: Number.isFinite(Number(at)) ? Number(at) : null };
+    edit = {
+      key: String(key || ""),
+      at: Number.isFinite(Number(at)) ? Number(at) : null,
+      sid: screenSid()
+    };
     bump();
   }
   function endEdit() {
@@ -7333,7 +7366,8 @@
     bump();
   }
   function getEdit() {
-    return edit;
+    if (!edit) return null;
+    return edit.sid === screenSid() ? edit : null;
   }
   function subscribe(fn) {
     listeners.add(fn);
@@ -7371,18 +7405,87 @@
     if (s && typeof s === "object") return s;
     return { sid: "", turns: [], live: null };
   }
+  function effectiveSid() {
+    const s = String(logState().sid || "");
+    if (s) return s;
+    try {
+      return String(window.sessionId || "");
+    } catch (e) {
+      return "";
+    }
+  }
   function getSnapshot() {
     const st = logState();
     const _sid = String(st.sid || "");
+    const _eff = effectiveSid();
     return {
       sid: _sid,
       turns: Array.isArray(st.turns) ? st.turns : [],
       live: st.live && Array.isArray(st.live.items) ? st.live : null,
       /* 只画本屏的乐观气泡 —— 别的会话的账不属于这一屏（串消息根治） */
-      pendingUser: pendingUser.filter((p) => !p.sid || p.sid === _sid),
+      pendingUser: pendingUser.filter((p) => !p.sid || p.sid === _eff),
       notes,
-      windowStart: histWin.get(_sid) || 0
+      windowStart: histWin.get(_eff) || 0
     };
+  }
+  var liveCache = /* @__PURE__ */ new Map();
+  var LIVE_CACHE_TTL = 4e3;
+  var _liveRestoreTimer = 0;
+  var _liveRestoreSid = "";
+  var _liveRestoreObj = null;
+  function writeLive(sid, live) {
+    const st = logState();
+    st.live = live && Array.isArray(live.items) ? live : null;
+    const s = String(sid || "");
+    if (!s) return st.live;
+    if (st.live) {
+      liveCache.set(s, { live: st.live, at: Date.now() });
+      if (liveCache.size > 6) {
+        let oldestKey = "";
+        let oldestAt = Infinity;
+        for (const [k, v] of liveCache) {
+          if (v.at < oldestAt) {
+            oldestAt = v.at;
+            oldestKey = k;
+          }
+        }
+        if (oldestKey) liveCache.delete(oldestKey);
+      }
+    } else {
+      liveCache.delete(s);
+    }
+    return st.live;
+  }
+  function restoreLiveFor(sid) {
+    const s = String(sid || "");
+    const hit = liveCache.get(s);
+    if (!hit || !hit.live) return null;
+    if (Date.now() - hit.at > LIVE_CACHE_TTL) {
+      liveCache.delete(s);
+      return null;
+    }
+    if (hit.live.running === false) return null;
+    return hit.live;
+  }
+  function armRestoreCheck(sid, obj) {
+    if (_liveRestoreTimer) {
+      try {
+        clearTimeout(_liveRestoreTimer);
+      } catch (e) {
+      }
+    }
+    _liveRestoreSid = String(sid || "");
+    _liveRestoreObj = obj;
+    _liveRestoreTimer = setTimeout(() => {
+      _liveRestoreTimer = 0;
+      const st = logState();
+      if (String(st.sid || "") !== _liveRestoreSid) return;
+      if (st.live !== _liveRestoreObj) return;
+      st.live = null;
+      liveCache.delete(_liveRestoreSid);
+      pendingUser = dropLandedPending(pendingUser, st.turns);
+      bump();
+    }, 2500);
   }
   function setHistory(sid, turns) {
     const st = logState();
@@ -7390,15 +7493,22 @@
     const changedScreen = String(st.sid || "") !== _sid;
     st.sid = _sid;
     st.turns = Array.isArray(turns) ? turns : [];
-    if (changedScreen) st.live = null;
+    if (changedScreen) {
+      const _pad = restoreLiveFor(_sid || effectiveSid());
+      st.live = _pad;
+      if (_pad) armRestoreCheck(_sid || effectiveSid(), _pad);
+    }
     notes = [];
-    const others = pendingUser.filter((p) => p.sid && p.sid !== _sid);
+    const others = pendingUser.filter((p) => p.sid && p.sid !== (_sid || effectiveSid()));
     const mine = dropLandedPending(
-      pendingUser.filter((p) => !p.sid || p.sid === _sid),
+      pendingUser.filter((p) => !p.sid || p.sid === (_sid || effectiveSid())),
       st.turns
     );
     pendingUser = mine.concat(others);
-    if (changedScreen) histWin.delete(_sid);
+    if (changedScreen) {
+      histWin.delete(_sid);
+      edit = null;
+    }
     bump();
   }
   function setLive(sid, live) {
@@ -7409,18 +7519,10 @@
     if (_nowFalse && (_wasRunning || _falseWriteTimer)) {
       _falseWritePending = live;
       if (!_falseWriteTimer) {
-        const _sid0 = sid;
-        _falseWriteTimer = setTimeout(() => {
-          _falseWriteTimer = 0;
-          const _p = _falseWritePending;
-          _falseWritePending = null;
-          if (!_p) return;
-          const _st = logState();
-          if (String(_sid0 || "") !== String(_st.sid || "")) return;
-          if (_st.live && _st.live.running !== false) return;
-          _st.live = _p;
-          bump();
-        }, 250);
+        _falseWriteSid = String(sid || "");
+        _falseWritePrevLive = st.live;
+        _falseWritePrevTurns = Array.isArray(st.turns) ? st.turns.length : 0;
+        _falseWriteTimer = setTimeout(_fireFalseWrite, 250);
       }
       return true;
     }
@@ -7429,10 +7531,27 @@
       _falseWriteTimer = 0;
       _falseWritePending = null;
     }
-    st.live = live && Array.isArray(live.items) ? live : null;
+    writeLive(sid, live && Array.isArray(live.items) ? live : null);
     if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
     bump();
     return true;
+  }
+  function _fireFalseWrite() {
+    _falseWriteTimer = 0;
+    const p = _falseWritePending;
+    _falseWritePending = null;
+    if (!p) return;
+    const st = logState();
+    if (_falseWriteSid !== String(st.sid || "")) return;
+    if (st.live !== _falseWritePrevLive) return;
+    const _len = Array.isArray(st.turns) ? st.turns.length : 0;
+    if (_len > _falseWritePrevTurns) {
+      writeLive(_falseWriteSid, null);
+      pendingUser = dropLandedPending(pendingUser, st.turns);
+    } else {
+      st.live = p;
+    }
+    bump();
   }
   function notify() {
     bump();
@@ -7442,8 +7561,19 @@
     seq += 1;
     const item = {
       id: "p" + seq,
-      /* 会话归属：发话那一刻在哪一屏，这句话就是哪家的账 */
-      sid: String(logState().sid || ""),
+      /**
+       * 会话归属：发话那一刻在哪一屏，这句话就是哪家的账。
+       *
+       * 【2026-11-11 补·sid 取不到会变成跨屏孤儿】
+       * 原来只读 LOG_STATE.sid。可它是**异步摆上来**的（setHistory 才写），
+       * 而 pushPendingUser 是「按下发送那一刻」同步调的。万一这一刻 sid 还是空串，
+       * 这颗气泡就带着 `sid: ''` 进账本，后果两头都坏：
+       *   · getSnapshot 的过滤是 `!p.sid || p.sid === 本屏` → 空 sid 在**每一屏**都画出来；
+       *   · dropPendingForScreen 的过滤是 `p.sid && p.sid !== 本屏` → 空 sid 永远清不掉。
+       * 于是「我在 A 说了一句，切到 B 屏幕上还挂着我那句话，怎么都收不掉」。
+       * 兜底读 window.sessionId（index.html:19318 那个 getter，跟 LOG_STATE.sid 同源）。
+       */
+      sid: effectiveSid(),
       text: String(it.text || ""),
       atts: Array.isArray(it.atts) ? it.atts.filter((a) => a && a.path) : [],
       who: String(it.who || ""),
@@ -7481,7 +7611,7 @@
     bump();
   }
   function setWindowStart(sid, start) {
-    const _sid = String(sid || "");
+    const _sid = String(sid || "") || effectiveSid();
     const n = Math.max(0, Number(start) || 0);
     if (histWin.get(_sid) === n) return;
     histWin.set(_sid, n);
@@ -7519,7 +7649,7 @@
     return keep.length === list.length ? list : keep;
   }
   function dropPendingForScreen() {
-    const _sid = String(logState().sid || "");
+    const _sid = effectiveSid();
     const before = pendingUser.length;
     pendingUser = pendingUser.filter((p) => p.sid && p.sid !== _sid);
     const dropped = before - pendingUser.length;
@@ -7599,13 +7729,17 @@
     if (turn.role === "user") {
       const who = String(turn.who || "");
       const isMate = Boolean(who) && who !== "\u4E3B\u4EBA";
+      const _steer = turn.steer === true;
+      const _steerAt = typeof turn.steerAt === "number" && Number.isFinite(turn.steerAt) ? turn.steerAt : null;
       out.push({
         kind: isMate ? "mate" : "user",
         key,
         text: String(turn.text || ""),
         atts: Array.isArray(turn.atts) ? turn.atts.filter((a) => a && a.path) : [],
         who,
-        tag: "",
+        tag: _steer ? "\u63D2\u8BDD" : "",
+        steer: _steer || void 0,
+        steerAt: _steer ? _steerAt : null,
         rewindId: numOrNull(turn.rewindId),
         ts: numOrNull(turn.ts),
         edited: Boolean(turn.edited),
@@ -7803,6 +7937,58 @@
     }
     return out;
   }
+  function applySteerSplits(items) {
+    const arr = Array.isArray(items) ? items : [];
+    const out = [];
+    for (let i = 0; i < arr.length; i++) {
+      const it = arr[i];
+      const nx = arr[i + 1];
+      if (it && it.kind === "assistant" && !it.isLive && nx && nx.kind === "user" && nx.steer && typeof nx.steerAt === "number" && Number.isFinite(nx.steerAt)) {
+        const cut = splitSteerAt(it, nx, nx.steerAt);
+        if (cut) {
+          for (const x of cut) out.push(x);
+          i += 1;
+          continue;
+        }
+      }
+      out.push(it);
+    }
+    return out;
+  }
+  function splitSteerAt(prev, steerItem, at) {
+    const bs = Array.isArray(prev.bubbles) ? prev.bubbles.map((b) => String(b == null ? "" : b)) : [];
+    const lastIdx = bs.length - 1;
+    if (lastIdx < 0) return null;
+    const last = bs[lastIdx];
+    if (!last) return null;
+    const cut = Math.max(0, Math.min(last.length, Math.floor(Number(at) || 0)));
+    if (cut >= last.length) return null;
+    if (cut === 0) return [steerItem, prev];
+    const frontItem = Object.assign({}, prev, {
+      /* 前半保住原 key / rewindId / 用量行 —— 「这一轮」的按钮和用量都挂在它上面，
+       * 挪到后半就等于把编辑、回退、分支全挂到了一段"残句"上。 */
+      bubbles: bs.slice(0, lastIdx).concat([last.slice(0, cut)])
+    });
+    const backItem = {
+      kind: "assistant",
+      /* key 必须稳定且不撞：前半是 t-<绝对下标>，后半挂 -sb 后缀。
+       * 用绝对下标而不是序号，往前补历史/新来内容都不会让它平移。 */
+      key: String(prev.key || "") + "-sb",
+      who: prev.who,
+      bubbles: [last.slice(cut)],
+      /* 编辑/回退/分支/删除四颗按钮只给前半（同一个 turn 不许长出两套按钮） */
+      rewindId: null,
+      ts: null,
+      edited: false,
+      cont: false,
+      usage: null,
+      model: "",
+      replyChars: last.slice(cut).length,
+      userChars: 0,
+      isLive: false
+    };
+    return [frontItem, steerItem, backItem];
+  }
   function buildMerged(snap) {
     const running = isRunning(snap);
     const _hasPending = Array.isArray(snap.pendingUser) && snap.pendingUser.length > 0;
@@ -7884,7 +8070,10 @@
       running,
       start,
       totalTurns: all.length,
-      items: items.concat(pend, live, noteItems)
+      /* 【2026-11-11】历史这一份先过一道「插话劈段」：带 steerAt 的插话要把她那段话
+       * 劈成两半、自己嵌在中间（见 applySteerSplits）。只对历史做 —— pend 是新发的
+       * 那句（没有 steerAt），live 那边服务端已经按事件顺序排好了。 */
+      items: applySteerSplits(items).concat(pend, live, noteItems)
     };
   }
 
@@ -9017,12 +9206,11 @@
     const stat = (0, import_react12.useMemo)(() => {
       const n = tools.length;
       const running = tools.find((t) => t.status === "run") || null;
-      const bad = tools.filter((t) => t.status === "err").length;
-      const warn = tools.filter((t) => t.status !== "ok" && t.status !== "err").length;
       let name = "\u8C03\u4E86 " + n + " \u6B21\u5DE5\u5177";
       if (running) name = "\u6B63\u5728" + (niceTool(running.name, running.args) || "\u5E72\u6D3B") + "\u2026";
-      const statusCls = "status " + (bad ? "err" : warn ? "warn" : "ok") + (running ? " run live" : "");
-      const statusTxt = bad ? bad + " \u4E2A\u5931\u8D25" : "";
+      const bad = tools.filter((t) => t.status === "err").length;
+      const statusCls = "status " + (bad ? "err" : running ? "run live" : "ok");
+      const statusTxt = bad ? bad + " \u4E2A\u5931\u8D25" : running ? "\u8FD0\u884C\u4E2D\u2026" : "";
       return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
     }, [list]);
     const doorName = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? stat.name.replace(/…$/, "") + " \xB7 " + Math.max(1, Math.round((Date.now() - Number(stat.running.startedAt)) / 1e3)) + "s\u2026" : stat.name;
@@ -9156,6 +9344,19 @@
     const lastScrollTopRef = (0, import_react14.useRef)(0);
     const keepFromBottom = (0, import_react14.useRef)(null);
     const preSwapScrollTop = (0, import_react14.useRef)(0);
+    const selfWriteRef = (0, import_react14.useRef)(0);
+    const followRef = (0, import_react14.useRef)(true);
+    const writeTop = (v) => {
+      const el = listRef.current || document.getElementById("log");
+      if (!el) return;
+      const want = Number(v);
+      if (!Number.isFinite(want)) return;
+      selfWriteRef.current = want;
+      try {
+        el.scrollTop = want;
+      } catch (e) {
+      }
+    };
     if (!listRef.current) listRef.current = document.getElementById("log");
     if (userScrolledRef.current && listRef.current) {
       const t = listRef.current.scrollTop;
@@ -9171,8 +9372,25 @@
       const onScroll = () => {
         const h = el.scrollHeight;
         const d = dist();
+        const st0 = el.scrollTop;
+        if (selfWriteRef.current > 0 && Math.abs(st0 - selfWriteRef.current) <= 1) {
+          selfWriteRef.current = 0;
+          lastHeightRef.current = h;
+          lastDistRef.current = d;
+          lastScrollTopRef.current = st0;
+          atBottomRef.current = d <= 8;
+          try {
+            window.paintToBottom && window.paintToBottom();
+          } catch (e) {
+          }
+          return;
+        }
         const shrank = h < lastHeightRef.current;
         lastHeightRef.current = h;
+        if (shrank) {
+          lastScrollTopRef.current = st0;
+          lastDistRef.current = d;
+        }
         if (!shrank) {
           const st = el.scrollTop;
           const wentUp = st < lastScrollTopRef.current - 0.5;
@@ -9180,6 +9398,7 @@
           if (wentUp) userScrolledRef.current = true;
           const prevDist = lastDistRef.current;
           lastDistRef.current = d;
+          if (!wentUp && d <= 8) followRef.current = true;
           if (!wentUp && d <= 8 && prevDist <= 8) userScrolledRef.current = false;
           lastScrollTopRef.current = st;
         }
@@ -9190,6 +9409,12 @@
       };
       const onUserIntent = () => {
         userScrolledRef.current = true;
+        selfWriteRef.current = 0;
+      };
+      const onTouchMove = () => {
+        userScrolledRef.current = true;
+        selfWriteRef.current = 0;
+        followRef.current = false;
       };
       const fromInnerScroller = (e) => {
         try {
@@ -9204,18 +9429,26 @@
       };
       const onWheel = (e) => {
         if (fromInnerScroller(e)) return;
+        selfWriteRef.current = 0;
         userScrolledRef.current = true;
-        if (e && Number(e.deltaY) < 0) atBottomRef.current = false;
+        if (e && Number(e.deltaY) < 0) {
+          atBottomRef.current = false;
+          followRef.current = false;
+        }
       };
       const onKey = (e) => {
         if (fromInnerScroller(e)) return;
+        selfWriteRef.current = 0;
         userScrolledRef.current = true;
         const k = e && e.key;
-        if (k === "ArrowUp" || k === "PageUp" || k === "Home") atBottomRef.current = false;
+        if (k === "ArrowUp" || k === "PageUp" || k === "Home") {
+          atBottomRef.current = false;
+          followRef.current = false;
+        }
       };
       el.addEventListener("scroll", onScroll, { passive: true });
       el.addEventListener("wheel", onWheel, { passive: true });
-      el.addEventListener("touchmove", onUserIntent, { passive: true });
+      el.addEventListener("touchmove", onTouchMove, { passive: true });
       el.addEventListener("pointerdown", onUserIntent, { passive: true });
       el.addEventListener("keydown", onKey);
       let pending = false;
@@ -9224,9 +9457,9 @@
         pending = true;
         requestAnimationFrame(() => {
           pending = false;
-          if (userScrolledRef.current && !atBottomRef.current) return;
+          if (!followRef.current) return;
           try {
-            el.scrollTop = el.scrollHeight;
+            writeTop(el.scrollHeight);
           } catch (e) {
           }
         });
@@ -9246,7 +9479,7 @@
       return () => {
         el.removeEventListener("scroll", onScroll);
         el.removeEventListener("wheel", onWheel);
-        el.removeEventListener("touchmove", onUserIntent);
+        el.removeEventListener("touchmove", onTouchMove);
         el.removeEventListener("pointerdown", onUserIntent);
         el.removeEventListener("keydown", onKey);
         try {
@@ -9267,19 +9500,40 @@
       } catch (e) {
       }
     }, [merged.totalTurns]);
+    const sidRef = (0, import_react14.useRef)(null);
+    (0, import_react14.useLayoutEffect)(() => {
+      const el = listRef.current || document.getElementById("log");
+      if (!el) return;
+      listRef.current = el;
+      const prev = sidRef.current;
+      sidRef.current = snap.sid;
+      if (prev === null || prev === snap.sid) return;
+      atBottomRef.current = true;
+      followRef.current = true;
+      userScrolledRef.current = false;
+      lastDistRef.current = 0;
+      preSwapScrollTop.current = 0;
+      keepFromBottom.current = null;
+      try {
+        writeTop(el.scrollHeight);
+      } catch (e) {
+      }
+      lastHeightRef.current = el.scrollHeight;
+      lastScrollTopRef.current = el.scrollTop;
+    }, [snap.sid]);
     const count = merged.items.length;
     const lastLen = tailLen(merged.items);
     (0, import_react14.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el) return;
       if (keepFromBottom.current != null) return;
-      if (!userScrolledRef.current || atBottomRef.current) {
-        el.scrollTop = el.scrollHeight;
+      if (followRef.current) {
+        writeTop(el.scrollHeight);
         return;
       }
       try {
         const want = preSwapScrollTop.current;
-        if (want > 0 && Math.abs(el.scrollTop - want) > 4) el.scrollTop = want;
+        if (want > 0 && Math.abs(el.scrollTop - want) > 4) writeTop(want);
       } catch (e) {
       }
       try {
@@ -9290,7 +9544,7 @@
     (0, import_react14.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el || keepFromBottom.current == null) return;
-      el.scrollTop = el.scrollHeight - keepFromBottom.current;
+      writeTop(el.scrollHeight - keepFromBottom.current);
       keepFromBottom.current = null;
     }, [merged.start]);
     const onLoadEarlier = () => {
@@ -9301,7 +9555,21 @@
     const lastItem = merged.items.length ? merged.items[merged.items.length - 1] : null;
     return /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)(import_jsx_runtime14.Fragment, { children: [
       merged.start > 0 ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("button", { type: "button", className: "loadEarlier", onClick: onLoadEarlier, children: "\u2191 \u518D\u5F80\u524D\u770B 100 \u8F6E\uFF08\u8FD8\u6709 " + merged.start + " \u8F6E\u6CA1\u663E\u793A\uFF09" }) : null,
-      rows.map((r) => /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(RowBoundary, { children: renderRow(r, merged.running, lastItem, snap.sid) }, r.key)),
+      rows.map((r) => (
+        /**
+         * 【2026-11-12 加·行 key 带上会话身份】
+         *
+         * item key 只有轮次绝对下标（`t-81-tl0` / `hub-t-81-tl0`），两个会话的
+         * 同号轮次完全一样。React 按 key 复用组件实例，于是切会话时**这一行不会重建**：
+         * 它的 `useState`（useOpen 的展开态、WorkerCard 的展开…）原样留着，
+         * `useOpen` 的初值也不会重新从 openMap 读 —— 主人看到的就是
+         * 「B 里第 81 轮的柜子自己开着」（探针三 复现）。
+         *
+         * 加上 sid 前缀之后，换屏时每一行都是新实例：展开态从 openMap 重新读
+         * （那边已经按会话分账），别的一并归零。sid 不换时 key 不变，不影响重渲染复用。
+         */
+        /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(RowBoundary, { children: renderRow(r, merged.running, lastItem, snap.sid) }, snap.sid + "\0" + r.key)
+      )),
       /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(TeamBar, { sid: snap.sid, items: merged.items })
     ] });
   }

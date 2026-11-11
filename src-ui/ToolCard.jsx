@@ -126,12 +126,13 @@ export function ToolGroup({ items }) {
   const stat = useMemo(() => {
     const n = tools.length;
     const running = tools.find((t) => t.status === 'run') || null;
-    const bad = tools.filter((t) => t.status === 'err').length;
-    const warn = tools.filter((t) => t.status !== 'ok' && t.status !== 'err').length;
     let name = '调了 ' + n + ' 次工具';
     if (running) name = '正在' + (niceTool(running.name, running.args) || '干活') + '…';
-    const statusCls = 'status ' + (bad ? 'err' : warn ? 'warn' : 'ok') + (running ? ' run live' : '');
-    const statusTxt = bad ? bad + ' 个失败' : '';
+    /* 【2026-11-12 主人】柜门上别动不动挂一颗金色「N 个失败」（没失败时太吵）；
+     * 改成：跑着就亮「运行中…」；**真有失败才报数**（不然失败被你藏了，等于信息丢失）。 */
+    const bad = tools.filter((t) => t.status === 'err').length;
+    const statusCls = 'status ' + (bad ? 'err' : running ? 'run live' : 'ok');
+    const statusTxt = bad ? bad + ' 个失败' : (running ? '运行中…' : '');
     return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
   }, [list]);
 

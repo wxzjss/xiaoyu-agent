@@ -3656,6 +3656,71 @@ function lastUserLine(sessionId) {
 }
 
 /**
+ * 把「上一轮没说完的半截话」从草稿补成一条正式的助手消息（带 `_recovered`）。
+ *
+ * 【2026-11-11 从 /api/sessions/select 里抽出来 · 重启后她说的话会永久消失】
+ *
+ * 这段原来只写在 `/api/sessions/select` 的处理里 —— 也就是说**得有人先打开这个会话**，
+ * 半截话才会被补回历史。可开机续跑（`resumeInterruptedTurn`，启动 8 秒后自己起跑）
+ * 是「还没进任何会话」就跑的，它读到的历史里没有这半截话；
+ * 而那一轮收尾时 `dropDraft` 会把草稿删掉 —— 于是：
+ *   · 续跑时她只看到引子里被引用的那一句「你当时正说到：…」，说得含糊，活还容易重干一遍；
+ *   · 跑完之后半截话**再也不会补进历史**（草稿没了、`select` 那趟也补不上了）。
+ * 实测（scripts/_t_resume_draft.mjs）：续跑的 prompt 里没有那条 assistant，
+ * 跑完历史的 6 条里也没有它，随后 select 报 recovered=false —— 那句话就此永久消失。
+ *
+ * 所以抽成一个函数，两处都调：`select`（主人打开会话时）和续跑（起跑之前）。
+ * 幂等：补完就 `dropDraft`，第二次进来 `readDraft` 返回 null 直接返回 false；
+ * 正文已经收进去过（`alreadyCollected`）也只删草稿不再补第二条。
+ *
+ * @returns {boolean} 这次真的补进去了没有
+ */
+function restoreDraftHalfTurn(id) {
+  const session = getSession(id);
+  if (!session || !Array.isArray(session.messages)) return false;
+  const draft = readDraft(id);
+  // 空草稿（一个字没说、也没调过工具）读出来是 null —— 顺手把文件删掉。
+  // 不删的话这种文件会一直躺在 .state/drafts 里，看目录的人会以为「有草稿没回灌」。
+  if (!draft) { try { dropDraft(id); } catch { /* 删不掉不影响这一轮 */ } return false; }
+  let recovered = false;
+  // 干工具活的时候往往一个字正经话都没说，只有工具记录 —— 以前读到「没文字」就当没草稿，
+  // 于是那一整轮（她说了「我这就去改」然后调了七八个工具）在历史里彻底蒸发。
+  // 现在只要草稿里有文字**或者**有工具记录，都接回来。
+  const last = session.messages[session.messages.length - 1];
+  // 只有「这一轮确实缺了这条回复」才补：最后一条是 assistant、有文字、且没待办工具
+  // → 真的说完了，草稿是残留，删掉。
+  // 其它情况（最后是 tool / user / 空壳 assistant）都算断在半路，把话接回来。
+  const tailIs = last ? last.role : '';
+  const tailHasTools = !!(last && Array.isArray(last.tool_calls) && last.tool_calls.length);
+  const tailHasText = !!(last && String(last.content ?? '').trim().length);
+  // tool 算断在半路，别误判成「说完了」把草稿当残留删掉
+  const tailFinished = tailIs === 'assistant' && tailHasText && !tailHasTools;
+  if (!tailFinished) {
+    const body = draftAsMessage(draft, (n) => featureNameOfTool(n) || n);
+    if (body) {
+      diagLog('draft-restored', `session=${id} len=${body.length}`);
+      /* 【草稿回灌也要过内容关】—— 2026-10-29
+       *
+       * 这里原来只判「最后一句是主人说的」就补。可重启那一下，
+       * 这一轮的话可能已经 commitWireBack 进历史了、草稿却没来得及删，
+       * 于是同一段话被补成第二条。现在先问一句：这段正文历史里有没有？
+       * 有就只删草稿，不再补。
+       */
+      if (alreadyCollected(session.messages, { role: 'assistant', content: body })) {
+        dropDraft(id);
+      } else {
+        session.messages.push({ role: 'assistant', content: body, _recovered: true });
+        session.updatedAt = Date.now();
+        saveSession(session);
+        recovered = true;
+      }
+    }
+  }
+  dropDraft(id);
+  return recovered;
+}
+
+/**
  * 崩溃后自动接着跑被打断的那一轮。
  *
  * 触发时机：startServer 之后 3 秒（界面已经能画出历史了）。
@@ -3740,6 +3805,24 @@ async function resumeInterruptedTurn(onlySessionId) {
   diagLog('resume-skip:already-running', sessionId);
     return;
   }
+  /**
+   * 【2026-11-11 修·重启后她说过的那半截话永久消失】
+   *
+   * 草稿回灌（把上一轮没说完的半截话补成一条 `_recovered` 的 assistant 消息）
+   * 原来只写在 `/api/sessions/select` 里 —— 也就是说**得先有人打开这个会话**才补。
+   * 而这里是开机自续：启动 8 秒后自己起跑，那时候前端可能还没进任何会话
+   * （主人开着两个会话、窗口最小化、手机端、或者这次要续的不是上次打开的那个）。
+   *
+   * 后果（scripts/_t_resume_draft.mjs 实测）：
+   *   · 续跑拿到的历史里没有那半截话，她只看到引子里被引用的最后 600 字 —— 活容易重干；
+   *   · 这一轮收尾会 dropDraft，草稿没了；之后主人再打开会话也补不上（recovered=false）
+   *     → 那句话就永久没了，正是主人说的「重启后……她说过的话没了」。
+   *
+   * 所以起跑前先补一次（跟 select 那条路是同一个函数，幂等）。
+   * 补进来那条带 `_recovered`，下面 `lastIsRecovered` 那道闸会照旧认成
+   * 「这一轮没干完」→ 不会把续跑误判成「已收尾」。
+   */
+  try { restoreDraftHalfTurn(sessionId); } catch (e) { console.warn('[resume] 草稿回灌失败（不影响续跑）：', String(e?.message ?? e)); }
   const last = session.messages[session.messages.length - 1];
   /**
    * 【判「这一轮到底收完没有」】—— 2026-10-31 改宽
@@ -8245,62 +8328,14 @@ const server = createServer(async (req, res) => {
     // 上次这一轮没跑完（进程被杀 / 断电 / 点了退出）留下的草稿：
     // 把已经说出来的话补成一条正式的助手消息，别让主人以为「记忆丢了」。
     // 只在没有在跑的时候补 —— 正在跑的那一轮草稿是活着的，补进去就重复了。
+    //
+    // 【2026-11-11】逻辑抽去了 `restoreDraftHalfTurn()`（模块级），
+    // 续跑那条路（resumeInterruptedTurn）起跑前也要调同一份 —— 否则
+    // 「开机自续先跑、主人才打开会话」这个顺序下，那半截话会永久消失。
     let recovered = false;
     const runningNow = runningTurns.get(id);
     if (!runningNow || runningNow.ac.signal.aborted) {
-      const draft = readDraft(id);
-      // 空草稿（一个字没说、也没调过工具）读出来是 null —— 顺手把文件删掉。
-      // 不删的话这种文件会一直躺在 .state/drafts 里，看目录的人会以为「有草稿没回灌」。
-      if (!draft) { try { dropDraft(id); } catch { /* 删不掉不影响这一轮 */ } }
-      // 干工具活的时候往往一个字正经话都没说，只有工具记录 —— 以前读到「没文字」就当没草稿，
-      // 于是那一整轮（她说了「我这就去改」然后调了七八个工具）在历史里彻底蒸发。
-      // 现在只要草稿里有文字**或者**有工具记录，都接回来。
-      if (draft) {
-        const last = session.messages[session.messages.length - 1];
-        // 只有「最后一句话是主人说的」才补：说明确实缺了这条回复。
-        // 否则草稿多半是以前遗留的脏数据，补进去反而多一条。
-        /**
-         * 【什么时候才该把草稿回灌】—— 2026-10-31 改宽
-         *
-         * 原来只认「最后一条是主人说的」。可主人反馈的真实场景是这样：
-         * 她说「我去查查」然后连着调工具，重启那一下最后一条是 tool；
-         * 或者刚说「我这就改」还没调工具，最后一条是空壳 assistant。
-         * 这两种都不满足「最后一条是 user」，于是草稿被 dropDraft 直接删掉 ——
-         * 主人那边看到的就是「重启前最后一轮她的话消失了」。
-         *
-         * 现在只在「这一轮明明已经正常收尾」时才不补：
-         * 最后一条是 assistant、有文字、且没待办工具 → 真的说完了，草稿是残留，删掉。
-         * 其它情况（最后是 tool / user / 空壳 assistant）都算断在半路，把话接回来。
-         */
-        const tailIs = last ? last.role : '';
-        const tailHasTools = !!(last && Array.isArray(last.tool_calls) && last.tool_calls.length);
-        const tailHasText = !!(last && String(last.content ?? '').trim().length);
-        // 同上：tool 算断在半路，别误判成「说完了」把草稿当残留删掉
-        const tailFinished = tailIs === 'assistant' && tailHasText && !tailHasTools;
-        if (!tailFinished) {
-          const body = draftAsMessage(draft, (n) => featureNameOfTool(n) || n);
-          if (body) {
-            diagLog('draft-restored', `session=${id} len=${body.length}`);
-            /**
-             * 【草稿回灌也要过内容关】—— 2026-10-29
-             *
-             * 这里原来只判「最后一句是主人说的」就补。可重启那一下，
-             * 这一轮的话可能已经 commitWireBack 进历史了、草稿却没来得及删，
-             * 于是同一段话被补成第二条。现在先问一句：这段正文历史里有没有？
-             * 有就只删草稿，不再补。
-             */
-            if (alreadyCollected(session.messages, { role: 'assistant', content: body })) {
-              dropDraft(id);
-            } else {
-              session.messages.push({ role: 'assistant', content: body, _recovered: true });
-              session.updatedAt = Date.now();
-              saveSession(session);
-              recovered = true;
-            }
-          }
-        }
-        dropDraft(id);
-      }
+      recovered = restoreDraftHalfTurn(id);
     }
     // 顺带把本子的状态带回去，界面不用再单发一次请求就知道有没有记忆
     return json(res, 200, { session: publicSession(session), memory: memoryInfo(id), recovered, interrupted: peekInterruptedInfo(id), running: runningTurns.has(id) });

@@ -207,6 +207,7 @@ const SELF_CHECK_BLOCK = [
   '· 动了 public/index.html → 跑 `node _t_ui.mjs`（真机会在浏览器里渲染一遍；App 得开着）',
   '· 动了 src/*.mjs → 按范围选，别一律上全量：只动一处文案/单文件 → `node scripts/check-changed.mjs`（增量，够用）；',
   '· 动了核心链路（server / turn / 消息落盘 / 权限）或要发版 → 才跑 `node scripts/run-all-checks.mjs` 全量。',
+  '· 全量那趟会顺带真机渲染一遍：App 没开、加了 --no-ui、或者机器上没 Edge，那一趟自动跳过，不算失败。',
   '· 跑挂了就把失败那条的原文贴出来；跑不了也要明说"没验"，不许含糊成"应该没问题"。',
 ].join('\n');
 

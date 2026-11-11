@@ -190,6 +190,38 @@ export default function LogView() {
    * 滚轮一滚浏览器当场就把 scrollTop 改了，不等 scroll 事件。
    */
   const preSwapScrollTop = useRef(0);
+  /**
+   * 【2026-11-12 加·区分「我自己写的 scrollTop」和「主人滚的」】
+   *
+   * 每次程序性写入都把目标值记在这儿；onScroll 看到 scrollTop 落在它附近，
+   * 就知道这一发是自己造成的 —— 只同步账本，不改「他在翻历史」的意图。
+   * 不这么记的话：换屏复位 / 收缩 clamp 之后我们自己那一发写入会被判成
+   * 「他往上滚了」，从此不再跟随最新消息（收尾后停在离底 87px 那个 bug）。
+   */
+  const selfWriteRef = useRef(0);
+  /**
+   * 【2026-11-12 加·「要不要跟着最新消息走」只由他的动作决定】
+   *
+   * 以前这件事靠 atBottomRef（离底 <= 8px）。可那个数会被**内容长高**改掉：
+   * 内容「先刚好铺满视口（335=clientHeight）、再长到 454」时，中间没有任何 scroll 事件，
+   * 等到下一发 scroll 到来时 d 已经是 119 → atBottom=false → pin 从此不贴底，
+   * 屏幕就停在顶部（实测：收尾后离底 119px，最新一条压在视口下面）。
+   *
+   * 所以单独记一笔「跟随意图」：
+   *   · 默认 true（新开屏、换会话都是「跟着最新」）；
+   *   · 只有**他主动往上翻**（滚轮朝上 / ↑ PageUp Home / 触屏上划）才置 false；
+   *   · 他自己滚回底部（scroll 后 d <= 8 且这一发不是往上走）就恢复 true。
+   * 内容长高、收缩 clamp、我们自己写 scrollTop —— 一律不动这笔账。
+   */
+  const followRef = useRef(true);
+  const writeTop = (v) => {
+    const el = listRef.current || document.getElementById('log');
+    if (!el) return;
+    const want = Number(v);
+    if (!Number.isFinite(want)) return;
+    selfWriteRef.current = want;
+    try { el.scrollTop = want; } catch (e) {}
+  };
 
   /* #log 是页面里现成的那个容器（React 只接管它的内容） */
   if (!listRef.current) listRef.current = document.getElementById('log');
@@ -211,6 +243,31 @@ export default function LogView() {
     const onScroll = () => {
       const h = el.scrollHeight;
       const d = dist();
+      const st0 = el.scrollTop;
+      /**
+       * 【2026-11-12 加·先认出「这一发是我自己写出来的」】
+       *
+       * pin / 滚动 effect / 换屏复位都会写 `scrollTop`，浏览器随后同样发一条 scroll 事件。
+       * 那条事件以前会被当成「主人往上滚了」——判据是 `st < lastScrollTopRef`（见下面 wentUp）：
+       *   · 换屏时我们写 `scrollTop = scrollHeight`，但 `lastScrollTopRef` 还停在上一个会话的
+       *     小值上 → 这一发被误判成「他往上滚」；
+       *   · 长屏换短屏时浏览器把 scrollTop 夹小（shrank 分支不记账），
+       *     `lastScrollTopRef` 留在旧的大值 → 紧接着我们自己的 `scrollTop = scrollHeight`
+       *     那一发又被判成「往上滚」→ `userScrolledRef=true / atBottomRef=false` → 从此不跟随
+       *     （探针实测：收尾后停在离底 87px，最新一条压在视口下面，得手动滚一下才恢复）。
+       *
+       * 所以每次程序性写入都把「我写的那个值」记下来（`selfWriteRef`），
+       * 对应的那发 scroll 只同步账本、不改「他在翻历史」的意图。
+       */
+      if (selfWriteRef.current > 0 && Math.abs(st0 - selfWriteRef.current) <= 1) {
+        selfWriteRef.current = 0;
+        lastHeightRef.current = h;
+        lastDistRef.current = d;
+        lastScrollTopRef.current = st0;
+        atBottomRef.current = d <= 8;
+        try { window.paintToBottom && window.paintToBottom(); } catch (e) {}
+        return;
+      }
       /* 【2026-11-11 修·收缩引起的滚动不算数】两发 scroll 之间高度变矮了
        * （折叠收起、流式重画换了个更矮的节点），浏览器会把 scrollTop 夹小
        * 并发出 scroll 事件 —— 这一发不是主人滚的。此刻 d 可能短暂变得很小，
@@ -219,6 +276,12 @@ export default function LogView() {
        * 一律不记账，主人的状态一个字都不动。 */
       const shrank = h < lastHeightRef.current;
       lastHeightRef.current = h;
+      if (shrank) {
+        /* 【2026-11-12 补】但锚点必须跟着夹小后的位置走 —— 否则下一发「我自己写的」
+         * scroll 会拿夹之前的旧大值去比，被判成「他往上滚了」（就是上面那段说的 87px）。 */
+        lastScrollTopRef.current = st0;
+        lastDistRef.current = d;
+      }
       if (!shrank) {
         /**
          * 【2026-11-11 再修·「8px 以内的上滚仍然被拽回」的真正根因】
@@ -247,6 +310,7 @@ export default function LogView() {
          * 刚往上走过（wentUp）更不能清：那一发 d 天然就小。 */
         const prevDist = lastDistRef.current;
         lastDistRef.current = d;
+        if (!wentUp && d <= 8) followRef.current = true;
         if (!wentUp && d <= 8 && prevDist <= 8) userScrolledRef.current = false;
         lastScrollTopRef.current = st;
       }
@@ -256,7 +320,9 @@ export default function LogView() {
       try { window.paintToBottom && window.paintToBottom(); } catch (e) {}
     };
     /* 只有这几种「他自己动手」的动作才把人标记成「在翻历史」 */
-    const onUserIntent = () => { userScrolledRef.current = true; };
+    const onUserIntent = () => { userScrolledRef.current = true; selfWriteRef.current = 0; };
+    /* 触屏上划：先停跟随；滚回底部 onScroll 会恢复 */
+    const onTouchMove = () => { userScrolledRef.current = true; selfWriteRef.current = 0; followRef.current = false; };
     /**
      * 【2026-11-11 修·主人报「小幅往上滚会不断抖动、把我拉回最新消息」】
      *
@@ -292,19 +358,21 @@ export default function LogView() {
     };
     const onWheel = (e) => {
       if (fromInnerScroller(e)) return;      // 内部滚自己的，别惊动聊天区
+      selfWriteRef.current = 0;              // 他动手了：作废「我自己写的」那个标记
       userScrolledRef.current = true;
       /* deltaY < 0 = 往上（看更早的内容）。触控板惯性里也有 deltaY>0 的帧，别误伤 */
-      if (e && Number(e.deltaY) < 0) atBottomRef.current = false;
+      if (e && Number(e.deltaY) < 0) { atBottomRef.current = false; followRef.current = false; }
     };
     const onKey = (e) => {
       if (fromInnerScroller(e)) return;
+      selfWriteRef.current = 0;
       userScrolledRef.current = true;
       const k = e && e.key;
-      if (k === 'ArrowUp' || k === 'PageUp' || k === 'Home') atBottomRef.current = false;
+      if (k === 'ArrowUp' || k === 'PageUp' || k === 'Home') { atBottomRef.current = false; followRef.current = false; }
     };
-    el.addEventListener('scroll', onScroll, { passive: true });
+        el.addEventListener('scroll', onScroll, { passive: true });
     el.addEventListener('wheel', onWheel, { passive: true });
-    el.addEventListener('touchmove', onUserIntent, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: true });
     el.addEventListener('pointerdown', onUserIntent, { passive: true });
     el.addEventListener('keydown', onKey);
 
@@ -325,8 +393,22 @@ export default function LogView() {
       pending = true;
       requestAnimationFrame(() => {
         pending = false;
-        if (userScrolledRef.current && !atBottomRef.current) return;
-        try { el.scrollTop = el.scrollHeight; } catch (e) {}
+        /**
+         * 【2026-11-12 修·收尾后停在离底 119px（最新一条压在视口下面）】
+         *
+         * 原来这里还要「他没自己滚过」那笔账 —— 可那个账很容易被误置成 true：
+         * 内容「先刚好铺满视口、再长高」时，期间那几发 scroll（浏览器 clamp /
+         * 我们自己的写入）里只要有一发被判成「他往上滚了」，pin 从此就再也不贴底。
+         * 探针实测账本：atBottom=false / userScrolled=true / lastH=335（正好等于视口高）
+         * / self=99（一次没落地的程序写入残留），内容长到 454 之后屏幕就停在顶部。
+         *
+         * 判据其实只需要一条：**此刻是不是贴着底**。
+         *   · 真贴底 → 内容一变就跟着长（跟原来一样）；
+         *   · 他往上翻了 → onScroll 距离一超过 8px 就把 atBottom 置 false，
+         *     这里什么都不做，「别动人正在看的位置」这条规矩没变。
+         */
+        if (!followRef.current) return;
+        try { writeTop(el.scrollHeight); } catch (e) {}
       });
     };
     let mo = null;
@@ -345,7 +427,7 @@ export default function LogView() {
     return () => {
       el.removeEventListener('scroll', onScroll);
       el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('touchmove', onUserIntent);
+      el.removeEventListener('touchmove', onTouchMove);
       el.removeEventListener('pointerdown', onUserIntent);
       el.removeEventListener('keydown', onKey);
       try { if (mo) mo.disconnect(); } catch (e) {}
@@ -359,6 +441,50 @@ export default function LogView() {
     if (!el) return;
     try { el.classList.toggle('long-list', merged.totalTurns > 150); } catch (e) {}
   }, [merged.totalTurns]);
+
+  /**
+   * 【2026-11-12 加·换屏必须把「滚动的账」清零（主人报的那一串切会话症状的根）】
+   *
+   * 这个组件是**单例**：切会话只换 store 里的数据，LogView 不重建 → 上面那些 ref
+   * （atBottomRef / userScrolledRef / lastScrollTopRef / preSwapScrollTop /
+   *   keepFromBottom）全都带着**上一个会话的状态**进到新会话：
+   *
+   *   · 在 A 翻到中间 → `userScrolledRef=true`、`atBottomRef=false`；
+   *     切到 B 之后 `pin()` 一看「他自己滚过、而且不在底部」→ 一根手指都不动，
+   *     滚动 effect 也走「还原位置」那一支，把视口摆到 `preSwapScrollTop`
+   *     （A 的 scrollTop！）—— 于是 B 落在半路、再也不跟随最新消息。
+   *     探针（scripts/_t_switch_probe.mjs 一）实测：切到 B 之后离底 **720px** 恒定不动，
+   *     B 里来新内容也只是把 720 变成 792（内容长高，视口没动）。
+   *   · `keepFromBottom` 还留着上一屏「再往前看」的中间值 → 补历史那个 effect
+   *     会把新会话的视口按那个距离重新摆一次 —— 位置随机。
+   *
+   * 换屏的正确语义只有一条：**新会话从底部开始、跟着最新消息走**。
+   * 所以这里把五笔账全部清零，并直接把视口摆到底。
+   *
+   * 放在滚动 effect 之前声明 = 同一次提交里先跑（useLayoutEffect 按声明顺序执行），
+   * 后面的滚动 effect 就不会拿旧的锚点去还原位置了。
+   */
+  const sidRef = useRef(null);
+  useLayoutEffect(() => {
+    const el = listRef.current || document.getElementById('log');
+    if (!el) return;
+    listRef.current = el;
+    const prev = sidRef.current;
+    sidRef.current = snap.sid;
+    /* 首帧（prev 还是 null）不用动：下面那个滚动 effect 本来就会贴底 */
+    if (prev === null || prev === snap.sid) return;
+    atBottomRef.current = true;
+    followRef.current = true;
+    userScrolledRef.current = false;
+    lastDistRef.current = 0;
+    preSwapScrollTop.current = 0;
+    keepFromBottom.current = null;
+    try { writeTop(el.scrollHeight); } catch (e) {}
+    /* 自己这一发写入也会来一条 scroll 事件：把「上一次的位置/高度」记成写完之后的值，
+     * 否则那一发会被当成「他往上滚了」（st 比旧值小）而把 atBottom 打回 false。 */
+    lastHeightRef.current = el.scrollHeight;
+    lastScrollTopRef.current = el.scrollTop;
+  }, [snap.sid]);
 
   const count = merged.items.length;
   const lastLen = tailLen(merged.items);
@@ -374,8 +500,8 @@ export default function LogView() {
     const el = listRef.current;
     if (!el) return;
     if (keepFromBottom.current != null) return;   // 补历史时由下面那个 effect 接管
-    if (!userScrolledRef.current || atBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
+    if (followRef.current) {
+      writeTop(el.scrollHeight);
       return;
     }
     /* 【2026-11-11 修·重画把人甩到顶上】真在翻历史的人：整屏重画换 DOM 的瞬间
@@ -387,7 +513,7 @@ export default function LogView() {
      * lastScrollTopRef（onScroll 记的，慢一帧）—— 见那个 ref 上面的长注释。 */
     try {
       const want = preSwapScrollTop.current;
-      if (want > 0 && Math.abs(el.scrollTop - want) > 4) el.scrollTop = want;
+      if (want > 0 && Math.abs(el.scrollTop - want) > 4) writeTop(want);
     } catch (e) {}
     /* 只更新「底下多了几条」那颗提醒 */
     try { if (window.noteNewContent) window.noteNewContent(); } catch (e) {}
@@ -397,7 +523,7 @@ export default function LogView() {
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el || keepFromBottom.current == null) return;
-    el.scrollTop = el.scrollHeight - keepFromBottom.current;
+    writeTop(el.scrollHeight - keepFromBottom.current);
     keepFromBottom.current = null;
   }, [merged.start]);
 
@@ -417,7 +543,19 @@ export default function LogView() {
         </button>
       ) : null}
       {rows.map((r) => (
-        <RowBoundary key={r.key}>{renderRow(r, merged.running, lastItem, snap.sid)}</RowBoundary>
+        /**
+         * 【2026-11-12 加·行 key 带上会话身份】
+         *
+         * item key 只有轮次绝对下标（`t-81-tl0` / `hub-t-81-tl0`），两个会话的
+         * 同号轮次完全一样。React 按 key 复用组件实例，于是切会话时**这一行不会重建**：
+         * 它的 `useState`（useOpen 的展开态、WorkerCard 的展开…）原样留着，
+         * `useOpen` 的初值也不会重新从 openMap 读 —— 主人看到的就是
+         * 「B 里第 81 轮的柜子自己开着」（探针三 复现）。
+         *
+         * 加上 sid 前缀之后，换屏时每一行都是新实例：展开态从 openMap 重新读
+         * （那边已经按会话分账），别的一并归零。sid 不换时 key 不变，不影响重渲染复用。
+         */
+        <RowBoundary key={snap.sid + '\u0000' + r.key}>{renderRow(r, merged.running, lastItem, snap.sid)}</RowBoundary>
       ))}
       {/* 【团队模式】顶部轻提示 + 流外的 running 卡（按 wid 与流内去重） */}
       <TeamBar sid={snap.sid} items={merged.items} />

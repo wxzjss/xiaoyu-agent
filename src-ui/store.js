@@ -240,6 +240,83 @@ export function getSnapshot() {
 /* ── 写入 API（chat.js / index.html 通过 window.__logStore 调用） ── */
 
 /**
+ * 【2026-11-12 加·「切回来回复闪一下又冒出来」——换屏那一拍的直播兜底】
+ *
+ * 换屏时 st.live 必须清掉（否则 B 屏幕上会长出 A 那一轮的话 = 串消息）。
+ * 可「清掉」到「attachLive 把快照拿回来」之间有一个**网络往返**的空档：
+ * 历史是齐的（齐到最后一条主人话），正在跑那一轮已经吐出来的字却不在 ——
+ * 主人看到的就是「切回来，她的回复先消失一下，过一会儿再全冒出来」。
+ *
+ * 探针（scripts/_t_switch_probe.mjs 二·b，把 /api/chat/live 打成 150ms 延迟
+ * ——真机常态）实测：中间有 2 帧屏幕只剩历史，缺的正是那两段正在跑的话；
+ * 本地 0ms 延迟时这一拍太快、根本来不及上屏（所以一直没人发现）。
+ *
+ * 修法：每个会话记住「上一次拿到的直播快照」，换屏回这个会话时先拿它垫上，
+ * 服务端的新快照一到就顶掉（followLive 每 1.2s 一拍）。
+ *
+ * 两条硬约束（不然「垫上」就成了「拿旧账骗人」）：
+ *   ① **只垫很新的**（LIVE_CACHE_TTL 内）。久不更新的快照可能属于早就跑完的那一轮，
+ *      垫上去等于拿旧内容盖住历史里更完整的回复 —— 那正是主人报过的另一个病
+ *      （「切走再切回来，看不到后续的话」）。
+ *   ② **自己会收摊**：垫上之后 2.5s 内没有任何更新的写（followLive 还没来），
+ *      说明这一轮要么早结束了、要么服务端不认 —— 立刻撤掉，把屏幕还给历史。
+ *      正常在跑的轮 1.2s 内必有新快照，所以这条只对「陈旧快照」生效。
+ */
+const liveCache = new Map();          // sid -> { live, at }
+const LIVE_CACHE_TTL = 4000;          // 只垫「4 秒内还新鲜过」的快照
+let _liveRestoreTimer = 0;
+let _liveRestoreSid = '';
+let _liveRestoreObj = null;
+
+/** 写直播 + 维护快照缓存（null = 这一轮收摊，缓存一起删） */
+function writeLive(sid, live) {
+  const st = logState();
+  st.live = live && Array.isArray(live.items) ? live : null;
+  const s = String(sid || '');
+  if (!s) return st.live;
+  if (st.live) {
+    liveCache.set(s, { live: st.live, at: Date.now() });
+    /* 只留最近几个会话，别让缓存无限长大（一份快照顶多几十条 item） */
+    if (liveCache.size > 6) {
+      let oldestKey = '';
+      let oldestAt = Infinity;
+      for (const [k, v] of liveCache) { if (v.at < oldestAt) { oldestAt = v.at; oldestKey = k; } }
+      if (oldestKey) liveCache.delete(oldestKey);
+    }
+  } else {
+    liveCache.delete(s);
+  }
+  return st.live;
+}
+
+/** 换屏：这个会话有没有「可以垫一下」的快照？（没有就返回 null = 老行为） */
+function restoreLiveFor(sid) {
+  const s = String(sid || '');
+  const hit = liveCache.get(s);
+  if (!hit || !hit.live) return null;
+  if (Date.now() - hit.at > LIVE_CACHE_TTL) { liveCache.delete(s); return null; }
+  if (hit.live.running === false) return null;   // 已经收尾的那一轮归历史管
+  return hit.live;
+}
+
+/** 垫上之后挂一个 2.5s 的自愈：没有更新的快照来就把这层垫子撤掉 */
+function armRestoreCheck(sid, obj) {
+  if (_liveRestoreTimer) { try { clearTimeout(_liveRestoreTimer); } catch (e) {} }
+  _liveRestoreSid = String(sid || '');
+  _liveRestoreObj = obj;
+  _liveRestoreTimer = setTimeout(() => {
+    _liveRestoreTimer = 0;
+    const st = logState();
+    if (String(st.sid || '') !== _liveRestoreSid) return;   // 又切走了
+    if (st.live !== _liveRestoreObj) return;                // 已经有更新的写（直播接手了）
+    st.live = null;                                        // 陈旧快照：收摊，交给历史
+    liveCache.delete(_liveRestoreSid);
+    pendingUser = dropLandedPending(pendingUser, st.turns);
+    bump();
+  }, 2500);
+}
+
+/**
  * 整屏历史换人 / 刷新。
  * 老实现里「整屏重画」会顺手把屏幕上的系统提示冲掉，这里沿用同一口径：
  * 历史一换，旧提示就不该再挂着（它们是上一轮的事）。
@@ -250,7 +327,13 @@ export function setHistory(sid, turns) {
   const changedScreen = String(st.sid || '') !== _sid;
   st.sid = _sid;
   st.turns = Array.isArray(turns) ? turns : [];
-  if (changedScreen) st.live = null;
+  /* 【2026-11-12 修】原来这里无条件 st.live = null（换屏清直播）。清还是要清，
+   * 但「切回一个正在跑的会话」时先用本会话上一份快照垫住那一拍 —— 见 liveCache 注释。 */
+  if (changedScreen) {
+    const _pad = restoreLiveFor(_sid || effectiveSid());
+    st.live = _pad;
+    if (_pad) armRestoreCheck(_sid || effectiveSid(), _pad);
+  }
   notes = [];
   /**
    * 账本规则（2026-11-10 三修，探针实测钉死的）：
@@ -325,7 +408,8 @@ export function setLive(sid, live) {
     _falseWriteTimer = 0;
     _falseWritePending = null;
   }
-  st.live = live && Array.isArray(live.items) ? live : null;
+  /* 【2026-11-12】写直播统一走 writeLive：顺手更新「换屏时能垫的那份快照」 */
+  writeLive(sid, live && Array.isArray(live.items) ? live : null);
   if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
   bump();
   return true;
@@ -367,7 +451,7 @@ function _fireFalseWrite() {
   const _len = Array.isArray(st.turns) ? st.turns.length : 0;
   if (_len > _falseWritePrevTurns) {
     /* ③ 历史已经接住了：直播收摊，屏幕交给历史 */
-    st.live = null;
+    writeLive(_falseWriteSid, null);
     pendingUser = dropLandedPending(pendingUser, st.turns);
   } else {
     /* ④ 没人接手：落账真相（running:false），别让界面永远以为在跑 */

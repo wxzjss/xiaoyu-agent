@@ -1252,8 +1252,15 @@ for (let round = 0; round < config.maxRounds; round++) {
         /* 【2026-11-05 修·插话带附件】
          * 原来只 push content: it.text —— 主人插话时拖进来的图全丢了。
          * 现在照 /api/chat 那条路的规矩来：正文用 composeUserContent 拼附件说明，
-         * 图片路径单记在 _images，发请求前由 inflateHistory 现读现编码。 */
-        for (const it of steered) {
+         * 图片路径单记在 _images，发请求前由 inflateHistory 现读现编码。 */        for (const it of steered) {
+          /* 【2026-11-11 修·插话在历史里出现两遍（数据层双写）】
+           *
+           * 首字延迟那个窗口里，/api/interject 会判「这一轮没在跑」，把主人的话
+           * **带 _steer 标记直推进历史**；前端随后又重发一遍，撞 409 后改走 steer
+           * 通道 → 这句又被塞进信箱 → 走到这里再 push 一次 = 历史里两份。
+           * 判据只看「带 _steer 的同文消息是不是就紧挨队尾」，
+           * 所以主人真想说两遍同一句（中间她答过一次）不会被吞。 */
+          if (isSteerAlreadyLanded(messages, it.text)) continue;
           const att = Array.isArray(it.attachments) ? it.attachments.filter((x) => x && x.path) : [];
           const imgs = att.map((x) => String(x.path)).filter((p) => isImagePath(p));
           const fls = att.map((x) => String(x.path)).filter((p) => !isImagePath(p));
@@ -2362,4 +2369,42 @@ function sumUsage(acc, u) {
     prompt_cache_hit_tokens: Number(next.prompt_cache_hit_tokens ?? 0) + hit,
     prompt_cache_miss_tokens: Number(next.prompt_cache_miss_tokens ?? 0) + miss,
   };
+}
+
+/**
+ * 【这句插话是不是已经落进历史了？】—— 2026-11-11
+ *
+ * 首字延迟（模型还没吐第一个字）那个窗口里，/api/interject 会判「这一轮没在跑」，
+ * 于是把主人的话**带 `_steer: true` 直接推进历史**；前端并不知道，仍按自己的
+ * 兜底逻辑重发一遍 → 撞 409 → 改走 steer 通道 → 这句话又被塞进信箱 →
+ * agent loop 在下一步 drainSteps 取到它，再 push 一条 = **历史里同一句两份**。
+ *（主人看到的就是「我发的那句话重复了」，办事鱼会话里 [246][247][248] 就是这形态。）
+ *
+ * 判据刻意收得很窄，只认「同文 + 带 _steer + 就在队尾附近」：
+ *   · 主人真想把同一句说两遍（中间她答过一次）→ 中间那条不带 tool_calls 的
+ *     assistant 会让扫描停下，不会被吞；
+ *   · 上一轮早先的插话即便文字相同，也离队尾很远，同样不受影响。
+ *
+ * @param {Array} messages 当前要发给模型的消息数组（历史 + 本轮已落的）
+ * @param {string} text 信箱里这条插话的正文
+ * @returns {boolean} true = 已经有了，别再 push
+ */
+function isSteerAlreadyLanded(messages, text) {
+  const arr = Array.isArray(messages) ? messages : [];
+  const nz = (s) => String(s == null ? '' : s).replace(/\s+/g, '');
+  const want = nz(text);
+  if (!want) return false;
+  for (let i = arr.length - 1, seen = 0; i >= 0 && seen < 4; i--) {
+    const m = arr[i];
+    if (!m || typeof m !== 'object') continue;
+    if (m.role === 'assistant') {
+      if (!m.tool_calls) break;   // 她答过话了 → 后面再插同样的算新话
+      continue;
+    }
+    if (m.role !== 'user') continue;
+    seen += 1;
+    if (m._steer !== true) continue;
+    if (nz(m.content) === want) return true;
+  }
+  return false;
 }

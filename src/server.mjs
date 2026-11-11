@@ -738,6 +738,59 @@ function lastUserTextOf(session) {
  * 走 send 推出去，界面画成她自己的气泡。
  */
 /**
+ * 【主人这句话是不是「同一轮的兜底重发」—— 已经在历史里了？】2026-11-11
+ *
+ * 返回历史里那条已经存在的记录（找到就复用它，不再 push 第二条），没有就返回 null。
+ *
+ * 判据（扫尾部 6 条 user）：
+ *   · 同 content + 同 _who；
+ *   · 中间她没真答过话（碰到不带 tool_calls 的 assistant 就停 —— 答过了再发同样的话
+ *     就是主人有意重发，两条都得落）；
+ *   · `_steer` 的消息**默认不算**对照物（插话和主人正式发的那句是两句），
+ *     唯一的例外：它就是**紧挨队尾的那一条**、而且是两分钟内刚写的 ——
+ *     那是 /api/interject 判「没在跑」时直推进历史的同一句，再 push 就是双写。
+ *
+ * 【为什么这函数单独拎出来】
+ * 这段逻辑以前内联在 /api/chat 里，一条 if 之隔就是双写。拎出来是为了能被
+ * scripts/check-steer-dedupe.mjs 真跑（把源码抠出来 new Function 跑，跟
+ * check-live-history-split 验 trimTurnsForLive 是同一套路子）。
+ *
+ * @param {Array} history 会话的 messages
+ * @param {{content?:string,_who?:string}} userMsg 这次要落的那条
+ * @param {number} [now] 注入当前时间（探针用）
+ */
+function findDupUserRef(history, userMsg, now = Date.now()) {
+  const arr = Array.isArray(history) ? history : [];
+  const who = (m) => (m && typeof m._who === 'string' ? m._who : '');
+  const content = String((userMsg && userMsg.content) ?? '');
+  const myWho = who(userMsg);
+  const STEER_FRESH_MS = 2 * 60 * 1000;
+  for (let k = arr.length - 1, seen = 0; k >= 0 && seen < 6; k--) {
+    const pm = arr[k];
+    if (!pm || typeof pm !== 'object') continue;
+    if (pm.role === 'assistant') {
+      // 她真的说过话 → 之后再发同样的话是有意重发，停
+      if (!pm.tool_calls) break;
+      continue;
+    }
+    seen++;
+    if (pm.role !== 'user') continue;
+    if (pm._steer) {
+      /* 插话：默认不算对照物。唯一例外 —— 它就是队尾、且刚写进去的那条
+       * （/api/interject 直推历史留下的自己）。 */
+      const isTail = k === arr.length - 1;
+      const at = Number(pm.at);
+      const fresh = Number.isFinite(at) && at > Number(now) - STEER_FRESH_MS;
+      if (!(isTail && fresh)) continue;
+    }
+    if (String(pm.content ?? '') !== content) continue;
+    if (who(pm) !== myWho) continue;
+    return pm;
+  }
+  return null;
+}
+
+/**
  * 【统一落盘：把主人说的话写进历史】—— 2026-10-27
  *
  * 两个 bug 同一个根：主人的话没真正进历史。
@@ -9570,26 +9623,18 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        *  两个条件都不能丢，否则会吞掉主人的真发言：
        *    · 「中间没有 assistant 人话」——她答过话了，主人再发同样的就是有意重发，必须两条都落；
        *    · 「同 _who」——群聊里别的成员发同样内容，是别人的话，不能当成重发吞掉。
+       *
+       *  【2026-11-11 二修·主人报「同一句插话在历史里出现两遍」】
+       *
+       *  上面那道闸对 `_steer` 是**一律跳过**的（「插话不算同轮重发的对照物」）。
+       *  可 /api/interject 判「这一轮没在跑」时，是**带 `_steer: true` 直接推进历史**的；
+       *  前端紧接着用同一句 POST /api/chat，正好被那句 continue 跳过 →
+       *  又 push 一份 → 历史里同一句出现两遍（办事鱼 [246][247][248] 就是这形态）。
+       *
+       *  区别在处理位置：那种「自己已经落盘了」的副本必然**紧挨队尾**、而且是刚写的。
+       *  所以只对「最后一条 + 两分钟内」放开 `_steer` 的跳过；更早的插话依旧不算对照物。
        */
-      let __dupUserRef = null;
-      for (let __k = history.length - 1, __seen = 0; __k >= 0 && __seen < 6; __k--) {
-        const __pm = history[__k];
-        if (!__pm || typeof __pm !== 'object') continue;
-        if (__pm.role === 'assistant') {
-          // 她真的说过话（不带工具调用的 assistant）→ 之后再发同样的话是有意重发，停。
-          if (!__pm.tool_calls) break;
-          continue; // 带工具调用的中间过程不算「答过话」
-        }
-        __seen++;
-        if (__pm.role !== 'user') continue; // tool 结果等中间记录，跳过
-        if (__pm._steer) continue; // 插话不算同轮重发的对照物
-        if (String(__pm.content ?? '') !== String(userMsg.content)) continue;
-        const __pmWho = typeof __pm._who === 'string' ? __pm._who : '';
-        const __myWho = typeof userMsg._who === 'string' ? userMsg._who : '';
-        if (__pmWho !== __myWho) continue;
-        __dupUserRef = __pm;
-        break;
-      }
+      const __dupUserRef = findDupUserRef(history, userMsg);
       if (__dupUserRef) {
         userMsgRef = __dupUserRef;
       } else {
@@ -12470,10 +12515,32 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        前端重绘时按 _atChars 把我那段话劈成两半，把主人的话嵌在中间。
        客户端没传就退回老做法（排末尾）。 */
     const _atC = Number(atChars);
+    /**
+     * 【2026-11-11 补 _who·署名与防重都要它】
+     *
+     * /api/chat 那条路一直在存 `_who`（主人身份也存，见 9541 那段注释），
+     * 可这条直推**一直没存**。两个后果：
+     *   ① 界面重画时这句的署名只能靠兜底，身份功能开着时会画错人；
+     *   ② findDupUserRef 的判据里有「同 _who」—— 一边空、一边是「主人」，
+     *      对不上 → 前端重发那句又 push 一份 = 插话在历史里出现两遍。
+     */
+    let _whoName = '';
+    let _whoId = '';
+    try {
+      const __me = currentIdentity(sessionId);
+      if (__me) { _whoName = String(__me.name || ''); _whoId = String(__me.id || ''); }
+    } catch {}
     history.push({
       role: 'user',
       content: message,
+      /* 【2026-11-11 补 at·原来这条没有时间戳】
+       * 没有 at 有两个后果：①界面上这句的时间是空的（publicSession 的 ts 兜底读 m.at）；
+       * ②findDupUserRef 认不出「这是刚刚直推进来的同一句」（它靠 at 判新鲜度），
+       * 于是前端重发那句又会 push 一份 —— 真机探针就是这么抓到 2 份的。 */
+      at: Date.now(),
       _steer: true,
+      ...(_whoName ? { _who: _whoName } : {}),
+      ...(_whoId ? { _whoId } : {}),
       ...(Number.isFinite(_atC) && _atC >= 0 ? { _atChars: _atC } : {}),
     });
     /**

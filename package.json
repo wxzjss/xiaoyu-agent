@@ -52,6 +52,7 @@
       "assets/**/*",
       "scripts/voice/**/*",
       "scripts/fetch-txt.mjs",
+      "scripts/screen-off.ps1",
       "package.json",
       "!**/*.bak",
       "!**/*.bak-*",
@@ -71,7 +72,8 @@
     ],
     "asar": true,
     "asarUnpack": [
-      "**/*.node"
+      "**/*.node",
+      "scripts/screen-off.ps1"
     ],
     "win": {
       "target": [

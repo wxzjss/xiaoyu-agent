@@ -202,12 +202,31 @@ console.log('\n二、随机串 200 轮（固定种子）');
 
 console.log('\n三、最小形状：口径 + 屏幕段数');
 {
+  /* 【2026-11-11 主人报的那一幕的原始事件】模型一步里并行调两个 read_file，
+   * 事件按「先都开跑、再各自结束」到达 —— 不是 A 开 A 结 B 开 B 结。 */
+  const PARALLEL = [
+    { type: 'tool_start', id: 'pA', name: 'read_file', args: '{"path":"a.txt"}' },
+    { type: 'tool_start', id: 'pB', name: 'read_file', args: '{"path":"b.txt"}' },
+    { type: 'tool_end', id: 'pA', ok: true, output: 'A 的内容' },
+    { type: 'tool_end', id: 'pB', ok: true, output: 'B 的内容' },
+  ];
+  /* 同一个 id 来两次结束（上游重试 / 补推 / 重放）：只许更新那一张，不许再加一张。 */
+  const DOUBLE_END = [
+    { type: 'tool_start', id: 'd1', name: 'read_file', args: '{}' },
+    { type: 'tool_end', id: 'd1', ok: true, output: '第一次' },
+    { type: 'tool_end', id: 'd1', ok: true, output: '第二次' },
+  ];
   const SHAPES = [
     ['① 别人插一句之后她接着说', [{ type: 'whale_stream_start', who: '小鲸' }, { type: 'text', text: '我看一下。' }, { type: 'whale_delta', who: '小鲸', text: ' ' }, { type: 'text', text: '的' }], 1],
     ['② 工具跑完之后她接着说', [{ type: 'text', text: 'A' }, { type: 'tool_start', id: 'k', name: 'run_command', args: '{}' }, { type: 'text', text: 'B' }, { type: 'tool_end', id: 'k', ok: true, output: 'o' }, { type: 'text', text: 'C' }], 2],
     ['③ text→worker→text→worker→text', [{ type: 'text', text: 'B' }, { type: 'worker', wid: 'w1', name: '干活', status: 'run', kind: 'step', text: 's1' }, { type: 'text', text: 'C' }, { type: 'worker', wid: 'w1', status: 'ok', kind: 'note', text: '' }, { type: 'text', text: 'D' }], 2],
     ['④ text→tool_end(更新)→text→tool_end(更新)→text', [{ type: 'tool_start', id: 'k1', name: 'run_command', args: '{}' }, { type: 'text', text: 'A' }, { type: 'tool_end', id: 'k1', ok: true, output: 'o1' }, { type: 'text', text: 'B' }, { type: 'tool_end', id: 'k1', ok: true, output: 'o2' }, { type: 'text', text: 'C' }], 1],
     ['⑤ text→whale_delta→text→whale_delta→text', [{ type: 'whale_stream_start', who: '小鲸' }, { type: 'text', text: 'A' }, { type: 'whale_delta', who: '小鲸', text: ' ' }, { type: 'text', text: 'B' }, { type: 'whale_delta', who: '小鲸', text: '！' }, { type: 'text', text: 'C' }], 1],
+    /* 【2026-11-11 加·主人报「读完文件了柜子里还是两张【正在读文件】(转圈 26s) + 两张【完成】」】
+     * 一步里并行开两个工具，事件顺序就是这么朴素。这里先把它塞进「最小形状」表，
+     * 管住「服务端两份相等 + 屏幕段数」这层；工具卡条数的专断言在下面 三·一。 */
+    ['⑥ 一步并行两个工具（A/B 同时开跑，各自结束）', PARALLEL, 0],
+    ['⑦ 同一个 id 结束两次（重复结束事件不许长出新卡）', DOUBLE_END, 0],
   ];
   for (const [name, evs, wantSeg] of SHAPES) {
     const c = compose(evs);
@@ -217,6 +236,72 @@ console.log('\n三、最小形状：口径 + 屏幕段数');
       name + ' → 清单 ' + wantSeg + ' 段 / 屏幕 ' + wantSeg + ' 个气泡',
       '清单 ' + textsOf(c.svInc).length + ' 段 / 屏幕 ' + scr.asst.length + ' 个');
   }
+}
+
+console.log('\n三·三、并行工具：柜子里一行代码只许一张卡（2026-11-11 主人报「4 张」）');
+{
+  /* ══ 主人截图那一幕 ══
+   * 「已经读完文件了，为什么柜子里还是有两个【正在读文件】（转圈 26s），下面还有两个【完成】」
+   *
+   * 病根在服务端「工具开始/结束」的配对只看**最后一张**工具卡：
+   *   tool_start A → tool_start B → tool_end A → tool_end B
+   *   · tool_end A：最后一张是 B，id 对不上 → 另 push 一条 A(完成)
+   *   · tool_end B：最后一张是刚 push 的 A(完成)，又对不上 → 再 push 一条 B(完成)
+   * 清单 4 条：A(正在跑) B(正在跑) A(完成) B(完成)。
+   *
+   * 修好之后：一步并行 N 个工具 = N 张卡，每张各自挂自己的结果，没有 status==='run' 的残留。
+   * 这两条断言就是那一幕的回归；改回「只看最后一张」必红（实测清单 4 条）。 */
+  const PARALLEL = [
+    { type: 'tool_start', id: 'pA', name: 'read_file', args: '{"path":"a.txt"}' },
+    { type: 'tool_start', id: 'pB', name: 'read_file', args: '{"path":"b.txt"}' },
+    { type: 'tool_end', id: 'pA', ok: true, output: 'A 的内容' },
+    { type: 'tool_end', id: 'pB', ok: true, output: 'B 的内容' },
+  ];
+  const c = compose(PARALLEL);
+  const toolsOf = (items) => (Array.isArray(items) ? items : []).filter((x) => x && x.k === 'tool');
+  for (const [label, items] of [['增量', c.svInc], ['重算', c.svOne]]) {
+    const ts = toolsOf(items);
+    ok(ts.length === 2, '并行两个工具 → ' + label + '清单恰好 2 张工具卡（改前 4 张）',
+      '实际 ' + ts.length + ' 条：' + J(ts));
+    ok(ts.length === 2 && ts.every((x) => x.status === 'ok'),
+      '并行两个工具 → ' + label + '清单两张都是【完成】',
+      '实际状态：' + J(ts.map((x) => x.status)));
+    ok(ts.every((x) => x.status !== 'run'),
+      '并行两个工具 → ' + label + '清单没有一张卡留在【正在跑】',
+      '还在跑的：' + J(ts.filter((x) => x.status === 'run')));
+    ok(J(ts.map((x) => String(x.id || ''))) === J(['pA', 'pB']),
+      '并行两个工具 → ' + label + '清单 id 各一份、顺序不乱',
+      '实际：' + J(ts.map((x) => x.id)));
+    ok(ts.map((x) => x.output).join('|') === 'A 的内容|B 的内容',
+      '并行两个工具 → ' + label + '清单每张挂的是**自己**的结果（不串台）',
+      '实际：' + J(ts.map((x) => x.output)));
+  }
+  ok(J(c.svInc) === J(c.svOne), '并行两个工具 → 服务端增量 == 从头重算', diffSummary(c.svInc, c.svOne));
+  /* 屏幕侧：清单 2 张 → 柜子里就该 2 张（不是 4 张，也不能只剩 1 张） */
+  const scr = screenOf(c.svInc);
+  const scrTools = (scr.res.items || []).filter((x) => x && x.kind === 'tool');
+  ok(scrTools.length === 2, '并行两个工具 → 屏幕上也恰好 2 张工具卡',
+    '屏幕 ' + scrTools.length + ' 张：' + J(scrTools.map((x) => x.id + ':' + x.status)));
+  ok(scrTools.every((x) => x.status === 'ok'),
+    '并行两个工具 → 屏幕两张卡都不再转圈（都【完成】）',
+    '屏幕状态：' + J(scrTools.map((x) => x.status)));
+
+  /* ── 反向：同一个 id 结束两次，只许更新那一张 ── */
+  const DUP = [
+    { type: 'tool_start', id: 'd1', name: 'read_file', args: '{}' },
+    { type: 'tool_end', id: 'd1', ok: true, output: '第一次' },
+    { type: 'tool_end', id: 'd1', ok: true, output: '第二次' },
+  ];
+  const c2 = compose(DUP);
+  for (const [label, items] of [['增量', c2.svInc], ['重算', c2.svOne]]) {
+    const ts = toolsOf(items);
+    ok(ts.length === 1, '同一个 id 结束两次 → ' + label + '清单仍只有 1 张工具卡（不新增）',
+      '实际 ' + ts.length + ' 条：' + J(ts));
+    ok(ts.length === 1 && ts[0].status === 'ok' && ts[0].output === '第二次',
+      '同一个 id 结束两次 → ' + label + '清单是就地更新（状态 ok、结果取最后一次）',
+      '实际：' + J(ts[0]));
+  }
+  ok(J(c2.svInc) === J(c2.svOne), '同一个 id 结束两次 → 服务端增量 == 从头重算', diffSummary(c2.svInc, c2.svOne));
 }
 
 console.log('\n三·二、小鲸一句话只许一个气泡（2026-11-10 主人报「说两遍」）');
@@ -368,6 +453,46 @@ console.log('\n七、插话位置：消息1 → 插话 → 消息2（主人钦�
     '屏幕顺序：消息1 → 插话 → 消息2', J(seq));
   ok(scr.res.items.filter((x) => x && x.kind === 'user' && x.steer).length === 1,
     '插话在屏幕上恰好一颗气泡（不双画）');
+}
+
+console.log('\n八、历史（跑完 / F5 之后的柜子）：并行工具按 tool_call_id 配对，不多不少');
+{
+  /* 主人截图那柜子是**跑完之后**的画面 —— 历史里的工具卡不走 appendLiveItem，
+   * 走 publicSession 的 toolListOf：拿这条 assistant 消息自己的 tool_calls，
+   * 逐个去 toolResults（role:'tool' 消息按 tool_call_id 建的 Map）里取结果。
+   * 它天然是按 id 配的，不存在「只看最后一张」那种错配；
+   * 但这正是「历史里并行工具会不会重复 / 漏结果」的关口，钉一条回归守住。 */
+  const tl = new Function('TOOL_ARGS_MAX', 'TOOL_OUT_MAX',
+    grab(SRV, 'toolListOf') + '\n' + grab(SRV, 'clipTool') + '\nreturn toolListOf;')(600, 3000);
+  const ASST = {
+    role: 'assistant', content: null,
+    tool_calls: [
+      { id: 'pA', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } },
+      { id: 'pB', function: { name: 'read_file', arguments: '{"path":"b.txt"}' } },
+    ],
+  };
+  const tools = tl(ASST, new Map([['pA', 'A 的内容'], ['pB', 'B 的内容']]));
+  ok(tools.length === 2, '历史：一条 assistant 里并行两个工具 → 恰好 2 张卡', '实际 ' + tools.length + ' 条：' + J(tools));
+  ok(J(tools.map((x) => x.id)) === J(['pA', 'pB']), '历史：两张卡的 id 各一份、顺序照 tool_calls', J(tools.map((x) => x.id)));
+  ok(tools.every((x) => x.ok === true), '历史：两张卡都拿到结果（ok=true，不冒充没跑完）', J(tools.map((x) => x.ok)));
+  ok(tools.map((x) => x.output).join('|') === 'A 的内容|B 的内容',
+    '历史：每张卡配的是**自己**的结果（不串台、不吞掉后一个）', J(tools.map((x) => x.output)));
+
+  /* 历史清单 → 屏幕：柜子里必须正好 2 张 */
+  const snap = {
+    sid: 'qa', turns: [{ role: 'assistant', text: '', rewindId: 3, ts: 0, tools, out: [], workers: [] }],
+    live: null, pendingUser: null, notes: [], windowStart: 0,
+  };
+  const st = (buildMerged(snap).items || []).filter((x) => x && x.kind === 'tool');
+  ok(st.length === 2, '历史 → 屏幕也恰好 2 张工具卡', '屏幕 ' + st.length + ' 张：' + J(st.map((x) => x.id + ':' + x.status)));
+  ok(st.every((x) => x.status === 'ok'), '历史 → 屏幕两张都是【完成】', J(st.map((x) => x.status)));
+  ok(st.map((x) => x.output).join('|') === 'A 的内容|B 的内容', '历史 → 屏幕每张显示自己的结果');
+
+  /* 反向：那一轮被打断，B 的结果没落盘 → 仍然 2 张卡，B 标「没跑完」而不是冒充失败 */
+  const tools2 = tl(ASST, new Map([['pA', 'A 的内容']]));
+  ok(tools2.length === 2 && tools2[1].ok === null && tools2[1].output === '',
+    '历史：B 的结果没落盘 → 卡还在，标「没跑完」（ok=null），不冒充失败、不消失',
+    J(tools2));
 }
 
 console.log('\n结果: ' + pass + ' 过 / ' + fail + ' 挂\n');

@@ -2158,8 +2158,35 @@ function appendLiveItem(items, ev) {
     items.push({ k: 'tool', id: String(ev.id || ''), name: String(ev.name || ''), args: String(ev.args || ''), status: 'run', output: '', startedAt: Number(ev.ts) || 0 });
   } else if (ev.type === 'tool_end') {
     const id = String(ev.id || '');
-    const it = lastOf('tool');
-    if (it && it.id === id) { it.status = ev.ok ? 'ok' : 'err'; it.output = String(ev.output || ''); }
+    /**
+     * 【2026-11-11 修·主人报「读完了柜子里还是两张【正在读文件】+ 两张【已完成】」】
+     *
+     * 病根：这里原来只看**最后一张**工具卡（lastOf('tool')），拿它的 id 去比。
+     * 可模型一步里常常**并行调好几个工具**（两个 read_file 一起读），事件顺序是：
+     *     tool_start A → tool_start B → tool_end A → tool_end B
+     * 于是：
+     *     tool_end A 时「最后一张」是 B，id 对不上 → 新 push 一条 A(完成)
+     *     tool_end B 时「最后一张」是刚 push 的 A(完成)，又对不上 → 再 push 一条 B(完成)
+     * 结果清单里 4 条：A(正在跑) B(正在跑) A(完成) B(完成) ——
+     * 屏幕上就是主人截到的那一幕：两个永远转圈的「正在读文件」+ 两个「完成」。
+     *
+     * 修法：按 id 往回找「还在跑的那一张」。找到就地把状态改成完成；
+     * 找不到才退回原来的兜底（新 push 一条），保证老数据/没 id 的事件照旧能画。
+     */
+    let it = null;
+    if (id) {
+      /* 按 id 往回找**同 id 的那张卡**（不看它是不是已经完成：
+       * 同一个 id 再来一次结束事件 = 补更新，依旧不算分段线） */
+      for (let i = items.length - 1; i >= 0; i--) {
+        const x = items[i];
+        if (x && x.k === 'tool' && String(x.id || '') === id) { it = x; break; }
+      }
+    }
+    if (!it) {
+      const lb = lastOf('tool');
+      if (lb && String(lb.id || '') === id) it = lb;
+    }
+    if (it) { it.status = ev.ok ? 'ok' : 'err'; it.output = String(ev.output || ''); }
     else items.push({ k: 'tool', id, name: String(ev.name || ''), args: '', status: ev.ok ? 'ok' : 'err', output: String(ev.output || ''), startedAt: 0 });
   } else if (ev.type === 'whale' || ev.type === 'agent') {
     /* 【2026-11-10 修·空气泡（A6）】空 say 不落清单（源头不产生）。
@@ -2365,9 +2392,28 @@ function buildLiveItems(events) {
       items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '', startedAt: Number(e.ts) || 0 });
     } else if (e.type === 'tool_end') {
       const id = String(e.id || '');
-      const it = lastOf('tool');
+      /**
+       * 【2026-11-11 修·与 appendLiveItem 同一口径：按 id 往回找那张还在跑的卡】
+       *
+       * 只认「最后一张工具卡」的话，一步里并行发起两个工具（两个 read_file）就会
+       * 配错对：A 的结束事件把 B 当对象、对不上 id → 另起一条 A(完成)，
+       * 最后清单里 4 条（两张永远「正在跑」+ 两张「完成」）。
+       * 增量那份（appendLiveItem）已经改了，这条必须同款 —— 否则
+       * check-live-items-parity 会立刻报「从头重算」和「增量攒」两份对不上。
+       */
+      let it = null;
+      if (id) {
+        for (let i = items.length - 1; i >= 0; i--) {
+          const x = items[i];
+          if (x && x.k === 'tool' && String(x.id || '') === id) { it = x; break; }
+        }
+      }
+      if (!it) {
+        const lb = lastOf('tool');
+        if (lb && String(lb.id || '') === id) it = lb;
+      }
       /* 改已有那张卡：屏幕上没多出东西，**不算分段线**（不 flush） */
-      if (it && it.id === id) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
+      if (it) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
       else { flush(); items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || ''), startedAt: 0 }); }
     } else if (e.type === 'whale' || e.type === 'agent') {
       const t = String(e.text || '');

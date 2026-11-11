@@ -2174,6 +2174,12 @@ export const tools = [
       }
 
       const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
+      /* 【2026-11-11 修·潜伏 bug】r 一直没声明 —— 以前团队模式默认关、闸门总拦着走不到这行，
+       * defaultOn 变 true 后第一次真用 spawn_worker 就是 ReferenceError（炸成「r is not defined」
+       * 当成工具结果返回，检查鱼 2026-11-11 全量回归抓到）。
+       * 声明必须在 try 块**外面**：try 内赋值（runSubagent）、catch 内兜底赋值、
+       * 块外读 text/finishWorker 三处共用同一个 r，作用域得覆盖全。 */
+      let r;
       if (typeof push === 'function') {
         try {
           push({ type: 'whale', who: '主智能体 → ' + nick, text: body, as: 'whale', tag: 'worker' });

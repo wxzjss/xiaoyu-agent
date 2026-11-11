@@ -54,6 +54,10 @@ t.ok('taskOn() 恒为 false（任意会话）',
   tm.taskOn('probe-a') === false && tm.taskOn('') === false && tm.taskOn('default') === false);
 const __F = await import('../src/features.mjs');
 t.ok('功能表里没有 taskmode 这个键', !__F.allFeatures().some((f) => f.id === 'taskmode'));
+/* 【2026-11-11 适配】团队模式 defaultOn 后来改成了 true（工作区改动，意图是「她全程自己说了算」），
+ * 这个检查不能再靠「默认关」碰巧闸住 —— 显式给 probe-a 关掉 team，再测闸门。
+ * 闸门本身要守的东西没变：关着就必须拦、必须说人话、不许提已删的按钮。 */
+__F.setFeatureFor('probe-a', 'team', false);
 const __refuse = await tl.runTool('spawn_worker', { task: '随便什么活' }, 'probe-a');
 /* 口径更新（2026-11-11）：团队模式（854ed10）上线后，闸门文案从「派活功能正在重做」
  * 改成「团队模式现在是关着的」。断言跟着改，但守的东西没变：

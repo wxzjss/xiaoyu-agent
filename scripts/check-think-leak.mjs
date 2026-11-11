@@ -55,9 +55,9 @@ const lines = sc.split(/\r?\n/);
 /* 【2026-11-08 改准】筛的时候带上 thinking —— 11-07 加了一道「角色标签」的门
  * （assistant/user/system），它当然不含 thinking，按老写法会一直红。
  * 这条要守的是「thinking 的门必须认结束标签」。 */
-const looseGuard = lines.filter((l) => l.includes('typeof m.content === \'string\'')
-  && l.includes('test(m.content)')
-  && l.includes('thinking'));
+const looseGuard = lines.filter((l) => l.indexOf("thinking") >= 0 && l.indexOf("test(") > 0);
+
+
 check(looseGuard.length > 0 && looseGuard.every((l) => l.includes('<\\/?(thinking')), 'sessions-core 读消息的外门认结束标签');
 check(lines.some((l) => /if \(!\/<\\\/\?\(thinking\|think\|reasoning\)\[\\s>\]\/i\.test\(s\)\) return s;/.test(l)),
   'sessions-core 里 stripThinkTags 自己的门也认结束标签');

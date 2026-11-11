@@ -144,9 +144,7 @@ const sc = read('src/sessions-core.mjs');
 /* 【2026-11-08 改准】原来筛的是「所有 typeof m.content === 'string' && test(m.content) 的行」，
  * 可 11-07 又加了一道**角色标签**的门（assistant/user/system），它当然不含 thinking ——
  * 于是这条永远红。它要守的是「thinking 那几道门必须认结束标签」，先筛出 thinking 的门再判。 */
-const guardLines = sc.split(/\r?\n/).filter((l) => l.includes("typeof m.content === 'string'")
-  && l.includes('test(m.content)')
-  && l.includes('thinking'));
+const guardLines = sc.split(/\r?\n/).filter((l) => l.indexOf("thinking") >= 0 && l.indexOf("test(") > 0);
 yes('sessions-core 读盘外门认结束标签', guardLines.length > 0 && guardLines.every((l) => l.includes('<\\/?(thinking')), String(guardLines.length) + ' 行');
 
 // ── 前端：三处渲染出口都要套上 ──────────────

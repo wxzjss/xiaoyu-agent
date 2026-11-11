@@ -26,7 +26,7 @@
  * 状态存盘子（.state/whale-on.json），换设备、换浏览器都一致，
  * 跟专业模式一个待遇。
  */
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 
@@ -42,23 +42,54 @@ function file() {
  *   - legacy：老文件里那个全局值（如果有）。**只用来一次性判断**，
  *             不再往后传 —— 小鱼那次就是栽在「把 legacy 一直带着」上。
  */
+/**
+ * readTable 的 mtime 缓存。
+ *
+ * 【为什么必须缓存】2026-11-11 实测（perf2 第 3 档拆账）：/api/sessions 一次请求里
+ * mateSwitchOn/groupOf 对 35 个会话各调一次 whaleOn → 每次 readTable 都同步读盘
+ * + JSON.parse 这个小文件 35 遍，加上 fishOn 同款，单这两项 ≈ 165ms，
+ * 挤在服务端主线程上。跟 agents.mjs readAll 是同一类病，用同一副药。
+ *
+ * 【为什么按 mtime 而不是无条件缓存】这份文件除了 setWhaleOn 会写，
+ * 自检脚本（check-whale-off 等）也会直接写盘。每次 statSync 一眼 mtime+size，
+ * 变了就重读 —— statSync 是几微秒，比读文件便宜三个数量级。
+ */
+let __whaleTableCache = { mtimeMs: -1, size: -1, data: null };
+
 function readTable() {
+  /* 【先看缓存】mtime+size 都没变 → 直接交上一次那份。
+   * 文件不在（ENOENT）走下面 existsSync 那条路，不缓存 —— 下次还要再试。 */
+  try {
+    const f = file();
+    const st = statSync(f);
+    if (__whaleTableCache.data && __whaleTableCache.mtimeMs === st.mtimeMs && __whaleTableCache.size === st.size) {
+      return __whaleTableCache.data;
+    }
+  } catch { /* stat 不到：文件多半不在，走下面 existsSync 返回空表 */ }
   try {
     const f = file();
     if (!existsSync(f)) return { map: {}, legacy: null };
     const j = JSON.parse(readFileSync(f, 'utf8'));
 
     // 新格式：{ on: { '<sid>': true } }
+    let result;
     if (j && j.on && typeof j.on === 'object' && !Array.isArray(j.on)) {
       const map = {};
       for (const [k, v] of Object.entries(j.on)) {
         if (typeof v === 'boolean') map[k] = v;
       }
-      return { map, legacy: null };
+      result = { map, legacy: null };
     }
     // 老格式：{ on: true } —— 只当一次性默认值，不往新格式里搬
-    if (j && typeof j.on === 'boolean') return { map: {}, legacy: j.on };
-    return { map: {}, legacy: null };
+    else if (j && typeof j.on === 'boolean') result = { map: {}, legacy: j.on };
+    else result = { map: {}, legacy: null };
+    /* 读成功才写缓存。读失败（文件坏了/不存在）返回空表但不写缓存，
+     * 不能把一个空表钉死在内存里。 */
+    try {
+      const st = statSync(f);
+      __whaleTableCache = { mtimeMs: st.mtimeMs, size: st.size, data: result };
+    } catch { /* stat 不到就不缓存，宁可下次重读 */ }
+    return result;
   } catch {
     return { map: {}, legacy: null };
   }
@@ -141,13 +172,20 @@ export function setWhaleOn(sessionId, on) {
     const dir = join(config.dataDir, '.state');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-    const { map } = readTable();
+    /* 【写路径不碰缓存对象】readTable 现在带缓存，直接 map[sid]=next 会把内存里
+     * 那份改脏（一旦下面写盘抛错，之后所有读看到的都是磁盘上没有的假数据）。
+     * 所以浅拷贝一份再改 —— 这张表是扁平的 { sid: boolean }，浅拷贝足够。 */
+    const map = { ...readTable().map };
     if (sid) map[sid] = next;
 
     const f = file();
     const tmp = f + '.tmp';
     writeFileSync(tmp, JSON.stringify({ schemaVersion: 2, on: map, at: Date.now() }, null, 2), 'utf8');
     renameSync(tmp, f);
+    /* 【写完立刻让缓存失效】写盘后 mtime 会变，下一次 readTable 的 statSync 自然
+     * 会重读；但同一毫秒内连续两次写、或文件系统 mtime 精度不够时，这条兜底
+     * 才是保险 —— 宁可多读一次，绝不让内存里留着和磁盘不一致的东西。 */
+    __whaleTableCache = { mtimeMs: -1, size: -1, data: null };
   } catch {}
   return next;
 }

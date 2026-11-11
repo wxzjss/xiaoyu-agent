@@ -47,6 +47,10 @@ const READ = `return (function(){
     rows,
     filtered: rows.filter((r) => /\\bassistant\\b/.test(r.cls) && r.who === '小鲸'),
     whale: rows.filter((r) => /\\bwhale\\b/.test(r.cls) && r.who === '小鲸'),
+    /* 【2026-11-11 二补·小鱼并排说话者】主人把小鲸挪到前面后，小鱼在【屋里的人】里
+     * 也变成 MateBubble —— 她的署名必须是她自己的 #f0a6a0（rgb(240,166,166)），
+     * 不能退回默认白 rgb(230,230,230)。 */
+    xiaoyu: rows.filter((r) => /\\bmate\\b/.test(r.cls) && r.who === '小鱼'),
     firstFrames: (Array.isArray(window.__firstColors) ? window.__firstColors : [])
       .filter((x) => /\\bassistant\\b/.test(x.cls) && x.who === '小鲸'),
     mapSize: (function(){ try { return window.__mateColors ? window.__mateColors.size : 'no-map'; } catch(e){ return 'err'; } })(),
@@ -150,6 +154,15 @@ const INJECT = `
         _rounds.push({ role: 'user', content: '小鲸测试问题第' + i + '句，历史气泡颜色要用。', at: _ts + i * 1000 });
         _rounds.push({ role: 'assistant', content: '小鲸测试回答第' + i + '句，署名必须是蓝色。', _who: '小鲸', at: _ts + i * 1000 + 500 });
       }
+      /* 【2026-11-11 二补·小鱼并排说话者】模拟「小鲸排在前面、小鱼也插话」的场景：
+       * 服务端只把 `_whaleSide:true`（并排插话）的消息标成 whale → 前端走 MateBubble
+       * （见 server.mjs turns 输出的 whale 字段判据）。小鱼这时署名要用她内置的
+       * #f0a6a0（= rgb(240,166,160)），不能退回默认白。 */
+      _rounds.push({ role: 'user', content: '再来一句，小鱼也说说。', at: _ts + 6000 });
+      _rounds.push({
+        role: 'assistant', content: '小鱼测试插话一句，署名必须是 #f0a6a0 的粉橙。',
+        _whaleSide: true, _whale: '小鱼', _who: '小鱼', at: _ts + 6500,
+      });
       const synth = {
         id: SID,
         title: '__qa_whale_color__',
@@ -176,6 +189,14 @@ const INJECT = `
     ok(out.total > 0, '屏幕上画出了历史（共 ' + out.total + ' 条带署名的消息）');
     ok(out.filtered.length > 0, '.msg.assistant 里署名「小鲸」的有 ' + out.filtered.length + ' 条');
     console.log('  __mateColors.size = ' + out.mapSize);
+    /* 【2026-11-11 二补·小鱼并排说话者】她的 MateBubble 署名不能白 */
+    ok(out.xiaoyu.length > 0, '.msg.mate 里署名「小鱼」的有 ' + out.xiaoyu.length + ' 条');
+    const xyuBad = out.xiaoyu.filter((r) => r.color !== 'rgb(240, 166, 160)');
+    ok(xyuBad.length === 0,
+      '小鱼署名全是她自己的 #f0a6a0（rgb(240,166,160)）（异色样本 ' + xyuBad.length + '/'
+        + out.xiaoyu.length + (xyuBad.length ? '：' + xyuBad[0].color : '') + '）');
+    ok(out.xiaoyu.every((r) => String(r.color) !== 'rgb(230, 230, 230)'),
+      '小鱼署名没有一条落在默认白 rgb(230,230,230)');
 
     console.log('  ── 稳定态：全部署名与颜色 ──');
     for (const r of out.rows) {

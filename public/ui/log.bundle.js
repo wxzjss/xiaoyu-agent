@@ -7895,6 +7895,7 @@
   }
   var MATE_DEFAULT_COLOR = "#e6e6e6";
   var BUILTIN_MATE_COLORS = {
+    "\u5C0F\u9C7C": "#f0a6a0",
     "\u5C0F\u9CB8": "#5b9bd5",
     "\u5C0F\u767D\u66E6": "#e6e6e6",
     "\u65C1\u767D": "#c8a8e8"

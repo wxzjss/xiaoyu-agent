@@ -81,6 +81,7 @@ const MATE_DEFAULT_COLOR = '#e6e6e6';
  * 这三张卡是随程序发的，颜色不随用户改，所以可以写死。
  */
 const BUILTIN_MATE_COLORS = {
+  '小鱼': '#f0a6a0',
   '小鲸': '#5b9bd5',
   '小白曦': '#e6e6e6',
   '旁白': '#c8a8e8',

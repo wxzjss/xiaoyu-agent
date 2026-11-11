@@ -183,7 +183,9 @@ import {
 /* 【2026-11-11 团队模式】后台派发/停/回传的通道注入与启动清理（src/team.mjs） */
 import { setTeamChannels, markInterruptedWorkers, stopWorker } from './team.mjs';
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
-import { recentFrames } from './tools-screen.mjs';
+import { recentFrames, turnOffScreen, turnOnScreen } from './tools-screen.mjs';
+/* 【增强提示词】输入框那颗星星的一次性改写调用（src/enhance-prompt.mjs，2026-11-11） */
+import { enhancePrompt } from './enhance-prompt.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
 import { getFeatures, featureNameOfTool, getEnabledMap, featureOnFor, setFeatureScoped, GLOBAL_ONLY_FEATURES, TOOL_FEATURE, TOOL_OWNERS, exportFeatures, exportFeaturesTo, importFeatures, removeCustomFeature } from './features.mjs';
 import {
@@ -2442,6 +2444,48 @@ const whaleParkBox = new Map();
  *
  * @returns {{n:number, before:number, after:number}} 补了几条
  */
+/**
+ * 【押着的条目补进历史 · 统一去重】2026-11-11 修主人报的「她回 3 句、后两句一模一样」
+ *
+ * 病根：小鲸的「并排插话」为防丢，同一个 rec 会**同时押在两个地方**
+ * （`runningTurns` 的 reg 上、旁路 `whaleParkBox` 里 —— 见 1764/1776 那两行注释）。
+ * 补写时必须把两边合起来看，否则丢话。但合起来之后**同一条会出现两份**：
+ *
+ *   parked = [...reg.whaleParked, ...box.whaleParked]   ← 同一对象两份引用
+ *   for (const rec of parked) msgs.push(rec);           ← 没有去重 → 落两遍
+ *
+ * 实测证据：会话 smwa2p0lqyxjo.json 里最后两条 assistant 的 `_at` **完全相同**
+ * （1794362877148），正文一字不差 —— 就是同一个对象被 push 了两次。
+ *
+ * `flushWhalePark()` 那条路径早就有这个去重（2026-10-27 修过一次），
+ * 但收尾补写（:11423）和开跑补漏（:9149）两处是**直接 push 的**，漏了。
+ * 现在三处统一走这里。
+ *
+ * 判据：`_at + 正文` 当键。同一次发言时间戳是同一个 `Date.now()`，
+ * 换成两次真发言时间戳必然不同，所以这个键足够严，不会把真话吞掉。
+ *
+ * @param {Array} msgs   要补进去的 messages
+ * @param {Array} parked 押着的条目（可能含重复引用）
+ * @returns {number} 真正补进去的条数
+ */
+function pushParkedUnique(msgs, parked) {
+  if (!Array.isArray(msgs) || !Array.isArray(parked) || !parked.length) return 0;
+  const seen = new Set();
+  for (const m of msgs) {
+    if (m && m._whale) seen.add(String(m._at ?? '') + '|' + String(m.content ?? ''));
+  }
+  let n = 0;
+  for (const rec of parked) {
+    if (!rec) continue;
+    const k = String(rec._at ?? '') + '|' + String(rec.content ?? '');
+    if (seen.has(k)) continue;     // 已经在历史里、或本轮已补过
+    seen.add(k);
+    msgs.push(rec);
+    n += 1;
+  }
+  return n;
+}
+
 function flushWhalePark(session, sessionId, tag = '') {
   const out = { n: 0, before: 0, after: 0 };
   try {
@@ -5045,6 +5089,74 @@ const server = createServer(async (req, res) => {
    * 点开看大图再走 /api/frames/<id> 那条（见下面的静态段）。
    * 顺便 prune() 一次：这个接口本来就不常调，顺手把两小时前的清掉。
    */
+  /**
+   * 【关闭显示屏】界面按钮（2026-11-11 主人要的）
+   *
+   * 和工具 screen_off 走同一个实现（turnOffScreen），不另写一套 ——
+   * 两套实现迟早会走偏：按钮能用、工具不能用，或者反过来。
+   *
+   * 功能关掉时按钮也要拦住：这里先查 screenOff 这个功能开关，
+   * 关了就直接 403 并如实说"功能被关了"，不假装关屏成功。
+   */
+  if (req.method === 'POST' && (url.pathname === '/api/screen/off' || url.pathname === '/api/screen/on')) {
+    let payload = {};
+    try { payload = await body(req); } catch { payload = {}; }
+    const sid = String(payload?.sessionId || url.searchParams.get('sessionId') || '') || '';
+    try {
+      if (featureOnFor(sid, 'screenOff') === false) {
+        return json(res, 403, { error: '「关闭显示屏」这个功能被关掉了，去【功能】里打开再试。' });
+      }
+    } catch { /* 查不到开关就当开着，别把人挡在门外 */ }
+    try {
+      if (url.pathname === '/api/screen/off') {
+        const r = await turnOffScreen({ keepBrightness: Boolean(payload?.keepBrightness) });
+        if (!r.ok) return json(res, 500, { error: r.error || '关屏失败' });
+        return json(res, 200, { ok: true, note: '显示器已关闭，电脑仍在运行' });
+      }
+      const r = await turnOnScreen();
+      if (!r.ok) return json(res, 500, { error: r.error || '恢复失败' });
+      return json(res, 200, { ok: true, note: '显示已恢复' });
+    } catch (e) {
+      return json(res, 500, { error: String(e?.message ?? e) });
+    }
+  }
+
+  /**
+   * 【增强提示词】输入框右下角那颗星星（2026-11-11 主人要的）
+   *
+   * 主人写下「帮我看看这个报错」，点一下星星 → 这句话被改写成更具体的表述，
+   * **直接替换回输入框**，他自己决定发不发。不发就点「恢复原文」。
+   *
+   * 【为什么要单独一条接口，而不是塞进 /api/chat】
+   * 这是一次性改写，**不能进会话历史**：进了历史，主人真正发出去的那句话
+   * 前面就多了一段他没说过的内容。所以走独立接口 + 独立提示词 + 非流式调用。
+   *
+   * 【为什么失败也返回 200】
+   * 界面那颗星星要区分三种收场：成功（换文案）、取消（静默恢复原文，
+   * 是主人再点一下造成的，不该弹错误）、失败（tooltip 显示原因）。
+   * 全用 200 + success/code 表达，前端只认这套字段，不用去猜 HTTP 状态码。
+   * 404/500 只在「接口本身出问题」时才出现。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/enhance-prompt') {
+    let payload = {};
+    try { payload = await body(req); } catch { payload = {}; }
+    const text = String(payload?.text ?? '');
+    const sid = String(payload?.sessionId ?? '') || '';
+    if (!text.trim()) {
+      return json(res, 200, { success: false, text: '', code: 'empty_input', error: '输入框是空的，没东西可增强。' });
+    }
+    try {
+      const r = await enhancePrompt({ text, sessionId: sid, model: payload?.model || undefined });
+      if (r && r.ok) return json(res, 200, { success: true, text: r.text });
+      return json(res, 200, { success: false, text: '', code: (r && r.code) || 'unknown', error: (r && r.error) || '增强失败' });
+    } catch (e) {
+      /* 取消：主人再点一下星星。界面要静默恢复原文，所以这里给 success:false + aborted，
+       * 前端见 aborted 不弹任何提示。 */
+      if (e?.name === 'AbortError') return json(res, 200, { success: false, text: '', code: 'aborted' });
+      return json(res, 500, { success: false, text: '', code: 'unknown', error: String(e?.message ?? e) });
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/screen/frames') {
     try {
       // 顺手清一次两小时前的（这个接口本来就不常调，不用另起定时器）
@@ -9076,9 +9188,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         const msgs = Array.isArray(session.messages) ? session.messages : null;
         if (msgs) {
           const n0 = msgs.length;
-          for (const rec of parkedLeft) msgs.push(rec);
+          /* 【2026-11-11】原来这里是裸 push：同一个 rec 可能两边都押着，会落两遍。
+           * 统一走 pushParkedUnique 去重（见函数注释里的实测证据）。 */
+          const added = pushParkedUnique(msgs, parkedLeft);
           try { saveSession(session); } catch {}
-          try { logWhaleAction('开跑补上次漏的：' + n0 + ' → ' + msgs.length + '（+' + parkedLeft.length + '）'); } catch {}
+          try { logWhaleAction('开跑补上次漏的：' + n0 + ' → ' + msgs.length + '（+' + added + '，押了' + parkedLeft.length + '条）'); } catch {}
         }
         leftover.whaleParked = [];
         whaleParkBox.delete(sessionId);
@@ -11350,11 +11464,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               try { logWhaleAction('补写失败：session.messages 不是数组（session=' + (session && session.id) + '）'); } catch {}
             } else {
               const n0 = msgs.length;
-              for (const rec of parked) msgs.push(rec);
+              /* 【2026-11-11】同上去重：reg 和旁路箱里可能是**同一个对象的两份引用**
+               * （为防丢两边都存），裸 push 会让她同一句话落两遍 —— 主人报的
+               * 「回了 3 句、后两句一模一样」就是这个。 */
+              const added = pushParkedUnique(msgs, parked);
               let saved = 'ok';
               try { saveSession(session); } catch (e) { saved = '失败:' + String(e && e.message ? e.message : e).slice(0, 80); }
               try {
-                logWhaleAction('补写完成：' + n0 + ' → ' + msgs.length + '（+' + parked.length + '），存盘' + saved);
+                logWhaleAction('补写完成：' + n0 + ' → ' + msgs.length + '（+' + added + '，押了' + parked.length + '条），存盘' + saved);
               } catch {}
             }
           }

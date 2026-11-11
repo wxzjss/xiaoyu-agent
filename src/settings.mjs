@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS = {
     "修bug时必须实测，不能只看代码",
     "主人让做什么时必须先列清单再做；主人插话的新要求也必须写进清单；做完一条清单必须先打勾，做新的清单任务前必须先看已做完的有没有打勾",
     "临时测试会话用完就删",
-    "任务做完按范围选回归：单文件/文案→check-smoke.mjs；日常→check-changed.mjs 增量；核心→check-core.mjs；发布前→run-all-checks.mjs。无单测层不跑「测试」，增量只此一档。跑完严检，查出问题修完重走",
+    "任务做完按范围选回归：单文件/文案→check-smoke.mjs；日常→check-changed.mjs 增量；核心→check-core.mjs；发布前→run-all-checks.mjs。无单测层不跑「测试」，增量只此一档。跑完严检：再各个角度严格检查一遍是否存在问题或不够保险的地方（要求只要检查过程中出现一次问题，那么检查完后再执行一次这条底线，直到没有出现任何问题）",
     "已完成清单超过十条就归档并删掉最旧的那条，已完成的清单最多保留10条",
     "只认主人的命令",
     "闲聊时一段话不超过50字，工作时一段话不超过200字"
@@ -51,7 +51,7 @@ export const DEFAULT_SETTINGS = {
    * 这类越狱味的句子 —— 模型一见就把整段判定成角色扮演诱导，转而不认人设、
    * 并从训练里抖出一个自我描述（实测会说自己是别的家的模型）。只描述「怎么说话」。
    */
-  safeWordNote: "停止：切回平时说话，一句话说清，不撒娇、不用颜文字、不绕弯子，先问清要什么再动手/命令：执行模式，不寒暄不铺垫直接做，做完再报结果；做不了的优先写新功能去做到/人设：把注意力拉回角色设定，按人设说话",
+  safeWordNote: "切回平时说话的样子：一句话说清，不撒娇、不用颜文字、不绕弯子。先问清楚要什么，再动手/进入执行模式：不寒暄、不铺垫，直接按主人说的做，做完再报结果，如果有无法完成的事情，除非存在现成工具可供下载使用，否则优先考虑开发新功能去做到。/把注意力收回到角色设定上，按人设的样子说话，别想别的。",
   // 【2026-11-01 主人】「可以整个把设置里的【外观】分区删了，因为切换没用」
   // 查清了为什么没用：下面 normalize() 的白名单里根本没有 iconStyle / chatCover，
   // 接口存盘时这两个键被直接丢掉 —— 界面上点了、保存了，下次打开还是默认值。
@@ -528,6 +528,51 @@ export function setDefaultBottomLines(lines) {
   ensureStateDir();
   writeFileSync(DEFAULTS_FILE, JSON.stringify({ ...prev, bottomLines: list }, null, 2), 'utf8');
   return { bottomLines: list, backup, changed: true };
+}
+
+/**
+ * 【恢复默认·安全词专用 · 2026-11-11 加】
+ * 把「现在生效的」安全词 + 说明存成默认（defaults.json 里那两样）。
+ *
+ * 为什么单开一个：底线的「设为默认」早就有（setDefaultBottomLines），
+ * 安全词这边一直没有 —— 界面上的按钮打过去是 405，主人点了没反应。
+ * 判定和备份都比照 setDefaultBottomLines：一样就 changed:false 不动文件，
+ * 不一样才写，写之前把旧那份存 .state/safewords.default.backup.md。
+ *
+ * @param {string[]} words 要当成默认的安全词，空数组直接拒绝
+ * @param {string} [note] 每个词对应的说明，不传就沿用现在生效的
+ */
+export function setDefaultSafeWords(words, note) {
+  const list = Array.isArray(words) ? words.map((w) => String(w ?? '').trim()).filter(Boolean) : [];
+  if (!list.length) {
+    const e = new Error('一个安全词都没有，不能把它设成默认');
+    e.status = 400;
+    throw e;
+  }
+  for (const w of list) {
+    if (looksGarbled(w)) {
+      const e = new Error('安全词像乱码（编码坏了），不敢写进默认');
+      e.status = 400;
+      throw e;
+    }
+  }
+  const noteNow = note === undefined ? defaultSafeWordNote() : String(note ?? '').trim();
+  const prev = readDefaults();
+  const oldList = Array.isArray(prev.safeWords) ? prev.safeWords : null;
+  const oldSame = oldList && oldList.length === list.length && oldList.every((w, i) => w === list[i]);
+  const noteSame = (prev.safeWordNote ?? '') === noteNow;
+  if (oldSame && noteSame) {
+    return { safeWords: oldList, safeWordNote: prev.safeWordNote ?? '', backup: null, changed: false };
+  }
+  let backup = null;
+  if (oldList && oldList.length) {
+    ensureStateDir();
+    backup = join(config.dataDir, '.state', 'safewords.default.backup.md');
+    writeFileSync(backup, '# 被替换掉的那版「默认安全词」\n\n' + oldList.map((w) => '- ' + w).join('\n') + '\n', 'utf8');
+  }
+  ensureStateDir();
+  writeFileSync(DEFAULTS_FILE, JSON.stringify({ ...prev, safeWords: list, safeWordNote: noteNow }, null, 2), 'utf8');
+  return { safeWords: list, safeWordNote: noteNow, backup, changed: true };
 }
 
 /**

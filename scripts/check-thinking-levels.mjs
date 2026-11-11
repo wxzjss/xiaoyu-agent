@@ -29,19 +29,22 @@ t.ok('档位正好四个', mod.LEVELS.length === 4, ids.join(','));
 t.ok('就是 关/低/高/最高', ids.join(',') === 'off,low,high,max', ids.join(','));
 
 // ── ② 老值都能落到四档里，不会卡住 ────────────────────────────
+/* 【2026-11-11 改·主人要求「模型页的思考档位在系统里默认设为【关】」】
+ * 兜底档从 high 改成 off 之后，认不出来的老值也该落到 off（而不是回到高）。
+ * 这里把期望一起改掉 —— 不改的话这条检查会拿旧口径去拦新行为。 */
 const CASES = [
   ['off', 'off'], ['low', 'low'], ['high', 'high'], ['max', 'max'],
-  ['on', 'high'], ['minimal', 'low'], ['medium', 'high'], ['xhigh', 'max'],
-  ['auto', 'high'], ['', 'high'], ['胡说八道', 'high'],
+  ['on', 'off'], ['minimal', 'low'], ['medium', 'off'], ['xhigh', 'max'],
+  ['auto', 'off'], ['', 'off'], ['胡说八道', 'off'],
 ];
 for (const [input, want] of CASES) {
   const got = mod.normalizeLevel(input);
   t.ok('老值 ' + JSON.stringify(input) + ' → ' + want, got === want, got);
 }
 
-// ── ③ 默认高 ──────────────────────────────────────────────────
-t.ok('没设过就是「高」（不是关）', /const level = normalizeLevel\(raw\.level\)/.test(src)
-  && /return 'high';\s*\n\}/.test(src));
+// ── ③ 默认关 ──────────────────────────────────────────────────
+t.ok('没设过就是「关」（主人 2026-11-11 定的系统默认）', /const level = normalizeLevel\(raw\.level\)/.test(src)
+  && /return 'off';\s*\n\}/.test(src));
 
 // ── ④ 发出去的字段：强度档不许再带 thinking ────────────────────
 const fOff = mod.fieldsForLevel('off');

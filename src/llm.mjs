@@ -427,7 +427,7 @@ export function normalizeToolPairing(list) {
  *
  * 所以：**发出去之前，把旧的工具结构抹平成一句人话**。
  * 只保留**最后一组**工具往返（当前这一轮还在用，必须原样给模型看，
- * 否则它没法接着链式调用），再往前的全压成「（用过工具：xxx）」。
+ * 否则它没法接着链式调用），再往前的一律压成纯文本正文，不附「用过工具」那句。
  *
  * 只动发出去的那一份，内存和磁盘上的会话一个字不改 ——
  * 界面上照样能看见每一次工具调用。
@@ -453,12 +453,8 @@ export function flattenOldToolTurns(list) {
     if (i >= keepFrom) { out.push(m); continue; }
     if (m && m.role === 'tool') continue;   // 旧的工具结果：整条丢掉
     if (m && m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
-      const names = m.tool_calls.map((c) => (c && c.function && c.function.name) || '工具').join('/');
       const body = String(m.content || '').trim();
-      out.push({
-        role: 'assistant',
-        content: (body ? body + '\n' : '') + '（用过工具：' + names + '）',
-      });
+      if (body) out.push({ role: 'assistant', content: body });
       continue;
     }
     out.push(m);

@@ -103,6 +103,7 @@ import {
   resetBottomLines,
   resetBottomLinesToFactory,
   setDefaultBottomLines,
+  setDefaultSafeWords,
   setDefaults,
   defaultBottomLines,
   currentBottomLines,
@@ -542,6 +543,17 @@ function toolListOf(m, toolResults) {
 /** What the UI needs to redraw a session: bubbles + the tool calls that went with them. */
 function publicSession(session) {
   const turns = [];
+  /* 这个会话的主智能体叫什么 —— 只给「消息自己没记名字」的兜底用。
+   * 取不到就空着，前端还有它自己的兜底，别在这儿抛。 */
+  const mainNameOfSession = (() => {
+    try {
+      const sid = String(session && session.id || '');
+      const id = mainAgentId(sid, (x) => mateSwitchOn(x, sid));
+      if (!id) return '';
+      const a = listAgents().find((x) => String(x.id) === String(id));
+      return a ? String(a.name || '') : '';
+    } catch { return ''; }
+  })();
   // 回退：只按「有效下标」画气泡，被撤回的那些直接不出现。
   const all = Array.isArray(session.messages) ? session.messages : [];
   const alive = new Set(effectiveIndexes(all, loadRewinds(session)).keep);
@@ -671,7 +683,24 @@ function publicSession(session) {
        * 前端只能退回全局的 mainAgentName，于是切到小白曦后满屏都是小白曦。
        * 这里补上：只要这条消息自己记着 _who，就照原样交出去。
        */
-      who: (typeof m._who === 'string' && m._who.trim()) ? m._who.trim() : undefined,
+      /* 【2026-11-11 主人报「历史消息署名全是小鱼」】
+       * 原来只认 `_who`。主流程落盘回答只写 `_whale`（群聊插话的标记），不写 `_who`，
+       * 这里交 undefined → 前端 `it.who || "小鱼"` 一律兜到「小鱼」。
+       * 现在补两条：`_whale` 也认（老消息不必重写）；`_card` 记着当时是哪张卡。 */
+      who: (() => {
+        const a = typeof m._who === 'string' ? m._who.trim() : '';
+        if (a) return a;
+        const b = typeof m._whale === 'string' ? m._whale.trim() : '';
+        if (b) return b;
+        const c = typeof m._card === 'string' ? m._card.trim() : '';
+        if (c) return c;
+        /* 【2026-11-11 主人报「历史消息署名全是小鱼」·第二刀】
+         * 上面三条全落空时（主流程落盘的普通回答就是这样：只有 role/at/content/_at），
+         * 交 undefined → 前端 `it.who || "小鱼"` 一律兜到「小鱼」。
+         * 这里用「这个会话现在的主智能体」兜底：老消息一条都不用重写，
+         * 重开窗口立刻就是对的。人换了，整段历史跟着走，也不会串。 */
+        return mainNameOfSession || undefined;
+      })(),
       /**
        * 【这句是小鲸并排插进来的，不是这一轮的收尾回答】—— 2026-10-26 补
        *
@@ -7340,6 +7369,23 @@ const server = createServer(async (req, res) => {
   }
 
 
+  // 【设默认·安全词 · 2026-11-11 加】把现在生效的安全词存成默认（defaults.json）
+  if (req.method === 'POST' && url.pathname === '/api/settings/default-safewords') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const words = Array.isArray(payload?.safeWords) ? payload.safeWords : defaultSafeWords();
+    const note = payload?.safeWordNote === undefined ? defaultSafeWordNote() : payload.safeWordNote;
+    try {
+      const out = setDefaultSafeWords(words, note);
+      return json(res, 200, { settings: out, safeWords: out.safeWords, safeWordNote: out.safeWordNote, changed: out.changed, backup: out.backup });
+    } catch (e) {
+      return json(res, e.status || 500, { error: String(e.message || e) });
+    }
+  }
   if (req.method === 'POST' && url.pathname === '/api/settings/reset-safewords') {
     try {
       return json(res, 200, resetSafeWords());

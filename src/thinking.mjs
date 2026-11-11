@@ -6,7 +6,7 @@
  *   2. 发请求时把档位翻译成**这家网关认的那组字段**再塞进去（见 thinkingFormatOf）
  *   3. 拿不准的模型不发这些字段（非推理模型收到会 400），所以能自动降级
  *
- * 存在 .state/thinking.json：{ level: 'high', perModel: { '<host>/<model>': 'low' } }
+ * 存在 .state/thinking.json：{ level: 'off', perModel: { '<host>/<model>': 'low' } }
  */
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -36,7 +36,7 @@ const FILE = join(config.dataDir, '.state', 'thinking.json');
 export const LEVELS = [
   { id: 'off', name: '关', desc: '完全不思考，直接把答案说出来' },
   { id: 'low', name: '低', desc: '简单对话，便宜又快' },
-  { id: 'high', name: '高', desc: '官方默认档，稳（默认用这个）' },
+  { id: 'high', name: '高', desc: '官方默认档，稳' },
   { id: 'max', name: '最高', desc: '重任务，舍得花时间' },
 ];
 
@@ -49,8 +49,8 @@ export function normalizeLevel(v) {
   if (s === 'off' || s === 'low' || s === 'high' || s === 'max') return s;
   if (s === 'minimal') return 'low';
   if (s === 'xhigh') return 'max';
-  /* on / medium / auto / 空 / 认不出的，一律落到默认的「高」 */
-  return 'high';
+  /* on / medium / auto / 空 / 认不出的，一律落到默认的「关」 */
+  return 'off';
 }
 
 const LEVEL_IDS = new Set(LEVELS.map((l) => l.id));

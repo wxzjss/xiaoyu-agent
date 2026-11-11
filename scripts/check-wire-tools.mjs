@@ -13,7 +13,7 @@
  *
  * 结论：这个网关**碰到历史里的 role:'tool' 结构就退化**，跟长度/档位/模型都无关。
  * 所以 wireMessages 里加 flattenOldToolTurns：只保留最后一组工具往返（当前这轮在用），
- * 更早的全部压成一句「（用过工具：xxx）」。
+ * 更早的一律压成纯文本，不再附「用过工具」那句。
  */
 import { makeChecker } from './_harness_util.mjs';
 import { flattenOldToolTurns, wireMessages } from '../src/llm.mjs';
@@ -37,8 +37,9 @@ const history = [
 const out = flattenOldToolTurns(history);
 
 t.ok('旧的 tool 消息整条去掉', !out.some((m) => m.role === 'tool' && m.tool_call_id === 'c1'));
-t.ok('旧的 tool_calls 抹成一句人话',
-  out.some((m) => m.role === 'assistant' && /用过工具：run_command/.test(String(m.content || ''))));
+t.ok('旧的 tool_calls 压成纯文本、不再附「用过工具」那句',
+  out.some((m) => m.role === 'assistant')
+  && !out.some((m) => /用过工具/.test(String(m.content || ''))));
 t.ok('最后一组 tool 原样保留', out.some((m) => m.role === 'tool' && m.tool_call_id === 'c2'));
 t.ok('最后一组 tool_calls 也保留', out.some((m) => m.role === 'assistant' && Array.isArray(m.tool_calls)
   && m.tool_calls.some((c) => c.id === 'c2')));

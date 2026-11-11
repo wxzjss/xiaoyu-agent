@@ -160,6 +160,38 @@ export function newSessionId() {
  */
 const ALERT_USER_RE = /^\s*⚠/;
 
+/* 【2026-11-11 perf2 抽·sanitize 判据共用化】
+ * 列表轻量投影（listItemAsync）必须和「打开会话」看到的内容一致，
+ * 所以「哪些 user 消息会被丢掉」「正文怎么洗」不能抄两份 —— 抄两份迟早改一处漏一处。
+ * 这里把 sanitizeLoadedMessages 的两条规则抽成函数，清洗和投影走同一份代码。 */
+
+/** 这条 user 消息会不会被 sanitize 丢掉（系统告警 / 量线提醒 / 程序插的）。非 user 消息永不被丢。 */
+function isDroppedUserMessage(m) {
+  if (!m || m.role !== 'user') return false;
+  // content 可能是字符串，也可能是 [{type:'text',text:...}, ...] 这种多段结构
+  let head = '';
+  if (typeof m.content === 'string') head = m.content;
+  else if (Array.isArray(m.content)) {
+    const t = m.content.find((x) => x && typeof x.text === 'string');
+    head = t ? t.text : '';
+  }
+  if (ALERT_USER_RE.test(head)) return true; // 系统告警，不是主人说的话
+  if (m._sysNote === true) return true; // 程序自己插的量线提醒，不是主人说的话
+  // 【2026-10-31 补】老会话里已经写进去的「〔量线／〔压缩」提醒也一并遮掉 —— 那是程序插的，不是主人说的。
+  if (/^\s*〔(量线|压缩|程序自动插入)/.test(String(m.content || ''))) return true;
+  return false;
+}
+
+/** 正文清洗（剥 <thinking> / 角色标签 / 压缩记忆）。只在是字符串时才动，三条规则依序套用 —— 与 sanitize 逐步等价。 */
+function cleanContentOf(m) {
+  if (!m || typeof m.content !== 'string') return m ? m.content : m;
+  let c = m.content;
+  if (/<\/?(thinking|think|reasoning)[\s>]/i.test(c)) c = stripThinkTags(c);
+  if (/<\/?(assistant|user|system)\s*>/i.test(c)) c = c.replace(/<\/?(?:assistant|user|system)\s*>/gi, '').trim();
+  if (c.indexOf('【压缩记忆') >= 0) c = stripCompressMemory(c);
+  return c;
+}
+
 function sanitizeLoadedMessages(list) {
   if (!Array.isArray(list) || !list.length) return list || [];
   const out = [];
@@ -175,43 +207,14 @@ function sanitizeLoadedMessages(list) {
    * 改成 let。另外那个 catch 也一并改成会打日志，别再让这种事查半天。
    */
   for (let m of list) {
-    if (m && m.role === 'user') {
-      // content 可能是字符串，也可能是 [{type:'text',text:...}, ...] 这种多段结构
-      let head = '';
-      if (typeof m.content === 'string') head = m.content;
-      else if (Array.isArray(m.content)) {
-        const t = m.content.find((x) => x && typeof x.text === 'string');
-        head = t ? t.text : '';
-      }
-      if (ALERT_USER_RE.test(head)) continue; // 系统告警，不是主人说的话
-      if (m._sysNote === true) continue; // 程序自己插的量线提醒，不是主人说的话
-      // 【2026-10-31 补】老会话里已经写进去的「〔量线／〔压缩」提醒也一并遮掉 —— 那是程序插的，不是主人说的。
-      if (/^\s*〔(量线|压缩|程序自动插入)/.test(String(m.content || ''))) continue;
-    }
+    if (isDroppedUserMessage(m)) continue; // 系统告警 / 量线提醒 / 程序插的，不是主人说的话
     // 【2026-11-05】剥掉正文里的思考标签：有的网关把思考塞进 content，
     // 老会话里已经躺了一批这样的脏消息，读的时候一并清掉。
-    /* 【2026-11-06 修·孤立结束标签清不掉】
-     * 入口原来只认「有起始标签」。可逐块剥留下的残渣往往是孤零零一个 </thinking>
-     * （起始标签在前一块已经被整段吃掉了）—— 这种脏消息进不了这道门，一直留着。
-     * 实测盘上就有这样的：6 条有起始标签能清，1 条只剩结束标签清不掉。
-     * 改成「有任一种标签就进」，让 stripThinkTags 自己去判断怎么清。 */
-    if (m && typeof m.content === 'string' && /<\/?(thinking|think|reasoning)[\s>]/i.test(m.content)) {
-      m = { ...m, content: stripThinkTags(m.content) };
-    }
-    /**
-     * 【2026-11-07 加·角色标签不是正文】
-     *
-     * 实测杂活鱼第 368 条：content 就是 `<assistant>`（11 个字符），
-     * 后面跟着 tool_calls —— 模型调工具前先吐了个角色标签当开头。
-     * 这是训练数据里的对话格式漏出来了，存盘时清掉。
-     * 有 tool_calls 的只清 content，调用本身保留（否则 tool 消息会变成孤儿）。
-     */
-    if (m && typeof m.content === 'string' && /<\/?(assistant|user|system)\s*>/i.test(m.content)) {
-      m = { ...m, content: m.content.replace(/<\/?(?:assistant|user|system)\s*>/gi, '').trim() };
-    }
-    /* 【2026-11-05】压缩记忆也不该出现在正文里（她有时候会照写出来）。 */
-    if (m && typeof m.content === 'string' && m.content.indexOf('【压缩记忆') >= 0) {
-      m = { ...m, content: stripCompressMemory(m.content) };
+    /* 【2026-11-06 修·孤立结束标签清不掉】入参放宽成「有任一种标签就进」（详见 cleanContentOf / stripThinkTags 注释）。 */
+    /* 【2026-11-07】角色标签不是正文；【2026-11-05】压缩记忆也不该出现在正文里 —— 都在 cleanContentOf 里。 */
+    if (m && typeof m.content === 'string') {
+      const c = cleanContentOf(m);
+      if (c !== m.content) m = { ...m, content: c };
     }
     out.push(m);
   }
@@ -547,21 +550,36 @@ export function renameSession(id, title) {
   return s;
 }
 
+/** 已 sanitize 的消息 → 预览（清洗路径）。 */
 function previewOf(messages) {
+  return pickPreview(messages, false);
+}
+
+/* 【2026-11-11 perf2 抽·raw 路径的预览】
+ * 列表投影拿到的是**没过 sanitize** 的原始 messages。预览必须和打开会话后看到的一致：
+ * ① sanitize 丢掉的那些 user 消息（告警/量线提醒）在列表里也必须看不见；
+ * ② sanitize 洗过的正文（剥 <thinking> 等）在这里要现洗一遍 —— 走同一个 cleanContentOf。
+ * 两个圈整体照抄 previewOf，只在 user 圈多一道丢弃判据、正文多一次现洗。
+ * fromRaw=false 时行为与旧 previewOf 完全一致（内容已洗过，不再重复洗）。 */
+function previewOfRaw(messages) {
+  return pickPreview(messages, true);
+}
+
+function pickPreview(messages, fromRaw) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m && m.role === 'user' && !m.context) {
-      const raw = m.content;
-      const body = Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join(' ') : raw;
-      let text = String(body ?? '').replace(/\s+/g, ' ').trim();
-      // 只有图没文字：拿附件名顶一下
-      if (!text && Array.isArray(m._images) && m._images.length) text = '[图片] ' + m._images.map((p) => String(p).split(/[\\/]/).pop()).join(' ');
-      /* 【2026-11-07 修·压缩过的会话预览是空的】
-       * 程序自动插的提醒不是主人说的话，这里要跳过，继续往前找，
-       * 不然整条会话的预览会变成「〔量线 30%〕…」这种废话。 */
-      if (!text || /^〔|^【该你自己压了】|^（下面是程序自动生成/.test(text)) continue;
-      return text.slice(0, 60);
-    }
+    if (!m || m.role !== 'user' || m.context) continue;
+    if (fromRaw && isDroppedUserMessage(m)) continue; // sanitize 会丢掉它，列表里同样看不见
+    const raw = fromRaw ? cleanContentOf(m) : m.content;
+    const body = Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join(' ') : raw;
+    let text = String(body ?? '').replace(/\s+/g, ' ').trim();
+    // 只有图没文字：拿附件名顶一下
+    if (!text && Array.isArray(m._images) && m._images.length) text = '[图片] ' + m._images.map((p) => String(p).split(/[\\/]/).pop()).join(' ');
+    /* 【2026-11-07 修·压缩过的会话预览是空的】
+     * 程序自动插的提醒不是主人说的话，这里要跳过，继续往前找，
+     * 不然整条会话的预览会变成「〔量线 30%〕…」这种废话。 */
+    if (!text || /^〔|^【该你自己压了】|^（下面是程序自动生成/.test(text)) continue;
+    return text.slice(0, 60);
   }
   /**
    * 【2026-11-07 加·兜底：主人原话被压缩折走之后】
@@ -573,12 +591,13 @@ function previewOf(messages) {
    *
    * 兜底：挑最后一条有文字的助手消息（或者那条压缩摘要）当前 60 字。
    * 会话里明明有一大堆内容，列表上就不该显示成空的。
+   * （sanitize 从不丢非 user 消息，所以这一圈 raw 路径不用过滤，只差正文现洗。）
    */
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (!m || (m.role !== 'assistant' && m.role !== 'system')) continue;
     if (Array.isArray(m.tool_calls) && m.tool_calls.length) continue;
-    const raw = m.content;
+    const raw = fromRaw ? cleanContentOf(m) : m.content;
     const body = Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join(' ') : raw;
     const text = String(body ?? '').replace(/\s+/g, ' ').trim();
     /* 程序自己注入的那几条（身份锚等）不能当预览 —— 列表面上一行小字，
@@ -657,23 +676,105 @@ export function listSessions() {
  * 这里按 8 个一批跑。
  *
  * 【坏一个不许整锅端】同步版里单个文件坏掉由 loadSession 内部 catch 掉返回 null；
- * 异步版走 readSessionRawAsync，同样单条 catch，坏的跳过、其余照常返回。
+ * 异步版走 listItemAsync，同样单条 catch，坏的跳过、其余照常返回。
  */
+
+/* 【2026-11-11 perf2·列表轻量投影 + 按文件缓存】
+ *
+ * 前人量过：35 个会话 10093 条消息，全量 sanitizeLoadedMessages（每条 4 个正则）
+ * ≈ 77ms，而列表只需要 count / preview / hasContent / mode 这几个字段。
+ *
+ * 但**不能简单跳过 sanitize**：前人试过「轻量投影跳过清理」→ count 差 2
+ * （sanitize 会滤掉系统告警/量线提醒）、preview 差（脏内容要清理）。
+ * 列表的数字必须和打开会话后看到的一致，这是硬约束。
+ *
+ * 所以 listItemAsync 是「只遍历但不改写」的投影：
+ *  · count / hasContent 按同一套过滤规则**只计数不构造对象**（isDroppedUserMessage，
+ *    与 sanitizeLoadedMessages 共用同一份代码）；
+ *  · preview 从后往前扫、命中即停（previewOfRaw），只有被选中的那一条才现洗正文
+ *    （cleanContentOf，与 sanitize 同源）；
+ *  · title / createdAt / updatedAt / mode 直接取 raw JSON，规则与 shapeSession 逐字段对齐。
+ *
+ * 再加**按文件缓存**：key = mtimeMs + size（和 sessionsFingerprint 同款判据）。
+ * 前端「发完一条消息刷列表」时通常只有当前会话的文件变了 —— 其余 34 个直接吃缓存，
+ * 一次 readFile + JSON.parse 都不用跑。会话文件的任何写入都走 writeFileAtomic
+ * （临时文件 + rename），mtime 必变，不存在「改了内容缓存还新鲜」的路径。
+ * 竞态方向也想过了：若读盘时文件刚被改，key 用的是 stat 到的旧 mtime，下轮必 miss
+ * 重算一次 —— 只浪费不致错。
+ */
+let __listProjCache = new Map(); // id -> { key: 'mtimeMs:size', item }
+
+async function listItemAsync(id) {
+  let raw = null;
+  try {
+    raw = JSON.parse(await fsp.readFile(fileFor(id), 'utf8'));
+  } catch (e) {
+    try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
+    return null;
+  }
+  if (!raw || typeof raw !== 'object') return null;
+  const messages = Array.isArray(raw.messages) ? raw.messages : [];
+  let count = 0;
+  let dropped = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || m.role !== 'user' || m.context) continue;
+    if (isDroppedUserMessage(m)) { dropped++; continue; }
+    count++;
+  }
+  return {
+    id,
+    title: cleanTitle(raw.title) || '新会话',
+    createdAt: Number(raw.createdAt) || 0,
+    updatedAt: Number(raw.updatedAt) || 0,
+    count,
+    preview: previewOfRaw(messages),
+    /* 压缩过的会话 count 可能是 0，但只要还有消息就不是空会话（见 listItemOf 的注释）。
+     * sanitize 只丢 user 告警，其余全保留 → 剩余条数 = 总数 - 丢掉的。 */
+    hasContent: messages.length - dropped > 0,
+    // 会话列表里带一句当前档位；word 为空时与 shapeSession→listItemOf 同样归 null
+    mode: raw.mode && typeof raw.mode === 'object' && raw.mode.word ? String(raw.mode.word) : null,
+  };
+}
+
 export async function listSessionsAsync() {
   ensureDir();
   const ids = listableNames();
-  if (!ids.length) return [];
+  const nextCache = new Map();
   const out = [];
-  const BATCH = 8;
-  for (let i = 0; i < ids.length; i += BATCH) {
-    const slice = ids.slice(i, i + BATCH);
-    // allSettled：一条炸了不影响同批其它条（loadSessionAsync 内部也有 catch，双保险）
-    const got = await Promise.allSettled(slice.map((id) => loadSessionAsync(id)));
-    for (const r of got) {
-      if (r.status !== 'fulfilled' || !r.value) continue;
-      out.push(listItemOf(r.value));
+  if (ids.length) {
+    // 先并发 stat 一圈：跟指纹同款判据挑出「真变了」的文件，其余吃缓存
+    const stats = await Promise.allSettled(ids.map((id) => fsp.stat(fileFor(id))));
+    const missIdx = [];
+    for (let i = 0; i < ids.length; i++) {
+      const s = stats[i];
+      const id = ids[i];
+      if (s.status === 'fulfilled') {
+        const key = s.value.mtimeMs + ':' + s.value.size;
+        const hit = __listProjCache.get(id);
+        if (hit && hit.key === key) { nextCache.set(id, hit); out.push(hit.item); continue; }
+      }
+      missIdx.push(i);
+    }
+    const BATCH = 8;
+    for (let i = 0; i < missIdx.length; i += BATCH) {
+      const slice = missIdx.slice(i, i + BATCH);
+      // allSettled：一条炸了不影响同批其它条
+      const got = await Promise.allSettled(slice.map(async (idx) => {
+        const s = stats[idx];
+        if (s.status !== 'fulfilled') return null; // stat 都拿不到 = 刚被删，按坏文件跳过
+        const id = ids[idx];
+        const item = await listItemAsync(id);
+        if (item) nextCache.set(id, { key: s.value.mtimeMs + ':' + s.value.size, item });
+        return item;
+      }));
+      for (const r of got) {
+        if (r.status !== 'fulfilled' || !r.value) continue;
+        out.push(r.value);
+      }
     }
   }
+  __listProjCache = nextCache; // 整表换代：消失的会话（删除/改名）自然出缓存
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;
 }

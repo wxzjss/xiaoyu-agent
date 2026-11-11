@@ -369,7 +369,7 @@ export const FEATURES = [
     name: '关闭显示屏',
     desc: '关屏但电脑照跑：背光熄灭 + 全屏黑遮罩，后台程序、网络、远程都不受影响，也不会睡眠或锁屏。'
       + '【功能】面板里有按钮可以直接点；也可以跟我说一声「关屏」，我自己关。'
-      + '恢复：按鼠标右键 / Esc / PrtSc / Delete，或刷指纹。',
+      + '恢复：按 Esc 或鼠标右键；锁屏/刷指纹时遮罩自动让开。',
     tools: ['screen_off', 'screen_on'],
     defaultOn: true,
   },

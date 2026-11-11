@@ -11,9 +11,11 @@
 #   1) 预启动 3 秒：先把亮度降到 30% 作为提示；这期间按解除键可取消
 #   2) 倒计时结束：亮度降到 0 + 全屏纯黑遮罩 + 隐藏系统光标
 #   3) 解除方式（轮询 GetAsyncKeyState，不依赖消息泵）：
-#        Esc / PrintScreen / Delete / Insert / Home / End / PgUp / PgDn / NumLock
-#        鼠标右键
-#        锁屏+指纹键（检测到会话被锁即解除）
+#        Esc / 鼠标右键
+#        锁屏+指纹键（检测到会话被锁即解除——这是异常兜底，不算解除键：
+#        黑遮罩绝不能挡住锁屏界面）
+#      【2026-11-11 主人要求只留 Esc 与右键】PrtSc / Delete / Insert / Home /
+#      End / PgUp / PgDn / NumLock 全部从默认解除键里移除（仍可用 -ExitKeys 传回）
 #      鼠标移动、左键、空格 都不解除
 #   4) 退出时：还原亮度、关遮罩、恢复光标
 #
@@ -39,7 +41,7 @@ param(
     [switch]$DetectKey,
     [int]$TimeoutSec = 3600,                  # 最长保持秒数，到点自动恢复
     [int]$ArmSeconds = 3,                     # 预启动倒计时（此期间可取消，屏幕先变暗）
-    [int[]]$ExitKeys = @(0x1B, 0x2C, 0x2E, 0x2D, 0x24, 0x23, 0x21, 0x22, 0x90),
+    [int[]]$ExitKeys = @(0x1B),
     [switch]$KeepBrightness                # 无人值守安全模式：只铺黑遮罩，不改亮度
 )
 
@@ -512,7 +514,7 @@ try {
     $dimOk = $false
     if ($armSec -gt 0) {
         Write-Log ("[预启动] $armSec 秒倒计时开始（可按解除键取消）")
-        Write-Host ("将在 {0} 秒后关闭显示器；这期间按 Esc / 右键 / PrtSc 可取消。" -f $armSec) -ForegroundColor Cyan
+        Write-Host ("将在 {0} 秒后关闭显示器；这期间按 Esc 或右键可取消。" -f $armSec) -ForegroundColor Cyan
 
         $dimTarget = [math]::Max(20, [math]::Min(35, [int]($saveB * 0.45)))
         if (-not $KeepBrightness -and $saveB -gt $dimTarget) {
@@ -589,7 +591,7 @@ try {
 
     try { [BlackVeilRunner]::HideSystemCursor($true); Write-Log '[关屏] 系统光标已隐藏' } catch { }
 
-    Write-Log '[关屏] 已生效，等待解除（Esc / PrtSc / Delete / 鼠标右键 / 锁屏指纹键）'
+    Write-Log '[关屏] 已生效，等待解除（Esc / 鼠标右键；锁屏时遮罩自动让开）'
 
     # ---------- 阶段 3：等待解除（纯轮询，不依赖消息泵） ----------
     $graceMs = 1200

@@ -15359,7 +15359,7 @@ if (featScreenOffBtn) {
       const r = await featApi('/api/screen/off', { sessionId });
       if (r && r.ok) {
         /* 屏幕黑掉后人看不见这条 toast，但它会留在聊天区/日志里，事后能对账 */
-        toast('显示器已关闭 · 电脑仍在运行\n恢复：鼠标右键 / Esc / PrtSc / Delete / 指纹');
+        toast('显示器已关闭 · 电脑仍在运行\n恢复：鼠标右键 / Esc');
       } else {
         toast('关屏没成功：' + ((r && r.error) || '未知原因'));
       }

@@ -188,7 +188,7 @@ export const screenTools = [
      * SC_MONITORPOWER 广播会让整机进 S0 待机并锁屏（实测 Kernel-Power 506），
      * 所以那个 API 一律不用。
      *
-     * 解除：指纹 / 鼠标右键 / Esc / PrtSc / Delete / 锁屏，或超时自动恢复。
+     * 解除：鼠标右键 / Esc；锁屏/刷指纹时遮罩自动让开；或超时自动恢复。
      * 进程是 detached 起的 —— 工具立刻返回，屏幕保持黑着，不会把这一轮卡住。
      */
     name: 'screen_off',
@@ -210,11 +210,11 @@ export const screenTools = [
       const r = await turnOffScreen({ keepBrightness: Boolean(keepBrightness) });
       if (r.ok && r.already) {
         return '显示器本来就关着（已经有一个关屏实例在跑），这次没有再叠一层。\n'
-          + '电脑仍在正常运行。主人按【鼠标右键 / Esc / PrtSc / Delete】或刷指纹就能恢复显示。';
+          + '电脑仍在正常运行。主人按【鼠标右键 / Esc】就能恢复显示。';
       }
       if (!r.ok) throw new Error(r.error || '关屏失败');
       return '显示器已关闭（背光 0 + 全屏黑遮罩），电脑仍在正常运行 —— 后台程序、网络、远程连接都没断，也没有睡眠或锁屏。\n'
-        + '主人按【鼠标右键 / Esc / PrtSc / Delete】或刷指纹就能恢复显示；也可以说「打开屏幕」让我执行 screen_on。';
+        + '主人按【鼠标右键 / Esc】就能恢复显示；也可以说「打开屏幕」让我执行 screen_on。';
     },
   },
   {

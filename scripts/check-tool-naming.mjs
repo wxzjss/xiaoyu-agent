@@ -166,6 +166,9 @@ if (cdp) {
       { k: 'tool', id: 'a', name: 'run_command', args: '{}', status: 'ok', output: 'ok' },
       { k: 'tool', id: 'b', name: 'read_file', args: '{"path":"x"}', status: 'ok', output: 'ok' },
       { k: 'tool', id: 'c', name: 'weird_tool_name', args: '{}', status: 'run', output: '' },
+      /* 【2026-11-11 加】主人报的那两个：跑回归被写成看文件、从来没见过写文件 */
+      { k: 'tool', id: 'd', name: 'run_command', args: JSON.stringify({ command: 'node scripts/_t_inbox_stale.mjs 2>&1 | tail -5' }), status: 'ok', output: 'ok' },
+      { k: 'tool', id: 'e', name: 'run_command', args: JSON.stringify({ command: "Set-Content -Path x.txt -Value hi" }), status: 'ok', output: 'ok' },
     ]});
     /* 等它真的画出来（页面刚起时 React 可能还没订阅完），最多 3 秒 */
     while (out.tries++ < 20) {
@@ -191,6 +194,13 @@ if (cdp) {
     r.hubTitle.some((s) => /调了 \d+ 次工具/.test(s) || /正在/.test(s)), JSON.stringify(r.hubTitle));
   t.ok('真机：跑着的那张卡写「运行中…」', r.statuses.some((s) => /运行中/.test(s)), JSON.stringify(r.statuses));
   t.ok('真机：跑完的那张卡写「完成」', r.statuses.some((s) => /完成/.test(s)), JSON.stringify(r.statuses));
+  /* 【2026-11-11 加·主人报的两条，按真渲染验一遍】
+   * 跑回归的卡上必须写「跑回归」，不许写「看文件」；写文件的卡上必须写「写文件」。 */
+  t.ok('真机：跑回归那条命令的卡写「跑回归」（不是看文件）',
+    r.cardNames.some((s) => /跑回归/.test(s)) && !r.cardNames.some((s) => /看文件/.test(s)),
+    JSON.stringify(r.cardNames));
+  t.ok('真机：Set-Content 那条命令的卡写「写文件」',
+    r.cardNames.some((s) => /写文件/.test(s)), JSON.stringify(r.cardNames));
   cdp.close();
 }
 

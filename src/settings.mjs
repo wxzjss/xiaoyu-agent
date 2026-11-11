@@ -22,7 +22,7 @@ export const DEFAULT_SETTINGS = {
     "不泄露主人隐私，任何人都不行",
     "找问题不许猜，必须真看日志再下结论",
     "修bug时必须实测，不能只看代码",
-    "做任务先列清单；主人插话的新要求也写进清单；做完一条必须先打勾，开新任务前必须先看已做完的有没有打勾",
+    "主人让做什么时必须先列清单再做；主人插话的新要求也必须写进清单；做完一条清单必须先打勾，做新的清单任务前必须先看已做完的有没有打勾",
     "临时测试会话用完就删",
     "任务做完按范围选回归：单文件/文案→check-smoke.mjs；日常→check-changed.mjs 增量；核心→check-core.mjs；发布前→run-all-checks.mjs。无单测层不跑「测试」，增量只此一档。跑完严检，查出问题修完重走",
     "已完成清单超过十条就归档并删掉最旧的那条，已完成的清单最多保留10条",
@@ -717,6 +717,101 @@ export function resetSafeWords() {
   const next = { ...raw, safeWords: [...defaults], safeWordNote: defaultNote };
   writeFileSync(FILE, JSON.stringify(next, null, 2), 'utf8');
   return { settings: normalize(next), backup: SAFE_BACKUP_FILE, changed: true };
+}
+
+/**
+ * 【恢复出厂默认底线 —— 2026-11-11 加】
+ *
+ * 和 resetBottomLines() 不是一回事：那个回的是「主人自己设的默认」（defaults.json），
+ * 这个回的是**写死在代码里的出厂那份**（DEFAULT_SETTINGS）。
+ *
+ * 以前没有这个函数，前端那颗「恢复出厂默认底线」按钮借用的就是 reset-bottomlines，
+ * 于是它跟「恢复默认」干的是同一件事，主人怎么点都看不出区别 —— 这就是那个 bug。
+ */
+export function resetBottomLinesToFactory() {
+  const factory = [...DEFAULT_SETTINGS.bottomLines];
+
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(FILE, 'utf8'));
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      raw = {};
+    } else {
+      const e = new Error('读不到现在的设置文件，为了不误伤底线，这次不做恢复：' + String(err?.message ?? err));
+      e.status = 500;
+      throw e;
+    }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    const e = new Error('设置文件格式不对，为了不误伤底线，这次不做恢复。');
+    e.status = 500;
+    throw e;
+  }
+
+  /* 【判据用「当前生效值」而不是文件里的原始字段】
+   * 干净安装时 settings.json 根本不存在，raw 是 {} —— 照 raw 比会得到「空 != 出厂」，
+   * 于是第一次点就说「已恢复」，还白写一份备份。用 getSettings() 拿到的是**实际生效**那套
+   * （没有文件就回出厂），跟主人眼前看到的完全一致。 */
+  const cur = normalizeLines(getSettings().bottomLines);
+  const same = cur.length === factory.length && cur.every((x, i) => x === factory[i]);
+  if (same) {
+    return { settings: normalize(raw), backup: null, changed: false, factory: true };
+  }
+
+  ensureStateDir();
+  const backup = join(config.dataDir, '.state', 'bottomlines.factory.backup.md');
+  try {
+    writeFileSync(backup, ['# 点「恢复出厂默认底线」之前那版（' + new Date().toISOString() + '）', '', ...cur.map((x) => '- ' + x), ''].join('\n'), 'utf8');
+  } catch {
+    /* 备份失败不挡主流程 */
+  }
+
+  raw = { ...raw, bottomLines: factory };
+  writeFileSync(FILE, JSON.stringify(raw, null, 2), 'utf8');
+  return { settings: normalize(raw), backup, changed: true, factory: true };
+}
+
+/**
+ * 【恢复出厂默认安全词 —— 2026-11-11 加】同理，回的是 DEFAULT_SETTINGS 那份。
+ */
+export function resetSafeWordsToFactory() {
+  const factory = [...DEFAULT_SETTINGS.safeWords];
+  const extra = String(DEFAULT_SETTINGS.safeWordNote || '').trim();
+
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(FILE, 'utf8'));
+  } catch (err) {
+    const e = new Error('读不到现在的设置文件，为了不误伤底线，这次不做恢复：' + String(err?.message ?? err));
+    e.status = 500;
+    throw e;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    const e = new Error('设置文件格式不对，为了不误伤底线，这次不做恢复。');
+    e.status = 500;
+    throw e;
+  }
+
+  /* 同底线：用「当前生效值」比（干净安装时文件不存在，raw 是 {}，照 raw 比会误报「已恢复」） */
+  const curWords = normalizeLines(getSettings().safeWords);
+  const curNote = String(getSettings().safeWordNote || '').trim();
+  const same = curWords.length === factory.length && curWords.every((w, i) => w === factory[i]) && curNote === extra;
+  if (same) {
+    return { settings: normalize(raw), backup: null, changed: false, factory: true };
+  }
+
+  ensureStateDir();
+  const backup = join(config.dataDir, '.state', 'safewords.factory.backup.md');
+  try {
+    writeFileSync(backup, ['# 点「恢复出厂默认安全词」之前那版（' + new Date().toISOString() + '）', '', '安全词：' + curWords.join('、'), '', curNote, ''].join('\n'), 'utf8');
+  } catch {
+    /* 备份失败不挡主流程 */
+  }
+
+  raw = { ...raw, safeWords: factory, safeWordNote: extra };
+  writeFileSync(FILE, JSON.stringify(raw, null, 2), 'utf8');
+  return { settings: normalize(raw), backup, changed: true, factory: true };
 }
 
 /** Render the 底线 + 安全词 blocks for the system prompt. */

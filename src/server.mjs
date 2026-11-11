@@ -101,6 +101,7 @@ import {
   safeWordNoteFor,
   DEFAULT_SETTINGS,
   resetBottomLines,
+  resetBottomLinesToFactory,
   setDefaultBottomLines,
   setDefaults,
   defaultBottomLines,
@@ -108,6 +109,7 @@ import {
   defaultSafeWords,
   defaultSafeWordNote,
   resetSafeWords,
+  resetSafeWordsToFactory,
   effectiveContextLimit,
   contextLimitInfo,
 } from './settings.mjs';
@@ -7088,6 +7090,21 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /* 【2026-11-11 加·三按钮分清】
+   * 上面那条 reset-bottomlines 回的是「主人自己存的默认」（defaults.json），
+   * 也就是界面上那颗【恢复默认】该干的事。
+   * 但界面上还有一颗【恢复出厂默认底线】，它以前也打这个接口 ——
+   * 于是「恢复出厂」和「恢复默认」干的是同一件事，永远回不到真出厂值。
+   * 现在单独开一条：真读 DEFAULT_SETTINGS，跟 defaults.json 无关。
+   */
+  if (req.method === 'POST' && url.pathname === '/api/settings/reset-bottomlines-factory') {
+    try {
+      return json(res, 200, resetBottomLinesToFactory());
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
   // 只恢复「安全词 + 触发说明」，底线 / 人设 / 模型一概不动
   // ---- 加号附件：只读地列目录 / 取图片预览 ----
   /* 【2026-11-05 加·粘贴图片】
@@ -7326,6 +7343,15 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/settings/reset-safewords') {
     try {
       return json(res, 200, resetSafeWords());
+    } catch (err) {
+      return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
+    }
+  }
+
+  // 同底线：这条才是真回出厂（DEFAULT_SAFE_WORDS），上一颗【恢复默认】回的是主人存的
+  if (req.method === 'POST' && url.pathname === '/api/settings/reset-safewords-factory') {
+    try {
+      return json(res, 200, resetSafeWordsToFactory());
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }

@@ -2065,9 +2065,7 @@
       border: 1px solid var(--border); background: transparent; color: var(--dim);
     }
     #sessExportOne:hover, #sessExportAll:hover { border-color: #3a4252; background: #1b1f28; color: var(--text); }
-    /* 全部导出再淡一档，免得和「导出这个」看混 */
-    #sessExportAll { color: #6b7484; }
-    #sessExportAll:hover { color: var(--text); }
+    /* 【2026-11-11 主人报】全部导出原来压暗一档(color:#6b7484)，跟旁边批量删除/搜索/导出txt 亮度不一致，看着别扭 → 拉回 ghost3 默认色，全部统一 */
     /* 批量删除：跟删除一个颜色，但平时是安静描边，避免误点 */
     #sessBulk { border: 1px solid var(--border); background: transparent; color: var(--dim); }
     #sessBulk:hover { border-color: rgba(226, 96, 96, .55); background: rgba(226, 96, 96, .08); color: #ff8b8b; }
@@ -10480,11 +10478,24 @@ async function resumeOrResend(s, text) {
 }
 
 sendBtn.onclick = () => {
-  /* 【2026-11-05】主按钮只管「发 / 插话」。
+  /* 【2026-11-05】主按钮只管「发 / 预发送」。
    * 停止已经改成独立的 ⏹ —— 这里再兜底一次 stopTurn 就会变成两个入口，
-   * 而且生成中空着输入框点它会莫名其妙把这一轮掐掉。 */
+   * 而且生成中空着输入框点它会莫名其妙把这一轮掐掉。
+   *
+   * 【2026-11-11 修·主人问「为什么回车是【预发送】，点【发送】却不是？」】
+   *
+   * 他说得对：这两条路以前走的根本不是同一件事。
+   *   · 回车（10568 行）：busy 时 → queueFromInput()，收进预发送队列，等这一轮结束自己发；
+   *   · 点【发送】     ：busy 时 → interject()，**打断式插话**（排到她这一步之后）。
+   * 这是 2026-11-08「加预发送机制」时漏改的一处：那天只把**回车**改成收队列，
+   * 按钮还留在 interject 上。于是同一句话，回车是「等着」，点按钮是「插进去」——
+   * 主人当然会觉得莫名其妙，而且两者在屏幕上的反馈也不一样（一个是队列小条，一个是插话气泡）。
+   *
+   * 现在统一走队列（主人 11-08 定的默认就是「运行时先保管」）。
+   * 想立刻打断、不等这一轮 —— 队列里那条的【直接发送】就是干这个的，那条路照旧走 interject。
+   */
   if (!busy) return send();
-  if (input.value.trim() || attachments.length) return interject();
+  if (input.value.trim() || attachments.length) return queueFromInput();
 };
 /* 【2026-11-05 加】独立停止键：不管输入框里有没有字，点它就是停。 */
 try {

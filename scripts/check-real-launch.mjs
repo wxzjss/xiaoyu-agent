@@ -60,7 +60,12 @@ let child = null, cdp = null, sid = '';
   console.log('实机验证 → ' + BASE);
   try {
     const health = await fetch(BASE + '/api/health', { signal: AbortSignal.timeout(4000) }).then((r) => r.json()).catch(() => null);
-    if (!health) { console.log('✘ 应用没在跑（' + BASE + ' 无响应）。先 npm start。'); process.exit(1); }
+    /* 【2026-11-11】没在跑就打 SKIP 而不是判红。
+     * 理由：这条验的是「真启动的应用」，而 run-all-checks 里应用通常没起 ——
+     * 那不是代码坏了，是环境不具备。判红会让全量回归永远挂一条，
+     * 久而久之大家就学会忽略红条了（比不查更坏）。
+     * 真要跑它：npm start 起来再单独执行。 */
+    if (!health) { sk('实机验证', BASE + ' 没有应用在跑（先 npm start）'); console.log('\n结果: ' + pass + ' 过 / ' + fail + ' 挂 / ' + skip + ' 跳过'); process.exit(0); }
 
     if (!EDGE) { console.log('SKIP 找不到 Edge/Chrome，跑不了真机 DOM 检查'); process.exit(0); }
 

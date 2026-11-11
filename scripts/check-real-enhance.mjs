@@ -42,7 +42,9 @@ let child = null, cdp = null, sid = '';
 (async () => {
   try {
     const health = await fetch(BASE + '/api/health', { signal: AbortSignal.timeout(4000) }).then((r) => r.json()).catch(() => null);
-    if (!health) { console.log('✘ 应用没在跑（' + BASE + '）'); process.exit(1); }
+    /* 没在跑就 SKIP，不判红 —— 理由同 check-real-launch.mjs：
+     * run-all-checks 里应用通常没起，那是环境不具备，不是代码坏了。 */
+    if (!health) { sk('真应用星星按钮', BASE + ' 没有应用在跑（先 npm start）'); console.log('\n结果: ' + pass + ' 过 / ' + fail + ' 挂 / ' + skip + ' 跳过'); process.exit(0); }
     if (!EDGE) { console.log('SKIP 找不到浏览器'); process.exit(0); }
 
     const s = await fetch(BASE + '/api/sessions/new', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then((r) => r.json()).catch(() => null);

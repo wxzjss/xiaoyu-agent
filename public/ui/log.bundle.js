@@ -9065,6 +9065,8 @@
     const listRef = (0, import_react14.useRef)(null);
     const atBottomRef = (0, import_react14.useRef)(true);
     const userScrolledRef = (0, import_react14.useRef)(false);
+    const lastHeightRef = (0, import_react14.useRef)(0);
+    const lastDistRef = (0, import_react14.useRef)(0);
     const lastScrollTopRef = (0, import_react14.useRef)(0);
     const keepFromBottom = (0, import_react14.useRef)(null);
     if (!listRef.current) listRef.current = document.getElementById("log");
@@ -9074,11 +9076,19 @@
       listRef.current = el;
       atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
       const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+      lastHeightRef.current = el.scrollHeight;
       const onScroll = () => {
+        const h = el.scrollHeight;
         const d = dist();
-        atBottomRef.current = d <= 24;
-        if (d <= 24) userScrolledRef.current = false;
-        lastScrollTopRef.current = el.scrollTop;
+        const shrank = h < lastHeightRef.current;
+        lastHeightRef.current = h;
+        if (!shrank) {
+          atBottomRef.current = d <= 8;
+          const prevDist = lastDistRef.current;
+          lastDistRef.current = d;
+          if (d <= 8 && prevDist <= 8) userScrolledRef.current = false;
+          lastScrollTopRef.current = el.scrollTop;
+        }
         try {
           window.paintToBottom && window.paintToBottom();
         } catch (e) {

@@ -67,6 +67,11 @@ export default function LogView() {
    * 重画一瞬间高度变矮、浏览器把 scrollTop 夹小，滚动事件一响就被当成「他在往上翻」，
    * 从此再也不跟随。（实测离底 251px 那个数就是这么攒出来的。） */
   const userScrolledRef = useRef(false);
+  /* 【2026-11-11 加·收缩防误清】上一发 scroll 事件时的高度 / 离底距离。
+   * 用它们认出「内容收缩把 scrollTop 夹出来的那发 scroll」—— 那不是主人滚的，
+   * 不能拿它改账（否则翻历史的状态会被一次收缩偷走）。 */
+  const lastHeightRef = useRef(0);
+  const lastDistRef = useRef(0);
   /* 【2026-11-11 加·重画锚点】整屏重画（发消息/轮次收尾）会把 DOM 换一遍，
    * 浏览器在换的瞬间把 scrollTop 夹成 0 —— 主人正在看的那段直接飞到顶上
    * （「发消息后弹到很久以前的位置」就是它）。这里持续记着主人最后停在哪，
@@ -84,14 +89,31 @@ export default function LogView() {
     listRef.current = el;
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
     const dist = () => el.scrollHeight - el.scrollTop - el.clientHeight;
+    lastHeightRef.current = el.scrollHeight;
     const onScroll = () => {
+      const h = el.scrollHeight;
       const d = dist();
-      atBottomRef.current = d <= 24;
-      /* 【2026-11-11 修·userScrolledRef 永不复位】原主人报「发消息后弹到很久以前」：
-       * 这 个 ref 只要滚过一次就永远 true，之后每次整屏重画都放弃钉底。
-       * 现在滚回底部就复位 —— 「人在底部」才是要不要跟随的唯一事实。 */
-      if (d <= 24) userScrolledRef.current = false;
-      lastScrollTopRef.current = el.scrollTop;
+      /* 【2026-11-11 修·收缩引起的滚动不算数】两发 scroll 之间高度变矮了
+       * （折叠收起、流式重画换了个更矮的节点），浏览器会把 scrollTop 夹小
+       * 并发出 scroll 事件 —— 这一发不是主人滚的。此刻 d 可能短暂变得很小，
+       * 照常记账的后果：atBottomRef 被写成 true → 下一次 pin/effect 就贴底；
+       * userScrolledRef 被清 → 「他在翻历史」的账被偷。所以高度变矮期间
+       * 一律不记账，主人的状态一个字都不动。 */
+      const shrank = h < lastHeightRef.current;
+      lastHeightRef.current = h;
+      if (!shrank) {
+        /* 【2026-11-11 改·阈值 24 → 8】主人报「向上小幅滚动就被弹回最新消息」：
+         * 原来离底 24px 以内都算「在底部」，往上滚一小格（20px 左右）根本不算数，
+         * pin/effect 照样贴底（探针实测：滚 20px + 追加一条内容 → 立刻弹回底部）。
+         * 8px 只留物理贴底的那点余量，滚 10px 就已经算「在翻历史」。 */
+        atBottomRef.current = d <= 8;
+        /* 滚回底部就复位「在翻历史」——但只认「连续两次都贴底」：
+         * 单独一发 d 很小的 scroll 可能是收缩夹出来的，不许凭它清账。 */
+        const prevDist = lastDistRef.current;
+        lastDistRef.current = d;
+        if (d <= 8 && prevDist <= 8) userScrolledRef.current = false;
+        lastScrollTopRef.current = el.scrollTop;
+      }
       /* 【2026-11-11 修·跳底按钮】滚动位置变化要驱动右下角按钮的显隐/未读清零。
        * 原来只有 noteNewContent/bumpUnseen/jumpToBottom 三个调用点，没有 scroll 监听 ——
        * 人滚回底部后按钮和角标还挂着，且往上滚远时按钮从不出现。 */

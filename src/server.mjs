@@ -177,8 +177,11 @@ import {
   setTaskOn,
   taskFeatureOn,
   taskInfo,
+  listWorkers,
   forgetSession as forgetTaskSession,
 } from './task-mode.mjs';
+/* 【2026-11-11 团队模式】后台派发/停/回传的通道注入与启动清理（src/team.mjs） */
+import { setTeamChannels, markInterruptedWorkers, stopWorker } from './team.mjs';
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames } from './tools-screen.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
@@ -2188,10 +2191,14 @@ function appendLiveItem(items, ev) {
     const wid = String(ev.wid || '0');
     let it = null;
     for (let i = items.length - 1; i >= 0; i--) if (items[i].k === 'worker' && items[i].id === wid) { it = items[i]; break; }
-    if (!it) { it = { k: 'worker', id: wid, name: String(ev.name || ''), status: 'run', steps: [], note: '' }; items.push(it); }
+    if (!it) { it = { k: 'worker', id: wid, name: String(ev.name || ''), status: 'run', steps: [], note: '', startedAt: 0, endedAt: 0 }; items.push(it); }
     if (ev.name) it.name = String(ev.name);
     if (ev.status) it.status = String(ev.status);
     if (ev.note) it.note = String(ev.note);
+    /* 【2026-11-11 团队模式】耗时用的两个字段：start 事件带 startedAt（从那一刻算
+     * 「· 2分13秒」），end 事件补 endedAt（收尾定格，跑着的由前端每秒现算）。 */
+    if (ev.startedAt && !it.startedAt) it.startedAt = Number(ev.startedAt) || 0;
+    if (ev.kind === 'end') it.endedAt = Date.now();
     const _st = String(ev.text || '').trim();
     if (_st && (ev.kind === 'step' || ev.kind === 'start' || ev.kind === 'mail')) {
       it.steps.push({ kind: String(ev.kind || 'step'), t: _st });
@@ -4441,6 +4448,34 @@ const server = createServer(async (req, res) => {
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
+  }
+
+  // ---- 团队模式：worker 花名册与手动停（2026-11-11，docs/design-team-mode.md §1.5）----
+  if (req.method === 'GET' && url.pathname === '/api/team/workers') {
+    const sid = url.searchParams.get('sessionId') || '';
+    if (!isSessionId(sid)) return json(res, 400, { error: 'bad sessionId' });
+    const ws = listWorkers(sid);
+    return json(res, 200, {
+      sessionId: sid,
+      workers: ws,
+      running: ws.filter((w) => w.status === 'running').length,
+      total: ws.length,
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/team/stop') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    const sid = String((payload && payload.sessionId) || '');
+    if (!isSessionId(sid)) return json(res, 400, { error: 'bad sessionId' });
+    const wid = String((payload && payload.wid) || '').trim();
+    if (!wid) return json(res, 400, { error: 'missing wid' });
+    const r = stopWorker(sid, wid);
+    return json(res, r && r.ok ? 200 : 404, { ...r, sessionId: sid });
   }
 
   // ---- 正在跑那一轮的直播缓存（重启窗口后补画用） ----
@@ -12412,6 +12447,63 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     startCron({ onDue: (task) => runCronTask(task) });
   } catch (e) {
     try { console.warn('[cron] 挂不上（不影响主流程）：', e && e.message); } catch {}
+  }
+
+  /* 【2026-11-11 团队模式】把三条通道交给 team.mjs —— 起轮、liveLogs 全在
+   * startServer 的闭包里，team.mjs 反着 import 会成环，照 setPeerWake 的老办法注入。
+   *   · pushWorkerEvent：worker 事件落该会话的 liveLogs（设计文档 §1.5「后台化必须
+   *     补的一条」—— 主轮收尾后 worker 还在跑，事件不能再只走那一轮的 send）。
+   *     缓存不存在/已收尾就开一份新的，前端轮询 /api/chat/live 照常补画；
+   *   · isTurnRunning：回报该不该排 followup（在跑 → 主轮收尾的 drainTurns 接走）；
+   *   · startTurnWithIntro：主轮不在、followup 没人取 → 照 selfwake 的路投一条
+   *     context+sysNote 引子再起排队轮，绝不冒充主人说话。 */
+  try {
+    setTeamChannels({
+      pushWorkerEvent: (sid, ev) => {
+        try {
+          let live = liveLogs.get(sid);
+          if (!live || live.done) {
+            live = { sessionId: sid, events: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true };
+            liveLogs.set(sid, live);
+          }
+          appendLiveItem(live.events, ev);
+        } catch { /* 事件丢一条不致命，别连累 worker 本体 */ }
+      },
+      isTurnRunning: (sid) => runningTurns.has(sid),
+      startTurnWithIntro: async (sid, text) => {
+        try {
+          const sess = getSession(sid);
+          if (!sess) return { ok: false, error: 'no-session' };
+          const msgs = Array.isArray(sess.messages) ? sess.messages : [];
+          if (!msgs.length) return { ok: false, error: 'empty-session' };
+          msgs.push({
+            role: 'user',
+            context: true,
+            _sysNote: true,
+            _at: Date.now(),
+            content: String(text || ''),
+          });
+          sess.updatedAt = Date.now();
+          try { saveSession(sess); } catch {}
+          const r = await startQueuedTurn(sid, null);
+          return r || { ok: false };
+        } catch (e) {
+          return { ok: false, error: String(e && e.message ? e.message : e) };
+        }
+      },
+    });
+  } catch (e) {
+    try { console.warn('[team] 通道挂不上（不影响主流程）：', e && e.message); } catch {}
+  }
+
+  /* 【2026-11-11 团队模式】启动时把「还挂着 running 但进程已经重启过」的 worker
+   * 统一标成 interrupted —— 不标的话页面刷新后前端看到的 running 是文件里的
+   * 旧状态，实际进程早没了（设计文档 §2.4 场景 C）。 */
+  try {
+    const _swept = markInterruptedWorkers();
+    if (_swept && _swept.swept) console.log('[team] 启动清理：' + _swept.swept + ' 个中断的 worker 已标记');
+  } catch (e) {
+    try { console.warn('[team] 中断标记失败（不影响启动）：', e && e.message); } catch {}
   }
 
   // 运行中定时查版本。

@@ -8409,6 +8409,23 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           (async () => {
             const _tool = String(ev.toolName || '桌面操作');
             const _reason = String(ev.reason || '').replace(/\s+/g, ' ').trim();
+            try {
+              /* 同一个 requestId 只处置一次（SSE 和直播补拉可能把同一事件送来两遍） */
+              const _seen = (window.__xySeenAsks = window.__xySeenAsks || new Set());
+              if (!ev.requestId || _seen.has(ev.requestId)) return;
+              _seen.add(ev.requestId);
+              /* 上一张确认框要是还开着（上一个请求主人还没点 / 测试脚本直接 POST 过了），
+               * 先替它点「不许」收掉 —— 不然 dialog 还开着，新的 showModal() 会直接抛异常，
+               * 被下面的 catch 当成「不许」，新弹窗根本出不来（e2e 实测栽过）。
+               * 连着来两个危险动作时，后来者把没答的前一个按「不许」处理 —— 问不到就当不许。 */
+              try {
+                const _old = document.getElementById('confirmDlg');
+                if (_old && _old.open) {
+                  const _oldCancel = document.getElementById('confirmCancel');
+                  if (_oldCancel) _oldCancel.click();
+                }
+              } catch {}
+            } catch {}
             let yes = false;
             try {
               yes = await askConfirm({

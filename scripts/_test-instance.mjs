@@ -151,6 +151,12 @@ export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
     env: { ...process.env, MINI_AGENT_DATA: dataDir, PORT: String(appPort), XY_TEST_INSTANCE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  /* 【2026-11-11 加·诊断通道】检查脚本排 e2e 问题时需要看服务端日志。
+   * 默认不转发（别污染回归输出）；设 XY_INSTANCE_LOG=1 才转发。 */
+  if (process.env.XY_INSTANCE_LOG) {
+    server.stdout.on('data', (d) => process.stdout.write('[srv] ' + String(d)));
+    server.stderr.on('data', (d) => process.stdout.write('[srv!] ' + String(d)));
+  }
   server.stdout.on('data', (d) => { boot += String(d); });
   server.stderr.on('data', (d) => { boot += String(d); });
 

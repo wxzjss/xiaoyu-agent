@@ -2501,6 +2501,19 @@ function json(res, code, obj) {
 }
 
 /**
+ * 【2026-11-11 加·askApproval 的挂起表】
+ *
+ * 危险动作弹窗问主人的那半条链路：工具里 ui-guard.askApproval 读 ctx.askApproval
+ * （下面主聊天路由注入的），这里存「等主人点允许/不许」的 resolve 函数。
+ * 前端点完 POST /api/ask-approval 带 requestId 来取。
+ *
+ * 【失败关闭】60 秒没等到答复算「不许」（超时 timer 在 askApproval 里）；
+ * 路由这边取不到 resolve（已超时/已答复/重复点）就回 404，绝不补一次「当成功」。
+ * 内存表，重启即清 —— 挂着的弹窗随进程消失，不会隔夜复活。
+ */
+const PENDING_ASKS = new Map();
+
+/**
  * 前情能插在哪儿（只认「安全缝」）。
  *
  * 上游网关按 OpenAI 协议验形状，一条死规矩：
@@ -4527,6 +4540,21 @@ const server = createServer(async (req, res) => {
       const line = new Date().toISOString() + ' [web] ' + JSON.stringify(b || {}).slice(0, 800) + '\n';
       __diagAppend(join(config.dataDir, '.state', 'console.log'), line, 'utf8');
     } catch { /* 记不上就算了 */ }
+    return json(res, 200, { ok: true });
+  }
+
+  // ---- askApproval 答复：前端确认框（「她要动：xx」）点完回传 ----
+  // 挂起表里取 resolve 调掉。取不到（已超时 / 已答过 / 编号不对）就 404，
+  // 绝不把「没问着」当成功 —— 那半边由 askApproval 的 60 秒 timer 按「不许」兜底。
+  if (req.method === 'POST' && url.pathname === '/api/ask-approval') {
+    const b = await body(req).catch(() => null);
+    const rid = String((b && b.requestId) || '');
+    const fn = PENDING_ASKS.get(rid);
+    if (typeof fn !== 'function') {
+      try { console.log('[ask] 答复落空：' + rid + ' yes=' + String(b && b.yes) + '（挂起表里没有，可能已超时/已答过）现存 ' + PENDING_ASKS.size + ' 条'); } catch {}
+      return json(res, 404, { ok: false, error: '没有这个待确认的请求（可能已经超时或答复过了）。按「不许」处理。' });
+    }
+    fn((b && b.yes) === true);
     return json(res, 200, { ok: true });
   }
 
@@ -10187,7 +10215,32 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         } catch {}
         return -1;
       })();
-      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
+      const { usage, lastUsage, files: sentFiles } = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null,
+        /* 【2026-11-11 加·askApproval 真注入】
+         * 2026-11-10 三方审计抓的静默失效：ui-guard.askApproval 读 exec.askApproval，
+         * 可全仓没有任何一方提供这个函数 —— 危险操作全都走「主人没有点头」分支还报绿。
+         * 现在在这里把通道接上：SSE 推 ask_approval 给前端 → 前端弹确认框（「她要动：xx」）
+         * → 点允许/不许 POST /api/ask-approval → 这里 resolve。
+         * 【失败关闭】60 秒没答复 = 不许；这一轮被掐（abort）也算不许 ——
+         * 问不到主人就不动，绝不「问不到就自己决定」。 */
+        askApproval: ({ toolName, reason }) => new Promise((resolve) => {
+          const requestId = 'ask_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+          let settled = false;
+          const finish = (yes, why) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            PENDING_ASKS.delete(requestId);
+            try { console.log('[ask] ' + requestId + ' ui=' + toolName + ' -> ' + (yes ? '允许' : '不许') + '（' + why + '）'); } catch {}
+            resolve(yes === true);
+          };
+          const timer = setTimeout(() => finish(false, '60s 超时'), 60000);
+          PENDING_ASKS.set(requestId, finish);
+          try { if (ac.signal) ac.signal.addEventListener('abort', () => finish(false, '本轮被掐'), { once: true }); } catch {}
+          try { send({ type: 'ask_approval', toolName: String(toolName || ''), reason: String(reason || ''), requestId }); }
+          catch (e) { finish(false, 'send 失败：' + String(e?.message || e)); }
+        }),
+        pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
         try {
           const ss = (typeof session !== 'undefined' && session) ? session : null;
           if (ss && Array.isArray(ss.messages) && f) {

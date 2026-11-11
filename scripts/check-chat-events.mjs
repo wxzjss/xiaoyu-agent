@@ -111,8 +111,12 @@ console.log('\n=== 3. 两段认的事件必须同一套（记了但没画 / 画�
  *   reasoning — 思考要收进折起来的思考链，不往气泡正文里塞
  *   fish_off  — 小鱼被关掉这件事本身不画进正文；它自己会落系统提示、
  *               还会去捞小鲸迟到的回复，所以反射逻辑在记录段里
+ *   ask_approval — 它的「画」就是记录段里当场弹的应用内确认框
+ *               （「她要动：xx」），必须赶在 onScreen() 分界**之前**弹：
+ *               主人切到别的会话时她也得能问，不然她干等 60 秒然后什么都不做。
+ *               （2026-11-11 加）
  */
-const REC_ONLY_OK = new Set(['reasoning', 'fish_off']);
+const REC_ONLY_OK = new Set(['reasoning', 'fish_off', 'ask_approval']);
 const recOnly = [...countTypes(recSeg).keys()].filter((t) => !countTypes(scrSeg).has(t) && !REC_ONLY_OK.has(t));
 const scrOnly = [...countTypes(scrSeg).keys()].filter((t) => !countTypes(recSeg).has(t));
 ok(recOnly.length === 0, recOnly.length ? '只记录了没画：' + recOnly.join(', ') : '没有「该画却没画」的事件');

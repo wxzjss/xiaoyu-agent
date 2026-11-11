@@ -20151,7 +20151,7 @@ refreshMusic();
     const caret = input.selectionStart || 0;
     const m = /(^|\s)@([^\s@]*)$/.exec(input.value.slice(0, caret));
     if (!m) { close(); return; }
-    mStart = caret - m[2].length;
+    mStart = caret - m[2].length - 1;   // 连 @ 一起算进要被替换的段里
     mEnd = caret;
     open = true;
     items = [];
@@ -20244,6 +20244,7 @@ refreshMusic();
     const empty = !logEl.querySelector('.msg') && !logEl.querySelector('details.toolhub');
     wrap.hidden = !(empty && sessionId);
   }
+  paint();   // 先画一组出来，别等「换一批」才有点击目标
   try {
     new MutationObserver(refresh).observe(logEl, { childList: true, subtree: true });
   } catch { /* 观察不上就只靠开机那一判 */ }

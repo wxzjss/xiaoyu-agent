@@ -51,6 +51,10 @@ const READ = `return (function(){
      * 也变成 MateBubble —— 她的署名必须是她自己的 #f0a6a0（rgb(240,166,166)），
      * 不能退回默认白 rgb(230,230,230)。 */
     xiaoyu: rows.filter((r) => /\\bmate\\b/.test(r.cls) && r.who === '小鱼'),
+    /* 【2026-11-11 三补·小鱼冷启动首拍】断网 / 颜色表没回来那一拍，小鱼的
+     * MateBubble 署名也要首拍即 #f0a6a0（内置表兜底，不许白）。 */
+    xiaoyuFirst: (Array.isArray(window.__firstColors) ? window.__firstColors : [])
+      .filter((x) => /\\bmate\\b/.test(x.cls) && x.who === '小鱼'),
     firstFrames: (Array.isArray(window.__firstColors) ? window.__firstColors : [])
       .filter((x) => /\\bassistant\\b/.test(x.cls) && x.who === '小鲸'),
     mapSize: (function(){ try { return window.__mateColors ? window.__mateColors.size : 'no-map'; } catch(e){ return 'err'; } })(),
@@ -197,6 +201,11 @@ const INJECT = `
         + out.xiaoyu.length + (xyuBad.length ? '：' + xyuBad[0].color : '') + '）');
     ok(out.xiaoyu.every((r) => String(r.color) !== 'rgb(230, 230, 230)'),
       '小鱼署名没有一条落在默认白 rgb(230,230,230)');
+    /* 【2026-11-11 三补·小鱼】正常加载（网络被拖慢）下小鱼的首拍也要即对 */
+    const xyuFirstBad = out.xiaoyuFirst.filter((x) => x.color !== 'rgb(240, 166, 160)');
+    ok(xyuFirstBad.length === 0,
+      '小鱼创建那一拍就是 #f0a6a0（异色样本 ' + xyuFirstBad.length + '/'
+        + out.xiaoyuFirst.length + (xyuFirstBad.length ? '：' + xyuFirstBad[0].color : '') + '）');
 
     console.log('  ── 稳定态：全部署名与颜色 ──');
     for (const r of out.rows) {
@@ -300,6 +309,12 @@ const INJECT = `
     ok(bFirstBad.length === 0,
       '断网时创建那一拍就是缓存色，不闪（异色样本 ' + bFirstBad.length + '/'
         + blocked.firstFrames.length + (bFirstBad.length ? '：' + bFirstBad[0].color : '') + '）');
+    /* 【2026-11-11 三补·小鱼】断网 + 缓存态：小鱼的 MateBubble 署名照旧 #f0a6a0 */
+    ok(blocked.xiaoyu.length > 0, '断网态也画出了 .msg.mate 的小鱼（' + blocked.xiaoyu.length + ' 条）');
+    const bXyuBad = blocked.xiaoyu.filter((r) => r.color !== 'rgb(240, 166, 160)');
+    ok(bXyuBad.length === 0,
+      '断网·缓存态小鱼署名仍是 #f0a6a0（异色样本 ' + bXyuBad.length + '/'
+        + blocked.xiaoyu.length + (bXyuBad.length ? '：' + bXyuBad[0].color : '') + '）');
 
     /* 清掉缓存，验「全新机器」：这时候只能靠内置表 */
     await cdp.eval(`try { localStorage.removeItem('xy_mateColors.v1'); } catch(e){} return 1;`);
@@ -313,6 +328,17 @@ const INJECT = `
     ok(fStableBad.length === 0,
       '无缓存断网时稳定态仍是蓝色（白样本 ' + fStableBad.length + '/'
         + fresh.filtered.length + (fStableBad.length ? '：' + fStableBad[0].color : '') + '）');
+    /* 【2026-11-11 三补·小鱼】断网 + 全新机器（无缓存）：只剩内置表兜底，
+     * 小鱼首拍 + 稳定态都必须是 #f0a6a0，不许白（老病灶「白名」的镜像场景）。 */
+    ok(fresh.xiaoyu.length > 0, '全新机器断网也画出了小鱼（' + fresh.xiaoyu.length + ' 条）');
+    const fXyuFirstBad = fresh.xiaoyuFirst.filter((x) => x.color !== 'rgb(240, 166, 160)');
+    ok(fXyuFirstBad.length === 0,
+      '无缓存断网时小鱼创建那一拍就是 #f0a6a0（异色样本 ' + fXyuFirstBad.length + '/'
+        + fresh.xiaoyuFirst.length + (fXyuFirstBad.length ? '：' + fXyuFirstBad[0].color : '') + '）');
+    const fXyuStableBad = fresh.xiaoyu.filter((r) => r.color !== 'rgb(240, 166, 160)');
+    ok(fXyuStableBad.length === 0,
+      '无缓存断网时小鱼稳定态仍是 #f0a6a0（异色样本 ' + fXyuStableBad.length + '/'
+        + fresh.xiaoyu.length + (fXyuStableBad.length ? '：' + fXyuStableBad[0].color : '') + '）');
 
     cdp.close();
   } finally {

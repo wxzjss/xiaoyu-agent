@@ -197,8 +197,8 @@ export const FEATURES = [
      * 照常用），派活是**后台**的 —— spawn 出去立刻拿到门牌号就继续干自己的，
      * worker 干完了主动把汇报递回来。没有顶栏按钮，入口只有功能页这一个开关。
      *
-     * 【为什么 defaultOn: false】新功能默认关（2026-11-10 定的规矩）：
-     * 它一开就是「她会同时开几路活」，主人得自己决定哪个会话让她拉小队。
+     * 【为什么 defaultOn: true】2026-11-11 主人要求默认开：他不想每开一个新
+     * 会话都先去功能页手动打开。想关就在功能页里关，按会话生效。
      *
      * 【工具归属】这五个工具同时被「智能体」声明过两个（spawn_worker /
      * list_workers），isToolEnabled 按「任一拥有者开着就能用」判 ——
@@ -206,7 +206,7 @@ export const FEATURES = [
      */
     id: 'team',
     name: '团队模式',
-    defaultOn: false,
+    defaultOn: true,
     tools: ['spawn_worker', 'spawn_workers', 'list_workers', 'tell_worker', 'watch_worker'],
     desc: '开了之后我干活时可以拉一支小队一起上：你说一句「帮我查三份资料」，我自己判断要不要拆、拆几份、派给谁。派出去之后我不停下来等——它们跑它们的，我该干别的干别的，想起来就看看进度、补两句话。所有子智能体只属于这个会话，干完或会话删了就没了。这个开关没有顶栏按钮，全程我说了算；关掉之后我只会一个人干活。',
   },

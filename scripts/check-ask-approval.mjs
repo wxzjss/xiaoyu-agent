@@ -127,7 +127,7 @@ async function grabSessionId(base) {
 }
 
 /* 等 live 事件流里出现 ui_key 的 tool_end（/api/chat/live 的 events 是原始事件，type/name/ok/output） */
-async function waitUiKeyDone(base, sid, maxMs = 300000) {
+async function waitUiKeyDone(base, sid, maxMs = 90000) {
   const t0 = Date.now();
   while (Date.now() - t0 < maxMs) {
     try {
@@ -142,7 +142,7 @@ async function waitUiKeyDone(base, sid, maxMs = 300000) {
 }
 
 /* 等这一轮彻底收尾（running 里没了）—— 下一轮要等空闲才能发 */
-async function waitTurnEnd(base, sid, maxMs = 240000) {
+async function waitTurnEnd(base, sid, maxMs = 150000) {
   const t0 = Date.now();
   while (Date.now() - t0 < maxMs) {
     try {

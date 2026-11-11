@@ -208,11 +208,24 @@ export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
       try { spawnSyncKill(proc.pid); } catch {}
       try { proc.kill(); } catch {}
     };
+    const wipe = async () => {
+      /* Windows 上 Edge 的一串子进程会短暂 hold 住 edge-profile 目录，一次删不掉就重试 */
+      for (let i = 0; i < 8; i++) {
+        try { rmSync(dataDir, { recursive: true, force: true }); return true; } catch {}
+        await sleep(250);
+      }
+      return false;
+    };
+    /* 【2026-11-11 补】脚本被掐断/异常退出时不一定走 stop()，那样目录就永远留着。
+     * 之前攒了 676 个 xy-check-* 死目录没人清。这里挂个兜底：进程退出时同步删。 */
+    const onExit = () => { try { rmSync(dataDir, { recursive: true, force: true }); } catch {} };
+    process.once("exit", onExit);
     const stop = async () => {
       kill(edge);
       kill(server);
-      await sleep(400);
-      try { rmSync(dataDir, { recursive: true, force: true }); } catch {}
+      await sleep(600);
+      process.removeListener("exit", onExit);
+      await wipe();
     };
 
     return { base, dataDir, cdpPort, copied, env, stop };

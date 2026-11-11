@@ -137,7 +137,7 @@ console.log('\n=== 5. 这一轮「没有下文」的三条路，收尾必须做�
  */
 // 前三样是函数调用；streaming 是类名字符串，判据不同，单独查
 const CLEANUP = ['hideSending', 'flushSpeech', 'closeThink'];
-const helperDef = html.match(/const\s+(\w*[Qq]uiet\w*|\w*[Cc]leanup\w*)\s*=\s*\(\)\s*=>\s*\{([\s\S]{0,900}?)\};/);
+const helperDef = html.match(/const\s+(\w*[Qq]uiet\w*|\w*[Cc]leanup\w*)\s*=\s*\(\)\s*=>\s*\{([\s\S]{0,6000}?)\};/);
 const helperName = helperDef ? helperDef[1] : null;
 const helperBody = helperDef ? helperDef[2] : '';
 if (helperName) console.log('  · 找到收尾小函数：' + helperName);
@@ -168,7 +168,7 @@ for (const t of ['aborted', 'error', 'rate_limited']) {
    * hidingSendingSafe()。这比无条件灭灯更对（见 check-sending-hint.mjs），
    * 所以把它也算「灯有人管」，别逼着代码退回旧 bug。 */
   const hasCleanup = (body, fn) => {
-    if (new RegExp(fn + '\s*[.(]').test(body)) return true;
+    if (new RegExp(fn + '\\s*[.(]').test(body)) return true;
     if (fn === 'hideSending' && /scheduleSendingRecheck\s*\(/.test(body)) return true;
     return false;
   };

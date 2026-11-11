@@ -88,6 +88,25 @@ console.log('\n=== 2. 后端源码 ===');
       : '这些文件两边不一致（改了不生效）：' + diff.join(', '));
   }
 }
+console.log('\n=== 1b. 前端脚本（public/ui/*.js）===');
+{
+  const dirA = path.join(REPO, 'public/ui');
+  const dirB = path.join(DATA, 'public/ui');
+  if (!fs.existsSync(dirA)) {
+    console.log('  · 仓库没有 public/ui，跳过');
+  } else if (!fs.existsSync(dirB)) {
+    console.log('  · 生效那份没有 public/ui 目录（跑的就是仓库这份），跳过');
+  } else {
+    const files = fs.readdirSync(dirA).filter((f) => /\.(js|css)$/.test(f));
+    const diff = [];
+    for (const f of files) {
+      if (same(path.join(dirA, f), path.join(dirB, f)) === false) diff.push(f);
+    }
+    ok(diff.length === 0, diff.length === 0
+      ? files.length + ' 个前端脚本两边一致'
+      : '这些前端脚本两边不一致（改了不生效）：' + diff.join(', '));
+  }
+}
 
 console.log('\n=== 3. 生效那份不能是坏的 ===');
 {

@@ -7500,11 +7500,20 @@
   function dropLandedPending(list, turns) {
     if (!list.length) return list;
     const arr = Array.isArray(turns) ? turns : [];
-    const tail = arr.slice(-6);
-    const texts = tail.map((t) => norm(t && t.text)).filter(Boolean);
+    const nz = (t) => norm(t && t.text);
+    let lastUserText = "";
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const t = arr[i];
+      if (t && t.role === "user") {
+        lastUserText = nz(t);
+        break;
+      }
+    }
+    const texts = arr.slice(-6).map(nz).filter(Boolean);
     const keep = list.filter((p) => {
       const n = norm(p.text);
       if (!n) return false;
+      if (lastUserText && (lastUserText === n || lastUserText.endsWith(n))) return false;
       return !texts.some((t) => t === n || t.endsWith(n));
     });
     return keep.length === list.length ? list : keep;

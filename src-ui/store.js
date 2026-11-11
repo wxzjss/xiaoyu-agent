@@ -324,17 +324,35 @@ function norm(s) {
 /**
  * 这句话在不在这份历史里？
  *
- * 判据是「洗完只留字」之后相等，只看最后几条 —— 刚发出去的那句必然贴着尾巴。
- * 命中就说明服务端已经落盘了，乐观那条必须收掉，否则屏幕上两份。
+ * 命中了就说明服务端已经落盘，乐观那条必须收掉，否则屏幕上两份。
+ *
+ * 【2026-11-11 修·主人报「一轮结束，我说的话全堆到这一轮最下面」】
+ *
+ * 原来只看**最后 6 条**（`arr.slice(-6)`）。可一轮活儿里她的回复常常被劈成
+ * 好几段 assistant turn（正文→工具→正文→工具…），主人那句话很快就被挤出这 6 条窗口：
+ * 于是「落盘了」判不出来 → 乐观气泡一直留着 → buildMerged 的 `items.concat(pend, live)`
+ * 把它摆在清单**最末尾** = 主人看到的「我这句话堆到了这一轮最下面」。
+ * 按 F5 就正常，是因为 pendingUser 只活在前端内存里，刷新即清空。
+ *
+ * 正确判据：**历史里最后一条 user turn 就是它**（不管这一轮后面又劈出多少段 assistant）。
+ * 保留末尾 6 条做兜底 —— 极少数路径（续跑 / 切会话）里最后一条 user 可能不是它。
+ * 刻意**不**全表扫：主人隔了很多轮又说一句同样的话（比如第三次「继续」），
+ * 全表扫会把它当「已经在历史里」当场收掉，屏幕上看着像话被吞了。
  */
 function dropLandedPending(list, turns) {
   if (!list.length) return list;
   const arr = Array.isArray(turns) ? turns : [];
-  const tail = arr.slice(-6);
-  const texts = tail.map((t) => norm(t && t.text)).filter(Boolean);
+  const nz = (t) => norm(t && t.text);
+  let lastUserText = '';
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const t = arr[i];
+    if (t && t.role === 'user') { lastUserText = nz(t); break; }
+  }
+  const texts = arr.slice(-6).map(nz).filter(Boolean);
   const keep = list.filter((p) => {
     const n = norm(p.text);
     if (!n) return false;
+    if (lastUserText && (lastUserText === n || lastUserText.endsWith(n))) return false;
     return !texts.some((t) => t === n || t.endsWith(n));
   });
   return keep.length === list.length ? list : keep;

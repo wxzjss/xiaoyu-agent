@@ -26,7 +26,7 @@ const CORE = [
   ['check-turn-watchdog.mjs', '整轮看门狗（别再「自己停了」）'],
   ['check-stuck-autoresume.mjs', '掐完自动接回'],
   ['check-resume-multi.mjs', '重启续跑（多会话不互相吃掉）'],
-  ['check-pending-queue.mjs', '预发送队列（不丢话、不重复发）'],
+  ['check-pending-hint.mjs', '发送提示（预发送队列已删·两条路都直接插话）'],
   ['check-think-display.mjs', '思考链渲染（字数/标题/收展）'],
   ['check-tool-naming.mjs', '工具命名与柜门'],
   ['check-factory-prompt.mjs', '出厂默认提示词（换机器还是这份）'],

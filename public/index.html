@@ -894,23 +894,6 @@
     /* 【2026-11-08 加·预发送队列】
        运行时发的话先在这里保管，等这一轮结束自动发出去。
        每条可以：直接发送（立刻插进去）／编辑（撤回输入框）／删除。 */
-    .pendingQueue { max-width: 900px; margin: 0 auto 8px; display: flex; flex-direction: column; gap: 6px; }
-    .pendingQueue[hidden] { display: none; }
-    .pendingHead { font-size: 11.5px; color: var(--dim); opacity: .75; padding: 0 2px; }
-    .pendingItem {
-      display: flex; align-items: center; gap: 8px; padding: 7px 10px;
-      border: 1px dashed rgba(240,185,84,.45); border-radius: 8px;
-      background: rgba(240,185,84,.06); font-size: 12.5px; color: var(--dim);
-    }
-    .pendingItem .ptag { flex: none; color: #f0b954; font-size: 11.5px; }
-    .pendingItem .ptext { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); opacity: .9; }
-    .pendingItem button {
-      flex: none; background: transparent; border: 1px solid var(--border); color: var(--dim);
-      border-radius: 6px; padding: 2px 7px; font-size: 11.5px; cursor: pointer;
-    }
-    .pendingItem button:hover { color: var(--text); border-color: rgba(255,255,255,.35); }
-    .pendingItem button.go { color: #f0b954; border-color: rgba(240,185,84,.5); }
-    .pendingItem button.go:hover { background: rgba(240,185,84,.12); }
     .attachChip {
       display: flex; align-items: center; gap: 8px; max-width: 260px; padding: 5px 8px 5px 6px;
       background: #0f1319; border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px;
@@ -4598,7 +4581,6 @@
         <span class="turnElapsed" id="turnElapsed"></span>
       </div>
     </div>
-    <div class="pendingQueue" id="pendingQueue" hidden></div>
     <div class="attachBar" id="attachBar"></div>
     <button id="toBottom" type="button" aria-label="回到最新" title="回到最新" hidden>
       <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -9759,302 +9741,6 @@ async function settleFromHistory(id) {
 /** 会话 id -> 后台轮次记录（切走也不停，切回来能接着看）。在下面统一初始化。 */
 
 
-/* ══════════════════════════════════════════════════════════════
- * 【预发送队列】—— 2026-11-08 主人要求
- *
- * 原话：「增加和 workbuddy 一样的消息预发送机制：运行时发送消息会暂时保管这条消息，
- * 等一轮结束后自动发送出去，也可手动直接发送或收回编辑或删除这条预发送消息」。
- *
- * 以前 busy 时按回车直接走 interject（打断式插话）—— 那是 2026-10-26 主人
- * 明确要回过「打断式」的，所以**没删它**：现在默认进队列，
- * 想立刻打断就点队列里那条的「直接发送」，走的还是 interject 那条老路。
- *
- * 存在 localStorage（按会话分 key），刷新页面不丢。
- * ══════════════════════════════════════════════════════════════ */
-let pendingQueue = [];
-let _flushingPending = false;
-
-function pendingStoreKey() {
-  return 'xy_pending_' + (sessionId || 'none');
-}
-
-function loadPendingQueue() {
-  try {
-    const raw = localStorage.getItem(pendingStoreKey());
-    const arr = raw ? JSON.parse(raw) : [];
-    pendingQueue = Array.isArray(arr)
-      ? arr.filter((x) => x && (x.text || (x.atts && x.atts.length)))
-      : [];
-  } catch (e) { pendingQueue = []; }
-  renderPendingQueue();
-}
-
-function savePendingQueue() {
-  try { localStorage.setItem(pendingStoreKey(), JSON.stringify(pendingQueue)); } catch (e) {}
-}
-
-function enqueueMessage(text, atts) {
-  const t = String(text || '').trim();
-  const a = Array.isArray(atts) ? atts.slice() : [];
-  if (!t && !a.length) return false;
-  pendingQueue.push({
-    id: 'pq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
-    text: t,
-    atts: a,
-    at: Date.now(),
-  });
-  savePendingQueue();
-  renderPendingQueue();
-  return true;
-}
-
-/** 把输入框里的内容收进队列（busy 时按回车走这条），返回是否收下了 */
-function queueFromInput() {
-  const t = String(input.value || '').trim();
-  const a = attachments.slice();
-  if (!t && !a.length) return false;
-  enqueueMessage(t, a);
-  try {
-    input.value = '';
-    attachments.length = 0;
-    autosizeInput();
-    syncSendBtn();
-    renderAttachBar();
-    /* 【2026-11-08 修·删掉的预发送消息重启后又跑回输入框】
-     *
-     * 草稿（xy.draft.<sid>）和队列（xy_pending_<sid>）是两个独立的 key。
-     * 这里以前只用程序把 input.value 清空了 —— 程序改 value 不会触发 input 事件，
-     * 于是节流版的 saveDraft() 根本没跑，草稿里那句话**还原封不动躺着**。
-     * 主人把队列里那条删掉、重启，restoreDraft() 读草稿又把它写回输入框，
-     * 看着就像「删掉的消息自己跑回来了」。
-     *
-     * 话已经进队列了，草稿这份就该当场作废。 */
-    try { clearDraft(); } catch (e) {}
-  } catch (e) {}
-  return true;
-}
-
-function renderPendingQueue() {
-  const box = document.getElementById('pendingQueue');
-  if (!box) return;
-  if (!pendingQueue.length) { box.hidden = true; box.innerHTML = ''; return; }
-  box.hidden = false;
-  box.innerHTML = '';
-
-  const _uncertain = pendingQueue.some((x) => x && x._uncertain);
-  const head = document.createElement('div');
-  head.className = 'pendingHead';
-  head.textContent = _uncertain
-    ? '有消息状态不确定 —— 可能已经发出去了，先确认下再点「直接发送」，别重复发'
-    : '待发送 ' + pendingQueue.length + ' 条 —— 这一轮结束后自动发出；也可以现在发，或撤回改';
-  box.appendChild(head);
-
-  for (const it of pendingQueue) {
-    const row = document.createElement('div');
-    row.className = 'pendingItem';
-
-    const tag = document.createElement('span');
-    tag.className = 'ptag';
-    /* 【2026-11-08】发到一半断掉的那条：不知道服务端收没收到，不猜、不重发 */
-    tag.textContent = it._uncertain ? '可能已发出' : '待发送';
-
-    const tx = document.createElement('span');
-    tx.className = 'ptext';
-    const n = (it.atts || []).length;
-    tx.textContent = (it.text || '（只有附件）') + (n ? '  [' + n + ' 个附件]' : '');
-    tx.title = it.text || '';
-
-    const bGo = document.createElement('button');
-    bGo.type = 'button';
-    bGo.className = 'go';
-    bGo.textContent = '直接发送';
-    bGo.title = '不等这一轮结束，立刻发出去（会打断她现在这轮）';
-    bGo.onclick = () => { sendPendingNow(it.id); };
-
-    const bEdit = document.createElement('button');
-    bEdit.type = 'button';
-    bEdit.textContent = '编辑';
-    bEdit.title = '撤回输入框，改完再发';
-    bEdit.onclick = () => { editPending(it.id); };
-
-    const bDel = document.createElement('button');
-    bDel.type = 'button';
-    bDel.textContent = '删除';
-    bDel.onclick = () => { removePending(it.id); };
-
-    row.append(tag, tx, bGo, bEdit, bDel);
-    box.appendChild(row);
-  }
-}
-
-function removePending(id) {
-  const i = pendingQueue.findIndex((x) => x && x.id === id);
-  if (i < 0) return;
-  const dead = pendingQueue[i];
-  pendingQueue.splice(i, 1);
-  savePendingQueue();
-  /* 【2026-11-08 补】清掉历史残留的草稿：老版本入队时没清草稿，
-   * 那份文本可能还躺在 xy.draft.<sid> 里。只在这条文本和它完全一样时才清，
-   * 别把主人正在输入框里打的别的话一起抹了。 */
-  try {
-    const t = localStorage.getItem(draftKey());
-    if (t && String(t).trim() === String(dead.text || '').trim()) clearDraft();
-  } catch (e) {}
-  renderPendingQueue();
-}
-
-function editPending(id) {
-  const i = pendingQueue.findIndex((x) => x.id === id);
-  if (i < 0) return;
-  const it = pendingQueue[i];
-  pendingQueue.splice(i, 1);
-  savePendingQueue();
-  renderPendingQueue();
-  try {
-    input.value = String(it.text || '');
-    for (const a of (it.atts || [])) { try { attachments.push(a); } catch (e) {} }
-    autosizeInput();
-    syncSendBtn();
-    try { renderAttachBar(); } catch (e) {}
-    input.focus({ preventScroll: true });
-  } catch (e) {}
-}
-
-/** 直接发送一条：不由队列排，立刻发（busy 时走插话，那条是被主人要回来的打断式） */
-async function sendPendingNow(id) {
-  const i = pendingQueue.findIndex((x) => x.id === id);
-  if (i < 0) return;
-  const it = pendingQueue[i];
-  pendingQueue.splice(i, 1);
-  savePendingQueue();
-  renderPendingQueue();
-  const text = String(it.text || '');
-  const atts = Array.isArray(it.atts) ? it.atts : [];
-  if (busy) {
-    /* 复用 interject：它读的是输入框 + attachments，所以先临时换进去再换回来 */
-    let keepV = '';
-    let keepA = [];
-    try {
-      keepV = input.value;
-      keepA = attachments.slice();
-      input.value = text;
-      attachments.length = 0;
-      for (const a of atts) attachments.push(a);
-      await interject();
-    } catch (e) {
-    } finally {
-      try {
-        input.value = keepV;
-        attachments.length = 0;
-        for (const a of keepA) attachments.push(a);
-        autosizeInput();
-        syncSendBtn();
-        try { renderAttachBar(); } catch (e) {}
-      } catch (e) {}
-    }
-  } else {
-    try { await runTurn({ text, attachments: atts }); } catch (e) {}
-  }
-}
-
-/** 一轮真的结束了：把队列里最前面那条发出去（一次一条，发完由下一次 done 继续） */
-/**
- * 【2026-11-08 修·发失败别把主人那句话弄丢】
- *
- * 老写法是「先 shift + savePendingQueue()，再 runTurn」——
- * runTurn 一抛错（服务没起、401、400、网络断），那条消息**已经从队列里拿走了、
- * 盘上也删了**，而 catch 是空的。主人看到的是：预发送队列里那条自己消失了，
- * 会话里也没有。等于把话吞了。
- *
- * 这跟服务端 `pending.shift()` 那个丢话坑是同一个形状（那段注释写过一模一样的话），
- * 现在这边也照着改：**发成功才取走**。
- *
- * 为什么放回不会重复发：runTurn 只在「res 不 ok」或「fetch 本身抛」时抛错，
- * 那两种都是服务端没接、消息没落盘（看 throw new Error(why) 那段），
- * 所以放回去是安全的。
- *
- * 为什么还要 _tries：服务真的挂了的时候，2 秒一次会转到天亮。
- * 试满 3 次就不再自动重试，但**条目留在队列里不删** —— 主人能看见、
- * 能自己点「直接发送」，也能删。宁可留着让他决定，不能替他丢掉。
- */
-async function flushPendingQueue() {
-  if (_flushingPending || busy || !pendingQueue.length) return;
-  const next = pendingQueue[0];
-  if (!next) return;
-  /**
-   * 【2026-11-08 修·「已经发出去一份，还有一份看着像没发」】
-   *
-   * 主人问：「预发送机制真的有生效吗？还是已经发送出去了一份，
-   * 还有一份是显示着看上去没发送」。这个怀疑是对的，确实有这条缝：
-   *
-   * `runTurn` 会先把话 POST 给服务端落盘，然后才接流式。
-   * 要是流式中途断了 / 页面刷新 / 被 abort，`runTurn` 抛错，
-   * 可服务端**那句话已经收下了** —— 而 catch 里我们只认「抛错=没发出」，
-   * 于是队列里那条留着，屏幕上就出现主人说的「一份发了、一份还挂着」。
-   * 更糟的是下次轮询会再发一遍，真的变成两条。
-   *
-   * 不能靠「比对文本」猜（会话里「继续」这种短句本来就重复过三次，会误删），
-   * 也不能直接删（万一真没发出去就丢了）。
-   *
-   * 现在：这条标成 `_uncertain`，**不删、也不再自动重发**，
-   * 界面上写「可能已发出」并提示先确认 —— 交给主人点「直接发送」或「删除」。
-   * 既不重复发，也不替他丢。
-   */
-  if (next._uncertain) return;
-  if ((Number(next._tries) || 0) >= 3) return;   // 试满了，等主人自己处理
-  _flushingPending = true;
-  let sent = false;
-  /* 【2026-11-09 修·「明明发出去了一份，界面还挂着待发送」】
-   * 原来这条要从队列里摘掉，得等 runTurn 整轮跑完（实测挂过 1 分 34 秒）。
-   * 可 runTurn 一进去消息就交给服务端了 —— 主人眼里就是「发出去了还挂着待发送」。
-   * 所以改成：交给 runTurn 之前先摘队、先重画。真失败了 catch 里再放回去。 */
-  const _takenOut = pendingQueue.findIndex((x) => x && x.id === next.id);
-  if (_takenOut >= 0) pendingQueue.splice(_takenOut, 1);
-  try { savePendingQueue(); } catch (_) {}
-  try { renderPendingQueue(); } catch (_) {}
-  try {
-    await runTurn({ text: String(next.text || ''), attachments: Array.isArray(next.atts) ? next.atts : [] });
-    sent = true;
-  } catch (e) {
-    /* 抛错不等于没发出去（见上面的说明）：标成「可能已发出」，不再自动重发 */
-    next._uncertain = true;
-    next._tries = (Number(next._tries) || 0) + 1;
-    /* 上面已经把它摘出队列了，这儿放回去 —— 不能让主人那句话凭空消失 */
-    if (!pendingQueue.some((x) => x && x.id === next.id)) pendingQueue.unshift(next);
-    try { savePendingQueue(); } catch (_) {}
-    try { console.warn('[预发送] 这条状态不确定（可能已经发出去了），留在队列里等主人确认，不自动重发'); } catch (_) {}
-  } finally {
-    _flushingPending = false;
-    if (sent) {
-      /* 只有真的发出去了才取走。按 id 找，别用 shift —— 中途主人可能编辑或删过 */
-      const ix = pendingQueue.findIndex((x) => x && x.id === next.id);
-      if (ix >= 0) pendingQueue.splice(ix, 1);
-      try { savePendingQueue(); } catch (_) {}
-    }
-    renderPendingQueue();
-  }
-}
-
-/**
- * 一轮结束后把队首那条发出去 —— 用轮询兜底。
- *
- * 【为什么用轮询而不是挂到每个「结束」出口上】
- * 「这一轮结束」有好几个出口（正常收尾 finally、断流走 followLive 旁路、被打断、切会话），
- * 一个个去挂，漏一个就永远不发。每 2 秒问一句「闲了吗、队列里还有吗」，最笨也最不会漏。
- * 闲着且队列空时只做两次判断，开销可以忽略。
- */
-let _pendingLoadedSid = '';
-setInterval(() => {
-  try {
-    /* 会话一变就把那个会话的队列读出来（首次打开也走这条） */
-    if (sessionId && sessionId !== _pendingLoadedSid) {
-      _pendingLoadedSid = sessionId;
-      loadPendingQueue();
-    }
-    if (!busy && !_flushingPending && pendingQueue.length) flushPendingQueue();
-  } catch (e) {}
-}, 2000);
-
 /* ============================================================================
  * 【2026-11-11 加·增强提示词】输入框右边那颗星星（主人要的）
  *
@@ -10494,24 +10180,21 @@ async function resumeOrResend(s, text) {
 }
 
 sendBtn.onclick = () => {
-  /* 【2026-11-05】主按钮只管「发 / 预发送」。
+  /* 【2026-11-05】主按钮只管「发 / 插话」。
    * 停止已经改成独立的 ⏹ —— 这里再兜底一次 stopTurn 就会变成两个入口，
    * 而且生成中空着输入框点它会莫名其妙把这一轮掐掉。
    *
-   * 【2026-11-11 修·主人问「为什么回车是【预发送】，点【发送】却不是？」】
+   * 【2026-11-11 主人定·预发送机制整个删除】
    *
-   * 他说得对：这两条路以前走的根本不是同一件事。
-   *   · 回车（10568 行）：busy 时 → queueFromInput()，收进预发送队列，等这一轮结束自己发；
-   *   · 点【发送】     ：busy 时 → interject()，**打断式插话**（排到她这一步之后）。
-   * 这是 2026-11-08「加预发送机制」时漏改的一处：那天只把**回车**改成收队列，
-   * 按钮还留在 interject 上。于是同一句话，回车是「等着」，点按钮是「插进去」——
-   * 主人当然会觉得莫名其妙，而且两者在屏幕上的反馈也不一样（一个是队列小条，一个是插话气泡）。
+   * 原话：「把【预发送】机制整个删除，就按原来那个点【发送】直接插话，
+   *        按回车也和点【发送】一样直接插话」。
    *
-   * 现在统一走队列（主人 11-08 定的默认就是「运行时先保管」）。
-   * 想立刻打断、不等这一轮 —— 队列里那条的【直接发送】就是干这个的，那条路照旧走 interject。
+   * 所以现在两条路完全一致：她没在跑 → send()；她在跑 → interject() 直接插进去。
+   * 2026-11-08 那套「待发送」队列（按会话存本地存储、一轮结束自动发、
+   * 队列里还能直接发送/编辑/删除）连同那个 2 秒轮询已经整段删掉。
    */
   if (!busy) return send();
-  if (input.value.trim() || attachments.length) return queueFromInput();
+  if (input.value.trim() || attachments.length) return interject();
 };
 /* 【2026-11-05 加】独立停止键：不管输入框里有没有字，点它就是停。 */
 try {
@@ -10582,20 +10265,20 @@ input.addEventListener('keydown', (e) => {
   if (_imBlocked) {
     if (e.key === 'Enter' && !e.shiftKey && !String(input.value || '').trim() && attachments.length) {
       e.preventDefault();
-      /* 【2026-11-08 改】运行时按回车不再打断她，先收进预发送队列 */
+      /* 【2026-11-11 主人定·跟点【发送】完全一致】没在跑就正常发，在跑就直接插话 */
       if (!busy) send();
-      else queueFromInput();
+      else interject();
     }
     return;
   }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     if (!String(input.value || '').trim() && !attachments.length) return;  // 空消息不发（send 里也挡了一次）
-    /* 【2026-11-08 改·预发送队列】原来 busy 时走 interject（立刻打断这一轮）。
-     * 主人要的是「先保管，这一轮结束自动发」。打断那条没删 ——
-     * 队列里点「直接发送」还是走 interject。 */
+    /* 【2026-11-11 主人定·预发送机制整个删除】
+     * 回车跟点【发送】走同一条路：没在跑 → send()；在跑 → interject()（直接插话）。
+     * 以前 busy 时会先收进「待发送」队列、等这一轮结束自动发 —— 那套已整段删掉。 */
     if (!busy) send();
-    else queueFromInput();
+    else interject();
   }
 });
 /**

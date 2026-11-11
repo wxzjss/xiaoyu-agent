@@ -1,7 +1,8 @@
 /**
  * check-pending-hint.mjs — 守两件事：
- *  ① 预发送队列：消息交给 runTurn **之前**就要摘队重画。
- *     原来等整轮跑完才摘，主人看到「明明发出去了，下面还挂着待发送」。
+ *  ① **预发送队列必须已经彻底删掉**（主人 2026-11-11 定：忙时点【发送】/回车都直接插话）。
+ *     原来这一段守的是「消息交给 runTurn 之前就要摘队重画」，那是队列还在时的口径。
+ *     现在队列整段删了，反过来守：不许再出现 flushPendingQueue / pendingQueue / xy_pending_。
  *  ② 「正在发送」提示只说这一句：主人 2026-11-11 要求删掉
  *     「已经 N 秒没有回音，可能卡住了」那句改口，现在它**不许存在**。
  *     但 `RUNNING_STALL_MS` 常量还要给会话列表绿点变黄用，那条守住。
@@ -26,30 +27,32 @@ const s = fs.readFileSync(HTML, 'utf8');
 
 console.log('check-pending-hint');
 
-/* ── ① 摘队发生在 await runTurn 之前 ───────────────────────── */
-const fn = (() => {
-  const i = s.indexOf('async function flushPendingQueue(');
-  if (i < 0) return '';
-  const rest = s.slice(i + 10);
-  const m = rest.match(/\n(?:async\s+)?function\s/);
-  return m ? s.slice(i, i + 10 + m.index) : s.slice(i, i + 5000);
-})();
+/* ── ① 预发送队列必须已经整段删掉（不许复活）───────────────────
+ *
+ * 主人 2026-11-11 原话：「把【预发送】机制整个删除，就按原来那个点【发送】直接插话，
+ * 按回车也和点【发送】一样直接插话」。
+ * 所以这里反过来钉：队列那套东西一个都不许再出现（函数、DOM、localStorage key、轮询）。
+ * 同时钉住「两条路都走 interject」—— 不然哪天有人又把回车改成排队，主人会再看到两个行为。 */
+{
+  const leftovers = [
+    ['flushPendingQueue', '队列的发送函数'],
+    ['pendingQueue', '队列变量/容器'],
+    ['queueFromInput', '回车收队列的函数'],
+    ['xy_pending_', '队列的 localStorage key'],
+    ['pendingStoreKey', '队列的存储 key 函数'],
+  ].filter(([k]) => s.includes(k));
+  if (leftovers.length) bad('预发送队列已彻底删除', '还有残留：' + leftovers.map(([k, d]) => k + '(' + d + ')').join('、'));
+  else ok('预发送队列已彻底删除（函数 / DOM / localStorage / 轮询一个不剩）');
 
-if (!fn) bad('找得到 flushPendingQueue');
-else {
-  const ixOut = fn.indexOf('pendingQueue.splice(_takenOut, 1)');
-  const ixRun = fn.indexOf('await runTurn(');
-  if (ixOut < 0) bad('发出前先摘队', '没找到摘队语句');
-  else if (ixRun < 0) bad('发出前先摘队', '没找到 runTurn 调用');
-  else if (ixOut > ixRun) bad('发出前先摘队', '摘队还在 runTurn 后面，等于没修');
-  else ok('发出前先摘队（不再等整轮跑完）');
+  /* 两条路必须都走 interject：点了发送、按了回车，忙时都是直接插话 */
+  const elseInterject = (s.match(/if \(!busy\) send\(\);\s*\n\s*else interject\(\);/g) || []).length;
+  if (elseInterject < 2) bad('回车忙时直接插话（两个入口都要）', '只找到 ' + elseInterject + ' 处');
+  else ok('回车忙时直接插话（两个入口都是 ' + elseInterject + ' 处）');
 
-  if (!fn.includes('pendingQueue.unshift(next)')) bad('失败了要放回队列', 'catch 里没放回，主人那句话会凭空消失');
-  else ok('失败了要放回队列');
-
-  const head = fn.slice(0, Math.max(ixRun, 0));
-  if (!head.includes('renderPendingQueue()')) bad('摘队后立刻重画', '没重画，界面上还挂着');
-  else ok('摘队后立刻重画');
+  /* 主按钮那颗：`if (!busy) return send();` 紧跟 `return interject();` */
+  if (!/if \(!busy\) return send\(\);\s*\n\s*if \(input\.value\.trim\(\) \|\| attachments\.length\) return interject\(\);/.test(s)) {
+    bad('点【发送】忙时直接插话', 'sendBtn 里没走 interject');
+  } else ok('点【发送】忙时直接插话');
 }
 
 /* ── ② 聊天区那句改口：主人 2026-11-11 要求删掉 ─────────────────

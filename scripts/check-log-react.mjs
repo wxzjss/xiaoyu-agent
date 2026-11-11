@@ -195,6 +195,15 @@ const SNAP_FN = `window.__lrSnap = function(){
   };
   return {
     segs: q('.msg.assistant .bubble').map(tx),
+    /**
+     * 【2026-11-11 加·只数本轮 QA 段】
+     *
+     * 隔离实例的启动会话自带一句开场白（服务端给新会话垫的 user→assistant 那对），
+     * 它也是一个 .msg.assistant 里的 .bubble —— 于是「段数从不超过 2」会数到 3，
+     * 红的是环境不是产品（把今天所有提交回退掉跑，一样红）。
+     * 二·a 要验的是「这一轮的两段，各占一个容器」，按 QA 前缀过滤就干净了。
+     */
+    qaSegs: q('.msg.assistant .bubble').map(tx).filter(function(t){ return t.indexOf('QA') >= 0; }),
     userSegs: q('.msg.user > .bubble').map(tx),
     tool: q('details.tool').length,
     hub: q('details.toolhub').length,
@@ -379,10 +388,10 @@ async function caseNormalTurn() {
   }
   ok(!dup, '整个过程任何一刻都没有「同一段出现两遍」', dup || '');
   ok(series.some((s) => s && s.tool === 1), '工具卡出现了', '工具卡数轨迹：' + series.map((s) => (s ? s.tool : 'x')).join(''));
-  ok(series.some((s) => s && s.segs.length >= 2), '直播期间屏幕上真的分成了两段',
-    '段数轨迹：' + series.map((s) => (s ? s.segs.length : 'x')).join(''));
-  ok(series.every((s) => !s || s.segs.length <= 2), '段数从不超过 2（没有中间态堆出来的第三段）',
-    '最大 ' + Math.max(0, ...series.map((s) => (s ? s.segs.length : 0))));
+  ok(series.some((s) => s && s.qaSegs.length >= 2), '直播期间屏幕上真的分成了两段',
+    '段数轨迹：' + series.map((s) => (s ? s.qaSegs.length : 'x')).join(''));
+  ok(series.every((s) => !s || s.qaSegs.length <= 2), '段数从不超过 2（没有中间态堆出来的第三段）',
+    '最大 ' + Math.max(0, ...series.map((s) => (s ? s.qaSegs.length : 0))));
 
   for (let i = 0; i < 80; i++) {
     const b = await cdp.eval('return !!window.busy;');

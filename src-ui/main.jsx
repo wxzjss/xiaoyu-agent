@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import LogView from './LogView.jsx';
 import * as storeApi from './store.js';
+import { primeMateColors } from './bridge.js';
 
 /**
  * 接管 #log。
@@ -49,6 +50,11 @@ function mount() {
 if (!mount()) {
   document.addEventListener('DOMContentLoaded', mount, { once: true });
 }
+
+/* 【2026-11-11 加·颜色预热】署名配色的拉取从「第一次问颜色」提前到开机。
+ * 内置卡的颜色已经在 bridge.js 里写死了（第一帧就对），这里只是把自定义卡的颜色
+ * 早点拿回来；拿回来如果跟屏幕上的不一样，bridge 会 bump 一次让 React 重画。 */
+try { primeMateColors(); } catch (e) {}
 
 /* 【自检用】把 React 和组件挂出来，真机探针可以拿它做「换一个容器重挂一次」这类验证。
  * 只挂引用，不改任何行为。 */

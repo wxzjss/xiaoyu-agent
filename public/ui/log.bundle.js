@@ -7876,12 +7876,57 @@
     }
     return "";
   }
-  function mateColorOf(name) {
+  var MATE_DEFAULT_COLOR = "#e6e6e6";
+  var BUILTIN_MATE_COLORS = {
+    "\u5C0F\u9CB8": "#5b9bd5",
+    "\u5C0F\u767D\u66E6": "#e6e6e6",
+    "\u65C1\u767D": "#c8a8e8"
+  };
+  var mateColors = new Map(Object.entries(BUILTIN_MATE_COLORS));
+  var mateColorsAsked = false;
+  function bumpLogView() {
     try {
-      if (typeof window.mateColorOf === "function") return String(window.mateColorOf(name) || "");
+      if (typeof window !== "undefined" && window.__logStore && typeof window.__logStore.bump === "function") {
+        window.__logStore.bump();
+      }
     } catch (e) {
     }
-    return "";
+  }
+  function primeMateColors() {
+    if (mateColorsAsked) return;
+    mateColorsAsked = true;
+    try {
+      fetch("/api/agents").then((r) => r.json()).then((r) => {
+        const list = r && Array.isArray(r.agents) ? r.agents : [];
+        let changed = false;
+        for (const a of list) {
+          if (!a || !a.name || !a.color) continue;
+          const nm = String(a.name);
+          const c = String(a.color).trim().toLowerCase();
+          if (!c || mateColors.get(nm) === c) continue;
+          mateColors.set(nm, c);
+          changed = true;
+        }
+        if (changed) bumpLogView();
+      }).catch(() => {
+      });
+    } catch (e) {
+    }
+  }
+  function mateColorOf(name) {
+    const nm = String(name == null ? "" : name).trim();
+    if (!nm) return "";
+    primeMateColors();
+    const own = mateColors.get(nm);
+    if (own) return own;
+    try {
+      if (typeof window.mateColorOf === "function") {
+        const c = String(window.mateColorOf(nm) || "").trim();
+        if (c && c.toLowerCase() !== MATE_DEFAULT_COLOR) return c;
+      }
+    } catch (e) {
+    }
+    return MATE_DEFAULT_COLOR;
   }
   function fmtSize(n) {
     try {
@@ -9097,6 +9142,10 @@
   }
   if (!mount()) {
     document.addEventListener("DOMContentLoaded", mount, { once: true });
+  }
+  try {
+    primeMateColors();
+  } catch (e) {
   }
   window.__logDebug = { React: import_react15.default, createRoot: import_client.createRoot, LogView, store: store_exports };
 })();

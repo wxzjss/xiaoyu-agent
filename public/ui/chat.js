@@ -256,8 +256,8 @@ export function followLive(id, fromIndex) {
  *
  * 为什么要「等」：刚结束那一拍，写盘可能还没跟上（落盘的是半截）。
  * 这时候就按历史画，屏幕会永远停在那半截 —— 后面不会有人来补。
- * 所以每 700ms 再问一次，直到「历史里最后那条助手不比直播清单短」为止；
- * 最多 6 次（约 4 秒），还不齐就直接按历史画 —— 宁可用落盘的，
+ * 所以每 700ms 再问一次，直到「直播的最后一段正文能在历史正文里找到」为止
+ * （判据详见下方注释）；最多 6 次（约 4 秒），还不齐就直接按历史画 —— 宁可用落盘的，
  * 也不用可能被压薄的直播。
  */
 async function finishTurn(id, snap, startedAt) {
@@ -266,14 +266,23 @@ async function finishTurn(id, snap, startedAt) {
     const nz = (s) => {
       try { return String(window.fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); }
     };
-    let want = '';
+    /* 【2026-11-11 修·收尾对账空等 4.2 秒（对齐 index.html settleFromHistory 同款修法）】
+     * 原判据是「历史最后一条 assistant 的长度 ≥ 直播正文总长」。多段轮里它恒不成立：
+     * want 是几段正文之和，last 只是最后一段 —— 六次重试（约 4.2 秒）必然全部落空，
+     * 期间屏幕塌缩成旧历史，主人看到的就是「回复消失了几秒才回来」。
+     * 其实服务端在摘登记（running 翻 false）之前就已 saveSession，历史此刻必然完整。
+     * 判据改成「直播里的**最后一段正文**能在（全部 assistant 正文拼接后的）历史正文里
+     * indexOf 找到」：找得到 = 历史齐了，立刻收尾；找不到才是真没写完，照旧重试兜底。 */
+    let lastSeg = '';
     try {
       const lv = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
       for (const it of (lv && Array.isArray(lv.items) ? lv.items : [])) {
-        if (it && it.k === 'text') want += String(it.t || '');
+        if (it && it.k === 'text') {
+          const seg = nz(it.t);
+          if (seg) lastSeg = seg;
+        }
       }
     } catch (e) {}
-    const wantNz = nz(want).length;
 
     let turns = null;
     for (let k = 0; k < 6; k++) {
@@ -285,9 +294,12 @@ async function finishTurn(id, snap, startedAt) {
       if (window.sessionId !== id) return;
       turns = (sel && sel.session && Array.isArray(sel.session.turns)) ? sel.session.turns : null;
       if (turns) {
-        const as = turns.filter((t) => t && t.role === 'assistant' && !t.whale);
-        const last = as.length ? nz(as[as.length - 1].text).length : 0;
-        if (last >= wantNz) break;
+        const allA = nz(turns
+          .filter((t) => t && t.role === 'assistant' && !t.whale)
+          .map((t) => String(t.text || ''))
+          .join('\n'));
+        /* 历史里找得到「直播的最后一段正文」= 历史齐了 */
+        if (!lastSeg || allA.indexOf(lastSeg) >= 0) break;
       }
       await new Promise((r) => setTimeout(r, 700));
     }

@@ -433,6 +433,29 @@ async function caseReload() {
  * ══════════════════════════════════════════════════════════════════ */
 async function caseThreeToThree() {
   console.log('\n六、跑着 3 个气泡 → 中途 F5 → 刷新之后仍然 3 个');
+  /* 【2026-11-11 修·这一节的「干净屏」前提被揭穿失效了】
+   *
+   * 原来这里 arm({ turns: null, live: null }) 以为屏幕是干净的 —— 其实 turns:null
+   * 只改了桩，页面 __logState.turns 里还留着第三节「切走再切回来」时装进来的
+   * [user(重载), assistant P1]（switchSession → logSetHistory，第六节期间没人再写它）。
+   *
+   * 旧判据（items.js 的 _pendingLanded：「历史最后一条 assistant 下标 > 最后一条 user
+   * 下标」）在任何结束过一轮的会话里恒为真 → 流式期间这段旧历史被恒裁掉 →
+   * 这一节一直「碰巧」在干净屏上跑，没人发现前提是脏的。
+   *
+   * 判据修对之后（按「这条 pending 自己落盘并答完」判 —— order-fixer 修
+   * 「发消息一瞬间回复1消失」的行为）：旧历史是**已完成的上一轮**，跟本轮 pending
+   * 「QA 三段」对不上，不许裁 —— 屏幕正当多出旧历史那一份（探针 _probe_dup.mjs
+   * 逐帧证实：4 个气泡 = 旧历史 P1 + 新流 S1/S2/S3，每个数据各画了一份，没有画重）。
+   *
+   * 所以这不是渲染回归，是这一节的场景没隔离。修法：跑之前用页面自己的 store
+   * 把历史 / 直播清空，让「跑着 3 个气泡」回到它本来要验的干净屏上。断言不动。 */
+  await cdp.eval(
+    'try { window.__logStore.setHistory(window.sessionId, []); } catch (e) {}' +
+    'try { window.__logStore.setLive(window.sessionId, null); } catch (e) {}' +
+    'return 1;'
+  );
+  await sleep(300);
   const S1 = 'QA三段甲她说了一句';
   const S2 = 'QA三段乙工具跑完接着说';
   const S3 = 'QA三段丙轮末之后又是另一段';

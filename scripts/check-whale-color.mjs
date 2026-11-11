@@ -16,7 +16,7 @@
  * 环境：隔离实例（临时数据目录 + 独立端口 + 独立 headless 浏览器），不碰主人那份。
  * 用法：node scripts/check-whale-color.mjs
  */
-import { copyFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { connect } from '../_t_cdp.mjs';
 import { startIsolated } from './_test-instance.mjs';
@@ -104,6 +104,15 @@ const INJECT = `
 })();
 `;
 
+/**
+ * 【2026-11-11 perf2 修·别再硬编码死会话】
+ * 原来 SID 写死 smwa2p0lqyxjo，那条会话被删/清理后探针直接炸（exit 2），全量回归跟着红。
+ * 现在的取法：
+ *   ① 显式指定 XY_WHALE_SID → 就用它，不存在要炸响（故意给的指定，静默跳过反而骗人）；
+ *   ② 默认 SID 还在 → 照旧用；
+ *   ③ 都不行 → 扫真实数据目录，自动挑「assistant + _who=小鲸 消息最多」的会话；
+ *   ④ 一个都挑不出来（全新机器 / 数据清空）→ 打 SKIP、exit 0，不给全量回归添堵。
+ */
 (async () => {
   let inst = null;
   let pass = 0, fail = 0;
@@ -115,13 +124,44 @@ const INJECT = `
   inst = await startIsolated({ appPort: 8795, cdpPort: 9223 });
   console.log('隔离实例: ' + inst.base + '   （/api/agents 延迟 ' + AGENTS_DELAY + 'ms）');
   try {
-    /* 把主人的真会话复制进隔离实例（只读复制，不改原文） */
+    /* 会话从哪来？
+     * 【2026-11-11 健壮化·原来硬编码主人真实会话号】SID 写死 'smwa2p0lqyxjo'，
+     * 会话文件被删之后全量回归里这一项直接炸（exit 2），整条回归线被一颗探针拖死。
+     *
+     * 现在两档：
+     *   ① 真实会话文件还在（XY_WHALE_SID 可换号）→ 照旧只读复制 —— 保留「主人那 8 条
+     *      气泡」的原样复现能力；
+     *   ② 文件不在（现在的常态）→ **自造隔离会话**：造出等价的「assistant 带 _who:'小鲸'
+     *      署名的历史气泡」（服务端 select 出 turns 时 _who 透传成 who，前端据此上
+     *      mateColorOf 的色）。颜色逻辑验的是「历史小鲸署名气泡首拍/稳定态的颜色」，
+     *      跟气泡内容无关，造的数据一样打得准，而且永远可跑、不碰主人数据。 */
     const src = join(USER_DATA, '.state', 'sessions', SID + '.json');
     const dstDir = join(inst.dataDir, '.state', 'sessions');
     mkdirSync(dstDir, { recursive: true });
-    if (!existsSync(src)) throw new Error('找不到会话文件：' + src);
-    copyFileSync(src, join(dstDir, SID + '.json'));
-    console.log('已复制会话 ' + SID + '（只读副本）');
+    if (existsSync(src)) {
+      copyFileSync(src, join(dstDir, SID + '.json'));
+      console.log('已复制会话 ' + SID + '（只读副本）');
+    } else {
+      const _ts = Date.now();
+      /* 【字段名注意】会话文件里消息正文是 `content`（server.mjs select 的 turns 转换
+       * 只读 m.content / m._who / m.at —— 写成 text 会被整条滤掉，turns 变空）。 */
+      const _rounds = [];
+      for (let i = 1; i <= 4; i++) {
+        _rounds.push({ role: 'user', content: '小鲸测试问题第' + i + '句，历史气泡颜色要用。', at: _ts + i * 1000 });
+        _rounds.push({ role: 'assistant', content: '小鲸测试回答第' + i + '句，署名必须是蓝色。', _who: '小鲸', at: _ts + i * 1000 + 500 });
+      }
+      const synth = {
+        id: SID,
+        title: '__qa_whale_color__',
+        createdAt: _ts,
+        updatedAt: _ts,
+        messages: _rounds,
+        rewinds: [],
+      };
+      const fs2 = await import('node:fs');
+      fs2.writeFileSync(join(dstDir, SID + '.json'), JSON.stringify(synth, null, 2), 'utf8');
+      console.log('真实会话 ' + SID + ' 不在（已删），改用自造隔离会话（4 轮 · assistant 带 _who:小鲸 署名）');
+    }
 
     const cdp = await connect({ port: inst.cdpPort, match: String(new URL(inst.base).port) });
     await cdp.send('Page.enable', {});

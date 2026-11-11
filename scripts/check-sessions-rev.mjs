@@ -51,14 +51,22 @@ t.ok('有响应缓存（指纹没变不重算）', /__sessionsCache\s*=\s*\{\s*f
   t.ok('指纹覆盖智能体卡与设置（agentId/crew 依赖它们）',
     /agents\.json/.test(body) && /settings\.json/.test(body));
 }
-/* 路由里：缓存短路必须出现在 listSessions 之前（指纹没变就绝不碰全量计算） */
+/* 路由里：缓存短路必须出现在全量计算之前（指纹没变就绝不碰全量计算） */
 {
   const i = srvSrc.indexOf("url.pathname === '/api/sessions'");
   const route = srvSrc.slice(i, srvSrc.indexOf("url.pathname === '/api/sessions/search'"));
   const atCache = route.indexOf('__sessionsCache.fp === fp');
-  const atList = route.indexOf('listSessions().map');
-  t.ok('路由先看缓存指纹、再全量计算（短路在 listSessions 之前）',
+  /* 【2026-11-11 改】全量计算那一句已经从 listSessions().map 换成
+   * (await listSessionsAsync()).map —— 同步读盘会把事件循环钉死 1.6~2.4 秒。
+   * 这里两种写法都认，否则守卫会因为「找不到那句」而恒红。 */
+  const atListA = route.indexOf('listSessionsAsync()).map');
+  const atListB = route.indexOf('listSessions().map');
+  const atList = atListA >= 0 ? atListA : atListB;
+  t.ok('路由先看缓存指纹、再全量计算（短路在全量计算之前）',
     atCache >= 0 && atList > atCache, 'cache@' + atCache + ' list@' + atList);
+  /* 全量计算必须走异步版：同步 listSessions 在这条路上会锁死事件循环 */
+  t.ok('全量计算走异步读盘（不阻塞事件循环）', atListA >= 0,
+    'listSessionsAsync@' + atListA + ' sync@' + atListB);
   t.ok('轻量响应不带 sessions 数组（304 语义）',
     /unchanged:\s*true,[\s\S]{0,200}lastSessionId/.test(route) && !/unchanged: true,[\s\S]{0,300}sessions:/.test(route));
 }

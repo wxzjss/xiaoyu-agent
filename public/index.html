@@ -7909,6 +7909,18 @@ try {
  */
 let __nudgeTimer = 0;
 let __nudgeSid = '';
+/* 【2026-11-11 加·在飞闸】
+ * 实测（CDP 打点 /api/chat/live）：一次流式回复里最多出现过 **4 个请求同时在飞**。
+ * 原因：定时器一响就把 __nudgeTimer 清零，紧接着的每一条 SSE 事件又会各自排一次新的，
+ * 而 fetch 还没回来 —— 于是同一份快照被并发拉了好几遍，且回来的顺序不可控。
+ * 窗口从 80ms 收到 16ms 之后这个并发会更多，必须先堵住。 */
+let __nudgeInFlight = 0;
+/* 【2026-11-11 改·80 → 16】
+ * 实测每一跳分解：SSE 数据块到达到上屏，滞后稳定在 90~101ms，
+ * 其中 80ms 就是这里的 setTimeout 窗口（HTTP 往返只有 2~4ms）。
+ * 收到 16ms（约一帧）之后，这段滞后降到 ~20ms 以内。
+ * 注意：这只减掉「滞后」，**不改变节拍** —— 节拍由服务端合并窗口决定（见 src/server.mjs 的 _maxWait）。 */
+const __NUDGE_MS = 16;
 function nudgeLive(sid) {
   try {
     const id = String(sid || sessionId || '');
@@ -7919,18 +7931,25 @@ function nudgeLive(sid) {
       __nudgeTimer = 0;
       const want = __nudgeSid;
       if (sessionId !== want) return;              // 主人在等的这一拍里切走了
+      /* 已经在拉了就别再开一条：这一拍会被后续事件重新排上，不需要堆请求 */
+      if (__nudgeInFlight > 0) return;
       let live = null;
+      __nudgeInFlight++;
       try {
         live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(want)).then((r) => r.json());
       } catch (e) {
         return;                                    // 网络抖一下，下一次事件会再来
+      } finally {
+        /* 【必须在 finally 里减】放成功路径上的话，一次异常就把这个计数焊死，
+         * 之后所有 nudge 都被闸挡住 —— 界面从此不再更新，比卡顿严重得多。 */
+        __nudgeInFlight--;
       }
       if (sessionId !== want) return;
       try {
         logSetLive(want, live);
         renderLog();
       } catch (e) { /* 单个事件画不出来不能连累这一轮 */ }
-    }, 80);
+    }, __NUDGE_MS);
   } catch (e) {}
 }
 

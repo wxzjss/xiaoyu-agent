@@ -1,6 +1,9 @@
 // Sessions on disk: .state/sessions/<id>.json + _last.json (最近会话).
 // Every turn writes back to disk, so a reload/power-cut never loses the conversation.
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, openSync, writeSync, fsyncSync, closeSync, unlinkSync } from 'node:fs';
+/* 【2026-11-11 加】会话列表要用异步读盘，别再拿 readFileSync 把事件循环钉住
+ * （实测 /api/sessions 重算那一下会把整台服务卡 1.6~2.4 秒，见 listSessionsAsync 的注释）。 */
+import * as fsp from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
 import { config } from './config.mjs';
 
@@ -215,27 +218,48 @@ function sanitizeLoadedMessages(list) {
   return out;
 }
 
+/** raw JSON → 会话对象。同步/异步两条读盘路共用，吐出的字段必须完全一致。 */
+function shapeSession(id, raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    id,
+    title: cleanTitle(raw.title) || '新会话',
+    createdAt: Number(raw.createdAt) || 0,
+    updatedAt: Number(raw.updatedAt) || 0,
+    messages: sanitizeLoadedMessages(Array.isArray(raw.messages) ? raw.messages : []),
+    // 回退点跟着会话一起落盘：只追加、从不改写老消息。
+    rewinds: Array.isArray(raw.rewinds) ? raw.rewinds : [],
+    // 老会话没有这个字段 -> 当人设档处理，不去补写盘
+    mode: raw.mode && typeof raw.mode === 'object' && raw.mode.word ? { word: String(raw.mode.word), since: Number(raw.mode.since) || 0 } : null,
+  };
+}
+
 export function loadSession(id) {
   if (!isSessionId(id)) return null;
   try {
     const raw = JSON.parse(readFileSync(fileFor(id), 'utf8'));
-    if (!raw || typeof raw !== 'object') return null;
-    return {
-      id,
-      title: cleanTitle(raw.title) || '新会话',
-      createdAt: Number(raw.createdAt) || 0,
-      updatedAt: Number(raw.updatedAt) || 0,
-      messages: sanitizeLoadedMessages(Array.isArray(raw.messages) ? raw.messages : []),
-      // 回退点跟着会话一起落盘：只追加、从不改写老消息。
-      rewinds: Array.isArray(raw.rewinds) ? raw.rewinds : [],
-      // 老会话没有这个字段 -> 当人设档处理，不去补写盘
-      mode: raw.mode && typeof raw.mode === 'object' && raw.mode.word ? { word: String(raw.mode.word), since: Number(raw.mode.since) || 0 } : null,
-    };
+    return shapeSession(id, raw);
   } catch (e) {
     /* 【2026-11-05 加·别把错误吞掉】
      * 原来这里 `catch { return null }` —— 一个会话读不出来，界面上就凭空少一条，
      * 而且一点线索都没有（主人报「重启后某个会话不见了」，我查了半天都没方向）。
      * 现在至少把 id 和原因打到日志里。 */
+    try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
+    return null;
+  }
+}
+
+/**
+ * loadSession 的异步版：只把「读盘」换成 fs/promises，其余 shaping 逻辑
+ * （cleanTitle / sanitizeLoadedMessages / mode 归一化）跟同步版**共用同一个 shapeSession**，
+ * 保证两条路返回的对象逐字段一致。
+ */
+export async function loadSessionAsync(id) {
+  if (!isSessionId(id)) return null;
+  try {
+    const raw = JSON.parse(await fsp.readFile(fileFor(id), 'utf8'));
+    return shapeSession(id, raw);
+  } catch (e) {
     try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
     return null;
   }
@@ -565,37 +589,90 @@ function previewOf(messages) {
   return '';
 }
 
-/** Newest first, for the 会话 picker. */
-export function listSessions() {
-  ensureDir();
-  const out = [];
+/** 会话文件 → 列表投影（同步/异步两条路共用同一份投影，字段一个都不能少） */
+function listItemOf(s) {
+  return {
+    id: s.id,
+    title: s.title,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+    count: s.messages.filter((m) => m && m.role === 'user' && !m.context).length,
+    preview: previewOf(s.messages),
+    /* 【2026-11-07 加】判「空会话」不能只看 count / preview：
+     * 压缩过的会话，主人原话全被折成一条摘要，count 变 0、preview 也得靠兜底 ——
+     * 界面那边要是只认这两个字段，就会把一堆内容的会话画成灰色的「新会话」。 */
+    hasContent: Array.isArray(s.messages) && s.messages.length > 0,
+    // 会话列表里带一句当前档位，界面想显示「这会话被叫停过」就有数据可用
+    mode: s.mode?.word || null,
+  };
+}
+
+/** 列表要的会话文件名（跳过 _last / 点开头的临时件 / 非法 id） */
+function listableNames() {
   let names = [];
   try {
     names = readdirSync(DIR);
   } catch {
-    return out;
+    return [];
   }
+  const out = [];
   for (const name of names) {
     if (!name.endsWith('.json')) continue;
     if (name.startsWith('_') || name.startsWith('.')) continue;
     const id = name.slice(0, -5);
     if (!isSessionId(id)) continue;
+    out.push(id);
+  }
+  return out;
+}
+
+/** Newest first, for the 会话 picker. */
+export function listSessions() {
+  ensureDir();
+  const out = [];
+  for (const id of listableNames()) {
     const s = loadSession(id);
     if (!s) continue;
-    out.push({
-      id: s.id,
-      title: s.title,
-      createdAt: s.createdAt,
-      updatedAt: s.updatedAt,
-      count: s.messages.filter((m) => m && m.role === 'user' && !m.context).length,
-      preview: previewOf(s.messages),
-      /* 【2026-11-07 加】判「空会话」不能只看 count / preview：
-       * 压缩过的会话，主人原话全被折成一条摘要，count 变 0、preview 也得靠兜底 ——
-       * 界面那边要是只认这两个字段，就会把一堆内容的会话画成灰色的「新会话」。 */
-      hasContent: Array.isArray(s.messages) && s.messages.length > 0,
-      // 会话列表里带一句当前档位，界面想显示「这会话被叫停过」就有数据可用
-      mode: s.mode?.word || null,
-    });
+    out.push(listItemOf(s));
+  }
+  out.sort((a, b) => b.updatedAt - a.updatedAt);
+  return out;
+}
+
+/**
+ * 异步版 listSessions —— **返回值与 listSessions 逐字段相同**，只是不阻塞事件循环。
+ *
+ * 【为什么必须有一个异步版】2026-11-11 实测：
+ * `/api/sessions` 走「重算」那条路时整台服务僵住 **1.6~2.4 秒**
+ * （同期 /api/health 从 2ms 被拖到 2336ms，两个不相干端点一起死 = 事件循环停了）。
+ * 病根就是下面这个同步循环：35 个会话、9.1MB，`readFileSync` + `JSON.parse`
+ * 全在主线程上排队。而这个接口偏偏会在**对话流式过程中**被前端调用
+ * （done 之后的 refreshSessions），一卡就是把正在吐的 SSE 一起卡住 ——
+ * 主人看到的就是「字长到一半停住一两秒」。
+ *
+ * 改成 fs/promises 并发读之后，即使总耗时还是 130ms，**也是在 await 里让出去的**，
+ * SSE 照常出字。这才是结构性修法（不是把调用挪晚那种掩盖）。
+ *
+ * 【并发度必须限】一次 Promise.all(35) 会同时开 35 个 fd；主人若哪天有 200 个会话就是灾难。
+ * 这里按 8 个一批跑。
+ *
+ * 【坏一个不许整锅端】同步版里单个文件坏掉由 loadSession 内部 catch 掉返回 null；
+ * 异步版走 readSessionRawAsync，同样单条 catch，坏的跳过、其余照常返回。
+ */
+export async function listSessionsAsync() {
+  ensureDir();
+  const ids = listableNames();
+  if (!ids.length) return [];
+  const out = [];
+  const BATCH = 8;
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const slice = ids.slice(i, i + BATCH);
+    // allSettled：一条炸了不影响同批其它条（loadSessionAsync 内部也有 catch，双保险）
+    const got = await Promise.allSettled(slice.map((id) => loadSessionAsync(id)));
+    for (const r of got) {
+      if (r.status !== 'fulfilled' || !r.value) continue;
+      out.push(listItemOf(r.value));
+    }
   }
   out.sort((a, b) => b.updatedAt - a.updatedAt);
   return out;

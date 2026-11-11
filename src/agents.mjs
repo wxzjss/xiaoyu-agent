@@ -18,7 +18,7 @@
  * 先让「智能体」这个词有实体，再谈「哪个会话用哪个智能体」。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 import {
@@ -68,7 +68,34 @@ function objOf(v) {
   return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
 }
 
+/**
+ * readAll 的 mtime 缓存。
+ *
+ * 【为什么必须缓存】2026-11-11 实测：`/api/sessions` 里对 35 个会话各调一次
+ * `mainAgentId` → 每次进 `activeAgentIds` → 每次 `groupEnabledMap` → 每次 `readAll()`。
+ * 也就是说这个 615KB 的花名册在一次列表请求里被 **同步读 + JSON.parse 了上百遍**，
+ * 单是 `activeAgentIds × 35` 实测就要 **313ms**，全部挤在服务端主线程上。
+ *
+ * 这跟「会话列表用同步读盘把事件循环钉死」是同一类病：都是在一个 HTTP 请求里
+ * 重做几十次本该做一次的 IO。加一层按 mtime 的缓存，读一次用到底。
+ *
+ * 【为什么按 mtime 而不是无条件缓存】花名册会被界面改（改颜色、开关、加卡、改名），
+ * 那些改动是**别的请求**写盘的。缓存必须能立刻看见 —— 所以每次 statSync 一眼 mtime，
+ * 变了就重读。statSync 是几微秒，比读 615KB 便宜三个数量级。
+ * 这里不敢用「写的时候主动清缓存」：写入口有十来个，漏一个就是「改了没生效」。
+ */
+let __readAllCache = { mtimeMs: -1, size: -1, data: null };
+
 function readAll() {
+  /* 【先看缓存】mtime+size 都没变 → 直接交上一次那份。
+   * 用 statSync 而不是缓存「多久之内有效」：时间窗会让主人刚改的设置看到旧值。 */
+  try {
+    const st = statSync(FILE);
+    if (__readAllCache.data && __readAllCache.mtimeMs === st.mtimeMs && __readAllCache.size === st.size) {
+      return __readAllCache.data;
+    }
+  } catch { /* 文件不在：走下面，返回 blank */ }
+
   const blank = {
   version: 4,
   customs: [],
@@ -95,7 +122,7 @@ function readAll() {
     if (_raw.charCodeAt(0) === 0xfeff) _raw = _raw.slice(1);
     const j = JSON.parse(_raw);
     if (!j || typeof j !== 'object' || Array.isArray(j)) return blank;
-    return {
+    const data = {
       version: 4,
       customs: Array.isArray(j.customs) ? j.customs : [],
       bySession: objOf(j.bySession),
@@ -129,12 +156,53 @@ function readAll() {
     /* 记住@的人·2026-10-29 */
     allowedBySession: objOf(j.allowedBySession),
     };
+    /* 读成功才写缓存。读失败（文件坏了/不存在）走下面 catch 返回 blank，
+     * 那条路不写缓存 —— 下次还要再试，不能把一个空花名册钉死在内存里。 */
+    try {
+      const st = statSync(FILE);
+      __readAllCache = { mtimeMs: st.mtimeMs, size: st.size, data };
+    } catch { /* stat 不到就不缓存，宁可下次重读 */ }
+    return data;
   } catch {
     return blank;
   }
 }
 
+/**
+ * **写路径专用**：拿一份可以随便改的副本，绝不碰缓存。
+ *
+ * 【为什么必须有这个函数】`readAll()` 现在带缓存。可是本文件有二十多个写入口
+ * 都是这个写法：
+ *     const data = readAll();
+ *     data.customs.push(item);      // ← 原地改
+ *     writeAll(data);
+ * 如果 `data` 是缓存里那个对象，一旦某个写入口在 `writeAll` 之前抛错、或者
+ * 它改完却没写盘（校验不过直接 return null），**内存缓存就被改脏了** ——
+ * 之后所有读的地方看到的都是「磁盘上没有、只在内存里有」的假数据，
+ * 而且重启一次就消失，是最难查的那种 bug。
+ *
+ * 所以：读路径用 readAll（拿缓存，快）；写路径一律用 readAllForWrite（拿深拷贝，安全）。
+ * 代价是写的时候多解析一次 615KB，但写操作一天也就几十次，
+ * 而读操作（35 会话 × mainAgentId × 每次列表请求）是每秒几十次 —— 这个取舍很划算。
+ */
+function readAllForWrite() {
+  const snapshot = __readAllCache.data ? __readAllCache.data : readAll();
+  /* structuredClone 比 JSON 往返快，且能正确处理数组/对象嵌套 ——
+   * 这份数据结构就是纯 JSON，没有函数/Date/undefined，所以两者结果等价。 */
+  try {
+    return structuredClone(snapshot);
+  } catch {
+    /* 极端兜底：structuredClone 不可用就退回 JSON 往返 */
+    try { return JSON.parse(JSON.stringify(snapshot)); } catch { return snapshot; }
+  }
+}
+
 function writeAll(data) {
+  /* 【2026-11-11 加·写完立刻让缓存失效】
+   * 写盘之后 mtime 会变，下一次 readAll 的 statSync 自然会发现并重读。
+   * 但同一毫秒内连续两次写、或者文件系统 mtime 精度不够时，这条兜底更重要：
+   * 直接把缓存清空，宁可多读一次，也绝不让内存里留着一份和磁盘不一致的东西。 */
+  try { __readAllCache = { mtimeMs: -1, size: -1, data: null }; } catch {}
   try {
     if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
     const payload = JSON.stringify({
@@ -430,7 +498,7 @@ export function dataDirOfAgents() {
 
 /** 新建一张卡。名字可以后改，正文先空着 —— 上来就抄一份别人的，人会以为她天生就这样。 */
 export function addAgent({ name, desc = '', persona = '', modelId = '' } = {}) {
-  const data = readAll();
+  const data = readAllForWrite();
   if (data.customs.length >= MAX_AGENTS) {
     const e = new Error(`最多 ${MAX_AGENTS} 个智能体，够了`);
     e.status = 400;
@@ -513,7 +581,7 @@ export function renameAgent(id, { name, desc } = {}) {
     throw e;
   }
 
-  const data = readAll();
+  const data = readAllForWrite();
   const a = data.customs.find((x) => String(x.id) === key);
   if (!a) return null;
   if (name !== undefined) a.name = cleanName(name, a.name);
@@ -526,7 +594,7 @@ export function renameAgent(id, { name, desc } = {}) {
 export function removeAgent(id) {
   const key = String(id || '');
   if (!key || key === AGENT_XIAOYU || key === AGENT_XIAOJING) return false;
-  const data = readAll();
+  const data = readAllForWrite();
   const i = data.customs.findIndex((x) => String(x.id) === key);
   if (i < 0) return false;
   data.customs.splice(i, 1);
@@ -574,7 +642,7 @@ export function saveAgentPersona(id, text) {
     return getAgent(key);
   }
 
-  const data = readAll();
+  const data = readAllForWrite();
   const a = data.customs.find((x) => String(x.id) === key);
   if (!a) return null;
   a.persona = t;
@@ -649,7 +717,7 @@ export function setAgentModel(id, modelId) {
     saveWhaleProfile({ modelId: mid });
     return getAgent(key);
   }
-  const data = readAll();
+  const data = readAllForWrite();
   const a = data.customs.find((x) => String(x.id) === key);
   if (!a) return null;
   a.modelId = mid;
@@ -792,7 +860,7 @@ export function importCard(raw) {
   if (!n.ok) return n;
   const c = n.card;
 
-  const data = readAll();
+  const data = readAllForWrite();
   if (data.customs.length >= MAX_AGENTS) {
     return { ok: false, error: `最多 ${MAX_AGENTS} 个智能体，先删几张再来` };
   }
@@ -880,7 +948,7 @@ export function setSessionAgent(sessionId, agentId) {
     e.status = 400;
     throw e;
   }
-  const data = readAll();
+  const data = readAllForWrite();
   const id = String(agentId || '');
   if (!id || id === AGENT_XIAOYU) {
     delete data.bySession[sid];
@@ -1114,7 +1182,7 @@ export function setSessionGroup(sessionId, ids, { keepWhale = true } = {}) {
     e.status = 400;
     throw e;
   }
-  const data = readAll();
+  const data = readAllForWrite();
   const beforeHasXj = cleanGroup(data, data.groupBySession[sid]).includes(AGENT_XIAOJING);
   // keepWhale:false 时先把这个会话标成「存过名单」，这样 cleanGroup 不会给她补默认
   if (!keepWhale && !Array.isArray(data.groupBySession[sid])) data.groupBySession[sid] = [];
@@ -1190,7 +1258,7 @@ export function setAgentQuiet(id, quiet) {  const key = String(id || '');
     e.status = 400;
     throw e;
   }
-  const data = readAll();
+  const data = readAllForWrite();
   if (key !== AGENT_XIAOJING && !data.customs.some((a) => String(a.id) === key)) {
     const e = new Error('没有这张卡');
     e.status = 404;
@@ -1275,7 +1343,7 @@ export function setGroupMemberEnabled(id, sessionId, enabled) {
    * 她们俩「说还是不说」真正读的是 fish-presence / whale-presence，
    * 由 `/api/agents/group/toggle` 一并改（见 server.mjs）—— 那才是唯一开关。
    */
-  const data = readAll();
+  const data = readAllForWrite();
   const map = (data.groupEnabledBySession[sid] && typeof data.groupEnabledBySession[sid] === 'object')
     ? { ...data.groupEnabledBySession[sid] } : {};
   if (enabled) delete map[key];
@@ -1295,7 +1363,7 @@ export function setGroupMemberEnabled(id, sessionId, enabled) {
 export function setSessionGroupOrder(sessionId, ids) {
   const sid = String(sessionId || '');
   if (!sid) { const e = new Error('得先有会话'); e.status = 400; throw e; }
-  const data = readAll();
+  const data = readAllForWrite();
   const cur = cleanGroup(data, data.groupBySession[sid]);
   const want = (Array.isArray(ids) ? ids : []).map((x) => String(x || '')).filter(Boolean);
   const seen = new Set();
@@ -1338,7 +1406,7 @@ export function setAgentColor(id, color) {
   if (!key) return { ok: false, error: '没有这张卡' };
   const c = String(color || '').trim();
   if (!/^#[0-9a-fA-F]{3,8}$/.test(c)) return { ok: false, error: '颜色格式不对（要 #rrggbb 这种）' };
-  const data = readAll();
+  const data = readAllForWrite();
   data.colors = data.colors || {};
   data.colors[key] = c;
   writeAll(data);
@@ -1378,7 +1446,7 @@ export function allowedSpeakersOf(sessionId) {
 export function setAllowedSpeakers(sessionId, ids) {
   const sid = String(sessionId || '');
   if (!sid) return null;
-  const data = readAll();
+  const data = readAllForWrite();
   if (Array.isArray(ids) && ids.length) {
     data.allowedBySession[sid] = ids.map((x) => String(x)).filter(Boolean);
   } else {

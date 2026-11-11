@@ -289,6 +289,9 @@ import {
   saveSession,
   messageKey,
   listSessions,
+  /* 【2026-11-11 加】异步版列表读盘：/api/sessions 重算那一下原来把事件循环钉死
+   * 1.6~2.4 秒（实测同期 /api/health 从 2ms 被拖到 2336ms）。改成 await 让出去。 */
+  listSessionsAsync,
   deleteSession,
   renameSession,
   getLastSessionId,
@@ -7226,7 +7229,13 @@ const server = createServer(async (req, res) => {
         return [];
       }
     };
-    const list = listSessions().map((s) => {
+    /* 【2026-11-11 换异步】原来是 listSessions() —— 同步读 35 个会话文件（9.1MB），
+     * 重算这一拍把整台服务钉死 1.6~2.4 秒（实测同期 /api/health 中位 3ms 被拖到 2336ms，
+     * 两个不相干的端点一起死 = 事件循环停了）。而这个接口偏偏会在流式对话过程中被调用
+     * （done 之后前端 refreshSessions），一卡就是把正在吐字的 SSE 一起卡住。
+     * 换成 listSessionsAsync 之后耗时不变，但读盘在 await 里让出去了，SSE 照常出字。
+     * 返回字段与同步版逐字段一致（35 条全量比对通过）。 */
+    const list = (await listSessionsAsync()).map((s) => {
       /**
        * 【2026-11-07 改·主人要的是「现在谁在说话」，不是「绑了哪张卡」】
        *
@@ -10642,15 +10651,26 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
              * 前端再也分不出哪句是提醒，只能整段当正文画（就是那个「中途换行」）。 */
             if (ev.notice) { send({ type: 'text', text: ev.text, notice: true }); }
             else {
-            // 2026-11-02 前端卡死修复：碎片合并
+            /* 2026-11-02 前端卡死修复：碎片合并
+             * 【2026-11-11 改·正文单独一档】
+             * 实测（CDP 逐跳对照 14 次上屏全部一致）：上屏间隔中位 **130ms**，
+             * 其中 80ms 是前端 nudgeLive 的 setTimeout，剩下的节拍由这里决定 ——
+             * 服务端 120ms 才攒一批 20 字推出去，前端再快也只能等下一批。
+             * 上游本身是 11ms 一块、2 字一块、166 字/秒，被这个窗口攒成了「一卡一卡」。
+             *
+             * 所以只把**正文（text）**收紧到 6 字 / 40ms（约一帧多一点），
+             * reasoning **一个字都不动**，仍是 24 字 / 120ms ——
+             * 思考链本来就没人逐字读，而它的事件数一旦放大到上万条，
+             * 会把 live.items 压坏（实测过 8325 条 reasoning 把正文挤没的事故）。
+             * 两条路分开设档，就是为了「正文跟手、思考不炸」。 */
             const _k = ev.type;
             _opAcc[_k] = (_opAcc[_k] || '') + String(ev.text || '');
             const _n = Date.now();
-            /* 【2026-11-02】阈值别太保守。原来 60 字 / 250ms —— 短回复（「好的」
-             *  两个字）攒不满，得等整轮收尾才一起冲出去，界面那段是空的，
-             *  看着就是「话说一半没下文」。降到 24 字 / 120ms：字出来得跟手，
-             *  事件数还是比逐字推少一个数量级。 */
-            if (_opAcc[_k].length >= 24 || _n - (_opLast[_k] || 0) >= 120) {
+            const _minChars = _k === 'text' ? 6 : 24;
+            const _maxWait = _k === 'text' ? 40 : 120;
+            /* 【_opLast 必须跟着更新】它是「上一次真的发出去的时刻」这个基准。
+             * 漏更新的话 `_n - _opLast` 永远为真，节流退化成「每块都发」= 等于关掉合并。 */
+            if (_opAcc[_k].length >= _minChars || _n - (_opLast[_k] || 0) >= _maxWait) {
               send({ type: _k, text: _opAcc[_k] });
               _opAcc[_k] = '';
               _opLast[_k] = _n;

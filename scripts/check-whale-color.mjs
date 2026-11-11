@@ -212,22 +212,46 @@ const INJECT = `
         window.__agentsBlocked = true;
       })();`,
     });
-    await cdp.eval(`location.href = ${JSON.stringify(url)}; return 1;`);
-    await sleep(3000);
-    const blocked = await cdp.eval(READ);
-    console.log('  ── 断网态（/api/agents 直接失败）：__mateColors.size=' + blocked.mapSize + ' ──');
-    for (const x of blocked.firstFrames) {
-      console.log('     t=' + x.t + 'ms  ' + x.cls + ' 小鲸 → ' + x.color + '  (inline=' + (x.inline || '空') + ')');
-    }
-    const bFirstBad = blocked.firstFrames.filter((x) => !isBlue(x.color));
-    const bStableBad = blocked.filtered.filter((r) => !isBlue(r.color));
+
+    /**
+     * 断网态要分两档看，判据不同：
+     *   ① 全新机器（本机没缓存过）→ 只能用内置表，必须是蓝的；
+     *   ② 已经缓存过主人改的颜色 → 必须用**缓存那个色**（这里是 #ff6b6b），
+     *      而且**不许闪**。这一档正是「内置表 vs 自定义色」冲突的最终验收。
+     */
+    const runBlocked = async (label) => {
+      await cdp.eval(`location.href = ${JSON.stringify(url)}; return 1;`);
+      await sleep(3000);
+      const got = await cdp.eval(READ);
+      console.log('  ── ' + label + '：__mateColors.size=' + got.mapSize + ' ──');
+      for (const x of got.firstFrames) {
+        console.log('     t=' + x.t + 'ms  ' + x.cls + ' 小鲸 → ' + x.color + '  (inline=' + (x.inline || '空') + ')');
+      }
+      return got;
+    };
+
+    const blocked = await runBlocked('断网态·已有缓存（主人改过色）');
     ok(blocked.filtered.length > 0, '断网态也画出了 .msg.assistant 的小鲸（' + blocked.filtered.length + ' 条）');
+    const bColors = [...new Set(blocked.filtered.map((r) => r.color))];
+    ok(bColors.length === 1 && bColors[0] === 'rgb(255, 107, 107)',
+      '断网时用的是主人改过的缓存色 ' + bColors.join('/') + '（不是内置蓝、也不是白）');
+    const bFirstBad = blocked.firstFrames.filter((x) => x.color !== 'rgb(255, 107, 107)');
     ok(bFirstBad.length === 0,
-      '断网时创建那一拍仍是蓝色（白样本 ' + bFirstBad.length + '/'
+      '断网时创建那一拍就是缓存色，不闪（异色样本 ' + bFirstBad.length + '/'
         + blocked.firstFrames.length + (bFirstBad.length ? '：' + bFirstBad[0].color : '') + '）');
-    ok(bStableBad.length === 0,
-      '断网时稳定态仍是蓝色（白样本 ' + bStableBad.length + '/'
-        + blocked.filtered.length + (bStableBad.length ? '：' + bStableBad[0].color : '') + '）');
+
+    /* 清掉缓存，验「全新机器」：这时候只能靠内置表 */
+    await cdp.eval(`try { localStorage.removeItem('xy_mateColors.v1'); } catch(e){} return 1;`);
+    const fresh = await runBlocked('断网态·全新机器（无缓存）');
+    const fFirstBad = fresh.firstFrames.filter((x) => !isBlue(x.color));
+    const fStableBad = fresh.filtered.filter((r) => !isBlue(r.color));
+    ok(fresh.filtered.length > 0, '全新机器断网也画出了小鲸（' + fresh.filtered.length + ' 条）');
+    ok(fFirstBad.length === 0,
+      '无缓存断网时创建那一拍仍是蓝色（白样本 ' + fFirstBad.length + '/'
+        + fresh.firstFrames.length + (fFirstBad.length ? '：' + fFirstBad[0].color : '') + '）');
+    ok(fStableBad.length === 0,
+      '无缓存断网时稳定态仍是蓝色（白样本 ' + fStableBad.length + '/'
+        + fresh.filtered.length + (fStableBad.length ? '：' + fStableBad[0].color : '') + '）');
 
     cdp.close();
   } finally {

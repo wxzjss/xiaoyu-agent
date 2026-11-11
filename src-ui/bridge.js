@@ -86,7 +86,54 @@ const BUILTIN_MATE_COLORS = {
   '旁白': '#c8a8e8',
 };
 
+/**
+ * 【2026-11-11 加·改过色的人不许闪】
+ *
+ * 内置表让第一帧就有色，但也带来一个新风险：主人若在面板里把小鲸改成了
+ * 别的颜色（比如 #ff6b6b），首帧会先画内置蓝，等 /api/agents 回来再 bump 成新色 ——
+ * **实测网络慢 1200ms 时，那一截蓝挂了 707ms，肉眼看得见。**
+ *
+ * 治法是「记住上次拿到的那份真值」：每成功拉到一次 /api/agents 就把整张表落到
+ * localStorage，下次开机先用它铺底。这样只要这台机器**拉过一次**颜色表，
+ * 之后每一帧（包括断网时）都是主人自己定的颜色，不存在闪。
+ *
+ * 什么时候仍会闪一次：主人改完色的**第一次**刷新（本机还不知道新值）。
+ * 那一次不可避免 —— 除非阻塞首屏，那是更糟的交换。
+ * 想连这一次也消掉的话，改色的那个接口返回后顺手调 `window.__mateColorsApply(名, 色)`
+ * 即可（见文件末尾的导出），下次刷新就从缓存里直接读新色。
+ */
+const CACHE_KEY = 'xy_mateColors.v1';
+
+function readColorCache() {
+  try {
+    const raw = window.localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return null;
+    return j;
+  } catch (e) { return null; }   /* 隐私模式 / 配额满：当没有缓存 */
+}
+
+function writeColorCache() {
+  try {
+    const o = {};
+    for (const [k, v] of mateColors) o[k] = v;
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify(o));
+  } catch (e) { /* 写不进去不影响正确性，最多下次开机没缓存 */ }
+}
+
 const mateColors = new Map(Object.entries(BUILTIN_MATE_COLORS));
+/* 上次拉到的真值优先于内置值：主人改过的颜色从第一帧起就生效 */
+try {
+  const cached = readColorCache();
+  if (cached) {
+    for (const k of Object.keys(cached)) {
+      const c = String(cached[k] || '').trim();
+      if (c) mateColors.set(String(k), c);
+    }
+  }
+} catch (e) { /* 同上 */ }
+
 let mateColorsAsked = false;
 
 /** 颜色表变了要让 React 知道（re-export 一下，省得调用方再记一个依赖） */
@@ -101,7 +148,7 @@ function bumpLogView() {
 
 /**
  * 预热颜色表（幂等）。页面启动 / 第一次问颜色时调都行。
- * 拉回来之后如果跟内置值不同，触发一次重渲染。
+ * 拉回来之后：落缓存；如果跟当前用的值不同，触发一次重渲染。
  */
 export function primeMateColors() {
   if (mateColorsAsked) return;
@@ -118,15 +165,35 @@ export function primeMateColors() {
         mateColors.set(nm, c);
         changed = true;
       }
+      /* 不管变没变都落盘：下一次开机用这份真值铺底，改过色的人首帧就不会闪 */
+      writeColorCache();
       if (changed) bumpLogView();
-    }).catch(() => { /* 抓不到就全用内置 / 默认色，不影响说话 */ });
+    }).catch(() => { /* 抓不到就全用缓存 / 内置 / 默认色，不影响说话 */ });
   } catch (e) { /* 同上 */ }
+}
+
+/**
+ * 外部改了某个身份的颜色（智能体面板保存后调）。
+ *
+ * 【为什么需要这个口子】
+ * 改了色但本机缓存还是旧值 → 下次刷新会先画旧色再 bump 成新色，闪一下。
+ * 面板保存成功后调一次这里，缓存当场就是新的，那次闪烁也就不存在了。
+ * 不调也不影响正确性（只是多闪那一帧）。
+ */
+export function applyMateColor(name, color) {
+  const nm = String(name == null ? '' : name).trim();
+  const c = String(color == null ? '' : color).trim().toLowerCase();
+  if (!nm || !c) return false;
+  mateColors.set(nm, c);
+  writeColorCache();
+  bumpLogView();
+  return true;
 }
 
 /**
  * 这个身份的名字该用什么颜色（小鲸 / 别的智能体卡）。
  *
- * 顺序：本地表（内置 + 已拉到的） → 页面上那份（它可能先拉到自定义卡） → 默认色。
+ * 顺序：本地表（缓存 + 内置 + 已拉到的） → 页面上那份 → 默认色。
  * **永远返回一个颜色，且不依赖网络是否已经回来。**
  */
 export function mateColorOf(name) {

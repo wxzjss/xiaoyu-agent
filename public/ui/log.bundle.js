@@ -7882,7 +7882,37 @@
     "\u5C0F\u767D\u66E6": "#e6e6e6",
     "\u65C1\u767D": "#c8a8e8"
   };
+  var CACHE_KEY = "xy_mateColors.v1";
+  function readColorCache() {
+    try {
+      const raw = window.localStorage.getItem(CACHE_KEY);
+      if (!raw) return null;
+      const j = JSON.parse(raw);
+      if (!j || typeof j !== "object" || Array.isArray(j)) return null;
+      return j;
+    } catch (e) {
+      return null;
+    }
+  }
+  function writeColorCache() {
+    try {
+      const o = {};
+      for (const [k, v] of mateColors) o[k] = v;
+      window.localStorage.setItem(CACHE_KEY, JSON.stringify(o));
+    } catch (e) {
+    }
+  }
   var mateColors = new Map(Object.entries(BUILTIN_MATE_COLORS));
+  try {
+    const cached = readColorCache();
+    if (cached) {
+      for (const k of Object.keys(cached)) {
+        const c = String(cached[k] || "").trim();
+        if (c) mateColors.set(String(k), c);
+      }
+    }
+  } catch (e) {
+  }
   var mateColorsAsked = false;
   function bumpLogView() {
     try {
@@ -7907,11 +7937,21 @@
           mateColors.set(nm, c);
           changed = true;
         }
+        writeColorCache();
         if (changed) bumpLogView();
       }).catch(() => {
       });
     } catch (e) {
     }
+  }
+  function applyMateColor(name, color) {
+    const nm = String(name == null ? "" : name).trim();
+    const c = String(color == null ? "" : color).trim().toLowerCase();
+    if (!nm || !c) return false;
+    mateColors.set(nm, c);
+    writeColorCache();
+    bumpLogView();
+    return true;
   }
   function mateColorOf(name) {
     const nm = String(name == null ? "" : name).trim();
@@ -9147,5 +9187,6 @@
     primeMateColors();
   } catch (e) {
   }
+  window.__mateColorsApply = applyMateColor;
   window.__logDebug = { React: import_react15.default, createRoot: import_client.createRoot, LogView, store: store_exports };
 })();

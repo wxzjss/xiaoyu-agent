@@ -264,6 +264,11 @@ export function listAgents() {
          可后端 isAgentQuiet() 里小鲸默认就是「叫才应」—— 显示和行为对不上。
          这里补上真实值，让勾和实际行为一致。 */
       quiet: Boolean(isAgentQuiet(AGENT_XIAOYU)),
+      /* 【2026-11-11 补·内置卡也要带颜色】
+       * 原来只有 customs 那段带 color，两张内置卡都没有 —— 前端 mateColorOf()
+       * 拿不到就退回默认 #e6e6e6，于是小鲸的署名永远是灰白的（主人问的就是这个）。
+       * 小鱼不上色（她是主声，用正文色），小鲸给默认蓝。 */
+      color: '',
     },
     {
       id: AGENT_XIAOJING,
@@ -277,6 +282,8 @@ export function listAgents() {
       modelFollows: !whaleModelId(),
       edited: !!whale.custom || !!whaleModelId(),
       quiet: Boolean(isAgentQuiet(AGENT_XIAOJING)),
+      /* 主人可以在智能体面板里给她改色（存 data.colors[id]），改过就用改的 */
+      color: (() => { try { return resolveBuiltinColor(AGENT_XIAOJING) || WHALE_DEFAULT_COLOR; } catch { return WHALE_DEFAULT_COLOR; } })(),
     },
   ];
 

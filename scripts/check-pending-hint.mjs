@@ -2,8 +2,9 @@
  * check-pending-hint.mjs — 守两件事：
  *  ① 预发送队列：消息交给 runTurn **之前**就要摘队重画。
  *     原来等整轮跑完才摘，主人看到「明明发出去了，下面还挂着待发送」。
- *  ② 「正在发送」提示：本轮空闲时长要取「服务端 idleMs」和「本轮自己的计时」的小值。
- *     原来只看服务端那份旧数，发新消息那一瞬间会闪一句「已经 N 秒没有回音」。
+ *  ② 「正在发送」提示只说这一句：主人 2026-11-11 要求删掉
+ *     「已经 N 秒没有回音，可能卡住了」那句改口，现在它**不许存在**。
+ *     但 `RUNNING_STALL_MS` 常量还要给会话列表绿点变黄用，那条守住。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -51,24 +52,51 @@ else {
   else ok('摘队后立刻重画');
 }
 
-/* ── ② 超时提示取小值 ───────────────────────────────────────── */
-const hintFn = (() => {
-  const j = s.indexOf('const _srvIdle');
-  if (j < 0) return '';
-  return s.slice(j, j + 700);
-})();
-
-if (!hintFn) bad('找得到超时提示那段', '没有 _srvIdle');
-else {
-  if (!/_myIdle/.test(hintFn) || !/_turnT0/.test(hintFn)) bad('本轮自己的计时也算进来', '只看服务端旧数就会闪一下');
-  else ok('本轮自己的计时也算进来');
-
-  if (!/Math\.min\(\s*_srvIdle\s*,\s*_myIdle\s*\)/.test(hintFn)) bad('两边取小值', '没取小值，旧数还是会冒出来');
-  else ok('两边取小值');
-
-  if (!/_idle > RUNNING_STALL_MS/.test(hintFn)) bad('阈值判断还在');
-  else ok('阈值判断还在');
+/* ── ② 聊天区那句改口：主人 2026-11-11 要求删掉 ─────────────────
+ *
+ * 原来这里断言「本轮空闲时长要取服务端 idleMs 和本轮自己计时的小值」——
+ * 那是「已经 N 秒没有回音，可能卡住了」这句改口的实现细节。
+ * 主人看不惯那句话，`public/index.html` 里那段取小值的逻辑连同改口一起删了，
+ * 现在只剩「正在发送消息」。
+ *
+ * 所以断言整个反过来：**改口不许存在**（界面不许出现「没有回音」「可能卡住了」），
+ * 「正在发送消息」照常。注意 `RUNNING_STALL_MS` 常量没删 —— 会话列表那颗
+ * 绿点变黄还在用它，那条要守住，不能让人顺手一起删掉。 */
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 }
+
+const hintBlock = (() => {
+  const j = s.indexOf("const _hh = document.getElementById('sendingHint')");
+  if (j < 0) return '';
+  return s.slice(j, j + 900);
+})();
+const hintCode = stripComments(hintBlock);
+
+if (!hintBlock) bad('找得到「正在发送消息」那段', '没有 sendingHint 的处理段');
+else {
+  if (!/正在发送消息/.test(hintCode)) bad('「正在发送消息」还在', '提示行被删空了');
+  else ok('「正在发送消息」还在（而且是唯一那句）');
+
+  const nag = /没有回音|可能卡住了/.exec(hintCode);
+  if (nag) bad('改口已经删掉', '聊天区还会说「' + nag[0] + '」');
+  else ok('改口已经删掉（不再说「没有回音 / 可能卡住了」）');
+
+  /* 全局也不许再有把它写到界面上的代码（注释里的历史说明不算） */
+  const allCode = stripComments(s);
+  const nagAll = /没有回音|可能卡住了/.exec(allCode);
+  if (nagAll) bad('全文件没有把改口写进界面', '还有一处：' + nagAll[0]);
+  else ok('全文件没有把改口写进界面');
+
+  /* stalled 这个类名只许「摘掉」，不许「加上」 */
+  if (/classList\.add\(\s*['"]stalled['"]\s*\)/.test(allCode)) bad('不会再给提示行加 stalled 金样式', '还有 add');
+  else ok('不会再给提示行加 stalled 金样式');
+}
+
+/* 会话列表的绿点/黄点还在用 RUNNING_STALL_MS —— 这个不许跟着一起删 */
+if (!/const RUNNING_STALL_MS = \d+/.test(s)) bad('RUNNING_STALL_MS 常量还在', '被顺手删了，会话列表黄点会失效');
+else if (!/idleMs[^\n]{0,80}RUNNING_STALL_MS/.test(s)) bad('会话列表还在按它变黄点', '常量成了摆设');
+else ok('RUNNING_STALL_MS 还在给会话列表黄点用（没被顺手删掉）');
 
 console.log('\n断言：' + (pass + fail) + ' 条，过 ' + pass + '，挂 ' + fail);
 if (fail) { console.log('FAIL'); process.exit(1); }

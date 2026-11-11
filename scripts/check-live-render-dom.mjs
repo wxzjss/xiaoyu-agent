@@ -312,10 +312,10 @@ async function caseSegments() {
 }
 
 /* ══════════════════════════════════════════════════════════════════
- * 四：⏹ 停止（aborted）—— 提示不许混进正文、思考块 / 光标收干净
+ * 四：⏹ 停止（aborted）—— 安静收尾（不弹 [已停止]）、半截话留住、光标收干净
  * ══════════════════════════════════════════════════════════════════ */
 async function caseAborted() {
-  console.log('\n四、⏹ 停止：提示独立成行、不混进她的正文');
+  console.log('\n四、⏹ 停止：安静收尾（不弹提示），她说到一半的话留下');
   const D = 'QA半句话说到一半就停';
   await arm({
     gap: 420,
@@ -328,23 +328,26 @@ async function caseAborted() {
     live: null,
   });
   await cdp.eval('window.__qaTurnP = window.runTurn({ text: "QA 主人一句（停止）" }); return 1;');
-  /* 取密一点：aborted 之后 settleFromHistory 会把这一屏交给历史，
-   * 那条提示只在这一小段窗口里活着（历史上不记它），100ms 一取会整体错过。 */
+  /* 取密一点：aborted 之后 settleFromHistory 会把这一屏交给历史。
+   * 盯着的是「有没有哪一帧冒出提示行 / 半截话有没有被吞掉」，40ms 一取才看得住这个窗口。 */
   const series = await watch(70, 40);
   ok(series.some((s) => s.streaming >= 1), '跑着的时候有流式光标');
   ok(series.some((s) => s.think >= 1), 'aborted 之前思考块在');
-  const noteSeen = series.find((s) => s.notes.some((n) => n.indexOf('已停止') >= 0)) || null;
-  ok(!!noteSeen, '[已停止] 作为独立提示行出现过（不是写进她的气泡）',
-    'notes 采样：' + JSON.stringify(series.map((s) => s.notes)));
-  ok(!!noteSeen && !noteSeen.bubbles.some((b) => b.indexOf('已停止') >= 0),
-    '[已停止] 没有混进她说的正文里', noteSeen ? JSON.stringify(noteSeen.bubbles) : '—');
-  const dupNote = series.find((s) => cnt(s.text, '已停止') > 1) || null;
-  ok(!dupNote, '[已停止] 全程没有出现两遍', dupNote ? '出现 ' + cnt(dupNote.text, '已停止') + ' 次' : '');
+  /* 【2026-11-11 改·主人要求「停止要安静」】判据整个反过来：
+   * 以前断言「[已停止] 提示独立成行出现过」，现在断言**它根本不许出现**
+   * （public/index.html 的 aborted 分支已改成 endTurnQuietly()，不再 addSysNote）。
+   * 同时守住那次修复的真正目的：她说到一半的话必须留在屏幕上/历史里 ——
+   * 停止如果把她已经说出来的字也吞了，那才是主人真正会骂的事。 */
+  const stopNote = series.find((s) => s.notes.some((n) => n.indexOf('已停止') >= 0)) || null;
+  ok(!stopNote, '[已停止] 提示行不许出现（停止要安静）',
+    stopNote ? '出现了：' + JSON.stringify(stopNote.notes) : '全程没出现');
+  ok(!series.some((s) => cnt(s.text, '已停止') > 0), '[已停止] 也不许混进她说的正文里',
+    series.filter((s) => cnt(s.text, '已停止') > 0).length + ' 帧命中');
   /* 收尾之后光标必须摘干净（这一条看最后那一帧） */
   await sleep(1500);
   const after = await snap();
   ok(after.streaming === 0, '停下来之后光标摘掉', '还剩 ' + after.streaming + ' 个');
-  ok(cnt(after.text, D) <= 1, '停下之后那半句没有重复', '出现 ' + cnt(after.text, D) + ' 次');
+  ok(cnt(after.text, D) === 1, '停下之后那半句留在屏幕上（而且只有一份）', '出现 ' + cnt(after.text, D) + ' 次');
 }
 
 /* ══════════════════════════════════════════════════════════════════

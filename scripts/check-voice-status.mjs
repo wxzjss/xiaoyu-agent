@@ -17,7 +17,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
+/**
+ * 【2026-11-11 修·检查自身的 bug（不是代码坏）】
+ *
+ * 这一轮 5 条挂全是同一个原因：`public/index.html` 是 **CRLF** 换行，
+ * 而下面用 `html.indexOf('\n}\n')` 去找函数结尾 —— CRLF 里根本没有裸 `\n}\n`，
+ * 返回 -1，`slice(paintI, -1 + 2)` 得到 1 个字符的边缘片段，
+ * 于是「找得到 vrPaint」以及所有基于 paint 的断言全成了假红。
+ *
+ * 证据（本轮实测）：normalize 之前 paint 长度 0、paintI=498036、k=-1。
+ * 这不是放宽断言 —— 归一化之后每一句正则照旧原样跑，真删了话术一样会挂。
+ */
+const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8').replace(/\r\n/g, '\n');
 
 let pass = 0, fail = 0;
 const ok = (cond, name, detail) => {

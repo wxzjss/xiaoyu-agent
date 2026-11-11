@@ -55,10 +55,18 @@ t.ok('taskOn() 恒为 false（任意会话）',
 const __F = await import('../src/features.mjs');
 t.ok('功能表里没有 taskmode 这个键', !__F.allFeatures().some((f) => f.id === 'taskmode'));
 const __refuse = await tl.runTool('spawn_worker', { task: '随便什么活' }, 'probe-a');
-t.ok('spawn_worker 被闸死且说人话（不是提已删的按钮）',
-  __refuse && __refuse.ok === false && /派活功能正在重做/.test(String(__refuse.output || ''))
-    && !/办事模式/.test(String(__refuse.output || '')),
-  String((__refuse && __refuse.output) || '').slice(0, 80));
+/* 口径更新（2026-11-11）：团队模式（854ed10）上线后，闸门文案从「派活功能正在重做」
+ * 改成「团队模式现在是关着的」。断言跟着改，但守的东西没变：
+ *   ① 必须闸死（ok === false），不能悄悄放行；
+ *   ② 必须说人话 —— 指到现存的那个开关（「团队模式」）并告诉她现在自己动手做；
+ *   ③ 不许提已经删掉的「办事模式」按钮（提了就是让她去点一个不存在的入口）。 */
+const __refuseText = String((__refuse && __refuse.output) || '');
+t.ok('spawn_worker 被闸死且说人话（指到团队模式，不提已删的按钮）',
+  __refuse && __refuse.ok === false
+    && /团队模式/.test(__refuseText) && /关着|关的|没开/.test(__refuseText)
+    && /自己动手做/.test(__refuseText)
+    && !/办事模式/.test(__refuseText),
+  __refuseText.slice(0, 80));
 t.ok('task-mode.mjs 不再读功能表的 taskmode 键',
   !/featureOnFor\([^)]*taskmode/.test(src));
 

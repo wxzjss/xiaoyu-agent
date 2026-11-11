@@ -502,6 +502,37 @@ async function runReal(cdp, pubDir, apiBase) {
   }
   if (!ready) { try { px.server.close(); } catch {} return { name: '真对话两轮', skip: '页面没起来' }; }
 
+  /**
+   * 【2026-11-11 parity-fixer 修·判重把「前几次跑的历史」当成了重画】
+   *
+   * 现场（run-all-checks 里第三次尝试红的那份日志，全文见
+   * %TEMP%/xy-runall-logs/50-check-no-spontaneous-dup.mjs.log）：
+   *   · 违规帧：`两个气泡开头一样（2 个）：QAT01END（把三个标记重新摆好`
+   *   · 同一帧：`assistant 容器 4 个（其中直播 0 个）`，四个容器全是 [历史]
+   *   · 同一份日志第 33 行：`屏幕上的次数 == 落盘次数 ✔` —— 一个字都没被多画
+   *
+   * 病根：这个脚本默认连跑 3 次（attempts=3，因为老 bug 是间歇性的），
+   * 三次**共用同一间屋子**（每次只 Page.navigate，会话还是服务端 lastSessionId 那个）。
+   * 于是第 3 次开始时屏幕上已经躺着前两次的 4 条回答；而模型的措辞高度一致，
+   * 第 3 次的回答前 40 字跟第 1 次几乎一字不差 → 被「两个气泡开头一样」判成重画。
+   * 那是**两次不同的发言**，不是同一个气泡被贴了两遍。
+   *
+   * 修法：把「这一次跑之前屏幕上就有的气泡」记成基线，判重时排除它们。
+   * 判的仍然是「这次跑的过程中有没有长出第二个一模一样的」—— 本意没变，
+   * 只是不再把上一轮的历史算进这一轮的账。
+   * （为什么不用「新建一间屋子」：页面开局认的是设备本地 lastSessionId，
+   *   `switchSessionSafe` 没暴露到 window，脚本改不了它开哪间屋子。基线更稳。）
+   */
+  const baseline = new Set();
+  try {
+    const pre = await cdp.eval(
+      'return [].slice.call(document.querySelectorAll("#log .msg.assistant .bubble"))'
+      + '.map(function (b) { return String(b.textContent || "").replace(/\\s+/g, ""); });',
+    ).catch(() => []);
+    for (const t of (pre || [])) if (t) baseline.add(t);
+    if (baseline.size) console.log('  基线：这次跑之前屏幕上已有 ' + baseline.size + ' 条历史气泡（判重时排除）');
+  } catch { /* 抓不到基线就当空的：退化成原来的严格口径，宁可多报也不漏报 */ }
+
   const navBefore = await cdp.eval('return (performance.getEntriesByType("navigation")||[]).length;');
   const samples = [];
   const prompts = [
@@ -547,7 +578,10 @@ async function runReal(cdp, pubDir, apiBase) {
      * 它的指纹非常明确 —— 两个气泡的**前 40 个字完全相同**。
      * 不同的轮次几乎不可能前 40 字一字不差，所以这条判据既准又不误伤。
      */
-    const heads = (s.asst || [])
+    /* 只算「这次跑出来的」气泡：基线（跑之前就有的历史）里的原文一律排除，
+     * 理由见上面 baseline 那段注释 —— 那是上一次尝试说过的话，不是重画。 */
+    const fresh = (s.asst || []).filter((x) => !baseline.has(norm(x.text)));
+    const heads = fresh
       .map((x) => String(x.text || '').replace(/^(小鱼|主人|小鲸)/, '').slice(0, 40))
       .filter((h) => h.length >= 20);
     const seenHead = new Map();
@@ -555,7 +589,7 @@ async function runReal(cdp, pubDir, apiBase) {
     for (const [h, n] of seenHead) {
       if (n > 1) violations.push({ at: s.at, turn: s.turn, kind: '两个气泡开头一样（' + n + ' 个）：' + h.slice(0, 18) });
     }
-    const ed = exactDup(s.asst);
+    const ed = exactDup(fresh);
     if (ed.length) violations.push({ at: s.at, turn: s.turn, kind: '两条一样的气泡 ' + ed.join('|') });
   }
   const hit = toks.filter((t) => samples.some((s) => s.all.indexOf(t) >= 0));

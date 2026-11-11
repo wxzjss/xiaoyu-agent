@@ -2215,7 +2215,7 @@ export const tools = [
       finishWorker(sid, w.id, { status: r?.ok ? 'reported' : 'failed', rounds: r?.rounds, tools: r?.tools, said: text });
       try {
         if (typeof push === 'function') {
-          push({ type: 'worker', wid: String(w.id), name: nick, kind: 'end', text: '', status: r?.ok ? 'ok' : 'err', note: text.slice(0, 400) });
+          push({ type: 'worker', wid: String(w.id), name: nick, kind: 'end', text: '', status: r?.ok ? 'ok' : 'err', note: text.slice(0, 400), endedAt: Date.now() });
         }
       } catch {}
 
@@ -2370,7 +2370,7 @@ export const tools = [
         } catch (e) {
           const msg = '子智能体没起来：' + String(e?.message ?? e);
           finishWorker(sid, p.id, { status: 'failed', said: msg });
-          try { if (typeof push === 'function') push({ type: 'worker', wid: p.id, name: p.nick, kind: 'end', text: '', status: 'err', note: msg.slice(0, 400) }); } catch {}
+          try { if (typeof push === 'function') push({ type: 'worker', wid: p.id, name: p.nick, kind: 'end', text: '', status: 'err', note: msg.slice(0, 400), endedAt: Date.now() }); } catch {}
           return { nick: p.nick, id: p.id, ok: false, text: msg };
         }
       };

@@ -2198,7 +2198,13 @@ function appendLiveItem(items, ev) {
     /* 【2026-11-11 团队模式】耗时用的两个字段：start 事件带 startedAt（从那一刻算
      * 「· 2分13秒」），end 事件补 endedAt（收尾定格，跑着的由前端每秒现算）。 */
     if (ev.startedAt && !it.startedAt) it.startedAt = Number(ev.startedAt) || 0;
-    if (ev.kind === 'end') it.endedAt = Date.now();
+    /* 【2026-11-11 parity 修·时间戳必须来自事件本身】
+     * 原来这里写 Date.now()，收尾那一刻「就地取钟」——
+     * 而 buildLiveItems（刷新 / items 空时兜底）拿的是事件数组，没有这一刻可问，
+     * 于是同一张 worker 卡：直播里有 endedAt，刷新后没有 → 两条路径的清单不逐字相等，
+     * 刷新还会把「跑了多久」抹掉。改为读事件上的 endedAt（生产者收尾时打戳），
+     * 两条路径读到同一个数；事件没带就留 0（前端 fmtDur 对 <=0 不显示，不崩）。 */
+    if (ev.kind === 'end') it.endedAt = Number(ev.endedAt) || 0;
     const _st = String(ev.text || '').trim();
     if (_st && (ev.kind === 'step' || ev.kind === 'start' || ev.kind === 'mail')) {
       it.steps.push({ kind: String(ev.kind || 'step'), t: _st });
@@ -2343,12 +2349,20 @@ function buildLiveItems(events) {
       if (!it) {
         /* 第一张卡 = 新条目 → 分段线；后面只是往这张卡上补一步，屏幕没多东西，不算 */
         flush();
-        it = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '' };
+        /* 【2026-11-11 parity 修·字段形状必须与 appendLiveItem 一致】
+         * 增量那边建卡时带 startedAt/endedAt 两个字段（团队模式的耗时），
+         * 这里漏了 → 同一张卡两条路径 JSON 不同（少两个键），parity 三条全红。
+         * 形状是清单契约的一部分：键不许一边有一边没有。 */
+        it = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '', startedAt: 0, endedAt: 0 };
         items.push(it);
       }
       if (e.name) it.name = String(e.name);
       if (e.status) it.status = String(e.status);
       if (e.note) it.note = String(e.note);
+      /* 与 appendLiveItem 同一口径：耗时两个字段都从事件上读（不许就地取钟，
+       * 否则重算路径拿不到同一刻，清单对不上、刷新还会丢时长）。 */
+      if (e.startedAt && !it.startedAt) it.startedAt = Number(e.startedAt) || 0;
+      if (e.kind === 'end') it.endedAt = Number(e.endedAt) || 0;
       const stepText = String(e.text || '').trim();
       if (stepText && (e.kind === 'step' || e.kind === 'start' || e.kind === 'mail')) {
         it.steps.push({ kind: String(e.kind || 'step'), t: stepText });

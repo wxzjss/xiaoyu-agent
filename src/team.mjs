@@ -162,6 +162,10 @@ export function dispatchWorker({ sessionId, wid, name, brief, maxRounds, timeout
     pushEv('end', '', {
       status: stopped ? 'stopped' : (r && r.ok ? 'ok' : 'err'),
       note: text.slice(0, 400),
+      /* 【2026-11-11 parity 修】收尾时刻打进事件里 —— 清单的 endedAt 从这读。
+       * 不许让 appendLiveItem 自己 Date.now()：刷新走的是从头重算（读事件数组），
+       * 那一侧没有「这一刻」，直播/刷新就会给两张不同的卡。 */
+      endedAt: Date.now(),
     });
     /* 被手动停的不用汇报 —— 主人自己停的，她心里有数；
      * 花名册上记着呢，watch_worker / list_workers 都看得到。 */

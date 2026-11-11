@@ -353,6 +353,26 @@ export const FEATURES = [
     tools: ['look_screen', 'screen_watch_status'],
     defaultOn: true,
   },
+  {
+    /**
+     * 【关闭显示屏】（2026-11-11 主人要的）
+     *
+     * 两个用法，一个开关管：
+     *   ① 界面【功能】面板里有【关闭显示屏】按钮，手点一下就走；
+     *   ② 直接跟她说「关屏 / 我要出门」，她调 screen_off 工具自己关。
+     * 关掉这个功能，两条路一起失效（工具从她手上撤掉，按钮也拦）。
+     *
+     * 实现是背光归零 + 全屏黑遮罩，不碰电源状态：本机 S0 机型用
+     * SC_MONITORPOWER 会整机进待机并锁屏，所以那条路已经彻底弃用。
+     */
+    id: 'screenOff',
+    name: '关闭显示屏',
+    desc: '关屏但电脑照跑：背光熄灭 + 全屏黑遮罩，后台程序、网络、远程都不受影响，也不会睡眠或锁屏。'
+      + '【功能】面板里有按钮可以直接点；也可以跟我说一声「关屏」，我自己关。'
+      + '恢复：按鼠标右键 / Esc / PrtSc / Delete，或刷指纹。',
+    tools: ['screen_off', 'screen_on'],
+    defaultOn: true,
+  },
   /**
    * 画图（2026-11-03）
    *
@@ -828,7 +848,9 @@ function readBySession() {
  * 必须是「关一次就真的关掉」—— 按会话的话，主人关了 A 会话，B 会话照样能点，
  * 那这个开关就是个心理安慰。
  */
-export const GLOBAL_ONLY_FEATURES = new Set(['videoBg', 'screenSense', 'ttsVoice', 'selfRestart', 'identity', 'desktopHands']);
+/* screenOff 也是"这台机器在不在做"的事：关屏是整机行为，不是某个会话的事。
+   按会话开关会出现「A 会话关了、B 会话还能关」的怪状态，所以放进全局集合。 */
+export const GLOBAL_ONLY_FEATURES = new Set(['videoBg', 'screenSense', 'ttsVoice', 'selfRestart', 'identity', 'desktopHands', 'screenOff']);
 
 /**
  * 一个功能在某个会话里到底开没开 —— 三级回退，顺序不能变。

@@ -1231,6 +1231,21 @@
     }
     #stopBtn.show { display: inline-block; }
     #stopBtn:hover { background: #2a1a1a; border-color: var(--err); }
+    /* 【2026-11-11 加·增强提示词】输入框右边那颗星星（交互照 WorkBuddy）。
+     * 四态：隐藏（空输入）/ 星星（有字）/ 转圈（增强中，再点=取消）/ 回转箭头（已增强，点=恢复原文）。
+     * 空输入不渲染，是为了不让人对着一个点了会报错的按钮发呆。 */
+    #enhanceBtn {
+      display: none; height: 44px; width: 42px; padding: 0; border: 1px solid var(--border);
+      border-radius: 8px; background: #0f1319; color: var(--muted);
+      cursor: pointer; flex: 0 0 auto; align-items: center; justify-content: center;
+    }
+    #enhanceBtn.show { display: inline-flex; }
+    #enhanceBtn:hover { color: var(--accent); border-color: var(--accent); }
+    #enhanceBtn.busy { color: var(--accent); cursor: progress; }
+    #enhanceBtn.done { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+    #enhanceBtn svg { width: 17px; height: 17px; display: block; }
+    #enhanceBtn.busy svg { animation: xySpin 900ms linear infinite; }
+    @keyframes xySpin { to { transform: rotate(360deg); } }
     /* 悬浮统一·2026-10-31 发送/停止是实心按钮，原来 hover 一点反应都没有 —— 底色压深一档 */
     #send:hover { background: color-mix(in srgb, var(--accent) 82%, #000); }
     #send.stop:hover { background: color-mix(in srgb, var(--err) 82%, #000); }
@@ -2997,9 +3012,10 @@
        「透明」预设下 surface=0 → 纱完全消失，浅色壁纸配浅色字直接看不见。
        给它 0.18 的下限（CSS max() 取两者大者），再透也保住一层可读的暗纱。 */
     body.skin #log { background: rgba(15, 17, 21, max(0.18, calc(var(--surface, .2) * .75))); }
-    /* 【同条】assistant 气泡原本完全没有底板（白字裸铺在壁纸上），补一层跟 user
-       同档的半透明底。平时（非 skin）不生效 —— 那边 #log 本来就有实底。 */
-    body.skin .msg.assistant .bubble { background: rgba(29, 36, 48, calc(var(--surface, .2) + .38)); }
+    /* 【2026-11-11 删·主人要求】这里原来有一行给 assistant 气泡补半透明底：
+       `body.skin .msg.assistant .bubble { background: rgba(29,36,48, ...); }`
+       是 11-10 第⑩条为「亮壁纸下白字裸铺看不清」加的，但主人不喜欢那个黑底，明确要删。
+       现在气泡是纯文字叠在 #log 那层薄纱上 —— 薄纱本身有 0.18 的下限兜底可读性。 */
 
     /* 右下角小圆钮 + 调节面板：鼠标靠近才变实，平时半透明不抢眼 */
     #skinKnob {
@@ -3444,6 +3460,13 @@
         <button type="button" class="ghost3" id="featImport" title="选一个或多个功能文件导进来；也能直接把文件拖到这个面板上">导入</button>
         <button type="button" class="ghost3" id="featExport" title="挑几个功能导出成文件，能带走、能挪到别的机器">导出</button>
         <input type="file" id="featFile" multiple accept=".json,application/json" hidden />
+      </div>
+      <!-- 2026-11-11 主人要的：【关闭显示屏】+【复制默认提示词】。
+           关屏走 /api/screen/off（和工具 screen_off 同一套实现），
+           提示词是主人出门时常用的那一段，一键复制带走。 -->
+      <div class="sessTop sessTools">
+        <button type="button" class="ghost3" id="featScreenOff" title="立刻关闭显示器：电脑照常运行，不睡眠不锁屏；回来按鼠标右键或 Esc 就恢复">关闭显示屏</button>
+        <button type="button" class="ghost3" id="featCopyPrompt" title="复制「暂时外出」那段默认提示词，粘到对话框就能让小鱼照着做">复制默认提示词</button>
       </div>
       <!-- 导入结果：黄=进来了但有提醒，红=真被拒。一次导入的账本，摆在列表上面。 -->
       <div class="featReport" id="featReport" hidden>
@@ -4363,6 +4386,13 @@
       <textarea id="input" placeholder="跟小鱼说点什么…也能让她改文件 / 跑命令（Enter 发送，Shift+Enter 换行）"></textarea>
       <!-- 【2026-11-05 加】独立的停止键。以前"停止"是跟"发送"抢同一个按钮：
            生成中只要你打了字，按钮就变回"发送"，想纯停止得先把字删干净。 -->
+      <!-- 【2026-11-11 加·增强提示词】输入框有字才出现的星星。
+           点一下把这句话改写得更具体，直接替换回输入框；再点一下=恢复原文。 -->
+      <button id="enhanceBtn" type="button" title="增强提示词" aria-label="增强提示词">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M8 0.6l1.72 5.68L15.4 8l-5.68 1.72L8 15.4 6.28 9.72 0.6 8l5.68-1.72z"/>
+        </svg>
+      </button>
       <button id="stopBtn" type="button" title="停下这一轮（不打断你正在打的字）">⏹</button>
       <button id="send">发送</button>
     </div>
@@ -9181,6 +9211,147 @@ setInterval(() => {
     if (!busy && !_flushingPending && pendingQueue.length) flushPendingQueue();
   } catch (e) {}
 }, 2000);
+
+/* ============================================================================
+ * 【2026-11-11 加·增强提示词】输入框右边那颗星星（主人要的）
+ *
+ * 干什么：把输入框里这句话改写得具体一点（「帮我看看这个报错」→
+ * 「请分析这段报错的原因、定位出错位置，并给出最小修复方案和验证步骤」），
+ * 直接替换回输入框。他自己决定发不发。
+ *
+ * 交互照 WorkBuddy，四个状态：
+ *   空输入   → 按钮不渲染（不让人对着一个点了会报错的按钮发呆）
+ *   有字     → 星星
+ *   增强中   → 转圈；这时候再点=取消（恢复原文，不弹任何错误）
+ *   已增强   → 回转箭头；点=恢复原文；再点星星=拿当前内容重新增强
+ *
+ * 两个容易漏的边界：
+ *   ① 程序化替换输入框内容会触发 input 事件，别把它误判成「用户自己改了字」
+ *      → 用 _enh.applying 包住
+ *   ② 用户在增强结果上手改了字，就**不能再撤销回原文**了（撤销备份作废），
+ *      否则他改了半天点一下恢复，改动全没了
+ * ========================================================================== */
+const enhanceBtn = document.getElementById('enhanceBtn');
+const ENHANCE_STAR_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0.6l1.72 5.68L15.4 8l-5.68 1.72L8 15.4 6.28 9.72 0.6 8l5.68-1.72z"/></svg>';
+const ENHANCE_REVERT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.2 8a4.8 4.8 0 104.8-4.8"/><path d="M3.2 3.4V8h4.6"/></svg>';
+
+const _enh = { busy: false, enhanced: false, backup: '', text: '', ac: null, seq: 0, applying: false };
+
+function enhanceInputEl() { return document.getElementById('input'); }
+
+/** 按钮显不显示：有字、或正处在「已增强」态（此时框里一定有字，但取消后可能是空的） */
+function enhancePaintVisible() {
+  if (!enhanceBtn) return;
+  const el = enhanceInputEl();
+  const has = !!el && String(el.value || '').trim().length > 0;
+  enhanceBtn.classList.toggle('show', has || _enh.enhanced || _enh.busy);
+}
+
+/** 四态画一次：星星 / 转圈 / 回转箭头 */
+function enhancePaint() {
+  if (!enhanceBtn) return;
+  enhanceBtn.classList.toggle('busy', !!_enh.busy);
+  enhanceBtn.classList.toggle('done', !_enh.busy && _enh.enhanced);
+  enhanceBtn.innerHTML = (_enh.enhanced && !_enh.busy) ? ENHANCE_REVERT_SVG : ENHANCE_STAR_SVG;
+  enhanceBtn.title = _enh.busy ? '增强中…（再点一下取消）'
+    : (_enh.enhanced ? '恢复原文' : '增强提示词');
+  enhancePaintVisible();
+}
+
+/** 程序化写输入框：要触发 input 事件，让发送键状态、自动高度跟着更新 */
+function enhanceWriteInput(text) {
+  const el = enhanceInputEl();
+  if (!el) return;
+  _enh.applying = true;
+  try {
+    el.value = text;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    try { el.focus(); el.setSelectionRange(text.length, text.length); } catch (e) {}
+  } finally { _enh.applying = false; }
+}
+
+/** 恢复原文（取消 / 点回转箭头 / 失败收场都走这里） */
+function enhanceRestore() {
+  if (!_enh.enhanced && !_enh.busy) return;
+  const back = String(_enh.backup || '');
+  _enh.busy = false;
+  _enh.enhanced = false;
+  _enh.backup = '';
+  _enh.text = '';
+  if (_enh.ac) { try { _enh.ac.abort(); } catch (e) {} _enh.ac = null; }
+  enhanceWriteInput(back);
+  enhancePaint();
+}
+
+async function enhanceRun() {
+  const el = enhanceInputEl();
+  if (!el) return;
+  const raw = String(el.value || '');
+  if (!raw.trim()) return;
+
+  /* 已经增强过、又点星星 → 拿当前内容重新增强（备份换成当前这份） */
+  _enh.backup = raw;
+  _enh.seq += 1;
+  const mySeq = _enh.seq;
+  _enh.busy = true;
+  _enh.enhanced = false;
+  if (_enh.ac) { try { _enh.ac.abort(); } catch (e) {} }
+  _enh.ac = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  enhancePaint();
+
+  let r = null;
+  try {
+    const res = await fetch('/api/enhance-prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: raw, sessionId: (typeof sessionId !== 'undefined' ? sessionId : '') }),
+      signal: _enh.ac ? _enh.ac.signal : undefined,
+    });
+    r = await res.json().catch(() => null);
+  } catch (e) {
+    /* 被取消：静默恢复原文，一个字都不弹 */
+    if (mySeq !== _enh.seq) return;
+    _enh.busy = false;
+    enhancePaint();
+    return;
+  }
+  if (mySeq !== _enh.seq) return;   // 中途又被点了一次，这次结果作废
+  _enh.busy = false;
+
+  if (r && r.success && String(r.text || '').trim()) {
+    _enh.text = String(r.text);
+    _enh.enhanced = true;
+    enhanceWriteInput(_enh.text);
+    enhancePaint();
+    return;
+  }
+  /* 失败：输入框保持原文，原因写进 tooltip（不弹窗打断） */
+  enhancePaint();
+  if (enhanceBtn && r && (r.error || r.code) && r.code !== 'aborted' && r.code !== 'empty_input') {
+    enhanceBtn.title = '增强失败：' + (r.error || r.code) + '（点一下可重试）';
+  }
+}
+
+if (enhanceBtn) {
+  enhanceBtn.addEventListener('click', () => {
+    if (_enh.busy) { enhanceRestore(); return; }   // 增强中再点 = 取消
+    if (_enh.enhanced) { enhanceRestore(); return; } // 已增强 = 恢复原文
+    enhanceRun();
+  });
+  /* 输入框一变就重新判「要不要显示星星」+ 判断用户有没有手改增强结果 */
+  const _enhOnInput = () => {
+    if (_enh.applying) return;   // 我们自己写的，不算用户编辑
+    if (_enh.enhanced) {
+      const el = enhanceInputEl();
+      const now = el ? String(el.value || '') : '';
+      if (now !== _enh.text) { _enh.enhanced = false; _enh.backup = ''; _enh.text = ''; }
+    }
+    enhancePaint();
+  };
+  const _enhInput = enhanceInputEl();
+  if (_enhInput) _enhInput.addEventListener('input', _enhOnInput);
+  enhancePaint();
+}
 
 async function send() {
   if (busy) return;
@@ -14463,6 +14634,75 @@ if (featFile) {
     const picked = Array.from(featFile.files || []);
     featFile.value = '';
     await featImportFiles(picked);
+  });
+}
+
+/* ---- 2026-11-11 主人要的两颗按钮：关屏 / 复制默认提示词 ---- */
+/* 出门前的默认提示词：一字不改照主人给的原话存着，复制走就能直接发给小鱼。 */
+const DEFAULT_OUT_PROMPT = '我要暂时外出，请按以下要求处理：现在立即关闭我的显示屏；'
+  + '如遇到需要验证或找问题之类的的环节，可临时开启显示屏完成该操作，操作结束后立刻重新关闭。'
+  + '全部任务处理完成后，请进行一次严格、全面的检查，确认每个步骤均已正确执行、没有遗漏或异常；'
+  + '确认无误后，将显示屏保持关闭状态。';
+
+const featScreenOffBtn = document.getElementById('featScreenOff');
+if (featScreenOffBtn) {
+  featScreenOffBtn.addEventListener('click', async () => {
+    /* 连点保护 + 进行中反馈：关屏要等服务端确认（最长 6~7 秒，脚本要真的铺上遮罩
+       才算成功），这段时间按钮必须"看得见地在忙"，否则主人会以为没点上、反复点。 */
+    if (featScreenOffBtn.dataset.busy === '1') return;
+    featScreenOffBtn.dataset.busy = '1';
+    const oldText = featScreenOffBtn.textContent;
+    featScreenOffBtn.disabled = true;
+    featScreenOffBtn.textContent = '正在关屏…';
+    try {
+      const r = await featApi('/api/screen/off', { sessionId });
+      if (r && r.ok) {
+        /* 屏幕黑掉后人看不见这条 toast，但它会留在聊天区/日志里，事后能对账 */
+        toast('显示器已关闭 · 电脑仍在运行\n恢复：鼠标右键 / Esc / PrtSc / Delete / 指纹');
+      } else {
+        toast('关屏没成功：' + ((r && r.error) || '未知原因'));
+      }
+    } catch (e) {
+      toast('关屏没成功：' + (e && e.message ? e.message : e));
+    } finally {
+      /* 失败时必须立刻能再点；成功时屏幕已经黑了，恢复按钮文字也无所谓。
+         统一在这里复位，别用 setTimeout 拖 1.2 秒。 */
+      featScreenOffBtn.disabled = false;
+      featScreenOffBtn.textContent = oldText;
+      featScreenOffBtn.dataset.busy = '0';
+    }
+  });
+}
+
+const featCopyPromptBtn = document.getElementById('featCopyPrompt');
+if (featCopyPromptBtn) {
+  featCopyPromptBtn.addEventListener('click', async () => {
+    let ok = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(DEFAULT_OUT_PROMPT);
+        ok = true;
+      }
+    } catch { /* 走下面的兜底 */ }
+    if (!ok) {
+      /* 兜底：Electron 里 navigator.clipboard 可能因为焦点/权限不可用，
+         用一个临时 textarea + execCommand 复制。
+         注意 textarea 必须插进 <dialog id="featuresDlg"> 内部而不是 body ——
+         modal 打开时 dialog 之外的子树全在 inert 状态，inert 里的 select() 拿不到选区，
+         execCommand 会必然返回 false（那样兜底就等于没有）。 */
+      try {
+        const host = document.getElementById('featuresDlg') || document.body;
+        const ta = document.createElement('textarea');
+        ta.value = DEFAULT_OUT_PROMPT;
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+        host.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ok = document.execCommand('copy');
+        host.removeChild(ta);
+      } catch { ok = false; }
+    }
+    toast(ok ? '默认提示词已复制，粘到对话框就能发' : '复制失败，请手动选中下面这段：\n' + DEFAULT_OUT_PROMPT);
   });
 }
 

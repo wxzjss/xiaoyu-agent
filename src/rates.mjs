@@ -327,6 +327,35 @@ const WINDOWS = {
 export const FALLBACK_WINDOW = 128000;
 
 /**
+ * 这个模型的窗口是「真标注的」还是兜底猜的。
+ *
+ * 【2026-11-11 加·给用量百分比用】界面上「上下文用量 N%」的 N 只能算给
+ * 真标注了窗口的模型 —— 认不出时 contextWindowOf 会兜一个 128000，
+ * 拿兜底值算百分比就是拿猜的数糊弄人。所以把「认没认出来」单独暴露出来，
+ * 认不出就不显示百分比。
+ * 判据与 contextWindowOf 逐条对齐（价目条目 win / WINDOWS 表精确/前缀包含）。
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function windowIsKnown(model) {
+  const key = String(model ?? '').trim();
+  if (!key) return false;
+  const rate = rateOf(key);
+  if (rate && Number(rate.win) > 0) return true;
+  if (WINDOWS[key]) return true;
+  const lower = key.toLowerCase();
+  for (const [k, v] of Object.entries(WINDOWS)) {
+    if (k.toLowerCase() === lower) return true;
+  }
+  const keys = Object.keys(WINDOWS).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    const lk = k.toLowerCase();
+    if (lower.startsWith(lk) || lower.includes(lk)) return true;
+  }
+  return false;
+}
+
+/**
  * 这个模型的上下文窗口有多大。
  * @param {string} model 模型名
  * @returns {number} token 数

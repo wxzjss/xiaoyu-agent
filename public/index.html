@@ -1574,6 +1574,8 @@
        用 float 而不是 flex：这行是纯文字流（↑输入 · ↓输出 · N tokens · ￥x），
        改成 flex 会把每个 · 都变成独立 item，间距全变。 */
     .turnUsage .usageMs { float: right; opacity: .75; white-space: nowrap; }
+    /* 【2026-11-11 上下文用量百分比】静默小尾巴，跟耗时一个待遇：淡淡地挂在那儿 */
+    .turnUsage .ctxPct { opacity: .75; white-space: nowrap; }
     /* 挂在她说的话里面（气泡内部、底部）：跟气泡左边对齐，别居中到整行 */
     /* 挂在气泡内部的那一路（实时那一轮）：口径跟外面完全一致，同样贴底、左对齐 */
     .msg .turnUsage.underMsg {
@@ -2196,6 +2198,17 @@
     }
     .sessRow .mini:hover { color: var(--text); border-color: var(--dim); }
     .sessRow .mini.del:hover { color: var(--err); border-color: var(--err); }
+    /* 【2026-11-11 置顶】置顶会话标题前的 📌 标记 */
+    .sessPinFlag { flex: 0 0 auto; margin-right: 5px; font-size: 10.5px; font-style: normal; line-height: 1; }
+    /* 【2026-11-11 筛选】面板顶部的极简筛选片：全部/置顶/今天/7天。
+       纯前端过滤，不加后端参数；亮灯样式照抄 #sessFindToggle.on */
+    .sessFilter { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+    .sessFilter .fbtn {
+      font-size: 11.5px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+    }
+    .sessFilter .fbtn:hover { color: var(--text); border-color: rgba(255, 255, 255, .22); }
+    .sessFilter .fbtn.on { border-color: rgba(77, 141, 255, .6); background: rgba(77, 141, 255, .14); color: #9dc0ff; }
     .sessRunning { color: var(--accent) !important; }
     .sessEmptyRow .sessTitle { color: var(--dim); font-weight: 400; }
     .sessEmptyRow { opacity: .72; }
@@ -3977,6 +3990,13 @@
         <!-- 导出 txt：JSON 导出是给「再导回来」用的，看不了。
              主人要的是能直接读、能发给别人的聊天记录，所以单开一个纯文本出口。 -->
         <button type="button" class="ghost3" id="sessExportTxt" title="把当前会话的聊天记录导出成 txt（人能直接读）">导出txt</button>
+        <!-- 【2026-11-11 筛选】极简筛选：全部/置顶/今天/最近7天。纯前端过滤，不加后端参数 -->
+        <span class="sessFilter" id="sessFilter" role="group" aria-label="按状态筛选会话">
+          <button type="button" class="fbtn" data-filter="all">全部</button>
+          <button type="button" class="fbtn" data-filter="pinned">置顶</button>
+          <button type="button" class="fbtn" data-filter="today">今天</button>
+          <button type="button" class="fbtn" data-filter="week">7天</button>
+        </span>
       </div>
       <!-- 搜会话内容：只看得见标题和最后一句时，想找「上次说那个脚本」根本没处下手 -->
       <div class="sessTop sessFind" id="sessFindBar" hidden>
@@ -15700,6 +15720,42 @@ let currentTurns = [];
  * @param {{prompt_tokens?:number, completion_tokens?:number, total_tokens?:number}} u
  * @param {number} [at] 这一轮用户那句话的下标，分支要用；不给就不画按钮
  */
+/* 【2026-11-11 上下文用量百分比】模型窗口的查询与缓存。
+ * 上限只认 /api/context-limit 里 known:true 的窗口 —— 那是价目表/WINDOWS
+ * 里真标注的；认不出模型时服务端会兜底猜 128k（known:false），拿猜的数
+ * 算百分比就是糊弄人，不显示。按模型名缓存：一轮里画很多行用量，
+ * 同一个模型只问一次。 */
+const __ctxWinCache = new Map(); // model -> Promise<{win, known} | null>
+function ctxWindowInfo(model) {
+  const key = String(model || '').trim();
+  if (!key) return Promise.resolve(null);
+  if (!__ctxWinCache.has(key)) {
+    __ctxWinCache.set(key,
+      fetch('/api/context-limit?model=' + encodeURIComponent(key))
+        .then((r) => r.json())
+        .then((j) => (j && Number(j.window) > 0 ? { win: Number(j.window), known: Boolean(j.known) } : null))
+        .catch(() => null));
+  }
+  return __ctxWinCache.get(key);
+}
+
+/* 用量行末尾挂一个静默的小百分比（如「· ▓ 12%」），hover 才说「已用 N / 上限 M」。
+ * 不弹任何提示、不加设置项 —— 主人 2026-11-05 主动删过「上下文自动压缩」那套提示，
+ * 这里沿用同一个口味：数字在那儿，想看的人自己停鼠标。 */
+function appendCtxUsagePct(row, model, used) {
+  ctxWindowInfo(model).then((info) => {
+    if (!info || !info.known || !info.win || !(Number(used) > 0)) return;
+    if (!row.isConnected) return; // 行早被重画掉了就别再挂
+    const pct = Math.min(999, Math.round((Number(used) / info.win) * 100));
+    const sp = document.createElement('span');
+    sp.className = 'ctxPct';
+    sp.textContent = '· ▓ ' + pct + '%';
+    sp.title = '上下文已用 ' + fmtTok(Number(used)) + ' / 上限 ' + fmtTok(info.win)
+      + ' tokens' + (model ? '（' + model + '）' : '');
+    row.appendChild(sp);
+  }).catch(() => {});
+}
+
 function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userChars) {
   // 历史里的老轮次没有用量记录：也画一行，明说「没记」，不装作没有。
   // （这个功能是后加的，早于它的对话谁也没存，只能如实标出来。）
@@ -15890,6 +15946,11 @@ function appendTurnUsage(u, at, modelOverride, host, underMsg, replyChars, userC
       + '\ntoken 数是真数，可以照常看。';
     row.append(noRate);
   }
+
+  // 【2026-11-11 上下文用量百分比】静默小尾巴。pin = 最后一次请求的 prompt_tokens，
+  // 口径跟上面那条注释一致（上下文 = 最后一次请求有多大），拿它除以模型窗口。
+  // 模型没标注窗口（known:false）就不显示 —— 不猜。
+  try { appendCtxUsagePct(row, model, pin); } catch (e) {}
 
   // 分支按钮不在这儿了 —— 见 attachBranchBtn：它现在贴着每条消息的气泡。
 
@@ -16671,6 +16732,23 @@ function setBulk(on) {
 document.getElementById('sessBulk').onclick = () => setBulk(!bulkMode);
 document.getElementById('sessBulkCancel').onclick = () => setBulk(false);
 
+/* 【2026-11-11 筛选】面板顶部那排小片：全部/置顶/今天/7天。
+ * 真正的过滤在 renderSessList（sessions.js）里做，这儿只负责亮灯和把档位递过去。 */
+const sessFilterBox = document.getElementById('sessFilter');
+if (sessFilterBox) {
+  const paintFilter = () => {
+    const cur = (typeof sessGetFilter === 'function') ? sessGetFilter() : 'all';
+    for (const b of sessFilterBox.querySelectorAll('.fbtn')) b.classList.toggle('on', b.dataset.filter === cur);
+  };
+  sessFilterBox.addEventListener('click', (e) => {
+    const b = e.target.closest('.fbtn');
+    if (!b) return;
+    if (typeof sessSetFilter === 'function') sessSetFilter(b.dataset.filter);
+    paintFilter();
+  });
+  paintFilter();
+}
+
 /**
  * 【2026-10-27 主人报：打开会话界面启用【批量删除】，关掉再打开，还是启用状态】
  *
@@ -17075,6 +17153,24 @@ document.getElementById('sessBulkDel').onclick = async () => {
   }
 };
 
+/* 【2026-11-11】改名流程：改名按钮、右键标题两条路走同一个对话框。
+ * 写法就是原来按钮里那套（askName → POST /api/sessions/rename），一个字没改。 */
+async function renameSessionFlow(id) {
+  const cur = (sessionsCache.find((s) => s.id === id) || {}).title || '';
+  const next = await askName({ title: '给这个会话起个名字', value: cur, maxLength: 80 });
+  if (next === null) return;
+  const name = next.trim();
+  if (!name) return;
+  const r = await fetch('/api/sessions/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, title: name }),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) { alert('改名失败'); return; }
+  if (id === sessionId) { sessionTitle = r.session.title; paintSessNow(); }
+  await refreshSessions();
+}
+
 sessList.addEventListener('click', async (e) => {
   // 刚拖选完松手的那一下：别当成普通点击再翻一遍
   if (dragSuppressClick) { dragSuppressClick = false; return; }
@@ -17106,20 +17202,28 @@ sessList.addEventListener('click', async (e) => {
     return;
   }
 
+  /* 【2026-11-11】改名流程抽出来：改名按钮、右键标题两条路走同一个对话框，
+   * 写法就是原来按钮里那套（askName → POST /api/sessions/rename），一个字没改。
+   * 本体在 click 监听外面（renameSessionFlow），右键那条路也要用。 */
   if (btn && btn.dataset.act === 'rename') {
-    const cur = (sessionsCache.find((s) => s.id === id) || {}).title || '';
-    const next = await askName({ title: '给这个会话起个名字', value: cur, maxLength: 80 });
-    if (next === null) return;
-    const name = next.trim();
-    if (!name) return;
-    const r = await fetch('/api/sessions/rename', {
+    await renameSessionFlow(id);
+    return;
+  }
+
+  /* 【2026-11-11 置顶】跟改名同一个路数：小写入 + 本地先改先画。
+   * 指纹不含 pin（_pins.json 不进服务端目录扫描），列表短时间内不会带新值回来，
+   * 所以响应一到就把 sessionsCache 里这条的 pinned 改掉、立刻重排。 */
+  if (btn && btn.dataset.act === 'pin') {
+    const s = sessionsCache.find((x) => x.id === id);
+    const on = !(s && s.pinned);
+    const r = await fetch('/api/sessions/pin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, title: name }),
+      body: JSON.stringify({ id, pinned: on }),
     }).then((x) => x.json()).catch(() => null);
-    if (!r || r.error) { alert('改名失败'); return; }
-    if (id === sessionId) { sessionTitle = r.session.title; paintSessNow(); }
-    await refreshSessions();
+    if (!r || r.error) { alert('置顶失败'); return; }
+    if (s) s.pinned = r.pinned || 0;
+    renderSessList();
     return;
   }
 
@@ -17172,6 +17276,17 @@ sessList.addEventListener('click', async (e) => {
   sessDlg.close();
   // 人刚点完会话，正打算接着说话 —— 这里明确把焦点送进去
   settleComposer({ focus: true });
+});
+
+/* 【2026-11-11 改名·右键入口】右键会话标题 = 弹改名框。
+ * 为什么不用双击：行上的单击本来就会切会话并关掉面板（上面那条 click 路径），
+ * 双击的第一下已经把面板关了，改名框弹出来也没了着落。右键不触发 click，没这个冲突。 */
+sessList.addEventListener('contextmenu', (e) => {
+  const row = e.target.closest('.sessRow');
+  if (!row || !row.dataset.id) return;
+  if (bulkMode) return;
+  e.preventDefault();
+  renameSessionFlow(row.dataset.id);
 });
 
 /* 【2026-11-10 B5】/api/sessions 的 rev 指纹缓存（存 sessionStorage）：

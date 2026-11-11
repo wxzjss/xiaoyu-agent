@@ -63,6 +63,7 @@ function sessRowSig(s) {
   /* 卡住秒数按 20 秒分桶再进签名：绿点 hover 提示里的秒数不必逐秒更新，
      否则跑动中的行每 3 秒轮询都要重建一次，又回到闪烁老路 */
   const live = info ? (stalled ? 's' + Math.floor(Number(info.idleMs || 0) / 20000) : 'r') : '-';
+  /* 【2026-11-11 置顶】pin 状态进签名：置顶/撤顶后这行的 📌 和按钮文字要跟着换 */
   return [
     s.id === window.sessionId ? '1' : '0',
     (window.bulkMode && window.picked.has(s.id)) ? '1' : '0',
@@ -75,6 +76,7 @@ function sessRowSig(s) {
     window.relTime(s.updatedAt),
     s.count ? String(s.count) : '',
     s.preview || '',
+    s.pinned ? '1' : '0',
   ].join('\u0001');
 }
 
@@ -89,6 +91,15 @@ function buildSessMain(s) {
   ttxt.className = 'sessTitleText';
   ttxt.textContent = window.fixMojibake(s.title || '新会话');
   t.appendChild(ttxt);
+  /* 【2026-11-11 置顶】置顶的会话标题前一颗 📌，一眼认出。
+   * 插在 ttxt 前面：绿点/黄点也是插这儿，顺序就是 📌 · 绿点 · 标题。 */
+  if (s.pinned) {
+    const pf = document.createElement('i');
+    pf.className = 'sessPinFlag';
+    pf.textContent = '📌';
+    pf.title = '这个会话已置顶';
+    t.insertBefore(pf, ttxt);
+  }
   if (window.runningSess.has(s.id)) {
     const lv = document.createElement('i');
     const info = window.runningSess.get(s.id) || {};
@@ -189,6 +200,21 @@ function buildSessMain(s) {
   return main;
 }
 
+/* 【2026-11-11 置顶】筛选状态：全部 / 置顶 / 今天 / 最近 7 天。纯前端过滤，
+ * 不加后端参数。放 sessionStorage 跟 sessListRev 同一个理由：面板关了再开别失忆。 */
+let sessFilterMode = 'all';
+try { sessFilterMode = sessionStorage.getItem('sessFilterMode') || 'all'; } catch (e) {}
+
+function sessFilterPass(s) {
+  if (sessFilterMode === 'pinned') return Boolean(s.pinned);
+  if (sessFilterMode === 'today') {
+    const d = new Date();
+    return Number(s.updatedAt || 0) >= new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  }
+  if (sessFilterMode === 'week') return Number(s.updatedAt || 0) >= Date.now() - 7 * 86400e3;
+  return true;
+}
+
 export function renderSessList() {
   window.sessList.classList.toggle('bulk', window.bulkMode);
   document.getElementById('sessBulkBar').hidden = !window.bulkMode;
@@ -219,7 +245,16 @@ export function renderSessList() {
    * 现在多认一个 hasContent（服务端给的「有没有消息」）。
    * 三个都空才算真空。 */
   const isEmpty = (x) => !x.hasContent && !x.count && !x.preview;
-  const view = window.sessionsCache.slice().sort((a, b) => {
+  /* 【2026-11-11 置顶 + 筛选】
+   * 筛选：先按面板顶部选的模式把不该露面的滤掉（纯前端，不惊动后端）。
+   * 排序：置顶组排最前（按 pinnedAt 倒序），其余照旧 —— 当前会话置顶、
+   * 空会话沉底、新的在前。当前会话自己也受这两条管：它被置顶就进置顶组，
+   * 没置顶就在未置顶组里排第一。 */
+  const view = window.sessionsCache.filter(sessFilterPass).sort((a, b) => {
+    const pa = a.pinned ? 1 : 0;
+    const pb = b.pinned ? 1 : 0;
+    if (pa !== pb) return pb - pa;                       // 置顶组在前
+    if (pa && pb) return (b.pinned || 0) - (a.pinned || 0); // 组内：后置顶的在前
     if (a.id === window.sessionId) return -1;
     if (b.id === window.sessionId) return 1;
     const ea = isEmpty(a) ? 1 : 0;
@@ -227,6 +262,10 @@ export function renderSessList() {
     if (ea !== eb) return ea - eb;      // 有内容的在前，空的在后
     return (b.updatedAt || 0) - (a.updatedAt || 0);
   });
+  /* 【2026-11-11 筛选】开着筛选时提示「筛出几个 / 共几个」，让人知道还有会话被藏起来了 */
+  window.sessHint.textContent = sessFilterMode === 'all'
+    ? `${window.sessionsCache.length} 个`
+    : `${view.length}/${window.sessionsCache.length} 个`;
 
   // 现存行按 key 收好（没有 dataset.id 的杂节点——比如 sessEmpty——不参与 diff）
   const oldRows = new Map();
@@ -257,6 +296,12 @@ export function renderSessList() {
       const oldMain = row.querySelector('.sessMain');
       if (oldMain) row.replaceChild(freshMain, oldMain);
       else row.insertBefore(freshMain, row.firstChild);
+      /* 【2026-11-11 置顶】按钮不在 main 块里，得单独跟着 pin 状态换字 */
+      const pinBtn = row.querySelector('button[data-act="pin"]');
+      if (pinBtn) {
+        pinBtn.textContent = s.pinned ? '撤顶' : '置顶';
+        pinBtn.title = s.pinned ? '取消置顶' : '把这个会话钉在列表最上面';
+      }
     } else {
       // 新会话：整行新建
       row = document.createElement('div');
@@ -279,12 +324,19 @@ export function renderSessList() {
       ren.className = 'mini';
       ren.dataset.act = 'rename';
       ren.textContent = '改名';
+      /* 【2026-11-11 置顶】跟改名/删除同一个交互：hover 才露面的 mini 小按钮 */
+      const pin = document.createElement('button');
+      pin.type = 'button';
+      pin.className = 'mini';
+      pin.dataset.act = 'pin';
+      pin.textContent = s.pinned ? '撤顶' : '置顶';
+      pin.title = s.pinned ? '取消置顶' : '把这个会话钉在列表最上面';
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'mini del';
       del.dataset.act = 'del';
       del.textContent = '删除';
-      row.append(ren, del);
+      row.append(ren, pin, del);
     }
     row.__sessSig = sessRowSig(s);
     // 按目标顺序归位：就在锚点位置的行不动，其余搬过去（搬 ≠ 重建）
@@ -296,12 +348,32 @@ export function renderSessList() {
   }
   // 这一轮没露面的行 = 被删掉的会话，摘掉
   for (const gone of oldRows.values()) gone.remove();
+  /* 【2026-11-11 筛选】筛选把所有会话都滤没了时给一句说明，别让人以为列表坏了 */
+  if (!view.length) {
+    const e = document.createElement('div');
+    e.className = 'sessEmpty';
+    e.textContent = sessFilterMode === 'pinned' ? '还没有置顶的会话：把鼠标放到会话行上点「置顶」' : '这个范围里没有会话';
+    window.sessList.appendChild(e);
+  }
   window.paintBulkCount();
+}
+
+/* 【2026-11-11 筛选】给经典脚本（index.html）调的入口：模块作用域里的
+ * sessFilterMode 摸不到，挂到 window 上走这一个口子。 */
+function sessSetFilter(mode) {
+  sessFilterMode = String(mode || 'all');
+  try { sessionStorage.setItem('sessFilterMode', sessFilterMode); } catch (e) {}
+  renderSessList();
+}
+
+/** 筛选片亮灯用：现在选的是哪一档。 */
+function sessGetFilter() {
+  return sessFilterMode;
 }
 
 
 /* 经典脚本（index.html 里那段）还要按名字直接调这些函数 ——
    模块有独立作用域，不挂回 window 它们就找不到了。 */
 Object.assign(window, {
-  refreshRunning, renderSessList,
+  refreshRunning, renderSessList, sessSetFilter, sessGetFilter,
 });

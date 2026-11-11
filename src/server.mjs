@@ -112,7 +112,7 @@ import {
   contextLimitInfo,
 } from './settings.mjs';
 // 自动档的水位线按模型窗口算，窗口表在 rates.mjs（跟价目表放一起）
-import { autoLimitFor, AUTO_COMFORT_RATIO, AUTO_ACT_RATIO } from './rates.mjs';
+import { autoLimitFor, AUTO_COMFORT_RATIO, AUTO_ACT_RATIO, windowIsKnown } from './rates.mjs';
 import {
   personaInfo,
   saveUserPersona,
@@ -6679,7 +6679,11 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/context-limit') {
     try {
       const mod = await import('./llm.mjs');
-      const model = mod.modelNameForSession(url.searchParams.get('sessionId') || '');
+      /* 【2026-11-11 用量百分比】带 model 参数就是「问某个模型的窗口」，
+       * 不带保持老行为（问当前会话的）。用量行画的是历史轮次，
+       * 那轮的模型可能不是现在会话用的，所以按轮次自己的模型来问。 */
+      const model = String(url.searchParams.get('model') || '')
+        || mod.modelNameForSession(url.searchParams.get('sessionId') || '');
       const info = contextLimitInfo(model);
       // 自适应判断的三条线：舒适线（占窗口 30%）、动手线（45%）。
       // 前端拿它显示「大概到多少 token 会开始压」，主人心里有数。
@@ -6690,6 +6694,9 @@ const server = createServer(async (req, res) => {
         ok: true,
         model,
         window: info.window,
+        /* 【2026-11-11 用量百分比】窗口是价目表/WINDOWS 里真标注的（known:true），
+         * 还是认不出模型时兜底猜的 128k（known:false）。猜的数不配算百分比。 */
+        known: windowIsKnown(model),
         mode: info.mode,
         limit: Number.isFinite(info.limit) ? info.limit : null,
         auto: autoLimitFor(model),
@@ -7296,6 +7303,7 @@ const server = createServer(async (req, res) => {
       } catch { agentId = ''; }
       return {
         ...s,
+        pinned: Number(pins[s.id]) || 0,
         agentId,
         agentName: agentId ? (nameOf.get(String(agentId)) || '') : '',
         boundAgentId: String(boundMap[s.id] || ''),
@@ -8068,6 +8076,22 @@ const server = createServer(async (req, res) => {
     const hot = sessions.get(id);
     if (hot) hot.title = saved.title;
     return json(res, 200, { session: { id: saved.id, title: saved.title, updatedAt: saved.updatedAt } });
+  }
+
+  // 置顶切换：POST /api/sessions/pin  { id, pinned }
+  // 跟改名同一个路数的小写入：pin 落在 _pins.json（见 loadPins 的注释），不碰会话本体。
+  // pinned 为真 = 置顶（记下时间戳，组内按它倒序）；为假 = 取消。
+  if (req.method === 'POST' && url.pathname === '/api/sessions/pin') {
+    const { id, pinned } = await body(req).catch(() => ({}));
+    const sid = String(id || '');
+    if (!sid || !isSessionId(sid)) return json(res, 400, { error: 'bad session id' });
+    const pins = loadPins();
+    if (pinned) pins[sid] = Date.now(); else delete pins[sid];
+    savePins(pins);
+    /* 列表缓存的 payload 里带着旧的 pinned 值 —— 掐掉它，下次 /api/sessions 重算。
+     * 指纹本身不含 pin（_pins.json 不进扫描），不掐的话 rev 没变、缓存永远回旧值。 */
+    __sessionsCache = { fp: '', payload: null };
+    return json(res, 200, { ok: true, id: sid, pinned: pins[sid] || 0 });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/sessions/delete') {

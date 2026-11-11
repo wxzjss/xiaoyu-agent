@@ -159,11 +159,14 @@ const DANGER_KEYS_HARD = new Set(['alt+f4', 'ctrl+w', 'ctrl+shift+w']);
  * 文件名里的危险词**只有第 2 类（app 在名单里）才升级成危险**，裸文件名不算。
  */
 export const DANGER_TITLE_WORDS = [
-  /* 第 1 类：系统级删除/清空/卸载（标题即动作，不看文件名） */
-  { re: /^\s*(删除|清空|格式化|卸载|销毁)/, why: '在删东西' },
-  /* 【2026-11-10 补名词形】`\bdelete\b` 匹配不到 `deletion`（后面跟着 ion，不是词边界），
+  /* 第 1 类：系统级删除/清空/卸载（标题即动作，不看文件名）
+   * 【2026-11-11 补 remove|removal】`Remove File - Guide` 以前整条链没人接 ——
+   * 第 1 类词表没有 remove，文档豁免又只认 help/手册类后缀，两头都漏（KNOWN_EDGE 治理）。
+   * 和 delete/uninstall 同档：窗口标题以 Remove 开头，没有第二个意思。
+   * 【2026-11-10 名词形保留】`\bdelete\b` 匹配不到 `deletion`（后面跟 ion 不是词边界），
    * 而确认框最常用的恰恰是名词形态（"Confirm deletion" 比 "Confirm Delete" 正式）。 */
-  { re: /^\s*(delete|deletion|erase|erasure|uninstall|uninstallation|wipe|purge|format|empty)\b/i, why: '在删东西' },
+  { re: /^\s*(删除|清空|格式化|卸载|销毁)/, why: '在删东西' },
+  { re: /^\s*(delete|deletion|erase|erasure|remove|removal|uninstall|uninstallation|wipe|purge|format|empty)\b/i, why: '在删东西' },
   /* 【2026-11-10 收窄·原来光见「回收站」就拦，会把"打开回收站看看"也拦掉】
    * 必须是「清空动作 + 回收站」同时出现才算危险。只打开看看不算。 */
   { re: /(清空|清倒|empty|clear|purge)[\s\S]{0,12}(回收站|recycle ?bin|trash)/i, why: '在清空回收站' },
@@ -251,7 +254,26 @@ function hitTitleDanger(text) {
    * 所以三个条件都要满足才当文档看：
    *   ① 末尾是文档类词  ② 标题里没有安全/警告类词  ③ 标题里没有确认类词
    */
-  const _DOC_END = /[-–—]\s*(help|帮助|documentation|文档|手册|guide|wiki|说明)\s*$/i.test(s);
+  /**
+   * 【2026-11-11 治理·文档词表补全（KNOWN_EDGE 消化）】
+   *
+   * 原词表要求短横后面**直接**是单字词（help/手册/说明…）——
+   * 结果 6 条真文档被误拦：`- 使用手册` / `- 说明书` / `- 操作说明` /
+   * `- 用户指南` / `- 快速参考` / `- User Guide` 都不在表里。现在补上这些复合词。
+   *
+   * ⚠️ 光补词表不够：下面的「动作+具体物件」否决（_LEAD_VERB_NOUN_*）会把
+   * `删除文件 - 使用手册` 拦回危险类（删除+文件 就在否决表里）。所以文档后缀分两档：
+   *   · **强文档后缀**（使用手册/说明书/操作说明/用户指南/快速参考/User Guide 等）：
+   *     顶着这种后缀的标题**只可能是文档** —— 真删除确认框不会叫「xx 使用手册」。
+   *     只要没有安全/确认/不可逆词，直接放行，**不看动作+物件**。
+   *   · **弱文档后缀**（help/帮助/guide/wiki…）：可能是「操作的帮助页」也可能是
+   *     「确认框顶着 Help 后缀」—— 维持原来的「动作+真物件否决」判据不动。
+   * 「清空数据 - 帮助」「Remove File - Guide」这类弱后缀真危险另行收口，
+   * 见 _LEAD_CN 的「数据」和第 1 类标题词表的 remove。
+   */
+  const _DOC_END = /[-–—]\s*(help|帮助|documentation|文档|手册|wiki|使用手册|说明书|操作说明|用户指南|快速参考|guide|user guide|user manual|quick reference|reference|说明)\s*$/i.test(s);
+  /* 强文档后缀：铁定是文档，豁免不受「动作+物件」否决（分档理由见上面那段） */
+  const _STRONG_DOC = /[-–—]\s*(使用手册|说明书|操作说明|用户指南|快速参考|documentation|user guide|user manual|quick reference|手册|文档)\s*$/i.test(s);
   const _SEC_WORD = /\b(security|warning|alert|danger|critical)\b|安全|警告|危险|重要/i.test(s);
   const _ASK_WORD = /(确认|确定|confirm|are you sure)/i.test(s);
   /**
@@ -300,8 +322,14 @@ function hitTitleDanger(text) {
    */
   /* 英文要空格分词；中文不需要。所以两套分开写。 */
   const _LEAD_VERB_NOUN_EN = /^\s*(?:delete|remove|erase|uninstall|wipe|purge|empty|format)\s+(?:user|users|account|accounts|profile|file|files|folder|folders|program|app|disk|drive|volume|directory)\s*(?:[-–—]|$)/i.test(s);
-  const _LEAD_VERB_NOUN_CN = /^\s*(?:删除|移除|卸载|清空|格式化)(?:用户|账号|账户|文件|文件夹|程序|目录|磁盘|全部)/.test(s);
-  if (_DOC_END && !_SEC_WORD && !_ASK_WORD && !_HARD_IRREVERSIBLE && !_LEAD_VERB_NOUN_EN && !_LEAD_VERB_NOUN_CN) return null;
+  /* 【2026-11-11 加·数据】`清空数据 - 帮助` 是真危险（KNOWN_EDGE 治理前被放过）：
+   * 数据和文件/磁盘同一档，宾语是「真会被删掉的东西」。 */
+  const _LEAD_VERB_NOUN_CN = /^\s*(?:删除|移除|卸载|清空|格式化)(?:用户|账号|账户|文件|文件夹|程序|目录|磁盘|全部|数据)/.test(s);
+  /* 强文档后缀直接放行（安全词/确认词/不可逆短语都查过才走到这）；弱后缀维持动作+物件否决 */
+  if (_DOC_END && !_SEC_WORD && !_ASK_WORD && !_HARD_IRREVERSIBLE) {
+    if (_STRONG_DOC) return null;
+    if (!_LEAD_VERB_NOUN_EN && !_LEAD_VERB_NOUN_CN) return null;
+  }
   for (const d of DANGER_TITLE_WORDS) {
     /* 第 1 类（系统动作）要求**标题以动作开头**；文件名类标题跳过这一层 */
     const m = d.re.exec(s);

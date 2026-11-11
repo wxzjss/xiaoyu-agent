@@ -77,7 +77,7 @@ if (String(process.env.ELECTRON_RUN_AS_NODE || '').trim() && !process.env[SELF_R
   process.exit(0);
 }
 
-const { app, BrowserWindow, shell, ipcMain, dialog, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, dialog, Tray, Menu, nativeImage, Notification } = require('electron');
 const { join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { readFileSync, writeFileSync, existsSync: fsExists } = require('node:fs');
@@ -187,6 +187,11 @@ function startHandleWorker() {
 // 这里显式改成中文名，凡是 app.getName() 的地方都用它。
 // 必须在 ready 之前调，否则窗口已经建好了。
 app.setName('小鱼Agent');
+
+// 【2026-11-11 加·桌面通知的前置】Windows 上通知中心按 AppUserModelId 找应用名 ——
+// 不设的话通知能弹，但署名是通用的 electron.exe（打包版还会落到 exe 临时名）。
+// 用 electron-builder 里那个 appId（package.json build.appId），两边必须一致。
+try { app.setAppUserModelId('com.xiaoyu.mini-agent'); } catch {}
 
 // 打包后 app.asar 是只读的，.state / 会话 / 设置必须写到可写目录：
 //   免安装版 → exe 旁边的 data\（真正随身带）
@@ -486,6 +491,14 @@ async function startServer() {
   // 告诉服务端「有人在管我」：界面上那个「重启让它生效」就是靠它决定
   // 能不能真的自己重启（浏览器直开的时候没人管，只能让主人手动关）。
   process.env.XIAOYU_DESKTOP = '1';
+
+  /**
+   * 【2026-11-11 加·桌面通知的通道】
+   * 必须在 startServer() 之前挂好（服务端是 await import() 进主进程跑的，
+   * globalThis 共用）。浏览器直开 server.mjs 时这里不执行，
+   * 服务端那边 typeof !== 'function' 就静默跳过，不报错。
+   */
+  globalThis.__xiaoyuNotify = (p) => showDesktopNotification(p);
   // 自检在 selfCheck() 里已经跑过了，这里别跑第二遍
   //
   // 【为什么不再用 port: 0】
@@ -637,6 +650,63 @@ function pickAppIcon() {
     return '';
   } catch { return ''; }
 }
+
+/**
+ * 【2026-11-11 加·桌面通知】主人一轮活常常跑十分钟，切去干别的就完全不知道跑完了。
+ *
+ * 服务端（跑在主进程里，同一个进程）只管「喊一声」，走 globalThis.__xiaoyuNotify ——
+ * 跟 __xiaoyuBrowser / __xiaoyuRelaunch 同一套规矩：**服务端永远不碰窗口**，
+ * 弹不弹、什么时候不弹，是主进程的事。
+ *
+ * 防轰炸的三道闸：
+ *   ① 服务端一轮只在收尾喊一次（send done 本来就一轮一次）；
+ *   ② 主人正盯着窗口看（可见 + 有焦点）时不打扰 —— 通知是给「切走了」的主人用的；
+ *   ③ 同样内容 3 秒内只发一次（防异常路径连发）。
+ * 正文只放「哪回事」，不带会话内容全文 —— 通知中心别人也看得见。
+ */
+function showDesktopNotification({ kind, title, body } = {}) {
+  try {
+    if (!Notification.isSupported()) return { ok: false, error: 'unsupported' };
+    if (win && !win.isDestroyed() && win.isVisible() && win.isFocused()) {
+      return { ok: true, skipped: 'focused' };
+    }
+    const key = String(kind || '') + '|' + String(title || '') + '|' + String(body || '');
+    const now = Date.now();
+    if (showDesktopNotification._lastKey === key && now - showDesktopNotification._lastAt < 3000) {
+      return { ok: true, skipped: 'dup' };
+    }
+    showDesktopNotification._lastKey = key;
+    showDesktopNotification._lastAt = now;
+    const n = new Notification({
+      title: String(title || '小鱼Agent'),
+      body: String(body || '').slice(0, 120),
+      icon: pickAppIcon() || undefined,
+      silent: false,
+    });
+    // 点通知 = 把窗口拽到眼前（跟 second-instance 同一套动作，别只 focus ——
+    // 窗口收在托盘 / 最小化时 focus 看不见）。
+    n.on('click', () => {
+      try {
+        if (win && !win.isDestroyed()) {
+          try { win.setSkipTaskbar(false); } catch {}
+          try { if (win.isMinimized()) win.restore(); } catch {}
+          try { win.show(); } catch {}
+          try { if (typeof win.moveTop === 'function') win.moveTop(); } catch {}
+          try { win.focus(); } catch {}
+        } else {
+          createWindow();
+        }
+      } catch {}
+    });
+    n.show();
+    return { ok: true };
+  } catch (e) {
+    try { console.warn('[notify] 桌面通知失败（不影响主功能）:', String((e && e.message) || e)); } catch {}
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+showDesktopNotification._lastKey = '';
+showDesktopNotification._lastAt = 0;
 
 async function createWindow(updated = false) {
   if (win && !win.isDestroyed()) {

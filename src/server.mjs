@@ -1967,6 +1967,27 @@ const SESSIONS_DIR_FINGERPRINT = join(config.dataDir, '.state', 'sessions');
 /** 上一份完整响应的缓存：{ fp, payload }。指纹变了才重建。 */
 let __sessionsCache = { fp: '', payload: null };
 
+/* 【2026-11-11 会话置顶】pin 表：.state/sessions/_pins.json，内容 { <sessionId>: pinnedAt }。
+ * 为什么单独一张表、不写进 sessions/<id>.json：
+ *  ① 列表投影（sessions-core 的 listItemAsync）是刚做完性能优化的固定形状，不该为一个小字段重开；
+ *  ② 文件名以下划线开头 —— listableNames 和 sessionsFingerprint 的目录扫描本来就跳过它，
+ *     置顶/撤顶不会惊动列表指纹，前端在 pin 的响应里自己先更新、不用等列表重算。 */
+let __pinsCache = null;
+function loadPins() {
+  if (__pinsCache) return __pinsCache;
+  try {
+    const raw = JSON.parse(__rotRead(join(SESSIONS_DIR_FINGERPRINT, '_pins.json'), 'utf8'));
+    __pinsCache = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  } catch { __pinsCache = {}; }
+  return __pinsCache;
+}
+function savePins(pins) {
+  __pinsCache = pins;
+  try {
+    writeFileAtomic(join(SESSIONS_DIR_FINGERPRINT, '_pins.json'), JSON.stringify(pins));
+  } catch (e) { console.warn('[pins] 存不上：', String(e?.message ?? e)); }
+}
+
 function sessionsFingerprint() {
   const parts = [];
   try {
@@ -2701,6 +2722,23 @@ function modelUsedThisTurn(sessionId) {
   } catch {
     return '';
   }
+}
+
+/**
+ * 【2026-11-11 加·桌面通知】主人场景：一轮活跑十分钟，切去干别的就不知道跑完了；
+ * 卡在「等主人点头」时更是干等。触发点只有两处：turn done / ask_approval。
+ *
+ * 只喊话，不干活：Electron 里主进程往 globalThis.__xiaoyuNotify 挂了真实现
+ * （跟 __xiaoyuRelaunch / __xiaoyuBrowser 同一套规矩）；浏览器直开（node src/server.mjs）
+ * 时没人挂 —— typeof 不是 function 就静默跳过，绝不报错。
+ * 正文只放「哪回事 + 哪个会话」，**不带会话内容全文**（通知中心别人看得见）。
+ */
+function notifyDesktop(kind, title, body) {
+  try {
+    const fn = globalThis.__xiaoyuNotify;
+    if (typeof fn !== 'function') return;
+    fn({ kind: String(kind || ''), title: String(title || ''), body: String(body || '') });
+  } catch { /* 通知失败不影响这一轮 */ }
 }
 
 /**
@@ -7237,6 +7275,9 @@ const server = createServer(async (req, res) => {
      * （done 之后前端 refreshSessions），一卡就是把正在吐字的 SSE 一起卡住。
      * 换成 listSessionsAsync 之后耗时不变，但读盘在 await 里让出去了，SSE 照常出字。
      * 返回字段与同步版逐字段一致（35 条全量比对通过）。 */
+    /* 【2026-11-11 置顶】列表每条带上 pin 状态（时间戳，0 = 没置顶）。
+     * 纯读一张小 map，不碰投影本身的形状 —— 投影还是 listItemAsync 那份。 */
+    const pins = loadPins();
     const list = (await listSessionsAsync()).map((s) => {
       /**
        * 【2026-11-07 改·主人要的是「现在谁在说话」，不是「绑了哪张卡」】
@@ -10540,6 +10581,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           try { if (ac.signal) ac.signal.addEventListener('abort', () => finish(false, '本轮被掐'), { once: true }); } catch {}
           try { send({ type: 'ask_approval', toolName: String(toolName || ''), reason: String(reason || ''), requestId }); }
           catch (e) { finish(false, 'send 失败：' + String(e?.message || e)); }
+          /* 【2026-11-11 加·桌面通知】她卡在等主人点头（60 秒没人答就不动）——
+           * 主人切走了得喊一声。只报工具名（ui_delete 这种），不带 reason 全文。 */
+          try { notifyDesktop('ask-approval', '小鱼在等你确认', '她要动：' + String(toolName || '').slice(0, 40)); } catch {}
         }),
         pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
         try {
@@ -11417,6 +11461,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           try { saveSession(session); } catch (e) {}
         }
       } catch (e) {}
+      /* 【2026-11-11 加·turn done 桌面通知】一轮跑完喊主人回来 ——
+       * send done 本来就一轮只走一次，所以这里天然「一轮只发一次」。
+       * 标题只带会话名（主人自己起的），正文不放她说完了什么。 */
+      try { notifyDesktop('turn-done', '小鱼干完了：「' + String(session.title || '会话').slice(0, 30) + '」', '点开看看结果。'); } catch {}
       send({ type: 'done', usage, at: doneAt, model: turnModel || modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。

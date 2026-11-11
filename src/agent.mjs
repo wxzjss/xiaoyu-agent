@@ -22,7 +22,26 @@ import { config } from './config.mjs';
 /* 瘦身暴涨时要把那一条落到 .state/slim-spike.log（打包版没有控制台） */
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildSystemPrompt, setToolLister } from './persona.mjs';
+import { buildSystemPrompt, setToolLister, isNarratorSession } from './persona.mjs';
+import { narratorStylefix } from './narrator.mjs';
+
+/**
+ * 【旁白的正文兜底】2026-11-11 主人报「旁白也会像角色一样说话」。
+ *
+ * 提示词已经改硬，但实测证明压不住（四个场景里两次仍输出「主人：「几点了」」）。
+ * 所以在正文落盘前过一道确定性清洗：把裸台词包成 `（谁说：「原话」）`。
+ *
+ * 只对叙述者型卡生效，其他卡原样返回 —— 她们本来就该正常说话。
+ * 出错时原样放行：兜底绝不许把正文弄丢。
+ */
+function _narratorize(text, sessionId) {
+  try {
+    if (!isNarratorSession(sessionId)) return text;
+    return narratorStylefix(text, true);
+  } catch {
+    return text;
+  }
+}
 import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identity.mjs';
 // 管理员权限：开了就把「整台机器都能动」跟着规则再发一遍（很多网关丢 system）。
 import { adminPromptBlock } from './admin-mode.mjs';
@@ -93,6 +112,9 @@ import { withTimeout } from './deadline.mjs';
  * 值一个没变，只是以后不再出现「llm 10 分钟 / 工具 30 分钟 / 整轮 180 分钟」
  * 三处各写各的。 */
 const TOOL_MAX_MS = DEADLINES.toolMaxMs;
+/* 【2026-11-11】TOOL_NOTICE_MS 目前**没有使用点**：主人让删掉了「还在跑，再等等我」
+ * 那句报平安（见下面 withTimeout 那段注释）。常量留着是因为 deadline.mjs 还导出它，
+ * 检查脚本也在断言它的存在；哪天真要用（比如改成只写进日志）直接接上就行。 */
 const TOOL_NOTICE_MS = DEADLINES.toolNoticeMs;
 
 /**
@@ -1640,7 +1662,7 @@ for (let round = 0; round < config.maxRounds; round++) {
            * 这句也照样落进去了。攒到二十来条之后，模型看着前面清一色「嗯，我在」，
            * 就跟着学，越回越短、越回越敷衍，拦都拦不住。
            * 所以：敷衍话一律不落历史，交给下面那道闸去重答。 */
-          if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: text });
+          if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(text, sessionId) });
           for (const it of late) {
             /* 【2026-11-11 团队模式】turns 槽里带 _sysNote 的条目（worker 干完的汇报）
              * 是程序递的背景，不是主人说话 —— 落成 context + _sysNote，
@@ -1666,7 +1688,7 @@ for (let round = 0; round < config.maxRounds; round++) {
           mails = [];
         }
         if (mails.length) {
-          if (String(text || "").trim() && !isFillerReply(text)) messages.push({ role: "assistant", content: text });
+          if (String(text || "").trim() && !isFillerReply(text)) messages.push({ role: "assistant", content: _narratorize(text, sessionId) });
           messages.push({ role: 'user', content: formatMail(mails) });
           onEvent({
             type: 'peer_mail',
@@ -1705,7 +1727,7 @@ for (let round = 0; round < config.maxRounds; round++) {
           continue;
         }
       }
-      if (!isFillerReply(text)) messages.push({ role: 'assistant', content: text });
+      if (!isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(text, sessionId) });
       /**
        * 【2026-11-04 修「压缩死循环」的最后一环 · 写进去】
        *
@@ -1850,12 +1872,13 @@ for (let round = 0; round < config.maxRounds; round++) {
         {
         what: '工具「' + toolCn(call.function.name) + '」',
         ac: _toolAc,   // 这里必须给 controller：deadline 到点会调它的 abort()
-        // 跑到 10 分钟先喊一声「还在跑」，别让主人干等。窗口本身不足 30 分钟时按 1/3 算。
-        noticeAt: Math.min(TOOL_NOTICE_MS, Math.floor(TOOL_MAX_MS / 3)),
-        onNotice: (ms) => {
-        const span = ms >= 60000 ? Math.max(1, Math.round(ms / 60000)) + ' 分钟' : Math.max(1, Math.round(ms / 1000)) + ' 秒';
-        onEvent({ type: 'text', text: '\n\n（「' + toolCn(call.function.name) + '」还在跑，已经 ' + span + '，再等等我。）', notice: true });
-        },
+        /* 【2026-11-11 删·主人要求】
+         * 原来跑到 10 分钟会往正文里插一句
+         *   「（「跑命令」还在跑，已经 10 分钟，再等等我。）」
+         * 主人明确要求删掉：这句话会**混进她的正文里**，看着像她说了半句废话；
+         * 而且主人本来就知道工具在跑（界面转着圈），不需要中间报平安。
+         * 工具该跑多久还是跑多久，只是不再插话 —— TOOL_MAX_MS 那道 30 分钟的闸没动。
+         */
         },
         ).catch((e) => ({
         ok: false,

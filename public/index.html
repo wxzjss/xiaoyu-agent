@@ -829,6 +829,44 @@
     /* 「下载日志」和上面两项不是一类，用一条细线隔开 */
     .plusMenu .logItem { border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; margin-top: 4px; }
 
+    /* 【2026-11-11 加·@ 提及浮层】观感照 .plusMenu 抄：同底色同圆角同阴影。
+       定位是 JS 算的（贴着输入框里 @ 那个光标），这里只管长相。 */
+    .mentionPop {
+      position: fixed; z-index: 70; min-width: 240px; max-width: 400px; max-height: 264px; overflow-y: auto;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.45); display: none;
+    }
+    .mentionPop:not([hidden]) { display: block; }
+    .mentionPop .mGroup { font-size: 11px; color: var(--dim); padding: 5px 8px 3px; }
+    .mentionPop .mItem {
+      display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0;
+      border-radius: 7px; background: transparent; color: var(--text); font: inherit; font-size: 12.5px;
+      cursor: pointer; text-align: left;
+    }
+    .mentionPop .mItem:hover { background: #1b2129; }
+    .mentionPop .mItem.sel { background: #1b2129; color: var(--accent); }
+    .mentionPop .mItem .mIco { flex: none; width: 16px; text-align: center; }
+    .mentionPop .mItem .mName {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+    }
+    .mentionPop .mEmpty { padding: 8px 10px; color: var(--dim); font-size: 12px; }
+
+    /* 【2026-11-11 加·空状态示例 chips】新会话开场白底下的那排例子。圆角胶囊，跟附件条那套小卡一个色。 */
+    .startChips { max-width: 900px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .startChips[hidden] { display: none; }
+    .startChipsTip { font-size: 12px; color: var(--dim); }
+    .startChipsList { display: contents; }
+    .startChip {
+      border: 1px solid var(--border); background: #0f1319; color: var(--text); border-radius: 999px;
+      padding: 5px 12px; font-size: 12.5px; cursor: pointer; transition: border-color .15s, color .15s;
+    }
+    .startChip:hover { border-color: var(--accent); color: var(--accent); }
+    .startChipsMore {
+      border: 0; background: transparent; color: var(--dim); font-size: 12px; cursor: pointer; padding: 5px 6px;
+    }
+    .startChipsMore:hover { color: var(--accent); }
+
     /* 已选附件条：输入框上方，一列小卡片 */
     .attachBar { max-width: 900px; margin: 0 auto 8px; display: none; flex-wrap: wrap; gap: 8px; }
     .attachBar.show { display: flex; }
@@ -960,6 +998,57 @@
       box-shadow: 0 2px 12px rgba(0, 0, 0, .45);
     }
     #imgView .imgViewClose:hover { background: rgba(220, 70, 70, .95); border-color: rgba(255, 255, 255, .7); }
+
+    /* ---- 预览抽屉（preview-fixer · 2026-11-11）----
+       点气泡里的文件路径从右侧滑出来看全文；气泡上的「查看改动」也走同一个抽屉。
+       dialog 原生会居中，这里用 fixed + inset 钉成右侧整条；进场动画靠 .in 类
+       （showModal 从 display:none 变 block，直接写 transition 不会动，得 JS 补一帧）。 */
+    #fileView {
+      position: fixed; inset: 0 0 0 auto; margin: 0; padding: 0;
+      width: min(720px, 92vw); max-width: 92vw; max-height: 100vh; height: 100vh;
+      border: 1px solid var(--border); border-right: 0; border-radius: 0;
+      background: var(--panel); color: var(--text);
+      display: flex; flex-direction: column;
+      transform: translateX(24px); opacity: 0;
+      transition: transform .16s ease, opacity .16s ease;
+    }
+    #fileView.in { transform: translateX(0); opacity: 1; }
+    #fileView::backdrop { background: rgba(0, 0, 0, .45); }
+    #fileView .fvHead {
+      display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+      padding: 10px 12px; border-bottom: 1px solid var(--border);
+    }
+    #fileView .fvPath {
+      flex: 1; min-width: 0; font: 12px/1.5 Consolas, "Courier New", monospace;
+      color: var(--dim); overflow-wrap: anywhere; user-select: text;
+    }
+    #fileView .fvBody { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; }
+    #fileView .fvImg { max-width: 100%; max-height: 100%; display: block; margin: 0 auto; border-radius: 8px; }
+    #fileView .fvPre {
+      margin: 0; font: 12px/1.55 Consolas, "Courier New", monospace; white-space: pre;
+      overflow: auto; color: var(--text); user-select: text;
+    }
+    #fileView .fvNote { color: var(--dim); font-size: 13px; padding: 24px 0; text-align: center; }
+    /* 气泡里像文件路径的行内代码：单击整段选中（复制习惯不变），双击开预览 */
+    .bubble code.pvPath { cursor: pointer; }
+    .bubble code.pvPath:hover { color: var(--accent); }
+    /* diff 渲染：加行绿、删行红，颜色全走主题变量 */
+    #fileView .fvTabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    #fileView .fvTabs button {
+      font-size: 12px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+    }
+    #fileView .fvTabs button.on { color: var(--text); border-color: var(--accent); background: rgba(79, 140, 255, .12); }
+    #fileView .fvDiff {
+      font: 12px/1.55 Consolas, "Courier New", monospace; white-space: pre;
+      overflow: auto; border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 0; user-select: text;
+    }
+    #fileView .fvDiff .dl { padding: 0 10px; min-height: 1.55em; overflow-wrap: normal; }
+    #fileView .fvDiff .dl.add { background: rgba(63, 185, 80, .14); color: var(--ok); }
+    #fileView .fvDiff .dl.del { background: rgba(248, 81, 73, .14); color: var(--err); }
+    #fileView .fvDiff .dl.ctx { color: var(--dim); }
+    #fileView .fvDiff .ln { display: inline-block; width: 3.4em; color: var(--dim); opacity: .75; user-select: none; }
 
     /* ---- 我发出去的文件：卡片（图片看、视频播、别的下载）---- */
     .fileList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -3387,6 +3476,64 @@
   header button { padding: 4px 7px; font-size: 12px; }
 }
 
+/* ─────────────────────────────────────────────────────────────
+   【2026-11-11 加·search-fixer】对话内搜索条（Ctrl+F）+ 命令面板（Ctrl+K）
+
+   搜索条浮在聊天区顶部中间：位置不写死 —— 顶栏高度会变（手机端还会折行），
+   打开那一刻由 JS 按 #log 的实际位置算（见脚本尾部 csOpen）。
+   配色全走现有变量：--panel / --border / --dim / --accent。
+   命中高亮用 <mark>（临时标记，关搜索条时逐个拆掉还原成文本节点）；
+   当前命中项换珊瑚橙 —— 跟「办事模式」按钮同一个色，醒目但不出戏。
+   ───────────────────────────────────────────────────────────── */
+#chatSearchBar {
+  position: fixed; z-index: 60; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+}
+/* 上面写了 display:flex 会盖掉 UA 的 [hidden]{display:none}，必须按回去 */
+#chatSearchBar[hidden] { display: none; }
+#chatSearchInput {
+  width: 230px; padding: 4px 8px; font-size: 13px;
+  background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); outline: none;
+}
+#chatSearchInput:focus { border-color: var(--accent); }
+#chatSearchCount {
+  color: var(--dim); font-size: 12px; white-space: nowrap;
+  min-width: 60px; text-align: center;
+}
+#chatSearchBar button {
+  background: transparent; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--dim); cursor: pointer; padding: 2px 8px; font-size: 12px; line-height: 1.4;
+}
+#chatSearchBar button:hover { color: var(--text); border-color: var(--dim); }
+#log mark.csHit {
+  background: rgba(79, 140, 255, .35); color: inherit;
+  border-radius: 2px; padding: 0;
+}
+#log mark.csHit.csHitCur { background: #f0b06a; color: #1a0f06; }
+
+/* 命令面板：复用 dialog 的既有底子（panel 实心底、圆角、backdrop），
+   只收窄宽度 + 自己的列表样式 */
+#cmdkDlg { width: min(480px, 92vw); max-height: 60vh; }
+#cmdkInput {
+  flex: 0 0 auto; margin: 10px; padding: 8px 10px; font-size: 14px;
+  background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); outline: none;
+}
+#cmdkInput:focus { border-color: var(--accent); }
+#cmdkList { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 6px 8px; }
+.cmdkItem {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 6px; cursor: pointer; color: var(--text);
+}
+.cmdkItem:hover { background: rgba(79, 140, 255, .10); }
+.cmdkItem.sel { background: rgba(79, 140, 255, .18); }
+.cmdkItem .kbd { margin-left: auto; color: var(--dim); font-size: 11px; }
+.cmdkEmpty { color: var(--dim); padding: 12px; font-size: 13px; }
+
 </style>
 </head>
 <body>
@@ -3483,6 +3630,14 @@
       <button type="button" class="ghost" id="nsCancel">取消</button>
       <button type="button" class="primary" id="nsOk">开一间</button>
     </div>
+  </dialog>
+
+  <!-- 【2026-11-11 加·search-fixer】命令面板（Ctrl+K 呼出）。
+       动作全部复用现有按钮的 onclick / 现有函数，这里只是给它们一个能搜能跑的入口。
+       Esc 关闭走 dialog 原生 cancel，不另写。 -->
+  <dialog id="cmdkDlg">
+    <input id="cmdkInput" type="text" placeholder="输入命令…（↑↓ 选择，Enter 执行，Esc 关闭）" autocomplete="off" />
+    <div id="cmdkList"></div>
   </dialog>
 
   <!-- 左上角两个框的下拉（不是 dialog，点外面就关） -->
@@ -4389,6 +4544,20 @@
        （content-visibility 优化试了两版都撤了，剩下的全是历史说明），
        已整段删除。历史结论留档：content-visibility: auto 的「先估后算」
        会把新消息顶出视口几千像素，位置准 > 长会话快那一点，别再开。 -->
+  <!-- 【2026-11-11 加·search-fixer】对话内搜索条（Ctrl+F 呼出）。
+       固定钉在聊天区顶部中间，具体坐标由打开那一刻按 #log 的实际位置算
+       （顶栏高度会变，写死必歪）。长会话屏幕上只画最近 40 轮（WINDOW=40），
+       所以这里只搜当前显示的内容 —— 跟 WorkBuddy 的对话内搜索行为一致，
+       placeholder 里写明，别让主人以为在搜全部历史。
+       只许放 #log 外面：#log 的内容由渲染函数整块重画，塞进去必被抹掉。 -->
+  <div id="chatSearchBar" role="search" hidden>
+    <input id="chatSearchInput" type="text" placeholder="搜索当前显示的内容" autocomplete="off" />
+    <span id="chatSearchCount" aria-live="polite"></span>
+    <button type="button" id="chatSearchPrev" title="上一个（Shift+Enter）">↑</button>
+    <button type="button" id="chatSearchNext" title="下一个（Enter）">↓</button>
+    <button type="button" id="chatSearchClose" title="关闭（Esc）">×</button>
+  </div>
+
   <div id="log"></div>
 
   <!-- 身份徽标：换成非主人身份时才冒出来。
@@ -4419,6 +4588,16 @@
       </svg>
       <span class="jumpBadge" id="toBottomBadge"></span>
     </button>
+    <!-- 【2026-11-11 加·空状态示例】新会话里什么都没有的时候，给几条一句话就能开工的例子。
+         点了只把字填进输入框（不自动发送），主人还能改。有历史的老会话不出现（JS 按屏幕空不空显隐）。 -->
+    <div class="startChips" id="startChips" hidden>
+      <span class="startChipsTip">可以试试</span>
+      <span class="startChipsList" id="startChipsList"></span>
+      <button type="button" class="startChipsMore" id="startChipsMore" title="换一组例子">换一批</button>
+    </div>
+    <!-- 【2026-11-11 加·@ 提及浮层】输入框打 @ 弹出来挑工作区文件。
+         挑中只是把路径文本插进输入框，消息该是什么样还是什么样。 -->
+    <div class="mentionPop" id="mentionPop" hidden></div>
     <div class="inputRow">
       <div class="plusWrap">
         <button id="plusBtn" type="button" title="添加文件或图片" aria-label="添加文件或图片" aria-expanded="false" aria-haspopup="menu">+</button>
@@ -6384,6 +6563,33 @@ async function markHistoryLength(id) {
   return -1;
 }
 
+/**
+ * 【2026-11-11 加·主人报「断网时装死 / 冒英文报错」】
+ *
+ * 断网时 fetch 抛的是 TypeError: Failed to fetch 这类网络错，以前这段英文
+ * 会被原样画进气泡/系统提示里（「⚠ Failed to fetch」）—— 主人不知道这是
+ * 「断网了」还是「她坏了」。现在统一识别 + 翻译成人话：
+ *
+ *   isNetErr(e)   这是不是网络类错误（Failed to fetch / net::ERR_* / ECONN…）
+ *   netDownText() 断网时给主人看的那个固定句子
+ *   humanizeErr(e) 给主人看的错误文案：网络错 → 断网人话；
+ *                  真内部错（程序 bug）→ 前面加一句「出了个内部问题」再带详情
+ */
+const NET_ERR_RE = /failed to fetch|fetch failed|networkerror|network error|net::|err_internet|err_network|err_connection|err_name|err_proxy|err_tunnel|econn|socket hang up|network changed| interrupted|load failed/i;
+function isNetErr(e) {
+  if (!e) return false;
+  /* fetch 被 30 秒看门狗掐掉时带这个标记（见 runTurn 里的 _netWatchdog） */
+  if (e && e.__netStall) return true;
+  return NET_ERR_RE.test(String(e.message || e.reason || e));
+}
+function netDownText() {
+  return '网络断了，联系不上她。恢复后她说的话会接着来。';
+}
+function humanizeErr(e) {
+  if (isNetErr(e)) return netDownText();
+  return '出了个内部问题：' + String((e && (e.message || e.reason)) || e || '未知错误');
+}
+
 async function tryHealAfterDisconnect(id) {
   let turnMark = -1;
   for (let i = 0; i < 4; i++) {
@@ -7090,6 +7296,204 @@ function openImgView(src) {
   try { dlg.showModal(); } catch {}
 }
 
+/* ---- 预览抽屉（preview-fixer · 2026-11-11）----
+ * 两条只读接口：/api/file（看文件）、/api/turn/:at/diff（看那一轮改了什么）。
+ * 加载失败一律在抽屉里说人话，不弹全局报错 —— 抽屉打不开不能连累聊天区。 */
+function fvNote(body, msg) {
+  if (!body) return;
+  body.textContent = '';
+  const d = document.createElement('div');
+  d.className = 'fvNote';
+  d.textContent = String(msg || '');
+  body.appendChild(d);
+}
+
+function fvShow(pathLabel, buildBody) {
+  const dlg = document.getElementById('fileView');
+  if (!dlg) return;
+  const pathEl = document.getElementById('fvPath');
+  const bodyEl = document.getElementById('fvBody');
+  const copyBtn = document.getElementById('fvCopy');
+  const closeBtn = document.getElementById('fvClose');
+  if (pathEl) { pathEl.textContent = pathLabel || ''; pathEl.title = pathLabel || ''; }
+  if (bodyEl) bodyEl.textContent = '';
+  if (copyBtn) { copyBtn.hidden = true; copyBtn.textContent = '复制'; copyBtn.onclick = null; }
+  if (closeBtn) closeBtn.onclick = () => { try { dlg.close(); } catch {} };
+  if (!dlg._wired) {
+    dlg._wired = true;
+    dlg.onclick = (e) => { if (e.target === dlg) { try { dlg.close(); } catch {} } };
+    /* showModal 从 display:none 直接变 block，transition 不会跑 —— 补一帧再加 .in */
+    dlg._anim = () => { requestAnimationFrame(() => { try { dlg.classList.add('in'); } catch {} }); };
+  }
+  dlg.classList.remove('in');
+  try { dlg.showModal(); } catch {}
+  if (dlg._anim) dlg._anim();
+  if (typeof buildBody === 'function') buildBody(bodyEl, copyBtn);
+}
+
+/** 看一个文件的全文：图片直出、.md 走 mdInto、其他文本等宽原文、二进制说人话。 */
+function openFileView(path) {
+  const p = String(path || '').trim();
+  if (!p) return;
+  fvShow(p, (body, copyBtn) => {
+    if (!body) return;
+    fvNote(body, '读取中…');
+    fetch('/api/file?path=' + encodeURIComponent(p))
+      .then((x) => x.json())
+      .then((r) => {
+        if (!r || r.error) return fvNote(body, (r && r.error) || '打不开这个文件。');
+        if (r.kind === 'image') {
+          if (r.tooBig) return fvNote(body, '图片太大了（' + Math.round((r.size || 0) / 1024) + ' KB），抽屉里放不下，去工作区里直接看吧。');
+          body.textContent = '';
+          const img = document.createElement('img');
+          img.className = 'fvImg';
+          img.alt = p;
+          img.src = 'data:' + (r.mime || 'image/png') + ';base64,' + r.data;
+          body.appendChild(img);
+          return;
+        }
+        if (r.kind === 'binary') return fvNote(body, '这是个二进制文件，预览不了。');
+        if (r.kind !== 'text') return fvNote(body, '这个类型预览不了。');
+        if (copyBtn) {
+          copyBtn.hidden = false;
+          copyBtn.onclick = async () => {
+            try { await navigator.clipboard.writeText(r.text || ''); copyBtn.textContent = '已复制'; }
+            catch { copyBtn.textContent = '复制失败'; }
+            setTimeout(() => { copyBtn.textContent = '复制'; }, 1200);
+          };
+        }
+        const tail = r.truncated ? '\n\n…（太长，只显示前一段，全文请去工作区里看）' : '';
+        if (/\.(md|markdown)$/i.test(r.ext || p || '') && typeof mdInto === 'function') {
+          body.textContent = '';
+          const box = document.createElement('div');
+          box.className = 'bubble md';
+          mdInto(box, (r.text || '') + tail);
+          body.appendChild(box);
+          return;
+        }
+        body.textContent = '';
+        const pre = document.createElement('pre');
+        pre.className = 'fvPre';
+        pre.textContent = (r.text || '') + tail;
+        body.appendChild(pre);
+      })
+      .catch(() => fvNote(body, '连不上服务，稍后再试。'));
+  });
+}
+
+/* 气泡里的文件路径：单击整段选中（保留「点一下就选中好复制」的习惯），
+ * 双击打开右侧预览抽屉。挂在 document 上做委托 —— 流式每个 tick 都会重建
+ * .bubble 的内容，节点级监听一挂就冲掉。pre 里的代码块不掺和。
+ * 认得保守：只认「带 / 或 \ 且有扩展名」或「纯文件名带扩展名」的行内 code；
+ * 是不是真文件由 /api/file 现查，查无此文件抽屉里说清楚。 */
+const PV_PATH_RE = /^(?!https?:)[^\s`]{1,300}[\/\\][^\s`]*\.[A-Za-z0-9]{1,8}$/;
+const PV_NAME_RE = /^[A-Za-z0-9\u4e00-\u9fa5._-]{1,120}\.[A-Za-z0-9]{1,8}$/;
+function pvPathOf(el) {
+  const c = el && el.closest ? el.closest('.bubble code') : null;
+  if (!c || c.closest('pre')) return null;
+  const t = String(c.textContent || '').trim();
+  if (!t) return null;
+  if (!PV_PATH_RE.test(t) && !PV_NAME_RE.test(t)) return null;
+  return { code: c, path: t };
+}
+document.addEventListener('click', (e) => {
+  const hit = pvPathOf(e.target);
+  if (!hit) return;
+  hit.code.classList.add('pvPath');
+  /* 单击 = 整段选中，直接 Ctrl+C 就走（不抢双击的事：双击仍由 dblclick 管） */
+  try {
+    const sel = window.getSelection();
+    const rng = document.createRange();
+    rng.selectNodeContents(hit.code);
+    sel.removeAllRanges();
+    sel.addRange(rng);
+  } catch {}
+});
+document.addEventListener('dblclick', (e) => {
+  const hit = pvPathOf(e.target);
+  if (!hit) return;
+  e.preventDefault();
+  openFileView(hit.path);
+});
+
+/** 看某一轮的文件改动：anchor 传那一问的下标（assistant 气泡也能直接带自己的下标）。 */
+function openTurnDiff(at) {
+  if (!Number.isFinite(Number(at))) return;
+  const sid = typeof sessionId === 'string' ? sessionId : '';
+  fvShow('改动 · 第 ' + Number(at) + ' 条那一轮', (body) => {
+    if (!sid) return fvNote(body, '还没打开会话。');
+    fvNote(body, '对比中…');
+    fetch('/api/turn/' + Number(at) + '/diff?id=' + encodeURIComponent(sid))
+      .then((x) => x.json())
+      .then((r) => {
+        if (!r || r.error) return fvNote(body, (r && r.error) || '拿不到改动记录。');
+        const files = Array.isArray(r.files) ? r.files : [];
+        if (!files.length) return fvNote(body, '这一轮没有登记到文件改动（只有用写文件工具改的才会记下来）。');
+        renderDiffView(body, files);
+      })
+      .catch(() => fvNote(body, '连不上服务，稍后再试。'));
+  });
+}
+
+/** diff 渲染：文件 tab + 行首 +/- 上色（加绿删红，全走主题变量）。只读。 */
+function renderDiffView(body, files) {
+  if (!body) return;
+  body.textContent = '';
+  const tabs = document.createElement('div');
+  tabs.className = 'fvTabs';
+  const view = document.createElement('div');
+  view.className = 'fvDiff';
+  const ST = { created: '新建', modified: '修改', deleted: '删除', tooBig: '太大，不比了', unchanged: '内容没变', absent: '后来又被删了' };
+  const show = (f) => {
+    view.textContent = '';
+    const head = document.createElement('div');
+    head.className = 'dl ctx';
+    head.textContent = '[' + (ST[f.status] || f.status) + '] ' + f.path;
+    view.appendChild(head);
+    if (!Array.isArray(f.hunks) || !f.hunks.length) {
+      const n = document.createElement('div');
+      n.className = 'dl ctx';
+      n.textContent = f.status === 'unchanged'
+        ? '磁盘内容和那一轮开始前一样，没有 diff。'
+        : '没有行级对比（文件太大或不是文本）。';
+      view.appendChild(n);
+      return;
+    }
+    for (const h of f.hunks) {
+      const dots = document.createElement('div');
+      dots.className = 'dl ctx';
+      dots.textContent = '⋯⋯';
+      view.appendChild(dots);
+      for (const row of h.lines) {
+        const d = document.createElement('div');
+        d.className = 'dl ' + (row.t === '+' ? 'add' : row.t === '-' ? 'del' : 'ctx');
+        const ln = document.createElement('span');
+        ln.className = 'ln';
+        ln.textContent = row.t === '+' ? String(row.bn || '') : String(row.an || '');
+        d.appendChild(ln);
+        d.appendChild(document.createTextNode((row.t === '+' ? '+ ' : row.t === '-' ? '- ' : '  ') + row.s));
+        view.appendChild(d);
+      }
+    }
+  };
+  files.forEach((f, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    const name = String(f.path || '').split('/').pop() || f.path;
+    b.textContent = name + (f.status === 'created' ? '（新）' : f.status === 'deleted' ? '（删）' : '');
+    b.title = f.path + ' · ' + (ST[f.status] || f.status);
+    b.onclick = () => {
+      [...tabs.children].forEach((x, k) => x.classList.toggle('on', k === i));
+      show(files[i]);
+    };
+    tabs.appendChild(b);
+  });
+  body.appendChild(tabs);
+  body.appendChild(view);
+  if (tabs.children[0]) tabs.children[0].classList.add('on');
+  show(files[0]);
+}
+
 /**
  * 【2026-11-05 加·复制】
  *
@@ -7154,6 +7558,18 @@ function attachRetry(wrap, askQueue) {
   rb.title = "把这一轮退掉，用你当时那句话重新问一遍";
   rb.onclick = () => retryHere(Number(ask.at), String(ask.text || ""), rb);
   actionsOf(wrap).appendChild(rb);
+  /* 【2026-11-11 加·查看改动】这一轮她用写文件工具改过东西的话，给个入口看 diff。
+   * 有没有真改动由 /api/turn/:at/diff 现查 —— 没快照时点了抽屉里说人话，不弹全局报错。
+   * 挂在这一问（ask.at）上：diff 接口按「那一轮的 user 消息」取 _ws 快照。 */
+  if (!wrap.querySelector('.diffBtn')) {
+    const db = document.createElement("button");
+    db.type = "button";
+    db.className = "diffBtn";
+    db.textContent = "± 查看改动";
+    db.title = "看这一轮改了哪些文件、每个文件改了什么（和她当前磁盘上的内容对比）";
+    db.onclick = () => openTurnDiff(Number(ask.at));
+    actionsOf(wrap).appendChild(db);
+  }
   wrap.classList.remove("noRewind");
 }
 
@@ -8272,6 +8688,10 @@ function hidingSendingSafe() {
  * 还在跑 → 把灯和 busy 都保持住；真结束了才灭。切会话了就什么都不做。
  */
 let _sendingRecheckTimer = 0;
+/* 【2026-11-11 加·断网兜底】连续多少次「连 /api/chat/live 都拉不到」算断网。
+ * 巡检是每 2 秒一轮，15 连败 ≈ 30 秒 —— 主人要求「30 秒无响应就转联系不上态，别无限转」。 */
+let _recheckFailStreak = 0;
+let _netDownAnnounced = false;
 function scheduleSendingRecheck(sid) {
   const _sid = String(sid || sessionId || '');
   if (!_sid) { hidingSendingSafe(); return; }
@@ -8281,12 +8701,35 @@ function scheduleSendingRecheck(sid) {
     if (String(sessionId || '') !== _sid) return;   // 中途切了会话，别动别人的灯
     let still = false;
     let at = 0;
+    let fetched = false;
     try {
       const j = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(_sid))
         .then((r) => r.json()).catch(() => null);
       still = Boolean(j && j.running);
       at = Number(j && j.startedAt) || 0;
+      fetched = Boolean(j);   // 连不上时 j 是 null（内层 catch 兜的），要单独认出来
     } catch {}
+    /* 【2026-11-11 加】拉不到 ≠ 服务端说没在跑：拉失败要单独记账。
+     * 服务端活着（哪怕在跑）→ 计数清零；连不上 → 计数往上走。 */
+    if (fetched) { _recheckFailStreak = 0; _netDownAnnounced = false; }
+    else _recheckFailStreak++;
+    /**
+     * 【断网 30 秒兜底】这一轮还挂着（turnsInFlight 里有它）而服务端连续 30 秒
+     * 连不上 —— 转圈只会无限转。现在：转「联系不上」态 ——
+     * 说一句人话、把灯和 busy 放下；但**继续留着巡检**：网络一恢复、
+     * 服务端说还在跑，灯和按钮自然回来，她的活不丢。
+     */
+    if (!fetched && turnsInFlight.has(_sid) && _recheckFailStreak >= 15) {
+      busy = false;
+      hidingSendingSafe();
+      try { syncSendBtn(); } catch {}
+      if (!_netDownAnnounced) {
+        _netDownAnnounced = true;
+        try { addSysNote('⚠ ' + netDownText()); } catch {}
+      }
+      _sendingRecheckTimer = setTimeout(() => scheduleSendingRecheck(_sid), 2000);
+      return;
+    }
     if (still || turnsInFlight.has(_sid)) {
       busy = true;
       try { showSending(at || undefined); } catch {}
@@ -8477,10 +8920,37 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
   showSending();
   syncSendBtn();
 
+  showSending();
+  syncSendBtn();
+
+  /* 【2026-11-11 加】30 秒看门狗是否开过火 —— catch 里要认它（try 块里声明看不到） */
+  let _netStallHit = false;
+
   try {
+    /**
+     * 【2026-11-11 加·30 秒看门狗】主人报「发消息后界面干等」。
+     *
+     * 网络真断的时候 fetch 会立刻抛错（走下面的 catch 说人话）；
+     * 但还有一种更阴的：Wi-Fi 看着连着、包却一个都过不去（半开连接）——
+     * fetch 既不成功也不失败，转圈能转到天荒地老。
+     *
+     * 所以发请求时挂一个 AbortController：30 秒内连服务端的第一个回包都没
+     * 摸到就掐掉它，掐出来的错带 __netStall 标记，isNetErr 认它 → 走断网人话。
+     * 第一个回包一到（说明链路是通的）看门狗就撤，后面她跑多久都不受影响。
+     */
+    const _ac = new AbortController();
+    let _gotFirstByte = false;
+    const _netWatchdog = setTimeout(() => {
+      if (_gotFirstByte) return;
+      _netStallHit = true;
+      const _stall = new Error('网络没响应：30 秒都没等到服务端的第一个回包');
+      try { _stall.__netStall = true; } catch {}
+      try { _ac.abort(_stall); } catch { try { _ac.abort(); } catch {} }
+    }, 30000);
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: _ac.signal,
       body: JSON.stringify(resume
         ? { sessionId, resume: true }
         : {
@@ -8488,7 +8958,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             message: text,
             attachments: sending.map((a) => ({ path: a.path, name: a.name, kind: a.kind })),
           }),
-    });
+    }).finally(() => { _gotFirstByte = true; clearTimeout(_netWatchdog); });
     if (!res.ok) {
       // 【2026-11-02 主人报「消息被吞」】409 = 服务端说还在跑，以前直接 throw，话就没了。
       // 现在改走插话：话落盘、排在这一轮后面，界面立刻出现。
@@ -8971,9 +9441,14 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
       scheduleSendingRecheck(sessionId);
       try { unstreamLiveBubbles(); } catch {}
       // 说人话，不甩英文栈
-      const friendly = /terminated|aborted|fetch failed|network|ECONN|socket hang up/i.test(String(err.message))
-        ? '这一轮的连接断了，而且服务端那边也没在跑了。再发一句就行，记录还在。'
-        : err.message;
+      /* 【2026-11-11 改·主人报「断网冒英文报错」】原来的正则认不出最常见的
+       * 「TypeError: Failed to fetch」（正则里写的是 fetch failed，词序反了），
+       * 断网时主人看到的就是一句英文。现在走统一的错误翻译：
+       *   网络类（含 30 秒看门狗掐的）→ 「网络断了，联系不上她。恢复后她说的话会接着来。」
+       *   非网络类（真 bug）→ 「出了个内部问题：」+ 详情，不装死也不糊弄 */
+      const friendly = (_netStallHit || isNetErr(err))
+        ? netDownText()
+        : humanizeErr(err);
       // 同样单独一行，别污染助手的气泡
       /* 【2026-11-05 加】带一个"放回输入框"的按钮 —— 出错了当场就能再试一次，
        * 不用翻历史、不用 hover 找「重发」。这句话和当时的附件一起还回来。 */
@@ -8994,7 +9469,8 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
         },
       }]);
     } else {
-      turnRec.parts.push({ kind: 'text', text: '\n\n⚠ ' + err.message });
+      /* 【2026-11-11 改】切走了看不见的轮次也别说英文：错误文案统一走翻译 */
+      turnRec.parts.push({ kind: 'text', text: '\n\n⚠ ' + humanizeErr(err) });
     }
   } finally {
     turnRec.running = false;
@@ -9041,7 +9517,10 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             syncSendBtn();
             const t = String(lastInterjectText || '').trim();
             if (input && !input.value.trim() && t) { input.value = t; autosizeInput(); }
-            addSysNote('⚠ 插的这句没接上：' + (e && e.message ? e.message : '未知错误') + '，已经放回输入框');
+            /* 【2026-11-11 改】断网别报英文：网络错给人话，真 bug 才带详情 */
+            addSysNote('⚠ ' + (isNetErr(e)
+              ? '网络断了，这句没接上，已经放回输入框'
+              : '插的这句没接上：' + humanizeErr(e) + '，已经放回输入框'));
           });
         }, 30);
       } else {
@@ -9842,7 +10321,10 @@ async function resumeOrResend(s, text) {
     busy = false;
     syncSendBtn();
     if (input && !input.value.trim() && needle) { input.value = needle; autosizeInput(); }
-    addSysNote('⚠ 这句没发出去：' + (e && e.message ? e.message : '网络错误') + '，已经放回输入框');
+    /* 【2026-11-11 改】断网别报英文（原来这里 e.message 可能是 Failed to fetch） */
+    addSysNote('⚠ ' + (isNetErr(e)
+      ? '网络断了，这句没发出去，已经放回输入框。恢复后她说的话会接着来。'
+      : '这句没发出去：' + humanizeErr(e) + '，已经放回输入框'));
   });
 }
 
@@ -9901,6 +10383,9 @@ function imeSwallowsEnter(e) {
 }
 
 input.addEventListener('keydown', (e) => {
+  /* 【2026-11-11 加·@ 提及】弹层开着时，方向键 / 回车 / Tab / Esc 先归它管。
+   * 返回 true = 这一下已经吃掉了，别再当「发送」处理。 */
+  if (window.__mentionKeyHook && window.__mentionKeyHook(e)) return;
   /* 【2026-11-05 修】中文输入法选词时按 Enter 只是「上屏」，不是发送。
    * 以前没挡这一下：拼音打一半、还没选字，回车一按就把半截拼音发出去了。
    * isComposing 是标准写法；keyCode 229 兜老年份的输入法（Chrome/Edge 上仍会出现）。
@@ -19518,8 +20003,509 @@ async function pushMusic(patch) {
 
 refreshMusic();
 
+/**
+ * 【2026-11-11 加·输入框 @ 提及文件】
+ *
+ * 对标 WorkBuddy 的 Mention files/symbols：输入框里打 @，浮层列出工作区里
+ * 匹配的文件 / 目录，↑↓ 选、Enter/Tab 确认、Esc 关；确认后把路径文本
+ * 替换掉 @xxx 那一段插回输入框。**只是插文本**，消息该什么样还什么样。
+ *
+ * 几个刻意的地方：
+ *   · 数据源是 GET /api/files/mention（server.mjs 新加的，钉死在工作区里）；
+ *   · 键盘接管走 window.__mentionKeyHook，挂在原 keydown 开头那道门上 ——
+ *     弹层开着时回车不能把消息发出去，只能完成选词；
+ *   · 输入法组合中（_imeComposing，跟发送那道门用同一个状态机）不触发；
+ *   · 文件名一律 textContent 画，名字里带 <script> 也只是字面文字。
+ */
+(function mentionFiles() {
+  const pop = document.getElementById('mentionPop');
+  if (!pop || !input) return;
+
+  /* 量光标坐标用的镜子：抄一份 textarea 的排版样式，把光标前的文字摆进去，
+     末尾垫一个零宽记号，量它落在哪 —— 这是 textarea 拿不到光标坐标的老办法。 */
+  const mirror = document.createElement('div');
+  const mcs = getComputedStyle(input);
+  [
+    'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
+    'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth',
+    'boxSizing', 'whiteSpace', 'wordWrap', 'overflowWrap',
+  ].forEach((k) => { try { mirror.style[k] = mcs[k]; } catch { /* 有就抄，没有拉倒 */ } });
+  mirror.style.position = 'absolute';
+  mirror.style.left = '-9999px';
+  mirror.style.top = '0';
+  mirror.style.visibility = 'hidden';
+  mirror.style.width = input.clientWidth + 'px';
+  mirror.style.height = 'auto';
+  document.body.appendChild(mirror);
+
+  let open = false;
+  let items = [];
+  let sel = 0;
+  let mStart = -1;   // @token 在输入框里的 [mStart, mEnd)
+  let mEnd = -1;
+  let seq = 0;       // 防竞态：只认最后一次请求
+  let debounceT = 0;
+
+  function close() {
+    open = false;
+    items = [];
+    sel = 0;
+    mStart = mEnd = -1;
+    pop.hidden = true;
+    pop.textContent = '';
+  }
+
+  function caretBox() {
+    mirror.textContent = input.value.slice(0, input.selectionStart || 0);
+    const mark = document.createElement('span');
+    mark.textContent = '\u200b';
+    mirror.appendChild(mark);
+    const tr = input.getBoundingClientRect();
+    const mr = mirror.getBoundingClientRect();
+    const sr = mark.getBoundingClientRect();
+    const lh = parseFloat(mcs.lineHeight) || (parseFloat(mcs.fontSize) * 1.4) || 20;
+    return {
+      left: tr.left + (sr.left - mr.left) - input.scrollLeft,
+      top: tr.top + (sr.top - mr.top) - input.scrollTop + lh + 4,
+    };
+  }
+
+  function place() {
+    const b = caretBox();
+    const pw = pop.offsetWidth || 300;
+    const ph = pop.offsetHeight || 120;
+    let left = Math.max(8, Math.min(b.left, window.innerWidth - pw - 8));
+    let top = b.top;
+    if (top + ph > window.innerHeight - 8) top = Math.max(8, b.top - ph - 26);
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+  }
+
+  function render() {
+    pop.textContent = '';
+    if (!items.length) {
+      const d = document.createElement('div');
+      d.className = 'mEmpty';
+      d.textContent = '工作区里没有匹配的文件';
+      pop.appendChild(d);
+      return;
+    }
+    const groups = [['目录', items.filter((x) => x.dir), '📁'], ['文件', items.filter((x) => !x.dir), '📄']];
+    let idx = 0;
+    for (const [label, list, ico] of groups) {
+      if (!list.length) continue;
+      const g = document.createElement('div');
+      g.className = 'mGroup';
+      g.textContent = label;
+      pop.appendChild(g);
+      for (const it of list) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'mItem' + (idx === sel ? ' sel' : '');
+        b.dataset.idx = String(idx);
+        const i = document.createElement('span');
+        i.className = 'mIco';
+        i.textContent = ico;
+        const n = document.createElement('span');
+        n.className = 'mName';
+        n.textContent = it.name;   // textContent：文件名再怪也只是字
+        b.appendChild(i);
+        b.appendChild(n);
+        pop.appendChild(b);
+        idx++;
+      }
+    }
+  }
+
+  function insertItem(it) {
+    if (!it || mStart < 0) { close(); return; }
+    const ins = it.name + ' ';
+    input.value = input.value.slice(0, mStart) + ins + input.value.slice(mEnd);
+    const c = mStart + ins.length;
+    input.setSelectionRange(c, c);
+    close();
+    input.focus();
+    input.dispatchEvent(new Event('input'));   // 让 autosize / 发送钮 / 草稿照常走
+  }
+
+  function scheduleFetch(q) {
+    const mySeq = ++seq;
+    clearTimeout(debounceT);
+    debounceT = setTimeout(async () => {
+      let its = [];
+      try {
+        const r = await fetch('/api/files/mention?dir=&q=' + encodeURIComponent(q)).then((x) => x.json());
+        its = Array.isArray(r && r.items) ? r.items : [];
+      } catch { /* 拉不到就空着，浮层显示「没有匹配」 */ }
+      if (mySeq !== seq || !open) return;
+      items = its.slice(0, 20);
+      sel = 0;
+      render();
+      place();
+    }, 120);
+  }
+
+  function detect() {
+    if (_imeComposing) { close(); return; }   // 输入法组合中不弹
+    const caret = input.selectionStart || 0;
+    const m = /(^|\s)@([^\s@]*)$/.exec(input.value.slice(0, caret));
+    if (!m) { close(); return; }
+    mStart = caret - m[2].length;
+    mEnd = caret;
+    open = true;
+    items = [];
+    sel = 0;
+    pop.hidden = false;
+    render();
+    place();
+    scheduleFetch(m[2]);
+  }
+
+  /* 弹层开着时把键盘接走。挂在原 keydown 处理器的第一道门上（见上文）。 */
+  window.__mentionKeyHook = function (e) {
+    if (!open) return false;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (items.length) {
+        sel = (sel + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+        render();
+        const el = pop.querySelector('.mItem.sel');
+        if (el) el.scrollIntoView({ block: 'nearest' });
+      }
+      return true;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      if (!items.length) return false;   // 没得选，回车还给发送
+      e.preventDefault();
+      insertItem(items[sel] || items[0]);
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+      return true;
+    }
+    return false;   // 空格、别的键照常打字；token 一断 detect 自己会收摊
+  };
+
+  input.addEventListener('input', detect);
+  input.addEventListener('click', detect);
+  input.addEventListener('blur', () => { setTimeout(close, 120); });   // 失焦就收，稍等一拍别抢点击
+  window.addEventListener('resize', close);
+  pop.addEventListener('mousedown', (e) => {
+    const b = e.target.closest('.mItem');
+    if (!b) return;
+    e.preventDefault();   // 别让 textarea 失焦
+    const it = items[Number(b.dataset.idx)];
+    if (it) insertItem(it);
+  });
+})();
+
+/**
+ * 【2026-11-11 加·空状态示例提示词】
+ *
+ * 对标 WorkBuddy 的 welcome.quickAction：新会话什么都没有的时候，
+ * 给几条一句话就能开工的例子，另带「换一批」轮换。
+ * 点了只把字填进输入框（不自动发送），主人还能改。
+ *
+ * 显隐的判据只有一条：这个会话屏幕上一笔历史都没有且已经在会话里 ——
+ * 老会话 / 有历史一律不出现。画历史的是 renderLog，它一动 #log
+ * 这里的 MutationObserver 就重判一遍，不用谁特意来叫。
+ */
+(function startChips() {
+  const wrap = document.getElementById('startChips');
+  const listEl = document.getElementById('startChipsList');
+  const moreBtn = document.getElementById('startChipsMore');
+  const logEl = document.getElementById('log');
+  if (!wrap || !listEl || !moreBtn || !logEl || !input) return;
+  const GROUPS = [
+    ['帮我看看这个报错', '把这段整理成文档', '清理一下下载目录里的大文件', '查一下今天的天气再总结给我'],
+    ['把一个文件夹里的照片按日期分好类', '帮我把这段话翻译成英文', '列一下我这个项目还欠着哪些活', '把这段会议记录提炼成待办清单'],
+  ];
+  let gi = 0;
+  function paint() {
+    listEl.textContent = '';
+    for (const txt of GROUPS[gi % GROUPS.length]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'startChip';
+      b.textContent = txt;
+      b.onclick = () => {
+        input.value = txt;
+        input.focus();
+        input.dispatchEvent(new Event('input'));
+      };
+      listEl.appendChild(b);
+    }
+  }
+  moreBtn.onclick = () => { gi = (gi + 1) % GROUPS.length; paint(); };
+  function refresh() {
+    const empty = !logEl.querySelector('.msg') && !logEl.querySelector('details.toolhub');
+    wrap.hidden = !(empty && sessionId);
+  }
+  try {
+    new MutationObserver(refresh).observe(logEl, { childList: true, subtree: true });
+  } catch { /* 观察不上就只靠开机那一判 */ }
+  refresh();
+})();
+
 /* 灰字那两个函数已经搬进 public/ui/hub.js（2026-11-08 模块化），
    这里原来留着一份从 HEAD 找回的副本 —— 同名两份，容易改错地方，删掉。 */
+
+/* ========================================================================== *
+ * 【2026-11-11 加·search-fixer】快捷键体系 + 对话内搜索（Ctrl+F）+ 命令面板（Ctrl+K）
+ *
+ * 以前全站 0 条组合键。现在统一从下面这一个 keydown 入口分发（capture 阶段）：
+ * 加新键只改 dispatchHotkeys 一张表，别再散落 addEventListener。
+ *
+ * 快捷键清单：
+ *   Ctrl+F  打开对话内搜索（带修饰键，输入框聚焦也生效）
+ *   Ctrl+K  打开命令面板（同上）
+ *   Ctrl+N  新建会话（同上）
+ *   Esc     命令面板开着 → 原生关闭；搜索条开着 → 关掉并清高亮；
+ *           正在生成 → 停止这一轮；焦点在输入框 → 照常失焦
+ * 无修饰键的按键一律不劫持（输入法、Enter 发送、Tab 都照旧）。
+ * ========================================================================== */
+
+/* ---- 对话内搜索 ---- */
+const csBar = document.getElementById('chatSearchBar');
+const csInput = document.getElementById('chatSearchInput');
+const csCount = document.getElementById('chatSearchCount');
+const csState = { hits: [], cur: -1, q: '' };
+
+/** 把上一次搜索埋的 <mark> 全拆掉，还原成普通文本节点（normalize 合并回去）。 */
+function csClearMarks() {
+  if (!csState.hits.length) return;
+  document.querySelectorAll('#log mark.csHit').forEach((m) => {
+    const p = m.parentNode;
+    if (!p) return;
+    p.replaceChild(document.createTextNode(m.textContent), m);
+    p.normalize();
+  });
+  csState.hits = [];
+  csState.cur = -1;
+}
+
+function csPaint() {
+  csState.hits.forEach((m, i) => m.classList.toggle('csHitCur', i === csState.cur));
+  if (!csState.q) { csCount.textContent = ''; return; }
+  const n = csState.hits.length;
+  if (!n) { csCount.textContent = '未找到匹配内容'; return; }
+  csCount.textContent = `第 ${csState.cur + 1} / ${n} 个`;
+  const cur = csState.hits[csState.cur];
+  if (cur) {
+    // 命中的气泡滚进视野中央。不用 smooth：CDP 实测和肉眼都不等滚动动画
+    try { cur.scrollIntoView({ block: 'center' }); } catch (e) {}
+  }
+}
+
+/** 重新搜索：清掉旧标记 → 遍历 #log 的文本节点 → 命中处包 <mark>。 */
+function csRun() {
+  csClearMarks();
+  const q = csInput.value.trim();
+  csState.q = q;
+  if (!q) { csPaint(); return; }
+  const lq = q.toLowerCase();
+  /* 只搜屏幕上有的：长会话只画最近 40 轮（WINDOW=40），这是设计好的性能边界，
+     不为搜索去加载全部历史。TreeWalker 只要文本节点，样式/输入控件里的跳过。 */
+  const nodes = [];
+  try {
+    const walker = document.createTreeWalker(log, NodeFilter.SHOW_TEXT, {
+      // 不用方法简写：check-ui.mjs 认不出 acceptNode(n) {} 这种键，会误报「未定义变量」
+      acceptNode: function (n) {
+        const v = n.nodeValue;
+        if (!v || !v.trim()) return NodeFilter.FILTER_REJECT;
+        const el = n.parentElement;
+        if (!el) return NodeFilter.FILTER_REJECT;
+        const tag = el.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA' || tag === 'INPUT') return NodeFilter.FILTER_REJECT;
+        return v.toLowerCase().includes(lq) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+  } catch (e) { nodes.length = 0; }
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    const low = text.toLowerCase();
+    const frag = document.createDocumentFragment();
+    let pos = 0;
+    let idx = low.indexOf(lq);
+    while (idx >= 0) {
+      if (idx > pos) frag.appendChild(document.createTextNode(text.slice(pos, idx)));
+      const mk = document.createElement('mark');
+      mk.className = 'csHit';
+      mk.textContent = text.slice(idx, idx + lq.length);
+      frag.appendChild(mk);
+      csState.hits.push(mk);
+      pos = idx + lq.length;
+      idx = low.indexOf(lq, pos);
+    }
+    if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)));
+    node.parentNode.replaceChild(frag, node);
+  }
+  csState.cur = csState.hits.length ? 0 : -1;
+  csPaint();
+}
+
+function csNext(d) {
+  const n = csState.hits.length;
+  if (!n) return;
+  csState.cur = ((csState.cur + d) % n + n) % n;
+  csPaint();
+}
+
+function csOpen() {
+  // 顶栏高度会变（手机端还折行），钉的位置按打开那一刻 #log 的真实位置算
+  try {
+    const r = log.getBoundingClientRect();
+    csBar.style.top = Math.round(r.top + 8) + 'px';
+    csBar.style.left = Math.round(r.left + r.width / 2) + 'px';
+  } catch (e) {}
+  csBar.hidden = false;
+  try { csInput.focus(); csInput.select(); } catch (e) {}
+  if (csInput.value.trim()) csRun();
+  else { csState.q = ''; csPaint(); }
+}
+
+function csClose() {
+  csClearMarks();
+  csBar.hidden = true;
+  csState.q = '';
+  try { input.focus(); } catch (e) {}
+}
+
+csInput.addEventListener('input', () => csRun());
+document.getElementById('chatSearchPrev').addEventListener('click', () => csNext(-1));
+document.getElementById('chatSearchNext').addEventListener('click', () => csNext(1));
+document.getElementById('chatSearchClose').addEventListener('click', () => csClose());
+
+/* ---- 命令面板（Ctrl+K）----
+   动作清单里全是现成的按钮 / 函数，点谁就 .click() 谁，一行逻辑都不重写。
+   「停止生成」只在真在跑的时候列出来（busy 标志和停止键同一份）。 */
+const cmdkDlg = document.getElementById('cmdkDlg');
+const cmdkInput = document.getElementById('cmdkInput');
+const cmdkList = document.getElementById('cmdkList');
+const cmdkState = { items: [], sel: 0 };
+
+function cmdkClick(id) { const b = document.getElementById(id); if (b) { try { b.click(); } catch (e) {} } }
+
+function cmdkActions() {
+  return [
+    { label: '新建会话', hint: 'Ctrl+N', run: () => { try { createSession(); } catch (e) {} } },
+    { label: '会话面板', hint: '', run: () => cmdkClick('openSessions') },
+    { label: '任务清单', hint: '', run: () => cmdkClick('todoBtn') },
+    { label: '定时任务', hint: '', run: () => cmdkClick('cronBtn') },
+    { label: '功能', hint: '', run: () => cmdkClick('openFeatures') },
+    { label: '设置', hint: '', run: () => cmdkClick('openSettings') },
+    { label: '模型', hint: '', run: () => cmdkClick('openModels') },
+    { label: '下载日志（.zip）', hint: '', run: () => cmdkClick('logDownload') },
+    { label: '滚动到最新', hint: '', run: () => { try { jumpToBottom(); } catch (e) {} } },
+    { label: '搜索对话内容', hint: 'Ctrl+F', run: () => { cmdkDlg.close(); csOpen(); } },
+    { label: '停止生成', hint: 'Esc', when: () => busy, run: () => { try { stopTurn(); } catch (e) {} } },
+  ];
+}
+
+function cmdkRender() {
+  const q = cmdkInput.value.trim().toLowerCase();
+  cmdkState.items = cmdkActions().filter((a) => (!a.when || a.when()) && (!q || a.label.toLowerCase().includes(q)));
+  cmdkState.sel = 0;
+  cmdkList.textContent = '';
+  if (!cmdkState.items.length) {
+    const d = document.createElement('div');
+    d.className = 'cmdkEmpty';
+    d.textContent = '没有匹配的命令';
+    cmdkList.appendChild(d);
+    return;
+  }
+  cmdkState.items.forEach((a, i) => {
+    const d = document.createElement('div');
+    d.className = 'cmdkItem' + (i === 0 ? ' sel' : '');
+    const s = document.createElement('span');
+    s.textContent = a.label;
+    d.appendChild(s);
+    if (a.hint) {
+      const k = document.createElement('span');
+      k.className = 'kbd';
+      k.textContent = a.hint;
+      d.appendChild(k);
+    }
+    d.addEventListener('click', () => cmdkRun(i));
+    cmdkList.appendChild(d);
+  });
+}
+
+function cmdkPaint() {
+  [...cmdkList.children].forEach((el, i) => el.classList.toggle('sel', i === cmdkState.sel));
+  const sel = cmdkList.children[cmdkState.sel];
+  if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+}
+
+function cmdkMove(d) {
+  const n = cmdkState.items.length;
+  if (!n) return;
+  cmdkState.sel = ((cmdkState.sel + d) % n + n) % n;
+  cmdkPaint();
+}
+
+function cmdkRun(i) {
+  const a = cmdkState.items[i];
+  if (!a) return;
+  try { cmdkDlg.close(); } catch (e) {}
+  try { a.run(); } catch (e) {}
+}
+
+function cmdkOpen() {
+  cmdkInput.value = '';
+  cmdkRender();
+  try { cmdkDlg.showModal(); } catch (e) { return; }
+  cmdkInput.focus();
+}
+
+cmdkInput.addEventListener('input', () => cmdkRender());
+
+/* ---- 统一 keydown 入口（capture，见文件头的清单注释）---- */
+document.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return;   // 输入法组词中，一律不管
+
+  /* 1) 命令面板开着：↑↓/Enter 在这儿处理；Esc 不拦 —— showModal 的 dialog
+        自己有原生 cancel（Esc 就关），别的键全留给面板输入框。 */
+  if (cmdkDlg.open) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); cmdkMove(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); cmdkMove(-1); return; }
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); cmdkRun(cmdkState.sel); return; }
+    return;
+  }
+
+  /* 2) 搜索条开着：Enter/Shift+Enter 翻页、↑↓ 也认、Esc 关掉清高亮。
+        其余按键全留给搜索输入框（打字、粘贴、全选照常），别劫持。 */
+  if (!csBar.hidden) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); csClose(); return; }
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); csNext(e.shiftKey ? -1 : 1); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); csNext(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); csNext(-1); return; }
+    return;
+  }
+
+  /* 3) 带修饰键的快捷键全局有效 —— 焦点在 #input 里打字打到一半也要能呼出。
+        无修饰键的按键走到这儿就放手，一个都不碰。 */
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+    const k = String(e.key || '').toLowerCase();
+    if (k === 'f') { e.preventDefault(); e.stopPropagation(); csOpen(); return; }
+    if (k === 'k') { e.preventDefault(); e.stopPropagation(); cmdkOpen(); return; }
+    if (k === 'n') { e.preventDefault(); e.stopPropagation(); try { createSession(); } catch (err) {} return; }
+  }
+
+  /* 4) Esc 兜底：dialog 开着让浏览器原生关（不拦）；都没有才轮到
+        「停止生成」（只在真在跑时）；焦点在输入框就照常失焦。 */
+  if (e.key === 'Escape') {
+    if (document.querySelector('dialog[open]')) return;
+    if (typeof pick !== 'undefined' && pick.open) return;   // 选文件那层自己有 Esc
+    if (busy) { e.preventDefault(); e.stopPropagation(); try { stopTurn(); } catch (err) {} return; }
+    if (document.activeElement === input) { try { input.blur(); } catch (err) {} }
+    return;
+  }
+}, true);
 
 
 
@@ -19527,5 +20513,16 @@ refreshMusic();
 
 <!-- 【2026-11-05 加】点开看大图。平时不显示，showModal 时靠 ::backdrop 压暗背景 -->
 <dialog id="imgView"><button type="button" class="imgViewClose" title="关闭（Esc 也行）">×</button><img alt=""></dialog>
+
+<!-- 预览抽屉（preview-fixer · 2026-11-11）：点气泡里的文件路径看全文；「查看改动」也走它。
+     内容全由 JS 画（openFileView / openTurnDiff），这里只留骨架。 -->
+<dialog id="fileView">
+  <div class="fvHead">
+    <span class="fvPath" id="fvPath"></span>
+    <button type="button" class="ghost3" id="fvCopy" hidden>复制</button>
+    <button type="button" class="x" id="fvClose" title="关闭（Esc 也行）">关闭</button>
+  </div>
+  <div class="fvBody" id="fvBody"></div>
+</dialog>
 </body>
 </html>

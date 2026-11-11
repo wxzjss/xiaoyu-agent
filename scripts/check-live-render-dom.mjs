@@ -169,6 +169,16 @@ const INSTALL = `(function(){
      * 所以 liveCount = 正文段数，live = 每段的文字（按阅读顺序）。 */
     return {
       liveCount: q('.msg.assistant .bubble').length,
+    /**
+     * 【2026-11-11 加·只数「这一轮的 QA 段」】
+     *
+     * 隔离实例的启动会话可能自带一句开场白（服务端给新会话垫的那对 user→assistant），
+     * 它也算 .msg.assistant 里的一个 .bubble。于是「直播期间最多 3 个容器」会数成 4 个 ——
+     * 红的是环境，不是产品（实测：把 UI 退回分组改动之前，一样 46/2）。
+     * 这一段要验的是「这一轮的三段各有自己的容器」，所以按 QA 前缀过滤计数。
+     */
+    qaCount: q('.msg.assistant .bubble').filter(function(e){ return tx(e).indexOf('QA') >= 0; }).length,
+    qaLive: q('.msg.assistant .bubble').filter(function(e){ return tx(e).indexOf('QA') >= 0; }).map(tx),
       allCount: q('.msg.assistant').length,
       live: q('.msg.assistant .bubble').map(tx),
       text: tx(lg),
@@ -283,9 +293,11 @@ async function caseSegments() {
   }
   ok(!dup, '整个过程任何一刻都没有「同一段出现两遍」', dup || '');
 
-  const maxLive = Math.max(...series.map((s) => s.liveCount || 0));
-  const withThree = series.find((s) => s.liveCount === 3) || null;
+  const maxLive = Math.max(...series.map((s) => s.qaCount || 0));
+  const withThree = series.find((s) => s.qaCount === 3) || null;
   ok(maxLive === 3, '直播期间正文容器最多 3 个（一段一个）', '最多见到 ' + maxLive + ' 个');
+  ok(series.every((s) => (s.qaCount || 0) <= 3), '整个过程这一轮的容器从不超过 3 个',
+    '最多 ' + maxLive + ' 个');
 
   /* 工具卡 / 思考块在直播期间的样子（回归面）
    * 注意：第一次看见工具卡那一刻它当然还是「运行中…」，所以这里看**整条时间线上
@@ -306,9 +318,9 @@ async function caseSegments() {
   ok(series.some((s) => s.sending), '跑着的时候「正在发送消息」在屏幕上');
 
   /* 轮末之后那段（丙）另起一个气泡，不是接在乙后面 */
-  ok(!!withThree && cnt(withThree.live.join('|'), B) === 1 && cnt(withThree.live.join('|'), C) === 1,
+  ok(!!withThree && cnt(withThree.qaLive.join('|'), B) === 1 && cnt(withThree.qaLive.join('|'), C) === 1,
     '轮末之后的那段另起一个容器（乙、丙各在自己那句里）',
-    withThree ? JSON.stringify(withThree.live) : '没抓到 liveCount=3 那一刻');
+    withThree ? JSON.stringify(withThree.qaLive) : '没抓到 qaCount=3 那一刻');
 
   /* 等 runTurn 收尾（settleFromHistory 会把这一屏交给历史） */
   for (let i = 0; i < 60; i++) {

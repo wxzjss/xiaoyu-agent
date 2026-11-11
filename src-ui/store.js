@@ -18,19 +18,62 @@
 const listeners = new Set();
 let version = 0;
 
-/** 展开态：item key -> true。按 key 记，重渲染只改文本，open 属性不动。 */
-export const openMap = new Map();
+/**
+ * 展开态：item key -> true。按 key 记，重渲染只改文本，open 属性不动。
+ *
+ * 【2026-11-12 修·主人报「切会话之后柜子自己开着/自己合上」】
+ *
+ * item key 里只有**轮次绝对下标**（`t-81-tl0` / `hub-t-81-tl0`），没有会话身份。
+ * 于是 A 会话里把第 81 轮那个柜子点开，切到 B 会话 —— B 的同号轮次拿到同一个 key，
+ * 打开状态直接被认成「开着的」：主人看到的是「B 里的柜子莫名其妙自己开了」。
+ * 探针（scripts/_t_switch_probe.mjs 三）复现：A 点开柜子 → 切到 B，B 的
+ * `details.toolhub[open]` 数 = 1。
+ *
+ * 这里把 openMap 包成「按当前会话自动加前缀」的一层：
+ *   · 调用方（useOpen）的用法一个字都不用改：has / get / set / delete / clear 照旧；
+ *   · 真正落账的 key 是 `<sid>|item key`，两个会话的同号轮次互不相干；
+ *   · sid 取的是**这一屏**（LOG_STATE.sid），跟屏幕上画的是同一份。
+ *
+ * 注意：光换 key 还不够。两个会话的行 React key 也可能撞（同样的 `hub-t-81-tl0`），
+ * 那样组件实例被复用、`useState` 的初值不会重新读 —— LogView 那边给行 key 加了
+ * 会话前缀，保证换屏时每一行都是新实例（见 LogView 里 RowBoundary 的 key）。
+ */
+const OPEN_PREFIX_SEP = '\u0000';
+const openRaw = new Map();
+export const openMap = {
+  get(key) { return openRaw.get(screenSid() + OPEN_PREFIX_SEP + String(key)); },
+  has(key) { return openRaw.has(screenSid() + OPEN_PREFIX_SEP + String(key)); },
+  set(key, v) { openRaw.set(screenSid() + OPEN_PREFIX_SEP + String(key), v); return openMap; },
+  delete(key) { return openRaw.delete(screenSid() + OPEN_PREFIX_SEP + String(key)); },
+  /* 清空是「全清」（所有会话）。切会话时**不**调它 —— 别的会话的展开态要留着。 */
+  clear() { openRaw.clear(); },
+  get size() { return openRaw.size; },
+};
+
 
 /* ── 辅助切片 ───────────────────────────────────────────────── */
 
+/**
+ * 这一屏属于哪个会话（展开态 / 编辑态都按它分账）。
+ * 【2026-11-12 统一口径】不自己再算一套 —— 直接用 effectiveSid()
+ * （「LOG_STATE.sid 有就用它，没有退 window.sessionId」，见下面那个函数的注释）。
+ * 两处各读一套的话，「sid 还没摆上来」那一拍会出现「屏幕说 A、账记在空串」。
+ */
+function screenSid() {
+  return effectiveSid();
+}
+
 /** 还没落盘的那句主人消息（乐观插入，落盘后自动消失） */
 let pendingUser = [];
-/**
- * running true→false 翻转拍的缓冲（见 setLive 内注释）：
+/** running true→false 翻转拍的缓冲（见 setLive 内注释）：
  * 待落的 false 快照 + 定时器句柄。
- */
+ * 【2026-11-11 补】还要记住「我们准备顶掉的是哪一份快照 / 收到它时历史多长」——
+ * 250ms 后靠这两样判断这期间有没有更新的写（见 _fireFalseWrite）。 */
 let _falseWritePending = null;
 let _falseWriteTimer = 0;
+let _falseWriteSid = '';
+let _falseWritePrevLive = null;
+let _falseWritePrevTurns = 0;
 /** 系统提示（报错 / 限流 / 断线）。老实现里它挂在屏幕末尾，下次整屏重画时被冲掉 —— 口径照旧。 */
 let notes = [];
 /** 历史窗口起点（只画最近 N 轮）。key 是 sid。 */
@@ -64,11 +107,29 @@ let seq = 0;
  * 「编辑框一开就清空原内容」。现在 textarea 由 React 受控渲染，
  * 提交回流只会让「同一行」在「气泡 ⇄ 编辑框」之间按 state 切换，谁也冲不掉谁。
  */
+/**
+ * 【2026-11-12 修·主人报「切到别人身份/别的会话之后，旧消息的编辑框还在」】
+ *
+ * 编辑态原来是全局一个 `{key, at}`。而 key 里只有轮次下标（`t-80`），
+ * 于是「正在编辑 A 会话第 80 轮」切到 B 会话 —— B 的第 80 轮 key 一模一样，
+ * 屏幕上当场给 B 的这句话套上编辑框（探针三/四 复现：
+ * 切到 B 后 `#log textarea.editArea` 数 = 1，getEdit() 还是 A 的 {key:'t-80'}）。
+ * 更糟的是那颗 `at` 是 A 的回退下标，主人要是随手点「存上」，
+ * 改的就是 B 里同下标的**另一句话**。
+ *
+ * 现在：edit 带上它属于哪个会话；
+ *   · getEdit() 只在「还是这一屏」时才交出去（key 撞了也不认）；
+ *   · setHistory 换屏时直接清掉（切走 = 放弃这次编辑，草稿不留到别人屏幕上）。
+ */
 let edit = null;
 
 /** 进入编辑态（key：item 的 key；at：回退点下标，保存时要用） */
 export function beginEdit(key, at) {
-  edit = { key: String(key || ''), at: Number.isFinite(Number(at)) ? Number(at) : null };
+  edit = {
+    key: String(key || ''),
+    at: Number.isFinite(Number(at)) ? Number(at) : null,
+    sid: screenSid(),
+  };
   bump();
 }
 
@@ -79,8 +140,10 @@ export function endEdit() {
   bump();
 }
 
+/** 正在编辑的那一条 —— 只属于**这一屏**（换了会话就当没在编辑） */
 export function getEdit() {
-  return edit;
+  if (!edit) return null;
+  return edit.sid === screenSid() ? edit : null;
 }
 
 /* ── 订阅 ───────────────────────────────────────────────────── */
@@ -137,19 +200,40 @@ function logState() {
   return { sid: '', turns: [], live: null };
 }
 
+/**
+ * 【2026-11-11 补·「这一屏是谁」的唯一口径】
+ *
+ * LOG_STATE.sid 是 **setHistory 之后**才摆上来的，可乐观气泡是「按下发送那一刻」
+ * 同步记账、也是「这一刻」就要画的。两边若各读一套，空 sid 那段窗口期就出鬼：
+ *   · 记成空 sid → getSnapshot 的 `!p.sid` 放行 → **每一屏都画**，且
+ *     dropPendingForScreen 的 `p.sid && p.sid !== 本屏` 永远清不掉 = 跨屏孤儿；
+ *   · 记成真 sid、读侧却还拿空 sid 比 → 刚发的那句**这一拍不画**（主人看到「我的话没上屏」）。
+ *
+ * 所以记账、读快照、清本屏这三处统一走这里：LOG_STATE.sid 有就用它，
+ * 没有就退到 window.sessionId（index.html:19318 那个 getter，跟 sessionId 同源）。
+ */
+function effectiveSid() {
+  const s = String(logState().sid || '');
+  if (s) return s;
+  try { return String(window.sessionId || ''); } catch (e) { return ''; }
+}
+
 /* ── 快照：给 React 用的只读视图 ───────────────────────────── */
 
 export function getSnapshot() {
   const st = logState();
   const _sid = String(st.sid || '');
+  /* 【2026-11-11】「本屏」一律按 effectiveSid 算（见它的注释）：
+   * 只拿 LOG_STATE.sid 比的话，还没 setHistory 的那一拍会把刚发的那句藏起来。 */
+  const _eff = effectiveSid();
   return {
     sid: _sid,
     turns: Array.isArray(st.turns) ? st.turns : [],
     live: st.live && Array.isArray(st.live.items) ? st.live : null,
     /* 只画本屏的乐观气泡 —— 别的会话的账不属于这一屏（串消息根治） */
-    pendingUser: pendingUser.filter((p) => !p.sid || p.sid === _sid),
+    pendingUser: pendingUser.filter((p) => !p.sid || p.sid === _eff),
     notes,
-    windowStart: histWin.get(_sid) || 0,
+    windowStart: histWin.get(_eff) || 0,
   };
 }
 
@@ -176,13 +260,27 @@ export function setHistory(sid, turns) {
    *     （finishTurn 对后台轮的收账被 sid 校验挡住），切回时历史里已有这句，
    *     不收就是两颗。收完的本屏账 + 原样保留的别家账 = 新账本。
    */
-  const others = pendingUser.filter((p) => p.sid && p.sid !== _sid);
+  const others = pendingUser.filter((p) => p.sid && p.sid !== (_sid || effectiveSid()));
   const mine = dropLandedPending(
-    pendingUser.filter((p) => !p.sid || p.sid === _sid),
+    pendingUser.filter((p) => !p.sid || p.sid === (_sid || effectiveSid())),
     st.turns,
   );
   pendingUser = mine.concat(others);
-  if (changedScreen) histWin.delete(_sid);
+  if (changedScreen) {
+    /**
+     * 【2026-11-12 修·换屏要清的几笔账（切会话的四个病一起收）】
+     *
+     *   · histWin：窗口起点是「用户在这个会话里翻到哪儿」，换进来一律从
+     *     「最近 WINDOW 轮」开始（buildMerged 自己会兜底），不能带着上一屏的。
+     *   · edit：正在编辑的那一行属于上一屏（key 会撞），切走就当放弃 —— 见 beginEdit。
+     *   · notes 上面已经整屏清了（换成 []）。
+     *
+     * 这里**刻意不清 openMap**：展开态是按会话记的（见 openMap），
+     * 切回去主人还想看到自己刚才看开的那个柜子；串开合由 key 前缀 + 行 key 解决。
+     */
+    histWin.delete(_sid);
+    edit = null;
+  }
   bump();
 }
 
@@ -213,19 +311,12 @@ export function setLive(sid, live) {
   if (_nowFalse && (_wasRunning || _falseWriteTimer)) {
     _falseWritePending = live;
     if (!_falseWriteTimer) {
-      const _sid0 = sid;
-      _falseWriteTimer = setTimeout(() => {
-        _falseWriteTimer = 0;
-        const _p = _falseWritePending;
-        _falseWritePending = null;
-        if (!_p) return;
-        const _st = logState();
-        if (String(_sid0 || '') !== String(_st.sid || '')) return;
-        /* 屏上已经有更新的在跑快照（新一轮接上了）—— 别拿旧的 running:false 盖 */
-        if (_st.live && _st.live.running !== false) return;
-        _st.live = _p;
-        bump();
-      }, 250);
+      _falseWriteSid = String(sid || '');
+      /* 【2026-11-11 补】记下「要顶掉的是哪一份」「此刻历史多长」——
+       * 250ms 后判断有没有更新的写，就靠这两个（见 _fireFalseWrite）。 */
+      _falseWritePrevLive = st.live;
+      _falseWritePrevTurns = Array.isArray(st.turns) ? st.turns.length : 0;
+      _falseWriteTimer = setTimeout(_fireFalseWrite, 250);
     }
     return true;
   }
@@ -240,6 +331,51 @@ export function setLive(sid, live) {
   return true;
 }
 
+/**
+ * 【2026-11-11 修·收尾那一拍可能永远落不了账（steer-fixer）】
+ *
+ * 缓冲到点要做的事，判据原来只写了「屏上还有 running:true 的快照就别盖」：
+ *
+ *     if (_st.live && _st.live.running !== false) return;
+ *
+ * 可那「running:true 的快照」往往**正是我们准备顶掉的那一份旧账**（服务端刚说
+ * running:false，followLive 还没来得及写新的）。于是这句判据恒真 → 到点一次也不落账
+ * → `live` 永远停在 running:true：按钮一直是【停止】、输入框一直锁着，屏幕上
+ * 直播那份和她落盘的历史**同时**画着这一轮（一次收尾留下两份）。
+ * finishTurn 真正跑到 setHistory+setLive(null) 时能救回来，可它一旦提前 return
+ * （排队轮 / 切走 / 抛错）就没人来救了 —— 只能 F5。
+ *
+ * 现在把「有没有更新的写」判准：比**对象身份**（st.live 还是不是我们记下的那一份），
+ * 不再拿「它是不是 running:true」当证据。三种情况：
+ *   ① 屏上那份已经换人（新一轮的 running:true 接上了，或者已被 setLive(null) 收掉）
+ *      → 一个字节都不写（旧的 false 不许盖新的）；
+ *   ② 这期间历史长过了（finishTurn 的 setHistory 已经接管）→ 把 live 收成 null，
+ *      干净交棒：既不重复也不留空帧；
+ *   ③ 什么都没有（finishTurn 没来）→ 落账那份 running:false。
+ *      宁可屏幕上少画一段（历史还在，下一拍就对上了），也不能一直骗自己"还在跑"。
+ */
+function _fireFalseWrite() {
+  _falseWriteTimer = 0;
+  const p = _falseWritePending;
+  _falseWritePending = null;
+  if (!p) return;
+  const st = logState();
+  /* ① 切走了：这份账不属于这一屏 */
+  if (_falseWriteSid !== String(st.sid || '')) return;
+  /* ② 这期间有更新的写（换人 / 已经收成 null）→ 别拿旧的 false 去盖 */
+  if (st.live !== _falseWritePrevLive) return;
+  const _len = Array.isArray(st.turns) ? st.turns.length : 0;
+  if (_len > _falseWritePrevTurns) {
+    /* ③ 历史已经接住了：直播收摊，屏幕交给历史 */
+    st.live = null;
+    pendingUser = dropLandedPending(pendingUser, st.turns);
+  } else {
+    /* ④ 没人接手：落账真相（running:false），别让界面永远以为在跑 */
+    st.live = p;
+  }
+  bump();
+}
+
 /** 只通知，不改数据（renderLog 现在就是这个语义：数据早摆好了，React 自己会画） */
 export function notify() {
   bump();
@@ -251,8 +387,19 @@ export function pushPendingUser(o) {
   seq += 1;
   const item = {
     id: 'p' + seq,
-    /* 会话归属：发话那一刻在哪一屏，这句话就是哪家的账 */
-    sid: String(logState().sid || ''),
+    /**
+     * 会话归属：发话那一刻在哪一屏，这句话就是哪家的账。
+     *
+     * 【2026-11-11 补·sid 取不到会变成跨屏孤儿】
+     * 原来只读 LOG_STATE.sid。可它是**异步摆上来**的（setHistory 才写），
+     * 而 pushPendingUser 是「按下发送那一刻」同步调的。万一这一刻 sid 还是空串，
+     * 这颗气泡就带着 `sid: ''` 进账本，后果两头都坏：
+     *   · getSnapshot 的过滤是 `!p.sid || p.sid === 本屏` → 空 sid 在**每一屏**都画出来；
+     *   · dropPendingForScreen 的过滤是 `p.sid && p.sid !== 本屏` → 空 sid 永远清不掉。
+     * 于是「我在 A 说了一句，切到 B 屏幕上还挂着我那句话，怎么都收不掉」。
+     * 兜底读 window.sessionId（index.html:19318 那个 getter，跟 LOG_STATE.sid 同源）。
+     */
+    sid: effectiveSid(),
     text: String(it.text || ''),
     atts: Array.isArray(it.atts) ? it.atts.filter((a) => a && a.path) : [],
     who: String(it.who || ''),
@@ -300,7 +447,7 @@ export function pushNote(text, actions) {
 
 /** 历史窗口：只画最近 N 轮，往上翻再补 */
 export function setWindowStart(sid, start) {
-  const _sid = String(sid || '');
+  const _sid = String(sid || '') || effectiveSid();
   const n = Math.max(0, Number(start) || 0);
   if (histWin.get(_sid) === n) return;
   histWin.set(_sid, n);
@@ -372,7 +519,9 @@ function dropLandedPending(list, turns) {
  * 只清本屏（按 sid 过滤），别的会话的账原样留着（切回去还要用）。
  */
 export function dropPendingForScreen() {
-  const _sid = String(logState().sid || '');
+  /* 【2026-11-11】「本屏」按 effectiveSid 算：记成空 sid 的账（极早期那一拍）
+   * 原来一律被判成「别家的」而原样留着 —— 那就是怎么都收不掉的孤儿。 */
+  const _sid = effectiveSid();
   const before = pendingUser.length;
   pendingUser = pendingUser.filter((p) => p.sid && p.sid !== _sid);
   const dropped = before - pendingUser.length;

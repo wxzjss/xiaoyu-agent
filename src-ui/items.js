@@ -152,13 +152,35 @@ function turnToItems(turn, abs, userChars) {
     const who = String(turn.who || '');
     /* 群聊里别人说的话被存成 role:'user'（老数据），按「那个人」的样子画 */
     const isMate = Boolean(who) && who !== '主人';
+    /**
+     * 【2026-11-11 修·插话在历史里「堆到轮末」（steer-fixer）】
+     *
+     * 服务端 publicSession 会给插话消息带两个记号（server.mjs:637 / 12662）：
+     *   steer: true    这句是主人半路插进来的
+     *   steerAt: N     他插话那一刻**她那段话**已经说出多少字（_atChars）
+     *
+     * 老 DOM 渲染器靠这两个数把她那段话劈成两半、把主人的话嵌在中间；
+     * React 重写后 turnToItems 把它们整个忽略了 —— 于是历史里的插话只能按
+     * 数组顺序排（在她那段话**之后**），看起来就是「我的话跑到她那段话后面 /
+     * 堆到这一轮最末」。这里把两个字段带到 item 上，劈段由 buildMerged 末尾
+     * 的 applySteerSplits() 负责（它要看到「前一条 assistant」，单条 turn 里看不到）。
+     *
+     * tag 也跟着给上「插话」：轮末落盘换历史时，那颗气泡的小标不许消失
+     * （直播那条路 liveToItems 一直有）。
+     */
+    const _steer = turn.steer === true;
+    /* 【别用 numOrNull】`Number(null)` 是 0 —— null 会被当成「steerAt = 0」，
+     * 老插话（没有这个字段）就会跑到那一段前面去。只认真的数字。 */
+    const _steerAt = typeof turn.steerAt === 'number' && Number.isFinite(turn.steerAt) ? turn.steerAt : null;
     out.push({
       kind: isMate ? 'mate' : 'user',
       key,
       text: String(turn.text || ''),
       atts: Array.isArray(turn.atts) ? turn.atts.filter((a) => a && a.path) : [],
       who,
-      tag: '',
+      tag: _steer ? '插话' : '',
+      steer: _steer || undefined,
+      steerAt: _steer ? _steerAt : null,
       rewindId: numOrNull(turn.rewindId),
       ts: numOrNull(turn.ts),
       edited: Boolean(turn.edited),
@@ -431,6 +453,119 @@ function liveToItems(items, running) {
 }
 
 /**
+ * 【2026-11-11 新增·插话按 steerAt 劈段】把「她那段话」劈成两半，把主人的话嵌在中间。
+ *
+ * ══ 为什么要这一步 ══
+ *
+ * 主人 2026-11-11 原话：「正常发消息，一轮结束消息全堆在轮末」「插话后她已说出的
+ * 回复也消失」。前者是 store.js 那头乐观气泡没收掉（已修），后者的一半就是这个：
+ * 直播时插话靠服务端往清单里推 k:'user'（位置＝事件真实顺序）画对了，
+ * 可**轮末落盘换历史之后**，历史里那条 user turn 只能按数组顺序排在她那段话后面 ——
+ * 屏幕上的话当场从「中间」跳到「末尾」，主人看到的就是「她已说出的回复没了 /
+ * 我的话堆到最下面」。
+ *
+ * ══ steerAt 的口径（跟服务端/老渲染器必须一致）══
+ *
+ * `steerAt` = 插话那一刻**她当前那一段正文**已经吐出多少字（server.mjs:12662
+ * 的 _atChars，前端 index.html:9930 那段算的）。它**不是**整轮累计字数：
+ * 一轮里只要调过工具，正文就会被劈成好几段 assistant turn，累计值远大于
+ * 「当前这一段」的长度，按累计值去劈会把主人的话插到很早以前那一段里面
+ * （index.html:9949「2026-11-05 修·插话跑到很早之前」记的就是这个坑）。
+ *
+ * 所以这里**只认紧挨着的那一段**（合并后的最后一个气泡），不跨气泡累加：
+ *   · 多个气泡（同一句话被工具劈开、在 buildMerged 里合并回来的）→ 只劈最后一个；
+ *     前面那几段一个字符都不动，绝不把某个气泡劈成空气泡。
+ *   · steerAt 可能大于该段长度（她插话后又说了几个字才停）→ Math.min 夹到段末，
+ *     等于「不劈」，一个字不丢、不重复。
+ *   · steerAt = 0（她这一段还没吐字）→ 插话排在这一段**前面**。
+ *
+ * @param {Array} items 已经合并好（同轮同署名的 assistant 并回一个气泡）的历史条目
+ * @returns {Array} 新数组（不改入参）
+ */
+export function applySteerSplits(items) {
+  const arr = Array.isArray(items) ? items : [];
+  const out = [];
+  for (let i = 0; i < arr.length; i++) {
+    const it = arr[i];
+    const nx = arr[i + 1];
+    /**
+     * 判据三件齐了才劈：
+     *   ① 前一条是**历史**里的 assistant（直播那条路服务端已经排好，别插手；
+     *      mate / say 是别人说的，steerAt 量的不是他的话）；
+     *   ② 后一条是带 steer 的 user；
+     *   ③ steerAt 是个**数**（老会话没有这个字段 → 照老样子排末尾，绝不去猜）。
+     *
+     * ③ 必须写成 typeof === 'number'：`Number(null)` 是 0，用 Number.isFinite(Number(x))
+     * 判的话「带 steer 但没有 steerAt」的老插话会被当成 steerAt=0 → 插话跑到那一段
+     * **前面**去（本来该排末尾）。null 不是数，别让它混进来。
+     */
+    if (
+      it &&
+      it.kind === 'assistant' &&
+      !it.isLive &&
+      nx &&
+      nx.kind === 'user' &&
+      nx.steer &&
+      typeof nx.steerAt === 'number' &&
+      Number.isFinite(nx.steerAt)
+    ) {
+      const cut = splitSteerAt(it, nx, nx.steerAt);
+      if (cut) {
+        for (const x of cut) out.push(x);
+        i += 1;              /* 插话那条已经嵌进去了，别再画第二遍 */
+        continue;
+      }
+    }
+    out.push(it);
+  }
+  return out;
+}
+
+/**
+ * 把 prev 那段正文在 at 处劈开 → [前半 assistant, 插话 user, 后半 assistant]。
+ *
+ * 返回 null = 不用劈（at 落在段末 / 这段没有正文），调用方照原顺序画。
+ */
+function splitSteerAt(prev, steerItem, at) {
+  const bs = Array.isArray(prev.bubbles) ? prev.bubbles.map((b) => String(b == null ? '' : b)) : [];
+  const lastIdx = bs.length - 1;
+  if (lastIdx < 0) return null;
+  const last = bs[lastIdx];
+  if (!last) return null;                       /* 这一段本来就是空的：没得劈 */
+  const cut = Math.max(0, Math.min(last.length, Math.floor(Number(at) || 0)));
+  /* ① 落在段末：本来就是这个位置，什么都不用做（这是最常见的一拍：
+   *    她这一整段已经说完，插话本来就该排在这一段之后） */
+  if (cut >= last.length) return null;
+  /* ② 0 字：她这一段还没开始说 → 插话排在这一段**前面** */
+  if (cut === 0) return [steerItem, prev];
+  /* ③ 中间：前半 / 插话 / 后半 */
+  const frontItem = Object.assign({}, prev, {
+    /* 前半保住原 key / rewindId / 用量行 —— 「这一轮」的按钮和用量都挂在它上面，
+     * 挪到后半就等于把编辑、回退、分支全挂到了一段"残句"上。 */
+    bubbles: bs.slice(0, lastIdx).concat([last.slice(0, cut)]),
+  });
+  const backItem = {
+    kind: 'assistant',
+    /* key 必须稳定且不撞：前半是 t-<绝对下标>，后半挂 -sb 后缀。
+     * 用绝对下标而不是序号，往前补历史/新来内容都不会让它平移。 */
+    key: String(prev.key || '') + '-sb',
+    who: prev.who,
+    bubbles: [last.slice(cut)],
+    /* 编辑/回退/分支/删除四颗按钮只给前半（同一个 turn 不许长出两套按钮） */
+    rewindId: null,
+    ts: null,
+    edited: false,
+    cont: false,
+    usage: null,
+    model: '',
+    replyChars: last.slice(cut).length,
+    userChars: 0,
+    isLive: false,
+  };
+  return [frontItem, steerItem, backItem];
+}
+
+/**
  * 主入口：快照 → 清单。
  * 顺序永远是：历史 → （还没落盘的主人那句）→ 直播。落盘之后乐观那条自动消失，
  * 位置不跳 —— 因为它本来就在同一个地方。
@@ -565,6 +700,9 @@ export function buildMerged(snap) {
     running,
     start,
     totalTurns: all.length,
-    items: items.concat(pend, live, noteItems),
+    /* 【2026-11-11】历史这一份先过一道「插话劈段」：带 steerAt 的插话要把她那段话
+     * 劈成两半、自己嵌在中间（见 applySteerSplits）。只对历史做 —— pend 是新发的
+     * 那句（没有 steerAt），live 那边服务端已经按事件顺序排好了。 */
+    items: applySteerSplits(items).concat(pend, live, noteItems),
   };
 }

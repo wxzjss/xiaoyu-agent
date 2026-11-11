@@ -1,0 +1,20 @@
+/* 小鱼Agent · highlight.js 配色（离线 vendor，2026-11-11）
+ *
+ * 为什么不用官方 theme 原样搬：代码块底色跟气泡走（.mdcode pre 是半透明灰，
+ * 深浅皮肤都会出现），官方主题的 token 色要么按白底调要么按黑底调，
+ * 单边适用。这里的颜色一律选中等明度（在白底和近黑底上都可读），并把
+ * .hljs 背景强制透明、颜色继承气泡文字色。
+ * 失败降级：这个文件没加载出来 → .hljs-* 无样式 → 原样纯色，无害。
+ */
+.hljs { color: inherit; background: transparent; }
+.hljs-comment, .hljs-quote { color: #8a94a3; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-subst { color: #9d5cd0; }
+.hljs-literal, .hljs-number, .hljs-selector-attr, .hljs-template-variable, .hljs-variable { color: #b7791f; }
+.hljs-string, .hljs-doctag, .hljs-regexp, .hljs-addition { color: #4d9e57; }
+.hljs-title, .hljs-title.class_, .hljs-title.function_, .hljs-section, .hljs-name { color: #4c86cf; }
+.hljs-attr, .hljs-attribute, .hljs-bullet, .hljs-symbol, .hljs-meta { color: #cc7a38; }
+.hljs-type, .hljs-built_in, .hljs-builtin-name, .hljs-class .hljs-title { color: #2aa1a1; }
+.hljs-deletion { color: #c0504d; }
+.hljs-link { color: #4b9eff; text-decoration: underline; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }

@@ -22,6 +22,9 @@
     html, body { background: #0f1115; }
 
   </style>
+  <!-- 【2026-11-11 加·离线 highlight.js 配色】vendor 里是本地文件，不联网；
+       加载失败只是 token 无色（纯色降级），不影响任何功能。 -->
+  <link rel="stylesheet" href="/vendor/hljs-theme.css" />
   <style>
     /* 滚动条：暗色细条，别跟背景打架 */
     * { scrollbar-width: thin; scrollbar-color: #2c333f transparent; }
@@ -3245,6 +3248,36 @@
   opacity: .7;
 }
 .bubble.md .mdcopy:hover { opacity: 1; }
+/* 【2026-11-11 加·代码块语言角标】复用 .mdcopy 的观感（同字号/同圆角/同半透明灰），
+   角标在右上，有角标时复制按钮往左挪一格，两个不打架。 */
+.bubble.md .mdlang {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(127, 127, 127, .35);
+  background: rgba(127, 127, 127, .12);
+  color: inherit;
+  opacity: .7;
+  pointer-events: none;
+  user-select: none;
+}
+.bubble.md .mdcode.haslang .mdcopy { right: 58px; }
+/* 【2026-11-11 加·md 补齐四类】删除线 / 引用块 / 任务列表勾选框（只读） */
+.bubble.md del { opacity: .62; }
+.bubble.md blockquote {
+  margin: 6px 0;
+  padding: 4px 10px;
+  border-left: 3px solid rgba(127, 127, 127, .45);
+  background: rgba(127, 127, 127, .1);
+  border-radius: 0 6px 6px 0;
+}
+.bubble.md blockquote .mdp { margin: 0 0 4px; }
+.bubble.md blockquote > :last-child { margin-bottom: 0; }
+.bubble.md blockquote ul, .bubble.md blockquote ol { margin: 4px 0; }
+.bubble.md li input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; }
 .bubble.md .mdtable { margin: 8px 0; overflow-x: auto; }
 .bubble.md table {
   border-collapse: collapse;
@@ -4434,6 +4467,9 @@
   <!-- 【2026-11-09 换框架】对话区（#log）改由 React 渲染。
        产物是预构建好、**跟着仓库一起发**的单文件（发布物不带 node_modules）。
        放在模块脚本前面：经典脚本立刻执行，所以 chat.js 起来之前 store 就已经在了。 -->
+  <!-- 【2026-11-11 加·离线 highlight.js】本地 vendor（约 96KB / 19 种常用语言），不联网。
+       加载失败时渲染链自己降级成纯色，页面照常。 -->
+  <script src="/vendor/hljs-common.min.js"></script>
   <script src="/ui/log.bundle.js"></script>
   <script type="module" src="/ui/hub.js"></script>
   <script type="module" src="/ui/sessions.js"></script>
@@ -5246,21 +5282,23 @@ document.addEventListener("keydown", (e) => {
  *   ② 只用 DOM 构建（createElement / textContent），不拼 innerHTML —— 她说的内容
  *      里带 script 标签也只是文字，不会变成节点。
  *   ③ 只管最痛的几类：代码块、表格、标题、列表、**粗体**、`行内代码`、裸链接。
- *      嵌套列表、引用块这些不处理，原样出。
+ *      【2026-11-11 加·md 补齐】引用块（>，可嵌套）、嵌套列表、任务列表（只读勾选框）、
+ *      删除线（~~xx~~）也补上了；代码块接离线 highlight.js 高亮 + 语言角标。
  *
  * 只作用于**历史渲染**这条路。流式那一路仍旧纯文本 —— 每收一个 token 就整篇
  * 重新解析 markdown 太贵，而且会把正在写的半截代码块画得乱七八糟。
  */
 function mdHasFeature(t) {
-  return /```|\*\*[^*\n]+\*\*|`[^`\n]+`|^\s{0,3}#{1,6}\s|^\s{0,3}[-*+]\s|^\s*\d+\.\s|^\s*\|.*\|\s*$/m.test(String(t || ''));
+  /* 【2026-11-11 加·md 补齐】新增四类特征：~~删除线~~、> 引用、- [ ] 任务列表 */
+  return /```|\*\*[^*\n]+\*\*|`[^`\n]+`|~~[^~\n]+~~|^\s{0,3}#{1,6}\s|^\s{0,3}[-*+]\s|^\s*\d+\.\s|^\s{0,3}>|^\s*\|.*\|\s*$/m.test(String(t || ''));
 }
 
-/** 行内：**粗** `代码` 和裸链接。返回一串节点，安全。 */
+/** 行内：**粗** `代码` ~~删~~ 和裸链接。返回一串节点，安全。 */
 function mdInline(text) {
   const out = [];
   const s = String(text || '');
-  // 先按 `代码` 和 **粗体** 切开，剩下的再找裸链接
-  const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+  // 先按 `代码` 和 **粗体**、~~删除线~~ 切开，剩下的再找裸链接
+  const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*|~~[^~\n]+~~)/g;
   let last = 0;
   let m;
   const pushPlain = (seg) => {
@@ -5287,6 +5325,11 @@ function mdInline(text) {
       const c = document.createElement('code');
       c.textContent = tok.slice(1, -1);
       out.push(c);
+    } else if (tok.startsWith('~~')) {
+      /* 【2026-11-11 加·删除线】textContent 走安全路径，内容原样转义 */
+      const d = document.createElement('del');
+      d.textContent = tok.slice(2, -2);
+      out.push(d);
     } else {
       const b = document.createElement('strong');
       const inner = tok.slice(2, -2);
@@ -5490,6 +5533,15 @@ function mdInto(el, rawText) {
         var __t = __ls[__k].trim();
         if (__t.length > 1 && __t.charAt(0) === String.fromCharCode(124) && __t.charAt(__t.length - 1) === String.fromCharCode(124)) { __hasTbl = true; break; }
       }
+      /* 【2026-11-11 加·md 补齐】引用块（行首 >）和列表（含嵌套缩进）跟表格一样
+       *  靠单换行连着 —— 升级成空行就把连续引用拆成一堆碎块、嵌套列表直接断代，
+       *  所以这类段落也整段原样留换行。 */
+      if (!__hasTbl) {
+        for (var __k2 = 0; __k2 < __ls.length; __k2++) {
+          var __t2 = __ls[__k2];
+          if (/^\s{0,3}>/.test(__t2) || /^\s{0,3}([-*+]|\d+\.)\s+/.test(__t2)) { __hasTbl = true; break; }
+        }
+      }
       if (__ls.length) __out.push(__ls.join(__hasTbl ? __NL : __NL + __NL));
     }
     text = __out.join(__NL + __NL);
@@ -5502,6 +5554,15 @@ function mdInto(el, rawText) {
   el.classList.add('md');
   el.textContent = '';
   const lines = text.split(/\r?\n/);
+  emitMdBlocks(el, lines);
+}
+
+/**
+ * 【2026-11-11 抽出·块级渲染】原来整个 while 内联在 mdInto 里；
+ * 引用块要递归（引用里还能再套引用 / 列表 / 代码块），所以提成独立函数。
+ * 只挪位置，行为不变。
+ */
+function emitMdBlocks(target, lines) {
   let i = 0;
 
   while (i < lines.length) {
@@ -5518,9 +5579,24 @@ function mdInto(el, rawText) {
       const code = document.createElement('code');
       if (lang) code.dataset.lang = lang;
       code.textContent = buf.join('\n');
+      /* 【2026-11-11 加·离线高亮】vendor/hljs-common.min.js（不联网）。
+       * 失败降级：hljs 没加载出来 / 语言不认 / 高亮抛错 → 原样纯色，绝不报错断流。 */
+      try {
+        if (lang && typeof window !== 'undefined' && window.hljs && window.hljs.getLanguage(lang)) {
+          window.hljs.highlightElement(code);
+        }
+      } catch { /* 降级：纯色 */ }
       pre.appendChild(code);
       const box = document.createElement('div');
-      box.className = 'mdcode';
+      /* 【2026-11-11 加·语言角标】dataset.lang 存了但一直没显示 —— 补上。
+         样式复用 .mdcopy 那套观感（.mdlang），haslang 让复制按钮左移一格。 */
+      box.className = lang ? 'mdcode haslang' : 'mdcode';
+      if (lang) {
+        const tag = document.createElement('span');
+        tag.className = 'mdlang';
+        tag.textContent = lang;
+        box.appendChild(tag);
+      }
       const cp = document.createElement('button');
       cp.type = 'button';
       cp.className = 'mdcopy';
@@ -5532,7 +5608,7 @@ function mdInto(el, rawText) {
       };
       box.appendChild(cp);
       box.appendChild(pre);
-      el.appendChild(box);
+      target.appendChild(box);
       continue;
     }
 
@@ -5567,7 +5643,7 @@ function mdInto(el, rawText) {
       const wrapT = document.createElement('div');
       wrapT.className = 'mdtable';
       wrapT.appendChild(tb);
-      el.appendChild(wrapT);
+      target.appendChild(wrapT);
       continue;
     }
 
@@ -5577,27 +5653,36 @@ function mdInto(el, rawText) {
       const h = document.createElement('div');
       h.className = 'mdh mdh' + hm[1].length;
       mdInline(hm[2]).forEach((n) => h.appendChild(n));
-      el.appendChild(h);
+      target.appendChild(h);
       i += 1;
       continue;
     }
 
-    // 无序 / 有序列表（连续同类行合成一个 <ul>/<ol>）
-    if (/^\s{0,3}[-*+]\s+/.test(line) || /^\s{0,3}\d+\.\s+/.test(line)) {
-      const ordered = /^\s{0,3}\d+\.\s+/.test(line);
-      const list = document.createElement(ordered ? 'ol' : 'ul');
-      while (i < lines.length) {
-        const cur = lines[i];
-        const isOrd = /^\s{0,3}\d+\.\s+/.test(cur);
-        const isBul = /^\s{0,3}[-*+]\s+/.test(cur);
-        if (ordered ? !isOrd : !isBul) break;
-        const li = document.createElement('li');
-        const bodyTxt = cur.replace(/^\s{0,3}([-*+]|\d+\.)\s+/, '');
-        mdInline(bodyTxt).forEach((n) => li.appendChild(n));
-        list.appendChild(li);
+    // 引用块：行首 >，多行连续合成一个 <blockquote>（【2026-11-11 加】）
+    // 内容剥一层 > 后递归走同一套块级解析 —— 引用里能再套引用/列表/代码块。
+    // 里头一切内容仍走 mdInline/textContent 的安全路径，<script> 只会被当文字画出来。
+    if (/^\s{0,3}>/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s{0,3}>/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s{0,3}> ?/, ''));
         i += 1;
       }
-      el.appendChild(list);
+      const bq = document.createElement('blockquote');
+      emitMdBlocks(bq, buf);
+      target.appendChild(bq);
+      continue;
+    }
+
+    // 无序 / 有序列表（【2026-11-11 升级·按缩进嵌套 + 任务列表】）
+    // 收集连续列表行（不管层级），缩进组装交给 mdBuildList。
+    if (/^\s{0,3}([-*+]|\d+\.)\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) {
+        const mm = /^(\s*)([-*+]|\d+\.)\s+(.*)$/.exec(lines[i]);
+        items.push({ indent: mm[1].replace(/\t/g, '    ').length, ordered: /\d/.test(mm[2]), body: mm[3] });
+        i += 1;
+      }
+      mdBuildList(target, items, 0, items[0].indent);
       continue;
     }
 
@@ -5611,14 +5696,57 @@ function mdInto(el, rawText) {
       && !/^\s{0,3}#{1,6}\s/.test(lines[i])
       && !/^\s{0,3}[-*+]\s+/.test(lines[i])
       && !/^\s{0,3}\d+\.\s+/.test(lines[i])
+      && !/^\s{0,3}>/.test(lines[i])
       && !(/^\s*\|.*\|\s*$/.test(lines[i]) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1]))) {
       if (!first) para.appendChild(document.createElement('br'));
       mdInline(lines[i]).forEach((n) => para.appendChild(n));
       first = false;
       i += 1;
     }
-    el.appendChild(para);
+    target.appendChild(para);
   }
+}
+
+/**
+ * 【2026-11-11 加·嵌套列表组装】
+ *
+ * 把收集好的列表行按缩进组装成嵌套 <ul>/<ol>：
+ *   · 比当前层级深 ≥2 空格 → 挂进上一个 <li> 里递归成子表；
+ *   · 同层换了类型（- 换 1.）→ 另起一个表（老行为：只连续同类，保留）；
+ *   · `[ ]` / `[x]` 开头 → 只读勾选框（disabled，不做交互勾选）；
+ *   · 内容一律走 mdInline（textContent 安全路径）。
+ * 返回消费到的下标，父层接着用。
+ */
+function mdBuildList(host, items, from, minIndent) {
+  let idx = from;
+  let list = null;
+  while (idx < items.length) {
+    const it = items[idx];
+    if (it.indent < minIndent) break;
+    if (list && it.indent >= minIndent + 2) {
+      const lastLi = list.lastElementChild;
+      if (lastLi) { idx = mdBuildList(lastLi, items, idx, it.indent); continue; }
+    }
+    if (!list || (it.ordered ? list.tagName !== 'OL' : list.tagName !== 'UL')) {
+      list = document.createElement(it.ordered ? 'ol' : 'ul');
+      host.appendChild(list);
+    }
+    const li = document.createElement('li');
+    let body = it.body;
+    const task = /^\[([ xX])\]\s+(.*)$/.exec(body);
+    if (task) {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = task[1] !== ' ';
+      cb.disabled = true;
+      li.appendChild(cb);
+      body = task[2];
+    }
+    mdInline(body).forEach((n) => li.appendChild(n));
+    list.appendChild(li);
+    idx += 1;
+  }
+  return idx;
 }
 
 /**

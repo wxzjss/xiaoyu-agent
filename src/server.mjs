@@ -6843,6 +6843,32 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     }
   }
 
+  /* 【2026-11-13 合并·mac 侧】系统通知开关：读写 notify.mjs 的两个开关。 */
+  if (req.method === 'GET' && url.pathname === '/api/notify') {
+    try {
+      const { getNotifyPrefs, notifyAvailable } = await import('./notify.mjs');
+      return json(res, 200, { ok: true, notify: getNotifyPrefs(), available: notifyAvailable() });
+    } catch (err) {
+      return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/notify') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const { setNotifyPrefs, notifyAvailable } = await import('./notify.mjs');
+      const notify = setNotifyPrefs(payload ?? {});
+      return json(res, 200, { ok: true, notify, available: notifyAvailable() });
+    } catch (err) {
+      return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/qq/start') {
     try {
       const { startQq } = await import('./qq-bridge.mjs');
@@ -14432,10 +14458,40 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       // 「自己注册的号」那条道如果开了「开机就连」，这里替主人接上。
       // 不 await：连不上也不该拖住启动（自愈和重拨都在 qq-onebot 里）。
       bootAutoStartOneBot(quiet);
+      /* 【2026-11-13 合并·mac 侧】官方机器人同理（以前根本没这个钩子） */
+      bootAutoStartQqBot(quiet);
       bootPruneQqMedia(quiet);
     });
 
   });
+}
+
+/**
+ * 【2026-11-13 合并·mac 侧】开机自动连「官方机器人」。
+ * 条件 = 凭据齐 + autoStart !== false。故意**不看 `bot.enabled`** ——
+ * 那格是 2026-10 的遗留：界面从来没有地方把它写成 true，真按它判，
+ * 「开机自动连」对所有存过凭据的人都永远不生效。
+ * 不 await：连不上也不拖住启动。
+ */
+async function bootAutoStartQqBot(quiet) {
+  try {
+    const { qqBot, qqConfigured } = await import('./qq.mjs');
+    const conf = qqBot();
+    if (!qqConfigured()) return;
+    if (conf.autoStart === false) return;
+    if (!quiet) console.log('qq: 开机自动连接「官方机器人」');
+    const { startQq } = await import('./qq-bridge.mjs');
+    const st = await startQq({
+      ensureSession: ensureQqSession,
+      renameGroupSession,
+      runChat: runQqTurn,
+      setSpeakerOwner: markQqOwner,
+      onLog: () => {},
+    });
+    if (!quiet) console.log(`  qq       : ${st.phase}（官方机器人${st.error ? ` · ${st.error}` : ''}）`);
+  } catch (e) {
+    console.log(`qq: 开机自动连接「官方机器人」失败 —— ${String(e?.message ?? e)}`);
+  }
 }
 
 // Auto-start when launched directly (node src/server.js).

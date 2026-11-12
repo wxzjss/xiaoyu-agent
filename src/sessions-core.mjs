@@ -246,8 +246,12 @@ export function loadSession(id) {
     /* 【2026-11-05 加·别把错误吞掉】
      * 原来这里 `catch { return null }` —— 一个会话读不出来，界面上就凭空少一条，
      * 而且一点线索都没有（主人报「重启后某个会话不见了」，我查了半天都没方向）。
-     * 现在至少把 id 和原因打到日志里。 */
-    try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
+     * 现在至少把 id 和原因打到日志里。
+     * 【2026-11-13 修·ENOENT 不是故障】文件不存在 = 会话还没建过（QQ 那条道会先探
+     * 一眼），是正常态 —— 照原样警告的话，正常流程刷一屏假故障。只对真损坏出声。 */
+    if (e && e.code !== 'ENOENT') {
+      try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
+    }
     return null;
   }
 }
@@ -263,7 +267,9 @@ export async function loadSessionAsync(id) {
     const raw = JSON.parse(await fsp.readFile(fileFor(id), 'utf8'));
     return shapeSession(id, raw);
   } catch (e) {
-    try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
+    if (e && e.code !== 'ENOENT') {   /* ENOENT=还没建过，正常态（见同步版注释） */
+      try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
+    }
     return null;
   }
 }
@@ -709,7 +715,9 @@ async function listItemAsync(id) {
   try {
     raw = JSON.parse(await fsp.readFile(fileFor(id), 'utf8'));
   } catch (e) {
-    try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
+    if (e && e.code !== 'ENOENT') {   /* ENOENT=还没建过，正常态 */
+      try { console.warn('[sessions] 读不出来，已跳过：' + id + ' —— ' + String(e && e.message ? e.message : e)); } catch (e2) {}
+    }
     return null;
   }
   if (!raw || typeof raw !== 'object') return null;

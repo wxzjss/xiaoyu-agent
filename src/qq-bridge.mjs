@@ -24,13 +24,23 @@
  */
 
 import { join } from 'node:path';
+import { existsSync, appendFileSync, mkdirSync, statSync, renameSync, unlinkSync } from 'node:fs';
+import { config } from './config.mjs';
 import {
   qqBot, qqBotPublic, qqBind, qqPeer, noteQqPeer, isOwnerQq, chunkText, splitSay, isOwnerOpenid, readQq, setQqBot,
-  qqGate, qqAllowed, normQqNum,
+  qqGate, qqAllowed, normQqNum, normPeerId, normGroupId,
 } from './qq.mjs';
+import { notifyNow } from './notify.mjs';
 import { saveInboundAttachments, describeInbound, transcodeVoiceToMp3 } from './qq-media.mjs';
 
 const SDK_PKG = '@tencent-connect/qqbot-nodejs';
+
+/**
+ * QQ 允许「对着同一条消息被动回复」最多 5 条（官方限制）。
+ * 超了的话返回的错和「主动消息失败」长得一样，界面上就成了「说了五句只回三句」。
+ * 所以一轮最多发 5 条，剩下的并进第 5 条（2026-11-12）。
+ */
+const MAX_PASSIVE = 5;
 
 /** 让上下两条之间喘口气 —— 分多条发的时候用（2026-11-06） */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -43,7 +53,25 @@ const rt = {
   startedAt: 0,
   me: null,
   log: [],
-  stats: { in: 0, out: 0, turns: 0, blocked: 0 },
+  stats: { in: 0, out: 0, turns: 0, blocked: 0, fail: 0 },
+  /**
+   * 【2026-11-12 加】最近一次「这一轮没答完」的原因。
+   *
+   * 主人报「LLM 接口报错，后续群里就不回复了」，可面板上的日志只在内存里 ——
+   * 重启一次就什么都查不到了。现在留一份带时间的记录，并且**同时写进
+   * `.state/qq.log`**（见 appendLogFile），下次再出这种「忽然不回了」，
+   * 至少能翻到是哪一条、什么错、后面还有没有别的尝试。
+   */
+  lastError: null,
+  /**
+   * 【2026-11-12 加】最近被门挡回去的几条。
+   *
+   * 主人原话：「显示已经连上，我在群里 @ 它怎么没有反应」。门上挡掉是设计如此，
+   * 但**主人看不见**挡了谁、为什么挡 —— 只能看到「她不回我」。
+   * 现在留一份内存里的账（最多 20 条，同一个人/同一个群只留最新的那条），
+   * 面板上直接列出来，配一个「放行」按钮：点一下就把这个群/这个人写进白名单。
+   */
+  blocked: [],
 };
 
 const LOG_MAX = 120;
@@ -63,10 +91,68 @@ function scrubSecrets(input) {
 }
 
 function log(line) {
-  const s = `[${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ${String(line ?? '')}`;
+  const now = new Date();
+  const s = `[${now.toLocaleTimeString('zh-CN', { hour12: false })}] ${String(line ?? '')}`;
   rt.log.push(s);
   if (rt.log.length > LOG_MAX) rt.log.splice(0, rt.log.length - LOG_MAX);
   try { console.log('[qq]', s); } catch {}
+  // 同时落盘：面板那份是内存的，重启就没了；出事之后要能翻账。
+  appendLogFile(`${now.toISOString()} ${String(line ?? '')}`);
+}
+
+/**
+ * 【2026-11-12 加】QQ 这条线的日志落盘到 `<data>/.state/qq.log`。
+ *
+ * 「群里忽然不回了」这种问题，光看内存日志没用 —— 主人往往是在**重启之后**
+ * 才来问的，那时内存里只剩「连上了」。之前只能靠主人截图，能拿到的东西太少。
+ *
+ * 写盘失败一律忽略：日志不能反过来把聊天搞挂。
+ * 超过 1MB 就轮转一份 `.1`（只留一代，够查最近一次事故了）。
+ */
+const LOG_FILE_MAX = 1024 * 1024;
+
+function appendLogFile(line) {
+  try {
+    const dir = join(config.dataDir, '.state');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'qq.log');
+    try {
+      if (existsSync(file) && statSync(file).size > LOG_FILE_MAX) {
+        const old = file + '.1';
+        try { if (existsSync(old)) unlinkSync(old); } catch {}
+        renameSync(file, old);
+      }
+    } catch { /* 轮转失败就继续往后写，别因为这行字丢了 */ }
+    appendFileSync(file, line + '\n');
+  } catch { /* 盘满 / 没权限：静默 */ }
+}
+
+const BLOCKED_MAX = 20;
+
+/** 「群里没 @ 我」这条日志的节流表：群 id → 上次记的时间（同一群 60 秒最多一条）。 */
+const noAtLogAt = new Map();
+
+/** 记一条「被挡回去」的账（同一个群/同一个人只留最新一条，次数累加）。 */
+function pushBlocked({ kind = 'c2c', id = '', qq = '', name = '', why = 'blocked', text = '' } = {}) {
+  const key = `${kind}:${id || qq}`;
+  const at = Date.now();
+  const item = {
+    key,
+    kind,
+    id: String(id || ''),
+    qq: String(qq || ''),
+    name: String(name || ''),
+    why,
+    text: String(text || '').slice(0, 60),
+    at,
+    count: 1,
+    // 面板上要显示「几点的」和「第几次」
+    when: new Date(at).toLocaleTimeString('zh-CN', { hour12: false }),
+  };
+  const i = rt.blocked.findIndex((x) => x.key === key);
+  if (i >= 0) item.count = (Number(rt.blocked[i].count) || 1) + 1;
+  rt.blocked = [item, ...rt.blocked.filter((x) => x.key !== key)].slice(0, BLOCKED_MAX);
+  return item;
 }
 
 /** 不给外面看密钥的运行状态 */
@@ -74,6 +160,8 @@ export function qqStatus() {
   return {
     phase: rt.phase,
     error: rt.error,
+    // 面板读的是 lastError（历史字段名），两边都给，省得再改前端
+    lastError: rt.error,
     startedAt: rt.startedAt,
     me: rt.me,
     bot: qqBotPublic(),
@@ -81,6 +169,12 @@ export function qqStatus() {
     gate: qqGate(),
     peers: qqPeerList(),
     stats: { ...rt.stats },
+    /* 最近一次「这一轮没答完」—— 跟上面 lastError（连不上）是两回事：
+     * 连上了、消息也收到了，但 LLM 那边 502 或者会话卡住，这一轮照样没话。
+     * 面板想区分「没连上」和「连上了但答不出」时就靠这个（2026-11-12）。 */
+    turnError: rt.lastError,
+    // 最近被挡的几个人/几个群 —— 面板上「放行」按钮靠它（2026-11-12）
+    blocked: rt.blocked.slice(0, BLOCKED_MAX),
     log: rt.log.slice(-40),
   };
 }
@@ -196,14 +290,31 @@ export async function startQq(deps = {}) {
     });
 
     bot.on('message', async (ctx, msg) => {
-      try {
-        await handleInbound({ msg, bot, deps });
-      } catch (err) {
-        log(`处理一条消息失败：${String(err?.message ?? err)}`);
-      }
+      // 走 safe 版：任何没料到的异常都记日志 + 尽量回一句，别让对面完全静默
+      await handleInboundSafe({ msg, bot, deps });
     });
 
-    await bot.start();
+    /* 【2026-11-12 修·点「连上」之后请求一直不返回】
+     *
+     * SDK 的 `start()` 在 WebSocket 模式下是「**一直连到断开才 resolve**」
+     * （内部注释原话：Resolves when abortSignal fires）。原来这里 await 它，
+     * 结果 `POST /api/qq/start` 这个请求永远不返回 —— 界面上就是点完一直转圈，
+     * 而「连上了」只能从状态轮询里看到。开机自动连更糟：整个 boot 被它挂住。
+     *
+     * 现在让它在后台跑，这里只看 `ready` 有没有来（最多等 10 秒）。
+     * 连不上由它 reject，重连/看门狗都在 SDK 里，不影响这里的返回。 */
+    Promise.resolve()
+      .then(() => bot.start())
+      .catch((err) => {
+        rt.phase = 'error';
+        rt.error = String(err?.message ?? err);
+        log(`没连上：${rt.error}`);
+      });
+    const waitFrom = Date.now();
+    while (rt.phase === 'starting' && Date.now() - waitFrom < 10_000) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    // 网关一句话都没回、也没报错：按「起了」算，面板还能点断开
     if (rt.phase === 'starting') rt.phase = 'online';
     return qqStatus();
   } catch (err) {
@@ -226,6 +337,36 @@ export async function stopQq() {
   rt.phase = 'stopped';
   log('停了');
   return qqStatus();
+}
+
+/**
+ * 【2026-11-12 加·兜底：任何没料到的异常，至少让对面看到一句话】
+ *
+ * 两条通道原来都是「try { handleInbound } catch { log }」—— 异常只写进日志，
+ * 对面那边**一个字都收不到**。主人报的「群里忽然就不回了」很可能就是这种：
+ * 代码里某个环节抛了（会话/liveLogs/附件/身份），日志有一行，QQ 那头完全静默，
+ * 而且因为是「静默」，主人根本没法判断是没收到、被挡了、还是程序坏了。
+ *
+ * 现在统一走这里：先记日志（落盘），再试着回一句人话。回不出去也不影响别的消息。
+ */
+export async function handleInboundSafe({ msg, bot, deps }) {
+  try {
+    await handleInbound({ msg, bot, deps });
+  } catch (err) {
+    const m = String(err?.message ?? err);
+    log(`处理一条消息时抛错了：${m}`);
+    rt.lastError = {
+      at: Date.now(),
+      sessionId: '',
+      code: Number(err?.status) || 0,
+      gateway: false,
+      sentParts: 0,
+      message: `[handleInbound] ${m}`.slice(0, 300),
+    };
+    try {
+      await send(bot, msg, '这条我处理到一半出了点岔子，你再发一次？（原因我记在日志里了）');
+    } catch { /* 回不出去就算了，日志已经留了 */ }
+  }
 }
 
 /**
@@ -259,9 +400,13 @@ export async function handleInbound({ msg, bot, deps }) {
   const gateVerdict = (() => {
     try {
       return qqAllowed({
-        qqId: msg?.senderQq ?? msg?.userOpenid ?? msg?.senderId,
+        // OneBot 那条道给的是真 QQ 号；官方那条道只有 openid，分开传，
+        // 别让 openid 混进「按号比」的分支（2026-11-12）
+        qqId: msg?.senderQq,
+        openid: msg?.userOpenid ?? msg?.senderId,
         groupId: isGroup ? groupId : '',
-        isOwner: isOwnerQq(msg?.senderQq),
+        isGroup,
+        isOwner: isOwnerQq(msg?.senderQq) || isOwnerOpenid(msg?.userOpenid ?? msg?.senderId),
       });
     } catch {
       return { ok: false, why: 'gate-error' };
@@ -271,22 +416,39 @@ export async function handleInbound({ msg, bot, deps }) {
     // 不在白名单 —— 一个字都不回（回了就等于告诉对方「这里有人」，
     // 主人要的是「清净」，不是「礼貌地拒绝」）。
     rt.stats.blocked = (Number(rt.stats.blocked) || 0) + 1;
+    pushBlocked({
+      kind: isGroup ? 'group' : 'c2c',
+      id: isGroup ? (groupId || '') : String(msg?.senderId ?? ''),
+      qq: gateVerdict.qq || '',
+      name: String(msg?.senderName ?? ''),
+      why: gateVerdict.why || 'blocked',
+      text,
+    });
     /* 【2026-11-09 加】「挡掉」也要说清为什么挡。
      * 官方机器人那条道拿不到 QQ 号（接口只给 openid），而白名单是按**号**比的 ——
      * 于是 strict 一开，私聊全被挡，屏面上只看到「她不回我」。
      * 这种时候日志必须点明是「没号可比」，否则主人只会以为程序坏了。 */
-    const _noNum = !normQqNum(msg?.senderQq);
-    log(`挡掉一条（${gateVerdict.why}）${isGroup ? '[群] ' : ''}${gateVerdict.qq || openid.slice(0, 8)}`
-      + (_noNum && !isGroup
-        ? ' —— 这条机器人拿不到说话人的 QQ 号（官方接口只给 openid），「只理白名单」按号比不了；要用私聊请走「自己注册的号」，或把「只理白名单」关掉'
-        : ''));
+    if (gateVerdict.why === 'group-not-allowed') {
+      log(`挡掉一条（这群不在「能说话的群」名单里）[群] ${groupId.slice(0, 12)}`
+        + ` —— 到面板第 2 格点「放行这个群」就行（官方那条道的群 id 是 openid，`
+        + `跟 QQ 群号不是一回事，手填群号对不上）`);
+    } else if (gateVerdict.why === 'group-no-id') {
+      log(`挡掉一条（群消息没带群 id，没法核对白名单）[群] ${openid.slice(0, 8)}`);
+    } else {
+      const _noNum = !normQqNum(msg?.senderQq);
+      log(`挡掉一条（${gateVerdict.why}）${isGroup ? '[群] ' : ''}${gateVerdict.qq || openid.slice(0, 8)}`
+        + (_noNum && !isGroup
+          ? ' —— 这条机器人拿不到说话人的 QQ 号（官方接口只给 openid），「只理白名单」按号比不了；'
+            + '要放行就点面板上的「放行这个人」，或把「只理白名单」关掉'
+          : ''));
+    }
     return;
   }
 
   // ② 群聊没 @ 就不接（QQ 自己在网关层也会过滤大部分，这里再兜一层）
   if (isGroup) {
     const you = String(rt.me?.id || '');
-    const mentioned = Array.isArray(msg?.mentions) && msg.mentions.some((m) => m && (m.is_you === true || (you && String(m.id || m.user_openid || '') === you)));
+    const mentioned = Array.isArray(msg?.mentions) && msg.mentions.some((m) => m && (m.is_you === true || (you && String(m.id || m.user_openid || m.member_openid || '') === you)));
     // 【2026-10-30 修】原来 /@\S+/ 太宽了：群里谁 @ 谁都算 @ 我，
     // 「@张三 你吃了吗」也能把我叫起来，还得一个字一个字给我答复。
     // 现在只认两种：结构化 mentions 里明确指我（上面那行），
@@ -296,7 +458,27 @@ export async function handleInbound({ msg, bot, deps }) {
       new RegExp(`<at[^>]*id\\s*=\\s*["\']?(?:qq_)?${mine}["\']?`, 'i').test(String(msg?.content ?? '')) ||
       new RegExp(`(^|[\\s、,，])@\\s*${mine}([\\s、,，]|$)`).test(String(msg?.content ?? ''))
     );
-    if (!mentioned && !atRaw) return;
+    /* 【2026-11-12 加】官方机器人在群里只推「有人 @ 我」这一种事件
+     * （GROUP_AT_MESSAGE_CREATE），事件本身已经等于「被 @ 了」。
+     * 而它给的 mentions 里不一定带 is_you、id 也是 openid 而不是 QQ 号，
+     * 上面两条判据都可能落空 —— 于是「明明 @ 了却不回」。按事件类型兜一层。 */
+    const eventSaysAtMe = /GROUP_AT_MESSAGE_CREATE/i.test(String(msg?.rawEventType ?? ''));
+    if (!mentioned && !atRaw && !eventSaysAtMe) {
+      /* 【2026-11-12 加】不接，但**留个痕**。
+       *
+       * 「群里 @ 了她，她不回」和「群里没 @ 她，本来就不该回」在主人眼里长得一模一样：
+       * 都是没反应。以前这里直接 return，日志里一个字都没有，事后完全没法区分。
+       * 现在记一条（同一个群 60 秒最多一条，免得活跃群里刷屏）——
+       * 再遇到「怎么不回」，一眼就能看出是「没 @」还是「收到了没跑通」。 */
+      const now = Date.now();
+      const last = noAtLogAt.get(groupId) || 0;
+      if (now - last > 60_000) {
+        noAtLogAt.set(groupId, now);
+        log(`群里有人说话但没 @ 我，按规矩不接（${String(groupId).slice(0, 8)}）：`
+          + String(text || '[附件]').slice(0, 20));
+      }
+      return;
+    }
   }
 
   /**
@@ -350,6 +532,20 @@ export async function handleInbound({ msg, bot, deps }) {
 
   rt.stats.in += 1;
   log(`← ${isGroup ? '[群] ' : ''}${name || openid.slice(0, 8)}：${(text || `[${keptMedia.length} 个附件]`).slice(0, 40)}`);
+
+  /* 【2026-11-12】系统通知：QQ 上有人找她时弹一条（面板上那个开关管着）。
+   * 只提醒「真的被接住」的消息 —— 被白名单挡掉的不弹，否则等于拿通知刷屏。
+   * 主人自己发的也不弹（他自己刚发完，用不着提醒）。
+   * notifyNow 内部还会再看一遍开关、以及窗口是不是就在最前面。 */
+  try {
+    const mine = isOwnerQq(msg?.senderQq) || isOwnerOpenid(openid);
+    if (!mine) {
+      const who = name || (isGroup ? '群里有人' : 'QQ 上有人');
+      const said = String(text || '').trim() || (keptMedia.length ? '（发来一个附件）' : '');
+      notifyNow('qq', isGroup ? `QQ 群 · ${who}` : `QQ · ${who}`,
+        isGroup ? `${who}：${said}` : said);
+    }
+  } catch {}
 
   // ① 认人 + ④ 找会话
   const ensured = await deps?.ensureSession?.({ openid: peerKey, peer, userText: turnText, isGroup, name, groupId });
@@ -421,12 +617,29 @@ export async function handleInbound({ msg, bot, deps }) {
       if (cut <= 0) return;   // 一句都还没说完，先别发
     }
     const chunk = fresh.slice(0, cut);
-    const parts = splitSay(chunk);
+    let parts = splitSay(chunk);
     if (!parts.length) { sentChars += cut; return; }
+    /* 【2026-11-12 加】QQ 对同一个 msg_id 的被动回复**最多 5 条**。
+     * 超了的那几条，返回的错和「主动消息失败」长得一模一样，界面上又是
+     * 「说了五句只回三句」。所以在这儿提前合并，宁可最后一条长一点，
+     * 也别把内容丢掉 —— 丢的是她真说过的话。 */
+    const room = MAX_PASSIVE - sentParts;
+    if (room <= 0) {
+      log(`这一轮已经用满 ${MAX_PASSIVE} 条被动回复（QQ 限制），剩下的没再发`);
+      sentChars += cut;
+      return;
+    }
+    if (parts.length > room) {
+      const head = parts.slice(0, room - 1);
+      const tail = parts.slice(room - 1).join('');
+      parts = [...head, tail];
+    }
     const firstEver = sentParts === 0;
     for (let i = 0; i < parts.length; i++) {
-      await send(bot, msg, parts[i], { quote: firstEver && i === 0 });
-      rt.stats.out += 1;
+      // quote 只对 OneBot 那条道有意义（那边「引用」是消息段）；
+      // 官方这条道的 msgId 一律带上 —— 摘了就变「主动消息」，群聊没权限。
+      const ok = await send(bot, msg, parts[i], { quote: firstEver && i === 0 });
+      if (ok !== false) rt.stats.out += 1;
       if (i < parts.length - 1) // 【2026-11-01 主人】条与条之间也抬到 1 秒（原来 0.5 秒）
 await sleep(1000 + Math.floor(Math.random() * 400));
     }
@@ -494,21 +707,55 @@ await sleep(1000 + Math.floor(Math.random() * 400));
     }
   } catch (err) {
     const m = String(err?.message ?? err);
+    const code = Number(err?.status) || 0;
+    /**
+     * 【2026-11-12 加】分清「网关自己挂了」和「我们发错了」。
+     *
+     * 主人贴来的日志里就是 `LLM HTTP 502: Upstream service temporarily unavailable`
+     * —— llm.mjs 那边已经会自动重试两次（1.2s / 2.4s），走到这里说明那家网关
+     * 连着抖了十几秒。这种错跟「配置写错了」完全不是一回事，话得说对，
+     * 不然主人会去翻 key、翻模型，白折腾半天。
+     */
+    const isGateway = /\b(502|503|504)\b/.test(m) || /upstream service temporarily unavailable/i.test(m);
+    rt.lastError = {
+      at: Date.now(),
+      sessionId,
+      code,
+      gateway: isGateway,
+      sentParts,
+      message: m.slice(0, 300),
+    };
     log(`这一轮没答完：${m}`);
+    if (sentParts > 0) log(`（已经发出去 ${sentParts} 条，剩下的没说完）`);
     /* 【2026-11-09 改·别把技术细节甩到 QQ】
      * 原来一律回「出错了：<原始错误>」，可能把接口地址、报错栈、甚至 key 的片段
      * 发给对面（群里谁都看得见）。现在：
      *   · 会话正忙（409）→ 说人话，让她知道等一会儿；
+     *   · 上游网关抖动（502/503/504）→ 说清是「那边抽风」，不是主人的配置坏了；
      *   · 主人本人 → 附一句简短原因，他好排查；客人 → 只说「出了点问题」；
-     *   · 完整原因一律留在面板日志里。 */
-    const code = Number(err?.status) || 0;
+     *   · 完整原因一律留在面板日志 + `.state/qq.log` 里。 */
     const isOwner = isOwnerQq(msg?.senderQq);
-    const say = code === 409
-      ? '我这边手上还有一件没收尾，等我说完这句就来，你别急 (´｡• ᵕ •｡`)'
-      : (isOwner ? `这一轮没跑通（${scrubSecrets(m).slice(0, 80)}），你回头看下日志。` : '我这边出了点小问题，过一会儿再喊我一声。');
-    await send(bot, msg, say);
+    let say;
+    if (code === 409) {
+      say = '我这边手上还有一件没收尾，等我说完这句就来，你别急 (´｡• ᵕ •｡`)';
+    } else if (isGateway) {
+      say = sentParts > 0
+        ? '说到一半，我这边上游断了一下 —— 你先看前面那几句，过一会儿我接着说。'
+        : '我这边上游网关抽风了（502），不是我坏了，等十几秒再喊我一声 (´･_･`)';
+    } else {
+      say = isOwner
+        ? `这一轮没跑通（${scrubSecrets(m).slice(0, 80)}），你回头看下日志。`
+        : '我这边出了点小问题，过一会儿再喊我一声。';
+    }
+    const told = await send(bot, msg, say);
+    /* 「群里彻底不回」最怕的就是这一种：连「我没跑通」这句都没送到。
+     * 那样对面看到的就是**完全静默**，跟「她根本没收到」一模一样。
+     * 这条日志必须单独打出来，否则事后翻日志只会看到上面那行错误，
+     * 误以为「已经告诉主人了」。 */
+    if (told === false) log('连「这一轮没跑通」这句都没送到 QQ —— 对面那边看起来就是完全没回复');
   }
 }
+
 
 /** 发一条（被动回复优先，没有 msgId 才走主动）。 */
 /**
@@ -544,35 +791,68 @@ function targetOf(msg) {
 
 async function send(bot, msg, content, opts = {}) {
   const t = String(content ?? '').trim();
-  if (!t) return;
-  const quote = opts.quote !== false;
+  if (!t) return false;
   const base = targetOf(msg);
-  // 引用只用在第一条上；**引用与否绝不改变发到哪儿**
-  const target = { ...base, msgId: quote ? base.msgId : undefined };
+  const passive = Boolean(base.msgId);
+  /**
+   * 【2026-11-12 修·群里从第 2 条起全被 QQ 拒：主动消息失败, 无权限】
+   *
+   * 原来这里为了「别让每条都挂着同一个引用、看着像复读」，从第 2 条起
+   * 把 msgId 摘掉再发。可 QQ 的语义是：
+   *   带 msg_id  → 被动回复（对方刚说的话，你有权回，还能连回好几条）
+   *   不带 msg_id → **主动推送**（群聊要单独申请权限，普通机器人一概 400）
+   *
+   * 于是真实日志变成了这样：
+   *   17:13:12  200 OK            ← 第 1 条（带 msgId）成功
+   *   17:13:13  400 主动消息失败, 无权限   ← 第 2 条起全灭
+   * 群里只看到第一句，主人以为「她没回复」，切到会话才看见正文 —— 就是这条 bug。
+   *
+   * 现在：msgId **一律带上**（这才是能到对面那条通道）。
+   * 「要不要长得像引用」是 message_reference 的事，不是 msgId 的事；
+   * SDK 的 sendText 压根不传 message_reference，所以多条回复同挂一个 msgId
+   * 在 QQ 里也不会显示成复读，只是 msg_seq 递增（SDK 的 getNextMsgSeq 管）。
+   *
+   * `opts.quote` 保留但**不再影响 msgId** —— 只有 OneBot 那条道会读它
+   * （那边「引用」是消息段，不带 msg_id 也能发）。
+   */
+  const target = { scope: base.scope, targetId: base.targetId, msgId: base.msgId };
+  const attempt = async (tgt) => bot.sendText(tgt, t);
   /* 【2026-11-09 改·发不出去原来只有一行日志，主人永远不知道】
    *
-   * 真实场景里失败的大头是「消息发送频率超限」「被动回复过期（msgId 太久）」——
-   * 都是**等一下再发就好**的那种。原来一次失败就整条丢了，QQ 那头只看到少一句，
-   * 面板上也只会看到一行没人看的灰字。
+   * 真实场景里失败的大头是「消息发送频率超限」「网络抖一下」——
+   * 都是**等一下再发就好**的那种。原来一次失败就整条丢了。
    *
-   * 现在：① 失败先摘掉引用、隔 700ms 重试一次（很多失败就是引用带不动）；
-   *      ② 还不行就记进 stats.fail，面板/状态里能看见「有 N 条没发出去」；
-   *      ③ 日志里写清原因，不再只有一句「发不出去」。
+   * 现在：① 失败先原样（同一个 msgId）隔 700ms 重试一次；
+   *      ② 只有私聊才允许「摘掉 msgId 走主动推送」兜底（群聊主动必失败，别浪费请求）；
+   *      ③ 还不行记进 stats.fail + 日志写清原因。
    */
-  const attempt = async (tgt) => bot.sendText(tgt, t);
   try {
     await attempt(target);
-    return;
+    return true;
   } catch (err1) {
     const m1 = String(err1?.message ?? err1);
-    log(`发不出去（${m1}），摘掉引用再试一次`);
+    log(`发不出去（${m1}），等 700ms 再试一次`);
     await sleep(700);
     try {
-      await attempt({ ...base, msgId: undefined });
-      return;
+      await attempt(target);
+      return true;
     } catch (err2) {
+      const m2 = String(err2?.message ?? err2);
+      if (passive && base.scope !== 'group') {
+        try {
+          await attempt({ scope: base.scope, targetId: base.targetId });
+          log('被动回复窗口过了，改走主动推送发出去了一条');
+          return true;
+        } catch { /* 主动推送也没成，往下记 */ }
+      }
       rt.stats.fail = (Number(rt.stats.fail) || 0) + 1;
-      log(`还是发不出去（${String(err2?.message ?? err2)}）—— 这一条没能送到 QQ`);
+      log(`还是发不出去（${m2}）—— 这一条没能送到 QQ`);
+      if (/主动消息/.test(m2)) {
+        log('说明：QQ 群只让「被动回复」（带 msg_id 回它那句话）。'
+          + '「主动消息」要单独申请权限，普通机器人发不出去 —— '
+          + '这一条一般是被当成了主动消息，看看是不是 msg_id 丢了或已过期。');
+      }
+      return false;
     }
   }
 }
@@ -628,7 +908,7 @@ export async function startQqOneBot(deps = {}) {
         ? { scope: 'group', targetId: String(inbound.groupId || ''), msgId: inbound.messageId }
         : { scope: 'c2c', targetId: String(inbound.senderId || ''), msgId: inbound.messageId };
       try {
-        await handleInbound({ msg: inbound, bot: shell, deps });
+        await handleInboundSafe({ msg: inbound, bot: shell, deps });
       } catch (err) {
         log(`处理一条消息失败：${String(err?.message ?? err)}`);
       }
@@ -661,29 +941,114 @@ export async function startQqOneBot(deps = {}) {
  * 现在只认一条：这个号在不在主人那份名单里（面板上那个号 + 私聊白名单）。
  * 代价是：老 peer 记录里没存号的话，他得再发一句话，面板上才会亮成主人。
  */
+/**
+ * 「找过她的人」那一列。
+ *
+ * 【2026-11-12 改】以前这里只用 QQ 号认人，官方机器人那条道根本没有 QQ 号，
+ * 于是所有人都是 guest、连「加进白名单」的按钮都不出现 —— 面板等于摆设。
+ * 现在身份统一用 normPeerId（有号用号，没号用 openid），跟白名单同一套口径：
+ *   role: owner  主人（面板上填的那个号 / 那个 openid）
+ *         known  已经在白名单里
+ *         guest  只是来过
+ */
 export function qqPeerList() {
   const data = readQq();
   const peers = data.peers;
-  const ownerQq = normQqNum((data.gate && data.gate.ownerQq) || '');
+  const ownerId = normPeerId((data.gate && data.gate.ownerQq) || '');
   const allow = Array.isArray(data.gate && data.gate.allowQq)
-    ? data.gate.allowQq.map((x) => normQqNum(x)).filter(Boolean)
+    ? data.gate.allowQq.map((x) => normPeerId(x)).filter(Boolean)
     : [];
-  return Object.entries(peers).map(([openid, p]) => {
+  const allowGroup = Array.isArray(data.gate && data.gate.allowGroup)
+    ? data.gate.allowGroup.map((x) => normGroupId(x)).filter(Boolean)
+    : [];
+
+  const rows = [];
+  /* 【2026-11-12 修「面板上同一个名字出现两行」】
+   *
+   * 认人表里的 key 有两种：
+   *   人      → openid
+   *   群会话  → 'group:<群 openid>'（见上面 peerKey 那段）
+   *
+   * 群那条以前被当成「人」照样列出来：名字取的是**最后在群里说话的人**，
+   * 于是「doro 在群里 @ 她」会在面板上变成两行 doro —— 一行是这个群，
+   * 一行才是他本人。更难堪的是那行还带着「填成主人」按钮：手一滑就把
+   * 群 openid 填成了主人，主人身份当场错乱。
+   *
+   * 现在：群单独成类（kind='group'，role='group'），排在人后面，
+   * 前端只给它「放行这个群」；人那条才是人。
+   */
+  for (const [key, p] of Object.entries(peers)) {
+    if (String(key).startsWith('group:')) {
+      const gid = normGroupId(String(key).slice('group:'.length));
+      // 连群 id 都没有的记录（group:unknown）对人没有任何用处，不列
+      if (!gid) continue;
+      const allowed = allowGroup.includes(gid);
+      rows.push({
+        kind: 'group',
+        openid: '',
+        id: gid,
+        short: `${gid.slice(0, 6)}…${gid.slice(-4)}`,
+        qq: '',
+        role: 'group',
+        isOwner: false,
+        whitelisted: allowed,
+        groupAllowed: allowed,
+        name: p.name,
+        sessionId: p.sessionId,
+        boundAt: p.boundAt,
+        lastAt: p.lastAt,
+        msgCount: p.msgCount,
+      });
+      continue;
+    }
     const qq = normQqNum(p.qq || '');
-    const known = Boolean(qq) && (qq === ownerQq || allow.includes(qq));
-    return {
-      openid,
-      short: `${openid.slice(0, 6)}…${openid.slice(-4)}`,
+    const id = qq || normPeerId(key);        // 官方通道只有 openid，这就是他的「身份」
+    if (!id) continue;
+    const isOwner = id === ownerId;
+    const known = isOwner || allow.includes(id);
+    rows.push({
+      kind: 'person',
+      openid: key,
+      id,
+      short: `${String(key).slice(0, 6)}…${String(key).slice(-4)}`,
       qq,
-      role: known ? 'owner' : 'guest',
-      isOwner: known,
+      role: isOwner ? 'owner' : (known ? 'known' : 'guest'),
+      isOwner,
+      whitelisted: known && !isOwner,
+      groupAllowed: false,
       name: p.name,
       sessionId: p.sessionId,
       boundAt: p.boundAt,
       lastAt: p.lastAt,
       msgCount: p.msgCount,
-    };
-  }).sort((a, b) => b.lastAt - a.lastAt);
+    });
+  }
+
+  /* 同一个人被记成两条（历史遗留：openid 大小写不同、或先有号再有 openid）
+   * → 按归一化身份合一，留信息全的那条，别让人在面板上数出两个自己。 */
+  const byId = new Map();
+  for (const row of rows) {
+    if (row.kind !== 'person') continue;
+    const prev = byId.get(row.id);
+    if (!prev) { byId.set(row.id, row); continue; }
+    prev.lastAt = Math.max(Number(prev.lastAt) || 0, Number(row.lastAt) || 0);
+    prev.msgCount = (Number(prev.msgCount) || 0) + (Number(row.msgCount) || 0);
+    prev.name = prev.name || row.name;
+    prev.sessionId = prev.sessionId || row.sessionId;
+    prev.boundAt = Math.min(Number(prev.boundAt) || Infinity, Number(row.boundAt) || Infinity);
+    // role 取「更亲」的那个：owner > known > guest
+    const rank = { guest: 0, known: 1, owner: 2 };
+    if (rank[row.role] > rank[prev.role]) {
+      prev.role = row.role;
+      prev.isOwner = row.isOwner;
+      prev.whitelisted = row.whitelisted;
+    }
+  }
+  const deduped = [...byId.values()];
+
+  // 人在前、群在后，各自按最后说话时间倒序
+  const byLast = (a, b) => (Number(b.lastAt) || 0) - (Number(a.lastAt) || 0);
+  return deduped.sort(byLast).concat(rows.filter((r) => r.kind === 'group').sort(byLast));
 }
 
 /** 供测试 / 命令行：把「是不是配好了」打出来。 */

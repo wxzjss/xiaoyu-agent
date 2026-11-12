@@ -7533,6 +7533,21 @@
       _falseWriteTimer = 0;
       _falseWritePending = null;
     }
+    const _prevItems = st.live && Array.isArray(st.live.items) && st.live.items.length ? st.live.items : null;
+    const _nextItems = live && Array.isArray(live.items) && live.items.length ? live.items : null;
+    const _sameHead = (a, b) => {
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length > b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        const x = a[i] || {}, y = b[i] || {};
+        if (String(x.k || "") !== String(y.k || "")) return false;
+        if (String(x.id || "") !== String(y.id || "")) return false;
+        const tx = String(x.t == null ? "" : x.t), ty = String(y.t == null ? "" : y.t);
+        if (tx !== ty.slice(0, tx.length)) return false;
+      }
+      return true;
+    };
+    const _wouldShrink = !!(_prevItems && live && live.running !== false && (!_nextItems || _nextItems.length < _prevItems.length && _sameHead(_nextItems, _prevItems)));
+    if (_wouldShrink) live = Object.assign({}, live, { items: _prevItems });
     writeLive(sid, live && Array.isArray(live.items) ? live : null);
     if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
     bump();

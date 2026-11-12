@@ -410,6 +410,40 @@ export function setLive(sid, live) {
     _falseWritePending = null;
   }
   /* 【2026-11-12】写直播统一走 writeLive：顺手更新「换屏时能垫的那份快照」 */
+  /**
+   * 【2026-11-12 修·主人报「我一插话，她这一轮说的话就在屏幕上消失」】
+   *
+   * 快照偶尔会「变薄」：插话之后服务端可能给一份只有 events、没有 items 的
+   * 直播对象（排队轮那份就是 {events, ...} 建出来的），或者条数比屏上已有的少。
+   * 以前这里照收 —— 而 `items` 不是数组时干脆写成 null（整段直播清掉），
+   * buildMerged 当场把 live 段丢掉：她已经说出来的话在屏幕上凭空消失，
+   * 得等这一轮收尾落盘才回来。
+   *
+   * 规矩定死：**同一轮里，屏幕上的正文只许变多，不许变少。**
+   * 新快照不带 items（或正文比现在少）→ 保留屏上这份 items，只把新的 running/时间接过来。
+   * 真要清空（这一轮结束）走的是 setLive(null) / running:false，那条路不受影响。
+   */
+  const _prevItems = (st.live && Array.isArray(st.live.items) && st.live.items.length) ? st.live.items : null;
+  const _nextItems = (live && Array.isArray(live.items) && live.items.length) ? live.items : null;
+  /* 【判据要收窄】只认两种「真变薄」：
+   *   ① 新快照**根本没带 items**（排队轮那份只有 events）—— 照收就等于清屏；
+   *   ② 新清单是旧清单的**前缀截短**（同一条活、条目被削掉尾巴）。
+   * 千万别拿「正文总字数」去比：新一轮可能整段换成「思考 + 工具」、正文是 0，
+   * 那是正常的阶段切换（真机上会把柜子整段吞掉，check-log-react 二·c 就是这么红的）。 */
+  const _sameHead = (a, b) => {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length > b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const x = a[i] || {}, y = b[i] || {};
+      if (String(x.k || '') !== String(y.k || '')) return false;
+      if (String(x.id || '') !== String(y.id || '')) return false;
+      const tx = String(x.t == null ? '' : x.t), ty = String(y.t == null ? '' : y.t);
+      if (tx !== ty.slice(0, tx.length)) return false;
+    }
+    return true;
+  };
+  const _wouldShrink = !!(_prevItems && live && live.running !== false &&
+    (!_nextItems || (_nextItems.length < _prevItems.length && _sameHead(_nextItems, _prevItems))));
+  if (_wouldShrink) live = Object.assign({}, live, { items: _prevItems });
   writeLive(sid, live && Array.isArray(live.items) ? live : null);
   if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
   bump();

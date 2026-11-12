@@ -8765,6 +8765,19 @@ function turnElapsedText(ms) {
 }
 
 function _hintWho() {
+  /* 【2026-11-12 主人】要的是「<智能体名>正在发送消息」：
+   * 小鱼 / 小鲸 / 张三 / 李四…… 谁在这个会话里干，就写谁。
+   * 取值顺序：
+   *   ① window.__turnSpeakerName —— 这一轮**实际开口的那个人**（refreshAgentChip 会按
+   *      会话的主智能体 / 群聊里插话的身份算出来，换身份它跟着变）；
+   *   ② mainAgentName —— 会话主智能体的兜底（老路径，可能还停在上一个会话的名）；
+   *   ③ '小鱼' —— 都没有才用它。
+   * 三处都不做「去重 / 默认值判定」—— 主人给智能体起什么名就原样显示。 */
+  try {
+    const t = String(window.__turnSpeakerName || '').trim();
+    if (t) return t;
+  } catch (e) {}
+
   /* 【2026-11-12 主人】提示行里那个名字：用**这个会话的主智能体**（小鱼/小鲸/自定义），
    * 别用会话名 —— 会话名可能还是默认的「新会话」，而实际做活的是小鲸，
    * 主人看到「新会话」完全对不上号。拿不到就退回「小鱼」。 */
@@ -8830,6 +8843,19 @@ function showSending(startAt) {
       const e2 = document.getElementById('turnElapsed');
       if (!e2) return;
       try { e2.textContent = turnElapsedText(Date.now() - _turnT0); } catch (err) {}
+      /* 【2026-11-12】名字可能晚一拍才准（切会话后 refreshAgentChip 才跑完）：
+       * 每秒顺手核一次，变了就改，别让提示行一直挂着上个会话的人名。 */
+      try {
+        /* 只在「还在跑」的时候刷名字：收尾那一下会改成「<名字>已完成」，
+         * 这一秒的 tick 不许把它又改回「正在发送消息」。 */
+        if (!sendingHint.classList.contains('done')) {
+          const sp2 = sendingHint && sendingHint.querySelector('span');
+          if (sp2) {
+            const want = _hintWho() + '正在发送消息';
+            if (sp2.textContent !== want) sp2.textContent = want;
+          }
+        }
+      } catch (err) {}
     };
     tick();
     if (_turnTimer) clearInterval(_turnTimer);

@@ -18,6 +18,15 @@ async function api(p, opt = {}) {
   return { code: r.status, json: j, text: t };
 }
 
+// 等服务真就绪（重启后端口要几秒才接客）
+for (let i = 0; i < 60; i++) {
+  try {
+    const r = await fetch(BASE + '/api/mini-deepseek/status');
+    if (r.ok) { const j = await r.json(); if (Array.isArray(j.ids) && j.ids.length) break; }
+  } catch { }
+  await new Promise(r => setTimeout(r, 500));
+}
+
 console.log('\n【1】status 接口字段齐全');
 {
   const r = await api('/api/mini-deepseek/status');

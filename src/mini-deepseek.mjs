@@ -1,4 +1,4 @@
-﻿// 【2026-11-12 加·本机 DeepSeek 预设】
+// 【2026-11-12 加·本机 DeepSeek 预设】
 //
 // 主人要的东西一句话说清：
 //   「模型」页「添加模型」的接口地址预设，末尾多一个【本机 DeepSeek】。
@@ -236,9 +236,13 @@ export async function startLocalService({ token } = {}) {
     env,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // 【2026-11-12 修】脱离父进程：不然本进程一退，子服务跟着被带走。
+    detached: true,
   });
   st.proc = child;
   st.startedAt = Date.now();
+  // 【2026-11-12 修】父进程退出时不要把子服务拖走（unref 只影响退出策略，不影响管道读取）。
+  try { child.unref(); } catch {}
   st.logTail = [];
   st.lastExit = null;
 
@@ -265,6 +269,24 @@ export async function startLocalService({ token } = {}) {
 
 /** 收尸。等登录那个定时器也一起清掉。 */
 export function stopLocalService() {
+  // 【2026-11-12 修】不是本进程起的服务（比如上次运行留下的）也要能停：按端口找 PID 再杀。
+  if (!st.proc) {
+    try {
+      const out = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true });
+      const pids = new Set();
+      for (const line of String(out.stdout || '').split(/\r?\n/)) {
+        if (!line.includes(':' + MINI_DS_PORT)) continue;
+        if (!/LISTENING/i.test(line)) continue;
+        const m = line.trim().match(/(\d+)\s*$/);
+        if (m) pids.add(m[1]);
+      }
+      for (const pid of pids) {
+        try { spawnSync('taskkill', ['/PID', pid, '/F'], { windowsHide: true }); } catch {}
+      }
+      return { ok: true, killed: [...pids] };
+    } catch { return { ok: false }; }
+  }
+
   if (st.waitTimer) { clearTimeout(st.waitTimer); st.waitTimer = null; }
   st.waitingLogin = false;
   const p = st.proc;

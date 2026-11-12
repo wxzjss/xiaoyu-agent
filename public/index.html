@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -10490,9 +10490,53 @@ function _holdFlushOnLeave() {
   try { _holdFire(); } catch (e) {}
 }
 
+/* 【2026-11-12 主人问「预发送的内容重启了还会在吗」——原来不会：_holdState 只在前端内存，
+ * 重启/刷新就丢。现在缓冲队列落 localStorage（按会话），启动时残留的自动放行（跟「重启续上」
+ * 同一个精神：主人亲手点过发送的话，不该被一次重启吞掉）。 */
+function _bufferKey() { return '__xySendBuffer:' + (sessionId || ''); }
+function _bufferSave(st) {
+  try {
+    localStorage.setItem(_bufferKey(), JSON.stringify({
+      queue: st.queue, firstAt: st.firstAt, deadline: st.deadline, maxMs: st.maxMs,
+    }));
+  } catch {}
+}
+function _bufferClear() { try { localStorage.removeItem(_bufferKey()); } catch {} }
+/** 启动/进会话时恢复残留的缓冲窗：没在跑 → 原样续钟放行；在跑 → 退回输入框当草稿（不许自动插话）。 */
+function _restoreBuffered() {
+  try {
+    const raw = localStorage.getItem(_bufferKey());
+    if (!raw) return;
+    const st0 = JSON.parse(raw);
+    if (!st0 || !Array.isArray(st0.queue) || !st0.queue.length) { _bufferClear(); return; }
+    if (busy) {
+      /* 正在跑（比如开机自续的那一轮）：不能自动插话，把字退回输入框让主人自己发 */
+      const texts = st0.queue.map((m) => String(m.text || '')).filter(Boolean);
+      if (texts.length && !input.value.trim()) {
+        input.value = texts.join('\n');
+        autosizeInput();
+        try { saveDraft(); } catch {}
+        toast('（重启前有 ' + st0.queue.length + ' 条没发出去的话，先退回输入框了——她正忙，主人按回车自己发）');
+      }
+      _bufferClear();
+      return;
+    }
+    _holdState = {
+      queue: st0.queue,
+      firstAt: Number(st0.firstAt) || Date.now(),
+      deadline: Math.max(Date.now() + 800, Number(st0.deadline) || 0),   // 早就到点了 → 最多再等 0.8 秒放行
+      bufferMs: 0,
+      maxMs: Number(st0.maxMs) || 5000,
+      timer: null,
+    };
+    _holdState.timer = setTimeout(_holdFire, Math.max(0, _holdState.deadline - Date.now()));
+  } catch { _bufferClear(); }
+}
+
 async function _holdFire() {
   const st = _holdState;
   _holdState = null;
+  _bufferClear();   // 账已取出：落盘那份清掉（发失败 runTurn 自己兜，不回滚缓冲）
   if (!st || !st.queue.length) return;
   const first = st.queue.shift();
   const extras = st.queue.splice(0).map((m) => ({
@@ -10542,6 +10586,7 @@ async function sendBuffered() {
   }
   if (_holdState.timer) clearTimeout(_holdState.timer);
   _holdState.timer = setTimeout(_holdFire, Math.max(0, _holdState.deadline - Date.now()));
+  _bufferSave(_holdState);   // 落盘：这 3~5 秒里重启/刷新也不丢（主人 2026-11-12 问的）
 }
 
 async function send() {
@@ -17476,6 +17521,7 @@ function clearAllStreamingCursors() {
  * 所以放在后面 select 那次再填一遍 —— 两处都填，谁先到谁填，都不覆盖已有内容）。 */
 document.addEventListener('DOMContentLoaded', () => {
   try { setTimeout(() => restoreDraft(true), 300); } catch {}   // 等会话 id 落定（启动场景：主人已在打字就不清）
+  try { setTimeout(() => _restoreBuffered(), 900); } catch {}   // 启动恢复残留的预发送缓冲（等 busy 状态落定）
 });
 document.addEventListener('DOMContentLoaded', clearAllStreamingCursors, { once: true });
     document.addEventListener('DOMContentLoaded', start, { once: true });
@@ -18696,25 +18742,20 @@ if (rwGo) {
     try { turnsInFlight.delete(sessionId); } catch (e) {}
     try { renderTurns(r.session.turns || [], { force: true, noCarry: true }); } catch (e) {}
     try { resetScrollStick(); } catch (e) {}
-    // 目标那句话填回输入框，改完再发就是「重新来一遍」
+    if (hint) hint.textContent = '已回退：这条之后的消息已删除，正在重发';
+    // 回退=这条保留、后面全删；把那句话填回输入框并自动重发一遍
     const back = rwText.textContent;
     if (input && back && back !== '（这条没有文字）') {
       input.value = back;
-      input.focus();
+      setTimeout(() => { try { sendBuffered(); } catch (e) { input.focus(); } }, 60);
     }
-    const f = r.files || {};
-    const n = (f.restored || []).length + (f.deleted || []).length;
-    const hint = document.getElementById('optHint');
-    if (hint) hint.textContent = n ? '已回退，' + n + ' 个文件还原了' : '已回退（老消息还留着，能撤销）';
-    rewindAt = null;
-    refreshSessions({ silent: true }).catch(() => {});
   };
 }
 
 /**
  * 「在新会话中分支」：把这一轮为止的对话复制到新会话，原会话原样保留。
  *
- * 跟「回退」的区别：回退是原地把后面的藏起来；分支是另开一条路，
+* 跟「回退」的区别：回退是原地删掉这条之后的所有消息并自动重发；分支是另开一条路，
  * 原来的对话还在，想回头再来一次不会丢东西。
  *
  * @param {number} at 这一轮用户那句话在当前会话里的下标

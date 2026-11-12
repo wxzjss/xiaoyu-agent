@@ -91,5 +91,10 @@ ok('内层 wrap 的 hidden 有 display:none !important（display:flex 会盖掉 
 ok('Esc 逐层退出（表单/阅读层→书架）',
   /Esc 逐层退出/.test(html));
 
+/* 【2026-11-13 主人钦定】知识卡只写方法做法，不写故事——seed 卡里不许再出现叙事标记 */
+ok('seed 知识卡全是方法做法，没有故事叙事（血泪史/那次/曾经 等标记禁入）',
+  !/血泪史|那次|曾经|后来我们/.test(kb)
+  && /内容\*\*只写方法做法\*\*|只写方法做法/.test(tools));
+
 console.log('\n知识库·书架：' + pass + ' 过 / ' + fail + ' 挂');
 process.exit(fail ? 1 : 0);

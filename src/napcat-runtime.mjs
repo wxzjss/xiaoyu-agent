@@ -56,10 +56,22 @@ const QQ_GUESS = [
   'C:/Program Files (x86)/Tencent/QQNT/QQ.exe',
   'D:/Program Files/Tencent/QQNT/QQ.exe',
   'D:/Tencent/QQNT/QQ.exe',
+  /* 【2026-11-11 mac 兼容】mac 的 QQNT 是一个 .app，可执行体在 Contents/MacOS 里 */
+  '/Applications/QQ.app/Contents/MacOS/QQ',
 ];
 
-/** 读一个 exe 的文件版本号 */
+/** 读一个 exe 的文件版本号。
+ * 【2026-11-11 mac 兼容】mac 读 QQ.app 的 Info.plist（CFBundleShortVersionString）。 */
 async function fileVersion(exe) {
+  if (process.platform === 'darwin') {
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const plist = '/Applications/QQ.app/Contents/Info.plist';
+      const out = await promisify(execFile)('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', plist], { timeout: 6000 });
+      return String(out || '').trim();
+    } catch { return ''; }
+  }
   const safe = exe.replace(/'/g, "''");
   return await ps(`(Get-Item -LiteralPath '${safe}').VersionInfo.FileVersion`);
 }
@@ -72,7 +84,21 @@ export async function detectQQ() {
   const cands = [...QQ_GUESS];
 
   // 正在跑的 QQ 补一个（主人可能装在别处）
-  const running = await ps(`Get-Process QQ -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path`);
+  /* 【2026-11-11 mac 兼容】「正在跑」的探测 Windows 走 Get-Process，
+   * mac 走 pgrep（mac 上 QQ 进程名也是 QQ）。 */
+  let running = '';
+  if (process.platform === 'darwin') {
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const out = await promisify(execFile)('pgrep', ['-x', 'QQ'], { timeout: 5000 });
+      if (String(out || '').trim() && fs.existsSync(QQ_GUESS[QQ_GUESS.length - 1])) {
+        running = QQ_GUESS[QQ_GUESS.length - 1];
+      }
+    } catch { /* 没在跑，算了 */ }
+  } else {
+    running = await ps(`Get-Process QQ -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path`);
+  }
   if (running && !cands.includes(running)) cands.unshift(running);
 
   for (const exe of cands) {
@@ -93,7 +119,9 @@ export async function detectQQ() {
 
 // ---------- 找 NapCat 装在哪 ----------
 
-const NAPCAT_GUESS = ['D:/NapCat', 'C:/NapCat', 'C:/Program Files/NapCat'];
+const NAPCAT_GUESS = ['D:/NapCat', 'C:/NapCat', 'C:/Program Files/NapCat',
+  /* 【2026-11-11 mac 兼容】手工装的常见位置 */
+  ...(process.platform === 'darwin' ? [path.join(os.homedir(), 'NapCat')] : [])];
 
 export function detectNapCat() {
   for (const dir of NAPCAT_GUESS) {
@@ -271,7 +299,16 @@ async function download(url, dest, onStep) {
 export async function installNapCat(onStep = () => {}) {
   const qq = await detectQQ();
   if (!qq.found) {
-    throw new Error('没找到本机的 QQ，先装 QQ 或告诉我 QQ 装在哪');
+    /* 【2026-11-11 mac 兼容】mac 的 QQ 在 /Applications/QQ.app，detectQQ 已认；
+     * 真没有就照实说。 */
+    throw new Error(process.platform === 'darwin'
+      ? '没找到本机的 QQ（/Applications/QQ.app），先装 QQ 再试'
+      : '没找到本机的 QQ，先装 QQ 或告诉我 QQ 装在哪');
+  }
+  /* 【2026-11-11 mac 兼容】自动安装链路（zip 里找 boot exe + PowerShell 铺目录）
+   * 是 Windows 专属；mac 的 NapCat 要按官方文档装进 QQ.app，这里不假装能装。 */
+  if (process.platform === 'darwin') {
+    throw new Error('macOS 上 NapCat 要按官方文档（napneko.github.io）手动装进 QQ.app，这一步暂时帮不了你。装好后把 WebSocket 服务端口开到 3001，小鱼这边填地址直连。');
   }
   onStep(`检测到 QQ ${qq.version}`);
 
@@ -381,8 +418,20 @@ export async function installNapCat(onStep = () => {}) {
  */
 export async function launchNapCat() {
   const cat = detectNapCat();
-  if (!cat.found) throw new Error('还没装 NapCat');
+  if (!cat.found) {
+    /* 【2026-11-11 mac 兼容】mac 版 NapCat 官方支持但启动方式完全不同
+     *（注入 QQ.app，不是 Windows 那个 boot exe），自动拉起还没做。
+     * 给一句能照着做的指引，别甩一句英文 stack trace。 */
+    if (process.platform === 'darwin') {
+      throw new Error('macOS 上还没法自动拉起 NapCat。先按 NapCat 官方文档（napneko.github.io）在 mac 的 QQ 里装好协议端、把 WebSocket 服务端口开到 3001，小鱼这边填上地址就能连上。');
+    }
+    throw new Error('还没装 NapCat');
+  }
+  /* mac 上就算目录在（手工装的），boot exe 也不存在 —— 同样指路 */
   const boot = path.join(cat.dir, 'NapCatWinBootMain.exe');
+  if (process.platform === 'darwin' && !fs.existsSync(boot)) {
+    throw new Error('macOS 上还没法自动拉起 NapCat（这台机器上的 NapCat 不是 Windows 版目录）。请按 NapCat 官方文档在 mac 的 QQ 里装好协议端、开好 3001 端口，小鱼这边填地址直连即可。');
+  }
   const qq = await detectQQ();
   const args = qq.exe ? [qq.exe] : [];
 

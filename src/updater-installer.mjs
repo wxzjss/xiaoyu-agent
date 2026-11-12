@@ -104,6 +104,18 @@ export async function latestRelease() {
  */
 export function pickInstaller(assets) {
   const list = Array.isArray(assets) ? assets : [];
+  /* 【2026-11-11 mac 兼容】mac 的发行物是 .dmg / -mac.zip（arm64）。
+   * mac 上不做静默安装（应用包要拖 /Applications），这里只挑出包，
+   * 装的动作由 spawnSilentInstall 的 darwin 分支交给 open 命令。 */
+  if (process.platform === 'darwin') {
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+    const dmgs = list.filter((a) => /\.dmg$/i.test(a.name));
+    const hit = dmgs.find((a) => new RegExp(arch, 'i').test(a.name)) || dmgs[0];
+    if (hit) return { ...hit, kind: 'dmg' };
+    const macZip = list.find((a) => /mac.*\.zip$/i.test(a.name));
+    if (macZip) return { ...macZip, kind: 'mac-zip' };
+    return null;
+  }
   const exes = list.filter((a) => /\.exe$/i.test(a.name));
   const setup = exes.find((a) => /setup/i.test(a.name) && /x64/i.test(a.name)) || exes.find((a) => /setup/i.test(a.name));
   if (setup) return { ...setup, kind: 'setup' };
@@ -227,8 +239,12 @@ export async function downloadInstaller(asset, opts = {}) {
 
   const all = Buffer.concat(bufs);
   if (total && all.length !== total) throw new Error(`下完的大小不对：${all.length} / ${total}`);
-  const head = all.subarray(0, 2).toString('latin1');
-  if (head !== 'MZ') throw new Error('下下来的东西不是 Windows 可执行文件');
+  /* 【2026-11-11 mac 兼容】PE 头（MZ）只对 exe；dmg 是 apple 的 udif 格式
+   * （koly trails 在尾部），开头没有固定魔数 —— mac 上不查头，只查 sha256。 */
+  if (process.platform !== 'darwin') {
+    const head = all.subarray(0, 2).toString('latin1');
+    if (head !== 'MZ') throw new Error('下下来的东西不是 Windows 可执行文件');
+  }
   if (asset.sha256) {
     const h = createHash('sha256').update(all).digest('hex');
     if (h !== asset.sha256) throw new Error(`校验不过：sha256 是 ${h}，官方是 ${asset.sha256}`);
@@ -266,6 +282,19 @@ export async function sha256OfFile(file) {
 export function spawnSilentInstall(job) {
   const file = String(job?.file || '');
   if (!file || !existsSync(file)) return { ok: false, error: '安装包不在了' };
+
+  /* 【2026-11-11 mac 兼容】mac 不做静默覆盖安装：
+   *   挂载 dmg → 把 .app 拷到 /Applications → 弹提示让主人重启。
+   * 这里只负责「打开 dmg」—— 拖拽这个动作交回给主人（Finder 里拖一下，
+   * 既符合 mac 习惯，也绕开正在运行的 app 覆盖不了自己的问题）。 */
+  if (process.platform === 'darwin') {
+    try {
+      spawn('open', [file], { detached: true, stdio: 'ignore' }).unref();
+      return { ok: true, mac: true };
+    } catch (e) {
+      return { ok: false, error: String(e?.message ?? e) };
+    }
+  }
   const dir = join(config.dataDir, '.state', 'downloads');
   mkdirSync(dir, { recursive: true });
   const script = join(dir, 'apply-update.cmd');

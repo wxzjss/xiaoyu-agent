@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { createReadStream, statSync, readdirSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, isAbsolute as isAbsolutePath } from 'node:path';
+import { join, isAbsolute as isAbsolutePath, extname } from 'node:path';
 import { config } from './config.mjs';
 /* 【2026-11-08 加·整轮空闲看门狗】以前只有「等模型」那层有超时，卡在别处没人管 */
 import { createTurnWatchdog } from './harness/turn-watchdog.mjs';
@@ -28,6 +28,8 @@ import { planPublicView, planUiAction, readPlanTxt, loadPlan } from './plan.mjs'
 // localVersion：更新器眼里「本地该是哪一版」。跟正在跑的版本可能不是一个数 ——
 // 见下面 /api/health 里 running/target 的注释。
 import { localVersion } from './updater.mjs';
+// 插件仓库 + 外观设置（主题 / 壁纸 / 功能都以 js 插件方式加载）。
+import { pluginsView, togglePlugin, removePlugin, pluginFile, openPluginsDir, importPlugins, createPluginFromCode, getAppearance, setAppearance } from './plugins.mjs';
 // 前情：一进来就记得的那段对话。只贴给模型看，不进会话记录，界面也不会画出来。
 import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
 // 会话记忆文件：一个会话一份自己的本子，每轮拼进系统提示（见 persona.mjs 的 memoryBlock）。
@@ -6178,6 +6180,87 @@ const server = createServer(async (req, res) => {
     return json(res, 200, getSkinState());
   }
 
+  // ---- 插件仓库 + 外观设置（2026-11-11）：主题 / 壁纸 / 功能都以 js 插件方式加载 ----
+  {
+    /* 【两条固定路径必须排在 <id> 前面】
+     * 下面那条 /^\/api\/plugins\/([^/]+)$/ 会把 import、open-dir 都当成「id 叫这个的插件」
+     * —— 请求先来先得，「打开插件目录」就会收到一句「没这个插件」（实测踩过一次）。
+     * 所以 import / open-dir 先认，认完才轮到按 id 的开关。 */
+    if (req.method === 'POST' && url.pathname === '/api/plugins/import') {
+      try {
+        const p = await body(req);
+        const out = await importPlugins(p?.files);
+        return json(res, out.ok ? 200 : 400, { ...out, plugins: pluginsView(), appearance: getAppearance() });
+      } catch (err) {
+        return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+    if (req.method === 'POST' && url.pathname === '/api/plugins/open-dir') {
+      const ok = await openPluginsDir();
+      return json(res, 200, { ok });
+    }
+    /* 粘贴代码建插件（2026-11-12）：body { id, name, type:'feature'|'theme', description?, code }。
+     * 跟 import 一样，回最新的插件清单 + 外观，前端不用再问一次。 */
+    if (req.method === 'POST' && url.pathname === '/api/plugins/create') {
+      try {
+        const p = await body(req);
+        const out = createPluginFromCode(p);
+        return json(res, out.ok ? 200 : 400, out);
+      } catch (err) {
+        return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+    const pm = url.pathname.match(/^\/api\/plugins\/([^/]+)(\/.*)?$/);
+    if (req.method === 'GET' && url.pathname === '/api/plugins') {
+      return json(res, 200, { ok: true, plugins: pluginsView(), appearance: getAppearance() });
+    }
+    if (req.method === 'POST' && pm && !pm[2]) {
+      // POST /api/plugins/<id>  body: { on: true|false } —— 开 / 关一个插件
+      try {
+        const p = await body(req);
+        const out = togglePlugin(decodeURIComponent(pm[1]), p?.on !== false);
+        if (!out.ok) return json(res, 404, out);
+        return json(res, 200, { ...out, plugins: pluginsView(), appearance: getAppearance() });
+      } catch (err) {
+        return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+    if (req.method === 'DELETE' && pm && !pm[2]) {
+      const out = removePlugin(decodeURIComponent(pm[1]));
+      return json(res, out.ok ? 200 : 400, { ...out, plugins: pluginsView() });
+    }
+    // 插件静态文件：/plugin-assets/<id>/<文件名>。路径守卫在 pluginFile 里（别跑出插件目录）。
+    const am = url.pathname.match(/^\/plugin-assets\/([^/]+)\/(.+)$/);
+    if (req.method === 'GET' && am) {
+      const f = pluginFile(decodeURIComponent(am[1]), decodeURIComponent(am[2]));
+      if (!f) return json(res, 404, { error: 'not found' });
+      const ext = extname(f);
+      const type = ext === '.js' ? 'text/javascript; charset=utf-8'
+        : ext === '.css' ? 'text/css; charset=utf-8'
+        : ext === '.json' ? 'application/json; charset=utf-8'
+        : ext === '.png' ? 'image/png'
+        : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+        : ext === '.webp' ? 'image/webp'
+        : ext === '.gif' ? 'image/gif'
+        : ext === '.svg' ? 'image/svg+xml'
+        : ext === '.mp4' ? 'video/mp4'
+        : ext === '.webm' ? 'video/webm'
+        : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+      res.end(__rotRead(f));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/appearance') {
+      try {
+        const p = await body(req);
+        return json(res, 200, { ok: true, appearance: setAppearance(p) });
+      } catch (err) {
+        return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+  }
+
+
   if (req.method === 'POST' && url.pathname === '/api/skin') {
     let payload;
     try {
@@ -6290,6 +6373,33 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     return json(res, 200, { settings: saveSettings(payload ?? {}) });
+  }
+
+  /* 系统通知的两个开关（2026-11-12）—— 见 src/notify.mjs 顶部注释。
+   * 设置面板里点一下就来一发 POST，返回整份设置，前端不用自己猜。 */
+  if (req.method === 'GET' && url.pathname === '/api/notify') {
+    try {
+      const { getNotifyPrefs, notifyAvailable } = await import('./notify.mjs');
+      return json(res, 200, { ok: true, notify: getNotifyPrefs(), available: notifyAvailable() });
+    } catch (err) {
+      return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/notify') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      const { setNotifyPrefs, notifyAvailable } = await import('./notify.mjs');
+      const notify = setNotifyPrefs(payload ?? {});
+      return json(res, 200, { ok: true, notify, available: notifyAvailable() });
+    } catch (err) {
+      return json(res, err?.status ?? 500, { ok: false, error: String(err?.message ?? err) });
+    }
   }
 
   // 把「现在生效的」底线 / 安全词 / 安全词说明一起定成默认（三样独立判定）
@@ -12446,6 +12556,8 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       // 「自己注册的号」那条道如果开了「开机就连」，这里替主人接上。
       // 不 await：连不上也不该拖住启动（自愈和重拨都在 qq-onebot 里）。
       bootAutoStartOneBot(quiet);
+      // 官方机器人同理（2026-11-12 补：以前根本没这个钩子）
+      bootAutoStartQqBot(quiet);
       bootPruneQqMedia(quiet);
     });
 
@@ -12478,6 +12590,42 @@ async function bootPruneQqMedia(quiet) {
   setTimeout(() => { run('boot'); }, 20_000).unref?.();
   const timer = setInterval(() => { run('daily'); }, 24 * 3600_000);
   timer.unref?.();
+}
+
+/**
+ * 【开机自动连上「官方机器人」】2026-11-12
+ *
+ * 主人原话：「小鱼Agent 一开就自动连上 没有实现」。
+ *
+ * 查下来是真的没实现：`bootAutoStartOneBot` 只管**自己注册的号**那条道，
+ * 官方机器人这条（AppID + AppSecret + SDK）压根没有开机钩子 ——
+ * `bot.autoStart` 这格存了、面板上那个勾也一直亮着，可启动流程里没人读它。
+ * 于是每次重开程序都得手动点一次「连上」。
+ *
+ * 现在补上：enabled（用不用这条道）+ autoStart + 凭据齐 → 起来就接。
+ * 不 await 到底（连接是常驻的），失败只记日志，不拖住启动。
+ */
+async function bootAutoStartQqBot(quiet) {
+  try {
+    const { qqBot, qqConfigured } = await import('./qq.mjs');
+    const conf = qqBot();
+    if (!qqConfigured()) return;
+    if (conf.autoStart === false) return;
+    /* 不再看 `bot.enabled` —— 那格是 2026-10 的遗留：界面从来没有地方把它写成 true，
+     * 于是所有存过凭据的人这里都是 false。真按它判，等于「开机自动连」永远不生效。 */
+    if (!quiet) console.log('qq: 开机自动连接「官方机器人」');
+    const { startQq } = await import('./qq-bridge.mjs');
+    const st = await startQq({
+      ensureSession: ensureQqSession,
+      renameGroupSession,
+      runChat: runQqTurn,
+      setSpeakerOwner: markQqOwner,
+      onLog: () => {},
+    });
+    if (!quiet) console.log(`  qq       : ${st.phase}（官方机器人${st.error ? ` · ${st.error}` : ''}）`);
+  } catch (e) {
+    console.log(`qq: 开机自动连接「官方机器人」失败 —— ${String(e?.message ?? e)}`);
+  }
 }
 
 /**

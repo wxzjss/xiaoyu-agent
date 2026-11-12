@@ -16,6 +16,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync, spawn } from 'node:child_process';
+/* mac 的 NapCat 是另一套形状（注入 QQ.app、没有 boot exe），实现在 src/napcat-mac.mjs。
+ * 这里静态 import：installed()/running() 是同步接口，动态 import 用不上。 */
+import { detectMacNapCat, macNapCatRunning, launchMacNapCat, openMacInstallerPage, portOpen, MAC_INSTALLER_URL } from '../src/napcat-mac.mjs';
 
 const NAPCAT_VERSION = 'v4.18.41';
 const MIRRORS = [
@@ -38,11 +41,19 @@ function dataDir() {
  *   ① 我们自己写 .bat 会被它读成乱码；
  *   ② NapCat 内部 spawn 子进程时也会踩同一个坑。
  * 所以这里避开 %APPDATA%\小鱼Agent，改用 %LOCALAPPDATA%\XiaoyuAgent\qq-protocol。
+ *
+ * 【2026-11-12 mac】mac 上没有 LOCALAPPDATA，原来会拼出
+ * ~/AppData/Local/... 这种既不对也不该出现的目录。mac 改放到
+ * ~/Library/Application Support/XiaoyuAgent/qq-protocol。
+ * 注意：mac 上 NapCat 本体不在这个目录里（它注入 QQ.app，数据在 QQ 容器里，
+ * 见 src/napcat-mac.mjs），这里只是我们自己的下载/临时目录。
  */
-const DIR = path.join(
-  process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
-  'XiaoyuAgent', 'qq-protocol',
-);
+const DIR = process.platform === 'darwin'
+  ? path.join(os.homedir(), 'Library', 'Application Support', 'XiaoyuAgent', 'qq-protocol')
+  : path.join(
+    process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+    'XiaoyuAgent', 'qq-protocol',
+  );
 const ZIP = path.join(DIR, '_download.zip');
 const RUNNER = path.join(DIR, '_run.bat');
 
@@ -139,11 +150,22 @@ async function pickRelease() {
     return { tag: list[0].tag_name };
   } catch { return null; }
 }
+/**
+ * 装没装 / 跑没跑。
+ *
+ * 【2026-11-12 mac】mac 上这两个问题不能按 Windows 的形状回答：
+ * 没有 NapCatWinBootMain.exe、没有 tasklist，NapCat 是注入在 QQ.app 里的。
+ * 判据交给 src/napcat-mac.mjs（NapCat 数据目录在不在 + QQ 进程在不在）。
+ */
+const IS_MAC = process.platform === 'darwin';
+
 function installed() {
+  if (IS_MAC) return detectMacNapCat().found;
   return exists(path.join(DIR, 'NapCatWinBootMain.exe')) && exists(path.join(DIR, 'napcat', 'napcat.mjs'));
 }
 
 function running() {
+  if (IS_MAC) return macNapCatRunning();
   try {
     const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq NapCatWinBootMain.exe', '/NH'], { encoding: 'utf8' });
     return /NapCatWinBootMain/i.test(out);
@@ -272,6 +294,25 @@ function installedBuild() {
   } catch { return ''; }
 }
 async function deploy() {
+  /* 【2026-11-12 mac】自动下载铺目录这条路是 Windows 专属（zip 里找 boot exe、
+   * Expand-Archive、写 .bat）。mac 的 NapCat 必须由官方安装器改 QQ 入口，
+   * 还要过系统授权 —— 替不了，但也不能让主人对着一句英文报错发呆：
+   * 已装就直接说「已经装好」，没装就把安装器下载页打开。 */
+  if (IS_MAC) {
+    const cat = detectMacNapCat();
+    if (cat.found) {
+      return { ok: true, installed: true, already: true, dir: cat.dir, message: 'mac 上的协议端已经装好了，点「启动协议端」就会打开 QQ。' };
+    }
+    const op = await openMacInstallerPage();
+    return {
+      ok: false,
+      installed: false,
+      needsInstaller: true,
+      url: MAC_INSTALLER_URL,
+      opened: op.ok === true,
+      message: 'mac 上装协议端要用官方安装器：已经帮你打开下载页，装完（它会改 QQ 入口，要你在系统设置里授权）回来点「启动协议端」。',
+    };
+  }
   fs.mkdirSync(DIR, { recursive: true });
   const qq = findQQ();
   if (!qq) throw new Error('这台机器上找不到 QQ.exe —— 协议端要挂在一个 QQ 客户端上');
@@ -322,6 +363,15 @@ async function deploy() {
 }
 
 function start() {
+  if (IS_MAC) {
+    /* mac 上「启动协议端」= 打开 QQ。
+     * 这里是同步函数（server 那边没 await），所以先做同步的可行性判断，
+     * 真正的 open + 等端口交给 async 版——调用方拿到的是一个带 started 的 Promise，
+     * 展开成 {} 也不会骗人（阶段字段由下次 status 刷新补上）。 */
+    if (!installed()) throw new Error('这台机器还没装协议端。点「准备协议端」会打开官方安装器下载页，装完再回来。');
+    launchMacNapCat().catch(() => {});
+    return { ok: true, started: true, platform: 'darwin', note: '已经让 QQ 起来了；3001 要等你扫码登录后才开。' };
+  }
   if (!installed()) throw new Error('还没装：先点「准备协议端」');
   if (running()) return { ok: true, already: true };
   const qq = findQQ();
@@ -337,6 +387,12 @@ function start() {
 }
 
 function kill() {
+  /* mac 上不替主人关 QQ：那可能正开着他自己的聊天窗口。
+   * 「换一张二维码」在 mac 上退化成「把 QQ 提到前面」，二维码由 NapCat 自己刷新。 */
+  if (IS_MAC) {
+    try { execFileSync('open', ['-a', '/Applications/QQ.app'], { timeout: 8000 }); } catch {}
+    return { ok: true, killed: false, platform: 'darwin', note: 'mac 上不关 QQ；已经把它提到前面了，NapCat 会自己换码。' };
+  }
   try {
     execFileSync('taskkill', ['/F', '/T', '/IM', 'NapCatWinBootMain.exe'], { stdio: 'ignore' });
     return { ok: true, killed: true };
@@ -346,6 +402,23 @@ function kill() {
 }
 
 async function status() {
+  if (IS_MAC) {
+    /* mac：webui 6099 / websocket 3001 都用裸 TCP 探，别去 fetch 一个只会返回
+     * HTML 登录页的 WebUI（还会被 302 绕一圈）。 */
+    const cat = detectMacNapCat();
+    const [ws, webui] = await Promise.all([portOpen(3001), portOpen(6099)]);
+    return {
+      ok: true,
+      platform: 'darwin',
+      installed: cat.found,
+      running: cat.found && macNapCatRunning(),
+      webui,
+      websocket: ws,
+      dir: cat.dir,
+      qq: exists('/Applications/QQ.app') ? '/Applications/QQ.app' : '',
+      installerUrl: MAC_INSTALLER_URL,
+    };
+  }
   let webui = false;
   try {
     const r = await fetch('http://127.0.0.1:6099/webui', { signal: AbortSignal.timeout(2000) });

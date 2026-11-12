@@ -185,7 +185,19 @@ export function setLive(sid, live) {
   const st = logState();
   if (String(sid || '') !== String(st.sid || '')) return false;
   st.live = live && Array.isArray(live.items) ? live : null;
-  if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
+  /**
+   * 这一轮收尾 → 把本屏已经落盘的乐观气泡撤掉。
+   *
+   * 【只对本屏的账跑】落盘下标（rewindId）是「在这个会话 messages 里的第几条」，
+   * 不同会话会出现同一个数。原来把整本账（含别家会话的）一起拿去对，
+   * 就有可能按下标误撤掉另一屏还没落盘的那颗。跟 setHistory 一个口径：只收本屏的。
+   */
+  if (!st.live) {
+    const _sid = String(st.sid || '');
+    const others = pendingUser.filter((p) => p.sid && p.sid !== _sid);
+    const mine = dropLandedPending(pendingUser.filter((p) => !p.sid || p.sid === _sid), st.turns);
+    pendingUser = mine.concat(others);
+  }
   bump();
   return true;
 }
@@ -272,17 +284,61 @@ function norm(s) {
 }
 
 /**
+ * 历史里最近几句「主人说的话」。
+ *
+ * 【为什么只收 user，不切尾巴】
+ * turns 不是「一问一答一条」，而是**一条 assistant 消息一条 turn** ——
+ * 她调过几次工具，一轮就会被劈成七八条（publicSession 逐条 push）。
+ * 于是「最后 6 条 turn」在一轮带工具的对话里，很可能**一条 user 都没有**。
+ * 拿这个窗口去对账，主人那句话永远对不上。
+ */
+function recentUserTurns(turns, n) {
+  const arr = Array.isArray(turns) ? turns : [];
+  const out = [];
+  for (let i = arr.length - 1; i >= 0 && out.length < n; i--) {
+    if (arr[i] && arr[i].role === 'user') out.push(arr[i]);
+  }
+  return out;
+}
+
+/**
  * 这句话在不在这份历史里？
  *
- * 判据是「洗完只留字」之后相等，只看最后几条 —— 刚发出去的那句必然贴着尾巴。
- * 命中就说明服务端已经落盘了，乐观那条必须收掉，否则屏幕上两份。
+ * 【2026-11-11 修·主人报「我发的话重复显示在 AI 回复后面」】
+ *
+ * 原来这里取 `turns.slice(-6)` 当窗口，理由是「刚发出去那句必然贴着尾巴」。
+ * 这个前提只在不调工具的短对话里成立：
+ *   · assistant 消息是一条一个 turn，一轮调 5 次工具 = 尾巴上 5 条都是 assistant；
+ *   · 实测主人那份会话，最后一句 user 之后跟了 **101 条** turn。
+ * 窗口里没有 user，norm 比对一条都命中不了 → 乐观气泡永远撤不掉 →
+ * 屏幕上除了历史里那句、底下还多挂一颗一模一样的（位置就在她回复后面），
+ * 每轮再叠一颗。修前用真 store 逻辑复现：user + 7 段 assistant 时 pending 仍是 1。
+ *
+ * 现在三条判据，任一命中就撤：
+ *   ① **落盘下标**：done 事件带来的 at = 那句话在 messages 里的下标，
+ *      跟历史 turn 的 rewindId 是同一个数 —— 改过字也对得上，最准；
+ *   ② **下标更早**：比历史里最后一句主人话还早的那颗，说明它早就落盘了
+ *      （老版本漏收留下的尸体，靠这条在下一轮顺手清掉）；
+ *   ③ **文字**：只在最近 5 句「主人说的话」里比（不再数 assistant 那些分段）。
  */
 function dropLandedPending(list, turns) {
   if (!list.length) return list;
-  const arr = Array.isArray(turns) ? turns : [];
-  const tail = arr.slice(-6);
-  const texts = tail.map((t) => norm(t && t.text)).filter(Boolean);
+  /* 【注意】Number(null) === 0，而 0 是合法下标（会话第一条）——
+   * 不判空就写 Number(x)，「还不知道下标」的乐观气泡会被当成「下标 0」误杀。 */
+  const numAt = (x) => (x == null || x === '' ? NaN : Number(x));
+  const asks = recentUserTurns(turns, 5);
+  const ids = new Set(asks.map((t) => numAt(t && t.rewindId)).filter((v) => Number.isFinite(v)));
+  const texts = asks.map((t) => norm(t && t.text)).filter(Boolean);
+  /* 历史里最后那句主人话的下标。下标是「在 messages 里的第几条」，
+   * 只增不减（回退只遮蔽不删），所以比它更早的那条一定已经落在历史里了。 */
+  const lastAskAt = asks.length ? numAt(asks[0] && asks[0].rewindId) : NaN;
   const keep = list.filter((p) => {
+    const at = numAt(p.rewindId);
+    if (Number.isFinite(at)) {
+      if (ids.has(at)) return false;
+      /* 比最后一句还早的那颗：它的那条早落盘了（只在老版本漏收的尸体上才走到） */
+      if (Number.isFinite(lastAskAt) && at < lastAskAt) return false;
+    }
     const n = norm(p.text);
     if (!n) return false;
     return !texts.some((t) => t === n || t.endsWith(n));

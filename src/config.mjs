@@ -23,11 +23,19 @@ const DATA = process.env.MINI_AGENT_DATA
     // 2026-10-28 踩到：改完 settings 跑回归，读出来 safeWords 是出厂的「停下/停止/…」，
     // 而主人设置里明明是「停止/命令/人设」—— 断言因此误判，我差点去改本来正确的代码。
     //
-    // 所以：只要 %APPDATA%\小鱼Agent\data\.state 存在（说明这台机器装过/用过），就用它；
+    // 所以：只要系统数据目录下的 .state 存在（说明这台机器装过/用过），就用它；
     // 否则才用 ROOT。这样仓库里跑的任何脚本看到的都是主人真实的配置。
-    (existsSync(join(process.env.APPDATA || '', '小鱼Agent', 'data', '.state'))
-      ? join(process.env.APPDATA, '小鱼Agent', 'data')
-      : ROOT);
+    //
+    // 【2026-11-11 mac 兼容】mac 没有 %APPDATA%，数据在
+    // ~/Library/Application Support/小鱼Agent/data（electron 主进程打包态就是这儿）。
+    // 跑脚本时同样优先认这份，认不到才回落 ROOT。
+    (process.platform === 'darwin'
+      ? (existsSync(join(process.env.HOME || '', 'Library', 'Application Support', '小鱼Agent', 'data', '.state'))
+          ? join(process.env.HOME, 'Library', 'Application Support', '小鱼Agent', 'data')
+          : ROOT)
+      : (existsSync(join(process.env.APPDATA || '', '小鱼Agent', 'data', '.state'))
+          ? join(process.env.APPDATA, '小鱼Agent', 'data')
+          : ROOT));
 const PACKAGED = DATA !== ROOT;
 
 /** 打包后默认干活目录放在数据目录下的 workspace，别用 cwd（那可能是 System32） */

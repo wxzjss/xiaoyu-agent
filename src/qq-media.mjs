@@ -179,12 +179,17 @@ export function describeInbound(one) {
   return `[${kindName}：${one.localPath}${mb}]`;
 }
 
-/** 找 ffmpeg：先看数据目录里小鱼Agent 自己那份，再看 PATH */
+/** 找 ffmpeg：先看数据目录里小鱼Agent 自己那份，再看 PATH
+ * 【2026-11-11 mac 兼容】mac 的二进制没有 .exe 后缀，且 GUI 启动 PATH
+ * 可能不含 Homebrew，把常见路径显式列上。 */
 export function findFfmpeg() {
+  const isMac = process.platform === 'darwin';
   const cands = [
-    join(config.dataDir, 'runtime', 'bin', 'ffmpeg.exe'),
+    join(config.dataDir, 'runtime', 'bin', 'ffmpeg' + (isMac ? '' : '.exe')),
+    isMac ? '/opt/homebrew/bin/ffmpeg' : '',
+    isMac ? '/usr/local/bin/ffmpeg' : '',
     'ffmpeg',
-  ];
+  ].filter(Boolean);
   if (process.env.XIAOYU_FFMPEG) cands.unshift(process.env.XIAOYU_FFMPEG);
   for (const c of cands) {
     try {

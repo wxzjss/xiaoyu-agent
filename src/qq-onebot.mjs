@@ -37,6 +37,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readQq, writeQq } from './qq.mjs';
+import { detectMacNapCat, macNapCatRunning } from './napcat-mac.mjs';
 
 /** 进程内的连接状态（不落盘）。 */
 const rt = {
@@ -323,16 +324,30 @@ export async function startOneBot(onEvent, opts = {}) {
     error: (e) => {
       // 【2026-10-30 修】原来一拨不上就甩「协议端开了吗？地址对吗？」，可最常见的是
       // 协议端好好地在跑、只是没开这个端口（还没登录 / WebSocket 服务端没配）。
-      // 所以先看进程有没有在，再决定说哪句话。
+      // 所以先看协议端到底在不在，再决定说哪句话。
+      // 【2026-11-12 mac】mac 上不能拿「QQ 进程在」当协议端在：原版 QQ 也开着，
+      // 这样会告诉主人「协议端在跑，只是没开门」，其实他压根没装 NapCat。
+      // 判据改成「NapCat 数据目录在 + QQ 在跑」（见 src/napcat-mac.mjs）。
+      const __macCat = process.platform === 'darwin' ? detectMacNapCat() : null;
       const __napRunning = (() => {
         try {
+          if (process.platform === 'darwin') return __macCat.found && macNapCatRunning();
           const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq NapCatWinBootMain.exe', '/NH'], { encoding: 'utf8', timeout: 3000, windowsHide: true });
           return /NapCatWinBootMain/i.test(out);
         } catch { return false; }
       })();
-      rt.error = __napRunning
-        ? `协议端在跑着，但还没在 ${conf.url} 上开门 —— 多半是 QQ 还没登录，或者它的 WebSocket 服务端没开（端口填 3001）。点「刷新二维码」我帮你重拉一次。`
-        : `协议端（NapCat）没在跑 —— 点「刷新二维码」我帮你拉起来。（原始错误：${String(e?.message ?? e)}）`;
+      if (process.platform === 'darwin' && !__macCat.found) {
+        rt.error = '这台机器上还没装协议端（mac 上要用官方 NapCat-Mac-Installer 把它装进 QQ.app）—— 回面板点「准备协议端」，我把下载页打开。'
+          + `（原始错误：${String(e?.message ?? e)}）`;
+      } else if (process.platform === 'darwin') {
+        rt.error = __napRunning
+          ? `QQ 开着，但 ${conf.url} 还没开门 —— 多半是还没扫码登录，或者 NapCat 的 WebSocket 服务端没开（端口填 3001）。点「换一张」我把 QQ 提到前面。`
+          : `装了 NapCat，但 QQ 没在跑 —— 点「启动协议端」我帮你打开。（原始错误：${String(e?.message ?? e)}）`;
+      } else {
+        rt.error = __napRunning
+          ? `协议端在跑着，但还没在 ${conf.url} 上开门 —— 多半是 QQ 还没登录，或者它的 WebSocket 服务端没开（端口填 3001）。点「刷新二维码」我帮你重拉一次。`
+          : `协议端（NapCat）没在跑 —— 点「刷新二维码」我帮你拉起来。（原始错误：${String(e?.message ?? e)}）`;
+      }
       log(rt.error);
     },
   });

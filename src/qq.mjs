@@ -115,6 +115,81 @@ export function normQqList(v) {
   return out.slice(0, 200);
 }
 
+/**
+ * 【2026-11-12 修·官方机器人那条道「群号」根本不是号】
+ *
+ * 主人报：「显示已经连上，我在群里 @ 它怎么没有反应」，
+ * 日志是 `挡掉一条（not-in-whitelist）[群] ED6F3300`。
+ *
+ * 根因：官方接口给的群 id 是 **group_openid**（一长串十六进制，如 `ED6F3300…`），
+ * 不是数字群号。老代码一律过 normQqNum —— 它只留纯数字，openid 被洗成空串，
+ * 于是群聊掉进了「私聊」那条分支；私聊又拿不到说话人的 QQ 号（官方只给 openid），
+ * 两头都空 → 一律 not-in-whitelist。**白名单里填多少群号都没用**，因为从来没有
+ * 一个值能对上。
+ *
+ * 现在 id 认两种形态：
+ *   · 纯数字 5~12 位     → 老路子（OneBot / 本地协议端给的群号、QQ 号）
+ *   · openid（8~64 位）→ 官方机器人那条道（大小写不敏感，存小写）
+ */
+export function normGroupId(v) {
+  const s = String(v ?? '').trim().replace(/^(group|guild)[:_-]?/i, '').replace(/[^0-9A-Za-z_-]/g, '');
+  if (!s) return '';
+  if (/^\d+$/.test(s)) return /^\d{5,12}$/.test(s) ? s : '';
+  if (!/^[0-9A-Za-z_-]{8,64}$/.test(s)) return '';
+  return s.toLowerCase();
+}
+
+/**
+ * 一个人的身份：可能是 QQ 号，也可能是官方那条道给的 openid。
+ * 私聊白名单两种都收 —— 否则官方机器人一开，「只理白名单」等于把主人也关在外面。
+ */
+export function normPeerId(v) {
+  const s = String(v ?? '').trim();
+  if (/^\d{5,12}$/.test(s)) return s;
+  if (!/^[0-9A-Za-z_-]{8,64}$/.test(s)) return '';
+  /* 纯数字但超过 12 位：不是 QQ 号，只可能是纯数字的 openid —— 也收（当 openid 用）。
+   * 5~12 位以外、又只有几位数字的，既不是号也不是 openid，别硬认。 */
+  if (/^\d+$/.test(s) && s.length <= 12) return '';
+  return s.toLowerCase();
+}
+
+/**
+ * 主人身份。两种写法都收：
+ *   · 自己注册的号那条道（OneBot）→ QQ 号，纯数字
+ *   · 官方机器人那条道 → openid（接口从不给 QQ 号，也没有换算接口）
+ *
+ * 【顺序不能反】必须先 normPeerId 再 normQqNum。
+ * normQqNum 会「削掉首尾非数字」，`meopenid00000aaaaaaaa` 会被削成 `00000`，
+ * 于是一个 openid 变成了假 QQ 号（2026-11-12 实测踩到：主人被存成 00000）。
+ */
+export function normOwnerId(v) {
+  return normPeerId(v) || normQqNum(v);
+}
+
+/** 一串群 id：数字群号、openid 都能填，逗号/换行隔开。 */
+export function normGroupList(v) {
+  const raw = Array.isArray(v) ? v : String(v ?? '').split(/[,，、;；\s]+/);
+  const out = [];
+  for (const x of raw) {
+    const n = normGroupId(x);
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out.slice(0, 200);
+}
+
+/** 一串人：主人的手输容忍「QQ:12345」这种写法，运行时的 id 一律走 normPeerId。 */
+export function normPeerList(v) {
+  const raw = Array.isArray(v) ? v : String(v ?? '').split(/[,，、;；\s]+/);
+  const out = [];
+  for (const x of raw) {
+    // 先按「原样 id」认（openid 必须原样保住），认不出再走手感宽容的号解析。
+    // 顺序反了的话，`ABC12345DEFG` 会被 normQqNum 削成 `12345` —— 存进去的是个假号。
+    const n = normPeerId(x) || normQqNum(x);
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out.slice(0, 200);
+}
+
 /** 单个会话最多挂多少人（防止有人拿机器人群发刷爆） */
 export const MAX_PEERS = 50;
 /** 口令多久内有效 */
@@ -186,9 +261,9 @@ export function readQq() {
         mode: objOf(j?.bind).mode === 'shared' ? 'shared' : 'per-user',
       },
       gate: {
-        ownerQq: normQqNum(objOf(j?.gate).ownerQq),
-        allowQq: normQqList(objOf(j?.gate).allowQq),
-        allowGroup: normQqList(objOf(j?.gate).allowGroup),
+        ownerQq: normOwnerId(objOf(j?.gate).ownerQq),
+        allowQq: normPeerList(objOf(j?.gate).allowQq),
+        allowGroup: normGroupList(objOf(j?.gate).allowGroup),
         // 没写这一格的老文件 → 当成「严守」（fail-closed，别因为升级就放开）
         strict: objOf(j?.gate).strict !== false,
       },
@@ -239,9 +314,9 @@ export function writeQq(data) {
       mode: objOf(d.bind).mode === 'shared' ? 'shared' : 'per-user',
     },
     gate: {
-      ownerQq: normQqNum(d.gate?.ownerQq),
-      allowQq: normQqList(d.gate?.allowQq),
-      allowGroup: normQqList(d.gate?.allowGroup),
+      ownerQq: normOwnerId(d.gate?.ownerQq),
+      allowQq: normPeerList(d.gate?.allowQq),
+      allowGroup: normGroupList(d.gate?.allowGroup),
       strict: d.gate?.strict !== false,
     },
     peers: {},
@@ -365,7 +440,12 @@ export function qqGate() {
  */
 export function ownerQqOf() {
   const d = readQq();
-  return normQqNum(d.gate.ownerQq) || normQqNum(d.onebot && d.onebot.ownerQq);
+  /* gate.ownerQq 现在可能是 openid（官方那条道）。这里只想要「QQ 号」，
+   * 所以先看它是不是真的纯数字 —— 直接 normQqNum(openid) 会把
+   * `meopenid00000aaa…` 削成 `00000`，于是「00000」莫名其妙成了主人（2026-11-12 实测踩到）。 */
+  const g = String(d.gate.ownerQq || '');
+  const own = /^\d{5,12}$/.test(g) ? g : '';
+  return own || normQqNum(d.onebot && d.onebot.ownerQq);
 }
 
 /**
@@ -377,16 +457,19 @@ export function ownerQqOf() {
 export function setQqGate({ ownerQq, allowQq, allowGroup, strict } = {}) {
   const data = readQq();
   if (ownerQq !== undefined) {
-    const n = normQqNum(ownerQq);
-    if (String(ownerQq || '').trim() && !n) {
-      const err = new Error('主人 QQ 号得是 5~12 位数字');
+    const raw = String(ownerQq ?? '').trim();
+    /* 官方机器人那条道拿不到 QQ 号，只有 openid —— 主人这一格两种都收（2026-11-12）。
+     * 不这么做的话，官方通道下「主人」这个身份根本没法填：填号对不上，填 openid 又被判非法。 */
+    const n = normOwnerId(raw);
+    if (raw && !n) {
+      const err = new Error('主人得填 QQ 号（5~12 位数字），或者官方通道里的那个 openid');
       err.status = 400;
       throw err;
     }
     data.gate.ownerQq = n;
   }
-  if (allowQq !== undefined) data.gate.allowQq = normQqList(allowQq);
-  if (allowGroup !== undefined) data.gate.allowGroup = normQqList(allowGroup);
+  if (allowQq !== undefined) data.gate.allowQq = normPeerList(allowQq);
+  if (allowGroup !== undefined) data.gate.allowGroup = normGroupList(allowGroup);
   if (strict !== undefined) data.gate.strict = strict !== false;
   // 主人自己得能私聊她 —— 自动并进白名单，但只并一次，不重复
   if (data.gate.ownerQq && !data.gate.allowQq.includes(data.gate.ownerQq)) {
@@ -398,18 +481,27 @@ export function setQqGate({ ownerQq, allowQq, allowGroup, strict } = {}) {
 /**
  * 这道门到底放不放这人进来。
  *
- * 参数都是网关给的原始值：QQ 号可能是字符串也可能是数字，
- * 这里统一过一遍 normQqNum 再比。
+ * 参数都是网关给的原始值：
+ *   · `qqId`    OneBot 那条道给的 QQ 号（纯数字）
+ *   · `openid`  官方机器人那条道只能给 openid（一长串字母数字）
+ *   · `groupId` 群号（数字）或 group_openid（官方那条道）
+ * 三种都要归一化之后再比 —— 2026-11-12 之前只认纯数字，官方那条道的
+ * 群 openid 会被洗成空串，群聊判断直接塌成私聊，白名单填什么都不生效。
  *
  * 【2026-11-01 体检补】strict 这一格以前是**死的**：界面上能勾能取消，
  * 存也存下来了，但这里从来没读过它 —— 勾不勾都一样严守。现在按它说的做：
  *   strict = true  只理白名单（默认，fail-closed）
  *   strict = false 不设防，谁都回（群聊仍然要求 @ 她）
  */
-export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
+export function qqAllowed({ qqId, groupId, openid, isOwner = false, isGroup = false } = {}) {
   const g = qqGate();
-  const q = normQqNum(qqId);
-  const grp = normQqNum(groupId);
+  // 运行时给的号码不做「去前缀」那套宽容处理 —— 那是给主人手输用的。
+  // 否则 openid 里恰好带 5 位数字（如 ABC12345DEFG）会被认成 QQ 号，白名单误放人。
+  const rawQq = String(qqId ?? '').trim();
+  const q = /^\d{5,12}$/.test(rawQq) ? rawQq : '';
+  // 「这人是谁」：有号用号，没号用 openid（官方那条道只有 openid）
+  const who = q || normPeerId(openid || qqId);
+  const grp = normGroupId(groupId);
   /**
    * 【2026-11-01 主人报的 bug】「我在QQ群里艾特小鱼，我事先没加这个群号到白名单，
    *  但她同时在我的私聊与这个群聊回了一句」
@@ -422,21 +514,32 @@ export function qqAllowed({ qqId, groupId, isOwner = false } = {}) {
    */
   const strict = g.strict !== false;   // 没写这一格的老文件按「严守」算
   if (grp) {
-    if (!strict) return q ? { ok: true, why: 'loose' } : { ok: false, why: 'group-not-allowed', qq: q, group: grp };
+    if (!strict) return { ok: true, why: 'loose', qq: who, group: grp };
     return g.allowGroup.includes(grp)
-      ? { ok: true, why: 'group' }
-      : { ok: false, why: 'group-not-allowed', qq: q, group: grp };
+      ? { ok: true, why: 'group', qq: who, group: grp }
+      : { ok: false, why: 'group-not-allowed', qq: who, group: grp };
   }
-  // 主人的号 —— 他一定是自己人（认号，不认 openid）。
+  // 说是群消息，却一个群 id 都没给 —— 没法核对。宁可挡，也得说清是「比不了」。
+  if (isGroup) {
+    return strict
+      ? { ok: false, why: 'group-no-id', qq: who, group: '' }
+      : { ok: true, why: 'loose', qq: who, group: '' };
+  }
+  // 主人的号 —— 他一定是自己人（认号；官方那条道没号时按 openid 认，见 isOwnerOpenid）
   // 号从 ownerQqOf() 取：gate 没填但 1.5 那格填了，也算数（2026-11-09 修）。
-  const _owner = normQqNum(g.ownerQq) || ownerQqOf();
+  const _owner = ownerQqOf();
   if (_owner && q && q === _owner) return { ok: true, why: 'owner' };
+  /* 【2026-11-12 补】主人这一格现在也收 openid。
+   * 官方机器人那条道永远没有 QQ 号（接口只给 openid，跟 QQ 号也没有换算），
+   * 所以「主人」在那边只能用 openid 认；否则主人自己私聊她都会被白名单挡在外面。 */
+  const _ownerPeer = normPeerId(g.ownerQq);
+  if (_ownerPeer && who && who === _ownerPeer) return { ok: true, why: 'owner' };
   // isOwner 只剩「早先被设成主人」这一个来源，口令退役后基本用不上，留着不碍事
   if (isOwner) return { ok: true, why: 'owner' };
   // 主人把「只理白名单」关掉了 → 不设防（但连号都没有的话还是别理，那是垃圾消息）
-  if (!strict) return q ? { ok: true, why: 'loose' } : { ok: false, why: 'not-in-whitelist', qq: q, group: '' };
-  if (q && g.allowQq.includes(q)) return { ok: true, why: 'whitelist' };
-  return { ok: false, why: 'not-in-whitelist', qq: q, group: '' };
+  if (!strict) return who ? { ok: true, why: 'loose' } : { ok: false, why: 'not-in-whitelist', qq: who, group: '' };
+  if (who && g.allowQq.includes(who)) return { ok: true, why: 'whitelist' };
+  return { ok: false, why: 'not-in-whitelist', qq: who, group: '' };
 }
 
 // ─────────────────────────── 接哪个会话 ───────────────────────────
@@ -489,7 +592,11 @@ export function qqPeer(openid) {
 
 export function isOwnerOpenid(openid) {
   const p = qqPeer(openid);
-  return Boolean(p && p.role === 'owner');
+  if (p && p.role === 'owner') return true;
+  /* 【2026-11-12 补】官方那条道没有 QQ 号，主人这一格可能填的就是 openid ——
+   * 这时候「消息里的 openid === 填的那个」就是唯一判据。 */
+  const o = normPeerId(qqGate().ownerQq);
+  return Boolean(o) && normPeerId(openid) === o;
 }
 
 /**

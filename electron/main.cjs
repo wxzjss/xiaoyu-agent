@@ -77,7 +77,7 @@ if (String(process.env.ELECTRON_RUN_AS_NODE || '').trim() && !process.env[SELF_R
   process.exit(0);
 }
 
-const { app, BrowserWindow, shell, ipcMain, dialog, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, dialog, Tray, Menu, nativeImage, Notification } = require('electron');
 const { join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { readFileSync, writeFileSync, existsSync: fsExists } = require('node:fs');
@@ -108,6 +108,15 @@ const BOOT_T0 = Date.now();
  */
 const bootLogPath = (() => {
   try {
+    /* 【2026-11-11 mac 兼容】mac 没有 APPDATA，启动日志跟着数据目录走：
+     * ~/Library/Application Support/小鱼Agent/data/.state/boot.log，
+     * 跟打包态 MINI_AGENT_DATA 指向的目录保持一致，不然日志永远落不下来。 */
+    if (process.platform === 'darwin') {
+      return require('node:path').join(
+        process.env.HOME || require('node:os').homedir(),
+        'Library', 'Application Support', '小鱼Agent', 'data', '.state', 'boot.log',
+      );
+    }
     return require('node:path').join(
       process.env.APPDATA || require('node:os').homedir(),
       '小鱼Agent', 'data', '.state', 'boot.log',
@@ -1049,6 +1058,11 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     bootMark('whenReady');
+    /* 【2026-11-12】Windows 上不设 AppUserModelID，系统通知会不显示（或者顶着
+     * 「electron.app.Electron」这个名字出现）。必须在弹第一条之前设好。 */
+    try {
+      if (process.platform === 'win32') app.setAppUserModelId('com.xiaoyu.mini-agent');
+    } catch {}
     // 【为什么把自检挪到后面】
     // 以前是 `await selfCheck()` 跑完才开窗口，而自检要联网问一次模型（还可能卡在
     // 「版本检查」那一步）。网不好或者那次请求挂住，窗口就永远不出来 —— 表现是
@@ -1152,7 +1166,98 @@ ipcMain.handle('app:info', () => ({
   version: app.getVersion(),
   port: serverInfo && serverInfo.port,
   url: serverInfo && serverInfo.url,
+  platform: process.platform,
 }));
+
+/**
+ * 系统通知（2026-11-12）。
+ *
+ * 主人原话：「你看看有没有系统通知的插件，没有做一个，设置在软件对话，
+ * ai 回复的时候提醒下，还有 qq 回复的设置提醒下，做两个开关项」。
+ *
+ * 两条来路：
+ *   1. 渲染进程 → `desktop.notify(...)` → IPC 'xy:notify'（AI 回复完成时用）
+ *   2. 服务端   → `globalThis.__xyNotify(...)`（server.mjs 是 import 进主进程跑的，
+ *      同一个进程、同一份 globalThis；QQ 消息在那边收到就可以直接弹）
+ *
+ * 【窗口在最前面就不弹】—— 人正盯着界面看，再弹一条「她回复了」纯属打扰。
+ * 只有最小化 / 被别的窗口盖住 / 切到别的应用时才弹。force 给自检用。
+ *
+ * 出错一律吞掉：通知弹不出来是小事，绝不能因此影响回复本身。
+ */
+function xyShowNotify(payload = {}) {
+  try {
+    if (!Notification.isSupported()) return false;
+    if (!win || win.isDestroyed()) return false;
+    const focused = win.isVisible() && !win.isMinimized() && win.isFocused();
+    if (focused && payload.force !== true) return false;
+    const title = String(payload.title || '小鱼').slice(0, 80);
+    const body = String(payload.body || '').slice(0, 180);
+    if (!body) return false;
+    const n = new Notification({ title, body, silent: false });
+    // 点通知 → 把窗口捞回来（最小化就还原）。找不到窗口就算了。
+    n.on('click', () => {
+      try {
+        if (!win || win.isDestroyed()) return;
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      } catch {}
+    });
+    n.show();
+    return true;
+  } catch (err) {
+    console.warn('[notify] 弹不出来（不影响使用）:', err && err.message ? err.message : err);
+    return false;
+  }
+}
+
+ipcMain.handle('xy:notify', (_e, payload) => xyShowNotify(payload || {}));
+/* 给同一个进程里的 server.mjs / qq-bridge.mjs 用（它们 import 进主进程，
+ * 拿不到 ipcMain，但能拿到这份 globalThis）。 */
+globalThis.__xyNotify = xyShowNotify;
+
+/**
+ * 原生「选文件 / 选图片 / 选文件夹」（2026-11-12）。
+ *
+ * 【为什么非要做这一条】对话区那颗「+」以前弹的是自己画的栏式浏览器 ——
+ * 一列一列横着铺、标着「C 盘」，那是 Windows 资源管理器的走法。
+ * 在 mac 上主人按 + 期待的是访达那张浮层：侧边栏、图标视图、⌘ 多选、空格预览。
+ * 自己再仿一套永远差口气，所以直接调系统面板：Electron 的 dialog 在 mac 上
+ * 就是 NSOpenPanel，在 Windows 上就是资源管理器那套，两边都原生。
+ *
+ * 参数：
+ *   kind        'file' | 'image' | 'dir'
+ *   defaultPath 上次用过的目录（可选，不存在时系统自己会回落）
+ * 回：{ canceled, paths }。paths 是本机绝对路径，前端接着走原来的 addAttachment。
+ */
+ipcMain.handle('app:pick', async (e, opts = {}) => {
+  const kind = opts && opts.kind === 'image' ? 'image' : opts && opts.kind === 'dir' ? 'dir' : 'file';
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const properties = kind === 'dir' ? ['openDirectory', 'createDirectory'] : ['openFile'];
+  // 图片是「挑一张」，文件允许一次挑好几个
+  if (kind === 'file') properties.push('multiSelections');
+
+  /* 图片给一组常见扩展名：mac 上 NSOpenPanel 会把这变成「只能选图片」，
+   * 省得主人选到一个 .psd / .mp4 再被后端的预览拒掉。 */
+  const filters = kind === 'image'
+    ? [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'heic', 'tif', 'tiff'] }]
+    : kind === 'dir' ? [] : [{ name: '所有文件', extensions: ['*'] }];
+
+  const payload = {
+    title: kind === 'image' ? '选择图片' : kind === 'dir' ? '选择文件夹' : '选择文件',
+    properties,
+  };
+  if (filters.length) payload.filters = filters;
+  if (opts && opts.defaultPath) payload.defaultPath = String(opts.defaultPath);
+
+  try {
+    const r = win ? await dialog.showOpenDialog(win, payload) : await dialog.showOpenDialog(payload);
+    return { canceled: Boolean(r.canceled), paths: r.canceled ? [] : (r.filePaths || []) };
+  } catch (err) {
+    return { canceled: true, paths: [], error: String(err && err.message ? err.message : err) };
+  }
+});
 
 ipcMain.handle('app:openWorkspace', async () => {
   const { config } = await importSrc('src/config.mjs');
@@ -1357,4 +1462,168 @@ ipcMain.handle('browser:reload', () => {
 });
 ipcMain.handle('browser:state', () => browserState());
 ipcMain.handle('browser:snap', () => snapBrowser());
+
+/* ============================================================================
+ * 开发模式：前端按 F12 → 这条通道 → 主进程给窗口开/关调试器
+ *
+ * 【为什么不在主进程里直接拦 F12】
+ * 要的是「前端 JS 监听键盘，再让这个进程去开调试器」——
+ * 渲染进程说了算，主进程只负责动手。拦截逻辑跟界面在一起，以后想加
+ * 「只有开发模式才允许」「面板里也能点开」都好加。
+ * 主进程这边的 before-input-event 不碰 F12，免得两处都响应、一按开关两次。
+ *
+ * 【为什么按窗口而不是按固定窗口】
+ * 主界面和内置浏览器是两个窗口，谁按的 F12 就调谁 —— 用
+ * BrowserWindow.fromWebContents(event.sender) 反查，绝不写死 win。
+ * 窗口关进托盘时先叫回来再开，否则调试器开在看不见的地方，主人以为没反应。
+ *
+ * 【状态要回推】
+ * 调试器也可能是从菜单（Ctrl+Shift+I / Cmd+Option+I）打开的，前端并不知道。
+ * 所以这里监听 devtools-opened / devtools-closed，统一往前端发 'dev:state'，
+ * 界面靠它决定要不要显示「开发模式」的提示、要不要把控制台日志转发过来。
+ * ==========================================================================*/
+
+/** 已经挂过事件监听的 webContents.id，防重复挂（同一个窗口会多次走到 devBind） */
+const devBound = new Set();
+/** 上一次真正切换的时间：挡住 120ms 内的连击（前端重复绑定、键鼠同发都会造成双开双关） */
+let devLastToggleAt = 0;
+
+/** 找到「发这条 IPC 的那个窗口」；找不到就退回主窗口 */
+function devWindowOf(sender) {
+  try {
+    const w = sender ? BrowserWindow.fromWebContents(sender) : null;
+    if (w && !w.isDestroyed()) return w;
+  } catch {}
+  try {
+    if (win && !win.isDestroyed()) return win;
+  } catch {}
+  try {
+    if (browserWin && !browserWin.isDestroyed()) return browserWin;
+  } catch {}
+  return null;
+}
+
+/** 这个窗口在我们这儿叫什么（给日志和前端提示用，别把对象塞给渲染进程） */
+function devWindowTag(w) {
+  if (!w) return 'none';
+  if (w === win) return 'main';
+  if (w === browserWin) return 'browser';
+  return 'window';
+}
+
+/** 窗口当前的调试状态（可以安全地整个发给渲染进程） */
+function devStateOf(w) {
+  if (!w || w.isDestroyed()) return { ok: false, open: false, window: 'none', error: '没有可调试的窗口' };
+  let open = false;
+  try { open = w.webContents.isDevToolsOpened(); } catch {}
+  let title = '';
+  try { title = w.getTitle() || ''; } catch {}
+  return { ok: true, open, window: devWindowTag(w), title, platform: process.platform };
+}
+
+/** 把调试状态推给那个窗口的前端 */
+function pushDevState(w) {
+  if (!w || w.isDestroyed()) return;
+  try { w.webContents.send('dev:state', devStateOf(w)); } catch {}
+}
+
+/**
+ * 给一个窗口挂上「调试器开关了」的监听。
+ * 幂等：同一个 webContents 只挂一次，销毁时把记录清掉。
+ */
+function devBind(w) {
+  if (!w || w.isDestroyed()) return;
+  try {
+    const wc = w.webContents;
+    if (!wc || devBound.has(wc.id)) return;
+    devBound.add(wc.id);
+    wc.on('devtools-opened', () => {
+      console.log(`[dev] 调试器已打开（${devWindowTag(w)}）`);
+      pushDevState(w);
+    });
+    wc.on('devtools-closed', () => {
+      console.log(`[dev] 调试器已关闭（${devWindowTag(w)}）`);
+      pushDevState(w);
+    });
+    wc.once('destroyed', () => { try { devBound.delete(wc.id); } catch {} });
+  } catch (e) {
+    console.warn('[dev] 挂调试器监听失败（不影响使用）:', e && e.message ? e.message : e);
+  }
+}
+
+/**
+ * 开 / 关 / 切换某个窗口的调试器。
+ * want: true 开、false 关、不传就取反。
+ */
+function devSet(w, want) {
+  if (!w || w.isDestroyed()) return { ok: false, open: false, window: 'none', error: '没有可调试的窗口' };
+  devBind(w);
+
+  const now = Date.now();
+  if (now - devLastToggleAt < 120) {
+    // 连击保护：直接回当前状态，不动手（否则会「开了又关」，看着像没反应）
+    const cur = devStateOf(w);
+    return { ...cur, throttled: true };
+  }
+
+  const wc = w.webContents;
+  let isOpen = false;
+  try { isOpen = wc.isDevToolsOpened(); } catch {}
+  const open = typeof want === 'boolean' ? want : !isOpen;
+
+  if (open === isOpen) return { ...devStateOf(w), open };
+
+  try {
+    if (open) {
+      // 窗口收在托盘里时先把人叫出来：调试器跟着窗口走，藏着的窗口开了也看不见
+      try {
+        if (!w.isVisible()) w.show();
+        if (w.isMinimized()) w.restore();
+        w.focus();
+      } catch {}
+      /**
+       * 停靠方式按平台分：
+       *   Windows —— 停右边，跟 VS Code 一个习惯，不遮住左侧会话列表。
+       *   macOS   —— 独立窗口，全屏 / 舞台管理器下停靠面板容易被挤没。
+       */
+      wc.openDevTools({ mode: process.platform === 'darwin' ? 'detach' : 'right', activate: true });
+    } else {
+      wc.closeDevTools();
+    }
+  } catch (e) {
+    const msg = String((e && e.message) || e || '打开调试器失败');
+    console.warn('[dev] 开关调试器失败:', msg);
+    return { ok: false, open: isOpen, window: devWindowTag(w), error: msg };
+  }
+
+  devLastToggleAt = now;
+  // 刚 open/close 的那一刻 isDevToolsOpened() 还没翻过来，先按意图回，
+  // 真正的状态随后由 devtools-opened / devtools-closed 事件推一次。
+  return { ...devStateOf(w), open };
+}
+
+ipcMain.handle('dev:toggle', (e, opts) => {
+  const want = opts && typeof opts.open === 'boolean' ? opts.open : undefined;
+  return devSet(devWindowOf(e.sender), want);
+});
+ipcMain.handle('dev:open', (e) => devSet(devWindowOf(e.sender), true));
+ipcMain.handle('dev:close', (e) => devSet(devWindowOf(e.sender), false));
+ipcMain.handle('dev:state', (e) => devStateOf(devWindowOf(e.sender)));
+
+/**
+ * 前端把控制台里的东西转一份到主进程终端的 stdout。
+ *
+ * 为什么要这条：调试器一旦关了，前端报的错就只在 DevTools 里，主人根本看不到；
+ * 而开发态是终端起的，顺手打出来最省事。
+ * 只收字符串、截断到 4000 字，免得一坨大对象把终端刷满。
+ */
+ipcMain.on('dev:log', (_e, payload) => {
+  const text = String(payload == null ? '' : payload).slice(0, 4000);
+  if (!text) return;
+  console.log('[renderer] ' + text);
+});
+
+// 窗口一建出来就挂监听（主界面、内置浏览器、以后新加的窗口都自动覆盖）
+app.on('browser-window-created', (_e, w) => { try { devBind(w); } catch {} });
+
 

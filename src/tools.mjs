@@ -51,13 +51,18 @@ const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * 而主人一直让智能体在 D:\小鱼Agent 这个源码仓库里干活。
  * run_command 能 cd 过去绕过，write_file / read_file 就会被挡，看着像「权限」。
  *
- * 放行规则：只有这台机器上**确实存在**这个仓库（src/server.mjs 在）才加，
- * 别的电脑检测不到就自动不启用，不影响发布版的安全边界。
- * 想换位置/彻底关掉：设 XY_DEV_REPO 环境变量（空串 = 不加）。
+ * 【2026-11-11 收进开发模式】原来这台机器上「确实存在」 D:\小鱼Agent 就默认放行，
+ * 等于任何会话随时都能改程序源码 —— 主人说了：这个能力**只能限制在开发模式**。
+ * 现在的定义：
+ *   · 显式设了 XY_DEV_REPO（指到仓库）→ 开发模式（这是最明确的表态）；
+ *   · 或设了 XIAOYU_DEV=1 → 开发模式，仓库位置用老默认（仅 Windows 的 D:\小鱼Agent）；
+ *   · 两者都没有 → DEV_REPO 为空，源码仓库一概不放行。
+ * 想关掉：不设这两个变量就是关（出厂状态）。
  */
+const DEV_MODE = process.env.XIAOYU_DEV === '1' || Boolean(String(process.env.XY_DEV_REPO ?? '').trim());
 const DEV_REPO = (() => {
   try {
-    const v = String(process.env.XY_DEV_REPO ?? 'D:/小鱼Agent').trim();
+    const v = String(process.env.XY_DEV_REPO ?? (DEV_MODE && process.platform === 'win32' ? 'D:/小鱼Agent' : '')).trim();
     if (!v) return '';
     const r = resolve(v);
     return existsSync(join(r, 'src', 'server.mjs')) ? r : '';
@@ -450,6 +455,39 @@ function memoryLocked(abs) {
  * 「开了管理员 = 放行 / 没开 = 拦住」这条规矩。真正的调用方都在本文件里。
  * 中间那道 memoryLocked 谁都不例外，位置别动。
  */
+/**
+ * 这个路径是不是「程序自己的源码」。
+ *
+ * 两处算：
+ *   · DEV_REPO（开发仓库，见上面说明）
+ *   · <数据目录>/code —— 热更代码，启动时比 asar 新就用它（electron/main.cjs codeRoot）
+ * 往这两处里写 = 改正在运行的程序本身，重启后直接生效。
+ * 只有开发模式才允许写（见 safePath 里那道闸）；读随便读。
+ */
+function isProgramSource(abs) {
+  try {
+    if (DEV_REPO) {
+      const r = relative(DEV_REPO, abs);
+      if (!r.startsWith('..') && !isAbsolute(r)) return true;
+    }
+    const codeDir = resolve(join(config.dataDir, 'code'));
+    const r2 = relative(codeDir, abs);
+    if (!r2.startsWith('..') && !isAbsolute(r2)) return true;
+  } catch {}
+  return false;
+}
+
+/** 开发模式关着时，想写程序源码的那句回答（主人看得懂、模型照着能办） */
+const DEV_SOURCE_HINT = [
+  '改程序源码（热更目录 / 开发仓库）只在**开发模式**下开放，现在这个会话是普通模式。',
+  '要开：关掉程序，在启动前设一个环境变量 ——',
+  '  · Windows（PowerShell）：$env:XIAOYU_DEV="1" 后再启动；',
+  '  · macOS/Linux：XIAOYU_DEV=1 ./start.sh；',
+  '  · 或者 XY_DEV_REPO=<仓库路径> 直接指到源码仓库。',
+  '开了之后重启程序，再让智能体改代码 + restart_self 就能生效。',
+  '（读源码不受限，随便看。）',
+].join('\n');
+
 export function safePath(p, { tool = '' } = {}) {
   const abs = isAbsolute(p) ? resolve(p) : resolve(ROOT, p);
   if (!abs) throw new Error(`路径不对：${p}`);
@@ -461,6 +499,16 @@ export function safePath(p, { tool = '' } = {}) {
    */
   if (memoryLocked(abs) && !READ_ONLY_TOOLS.has(tool)) {
     throw new Error(BLOCKED_HINT + ': ' + p);
+  }
+  /**
+   * 【2026-11-11 加·开发模式闸门】
+   *
+   * 改「程序自己的源码」（热更 code/ 目录、开发仓库）只在开发模式开放。
+   * 位置放在管理员权限**之前**：管理员开的是「越过工作区沙箱」，
+   * 不是「能改正在运行的程序」—— 两件事，别混。读类工具不受影响。
+   */
+  if (!READ_ONLY_TOOLS.has(tool) && !DEV_MODE && isProgramSource(abs)) {
+    throw new Error(DEV_SOURCE_HINT + '\n（要写的路径：' + p + '）');
   }
   /**
    * 【管理员权限】—— 2026-11-01
@@ -836,13 +884,25 @@ export const tools = [
   },
   {
     name: 'run_command',
-    description:
-      '在本机跑一条命令（Windows 上是 PowerShell，工作区当前目录）。装依赖、跑脚本、压包、转格式、调 ffmpeg、查环境全都靠它。返回 stdout 和 stderr 合并的结果。'
-      + '\n\n【两条能省好几倍时间的规矩】'
-      + '\n· 几件不相干的检查用 ; 串成**一条**命令，别分几次跑 —— 每一次工具调用都是一整趟模型往返。'
-      + '\n  例如：node scripts/check-a.mjs; node scripts/check-b.mjs; node scripts/check-c.mjs'
-      + '\n· **搜东西别用命令**：找函数/字符串在哪，用 search_files，一次就给「路径:行号」。'
-      + '\n  为了搜一个词去 node -e 现写一段读目录的脚本，是最慢的做法。',
+    description: (() => {
+      const isMac = process.platform === 'darwin';
+      const isWin = process.platform === 'win32';
+      const shellNote = isMac
+        ? 'macOS 上走 zsh/sh（标准 Unix 命令）'
+        : isWin ? 'Windows 上是 PowerShell' : '类 Unix 系统走 /bin/sh';
+      const joinNote = isWin
+        ? '几件不相干的检查用 ; 串成**一条**命令（PowerShell 不认 &&），别分几次跑 —— 每一次工具调用都是一整趟模型往返。'
+        : '几件不相干的检查可以 ; 串成**一条**命令，要前一步成功才继续就用 &&，别分几次跑 —— 每一次工具调用都是一整趟模型往返。';
+      const example = isWin
+        ? '例如：node scripts/check-a.mjs; node scripts/check-b.mjs; node scripts/check-c.mjs'
+        : '例如：node scripts/check-a.mjs && node scripts/check-b.mjs && node scripts/check-c.mjs';
+      return '在本机跑一条命令（' + shellNote + '，工作区当前目录）。装依赖、跑脚本、压包、转格式、调 ffmpeg、查环境全都靠它。返回 stdout 和 stderr 合并的结果。'
+        + '\n\n【两条能省好几倍时间的规矩】'
+        + '\n· ' + joinNote
+        + '\n  ' + example
+        + '\n· **搜东西别用命令**：找函数/字符串在哪，用 search_files，一次就给「路径:行号」。'
+        + '\n  为了搜一个词去 node -e 现写一段读目录的脚本，是最慢的做法。';
+    })(),
     parameters: {
       type: 'object',
       properties: {
@@ -856,8 +916,17 @@ export const tools = [
          * 现在能自己定：跑长活带个数就行。
          */
         timeout_ms: { type: 'number', description: '最多等多少毫秒，默认 120000（2 分钟），最多 900000（15 分钟）' },
-        /** 默认 auto：简单命令走 cmd（快），带 $ / 引号 / 管道 / cmdlet 的自动回 PowerShell。 */
-        shell_hint: { type: 'string', description: '选壳：auto（默认）/ cmd / powershell。拿不准就别填。' },
+        /**
+         * 【2026-11-11 mac 兼容】选壳说明按平台给。
+         * mac 上 pickShell 直接走 /bin/sh，hint 根本用不上 —— 写明「仅 Windows」，
+         * 免得模型在 mac 上传 powershell 然后对着结果发懵。
+         */
+        shell_hint: {
+          type: 'string',
+          description: process.platform === 'win32'
+            ? '选壳：auto（默认）/ cmd / powershell。拿不准就别填。'
+            : '选壳参数仅 Windows 有效；本机自动用 sh，不用填。',
+        },
       },
       required: ['command'],
     },
@@ -884,7 +953,14 @@ export const tools = [
           ['kill', /\bkill\b/i],
           ['wmic.*terminate', /wmic[^\n]*terminate/i],
         ];
-        const names = [selfExe, '小鱼agent.exe', 'xiaoyu-mini-agent.exe'].filter(Boolean);
+        /* 【2026-11-11 mac 兼容】进程名黑名单按平台补齐：
+         * mac 打包版叫「小鱼Agent.app」，开发态进程名是 Electron（或小鱼的 app 名），
+         * 别只盯 .exe —— 不然 mac 上 kill 那条路就漏了。 */
+        const names = [
+          selfExe,
+          '小鱼agent.exe', 'xiaoyu-mini-agent.exe',
+          '小鱼agent', '小鱼agent.app', 'electron', 'electron.app',
+        ].filter(Boolean);
         let hit = '';
         for (const [label, re] of HITS) {
           if (!re.test(raw)) continue;
@@ -939,6 +1015,14 @@ export const tools = [
             try {
               spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 8000 });
               return;
+            } catch {}
+          }
+          /* 【2026-11-11 mac 兼容】mac 上 child.kill() 同样只打死直接子进程，
+           * 壳派出去的孙进程还活着（跟 Windows 那个坑同源）。先用 pkill -P
+           * 把直接子进程的孩子们带走，再杀本体；pkill 不在（理论上不会）就退回 kill。 */
+          if (process.platform === 'darwin' && child.pid) {
+            try {
+              spawnSync('pkill', ['-P', String(child.pid)], { stdio: 'ignore', timeout: 8000 });
             } catch {}
           }
           child.kill(sig || 'SIGTERM');

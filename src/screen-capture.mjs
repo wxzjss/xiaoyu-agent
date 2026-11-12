@@ -89,6 +89,44 @@ function ps(script, timeout = 20000) {
 }
 
 /**
+ * 【2026-11-11 mac 兼容】macOS 侧的执行器：screencapture / sips / osascript。
+ *
+ * 跟 ps() 一个形状：Promisify 的 execFile，超时、maxBuffer 都对齐。
+ * 全部用系统自带命令，不引依赖（跟 Windows 用自带 .NET 是同一个理由）。
+ * 注意屏幕录制权限（TCC）：第一次 screencapture 会弹授权框，
+ * 没授权时截出来是桌面壁纸+菜单栏、窗口全是空的 —— meta 里带个提示让主人知道。
+ */
+function runMac(argv, timeout = 20000) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      argv[0], argv.slice(1),
+      { timeout, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const e = new Error(String(stderr || err.message || err).trim().split('\n').slice(0, 3).join(' / '));
+          e.code = err.code;
+          e.killed = err.killed;
+          return reject(e);
+        }
+        resolve(String(stdout || ''));
+      },
+    );
+  });
+}
+
+/** 用 sips 读一张图的像素尺寸（mac 缩图后量尺寸用） */
+async function imageSizeMac(p) {
+  try {
+    const out = await runMac(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', p], 8000);
+    const w = /pixelWidth:\s*(\d+)/.exec(out);
+    const h = /pixelHeight:\s*(\d+)/.exec(out);
+    return { width: Number(w?.[1]) || 0, height: Number(h?.[1]) || 0 };
+  } catch {
+    return { width: 0, height: 0 };
+  }
+}
+
+/**
  * PowerShell 侧那一段脚本：只截屏、只存 PNG。
  *
  * 【写成这个形状的几个坑（都是实测踩出来的，别改回去）】
@@ -198,6 +236,28 @@ $out = @{ w = $tw; h = $th } | ConvertTo-Json -Compress
  * 缩图失败不致命：降级成「她看原图」，多花点 token，功能照常。
  */
 async function smallOf(fullPng, outJpeg, width, quality) {
+  /* 【2026-11-11 mac 兼容】缩图用系统自带的 sips（macOS 版 ImageMagick，免依赖）：
+   * sips -Z 按最长边缩，我们要「按宽缩」，先量一下原图宽，算出目标高度再 -z。 */
+  if (process.platform === 'darwin') {
+    try {
+      const size = await imageSizeMac(fullPng);
+      const sw = size.width || width;
+      const sh = size.height || Math.round(width * 0.6);
+      const tw = Math.min(width, sw);
+      const th = Math.max(1, Math.round(sh * tw / sw));
+      await runMac([
+        'sips', '-s', 'format', 'jpeg',
+        '-s', 'formatOptions', String(Math.round(quality)),
+        '-z', String(th), String(tw),
+        fullPng, '--out', outJpeg,
+      ], 20000);
+      if (!existsSync(outJpeg)) return { ok: false, error: '缩图跑完了但文件没出来（sips）。' };
+      const out = await imageSizeMac(outJpeg);
+      return { ok: true, width: out.width, height: out.height };
+    } catch (e) {
+      return { ok: false, error: '缩图失败：' + String(e?.message ?? e) };
+    }
+  }
   let raw = '';
   try {
     raw = await ps(buildShrinkScript({ srcPng: fullPng, outJpeg, width, quality }), 20000);
@@ -221,8 +281,56 @@ async function smallOf(fullPng, outJpeg, width, quality) {
  * @returns {Promise<{ok: true, id: string, full: string, small: string, meta: object} | {ok: false, error: string}>}
  */
 export async function capture({ width = 1280, quality = 72, tag = '' } = {}) {
+  /* 【2026-11-11 mac 兼容】mac 走系统自带的 screencapture：
+   *   screencapture -x <file>  —— -x 是不响（Windows 那边的 WindowsHide 同款需求）。
+   * 全屏一张，跟 Windows 分支的「整块虚拟屏」等价；多屏时 screencapture 默认
+   * 只截主屏，要全屏矩阵得 -m 逐屏拼，先不做（主人平时就一块屏）。 */
+  if (process.platform === 'darwin') {
+    const dir = frameDir();
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch (e) {
+      return { ok: false, error: '放不下截图：' + String(e?.message ?? e) };
+    }
+    const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const full = join(dir, id + '.png');
+    const small = join(dir, id + '-small.jpg');
+    const metaFile = join(dir, id + '.json');
+    const w = Math.max(320, Math.min(2560, Math.round(Number(width) || 1280)));
+    const q = Math.max(30, Math.min(95, Math.round(Number(quality) || 72)));
+    try {
+      await runMac(['screencapture', '-x', '-m', full], 20000);
+    } catch (e) {
+      return { ok: false, error: '截屏没成：' + String(e?.message ?? e) };
+    }
+    if (!existsSync(full)) {
+      return { ok: false, error: '截屏跑完了但文件没出来（可能没给屏幕录制权限）。' };
+    }
+    const size = await imageSizeMac(full);
+    const title = await foregroundTitle();
+    const smallRes = await smallOf(full, small, w, q);
+    if (!smallRes.ok) {
+      return { ok: false, error: smallRes.error };
+    }
+    const meta = {
+      id,
+      at: new Date().toISOString(),
+      screen: { width: size.width, height: size.height },
+      small: { width: smallRes.width || 0, height: smallRes.height || 0 },
+      title: String(title || ''),
+      tag: String(tag || ''),
+      smallFallback: Boolean(smallRes.fallback),
+      fullBytes: (() => { try { return statSync(full).size; } catch { return 0; } })(),
+      smallBytes: (() => { try { return statSync(small).size; } catch { return 0; } })(),
+    };
+    try {
+      writeFileSync(metaFile, JSON.stringify(meta, null, 2), 'utf8');
+    } catch { /* 元信息写不进去不影响看图 */ }
+    prune();
+    return { ok: true, id, full, small, meta };
+  }
   if (process.platform !== 'win32') {
-    return { ok: false, error: '这台机器不是 Windows，抓不了屏幕。' };
+    return { ok: false, error: '这台机器不是 Windows / macOS，抓不了屏幕。' };
   }
   const dir = frameDir();
   try {
@@ -359,6 +467,23 @@ export function stashSize() {
 
 /** 前台窗口标题（不截图，只问一句「主人在哪儿」）。 */
 export async function foregroundTitle() {
+  /* 【2026-11-11 mac 兼容】用 osascript 问 System Events：谁在最前面、窗口标题是什么。
+   * 没给辅助功能权限时 AppleScript 会报 -25211 之类，返回空串（跟 Windows 拿不到时一致）。 */
+  if (process.platform === 'darwin') {
+    try {
+      const out = await runMac([
+        'osascript', '-e',
+        'tell application "System Events" to set frontApp to name of first application process whose frontmost is true\n' +
+        'tell application "System Events" to tell process frontApp to try\n' +
+        '  set winName to name of front window\n' +
+        'on error\n' +
+        '  set winName to ""\n' +
+        'end try\n' +
+        'return frontApp & " | " & winName',
+      ], 6000);
+      return String(out || '').replace(/\s*\|\s*$/, '').trim();
+    } catch { return ''; }
+  }
   if (process.platform !== 'win32') return '';
   try {
     const out = await ps(`

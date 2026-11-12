@@ -28,10 +28,22 @@
  */
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 
-const ROOT = 'D:\\小鱼Agent';
+/* 【2026-11-11 修】原来写死 D:\小鱼Agent（作者本机），换台机器 / 换系统就
+ * 「文件不存在」，这道闸门等于没跑，还显得像页面坏了。
+ * 根目录从脚本位置往上推一层（scripts/ 的上一级 = 仓库根）。 */
+const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 const SOURCE = join(ROOT, 'public', 'index.html');
-const LIVE = join(process.env.APPDATA || '', '小鱼Agent', 'data', 'public', 'index.html');
+
+/** 安装版的数据目录：Windows 在 APPDATA，macOS 在 ~/Library/Application Support */
+function installDataDir() {
+  if (process.env.MINI_AGENT_DATA) return process.env.MINI_AGENT_DATA;
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', '小鱼Agent', 'data');
+  return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), '小鱼Agent', 'data');
+}
+const LIVE = join(installDataDir(), 'public', 'index.html');
 
 const args = process.argv.slice(2);
 let targets = [];
@@ -271,6 +283,16 @@ function checkFile(label, path) {
   for (const m of code.matchAll(/\b(?:const|let|var)\s*\{([^}]+)\}/g)) {
     for (const p of m[1].split(',')) declared.add(p.trim().split(':').pop().trim());
   }
+  /**
+   * 【2026-11-11 修·getter/setter 的名字被当成裸变量 → 假红】
+   *
+   * devtools.js 里 `get isOpen() { return devOpen; }` 是对象字面量的取值器，
+   * 名字后面正好跟一个 `(`，撞上「被当函数调用」那条判定，于是报
+   *   ✘ isOpen 被当变量用，但全文没有声明
+   * —— 页面本身没问题（L4451 内联脚本语法 OK，真机上也不白屏）。
+   * 取值器/设值器/异步方法的名字不是变量，登记成「已知名字」排掉。
+   */
+  for (const m of code.matchAll(/\b(?:get|set|async)\s+([A-Za-z_$][\w$]*)\s*\(/g)) declared.add(m[1]);
   /**
    * 【2026-11-09 修·数组解构没被算成「已声明」→ 假红】
    *

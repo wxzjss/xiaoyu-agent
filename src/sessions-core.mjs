@@ -232,6 +232,17 @@ export function loadSession(id) {
       mode: raw.mode && typeof raw.mode === 'object' && raw.mode.word ? { word: String(raw.mode.word), since: Number(raw.mode.since) || 0 } : null,
     };
   } catch (e) {
+    /* 【2026-11-12 改·ENOENT 不是故障，是正常账】
+     *
+     * 认人表（qq.json 的 peers）、最近会话、后台任务里都可能留着已经被删掉的会话 id。
+     * 读它必然是 ENOENT —— 这是**预期**，不是坏了。以前这里连 ENOENT 也 warn，
+     * 于是主人每在 QQ 上说一句话，日志就刷一行
+     * 「[sessions] 读不出来，已跳过：smwd99njru8wc —— ENOENT」，
+     * 看着像出了大事，其实下一步就自动开了新会话，一切正常。
+     *
+     * 现在：文件不在 → 静默返回 null（调用方本来就当「没有这个会话」处理）；
+     * 只有「文件在、但读不动」（坏 JSON / 权限 / 磁盘）才值得把 id 和原因打出来。 */
+    if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return null;
     /* 【2026-11-05 加·别把错误吞掉】
      * 原来这里 `catch { return null }` —— 一个会话读不出来，界面上就凭空少一条，
      * 而且一点线索都没有（主人报「重启后某个会话不见了」，我查了半天都没方向）。

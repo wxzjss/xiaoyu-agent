@@ -7403,7 +7403,12 @@
     const st = logState();
     if (String(sid || "") !== String(st.sid || "")) return false;
     st.live = live && Array.isArray(live.items) ? live : null;
-    if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
+    if (!st.live) {
+      const _sid = String(st.sid || "");
+      const others = pendingUser.filter((p) => p.sid && p.sid !== _sid);
+      const mine = dropLandedPending(pendingUser.filter((p) => !p.sid || p.sid === _sid), st.turns);
+      pendingUser = mine.concat(others);
+    }
     bump();
     return true;
   }
@@ -7470,12 +7475,27 @@
       return String(s || "").replace(/\s+/g, "");
     }
   }
+  function recentUserTurns(turns, n) {
+    const arr = Array.isArray(turns) ? turns : [];
+    const out = [];
+    for (let i = arr.length - 1; i >= 0 && out.length < n; i--) {
+      if (arr[i] && arr[i].role === "user") out.push(arr[i]);
+    }
+    return out;
+  }
   function dropLandedPending(list, turns) {
     if (!list.length) return list;
-    const arr = Array.isArray(turns) ? turns : [];
-    const tail = arr.slice(-6);
-    const texts = tail.map((t) => norm(t && t.text)).filter(Boolean);
+    const numAt = (x) => x == null || x === "" ? NaN : Number(x);
+    const asks = recentUserTurns(turns, 5);
+    const ids = new Set(asks.map((t) => numAt(t && t.rewindId)).filter((v) => Number.isFinite(v)));
+    const texts = asks.map((t) => norm(t && t.text)).filter(Boolean);
+    const lastAskAt = asks.length ? numAt(asks[0] && asks[0].rewindId) : NaN;
     const keep = list.filter((p) => {
+      const at = numAt(p.rewindId);
+      if (Number.isFinite(at)) {
+        if (ids.has(at)) return false;
+        if (Number.isFinite(lastAskAt) && at < lastAskAt) return false;
+      }
       const n = norm(p.text);
       if (!n) return false;
       return !texts.some((t) => t === n || t.endsWith(n));

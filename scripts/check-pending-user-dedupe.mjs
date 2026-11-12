@@ -18,13 +18,15 @@
  *   （实测：两个气泡的文字**逐字相同**，且都等于盘上那条。）
  *
  * ══ 断言（只断言行为 + 一条源码不变式）══
- *   ① 真机：发一句话跑完，`.msg.user` 恰好 1 个（盘上也只有 1 条）
- *   ② 真机：那一颗主人气泡的文字 == 盘上那条（没串、没截）
- *   ③ 源码：`logSetHistory` 必须把写入交给 store（否则 dropLandedPending 永远不跑）
+ *   ① 源码：`logSetHistory` 必须把写入交给 store（否则 dropLandedPending 永远不跑）
  *      判据不看函数名，看**行为**：`__logStore.setHistory` 在生产代码里必须被调用
+ *   ② 单测：落盘对账的九种边界（工具轮、同字连发、下标 0、旧尸体、收尾…），
+ *      不用浏览器也不用模型 —— 【2026-11-11 加，见下面那段长注释】
+ *   ③ 真机：发一句话跑完，`.msg.user` 恰好 1 个（盘上也只有 1 条）
+ *   ④ 真机：那一颗主人气泡的文字 == 盘上那条（没串、没截）
  *
  * 用法：node scripts/check-pending-user-dedupe.mjs [--public public]
- * 需要隔离实例（XY_CDP_PORT）；没有就只跑源码那一条。
+ * 需要隔离实例（XY_CDP_PORT）才有真机格；没有就跑源码 + 单测两节。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -68,7 +70,78 @@ console.log('\n一、源码：历史写入必须经过 store（撤乐观气泡�
 }
 
 /* ══════════════════════════════════════════════════════════════
- * 二、真机：跑一轮，数主人气泡
+ * 二、单测：直接跑真 store 的落盘对账（不需要浏览器，也不需要模型）
+ *
+ * 【2026-11-11 加·主人报「我发的话会重复显示到 ai 回复的后面」】
+ *
+ * 上一节只能证明「钩子被调到」，证明不了「钩子认得出这句话已落盘」。
+ * 真正病根在判据本身：`dropLandedPending()` 拿 `turns.slice(-6)` 当窗口，
+ * 前提是「刚发出去那句必然贴着尾巴」——而 assistant 是**一条消息一个 turn**，
+ * 她调几次工具一轮就劈成七八条，实测主人那份会话最后一句 user 之后跟了 101 条 turn。
+ * 窗口里一条 user 都没有 → 文字比对必然落空 → 气泡永远撤不掉。
+ *
+ * 这一节把边界钉死，任何人再动这段逻辑，跑一次就知道有没有踩回去。
+ * ══════════════════════════════════════════════════════════════ */
+console.log('\n二、单测：落盘对账的边界（假 window + 真 store）');
+{
+  globalThis.window = { __logState: { sid: 's-dedupe-check', turns: [], live: null } };
+  const store = await import('../src-ui/store.js');
+
+  const SID = 's-dedupe-check';
+  const U = (text, at) => ({ role: 'user', text, rewindId: at });
+  const A = (i) => ({ role: 'assistant', text: '第 ' + i + ' 段', rewindId: 300 + i });
+  const ASK = 'QA 主人一句';
+  const left = () => store.getSnapshot().pendingUser.length;
+  const tools = (n) => Array.from({ length: n }, (_, i) => A(i));
+
+  /* ① 一轮带 7 次工具：这就是 slice(-6) 全军覆没的形状 */
+  store.setHistory(SID, []);
+  store.pushPendingUser({ text: ASK });
+  store.setHistory(SID, [U(ASK, 10), ...tools(7)]);
+  ok(left() === 0, '① user + 7 段 assistant 时，乐观气泡要收掉', '还剩 ' + left() + ' 颗');
+
+  /* ② 刚落、还不知道落盘下标：先留着（否则发送瞬间气泡会闪一下就没） */
+  store.pushPendingUser({ text: '还没落盘的一句' });
+  const idNew = store.getSnapshot().pendingUser[0].id;
+  ok(left() === 1, '② 刚落、下标未知时先留着', '还剩 ' + left() + ' 颗');
+  store.setHistory(SID, [U(ASK, 10), ...tools(7)]);
+  ok(left() === 1, '③ 历史没变时不许乱撤', '还剩 ' + left() + ' 颗');
+
+  /* ④ done.at 回来，下标对上 */
+  store.setPendingRewind(idNew, 20);
+  store.setHistory(SID, [U(ASK, 10), ...tools(7), U('还没落盘的一句', 20), A(8)]);
+  ok(left() === 0, '④ 落盘下标对上就撤（改过字也认得出）', '还剩 ' + left() + ' 颗');
+
+  /* ⑤ 同一句话连发两次：未落盘那颗不能被历史里同字的那句连坐 */
+  store.setHistory(SID, [U('继续', 30), A(9)]);
+  const id2 = store.pushPendingUser({ text: '继续' });
+  ok(left() === 1, '⑤ 同字未落盘时先留着（不然第二句会先消失再冒出来）', '还剩 ' + left() + ' 颗');
+  store.setPendingRewind(id2, 40);
+  store.setHistory(SID, [U('继续', 30), A(9), U('继续', 40), A(10)]);
+  ok(left() === 0, '⑥ 同字那句真落盘了才撤', '还剩 ' + left() + ' 颗');
+
+  /* ⑦ 下标 0 是合法值（会话第一条）—— Number(null) === 0 的坑 */
+  store.setHistory(SID, []);
+  const id3 = store.pushPendingUser({ text: '第一句' });
+  store.setPendingRewind(id3, 0);
+  store.setHistory(SID, [U('第一句', 0), A(1)]);
+  ok(left() === 0, '⑦ 落盘下标 0 也算对上', '还剩 ' + left() + ' 颗');
+
+  /* ⑧ 上一版漏收留下的尸体：下标比历史里最后一句主人话还早 → 下一轮顺手清掉 */
+  const id4 = store.pushPendingUser({ text: '很久以前那句' });
+  store.setPendingRewind(id4, 5);
+  store.setHistory(SID, [U('第一句', 0), A(1), U('后来那句', 30), A(2)]);
+  ok(left() === 0, '⑧ 上一版漏收的尸体，下一轮清掉（不要求主人重启）', '还剩 ' + left() + ' 颗');
+
+  /* ⑨ 收尾那一路也要收干净 */
+  store.pushPendingUser({ text: '断线那句' });
+  store.setHistory(SID, [U('第一句', 0), A(1), U('后来那句', 30), A(2), U('断线那句', 40)]);
+  store.setLive(SID, null);
+  ok(left() === 0, '⑨ 这一轮结束时 setLive(null) 不留气泡', '还剩 ' + left() + ' 颗');
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 三、真机：跑一轮，数主人气泡
  * ══════════════════════════════════════════════════════════════ */
 if (!process.env.XY_CDP_PORT) {
   console.log('\n真机格：SKIP（没有 XY_CDP_PORT，不是隔离实例；源码断言已跑完）');
@@ -76,7 +149,7 @@ if (!process.env.XY_CDP_PORT) {
   const { connect } = await import('../_t_cdp.mjs');
   const cdp = await connect({ port: Number(process.env.XY_CDP_PORT) });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  console.log('\n二、真机：发一句话跑完 → 主人的话只许占一个气泡');
+  console.log('\n三、真机：发一句话跑完 → 主人的话只许占一个气泡');
 
   const ready = async () => {
     try {

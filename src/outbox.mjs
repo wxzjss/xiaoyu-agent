@@ -76,11 +76,27 @@ export function isPrivatePath(p) {
 }
 
 /**
- * 哪些盘让发：工作区、用户目录、程序自己所在的盘。
+ * 哪些盘/目录让发：工作区、用户目录、程序自己所在的盘。
  * 别的一律不发 —— 系统盘（C:）只有主人在用的那块地方（用户目录）算数，
  * 别的目录连问都不用问，直接挡回去。
+ *
+ * 【2026-11-11 mac 兼容】mac 没有盘符，路径都是 / 开头的。
+ * 这里改成「允许的前缀目录」清单：工作区、用户主目录、程序所在目录、
+ * 外接卷的根（/Volumes/*）。Windows 那条盘符规则原样保留。
  */
-function allowedDrives() {
+function allowedRoots() {
+  if (process.platform !== "win32") {
+    const roots = new Set();
+    const push = (p) => {
+      const s = resolve(String(p || ""));
+      if (s) roots.add(s);
+    };
+    push(config.workspace);
+    push(process.env.HOME || process.env.USERPROFILE);
+    push(APP_ROOT);
+    push("/Volumes");
+    return roots;
+  }
   const set = new Set();
   const push = (p) => {
     const m = /^([A-Za-z]):/.exec(String(p || ""));
@@ -92,6 +108,9 @@ function allowedDrives() {
   if (!set.size) { set.add("C"); set.add("D"); }
   return set;
 }
+
+/** Windows 用的老名字，别的地方还有引用就留着 */
+const allowedDrives = allowedRoots;
 
 /**
  * 相对路径怎么算绝对路径：
@@ -114,8 +133,17 @@ function toAbs(raw) {
 export function sendCheck(p) {
   const s = String(p || "");
   if (!isAbsolute(s)) return "要发文件得给绝对路径（相对路径只在工作区里认）";
-  const m = /^([A-Za-z]):/.exec(s);
-  if (m && !allowedDrives().has(m[1].toUpperCase())) return "不许往 " + m[1].toUpperCase() + ": 盘发东西";
+  if (process.platform !== "win32") {
+    /* 【2026-11-11 mac 兼容】按「允许的前缀目录」挡：
+     * 用户主目录、工作区、程序目录、外接卷都放行；别的系统目录不发。 */
+    const abs = resolve(s);
+    const ok = [...allowedRoots()].some((root) =>
+      abs === root || abs.startsWith(root.endsWith("/") ? root : root + "/"));
+    if (!ok) return "这个位置不在允许发送的范围里（用户目录、工作区、外接盘可以），换一个";
+  } else {
+    const m = /^([A-Za-z]):/.exec(s);
+    if (m && !allowedDrives().has(m[1].toUpperCase())) return "不许往 " + m[1].toUpperCase() + ": 盘发东西";
+  }
   if (isPrivatePath(s)) return "这个是我们自己的机密文件，不发（换一个）";
   return "";
 }

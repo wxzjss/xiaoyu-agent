@@ -76,7 +76,10 @@ export const FEATURES = [
   {
     id: 'shell',
     name: '跑命令',
-    desc: '在这台电脑上跑 PowerShell 命令。关掉之后完全碰不到命令行。',
+    /* 【2026-11-11 mac 兼容】文案按平台说，别再让 mac 用户看到 PowerShell */
+    desc: process.platform === 'win32'
+      ? '在这台电脑上跑 PowerShell 命令。关掉之后完全碰不到命令行。'
+      : '在这台电脑上跑终端命令（macOS 是 zsh/sh）。关掉之后完全碰不到命令行。',
     tools: ['run_command'],
   },
   {
@@ -400,9 +403,12 @@ export const FEATURES = [
   {
     id: 'desktopHands',
     name: '操作桌面',
+    /* 【2026-11-11 mac 兼容】底层是 Win32（SendInput / UI Automation），
+     * mac 版还在做 —— 文案照实说，别让 mac 用户开了开关然后一直失败。 */
     desc: '让她能真的替你动鼠标键盘：看看现在桌面上开着什么窗口，把里面的按钮、输入框一个一个编号列出来，然后点它、往里打字、按快捷键。'
       + '默认「投」点击进窗口，不抢你正在打字的焦点；只有程序不认「投」的时候才动真鼠标。'
-      + '动手前必须先看一眼，编号 30 秒就过期；密码框她不代打；要删东西、要花钱、要退出登录这类，会先问你一声。不想要就关掉。',
+      + '动手前必须先看一眼，编号 30 秒就过期；密码框她不代打；要删东西、要花钱、要退出登录这类，会先问你一声。不想要就关掉。'
+      + (process.platform !== 'win32' ? '【本机是 macOS：这个功能目前只有 Windows 版能用，开着也不会生效。】' : ''),
     tools: ['ui_observe', 'ui_click', 'ui_double_click', 'ui_right_click', 'ui_type', 'ui_key', 'ui_scroll'],
     defaultOn: true,
   },

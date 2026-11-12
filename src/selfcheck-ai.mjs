@@ -141,9 +141,13 @@ export const PROBES = [
   },
   {
     name: 'probe_cmd',
-    description:
-      '跑一条只读的查看命令（node -v / npm -v / git status 之类），看输出。自检阶段不许改东西。' +
-      '【Windows 上这个工具背后是 PowerShell】多条命令请用 ; 分隔，不要用 &&（PowerShell 不认）。',
+    description: (() => {
+      const isWin = platform() === 'win32';
+      return '跑一条只读的查看命令（node -v / npm -v / git status 之类），看输出。自检阶段不许改东西。' +
+        (isWin
+          ? '【Windows 上这个工具背后是 PowerShell】多条命令请用 ; 分隔，不要用 &&（PowerShell 不认）。'
+          : '【macOS/Linux 上这个工具背后是 sh】可以用 && 也可以用 ;（&& 表示前一条成功才跑下一条）。');
+    })(),
     parameters: {
       type: 'object',
       properties: { command: { type: 'string' } },

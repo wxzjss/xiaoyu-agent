@@ -18,15 +18,21 @@
     "autopublish": "node scripts/auto-publish.mjs",
     "pack:exe": "electron-builder --win",
     "pack:dir": "electron-builder --win --dir",
+    "pack:mac": "electron-builder --mac",
+    "pack:mac:dir": "electron-builder --mac --dir",
     "sync": "node scripts/preflight.mjs && node scripts/sync-live.mjs",
     "sync:check": "node scripts/sync-live.mjs --check",
     "check:ui": "node scripts/check-ui.mjs --all",
+    "check:qq:mac": "node scripts/check-qq-mac.mjs",
     "preflight": "node scripts/preflight.mjs",
     "check:id": "node scripts/check-identifiers.mjs",
     "check:live": "node scripts/sync-live.mjs --check",
     "build:ui": "node esbuild.config.mjs",
     "models:check": "node scripts/refresh-model-presets.mjs",
-    "models:fix": "node scripts/refresh-model-presets.mjs --apply"
+    "models:fix": "node scripts/refresh-model-presets.mjs --apply",
+    "check:qq:gate": "node scripts/check-qq-gate.mjs",
+    "check:qq:send": "node scripts/check-qq-send.mjs",
+    "check:notify": "node scripts/check-notify.mjs"
   },
   "devDependencies": {
     "electron": "33.4.11",
@@ -52,6 +58,7 @@
       "assets/**/*",
       "scripts/voice/**/*",
       "scripts/fetch-txt.mjs",
+      "scripts/qq-protocol.mjs",
       "package.json",
       "!**/*.bak",
       "!**/*.bak-*",
@@ -105,9 +112,29 @@
     },
     "portable": {
       "artifactName": "XiaoyuAgent-${version}-Portable.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/xiaoyu.icns",
+      "category": "public.app-category.productivity",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "artifactName": "XiaoyuAgent-${version}-arm64.${ext}"
+    },
+    "dmg": {
+      "title": "小鱼Agent ${version}"
     }
   },
   "dependencies": {
+    "@tencent-connect/qqbot-nodejs": "^1.0.5",
     "docx": "^9.15.3",
     "exceljs": "^4.4.0",
     "opencc-js": "^1.4.2",

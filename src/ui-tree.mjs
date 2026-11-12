@@ -171,7 +171,7 @@ $out = @{ ok = $true; windows = $rows; count = $rows.Count } | ConvertTo-Json -C
 }
 
 export async function listWindows() {
-  if (process.platform !== 'win32') return { ok: false, error: '这台机器不是 Windows，列不了窗口。' };
+  if (process.platform !== 'win32') return { ok: false, error: '读窗口列表目前只有 Windows 版（macOS 的界面读取还在做）。这台机器是 ' + (process.platform === 'darwin' ? 'macOS' : process.platform) + '，先陪看屏幕、跑命令这些都能用。' };
   let raw = '';
   try {
     raw = await ps(buildListWindowsScript(), 20000);
@@ -314,7 +314,7 @@ for ($i = 0; $i -lt $tree.Count; $i++) {
  * @param {{hwnd?: number, maxElements?: number, tag?: string}} [opts]
  */
 export async function readWindow({ hwnd = 0, maxElements = 500, tag = '' } = {}) {
-  if (process.platform !== 'win32') return { ok: false, error: '这台机器不是 Windows，读不了界面。' };
+  if (process.platform !== 'win32') return { ok: false, error: '读界面控件的细节目前只有 Windows 版（macOS 的界面读取还在做）。这台机器是 ' + (process.platform === 'darwin' ? 'macOS' : process.platform) + '。' };
   const dir = uiDir();
   try {
     mkdirSync(dir, { recursive: true });

@@ -16,7 +16,7 @@
  * 调用方（run-all-checks.mjs）必须把返回的 env 传给每一个检查子进程。
  * 起不来就抛错，绝不「自动探测」退回 8788 —— 静默退回等于这道闸白装。
  */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readdirSync, copyFileSync, existsSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -42,6 +42,10 @@ const USER_DATA = process.env.XY_USER_DATA
 const EDGE = (() => {
   if (process.env.XY_EDGE) return process.env.XY_EDGE;
   const cands = [
+    /* 【2026-11-11 mac 兼容】mac 上这两个就是同一个内核的浏览器，路径固定 */
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
     'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
     'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
     join(process.env.LOCALAPPDATA || '', 'Microsoft/Edge/Application/msedge.exe'),
@@ -217,10 +221,22 @@ export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
   }
 }
 
-/** Windows 上 Edge 会带一串子进程，只 kill 主进程会留一堆 */
+/**
+ * Windows 上 Edge 会带一串子进程，只 kill 主进程会留一堆。
+ *
+ * 【2026-11-11 mac 兼容】原来无脑调 taskkill —— mac 上那是 ENOENT，
+ * 而且 `spawn` 的错误事件没人接，整个检查进程会直接被带崩（不是「清理失败」，是崩）。
+ * 现在按平台走：win 用 taskkill /T，mac & linux 先 pkill 子进程再杀本体。
+ */
 function spawnSyncKill(pid) {
   try {
-    spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      return;
+    }
+    try { execFileSync('pkill', ['-TERM', '-P', String(pid)], { stdio: 'ignore' }); } catch { /* 没有子进程 */ }
+    try { process.kill(pid, 'SIGTERM'); } catch { /* 已经没了 */ }
+    try { process.kill(pid, 'SIGKILL'); } catch { /* 已经没了 */ }
   } catch {}
 }
 

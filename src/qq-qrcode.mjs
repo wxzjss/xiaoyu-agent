@@ -14,10 +14,31 @@
 
 const QR_NAME = 'qrcode.png';
 
-/** 目录：%LOCALAPPDATA%\XiaoyuAgent\qq-protocol\napcat\cache */
-async function cacheDir() {
-  const p = await import('../scripts/qq-protocol.mjs');
-  return String(p.DIR) + '\\napcat\\cache';
+/**
+ * 二维码可能落在哪儿（按可能性排序，逐个试）。
+ *
+ * 【2026-11-12 mac】原来这里写死了 `DIR + '\\napcat\\cache'`：
+ *   ① 用反斜杠拼路径，在 mac/linux 上那不是分隔符，会被当成文件名的一部分
+ *      （实测读出来是 `...qq-protocol\napcat\cache/qrcode.png`，永远 ENOENT）；
+ *   ② mac 的 NapCat 根本不装在 DIR 里 —— 它在 QQ 的容器里，
+ *      见 src/napcat-mac.mjs。
+ * 所以改成「一串候选目录 + path.join」。
+ */
+async function cacheDirs() {
+  const path = await import('node:path');
+  const out = [];
+  try {
+    const p = await import('../scripts/qq-protocol.mjs');
+    if (process.platform === 'darwin') {
+      const mac = await import('./napcat-mac.mjs');
+      const cat = mac.detectMacNapCat();
+      for (const d of cat.qrDirs || []) out.push(d);
+    }
+    out.push(path.join(String(p.DIR), 'napcat', 'cache'));
+  } catch (e) {
+    if (!out.length) throw e;
+  }
+  return out;
 }
 
 function stamp(st) {
@@ -33,25 +54,46 @@ function stamp(st) {
 export async function loginQrcode() {
   const fs = await import('node:fs');
   const path = await import('node:path');
-  let dir = '';
+  let dirs = [];
   try {
-    dir = await cacheDir();
+    dirs = await cacheDirs();
   } catch (e) {
     return { ok: false, exists: false, reason: 'no-protocol', error: String(e?.message ?? e) };
   }
-  const file = path.join(dir, QR_NAME);
-  try {
-    const st = fs.statSync(file);
-    if (!st.size) return { ok: false, exists: false, reason: 'empty' };
-    const buf = fs.readFileSync(file);
-    // 只认 PNG（防止读到半截写坏的图）
-    if (buf[0] !== 0x89 || buf[1] !== 0x50) return { ok: false, exists: true, reason: 'not-png' };
-    let width = 0;
-    let height = 0;
+
+  /* 逐个候选目录试：mac 上可能落在 napcat/cache、napcat/temp 或 napcat 根下。
+   * 挑「最新的那一张」—— 换码时旧图还在，取到旧的会让人扫一张过期码。 */
+  let best = null;
+  let firstFile = '';
+  for (const dir of dirs) {
+    const file = path.join(dir, QR_NAME);
+    if (!firstFile) firstFile = file;
     try {
-      width = buf.readUInt32BE(16);
-      height = buf.readUInt32BE(20);
-    } catch {}
+      const st = fs.statSync(file);
+      if (!st.size) continue;
+      if (!best || st.mtimeMs > best.mtimeMs) best = { file, st };
+    } catch { /* 这个目录没有，看下一个 */ }
+  }
+
+  if (!best) return { ok: false, exists: false, reason: 'not-yet', file: firstFile };
+
+  const { file, st } = best;
+  try {
+    const buf = fs.readFileSync(file);
+    /* 只认「成型的 PNG」。
+     * 【2026-11-12 修】原来只看头两个字节 0x89 0x50，NapCat 正写到一半时
+     * 我们读到的就是 `89 50 00` 这种残片 —— 也会被判成合法，base64 塞进 <img>
+     * 变成一张破图，面板上看着像「码没出来」，实际是读早了。
+     * 现在要求：8 字节签名全对 + 第 12~16 字节是 IHDR + 能读出正的宽高。 */
+    const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const headOk = buf.length >= 33
+      && PNG_SIG.every((b, i) => buf[i] === b)
+      && buf.toString('latin1', 12, 16) === 'IHDR';
+    const width = headOk ? buf.readUInt32BE(16) : 0;
+    const height = headOk ? buf.readUInt32BE(20) : 0;
+    if (!headOk || !width || !height) {
+      return { ok: false, exists: true, reason: 'not-png', size: st.size, file };
+    }
     return {
       ok: true,
       exists: true,

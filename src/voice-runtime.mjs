@@ -156,14 +156,21 @@ async function usablePython(exe) {
   return Boolean(r.ok && r.out.includes('EDGE_OK'));
 }
 
-/** 这台机器上现成能用的 python（按可信度）。只返回真能 import edge_tts 的。 */
+/** 这台机器上现成能用的 python（按可信度）。只返回真能 import edge_tts 的。
+ * 【2026-11-11 mac 兼容】mac 的解释器叫 python3（系统 / Homebrew 都有），
+ * 候选按平台给；GUI 启动时 PATH 里可能没有 /opt/homebrew，所以把常见路径列全。 */
 export async function readyPythons() {
   const lad = process.env.LOCALAPPDATA || '';
+  const isMac = process.platform === 'darwin';
   const cands = [
     existsSync(PY_EXE) ? PY_EXE : '',
     process.env.XIAOYU_PYTHON || '',
     lad ? join(lad, 'Python', 'bin', 'python.exe') : '',
     lad ? join(lad, 'Python', 'pythoncore-3.14-64', 'python.exe') : '',
+    isMac ? '/opt/homebrew/bin/python3' : '',
+    isMac ? '/usr/local/bin/python3' : '',
+    isMac ? '/usr/bin/python3' : '',
+    isMac ? 'python3' : '',
     'python',
   ].filter(Boolean);
   const seen = new Set();
@@ -182,9 +189,18 @@ export async function readyPythons() {
   return good;
 }
 
-/** ffmpeg 在不在 */
+/** ffmpeg 在不在
+ * 【2026-11-11 mac 兼容】mac 上 brew 装的 ffmpeg 在 /opt/homebrew/bin，
+ * GUI 启动 PATH 里未必有，把常见路径显式列上。 */
 export async function readyFfmpeg() {
-  const cands = [existsSync(FF_EXE) ? FF_EXE : '', process.env.XIAOYU_FFMPEG || '', 'ffmpeg'].filter(Boolean);
+  const isMac = process.platform === 'darwin';
+  const cands = [
+    existsSync(FF_EXE) ? FF_EXE : '',
+    process.env.XIAOYU_FFMPEG || '',
+    isMac ? '/opt/homebrew/bin/ffmpeg' : '',
+    isMac ? '/usr/local/bin/ffmpeg' : '',
+    'ffmpeg',
+  ].filter(Boolean);
   for (const p of cands) {
     const r = await runQuiet(p.split('\\').join('/'), ['-version'], 12000);
     if (r.ok && r.out.toLowerCase().includes('ffmpeg')) return p.split('\\').join('/');
@@ -387,6 +403,27 @@ export function runtimeInfo() {
 
 /** 装它。已经装好就直接返回。 */
 export async function installRuntime() {
+  /* 【2026-11-11 mac 兼容】整套下载源都是 Windows 的（嵌入式 python.exe、
+   * win_amd64 wheel、ffmpeg-win32-x64），mac 上下回来也跑不了。
+   * mac 的正路：先用本机已有的环境（ensureVoiceRuntimeInBackground 会探测）；
+   * 真没有就给一句能照着做的指引，绝不下载 Windows 包。 */
+  if (process.platform === 'darwin') {
+    const [pys, ff] = await Promise.all([readyPythons(), readyFfmpeg()]);
+    if (pys.length && ff) {
+      mkdirSync(STATE, { recursive: true });
+      writeFileSync(
+        MARK,
+        JSON.stringify({ ok: true, at: Date.now(), tookMs: 0, python: pys[0], ffmpeg: ff, using: '本机已有的', bytes: 0 }, null, 2),
+        'utf8',
+      );
+      return { ok: true, using: '本机已有的' };
+    }
+    const missing = [
+      pys.length ? '' : 'python3（带 edge_tts：pip3 install edge-tts）',
+      ff ? '' : 'ffmpeg（brew install ffmpeg）',
+    ].filter(Boolean).join(' 和 ');
+    return { ok: false, error: 'macOS 暂不支持自动安装。请先自己装好 ' + missing + '，再回来点「重新检测」。' };
+  }
   if (busy) return { ok: false, busy: true, error: '正在装，别重复点' };
   busy = true;
   const t0 = Date.now();

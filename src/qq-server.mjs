@@ -157,9 +157,18 @@ export async function runQqTurn({ sessionId, text, fromQq, onEvent, replyTarget,
   }
 
   // 这个会话正在跑（主人在界面里聊着）→ 排队等它，别两个 runAgent 抢一个数组
-  for (let i = 0; i < 120; i++) {
-    if (!h.runningTurns.get(id)) break;
+  //
+  // 【2026-11-12 改】原来只等 30 秒（120 × 250ms）。可 LLM 那边一慢 —— 网关抖两下
+  // （llm.mjs 自己就会重试 1.2s + 2.4s）、或者这轮回复特别长 —— 30 秒根本不够，
+  // 第二条消息就吃 409。在 QQ 那头看着就是「我说了第二句，她不回了」。
+  // 现在等到 180 秒；真等到头了才 409（那说明上一轮多半卡死了，看门狗会收拾）。
+  let waited = 0;
+  while (h.runningTurns.get(id) && waited < 180_000) {
+    if (waited === 0) {
+      try { console.warn(`[qq] 会话 ${id} 正在跑上一轮，这条排队等它（最多 180 秒）`); } catch {}
+    }
     await new Promise((r) => setTimeout(r, 250));
+    waited += 250;
   }
   if (h.runningTurns.get(id)) {
     const err = new Error('这个会话正在跑别的，等一下再发');

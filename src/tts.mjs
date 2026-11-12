@@ -118,12 +118,19 @@ export function pythonExe() {
  */
 export function pythonCandidates() {
   const lad = process.env.LOCALAPPDATA || '';
+  const isMac = process.platform === 'darwin';
   const raw = [
     // 自己装的那份最可信：它就是为这台机器配好的，import edge_tts 一定有用
     bundledPython(),
     process.env.XIAOYU_PYTHON || '',
     lad ? join(lad, 'Python', 'bin', 'python.exe') : '',
     lad ? join(lad, 'Python', 'pythoncore-3.14-64', 'python.exe') : '',
+    /* 【2026-11-11 mac 兼容】mac 的解释器叫 python3；GUI 启动 PATH 可能不含
+     * Homebrew，把常见路径列全。WindowsApps 空壳那个坑在 mac 上不存在。 */
+    isMac ? '/opt/homebrew/bin/python3' : '',
+    isMac ? '/usr/local/bin/python3' : '',
+    isMac ? '/usr/bin/python3' : '',
+    isMac ? 'python3' : '',
     'python',
   ].filter(Boolean);
   const seen = new Set();

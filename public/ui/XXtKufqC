@@ -1,0 +1,819 @@
+/**
+ * 外观中心：主题 / 壁纸 / 插件（2026-11-11）
+ *
+ * 【三样东西是一套机制】
+ *   主题  = 一组 CSS 变量（--bg / --panel / --border / --text / --dim / --accent ...）
+ *   壁纸  = body 的 background-image（内置的是纯 CSS 纹理，插件可以给图片/视频）
+ *   功能  = 一段前端模块脚本（plugin.json 的 entry）
+ * 三者都可以是「内置」的，也可以是 <数据目录>/plugins/<id>/ 里主人自己放的。
+ *
+ * 【为什么不用一个大 JSON 主题文件】
+ * 内置主题写在这里（换主题 = setProperty 十次，零网络请求、零闪烁）；
+ * 磁盘插件只放增量 —— 出厂状态不该依赖「先拷文件」这一步。
+ *
+ * 【视觉口径（别改成 AI 味）】
+ * 中性灰阶打底，一套主题只给一个有彩色的强调色；卡片用 1px 描边分界，不用投影堆层次；
+ * 预览块用真实配色渲染，不用渐变贴图糊弄。
+ */
+
+const $ = (s, r = document) => r.querySelector(s);
+
+/* ============================ 内置主题 ============================ */
+
+/**
+ * 每套主题就是一组变量。键名跟 index.html 的 :root 一一对应。
+ *
+ * 【要改就改全套】顶栏 / 气泡 / 输入框 / 弹窗 / 侧栏 / 滚动条全吃这几个变量，
+ * 少写一个就会露出「换了一半」的底色 —— 那比不做主题还难看。
+ * 语义色（红/金/青、角色身份色）故意不在这里：它们不随主题漂。
+ */
+export const THEMES = [
+  {
+    id: 'graphite',
+    name: '石墨',
+    soul: '纯黑打底，蓝作强调。最中性的一套，长时间看不累。',
+    vars: {
+      '--bg': '#000000', '--panel': '#171a21', '--border': '#262b36',
+      '--text': '#e6e9ef', '--dim': '#8b95a7', '--accent': '#4f8cff',
+      '--panel-2': '#0f1319', '--raise': '#1b2129', '--hover': '#1d2430',
+      '--scroll': '#2c333f', '--scroll-hover': '#3b4553',
+      '--toolhub-bg': '#1e232c', '--toolhub-bg2': '#232935',
+      '--input-bg': 'rgba(10, 12, 17, .55)',
+    },
+  },
+  {
+    id: 'ink',
+    name: '墨蓝',
+    soul: '底色偏靛，强调色是更亮一档的蓝。夜里最像纸上的墨。',
+    vars: {
+      '--bg': '#05070d', '--panel': '#101521', '--border': '#1f2839',
+      '--text': '#e3e8f2', '--dim': '#7f8ca3', '--accent': '#5b8def',
+      '--panel-2': '#0a0f1a', '--raise': '#161d2b', '--hover': '#1a2331',
+      '--scroll': '#222c3d', '--scroll-hover': '#2e3a4e',
+      '--toolhub-bg': '#161d2b', '--toolhub-bg2': '#1b2334',
+      '--input-bg': 'rgba(7, 10, 17, .6)',
+    },
+  },
+  {
+    id: 'pine',
+    name: '松绿',
+    soul: '墨绿灰，强调色是偏冷的青绿。适合白天用，不刺眼。',
+    vars: {
+      '--bg': '#050a08', '--panel': '#0f1714', '--border': '#1e2c26',
+      '--text': '#e2eae6', '--dim': '#7e8f87', '--accent': '#3fa87a',
+      '--panel-2': '#080f0c', '--raise': '#152019', '--hover': '#19261f',
+      '--scroll': '#20302a', '--scroll-hover': '#2b3d35',
+      '--toolhub-bg': '#152019', '--toolhub-bg2': '#1a2620',
+      '--input-bg': 'rgba(8, 14, 11, .6)',
+    },
+  },
+  {
+    id: 'clay',
+    name: '陶土',
+    soul: '暖褐底，赭橙强调。偏纸质书那种温度，晚上不冷。',
+    vars: {
+      '--bg': '#0a0705', '--panel': '#181310', '--border': '#2b231d',
+      '--text': '#ece6df', '--dim': '#9a8d80', '--accent': '#d08b5b',
+      '--panel-2': '#100b08', '--raise': '#211a15', '--hover': '#271f19',
+      '--scroll': '#2f2620', '--scroll-hover': '#3d322a',
+      '--toolhub-bg': '#211a15', '--toolhub-bg2': '#271f19',
+      '--input-bg': 'rgba(16, 12, 9, .6)',
+    },
+  },
+  {
+    id: 'slate',
+    name: '石板',
+    soul: '冷灰偏青，强调色是天青。最接近编辑器默认配色的一套。',
+    vars: {
+      '--bg': '#07080a', '--panel': '#14171b', '--border': '#232830',
+      '--text': '#e5e8ec', '--dim': '#868e9b', '--accent': '#58b6c9',
+      '--panel-2': '#0c0e12', '--raise': '#1b1f25', '--hover': '#20252c',
+      '--scroll': '#2a3038', '--scroll-hover': '#363d47',
+      '--toolhub-bg': '#1b1f25', '--toolhub-bg2': '#20252c',
+      '--input-bg': 'rgba(10, 12, 15, .6)',
+    },
+  },
+  {
+    id: 'ember',
+    name: '炭红',
+    soul: '暗红褐打底，朱红强调。只在真的想用红色时选它。',
+    vars: {
+      '--bg': '#0a0506', '--panel': '#190f11', '--border': '#2d1c1f',
+      '--text': '#eee3e5', '--dim': '#9c8489', '--accent': '#e05a5a',
+      '--panel-2': '#120a0b', '--raise': '#221417', '--hover': '#281a1d',
+      '--scroll': '#322024', '--scroll-hover': '#402a2e',
+      '--toolhub-bg': '#221417', '--toolhub-bg2': '#281a1d',
+      '--input-bg': 'rgba(16, 9, 10, .6)',
+    },
+  },
+];
+
+/* ============================ 内置壁纸 ============================ */
+
+/**
+ * 全部是纯 CSS 纹理，没有图片文件。
+ * 一律用白色极低透明度叠加 —— 这样六套主题都能配，不用给每套主题单独做一套壁纸。
+ *
+ * 【image 里不许写 position/size】
+ * CSSOM 的 background-image 只收「图层」本身，写 `... 0 0 / 22px 22px` 会整条被丢掉，
+ * 结果就是 backgroundImage 设了个空串、壁纸看起来「选了没反应」。
+ * 平铺尺寸一律走 size / repeat 两个字段（这条踩过一次，别合并回去）。
+ */
+export const WALLPAPERS = [
+  { id: '', name: '无', soul: '就是主题底色。', image: '' },
+  {
+    id: 'dot', name: '网点', soul: '22px 一个点，几乎看不见，只是不让大片纯色发死。',
+    image: 'radial-gradient(circle, rgba(255,255,255,.05) 1px, transparent 1px)',
+    size: '22px 22px', repeat: 'repeat',
+  },
+  {
+    id: 'grid', name: '方格', soul: '32px 细格，像坐标纸。',
+    image: 'linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),'
+      + 'linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px)',
+    size: '32px 32px', repeat: 'repeat',
+  },
+  {
+    id: 'rule', name: '横线', soul: '28px 一条横线，写东西时看着像本子。',
+    image: 'repeating-linear-gradient(to bottom, rgba(255,255,255,.032) 0 1px, transparent 1px 28px)',
+    size: 'auto', repeat: 'repeat',
+  },
+  {
+    id: 'grain', name: '纸纹', soul: '两层极细斜纹叠出来的颗粒感，最接近真实纸张。',
+    image: 'repeating-linear-gradient(45deg, rgba(255,255,255,.02) 0 1px, transparent 1px 3px),'
+      + 'repeating-linear-gradient(-45deg, rgba(255,255,255,.016) 0 1px, transparent 1px 4px)',
+    size: 'auto', repeat: 'repeat',
+  },
+  {
+    id: 'glow', name: '顶光', soul: '从顶部正中往下退的一层微光，屏幕上方像有盏灯。',
+    image: 'radial-gradient(120% 70% at 50% -10%, rgba(255,255,255,.075), transparent 62%)',
+    size: 'cover', repeat: 'no-repeat',
+  },
+  {
+    id: 'vignette', name: '暗角', soul: '四角压暗、中间稍亮，注意力收在正文上。',
+    image: 'radial-gradient(120% 90% at 50% 45%, transparent 42%, rgba(0,0,0,.5) 100%)',
+    size: 'cover', repeat: 'no-repeat',
+  },
+];
+
+/* ============================ 状态 ============================ */
+
+const state = {
+  plugins: [],
+  appearance: { themeId: 'graphite', wallpaperId: '', railCollapsed: false, railOn: true },
+  tab: 'theme',
+  loaded: false,
+};
+
+const themeById = (id) => THEMES.find((t) => t.id === id) || null;
+const wallById = (id) => WALLPAPERS.find((w) => w.id === id) || WALLPAPERS[0];
+const pluginById = (id) => state.plugins.find((p) => p.id === id) || null;
+
+/* ============================ 应用：主题 ============================ */
+
+/** 内置主题的 id 前缀；插件主题直接用自己的目录名，撞了就以插件的为准 */
+let activeThemeEls = [];   // 插件主题注入的 <link>/<style>，切走时要摘掉
+
+/** 主题会碰的变量名（清 inline 时按这个名单来，不动别的） */
+const THEME_KEYS = [
+  '--bg', '--panel', '--border', '--text', '--dim', '--accent',
+  '--panel-2', '--raise', '--hover', '--scroll', '--scroll-hover',
+  '--bg-rgb', '--panel-rgb', '--hover-rgb',
+  '--toolhub-bg', '--toolhub-bg2', '--input-bg',
+];
+
+function clearPluginTheme() {
+  for (const el of activeThemeEls) { try { el.remove(); } catch {} }
+  activeThemeEls = [];
+}
+
+/**
+ * 把内联变量全撤掉，退回 index.html 里 :root 的默认值（那套就是石墨）。
+ *
+ * 【为什么插件主题必须撤内联】
+ * 内联 style 的优先级高于任何样式表 —— 内置主题写过的 --accent: #4f8cff 会盖掉
+ * 插件 CSS 里的 :root { --accent: #ff9f43 }，表现是「选了插件主题，颜色一点没变」。
+ * 插件主题只提供它想改的那几个变量，剩下靠默认值补齐。
+ */
+function clearInlineThemeVars() {
+  const root = document.documentElement;
+  for (const k of THEME_KEYS) root.style.removeProperty(k);
+}
+
+export function applyTheme(id) {
+  const root = document.documentElement;
+  clearPluginTheme();
+
+  const builtin = themeById(id);
+  if (builtin) {
+    for (const [k, v] of Object.entries(withRgbVars(builtin.vars))) root.style.setProperty(k, v);
+    document.body.dataset.xyTheme = builtin.id;
+    return;
+  }
+
+  // 插件主题
+  const p = pluginById(id);
+  if (p && p.type === 'theme') {
+    clearInlineThemeVars();
+    if (p.css) activeThemeEls.push(addLink(assetUrl(p.id, p.css)));
+    if (p.entry) loadFeature(p, 'theme');
+    document.body.dataset.xyTheme = p.id;
+    return;
+  }
+
+  // 都没找到（插件被删了 / 状态脏了）：回落石墨
+  const fallback = themeById('graphite');
+  for (const [k, v] of Object.entries(withRgbVars(fallback.vars))) root.style.setProperty(k, v);
+  document.body.dataset.xyTheme = 'graphite';
+}
+
+/** 插件里的一个文件 → 可访问的 URL（逐段 encode，避免中文/空格文件名出问题） */
+function assetUrl(id, rel) {
+  return `/plugin-assets/${encodeURIComponent(id)}/${String(rel).split('/').map(encodeURIComponent).join('/')}`;
+}
+
+/**
+ * 从主题的 --bg / --panel / --hover 自动派生 rgb 分量。
+ *
+ * 干嘛要这个：开着壁纸或视频背景时，面板得半透明才看得见画面，而 rgba() 里那个
+ * 颜色分量没法写成 var。手写「每套主题三行 rgb」迟早写错一个 —— 干脆从已有的
+ * hex 算出来，主题改颜色时分量自动跟上。
+ */
+function withRgbVars(vars) {
+  const hex2rgb = (hex) => {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || '').trim());
+    return m ? `${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}` : '';
+  };
+  const out = { ...vars };
+  for (const [key, rgbKey] of [['--bg', '--bg-rgb'], ['--panel', '--panel-rgb'], ['--hover', '--hover-rgb']]) {
+    const rgb = hex2rgb(vars[key]);
+    if (rgb) out[rgbKey] = rgb;
+  }
+  return out;
+}
+
+/* ============================ 应用：壁纸 ============================ */
+
+/**
+ * 壁纸 = 铺满首页那一层（#xyWall，跟视频背景同档负层级）。
+ *
+ * 【为什么不是 body 的 background】
+ * body 是最底下那层，内容全压在它上面 —— 设上去等于白设，一个字都看不见。
+ * 首页那张固定的画面本来就是独立一层（#bgVideo / #bgVeil / #bgTint），
+ * 壁纸必须跟它站在同一个高度，所以另开 #xyWall。
+ *
+ * 【选了壁纸就把视频藏起来】
+ * 视频盖在壁纸上谁也看不见。body.wall 会让 #bgVideo display:none，
+ * 同时让面板半透明（跟 body.skin 共用同一套规则），画面才透得出来。
+ */
+export function applyWallpaper(id) {
+  const el = document.getElementById('xyWall');
+  if (!el) return;
+
+  const builtin = WALLPAPERS.find((w) => w.id === id) || null;
+  const plugin = pluginById(id);
+  const pluginOk = plugin && plugin.type === 'wallpaper' && plugin.wallpaper && plugin.wallpaper.kind !== 'video';
+  const on = Boolean(id) && (builtin ? builtin.id !== '' : Boolean(pluginOk));
+
+  document.body.classList.toggle('wall', on);
+
+  if (!on) {
+    el.style.backgroundImage = '';
+    el.style.backgroundSize = '';
+    el.style.backgroundRepeat = '';
+    document.body.dataset.xyWall = '';
+    return;
+  }
+
+  if (builtin) {
+    el.style.backgroundImage = builtin.image || '';
+    el.style.backgroundSize = builtin.size || '';
+    el.style.backgroundRepeat = builtin.repeat || '';
+    document.body.dataset.xyWall = builtin.id;
+    return;
+  }
+
+  el.style.backgroundImage = `url("${assetUrl(plugin.id, plugin.wallpaper.file)}")`;
+  el.style.backgroundSize = 'cover';
+  el.style.backgroundRepeat = 'no-repeat';
+  document.body.dataset.xyWall = plugin.id;
+}
+
+/* ============================ 应用：顶部菜单收缩 ============================ */
+
+/**
+ * 顶栏收起：整条 header 只留「小鱼」和一个展开箭头，其余按钮全藏起来。
+ *
+ * 【为什么不是收左侧】
+ * 左边那列「屋里的人」是浮在聊天区上的，本来就不占位置，收它等于少一个入口、
+ * 省不到空间。真正占地方的是顶栏那一整排按钮 —— 窗口一窄就挤成一团。
+ * 收起后字号和高度都降一档，正文能多出一行。
+ */
+function applyRail() {
+  document.body.classList.toggle('hdrMini', state.appearance.railCollapsed === true);
+  document.body.classList.toggle('railOff', state.appearance.railOn === false);
+}
+
+/** header 上那颗按钮：顶栏展开 ↔ 收起 */
+export function toggleRail() {
+  state.appearance.railCollapsed = !state.appearance.railCollapsed;
+  applyRail();
+  save({ railCollapsed: state.appearance.railCollapsed });
+  return state.appearance.railCollapsed;
+}
+
+/* ============================ 插件加载 ============================ */
+
+const loadedFeatures = new Set();
+
+function addLink(href) {
+  const l = document.createElement('link');
+  l.rel = 'stylesheet';
+  l.href = href;
+  document.head.appendChild(l);
+  return l;
+}
+
+/**
+ * 功能插件：import 它的入口模块，把宿主能力递进去。
+ * 约定：默认导出是一个函数，收到 { root, api, toast } 就自己往页面上挂东西。
+ * 加载失败只打一行日志 —— 一个坏插件不该让整个界面起不来。
+ */
+async function loadFeature(p, kind) {
+  if (!p.entry || loadedFeatures.has(p.id)) return;
+  loadedFeatures.add(p.id);
+  try {
+    const mod = await import(assetUrl(p.id, p.entry));
+    const fn = mod?.default || mod?.mount || mod?.activate;
+    if (typeof fn === 'function') {
+      await fn({
+        root: document.body,
+        kind,
+        meta: p,
+        toast: (t) => tip(String(t)),
+        api: {
+          getAppearance: () => ({ ...state.appearance }),
+          setAppearance: (patch) => { Object.assign(state.appearance, patch); save(patch); },
+          listPlugins: () => state.plugins.slice(),
+        },
+      });
+    }
+  } catch (err) {
+    // 加载失败要允许重试：不然一个当时的临时错误（文件刚放进去、语法刚改好）
+    // 会让这个插件在本次运行里永远起不来，主人只能重启
+    loadedFeatures.delete(p.id);
+    console.warn(`[plugin] ${p.id} 载入失败：`, err);
+  }
+}
+
+function unloadFeature(p) {
+  // 模块没法卸载，只能记住「已经加载过」，关掉时不再执行；页面上留下的节点由插件自己在
+  // 挂载时监听 'xy:disable' 事件清理（约定，不是强制）。
+  loadedFeatures.delete(p.id);   // 停用后允许重新启用时再挂一次
+  try { window.dispatchEvent(new CustomEvent('xy:disable', { detail: { id: p.id } })); } catch {}
+}
+
+/** 把「启用的插件」落地：功能插件挂载；主题/壁纸由 applyTheme / applyWallpaper 负责 */
+function applyAllPlugins() {
+  for (const p of state.plugins) {
+    if (!p.enabled) { unloadFeature(p); continue; }
+    // 【注意】这里不碰 type==='theme' 的 CSS：同时启用两个主题插件会互相盖，
+    // 主题样式只由 applyTheme(当前选中的那个) 注入，别在这里再注一遍。
+    if (p.type === 'feature') loadFeature(p, 'feature');
+  }
+}
+
+/* ============================ 与后端通信 ============================ */
+
+async function save(patch) {
+  try {
+    const r = await fetch('/api/appearance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const j = await r.json();
+    if (j?.appearance) state.appearance = { ...state.appearance, ...j.appearance };
+  } catch (err) {
+    console.warn('[appearance] 保存失败', err);
+  }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/plugins');
+    const j = await r.json();
+    state.plugins = Array.isArray(j?.plugins) ? j.plugins : [];
+    if (j?.appearance) state.appearance = { ...state.appearance, ...j.appearance };
+  } catch (err) {
+    console.warn('[appearance] 读取失败', err);
+  }
+  return state;
+}
+
+/* ============================ 面板：样式 ============================ */
+
+const PANEL_CSS = `
+/* header 上的图标按钮（顶栏收起开关）：沿用 header button 的底色，只收紧内边距 */
+header #railBtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 4px 7px; line-height: 1;
+}
+header #railBtn svg { display: block; }
+header #railBtn:hover { color: var(--accent); }
+
+/* ---- 顶栏收起态 ----
+   只留「小鱼」和这颗开关，其余按钮全收进开关里。
+   保留 #hdrPush（零宽推杆）：不留它，剩下那两个元素会贴到最左边，
+   展开时整排按钮的位置会跳一下。 */
+body.hdrMini header { padding: 5px 12px; gap: 8px; }
+body.hdrMini header > *:not(#railBtn):not(b):not(#hdrPush) { display: none !important; }
+body.hdrMini header b { font-size: 13px; }
+body.hdrMini #railBtn { color: var(--accent); border-color: var(--border); }
+/* 收起时顶部那条分隔线也没必要那么重 */
+body.hdrMini { --hdr-mini: 1; }
+body.hdrMini header { border-bottom-color: var(--border); }
+
+/* 左侧那列「屋里的人」可以整体关掉（不是收缩，就是不显示） */
+body.railOff #whoRail { display: none !important; }
+
+/* ---- 外观面板 ---- */
+#appearanceDlg { width: min(680px, 94vw); }
+#appearanceDlg .apTabs {
+  display: flex; gap: 2px; padding: 10px 16px 0; border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+#appearanceDlg .apTabs button {
+  background: transparent; border: 0; border-bottom: 2px solid transparent;
+  color: var(--dim); font: inherit; font-size: 13px; padding: 7px 12px 9px;
+  cursor: pointer; border-radius: 6px 6px 0 0;
+}
+#appearanceDlg .apTabs button:hover { color: var(--text); background: rgba(255,255,255,.04); }
+#appearanceDlg .apTabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+
+#appearanceDlg .apGrid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px;
+}
+#appearanceDlg .apCard {
+  position: relative; text-align: left; padding: 0; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  overflow: hidden; font: inherit; color: var(--text);
+  transition: border-color .12s, background .12s;
+}
+#appearanceDlg .apCard:hover { border-color: var(--dim); }
+#appearanceDlg .apCard.on { border-color: var(--accent); }
+#appearanceDlg .apCard.on::after {
+  content: '✓'; position: absolute; top: 6px; right: 8px;
+  color: var(--accent); font-size: 13px; font-weight: 700;
+}
+/* 主题预览：三条色带 + 一块模拟面板，用真实配色画，不用截图 */
+#appearanceDlg .apSwatch { height: 62px; display: flex; }
+#appearanceDlg .apSwatch i { flex: 1; display: block; }
+#appearanceDlg .apCardBody { padding: 8px 10px 10px; }
+#appearanceDlg .apCardName { font-size: 12.5px; font-weight: 600; display: flex; gap: 6px; align-items: baseline; }
+#appearanceDlg .apCardName em {
+  font-style: normal; font-size: 10px; font-weight: 400; color: var(--dim);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0 4px;
+}
+#appearanceDlg .apCardSoul {
+  margin-top: 3px; font-size: 11px; color: var(--dim); line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+/* 壁纸预览块 */
+#appearanceDlg .apWall { height: 76px; border-bottom: 1px solid var(--border); }
+
+/* 插件列表 */
+#appearanceDlg .apPlug {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); margin-bottom: 8px;
+}
+#appearanceDlg .apPlugMain { flex: 1 1 auto; min-width: 0; }
+#appearanceDlg .apPlugName { font-size: 13px; font-weight: 600; display: flex; gap: 6px; align-items: baseline; }
+#appearanceDlg .apPlugName em { font-style: normal; font-size: 10px; color: var(--dim); font-weight: 400; }
+#appearanceDlg .apPlugDesc { font-size: 11.5px; color: var(--dim); margin-top: 3px; line-height: 1.5; }
+#appearanceDlg .apPlugSide { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
+#appearanceDlg .apPlugSide button {
+  background: transparent; border: 1px solid var(--border); color: var(--dim);
+  border-radius: 6px; font: inherit; font-size: 11.5px; padding: 3px 8px; cursor: pointer;
+}
+#appearanceDlg .apPlugSide button:hover { color: var(--err, #f85149); border-color: var(--err, #f85149); }
+#appearanceDlg .apEmpty {
+  padding: 26px 12px; text-align: center; color: var(--dim); font-size: 12.5px; line-height: 1.8;
+}
+#appearanceDlg .apEmpty code {
+  background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 5px; font-size: 11.5px;
+}
+/* 开关（跟界面其它开关同款手感） */
+#appearanceDlg .apSwitch {
+  position: relative; width: 34px; height: 19px; flex: 0 0 auto;
+  border-radius: 10px; background: #2a3140; border: 1px solid var(--border);
+  cursor: pointer; transition: background .14s, border-color .14s; padding: 0;
+}
+#appearanceDlg .apSwitch i {
+  position: absolute; top: 1.5px; left: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--dim); transition: transform .14s, background .14s;
+}
+#appearanceDlg .apSwitch.on { background: rgba(79,140,255,.28); border-color: var(--accent); }
+#appearanceDlg .apSwitch.on i { transform: translateX(15px); background: var(--accent); }
+`;
+
+function injectCss() {
+  if (document.getElementById('xyAppearanceCss')) return;
+  const s = document.createElement('style');
+  s.id = 'xyAppearanceCss';
+  s.textContent = PANEL_CSS;
+  document.head.appendChild(s);
+}
+
+/* ============================ 轻提示 ============================ */
+
+let tipTimer = 0;
+function tip(text) {
+  let el = document.getElementById('xyApTip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'xyApTip';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.style.cssText = [
+    'position:fixed', 'left:50%', 'bottom:34px', 'transform:translateX(-50%)',
+    'z-index:9999', 'padding:7px 14px', 'border-radius:8px',
+    'background:rgba(20,24,32,.96)', 'border:1px solid var(--border)',
+    'color:var(--text)', 'font-size:12.5px', 'pointer-events:none',
+    'box-shadow:0 6px 24px rgba(0,0,0,.45)', 'opacity:1', 'transition:opacity .18s',
+  ].join(';');
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 200);
+  }, 1500);
+}
+
+/* ============================ 面板：渲染 ============================ */
+
+function hexOf(v, fallback) {
+  // 预览色块只处理 #rrggbb；带 alpha 的（--input-bg）不参与预览
+  return /^#[0-9a-f]{6}$/i.test(String(v || '')) ? v : fallback;
+}
+
+function renderThemeTab() {
+  const cur = state.appearance.themeId;
+  const builtinIds = new Set(THEMES.map((t) => t.id));
+  const pluginThemes = state.plugins.filter((p) => p.type === 'theme');
+
+  const card = (t, isPlugin) => {
+    const v = t.vars || {};
+    // 插件主题没有配色数据，用「未知」色块占位（真色要等 CSS 载入后才知道，不值得去算）
+    const sw = isPlugin
+      ? `<i style="background:#2a2f3a"></i><i style="background:#3a4150"></i><i style="background:#4a5266"></i><i style="background:#5a6278"></i><i style="background:#6a7288"></i>`
+      : `<i style="background:${hexOf(v['--bg'], '#000')}"></i>`
+        + `<i style="background:${hexOf(v['--panel'], '#171a21')}"></i>`
+        + `<i style="background:${hexOf(v['--border'], '#262b36')}"></i>`
+        + `<i style="background:${hexOf(v['--text'], '#e6e9ef')}"></i>`
+        + `<i style="background:${hexOf(v['--accent'], '#4f8cff')}"></i>`;
+    const on = cur === t.id ? ' on' : '';
+    return `<button class="apCard${on}" data-theme="${esc(t.id)}" type="button">
+      <div class="apSwatch">${sw}</div>
+      <div class="apCardBody">
+        <div class="apCardName">${esc(t.name)}${isPlugin ? '<em>插件</em>' : ''}</div>
+        <div class="apCardSoul">${esc(t.soul || t.description || '')}</div>
+      </div>
+    </button>`;
+  };
+
+  return `<div class="apGrid">${THEMES.map((t) => card(t, false)).join('')}${pluginThemes.map((p) => card(p, true)).join('')}</div>
+    <p style="color:var(--dim);font-size:11.5px;margin:14px 0 0;line-height:1.7">
+      主题只改颜色，不改布局。插件主题放在插件目录里，<code style="background:var(--input-bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px">type</code> 写 <code style="background:var(--input-bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px">theme</code>、再用 <code style="background:var(--input-bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px">css</code> 指一份样式，只写想改的那几个变量就行。
+    </p>`;
+}
+
+function renderWallTab() {
+  const cur = state.appearance.wallpaperId;
+  const pluginWalls = state.plugins.filter((p) => p.type === 'wallpaper');
+  const items = [
+    ...WALLPAPERS.map((w) => ({ ...w, plugin: false })),
+    ...pluginWalls.map((p) => {
+      const isVideo = p.wallpaper?.kind === 'video';
+      const url = p.wallpaper ? assetUrl(p.id, p.wallpaper.file) : '';
+      return {
+        id: p.id, name: p.name, soul: p.description || '', plugin: true,
+        image: url && !isVideo ? `url("${url}")` : '',
+        size: url && !isVideo ? 'cover' : '',
+        repeat: url && !isVideo ? 'no-repeat' : '',
+        isVideo,
+      };
+    }),
+  ];
+
+  // 预览块：用真实 CSS 画，跟真正生效的那层是同一份数据 —— 所见即所得
+  const previewStyle = (w) => {
+    const p = ['background-color:var(--bg)'];
+    if (w.image) {
+      p.push(`background-image:${w.image}`);
+      if (w.size) p.push(`background-size:${w.size}`);
+      if (w.repeat) p.push(`background-repeat:${w.repeat}`);
+      if (w.repeat === 'no-repeat') p.push('background-position:center');
+    }
+    return p.join(';');
+  };
+
+  const card = (w) => `<button class="apCard${cur === w.id ? ' on' : ''}" data-wall="${esc(w.id)}" type="button">
+      <div class="apWall" style="${previewStyle(w)}">${
+        w.isVideo ? '<span style="display:flex;height:100%;align-items:center;justify-content:center;font-size:11px;color:#cfd6e2">视频壁纸</span>' : ''
+      }</div>
+      <div class="apCardBody">
+        <div class="apCardName">${esc(w.name)}${w.plugin ? '<em>插件</em>' : ''}</div>
+        <div class="apCardSoul">${esc(w.soul || '')}</div>
+      </div>
+    </button>`;
+
+  return `<div class="apGrid">${items.map(card).join('')}</div>
+    <p style="color:var(--dim);font-size:11.5px;margin:14px 0 0;line-height:1.7">
+      壁纸是铺在底色上的一层纹理，不挡正文。想用自己的图：做一个 <code style="background:var(--input-bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px">type: "wallpaper"</code> 的插件，把图放进去、在 plugin.json 里写 <code style="background:var(--input-bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px">{"wallpaper":{"kind":"image","file":"bg.jpg"}}</code>。
+    </p>`;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderBody() {
+  const el = $('#apBody');
+  if (!el) return;
+  el.innerHTML = state.tab === 'theme' ? renderThemeTab()
+    : state.tab === 'wall' ? renderWallTab()
+      : renderPlugTab();
+  for (const b of document.querySelectorAll('#appearanceDlg .apTabs button')) {
+    b.classList.toggle('on', b.dataset.tab === state.tab);
+  }
+}
+
+/* ============================ 面板：交互 ============================ */
+
+function bindPanel(dlg) {
+  dlg.addEventListener('click', async (ev) => {
+    const tabBtn = ev.target.closest('.apTabs button');
+    if (tabBtn) { state.tab = tabBtn.dataset.tab; renderBody(); return; }
+
+    const themeCard = ev.target.closest('.apCard[data-theme]');
+    if (themeCard) {
+      const id = themeCard.dataset.theme;
+      state.appearance.themeId = id;
+      applyTheme(id);
+      renderBody();
+      save({ themeId: id });
+      return;
+    }
+
+    const wallCard = ev.target.closest('.apCard[data-wall]');
+    if (wallCard) {
+      const id = wallCard.dataset.wall;
+      state.appearance.wallpaperId = id;
+      applyWallpaper(id);
+      renderBody();
+      save({ wallpaperId: id });
+      return;
+    }
+
+    const tg = ev.target.closest('[data-toggle]');
+    if (tg) {
+      const id = tg.dataset.toggle;
+      const p = pluginById(id);
+      if (!p) return;
+      const on = !p.enabled;
+      p.enabled = on;
+      try {
+        await fetch(`/api/plugins/${encodeURIComponent(id)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ on }),
+        });
+      } catch (err) { console.warn(err); }
+      // 启用/停用后要把外观重新落一遍：插件可能带来主题/壁纸
+      await refresh();
+      // 停用的正好是当前主题/壁纸 → 退回内置默认，别留一个指向不存在插件的状态
+      if (!on && state.appearance.themeId === id) {
+        state.appearance.themeId = 'graphite';
+        save({ themeId: 'graphite' });
+      }
+      if (!on && state.appearance.wallpaperId === id) {
+        state.appearance.wallpaperId = '';
+        save({ wallpaperId: '' });
+      }
+      applyTheme(state.appearance.themeId);
+      applyWallpaper(state.appearance.wallpaperId);
+      if (on && p.type === 'feature') loadFeature(p, 'feature');
+      if (!on) unloadFeature(p);
+      renderBody();
+      tip(on ? `已启用「${p.name}」` : `已停用「${p.name}」`);
+      return;
+    }
+
+    const rm = ev.target.closest('[data-remove]');
+    if (rm) {
+      const id = rm.dataset.remove;
+      const p = pluginById(id);
+      if (!p) return;
+      if (!confirm(`从磁盘删掉「${p.name}」？文件夹里所有文件都会没。`)) return;
+      try {
+        await fetch(`/api/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch (err) { console.warn(err); }
+      await refresh();
+      if (state.appearance.themeId === id) { state.appearance.themeId = 'graphite'; applyTheme('graphite'); save({ themeId: 'graphite' }); }
+      if (state.appearance.wallpaperId === id) { state.appearance.wallpaperId = ''; applyWallpaper(''); save({ wallpaperId: '' }); }
+      renderBody();
+      tip('已删除');
+      return;
+    }
+
+    if (ev.target.closest('#apOpenDir')) {
+      try {
+        const r = await fetch('/api/plugins/open-dir', { method: 'POST' });
+        const j = await r.json();
+        if (!j?.ok) tip('打不开目录，手动去 数据目录/plugins 找吧');
+      } catch { tip('打不开目录'); }
+    }
+  });
+}
+
+/* ============================ 对外：打开面板 ============================ */
+
+export async function openPanel(tab) {
+  if (tab) state.tab = tab;
+  await refresh();
+  let dlg = document.getElementById('appearanceDlg');
+  if (!dlg) {
+    dlg = document.createElement('dialog');
+    dlg.id = 'appearanceDlg';
+    dlg.innerHTML = `
+      <div class="dlgHead">
+        <b>外观</b>
+        <span class="meta" id="apHint" style="color:var(--dim);font-size:12px">主题与壁纸</span>
+        <button class="x" id="apClose" type="button">关闭</button>
+      </div>
+      <div class="apTabs">
+        <button data-tab="theme" type="button">主题</button>
+        <button data-tab="wall" type="button">壁纸</button>
+      </div>
+      <div class="dlgBody" id="apBody"></div>
+      <div class="dlgFoot">
+        <span class="hint">主题改的是整页配色；壁纸铺在首页最底下那层，不挡正文</span>
+      </div>`;
+    document.body.appendChild(dlg);
+    bindPanel(dlg);
+    $('#apClose', dlg).addEventListener('click', () => dlg.close());
+  }
+  renderBody();
+  if (!dlg.open) dlg.showModal();
+}
+
+/* ============================ 初始化 ============================ */
+
+export async function init() {
+  if (state.loaded) return;
+  state.loaded = true;
+  injectCss();
+  await refresh();
+  applyTheme(state.appearance.themeId);
+  applyWallpaper(state.appearance.wallpaperId);
+  applyRail();
+  applyAllPlugins();
+
+  // header 那颗按钮：没登进 DOM 就等一会儿（index.html 的脚本顺序不保证）
+  const bind = () => {
+    const btn = document.getElementById('openAppearance');
+    if (btn && !btn.dataset.bound) {
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', () => openPanel());
+    }
+    const rail = document.getElementById('railBtn');
+    if (rail && !rail.dataset.bound) {
+      rail.dataset.bound = '1';
+      rail.addEventListener('click', () => {
+        const collapsed = toggleRail();
+        tip(collapsed ? '顶栏已收起（点左上角展开）' : '顶栏已展开');
+      });
+    }
+  };
+  bind();
+  if (!document.getElementById('openAppearance')) {
+    document.addEventListener('DOMContentLoaded', bind, { once: true });
+    setTimeout(bind, 600);
+  }
+}
+
+/* 挂在 window 上，方便在控制台/调试器里直接调 */
+window.xyAppearance = {
+  open: openPanel,
+  init,
+  themes: THEMES,
+  wallpapers: WALLPAPERS,
+  state: () => ({ ...state.appearance, plugins: state.plugins }),
+  applyTheme,
+  applyWallpaper,
+  toggleRail,
+};
+
+init();

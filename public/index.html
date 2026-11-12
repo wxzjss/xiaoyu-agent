@@ -16,23 +16,23 @@
     #cronDlg .cronList { padding: 6px 10px; overflow: auto; max-height: 44vh; }
     #cronDlg .cronRow { display: flex; gap: 8px; align-items: center; padding: 6px 2px; border-bottom: 1px solid rgba(255,255,255,0.06); }
     #cronDlg .cronRow .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #cronDlg .cronRow .w { color: #8b949e; font-size: 12px; flex: 0 0 auto; }
+    #cronDlg .cronRow .w { color: var(--dim); font-size: 12px; flex: 0 0 auto; }
     #cronDlg .cronRow .off { opacity: 0.45; text-decoration: line-through; }
-    #cronDlg .cronEmpty { color: #8b949e; padding: 10px 2px; }
-    html, body { background: #0f1115; }
+    #cronDlg .cronEmpty { color: var(--dim); padding: 10px 2px; }
+    html, body { background: var(--panel-2); }
 
   </style>
   <style>
     /* 滚动条：暗色细条，别跟背景打架 */
-    * { scrollbar-width: thin; scrollbar-color: #2c333f transparent; }
+    * { scrollbar-width: thin; scrollbar-color: var(--scroll) transparent; }
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb {
-      background: #2c333f; border-radius: 8px;
+      background: var(--scroll); border-radius: 8px;
       border: 2px solid transparent; background-clip: content-box;
     }
-    ::-webkit-scrollbar-thumb:hover { background: #3b4553; background-clip: content-box; }
-    ::-webkit-scrollbar-thumb:active { background: #4a5568; background-clip: content-box; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--scroll-hover); background-clip: content-box; }
+    ::-webkit-scrollbar-thumb:active { background: var(--scroll-hover); background-clip: content-box; }
     ::-webkit-scrollbar-corner { background: transparent; }
 
     :root {
@@ -54,6 +54,25 @@
       --accent: #4f8cff;
       --ok: #3fb950;
       --err: #f85149;
+      /* 【2026-11-11 主题全应用化】以前这十来个色值是散在样式里写死的，
+         于是「换主题」只换得动半边脸 —— 顶栏变了、气泡和输入框还是老样子。
+         下面这几档是整页的中间层次，主题只改这里，整页一起走：
+           --panel-2  比 --panel 深一档：输入框底、代码块、次级面板
+           --raise    比 --panel 亮一档：小按钮 / 芯片底
+           --hover    悬停 / 当前态底 */
+      --panel-2: #0f1319;
+      --raise: #1b2129;
+      --hover: #1d2430;
+      /* 滚动条：整页每一处滚动都吃它，不跟主题走会显得像后贴上去的 */
+      --scroll: #2c333f;
+      --scroll-hover: #3b4553;
+      /* 【为什么要 rgb 分量】开着壁纸/视频背景时，面板必须半透明才看得见画面，
+         而 rgba() 的写法里那个颜色是写死的 —— 换成主题色就会分裂成「面板是石墨黑、
+         壁纸底下是松绿」。所以按主题给出 r,g,b 分量，透明度另算：
+           rgba(var(--panel-rgb), .2)  →  跟主题同一块颜色，只是透。 */
+      --bg-rgb: 0, 0, 0;
+      --panel-rgb: 23, 26, 33;
+      --hover-rgb: 29, 36, 48;
       /* 视频背景的旋钮（开着才有意义，关着时这两层都不显示） */
       --surface: .2;
       --veil: .14;
@@ -239,7 +258,7 @@
       border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
       background: var(--input-bg); display: flex; flex-direction: column;
     }
-    .scrCard img { width: 100%; display: block; cursor: zoom-in; background: #0b0d11; }
+    .scrCard img { width: 100%; display: block; cursor: zoom-in; background: var(--panel-2); }
     .scrCard .cap { padding: 6px 8px; font-size: 12px; line-height: 1.5; color: var(--dim); }
     .scrCard .cap b { color: var(--text); font-weight: 600; }
     .scrCard .why { color: var(--text); }
@@ -283,6 +302,9 @@
     .qqState {
       font-size: 12px; padding: 3px 9px; border-radius: 999px;
       border: 1px solid var(--border); color: var(--dim); white-space: nowrap;
+      /* 药丸里要装「已连上：丸子🍡🍡」—— 不给它自己的宽度，会被旁边的
+         「断开」和说明文字挤掉半截（实测显示成「已连上: 丸子\」）。 */
+      flex: 0 0 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis;
     }
     .qqState.on { border-color: rgba(140, 220, 210, 0.6); color: #8cdcd2; background: rgba(140, 220, 210, 0.12); }
     .qqState.bad { border-color: rgba(232, 122, 122, 0.55); color: #e87a7a; }
@@ -298,8 +320,35 @@
       border: 1px solid var(--border); color: var(--dim);
     }
     .qqPeer .tag.owner { border-color: rgba(140, 220, 210, 0.6); color: #8cdcd2; }
+    /* 群那一行（2026-11-12）：跟「人」分开，别让人以为群里最后说话的那个人重复了 */
+    .qqPeer .tag.group { border-color: rgba(150, 175, 235, 0.55); color: #9db4ea; }
     .qqPeer .grow { flex: 1 1 auto; }
     .qqPeer .when { font-size: 11px; color: var(--dim); white-space: nowrap; }
+    /* 一行可能挂两颗快捷按钮（填成主人 / 填进白名单）—— 名字太长时让名字先截，别把按钮挤成两行 */
+    .qqPeer .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 42%; }
+    .qqPeer button { flex: 0 0 auto; font-size: 11.5px; padding: 2px 8px; }
+
+    /* 「刚被挡掉的」那一块（2026-11-12）
+       主人 @ 了没反应时，得能一眼看出是哪个群/哪个人被挡、点一下就能放行。
+       语气用暖黄而不是红：这是护栏在干活，不是出错。 */
+    .qqBlocked {
+      display: flex; flex-direction: column; gap: 6px; margin-top: 2px;
+      border: 1px solid rgba(226, 178, 96, 0.4); border-radius: 8px;
+      padding: 8px 9px; background: rgba(226, 178, 96, 0.07);
+    }
+    .qqBlocked[hidden] { display: none; }
+    .qqBlocked .bkHead { font-size: 11.5px; color: #dcb476; }
+    .qqBlocked .bkRow {
+      display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+      border-top: 1px dashed rgba(226, 178, 96, 0.22); padding-top: 6px;
+    }
+    .qqBlocked .bkRow:first-of-type { border-top: 0; padding-top: 0; }
+    .qqBlocked .bkWho { color: var(--text); }
+    .qqBlocked .bkWhy { font-size: 11px; color: var(--dim); }
+    .qqBlocked .bkGrow { flex: 1 1 auto; }
+    /* 一行最多三样东西（谁 / 为什么 / 两颗按钮），按钮绝不能被文字挤压换行 */
+    .qqBlocked .bkWho, .qqBlocked .bkWhy { min-width: 0; overflow-wrap: anywhere; }
+    .qqBlocked .bkRow button { flex: 0 0 auto; white-space: nowrap; font-size: 11.5px; padding: 2px 8px; }
 
     /* 登录二维码那一块：图放中间，白底才扫得动 */
     .qqQrBox { display: none; flex-direction: column; gap: 8px; margin-top: 4px; }
@@ -343,7 +392,7 @@
     }
     #agentChip[hidden] { display: none; }
     .user .role {
-      color: #cfd6e4;
+      color: var(--text);
       font-weight: 600;
     }
     /* 我自己的名字：暖色，一眼看出是这条鲸鱼在说话 */
@@ -358,7 +407,7 @@
       font-weight: 600;
     }
     .user .bubble {
-      background: #1d2430; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+      background: var(--hover); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
       white-space: pre-wrap; word-break: break-word;
     }
     .assistant .bubble {
@@ -396,7 +445,7 @@
 /* 【自建智能体·2026-11-01】不是小鲸的人说话：名字用它自己卡上的颜色，
    气泡跟小鱼一样没底没框（主人已经定过「屋里的人说话都长一样」）。 */
 .msg.mate .role {
-  color: var(--whoC, #e6e6e6);
+  color: var(--whoC, var(--text));
   font-size: 0.92em;
   letter-spacing: 0.02em;
   font-weight: 600;
@@ -718,7 +767,7 @@
       max-height: 320px; overflow: auto; color: #c9d1d9;
     }
     details.think {
-      border: 1px solid var(--border); border-radius: 8px; background: rgba(23, 26, 33, .72);
+      border: 1px solid var(--border); border-radius: 8px; background: rgba(var(--panel-rgb), .72);
       font-size: 12.5px;
       /* 【2026-10-31 修 53】思考链太宽：它原来既没定宽、也不收缩，长路径/长 URL/整段无空格的
          中文会把这块撑出气泡外，横向滚动条横穿半个屏幕。三件事一起做：
@@ -762,7 +811,7 @@
        thinkPast 想要「窄一点」就得按同样的 92% 比例单独说一遍：892 * 0.92 ≈ 820 */
     #log > details.think.thinkPast { max-width: 820px; }
     details.think.thinkPast > summary { padding: 5px 9px; font-size: 12px; opacity: .8; }
-    details.think.thinkPast[open] { background: rgba(23, 26, 33, .72); border-color: var(--border); }
+    details.think.thinkPast[open] { background: rgba(var(--panel-rgb), .72); border-color: var(--border); }
     .interjectTag {
       display: inline-block; font-size: 12px; color: var(--accent);
       border: 1px solid var(--accent); border-radius: 999px; padding: 1px 9px; margin-left: 8px;
@@ -800,7 +849,7 @@
     .plusWrap { position: relative; flex: 0 0 auto; }
     #plusBtn {
       width: 44px; height: 44px; padding: 0; border: 1px solid var(--border); border-radius: 8px;
-      background: #0f1319; color: var(--text); font-size: 22px; line-height: 1; cursor: pointer;
+      background: var(--panel-2); color: var(--text); font-size: 22px; line-height: 1; cursor: pointer;
       display: flex; align-items: center; justify-content: center; transition: border-color .15s, color .15s;
     }
     #plusBtn:hover { border-color: var(--accent); color: var(--accent); }
@@ -817,7 +866,7 @@
       border-radius: 7px; background: transparent; color: var(--text); font: inherit; font-size: 13.5px;
       cursor: pointer; text-align: left;
     }
-    .plusMenu button:hover { background: #1b2129; color: var(--accent); }
+    .plusMenu button:hover { background: var(--raise); color: var(--accent); }
     .plusMenu button:disabled { opacity: .5; cursor: default; }
     .plusMenu button:disabled:hover { background: transparent; color: var(--text); }
     .plusMenu .ico { font-size: 15px; width: 18px; text-align: center; }
@@ -850,14 +899,14 @@
     .pendingItem button.go:hover { background: rgba(240,185,84,.12); }
     .attachChip {
       display: flex; align-items: center; gap: 8px; max-width: 260px; padding: 5px 8px 5px 6px;
-      background: #0f1319; border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px;
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px;
     }
     .attachChip .thumb {
       width: 26px; height: 26px; border-radius: 5px; object-fit: cover; flex: 0 0 auto;
-      background: #1b2129; display: block;
+      background: var(--raise); display: block;
     }
     .attachChip .ficon {
-      width: 26px; height: 26px; border-radius: 5px; background: #1b2129; color: var(--dim);
+      width: 26px; height: 26px; border-radius: 5px; background: var(--raise); color: var(--dim);
       display: flex; align-items: center; justify-content: center; font-size: 12px; flex: 0 0 auto;
     }
     .attachChip .aname {
@@ -875,7 +924,7 @@
     /* 消息里带的视频 / 音频：要能直接播，不能缩成纸片图标 */
     .msgAttach .attachMedia {
       display: flex; flex-direction: column; gap: 6px; max-width: 420px;
-      background: #0f1319; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
     }
     .msgAttach .attachMedia .amediaName {
       font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -963,12 +1012,12 @@
     .sentLive { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .fileCard {
       display: flex; align-items: center; gap: 8px; max-width: 300px; padding: 7px 9px;
-      background: #0f1319; border: 1px solid var(--border); border-radius: 9px;
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
       font-size: 12.5px; color: var(--text); text-decoration: none; cursor: pointer;
     }
     .fileCard:hover { border-color: #3a4657; background: #141a22; }
     .fileCard .fk {
-      width: 30px; height: 30px; border-radius: 6px; background: #1b2129; color: var(--dim);
+      width: 30px; height: 30px; border-radius: 6px; background: var(--raise); color: var(--dim);
       display: flex; align-items: center; justify-content: center; font-size: 14px; flex: 0 0 auto;
     }
     .fileCard img.fk { object-fit: cover; display: block; }
@@ -1105,13 +1154,13 @@
     }
     .pickHead .ptitle { font-size: 13.5px; font-weight: 600; flex: 0 0 auto; }
     .pickHead .pcrumb {
-      flex: 1; min-width: 0; background: #0f1319; color: var(--text);
+      flex: 1; min-width: 0; background: var(--panel-2); color: var(--text);
       border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px;
       font: inherit; font-size: 12px; outline: none;
     }
     .pickHead .pcrumb:focus { border-color: var(--accent); }
     .pickHead button {
-      border: 1px solid var(--border); background: #0f1319; color: var(--text);
+      border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
       border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; flex: 0 0 auto;
     }
     .pickHead button:hover { border-color: var(--accent); color: var(--accent); }
@@ -1129,7 +1178,7 @@
       padding: 2px 5px; border-radius: 4px; cursor: pointer; flex: 0 0 auto; max-width: 220px;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .pickCrumbs .pcseg:hover { background: #1b2129; color: var(--text); }
+    .pickCrumbs .pcseg:hover { background: var(--raise); color: var(--text); }
     .pickCrumbs .pcseg.cur { color: var(--text); font-weight: 600; }
 
     /* 多栏并排，一栏一层目录，横着滚 */
@@ -1155,7 +1204,7 @@
       display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 6px;
       cursor: pointer; font-size: 13px; user-select: none;
     }
-    .pickRow:hover { background: #1b2129; }
+    .pickRow:hover { background: var(--raise); }
     .pickRow.sel { background: #17222e; box-shadow: inset 0 0 0 1px var(--accent); }
     .pickRow .pico { flex: 0 0 auto; width: 18px; text-align: center; font-size: 13px; }
     .pickRow .pname {
@@ -1212,7 +1261,7 @@
     .pickEmpty { padding: 26px; text-align: center; color: var(--dim); font-size: 12.5px; }
     textarea {
       flex: 1; resize: none; min-height: 44px; max-height: 180px; padding: 10px 12px;
-      background: #0f1319; color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
       font: inherit; outline: none;
     }
     textarea:focus { border-color: var(--accent); }
@@ -1225,7 +1274,7 @@
     /* 【2026-11-05 加】独立停止键：只在跑的时候出现，平时不占地方 */
     #stopBtn {
       display: none; height: 44px; padding: 0 14px; border: 1px solid var(--border);
-      border-radius: 8px; background: #0f1319; color: var(--err); font-size: 15px;
+      border-radius: 8px; background: var(--panel-2); color: var(--err); font-size: 15px;
       cursor: pointer; flex: 0 0 auto;
     }
     #stopBtn.show { display: inline-block; }
@@ -1299,7 +1348,7 @@
       #whoRail {
         max-width: 44px; left: 8px; padding: 5px;
         align-items: center;
-        background: rgba(23, 26, 33, .88);
+        background: rgba(var(--panel-rgb), .88);
         border: 1px solid var(--border); border-radius: 10px;
       }
       #whoRail .whoCap { display: none; }
@@ -1315,7 +1364,7 @@
       #whoRail .whoBtn::first-letter { font-size: 13px; font-weight: 600; }
       /* 整列 hover：展开回全名牌，看清全名也好点 */
       #whoRail:hover {
-        max-width: 160px; background: rgba(23, 26, 33, .95);
+        max-width: 160px; background: rgba(var(--panel-rgb), .95);
         align-items: flex-start;
       }
       #whoRail:hover .whoBtn {
@@ -1328,7 +1377,7 @@
       #whoRail:hover .whoCap { display: block; }
     }
     /* 圆圈底色跟左侧会话方块（.sessRow）统一成同一档：
-       平时透明，悬停/当前态 #1d2430 + var(--border)。
+       平时透明，悬停/当前态 var(--hover) + var(--border)。
        三档（me / whale / quiet）只靠边框和字色区分，不再各刷一层 tint 底。 */
     #whoRail .whoBtn {
       border: 1px solid transparent; border-radius: 8px;
@@ -1340,20 +1389,20 @@
       user-select: none; -webkit-user-select: none;
       touch-action: none; -webkit-touch-callout: none;
     }
-    #whoRail .whoBtn:hover { background: #1d2430; border-color: var(--border); }
+    #whoRail .whoBtn:hover { background: var(--hover); border-color: var(--border); }
     /* 【2026-11-01 实线 / 虚线换位】主人原话：「我把【小鲸】拖动到小鱼上面，那么此时
        小鲸的方块变成原来第一个的小鱼的方框的那种实线，小鱼的方框变成小鲸的那种虚线」。
        也就是说：**实线 = 排第一个的那个（她先说）**，其余一律虚线。
        所以样式不能再按「me（小鱼）/ whale（小鲸）」分，改成按位置分：
        .first 走实线，其它走虚线；颜色仍各归各的（小鱼粉、小鲸蓝、其余白）。 */
     #whoRail .whoBtn.first {
-      background: #1d2430;
+      background: var(--hover);
       border-style: solid;
       border-color: var(--whoC, rgba(240, 166, 160, .6));
       color: var(--whoC, #f0a6a0);
     }
     #whoRail .whoBtn { border-style: dashed; border-color: var(--whoC, var(--border)); color: var(--whoC, var(--text)); }
-    #whoRail .whoBtn.first:hover, #whoRail .whoBtn:hover { background: #1d2430; border-color: var(--border); }
+    #whoRail .whoBtn.first:hover, #whoRail .whoBtn:hover { background: var(--hover); border-color: var(--border); }
     /* 关掉的牌：暗下去 + 划掉，一眼看得出「她这会儿不说话」 */
     #whoRail .whoBtn.off {
       opacity: .45;
@@ -1619,7 +1668,7 @@
     .xyToast {
       pointer-events: auto; cursor: pointer;
       padding: 9px 14px; border-radius: 8px;
-      background: rgba(32, 36, 44, .97); color: var(--text, #e6e9ef);
+      background: rgba(32, 36, 44, .97); color: var(--text, var(--text));
       border: 1px solid rgba(255, 255, 255, .12);
       box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
       font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
@@ -1665,7 +1714,7 @@
     .cfgBox {
       display: inline-flex; align-items: center; gap: 6px;
       padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px;
-      background: #0f1319; color: var(--text); font: inherit; font-size: 12.5px;
+      background: var(--panel-2); color: var(--text); font: inherit; font-size: 12.5px;
       cursor: pointer; white-space: nowrap; max-width: 260px;
       transition: border-color .15s, color .15s;
     }
@@ -1700,7 +1749,7 @@
       border: 0; border-radius: 7px; background: transparent; color: var(--text);
       font: inherit; font-size: 13px; cursor: pointer; text-align: left;
     }
-    .cfgMenuItem:hover { background: #1b2129; color: var(--accent); }
+    .cfgMenuItem:hover { background: var(--raise); color: var(--accent); }
     .cfgMenuItem .ck { width: 14px; color: var(--accent); flex: 0 0 auto; }
     .cfgMenuItem .desc { color: var(--dim); font-size: 11px; margin-left: auto; flex: 0 0 auto; }
 
@@ -1708,7 +1757,7 @@
     .pList { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
     .pCard {
       position: relative; min-width: 132px; max-width: 220px; padding: 8px 26px 8px 10px;
-      border: 1px solid var(--border); border-radius: 9px; background: #0f1319; cursor: pointer;
+      border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); cursor: pointer;
       display: flex; flex-direction: column; gap: 3px; transition: border-color .15s, background .15s;
     }
     .pCard:hover { border-color: var(--accent); }
@@ -1751,7 +1800,7 @@
     .askBody { padding: 14px 16px; }
     .askBody input {
       width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 8px;
-      border: 1px solid var(--border); background: #0f1319; color: var(--text);
+      border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
       font: inherit; font-size: 13.5px; outline: none;
     }
     .askBody input:focus { border-color: var(--accent); }
@@ -1785,8 +1834,8 @@
        「关不掉的会话/设置叠一起」就是这么来的。这条把它按回去。 */
     dialog:not([open]) { display: none !important; }
     /* 开着视频背景时 --panel 是半透明的，但弹窗里面要读字，必须保持实心 */
-    body.skin dialog { background: #161a22; }
-    body.skin dialog::backdrop { background: rgba(0, 0, 0, .62); }
+    body.skin dialog , body.wall dialog { background: #161a22; }
+    body.skin dialog::backdrop , body.wall dialog::backdrop { background: rgba(0, 0, 0, .62); }
     dialog > form {
       display: flex; flex-direction: column;
       min-height: 0; max-height: 86vh; overflow: hidden;
@@ -1799,6 +1848,11 @@
       padding: 12px 16px; border-bottom: 1px solid var(--border);
     }
     .dlgHead b { font-size: 15px; }
+    /* 标题右边那行统计（如「31 个插件 · 1 个停用」）：不压字号会跟标题连成一句话 */
+    .dlgHead .meta {
+      color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums;
+      padding-left: 10px; border-left: 1px solid var(--border);
+    }
     .dlgHead .x {
       margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--dim);
       border-radius: 6px; padding: 3px 10px; cursor: pointer;
@@ -1840,7 +1894,7 @@
     .field input[type=number]:focus,
     .field input[type=password]:focus { border-color: var(--accent); }
     /* 数字框：深色实心底 + 去掉自带的白箭头。
-       以前这里写死 #0f1319 又让 color-scheme 画浅色箭头，浅色主题下一块白很扎眼。 */
+       以前这里写死 var(--panel-2) 又让 color-scheme 画浅色箭头，浅色主题下一块白很扎眼。 */
     .field input[type=number] {
       background: var(--input-bg);
       color: var(--text);
@@ -1858,10 +1912,10 @@
       -webkit-appearance: none; margin: 0;
     }
     /* 开着视频背景时，弹窗里那几个输入框保持同一个深色，别跟外面半透明混在一起 */
-    body.skin .field input[type=text],
-    body.skin .field input[type=number],
-    body.skin .field input[type=password],
-    body.skin .field textarea { background: var(--input-bg); }
+    body.skin .field input[type=text], body.wall .field input[type=text],
+    body.skin .field input[type=number], body.wall .field input[type=number],
+    body.skin .field input[type=password], body.wall .field input[type=password],
+    body.skin .field textarea , body.wall .field textarea { background: var(--input-bg); }
     .field input::placeholder { color: #5b6473; }
     /* 确认框里那个可选的勾选项（清空时问「要不要连记忆一起清」）。
        默认藏起来，askConfirm 传了 opt 才显示。 */
@@ -2025,7 +2079,7 @@
 .findHit { padding: 8px 14px; border-bottom: 1px solid rgba(255, 255, 255, .05); cursor: pointer; }
 .findHit:hover { background: rgba(77, 141, 255, .09); }
 .findHit .fhTitle { font-size: 13px; color: var(--fg); display: flex; gap: 8px; align-items: baseline; }
-.findHit .fhCount { color: var(--accent, #4d8dff); font-size: 11.5px; }
+.findHit .fhCount { color: var(--accent, var(--accent)); font-size: 11.5px; }
 .findHit .fhSnippet { font-size: 12px; color: var(--dim); margin-top: 3px; line-height: 1.55; word-break: break-word; }
 .findHit .fhSnippet b { color: #ffd479; font-weight: 600; }
 .findEmpty { padding: 12px 14px; color: var(--dim); font-size: 12.5px; }
@@ -2096,8 +2150,8 @@
       display: flex; align-items: center; gap: 8px; padding: 9px 10px;
       border: 1px solid transparent; border-radius: 8px; cursor: pointer;
     }
-    .sessRow:hover { background: #1d2430; border-color: var(--border); }
-    .sessRow.current { background: #1d2430; border-color: var(--accent); }
+    .sessRow:hover { background: var(--hover); border-color: var(--border); }
+    .sessRow.current { background: var(--hover); border-color: var(--accent); }
     .sessMain { flex: 1; min-width: 0; }
     .sessTitle { font-size: 13.5px; display: flex; align-items: center; min-width: 0; }
 .sessTitleText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -2214,8 +2268,8 @@
       display: flex; align-items: center; gap: 12px; padding: 13px 14px;
       border: 1px solid transparent; border-radius: 8px; cursor: pointer;
     }
-    .mdlRow:hover { background: #1d2430; border-color: var(--border); }
-    .mdlRow.current { background: #1d2430; border-color: var(--accent); }
+    .mdlRow:hover { background: var(--hover); border-color: var(--border); }
+    .mdlRow.current { background: var(--hover); border-color: var(--accent); }
     .mdlMain { flex: 1; min-width: 0; }
     .mdlName { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
     .mdlName .badge {
@@ -2312,7 +2366,7 @@
 .priceMul input { width: 90px; }
     .mdlForm .hint { display: block; margin-top: 5px; line-height: 1.6; }
     .mdlForm input[type=password] {
-      width: 100%; background: #0f1319; color: var(--text); border: 1px solid var(--border);
+      width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
       border-radius: 8px; padding: 9px 12px; font: inherit; outline: none;
     }
     .mdlForm input[type=password]:focus { border-color: var(--accent); }
@@ -2341,7 +2395,7 @@
       display: flex; align-items: center; gap: 12px; padding: 10px 12px;
       border-radius: 8px;
     }
-    .optRow:hover { background: #1d2430; }
+    .optRow:hover { background: var(--hover); }
     .optMain { flex: 1; min-width: 0; }
     .optName { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
     .optVal { font-size: 11.5px; color: var(--accent); }
@@ -2349,7 +2403,7 @@
     .optDesc b { color: var(--text); font-weight: 600; }
     .optSel {
       flex: none; min-width: 120px; height: 30px; padding: 0 8px;
-      background: #0f1319; color: var(--text); border: 1px solid var(--border);
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
       border-radius: 8px; font: inherit; font-size: 12.5px; outline: none; cursor: pointer;
     }
     .optSel:focus { border-color: var(--accent); }
@@ -2407,7 +2461,8 @@
 .voiceBar { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; }
 
 /* ---- 功能面板 ---- */
-    .featScroll { overflow-y: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
+    /* 底部留一口气：不留的话最后一行卡片正好被滚动区边缘切一半，像少画了一行 */
+    .featScroll { overflow-y: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; padding-bottom: 16px; }
     /* ---- 会话记忆 ------------------------------------------------------ */
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
     /* ---- 记忆本整本 ---- */
@@ -2445,10 +2500,10 @@
     .todoDot:hover { border-color: var(--accent); }
     .todoItem.doing .todoDot { border-color: var(--accent); color: var(--accent); }
     .todoItem.done .todoDot { border-color: #4fb47a; background: #4fb47a; color: #0d1117; }
-    .todoItem.done .todoText { color: #6b7482; text-decoration: line-through; }
+    .todoItem.done .todoText { color: var(--dim); text-decoration: line-through; }
     .todoText { flex: 1 1 auto; min-width: 0; word-break: break-word; }
     .todoMeta { flex: none; font-size: 11px; color: var(--dim); padding-top: 2px; }
-    .todoNote { display: block; font-size: 11.5px; color: #6b7482; margin-top: 2px; }
+    .todoNote { display: block; font-size: 11.5px; color: var(--dim); margin-top: 2px; }
     .todoEmpty { padding: 26px 12px; text-align: center; font-size: 13px; color: var(--dim); line-height: 1.7; }
     .todoAddRow { display: flex; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--border); flex: 0 0 auto; }
     .todoAddRow input {
@@ -2461,31 +2516,65 @@
     }
     /* ---- 会话记忆 ------------------------------------------------------ */
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
-    .featList { padding: 8px; }
+  /* 【2026-11-11 插件市场·卡片网格】
+     原来是竖着一行一条的开关列表 —— 那是「设置项」的长相，不是「插件」的长相。
+     现在一项一张卡：图标 + 名字 + 说明 + 底部开关，一屏能扫完十几个。
+     用 auto-fill 而不是 auto-fit：东西少的时候卡片不会横向拉成一条。 */
   .naLab { display: block; margin: 8px 0; font-size: 13px; }
   .naLab input, .naLab textarea { display: block; width: 100%; margin-top: 4px; }
-    .featRow {
-      display: flex; align-items: center; gap: 12px; padding: 11px 12px;
-      border: 1px solid transparent; border-radius: 8px;
+    .featList {
+      padding: 12px;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+      gap: 9px; align-content: start;
     }
-    .featRow:hover { background: #1d2430; border-color: var(--border); }
-    .featMain { flex: 1; min-width: 0; }
-    .featName { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+    .featRow {
+      /* 竖排 + 允许换行：.featMain 吃满第一行，按钮和开关落到第二行 */
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      padding: 10px 12px 8px;
+      border: 1px solid var(--border); border-radius: 11px;
+      background: var(--panel);
+      transition: border-color .12s, background .12s;
+    }
+    .featRow:hover { background: var(--hover); border-color: var(--dim); }
+    /* 卡片左上角的图标：功能名首字 + 分类底色。
+       不打包图标资源：几十个插件每个配张图，维护成本比收益大得多。 */
+    .featIco {
+      flex: none; width: 30px; height: 30px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 600; letter-spacing: 0;
+      color: var(--text); background: rgba(139, 149, 167, .14);
+      border: 1px solid var(--border);
+    }
+    .featIco.t-blue   { background: rgba(79, 140, 255, .16); border-color: rgba(79, 140, 255, .34); color: #9dbcff; }
+    .featIco.t-green  { background: rgba(63, 185, 80, .14);  border-color: rgba(63, 185, 80, .32);  color: #7fd18b; }
+    .featIco.t-orange { background: rgba(240, 176, 106, .14); border-color: rgba(240, 176, 106, .32); color: #f0c08a; }
+    .featIco.t-violet { background: rgba(150, 130, 235, .16); border-color: rgba(150, 130, 235, .34); color: #b9a9f5; }
+    .featIco.t-cyan   { background: rgba(140, 220, 210, .14); border-color: rgba(140, 220, 210, .32); color: #8cdcd2; }
+    .featIco.t-pink   { background: rgba(240, 166, 160, .14); border-color: rgba(240, 166, 160, .32); color: #f0a6a0; }
+    .featMain { flex: 1 1 100%; min-width: 0; display: flex; gap: 10px; align-items: flex-start; }
+    .featText { flex: 1; min-width: 0; }
+    .featName { font-size: 13.5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .featName .badge {
-      font-size: 11px; border-radius: 999px; padding: 0 7px; flex: none;
+      font-size: 10.5px; border-radius: 999px; padding: 0 6px; flex: none;
       color: var(--ok); border: 1px solid var(--ok);
     }
     .featName .badge.off { color: var(--dim); border-color: var(--border); }
-    /* 「自定义」小标：一眼看出哪些行是主人自己导进来的（也就是能删的那几行） */
+    /* 「自定义」小标：一眼看出哪些卡是主人自己导进来的（也就是能卸载的那几张） */
     .featName .badge.own { color: var(--accent); border-color: rgba(79, 140, 255, .5); }
-    /* 「整台机器」小标：这两条开关不跟会话走（视频背景 / 陪看屏幕）。
-       用虚线圈，跟按会话的那些区分开，又不至于太抢眼。 */
+    /* 「整台机器」小标：这几条开关不跟会话走。用虚线圈，跟按会话的区分开，又不抢眼。 */
     .featName .badge.mach { color: var(--dim); border-color: var(--border); border-style: dashed; }
-    .featDesc { color: var(--dim); font-size: 11.5px; line-height: 1.7; margin-top: 2px; }
+    .featDesc {
+      color: var(--dim); font-size: 11.5px; line-height: 1.65; margin-top: 3px;
+      /* 说明太长的卡会高矮不一，截到两行让网格整齐；悬停再展开 */
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .featRow:hover .featDesc { -webkit-line-clamp: 6; }
+    /* 底部那一排（额外按钮 + 开关）贴到卡片右下角 */
     .featRow .switch {
-      flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
+      margin-left: auto;
+      flex: none; min-width: 60px; height: 26px; border-radius: 999px; cursor: pointer;
       border: 1px solid var(--border); background: transparent; color: var(--dim);
-      font-size: 12.5px; padding: 0 12px;
+      font-size: 12px; padding: 0 11px;
     }
     .featRow .switch.on {
       border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10);
@@ -2498,9 +2587,9 @@
 
     /* ---- 开场白编辑器 ------------------------------------------------------ */
     .featRow .featEditBtn {
-      flex: none; height: 30px; border-radius: 999px; cursor: pointer;
+      flex: none; height: 26px; border-radius: 999px; cursor: pointer;
       border: 1px solid var(--border); background: transparent; color: var(--dim);
-      font-size: 12.5px; padding: 0 12px;
+      font-size: 12px; padding: 0 11px;
     }
     .featRow .featEditBtn:hover { border-color: var(--accent); color: var(--accent); }
     /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
@@ -2513,7 +2602,16 @@
     #featImport { border: 1px solid rgba(79, 140, 255, .55); background: rgba(79, 140, 255, .10); color: #9dbcff; font-weight: 600; }
     #featImport:hover { background: rgba(79, 140, 255, .20); border-color: var(--accent); color: #cfe0ff; }
     #featExport { border: 1px solid var(--border); background: transparent; color: var(--dim); }
-    #featExport:hover { border-color: #3a4252; background: #1b1f28; color: var(--text); }
+    #featExport:hover { border-color: #3a4252; background: var(--raise); color: var(--text); }
+    /* 插件搜索框：跟导入/导出同一排，吃掉剩下的宽度 */
+    #featSearch {
+      flex: 1 1 140px; min-width: 110px; height: 28px; margin-left: auto;
+      border: 1px solid var(--border); border-radius: 999px;
+      background: var(--input-bg); color: var(--text);
+      font: inherit; font-size: 12.5px; padding: 0 12px;
+    }
+    #featSearch::placeholder { color: var(--dim); }
+    #featSearch:focus { outline: none; border-color: var(--accent); }
 
     /* 行尾那颗「删除」：只有主人自己导入进来的功能才有。
      * 平时整颗藏着（opacity:0），鼠标落到这一行才露头 ——
@@ -2533,18 +2631,73 @@
      * 拖拽事件会断，drop 永远不来。
      * 注意：只给 form 加 position:relative，**别给 dialog 加** ——
      * 模态 dialog 靠 UA 的 position:fixed 才居中，一改成 relative 就跑回文档流里去了。 */
+    #featuresDlg { width: min(880px, 94vw); }
     #featuresDlg > form { position: relative; }
     #featuresDlg.dropping { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
     .featDrop {
       position: absolute; inset: 0; z-index: 6; pointer-events: none;
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
       border: 2px dashed var(--accent); border-radius: 12px;
-      background: rgba(23, 26, 33, .94); color: var(--accent);
+      background: rgba(var(--panel-rgb), .94); color: var(--accent);
     }
     /* [hidden] 是 display:none，可上面那条 display:flex 会把它盖掉，得显式补回来 */
     .featDrop[hidden] { display: none; }
     .featDrop b { font-size: 16px; }
     .featDrop span { font-size: 12px; color: var(--dim); }
+
+    /* ---- 导入插件面板（2026-11-12） --------------------------------------
+       两张脸：从文件 / 粘贴代码。分段标签在上、1px 描边分块，跟【外观】那张一个口径；
+       不用渐变、不堆投影 —— 层次靠描边和留白，不靠发光。 */
+    #plugImportDlg { width: min(600px, 94vw); }
+    #plugImportDlg .piTabs {
+      display: flex; gap: 2px; padding: 10px 16px 0; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+    }
+    #plugImportDlg .piTabs button {
+      background: transparent; border: 0; border-bottom: 2px solid transparent;
+      color: var(--dim); font: inherit; font-size: 13px; padding: 7px 12px 9px;
+      cursor: pointer; border-radius: 6px 6px 0 0;
+    }
+    #plugImportDlg .piTabs button:hover { color: var(--text); background: rgba(255,255,255,.04); }
+    #plugImportDlg .piTabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+    #plugImportDlg .dlgBody { display: flex; flex-direction: column; gap: 12px; }
+    #plugImportDlg .piPanel[hidden] { display: none; }
+    #plugImportDlg .piPanel { display: flex; flex-direction: column; gap: 12px; }
+    #plugImportDlg .piDrop {
+      border: 1px dashed var(--border); border-radius: 10px; padding: 22px 18px;
+      background: var(--panel-2);
+      display: flex; flex-direction: column; align-items: center; gap: 9px; text-align: center;
+    }
+    #plugImportDlg .piDrop.over { border-color: var(--accent); background: rgba(var(--hover-rgb), .55); }
+    #plugImportDlg .piDrop b { font-size: 14px; }
+    #plugImportDlg .piDrop span { font-size: 12px; color: var(--dim); line-height: 1.8; max-width: 46ch; }
+    #plugImportDlg .piNote { font-size: 12px; color: var(--dim); line-height: 1.95; }
+    #plugImportDlg .piNote i {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--dim); margin-right: 8px; vertical-align: 1px;
+    }
+    #plugImportDlg .piNote i.ok { background: var(--ok); }
+    #plugImportDlg .piGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    #plugImportDlg .piField { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    #plugImportDlg .piField > span { font-size: 12px; color: var(--dim); }
+    #plugImportDlg .piField input, #plugImportDlg .piField select, #plugImportDlg .piField textarea {
+      width: 100%; box-sizing: border-box; background: var(--input-bg, var(--panel-2));
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font: inherit; font-size: 13px; padding: 7px 9px;
+    }
+    #plugImportDlg .piField input:focus, #plugImportDlg .piField select:focus,
+    #plugImportDlg .piField textarea:focus { outline: none; border-color: var(--accent); }
+    #plugImportDlg .piField textarea {
+      min-height: 196px; resize: vertical; tab-size: 2;
+      font: 12.5px/1.7 ui-monospace, "SF Mono", Consolas, monospace;
+      white-space: pre; overflow: auto;
+    }
+    #plugImportDlg .piHint { font-size: 12px; color: var(--dim); line-height: 1.85; }
+    #plugImportDlg .piHint code {
+      font: 11.5px ui-monospace, "SF Mono", Consolas, monospace;
+      color: var(--text); background: var(--raise); padding: 1px 5px; border-radius: 4px;
+    }
+    #plugImportDlg .piErr { font-size: 12.5px; color: var(--err); line-height: 1.7; }
+    #plugImportDlg .piErr[hidden] { display: none; }
 
     /* 一条功能都读不到时的空态。以前这里就是一块空白，主人只会觉得面板坏了。 */
     .featEmpty { padding: 30px 14px; text-align: center; font-size: 13px; color: var(--dim); line-height: 1.8; }
@@ -2880,6 +3033,20 @@
       border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10);
     }
     #settingsDlg #mobToggle[disabled] { opacity: .45; cursor: not-allowed; }
+
+    /* 设置 →「系统通知」两个开关（2026-11-12）。跟手机连接那颗同款长相，
+     * 但这两个是各自独立的（谁开谁关互不影响），所以用类名不用 id。 */
+    #settingsDlg .ntSwitch {
+      flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 12px;
+    }
+    #settingsDlg .ntSwitch.on { border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10); }
+    #settingsDlg .ntSwitch[disabled] { opacity: .45; cursor: not-allowed; }
+    .ntRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .ntRow .ntText { flex: 1 1 240px; min-width: 0; }
+    .ntRow .ntText b { font-weight: 600; }
+    .ntRow .ntText .hint { display: block; margin-top: 3px; }
     #settingsDlg #mobQr svg { width: 168px; height: 168px; display: block; background: #fff; border-radius: 8px; padding: 6px; }
 
     /* 一个地址一张卡片：Wi-Fi 一张、Radmin 那种组网的再一张，并排放 */
@@ -2895,7 +3062,7 @@
     .mobQrHead { display: flex; flex-direction: column; gap: 2px; align-items: center; text-align: center; }
     .mobQrHead b { font-size: 13px; font-weight: 600; color: var(--text); }
     .mobQrHead .hint { font-size: 11.5px; }
-    .mobQrCard.lan2 .mobQrHead b { color: var(--accent, #4d8dff); }
+    .mobQrCard.lan2 .mobQrHead b { color: var(--accent, var(--accent)); }
     .mobQrBox { display: flex; justify-content: center; }
     .mobQrFoot {
       display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center;
@@ -2937,24 +3104,31 @@
        所以不用给任何组件加层级，也不会挡住点击（含挂在 body 上的模态）。 */
     #bgVideo, #bgVeil, #bgTint { position: fixed; inset: 0; pointer-events: none; }
     /* 【2026-11-10 修·开局那一瞬比黑还黑】原来 background: transparent ——
-       body.skin 把 body 底色让给视频层之后、视频头一帧还没画出来之前，
-       透过去看到的是 BrowserWindow 的纯黑底，比 --bg 的 #0f1115 还黑一截，
-       看着就是「开局界面发暗」。这里给视频层垫上同款 #0f1115：
+       body.skin / body.wall 把 body 底色让给背景层之后、视频头一帧还没画出来之前，
+       透过去看到的是 BrowserWindow 的纯黑底，比 --bg 的 var(--panel-2) 还黑一截，
+       看着就是「开局界面发暗」。这里给视频层垫上同款 var(--panel-2)：
        没出帧时它就是普通暗底，出帧后被画面盖住，一点不碍事。 */
-    #bgVideo { z-index: -3; width: 100%; height: 100%; object-fit: cover; background: #0f1115; }
+    #bgVideo { z-index: -3; width: 100%; height: 100%; object-fit: cover; background: var(--panel-2); }
+    /* 【2026-11-11 壁纸层】铺满首页的那一层：图/纹理走 background-image。
+       z-index -3 跟视频同档，选壁纸时视频被藏起来，所以谁也不会盖住谁。 */
+    #xyWall {
+      position: fixed; inset: 0; z-index: -3; pointer-events: none;
+      background-position: center; background-repeat: no-repeat; background-size: cover;
+    }
+    body.wall #bgVideo { display: none !important; }
     #bgVeil { z-index: -2; background: rgba(0, 0, 0, var(--veil, .14)); }
-    #bgTint { z-index: -1; background: rgba(15, 17, 21, var(--surface, .2)); }
+    #bgTint { z-index: -1; background: rgba(var(--panel-rgb), var(--surface, .2)); }
     /* 开着背景时 body 的底色让给 #bgTint，面板和输入区跟着半透明，画面才看得见 */
-    body.skin {
+    body.skin, body.wall {
       background: transparent;
-      --bg: rgba(0, 0, 0, var(--surface, .2));
-      --panel: rgba(23, 26, 33, var(--surface, .2));
+      --bg: rgba(var(--bg-rgb), var(--surface, .2));
+      --panel: rgba(var(--panel-rgb), var(--surface, .2));
     }
     /* 这几处是写死的底色，不跟着透就会是一块块死黑，很扎眼 */
-    body.skin .user .bubble { background: rgba(29, 36, 48, calc(var(--surface, .2) + .38)); }
-    body.skin details.think { background: rgba(23, 26, 33, calc(var(--surface, .2) + .38)); }
+    body.skin .user .bubble , body.wall .user .bubble { background: rgba(var(--hover-rgb), calc(var(--surface, .2) + .38)); }
+    body.skin details.think , body.wall details.think { background: rgba(var(--panel-rgb), calc(var(--surface, .2) + .38)); }
     /* 【2026-10-31 修·两条消息之间那条黑条】工具折叠条（details.toolhub）跟 think 一样
-       也吃 --panel，但 body.skin 下 --panel 只有 .2 透明度，压在壁纸上就是一条纯黑杠。
+       也吃 --panel，但开着背景时 --panel 只有 .2 透明度，压在壁纸上就是一条纯黑杠。
        这里给它补上跟 think 一样的底色，看起来才是跟气泡一致的灰卡，不是黑条。 */
     /* 【2026-10-31 主人：太黑了】原来是 rgba(30,35,44,.72)，比主人自己的气泡还暗。
        压在壁纸上就是一块黑卡。调亮一档、再透一点，跟气泡一个量级。 */
@@ -2962,23 +3136,24 @@
        skin 下 --panel = rgba(23,26,33,.2)，半透明，壁纸透得出来。
        这里原来写的是 transparent，把上面那条 var(--panel) 压掉了（特异性更高），
        结果卡只有一条边框、没有底色。 */
-    body.skin details.toolhub { background: var(--panel); }
+    body.skin details.toolhub , body.wall details.toolhub { background: var(--panel); }
     /* 抽屉跟柜子同一个底（主人要求「抽屉背景和柜子一样」）；
        原来这里是 rgba(44,54,73,.30) 实心暗色，比柜子还暗，看着像两层。 */
-    body.skin details.toolhub details.tool { background: var(--panel); }
-    body.skin #log > details.tool { background: var(--panel); }
-    body.skin .featRow:hover { background: rgba(29, 36, 48, calc(var(--surface, .2) + .3)); }
+    body.skin details.toolhub details.tool , body.wall details.toolhub details.tool { background: var(--panel); }
+    body.skin #log > details.tool , body.wall #log > details.tool { background: var(--panel); }
+    body.skin .featRow:hover , body.wall .featRow:hover { background: rgba(var(--hover-rgb), calc(var(--surface, .2) + .3)); }
     /* 对话区垫一层薄纱：图片再花，长句子也有底可读；两头仍能看见画面 */
-    body.skin #log { background: rgba(15, 17, 21, calc(var(--surface, .2) * .75)); }
+    body.skin #log , body.wall #log { background: rgba(var(--panel-rgb), calc(var(--surface, .2) * .75)); }
 
     /* 右下角小圆钮 + 调节面板：鼠标靠近才变实，平时半透明不抢眼 */
     #skinKnob {
       position: fixed; right: 14px; bottom: 44px; width: 30px; height: 30px;
-      border-radius: 50%; border: 1px solid var(--border); background: rgba(23, 26, 33, .55);
+      border-radius: 50%; border: 1px solid var(--border); background: rgba(var(--panel-rgb), .55);
       color: var(--dim); font-size: 13px; line-height: 1; cursor: pointer;
       z-index: 900; opacity: .32; transition: opacity .15s, color .15s; display: none;
     }
     #skinKnob:hover { opacity: 1; color: var(--text); }
+    /* 这颗钮只管视频背景（调透明度和播放速度），壁纸不吃它 —— 所以只跟 skin 走 */
     body.skin #skinKnob { display: block; }
     #skinPanel {
       position: fixed; right: 14px; bottom: 80px; width: 236px; z-index: 901; display: none;
@@ -2990,7 +3165,7 @@
     #skinPanel .skRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 7px 0; }
     #skinPanel .skRow span { flex: none; }
     #skinPanel input[type=range] { width: 116px; accent-color: var(--accent); }
-    #skinPanel .skVal { font-size: 11px; color: #6b7482; margin: 2px 0 8px; }
+    #skinPanel .skVal { font-size: 11px; color: var(--dim); margin: 2px 0 8px; }
     #skinPanel .skPre { display: flex; gap: 6px; }
     #skinPanel .skPre button {
       flex: 1; background: transparent; color: var(--dim); border: 1px solid var(--border);
@@ -3043,7 +3218,7 @@
   transform: translateX(0);
   pointer-events: auto;
 }
-.msg .rewindBtn:hover { color: var(--accent, #4d8dff); border-color: var(--accent, #4d8dff); }
+.msg .rewindBtn:hover { color: var(--accent, var(--accent)); border-color: var(--accent, var(--accent)); }
 /*
  * 每条消息右上角（她说的话是右下角）那一排小按钮。
  *
@@ -3094,7 +3269,7 @@
 }
 .msg:hover .msgActions > button,
 .msg .msgActions > button:focus-visible { opacity: 1; }
-.msg .msgActions > button:hover { color: var(--accent, #4d8dff); border-color: var(--accent, #4d8dff); }
+.msg .msgActions > button:hover { color: var(--accent, var(--accent)); border-color: var(--accent, var(--accent)); }
 .msg .msgActions > button:disabled { opacity: .5; cursor: default; }
 /* 正在改的时候按钮先收起来，别挡着输入框 */
 .msg.editing .msgActions { display: none; }
@@ -3110,20 +3285,20 @@
 /* 改过的那条，角色名后面点一个小标记 */
 .msg.edited .role::after { content: '· 改过'; color: var(--muted); font-size: 11px; margin-left: 6px; }
 /* 正在编辑的那个气泡 */
-.bubble.editing { outline: 1px dashed var(--accent, #4d8dff); outline-offset: 2px; }
+.bubble.editing { outline: 1px dashed var(--accent, var(--accent)); outline-offset: 2px; }
 .bubble textarea.editArea {
   width: 100%; min-height: 64px; resize: vertical;
   font: inherit; line-height: 1.7; color: inherit;
   background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border, #2a3341);
   border-radius: 8px; padding: 8px 10px; box-sizing: border-box;
 }
-.bubble textarea.editArea:focus { outline: none; border-color: var(--accent, #4d8dff); }
+.bubble textarea.editArea:focus { outline: none; border-color: var(--accent, var(--accent)); }
 .editActions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .editActions button {
   padding: 3px 10px; font-size: 12px; border-radius: 999px; cursor: pointer;
-  border: 1px solid rgba(255, 255, 255, 0.16); background: rgba(20, 24, 31, 0.86); color: var(--text, #e6e9ef);
+  border: 1px solid rgba(255, 255, 255, 0.16); background: rgba(20, 24, 31, 0.86); color: var(--text, var(--text));
 }
-.editActions button.primary { border-color: var(--accent, #4d8dff); color: var(--accent, #4d8dff); }
+.editActions button.primary { border-color: var(--accent, var(--accent)); color: var(--accent, var(--accent)); }
 .editActions button:disabled { opacity: .5; cursor: not-allowed; }
 #rewindDlg { width: 380px; max-width: calc(100vw - 32px); }
 #rewindDlg .rwText {
@@ -3227,7 +3402,7 @@
    * 字直接变灰黑，看着就像"上面有一层阴影"。字不是装饰，不许被盖住。
    * 现在：只在最底下留 18px 的极淡渐隐（.45），够暗示"下面还有"，压不黑任何字。 */
   content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 18px;
-  background: linear-gradient(to bottom, rgba(15, 17, 21, 0), rgba(15, 17, 21, .45));
+  background: linear-gradient(to bottom, rgba(var(--panel-rgb), 0), rgba(var(--panel-rgb), .45));
   pointer-events: none;
 }
 .foldToggle {
@@ -3283,10 +3458,13 @@
   <!-- 视频背景的三层（关着时视频不加载、body 不加 skin，这三层都是空的） -->
   <div id="bgTint"></div>
   <div id="bgVeil"></div>
+  <!-- 壁纸层（2026-11-11）：铺满首页的一张图或一层纹理，z-index 跟视频同档 ——
+       选了壁纸就把视频藏起来（body.wall #bgVideo{display:none}），两层不会打架。 -->
+  <div id="xyWall"></div>
   <video id="bgVideo" muted loop playsinline preload="none"></video>
   <!-- 背景音乐：默认就是主人桌面壁纸（[deepseek娘]深夜的大肥鱼）那首，循环放 -->
   <audio id="bgMusic" loop preload="none"></audio>
-  <!-- 背景的调节钮：只有开着背景时才显示（body.skin #skinKnob{display:block}） -->
+  <!-- 背景的调节钮：只有开着背景时才显示（body.skin #skinKnob, body.wall #skinKnob{display:block}） -->
   <button type="button" id="skinKnob" title="调整背景">◐</button>
   <div id="skinPanel">
     <div class="skRow"><span>面板暗度</span><input type="range" id="skSurface" min="0" max="95" step="5" value="20"></div>
@@ -3302,6 +3480,15 @@
     </div>
   </div>
   <header>
+    <!-- 2026-11-12 主人：「左上角这个收起本来会控制下面的人设」——
+         对，这颗只管左边那列「屋里的人」（收起来就是 body.railOff），
+         顶栏自己那排按钮的收起挪到右端那颗小箭头（#hdrFold）上了。 -->
+    <button id="railBtn" class="iconBtn" title="收起 / 展开左侧「屋里的人」" aria-label="收起或展开左侧「屋里的人」">
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <rect x="1.25" y="2.25" width="11.5" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        <line x1="5.25" y1="2.25" x2="5.25" y2="11.75" stroke="currentColor" stroke-width="1.2"/>
+      </svg>
+    </button>
     <b>小鱼</b><span class="meta">鲸鱼娘</span>
     <span class="topCfg">
       <button type="button" class="cfgBox" id="topModel" title="点一下换模型（只影响这个会话）">
@@ -3341,9 +3528,19 @@
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
     <button id="cronBtn" title="定时任务：跟她说一件事、再说什么时候做，到点她自己去做">定时</button>
-    <button id="openFeatures">功能</button>
+    <button id="openFeatures" title="插件：系统插件和自己的插件都在这儿，可启用、停用、导入、卸载">插件</button>
+    <button id="openAppearance" title="外观：主题、壁纸、插件">外观</button>
     <button id="openSettings">设置</button>
     <button id="openModels" title="模型">模型</button>
+    <!-- 【2026-11-12 顶栏自己的收起】主人要的「顶部菜单收缩」落在这一颗上：
+         点一下整排按钮收进箭头里，只留「小鱼」和它；再点一下放回来。
+         左上那颗 #railBtn 只管路左侧那列人，别再把两件事混在一颗按钮上。 -->
+    <button id="hdrFold" title="收起顶栏（只留标题）" aria-label="收起或展开顶栏">
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        <path d="M2.2 7.6 6 3.8l3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.3"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
     <!-- 【2026-10-31 拆掉清空当前按钮】：主人 2026-10-31 说「严重怀疑就是它把会话/清单清空的」。
          宁可没有这个按钮，也不留一次误点的机会。清空要真需要，去会话面板里删那一整个会话。 -->
   </header>
@@ -3381,18 +3578,19 @@
   <dialog id="featuresDlg">
     <form method="dialog">
       <div class="dlgHead">
-        <b>功能</b><span class="meta" id="featHint"></span>
+        <b>插件</b><span class="meta" id="featHint"></span>
         <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="sessTop">
-        <span class="hint">关掉的功能，小鱼就拿不到对应的工具；下一句生效</span>
+        <span class="hint">系统插件是程序自带的（只能停用）；自己导入的可以卸载。停用的插件，小鱼就拿不到对应的工具，下一句生效</span>
       </div>
-      <!-- 2026-11-10 主人要的：功能能导入、能挑着导出、自己导进来的能删掉。
+      <!-- 2026-11-10：插件能导入、能挑着导出、自己导进来的能删掉。
            导入=描边蓝、导出=安静灰，跟【会话】面板那排一模一样，别长两副脸。 -->
       <div class="sessTop sessTools">
-        <button type="button" class="ghost3" id="featImport" title="选一个或多个功能文件导进来；也能直接把文件拖到这个面板上">导入</button>
-        <button type="button" class="ghost3" id="featExport" title="挑几个功能导出成文件，能带走、能挪到别的机器">导出</button>
-        <input type="file" id="featFile" multiple accept=".json,application/json" hidden />
+        <button type="button" class="ghost3" id="featImport" title="选一个或多个插件文件导进来；也能直接把文件拖到这个面板上">导入插件</button>
+        <button type="button" class="ghost3" id="featExport" title="挑几个插件导出成文件，能带走、能挪到别的机器">导出</button>
+        <input type="search" id="featSearch" placeholder="搜插件名 / 说明" />
+        <input type="file" id="featFile" multiple accept=".json,.zip,application/json,application/zip" hidden />
       </div>
       <!-- 导入结果：黄=进来了但有提醒，红=真被拒。一次导入的账本，摆在列表上面。 -->
       <div class="featReport" id="featReport" hidden>
@@ -3406,12 +3604,85 @@
         <div class="featList" id="featList"></div>
       </div>
       <div class="dlgFoot">
-        <span class="hint" id="featFoot">关掉的功能小鱼就用不了，改了下一句生效。</span>
+        <span class="hint" id="featFoot">把 .json（功能）或 .zip（主题 / 壁纸）拖到这一页也能导入；停用的插件下一句生效。</span>
+        <button type="button" class="ghost3" id="featOpenDir" title="主题 / 壁纸这类带图片和样式的插件放这里；一个文件夹一个插件">打开插件目录</button>
       </div>
       <!-- 拖文件进来时盖在上面那层（平时 hidden）。不吃鼠标，见 CSS 里那条说明。 -->
       <div class="featDrop" id="featDrop" hidden>
         <b>松手就导入</b>
-        <span>一次拖几个都行 · 只认功能文件（.json）</span>
+        <span>一次拖几个都行 · 功能插件是 .json，主题 / 壁纸是 .zip 包</span>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 导入插件（2026-11-12 主人：「导入应该做一个 dialog form，说明清楚，也可以粘贴代码编辑」）。
+       两张脸：从文件（拖 / 选，系统自己的面板）、粘贴代码（JS 功能 / CSS 主题）。
+       为什么不做成「点了直接弹文件框」：主人得先知道 .zip 和 .json 是两种东西，
+       弹框前一句说明都没有，选错了只会收到一句「包里没有 plugin.json」。 -->
+  <dialog id="plugImportDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>导入插件</b><span class="meta" id="piMeta">文件或代码</span>
+        <button type="button" class="x" data-close="1">关闭</button>
+      </div>
+      <div class="piTabs" role="tablist">
+        <button type="button" role="tab" data-pi-tab="file" class="on">从文件</button>
+        <button type="button" role="tab" data-pi-tab="code">粘贴代码</button>
+      </div>
+      <div class="dlgBody">
+        <!-- 一、从文件 -->
+        <section class="piPanel" data-pi-panel="file">
+          <div class="piDrop" id="piDrop">
+            <b>把插件文件拖到这里</b>
+            <span>.zip 是主题 / 壁纸插件包（解开来里面要有 plugin.json 和图片、样式）<br>
+                  .json 是从「导出」那儿拿到的功能定义，一个文件可以装好几条功能</span>
+            <button type="button" class="ghost3" id="piChoose">选择文件…</button>
+          </div>
+          <div class="piNote">
+            <div><i class="ok"></i>装进来就自动启用；功能插件下一句就生效</div>
+            <div><i></i>主题 / 壁纸装完还要去【外观】里选中它才算用上</div>
+            <div><i></i>装错、不想要了，回到列表上点「卸载」就整个删掉</div>
+          </div>
+        </section>
+
+        <!-- 二、粘贴代码 -->
+        <section class="piPanel" data-pi-panel="code" hidden>
+          <div class="piGrid">
+            <label class="piField">
+              <span>类型</span>
+              <select id="piType">
+                <option value="feature">功能插件（JS）</option>
+                <option value="theme">主题插件（CSS）</option>
+              </select>
+            </label>
+            <label class="piField">
+              <span>id（也是文件夹名）</span>
+              <input id="piId" placeholder="my-plugin" spellcheck="false" autocomplete="off" />
+            </label>
+          </div>
+          <div class="piGrid">
+            <label class="piField">
+              <span>名字</span>
+              <input id="piName" placeholder="留空就用 id" autocomplete="off" />
+            </label>
+            <label class="piField">
+              <span>说明（可留空）</span>
+              <input id="piDesc" placeholder="一句话：它干什么" autocomplete="off" />
+            </label>
+          </div>
+          <label class="piField">
+            <span id="piCodeLabel">代码</span>
+            <textarea id="piCode" spellcheck="false" autocomplete="off"
+              placeholder="export default function mount({ root, api, toast }) {&#10;  // 想往页面上挂什么就挂什么&#10;}"></textarea>
+          </label>
+          <div class="piHint" id="piHint"></div>
+          <div class="piErr" id="piErr" hidden></div>
+        </section>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint" id="piFoot">同一个 id 再导一次就是覆盖更新，不会多出一份</span>
+        <button type="button" class="ghost3" id="piCancel">取消</button>
+        <button type="button" class="primary" id="piOk">导入</button>
       </div>
     </form>
   </dialog>
@@ -3525,6 +3796,28 @@
             <div class="usageMain" id="usageTotal">正在算…</div>
             <div class="usageSub" id="usageRounds"></div>
             <div class="usageSub" id="usageModelNote"></div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>系统通知</legend>
+          <!-- 2026-11-12 主人：「你看看有没有系统通知的插件，没有做一个，设置在软件对话，
+               ai 回复的时候提醒下，还有 qq 回复的设置提醒下，做两个开关项」
+               点一下当场存盘（不用按底部那个「保存」），跟 QQ 面板那几个开关一个手感。 -->
+          <div class="field ntRow">
+            <span class="ntText"><b>她回完一句，提醒我</b>
+              <span class="hint">只在窗口最小化、或被别的应用盖住时弹一条；你正看着界面就不吵你。第一次弹之前系统可能会问一次「允不允许通知」。</span>
+            </span>
+            <button type="button" class="ntSwitch" id="ntChat" data-on="1">开</button>
+          </div>
+          <div class="field ntRow">
+            <span class="ntText"><b>QQ 上有人找她，提醒我</b>
+              <span class="hint">私聊她、或者在群里 @ 她时弹一条（带谁说的、说了什么）。白名单挡掉的那些不弹，免得拿通知刷屏。</span>
+            </span>
+            <button type="button" class="ntSwitch" id="ntQq" data-on="1">开</button>
+          </div>
+          <div class="field">
+            <span class="hint" id="ntState">…</span>
           </div>
         </fieldset>
 
@@ -4106,9 +4399,12 @@
       <button type="button" class="x" id="qqClose" data-close="1">关闭</button>
     </div>
     <div class="dlgBody qqBody">
-      <!-- 第一格：连不连得上（凭据 + 开关） -->
+      <!-- 第一格：连不连得上（凭据 + 开关）
+           【2026-11-12】NapCat 上游宣布 ending 之后，走官方机器人成了唯一稳定路线，
+           所以这一格标题明确写「推荐」；能力边界（不能主动私聊、群里要 @）也写进提示，
+           别让人连上之后才发现「怎么跟说好的不一样」。 -->
       <div class="qqSect">
-        <div class="qqSectHead"><b>1</b><span>先让机器人连上 QQ</span></div>
+        <div class="qqSectHead"><b>1</b><span>连上机器人（官方通道 · 推荐）</span></div>
         <div class="qqField">
           <label for="qqAppId">AppID</label>
           <input id="qqAppId" type="text" spellcheck="false" placeholder="QQ 开放平台里那个机器人的 AppID">
@@ -4124,7 +4420,8 @@
           <span class="qqState" id="qqState">没连</span>
           <button type="button" class="ghost" id="qqToggle">连上</button>
         </div>
-        <div class="qqHint" id="qqHint">凭据去 QQ 开放平台（q.qq.com）建一个机器人拿，沙箱/正式都能用。</div>
+        <div class="qqHint" id="qqHint">凭据去 QQ 开放平台（q.qq.com）建一个机器人拿。没上线前只在「沙箱」里生效 ——
+          要把你自己和测试群加进沙箱成员，不然发消息没人理。群里要 @ 她才答应，她也不能主动私聊陌生人。</div>
       </div>
 
       <!-- 第二格：认主 + 白名单。
@@ -4132,33 +4429,41 @@
            现在只有一条判据 —— 号对上就是主人，对不上就是客人。 -->
       <div class="qqSect">
         <div class="qqSectHead"><b>2</b><span>谁是你，谁能跟她说话</span></div>
-        <!-- 你本人的 QQ 号：填了它，这个号说的话她按主人答；别人说话的号一律按客人 -->
+        <!-- 你本人：填了它，这个号说的话她按主人答；别人说话的号一律按客人。
+             官方机器人那条道拿不到 QQ 号，只能填 openid —— 两种都收（2026-11-12） -->
         <div class="qqField">
-          <label for="qqOwnerQq">你的 QQ 号</label>
-          <input id="qqOwnerQq" type="text" spellcheck="false" inputmode="numeric" placeholder="例如 10001，只填数字">
+          <label for="qqOwnerQq">你的号（或者说 openid）</label>
+          <input id="qqOwnerQq" type="text" spellcheck="false" placeholder="自己注册的号那条道填 QQ 号（如 10001）；官方机器人那条道填 openid —— 懒得抄就点下面那行的「填成主人」">
         </div>
-        <div class="qqHint" id="qqOwnerHint">只认这一个号：这个号私聊她、在群里 @ 她，她按主人来答；别的号说破了天也只是客人。</div>
+        <div class="qqHint" id="qqOwnerHint">只认这一个：这个号（或这个 openid）私聊她、在群里 @ 她，她按主人来答；别的号说破了天也只是客人。</div>
         <div class="qqPeers" id="qqPeers"></div>
-        <div class="qqHint" id="qqPeersHint">上面这里列的是找过她的人，只是个名单 —— 谁是主人只看你填的那个号。</div>
+        <div class="qqHint" id="qqPeersHint">上面列的是找过她的人 —— 只是个名单，不会自己变成主人。是你，就点那行的「填成主人」（当场保存，不用手抄那串 openid）。带「群」标记的那行是一个群（名字是最后在群里说话的人），不是重复的人。</div>
         <div class="qqField">
           <label for="qqAllowQq">能私聊她的号</label>
-          <textarea id="qqAllowQq" rows="2" spellcheck="false" placeholder="一行一个，或者用逗号隔开：10001, 10002"></textarea>
+          <textarea id="qqAllowQq" rows="2" spellcheck="false" placeholder="QQ 号，一行一个：10001, 10002。官方机器人那条道拿不到 QQ 号，只会给 openid —— 直接点下面的「放行这个人」最省事"></textarea>
         </div>
         <div class="qqField">
           <label for="qqAllowGroup">能说话的群</label>
-          <textarea id="qqAllowGroup" rows="2" spellcheck="false" placeholder="群号，一行一个。不在名单里的群，@ 她也不吭声"></textarea>
+          <textarea id="qqAllowGroup" rows="2" spellcheck="false" placeholder="群号或群 openid，一行一个。官方机器人给的群 id 是 openid（一长串字母数字），跟 QQ 群号不是一回事 —— 点下面的「放行这个群」会自动填对"></textarea>
         </div>
         <div class="qqField qqFieldInline">
           <label class="qqCheck"><input type="checkbox" id="qqGateStrict"><span>只理白名单，别人一句话都不回</span></label>
         </div>
         <div class="qqHint" id="qqGateHint">不在白名单里的号和群，她一个字都不发 —— 既不应答，也不提自己在。</div>
+        <!-- 【2026-11-12】被门挡掉的记录。主人「在群里 @ 了没反应」时，
+             这里直接列出是哪个群被挡、为什么挡，右边一颗按钮写进白名单。
+             官方机器人给的群 id 是 openid（一长串字母数字），跟 QQ 群号不是一回事 ——
+             手填群号对不上，所以这颗按钮比手填靠谱。 -->
+        <div class="qqBlocked" id="qqBlockedBox" hidden></div>
       </div>
 
       <!-- 第一格半：「自己注册的号」那条道（OneBot / NapCat）。
+           【2026-11-12】NapCat 上游已宣布 ending（仓库已下架，只剩 fork），
+           所以标题要写清「已停更」—— 已经装好的还能用，但不该再让人往里投时间。
            官方机器人接口不给戳一戳、不给表情包，也连不了你自己那个号；
            挂一个协议端就能全有。 -->
       <div class="qqSect">
-        <div class="qqSectHead"><b>1.5</b><span>用你自己注册的号（扫码登录 NapCat）</span></div>
+        <div class="qqSectHead"><b>1.5</b><span>用你自己注册的号（NapCat · 上游已停更）</span></div>
         <div class="qqField qqFieldInline">
           <label class="qqCheck"><input type="checkbox" id="obEnabled"><span>走这条道</span></label>
           <label class="qqCheck" title="小鱼Agent 一起来就把这条道接上；断了/协议端挂了会自己重拨爬起来"><input type="checkbox" id="obAutoStart"><span>开机就连</span></label>
@@ -4183,9 +4488,12 @@
           <label for="obToken">Token</label>
           <input id="obToken" type="password" spellcheck="false" placeholder="协议端设了 token 才填，没有就空着">
         </div>
-        <div class="qqHint" id="obHint">点「准备协议端」→ 自动装好并拉起，屏幕上会弹一个 QQ 窗口；
-          用手机 QQ 扫那个码登录，WebSocket 会自动开在 ws://127.0.0.1:3001，
-          再点「连上」就全通了。连上之后戳一戳、表情包、引用、群管理才全有 —— 这些官方接口给不了。</div>
+        <!-- 这里是首帧占位；面板一打开 paintOneBot 就会按系统换成对应说法
+             （Windows：UAC + 弹 QQ 窗口；mac：安装器 + 打开 QQ）。别在静态文案里
+             写死某一平台的操作步骤。 -->
+        <div class="qqHint" id="obHint">NapCat 上游 2026-11 已宣布停止维护（GitHub 仓库下架，只剩第三方 fork）。
+          已经装好的还能接着用，但新装不再推荐 —— 想长期稳定就用上面第 1 格的官方机器人。
+          这条道的好处是「号是你自己的」：戳一戳、表情包、引用、群管理才全有，这些官方接口给不了。</div>
         <div class="qqQrBox" id="obQrBox">
           <div class="qqQrHead">
             <span>登录二维码</span>
@@ -4359,6 +4667,12 @@
   <script type="module" src="/ui/hub.js"></script>
   <script type="module" src="/ui/sessions.js"></script>
   <script type="module" src="/ui/chat.js"></script>
+  <!-- 开发模式：F12 开 / 关调试器。放在主脚本前面，界面还没画完也能用。
+       走的是 window.desktop.dev → 主进程 openDevTools，浏览器里打开时自动失效。 -->
+  <script type="module" src="/ui/devtools.js"></script>
+  <!-- 外观中心：主题 / 壁纸 / 插件（可插拔的 js 插件），以及左侧栏收缩态。
+       它自己带 init()，不依赖别的模块；接口挂在 window.xyAppearance 上方便调。 -->
+  <script type="module" src="/ui/appearance.js"></script>
   <script>
 /**
  * 【2026-11-01 加】脚本出错的兜底提示。
@@ -4422,6 +4736,13 @@ const log = document.getElementById('log');
 function toast(text) {
   const s = String(text == null ? '' : text).trim();
   if (!s || typeof document === 'undefined') return;
+  /* 【2026-11-12 修·模态面板里一句都看不见】
+   *
+   * 这个函数是把提示条挂 <body> 上的，而 dialog::backdrop 在 top-layer，
+   * 所以「身份面板存好了」「文件夹拖不进来」这类提示全落在遮罩后面 ——
+   * 主人看到的是「点了没反应」。showToast 早就按这个场景做了 dialog 归位，
+   * 统一交给它；它万一不在（极端的老缓存页面），再走下面这套本来的画法。 */
+  if (typeof showToast === 'function') { showToast(s); return; }
   let host = document.getElementById('__toastHost');
   if (!host) {
     host = document.createElement('div');
@@ -4434,7 +4755,7 @@ function toast(text) {
   const el = document.createElement('div');
   el.textContent = s;
   el.style.cssText = 'background:rgba(23,26,33,.96);border:1px solid var(--border,#262b36);'
-    + 'color:var(--text,#e6e9ef);border-radius:8px;padding:8px 14px;font-size:13px;'
+    + 'color:var(--text,var(--text));border-radius:8px;padding:8px 14px;font-size:13px;'
     + 'line-height:1.6;box-shadow:0 6px 22px rgba(0,0,0,.45);white-space:pre-wrap;'
     + 'max-width:80vw;opacity:0;transition:opacity .18s ease;';
   host.appendChild(el);
@@ -4773,8 +5094,51 @@ function childDirs(lv) {
   return (lv.dirs || []).filter((d) => pick.hidden || !d.name.startsWith("."));
 }
 
+/**
+ * 【2026-11-12 加】把一串本机路径变成附件。
+ *
+ * 原生面板回来的就是路径（没有 File 对象），图片还得先问后端要一张 dataUrl
+ * 才能在气泡里预览 —— 这段跟栏式浏览那条路完全一样，抽出来两边共用。
+ */
+async function attachPaths(paths) {
+  for (const p of Array.from(paths || [])) {
+    if (!p) continue;
+    const kind = isImg(p) ? "image" : "file";
+    let dataUrl, size;
+    if (kind === "image") {
+      try {
+        const r = await fetch(`/api/attach/preview?path=${encodeURIComponent(p)}`).then((x) => x.json());
+        if (r && r.dataUrl) dataUrl = r.dataUrl;
+        if (r && typeof r.size === "number") size = r.size;
+      } catch { /* 预览拿不到也照样挂上去，发送时后端自己会读 */ }
+    }
+    addAttachment({ path: p, name: baseName(p), kind, size, dataUrl });
+  }
+}
+
 async function openPicker(kind) {
   setMenu(false);
+  const k = kind === "image" ? "image" : "file";
+
+  /* 【mac / Windows 用系统面板】桌面包里有 window.desktop.pick 就直接调原生：
+   * mac 是访达那张浮层，Windows 是资源管理器那张。自己画的栏式浏览器只在
+   * 浏览器里打开（没有 preload）时兜底。 */
+  if (window.desktop && typeof window.desktop.pick === "function") {
+    let r = null;
+    try {
+      r = await window.desktop.pick({ kind: k, defaultPath: pick.lastDir || "" });
+    } catch (err) {
+      addSysNote("⚠ 没能打开系统的选择窗口：" + String(err && err.message ? err.message : err));
+      return;
+    }
+    if (!r || r.canceled) return;
+    const paths = Array.isArray(r.paths) ? r.paths : [];
+    if (paths.length) pick.lastDir = paths[0].replace(/[\\/][^\\/]*$/, "");
+    await attachPaths(paths);
+    input.focus();
+    return;
+  }
+
   pick.open = true;
   // 走附件这条老路时先把「选目录」那两个回调摘干净，免得上一轮的回话被这条误触发
   pick.onDir = null;
@@ -4811,6 +5175,23 @@ async function openPicker(kind) {
  */
 async function openDirPicker(onDir, onCancel) {
   setMenu(false);
+
+  /* 桌面包里同样走系统面板：选文件夹本来就是访达/资源管理器最擅长的事 */
+  if (window.desktop && typeof window.desktop.pick === "function") {
+    let r = null;
+    try {
+      r = await window.desktop.pick({ kind: "dir", defaultPath: pick.lastDir || "" });
+    } catch { r = null; }
+    const dir = r && !r.canceled && r.paths && r.paths[0] ? r.paths[0] : "";
+    if (dir) {
+      pick.lastDir = dir;
+      if (onDir) { try { onDir(dir); } catch {} }
+    } else if (onCancel) {
+      try { onCancel(); } catch {}
+    }
+    return;
+  }
+
   pick.open = true;
   pick.kind = "dir";
   pick.onDir = onDir || null;
@@ -5131,6 +5512,20 @@ async function commitPick() {
 
 document.getElementById("pickFile").onclick = () => openPicker("file");
 document.getElementById("pickImage").onclick = () => openPicker("image");
+
+/* 菜单右边那行小字跟着系统走：mac 上打开的是访达，Windows 上才是盘符。
+ * 以前写死「C 盘」，mac 主人看一眼就知道这不是给自己做的。 */
+(async () => {
+  let mac = /Mac/i.test(navigator.userAgent);
+  try {
+    const info = window.desktop && window.desktop.info ? await window.desktop.info() : null;
+    if (info && info.platform) mac = info.platform === "darwin";
+  } catch { /* 拿不到就按 UA 判 */ }
+  const f = document.querySelector("#pickFile .sub");
+  const i = document.querySelector("#pickImage .sub");
+  if (f) f.textContent = mac ? "访达" : "此电脑";
+  if (i) i.textContent = mac ? "照片" : "图片库";
+})();
 document.getElementById("pickClose").onclick = closePicker;
 document.getElementById("pickCancel").onclick = closePicker;
 document.getElementById("pickOk").onclick = commitPick;
@@ -7280,7 +7675,7 @@ function paintWhaleFromLive(ev, sid) {
  * 【自建智能体的颜色·2026-11-01 主人】
  * 主人原话：「智能体是像你和小鲸一样是独立的个体」。
  * 所以自建卡发的话不能穿小鱼的皮（红名）也不能穿小鲸的皮（蓝名），
- * 得用它自己那张卡的 color（agents.mjs 里存的，默认 #e6e6e6）。
+ * 得用它自己那张卡的 color（agents.mjs 里存的，默认 var(--text)）。
  *
  * 颜色从 /api/agents 拿；第一次用的时候顺手抓一次，抓回来把已经画在屏上的
  * 那些 .msg.mate 重新上一次色 —— 不然首屏那几条会一直是默认灰。
@@ -7316,7 +7711,7 @@ function mateColorOf(name) {
       }).catch(() => {});
     } catch { /* 抓不到就全用默认色，不影响说话 */ }
   }
-  return hit || '#e6e6e6';
+  return hit || 'var(--text)';
 }
 
 // 工具名说人话：主人一眼看得出她在干嘛，而不是看 run_command 这种英文
@@ -8487,6 +8882,16 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           /* 【2026-11-10 A2 收编】与 files 同一支：sentfile 也只是信号，
            * 文件卡由服务端清单（k:'file'）→ FileCard 画，见上面的分支说明。 */
         } else if (ev.type === 'done') {
+          /* 【2026-11-12】系统通知：她这一轮答完了 → 弹一条。
+           * 文本用服务端算好的 turnTexts（真正落盘的那几句），不是屏幕上的临时节点；
+           * 弹不弹的最终判断在主进程（窗口就在最前面就不弹），这里只管递话。 */
+          try {
+            const arr = (Array.isArray(ev.turnTexts) ? ev.turnTexts : []).filter(Boolean);
+            // 取最后一段：那是主人真正看到的那句；整轮拼起来会太长、也太杂
+            const said = String(arr.length ? arr[arr.length - 1] : '')
+              .replace(/[*#`>]+/g, '').replace(/\s+/g, ' ').trim();
+            if (said) window.desktop?.notify?.({ kind: 'chat', title: '小鱼回复了', body: said.slice(0, 140) });
+          } catch {}
           /* 【2026-11-09】先把模型 flush 一次：SSE 这一路是节流画的，
            * 最后 16ms 里到的字还在模型里没上屏。这里补齐，**不清清单** ——
            * 清掉就是「话说到一半屏幕空一截」，历史还没落盘顶上呢。 */
@@ -11372,6 +11777,172 @@ async function qqApi(path, body) {
   return r;
 }
 
+/**
+ * 「刚被挡掉的」那一块（2026-11-12）。
+ *
+ * 主人原话：「显示已经连上，我在群里 @ 它怎么没有反应」。
+ * 后端日志里明明白白写着 `挡掉一条（not-in-whitelist）[群] ED6F3300`，
+ * 可面板上看不到 —— 看上去就是「坏了」。现在把这份账画出来：
+ * 谁/哪个群、为什么挡、说了什么，右边一颗「放行」按钮直接写进白名单。
+ */
+const QQ_BLOCK_WHY = {
+  'group-not-allowed': '这个群不在「能说话的群」名单里',
+  'group-no-id': '群消息没带群 id，没法核对名单',
+  'not-in-whitelist': '这个人不在私聊名单里',
+  'gate-error': '准入判断出错（看日志）',
+  blocked: '被门挡下',
+};
+
+function qqShortId(id) {
+  const s = String(id || '');
+  if (!s) return '（没 id）';
+  if (/^\d{5,12}$/.test(s)) return s;
+  return s.length > 10 ? s.slice(0, 10) + '…' : s;
+}
+
+/**
+ * 「把这个人认成我」—— 主人身份那一格的唯一入口。
+ *
+ * 背景（2026-11-12）：官方机器人那条道**从来不给 QQ 号**，只给 openid，而且
+ * 没有任何接口能问出「谁是这个机器人的主人」。所以「拉一下就知道」不存在，
+ * 能省掉的只有「手抄那串 openid」—— 让她见过你一次，点一下这颗按钮。
+ *
+ * 当场存盘：面板每 2 秒刷新一次，只写输入框不保存的话，下次刷新就被旧值盖回去。
+ */
+async function qqSetOwnerId(id, name) {
+  const key = String(id || '').trim();
+  if (!key) { qqSetHint('这一行没有可用的 id，只能手填', true); return; }
+  /* 群那一行的 id 是群 openid，绝不能当主人：填进去之后「群」就成了主人，
+   * 群里任何人说话都会被当成你。（群行现在只给「放行这个群」，这里是第二道闸；
+   * 已经在名单里的群、以及认人表里记为 group: 的群，都拦。） */
+  const groups = (qqGateCache && Array.isArray(qqGateCache.allowGroup)) ? qqGateCache.allowGroup : [];
+  const peerRows = (qqState && Array.isArray(qqState.peers)) ? qqState.peers : [];
+  const looksGroup = groups.some((g) => String(g).toLowerCase() === key.toLowerCase())
+    || peerRows.some((p) => p && (p.kind === 'group' || p.role === 'group')
+      && String(p.id || '').toLowerCase() === key.toLowerCase());
+  if (looksGroup) {
+    qqSetHint('这是群，不是人 —— 群不能当主人；想让她在那个群说话，点「放行这个群」。', true);
+    return;
+  }
+  const el = qqEl('qqOwnerQq');
+  if (!el) return;
+  el.value = key;
+  if (!(await saveQqGate())) return;
+  qqSetHint(`已把 ${name || key} 设成主人（她也自动进了私聊白名单）—— 想换人，在上面那格改掉再保存。`);
+  await refreshQqPanel();
+}
+
+/** 把「找过她的人」里那个群行加进「能说话的群」并当场存盘。 */
+async function qqAllowGroupId(id, name) {
+  const key = String(id || '').trim();
+  if (!key) { qqSetHint('这一行没有群 id，只能手填', true); return; }
+  const el = qqEl('qqAllowGroup');
+  if (!el) return;
+  const have = String(el.value || '').split(/[\s,，、;；]+/).filter(Boolean);
+  if (have.some((x) => x.toLowerCase() === key.toLowerCase())) { qqSetHint('这个群已经在名单里了'); return; }
+  have.push(key);
+  el.value = have.join('\n');
+  if (!(await saveQqGate())) return;
+  qqSetHint(`已放行${name ? `「${name}」这个群` : '这个群'} —— 在群里再 @ 她一次试试。`);
+  await refreshQqPanel();
+}
+
+/** 把这个人加进私聊白名单并当场存盘。 */
+async function qqAllowPerson(id, name) {
+  const key = String(id || '').trim();
+  if (!key) { qqSetHint('这一行没有可用的 id，只能手填', true); return; }
+  const el = qqEl('qqAllowQq');
+  if (!el) return;
+  const have = String(el.value || '').split(/[\s,，]+/).filter(Boolean);
+  if (have.some((x) => x.toLowerCase() === key.toLowerCase())) { qqSetHint('已经在白名单里了'); return; }
+  have.push(key);
+  el.value = have.join('\n');
+  if (!(await saveQqGate())) return;
+  qqSetHint(`已把 ${name || key} 加进私聊白名单。`);
+  await refreshQqPanel();
+}
+
+/** 点「放行」：把这个群/这个人补进对应的名单，存盘，重画。 */
+async function qqAllowBlocked(b) {
+  const isGroup = b.kind === 'group';
+  const el = qqEl(isGroup ? 'qqAllowGroup' : 'qqAllowQq');
+  if (!el) return;
+  const key = String(isGroup ? (b.id || '') : (b.qq || b.id || '')).trim();
+  if (!key) { qqSetHint('这条记录里没有可用的 id，只能手动填', true); return; }
+  const have = String(el.value || '').split(/[\s,，、;；]+/).filter(Boolean);
+  if (!have.some((x) => x.toLowerCase() === key.toLowerCase())) have.push(key);
+  el.value = have.join('\n');
+  if (!(await saveQqGate())) return;
+  qqSetHint(isGroup
+    ? '这个群放行了 —— 在群里再 @ 她一次试试'
+    : '这个人放行了 —— 让他再发一句');
+  await refreshQqPanel();
+}
+
+/**
+ * 这条其实已经放行了 —— 刚点过「放行」，或者白名单事后补上了。
+ * 服务器那份「挡掉记录」是内存的、不会自己消失，所以得在这一层滤掉，
+ * 否则主人点完「放行」还看见它挂在那儿，会以为没生效。
+ */
+function qqAlreadyAllowed(b) {
+  if (!b) return false;
+  const g = qqGateCache || {};
+  const eq = (a, x) => String(a ?? '').toLowerCase() === String(x ?? '').toLowerCase();
+  const has = (arr, v) => Array.isArray(arr) && arr.some((x) => eq(x, v));
+  if (b.kind === 'group') return has(g.allowGroup, b.id);
+  return has(g.allowQq, b.qq) || has(g.allowQq, b.id);
+}
+
+function renderQqBlocked(list) {
+  const box = qqEl('qqBlockedBox');
+  if (!box) return;
+  box.innerHTML = '';
+  const rows = (Array.isArray(list) ? list : []).filter((b) => !qqAlreadyAllowed(b)).slice(0, 5);
+  if (!rows.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const head = document.createElement('div');
+  head.className = 'bkHead';
+  head.textContent = '刚被挡掉的几条（不是坏了 —— 是白名单在拦，点「放行」就通）';
+  box.append(head);
+  for (const b of rows) {
+    const row = document.createElement('div');
+    row.className = 'bkRow';
+    const who = document.createElement('span');
+    who.className = 'bkWho';
+    who.textContent = b.kind === 'group'
+      ? `群 ${qqShortId(b.id)}`
+      : `${qqShortId(b.qq || b.id)}${b.name ? `（${b.name}）` : ''}`;
+    // 缩写是给眼睛看的，完整那串挂 tooltip（验证、手填都要用它）
+    who.title = `${b.kind === 'group' ? '群 openid' : 'openid'}：${b.id || b.qq || ''}`;
+    const why = document.createElement('span');
+    why.className = 'bkWhy';
+    const bits = [QQ_BLOCK_WHY[b.why] || b.why || '被挡'];
+    if (b.text) bits.push(`说了「${b.text}」`);
+    if (Number(b.count) > 1) bits.push(`${b.count} 次`);
+    why.textContent = bits.join(' · ');
+    const grow = document.createElement('span');
+    grow.className = 'bkGrow';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ghost';
+    btn.textContent = b.kind === 'group' ? '放行这个群' : '放行这个人';
+    btn.onclick = () => { qqAllowBlocked(b); };
+    row.append(who, why, grow, btn);
+    /* 私聊那条：主人自己也可能是「第一次来找她」的那个人 ——
+     * 官方通道拿不到 QQ 号，除了这里没有别的地方能把这串 openid 认成「我」。 */
+    if (b.kind !== 'group') {
+      const mine = document.createElement('button');
+      mine.type = 'button';
+      mine.className = 'ghost';
+      mine.textContent = '这是我';
+      mine.title = '把这条消息的发送者设成主人（她也会自动把你加进私聊白名单）';
+      mine.onclick = () => { qqSetOwnerId(b.qq || b.id, b.name); };
+      row.append(mine);
+    }
+    box.append(row);
+  }
+}
+
 /** 把状态画到面板上。整块重画，简单，也不会漏字段。 */
 function renderQqPanel(st) {
   if (!st) return;
@@ -11398,7 +11969,9 @@ function renderQqPanel(st) {
   if (stateEl && toggle) {
     stateEl.className = 'qqState';
     if (st.running) {
-      stateEl.textContent = st.me && st.me.username ? `已连上：${st.me.username}` : '已连上';
+      // 后端 me 给的是 { id, name }（官方 SDK 的 ready 载荷），老字段叫 username —— 两个都认
+      const meName = st.me && (st.me.name || st.me.username);
+      stateEl.textContent = meName ? `已连上：${meName}` : '已连上';
       stateEl.classList.add('on');
       toggle.textContent = '断开';
     } else if (!bot.configured) {
@@ -11451,17 +12024,25 @@ function renderQqPanel(st) {
     const nQq = Array.isArray(gate.allowQq) ? gate.allowQq.length : 0;
     const nGrp = Array.isArray(gate.allowGroup) ? gate.allowGroup.length : 0;
     if (gate.strict === false) {
-      gateHint.textContent = '「只理白名单」现在是**关着**的 —— 谁私聊她她都会回（群聊仍然要 @ 她）。';
+      gateHint.textContent = '「只理白名单」现在是关着的 —— 谁私聊她她都会回（群聊仍然要 @ 她）。';
     } else if (!gate.ownerQq && !nQq && !nGrp) {
       gateHint.textContent = '还没填白名单 —— 现在谁都私聊不了她（门是关着的）。先把你自己的号填上。';
     } else {
+      // 主人那一格现在可能是 openid（官方机器人那条道只有 openid）——
+      // 32 位往这一行里一塞，整句就看不完了，所以短码显示，全量放 title。
+      const who = String(gate.ownerQq || '');
+      const whoShort = !who ? '' : (/^\d{5,12}$/.test(who) ? who : `${who.slice(0, 6)}…${who.slice(-4)}`);
       gateHint.textContent = `现在放行：私聊 ${nQq} 个号、群 ${nGrp} 个`
-        + (gate.ownerQq ? `，你本人 ${gate.ownerQq}` : '')
+        + (whoShort ? `，你本人 ${whoShort}` : '')
         + '。名单之外的一概不回。';
+      if (whoShort) gateHint.title = who;
     }
   }
   // 白名单里的号先给「认成主人」按钮记一份，省得再查一次
   qqGateCache = gate;
+
+  // 最近被门挡掉的那几条（2026-11-12）
+  renderQqBlocked(st.blocked || []);
 
   const peers = Array.isArray(st.peers) ? st.peers : [];
   const box = qqEl('qqPeers');
@@ -11470,38 +12051,58 @@ function renderQqPanel(st) {
     if (!peers.length) {
       box.innerHTML = '<div class="qqHint">还没有人在 QQ 上找过她。</div>';
     }
+    const mkPeerBtn = (label, title, onClick) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ghost';
+      b.textContent = label;
+      if (title) b.title = title;
+      b.onclick = onClick;
+      return b;
+    };
     for (const p of peers) {
       const row = document.createElement('div');
       row.className = 'qqPeer';
+      /* 【2026-11-12 修】群会话也是认人表里的一条（key 是 group:<群 openid>），
+       * 以前跟人混在一起列：名字是「最后在群里说话的人」，于是同一个人看起来
+       * 出现了两行；更糟的是群那行也带「填成主人」—— 点一下就把群 openid
+       * 填成主人，身份当场错乱。群行只给「放行这个群」。 */
+      const isGroupRow = p.kind === 'group' || p.role === 'group';
+      const isOwnerRow = p.role === 'owner';
       const who = document.createElement('span');
       who.className = 'who';
-      who.textContent = p.name || p.short || p.openidShort || '（没留名字）';
+      who.textContent = isGroupRow
+        ? `群聊 · ${p.short || qqShortId(p.id)}`
+        : (p.name || p.short || p.openidShort || '（没留名字）');
+      // 完整身份挂 tooltip 上：官方通道那串 openid 太长，一行放不下，但要能核对
+      if (isGroupRow) {
+        who.title = `群 openid：${p.id || ''}` + (p.name ? `\n最后在群里说话的人：${p.name}` : '');
+      } else if (p.id) {
+        who.title = `${p.qq ? 'QQ 号' : 'openid'}：${p.id}`;
+      }
       const tag = document.createElement('span');
-      tag.className = 'tag' + (p.role === 'owner' ? ' owner' : '');
-      tag.textContent = p.role === 'owner' ? '主人' : '客人';
+      tag.className = 'tag' + (isOwnerRow ? ' owner' : (isGroupRow ? ' group' : ''));
+      tag.textContent = isGroupRow
+        ? (p.groupAllowed ? '群 · 已放行' : '群')
+        : (isOwnerRow ? '主人' : (p.role === 'known' ? '白名单' : '客人'));
       const grow = document.createElement('span');
       grow.className = 'grow';
       const when = document.createElement('span');
       when.className = 'when';
       when.textContent = p.lastAt ? new Date(p.lastAt).toLocaleString('zh-CN', { hour12: false }) : '';
       row.append(who, tag, grow, when);
-      // 「认成主人」那颗按钮在 2026-11-03 就撤了 —— 认主只认面板上填的那个号，
-      // 在这里点一下把别人设成主人才是漏子。这里最多给个「填进白名单」的快捷。
-      if (p.role !== 'owner' && p.qq) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'ghost';
-        btn.textContent = '加进白名单';
-        btn.onclick = async () => {
-          const el = qqEl('qqAllowQq');
-          if (!el) return;
-          const have = String(el.value || '').split(/[\s,，]+/).filter(Boolean);
-          if (have.includes(String(p.qq))) { qqSetHint('已经在白名单里了'); return; }
-          have.push(String(p.qq));
-          el.value = have.join('\n');
-          qqSetHint('填进私聊白名单了，记得点「保存白名单」');
-        };
-        row.append(btn);
+      // 身份：自己注册的号那条道是 QQ 号；官方机器人那条道只有 openid —— 后端已归一化进 p.id
+      const id = String(p.id || p.qq || p.openid || '').trim();
+      if (isGroupRow) {
+        if (id && !p.groupAllowed) {
+          row.append(mkPeerBtn('放行这个群', '把这个群加进「能说话的群」并当场保存', () => qqAllowGroupId(id, p.name)));
+        }
+      } else if (id && !isOwnerRow) {
+        const label = p.name || p.short || id;
+        row.append(mkPeerBtn('填成主人', '把这一串设成「你的号」并当场保存', () => qqSetOwnerId(id, label)));
+        if (!p.whitelisted) {
+          row.append(mkPeerBtn('填进白名单', '把这一串加进「能私聊她的号」并当场保存', () => qqAllowPerson(id, label)));
+        }
       }
       box.append(row);
     }
@@ -11699,6 +12300,10 @@ async function paintOneBot(obStatus, obPrepare) {
   }
   const hint = qqEl('obHint');
   if (hint) {
+    /* 【2026-11-12 mac】这段话在 mac 上原来整段是错的：
+     * mac 上没有 UAC、没有「自动装好」，NapCat 要官方安装器改 QQ 入口。
+     * 按系统分成两套说法，别让 mac 主人照着 Windows 的步骤找不到按钮。 */
+    const mac = /Mac/i.test(navigator.userAgent);
     if (st.error) hint.textContent = '上次没连上：' + st.error;
     else if (st.phase === 'online') {
       hint.textContent = '连上了 —— 现在戳一戳、表情包、引用、群管理这些她都能做。';
@@ -11710,10 +12315,25 @@ async function paintOneBot(obStatus, obPrepare) {
        * 那串具体退避序列在代码里根本不存在（重连是协议端 SDK 自己管的，
        * 见 src/qq-bridge.mjs:190「连接断了，SDK 自己在重连……」）。
        * 编一组精确数字让主人产生「我可以算得出多久恢复」的错觉，比不说更糟。 */
-      const autoTip = conf.autoStart ? '（开了「开机就连」，断了它会自己重连接上，协议端进程没了也会替你拉起来）' : '';
-      hint.textContent = '点「准备协议端」→ 自动装好并拉起（会弹 UAC，点「是」），屏幕上会开一个 QQ 窗口，'
-        + '用手机 QQ 扫那个码登录。WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。' + autoTip
-        + (pr0.installed ? '' : '（这台机器上还没装协议端）');
+      const autoTip = conf.autoStart
+        ? (mac
+          ? '（开了「开机就连」，断了它会自己重连；QQ 没开时会替你打开。）'
+          : '（开了「开机就连」，断了它会自己重连接上，协议端进程没了也会替你拉起来）')
+        : '';
+      /* 【2026-11-12】上游 ending 之后，这段话每次都要带一句提醒：
+       * 不是劝退已经装好的人，是别再让新来的人以为「这条道还在正常维护」。 */
+      const legacyTip = '（NapCat 上游 2026-11 已停止维护：还能用，但不再更新，也不再推荐新装。）';
+      if (mac) {
+        hint.textContent = (pr0.installed
+          ? '点「启动协议端」→ 打开 QQ（入口已经是 NapCat 了）；'
+          : '还没装协议端：点「准备协议端」会打开官方安装器下载页，装完（要改 QQ 入口、去「系统设置 → 隐私与安全性 → App 管理」授权）再点「启动协议端」；')
+          + '扫码登录后 WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。'
+          + autoTip + legacyTip;
+      } else {
+        hint.textContent = '点「准备协议端」→ 自动装好并拉起（会弹 UAC，点「是」），屏幕上会开一个 QQ 窗口，'
+          + '用手机 QQ 扫那个码登录。WebSocket 会自动开在 ws://127.0.0.1:3001，回来点「连上」就全通了。' + autoTip
+          + (pr0.installed ? '' : '（这台机器上还没装协议端）') + legacyTip;
+      }
     }
   }
   // 「准备协议端」按钮的状态：装没装、跑没跑
@@ -11734,10 +12354,16 @@ async function paintOneBot(obStatus, obPrepare) {
   }
   if (prepHint) {
     const pr = obPrepare || {};
+    const mac = /Mac/i.test(navigator.userAgent);
     if (pr.message) prepHint.textContent = pr.message;
-    else if (pr.running) prepHint.textContent = '协议端已经在跑。去那个 QQ 窗口扫码（如果还没扫），WebUI 在 http://127.0.0.1:6099/webui';
-    else if (pr.installed) prepHint.textContent = '已经装好了（' + (pr.dir || '') + '）。点「启动协议端」就会弹 QQ 窗口。';
-    else prepHint.textContent = '';
+    else if (pr.running) {
+      prepHint.textContent = mac
+        ? 'QQ 开着（入口已是 NapCat）。还没登录就去 QQ 窗口扫一下；WebUI 在 http://127.0.0.1:6099/webui'
+        : '协议端已经在跑。去那个 QQ 窗口扫码（如果还没扫），WebUI 在 http://127.0.0.1:6099/webui';
+    } else if (pr.installed) {
+      prepHint.textContent = '已经装好了（' + (pr.dir || '') + '）。'
+        + (mac ? '点「启动协议端」就会打开 QQ。' : '点「启动协议端」就会弹 QQ 窗口。');
+    } else prepHint.textContent = '';
   }
 }
 
@@ -11782,7 +12408,9 @@ async function saveQqCreds() {
 
 /** 白名单单独存（面板上的「保存白名单」也走它）。 */
 async function saveQqGate() {
-  const ownerQq = String((qqEl('qqOwnerQq') || {}).value || '').replace(/[^0-9]/g, '');
+  // 主人这一格两种写法都收：自己注册的号那条道填 QQ 号，官方机器人那条道填 openid。
+  // 以前这里强删非数字，官方通道填进来的 openid 会被悄悄清空 —— 主人以为填了，其实没了。
+  const ownerQq = String((qqEl('qqOwnerQq') || {}).value || '').trim();
   const allowQq = String((qqEl('qqAllowQq') || {}).value || '');
   const allowGroup = String((qqEl('qqAllowGroup') || {}).value || '');
   const strict = Boolean((qqEl('qqGateStrict') || {}).checked);
@@ -11845,11 +12473,16 @@ async function saveQqBind() {
   wire('obToggle', async () => {
     const st = (qqState && qqState.onebot) || {};
     const running = st.phase === 'online' || st.phase === 'connecting' || st.phase === 'starting';
+    // 这条道（OneBot）只认数字 QQ 号；上面那格若填的是官方通道的 openid，这里就别往里塞
+    const ownerNum = (() => {
+      const v = String((qqEl('qqOwnerQq') || {}).value || '').trim();
+      return /^\d{5,12}$/.test(v) ? v : '';
+    })();
     const patch = {
       enabled: Boolean((qqEl('obEnabled') || {}).checked),
       mode: String((qqEl('obMode') || {}).value || 'forward'),
       url: String((qqEl('obUrl') || {}).value || '').trim(),
-      ownerQq: String((qqEl('qqOwnerQq') || {}).value || '').replace(/[^0-9]/g, ''),
+      ownerQq: ownerNum,
       autoStart: Boolean((qqEl('obAutoStart') || {}).checked),
     };
     const tok = String((qqEl('obToken') || {}).value || '').trim();
@@ -11878,8 +12511,11 @@ async function saveQqBind() {
   });
 
   // 「准备协议端」：没装就装（走镜像下载），装了就拉起（会弹 UAC + QQ 扫码）
+  // 【2026-11-12 mac】mac 上装不了（要官方安装器改 QQ 入口），所以后端会回
+  // needsInstaller + 一段 message，并把下载页打开；这里照它的话显示，别再说「装好了」。
   wire('obPrepare', async () => {
     const hintEl = qqEl('obPrepareHint');
+    const mac = /Mac/i.test(navigator.userAgent);
     const say = (t, bad) => {
       if (!hintEl) return;
       hintEl.textContent = t;
@@ -11893,14 +12529,19 @@ async function saveQqBind() {
       if (!cur.installed) {
         /* 【2026-11-10 文案审查】原来写「大概 34MB」—— 这个数代码里从来没校验过，
        * 写死一个具体数字等于承诺一个我们不知道的量。改成「几十 MB」这种诚实区间。 */
-        say('正在准备协议端（第一次要下载，几十 MB，走国内镜像）…');
+        say(mac ? '正在看协议端装没装…' : '正在准备协议端（第一次要下载，几十 MB，走国内镜像）…');
         const r = await qqApi('/api/qq/onebot/protocol/deploy', {});
         if (!r || r.error) { say('装失败了：' + ((r && r.error) || '网络错误'), true); return; }
-        say('装好了。现在启动它 —— 会弹一个 UAC 窗口，请点「是」。');
+        if (r.needsInstaller) { say(r.message || 'mac 上要先用官方安装器装进 QQ.app。', false); return; }
+        say(mac
+          ? '装好了。现在启动它 —— 会打开 QQ。'
+          : '装好了。现在启动它 —— 会弹一个 UAC 窗口，请点「是」。');
       }
       const s = await qqApi('/api/qq/onebot/protocol/start', {});
       if (!s || s.error) { say('拉不起来：' + ((s && s.error) || '网络错误'), true); return; }
-      say('已经放出去了。二维码就在下面这一格里，用手机 QQ 直接扫；登进去之后回来点「连上」。');
+      say(mac
+        ? 'QQ 已经打开了。二维码就在下面这一格里（没有的话切到 QQ 窗口扫它自己那张）；登进去之后回来点「连上」。'
+        : '已经放出去了。二维码就在下面这一格里，用手机 QQ 直接扫；登进去之后回来点「连上」。');
     } finally {
       await refreshQqPanel();
     }
@@ -12055,6 +12696,92 @@ for (const [el, want] of [[curCny, 'cny'], [curUsd, 'usd']]) {
 }
 
 // 聊天封面（applyChatCover）2026-11-01 随「外观」分区一起删了
+
+/* ---- 系统通知的两个开关（2026-11-12） -------------------------------------
+ *
+ * 主人：「设置在软件对话，ai 回复的时候提醒下，还有 qq 回复的设置提醒下，做两个开关项」。
+ * 存的是 .state/notify.json，接口是 /api/notify。点一下当场存盘 ——
+ * 这两个开关不在底部「保存」的管辖里，别让人点完了还怀疑有没有存上。
+ *
+ * 「能不能弹」由主进程决定（窗口在最前面就不弹），前端只负责把开关和文案摆对。
+ */
+let ntPrefs = { chat: true, qq: true };
+let ntAvailable = true;
+
+function ntPaintSwitch(id, on) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('on', on);
+  el.dataset.on = on ? '1' : '0';
+  el.textContent = on ? '开' : '关';
+}
+
+function ntPaint(prefs, available) {
+  ntPrefs = { chat: prefs?.chat !== false, qq: prefs?.qq !== false };
+  if (typeof available === 'boolean') ntAvailable = available;
+  ntPaintSwitch('ntChat', ntPrefs.chat);
+  ntPaintSwitch('ntQq', ntPrefs.qq);
+  const st = document.getElementById('ntState');
+  if (st) {
+    st.textContent = !ntAvailable
+      ? '这台机器弹不出系统通知（在浏览器里直接打开页面时没有这个能力）—— 用 App 打开才有效。'
+      : `现在：对话提醒${ntPrefs.chat ? '开' : '关'}、QQ 提醒${ntPrefs.qq ? '开' : '关'}。改完立刻生效，不用按下面的保存。`;
+  }
+  for (const id of ['ntChat', 'ntQq']) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !ntAvailable;
+  }
+}
+
+async function ntLoad() {
+  const r = await fetch('/api/notify').then((x) => x.json()).catch(() => null);
+  if (!r || r.error) {
+    const st = document.getElementById('ntState');
+    if (st) st.textContent = '读不到通知设置：' + ((r && r.error) || '网络错误');
+    return;
+  }
+  ntPaint(r.notify, r.available);
+}
+
+async function ntSave(patch, say) {
+  const r = await fetch('/api/notify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) {
+    showToast('通知设置没存上：' + ((r && r.error) || '网络错误'), { warn: true });
+    return;
+  }
+  ntPaint(r.notify, r.available);
+  showToast(say);
+}
+
+for (const [id, key, name] of [['ntChat', 'chat', '对话提醒'], ['ntQq', 'qq', 'QQ 提醒']]) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.addEventListener('click', async () => {
+    if (el.disabled) return;
+    const next = el.dataset.on !== '1';
+    // 先按下去，存不上再回滚 —— 按钮不跟着手指走会让人以为没点着
+    ntPaintSwitch(id, next);
+    el.disabled = true;
+    const r = await fetch('/api/notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: next }),
+    }).then((x) => x.json()).catch(() => null);
+    el.disabled = !ntAvailable;
+    if (!r || r.error) {
+      ntPaintSwitch(id, !next);
+      showToast('通知设置没存上：' + ((r && r.error) || '网络错误'), { warn: true });
+      return;
+    }
+    ntPaint(r.notify, r.available);
+    showToast(`${name}已${next ? '打开' : '关掉'}`);
+  });
+}
+
 document.getElementById('openSettings').onclick = async () => {
   saveHint.textContent = '';
   bottomLinesHint.textContent = '';
@@ -12065,6 +12792,8 @@ document.getElementById('openSettings').onclick = async () => {
   // 汇率跟着设置一起下：切了币种也要立刻生效，不能等下次开机才换过来
   if (r.fx && Number(r.fx.usdPerCny) > 0) moneyFx = Number(r.fx.usdPerCny);
   fillSettings(r.settings);
+  // 两个通知开关跟着设置一起刷（它们走的是 /api/notify，不在 settings 那份里）
+  try { await ntLoad(); } catch {}
   const p = await fetch(PERSONA_API('/api/personas')).then(r => r.json()).catch(() => null);
   if (p) fillPersona(p); else personaHint.textContent = '人设读取失败';
   closeOtherDialogs('settingsDlg');
@@ -12195,6 +12924,18 @@ document.getElementById('todoAddInput').addEventListener('keydown', (e) => {
 });
 
 document.getElementById('saveSettings').onclick = async () => {
+  /* 【2026-11-12 修·「点了保存什么都没发生」】
+   *
+   * 两个老毛病：
+   *   ① 失败分支只判了 `!r`（网络层挂了），服务端回 `{error:'…'}` 时 r 是真的，
+   *      接着 fillSettings(undefined) 抛 TypeError —— 界面上一个字都不写；
+   *   ② 成功的提示写在 saveHint 上，但 450ms 后 dialog 就关了，那行字基本看不见。
+   * 现在：错就当场说清楚（hint + 气泡），对了先把面板关掉再弹气泡（否则气泡在遮罩后）。
+   */
+  const saveBtn = document.getElementById('saveSettings');
+  if (saveBtn && saveBtn.disabled) return;
+  if (saveBtn) saveBtn.disabled = true;
+  try {
   const p = await fetch(PERSONA_API('/api/personas/save'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -12202,6 +12943,7 @@ document.getElementById('saveSettings').onclick = async () => {
   }).then(r => r.json()).catch(() => null);
   if (!p || p.error) {
     saveHint.textContent = '人设保存失败：' + (p && p.error ? p.error : '网络错误');
+    showToast(saveHint.textContent, { warn: true });
     return;
   }
   fillPersona(p);
@@ -12222,7 +12964,11 @@ document.getElementById('saveSettings').onclick = async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }).then(r => r.json()).catch(() => null);
-  if (!r) { saveHint.textContent = '保存失败'; return; }
+  if (!r || r.error) {
+    saveHint.textContent = '保存失败：' + ((r && r.error) || '网络错误');
+    showToast(saveHint.textContent, { warn: true });
+    return;
+  }
   fillSettings(r.settings);
   // 币种可能刚改过：把这一屏的钱数当场按新币种重画，别等下一轮对话
   try { paintUsageBox(); } catch {}
@@ -12250,7 +12996,13 @@ document.getElementById('saveSettings').onclick = async () => {
    */
   /* 保存后不再整屏重绘：try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {} */
   saveHint.textContent = '已保存，下一句生效';
-  setTimeout(() => dlg.close(), 450);
+  /* 先关面板再弹气泡：showToast 会挂进「当前打开的 dialog」，
+   * 关掉之后才没有遮罩压着，这一句才看得见（老版只闪了 450ms 就没了）。 */
+  try { dlg.close(); } catch {}
+  showToast('设置已保存，下一句生效');
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
 };
 
 /* 人设设默认按钮·2026-10-30 —— 把当前这套设成默认 */
@@ -12933,9 +13685,12 @@ if (document.getElementById('updInstall')) {
       const r = await fetch('/api/update/install', { method: 'POST' }).then((x) => x.json()).catch(() => null);
       if (!r || !r.ok) {
         addSysNote('装不了：' + ((r && r.error) || '未知原因'));
+        // 设置面板是模态的，addSysNote 落在遮罩后面 —— 这里补一条看得见的
+        showToast('装不了：' + ((r && r.error) || '未知原因'), { warn: true });
         return;
       }
       addSysNote('程序这就关掉去装新版，装完会自己打开，稍等十几秒 (๑•̀ㅂ•́)و✧');
+      showToast('这就关掉去装新版，装完会自己打开，稍等十几秒');
     } finally {
       btn.disabled = false;
       btn.textContent = old;
@@ -13174,16 +13929,147 @@ function featPaintEmpty() {
   featList.appendChild(box);
 }
 
+/**
+ * 【插件市场·卡片配色】按「这个插件是干嘛的」分组，不按字母排。
+ *
+ * 一屏扫过去，同色的挨在一起，找东西先靠颜色定位再读名字 —— 比一列灰字快得多。
+ * 没登记的走中性灰：新加的功能忘了登记也不会变成一块花斑。
+ */
+const FEAT_TONE = {
+  // 联网 / 抓网页
+  web: 'blue', browser: 'blue', webFetchTxt: 'blue', fetchPack: 'blue', zhConvert: 'blue',
+  // 文件 / 文档
+  readFile: 'green', writeFile: 'green', listDir: 'green', officeDocs: 'green', sendFile: 'green',
+  // 系统 / 桌面 / 外部程序
+  shell: 'orange', screenSense: 'orange', desktopHands: 'orange', selfRestart: 'orange', qqSense: 'orange',
+  // 记忆 / 智能体 / 上下文
+  memory: 'violet', skills: 'violet', chronicle: 'violet', foldedBox: 'violet',
+  subagent: 'violet', taskmode: 'violet', plan: 'violet', note: 'violet',
+  // 界面外观
+  videoBg: 'pink', ttsVoice: 'pink', identity: 'pink',
+  // 输出 / 心跳 / 协作
+  video: 'cyan', makeImage: 'cyan', selfwake: 'cyan', peerMail: 'cyan', cron: 'cyan',
+};
+
+/** 卡片图标上的那个字：中文取首字，英文取首字母 */
+function featIconLetter(name) {
+  const s = String(name || '').trim();
+  if (!s) return '·';
+  const ch = [...s][0];
+  return /[a-z]/i.test(ch) ? ch.toUpperCase() : ch;
+}
+
+/** 插件市场的搜索词（空 = 全显示） */
+let featQuery = '';
+/** 这条插件配不配得上当前搜索词：名字、说明、id 三处任一命中 */
+function featMatch(f) {
+  const q = featQuery.trim().toLowerCase();
+  if (!q) return true;
+  return [f.name, f.desc, f.id].some((v) => String(v || '').toLowerCase().includes(q));
+}
+
+/**
+ * ---- 外观插件（目录型：主题 / 壁纸）----
+ *
+ * 它跟上面那些功能插件是两套存储：功能插件在 .state/features-custom.json（一条 JSON），
+ * 外观插件是 plugins/<id>/ 一个文件夹（可能带图片、带 CSS）。
+ * 但在主人眼里都是「装进来的插件」，所以并到同一张列表里，用类型标区分。
+ * 开关和卸载走 /api/plugins，跟功能那套的 /api/features/set 不混。
+ */
+let featApPlugins = [];
+async function loadApPlugins() {
+  try {
+    const j = await fetch('/api/plugins').then((x) => x.json());
+    featApPlugins = Array.isArray(j?.plugins) ? j.plugins : [];
+  } catch { featApPlugins = []; }
+}
+
+/** 一张外观插件卡。结构跟功能卡一样，只是数据来源和操作接口不同。 */
+function apPlugCard(p) {
+  const typeName = { theme: '主题', wallpaper: '壁纸', feature: '功能' }[p.type] || p.type;
+  const tone = p.type === 'theme' ? 'violet' : p.type === 'wallpaper' ? 'pink' : 'cyan';
+
+  const row = document.createElement('div');
+  row.className = 'featRow';
+  row.dataset.apid = p.id;
+
+  const main = document.createElement('div');
+  main.className = 'featMain';
+  const ico = document.createElement('div');
+  ico.className = 'featIco t-' + tone;
+  ico.textContent = featIconLetter(p.name);
+  const text = document.createElement('div');
+  text.className = 'featText';
+  const name = document.createElement('div');
+  name.className = 'featName';
+  const nm = document.createElement('span');
+  nm.textContent = p.name;
+  const badge = document.createElement('span');
+  badge.className = 'badge' + (p.enabled ? '' : ' off');
+  badge.textContent = p.enabled ? '已启用' : '已停用';
+  const kind = document.createElement('span');
+  kind.className = 'badge mach';
+  kind.textContent = typeName + '插件';
+  kind.title = '这一条是插件目录里的（不是程序自带的），可以卸载';
+  name.append(nm, badge, kind);
+  const desc = document.createElement('div');
+  desc.className = 'featDesc';
+  desc.textContent = p.description || '（没有写说明）';
+  text.append(name, desc);
+  main.append(ico, text);
+
+  // 目录型插件都是主人自己放进去的，所以都能卸载（功能插件里内置的那些不能）
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'featDelBtn';
+  del.textContent = '卸载';
+  del.dataset.apRemove = p.id;
+  del.style.opacity = '1';
+
+  const sw = document.createElement('button');
+  sw.type = 'button';
+  sw.className = 'switch' + (p.enabled ? ' on' : '');
+  sw.dataset.apToggle = p.id;
+  sw.dataset.on = p.enabled ? '1' : '0';
+  sw.textContent = p.enabled ? '停用' : '启用';
+
+  row.append(main, del, sw);
+  return row;
+}
+
 function renderFeatList() {
   if (!featList) return;
   featList.innerHTML = '';
-  const rows = featRows();
-  if (!rows.length) {
+  const all = featRows();
+  const rows = all.filter(featMatch);
+  /* 外观插件（主题 / 壁纸）跟功能插件并排画在同一张表里，所以「一共多少个」「搜到几个」
+   * 都得两边一起算。只数功能那半边，会出现「0 / 31」而卡片明明有三张的怪账。 */
+  const apAll = featApPlugins;
+  const apShown = apAll.filter((p) => !featQuery.trim()
+    || featMatch({ name: p.name, desc: p.description, id: p.id }));
+  const totalAll = all.length + apAll.length;
+  const totalShown = rows.length + apShown.length;
+
+  if (!totalShown) {
+    if (totalAll && featQuery.trim()) {
+      // 有插件，只是没搜到 —— 别说「一条都没有」，那是另一回事
+      const box = document.createElement('div');
+      box.className = 'featEmpty';
+      const t = document.createElement('div');
+      t.className = 't';
+      t.textContent = `没有匹配「${featQuery.trim()}」的插件`;
+      box.append(t);
+      featList.appendChild(box);
+      if (featHint) featHint.textContent = `0 / ${totalAll}`;
+      paintFeatNow();
+      return;
+    }
     featPaintEmpty();
-    if (featHint) featHint.textContent = featState.error ? '没读到' : '0 个功能';
+    if (featHint) featHint.textContent = featState.error ? '没读到' : '0 个插件';
     paintFeatNow();
     return;
   }
+  /* 顶上的统计统一在函数末尾算（那时两边的卡片都已经画完），这里不再写一份 */
   for (const f of rows) {
     const row = document.createElement('div');
     row.className = 'featRow';
@@ -13200,6 +14086,12 @@ function renderFeatList() {
 
     const main = document.createElement('div');
     main.className = 'featMain';
+    /* 卡片图标：分类色块 + 首字。纯 CSS，不打包图片。 */
+    const ico = document.createElement('div');
+    ico.className = 'featIco t-' + (FEAT_TONE[f.id] || 'gray');
+    ico.textContent = featIconLetter(f.name);
+    const text = document.createElement('div');
+    text.className = 'featText';
     const name = document.createElement('div');
     name.className = 'featName';
     const nm = document.createElement('span');
@@ -13226,7 +14118,8 @@ function renderFeatList() {
     const desc = document.createElement('div');
     desc.className = 'featDesc';
     desc.textContent = f.desc;
-    main.append(name, desc);
+    text.append(name, desc);
+    main.append(ico, text);
 
     const sw = document.createElement('button');
     sw.type = 'button';
@@ -13389,14 +14282,23 @@ function renderFeatList() {
     }
     featList.appendChild(row);
   }
-  const off = rows.filter((f) => !f.enabled).length;
-  /* 总数一律从 features 现算，不读 featState.total —— 后端那份 total 会随
-   * 「按会话 / 带自定义」变（31 → 33），写死或另取一处必然对不上。
-   * customCount 后端有就用它的，没有就自己数一遍。 */
+
+  /* 追加外观插件（主题 / 壁纸）：它们不在 features 清单里，另存一份、另走一套接口 */
+  for (const p of apShown) featList.appendChild(apPlugCard(p));
+
+  /* 停用数要把外观插件一起算：它们跟功能插件并排摆在同一张表里，
+   * 只数功能那半边，顶上写着「1 个停用」而下面明明有两张灰标。
+   * 总数一律从清单现算，不读 featState.total —— 后端那份 total 会随
+   * 「按会话 / 带自定义」变（31 → 33），写死或另取一处必然对不上。 */
+  const off = rows.filter((f) => !f.enabled).length + apShown.filter((p) => !p.enabled).length;
   const own = Number.isFinite(featState.customCount) ? featState.customCount : rows.filter((f) => f.custom).length;
   if (featHint) {
-    const head = own ? `${rows.length} 个功能（${own} 个自己加的）` : `${rows.length} 个功能`;
-    featHint.textContent = off ? `${head} · ${off} 个关着` : `${head} · 全开`;
+    if (featQuery.trim()) {
+      featHint.textContent = `${totalShown} / ${totalAll} 个`;
+    } else {
+      const head = own ? `${totalAll} 个插件（${own} 个自己导入的）` : `${totalAll} 个插件`;
+      featHint.textContent = off ? `${head} · ${off} 个停用` : `${head} · 全开`;
+    }
   }
   paintFeatNow();
 }
@@ -13407,10 +14309,14 @@ async function loadFeatures() {
    * 否则后端只能退回全局表，显示的就不是主人这个会话的真实状态。 */
   const sid = featSid();
   const url = sid ? '/api/features?sessionId=' + encodeURIComponent(sid) : '/api/features';
-  const r = await fetch(url).then((x) => x.json()).catch(() => null);
+  // 两套插件一起读：功能插件 + 外观插件（主题/壁纸），一次画完，面板不会先空一下
+  const [r] = await Promise.all([
+    fetch(url).then((x) => x.json()).catch(() => null),
+    loadApPlugins(),
+  ]);
   /* 以前这里失败就 return false，面板保持上一次的样子（常常是空白）；
    * 现在把「没读到」也画进列表里，给一颗重试 —— 不许静默。 */
-  const ok = featTakeState(r, '没读到功能列表');
+  const ok = featTakeState(r, '没读到插件列表');
   renderFeatList();
   return ok;
 }
@@ -14219,9 +15125,45 @@ function featReadFile(f) {
   });
 }
 
+/**
+ * 读一个本地文件成 base64（插件包用）。
+ *
+ * 【为什么不用 FormData 直接传】
+ * 服务端那条 body() 只认 JSON（整个项目就这一套读写口子）。为一件事
+ * 再引一个 multipart 解析器不值，插件包也就几十 KB 到几 MB。
+ */
+function featReadB64(f) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      // dataURL = "data:application/zip;base64,xxxx"，逗号后面才是料
+      const s = String(fr.result || '');
+      const i = s.indexOf(',');
+      resolve(i >= 0 ? s.slice(i + 1) : '');
+    };
+    fr.onerror = () => reject(fr.error || new Error('读不出来'));
+    fr.readAsDataURL(f);
+  });
+}
+
+/**
+ * 停用 / 卸载 / 覆盖安装插件之后，把当前主题和壁纸重新落一遍。
+ *
+ * 不重落的话界面可能停在一个「已经不存在的主题」上：变量还是上次 setProperty
+ * 留下的那套，看起来像卡住了，其实背后那套主题已经没了。
+ */
+function featReapplyAppearance() {
+  try {
+    const ap = window.xyAppearance && window.xyAppearance.state && window.xyAppearance.state();
+    if (!ap) return;
+    window.xyAppearance.applyTheme(ap.themeId);
+    window.xyAppearance.applyWallpaper(ap.wallpaperId);
+  } catch (e) { console.warn('[plugins] 外观没重落：', e && e.message); }
+}
+
 /** 面板底部那行小字。说完过一会儿自己退回原话，不用等下一次操作才刷新。 */
 let featFootTimer = 0;
-const FEAT_FOOT_DEFAULT = '关掉的功能小鱼就用不了，改了下一句生效。';
+const FEAT_FOOT_DEFAULT = '把 .json（功能）或 .zip（主题 / 壁纸）拖到这一页也能导入；停用的插件下一句生效。';
 function featSay(text, keep) {
   const foot = document.getElementById('featFoot');
   if (!foot) return;
@@ -14261,6 +15203,66 @@ function featHideReport() {
 }
 
 /**
+ * 装插件包（.zip）：主题 / 壁纸这类带样式和图片的插件走这条。
+ *
+ * 跟功能插件（.json）分成两条路是因为后端就是两套存储：
+ * 功能是一条定义存在 .state/features-custom.json 里，外观插件是一整个文件夹。
+ * 但主人在界面上只看见「导入」一颗按钮，所以这里按扩展名分流，不让人选。
+ */
+async function featImportPackages(files) {
+  const picked = [];
+  const bad = [];
+  for (const f of files) {
+    try {
+      const b64 = await featReadB64(f);
+      if (!b64) { bad.push(f.name + '（是空的）'); continue; }
+      picked.push({ name: f.name, b64 });
+    } catch {
+      bad.push(f.name + '（读不出来）');
+    }
+  }
+  if (!picked.length) {
+    featSay('这几个包都没读出来');
+    featShowReport('这几个包都没读出来', bad.map((n) => ({ k: 'err', t: n })));
+    return;
+  }
+
+  featSay('正在装 ' + picked.length + ' 个插件包…', true);
+  const r = await featApi('/api/plugins/import', { files: picked });
+  await loadApPlugins();
+  renderFeatList();
+  featReapplyAppearance();
+
+  if (!r.ok) {
+    featSay('没装上：' + r.error);
+    featShowReport('没装上', [{ k: 'err', t: r.error }].concat(bad.map((n) => ({ k: 'err', t: n }))));
+    return;
+  }
+
+  const added = r.added || [];
+  const updated = r.updated || [];
+  const failed = r.failed || [];
+  const lines = [];
+  for (const p of added) lines.push({ k: 'ok', t: p.name + '（' + ({ theme: '主题', wallpaper: '壁纸', feature: '功能' }[p.type] || p.type) + '插件）装好了，已经启用' });
+  for (const p of updated) lines.push({ k: 'warn', t: p.name + '（' + ({ theme: '主题', wallpaper: '壁纸', feature: '功能' }[p.type] || p.type) + '插件）覆盖了原来那个，已经启用' });
+  for (const p of failed) lines.push({ k: 'err', t: (p.name || '这个包') + '：' + (p.reason || '没说原因') });
+  for (const n of bad) lines.push({ k: 'err', t: n });
+
+  const bits = [];
+  if (added.length) bits.push('装了 ' + added.length + ' 个');
+  if (updated.length) bits.push('覆盖 ' + updated.length + ' 个');
+  if (failed.length) bits.push('没进 ' + failed.length + ' 个');
+  const head = bits.length ? '插件包：' + bits.join('，') : '这个包里没有能装的插件';
+  featSay(head);
+  if (!lines.length) lines.push({ k: 'ok', t: '装好了' });
+  if (added.length || updated.length) {
+    lines.push({ k: 'grey', t: '主题 / 壁纸装好之后，去【外观】里选中它才算用上；功能插件下一句就生效' });
+  }
+  featShowReport(head, lines);
+  toast(head);
+}
+
+/**
  * 导入一批文件。
  *
  * 支持一次拖/选多个：逐个读成文本，一个文件一个 {name, content}，整包发过去。
@@ -14269,9 +15271,17 @@ function featHideReport() {
 async function featImportFiles(list) {
   const files = Array.from(list || []);
   if (!files.length) return;
+
+  /* .zip 是外观插件包（主题 / 壁纸），走另一条接口；其余按功能定义读文本。
+   * 两条都跑完再各自摆账本，混在一个报告里会让人分不清哪条失败了。 */
+  const packs = files.filter((f) => /\.zip$/i.test(f.name || ''));
+  const plain = files.filter((f) => !/\.zip$/i.test(f.name || ''));
+  if (packs.length) await featImportPackages(packs);
+  if (!plain.length) return;
+
   const picked = [];
   const bad = [];
-  for (const f of files) {
+  for (const f of plain) {
     try {
       const text = await featReadFile(f);
       if (!text.trim()) { bad.push(f.name + '（是空的）'); continue; }
@@ -14333,21 +15343,291 @@ async function featImportFiles(list) {
   toast('导入完成：' + bits.join('，'));
 }
 
-/* ---- 导入：点按钮选文件（可多选） ---- */
-const featImportBtn = document.getElementById('featImport');
+/* ---- 导入：先开「导入插件」这张 dialog（从文件 / 粘贴代码） ----------------
+ *
+ * 2026-11-12 主人：「导入应该做一个 dialog form，说明清楚，也可以粘贴代码编辑」。
+ * 以前点「导入插件」直接弹系统文件框 —— 主人连 .zip 和 .json 是两条路都不知道，
+ * 选错了才在报告里看到「包里没有 plugin.json」。
+ *
+ * 现在：先看说明，再选走哪条；粘贴那条直接写磁盘（/api/plugins/create），
+ * 跟 zip 导入落在同一套 plugins/<id>/ 目录里，装完照样能停用、能卸载。
+ */
 const featReportClose = document.getElementById('featReportClose');
 if (featReportClose) featReportClose.addEventListener('click', () => { featHideReport(); });
-if (featImportBtn && featFile) {
-  featImportBtn.addEventListener('click', () => {
-    featFile.value = '';   // 清一下：同一个文件第二次选也能触发 change
-    featFile.click();
-  });
+
+const featImportBtn = document.getElementById('featImport');
+const plugImpDlg = document.getElementById('plugImportDlg');
+const piDrop = document.getElementById('piDrop');
+const piChoose = document.getElementById('piChoose');
+const piCancel = document.getElementById('piCancel');
+const piOk = document.getElementById('piOk');
+const piType = document.getElementById('piType');
+const piId = document.getElementById('piId');
+const piName = document.getElementById('piName');
+const piDesc = document.getElementById('piDesc');
+const piCode = document.getElementById('piCode');
+const piCodeLabel = document.getElementById('piCodeLabel');
+const piHint = document.getElementById('piHint');
+const piErr = document.getElementById('piErr');
+const piMeta = document.getElementById('piMeta');
+const piFoot = document.getElementById('piFoot');
+
+const PI_HINT = {
+  feature:
+    '默认导出一个函数，挂载时收到 <code>{ root, api, toast }</code>：'
+    + '<code>root</code> 是 body，<code>toast(文字)</code> 弹一下，'
+    + '<code>api.getAppearance()</code> / <code>api.setAppearance({…})</code> 读写外观。'
+    + '停用时会被叫一次 <code>xy:disable</code> 事件，自己把挂上去的节点摘掉。',
+  theme:
+    '就是一段 CSS：<code>:root { --bg: …; --panel: …; --text: …; --accent: … }</code>。'
+    + '只写要改的那几个变量，其余用默认值补齐；切走时按变量名单清掉，不会串色。',
+};
+const PI_PLACEHOLDER = {
+  feature: 'export default function mount({ root, api, toast }) {\n  // 想往页面上挂什么就挂什么\n}',
+  theme: ':root {\n  --bg: #0b0d12;\n  --panel: #12161d;\n  --border: #222834;\n  --text: #e6e9ef;\n  --dim: #8b95a7;\n  --accent: #5b8def;\n}',
+};
+
+function piShowErr(msg) {
+  if (!piErr) return;
+  piErr.hidden = !msg;
+  piErr.textContent = msg || '';
 }
+
+function piShowTab(tab) {
+  const want = tab === 'code' ? 'code' : 'file';
+  if (!plugImpDlg) return;
+  plugImpDlg.querySelectorAll('[data-pi-tab]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.piTab === want);
+    b.setAttribute('aria-selected', b.dataset.piTab === want ? 'true' : 'false');
+  });
+  plugImpDlg.querySelectorAll('[data-pi-panel]').forEach((p) => {
+    p.hidden = p.dataset.piPanel !== want;
+  });
+  if (piMeta) piMeta.textContent = want === 'code' ? '直接写进插件目录' : '选 .zip 或 .json';
+  if (piFoot) {
+    piFoot.textContent = want === 'code'
+      ? '同一个 id 再导一次就是覆盖更新，不会多出一份'
+      : '装错了别慌：回到列表点「卸载」，整个文件夹都会删掉';
+  }
+  if (piOk) piOk.textContent = want === 'code' ? '写入并启用' : '导入';
+  if (want === 'code' && piId) setTimeout(() => { try { piId.focus(); } catch {} }, 30);
+}
+
+function openPlugImport() {
+  if (!plugImpDlg) { if (featFile) { featFile.value = ''; featFile.click(); } return; }
+  piShowErr('');
+  piShowTab('file');
+  if (!plugImpDlg.open) {
+    try { plugImpDlg.showModal(); } catch { plugImpDlg.setAttribute('open', '1'); }
+  }
+}
+
+if (featImportBtn) featImportBtn.addEventListener('click', openPlugImport);
+
+if (plugImpDlg) {
+  plugImpDlg.querySelectorAll('[data-pi-tab]').forEach((b) => {
+    b.addEventListener('click', () => piShowTab(b.dataset.piTab));
+  });
+  if (piCancel) piCancel.addEventListener('click', () => { try { plugImpDlg.close(); } catch {} });
+  if (piChoose) {
+    piChoose.addEventListener('click', () => {
+      if (!featFile) return;
+      featFile.value = '';   // 清一下：同一个文件第二次选也能触发 change
+      featFile.click();
+    });
+  }
+
+  // 拖进虚线框就等于选了这些文件
+  if (piDrop) {
+    ["dragenter", "dragover"].forEach((t) => piDrop.addEventListener(t, (e) => {
+      e.preventDefault(); e.stopPropagation(); piDrop.classList.add("over");
+    }));
+    ["dragleave", "dragend"].forEach((t) => piDrop.addEventListener(t, (e) => {
+      e.preventDefault(); piDrop.classList.remove("over");
+    }));
+    piDrop.addEventListener("drop", async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      piDrop.classList.remove("over");
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (!files.length) return;
+      try { plugImpDlg.close(); } catch {}
+      await featImportFiles(files);
+    });
+  }
+
+  // 类型切换：提示、占位符、标题都跟着换
+  const syncType = () => {
+    const t = piType && piType.value === 'theme' ? 'theme' : 'feature';
+    if (piHint) piHint.innerHTML = PI_HINT[t];
+    if (piCode) piCode.placeholder = PI_PLACEHOLDER[t];
+    if (piCodeLabel) piCodeLabel.textContent = t === 'theme' ? '样式（CSS）' : '代码（JS）';
+  };
+  if (piType) { piType.addEventListener('change', syncType); syncType(); }
+
+  // 写代码并导入
+  if (piOk) {
+    piOk.addEventListener('click', async () => {
+      const type = piType && piType.value === 'theme' ? 'theme' : 'feature';
+      const id = (piId && piId.value ? piId.value : '').trim();
+      const code = piCode ? piCode.value : '';
+      if (!id) { piShowErr('先给个 id —— 它就是插件文件夹名，只能用字母、数字和 . _ -'); return; }
+      if (!code.trim()) { piShowErr(type === 'theme' ? '样式是空的' : '代码是空的'); return; }
+      piShowErr('');
+      piOk.disabled = true;
+      const old = piOk.textContent;
+      piOk.textContent = '写入中…';
+      try {
+        const r = await featApi('/api/plugins/create', {
+          id,
+          name: (piName && piName.value ? piName.value : '').trim(),
+          type,
+          description: (piDesc && piDesc.value ? piDesc.value : '').trim(),
+          code,
+        });
+        if (!r.ok) { piShowErr(r.error || '没写进去'); return; }
+        const nm = (piName && piName.value ? piName.value.trim() : '') || id;
+        try { plugImpDlg.close(); } catch {}
+        await loadApPlugins();
+        renderFeatList();
+        // 新装的 js 插件要马上挂上，不然「装好了」还得刷一次才看得见
+        try {
+          if (window.xyAppearance && window.xyAppearance.reloadPlugins) await window.xyAppearance.reloadPlugins();
+        } catch {}
+        featReapplyAppearance();
+        const head = (r.updated && r.updated.length ? '覆盖更新：' : '装好了：') + nm;
+        const lines = [{
+          k: 'ok',
+          t: (type === 'theme' ? '主题' : '功能') + '插件 ' + id + ' 已写进插件目录'
+            + (r.file ? '（' + r.file + '）' : '') + '，并已启用',
+        }];
+        lines.push(type === 'theme'
+          ? { k: 'grey', t: '去【外观】→ 主题里选中它才算用上' }
+          : { k: 'grey', t: '已经挂上了；下一句就生效，想停用回列表关掉那一格' });
+        featSay(head);
+        featShowReport(head, lines);
+        toast(head);
+        // 清一下，下次粘贴是干净的
+        if (piCode) piCode.value = '';
+        if (piId) piId.value = '';
+        if (piName) piName.value = '';
+        if (piDesc) piDesc.value = '';
+      } finally {
+        piOk.disabled = false;
+        piOk.textContent = old || '导入';
+      }
+    });
+  }
+}
+
 if (featFile) {
   featFile.addEventListener('change', async () => {
     const picked = Array.from(featFile.files || []);
     featFile.value = '';
+    if (plugImpDlg && plugImpDlg.open) { try { plugImpDlg.close(); } catch {} }
     await featImportFiles(picked);
+  });
+}
+
+/* 插件搜索：输入即过滤，不用按回车。卡片是每次重建的，所以只改词 + 重画。 */
+const featSearchEl = document.getElementById('featSearch');
+if (featSearchEl) {
+  let searchTimer = 0;
+  featSearchEl.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      featQuery = featSearchEl.value || '';
+      renderFeatList();
+    }, 120);
+  });
+  featSearchEl.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { ev.stopPropagation(); featSearchEl.value = ''; featQuery = ''; renderFeatList(); }
+  });
+}
+
+/**
+ * 外观插件（主题 / 壁纸）卡片上的开关与卸载。
+ *
+ * 走 /api/plugins —— 跟功能插件的 /api/features/set 是两套存储，别混。
+ * 动完要把外观重新落一遍：停用的可能正是当前这套主题/壁纸，
+ * 不重落的话界面会停在一个「已经不存在的主题」上。
+ */
+if (featList) {
+  featList.addEventListener('click', async (ev) => {
+    const tg = ev.target.closest('[data-ap-toggle]');
+    if (tg) {
+      ev.preventDefault();
+      const id = tg.dataset.apToggle;
+      const p = featApPlugins.find((x) => x.id === id);
+      if (!p) return;
+      const on = !p.enabled;
+      tg.disabled = true;
+      /* 【2026-11-12】以前这里只 await fetch，成败都不吭声（catch 里只 console.warn）——
+       * 主人点了开关，切过去了又弹回来，得不到一句解释。现在把结果说出来。 */
+      let ok = false;
+      let bad = '';
+      try {
+        const r = await fetch('/api/plugins/' + encodeURIComponent(id), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ on }),
+        });
+        const j = await r.json().catch(() => null);
+        ok = r.ok && !(j && j.error);
+        if (!ok) bad = (j && j.error) || ('HTTP ' + r.status);
+      } catch (err) { bad = String(err?.message ?? err); }
+      await loadApPlugins();
+      renderFeatList();
+      // 启停 js 插件要当场生效，不能等下一次刷新
+      try { if (window.xyAppearance && window.xyAppearance.reloadPlugins) await window.xyAppearance.reloadPlugins(); } catch {}
+      featReapplyAppearance();
+      const say = ok ? `已${on ? '启用' : '停用'}「${p.name}」` : `没切过来：${bad || '未知原因'}`;
+      featSay(say);
+      if (ok) showToast(say); else showToast(say, { warn: true });
+      return;
+    }
+
+    const rm = ev.target.closest('[data-ap-remove]');
+    if (rm) {
+      ev.preventDefault();
+      const id = rm.dataset.apRemove;
+      const p = featApPlugins.find((x) => x.id === id);
+      if (!p) return;
+      if (!confirm(`卸载「${p.name}」？它整个文件夹都会从磁盘上删掉。`)) return;
+      let ok = false;
+      let bad = '';
+      try {
+        const r = await fetch('/api/plugins/' + encodeURIComponent(id), { method: 'DELETE' });
+        const j = await r.json().catch(() => null);
+        ok = r.ok && !(j && j.error);
+        if (!ok) bad = (j && j.error) || ('HTTP ' + r.status);
+      } catch (err) { bad = String(err?.message ?? err); }
+      await loadApPlugins();
+      renderFeatList();
+      try { if (window.xyAppearance && window.xyAppearance.reloadPlugins) await window.xyAppearance.reloadPlugins(); } catch {}
+      featReapplyAppearance();
+      const say = ok ? `「${p.name}」卸载了` : `没卸掉：${bad || '未知原因'}`;
+      featSay(say);
+      if (ok) showToast(say); else showToast(say, { warn: true });
+    }
+  });
+}
+
+/**
+ * 打开插件目录。
+ *
+ * 主入口是「导入」——这条只是让人看一眼插件文件夹长什么样、或者手工挪文件用，
+ * 所以摆在脚注、字体也轻：别让它看起来像唯一的安装方式。
+ */
+const featOpenDirBtn = document.getElementById('featOpenDir');
+if (featOpenDirBtn) {
+  featOpenDirBtn.addEventListener('click', async () => {
+    featOpenDirBtn.disabled = true;
+    try {
+      const r = await featApi('/api/plugins/open-dir', {});
+      featSay(r.ok ? '已经在访达 / 资源管理器里打开了' : '打不开目录：' + (r.error || '系统没让开'));
+    } finally {
+      featOpenDirBtn.disabled = false;
+    }
   });
 }
 
@@ -15793,6 +17073,12 @@ async function setSessionCfg(patch) {
   cfgState = { ...cfgState, ...r };
   paintTopCfg();
   if (meta) meta.title = (meta.title || '') ;
+  /* 【2026-11-12】顶栏换模型 / 换思考强度是最高频的两个开关，以前成功后
+   * 只有标签变了一下，列表长的时候容易看漏。这里补一句回执。 */
+  try {
+    if (patch && patch.model) showToast('这个会话改用「' + String(r.model || patch.model).slice(0, 40) + '」了，下一句生效');
+    else if (patch && patch.think) showToast('思考强度改成「' + String(r.think || patch.think) + '」了，下一句生效');
+  } catch {}
 }
 
 topModel.onclick = (e) => { e.stopPropagation(); openCfgMenu('model'); };
@@ -18046,6 +19332,8 @@ function paintModels() {
       mdlState = r;
       paintModels();
       syncHealth();
+      // 切完给一句回执（模态面板里也能看见 —— showToast 会挂进 dialog）
+      try { showToast('现在用「' + (m.name || m.model || m.id) + '」说话了，下一句生效'); } catch {}
     };
 
     mdlList.appendChild(row);
@@ -18738,15 +20026,32 @@ async function refreshMusic() {
 }
 
 async function pushMusic(patch) {
+  const before = { on: musState.on, volume: musState.volume };
   Object.assign(musState, patch);
   paintMusicUI();
   if (musState.on && musState.bound && musState.hasMusic) musicStart();
   else musicStop();
-  await fetch('/api/skin', {
+  /* 【2026-11-12】以前 `.catch(()=>{})` 把失败全吞了：存不上也照样显示「已关闭」，
+   * 下次打开又变回来，主人只会觉得这开关时灵时不灵。现在失败就回滚 + 说一句。 */
+  const r = await fetch('/api/skin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
-  }).catch(() => {});
+  }).then((x) => x.json()).catch(() => null);
+  if (!r || r.error) {
+    musState.on = before.on;
+    musState.volume = before.volume;
+    paintMusicUI();
+    if (musState.on && musState.bound && musState.hasMusic) musicStart();
+    else musicStop();
+    showToast('音乐设置没存上：' + ((r && r.error) || '网络错误'), { warn: true });
+    return false;
+  }
+  // 开关要有回执；音量拖动不弹（百分比就在眼前，弹一句反而吵）
+  if (Object.prototype.hasOwnProperty.call(patch, 'musicOn')) {
+    showToast(patch.musicOn ? '背景音乐已开' : '背景音乐已关');
+  }
+  return true;
 }
 
 (function wireMusicUI() {

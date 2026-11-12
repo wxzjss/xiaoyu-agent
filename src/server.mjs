@@ -570,8 +570,24 @@ function publicSession(session) {
   for (const x of all) {
     if (x && x.role === 'tool' && x.tool_call_id) toolResults.set(String(x.tool_call_id), String(x.content ?? ''));
   }
+  let foldNoteShown = false;   // 折叠存档的交代只补一条
   for (let i = 0; i < all.length; i++) {
     const m = all[i];
+    /* 【2026-11-12 修·主人问「503 那句之后以前的上下文怎么全消失了」】
+     * 不是渲染丢 —— 是**压缩折叠**：445k token 撞了窗口，程序把最旧的 481 条
+     * 原文折进 .state/folded/ 存档，历史开头换成一条「早期对话摘要」（context/summary，
+     * 界面不画）。数据都在（折叠文件翻得回），可屏幕上**一个字的交代都没有**，
+     * 主人看到的就是「上下文突然没了」，还以为是 503 那句话把历史弄坏了。
+     * 现在摘要的位置补一条**可见**的系统提示，把这件事说破。 */
+    if (m && m.context && m.summary && !foldNoteShown) {
+      turns.push({
+        role: 'assistant',
+        note: true,
+        text: '（更早的对话太长，已经折叠存档了 —— 没丢，翻得回；这里是从摘要接着走的。）',
+      });
+      foldNoteShown = true;
+      continue;
+    }
     if (!m || m.context) continue;
     if (headSkip.has(i)) continue;
     if (!alive.has(i)) continue;
@@ -636,6 +652,11 @@ function publicSession(session) {
       /* 【2026-11-11】ts 兜底 _at：主流程的 userMsg 现在都带 at；老消息只有 assistant 补过 _at。
        * 老的 user 消息两个都没有 → 还是 0，前端就不画时间，历史数据不动。 */
       turns.push({ role: 'user', ts: typeof m.at === 'number' ? m.at : (typeof m._at === 'number' ? m._at : 0), text: shown, atts, rewindId: i, edited, usage, who, sysNote: m._sysNote === true ? true : undefined,      steer: m._steer === true ? true : undefined,      steerAt: typeof m._atChars === 'number' ? m._atChars : undefined, });
+    }
+    if (m.note === true) {
+      /* 【2026-11-12】持久化的系统提示（note:true）：不冒充谁说话，给前端画 SysNote */
+      turns.push({ role: 'assistant', note: true, text: String(m.content || ''), ts: typeof m.at === 'number' ? m.at : 0 });
+      continue;
     }
     else if (m.role === 'assistant') turns.push({
       role: 'assistant',
@@ -742,7 +763,11 @@ function publicSession(session) {
    * 主人接着说下一句时它自然就不在末尾了，提示自动消失，不用另存状态。
    */
   const _lastRaw = Array.isArray(session.messages) ? session.messages[session.messages.length - 1] : null;
-  if (_lastRaw && _lastRaw._recovered === true) {
+  /* 【2026-11-12 改·主人嫌它「一直钉在最底部」】
+   * 原来（她还没落盘回复的）整轮期间这条提示都杵在历史末尾 —— 她跑工具没正文时，
+   * 屏幕最底下就一直是它，看着像坏掉了。现在：**这一轮正在跑就不给**，
+   * 她一开工提示就收掉；真跑完了还停在半截（被停/被断/没人管）才显示。 */
+  if (_lastRaw && _lastRaw._recovered === true && !runningTurns.has(session.id)) {
     turns.push({
       role: 'assistant',
       note: true,
@@ -10822,6 +10847,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
 
     const commitWireBack = () => {
       let n = 0;
+      /* 【2026-11-12】正常收尾（有话接回历史）= 上游活过来了 → 连败账清零，
+       * 下一回再撞 503 从头数（连败才报警，单次永远静默）。 */
+      try { if (wireMessages.length) upFailBook.delete(sessionId); } catch {}
       try {
       for (const m of wireMessages) {
         if (!m || wireSeenBefore.has(m) || committed.has(m)) continue;
@@ -12174,6 +12202,54 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * 所以：这句话必须落盘。落进历史的东西切会话、刷新、重启都在。
            */
           const errText = String(err?.message ?? err);
+          /* 【2026-11-12 主人定·上游挂了要静默自动接回】
+           *
+           * 现场：她干活干到一半，上游网关抖一下（502/503/504/52x、断连），
+           * llm 层自己重试过两次（1.2s/2.4s）还是不行，这一轮就死了 ——
+           * 历史里留一条「⚠️ 这一轮断在这儿了：LLM HTTP 503」，主人得自己喊「继续」。
+           * 他要的是：**自动接回，而且静默** —— 不口述、不弹「她说话」式的提示，
+           * 只有连续几次都没接上才给一条系统提示。
+           *
+           * 做法：
+           *   · 上游性质的错误 → 不落 ⚠️ 口述话、不弹错误事件；
+           *   · 记一笔连败账（半小时窗口），没超上限就 scheduleStuckRetry 静默接回
+           *     （它推的那条框架消息 _sysNote=true，她读得到、界面不画）；
+           *   · 超了上限才在历史里落一条 note（系统提示，不冒充谁说话）。
+           *   · 账在正常收尾（commitWireBack）时清零。 */
+          const _upLike = /LLM HTTP (5\d\d|429)|ECONN|fetch failed|socket|network|terminated|temporarily unavailable/i.test(errText);
+          if (_upLike) {
+            const _now = Date.now();
+            const _rec = upFailBook.get(sessionId) || { n: 0, lastAt: 0 };
+            if (_now - _rec.lastAt > UP_FAIL_WINDOW) _rec.n = 0;
+            _rec.n += 1;
+            _rec.lastAt = _now;
+            _rec.lastCode = (errText.match(/LLM HTTP \d+[^\n:：]*/i) || [errText.slice(0, 60)])[0];
+            upFailBook.set(sessionId, _rec);
+            if (_rec.n <= UP_FAIL_MAX) {
+              diagLog('upstream-auto-resume', sessionId + ' 第 ' + _rec.n + ' 次静默接回（' + _rec.lastCode + '）');
+              scheduleStuckRetry(sessionId, {
+                idleMs: 60000,
+                noteText: '（刚才那一轮撞上了上游故障（' + _rec.lastCode + '）。程序等了几秒自己重新接上了——接着做，别问「要继续吗」。）',
+              });
+            } else {
+              diagLog('upstream-auto-resume-give-up', sessionId + ' 连败 ' + _rec.n + ' 次，改报系统提示');
+              try {
+                const _s = getSession(sessionId);
+                if (_s) {
+                  _s.messages.push({
+                    role: 'assistant',
+                    note: true,
+                    content: '',
+                    text: '上游连着 ' + _rec.n + ' 次没接上（' + _rec.lastCode + '）。等一会儿再喊她一声，或者换个模型试试。',
+                    at: Date.now(),
+                    __turnErr: true,
+                  });
+                  saveSession(_s);
+                }
+              } catch {}
+              send({ type: 'error', message: '上游连着 ' + _rec.n + ' 次没接上（' + _rec.lastCode + '）', persisted: true });
+            }
+          } else {
           try {
             const _s = getSession(sessionId);
             const _last = (_s && Array.isArray(_s.messages) && _s.messages.length) ? _s.messages[_s.messages.length - 1] : null;
@@ -12193,6 +12269,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * 「这条已经落进历史了，你别再自己补一颗」—— 屏幕只认落盘的那一条，
            * 轮末换历史时不闪、不双画。 */
           send({ type: 'error', message: errText, persisted: true });
+          }
         }
       }
     } finally {
@@ -12933,6 +13010,12 @@ export function __emitExitForTest(code = 75) {
  * 还要防死循环：上游真挂了的时候，「掐 → 接 → 再掐」能转到天亮。
  * 所以同一会话半小时内最多自动接 2 次，第 3 次就老实停下，把话说清楚。
  * ──────────────────────────────────────────────────────────────── */
+/* 【2026-11-12·上游故障静默自动接回】连败账：sid → { n, lastAt, lastCode }。
+ * 上游挂（5xx/429/断连）不落口述话、不弹错误，静默接回；半小时内连败超过
+ * UP_FAIL_MAX 次才在历史里落一条系统提示。正常收尾（commitWireBack）清零。 */
+const upFailBook = new Map();
+const UP_FAIL_MAX = 3;
+const UP_FAIL_WINDOW = 30 * 60 * 1000;
 const stuckRetryBook = new Map(); // sid → { n, lastAt }
 const STUCK_RETRY_MAX = 2;        // 半小时内最多自动接几次
 const STUCK_RETRY_WINDOW = 30 * 60 * 1000;
@@ -12971,7 +13054,9 @@ function scheduleStuckRetry(sid, info = {}) {
           context: true,      // 框架消息：前端不画成「主人说的话」
           _sysNote: true,
           _at: Date.now(),
-          content: '（刚才那一轮静了 ' + (idleSec || 60) + ' 秒没有动静，我把它掐断，重来一次——接着做。）',
+          /* 【2026-11-12 主人定·自动接回要静默】这条框架消息她读得到、界面不画 ——
+           * 文案按断因给：看门狗掐的用老话；上游挂的自带说明（见 error 分支）。 */
+          content: String(info.noteText || ('（刚才那一轮静了 ' + (idleSec || 60) + ' 秒没有动静，我把它掐断，重来一次——接着做。）')),
         });
         try { saveSession(sess); } catch {}
         diagLog('stuck-retry', sessionId + ' 第 ' + rec.n + ' 次自动接回（静了 ' + idleSec + ' 秒）');

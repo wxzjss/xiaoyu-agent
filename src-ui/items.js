@@ -683,8 +683,16 @@ export function buildMerged(snap) {
         continue;
       }
       if (it.kind === 'assistant' && wantUsageRow) {
-        it.usageRow = true;
-        wantUsageRow = false;
+        /* 【2026-11-12 修·主人问「为什么露了署名但没说话」】
+         * 一轮只跑了工具、一个字没说就断了（上游 503 掐的）——历史里那条
+         * assistant 没有正文，只有用量行挂着：屏幕上一行「进入 · 计时 · tokens」
+         * 孤零零悬着，看着像她签了到却不吭声。规矩：**没说话就没有署名行**。
+         * 用量数字跟着下一句有话的话再挂（wantUsageRow 不清，顺延过去）。 */
+        const _hasTalk = Array.isArray(it.bubbles) && it.bubbles.some((b) => String(b || '').trim());
+        if (_hasTalk) {
+          it.usageRow = true;
+          wantUsageRow = false;
+        }
       }
       items.push(it);
     }

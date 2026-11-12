@@ -8114,8 +8114,11 @@
           continue;
         }
         if (it.kind === "assistant" && wantUsageRow) {
-          it.usageRow = true;
-          wantUsageRow = false;
+          const _hasTalk = Array.isArray(it.bubbles) && it.bubbles.some((b) => String(b || "").trim());
+          if (_hasTalk) {
+            it.usageRow = true;
+            wantUsageRow = false;
+          }
         }
         items.push(it);
       }

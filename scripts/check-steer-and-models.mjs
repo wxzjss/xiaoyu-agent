@@ -53,7 +53,7 @@ console.log('\n二、插话：前端直出成主人气泡（不再走乐观 pend
   ok(/kind: 'user'[\s\S]{0,240}?steer: true/.test(items), 'items.js 直出 kind:\'user\' + steer 标记');
 
   /* interject() 里不许再有 addUser 乐观气泡 —— 有就是双画 */
-  const fnIdx = html.indexOf('async function interject()');
+  const fnIdx = html.search(/async function interject[^{]*\{/);
   ok(fnIdx >= 0, 'public/index.html 里 interject() 还在');
   if (fnIdx >= 0) {
     const seg = html.slice(fnIdx, fnIdx + 6000);

@@ -20,6 +20,7 @@ import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSy
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const require_ = createRequire(import.meta.url);
 
@@ -40,7 +41,7 @@ export function miniDsDir() {
   const cands = [
     join(process.cwd(), 'sandbox', 'mini_ds'),
     join(homedir(), 'AppData', 'Roaming', '小鱼Agent', 'data', 'sandbox', 'mini_ds'),
-    'D:/小鱼Agent/sandbox/mini_ds',
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'sandbox', 'mini_ds'),
   ];
   for (const d of cands) {
     try { if (existsSync(join(d, 'mini_ds.py'))) return d; } catch { /* 不存在就算了 */ }
@@ -57,6 +58,7 @@ export function findPython() {
     join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python313', 'python.exe'),
     join(home, 'AppData', 'Local', 'Programs', 'Python', 'Python314', 'python.exe'),
   ];
+  if (process.env.MINI_DS_DIR) cands.unshift(process.env.MINI_DS_DIR);
   for (const p of cands) {
     try { if (existsSync(p)) return p; } catch { /* 跳过 */ }
   }

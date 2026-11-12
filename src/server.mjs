@@ -19,7 +19,7 @@ import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 import { startSelfwake, stopSelfwake, noteReplied, noteSpoke, shouldFire, getState as selfwakeState } from './selfwake.mjs';
 import { startCron, listTasks, addTask, removeTask, setEnabled as cronSetEnabled, markRan as cronMarkRan, dueTasks } from './cron.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
-import { checkToolDocs, setPeerWake, setRunningProbe, runWithToolContext, tools as allTools } from './tools.mjs';
+import { checkToolDocs, setPeerWake, setPeerDeliver, setRunningProbe, runWithToolContext, tools as allTools } from './tools.mjs';
 import { checkSkills } from './skills.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
@@ -3353,6 +3353,50 @@ async function wakePeer(sessionId) {
   }
   pending.then((err) => { if (err) console.warn('[peer] 叫醒后跑挂了：', err); });
   return { ok: true, note: '已经在后台叫醒她' };
+}
+
+/**
+ * 【2026-11-12 主人钦定·递话即时可见 + 仅AI可见的系统提示形式】
+ *
+ * 主人两条原话：
+ *   「信箱不是即时能看到的，改一下：在运行过程中就类似插话的形式；
+ *     不在运行就走发消息唤醒路径」
+ *   「递话不要以我的署名，要用类似压缩提醒一样的仅AI可见的系统提示形式」
+ *
+ * 两条路：
+ *   · 她正在跑 → steer 进 steps 槽带 _sysNote（agent 循环下一步取走，落成
+ *     context+_sysNote 的系统提示 —— 不打主人署名、前端画成系统提示条），
+ *     同时直播清单立刻推一条 notice（前端马上看见「递了话」，跟压缩提醒同款）。
+ *   · 她没在跑 → 信本来就在信箱里（postMail 落盘的），直接走 wakePeer 叫醒。
+ */
+async function deliverMailNow(to, fromTitle, text) {
+  const turn = runningTurns.get(to);
+  const alive = Boolean(turn && turn.ac && !turn.ac.signal.aborted);
+  const sysText = '（同机伙伴「' + (fromTitle || '另一个会话') + '」给你递了话：「' + String(text || '').slice(0, 2000)
+    + '」。这是程序转交的信，不是主人说的。要回话用 ask_peer 递回去。）';
+  if (alive) {
+    try {
+      steer(to, sysText, { _sysNote: true });
+      diagLog('peer-deliver-live', 'to=' + to + '（在跑，系统提示已插进下一步）');
+    } catch (e) {
+      return { ok: false, note: '插进当前轮失败：' + String(e?.message ?? e) };
+    }
+    /* 直播清单立刻可见（notice → 前端 SysNote 条，跟压缩提醒同款） */
+    try {
+      const lv = liveLogs.get(to);
+      if (lv && Array.isArray(lv.events)) {
+        appendLiveCache(lv, { notice: '「' + (fromTitle || '另一个会话') + '」递来一条话（已插进她当前这轮，仅她可见）', at: Date.now() });
+      }
+    } catch {}
+    return { ok: true, note: '已即时插进她当前这轮（仅AI可见的系统提示）' };
+  }
+  /* 没在跑：信在信箱里，叫醒她 */
+  try {
+    const r = await wakePeer(to);
+    return { ok: Boolean(r && r.ok), note: r && r.ok ? '已叫醒她，她这就去看信箱' : (r && r.note) || '叫醒没成' };
+  } catch (e) {
+    return { ok: false, note: '叫醒出错：' + String(e?.message ?? e) };
+  }
 }
 
 /**
@@ -13720,6 +13764,9 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
   // 为什么用注入：wakePeer 要动 runningTurns、要起 runAgent，这些都在本文件里；
   // 而 tools.mjs 反过来 import server.mjs 就成环了。所以在这里塞进去。
   setPeerWake(wakePeer);
+  // 【2026-11-12 主人钦定·信箱即时递送】deliverMailNow 要动 runningTurns/steer/liveLogs
+  // （全在本文件里），照 setPeerWake 的老办法注入，避免 tools.mjs 反向 import 成环。
+  setPeerDeliver(deliverMailNow);
   // 让 list_peers / 重启前自检能看见「此刻谁在跑」（2026-11-04）
   setRunningProbe(() => [...runningTurns.keys()]);
 

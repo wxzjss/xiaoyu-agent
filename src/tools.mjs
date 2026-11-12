@@ -165,6 +165,8 @@ const CTX = {
   outbox: null,
   signal: null,
   wakePeer: null,
+  /* 【2026-11-12 主人钦定】信箱即时递送：在跑→系统提示插队（仅AI可见）；没在跑→唤醒 */
+  peerDeliver: null,
   /**
    * 往界面推一条事件。
    *
@@ -211,6 +213,16 @@ const CTX = {
  */
 export function setPeerWake(fn) {
   CTX.wakePeer = typeof fn === 'function' ? fn : null;
+}
+
+/**
+ * 注入「信箱即时递送」的实现（2026-11-12 主人钦定）。
+ *
+ * server 端的 deliverMailNow：她在跑 → 信转成【系统提示】插进插话信箱（仅AI可见，
+ * 不打主人署名）；她没在跑 → 走发消息唤醒路径。工具这边只管调。
+ */
+export function setPeerDeliver(fn) {
+  CTX.peerDeliver = typeof fn === 'function' ? fn : null;
 }
 
 /**
@@ -1293,6 +1305,19 @@ export const tools = [
       const r = postMail({ from: me, to: String(to), text, fromTitle: title });
       if (!r.ok) return 'ERROR：没送出去：' + r.error;
       const head = '话已经放进「' + to + '」的信箱了。';
+      /* 【2026-11-12 主人钦定·信箱即时递送】不再「等她下次说话」：
+       * 她在跑 → 系统提示形式插进去（仅AI可见，不打主人署名）；她没在跑 → 直接叫醒。
+       * 两条路由 server 的 deliverMailNow 办，不再要显式 wake 传参。 */
+      const deliver = ctxNow().peerDeliver;
+      if (typeof deliver === 'function') {
+        try {
+          const d = await deliver(String(to), title, text);
+          if (d && d.ok) return head + '（已即时递到：' + (d.note || '她这就看到') + '）';
+          return head + '（即时递送没成：' + ((d && d.note) || '未知原因') + '。信留在信箱里，她下次说话时会看到）';
+        } catch (e) {
+          return head + '（即时递送出错：' + String(e?.message ?? e) + '。信留在信箱里，她下次说话时会看到）';
+        }
+      }
       if (!wake) {
         return head + '她下次说话时会看到（不打断她现在手上的活）。';
       }

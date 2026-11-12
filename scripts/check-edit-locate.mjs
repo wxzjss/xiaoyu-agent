@@ -50,8 +50,8 @@ const ok = (name, cond, extra = '') => {
   const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf-8');
   ok('/api/sessions/edit 收 msgAt', /pathname === '\/api\/sessions\/edit'[\s\S]{0,200}msgAt/.test(server));
   ok('editMessage 调用带第四参 msgAt', /editMessage\(session, at, text, msgAt\)/.test(server));
-  ok('/api/sessions/message-delete 收 msgAt 且 locateByMsgAt 定位',
-    /pathname === '\/api\/sessions\/message-delete'[\s\S]{0,900}locateByMsgAt\(all, msgAt/.test(server));
+  ok('/api/sessions/message-delete 收 msgAt 且按有效视图下标定位',
+    /pathname === '\/api\/sessions\/message-delete'[\s\S]{0,900}msgAt[\s\S]{0,900}effectiveIndexes\(all, loadRewinds/.test(server));
 }
 
 /* ── ④ 前端三处气泡 + 删除按钮都把时间戳带上 ─────────────── */

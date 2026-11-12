@@ -36,16 +36,18 @@ ok('合并落盘留了 diag 痕迹',
   /send-buffer-merge/.test(server));
 
 /* ── ③ 前端缓冲窗 ─────────────────────────────────────── */
-ok('点【发送】走 sendBuffered（回车不受影响）',
-  /if \(!busy\) return sendBuffered\(\);/.test(html));
-ok('回车键照旧走 send()（直接发，不缓冲）',
-  /if \(!busy\) send\(\);\s*\n\s*else queueFromInput\(\);/.test(html));
+ok('点【发送】统一走 sendBuffered（busy 分派在函数内；金框那路已死）',
+  /sendBtn\.onclick[\s\S]{0,900}return sendBuffered\(\);/.test(html));
+ok('回车：没在跑 send()，在跑直接插话 interject()（金框那路死掉，主人钦定）',
+  /if \(!busy\) send\(\);\s*\n\s*else interject\(\);/.test(html));
 ok('缓冲窗打字顺延：_holdPat 每键 +1 秒',
   /function _holdPat\(\)[\s\S]{0,200}deadline \+ 1000[\s\S]{0,120}firstAt \+ st\.maxMs/.test(html));
 ok('keydown 里挂了 _holdPat',
   /try \{ _holdPat\(\); \} catch/.test(html));
-ok('到点一次性发：_holdFire 带 _extraMsgs',
-  /_holdFire[\s\S]{0,900}_extraMsgs: extras/.test(html));
+ok('到点一次性发：_holdFire 带 _extraMsgs（没在跑）',
+  /_holdFire[\s\S]{0,1400}_extraMsgs: extras/.test(html));
+ok('到点她还在跑：整包合成一条走插话通道（不许 409 丢话）',
+  /_holdFire[\s\S]{0,700}if \(busy\)[\s\S]{0,600}await interject\(\{ text: merged, atts: allAtts \}\);/.test(html));
 ok('缓冲中的乐观显示不画两遍（_skipUserDraw）',
   html.includes('_skipUserDraw = false') && /if \(!_skipUserDraw\) \{[\s\S]{0,300}pendingRewindBubble = addUser\(text/.test(html));
 ok('缓冲窗开着时按回车 = 立刻连缓冲一起发',

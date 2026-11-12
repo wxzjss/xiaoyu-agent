@@ -10543,6 +10543,19 @@ async function _holdFire() {
     text: m.text,
     attachments: (m.atts || []).map((a) => ({ path: a.path, name: a.name, kind: a.kind })),
   }));
+  /* 【2026-11-12 加·busy 分派】到点时她还在跑的话 runTurn 会被服务端 409 挡回
+   * （「这个会话还在跑」），整包话就丢了。改走插话通道：把整包合成一条
+   * （正文拼接、附件全并），交给 interject 织进当前轮 —— 主人看到的还是
+   * 「一次性把话说完」，只是以插话形式进她的上下文。 */
+  if (busy) {
+    const parts = [first.text].concat(extras.map((m) => m.text)).filter((t) => String(t || '').trim());
+    const merged = parts.join('\\n\\n');
+    const allAtts = (first.atts || []).concat(...extras.map((m) => m.atts || []));
+    try {
+      await interject({ text: merged, atts: allAtts });
+    } catch (e) { /* interject 自己会兜错 */ }
+    return;
+  }
   try {
     await runTurn({ text: first.text, attachments: first.atts || [], _skipUserDraw: true, _extraMsgs: extras });
   } catch (e) { /* runTurn 自己会兜错 */ }
@@ -10550,7 +10563,9 @@ async function _holdFire() {
 
 /** 预发送：点【发送】按钮走这条（回车走 send() 不缓冲）。 */
 async function sendBuffered() {
-  if (busy) { queueFromInput(); return; }
+  /* 【2026-11-12 主人报·金框】busy 时不再进金色待发送框（那机制已死），
+   * 照常开缓冲窗 —— 到点 _holdFire 看 busy 分派：没在跑 runTurn 一次全发，
+   * 还在跑就把整包当一条插话（/api/interject）织进当前轮。 */
   const text = input.value.trim();
   if (!text && !attachments.length) { toast('（输入框是空的）'); return; }
   if (!sessionId) {
@@ -10640,17 +10655,23 @@ async function send() {
  * 0.9.26 最短，而且分工清楚 ——
  *   服务端只负责「话落盘」；「接着跑」由这里根据 running 字段决定。
  */
-async function interject() {
-  const text = input.value.trim();
+async function interject(_passed = null) {
+  /* 【2026-11-12 加·_passed】缓冲窗到点她还在跑时，_holdFire 把整包传进来走插话通道
+   * （服务端 /api/interject 对在跑的会话就是干这个的）；不传 = 老行为，从输入框取。 */
+  const text = _passed ? String(_passed.text || '') : input.value.trim();
   /* 【2026-11-05 修·插话丢图】
    * 主人报：「拖图 + 打字 + 发送，只发出文字，图没了」。
    * 生成中点发送走的是插话这条路，而插话原来只带 text —— 附件从头没被读。
    * 现在先把它抓住，再清空输入区。
    * 另外原来 `!text` 就直接 return：只拖图不打字时，图会静悄悄消失，连提示都没有。 */
-  const atts = attachments.slice();
+  const atts = _passed ? (_passed.atts || []).slice() : attachments.slice();
   if (!busy || (!text && !atts.length)) return;
-  input.value = '';
-  clearDraft();   // 插话发出去也算发了
+  if (_passed) {
+    // 外部传入（缓冲窗）：不动输入框和全局附件 —— 那些不是这次的内容
+  } else {
+    input.value = '';
+    clearDraft();   // 插话发出去也算发了
+  }
   autosizeInput();
   attachments = [];
   renderAttachBar();
@@ -10926,8 +10947,7 @@ sendBtn.onclick = () => {
    * （缓冲窗：等一拍，期间打字/再点都顺延，到点一次性发，窗里不算插话）。
    * 功能页关掉「发送缓冲」时，按钮退回跟回车一样直接发。
    */
-  if (!busy) return sendBuffered();
-  if (input.value.trim() || attachments.length) return queueFromInput();
+  return sendBuffered();   /* busy 与否都在 sendBuffered 里分派（见函数头注释） */
 };
 /* 【2026-11-05 加】独立停止键：不管输入框里有没有字，点它就是停。 */
 try {
@@ -11002,19 +11022,22 @@ input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !String(input.value || '').trim() && attachments.length) {
       e.preventDefault();
       /* 【2026-11-11 主人定·跟点【发送】完全一致】没在跑就正常发，在跑就直接插话 */
+      /* 【2026-11-12 主人报·回车冒金色待发送框】busy 时走直接插话，金框那路死掉 */
       if (!busy) send();
-      else queueFromInput();
+      else interject();
     }
     return;
   }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     if (!String(input.value || '').trim() && !attachments.length) return;  // 空消息不发（send 里也挡了一次）
-    /* 【2026-11-11 主人定·预发送机制整个删除】
-     * 回车跟点【发送】走同一条路：没在跑 → send()；在跑 → interject()（直接插话）。
-     * 以前 busy 时会先收进「待发送」队列、等这一轮结束自动发 —— 那套已整段删掉。 */
+    /* 【2026-11-11 主人定 + 2026-11-12 补】回车跟点【发送】走同一条路：
+     * 没在跑 → send()；在跑 → interject()（直接插话）。
+     * 【2026-11-12 修·主人报「按回车有时还出预发送金框」】在跑那支原来写的是
+     * queueFromInput() —— 那是 11-11 就该删掉的待发送队列，话被收进金色框
+     * 还得再点一次【直接发送】。现在改成直接插话，跟注释许诺的行为对齐。 */
     if (!busy) send();
-    else queueFromInput();
+    else { try { interject(); } catch (e) {} }
   }
 });
 /**
@@ -19670,7 +19693,65 @@ if (mdlDiscoverBtn) {
    *   · 不通 → 自动去拉真实列表（runDiscover），并把原因写清楚，
    *     让主人一点下拉就能选到能用的那个，而不是自己去猜后缀
    */
-  window.__mdlQuietProbe = async (model) => {
+  /* ---------------------------------------------------------------------------
+ * 模型列表里每行那个「测连通」。
+ * 普通模型：照老样子打一次 /api/models/test，通就绿、不通就红。
+ * 本机 DeepSeek：连不上就自己查原因——
+ *   · 服务没起 → 自动起
+ *   · 没 token  → 自动去内置浏览器捞，捞不到就开登录页
+ *   · token 过期 / 地址 key 对不上 → 自动重新对齐再测一次
+ * 修好之后再测一遍，通了就静默（只把行上的小字变成「通了」），不再弹任何提示。
+ * ------------------------------------------------------------------------- */
+window.__mdlRowTest = async (name) => {
+  const model = (mdlState.models || []).find((m) => (m.name || m.model) === name);
+  if (!model) return { ok: false, error: '没找到这个模型' };
+
+  const isLocal = String(model.id || model.model || '') === 'local-deepseek'
+    || /127\.0\.0\.1:8321/.test(String(model.baseURL || model.base || ''));
+
+  const probeOnce = async () => {
+    const r = await fetch('/api/models/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: model.id, name: model.name, model: model.model, baseURL: model.baseURL || model.base, apiKey: model.apiKey || model.key }),
+    });
+    return jsonOrError(r).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  };
+
+  const first = await probeOnce();
+  if (first && first.ok) return { ok: true, ms: first.ms, fixed: false };
+
+  if (!isLocal) return { ok: false, error: (first && first.error) || '连不上' };
+
+  // ---- 本机 DeepSeek：查原因、自动修 ----
+  const why = (first && first.error) || '';
+  let reason = 'down';
+  try {
+    const st = await localDeepSeekGet('/api/mini-deepseek/status');
+    if (st && st.needLogin) reason = 'no-token';
+    else if (st && st.up) reason = 'token';
+    else if (st && st.programFound === false) reason = 'no-program';
+  } catch { /* 查不到就按服务没起处理 */ }
+
+  // 没 token 或者服务没起：直接让后端一把拉起（它会自己取 token / 开登录页）
+  const st2 = await localDeepSeekEnsure();
+  if (st2 && st2.error) return { ok: false, error: st2.error, reason };
+  if (!(st2 && st2.up)) return { ok: false, error: (st2 && st2.error) || '服务没起来', reason };
+
+  // 对齐一次地址 / key / 模型名（可能 token 换了、地址写歪了）
+  const done = await localDeepSeekApply({ id: model.id, name: model.name });
+  if (done && !done.error) mdlState = done.state || mdlState;
+
+  const second = await probeOnce();
+  if (second && second.ok) {
+    mdlState = mdlState || {};
+    paintModels();
+    return { ok: true, ms: second.ms, fixed: true, reason, why };
+  }
+  return { ok: false, error: (second && second.error) || why || '还是连不上', reason, fixed: false };
+};
+
+window.__mdlQuietProbe = async (model) => {
     const base = (mdlBase && mdlBase.value ? mdlBase.value : '').trim();
     if (!base || !model) return;
     const key = (mdlKey && mdlKey.value ? mdlKey.value : '').trim();
@@ -20022,6 +20103,39 @@ function paintModels() {
       edit.type = 'button';
       edit.className = 'mini edit';
       edit.textContent = '编辑';
+
+      // 每行一个「测连通」：本机 DeepSeek 连不上会自己查原因、自己修好。
+      const tst = document.createElement('button');
+      tst.type = 'button';
+      tst.className = 'mdl-btn ghost';
+      tst.textContent = '测连通';
+      tst.title = '试一下这个模型能不能用';
+      tst.onclick = async () => {
+        tst.disabled = true;
+        const old = tst.textContent;
+        tst.textContent = '测...';
+        try {
+          const r = await window.__mdlRowTest(model.name || model.model);
+          if (r && r.ok) {
+            tst.textContent = r.fixed ? '修好了' : '通了';
+            tst.style.color = '#4ade80';
+            var _m = (mdlState.models || []).find(function (x) { return (x.name || x.model) === (model.name || model.model); });
+            if (_m) _m.__health = 'ok';
+          } else {
+            tst.textContent = '不通';
+            tst.style.color = '#f87171';
+            tst.title = (r && r.error) || '连不上';
+            var _m2 = (mdlState.models || []).find(function (x) { return (x.name || x.model) === (model.name || model.model); });
+            if (_m2) _m2.__health = 'bad';
+          }
+        } catch (e) {
+          tst.textContent = '不通';
+          tst.style.color = '#f87171';
+          tst.title = String((e && e.message) || e);
+        } finally {
+          setTimeout(() => { tst.disabled = false; tst.textContent = old; tst.style.color = ''; }, 2200);
+        }
+      };
       edit.title = m.source === 'env'
         ? '改这条（改完会存成一套独立配置，不再跟着 .env 走）'
         : '改名字 / 接口地址 / 模型名 / Key';
@@ -20047,7 +20161,7 @@ function paintModels() {
         paintModels();
         syncHealth();
       };
-      acts.append(edit, del);
+      acts.append(edit, tst, del);
       row.appendChild(acts);
     }
 

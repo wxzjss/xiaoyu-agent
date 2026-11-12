@@ -99,7 +99,7 @@ const _upstreamDown = (() => {
   const errs = ev1.filter((e) => e && e.type === 'error');
   if (!errs.length) return '';
   const m = String(errs[0].message || '');
-  if (/40[123]\b|Insufficient|Balance|quota|额度|余额|限流|rate.?limit/i.test(m)) return m;
+  if (/40[1238]\b|Insufficient|Balance|quota|额度|余额|限流|rate.?limit|budget exhausted|upstream/i.test(m)) return m;
   return '';
 })();
 if (_upstreamDown) {

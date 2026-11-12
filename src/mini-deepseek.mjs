@@ -87,28 +87,97 @@ export function findPython() {
  *
  * 返回 { token } 或 { error }。token 只在内存里过，不写文件。
  */
-export function readDeepSeekToken() {
-  const candidates = [];
-  const push = (p) => { if (p) candidates.push(p); };
-  // 内置浏览器用的是小鱼 Agent 自己的 profile
+
+// ─────────────────────────────────────────── token 缓存（2026-11-12 修冻死）
+//
+// 【为什么必须缓存】readDeepSeekToken() 是同步扫整个 leveldb 目录：几百个文件
+// 加压缩块，扫一遍几十秒。原来 localHealth() 每次调用（前端 2 秒轮一次）
+// 都同步跑一遍，把 node 事件循环彻底堵死 —— 表现是 /api/health 都不应答。
+// 现在：只有 ensure/start 这种真的要用 token 的地方才扫，其余读缓存。
+let _tokenCache = { token: '', at: 0 };
+let _tokenInflight = null;
+const TOKEN_CACHE_MS = 60 * 1000;   // 新鲜期：一分钟内直接用
+const TOKEN_STALE_MS = 30 * 60 * 1000; // 过期但还能顶着的宽限期
+
+// 只读缓存，绝不触发扫描。【localHealth 这类要高频调的地方必须用这个】
+// 缓存空着就返回空 —— 宁可显示"未登录"，也绝不阻塞事件循环。
+function readDeepSeekTokenCached(force = false) {
+  return _tokenCache;
+}
+
+// 异步刷新：后台跑，不阻塞任何请求。多少请求同时来都只跑一次。
+function refreshTokenAsync() {
+  if (_tokenInflight) return _tokenInflight;
+  _tokenInflight = new Promise((resolve) => {
+    try {
+      readDeepSeekTokenAsync().then((got) => {
+        _tokenCache = { token: (got && got.token) || '', at: Date.now(), detail: got };
+        resolve(_tokenCache);
+      }).catch(() => resolve(_tokenCache));
+    } catch { resolve(_tokenCache); }
+  }).finally(() => { _tokenInflight = null; });
+  return _tokenInflight;
+}
+
+// 同步版本（只给 ensureToken 用，它会 await 异步版）
+function readDeepSeekTokenSync() {
+  return readDeepSeekToken();
+}
+
+// 异步版本：用 spawn 而不是 spawnSync，事件循环照常转。
+function readDeepSeekTokenAsync() {
+  return new Promise((resolve) => {
+    const candidates = tokenDirs();
+    const py = findPython();
+    const script = join(miniDsDir(), 'get_token.py');
+    if (existsSync(script)) {
+      let out = '';
+      let done = false;
+      const finish = (tk) => {
+        if (done) return;
+        done = true;
+        if (looksLikeToken(tk)) return resolve({ token: tk });
+        // python 失败 → 同步兜底扫（这时目录已经知道不大）
+        try { resolve(readDeepSeekTokenSyncFallback(candidates)); } catch { resolve({ token: '' }); }
+      };
+      try {
+        const cp = spawn(py, [script], { windowsHide: true });
+        const t = setTimeout(() => { try { cp.kill(); } catch {} finish(''); }, 20000);
+        cp.stdout && cp.stdout.on('data', (d) => { out += d.toString('utf8'); });
+        cp.on('error', () => { clearTimeout(t); finish(''); });
+        cp.on('close', () => {
+          clearTimeout(t);
+          const tk = out.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).pop() || '';
+          finish(tk);
+        });
+        return;
+      } catch { /* 落到兜底 */ }
+    }
+    try { resolve(readDeepSeekTokenSyncFallback(candidates)); } catch { resolve({ token: '' }); }
+  });
+}
+
+function tokenDirs() {
+  const c = [];
+  const push = (p) => { if (p && c.indexOf(p) < 0) c.push(p); };
   push(join(homedir(), 'AppData', 'Roaming', '小鱼Agent', 'Local Storage', 'leveldb'));
   push(join(homedir(), 'AppData', 'Roaming', '小鱼Agent', 'Partitions', 'persist', 'main', 'Local Storage', 'leveldb'));
   push(join(homedir(), 'AppData', 'Roaming', '小鱼Agent', 'data', 'Local Storage', 'leveldb'));
+  return c;
+}
 
-  // 先交给 get_token.py 扒 —— 那边会 snappy 解压 + UTF-16LE 兜底，
-  // 光在 utf8 明文里搜会漏掉压缩块里的 token（试过，会漏）。
-  const py = findPython();
-  const script = join(miniDsDir(), 'get_token.py');
-  if (existsSync(script)) {
-    try {
-      const r = spawnSync(py, [script], {
-        encoding: 'utf8', timeout: 20000, windowsHide: true,
-      });
-      const out = String((r && r.stdout) || '').trim();
-      const tk = out.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).pop() || '';
-      if (looksLikeToken(tk)) return { token: tk };
-    } catch { /* 落到下面自己扫 */ }
-  }
+
+// 兼容：外部还要同步版时给它纯扫描（不 spawn python，不会长时间堵）
+export function readDeepSeekToken() {
+  try { return readDeepSeekTokenSyncFallback(tokenDirs()); } catch { return { token: '' }; }
+}
+
+export function invalidateTokenCache() {
+  _tokenCache = { token: '', at: 0 };
+}
+
+// 纯 JS 扫描兜底：不调 python，不 spawn。给异步版本失败时用。
+function readDeepSeekTokenSyncFallback(candidates) {
 
   for (const dir of candidates) {
     let files = [];
@@ -214,7 +283,7 @@ export async function probeLocalService(timeoutMs = 1500) {
 }
 
 /** 起服务。已经在跑就直接说在跑。 */
-export async function startLocalService({ token } = {}) {
+export async function startLocalService({ token, opener, waitMs } = {}) {
   const already = await probeLocalService(900);
   if (already.up) return { ok: true, already: true, ids: already.ids };
 
@@ -223,9 +292,15 @@ export async function startLocalService({ token } = {}) {
 
   let tk = String(token || '').trim();
   if (!tk) {
-    const got = readDeepSeekToken();
-    if (!got.token) return { ok: false, reason: 'no-token', error: got.error || '取不到 token' };
-    tk = got.token;
+    let got = await refreshTokenAsync();
+    // __LOGIN_HOOK__ 【2026-11-12】没 token 不是直接失败：开内置浏览器登录页，等十分钟。
+    if (!got.token) {
+      const w = await waitForLogin({ opener, waitMs });
+      if (!w.ok) return { ok: false, reason: w.reason, error: w.error || '没登录 DeepSeek' };
+      tk = w.token;
+    } else {
+      tk = got.token;
+    }
   }
 
   const py = findPython();
@@ -261,7 +336,10 @@ export async function startLocalService({ token } = {}) {
   for (let i = 0; i < 40; i += 1) {
     await new Promise((r) => setTimeout(r, 500));
     const p = await probeLocalService(800);
-    if (p.up) return { ok: true, started: true, ids: p.ids };
+    if (p.up) {
+      invalidateTokenCache();
+      return { ok: true, started: true, ids: p.ids };
+    }
     if (!st.proc) break;
   }
   const tail = st.logTail.slice(-6).join('\n');
@@ -331,7 +409,7 @@ export async function localHealth(timeoutMs = 1500) {
     ids: p.ids ?? [],
     owned: !!st.proc,
     waitingLogin: st.waitingLogin,
-    hasToken: !!readDeepSeekToken().token,
+    hasToken: !!readDeepSeekTokenCached().token,
     base: MINI_DS_BASE,
     key: MINI_DS_KEY,
     model: MINI_DS_MODEL,

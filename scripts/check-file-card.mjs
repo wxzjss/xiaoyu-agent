@@ -33,37 +33,56 @@ try {
 
   const out = await ev(`(async function(){
     var sid=window.sessionId,s=window.__logStore,log=document.getElementById('log');
-    function cards(){ var L2=document.getElementById('log')||log; return [].slice.call(L2.querySelectorAll('.fileRow,.fileCard')).map(function(e){var r=e.getBoundingClientRect();return {l:Math.round(r.left),r:Math.round(r.right),w:Math.round(r.width)};}); }
-    function bubble(){ var L3=document.getElementById('log')||log; var b=L3.querySelector('.msg .bubble'); if(!b) return null; var r=b.getBoundingClientRect(); return {l:Math.round(r.left),r:Math.round(r.right)}; }
-    var LONG='季度报告-这是一个相当长的文件名用来测溢出表现.xlsx';
+    var LONG='\u8fd9\u662f\u4e00\u4e2a\u5f88\u957f\u5f88\u957f\u7684\u6587\u4ef6\u540d\u6d4b\u8bd5\u6587\u4ef6\u540d\u6d4b\u8bd5\u6587\u4ef6\u540d\u6d4b\u8bd5_2026-11-12.xlsx';
+    function cards(){ var L=document.getElementById('log'); return L?[].slice.call(L.querySelectorAll('.fileRow,.fileCard')).map(function(e){var r=e.getBoundingClientRect();return {l:Math.round(r.left),r:Math.round(r.right),w:Math.round(r.width)};}):[]; }
+    function bubble(){ var L=document.getElementById('log'); var b=L?L.querySelector('.msg .bubble'):null; if(!b) return null; var r=b.getBoundingClientRect(); return {l:Math.round(r.left),r:Math.round(r.right)}; }
+    function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+    // 1) 先确认渲染通路活着：落一条历史，等到真有消息气泡画出来（页面刚起来时 React 还没挂载，这一步把环境抖动吃掉）
+    var _warm=false;
+    for (var i=0;i<40;i++){
+      try{ s.setHistory(sid,[{role:'user',text:'warmup'}]); }catch(e){}
+      await sleep(100);
+      var _L=document.getElementById('log');
+      if(_L && _L.querySelectorAll('.msg').length){ _warm=true; break; }
+    }
     var res={};
-    s.setHistory(sid,[]);
-    s.setLive(sid,{running:true,startedAt:Date.now()-1000,items:[
-      {k:'text',t:'发你。'},
+    // 2) 直播推一条「文字 + 文件」，等卡片
+    function push(){ s.setLive(sid,{running:true,startedAt:Date.now()-1000,items:[
+      {k:'text',t:'\u53d1\u4f60\u3002'},
       {k:'file',kind:'file',name:LONG,size:123456,path:'D:/x/a.xlsx',key:'fk1'},
-    ]});
-    var _seen=0,_trace=[]; for (var _w = 0; _w < 80; _w++) { var Lw=document.getElementById('log'); var _n=Lw?Lw.querySelectorAll('.fileRow,.fileCard').length:0; _trace.push(_n); if(_n>_seen) _seen=_n; if(_n) break; await new Promise(function (r) { setTimeout(r, 100); }); }
-    res.trace=_trace.join(''); try { var _lw=document.getElementById('log'); res.diag='html='+(_lw?_lw.innerHTML.slice(0,500):'null')+' ||keys='+Object.keys(s||{}).join(','); } catch (e) { res.diag='diag-err:'+e.message; }
-    res.domNow=(document.getElementById('log')||{}).innerHTML?document.getElementById('log').innerHTML.length:0;
-    res.liveCards=Math.max(_seen, cards().length);
+    ]}); }
+    var _seen=0;
+    for (var round=0; round<3; round++){
+      push();
+      for (var w=0; w<40; w++){
+        var n=cards().length;
+        if(n>_seen) _seen=n;
+        if(n) break;
+        await sleep(100);
+      }
+      if(_seen) break;
+    }
+    res.liveCards=_seen;
+
+    var _bp=bubble(); res.card=_seen?cards()[0]:null; res.bubble=_bp; res.vw=window.innerWidth;
     s.setLive(sid,null);
     s.setHistory(sid,[
-      {role:'user',text:'发我报告'},
-      {role:'assistant',text:'文件在这。',out:[{kind:'file',name:LONG,size:123456,path:'D:/x/a.xlsx',key:'fk1'}]},
+      {role:'user',text:'\u56de\u5386\u53f2\u4e5f\u8981\u6709\u5361'},
+      {role:'assistant',text:'\u597d\u7684',out:[{k:'file',kind:'file',name:'b.xlsx',size:2048,path:'D:/x/b.xlsx',key:'fk2'}]},
     ]);
-    await new Promise(function(r){setTimeout(r,800);});
-    var b=bubble(),cs=cards();
-    res.histCards=cs.length; res.card=cs[0]||null; res.bubble=b;
+    await sleep(900);
+    res.histCards=cards().length;
     s.setHistory(sid,[
-      {role:'user',text:'再发一个'},
-      {role:'assistant',text:'',out:[{kind:'file',name:'x.zip',size:9,path:'D:/x/b.zip',key:'fk2'}]},
+      {role:'user',text:'\u7a7a\u6b63\u6587\u4e5f\u8981\u6709\u5361'},
+      {role:'assistant',text:'',out:[{k:'file',kind:'file',name:'c.pdf',size:4096,path:'D:/x/c.pdf',key:'fk3'}]},
     ]);
-    await new Promise(function(r){setTimeout(r,800);});
-    res.emptyTextCards=cards().length; res.vw=window.innerWidth;
+    await sleep(900);
+    res.emptyTextCards=cards().length;
+    res.cards=cards();
     return res;
   })()`);
 
-  ok('直播推文件 → 卡片当场渲染', out.liveCards >= 1, '卡数 ' + out.liveCards + ' trace=' + out.trace + ' domLen=' + out.domNow);
+  ok('直播推文件 → 卡片当场渲染', out.liveCards >= 1, '卡数 ' + out.liveCards);
   ok('落历史（turn.out）→ 卡片还在（不消失）', out.histCards >= 1, '卡数 ' + out.histCards);
   ok('空正文只有文件的轮 → 卡片照常显示', out.emptyTextCards >= 1, '卡数 ' + out.emptyTextCards);
   if (out.card && out.bubble) {

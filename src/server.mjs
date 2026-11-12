@@ -1,4 +1,4 @@
-﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
+// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile, open as pvOpen } from 'node:fs/promises';
@@ -2656,6 +2656,8 @@ const LIVE_CAP_NOTICE_TEXT = '本轮内容太多（超过 ' + LIVE_MAX_EVENTS + 
 // In-flight turns: sessionId -> { ac: AbortController, done: Promise<void> }
 // 插话要先 abort，再等这一轮真的收尾（历史写完盘）后才能把新话接上去。
 const runningTurns = new Map();
+/** 【2026-11-12】重启去重闸：sid -> 上次发起重启的时间戳。 */
+const __restartGuard = new Map();
 
 /** 小鲸中途插话的节流时间戳（每会话一个用不上，全局一个够了 —— 她一开口就是整个界面看得见）。 */
 let lastWhaleTickAt = 0;
@@ -9012,6 +9014,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     if (process.env.XIAOYU_DESKTOP !== '1') {
       return json(res, 501, { ok: false, error: '这个窗口不是从桌面图标打开的，没法自己重启' });
     }
+
     /**
      * 【主动重启也要能续跑】
      *
@@ -9033,6 +9036,42 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     try {
       _b = (req && req.__xyBody) ? req.__xyBody : await body(req).catch(() => ({}));
       _reqSid = String(_b?.sessionId || '');
+      {
+        /**
+         * 【2026-11-12 加·同一个会话连着要求重启，第二次不许再杀一次】
+         *
+         * 主人报过「话说到一半突然停下、断点停在上一句」。查日志（diag.log 2026-11-12T08:3x）：
+         *   16:35:14 quit → 记断点 → 16:35:15 重开 → 16:35:25 自动续跑 → 16:35:50 又被要求重启
+         *   → 续跑正好跑到一半被掐 → [resume-fail] quit → 界面上留了个「断在上一句」。
+         *
+         * 根子：这条接口不挡「同一个会话自己在短时间内反复要求重启」。第一次杀完、新进程
+         * 刚把上一轮续上，第二次的请求一到，续跑又被打断 —— 看上去就像我自己说着说着停了。
+         *
+         * 加一道闸：同一个会话 45 秒内已经发起过重启，就直接回 202，不杀任何东西。
+         * 45 秒是「机器重启 + 续跑起步」那段时间的保守上限。
+         */
+        try {
+          const _nowRs = Date.now();
+          if (_reqSid) {
+            const _last = __restartGuard.get(_reqSid) || 0;
+            if (_nowRs - _last < 45000) {
+              console.log('[restart] 同一会话 ' + Math.round((_nowRs - _last) / 1000) + ' 秒前刚重启过，这次不重复杀：' + _reqSid);
+              return json(res, 202, {
+                ok: true,
+                skipped: true,
+                reason: 'same-session-recent-restart',
+                waitedMs: _nowRs - _last,
+                note: '这个会话 ' + Math.round((_nowRs - _last) / 1000) + ' 秒前刚重启过，这次不再重启一次（免得把刚续上的那一轮又掐断）。',
+              });
+            }
+            __restartGuard.set(_reqSid, _nowRs);
+            if (__restartGuard.size > 200) {
+              const _cut = _nowRs - 600000;
+              for (const [k, v] of __restartGuard) if (v < _cut) __restartGuard.delete(k);
+            }
+          }
+        } catch (e) { console.warn('[restart] 去重闸出错（不影响重启）：', String(e && e.message || e)); }
+      }
       const _want = _reqSid;
       /**
        * 【认谁在跑，不认谁最后聊过】
@@ -9956,6 +9995,18 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         history.push(userMsg);
         userMsgRef = userMsg;
       }
+      /* 【2026-11-12 修·give-up 之后主人说话她彻底装死（smwc7bg8fo4ky 实锤）】
+       * 上游连挂时 stuckRetryBook 涨满 → give-up 之后谁都不接。可主人**亲自**
+       * 发消息 = 人力介入了 = 必须重新给额度，不能拿「自动重试失败太多次」的账
+       * 去惩罚主人亲手打的字 —— 那几句 502 之后连 llm 层的重试都不走，石沉大海。
+       * 这里把两本账都清了（_sysNote 的框架消息不走这儿，自动循环的额度不受影响）。 */
+      try {
+        if (userMsg._sysNote !== true) {   // 主人的插话（_steer）也算亲自说话，一并重置
+          stuckRetryBook.delete(sessionId);
+          upFailBook.delete(sessionId);
+          diagLog('retry-budget-reset', sessionId + ' 主人亲自说话，自动接回额度重置');
+        }
+      } catch {}
       /* 两个条件都要：这是第一句，而且现在的标题还空着/是默认名/短得不像名字。 */
       if (firstUserTurn && _titleAutoOk) session.title = titleFromMessage(message);
     }
@@ -13105,8 +13156,10 @@ const upFailBook = new Map();
 const UP_FAIL_MAX = 3;
 const UP_FAIL_WINDOW = 30 * 60 * 1000;
 const stuckRetryBook = new Map(); // sid → { n, lastAt }
-const STUCK_RETRY_MAX = 2;        // 半小时内最多自动接几次
+const STUCK_RETRY_MAX = 10;       // 半小时内最多自动接几次（主人钦定 10；太少：上游持续挂时两下用光，主人完全无感）
 const STUCK_RETRY_WINDOW = 30 * 60 * 1000;
+/* give-up 之后给主人落的那条 note 别刷屏：同一会话 30 分钟内只落一次 */
+const gaveUpNoted = new Map();    // sid → lastAt
 
 function scheduleStuckRetry(sid, info = {}) {
   const sessionId = String(sid || '');
@@ -13117,6 +13170,26 @@ function scheduleStuckRetry(sid, info = {}) {
 
   if (rec.n >= STUCK_RETRY_MAX) {
     diagLog('stuck-retry-give-up', sessionId + ' 半小时内已经自动接过 ' + rec.n + ' 次还是停，不再硬接了');
+    /* 【2026-11-12 修·主人报「莫名其妙就停了」】give-up 之后历史上什么都没有，
+     * 她看起来就像人间蒸发 —— 至少给主人留一句话（一次性，30 分钟不重复）。 */
+    try {
+      const _last = gaveUpNoted.get(sessionId) || 0;
+      if (now - _last > STUCK_RETRY_WINDOW) {
+        gaveUpNoted.set(sessionId, now);
+        const _s = getSession(sessionId);
+        if (_s) {
+          _s.messages.push({
+            role: 'assistant',
+            note: true,
+            content: '',
+            text: '（上游连着几次都没接上，自动重试的额度用完了，先停在这儿。主人再喊我一声就接着来。）',
+            at: now,
+            __turnErr: true,
+          });
+          try { saveSession(_s); } catch {}
+        }
+      }
+    } catch {}
     return;
   }
   rec.n += 1;

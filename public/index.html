@@ -2674,6 +2674,10 @@
     /* ---- 会话记忆 ------------------------------------------------------ */
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
     .featList { padding: 8px; }
+    /* 【2026-11-12 旁观者模式卡】展开的选人区：缩进一点表示「卡里的内容」，
+       行本身复用 .featRow，不加边框免得看起来像第二张卡。 */
+    .specSub { padding: 2px 10px 10px 26px; }
+    .specSub .featRow { padding-top: 9px; padding-bottom: 9px; }
   .naLab { display: block; margin: 8px 0; font-size: 13px; }
   .naLab input, .naLab textarea { display: block; width: 100%; margin-top: 4px; }
     .featRow {
@@ -3750,14 +3754,9 @@
         <div class="frBody" id="featReportBody"></div>
       </div>
       <div class="featScroll">
-        <!-- 【2026-11-12 旁观者模式·主人定】按会话挑谁能在旁边随时插一句：
-             默认关闭（不选人=关）；旁观者不能跟本会话干活的主智能体相同；
-             旁观者说话时名字旁带「旁观」小牌；纯闲聊（没跑工具）不插话。 -->
-        <div class="sessTop sessTools" id="specBar" style="align-items:center;gap:8px;flex-wrap:wrap;">
-          <b style="font-size:12.5px;">旁观者模式（本会话）</b>
-          <span class="hint" id="specHint" style="flex:1 1 auto;min-width:0;"></span>
-        </div>
-        <div id="specPick" style="padding:6px 8px 10px;"></div>
+        <!-- 【2026-11-12 旁观者模式·进功能卡列表（主人定）】做成【读文件】【写文件】同款卡片。
+             卡片本体由 renderFeatList → specPaintInto 画在 featList 最顶上（specBuild），
+             这里不再放独立标题条 —— 之前那块跟功能卡不一个门脸。 -->
         <div class="featList" id="featList"></div>
       </div>
       <div class="dlgFoot">
@@ -8784,8 +8783,25 @@ async function stopTurn() {
 }
 
 function autosizeInput() {
+  /* 【2026-11-12 修·打字整个聊天区抖一下（主人报）】
+   * 全局是 * { box-sizing: border-box }，这里原来 height = scrollHeight：
+   * border-box 下可视内容区 = height - 上下 padding(20) - 边框(2)，**比内容矮 2px**
+   * → 内滚动条闪现 → 文字变窄重排 → 下一键再量又变回去 —— 一字一抖，内容越长越明显。
+   * 修法：补上边框差（offsetHeight - clientHeight 在 border-box 下正好 = 左右边框），
+   * 并在没到 180 封顶前把内滚动条藏掉（overflow-y:auto 只在封顶后要）。 */
+  const log = document.getElementById('log');
+  /* 【2026-11-12 主人问「输入框增高时，上下文最低端还是不是输入框最高端」—— 要是。】
+   * #log 的滚动锚定是关着的（防翻历史抽搐），LogView 的贴底又只认「新内容」——
+   * 输入框长高把聊天视口压矮时没人管，最后一句就被顶出去一截。
+   * 这里补：**原来贴着底**就重新贴底；主人往回翻着看就绝不抢（不动滚动位置）。 */
+  let pinned = false;
+  try { pinned = !!log && log.scrollTop + log.clientHeight >= log.scrollHeight - 4; } catch {}
   input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+  const _border = Math.max(0, (input.offsetHeight - input.clientHeight) || 0);
+  const next = Math.min(input.scrollHeight + _border, 180);
+  input.style.height = next + 'px';
+  input.style.overflowY = next >= 180 ? 'auto' : 'hidden';
+  if (pinned) { try { log.scrollTop = log.scrollHeight; } catch {} }
 }
 
 /** 底部灰字「正在发送消息……」。发送时亮、这轮彻底结束就灭。 */
@@ -10895,15 +10911,18 @@ function saveDraft() {
 function clearDraft() {
   try { localStorage.removeItem(draftKey()); } catch {}
 }
-function restoreDraft() {
+function restoreDraft(skipIfTyping) {
   try {
     const t = localStorage.getItem(draftKey());
     /* 【2026-11-03 修·切会话输入框串味】原来是「输入框有内容就不覆盖」，
      *  可切会话时输入框里永远是上一个会话的字 —— 于是新会话的草稿一辈子读不出来，
      *  在 A 打的字跟着跑进 B，切回 A 又变成 B 的。
      *  正确做法：没草稿就清空（不能留上一个会话的字），有草稿就写进去。 */
+    /* 【2026-11-12 修·启动 300ms 误清正打的字】启动那次调用（skipIfTyping=true）
+     * 时输入框若有字，只可能是主人已经开打了 —— 不能清。切会话那条路
+     * （不传参）照旧清，防串味的修复不受影响。 */
     if (!t) {
-      if (input.value) {
+      if (input.value && !skipIfTyping) {
         input.value = '';
         try { autosizeInput(); } catch {}
         try { syncSendBtn(); } catch {}
@@ -14513,6 +14532,161 @@ function featSid() {
 }
 
 // 功能按钮上只留「功能」两个字，开关状态看面板或悬停提示。
+/* ===== 旁观者模式·功能卡（2026-11-12 主人钦点：做成【读文件】【写文件】同款卡片） ======
+ *
+ * 原来是功能卡列表上方一块独立标题条 + 一排选人行，跟功能卡不一个门脸。
+ * 现在收进 featList：一张「旁观者模式」卡（名字+徽标+说明+「挑人/收起」+开关），
+ * 点「挑人」展开选人区，里面一行一个智能体（还是 featRow 同款）。
+ *
+ * 数据在 specState，面板每次打开 specLoad() 现拉全量（/api/agents + /api/spectator）——
+ * 所以**自建新卡会自动出现在候选里**，不用维护第二份名单。
+ * 名单存的是名字（按会话，上限 8 个）：删掉的卡自动从候选里消失，残留名字无害。 */
+const specState = { loaded: false, cards: [], chosen: new Set(), main: '', occupied: new Set(), expanded: false };
+
+async function specLoad() {
+  const sid = featSid();
+  const _r = await fetch('/api/spectator?sessionId=' + encodeURIComponent(sid)).then((x) => x.json()).catch(() => null);
+  const _ag = await fetch('/api/agents').then((x) => x.json()).catch(() => null);
+  specState.cards = (Array.isArray(_ag && _ag.agents) ? _ag.agents : (Array.isArray(_ag) ? _ag : []))
+    .filter((c) => c && String(c.name || '').trim() && c.enabled !== false);
+  specState.chosen = new Set(Array.isArray(_r && _r.agents) ? _r.agents : []);
+  specState.main = String((_r && _r.main) || '').trim();
+  specState.occupied = new Set(Array.isArray(_r && _r.occupied) ? _r.occupied : []);
+  /* 冲突自愈：已勾的旁观者现在进了屋里 → 当场摘掉并回存（服务端闸还有一道双保险） */
+  let _dirty = false;
+  for (const _n of [].concat(Array.from(specState.chosen))) {
+    if (_n === specState.main || specState.occupied.has(_n)) { specState.chosen.delete(_n); _dirty = true; }
+  }
+  if (_dirty) {
+    fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, agents: Array.from(specState.chosen) }) }).catch(() => {});
+  }
+  specState.loaded = true;
+}
+
+async function specSave() {
+  const sid = featSid();
+  const names = specState.cards.map((x) => String(x.name || '').trim()).filter((n) => specState.chosen.has(n));
+  const rr = await fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: sid, agents: names }) }).then((x) => x.json()).catch(() => null);
+  return Boolean(rr && rr.ok);
+}
+
+/** 旁观者卡 + 选人区（展开时）。返回一个 fragment，调用方往哪插都行。 */
+function specBuild() {
+  const frag = document.createDocumentFragment();
+  const on = specState.chosen.size > 0;
+
+  const card = document.createElement('div');
+  card.className = 'featRow specCard';
+  card.dataset.spec = '1';
+  const main = document.createElement('div');
+  main.className = 'featMain';
+  const name = document.createElement('div');
+  name.className = 'featName';
+  const nm = document.createElement('span');
+  nm.textContent = '旁观者模式';
+  const badge = document.createElement('span');
+  badge.className = 'badge' + (on ? '' : ' off');
+  badge.textContent = on ? '旁观中·' + specState.chosen.size + '人' : '未旁观';
+  name.append(nm, badge);
+  const desc = document.createElement('div');
+  desc.className = 'featDesc';
+  desc.textContent = on
+    ? '旁观中：' + Array.from(specState.chosen).join('、') + '。她干活时这几位随时插一句（说话带「旁观」小牌），纯闲聊不插话。'
+    : '还没挑人。点「挑人」选几位（按会话生效），她干活时选中的随时插一句；纯闲聊不插话。';
+  main.append(name, desc);
+  const pick = document.createElement('button');
+  pick.type = 'button';
+  pick.className = 'featEditBtn';
+  pick.textContent = specState.expanded ? '收起 ▴' : '挑人 ▾';
+  pick.title = '展开/收起选人区';
+  const sw = document.createElement('button');
+  sw.type = 'button';
+  sw.className = 'switch' + (on ? ' on' : '');
+  sw.textContent = on ? '点一下关' : '点一下开';
+  if (on) {
+    /* 关 = 清空名单（回到没人旁观） */
+    sw.onclick = async () => { specState.chosen.clear(); if (await specSave()) specRepaint(); };
+  } else {
+    /* 开 = 先展开选人区让人挑；挑上人就真正「旁观中」 */
+    sw.onclick = () => { specState.expanded = true; specRepaint(); };
+  }
+  pick.onclick = () => { specState.expanded = !specState.expanded; specRepaint(); };
+  card.append(main, pick, sw);
+
+  const sub = document.createElement('div');
+  sub.className = 'specSub';
+  sub.hidden = !specState.expanded;
+  if (!specState.cards.length) {
+    const empty = document.createElement('div');
+    empty.className = 'featDesc';
+    empty.style.padding = '6px 4px';
+    empty.textContent = '没有可选的智能体。';
+    sub.append(empty);
+  } else {
+    for (const c of specState.cards) {
+      const _name = String(c.name || '').trim();
+      const _isMain = _name === specState.main;
+      const _inRoom = specState.occupied.has(_name);
+      const _locked = _isMain || _inRoom;
+      const row = document.createElement('div');
+      row.className = 'featRow';
+      row.dataset.name = _name;
+      row.dataset.locked = _locked ? '1' : '0';
+      const mainEl = document.createElement('div');
+      mainEl.className = 'featMain';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'featName';
+      const nmm = document.createElement('span');
+      nmm.textContent = _name;
+      const badge2 = document.createElement('span');
+      badge2.className = 'badge off';
+      badge2.textContent = _locked ? (_isMain ? '干活中' : '在屋里') : (specState.chosen.has(_name) ? '旁观中' : '未旁观');
+      nameEl.append(nmm, badge2);
+      const desc2 = document.createElement('div');
+      desc2.className = 'featDesc';
+      desc2.textContent = _locked
+        ? (_isMain ? '本会话正在干活的主智能体，不能自己旁观自己。'
+                   : '已在「屋里的人」里，会接话干活，不能再当旁观者（把她移出屋里才能旁观）。')
+        : String(c.desc || '').trim() || '拨开后，她干活时这位可以随时插一句（说话带「旁观」小牌）。';
+      mainEl.append(nameEl, desc2);
+      const sw2 = document.createElement('button');
+      sw2.type = 'button';
+      sw2.className = 'switch' + (specState.chosen.has(_name) ? ' on' : '');
+      sw2.textContent = _locked ? '不能旁观' : (specState.chosen.has(_name) ? '停止旁观' : '开始旁观');
+      if (_locked) {
+        sw2.disabled = true;
+        sw2.title = _isMain ? '干活的人不能旁观自己' : '在「屋里的人」里的不能旁观';
+      } else {
+        sw2.onclick = async () => {
+          if (specState.chosen.has(_name)) specState.chosen.delete(_name); else specState.chosen.add(_name);
+          if (await specSave()) specRepaint();
+        };
+      }
+      row.append(mainEl, sw2);
+      sub.append(row);
+    }
+  }
+  frag.append(card, sub);
+  return frag;
+}
+
+function specPaintInto(list) {
+  if (!specState.loaded) return;
+  list.append(specBuild());
+}
+
+/** 只重画旁观者那张卡和选人区 —— 别把整张功能列表冲了（滚动位置和别的行状态都会丢） */
+function specRepaint() {
+  if (!featList || !specState.loaded) return;
+  const oldCard = featList.querySelector('.featRow.specCard');
+  const oldSub = featList.querySelector('.specSub');
+  if (oldCard) oldCard.remove();
+  if (oldSub) oldSub.remove();
+  featList.insertBefore(specBuild(), featList.firstChild);
+}
+
 function paintFeatNow() {
   const btn = document.getElementById('openFeatures');
   if (!btn) return;
@@ -14543,6 +14717,8 @@ function featPaintEmpty() {
 function renderFeatList() {
   if (!featList) return;
   featList.innerHTML = '';
+  /* 【2026-11-12 旁观者模式卡】画在功能列表最顶上（数据没拉过就不画，openFeatures 会先 specLoad） */
+  specPaintInto(featList);
   const rows = featRows();
   if (!rows.length) {
     featPaintEmpty();
@@ -15540,106 +15716,12 @@ if (openFeaturesBtn) {
     /* 【2026-11-10】以前读失败就 alert 一句然后不打开面板 ——
      * 主人点了一下，弹个「读取功能列表失败」，面板还是没出来，等于白点。
      * 现在无论如何都打开：读不到就在列表位置写清原因 + 给一颗重试。 */
+    /* 【2026-11-12 旁观者模式·进功能卡列表（主人定）】先拉旁观者数据，再 loadFeatures ——
+     * renderFeatList 会把「旁观者模式」卡画在功能列表最顶上（specPaintInto）。
+     * 每次打开都现拉 /api/agents 全表：自建新卡自动进候选，不用维护第二份名单。 */
+    await specLoad();
     await loadFeatures();
     featHideReport();   // 上一次导入的账本别在新一次打开时还杵着
-    /* 【2026-11-12 旁观者模式·卡片化（主人定）】照【读文件】【写文件】那排
-     * featRow 的样子：一行一个智能体，左边名字+徽标+说明，右边「开始/停止旁观」胶囊。
-     * 之前做成一行复选框是图快直接塞在标题条下面，没复用功能行的骨架 —— 现在归位。
-     * 禁勾逻辑也修了：原来拿 mainAgentName 判「干活中」，而它按设计恒为「小鱼」
-     * （历史署名兜底），于是小鱼永远禁勾、真正干活的小鲸反而能勾 —— 判反了。
-     * 现在主智能体由服务端算好发回来（main），「屋里的人」全名单也一起发（occupied）：
-     * 主智能体、在屋里的（含静音的）都禁勾 —— 同一个人不能一边干活一边旁观。
-     * 还有主人问的那条：**提前勾了旁观者、后来又把同名的加进屋里的人** ——
-     * 载入时就把冲突的名字从名单里摘掉并回存，服务端闸也双保险（取名单时再滤一遍）。 */
-    try {
-      const _sid = (typeof sessionId === 'string' && sessionId) || window.sessionId || '';
-      const _pick = document.getElementById('specPick');
-      const _hint = document.getElementById('specHint');
-      if (_pick && _hint) {
-        _pick.innerHTML = '';
-        _hint.textContent = '读取中…';
-        const _ag = await fetch('/api/agents').then((x) => x.json()).catch(() => null);
-        const _cards = (Array.isArray(_ag && _ag.agents) ? _ag.agents : (Array.isArray(_ag) ? _ag : []))
-          .filter((c) => c && String(c.name || '').trim() && c.enabled !== false);
-        const _r = await fetch('/api/spectator?sessionId=' + encodeURIComponent(_sid)).then((x) => x.json()).catch(() => null);
-        const _chosen = new Set(Array.isArray(_r && _r.agents) ? _r.agents : []);
-        const _main = String((_r && _r.main) || '').trim();
-        const _occupied = new Set(Array.isArray(_r && _r.occupied) ? _r.occupied : []);
-        /* 冲突自愈：已勾的旁观者现在进了屋里 → 当场摘掉并回存 */
-        let _dirty = false;
-        for (const _n of [].concat(Array.from(_chosen))) {
-          if (_n === _main || _occupied.has(_n)) { _chosen.delete(_n); _dirty = true; }
-        }
-        if (_dirty) {
-          fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId: _sid, agents: Array.from(_chosen) }) }).catch(() => {});
-        }
-        _pick.innerHTML = '';
-        if (!_cards.length) { _hint.textContent = '没有可选的智能体。'; }
-        else {
-          _hint.textContent = '拨到「旁观中」，谁就能在她干活时随时插一句；纯闲聊不插话，说话带「旁观」小牌。';
-          const _paint = () => {
-            for (const row of [].slice.call(_pick.querySelectorAll('.featRow'))) {
-              const _n = row.dataset.name;
-              if (row.dataset.locked === '1') continue;
-              const on = _chosen.has(_n);
-              const _bad = row.querySelector('.badge');
-              const _sw = row.querySelector('.switch');
-              _bad.className = 'badge' + (on ? '' : ' off');
-              _bad.textContent = on ? '旁观中' : '未旁观';
-              _sw.className = 'switch' + (on ? ' on' : '');
-              _sw.textContent = on ? '停止旁观' : '开始旁观';
-            }
-          };
-          for (const c of _cards) {
-            const _name = String(c.name || '').trim();
-            const _isMain = _name === _main;
-            const _inRoom = _occupied.has(_name);
-            const _locked = _isMain || _inRoom;
-            const row = document.createElement('div');
-            row.className = 'featRow';
-            row.dataset.name = _name;
-            row.dataset.locked = _locked ? '1' : '0';
-            const mainEl = document.createElement('div');
-            mainEl.className = 'featMain';
-            const nameEl = document.createElement('div');
-            nameEl.className = 'featName';
-            const nm = document.createElement('span');
-            nm.textContent = _name;
-            const badge = document.createElement('span');
-            badge.className = 'badge off';
-            badge.textContent = _locked ? (_isMain ? '干活中' : '在屋里') : (_chosen.has(_name) ? '旁观中' : '未旁观');
-            nameEl.append(nm, badge);
-            const desc = document.createElement('div');
-            desc.className = 'featDesc';
-            desc.textContent = _locked
-              ? (_isMain ? '本会话正在干活的主智能体，不能自己旁观自己。'
-                         : '已在「屋里的人」里，会接话干活，不能再当旁观者（把她移出屋里才能旁观）。')
-              : String(c.desc || '').trim() || '拨开后，她干活时这位可以随时插一句（说话带「旁观」小牌）。';
-            mainEl.append(nameEl, desc);
-            const sw = document.createElement('button');
-            sw.type = 'button';
-            sw.className = 'switch' + (_chosen.has(_name) ? ' on' : '');
-            sw.textContent = _locked ? '不能旁观' : (_chosen.has(_name) ? '停止旁观' : '开始旁观');
-            if (_locked) {
-              sw.disabled = true;
-              sw.title = _isMain ? '干活的人不能旁观自己' : '在「屋里的人」里的不能旁观';
-            } else {
-              sw.onclick = async () => {
-                if (_chosen.has(_name)) _chosen.delete(_name); else _chosen.add(_name);
-                const names = _cards.map((x) => String(x.name || '').trim()).filter((n) => _chosen.has(n));
-                const rr = await fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ sessionId: _sid, agents: names }) }).then((x) => x.json()).catch(() => null);
-                if (rr && rr.ok) _paint();
-                else _hint.textContent = '没存上，再试一次';
-              };
-            }
-            row.append(mainEl, sw);
-            _pick.append(row);
-          }
-        }
-      }
-    } catch (e) {}
     closeOtherDialogs('featuresDlg');
     /* 已经开着就别再 showModal() —— 对开着的 dialog 再调一次会抛 InvalidStateError，
      * 白白在控制台留一条红字。 */
@@ -17187,7 +17269,7 @@ function clearAllStreamingCursors() {
 /* 草稿暂存·2026-10-31 刷新回来先把草稿填回去（这时候 sessionId 可能还没定，
  * 所以放在后面 select 那次再填一遍 —— 两处都填，谁先到谁填，都不覆盖已有内容）。 */
 document.addEventListener('DOMContentLoaded', () => {
-  try { setTimeout(restoreDraft, 300); } catch {}   // 等会话 id 落定
+  try { setTimeout(() => restoreDraft(true), 300); } catch {}   // 等会话 id 落定（启动场景：主人已在打字就不清）
 });
 document.addEventListener('DOMContentLoaded', clearAllStreamingCursors, { once: true });
     document.addEventListener('DOMContentLoaded', start, { once: true });

@@ -40,7 +40,19 @@ ok('服务端用 getAgent(sessionAgentId(sid)) 算 main',
 
 /* ── ③ 冲突自愈 ── */
 ok('UI 载入时把「进了屋里」的预勾摘掉并回存',
-  html.includes('let _dirty = false;') && html.includes('_occupied.has(_n)') && html.includes("agents: Array.from(_chosen)"));
+  html.includes('let _dirty = false;') && html.includes('specState.occupied.has(_n)') && html.includes("agents: Array.from(specState.chosen)"));
+
+/* ── ③′ 功能卡形态（2026-11-12 主人钦点：跟【读文件】【写文件】一张门脸） ── */
+ok('旁观者卡由 renderFeatList 画进功能列表（不再挂独立标题条）',
+  /function renderFeatList[\s\S]{0,300}specPaintInto\(featList\)/.test(html));
+ok('旧独立块（specBar/specHint/specPick）已清干净',
+  !html.includes('id="specPick"') && !html.includes('id="specHint"') && !html.includes('id="specBar"'));
+ok('卡上有「挑人/收起」展开钮 + 选人区 .specSub',
+  html.includes("'收起 ▴' : '挑人 ▾'") && html.includes("className = 'specSub'"));
+ok('候选名单每次打开现拉 /api/agents 全表（自建新卡自动进候选）',
+  /async function specLoad[\s\S]{0,600}\/api\/agents/.test(html));
+ok('卡上开关语义：关=清空名单，开=展开选人区',
+  html.includes('specState.chosen.clear()') && /sw\.onclick = \(\) => \{ specState\.expanded = true; specRepaint\(\); \}/.test(html));
 
 /* ── ④ 服务端闸双保险 ── */
 ok('插话闸用 residentNamesOf 全名单滤（不再只除主智能体）',

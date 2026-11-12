@@ -31,7 +31,7 @@ t.ok('onStuck 在 abort 之前敲（先把账记下来再动手）',
 // ── 2. server 那半边：真的接住了 ───────────────────────────────
 t.ok('server 定义了 scheduleStuckRetry', /function scheduleStuckRetry\(sid, info = \{\}\)/.test(server));
 t.ok('看门狗启动时把 onStuck 接上', /onStuck:\s*\(sid, info\) => \{\s*try \{ scheduleStuckRetry\(sid, info\); \}/.test(server));
-t.ok('有次数上限常量', /const STUCK_RETRY_MAX = 2;/.test(server));
+t.ok('有次数上限常量（主人钦定 10）', /const STUCK_RETRY_MAX = 10;/.test(server));
 t.ok('有半小时窗口（过一阵子重新记账）', /const STUCK_RETRY_WINDOW = 30 \* 60 \* 1000;/.test(server));
 t.ok('超限时老实停手并留痕', /stuck-retry-give-up/.test(server));
 t.ok('等旧轮退干净再接手（看 ac.signal.aborted）',

@@ -69,8 +69,18 @@ t.ok('Windows 语音路线原样保留（python.exe / embed-amd64）',
   /python\.exe/.test(voice) && /embed-amd64\.zip/.test(voice));
 
 /* ── ⑤ QQ 接线 ──────────────────────────────────────────────── */
-t.ok('detectQQ 非 win32 直接回「只支持 Windows」',
-  /export async function detectQQ[\s\S]{0,300}platform !== 'win32'[\s\S]{0,400}只支持 Windows/.test(napcat));
+t.ok('detectQQ 有 darwin 真路线（认 /Applications/QQ.app + Info.plist 读版本）',
+  /export async function detectQQ[\s\S]{0,400}platform === 'darwin'[\s\S]{0,600}\/Applications\/QQ\.app[\s\S]{0,400}CFBundleShortVersionString/.test(napcat));
+t.ok('detectQQ 其余非 win32 仍给明白话（支持 Windows 与 macOS）',
+  /platform !== 'win32'[\s\S]{0,300}支持 Windows 与 macOS/.test(napcat));
+t.ok('detectNapCat 认 mac 安装形态（QQ 容器 napcat 目录 / 注入 loader）',
+  /export function detectNapCat[\s\S]{0,400}platform === 'darwin'[\s\S]{0,700}com\.tencent\.qq[\s\S]{0,300}loadNapCat\.js/.test(napcat));
+t.ok('launchNapCat mac 起的是 QQ 本体带 --no-sandbox（沙盒 EPERM 必踩）',
+  /export async function launchNapCat[\s\S]{0,400}platform === 'darwin'[\s\S]{0,700}--no-sandbox/.test(napcat));
+t.ok('installNapCat mac 不代劳，回 NapCat-Mac-Installer 官方指引',
+  /export async function installNapCat[\s\S]{0,300}platform === 'darwin'[\s\S]{0,700}NapCat-Mac-Installer/.test(napcat));
+t.ok('napcatStatus mac 上版本比对放宽（mac 没有版本账，真话看 3001）',
+  /isMac[\s\S]{0,300}versionMatch[\s\S]{0,400}\(isMac \|\|/.test(napcat));
 
 /* ── ⑥ 主进程 boot.log ──────────────────────────────────────── */
 t.ok('boot.log 在 mac 上落到 ~/Library/Application Support',

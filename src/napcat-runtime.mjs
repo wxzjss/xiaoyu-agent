@@ -69,12 +69,30 @@ async function fileVersion(exe) {
  * version 统一成 NapCat 的写法：9.9.31-49738
  */
 export async function detectQQ() {
-  /* 【2026-11-12 加·mac 兜底】整套探测（powershell + QQ.exe 路径 + NapCatWinBootMain.exe）
-   * 都是 Windows 的活，mac 上跑只会空转出「没找到」。直接给明白话。 */
+  /* 【2026-11-12 加·mac 路线】NapCat 官方有 mac 安装器（NapCat-Mac-Installer，macOS 12+，
+   * Intel/Apple Silicon 双架构）：QQ 装在 /Applications/QQ.app，安装器把 QQ 的程序入口
+   * 切成 NapCat。所以 mac 上「找到 QQ」= QQ.app 存在；版本从 Info.plist 读
+   * （Windows 那套 powershell + QQ.exe 路径在 mac 上全是空转）。 */
+  if (process.platform === 'darwin') {
+    const app = '/Applications/QQ.app';
+    const bin = app + '/Contents/MacOS/QQ';
+    if (!fs.existsSync(bin)) {
+      return {
+        exe: '', found: false, version: '', build: '', raw: '',
+        reason: 'mac 上没找到 QQ：要先装官方 QQ 客户端到「应用程序」（/Applications/QQ.app）。',
+      };
+    }
+    let raw = '';
+    try { raw = fs.readFileSync(app + '/Contents/Info.plist', 'utf8'); } catch {}
+    const m = /CFBundleShortVersionString[\s\S]{0,200}?<string>([\d.]+)<\/string>/.exec(raw);
+    const version = m ? String(m[1]) : '';
+    return { exe: bin, found: true, version, build: '', raw: version };
+  }
+  /* 【2026-11-12 加·兜底】其余非 Windows 平台（Linux 等）整套探测都是空转，给明白话。 */
   if (process.platform !== 'win32') {
     return {
       exe: '', found: false, version: '', build: '', raw: '',
-      reason: 'QQ 接线目前只支持 Windows（NapCat 启动器是 Windows 程序），mac 版暂不支持。',
+      reason: 'QQ 接线目前支持 Windows 与 macOS（Linux 还没做）。',
     };
   }
   const cands = [...QQ_GUESS];
@@ -104,6 +122,17 @@ export async function detectQQ() {
 const NAPCAT_GUESS = ['D:/NapCat', 'C:/NapCat', 'C:/Program Files/NapCat'];
 
 export function detectNapCat() {
+  /* 【2026-11-12 加·mac 路线】mac 的安装形态跟 Windows 完全不同：
+   * NapCat-Mac-Installer 把 QQ 的程序入口切成 NapCat（QQ.app/Contents/MacOS 里会出现
+   * 注入 loader），配置/插件落在 QQ 沙盒容器的 Documents/napcat。
+   * 认这两处任意一处 = 装了；没有 NapCatWinBootMain.exe 这种壳，别拿 Windows 的尺子量。 */
+  if (process.platform === 'darwin') {
+    const docs = path.join(os.homedir(), 'Library', 'Containers', 'com.tencent.qq', 'Data', 'Documents', 'napcat');
+    const loader = '/Applications/QQ.app/Contents/MacOS/loadNapCat.js';
+    if (fs.existsSync(docs)) return { dir: docs, found: true, version: '', baseVersion: '' };
+    if (fs.existsSync(loader)) return { dir: '/Applications/QQ.app/Contents/MacOS', found: true, version: '', baseVersion: '' };
+    return { dir: '', found: false, version: '', baseVersion: '' };
+  }
   for (const dir of NAPCAT_GUESS) {
     const boot = path.join(dir, 'NapCatWinBootMain.exe');
     if (!fs.existsSync(boot)) continue;
@@ -151,8 +180,12 @@ export async function napcatStatus() {
   const port = await portOpen(3001);
 
   // 版本对不对：NapCat 自己带的壳版本 vs QQ 本体
+  // 【2026-11-12 mac】mac 的 NapCat 配置目录里没有 qqnt.json 这套版本账（安装形态不同），
+  // 没法逐字比对 —— 装没装好就看 3001 开没开（ready 才是真话），版本比对只留给 Windows。
+  const isMac = process.platform === 'darwin';
   const versionMatch = Boolean(
-    qq.found && cat.found && qq.version && cat.version && qq.version === cat.version
+    qq.found && cat.found
+    && (isMac || (qq.version && cat.version && qq.version === cat.version))
   );
 
   return {
@@ -277,6 +310,17 @@ async function download(url, dest, onStep) {
  * @param {(msg:string)=>void} onStep 进度回调（界面显示用）
  */
 export async function installNapCat(onStep = () => {}) {
+  /* 【2026-11-12 加·mac 分流】Windows 是「下 zip → 铺 NapCatWinBootMain.exe」，
+   * mac 的安装走的是官方 NapCat-Mac-Installer（改 QQ 程序入口 + 沙盒授权），
+   * 小鱼代劳不了 —— 这里只给正经指引，别让主人对着一个 Windows 包干瞪眼。 */
+  if (process.platform === 'darwin') {
+    return {
+      ok: false,
+      error: 'mac 版要先用官方 NapCat-Mac-Installer 装 NapCat：'
+        + '到 github.com/NapNeko/NapCat-Mac-Installer 下载安装器 → 选 NapCat 版本安装 → '
+        + '按提示把「程序入口」切换成 NapCat → 装完回到这里刷新状态，小鱼就能接上（OneBot 3001 口不变）。',
+    };
+  }
   const qq = await detectQQ();
   if (!qq.found) {
     throw new Error('没找到本机的 QQ，先装 QQ 或告诉我 QQ 装在哪');
@@ -388,6 +432,19 @@ export async function installNapCat(onStep = () => {}) {
  * 启动 NapCat（让 3001 开起来，然后要扫码）
  */
 export async function launchNapCat() {
+  /* 【2026-11-12 加·mac 路线】mac 上没有 NapCatWinBootMain.exe：安装器已把 QQ 的
+   * 程序入口切成 NapCat，**起 QQ 就是起 NapCat**。沙盒限制下必须带 --no-sandbox
+   * （不带会 EPERM 起不来，NapCat 官方 mac 文档也是这么教的）。 */
+  if (process.platform === 'darwin') {
+    const qqMac = '/Applications/QQ.app/Contents/MacOS/QQ';
+    if (!fs.existsSync(qqMac)) throw new Error('mac 上没找到 QQ（/Applications/QQ.app），先装 QQ 再用 NapCat-Mac-Installer 切入口');
+    const child = spawn(qqMac, ['--no-sandbox'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return { ok: true, pid: child.pid, dir: '/Applications/QQ.app' };
+  }
   const cat = detectNapCat();
   if (!cat.found) throw new Error('还没装 NapCat');
   const boot = path.join(cat.dir, 'NapCatWinBootMain.exe');

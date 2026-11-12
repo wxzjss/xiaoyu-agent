@@ -71,6 +71,10 @@ t.ok('同一轮里「只有思考」的那一行会并进那一轮的工具柜�
     iUseOpen >= 0 && iTicker > iUseOpen && iDispatch > iTicker,
     'useOpen@' + iUseOpen + ' ticker@' + iTicker + ' 分派@' + iDispatch);
 }
+/* 【2026-11-12 加·柜门默认收起】主人钦定过两次（9e75bdf / 24495e4 都还原过），
+ * 并行会话两次把它冲回 true。这里钉死：柜门的 useOpen 默认必须是 false（收起）。 */
+t.ok('柜门默认收起（useOpen 第二参必须是 false，主人钦定过两次）',
+  /const \[open, onToggle\] = useOpen\('hub-' \+ \(list\[0\] \? list\[0\]\.key : 'x'\), false\)/.test(toolCard));
 /* 【别死抠「函数还在不在」】那台「搬节点自愈守卫」还留着定义（死代码，无害），
  * 但**没有任何调用点** —— 也就是它根本没装。断言「没装」而不是「不存在」，
  * 这样将来谁把死代码删干净了也不会误报。 */

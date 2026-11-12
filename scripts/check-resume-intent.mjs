@@ -52,5 +52,14 @@ ok('无参 dropInterrupted() 只剩主人手动的 DELETE /api/resume 那一处'
   noArg.map((x) => 'L' + x.line + (x.manual ? '（手动，允许）' : '（自动路径，违规）')).join(' '));
 ok('叫醒路径改成 dropInterrupted(_sid)', /try \{ dropInterrupted\(_sid\); \} catch \{\}/.test(src));
 
+/* ── ④ 退出路径：先拍快照再 abort（手动退出重启也要续） ── */
+ok('退出收尾先拍「谁在跑」快照（_wasLiveAtQuit）', /_wasLiveAtQuit = new Set\(\)/.test(src)
+  && /for \(const \[id, turn\] of runningTurns\) \{[\s\S]{0,200}ac\.abort\('quit'\)/.test(src)
+  && src.indexOf('_wasLiveAtQuit = new Set()') < src.indexOf("ac.abort('quit')"),
+  '快照必须建在第一个 abort 之前');
+const qi = src.indexOf("'关窗口退出（这一轮还没跑完）'");
+ok('退出记账的 autoResume 认快照（不认 abort 之后的 runningTurns）',
+  qi > 0 && /_wasLiveAtQuit\.has\(String\(_qsid\)\)/.test(src.slice(Math.max(0, qi - 1200), qi + 400)));
+
 console.log('\n── 续跑意图三道口子：' + pass + '/' + (pass + fail) + (fail ? ' 有失败' : ' 全过') + ' ──');
 process.exit(fail ? 1 : 0);

@@ -8695,6 +8695,13 @@ const server = createServer(async (req, res) => {
   // 历史里就只剩主人那句话 —— 看起来就像她什么都没回过。
   if (req.method === 'POST' && url.pathname === '/api/app/quitting') {
     const ids = [];
+    /* 【2026-11-12 修·主人「手动退出重启也要续」的真凶：先 abort 再记账的竞态】
+     *  下面的 abort 会让每一轮走自己的 finally，里面会把 runningTurns 的条目删掉；
+     *  而记账那段（"① 正在跑的"）是 abort 之后才读 runningTurns —— 手快的话
+     *  已经读不到了，_qlive 落成 null → autoResume:false → 重启后不续。
+     *  所以在动任何一轮**之前**，先把「退出那一刻谁在跑」拍张快照，记账全认它。 */
+    const _wasLiveAtQuit = new Set();
+    try { for (const id of runningTurns.keys()) _wasLiveAtQuit.add(String(id)); } catch {}
     for (const [id, turn] of runningTurns) {
       if (!turn || !turn.ac || turn.ac.signal.aborted) continue;
       ids.push(id);
@@ -8742,9 +8749,8 @@ const server = createServer(async (req, res) => {
         const s = String(sid || '');
         if (s && !_cand.includes(s)) _cand.push(s);
       };
-      /* ① 正在跑的：一个都别落下 */
-      for (const id of ids) { try { if (runningTurns.get(id)) _pushCand(id); } catch {} }
-      try { for (const sid of runningTurns.keys()) _pushCand(sid); } catch {}
+      /* ① 正在跑的：一个都别落下（认 abort **之前**的快照，不认现在——见上） */
+      for (const id of _wasLiveAtQuit) { try { _pushCand(id); } catch {} }
       /* ② 【2026-11-07 删·不再扫「清单还有没打勾的」】
        *
        * 原来这里会把最近 30 个会话里清单没清完的都收进来 —— 实测一次退出记出
@@ -8764,7 +8770,7 @@ const server = createServer(async (req, res) => {
             .map((x, n) => ({ n: (x.id != null ? x.id : n + 1), text: String(x.text || '').slice(0, 200) }));
         } catch {}
         let _qlive = null;
-        try { _qlive = runningTurns.get(_qsid); } catch {}
+        try { _qlive = _wasLiveAtQuit.has(String(_qsid)) ? (runningTurns.get(_qsid) || { _wasLive: true }) : null; } catch {}
         if (_qlive || _qopen.length) {
           markInterrupted({
             sessionId: _qsid,
@@ -13134,7 +13140,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           }
           /* 读完就把它销掉：断点已经抄进这条消息里了（会话里存得住），
            * 留着只会让下一次重启又读到同一个旧断点，把老账重念一遍。
-           * 【2026-11-12 修·接手「检查鱼」：这里原来 dropInterrupted() 不带参数 ——
+           * 【2026-11-12 修·接手「检查鱼」：这里原来不带参数调用 dropInterrupted ——
            *  无参 = 整个 resume.json 删掉（resume.mjs:211 `if (!sessionId) unlinkSync(FILE)`）。
            *  明明只消费了 _sid 这一个会话的断点，却把**别的会话**排队的续跑意图
            *  一起端了 —— 别的会话重启后就「没续上」。只删自己这份。 */

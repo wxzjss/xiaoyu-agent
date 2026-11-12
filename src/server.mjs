@@ -276,6 +276,7 @@ import {
   probeLocalService,
   localStatus,
   waitForLogin,
+  invalidateTokenCache,
   readDeepSeekToken,
   miniDsDir,
   findPython,
@@ -5289,7 +5290,20 @@ const server = createServer(async (req, res) => {
   }
   /* 【2026-11-12 加】token 过期了要能重新取：前端「测连通」失败且原因看着是 token 时调它。
    * 绝不把 token 本体回给前端，只回「取到了没有」。 */
-  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
+  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/relogin') {
+    // token 失效专用：停服务 → 作废 token 缓存 → 开内置浏览器登录页等重登 → 带新 token 重启
+    try { stopLocalService(); } catch {}
+    invalidateTokenCache();
+    /* 【2026-11-13 顺手修】原稿写的 readBody——本项目没这个函数（助手叫 body），
+     * check-identifiers 抓的。变量名避开 helper 本名（const body = await body(req)
+     * 会 TDZ 自爆），改 _pay。 */
+    const _pay = await body(req).catch(() => ({}));
+    const started = await startLocalService({ opener: openInBrowser, waitMs: Number(_pay && _pay.waitMs) || 0, forceRelogin: true });
+    if (!started.ok) return json(res, 200, { ok: false, reason: started.reason, error: started.error || '重新登录失败' });
+    return json(res, 200, { ok: true, hasToken: true, base: MINI_DS_BASE, key: MINI_DS_KEY });
+  }
+
+if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     try {
       const r = readDeepSeekToken();
       if (!r || !r.token) {

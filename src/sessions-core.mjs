@@ -792,6 +792,17 @@ export function deleteSession(id) {
   try {
     const pf = join(PLAN_DIR, `${id}.json`);
     if (existsSync(pf)) renameSync(pf, join(TRASH, `${id}-plan-${Date.now()}.json`));
+    // 【2026-11-15 主人新规矩】会话删除时，归档清单跟着一起走，不留孤儿档案
+    try {
+      const hdir = join(PLAN_DIR, '_history');
+      if (existsSync(hdir)) {
+        for (const n of readdirSync(hdir)) {
+          if (n.startsWith(`${id}-`)) {
+            try { renameSync(join(hdir, n), join(TRASH, `${n}`)); } catch {}
+          }
+        }
+      }
+    } catch {}
   } catch {}
   const last = getLastSessionId();
   if (last === id) {

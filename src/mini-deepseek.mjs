@@ -283,7 +283,7 @@ export async function probeLocalService(timeoutMs = 1500) {
 }
 
 /** 起服务。已经在跑就直接说在跑。 */
-export async function startLocalService({ token, opener, waitMs } = {}) {
+export async function startLocalService({ token, opener, waitMs, forceRelogin } = {}) {
   const already = await probeLocalService(900);
   if (already.up) return { ok: true, already: true, ids: already.ids };
 
@@ -291,11 +291,13 @@ export async function startLocalService({ token, opener, waitMs } = {}) {
   if (!dir) return { ok: false, reason: 'no-program', error: '找不到 mini_ds 程序目录' };
 
   let tk = String(token || '').trim();
-  if (!tk) {
-    let got = await refreshTokenAsync();
+  if (!tk || forceRelogin) {
+    // forceRelogin：旧 token 大概率已失效，无视它，直接开登录页等重新登录
+    let got = forceRelogin ? { token: '' } : await refreshTokenAsync();
     // __LOGIN_HOOK__ 【2026-11-12】没 token 不是直接失败：开内置浏览器登录页，等十分钟。
+    // 【2026-11-13】token 失效也一样：开登录页，等主人重新登录拿新 token。
     if (!got.token) {
-      const w = await waitForLogin({ opener, waitMs });
+      const w = await waitForLogin({ opener, waitMs, force: true });
       if (!w.ok) return { ok: false, reason: w.reason, error: w.error || '没登录 DeepSeek' };
       tk = w.token;
     } else {
@@ -304,6 +306,21 @@ export async function startLocalService({ token, opener, waitMs } = {}) {
   }
 
   const py = findPython();
+  /* 【2026-11-13 修·别的电脑兜底（主人问发布携带）】findPython 找不到会退回裸
+   * 'python'——别的电脑没装 Python 的话 spawn 直接 ENOENT 抛异常，
+   * 不接住就是一次未捕获拒绝。这里先探一下，给句人话。 */
+  let pyOk = false;
+  try {
+    const { spawnSync } = await import('node:child_process');
+    pyOk = spawnSync(py, ['--version'], { timeout: 8000, windowsHide: true }).status === 0;
+  } catch { pyOk = false; }
+  if (!pyOk) {
+    return {
+      ok: false,
+      reason: 'no-python',
+      error: '这台机器没装 Python（3.12~3.14 都行），本机 DeepSeek 跑不起来——装好 Python 再点一次就好',
+    };
+  }
   const env = { ...process.env, DS_TOKEN: tk, DS_PORT: String(MINI_DS_PORT), PYTHONIOENCODING: 'utf-8' };
   // 绝不让 token 落进日志或回给前端
   delete env.DS_COOKIE;
@@ -426,16 +443,23 @@ export async function localHealth(timeoutMs = 1500) {
  *
  * 这一步是「等」不是「问」—— 主人不用回来点任何东西，登录完自动往下走。
  */
-export async function waitForLogin({ opener, waitMs, reader } = {}) {
+export async function waitForLogin({ opener, waitMs, reader, force } = {}) {
   // 已经在等了，别叠第二层
   if (st.waitingLogin) return { ok: false, reason: 'already-waiting' };
 
   const read = typeof reader === 'function' ? reader : readDeepSeekToken;
-  const got0 = read();
-  if (got0 && got0.token) return { ok: true, already: true };
+  // force（forceRelogin）：旧 token 已知失效，跳过预检，必须等真重登
+  if (!force) {
+    const got0 = read();
+    if (got0 && got0.token) return { ok: true, already: true };
+  }
 
   st.waitingLogin = true;
   try {
+    // force 时旧 token 还躺在 leveldb 里，必须记下来，只认「跟旧的不一样」的新 token，
+    // 不然没重登也会把旧死 token 捡回来当登录好了。
+    let oldToken = '';
+    if (force) { const g0 = read(); if (g0 && g0.token) oldToken = g0.token; }
     if (typeof opener === 'function') {
       try { await opener('https://chat.deepseek.com/sign_in'); } catch { /* 打不开就算了，照样轮询 */ }
     }
@@ -444,7 +468,7 @@ export async function waitForLogin({ opener, waitMs, reader } = {}) {
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       const got = read();
-      if (got && got.token) {
+      if (got && got.token && got.token !== oldToken) {
         st.waitingLogin = false;
         return { ok: true, token: got.token };
       }

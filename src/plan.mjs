@@ -266,15 +266,16 @@ const ARCHIVE_KEEP_DONE = 10;
 function pruneSaveArchives() {
   try {
     if (!existsSync(HISTORY_DIR)) return 0;
-    const files = readdirSync(HISTORY_DIR).filter((n) => /-save\.(json|txt)$/.test(n));
-    if (files.length <= 50 * 2) return 0;
+    // 【2026-11-15 主人新规矩】归档总量超 100 份（不分 save/归档），按最旧彻底删
+    const files = readdirSync(HISTORY_DIR).filter((n) => n.endsWith('.json') || n.endsWith('.txt'));
+    if (files.length <= 100) return 0;
     const withTime = files.map((n) => {
       let t = 0;
       try { t = statSync(join(HISTORY_DIR, n)).mtimeMs; } catch {}
       return { n, t };
     });
     withTime.sort((a, b) => b.t - a.t);
-    const drop = withTime.slice(50 * 2);
+    const drop = withTime.slice(100);
     for (const d of drop) {
       try { unlinkSync(join(HISTORY_DIR, d.n)); } catch {}
     }
@@ -304,8 +305,9 @@ function archiveFinishedSteps(key, state) {
     const take = ranked.slice(0, finished.length - ARCHIVE_KEEP_DONE).map((x) => x.st);
     const takeSet = new Set(take);
 
-    // pinned 的留下：主人钉死的任务不许自动消失
-    const movable = take.filter((st) => !st.pinned);
+    // 【2026-11-15 主人新规矩】只要打勾的 done 超 10 条就清最旧的，只留 10 条；
+    // pinned 也不例外 —— 归档里有底，不算丢。
+    const movable = take;
     if (!movable.length) return 0;
     const movableSet = new Set(movable);
 
@@ -327,6 +329,7 @@ function pinnedSteps(state) {
 function savePlan(key, state) {
   if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
   archiveFinishedSteps(key, state);   // 底线第8条：done 超十条先归档再落盘
+  try { pruneSaveArchives(); } catch { /* 归档总量守门：每次落盘都查一遍，别只在归档时才查 */ }
   try { const prev = loadPlan(key); if (prev && prev.steps && prev.steps.length) archivePlan(key, prev, 'save'); } catch { /* 忽略 */ }
   state.updatedAt = Date.now();
   if (!state.createdAt) state.createdAt = state.updatedAt;

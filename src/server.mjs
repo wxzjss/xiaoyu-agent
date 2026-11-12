@@ -12366,6 +12366,29 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             upFailBook.set(sessionId, _rec);
             if (_rec.n <= UP_FAIL_MAX) {
               diagLog('upstream-auto-resume', sessionId + ' 第 ' + _rec.n + ' 次静默接回（' + _rec.lastCode + '）');
+              /* 【2026-11-12 主人钦定·上游挂了当下要有提示】静默接回是接回的规矩，
+               * 但主人不能连「她为什么停了」都看不见 —— 第一次撞上游故障就落一条
+               * 系统提示（不冒充谁说话），后面接着重试照样静默。账被成功落盘清掉后
+               * 再撞又是新一轮，不会刷屏。 */
+              /* 30 分钟防刷屏：接回成功落盘会清账（n 回 1），上游真挂期间每轮死都会
+               * 「第一次失败」—— 不防重的话主人每几秒挨一条提示。 */
+              if (_rec.n === 1 && _now - (upNotedAt.get(sessionId) || 0) > UP_FAIL_WINDOW) {
+                upNotedAt.set(sessionId, _now);
+                try {
+                  const _s = getSession(sessionId);
+                  if (_s) {
+                    _s.messages.push({
+                      role: 'assistant',
+                      note: true,
+                      content: '',
+                      text: '（上游网关抖了（' + _rec.lastCode + '），程序正在自动重试接回，别担心 —— 续不上会再告诉你。）',
+                      at: Date.now(),
+                      __turnErr: true,
+                    });
+                    try { saveSession(_s); } catch {}
+                  }
+                } catch {}
+              }
               scheduleStuckRetry(sessionId, {
                 idleMs: 60000,
                 noteText: '（刚才那一轮撞上了上游故障（' + _rec.lastCode + '）。程序等了几秒自己重新接上了——接着做，别问「要继续吗」。）',
@@ -13160,6 +13183,8 @@ const STUCK_RETRY_MAX = 10;       // 半小时内最多自动接几次（主人�
 const STUCK_RETRY_WINDOW = 30 * 60 * 1000;
 /* give-up 之后给主人落的那条 note 别刷屏：同一会话 30 分钟内只落一次 */
 const gaveUpNoted = new Map();    // sid → lastAt
+/* 「上游抖了正在重试」那条首次提示的防刷屏账 */
+const upNotedAt = new Map();      // sid → lastAt
 
 function scheduleStuckRetry(sid, info = {}) {
   const sessionId = String(sid || '');

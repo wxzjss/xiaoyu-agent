@@ -99,11 +99,25 @@ export async function latestRelease() {
 /**
  * 从资产清单里挑出「要给这台机器装的安装包」。
  *
- * 优先 setup（有开始菜单/桌面快捷方式、能升级已装的那份）；
+ * Windows：优先 setup（有开始菜单/桌面快捷方式、能升级已装的那份）；
  * 没有 setup 才退而用 portable —— portable 无法覆盖已安装的版本，只能另放一份。
+ *
+ * 【2026-11-12 加·macOS】mac 认 .dmg/.zip（发行物是 zip：解压拖进「应用程序」），
+ * 按 CPU 架构优先 arm64（Apple Silicon）再 x64（Intel），都不挑就取第一个。
+ * 没有mac 资产返回 null，调用方会走「发行版里没有安装包」的人话提示。
  */
 export function pickInstaller(assets) {
   const list = Array.isArray(assets) ? assets : [];
+  if (process.platform === 'darwin') {
+    const mac = list.filter((a) => /\.(dmg|zip)$/i.test(String(a.name)) && !/android|apk|win/i.test(String(a.name)));
+    if (!mac.length) return null;
+    const wantArm = process.arch === 'arm64';
+    const hit = (wantArm ? mac.find((a) => /arm64|aarch64/i.test(a.name)) : mac.find((a) => /x64|intel/i.test(a.name)))
+      || mac.find((a) => /arm64|aarch64/i.test(a.name))
+      || mac.find((a) => /x64|intel/i.test(a.name))
+      || mac[0];
+    return { ...hit, kind: 'mac' };
+  }
   const exes = list.filter((a) => /\.exe$/i.test(a.name));
   const setup = exes.find((a) => /setup/i.test(a.name) && /x64/i.test(a.name)) || exes.find((a) => /setup/i.test(a.name));
   if (setup) return { ...setup, kind: 'setup' };

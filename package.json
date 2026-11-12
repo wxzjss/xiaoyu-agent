@@ -18,6 +18,7 @@
     "autopublish": "node scripts/auto-publish.mjs",
     "pack:exe": "electron-builder --win",
     "pack:dir": "electron-builder --win --dir",
+    "pack:mac": "electron-builder --mac",
     "sync": "node scripts/preflight.mjs && node scripts/sync-live.mjs",
     "sync:check": "node scripts/sync-live.mjs --check",
     "check:ui": "node scripts/check-ui.mjs --all",
@@ -107,6 +108,26 @@
     },
     "portable": {
       "artifactName": "XiaoyuAgent-${version}-Portable.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "artifactName": "XiaoyuAgent-${version}-macOS-${arch}.${ext}"
     }
   },
   "dependencies": {

@@ -13732,6 +13732,14 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     server.listen(port, bindHost, () => {
       const actual = server.address().port;
       listeningPort = actual;
+      /* 【2026-11-12 修·restart_self 永远报「不知道自己监听哪个端口」】
+       * 病根：tools.mjs 里 restart_self 靠 process.env.PORT || XIAOYU_PORT 认自己的端口，
+       * 可这两个变量全仓库从来没有一处赋值 —— 服务端明明知道真端口（listeningPort），
+       * 却没告诉工具那边。于是每次重启都被「拿不到端口」拦下，只能让主人从托盘手动重开。
+       * 两边同一个进程，环境变量共享，listen 成功之后补写一行就通。
+       * 端口可能因占用从默认值漂走（actual 才是真的），所以写 actual。 */
+      try { process.env.XIAOYU_PORT = String(actual); process.env.PORT = String(actual); } catch {}
+      
       const url = `http://127.0.0.1:${actual}`;
       /**
        * 【2026-11-11 加·「干活中途退出重启后，我很早以前发过的消息跑到聊天最底下」】

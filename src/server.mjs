@@ -1,4 +1,4 @@
-// Minimal web server: static UI + one SSE endpoint that runs the agent.
+﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile, open as pvOpen } from 'node:fs/promises';
@@ -191,7 +191,7 @@ import { recentFrames, turnOffScreen, turnOnScreen } from './tools-screen.mjs';
 /* 【增强提示词】输入框那颗星星的一次性改写调用（src/enhance-prompt.mjs，2026-11-11） */
 import { enhancePrompt } from './enhance-prompt.mjs';
 import { frameDir as screenFrameDir, prune as pruneFrames } from './screen-capture.mjs';
-import { getFeatures, featureNameOfTool, getEnabledMap, featureOnFor, setFeatureScoped, GLOBAL_ONLY_FEATURES, TOOL_FEATURE, TOOL_OWNERS, exportFeatures, exportFeaturesTo, importFeatures, removeCustomFeature } from './features.mjs';
+import { getFeatures, featureNameOfTool, getEnabledMap, featureOnFor, setFeatureScoped, GLOBAL_ONLY_FEATURES, TOOL_FEATURE, TOOL_OWNERS, exportFeatures, exportFeaturesTo, importFeatures, removeCustomFeature, featureNumber, setFeatureNumber } from './features.mjs';
 import {
   identityState,
   currentIdentity,
@@ -1749,7 +1749,11 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   try { send({ type: 'whale', who: WHO, text, spectator: isSpectator(sessionId, WHO) }); } catch {}
   try {
     if (live && Array.isArray(live.events) && live.events.length < 20000) {
-      live.events.push({ type: 'whale', who: WHO, text, spectator: isSpectator(sessionId, WHO) });
+      /* 【2026-11-12 修】原来这里 live.events.push 裸推 —— 不进 items、不打 rev，
+       * 前端照 items 画就看不见这一份（兜底推了等于白推）。改走 appendLiveCache：
+       * events/items/rev 一套不落；send 已经推过同句时 appendLiveItem 的
+       * 同句去重会把它并进已有 say 条目，不会出两个气泡。 */
+      appendLiveCache(live, { type: 'whale', who: WHO, text, spectator: isSpectator(sessionId, WHO), at: Date.now() });
       live.done = live.done === true;
     }
   } catch {}
@@ -2688,6 +2692,124 @@ const LIVE_SOFT_MAX = 600;
  */
 const LIVE_CAP_NOTICE_TEXT = '本轮内容太多（超过 ' + LIVE_MAX_EVENTS + ' 条），后面的细节先省略了；事情还在照常做，结果不受影响。';
 
+/**
+ * 【2026-11-12 修·插话后她说话不渲染（主人报）】
+ *
+ * 这份缓存账（同类合并 / seq+rev 游标 / items 清单 / 封顶 notice / 压薄）
+ * 原来整段内联在 /api/chat 主轮的 send 里，而排队轮（startQueuedTurn）的
+ * send 只干一件事：live.events.push —— items 永远不进。
+ *
+ * 实测现场（/api/chat/live）：events 912 条在涨，items 冻在 1 条（主人的插话）。
+ * 前端照 items 画 → 接续轮她说再多也全看不见。插话那一刻 lv.items=[] 被创建、
+ * 主人那条 user 条目进去之后，就再也没人往里写第二个条目了。
+ *
+ * 抽成公共函数，主轮 / 排队轮两处共用，行为逐字节一致。
+ * 返回值：真正进了缓存的那条事件（封顶时是 notice），静默丢弃时返回 null ——
+ * 主轮的 SSE 据此决定写不写连接。
+ */
+function appendLiveCache(live, ev) {
+  if (!live || !Array.isArray(live.events)) return null;
+  try {
+    if (!Array.isArray(live.items)) live.items = [];
+    /* 同一轮里相邻的 reasoning/text 并进上一条（前端不吃增量、按 rev 拉
+     * 全量快照重画，所以并没副作用；不并的话长回复几千条事件，压薄会丢正文）。 */
+    const _sameKind = (ev && (ev.type === 'reasoning' || ev.type === 'text'))
+      && !live.__capNoticed
+      && live.events.length
+      && live.events[live.events.length - 1]
+      && live.events[live.events.length - 1].type === ev.type;
+    if (_sameKind) {
+      try { appendLiveItem(live.items, ev); } catch (e) {}
+      const _last0 = live.events[live.events.length - 1];
+      live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
+      live.events[live.events.length - 1] = {
+        ..._last0,
+        text: String(_last0.text || '') + String(ev.text || ''),
+        rev: live.rev,
+      };
+      return ev;
+    }
+    if (live.events.length < LIVE_MAX_EVENTS) {
+      live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
+      ev.seq = live.events.length;
+      ev.rev = live.rev;
+      live.events.push(ev);
+      /* 【画面真身】清单只增不减 —— 压薄动的是 events 数组，动不了它 */
+      try { appendLiveItem(live.items, ev); } catch (e) {}
+      return ev;
+    }
+    if (!live.__capNoticed) {
+      /* 封顶可感知：第一次封顶推一条 notice，之后的事件才静默丢弃 */
+      live.__capNoticed = true;
+      live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
+      const _notice = {
+        type: 'text',
+        notice: true,
+        text: LIVE_CAP_NOTICE_TEXT,
+        at: Date.now(),
+        seq: live.events.length,
+        rev: live.rev,
+      };
+      live.events.push(_notice);
+      try { appendLiveItem(live.items, _notice); } catch (e) {}
+      ev = _notice;
+    } else {
+      return null;   // 已经提醒过了：后续事件静默丢弃，SSE 也不再发
+    }
+    /* ② 太长了就压薄：把相邻同类合并，实在还超就砍最老的 */
+    if (live.events.length > LIVE_SOFT_MAX) {
+      const _kept = [];
+      for (const e of live.events) {
+        const p = _kept[_kept.length - 1];
+        // 同上：text 也合并（前端不按增量画了，内容变长没副作用；合并反而省条数、防压薄丢正文）
+        if (p && e && p.type === e.type && (e.type === 'reasoning' || e.type === 'text')) {
+          // seq/rev 一并带过去：压薄重组后 seq 会被重排，rev 保持单调（游标据此过滤）
+          _kept[_kept.length - 1] = {
+            ...p,
+            text: String(p.text || '') + String(e.text || ''),
+            seq: typeof p.seq === 'number' ? p.seq : 0,
+            rev: Math.max(typeof p.rev === 'number' ? p.rev : 0, typeof e.rev === 'number' ? e.rev : 0),
+          };
+        } else _kept.push(e);
+      }
+      /* 砍的时候别一视同仁：tool_start/tool_end/done 这些是「骨架」，
+       *  丢了界面就画不出【跑命令】这些块；reasoning/text 是血肉，可压。
+       *  先按类型把 reasoning/text 合并到底，还超就只在它们里面砍。 */
+      /* 留着每个事件的原始下标，压薄后按原始下标的先后重新排 ——
+       * 事件本来就是按发生顺序进数组的，这才是真顺序。 */
+      const _bones = _kept.map((e, i) => ({ e, i })).filter((x) => x.e && x.e.type !== 'reasoning' && x.e.type !== 'text');
+      const _flesh = _kept.map((e, i) => ({ e, i })).filter((x) => x.e && (x.e.type === 'reasoning' || x.e.type === 'text'));
+      /* 按字数额度留：谁都别整条消失，只把超长的那条按尾巴截短。
+       * 优先保 reasoning（主人最想看的推理），再保 text。 */
+      const _lenOf = (arr) => arr.reduce((n, x) => n + String((x.e && x.e.text) || '').length, 0);
+      const _thinkLen = _lenOf(_flesh.filter((x) => x.e && x.e.type === 'reasoning'));
+      const _sayLen = _lenOf(_flesh.filter((x) => x.e && x.e.type === 'text'));
+      const _keepThink = Math.max(80000, Math.min(_thinkLen, 400000));
+      const _keepSay = Math.max(40000, Math.min(_sayLen, 200000));
+      const _cutByChars = (arr, cap) => {
+        let left = cap;
+        const out = [];
+        for (let k = arr.length - 1; k >= 0; k--) {
+          const it = arr[k];
+          const t = String((it.e && it.e.text) || '');
+          if (left <= 0) break;
+          if (t.length <= left) { out.push(it); left -= t.length; }
+          else { out.push({ ...it, e: { ...it.e, text: t.slice(-left) } }); left = 0; }
+        }
+        return out;
+      };
+      const _keptFlesh = [
+        ..._cutByChars(_flesh.filter((x) => x.e && x.e.type === 'reasoning'), _keepThink),
+        ..._cutByChars(_flesh.filter((x) => x.e && x.e.type === 'text'), _keepSay),
+      ];
+      const _merged = [..._keptFlesh, ..._bones].sort((a, b) => a.i - b.i).map((x) => x.e);
+      live.events.length = 0;
+      for (const e of _merged) { e.seq = live.events.length; live.events.push(e); }
+    }
+    return ev;
+  } catch { return null; }
+}
+
 // In-flight turns: sessionId -> { ac: AbortController, done: Promise<void> }
 // 插话要先 abort，再等这一轮真的收尾（历史写完盘）后才能把新话接上去。
 const runningTurns = new Map();
@@ -3442,7 +3564,10 @@ function openLiveForQueuedTurn(sessionId) {
       prev.endedAt = 0;
       return prev;
     }
-    const live = { sessionId, events: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true };
+    /* 【2026-11-12 修】items 一开始就要有：插话处理里 `if (!Array.isArray(lv.items))
+     * lv.items = []` 会顺手建，但那是插话先到的情况；排队轮先吐内容、items 一直
+     * 缺着的话，appendLiveCache 会补建 —— 这里显式建好更稳。 */
+    const live = { sessionId, events: [], items: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true };
     liveLogs.set(sessionId, live);
     return live;
   } catch { return null; }
@@ -3636,8 +3761,13 @@ async function startQueuedTurn(sessionId, queue = null) {
 
   const live = openLiveForQueuedTurn(sessionId);
   const send = (ev) => {
+    /* 【2026-11-12 修·插话后她说话不渲染（主人报）】
+     * 原来这里只 live.events.push —— items 从来不进，而前端照 items 画。
+     * 实测现场：events 912 条在涨、items 冻在 1 条（主人的插话），
+     * 接续轮她说再多屏幕上全看不见。现在跟主轮共用 appendLiveCache：
+     * 合并 / seq+rev / items / 封顶 / 压薄 一套不落。 */
     if (!live) return;
-    try { live.events.push({ ...ev, at: Date.now() }); } catch {}
+    try { appendLiveCache(live, { ...ev, at: Date.now() }); } catch {}
   };
 
   const history = session.messages;
@@ -4057,8 +4187,13 @@ async function resumeInterruptedTurn(onlySessionId) {
    */
   const live = openLiveForQueuedTurn(sessionId);
   const send = (ev) => {
+    /* 【2026-11-12 修·插话后她说话不渲染（主人报）】
+     * 原来这里只 live.events.push —— items 从来不进，而前端照 items 画。
+     * 实测现场：events 912 条在涨、items 冻在 1 条（主人的插话），
+     * 接续轮她说再多屏幕上全看不见。现在跟主轮共用 appendLiveCache：
+     * 合并 / seq+rev / items / 封顶 / 压薄 一套不落。 */
     if (!live) return;
-    try { live.events.push({ ...ev, at: Date.now() }); } catch {}
+    try { appendLiveCache(live, { ...ev, at: Date.now() }); } catch {}
   };
   try {
     const history = session.messages;
@@ -5006,6 +5141,9 @@ const server = createServer(async (req, res) => {
     return json(res, 200, {
       ok: true,
       ...stt,
+      // running = 「现在服务能不能用」，不是「本进程有没有子进程句柄」。
+      // 服务可能是外部（start.bat）起的，那时 stt.running 为 false 但端口活得好好的。
+      running: !!(stt.running || probe.up),
       up: probe.up,
       ids: probe.ids ?? [],
       hasToken: !!readDeepSeekToken().token,
@@ -5068,7 +5206,7 @@ const server = createServer(async (req, res) => {
       if (dup) {
         // 已经加过：不重复加，只把 key 刷新（token 是随时会变的东西）
         saveModel({ ...dup, apiKey: plan.key });
-        return json(res, 200, { ok: true, created: false, id: dup.id, baseURL: plan.base, apiKey: plan.key, model: plan.model, state: listModels() });
+        return json(res, 200, { ok: true, created: false, already: true, id: dup.id, base: plan.base, key: plan.key, baseURL: plan.base, apiKey: plan.key, model: plan.model, state: listModels() });
       }
       const r = saveModel({
         name: String(p?.name || '').trim() || '本机 DeepSeek',
@@ -5077,7 +5215,7 @@ const server = createServer(async (req, res) => {
         model: plan.model,
         kind: 'chat',
       });
-      return json(res, 200, { ok: true, created: true, id: (r && r.id) || LOCAL_ID, baseURL: plan.base, apiKey: plan.key, model: plan.model, state: listModels() });
+      return json(res, 200, { ok: true, created: true, already: false, id: (r && r.id) || LOCAL_ID, base: plan.base, key: plan.key, baseURL: plan.base, apiKey: plan.key, model: plan.model, state: listModels() });
     } catch (e) {
       return json(res, 200, { ok: false, error: String(e?.message ?? e) });
     }
@@ -5098,7 +5236,7 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/probe') {
     const p = await probeLocalService(1500);
-    return json(res, 200, { ok: true, up: p.up, ids: p.ids ?? [], hasToken: !!readDeepSeekToken().token });
+    return json(res, 200, { ok: true, up: p.up, running: p.up, already: p.up, ids: p.ids ?? [], hasToken: !!readDeepSeekToken().token, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL });
   }
 
   /**
@@ -5982,6 +6120,31 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  /* 【2026-11-12 主人钦定·发送缓冲】功能的数值设置（秒数）读写 */
+  if (req.method === 'GET' && url.pathname === '/api/features/numbers') {
+    return json(res, 200, {
+      sendBufferSec: featureNumber('sendBufferSec', 3),
+      sendBufferMaxSec: featureNumber('sendBufferMaxSec', 5),
+    });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/features/number') {
+    let payload;
+    try {
+      payload = await body(req);
+    } catch {
+      return json(res, 400, { error: 'invalid JSON body' });
+    }
+    try {
+      setFeatureNumber(String(payload?.key || ''), payload?.value);
+      return json(res, 200, {
+        ok: true,
+        sendBufferSec: featureNumber('sendBufferSec', 3),
+        sendBufferMaxSec: featureNumber('sendBufferMaxSec', 5),
+      });
+    } catch (e) {
+      return json(res, e?.status || 500, { error: String(e?.message ?? e) });
+    }
+  }
   if (req.method === 'POST' && url.pathname === '/api/features/set') {
     let payload;
     try {
@@ -10149,6 +10312,30 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           diagLog('retry-budget-reset', sessionId + ' 主人亲自说话，自动接回额度重置');
         }
       } catch {}
+      /* 【2026-11-12 主人钦定·发送缓冲】缓冲窗到点，前端把攒下的话一次性送上来。
+       * 这里把其余几条按**普通发言**逐条落盘（不标 _steer —— 窗里的不算插话），
+       * 然后这一轮才开跑：她一睁眼看到全部，一口气答完。 */
+      const _extras = Array.isArray(payload.extraMessages) ? payload.extraMessages : [];
+      for (const _ex of _extras) {
+        const _exText = String((_ex && _ex.text) || '').trim();
+        const _exAtts = Array.isArray(_ex && _ex.attachments) ? _ex.attachments : [];
+        if (!_exText && !_exAtts.length) continue;
+        const _exMsg = { role: 'user', content: composeUserContent(_exText, _exAtts), at: Date.now() };
+        try {
+          const __meEx = currentIdentity(sessionId);
+          if (__meEx) {
+            _exMsg._who = __meEx.name;
+            _exMsg._whoId = __meEx.id;
+          }
+        } catch {}
+        const _exImgs = _exAtts.map((a) => a && a.path).filter((p) => p && isImagePath(p));
+        const _exFiles = _exAtts.map((a) => a && a.path).filter((p) => p && !isImagePath(p));
+        if (_exImgs.length) _exMsg._images = _exImgs;
+        if (_exFiles.length) _exMsg._files = _exFiles;
+        if (_exText) _exMsg._text = _exText;
+        history.push(_exMsg);
+        diagLog('send-buffer-merge', sessionId + ' 缓冲窗合并 +1（' + _exText.slice(0, 30) + '）');
+      }
       /* 两个条件都要：这是第一句，而且现在的标题还空着/是默认名/短得不像名字。 */
       if (firstUserTurn && _titleAutoOk) session.title = titleFromMessage(message);
     }
@@ -10248,129 +10435,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
 
     const send = (ev) => {
-      /* 【2026-11-02 前端卡死修复】
-       *  主人报「消息被吞、画面固定、刷新也看不到新消息」。
-       *  实测这一轮的 live.events 有 2938 条，其中 2249 条是 reasoning，
-       *  平均每条只有 1.8 个字 —— 模型一两个字一吐，每一片都成了独立事件。
-       *  前端一刷新就要拉全量重画，主线程直接卡死。
-       *  这里两道保险：①同一轮里相邻的 reasoning/text 直接并进上一条，
-       *  ②超过 SOFT_MAX 就整体「压薄」一次（只留最近的大块）。 */
-      try {
-        /* 【2026-11-02 · text 又改回「并进上一条」了，原因如下】
-         *
-         *  以前不能并：前端拿「事件条数」当游标要增量，被并长的那条再也拉不到（丢字）。
-         *  现在前端不吃增量了 —— 它只要一有新事件就重新拉「这一轮现在长什么样」的全量快照，
-         *  按 rev 过滤（被加长的老事件照样会被带回来），照着整组重画。所以并进上一条没副作用。
-         *
-         *  反而必须并：一条一条送的话，长回复会有几千条事件，撞上 LIVE_SOFT_MAX 压薄，
-         *  老的那些 text 被直接丢掉 —— 屏幕上就成了「短一版」，刷新前跟刷新后不一样。
-         *  并起来事件数就压到几十条，压薄不会再动正文。 */
-        const _sameKind = (ev && (ev.type === 'reasoning' || ev.type === 'text'))
-          && !live.__capNoticed   /* 【2026-11-10 D5】封顶后不许再合并：否则正文会被并进封顶 notice 里 */
-          && live.events.length
-          && live.events[live.events.length - 1]
-          && live.events[live.events.length - 1].type === ev.type;
-        if (_sameKind) {
-          /* 合并进上一条的事件，清单这边也要跟着长（正文就是这么攒起来的） */
-          try { appendLiveItem(live.items, ev); } catch (e) {}
-          const _last0 = live.events[live.events.length - 1];
-          live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
-          live.events[live.events.length - 1] = {
-            ..._last0,
-            text: String(_last0.text || '') + String(ev.text || ''),
-            rev: live.rev,
-          };
-        } else if (live.events.length < LIVE_MAX_EVENTS) {
-          /* 【2026-11-02 游标修复】每条事件打上稳定序号 seq（数组下标）与 rev（变更次数）。
-           *  前端原来拿「事件条数」当游标，而 text/reasoning 会被并进上一条（条数不变、内容变长），
-           *  于是被追加的那条永远拉不到 —— 界面停在那一刻，非得再刷新一次才补回来。
-           *  rev 每次 push/合并都 +1，/api/chat/live 用 rev 过滤，加长的老事件也能被拉到。 */
-          live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
-          ev.seq = live.events.length;
-          ev.rev = live.rev;
-          live.events.push(ev);
-          /* 【画面真身】清单只增不减 —— 压薄动的是上面那个 events 数组，动不了它 */
-          try { appendLiveItem(live.items, ev); } catch (e) {}
-        } else if (!live.__capNoticed) {
-          /* 【2026-11-10 D5·封顶可感知】第一次封顶向流内推一条 notice（带 seq/rev 照常进清单），
-           *  让界面明说「细节省略了」，而不是无声消失；之后的事件才静默丢弃（连 SSE 都不发）。 */
-          live.__capNoticed = true;
-          live.rev = (typeof live.rev === 'number' ? live.rev : 0) + 1;
-          ev = {
-            type: 'text',
-            notice: true,
-            text: LIVE_CAP_NOTICE_TEXT,
-            at: Date.now(),
-            seq: live.events.length,
-            rev: live.rev,
-          };
-          live.events.push(ev);
-          try { appendLiveItem(live.items, ev); } catch (e) {}
-        } else {
-          return; // 已经提醒过了：后续事件静默丢弃，SSE 也不再发
-        }
-        /* ② 太长了就压薄：把相邻同类合并，实在还超就砍最老的 */
-        if (live.events.length > LIVE_SOFT_MAX) {
-          const _kept = [];
-          for (const e of live.events) {
-            const p = _kept[_kept.length - 1];
-            // 同上：text 也合并（前端不按增量画了，内容变长没副作用；合并反而省条数、防压薄丢正文）
-            if (p && e && p.type === e.type && (e.type === 'reasoning' || e.type === 'text')) {
-              // seq/rev 一并带过去：压薄重组后 seq 会被重排，rev 保持单调（游标据此过滤）
-              _kept[_kept.length - 1] = {
-                ...p,
-                text: String(p.text || '') + String(e.text || ''),
-                seq: typeof p.seq === 'number' ? p.seq : 0,
-                rev: Math.max(typeof p.rev === 'number' ? p.rev : 0, typeof e.rev === 'number' ? e.rev : 0),
-              };
-            } else _kept.push(e);
-          }
-          /* 砍的时候别一视同仁：tool_start/tool_end/done 这些是「骨架」，
-           *  丢了界面就画不出【跑命令】这些块；reasoning/text 是血肉，可压。
-           *  做法：先按类型把 reasoning/text 合并到底，还超就只在它们里面砍。 */
-          /* 【2026-11-02 主人报「文字和工具条交错、显示不全」】
-           *  原来这里：先 push(..._flesh, ..._bones)，再按 (a.at||0) 排。
-           *  两个 bug：
-           *   ① tool_start / tool_end / done 这些事件压根不带 at，全是 0，
-           *      一排序工具条整体飞到最前面 —— 画出来就是「一堆工具块、话在下面」。
-           *   ② 先 flesh 后 bones 再排，等于是靠 at 兜，缺 at 就全乱。
-           *  改法：留着每个事件的原始下标，压薄后按原始下标的先后重新排 ——
-           *  事件本来就是按发生顺序进数组的，这才是真顺序。 */
-          const _bones = _kept.map((e, i) => ({ e, i })).filter((x) => x.e && x.e.type !== 'reasoning' && x.e.type !== 'text');
-          const _flesh = _kept.map((e, i) => ({ e, i })).filter((x) => x.e && (x.e.type === 'reasoning' || x.e.type === 'text'));
-          /* 【2026-11-03 主人报「思考链只剩二三十字」】原来是 _flesh.slice(-_room)：
-           *  按**条数**砍，前面的事件整条丢掉。可 reasoning/text 早就被并成一条了，
-           *  条数不多、字数巨大 —— 结果就是思考动不动被削到只剩尾巴几十个字。
-           *  改成按**字数额度**留：谁都别整条消失，只把超长的那条按尾巴截短。
-           *  优先保 reasoning（主人最想看的推理），再保 text。 */
-          /* 额度按实际长度给：正常轮次一个字都不砍，只在真的超长时才截尾巴。 */
-          const _lenOf = (arr) => arr.reduce((n, x) => n + String((x.e && x.e.text) || '').length, 0);
-          const _thinkLen = _lenOf(_flesh.filter((x) => x.e && x.e.type === 'reasoning'));
-          const _sayLen = _lenOf(_flesh.filter((x) => x.e && x.e.type === 'text'));
-          const _keepThink = Math.max(80000, Math.min(_thinkLen, 400000));
-          const _keepSay = Math.max(40000, Math.min(_sayLen, 200000));
-          const _cutByChars = (arr, cap) => {
-            let left = cap;
-            const out = [];
-            for (let k = arr.length - 1; k >= 0; k--) {
-              const it = arr[k];
-              const t = String((it.e && it.e.text) || '');
-              if (left <= 0) break;
-              if (t.length <= left) { out.push(it); left -= t.length; }
-              else { out.push({ ...it, e: { ...it.e, text: t.slice(-left) } }); left = 0; }
-            }
-            return out;
-          };
-          const _keptFlesh = [
-            ..._cutByChars(_flesh.filter((x) => x.e && x.e.type === 'reasoning'), _keepThink),
-            ..._cutByChars(_flesh.filter((x) => x.e && x.e.type === 'text'), _keepSay),
-          ];
-          const _merged = [..._keptFlesh, ..._bones].sort((a, b) => a.i - b.i).map((x) => x.e);
-          live.events.length = 0;
-          for (const e of _merged) { e.seq = live.events.length; live.events.push(e); }
-        }
-      } catch {}
-
+      /* 【2026-11-12 修·插话后她说话不渲染】缓存账整段搬进 appendLiveCache 公共函数
+       * （同类合并 / seq+rev 游标 / items 清单 / 封顶 notice / 压薄）——
+       * 排队轮的 send 原来只 live.events.push、从不写 items，前端照 items 画，
+       * 接续轮她说再多屏幕上全看不见。两处现在共用同一份逻辑，行为逐字节一致。
+       * 返回 null = 封顶后静默丢弃，SSE 也不再发。 */
+      const _cached = appendLiveCache(live, ev);
+      if (!_cached) return;
       /**
        * 【连接已经收了尾，这一下别把整个进程带崩】—— 2026-11-03
        *
@@ -10385,7 +10456,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       if (res.writableEnded || res.destroyed) return;
       try {
-        res.write(`data: ${JSON.stringify(ev)}\n\n`);
+        res.write(`data: ${JSON.stringify(_cached)}
+
+`);
       } catch {
         // 连接早断了也无所谓：事件已经进缓存，人回来看的时候还能补
       }
@@ -14368,3 +14441,4 @@ if (isDirectRun) startServer().catch((err) => {
   console.error('failed to start:', err?.message ?? err);
   process.exit(1);
 });
+

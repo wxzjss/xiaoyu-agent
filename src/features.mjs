@@ -128,6 +128,26 @@ export const FEATURES = [
   },
   {
     /**
+     * 【2026-11-12 主人钦定·发送缓冲】
+     *
+     * 主人原话：「在我发一句话后等几秒再让小鱼Agent发消息，这一秒内我按了一次键盘，
+     * 那么就重置时间并延长一秒，每按一次键盘都重置一次时间并延长一秒，然后时间内
+     * 发送的话不算插话，等时间结束后，小鱼Agent能一次性看到所有消息」。
+     * （时长主人定：初始 3 秒、每次 +1 秒、上限 5 秒，功能页里可改。）
+     *
+     * 为什么是功能页一张卡：这是「要不要等一等」的偏好，不是本事的开关 ——
+     * 按会话记，跟别的卡一个口径。缓冲窗本身在前端掐表（按键主人自己知道），
+     * 到点把攒下的话一次性发上来（extraMessages），服务端一次全落盘再开轮 ——
+     * 窗里的话全程不算插话、不标 _steer。
+     */
+    id: 'sendBuffer',
+    name: '发送缓冲',
+    desc: '发完话先等一拍再让我开口（默认 3 秒）；这一拍里继续打字或再发消息，时间顺延（上限默认 5 秒）。到点我一次性看到你发的所有话，一整轮回答，中间的不算插话。下面可以改等待秒数。',
+    defaultOn: false,
+    tools: [],   // 纯前端行为偏好，不辖任何工具；rebuildToolIndex 要求字段在
+  },
+  {
+    /**
      * 【2026-11-08 补·定时任务这一项一直没登记，等于从来没开过】
      *
      * 现场：跑回归时 `_t_agents2` 报
@@ -1037,6 +1057,31 @@ export function setFeature(id, on) {
   map[f.id] = Boolean(on);
   writeRawFile({ schemaVersion: SCHEMA_VERSION, ...map });
   return getFeatures();
+}
+
+/* ---- 功能的数值设置（如发送缓冲的秒数） ------------------------------
+ * features.json 这张表本来只存布尔开关；数值设置沿用同一张表，
+ * 键名避开功能 id（用 `<id>Sec` 这种），读写都走 readRaw/writeRawFile，
+ * 缓存口径跟开关完全一致。
+ */
+
+/** 读一个数值设置。没写过 / 不是正数 → 回 fallback。 */
+export function featureNumber(key, fallback) {
+  const v = Number(readRaw()[String(key || '')]);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+/** 写一个数值设置。非法值（非正数）抛 400，别悄悄写进垃圾。 */
+export function setFeatureNumber(key, value) {
+  const k = String(key || '');
+  const v = Number(value);
+  if (!k || !Number.isFinite(v) || v <= 0) {
+    const e = new Error('数值设置得是正数：' + k + '=' + value);
+    e.status = 400;
+    throw e;
+  }
+  writeRawFile({ ...readRaw(), [k]: v });
+  return v;
 }
 
 /** 现在能用的工具名。给了 sessionId 就按会话算，没给退回全局。 */

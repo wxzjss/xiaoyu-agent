@@ -6244,7 +6244,7 @@ let sessionTitle = '';
  * 生产代码不碰它们。
  */
 try { Object.defineProperty(window, '__xyGetSessionId', { value: () => sessionId }); } catch { /* 忽略 */ }
-try { Object.defineProperty(window, '__xySetSessionId', { value: (v) => { sessionId = String(v || ''); return sessionId; } }); } catch { /* 忽略 */ }
+try { Object.defineProperty(window, '__xySetSessionId', { value: (v) => { /* 【发送缓冲】切走前把攒着的话立刻放行（此刻 sessionId 还是旧会话，runTurn 开局就捕获） */ try { if (typeof _holdFlushOnLeave === 'function') _holdFlushOnLeave(); } catch (e0) {} sessionId = String(v || ''); return sessionId; } }); } catch { /* 忽略 */ }
 let sessionsCache = [];
 let pendingResume = false; // 插话之后要不要接着跑
 let stopping = false; // 正在停止，按钮锁住别再点
@@ -9127,7 +9127,7 @@ let pendingRewindBubble = null;
 /* 【2026-11-01 主人报】截图和文字一起发，只发出文字、截图留在输入框。
    原来签名里没有 attachments —— 函数体里用的是外层那个全局变量，send() 传进来也不认。
    现在显式收下（不传就退回全局那份，兼容插话等老调用）。 */
-async function runTurn({ resume = false, text = '', attachments: _att = null } = {}) {
+async function runTurn({ resume = false, text = '', attachments: _att = null, _skipUserDraw = false, _extraMsgs = null } = {}) {
   // 关键：这一轮属于「发起时」那个会话。中途切走、切回来都不能串台。
   const turnSession = sessionId;
   /* 这一轮要带出去的图：显式传进来的优先；没传就用输入框里攒的那份（插话等老调用）。
@@ -9239,7 +9239,10 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
       // 只改我切换身份之后说出的话的顶着的名字」。
       // currentIdentityName 由 refreshIdentityBadge 跟着身份一起更新，这里取的就是「此刻是谁」。
       // 取不到（还没拉到身份）就留空，addUser 会当「主人」处理 —— 这是最不容易吓到人的默认值。
-      pendingRewindBubble = addUser(text, undefined, sending, undefined, undefined, currentIdentityName);
+      /* 【2026-11-12 发送缓冲】_skipUserDraw = 缓冲窗乐观画已经画过了，别画两遍 */
+      if (!_skipUserDraw) {
+        pendingRewindBubble = addUser(text, undefined, sending, undefined, undefined, currentIdentityName);
+      }
       turnRec.userDrawn = true;   // 记一笔：主人这句已经画在屏幕上了
       // 我自己刚发的话，必须看得见 —— 发消息就等于「我要看最新的」，
       // 这里无条件跳底（A3：jumpToBottom 直接 scrollTop = scrollHeight，
@@ -9296,6 +9299,9 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
             sessionId,
             message: text,
             attachments: sending.map((a) => ({ path: a.path, name: a.name, kind: a.kind })),
+            /* 【2026-11-12 发送缓冲】缓冲窗攒下的其余几句，一次全送上去 ——
+             * 服务端按普通发言逐条落盘（不算插话），这一轮她一睁眼看到全部。 */
+            ...(Array.isArray(_extraMsgs) && _extraMsgs.length ? { extraMessages: _extraMsgs } : {}),
           }),
     }).finally(() => { _gotFirstByte = true; clearTimeout(_netWatchdog); });
     if (!res.ok) {
@@ -10438,7 +10444,131 @@ if (enhanceBtn) {
   enhancePaint();
 }
 
+/* ===== 发送缓冲（主人钦定 2026-11-12）=====
+ * 点【发送】不立刻发：先等一拍（默认 3 秒，功能页可改）；
+ * 这一拍里打字 / 再点发送，时间顺延 1 秒（上限默认 5 秒）；
+ * 到点把攒下的话一次性发上去（extraMessages），全程不算插话。
+ * 回车不缓冲 —— 回车就是直接发（主人钦定）。 */
+let _holdState = null;      // { queue, firstAt, deadline, bufferMs, maxMs, timer }
+let _bufCfgCache = { at: 0, val: null };
+
+async function _bufferCfg() {
+  const now = Date.now();
+  if (_bufCfgCache.val && now - _bufCfgCache.at < 3000) return _bufCfgCache.val;
+  const val = { on: false, sec: 3, max: 5 };
+  try {
+    const [en, num] = await Promise.all([
+      fetch('/api/features?sessionId=' + encodeURIComponent(sessionId || '')).then((r) => r.json()).catch(() => null),
+      fetch('/api/features/numbers').then((r) => r.json()).catch(() => null),
+    ]);
+    const _f = en && Array.isArray(en.features) ? en.features.find((x) => x && x.id === 'sendBuffer') : null;
+    val.on = !!(_f && _f.enabled);
+    if (num) {
+      val.sec = Math.min(60, Math.max(1, Number(num.sendBufferSec) || 3));
+      val.max = Math.min(60, Math.max(val.sec, Number(num.sendBufferMaxSec) || 5));
+    }
+  } catch (e) { /* 读不到就当关着，直接发 */ }
+  _bufCfgCache = { at: now, val };
+  return val;
+}
+
+/** 这一拍里每按一次键盘：时间顺延 1 秒（不超上限）。挂在输入框 keydown 上。 */
+function _holdPat() {
+  const st = _holdState;
+  if (!st || !st.timer) return;
+  st.deadline = Math.min(st.deadline + 1000, st.firstAt + st.maxMs);
+  clearTimeout(st.timer);
+  st.timer = setTimeout(_holdFire, Math.max(0, st.deadline - Date.now()));
+}
+
+/** 切会话前把缓冲里的立刻放行（旧会话的话不跟着人跑到新会话去）。 */
+function _holdFlushOnLeave() {
+  const st = _holdState;
+  if (!st || !st.timer) return;
+  clearTimeout(st.timer);
+  st.timer = null;
+  try { _holdFire(); } catch (e) {}
+}
+
+async function _holdFire() {
+  const st = _holdState;
+  _holdState = null;
+  if (!st || !st.queue.length) return;
+  const first = st.queue.shift();
+  const extras = st.queue.splice(0).map((m) => ({
+    text: m.text,
+    attachments: (m.atts || []).map((a) => ({ path: a.path, name: a.name, kind: a.kind })),
+  }));
+  try {
+    await runTurn({ text: first.text, attachments: first.atts || [], _skipUserDraw: true, _extraMsgs: extras });
+  } catch (e) { /* runTurn 自己会兜错 */ }
+}
+
+/** 预发送：点【发送】按钮走这条（回车走 send() 不缓冲）。 */
+async function sendBuffered() {
+  if (busy) { queueFromInput(); return; }
+  const text = input.value.trim();
+  if (!text && !attachments.length) { toast('（输入框是空的）'); return; }
+  if (!sessionId) {
+    try { await booted; } catch {}
+    if (!sessionId) return;
+  }
+  const cfg = await _bufferCfg();
+  if (!cfg.on) return send();   // 功能关着 = 跟回车一样直接发
+  const msg = { text, atts: attachments.slice() };
+  /* 乐观显示：跟 runTurn 同一套画法，主人点完立刻看得见 */
+  input.value = '';
+  clearDraft();
+  autosizeInput();
+  if (onScreen()) {
+    pendingRewindBubble = addUser(msg.text, undefined, msg.atts.slice(), undefined, undefined, currentIdentityName);
+    jumpToBottom();
+  }
+  attachments = [];
+  renderAttachBar();
+  syncSendBtn();
+  if (_holdState && _holdState.timer) {
+    _holdState.queue.push(msg);
+    _holdState.deadline = Math.min(_holdState.deadline + 1000, _holdState.firstAt + _holdState.maxMs);
+  } else {
+    _holdState = {
+      queue: [msg],
+      firstAt: Date.now(),
+      deadline: Date.now() + cfg.sec * 1000,
+      bufferMs: cfg.sec * 1000,
+      maxMs: cfg.max * 1000,
+      timer: null,
+    };
+  }
+  if (_holdState.timer) clearTimeout(_holdState.timer);
+  _holdState.timer = setTimeout(_holdFire, Math.max(0, _holdState.deadline - Date.now()));
+}
+
 async function send() {
+  if (busy) return;
+  /* 【发送缓冲】缓冲窗开着时按了回车 = 主人宣布说完了：
+   * 把窗里攒下的话连同这句，按顺序（先攒的、后这句）一次性立刻发。 */
+  if (_holdState && _holdState.timer) {
+    const text = input.value.trim();
+    const msg = { text, atts: attachments.slice() };
+    if (text || msg.atts.length) {
+      input.value = '';
+      clearDraft();
+      autosizeInput();
+      if (onScreen()) {
+        pendingRewindBubble = addUser(msg.text, undefined, msg.atts.slice(), undefined, undefined, currentIdentityName);
+        jumpToBottom();
+      }
+      attachments = [];
+      renderAttachBar();
+      syncSendBtn();
+      if (text || msg.atts.length) _holdState.queue.push(msg);
+    }
+    clearTimeout(_holdState.timer);
+    _holdState.timer = null;
+    await _holdFire();
+    return;
+  }
   if (busy) return;
   /* 【2026-11-05 加】真正开口新一轮 —— 计时从这里重新开始。
    * 放在这儿而不是 hideSending：切会话也会 hide，那不是新一轮。 */
@@ -10745,11 +10875,13 @@ sendBtn.onclick = () => {
    * 原话：「把【预发送】机制整个删除，就按原来那个点【发送】直接插话，
    *        按回车也和点【发送】一样直接插话」。
    *
-   * 所以现在两条路完全一致：她没在跑 → send()；她在跑 → interject() 直接插进去。
-   * 2026-11-08 那套「待发送」队列（按会话存本地存储、一轮结束自动发、
-   * 队列里还能直接发送/编辑/删除）连同那个 2 秒轮询已经整段删掉。
+   * 【2026-11-12 主人改口径·发送缓冲回来了（这次做成功能页一张卡）】
+   * 原话：「改回车是直接发送插话消息，只有点输入框右侧的【发送】按钮才是预发送」。
+   * 所以现在：回车 → send()（直接发，不缓冲）；【发送】按钮 → sendBuffered()
+   * （缓冲窗：等一拍，期间打字/再点都顺延，到点一次性发，窗里不算插话）。
+   * 功能页关掉「发送缓冲」时，按钮退回跟回车一样直接发。
    */
-  if (!busy) return send();
+  if (!busy) return sendBuffered();
   if (input.value.trim() || attachments.length) return queueFromInput();
 };
 /* 【2026-11-05 加】独立停止键：不管输入框里有没有字，点它就是停。 */
@@ -10800,6 +10932,9 @@ function imeSwallowsEnter(e) {
 }
 
 input.addEventListener('keydown', (e) => {
+  /* 【2026-11-12 发送缓冲】缓冲窗开着的时候每按一次键盘都顺延 1 秒（主人钦定）。
+   * 放在最前面，任何键（打字、删字）都算「主人还在说话」。 */
+  try { _holdPat(); } catch (e0) {}
   /* 【2026-11-11 加·@ 提及】弹层开着时，方向键 / 回车 / Tab / Esc 先归它管。
    * 返回 true = 这一下已经吃掉了，别再当「发送」处理。 */
   if (window.__mentionKeyHook && window.__mentionKeyHook(e)) return;
@@ -14886,6 +15021,71 @@ function renderFeatList() {
         toggleVoicePicker(row);
       });
       row.append(main, pick, sw);
+      featList.appendChild(row);
+      continue;
+    }
+
+    /* 【2026-11-12 主人钦定·发送缓冲】多给一个「改时长」入口：
+     * 初始等几秒、上限几秒，两个数都是主人自己定。 */
+    if (f.id === 'sendBuffer') {
+      const cfgBtn = document.createElement('button');
+      cfgBtn.type = 'button';
+      cfgBtn.className = 'featEditBtn';
+      cfgBtn.textContent = '改时长';
+      cfgBtn.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        let box = row.nextElementSibling;
+        if (box && box.dataset && box.dataset.holdCfg === '1') { box.remove(); return; }
+        let num = { sendBufferSec: 3, sendBufferMaxSec: 5 };
+        try { num = await fetch('/api/features/numbers').then((x) => x.json()); } catch (e) {}
+        box = document.createElement('div');
+        box.dataset.holdCfg = '1';
+        box.style.cssText = 'padding:8px 10px 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;';
+        const mk = (label, key, val) => {
+          const wrap = document.createElement('label');
+          wrap.style.cssText = 'display:flex;align-items:center;gap:5px;';
+          const sp = document.createElement('span');
+          sp.textContent = label;
+          const inp = document.createElement('input');
+          inp.type = 'number';
+          inp.min = '1';
+          inp.max = '60';
+          inp.value = String(val || (key === 'sendBufferSec' ? 3 : 5));
+          inp.style.cssText = 'width:56px;padding:3px 6px;';
+          inp.dataset.key = key;
+          wrap.append(sp, inp);
+          return wrap;
+        };
+        const s1 = mk('发出后先等', 'sendBufferSec', num.sendBufferSec);
+        const s2 = mk('上限', 'sendBufferMaxSec', num.sendBufferMaxSec);
+        const unit = document.createElement('span');
+        unit.textContent = '秒；这一拍里打字/再发都顺延 1 秒，到点一次性看到全部';
+        unit.style.cssText = 'opacity:.65;';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'featEditBtn';
+        save.textContent = '存';
+        save.addEventListener('click', async (ev2) => {
+          ev2.preventDefault();
+          ev2.stopPropagation();
+          try {
+            for (const inp of [s1.querySelector('input'), s2.querySelector('input')]) {
+              await fetch('/api/features/number', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: inp.dataset.key, value: Number(inp.value) }),
+              }).then((x) => x.json());
+            }
+            try { _bufCfgCache.at = 0; } catch (e3) {}   // 让缓冲配置立刻重读
+            toast('缓冲时长存好了');
+            box.remove();
+          } catch (e2) { toast('没存上：' + ((e2 && e2.message) || e2)); }
+        });
+        box.append(s1, unit, s2, save);
+        row.after(box);
+      });
+      row.append(main, cfgBtn, sw);
       featList.appendChild(row);
       continue;
     }
@@ -19030,20 +19230,25 @@ const PROVIDERS = [
   },
   // 【2026-11-12 加】本机 DeepSeek：永远排最后，主人说「预设末尾处」
   {
+    key: 'local-deepseek',
     name: '本机 DeepSeek',
     base: '',
     models: [],
     hint: '在本机起一个 DeepSeek 网页版转接服务，不用 API key。选中后什么也不用填，直接点「测连通」。',
     local: true,
-    match: /^\u0000local-deepseek\u0000$/,
+    match: /^local-deepseek$/,
   },
 ];
 
 /** 按地址认厂商；认不出来返回 null */
 function providerOf(base) {
   const b = String(base || '').trim();
+  /* 【2026-11-12】「本机 DeepSeek」这条没有真地址（base 是空串），
+     所以它认的是下拉里的 key，不是地址。空地址时先照 key 找一遍。 */
   if (!b) return null;
-  return PROVIDERS.find((p) => p.match.test(b)) || null;
+  const byKey = PROVIDERS.find((p) => p.key && p.key === b);
+  if (byKey) return byKey;
+  return PROVIDERS.find((p) => p.match && p.match.test(b)) || null;
 }
 
 const mdlDlg = document.getElementById('modelsDlg');
@@ -19158,7 +19363,10 @@ function paintBasePicker() {
   mdlBasePreset.appendChild(opt0);
   for (const p of PROVIDERS) {
     const o = document.createElement('option');
-    o.value = p.base;
+    /* 【2026-11-12】「本机 DeepSeek」没有真地址（base 是空串），
+       value 再用 base 就会跟最上面那个「选一家…（或直接手填）」撞成同一个空值，
+       选了等于没选。所以没 base 的预设用 key 当 value。 */
+    o.value = p.base || p.key || '';
     o.textContent = p.name;
     mdlBasePreset.appendChild(o);
   }
@@ -19166,7 +19374,7 @@ function paintBasePicker() {
     mdlBaseList.innerHTML = '';
     for (const p of PROVIDERS) {
       const o = document.createElement('option');
-      o.value = p.base;
+      o.value = p.base || p.key || '';
       o.label = p.name;
       mdlBaseList.appendChild(o);
     }
@@ -19256,6 +19464,18 @@ if (mdlBasePreset) {
     const v = mdlBasePreset.value;
     if (!v) return;
     const p = providerOf(v);
+    /* 【2026-11-12 主人要的】选中「本机 DeepSeek」→ 地址/key/模型名全空着，
+       什么都不用填，直接点「测连通」让它自己起服务、自己填回来。 */
+    if (p && p.local) {
+      mdlBase.value = '';
+      if (mdlKey) mdlKey.value = '';
+      mdlModel.value = '';
+      if (mdlName) mdlName.value = '';
+      mdlDiscovered = { base: '', ids: [] };
+      paintModelPicker('');
+      if (mdlBaseHint) mdlBaseHint.textContent = '本机 DeepSeek：不用填，直接点「测连通」';
+      return;
+    }
     // 换了地址就是换了一家公司，原来的模型名几乎肯定不对了（除非它正好是这家的）。
     // 以前这里只在「空着」时才填，结果从别的公司切过来时留着旧值，看着像没反应。
     const oldModel = (mdlModel.value || '').trim();
@@ -19970,83 +20190,115 @@ document.getElementById('mdlCancel').onclick = () => closeForm();
 
 /* 【2026-11-12 主人钦点·本机 DeepSeek 的「测连通」】
  *
- * 主人的原话拆成五条，一条都不能少：
- *  ① 预设末尾有「本机 DeepSeek」，选中它时**什么都没填**，点「测连通」就自动起程序；
+ * 主人原话拆成四条：
+ *  ① 预设末尾有「本机 DeepSeek」，选中时什么都没填，点「测连通」就自动起程序；
  *  ② 没在内置浏览器登过 DeepSeek → 打开内置浏览器的 DeepSeek 登录页，十分钟没登自动停；
- *  ③ 登过了 → 自动取 token、起服务、自动填地址/key/模型名，然后添加模型；
- *  ④ 已经加过这个模型 → 测连通成功就**什么都不发生**；
- *  ⑤ 测连通失败 → 没起服务就起服务；token 不行就重新取 token 再填进去。
+ *  ③ 登过了 → 自动取 token、起服务、自动填地址/key/模型名，然后在模型界面添加上；
+ *  ④ 已经有这个模型 → 测连通成功就提示「通了」；测失败再看原因救：没起服务就起服务，
+ *     token 不行就重新取 token 并填进去。
  *
- * 全程不给任何提示（主人特意叮嘱「之后说的要求全程不会有任何提示」），
- * 所以这里一律不弹框、不写表单提示行，成功就静默 —— 只有失败才落到表单提示行上。
+ * 全程不弹框（主人说「之后说的要求全程不会有任何提示」）—— 提示只落在表单提示行上。
  */
-async function localDeepSeekProbe() {
-  const post = async (p) => {
-    const res = await fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    return jsonOrError(res);
-  };
-  const get = async (p) => {
-    const res = await fetch(p);
-    return jsonOrError(res);
-  };
+function mdlLocalHint(kind, text) {
+  const el = document.getElementById('mdlFormHint') || document.getElementById('mdlHint');
+  if (el) { el.textContent = text || ''; el.className = 'hint ' + (kind || ''); }
+  try { if (typeof clearFormHint === 'function') clearFormHint(kind, text); } catch (_) {}
+}
 
-  // ① 先问服务起来没有；没起来就起（起的时候会顺手查 token，没有就打开登录页等）
-  let st = await get('/api/mini-deepseek/status');
-  if (!st || !st.up) {
-    st = await post('/api/mini-deepseek/start');
-    if (!st || !st.up) {
-      clearFormHint('err', (st && st.error) || '本机 DeepSeek 起不来');
-      return null;
-    }
-  }
+async function localDeepSeekGet(p) {
+  const res = await fetch(p);
+  return jsonOrError(res);
+}
+async function localDeepSeekPost(p, body) {
+  const res = await fetch(p, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  return jsonOrError(res);
+}
 
-  // ② 服务起来了，但没 token —— 那服务其实不可用，得让主人登一次
-  if (!st.hasToken) {
-    st = await post('/api/mini-deepseek/ensure-token');
-    if (!st || !st.ok) {
-      clearFormHint('err', (st && st.error) || '没取到 DeepSeek 的登录凭证');
-      return null;
-    }
-  }
-
+/* 把服务拉起来（含：没登录 → 开登录页等十分钟；有登录 → 自动取 token） */
+async function localDeepSeekEnsure() {
+  let st = await localDeepSeekGet('/api/mini-deepseek/status');
+  if (st && st.up && st.hasToken) return st;
+  st = await localDeepSeekPost('/api/mini-deepseek/start');
+  if (!st) return { error: '本机 DeepSeek 起不来' };
+  if (st.error) return st;
+  if (!st.up) return { error: st.error || '本机 DeepSeek 没起来' };
+  if (!st.hasToken) return { error: st.error || '没取到 DeepSeek 的登录凭证（内置浏览器里登一下）' };
   return st;
+}
+
+/* 把服务端的地址/key/模型名写进表单并落库 */
+async function localDeepSeekApply(payload) {
+  return localDeepSeekPost('/api/mini-deepseek/apply', { name: (payload && payload.name) || '', id: (payload && payload.id) || '' });
 }
 
 document.getElementById('mdlTest').onclick = async () => {
   try {
     const payload = formPayload();
-    /* 本机 DeepSeek 这条走自己的路：它不需要地址、不需要 key、不需要模型名，
-     * 一切都由服务端自动完成。别的预设还是老样子。 */
+    /* ---------- 本机 DeepSeek：它不需要地址、不需要 key、不需要模型名 ---------- */
     if (payload && payload.providerLocalDeepSeek) {
-      const st = await localDeepSeekProbe();
-      if (!st) return;
-      // ③ 地址/key/模型名由服务端算好；能自动保存就自动保存（主人要「在模型界面添加该模型」）
-      const done = await fetch('/api/mini-deepseek/apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: payload.name || '', id: payload.id || '' }),
-      }).then((x) => jsonOrError(x));
+      const t0 = Date.now();
+      mdlLocalHint('', '正在起本机 DeepSeek…');
+
+      // 先把模型加进 / 对齐（内部会查服务、必要时起服务）
+      let done = await localDeepSeekApply(payload);
       if (!done || done.error) {
-        clearFormHint('err', (done && done.error) || '自动添加模型失败');
+        mdlLocalHint('err', (done && done.error) || '自动添加模型失败');
         return;
       }
-      /* ④ 已经有了同样的模型 → 成功就什么事都不发生（不弹提示、不改表单）。
-       * 这一轮如果本来就是在「编辑已有那个」，顺手把表单填上，方便主人看见值。 */
-      if (done.created) {
-        mdlState = done.state || mdlState;
-        paintModels();
-        syncHealth();
-        closeForm();
+      mdlState = done.state || mdlState;
+      if (mdlBase && done.baseURL) mdlBase.value = done.baseURL;
+      if (mdlKey && done.apiKey) mdlKey.value = done.apiKey;
+      if (mdlModel && done.model) mdlModel.value = done.model;
+      if (done.created) { paintModels(); syncHealth(); }
+
+      // 真打一次
+      let probe = await localDeepSeekGet('/api/mini-deepseek/probe');
+      if (probe && probe.ok && probe.up) {
+        mdlLocalHint('ok', `通了，${Date.now() - t0}ms`);
+        if (!done.created) { paintModels(); syncHealth(); }
         return;
       }
-      // 已经存在：只把三项值补进表单（主人打开的是它），其余一律不动
-      if (mdlBase) mdlBase.value = done.baseURL || mdlBase.value;
-      if (mdlKey) mdlKey.value = done.apiKey || mdlKey.value;
-      if (mdlModel) mdlModel.value = done.model || mdlModel.value;
-      clearFormHint('ok', '通了');
+
+      // 没通 —— 按原因自己救
+      const why = (probe && probe.error) || '';
+      const notRunning = probe && (probe.running === false || !probe.up);
+      mdlLocalHint('', notRunning ? '服务没起来，正在拉起…' : '凭证或服务有问题，正在重取…');
+
+      if (notRunning) {
+        // 服务原因：先起服务（含登录引导），再对一次
+        const st = await localDeepSeekEnsure();
+        if (st && st.error) { mdlLocalHint('err', st.error); return; }
+      } else {
+        // token 原因：重新取一次 token 并重启服务
+        const tk = await localDeepSeekPost('/api/mini-deepseek/token');
+        if (!tk || tk.error) { mdlLocalHint('err', (tk && tk.error) || '重新取 token 失败'); return; }
+        const st = await localDeepSeekEnsure();
+        if (st && st.error) { mdlLocalHint('err', st.error); return; }
+      }
+
+      // 再对齐一次（地址/key/模型名可能变了），然后再测
+      done = await localDeepSeekApply(payload);
+      if (!done || done.error) { mdlLocalHint('err', (done && done.error) || '自动添加模型失败'); return; }
+      mdlState = done.state || mdlState;
+      if (mdlBase && done.baseURL) mdlBase.value = done.baseURL;
+      if (mdlKey && done.apiKey) mdlKey.value = done.apiKey;
+      if (mdlModel && done.model) mdlModel.value = done.model;
+      paintModels(); syncHealth();
+
+      probe = await localDeepSeekGet('/api/mini-deepseek/probe');
+      if (probe && probe.ok && probe.up) {
+        mdlLocalHint('ok', `通了，${Date.now() - t0}ms`);
+        return;
+      }
+      mdlLocalHint('err', ((probe && probe.error) || why || '还是连不上') + '（已经试着自动恢复过一次）');
       return;
     }
 
+    /* ---------- 别的预设：老样子 ---------- */
     if (!payload.model || !payload.baseURL) { clearFormHint('err', '地址和模型名先填上'); return; }
     clearFormHint('', '正在连…');
     const res = await fetch('/api/models/test', {
@@ -20060,7 +20312,6 @@ document.getElementById('mdlTest').onclick = async () => {
     clearFormHint('err', '连不上：' + (e && e.message ? e.message : e));
   }
 };
-
 document.getElementById('mdlSave').onclick = async () => {
   const btn = document.getElementById('mdlSave');
   try {

@@ -19,8 +19,10 @@ const ok = (name, cond, detail = '') => {
 };
 
 /* ① 黑洞端点：accept 但永不回话，让轮子一直挂着 */
-const bh = net.createServer((s) => { /* 故意不响应 */ });
-await new Promise((r) => bh.listen(18777, '127.0.0.1', r));
+const bh = net.createServer((s) => { /* 故意不响应 */ s.on('error', () => {}); });
+const BH_PORT = Number(process.env.XY_BH_PORT || 0) || (18000 + Math.floor(Math.random() * 900));
+await new Promise((r) => bh.listen(BH_PORT, '127.0.0.1', r));
+const BH_BASE = 'http://127.0.0.1:' + BH_PORT + '/v1';
 
 const { startIsolated } = await import(pathToFileURL(join(ROOT, 'scripts', '_test-instance.mjs')).href);
 const iso = await startIsolated({ appPort: 8997, cdpPort: 9397 });
@@ -29,7 +31,7 @@ try {
   /* ② 把激活模型换成黑洞（真实 key 一分不花） */
   const mpath = join(iso.dataDir, '.state', 'models.json');
   writeFileSync(mpath, JSON.stringify({
-    models: [{ id: 'm_blackhole', name: '黑洞', model: 'fake-model', baseURL: 'http://127.0.0.1:18777/v1', apiKey: 'test' }],
+    models: [{ id: 'm_blackhole', name: '黑洞', model: 'fake-model', baseURL: BH_BASE, apiKey: 'test' }],
     activeId: 'm_blackhole',
   }, null, 2));
 
@@ -62,7 +64,7 @@ try {
 
   /* ⑥ 硬杀服务（taskkill /F，不走任何优雅路径） */
   const { execSync } = await import('node:child_process');
-  const out = execSync(`netstat -ano | findstr :8997 | findstr LISTENING`, { encoding: 'utf8' });
+  const out = execSync(`netstat -ano | findstr :${new URL(iso.base).port} | findstr LISTENING`, { encoding: 'utf8' });
   const pid = String(out).trim().split(/\s+/).pop();
   ok('找到服务 PID', /^\d+$/.test(pid), pid);
   execSync(`taskkill /F /PID ${pid} /T`, { stdio: 'ignore' });

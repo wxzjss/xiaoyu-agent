@@ -6,9 +6,11 @@
  * 秒表 tick 每秒写「<名字>正在发送消息」—— 两个写手对轰。
  * 修法：巡检改走同一个 _hintSetText(_hintWho()...) 出口。
  *
+ * 【2026-11-12 主人】改回不带名字前缀的【正在发送消息】。防切换的规矩保留：
+ *  所有写手必须走同一个出口 _hintSetText('正在发送消息')，不许各自手写 textContent。
  * 钉两条（改前会红）：
  *  ① 全文件不许再有任何「裸写」正在发送消息 的 JS 赋值（静态模板那一份除外）；
- *  ② 带名字的写手至少两处（showSending + 3 秒巡检），同一个出口。
+ *  ② 统一出口 _hintSetText('正在发送消息') 至少 3 处（showSending / tick / 3 秒巡检）。
  */
 import { readFileSync } from 'node:fs';
 
@@ -25,9 +27,11 @@ const bare = [];
 }
 ok('没有裸写「正在发送消息」的赋值', bare.length === 0, bare.map((n) => 'L' + n).join(' '));
 
-/* ② 带名字的写手走同一出口，至少 2 处 */
-const named = (s.match(/_hintSetText\(_hintWho\(\) \+ '正在发送消息'\)/g) || []).length;
-ok('带名字的写手走 _hintSetText(_hintWho()…)（showSending + 3 秒巡检）', named >= 2, '共 ' + named + ' 处');
+/* ② 【2026-11-12 主人】改回不带名字前缀：写手统一走 _hintSetText('正在发送消息')
+ * （showSending / 秒表 tick / 3 秒巡检 ≥3 处），防切换的「同一出口」规矩保留。 */
+const named = (s.match(/_hintSetText\('正在发送消息'\)/g) || []).length;
+ok('写手统一走 _hintSetText(\'正在发送消息\')（≥3 处）', named >= 3, '共 ' + named + ' 处');
+ok('名字前缀已去掉（不再有 _hintWho() + 的拼接）', !/_hintWho\(\) \+ '正在发送消息'/.test(s));
 
 console.log('\n── 提示行名字：' + pass + '/' + (pass + fail) + (fail ? ' 有失败' : ' 全过') + ' ──');
 process.exit(fail ? 1 : 0);

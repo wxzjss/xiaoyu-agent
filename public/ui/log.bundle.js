@@ -7785,6 +7785,7 @@
           kind: "say",
           key,
           who: String(turn.whale),
+          spectator: Boolean(turn.spectator),
           bubbles: [text],
           rewindId: numOrNull(turn.rewindId),
           ts: numOrNull(turn.ts),
@@ -7921,6 +7922,7 @@
           kind: "say",
           key,
           who: String(it.who || ""),
+          spectator: Boolean(it.spectator),
           bubbles: [String(it.t || "")],
           rewindId: null,
           ts: null,
@@ -8673,7 +8675,10 @@
         "data-rewind-id": it.rewindId == null ? void 0 : String(it.rewindId),
         "data-at": it.rewindId == null ? void 0 : String(it.rewindId),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "role", children: who }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "role", children: [
+            who,
+            it.spectator ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "specTag", children: "\u65C1\u89C2" }) : null
+          ] }),
           editing ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EditArea, { text: bubbles.join("\n\n"), at: it.rewindId }) : bubbles.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(MdDiv, { className: "bubble" + (i > 0 ? " cont" : ""), text: t }, "b" + i))
         ]
       }

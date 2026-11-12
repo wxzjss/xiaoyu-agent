@@ -12,6 +12,7 @@ import { TURN_IDLE_MAX_MS, TOOL_MAX_MS, LLM_IDLE_MS } from './deadline.mjs';
 // 小鲸在场的开关。必须在顶层导入：以前写在接口分支里用 await import，
 // 出了分支 whaleOn 就没了，而每轮收尾那句 if (whaleOn()) 还在 —— 每轮都崩。
 import { whaleOn, setWhaleOn, markWhaleSpoke, whaleSpokeThisTurn } from './whale-presence.mjs';
+import { spectatorsOf, isSpectator, setSpectators } from './spectator.mjs';
 // 顶栏那个「小鱼」按钮：默认在场，禁用后这个会话后面的话她一个字都不发。
 import { fishOn, setFishOn } from './fish-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
@@ -642,6 +643,7 @@ function publicSession(session) {
       text,
       rewindId: i,
       edited,
+      spectator: m._spectator === true,
       out: Array.isArray(m._out) ? m._out : [],
       tools,
       /* 【2026-11-03 加】这一轮里「谁干了什么」（办事模式的子任务流水）。
@@ -1038,7 +1040,10 @@ async function runMateRound({ sessionId, heard, send, excludeIds = [], signal = 
   }
 }
 
-async function whaleMaybeReply({ session, userText, send, sessionId, live = null, speaksToHer = false, extraRule = '' }) {
+async function whaleMaybeReply({ session, userText, send, sessionId, live = null, speaksToHer = false, extraRule = '', whoName = '小鲸' }) {
+  /* 【2026-11-12 旁观者模式】说话的人可换：默认还是小鲸；功能页选了谁，whoName 就是谁。
+   * 下面所有 who/名字/落盘标记都认 WHO，不再焊死。 */
+  const WHO = String(whoName || '').trim() || '小鲸';
   const { runSubagent } = await import('./subagent.mjs');
 
   /**
@@ -1281,7 +1286,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
           '所以：没有非说不可的就一个字都别回；真有要补的，只补她漏掉的那一点。',
         ]),
     '【铁律：你不是小鱼，别替她答】',
-    '- 你是小鲸。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
+    '- 你是' + WHO + '。你在这一趟里说的每一个「我」，指的都是你自己，不是小鱼。',
     '- 主人问「小鱼记不记得」「小鱼查了没」「小鱼在不在」—— 那是问她的，不是你答的题。',
     '  你可以说「这得她自己说」，或者干脆不出声；不许用「我」替她认下来。',
     '- 工具你是有的，「我这就查」「我去看看」你可以说 —— 但说了就得真去查，',
@@ -1377,14 +1382,14 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    * 后面的 whale_delta 才有地方往里塞字。少了这个头，前端收到 delta
    * 发现没有活着的流，只能丢掉 —— 看起来还是「整段蹦出来」。
    */
-  try { send({ type: 'whale_stream_start', who: '小鲸' }); } catch {}
+  try { send({ type: 'whale_stream_start', who: WHO, spectator: isSpectator(sessionId, WHO) }); } catch {}
 
   let r;
   setFullAccess(true);
   try {
     r = await runSubagent({
       task,
-      name: '小鲸',
+      name: WHO,
       /* 【2026-11-10 按会话】她干活也要听这个会话的功能开关 */
       sessionId,
       safeWord: __swWord,
@@ -1672,10 +1677,10 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
    * 先收口再推整段，两条路都在的时候前端按 text 去重，不会出两个气泡。
    */
   try { send({ type: 'whale_stream_finish', text }); } catch {}
-  try { send({ type: 'whale', who: '小鲸', text }); } catch {}
+  try { send({ type: 'whale', who: WHO, text, spectator: isSpectator(sessionId, WHO) }); } catch {}
   try {
     if (live && Array.isArray(live.events) && live.events.length < 20000) {
-      live.events.push({ type: 'whale', who: '小鲸', text });
+      live.events.push({ type: 'whale', who: WHO, text, spectator: isSpectator(sessionId, WHO) });
       live.done = live.done === true;
     }
   } catch {}
@@ -1690,7 +1695,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   markWhaleSpoke(session, text);
 
   // 推流在这儿（上面），落盘交给两边共用的那一处（本来就在这个函数里，抽出去只为让别的路也能落）
-  landWhaleSay({ session, sessionId, text, send, live });
+  landWhaleSay({ session, sessionId, text, send, live, who: WHO });
 }
 
 /**
@@ -1824,7 +1829,10 @@ function landWhaleSay({ session, sessionId, text, send = null, live = null }) {
       const rec = {
         role: 'assistant',
         content: text,
-        _whale: '小鲸',
+        _whale: String(who || '小鲸').trim() || '小鲸',
+        /* 【2026-11-12 旁观者模式】说话的人在不在本会话的旁观名单里——
+         * 在就打标，前端名字旁边画「旁观」小牌。 */
+        _spectator: isSpectator(sessionId, who),
         // 这句是并排插进来的，不是这一轮的收尾回答
         _whaleSide: true,
         // flushWhalePark 要按这个时间排序补写；不写它，排序就全靠运气
@@ -2294,10 +2302,10 @@ function appendLiveItem(items, ev) {
           /* 定稿比流式那份长（尾部补全）：以定稿为准，别留半句 */
           _lastSay.t = _t;
         } else {
-          items.push({ k: 'say', who: _who, t: _t });
+          items.push({ k: 'say', who: _who, t: _t, spectator: ev.spectator === true });
         }
       } else {
-        items.push({ k: 'say', who: _who, t: _t });
+        items.push({ k: 'say', who: _who, t: _t, spectator: ev.spectator === true });
       }
     }
   } else if (ev.type === 'whale_stream_start') {
@@ -2308,7 +2316,7 @@ function appendLiveItem(items, ev) {
      * 屏幕那半边的口径：items.js 对 say 与 text 对称滤空 —— 占位还没等到字
      * 就被 F5 / 对账撞上时，前端不画空气泡；两份实现（增量 / 从头重算）
      * 都带着同一个占位，清单仍然逐字相等。 */
-    items.push({ k: 'say', who: String(ev.who || ''), t: '' });
+    items.push({ k: 'say', who: String(ev.who || ''), t: '', spectator: ev.spectator === true });
   } else if (ev.type === 'whale_delta') {
     const who = String(ev.who || '');
     const it = lastOf('say');
@@ -8696,6 +8704,18 @@ const server = createServer(async (req, res) => {
   if (req.method === 'DELETE' && url.pathname === '/api/resume') {
     return json(res, 200, { ok: dropInterrupted() });
   }
+  /* 【2026-11-12 旁观者模式】按会话挑谁能在旁边插话；名单空 = 关闭（默认）。 */
+  if (req.method === 'GET' && url.pathname === '/api/spectator') {
+    const sid = q.get('sessionId') || '';
+    return json(res, 200, { ok: true, sessionId: sid, agents: spectatorsOf(sid) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/spectator') {
+    const b = await readBody(req);
+    const sid = String(b?.sessionId || '').trim();
+    if (!sid) return json(res, 400, { ok: false, error: '没有 sessionId' });
+    const r = setSpectators(sid, Array.isArray(b?.agents) ? b.agents : []);
+    return json(res, r.ok ? 200 : 500, r);
+  }
   if (req.method === 'POST' && url.pathname === '/api/resume') {
     const info = peekInterrupted();
     if (!info) return json(res, 400, { ok: false, error: '没有待续的那一轮' });
@@ -11180,7 +11200,30 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         // 这里每轮调模型前敲一下，节流由 lastWhaleTickAt 兜住（见下），不许连累这一轮。
         onRoundTick: async ({ round }) => {
           try {
-            if (!whaleOn(sessionId)) return;
+            /* 【2026-11-12 旁观者模式·替换原来的 whaleOn 闸】
+             * 主人报「我没启用小鲸，她是怎么冒出来的」——旧闸只认 whale-on.json，
+             * 那张表里有条目就开口。现在改成：本会话在功能页选了旁观者（名单非空）才允许，
+             * 而且旁观者不能跟主智能体相同、纯闲聊（这轮还没跑过工具）不插话。 */
+            const __spect = spectatorsOf(sessionId);
+            if (!__spect.length) return;
+            /* 旁观者 ≠ 主智能体（主智能体就是第一名；名单里除掉他） */
+            const __mainName = (() => {
+              try { const c = getAgent(__mainIdForTurn); return String((c && c.name) || '').trim(); } catch { return ''; }
+            })();
+            const __who = __spect.find((n) => n && n !== __mainName);
+            if (!__who) return;
+            /* 纯闲聊不插话：从本轮起点到现在，一个工具都没跑过 → 安静看着 */
+            const __worked = (() => {
+              try {
+                const ms = Array.isArray(session.messages) ? session.messages : [];
+                for (let k = ms.length - 1; k >= Math.max(0, turnStart); k--) {
+                  const m = ms[k];
+                  if (m && (m.role === 'tool' || (Array.isArray(m.tool_calls) && m.tool_calls.length))) return true;
+                }
+              } catch {}
+              return false;
+            })();
+            if (!__worked) return;
             /**
              * 【2026-11-11 修·主人报「只开小鲸时她连回两条」】
              *
@@ -11203,6 +11246,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               sessionId,
               live,
               speaksToHer: false,
+              whoName: __who,
               extraRule: '（这是我干活干到一半，不是你刚说完话。看着进度，想说一句就说，没什么想讲就一个字都别回。）',
             });
           } catch (e) {

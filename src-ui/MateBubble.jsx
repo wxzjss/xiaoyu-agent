@@ -58,7 +58,7 @@ export default function MateBubble({ it, ask }) {
       data-rewind-id={it.rewindId == null ? undefined : String(it.rewindId)}
       data-at={it.rewindId == null ? undefined : String(it.rewindId)}
     >
-      <div className="role">{who}</div>
+      <div className="role">{who}{it.spectator ? <span className="specTag">旁观</span> : null}</div>
       {editing ? (
         <EditArea text={bubbles.join('\n\n')} at={it.rewindId} />
       ) : (

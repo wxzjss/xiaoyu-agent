@@ -1546,6 +1546,11 @@
     .sendingHint span, .sendingHint {
       color: var(--dim); font-size: 12px; white-space: nowrap;
     }
+    .specTag {
+      display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 5px;
+      font-size: 10px; line-height: 15px; vertical-align: 1px;
+      color: #f0b954; border: 1px solid rgba(240,185,84,.45); background: rgba(240,185,84,.08);
+    }
     .sendingHint .dots::after {
       content: ''; animation: sendingDots 1.4s steps(4, end) infinite;
     }
@@ -3740,6 +3745,14 @@
         <div class="frBody" id="featReportBody"></div>
       </div>
       <div class="featScroll">
+        <!-- 【2026-11-12 旁观者模式·主人定】按会话挑谁能在旁边随时插一句：
+             默认关闭（不选人=关）；旁观者不能跟本会话干活的主智能体相同；
+             旁观者说话时名字旁带「旁观」小牌；纯闲聊（没跑工具）不插话。 -->
+        <div class="sessTop sessTools" id="specBar" style="align-items:center;gap:8px;flex-wrap:wrap;">
+          <b style="font-size:12.5px;">旁观者模式（本会话）</b>
+          <span class="hint" id="specHint" style="flex:1 1 auto;min-width:0;"></span>
+        </div>
+        <div id="specPick" style="display:flex;flex-wrap:wrap;gap:8px;padding:0 14px 10px;"></div>
         <div class="featList" id="featList"></div>
       </div>
       <div class="dlgFoot">
@@ -8821,7 +8834,7 @@ function _hintSetText(t) {
 
 function showSending(startAt) {
   /* 名字跟着这次运行走（切会话/换身份都会变） */
-  try { _hintSetText(_hintWho() + '正在发送消息'); } catch (e) {}
+  try { _hintSetText('正在发送消息'); } catch (e) {}
   sendingHint.classList.remove('done');
   sendingHint.classList.add('show');
   noteNewContent();
@@ -8876,7 +8889,7 @@ function showSending(startAt) {
         if (!sendingHint.classList.contains('done')) {
           const sp2 = sendingHint && sendingHint.querySelector('span');
           if (sp2) {
-            const want = _hintWho() + '正在发送消息';
+            const want = '正在发送消息';
             if (sp2.textContent !== want) sp2.textContent = want;
           }
         }
@@ -15507,6 +15520,43 @@ if (openFeaturesBtn) {
      * 现在无论如何都打开：读不到就在列表位置写清原因 + 给一颗重试。 */
     await loadFeatures();
     featHideReport();   // 上一次导入的账本别在新一次打开时还杵着
+    /* 【2026-11-12 旁观者模式】按会话挑谁能在旁边随时插一句（不选=关，默认） */
+    try {
+      const _sid = (typeof sessionId === 'string' && sessionId) || window.sessionId || '';
+      const _pick = document.getElementById('specPick');
+      const _hint = document.getElementById('specHint');
+      if (_pick && _hint) {
+        _pick.textContent = '读取中…';
+        const _ag = await fetch('/api/agents').then((x) => x.json()).catch(() => null);
+        const _cards = (Array.isArray(_ag && _ag.agents) ? _ag.agents : (Array.isArray(_ag) ? _ag : []))
+          .filter((c) => c && String(c.name || '').trim() && c.enabled !== false);
+        const _r = await fetch('/api/spectator?sessionId=' + encodeURIComponent(_sid)).then((x) => x.json()).catch(() => null);
+        const _chosen = new Set(Array.isArray(_r && _r.agents) ? _r.agents : []);
+        _pick.textContent = '';
+        if (!_cards.length) { _hint.textContent = '没有可选的智能体。'; }
+        else {
+          _hint.textContent = '勾选谁，谁就能在她干活时随时插一句；不勾=关闭。名字旁边带「旁观」小牌；纯闲聊不插话。';
+          for (const c of _cards) {
+            const _name = String(c.name || '').trim();
+            const _isMain = _name === (typeof mainAgentName !== 'undefined' && mainAgentName) || _name === String(window.mainAgentName || '');
+            const lab = document.createElement('label');
+            lab.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--dim);cursor:pointer;white-space:nowrap;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.value = _name; cb.checked = _chosen.has(_name);
+            if (_isMain) { cb.disabled = true; cb.title = '本会话正在干活的主智能体，不能当旁观者'; }
+            cb.onchange = async () => {
+              const names = [].slice.call(_pick.querySelectorAll('input[type=checkbox]'))
+                .filter((x) => x.checked && !x.disabled).map((x) => x.value);
+              const rr = await fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: _sid, agents: names }) }).then((x) => x.json()).catch(() => null);
+              _hint.textContent = rr && rr.ok ? (names.length ? '已保存：' + names.join('、') + ' 在旁观' : '已关闭（没人旁观）') : '没存上，再试一次';
+            };
+            lab.append(cb, document.createTextNode(_name + (_isMain ? '（干活中）' : '')));
+            _pick.append(lab);
+          }
+        }
+      }
+    } catch (e) {}
     closeOtherDialogs('featuresDlg');
     /* 已经开着就别再 showModal() —— 对开着的 dialog 再调一次会抛 InvalidStateError，
      * 白白在控制台留一条红字。 */
@@ -19993,7 +20043,7 @@ setInterval(async () => {
          * 而秒表 tick 每秒写「<名字>正在发送消息」—— 两个写手对轰，
          * 屏幕上就 3 秒切一次裸的、1 秒切回带名字的。改成同一把出口（_hintSetText），
          * 名字取值跟 tick 完全同源，谁后写都一样。 */
-        try { _hintSetText(_hintWho() + '正在发送消息'); } catch (e) {}
+        try { _hintSetText('正在发送消息'); } catch (e) {}
         _hh.classList.remove('stalled');
       } else if (_hh) {
         _hh.classList.remove('stalled');

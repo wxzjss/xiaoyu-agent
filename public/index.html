@@ -2749,6 +2749,102 @@
      * 拖拽事件会断，drop 永远不来。
      * 注意：只给 form 加 position:relative，**别给 dialog 加** ——
      * 模态 dialog 靠 UA 的 position:fixed 才居中，一改成 relative 就跑回文档流里去了。 */
+    /* ── 知识库·书架大界面（2026-11-12 主人钦点）── */
+    #kbOverlay {
+      position: fixed; inset: 0; z-index: 900;
+      background: linear-gradient(180deg, #2b2320 0%, #3a2f28 55%, #2b2320 100%);
+      display: flex; flex-direction: column;
+      padding: 18px 26px 0;
+      overflow: hidden;
+    }
+    #kbOverlay[hidden] { display: none; }
+    body.skin #kbOverlay { background: linear-gradient(180deg, #1c222b 0%, #26303c 55%, #1c222b 100%); }
+    .kbHead { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; flex: 0 0 auto; }
+    .kbHead b { font-size: 17px; letter-spacing: 2px; color: #f2e9dc; }
+    body.skin .kbHead b { color: var(--text); }
+    .kbHead .kbHint { flex: 1; text-align: center; color: #bfb2a2; font-size: 12px; }
+    body.skin .kbHead .kbHint { color: var(--muted); }
+    .kbHead button { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16); color: #f2e9dc; border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+    .kbHead button:hover { background: rgba(255,255,255,.16); }
+    body.skin .kbHead button { color: var(--text); }
+    .kbHead button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .kbSearch { background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18); color: #f2e9dc; border-radius: 8px; padding: 6px 12px; font-size: 13px; width: 200px; }
+    body.skin .kbSearch { color: var(--text); }
+    .kbShelfWrap { flex: 1; overflow-y: auto; padding: 6px 4px 30px; }
+    .kbShelf { position: relative; display: flex; align-items: flex-end; gap: 14px; padding: 22px 26px 0; min-height: 208px; flex-wrap: wrap; }
+    .kbShelf::after {
+      content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 12px;
+      background: linear-gradient(180deg, #7a5b3e 0%, #5d442c 45%, #3e2d1c 100%);
+      border-radius: 3px 3px 0 0;
+      box-shadow: 0 6px 14px rgba(0,0,0,.45);
+    }
+    body.skin .kbShelf::after { background: linear-gradient(180deg, #46586e 0%, #35465a 45%, #232e3c 100%); }
+    .kbBook {
+      position: relative; z-index: 1;
+      width: 88px; height: 168px;
+      border-radius: 4px 10px 10px 4px;
+      cursor: pointer;
+      padding: 10px 8px 12px 12px;
+      display: flex; flex-direction: column;
+      transition: transform .18s ease, box-shadow .18s ease;
+      box-shadow: inset 6px 0 10px -6px rgba(0,0,0,.55), inset -2px 0 3px rgba(255,255,255,.18), 3px 4px 8px rgba(0,0,0,.35);
+      transform-origin: bottom center;
+    }
+    .kbBook::before {
+      content: ''; position: absolute; left: 9px; top: 6px; bottom: 6px; width: 3px;
+      background: rgba(0,0,0,.18); border-radius: 2px;
+    }
+    .kbBook:hover { transform: translateY(-10px) rotate(0deg) !important; box-shadow: inset 6px 0 10px -6px rgba(0,0,0,.55), 6px 14px 18px rgba(0,0,0,.4); }
+    .kbBook .kbBTitle {
+      font-size: 12.5px; line-height: 1.35; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.35);
+      font-weight: 700; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .kbBook .kbBAuthor { margin-top: auto; font-size: 10.5px; color: rgba(255,255,255,.85); }
+    .kbBook .kbBTag {
+      position: absolute; top: -9px; right: -6px;
+      background: #c0392b; color: #fff; font-size: 10px;
+      padding: 2px 7px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,.3);
+    }
+    .kbBookAdd {
+      width: 88px; height: 168px; border: 2px dashed rgba(255,255,255,.3); border-radius: 4px 10px 10px 4px;
+      display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px;
+      color: rgba(255,255,255,.55); cursor: pointer; font-size: 13px; transition: all .18s;
+    }
+    .kbBookAdd:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-6px); }
+    .kbBookAdd span { font-size: 30px; line-height: 1; }
+    .kbFormWrap, .kbReadWrap {
+      position: absolute; inset: 0; z-index: 5;
+      background: rgba(15,12,10,.72); backdrop-filter: blur(3px);
+      display: flex; align-items: center; justify-content: center;
+    }
+    body.skin .kbFormWrap, body.skin .kbReadWrap { background: rgba(12,16,22,.72); }
+    .kbForm, .kbRead {
+      width: min(680px, 92vw); max-height: 86vh; overflow-y: auto;
+      background: #fbf6ec; color: #33302a; border-radius: 12px;
+      padding: 20px 24px; box-shadow: 0 18px 50px rgba(0,0,0,.5);
+    }
+    body.skin .kbForm, body.skin .kbRead { background: var(--panel, #1d2530); color: var(--text); }
+    .kbForm h3, .kbRead h3 { margin: 0 0 12px; font-size: 16px; }
+    .kbForm label { display: block; font-size: 12px; margin: 10px 0 4px; opacity: .75; }
+    .kbForm input, .kbForm textarea {
+      width: 100%; box-sizing: border-box; border: 1px solid rgba(0,0,0,.18); border-radius: 8px;
+      padding: 8px 10px; font-size: 13.5px; background: #fff; color: #33302a; font-family: inherit;
+    }
+    body.skin .kbForm input, body.skin .kbForm textarea { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.18); color: var(--text); }
+    .kbForm textarea { min-height: 240px; resize: vertical; line-height: 1.6; }
+    .kbForm .kbRow { display: flex; gap: 10px; } .kbForm .kbRow > div { flex: 1; }
+    .kbBtns { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; flex-wrap: wrap; }
+    .kbBtns button { border-radius: 8px; padding: 8px 18px; cursor: pointer; font-size: 13.5px; border: 1px solid rgba(0,0,0,.2); background: #fff; color: #33302a; }
+    body.skin .kbBtns button { background: rgba(255,255,255,.08); color: var(--text); border-color: rgba(255,255,255,.2); }
+    .kbBtns button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .kbBtns button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+    .kbRead .kbMeta { font-size: 12px; opacity: .7; margin-bottom: 12px; }
+    .kbRead .kbBody { white-space: pre-wrap; line-height: 1.75; font-size: 14px; }
+    .kbToast {
+      position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%);
+      background: rgba(20,20,20,.85); color: #fff; padding: 8px 18px; border-radius: 8px;
+      font-size: 13px; z-index: 999; pointer-events: none; transition: opacity .3s;
+    }
     #featuresDlg > form { position: relative; }
     #featuresDlg.dropping { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
     .featDrop {
@@ -3679,6 +3775,7 @@
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
     <button id="cronBtn" title="定时任务：跟她说一件事、再说什么时候做，到点她自己去做">定时</button>
+    <button id="kbBtn" title="知识库：所有会话共享的书架——架构速览、排查套路、踩坑经验。点开挑一本读；智能体也能用工具翻">知识库</button>
     <button id="openFeatures">功能</button>
     <button id="openSettings">设置</button>
     <button id="openModels" title="模型">模型</button>
@@ -3722,6 +3819,61 @@
   <div class="cfgMenu" id="cfgMenu">
     <div class="cfgMenuHead" id="cfgMenuHead"></div>
     <div class="cfgMenuList" id="cfgMenuList"></div>
+  </div>
+
+  <!-- 知识库·书架大界面（2026-11-12 主人钦点）：不是小弹窗，是全屏书架。
+       卡=书：封面色按 id 取、微倾角、hover 抬起；点书打开阅读/编辑面板。 -->
+  <div id="kbOverlay" hidden>
+    <div class="kbHead">
+      <b>知 识 库</b>
+      <input type="text" class="kbSearch" id="kbSearch" placeholder="搜书名 / 内容 / 作者 / 标签…">
+      <span class="kbHint" id="kbHint">所有会话共享的书架——点一本书读，智能体也能用工具翻</span>
+      <button type="button" id="kbCreate" class="primary">＋ 创建知识卡</button>
+      <button type="button" id="kbImport">导入</button>
+      <button type="button" id="kbExport">导出</button>
+      <button type="button" id="kbClose">关闭</button>
+    </div>
+    <div class="kbShelfWrap" id="kbShelfWrap">
+      <div class="kbShelf" id="kbShelf"></div>
+    </div>
+    <!-- 创建/编辑表单层 -->
+    <div class="kbFormWrap" id="kbFormWrap" hidden>
+      <div class="kbForm">
+        <h3 id="kbFormTitle">创建知识卡</h3>
+        <div class="kbRow">
+          <div>
+            <label>书名（标题，必填）</label>
+            <input type="text" id="kbFTitle" maxlength="120" placeholder="一句话说清这张卡讲什么">
+          </div>
+          <div>
+            <label>作者名</label>
+            <input type="text" id="kbFAuthor" maxlength="60" placeholder="谁写的">
+          </div>
+        </div>
+        <label>标签（逗号隔开，比如：踩坑,机制）</label>
+        <input type="text" id="kbFTags" placeholder="可留空">
+        <label>知识内容</label>
+        <textarea id="kbFContent" placeholder="问题是什么、根因是什么、正确做法是什么……"></textarea>
+        <div class="kbBtns">
+          <button type="button" id="kbFCancel">取消</button>
+          <button type="button" id="kbFSave" class="primary">上架</button>
+        </div>
+      </div>
+    </div>
+    <!-- 阅读/操作层 -->
+    <div class="kbReadWrap" id="kbReadWrap" hidden>
+      <div class="kbRead">
+        <h3 id="kbRTitle"></h3>
+        <div class="kbMeta" id="kbRMeta"></div>
+        <div class="kbBody" id="kbRBody"></div>
+        <div class="kbBtns">
+          <button type="button" id="kbRDelete" class="danger">删除</button>
+          <button type="button" id="kbRCopy">复制提示词</button>
+          <button type="button" id="kbREdit">编辑知识卡</button>
+          <button type="button" id="kbRClose">合上</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <dialog id="featuresDlg">
@@ -14694,6 +14846,203 @@ try {
     } finally { add.disabled = false; }
   };
 } catch (e) { console.warn('[cron] 面板挂不上：', e && e.message); }
+/* ═══════════ 知识库·书架大界面（2026-11-12 主人钦点）═══════════ */
+(function () {
+  const $ = (id) => document.getElementById(id);
+  if (!$('kbOverlay')) return;
+  const overlay = $('kbOverlay'), shelf = $('kbShelf'), hint = $('kbHint');
+  const formWrap = $('kbFormWrap'), readWrap = $('kbReadWrap');
+  let cards = [];            // 当前列表
+  let editing = null;        // 正在编辑的卡（null=新建）
+  let reading = null;        // 正在读的卡
+
+  /* 封面色：按 id hash 从一套书脊色里挑，同一本书颜色永远一样 */
+  const BOOK_COLORS = ['#8c3b2e', '#2e5e4e', '#3b4d8c', '#7a5b2e', '#5e2e5e', '#2e6e7a', '#6e3b2e', '#456b2e'];
+  function bookColor(id) {
+    let h = 0;
+    for (let i = 0; i < String(id).length; i++) h = (h * 31 + String(id).charCodeAt(i)) >>> 0;
+    return BOOK_COLORS[h % BOOK_COLORS.length];
+  }
+
+  function toast(msg) {
+    let t = document.querySelector('.kbToast');
+    if (!t) { t = document.createElement('div'); t.className = 'kbToast'; document.body.appendChild(t); }
+    t.textContent = msg; t.style.opacity = '1';
+    clearTimeout(t.__timer);
+    t.__timer = setTimeout(() => { t.style.opacity = '0'; }, 2200);
+  }
+
+  function paint(list) {
+    cards = list;
+    shelf.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    for (const c of list) {
+      const b = document.createElement('div');
+      b.className = 'kbBook';
+      b.style.background = 'linear-gradient(160deg, ' + bookColor(c.id) + ' 0%, ' + bookColor(c.id) + ' 70%, rgba(0,0,0,.25) 100%)';
+      b.style.transform = 'rotate(' + (((c.id.charCodeAt(1) || 5) % 5) - 2) * 0.7 + 'deg)';
+      b.title = c.title + '（点开读）';
+      const tag = (c.tags && c.tags.length) ? '<span class="kbBTag">' + c.tags[0] + '</span>' : '';
+      b.innerHTML = tag + '<div class="kbBTitle">' + c.title.replace(/</g, '&lt;') + '</div><div class="kbBAuthor">' + (c.author || '').replace(/</g, '&lt;') + '</div>';
+      b.onclick = () => openRead(c);
+      frag.appendChild(b);
+    }
+    /* 书架尽头放一本「虚位以待」的空书 = 创建入口 */
+    const add = document.createElement('div');
+    add.className = 'kbBookAdd';
+    add.innerHTML = '<span>＋</span>创建知识卡';
+    add.onclick = () => openForm(null);
+    frag.appendChild(add);
+    shelf.appendChild(frag);
+    hint.textContent = '书架上有 ' + list.length + ' 本卡——点一本书读；智能体也能用工具翻';
+  }
+
+  async function load(q) {
+    try {
+      const r = await fetch('/api/knowledge').then((x) => x.json());
+      let list = r.cards || [];
+      const kw = String(q || '').trim().toLowerCase();
+      if (kw) {
+        list = list.filter((c) =>
+          (c.title + '\n' + c.content + '\n' + c.author + '\n' + (c.tags || []).join('\n')).toLowerCase().includes(kw));
+      }
+      paint(list);
+    } catch (e) { hint.textContent = '书架搬不动：' + String(e?.message ?? e); }
+  }
+
+  function openForm(card) {
+    editing = card || null;
+    $('kbFormTitle').textContent = card ? '编辑知识卡' : '创建知识卡';
+    $('kbFTitle').value = card ? card.title : '';
+    $('kbFAuthor').value = card ? (card.author || '') : '';
+    $('kbFTags').value = card ? (card.tags || []).join(',') : '';
+    $('kbFContent').value = card ? card.content : '';
+    readWrap.hidden = true;
+    formWrap.hidden = false;
+    setTimeout(() => { try { $('kbFTitle').focus(); } catch {} }, 60);
+  }
+
+  async function saveForm() {
+    const title = $('kbFTitle').value.trim();
+    if (!title) { toast('书名不能是空的'); return; }
+    const r = await fetch('/api/knowledge/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: editing ? editing.id : undefined,
+        title,
+        author: $('kbFAuthor').value.trim(),
+        tags: $('kbFTags').value.split(/[,，、]/).map((x) => x.trim()).filter(Boolean),
+        content: $('kbFContent').value,
+      }),
+    }).then((x) => x.json()).catch(() => null);
+    if (!r || !r.ok) { toast('没存进去：' + ((r && r.error) || '网络错误')); return; }
+    formWrap.hidden = true;
+    toast(editing ? '已更新' : '已上架新书');
+    await load($('kbSearch').value);
+  }
+
+  function openRead(card) {
+    reading = card;
+    $('kbRTitle').textContent = card.title;
+    $('kbRMeta').textContent = '作者：' + (card.author || '佚名')
+      + ((card.tags && card.tags.length) ? '｜标签：' + card.tags.join('、') : '')
+      + '｜更新：' + new Date(card.updatedAt || Date.now()).toLocaleString();
+    $('kbRBody').textContent = card.content;
+    formWrap.hidden = true;
+    readWrap.hidden = false;
+  }
+
+  async function delCard() {
+    if (!reading) return;
+    if (!confirm('把《' + reading.title + '》从书架上撤下来？删了智能体就学不到了。')) return;
+    const r = await fetch('/api/knowledge/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: reading.id }),
+    }).then((x) => x.json()).catch(() => null);
+    if (!r || !r.ok) { toast('没删掉：' + ((r && r.error) || '网络错误')); return; }
+    readWrap.hidden = true;
+    toast('已撤下');
+    await load($('kbSearch').value);
+  }
+
+  async function copyPrompt() {
+    if (!reading) return;
+    const text = '请学习这张知识卡（来自知识库，所有会话共享）：\n\n【' + reading.title + '】\n作者：' + (reading.author || '佚名')
+      + '\n\n' + reading.content + '\n\n（学完就记在心里，之后干活照着做，不用复述给我听。）';
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('提示词已复制，粘到哪个会话都能让那边的智能体学');
+    } catch (e) {
+      /* 剪贴板被拒（无焦点/权限）：退化成选中文本 */
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); toast('提示词已复制'); } catch { toast('复制失败，请手动选中文本复制'); }
+      ta.remove();
+    }
+  }
+
+  async function doImport() {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.json,application/json';
+    inp.onchange = async () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        const r = await fetch('/api/knowledge/import', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ json: text }),
+        }).then((x) => x.json()).catch(() => null);
+        if (!r || !r.ok) { toast('导入失败：' + ((r && r.error) || '文件格式不对')); return; }
+        toast('导入完成：新增 ' + (r.added || 0) + ' 本、更新 ' + (r.updated || 0) + ' 本');
+        await load('');
+      } catch (e) { toast('读文件出错：' + String(e?.message ?? e)); }
+    };
+    inp.click();
+  }
+
+  async function doExport() {
+    try {
+      const data = await fetch('/api/knowledge/export').then((x) => x.json());
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = '知识库-' + new Date().toISOString().slice(0, 10) + '.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      toast('已导出 ' + ((data.cards || []).length) + ' 本卡');
+    } catch (e) { toast('导出失败：' + String(e?.message ?? e)); }
+  }
+
+  $('kbBtn').onclick = () => {
+    overlay.hidden = false;
+    formWrap.hidden = true; readWrap.hidden = true;
+    load($('kbSearch').value);
+  };
+  $('kbClose').onclick = () => { overlay.hidden = true; };
+  $('kbCreate').onclick = () => openForm(null);
+  $('kbFSave').onclick = saveForm;
+  $('kbFCancel').onclick = () => { formWrap.hidden = true; };
+  $('kbImport').onclick = doImport;
+  $('kbExport').onclick = doExport;
+  $('kbRDelete').onclick = delCard;
+  $('kbRCopy').onclick = copyPrompt;
+  $('kbREdit').onclick = () => { if (reading) openForm(reading); };
+  $('kbRClose').onclick = () => { readWrap.hidden = true; };
+  let _kbSearchTimer = null;
+  $('kbSearch').addEventListener('input', () => {
+    clearTimeout(_kbSearchTimer);
+    _kbSearchTimer = setTimeout(() => load($('kbSearch').value), 250);
+  });
+  /* Esc 逐层退出：表单/阅读层 → 整个书架 */
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || overlay.hidden) return;
+    if (!formWrap.hidden) { formWrap.hidden = true; return; }
+    if (!readWrap.hidden) { readWrap.hidden = true; return; }
+    overlay.hidden = true;
+  });
+})();
+
 const featDlg = document.getElementById('featuresDlg');
 const featList = document.getElementById('featList');
 const featHint = document.getElementById('featHint');
@@ -19539,7 +19888,7 @@ if (mdlBasePreset) {
       if (mdlName) mdlName.value = '';
       mdlDiscovered = { base: '', ids: [] };
       paintModelPicker('');
-      if (mdlBaseHint) mdlBaseHint.textContent = '本机 DeepSeek：不用填，直接点「测连通」';
+      if (mdlBaseHint) mdlBaseHint.textContent = '';
       return;
     }
     // 换了地址就是换了一家公司，原来的模型名几乎肯定不对了（除非它正好是这家的）。
@@ -20357,9 +20706,12 @@ document.getElementById('mdlCancel').onclick = () => closeForm();
  * 全程不弹框（主人说「之后说的要求全程不会有任何提示」）—— 提示只落在表单提示行上。
  */
 function mdlLocalHint(kind, text) {
+  /* 主人钦点：全程不出提示。所以只有「真失败」才落脚一句话，
+   * 成功一律清空提示行，让表单看着跟没点过一样。 */
   const el = document.getElementById('mdlFormHint') || document.getElementById('mdlHint');
-  if (el) { el.textContent = text || ''; el.className = 'hint ' + (kind || ''); }
-  try { if (typeof clearFormHint === 'function') clearFormHint(kind, text); } catch (_) {}
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'hint' + (kind ? ' ' + kind : '');
 }
 
 async function localDeepSeekGet(p) {
@@ -20398,7 +20750,7 @@ document.getElementById('mdlTest').onclick = async () => {
     /* ---------- 本机 DeepSeek：它不需要地址、不需要 key、不需要模型名 ---------- */
     if (payload && payload.providerLocalDeepSeek) {
       const t0 = Date.now();
-      mdlLocalHint('', '正在起本机 DeepSeek…');
+      mdlLocalHint('', '');
 
       // 先把模型加进 / 对齐（内部会查服务、必要时起服务）
       let done = await localDeepSeekApply(payload);
@@ -20415,7 +20767,7 @@ document.getElementById('mdlTest').onclick = async () => {
       // 真打一次
       let probe = await localDeepSeekGet('/api/mini-deepseek/probe');
       if (probe && probe.ok && probe.up) {
-        mdlLocalHint('ok', `通了，${Date.now() - t0}ms`);
+        mdlLocalHint('', '');
         if (!done.created) { paintModels(); syncHealth(); }
         return;
       }
@@ -20423,7 +20775,7 @@ document.getElementById('mdlTest').onclick = async () => {
       // 没通 —— 按原因自己救
       const why = (probe && probe.error) || '';
       const notRunning = probe && (probe.running === false || !probe.up);
-      mdlLocalHint('', notRunning ? '服务没起来，正在拉起…' : '凭证或服务有问题，正在重取…');
+      mdlLocalHint('', '');
 
       if (notRunning) {
         // 服务原因：先起服务（含登录引导），再对一次
@@ -20448,7 +20800,7 @@ document.getElementById('mdlTest').onclick = async () => {
 
       probe = await localDeepSeekGet('/api/mini-deepseek/probe');
       if (probe && probe.ok && probe.up) {
-        mdlLocalHint('ok', `通了，${Date.now() - t0}ms`);
+        mdlLocalHint('', '');
         return;
       }
       mdlLocalHint('err', ((probe && probe.error) || why || '还是连不上') + '（已经试着自动恢复过一次）');

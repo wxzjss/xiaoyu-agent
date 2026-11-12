@@ -42,6 +42,7 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 中途投递信箱：主人一边看她干活一边插的话排在这里（照 dsh 的 steering，见 inbox.mjs）
 import { steer, clearInbox, inboxCount, peekInbox, purgeStale as purgeStaleInbox } from './inbox.mjs';
+import { initKnowledge, listCards, getCard, saveCard, deleteCard, importCards, exportCards, digestForAgent } from './knowledge.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted, listInterrupted } from './resume.mjs';
 /**
@@ -5998,6 +5999,29 @@ const server = createServer(async (req, res) => {
    *
    * 现在收在正确位置：下面的 cron / features 路由全部恢复生效。
    */
+  // ===== 知识库（2026-11-12 主人钦点）：所有会话共享的书架 =====
+  if (req.method === 'GET' && url.pathname === '/api/knowledge') {
+    return json(res, 200, { cards: listCards() });
+  }
+  if (req.method === 'GET' && url.pathname === '/api/knowledge/export') {
+    return json(res, 200, exportCards());
+  }
+  if (req.method === 'POST' && url.pathname === '/api/knowledge/save') {
+    const { id, title, author, content, tags } = await body(req).catch(() => ({}));
+    const out = saveCard({ id, title, author, content, tags });
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/knowledge/delete') {
+    const { id } = await body(req).catch(() => ({}));
+    const out = deleteCard(id);
+    return json(res, out.ok ? 200 : 404, out);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/knowledge/import') {
+    const { json: payload } = await body(req).catch(() => ({}));
+    const out = importCards(payload ?? null);
+    return json(res, out.ok ? 200 : 400, out);
+  }
+
   // ===== 定时任务（cron）—— 按主人要求加的 =====
   if (req.method === 'GET' && url.pathname === '/api/cron') {
     return json(res, 200, { tasks: listTasks(), limits: { tickMs: 30000 } });
@@ -13551,6 +13575,9 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
   } catch (e) {
     console.warn('[watchdog] 起不来（不影响主流程）：', String(e?.message ?? e));
   }
+
+  // 知识库首次初始化：cards.json 不存在时写入内置踩坑卡（2026-11-12 主人钦点）
+  try { initKnowledge(); } catch (e) { console.warn('[knowledge] 初始化失败（不影响主流程）：', String(e?.message ?? e)); }
 
   // 返回一个「服务句柄」：{ port, url, close(), on/once/off('exit') }。
   //

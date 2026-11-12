@@ -2027,6 +2027,84 @@ export const tools = [
   },
   /**
    * ────────────────────────────────────────────────────────────
+   *  知识库（2026-11-12 主人钦点）
+   * ────────────────────────────────────────────────────────────
+   *
+   * 主人原话：「像【岁月史书】一样，可供所有会话的智能体浏览创建、学习里面的知识」。
+   * 和岁月史书的区别：岁月史书 = 自动记的全部对话流水（外部记忆）；
+   * 知识库 = 人和智能体**主动沉淀**的知识卡（踩坑经验、约定、操作手册）。
+   * 界面上是一座书架，卡是书；这里给智能体的入口。
+   */
+  {
+    name: 'knowledge_browse',
+    description:
+      '翻「知识库」的书架：这里存着所有会话共享的知识卡——小鱼Agent 的架构速览、排查套路、踩坑经验、机制说明都在里面。做小鱼Agent 相关的活之前先来翻一翻（尤其「必读」标签那几张），能少绕很多弯路。带 query 就搜（标题/内容/作者/标签都搜，多词空格隔开），不带就列最新目录。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '要搜的词。中文英文都行，多个词用空格隔开；不填就列最新目录' },
+        limit: { type: 'number', description: '最多列几张，默认 20' },
+      },
+      required: [],
+    },
+    async run({ query, limit }) {
+      const { digestForAgent } = await import('./knowledge.mjs');
+      try {
+        return digestForAgent(query, null, Number.isFinite(Number(limit)) ? Number(limit) : 20);
+      } catch (e) {
+        return { ok: false, output: '知识库翻不开：' + String(e?.message ?? e) };
+      }
+    },
+  },
+  {
+    name: 'knowledge_read',
+    description:
+      '精读「知识库」里的某一张知识卡（拿到全文）。先 knowledge_browse 看目录拿 id，再用 id 来读。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '知识卡 id（knowledge_browse 目录里有）' },
+      },
+      required: ['id'],
+    },
+    async run({ id }) {
+      const { digestForAgent } = await import('./knowledge.mjs');
+      try {
+        return digestForAgent(null, id);
+      } catch (e) {
+        return { ok: false, output: '这张卡读不动：' + String(e?.message ?? e) };
+      }
+    },
+  },
+  {
+    name: 'knowledge_save',
+    description:
+      '往「知识库」写一张知识卡（新建或更新）。适合把这次踩的坑、验证过的结论、主人定的规矩沉淀下来给所有会话共享。带 id 且存在=更新那张卡；不带 id=新建。标题必填；内容写清楚「问题是什么、根因是什么、正确做法是什么」。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '要更新的卡 id（新建就不传）' },
+        title: { type: 'string', description: '卡的标题（一句话说清这张卡讲什么）' },
+        author: { type: 'string', description: '作者名（你的名字，比如 小鱼 / 小鲸）' },
+        tags: { type: 'string', description: '标签，逗号隔开，比如：踩坑,机制。最多 6 个' },
+        content: { type: 'string', description: '知识内容（正文，想写多长写多长）' },
+      },
+      required: ['title', 'content'],
+    },
+    async run({ id, title, author, tags, content }) {
+      const { saveCard } = await import('./knowledge.mjs');
+      try {
+        const tagList = String(tags ?? '').split(/[,，、]/).map((t) => t.trim()).filter(Boolean).slice(0, 6);
+        const r = saveCard({ id, title, author, content, tags: tagList });
+        if (!r.ok) return { ok: false, output: '没存进去：' + (r.error || '未知原因') };
+        return (r.created ? '已上架新书：' : '已更新：') + '【' + r.card.title + '】（id=' + r.card.id + '）。所有会话都能在知识库翻到它了。';
+      } catch (e) {
+        return { ok: false, output: '存卡出错：' + String(e?.message ?? e) };
+      }
+    },
+  },
+  /**
+   * ────────────────────────────────────────────────────────────
    *  折叠箱（折掉的原文还能翻回来）
    * ────────────────────────────────────────────────────────────
    *

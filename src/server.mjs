@@ -2346,7 +2346,7 @@ function appendLiveItem(items, ev) {
     const who = String(ev.who || '');
     const it = lastOf('say');
     if (it && it.who === who) it.t += String(ev.text || '');
-    else items.push({ k: 'say', who, t: String(ev.text || '') });
+    else items.push({ k: 'say', who, t: String(ev.text || ''), spectator: ev.spectator === true });
   } else if (ev.type === 'whale_stream_finish') {
     const it = lastOf('say');
     const t = String(ev.text || '');

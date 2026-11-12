@@ -9275,7 +9275,7 @@
     const list = Array.isArray(items) ? items : [];
     const tools = list.filter((t) => t && t.kind === "tool");
     const thinks = list.filter((t) => t && t.kind === "think");
-    const [open, onToggle] = useOpen("hub-" + (list[0] ? list[0].key : "x"), false);
+    const [open, onToggle] = useOpen("hub-" + (list[0] ? list[0].key : "x"), true);
     const _running0 = tools.find((t) => t.status === "run" && (Number(t.startedAt) || 0) > 0) || null;
     const tick = useRunTicker(Boolean(_running0));
     const stat = (0, import_react12.useMemo)(() => {
@@ -9429,6 +9429,7 @@
     const keepFromBottom = (0, import_react14.useRef)(null);
     const preSwapScrollTop = (0, import_react14.useRef)(0);
     const selfWriteRef = (0, import_react14.useRef)(0);
+    const prevCountRef = (0, import_react14.useRef)(0);
     const followRef = (0, import_react14.useRef)(true);
     const writeTop = (v) => {
       const el = listRef.current || document.getElementById("log");
@@ -9620,11 +9621,14 @@
         if (want > 0 && Math.abs(el.scrollTop - want) > 4) writeTop(want);
       } catch (e) {
       }
-      try {
-        if (window.noteNewContent) window.noteNewContent();
-      } catch (e) {
+      if (count > prevCountRef.current) {
+        try {
+          if (window.noteNewContent) window.noteNewContent();
+        } catch (e) {
+        }
       }
-    }, [count, lastLen]);
+      prevCountRef.current = count;
+    }, [count]);
     (0, import_react14.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el || keepFromBottom.current == null) return;

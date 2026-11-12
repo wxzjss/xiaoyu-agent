@@ -199,6 +199,13 @@ export default function LogView() {
    * 「他往上滚了」，从此不再跟随最新消息（收尾后停在离底 87px 那个 bug）。
    */
   const selfWriteRef = useRef(0);
+  /* 【2026-11-12 修·「回到最新」的数字一下子蹦一大堆】
+   * 未读角标只有一个记账人：这里的**行数变多**（count 变大）。
+   * 原来这个 effect 还依赖 lastLen（最后一条的字数）—— 她流式吐字时每个
+   * 字块都让它变，往上翻着历史看的那一会儿，数字一秒蹦好几个；
+   * 再加 index.html 那边 tool_start/text 事件各 +1、flushSpeech 又 +1，
+   * 一段话被记了三四次。现在：一段话再长也是「一件」，其他计数点全拆。 */
+  const prevCountRef = useRef(0);
   /**
    * 【2026-11-12 加·「要不要跟着最新消息走」只由他的动作决定】
    *
@@ -303,7 +310,12 @@ export default function LogView() {
         const st = el.scrollTop;
         const wentUp = st < lastScrollTopRef.current - 0.5;
         atBottomRef.current = wentUp ? false : (d <= 8);
-        /* 往上走这一下本身就是「他自己动的手」，记账（收缩 clamp 不会走到这里） */
+        /* 往上走这一下本身就是「他自己动的手」，记账（收缩 clamp 不会走到这里）。
+         * 【2026-11-12 试过又撤】这里**不能**顺手把 followRef 置 false：
+         * 流式重排时上面节点的临时换装会让 scrollTop 假性下滑，一发噪音
+         * 就把跟随关死，收尾后停在离底 119px（check-msg-order 实锤）。
+         * 「停跟随」只归滚轮/键盘/触屏那三个明确的用户动作管；
+         * 拖滚动条那条漏网路径先记账不关跟随 —— 两害相权取其轻。 */
         if (wentUp) userScrolledRef.current = true;
         /* 滚回底部就复位「在翻历史」——但只认「连续两次都贴底」：
          * 单独一发 d 很小的 scroll 可能是收缩夹出来的，不许凭它清账。
@@ -515,9 +527,13 @@ export default function LogView() {
       const want = preSwapScrollTop.current;
       if (want > 0 && Math.abs(el.scrollTop - want) > 4) writeTop(want);
     } catch (e) {}
-    /* 只更新「底下多了几条」那颗提醒 */
-    try { if (window.noteNewContent) window.noteNewContent(); } catch (e) {}
-  }, [count, lastLen]);
+    /* 只更新「底下多了几条」那颗提醒：行数**变大**才算新东西。
+     * （变小说明在补历史/收窗口 —— 不是新东西，不数。） */
+    if (count > prevCountRef.current) {
+      try { if (window.noteNewContent) window.noteNewContent(); } catch (e) {}
+    }
+    prevCountRef.current = count;
+  }, [count]);
 
   /* 「再往前看」：补完把视口还到「离底同样的距离」，一像素都不跳 */
   useLayoutEffect(() => {

@@ -4932,6 +4932,8 @@ function stampSpeechNode(node) {
  * 把「当前这一段」记成已数过：数过就 +1，没数过就什么都不做。
  * 这是「说完一段话」的唯一入口 —— 保证同一段话只涨一次。
  */
+/** 语音分段的老账本：现在只维护记号（谁数过了），**不再 +1** ——
+ *  角标只有 LogView「行数变多」一个记账人（2026-11-12 拆重复计数）。 */
 function flushSpeech() {
   hubReset();   // 新一段话：工具重新归组
   const st = speechMark();
@@ -4943,9 +4945,7 @@ function flushSpeech() {
   if (!hasText) return;
   const key = speechKey(b, t);
   if (key === 'none') return;
-  if (st.counted.has(key)) return; // 这段已经数过了
   st.counted.add(key);
-  bumpUnseen();
 }
 
 /**
@@ -8847,7 +8847,8 @@ function showSending(startAt) {
   try { _hintSetText('正在发送消息'); } catch (e) {}
   sendingHint.classList.remove('done');
   sendingHint.classList.add('show');
-  noteNewContent();
+  /* 【2026-11-12】原来这里 noteNewContent() +1 —— 你发的这句话本身会作为
+   * 一个 item 被 LogView 数到，这里再 +1 就是同一件记两次。拆掉。 */
   try {
     /* 【2026-11-05 改·别每次都从零开始】
      * 原来这里无条件 `_turnT0 = Date.now()`。于是「切到别的会话再切回来」时，
@@ -9518,10 +9519,11 @@ async function runTurn({ resume = false, text = '', attachments: _att = null } =
           /* 压缩条一律不画。后端已经不推了，旧进程 / 旧重放里还有 —— 一个像素都不出现 */
           if (String(ev.name) === 'compress') continue;
           const _et = ev.type;
-          /* 开始调一个工具 → 右下那个数字 +1（只是数字，不碰对话节点） */
-          if (_et === 'tool_start') { try { bumpUnseen(); } catch {} }
+          /* 【2026-11-12 修·未读角标重复计数】原来 tool_start +1、text 事件 +1 ——
+           * 跟 LogView 的「行数变多」各记各的账，一个工具计两次、一段话计三次，
+           * 主人往上翻历史那会儿数字一秒蹦好几个。现在角标只有 LogView
+           * 「行数变多」这一个记账人，这里不再重复记。 */
           nudgeLive(turnSession);
-          if (_et === 'text') { try { noteNewContent(); } catch {} }
           continue;
         }
 

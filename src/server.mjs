@@ -3781,6 +3781,10 @@ function lastUserLine(sessionId) {
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
       if (!m || m.role !== 'user' || m.context) continue;
+      /* 【2026-11-12 修·续跑提示套娃】重启续跑那条 _sysNote 也是 role:'user' ——
+       * 不跳过它，下一次重启的 taskLine 就是上一条续跑提示自己，
+       * 「断在主人这句话上：重启了。断点在这儿：断在主人这句话上：…」一层套一层。 */
+      if (m._sysNote) continue;
       const raw = Array.isArray(m.content)
         ? m.content.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n')
         : String(m.content ?? '');
@@ -13451,7 +13455,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
        * 真上游挂掉仍然有人兜：llm 层自己的空闲超时会报错 → agent 续写 →
        * 错误驱动的自动接回（upFailBook/scheduleStuckRetry）照常工作。
        * 配置行和 onStuck 都留着，哪天要重新启用把这行改回去就行。 */
-      globalThis.__xyTurnWatchdog = { start() {}, stop() {}, _disabledByMaster: true };
+      globalThis.__xyTurnWatchdog = { start: () => {}, stop: () => {}, _disabledByMaster: true };
       diagLog('watchdog-disabled', '主人钦定不掐（2026-11-12）：外刀误杀正常轮，真实故障由 llm 层超时 + 错误接回兜底');
       if (!quiet) {
         console.log('  watchdog : 已停用（主人钦定不掐）—— 真实故障由 llm 层超时 + 错误驱动的自动接回兜底');

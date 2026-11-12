@@ -156,7 +156,9 @@ async function usablePython(exe) {
   return Boolean(r.ok && r.out.includes('EDGE_OK'));
 }
 
-/** 这台机器上现成能用的 python（按可信度）。只返回真能 import edge_tts 的。 */
+/** 这台机器上现成能用的 python（按可信度）。只返回真能 import edge_tts 的。
+ * 【2026-11-12 加·mac/linux】候选里补 python3 和 Homebrew 常见路径 ——
+ * Windows 候选（python.exe / LOCALAPPDATA）在 mac 上全是空转，真正命中的是 PATH 里的 python3。 */
 export async function readyPythons() {
   const lad = process.env.LOCALAPPDATA || '';
   const cands = [
@@ -164,6 +166,10 @@ export async function readyPythons() {
     process.env.XIAOYU_PYTHON || '',
     lad ? join(lad, 'Python', 'bin', 'python.exe') : '',
     lad ? join(lad, 'Python', 'pythoncore-3.14-64', 'python.exe') : '',
+    process.platform === 'darwin' ? '/opt/homebrew/bin/python3' : '',   // Apple Silicon Homebrew
+    process.platform === 'darwin' ? '/usr/local/bin/python3' : '',      // Intel Homebrew
+    process.platform !== 'win32' ? '/usr/bin/python3' : '',             // macOS 自带
+    'python3',
     'python',
   ].filter(Boolean);
   const seen = new Set();
@@ -387,6 +393,17 @@ export function runtimeInfo() {
 
 /** 装它。已经装好就直接返回。 */
 export async function installRuntime() {
+  /* 【2026-11-12 加·mac/linux 兜底】下面整套下载的是 Windows 嵌入式 Python + ffmpeg-win32-x64，
+   * mac 上装出来也跑不了，别让它白下 90MB。mac 的正路是系统 python3 + edge_tts + PATH 里的
+   * ffmpeg（readyPythons/readyFfmpeg 都会探），没有就让主人 brew 一把，小鱼直接用系统那份。 */
+  if (process.platform !== 'win32') {
+    return {
+      ok: false,
+      error: 'macOS/Linux 上小鱼不自带语音运行时安装（那是 Windows 版的）。'
+        + '请先在系统里装好：python3 + edge-tts（pip3 install edge-tts）+ ffmpeg（brew install ffmpeg），'
+        + '装好后小鱼会自动用系统里的这份，不用再点安装。',
+    };
+  }
   if (busy) return { ok: false, busy: true, error: '正在装，别重复点' };
   busy = true;
   const t0 = Date.now();

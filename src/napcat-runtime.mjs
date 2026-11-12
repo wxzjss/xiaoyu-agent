@@ -69,6 +69,14 @@ async function fileVersion(exe) {
  * version 统一成 NapCat 的写法：9.9.31-49738
  */
 export async function detectQQ() {
+  /* 【2026-11-12 加·mac 兜底】整套探测（powershell + QQ.exe 路径 + NapCatWinBootMain.exe）
+   * 都是 Windows 的活，mac 上跑只会空转出「没找到」。直接给明白话。 */
+  if (process.platform !== 'win32') {
+    return {
+      exe: '', found: false, version: '', build: '', raw: '',
+      reason: 'QQ 接线目前只支持 Windows（NapCat 启动器是 Windows 程序），mac 版暂不支持。',
+    };
+  }
   const cands = [...QQ_GUESS];
 
   // 正在跑的 QQ 补一个（主人可能装在别处）

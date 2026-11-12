@@ -278,6 +278,18 @@ export async function sha256OfFile(file) {
  * @returns {{ok:boolean, script?:string, error?:string}}
  */
 export function spawnSilentInstall(job) {
+  /* 【2026-11-12 加·mac 兜底】下面整套是 NSIS 静默安装（cmd 脚本 + tasklist 等 PID），
+   * 全是 Windows 的活。mac 上别硬跑 —— 告诉主人手动装：打开 dmg/解压 zip 拖进应用程序。 */
+  if (process.platform !== 'win32') {
+    const file = String(job?.file || '');
+    return {
+      ok: false,
+      manual: true,
+      error: 'macOS 版自动安装还没接线：请手动安装 —— '
+        + (file ? '安装包已下好在 ' + file + '，' : '')
+        + '打开后把「小鱼Agent」拖进「应用程序」即可（会话和设置都在数据目录，不会丢）。',
+    };
+  }
   const file = String(job?.file || '');
   if (!file || !existsSync(file)) return { ok: false, error: '安装包不在了' };
   const dir = join(config.dataDir, '.state', 'downloads');

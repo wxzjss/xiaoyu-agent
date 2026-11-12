@@ -665,7 +665,14 @@ export async function checkForUpdate(opts = {}) {
       const rel = await latestRelease();
       if (!rel.ok) throw Object.assign(new Error(rel.reason || '拿不到发行版信息'), { net: true });
       const asset = pickInstaller(rel.assets);
-      if (!asset) throw new Error('这个发行版里没有安装包');
+      /* 【2026-11-12 mac 分支】mac 发行物还没常态上传时，别只说「没有安装包」，
+       * 把 releases 地址和人话指引一起给出去（覆盖安装即可，会话和设置都在）。 */
+      if (!asset) {
+        const macHint = process.platform === 'darwin'
+          ? `mac 版安装包还没发布。请到 https://github.com/${REPO}/releases 手动下载（解压/打开后拖进「应用程序」覆盖即可，会话和设置都在）。`
+          : '这个发行版里没有安装包';
+        throw new Error(macHint);
+      }
       const dl = await downloadInstaller(asset);
       const at = Date.now();
       const info = {

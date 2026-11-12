@@ -108,10 +108,15 @@ const BOOT_T0 = Date.now();
  */
 const bootLogPath = (() => {
   try {
-    return require('node:path').join(
-      process.env.APPDATA || require('node:os').homedir(),
-      '小鱼Agent', 'data', '.state', 'boot.log',
-    );
+    /* 【2026-11-12 加·mac 落位】Windows 用 %APPDATA%\小鱼Agent；mac 用 ~/Library/Application Support，
+     * 跟 Electron 官方数据目录习惯一致（装包态其实走 MINI_AGENT_DATA，这里只是开发/兜底）。 */
+    const base = process.platform === 'darwin'
+      ? require('node:path').join(require('node:os').homedir(), 'Library', 'Application Support', '小鱼Agent')
+      : require('node:path').join(
+        process.env.APPDATA || require('node:os').homedir(),
+        '小鱼Agent',
+      );
+    return require('node:path').join(base, 'data', '.state', 'boot.log');
   } catch { return ''; }
 })();
 const bootMark = (what) => {

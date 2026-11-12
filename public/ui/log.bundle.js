@@ -9216,9 +9216,12 @@
     const tick = useRunTicker(Boolean(_running0));
     const stat = (0, import_react12.useMemo)(() => {
       const n = tools.length;
-      const running = tools.find((t) => t.status === "run") || null;
+      const runList = tools.filter((t) => t.status === "run");
+      const running = runList.length ? runList[runList.length - 1] : null;
       let name = "\u8C03\u4E86 " + n + " \u6B21\u5DE5\u5177";
-      if (running) name = "\u6B63\u5728" + (niceTool(running.name, running.args) || "\u5E72\u6D3B") + "\u2026";
+      if (running) {
+        name = runList.length > 1 ? "\u6B63\u5728\u8DD1 " + runList.length + " \u4E2A\u5DE5\u5177\u2026" : "\u6B63\u5728" + (niceTool(running.name, running.args) || "\u5E72\u6D3B") + "\u2026";
+      }
       const statusCls = "status " + (running ? "run live" : "ok");
       const statusTxt = running ? "\u8FD0\u884C\u4E2D\u2026" : "";
       return { name, statusCls, statusTxt, running, thinkCount: thinks.length };

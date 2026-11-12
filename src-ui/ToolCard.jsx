@@ -125,9 +125,27 @@ export function ToolGroup({ items }) {
 
   const stat = useMemo(() => {
     const n = tools.length;
-    const running = tools.find((t) => t.status === 'run') || null;
+    /**
+     * 【2026-11-12 修·主人问「她说在跑检查，柜门为什么显示【正在看文件】」】
+     *
+     * 原来取的是 `tools.find(t => t.status === 'run')` —— **列表里第一个**还在跑的。
+     * 可一张卡要是没收到结束事件（进程重启 / 事件丢了 / 那个工具真的卡住），
+     * 它会一直挂着「运行中」，于是柜门标题永远被那张**老卡**占着：
+     * 她明明在跑检查（run_command），门上却一直写「正在看文件 · 198s…」。
+     * 实测截图就是这样：柜门「正在看文件 · 198s」，里面第一张「看文件 完成」、
+     * 第二张「看文件 正在跑 · 198s」，而真正在干的活儿在更下面。
+     *
+     * 改法：标题跟**最新**那个在跑的工具走（人想知道的是「她现在这一秒在干什么」）；
+     * 同时在跑的超过一个，就直说「正在跑 N 个工具…」—— 别拿某一个冒充全部。
+     */
+    const runList = tools.filter((t) => t.status === 'run');
+    const running = runList.length ? runList[runList.length - 1] : null;
     let name = '调了 ' + n + ' 次工具';
-    if (running) name = '正在' + (niceTool(running.name, running.args) || '干活') + '…';
+    if (running) {
+      name = runList.length > 1
+        ? '正在跑 ' + runList.length + ' 个工具…'
+        : '正在' + (niceTool(running.name, running.args) || '干活') + '…';
+    }
     /* 【2026-11-12 主人】柜门上不要金色「N 个失败」（没失败时太吵，看着像出错）；
      * 改成：跑着就亮「运行中…」，柜门标题也带一份。 */
     const statusCls = 'status ' + (running ? 'run live' : 'ok');

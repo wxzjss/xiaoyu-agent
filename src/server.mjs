@@ -12150,6 +12150,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       }
       live.endedAt = Date.now();
       // 收尾时把自己这一条登记摘掉（提前登记过、ac 可能还是 null，所以认对象不认 ac）
+      /**
+       * 【2026-11-12 修·「显示她做完了，回去看发现还没做完」】
+       *
+       * 以前就在这个位置（**commitWireBack + saveSession 之前**）把登记删了。
+       * 于是有那么几百毫秒：/api/running 说「没在跑」，可这一轮最后那段话还没落进历史。
+       * 前端那趟 3 秒轮询一看服务端说闲，立刻解冻——按钮变【发送】、提示消失，
+       * 主人切回来看到的就是「做完了」，其实历史里还差一截（再等一会儿才会补上）。
+       * 切窗口/切会话时最容易撞上这段空档，因为前台那一路正好在这一刻重新对账。
+       *
+       * 改法：这里只**记个意**，等下面 commitWireBack + 存盘都跑完再真删（见 finally 末尾）。
+       * 摘登记晚几百毫秒没有任何副作用——那一轮这会儿确实还在收尾，说「在跑」才是实话。
+       */
+      let _unregAfterSave = null;
       {
         const mine = runningTurns.get(sessionId);
         /**
@@ -12246,7 +12259,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         if (!mine) {
           // 已经没人登记了，什么都不用做
         } else if (mine === reg || (mine && mine.ac === ac)) {
-          runningTurns.delete(sessionId);
+          _unregAfterSave = mine;      // 真正的 delete 放到存盘之后（见 finally 末尾）
         }
         // else：登记的是别人（多半是插话接续刚起的那一轮），留着它，别动
       }
@@ -12417,6 +12430,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               console.warn('[chronicle] 并进史书失败（不影响这一轮）：', String(e?.message ?? e));
             });
         });
+      }
+      /* 【2026-11-12】到这里历史已经落盘、屏幕也收尾了，再摘登记 ——
+       * 顺序反过来就是「服务端说没在跑、历史还差一截」那个空档（见上面 _unregAfterSave 的注释）。 */
+      if (_unregAfterSave) {
+        try { if (runningTurns.get(sessionId) === _unregAfterSave) runningTurns.delete(sessionId); } catch {}
       }
       finishTurn();
 

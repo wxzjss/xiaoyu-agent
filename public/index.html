@@ -1636,14 +1636,15 @@
     details.toolhub > summary .status.err { color: var(--err); }
     details.toolhub > summary .status.warn { color: #d9a45b; }
     details.toolhub > summary .status.run { color: #f0b954; opacity: 1; font-weight: 500; }
-    /* 【2026-11-12 主人·跑着的时候整条柜门都金色】
-       以前只有右边那颗「运行中」是金色，左边「⠙ 正在跑命令 · 12s…」还是主题色 ——
-       一眼看过去像两套东西。现在标题、转圈点、秒数一并金色，同一个色号（#f0b954），
-       整条柜门「亮起来」才像一件事。跑完自动退回主题色 + 灰字摘要。 */
-    details.toolhub > summary .hubname.run { color: #f0b954; font-weight: 500; }
-    details.toolhub > summary .hubname .hubSpin,
-    details.toolhub > summary .hubname .hubText { color: inherit; }
-    /* 秒数压一档透明度：别跟「正在跑命令」抢注意力，但仍是金色 */
+    /* 【2026-11-12 主人·金色只给「会动的东西」】
+       先按「整条柜门都金色」改过一版，主人当场纠正：
+       **「正在跑xxx」这几个字保持蓝色**（主题色），金色只给转圈点、秒数、和右边那颗「运行中」。
+       道理也对 —— 会变的（转圈、秒数、状态）用金色提示「这里活着」，
+       描述性文字保持安静，不然整条门都在喊。 */
+    details.toolhub > summary .hubname.run { color: var(--accent); }
+    details.toolhub > summary .hubname .hubText { color: var(--accent); }
+    details.toolhub > summary .hubname .hubSpin { color: #f0b954; }
+    /* 秒数压一档透明度：别跟文字抢注意力，但仍是金色 */
     details.toolhub > summary .hubname .hubSecs { color: #f0b954; opacity: .75; }
     .hubpeek:empty { display: none; }
     /* 【2026-11-07 主人要的金色「运行中」】
@@ -17099,6 +17100,10 @@ function paintSessNow() {
    光有 id 分不出「她正在想」和「她卡死了」—— 主人报的就是这个。 */
 let runningSess = new Map();
 
+/* 【2026-11-12 加·解冻要连拍两拍】3 秒轮询里连续读到「服务端说没在跑」的次数。
+ * 见下面那趟轮询的注释：一拍就解冻会在「跑完→落盘」的空档里误报「做完了」。 */
+let __xyIdleStrikes = 0;
+
 
 /* 【2026-11-08 主人】静默超过这么久没有任何事件 → 认为可能卡住了。
  * 从 90 秒改成 300 秒，跟后端那道「等模型上限 300 秒就掐」对齐：
@@ -19508,9 +19513,27 @@ setInterval(async () => {
         try { syncSendBtn(); } catch (e) {}
       }
     } else if (!r && busy && sid && !turnsInFlight.has(sid)) {
-      busy = false;
-      try { hidingSendingSafe(); } catch (e) {}
-      try { syncSendBtn(); } catch (e) {}
+      /**
+       * 【2026-11-12 修·「显示她做完了，回去看发现还没做完」】
+       *
+       * 这里原来**一拍就解冻**：3 秒轮询看服务端说「没在跑」→ busy=false、提示消失、
+       * 按钮变【发送】。可服务端在「跑完 → 落盘」之间有一小段间隙（已修，
+       * 见 src/server.mjs 里 _unregAfterSave 那段注释），切窗口/切会话时最容易撞上。
+       * 撞上就是主人看到的那一幕：显示做完了，回去一看还差一截。
+       *
+       * 现在要**连着两拍**都说不跑才解冻（约 3~6 秒的宽限），一拍不中就当没看见。
+       * 这一轮真跑完了，第二拍照样会解冻，最多晚 3 秒，不会卡住。
+       */
+      __xyIdleStrikes = (__xyIdleStrikes || 0) + 1;
+      if (__xyIdleStrikes >= 2) {
+        __xyIdleStrikes = 0;
+        busy = false;
+        try { hidingSendingSafe(); } catch (e) {}
+        try { syncSendBtn(); } catch (e) {}
+      }
+    } else if (r) {
+      /* 服务端说在跑（或本页本来闲着）→ 计数清零，别把上一次的「不跑」攒着 */
+      __xyIdleStrikes = 0;
     }
     /**
      * 【2026-11-11 主人要求：删掉聊天区的「已经 N 秒没有回音」改口】

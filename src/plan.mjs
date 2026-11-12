@@ -464,6 +464,8 @@ export function planAction(key, args = {}) {
     step.status = status;
     if (args.note !== undefined) step.note = clean(args.note, 300);
     if (args.pin != null) step.pinned = !!args.pin;
+    /* savePlan 内部先走 archiveFinishedSteps（done 超十条归档+摘除、id 不重排），
+     * 改的是同一个 state 对象，返回的文案/状态跟落盘天然一致。 */
     savePlan(key, state);
     return { text: `第 ${id} 步 → ${status}\n${formatPlan(state)}`, state };
   }
@@ -478,16 +480,32 @@ export function planAction(key, args = {}) {
   }
 
   if (action === 'clear' || action === 'reset') {
+    /**
+     * 【2026-11-12 修·主人问「有没有拦住 AI 删已完成清单」】
+     *
+     * 原来只有「钉死的」活下来，**已完成的照样被一次 clear 带走** ——
+     * 而主人定的规矩是「清单内容只可增加，无论是否做完，全部保留，严禁删除、严禁覆盖」。
+     * 所以：默认把 done 也一起留在清单上（只清 pending / doing / skipped 那些还没落地的）。
+     * 真要全清得显式传 force:true —— 目前没有任何界面路径会传，
+     * 等于把「AI 一把梭清空清单」这个口子焊死。
+     */
+    const force = args.force === true;
     if (state.steps.length) archivePlan(key, state, 'clear');
-    // 钉死的步不许被 clear 带走
-    const keep = pinnedSteps(state);
+    const keep = force
+      ? pinnedSteps(state)
+      : (state.steps || []).filter((st) => st && (st.pinned || st.status === 'done'));
     const next = emptyState();
     if (keep.length) {
       next.goal = state.goal;
       next.steps = keep.map((st, i) => ({ ...st, id: i + 1 }));
     }
     savePlan(key, next);
-    return { text: keep.length ? `清单清空了，但钉死的 ${keep.length} 条老任务留下了` : '清单清空了（旧的那份已归档，翻得到）', state: next };
+    return {
+      text: keep.length
+        ? `清单清空了（旧的那份已归档）；钉死的 + 已完成的 ${keep.length} 条一条没删，还在清单上`
+        : '清单清空了（旧的那份已归档，翻得到）',
+      state: next,
+    };
   }
 
   return { text: `ERROR：未知 action「${action}」，可用 create / update / add / view / clear`, state };

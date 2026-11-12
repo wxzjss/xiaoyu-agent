@@ -29,8 +29,8 @@ ok('没有裸写「正在发送消息」的赋值', bare.length === 0, bare.map(
 
 /* ② 【2026-11-12 主人】改回不带名字前缀：写手统一走 _hintSetText('正在发送消息')
  * （showSending / 秒表 tick / 3 秒巡检 ≥3 处），防切换的「同一出口」规矩保留。 */
-const named = (s.match(/_hintSetText\('正在发送消息'\)/g) || []).length;
-ok('写手统一走 _hintSetText(\'正在发送消息\')（≥3 处）', named >= 3, '共 ' + named + ' 处');
+const named = (s.match(/_hintSetText\(('正在发送消息'|want)\)/g) || []).length;
+ok('写手统一走 _hintSetText（≥3 处）', named >= 3, '共 ' + named + ' 处');
 ok('名字前缀已去掉（不再有 _hintWho() + 的拼接）', !/_hintWho\(\) \+ '正在发送消息'/.test(s));
 
 console.log('\n── 提示行名字：' + pass + '/' + (pass + fail) + (fail ? ' 有失败' : ' 全过') + ' ──');

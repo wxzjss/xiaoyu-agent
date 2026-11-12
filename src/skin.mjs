@@ -218,16 +218,26 @@ export function getSkinState() {
   const videoPath = skinVideoPath();
   const musicPath = skinMusicPath();
   const musicCustom = Boolean(settings.musicFile) && musicPath === settings.musicFile;
+  /* 【2026-11-13 修·重启慢】媒体 URL 的版本号用文件 mtime：文件没变 → URL 不变
+   * → Chromium HTTP 缓存直接复用，开屏不再全量重下 10.6MB。
+   * 原来前端拿 Date.now() 当防缓存戳，等于每次启动都重新拉整段视频/音乐，
+   * 还把页面 load 事件拖住十几秒（boot.log 实锤 +19.7s，主人问「重启怎么这么慢」）。 */
+  let videoVer = 0;
+  try { if (videoPath) videoVer = Math.floor(statSync(videoPath).mtimeMs); } catch {}
+  let musicVer = 0;
+  try { if (musicPath) musicVer = Math.floor(statSync(musicPath).mtimeMs); } catch {}
   return {
     enabled,
     settings,
     defaults: DEFAULTS,
     hasVideo: Boolean(videoPath),
     videoName: videoPath ? videoPath.split(/[\\/]/).pop() : '',
+    videoVer,
     // 手机上要不要拉那段 10.6 MB 的片子（默认不要，见 DEFAULTS 里的说明）
     allowMobileVideo: Boolean(settings.allowMobileVideo),
     hasMusic: Boolean(musicPath),
     musicName: musicPath ? musicPath.split(/[\\/]/).pop().replace(/^\d{10,}-/, '') : '',
+    musicVer,
     musicIsCustom: musicCustom,
     // 音乐实际会不会响 = 视频背景开着 且 主人自己没关它
     musicPlayable: enabled && settings.musicOn && Boolean(musicPath),

@@ -4519,7 +4519,11 @@ function serveSkinVideo(req, res) {
   const head = {
     'Content-Type': 'video/mp4',
     'Accept-Ranges': 'bytes',
-    'Cache-Control': 'no-store',
+    /* 【2026-11-13 修·重启慢】URL 带 mtime 版本号（前端 /api/skin 拿 videoVer 拼进 URL），
+     * 内容变了版本号就变、URL 跟着变 —— 所以这里可以放心给一年 immutable：
+     * 片子没换时 Chromium 直接吃磁盘缓存，开屏不再全量重拉 10.6MB。
+     * 原来是 no-store + 前端 Date.now() 防缓存戳，双重保险变成双重浪费。 */
+    'Cache-Control': 'public, max-age=31536000, immutable',
   };
 
   // 流必须挂 error：文件在播放途中消失（老的 portable 临时解包目录就是这样）时，
@@ -4600,7 +4604,8 @@ function serveSkinMusic(req, res) {
   const head = {
     'Content-Type': musicMime(file),
     'Accept-Ranges': 'bytes',
-    'Cache-Control': 'no-store',
+    /* 【2026-11-13 修·重启慢】同视频：URL 带音乐文件 mtime 版本号 → immutable 缓存。 */
+    'Cache-Control': 'public, max-age=31536000, immutable',
   };
 
   const pipe = (opts) => {
@@ -13578,6 +13583,29 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
 
   // 知识库首次初始化：cards.json 不存在时写入内置踩坑卡（2026-11-12 主人钦点）
   try { initKnowledge(); } catch (e) { console.warn('[knowledge] 初始化失败（不影响主流程）：', String(e?.message ?? e)); }
+  const _bootT0 = Date.now();   /* 【2026-11-13】启动相位基准（boot-lag / boot-resume-sched 共用） */
+
+  /* 【2026-11-13 修·重启慢（主人问「为什么重启很慢」）】
+   * boot.log 实锤：同一次重启「服务听上了 +660ms」但「页面加载完 +20089ms」，
+   * 且 boot-resume 的 +8s 定时器拖到 +15s 才响 —— 服务事件循环在启动后被什么东西
+   * 同步卡了 7 秒+。历史几次重启页面加载 3.3s / 4.3s / 16.4s / 20s 波动巨大，
+   * 读代码猜不出来，装一个 60 秒的事件循环卡顿探测器：哪一拍 drift 超过 300ms
+   * 就写 diag.log（带当时在跑的第几秒），下次重启数据自己说话。 */
+  try {
+    const _t0 = Date.now();
+    let _last = _t0;
+    const _lagTimer = setInterval(() => {
+      const now = Date.now();
+      const drift = now - _last - 250;
+      _last = now;
+      if (drift > 300) {
+        diagLog('boot-lag', `启动第 ${now - _t0}ms 事件循环卡了 ${drift}ms`);
+      }
+      if (now - _t0 > 60000) clearInterval(_lagTimer);
+    }, 250);
+    _lagTimer.unref?.();
+  } catch {}
+
 
   // 返回一个「服务句柄」：{ port, url, close(), on/once/off('exit') }。
   //
@@ -14037,8 +14065,11 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
   // 缺东西就在后台下载安装，界面上不弹窗、不挡任何操作。
   // 用户真去点试听的时候，多半已经装好了。
   // 为什么是后台装而不是安装包里带：带齐要 +108MB，而大部分人根本不用语音。
-  setTimeout(() => {
-    try {
+      /* 【2026-11-13 排查重启慢】注册时刻也记一笔——「注册晚」和「触发晚」是两种病：
+       * 注册晚=这一行之前的同步活卡住；触发晚（注册准、响得晚）=事件循环中途被卡。 */
+      diagLog('boot-resume-sched', `+${Date.now() - _bootT0}ms 注册，8s 后触发`);
+      setTimeout(() => {
+          try {
       ensureVoiceRuntimeInBackground('开机自检');
     } catch (e) {
       console.warn('[voice-runtime] 自检没跑成（不影响使用）：', String(e?.message ?? e));
@@ -14245,13 +14276,13 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
        * 续跑跟「要不要打印启动日志」毫无关系，搬出来。
        */
         setTimeout(() => {
-          try {
-            /* 【2026-11-07 加·这条链路以前一声不响】
-             * 实测：开机续跑一次都没触发，可哪儿都没日志 ——
-             * 因为这个 try 里的几个 return 和 catch 只往 console 打，
-             * 而安装版没有控制台，等于什么都没留下。
-             * 现在每一道闸都写 diag.log，下次一看就知道卡在哪一步。 */
-            diagLog('boot-resume-enter', 'start');
+        try {
+          /* 【2026-11-07 加·这条链路以前一声不响】
+           * 实测：开机续跑一次都没触发，可哪儿都没日志 ——
+           * 因为这个 try 里的几个 return 和 catch 只往 console 打，
+           * 而安装版没有控制台，等于什么都没留下。
+           * 现在每一道闸都写 diag.log，下次一看就知道卡在哪一步。 */
+          diagLog('boot-resume-enter', 'start');
             const f = getFeatures();
             const on = Boolean(f && f.features && f.features.find((x) => x.id === 'selfRestart')?.enabled);
             if (!on) { console.log('  resume   : 「自动重启续上」关着，不续'); diagLog('boot-resume-skip:switch', 'off'); return; }

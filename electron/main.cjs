@@ -134,6 +134,16 @@ const bootMark = (what) => {
 };
 bootMark('主进程起来了');
 
+/* 【2026-11-13 修·重启慢诊断】设 XY_CDP=1 启动就开远程调试端口（9222），
+ * 平时不开（安全）。排查渲染器问题用：探针连上能看 load 事件、网络瀑布、
+ * 主线程任务，哪一步卡 19 秒一目了然。 */
+try {
+  if (process.env.XY_CDP === '1') {
+    app.commandLine.appendSwitch('remote-debugging-port', '9222');
+    app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+  }
+} catch { /* 开不了就算了 */ }
+
 /**
  * 【把她要看一眼的界面，隔着线程安全地递给她】2026-11-02
  *

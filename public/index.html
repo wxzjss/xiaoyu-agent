@@ -21201,24 +21201,36 @@ async function setupSkin() {
   skinVideoEl.style.display = '';
   const want = '/api/skin/video';
   const now = skinVideoEl.getAttribute('src') || '';
-  // 换过片子（URL 没变但内容变了）时就带个时间戳重下一次
-  if (!now.startsWith(want)) {
-    skinVideoEl.src = want + '?t=' + Date.now();
-    skinVideoEl.playbackRate = Number(skinState.settings.playbackRate) || 1;
+  // 换过片子（URL 没变但内容变了）时就带版本号重下一次——版本号 = 文件 mtime，
+  // 文件没变 URL 就不变，Chromium 缓存直接复用（原来用 Date.now()，每次开屏全量重下 10.6MB，
+  // 还把页面 load 事件拖十几秒——boot.log +19.7s，主人问「重启怎么这么慢」的根因）。
+  const vurl = want + '?v=' + (Number(skinState.videoVer) || 0);
+  if (now !== vurl) {
+    /* 【2026-11-13 修·重启慢】把「设 src + 播放」延到页面 load 事件之后：
+     * Chromium 里带 src 的媒体元素会拖住 did-finish-load（窗口要等它才露面），
+     * 原来在首屏脚本里就设 src → 10.6MB 视频+音乐在 load 前抢跑 → 窗口晚开十几秒。
+     * 现在先给主人出界面，视频在 load 后一拍自己淡进来（applySkinVars 的遮罩本来就是渐显）。 */
+    const startVideo = () => {
+      if (skinVideoEl.getAttribute('src') === vurl) return;   // 已设过（切皮肤回来）就不重复
+      skinVideoEl.src = vurl;
+      skinVideoEl.playbackRate = Number(skinState.settings.playbackRate) || 1;
 
-    // 兜底一：错误直接放弃（文件没了、token 没带上、内核不认这个编码…）
-    skinVideoEl.addEventListener('error', () => skinGiveUp('元素报 error'), { once: true });
-    // 兜底二：12 秒还没首帧也算放弃（弱网下别让人对着黑屏干等）
-    clearTimeout(skinFailTimer);
-    skinFailTimer = setTimeout(() => {
-      if (skinVideoEl.readyState < 2) skinGiveUp('12 秒没出画面');
-    }, 12000);
+      // 兜底一：错误直接放弃（文件没了、token 没带上、内核不认这个编码…）
+      skinVideoEl.addEventListener('error', () => skinGiveUp('元素报 error'), { once: true });
+      // 兜底二：12 秒还没首帧也算放弃（弱网下别让人对着黑屏干等）
+      clearTimeout(skinFailTimer);
+      skinFailTimer = setTimeout(() => {
+        if (skinVideoEl.readyState < 2) skinGiveUp('12 秒没出画面');
+      }, 12000);
 
-    // 自动播放被挡（理论上不会，Electron 默认允许）就静音兜底，反正本来就是无声
-    skinVideoEl.play().catch(() => {
-      skinVideoEl.muted = true;
-      skinVideoEl.play().catch(() => {});
-    });
+      // 自动播放被挡（理论上不会，Electron 默认允许）就静音兜底，反正本来就是无声
+      skinVideoEl.play().catch(() => {
+        skinVideoEl.muted = true;
+        skinVideoEl.play().catch(() => {});
+      });
+    };
+    if (document.readyState === 'complete') startVideo();
+    else window.addEventListener('load', startVideo, { once: true });
   }
 }
 
@@ -21228,6 +21240,10 @@ async function refreshSkin() {
   skinState.settings = { ...skinState.settings, ...(r.settings || {}) };
   skinState.hasVideo = Boolean(r.hasVideo);
   skinState.allowMobileVideo = Boolean(r.allowMobileVideo);
+  /* 【2026-11-13 修·重启慢】媒体版本号 = 文件 mtime（服务端算好）。
+   * 文件没变 → URL 不变 → Chromium 缓存直接复用，不再每次开屏重下 10.6MB。 */
+  skinState.videoVer = Number(r.videoVer) || 0;
+  skinState.musicVer = Number(r.musicVer) || 0;
   if (!r.enabled || !r.hasVideo) {
     teardownSkin();
     return;
@@ -21347,8 +21363,13 @@ function musicStart() {
   if (!musicEl || !musState.hasMusic || !musState.on || !musState.bound) return;
   musicEl.volume = Math.max(0, Math.min(1, Number(musState.volume) || 0));
   const want = '/api/skin/music';
-  if (!String(musicEl.getAttribute('src') || '').startsWith(want)) {
-    musicEl.src = want + '?t=' + Date.now();
+  /* 【2026-11-13 修·重启慢】同视频：版本号=mtime（缓存可复用），且延到页面 load
+   * 之后再设 src —— 媒体元素不许再拖住窗口露面。 */
+  const murl = want + '?v=' + (Number(skinState.musicVer) || 0);
+  if (musicEl.getAttribute('src') !== murl) {
+    const setMusic = () => { if (musicEl.getAttribute('src') !== murl) musicEl.src = murl; };
+    if (document.readyState === 'complete') setMusic();
+    else window.addEventListener('load', setMusic, { once: true });
   }
   const p = musicEl.play();
   if (p && typeof p.catch === 'function') {

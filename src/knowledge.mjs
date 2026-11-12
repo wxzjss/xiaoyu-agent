@@ -191,11 +191,11 @@ export function initKnowledge() {
   } catch {}
 }
 
-/** 全部卡（按更新时间新→旧） */
+/** 全部卡（按创建先后：先建的在左，新书排在书架末尾——2026-11-13 主人钦点） */
 export function listCards() {
   let cards = loadAll();
   if (cards === null) { initKnowledge(); cards = loadAll() || []; }
-  return cards.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return cards.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || (a.updatedAt || 0) - (b.updatedAt || 0));
 }
 
 export function getCard(id) {
@@ -226,7 +226,7 @@ export function saveCard({ id, title, author, content, tags }) {
   }
   const c = normalizeCard({ title, author, content, tags, createdAt: now, updatedAt: now });
   if (!c) return { ok: false, error: '标题不能为空' };
-  cards.unshift(c);
+  cards.push(c);   /* 【2026-11-13 主人钦点】新书排书架末尾，不插最前面 */
   saveAll(cards);
   return { ok: true, card: c, created: true };
 }
@@ -262,7 +262,7 @@ export function importCards(payload) {
       if (cards[i].updatedAt >= c.updatedAt) continue;   // 本地较新，跳过
       cards[i] = c; updated++;
     } else {
-      cards.unshift(c); added++;
+      cards.push(c); added++;   /* 【2026-11-13 主人钦点】导入的卡同样排末尾 */
     }
   }
   saveAll(cards);

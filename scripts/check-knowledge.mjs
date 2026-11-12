@@ -96,5 +96,11 @@ ok('seed 知识卡全是方法做法，没有故事叙事（血泪史/那次/曾
   !/血泪史|那次|曾经|后来我们/.test(kb)
   && /内容\*\*只写方法做法\*\*|只写方法做法/.test(tools));
 
+/* 【2026-11-13 主人钦定】新书排书架末尾：创建先后排序，新建/导入都 push 不 unshift */
+ok('书架按创建先后排（旧→新，新书在末尾）',
+  /\(a\.createdAt \|\| 0\) - \(b\.createdAt \|\| 0\)/.test(kb));
+ok('新建卡 push 到末尾（不再 unshift 插最前）',
+  !/cards\.unshift\(c\)/.test(kb) && /cards\.push\(c\);[^\n]*主人钦点】新书排书架末尾/.test(kb));
+
 console.log('\n知识库·书架：' + pass + ' 过 / ' + fail + ' 挂');
 process.exit(fail ? 1 : 0);

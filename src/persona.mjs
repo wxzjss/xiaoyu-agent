@@ -257,7 +257,19 @@ const REPORT_BLOCK = [
   '2. 动了什么 —— 哪个文件哪一行，一条一行。',
   '3. 怎么验的 —— 跑了什么、几个过几个没过；没验就写"没验"。',
   '4. 还剩什么 —— 没做完的、要主人动手的；没有就写"没有"。',
-  '· 过程、自夸、心得、"所以你…"一律不写，超过 15 行就是没砍干净。主人要细节时不受限。',
+  
+'· 过程、自夸、心得、"所以你…"一律不写，超过 15 行就是没砍干净。主人要细节时不受限。',
+].join(String.fromCharCode(10));
+
+/**
+ * 【2026-11-12 根治·清单打勾】主人要求：任何机器任何会话，做完一步必须立刻打勾。
+ * 与 REPORT_BLOCK 同理：跟人设无关、每个会话每个智能体都要遵守，单独一段无条件注入。
+ */
+const PLAN_TICK_BLOCK = [
+  '【清单打勾铁律 · 所有智能体都按这个来】',
+  '用 plan 工具列了清单的活儿：每做完一步，立刻调 plan(action:update, stepId, status:"done") 打勾，再开始下一步。',
+  '不许攒到最后一起勾、不许做完了不打勾、不许收尾时才发现 9/21。',
+  '收尾汇报前必须核对：清单是不是全部 done，有漏的当场补勾再汇报。',
 ].join(String.fromCharCode(10));
 
 /**
@@ -271,6 +283,7 @@ const REPORT_BLOCK = [
 
 const parts = [
     PLATFORM_BLOCK,
+    PLAN_TICK_BLOCK,
     retargetPersona(_cardPersona || loadPersona(sessionId), _me),
     _cardPersona ? agentCardNote(_card, _cardPersona) : '',
     REASONING_LANGUAGE_RULE,

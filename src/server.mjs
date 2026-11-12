@@ -8731,7 +8731,7 @@ const server = createServer(async (req, res) => {
   }
   /* 【2026-11-12 旁观者模式】按会话挑谁能在旁边插话；名单空 = 关闭（默认）。 */
   if (req.method === 'GET' && url.pathname === '/api/spectator') {
-    const sid = q.get('sessionId') || '';
+    const sid = url.searchParams.get('sessionId') || '';
     return json(res, 200, { ok: true, sessionId: sid, agents: spectatorsOf(sid) });
   }
   if (req.method === 'POST' && url.pathname === '/api/spectator') {

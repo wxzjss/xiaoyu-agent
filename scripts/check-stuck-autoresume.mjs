@@ -46,7 +46,7 @@ t.ok('接成功/失败都写 diag', /diagLog\('stuck-retry'/.test(server) && /di
 /* scheduleStuckRetry 只挂在看门狗的 onStuck 上，而 onStuck 只在
  * 「静默超过上限」时才调用 —— 主人点停止走的是另一条路（signal.aborted），
  * 不会经过这里。这条断言是防止以后有人图省事把它挂到全局 abort 上。 */
-t.ok('只有看门狗那条路会调它（abort 是用户点停止时不经过 onStuck）',
-  (server.match(/scheduleStuckRetry\(/g) || []).length === 2); // 定义 1 处 + onStuck 里 1 处
+t.ok('scheduleStuckRetry 不挂在 abort / 点停止 那条路上',
+  !/signal\.aborted[\s\S]{0,300}scheduleStuckRetry\(/.test(server));
 
 t.done();

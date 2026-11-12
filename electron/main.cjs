@@ -1258,7 +1258,97 @@ ipcMain.handle('app:info', () => ({
   version: app.getVersion(),
   port: serverInfo && serverInfo.port,
   url: serverInfo && serverInfo.url,
+  platform: process.platform,
 }));
+
+/**
+ * 【2026-11-13 合并·mac 侧】系统通知。
+ *
+ * 主人原话：「你看看有没有系统通知的插件，没有做一个，设置在软件对话，
+ * ai 回复的时候提醒下，还有 qq 回复的设置提醒下，做两个开关项」。
+ *
+ * 两条来路：
+ *   1. 渲染进程 → `desktop.notify(...)` → IPC 'xy:notify'（AI 回复完成时用）
+ *   2. 服务端   → `globalThis.__xyNotify(...)`（server.mjs 是 import 进主进程跑的，
+ *      同一个进程、同一份 globalThis；QQ 消息在那边收到就可以直接弹）
+ *
+ * 【窗口在最前面就不弹】—— 人正盯着界面看，再弹一条「她回复了」纯属打扰。
+ * 只有最小化 / 被别的窗口盖住 / 切到别的应用时才弹。force 给自检用。
+ *
+ * 出错一律吞掉：通知弹不出来是小事，绝不能因此影响回复本身。
+ * 【为什么必须放主进程】页面里的 Web Notification 在 Electron 里不可靠，
+ * 插件更不可能（插件跑在页面里）——所以这是内置能力，不是插件。
+ */
+function xyShowNotify(payload = {}) {
+  try {
+    if (!Notification.isSupported()) return false;
+    if (!win || win.isDestroyed()) return false;
+    const focused = win.isVisible() && !win.isMinimized() && win.isFocused();
+    if (focused && payload.force !== true) return false;
+    const title = String(payload.title || '小鱼').slice(0, 80);
+    const body = String(payload.body || '').slice(0, 180);
+    if (!body) return false;
+    const n = new Notification({ title, body, silent: false });
+    // 点通知 → 把窗口捞回来（最小化就还原）。找不到窗口就算了。
+    n.on('click', () => {
+      try {
+        if (!win || win.isDestroyed()) return;
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+      } catch {}
+    });
+    n.show();
+    return true;
+  } catch (err) {
+    console.warn('[notify] 弹不出来（不影响使用）:', err && err.message ? err.message : err);
+    return false;
+  }
+}
+
+ipcMain.handle('xy:notify', (_e, payload) => xyShowNotify(payload || {}));
+/* 给同一个进程里的 server.mjs / qq-bridge.mjs 用（它们 import 进主进程，
+ * 拿不到 ipcMain，但能拿到这份 globalThis）。 */
+globalThis.__xyNotify = xyShowNotify;
+
+/**
+ * 【2026-11-13 合并·mac 侧】原生「选文件 / 选图片 / 选文件夹」。
+ *
+ * 对话区那颗「+」以前弹的是自己画的栏式浏览器 —— 一列一列横着铺、标着「C 盘」，
+ * 那是 Windows 资源管理器的走法。在 mac 上主人按 + 期待的是访达那张浮层。
+ * 直接调系统面板：Electron 的 dialog 在 mac 上就是 NSOpenPanel，
+ * 在 Windows 上就是资源管理器那套，两边都原生。
+ *
+ * 参数：kind 'file' | 'image' | 'dir'；defaultPath 上次用过的目录（可选）。
+ * 回：{ canceled, paths }。paths 是本机绝对路径，前端接着走原来的 addAttachment。
+ */
+ipcMain.handle('app:pick', async (e, opts = {}) => {
+  const kind = opts && opts.kind === 'image' ? 'image' : opts && opts.kind === 'dir' ? 'dir' : 'file';
+  const pickWin = BrowserWindow.fromWebContents(e.sender);
+  const properties = kind === 'dir' ? ['openDirectory', 'createDirectory'] : ['openFile'];
+  // 图片是「挑一张」，文件允许一次挑好几个
+  if (kind === 'file') properties.push('multiSelections');
+
+  /* 图片给一组常见扩展名：mac 上 NSOpenPanel 会把这变成「只能选图片」，
+   * 省得主人选到一个 .psd / .mp4 再被后端的预览拒掉。 */
+  const filters = kind === 'image'
+    ? [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'heic', 'tif', 'tiff'] }]
+    : kind === 'dir' ? [] : [{ name: '所有文件', extensions: ['*'] }];
+
+  const payload = {
+    title: kind === 'image' ? '选择图片' : kind === 'dir' ? '选择文件夹' : '选择文件',
+    properties,
+  };
+  if (filters.length) payload.filters = filters;
+  if (opts && opts.defaultPath) payload.defaultPath = String(opts.defaultPath);
+
+  try {
+    const r = pickWin ? await dialog.showOpenDialog(pickWin, payload) : await dialog.showOpenDialog(payload);
+    return { canceled: Boolean(r.canceled), paths: r.canceled ? [] : (r.filePaths || []) };
+  } catch (err) {
+    return { canceled: true, paths: [], error: String(err && err.message ? err.message : err) };
+  }
+});
 
 ipcMain.handle('app:openWorkspace', async () => {
   const { config } = await importSrc('src/config.mjs');

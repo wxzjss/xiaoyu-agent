@@ -5,6 +5,14 @@ contextBridge.exposeInMainWorld('desktop', {
   info: () => ipcRenderer.invoke('app:info'),
   openWorkspace: () => ipcRenderer.invoke('app:openWorkspace'),
 
+  /* 【2026-11-13 合并·mac 侧】系统通知（AI 回复完成时用）。
+   * 调用方一律写 window.desktop?.notify?.(…) —— 浏览器里直接开页面时这个字段不存在。 */
+  notify: (payload) => ipcRenderer.invoke('xy:notify', payload || {}),
+
+  /* 【2026-11-13 合并·mac 侧】原生「选文件 / 选图片 / 选文件夹」面板
+   * （mac = NSOpenPanel，Windows = 资源管理器那套）。回 { canceled, paths }。 */
+  pick: (opts) => ipcRenderer.invoke('app:pick', opts || {}),
+
   /* 【2026-11-09】输入法相关的 IPC 全删了。应用一行都不碰系统输入法，
    * 交给 Windows 和主人自己（Shift / Ctrl+Space）。留着两个没人接的
    * invoke 只会让设置页以为还能「跟随系统」，误导人。 */

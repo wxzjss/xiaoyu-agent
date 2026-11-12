@@ -3757,7 +3757,7 @@
           <b style="font-size:12.5px;">旁观者模式（本会话）</b>
           <span class="hint" id="specHint" style="flex:1 1 auto;min-width:0;"></span>
         </div>
-        <div id="specPick" style="display:flex;flex-wrap:wrap;gap:8px;padding:0 14px 10px;"></div>
+        <div id="specPick" style="padding:6px 8px 10px;"></div>
         <div class="featList" id="featList"></div>
       </div>
       <div class="dlgFoot">
@@ -15540,39 +15540,100 @@ if (openFeaturesBtn) {
      * 现在无论如何都打开：读不到就在列表位置写清原因 + 给一颗重试。 */
     await loadFeatures();
     featHideReport();   // 上一次导入的账本别在新一次打开时还杵着
-    /* 【2026-11-12 旁观者模式】按会话挑谁能在旁边随时插一句（不选=关，默认） */
+    /* 【2026-11-12 旁观者模式·卡片化（主人定）】照【读文件】【写文件】那排
+     * featRow 的样子：一行一个智能体，左边名字+徽标+说明，右边「开始/停止旁观」胶囊。
+     * 之前做成一行复选框是图快直接塞在标题条下面，没复用功能行的骨架 —— 现在归位。
+     * 禁勾逻辑也修了：原来拿 mainAgentName 判「干活中」，而它按设计恒为「小鱼」
+     * （历史署名兜底），于是小鱼永远禁勾、真正干活的小鲸反而能勾 —— 判反了。
+     * 现在主智能体由服务端算好发回来（main），「屋里的人」全名单也一起发（occupied）：
+     * 主智能体、在屋里的（含静音的）都禁勾 —— 同一个人不能一边干活一边旁观。
+     * 还有主人问的那条：**提前勾了旁观者、后来又把同名的加进屋里的人** ——
+     * 载入时就把冲突的名字从名单里摘掉并回存，服务端闸也双保险（取名单时再滤一遍）。 */
     try {
       const _sid = (typeof sessionId === 'string' && sessionId) || window.sessionId || '';
       const _pick = document.getElementById('specPick');
       const _hint = document.getElementById('specHint');
       if (_pick && _hint) {
-        _pick.textContent = '读取中…';
+        _pick.innerHTML = '';
+        _hint.textContent = '读取中…';
         const _ag = await fetch('/api/agents').then((x) => x.json()).catch(() => null);
         const _cards = (Array.isArray(_ag && _ag.agents) ? _ag.agents : (Array.isArray(_ag) ? _ag : []))
           .filter((c) => c && String(c.name || '').trim() && c.enabled !== false);
         const _r = await fetch('/api/spectator?sessionId=' + encodeURIComponent(_sid)).then((x) => x.json()).catch(() => null);
         const _chosen = new Set(Array.isArray(_r && _r.agents) ? _r.agents : []);
-        _pick.textContent = '';
+        const _main = String((_r && _r.main) || '').trim();
+        const _occupied = new Set(Array.isArray(_r && _r.occupied) ? _r.occupied : []);
+        /* 冲突自愈：已勾的旁观者现在进了屋里 → 当场摘掉并回存 */
+        let _dirty = false;
+        for (const _n of [].concat(Array.from(_chosen))) {
+          if (_n === _main || _occupied.has(_n)) { _chosen.delete(_n); _dirty = true; }
+        }
+        if (_dirty) {
+          fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: _sid, agents: Array.from(_chosen) }) }).catch(() => {});
+        }
+        _pick.innerHTML = '';
         if (!_cards.length) { _hint.textContent = '没有可选的智能体。'; }
         else {
-          _hint.textContent = '勾选谁，谁就能在她干活时随时插一句；不勾=关闭。名字旁边带「旁观」小牌；纯闲聊不插话。';
+          _hint.textContent = '拨到「旁观中」，谁就能在她干活时随时插一句；纯闲聊不插话，说话带「旁观」小牌。';
+          const _paint = () => {
+            for (const row of [].slice.call(_pick.querySelectorAll('.featRow'))) {
+              const _n = row.dataset.name;
+              if (row.dataset.locked === '1') continue;
+              const on = _chosen.has(_n);
+              const _bad = row.querySelector('.badge');
+              const _sw = row.querySelector('.switch');
+              _bad.className = 'badge' + (on ? '' : ' off');
+              _bad.textContent = on ? '旁观中' : '未旁观';
+              _sw.className = 'switch' + (on ? ' on' : '');
+              _sw.textContent = on ? '停止旁观' : '开始旁观';
+            }
+          };
           for (const c of _cards) {
             const _name = String(c.name || '').trim();
-            const _isMain = _name === (typeof mainAgentName !== 'undefined' && mainAgentName) || _name === String(window.mainAgentName || '');
-            const lab = document.createElement('label');
-            lab.style.cssText = 'display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--dim);cursor:pointer;white-space:nowrap;';
-            const cb = document.createElement('input');
-            cb.type = 'checkbox'; cb.value = _name; cb.checked = _chosen.has(_name);
-            if (_isMain) { cb.disabled = true; cb.title = '本会话正在干活的主智能体，不能当旁观者'; }
-            cb.onchange = async () => {
-              const names = [].slice.call(_pick.querySelectorAll('input[type=checkbox]'))
-                .filter((x) => x.checked && !x.disabled).map((x) => x.value);
-              const rr = await fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionId: _sid, agents: names }) }).then((x) => x.json()).catch(() => null);
-              _hint.textContent = rr && rr.ok ? (names.length ? '已保存：' + names.join('、') + ' 在旁观' : '已关闭（没人旁观）') : '没存上，再试一次';
-            };
-            lab.append(cb, document.createTextNode(_name + (_isMain ? '（干活中）' : '')));
-            _pick.append(lab);
+            const _isMain = _name === _main;
+            const _inRoom = _occupied.has(_name);
+            const _locked = _isMain || _inRoom;
+            const row = document.createElement('div');
+            row.className = 'featRow';
+            row.dataset.name = _name;
+            row.dataset.locked = _locked ? '1' : '0';
+            const mainEl = document.createElement('div');
+            mainEl.className = 'featMain';
+            const nameEl = document.createElement('div');
+            nameEl.className = 'featName';
+            const nm = document.createElement('span');
+            nm.textContent = _name;
+            const badge = document.createElement('span');
+            badge.className = 'badge off';
+            badge.textContent = _locked ? (_isMain ? '干活中' : '在屋里') : (_chosen.has(_name) ? '旁观中' : '未旁观');
+            nameEl.append(nm, badge);
+            const desc = document.createElement('div');
+            desc.className = 'featDesc';
+            desc.textContent = _locked
+              ? (_isMain ? '本会话正在干活的主智能体，不能自己旁观自己。'
+                         : '已在「屋里的人」里，会接话干活，不能再当旁观者（把她移出屋里才能旁观）。')
+              : String(c.desc || '').trim() || '拨开后，她干活时这位可以随时插一句（说话带「旁观」小牌）。';
+            mainEl.append(nameEl, desc);
+            const sw = document.createElement('button');
+            sw.type = 'button';
+            sw.className = 'switch' + (_chosen.has(_name) ? ' on' : '');
+            sw.textContent = _locked ? '不能旁观' : (_chosen.has(_name) ? '停止旁观' : '开始旁观');
+            if (_locked) {
+              sw.disabled = true;
+              sw.title = _isMain ? '干活的人不能旁观自己' : '在「屋里的人」里的不能旁观';
+            } else {
+              sw.onclick = async () => {
+                if (_chosen.has(_name)) _chosen.delete(_name); else _chosen.add(_name);
+                const names = _cards.map((x) => String(x.name || '').trim()).filter((n) => _chosen.has(n));
+                const rr = await fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ sessionId: _sid, agents: names }) }).then((x) => x.json()).catch(() => null);
+                if (rr && rr.ok) _paint();
+                else _hint.textContent = '没存上，再试一次';
+              };
+            }
+            row.append(mainEl, sw);
+            _pick.append(row);
           }
         }
       }

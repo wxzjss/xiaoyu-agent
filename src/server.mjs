@@ -3076,7 +3076,7 @@ function residentNamesOf(sessionId) {
     const n = String((c && c.name) || '').trim();
     if (n) out.add(n);
   } catch {}
-  return out;
+  return Array.from(out);
 }
 
 async function startOpening(sessionId) {
@@ -11276,7 +11276,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
              * 主智能体固然不行，排进接话名单的也一律让位 —— 同一个人
              * 一边干活一边旁观，屏幕上就是「她自己回答自己点评」。
              * 静音的也算在屋里（人在屋里就占了身份）。 */
-            const __resident = residentNamesOf(sessionId);
+            const __resident = new Set(residentNamesOf(sessionId));
             const __who = __spect.find((n) => n && !__resident.has(String(n).trim()));
             if (!__who) return;
             /* 纯闲聊不插话：从本轮起点到现在，一个工具都没跑过 → 安静看着 */

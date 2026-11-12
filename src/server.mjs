@@ -1,4 +1,4 @@
-﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
+// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile, open as pvOpen } from 'node:fs/promises';
@@ -3891,6 +3891,9 @@ async function startQueuedTurn(sessionId, queue = null) {
      * 现在历史里不落了，前端也不画 —— 断轮静默（主人钦定）。 */
     else send({ type: 'error', message: String(e?.message ?? e), persisted: true });
     throw e;
+  } finally {
+    if (live) { live.done = true; live.endedAt = Date.now(); }
+    if (runningTurns.get(sessionId) === turn) runningTurns.delete(sessionId);
     /* 【2026-11-12 续跑账收尾】跟主轮同一规矩：正常跑完清账；stop 也清（主人点了停）；
      * 其余 abort（quit/handoff）不清 —— 优雅退出/自重启的记账比我晚一步，别抢。 */
     try {
@@ -5249,8 +5252,15 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/probe') {
-    const p = await probeLocalService(1500);
-    return json(res, 200, { ok: true, up: p.up, running: p.up, already: p.up, ids: p.ids ?? [], hasToken: !!readDeepSeekToken().token, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL });
+    // 【2026-11-12 修】探不通就自动起服务（主人：「点测连通会自动起程序」）。
+    let p = await probeLocalService(1500);
+    let started = false;
+    if (!p.up) {
+      const s = await startLocalService({});
+      started = !!s.started;
+      p = await probeLocalService(1500);
+    }
+    return json(res, 200, { ok: true, up: p.up, running: p.up, already: p.up && !started, started, ids: p.ids ?? [], hasToken: !!readDeepSeekToken().token, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL });
   }
 
   /**
@@ -8776,77 +8786,39 @@ const server = createServer(async (req, res) => {
   // ---- 对话回退 ----
   // 只遮蔽不删除：往会话里追加一个回退点，老消息原样留在日志里。
   if (req.method === 'POST' && url.pathname === '/api/sessions/rewind') {
+    // 【2026-11-12 主人定的新语义】回退 = 该条本身保留，删它【之后】所有消息（真删，非遮蔽）。
+    // 旧语义（createRewind 遮蔽 + 快照/记忆还原）废弃，避免新旧逻辑打架。
     const { id, at } = await body(req).catch(() => ({}));
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
-    /**
-     * 【2026-11-01 修·回退不了】
-     *
-     * 原来这里直接回 409「这个会话正在跑，先点停止再回退」。
-     * 可 preview 端点不查运行状态，界面上显示得好好的、点确认才被拒 ——
-     * 主人只会看到「回退不了」，不知道要先去点停止。
-     *
-     * 主人点回退，意思就是「回到这条之前」，替他停掉更顺，不该让他再多点一次。
-     * 所以这里就地掐掉这一轮（abort + 销登记），然后照常往下回退。
-     */
-    const _rwTurn = runningTurns.get(id);
-    if (_rwTurn && !_rwTurn.ac.signal.aborted) {
-      try { _rwTurn.ac.abort('rewind'); } catch {}
-      runningTurns.delete(id);
-      try {
-        const _ll = liveLogs.get(id);
-        if (_ll) { _ll.done = true; _ll.endedAt = Date.now(); }
-      } catch {}
-    }
-    repairHistory(session.messages);
-    const out = createRewind(session, at);
-    if (!out.ok) return json(res, 400, { error: out.error });
-    // 文件按快照还原（以快照为准，只动真正不一致的文件）
-    const files = restoreWorkspace(out.rewind.ws || {});
-    // 记忆跟着一起退回这一轮开始时的样子，否则对话退回去了、记忆还记着后来那些事
-    const memory = restoreMemory(session, out.rewind);
-    saveSession(session);
-    return json(res, 200, { ok: true, session: publicSession(session), files, memory });
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/sessions/rewind-undo') {
-    const { id } = await body(req).catch(() => ({}));
-    if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
-    /* 【2026-11-03 严检补的】/rewind 有 busy 保护（它还会主动掐断正在跑的那一轮），
-     * 而「撤销回退」这条没有：它同样 saveSession 写盘 + snapMemory 回写记忆，
-     * 跑着的时候点会跟正在吐字的那一轮抢同一条会话，落盘成半截。
-     * 两条路必须是同一把锁，否则前门锁了后门还开着。 */
-    if (runningTurns.get(id)) {
-      return json(res, 409, { error: '这一轮正在生成，等它说完再撤销回退（不然会写乱）' });
-    }
-    const session = getSession(id);
-    if (!session) return json(res, 404, { error: 'session not found' });
-    // undoLastRewind 会把被摘掉那个回退点的 mem / ws 一起带回来（它在删之前取的），
-    // 所以这里拿到的是真快照。撤销回退 = 记忆也回到「还没退」的样子。
-    const out = undoLastRewind(session);
-    if (!out.ok) return json(res, 400, { error: out.error });
-    let memory = null;
-    if (out.hasMem) {
-      try {
-        memory = snapMemory(id, out.mem ?? null);
-      } catch {
-        memory = null;
-      }
+    if (runningTurns.get(id)) return json(res, 409, { error: '这一轮正在生成，等它说完或点停止再回退' });
+    // 前端传的可能是「有效视图下标」，换算回 messages 真下标（与 message-delete 同一套）
+    const _view = effectiveIndexes(all, loadRewinds(session));
+    const _real = Number.isInteger(at) && at >= 0 && at < all.length && all[at] ? at : _view[at];
+    const i = Number(_real);
+    if (!Number.isInteger(i) || i < 0 || i >= session.messages.length) return json(res, 400, { error: 'bad at' });
+    const msg = session.messages[i];
+    // 该条本身保留（含它挂着的工具消息），只砍 i 之后的所有
+    const removed = session.messages.length - (i + 1);
+    if (removed > 0) session.messages.splice(i + 1);
+    // 已有回退点下标重映射：指向 <= i 的保留；> i 的（指向被删区间）丢弃
+    if (Array.isArray(session.rewinds)) {
+      session.rewinds = session.rewinds.filter(rw => {
+        const a = typeof rw === 'number' ? rw : rw && rw.at;
+        return Number.isInteger(a) && a <= i;
+      });
     }
     saveSession(session);
-    return json(res, 200, { ok: true, session: publicSession(session), memory });
+    console.log('[rewind-hard] session=' + id + ' at=' + i + ' kept=' + (msg && msg.role) + ' removed=' + removed);
+    return json(res, 200, { ok: true, session: publicSession(session), removed });
   }
 
   /**
    * 【删掉某一条消息】—— 2026-10-30 主人：「给消息加个删除按钮」。
-   *
    * 跟回退不一样：回退是「把对话退到这条之前」，会连记忆、文件一起退。
-   * 删除只办一件事：这一条从今往后不发给模型了，别的什么都不动。
-   *
-   * 做法照抄 rewind 的路子：往 session 上记一条 hiddenRewinds，用 effectiveIndexes
-   * 精确把这一条剔出去，**不改 messages 数组本身** —— 下标一变，所有 rewind 点、
-   * 所有 _ws 快照就全错位了。
+   * 删除只动对话历史这一层：把这一条从 messages 里 splice 掉（真删，盘上不再留），
+   * 已有的回退点/快照下标跟着重映射，不然它们全错位。
    *
    * 两条铁律（都是 rewind.mjs 里踩出来的）：
    *   ① 删 assistant 时，它名下 tool_calls 对应的 tool 结果必须一起删，
@@ -8858,80 +8830,47 @@ const server = createServer(async (req, res) => {
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
-    const rt = runningTurns.get(id);
-    if (rt && !rt.ac.signal.aborted) {
+    if (runningTurns.get(id) && !runningTurns.get(id).ac.signal.aborted) {
       return json(res, 409, { error: '这个会话正在跑，先点停止再删' });
     }
     repairHistory(session.messages);
     const all = Array.isArray(session.messages) ? session.messages : [];
-    /* 【2026-11-12 修·上下文整理后老下标全错位】优先按时间戳定位（at 只作提示） */
-    let idx = Number(at);
-    const _byTs = locateByMsgAt(all, msgAt, Number.isFinite(idx) ? idx : -1);
-    if (_byTs >= 0) idx = _byTs;
-    if (!Number.isFinite(idx) || idx < 0 || idx >= all.length) {
-      return json(res, 400, { error: '这条消息不在这个会话里' });
-    }
-    const target = all[idx];
+    const view = effectiveIndexes(all, loadRewinds(session));
+    const idx = Number(at ?? msgAt);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= all.length) return json(res, 400, { error: 'bad index' });
+    // 前端传的是「有效视图下标」，换算回 messages 真下标
+    const real = view.indexOf(idx) >= 0 ? idx : view[idx];
+    if (!Number.isFinite(real) || real < 0 || real >= all.length) return json(res, 400, { error: 'bad index' });
+    const target = all[real];
     if (!target || target.role === 'system') return json(res, 400, { error: 'system 那段不能删' });
-
-    const rewinds = loadRewinds(session);
-    if (!effectiveIndexes(all, rewinds).keep.includes(idx)) {
-      return json(res, 400, { error: '这条已经删过/退过了' });
-    }
-
-    // 要剔的下标：这条自己 + 它到「下一条真正的消息」之间挂着的工具
-    //
-    // 【2026-10-30 主人要】删一条就把它到下一个消息之间的工具一起删 ——
-    // 原来只删「这条 + 它自己 tool_calls 名下那几条 tool」，于是删掉 user 那句之后，
-    // 后面那条 assistant 顺手调的一串工具（读文件、跑命令…）还孤零零挂在原地，
-    // 看着像没删干净。现在改成：从这条往后，一路吃到「下一个不是 tool 的消息」为止。
-    //
-    // 【怎么划这刀】一轮的骨架是：user → assistant(调工具) → tool → tool → assistant(总结)
-    // 所以「这条到下一个消息之间」= 吃到**下一条 user** 为止，中间 assistant / tool 全带走。
-    // （早先按「撞上非 tool 就停」，删 user 时第一条 assistant 就把它顶住了，工具一条没删。）
-    const drop = new Set([idx]);
-    for (let k = idx + 1; k < all.length; k++) {
-      const m = all[k];
-      if (!m) continue;
-      if (m.role === 'user') break;   // 下一个开口的人 → 到这里为止
-      if (m.role === 'system') break; // 系统提示不动
-      // assistant 分两种：纯调工具的那种（content 是空的）算「经过」，跟着走；
-      // 有字的回答是「她说过的话」，那是下一条消息，不能顺手删掉。
-      if (m.role === 'assistant') {
-        const txt = typeof m.content === 'string' ? m.content.trim() : '';
-        if (txt) break;
-        drop.add(k);
-        continue;
-      }
-      drop.add(k);                    // tool 结果 → 一起走
-    }
-    // 吃到下一个 user 为止
-    // 再兜一层：这条自己如果是 assistant，它 tool_calls 点名的 tool 结果无论隔多远都要删
-    const calls = Array.isArray(target.tool_calls) ? target.tool_calls : [];
-    for (const c of calls) {
-      const cid = String((c && c.id) || '');
-      if (!cid) continue;
-      for (let k = idx + 1; k < all.length; k++) {
-        const m = all[k];
-        if (m && m.role === 'tool' && String(m.tool_call_id || '') === cid) drop.add(k);
+    // ① 删 assistant 时把它 tool_calls 名下的 tool 结果一起带走
+    const drop = new Set([real]);
+    if (target.role === 'assistant' && Array.isArray(target.tool_calls)) {
+      for (const c of target.tool_calls) {
+        const cid = String((c && c.id) || '');
+        if (!cid) continue;
+        for (let k = real + 1; k < all.length; k++) {
+          const m = all[k];
+          if (m && m.role === 'tool' && String(m.tool_call_id || '') === cid) drop.add(k);
+        }
       }
     }
-
-    /**
-     * 【怎么让它真的不发给模型】
-     *
-     * 不另造字段 —— effectiveIndexes 只认 rewinds[].hidden，而且 loadRewinds 会
-     * 把「没有 at 的记录」整个滤掉。所以这里必须带 at: -1 —— rewind.mjs 第 44 行
-     * 写明「at:-1 是登记表，不是回退点，永远不算数」，正好拿来当纯隐藏用。
-     * 只给 hidden 不给 at 的话，会被 loadRewinds 丢掉，删了等于没删。
-     */
-    const rec = { at: -1, hidden: [...drop].sort((a, b) => a - b), ws: {}, deleted: true };
+    const drops = [...drop].sort((a, b) => a - b);
+    // 真删：splice 出数组
+    for (let i = drops.length - 1; i >= 0; i--) all.splice(drops[i], 1);
+    // ② 已有回退点/快照下标重映射：删掉的位置之后全部前移
+    const shift = (x) => { let v = x; for (const d of drops) { if (v >= d) v--; } return v; };
     const list = Array.isArray(session.rewinds) ? session.rewinds : [];
-    list.push(rec);
+    for (const r of list) {
+      if (!r || typeof r.at !== 'number' || r.at === -1) continue;
+      r.at = shift(r.at);
+      if (Array.isArray(r.hidden)) r.hidden = [...new Set(r.hidden.map(shift))];
+      // r.ws 以文件路径为键，不受下标影响，不动
+    }
     session.rewinds = list;
     session.updatedAt = Date.now();
     saveSession(session);
-    return json(res, 200, { ok: true, deleted: [...drop], session: publicSession(session) });
+    return json(res, 200, { ok: true, deleted: drops, session: publicSession(session) });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/sessions/rewind-preview') {
@@ -8959,14 +8898,10 @@ const server = createServer(async (req, res) => {
     if (!view.keep.includes(idx)) {
       return json(res, 200, { ok: false, at: idx, error: '这条已经被回退过了', removed: 0, files: [], text: '' });
     }
-    const cut = view.keep.filter((i) => i >= idx).length;
+    const cut = view.keep.filter((i) => i > idx).length; // 新语义：该条保留，只数它之后的
     // 目标那条往后的文件快照并起来，作为「会还原哪些文件」的清单
-    const paths = new Set();
-    for (const [k, v] of Object.entries(all[idx]?._ws || {})) if (v !== undefined) paths.add(k);
-    for (const r of loadRewinds(session)) {
-      if (r.at < idx) continue;
-      for (const k of Object.keys(r.ws || {})) paths.add(k);
-    }
+    const paths = new Set(); // 新语义：不再还原文件快照，仅保留字段兼容前端
+
     return json(res, 200, {
       ok: true,
       at: idx,
@@ -12983,6 +12918,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       }
       /* 【2026-11-12】到这里历史已经落盘、屏幕也收尾了，再摘登记 ——
        * 顺序反过来就是「服务端说没在跑、历史还差一截」那个空档（见上面 _unregAfterSave 的注释）。 */
+      if (_unregAfterSave) {
+        try { if (runningTurns.get(sessionId) === _unregAfterSave) runningTurns.delete(sessionId); } catch {}
+      }
       /* 【2026-11-12 续跑账收尾（配套轮开局记账）】正常跑完 → 清账，硬杀残留的才是待续轮。
        * 被 abort 时不在这里清：优雅退出/自重启的记账路径比我晚一步跑，别抢它刚写的账。
        * 例外 stop：主人点停止=这一轮到此为止，账必须清（否则下次开机把已停的轮又续起来）。 */

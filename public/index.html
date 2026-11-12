@@ -19265,7 +19265,8 @@ const PROVIDERS = [
   },
   {
     key: 'ollama', name: '本机 Ollama', base: 'http://127.0.0.1:11434/v1',
-    match: /11434|localhost|127\.0\.0\.1/i,
+    /* 8321 是本机 DeepSeek 的端口，别被这条抢走（负向预查排掉） */
+    match: /^(?!.*:8321\b).*(11434|localhost|127\.0\.0\.1)/i,
     models: ['qwen2.5:7b', 'llama3.2', 'deepseek-r1:7b'],
     hint: '自己电脑跑，不要钱。要先 ollama serve 起来。',
   },
@@ -19277,7 +19278,8 @@ const PROVIDERS = [
     models: [],
     hint: '在本机起一个 DeepSeek 网页版转接服务，不用 API key。选中后什么也不用填，直接点「测连通」。',
     local: true,
-    match: /^local-deepseek$/,
+    /* 既能认下拉里的 key，也能认 8321 这个真地址（providerOf 两个方向都会走） */
+    match: /^local-deepseek$|:8321\b/i,
   },
 ];
 

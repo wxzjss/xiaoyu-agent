@@ -1316,6 +1316,15 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     '  你可以说「这得她自己说」，或者干脆不出声；不许用「我」替她认下来。',
     '- 工具你是有的，「我这就查」「我去看看」你可以说 —— 但说了就得真去查，',
     '  查完再开口。一句都不许说的是「我已经翻过日志了」这种没做过就认下的话。',
+    /* 【2026-11-12 修·主人问「为什么你又停了」她编了一整条调查过程（35 段旁白全是演的）】
+     * 上面那条「说了就得真去查」拦不住她 —— 她把「去查」本身也演出来了：
+     * 一段（看到关键了）（真因方向清楚了）接一段，一条 tool_calls 都没有。
+     * 把线画死：**真调了工具之前，正文里一个「查到了」都不许有。** */
+    '- 硬线：在这次生成里**真调用过工具**（发出 tool_calls 并拿到结果）之前，',
+    '  正文不许出现「翻过/看了/查了/找到/看到关键/真因/证据链」这一类断言 ——',
+    '  没调工具就写这些 = 编造，一句都不行。',
+    '- 没把握的事就说「还看不出来，得真去查」，然后要么把工具真调起来，',
+    '  要么一句话收尾（「这个得让干活的翻完日志再回你」），别再往下演。',
     '- 你也别用小鱼那种口气（一句一个「主人」、满屏颜文字撒娇）。',
     '  你是沉的那个，说话短、直接、不哄人。她的话是她的，你别学。',
     // 调用方临时钉的规矩（比如「这一趟没工具，别假装查过」），没有就整段不出现
@@ -9641,7 +9650,20 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         try {
         const sessForWhale = getSession(sessionId);
         const said = String(message || '').trim();
-        if (sessForWhale && said && whaleOn(sessionId)) {
+        /* 【2026-11-12 修·主人问「为什么她又停了」，几秒内冒出一大堆（旁白腔）假装干活的汇报】
+         * 这条老路是「小鱼关着 + 屋里没别人 → 让小鲸以旁白身份答一句」。可小鲸要是
+         * 本来就在屋里开着（她就是干活的人），这个问题该由**正常的轮**来答 ——
+         * 带真工具、真查证。旁白这条路抢先答，她手上没有当轮的活儿可干，
+         * 模型就把自己「演」成查过了：35 段（去查日志）（看到关键了）全是编的，
+         * 一条 tool_calls 都没有（smwc7bg8fo4ky #664 实锤）。
+         * 所以：她在屋里开着 → 这条旁白路让位，让正常轮来答。 */
+        const __whaleAliveInRoom = (() => {
+          try {
+            const ids = activeAgentIds(sessionId, (id) => mateSwitchOn(id, sessionId)) || [];
+            return ids.map(String).includes(AGENT_XIAOJING);
+          } catch { return false; }
+        })();
+        if (sessForWhale && said && whaleOn(sessionId) && !__whaleAliveInRoom) {
           /**
            * 【这句是冲她说的】—— 2026-10-27 修
            *
@@ -10496,7 +10518,15 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         return String(mainAgentId(sessionId, (id) => mateSwitchOn(id, sessionId)) || '') === AGENT_XIAOJING;
       } catch { return false; }
     })();
-    if (whaleOn(sessionId) && __whaleCalledToSpeak && !__quiet && !__busyTurn && !__mainIsWhale) {
+    /* 【2026-11-12 主人·旁观者模式收编】自发的收尾补一句，不再认 whale-on.json
+     * 那张旧表（里面一堆历史残留的 true，主人早没开着她也冒出来）——
+     * 认**功能页按会话挑的旁观者名单**：名单里有她才许自发开口；
+     * 主人明确冲她说的（__speaksToHer）照旧，那不是旁观插话，是点她答话。 */
+    const __spectWhale = (() => {
+      try { return spectatorsOf(sessionId).includes('小鲸'); } catch { return false; }
+    })();
+    if (whaleOn(sessionId) && __whaleCalledToSpeak && !__quiet && !__busyTurn && !__mainIsWhale
+        && (__speaksToHer || __spectWhale)) {
       const userTextNow = lastUserTextOf(session);
       if (userTextNow) {
         (async () => {

@@ -128,21 +128,27 @@ export function ToolGroup({ items }) {
     const running = tools.find((t) => t.status === 'run') || null;
     let name = '调了 ' + n + ' 次工具';
     if (running) name = '正在' + (niceTool(running.name, running.args) || '干活') + '…';
-    /* 【2026-11-12 主人】柜门上别动不动挂一颗金色「N 个失败」（没失败时太吵）；
-     * 改成：跑着就亮「运行中…」；**真有失败才报数**（不然失败被你藏了，等于信息丢失）。 */
-    const bad = tools.filter((t) => t.status === 'err').length;
-    const statusCls = 'status ' + (bad ? 'err' : running ? 'run live' : 'ok');
-    const statusTxt = bad ? bad + ' 个失败' : (running ? '运行中…' : '');
+    /* 【2026-11-12 主人】柜门上不要金色「N 个失败」（没失败时太吵，看着像出错）；
+     * 改成：跑着就亮「运行中…」，柜门标题也带一份。 */
+    const statusCls = 'status ' + (running ? 'run live' : 'ok');
+    const statusTxt = running ? '运行中…' : '';
     return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
   }, [list]);
 
   /* 跑着的卡带 startedAt 时，柜门名后面跟着已耗时秒数（没有就维持原样） */
-  const doorName = stat.running && (Number(stat.running.startedAt) || 0) > 0
-    ? stat.name.replace(/…$/, '') + ' · ' + Math.max(1, Math.round((Date.now() - Number(stat.running.startedAt)) / 1000)) + 's…'
-    : stat.name;
-  const doorSpin = stat.running && (Number(stat.running.startedAt) || 0) > 0
-    ? SPIN[tick % SPIN.length] + ' ' + doorName
-    : doorName;
+  /**
+   * 【2026-11-12 主人】柜门标题在「跑着」的时候整段也改成金色 ——
+   * 以前只有右边那颗「运行中」是金色（#f0b954），左边「⠙ 正在跑命令 · 12s…」
+   * 还是主题色，一眼看过去像两套东西。现在：转圈点、标题、秒数一并金色，
+   * 跟「运行中」同一个色号，整条柜门「亮起来」才像一个状态。
+   *
+   * 拆成三段渲染（不再拼成一个字符串）：转圈点 / 标题 / 秒数，
+   * 这样样式能分开给（秒数压一点透明度，别跟标题抢），也方便以后单独调。
+   */
+  const _startedAt = stat.running ? (Number(stat.running.startedAt) || 0) : 0;
+  const spinOn = !!stat.running && _startedAt > 0;
+  const doorTitle = spinOn ? stat.name.replace(/…$/, '') : stat.name;
+  const doorSecs = spinOn ? Math.max(1, Math.round((Date.now() - _startedAt) / 1000)) : 0;
 
   /**
    * 【2026-11-11 加·柜子展开后要跟着新工具走】
@@ -190,7 +196,11 @@ export function ToolGroup({ items }) {
   return (
     <details className="toolhub" open={open} onToggle={onToggle}>
       <summary>
-        <span className="hubname">{doorSpin}</span>
+        <span className={'hubname' + (spinOn ? ' run' : '')}>
+          {spinOn ? <span className="hubSpin">{SPIN[tick % SPIN.length]}</span> : null}
+          <span className="hubText">{spinOn ? ' ' + doorTitle : doorTitle}</span>
+          {spinOn ? <span className="hubSecs">{' · ' + doorSecs + 's…'}</span> : null}
+        </span>
         <span className={stat.statusCls}>{stat.statusTxt}</span>
         <GrayPeek text={stat.running ? '' : niceTool(last.name, last.args)} />
       </summary>

@@ -1636,6 +1636,15 @@
     details.toolhub > summary .status.err { color: var(--err); }
     details.toolhub > summary .status.warn { color: #d9a45b; }
     details.toolhub > summary .status.run { color: #f0b954; opacity: 1; font-weight: 500; }
+    /* 【2026-11-12 主人·跑着的时候整条柜门都金色】
+       以前只有右边那颗「运行中」是金色，左边「⠙ 正在跑命令 · 12s…」还是主题色 ——
+       一眼看过去像两套东西。现在标题、转圈点、秒数一并金色，同一个色号（#f0b954），
+       整条柜门「亮起来」才像一件事。跑完自动退回主题色 + 灰字摘要。 */
+    details.toolhub > summary .hubname.run { color: #f0b954; font-weight: 500; }
+    details.toolhub > summary .hubname .hubSpin,
+    details.toolhub > summary .hubname .hubText { color: inherit; }
+    /* 秒数压一档透明度：别跟「正在跑命令」抢注意力，但仍是金色 */
+    details.toolhub > summary .hubname .hubSecs { color: #f0b954; opacity: .75; }
     .hubpeek:empty { display: none; }
     /* 【2026-11-07 主人要的金色「运行中」】
        工具在跑的时候柜门右边写「运行中」，用工具卡标题那个金色（#f0b954），
@@ -7436,22 +7445,63 @@ document.addEventListener('dblclick', (e) => {
   openFileView(hit.path);
 });
 
-/** 看某一轮的文件改动：anchor 传那一问的下标（assistant 气泡也能直接带自己的下标）。 */
+/**
+ * 看某一轮的文件改动：anchor 传那一问的下标（assistant 气泡也能直接带自己的下标）。
+ *
+ * 【2026-11-12 修·主人问「点【查看改动】说这一轮是空的，是因为还在跑吗？得等跑完？」】
+ *
+ * 答案是「是」——但以前抽屉里那句话完全没提这回事，只说「这一轮没有登记到文件改动」，
+ * 看着就像功能坏了。原因在服务端（src/server.mjs 的 stashFile / _ws 快照）：
+ * 快照是**边跑边登记**的 —— 那一轮她第一次用写文件工具时才会有第一条记录。
+ * 所以：
+ *   · 她还在跑、又还没动文件（正在查资料 / 想）→ 抽屉里是空的，属于正常；
+ *   · 她一动文件 → 立刻就有内容，不用等这一轮结束；
+ *   · 一轮跑完还是空的 → 才是真的「这一轮没改文件」。
+ *
+ * 现在抽屉里把三种情况分开说，并在「还在跑」时每 2 秒自动刷一次（最多 40 次 ≈ 80 秒），
+ * 跑完的那一刻也能自动落到结果上，不用主人手点第二次。
+ */
 function openTurnDiff(at) {
   if (!Number.isFinite(Number(at))) return;
   const sid = typeof sessionId === 'string' ? sessionId : '';
-  fvShow('改动 · 第 ' + Number(at) + ' 条那一轮', (body) => {
+  const idx = Number(at);
+  fvShow('改动 · 第 ' + idx + ' 条那一轮', (body) => {
     if (!sid) return fvNote(body, '还没打开会话。');
-    fvNote(body, '对比中…');
-    fetch('/api/turn/' + Number(at) + '/diff?id=' + encodeURIComponent(sid))
+    let tries = 0;
+    const isRunning = (which) => fetch('/api/running')
       .then((x) => x.json())
-      .then((r) => {
-        if (!r || r.error) return fvNote(body, (r && r.error) || '拿不到改动记录。');
-        const files = Array.isArray(r.files) ? r.files : [];
-        if (!files.length) return fvNote(body, '这一轮没有登记到文件改动（只有用写文件工具改的才会记下来）。');
-        renderDiffView(body, files);
-      })
-      .catch(() => fvNote(body, '连不上服务，稍后再试。'));
+      .then((r) => !!(r && Array.isArray(r.running) && r.running.some((w) => w && w.sessionId === which)))
+      .catch(() => false);
+    const draw = () => {
+      /* 抽屉被关掉 / 换内容了就别再往里写（body 会从文档上摘下来） */
+      if (!body.isConnected) return;
+      fetch('/api/turn/' + idx + '/diff?id=' + encodeURIComponent(sid))
+        .then((x) => x.json())
+        .then(async (r) => {
+          if (!body.isConnected) return;
+          if (!r || r.error) return fvNote(body, (r && r.error) || '拿不到改动记录。');
+          const files = Array.isArray(r.files) ? r.files : [];
+          const running = await isRunning(sid);
+          if (files.length) {
+            renderDiffView(body, files);
+            if (running) {
+              const n = document.createElement('div');
+              n.className = 'dl ctx';
+              n.textContent = '（这一轮还在跑，上面是已经发生的改动；跑完还会继续长，抽屉会自动刷新）';
+              body.insertBefore(n, body.firstChild);
+            }
+          } else if (running) {
+            fvNote(body, '这一轮还在跑，她还没动文件（可能正在查东西/想）。'
+              + '她一动文件这里就会出内容，不用等这一轮结束 —— 抽屉会自动刷新。');
+          } else {
+            fvNote(body, '这一轮没有登记到文件改动（只有用写文件工具改的才会记下来）。');
+          }
+          if (running && tries < 40) { tries += 1; setTimeout(draw, 2000); }
+        })
+        .catch(() => { if (body.isConnected) fvNote(body, '连不上服务，稍后再试。'); });
+    };
+    fvNote(body, '对比中…');
+    draw();
   });
 }
 

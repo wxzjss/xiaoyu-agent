@@ -9223,8 +9223,10 @@
       const statusTxt = running ? "\u8FD0\u884C\u4E2D\u2026" : "";
       return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
     }, [list]);
-    const doorName = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? stat.name.replace(/…$/, "") + " \xB7 " + Math.max(1, Math.round((Date.now() - Number(stat.running.startedAt)) / 1e3)) + "s\u2026" : stat.name;
-    const doorSpin = stat.running && (Number(stat.running.startedAt) || 0) > 0 ? SPIN[tick % SPIN.length] + " " + doorName : doorName;
+    const _startedAt = stat.running ? Number(stat.running.startedAt) || 0 : 0;
+    const spinOn = !!stat.running && _startedAt > 0;
+    const doorTitle = spinOn ? stat.name.replace(/…$/, "") : stat.name;
+    const doorSecs = spinOn ? Math.max(1, Math.round((Date.now() - _startedAt) / 1e3)) : 0;
     const bodyRef = (0, import_react12.useRef)(null);
     const followRef = (0, import_react12.useRef)(true);
     const onBodyScroll = () => {
@@ -9247,7 +9249,11 @@
     const last = tools[tools.length - 1];
     return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "toolhub", open, onToggle, children: [
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubname", children: doorSpin }),
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "hubname" + (spinOn ? " run" : ""), children: [
+          spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSpin", children: SPIN[tick % SPIN.length] }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubText", children: spinOn ? " " + doorTitle : doorTitle }),
+          spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSecs", children: " \xB7 " + doorSecs + "s\u2026" }) : null
+        ] }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(GrayPeek, { text: stat.running ? "" : niceTool(last.name, last.args) })
       ] }),

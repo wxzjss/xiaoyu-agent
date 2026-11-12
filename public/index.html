@@ -631,7 +631,14 @@
        思考块也是 #log 的直接子元素 —— 同样是 flex item，同样默认 flex-shrink:1
        （被压成一条 2px 黑线），而且它只写了 max-width:100%，能长到 1240 宽，
        比 892 的气泡左右各凸出一截。跟工具条一起塞进这把尺子。 */
-    #log > details.tool, #log > details.toolhub, #log > details.think {
+    #log > details.tool, #log > details.toolhub, #log > details.think,
+    #log > .teamBar,
+    /* 【2026-11-12 接手「测试团队模式」的活·聊天流里的 worker 卡也要进尺子】
+       11-11 那次只把 #log > .teamBar（顶上那根横条）收进来了，可聊天流里的
+       子Agent进度卡（LogView renderRow 的 it.kind==='worker' → details.wcard，
+       也是 #log 的直接子元素）没进 —— 宽度照样由内容撑，长名字/长状态一顶
+       就横着捅出消息栏两侧。跟兄弟们同一把尺子量。 */
+    #log > details.wcard {
       /* flex-shrink 必须显式写 0：#log 是 flex 容器，工具条是 flex item，
          默认 flex-shrink:1 —— 一个 content 超高的 details 会被压成 2px 高的一条黑线，
          这就是「每条消息下面一条条黑线」的真凶（实测 209 条全是 2px）。 */
@@ -646,6 +653,24 @@
       padding-left: 0; padding-right: 0;
       box-sizing: border-box;
     }
+    /* 【2026-11-11 修·主子Agent卡片超出消息栏左右两侧】
+       根因：.teamBar 是 #log 的直接子元素（flex item），上面那把「跟消息同宽」
+       尺子只列了 tool/toolhub/think，.teamBar 不在里面 —— 它宽度由内容撑，
+       里面的 details.wcard 也只有 max-width:100%（跟着没约束的父级走），
+       卡片里长名字/长状态一顶，整块就横着捅出消息栏。
+       这里两条一起补：.teamBar 进尺子；里面的 wcard 也按父宽收，不许撑。 */
+    #log > .teamBar { overflow: hidden; }
+    #log > .teamBar, #log > .teamBar details.wcard, #log > .teamBar .teamTail {
+      max-width: 100%; box-sizing: border-box;
+    }
+    #log > .teamBar details.wcard > summary { min-width: 0; }
+    #log > .teamBar details.wcard > summary .name,
+    #log > .teamBar details.wcard > summary .status,
+    #log > details.wcard > summary .name,
+    #log > details.wcard > summary .status {
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
     /* 【2026-11-06 修·工具卡两头空得太多】
      *  量出来是：消息↔卡 16px、卡↔消息 20px。
      *  原因是 #log 自己 gap:14px，卡片又各带 2/6 的 margin，两头叠加。

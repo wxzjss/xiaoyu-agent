@@ -1726,6 +1726,22 @@ function landWhaleSay({ session, sessionId, text, send = null, live = null }) {
   try {
     const body = String(text || '').trim();
     /**
+     * 【2026-11-12 修·接手小鲸鱼的清单第 19/22 步：那条裸空 assistant 的真凶】
+     *
+     * 实测 smwc7bg8fo4ky.json 下标 3：23:32 主人发「sleep1到10」之后，
+     * 历史里躺着一条 {role:'assistant', content:'', _at, _who, _whale} ——
+     * 键组合正是这里（群聊侧栏小鲸的插话）。下面的空壳检查拦的是
+     * 「有字但全是旁白」（`!withoutAside && body`），text **整个为空**时
+     * body 是空串、条件不成立 → 直接穿透，空消息一路押送、补写、落盘。
+     *
+     * 现在：整条空 = 她什么都没说，跟空壳旁白一样当没说话处理。
+     */
+    if (!body) {
+      try { logWhaleAction('丢掉整条空话（text 为空，落盘会变成裸空 assistant）'); } catch {}
+      dropWhaleSay(send);
+      return;
+    }
+    /**
      * 【假动作旁白整条丢掉】—— 2026-10-27
      *
      * 实测出现过「（它查完什么都没说）」这种空壳落到会话里：
@@ -2715,6 +2731,13 @@ function flushWhalePark(session, sessionId, tag = '') {
     }
     for (const rec of parked) {
       if (!rec) continue;
+      /* 【2026-11-12 加·兜底闸】押着的记录若是裸空（没字、没文件、没工具调用），
+       * 补写出去就是主人看到的那种「只剩时间戳的空气泡」。landWhaleSay 入口
+       * 已经拦了，这里再挡一道 —— 旧版押进来的存量空记录也不能再往历史里漏。 */
+      const _rc = String(rec.content ?? '').trim();
+      const _rcHasStuff = (Array.isArray(rec._out) && rec._out.length)
+        || (Array.isArray(rec.tool_calls) && rec.tool_calls.length);
+      if (!_rc && !_rcHasStuff) { out.n++; continue; }  // 计进 n（确实消费掉了），但不落盘
       const k = String(rec._at ?? '') + '|' + String(rec.content ?? '');
       if (seen.has(k)) continue;
       seen.add(k);

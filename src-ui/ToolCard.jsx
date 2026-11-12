@@ -148,6 +148,10 @@ export function ToolGroup({ items }) {
     }
     /* 【2026-11-12 主人】柜门上不要金色「N 个失败」（没失败时太吵，看着像出错）；
      * 改成：跑着就亮「运行中…」，柜门标题也带一份。 */
+    /* 【2026-11-12 主人】柜门右侧那颗状态原本写「运行中…」——**不该有省略号**：
+     * 它就是一句状态词（柜子里那张卡写的是「正在跑」，也不带省略号），
+     * 带上「…」看着像「还有下文」，跟秒数后面的「…」撞一起就是两个半截句。
+     * 秒数的省略号也一起去掉（见下面 hubSecs）。 */
     const statusCls = 'status ' + (running ? 'run live' : 'ok');
     const statusTxt = running ? '运行中…' : '';
     return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
@@ -214,12 +218,17 @@ export function ToolGroup({ items }) {
   return (
     <details className="toolhub" open={open} onToggle={onToggle}>
       <summary>
+        {/* 【2026-11-12 主人】顺序改成：⠙ 正在看仓库 · 运行中 · 1s
+              原来秒数紧贴标题（· 1s…），「运行中…」孤零零吊在右边，两个都带省略号。
+              现在：标题 → 「运行中」→ · → 秒数，跟柜子里那张卡一个读法
+             （卡里是「看仓库 ⠿ 正在跑 · 1s」）。 */}
         <span className={'hubname' + (spinOn ? ' run' : '')}>
           {spinOn ? <span className="hubSpin">{SPIN[tick % SPIN.length]}</span> : null}
           <span className="hubText">{spinOn ? ' ' + doorTitle : doorTitle}</span>
-          {spinOn ? <span className="hubSecs">{' · ' + doorSecs + 's…'}</span> : null}
         </span>
         <span className={stat.statusCls}>{stat.statusTxt}</span>
+        {spinOn ? <span className="hubSep">·</span> : null}
+        {spinOn ? <span className="hubSecs">{doorSecs + 's'}</span> : null}
         <GrayPeek text={stat.running ? '' : niceTool(last.name, last.args)} />
       </summary>
       {/* 【2026-11-11 加·hubBody】柜子里可能塞很多东西（思考块 + 十几张工具卡），

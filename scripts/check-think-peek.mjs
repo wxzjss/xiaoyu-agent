@@ -79,7 +79,9 @@ console.log('\n二、柜门那一行由数据算（ToolCard.jsx），不再扫 D
 {
   t.ok('柜门标题：在跑的时候写「正在X…」', /'正在'\s*\+\s*\(niceTool\(running\.name, running\.args\)/.test(TOOLCARD));
   t.ok('柜门标题：平常写「调了 N 次工具」', /'调了 '\s*\+\s*n\s*\+\s*' 次工具'/.test(TOOLCARD));
-  t.ok('柜门状态：失败数写「N 个失败」', /bad \+ ' 个失败'/.test(TOOLCARD));
+  /* 【2026-11-12 主人】状态词是「运行中」，不带省略号（见 check-think-display 那条注释） */
+  t.ok('柜门不挂「N 个失败」，改亮「运行中」',
+    !/\+ ' 个失败'/.test(TOOLCARD) && /statusTxt = running \? '运行中'/.test(TOOLCARD));
   t.ok('灰字组件从 bridge 借 thinkPeek（同一个来源，不会两处各算一套）',
     /import \{ thinkPeek \} from '\.\/bridge\.js'/.test(GRAY) && /thinkPeek\(flat\)/.test(GRAY));
   t.ok('灰字组件 memo 住了（文案不变就不重渲染）', /memo\(function GrayPeek/.test(GRAY));

@@ -9254,10 +9254,11 @@
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
         /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "hubname" + (spinOn ? " run" : ""), children: [
           spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSpin", children: SPIN[tick % SPIN.length] }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubText", children: spinOn ? " " + doorTitle : doorTitle }),
-          spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSecs", children: " \xB7 " + doorSecs + "s\u2026" }) : null
+          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubText", children: spinOn ? " " + doorTitle : doorTitle })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
+        spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSep", children: "\xB7" }) : null,
+        spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSecs", children: doorSecs + "s" }) : null,
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(GrayPeek, { text: stat.running ? "" : niceTool(last.name, last.args) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "hubBody", ref: bodyRef, onScroll: onBodyScroll, children: list.map((t) => t.kind === "think" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ThinkBlock, { it: t }, t.key) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: t }, t.key)) })

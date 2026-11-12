@@ -49,10 +49,53 @@ function editableMessage(session, idx) {
   return m;
 }
 
-/** 改一句对话。 */
-export function editMessage(session, idx, text) {
-  const m = editableMessage(session, idx);
-  if (!m) return { ok: false, error: '这句不能改（系统消息、或者已经不存在了）' };
+/**
+ * 【2026-11-12 修·上下文整理后老下标全错位（主人报「改不了也删不了」）】
+ *
+ * 现场：会话被上下文压缩折叠（575 条折成 384 条），界面还画着折叠前的完整快照 ——
+ * 气泡上挂的 rewindId 是**折叠前**的数组下标，主人对着旧气泡点改/删，
+ * 老下标对到的早就是另一条消息（经常还是 system 段），于是
+ * 「这句不能改」「system 段不能删」两头碰壁。
+ *
+ * 修法：请求带上这条消息的时间戳（msgAt，渲染时就在 turn.ts 里躺着），
+ * 服务端按时间戳+role 找真实下标——下标会随折叠漂移，时间戳不会。
+ * 同一毫秒批量写入时取离 hintIdx 近的那条。
+ *
+ * @returns {number} 真实下标；-1 = 没找到（调用方决定怎么报错）
+ */
+export function locateByMsgAt(list, msgAt, hintIdx) {
+  const n = Number(msgAt);
+  if (!Number.isFinite(n) || n <= 0) return -1;
+  const hint = Number.isInteger(Number(hintIdx)) ? Number(hintIdx) : -1;
+  let best = -1;
+  let bestDist = Infinity;
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+    const at = Number(m.at || m._at || 0);
+    if (!at || Math.abs(at - n) > 2) continue;   // at 与 _at 偶有 1ms 级出入
+    const dist = hint >= 0 ? Math.abs(i - hint) : 0;
+    if (dist < bestDist) { best = i; bestDist = dist; }
+  }
+  return best;
+}
+
+/** 改一句对话。msgAt = 这条消息的时间戳（界面气泡上带着），有它按时间戳定位，老下标只作提示。 */
+export function editMessage(session, idx, text, msgAt) {
+  const list = Array.isArray(session?.messages) ? session.messages : [];
+  let n = Number(idx);
+  const byTs = locateByMsgAt(list, msgAt, Number.isInteger(n) ? n : -1);
+  if (byTs >= 0) n = byTs;
+  /* 【2026-11-12 关键】带了时间戳却对不上 = 这条真的不在了 —— 千万别退回旧下标：
+   * 折叠后的旧下标指向的是**另一条**消息，照着改就是改错人。 */
+  const hasMsgAt = Number.isFinite(Number(msgAt)) && Number(msgAt) > 0;
+  if (byTs < 0 && hasMsgAt) {
+    return { ok: false, gone: true, error: '这条已经不在对话里了（上下文整理时收进了摘要），刷新界面后它就不再显示了' };
+  }
+  const m = editableMessage(session, n);
+  if (!m) {
+    return { ok: false, error: '这句不能改（系统消息、或者已经不存在了）' };
+  }
   const before = contentOf(m);
   const after = String(text ?? '');
   if (!after.trim()) return { ok: false, error: '不能改成空的' };

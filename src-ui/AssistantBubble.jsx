@@ -25,7 +25,7 @@ export default function AssistantBubble({ it, ask, streaming }) {
     try { window.attachEdit && window.attachEdit(w, it.rewindId, () => beginEdit(it.key, it.rewindId)); } catch (e) {}
     try { window.attachBranchBtn && window.attachBranchBtn(w, it.rewindId); } catch (e) {}
     try { window.attachRetry && window.attachRetry(w, ask ? [{ at: ask.at, text: ask.text }] : []); } catch (e) {}
-    try { window.attachDelBtn && window.attachDelBtn(w, it.rewindId); } catch (e) {}
+    try { window.attachDelBtn && window.attachDelBtn(w, it.rewindId, it.ts); } catch (e) {}
     try { window.attachCopyBtn && window.attachCopyBtn(w); } catch (e) {}
   }, [it.rewindId, it.ts, it.cont, it.key, ask && ask.at, ask && ask.text]);
 
@@ -71,7 +71,7 @@ export default function AssistantBubble({ it, ask, streaming }) {
         {who}
       </div>
       {editing ? (
-        <EditArea text={bubbles.join('\n\n')} at={it.rewindId} />
+        <EditArea text={bubbles.join('\n\n')} at={it.rewindId} msgAt={it.ts} />
       ) : (
         bubbles.map((t, i) => (
           <MdDiv

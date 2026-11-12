@@ -8310,7 +8310,7 @@
   // src-ui/EditArea.jsx
   var import_react = __toESM(require_react());
   var import_jsx_runtime = __toESM(require_jsx_runtime());
-  function EditArea({ text, at }) {
+  function EditArea({ text, at, msgAt }) {
     const [draft, setDraft] = (0, import_react.useState)(String(text == null ? "" : text));
     const [busy, setBusy] = (0, import_react.useState)(false);
     const ta = (0, import_react.useRef)(null);
@@ -8377,6 +8377,9 @@
         body: JSON.stringify({
           id: window.sessionId,
           ...Number.isFinite(Number(at)) ? { at: Number(at) } : {},
+          /* 【2026-11-12 加·msgAt】上下文整理会把历史折短，老下标会漂移；
+           * 时间戳不会 —— 服务端优先按它定位，at 只当提示用。 */
+          ...Number.isFinite(Number(msgAt)) && Number(msgAt) > 0 ? { msgAt: Number(msgAt) } : {},
           text: next
         })
       }).then((x) => x.json()).catch(() => null);
@@ -8520,7 +8523,7 @@
       } catch (e) {
       }
       try {
-        window.attachDelBtn && window.attachDelBtn(w, it.rewindId);
+        window.attachDelBtn && window.attachDelBtn(w, it.rewindId, it.ts);
       } catch (e) {
       }
     }, [it.rewindId, it.ts, it.key]);
@@ -8548,7 +8551,7 @@
           list.length ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "msgAttach", children: list.map(
             (a, i) => mediaKindOf(a) ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(MediaRow, { a }, "m" + i) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(AttachChip, { a }, "c" + i)
           ) }) : null,
-          editing ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(EditArea, { text: String(it.text || ""), at: it.rewindId }) : String(it.text || "") ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "bubble", children: String(it.text || "") }) : null
+          editing ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(EditArea, { text: String(it.text || ""), at: it.rewindId, msgAt: it.ts }) : String(it.text || "") ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "bubble", children: String(it.text || "") }) : null
         ]
       }
     );
@@ -8599,7 +8602,7 @@
       } catch (e) {
       }
       try {
-        window.attachDelBtn && window.attachDelBtn(w, it.rewindId);
+        window.attachDelBtn && window.attachDelBtn(w, it.rewindId, it.ts);
       } catch (e) {
       }
       try {
@@ -8649,7 +8652,7 @@
         "data-at": it.rewindId == null ? void 0 : String(it.rewindId),
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "role", style: color ? { color } : void 0, children: who }),
-          editing ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(EditArea, { text: bubbles.join("\n\n"), at: it.rewindId }) : bubbles.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+          editing ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(EditArea, { text: bubbles.join("\n\n"), at: it.rewindId, msgAt: it.ts }) : bubbles.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
             MdDiv,
             {
               className: "bubble" + (i > 0 ? " cont" : "") + (streaming && i === bubbles.length - 1 ? " streaming" : ""),
@@ -8689,7 +8692,7 @@
       } catch (e) {
       }
       try {
-        window.attachDelBtn && window.attachDelBtn(w, it.rewindId);
+        window.attachDelBtn && window.attachDelBtn(w, it.rewindId, it.ts);
       } catch (e) {
       }
       try {
@@ -8723,7 +8726,7 @@
             who,
             it.spectator ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "specTag", children: "\u65C1\u89C2" }) : null
           ] }),
-          editing ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EditArea, { text: bubbles.join("\n\n"), at: it.rewindId }) : bubbles.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(MdDiv, { className: "bubble" + (i > 0 ? " cont" : ""), text: t }, "b" + i))
+          editing ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EditArea, { text: bubbles.join("\n\n"), at: it.rewindId, msgAt: it.ts }) : bubbles.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(MdDiv, { className: "bubble" + (i > 0 ? " cont" : ""), text: t }, "b" + i))
         ]
       }
     );

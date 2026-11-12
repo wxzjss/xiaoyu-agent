@@ -35,7 +35,7 @@ import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelud
 import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, appendFixed, wipeMemory, snapMemory, SKELETON } from './session-memory.mjs';
 // 记忆本整本界面：小鲸那本是跨会话的，也要给主人看（见 /api/memory/book）
 import { readWhaleMemory, memoryPath as whaleMemoryPath } from './whale-memory.mjs';
-import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit } from './edit.mjs';
+import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit, locateByMsgAt } from './edit.mjs';
 // 整份数据备份：会话 / 人设 / 模型配置 / 设置，换电脑或重装时救命用。
 import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 // 进行中那一轮的草稿：边跑边落，进程被杀也不会把已经说出来的话全丢。
@@ -269,7 +269,42 @@ import {
   restoreEnvModel,
   probeEndpoint,
 } from './models.mjs';
+import {
+  startLocalService,
+  stopLocalService,
+  probeLocalService,
+  localStatus,
+  waitForLogin,
+  readDeepSeekToken,
+  miniDsDir,
+  findPython,
+  localDeepSeekDefaults,
+  localHealth,
+  LOCAL_ID,
+  MINI_DS_BASE,
+  MINI_DS_KEY,
+  MINI_DS_MODEL,
+  MINI_DS_PORT,
+} from './mini-deepseek.mjs';
 import { loadRewinds, effectiveIndexes, createRewind, undoLastRewind, restoreWorkspace, restoreMemory } from './rewind.mjs';
+
+/**
+ * 【2026-11-12 加·本机 DeepSeek 登录引导】
+ * 本机 DeepSeek 没登录的时候要把内置浏览器拉到登录页。
+ * 内置浏览器归主进程管（electron/main.cjs 里挂在 globalThis.__xiaoyuBrowser），
+ * 这里只借通道，不自己造窗口；通道不在就老实说打不开，不装成功。
+ */
+async function openInBrowser(url) {
+  const ch = typeof globalThis !== 'undefined' ? globalThis.__xiaoyuBrowser : null;
+  if (!ch || typeof ch.open !== 'function') return { ok: false, error: '内置浏览器通道不可用' };
+  try {
+    const r = await ch.open(url);
+    return { ok: r?.ok !== false, error: r?.ok === false ? String(r.error || '打不开') : '' };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  }
+}
+
 import {
   publicMobileState,
   enableMobile,
@@ -4963,6 +4998,107 @@ const server = createServer(async (req, res) => {
   }
 
   /**
+   * 【2026-11-12 加·本机 DeepSeek 预设】
+   *
+   * 主人要在「添加模型」的接口地址预设末尾加一个【本机 DeepSeek】：
+   * 选中后什么都不填，点【测连通】就自动起服务、自动把地址/key/模型名填好。
+   *
+   * 四个接口分工：
+   *   GET  /api/mini-deepseek/status  现在什么情况（起没起、等没等登录、程序在不在）
+   *   POST /api/mini-deepseek/start   起服务；没登录就先开登录页等十分钟
+   *   POST /api/mini-deepseek/stop    收尸
+   *   POST /api/mini-deepseek/probe   只探端口，轻量、不启动
+   *
+   * 一条硬规矩：**token 绝不回给前端**，只回「有没有」。
+   */
+  if (req.method === 'GET' && url.pathname === '/api/mini-deepseek/status') {
+    const stt = localStatus();
+    const probe = await probeLocalService(900);
+    return json(res, 200, {
+      ok: true,
+      ...stt,
+      up: probe.up,
+      ids: probe.ids ?? [],
+      hasToken: !!readDeepSeekToken().token,
+      hasProgram: !!miniDsDir(),
+      python: findPython(),
+      modelFixed: MINI_DS_MODEL,
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/start') {
+    let payload = {};
+    try { payload = (await body(req)) ?? {}; } catch { payload = {}; }
+
+    // 先看已经在跑没
+    const running = await probeLocalService(900);
+    if (running.up) {
+      return json(res, 200, {
+        ok: true, already: true, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL,
+      });
+    }
+
+    // 没 token 就先等登录（这一步会挂十分钟以内）
+    if (!readDeepSeekToken().token) {
+      if (payload?.noWait) {
+        return json(res, 200, { ok: false, reason: 'need-login', error: '还没在内置浏览器登录 DeepSeek' });
+      }
+      const w = await waitForLogin({ opener: openInBrowser });
+      if (!w.ok) {
+        return json(res, 200, {
+          ok: false,
+          reason: w.reason === 'timeout' ? 'login-timeout' : 'need-login',
+          error: w.error || '没等到登录',
+        });
+      }
+    }
+
+    const r = await startLocalService();
+    if (!r.ok) {
+      return json(res, 200, { ok: false, reason: r.reason, error: r.error, log: r.log });
+    }
+    return json(res, 200, {
+      ok: true, started: true, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL, ids: r.ids ?? [],
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/stop') {
+    stopLocalService();
+    return json(res, 200, { ok: true });
+  }
+
+  /* 【2026-11-12】本机 DeepSeek 的三项默认值 + 自动落模型。
+   * 主人要的是「自动填写接口地址、key、模型名，在【模型】界面添加该模型」。
+   * 已经有同 id 的模型就不重复加（返回 created:false），前端据此「什么都不发生」。 */
+  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/apply') {
+    try {
+      const p = await body(req);
+      const plan = localDeepSeekDefaults();
+      const cur = listModels();
+      const dup = (cur.models || []).find((m) => m.id === LOCAL_ID || (m.baseURL === plan.base && m.model === plan.model));
+      if (dup) {
+        // 已经加过：不重复加，只把 key 刷新（token 是随时会变的东西）
+        saveModel({ ...dup, apiKey: plan.key });
+        return json(res, 200, { ok: true, created: false, id: dup.id, baseURL: plan.base, apiKey: plan.key, model: plan.model, state: listModels() });
+      }
+      const r = saveModel({
+        name: String(p?.name || '').trim() || '本机 DeepSeek',
+        baseURL: plan.base,
+        apiKey: plan.key,
+        model: plan.model,
+        kind: 'chat',
+      });
+      return json(res, 200, { ok: true, created: true, id: (r && r.id) || LOCAL_ID, baseURL: plan.base, apiKey: plan.key, model: plan.model, state: listModels() });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: String(e?.message ?? e) });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/probe') {
+    const p = await probeLocalService(1500);
+    return json(res, 200, { ok: true, up: p.up, ids: p.ids ?? [], hasToken: !!readDeepSeekToken().token });
+  }
+
+  /**
    * 【2026-11-10 主人钦点：「添加模型」的「选一个」不要写死的】
    *
    * 以前那颗下拉是前端写死的一张 PROVIDERS 预设表（按 base host 认出哪家，
@@ -8329,7 +8465,7 @@ const server = createServer(async (req, res) => {
   // 撤销时按后进先出还原，只动那一句，别的一句不碰。
 
   if (req.method === 'POST' && url.pathname === '/api/sessions/edit') {
-    const { id, at, text } = await body(req).catch(() => ({}));
+    const { id, at, text, msgAt } = await body(req).catch(() => ({}));
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
@@ -8340,7 +8476,7 @@ const server = createServer(async (req, res) => {
     if (busyTurn && !busyTurn.ac.signal.aborted) {
       return json(res, 409, { error: '这个会话正在跑，先点停止再改' });
     }
-    const out = editMessage(session, at, text);
+    const out = editMessage(session, at, text, msgAt);
     if (!out.ok) return json(res, 400, { error: out.error });
     if (!out.unchanged) saveSession(session);
     // 改完对话，把这个会话记忆本子里提到这句话的地方也换成新的（主人明确要的）
@@ -8538,7 +8674,7 @@ const server = createServer(async (req, res) => {
    *   ② 反过来不处理：tool 结果被删、assistant 留着，那个形状上游接受。
    */
   if (req.method === 'POST' && url.pathname === '/api/sessions/message-delete') {
-    const { id, at } = await body(req).catch(() => ({}));
+    const { id, at, msgAt } = await body(req).catch(() => ({}));
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
@@ -8548,7 +8684,10 @@ const server = createServer(async (req, res) => {
     }
     repairHistory(session.messages);
     const all = Array.isArray(session.messages) ? session.messages : [];
-    const idx = Number(at);
+    /* 【2026-11-12 修·上下文整理后老下标全错位】优先按时间戳定位（at 只作提示） */
+    let idx = Number(at);
+    const _byTs = locateByMsgAt(all, msgAt, Number.isFinite(idx) ? idx : -1);
+    if (_byTs >= 0) idx = _byTs;
     if (!Number.isFinite(idx) || idx < 0 || idx >= all.length) {
       return json(res, 400, { error: '这条消息不在这个会话里' });
     }

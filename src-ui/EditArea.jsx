@@ -15,7 +15,7 @@ import { endEdit } from './store.js';
  * 样式全用旧类名（.bubble.editing / textarea.editArea / .editActions），
  * .msg.editing 由外层组件挂 —— 一行 CSS 都不用改。
  */
-export default function EditArea({ text, at }) {
+export default function EditArea({ text, at, msgAt }) {
   const [draft, setDraft] = useState(String(text == null ? '' : text));
   const [busy, setBusy] = useState(false);
   const ta = useRef(null);
@@ -70,6 +70,9 @@ export default function EditArea({ text, at }) {
       body: JSON.stringify({
         id: window.sessionId,
         ...(Number.isFinite(Number(at)) ? { at: Number(at) } : {}),
+        /* 【2026-11-12 加·msgAt】上下文整理会把历史折短，老下标会漂移；
+         * 时间戳不会 —— 服务端优先按它定位，at 只当提示用。 */
+        ...(Number.isFinite(Number(msgAt)) && Number(msgAt) > 0 ? { msgAt: Number(msgAt) } : {}),
         text: next,
       }),
     }).then((x) => x.json()).catch(() => null);

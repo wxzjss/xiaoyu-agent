@@ -7269,7 +7269,7 @@ function attachBranchBtn(wrap, at) {
  * 所以后端记的是一条 at:-1 的登记记录（见 server.mjs 的 message-delete），
  * 只往 hidden 里塞这条的下标，不设回退点。
  */
-function attachDelBtn(wrap, at) {
+function attachDelBtn(wrap, at, msgAt) {
   if (!wrap || !Number.isFinite(Number(at))) return;
   if (wrap.querySelector('.delBtn')) return;
   const db = document.createElement('button');
@@ -7288,7 +7288,13 @@ function attachDelBtn(wrap, at) {
       const r = await fetch('/api/sessions/message-delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: sessionId, at: Number(at) }),
+        /* 【2026-11-12 加·msgAt】上下文整理折短历史后老下标会漂移，时间戳不会 ——
+         * 服务端优先按时间戳定位，at 退化为提示。 */
+        body: JSON.stringify({
+          id: sessionId,
+          at: Number(at),
+          ...(Number.isFinite(Number(msgAt)) && Number(msgAt) > 0 ? { msgAt: Number(msgAt) } : {}),
+        }),
       }).then((x) => x.json()).catch((e) => ({ error: (e && e.message) || '连不上服务' }));
       if (!r || r.error) {
         alert('删不掉：' + ((r && r.error) || '网络错误'));
@@ -19022,6 +19028,15 @@ const PROVIDERS = [
     models: ['qwen2.5:7b', 'llama3.2', 'deepseek-r1:7b'],
     hint: '自己电脑跑，不要钱。要先 ollama serve 起来。',
   },
+  // 【2026-11-12 加】本机 DeepSeek：永远排最后，主人说「预设末尾处」
+  {
+    name: '本机 DeepSeek',
+    base: '',
+    models: [],
+    hint: '在本机起一个 DeepSeek 网页版转接服务，不用 API key。选中后什么也不用填，直接点「测连通」。',
+    local: true,
+    match: /^\u0000local-deepseek\u0000$/,
+  },
 ];
 
 /** 按地址认厂商；认不出来返回 null */
@@ -19656,6 +19671,10 @@ function formPayload() {
   const baseURL = (mdlBase.value || '').trim();
   const apiKey = (mdlKey.value || '').trim();
   const payload = { name, model, baseURL };
+  /* 【2026-11-12】选中的是「本机 DeepSeek」这条预设吗？
+   * 认它不能靠地址（地址是空的），也不能靠名字（主人可以改），
+   * 只能看下拉框当前选中的那个选项的 value —— 它被设成 LOCAL_DEEPSEEK 这个专有标记。 */
+  if (mdlBasePreset && mdlBasePreset.value === LOCAL_DEEPSEEK) payload.providerLocalDeepSeek = true;
   // 名字不填就用模型名顶，省得列表里出现一行空白的
   if (!payload.name) payload.name = model;
   // 编辑时 Key 留空 = 保留原来那个，不能拿空串把已有 Key 洗掉
@@ -19949,9 +19968,85 @@ document.getElementById('mdlAdd').onclick = () => openForm(null);
 document.getElementById('mdlEmptyAdd').onclick = () => openForm(null);
 document.getElementById('mdlCancel').onclick = () => closeForm();
 
+/* 【2026-11-12 主人钦点·本机 DeepSeek 的「测连通」】
+ *
+ * 主人的原话拆成五条，一条都不能少：
+ *  ① 预设末尾有「本机 DeepSeek」，选中它时**什么都没填**，点「测连通」就自动起程序；
+ *  ② 没在内置浏览器登过 DeepSeek → 打开内置浏览器的 DeepSeek 登录页，十分钟没登自动停；
+ *  ③ 登过了 → 自动取 token、起服务、自动填地址/key/模型名，然后添加模型；
+ *  ④ 已经加过这个模型 → 测连通成功就**什么都不发生**；
+ *  ⑤ 测连通失败 → 没起服务就起服务；token 不行就重新取 token 再填进去。
+ *
+ * 全程不给任何提示（主人特意叮嘱「之后说的要求全程不会有任何提示」），
+ * 所以这里一律不弹框、不写表单提示行，成功就静默 —— 只有失败才落到表单提示行上。
+ */
+async function localDeepSeekProbe() {
+  const post = async (p) => {
+    const res = await fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    return jsonOrError(res);
+  };
+  const get = async (p) => {
+    const res = await fetch(p);
+    return jsonOrError(res);
+  };
+
+  // ① 先问服务起来没有；没起来就起（起的时候会顺手查 token，没有就打开登录页等）
+  let st = await get('/api/mini-deepseek/status');
+  if (!st || !st.up) {
+    st = await post('/api/mini-deepseek/start');
+    if (!st || !st.up) {
+      clearFormHint('err', (st && st.error) || '本机 DeepSeek 起不来');
+      return null;
+    }
+  }
+
+  // ② 服务起来了，但没 token —— 那服务其实不可用，得让主人登一次
+  if (!st.hasToken) {
+    st = await post('/api/mini-deepseek/ensure-token');
+    if (!st || !st.ok) {
+      clearFormHint('err', (st && st.error) || '没取到 DeepSeek 的登录凭证');
+      return null;
+    }
+  }
+
+  return st;
+}
+
 document.getElementById('mdlTest').onclick = async () => {
   try {
     const payload = formPayload();
+    /* 本机 DeepSeek 这条走自己的路：它不需要地址、不需要 key、不需要模型名，
+     * 一切都由服务端自动完成。别的预设还是老样子。 */
+    if (payload && payload.providerLocalDeepSeek) {
+      const st = await localDeepSeekProbe();
+      if (!st) return;
+      // ③ 地址/key/模型名由服务端算好；能自动保存就自动保存（主人要「在模型界面添加该模型」）
+      const done = await fetch('/api/mini-deepseek/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: payload.name || '', id: payload.id || '' }),
+      }).then((x) => jsonOrError(x));
+      if (!done || done.error) {
+        clearFormHint('err', (done && done.error) || '自动添加模型失败');
+        return;
+      }
+      /* ④ 已经有了同样的模型 → 成功就什么事都不发生（不弹提示、不改表单）。
+       * 这一轮如果本来就是在「编辑已有那个」，顺手把表单填上，方便主人看见值。 */
+      if (done.created) {
+        mdlState = done.state || mdlState;
+        paintModels();
+        syncHealth();
+        closeForm();
+        return;
+      }
+      // 已经存在：只把三项值补进表单（主人打开的是它），其余一律不动
+      if (mdlBase) mdlBase.value = done.baseURL || mdlBase.value;
+      if (mdlKey) mdlKey.value = done.apiKey || mdlKey.value;
+      if (mdlModel) mdlModel.value = done.model || mdlModel.value;
+      clearFormHint('ok', '通了');
+      return;
+    }
+
     if (!payload.model || !payload.baseURL) { clearFormHint('err', '地址和模型名先填上'); return; }
     clearFormHint('', '正在连…');
     const res = await fetch('/api/models/test', {

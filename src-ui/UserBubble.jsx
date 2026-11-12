@@ -93,7 +93,7 @@ export default function UserBubble({ it }) {
     try { window.attachRewind && window.attachRewind(w, it.rewindId); } catch (e) {}
     try { window.attachEdit && window.attachEdit(w, it.rewindId, () => beginEdit(it.key, it.rewindId)); } catch (e) {}
     try { window.attachBranchBtn && window.attachBranchBtn(w, it.rewindId); } catch (e) {}
-    try { window.attachDelBtn && window.attachDelBtn(w, it.rewindId); } catch (e) {}
+    try { window.attachDelBtn && window.attachDelBtn(w, it.rewindId, it.ts); } catch (e) {}
   }, [it.rewindId, it.ts, it.key]);
 
   const editing = (() => { try { const e = getEdit(); return !!e && e.key === it.key; } catch (e) { return false; } })();
@@ -117,7 +117,7 @@ export default function UserBubble({ it }) {
         </div>
       ) : null}
       {editing ? (
-        <EditArea text={String(it.text || '')} at={it.rewindId} />
+        <EditArea text={String(it.text || '')} at={it.rewindId} msgAt={it.ts} />
       ) : (
         String(it.text || '') ? <div className="bubble">{String(it.text || '')}</div> : null
       )}

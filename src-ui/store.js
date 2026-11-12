@@ -444,6 +444,11 @@ export function setLive(sid, live) {
   const _wouldShrink = !!(_prevItems && live && live.running !== false &&
     (!_nextItems || (_nextItems.length < _prevItems.length && _sameHead(_nextItems, _prevItems))));
   if (_wouldShrink) live = Object.assign({}, live, { items: _prevItems });
+  /* 【2026-11-12 修·主人嫌「上一轮被中断」提示钉死在屏幕最底部】
+   * 她开工的整轮期间它都杵在历史末尾（她跑工具没正文时更显眼）。
+   * 现在她一开口干活（直播 running 进来）提示就收掉 —— 它的使命
+   * 只是「你回来时交代一句」，不是常驻横幅。主人发话也一样收（见 pushPendingUser）。 */
+  if (live && live.running !== false && notes.length) notes = [];
   writeLive(sid, live && Array.isArray(live.items) ? live : null);
   if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
   bump();
@@ -524,7 +529,26 @@ export function pushPendingUser(o) {
     who: String(it.who || ''),
     tag: String(it.tag || ''),
     rewindId: Number.isFinite(Number(it.rewindId)) ? Number(it.rewindId) : null,
+    /**
+     * 【2026-11-12 加·记账那一刻历史有多长】
+     *
+     * 收账（dropLandedPending）原来只在「历史末尾 6 条 / 最后一条 user」里找。
+     * 一轮被打断、停止，或者收尾那一路没走 setHistory，这颗气泡就收不掉；
+     * 之后每轮合并 `items.concat(pend, live)` 都把它排到清单最末尾 ——
+     * 主人看到的就是「我早先发的那句话每轮结束都被重发一遍」，
+     * 而它不是真实历史条目，点编辑拿不到合法 at →「这句不能改」。
+     * （搭建鱼会话的「搭一个看看」实锤：历史里只有一条，屏幕上却反复出现。）
+     *
+     * 记下 push 时的历史长度，收账时就能分清：
+     *   · 历史里 push 位置**之后**出现了同文 user → 这就是它落盘的那份，收掉；
+     *   · push 之后已经又落了 **2 条以上别的 user** → 它那一轮早结束了，
+     *     还没对上账的就是孤儿（没落盘也不会再有答案）——收掉，别再阴魂不散。
+     */
+    pushLen: (() => {
+      try { const t = logState().turns; return Array.isArray(t) ? t.length : 0; } catch (e) { return 0; }
+    })(),
   };
+  if (notes.length) notes = [];
   pendingUser = pendingUser.concat([item]);
   bump();
   return item.id;
@@ -634,11 +658,34 @@ function dropLandedPending(list, turns) {
     if (t && t.role === 'user') { lastUserText = nz(t); break; }
   }
   const texts = arr.slice(-6).map(nz).filter(Boolean);
+  /* 【2026-11-12 加·孤儿账收容】push 之后的 user turn（带下标），给两条新规矩用 */
+  const userAfter = (pushLen) => {
+    const out = [];
+    for (let i = Math.max(0, pushLen | 0); i < arr.length; i++) {
+      const t = arr[i];
+      if (t && t.role === 'user') out.push(nz(t));
+    }
+    return out;
+  };
   const keep = list.filter((p) => {
     const n = norm(p.text);
     if (!n) return false;
     if (lastUserText && (lastUserText === n || lastUserText.endsWith(n))) return false;
-    return !texts.some((t) => t === n || t.endsWith(n));
+    if (texts.some((t) => t === n || t.endsWith(n))) return false;
+    /* 新规矩只对带 pushLen 的账生效（老账没有这个字段，走原判据） */
+    const pl = Number(p.pushLen);
+    if (Number.isFinite(pl) && pl >= 0) {
+      const after = userAfter(pl);
+      /* ① 落盘了：push 位置之后历史里出现了同文 user —— 那就是它，收掉。
+       *    （不管它排在哪，劈成几段、中间隔了多少轮都算数。） */
+      if (after.some((t) => t === n || t.endsWith(n) || n.endsWith(t))) return false;
+      /* ② 孤儿：push 之后已经又落了 2 条以上**别的** user —— 它那一轮早就结束了，
+       *    还没对上账说明这份乐观气泡永远等不到落盘（被停 / 被断 / 上游 402）。
+       *    留着就是「每轮重发一遍」的鬼影，收掉。 */
+      const others = after.filter((t) => !(t === n || t.endsWith(n) || n.endsWith(t)));
+      if (others.length >= 2) return false;
+    }
+    return true;
   });
   return keep.length === list.length ? list : keep;
 }

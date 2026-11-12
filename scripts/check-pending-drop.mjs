@@ -63,5 +63,63 @@ const pend = [{ id: 'p1', text: '帮我看一下那个报错' }];
 ok('⑥ 空列表不出错', drop([], [{ role: 'user', text: 'x' }]).length === 0);
 ok('⑦ 非数组不出错', drop(pend, null).length === 1);
 
+/* ── 2026-11-12 加·孤儿账收容（pushLen 两规矩）────────────────────
+ * 主人报【搭建鱼】「搭一个看看」每轮被重发一遍、编辑还报「这句不能改」。
+ * 根因：一轮被停/断后乐观气泡没被收，之后每次合并都被排到清单末尾。
+ * 修法：带 pushLen 的账 ① push 之后历史里出现同文 user → 收；② push 之后
+ * 又落了 ≥2 条别的 user → 孤儿，收。 */
+
+/* ⑧ push 之后同文落盘（哪怕排在很后面）→ 收 */
+{
+  const p = [{ id: 'p1', text: '搭一个看看', pushLen: 4 }];
+  const turns = [
+    { role: 'user', text: '更早的话' }, { role: 'assistant', text: '答' },
+    { role: 'user', text: 'x1' }, { role: 'assistant', text: 'y1' },
+    /* pushLen=4 从这往后才算「之后」 */
+    { role: 'user', text: '别的问句' }, { role: 'assistant', text: '别的答' },
+    { role: 'user', text: '搭一个看看' }, { role: 'assistant', text: '开工' },
+  ];
+  ok('⑧ push 之后同文落盘（隔了很多条）→ 收（鬼影就此打住）', drop(p, turns).length === 0);
+}
+
+/* ⑨ push 之后落了 ≥2 条别的 user、自己一直没落盘 → 孤儿，收 */
+{
+  const p = [{ id: 'p1', text: '搭一个看看', pushLen: 0 }];
+  const turns = [
+    { role: 'user', text: '继续' }, { role: 'assistant', text: '答1' },
+    { role: 'user', text: '再继续' }, { role: 'assistant', text: '答2' },
+  ];
+  ok('⑨ push 之后 ≥2 条别的 user 也没等到自己 → 孤儿收掉（不再每轮重发）', drop(p, turns).length === 0);
+}
+
+/* ⑩ push 之后只有 1 条别的 user → 还在等，不许收（可能是同轮插话还没落） */
+{
+  const p = [{ id: 'p1', text: '搭一个看看', pushLen: 0 }];
+  const turns = [{ role: 'user', text: '继续' }, { role: 'assistant', text: '答' }];
+  ok('⑩ 只差一条 user → 留着（别把还在等的账提前吞了）', drop(p, turns).length === 1);
+}
+
+/* ⑪ 连发两条同文：第一条落盘后两条都收（屏幕短暂剩历史那几条，可接受） */
+{
+  const p = [
+    { id: 'p1', text: '继续', pushLen: 0 },
+    { id: 'p2', text: '继续', pushLen: 0 },
+  ];
+  const turns = [{ role: 'user', text: '继续' }, { role: 'assistant', text: '答' }];
+  ok('⑪ 连发同文、第一条落盘 → 两条都收（不死账优先于轻微闪动）', drop(p, turns).length === 0);
+}
+
+/* ⑫ 老 pendings 没有 pushLen 字段 → 走原判据（④ 的行为不许变） */
+{
+  const p = [{ id: 'p1', text: '帮我看一下那个报错' }];
+  const turns = [
+    { role: 'user', text: '帮我看一下那个报错' },
+    { role: 'assistant', text: '第一轮的回答' },
+  ];
+  for (let i2 = 0; i2 < 8; i2++) turns.push({ role: 'assistant', text: '中间第 ' + i2 + ' 段' });
+  turns.push({ role: 'user', text: '别的问句' }, { role: 'assistant', text: '别的回答' });
+  ok('⑫ 无 pushLen 的老账走原判据（不误吞）', drop(p, turns).length === 1);
+}
+
 console.log('\n' + pass + ' 过 / ' + fail + ' 挂');
 process.exit(fail ? 1 : 0);

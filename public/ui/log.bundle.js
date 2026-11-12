@@ -7548,6 +7548,7 @@
     };
     const _wouldShrink = !!(_prevItems && live && live.running !== false && (!_nextItems || _nextItems.length < _prevItems.length && _sameHead(_nextItems, _prevItems)));
     if (_wouldShrink) live = Object.assign({}, live, { items: _prevItems });
+    if (live && live.running !== false && notes.length) notes = [];
     writeLive(sid, live && Array.isArray(live.items) ? live : null);
     if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
     bump();
@@ -7595,8 +7596,32 @@
       atts: Array.isArray(it.atts) ? it.atts.filter((a) => a && a.path) : [],
       who: String(it.who || ""),
       tag: String(it.tag || ""),
-      rewindId: Number.isFinite(Number(it.rewindId)) ? Number(it.rewindId) : null
+      rewindId: Number.isFinite(Number(it.rewindId)) ? Number(it.rewindId) : null,
+      /**
+       * 【2026-11-12 加·记账那一刻历史有多长】
+       *
+       * 收账（dropLandedPending）原来只在「历史末尾 6 条 / 最后一条 user」里找。
+       * 一轮被打断、停止，或者收尾那一路没走 setHistory，这颗气泡就收不掉；
+       * 之后每轮合并 `items.concat(pend, live)` 都把它排到清单最末尾 ——
+       * 主人看到的就是「我早先发的那句话每轮结束都被重发一遍」，
+       * 而它不是真实历史条目，点编辑拿不到合法 at →「这句不能改」。
+       * （搭建鱼会话的「搭一个看看」实锤：历史里只有一条，屏幕上却反复出现。）
+       *
+       * 记下 push 时的历史长度，收账时就能分清：
+       *   · 历史里 push 位置**之后**出现了同文 user → 这就是它落盘的那份，收掉；
+       *   · push 之后已经又落了 **2 条以上别的 user** → 它那一轮早结束了，
+       *     还没对上账的就是孤儿（没落盘也不会再有答案）——收掉，别再阴魂不散。
+       */
+      pushLen: (() => {
+        try {
+          const t = logState().turns;
+          return Array.isArray(t) ? t.length : 0;
+        } catch (e) {
+          return 0;
+        }
+      })()
     };
+    if (notes.length) notes = [];
     pendingUser = pendingUser.concat([item]);
     bump();
     return item.id;
@@ -7662,11 +7687,27 @@
       }
     }
     const texts = arr.slice(-6).map(nz).filter(Boolean);
+    const userAfter = (pushLen) => {
+      const out = [];
+      for (let i = Math.max(0, pushLen | 0); i < arr.length; i++) {
+        const t = arr[i];
+        if (t && t.role === "user") out.push(nz(t));
+      }
+      return out;
+    };
     const keep = list.filter((p) => {
       const n = norm(p.text);
       if (!n) return false;
       if (lastUserText && (lastUserText === n || lastUserText.endsWith(n))) return false;
-      return !texts.some((t) => t === n || t.endsWith(n));
+      if (texts.some((t) => t === n || t.endsWith(n))) return false;
+      const pl = Number(p.pushLen);
+      if (Number.isFinite(pl) && pl >= 0) {
+        const after = userAfter(pl);
+        if (after.some((t) => t === n || t.endsWith(n) || n.endsWith(t))) return false;
+        const others = after.filter((t) => !(t === n || t.endsWith(n) || n.endsWith(t)));
+        if (others.length >= 2) return false;
+      }
+      return true;
     });
     return keep.length === list.length ? list : keep;
   }
@@ -9272,13 +9313,13 @@
     const last = tools[tools.length - 1];
     return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "toolhub", open, onToggle, children: [
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "hubname" + (spinOn ? " run" : ""), children: [
-          spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSpin", children: SPIN[tick % SPIN.length] }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubText", children: spinOn ? " " + doorTitle : doorTitle })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
-        spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSep", children: "\xB7" }) : null,
-        spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubSecs", children: doorSecs + "s" }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubname", children: doorTitle }),
+        spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "hubStatus", children: [
+          SPIN[tick % SPIN.length],
+          " \u6B63\u5728\u8DD1 \xB7 ",
+          doorSecs,
+          "s"
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: stat.statusCls, children: stat.statusTxt }),
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(GrayPeek, { text: stat.running ? "" : niceTool(last.name, last.args) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "hubBody", ref: bodyRef, onScroll: onBodyScroll, children: list.map((t) => t.kind === "think" ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ThinkBlock, { it: t }, t.key) : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: t }, t.key)) })

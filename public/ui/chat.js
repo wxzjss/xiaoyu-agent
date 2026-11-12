@@ -636,9 +636,14 @@ export async function switchSession(id, opts) {
     if (r.recovered) window.addSysNote('上一轮断在半路（进程被关或被杀），她没说完的那半截话已经接回历史了。');
     else if (r.interrupted) window.addSysNote('上一轮是被中断的（没跑完）。要接着做就跟我说一声。');
   } catch (e) {}
-  /* 【2026-11-12 删】这里原来还有 `window.loadPendingQueue()` ——
-   * 预发送队列整套已按主人要求删除，这句现在只会静默抛错，清掉。 */
-  // 上下文球：这个会话用了多少 / 能装多少 / 累计 —— 换过来立刻问一次
+  /* 【2026-11-12 加·两件切屏必做的事】
+   * ① 完成闪字的「这轮是谁家的」旗子清掉 —— A 屏起的轮，切到 B 屏后 A 轮收尾
+   *    绝不许在 B 屏闪「已完成」（主人报的就是这个：显示干完了，实际那是小鲸在
+   *    另一个会话里干活）。
+   * ② 预发送队列读出来 —— 队列 2026-11-12 已按主人要求恢复，但切会话的
+   *    loadPendingQueue() 当时跟着删掉的版本一起没了，切过来队列条不显示。 */
+  try { window.__turnForSid = ''; } catch (e) {}
+  try { window.loadPendingQueue(); } catch (e) {}
 
   // 这个会话还在后台跑吗？
   // 先问服务端（窗口关过也能补回来），再退回本页内存里的记录。

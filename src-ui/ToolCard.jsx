@@ -218,17 +218,15 @@ export function ToolGroup({ items }) {
   return (
     <details className="toolhub" open={open} onToggle={onToggle}>
       <summary>
-        {/* 【2026-11-12 主人】顺序改成：⠙ 正在看仓库 · 运行中 · 1s
-              原来秒数紧贴标题（· 1s…），「运行中…」孤零零吊在右边，两个都带省略号。
-              现在：标题 → 「运行中」→ · → 秒数，跟柜子里那张卡一个读法
-             （卡里是「看仓库 ⠿ 正在跑 · 1s」）。 */}
-        <span className={'hubname' + (spinOn ? ' run' : '')}>
-          {spinOn ? <span className="hubSpin">{SPIN[tick % SPIN.length]}</span> : null}
-          <span className="hubText">{spinOn ? ' ' + doorTitle : doorTitle}</span>
-        </span>
-        <span className={stat.statusCls}>{stat.statusTxt}</span>
-        {spinOn ? <span className="hubSep">·</span> : null}
-        {spinOn ? <span className="hubSecs">{doorSecs + 's'}</span> : null}
+        {/* 【2026-11-12 主人】柜门跟柜内工具卡标题**完全同款**：
+              卡上是「名字(蓝) ⠿ 正在跑 · 1s(琥珀)」—— 状态是一个整串，
+              没有单独的「运行中」词、没有分开的秒数、没有间隔点。
+              柜门原来拆成 标题 · 运行中 · 1s 三段、金蓝混杂，跟卡里对不上。
+              现在结构/颜色/字重全部照抄卡上那套。 */}
+        <span className="hubname">{doorTitle}</span>
+        {spinOn
+          ? <span className="hubStatus">{SPIN[tick % SPIN.length]} 正在跑 · {doorSecs}s</span>
+          : <span className={stat.statusCls}>{stat.statusTxt}</span>}
         <GrayPeek text={stat.running ? '' : niceTool(last.name, last.args)} />
       </summary>
       {/* 【2026-11-11 加·hubBody】柜子里可能塞很多东西（思考块 + 十几张工具卡），

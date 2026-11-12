@@ -1683,18 +1683,11 @@
     .pendingItem button.go:hover { background: rgba(240,185,84,.12); }
     details.toolhub > summary .status.warn { color: #d9a45b; }
     details.toolhub > summary .status.run { color: #f0b954; opacity: 1; font-weight: 500; }
-    /* 【2026-11-12 主人·金色只给「会动的东西」】
-       先按「整条柜门都金色」改过一版，主人当场纠正：
-       **「正在跑xxx」这几个字保持蓝色**（主题色），金色只给转圈点、秒数、和右边那颗「运行中」。
-       道理也对 —— 会变的（转圈、秒数、状态）用金色提示「这里活着」，
-       描述性文字保持安静，不然整条门都在喊。 */
-    details.toolhub > summary .hubname.run { color: var(--accent); }
-    details.toolhub > summary .hubname .hubText { color: var(--accent); }
-    details.toolhub > summary .hubname .hubSpin { color: #f0b954; }
-    /* 秒数压一档透明度：别跟文字抢注意力，但仍是金色 */
-    details.toolhub > summary .hubSecs { color: #f0b954; opacity: .75; }
-    /* 【2026-11-12 主人】「运行中」与秒数之间的那个间隔点 —— 跟两边同色（金），别抢眼 */
-    details.toolhub > summary .hubSep { color: #f0b954; opacity: .55; margin: 0 .1em; }
+    /* 【2026-11-12 主人·柜门跟柜内工具卡标题完全同款】
+       卡上跑着时是「名字(蓝 var(--accent)) + ⠿ 正在跑 · 1s(#d9a45b 琥珀)」一个整串；
+       柜门原来拆成 标题/运行中/·/秒数 四段、金蓝混杂。现在结构照抄：
+       标题就是 .hubname（蓝），跑着的整串状态是 .hubStatus（琥珀，同卡色）。 */
+    details.toolhub > summary .hubStatus { color: #d9a45b; }
     .hubpeek:empty { display: none; }
     /* 【2026-11-07 主人要的金色「运行中」】
        工具在跑的时候柜门右边写「运行中」，用工具卡标题那个金色（#f0b954），
@@ -8792,6 +8785,11 @@ function autosizeInput() {
  * 为什么在 hideSending 里 clearInterval：不 clear 的话，hide 之后计时器还在跑，
  * 下一轮 showSending 又起一个，几个计时器同时改同一个 span，数字会乱跳。 */
 let _turnT0 = 0;
+/* 【2026-11-12 加·这轮计时是哪一屏的】
+ * 原来 _turnT0 是全局一杆旗：在 A 屏起了一轮，切到 B 屏它还留着 ——
+ * B 屏第一次 syncSendBtn（busy 无论如何翻一下）就会闪「已完成」，
+ * 那轮明明是 A 屏的活。切会话时清掉（见 switchSession 里 _turnForSid）。 */
+let _turnForSid = '';   // 同步一份到 window.__turnForSid（chat.js 模块也要读写）
 let _turnTimer = 0;
 
 function turnElapsedText(ms) {
@@ -8865,6 +8863,11 @@ function showSending(startAt) {
     const _at = (startAt === undefined || startAt === null) ? window.__xyLiveStartAt : startAt;
     if (Number.isFinite(Number(_at)) && Number(_at) > 0) _turnT0 = Number(_at);
     else if (!_turnT0) _turnT0 = Date.now();
+    /* 【2026-11-12】亮灯那一刻这轮属于哪一屏，记下 —— 收尾闪「已完成」只认它 */
+    try {
+      _turnForSid = (typeof sessionId === 'string' && sessionId) || window.sessionId || '';
+      window.__turnForSid = _turnForSid;
+    } catch (e) {}
     /**
      * 【2026-11-05 修·「F5 之后时长永远是 0s」的真凶】
      *
@@ -9026,7 +9029,12 @@ function scheduleSendingRecheck(sid) {
 function _flashDone() {
   try {
     if (!sendingHint) return;
-    _hintSetText(_hintWho() + '已完成');
+    /* 名字：这一轮说话的人（__turnSpeakerName 是 refreshAgentChip 按会话主智能体算的）；
+     * 拿不到才退 mainAgentName / 小鱼。 */
+    let _doneWho = '';
+    try { _doneWho = String(window.__turnSpeakerName || '').trim(); } catch (e) {}
+    if (!_doneWho) { try { _doneWho = _hintWho(); } catch (e) {} }
+    _hintSetText(String(_doneWho || '小鱼') + '已完成');
     sendingHint.classList.add('show', 'done');
     setTimeout(function () {
       try {
@@ -18072,7 +18080,7 @@ async function renameSessionFlow(id) {
     body: JSON.stringify({ id, title: name }),
   }).then((x) => x.json()).catch(() => null);
   if (!r || r.error) { alert('改名失败'); return; }
-  if (id === sessionId) { sessionTitle = r.session.title; paintSessNow(); }
+  if (id === sessionId) { sessionTitle = fixMojibake(r.session.title || ''); paintSessNow(); }
   await refreshSessions();
 }
 
@@ -18220,7 +18228,7 @@ async function refreshSessions({ silent = false } = {}) {
   rememberSessListRev(r.rev);
   sessionsCache = r.sessions || [];
   const cur = sessionsCache.find((s) => s.id === sessionId);
-  if (cur) { sessionTitle = cur.title; paintSessNow(); }
+  if (cur) { sessionTitle = fixMojibake(cur.title || ''); paintSessNow(); }
   renderSessList();
   return r;
 }
@@ -18419,7 +18427,7 @@ async function createSessionEx(opts = {}) {
     return false;
   }
   sessionId = r.session.id;
-  sessionTitle = r.session.title;
+  sessionTitle = fixMojibake(r.session.title || '');
   localStorage.setItem(STORE_KEY, sessionId);
   paintSessNow();
   paintMemoryFlag(r.memory); // 新会话是空本子，刷新顶栏

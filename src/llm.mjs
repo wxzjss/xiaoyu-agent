@@ -63,6 +63,54 @@ export function isGatewayStatus(status) {
     || n === 522 || n === 523 || n === 524 || n === 525 || n === 526 || n === 527;
 }
 
+/**
+ * 【2026-11-13 搬运·WorkBuddy 的请求级重试分类学（#42 主人钦点）】
+ *
+ * WorkBuddy CLI 引擎（codebuddy-lite-wb.mjs）里挖出来的三件套：
+ *   ① 请求级可重试状态码 isRequestLevelRetryableStatus = {408, 409, 429, 502, 503, 529}
+ *      —— 429（限流）和 529（站点过载）我们的旧判定根本不重试，一撞就整轮白跑；
+ *   ② 连接类错误码 = {ECONNREFUSED, ENOTFOUND, EAI_AGAIN, EHOSTUNREACH,
+ *      ENETUNREACH, UND_ERR_CONNECT_TIMEOUT}（连接期）+
+ *      {ECONNRESET, EPIPE, ETIMEDOUT, UND_ERR_SOCKET, UND_ERR_HEADERS_TIMEOUT}（传输期）
+ *      + 文案 /fetch failed|socket hang up|terminated|network/；
+ *   ③ 退避 = 指数 min(base × 2ⁿ, 30 秒) ± 20% 抖动（calculateBackoffTime 原公式），
+ *      maxRetries 最高 10。
+ *
+ * 我们搬的是「请求级」这一层：一次模型调用内自己重试，主人看到的是
+ * 「等待模型响应」一直转，而不是整轮失败再等 60 秒的外层接回。
+ * 409 不搬——那是语义冲突（比如并发写同一会话），重试没意义。
+ */
+const RETRY_STATUS = new Set([408, 429, 502, 503, 504, 529]);
+const RETRY_CONNECT_CODES = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT',
+  'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT',
+]);
+
+/** 请求级可重试状态：WorkBuddy 清单 + 我们自己的 Cloudflare 52x 家族。 */
+export function isRetryableStatus(status) {
+  if (RETRY_STATUS.has(Number(status) || 0)) return true;
+  return isGatewayStatus(status);
+}
+
+/** 连接期/传输期网络错误（fetch 直接抛的那种）。用户主动停（AbortError）不算。 */
+export function isRetryableConnectError(err) {
+  if (!err) return false;
+  if (err.name === 'AbortError') return false;
+  const code = String(err.cause?.code ?? err.code ?? '');
+  if (code && RETRY_CONNECT_CODES.has(code)) return true;
+  const msg = String(err.cause?.message ?? err.message ?? '');
+  if (/fetch failed|socket hang up|other side closed|network/i.test(msg)) return true;
+  return isStreamDropError(err);
+}
+
+/** WorkBuddy calculateBackoffTime 原公式：指数 min(base×2ⁿ, 30s) ± 20% 抖动。 */
+export function retryBackoffMs(attempt, base = 1000) {
+  const raw = Math.min(base * 2 ** Math.max(0, attempt), 30000);
+  const jitter = Math.round(0.2 * raw * (2 * Math.random() - 1));
+  return Math.max(0, raw + jitter);
+}
+
 const GATEWAY_HINT = '这多半是那家网关自己挂了，不是你配错了 —— 等一会儿再试，或者先换个模型。';
 
 /** 从一段「可能是 HTML」的正文里，尽量抠出站点名和它自报的毛病。 */
@@ -545,8 +593,14 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
    * 压过一次还报同样的错，就不再死循环，老实抛给主人看。
    */
   let overflowTried = false;
-  let gatewayRetried = 0; // 网关 5xx 已经重试过几次（最多 2 次）
-  for (let guard = 0; guard < 8; guard++) {
+  /* 【2026-11-13 搬运·WorkBuddy 请求级重试（#42）】状态码（429/5xx/408/529）和
+   * 连接错误统一走这一本账，最多 5 次、指数退避 ±20% 抖动。
+   * 原来只有网关 5xx 重试 2 次、固定 1.2s/2.4s，429 和连接失败一撞就整轮白跑，
+   * 主人看到的就是「她说着说着就断了」——现在这一层自己消化抖动，
+   * 消化不了才轮到外层的 stuck-retry（60 秒后重跑整轮）兜底。 */
+  const NET_RETRY_MAX = 5;
+  let netRetried = 0;
+  for (let guard = 0; guard < 12; guard++) {
     const payload = withEffort(body, level, ep).body;
     /**
     /**
@@ -560,16 +614,34 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
      * LLM_IDLE_MS 管「响应头回来之前」这段静默（默认 5 分钟）。头回来之后、
      * 正在吐字那段由下面的看门狗 StallWatch 管，两边不重叠。
      */
-    const r = await withTimeout(
-      fetch(ep.baseURL + '/chat/completions', {
-        method: 'POST',
-        headers: headers(ep),
-        body: JSON.stringify(payload),
-        signal,
-      }),
-      LLM_IDLE_MS,
-      { what: '等上游开始回话' },
-    );
+    /* 【2026-11-13 搬运·连接错误也重试（#42）】fetch 在连接期直接抛
+     * （ECONNREFUSED/EHOSTUNREACH/UND_ERR_CONNECT_TIMEOUT/fetch failed…），
+     * 原来这一抛就整轮完蛋——其实多半是本机网络/网关抖一下。按 WorkBuddy 的
+     * 分类接住：连接类错误 → 指数退避后再敲门；用户主动停（AbortError）照抛。 */
+    let r = null;
+    try {
+      r = await withTimeout(
+        fetch(ep.baseURL + '/chat/completions', {
+          method: 'POST',
+          headers: headers(ep),
+          body: JSON.stringify(payload),
+          signal,
+        }),
+        LLM_IDLE_MS,
+        { what: '等上游开始回话' },
+      );
+    } catch (e) {
+      if (signal?.aborted || e?.name === 'AbortError') throw e;
+      if (isRetryableConnectError(e) && netRetried < NET_RETRY_MAX) {
+        netRetried++;
+        const waitMs = retryBackoffMs(netRetried - 1);
+        const why = String(e?.cause?.code || e?.message || '网络错误').slice(0, 60);
+        console.warn('[llm] 连接没握上（' + why + '），' + Math.round(waitMs / 100) / 10 + ' 秒后重试（第 ' + netRetried + '/' + NET_RETRY_MAX + ' 次）');
+        await new Promise((ok) => setTimeout(ok, waitMs));
+        continue;
+      }
+      throw e;
+    }
     if (r.ok) {
       res = r;
       break;
@@ -577,19 +649,22 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
     lastStatus = r.status;
     lastText = await withTimeout(r.text().catch(() => ''), LLM_IDLE_MS, { what: '读上游的错误正文' });
     /**
-     * 【网关自己挂了：等多一两秒再敲一次门，别一次抖动就整轮白跑】
+     * 【请求级可重试状态：统一走 WorkBuddy 分类学（#42）】
      *
-     * 502/503/504、Cloudflare 那串 52x，全都是「上游此刻不行」，不是我们发错了。
-     * 实测那家网关抖动十几秒是常事，硬撞一次就报错，等于把主人的一句话白扔了。
-     * 422 不算 —— 那是我们发的东西不合规，重试多少次都一样。
+     * 502/503/504、Cloudflare 52x、408/429/529 全都是「上游此刻不行」，
+     * 不是我们发错了。429 限流尤其常见——原来根本不重试，一撞整轮白跑。
+     * 422 不算——那是我们发的东西不合规，重试多少次都一样。
+     * 429 带 Retry-After 头就听它指挥（封顶 2 分钟），否则指数退避。
      */
-    if (isGatewayStatus(r.status)) {
+    if (isRetryableStatus(r.status)) {
       noteUpstreamError(r.status, lastText, ep);
-      const tries = (typeof gatewayRetried !== 'undefined' ? gatewayRetried : 0);
-      if (tries < 2 && !overflowTried) {
-        gatewayRetried = tries + 1;
-        const waitMs = 1200 * gatewayRetried;
-        console.warn('[llm] 上游 ' + r.status + '，' + Math.round(waitMs / 100) / 10 + ' 秒后重试（第 ' + gatewayRetried + ' 次）');
+      if (netRetried < NET_RETRY_MAX) {
+        netRetried++;
+        const ra = Number(r.headers?.get?.('retry-after'));
+        const waitMs = (Number.isFinite(ra) && ra > 0 && ra <= 120)
+          ? Math.round(ra * 1000)
+          : retryBackoffMs(netRetried - 1);
+        console.warn('[llm] 上游 ' + r.status + '，' + Math.round(waitMs / 100) / 10 + ' 秒后重试（第 ' + netRetried + '/' + NET_RETRY_MAX + ' 次）');
         await new Promise((ok) => setTimeout(ok, waitMs));
         continue;
       }

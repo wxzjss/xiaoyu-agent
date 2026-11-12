@@ -16,7 +16,7 @@
  * 调用方（run-all-checks.mjs）必须把返回的 env 传给每一个检查子进程。
  * 起不来就抛错，绝不「自动探测」退回 8788 —— 静默退回等于这道闸白装。
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readdirSync, copyFileSync, existsSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -206,10 +206,18 @@ export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
       MINI_AGENT_DATA: dataDir,
     };
 
-    const kill = (proc) => {
-      if (!proc || proc.killed || proc.exitCode != null) return;
+    /* 【2026-11-12 改·stop() 要等进程真退】
+     * 原来 kill 完只睡 600ms 就开始删目录：慢机器上 Edge 一串子进程 / 服务
+     * 还没死透，rmSync 删一半被 hold 住，残半个 xy-check-* 目录。
+     * 现在 killWait 轮询 exitCode（最多 ~5s），还没退就 SIGKILL 补刀。 */
+    const killWait = async (proc, ms = 5000) => {
+      if (!proc || proc.exitCode != null) return true;
       try { spawnSyncKill(proc.pid); } catch {}
       try { proc.kill(); } catch {}
+      const t0 = Date.now();
+      while (proc.exitCode == null && Date.now() - t0 < ms) await sleep(100);
+      if (proc.exitCode == null) { try { proc.kill('SIGKILL'); } catch {} }
+      return proc.exitCode != null;
     };
     const wipe = async () => {
       /* Windows 上 Edge 的一串子进程会短暂 hold 住 edge-profile 目录，一次删不掉就重试 */
@@ -220,13 +228,26 @@ export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
       return false;
     };
     /* 【2026-11-11 补】脚本被掐断/异常退出时不一定走 stop()，那样目录就永远留着。
-     * 之前攒了 676 个 xy-check-* 死目录没人清。这里挂个兜底：进程退出时同步删。 */
-    const onExit = () => { try { rmSync(dataDir, { recursive: true, force: true }); } catch {} };
+     * 之前攒了 676 个 xy-check-* 死目录没人清。这里挂个兜底：进程退出时同步删。
+     * 【2026-11-12 补】兜底原来只删目录不杀进程，而且 spawn 的 taskkill 是异步的
+     * —— 'exit' 钩子里进程马上就没了，异步杀等于没杀，Edge/服务照样变孤儿。
+     * 改成 spawnSync（'exit' 里只能干同步活），把服务和无头浏览器都带走。 */
+    const onExit = () => {
+      for (const proc of [edge, server]) {
+        if (!proc || proc.exitCode != null) continue;
+        try {
+          if (process.platform === 'win32') {
+            spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+          } else {
+            try { process.kill(-proc.pid, 'SIGKILL'); } catch { try { proc.kill('SIGKILL'); } catch {} }
+          }
+        } catch {}
+      }
+      try { rmSync(dataDir, { recursive: true, force: true }); } catch {}
+    };
     process.once("exit", onExit);
     const stop = async () => {
-      kill(edge);
-      kill(server);
-      await sleep(600);
+      await Promise.all([killWait(edge), killWait(server)]);
       process.removeListener("exit", onExit);
       await wipe();
     };
@@ -239,10 +260,16 @@ export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
   }
 }
 
-/** Windows 上 Edge 会带一串子进程，只 kill 主进程会留一堆 */
+/** Windows 上 Edge 会带一串子进程，只 kill 主进程会留一堆。
+ * 【2026-11-12 改】spawn→spawnSync：killWait 要在它发完信号后轮询 exitCode，
+ * 异步 fire-and-forget 的话 taskkill 可能还没出手，进程状态就摸不到。 */
 function spawnSyncKill(pid) {
   try {
-    spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    } else {
+      try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    }
   } catch {}
 }
 

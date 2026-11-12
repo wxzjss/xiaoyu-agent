@@ -86,6 +86,8 @@ ok('复制提示词是「让那边智能体学习」的完整话术',
   /请学习这张知识卡（来自知识库，所有会话共享）|请学习这张知识卡/.test(html) && /学完就记在心里/.test(html));
 ok('书架尽头有「＋创建」空书入口',
   /kbBookAdd/.test(html) && /创建知识卡<\/div>/.test(html.replace(/\n/g, '').replace(/\s+/g, ' ')) || /创建知识卡/.test(html));
+ok('内层 wrap 的 hidden 有 display:none !important（display:flex 会盖掉 UA hidden，主人截图实锤）',
+  /\.kbFormWrap\[hidden\], \.kbReadWrap\[hidden\] \{ display: none !important; \}/.test(html));
 ok('Esc 逐层退出（表单/阅读层→书架）',
   /Esc 逐层退出/.test(html));
 

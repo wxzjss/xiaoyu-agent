@@ -2838,6 +2838,10 @@
       background: rgba(15,12,10,.72); backdrop-filter: blur(3px);
       display: flex; align-items: center; justify-content: center;
     }
+    /* 【2026-11-13 主人报·打开书架直接叠着表单和阅读层】display:flex 会盖掉
+     * HTML hidden 属性的 UA display:none —— 内层两个 wrap 必须显式写这条，
+     * 光靠 hidden 属性不放出来。 */
+    .kbFormWrap[hidden], .kbReadWrap[hidden] { display: none !important; }
     body.skin .kbFormWrap, body.skin .kbReadWrap { background: rgba(12,16,22,.72); }
     .kbForm, .kbRead {
       width: min(680px, 92vw); max-height: 86vh; overflow-y: auto;

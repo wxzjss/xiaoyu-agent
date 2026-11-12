@@ -660,6 +660,18 @@
        卡片里长名字/长状态一顶，整块就横着捅出消息栏。
        这里两条一起补：.teamBar 进尺子；里面的 wcard 也按父宽收，不许撑。 */
     #log > .teamBar { overflow: hidden; }
+    /* 【2026-11-12 主人·发文件又跑到消息栏外面去了】
+       .fileCard / .fileRow（她发的文件卡、视频、语音）也是 #log 的直接子元素，
+       跟工具卡一个待遇 —— 可它们不在「跟消息同宽」那把尺子里，#log 又是全宽的
+       flex 容器，flex-start 一对齐就贴到整窗最左边（截图里卡片在窗口左缘，
+       气泡列在中间）。这里只补**水平位置**：左缘跟气泡列对齐（同一个
+       calc(50% - 442px)，跟工具卡一样比气泡凸出 8px 的既有惯例）；
+       宽度不进尺子 —— 它们自带 max-width:300/320px 的小卡，拉满 892 反而难看。 */
+    #log > .fileCard, #log > .fileRow {
+      margin-left: max(0px, calc(50% - 442px));
+      margin-right: auto;
+      flex: 0 0 auto;
+    }
     #log > .teamBar, #log > .teamBar details.wcard, #log > .teamBar .teamTail {
       max-width: 100%; box-sizing: border-box;
     }

@@ -19988,7 +19988,12 @@ setInterval(async () => {
        *（看着像卡住，其实在干活），现在看门狗 8 分钟才真掐，这句话只会添乱。
        * 会话列表的绿点变黄那套（RUNNING_STALL_MS）保留不动。 */
       if (_hh && _sp && busy) {
-        _sp.textContent = '正在发送消息';
+        /* 【2026-11-12 修·主人报「【xxx正在发送消息】与【正在发送消息】频繁切换」】
+         * 真凶就是这行：3 秒一轮的巡检每拍都写**裸的**「正在发送消息」，
+         * 而秒表 tick 每秒写「<名字>正在发送消息」—— 两个写手对轰，
+         * 屏幕上就 3 秒切一次裸的、1 秒切回带名字的。改成同一把出口（_hintSetText），
+         * 名字取值跟 tick 完全同源，谁后写都一样。 */
+        try { _hintSetText(_hintWho() + '正在发送消息'); } catch (e) {}
         _hh.classList.remove('stalled');
       } else if (_hh) {
         _hh.classList.remove('stalled');

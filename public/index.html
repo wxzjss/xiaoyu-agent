@@ -3246,6 +3246,12 @@
 /* 她说的话：以前挪到右下角，现在统一跟主人那条一样贴在气泡左侧（见上面容器规则） */
 /* 一行里有多条 assistant（干工具活）时，气泡底下还有用量行，稍微往上让一点 */
 .msg.assistant .msgActions { top: auto; bottom: 4px; }
+    /* 【2026-11-12 主人·运行时鼠标移到消息上冒出【重发】【分支】【删除】那些按钮，不正常】
+     * 这些按钮是「这一轮已经说完了」才该有的动作：她还在写的时候，重发/分支/删除
+     * 打过去要么撞 409、要么把正在跑的那一轮弄乱。所以整轮跑着期间一律不显示
+     * （body.xy-busy 由 syncSendBtn 统一维护，切会话/收尾都会跟着翻）。 */
+    body.xy-busy #log .msgActions,
+    body.xy-busy #log .msg .rewindBtn { display: none !important; }
 
 .msg .msgActions > button {
   padding: 2px 8px;
@@ -8740,7 +8746,27 @@ function turnElapsedText(ms) {
   return m + 'm' + (r < 10 ? '0' : '') + r + 's';
 }
 
+function _hintWho() {
+  /* 【2026-11-12 主人】提示行里那个名字：用**这个会话的主智能体**（小鱼/小鲸/自定义），
+   * 别用会话名 —— 会话名可能还是默认的「新会话」，而实际做活的是小鲸，
+   * 主人看到「新会话」完全对不上号。拿不到就退回「小鱼」。 */
+  try {
+    const n = String(window.mainAgentName || '').trim();
+    if (n) return n;
+  } catch (e) {}
+  return '小鱼';
+}
+function _hintSetText(t) {
+  try {
+    const sp = sendingHint && sendingHint.querySelector('span');
+    if (sp) sp.textContent = String(t || '');
+  } catch (e) {}
+}
+
 function showSending(startAt) {
+  /* 名字跟着这次运行走（切会话/换身份都会变） */
+  try { _hintSetText(_hintWho() + '正在发送消息'); } catch (e) {}
+  sendingHint.classList.remove('done');
   sendingHint.classList.add('show');
   noteNewContent();
   try {
@@ -8907,7 +8933,39 @@ function scheduleSendingRecheck(sid) {
 }
 
 /** 生成中：输入框有内容 -> 按钮变「发送」（插一句）；空着 -> 「停止」。 */
+/**
+ * 【2026-11-12 加·收尾时给一句「已完成」】
+ *
+ * 主人要的是「做完得有个明确的收尾提示」。跑完这一轮闪一句「小鱼已完成」，
+ * 1.4 秒后自己收掉，不占地方。
+ * 判据用 _turnT0 > 0：那表示「本屏真的跑过一轮」（切会话不会把它清零，但闪完就清），
+ * 免得切会话/刷新时凭空闪一下。
+ */
+function _flashDone() {
+  try {
+    if (!sendingHint) return;
+    _hintSetText(_hintWho() + '已完成');
+    sendingHint.classList.add('show', 'done');
+    setTimeout(function () {
+      try {
+        sendingHint.classList.remove('show', 'done');
+        _hintSetText('');
+      } catch (e) {}
+    }, 1400);
+  } catch (e) {}
+}
+
 function syncSendBtn() {
+  /* 【2026-11-12 加】运行态贴到 body 上 —— CSS 用它把消息上的按钮（重发/分支/删除…）藏起来；
+   * 顺手认「跑完这一拍」并闪一句已完成。 */
+  try {
+    const wasBusy = document.body.classList.contains('xy-busy');
+    document.body.classList.toggle('xy-busy', !!busy);
+    if (wasBusy && !busy && _turnT0 > 0) {
+      _turnT0 = 0;
+      _flashDone();
+    }
+  } catch (e) {}
   /* 【2026-11-11 主人要求：忙碌锁整个删掉】管理员/会话在任务跑动期间保持可点，
    * 多个会话并行做不同的活。原来这里会把 busyLock 类贴到
    * adminBtn/taskBtn/openSessions 上（变暗 + 点不动），已删。 */

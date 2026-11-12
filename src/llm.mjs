@@ -721,7 +721,6 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
      * agent 的 isStreamDropped 路径会保留半截话、让模型接着写（最多 30 次）。 */
     let sawFinish = false;
     for await (const chunk of guardedStream(res.body, guard)) {
-    guard.beat('收到数据块');
     buf += decoder.decode(chunk, { stream: true });
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
@@ -749,7 +748,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       const _choice = json.choices?.[0];
       const delta = _choice?.delta;
       const finish = _choice?.finish_reason;
-      if (finish) sawFinish = true;
+      if (finish) { sawFinish = true; guard.beat('收到 finish'); }
       /* 【2026-11-05 修·工具调用会凭空消失】
        *
        * 原来这里 `if (!delta) continue`，而 finish_reason 是在下面才取的 ——
@@ -761,6 +760,14 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
        * 现在：先取 finish，delta 有没有都往下走；帧里没 delta 就只做交付判断。
        */
       if (delta) {
+        /* 【2026-11-12 修·等模型回话静了 548 秒才被看门狗收尸】
+         * 原来 beat 放在 for-await 一进循环就调，收到任何一块字节都续命。
+         * 可 SSE 里大量是心跳注释帧、空行、非 data 帧——网关抽风时隔几分钟吐一个，
+         * 叠着把 480 秒的表一直往回拨，stallGuard 永远开不了火，只能等整轮看门狗
+         * 拖到 540 秒兜底。现在只有真吐了内容或真收到 finish 才算活着。 */
+        if (delta.reasoning_content || delta.reasoning || delta.content || (delta.tool_calls && delta.tool_calls.length)) {
+          guard.beat('收到内容');
+        }
         const reasoning = delta.reasoning_content ?? delta.reasoning;
         if (reasoning) yield { type: 'reasoning', text: reasoning };
         if (delta.content) {

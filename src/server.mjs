@@ -9051,6 +9051,14 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             : '主人让它重启（这一轮已说完，清单上还有没做完的）',
           taskLine: lastUserLine(_sid),
           openSteps: _open,
+          /* 【2026-11-12 修·接手「检查鱼」查到一半的活：重启后没有续上（真凶之一）】
+           *  这里原来**不带 autoResume** —— 而开机自续只挑 autoResume===true 的续
+           *  （server.mjs boot 那段：filter(x => x.autoResume === true)）。
+           *  于是 /api/app/restart 记的每一条都被当成「清单老账」跳过，
+           *  日志只会说「没有需要自动续的」—— 重启完一片安静，正是主人报的现象。
+           *  规矩跟退出那条路（/api/app/quitting）对齐：真的在跑被打断 → 自动续；
+           *  只是清单有剩（人早不在跑）→ 只记账，等主人手动点。 */
+          autoResume: Boolean(_live),
           /* 【2026-11-06 加·5 段式交接】
            *  原来只记「断在哪、还剩哪几步」—— 醒来知道接着干，但不知道**为什么干**、
            *  也**已经定过什么主意**，于是要么把做过的重做一遍，要么拐到别的方向去。
@@ -13035,6 +13043,9 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
             text: d ? d.text : '',
             reason: '进程崩了（同类错误反复出现，兜底退出）',
             taskLine: lastUserLine(id),
+            /* 【2026-11-12 修·同上：崩兜底退出时那一轮铁定在跑，属于「真的被打断」，
+             *  不带 autoResume 的话开机自续会把它当清单老账跳过 → 重启后不续上。 */
+            autoResume: true,
           });
         } catch {}
       }
@@ -13122,8 +13133,12 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
               '\n\n（直接从没打勾那步接着干，不用等我再问。别回「我在」这种话。）';
           }
           /* 读完就把它销掉：断点已经抄进这条消息里了（会话里存得住），
-           * 留着只会让下一次重启又读到同一个旧断点，把老账重念一遍。 */
-          try { dropInterrupted(); } catch {}
+           * 留着只会让下一次重启又读到同一个旧断点，把老账重念一遍。
+           * 【2026-11-12 修·接手「检查鱼」：这里原来 dropInterrupted() 不带参数 ——
+           *  无参 = 整个 resume.json 删掉（resume.mjs:211 `if (!sessionId) unlinkSync(FILE)`）。
+           *  明明只消费了 _sid 这一个会话的断点，却把**别的会话**排队的续跑意图
+           *  一起端了 —— 别的会话重启后就「没续上」。只删自己这份。 */
+          try { dropInterrupted(_sid); } catch {}
         }
       } catch (e) { try { console.warn('[restart] 读断点失败（不影响叫醒）：', String(e && e.message)); } catch {} }
       /**

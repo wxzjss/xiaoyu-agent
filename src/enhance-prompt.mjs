@@ -29,74 +29,53 @@
  * - 被取消（主人再点一下星星）：抛 AbortError，界面静默恢复原文，不弹错误
  */
 
-/** WorkBuddy 的 system 提示词（逐字照抄，只删掉无关的代码助手限定语）。 */
+/**
+ * 【2026-11-12 主人重定口径】给增强 AI 的提示词只有一句：
+ * **「润色这段话或增强这段提示词」。**
+ *
+ * 旧版照抄 WorkBuddy 的英文「Prompt Engineering Expert」—— 它把**任何话**
+ * 都改写成第三人称任务说明书。主人发「小鱼，我喜欢你」，
+ * 它改成了「请以"小鱼"为对象，写一段真诚、自然的表白……」——
+ * 他要说的话被换成了「让别人写表白」的指令，意思整个变了。
+ *
+ * 新口径的道理：输入框里那句是**他要发出去的话本身**。
+ *   · 日常聊天 / 撒娇 / 表白 / 问候 → 只把句子理顺（润色），一个字的意思都不许换向；
+ *   · 真是派活（报错 / 任务 / 需求）→ 才增强：目标、范围、要的产物说清楚。
+ * 判据就一条：改完之后，这句话**还是不是他在对小鱼说话**。
+ */
 const SYSTEM_PROMPT = [
-  'You are a Prompt Engineering Expert specializing in improving user prompts for an AI assistant.',
-  'When given a prompt, analyze and enhance it to create a more effective version while maintaining its core purpose.',
+  '你的任务只有一句话：润色这段话，或增强这段提示词。',
   '',
-  'TASK: When given a prompt, analyze and enhance it to create a more effective version while maintaining its core purpose.',
-  '',
-  'ANALYSIS PROCESS:',
-  'Evaluate the original prompt: identify the main objective, note any ambiguities or gaps, assess the clarity of instructions, check for missing context.',
-  'Apply these prompt engineering principles: write clear specific instructions, include necessary context, set explicit parameters and constraints, structure the output format, add relevant examples, match tone and complexity to the use case, remove redundant information.',
-  'Create the enhanced version: maintain the original goal, incorporate identified improvements, ensure clarity and completeness, be realistic in the features to add.',
-  '',
-  'IMPORTANT CONSTRAINTS:',
-  "1. Language matching is the highest priority - You MUST strictly respond in the exact same language as the user's input. If the user writes in Chinese, respond in Chinese; if the user writes in English, respond in English. Do not mix languages unless the user's input itself mixes languages.",
-  '2. Keep the enhanced prompt concise - maximum length should be around 800 characters.',
-  '',
-  'FORMAT: Provide only the enhanced prompt with no additional commentary.',
+  '规矩：',
+  "1. 输入框里那句是「主人要发给对方的话本身」，不是让你替他写一份关于这件事的说明书。改完之后它必须还是主人在说话（第一人称、对同一个人说、同一个意思）。",
+  '2. 日常聊天、撒娇、表白、问候、闲聊这类话：只把句子理顺，别的一个字都不许动方向。绝对禁止把它改写成「请以……为对象，写一段……」这种第三人称指令。',
+  '3. 真是派活的指令（报错、任务、需求）：才做增强 —— 把目标、范围、要的产物说清楚，让它更容易被照着做。',
+  "4. 说中文就出中文，说英文就出英文，别混译。语言是次要规矩，第 1 条才是最高规矩。",
+  '5. 只输出改完的那句话，不要任何说明、前缀、引号、代码栅栏。',
+  '6. 克制：润色不是扩写，一般不超过原文的三倍。',
 ].join('\n');
 
 /**
  * user 提示词模板。{input} 是主人原话。
  *
- * 最后那组 GOOD/BAD 例子不是凑数 —— WorkBuddy 那边实测发现模型爱输出
- * 「User input is in Chinese → Response must be in Chinese.」这种语言标注，
- * 反面例子是唯一能压住它的办法。
+ * GOOD/BAD 例子用真事：主人的原话「小鱼，我喜欢你」被旧版改成了
+ * 「请以"小鱼"为对象，写一段真诚、自然的表白……」—— BAD 就是它。
  */
 const USER_PROMPT_TEMPLATE = [
-  'You are a prompt enhancement assistant. Improve the user prompt while preserving its intent and language.',
+  '润色这段话或增强这段提示词（只输出改完的那句话）：',
   '',
-  'USER INPUT:',
+  '【原文】',
   '{input}',
   '',
-  'TASK:',
-  'Rewrite the user input into a clearer, more specific prompt for the target AI assistant.',
+  '例 1（日常话，只润色）：',
+  '原文：「小鱼，我喜欢你」',
+  '改：「小鱼，我喜欢你。」（意思不许动 —— 绝不许改成「请以"小鱼"为对象写一段表白……」这种说明书）',
   '',
-  'CRITICAL PRIORITY - LANGUAGE CONSISTENCY:',
-  '1. You MUST detect the language of the user input above and write the enhanced prompt in that same language.',
-  '2. If the user writes in Chinese, the enhanced prompt MUST be entirely in Chinese.',
-  '3. If the user writes in English, the enhanced prompt MUST be entirely in English.',
-  '4. If the user writes in any other language, the enhanced prompt MUST use that exact same language.',
-  '5. If the user mixes languages, keep a natural matching mix. Do not translate the user intent into a single language.',
-  '6. These language rules are behavior instructions only; never include language analysis or language labels in the output.',
+  '例 2（派活的话，做增强）：',
+  '原文：「帮我看看这个报错」',
+  '改：「请分析这个报错的原因，定位出错的代码位置，给出最小修复方案和验证步骤。」',
   '',
-  'ENHANCEMENT REQUIREMENTS:',
-  '1. Return only the enhanced prompt text; do not add explanations, prefaces, markdown fences, labels, or analysis.',
-  '2. Do not include language labels or meta notes such as "User input is in Chinese" or "Response must be in Chinese".',
-  '3. Preserve the user original intent, topic, constraints, and target output type. Do not answer the request.',
-  '4. Always make a substantive enhancement when possible: clarify the task, scope, constraints, and expected output.',
-  '5. If the original prompt is already clear, lightly polish it instead of returning it unchanged.',
-  '6. Keep the enhanced prompt complete and concise. Do not end with an unfinished list, dangling conjunction, or trailing colon.',
-  '7. Do not add unrelated requirements, unsupported facts, or unnecessary sections.',
-  '',
-  'EXAMPLES:',
-  'User input (Chinese): "请帮我解释这段代码的功能"',
-  'Enhanced prompt: "请解释这段代码的主要功能、执行流程和关键逻辑，并指出可能需要注意的边界情况。"',
-  '',
-  'User input (English): "Please explain what this code does"',
-  'Enhanced prompt: "Explain what this code does, including its main purpose, key control flow, and any important edge cases."',
-  '',
-  'User input (Mixed): "这段代码有 bug，can you help me fix it?"',
-  'Enhanced prompt: "请分析这段代码中的 bug，explain the root cause, and provide a minimal fix with necessary verification steps."',
-  '',
-  'BAD OUTPUT EXAMPLE:',
-  'User input is in Chinese → Response must be in Chinese.',
-  '请解释这段代码的主要功能',
-  '',
-  'GOOD OUTPUT EXAMPLE:',
-  '请解释这段代码的主要功能、执行流程和关键逻辑，并指出可能需要注意的边界情况。',
+  'BAD（方向被换掉，禁止）：原文「小鱼，我喜欢你」→「请以"小鱼"为对象，写一段真诚、自然的表白，表达你对她的喜欢……」',
 ].join('\n');
 
 /**

@@ -64,6 +64,24 @@
       --input-bg: rgba(10, 12, 17, .55);
     }
     * { box-sizing: border-box; }
+    /* 【2026-11-12 主人钦定·控件亮白框根治（全局兜底）】
+     * 病根：JS 动态 createElement 出来的 input/textarea/select 不在任何 .field 类里，
+     * 裸吃浏览器 UA 默认样式 = 亮白背景黑字，深色界面上一块刺眼的白。
+     * 全局给它们一个主题化兜底（低特异性：任何 class/id 规则都能盖过它）。
+     * checkbox/radio/file 除外：原生外观不能被背景色污染。 */
+    input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+    textarea, select {
+      background: var(--input-bg, rgba(10, 12, 17, .55));
+      color: var(--text, #e6e9ef);
+      border: 1px solid var(--border, #262b36);
+      border-radius: 6px;
+    }
+    /* button 同一兜底：动态裸按钮透明底 + 主题文字色，绝不亮白。 */
+    button {
+      background: transparent;
+      color: inherit;
+      font-family: inherit;
+    }
     /* 【2026-11-10 B7·键盘焦点兜底】
      * 全局 :focus-visible：键盘导航（Tab / 方向键）走到哪都有清楚的一圈，
      鼠标点击不触发（focus-visible 只对键盘出现）—— 主人不再「盲飞」。
@@ -2713,12 +2731,15 @@
     .featRow .switch[disabled] { opacity: .45; cursor: not-allowed; }
 
     /* ---- 开场白编辑器 ------------------------------------------------------ */
-    .featRow .featEditBtn {
+    /* 【2026-11-12 主人报·【存】按钮亮白】原来选择器限定 .featRow 后代——
+     * 发送缓冲的「改时长」框插在 featRow 外面，命中不了 = 裸吃 UA 亮白。
+     * 改成通用规则，哪儿用都主题化。 */
+    .featEditBtn {
       flex: none; height: 30px; border-radius: 999px; cursor: pointer;
       border: 1px solid var(--border); background: transparent; color: var(--dim);
       font-size: 12.5px; padding: 0 12px;
     }
-    .featRow .featEditBtn:hover { border-color: var(--accent); color: var(--accent); }
+    .featEditBtn:hover { border-color: var(--accent); color: var(--accent); }
     /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
     .featRow .featEditGroup { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -3907,7 +3928,7 @@
       </div>
       <div class="featScroll">
         <!-- 【2026-11-12 旁观者模式·进功能卡列表（主人定）】做成【读文件】【写文件】同款卡片。
-             卡片本体由 renderFeatList → specPaintInto 画在 featList 最顶上（specBuild），
+             卡片本体由 renderFeatList → specPaintInto 画在 featList 最下方（specBuild），
              这里不再放独立标题条 —— 之前那块跟功能卡不一个门脸。 -->
         <div class="featList" id="featList"></div>
       </div>
@@ -14851,7 +14872,9 @@ try {
   const $ = (id) => document.getElementById(id);
   if (!$('kbOverlay')) return;
   const overlay = $('kbOverlay'), shelf = $('kbShelf'), hint = $('kbHint');
-  const formWrap = $('kbFormWrap'), readWrap = $('kbReadWrap');
+  /* 【注意】这两行分开声明：check-ui 的声明正则不认链式声明的第二个变量（const a=…, b=…），拆开它才认 */
+  const formWrap = $('kbFormWrap');
+  const readWrap = $('kbReadWrap');
   let cards = [];            // 当前列表
   let editing = null;        // 正在编辑的卡（null=新建）
   let reading = null;        // 正在读的卡
@@ -15275,13 +15298,13 @@ function featPaintEmpty() {
 function renderFeatList() {
   if (!featList) return;
   featList.innerHTML = '';
-  /* 【2026-11-12 旁观者模式卡】画在功能列表最顶上（数据没拉过就不画，openFeatures 会先 specLoad） */
-  specPaintInto(featList);
   const rows = featRows();
   if (!rows.length) {
     featPaintEmpty();
     if (featHint) featHint.textContent = featState.error ? '没读到' : '0 个功能';
-    paintFeatNow();
+        /* 【2026-11-13 旁观者模式卡】挪到功能列表最下方（主人要求） */
+    specPaintInto(featList);
+paintFeatNow();
     return;
   }
   for (const f of rows) {
@@ -15469,7 +15492,7 @@ function renderFeatList() {
           inp.min = '1';
           inp.max = '60';
           inp.value = String(val || (key === 'sendBufferSec' ? 3 : 5));
-          inp.style.cssText = 'width:56px;padding:3px 6px;';
+          inp.style.cssText = 'width:56px;padding:3px 6px;background:var(--input-bg,rgba(10,12,17,.55));color:var(--text,#e6e9ef);border:1px solid var(--border,#262b36);border-radius:6px;';
           inp.dataset.key = key;
           wrap.append(sp, inp);
           return wrap;
@@ -15568,6 +15591,8 @@ function renderFeatList() {
     const head = own ? `${rows.length} 个功能（${own} 个自己加的）` : `${rows.length} 个功能`;
     featHint.textContent = off ? `${head} · ${off} 个关着` : `${head} · 全开`;
   }
+  /* 【2026-11-13 旁观者模式卡】挪到功能列表最下方（主人要求） */
+  specPaintInto(featList);
   paintFeatNow();
 }
 
@@ -16340,7 +16365,7 @@ if (openFeaturesBtn) {
      * 主人点了一下，弹个「读取功能列表失败」，面板还是没出来，等于白点。
      * 现在无论如何都打开：读不到就在列表位置写清原因 + 给一颗重试。 */
     /* 【2026-11-12 旁观者模式·进功能卡列表（主人定）】先拉旁观者数据，再 loadFeatures ——
-     * renderFeatList 会把「旁观者模式」卡画在功能列表最顶上（specPaintInto）。
+     * renderFeatList 会把「旁观者模式」卡画在功能列表最下方（specPaintInto）。
      * 每次打开都现拉 /api/agents 全表：自建新卡自动进候选，不用维护第二份名单。 */
     await specLoad();
     await loadFeatures();
@@ -20366,8 +20391,8 @@ function formPayload() {
   const payload = { name, model, baseURL };
   /* 【2026-11-12】选中的是「本机 DeepSeek」这条预设吗？
    * 认它不能靠地址（地址是空的），也不能靠名字（主人可以改），
-   * 只能看下拉框当前选中的那个选项的 value —— 它被设成 LOCAL_DEEPSEEK 这个专有标记。 */
-  if (mdlBasePreset && mdlBasePreset.value === LOCAL_DEEPSEEK) payload.providerLocalDeepSeek = true;
+   * 只能看下拉框当前选中的那个选项的 value —— 「本机 DeepSeek」这条预设 base 为空，value 落到 key，即 'local-deepseek'。 */
+  if (mdlBasePreset && mdlBasePreset.value === 'local-deepseek') payload.providerLocalDeepSeek = true;
   // 名字不填就用模型名顶，省得列表里出现一行空白的
   if (!payload.name) payload.name = model;
   // 编辑时 Key 留空 = 保留原来那个，不能拿空串把已有 Key 洗掉
@@ -20459,7 +20484,7 @@ function paintModels() {
       tst.className = 'mdl-btn ghost';
       tst.textContent = '测连通';
       tst.title = '试一下这个模型能不能用';
-      tst.onclick = async () => {
+      tst.onclick = async (e) => { e.stopPropagation();
         tst.disabled = true;
         const old = tst.textContent;
         tst.textContent = '测...';
@@ -20836,6 +20861,18 @@ document.getElementById('mdlSave').onclick = async () => {
     });
     const r = await jsonOrError(res);
     mdlState = r;
+    // 主人要求：编辑保存后自动启用这条模型（不用再手动点一下行）
+    try {
+      const savedId = r && r.model && r.model.id;
+      if (savedId && mdlState.activeId !== savedId) {
+        const sel = await fetch('/api/models/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: savedId }),
+        }).then((x) => x.json()).catch(() => null);
+        if (sel && !sel.error) mdlState = sel;
+      }
+    } catch (e2) {}
     closeForm();
     paintModels();
     syncHealth();

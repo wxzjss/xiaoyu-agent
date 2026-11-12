@@ -14,12 +14,20 @@
  * 临时会话用完就删。
  */
 import { readFileSync, existsSync } from 'node:fs';
-import { detectBase } from './_base.mjs';
 import { readUISource } from './_ui-src.mjs';
 
-const BASE = detectBase();
+/* 【2026-11-12 修·别再往真身 App 里塞测试会话】
+ *
+ * 这条原来用 detectBase() 探端口 —— 真身 App 开着时探到的就是 8788，
+ * 于是「__e2e_chat__」这种测试会话建进了主人的会话列表，还真的跑一轮
+ * （烧他的 token）；一轮跑完 turn-done 桌面通知还弹「小鱼干完了：__e2e_chat_」
+ * —— 主人看到的「跑个回归却弹干完了、会话名一串英文」就是它。
+ * 现在固定起隔离实例（自己的端口 + 临时数据目录），跟真身彻底无关。 */
+import { startIsolated } from './_test-instance.mjs';
+const iso = await startIsolated({ appPort: 8793 });
+const BASE = iso.base;
 /* 【2026-11-09】隔离全量回归时数据目录是临时的，不能再写死主人那份 */
-const DATA = process.env.XY_TEST_DATA || process.env.MINI_AGENT_DATA || 'C:/Users/35453/AppData/Roaming/小鱼Agent/data';
+const DATA = iso.dataDir;
 const SESS = DATA + '/.state/sessions';
 
 let pass = 0, fail = 0;
@@ -300,6 +308,7 @@ try {
 } catch (e) { ok('补画时工具事件会断开当前气泡', false); }
 
 console.log('断言：' + pass + '/' + (pass + fail));
+try { await iso.stop(); } catch {}
 if (fail) { console.log('FAIL 有 ' + fail + ' 条没过'); process.exit(1); }
 console.log('PASS 发消息链路端到端通过');
 

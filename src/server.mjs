@@ -1,4 +1,4 @@
-// Minimal web server: static UI + one SSE endpoint that runs the agent.
+﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile, open as pvOpen } from 'node:fs/promises';
@@ -2529,22 +2529,22 @@ function buildLiveItems(events) {
           if (!String(lastSay.t || '').trim()) lastSay.t = t;
           else if (norm(lastSay.t) === norm(t)) lastSay.t = t;
           else if (norm(t).startsWith(norm(lastSay.t))) lastSay.t = t;
-          else { flush(); items.push({ k: 'say', who, t }); }
+          else { flush(); items.push({ k: 'say', who, t, spectator: e && e.spectator === true }); }
         } else {
           flush();
-          items.push({ k: 'say', who, t });
+          items.push({ k: 'say', who, t, spectator: e && e.spectator === true });
         }
       }
     } else if (e.type === 'whale_stream_start') {
       /* 【2026-11-10 A6 复核后保留】空 say 占位是分段记号（见 appendLiveItem 同支）；
        * 两份实现都带着它，清单逐字相等；屏幕半边由 items.js 对称滤空。 */
       flush();
-      items.push({ k: 'say', who: String(e.who || ''), t: '' });
+      items.push({ k: 'say', who: String(e.who || ''), t: '', spectator: e && e.spectator === true });
     } else if (e.type === 'whale_delta') {
       const it = lastOf('say');
       /* 她那一句已经在屏幕上长着：只是接着长，**不算分段线** */
       if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
-      else { flush(); items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || '') }); }
+      else { flush(); items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || ''), spectator: e && e.spectator === true }); }
     } else if (e.type === 'steer') {
       /* 【2026-11-10 主人钦点·插话进对话流中间】与 appendLiveItem 同一口径：
        * 插话是独立条目 = 分段线（flush 前置，不并进她正在说的正文）。
@@ -3048,6 +3048,35 @@ function cardIdOf(sessionId) {
   } catch {
     return AGENT_XIAOYU;
   }
+}
+
+/**
+ * 【2026-11-12 主人定】本会话「屋里的人」的名字全表（主智能体 + 排队接话的，含静音的）。
+ *
+ * 用途：旁观者冲突闸 —— 同一个人不能一边在屋里干活一边站在旁边旁观。
+ * 主人原话：「如果提前勾选了旁观者模式里的某个智能体，后续再在屋里的人加上
+ * 这个同名智能体后，是否能做到禁用旁观者里的这个？」—— 能，就在这儿。
+ * 注意要「静音也算」：人在屋里就占了这个身份，静音只是暂时不接话，
+ * 拿他当旁观者照样会出现「他自己回答自己点评」的怪象。
+ */
+function residentNamesOf(sessionId) {
+  const out = new Set();
+  try {
+    const ids = activeAgentIds(sessionId, () => true) || [];
+    for (const id of ids) {
+      try {
+        const c = getAgent(id);
+        const n = String((c && c.name) || '').trim();
+        if (n) out.add(n);
+      } catch {}
+    }
+  } catch {}
+  try {
+    const c = getAgent(sessionAgentId(sessionId) || AGENT_XIAOYU);
+    const n = String((c && c.name) || '').trim();
+    if (n) out.add(n);
+  } catch {}
+  return out;
 }
 
 async function startOpening(sessionId) {
@@ -8732,10 +8761,19 @@ const server = createServer(async (req, res) => {
   /* 【2026-11-12 旁观者模式】按会话挑谁能在旁边插话；名单空 = 关闭（默认）。 */
   if (req.method === 'GET' && url.pathname === '/api/spectator') {
     const sid = url.searchParams.get('sessionId') || '';
-    return json(res, 200, { ok: true, sessionId: sid, agents: spectatorsOf(sid) });
+    /* main = 本会话主智能体的名字；occupied = 当前「屋里的人」的名字全表。
+     * 这两个给功能页用：主智能体不能当旁观者（干活的人不看戏），
+     * 在屋里的同名者也要禁勾——同一个人不能一边干活一边旁观（主人 2026-11-12 定）。 */
+    let main = '小鱼';
+    try {
+      const c = getAgent(sessionAgentId(sid) || AGENT_XIAOYU);
+      if (c && String(c.name || '').trim()) main = String(c.name).trim();
+    } catch {}
+    const occupied = residentNamesOf(sid);
+    return json(res, 200, { ok: true, sessionId: sid, agents: spectatorsOf(sid), main, occupied });
   }
   if (req.method === 'POST' && url.pathname === '/api/spectator') {
-    const b = await readBody(req);
+    const b = await body(req);
     const sid = String(b?.sessionId || '').trim();
     if (!sid) return json(res, 400, { ok: false, error: '没有 sessionId' });
     const r = setSpectators(sid, Array.isArray(b?.agents) ? b.agents : []);
@@ -11234,11 +11272,12 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
              * 而且旁观者不能跟主智能体相同、纯闲聊（这轮还没跑过工具）不插话。 */
             const __spect = spectatorsOf(sessionId);
             if (!__spect.length) return;
-            /* 旁观者 ≠ 主智能体（主智能体就是第一名；名单里除掉他） */
-            const __mainName = (() => {
-              try { const c = getAgent(__mainIdForTurn); return String((c && c.name) || '').trim(); } catch { return ''; }
-            })();
-            const __who = __spect.find((n) => n && n !== __mainName);
+            /* 旁观者不能跟「屋里的人」重名（主人 2026-11-12 定）：
+             * 主智能体固然不行，排进接话名单的也一律让位 —— 同一个人
+             * 一边干活一边旁观，屏幕上就是「她自己回答自己点评」。
+             * 静音的也算在屋里（人在屋里就占了身份）。 */
+            const __resident = residentNamesOf(sessionId);
+            const __who = __spect.find((n) => n && !__resident.has(String(n).trim()));
             if (!__who) return;
             /* 纯闲聊不插话：从本轮起点到现在，一个工具都没跑过 → 安静看着 */
             const __worked = (() => {
@@ -12081,8 +12120,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       } catch (e) {}
       /* 【2026-11-11 加·turn done 桌面通知】一轮跑完喊主人回来 ——
        * send done 本来就一轮只走一次，所以这里天然「一轮只发一次」。
-       * 标题只带会话名（主人自己起的），正文不放她说完了什么。 */
-      try { notifyDesktop('turn-done', '小鱼干完了：「' + String(session.title || '会话').slice(0, 30) + '」', '点开看看结果。'); } catch {}
+       * 标题只带会话名（主人自己起的），正文不放她说完了什么。
+       * 【2026-11-12 修·主人报「是小鲸在干却说是小鱼」】名字原来写死「小鱼」。
+       * 现在取这一轮实际说话的人：往回找最后一条 assistant 的 _who（非小鱼身份
+       * 说话时都记了）；找不到再看「屋里的人」第一个开着的；再不行才是小鱼。 */
+      try {
+        let _nWho = '';
+        try {
+          for (let _q = session.messages.length - 1; _q >= 0 && !_nWho; _q--) {
+            const _m = session.messages[_q];
+            if (_m && _m.role === 'assistant' && typeof _m._who === 'string' && _m._who.trim()) _nWho = _m._who.trim();
+          }
+        } catch {}
+        if (!_nWho) {
+          try {
+            const _enMap = groupEnabledMap(session.id);
+            const _firstOn = groupAgentIds(session.id).find((id) => _enMap.get(id) !== false);
+            if (_firstOn) _nWho = String((getAgent(_firstOn) || {}).name || '').trim();
+          } catch {}
+        }
+        notifyDesktop('turn-done', String(_nWho || '小鱼') + '干完了：「' + String(session.title || '会话').slice(0, 30) + '」', '点开看看结果。');
+      } catch {}
       send({ type: 'done', usage, at: doneAt, model: turnModel || modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {
       // 用户点了「停止」：不是错误，照实报一句就收尾。

@@ -713,6 +713,13 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       what: '上游往这边吐字',
       limitMs: LLM_IDLE_MS,
     });
+    /* 【2026-11-12 修·「说着说着突然断了，一个错都没有」】
+     * 有的网关抽风时不发 finish_reason、不发 [DONE]，直接把 SSE 一关 ——
+     * 流「正常结束」，agent 把半句话当成「说完了」落盘收工。
+     * 小鲸鱼 13:24 那几条半截话就是这么来的（[663] 截断在半句、日志里干干净净）。
+     * 这里记一笔「上游正经收尾过没有」，流走完没见到就按断流抛 ——
+     * agent 的 isStreamDropped 路径会保留半截话、让模型接着写（最多 30 次）。 */
+    let sawFinish = false;
     for await (const chunk of guardedStream(res.body, guard)) {
     guard.beat('收到数据块');
     buf += decoder.decode(chunk, { stream: true });
@@ -723,6 +730,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       if (!line.startsWith('data:')) continue;
       const payload = line.slice(5).trim();
       if (!payload || payload === '[DONE]') {
+        sawFinish = true;
         /* 【2026-11-05 修】流要结束了还有攒着的 tool_calls —— 说明网关压根没发
          * finish_reason（或者发在一个我们没收到的帧里）。这里兜底交出去，
          * 总比让它静默消失强；正常结束时 acc 早被清空了，不会重复交付。 */
@@ -741,6 +749,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       const _choice = json.choices?.[0];
       const delta = _choice?.delta;
       const finish = _choice?.finish_reason;
+      if (finish) sawFinish = true;
       /* 【2026-11-05 修·工具调用会凭空消失】
        *
        * 原来这里 `if (!delta) continue`，而 finish_reason 是在下面才取的 ——
@@ -780,6 +789,9 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
         acc.clear();
       }
     }
+    }
+    if (!sawFinish) {
+      throw new Error('上游把流提前关了（没发 finish_reason / [DONE] 就断开 —— premature close，stream terminated early）。已收到的字都保留，接着续写。');
     }
     /**
      * 【2026-11-05 加·兜底：正文里藏着 XML 工具调用】

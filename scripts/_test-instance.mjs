@@ -148,7 +148,10 @@ export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
   let boot = '';
   const server = spawn(process.execPath, ['src/server.mjs'], {
     cwd: ROOT,
-    env: { ...process.env, MINI_AGENT_DATA: dataDir, PORT: String(appPort), XY_TEST_INSTANCE: '1' },
+    /* 【2026-11-12 加】BASE 也给上 —— detectBase 原来探端口把 8788（真身）排第一，
+     * 「隔离全量」的子进程其实一直在打真身（_e2e_chat_ 测试会话就是这样进了主人的
+     * 会话列表）。BASE + REQUIRE_ISOLATED 双保险，子进程想偏都偏不了。 */
+    env: { ...process.env, MINI_AGENT_DATA: dataDir, PORT: String(appPort), XY_TEST_INSTANCE: '1', BASE: 'http://127.0.0.1:' + appPort, XY_REQUIRE_ISOLATED: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   /* 【2026-11-11 加·诊断通道】检查脚本排 e2e 问题时需要看服务端日志。

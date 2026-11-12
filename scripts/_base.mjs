@@ -70,8 +70,20 @@ export function detectBase(extra = []) {
   }
   if (process.env.BASE) return process.env.BASE.replace(/\/+$/, '');
 
+  /* 【2026-11-12 修·回归把测试会话建到真身 App 上（「_e2e_chat_」通知就是这么来的）】
+   * 两个洞一起堵：
+   *   ① 子进程带着 PORT（隔离实例给它的端口）时，优先认它 —— 这是 runner 明说的事；
+   *   ② 自动探测的顺序把 **8788 排到最后**：以前它排第一，真身 App 一开，
+   *      探测永远先命中它 —— 检查的建会话/发消息全灌进主人的会话列表，
+   *      跑完还弹「小鱼干完了：_e2e_chat_」的桌面通知。 */
   const ports = listeningPorts();
-  const order = [...new Set([...extra, 8788, 8787, ...ports])];
+  const order = [...new Set([
+    ...(Number(process.env.PORT) ? [Number(process.env.PORT)] : []),
+    ...extra,
+    ...ports.filter((p) => p !== 8788),
+    8787,
+    8788,   // 真身默认端口：最后手段（读接口的检查用，写会话的检查不该走到这）
+  ])];
   for (const p of order) {
     if (alive(p)) return 'http://127.0.0.1:' + p;
   }

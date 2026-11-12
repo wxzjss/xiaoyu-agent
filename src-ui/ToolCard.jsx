@@ -153,7 +153,7 @@ export function ToolGroup({ items }) {
      * 带上「…」看着像「还有下文」，跟秒数后面的「…」撞一起就是两个半截句。
      * 秒数的省略号也一起去掉（见下面 hubSecs）。 */
     const statusCls = 'status ' + (running ? 'run live' : 'ok');
-    const statusTxt = running ? '运行中…' : '';
+    const statusTxt = running ? '运行中' : '';
     return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
   }, [list]);
 

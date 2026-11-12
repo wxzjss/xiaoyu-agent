@@ -9223,7 +9223,7 @@
         name = runList.length > 1 ? "\u6B63\u5728\u8DD1 " + runList.length + " \u4E2A\u5DE5\u5177\u2026" : "\u6B63\u5728" + (niceTool(running.name, running.args) || "\u5E72\u6D3B") + "\u2026";
       }
       const statusCls = "status " + (running ? "run live" : "ok");
-      const statusTxt = running ? "\u8FD0\u884C\u4E2D\u2026" : "";
+      const statusTxt = running ? "\u8FD0\u884C\u4E2D" : "";
       return { name, statusCls, statusTxt, running, thinkCount: thinks.length };
     }, [list]);
     const _startedAt = stat.running ? Number(stat.running.startedAt) || 0 : 0;

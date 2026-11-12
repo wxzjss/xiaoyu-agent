@@ -32,15 +32,16 @@ t.ok('TURN_IDLE_MAX_MS 默认 12 分钟', /TURN_IDLE_MAX_MS = msOr\([^)]*12 \* 6
  * 8 分钟 = 给「想得久」留足余量，又不是无限等（下面行为用例仍守「真空转要掐」）。 */
 t.ok('LLM_IDLE_MS 默认 8 分钟（推理模型+网关缓冲，5 分钟不吐字仍属正常）',
   /LLM_IDLE_MS = msOr\([^)]*8 \* 60 \* 1000/.test(dl));
-t.ok('server 里真的启动了看门狗', /globalThis\.__xyTurnWatchdog = createTurnWatchdog\(/.test(server));
-t.ok('看门狗用了整轮上限（不再是摆设）', /idleMs:\s*TURN_IDLE_MAX_MS/.test(server));
-t.ok('等工具时放宽（不误杀长工具）', /toolIdleMs:\s*TOOL_MAX_MS \+ 60000/.test(server));
-t.ok('等模型另立一档（不吃整轮上限）', /llmIdleMs:\s*LLM_IDLE_MS \+ 60000/.test(server));
-t.ok('软掐 + 硬清两段都接上了',
-  /abort:\s*\(sid\)[\s\S]{0,200}ac\.abort\('turn-idle'\)/.test(server)
-  && /forceClean:\s*\(sid\)[\s\S]{0,240}runningTurns\.delete\(sid\)/.test(server));
-t.ok('掐的时候写 diag（可追溯）', /diagLog\('watchdog-start'/.test(server));
-t.ok('掐之前敲 onStuck（好让自动续跑接住）', /onStuck:\s*\(sid, info\)/.test(server));
+/* 【2026-11-12 主人钦定：不掐了】看门狗误杀正常轮（小鲸鱼好好干活被等模型档掐掉
+ * —— llm 心跳让内层不报错，外刀只看字节就动手）。现在 server 不再启动它，
+ * 但 createTurnWatchdog 模块和配置行全部保留，要重新启用改回 start() 即可。
+ * 行为用例（下面第 2 段）照跑：模块本身没坏，只是不再挂到生产上。 */
+t.ok('看门狗已被停用（主人钦定不掐，2026-11-12）',
+  /_disabledByMaster/.test(server) && /watchdog-disabled/.test(server));
+t.ok('看门狗模块与配置行仍保留（随时可重新启用）',
+  /globalThis\.__xyTurnWatchdog = createTurnWatchdog\(/.test(server)
+  && /idleMs:\s*TURN_IDLE_MAX_MS/.test(server)
+  && /onStuck:\s*\(sid, info\)/.test(server));
 
 // ── 2. 行为 ────────────────────────────────────────────────────
 const { createTurnWatchdog } = await import('../src/harness/turn-watchdog.mjs');

@@ -3741,27 +3741,12 @@ async function startQueuedTurn(sessionId, queue = null) {
     return { ok: true, text: out && out.text, rest: rest() };
   } catch (e) {
     console.warn('[queued] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
-    /* 【2026-11-09 补】排队轮（setImmediate 起来的那种）出错也要落盘。
-     * 以前这里只 send({type:"error"})，事件一走就没了：切会话、刷新、重启全都看不见。
-     * 跟主轮那处一个套路，先落历史再发事件，并且去重。 */
-    try {
-      const _s = getSession(sessionId);
-      const _last = (_s && Array.isArray(_s.messages) && _s.messages.length) ? _s.messages[_s.messages.length - 1] : null;
-      const errText = String(e?.message ?? e);
-      if (_s && !(_last && _last.__turnErr)) {
-        _s.messages.push({
-          role: 'assistant',
-          content: '⚠️ 这一轮断在这儿了：' + errText
-            + '\n\n（这一轮没说完，工具结果还在。换个模型试试，或者跟我说一声「接着办」，我照清单往下走。）',
-          at: Date.now(),
-          __turnErr: true,
-        });
-        saveSession(_s);
-      }
-    } catch {}
+    /* 【2026-11-12 主人钦定】不再往历史里落「⚠️ 这一轮断在这儿了：quit/503」这类提示
+     * （主人点名删）—— 上游专属的两种提示（「抖了在重试」「额度用完」）各自的路还照落，
+     * 其余断轮一律静默：send error 带 persisted:true，前端也不补画。 */
     if (ac.signal.aborted) send({ type: 'aborted', reason: String(ac.signal.reason ?? '') });
-    /* 【2026-11-10 修·错误提示画两遍】落盘过就打 persisted，
-     * 前端便不再补画一颗（屏幕只认历史那一条）。见前端 error 分支注释。 */
+    /* 【2026-11-10 修·错误提示画两遍】persisted:true 告诉前端「别再自己补一颗」。
+     * 现在历史里不落了，前端也不画 —— 断轮静默（主人钦定）。 */
     else send({ type: 'error', message: String(e?.message ?? e), persisted: true });
     throw e;
   } finally {
@@ -5093,6 +5078,20 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: false, error: String(e?.message ?? e) });
     }
   }
+  /* 【2026-11-12 加】token 过期了要能重新取：前端「测连通」失败且原因看着是 token 时调它。
+   * 绝不把 token 本体回给前端，只回「取到了没有」。 */
+  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
+    try {
+      const r = readDeepSeekToken();
+      if (!r || !r.token) {
+        return json(res, 200, { ok: false, reason: 'no-token', error: (r && r.reason) || '没在内置浏览器里登过 deepseek' });
+      }
+      return json(res, 200, { ok: true, hasToken: true, len: String(r.token).length });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: String((e && e.message) || e) });
+    }
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/probe') {
     const p = await probeLocalService(1500);
     return json(res, 200, { ok: true, up: p.up, ids: p.ids ?? [], hasToken: !!readDeepSeekToken().token });
@@ -12551,24 +12550,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               send({ type: 'error', message: '上游连着 ' + _rec.n + ' 次没接上（' + _rec.lastCode + '）', persisted: true });
             }
           } else {
-          try {
-            const _s = getSession(sessionId);
-            const _last = (_s && Array.isArray(_s.messages) && _s.messages.length) ? _s.messages[_s.messages.length - 1] : null;
-            const _already = !!(_last && _last.__turnErr);
-            if (_s && !_already) {
-              _s.messages.push({
-                role: 'assistant',
-                content: '⚠️ 这一轮断在这儿了：' + errText
-                  + '\n\n（这一轮没说完，工具结果还在。换个模型试试，或者跟我说一声「接着办」，我照清单往下走。）',
-                at: Date.now(),
-                __turnErr: true,
-              });
-              saveSession(_s);
-            }
-          } catch {}
-          /* 【2026-11-10 修·错误提示画两遍】persisted=true 告诉前端
-           * 「这条已经落进历史了，你别再自己补一颗」—— 屏幕只认落盘的那一条，
-           * 轮末换历史时不闪、不双画。 */
+          /* 【2026-11-12 主人钦定·整个删】不再往历史里落「⚠️ 这一轮断在这儿了：…」——
+           * 主人原话「我要求把这个提示系统内部整个删了」。断轮一律静默：
+           * send error 带 persisted:true，前端也不补画。
+           * 上游专属提示（「抖了在重试」「额度用完」）在别的分支照常落，不受影响。 */
           send({ type: 'error', message: errText, persisted: true });
           }
         }
@@ -13459,13 +13444,17 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         onStuck: (sid, info) => { try { scheduleStuckRetry(sid, info); } catch {} },
         onLog: (tag, detail) => diagLog(tag, detail),
       });
-      globalThis.__xyTurnWatchdog.start();
-      diagLog('watchdog-start', 'idle=' + Math.round(TURN_IDLE_MAX_MS / 1000) + 's tool='
-        + Math.round((TOOL_MAX_MS + 60000) / 1000) + 's llm=' + Math.round((LLM_IDLE_MS + 60000) / 1000) + 's');
+      /* 【2026-11-12 主人钦定：不掐了】主人原话「删掉，不掐。她明明运行好好的，
+       * 突然就被掐了，我没看她停过」。实锤也支持主人：20:30 小鲸鱼好好干着活
+       * 被等模型那档掐掉 —— llm 层心跳（2dfba3b）让内层不报错，这把外刀却只看
+       * 「有没有字节流过来」就动手，把正常思考/心跳续命的一轮误判成僵死。
+       * 真上游挂掉仍然有人兜：llm 层自己的空闲超时会报错 → agent 续写 →
+       * 错误驱动的自动接回（upFailBook/scheduleStuckRetry）照常工作。
+       * 配置行和 onStuck 都留着，哪天要重新启用把这行改回去就行。 */
+      globalThis.__xyTurnWatchdog = { start() {}, stop() {}, _disabledByMaster: true };
+      diagLog('watchdog-disabled', '主人钦定不掐（2026-11-12）：外刀误杀正常轮，真实故障由 llm 层超时 + 错误接回兜底');
       if (!quiet) {
-        console.log('  watchdog : 真空转 ' + Math.round(TURN_IDLE_MAX_MS / 1000) + 's / 等工具 '
-          + Math.round((TOOL_MAX_MS + 60000) / 1000) + 's / 等模型 '
-          + Math.round((LLM_IDLE_MS + 60000) / 1000) + 's，超了掐掉并自动接回来');
+        console.log('  watchdog : 已停用（主人钦定不掐）—— 真实故障由 llm 层超时 + 错误驱动的自动接回兜底');
       }
     }
   } catch (e) {

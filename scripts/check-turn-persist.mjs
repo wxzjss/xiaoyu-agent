@@ -70,18 +70,27 @@ async function main() {
   const srvSrc = readFileSync(join(REPO, 'src', 'server.mjs'), 'utf8');
   const lines = srvSrc.split(/\r?\n/);
 
-  // 落盘可能写在 send 之前（先落盘、再发事件），所以不能只看"往后 60 行"。
-  // 改成：每一处 error 出口前后 80 行内都必须有 __turnErr。
+  /* 【2026-11-12 主人钦定·改口径】「⚠️ 这一轮断在这儿了」整个删了 —— 断轮静默。
+   * 现在守卫反过来：这句文案不许再出现在落盘代码里（注释不算）；
+   * error 出口都要带 persisted:true（前端也不补画）。 */
+  const duanIdxs = lines.map((l, i) => ((/断在这儿了/.test(l) && !/^\s*(\/\*|\*|\/\/)/.test(l)) ? i : -1)).filter((i) => i >= 0);
+  if (duanIdxs.length) bad('「断在这儿了」又回来了（主人钦定整个删）', 'L' + duanIdxs.map((i) => i + 1).join(', L'));
+  else ok('「⚠️ 这一轮断在这儿了」已整个删除（主人钦定，断轮静默）');
   const errIdxs = lines.map((l, i) => (/type:\s*'error'/.test(l) ? i : -1)).filter((i) => i >= 0);
   if (!errIdxs.length) {
     bad('server.mjs 里找不到 send({type:"error"}) 那一处');
   } else {
+    /* 静默出口（原来落「断在这儿了」的那两处）必须 persisted:true；
+     * 其它正当的用户提示（限流换会话失败等）允许不带 —— 它们本来就该让主人看见。 */
+    const SILENT = [3750, 12557];   // 主轮 / 排队轮两个原「断在这儿了」出口
     const MISSING = errIdxs.filter((i) => {
+      const ln = i + 1;
+      if (!SILENT.some((s) => Math.abs(s - ln) <= 3)) return false;
       const win = lines.slice(Math.max(0, i - 80), i + 80).join('\n');
-      return !/__turnErr/.test(win);
+      return !/persisted:\s*true/.test(win);
     });
-    if (!MISSING.length) ok('上游报错那一路：每个 error 出口前后 80 行内都有 __turnErr（共 ' + errIdxs.length + ' 处）');
-    else bad('有一处 error 出口没落盘', 'L' + MISSING.map((i) => i + 1).join(', L'));
+    if (!MISSING.length) ok('静默出口都带 persisted:true（前端不补画；其它正当提示照常可见）');
+    else bad('静默出口缺 persisted:true（前端会补画出一颗）', 'L' + MISSING.map((i) => i + 1).join(', L'));
   }
 
   const cleanIdx = lines.findIndex((l) => /forceClean:\s*\(sid\)/.test(l));
@@ -216,17 +225,18 @@ async function main() {
         const errMsg = arr.filter((m) => m && m.__turnErr);
         if (errMsg.length === 1) {
           ok('断了之后历史里落了一条 __turnErr（正好一条，没重复）');
-          ok('那条内容是：' + String(errMsg[0].content || '').slice(0, 70).replace(/\n/g, ' '));
+          ok('那条内容是：' + String(errMsg[0].content || errMsg[0].text || '').slice(0, 70).replace(/\n/g, ' '));
         } else if (errMsg.length === 0) {
-          bad('断了之后历史里居然什么都没有 —— 这就是主人遇到的那个 bug', '最后三条：' +
-            JSON.stringify(arr.slice(-3).map((m) => ({ role: m.role, content: String(m.content || '').slice(0, 50), __turnErr: !!m.__turnErr })), null, 1));
+          /* 【2026-11-12 改口径】断轮静默（主人钦定删「断在这儿了」）—— 历史里什么都没有是合法的；
+           * 上游专属提示走自己的路（那条是 note:true，不带 __turnErr 的话也存在）。 */
+          ok('断了之后历史里什么都没落（断轮静默，主人钦定 2026-11-12）');
         } else {
           bad('落了好几条 __turnErr（去重没生效）', JSON.stringify(errMsg.map((m) => String(m.content || '').slice(0, 40))));
         }
 
-        // 它必须是「能看见的话」，不能是空
-        if (errMsg.length && !String(errMsg[0].content || '').trim()) {
-          bad('落了 __turnErr 但内容是空的，界面上还是啥都看不见');
+        // 能看见的话必须非空：content 或 text（note:true 的提示话在 text 里）
+        if (errMsg.length && !String(errMsg[0].content || '').trim() && !String(errMsg[0].text || '').trim()) {
+          bad('落了 __turnErr 但内容和 text 都是空的，界面上还是啥都看不见');
         } else if (errMsg.length) {
           ok('内容非空，界面上画得出来');
         }

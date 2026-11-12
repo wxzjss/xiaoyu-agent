@@ -164,11 +164,13 @@ export function startHealthWatch() {
       }
     } catch {}
   };
-  // setImmediate 让出一次事件循环 → 服务起来、窗口画出来之后再量。
-  try {
-    if (typeof setImmediate === 'function') setImmediate(runReport);
-    else setTimeout(runReport, 0);
-  } catch { runReport(); }
+  /* 【2026-11-13 修·重启还是慢（boot-cpu 火焰图实锤）】2026-11-07 那次改用了
+   * setImmediate——但它只在当前拍之后让一次事件循环，窗口还一个像素没画呢
+   * 它就开跑了：healthReport 递归 statSync 整个 .state（1.3GB / 3.4 万文件）
+   * 把主进程同步卡死 11.3 秒（boot-lag：启动第 11576ms 卡 11326ms），
+   * 页面加载/静态文件全被摁住 ——「双击图标十几秒窗口才出来」卷土重来。
+   * 现在真往后放：等 30 秒（窗口早画完、续跑也起好轮了）再量，量完只写一行日志。 */
+  try { setTimeout(runReport, 30_000).unref?.(); } catch { /* 退化成不跑，也不能卡启动 */ }
 }
 
 export default { healthReport, pruneOrphans, startHealthWatch };

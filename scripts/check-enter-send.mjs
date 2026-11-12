@@ -23,7 +23,7 @@ const ui = readUISource();
 
 // ── 源码 ─────────────────────────────────────────────────────────
 t.ok('229/选词那道门还在', /e\.isComposing \|\| e\.keyCode === 229/.test(ui));
-t.ok('空输入框 + 有附件时放行', /_imBlocked[\s\S]{0,320}attachments\.length\)\s*\{[\s\S]{0,120}send\(\)/.test(ui));
+t.ok('空输入框 + 有附件时放行', /_imBlocked[\s\S]{0,700}attachments\.length\)\s*\{[\s\S]{0,200}send\(\)/.test(ui));
 t.ok('空消息什么都不发', /!String\(input\.value \|\| ''\)\.trim\(\) && !attachments\.length\) return;/.test(ui));
 t.ok('有文档级兜底监听', /document\.addEventListener\('keydown',[\s\S]{0,200}attachments\.length \|\| busy\) return;/.test(ui));
 t.ok('兜底会避开面板和别的输入框', /dialog\[open\][\s\S]{0,400}tag === 'input'/.test(ui));

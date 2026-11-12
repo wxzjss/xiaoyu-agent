@@ -11199,8 +11199,13 @@ input.addEventListener('keydown', (e) => {
    */
   const _imBlocked = imeSwallowsEnter(e);
   if (_imBlocked) {
+    /* 【2026-11-13 修·主人报「回车有时真的换行」】被输入法门吞掉的 Enter 必须
+     * preventDefault —— 否则浏览器执行默认行为：往输入框里插一个真换行。
+     * 现场就是 150ms 窗口：打完字选词上屏（compositionend）后立刻按回车想发送，
+     * 被当成「上屏回车」吞了，又一脚踩进默认行为 → 凭空多一个换行。
+     * 吞掉的这一下现在什么都不做（不发也不换行），主人再按一次就发出去了。 */
+    if (e.key === 'Enter' && !e.shiftKey) e.preventDefault();
     if (e.key === 'Enter' && !e.shiftKey && !String(input.value || '').trim() && attachments.length) {
-      e.preventDefault();
       /* 【2026-11-11 主人定·跟点【发送】完全一致】没在跑就正常发，在跑就直接插话 */
       /* 【2026-11-12 主人报·回车冒金色待发送框】busy 时走直接插话，金框那路死掉 */
       if (!busy) send();
@@ -19917,6 +19922,7 @@ if (mdlBasePreset) {
       mdlBase.value = '';
       if (mdlKey) mdlKey.value = '';
       mdlModel.value = '';
+      if (mdlName) { mdlName.value = ''; mdlNameTouched = false; }
       if (mdlName) mdlName.value = '';
       mdlDiscovered = { base: '', ids: [] };
       paintModelPicker('');
@@ -20738,8 +20744,7 @@ document.getElementById('mdlCancel').onclick = () => closeForm();
  * 全程不弹框（主人说「之后说的要求全程不会有任何提示」）—— 提示只落在表单提示行上。
  */
 function mdlLocalHint(kind, text) {
-  /* 主人钦点：全程不出提示。所以只有「真失败」才落脚一句话，
-   * 成功一律清空提示行，让表单看着跟没点过一样。 */
+  /* 2026-11-13 主人改主意：成功也要提示（此前按「全程静默」清空过）。 */
   const el = document.getElementById('mdlFormHint') || document.getElementById('mdlHint');
   if (!el) return;
   el.textContent = text || '';
@@ -20794,12 +20799,13 @@ document.getElementById('mdlTest').onclick = async () => {
       if (mdlBase && done.baseURL) mdlBase.value = done.baseURL;
       if (mdlKey && done.apiKey) mdlKey.value = done.apiKey;
       if (mdlModel && done.model) mdlModel.value = done.model;
+      if (mdlName && !mdlNameTouched) { mdlName.value = '本机 DeepSeek'; mdlNameTouched = true; }
       if (done.created) { paintModels(); syncHealth(); }
 
       // 真打一次
       let probe = await localDeepSeekGet('/api/mini-deepseek/probe');
       if (probe && probe.ok && probe.up) {
-        mdlLocalHint('', '');
+        mdlLocalHint('ok', '通了，服务在跑，token 也在');
         if (!done.created) { paintModels(); syncHealth(); }
         return;
       }
@@ -20828,11 +20834,12 @@ document.getElementById('mdlTest').onclick = async () => {
       if (mdlBase && done.baseURL) mdlBase.value = done.baseURL;
       if (mdlKey && done.apiKey) mdlKey.value = done.apiKey;
       if (mdlModel && done.model) mdlModel.value = done.model;
+      if (mdlName && !mdlNameTouched) { mdlName.value = '本机 DeepSeek'; mdlNameTouched = true; }
       paintModels(); syncHealth();
 
       probe = await localDeepSeekGet('/api/mini-deepseek/probe');
       if (probe && probe.ok && probe.up) {
-        mdlLocalHint('', '');
+        mdlLocalHint('ok', '通了，服务在跑，token 也在');
         return;
       }
       mdlLocalHint('err', ((probe && probe.error) || why || '还是连不上') + '（已经试着自动恢复过一次）');

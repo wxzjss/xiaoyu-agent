@@ -299,7 +299,14 @@ function saveSlimOriginal(sessionId, index, role, text) {
     mkdirSync(dir, { recursive: true });
     const file = join(dir, String(index).padStart(4, '0') + '-' + role + '-' + Date.now() + '.txt');
     writeFileSync(file, String(text), 'utf8');
-    pruneSlimDir(sessionId);
+    /* 【2026-11-13 修·重启慢（boot-cpu 火焰图第二热点）】每次存原文都全目录
+     * statSync 排一遍队再删超编的 —— 开机续跑一轮要存几十条原文，就是几十次
+     * 全目录 stat（火焰图里 0.94s，全部砸在「窗口还没画完」的启动窗口里）。
+     * 挪到 setImmediate：存盘的关键路径（不丢原文）照旧，清理让一步。 */
+    try {
+      if (typeof setImmediate === 'function') setImmediate(() => { try { pruneSlimDir(sessionId); } catch {} });
+      else pruneSlimDir(sessionId);
+    } catch {}
     return file;
   } catch {
     return '';

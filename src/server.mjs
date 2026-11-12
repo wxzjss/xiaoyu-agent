@@ -2,7 +2,7 @@
 
 import { createServer } from 'node:http';
 import { readFile, open as pvOpen } from 'node:fs/promises';
-import { createReadStream, statSync, readFileSync as pvReadFileSync, readdirSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
+import { writeFileSync, createReadStream, statSync, readFileSync as pvReadFileSync, readdirSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve, relative, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
@@ -13606,6 +13606,32 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     _lagTimer.unref?.();
   } catch {}
 
+
+  /* 【2026-11-13 修·重启慢】boot-lag 实锤主进程事件循环被同步卡 11.3s（+2.7→+14s），
+   * 但探针只能在事后喊疼，指不出卡在哪个函数。装 CPU 剖析器：启动后自动采 25 秒，
+   * 存 .state/boot-cpu.cpuprofile —— 卡在哪一行，火焰图数据自己说话。 */
+  try {
+    import('node:inspector').then((inspector) => {
+      const session = new inspector.Session();
+      session.connect();
+      const post = (m, p) => new Promise((r) => session.post(m, p, (e, res) => r(e ? null : res)));
+      return post('Profiler.enable')
+        .then(() => post('Profiler.setSamplingInterval', { interval: 1000 }))   // 1ms 采样，定位毫秒级热点
+        .then(() => post('Profiler.start'))
+        .then(() => new Promise((r) => setTimeout(r, 25000)))
+        .then(async () => {
+          try {
+            const r = await post('Profiler.stop');
+            const prof = r?.profile;
+            if (prof) {
+              writeFileSync(join(config.dataDir, '.state', 'boot-cpu.cpuprofile'), JSON.stringify(prof));
+              diagLog('boot-cpu', '启动期 CPU 剖析已存 boot-cpu.cpuprofile');
+            }
+          } catch { /* 剖析失败不影响服务 */ }
+          try { session.disconnect(); } catch {}
+        });
+    }).catch(() => { /* inspector 起不来就算了 */ });
+  } catch { /* 同上 */ }
 
   // 返回一个「服务句柄」：{ port, url, close(), on/once/off('exit') }。
   //

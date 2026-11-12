@@ -201,7 +201,7 @@ export const screenTools = [
       properties: {
         keepBrightness: {
           type: 'boolean',
-          description: '只铺黑遮罩、不把背光降到 0。默认 false（真熄屏）。屏幕可能偏灰时用 true。',
+          description: '【一般不要传】不传就是真熄屏：背光降到 0%，屏幕全黑不漏光。传 true 只会盖一层黑遮罩、背光仍亮着（屏幕发灰、还能透光），只有在主人明确要求"保留亮度/只盖一层"时才用。',
         },
       },
       required: [],

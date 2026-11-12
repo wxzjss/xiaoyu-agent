@@ -734,7 +734,6 @@ function toolBlock(sessionId = '') {
   const tips = [
     ABILITY_LIST,
     '遇到上面写的事直接干，别说做不到、别只说路径不发东西。',
-    '（如果这里列得比你会的少，那是我收窄了这一档的权限 —— 别反复试，也别假装本来就不会；直接跟主人说这一档干不了。）',
   ];
   if (hasSend) {
     tips.push('- 要发文件给主人（图、视频、声音、压缩包、报告…）用 send_file，别只报路径；');

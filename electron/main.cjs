@@ -486,6 +486,27 @@ async function startServer() {
     close: () => Promise.resolve(closeBrowser()),
     state: () => Promise.resolve(browserState()),
     snap: () => snapBrowser(),
+    // 【2026-11-12 新加·让小鱼能读页面里的东西】
+    // 截图看不清小字时，用它跑一段 JS 把 localStorage / document.cookie 取回来。
+    // 只在主进程自己的内置浏览器窗口里跑，不碰别的进程。
+    eval: async (code) => {
+      try {
+        if (!browserWin || browserWin.isDestroyed()) return { ok: false, error: "浏览器没开着" };
+        const r = await browserWin.webContents.executeJavaScript(String(code), true);
+        return { ok: true, value: r };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    },
+    // 读 cookie（有些站的登录凭据只在这儿）
+    cookies: async () => {
+      try {
+        const { session } = require("electron");
+        const ses = (browserWin && !browserWin.isDestroyed())
+          ? browserWin.webContents.session
+          : session.defaultSession;
+        const list = await ses.cookies.get({});
+        return { ok: true, value: list.map((c) => ({ name: c.name, domain: c.domain, value: c.value })) };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    },
   };
 
   // 告诉服务端「有人在管我」：界面上那个「重启让它生效」就是靠它决定

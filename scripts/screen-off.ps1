@@ -42,7 +42,7 @@ param(
     [int]$TimeoutSec = 3600,                  # 最长保持秒数，到点自动恢复
     [int]$ArmSeconds = 3,                     # 预启动倒计时（此期间可取消，屏幕先变暗）
     [int[]]$ExitKeys = @(0x1B),
-    [switch]$KeepBrightness                # 无人值守安全模式：只铺黑遮罩，不改亮度
+    [switch]$KeepBrightness                # 【已废弃 2026-11-12】仅为兼容老调用保留，不再生效：现在一律把背光降到 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +75,13 @@ function Set-BrightnessValue {
     if ($Value -gt 100) { $Value = 100 }
     try {
         $methods = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop
+        if (-not $methods) {
+            # 【2026-11-12 修】这里原来是"$methods 为空 → foreach 不跑 → 返回 false"，
+            # 一声不响地失败。系统忙/并发查询时 Get-CimInstance 确实会返回空集合，
+            # 于是「降背光」这一步被悄悄跳过，屏幕只剩黑遮罩 —— 看着黑、其实背光还亮着。
+            Write-Log '亮度写入口令枚举为空（WMI 暂无响应），本次未写入' 'WARN'
+            return $false
+        }
         $ok = $false
         foreach ($m in $methods) {
             try {
@@ -90,6 +97,39 @@ function Set-BrightnessValue {
         Write-Log "亮度接口不可用: $($_.Exception.Message)" 'WARN'
         return $false
     }
+}
+
+<#
+ * 【2026-11-12 新增】把亮度设到目标值，并且**读回确认**。
+ *
+ * 为什么必须要有这个：原来只调一次 Set-BrightnessValue、只信它的返回值。
+ * 实测踩到 —— WMI 偶发不给方法对象时会静默失败，于是「降到 0%」这一步被跳过，
+ * 屏幕上只剩一层黑遮罩，遮罩后面背光仍然亮着，主人看到的就是"不是全黑、还发光"。
+ *
+ * 现在的做法：写 → 读回 → 差得远就重试（最多 Tries 次，每次间隔 250ms）。
+ * 只要有一次读回接近目标就算成功。彻底失败会写 WARN，绝不静默。
+#>
+function Set-BrightnessForced {
+    param(
+        [int]$Value,
+        [int]$Tries = 5,
+        [int]$Tolerance = 2
+    )
+    if ($Value -lt 0) { $Value = 0 }
+    if ($Value -gt 100) { $Value = 100 }
+    for ($i = 1; $i -le $Tries; $i++) {
+        $null = Set-BrightnessValue -Value $Value
+        Start-Sleep -Milliseconds 250
+        $now = Get-BrightnessValue
+        if ($now -ge 0 -and [math]::Abs($now - $Value) -le $Tolerance) {
+            if ($i -gt 1) { Write-Log ("[亮度] 第 {0} 次尝试后确认到位：{1}%（目标 {2}%）" -f $i, $now, $Value) }
+            return $true
+        }
+        Write-Log ("[亮度] 第 {0}/{1} 次写入后读回 {2}%，未达目标 {3}%，重试" -f $i, $Tries, $now, $Value) 'WARN'
+    }
+    $final = Get-BrightnessValue
+    Write-Log ("[亮度] 连续 {0} 次都没设到 {1}%（最后一次读回 {2}%）" -f $Tries, $Value, $final) 'ERROR'
+    return $false
 }
 
 # ---------------- 全屏黑遮罩（独立 STA 线程 + 消息泵 + 纯 Win32） ----------------
@@ -517,7 +557,7 @@ try {
         Write-Host ("将在 {0} 秒后关闭显示器；这期间按 Esc 或右键可取消。" -f $armSec) -ForegroundColor Cyan
 
         $dimTarget = [math]::Max(20, [math]::Min(35, [int]($saveB * 0.45)))
-        if (-not $KeepBrightness -and $saveB -gt $dimTarget) {
+        if ($saveB -gt $dimTarget) {
             $dimOk = Set-BrightnessValue -Value $dimTarget
             if ($dimOk) { Write-Log ("[预启动] 亮度先降到 {0}% 作为提示" -f $dimTarget) }
         }
@@ -557,13 +597,19 @@ try {
     }
 
     # ---------- 阶段 2：真正黑屏 ----------
+    # 【2026-11-12】不再有"只遮罩不降亮度"的分支了：那是当初怕进程被杀把屏幕卡黑
+    # 而留的安全模式，现在已经有启动自愈（残留低亮度自动拉回）兜底，不需要它了。
+    # 而且实测证明它正是"看着黑、其实背光还亮着"的元凶 —— 主人要的是真黑，
+    # 所以就算上层还传了 -KeepBrightness，这里也一律把背光降到 0。
     $brightnessOk = $false
-    if (-not $KeepBrightness -and $origBrightness -ge 0) {
-        $brightnessOk = Set-BrightnessValue -Value 0
-        if ($brightnessOk) { Write-Log '[关屏] 背光已降至 0%' }
-    }
-    elseif ($KeepBrightness) {
-        Write-Log '[关屏] KeepBrightness 模式：不改亮度，仅铺黑遮罩（进程退出即自动恢复可视）'
+    if ($origBrightness -ge 0) {
+        $brightnessOk = Set-BrightnessForced -Value 0 -Tries 5
+        if ($brightnessOk) {
+            Write-Log ("[关屏] 背光已降至 0%（读回确认 {0}%）" -f (Get-BrightnessValue))
+        }
+        else {
+            Write-Log '[关屏] 背光没能降到 0%，这次只会盖黑遮罩、背后仍有背光；请把当天日志发给小鱼排查' 'ERROR'
+        }
     }
 
     $veilOk = $false

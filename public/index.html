@@ -8890,7 +8890,7 @@ function showSending(startAt) {
           const sp2 = sendingHint && sendingHint.querySelector('span');
           if (sp2) {
             const want = '正在发送消息';
-            if (sp2.textContent !== want) sp2.textContent = want;
+            if (sp2.textContent !== want) _hintSetText(want);
           }
         }
       } catch (err) {}

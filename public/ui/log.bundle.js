@@ -9275,7 +9275,7 @@
     const list = Array.isArray(items) ? items : [];
     const tools = list.filter((t) => t && t.kind === "tool");
     const thinks = list.filter((t) => t && t.kind === "think");
-    const [open, onToggle] = useOpen("hub-" + (list[0] ? list[0].key : "x"), true);
+    const [open, onToggle] = useOpen("hub-" + (list[0] ? list[0].key : "x"), false);
     const _running0 = tools.find((t) => t.status === "run" && (Number(t.startedAt) || 0) > 0) || null;
     const tick = useRunTicker(Boolean(_running0));
     const stat = (0, import_react12.useMemo)(() => {

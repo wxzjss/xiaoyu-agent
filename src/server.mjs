@@ -3524,7 +3524,7 @@ async function startQueuedTurn(sessionId, queue = null) {
    * 她用「我以为这句话还是我接」的口吻答，看上去就像在冒充小鲸。
    */
   if (!fishOn(sessionId)) {
-    console.log('[queued] 小鱼在这个会话是关着的，这一轮不跑：', sessionId);
+    diagLog('queued-skip-fish-off', sessionId);
     return { ok: false, skipped: 'fish-off' };
   }
   if (!session) throw new Error('没有这个会话');
@@ -13534,7 +13534,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       } else {
         _s.messages.push({ role: 'user', content: _resumeMsg, _sysNote: true });
         saveSession(_s);
-        try { startQueuedTurn(_sid, null).catch((e) => console.warn('[restart] 叫醒失败：', String(e?.message ?? e))); } catch {}
+        try { diagLog('after-restart-kick', _sid); startQueuedTurn(_sid, null).then((r) => diagLog('after-restart-kick-result', _sid + ' ' + JSON.stringify(r ?? {}).slice(0,200))).catch((e) => { diagLog('after-restart-kick-FAIL', _sid + ' ' + String(e?.message ?? e)); console.warn('[restart] 叫醒失败：', String(e?.message ?? e)); }); } catch (e) { diagLog('after-restart-kick-sync-FAIL', _sid + ' ' + String(e?.message ?? e)); }
       }
     } catch (e) {
       console.warn('[restart] 自动说一句失败（不影响使用）：', String(e?.message ?? e));

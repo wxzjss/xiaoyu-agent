@@ -9036,8 +9036,16 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     if (!session) return json(res, 404, { error: 'session not found' });
     if (runningTurns.get(id)) return json(res, 409, { error: '这一轮正在生成，等它说完或点停止再回退' });
     // 前端传的可能是「有效视图下标」，换算回 messages 真下标（与 message-delete 同一套）
-    const _view = effectiveIndexes(all, loadRewinds(session));
-    const _real = Number.isInteger(at) && at >= 0 && at < all.length && all[at] ? at : _view[at];
+    /* 【2026-11-13 修·主人报「回退/删除按钮全部无效」】两颗雷一起排掉：
+     * ① 这条路由里根本没有 `all` 这个变量（别的路由块里定义的 const 出了块就没了）
+     *    —— 一执行就 ReferenceError，响应永远不回，前端 fetch 干等 = 点了没反应；
+     * ② effectiveIndexes 返回的是 {head, keep} **对象**，不是数组 ——
+     *    `_view[at]` 在对象上取数字键永远是 undefined，这个换算从来没对过。 */
+    const _all = Array.isArray(session.messages) ? session.messages : [];
+    const _view = effectiveIndexes(_all, loadRewinds(session));
+    const _real = Number.isInteger(at) && at >= 0 && at < _all.length && _all[at] && _view.keep.includes(at)
+      ? at
+      : _view.keep[at];
     const i = Number(_real);
     if (!Number.isInteger(i) || i < 0 || i >= session.messages.length) return json(res, 400, { error: 'bad at' });
     const msg = session.messages[i];
@@ -9080,8 +9088,14 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     const view = effectiveIndexes(all, loadRewinds(session));
     const idx = Number(at ?? msgAt);
     if (!Number.isFinite(idx) || idx < 0 || idx >= all.length) return json(res, 400, { error: 'bad index' });
-    // 前端传的是「有效视图下标」，换算回 messages 真下标
-    const real = view.indexOf(idx) >= 0 ? idx : view[idx];
+    // 前端传的可能是「有效视图下标」，换算回 messages 真下标
+    /* 【2026-11-13 修·主人报「删除按钮无效」】原来写的是 view.indexOf(idx) ——
+     * effectiveIndexes 返回的是 {head, keep} 对象，根本没有 indexOf 方法，
+     * 一执行就 TypeError，响应永远不回，前端 fetch 干等 = 点删除、点确认，什么都没发生。
+     * 现在按 rewind-preview 同一套判据：真下标（在 keep 里）直接用；
+     * 不是真下标就当「视图里的第 idx 个」，用 keep[idx] 换算回真下标。 */
+    const keep = view.keep;
+    const real = keep.includes(idx) ? idx : keep[idx];
     if (!Number.isFinite(real) || real < 0 || real >= all.length) return json(res, 400, { error: 'bad index' });
     const target = all[real];
     if (!target || target.role === 'system') return json(res, 400, { error: 'system 那段不能删' });

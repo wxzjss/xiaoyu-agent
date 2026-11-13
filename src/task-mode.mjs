@@ -317,6 +317,11 @@ export function listWorkers(sessionId) {
       id: String(w.id || ''),
       name: String(w.name || ''),
       task: String(w.task || ''),
+      /* 【2026-11-13 子 Agent 续上】brief = 派活时的完整任务原文（含汇报要求），
+       * 续跑要靠它接着干 —— task 只留了前 200 字，不够。accept/resumes 同理。 */
+      brief: String(w.brief || ''),
+      accept: String(w.accept || ''),
+      resumes: Number(w.resumes) || 0,
       status: String(w.status || 'running'),
       startedAt: Number(w.startedAt) || 0,
       endedAt: Number(w.endedAt) || 0,
@@ -351,6 +356,15 @@ export function noteWorker(sessionId, worker) {
     id,
     name: String(worker.name || ''),
     task: String(worker.task || ''),
+    /* 【2026-11-13 子 Agent 续上】brief（完整任务原文）与 resumes（已被续跑几次，
+     * 防崩溃循环：同一条活最多自动续 2 次，再挂就老实标 interrupted 等人来）。
+     * 没显式传就继承旧记录 —— 改状态不许把这些抹了。 */
+    brief: worker.brief !== undefined
+      ? String(worker.brief || '')
+      : (at >= 0 ? String(list[at].brief || '') : ''),
+    resumes: worker.resumes !== undefined
+      ? Number(worker.resumes) || 0
+      : (at >= 0 ? Number(list[at].resumes) || 0 : 0),
     status: String(worker.status || 'running'),
     startedAt: Number(worker.startedAt) || Date.now(),
     endedAt: Number(worker.endedAt) || 0,

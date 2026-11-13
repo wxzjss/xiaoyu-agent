@@ -23,7 +23,7 @@ import { readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { featureOnFor } from './features.mjs';
 import { followup, peekInbox, drainTurns } from './inbox.mjs';
-import { drainWorkerMail, finishWorker, listWorkers, workersPath } from './task-mode.mjs';
+import { drainWorkerMail, finishWorker, listWorkers, noteWorker, workersPath } from './task-mode.mjs';
 
 /** 这个会话现在开没开团队模式。读盘失败 = 没开（fail-closed，跟 taskOn 同一口径）。 */
 export function teamOn(sessionId) {
@@ -244,4 +244,91 @@ export function markInterruptedWorkers() {
     } catch { /* 单个会话坏了不连累别的 */ }
   }
   return { ok: true, swept };
+}
+
+/* ── 重启后的自动续跑（主人 2026-11-13 钦点：子 Agent 也要续上） ───── */
+
+/**
+ * 启动时扫花名册：还挂着 'running' 的 worker，进程已经没了 ——
+ * 跟主会话的续跑（resume.mjs）同一个道理，把它们**重新派发**，接着上一段干。
+ *
+ * 规矩：
+ *  · 只有「新鲜」的才续：startedAt 在 24h 内、自动续跑次数没超 2（防崩溃循环 ——
+ *    如果这个任务本身会把程序搞挂，第三次就别再自动拉了，老实标 interrupted）；
+ *  · 续跑的任务原文带三样：完整 brief（含汇报要求）、验收标准、上次的进度行 ——
+ *    让她先看进度再动手，**接着做别从头来**；
+ *  · 过期的/没任务原文的照旧标 'interrupted'（原 markInterruptedWorkers 的行为）；
+ *  · 续跑用同一个 wid —— 花名册、进度、信箱、watch_worker 全都还认得它。
+ *
+ * 延迟 delayMs 再真正派发：开机头几秒主会话自己的续跑轮先跑，别跟它抢模型。
+ */
+export function resumeInterruptedWorkers({ delayMs = 12000 } = {}) {
+  let dir = '';
+  try { dir = workersPath(); } catch { return { ok: false }; }
+  let files = [];
+  try { files = readdirSync(dir).filter((f) => f.endsWith('.json')); } catch { return { ok: true, resumed: 0, interrupted: 0, ids: [] }; }
+  const MAX_AGE_MS = 24 * 60 * 60 * 1000;   // 跟 resume.mjs 的 MAX_AGE_MS 同一个口径
+  const MAX_RESUMES = 2;                     // 自动续跑上限（防崩溃循环）
+  let resumed = 0;
+  let interrupted = 0;
+  const ids = [];
+  let idx = 0;
+  for (const f of files) {
+    const sid = basename(f, '.json');
+    if (!sid) continue;
+    let ws = [];
+    try { ws = listWorkers(sid); } catch { continue; }
+    for (const w of ws) {
+      if (w.status !== 'running') continue;
+      const age = Date.now() - (Number(w.startedAt) || 0);
+      const fresh = Number.isFinite(age) && age >= 0 && age <= MAX_AGE_MS;
+      const brief = String(w.brief || w.task || '').trim();
+      if (!fresh || !brief || (Number(w.resumes) || 0) >= MAX_RESUMES) {
+        try { finishWorker(sid, w.id, { status: 'interrupted' }); interrupted += 1; } catch {}
+        continue;
+      }
+      /* 先把名册改回 running（继承 mails/progress，resumes +1）——
+       * 界面立刻显示「干活中」，真正派发在 delayMs 之后。 */
+      try {
+        noteWorker(sid, {
+          id: w.id,
+          name: w.name,
+          task: w.task,
+          brief: w.brief,
+          accept: w.accept,
+          status: 'running',
+          startedAt: w.startedAt,   // 保留原开工时间 —— 界面上「跑了多久」从这算
+          resumes: (Number(w.resumes) || 0) + 1,
+        });
+      } catch { continue; }
+      const lastSteps = Array.isArray(w.progress) ? w.progress.slice(-10) : [];
+      const resumeBrief = [
+        '【续跑】程序中途重启过一次，你上一段干到一半被打断了。这不是新任务 ——',
+        '先看下面的进度记录，**接着上一次的进度往下做**：别从头来、别重复已经做完的步骤。',
+        '',
+        '原任务与汇报要求：',
+        brief,
+        '',
+        w.accept ? ('验收标准：' + w.accept) : '',
+        '',
+        lastSteps.length
+          ? ('上次干到哪儿（按时间排的进度记录，最后一条是断点）：\n' + lastSteps.map((x) => '- ' + String(x.line || x).slice(0, 200)).join('\n'))
+          : '上次没有留下进度记录（刚开始就被打断了），从头做这件活。',
+      ].filter(Boolean).join('\n');
+      const delay = delayMs + idx * 1500;   // 错峰派发，别一口气全挤到模型上
+      idx += 1;
+      resumed += 1;
+      ids.push(sid + '#' + w.id);
+      setTimeout(() => {
+        try {
+          dispatchWorker({ sessionId: sid, wid: String(w.id), name: w.name, brief: resumeBrief, maxRounds: 60 });
+        } catch (e) {
+          /* 续跑派发失败：老实标中断，别让界面停在「干活中」 */
+          try { finishWorker(sid, w.id, { status: 'interrupted' }); } catch {}
+          try { console.warn('[team] worker 续跑派发失败 #' + w.id + '：', e && e.message); } catch {}
+        }
+      }, delay).unref?.();
+    }
+  }
+  return { ok: true, resumed, interrupted, ids };
 }

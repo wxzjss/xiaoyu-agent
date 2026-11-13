@@ -186,7 +186,7 @@ import {
   forgetSession as forgetTaskSession,
 } from './task-mode.mjs';
 /* 【2026-11-11 团队模式】后台派发/停/回传的通道注入与启动清理（src/team.mjs） */
-import { setTeamChannels, markInterruptedWorkers, stopWorker } from './team.mjs';
+import { setTeamChannels, markInterruptedWorkers, resumeInterruptedWorkers, stopWorker } from './team.mjs';
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames, turnOffScreen, turnOnScreen } from './tools-screen.mjs';
 /* 【增强提示词】输入框那颗星星的一次性改写调用（src/enhance-prompt.mjs，2026-11-11） */
@@ -14249,14 +14249,19 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     try { console.warn('[team] 通道挂不上（不影响主流程）：', e && e.message); } catch {}
   }
 
-  /* 【2026-11-11 团队模式】启动时把「还挂着 running 但进程已经重启过」的 worker
-   * 统一标成 interrupted —— 不标的话页面刷新后前端看到的 running 是文件里的
-   * 旧状态，实际进程早没了（设计文档 §2.4 场景 C）。 */
+  /* 【2026-11-13 子 Agent 续上（主人钦点）】启动时扫花名册：还挂着 running 的
+   * worker 进程已经没了 —— 新鲜的（24h 内、没超过自动续跑上限）在 12s 后自动
+   * 重新派发接着干（错峰，先让主会话自己的续跑轮跑）；过期/超限的照旧标
+   * interrupted。原 markInterruptedWorkers 保留给别处用（这里不再调它）。 */
   try {
-    const _swept = markInterruptedWorkers();
-    if (_swept && _swept.swept) console.log('[team] 启动清理：' + _swept.swept + ' 个中断的 worker 已标记');
+    const _r = resumeInterruptedWorkers({ delayMs: 12000 });
+    if (_r && _r.ok && (_r.resumed || _r.interrupted)) {
+      console.log('[team] 启动清理：' + _r.interrupted + ' 个过期 worker 标记中断，'
+        + _r.resumed + ' 个 worker 将自动续跑' + (_r.ids.length ? '（' + _r.ids.join(', ') + '）' : ''));
+      try { diagLog('worker-resume', 'resumed=' + _r.resumed + ' interrupted=' + _r.interrupted + (_r.ids.length ? ' ' + _r.ids.join(',') : '')); } catch {}
+    }
   } catch (e) {
-    try { console.warn('[team] 中断标记失败（不影响启动）：', e && e.message); } catch {}
+    try { console.warn('[team] worker 续跑安排失败（不影响启动）：', e && e.message); } catch {}
   }
 
   // 运行中定时查版本。

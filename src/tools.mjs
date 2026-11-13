@@ -2361,14 +2361,16 @@ export const tools = [
       /* 【2026-11-11 后台派发】登记花名册 → 交给 team.mjs 放到后台 → 立刻回来。
        * 门牌号在登记那一刻就定了，返回文案里直接用它。 */
       if (background === true) {
-        const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
+        /* 【2026-11-13 子 Agent 续上】brief 存全量任务原文 —— 程序重启后续跑要靠它接着干 */
+        const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), brief: brief + reportAsk, accept: String(accept || '').slice(0, 200), status: 'running' });
         dispatchWorker({ sessionId: sid, wid: String(w.id), name: nick, brief: brief + reportAsk, maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60 });
         return '【#' + w.id + ' 派出去了，正在后台干】\n'
           + '它跑它的，你别停 —— 有别的活就接着做；想看看进度用 watch_worker ' + w.id + '；想补话用 tell_worker ' + w.id + '。\n'
           + '干完我会主动告诉你。';
       }
 
-      const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), accept: String(accept || '').slice(0, 200), status: 'running' });
+      /* 【2026-11-13 子 Agent 续上】同上：brief 存全量（同步等待款也可能被硬杀续跑） */
+      const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), brief: brief + reportAsk, accept: String(accept || '').slice(0, 200), status: 'running' });
       /* 【2026-11-11 修·潜伏 bug】r 一直没声明 —— 以前团队模式默认关、闸门总拦着走不到这行，
        * defaultOn 变 true 后第一次真用 spawn_worker 就是 ReferenceError（炸成「r is not defined」
        * 当成工具结果返回，检查鱼 2026-11-11 全量回归抓到）。
@@ -2513,6 +2515,8 @@ export const tools = [
         const w = noteWorker(sid, {
           name: nick,
           task: body.slice(0, 200),
+          /* 【2026-11-13 子 Agent 续上】同上：brief 存全量 */
+          brief: brief + reportAsk,
           accept: String(t.accept || '').slice(0, 200),
           status: 'running',
         });

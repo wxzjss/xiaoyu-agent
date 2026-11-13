@@ -3849,7 +3849,8 @@
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
     <button id="cronBtn" title="定时任务：跟她说一件事、再说什么时候做，到点她自己去做">定时</button>
     <button id="kbBtn" title="知识库：所有会话共享的书架——架构速览、排查套路、踩坑经验。点开挑一本读；智能体也能用工具翻">知识库</button>
-    <button id="openFeatures">功能</button>
+    <!-- 【2026-11-13 合并·mac 侧】「功能」改叫「插件」：系统插件和自己的插件都在这儿，可启用、停用、导入、卸载 -->
+    <button id="openFeatures" title="插件：系统插件和自己的插件都在这儿，可启用、停用、导入、卸载">插件</button>
     <!-- 【2026-11-13 合并·外观中心】主题 / 壁纸 / 插件（可插拔 js 插件）——面板由
          /ui/appearance.js 自己建，这里只放入口按钮。 -->
     <button id="openAppearance" title="外观：主题、壁纸、插件">外观</button>
@@ -3955,17 +3956,19 @@
   <dialog id="featuresDlg">
     <form method="dialog">
       <div class="dlgHead">
-        <b>功能</b><span class="meta" id="featHint"></span>
+        <!-- 【2026-11-13 合并·mac 侧】「功能」改叫「插件」：功能插件（内置）和插件目录
+             里主人自己放的（主题/壁纸/功能）都是「装进来的插件」，一个面板管完。 -->
+        <b>插件</b><span class="meta" id="featHint"></span>
         <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="sessTop">
-        <span class="hint">关掉的功能，小鱼就拿不到对应的工具；下一句生效</span>
+        <span class="hint">系统插件是程序自带的（只能停用）；自己导入的可以卸载。停用的插件，小鱼就拿不到对应的工具，下一句生效</span>
       </div>
       <!-- 2026-11-10 主人要的：功能能导入、能挑着导出、自己导进来的能删掉。
            导入=描边蓝、导出=安静灰，跟【会话】面板那排一模一样，别长两副脸。 -->
       <div class="sessTop sessTools">
-        <button type="button" class="ghost3" id="featImport" title="选一个或多个功能文件导进来；也能直接把文件拖到这个面板上">导入</button>
-        <button type="button" class="ghost3" id="featExport" title="挑几个功能导出成文件，能带走、能挪到别的机器">导出</button>
+        <button type="button" class="ghost3" id="featImport" title="选一个或多个插件文件导进来；也能直接把文件拖到这个面板上">导入插件</button>
+        <button type="button" class="ghost3" id="featExport" title="挑几个插件导出成文件，能带走、能挪到别的机器">导出</button>
         <!-- 2026-11-11 主人要的：这两颗紧跟在【导入】【导出】右边，同一排。
              关屏走 /api/screen/off（和工具 screen_off 同一套实现，先变暗 3 秒再熄屏），
              提示词是主人出门时常用的那一段，一键复制带走。 -->
@@ -15517,16 +15520,111 @@ function featPaintEmpty() {
   featList.appendChild(box);
 }
 
+/* ── 【2026-11-13 合并·mac 侧】外观插件（目录型：主题 / 壁纸 / 功能）──────
+ * 它跟上面的功能插件是两套存储：功能插件在 .state/features-custom.json（一条 JSON），
+ * 外观插件是 <数据目录>/plugins/<id>/ 一个文件夹（可能带图片、带 CSS）。
+ * 但在主人眼里都是「装进来的插件」，所以并到同一张列表里，用类型标区分。
+ * 开关和卸载走 /api/plugins，跟功能那套的 /api/features/set 不混。 */
+let featApPlugins = [];
+async function loadApPlugins() {
+  try {
+    const j = await fetch('/api/plugins').then((x) => x.json());
+    featApPlugins = Array.isArray(j?.plugins) ? j.plugins : [];
+  } catch { featApPlugins = []; }
+}
+
+function featIconLetter(name) {
+  const s = String(name || '').trim();
+  return s ? s[0].toUpperCase() : '?';
+}
+
+/** 一张外观插件卡。结构跟功能卡一样，只是数据来源和操作接口不同。 */
+function apPlugCard(p) {
+  const typeName = { theme: '主题', wallpaper: '壁纸', feature: '功能' }[p.type] || p.type;
+  const tone = p.type === 'theme' ? 'violet' : p.type === 'wallpaper' ? 'pink' : 'cyan';
+
+  const row = document.createElement('div');
+  row.className = 'featRow';
+  row.dataset.apid = p.id;
+
+  const main = document.createElement('div');
+  main.className = 'featMain';
+  const ico = document.createElement('div');
+  ico.className = 'featIco t-' + tone;
+  ico.textContent = featIconLetter(p.name);
+  const text = document.createElement('div');
+  text.className = 'featText';
+  const name = document.createElement('div');
+  name.className = 'featName';
+  const nm = document.createElement('span');
+  nm.textContent = p.name;
+  const badge = document.createElement('span');
+  badge.className = 'badge' + (p.enabled ? '' : ' off');
+  badge.textContent = p.enabled ? '已启用' : '已停用';
+  const kind = document.createElement('span');
+  kind.className = 'badge mach';
+  kind.textContent = typeName + '插件';
+  kind.title = '这一条是插件目录里的（不是程序自带的），可以卸载';
+  name.append(nm, badge, kind);
+  const desc = document.createElement('div');
+  desc.className = 'featDesc';
+  desc.textContent = p.description || '（没有写说明）';
+  text.append(name, desc);
+  main.append(ico, text);
+
+  // 目录型插件都是主人自己放进去的，所以都能卸载（功能插件里内置的那些不能）
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'featDelBtn';
+  del.textContent = '卸载';
+  del.dataset.apRemove = p.id;
+  del.style.opacity = '1';
+
+  const sw = document.createElement('button');
+  sw.type = 'button';
+  sw.className = 'switch' + (p.enabled ? ' on' : '');
+  sw.dataset.apToggle = p.id;
+  sw.dataset.on = p.enabled ? '1' : '0';
+  sw.textContent = p.enabled ? '点一下关' : '点一下开';
+
+  row.append(main, del, sw);
+  return row;
+}
+
+/** 动了外观插件之后把外观重落一遍：停用的可能正是当前这套主题/壁纸。 */
+async function featReapplyAppearance() {
+  const ap = window.xyAppearance;
+  if (!ap) return;
+  try {
+    const st = ap.state();
+    if (st && st.themeId) ap.applyTheme(st.themeId);
+    if (st && st.wallpaperId) ap.applyWallpaper(st.wallpaperId);
+    if (ap.reloadPlugins) await ap.reloadPlugins();
+  } catch {}
+}
+
 function renderFeatList() {
   if (!featList) return;
   featList.innerHTML = '';
   const rows = featRows();
-  if (!rows.length) {
+  /* 【2026-11-13 合并·mac 侧】外观插件跟功能插件并排画在同一张表里，所以「一共多少个」
+   * 都得两边一起算 —— 只数功能那半边，会出现「0 个插件」而卡片明明有三张的怪账。 */
+  const apAll = featApPlugins;
+  if (!rows.length && !apAll.length) {
     featPaintEmpty();
-    if (featHint) featHint.textContent = featState.error ? '没读到' : '0 个功能';
+    if (featHint) featHint.textContent = featState.error ? '没读到' : '0 个插件';
         /* 【2026-11-13 旁观者模式卡】挪到功能列表最下方（主人要求） */
     specPaintInto(featList);
 paintFeatNow();
+    return;
+  }
+  /* 空的是功能那半边但插件目录有货：先把插件卡画上（下面循环一次都不跑，
+   * 不补这段的话「功能 0 + 插件 3」的账只剩 hint 数字、卡不见）。 */
+  if (!rows.length) {
+    for (const p of apAll) featList.appendChild(apPlugCard(p));
+    if (featHint) featHint.textContent = `${apAll.length} 个插件（都是插件目录里的）`;
+    specPaintInto(featList);
+    paintFeatNow();
     return;
   }
   for (const f of rows) {
@@ -15804,14 +15902,22 @@ paintFeatNow();
     }
     featList.appendChild(row);
   }
+  /* 【2026-11-13 合并·mac 侧】外观插件（主题/壁纸/目录功能）跟在功能行后面 */
+  for (const p of apAll) featList.appendChild(apPlugCard(p));
   const off = rows.filter((f) => !f.enabled).length;
+  const apOff = apAll.filter((p) => !p.enabled).length;
   /* 总数一律从 features 现算，不读 featState.total —— 后端那份 total 会随
    * 「按会话 / 带自定义」变（31 → 33），写死或另取一处必然对不上。
    * customCount 后端有就用它的，没有就自己数一遍。 */
   const own = Number.isFinite(featState.customCount) ? featState.customCount : rows.filter((f) => f.custom).length;
   if (featHint) {
-    const head = own ? `${rows.length} 个功能（${own} 个自己加的）` : `${rows.length} 个功能`;
-    featHint.textContent = off ? `${head} · ${off} 个关着` : `${head} · 全开`;
+    /* 【2026-11-13 合并·mac 侧】统计两边一起算：功能 + 插件目录，一眼看清总共几个 */
+    const total = rows.length + apAll.length;
+    const offAll = off + apOff;
+    const head = own
+      ? `${total} 个插件（${own} 个自己加的功能）`
+      : `${total} 个插件`;
+    featHint.textContent = offAll ? `${head} · ${offAll} 个关着` : `${head} · 全开`;
   }
   /* 【2026-11-13 旁观者模式卡】挪到功能列表最下方（主人要求） */
   specPaintInto(featList);
@@ -15824,7 +15930,11 @@ async function loadFeatures() {
    * 否则后端只能退回全局表，显示的就不是主人这个会话的真实状态。 */
   const sid = featSid();
   const url = sid ? '/api/features?sessionId=' + encodeURIComponent(sid) : '/api/features';
-  const r = await fetch(url).then((x) => x.json()).catch(() => null);
+  /* 【2026-11-13 合并·mac 侧】插件目录（主题/壁纸）跟功能表一起拉 —— 同一张列表两半边。 */
+  const r = await Promise.all([
+    fetch(url).then((x) => x.json()).catch(() => null),
+    loadApPlugins(),
+  ]).then((v) => v[0]).catch(() => null);
   /* 以前这里失败就 return false，面板保持上一次的样子（常常是空白）；
    * 现在把「没读到」也画进列表里，给一颗重试 —— 不许静默。 */
   const ok = featTakeState(r, '没读到功能列表');
@@ -17056,14 +17166,71 @@ if (featOutPick) featOutPick.onclick = async () => {
 
 /* ---- 删除：只有自定义功能才有这颗按钮，内置的只能停用 ---- */
 if (featList) {
+  /* ── 【2026-11-13 合并·mac 侧】外观插件（主题/壁纸）的开关与卸载 ──
+   * 走 /api/plugins —— 跟功能插件的 /api/features/set 是两套存储，别混。
+   * 动完要把外观重落一遍：停用的可能正是当前这套主题/壁纸，
+   * 不重落的话界面会停在一个「已经不存在的主题」上。 */
+  featList.addEventListener('click', async (ev) => {
+    const tg = ev.target.closest('[data-ap-toggle]');
+    if (tg) {
+      ev.preventDefault();
+      const id = tg.dataset.apToggle;
+      const p = featApPlugins.find((x) => x.id === id);
+      if (!p) return;
+      const on = !p.enabled;
+      tg.disabled = true;
+      /* 以前这里只 await fetch，成败都不吭声 —— 主人点了开关，切过去了又弹回来，
+       * 得不到一句解释。现在把结果说出来（mac 侧 2026-11-12 踩过的坑，原样搬来）。 */
+      let ok = false;
+      let bad = '';
+      try {
+        const r = await fetch('/api/plugins/' + encodeURIComponent(id), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ on }),
+        });
+        const j = await r.json().catch(() => null);
+        ok = r.ok && !(j && j.error);
+        if (!ok) bad = (j && j.error) || ('HTTP ' + r.status);
+      } catch (err) { bad = String(err?.message ?? err); }
+      await loadApPlugins();
+      renderFeatList();
+      await featReapplyAppearance();
+      const say = ok ? `已${on ? '启用' : '停用'}「${p.name}」` : `没切过来：${bad || '未知原因'}`;
+      toast(say);
+      return;
+    }
+
+    const rm = ev.target.closest('[data-ap-remove]');
+    if (rm) {
+      ev.preventDefault();
+      const id = rm.dataset.apRemove;
+      const p = featApPlugins.find((x) => x.id === id);
+      if (!p) return;
+      if (!confirm(`卸载「${p.name}」？它整个文件夹都会从磁盘上删掉。`)) return;
+      let ok = false;
+      let bad = '';
+      try {
+        const r = await fetch('/api/plugins/' + encodeURIComponent(id), { method: 'DELETE' });
+        const j = await r.json().catch(() => null);
+        ok = r.ok && !(j && j.error);
+        if (!ok) bad = (j && j.error) || ('HTTP ' + r.status);
+      } catch (err) { bad = String(err?.message ?? err); }
+      await loadApPlugins();
+      renderFeatList();
+      await featReapplyAppearance();
+      const say = ok ? `「${p.name}」卸载了` : `没卸掉：${bad || '未知原因'}`;
+      toast(say);
+    }
+  });
+
   featList.addEventListener('click', async (ev) => {
     const btn = ev.target.closest('button.featDelBtn[data-del]');
     if (!btn || btn.disabled) return;
     ev.preventDefault();
     ev.stopPropagation();
     const id = btn.dataset.del;
-    const f = featRows().find((x) => x.id === id);
-    const nm = (f && f.name) || id;
+    const f = featRows().find((x) => x.id === id);    const nm = (f && f.name) || id;
     // 确认框会把【功能】面板一起收起来（全局面板互斥的老规矩），记一下状态，删完开回来
     const wasOpen = Boolean(featDlg && featDlg.open);
 

@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { startIsolated } from './_test-instance.mjs';
-import { connect } from '../_t_cdp.mjs';
+import { connect } from './_cdp-connect.mjs';
 import { makeChecker } from './_harness_util.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -251,13 +251,16 @@ try {
   c.ok('冷启动后屏幕不是空的（不许整屏空白）', s1.msgCount > 0, 'msg=' + s1.msgCount);
   /* 【数据层】草稿必须被接回来 —— select 回 recovered=true，历史里多出一条 _recovered 的 assistant。
    * （正文本身**有意不画**：2026-11-08 主人说「重启后她发出一大段内心独白，是说给我看的吗」，
-   *  src/server.mjs:598 `if (m._recovered) continue;`。所以屏幕上看到它反而是回归。） */
+   *  2026-11-13 起 _recovered 照常显示（主人钦点），屏幕上看到它才是对的。） */
   c.ok('数据层：半截话被接回来了（历史里多出一条 _recovered 的 assistant，话没丢）',
     s1.recovered === 1 && s1.disk.lastIsRecovered === true && s1.disk.draftLeft === false,
     '盘上 _recovered ' + s1.recovered + ' 条 / messages ' + s1.selTurns + ' / 最后一条 ' + s1.disk.lastRole
     + ' / 草稿残留 ' + s1.disk.draftLeft);
-  c.ok('屏幕层：半截话的内心独白没有被当正文画出来（有意隐藏）', cnt(s1.text, DRAFT_TEXT) === 0,
-    '命中 ' + cnt(s1.text, DRAFT_TEXT) + ' 次（应为 0）');
+  /* 【2026-11-13 反转·主人钦点翻案】旧设计把接回的半截话藏起来（"有意隐藏"），
+   * 结果主人重启后看到「她说过的话全没了」。现在照常画成她的正文气泡，
+   * 这里改判「必须出现」——话不能消失。 */
+  c.ok('屏幕层：半截话被接回来并照常画出来（她说过的话不能消失）', cnt(s1.text, DRAFT_TEXT) >= 1,
+    '命中 ' + cnt(s1.text, DRAFT_TEXT) + ' 次（应 ≥1）');
   c.ok('她自己那句话也在（不是只有主人的问句）', s1.text.indexOf('QA重启第29答') >= 0,
     '第29答命中 ' + (s1.text.indexOf('QA重启第29答') >= 0));
   c.ok('/api/chat/live 说 running=false', s1.liveRunning === false, 'live.running=' + s1.liveRunning);
@@ -279,8 +282,11 @@ try {
     }
     return '';
   })();
-  c.ok('最后一条对话内容是本轮那句问话（提示行不算，它本来就该在最底下）',
-    __lastTalks1.indexOf('QA重启最后一句问话') >= 0, '最后一条对话：' + __lastTalks1.slice(0, 30));
+  /* 【2026-11-13 反转】旧设计接回的话被藏，最后一条「真对话」停在主人的问句；
+   * 现在接回的半截话照常显示，最后一条就该是它。 */
+  c.ok('最后一条对话内容是接回的半截话（她说过的话回来了，就排在最底下）',
+    __lastTalks1.indexOf('assistant:') === 0 && /半截话|接回/.test(__lastTalks1),
+    '最后一条对话：' + __lastTalks1.slice(0, 30));
   /* 【屏幕层·交代】这一轮断在半路，屏幕上总得看得出「发生过什么」：
    * 要么半截话可见，要么有一条提示（sysnote / 提示条 / 待续按钮）。
    * 现在两者都没有 —— 主人看到的就是「我问了一句，她一个字没回」，跟没发生过一样。 */
@@ -320,8 +326,8 @@ try {
     }
     return '';
   })();
-  c.ok('第二次冷启动：最后一条对话内容仍是本轮那句问话',
-    __lastTalks2.indexOf('QA重启最后一句问话') >= 0, '最后一条对话：' + __lastTalks2.slice(0, 30));
+  c.ok('第二次冷启动：最后一条对话仍是接回的半截话（不重复、不消失）',
+    __lastTalks2.indexOf('assistant:') === 0 && /半截话|接回/.test(__lastTalks2), '最后一条对话：' + __lastTalks2.slice(0, 30));
   c.ok('两次冷启动的 DOM 阅读顺序一致（没有一次比一次多/少）',
     JSON.stringify(s1.rows) === JSON.stringify(s2.rows),
     '第一次 ' + s1.rows.length + ' 行 / 第二次 ' + s2.rows.length + ' 行');

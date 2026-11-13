@@ -30,7 +30,7 @@ const MUST_SKIP = [
   ['role: tool', /if \(m\.role === 'tool'\) continue;/, '工具结果是配在 assistant 上的，不是谁说的话'],
   ['role: system', /if \(m\.role === 'system'\) continue;/, '人设正文不该出现在对话流里'],
   ['context 提示', /if \(!m \|\| m\.context\) continue;/, '程序插的上下文提示'],
-  ['_recovered 草稿回灌', /if \(m\._recovered\) continue;/, '重启时补回来的半截话（她要读，主人不必看）'],
+  /* 【2026-11-13 删】_recovered 不再隐藏——主人钦点「她说过的话不能消失」，照常画成正文气泡。 */
 ];
 
 console.log('── publicSession 该跳过的消息类型 ──');

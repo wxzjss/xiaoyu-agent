@@ -652,17 +652,18 @@ function publicSession(session) {
      */
     if (m.role === 'system') continue;
     /**
-     * 【2026-11-08 加·草稿回灌不画给主人看】
+    /* 【2026-11-13 改·接回的话照常显示（主人钦点翻案）】
      *
-     * 主人问：「重启后【杂活鱼】会发出一大段话，是说给我看的吗？」
-     * 不是。那是 `_recovered` —— 重启时把上一轮没说完的半截话从草稿补回来，
-     * 目的是「别丢了她说的话、让她接着往下说」。实测那条 1079 字，
-     * 里面全是括号里的内心独白（「丢脸」「我手上没工具调它」），还带着 `<assistant>` 标签。
+     * 2026-11-08 的旧设计：`_recovered` 只留在 messages 里给她读，界面不画 ——
+     * 当时的理由是接回文本里全是括号内心独白、还带 <assistant> 标签，画出来难看。
+     * 代价是：重启后她上一轮没来得及提交的正文在屏幕上**整个消失**，
+     * 主人看到的就是「历史停在主人的话，她说过的话全没了」（11-13 主人正式报案）。
      *
-     * 这功能要留（删了她会从断点前重说一遍），但它**不该当正文画出来** ——
-     * 跟压缩摘要一个待遇：留在 messages 里（她自己读得到），界面上不显示。
-     */
-    if (m._recovered) continue;
+     * 现在照常画成她的正文气泡。文本末尾本来就带
+     * 「（说到这儿断了一下——当时程序被关了，这段是接回来的。）」的交代，
+     * 主人分得清哪些是接回来的；难看也比「话说没了」强。
+     * （旧设计的去重前提也没了：回灌函数 11-13 起只补「没提交的尾巴」，不重复。） */
+
     // content 可能是多模态数组（只在内存里出现过），取文字段
     const raw = m.content;
     const text = (Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n') : String(raw ?? '')).trim();
@@ -800,30 +801,10 @@ function publicSession(session) {
       reasoning: typeof m._reasoning === 'string' && m._reasoning.trim() ? m._reasoning : undefined,
     });
   }
-  /**
-   * 【2026-11-12 加·「上一轮断在半路」要在屏幕上留一句交代】
-   *
-   * `_recovered` 那条（重启后从草稿接回来的半截话）按设计不画成正文 —— 她读得到，
-   * 界面不显示。可这样主人重启后只看到历史停在一半，屏幕上没有任何说明，
-   * 以为「她的回答丢了」或「程序坏了」（真机检查 check-restart-cold-start 抓的就是这条）。
-   *
-   * 所以：只要**最后一条**消息是接回来的半截话（它后面还没有新的对话），
-   * 就在 turns 末尾补一条 `note: true` 的记账行，前端画成一行系统提示
-   *（items.js 的 turnToItems 认这个标记，不挂气泡、不冒充谁说话）。
-   * 主人接着说下一句时它自然就不在末尾了，提示自动消失，不用另存状态。
-   */
-  const _lastRaw = Array.isArray(session.messages) ? session.messages[session.messages.length - 1] : null;
-  /* 【2026-11-12 改·主人嫌它「一直钉在最底部」】
-   * 原来（她还没落盘回复的）整轮期间这条提示都杵在历史末尾 —— 她跑工具没正文时，
-   * 屏幕最底下就一直是它，看着像坏掉了。现在：**这一轮正在跑就不给**，
-   * 她一开工提示就收掉；真跑完了还停在半截（被停/被断/没人管）才显示。 */
-  if (_lastRaw && _lastRaw._recovered === true && !runningTurns.has(session.id)) {
-    turns.push({
-      role: 'assistant',
-      note: true,
-      text: '上一轮断在半路（程序被关或被掐了）。她那半截话我接回历史了，接着做跟我说一声。',
-    });
-  }
+  /* 【2026-11-13 删·「上一轮断在半路」记账行】
+   * 原来 _recovered 不画，历史末尾要靠这条 note 交代「话接回来了」；
+   * 现在接回的半截话**照常画成她的正文气泡**（自带「说到这儿断了一下…接回来的」
+   * 交代尾巴），再补一行系统提示就是重复——删。 */
   // 撤回记录本身也交出去，界面才能提示「还能撤销回退」
   const rewinds = loadRewinds(session);
   return {
@@ -4042,7 +4023,53 @@ function restoreDraftHalfTurn(id) {
   // tool 算断在半路，别误判成「说完了」把草稿当残留删掉
   const tailFinished = tailIs === 'assistant' && tailHasText && !tailHasTools;
   if (!tailFinished) {
-    const body = draftAsMessage(draft, (n) => featureNameOfTool(n) || n);
+    /* 【2026-11-13 修·接回的话跟上面重复（主人报「重启后她说过的话全没了」，数据里
+     * 其实是「已提交的还在 + 又多了一条一模一样的接回」）】
+     *
+     * 草稿的 text 是**整轮从头累计**的。重启前 commitWireBack 已经把前几段正文
+     * 逐段收进历史了，草稿里却还留着全文 —— alreadyCollected 只认「整条指纹
+     * 相等」，合并体对不上任何一条单句 → 同一段话被补成第二条。
+     *
+     * 现在先算「已提交覆盖」：最后一条（真人的）user 之后的 assistant 正文按序
+     * 拼起来、去空白归一化。若它正好是草稿正文的前缀（同一次生成，提交的永远
+     * 是草稿累计的前几段），就只把**没提交的尾巴**接回去；尾巴为空且工具也
+     * 都交过了 → 草稿是纯残留，直接删，一个字都不补。 */
+    const _norm = (x) => String(x || '').replace(/\s+/g, '');
+    let _lastUser = -1;
+    for (let k = session.messages.length - 1; k >= 0; k--) {
+      const _m = session.messages[k];
+      if (_m && _m.role === 'user' && !_m._sysNote) { _lastUser = k; break; }
+    }
+    const _tailMsgs = _lastUser >= 0 ? session.messages.slice(_lastUser + 1) : session.messages;
+    const _committedText = _norm(_tailMsgs
+      .filter((m) => m && m.role === 'assistant')
+      .map((m) => (typeof m.content === 'string' ? m.content : ''))
+      .join(''));
+    const _committedTools = _tailMsgs.filter((m) => m && m.role === 'tool').length;
+    const _draftText = String(draft.text || '');
+    const _draftNorm = _norm(_draftText);
+    const _draftTools = Array.isArray(draft.toolCalls)
+      ? draft.toolCalls.filter((t) => t && t.type === 'tool_start' && t.name)
+      : [];
+    let body = null;
+    if (_committedText && _draftNorm.startsWith(_committedText)) {
+      // 按归一化计数对齐，找回原文本里「未提交尾巴」的起点
+      let _need = _committedText.length, _acc = 0, _cut = 0;
+      for (let k = 0; k < _draftText.length && _acc < _need; k++) {
+        if (!/\s/.test(_draftText[k])) _acc++;
+        _cut = k + 1;
+      }
+      const _restText = _draftText.slice(_cut).trim();
+      const _restTools = _draftTools.length > _committedTools ? _draftTools.slice(_committedTools) : [];
+      if (!_restText && _restTools.length === 0) {
+        // 全都交过了：草稿是残留，删掉就完事（这就是「接回的话跟上面重复」的源头）
+        dropDraft(id);
+        return false;
+      }
+      body = draftAsMessage({ text: _restText, toolCalls: _restTools }, (n) => featureNameOfTool(n) || n);
+    } else {
+      body = draftAsMessage(draft, (n) => featureNameOfTool(n) || n);
+    }
     if (body) {
       diagLog('draft-restored', `session=${id} len=${body.length}`);
       /* 【草稿回灌也要过内容关】—— 2026-10-29
@@ -5227,6 +5254,9 @@ const server = createServer(async (req, res) => {
       running: !!(stt.running || probe.up),
       up: probe.up,
       ids: probe.ids ?? [],
+      // 【2026-11-13 修】probe 现在带 tokenOk（真打上游验过），status 原样透传给前端。
+      //   tokenOk:false = 服务活着但 token 已死 —— 前端 ensure 靠它决定「先停再换血」。
+      tokenOk: probe.tokenOk,
       hasToken: !!readDeepSeekToken().token,
       hasProgram: !!miniDsDir(),
       python: findPython(),
@@ -5240,10 +5270,16 @@ const server = createServer(async (req, res) => {
 
     // 先看已经在跑没
     const running = await probeLocalService(900);
-    if (running.up) {
+    if (running.up && running.tokenOk !== false) {
       return json(res, 200, {
         ok: true, already: true, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL,
       });
+    }
+    // 【2026-11-13 修】服务活着但 token 已死（tokenOk:false）：旧进程喂的是死 token，
+    //   直接回 already 等于假成功 —— 先停掉，往下走正常拉起流程换新 token。
+    if (running.up && running.tokenOk === false) {
+      try { await stopLocalService(); } catch {}
+      await new Promise((r) => setTimeout(r, 800));
     }
 
     // 没 token 就先等登录（这一步会挂十分钟以内）

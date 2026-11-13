@@ -247,20 +247,21 @@ export function renderSessList() {
   const isEmpty = (x) => !x.hasContent && !x.count && !x.preview;
   /* 【2026-11-11 置顶 + 筛选】
    * 筛选：先按面板顶部选的模式把不该露面的滤掉（纯前端，不惊动后端）。
-   * 排序：置顶组排最前（按 pinnedAt 倒序），其余照旧 —— 当前会话置顶、
-   * 空会话沉底、新的在前。当前会话自己也受这两条管：它被置顶就进置顶组，
-   * 没置顶就在未置顶组里排第一。 */
+   * 【2026-11-13 主人钦点：置顶改「按时间顺序动态排序」】置顶不再是
+   * 「按 pinnedAt 静态钉死」的那组——它只当一个排序权重（置顶的永远压过
+   * 未置顶的），组内和其余全部按 updatedAt 时间倒序动态排：哪条会话最新，
+   * 它就在自己那一层里排最前，列表跟着消息动。当前会话仍排它那层第一，
+   * 空会话照旧沉底。 */
   const view = window.sessionsCache.filter(sessFilterPass).sort((a, b) => {
     const pa = a.pinned ? 1 : 0;
     const pb = b.pinned ? 1 : 0;
-    if (pa !== pb) return pb - pa;                       // 置顶组在前
-    if (pa && pb) return (b.pinned || 0) - (a.pinned || 0); // 组内：后置顶的在前
+    if (pa !== pb) return pb - pa;                       // 置顶权重在前
     if (a.id === window.sessionId) return -1;
     if (b.id === window.sessionId) return 1;
     const ea = isEmpty(a) ? 1 : 0;
     const eb = isEmpty(b) ? 1 : 0;
     if (ea !== eb) return ea - eb;      // 有内容的在前，空的在后
-    return (b.updatedAt || 0) - (a.updatedAt || 0);
+    return (b.updatedAt || 0) - (a.updatedAt || 0);      // 纯时间倒序（动态）
   });
   /* 【2026-11-11 筛选】开着筛选时提示「筛出几个 / 共几个」，让人知道还有会话被藏起来了 */
   window.sessHint.textContent = sessFilterMode === 'all'

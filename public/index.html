@@ -2777,12 +2777,16 @@
     /* 【2026-11-12 主人报·【存】按钮亮白】原来选择器限定 .featRow 后代——
      * 发送缓冲的「改时长」框插在 featRow 外面，命中不了 = 裸吃 UA 亮白。
      * 改成通用规则，哪儿用都主题化。 */
+    /* 【2026-11-13 主人报「按钮跟隐身了一样特别废眼睛」】原来 border 用 --border，
+     * 当前主题下它跟卡片底色几乎同色 —— 整颗按钮只剩两个字母飘着。改成
+     * 半透明亮边 + 微底色，任何主题下都看得见轮廓；悬停亮 accent。 */
     .featEditBtn {
       flex: none; height: 30px; border-radius: 999px; cursor: pointer;
-      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      /* 六套主题全是暗色底，白半透明在任何主题下都有轮廓 */
+      border: 1px solid rgba(255, 255, 255, .18); background: rgba(255, 255, 255, .05); color: var(--dim);
       font-size: 12.5px; padding: 0 12px;
     }
-    .featEditBtn:hover { border-color: var(--accent); color: var(--accent); }
+    .featEditBtn:hover { border-color: var(--accent); color: var(--accent); background: rgba(255, 255, 255, .09); }
     /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
     .featRow .featEditGroup { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -3313,9 +3317,42 @@
        内容一长，dlgBody 顶着往下长，底部的 .dlgFoot（保存按钮那条）直接被挤出弹窗，
        看起来就是「保存按钮浮在文本框上面」。
        设置面板内容本来就多（人设/底线/安全词/移动端/备份/更新…），给它一个确定高度。 */
-    #settingsDlg { height: min(86vh, 680px); }
+    #settingsDlg { height: min(86vh, 680px); width: min(1080px, 95vw); }
     /* 用确定的最大高度把滚动关住：头 52px + 底 60px + 余量 */
     #settingsDlg .dlgBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; max-height: calc(86vh - 118px); }
+
+    /* 【2026-11-13 主人报「设置页看上去很乱」】两刀重排：
+     * ① 面板加宽到 1080，十个分区（fieldset）从「一长条挤到底」改双列瀑布
+     *    （columns + break-inside: avoid，每个分区是一张圆角卡片，矮的先补位）；
+     * ② legend 从飘在边框上的小字变成分区标题胶囊，一眼看清分区名。
+     * 只动布局与样式，一个功能都不动。窄窗口自动落回单列。 */
+    #settingsDlg .dlgBody { columns: 2; column-gap: 14px; }
+    #settingsDlg fieldset {
+      break-inside: avoid; -webkit-column-break-inside: avoid;
+      margin: 0 0 14px; padding: 14px 16px 12px;
+      border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
+    }
+    #settingsDlg legend {
+      display: inline-block; padding: 2px 12px; margin-bottom: 4px;
+      border: 1px solid rgba(255, 255, 255, .14); border-radius: 999px;
+      background: rgba(255, 255, 255, .04);
+      color: var(--accent); font-size: 12.5px; font-weight: 600; letter-spacing: .5px;
+    }
+    @media (max-width: 880px) { #settingsDlg .dlgBody { columns: 1; } }
+
+    /* 【2026-11-13 主人报「打开智能体面板按钮廉价塑料感」】塑料感来源=实心大色块
+     * （.primary 的 accent 实底）。改描边 + 微填充的卡片按钮：平时淡 Accent 描边，
+     * 悬停填充加深 + 内圈亮线，跟整页气质一致。 */
+    #openAgentPanelFromSettings {
+      height: 34px; padding: 0 18px; border-radius: 10px; cursor: pointer;
+      border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+      color: var(--accent); font-size: 12.5px; font-weight: 600;
+      transition: background .12s ease, box-shadow .12s ease;
+    }
+    #openAgentPanelFromSettings:hover {
+      background: color-mix(in srgb, var(--accent) 20%, transparent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent) inset;
+    }
 
     #settingsDlg #mobToggle {
       flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
@@ -13407,7 +13444,7 @@ async function importAgentCardFrom(file) {
   wire('agReset', () => resetAgentCard());
 
   wire('agDel', () => delAgentCard());
-  wire('agClose', () => { const d = document.getElementById('agentListDlg'); if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } } });
+  wire('agClose', () => { dlgReturn('agentListDlg'); });   // 返回=退回来源页（设置/插件），没有来源才回主界面
   wire('agPanel', () => {
     /* 多套人设推广·2026-10-30：每张卡打开的都是「她自己那一套」。
        who 空/小鱼 => 老地方；小鲸 => whale；自建卡 => 她的 id。 */
@@ -16566,7 +16603,7 @@ async function delIdentity() {
   }
 }
 
-document.getElementById('idClose').onclick = () => closeIdentityDlg();
+document.getElementById('idClose').onclick = () => { closeIdentityDlg(); try { dlgReturn('identityDlg'); } catch {} };   // 返回=退回来源页
 document.getElementById('idSave').onclick = () => saveIdentityEdit();
   // 【2026-11-04】把当前这个内置身份存成「默认」
   const setDefBtn2 = document.getElementById('idSetDefault');
@@ -18792,19 +18829,44 @@ function paintUsageBox() {
  *
  * @param {string} [keepId] 这个要留着（正在开的那个）
  */
+/* 【2026-11-13 主人报「二级面板点返回回不到来源页」】关谁之前先把谁记成
+ * keepId 的「来源」——返回按钮（dlgReturn）照着这条记录把来源面板重新打开。
+ * 没有来源（从主界面直接开的）就照旧只关自己。 */
+window.__dlgOriginStack = window.__dlgOriginStack || {};
 function closeOtherDialogs(keepId) {
+  const stack = (window.__dlgOriginStack[keepId] = window.__dlgOriginStack[keepId] || []);
   for (const id of ['sessionsDlg', 'featuresDlg', 'settingsDlg', 'modelsDlg', 'todoDlg',
     // 2026-10-29：智能体面板和两个「改人设」的大面板也归这一套规矩
     'agentListDlg', 'fishPersonaDlg', 'whalePersonaDlg', 'cronDlg']) {
     if (id === keepId) continue;
     const d = document.getElementById(id);
     if (d && d.open) {
+      stack.push(id);   // 记来源：返回时按原路放回
       try { d.close(); } catch {}
     }
   }
   // 加号那个栏式浏览浮层也算一个
   if (keepId !== 'pickMask') {
     try { if (typeof pick !== 'undefined' && pick.open) closePicker(); } catch {}
+  }
+}
+
+/* 【2026-11-13 主人报「设置→智能体面板→返回 回到主页面」】返回按钮统一走这里：
+ * 关掉当前面板，然后把来源栈里最近那个面板重新打开（一层层退回去）；
+ * 没来源（从主界面直接开的）就只关自己，回到主界面。 */
+function dlgReturn(curId) {
+  const stack = window.__dlgOriginStack && window.__dlgOriginStack[curId];
+  const origin = stack && stack.length ? stack.pop() : null;
+  const cur = document.getElementById(curId);
+  if (cur && cur.open) { try { cur.close(); } catch {} }
+  if (origin) {
+    const od = document.getElementById(origin);
+    if (od) {
+      closeOtherDialogs(origin);   // 关掉挡路的，把来源面板顶到最前
+      try { od.showModal(); } catch { try { od.show(); } catch {} }
+      if (origin === 'sessionsDlg' && typeof refreshSessions === 'function') { try { refreshSessions(); } catch {} }
+      if (origin === 'featuresDlg' && typeof loadFeatures === 'function') { try { loadFeatures(); } catch {} }
+    }
   }
 }
 
@@ -19370,7 +19432,9 @@ function askConfirm({ title = '确认一下', body = '', ok = '确定', cancel =
     };
     dlg.onclose = () => finish(false);
 
-    closeOtherDialogs('confirmDlg');
+    /* 【2026-11-13 删·主人报「删除/取消都会回到主页面」】原来确认窗一弹就把
+     * 会话等面板全关了——取消也一样回不去。确认窗是叠在面板上面的，两层
+     * dialog 本来就能共存，一个字都不用关。 */
     dlg.showModal();
     cancelBtn.focus();
   });
@@ -19979,8 +20043,8 @@ sessList.addEventListener('click', async (e) => {
     try {
       if (id === sessionId) {
         // 删的就是当前这个：自动切到另一个（或新建一个），然后彻底回到能打字的状态
-        // 先把面板关掉——它还开着就盖在输入框上面，人看着就是「点不了、打不了字」
-        try { sessDlg.close(); } catch {}
+        /* 【2026-11-13 主人钦点】不再把面板关掉——删完留在【会话】面板里看列表，
+         * 输入区照样由下面的 settleComposer 复位（面板开着也不挡它工作）。 */
         try {
           if (r.lastSessionId) await switchSessionSafe(r.lastSessionId);
           else await createSession();

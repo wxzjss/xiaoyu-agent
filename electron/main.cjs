@@ -136,9 +136,21 @@ bootMark('主进程起来了');
 
 /* 【2026-11-13 修·重启慢诊断】设 XY_CDP=1 启动就开远程调试端口（9222），
  * 平时不开（安全）。排查渲染器问题用：探针连上能看 load 事件、网络瀑布、
- * 主线程任务，哪一步卡 19 秒一目了然。 */
+ * 主线程任务，哪一步卡 19 秒一目了然。
+ * 【2026-11-13 补·flag 文件方式】explorer 委托启动带不了环境变量（我的 shell
+ * 环境污染也传不进去）——改成：数据目录 .state/xy-cdp.flag 存在就开。
+ * 诊断完删掉文件即可，双保险还是看环境变量。 */
 try {
-  if (process.env.XY_CDP === '1') {
+  let _xyCdp = process.env.XY_CDP === '1';
+  if (!_xyCdp) {
+    try {
+      const _flagPath = process.env.APPDATA
+        ? process.env.APPDATA + '\\小鱼Agent\\data\\.state\\xy-cdp.flag'
+        : '';
+      if (_flagPath && require('node:fs').existsSync(_flagPath)) _xyCdp = true;
+    } catch { /* 探测失败就当没开 */ }
+  }
+  if (_xyCdp) {
     app.commandLine.appendSwitch('remote-debugging-port', '9222');
     app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
   }

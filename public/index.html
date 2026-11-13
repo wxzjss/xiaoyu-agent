@@ -9536,13 +9536,23 @@ async function runTurn({ resume = false, text = '', attachments: _att = null, _s
     renderAttachBar();
   }
   // 注意顺序：先清空输入框，再刷按钮状态，否则生成中会一直显示「发送」。
-  busy = true;
+  /* 【2026-11-13 修·主人报「发消息不立即显示，得过一会才显示」】
+   * busy 原来在这里无条件置真 —— 可这一轮可能是**别的会话的后台轮**（重启续跑、
+   * 看门狗接回都是这条路径）。后台轮一跑，全局 busy 就被污染成 true：
+   * 主人在自己屏幕的会话里点发送，send() 第一行 `if (busy) return` 静默丢 ——
+   * 消息不显示也不发送，等后台轮跑完才发得出去 = 主人看到的「得过一会才显示」。
+   * 收尾那边（finally 里）早就做了对称的判断（只有屏幕会话的轮才放下 busy），
+   * 开头这里补齐同一套口径：**只有屏幕上就是这个会话**才动全局 busy。 */
+  if (turnSession === sessionId) busy = true;
   // 新的一轮：署名重新允许报一次（同一轮里的第 2、3 段不再重报名字）
   try { if (typeof resetRoleOnce === "function") resetRoleOnce(); } catch {}
   /* 【2026-11-10 A4 清理】foldOldHubs / hubReset 两句删除：
    * 柜子怎么分组是数据的事（连续几条 tool → 一个柜子，LogView 的 toRows 算），
    * 跑新一轮不存在「把散卡收进柜子」这个 DOM 动作了。 */
-  showSending();
+  /* 【2026-11-13 修·跟 busy 同一口径】后台轮（别的会话的续跑）不往主人屏幕上
+   * 挂「正在发送消息」的转圈 —— 那一轮跟主人眼前这个会话没关系。 */
+  if (turnSession === sessionId) showSending();
+  else try { scheduleSendingRecheck(turnSession); } catch {}
   syncSendBtn();
 
   showSending();

@@ -160,11 +160,20 @@
      */
     header #hdrPush { margin-left: auto; }
     header #meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* 【2026-11-13 主人钦点·顶栏按钮排焕新】原来 transparent 底 + --border 描边
+     * + --dim 暗字，在卡片化的新设计语言里显得又扁又灰。焕新成整页同款：
+     * 微填充 + 白描边胶囊（跟【底线】标题胶囊一族），字亮一档，悬停亮 accent；
+     * 圆角 8px / 高度统一。办事模式 on 的珊瑚橙状态色不动。 */
     header button {
-      background: transparent; color: var(--dim);
-      border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+      background: rgba(255, 255, 255, .04); color: var(--text);
+      border: 1px solid rgba(255, 255, 255, .14); border-radius: 8px;
+      padding: 5px 12px; cursor: pointer;
+      transition: border-color .12s ease, color .12s ease, background .12s ease;
     }
-    header button:hover { color: var(--text); border-color: var(--dim); }
+    header button:hover {
+      color: var(--accent); border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+    }
     /* 办事模式：珊瑚橙。开着就亮着，一眼看得出来她这会儿只动嘴不动手 */
     header button#taskBtn.on {
       color: #1a0f06; background: #f0b06a; border-color: #f0b06a; font-weight: 600;
@@ -3183,6 +3192,18 @@
       border: 1px solid var(--border); border-radius: 999px;
       padding: 0 6px; margin-left: 6px;
     }
+    /* 【2026-11-13 主人钦点】每张卡一排色点：点一下改「屋里的人」名字颜色。
+     * 颜色存 /api/agents/color（data.colors[id]），渲染走 mateColorOf 同一条路。 */
+    #agentListDlg .agItem .colorRow {
+      display: flex; gap: 5px; margin-top: 6px; align-items: center;
+    }
+    #agentListDlg .agItem .colorDot {
+      width: 14px; height: 14px; border-radius: 50%; cursor: pointer;
+      border: 2px solid transparent; padding: 0; flex: 0 0 auto;
+      transition: transform .1s ease;
+    }
+    #agentListDlg .agItem .colorDot:hover { transform: scale(1.25); }
+    #agentListDlg .agItem .colorDot.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text) inset; }
     #agentListDlg .agItem .d {
       font-size: 11.5px; color: var(--dim); line-height: 1.6; margin-top: 2px;
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -3429,13 +3450,22 @@
       display: flex; flex-direction: column; gap: 7px; align-items: center;
       background: rgba(255, 255, 255, .02);
     }
-    /* 跨网络的那种单独描个边，一眼看出「出门也能用」 */
-    .mobQrCard.lan2 { border-color: rgba(77, 141, 255, .55); background: rgba(77, 141, 255, .06); }
+    /* 【2026-11-13 主人报「跨网络的蓝框刺眼」】lan2 的特殊描边删了，
+     * 跟「同一个 Wi-Fi」那款完全一样（class 留着不碍事）。 */
     .mobQrHead { display: flex; flex-direction: column; gap: 2px; align-items: center; text-align: center; }
     .mobQrHead b { font-size: 13px; font-weight: 600; color: var(--text); }
     .mobQrHead .hint { font-size: 11.5px; }
-    .mobQrCard.lan2 .mobQrHead b { color: var(--accent, #4d8dff); }
     .mobQrBox { display: flex; justify-content: center; }
+    /* 【2026-11-13 主人报「二维码发光，刺眼」】二维码必须白底黑码才扫得动，
+     * 原来原图多大画多大 —— 暗色主题里整块纯白像一块发光的白砖。
+     * 收小 + 圆角 + 浅灰底 + 细描边，亮度降下来照样能扫。 */
+    .mobQrBox img {
+      width: 148px; height: 148px; display: block;
+      image-rendering: pixelated;
+      border-radius: 8px; padding: 6px; box-sizing: border-box;
+      background: #e9ebee;
+      border: 1px solid rgba(255, 255, 255, .14);
+    }
     .mobQrFoot {
       display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center;
       width: 100%;
@@ -4338,14 +4368,10 @@
             </div>
             <div class="field" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
               <button type="button" class="ghost" id="mobRotate">换一个配对码</button>
-              <span class="hint">换完手机得重新连一次，旧的立刻作废。</span>
             </div>
             <div class="field">
               <label>连过的手机</label>
               <div id="mobDevices"><span class="hint">还没有手机连进来</span></div>
-            </div>
-            <div class="field">
-              <span class="hint">同一个 Wi-Fi 可以直接连；两边都装 Radmin 这类组网工具，出门用流量也能连。开关关掉，电脑就只接本机访问，外面连不进来。</span>
             </div>
           </div>
         </fieldset>
@@ -4477,20 +4503,14 @@
         <fieldset>
           <legend>系统通知</legend>
           <div class="field ntRow">
-            <span class="ntText"><b>她回完一句，提醒我</b>
-              <span class="hint">只在窗口最小化、或被别的应用盖住时弹一条；你正看着界面就不吵你。第一次弹之前系统可能会问一次「允不允许通知」。</span>
-            </span>
+            <span class="ntText"><b>她回完一句，提醒我</b></span>
             <button type="button" class="ntSwitch" id="ntChat" data-on="1">开</button>
           </div>
           <div class="field ntRow">
-            <span class="ntText"><b>QQ 上有人找她，提醒我</b>
-              <span class="hint">私聊她、或者在群里 @ 她时弹一条（带谁说的、说了什么）。白名单挡掉的那些不弹，免得拿通知刷屏。</span>
-            </span>
+            <span class="ntText"><b>QQ 上有人找她，提醒我</b></span>
             <button type="button" class="ntSwitch" id="ntQq" data-on="1">开</button>
           </div>
-          <div class="field">
-            <span class="hint" id="ntState">…</span>
-          </div>
+
         </fieldset>
         </div>
       </div>
@@ -5097,12 +5117,6 @@
     <div class="dlgFoot">
       <span class="hint">这上面就是文件里的原文，没加工。</span>
       <button type="button" class="ghost" id="todoReload">刷新</button>
-    </div>
-    <!-- 想临时加一条，直接在这儿写。跟小鱼手里的 plan 工具是同一份数据，
-         她下次开工时看得见。 -->
-    <div class="todoAddRow">
-      <input type="text" id="todoAddInput" placeholder="加一条……回车就进清单" />
-      <button type="button" id="todoAddBtn">加上</button>
     </div>
   </dialog>
 
@@ -7328,7 +7342,12 @@ async function tryHealAfterDisconnect(id) {
         if (sel.recovered) {
           addSysNote('上一轮断在半路（进程被关或被杀），她没说完的那半截话已经接回历史了。');
         } else if (sel.interrupted) {
-          addSysNote('上一轮是被中断的（没跑完）。要接着做就跟我说一声。');
+          /* 【2026-11-13 主人钦点】重启续上路径的提示要说「正在续上」，别再让主人
+           * 以为没续上、又手动发一句「继续」变成插话。select 带了 running：
+           * 在跑 = boot-resume 已经接上了，就是「正在续上」；还没跑 = 马上会自动起。 */
+          addSysNote(sel.running
+            ? '上一轮没跑完——正在自动续上，她接上就继续干活。'
+            : '上一轮没跑完，马上会自动续上；等不及说一声「继续」也行。');
         }
         busy = false;
         hideSending();
@@ -12149,7 +12168,35 @@ function renderAgentList() {
     const d = document.createElement('div');
     d.className = 'd';
     d.textContent = a.snippet || (a.personaChars ? `${a.personaChars} 字人设` : '还没写人设');
-    b.append(n, d);
+    /* 【2026-11-13 主人钦点】每张卡一排色点：点一下改名字颜色（【屋里的人】那竖列
+     * 与气泡署名跟着换）。走 /api/agents/color 正规存色路径，存完整屏补色。 */
+    const colorRow = document.createElement('div');
+    colorRow.className = 'colorRow';
+    const AGENT_PALETTE = ['#f0a6a0', '#7aa8e8', '#3b6fd4', '#9b6fd4', '#58b07a', '#d49a4a', '#e6e6e6'];
+    const cur = String(a.color || '').toLowerCase();
+    for (const c of AGENT_PALETTE) {
+      const dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'colorDot' + (cur === c.toLowerCase() ? ' on' : '');
+      dot.style.background = c;
+      dot.title = '把她「屋里的人」的名字改成这个颜色';
+      dot.addEventListener('click', async (ev) => {
+        ev.stopPropagation();   // 别把卡片点开了（选人）
+        try {
+          const r = await fetch('/api/agents/color', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: a.id, color: c }),
+          }).then((x) => x.json());
+          if (!r || r.error) { agHint('颜色没存上：' + ((r && r.error) || '网络错误')); return; }
+          if (typeof refreshMateColors === 'function') refreshMateColors();
+          if (typeof primeMateColors === 'function') primeMateColors();
+          renderAgentList();   // 当前色圆环跟手
+          toast?.('名字颜色换好了');
+        } catch (e) { agHint('颜色没存上：' + (e?.message || e)); }
+      });
+      colorRow.appendChild(dot);
+    }
+    b.append(n, d, colorRow);
     b.addEventListener('click', () => { selectAgent(a.id); });
     list.appendChild(b);
   }
@@ -14372,22 +14419,6 @@ document.getElementById('todoClose').onclick = () => {
 
 document.getElementById('todoReload').onclick = todoLoad;
 
-const todoAddGo = async () => {
-  const inp = document.getElementById('todoAddInput');
-  const text = (inp && inp.value || '').trim();
-  if (!text) return;
-  if (todoPlan && !todoPlan.total) {
-    await todoPost({ action: 'create', goal: text, steps: [text] });
-  } else {
-    await todoPost({ action: 'add', text });
-  }
-  if (inp) inp.value = '';
-  await todoLoad();
-};
-document.getElementById('todoAddBtn').onclick = todoAddGo;
-document.getElementById('todoAddInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); todoAddGo(); }
-});
 
 document.getElementById('saveSettings').onclick = async () => {
   const _saveBtn = document.getElementById('saveSettings');
@@ -14678,11 +14709,10 @@ async function loadMobPairing() {
 
   mobQr.innerHTML = eps
     .map((e, i) => {
-      const tip = e.kind === 1
-        ? '手机也装同一个组网工具、加同一个网络，用流量也能连'
-        : e.kind === 0
-          ? '手机和电脑连同一个 Wi-Fi 时用这个'
-          : '一般用不上，上面两个不行再试';
+      /* 【2026-11-13 主人钦点】两条 QR 说明文案删除（「手机也装同一个组网工具…」「手机和电脑
+       * 连同一个 Wi-Fi 时用这个」）——卡片标题（同一个 Wi-Fi / 组网）已经说清是哪张，不再重复。
+       * 第三条（「一般用不上…」）保留。 */
+      const tip = e.kind === 2 ? '一般用不上，上面两个不行再试' : '';
       return `<div class="mobQrCard${e.kind === 1 ? ' lan2' : ''}">
         <div class="mobQrHead">
           <b>${e.label || '局域网'}</b>
@@ -14693,7 +14723,7 @@ async function loadMobPairing() {
           <code>${e.url}</code>
           <button type="button" class="ghost" data-copyurl="${i}">复制地址</button>
         </div>
-        <div class="hint">${tip}</div>
+        ${tip ? '<div class="hint">' + tip + '</div>' : ''}
       </div>`;
     })
     .join('');

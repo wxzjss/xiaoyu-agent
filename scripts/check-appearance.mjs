@@ -29,7 +29,7 @@ ok('plugins.mjs 存在且导出八件', /export function pluginsView/.test(plugi
   && /export function createPluginFromCode/.test(plugins));
 ok('server.mjs import plugins.mjs 八件', /pluginsView,\s*\n\s*togglePlugin/.test(server) && /getAppearance,\s*\n\s*setAppearance,?\s*\n?\} from '\.\/plugins\.mjs'/.test(server));
 ok('插件固定路径排在 <id> 之前（import/open-dir 先认）',
-  server.indexOf('/api/plugins/import') < server.indexOf('([^/]+)'));
+  server.indexOf('/api/plugins/import') < server.indexOf('url.pathname.match(/^\\/api\\/plugins\\/([^/]+)'));
 ok('plugin-assets 静态路由在（js 给 text/javascript）',
   server.includes('plugin-assets') && /text\/javascript; charset=utf-8/.test(server));
 ok('POST /api/appearance 在', /POST' && url\.pathname === '\/api\/appearance'/.test(server));

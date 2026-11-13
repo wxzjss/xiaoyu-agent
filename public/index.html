@@ -320,6 +320,8 @@
       border: 1px solid var(--border); color: var(--dim);
     }
     .qqPeer .tag.owner { border-color: rgba(140, 220, 210, 0.6); color: #8cdcd2; }
+    /* 【2026-11-13 合并·mac 侧】群条目蓝标，跟主人青标/客人灰标一眼分开 */
+    .qqPeer .tag.group { border-color: rgba(88, 166, 255, 0.55); color: #58a6ff; }
     .qqPeer .grow { flex: 1 1 auto; }
     .qqPeer .when { font-size: 11px; color: var(--dim); white-space: nowrap; }
 
@@ -3219,6 +3221,19 @@
     #settingsDlg #mobToggle[disabled] { opacity: .45; cursor: not-allowed; }
     #settingsDlg #mobQr svg { width: 168px; height: 168px; display: block; background: #fff; border-radius: 8px; padding: 6px; }
 
+    /* 【2026-11-13 合并·mac 侧】设置 →「系统通知」两个开关。跟手机连接那颗同款长相，
+     * 但这两个是各自独立的（谁开谁关互不影响），所以用类名不用 id。 */
+    #settingsDlg .ntSwitch {
+      flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 12px;
+    }
+    #settingsDlg .ntSwitch.on { border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10); }
+    #settingsDlg .ntSwitch[disabled] { opacity: .45; cursor: not-allowed; }
+    .ntRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .ntRow .ntText { flex: 1 1 240px; min-width: 0; }
+    .ntRow .ntText b { font-weight: 600; }
+
     /* 一个地址一张卡片：Wi-Fi 一张、Radmin 那种组网的再一张，并排放 */
     .mobQrWrap { display: flex; gap: 12px; flex-wrap: wrap; padding: 10px 0; }
     .mobQrCard {
@@ -4170,6 +4185,28 @@
             <button type="button" class="primary" id="updRestart" hidden>重启让它生效</button>
           </div>
         </fieldset>
+
+        <!-- 【2026-11-13 合并·mac 侧】系统通知（主人原话：「ai 回复的时候提醒下，
+             还有 qq 回复的设置提醒下，做两个开关项」）
+             点一下当场存盘（不用按底部那个「保存」），跟 QQ 面板那几个开关一个手感。 -->
+        <fieldset>
+          <legend>系统通知</legend>
+          <div class="field ntRow">
+            <span class="ntText"><b>她回完一句，提醒我</b>
+              <span class="hint">只在窗口最小化、或被别的应用盖住时弹一条；你正看着界面就不吵你。第一次弹之前系统可能会问一次「允不允许通知」。</span>
+            </span>
+            <button type="button" class="ntSwitch" id="ntChat" data-on="1">开</button>
+          </div>
+          <div class="field ntRow">
+            <span class="ntText"><b>QQ 上有人找她，提醒我</b>
+              <span class="hint">私聊她、或者在群里 @ 她时弹一条（带谁说的、说了什么）。白名单挡掉的那些不弹，免得拿通知刷屏。</span>
+            </span>
+            <button type="button" class="ntSwitch" id="ntQq" data-on="1">开</button>
+          </div>
+          <div class="field">
+            <span class="hint" id="ntState">…</span>
+          </div>
+        </fieldset>
       </div>
       <div class="dlgFoot">
         <span class="hint" id="saveHint"></span>
@@ -4992,8 +5029,14 @@ const log = document.getElementById('log');
  * 挂在 <body> 上（不是某个面板里），所以面板开着也看得见。
  */
 function toast(text) {
+  /* 【2026-11-13 合并·mac 侧】提示条改挂进**当前打开的 <dialog>**：
+   * 原来挂在 <body>，dialog 打开时（top-layer）整条被 ::backdrop 压住 ——
+   * 身份面板、插件面板里的提示全看不见（mac 侧踩过的坑，原样搬来）。
+   * 同一句连点几次只留一条；点一下提前消失。 */
   const s = String(text == null ? '' : text).trim();
   if (!s || typeof document === 'undefined') return;
+  const openDlg = document.querySelector('dialog[open]');
+  const wantHost = openDlg || document.body;
   let host = document.getElementById('__toastHost');
   if (!host) {
     host = document.createElement('div');
@@ -5001,14 +5044,19 @@ function toast(text) {
     host.style.cssText = 'position:fixed;left:50%;bottom:26px;transform:translateX(-50%);'
       + 'z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:center;'
       + 'pointer-events:none;max-width:80vw;';
-    document.body.appendChild(host);
+  }
+  if (!host.isConnected || host.parentNode !== wantHost) wantHost.appendChild(host);
+  for (const old of [...host.children]) {
+    if (old.dataset && old.dataset.text === s) old.remove();
   }
   const el = document.createElement('div');
   el.textContent = s;
+  el.dataset.text = s;
   el.style.cssText = 'background:rgba(23,26,33,.96);border:1px solid var(--border,#262b36);'
     + 'color:var(--text,#e6e9ef);border-radius:8px;padding:8px 14px;font-size:13px;'
     + 'line-height:1.6;box-shadow:0 6px 22px rgba(0,0,0,.45);white-space:pre-wrap;'
-    + 'max-width:80vw;opacity:0;transition:opacity .18s ease;';
+    + 'max-width:80vw;opacity:0;transition:opacity .18s ease;pointer-events:auto;cursor:pointer;';
+  el.onclick = () => { try { el.remove(); } catch {} };
   host.appendChild(el);
   requestAnimationFrame(() => { el.style.opacity = '1'; });
   setTimeout(() => {
@@ -5016,6 +5064,18 @@ function toast(text) {
     setTimeout(() => { try { el.remove(); } catch {} }, 240);
   }, 2600);
 }
+
+/* 【2026-11-13 合并】提示条落进 <dialog> 时：top-layer 的层叠跟页面不是一套，
+ * 外面 z-index 再大也压不过它——宿主跟着 dialog 走后，位置改右下角，
+ * 免得挡住对话框中间那颗按钮。 */
+(function () {
+  try {
+    const st = document.createElement('style');
+    st.textContent = 'dialog #__toastHost { position: fixed; left: auto; right: 18px; bottom: 18px;'
+      + ' transform: none; align-items: flex-end; z-index: 2147483000; }';
+    document.head.appendChild(st);
+  } catch {}
+}())
 
 
 /* ════════════════════════════════════════════════════════════════════
@@ -9823,6 +9883,16 @@ async function runTurn({ resume = false, text = '', attachments: _att = null, _s
           /* 【2026-11-10 A2 收编】与 files 同一支：sentfile 也只是信号，
            * 文件卡由服务端清单（k:'file'）→ FileCard 画，见上面的分支说明。 */
         } else if (ev.type === 'done') {
+          /* 【2026-11-13 合并·mac 侧】系统通知：她这一轮答完了 → 弹一条。
+           * 文本用服务端算好的 turnTexts（真正落盘的那几句），不是屏幕上的临时节点；
+           * 弹不弹的最终判断在主进程（窗口就在最前面就不弹），这里只管递话。 */
+          try {
+            const arr = (Array.isArray(ev.turnTexts) ? ev.turnTexts : []).filter(Boolean);
+            // 取最后一段：那是主人真正看到的那句；整轮拼起来会太长、也太杂
+            const said = String(arr.length ? arr[arr.length - 1] : '')
+              .replace(/[*#`>]+/g, '').replace(/\s+/g, ' ').trim();
+            if (said) window.desktop?.notify?.({ kind: 'chat', title: '小鱼回复了', body: said.slice(0, 140) });
+          } catch {}
           /* 【2026-11-09】先把模型 flush 一次：SSE 这一路是节流画的，
            * 最后 16ms 里到的字还在模型里没上屏。这里补齐，**不清清单** ——
            * 清掉就是「话说到一半屏幕空一截」，历史还没落盘顶上呢。 */
@@ -13248,10 +13318,14 @@ function renderQqPanel(st) {
       row.className = 'qqPeer';
       const who = document.createElement('span');
       who.className = 'who';
-      who.textContent = p.name || p.short || p.openidShort || '（没留名字）';
+      /* 【2026-11-13 合并·mac 侧】群单独成类：名字写成「群聊 · 6958d4…b656」，
+       * 和人一眼分开 —— 群名取的是「最后在群里说话的人」，以前混在人堆里看着像同一个人。 */
+      who.textContent = p.kind === 'group'
+        ? '群聊 · ' + (p.short || (p.id || '').slice(0, 6))
+        : (p.name || p.short || p.openidShort || '（没留名字）');
       const tag = document.createElement('span');
-      tag.className = 'tag' + (p.role === 'owner' ? ' owner' : '');
-      tag.textContent = p.role === 'owner' ? '主人' : '客人';
+      tag.className = 'tag' + (p.role === 'owner' ? ' owner' : '') + (p.kind === 'group' ? ' group' : '');
+      tag.textContent = p.role === 'owner' ? '主人' : (p.kind === 'group' ? '群' : '客人');
       const grow = document.createElement('span');
       grow.className = 'grow';
       const when = document.createElement('span');
@@ -13259,22 +13333,60 @@ function renderQqPanel(st) {
       when.textContent = p.lastAt ? new Date(p.lastAt).toLocaleString('zh-CN', { hour12: false }) : '';
       row.append(who, tag, grow, when);
       // 「认成主人」那颗按钮在 2026-11-03 就撤了 —— 认主只认面板上填的那个号，
-      // 在这里点一下把别人设成主人才是漏子。这里最多给个「填进白名单」的快捷。
-      if (p.role !== 'owner' && p.qq) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'ghost';
-        btn.textContent = '加进白名单';
-        btn.onclick = async () => {
-          const el = qqEl('qqAllowQq');
-          if (!el) return;
-          const have = String(el.value || '').split(/[\s,，]+/).filter(Boolean);
-          if (have.includes(String(p.qq))) { qqSetHint('已经在白名单里了'); return; }
-          have.push(String(p.qq));
-          el.value = have.join('\n');
-          qqSetHint('填进私聊白名单了，记得点「保存白名单」');
-        };
-        row.append(btn);
+      // 在这里点一下把别人设成主人才是漏子。
+      // 【2026-11-13 合并·mac 侧】白名单/群放行改成**当场存盘**：
+      // 原来只填进输入框还要手点「保存白名单」，而面板 2 秒轮询会把输入框盖回去 ——
+      // 主人点了按钮、字被冲掉，等于没放行。现在点一下直接 POST gate，坏了当场说。
+      if (p.kind === 'group') {
+        if (!p.groupAllowed) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ghost';
+          btn.textContent = '放行这个群';
+          btn.onclick = async () => {
+            btn.disabled = true;
+            const el = qqEl('qqAllowGroup');
+            if (!el) return;
+            const have = String(el.value || '').split(/[\s,，、;；]+/).filter(Boolean);
+            if (have.includes(String(p.id))) { qqSetHint('这个群已经在放行名单里了'); btn.disabled = false; return; }
+            have.push(String(p.id));
+            el.value = have.join('\n');
+            if (await saveQqGate()) {
+              qqSetHint('已放行群聊 ' + (p.short || p.id) + '（当场存盘）');
+              try { refreshQqPanel?.(); } catch {}
+            }
+            btn.disabled = false;
+          };
+          row.append(btn);
+        }
+      } else if (p.role !== 'owner') {
+        if (p.whitelisted) {
+          const done = document.createElement('span');
+          done.className = 'tag';
+          done.textContent = '已在白名单';
+          row.append(done);
+        } else if (p.qq || p.id) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ghost';
+          btn.textContent = '加进白名单';
+          btn.onclick = async () => {
+            btn.disabled = true;
+            const el = qqEl('qqAllowQq');
+            if (!el) return;
+            const ident = String(p.qq || p.id);
+            const have = String(el.value || '').split(/[\s,，、;；]+/).filter(Boolean);
+            if (have.includes(ident)) { qqSetHint('已经在白名单里了'); btn.disabled = false; return; }
+            have.push(ident);
+            el.value = have.join('\n');
+            if (await saveQqGate()) {
+              qqSetHint('已放行 ' + (p.name || ident) + '（当场存盘）');
+              try { refreshQqPanel?.(); } catch {}
+            }
+            btn.disabled = false;
+          };
+          row.append(btn);
+        }
       }
       box.append(row);
     }
@@ -13555,7 +13667,10 @@ async function saveQqCreds() {
 
 /** 白名单单独存（面板上的「保存白名单」也走它）。 */
 async function saveQqGate() {
-  const ownerQq = String((qqEl('qqOwnerQq') || {}).value || '').replace(/[^0-9]/g, '');
+  /* 【2026-11-13 合并·mac 侧】主人号不再只留数字：官方机器人那条道主人这格
+   * 填的是 openid（一长串字母数字），原来的 [^0-9] 过滤会把它削成空串。
+   * 只去掉分隔符；「群 id 不能当主人」这道闸在后端（normPeerId/qqAllowed）守着。 */
+  const ownerQq = String((qqEl('qqOwnerQq') || {}).value || '').replace(/[\s,，、;；]+/g, '');
   const allowQq = String((qqEl('qqAllowQq') || {}).value || '');
   const allowGroup = String((qqEl('qqAllowGroup') || {}).value || '');
   const strict = Boolean((qqEl('qqGateStrict') || {}).checked);
@@ -13841,6 +13956,8 @@ document.getElementById('openSettings').onclick = async () => {
   const p = await fetch(PERSONA_API('/api/personas')).then(r => r.json()).catch(() => null);
   if (p) fillPersona(p); else personaHint.textContent = '人设读取失败';
   closeOtherDialogs('settingsDlg');
+  // 系统通知开关跟着打开面板刷一遍（prefs 启动时拉过，这里只重画）
+  try { _ntPaint(); } catch {}
   // 花多少钱：打开面板就算一遍这个会话的账（见 paintUsageBox）
   try { paintUsageBox(); } catch {}
   dlg.showModal();
@@ -13968,6 +14085,12 @@ document.getElementById('todoAddInput').addEventListener('keydown', (e) => {
 });
 
 document.getElementById('saveSettings').onclick = async () => {
+  const _saveBtn = document.getElementById('saveSettings');
+  /* 【2026-11-13 合并·mac 侧】防连点：保存要打两路接口，连点会发出好几个并存的请求，
+   * 谁后回来谁说了算 —— 界面可能显示「成功」实际存的是旧值。 */
+  if (_saveBtn.disabled) return;
+  _saveBtn.disabled = true;
+  try {
   const p = await fetch(PERSONA_API('/api/personas/save'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -13995,7 +14118,12 @@ document.getElementById('saveSettings').onclick = async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }).then(r => r.json()).catch(() => null);
-  if (!r) { saveHint.textContent = '保存失败'; return; }
+  /* 【2026-11-13 合并·mac 侧】要判 r.error：原来只判 !r，服务端回了错误对象
+   * 也往下走 fillSettings(r.settings) —— settings 是 undefined，下一秒就炸。 */
+  if (!r || r.error) {
+    saveHint.textContent = '保存失败：' + (r && r.error ? r.error : '网络没通');
+    return;
+  }
   fillSettings(r.settings);
   // 币种可能刚改过：把这一屏的钱数当场按新币种重画，别等下一轮对话
   try { paintUsageBox(); } catch {}
@@ -14024,6 +14152,7 @@ document.getElementById('saveSettings').onclick = async () => {
   /* 保存后不再整屏重绘：try { if (typeof refreshTurnsCost === 'function') refreshTurnsCost(); } catch {} */
   saveHint.textContent = '已保存，下一句生效';
   setTimeout(() => dlg.close(), 450);
+  } finally { _saveBtn.disabled = false; }
 };
 
 /* 人设设默认按钮·2026-10-30 —— 把当前这套设成默认 */
@@ -14661,6 +14790,47 @@ async function refreshUpdate() {
       ? '这个会话还在跑，等它说完再重启'
       : '重启一下小鱼Agent，新版本就生效了（会话和设置都不动）';
   }
+}
+
+/* ── 系统通知开关（2026-11-13 合并 mac 侧改动）────────────────
+ * 两个开关当场存盘（POST /api/notify），失败了当场翻回去并说人话，
+ * 不像以前那样「看着开了、重启才发现没存上」。 */
+let _ntPrefs = { chat: true, qq: true };
+const _ntPaint = () => {
+  for (const [id, key] of [['ntChat', 'chat'], ['ntQq', 'qq']]) {
+    const b = document.getElementById(id);
+    if (!b) continue;
+    const on = !!_ntPrefs[key];
+    b.dataset.on = on ? '1' : '0';
+    b.classList.toggle('on', on);
+    b.textContent = on ? '开' : '关';
+  }
+};
+try {
+  fetch('/api/notify').then((r) => r.json()).then((d) => {
+    if (d && d.prefs) { _ntPrefs = { chat: !!d.prefs.chat, qq: !!d.prefs.qq }; _ntPaint(); }
+  }).catch(() => {});
+} catch {}
+for (const [id, key] of [['ntChat', 'chat'], ['ntQq', 'qq']]) {
+  const b = document.getElementById(id);
+  if (!b) continue;
+  b.onclick = async () => {
+    _ntPrefs[key] = !_ntPrefs[key];
+    _ntPaint();
+    b.disabled = true;
+    try {
+      const r = await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(_ntPrefs),
+      }).then((x) => x.json()).catch(() => null);
+      if (!r || r.error) {
+        _ntPrefs[key] = !_ntPrefs[key];
+        _ntPaint();
+        toast('系统通知开关没存上：' + (r && r.error ? r.error : '网络没通'));
+      }
+    } finally { b.disabled = false; }
+  };
 }
 
 if (document.getElementById('updCheck')) {
@@ -20121,6 +20291,10 @@ window.__mdlRowTest = async (name) => {
   } catch { /* 查不到就按服务没起处理 */ }
 
   // 没 token 或者服务没起：直接让后端一把拉起（它会自己取 token / 开登录页）
+  if (reason === 'token') {
+    // 服务活着但 token 失效：ensure 见 up+hasToken 会跳过重启，旧进程换不了新 token，先停再起
+    await localDeepSeekPost('/api/mini-deepseek/stop').catch(() => {});
+  }
   const st2 = await localDeepSeekEnsure();
   if (st2 && st2.error) return { ok: false, error: st2.error, reason };
   if (!(st2 && st2.up)) return { ok: false, error: (st2 && st2.error) || '服务没起来', reason };
@@ -20789,6 +20963,12 @@ document.getElementById('mdlTest').onclick = async () => {
       const t0 = Date.now();
       mdlLocalHint('', '');
 
+      // base 少 /v1 的话自动补上（not found 的根治：8321 只有 /v1 前缀路由）
+      if (mdlBase && mdlBase.value && !/\/v1\s*$/.test(mdlBase.value.trim())) {
+        mdlBase.value = mdlBase.value.trim().replace(/\/+$/, '') + '/v1';
+        payload = formPayload();
+      }
+
       // 先把模型加进 / 对齐（内部会查服务、必要时起服务）
       let done = await localDeepSeekApply(payload);
       if (!done || done.error) {
@@ -20820,9 +21000,11 @@ document.getElementById('mdlTest').onclick = async () => {
         const st = await localDeepSeekEnsure();
         if (st && st.error) { mdlLocalHint('err', st.error); return; }
       } else {
-        // token 原因：重新取一次 token 并重启服务
-        const tk = await localDeepSeekPost('/api/mini-deepseek/token');
-        if (!tk || tk.error) { mdlLocalHint('err', (tk && tk.error) || '重新取 token 失败'); return; }
+        // token 原因：旧 token 大概率失效（上游 data:null / 401），重取 leveldb 拿回来的还是同一条
+        // → 直接开内置浏览器登录页，等主人重新登录拿新 token（最多十分钟）
+        mdlLocalHint('', 'token 失效了，正在打开 DeepSeek 登录页，请重新登录（最多等十分钟）…');
+        const rl = await localDeepSeekPost('/api/mini-deepseek/relogin', { waitMs: 10 * 60 * 1000 });
+        if (!rl || !rl.ok) { mdlLocalHint('err', (rl && rl.error) || '重新登录没完成'); return; }
         const st = await localDeepSeekEnsure();
         if (st && st.error) { mdlLocalHint('err', st.error); return; }
       }

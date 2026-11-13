@@ -269,9 +269,12 @@ function pruneSaveArchives() {
     // 【2026-11-15 主人新规矩】归档总量超 100 份（不分 save/归档），按最旧彻底删
     const files = readdirSync(HISTORY_DIR).filter((n) => n.endsWith('.json') || n.endsWith('.txt'));
     if (files.length <= 100) return 0;
+    const now = Date.now();
     const withTime = files.map((n) => {
       let t = 0;
       try { t = statSync(join(HISTORY_DIR, n)).mtimeMs; } catch {}
+      // 【2026-11-15 事故保险】mtime 在未来的文件是异常文件（时间戳溢出等），最不容易被误删
+      if (t > now + 60000) t = now; // 异常文件当刚落盘的，最不容易被删
       return { n, t };
     });
     withTime.sort((a, b) => b.t - a.t);

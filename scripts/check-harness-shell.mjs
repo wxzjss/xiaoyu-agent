@@ -43,7 +43,7 @@ if (win) {
 const tools = fs.readFileSync('src/tools.mjs', 'utf8');
 t.ok('tools.mjs 真的用上了 pickShell', /shell: pickShell\(command, shell_hint\)/.test(tools));
 t.ok('不再无条件写死 powershell.exe', !/shell: process\.platform === 'win32' \? 'powershell\.exe'/.test(tools));
-t.ok('shell_hint 进 schema', /shell_hint: \{ type: 'string'/.test(tools));
+t.ok('shell_hint 进 schema（2026-11-13 起按平台给说明，Windows 单行 / 其他平台多行）', /shell_hint: \{ type: 'string'/.test(tools) || /shell_hint: \{\s*[\s\S]{0,200}type: 'string'/.test(tools));
 t.ok('timeout_ms 没被动掉', /timeout_ms: \{ type: 'number'/.test(tools));
 t.ok('超时说明仍在', /超时掐掉了/.test(tools));
 

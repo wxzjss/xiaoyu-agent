@@ -1,10 +1,11 @@
 /**
  * 加号附件：只读地列目录、读图片。
  *
- * 主人要在聊天框里直接挑文件和图片，所以这里允许浏览整个 C 盘（不止工作区）。
+ * 主人要在聊天框里直接挑文件和图片，所以这里允许浏览整块磁盘
+ * （Windows 是整个 C 盘；macOS 是整个用户盘 + 外接卷）。不止工作区。
  * 因此这个模块**只读**：不写、不删、不执行。
  */
-import { readdirSync, statSync, readFileSync, existsSync } from 'node:fs';
+import { readdirSync, statSync, readFileSync, existsSync, realpathSync } from 'node:fs';
 import { join, dirname, parse, resolve, isAbsolute } from 'node:path';
 
 /** 图片扩展名（小写） */
@@ -37,24 +38,47 @@ export function isImagePath(p) {
   return IMAGE_EXT.has(extOf(p));
 }
 
-/** 磁盘根目录（Windows 是 C:\） */
+/** 磁盘根目录（Windows 是 C:\，macOS 是 /） */
 function rootDrive() {
-  return parse(process.cwd()).root || 'C:\\';
+  return parse(process.cwd()).root || (process.platform === 'win32' ? 'C:\\' : '/');
 }
 
 /**
- * 本机还有哪些盘。
+ * 本机还有哪些「盘」。
  *
- * 以前只认「工作目录所在的盘」，于是加号里翻到 C:\ 就到头了，D 盘 E 盘根本进不去。
- * 这里把 A~Z 挨个 statSync 一下，存在的才算；Windows 上没插盘的盘符会直接报错，正好跳过。
+ * Windows：以前只认「工作目录所在的盘」，加号里翻到 C:\ 就到头了，D 盘 E 盘根本进不去。
+ *   现在把 A~Z 挨个 statSync 一下，存在的才算；没插盘的盘符会直接报错，正好跳过。
+ * macOS：根目录是 /；外接的 U 盘、移动硬盘都挂在 /Volumes 下面，
+ *   把它们也列出来，不然加号里永远看不到外接盘。
  *
- * @returns {{name:string, path:string}[]} 形如 [{name:'C:', path:'C:\\'}, ...]
+ * @returns {{name:string, path:string}[]} Windows 形如 [{name:'C:', path:'C:\\'}, ...]；macOS 形如 [{name:'Macintosh HD', path:'/'}, {name:'U盘', path:'/Volumes/U盘'}, ...]
  */
 export function drives() {
   const out = [];
   if (process.platform !== 'win32') {
     const root = rootDrive();
-    out.push({ name: root, path: root });
+    out.push({
+      name: process.platform === 'darwin' ? 'Macintosh HD' : root,
+      path: root,
+    });
+    /* 【2026-11-11 mac 兼容】把 /Volumes 下的外接卷也列出来。
+     * /Volumes 里会有一个指向根目录的软链（Macintosh HD），用 realpath 对齐后过滤掉。 */
+    if (process.platform === 'darwin') {
+      let rootReal = '';
+      try { rootReal = realpathSync(root); } catch { rootReal = root; }
+      try {
+        for (const name of readdirSync('/Volumes')) {
+          const p = join('/Volumes', name);
+          try {
+            if (!statSync(p).isDirectory()) continue;
+            let real = '';
+            try { real = realpathSync(p); } catch { real = p; }
+            if (real === rootReal || resolve(p) === resolve(root)) continue; // 根盘自己，上面已经加过了
+            out.push({ name, path: p });
+          } catch { /* 没权限 / 已弹出，跳过 */ }
+        }
+      } catch { /* 没有 /Volumes（理论上不可能），就只有根目录 */ }
+    }
     return out;
   }
   for (let i = 65; i <= 90; i++) { // A..Z
@@ -70,13 +94,19 @@ export function drives() {
 }
 
 /**
- * 这个路径是不是盘符根（C:\、D:\ 这种）。
+ * 这个路径是不是「盘根」（Windows 是 C:\、D:\ 这种；macOS 是 / 或 /Volumes/xxx）。
  * 是的话，界面上要把别的盘也列出来，不然只能困在一个盘里。
  */
 function isDriveRoot(p) {
+  const s = String(p || '').trim();
+  /* Windows：把所有分隔符去掉，剩下如果正好是「字母+冒号」，那就是盘符根。
+   * macOS：/ 本身，或者 /Volumes/<卷名>（外接卷的根）。 */
+  if (process.platform !== 'win32') {
+    const t = s.replace(/\/+$/, '');
+    return t === '' || t === '/' || /^\/Volumes\/[^/]+$/.test(t);
+  }
   // 别去数反斜杠有几个（不同地方传进来的写法不一样：C:  C:\  C:\\）。
-  // 把所有分隔符统统去掉，剩下如果正好是「字母+冒号」，那就是盘符根。
-  const t = String(p || '').trim().replace(/[\\/]+/g, '');
+  const t = s.replace(/[\\/]+/g, '');
   return /^[A-Za-z]:$/.test(t);
 }
 

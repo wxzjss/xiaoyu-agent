@@ -39,7 +39,7 @@ const DEFAULT_CARDS = [
     content: [
       '小鱼Agent 是 Electron 桌面应用：electron/main.cjs 是主进程（窗口/托盘/重启），src/server.mjs 是内嵌服务（8788 端口，路由+轮次+直播），src/agent.mjs 是智能体循环（取信箱→调模型→执行工具），src/tools.mjs 是工具注册表，src-ui/ 是 React 前端（构建产物 public/ui/log.bundle.js），旧 DOM 路径在 public/index.html 内联脚本里（两套并存）。',
       '',
-      '关键目录：会话存 <数据根>/.state/sessions/*.json（一条消息一 at 时间戳）；诊断日志 .state/diag.log（排查问题的第一站）；运行实例在 %APPDATA%\\小鱼Agent\\data\\（打包态），开发态源码在仓库根目录。',
+      '关键目录：会话存 <数据根>/.state/sessions/*.json（一条消息一 at 时间戳）；诊断日志 .state/diag.log（排查问题的第一站）；运行实例的数据根在打包态按平台取（Windows 是 %APPDATA%\\小鱼Agent\\data\\，macOS 是 ~/Library/Application Support/小鱼Agent/data\\），开发态源码在仓库根目录。',
       '',
       '改前端要 npm run build:ui 重打 bundle；改 src/ 要 npm run sync 同步到运行实例并重启才生效。改完必须跑 scripts/check-*.mjs 站岗（每个修复都配了站岗，红=回归）。',
     ].join('\n'),

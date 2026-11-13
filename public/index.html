@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -2705,7 +2705,23 @@
     }
     /* ---- 会话记忆 ------------------------------------------------------ */
     /* 顶栏那个「记忆」按钮和它的大对话框都撤了，只剩「改过」小标记用得到 */
-    .featList { padding: 8px; }
+    .featDrop {
+      position: absolute; inset: 0; z-index: 6; pointer-events: none;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+      border: 2px dashed var(--accent); border-radius: 12px;
+      background: rgba(var(--panel-rgb), .94); color: var(--accent);
+    }
+    /* [hidden] 是 display:none，可上面那条 display:flex 会把它盖掉，得显式补回来 */
+    .featDrop[hidden] { display: none; }
+    .featDrop b { font-size: 16px; }
+    .featDrop span { font-size: 12px; color: var(--dim); }
+
+    /* 【2026-11-13 合并·mac 侧】插件卡网格：auto-fill 三列起，窗口窄了自动减列 */
+    .featList {
+      padding: 12px;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+      gap: 9px; align-content: start;
+    }
     /* 【2026-11-12 旁观者模式卡】展开的选人区：缩进一点表示「卡里的内容」，
        行本身复用 .featRow，不加边框免得看起来像第二张卡。 */
     .specSub { padding: 2px 10px 10px 26px; }
@@ -2713,11 +2729,30 @@
   .naLab { display: block; margin: 8px 0; font-size: 13px; }
   .naLab input, .naLab textarea { display: block; width: 100%; margin-top: 4px; }
     .featRow {
-      display: flex; align-items: center; gap: 12px; padding: 11px 12px;
-      border: 1px solid transparent; border-radius: 8px;
+      /* 【2026-11-13 合并·mac 侧】竖排 + 允许换行：.featMain 吃满第一行，按钮和开关落到第二行 */
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      padding: 10px 12px 8px;
+      border: 1px solid var(--border); border-radius: 11px;
+      background: var(--panel);
+      transition: border-color .12s, background .12s;
     }
-    .featRow:hover { background: #1d2430; border-color: var(--border); }
-    .featMain { flex: 1; min-width: 0; }
+    .featRow:hover { background: var(--hover); border-color: var(--dim); }
+    /* 卡片左上角的图标：插件名首字 + 分类底色。不打包图标资源，纯 CSS。 */
+    .featIco {
+      flex: none; width: 30px; height: 30px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 600; letter-spacing: 0;
+      color: var(--text); background: rgba(139, 149, 167, .14);
+      border: 1px solid var(--border);
+    }
+    .featIco.t-blue   { background: rgba(79, 140, 255, .16); border-color: rgba(79, 140, 255, .34); color: #9dbcff; }
+    .featIco.t-green  { background: rgba(63, 185, 80, .14);  border-color: rgba(63, 185, 80, .32);  color: #7fd18b; }
+    .featIco.t-orange { background: rgba(240, 176, 106, .14); border-color: rgba(240, 176, 106, .32); color: #f0c08a; }
+    .featIco.t-violet { background: rgba(150, 130, 235, .16); border-color: rgba(150, 130, 235, .34); color: #b9a9f5; }
+    .featIco.t-cyan   { background: rgba(140, 220, 210, .14); border-color: rgba(140, 220, 210, .32); color: #8cdcd2; }
+    .featIco.t-pink   { background: rgba(240, 166, 160, .14); border-color: rgba(240, 166, 160, .32); color: #f0a6a0; }
+    .featMain { flex: 1 1 100%; min-width: 0; display: flex; gap: 10px; align-items: flex-start; }
+    .featText { flex: 1; min-width: 0; }
     .featName { font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
     .featName .badge {
       font-size: 11px; border-radius: 999px; padding: 0 7px; flex: none;
@@ -2729,11 +2764,18 @@
     /* 「整台机器」小标：这两条开关不跟会话走（视频背景 / 陪看屏幕）。
        用虚线圈，跟按会话的那些区分开，又不至于太抢眼。 */
     .featName .badge.mach { color: var(--dim); border-color: var(--border); border-style: dashed; }
-    .featDesc { color: var(--dim); font-size: 11.5px; line-height: 1.7; margin-top: 2px; }
+    .featDesc {
+      color: var(--dim); font-size: 11.5px; line-height: 1.65; margin-top: 3px;
+      /* 【2026-11-13 合并·mac 侧】说明太长的卡会高矮不一，截到两行让网格整齐；悬停再展开 */
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .featRow:hover .featDesc { -webkit-line-clamp: 6; }
     .featRow .switch {
-      flex: none; min-width: 76px; height: 30px; border-radius: 999px; cursor: pointer;
+      /* 【2026-11-13 合并·mac 侧】贴到卡片右下角 */
+      margin-left: auto;
+      flex: none; min-width: 60px; height: 26px; border-radius: 999px; cursor: pointer;
       border: 1px solid var(--border); background: transparent; color: var(--dim);
-      font-size: 12.5px; padding: 0 12px;
+      font-size: 12px; padding: 0 11px;
     }
     .featRow .switch.on {
       border-color: var(--ok); color: var(--ok); background: rgba(63,185,80,.10);
@@ -2761,6 +2803,70 @@
      * 这一排照抄会话面板那排的手感：同一套 .sessTop.sessTools 的尺寸，
      * 颜色也同一套意思（导入=往里进，描边蓝；导出=往外拿，安静灰）。
      * 两个面板长得一样，主人就不用学两遍。 */
+/* 【2026-11-13 合并·mac 侧】导入插件面板（从文件 / 粘贴代码）+ 搜索框 */
+    #featSearch {
+      flex: 1 1 140px; min-width: 110px; height: 28px; margin-left: auto;
+      border: 1px solid var(--border); border-radius: 999px;
+      background: var(--input-bg); color: var(--text);
+      font: inherit; font-size: 12.5px; padding: 0 12px;
+    }
+    #featSearch::placeholder { color: var(--dim); }
+    #featSearch:focus { outline: none; border-color: var(--accent); }
+    /* ---- 导入插件面板（2026-11-12） --------------------------------------
+       两张脸：从文件 / 粘贴代码。分段标签在上、1px 描边分块，跟【外观】那张一个口径；
+       不用渐变、不堆投影 —— 层次靠描边和留白，不靠发光。 */
+    #plugImportDlg { width: min(600px, 94vw); }
+    #plugImportDlg .piTabs {
+      display: flex; gap: 2px; padding: 10px 16px 0; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+    }
+    #plugImportDlg .piTabs button {
+      background: transparent; border: 0; border-bottom: 2px solid transparent;
+      color: var(--dim); font: inherit; font-size: 13px; padding: 7px 12px 9px;
+      cursor: pointer; border-radius: 6px 6px 0 0;
+    }
+    #plugImportDlg .piTabs button:hover { color: var(--text); background: rgba(255,255,255,.04); }
+    #plugImportDlg .piTabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+    #plugImportDlg .dlgBody { display: flex; flex-direction: column; gap: 12px; }
+    #plugImportDlg .piPanel[hidden] { display: none; }
+    #plugImportDlg .piPanel { display: flex; flex-direction: column; gap: 12px; }
+    #plugImportDlg .piDrop {
+      border: 1px dashed var(--border); border-radius: 10px; padding: 22px 18px;
+      background: var(--panel-2);
+      display: flex; flex-direction: column; align-items: center; gap: 9px; text-align: center;
+    }
+    #plugImportDlg .piDrop.over { border-color: var(--accent); background: rgba(var(--hover-rgb), .55); }
+    #plugImportDlg .piDrop b { font-size: 14px; }
+    #plugImportDlg .piDrop span { font-size: 12px; color: var(--dim); line-height: 1.8; max-width: 46ch; }
+    #plugImportDlg .piNote { font-size: 12px; color: var(--dim); line-height: 1.95; }
+    #plugImportDlg .piNote i {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--dim); margin-right: 8px; vertical-align: 1px;
+    }
+    #plugImportDlg .piNote i.ok { background: var(--ok); }
+    #plugImportDlg .piGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    #plugImportDlg .piField { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    #plugImportDlg .piField > span { font-size: 12px; color: var(--dim); }
+    #plugImportDlg .piField input, #plugImportDlg .piField select, #plugImportDlg .piField textarea {
+      width: 100%; box-sizing: border-box; background: var(--input-bg, var(--panel-2));
+      border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+      font: inherit; font-size: 13px; padding: 7px 9px;
+    }
+    #plugImportDlg .piField input:focus, #plugImportDlg .piField select:focus,
+    #plugImportDlg .piField textarea:focus { outline: none; border-color: var(--accent); }
+    #plugImportDlg .piField textarea {
+      min-height: 196px; resize: vertical; tab-size: 2;
+      font: 12.5px/1.7 ui-monospace, "SF Mono", Consolas, monospace;
+      white-space: pre; overflow: auto;
+    }
+    #plugImportDlg .piHint { font-size: 12px; color: var(--dim); line-height: 1.85; }
+    #plugImportDlg .piHint code {
+      font: 11.5px ui-monospace, "SF Mono", Consolas, monospace;
+      color: var(--text); background: var(--raise); padding: 1px 5px; border-radius: 4px;
+    }
+    #plugImportDlg .piErr { font-size: 12.5px; color: var(--err); line-height: 1.7; }
+    #plugImportDlg .piErr[hidden] { display: none; }
+
+
     #featImport { border: 1px solid rgba(79, 140, 255, .55); background: rgba(79, 140, 255, .10); color: #9dbcff; font-weight: 600; }
     #featImport:hover { background: rgba(79, 140, 255, .20); border-color: var(--accent); color: #cfe0ff; }
     #featExport { border: 1px solid var(--border); background: transparent; color: var(--dim); }
@@ -3961,14 +4067,18 @@
         <b>插件</b><span class="meta" id="featHint"></span>
         <button type="button" class="x" data-close="1">关闭</button>
       </div>
-      <div class="sessTop">
+      <div class="sessTop" style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap">
         <span class="hint">系统插件是程序自带的（只能停用）；自己导入的可以卸载。停用的插件，小鱼就拿不到对应的工具，下一句生效</span>
+        <!-- 【2026-11-13 合并·mac 侧】插件搜索：输入即过滤 -->
+        <input type="search" id="featSearch" placeholder="搜插件名 / 说明" />
       </div>
       <!-- 2026-11-10 主人要的：功能能导入、能挑着导出、自己导进来的能删掉。
            导入=描边蓝、导出=安静灰，跟【会话】面板那排一模一样，别长两副脸。 -->
       <div class="sessTop sessTools">
         <button type="button" class="ghost3" id="featImport" title="选一个或多个插件文件导进来；也能直接把文件拖到这个面板上">导入插件</button>
         <button type="button" class="ghost3" id="featExport" title="挑几个插件导出成文件，能带走、能挪到别的机器">导出</button>
+        <!-- 【2026-11-13 合并·mac 侧】主题/壁纸这类带图片和样式的插件放这里；一个文件夹一个插件 -->
+        <button type="button" class="ghost3" id="featOpenDir" title="主题 / 壁纸这类带图片和样式的插件放这里；一个文件夹一个插件">打开插件目录</button>
         <!-- 2026-11-11 主人要的：这两颗紧跟在【导入】【导出】右边，同一排。
              关屏走 /api/screen/off（和工具 screen_off 同一套实现，先变暗 3 秒再熄屏），
              提示词是主人出门时常用的那一段，一键复制带走。 -->
@@ -3997,6 +4107,81 @@
       <div class="featDrop" id="featDrop" hidden>
         <b>松手就导入</b>
         <span>一次拖几个都行 · 只认功能文件（.json）</span>
+      </div>
+          <div class="featDrop" id="featDrop" hidden>
+        <b>松手就导入</b>
+        <span>一次拖几个都行 · 功能插件是 .json，主题 / 壁纸是 .zip 包</span>
+      </div>
+</form>
+  </dialog>
+  <!-- 导入插件（2026-11-12 主人：「导入应该做一个 dialog form，说明清楚，也可以粘贴代码编辑」）。
+       两张脸：从文件（拖 / 选，系统自己的面板）、粘贴代码（JS 功能 / CSS 主题）。
+       为什么不做成「点了直接弹文件框」：主人得先知道 .zip 和 .json 是两种东西，
+       弹框前一句说明都没有，选错了只会收到一句「包里没有 plugin.json」。 -->
+  <dialog id="plugImportDlg">
+    <form method="dialog">
+      <div class="dlgHead">
+        <b>导入插件</b><span class="meta" id="piMeta">文件或代码</span>
+        <button type="button" class="x" data-close="1">关闭</button>
+      </div>
+      <div class="piTabs" role="tablist">
+        <button type="button" role="tab" data-pi-tab="file" class="on">从文件</button>
+        <button type="button" role="tab" data-pi-tab="code">粘贴代码</button>
+      </div>
+      <div class="dlgBody">
+        <!-- 一、从文件 -->
+        <section class="piPanel" data-pi-panel="file">
+          <div class="piDrop" id="piDrop">
+            <b>把插件文件拖到这里</b>
+            <span>.zip 是主题 / 壁纸插件包（解开来里面要有 plugin.json 和图片、样式）<br>
+                  .json 是从「导出」那儿拿到的功能定义，一个文件可以装好几条功能</span>
+            <button type="button" class="ghost3" id="piChoose">选择文件…</button>
+          </div>
+          <div class="piNote">
+            <div><i class="ok"></i>装进来就自动启用；功能插件下一句就生效</div>
+            <div><i></i>主题 / 壁纸装完还要去【外观】里选中它才算用上</div>
+            <div><i></i>装错、不想要了，回到列表上点「卸载」就整个删掉</div>
+          </div>
+        </section>
+
+        <!-- 二、粘贴代码 -->
+        <section class="piPanel" data-pi-panel="code" hidden>
+          <div class="piGrid">
+            <label class="piField">
+              <span>类型</span>
+              <select id="piType">
+                <option value="feature">功能插件（JS）</option>
+                <option value="theme">主题插件（CSS）</option>
+              </select>
+            </label>
+            <label class="piField">
+              <span>id（也是文件夹名）</span>
+              <input id="piId" placeholder="my-plugin" spellcheck="false" autocomplete="off" />
+            </label>
+          </div>
+          <div class="piGrid">
+            <label class="piField">
+              <span>名字</span>
+              <input id="piName" placeholder="留空就用 id" autocomplete="off" />
+            </label>
+            <label class="piField">
+              <span>说明（可留空）</span>
+              <input id="piDesc" placeholder="一句话：它干什么" autocomplete="off" />
+            </label>
+          </div>
+          <label class="piField">
+            <span id="piCodeLabel">代码</span>
+            <textarea id="piCode" spellcheck="false" autocomplete="off"
+              placeholder="export default function mount({ root, api, toast }) {&#10;  // 想往页面上挂什么就挂什么&#10;}"></textarea>
+          </label>
+          <div class="piHint" id="piHint"></div>
+          <div class="piErr" id="piErr" hidden></div>
+        </section>
+      </div>
+      <div class="dlgFoot">
+        <span class="hint" id="piFoot">同一个 id 再导一次就是覆盖更新，不会多出一份</span>
+        <button type="button" class="ghost3" id="piCancel">取消</button>
+        <button type="button" class="primary" id="piOk">导入</button>
       </div>
     </form>
   </dialog>
@@ -5337,6 +5522,20 @@ document.addEventListener("keydown", (e) => {
 // 把当前这个会话的原始记录 + 附件打成一个 zip 交给浏览器下载。
 // 先在服务端 HEAD 一下：既验证「这个会话还在不在」，也能提前把按钮切成「正在打包」，
 // 免得点一下没反应让人以为坏了。
+/* 【2026-11-13 合并·mac 侧】菜单右边那行小字跟着系统走：mac 上打开的是访达，
+ * Windows 上才是盘符。以前写死「C 盘」，mac 主人看一眼就知道这不是给自己做的。 */
+(async () => {
+  let mac = /Mac/i.test(navigator.userAgent);
+  try {
+    const info = window.desktop && window.desktop.info ? await window.desktop.info() : null;
+    if (info && info.platform) mac = info.platform === 'darwin';
+  } catch { /* 拿不到就按 UA 判 */ }
+  const f = document.querySelector('#pickFile .sub');
+  const i = document.querySelector('#pickImage .sub');
+  if (f) f.textContent = mac ? '访达' : '此电脑';
+  if (i) i.textContent = mac ? '照片' : '图片库';
+})();
+
 const logDownload = document.getElementById("logDownload");
 if (logDownload) {
   logDownload.addEventListener("click", async () => {
@@ -15304,6 +15503,16 @@ try {
 const featDlg = document.getElementById('featuresDlg');
 const featList = document.getElementById('featList');
 const featHint = document.getElementById('featHint');
+
+/* 【2026-11-13 合并·mac 侧】插件搜索：输入即过滤，不用按回车。 */
+let featQuery = '';
+function featMatch(f) {
+  const q = featQuery.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [f.name, f.desc, f.id, f.description].map((x) => String(x || '').toLowerCase());
+  return hay.some((x) => x.includes(q));
+}
+
 let featState = { features: [], enabledCount: 0, total: 0 };
 
 /**
@@ -15543,9 +15752,28 @@ async function loadApPlugins() {
   } catch { featApPlugins = []; }
 }
 
+const FEAT_TONE = {
+  // 联网 / 抓网页
+  web: 'blue', browser: 'blue', webFetchTxt: 'blue', fetchPack: 'blue', zhConvert: 'blue',
+  // 文件 / 文档
+  readFile: 'green', writeFile: 'green', listDir: 'green', officeDocs: 'green', sendFile: 'green',
+  // 系统 / 桌面 / 外部程序
+  shell: 'orange', screenSense: 'orange', desktopHands: 'orange', selfRestart: 'orange', qqSense: 'orange',
+  // 记忆 / 智能体 / 上下文
+  memory: 'violet', skills: 'violet', chronicle: 'violet', foldedBox: 'violet',
+  subagent: 'violet', taskmode: 'violet', plan: 'violet', note: 'violet',
+  // 界面外观
+  videoBg: 'pink', ttsVoice: 'pink', identity: 'pink',
+  // 输出 / 心跳 / 协作
+  video: 'cyan', makeImage: 'cyan', selfwake: 'cyan', peerMail: 'cyan', cron: 'cyan',
+};
+
+/** 卡片图标上的那个字：中文取首字，英文取首字母（mac 版原样） */
 function featIconLetter(name) {
   const s = String(name || '').trim();
-  return s ? s[0].toUpperCase() : '?';
+  if (!s) return '·';
+  const ch = [...s][0];
+  return /[a-z]/i.test(ch) ? ch.toUpperCase() : ch;
 }
 
 /** 一张外观插件卡。结构跟功能卡一样，只是数据来源和操作接口不同。 */
@@ -15616,10 +15844,29 @@ async function featReapplyAppearance() {
 function renderFeatList() {
   if (!featList) return;
   featList.innerHTML = '';
-  const rows = featRows();
+  /* 【2026-11-13 合并·mac 侧】搜索过滤：功能和插件目录两半边一起过 */
+  const all = featRows();
+  const rows = all.filter(featMatch);
+  const apAll = featApPlugins.filter((p) => featMatch({ name: p.name, desc: p.description, id: p.id }));
+  featApPlugins = apAll.length === featApPlugins.length ? featApPlugins : featApPlugins;
   /* 【2026-11-13 合并·mac 侧】外观插件跟功能插件并排画在同一张表里，所以「一共多少个」
-   * 都得两边一起算 —— 只数功能那半边，会出现「0 个插件」而卡片明明有三张的怪账。 */
-  const apAll = featApPlugins;
+   * 都得两边一起算 —— 只数功能那半边，会出现「0 个插件」而卡片明明有三张的怪账。
+   * （apAll 已在函数头按搜索过滤过，这里不再重复取。） */
+  // apAll 见函数头
+  /* 【2026-11-13 合并·mac 侧】有插件但没搜到 —— 别说「一条都没有」，那是另一回事 */
+  if (!rows.length && !apAll.length && featQuery.trim()) {
+    const box = document.createElement('div');
+    box.className = 'featEmpty';
+    const t = document.createElement('div');
+    t.className = 't';
+    t.textContent = '没有匹配「' + featQuery.trim() + '」的插件';
+    box.append(t);
+    featList.appendChild(box);
+    if (featHint) featHint.textContent = '0 / ' + (featRows().length + featApPlugins.length);
+    specPaintInto(featList);
+    paintFeatNow();
+    return;
+  }
   if (!rows.length && !apAll.length) {
     featPaintEmpty();
     if (featHint) featHint.textContent = featState.error ? '没读到' : '0 个插件';
@@ -15653,6 +15900,12 @@ paintFeatNow();
 
     const main = document.createElement('div');
     main.className = 'featMain';
+    /* 【2026-11-13 合并·mac 侧】卡片图标：分类色块 + 首字，纯 CSS 不打包图片 */
+    const ico = document.createElement('div');
+    ico.className = 'featIco t-' + (FEAT_TONE[f.id] || 'gray');
+    ico.textContent = featIconLetter(f.name);
+    const text = document.createElement('div');
+    text.className = 'featText';
     const name = document.createElement('div');
     name.className = 'featName';
     const nm = document.createElement('span');
@@ -15679,7 +15932,8 @@ paintFeatNow();
     const desc = document.createElement('div');
     desc.className = 'featDesc';
     desc.textContent = f.desc;
-    main.append(name, desc);
+    text.append(desc);
+    main.append(ico, text);
 
     const sw = document.createElement('button');
     sw.type = 'button';
@@ -16767,6 +17021,20 @@ async function featApi(path, payload) {
   }
 }
 
+function featReadB64(f) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      // dataURL = "data:application/zip;base64,xxxx"，逗号后面才是料
+      const s = String(fr.result || '');
+      const i = s.indexOf(',');
+      resolve(i >= 0 ? s.slice(i + 1) : '');
+    };
+    fr.onerror = () => reject(fr.error || new Error('读不出来'));
+    fr.readAsDataURL(f);
+  });
+}
+
 /** 读一个本地文件成文本。FileReader 是回调式的，包成 Promise 才好在循环里等。 */
 function featReadFile(f) {
   return new Promise((resolve, reject) => {
@@ -16824,9 +17092,69 @@ function featHideReport() {
  * 支持一次拖/选多个：逐个读成文本，一个文件一个 {name, content}，整包发过去。
  * 单条 <id>.feature.json 和汇总包 _all.featurepack.json 后台都认得，这里不用分。
  */
+async function featImportPackages(files) {
+  const picked = [];
+  const bad = [];
+  for (const f of files) {
+    try {
+      const b64 = await featReadB64(f);
+      if (!b64) { bad.push(f.name + '（是空的）'); continue; }
+      picked.push({ name: f.name, b64 });
+    } catch {
+      bad.push(f.name + '（读不出来）');
+    }
+  }
+  if (!picked.length) {
+    featSay('这几个包都没读出来');
+    featShowReport('这几个包都没读出来', bad.map((n) => ({ k: 'err', t: n })));
+    return;
+  }
+
+  featSay('正在装 ' + picked.length + ' 个插件包…', true);
+  const r = await featApi('/api/plugins/import', { files: picked });
+  await loadApPlugins();
+  renderFeatList();
+  featReapplyAppearance();
+
+  if (!r.ok) {
+    featSay('没装上：' + r.error);
+    featShowReport('没装上', [{ k: 'err', t: r.error }].concat(bad.map((n) => ({ k: 'err', t: n }))));
+    return;
+  }
+
+  const added = r.added || [];
+  const updated = r.updated || [];
+  const failed = r.failed || [];
+  const lines = [];
+  for (const p of added) lines.push({ k: 'ok', t: p.name + '（' + ({ theme: '主题', wallpaper: '壁纸', feature: '功能' }[p.type] || p.type) + '插件）装好了，已经启用' });
+  for (const p of updated) lines.push({ k: 'warn', t: p.name + '（' + ({ theme: '主题', wallpaper: '壁纸', feature: '功能' }[p.type] || p.type) + '插件）覆盖了原来那个，已经启用' });
+  for (const p of failed) lines.push({ k: 'err', t: (p.name || '这个包') + '：' + (p.reason || '没说原因') });
+  for (const n of bad) lines.push({ k: 'err', t: n });
+
+  const bits = [];
+  if (added.length) bits.push('装了 ' + added.length + ' 个');
+  if (updated.length) bits.push('覆盖 ' + updated.length + ' 个');
+  if (failed.length) bits.push('没进 ' + failed.length + ' 个');
+  const head = bits.length ? '插件包：' + bits.join('，') : '这个包里没有能装的插件';
+  featSay(head);
+  if (!lines.length) lines.push({ k: 'ok', t: '装好了' });
+  if (added.length || updated.length) {
+    lines.push({ k: 'grey', t: '主题 / 壁纸装好之后，去【外观】里选中它才算用上；功能插件下一句就生效' });
+  }
+  featShowReport(head, lines);
+  toast(head);
+}
+
 async function featImportFiles(list) {
   const files = Array.from(list || []);
   if (!files.length) return;
+
+  /* 【2026-11-13 合并·mac 侧】.zip 是外观插件包（主题 / 壁纸），走另一条接口；
+   * 其余按功能定义读文本。两条都跑完再各自摆账本，混在一个报告里分不清谁失败了。 */
+  const packs = files.filter((f) => /\.zip$/i.test(f.name || ''));
+  const plain = files.filter((f) => !/\.zip$/i.test(f.name || ''));
+  if (packs.length) await featImportPackages(packs);
+  if (!plain.length) return;
   const picked = [];
   const bad = [];
   for (const f of files) {
@@ -16892,6 +17220,87 @@ async function featImportFiles(list) {
 }
 
 /* ---- 导入：点按钮选文件（可多选） ---- */
+
+/* 【2026-11-13 合并·mac 侧】插件搜索：输入即过滤（防抖 120ms），Esc 清空。 */
+const featSearchEl = document.getElementById('featSearch');
+if (featSearchEl) {
+  let _searchTimer = 0;
+  featSearchEl.addEventListener('input', () => {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => {
+      featQuery = featSearchEl.value || '';
+      renderFeatList();
+    }, 120);
+  });
+  featSearchEl.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { ev.stopPropagation(); featSearchEl.value = ''; featQuery = ''; renderFeatList(); }
+  });
+}
+
+/* 【2026-11-13 合并·mac 侧】打开插件目录（资源管理器里看 plugins/<id>/ 那些文件夹）。 */
+const featOpenDirBtn = document.getElementById('featOpenDir');
+if (featOpenDirBtn) {
+  featOpenDirBtn.addEventListener('click', async () => {
+    featOpenDirBtn.disabled = true;
+    try {
+      const r = await fetch('/api/plugins/open-dir', { method: 'POST' }).then((x) => x.json()).catch(() => null);
+      if (!r || !r.ok) toast('目录没打开：' + ((r && r.error) || '未知原因'));
+    } finally { featOpenDirBtn.disabled = false; }
+  });
+}
+
+/**
+ * ---- 导入：把文件直接拖到【功能】面板上 ----
+ *
+ * 三个坑都在这儿：
+ *  ① 页面上本来就有一条「拖文件进来加附件」的全局监听，还配一层全屏遮罩。
+ *     拖到功能面板上时它先跳出来喊「加进输入框」，松手还会把文件塞进附件条 ——
+ *     明明想导功能，结果变成给下一条消息挂了个附件。所以这里必须 stopPropagation。
+ *  ② 子元素之间来回穿会连发 enter/leave，用层数计数挡掉闪烁。
+ *  ③ 提示层不能吃鼠标（CSS 里 pointer-events:none），否则 drop 落不到面板上。
+ */
+if (featDlg) {
+  let featDragDepth = 0;
+  const paintDrop = (on) => {
+    if (!on) featDragDepth = 0;
+    featDlg.classList.toggle('dropping', on);
+    if (featDrop) featDrop.hidden = !on;
+  };
+  featDlg.addEventListener('dragenter', (e) => {
+    if (!featDlg.open || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    featDragDepth++;
+    if (featDragDepth === 1) paintDrop(true);
+  });
+  featDlg.addEventListener('dragover', (e) => {
+    if (!featDlg.open || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  featDlg.addEventListener('dragleave', (e) => {
+    if (!featDlg.open || !dragHasFiles(e)) return;
+    e.stopPropagation();
+    featDragDepth = Math.max(0, featDragDepth - 1);
+    if (!featDragDepth) paintDrop(false);
+  });
+  featDlg.addEventListener('drop', (e) => {
+    if (!featDlg.open || !dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    paintDrop(false);
+    const dropped = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (!dropped.length) {
+      // 拖进来的是文件夹时 files 是空的。别静默，说一句，不然像卡住了。
+      toast('文件夹拖不进来，点「导入」进去挑文件');
+      return;
+    }
+    featImportFiles(dropped);
+  });
+}
+
+
 const featImportBtn = document.getElementById('featImport');
 const featReportClose = document.getElementById('featReportClose');
 if (featReportClose) featReportClose.addEventListener('click', () => { featHideReport(); });
@@ -16905,6 +17314,8 @@ if (featFile) {
   featFile.addEventListener('change', async () => {
     const picked = Array.from(featFile.files || []);
     featFile.value = '';
+    /* 【2026-11-13 合并·mac 侧】从「导入插件」窗里选的，选完把窗关掉 */
+    try { const _pi = document.getElementById('plugImportDlg'); if (_pi && _pi.open) _pi.close(); } catch {}
     await featImportFiles(picked);
   });
 }
@@ -20365,7 +20776,7 @@ if (mdlModelPreset) {
 if (mdlBase) {
   // 手改地址时也跟着换模型下拉
   mdlBase.addEventListener('input', () => {
-    mdlBasePreset.value = PROVIDERS.some((p) => p.base === mdlBase.value.trim()) ? mdlBase.value.trim() : '';
+    mdlBasePreset.value = (PROVIDERS.find((p) => p.base === mdlBase.value.trim()) || providerOf(mdlBase.value.trim()) || { key: '' }).key;
     /* 地址一动，之前拉回来的列表就作废（换家了，那份列表一定不对） */
     if (mdlDiscovered.base && mdlDiscovered.base !== mdlBase.value.trim()) mdlDiscovered = { base: '', ids: [] };
     paintModelPicker(mdlBase.value);
@@ -21256,7 +21667,7 @@ document.getElementById('mdlTest').onclick = async () => {
     const r = await jsonOrError(res);
     clearFormHint('ok', `通了，${r.ms}ms`);
   } catch (e) {
-    clearFormHint('err', '连不上：' + (e && e.message ? e.message : e));
+    clearFormHint('err', String(e && e.message ? e.message : e));
   }
 };
 document.getElementById('mdlSave').onclick = async () => {
@@ -21375,6 +21786,28 @@ const booted = (async () => {
    结果 priceOf 一路返回 null，退回去用写死的官方牌价，比主人自己填的贵十倍。
    放这儿拉一次，之后每一轮算钱都能拿到他填的那几个数。 */
 loadModels().catch(() => {});
+
+/* 【2026-11-13 修·主人报「重启续上时输入框左上角没提示，以为没续上，又发了一条继续，结果两条（其中一条成了插话）」】
+ * 链路：重启 → 服务端 boot-resume 自动接上续跑轮 → 页面新加载，
+ * 可 scheduleSendingRecheck（查「服务端在跑」→ 挂提示 + 置 busy）的触发点
+ * 全在轮收尾/停止那几条路上 —— **开机第一次打开没人调它**。
+ * 于是提示不挂、busy 不置：主人看到的输入框左上角空空的，以为没续上。
+ * 现在 bootSessions 落位后对当前会话跑一次巡检：服务端在跑 →
+ * 「正在发送消息」和按钮状态立刻回来（续跑轮收尾照旧接上那条路）。 */
+try {
+  booted.then(() => {
+    let _bootRecheckTries = 0;
+    const _bootRecheck = () => {
+      _bootRecheckTries++;
+      try {
+        if (typeof sessionId !== 'undefined' && sessionId) { scheduleSendingRecheck(sessionId); return; }
+      } catch (e) {}
+      // sessionId 还没落位（会话恢复是异步的）：最多再等 6 次 × 800ms，落位即巡检
+      if (_bootRecheckTries < 6) setTimeout(_bootRecheck, 800);
+    };
+    setTimeout(_bootRecheck, 800);   // 留一点给首屏渲染、会话列表落位的时间
+  }).catch(() => {});
+} catch {}
 
 /* 【2026-11-11 加·颜色表预热】主人报「重启后历史里小鲸的名字是白的」。
    原因：颜色表懒加载 —— 只有第一次有人问颜色时才去拉 /api/agents。

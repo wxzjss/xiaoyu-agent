@@ -871,13 +871,25 @@ export const tools = [
   },
   {
     name: 'run_command',
-    description:
-      '在本机跑一条命令（Windows 上是 PowerShell，工作区当前目录）。装依赖、跑脚本、压包、转格式、调 ffmpeg、查环境全都靠它。返回 stdout 和 stderr 合并的结果。'
-      + '\n\n【两条能省好几倍时间的规矩】'
-      + '\n· 几件不相干的检查用 ; 串成**一条**命令，别分几次跑 —— 每一次工具调用都是一整趟模型往返。'
-      + '\n  例如：node scripts/check-a.mjs; node scripts/check-b.mjs; node scripts/check-c.mjs'
-      + '\n· **搜东西别用命令**：找函数/字符串在哪，用 search_files，一次就给「路径:行号」。'
-      + '\n  为了搜一个词去 node -e 现写一段读目录的脚本，是最慢的做法。',
+    description: (() => {
+      const isMac = process.platform === 'darwin';
+      const isWin = process.platform === 'win32';
+      const shellNote = isMac
+        ? 'macOS 上走 zsh/sh（标准 Unix 命令）'
+        : isWin ? 'Windows 上是 PowerShell' : '类 Unix 系统走 /bin/sh';
+      const joinNote = isWin
+        ? '几件不相干的检查用 ; 串成**一条**命令（PowerShell 不认 &&），别分几次跑 —— 每一次工具调用都是一整趟模型往返。'
+        : '几件不相干的检查可以 ; 串成**一条**命令，要前一步成功才继续就用 &&，别分几次跑 —— 每一次工具调用都是一整趟模型往返。';
+      const example = isWin
+        ? '例如：node scripts/check-a.mjs; node scripts/check-b.mjs; node scripts/check-c.mjs'
+        : '例如：node scripts/check-a.mjs && node scripts/check-b.mjs && node scripts/check-c.mjs';
+      return '在本机跑一条命令（' + shellNote + '，工作区当前目录）。装依赖、跑脚本、压包、转格式、调 ffmpeg、查环境全都靠它。返回 stdout 和 stderr 合并的结果。'
+        + '\n\n【两条能省好几倍时间的规矩】'
+        + '\n· ' + joinNote
+        + '\n  ' + example
+        + '\n· **搜东西别用命令**：找函数/字符串在哪，用 search_files，一次就给「路径:行号」。'
+        + '\n  为了搜一个词去 node -e 现写一段读目录的脚本，是最慢的做法。';
+    })(),
     parameters: {
       type: 'object',
       properties: {
@@ -892,7 +904,17 @@ export const tools = [
          */
         timeout_ms: { type: 'number', description: '最多等多少毫秒，默认 120000（2 分钟），最多 900000（15 分钟）' },
         /** 默认 auto：简单命令走 cmd（快），带 $ / 引号 / 管道 / cmdlet 的自动回 PowerShell。 */
-        shell_hint: { type: 'string', description: '选壳：auto（默认）/ cmd / powershell。拿不准就别填。' },
+        /**
+         * 【2026-11-11 mac 兼容（mac 侧原样）】选壳说明按平台给。
+         * mac 上 pickShell 直接走 /bin/sh，hint 根本用不上 —— 写明「仅 Windows」，
+         * 免得模型在 mac 上传 powershell 然后对着结果发懵。
+         */
+        shell_hint: {
+          type: 'string',
+          description: process.platform === 'win32'
+            ? '选壳：auto（默认）/ cmd / powershell。拿不准就别填。'
+            : '选壳参数仅 Windows 有效；本机自动用 sh，不用填。',
+        },
       },
       required: ['command'],
     },
@@ -995,6 +1017,14 @@ export const tools = [
             try {
               spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 8000 });
               return;
+            } catch {}
+          }
+          /* 【2026-11-11 mac 兼容（mac 侧原样）】mac 上 child.kill() 同样只打死直接子进程，
+           * 壳派出去的孙进程还活着（跟 Windows 那个坑同源）。先用 pkill -P
+           * 把直接子进程的孩子们带走，再杀本体。 */
+          if (process.platform === 'darwin' && child.pid) {
+            try {
+              spawnSync('pkill', ['-P', String(child.pid)], { stdio: 'ignore', timeout: 8000 });
             } catch {}
           }
           child.kill(sig || 'SIGTERM');

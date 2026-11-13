@@ -1347,20 +1347,27 @@
     /* 2026-11-03：【多套人设】面板底部的「关闭 / 保存」以前没有样式，
      * 落到了浏览器默认的亮白按钮上 —— 主人一眼看见的就是那两颗白块。
      * 这里把 .ghost / .primary 也补上，跟别处的按钮一个手感。 */
+    /* 【2026-11-13 主人钦点】同上：胶囊配色（保持 32px 底栏尺寸） */
     .dlgFoot button.ghost {
       height: 32px; padding: 0 14px; border-radius: 8px;
-      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .04); color: var(--accent);
       font-size: 12.5px; cursor: pointer;
+      transition: background .12s ease, border-color .12s ease;
     }
-    .dlgFoot button.ghost:hover { color: var(--text); border-color: var(--dim); }
-    .dlgFoot button.ghost:active { background: rgba(255, 255, 255, .06); }
+    .dlgFoot button.ghost:hover { color: var(--accent); border-color: rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); }
+    .dlgFoot button.ghost:active { background: rgba(255, 255, 255, .12); }
+    /* 【2026-11-13 主人钦点】同上：accent 描边款（保持 32px 底栏尺寸） */
     .dlgFoot button.primary {
-      height: 32px; padding: 0 16px; border-radius: 8px;
-      border: 1px solid var(--accent); background: var(--accent); color: #fff;
-      font-size: 12.5px; font-weight: 600; cursor: pointer;
+      height: 32px; padding: 0 16px; border-radius: 10px;
+      border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+      color: var(--accent); font-size: 12.5px; font-weight: 600; cursor: pointer;
+      transition: background .12s ease, box-shadow .12s ease;
     }
-    .dlgFoot button.primary:hover { filter: brightness(1.06); }
-    .dlgFoot button.primary:active { filter: brightness(.9); }
+    .dlgFoot button.primary:hover {
+      background: color-mix(in srgb, var(--accent) 20%, transparent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent) inset;
+    }
+    .dlgFoot button.primary:active { background: color-mix(in srgb, var(--accent) 28%, transparent); }
     .dlgFoot button.ghost2:hover { color: var(--text); border-color: var(--dim); }
     .dlgFoot button.ghost2:active { background: rgba(255, 255, 255, .06); }
     .pickEmpty { padding: 26px; text-align: center; color: var(--dim); font-size: 12.5px; }
@@ -2105,20 +2112,30 @@
     .askOpt.danger input[type=checkbox]:checked { background: #d9a45b; border-color: #d9a45b; }
     /* 第二个勾选项比第一个更「重」（比如清空时那个人设），缩进一点以示从属 */
     #confirmExtraWrap { margin-top: 8px; margin-left: 14px; }
+    /* 【2026-11-13 主人钦点】.primary 全局统一成【打开智能体面板】那颗的样式：
+     * accent 描边 + accent 微填充 + accent 字（原来是实心大色块，塑料感） */
     .primary {
-      height: 36px; padding: 0 16px; border: 0; border-radius: 8px;
-      background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
+      height: 34px; padding: 0 18px; border-radius: 10px;
+      border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+      color: var(--accent); font-weight: 600; cursor: pointer;
+      transition: background .12s ease, box-shadow .12s ease;
     }
-    /* 悬浮统一·2026-10-31 .primary 是实心紫底，原来 hover 没反应 —— 压深一档 */
-    .primary:hover { background: color-mix(in srgb, var(--accent) 82%, #000); border-color: color-mix(in srgb, var(--accent) 82%, #000); }
-    .primary:active { background: color-mix(in srgb, var(--accent) 70%, #000); }
+    .primary:hover {
+      background: color-mix(in srgb, var(--accent) 20%, transparent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent) inset;
+    }
+    .primary:active { background: color-mix(in srgb, var(--accent) 28%, transparent); }
     .primary:disabled { opacity: .5; cursor: not-allowed; }
     .primary:disabled:hover { background: var(--accent); }
+    /* 【2026-11-13 主人钦点】.ghost 全局统一成【底线】标题胶囊那套配色
+     * （白 .14 描边 + 白 .04 底 + accent 字）——原来 var(--border) 暗边配暗字，
+     * 跟背景几乎同色，跟隐身了一样。形状（36px/8px 圆角）不动。 */
     .ghost {
-      height: 36px; padding: 0 14px; border: 1px solid var(--border); border-radius: 8px;
-      background: transparent; color: var(--dim); cursor: pointer;
+      height: 36px; padding: 0 14px; border: 1px solid rgba(255, 255, 255, .14); border-radius: 8px;
+      background: rgba(255, 255, 255, .04); color: var(--accent); cursor: pointer;
+      transition: background .12s ease, border-color .12s ease;
     }
-    .ghost:hover { color: var(--text); }
+    .ghost:hover { color: var(--accent); border-color: rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); }
     .sessTop {
       display: flex; align-items: center; gap: 12px;
       padding: 12px 16px; border-bottom: 1px solid var(--border);
@@ -2783,12 +2800,14 @@
     /* 【2026-11-13 主人钦点】插件卡按钮统一设置页同款（.ghost 家族）：
      * var(--border) 描边 + 透明底 + 8px 圆角，悬停字亮边框加深——跟设置页一模一样 */
     .featEditBtn {
+      /* 【2026-11-13 主人钦点】同族同步：胶囊配色（见 .ghost 处注释） */
       flex: none; height: 32px; border-radius: 8px; cursor: pointer;
-      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .04); color: var(--accent);
       font-size: 12.5px; padding: 0 14px;
+      transition: background .12s ease, border-color .12s ease;
     }
-    .featEditBtn:hover { color: var(--text); border-color: var(--dim); }
-    .featEditBtn:active { background: rgba(255, 255, 255, .06); }
+    .featEditBtn:hover { color: var(--accent); border-color: rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); }
+    .featEditBtn:active { background: rgba(255, 255, 255, .12); }
     /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
     .featRow .featEditGroup { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -2869,10 +2888,9 @@
      * 平时整颗藏着（opacity:0），鼠标落到这一行才露头 ——
      * 常驻的话一整列都是红的，天天勾人去点，容易误删。 */
     .featRow .featDelBtn {
-      /* 【2026-11-13 主人钦点】同款统一：ghost 形状（描边/透明底/8px 圆角），
-       * 平时隐身（opacity:0）悬停显形的老规矩不动，悬停红字提示删除 */
+      /* 【2026-11-13 主人钦点】同族同步胶囊配色；平时隐身悬停显形不变，悬停红字 */
       flex: none; height: 32px; border-radius: 8px; cursor: pointer;
-      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .04); color: var(--accent);
       font-size: 12.5px; padding: 0 14px; opacity: 0;
       transition: opacity .12s ease;
     }
@@ -3324,6 +3342,13 @@
     #settingsDlg .dlgBody {
       display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
       align-items: start; overflow-x: hidden;
+    }
+    /* 【2026-11-13 三改·主人报「分区之间空出一大片」】grid 按行取整行最大高——
+     * 手机连接 768px 旁边是安全词 295px，安全词下面就空出 473px。改成两个显式
+     * 列容器按实测高度配平（A≈1194 / B≈1191px），列内 flex 纵排，再没有大空隙。 */
+    #settingsDlg .setCol {
+      display: flex; flex-direction: column; gap: 14px;
+      min-width: 0;
     }
     #settingsDlg fieldset {
       margin: 0; padding: 14px 16px 12px;
@@ -4258,7 +4283,8 @@
         <button type="button" class="x" data-close="1">关闭</button>
       </div>
       <div class="dlgBody">
-        <fieldset>
+        <div class="setCol">
+<fieldset>
           <legend>智能体</legend>
           <div class="field">
             <!-- 2026-10-29 主人：「可以在里面编辑小鱼与小鲸的人设，把小鱼的人设从设置里移过去」。
@@ -4273,43 +4299,6 @@
           </div>
         </fieldset>
 
-        <fieldset>
-          <legend>底线</legend>
-          <div class="field">
-            <label>一行一条。这些是硬规则，压在人设上面——任何档位、任何情绪都不许越过。</label>
-            <textarea id="bottomLines" spellcheck="false" style="height:150px;max-height:150px;min-height:150px;resize:vertical"></textarea>
-          </div>
-          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button type="button" class="ghost" id="resetBottomLines">恢复出厂默认底线</button>
-            <button type="button" class="ghost" id="setDefaultBottomLines" title="把输入框里现在这几条存成这套人设自己的默认；以后点右边那颗「恢复默认」回来的就是它们">设为默认</button>
-            <button type="button" class="ghost" id="restoreDefaultBottomLines" title="把底线恢复成你上次点「设为默认」时存下的那一份（不是出厂那几条）">恢复默认</button>
-            <span class="hint" id="bottomLinesHint"></span>
-          </div>
-        </fieldset>
-
-
-        <!-- 【2026-11-13 主人钦点删】【记账用什么钱】整块删除（币种走配置默认，不再上界面） -->
-        <!-- 【2026-11-01 主人】「把设置里的【外观】分区删了，因为切换没用」
-             查清了确实没用：settings.mjs 的 normalize() 不认 iconStyle / chatCover，
-             存盘时被丢掉，点完保存下次打开还是默认 —— 所以点了也白点。整段删掉，不修。
-             素材（assets/xiaoyu-whale*.ico / cover.png）留着，以后想用还在。 -->
-        <fieldset>
-          <legend>安全词</legend>
-          <div class="field">
-            <label>用 / 或 , 分隔。消息里出现任意一个，小鱼这一回合就停下演出，只谈正事。</label>
-            <input type="text" id="safeWords" spellcheck="false" autocomplete="off" />
-          </div>
-          <div class="field">
-            <label>触发后要她怎么做</label>
-            <textarea id="safeWordNote" spellcheck="false" style="min-height:80px"></textarea>
-          </div>
-          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button type="button" class="ghost" id="resetSafeWords">恢复出厂默认安全词</button>
-            <button type="button" class="ghost" id="setDefaultSafeWords" title="把输入框里现在这几个词存成这套人设自己的默认；以后点右边那颗「恢复默认」回来的就是它们">设为默认</button>
-            <button type="button" class="ghost" id="restoreDefaultSafeWords" title="把安全词恢复成你上次点「设为默认」时存下的那一份（不是出厂那几条）">恢复默认</button>
-            <span class="hint" id="safeWordsHint"></span>
-          </div>
-        </fieldset>
 
         <!-- 【2026-11-13 主人钦点删】【花费与用量】整块删除 -->
 
@@ -4341,6 +4330,7 @@
           </div>
         </fieldset>
 
+
         <fieldset>
           <legend>数据备份</legend>
           <div class="field">
@@ -4366,6 +4356,63 @@
           </div>
         </fieldset>
 
+
+        <fieldset>
+          <legend>更新</legend>
+          <div class="field">
+            <span class="hint" id="updState">…</span>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="ghost" id="updCheck">马上检查一次</button>
+            <button type="button" class="primary" id="updInstall" hidden>装一下</button>
+            <button type="button" class="ghost" id="updInstallNo" hidden>这次不装</button>
+            <button type="button" class="primary" id="updRestart" hidden>重启让它生效</button>
+          </div>
+        </fieldset>
+        </div>
+        <div class="setCol">
+
+
+        <fieldset>
+          <legend>底线</legend>
+          <div class="field">
+            <label>一行一条。这些是硬规则，压在人设上面——任何档位、任何情绪都不许越过。</label>
+            <textarea id="bottomLines" spellcheck="false" style="height:150px;max-height:150px;min-height:150px;resize:vertical"></textarea>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="ghost" id="resetBottomLines">恢复出厂默认底线</button>
+            <button type="button" class="ghost" id="setDefaultBottomLines" title="把输入框里现在这几条存成这套人设自己的默认；以后点右边那颗「恢复默认」回来的就是它们">设为默认</button>
+            <button type="button" class="ghost" id="restoreDefaultBottomLines" title="把底线恢复成你上次点「设为默认」时存下的那一份（不是出厂那几条）">恢复默认</button>
+            <span class="hint" id="bottomLinesHint"></span>
+          </div>
+        </fieldset>
+
+
+
+        <!-- 【2026-11-13 主人钦点删】【记账用什么钱】整块删除（币种走配置默认，不再上界面） -->
+        <!-- 【2026-11-01 主人】「把设置里的【外观】分区删了，因为切换没用」
+             查清了确实没用：settings.mjs 的 normalize() 不认 iconStyle / chatCover，
+             存盘时被丢掉，点完保存下次打开还是默认 —— 所以点了也白点。整段删掉，不修。
+             素材（assets/xiaoyu-whale*.ico / cover.png）留着，以后想用还在。 -->
+        <fieldset>
+          <legend>安全词</legend>
+          <div class="field">
+            <label>用 / 或 , 分隔。消息里出现任意一个，小鱼这一回合就停下演出，只谈正事。</label>
+            <input type="text" id="safeWords" spellcheck="false" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>触发后要她怎么做</label>
+            <textarea id="safeWordNote" spellcheck="false" style="min-height:80px"></textarea>
+          </div>
+          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" class="ghost" id="resetSafeWords">恢复出厂默认安全词</button>
+            <button type="button" class="ghost" id="setDefaultSafeWords" title="把输入框里现在这几个词存成这套人设自己的默认；以后点右边那颗「恢复默认」回来的就是它们">设为默认</button>
+            <button type="button" class="ghost" id="restoreDefaultSafeWords" title="把安全词恢复成你上次点「设为默认」时存下的那一份（不是出厂那几条）">恢复默认</button>
+            <span class="hint" id="safeWordsHint"></span>
+          </div>
+        </fieldset>
+
+
         <fieldset>
           <legend>语音引擎</legend>
           <div class="field">
@@ -4382,6 +4429,7 @@
             <span class="hint" id="vrBarText"></span>
           </div>
         </fieldset>
+
 
         <fieldset>
           <legend>背景音乐</legend>
@@ -4402,18 +4450,6 @@
           </div>
         </fieldset>
 
-        <fieldset>
-          <legend>更新</legend>
-          <div class="field">
-            <span class="hint" id="updState">…</span>
-          </div>
-          <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <button type="button" class="ghost" id="updCheck">马上检查一次</button>
-            <button type="button" class="primary" id="updInstall" hidden>装一下</button>
-            <button type="button" class="ghost" id="updInstallNo" hidden>这次不装</button>
-            <button type="button" class="primary" id="updRestart" hidden>重启让它生效</button>
-          </div>
-        </fieldset>
 
         <!-- 【2026-11-13 合并·mac 侧】系统通知（主人原话：「ai 回复的时候提醒下，
              还有 qq 回复的设置提醒下，做两个开关项」）
@@ -4436,13 +4472,8 @@
             <span class="hint" id="ntState">…</span>
           </div>
         </fieldset>
-      </div>
-      <div class="dlgFoot">
-        <span class="hint" id="saveHint"></span>
-        <button type="button" class="primary" id="saveSettings">保存</button>
-      </div>
-    </form>
-  </dialog>
+        </div>
+</dialog>
 
   <dialog id="modelsDlg">
     <form method="dialog">

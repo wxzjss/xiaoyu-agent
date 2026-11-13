@@ -3298,18 +3298,6 @@
     }
 
     /* ---- 手机连接 ---------------------------------------------------------- */
-    /* 设置里的「花费与用量」块：这辈子的账一眼看全 */
-    .usageBox {
-      border: 1px solid var(--border); border-radius: 10px;
-      background: var(--input-bg); padding: 12px 14px; margin-top: 4px;
-    }
-    .usageBox .usageMain {
-      font-size: 14px; color: var(--text); line-height: 1.9;
-      font-variant-numeric: tabular-nums; user-select: text;
-    }
-    .usageBox .usageMain b { color: #d9a45b; font-weight: 600; }
-    .usageBox .usageMain .tok { color: #8fc7ff; }
-    .usageBox .usageSub { color: var(--dim); font-size: 11.5px; line-height: 1.8; margin-top: 4px; user-select: text; }
 
     /* 【2026-11-05 修·设置面板的底部保存条被内容挤没了】
        通用 dialog 是 `height:auto` + `max-height:86vh` + `display:flex`，
@@ -3326,11 +3314,17 @@
      *    （columns + break-inside: avoid，每个分区是一张圆角卡片，矮的先补位）；
      * ② legend 从飘在边框上的小字变成分区标题胶囊，一眼看清分区名。
      * 只动布局与样式，一个功能都不动。窄窗口自动落回单列。 */
-    #settingsDlg .dlgBody { columns: 2; column-gap: 14px; }
+    /* 【2026-11-13 二改·主人报「左右移动改上下移动」】第一版用的 CSS columns
+     * （multicol），内容超过两列容量就**横向**溢出新列 —— 「页面左右移动」就是它。
+     * 改 grid 双列：永远只有竖向滚动。 */
+    #settingsDlg .dlgBody {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+      align-items: start; overflow-x: hidden;
+    }
     #settingsDlg fieldset {
-      break-inside: avoid; -webkit-column-break-inside: avoid;
-      margin: 0 0 14px; padding: 14px 16px 12px;
+      margin: 0; padding: 14px 16px 12px;
       border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
+      min-width: 0;
     }
     #settingsDlg legend {
       display: inline-block; padding: 2px 12px; margin-bottom: 4px;
@@ -3338,7 +3332,7 @@
       background: rgba(255, 255, 255, .04);
       color: var(--accent); font-size: 12.5px; font-weight: 600; letter-spacing: .5px;
     }
-    @media (max-width: 880px) { #settingsDlg .dlgBody { columns: 1; } }
+    @media (max-width: 880px) { #settingsDlg .dlgBody { grid-template-columns: 1fr; } }
 
     /* 【2026-11-13 主人报「打开智能体面板按钮廉价塑料感」】塑料感来源=实心大色块
      * （.primary 的 accent 实底）。改描边 + 微填充的卡片按钮：平时淡 Accent 描边，
@@ -4290,18 +4284,7 @@
         </fieldset>
 
 
-        <fieldset>
-          <legend>记账用什么钱</legend>
-          <div class="field">
-            <label>价目表里存的是「元 / 百万 token」。想按美元对账（OpenAI 账单、中转站后台都是美元）就选 $。</label>
-            <div class="mdlKindRow">
-              <label class="mdlKind"><input type="radio" name="moneyCur" value="cny" id="curCny" checked /><span>￥ 元</span></label>
-              <label class="mdlKind"><input type="radio" name="moneyCur" value="usd" id="curUsd" /><span>$ 美元</span></label>
-            </div>
-            <span class="hint" id="curHint">只换显示，价目表不动。按 1 元 ≈ 0.14 美元折算，这个值在配置里定死，界面上改不了。</span>
-          </div>
-        </fieldset>
-
+        <!-- 【2026-11-13 主人钦点删】【记账用什么钱】整块删除（币种走配置默认，不再上界面） -->
         <!-- 【2026-11-01 主人】「把设置里的【外观】分区删了，因为切换没用」
              查清了确实没用：settings.mjs 的 normalize() 不认 iconStyle / chatCover，
              存盘时被丢掉，点完保存下次打开还是默认 —— 所以点了也白点。整段删掉，不修。
@@ -4324,19 +4307,7 @@
           </div>
         </fieldset>
 
-        <fieldset>
-          <legend>花费与用量</legend>
-          <!-- 【2026-11-02 主人问「以前不是会显示 tokens 消耗以及花费吗？现在怎么不显示了」】
-               查下来两件事：
-               ① 那行小字一直是隐藏的（默认 opacity 0，悬停才淡出），等于没显示 —— 已改常驻。
-               ② 明细还从来不算「这一轮花了多少钱」，因为服务端没告诉前端「这一轮真正用的是哪个模型」，
-                  前端只能拿全局默认去对价目表，对不上就只报数不报价。这里补上，顺手加个会话总账。 -->
-          <div class="usageBox" id="usageBox">
-            <div class="usageMain" id="usageTotal">正在算…</div>
-            <div class="usageSub" id="usageRounds"></div>
-            <div class="usageSub" id="usageModelNote"></div>
-          </div>
-        </fieldset>
+        <!-- 【2026-11-13 主人钦点删】【花费与用量】整块删除 -->
 
         <fieldset>
           <legend>手机连接</legend>
@@ -4389,9 +4360,6 @@
             </div>
             <span class="hint" id="bakFileInfo"></span>
           </div>
-          <div class="field">
-            <span class="hint">安装版数据在 <code>%APPDATA%\小鱼Agent\data\.state</code>，免安装版在 exe 旁边的 <code>data\</code>。卸载不会删数据，但换安装方式会换目录 —— 备份一下最稳。</span>
-          </div>
         </fieldset>
 
         <fieldset>
@@ -4408,9 +4376,6 @@
           <div class="field" id="vrBarBox" hidden>
             <div class="vrBar"><div class="vrBarIn" id="vrBarIn"></div></div>
             <span class="hint" id="vrBarText"></span>
-          </div>
-          <div class="field">
-            <span class="hint">从国内镜像下（python.org 实测只有 74 KB/s，npmmirror 有 5 MB/s，差 70 倍）。默认会装到数据目录的 <code>runtime\</code> 下，约 100 MB 以上；你机器上本来就有 Python + edge_tts + ffmpeg 的话就直接用现成的，不额外占空间。删掉不影响别的功能，下次用会重装。</span>
           </div>
         </fieldset>
 
@@ -4431,15 +4396,11 @@
             <label>音量 <span class="hint" id="musVolVal">40%</span></label>
             <input type="range" id="musVol" min="0" max="100" step="5" value="40" style="width:100%" />
           </div>
-          <div class="field">
-            <span class="hint">浏览器规定页面必须先被点一下才许出声，所以是「点一下界面就开始放」。想静音就取消上面那个勾。</span>
-          </div>
         </fieldset>
 
         <fieldset>
           <legend>更新</legend>
           <div class="field">
-            <label>程序会自己查新版本，发现新版就把官方安装包下下来（下好会告诉你），你点一下才装。装的是官方发布的那一份，代码、依赖、图标一起换 —— 不会出现「代码新了、缺个包一用就崩」。</label>
             <span class="hint" id="updState">…</span>
           </div>
           <div class="field" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -4581,21 +4542,8 @@
         </div>
       </div>
       <div class="mdlOpts" id="mdlOpts">
-        <div class="optRow">
-          <div class="optMain">
-            <div class="optName">思考档位<span class="optVal" id="thinkNow">…</span></div>
-            <div class="optDesc">这轮想多用力想。自动 = 要调工具就用高挡，纯聊天用低挡，省钱。</div>
-          </div>
-          <select id="thinkSel" class="optSel"></select>
-        </div>
-
-        <div class="optRow">
-          <div class="optMain">
-            <div class="optName">撞 429 自动回退<span class="optVal" id="r429Now">…</span></div>
-            <div class="optDesc">限流了先退避重试；连着撞几次就换个新会话接着干，不白等。</div>
-          </div>
-          <button type="button" class="switch" id="r429Sw">…</button>
-        </div>
+        <!-- 【2026-11-13 主人钦点删】【思考档位】【撞 429 自动回退】两行删除
+             （思考强度只从主页面左上角那个下拉换；429 回退走服务端默认配置） -->
 
         <div class="mdlFoot">
           <span class="hint" id="optHint"></span>
@@ -14785,7 +14733,7 @@ function vrPaint(info) {
   if (r.busy && p) {
     st.textContent = `正在装…… ${p.msg || ''}（${p.pct}%）`;
   } else if (r.installed && external) {
-    st.textContent = `✅ 能用了：直接用这台机器上已有的 Python（${short(r.pythonRealPath)}）和 ffmpeg（${short(r.ffmpegRealPath)}），没额外占空间。「小鱼说话」随时能用。`;
+    st.textContent = '✅ 能用了';
   } else if (r.installed && ownBytes > 0) {
     st.textContent = `✅ 装好了：Python 和 ffmpeg 装在 ${r.dir}，占 ${mb(ownBytes)} MB。「小鱼说话」随时能用。`;
   } else if (r.installed) {
@@ -19148,26 +19096,16 @@ function openCfgMenu(which) {
     cfgMenuList.appendChild(back);
   } else {
     cfgMenuHead.textContent = '换思考强度（只影响这个会话）';
-    // 「默认」第一项
-    const def = document.createElement('button');
-    def.type = 'button';
-    def.className = 'cfgMenuItem';
-    def.innerHTML = '<span class="ck">' + (cfgState.isLevelCustom ? '' : '✓') + '</span>';
-    const dt = document.createElement('span');
-    dt.textContent = '默认';
-    def.appendChild(dt);
-    const dd = document.createElement('span');
-    dd.className = 'desc';
-    dd.textContent = cfgState.defaultLevelName ? `跟模型走（${cfgState.defaultLevelName}）` : '跟模型设置走';
-    def.appendChild(dd);
-    def.onclick = () => setSessionCfg({ level: '' });
-    cfgMenuList.appendChild(def);
-
+    /* 【2026-11-13 主人钦点删】「默认」那一项（level:'' 跟模型走）从菜单里拿掉——
+     * 主人不想看到它。删掉后有个小账要算平：会话还没自己设过档（isLevelCustom=false）
+     * 时，✓ 原来挂在「默认」项上；现在改挂到**实际生效的那一档**（按 defaultLevelName
+     * 对号），列表里永远有一项亮着勾，不会出现「没有任何选中」的悬空状态。 */
     for (const lv of cfgState.levels || []) {
+      const isEffDefault = !cfgState.isLevelCustom && cfgState.defaultLevelName && lv.name === cfgState.defaultLevelName;
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'cfgMenuItem';
-      b.innerHTML = '<span class="ck">' + (cfgState.level === lv.id ? '✓' : '') + '</span>';
+      b.innerHTML = '<span class="ck">' + (cfgState.level === lv.id || isEffDefault ? '✓' : '') + '</span>';
       const nm = document.createElement('span');
       nm.textContent = lv.name;
       b.appendChild(nm);

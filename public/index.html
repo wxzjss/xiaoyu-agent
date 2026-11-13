@@ -8679,6 +8679,15 @@ const TOOL_NICE = {
   browser_goto: '跳转网页',
   browser_snap: '给网页截图',
   browser_state: '看浏览器状态',
+  // 【2026-11-13 内置浏览器大扩编：八个新能力】
+  browser_eval: '在网页里执行JS',
+  browser_cookies: '看网页Cookie',
+  browser_setcookie: '设网页Cookie',
+  browser_network: '看网页网络请求',
+  browser_click: '点网页元素',
+  browser_type: '往网页填字',
+  browser_wait: '等网页就绪',
+  browser_read: '读网页文字',
   // 【2026-10-28 主人要求：岁月史书/折叠箱这几个也换成中文】
   chronicle_toc: '翻史书目录',
   chronicle_search: '翻史书查',
@@ -17373,18 +17382,178 @@ if (featDlg) {
 const featImportBtn = document.getElementById('featImport');
 const featReportClose = document.getElementById('featReportClose');
 if (featReportClose) featReportClose.addEventListener('click', () => { featHideReport(); });
-if (featImportBtn && featFile) {
-  featImportBtn.addEventListener('click', () => {
-    featFile.value = '';   // 清一下：同一个文件第二次选也能触发 change
-    featFile.click();
-  });
+
+/* 【2026-11-13 补完·导入插件窗的 JS（当时只搬了壳，打开/切tab/拖拽/提交全没接上——
+ * 真机验收抓出来的）】mac 侧原样移植：导入插件按钮不再直接弹文件选择器，
+ * 而是开 plugImportDlg（从文件 / 粘贴代码 双 tab）。 */
+const plugImpDlg = document.getElementById('plugImportDlg');
+const piDrop = document.getElementById('piDrop');
+const piChoose = document.getElementById('piChoose');
+const piCancel = document.getElementById('piCancel');
+const piOk = document.getElementById('piOk');
+const piType = document.getElementById('piType');
+const piId = document.getElementById('piId');
+const piName = document.getElementById('piName');
+const piDesc = document.getElementById('piDesc');
+const piCode = document.getElementById('piCode');
+const piCodeLabel = document.getElementById('piCodeLabel');
+const piHint = document.getElementById('piHint');
+const piErr = document.getElementById('piErr');
+const piMeta = document.getElementById('piMeta');
+const piFoot = document.getElementById('piFoot');
+
+const PI_HINT = {
+  feature:
+    '默认导出一个函数，挂载时收到 <code>{ root, api, toast }</code>：'
+    + '<code>root</code> 是 body，<code>toast(文字)</code> 弹一下，'
+    + '<code>api.getAppearance()</code> / <code>api.setAppearance({…})</code> 读写外观。'
+    + '停用时会被叫一次 <code>xy:disable</code> 事件，自己把挂上去的节点摘掉。',
+  theme:
+    '就是一段 CSS：<code>:root { --bg: …; --panel: …; --text: …; --accent: … }</code>。'
+    + '只写要改的那几个变量，其余用默认值补齐；切走时按变量名单清掉，不会串色。',
+};
+const PI_PLACEHOLDER = {
+  feature: 'export default function mount({ root, api, toast }) {\n  // 想往页面上挂什么就挂什么\n}',
+  theme: ':root {\n  --bg: #0b0d12;\n  --panel: #12161d;\n  --border: #222834;\n  --text: #e6e9ef;\n  --dim: #8b95a7;\n  --accent: #5b8def;\n}',
+};
+
+function piShowErr(msg) {
+  if (!piErr) return;
+  piErr.hidden = !msg;
+  piErr.textContent = msg || '';
 }
+
+function piShowTab(tab) {
+  const want = tab === 'code' ? 'code' : 'file';
+  if (!plugImpDlg) return;
+  plugImpDlg.querySelectorAll('[data-pi-tab]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.piTab === want);
+    b.setAttribute('aria-selected', b.dataset.piTab === want ? 'true' : 'false');
+  });
+  plugImpDlg.querySelectorAll('[data-pi-panel]').forEach((p) => {
+    p.hidden = p.dataset.piPanel !== want;
+  });
+  if (piMeta) piMeta.textContent = want === 'code' ? '直接写进插件目录' : '选 .zip 或 .json';
+  if (piFoot) {
+    piFoot.textContent = want === 'code'
+      ? '同一个 id 再导一次就是覆盖更新，不会多出一份'
+      : '装错了别慌：回到列表点「卸载」，整个文件夹都会删掉';
+  }
+  if (piOk) piOk.textContent = want === 'code' ? '写入并启用' : '导入';
+  if (want === 'code' && piId) setTimeout(() => { try { piId.focus(); } catch {} }, 30);
+}
+
+function openPlugImport() {
+  if (!plugImpDlg) { if (featFile) { featFile.value = ''; featFile.click(); } return; }
+  piShowErr('');
+  piShowTab('file');
+  if (!plugImpDlg.open) {
+    try { plugImpDlg.showModal(); } catch { plugImpDlg.setAttribute('open', '1'); }
+  }
+}
+
+if (featImportBtn) featImportBtn.addEventListener('click', openPlugImport);
+
+if (plugImpDlg) {
+  plugImpDlg.querySelectorAll('[data-pi-tab]').forEach((b) => {
+    b.addEventListener('click', () => piShowTab(b.dataset.piTab));
+  });
+  if (piCancel) piCancel.addEventListener('click', () => { try { plugImpDlg.close(); } catch {} });
+  if (piChoose) {
+    piChoose.addEventListener('click', () => {
+      if (!featFile) return;
+      featFile.value = '';   // 清一下：同一个文件第二次选也能触发 change
+      featFile.click();
+    });
+  }
+
+  // 拖进虚线框就等于选了这些文件
+  if (piDrop) {
+    ["dragenter", "dragover"].forEach((t) => piDrop.addEventListener(t, (e) => {
+      e.preventDefault(); e.stopPropagation(); piDrop.classList.add("over");
+    }));
+    ["dragleave", "dragend"].forEach((t) => piDrop.addEventListener(t, (e) => {
+      e.preventDefault(); piDrop.classList.remove("over");
+    }));
+    piDrop.addEventListener("drop", async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      piDrop.classList.remove("over");
+      const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+      if (!files.length) return;
+      try { plugImpDlg.close(); } catch {}
+      await featImportFiles(files);
+    });
+  }
+
+  // 类型切换：提示、占位符、标题都跟着换
+  const syncType = () => {
+    const t = piType && piType.value === 'theme' ? 'theme' : 'feature';
+    if (piHint) piHint.innerHTML = PI_HINT[t];
+    if (piCode) piCode.placeholder = PI_PLACEHOLDER[t];
+    if (piCodeLabel) piCodeLabel.textContent = t === 'theme' ? '样式（CSS）' : '代码（JS）';
+  };
+  if (piType) { piType.addEventListener('change', syncType); syncType(); }
+
+  // 写代码并导入
+  if (piOk) {
+    piOk.addEventListener('click', async () => {
+      const type = piType && piType.value === 'theme' ? 'theme' : 'feature';
+      const id = (piId && piId.value ? piId.value : '').trim();
+      const code = piCode ? piCode.value : '';
+      if (!id) { piShowErr('先给个 id —— 它就是插件文件夹名，只能用字母、数字和 . _ -'); return; }
+      if (!code.trim()) { piShowErr(type === 'theme' ? '样式是空的' : '代码是空的'); return; }
+      piShowErr('');
+      piOk.disabled = true;
+      const old = piOk.textContent;
+      piOk.textContent = '写入中…';
+      try {
+        const r = await featApi('/api/plugins/create', {
+          id,
+          name: (piName && piName.value ? piName.value : '').trim(),
+          type,
+          description: (piDesc && piDesc.value ? piDesc.value : '').trim(),
+          code,
+        });
+        if (!r.ok) { piShowErr(r.error || '没写进去'); return; }
+        const nm = (piName && piName.value ? piName.value.trim() : '') || id;
+        try { plugImpDlg.close(); } catch {}
+        await loadApPlugins();
+        renderFeatList();
+        // 新装的 js 插件要马上挂上，不然「装好了」还得刷一次才看得见
+        try {
+          if (window.xyAppearance && window.xyAppearance.reloadPlugins) await window.xyAppearance.reloadPlugins();
+        } catch {}
+        featReapplyAppearance();
+        const head = (r.updated && r.updated.length ? '覆盖更新：' : '装好了：') + nm;
+        const lines = [{
+          k: 'ok',
+          t: (type === 'theme' ? '主题' : '功能') + '插件 ' + id + ' 已写进插件目录'
+            + (r.file ? '（' + r.file + '）' : '') + '，并已启用',
+        }];
+        lines.push(type === 'theme'
+          ? { k: 'grey', t: '去【外观】→ 主题里选中它才算用上' }
+          : { k: 'grey', t: '已经挂上了；下一句就生效，想停用回列表关掉那一格' });
+        featSay(head);
+        featShowReport(head, lines);
+        toast(head);
+        // 清一下，下次粘贴是干净的
+        if (piCode) piCode.value = '';
+        if (piId) piId.value = '';
+        if (piName) piName.value = '';
+        if (piDesc) piDesc.value = '';
+      } finally {
+        piOk.disabled = false;
+        piOk.textContent = old || '导入';
+      }
+    });
+  }
+}
+
 if (featFile) {
   featFile.addEventListener('change', async () => {
     const picked = Array.from(featFile.files || []);
     featFile.value = '';
-    /* 【2026-11-13 合并·mac 侧】从「导入插件」窗里选的，选完把窗关掉 */
-    try { const _pi = document.getElementById('plugImportDlg'); if (_pi && _pi.open) _pi.close(); } catch {}
+    if (plugImpDlg && plugImpDlg.open) { try { plugImpDlg.close(); } catch {} }
     await featImportFiles(picked);
   });
 }

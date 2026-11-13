@@ -151,8 +151,29 @@ try {
     } catch { /* 探测失败就当没开 */ }
   }
   if (_xyCdp) {
-    app.commandLine.appendSwitch('remote-debugging-port', '9222');
+    /* 【2026-11-13 补·端口被占自动换】9222 被幽灵 socket 占死过一次（僵尸 PID
+     * 的表项赖着不走），Electron 的 remote-debugging-port 绑不上时**静默失败**，
+     * 探针连不上还以为没开。这里用 netstat 同步探一轮：LISTENING 就跳过，
+     * 往后找空位（最多到 9232）。.cjs 顶层不能 await，只能走同步路。 */
+    let _port = 9222;
+    try {
+      const _out = require('node:child_process').execSync(
+        'netstat -ano -p tcp', { encoding: 'utf8', timeout: 8000 });
+      const busy = new Set();
+      for (const m of _out.matchAll(/127\.0\.0\.1:(\d{4,5})\s+\S+\s+LISTENING/g)) {
+        busy.add(Number(m[1]));
+      }
+      for (let p = 9222; p <= 9232; p++) {
+        if (!busy.has(p)) { _port = p; break; }
+      }
+    } catch { /* netstat 失败就按默认 9222 来 */ }
+    app.commandLine.appendSwitch('remote-debugging-port', String(_port));
     app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+    /* 实际落在哪个端口写给 flag 旁边，探针不用猜 */
+    try {
+      require('node:fs').writeFileSync(
+        process.env.APPDATA + '\\小鱼Agent\\data\\.state\\xy-cdp.port', String(_port), 'utf8');
+    } catch { /* 写不了就算了 */ }
   }
 } catch { /* 开不了就算了 */ }
 

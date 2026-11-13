@@ -1347,15 +1347,18 @@
     /* 2026-11-03：【多套人设】面板底部的「关闭 / 保存」以前没有样式，
      * 落到了浏览器默认的亮白按钮上 —— 主人一眼看见的就是那两颗白块。
      * 这里把 .ghost / .primary 也补上，跟别处的按钮一个手感。 */
-    /* 【2026-11-13 主人钦点】同上：胶囊配色（保持 32px 底栏尺寸） */
+    /* 【2026-11-13 主人钦点】同上：accent 描边款（保持 32px 底栏尺寸） */
     .dlgFoot button.ghost {
       height: 32px; padding: 0 14px; border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .04); color: var(--accent);
+      border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent);
       font-size: 12.5px; cursor: pointer;
-      transition: background .12s ease, border-color .12s ease;
+      transition: background .12s ease, box-shadow .12s ease;
     }
-    .dlgFoot button.ghost:hover { color: var(--accent); border-color: rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); }
-    .dlgFoot button.ghost:active { background: rgba(255, 255, 255, .12); }
+    .dlgFoot button.ghost:hover {
+      background: color-mix(in srgb, var(--accent) 20%, transparent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent) inset;
+    }
+    .dlgFoot button.ghost:active { background: color-mix(in srgb, var(--accent) 28%, transparent); }
     /* 【2026-11-13 主人钦点】同上：accent 描边款（保持 32px 底栏尺寸） */
     .dlgFoot button.primary {
       height: 32px; padding: 0 16px; border-radius: 10px;
@@ -2127,15 +2130,19 @@
     .primary:active { background: color-mix(in srgb, var(--accent) 28%, transparent); }
     .primary:disabled { opacity: .5; cursor: not-allowed; }
     .primary:disabled:hover { background: var(--accent); }
-    /* 【2026-11-13 主人钦点】.ghost 全局统一成【底线】标题胶囊那套配色
-     * （白 .14 描边 + 白 .04 底 + accent 字）——原来 var(--border) 暗边配暗字，
-     * 跟背景几乎同色，跟隐身了一样。形状（36px/8px 圆角）不动。 */
+    /* 【2026-11-13 主人钦点·二次改】ghost 家族统一套【打开智能体面板】的
+ * accent 描边配色（accent 描边 + accent 10% 微填充 + accent 字，悬停加深+内圈亮线）；
+ * 形状保持各自原样（这里 36px/8px），不跟着换。 */
     .ghost {
-      height: 36px; padding: 0 14px; border: 1px solid rgba(255, 255, 255, .14); border-radius: 8px;
-      background: rgba(255, 255, 255, .04); color: var(--accent); cursor: pointer;
-      transition: background .12s ease, border-color .12s ease;
+      height: 36px; padding: 0 14px; border: 1px solid var(--accent); border-radius: 8px;
+      background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); cursor: pointer;
+      transition: background .12s ease, box-shadow .12s ease;
     }
-    .ghost:hover { color: var(--accent); border-color: rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); }
+    .ghost:hover {
+      background: color-mix(in srgb, var(--accent) 20%, transparent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent) inset;
+    }
+    .ghost:active { background: color-mix(in srgb, var(--accent) 28%, transparent); }
     .sessTop {
       display: flex; align-items: center; gap: 12px;
       padding: 12px 16px; border-bottom: 1px solid var(--border);
@@ -2800,14 +2807,17 @@
     /* 【2026-11-13 主人钦点】插件卡按钮统一设置页同款（.ghost 家族）：
      * var(--border) 描边 + 透明底 + 8px 圆角，悬停字亮边框加深——跟设置页一模一样 */
     .featEditBtn {
-      /* 【2026-11-13 主人钦点】同族同步：胶囊配色（见 .ghost 处注释） */
+      /* 【2026-11-13 主人钦点】同族同步：accent 描边款（形状 32px/8px 不动） */
       flex: none; height: 32px; border-radius: 8px; cursor: pointer;
-      border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .04); color: var(--accent);
+      border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent);
       font-size: 12.5px; padding: 0 14px;
-      transition: background .12s ease, border-color .12s ease;
+      transition: background .12s ease, box-shadow .12s ease;
     }
-    .featEditBtn:hover { color: var(--accent); border-color: rgba(255, 255, 255, .3); background: rgba(255, 255, 255, .08); }
-    .featEditBtn:active { background: rgba(255, 255, 255, .12); }
+    .featEditBtn:hover {
+      background: color-mix(in srgb, var(--accent) 20%, transparent);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent) inset;
+    }
+    .featEditBtn:active { background: color-mix(in srgb, var(--accent) 28%, transparent); }
     /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
     .featRow .featEditGroup { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -2888,9 +2898,9 @@
      * 平时整颗藏着（opacity:0），鼠标落到这一行才露头 ——
      * 常驻的话一整列都是红的，天天勾人去点，容易误删。 */
     .featRow .featDelBtn {
-      /* 【2026-11-13 主人钦点】同族同步胶囊配色；平时隐身悬停显形不变，悬停红字 */
+      /* 【2026-11-13 主人钦点】同族同步 accent 描边款；平时隐身悬停显形不变，悬停红字 */
       flex: none; height: 32px; border-radius: 8px; cursor: pointer;
-      border: 1px solid rgba(255, 255, 255, .14); background: rgba(255, 255, 255, .04); color: var(--accent);
+      border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent);
       font-size: 12.5px; padding: 0 14px; opacity: 0;
       transition: opacity .12s ease;
     }

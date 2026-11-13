@@ -918,6 +918,13 @@ export const tools = [
           ['taskkill', /taskkill/i],
           ['kill', /\bkill\b/i],
           ['wmic.*terminate', /wmic[^\n]*terminate/i],
+          /* 【2026-11-13 加·主人报「重启后没一会就自动退出」】间接自毁也要拦：
+           * repack-installed-app.ps1 的第 1 步就是 Stop-Process 杀所有小鱼Agent.exe ——
+           * 命令文本里干干净净只有一个脚本名，上面四条全放行。
+           * 实测：打包活续跑接上 → 跑 repack → 宿主（包括正在干活的那位）被硬杀，
+           * 无 crash.log 无退出码，窗口直接消失。这类「脚本内容会杀宿主」的命令，
+           * 点名拦下 + 说人话，让正确姿势（外部终端）来。 */
+          ['repack-installed-app', /repack-installed-app/i],
         ];
         const names = [selfExe, '小鱼agent.exe', 'xiaoyu-mini-agent.exe'].filter(Boolean);
         let hit = '';
@@ -939,18 +946,32 @@ export const tools = [
           if (/process\.exit|app\.exit|\$pid\s*\)\s*\{\s*stop-process/i.test(raw) && /8788|8780|8781/.test(raw)) { hit = label + '（按端口）'; break; }
         }
         if (hit) {
-          return [
-            '这条路是堵死的：不能用命令去杀小鱼Agent自己。',
-            '',
-            '那样做不是重启，是退出 —— 主进程没了，谁也不会把它拉回来，',
-            '只能等主人自己双击。真的想重启只有一个正经入口：',
-            '',
-            '  · 调 restart_self 工具（背后是 POST /api/app/restart，带 byTool:true）',
-            '  · 它会先把这一轮话落盘，再让主进程 app.relaunch() 把自己拉起来，',
-            '    会话/设置/草稿全自动接上，重启完还会自动说一句「重启了」。',
-            '',
-            '被拦下的命令：' + raw.slice(0, 200),
-          ].join('\n');
+          const head = /repack-installed-app/i.test(hit) || /repack/i.test(raw)
+            ? [
+                '这条命令（repack-installed-app.ps1）不能从小鱼里面跑。',
+                '',
+                '它第 1 步就会把所有正在运行的小鱼Agent.exe 杀掉 —— 包括正在跑这条命令的',
+                '我自己（宿主死了，这轮活全丢，主人看到的「自动退出」就是它干的）。',
+                '',
+                '正确姿势（二选一）：',
+                '  · 让主人在**外部**终端（PowerShell/cmd）里跑：',
+                '      powershell -File scripts\\repack-installed-app.ps1',
+                '    它替换完 asar 会自己把应用拉回来。',
+                '  · 或者把要打包的改动先落盘，让主人手动重启后再安排。',
+              ]
+            : [
+                '这条路是堵死的：不能用命令去杀小鱼Agent自己。',
+                '',
+                '那样做不是重启，是退出 —— 主进程没了，谁也不会把它拉回来，',
+                '只能等主人自己双击。真的想重启只有一个正经入口：',
+                '',
+                '  · 调 restart_self 工具（背后是 POST /api/app/restart，带 byTool:true）',
+                '  · 它会先把这一轮话落盘，再让主进程 app.relaunch() 把自己拉起来，',
+                '    会话/设置/草稿全自动接上，重启完还会自动说一句「重启了」。',
+                '',
+                '被拦下的命令：' + raw.slice(0, 200),
+              ];
+          return head.join('\n');
         }
       }
 

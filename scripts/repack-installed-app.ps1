@@ -45,6 +45,25 @@ Write-Host "源码   = $src"
 Write-Host "安装版 = $InstallDir"
 Write-Host "node   = $node"
 
+# 【2026-11-13 加·防自毁】如果这个脚本是被小鱼自己拉起来的（父进程链里有小鱼Agent.exe
+# 或它带的服务端 node），第 1 步的 Stop-Process 就会杀死宿主自己 —— 实测表现就是
+# 「重启后没一会自动退出」（主人 2026-11-13 早上连环遇到的）。
+# 被小鱼拉起时直接报错退出，一个人都不杀；请到外部终端跑。
+$probe = $null
+try {
+  $cur = Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction Stop
+  for ($i = 0; $i -lt 12 -and $cur; $i++) {
+    if ($cur.Name -like '*小鱼*' -or $cur.Name -like '*xiaoyu*') { $probe = $cur.Name; break }
+    $pp = $cur.ParentProcessId
+    if (-not $pp) { break }
+    $cur = Get-CimInstance Win32_Process -Filter "ProcessId = $pp" -ErrorAction SilentlyContinue
+  }
+} catch {}
+if ($probe) {
+  throw ('这个脚本正在被小鱼Agent自己拉起（祖先进程：' + $probe + '），跑下去会把它自己杀掉。'
+    + '请在**外部**终端（PowerShell/cmd）里运行这条命令 —— 替换完它会自动把应用拉回来。')
+}
+
 # 1) 先停掉正在运行的安装版，否则 asar 被映射着替换不掉
 Get-CimInstance Win32_Process |
   Where-Object { $_.ExecutablePath -like "*$($InstallDir -replace '\\', '\\')*" -or $_.Name -eq '小鱼Agent.exe' } |
@@ -105,3 +124,12 @@ Copy-Item $new $asarP -Force
 
 $files = (Get-ChildItem $work -Recurse -File | Measure-Object).Count
 Write-Host "好了：$files 个文件，app.asar = $((Get-Item $asarP).Length) 字节"
+
+# 【2026-11-13 加】第 1 步杀掉的应用拉回来 —— 主人少一步手动双击。
+# -WindowStyle Hidden 让它跟正常双击一样进托盘/窗口，不带黑框。
+$exe = Join-Path $InstallDir '小鱼Agent.exe'
+if (Test-Path $exe) {
+  Start-Sleep -Seconds 1
+  Start-Process $exe | Out-Null
+  Write-Host '应用已重新拉起。'
+}

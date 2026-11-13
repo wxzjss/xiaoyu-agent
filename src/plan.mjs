@@ -30,6 +30,19 @@ function clean(v, max) {
   return String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+/** 【2026-11-15】给缺 id 的老数据补号：跳过已有的号，避免重号 */
+function _fillId(list, i) {
+  const used = new Set();
+  for (const x of list) {
+    const n = Number(x && x.id);
+    if (Number.isInteger(n) && n > 0) used.add(n);
+  }
+  let cand = i + 1;
+  while (used.has(cand)) cand += 1;
+  used.add(cand);
+  return cand;
+}
+
 /** 某个会话的 txt 清单路径 */
 function txtFileFor(key) {
   const safe = String(key || 'default').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 80) || 'default';
@@ -153,9 +166,10 @@ export function loadPlan(key = 'default') {
       steps: (Array.isArray(data.steps) ? data.steps : [])
         .filter((s) => s && typeof s.text === 'string')
         .slice(0, MAX_STEPS)
-        .map((s, i) => ({
+        .map((s, i, _list) => ({
           // 【2026-11-08 修】id 不许按位置重算：归档删掉前面几条后，后面 id 会整体前移，stepId 就打勾到别人头上。
-          id: (Number.isInteger(Number(s.id)) && Number(s.id) > 0) ? Number(s.id) : (i + 1),
+          // 【2026-11-15 再修】缺 id 的老数据补号时也要避开已有的号，别补出一个跟别人重号的 id。
+          id: (Number.isInteger(Number(s.id)) && Number(s.id) > 0) ? Number(s.id) : _fillId(_list, i),
           text: clean(s.text, 300),
           status: STATUSES.includes(s.status) ? s.status : 'pending',
           note: clean(s.note, 300),
@@ -325,6 +339,16 @@ function archiveFinishedSteps(key, state) {
   }
 }
 
+/** 【2026-11-15】下一个可用 id = 现有最大 id + 1。永远往前走，绝不回收旧号。 */
+function nextStepId(state) {
+  let mx = 0;
+  for (const st of (state && state.steps) || []) {
+    const n = Number(st && st.id);
+    if (Number.isInteger(n) && n > mx) mx = n;
+  }
+  return mx + 1;
+}
+
 function pinnedSteps(state) {
   return (state.steps || []).filter((st) => st && st.pinned);
 }
@@ -453,7 +477,24 @@ export function planAction(key, args = {}) {
       goal: clean(args.goal, 300) || state.goal,
       createdAt: Date.now(),
       updatedAt: 0,
-      steps: merged.map((st, i) => ({ id: i + 1, text: st.text, status: st.status === 'done' ? 'done' : (st.status || 'pending'), note: st.note || '', pinned: !!st.pinned })),
+      /* 【2026-11-15 根治 · id 永不重排】create 是「接上」老清单，老步骤的 id 必须原样留着。
+       * 老写法 id: i+1 会把整张清单重新编号，第 N 步换成别人，打过的勾/钉死全跟着错位
+       * （实测 66 步清单被 create 串成 76 步、勾落到别的行上，就是这么来的）。
+       * 新接上的步骤一律从「当前最大 id + 1」往后排，绝不回头占号。 */
+      steps: (() => {
+        let mx = 0;
+        for (const st of base) {
+          const n = Number(st && st.id);
+          if (Number.isInteger(n) && n > mx) mx = n;
+        }
+        return merged.map((st) => {
+          const kept = Number.isInteger(Number(st.id)) && Number(st.id) > 0;
+          const st2 = st.status === 'done' ? 'done' : (st.status || 'pending');
+          if (kept) return { id: Number(st.id), text: st.text, status: st2, note: st.note || '', pinned: !!st.pinned };
+          mx += 1;
+          return { id: mx, text: st.text, status: st2, note: st.note || '', pinned: !!st.pinned };
+        });
+      })(),
       notes: state.notes,
     };
     savePlan(key, next);
@@ -465,7 +506,10 @@ export function planAction(key, args = {}) {
     const id = Number(args.stepId ?? args.id ?? args.step);
     const status = normStatus(args.status);
     const step = state.steps.find((s) => s.id === id);
-    if (!step) return { text: `ERROR：没有第 ${args.stepId ?? '?'} 步（现有 1~${state.steps.length}）`, state };
+    if (!step) {
+      const ids = (state.steps || []).map((x) => x.id).join(', ');
+      return { text: `ERROR：没有第 ${args.stepId ?? '?'} 步（现有这些号：${ids || '空清单'}）`, state };
+    }
     if (!status) return { text: `ERROR：status 只能是 pending / doing / done / skipped`, state };
     step.status = status;
     if (args.note !== undefined) step.note = clean(args.note, 300);
@@ -480,7 +524,9 @@ export function planAction(key, args = {}) {
     const text = clean(args.text ?? args.step, 300);
     if (!text) return { text: 'ERROR：add 需要 text', state };
     if (state.steps.length >= MAX_STEPS) return { text: `ERROR：清单最多 ${MAX_STEPS} 步`, state };
-    state.steps.push({ id: state.steps.length + 1, text, status: 'pending', note: '', pinned: !!args.pin });
+    // 【2026-11-15 根治】id 取「现有最大 id + 1」。老写法 length+1 在归档摘走中间几条后会撞上已有 id，
+    // 一撞 update 就 find 到错的那一步。
+    state.steps.push({ id: nextStepId(state), text, status: 'pending', note: '', pinned: !!args.pin });
     savePlan(key, state);
     return { text: `加了一步：\n${formatPlan(state)}`, state };
   }
@@ -503,7 +549,8 @@ export function planAction(key, args = {}) {
     const next = emptyState();
     if (keep.length) {
       next.goal = state.goal;
-      next.steps = keep.map((st, i) => ({ ...st, id: i + 1 }));
+      // 【2026-11-15 根治】留着的那几条沿用原 id，不重新编号，否则清空后打勾又错行
+      next.steps = keep.map((st) => ({ ...st }));
     }
     savePlan(key, next);
     return {

@@ -332,6 +332,8 @@ export function pushToolContext() {
  * 不设这个，一个爱乱回答的子智能体能把进程拖死。
  */
 export const MAX_SUBAGENT_DEPTH = 2;
+/* 【2026-11-13 主人要求放宽】spawn_workers 单次派发上限：4 → 8（真无上限会把内存和 API 配额打爆，8 件已是「肉眼可见的多鱼干活」）。 */
+export const MAX_SPAWN_WORKERS = 8;
 /**
  * 现在这个工具调用是「替哪個会话」在干活。
  *
@@ -2399,8 +2401,8 @@ export const tools = [
     name: 'spawn_workers',
     /* 【2026-11-11 团队模式完整版】删掉「等它们的时候可以先 watch_worker」这句
      * 假话 —— 现在派出去立刻回来，不是「等它们」。（设计文档 §三 验收点名） */
-    description: '一次派好几件互不依赖的活，让它们**同时**跑（不是一个一个排队），派完立刻回来，你去干自己的 —— 它们干完会各自把汇报递回来。最多 4 件。'
-      + '\n\n【什么时候用】几件事之间不需要别人先说、也不抢同一个文件 —— 比如「查 A 文档」「跑 B 测试」「统计 C 行数」。'
+    description: '一次派好几件互不依赖的活，让它们**同时**跑（不是一个一个排队），派完立刻回来，你去干自己的 —— 它们干完会各自把汇报递回来。最多 ' + MAX_SPAWN_WORKERS + ' 件。'
+      + '\n\n【什么时候用】几件事之间不需要别人先说、也不抢同一个文件 —— 比如「查 A 文档」「跑 B 测试」「统计 C 行数」。**两件以上互不依赖的活就默认拆给 workers 同时干，别自己一件件排队**——并行是默认工作方式，不是最后手段。'
       + '\n\n【什么时候别用】后一件要看前一件的结果 —— 那就一次派一件，等它回来再说。'
       + '\n\n【派完别停】它们跑它们的，你接着做自己的事；别因为派了活就停下来干等，也别在主人面前装作已经做完了。'
       + '\n\n【回来的是一串汇报】逐件检查，别一律采信；哪件没干对就退回给同一个 worker。',
@@ -2409,7 +2411,7 @@ export const tools = [
       properties: {
         tasks: {
           type: 'array',
-          description: '要派出去的活，每件一个对象。1~4 件。',
+          description: '要派出去的活，每件一个对象。1~' + MAX_SPAWN_WORKERS + ' 件。',
           items: {
             type: 'object',
             properties: {
@@ -2435,7 +2437,7 @@ export const tools = [
       }
       const list = (Array.isArray(tasks) ? tasks : []).filter((t) => t && String(t.task || '').trim());
       if (!list.length) return 'ERROR：没说要干什么（tasks 是空的）。';
-      if (list.length > 4) return '一次最多派 4 件。要更多就先派 4 件，等回来再派。';
+      if (list.length > MAX_SPAWN_WORKERS) return `一次最多派 ${MAX_SPAWN_WORKERS} 件。要更多就先派 ${MAX_SPAWN_WORKERS} 件，等回来再派。`;
       if (list.length === 1) {
         return '只有一件活就不用这个工具了 —— 用 spawn_worker 就行（说明会清楚得多）。';
       }

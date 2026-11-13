@@ -5,7 +5,12 @@
  * 完全访问 + 永不询问 + 内置 computer use + 操控提示。这里做同一件事：
  * 把「只能在工作区里动」这条默认红线，变成一个**按会话、可开可关**的档位。
  *
- * ── 为什么这件事必须做成「开关」，而不是「平时就开着」 ──────────────
+ * ── 2026-11-13 主人钦点：默认开启 ──────────────────────────────
+ * 主人原话：「把【管理员】按钮删除，改卡片形式放到【插件】页面里，且改为默认开启」。
+ * 现在语义反过来：**没显式关过 = 开**，表里只记「谁被显式关掉」。
+ * 旧文件（version 1，只有 on 表）读进来兼容：on:true 跟默认开同义。
+ *
+ * ── 旧说明（2026-11-01 当时为什么做成开关） ──────────────────────
  *
  * 默认状态下，她 read_file / write_file / run_command 全都被 safePath 关在工作区里
  * （老板的整套东西只有一份，位置出错代价太大）。这一档打开之后，她能看到整台机器：
@@ -35,42 +40,39 @@ function logFile() {
   return join(config.dataDir, '.state', 'admin.log');
 }
 
-/** 读整张表：{ '<sessionId>': true }。坏文件一律当空表（= 全都没开）。 */
-function readTable() {
+/** 读整张表。返回 { off, on }：off = 显式关掉的会话；on = 兼容读旧格式。
+ *  坏文件返回 null。
+ *
+ *  【2026-11-13 主人钦点：管理员档改为默认开启】
+ *  旧语义是「没开过 = 关」（fail-closed，升高权限要显式点头）。
+ *  主人原话：「改为默认开启」—— 现在反过来：**没显式关过 = 开**。
+ *  表里只记「谁被显式关掉」（off）；旧的 on 表读进来只为兼容（旧 on:true 跟默认开同义）。
+ *  读盘失败也按默认开处理（主人的意图就是让它开）。
+ */
+function readState() {
   try {
     const f = file();
-    if (!existsSync(f)) return {};
-    /* 【2026-11-06 修·BOM 会让整张权限表静默失效】
-     *
-     * 主人报了「管理员权限明明开着，read_file 还是被拦」。真因：
-     * 这个 json 被外部改写过一次，存成了 UTF-8 BOM。JSON.parse 见到
-     * 开头的 \uFEFF 直接抛错，而下面那个 catch 把错吞掉、返回空表 ——
-     * 表现就是「一声不响，权限全没了」，连日志都没有。
-     *
-     * 两道都补上：读之前剥掉 BOM；真解析失败时喊一声，别静默降级。 */
+    if (!existsSync(f)) return { off: {}, on: {} };
+    /* 【2026-11-06 修·BOM 会让整张权限表静默失效】读之前剥掉 BOM；解析失败喊一声。 */
     let raw = readFileSync(f, 'utf8');
     if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
     const j = JSON.parse(raw);
-    if (j && j.on && typeof j.on === 'object' && !Array.isArray(j.on)) {
-      const map = {};
-      for (const [k, v] of Object.entries(j.on)) if (v === true) map[k] = true;
-      return map;
-    }
-    return {};
+    return {
+      off: (j && j.off && typeof j.off === 'object' && !Array.isArray(j.off)) ? j.off : {},
+      on: (j && j.on && typeof j.on === 'object' && !Array.isArray(j.on)) ? j.on : {},
+    };
   } catch (e) {
-    /* 【2026-11-06】以前这里是裸 catch，文件坏了就静默返回空表 ——
-     * 权限一夜之间全没了，还查不出为什么。坏了就得喊一声。 */
-    log('读表失败，按「全都没开」处理：' + (e && e.message ? e.message : e));
-    return {};
+    log('读表失败，按「默认开启」处理：' + (e && e.message ? e.message : e));
+    return null;
   }
 }
 
-function writeTable(map) {
+function writeState(st) {
   const f = file();
   try {
     mkdirSync(dirname(f), { recursive: true });
     const tmp = f + '.tmp';
-    writeFileSync(tmp, JSON.stringify({ version: 1, on: map }, null, 2), 'utf8');
+    writeFileSync(tmp, JSON.stringify({ version: 2, off: st.off, on: st.on }, null, 2), 'utf8');
     renameSync(tmp, f);
     return true;
   } catch (e) {
@@ -91,12 +93,14 @@ function log(line) {
 /**
  * 这个会话现在是不是管理员权限。
  *
- * 【读盘失败 = 关】见文件头：这是升高权限的开关，宁可开不了也不能莫名开着。
+ * 【2026-11-13 默认开启】没显式关过 = 开。off 表里有它才是关。
  */
 export function adminOn(sessionId) {
   const sid = String(sessionId || 'default');
-  const map = readTable();
-  return map[sid] === true;
+  const st = readState();
+  if (!st) return true;
+  if (st.off[sid] === true) return false;
+  return true;
 }
 
 /**
@@ -106,18 +110,27 @@ export function adminOn(sessionId) {
  */
 export function setAdminOn(sessionId, on) {
   const sid = String(sessionId || 'default');
-  const map = readTable();
   const want = on === true;
-  if (want) map[sid] = true;
-  else delete map[sid];
-  const ok = writeTable(map);
+  const st = readState() || { off: {}, on: {} };
+  if (want) {
+    delete st.off[sid];
+    st.on[sid] = true;
+  } else {
+    st.off[sid] = true;
+    delete st.on[sid];
+  }
+  const ok = writeState(st);
   log(`${want ? '开' : '关'} session=${sid} ok=${ok}`);
-  return { ok, sessionId: sid, on: want && adminOn(sid) };
+  return { ok, sessionId: sid, on: want ? adminOn(sid) : false };
 }
 
-/** 现在哪些会话开着（界面/自检用）。 */
+/** 现在哪些会话开着（界面/自检用）：默认全开，减去显式关掉的。
+ *  只能列出「有记录的」——没记录的会话也是开（默认档），列不全就算了。 */
 export function adminSessions() {
-  return Object.keys(readTable());
+  const st = readState() || { off: {}, on: {} };
+  const on = new Set(Object.keys(st.on || {}));
+  for (const sid of Object.keys(st.off || {})) on.delete(sid);
+  return Array.from(on);
 }
 
 /**

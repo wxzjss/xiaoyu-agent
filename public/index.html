@@ -246,21 +246,7 @@
     /* 「小鲸」按钮：按下去就一直是她的冷蓝色 */
     /* 小鱼按钮 / 小鲸按钮（2026-11-02 已删）—— 她们的开关现在只剩左边「屋里的人」那两颗牌。
        这里保留注释，免得以后有人在顶上又加回一颗，两处状态互相打架。 */
-    /* 管理员权限：没开时是暗红色边框（提醒这一档存在），开了就整块亮起来。
-       参考 dsh-admin-mode：那一档在权限菜单里是要「显眼到一眼看见」的。 */
-    #adminBtn { border-color: rgba(226, 132, 132, 0.45); color: #d8b3b3; }
-    #adminBtn.on {
-      background: rgba(226, 96, 96, 0.26);
-      border-color: #e26060;
-      color: #ffd7d7;
-      font-weight: 600;
-      box-shadow: 0 0 0 1px rgba(226, 96, 96, 0.45) inset;
-    }
-    /* 悬浮统一·2026-10-31 这几枚用 ID 写了 border-color，权重比 header button:hover 高，
-     * 悬停时只有字亮、边框不动。按各自色调补一套 :hover，开着的再亮一档。
-     * （fishBtn / whaleBtn 那几行 2026-11-02 随按钮一起删了。） */
-    #adminBtn:hover { border-color: #e26060; color: #ffd7d7; }
-    #adminBtn.on:hover { border-color: #ff8a8a; box-shadow: 0 0 0 1px rgba(226, 96, 96, 0.7) inset; }
+    /* 【2026-11-13 删】#adminBtn 顶栏按钮样式随按钮一起删（管理员档改卡片进【插件】面板）。 */
     /* 陪看屏幕 · 最近看过：两列缩图，每张下面是时间和窗口名（2026-11-01） */
     #scrFramesDlg { width: min(880px, 94vw); height: min(84vh, 720px); }
     #scrFramesDlg .dlgBody { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
@@ -3946,13 +3932,8 @@
       点一下开、再点一下关（小鱼、小鲸以前是常亮的点不灭，现在也归这颗牌管 ——
       服务端 /api/agents/group/toggle 会把 fish-presence / whale-presence 一并改掉）。
     -->
-    <!-- 2026-11-01：管理员权限。参考 dsh-admin-mode 那一档 ——「完全访问 + 永不询问」。
-         颜色用危险色：开着的时候一眼能看见，别让人忘了它还在开。
-         按会话存，跟专业模式/小鲸在场一个规矩。 -->
-    <!-- 【2026-11-10 加·开局就藏着】首帧就显示它的话，refreshAdminBtn 会因为
-         会话没就绪先把它 hidden 再显回来 —— 白闪一下。开局 hidden、会话到了
-         refreshAdminBtn 自己会放它出来（refreshAdminBtn 的 !sessionId 分支）。 -->
-    <button id="adminBtn" class="warn" hidden title="管理员权限：开了之后她能读写整台机器上的文件（桌面、下载、别的盘），不再只在工作区里。按会话开，随时可以关">管理员</button>
+    <!-- 【2026-11-13 删·主人钦点】顶栏【管理员】按钮已删——管理员档改成卡片放进【插件】
+         面板（adminPaintInto），且默认开启（admin-mode.mjs 默认档语义）。 -->
     <button id="openDir" hidden>打开工作目录</button>
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
@@ -12341,86 +12322,82 @@ async function openScreenFramesDlg() {
 }
 
 /**
- * 顶栏那枚「管理员权限」的按钮。
+ * 【2026-11-13 主人钦点】管理员档改成卡片放进【插件】面板（顶栏按钮已删）。
  *
- * 【为什么不把状态记在本地变量里】
- * 这一档按会话存在盘上（.state/admin-mode.json）。主人可能从另一个窗口、
- * 另一台设备把它关掉；界面自己记着「我开着呢」，就会给主人一个假象 ——
- * 他以为关掉了，其实这个窗口还亮着。所以每次切会话、每次点完，都去问一次。
+ * 卡片形态跟旁观者卡同一套结构（featRow + featIco + featText + switch），
+ * 默认开启（admin-mode.mjs 默认档语义：没显式关过 = 开）。
+ * 开关走 /api/admin-mode（POST {sessionId, on}），动完当场生效 + toast 回执。
  *
- * 谁调它：loadTopCfg（开机 + 每次切会话）、点按钮之后、新建会话之后。
+ * 谁调它：loadFeatures（每次画插件面板都会调，状态每回现读）、开关点完。
  */
-async function refreshAdminBtn() {
-  const el = document.getElementById('adminBtn');
-  if (!el) return;
-  if (!sessionId) { el.classList.remove('on'); el.hidden = true; return; }
-  el.hidden = false;
-  try {
-    const r = await fetch('/api/admin-mode?sessionId=' + encodeURIComponent(sessionId))
-      .then((x) => x.json());
-    const on = Boolean(r && r.on === true);
-    el.classList.toggle('on', on);
-    /* 管理员按钮只三个字·2026-10-31 主人要的：开着也还是「管理员」三个字，
-     * 开没开看颜色和边框（.on 会整块亮起来），不靠改字。 */
-    el.textContent = '管理员';
-    el.title = on
-      ? '这个会话现在是管理员权限：她能读写整台机器上的文件，不可逆的事也不再回头问你，会自己决定做完再交代。点一下关掉。'
-      : '管理员权限：开了之后她能读写整台机器上的文件（桌面、下载、别的盘），不再只在工作区里。不可逆的事她会自己决定。按会话开，随时可以关';
-  } catch {
-    // 问不到就当没开（fail-closed，跟服务端一个口径）
-    el.classList.remove('on');
-    el.textContent = '管理员';
-  }
-}
+let adminCardOn = true;   // 缓存上一回读到的状态；现读为主，这个只省首帧闪烁
 
-/**
- * 点一下＝开/关。开关是要见血的事，所以开了之后必须再确认一次弹窗。
- */
-async function toggleAdminBtn() {
-  if (!sessionId) { toast?.('得先有会话'); return; }
-  const el = document.getElementById('adminBtn');
-  const nowOn = el && el.classList.contains('on');
-  if (!nowOn) {
-    /**
-     * 2026-11-01：开之前问一句。
-     * 参考 dsh-admin-mode 的「永不询问」—— 它省掉的是**每一件事**都问，
-     * 但进入这一档本身是一次性动作，问一句让主人确认他知道自己在做什么。
-     */
-    const yes = await new Promise((resolve) => {
-      const d = document.createElement('dialog');
-      d.className = 'dlg';
-      d.innerHTML = '<div class="dlgHead">开管理员权限？</div>' +
-        '<div class="dlgBody" style="line-height:1.8">' +
-        '<p>开了之后，<b>这个会话</b>里的她就不是只动工作区了：桌面、下载、别的盘、系统目录都能读写、都能跑命令。</p>' +
-        '<p>几条不变的东西：</p>' +
-        '<ul style="margin:6px 0 0 18px;padding:0">' +
-        '<li>记忆本那几份文件还是不许她碰（关掉记忆＝只读，这条比权限更硬）</li>' +
-        '<li>不可逆的事（删文件、覆盖、改注册表、装卸软件）她不会再问你，会直接自己决定去做</li>' +
-        '<li>这一档按会话开，随时可以在顶栏关掉</li>' +
-        '</ul></div>' +
-        '<div class="dlgFoot"><button type="button" class="ghost" id="_adNo">算了</button>' +
-        '<button type="button" class="primary" id="_adYes">开吧</button></div>';
-      document.body.appendChild(d);
-      const done = (v) => { try { d.close(); } catch {} d.remove(); resolve(v); };
-      d.querySelector('#_adNo').onclick = () => done(false);
-      d.querySelector('#_adYes').onclick = () => done(true);
-      d.oncancel = () => done(false);
-      d.showModal();
-    });
-    if (!yes) return;
-  }
+async function adminPaintInto(list) {
+  if (!list) return;
   try {
-    const r = await fetch('/api/admin-mode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, on: !nowOn }),
-    }).then((x) => x.json());
-    if (!r || r.error) { toast?.(r?.error || '没存上'); return; }
-    await refreshAdminBtn();
-    toast?.(r.on ? '管理员权限：开了。她可以动整台机器了。' : '管理员权限：关了。她回到工作区里。');
-  } catch (e) {
-    toast?.('没存上：' + (e?.message || e));
-  }
+    const r = await fetch('/api/admin-mode?sessionId=' + encodeURIComponent(sessionId || 'default'))
+      .then((x) => x.json()).catch(() => null);
+    adminCardOn = Boolean(r && r.on === true);
+  } catch { /* 问不到就沿用缓存（默认开） */ }
+
+  // 面板里可能已经有这颗卡（renderFeatList 被连续调两次时），先摘旧的再画新的
+  const old = list.querySelector('[data-admin-card]');
+  if (old) old.remove();
+
+  const card = document.createElement('div');
+  card.className = 'featRow';
+  card.dataset.adminCard = '1';
+  const main = document.createElement('div');
+  main.className = 'featMain';
+  const ico = document.createElement('div');
+  ico.className = 'featIco t-red';
+  ico.textContent = '管';
+  const text = document.createElement('div');
+  text.className = 'featText';
+  const name = document.createElement('div');
+  name.className = 'featName';
+  const nm = document.createElement('span');
+  nm.textContent = '管理员权限';
+  const badge = document.createElement('span');
+  badge.className = 'badge' + (adminCardOn ? '' : ' off');
+  badge.textContent = adminCardOn ? '默认开' : '已关';
+  name.append(nm, badge);
+  const desc = document.createElement('div');
+  desc.className = 'featDesc';
+  desc.textContent = adminCardOn
+    ? '整台机器随便读写跑命令；改自己的源码/配置、重启、自更、派鱼全部自作主张不再过问。'
+    : '回到工作区里；想要完全自主再点开。';
+  desc.title = '管理员档（默认开启）：整台机器的文件随便读写、随便跑命令；改小鱼自己的源码/配置/人设/功能，'
+    + '重启和自更程序本体（repack -SelfUpdate）、派多条鱼同时干活，全部自己做主做完交代，不再请示。'
+    + '按会话存——关掉只关这一个会话，别的会话照旧默认开。';
+  text.append(name, desc);
+  main.append(ico, text);
+  const sw = document.createElement('button');
+  sw.type = 'button';
+  sw.className = 'switch' + (adminCardOn ? ' on' : '');
+  sw.textContent = adminCardOn ? '点一下关' : '点一下开';
+  sw.onclick = async () => {
+    const want = !adminCardOn;
+    sw.disabled = true;
+    try {
+      const r = await fetch('/api/admin-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, on: want }),
+      }).then((x) => x.json());
+      if (!r || r.error) { toast?.(r?.error || '没存上'); return; }
+      adminCardOn = Boolean(r.on);
+      toast?.(adminCardOn ? '管理员权限：开了（这个会话）。她可以动整台机器和程序本体了。' : '管理员权限：关了（这个会话）。她回到工作区里。');
+      // 就地重画这颗卡（状态字、描述、开关都跟着换）
+      await adminPaintInto(list);
+    } catch (e) {
+      toast?.('没存上：' + (e?.message || e));
+    } finally {
+      sw.disabled = false;
+    }
+  };
+  card.append(main, sw);
+  list.appendChild(card);
 }
 
 /**
@@ -13107,16 +13084,7 @@ async function loadAgentState() {
 }
 
 /** 群聊名单那行：把每张自建卡画成一个能点的圆牌 */
-/**
- * 顶栏那颗「管理员」按钮接上点击。
- *
- * 放在这里（顶栏那一带的初始化旁边）是因为它就在顶栏上；
- * 用 onclick 而不是 addEventListener，跟同一排其它按钮一个写法。
- */
-(function wireAdminBtn() {
-  const btn = document.getElementById('adminBtn');
-  if (btn) btn.addEventListener('click', () => { toggleAdminBtn(); });
-})();
+/* 【2026-11-13 删】顶栏「管理员」按钮的接线随按钮一起删（卡片版在 adminPaintInto 里自己接）。 */
 
 function renderGroupRow() {
   const box = document.getElementById('agGroup');
@@ -16281,6 +16249,8 @@ async function loadFeatures() {
    * 现在把「没读到」也画进列表里，给一颗重试 —— 不许静默。 */
   const ok = featTakeState(r, '没读到功能列表');
   renderFeatList();
+  /* 【2026-11-13 管理员卡】每回画插件面板都现读一次状态（默认开），画在列表最底下 */
+  try { await adminPaintInto(featList); } catch { /* 卡不上不影响列表 */ }
   return ok;
 }
 
@@ -19041,8 +19011,8 @@ function paintTopCfg() {
 async function loadTopCfg() {
   // 顶栏「现在是谁在说话」那块牌跟着会话走，顺手一起刷（失败就当没这块牌）
   try { refreshAgentChip(); } catch { /* 忽略 */ }
-  // 「管理员权限」按会话存 —— 切到别的会话，那块牌子得跟着换
-  try { refreshAdminBtn(); } catch { /* 忽略 */ }
+  // 「管理员权限」默认开、按会话存 —— 插件面板开着的话把卡片刷成新会话的状态
+  try { if (typeof featuresDlg !== 'undefined' && featuresDlg && featuresDlg.open) { const _fl = document.getElementById('featList'); if (_fl) await adminPaintInto(_fl); } } catch { /* 忽略 */ }
   // 左上角那竖列「屋里的人」也是跟着会话走的
   try { refreshWhoRail(); } catch { /* 忽略 */ }
   if (!sessionId) return;

@@ -62,6 +62,18 @@
       --veil: .14;
       /* 输入框底色：比面板再深一点点，跟聊天框那层同一个调子，别用纯白 / 纯黑 */
       --input-bg: rgba(10, 12, 17, .55);
+      /* 【2026-11-13 合并·外观中心】下面 8 个是主题切换的骨架（mac 侧引入的分层变量）。
+       * 默认值 = graphite（石墨）主题 = 我们原来的底色，所以视觉零变化；
+       * 外观中心换主题时 setProperty 改的就是它们。没被现有样式用到的先躺着，无害。 */
+      --panel-2: #0f1319;   /* 比 --panel 深一档：输入框底、代码块、次级面板 */
+      --raise: #1b2129;     /* 比 --panel 亮一档：小按钮 / 芯片底 */
+      --hover: #1d2430;     /* 悬停 / 当前态底 */
+      --scroll: #2c333f;
+      --scroll-hover: #3b4553;
+      /* rgb 分量：开着壁纸/视频背景时面板要半透明，rgba() 写死颜色会跟主题分裂 */
+      --bg-rgb: 0, 0, 0;
+      --panel-rgb: 23, 26, 33;
+      --hover-rgb: 29, 36, 48;
     }
     * { box-sizing: border-box; }
     /* 【2026-11-12 主人钦定·控件亮白框根治（全局兜底）】
@@ -3294,6 +3306,24 @@
        看着就是「开局界面发暗」。这里给视频层垫上同款 #0f1115：
        没出帧时它就是普通暗底，出帧后被画面盖住，一点不碍事。 */
     #bgVideo { z-index: -3; width: 100%; height: 100%; object-fit: cover; background: #0f1115; }
+    /* 【2026-11-13 合并·外观中心】壁纸层：跟视频同档负层级（z-index -3）。
+       同档时后出现的元素盖住前面的 —— xyWall 在 DOM 里排视频前面，所以视频开着时
+       壁纸被画面盖住；选壁纸时 body.wall 把视频藏起来，壁纸露出来，谁也不挡谁。 */
+    #xyWall {
+      position: fixed; inset: 0; z-index: -3; pointer-events: none;
+      background-position: center; background-repeat: no-repeat; background-size: cover;
+    }
+    body.wall #bgVideo { display: none !important; }
+    /* 【2026-11-13 合并·外观中心】body.wall 的透底：跟 body.skin 同一套思路，
+     * 但颜色走 rgb 分量变量 —— 外观中心换主题时透底也跟着主题走，不会分裂成
+     * 「面板换了色、透底还是石墨黑」。 */
+    body.wall {
+      background: transparent;
+      --bg: rgba(var(--bg-rgb), var(--surface, .2));
+      --panel: rgba(var(--panel-rgb), var(--surface, .2));
+    }
+    body.wall .user .bubble { background: rgba(var(--hover-rgb), calc(var(--surface, .2) + .38)); }
+    body.wall details.think { background: rgba(var(--panel-rgb), calc(var(--surface, .2) + .38)); }
     #bgVeil { z-index: -2; background: rgba(0, 0, 0, var(--veil, .14)); }
     #bgTint { z-index: -1; background: rgba(15, 17, 21, var(--surface, .2)); }
     /* 开着背景时 body 的底色让给 #bgTint，面板和输入区跟着半透明，画面才看得见 */
@@ -3752,6 +3782,9 @@
 </head>
 <body>
   <!-- 视频背景的三层（关着时视频不加载、body 不加 skin，这三层都是空的） -->
+  <!-- 【2026-11-13 合并·外观中心】壁纸层：图/纹理走 background-image，z-index 与视频同档。
+       选了壁纸就把视频藏起来（body.wall #bgVideo{display:none}），两层不打架。 -->
+  <div id="xyWall"></div>
   <div id="bgTint"></div>
   <div id="bgVeil"></div>
   <video id="bgVideo" muted loop playsinline preload="none"></video>
@@ -3817,6 +3850,9 @@
     <button id="cronBtn" title="定时任务：跟她说一件事、再说什么时候做，到点她自己去做">定时</button>
     <button id="kbBtn" title="知识库：所有会话共享的书架——架构速览、排查套路、踩坑经验。点开挑一本读；智能体也能用工具翻">知识库</button>
     <button id="openFeatures">功能</button>
+    <!-- 【2026-11-13 合并·外观中心】主题 / 壁纸 / 插件（可插拔 js 插件）——面板由
+         /ui/appearance.js 自己建，这里只放入口按钮。 -->
+    <button id="openAppearance" title="外观：主题、壁纸、插件">外观</button>
     <button id="openSettings">设置</button>
     <button id="openModels" title="模型">模型</button>
     <!-- 【2026-10-31 拆掉清空当前按钮】：主人 2026-10-31 说「严重怀疑就是它把会话/清单清空的」。
@@ -4968,6 +5004,10 @@
   <script type="module" src="/ui/hub.js"></script>
   <script type="module" src="/ui/sessions.js"></script>
   <script type="module" src="/ui/chat.js"></script>
+  <!-- 【2026-11-13 合并·外观中心】主题 / 壁纸 / 插件（可插拔的 js 插件）。
+       自己带 init()，不依赖别的模块；接口挂在 window.xyAppearance 上方便调。
+       放在主脚本前面：顶栏按钮的点击 handler 它自己接。 -->
+  <script type="module" src="/ui/appearance.js"></script>
   <script>
 /**
  * 【2026-11-01 加】脚本出错的兜底提示。

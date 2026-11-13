@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile, open as pvOpen } from 'node:fs/promises';
 import { writeFileSync, createReadStream, statSync, readFileSync as pvReadFileSync, readdirSync, readFileSync as __rotRead, writeFileSync as __rotWrite, mkdirSync as __mkPaste } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, resolve, relative, isAbsolute as isAbsolutePath } from 'node:path';
+import { join, resolve, relative, extname, isAbsolute as isAbsolutePath } from 'node:path';
 import { config } from './config.mjs';
 /* 【2026-11-08 加·整轮空闲看门狗】以前只有「等模型」那层有超时，卡在别处没人管 */
 import { createTurnWatchdog } from './harness/turn-watchdog.mjs';
@@ -222,6 +222,19 @@ import {
   ensureBundledMusic,
   DEFAULTS as SKIN_DEFAULTS,
 } from './skin.mjs';
+/* 【2026-11-13 合并 mac 侧】外观中心：主题 / 壁纸 / 可插拔 js 插件的仓库层。
+ * 独立模块（只吃 config.dataDir），与我们皮肤视频系统互不干扰。 */
+import {
+  pluginsView,
+  togglePlugin,
+  removePlugin,
+  pluginFile,
+  openPluginsDir,
+  importPlugins,
+  createPluginFromCode,
+  getAppearance,
+  setAppearance,
+} from './plugins.mjs';
 import { getTTSState, writeTTS, speak } from './tts.mjs';
 import { runtimeInfo, installRuntime, removeRuntime, readyPythons, readyFfmpeg, ensureVoiceRuntimeInBackground } from './voice-runtime.mjs';
 import { postMail, peekMail, takeMail, formatMail, peerInfo, mailCount } from './peer.mjs';
@@ -7573,6 +7586,86 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
   // ---- 视频背景：状态 / 旋钮 / 片子本身 ----
   if (req.method === 'GET' && url.pathname === '/api/skin') {
     return json(res, 200, getSkinState());
+  }
+
+  // ---- 插件仓库 + 外观设置（2026-11-13 合并 mac 侧）：主题 / 壁纸 / 功能都以 js 插件方式加载 ----
+  {
+    /* 【两条固定路径必须排在 <id> 前面】
+     * 下面那条 /^\/api\/plugins\/([^/]+)$/ 会把 import、open-dir 都当成「id 叫这个的插件」
+     * —— 请求先来先得，「打开插件目录」就会收到一句「没这个插件」（mac 侧实测踩过）。
+     * 所以 import / open-dir 先认，认完才轮到按 id 的开关。 */
+    if (req.method === 'POST' && url.pathname === '/api/plugins/import') {
+      try {
+        const p = await body(req);
+        const out = await importPlugins(p?.files);
+        return json(res, out.ok ? 200 : 400, { ...out, plugins: pluginsView(), appearance: getAppearance() });
+      } catch (err) {
+        return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+    if (req.method === 'POST' && url.pathname === '/api/plugins/open-dir') {
+      const ok = await openPluginsDir();
+      return json(res, 200, { ok });
+    }
+    /* 粘贴代码建插件：body { id, name, type:'feature'|'theme', description?, code }。
+     * 跟 import 一样，回最新的插件清单 + 外观，前端不用再问一次。 */
+    if (req.method === 'POST' && url.pathname === '/api/plugins/create') {
+      try {
+        const p = await body(req);
+        const out = createPluginFromCode(p);
+        return json(res, out.ok ? 200 : 400, out);
+      } catch (err) {
+        return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+    const _pm = url.pathname.match(/^\/api\/plugins\/([^/]+)(\/.*)?$/);
+    if (req.method === 'GET' && url.pathname === '/api/plugins') {
+      return json(res, 200, { ok: true, plugins: pluginsView(), appearance: getAppearance() });
+    }
+    if (req.method === 'POST' && _pm && !_pm[2]) {
+      // POST /api/plugins/<id>  body: { on: true|false } —— 开 / 关一个插件
+      try {
+        const p = await body(req);
+        const out = togglePlugin(decodeURIComponent(_pm[1]), p?.on !== false);
+        if (!out.ok) return json(res, 404, out);
+        return json(res, 200, { ...out, plugins: pluginsView(), appearance: getAppearance() });
+      } catch (err) {
+        return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
+    if (req.method === 'DELETE' && _pm && !_pm[2]) {
+      const out = removePlugin(decodeURIComponent(_pm[1]));
+      return json(res, out.ok ? 200 : 400, { ...out, plugins: pluginsView() });
+    }
+    // 插件静态文件：/plugin-assets/<id>/<文件名>。路径守卫在 pluginFile 里（别跑出插件目录）。
+    const _am = url.pathname.match(/^\/plugin-assets\/([^/]+)\/(.+)$/);
+    if (req.method === 'GET' && _am) {
+      const f = pluginFile(decodeURIComponent(_am[1]), decodeURIComponent(_am[2]));
+      if (!f) return json(res, 404, { error: 'not found' });
+      const _ext = extname(f);
+      const type = _ext === '.js' ? 'text/javascript; charset=utf-8'
+        : _ext === '.css' ? 'text/css; charset=utf-8'
+        : _ext === '.json' ? 'application/json; charset=utf-8'
+        : _ext === '.png' ? 'image/png'
+        : _ext === '.jpg' || _ext === '.jpeg' ? 'image/jpeg'
+        : _ext === '.webp' ? 'image/webp'
+        : _ext === '.gif' ? 'image/gif'
+        : _ext === '.svg' ? 'image/svg+xml'
+        : _ext === '.mp4' ? 'video/mp4'
+        : _ext === '.webm' ? 'video/webm'
+        : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+      res.end(__rotRead(f));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/appearance') {
+      try {
+        const p = await body(req);
+        return json(res, 200, { ok: true, appearance: setAppearance(p) });
+      } catch (err) {
+        return json(res, 500, { ok: false, error: String(err?.message ?? err) });
+      }
+    }
   }
 
   if (req.method === 'POST' && url.pathname === '/api/skin') {

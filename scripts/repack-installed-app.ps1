@@ -6,10 +6,13 @@
 #
 # 用法：  powershell -File scripts\repack-installed-app.ps1
 #         powershell -File scripts\repack-installed-app.ps1 -InstallDir "D:\某个目录"
-#
-# 路径都不写死：安装目录按 %LOCALAPPDATA% 推，node 用当前跑着的那个。
+#         powershell -File scripts\repack-installed-app.ps1 -SelfUpdate
+#           ↑【2026-11-13 管理员档专属】主人开了管理员权限时，智能体自己更新程序本体用。
+#             跳过父链自检（她就是故意的），流程不变：杀应用 → 换包 → 自动拉回来；
+#             她这一轮会被硬杀一次，重启后由开机自续接回（半截话也能显示）。
 param(
-  [string]$InstallDir = ''
+  [string]$InstallDir = '',
+  [switch]$SelfUpdate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,9 +62,13 @@ try {
     $cur = Get-CimInstance Win32_Process -Filter "ProcessId = $pp" -ErrorAction SilentlyContinue
   }
 } catch {}
-if ($probe) {
+if ($probe -and -not $SelfUpdate) {
   throw ('这个脚本正在被小鱼Agent自己拉起（祖先进程：' + $probe + '），跑下去会把它自己杀掉。'
-    + '请在**外部**终端（PowerShell/cmd）里运行这条命令 —— 替换完它会自动把应用拉回来。')
+    + '请在**外部**终端（PowerShell/cmd）里运行这条命令 —— 替换完它会自动把应用拉回来。'
+    + '（管理员档下可以用 -SelfUpdate 参数：她就是在自更程序本体，杀掉后自动拉回、轮子自动接回。）')
+}
+if ($SelfUpdate) {
+  Write-Host '【SelfUpdate】管理员档自更：跳过父链自检，跑完自动把应用拉回来。'
 }
 
 # 1) 先停掉正在运行的安装版，否则 asar 被映射着替换不掉

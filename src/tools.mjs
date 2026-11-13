@@ -970,7 +970,27 @@ export const tools = [
           if (/process\.exit|app\.exit|\$pid\s*\)\s*\{\s*stop-process/i.test(raw) && /8788|8780|8781/.test(raw)) { hit = label + '（按端口）'; break; }
         }
         if (hit) {
-          const head = /repack-installed-app/i.test(hit) || /repack/i.test(raw)
+          /* 【2026-11-13 管理员档·程序本体自更放行】主人钦点：管理员权限下智能体要能
+           * 完美掌控小鱼Agent这个程序。repack-installed-app.ps1 加了 -SelfUpdate 参数
+           * （跳过父链自检），流程是「杀应用 → 换包 → 自动拉回来」，这一轮会被硬杀一次、
+           * 重启后由开机自续接回（半截话也能显示，见 _t_restart_dup_screen）。
+           * 所以管理员档下 repack 不再拦，改给 -SelfUpdate 的正确用法；
+           * 其它自杀命令（裸 taskkill 自己）照旧拦 —— 那不是掌控，是自杀，重启请走 restart_self。 */
+          const _admin = CTX.adminMode === true;
+          const _isRepack = /repack-installed-app/i.test(hit) || /repack/i.test(raw);
+          if (_admin && _isRepack) {
+            return [
+              '【管理员档 · 程序本体自更】可以跑，用这个姿势：',
+              '',
+              '  powershell -File scripts\\repack-installed-app.ps1 -SelfUpdate',
+              '',
+              '流程：先把当前这轮的状态说清楚（主人回来要能看懂改了什么）→ 跑上面这条。',
+              '它会杀掉应用（包括你自己这一轮）→ 换包 → 自动把应用拉回来；',
+              '你被打断的这轮由开机自续接上，之前说过的话主人屏幕上还看得到。',
+              '注意：-SelfUpdate 之外不要去掉参数直接跑，父链自检会把命令拒掉。',
+            ].join('\n');
+          }
+          const head = _isRepack
             ? [
                 '这条命令（repack-installed-app.ps1）不能从小鱼里面跑。',
                 '',
@@ -982,6 +1002,7 @@ export const tools = [
                 '      powershell -File scripts\\repack-installed-app.ps1',
                 '    它替换完 asar 会自己把应用拉回来。',
                 '  · 或者把要打包的改动先落盘，让主人手动重启后再安排。',
+                '  · 【管理员档】这个会话开了管理员权限的话，可以直接带 -SelfUpdate 跑（自更专用）。',
               ]
             : [
                 '这条路是堵死的：不能用命令去杀小鱼Agent自己。',
@@ -1160,7 +1181,8 @@ export const tools = [
       '重启小鱼自己（把程序关掉再拉起来）。改完代码要生效、界面卡住、服务端不听话的时候用。' +
       '重启前会等最多几秒把这一轮的话落盘。用完就别再指望这一轮还能继续跑工具了。' +
       '【有别的会话在跑时会被挡住】那时服务端会让你「先问主人」，你要真的去问，' +
-      '不要自己替他决定；主人说现在重启，再带 force:true 调一次。',
+      '不要自己替他决定；主人说现在重启，再带 force:true 调一次。' +
+      '【管理员档例外】这个会话开着管理员权限时不用问——409 会自动带 force 重试，别的轮由接回兜底。',
     parameters: {
       type: 'object',
       properties: {
@@ -1215,6 +1237,21 @@ export const tools = [
           /* 【2026-11-07】有别 的会话在跑 —— 这是「拦一道、让你去问主人」，不是失败。
            * 用 ok:false 是为了让它看起来像「这件事没做成」，模型才会去说话而不是当成功。 */
           if (r.status === 409) {
+            /* 【2026-11-13 管理员档】别的会话在跑时不再「先问主人」——主人钦点管理员档下
+             * 一切不过问。直接带 force 重试一次（别的轮被安全掐断、各自有接回兜底）。 */
+            if (CTX.adminMode === true) {
+              try {
+                const r2 = await fetch('http://127.0.0.1:' + port + '/api/app/restart', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ reason: String(reason || '') + '（管理员档自动 force）', byTool: true, sessionId: currentSessionId(), force: true }),
+                });
+                const j2 = await r2.json().catch(() => null);
+                if (r2.ok && j2 && j2.ok) {
+                  return '好，正在重启（管理员档：没问，直接打断别的轮接回；' + (reason ? '原因：' + reason : '没写原因') + '）。过几秒窗口会重新立起来。';
+                }
+              } catch { /* 落到下面的通用失败话术 */ }
+            }
             return {
               ok: false,
               output: (j && j.error)
@@ -2283,7 +2320,9 @@ export const tools = [
       const sid = ctxNow().sessionId || 'default';
       /* 【2026-11-11 换闸】办事模式整档删除（taskOn 已钉死 false），
        * 派活的闸换成【团队模式】的按会话开关。 */
-      if (!teamOn(sid)) {
+      /* 【2026-11-13 管理员档】主人钦点「完全自主」：管理员档下派鱼不看团队模式开关——
+       * 开关是给平时省钱的，管理员档的语义就是「别拿开关绊她」。 */
+      if (!teamOn(sid) && CTX.adminMode !== true) {
         return 'ERROR：【团队模式】现在是关着的，派不了活。要用就在功能页里打开「团队模式」；这件活现在你自己动手做。';
       }
       const body = String(task || '').trim();
@@ -2432,7 +2471,8 @@ export const tools = [
     async run({ tasks, maxRounds, background }) {
       const sid = ctxNow().sessionId || 'default';
       /* 【2026-11-11 换闸】同 spawn_worker：闸换成【团队模式】的按会话开关。 */
-      if (!teamOn(sid)) {
+      /* 【2026-11-13 管理员档】同上：管理员档下不看团队模式开关。 */
+      if (!teamOn(sid) && CTX.adminMode !== true) {
         return 'ERROR：【团队模式】现在是关着的，派不了活。要用就在功能页里打开「团队模式」；这些活现在你自己动手做。';
       }
       const list = (Array.isArray(tasks) ? tasks : []).filter((t) => t && String(t.task || '').trim());

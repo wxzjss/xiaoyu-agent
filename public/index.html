@@ -22078,18 +22078,23 @@ loadModels().catch(() => {});
  * 现在 bootSessions 落位后对当前会话跑一次巡检：服务端在跑 →
  * 「正在发送消息」和按钮状态立刻回来（续跑轮收尾照旧接上那条路）。 */
 try {
-  booted.then(() => {
-    let _bootRecheckTries = 0;
-    const _bootRecheck = () => {
-      _bootRecheckTries++;
-      try {
-        if (typeof sessionId !== 'undefined' && sessionId) { scheduleSendingRecheck(sessionId); return; }
-      } catch (e) {}
-      // sessionId 还没落位（会话恢复是异步的）：最多再等 6 次 × 800ms，落位即巡检
-      if (_bootRecheckTries < 6) setTimeout(_bootRecheck, 800);
-    };
-    setTimeout(_bootRecheck, 800);   // 留一点给首屏渲染、会话列表落位的时间
-  }).catch(() => {});
+  /* 【2026-11-13 大改·主人报「续上后当前这轮她说的所有内容被吞」（端到端采样实锤）】
+   * 原来只等 booted（等会话列表，本身要两三秒）再 +800ms，且 sessionId 没落位
+   * 只重试 6 次 × 800ms —— 开机自续在 **+8 秒**才起跑，页面加载快的话整扇
+   * 巡检窗口（约 4.8 秒）在续跑起跑前就关了：续跑轮全程无人跟播，
+   * 她说的每个字都上不了屏 = 「当前这轮的内容被吞」。
+   * 现在：不等 booted，脚本落位就开始问；40 次 × 500ms = 20 秒窗口，
+   * 稳稳盖住 +8s 的续跑起跑点；sessionId 落位即挂 scheduleSendingRecheck
+   * （它自己在跑时会 2 秒一拍接着盯，跟播由 attachLive 接上）。 */
+  let _bootRecheckTries = 0;
+  const _bootRecheck = () => {
+    _bootRecheckTries++;
+    try {
+      if (typeof sessionId !== 'undefined' && sessionId) { scheduleSendingRecheck(sessionId); return; }
+    } catch (e) {}
+    if (_bootRecheckTries < 40) setTimeout(_bootRecheck, 500);   // sessionId 落位（会话恢复是异步的）即巡检
+  };
+  _bootRecheck();
 } catch {}
 
 /* 【2026-11-11 加·颜色表预热】主人报「重启后历史里小鲸的名字是白的」。

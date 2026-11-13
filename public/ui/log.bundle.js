@@ -7756,8 +7756,14 @@
   function trimTurnsForLive(turns, opts = {}) {
     if (!Array.isArray(turns) || !turns.length) return turns;
     if (opts && opts.hasPending && !opts.pendingLanded) return turns;
+    const _startedAt = Number(opts && opts.startedAt) || 0;
     for (let i = turns.length - 1; i >= 0; i--) {
-      if (turns[i] && turns[i].role === "user") return turns.slice(0, i + 1);
+      const _t = turns[i];
+      if (_t && _t.role === "user") return turns.slice(0, i + 1);
+      if (_t && _t.role === "assistant" && _startedAt > 0) {
+        const _ts = Number(_t.ts) || 0;
+        if (_ts > 0 && _ts < _startedAt) return turns.slice(0, i + 1);
+      }
     }
     for (let i = turns.length - 1; i >= 0; i--) {
       if (turns[i] && turns[i].role === "assistant") return turns.slice(0, i).concat(turns.slice(i + 1));
@@ -8091,7 +8097,7 @@
         return false;
       }
     })();
-    const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded }) : snap.turns;
+    const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded, startedAt: snap.live && Number(snap.live.startedAt) || 0 }) : snap.turns;
     const sid = snap.sid;
     let start = Number(getWindowStart(sid)) || 0;
     if (!isWindowTouched(sid)) start = Math.max(0, all.length - WINDOW);

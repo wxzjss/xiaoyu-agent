@@ -63,8 +63,26 @@ export function trimTurnsForLive(turns, opts = {}) {
    * 就得照原规则裁掉，让 live 那份接管，不能两边都留。
    */
   if (opts && opts.hasPending && !opts.pendingLanded) return turns;
+  /* 【2026-11-13 修·主人报「续上后当前这轮她说的所有内容被吞」（端到端采样实锤）】
+   * 原来跑动时把历史从最后一条 user 之后**整段裁掉**——那是给「当场发消息」的
+   * 流式轮设计的：正文边流边落盘，历史里那份跟直播重复，裁掉防双份。
+   * 可续跑轮（重启后续上）的直播**只有新内容**——被打断那轮已提交的正文和
+   * 工具卡在直播里根本没有，一裁主人看着就是「当前这轮她说的所有内容被吞」
+   * （_t_restart_dup_screen 采样：接上一瞬间屏幕从 3 条塌到 1 条，只剩消息A）。
+   *
+   * 现在按「属于本轮」裁：opts.startedAt = 直播开始时刻。倒着扫，碰到
+   * **早于直播开工的 assistant**（ts < startedAt，重启前已提交的那半截）就停——
+   * 它和它之前的历史照常画，直播只管接后面的新内容；ts >= startedAt 的
+   * （本轮边流边提交的段落）照旧裁——直播里有同款，裁掉防双份。
+   * ts 缺失（0）的照旧裁（老行为，万一 live 真带着它也不至于画两遍）。 */
+  const _startedAt = Number(opts && opts.startedAt) || 0;
   for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i] && turns[i].role === 'user') return turns.slice(0, i + 1);
+    const _t = turns[i];
+    if (_t && _t.role === 'user') return turns.slice(0, i + 1);
+    if (_t && _t.role === 'assistant' && _startedAt > 0) {
+      const _ts = Number(_t.ts) || 0;
+      if (_ts > 0 && _ts < _startedAt) return turns.slice(0, i + 1);   // 本轮开工前的历史：一个字都不裁
+    }
   }
   for (let i = turns.length - 1; i >= 0; i--) {
     if (turns[i] && turns[i].role === 'assistant') return turns.slice(0, i).concat(turns.slice(i + 1));
@@ -640,7 +658,7 @@ export function buildMerged(snap) {
       });
     } catch { return false; }
   })();
-  const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded }) : snap.turns;
+  const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded, startedAt: (snap.live && Number(snap.live.startedAt)) || 0 }) : snap.turns;
   const sid = snap.sid;
 
   /* 窗口：只画最近 WINDOW 轮（长会话一次性建上万个节点会把主线程顶住） */

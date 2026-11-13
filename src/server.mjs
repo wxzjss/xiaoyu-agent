@@ -4082,7 +4082,11 @@ function restoreDraftHalfTurn(id) {
       if (alreadyCollected(session.messages, { role: 'assistant', content: body })) {
         dropDraft(id);
       } else {
-        session.messages.push({ role: 'assistant', content: body, _recovered: true });
+        /* 【2026-11-13 补·接回消息带 at】前端 trimTurnsForLive 现在按
+         * 「ts < 直播开工时刻」保住重启前已提交的历史——接回这条必须有
+         * 时间戳才判得了，不然 ts=0 会被当成「本轮的」裁掉（续跑轮直播
+         * 里没有它 → 屏幕上它就消失了）。 */
+        session.messages.push({ role: 'assistant', content: body, at: Date.now(), _recovered: true });
         session.updatedAt = Date.now();
         saveSession(session);
         recovered = true;

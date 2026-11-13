@@ -73,9 +73,9 @@ ok('顶栏有【知识库】按钮（在【功能】左边）',
 ok('全屏书架 overlay（不是小弹窗）',
   /<div id="kbOverlay" hidden>/.test(html) && /#kbOverlay \{\s*\n\s*position: fixed; inset: 0;/.test(html));
 ok('书架样式：shelf 木板 + 书（kbBook）',
-  /\.kbShelf::after/.test(html) && /\.kbBook \{/.test(html));
+  /\.kbShelf \{/.test(html) && /\.kbBook \{/.test(html));
 ok('书=卡的 UI 外观（封面色按 id hash + hover 抬起）',
-  /function bookColor\(id\)/.test(html) && /translateY\(-10px\) rotate\(0deg\)/.test(html));
+  /function bookColor\(id\)/.test(html) && /\.kbBook:hover \{[^}]*translateY\(-6px\)/.test(html));
 ok('三入口齐：创建/导入/导出',
   /id="kbCreate"/.test(html) && /id="kbImport"/.test(html) && /id="kbExport"/.test(html));
 ok('创建界面三件套：标题/作者名/知识内容',

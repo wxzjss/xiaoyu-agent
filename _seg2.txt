@@ -1,0 +1,40 @@
+﻿    for (let i = 0; i < 60; i++) {
+      const m = /running:\s*http:\/\/127\.0\.0\.1:(\d+)/.exec(boot);
+      if (m) {
+        const tryBase = 'http://127.0.0.1:' + m[1];
+        try { if ((await fetch(tryBase + '/api/health')).ok) { base = tryBase; break; } } catch {}
+      }
+      await sleep(300);
+    }
+    if (!base) throw new Error('隔离实例没起来：' + boot.split('\n').slice(-6).join(' | ').slice(0, 240));
+
+    /* 浏览器打开的是隔离实例，不是主人窗口 */
+    const edge = spawn(EDGE, [
+      '--headless=new', '--disable-gpu', '--no-first-run',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--remote-debugging-port=' + cdpPort,
+      '--user-data-dir=' + profile,
+      base,
+    ], { stdio: 'ignore', windowsHide: true });
+
+    /* 等 CDP 里真出现这个页面；连不上就失败，不许偷偷用旧窗口 */
+    let pageOk = false;
+    for (let i = 0; i < 50; i++) {
+      try {
+        const list = await fetch('http://127.0.0.1:' + cdpPort + '/json/list').then((r) => r.json());
+        if (list.some((t) => t.type === 'page' && String(t.url || '').startsWith(base))) { pageOk = true; break; }
+      } catch {}
+      await sleep(300);
+    }
+    if (!pageOk) throw new Error('调试浏览器没打开隔离页面（' + base + '）');
+
+    const env = {
+      ...process.env,
+      BASE: base,                       // detectBase() 优先读它，所有检查自动指向隔离实例
+      XY_CDP_PORT: String(cdpPort),
+      XY_TEST_DATA: dataDir,            // sweep() 只清这个目录里的垃圾
+      XY_REQUIRE_ISOLATED: '1',         // detectBase() 的保险：没 BASE 就抛错
+      MINI_AGENT_DATA: dataDir,
+    };

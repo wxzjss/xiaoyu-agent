@@ -31,19 +31,20 @@ t.ok('兜底会避开面板和别的输入框', /dialog\[open\][\s\S]{0,400}tag 
 // ── 真机 ─────────────────────────────────────────────────────────
 let cdp = null;
 try {
-  const { connect } = await import('../_t_cdp.mjs');
-  cdp = await connect({ port: Number(process.env.XY_CDP_PORT || 9223) });
-} catch { cdp = null; }
+  const { connect } = await import('./_cdp-connect.mjs');
+  const _port = Number(process.env.XY_CDP_PORT || 0);
+  if (!_port) throw new Error('没有 XY_CDP_PORT（不是隔离实例）—— 真机格跳过，绝不连 9223 主人的浏览器');
+  cdp = await connect({ port: _port, match: process.env.BASE || '127.0.0.1' });
+} catch (e) { cdp = null; console.log("\n真机格：连不上（" + (e && e.message) + "）"); }
 
 if (!cdp) {
-  console.log('\n真机格：SKIP（没连上 9223 的调试浏览器，源码断言已全过）');
+  console.log('\n真机格：SKIP（没有隔离实例给的 XY_CDP_PORT，源码断言已全过）');
 } else {
-  /* 先刷新：运行版 index.html 可能刚同步过，页面里还是旧代码 —— 不刷新等于验了个假的。 */
-  try {
-    await cdp.send('Page.enable');
-    await cdp.send('Page.reload', { ignoreCache: true });
-    await new Promise((r) => setTimeout(r, 14000));
-  } catch { console.log('（刷新失败，按当前页面验）'); }
+  /* 【2026-11-13 改】原来无条件 Page.reload + 硬等 14 秒。
+   * 隔离实例是全新起的，页面本来就是最新代码，reload 纯属多余；
+   * 而且 reload 会销毁执行上下文，紧接着的 eval 直接抛「navigated or closed」，
+   * 整条真机格全灭。改成：只等一下页面就绪，不 reload。 */
+  await new Promise((r) => setTimeout(r, 1200));
   const r = await cdp.eval(`
       const out = {};
       const inp = document.getElementById('input');
@@ -55,13 +56,11 @@ if (!cdp) {
       };
       let calls = 0;
       const realSend = window.send;
-      const realBusy = busy;
-      const realAtts = attachments.slice();
+      const realAtts = window.attachments.slice();
       try {
         window.send = () => { calls += 1; };
-        busy = false;
-        attachments.length = 0;
-        attachments.push({ path: 'D:/x/a.png', name: 'a.png', kind: 'image' });
+        window.attachments.length = 0;
+        window.attachments.push({ path: 'D:/x/a.png', name: 'a.png', kind: 'image' });
         inp.value = '';
         inp.focus();
 
@@ -69,10 +68,10 @@ if (!cdp) {
         calls = 0; inp.dispatchEvent(mk({}));                  out.enterPlain = calls;
         calls = 0; inp.dispatchEvent(mk({ composing: true })); out.enterComposing = calls;
 
-        attachments.length = 0;
+        window.attachments.length = 0;
         calls = 0; inp.dispatchEvent(mk({}));                  out.enterNoAttach = calls;
 
-        attachments.push({ path: 'D:/x/b.png', name: 'b.png', kind: 'image' });
+        window.attachments.push({ path: 'D:/x/b.png', name: 'b.png', kind: 'image' });
         inp.value = 'ni';
         calls = 0; inp.dispatchEvent(mk({ composing: true }));  out.composingWithText = calls;
 
@@ -87,9 +86,8 @@ if (!cdp) {
         d.remove();
       } catch (e) { out.err = String(e); }
       window.send = realSend;
-      busy = realBusy;
-      attachments.length = 0;
-      for (const a of realAtts) attachments.push(a);
+      window.attachments.length = 0;
+      for (const a of realAtts) window.attachments.push(a);
       try { inp.value = ''; } catch {}
       return out;
   `);

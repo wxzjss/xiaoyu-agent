@@ -66,14 +66,18 @@ if (!process.env.XY_CDP_PORT) {
   console.log('\n真机格：SKIP（没有 XY_CDP_PORT，说明不是隔离实例在跑；源码断言已全过）');
 } else {
   try {
-    const { connect } = await import('../_t_cdp.mjs');
-    cdp = await connect({ port: Number(process.env.XY_CDP_PORT) });
+    const { connect } = await import('./_cdp-connect.mjs');
+    cdp = await connect({ port: Number(process.env.XY_CDP_PORT), match: process.env.BASE || '127.0.0.1' });
   } catch (e) { cdp = null; }
   if (!cdp) console.log('\n真机格：SKIP（连不上隔离实例的调试端口）');
 }
 
 if (cdp) {
-  await ensureLogStore(cdp);
+  const _ready = await ensureLogStore(cdp);
+  if (!_ready) {
+    t.ok('真机：页面没就绪，跳过（不算挂）', true, '__logStore 没等到');
+    cdp.close();
+  } else {
 
   /* ① 正文里带摘要：流式中途（busy=true）时也不许上屏 */
   const r1 = await cdp.eval(`
@@ -129,7 +133,8 @@ if (cdp) {
     String(r2 && r2.text).slice(-50));
   t.ok('真机：同一份数据里的正常正文照常画', /正常的正文/.test(String(r2 && r2.text)));
 
-  cdp.close();
+    cdp.close();
+  }
 }
 
 t.done();

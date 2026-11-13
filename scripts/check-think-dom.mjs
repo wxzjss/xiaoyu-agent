@@ -10,7 +10,7 @@
  */
 let connect = null;
 try {
-  ({ connect } = await import('../_t_cdp.mjs'));
+  ({ connect } = await import('./_cdp-connect.mjs'));
 } catch (e) {
   connect = null;
 }

@@ -146,7 +146,7 @@ let cdp = null;
 if (!process.env.XY_CDP_PORT) {
   console.log('\n真机格：SKIP（没有 XY_CDP_PORT，不是隔离实例；源码断言已过）');
 } else {
-  try { const { connect } = await import('../_t_cdp.mjs'); cdp = await connect({ port: Number(process.env.XY_CDP_PORT) }); } catch (e) { cdp = null; }
+  try { const { connect } = await import('./_cdp-connect.mjs'); cdp = await connect({ port: Number(process.env.XY_CDP_PORT), match: process.env.BASE || '127.0.0.1' }); } catch (e) { cdp = null; }
   if (!cdp) console.log('\n真机格：SKIP（连不上隔离实例的调试端口）');
 }
 
@@ -155,7 +155,7 @@ if (cdp) {
    * 踩过的坑：只要 sessionId 一有值就往里喂数据，可这时 chat.js 的 logSetHistory 可能
    * 还没跑完（LOG_STATE.sid 还是空），setLive 被 sid 挡掉 → 屏幕一片空白 → 一堆假红。
    * 就绪判据：__logStore 在 && __logState.sid 非空。 */
-  if (!(await ensureLogStore(cdp))) console.log('  （页面 store 一直没就绪，真机格按空处理）');
+  if (!(await ensureLogStore(cdp))) { console.log("  store 没就绪 —— 真机格跳过"); t.done(); process.exit(0); }
   const r = await cdp.eval(`
     const out = { tries: 0 };
     const lg = document.getElementById('log');

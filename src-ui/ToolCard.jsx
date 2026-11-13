@@ -7,12 +7,15 @@ import ThinkBlock from './ThinkBlock.jsx';
 function statusText(s) {
   if (s === 'ok') return '完成';
   if (s === 'err') return '失败';
+  /* 【2026-11-14】历史里被掐断的命令：不再谎报「运行中…」 */
+  if (s === 'stopped') return '中断';
   return '运行中…';
 }
 
 function statusClass(s) {
   if (s === 'ok') return 'status ok';
   if (s === 'err') return 'status err';
+  if (s === 'stopped') return 'status stopped';
   return 'status warn';
 }
 

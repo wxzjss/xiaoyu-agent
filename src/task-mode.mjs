@@ -28,6 +28,7 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync, statSync, rmSync } from 'node:fs';
 import { join, dirname, resolve, basename } from 'node:path';
 import { config } from './config.mjs';
+import { enforceZhWorkerName } from './name-zh.mjs';
 import { featureOnFor } from './features.mjs';
 
 /** 界面上显示的名字。改文案只改这里。 */
@@ -482,7 +483,8 @@ export function workersSnapshot(sessionId) {
     if (!steps.length && st !== 'running') continue;
     out.push({
       id: String(w.id),
-      name: String(w.name || ('worker-' + w.id)),
+      /* 【2026-11-13 主人钦点】名字必须是中文，老数据里可能是 worker-xxx */
+      name: enforceZhWorkerName(w.name, '工').name,
       status,
       /* 【2026-11-11 团队模式】卡片要显示「跑了多久」「几轮几次工具」，没有时间算不了 */
       startedAt: Number(w.startedAt) || 0,

@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { startIsolated } from './_test-instance.mjs';
-import { connect } from '../_t_cdp.mjs';
+import { connect } from './_cdp-connect.mjs';
 import { makeChecker } from './_harness_util.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

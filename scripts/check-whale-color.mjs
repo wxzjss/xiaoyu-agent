@@ -18,7 +18,7 @@
  */
 import { copyFileSync, mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { connect } from '../_t_cdp.mjs';
+import { connect } from './_cdp-connect.mjs';
 import { startIsolated } from './_test-instance.mjs';
 
 const SID = process.env.XY_WHALE_SID || 'smwa2p0lqyxjo';

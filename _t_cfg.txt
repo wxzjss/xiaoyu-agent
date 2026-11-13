@@ -1,0 +1,3 @@
+dataDir default = C:\Users\35453\AppData\Roaming\小鱼Agent\data
+after set env, cached config.dataDir = C:\Users\35453\AppData\Roaming\小鱼Agent\data
+fresh import dataDir = C:\tmp\xy-fake

@@ -55,6 +55,9 @@ const EDGE = (() => {
 })();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 【2026-11-15 加】测试隔离绝不许带出去的东西：凭据、账号、记忆、断点。 */
+const SENSITIVE_RE = /qq|onebot|napcat|bot|token|secret|cred|passwd|password|apikey|api[-_]?key|admin[-_]?mode|license|account|cookie|resume|my-memory|whale-on|deepseek|github|^\./i;
+
 /** 只带配置、不带任何会话：主人的聊天记录一个字节都不进临时目录 */
 function seedConfig(dst) {
   const srcState = join(USER_DATA, '.state');
@@ -67,6 +70,11 @@ function seedConfig(dst) {
   for (const name of readdirSync(srcState)) {
     if (name === 'sessions') continue;                 // 会话：绝不复制
     if (/\.bak|backup|orphan/i.test(name)) continue;   // 备份/垃圾：不带
+    /* 【2026-11-15 修】以前这里只挡 sessions，结果 qq.json（机器人凭据）、
+       resume.json（主人断点）、github-token.txt、my-memory.md、admin-mode.json
+       全被拷进临时目录 —— 隔离实例会真的连上主人的 QQ 机器人、读到主人断点。
+       测试只要配置，绝不需要任何凭据/账号/记忆。 */
+    if (SENSITIVE_RE.test(name)) continue;             // 凭据/账号/记忆：绝不带
     const p = join(srcState, name);
     try {
       if (!statSync(p).isFile()) continue;             // 只复制散装配置文件
@@ -83,6 +91,7 @@ function seedConfig(dst) {
       if (!statSync(p).isFile()) continue;
       if (statSync(p).size > 4 * 1024 * 1024) continue;
       if (/\.bak|backup/i.test(name)) continue;
+      if (SENSITIVE_RE.test(name)) continue;           // 凭据/账号/记忆：绝不带
       copyFileSync(p, join(dst, name));
       n++;
     }

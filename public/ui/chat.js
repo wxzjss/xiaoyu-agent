@@ -407,7 +407,13 @@ export function replayInFlight(id) {
 export function renderTurns(turns, opts) {
   void opts;
   const sid = (typeof window.sessionId !== 'undefined' && window.sessionId) ? window.sessionId : LOG_STATE.sid;
-  logSetHistory(sid, turns);
+  /* 【2026-11-13 修·主人报「检查鱼发消息后以前的历史全消失了」】
+   * 上游 408 / 断流收尾那一拍，服务端可能回一份空 turns。这里原来无条件
+   * logSetHistory(sid, []) —— 直接把 store 的历史清成空，屏上只剩乐观气泡；
+   * 等下一拍全量回来才「恢复」，主人看到的就是「消失 → 中断又恢复」。
+   * 跟 finishTurn 那段同款规矩：空数组一律不换屏，宁可用旧屏也不用空屏。
+   * 真要清屏的（新建会话）调用方在 20545 已经显式清过一次了，不靠这里。 */
+  if (Array.isArray(turns) && turns.length) logSetHistory(sid, turns);
   renderLog({ force: true });
 }
 
@@ -570,7 +576,8 @@ export async function switchSession(id, opts) {
   // 专业模式也按会话：切过去要重读，不然按钮还亮着上一个会话的状态
   // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
   try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
-  window.loadTopCfg(); // 左上角那两个框跟着换成本会话的设置
+  /* 【2026-11-13】身份徽标是异步刷的，等它回来，别让上一会话的名字残留一拍 */
+  try { await window.loadTopCfg?.(); } catch (e) { try { window.loadTopCfg?.(); } catch {} } // 左上角那两个框跟着换成本会话的设置
   /* 【2026-11-02 修·切回来自家会话，历史署名全变成上一个会话的人】
    * 病根在顺序：renderTurns 先把 578 条历史画出来，而它给每条气泡配署名时
    * 优先看这条消息自带的名字，老消息没存名字就退回全局 mainAgentName ——

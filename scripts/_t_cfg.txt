@@ -1,0 +1,36 @@
+25|    //
+26|    // 所以：只要 %APPDATA%\小鱼Agent\data\.state 存在（说明这台机器装过/用过），就用它；
+27|    // 否则才用 ROOT。这样仓库里跑的任何脚本看到的都是主人真实的配置。
+28|    (existsSync(join(process.env.APPDATA || '', '小鱼Agent', 'data', '.state'))
+29|      ? join(process.env.APPDATA, '小鱼Agent', 'data')
+30|      : ROOT);
+31|const PACKAGED = DATA !== ROOT;
+32|
+33|/** 打包后默认干活目录放在数据目录下的 workspace，别用 cwd（那可能是 System32） */
+34|const DEFAULT_WORKSPACE = PACKAGED ? join(DATA, 'workspace') : process.cwd();
+35|
+36|/** 应用版本：只从资源根的 package.json 读，界面底部用它显示，省得再写死一份到处漂 */
+37|function readAppVersion() {
+38|  try {
+39|    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+40|    return typeof pkg?.version === 'string' ? pkg.version : '0.0.0';
+41|  } catch {
+42|    return '0.0.0';
+43|  }
+44|}
+45|export const appVersion = readAppVersion();
+46|
+47|function loadEnvFile() {
+48|  // 数据目录里的 .env 优先（打包后用户能改的就是这一个），再退回资源目录
+49|  const file = [join(DATA, '.env'), join(ROOT, '.env')].find((p) => existsSync(p));
+50|  if (!file) return {};
+51|  const out = {};
+52|  for (const raw of readFileSync(file, 'utf8').split(/\r?\n/)) {
+53|    const line = raw.trim();
+54|    if (!line || line.startsWith('#')) continue;
+55|    const eq = line.indexOf('=');
+56|    if (eq < 0) continue;
+57|    const key = line.slice(0, eq).trim();
+58|    let val = line.slice(eq + 1).trim();
+59|    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+60|      val = val.slice(1, -1);

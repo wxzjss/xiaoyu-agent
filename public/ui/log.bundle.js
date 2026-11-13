@@ -7550,7 +7550,9 @@
     if (_wouldShrink) live = Object.assign({}, live, { items: _prevItems });
     if (live && live.running !== false && notes.length) notes = [];
     writeLive(sid, live && Array.isArray(live.items) ? live : null);
-    if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
+    if (!st.live || st.live && st.live.running === false) {
+      pendingUser = dropLandedPending(pendingUser, st.turns);
+    }
     bump();
     return true;
   }
@@ -7808,6 +7810,13 @@
         kind: isMate ? "mate" : "user",
         key,
         text: String(turn.text || ""),
+        /* 【2026-11-13 修·主人报「切换身份说话时前端消息渲染会有问题」】
+         * mate 条目原来只带 text 不带 bubbles —— 而 LogView 把 kind:'mate'
+         * 一律交给 MateBubble，它只认 it.bubbles（数组）→ 身份说话的每一条
+         * 从历史重画时**正文全丢**（气泡里只剩名字、时间、按钮）。
+         * 现在带上 bubbles，跟 say/assistant 条目同一规格。
+         * 【注意】这里只能用 turn.text —— 下面那个 const text 在这之后才声明，提前用会 TDZ 炸。 */
+        bubbles: hasText(turn.text) ? [String(turn.text || "")] : [],
         atts: Array.isArray(turn.atts) ? turn.atts.filter((a) => a && a.path) : [],
         who,
         tag: _steer ? "\u63D2\u8BDD" : "",
@@ -7880,7 +7889,10 @@
         id: String(t.id || ""),
         name: String(t.name || ""),
         args: t.args,
-        status: t.ok === null || t.ok === void 0 ? "run" : t.ok ? "ok" : "err",
+        /* 【2026-11-14 主人报「界面显示跑回归运行中」】历史里 ok=null 意思是「这条命令
+         * 当时没跑完就被掐了」（重启/中断）。原来直接标成 'run' → 卡片永远显示「运行中…」，
+         * 可那一轮早结束了。现在标 'stopped'（中断），由 ToolCard 显示成「中断」。 */
+        status: t.ok === null || t.ok === void 0 ? "stopped" : t.ok ? "ok" : "err",
         output: String(t.output || "")
       });
     }
@@ -8102,6 +8114,18 @@
     let start = Number(getWindowStart(sid)) || 0;
     if (!isWindowTouched(sid)) start = Math.max(0, all.length - WINDOW);
     start = Math.max(0, Math.min(start, all.length));
+    if (!isWindowTouched(sid)) {
+      let _hubs = 0;
+      let _i = all.length - 1;
+      for (; _i >= 0; _i--) {
+        const _cur = all[_i];
+        const _next = all[_i + 1];
+        if (_cur && _cur.role === "assistant" && (!_next || _next.role !== "assistant")) _hubs += 1;
+        if (_hubs > 8) break;
+        if (all.length - _i >= 160) break;
+      }
+      start = Math.max(0, Math.min(start, _i < 0 ? 0 : _i));
+    }
     const items = [];
     let lastUserChars = 0;
     let wantUsageRow = false;
@@ -8129,10 +8153,14 @@
         items.push(it);
       }
     }
-    const pend = (snap.pendingUser || []).map((p) => ({
+    const _liveEnded = !!(snap.live && snap.live.running === false);
+    const pend = _liveEnded || _pendingLanded ? [] : (snap.pendingUser || []).map((p) => ({
       kind: p.who && p.who !== "\u4E3B\u4EBA" ? "mate" : "user",
       key: p.id.indexOf("p") === 0 ? "p-" + p.id.slice(1) : "p-" + p.id,
       text: p.text,
+      /* 【2026-11-13 同修】乐观气泡那条 mate 也缺 bubbles——切身份当场发的那句
+       * 同样只剩名字没正文。 */
+      bubbles: hasText(p.text) ? [String(p.text || "")] : [],
       atts: p.atts,
       who: p.who,
       tag: p.tag,
@@ -8677,7 +8705,7 @@
   function MateBubble({ it, ask }) {
     const wrap = (0, import_react5.useRef)(null);
     const who = String(it.who || "\u5C0F\u9CB8");
-    const bubbles = Array.isArray(it.bubbles) ? it.bubbles : [];
+    const bubbles = Array.isArray(it.bubbles) && it.bubbles.length ? it.bubbles : String(it.text || "").trim() ? [String(it.text || "")] : [];
     (0, import_react5.useEffect)(() => {
       const w = wrap.current;
       if (!w) return;
@@ -9231,11 +9259,13 @@
   function statusText(s) {
     if (s === "ok") return "\u5B8C\u6210";
     if (s === "err") return "\u5931\u8D25";
+    if (s === "stopped") return "\u4E2D\u65AD";
     return "\u8FD0\u884C\u4E2D\u2026";
   }
   function statusClass(s) {
     if (s === "ok") return "status ok";
     if (s === "err") return "status err";
+    if (s === "stopped") return "status stopped";
     return "status warn";
   }
   var SPIN = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];

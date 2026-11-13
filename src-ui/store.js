@@ -450,7 +450,13 @@ export function setLive(sid, live) {
    * 只是「你回来时交代一句」，不是常驻横幅。主人发话也一样收（见 pushPendingUser）。 */
   if (live && live.running !== false && notes.length) notes = [];
   writeLive(sid, live && Array.isArray(live.items) ? live : null);
-  if (!st.live) pendingUser = dropLandedPending(pendingUser, st.turns);
+  /* 【2026-11-13 严检·主人问「一轮结束后会不会把我说过的消息重渲染一遍」】
+   * 原来只在 !st.live 时清 pending —— 可收尾那一拍 live 对象还挂着（running:false
+   * 而不是 null），清理不触发，乐观气泡和历史里同文的那条就双份画着，
+   * 等下一拍 live 真被置空才恢复。现在 running:false（这一轮已结束）也清。 */
+  if (!st.live || (st.live && st.live.running === false)) {
+    pendingUser = dropLandedPending(pendingUser, st.turns);
+  }
   bump();
   return true;
 }

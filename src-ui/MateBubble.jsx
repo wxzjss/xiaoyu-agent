@@ -13,7 +13,11 @@ import EditArea from './EditArea.jsx';
 export default function MateBubble({ it, ask }) {
   const wrap = useRef(null);
   const who = String(it.who || '小鲸');
-  const bubbles = Array.isArray(it.bubbles) ? it.bubbles : [];
+  /* 【2026-11-13 兜底】bubbles 缺失时退回 it.text——任何一条没带 bubbles 的
+   * mate 条目都不许画成「只有名字没正文」。 */
+  const bubbles = Array.isArray(it.bubbles) && it.bubbles.length
+    ? it.bubbles
+    : (String(it.text || '').trim() ? [String(it.text || '')] : []);
 
   useEffect(() => {
     const w = wrap.current;

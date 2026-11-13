@@ -158,6 +158,11 @@ function normalizeCard(raw) {
     content,
     createdAt: Number.isFinite(Number(c.createdAt)) ? Number(c.createdAt) : now,
     updatedAt: Number.isFinite(Number(c.updatedAt)) ? Number(c.updatedAt) : now,
+    /* 【2026-11-13】书架位置。null = 老卡还没迁移，listCards 会按创建时间补。
+     * 排序只认 order / createdAt，**绝不认 updatedAt** —— 主人明确不要
+     * 「编辑完自动排到后面」。 */
+    order: (c.order !== null && c.order !== undefined && Number.isFinite(Number(c.order)))
+      ? Number(c.order) : null,
   };
 }
 
@@ -191,11 +196,46 @@ export function initKnowledge() {
   } catch {}
 }
 
-/** 全部卡（按创建先后：先建的在左，新书排在书架末尾——2026-11-13 主人钦点） */
+/** 老卡一次性补 order：按创建时间（发布时间）从早到晚编号。只跑一次。 */
+function ensureOrder(cards) {
+  let max = -1;
+  for (const c of cards) if (Number.isFinite(c.order) && c.order > max) max = c.order;
+  const missing = cards
+    .map((c, i) => ({ c, i }))
+    .filter((x) => !Number.isFinite(x.c.order))
+    .sort((a, b) => (a.c.createdAt || 0) - (b.c.createdAt || 0) || a.i - b.i);
+  if (!missing.length) return cards;
+  let next = max + 1;
+  for (const x of missing) x.c.order = next++;
+  saveAll(cards);
+  return cards;
+}
+
+/** 全部卡：按书架位置排（等于发布时间先后，除非主人拖过）；编辑不动位置。
+ *  【2026-11-13 主人钦点】新书排末尾；不要把 updatedAt 当第二判据，
+ *  否则创建时间相同的卡一编辑就往后挪。 */
 export function listCards() {
   let cards = loadAll();
   if (cards === null) { initKnowledge(); cards = loadAll() || []; }
-  return cards.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || (a.updatedAt || 0) - (b.updatedAt || 0));
+  cards = ensureOrder(cards);
+  return cards.sort((a, b) =>
+    (a.order - b.order) ||
+    (a.createdAt || 0) - (b.createdAt || 0) ||
+    String(a.id).localeCompare(String(b.id)));
+}
+
+/** 主人拖完书架：按前端给回来的 id 顺序重编号；没提到的卡接在末尾。 */
+export function reorderCards(ids) {
+  const wanted = Array.isArray(ids) ? ids.map((x) => String(x)) : [];
+  if (!wanted.length) return { ok: false, error: '没给顺序' };
+  const cards = loadAll() || [];
+  const rank = new Map();
+  wanted.forEach((id, i) => { if (!rank.has(id)) rank.set(id, i); });
+  let next = rank.size;
+  for (const c of cards) if (!rank.has(c.id)) rank.set(c.id, next++);
+  for (const c of cards) c.order = rank.get(c.id);
+  saveAll(cards);
+  return { ok: true, cards: listCards() };
 }
 
 export function getCard(id) {
@@ -224,7 +264,10 @@ export function saveCard({ id, title, author, content, tags }) {
     saveAll(cards);
     return { ok: true, card: upd, created: false };
   }
-  const c = normalizeCard({ title, author, content, tags, createdAt: now, updatedAt: now });
+  /* 新书固定排书架末尾：order 取当前最大 +1。编辑走上面 idx>=0 分支，
+   * ...old 带着原 order，一个数字都不动。 */
+  const _maxOrder = cards.reduce((m, x) => Math.max(m, Number.isFinite(x.order) ? x.order : -1), -1);
+  const c = normalizeCard({ title, author, content, tags, createdAt: now, updatedAt: now, order: _maxOrder + 1 });
   if (!c) return { ok: false, error: '标题不能为空' };
   cards.push(c);   /* 【2026-11-13 主人钦点】新书排书架末尾，不插最前面 */
   saveAll(cards);
@@ -254,6 +297,7 @@ export function importCards(payload) {
   if (!rawList) return { ok: false, error: '没有找到卡（要 { "cards": [...] } 或数组）' };
   const cards = loadAll() || [];
   let added = 0, updated = 0;
+  let _importOrder = cards.reduce((m, x) => Math.max(m, Number.isFinite(x.order) ? x.order : -1), -1);
   for (const raw of rawList) {
     const c = normalizeCard(raw);
     if (!c) continue;
@@ -262,6 +306,7 @@ export function importCards(payload) {
       if (cards[i].updatedAt >= c.updatedAt) continue;   // 本地较新，跳过
       cards[i] = c; updated++;
     } else {
+      c.order = ++_importOrder;
       cards.push(c); added++;   /* 【2026-11-13 主人钦点】导入的卡同样排末尾 */
     }
   }

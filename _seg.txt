@@ -1,0 +1,115 @@
+31|const INSTALL = `(function(){
+32|  if (window.__qaOrigFetch) return;
+33|  window.__qaOrigFetch = window.fetch.bind(window);
+34|  window.__qa = window.__qa || { events: [], gap: 350, sid: '', i: 0 };
+35|  var jsonRes = function(o){ return new Response(JSON.stringify(o), {status:200, headers:{'content-type':'application/json'}}); };
+36|  window.fetch = function(u, opt){
+37|    var url = (typeof u === 'string') ? u : ((u && u.url) || '');
+38|    var qa = window.__qa || {};
+39|    if (/\\/api\\/chat$/.test(url)) {
+40|      var evs = qa.events || [], gap = Number(qa.gap || 350), i = 0;
+41|      var enc = new TextEncoder();
+42|      var stream = new ReadableStream({
+43|        async pull(cc){
+44|          if (i >= evs.length) {
+45|            if (qa.holdOpen) { await new Promise(function(){}); return; }
+46|            try { cc.close(); } catch(e){}
+47|            return;
+48|          }
+49|          var e = evs[i++]; qa.i = i;
+50|          cc.enqueue(enc.encode('data: ' + JSON.stringify(e) + '\\n\\n'));
+51|          await new Promise(function(r){ setTimeout(r, gap); });
+52|        }
+53|      });
+54|      return Promise.resolve(new Response(stream, {status:200, headers:{'content-type':'text/event-stream'}}));
+55|    }
+56|    if (url.indexOf('/api/chat/live') >= 0) {
+57|      if (qa.steps && qa.steps.length) {
+58|        var last = qa.steps.length - 1;
+59|        var k = Math.max(0, Math.min(Number(qa.i) || 0, last));
+60|        var _len = Array.isArray(qa.events) ? qa.events.length : 0;
+61|        var _i = Number(qa.i) || 0;
+62|        if (_i >= _len && _len > 0 && !qa.endAt) qa.endAt = Date.now();
+63|        var running = qa.holdOpen ? true : (_i < _len || (_len > 0 && qa.endAt && (Date.now() - qa.endAt) < 800));
+64|        return Promise.resolve(jsonRes({ sessionId: qa.sid, running: running, items: qa.steps[k], events: [], startedAt: qa.startedAt || Date.now(), nextSince: 0 }));
+65|      }
+66|      return Promise.resolve(jsonRes({ running:false, items:[], events:[], nextSince:0 }));
+67|    }
+68|    if (url.indexOf('/api/sessions/select') >= 0) {
+69|      /* 收尾那一刻：历史必须已经含本轮（流跑完了才给 turnsAfter） */
+70|      var done = (Number(qa.i) || 0) >= ((qa.events || []).length);
+71|      var turns = (done && qa.turnsAfter) ? qa.turnsAfter : qa.turns;
+72|      return Promise.resolve(jsonRes({ session: { id: qa.sid, turns: turns || [] } }));
+73|    }
+74|    return window.__qaOrigFetch(u, opt);
+75|  };
+76|
+77|  /* DOM 阅读顺序：把屏幕压成一张「一行一行」的表 */
+78|  window.__qaRows = function(){
+79|    var lg = document.getElementById('log');
+80|    var tx = function(el){ return String((el && el.textContent) || '').replace(/\\s+/g,''); };
+81|    var out = [];
+82|    if (!lg) return out;
+83|    var nodes = lg.querySelectorAll('.msg, details.tool, details.toolhub, .sysnote');
+84|    for (var i = 0; i < nodes.length; i++) {
+85|      var el = nodes[i];
+86|      if (el.parentElement && el.parentElement.closest('details')) continue;  /* 柜子里的卡不算行 */
+87|      var cls = String(el.className || '');
+88|      var kind = '';
+89|      if (el.tagName === 'DETAILS') kind = /toolhub/.test(cls) ? 'hub' : 'tool';
+90|      else if (cls.indexOf('sysnote') >= 0) kind = 'note';
+91|      else if (/(^|\\s)user(\\s|$)/.test(cls)) kind = 'user';
+92|      else if (/(^|\\s)assistant(\\s|$)/.test(cls)) kind = 'assistant';
+93|      else if (/(^|\\s)mate(\\s|$)/.test(cls)) kind = 'mate';
+94|      var bs = el.querySelectorAll('.bubble');
+95|      var txt = [];
+96|      for (var b = 0; b < bs.length; b++) txt.push(tx(bs[b]));
+97|      out.push({ kind: kind, text: (kind === 'hub' || kind === 'tool') ? '' : (txt[0] || ''), bubbles: txt.length });
+98|    }
+99|    return out;
+100|  };
+101|
+102|  window.__qaSnap = function(){
+103|    var lg = document.getElementById('log');
+104|    var rows = window.__qaRows();
+105|    var count = function(k){ var n = 0; for (var i = 0; i < rows.length; i++) if (rows[i].kind === k) n++; return n; };
+106|    var hubs = 0, hubCards = 0, bare = 0;
+107|    if (lg) {
+108|      var hs = lg.querySelectorAll('details.toolhub');
+109|      hubs = hs.length;
+110|      for (var h = 0; h < hs.length; h++) hubCards += hs[h].querySelectorAll('details.tool').length;
+111|      bare = Math.max(0, lg.querySelectorAll('details.tool').length - hubCards);
+112|    }
+113|    return {
+114|      rows: rows.map(function(r){ return r.kind + ':' + r.text.slice(0, 24); }),
+115|      kinds: rows.map(function(r){ return r.kind; }),
+116|      userCount: count('user'),
+117|      assistantRows: count('assistant'),
+118|      assistantBubbles: (function(){ var n = 0; for (var i = 0; i < rows.length; i++) if (rows[i].kind === 'assistant') n += rows[i].bubbles; return n; })(),
+119|      hubs: hubs,
+120|      toolCards: bare,
+121|      hubCards: hubCards,
+122|      thinks: lg ? lg.querySelectorAll('details.think').length : 0,
+123|      errRows: lg ? [].filter.call(lg.querySelectorAll('.sysnote'), function(e){ return String(e.textContent||'').indexOf('渲染出错') >= 0; }).length : 0,
+124|      dist: lg ? Math.round(lg.scrollHeight - lg.scrollTop - lg.clientHeight) : -1,
+125|      st: lg ? Math.round(lg.scrollTop) : -1,
+126|      sh: lg ? lg.scrollHeight : -1,
+127|      ch: lg ? lg.clientHeight : -1,
+128|      st: lg ? Math.round(lg.scrollTop) : -1,
+129|      sh: lg ? lg.scrollHeight : -1,
+130|      ch: lg ? lg.clientHeight : -1,
+131|      sendText: (document.getElementById('send') || {}).textContent || '',
+132|      stopShown: !!(document.getElementById('stopBtn') && document.getElementById('stopBtn').classList.contains('show')),
+133|      sending: !!(document.getElementById('sendingHint') && document.getElementById('sendingHint').classList.contains('show')),
+134|      busy: !!window.busy,
+135|      text: lg ? String(lg.textContent || '').replace(/\\s+/g, '') : '',
+136|    };
+137|  };
+138|  var raw = null;
+139|  try { raw = localStorage.getItem('__qa_payload'); } catch(e){}
+140|  if (raw) { try { window.__qa = Object.assign(window.__qa || {}, JSON.parse(raw)); } catch(e){} }
+141|})();`;
+142|
+143|const cnt = (hay, needle) => String(hay || '').split(needle).length - 1;
+144|
+145|let iso = null;

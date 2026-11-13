@@ -2040,13 +2040,70 @@
       padding: 12px 16px; border-bottom: 1px solid var(--border);
     }
     .dlgHead b { font-size: 15px; }
+    /* 【2026-11-13 主人钦点·关闭按钮焕新】原来 transparent 底 + --border + 6px 圆角，
+     * 焕新成顶栏/面板同款胶囊（微填充 + 白描边 + 8px + hover 亮 accent）。 */
     .dlgHead .x {
-      margin-left: auto; background: transparent; border: 1px solid var(--border); color: var(--dim);
-      border-radius: 6px; padding: 3px 10px; cursor: pointer;
+      margin-left: auto; background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .14); color: var(--text);
+      border-radius: 8px; padding: 3px 12px; cursor: pointer;
+      transition: border-color .12s ease, color .12s ease, background .12s ease;
     }
-    /* 悬浮统一·2026-10-31 「关闭」原来没写 hover —— 字和边框一起亮 */
-    .dlgHead .x:hover { color: var(--text); border-color: var(--dim); }
-    .dlgHead .x:active { background: rgba(255, 255, 255, .06); }
+    .dlgHead .x:hover {
+      color: var(--accent); border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+    .dlgHead .x:active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+    /* 知识库面板那颗【关闭】没挂 .x 也没专属样式 —— 一并收进焕新 */
+    #kbClose {
+      background: rgba(255, 255, 255, .04); color: var(--text);
+      border: 1px solid rgba(255, 255, 255, .14); border-radius: 8px;
+      padding: 3px 12px; cursor: pointer;
+      transition: border-color .12s ease, color .12s ease, background .12s ease;
+    }
+    #kbClose:hover {
+      color: var(--accent); border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·五面板统一焕新层】
+       参照【知识库书架】让人舒服的点（主人原话「很舒缓」）与【顶栏按钮排焕新】：
+       · 微填充底 + 半透白描边（不硬、不死黑）
+       · 大圆角、宽松留白、hover 轻上浮 + 阴影加深（书被拿起来的手感）
+       · 悬停亮 accent 的 color-mix 渐变（顶栏同款）
+       只加增量，不改面板原有规则 —— 打架了删这段就能回退。
+       覆盖：【会话】sessRow /【智能体】agItem /【设置】【模型】field input
+       / 弹窗 backdrop 磨砂 / 弹窗标题字距。
+       ═══════════════════════════════════════════════════════════════ */
+    dialog::backdrop { background: rgba(0, 0, 0, .55); backdrop-filter: blur(3px); }
+    body.skin dialog::backdrop { background: rgba(0, 0, 0, .62); backdrop-filter: blur(3px); }
+    dialog .dlgHead b { letter-spacing: 1.5px; }
+    /* 会话列表项：死灰底换成微填充 + 轻上浮 */
+    .sessRow { transition: background .12s ease, border-color .12s ease, transform .12s ease, box-shadow .12s ease; }
+    .sessRow:hover {
+      background: rgba(255, 255, 255, .05); border-color: rgba(255, 255, 255, .16);
+      transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0, 0, 0, .28);
+    }
+    .sessRow.current { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--accent); }
+    /* 智能体卡：同款手感，圆角放大到 10px */
+    #agentListDlg .agItem {
+      border-radius: 10px;
+      transition: background .12s ease, border-color .12s ease, transform .12s ease, box-shadow .12s ease;
+    }
+    #agentListDlg .agItem:hover {
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      border-color: rgba(255, 255, 255, .16);
+      transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0, 0, 0, .28);
+    }
+    /* 设置/模型输入框：底色微填充化、hover 描边亮一档（focus 亮 accent 照旧） */
+    .field input[type=text], .field input[type=number], .field input[type=password] {
+      transition: background-color .15s, border-color .15s, box-shadow .15s;
+    }
+    .field input[type=text]:hover, .field input[type=number]:hover, .field input[type=password]:hover {
+      border-color: rgba(255, 255, 255, .22);
+    }
+    .field input[type=text]:focus, .field input[type=number]:focus, .field input[type=password]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+    }
     .dlgBody { padding: 16px; overflow-y: auto; flex: 1 1 auto; min-height: 0; overscroll-behavior: contain; }
     .dlgFoot {
       display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
@@ -2175,7 +2232,7 @@
        颜色分三层：导入=描边蓝（往里进），导出=安静灰（往外拿），全部导出=更淡（备用）。 */
     .sessTop.sessTools { padding-top: 0; border-bottom: 0; gap: 8px; flex-wrap: wrap; }
     .sessTop.sessTools button {
-      font-size: 12.5px; padding: 5px 12px; height: 28px; border-radius: 7px;
+      font-size: 12.5px; padding: 5px 12px; height: 28px; border-radius: 8px;
       display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
       transition: background .12s, border-color .12s, color .12s;
     }
@@ -2204,20 +2261,29 @@
      * 根因：ghost3 只在 .askFoot 下面写过样式（.askFoot button.ghost3），
      * 会话面板这排压根没被管到，于是露出浏览器原生 button 外观——白底白描边，跟暗色页面撞成一团。
      * 这里补一条全局的，照 .ghost 的手感：透明底、暗灰字、细描边。 */
+    /* 【2026-11-13 主人钦点·会话/插件面板按钮焕新】ghost3 原来 transparent 底 +
+     * --border 描边 + --dim 暗字，跟顶栏焕新前的旧语言一样又扁又灰。焕新成顶栏
+     * 同款：微填充 + 白描边胶囊 + 8px 圆角，字亮一档，悬停亮 accent。
+     * 语义色特例（#sessImport 蓝、#sessBulk 红、#featImport 蓝）带 id 特异性
+     * 压在这下面，照旧亮各自的色，不受影响。 */
     button.ghost3 {
-      background: transparent;
-      color: var(--dim);
-      border: 1px solid var(--border);
-      border-radius: 7px;
-      padding: 5px 11px;
+      background: rgba(255, 255, 255, .04);
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, .14);
+      border-radius: 8px;
+      padding: 5px 12px;
       font-size: 12.5px;
       font-weight: 400;
       cursor: pointer;
       -webkit-appearance: none;
       appearance: none;
       color-scheme: dark;
+      transition: border-color .12s ease, color .12s ease, background .12s ease;
     }
-    button.ghost3:hover { color: var(--text); border-color: rgba(255, 255, 255, .22); }
+    button.ghost3:hover {
+      color: var(--accent); border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+    }
     button.ghost3:disabled { opacity: .45; cursor: default; }
 
     /* 【2026-10-27 主人报：批量删除关了再开还是开着】
@@ -3204,6 +3270,12 @@
     }
     #agentListDlg .agItem .colorDot:hover { transform: scale(1.25); }
     #agentListDlg .agItem .colorDot.on { border-color: var(--text); box-shadow: 0 0 0 1px var(--text) inset; }
+    #agentListDlg .agItem .colorPicker {
+      width: 16px; height: 16px; padding: 0; border: none; cursor: pointer;
+      background: none; flex: 0 0 auto; border-radius: 50%; overflow: hidden;
+    }
+    #agentListDlg .agItem .colorPicker::-webkit-color-swatch-wrapper { padding: 0; }
+    #agentListDlg .agItem .colorPicker::-webkit-color-swatch { border: 1px dashed rgba(255,255,255,.4); border-radius: 50%; }
     #agentListDlg .agItem .d {
       font-size: 11.5px; color: var(--dim); line-height: 1.6; margin-top: 2px;
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -3993,6 +4065,526 @@
 .cmdkItem .kbd { margin-left: auto; color: var(--dim); font-size: 11px; }
 .cmdkEmpty { color: var(--dim); padding: 12px; font-size: 13px; }
 
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 验收加固层 · 放在全部样式最后】
+       原「五面板统一焕新层」写在 CSS 前部，被后面同特异性规则压回旧样式；
+       另有一批按钮从来没吃到大焕新。这里统一压住，一处可整体删回退。
+       语言：微填充 + 半透白描边 + 8px 胶囊 + hover accent 渐变。
+       ═══════════════════════════════════════════════════════════════ */
+    dialog .sessRow:hover {
+      background: rgba(255, 255, 255, .05); border-color: rgba(255, 255, 255, .16);
+      transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0, 0, 0, .28);
+    }
+    dialog .sessRow.current { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--accent); }
+    #agentListDlg .agItem { border-radius: 10px; transition: background .12s ease, border-color .12s ease, transform .12s ease, box-shadow .12s ease; }
+    #agentListDlg .agItem:hover {
+      background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: rgba(255, 255, 255, .16);
+      transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0, 0, 0, .28);
+    }
+    dialog .field input[type=text]:hover, dialog .field input[type=number]:hover, dialog .field input[type=password]:hover { border-color: rgba(255, 255, 255, .22); }
+    dialog .field input[type=text]:focus, dialog .field input[type=number]:focus, dialog .field input[type=password]:focus {
+      border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+    }
+    /* 小窗取消钮 / 导出 / 批量 / 行内 mini / 标签页 / 菜单项：原来透明底暗字 */
+    .askFoot button.ghost3, .pickFoot button.ghost2, .dlgFoot button.ghost2,
+    #sessExportOne, #sessExportAll, #featExport, #sessBulk,
+    .sessRow .mini, .mdlRow .mini, .sessBulkBar button,
+    #plugImportDlg .piTabs button, .plusMenu button, .mentionPop button,
+    .cfgMenuItem, #fileView button, .pendingHead button, .loadEarlier {
+      background: rgba(255, 255, 255, .04); color: var(--text);
+      border: 1px solid rgba(255, 255, 255, .14); border-radius: 8px;
+      transition: border-color .12s ease, color .12s ease, background .12s ease;
+    }
+    .askFoot button.ghost3:hover, .pickFoot button.ghost2:hover, .dlgFoot button.ghost2:hover,
+    #sessExportOne:hover, #sessExportAll:hover, #featExport:hover,
+    .sessRow .mini:hover, .mdlRow .mini:hover, .sessBulkBar button:hover,
+    #plugImportDlg .piTabs button:hover, .plusMenu button:hover, .mentionPop button:hover,
+    .cfgMenuItem:hover, #fileView button:hover, .pendingHead button:hover, .loadEarlier:hover {
+      color: var(--accent); border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+    /* 开关按钮：默认态跟随新语言；.on 的状态色仍由原规则说了算 */
+    .optRow .switch:not(.on), .featRow .switch:not(.on) {
+      background: rgba(255, 255, 255, .04); color: var(--text);
+      border: 1px solid rgba(255, 255, 255, .14); border-radius: 8px;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人报「会话/插件页面滚轮一卡一卡」· 滚动性能修复层】
+       两个面板一起卡 = 所有 dialog 共用的东西 + 列表行共用的东西：
+         ① dialog::backdrop 的 backdrop-filter: blur(3px)：滚动时背后的内容在动，
+            Chromium 每帧都要重算模糊合成层，掉帧最狠（今晚新加的）。
+         ② .sessRow / .agItem 的 hover transform + box-shadow：滚轮一滚，
+            几十行从鼠标底下依次划过，每行都触发位移与阴影重绘 = 一卡一卡。
+         ③ 行内 mini / 菜单按钮的 transition：每行都带，平白多一层样式计算。
+       这里统一关掉这三样；**配色语言全留**（微填充、白描边、hover accent
+       渐变、顶栏按钮那套单独保留，顶栏不滚动不受影响）。
+       放在最后，用 !important 压住前后两层焕新规则。删这段即可回退。
+       ═══════════════════════════════════════════════════════════════ */
+    dialog::backdrop, body.skin dialog::backdrop {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+    dialog .sessRow, .sessRow,
+    #agentListDlg .agItem, .agItem {
+      transition: background-color .12s ease, border-color .12s ease !important;
+      will-change: auto !important;
+    }
+    dialog .sessRow:hover, .sessRow:hover,
+    #agentListDlg .agItem:hover, .agItem:hover {
+      transform: none !important;
+      box-shadow: none !important;
+    }
+    .sessRow .mini, .mdlRow .mini, .sessBulkBar button,
+    #plugImportDlg .piTabs button, .plusMenu button, .mentionPop button,
+    .cfgMenuItem, #fileView button, .pendingHead button, .loadEarlier,
+    .askFoot button.ghost3, .pickFoot button.ghost2, .dlgFoot button.ghost2,
+    #sessExportOne, #sessExportAll, #featExport, #sessBulk,
+    .optRow .switch, .featRow .switch {
+      transition: none !important;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人报「会话页 全部/置顶/今天/7天 没焕新」· 筛选按钮焕新】
+       .sessFilter .fbtn 之前是 transparent 底 + --border + --dim 暗字 + 6px，
+       不在前两批焕新的选择器里（那两批覆盖的是 ghost3 / 导出 / mini 等）。
+       补到顶栏同款语言；.on 激活态单独走 accent，不覆盖它。
+       这四颗在面板顶部固定、不随列表滚动，所以可以放心带 hover 渐变。
+       ═══════════════════════════════════════════════════════════════ */
+    .sessFilter .fbtn:not(.on) {
+      background: rgba(255, 255, 255, .04); color: var(--text);
+      border: 1px solid rgba(255, 255, 255, .14); border-radius: 8px;
+      transition: border-color .12s ease, color .12s ease, background .12s ease;
+    }
+    .sessFilter .fbtn:not(.on):hover {
+      color: var(--accent); border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+    }
+    .sessFilter .fbtn.on {
+      border-radius: 8px; border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 18%, transparent);
+      color: var(--accent); font-weight: 600;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 二改·主人「你怎么把原来的金色改没了」】
+       金色是主人钦点的身份牌语义色，**不许动**。上一版一锅端成白描边灰胶囊，
+       是我判断错了 —— 焕新只该动「形态 + hover 手感」，不该动色相。
+       现在：金底/金字/金边原样回来；圆角 6→8px、内边距对齐顶栏、
+       hover 走同色系渐变 + 亮一档字色（顶栏那颗渐变舒服就在这个手感）。
+       ═══════════════════════════════════════════════════════════════ */
+    #idBadge {
+      background: rgba(224, 163, 58, .16);
+      color: #f0c47a;
+      border: 1px solid rgba(224, 163, 58, .55);
+      border-radius: 8px;
+      padding: 5px 12px;
+      font-weight: 600;
+      transition: border-color .12s ease, color .12s ease, background .12s ease, box-shadow .12s ease;
+    }
+    #idBadge:hover {
+      color: #ffe0a8; border-color: #f0c47a;
+      background: linear-gradient(135deg, rgba(224, 163, 58, .32), rgba(224, 163, 58, .14));
+      box-shadow: 0 0 0 1px rgba(224, 163, 58, .18) inset;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【主智能体牌「本会话·小鱼」· 同样「保色相、只焕形态」】
+       青色是 10-31 主人嫌字太暗之后钦点的，也不动。圆角 7→8px、
+       hover 同色系渐变 + 亮一档，形态与身份牌/顶栏对齐。
+       ═══════════════════════════════════════════════════════════════ */
+    #agentChip {
+      border: 1px solid rgba(140, 220, 210, .45);
+      border-radius: 8px;
+      padding: 5px 12px;
+      background: rgba(140, 220, 210, .10);
+      color: #a8ece4;
+      font-weight: 600;
+      transition: border-color .12s ease, color .12s ease, background .12s ease, box-shadow .12s ease;
+    }
+    #agentChip:hover {
+      color: #e6fffb; border-color: #8cdcd2;
+      background: linear-gradient(135deg, rgba(140, 220, 210, .26), rgba(140, 220, 210, .10));
+      box-shadow: 0 0 0 1px rgba(140, 220, 210, .18) inset;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 知识卡长按拖动排序】主人要「按发布时间往后排」且
+       「编辑完别自动排到后面」；顺序可长按拖卡片自定义。
+       视觉克制：只有拖起来那本轻轻放大 + 阴影，别破坏书架的舒缓感。
+       ═══════════════════════════════════════════════════════════════ */
+    .kbBook { user-select: none; }
+    .kbBook.kbDragging {
+      opacity: .92; transform: scale(1.03) rotate(-.4deg);
+      box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+      cursor: grabbing; position: relative; z-index: 6;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·柜门标题 + 工具调用显示焕新，悬浮就亮】
+       规矩（今天刚立）：语义色一个不动 —— 柜门 .hubname / 工具 .name 的
+       accent、.status 的绿(ok)/红(err)/黄(warn) 原样；只焕形态与 hover 手感。
+       只加背景/内描边/圆角/过渡，**不碰 padding、margin、width** ——
+       11-08 那次柜门标题被挤成一个字一行，就是动过盒模型。
+       主人要「只要鼠标悬浮在上面就会亮」：一层 accent 同色系渐变 +
+       亮描边 + 柔光，箭头和灰字一起亮，收起/展开都生效。
+       ═══════════════════════════════════════════════════════════════ */
+    details.toolhub > summary,
+    details.tool > summary,
+    details.toolhub details.tool > summary.toolHead {
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .035);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .09);
+      transition: background .12s ease, box-shadow .12s ease, color .12s ease;
+    }
+    details.toolhub > summary:hover,
+    details.tool > summary:hover,
+    details.toolhub details.tool > summary.toolHead:hover {
+      background: linear-gradient(135deg,
+        color-mix(in srgb, var(--accent) 20%, transparent),
+        color-mix(in srgb, var(--accent) 7%, transparent));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent),
+                  0 0 10px color-mix(in srgb, var(--accent) 14%, transparent);
+      color: var(--text);
+    }
+    /* 标题字亮一档（色相不变）；柜门后面那截灰字改成亮白，别抢 accent */
+    details.toolhub > summary:hover .hubname,
+    details.toolhub > summary:hover .name,
+    details.tool > summary:hover .name,
+    details.toolhub details.tool > summary.toolHead:hover .name {
+      filter: brightness(1.28);
+    }
+    details.toolhub > summary:hover .hubpeek { color: var(--text); }
+    /* 小箭头跟着亮 */
+    details.toolhub > summary::before,
+    details.tool > summary::before,
+    details.toolhub details.tool > summary.toolHead::before {
+      transition: color .12s ease, opacity .12s ease, transform .15s ease;
+    }
+    details.toolhub > summary:hover::before,
+    details.tool > summary:hover::before,
+    details.toolhub details.tool > summary.toolHead:hover::before {
+      color: var(--accent); opacity: 1;
+    }
+    /* 展开后的参数/结果区：一点底色，鼠标进整张工具卡也亮一下 */
+    details.tool pre, details.toolhub details.tool pre {
+      background: rgba(255, 255, 255, .02);
+      transition: background .12s ease, border-color .12s ease;
+    }
+    details.tool:hover > pre, details.toolhub details.tool:hover > pre {
+      background: rgba(255, 255, 255, .045);
+      border-top-color: color-mix(in srgb, var(--accent) 30%, transparent);
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·思考链焕新，悬浮就亮】
+       跟柜门/工具条同一套语言，但内心戏压得更柔一档（底色更淡、光更散）。
+       规矩不变：语义色不动 —— .interjectTag（插话标记）的 accent、正文灰字都原样；
+       盒模型不碰（不碰 padding/margin/width），11-08 的竖排事故不再犯。
+       历史思考 .thinkPast 本来就淡一档，hover 时才提亮到常态。
+       ═══════════════════════════════════════════════════════════════ */
+    details.think {
+      transition: border-color .12s ease, box-shadow .12s ease;
+    }
+    details.think:hover {
+      border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+      box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 9%, transparent);
+    }
+    details.think > summary {
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .03);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .075);
+      transition: background .12s ease, box-shadow .12s ease, color .12s ease, opacity .12s ease;
+    }
+    details.think > summary:hover {
+      background: linear-gradient(135deg,
+        color-mix(in srgb, var(--accent) 16%, transparent),
+        color-mix(in srgb, var(--accent) 5%, transparent));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent),
+                  0 0 10px color-mix(in srgb, var(--accent) 12%, transparent);
+      color: var(--text);
+    }
+    /* 标题亮一档（色相不动）、字数从 65% 透明提到实色 */
+    details.think > summary:hover .thinkTitle { filter: brightness(1.22); }
+    details.think > summary:hover .thinkMeta { opacity: 1; color: var(--text); }
+    /* 小箭头跟着亮 */
+    details.think > summary::before {
+      transition: color .12s ease, opacity .12s ease, transform .15s ease;
+    }
+    details.think > summary:hover::before { color: var(--accent); opacity: 1; }
+    /* 展开的正文：分隔线跟亮，正文加一层极淡底色 */
+    details.think > .thinkBody {
+      transition: background .12s ease, border-color .12s ease;
+    }
+    details.think:hover > .thinkBody {
+      background: rgba(255, 255, 255, .015);
+      border-top-color: color-mix(in srgb, var(--accent) 26%, transparent);
+    }
+    /* 历史思考（更淡更窄）：常态不抢，hover 提回常态 */
+    details.think.thinkPast > summary { background: rgba(255, 255, 255, .018); }
+    details.think.thinkPast > summary:hover { opacity: 1; }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·子Agent 干活卡焕新，悬浮就亮】
+       结构：details.wcard > summary（.name + .status + .wstop）+ pre 流水。
+       规矩不变：语义色一个不动 —— status.run 黄 / ok 绿 / err 红 / stopped 灰，
+       .wstop 停掉键的红 hover 也原样；只加底色、内描边、圆角、过渡与柔光。
+       盒模型不碰（padding/margin/width 全不动）。
+       ═══════════════════════════════════════════════════════════════ */
+    details.wcard {
+      transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
+    }
+    details.wcard:hover {
+      border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+      box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 11%, transparent);
+      background: rgba(255, 255, 255, .035);
+    }
+    details.wcard > summary {
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .03);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+      transition: background .12s ease, box-shadow .12s ease, color .12s ease;
+    }
+    details.wcard > summary:hover {
+      background: linear-gradient(135deg,
+        color-mix(in srgb, var(--accent) 18%, transparent),
+        color-mix(in srgb, var(--accent) 6%, transparent));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent),
+                  0 0 10px color-mix(in srgb, var(--accent) 13%, transparent);
+      color: var(--text);
+    }
+    /* 名字亮一档；状态字从 75% 透明提到实色（四档色相不动） */
+    details.wcard > summary:hover .name { filter: brightness(1.25); }
+    details.wcard > summary:hover .status { opacity: 1; }
+    /* 展开的流水：底色跟亮一点 */
+    details.wcard > pre { transition: background .12s ease; }
+    details.wcard:hover > pre { background: rgba(255, 255, 255, .02); }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人报「子Agent 干活卡展开后字太浅太透明，看得费眼」】
+       流水原来用 var(--muted) = #8b95a7（最浅那档灰）+ 12px，展开真费眼。
+       改成跟工具卡流水同一个亮档 #c9d1d9，字号 12.5、行高 1.7；
+       状态字也从 75% 透明提到 90%（hover 仍是 100%）。
+       语义色（运行黄 / 完成绿 / 失败红 / 停灰）一个不动。
+       ═══════════════════════════════════════════════════════════════ */
+    details.wcard > pre {
+      color: #c9d1d9;
+      font-size: 12.5px;
+      line-height: 1.7;
+    }
+    details.wcard > summary .status { opacity: 0.9; }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·只回滚背景色】
+       柜门 / 工具调用显示 / 思考链：把这几层加过的**背景色**退回原始状态
+       （原来都没有自己的底色，就是透明/继承父级卡片底）。
+       保留：8px 圆角、内描边、hover 亮描边与柔光、过渡 —— 那些不是背景色。
+       子Agent 干活卡不在这次回滚范围（主人没提）。
+       ═══════════════════════════════════════════════════════════════ */
+    details.toolhub > summary,
+    details.tool > summary,
+    details.toolhub details.tool > summary.toolHead,
+    details.toolhub > summary:hover,
+    details.tool > summary:hover,
+    details.toolhub details.tool > summary.toolHead:hover {
+      background: transparent;
+    }
+    details.tool pre,
+    details.toolhub details.tool pre,
+    details.tool:hover > pre,
+    details.toolhub details.tool:hover > pre {
+      background: transparent;
+    }
+    details.think > summary,
+    details.think > summary:hover,
+    details.think > .thinkBody,
+    details.think:hover > .thinkBody,
+    details.think.thinkPast > summary {
+      background: transparent;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·两件事】
+       ① 子Agent 干活卡**只回滚背景色**：恢复它原本那层 rgba(255,255,255,.02)，
+          summary / pre 回透明；圆角、描边、hover 柔光都留着。
+       ② 柜门 + 子Agent 卡的 hover 白字，改成跟思考链 hover 一样：
+          思考链是 `details.think > summary:hover { color: var(--text) }`，
+          这里照同款 —— 整行普通字提到 var(--text)，.hubpeek 也跟上。
+          不动：.hubname（accent 蓝标题）、.status 的绿/红/黄语义色。
+       ═══════════════════════════════════════════════════════════════ */
+    details.wcard { background: rgba(255, 255, 255, .02); }
+    details.wcard:hover { background: rgba(255, 255, 255, .02); }
+    details.wcard > summary,
+    details.wcard > summary:hover,
+    details.wcard > pre,
+    details.wcard:hover > pre {
+      background: transparent;
+    }
+    /* hover 白字：跟思考链同款 */
+    details.toolhub > summary:hover { color: var(--text); }
+    details.toolhub > summary:hover .hubpeek { color: var(--text); }
+    details.wcard > summary:hover { color: var(--text); }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·柜门/工具调用 hover 对标【会话】按钮】
+       【会话】那颗（header button）的 hover 原样是：
+         background: accent 10% 半透明；border-color: accent；无渐变、无柔光。
+       这里照抄到柜门与工具调用条上（背景 + 描边），**字色不动** ——
+       灰字/白字仍按上一轮对标的思考链逻辑走。
+       柜门灰字 .hubpeek 再对齐一次思考链标题：透明度去掉，hover 就是纯
+       var(--text)，不发灰。
+       ═══════════════════════════════════════════════════════════════ */
+    details.toolhub > summary:hover,
+    details.tool > summary:hover,
+    details.toolhub details.tool > summary.toolHead:hover {
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    details.toolhub > summary:hover .hubpeek {
+      color: var(--text);
+      opacity: 1;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·复制粘贴级对标】
+       CDP 强制 hover 实测思考链 hover 后的值：
+         details.think > summary        color: rgb(230,233,239)  opacity 1  filter none
+         .thinkTitle                    color: rgb(230,233,239)  filter: brightness(1.22)
+         .thinkMeta                     color: rgb(230,233,239)  filter none
+       下面把这些值**原样**覆盖到柜门 / 工具调用条 / 子Agent 干活卡的灰字与白字上。
+       不动：.hubname / .name 的 accent 蓝标题（实测 rgb(79,140,255)）、
+             .status 的绿红黄语义色（实测 rgb(63,185,80) 等）。
+       用 !important 是因为柜门 summary 的 color 被上游规则压成了 var(--dim)，
+       实测验证过：不加压不住。
+       ═══════════════════════════════════════════════════════════════ */
+    details.toolhub > summary:hover,
+    details.tool > summary:hover,
+    details.toolhub details.tool > summary.toolHead:hover,
+    details.wcard > summary:hover {
+      color: rgb(230, 233, 239) !important;
+      opacity: 1 !important;
+    }
+    details.toolhub > summary:hover .hubpeek,
+    details.wcard > summary:hover .name {
+      color: rgb(230, 233, 239) !important;
+      opacity: 1 !important;
+      filter: brightness(1.22) !important;
+      text-shadow: none !important;
+    }
+    /* 兜底：柜门/子Agent 的 summary 容器自身 color（虽无可见文本，仍与思考链对齐） */
+    #log details.toolhub > summary:hover,
+    #log details.wcard > summary:hover {
+      color: rgb(230, 233, 239) !important;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·背景框 + 蓝字都对齐【会话】】
+       【会话】那颗的逻辑：
+         常态 background rgba(255,255,255,.04) + 白描边 rgba(255,255,255,.14)
+         字 var(--text)；hover 底变 accent 10%、描边 accent、**字也跟着变 accent**
+       柜门 / 工具调用卡原来底是 var(--panel) 深色块、蓝字上还压着 brightness(1.28)，
+       跟背景各走各的，所以看着生硬。现在：
+         · 卡片背景 + 边框 = 【会话】同款；
+         · 蓝标题 hover 时用纯 accent（去掉 brightness），并带 color 过渡 ——
+           底和字一起变，才是「随背景自然变化」。
+       ═══════════════════════════════════════════════════════════════ */
+    details.toolhub,
+    #log > details.tool,
+    details.toolhub details.tool {
+      background: rgba(255, 255, 255, .04);
+      border-color: rgba(255, 255, 255, .14);
+    }
+    details.toolhub > summary .hubname,
+    details.toolhub > summary .name,
+    details.tool > summary .name,
+    details.toolhub details.tool > summary.toolHead .name {
+      transition: color .12s ease;
+    }
+    details.toolhub > summary:hover .hubname,
+    details.toolhub > summary:hover .name,
+    details.tool > summary:hover .name,
+    details.toolhub details.tool > summary.toolHead:hover .name {
+      color: var(--accent);
+      filter: none;
+      text-shadow: none;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 恢复·删自发光时连带删掉的底色与灰字平滑，这里补回】
+       蓝字按 23:20 那版：`color: var(--accent); filter: none; text-shadow: none`
+       （上面那层还在），**不带任何辉光**。
+       这里只补两块：
+         · 卡片底色 .08 / 抽屉 .02（中间别比边缘暗）；
+         · 柜门灰字、工具条白字、子Agent 名字 hover = rgb(200,205,214)，
+           只走 color 过渡，不用 filter（避免移开闪）。
+       ═══════════════════════════════════════════════════════════════ */
+    details.toolhub,
+    #log > details.tool {
+      background: rgba(255, 255, 255, .08);
+      border-color: rgba(255, 255, 255, .16);
+    }
+    details.toolhub details.tool {
+      background: rgba(255, 255, 255, .02);
+      border-color: rgba(255, 255, 255, .12);
+    }
+    details.wcard > summary:hover .name,
+    details.toolhub > summary:hover .hubpeek,
+    details.toolhub > summary:hover,
+    details.tool > summary:hover,
+    details.toolhub details.tool > summary.toolHead:hover {
+      color: rgb(200, 205, 214) !important;
+      filter: none !important;
+      opacity: 1 !important;
+      transition: color .12s ease;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·思考链白字也跟子Agent/柜门同一档】
+       思考链原来 hover 是 rgb(230,233,239) + .thinkTitle 上还叠了
+       filter: brightness(1.22)（过曝 + 移开易闪）。
+       现在统一成柜门/子Agent 那档 rgb(200,205,214)，去掉 filter，
+       只让 color 平滑过渡。字数 .thinkMeta 不动（它是辅助灰字）。
+       ═══════════════════════════════════════════════════════════════ */
+    details.think > summary:hover,
+    details.think > summary:hover .thinkTitle {
+      color: rgb(200, 205, 214) !important;
+      filter: none !important;
+      transition: color .12s ease;
+    }
+    /* 【2026-11-13 思考链字数同档】原来 hover 是 230（var(--text)），压到 200 */
+    details.think > summary:hover .thinkMeta {
+      color: rgb(200, 205, 214) !important;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·思考链 hover 除了白字，其余跟柜门一样】
+       柜门 hover = accent 10% 半透明底 + 1px accent 内描边（无渐变、无柔光）。
+       思考链原来还留着 22:28 那层的「渐变 + 柔光 + 容器边框亮」，全部收掉；
+       白字保持 rgb(200,205,214) 不动（上一轮定的）。
+       ═══════════════════════════════════════════════════════════════ */
+    details.think > summary:hover {
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    details.think:hover {
+      border-color: var(--border);
+      box-shadow: none;
+    }
+    /* ═══════════════════════════════════════════════════════════════
+       【2026-11-13 主人钦点·子Agent 卡 hover 除了白字，其余跟柜门一样】
+       柜门 hover = accent 10% 半透明底 + 1px accent 内描边（无渐变、无柔光）。
+       子Agent 原来还留着 22:28 层的「渐变 + 柔光 + 容器边框亮」，全部收掉；
+       白字保持 rgb(200,205,214) 不动。
+       ═══════════════════════════════════════════════════════════════ */
+    details.wcard > summary:hover {
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+    details.wcard:hover {
+      border-color: var(--line, #2a2a2a);
+      box-shadow: none;
+    }
+    /* 【2026-11-14】多套人设·每套的开场白一栏 */
+    #fishPersonaDlg .pOpenRow {
+      display: flex; flex-direction: column; gap: 6px; margin-top: 12px;
+      padding-top: 12px; border-top: 1px solid var(--border);
+    }
+    #fishPersonaDlg .pOpenRow label { font-size: 13px; color: var(--text); }
+    #fishPersonaDlg .pOpenRow label .hint { font-size: 11.5px; color: var(--dim); }
+    #fishPersonaDlg #personaOpening {
+      min-height: 64px; max-height: 150px; resize: vertical;
+      padding: 9px 11px; border-radius: 8px;
+      background: var(--input-bg, #0f1319); color: var(--text);
+      border: 1px solid var(--border); font: inherit; font-size: 13px;
+      outline: none; line-height: 1.6;
+    }
+    #fishPersonaDlg #personaOpening:focus { border-color: var(--accent); }
+    #fishPersonaDlg #personaOpeningHint { font-size: 11.5px; color: var(--dim); min-height: 14px; }
+    /* 【2026-11-14】工具卡「中断」态：被重启/掐断的命令，灰字，不再冒充运行中 */
+    details.tool > summary .status.stopped { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -4027,7 +4619,7 @@
         <span id="topModelName">…</span><span class="caret">▾</span>
       </button>
       <button type="button" class="cfgBox cfgThink" id="topThink" title="点一下换思考强度（只影响这个会话）">
-        <span class="thinkPrefix">当前思考强度：</span><span id="topThinkName">默认</span><span class="caret">▾</span>
+        <span class="thinkPrefix">当前思考强度：</span><span id="topThinkName">高</span><span class="caret">▾</span>
       </button>
     </span>
     <!-- 2026-11-01【主人的话：「删除专业模式，回滚办事模式，然后让【专业模式】按钮变成【办事模式】按钮」】
@@ -4873,6 +5465,14 @@
           <button type="button" class="ghost" id="resetPersona">恢复成默认内容</button>
         </div>
         <textarea id="personaText" spellcheck="false"></textarea>
+        <!-- 【2026-11-14 主人钦点】每套人设自己的开场白：新建会话时她自动说的第一句 -->
+        <div class="pOpenRow">
+          <label for="personaOpening">这套的开场白
+            <span class="hint">（新建会话时她自动说的第一句；留空 = 这套不开口）</span>
+          </label>
+          <textarea id="personaOpening" spellcheck="false" placeholder="比如：（尾巴轻轻晃了一下）我在的哦 (≧▽≦)"></textarea>
+          <span class="hint" id="personaOpeningHint"></span>
+        </div>
       </div>
       <div class="dlgFoot">
         <span class="hint">改完点「保存」，下一句生效；平台自带那份文件不动。</span>
@@ -5156,7 +5756,8 @@
        right:22px 跟顶栏「清空当前」的右缘大致齐平（button 自带 padding）。
        为什么不放在 .sendingRow 里跟着流排：那一行会随「正在发送消息」时隐时现，
        徽标会跟着上下跳，主人要的是「固定放在这里」。 -->
-  <button id="idBadge" type="button" hidden>以「」身份说话中</button>
+  <!-- 【2026-11-13 主人钦点】常驻显示，不再 hidden；默认主人，加载后按会话身份刷新 -->
+  <button id="idBadge" type="button">以「主人」身份说话中</button>
 
   <!-- 版本水印：右下角小字，一眼看出跑的是哪一版。查「看到旧界面」时就靠它 -->
   <div id="buildTag" style="position:fixed;right:8px;bottom:6px;font-size:10.5px;color:#5b6472;opacity:.55;pointer-events:none;z-index:5;font-family:ui-monospace,Consolas,monospace"></div>
@@ -9631,6 +10232,12 @@ function scheduleSendingRecheck(sid) {
 function _flashDone() {
   try {
     if (!sendingHint) return;
+    /* 【2026-11-13 修·主人报「活还没做完，切换其他窗口却提示做完了」】
+     * _turnT0 / _turnForSid 是全局一杆旗：A 会话起的轮，切到 B 会话后 A 收尾
+     * 会在 B 屏闪一下「已完成」。判一下这轮属于哪个会话，不是当前屏就别闪；
+     * 切回 A 时 attachLive → showSending 会重设旗子，照样闪得出来。 */
+    const _curSid = String((typeof window !== 'undefined' && window.sessionId) || '');
+    if (_turnForSid && _curSid && _turnForSid !== _curSid) return;
     /* 名字：这一轮说话的人（__turnSpeakerName 是 refreshAgentChip 按会话主智能体算的）；
      * 拿不到才退 mainAgentName / 小鱼。 */
     let _doneWho = '';
@@ -11838,6 +12445,9 @@ function toAsciiPunct(s) {
 }
 
 const elPersonaList = document.getElementById('personaList');
+/* 【2026-11-14】每套人设的开场白输入框 */
+const elPersonaOpening = document.getElementById('personaOpening');
+const elPersonaOpeningHint = document.getElementById('personaOpeningHint');
 
 /**
  * 画人设可选栏。当前那套高亮，非内置的右上角有个 ×（删之前会问）。
@@ -11917,9 +12527,39 @@ function renderPersonaList(info) {
   }
 }
 
+/* 【2026-11-14】把「这套人设」的开场白读出来填进栏里。
+ * null = 从没单独设过 → 留空并标 unset，保存时不写（继续跟随卡级/出厂）；
+ * ''   = 明确设成「不开口」 → 留空但不标 unset。 */
+async function loadPersonaOpening(info) {
+  if (!elPersonaOpening) return;
+  const pid = String((info && info.current) || '');
+  elPersonaOpening.value = '';
+  delete elPersonaOpening.dataset.unset;
+  if (elPersonaOpeningHint) elPersonaOpeningHint.textContent = '';
+  if (!pid) return;
+  try {
+    const scope = personaWho || 'xiaoyu';
+    const r = await fetch('/api/personas/opening?scope=' + encodeURIComponent(scope) + '&personaId=' + encodeURIComponent(pid))
+      .then((x) => x.json());
+    if (r && typeof r.opening === 'string') {
+      elPersonaOpening.value = r.opening;
+    } else {
+      elPersonaOpening.dataset.unset = '1';
+      if (elPersonaOpeningHint) elPersonaOpeningHint.textContent = '（这套还没单独设过，跟着卡上的开场白走）';
+    }
+  } catch { /* 读不出来就留空，不挡编辑 */ }
+}
+if (elPersonaOpening) {
+  elPersonaOpening.addEventListener('input', () => {
+    delete elPersonaOpening.dataset.unset;
+    if (elPersonaOpeningHint) elPersonaOpeningHint.textContent = '';
+  });
+}
+
 function fillPersona(info) {
   personaInfo = info;
   elPersona.value = info.text || '';
+  try { loadPersonaOpening(info); } catch { /* 开场白读不出来不影响正文 */ }
   renderPersonaList(info);
   const touched = info.custom && info.current !== 'default';
   personaHint.textContent = touched
@@ -12094,6 +12734,21 @@ function closeFishPersonaDlg() {
         personaHint.textContent = '保存失败：' + (r && r.error ? r.error : '网络错误');
         return;
       }
+      // 【2026-11-14】开场白跟着这套人设一起存（没单独设过的不写，继续跟随卡级）
+      try {
+        if (elPersonaOpening) {
+          const _pid = personaInfo && personaInfo.current ? personaInfo.current : '';
+          if (_pid && elPersonaOpening.dataset.unset !== '1') {
+            const rr = await fetch('/api/personas/opening', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ scope: personaWho || 'xiaoyu', personaId: _pid, opening: elPersonaOpening.value }),
+            }).then((x) => x.json()).catch(() => null);
+            if (!rr || rr.error) {
+              personaHint.textContent = '开场白没存上：' + (rr && rr.error ? rr.error : '网络错误');
+            }
+          }
+        }
+      } catch { /* 开场白存不进去不挡正文保存 */ }
       fillPersona(r);
       // 2026-11-03：存完顺手回写给对应身份的档案，【智能体】那边才不会还是老一套
       await syncPersonaToAgent(personaSyncWho);
@@ -12179,12 +12834,42 @@ function renderAgentList() {
     d.className = 'd';
     d.textContent = a.snippet || (a.personaChars ? `${a.personaChars} 字人设` : '还没写人设');
     /* 【2026-11-13 主人钦点】每张卡一排色点：点一下改名字颜色（【屋里的人】那竖列
-     * 与气泡署名跟着换）。走 /api/agents/color 正规存色路径，存完整屏补色。 */
+     * 与气泡署名跟着换）。走 /api/agents/color 正规存色路径，存完整屏补色。
+     * 【二改·主人四点反馈】①点完圆环立刻跟手（本地 agentState 同步 + 强制拉新色表，
+     * 不再要退出重进）②当前色不在预设里就动态插一颗（每个智能体都能看到自己
+     * 「默认启用的颜色」）③最右侧加色盘按钮（input[type=color] 自定义任意颜色）
+     * ④消息界面的署名颜色跟着换（primeMateColors 有一次闸，这里手动拉）。 */
     const colorRow = document.createElement('div');
     colorRow.className = 'colorRow';
     const AGENT_PALETTE = ['#f0a6a0', '#7aa8e8', '#3b6fd4', '#9b6fd4', '#58b07a', '#d49a4a', '#e6e6e6'];
+    const applyColor = async (c) => {
+      try {
+        const r = await fetch('/api/agents/color', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: a.id, color: c }),
+        }).then((x) => x.json());
+        if (!r || r.error) { agHint('颜色没存上：' + ((r && r.error) || '网络错误')); return; }
+        a.color = r.color;                                   // 本地跟手：圆环立刻换位
+        /* 【2026-11-13 验收补漏·色板】bridge 里写明的 __mateColorsApply 漏调了 ——
+         * 屏上已有气泡靠 refreshMateColors 补色，但 LogView 自己有一份 mateColors
+         * 缓存（且 prime 只拉一次），不推这一下，新画出的气泡署名还是旧色。
+         * 【屋里的人】竖列读的是 /api/agents/group，也得顺手刷一下才跟手。 */
+        try { window.__mateColorsApply?.(String(a.name || ''), String(r.color || '')); } catch {}
+        try { if (typeof refreshWhoRail === 'function') refreshWhoRail(); } catch {}
+        try {                                                 // 强制拉新色表（prime 的 once 闸绕开）
+          const aj = await fetch('/api/agents').then((x) => x.json());
+          const list2 = aj && Array.isArray(aj.agents) ? aj.agents : [];
+          list2.forEach((ag) => { if (ag && ag.name && ag.color) __mateColors.set(String(ag.name), String(ag.color)); });
+          if (typeof refreshMateColors === 'function') refreshMateColors();
+        } catch { /* 拉不到就靠下一轮预热 */ }
+        renderAgentList();                                    // 圆环 + 当前色点跟手
+        toast?.('名字颜色换好了');
+      } catch (e) { agHint('颜色没存上：' + (e?.message || e)); }
+    };
     const cur = String(a.color || '').toLowerCase();
-    for (const c of AGENT_PALETTE) {
+    const palette = AGENT_PALETTE.slice();
+    if (cur && !palette.some((c) => c.toLowerCase() === cur)) palette.push(a.color);   // 当前色动态入列（圆环有处挂）
+    for (const c of palette) {
       const dot = document.createElement('button');
       dot.type = 'button';
       dot.className = 'colorDot' + (cur === c.toLowerCase() ? ' on' : '');
@@ -12192,20 +12877,21 @@ function renderAgentList() {
       dot.title = '把她「屋里的人」的名字改成这个颜色';
       dot.addEventListener('click', async (ev) => {
         ev.stopPropagation();   // 别把卡片点开了（选人）
-        try {
-          const r = await fetch('/api/agents/color', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: a.id, color: c }),
-          }).then((x) => x.json());
-          if (!r || r.error) { agHint('颜色没存上：' + ((r && r.error) || '网络错误')); return; }
-          if (typeof refreshMateColors === 'function') refreshMateColors();
-          if (typeof primeMateColors === 'function') primeMateColors();
-          renderAgentList();   // 当前色圆环跟手
-          toast?.('名字颜色换好了');
-        } catch (e) { agHint('颜色没存上：' + (e?.message || e)); }
+        await applyColor(c);
       });
       colorRow.appendChild(dot);
     }
+    /* 色盘按钮：自定义任意颜色 */
+    const picker = document.createElement('input');
+    picker.type = 'color';
+    picker.value = /^#[0-9a-fA-F]{6}$/.test(a.color || '') ? a.color : '#e6e6e6';
+    picker.title = '自定义颜色';
+    picker.className = 'colorPicker';
+    picker.addEventListener('click', (ev) => ev.stopPropagation());
+    picker.addEventListener('change', async () => {
+      if (/^#[0-9a-fA-F]{6}$/.test(picker.value)) await applyColor(picker.value);
+    });
+    colorRow.appendChild(picker);
     b.append(n, d, colorRow);
     b.addEventListener('click', () => { selectAgent(a.id); });
     list.appendChild(b);
@@ -12741,6 +13427,13 @@ async function toggleWhoBtn(agentId, wasOff) {
       body: JSON.stringify({ sessionId: sid, id: agentId, enabled: wasOff }),
     }).then((x) => x.json());
     if (r && r.error) throw new Error(r.error);
+    /* 【2026-11-13 主人钦点·任务中防护闸】服务端拒了（关主智能体/启用上位卡）——
+     * toast 说人话，牌子回弹（refreshWhoRail 恢复原状）。 */
+    if (r && r.refused) {
+      try { toast(r.why || '这轮还没跑完，先别动她'); } catch { /* 忽略 */ }
+      try { await refreshWhoRail(); } catch { /* 忽略 */ }
+      return;
+    }
     ok = true;
   } catch (e) {
     try { toast('没切成：' + (e && e.message ? e.message : e)); } catch { /* 忽略 */ }
@@ -12959,6 +13652,11 @@ async function commitWhoOrder() {
       body: JSON.stringify({ sessionId: sid, agentIds: ids }),
     }).then((x) => x.json());
     if (r && r.error) throw new Error(r.error);
+    /* 【2026-11-13 主人钦点·任务中防护闸】服务端拒了换位（主智能体第一启用位
+     * 不许动）——toast 说人话，随后 refreshWhoRail 用 r.agentIds 弹回原顺序。 */
+    if (r && r.refused) {
+      try { toast(r.why || '这轮还没跑完，主智能体不能换位'); } catch { /* 忽略 */ }
+    }
   } catch (e) {
     try { toast('顺序没存上：' + (e && e.message ? e.message : e)); } catch { /* 忽略 */ }
   }
@@ -13500,7 +14198,8 @@ async function importAgentCardFrom(file) {
   agentSel = r.agent && r.agent.id ? r.agent.id : agentSel;
   renderAgentList();
   if (agentSel) await selectAgent(agentSel);
-  agHint(r.renamed ? `导进来了，重名，改叫「${r.agent.name}」` : `导进来了：「${r.agent.name}」`);
+  /* 【2026-11-14】同名不再改名造新人，而是给它添一套人设 */
+  agHint(r.merged ? (r.message || `「${r.agent.name}」已经在了，导入的人设已加到 TA 名下`) : (r.renamed ? `导进来了，重名，改叫「${r.agent.name}」` : `导进来了：「${r.agent.name}」`));
 }
 
 {
@@ -15422,6 +16121,102 @@ try {
     t.__timer = setTimeout(() => { t.style.opacity = '0'; }, 2200);
   }
 
+  /* 【2026-11-13】长按 380ms 才进入拖动，免得点开阅读时误触。
+   * 桌面鼠标和触屏都走 pointer 事件；搜索状态下不许拖（不然只排到半张书架）。 */
+  function enableLongDrag(b, c) {
+    let timer = null;
+    let dragging = false;
+    let suppress = false;
+    let sx = 0;
+    let sy = 0;
+    b.dataset.id = c.id;
+    b.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      sx = e.clientX; sy = e.clientY;
+      timer = setTimeout(() => {
+        if (String(($('kbSearch') || {}).value || '').trim()) {
+          toast('先把搜索清空，再整架排序');
+          return;
+        }
+        dragging = true; suppress = true;
+        b.classList.add('kbDragging');
+        try { b.setPointerCapture(e.pointerId); } catch {}
+        toast('拖到想放的位置，松手就排好');
+      }, 380);
+    });
+    b.addEventListener('pointermove', (e) => {
+      if (!dragging) {
+        if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) > 8) clearTimeout(timer);
+        return;
+      }
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const other = el && el.closest ? el.closest('.kbBook') : null;
+      if (!other || other === b) return;
+      const r = other.getBoundingClientRect();
+      const after = (e.clientY > r.bottom) || (e.clientY > r.top && e.clientX > r.left + r.width / 2);
+      shelf.insertBefore(b, after ? other.nextSibling : other);
+    });
+    const finish = async () => {
+      clearTimeout(timer);
+      if (!dragging) return;
+      dragging = false;
+      b.classList.remove('kbDragging');
+      const ids = Array.prototype.slice.call(shelf.querySelectorAll('.kbBook'))
+        .map((x) => x.dataset.id).filter(Boolean);
+      setTimeout(() => { suppress = false; }, 150);
+      /* 先写本机：服务端还没重启时（旧路由 405），顺序照样留得住 */
+      writeKbOrder(ids);
+      const r = await fetch('/api/knowledge/reorder', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      }).then((x) => x.json()).catch(() => null);
+      if (r && r.ok) {
+        try { localStorage.removeItem(KB_ORDER_KEY); } catch {}
+        toast('书架顺序记好了');
+      } else {
+        toast('顺序先记在本机了（服务端重启后会自动接管）');
+      }
+      await load($('kbSearch').value);
+    };
+    b.addEventListener('pointerup', finish);
+    b.addEventListener('pointercancel', finish);
+    b.onclick = (e) => {
+      if (suppress) { e.preventDefault(); e.stopPropagation(); return; }
+      openRead(c);
+    };
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     【2026-11-13 前端降级·不重启也能用】
+     服务端新代码要重启才加载，可主人这会儿有会话在跑，规矩不许擅自掐断。
+     所以排序先在前端站住：
+       ① 默认按 createdAt 升序 + id 稳定判据，**不看 updatedAt** ——
+          这是「编辑完自动排到后面」的根子，前端先堵死；
+       ② 主人拖过的顺序存 localStorage，刷新/换屏都在，新卡自动接末尾；
+       ③ 等服务端新版本起来了（卡上带 order 字段），把本地顺序一次性
+          POST 给 /api/knowledge/reorder，之后交给服务端，本地记录清掉。
+     ═══════════════════════════════════════════════════════════════ */
+  const KB_ORDER_KEY = 'xy.kb.order.v1';
+  function readKbOrder() {
+    try {
+      const a = JSON.parse(localStorage.getItem(KB_ORDER_KEY) || '[]');
+      return Array.isArray(a) ? a.map(String) : [];
+    } catch { return []; }
+  }
+  function writeKbOrder(ids) {
+    try { localStorage.setItem(KB_ORDER_KEY, JSON.stringify(ids)); } catch {}
+  }
+  function stableKb(list) {
+    const arr = list.slice().sort((a, b) =>
+      (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0) ||
+      String(a.id).localeCompare(String(b.id)));
+    const rank = new Map();
+    readKbOrder().forEach((id, i) => { if (!rank.has(id)) rank.set(id, i); });
+    if (!rank.size) return arr;
+    const stored = arr.filter((c) => rank.has(c.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
+    return stored.concat(arr.filter((c) => !rank.has(c.id)));
+  }
+
   function paint(list) {
     cards = list;
     shelf.innerHTML = '';
@@ -15440,7 +16235,7 @@ try {
       b.innerHTML = '<div class="kbBTitle">' + esc(c.title) + '</div>'
         + (snippet ? '<div class="kbBSnippet">' + esc(snippet) + '…</div>' : '')
         + '<div class="kbBFoot">' + (c.author ? '<span class="kbBAuthor">' + esc(c.author) + '</span>' : '') + tags + '</div>';
-      b.onclick = () => openRead(c);
+      enableLongDrag(b, c);
       frag.appendChild(b);
     }
     /* 书架尽头放一本「虚位以待」的空书 = 创建入口 */
@@ -15456,7 +16251,18 @@ try {
   async function load(q) {
     try {
       const r = await fetch('/api/knowledge').then((x) => x.json());
-      let list = r.cards || [];
+      let list = stableKb(r.cards || []);
+      /* 服务端新版已生效 → 把本机拖好的顺序交还给它，之后不再靠 localStorage */
+      const _stored = readKbOrder();
+      if (_stored.length && (r.cards || []).some((c) => Number.isFinite(c.order))) {
+        try {
+          await fetch('/api/knowledge/reorder', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: list.map((c) => c.id) }),
+          });
+          localStorage.removeItem(KB_ORDER_KEY);
+        } catch {}
+      }
       const kw = String(q || '').trim().toLowerCase();
       if (kw) {
         list = list.filter((c) =>
@@ -16791,23 +17597,36 @@ function repaintUserRoles() {
 async function refreshIdentityBadge() {
   const el = document.getElementById('idBadge');
   if (!el) return;
+  /* 【2026-11-13 主人钦点·常驻 + 按会话自动切换】
+   * 原来 owner 身份直接 el.hidden=true，读失败也 hidden —— 徽标能被「关掉」，
+   * 而关掉之后（身份功能是全局开关）切会话也不会自己回来，主人得去插件页
+   * 再打开一次切换身份界面。现在不管哪个身份都常驻显示；点它只打开切换面板，
+   * 不再有「关掉」这个状态。切会话由 loadTopCfg → 本函数读
+   * /api/identity?sessionId=当前会话，文案自然跟着该会话的身份走。 */
+  const paint = (name, isOwner) => {
+    try {
+      const nm = String(name || '主人');
+      el.hidden = false;
+      el.textContent = '以「' + nm + '」身份说话中';
+      el.title = isOwner
+        ? '现在是主人在说话。点这里可以换个身份。'
+        : '她们现在不认你是主人，你说的话命令不动她们；安全词也不作数。点这里切回去。';
+      el.onclick = () => openIdentityDlg();
+      return nm;
+    } catch { return '主人'; }
+  };
   try {
     const r = await fetch('/api/identity?sessionId=' + encodeURIComponent(sessionId || '')).then((x) => x.json());
-    if (!r || !r.ok) { el.hidden = true; return; }
-    // 【消息署名】—— 我这一轮是以谁的身份说话，消息左上角就写谁的名字。
-    // 以前那里写死'主人'，切到小鱼身份之后我发的话还顶着「主人」两个字，主人当场发现了。
-    // 这个变量同时给身份徽标和消息署名用，一处更新、两处一致。
-    const me = r.identities && r.identities.find((x) => x.id === r.current);
-    currentIdentityName = (me && me.name) ? String(me.name) : '主人';
+    if (!r || !r.ok) { currentIdentityName = paint('主人', true); return; }
+    /* 身份功能被全局关掉时，语义就是「永远按主人算」（identityOn=false） */
+    const off = r.enabled === false;
+    const id = off ? 'owner' : String(r.current || 'owner');
+    const me = r.identities && r.identities.find((x) => x.id === id);
+    const nm = me && me.name ? String(me.name) : '主人';
+    currentIdentityName = paint(nm, id === 'owner');
     if (typeof repaintUserRoles === 'function') repaintUserRoles();
-    if (r.current === 'owner') { el.hidden = true; return; }
-    const cur = me;
-    el.hidden = false;
-    el.textContent = '以「' + (cur ? cur.name : '?') + '」身份说话中';
-    el.title = '她们现在不认你是主人，你说的话命令不动她们；安全词也不作数。点这里切回去。';
-    el.onclick = () => openIdentityDlg();
   } catch {
-    el.hidden = true;
+    currentIdentityName = paint('主人', true);
   }
 }
 
@@ -19121,7 +19940,9 @@ let cfgMenuFor = null; // 'model' | 'think' | null
 
 function paintTopCfg() {
   topModelName.textContent = cfgState.modelName || '没配模型';
-  topThinkName.textContent = cfgState.levelName || '默认';
+  /* 【2026-11-13 主人报「删了默认档，新会话还是显示默认」】回落文案残留旧八档
+   * 时代的「默认」。档位表早改成 关/低/高/最高（默认=高），回落显示也得跟着。 */
+  topThinkName.textContent = cfgState.levelName || '高';
   // 会话自定义过的，框变个色，免得忘了自己改过
   topModel.classList.toggle('custom', Boolean(cfgState.isModelCustom));
   topThink.classList.toggle('custom', Boolean(cfgState.isLevelCustom));
@@ -19130,12 +19951,17 @@ function paintTopCfg() {
     : `跟右上角一致：${cfgState.modelName}（点一下换，只影响这个会话）`;
   topThink.title = cfgState.isLevelCustom
     ? `这个会话临时用了「${cfgState.levelName}」（点一下换）`
-    : '默认：跟右上角给这个模型设的强度走（点一下换，只影响这个会话）';
+    : '跟右上角给这个模型设的强度走（没设过就是「高」；点一下换，只影响这个会话）';
 }
 
 async function loadTopCfg() {
   // 顶栏「现在是谁在说话」那块牌跟着会话走，顺手一起刷（失败就当没这块牌）
   try { refreshAgentChip(); } catch { /* 忽略 */ }
+  /* 【2026-11-13 主人报「测试鱼会话用小鲸说话，屏上署名乱」】身份是按会话存的，
+   * 但 currentIdentityName 是全局变量、只在身份对话框里刷新 —— 切到身份为
+   * 「小鲸」的会话时它还拿着上一个会话的值，乐观气泡署名就画错了。
+   * loadTopCfg 在每次切会话/新会话都会跑，这里顺手把身份徽标和署名一起刷。 */
+  try { if (typeof refreshIdentityBadge === 'function') await refreshIdentityBadge(); } catch { /* 忽略 */ }
   // 「管理员权限」默认开、按会话存 —— 插件面板开着的话把卡片刷成新会话的状态
   try { if (typeof featuresDlg !== 'undefined' && featuresDlg && featuresDlg.open) { const _fl = document.getElementById('featList'); if (_fl) await adminPaintInto(_fl); } } catch { /* 忽略 */ }
   // 左上角那竖列「屋里的人」也是跟着会话走的
@@ -19351,7 +20177,9 @@ function askPersonaNew({ name = '', text = '' } = {}) {
     };
 
     syncOk();
-    closeOtherDialogs('settingsDlg');
+    /* 【2026-11-13 主人报「【多套人设】点【新建人设】面板自动关掉」】同一个病根：
+     * 写死 closeOtherDialogs('settingsDlg') —— 从人设面板点新建，弹框一出来
+     * 人设面板就被关了。照 askConfirm 先例改叠层，一个面板都不关。 */
     dlg.showModal();
     input.focus();
     input.select();
@@ -19404,7 +20232,10 @@ function askName({ title, value = '', placeholder = '', maxLength = 80 } = {}) {
     };
 
     syncOk();
-    closeOtherDialogs('settingsDlg');
+    /* 【2026-11-13 主人报「改名会自动关掉【会话】面板」】askName 是叠在当前面板
+     * 上的临时小窗，原来写死 closeOtherDialogs('settingsDlg') —— 从会话面板点
+     * 改名，起名框一弹就把会话面板关了。照 askConfirm 的先例：两层 dialog 本来
+     * 就能共存，一个面板都不关，弹就完事。 */
     dlg.showModal();
     input.focus();
     input.select();
@@ -19976,20 +20807,20 @@ document.getElementById('sessBulkDel').onclick = async () => {
     return;
   }
   picked.clear();
-  try {
-    if (hasCur) {
-      // 删的里面有当前会话：先关面板再切，跟单个删除一个套路，
-      // 免得面板盖在输入框上、人以为「删完打不了字」
-      try { sessDlg.close(); } catch {}
-      try {
-        if (r.lastSessionId) await switchSessionSafe(r.lastSessionId);
-        else await createSession();
-      } catch (e) {
-        console.warn('[bulk-del] 切会话出错:', e && e.message ? e.message : e);
-      } finally {
-        settleComposer({ focus: true });
+    try {
+      if (hasCur) {
+        // 删的里面有当前会话：自动切到另一个（或新建一个），面板照旧留着——
+        /* 【2026-11-13 主人钦点·同单个删除的规矩】不再把面板关掉，删完留在
+         * 【会话】面板里看列表刷新。settleComposer 照常复位输入区。 */
+        try {
+          if (r.lastSessionId) await switchSessionSafe(r.lastSessionId);
+          else await createSession();
+        } catch (e) {
+          console.warn('[bulk-del] 切会话出错:', e && e.message ? e.message : e);
+        } finally {
+          settleComposer({ focus: true });
+        }
       }
-    }
     await refreshSessions();
     const refusedN = Array.isArray(r.refused) ? r.refused.length : 0;
     addSysNote(`已删掉 ${r.deleted} 个会话`
@@ -21231,6 +22062,14 @@ window.__mdlRowTest = async (name) => {
 
   const first = await probeOnce();
   if (first && first.ok) return { ok: true, ms: first.ms, fixed: false };
+  /* 【2026-11-13 修·主人报「测连通一定显示不通」】上游 408/429/5xx/超时
+   * 是「服务商这会儿接不上」，不是 Key 或地址填错了。一次抖动就判死太冤：
+   * 隔 1.2 秒自动再试一次（只针对这类临时故障，别把 401「Key 不对」也重试）。 */
+  if (!isLocal && /upstream|attempt budget|408|429|502|503|504|529|超时|timeout|排队/i.test(String((first && first.error) || ''))) {
+    await new Promise((r) => setTimeout(r, 1200));
+    const retry2 = await probeOnce();
+    if (retry2 && retry2.ok) return { ok: true, ms: retry2.ms, fixed: false, retried: true };
+  }
 
   if (!isLocal) return { ok: false, error: (first && first.error) || '连不上' };
 
@@ -21603,6 +22442,12 @@ function paintModels() {
     row.appendChild(main);
 
     {
+      /* 【2026-11-13 修·主人报「测连通点了一直显示不通」】
+       * 下面 onclick 闭包里写的是 model.name / model.model，可这层循环变量叫 m，
+       * 根本没有 model —— 一点就抛 ReferenceError: model is not defined，
+       * 被 catch 吞成「不通」（按钮 title 里留着这个错），压根没打接口。
+       * 补个别名，闭包就能拿到这一行的数据；历史遗留，静态扫描漏了箭头函数。 */
+      const model = m;
       const acts = document.createElement('div');
       acts.className = 'acts';
       const edit = document.createElement('button');
@@ -21628,11 +22473,17 @@ function paintModels() {
             var _m = (mdlState.models || []).find(function (x) { return (x.name || x.model) === (model.name || model.model); });
             if (_m) _m.__health = 'ok';
           } else {
-            tst.textContent = '不通';
-            tst.style.color = '#f87171';
-            tst.title = (r && r.error) || '连不上';
+            /* 【2026-11-13 修】上游临时故障不该显示成「不通」—— 那会让主人
+             * 以为 Key/地址填坏了，反复去改配置。黄的「上游忙」+ 说明真相。 */
+            const _err = String((r && r.error) || '连不上');
+            const _upstream = /(upstream|attempt budget|408|429|502|503|504|529|超时|timeout|排队|额度|余额不足)/i.test(_err);
+            tst.textContent = _upstream ? '上游忙' : '不通';
+            tst.style.color = _upstream ? '#fbbf24' : '#f87171';
+            tst.title = _upstream
+              ? ('上游这会儿接不上（不是配置问题）：' + _err + ' —— 等一下再试，或先切到别的模型')
+              : _err;
             var _m2 = (mdlState.models || []).find(function (x) { return (x.name || x.model) === (model.name || model.model); });
-            if (_m2) _m2.__health = 'bad';
+            if (_m2) _m2.__health = _upstream ? 'upstream' : 'bad';
           }
         } catch (e) {
           tst.textContent = '不通';

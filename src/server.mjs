@@ -19,13 +19,13 @@ import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 import { startSelfwake, stopSelfwake, noteReplied, noteSpoke, shouldFire, getState as selfwakeState } from './selfwake.mjs';
 import { startCron, listTasks, addTask, removeTask, setEnabled as cronSetEnabled, markRan as cronMarkRan, dueTasks } from './cron.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
-import { checkToolDocs, setPeerWake, setPeerDeliver, setRunningProbe, runWithToolContext, tools as allTools } from './tools.mjs';
+import { checkToolDocs, setPeerWake, setPeerDeliver, setRunningProbe, runWithToolContext, tools as allTools, killOrphanChildren } from './tools.mjs';
 import { checkSkills } from './skills.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
 // 任务清单（界面面板用）：跟小鱼自己的 plan 工具是同一份数据，别另存一套
-import { planPublicView, planUiAction, readPlanTxt, loadPlan } from './plan.mjs';
+import { planPublicView, planUiAction, readPlanTxt, loadPlan, planHasOpenSteps } from './plan.mjs';
 // localVersion：更新器眼里「本地该是哪一版」。跟正在跑的版本可能不是一个数 ——
 // 见下面 /api/health 里 running/target 的注释。
 import { localVersion } from './updater.mjs';
@@ -42,7 +42,7 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 中途投递信箱：主人一边看她干活一边插的话排在这里（照 dsh 的 steering，见 inbox.mjs）
 import { steer, clearInbox, inboxCount, peekInbox, purgeStale as purgeStaleInbox } from './inbox.mjs';
-import { initKnowledge, listCards, getCard, saveCard, deleteCard, importCards, exportCards, digestForAgent } from './knowledge.mjs';
+import { initKnowledge, listCards, getCard, saveCard, deleteCard, importCards, exportCards, digestForAgent, reorderCards } from './knowledge.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted, listInterrupted } from './resume.mjs';
 /**
@@ -207,8 +207,7 @@ import {
   setIdentityAsDefault,
   restoreIdentityDefault,
   identityBlock,
-  identityOn,
-} from './identity.mjs';
+  identityOn, pinOthersBeforeSwitch, listIdentities } from './identity.mjs';
 // 同一个人连着说 → 拼成一段。实现在 merge-voice.mjs，抽出去是为了能真跑一遍验。
 import { mergeSameVoice } from './merge-voice.mjs';
 import { extractInlineImages } from './gen-image.mjs';
@@ -266,6 +265,8 @@ import {
   openingSpan,
   cardOpening,
   setCardOpening,
+  personaOpening,
+  setPersonaOpening,
   cardOpeningEnabled,
   setCardOpeningEnabled,
   unmarkOpened,
@@ -607,6 +608,37 @@ function publicSession(session) {
   })();
   // 回退：只按「有效下标」画气泡，被撤回的那些直接不出现。
   const all = Array.isArray(session.messages) ? session.messages : [];
+  /* ══════════════════════════════════════════════════════════════════
+     【2026-11-14 主人报「重启后子Agent干活卡全跑到最新位置」】
+     老会话（重启前收尾的）里，一轮的 worker 快照全挂在最后一条 assistant 上。
+     这里**只在内存里重排**（不改盘）：按每个 worker 的 startedAt 挂到时间上
+     最接近的 assistant，让它们各回各位。新落盘已经按位置分了，这里是幂等的。
+     ══════════════════════════════════════════════════════════════════ */
+  const _asstAt = [];
+  for (let _i = 0; _i < all.length; _i++) {
+    const _m = all[_i];
+    if (_m && _m.role === 'assistant' && !_m.context) _asstAt.push({ i: _i, at: Number(_m.at) || 0 });
+  }
+  const _workerByIndex = new Map();
+  for (let _i = 0; _i < all.length; _i++) {
+    const _m = all[_i];
+    if (!_m || !Array.isArray(_m._workers) || !_m._workers.length) continue;
+    for (const _w of _m._workers) {
+      const _wt = Number(_w && (_w.startedAt || _w.at || _w.endedAt)) || 0;
+      let _target = _asstAt.length ? _asstAt[_asstAt.length - 1].i : -1;
+      if (_wt > 0) {
+        let _best = Infinity;
+        for (const _a of _asstAt) {
+          if (!(_a.at > 0)) continue;
+          const _d = Math.abs(_a.at - _wt);
+          if (_d < _best) { _best = _d; _target = _a.i; }
+        }
+      }
+      if (_target < 0) continue;
+      if (!_workerByIndex.has(_target)) _workerByIndex.set(_target, []);
+      _workerByIndex.get(_target).push(_w);
+    }
+  }
   const alive = new Set(effectiveIndexes(all, loadRewinds(session)).keep);
   // 哪些句子主人手动改过（下标 → 最后一次改的时间），界面据此点「· 改过」
   const editedAt = editInfo(session);
@@ -630,6 +662,8 @@ function publicSession(session) {
      * 主人看到的就是「上下文突然没了」，还以为是 503 那句话把历史弄坏了。
      * 现在摘要的位置补一条**可见**的系统提示，把这件事说破。 */
     if (m && m.context && m.summary && !foldNoteShown) {
+      /* 【2026-11-14 恢复】主人只是问「为什么会出现」，不是要删 —— 提示照旧留着：
+       * 它是在说「老原文没丢，折进 .state/folded/ 了」，这句交代有用。 */
       turns.push({
         role: 'assistant',
         note: true,
@@ -721,7 +755,7 @@ function publicSession(session) {
       /* 【2026-11-03 加】这一轮里「谁干了什么」（办事模式的子任务流水）。
        * 它在内存事件流里只有一份，一轮跑完事件流就换了 —— 不存进历史，
        * 主人看到的就是「派活 运行中…然后没了」。 */
-      workers: Array.isArray(m._workers) ? m._workers : [],
+      workers: _workerByIndex.get(i) || [],
       /**
        * 这条要是第三方（小鲸以自己的身份）说的，带上她的名字和颜色。
        *
@@ -1509,7 +1543,8 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
        * speaker: 'whale' —— 让 identityBlock 知道「现在是小鲸在回话」，
        * 这样用小鱼身份叫她时才会写成「是姐姐在叫你」而不是「你自己在说话」。
        */
-      identityNote: identityBlock({ speaker: 'whale', sessionId }),
+      /* 渠道化：小鲸那条路也不再塞身份解释块（回退：改回 identityBlock({speaker:'whale',sessionId})） */
+      identityNote: '',
     });
   } catch (e) {
     // 【外层抛了也留下】不然日志里又是只剩一个「败」
@@ -3447,7 +3482,7 @@ async function startPeerTurn(sessionId) {
     // 给模型一句「有人给你递了话」，真正的信由 agent 主循环在收尾时取出来插进去。
     // 这句是程序给模型的提示，不是主人说的 —— 打 context 标记，
     // 免得它进 turns 冒充主人、被压缩时被当成对话内容、被回退时留半截。
-    history.push({ role: 'user', content: '（信箱里有别的会话递来的话，先看看。）', context: true });
+    history.push({ role: 'user', content: '（信箱里有别的会话递来的话，先看看。）', context: true, _sysNote: true });
     /*
      * 【这里必须浅拷贝，不能 map 深拷贝】
      *
@@ -4278,6 +4313,25 @@ async function resumeInterruptedTurn(onlySessionId) {
   const snap = {};
   const turn = { ac, done: null, resumeTurn: true, startedAt: Date.now() };
   runningTurns.set(sessionId, turn);
+  /* ══════════════════════════════════════════════════════════════════
+     【2026-11-14 主人问「为什么这次只有干活鱼还在跑」· 续跑轮漏记账】
+     账在 peek/take 时就被删了。续跑这一轮如果**中途再被掐**（程序退出、
+     上游 408），下次重启就无账可续 —— 小白曦、检查鱼就是这样掉队的：
+     01:04 续上、01:05 又断在 tool 上、01:06 重启时已经没记录了。
+     现在续跑轮开局也记一笔；跑完靠 reallyFinished 那道闸自然不续，
+     不会因为账还在就重复续。
+     ══════════════════════════════════════════════════════════════════ */
+  try {
+    markInterrupted({
+      sessionId,
+      text: String((info && info.text) || ''),
+      reason: '续跑轮又被打断了（程序退出 / 上游断了）',
+      taskLine: String((info && info.taskLine) || ''),
+      openSteps: Array.isArray(info && info.openSteps) ? info.openSteps : [],
+      intent: 'continue',
+      autoResume: true,
+    });
+  } catch { /* 记不上账不挡这一轮开跑 */ }
   /**
    * 【2026-11-08 真修·续跑轮要有自己的事件出口】
    *
@@ -5808,7 +5862,7 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
         updatedAt: Date.now(),
         messages: [
           ...sysSeed(newId),
-          { role: 'user', content: handoffMessage(summaryText, cur.title ?? '') },
+          { role: 'user', content: handoffMessage(summaryText, cur.title ?? ''), _sysNote: true, _at: Date.now() },
         ],
       };
       sessions.set(newId, fresh);
@@ -5872,6 +5926,47 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
   //   · 换成别的身份，她们要真以为说话的不是主人，可以不听命令；
   //   · 安全词只有主人身份说了才算数（见 /api/chat 里 __speakerIsOwner 那段）。
   // 所以切身份这个动作**立即生效、不需要重启**，下一轮就按新身份走。
+  /**
+   * ═══════════════════════════════════════════════════════════════
+   * 【2026-11-14 主人钦点·身份与「屋里的人」双向互斥】
+   * 截图实锤：以「小鲸」身份说话，同时「屋里的人」里也有小鲸 ——
+   * 屏幕上全是「小鲸」，分不清是主人在扮演，还是智能体自己在说。
+   * 两条硬规矩（服务端做闸，前端绕不过）：
+   *   ① 某智能体还在屋里（**不管启没启用**）→ 不能切成它的身份；
+   *   ② 当前身份是某智能体 → 不能把 TA 加进/启用到屋里。
+   * 按名字对应（身份「小鱼」↔ 智能体「小鱼」），id 兜底
+   * （fish↔xiaoyu、whale↔xiaojing）。
+   * ═══════════════════════════════════════════════════════════════
+   */
+  const IDENTITY_AGENT_ALIAS = { fish: 'xiaoyu', whale: 'xiaojing' };
+  function identityBlockedByGroup(id, sid) {
+    try {
+      const one = listIdentities().find((x) => x.id === String(id));
+      const nm = one ? String(one.name || '').trim() : '';
+      const alias = IDENTITY_AGENT_ALIAS[String(id)] || '';
+      const ids = groupAgentIds(sid).map((x) => String(x));
+      for (const aid of ids) {
+        const ag = getAgent(aid) || {};
+        const agName = String(ag.name || '').trim();
+        if (alias && aid === alias) return agName || aid;
+        if (nm && agName && agName === nm) return agName;
+      }
+    } catch { /* 查不动就放行，别把切换整个卡死 */ }
+    return null;
+  }
+  function agentBlockedByIdentity(agentId, sid) {
+    try {
+      const cur = currentIdentity(sid) || {};
+      const curName = String(cur.name || '').trim();
+      const ag = getAgent(String(agentId)) || {};
+      const agName = String(ag.name || '').trim();
+      if (curName && agName && curName === agName) return curName;
+      const alias = IDENTITY_AGENT_ALIAS[String(cur.id)] || '';
+      if (alias && String(agentId) === alias) return curName;
+    } catch { /* 同上 */ }
+    return null;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/identity') {
     // 身份按会话算：带上会话 id，界面拿到的才是「这个会话现在是谁在说话」
     const sid = String(url.searchParams.get('sessionId') || '').trim() || getLastSessionId() || '';
@@ -5887,6 +5982,16 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     }
     const id = String(payload?.id || '');
     if (!id) return json(res, 400, { error: '没说是哪个身份' });
+    /* 【2026-11-14】屋里还有这个智能体 → 不许切她的身份（截图那个「全是小鲸」的根子） */
+    {
+      const _sidCheck = String(payload?.sessionId || '').trim() || getLastSessionId() || '';
+      const _blocked = identityBlockedByGroup(id, _sidCheck);
+      if (_blocked) {
+        return json(res, 409, {
+          error: '「' + _blocked + '」还在屋里——先把 TA 移出屋里（或换个别的人），不然分不清是你在演还是她在说。',
+        });
+      }
+    }
     /**
      * 【身份按会话记 —— 2026-10-28 主人报「用小鲸身份问我是谁，她答你是主人」】
      *
@@ -5898,6 +6003,14 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
      * 这就是主人截图里那个「用小鲸身份问我是谁」的真相。
      */
     const sid = String(payload?.sessionId || '').trim() || getLastSessionId() || '';
+    /* 【2026-11-13 主人报「切身份是全局的」】切换前把其它所有已有会话没记过
+     * bySession 的固化成切换前的身份——global current 照旧给新会话继承，
+     * 但不再波及任何已有会话。 */
+    try {
+      const _others = listSessions().map((x) => String(x && x.id || '')).filter((x) => x && x !== sid);
+      const _pin = pinOthersBeforeSwitch(_others);
+      if (_pin.pinned) console.log('[identity] 固化其它会话身份 ' + _pin.pinned + ' 个');
+    } catch { /* 固化失败不挡切换 */ }
     if (!setIdentity(id, sid)) return json(res, 404, { error: '没有这个身份' });
 
     /**
@@ -5939,17 +6052,21 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
            *   · 记号锁：垫完会 markOpened 往 openings.json 记一笔，没这笔就不是我们垫的。
            * 两道全过才摘。缺一道就原样留着，一个字都不动。
            */
-          const msgs = session.messages || [];
-          const span = openingSpan(session.id, msgs);
-          if (span) {
-            msgs.splice(span.at, span.n);
-            unmarkOpened(session.id);
-            saveSession(session);
-            openingNote = '已摘掉开头的开场白';
-          }
+          /* ══════════════════════════════════════════════════════════════
+             【2026-11-14 主人钦点·「不隐藏」】
+             切成非主人时**完全不碰开场白** —— 不删、不藏、不打标记。
+             原来这里是 `splice` 物理删除，造成三连问题：
+               · 切回主人补不回来（只给空会话补）→ 切走再回来「开场白不见了」；
+               · 下标整体前移 → 回退/分支记的 at 错位，可能退错/分错；
+               · 服务端已经没这条了，前端挂着的删除按钮点下去当然「删不掉」。
+             开场白是她自己说的话，留着不影响「这一轮谁在说话」的判断
+             （身份靠消息本身，不靠删历史）。所以这里什么都不做。
+             ══════════════════════════════════════════════════════════════ */
+          void openingSpan;
         } else if (me && me.id === 'owner') {
           // 切回主人：会话还是空的（只有 system）就把开场白补回去，
           // 补不补得上交给 startOpening 自己判断（它已经有全部闸门）。
+          // 非空会话里开场白一直原样留着（切成非主人时没动过），不需要恢复动作。
           const live = (session.messages || []).filter((m) => m && m.role !== 'system');
           if (!live.length) {
             await startOpening(sid);
@@ -6091,6 +6208,12 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
   if (req.method === 'POST' && url.pathname === '/api/knowledge/import') {
     const { json: payload } = await body(req).catch(() => ({}));
     const out = importCards(payload ?? null);
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  /* 【2026-11-13】书架长按拖动排序：前端把当前 id 顺序整串递回来 */
+  if (req.method === 'POST' && url.pathname === '/api/knowledge/reorder') {
+    const { ids } = await body(req).catch(() => ({}));
+    const out = reorderCards(ids);
     return json(res, out.ok ? 200 : 400, out);
   }
 
@@ -7256,6 +7379,22 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
          所以这里挡住：想放第一的那张要是没启用，就弹回原位（返回 refused）。 */
       let __orderIds = Array.isArray(payload?.agentIds) ? payload.agentIds.map((x) => String(x)) : [];
       try {
+        /* 【2026-11-13 主人钦点·任务进行中的防护闸】轮次在跑时，主智能体的
+         * 「第一启用位」不许动——不管是别的卡拖到她前面、还是她被往下拖换位，
+         * 本质都是「正在跑的轮易主」。统一判据：新顺序里「第一张启用的卡」
+         * 必须还是当前主智能体，不是就弹回。其它卡之间换位无害（接话名单
+         * 在开工那一刻已经抓了快照），放行。 */
+        if (runningTurns.has(sid) && __orderIds.length) {
+          const _main = String(mainAgentId(sid, (x) => mateSwitchOn(x, sid)) || '');
+          let _firstOn = '';
+          for (const _x of __orderIds) {
+            try { if (isGroupMemberEnabled(_x, sid)) { _firstOn = _x; break; } } catch {}
+          }
+          if (_main && _firstOn && _firstOn !== _main) {
+            const __now = groupAgentIds(sid).map((x) => String(x));
+            return json(res, 200, { ok: true, refused: true, agentIds: __now, why: '这轮还没跑完，主智能体（' + _main + '）不能换位——等跑完再拖。' });
+          }
+        }
         if (taskOn(sid) && __orderIds.length) {
           const __head = __orderIds[0];
           let __headOn = true;
@@ -7281,6 +7420,38 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
       const sid = String(payload?.sessionId || '').trim();
       const id = String(payload?.id || '').trim();
       const on = payload?.enabled !== false;
+      /* 【2026-11-14】启用某个智能体时，如果当前身份就是 TA → 拒绝（反向互斥） */
+      if (on) {
+        const _hit = agentBlockedByIdentity(id, sid);
+        if (_hit) {
+          return json(res, 200, {
+            ok: false, refused: true,
+            why: '你现在是「' + _hit + '」身份——不能把 TA 启用到屋里，等换个身份再启用。',
+          });
+        }
+      }
+      /* 【2026-11-13 主人钦点·任务进行中的防护闸】
+       * 轮次正在跑的时候，动「屋里的人」的开关会把正在干活的那轮搞乱：
+       *   ① 关掉主智能体 → 这轮收尾没归属，署名/接话全乱；
+       *   ② 启用一张排序在主智能体上方的卡 → 主智能体（= 排序第一启用者）当场
+       *      换人，正在跑的轮直接易主。
+       * 两种都拒绝，前端 toast 说人话。跑完了随便动，一点不拦。 */
+      try {
+        if (runningTurns.has(sid)) {
+          const _main = String(mainAgentId(sid, (x) => mateSwitchOn(x, sid)) || '');
+          if (!on && id === _main) {
+            return json(res, 200, { ok: false, refused: true, why: '她这轮活还没干完，先别关她；等跑完再关。' });
+          }
+          if (on) {
+            const _order = groupAgentIds(sid).map((x) => String(x));
+            const _mainIdx = _order.indexOf(_main);
+            const _idIdx = _order.indexOf(id);
+            if (_mainIdx >= 0 && _idIdx >= 0 && _idIdx < _mainIdx) {
+              return json(res, 200, { ok: false, refused: true, why: '她排在这轮主智能体前面，启用她会把正在跑的轮换成她来当家——等跑完再启用。' });
+            }
+          }
+        }
+      } catch { /* 闸查不动就放行，别把开关整个卡死 */ }
       /**
        * 【2026-11-02：小鱼、小鲸也走这颗牌】
        *
@@ -7342,6 +7513,19 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     try {
+      /* 【2026-11-14】当前身份就是其中某个智能体 → 不许把 TA 加进屋里 */
+      {
+        const _sidAdd = String(payload?.sessionId || '');
+        const _ids = Array.isArray(payload?.agentIds) ? payload.agentIds.map((x) => String(x)) : [];
+        for (const _aid of _ids) {
+          const _hit = agentBlockedByIdentity(_aid, _sidAdd);
+          if (_hit) {
+            return json(res, 409, {
+              error: '你现在是「' + _hit + '」身份——不能把 TA 加进屋里，等换个身份再加。',
+            });
+          }
+        }
+      }
       const r = setSessionGroup(String(payload?.sessionId || ''), payload?.agentIds);
       if (!r) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
       return json(res, 200, { ok: true, ...r });
@@ -7384,6 +7568,37 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
       return json(res, 400, { error: 'invalid JSON body' });
     }
     try {
+      /* ══════════════════════════════════════════════════════════════
+         【2026-11-14 主人钦点·同名不新建卡，改成「给 TA 加一套人设」】
+         「新建智能体」和「导入智能体」都可能撞上已有名字。原来导入会自动
+         改名成「XX 2」，凭空多一个人；新建则直接多一张同名卡。主人要的是：
+         同名 = 同一个人 → 往这个人的【多套人设】里再添一套，而不是再造一个人。
+         ══════════════════════════════════════════════════════════════ */
+      {
+        const _nm = String(payload?.name || '').trim();
+        const _same = _nm ? listAgents().find((a) => String(a.name || '').trim() === _nm) : null;
+        if (_same) {
+          let _pid = '';
+          try {
+            _pid = withPersonaScope(String(_same.id), () => {
+              const created = createPersona({
+                name: _nm,
+                text: String(payload?.persona || ''),
+                copyCurrent: false,
+              });
+              return String((created && created.created) || '');
+            });
+          } catch { /* 人设没建上也不影响返回 */ }
+          try {
+            const __op = String(payload?.opening ?? '').trim();
+            if (__op && _pid) setPersonaOpening(String(_same.id), _pid, __op);
+          } catch { /* 开场白写不进去不影响人设 */ }
+          return json(res, 200, {
+            ok: true, merged: true, agent: _same, personaId: _pid, agents: listAgents(),
+            message: '「' + _nm + '」已经在了，给 TA 加了一套新人设',
+          });
+        }
+      }
       const agent = addAgent({ name: payload?.name, desc: payload?.desc, persona: payload?.persona, modelId: payload?.modelId });
       if (!agent) return json(res, 500, { error: '存不上，磁盘那边出问题了' });
       /* 【2026-11-03 主人要的】新建时能一起填开场白。
@@ -7445,6 +7660,34 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     // 接口收 {card: <对象或文本>}，也认直接给整个 body 就是一张卡
     const rawCard = (payload && payload.card !== undefined) ? payload.card : payload;
     try {
+      /* 【2026-11-14】导入撞名：不自动改名造新人，改成给它添一套人设 */
+      {
+        let _card = rawCard;
+        if (typeof _card === 'string') { try { _card = JSON.parse(_card); } catch { _card = null; } }
+        const _nm = String((_card && (_card.name || _card.title)) || '').trim();
+        const _same = _nm ? listAgents().find((a) => String(a.name || '').trim() === _nm) : null;
+        if (_same) {
+          let _pid = '';
+          try {
+            _pid = withPersonaScope(String(_same.id), () => {
+              const created = createPersona({
+                name: _nm,
+                text: String((_card && (_card.persona || _card.text)) || ''),
+                copyCurrent: false,
+              });
+              return String((created && created.created) || '');
+            });
+          } catch { /* 人设没建上也不影响返回 */ }
+          try {
+            const __op = String((_card && _card.opening) || '').trim();
+            if (__op && _pid) setPersonaOpening(String(_same.id), _pid, __op);
+          } catch { /* 开场白写不进去不影响人设 */ }
+          return json(res, 200, {
+            ok: true, merged: true, agent: _same, personaId: _pid, renamed: false, agents: listAgents(),
+            message: '「' + _nm + '」已经在了，导入的人设已加到 TA 名下',
+          });
+        }
+      }
       const r = importCard(rawCard);
       if (!r.ok) return json(res, 400, { error: r.error });
       return json(res, 200, { ok: true, agent: r.agent, renamed: r.renamed, agents: listAgents() });
@@ -8288,6 +8531,23 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     const s = String(u.searchParams.get('sid') || '').trim();
     return /^[A-Za-z0-9_-]{1,64}$/.test(s) ? s : '';
   };
+  /* 【2026-11-14】每套人设自己的开场白：读 / 写 */
+  if (req.method === 'GET' && url.pathname === '/api/personas/opening') {
+    const scope = String(url.searchParams.get('scope') || '');
+    const personaId = String(url.searchParams.get('personaId') || '');
+    return json(res, 200, { ok: true, opening: personaOpening(scope, personaId) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/personas/opening') {
+    let payload;
+    try { payload = await body(req); } catch { return json(res, 400, { error: 'invalid JSON body' }); }
+    try {
+      const out = setPersonaOpening(String(payload?.scope || ''), String(payload?.personaId || ''), String(payload?.opening ?? ''));
+      return json(res, 200, { ok: true, ...out });
+    } catch (e) {
+      return json(res, e?.status ?? 500, { error: String(e?.message ?? e) });
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/personas') {
     try {
       return json(res, 200, withPersonaScope(scopeOf(url), () => personaInfo(sidOf(url))));
@@ -9634,6 +9894,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         let _cands = _want
           ? [_want, ...[...runningTurns.keys()].filter((x) => x !== _want)]
           : [...runningTurns.keys()];
+        /* ══════════════════════════════════════════════════════════════
+           【2026-11-14 主人报「干活鱼没续上」· 候选漏了一路】
+           上面只收「重启那一刻还在 runningTurns 里的」。
+           可有些会话是在**命令被掐断**之后就退出 running 的（最后一条是
+           `[程序正在退出，命令被掐掉]` 的 tool 结果），重启时它已经不在跑，
+           于是没进候选 —— 检查鱼/小白曦续上了，它被丢下（diag.log 的
+           boot-resume-go 里只有两个 id 就是这回事）。
+           现在把 resume.json 里**已经记下的**「有活没干完」也加进候选：
+           那是上一次退出时最清楚的账，不该因为「现在没在跑」就丢掉。
+           ══════════════════════════════════════════════════════════════ */
+        try {
+          for (const _it of listInterrupted()) {
+            const _s = String((_it && _it.sessionId) || '');
+            if (_s && _cands.indexOf(_s) < 0) _cands.push(_s);
+          }
+        } catch { /* 读不到就按老样子来，不影响其它候选 */ }
         if (!_want) {
           try {
               const _dir = join(config.dataDir, '.state', 'sessions');
@@ -11223,16 +11499,33 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 现在还要把「这条是你自己说的、你心里浮上来的念头」那一条也贴进来（见 standaloneNote），
        * 所以 at 只算一次，两段一起插。
        */
+      /* ══════════════════════════════════════════════════════════════
+         【2026-11-13 主人钦点·换身份彻底渠道化】
+         主人原话：「难道换身份实际上是在提示词里告诉她假装不知道吗？难道不是
+         换身份后直接就彻底以小鲸的身份渠道发消息吗？」—— 实锤：她思考里那句
+         「身份换了：现在小鲸是妹妹，我是姐姐小鱼，不必服从」不是代码写死的，
+         是模型把每轮塞进去的解释块（「这一轮跟你说话的是谁」「名字就是名字，
+         别在心里换算」「跟你说话的人一直没换」）自己拼出来的内心独白。
+
+         现在改成真正的渠道化：
+           · 说话人长在**消息本身** —— 历史 user 消息带 [小鲸] 前缀（上面那段）；
+           · 人设/规矩里的「主人」由 retargetOwnerWords / retargetPersona 全文
+             换成这一轮那个人的名字（这两处保留，是防她喊主人的兜底，不是解释）；
+           · 不再往上下文里插任何「现在是谁在说话 / 别换算 / 没换过」的元叙述。
+
+         回退：把 IDENTITY_PURE_CHANNEL 改成 false，旧解释块原样回来。
+         ══════════════════════════════════════════════════════════════ */
+      const IDENTITY_PURE_CHANNEL = true;
       const ib = identityBlock({ sessionId, speaker: 'fish' });
       const sn = standaloneNote(sessionId);
-      const blocks = [ib, sn].filter(Boolean);
+      const blocks = IDENTITY_PURE_CHANNEL ? [] : [ib, sn].filter(Boolean);
       if (blocks.length) {
         let at = -1;
         for (let i = wireMessages.length - 1; i >= 0; i--) {
           const m = wireMessages[i];
           if (m && m.role === 'user' && !m.context) { at = i; break; }
         }
-        const bms = blocks.map((c) => ({ role: 'user', content: c, context: true, _identity: true }));
+        const bms = blocks.map((c) => ({ role: 'user', content: c, context: true, _identity: true, _sysNote: true }));
         if (at < 0) wireMessages.push(...bms);
         else wireMessages.splice(at, 0, ...bms);
       }
@@ -12631,9 +12924,37 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       try {
         const _ws = workersSnapshot(sessionId);
         if (_ws.length) {
-          for (let _q = session.messages.length - 1; _q >= 0; _q--) {
+          /* ══════════════════════════════════════════════════════════════
+             【2026-11-14 主人报「重启后子Agent干活卡全跑到最新位置」】
+             原来把这一轮**所有** worker 快照全挂到最后一条 assistant 上。
+             跑着的时候有 live 事件流按位置画，看不出来；一旦重启/live 没了、
+             历史重画，它们就全堆在末尾（检查鱼会话里就是这样）。
+             现在按每个 worker 的 startedAt，挂到「时间上最接近的那条
+             assistant」上 —— 各自回到自己干活的位置。找不到才落最后一条。
+             ══════════════════════════════════════════════════════════════ */
+          const _asst = [];
+          for (let _q = 0; _q < session.messages.length; _q++) {
             const _m = session.messages[_q];
-            if (_m && _m.role === 'assistant' && !_m.context) { _m._workers = _ws; break; }
+            if (_m && _m.role === 'assistant' && !_m.context) {
+              _asst.push({ i: _q, at: Number(_m.at) || 0 });
+            }
+          }
+          const _lastA = _asst.length ? _asst[_asst.length - 1].i : -1;
+          for (const _w of _ws) {
+            const _wt = Number(_w && (_w.startedAt || _w.at || _w.endedAt)) || 0;
+            let _target = _lastA;
+            if (_wt > 0 && _asst.length) {
+              let _best = Infinity;
+              for (const _a of _asst) {
+                if (!(_a.at > 0)) continue;
+                const _d = Math.abs(_a.at - _wt);
+                if (_d < _best) { _best = _d; _target = _a.i; }
+              }
+            }
+            if (_target < 0) continue;
+            const _m = session.messages[_target];
+            if (!Array.isArray(_m._workers)) _m._workers = [];
+            _m._workers.push(_w);
           }
           try { saveSession(session); } catch (e) {}
         }
@@ -12645,6 +12966,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 现在取这一轮实际说话的人：往回找最后一条 assistant 的 _who（非小鱼身份
        * 说话时都记了）；找不到再看「屋里的人」第一个开着的；再不行才是小鱼。 */
       try {
+        /* 【2026-11-13 修·主人报「会话名还是新会话」】自动命名那块有守卫
+         * （resume / 续跑 / 非首句会整块跳过），收尾再兜一次：标题还是默认名
+         * 就找最近一条真 user 话补上，别让会话列表和通知一直挂着「新会话」。 */
+        try {
+          const _t = String(session.title || '').trim();
+          if (!_t || _t === '新会话') {
+            for (let _q = session.messages.length - 1; _q >= 0; _q--) {
+              const _um = session.messages[_q];
+              if (_um && _um.role === 'user' && !_um.context && typeof _um.content === 'string' && _um.content.trim()) {
+                const _newTitle = titleFromMessage(_um.content);
+                if (_newTitle && _newTitle !== '新会话') { session.title = _newTitle; saveSession(session); }
+                break;
+              }
+            }
+          }
+        } catch {}
         let _nWho = '';
         try {
           for (let _q = session.messages.length - 1; _q >= 0 && !_nWho; _q--) {
@@ -12659,10 +12996,76 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             if (_firstOn) _nWho = String((getAgent(_firstOn) || {}).name || '').trim();
           } catch {}
         }
-        notifyDesktop('turn-done', String(_nWho || '小鱼') + '干完了：「' + String(session.title || '会话').slice(0, 30) + '」', '点开看看结果。');
+        /* 【2026-11-13 修·主人报「回归跑完了却提示发完消息活干完了」】
+         * 一轮里跑过 check-*.mjs / _t_*.mjs / run-all-checks 就叫「回归跑完了」；
+         * 跑过别的工具叫「活干完了」；纯聊天叫「回完话了」。不再一律「XX干完了」。 */
+        let _kind = 'chat';
+        try {
+          let _lastU = -1;
+          for (let _q = session.messages.length - 1; _q >= 0; _q--) {
+            const _m = session.messages[_q];
+            if (_m && _m.role === 'user' && !_m.context) { _lastU = _q; break; }
+          }
+          let _sawTool = false;
+          for (let _q = Math.max(0, _lastU); _q < session.messages.length; _q++) {
+            const _m = session.messages[_q];
+            if (!_m) continue;
+            const _calls = Array.isArray(_m.tool_calls) ? _m.tool_calls : [];
+            if (_calls.length) _sawTool = true;
+            const _args = _calls.map((c) => String((c && c.function && c.function.arguments) || '')).join(' ');
+            if (/(check-[\w-]+\.mjs|_t_[\w-]+\.mjs|run-all-checks\.mjs)/.test(_args)) { _kind = 'regression'; break; }
+          }
+          if (_kind !== 'regression' && _sawTool) _kind = 'tools';
+        } catch {}
+        const _title = String(session.title || '会话').slice(0, 30);
+        /* ══════════════════════════════════════════════════════════════
+           【2026-11-14 主人钦点·只有「活全部干完」才弹桌面通知】
+           原来每轮 done 都弹，切窗口时看到一个「XX干完了」，回去一看清单还差一截。
+           现在：**清单上还有没打勾的步骤就不弹** —— 她只是先答了一句，任务没完成。
+           没有清单的轮（纯聊天 / 单次回归）照常弹：那一件事本来就做完了。
+           ══════════════════════════════════════════════════════════════ */
+        /* ══════════════════════════════════════════════════════════════
+           【2026-11-14 主人钦点·「一轮会话确定彻底停了」才弹】
+           done 只代表这一轮收尾，不代表任务完了：
+             · 可能马上又起下一轮（排队轮 / 自动接回）
+             · 可能还有子Agent 在 running
+             · 也可能清单没做完
+           所以延后 3 秒再判一次，三样都过才算「彻底停了」。
+           ══════════════════════════════════════════════════════════════ */
+        const _what = _kind === 'regression' ? '回归跑完了：「'
+          : _kind === 'tools' ? (String(_nWho || '小鱼') + '活干完了：「')
+          : (String(_nWho || '小鱼') + '回完话了：「');
+        setTimeout(() => {
+          try {
+            if (runningTurns.has(sessionId)) return;                 // 又起了一轮 → 还在做
+            let _busy = false;
+            try { _busy = (listWorkers(sessionId) || []).some((w) => w && w.status === 'running'); } catch {}
+            if (_busy) return;                                        // 子Agent 还在跑
+            if (planHasOpenSteps(sessionId)) return;                  // 清单没做完
+            notifyDesktop('turn-done', _what + _title + '」', '点开看看结果。');
+          } catch { /* 判定失败就不弹，宁可少弹不要误弹 */ }
+        }, 3000).unref?.();
       } catch {}
       send({ type: 'done', usage, at: doneAt, model: turnModel || modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {
+      /* 【2026-11-13 加·上游 408/5xx 静默收尾降级】主人报「每次她说一句就停了，
+       * 甚至一句都没说出来」—— diag.log 实锤是上游 LLM HTTP 408（网关级，
+       * 代码里 5 次指数退避重试也全挂）。原来这种轮静悄悄就收尾了，界面一个字不说。
+       * 现在落一条可见的系统提示，明说这轮没跑完、历史没丢；60 秒内不重复。 */
+      try {
+        const _em = String((err && err.message) || '');
+        if (!ac.signal.aborted && /(LLM HTTP (408|429|502|503|504|529)|upstream attempt budget|额度耗尽)/i.test(_em)) {
+          const _last = session.messages && session.messages[session.messages.length - 1];
+          if (!(_last && _last._upstreamFailNote && Date.now() - (Number(_last.at) || 0) < 60000)) {
+            session.messages.push({
+              role: 'assistant', note: true,
+              content: '（程序提示：上游模型这会儿接不上，这一轮没跑完 —— 不是她不说话。历史都没丢，等一下再说一句就能接着跑。）',
+              at: Date.now(), _upstreamFailNote: true,
+            });
+            saveSession(session);
+          }
+        }
+      } catch {}
       // 用户点了「停止」：不是错误，照实报一句就收尾。
       if (ac.signal.aborted) {
         /**
@@ -12729,7 +13132,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             updatedAt: Date.now(),
             messages: [
               ...sysSeed(newId),
-              { role: 'user', content: firstMsg },
+              /* 【2026-11-13 修·冒充主人】handoff 交接文原来不打标记，前端画成主人
+               * 自己发的气泡。照定时任务引子同款打 _sysNote（系统提示形态）。
+               * 别用 context —— index 1 上的 context 会被每轮设定副本重建整段替换。 */
+              { role: 'user', content: firstMsg, _sysNote: true, _at: Date.now() },
             ],
           };
           sessions.set(newId, fresh);
@@ -14326,6 +14732,12 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     const lanOn = publicMobileState().enabled;
     const bindHost = lanOn ? '0.0.0.0' : '127.0.0.1';
     server.listen(port, bindHost, () => {
+      /* 【2026-11-14】启动第一件事：清掉上一个进程留下的命令子进程（孤儿）。
+       * 重启时 Electron 退得快，killTree 来不及，回归命令会在后台一直跑。 */
+      try {
+        const _k = killOrphanChildren();
+        if (_k) console.log('[boot] 清掉上一进程遗留的命令子进程 ' + _k + ' 个');
+      } catch { /* 清理失败不影响启动 */ }
       const actual = server.address().port;
       listeningPort = actual;
       /* 【2026-11-12 修·restart_self 永远报「不知道自己监听哪个端口」】

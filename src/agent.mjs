@@ -407,7 +407,11 @@ export function contextMessage(sessionId = 'default', opts = {}) {
    * 现在真正的重写由 retargetOwnerText 在出提示词那一刻统一做掉了，
    * 这里不需要再指着那个词解释 —— 说「规矩里的人称已经换过」就够了。
    */
-  const _head = _whoHead ? _whoHead + CONTEXT_PREAMBLE : CONTEXT_PREAMBLE;
+  /* 【2026-11-13 渠道化】_whoHead 那段「最要紧的一条：这一轮跟你说话的是 X」
+   * 不再拼进规则副本 —— 说话人由历史里的 [名字] 前缀承担。
+   * 回退：IDENTITY_PURE_CHANNEL 改 false。 */
+  const IDENTITY_PURE_CHANNEL = true;
+  const _head = IDENTITY_PURE_CHANNEL ? CONTEXT_PREAMBLE : (_whoHead ? _whoHead + CONTEXT_PREAMBLE : CONTEXT_PREAMBLE);
   /**
    * 规则副本（这一趟 user 版的 rules）和系统提示一样，必须过同一道卡口。
    * 只改系统提示、不改这份副本的话，「主人」还会从这个口子漏回去 ——
@@ -691,16 +695,9 @@ export async function runAgent({
    * 会话选的模型被删/被禁用时，下面会一路回落到默认那套 —— 换模型、换 key、
    * 换计费、换上下文窗口，原来一句话都不说，主人只会觉得「怎么突然变笨/变贵了」。
    * 现在开头就把这句递到界面上（notice 不进正文，不污染她说的话）。 */
-  try {
-    if (!hasSessionModel(sessionId)) {
-      onEvent({
-        type: 'text',
-        notice: true,
-        text: '（这个会话原来选的模型已经不在了，这一轮回落到默认模型「' + turnModel
-          + '」。要换回来，去【模型】里重新选一个。）',
-      });
-    }
-  } catch {}
+  /* 【2026-11-14 主人要求删掉】
+   * 原来这里会往界面递一句「这个会话原来选的模型已经不在了，这一轮回落到默认模型…」。
+   * 主人说删了 —— 回落就回落，别每轮弹这句。回落逻辑本身不变，只是不出声了。 */
 
   /**
    * 【这一轮已经压过一次了，就别再压】
@@ -1764,7 +1761,10 @@ for (let round = 0; round < config.maxRounds; round++) {
       role: 'assistant',
       // 【2026-11-05】记下这条是什么时候说的，界面要显示时间（沿用项目已有的 at）
       at: Date.now(),
-      content: text || null,
+      /* 【2026-11-13 修】content: text || null → ''。null 是 OpenAI 协议合法形态，
+       * 但 glm-5.3 上游解析 null 会报「missing type field in content item」把整个
+       * 请求拒掉（检查鱼就是这么断的）。空串两边都认，落盘也是干净的。 */
+      content: text || '',
       tool_calls: toolCalls.map((tc, i) => ({
         id: tc.id || `call_${round}_${i}`,
         type: 'function',

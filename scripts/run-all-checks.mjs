@@ -93,10 +93,27 @@ const TIER_ENTRY = new Set(['check-smoke.mjs', 'check-changed.mjs', 'check-core.
  * 它验的是「检查器本身」，属于元测试，单独跑：node scripts/check-gates-self.mjs */
 const META_ONLY = new Set(["check-gates-self.mjs"]);
 
-const scripts = fs
+let scripts = fs
   .readdirSync(path.join(process.cwd(), 'scripts'))
   .filter((f) => /^check-.*\.mjs$/.test(f) && !TIER_ENTRY.has(f) && !META_ONLY.has(f))
   .sort();
+
+/* ══════════════════════════════════════════════════════════════════
+   【2026-11-14 主人问「回归容易被超时掐」· 分片跑】
+   用法：node scripts/run-all-checks.mjs --only=ui,msg
+   按文件名子串过滤（逗号分隔，命中任一就跑）。单次跑短，不容易撞超时；
+   全量还是不带参数一次跑。
+   ══════════════════════════════════════════════════════════════════ */
+{
+  const _onlyArg = process.argv.find((a) => a.startsWith('--only='));
+  if (_onlyArg) {
+    const _keys = _onlyArg.slice('--only='.length).split(',').map((x) => x.trim()).filter(Boolean);
+    if (_keys.length) {
+      scripts = scripts.filter((f) => _keys.some((k) => String(f).toLowerCase().includes(k.toLowerCase())));
+      console.log('分片跑：--only=' + _keys.join(',') + ' → ' + scripts.length + ' 个脚本');
+    }
+  }
+}
 
 console.log('=== 开始前先清一遍 ===');
 sweep('before');

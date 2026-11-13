@@ -1,0 +1,100 @@
+736|   const curNote = typeof raw.safeWordNote === 'string' ? raw.safeWordNote.trim() : '';
+737| 
+738|   const same =
+739|     curWords.length === defaults.length &&
+740|     curWords.every((w, i) => w === defaults[i]) &&
+741|     curNote === defaultNote;
+742|   if (same) {
+743|     return { settings: normalize(raw), backup: null, changed: false };
+744|   }
+745| 
+746|   if (!existsSync(join(config.dataDir, '.state'))) mkdirSync(join(config.dataDir, '.state'), { recursive: true });
+747|   writeFileSync(
+748|     SAFE_BACKUP_FILE,
+749|     '# 被替换掉的那版安全词\n\n' +
+750|       (curWords.length ? curWords.map((w) => '- ' + w).join('\n') : '(当时是空的)') +
+751|       '\n\n## 触发后要她怎么做\n\n' +
+752|       (curNote || '(当时是空的)') +
+753|       '\n',
+754|     'utf8',
+755|   );
+756| 
+757|   const next = { ...raw, safeWords: [...defaults], safeWordNote: defaultNote };
+758|   writeFileSync(FILE, JSON.stringify(next, null, 2), 'utf8');
+759|   return { settings: normalize(next), backup: SAFE_BACKUP_FILE, changed: true };
+760| }
+761| 
+762| /**
+763|  * 【恢复出厂默认底线 —— 2026-11-11 加】
+764|  *
+765|  * 和 resetBottomLines() 不是一回事：那个回的是「主人自己设的默认」（defaults.json），
+766|  * 这个回的是**写死在代码里的出厂那份**（DEFAULT_SETTINGS）。
+767|  *
+768|  * 以前没有这个函数，前端那颗「恢复出厂默认底线」按钮借用的就是 reset-bottomlines，
+769|  * 于是它跟「恢复默认」干的是同一件事，主人怎么点都看不出区别 —— 这就是那个 bug。
+770|  */
+771| export function resetBottomLinesToFactory() {
+772|   const factory = [...DEFAULT_SETTINGS.bottomLines];
+773| 
+774|   let raw;
+775|   try {
+776|     raw = JSON.parse(readFileSync(FILE, 'utf8'));
+777|   } catch (err) {
+778|     if (err && err.code === 'ENOENT') {
+779|       raw = {};
+780|     } else {
+781|       const e = new Error('读不到现在的设置文件，为了不误伤底线，这次不做恢复：' + String(err?.message ?? err));
+782|       e.status = 500;
+783|       throw e;
+784|     }
+785|   }
+786|   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+787|     const e = new Error('设置文件格式不对，为了不误伤底线，这次不做恢复。');
+788|     e.status = 500;
+789|     throw e;
+790|   }
+791| 
+792|   /* 【判据用「当前生效值」而不是文件里的原始字段】
+793|    * 干净安装时 settings.json 根本不存在，raw 是 {} —— 照 raw 比会得到「空 != 出厂」，
+794|    * 于是第一次点就说「已恢复」，还白写一份备份。用 getSettings() 拿到的是**实际生效**那套
+795|    * （没有文件就回出厂），跟主人眼前看到的完全一致。 */
+796|   const cur = normalizeLines(getSettings().bottomLines);
+797|   const same = cur.length === factory.length && cur.every((x, i) => x === factory[i]);
+798|   if (same) {
+799|     return { settings: normalize(raw), backup: null, changed: false, factory: true };
+800|   }
+801| 
+802|   ensureStateDir();
+803|   const backup = join(config.dataDir, '.state', 'bottomlines.factory.backup.md');
+804|   try {
+805|     writeFileSync(backup, ['# 点「恢复出厂默认底线」之前那版（' + new Date().toISOString() + '）', '', ...cur.map((x) => '- ' + x), ''].join('\n'), 'utf8');
+806|   } catch {
+807|     /* 备份失败不挡主流程 */
+808|   }
+809| 
+810|   raw = { ...raw, bottomLines: factory };
+811|   writeFileSync(FILE, JSON.stringify(raw, null, 2), 'utf8');
+812|   return { settings: normalize(raw), backup, changed: true, factory: true };
+813| }
+814| 
+815| /**
+816|  * 【恢复出厂默认安全词 —— 2026-11-11 加】同理，回的是 DEFAULT_SETTINGS 那份。
+817|  */
+818| export function resetSafeWordsToFactory() {
+819|   const factory = [...DEFAULT_SETTINGS.safeWords];
+820|   const extra = String(DEFAULT_SETTINGS.safeWordNote || '').trim();
+821| 
+822|   let raw;
+823|   try {
+824|     raw = JSON.parse(readFileSync(FILE, 'utf8'));
+825|   } catch (err) {
+826|     const e = new Error('读不到现在的设置文件，为了不误伤底线，这次不做恢复：' + String(err?.message ?? err));
+827|     e.status = 500;
+828|     throw e;
+829|   }
+830|   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+831|     const e = new Error('设置文件格式不对，为了不误伤底线，这次不做恢复。');
+832|     e.status = 500;
+833|     throw e;
+834|   }
+835| 

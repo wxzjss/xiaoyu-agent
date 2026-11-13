@@ -1,0 +1,32 @@
+9451|           _qopen = _qst
+9452|             .filter((x) => x && x.status !== 'done' && x.status !== 'skipped')
+9453|             .map((x, n) => ({ n: (x.id != null ? x.id : n + 1), text: String(x.text || '').slice(0, 200) }));
+9454|         } catch {}
+9455|         let _qlive = null;
+9456|         try { _qlive = _wasLiveAtQuit.has(String(_qsid)) ? (runningTurns.get(_qsid) || { _wasLive: true }) : null; } catch {}
+9457|         if (_qlive || _qopen.length) {
+9458|           markInterrupted({
+9459|             sessionId: _qsid,
+9460|             text: _qlive && _qlive.draft ? _qlive.draft.text : '',
+9461|             reason: _qlive ? '关窗口退出（这一轮还没跑完）' : '关窗口退出（清单上还有没做完的）',
+9462|             taskLine: lastUserLine(_qsid),
+9463|             openSteps: _qopen,
+9464|             /* 【2026-11-07】只有「正在跑被打断」才在开机时自动接着干；
+9465|              * 清单老账（人早就不在跑了）只记着，等主人手动点 —— 否则一次能拉起八个会话。 */
+9466|             autoResume: Boolean(_qlive),
+9467|           });
+9468|           diagLog('quit-resume:' + _qsid + ':' + _qopen.length, _qsid);
+9469|         }
+9470|       }
+9471|     } catch (e) { console.warn('[quit] 记续跑意图失败：', String(e?.message ?? e)); }
+9472|     /* 【2026-11-02 主人要求·修】这里原来干的是「有活没干完就置 __xyRelaunchOnQuit，
+9473|      *  让主进程退了之后自己爬起来」。主人手动退出却自己重开，就是这一行造成的：
+9474|      *  只要 resume.json 里还压着旧账（清单没做完），哪怕是他自己点了退出，
+9475|      *  程序也会偷偷 relaunch。而「重启后自动接着干」那套功能后来已经按主人要求删了，
+9476|      *  这个重开就只剩副作用 —— 所以整段拿掉。
+9477|      *  现在规矩很干脆：主人亲手退出 = 真退出，绝不自己爬起来。
+9478|      *  只有我调 /api/app/restart（带 byTool）时，才由那条路径自己处理重开。 */
+9479|     json(res, 200, { ok: true, count: ids.length, ids });
+9480|     return;
+9481|   }
+9482| 

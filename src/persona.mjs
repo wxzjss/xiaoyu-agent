@@ -356,7 +356,11 @@ const parts = [
    * 主人身份下返回 '' —— 平时一个字不花，缓存前缀不动。
    */
   // 放在人设后面紧挨着它；但必须在会话记忆之前 —— 记忆块是滚动的逐次变长，贴在它后面的话，下一轮就离人设很远了。
-  const nv = identityNoteBlock(sessionId);
+  /* 【2026-11-13 渠道化】「人设阅读须知——称呼已经改过」那段也是元解释，
+   * 等于当面告诉她「称呼被换过了」。人设正文的称呼改写由 retargetPersona 做，
+   * 不需要再解释一遍。回退：IDENTITY_PURE_CHANNEL 改 false。 */
+  const IDENTITY_PURE_CHANNEL = true;
+  const nv = IDENTITY_PURE_CHANNEL ? '' : identityNoteBlock(sessionId);
   if (nv) parts.push(nv);
   /**
    * 【管理员权限 · 2026-11-01】
@@ -532,6 +536,13 @@ function identityNoteBlock(sessionId = null) {
  */
 function retargetPersona(text, me) {
   if (!text || !me || !me.id || me.id === 'owner') return text;
+  /* 【2026-11-13 主人钦点】同 identity.mjs 的 IDENTITY_NO_RETARGET：
+   * 小鲸自己发消息时人设正文原样不动，换身份也该原样不动。
+   * 「对用户的称呼：主人」「CORE_LOVE 喜欢主人」都留着 —— 主人是另一个人，
+   * 这一轮只是小鲸在跟她说话，别把整篇人设里的人换掉。
+   * 回退：改成 false。 */
+  const IDENTITY_NO_RETARGET = true;
+  if (IDENTITY_NO_RETARGET) return text;
   const TA = me.she ? '她' : '他';
   const nm = String(me.name || '').trim() || '你';
   // 小鱼身份 = 她自己在心里自言自语，没有「称呼别人」这回事
@@ -900,8 +911,12 @@ function memoryBlock(sessionId) {
    * 模型读着读着就以为这一轮说话的还是主人。这里把本子正文的「主人」也换掉，
    * 并且在开头说明一句，免得模型把「主人」和「这一轮说话的人」搞混。
    */
+  /* 【2026-11-13 主人钦点】同 retargetPersona 的 IDENTITY_NO_RETARGET：
+   * 小鲸自己发消息时，记忆本里「主人说『X』」原样留着 —— 主人是另一个人，
+   * 别把本子里的人也换成小鲸，不然她连「主人说过什么」都记不起来了。 */
+  const IDENTITY_NO_RETARGET = true;
   const me = currentIdentity(sessionId);
-  if (me && me.id && me.id !== 'owner') {
+  if (!IDENTITY_NO_RETARGET && me && me.id && me.id !== 'owner') {
     const nm = String(me.name || '').trim() || '你';
     if (me.id === 'fish') {
       body = body.replace(/主人说/g, '我自言自语').replace(/主人/g, '自己');

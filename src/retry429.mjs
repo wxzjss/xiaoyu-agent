@@ -211,14 +211,18 @@ export function handoffSummary(messages = []) {
 
 /** 换会话时给新会话的第一句话 */
 export function handoffMessage(summaryText, originalTask = '') {
+  /* 【2026-11-13 主人问「代码层面有没有以我的名义提醒的」—— 这里就是那一处】
+   * 首行原来是「这是上一轮撞限流后…」、末句「不用跟我确认」——主人第一人称口吻，
+   * 加上落盘时没打 _sysNote，前端把这条画成主人自己发的气泡 = 程序冒充主人。
+   * 现在改成程序代递的口吻；落盘标记见 server.mjs 两处 handoffMessage 调用点。 */
   return [
-    '（这是上一轮撞限流后自动接上来的新会话，历史没丢，摘要如下）',
+    '（程序提示：上一轮撞限流太多次，自动开了个新会话接着干 —— 历史没丢，摘要如下）',
     '',
     summaryText,
     '',
     originalTask ? `原任务：${originalTask}` : '',
     '',
-    '直接接着做，不用跟我确认。',
+    '接着做，不用重新开始。',
   ]
     .filter(Boolean)
     .join('\n');

@@ -331,6 +331,17 @@ export function inflateHistory(messages) {
   if (!Array.isArray(messages)) return messages;
   return messages.map((m) => {
     if (!m || typeof m !== 'object') return m;
+    /* 【2026-11-13 修·检查鱼中断的真凶】纯工具调用的 assistant 消息落盘是
+     * content:null（OpenAI 协议合法形态），但 glm-5.3 上游把 null 当 content
+     * 数组解析 → 「Parse message failed: missing type field in content item
+     * at index 0」→ 整个请求被拒 → 轮次中断。检查鱼 291 条 assistant 里 273
+     * 条是这种形态，长任务必炸。发送前统一规整成 ''（OpenAI/智谱都合法）。 */
+    /* 【2026-11-13 验收补漏】原来只认「带 tool_calls 的 null」。历史里也可能有
+     * 纯 assistant 空壳（content:null 无 tool_calls），一样会被上游当数组解析。
+     * 只要是 assistant 且 content 为 null，一律规整成空串。 */
+    if (m.role === 'assistant' && m.content == null) {
+      return Object.assign({}, m, { content: '' });
+    }
     if (Array.isArray(m.content)) return m;
     return inflateImages(m);
   });

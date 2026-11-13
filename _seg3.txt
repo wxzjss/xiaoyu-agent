@@ -1,0 +1,91 @@
+210|
+211|/* ══════════════════════════════════════════════════════════════════
+212| * 一：发一句 —— 立刻上屏、位置在她的回答之前、收尾后只有一份
+213| * ══════════════════════════════════════════════════════════════════ */
+214|async function caseOne() {
+215|  console.log('\n一、发一句：立刻上屏 → 她在回 → 收尾后我这句话只有一份且在她的话之前');
+216|  await cdp.eval('try { window.__logStore.setHistory(window.sessionId, []); } catch(e){}'
+217|    + 'try { window.__logStore.setLive(window.sessionId, null); } catch(e){} return 1;');
+218|  await sleep(300);
+219|
+220|  const U = 'QA我说的这一句要验顺序';
+221|  const A = 'QA她回的第一段话';
+222|  await arm({
+223|    events: [{ type: 'text', text: A }, { type: 'done' }],
+224|    turns: [],
+225|    turnsAfter: [{ role: 'user', text: U }, { role: 'assistant', text: A }],
+226|  });
+227|
+228|  /* 发 + 60ms 内取第一帧（乐观气泡该在） */
+229|  cdp.eval('window.__qaTurnP = window.runTurn({ text: ' + JSON.stringify(U) + ' }); return 1;').catch(() => {});
+230|  await sleep(60);
+231|  const first = await snap();
+232|  const earlyUser = first.kinds.indexOf('user');
+233|  c.ok('60ms 内我这句话已经在屏幕上（乐观气泡）', earlyUser >= 0 && cnt(first.text, U) === 1,  '行数 ' + first.rows.length + ' 顺序 ' + JSON.stringify(first.rows));
+234|  /* 【2026-11-12 改·这条天生有竞态】桩在同一帧就把她的第一段送来了，
+235|   * 拿「我是最后一行」去判会随机红。真正要守的是：我这句话**在屏幕上**，
+236|   * 且**在她的第一行之前**（不许堆到轮末）—— 这两条任何一帧都必须成立。 */
+237|  const _u = first.kinds.indexOf('user');
+238|  const _her = first.kinds.findIndex((k) => k === 'assistant' || k === 'hub' || k === 'tool');
+239|  c.ok('刚发出去那一刻，我这句话已经上屏、且排在她的第一行之前',
+240|    _u >= 0 && (_her < 0 || _u < _her),
+241|    '我@' + _u + ' 她第一行@' + _her + ' 顺序 ' + JSON.stringify(first.rows));
+242|
+243|  const series = await watch(40, 100);
+244|
+245|  /* 不变式一：任何一帧里我这句话最多一份 */
+246|  const dupFrames = series.map((s, i) => ({ i, n: cnt(s.text, U) })).filter((x) => x.n > 1);
+247|  c.ok('全程我这句话没有出现两份', dupFrames.length === 0, 
+248|    dupFrames.length ? '第 ' + dupFrames[0].i + ' 帧出现 ' + dupFrames[0].n + ' 次' : '');
+249|
+250|  /* 不变式二：她一旦开口，我的下标必须小于她这一轮最后一行（不许跑到轮末） */
+251|  let bad = null;
+252|  for (let i = 0; i < series.length; i++) {
+253|    const s = series[i];
+254|    const u = s.kinds.indexOf('user');
+255|    let lastHer = -1;
+256|    for (let k = 0; k < s.kinds.length; k++) if (s.kinds[k] === 'assistant' || s.kinds[k] === 'hub' || s.kinds[k] === 'tool') lastHer = k;
+257|    if (u >= 0 && lastHer >= 0 && u > lastHer) { bad = { i, u, lastHer, rows: s.rows }; break; }
+258|  }
+259|  c.ok('全程我的气泡都在她的话之前（没有跑到轮末）', !bad, 
+260|    bad ? '第 ' + bad.i + ' 帧：我@' + bad.u + ' 她最后一行@' + bad.lastHer + ' ' + JSON.stringify(bad.rows) : '');
+261|
+262|  const idle = await waitIdle();
+263|  c.ok('这一轮收尾了（busy=false）', idle);
+264|  await sleep(1200);
+265|  const fin = await snap();
+266|
+267|  c.ok('收尾后我这句话只有一份', cnt(fin.text, U) === 1,  '出现 ' + cnt(fin.text, U) + ' 次');
+268|  c.ok('收尾后她的回答只有一份', cnt(fin.text, A) === 1,  '出现 ' + cnt(fin.text, A) + ' 次');
+269|  const ui = fin.kinds.indexOf('user');
+270|  const ai = fin.kinds.indexOf('assistant');
+271|  c.ok('收尾后 DOM 顺序是「我 → 她的回答」', ui >= 0 && ai >= 0 && ui < ai, 
+272|    '我的下标 ' + ui + '，她的下标 ' + ai + '，顺序 ' + JSON.stringify(fin.rows));
+273|  c.ok('收尾后屏幕贴在底部', fin.dist <= 8,  '离底 ' + fin.dist + 'px');
+274|  c.ok('主按钮文案是【发送】', fin.sendText === '发送',  '实际「' + fin.sendText + '」');
+275|  c.ok('没有「这一条渲染出错了」的兜底行', fin.errRows === 0,  fin.errRows + ' 行');
+276|}
+277|
+278|/* ══════════════════════════════════════════════════════════════════
+279| * 二：一轮劈成多段（正文 → 工具 → 正文 → 轮末 → 正文）——
+280| *     我这句话不许被挤到轮末；工具要折成一个柜子
+281| * ══════════════════════════════════════════════════════════════════ */
+282|async function caseSegments() {
+283|  console.log('\n二、一轮劈成多段：我这句话全程在她的话之前、工具折成一个柜子');
+284|  await cdp.eval('try { window.__logStore.setHistory(window.sessionId, []); } catch(e){}'
+285|    + 'try { window.__logStore.setLive(window.sessionId, null); } catch(e){} return 1;');
+286|  await sleep(300);
+287|
+288|  const U = 'QA我这一句发出去以后要干一段活';
+289|  const S1 = 'QA第一段开工了';
+290|  const S2 = 'QA第二段工具跑完接着汇报';
+291|  const S3 = 'QA第三段轮末之后补一句';
+292|  const events = [
+293|    { type: 'reasoning', text: 'QA思考要不要分三段写这件事得想清楚一点' },
+294|    { type: 'text', text: S1 },
+295|    { type: 'tool_start', id: 'q1', name: 'run_command', args: '{"cmd":"echo 1"}' },
+296|    { type: 'tool_end', id: 'q1', ok: true, output: '1' },
+297|    { type: 'tool_start', id: 'q2', name: 'run_command', args: '{"cmd":"echo 2"}' },
+298|    { type: 'tool_end', id: 'q2', ok: true, output: '2' },
+299|    { type: 'text', text: S2 },
+300|    { type: 'done' },

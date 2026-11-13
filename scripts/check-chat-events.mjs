@@ -40,6 +40,12 @@ const countTypes = (seg) => {
 // ── 服务端会发的 type
 const sentTypes = new Set();
 for (const m of server.matchAll(/type:\s*'([a-z_]+)'/g)) sentTypes.add(m[1]);
+// 注释里的 type:'xxx' 不是真事件（如插件文档注释 type:'feature'|'theme'），剔除：
+// 该 type 在服务端只出现在注释行（// 或 /* 开头）才算假命中
+for (const m of [...sentTypes]) {
+  const hits = server.split('\n').filter(l => l.includes("type: '" + m + "'") || l.includes("type:'" + m + "'"));
+  if (hits.length && hits.every(l => /^\s*(\/\/|\/\*|\*)/.test(l))) sentTypes.delete(m);
+}
 for (const t of ['session', 'message', 'assistant', 'user', 'system', 'tool']) sentTypes.delete(t);
 
 // ── 切出实时流处理段

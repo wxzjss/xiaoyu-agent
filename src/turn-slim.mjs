@@ -181,7 +181,20 @@ export function slimRoundMessages(messages, opts = {}) {
   // 本轮之内：最近 KEEP_RECENT_ROUNDS 条也原样留着
   const localSlim = new Set(toolIdxs.slice(0, Math.max(0, toolIdxs.length - KEEP_RECENT_ROUNDS)));
 
-  const slimSet = new Set([...globalSlim, ...localSlim]);
+  // 【硬上限 · 2026-11-13】单条工具结果超过这个字符数，管它多新一律压。
+  // 起因：一个会话里 #248 那条 tool 结果有 288 万字符（一张 2.1MB 截图 base64
+  // 被工具塞成纯字符串），正好落在"最近 2 条原样留"的区间里，于是每圈都整份重发，
+  // prompt_tokens 冲到 920 万，超出窗口的部分被截断 —— 表现就是"看不见最新的话"。
+  const HARD_SINGLE_MAX = 200000;
+  const giantSlim = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || m.role !== 'tool') continue;
+    if (Array.isArray(m.content)) continue;
+    if (String(m.content ?? '').length > HARD_SINGLE_MAX) giantSlim.push(i);
+  }
+
+  const slimSet = new Set([...globalSlim, ...localSlim, ...giantSlim]);
   if (!slimSet.size) {
     return { messages, changed: 0, savedChars: 0 };
   }

@@ -25,7 +25,7 @@ import { spawn, execFile } from 'node:child_process';
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { startIsolated } from './_test-instance.mjs';
-import { connect as cdpConnect } from '../_t_cdp.mjs';
+import { connect as cdpConnect } from './_cdp-connect.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;

@@ -1,0 +1,39 @@
+window.__paintLog = [];
+(function () {
+  const _sh = window.logSetHistory, _sl = window.logSetLive, _bt = window.logBeginTurn;
+  const stackOf = () => {
+    try {
+      const lines = String(new Error().stack || '').split('\n').slice(2, 7);
+      return lines.map((l) => l.replace(/^\s*at\s*/, '').replace(/\?v=[^:]*:/, ':').slice(0, 90)).join(' | ');
+    } catch (e) { return ''; }
+  };
+  window.logSetHistory = function (sid, turns) {
+    try {
+      window.__paintLog.push({
+        t: Date.now(), fn: 'setHistory', sid: String(sid).slice(-6),
+        n: Array.isArray(turns) ? turns.length : -1, stack: stackOf(),
+      });
+    } catch (e) {}
+    return _sh.apply(this, arguments);
+  };
+  window.logSetLive = function (sid, live) {
+    try {
+      window.__paintLog.push({
+        t: Date.now(), fn: 'setLive', sid: String(sid).slice(-6),
+        n: live && Array.isArray(live.items) ? live.items.length : -1,
+        running: !!(live && live.running !== false), stack: stackOf(),
+      });
+    } catch (e) {}
+    return _sl.apply(this, arguments);
+  };
+  window.logBeginTurn = function (sid, turns) {
+    try {
+      window.__paintLog.push({
+        t: Date.now(), fn: 'beginTurn', sid: String(sid).slice(-6),
+        n: Array.isArray(turns) ? turns.length : -1, stack: stackOf(),
+      });
+    } catch (e) {}
+    return _bt.apply(this, arguments);
+  };
+})();
+return 1;

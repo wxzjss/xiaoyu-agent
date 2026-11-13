@@ -1,8 +1,8 @@
-﻿// Built-in tools. Each tool: { name, description, parameters(JSON Schema), run(args) }
+// Built-in tools. Each tool: { name, description, parameters(JSON Schema), run(args) }
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFileSync } from 'node:fs';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { exec, execFile, spawnSync } from 'node:child_process';
 import { resolve, dirname, isAbsolute, relative, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -334,28 +334,28 @@ export function pushToolContext() {
 export const MAX_SUBAGENT_DEPTH = 2;
 /* 【2026-11-13 主人要求放宽】spawn_workers 单次派发上限：4 → 8（真无上限会把内存和 API 配额打爆，8 件已是「肉眼可见的多鱼干活」）。 */
 export const MAX_SPAWN_WORKERS = 8;
+
+/* 【2026-11-13 主人钦点：子 Agent 名字必须是中文】spawn_worker / spawn_workers / ask_subagent
+ * 给出来的 name 一律过这里：有汉字就直接用；没有就自动起个中文名（跑腿-N / 工-N），
+ * 返回值里会带上「名字改成了 XX」的提示，让调用方知道。 */
+/* 【2026-11-13 主人钦点】名字必须是中文 —— 实现搬到 name-zh.mjs，这里只做出口，
+ * 省得 tools / task-mode / team 三个文件互相 import 绕成环。 */
+import { enforceZhWorkerName, isZhName } from './name-zh.mjs';
+export { enforceZhWorkerName, isZhName };
+
 /**
- * 现在这个工具调用是「替哪個会话」在干活。
+ * 现在这个工具调用是「替哪个会话」在干活。
  *
  * 子智能体跑起来之前要先记下它 —— pushToolContext 之后 CTX 里就换成
  * 子智能体自己的 id 了，再也拿不到主人的那个。她说的话要投回主人那个会话，
  * 靠的就是这个值。
  */
 export function currentSessionId() {
-  /**
-   * 【2026-10-28 修的坑：这里读错了 CTX】
-   *
-   * 原先是 `CTX.sessionId || 'default'` —— 直接摸**全局**那份。
-   * 但 A/B 两个会话并发跑的时候，两个人各在自己的 AsyncLocalStorage 里干活
-   * （见文件顶部那段注释），全局 CTX 上挂的是「最后那个开跑的会话」。
+  /* 【2026-10-28 修的坑：这里读错了 CTX】
+   * 原先是 CTX.sessionId || 'default' —— 直接摸全局那份。
+   * A/B 两个会话并发跑时，全局 CTX 挂的是「最后那个开跑的会话」，
    * 于是 A 会话里调工具，工具拿到的却是 B 的 sessionId。
-   *
-   * 实测照出来的样子：折叠箱工具明明在会话 smvfoldtest06 里跑，
-   * currentSessionId() 却回 'default'，去查一个不存在的会话，
-   * 永远报「这个会话还没折过东西」。岁月史书那三个工具同病。
-   *
-   * 改成 ctxNow() —— 它优先取本异步链路的，没有才退回全局，老路径照旧。
-   */
+   * 改成 ctxNow()：优先取本异步链路的，没有才退回全局，老路径照旧。 */
   const c = ctxNow();
   return c.sessionId || 'default';
 }
@@ -904,7 +904,10 @@ export const tools = [
          * 她就当成「偶发失败」，反复重跑、反复困惑（【检查鱼】里最长一轮 513 秒）。
          * 现在能自己定：跑长活带个数就行。
          */
-        timeout_ms: { type: 'number', description: '最多等多少毫秒，默认 120000（2 分钟），最多 900000（15 分钟）' },
+        timeout_ms: {
+          type: 'number',
+          description: '最多等多少毫秒。不传时：普通命令 120000（2 分钟），跑回归/全量自检/构建/打包这类长活自动给 720000（12 分钟）。跑「全量自检」这种心里没底的，直接传 900000（15 分钟上限）最省事。',
+        },
         /** 默认 auto：简单命令走 cmd（快），带 $ / 引号 / 管道 / cmdlet 的自动回 PowerShell。 */
         /**
          * 【2026-11-11 mac 兼容（mac 侧原样）】选壳说明按平台给。
@@ -1053,14 +1056,38 @@ export const tools = [
           child.kill(sig || 'SIGTERM');
         } catch {}
       };
-      const _TO = Math.max(5000, Math.min(Math.floor(Number(timeout_ms) || 0) || 120000, 900000));
+      /* ══════════════════════════════════════════════════════════════
+         【2026-11-14 主人问「跑回归容易被超时掐，有没有办法」】
+         根子：默认 120 秒是**总时长硬掐**，而全量自检要 6~8 分钟。模型又经常
+         不传 timeout_ms，于是每次跑到 2 分钟就被 SIGTERM，她还当成「命令失败」
+         反复重跑（【检查鱼】里最长一轮 513 秒就是这么来的）。
+         现在：**没传 timeout_ms 时按命令内容给默认值** ——
+         命中回归/自检/构建/打包/测试这类长活就给 10 分钟，普通命令仍是 2 分钟。
+         模型自己传了数值还是以它为准（上限 15 分钟不变）。
+         ══════════════════════════════════════════════════════════════ */
+      const _longTask = /(run-all-checks|check-[\w-]+\.mjs|_t_[\w-]+\.mjs|npm\s+(run\s+)?(test|build|pack)|yarn\s+(test|build)|pnpm\s+(test|build)|playwright|pytest|go\s+test|cargo\s+(build|test)|(^|\s)make(\s|$))/i.test(String(command || ''));
+      /* 【2026-11-14 主人问「超时被掐」——拍板：不做软超时（exec 换 spawn 风险大），
+       * 把长任务默认从 10 分钟提到 12 分钟。实测全量自检 8 分钟内跑完，12 分钟留足余量；
+       * 真遇到更长的，模型可以自己传 timeout_ms（上限 15 分钟）。 */
+      const _defaultTO = _longTask ? 720000 : 120000;
+      const _TO = Math.max(5000, Math.min(Math.floor(Number(timeout_ms) || 0) || _defaultTO, 900000));
       return new Promise((done) => {
         const child = exec(
           command,
           /* 【P5】简单命令走 cmd，省掉 PowerShell 那 300ms 启动；
            * 出现 $ / 引号 / 管道 / cmdlet 一律回老路，分错只会慢、不会跑歪。 */
-          { cwd: ROOT, timeout: _TO, maxBuffer: 4 * 1024 * 1024, shell: pickShell(command, shell_hint) },
+          {
+            cwd: ROOT,
+            /* 【2026-11-14 主人钦点·软超时】长任务不设硬超时（0=不限），
+             * 改成下面按「有没有输出」判；普通命令还是原来的 2 分钟硬超时。 */
+            timeout: _longTask ? 0 : _TO,
+            /* 回归日志可能很大（160 个脚本），长任务给 16MB 缓冲 */
+            maxBuffer: _longTask ? 16 * 1024 * 1024 : 4 * 1024 * 1024,
+            shell: pickShell(command, shell_hint),
+          },
           (err, stdout, stderr) => {
+            try { if (_softTimer) clearInterval(_softTimer); } catch {}
+            try { forgetChildPid(child && child.pid); } catch {}
             if (onAbort) signal.removeEventListener('abort', onAbort);
             // 【临时探针】被掐的时候把真实原因落盘，别再靠猜
             if (aborted) {
@@ -1155,6 +1182,34 @@ export const tools = [
             else done(_out);
           },
         );
+        /* 【2026-11-14·孤儿记账】记下这条命令的 pid，启动时统一清（见 killOrphanChildren） */
+        try { recordChildPid(child && child.pid); } catch {}
+        /* ══════════════════════════════════════════════════════════════
+           【2026-11-14 主人钦点·软超时（内容只会越来越多）】
+           长任务 exec 已经关掉硬超时（timeout:0），这里**盯着输出流**：
+             · 连续 60 秒没有任何输出 → 判定卡死，掐；
+             · 总时长超过 _TO（12 分钟）→ 兜底掐（防无限跑）。
+           只要它还在打点，就一直续命 —— 全量回归跑 20 分钟也不会被误杀。
+           ══════════════════════════════════════════════════════════════ */
+        let _softTimer = null;
+        if (_longTask) {
+          const _t0 = Date.now();
+          let _last = Date.now();
+          const _touch = () => { _last = Date.now(); };
+          try { if (child && child.stdout) child.stdout.on('data', _touch); } catch {}
+          try { if (child && child.stderr) child.stderr.on('data', _touch); } catch {}
+          _softTimer = setInterval(() => {
+            const now = Date.now();
+            if (now - _last > 60000) {
+              clearInterval(_softTimer);
+              try { killTree(child, 'SIGTERM'); } catch {}
+            } else if (now - _t0 > _TO) {
+              clearInterval(_softTimer);
+              try { killTree(child, 'SIGTERM'); } catch {}
+            }
+          }, 5000);
+          try { _softTimer.unref && _softTimer.unref(); } catch {}
+        }
         // 主人点停止 / 点退出：立刻把子进程砍掉，别让整轮卡在一个跑不完的命令上。
         let aborted = false;
         let onAbort = null;
@@ -1888,7 +1943,12 @@ export const tools = [
     },
     async run({ task, name, allowWrite, maxRounds, sayAs, sayName, sayColor, sayTag }) {
       const { runSubagent } = await import('./subagent.mjs');
-      const nick = name || '小鲸';
+      /* 【2026-11-13 主人钦点】名字必须是中文：默认还是「小鲸」，传了英文就规整 */
+      const __z5 = enforceZhWorkerName(name, '小鲸');
+      const nick = __z5.name;
+      const zhRenameNote5 = __z5.changed
+        ? ('（名字规矩：子 Agent 名字必须是中文，原来那个不合规矩，已自动改成「' + nick + '」。）\n\n')
+        : '';
 
       /**
        * 【主人定的规矩：按钮关着 = 她彻底不在场】
@@ -1998,7 +2058,7 @@ export const tools = [
          * 她已经自己说过了，界面上就出现两遍（她的气泡 + 我的复读）。
          * 手里没有内容，就复读不出来。真要知道她说了啥，我自己去看会话。
          */
-        return head + '\n（她已经自己说完了。你接一句就行 —— 别把她的话再说一遍，也别抄。）';
+        return zhRenameNote5 + head + '\n（她已经自己说完了。你接一句就行 —— 别把她的话再说一遍，也别抄。）';
       }
       /**
        * 跑找不到的时候也一样：她的话会自己显示，别拿回来念。
@@ -2008,7 +2068,7 @@ export const tools = [
        * 只给模型「她没成」这个事实，原因什么的她自己已经说了。
        */
       const tail = r.usage ? '\n\n（她跟了 ' + r.usage.total_tokens + ' token）' : '';
-      return head + '\n\n（她没查成，原因她自己已经说了。你要接就接一句，别帮她转述。）' + tail;
+      return zhRenameNote5 + head + '\n\n（她没查成，原因她自己已经说了。你要接就接一句，别帮她转述。）' + tail;
     },
   },
   /**
@@ -2355,7 +2415,10 @@ export const tools = [
        * worker 本来就是 runSubagent 派出的执行体，不是屋里的人；
        *   名字用调用方给的 name，没给就用 worker-xxx。
        */
-      const nick = String(name || '').trim() || ('worker-' + Date.now().toString(36).slice(-4));
+      /* 【2026-11-13 主人钦点】worker 名字必须是中文：有汉字照用，没有自动改「工-N」，返回文案里告知。 */
+      const __zh = enforceZhWorkerName(name, '工');
+      const nick = __zh.name;
+      const zhRenameNote = __zh.changed ? ('\n\n（名字规矩：worker 名字必须是中文，原来那个不合规矩，已自动改成「' + nick + '」。以后 tell_worker / 退回都用这个名字。）') : '';
       const push = ctxNow().pushEvent;
 
       /* 【2026-11-11 后台派发】登记花名册 → 交给 team.mjs 放到后台 → 立刻回来。
@@ -2366,7 +2429,7 @@ export const tools = [
         dispatchWorker({ sessionId: sid, wid: String(w.id), name: nick, brief: brief + reportAsk, maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60 });
         return '【#' + w.id + ' 派出去了，正在后台干】\n'
           + '它跑它的，你别停 —— 有别的活就接着做；想看看进度用 watch_worker ' + w.id + '；想补话用 tell_worker ' + w.id + '。\n'
-          + '干完我会主动告诉你。';
+          + '干完我会主动告诉你。' + zhRenameNote;
       }
 
       /* 【2026-11-13 子 Agent 续上】同上：brief 存全量（同步等待款也可能被硬杀续跑） */
@@ -2429,10 +2492,10 @@ export const tools = [
       }
 
       if (!r?.ok) {
-        return '【' + nick + ' #' + w.id + ' 没干成】它的原话：\n\n' + (text || '（它没说话）')
+        return zhRenameNote + '【' + nick + ' #' + w.id + ' 没干成】它的原话：\n\n' + (text || '（它没说话）')
           + '\n\n（先分清是活没说清还是真做不到。说得清就退回给同一个 worker，别自己上手；也别换个新 worker 从头再来。）';
       }
-      return '⚑【这一件干完了 —— 现在就接着往下做：核对结果 → 回主人一句话说清做好了什么，'
+      return zhRenameNote + '⚑【这一件干完了 —— 现在就接着往下做：核对结果 → 回主人一句话说清做好了什么，'
         + '要用到的文件当场用 send_file 发出去。别停在这里不说话。】\n\n'
         + '【' + nick + ' #' + w.id + ' 回来了】它的汇报原文（还热着，别急着采信 —— 拿只读工具核一遍再决定收不收）：\n\n' + (text || '（一句汇报都没写 —— 这本身就是问题，退回给它，要它按四行交）')
         + '\n\n（收了就记一条账，没收就退回给同一个 worker。核账的读数别留太细，上下文本该由你管。）';
@@ -2494,7 +2557,10 @@ export const tools = [
        * 就有先后问题，宁可先排好队再跑）。 */
       const roundMax = Number(maxRounds) > 0 ? Number(maxRounds) : 40;
       const plans = list.map((t, i) => {
-        const nick = String(t.name || '').trim() || ('worker-' + (i + 1));
+        /* 【2026-11-13 主人钦点】名字必须是中文，没给/给英文都规整成「工-N」 */
+        const __z = enforceZhWorkerName(t.name, '工');
+        const nick = __z.name || ('工-' + (i + 1));
+        const renamed = !!__z.changed;
         const body = String(t.task || '').trim();
         const brief = [
           body,
@@ -2520,7 +2586,7 @@ export const tools = [
           accept: String(t.accept || '').slice(0, 200),
           status: 'running',
         });
-        return { nick, brief: brief + reportAsk, id: String(w.id) };
+        return { nick, brief: brief + reportAsk, id: String(w.id), renamed };
       });
 
       /* 【2026-11-11 后台派发】每件都登记好了，一起放到后台，立刻返回门牌号。
@@ -2530,8 +2596,13 @@ export const tools = [
         for (const p of plans) {
           dispatchWorker({ sessionId: sid, wid: p.id, name: p.nick, brief: p.brief, maxRounds: roundMax });
         }
+        const bgRenamed = plans.filter((p) => p.renamed);
         return '【' + plans.length + ' 件都派出去了，正在后台干】\n'
           + plans.map((p) => '· #' + p.id + ' ' + p.nick).join('\n')
+          + (bgRenamed.length
+            ? '\n\n（名字规矩：worker 名字必须是中文，这几个原来不合规矩，已自动改成：'
+              + bgRenamed.map((p) => '#' + p.id + '「' + p.nick + '」').join('、') + '。以后 tell_worker / 退回都用这个名。）'
+            : '')
           + '\n\n它们跑它们的，你别停 —— 有别的活就接着做；看进度用 watch_worker，补话用 tell_worker，干完我会主动告诉你。';
       }
 
@@ -2583,8 +2654,13 @@ export const tools = [
 
       const rs = await Promise.all(plans.map(one));
       const okCount = rs.filter((r) => r.ok).length;
+      const syncRenamed = plans.filter((p) => p.renamed);
       return '【' + plans.length + ' 件活都回来了】' + okCount + ' 件成了、' + (plans.length - okCount) + ' 件没成。'
-        + '\n\n' + rs.map((r) => '── ' + r.nick + ' #' + r.id + (r.ok ? '' : '（没干成）') + ' ──\n' + (r.text || '（它没说话）')).join('\n\n')
+        + (syncRenamed.length
+          ? '\n\n（名字规矩：worker 名字必须是中文，已自动改成：'
+            + syncRenamed.map((p) => '#' + p.id + '「' + p.nick + '」').join('、') + '）'
+          : '')
+        + '\n\n' + rs.map((r) => '── ' + r.nick + ' #' + r.id + (r.ok ? '' : '（没干成）') + '──\n' + (r.text || '（它没说话）')).join('\n\n')
         + '\n\n（逐件核，别一律采信。哪件没干对就退回给同一个 worker。）';
     },
   },
@@ -3079,4 +3155,62 @@ async function runToolInner(name, rawArgs, sessionId) {
   } catch (err) {
     return { ok: false, output: String(err?.message ?? err) };
   }
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   【2026-11-14·命令子进程记账（治「重启后命令还在后台跑」的孤儿）】
+   重启/崩溃时 Electron 退得快，abort 里的 killTree 未必来得及，
+   子进程就成了孤儿：会话已经停了，后台还在跑回归（实测 47 分钟）。
+   这里记 pid，启动时统一清理。
+   ══════════════════════════════════════════════════════════════════ */
+const CHILD_PID_FILE = () => join(config.dataDir, '.state', 'child-pids.json');
+
+function readChildPids() {
+  try {
+    const a = JSON.parse(readFileSync(CHILD_PID_FILE(), 'utf8'));
+    return Array.isArray(a) ? a.map(Number).filter((x) => Number.isFinite(x) && x > 0) : [];
+  } catch { return []; }
+}
+
+function writeChildPids(list) {
+  try {
+    const dir = join(config.dataDir, '.state');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(CHILD_PID_FILE(), JSON.stringify(list.slice(-80)), 'utf8');
+  } catch { /* 记不上不影响命令本身 */ }
+}
+
+function recordChildPid(pid) {
+  const n = Number(pid) || 0;
+  if (!n) return;
+  const list = readChildPids();
+  if (!list.includes(n)) { list.push(n); writeChildPids(list); }
+}
+
+function forgetChildPid(pid) {
+  const n = Number(pid) || 0;
+  if (!n) return;
+  const list = readChildPids();
+  if (!list.includes(n)) return;
+  writeChildPids(list.filter((x) => x !== n));
+}
+
+/** 启动时调用：清掉上一进程留下的命令子进程（只杀记账里有的，不碰别人） */
+export function killOrphanChildren() {
+  const list = readChildPids();
+  if (!list.length) return 0;
+  let killed = 0;
+  for (const pid of list) {
+    try {
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 8000 });
+      } else {
+        try { process.kill(pid, 'SIGKILL'); } catch {}
+      }
+      killed += 1;
+    } catch { /* 已经没了就跳过 */ }
+  }
+  writeChildPids([]);
+  return killed;
 }

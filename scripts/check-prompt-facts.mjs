@@ -90,6 +90,6 @@ t.ok('出厂人设不含旧的 PERSONA_LOAD 头', !xiaoyu.includes('【PERSONA_L
 const { DEFAULT_SETTINGS } = await import('../src/settings.mjs');
 // 2026-11-11：主人把设置里那一版（11 条，含「修bug时必须实测」）设成了出厂默认。
 // 条数以 .state/defaults.json 为真相，这里钉住它没被回退成旧长版 15 条。
-t.ok('出厂底线 11 条（不是旧长版 15 条）', DEFAULT_SETTINGS.bottomLines.length === 11);
+t.ok('出厂底线 8 条（主人 2026-11-15 改定版）', DEFAULT_SETTINGS.bottomLines.length === 8);
 
 t.done();

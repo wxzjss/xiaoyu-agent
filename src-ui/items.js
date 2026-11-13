@@ -201,6 +201,13 @@ function turnToItems(turn, abs, userChars) {
       kind: isMate ? 'mate' : 'user',
       key,
       text: String(turn.text || ''),
+      /* 【2026-11-13 修·主人报「切换身份说话时前端消息渲染会有问题」】
+       * mate 条目原来只带 text 不带 bubbles —— 而 LogView 把 kind:'mate'
+       * 一律交给 MateBubble，它只认 it.bubbles（数组）→ 身份说话的每一条
+       * 从历史重画时**正文全丢**（气泡里只剩名字、时间、按钮）。
+       * 现在带上 bubbles，跟 say/assistant 条目同一规格。
+       * 【注意】这里只能用 turn.text —— 下面那个 const text 在这之后才声明，提前用会 TDZ 炸。 */
+      bubbles: hasText(turn.text) ? [String(turn.text || '')] : [],
       atts: Array.isArray(turn.atts) ? turn.atts.filter((a) => a && a.path) : [],
       who,
       tag: _steer ? '插话' : '',
@@ -287,7 +294,10 @@ function turnToItems(turn, abs, userChars) {
       id: String(t.id || ''),
       name: String(t.name || ''),
       args: t.args,
-      status: t.ok === null || t.ok === undefined ? 'run' : t.ok ? 'ok' : 'err',
+      /* 【2026-11-14 主人报「界面显示跑回归运行中」】历史里 ok=null 意思是「这条命令
+       * 当时没跑完就被掐了」（重启/中断）。原来直接标成 'run' → 卡片永远显示「运行中…」，
+       * 可那一轮早结束了。现在标 'stopped'（中断），由 ToolCard 显示成「中断」。 */
+      status: t.ok === null || t.ok === undefined ? 'stopped' : t.ok ? 'ok' : 'err',
       output: String(t.output || ''),
     });
   }
@@ -673,6 +683,34 @@ export function buildMerged(snap) {
    *   翻过（哪怕翻到 0）→ 老老实实尊重他的位置，一路看到最顶也不跳回最新。 */
   if (!isWindowTouched(sid)) start = Math.max(0, all.length - WINDOW);
   start = Math.max(0, Math.min(start, all.length));
+  /* 【2026-11-13 修·检查鱼历史消失第二因】WINDOW 数的是 turn，可长任务一轮
+   * 能跑上百次工具调用（检查鱼 475 条消息 / 228 turns，一轮就占掉大半）。
+   * 最近 40 个 turn 全被当前这一轮吃掉 → 屏上只剩八个气泡，主人看着就是
+   * 「以前的历史全没了」。现在往前扩到「至少盖住最近 3 条主人消息」，
+   * 硬上限 120 turn 防卡（虚拟化注释里 300 轮会卡好几秒）。
+   * 主人手动翻过的位置（isWindowTouched）一律尊重，这里不碰。 */
+  if (!isWindowTouched(sid)) {
+    /* ══════════════════════════════════════════════════════════════
+       【2026-11-14 主人钦点·窗口按「柜子数」算，不按 turn 数】
+       工具现在都收在柜子里：一轮长活十几个工具调用，在 turns 里是十几个
+       assistant，可界面上只是**一个柜子**。按 turn 数算窗口会把一个柜子
+       当成十几轮，长任务一下子就把历史挤光。
+       从末尾往前扫，把「一段连续 assistant」算一个柜子，保留最近 8 个柜子
+       （外加它们之间的主人消息）；160 turn 兜底防卡。
+       主人手动翻过的位置（isWindowTouched）照旧一律尊重。
+       ══════════════════════════════════════════════════════════════ */
+    let _hubs = 0;
+    let _i = all.length - 1;
+    for (; _i >= 0; _i--) {
+      const _cur = all[_i];
+      const _next = all[_i + 1];
+      // 倒着扫：当前是 assistant、而更靠后的那条不是 → 这是一段连续 assistant 的开头（一个柜子）
+      if (_cur && _cur.role === 'assistant' && (!_next || _next.role !== 'assistant')) _hubs += 1;
+      if (_hubs > 8) break;
+      if (all.length - _i >= 160) break;
+    }
+    start = Math.max(0, Math.min(start, _i < 0 ? 0 : _i));
+  }
 
   const items = [];
   let lastUserChars = 0;
@@ -716,10 +754,35 @@ export function buildMerged(snap) {
     }
   }
 
-  const pend = (snap.pendingUser || []).map((p) => ({
+  /* 【2026-11-13 严检·主人问「一轮结束后会不会把我曾说过的消息重渲染一遍」—— 会，漏点在这】
+   * pend（乐观气泡）原来**无条件拼接**（live 有 running 闸，pend 没有）：
+   * 收尾那一拍 running:false 快照进来 → 历史全量接管（主人消息已在历史里）→
+   * 而 pendingUser 的清理是异步的（dropLandedPending 只在 !st.live 时跑，
+   * 收尾时 live 对象还挂着 running:false）→ 主人那条消息「历史一份 + 乐观气泡一份」
+   * 画两遍，等清理触发才恢复。修：两种形态都不再拼 pend——
+   *   ① running=false：历史全量已含所有落盘消息，pend 里没有「还没落盘」的；
+   *   ② _pendingLanded=true（pending 已落盘且被答完）：历史里主人消息保留着
+   *      （trimTurnsForLive 只裁它后面的 assistant），再拼 pend 又是双份。 */
+  /* 【2026-11-13 二改·主人报「发消息时屏幕上不立即显示，要等回话才出现」】
+   * 上一版拿 !running 当「历史已全量接管」的判据，可 isRunning() 要求 live
+   * 对象存在且 running!==false —— 而按下发送那一刻 live 还没建立（null），
+   * 于是 !running=true，乐观气泡被整批挡掉：主人那句话要等服务端回话、
+   * 历史里有了才冒出来。主人感知的就是「必须等回话才显示」。
+   *
+   * 正确的「不画」只有两种：
+   *   ① 明确收尾那一拍（live.running === false，历史已全量含这条）；
+   *   ② 这条 pending 已落盘且被答完（_pendingLanded）。
+   * 其余（live=null 刚发出 / live.running=true 正在跑）一律照常画乐观气泡。
+   * live 真被置 null 之后，store 的 dropLandedPending 已把账收干净，
+   * pendingUser 自然为空，不会把「收尾后」误判成「刚发出」。 */
+  const _liveEnded = !!(snap.live && snap.live.running === false);
+  const pend = (_liveEnded || _pendingLanded) ? [] : (snap.pendingUser || []).map((p) => ({
     kind: p.who && p.who !== '主人' ? 'mate' : 'user',
     key: p.id.indexOf('p') === 0 ? 'p-' + p.id.slice(1) : 'p-' + p.id,
     text: p.text,
+    /* 【2026-11-13 同修】乐观气泡那条 mate 也缺 bubbles——切身份当场发的那句
+     * 同样只剩名字没正文。 */
+    bubbles: hasText(p.text) ? [String(p.text || '')] : [],
     atts: p.atts,
     who: p.who,
     tag: p.tag,

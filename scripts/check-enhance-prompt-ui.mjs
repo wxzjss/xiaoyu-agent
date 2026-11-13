@@ -15,7 +15,7 @@
  * 模型不通（网关 502 / 无可用端点）时打 SKIP，不判红 —— 那是环境问题。
  */
 import { startIsolated } from './_test-instance.mjs';
-import { connect } from '../_t_cdp.mjs';
+import { connect } from './_cdp-connect.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0, skip = 0;

@@ -11,6 +11,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node
 import { join } from 'node:path';
 import { config } from './config.mjs';
 import { cardOpeningEnabled, setCardOpeningEnabled as _setCardOpeningEnabled } from './opening-switch.mjs';
+/* 【2026-11-14】每套人设的开场白：需要知道「这张卡现在用的是哪一套人设」 */
+import { personaInfo, withPersonaScope } from './persona-store.mjs';
 
 /**
  * 这张卡这次要不要开场。
@@ -89,9 +91,62 @@ function readCardMap() {
   }
 }
 
-/** 这张卡的开场白。没记过的话小鱼用出厂那段，别的卡一律空着。 */
+/** 每套人设自己的开场白：{ "agentId::personaId": "那句话" } */
+const PERSONA_OPENING_FILE = () => join(config.dataDir, '.state', 'persona-openings.json');
+
+function readPersonaOpenings() {
+  try {
+    const d = JSON.parse(readFileSync(PERSONA_OPENING_FILE(), 'utf8'));
+    return d && typeof d === 'object' ? d : {};
+  } catch { return {}; }
+}
+
+function personaOpeningKey(agentId, personaId) {
+  return String(agentId || 'xiaoyu') + '::' + String(personaId || '');
+}
+
+/** 这套人设的开场白；**null = 从没设过**（调用方决定回落卡级/出厂） */
+export function personaOpening(agentId, personaId) {
+  const map = readPersonaOpenings();
+  const k = personaOpeningKey(agentId, personaId);
+  return Object.prototype.hasOwnProperty.call(map, k) ? String(map[k] ?? '') : null;
+}
+
+/** 改某套人设的开场白（空串 = 这套不开口，不会回落） */
+export function setPersonaOpening(agentId, personaId, text) {
+  const map = readPersonaOpenings();
+  const k = personaOpeningKey(agentId, personaId);
+  map[k] = String(text ?? '').replace(/\r\n/g, '\n').trim();
+  try {
+    const dir = join(config.dataDir, '.state');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(PERSONA_OPENING_FILE(), JSON.stringify(map, null, 2), 'utf8');
+  } catch (e) {
+    const err = new Error('开场白存不进去：' + e.message);
+    err.status = 500;
+    throw err;
+  }
+  return { agentId: String(agentId || 'xiaoyu'), personaId: String(personaId || ''), opening: map[k] };
+}
+
+/** 这张卡当前用的是哪套人设 */
+function currentPersonaIdOf(agentId) {
+  try {
+    return withPersonaScope(String(agentId || ''), () => String(personaInfo('').current || ''));
+  } catch { return ''; }
+}
+
+/** 这张卡的开场白。**先看当前这套人设的**，没有再看卡级的（兼容老数据）。 */
 export function cardOpening(agentId) {
   const id = String(agentId || '');
+  /* 【2026-11-14 主人钦点·多套人设各有各的开场白】 */
+  try {
+    const pid = currentPersonaIdOf(id);
+    if (pid) {
+      const v = personaOpening(id, pid);
+      if (v !== null) return v;
+    }
+  } catch { /* 人设库读不出来就回落卡级 */ }
   // 【2026-10-31 修 · 卡是唯一来源，不许再拿老文件顶】
   // 原来「表里没记过 → 小鱼回落到老 .state/opening.json 的 assistant → 再不行出厂段」。
   // 那条回落成了病根：功能页那个入口删了，可 opening.json 里那句老话还在盘上，
@@ -409,7 +464,14 @@ export function finishOpening(session, userMsg, text) {
       session.messages.splice(idx + 1, 0, reply);
     }
   } else {
-    session.messages.push(userMsg, reply);
+    /* ══════════════════════════════════════════════════════════════
+       【2026-11-13 主人报「开场白会有主人的『在吗』消息」】
+       引子（DEFAULT_OPENING_USER_TEXT = '在吗'）只发给模型看，**不落盘**。
+       原来这里 push(userMsg, reply)，会话历史第一条就成了「主人：在吗」，
+       界面上看着像主人刚发过一句。现在只落她自己那句，历史里第一条是
+       assistant —— openingSpan 已经认「单条 assistant」这种新形状。
+       ══════════════════════════════════════════════════════════════ */
+    session.messages.push(reply);
   }
   markOpened(session.id);
   return true;

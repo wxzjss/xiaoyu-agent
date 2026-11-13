@@ -207,6 +207,13 @@ function sanitizeLoadedMessages(list) {
    * 改成 let。另外那个 catch 也一并改成会打日志，别再让这种事查半天。
    */
   for (let m of list) {
+    /* 【2026-11-13 修·null content 兜底】历史里已有 content:null 的 assistant 消息
+     * （旧版 subagent 落盘留下的），整份重发给 glm-5.3 会报
+     * 「missing type field in content item」→ 400 拒收。读盘时统一规整：
+     * 只动 assistant 且 content 为 null/undefined 的条目，别的角色和数组形态不碰。 */
+    if (m && m.role === 'assistant' && (m.content === null || m.content === undefined)) {
+      m = { ...m, content: '' };
+    }
     if (isDroppedUserMessage(m)) continue; // 系统告警 / 量线提醒 / 程序插的，不是主人说的话
     // 【2026-11-05】剥掉正文里的思考标签：有的网关把思考塞进 content，
     // 老会话里已经躺了一批这样的脏消息，读的时候一并清掉。

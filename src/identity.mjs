@@ -189,6 +189,14 @@ export function currentIdentityId(sessionId = null) {
   if (sessionId) {
     const mine = st.bySession && st.bySession[sessionId];
     if (mine && all.some((x) => x.id === mine)) return mine;
+    /* ══════════════════════════════════════════════════════════════
+       【2026-11-13 主人报「新建会话默认是小鲸身份，不是主人」】
+       原来这里没记过就回落到全局 current —— 而 setIdentity 每次切换都会
+       改写 current。主人最后切到小鲸，新建的会话就继承了小鲸。
+       现在：**会话没记过身份 = 默认主人**。身份严格按会话走，
+       不继承「上一次切到谁」。无 sessionId 的调用（老接口/诊断）仍读 current。
+       ══════════════════════════════════════════════════════════════ */
+    return 'owner';
   }
   return all.some((x) => x.id === st.current) ? st.current : 'owner';
 }
@@ -266,6 +274,19 @@ export function retargetOwnerText(text, me, opt = {}) {
   const s = String(text ?? '');
   if (!s) return s;
   if (opt.keep || !retargetOwnerWords(me)) return s;
+  /* ══════════════════════════════════════════════════════════════
+     【2026-11-13 主人钦点·换身份只换渠道，不改提示词】
+     主人原话：「就不能我用小鲸身份发送消息时，走小鲸发消息那条路吗？
+     小鲸发消息时是什么样，我发消息就是什么样」。
+     小鲸在群里自己发一句时，人设和规矩一个字都不改 —— 小鱼照样知道
+     有主人、最喜欢主人，只是这一轮跟她搭话的是小鲸（消息本身带 [小鲸]）。
+     以前这道「按会话身份整篇替换」的工序把 CORE_LOVE「喜欢主人」也换成
+     「喜欢小鲸」，她就把「喜欢的人」安到小鲸头上了（主人截图实锤）。
+     现在整道停掉：说话人只由消息本身决定，不由提示词改写决定。
+     回退：IDENTITY_NO_RETARGET 改 false，恢复旧的全文替换。
+     ══════════════════════════════════════════════════════════════ */
+  const IDENTITY_NO_RETARGET = true;
+  if (IDENTITY_NO_RETARGET) return s;
   // 小鱼身份 = 她自己在跟自己说话，没有「称呼谁」这回事，跟 persona.mjs 一致
   if (me.id === 'fish') {
     return s.replace(/主人/g, '用户');
@@ -297,6 +318,44 @@ export function setIdentity(id, sessionId = null) {
   // 全局那份也跟着走：新会话默认继承它（主人切完立刻开新会话，也能继承上）
   st.current = id;
   return writeState(st);
+}
+
+/**
+ * 【2026-11-13 主人报「切换身份不是按会话来的，而是全局」—— 污染源钉死】
+ *
+ * setIdentity 按会话记了 bySession[sid] 没错，但它**同时改写全局 current**
+ * （那是「新会话默认继承」的钦点语义）。坑在回落链：**没记过 bySession 的
+ * 其它已有会话**，读身份时回落到 current —— 这次切换把它们也一起改了。
+ * 主人感知的就是「切身份是全局的」。
+ *
+ * 修：切换时由调用方把**其它所有已有会话**传进来，没记过 bySession 的
+ * 一律**固化成切换前的 current** —— current 之后怎么改都不再波及它们；
+ * 只有「新会话默认继承」这一条钦点语义保留。
+ */
+export function pinOthersBeforeSwitch(otherSessionIds = []) {
+  /* 【2026-11-13 二改】回落链已经改成「没记过 = 主人」，这里不必再固化别家
+   * 会话（固化反而会把它们钉成切换前的身份）。保留函数签名给 server 调，
+   * 直接返回 0：一个都不用补。 */
+  void otherSessionIds;
+  return { ok: true, pinned: 0 };
+}
+
+/** 旧实现留档（不再调用） */
+function _pinOthersBeforeSwitchLegacy(otherSessionIds = []) {
+  const st = readState();
+  const prev = st.current;
+  if (!st.bySession || typeof st.bySession !== 'object') st.bySession = {};
+  let pinned = 0;
+  for (const sid of otherSessionIds) {
+    const key = String(sid || '');
+    if (!key || key === 'default') continue;
+    if (!st.bySession[key]) {
+      st.bySession[key] = prev;
+      pinned += 1;
+    }
+  }
+  if (pinned) writeState(st);
+  return { ok: true, pinned };
 }
 
 /** 新建自定义身份，返回新对象；超上限或名字空返回 null */

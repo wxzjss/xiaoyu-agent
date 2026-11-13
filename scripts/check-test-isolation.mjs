@@ -77,4 +77,26 @@ try {
 } catch {}
 t.ok('主人会话目录里没有测试脚本残留的垃圾', junk.length === 0, junk.join(', '));
 
+/* 【2026-11-15 加】隔离实例以前只跳过 sessions，把 qq.json（机器人凭据）、
+ * resume.json（主人断点）、admin-mode.json、my-memory.md、github-token.txt
+ * 一并复制进临时目录 —— 结果是测试实例连上了主人的 QQ 机器人、
+ * 读到主人的断点。实测证据：隔离实例启动日志里出现 "qq : online（官方机器人）"。
+ * 这两条把「不许带凭据」钉死，以后谁再放宽白名单都会先红。 */
+t.ok('隔离模块有「不许带出去」的敏感名单', /SENSITIVE_RE\s*=\s*\//.test(iso));
+const sens = [
+  'qq', 'onebot', 'token', 'secret', 'cred', 'passwd', 'password',
+  'apikey', 'admin[-_]?mode', 'license', 'account', 'cookie',
+  'resume', 'my-memory', 'whale-on', 'deepseek', 'github',
+];
+const missing = sens.filter((w) => {
+  const m = /const SENSITIVE_RE = \/([^\n]*?)\/i;/.exec(iso);
+  return !m || !m[1].includes(w);
+});
+t.ok('敏感名单覆盖凭据/断点/记忆/账号', missing.length === 0, missing.join(', '));
+t.ok('复制 .state 时按敏感名单跳过',
+  /if \(SENSITIVE_RE\.test\(name\)\) continue;/.test(iso));
+t.ok('复制 data 根目录时也按敏感名单跳过',
+  (iso.match(/SENSITIVE_RE\.test\(name\)/g) || []).length >= 2);
+
+
 t.done();

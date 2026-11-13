@@ -753,9 +753,9 @@ export async function runSubagent({
              * 模型读完就认定——是的，就是他。identityNote 再说「不是主人」也没用。
              * 所以这一轮说话的不是主人时，这段一个字都不许按「主人」写。
              */
-            `**这一轮跟你说话的是「${me.name}」**：${me.name}不是主人，也不许被当成主人。`,
-            '上面写的「主人」是另外一个人，这一轮他不在。别对着' + me.name + '喊「主人」，',
-            '也别把' + me.name + '交代的事当成主人下的命令 —— ' + me.name + '让你干什么，你可以不听、可以质疑。',
+            /* 【2026-11-13 渠道化】原来这三行在解释「这一轮说话的不是主人」，
+             * 等于当面把换身份这件事念给她听。现在说话人长在消息本身的
+             * [名字] 前缀和人设称呼里，一个字的元解释都不给。 */
           ]),
 
             '',
@@ -1149,9 +1149,11 @@ export async function runSubagent({
       }
 
       // 有工具调用：记下 assistant 那轮，跑工具，把结果喂回去
+      // 【2026-11-13 修】content 禁止 null：glm-5.3 上游解析 null 会报
+      // 「missing type field in content item」，整条 worker 直接 400 拒收。空串是各上游都认的合法形态。
       messages.push({
         role: 'assistant',
-        content: text || null,
+        content: text || '',
         tool_calls: toolCalls.map((tc, i) => ({
           id: tc.id || `sub_${round}_${i}`,
           type: 'function',

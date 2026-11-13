@@ -1,0 +1,36 @@
+300|      : defaultSafeWordNote();
+301|  // 压缩阈值：数字就是 token 数，0 = 自动档，Infinity = 彻底关掉。
+302|  //
+303|  // 落盘编码（JSON 存不下 Infinity，也分不清 0 的两种含义）：
+304|  //   自动  -> 字符串 "auto"
+305|  //   关闭  -> 数字 0
+306|  //   正数  -> 数字原样
+307|  // 以前「0 表示关闭」是直接写 0，现在 0 归「自动」了，所以关闭必须写成别的形式，
+308|  // 否则主人以前把阈值设成 0（想关掉）的配置，读回来会变成自动档 —— 惊到人。
+309|  const contextLimit = parseContextLimitValue(
+310|    input.contextLimit === undefined ? DEFAULT_SETTINGS.contextLimit : input.contextLimit,
+311|    DEFAULT_SETTINGS.contextLimit,
+312|  );
+313|  // 主动找我：同样只认明确的 true，其余一律当关（这种要主动发声的，默认必须安全）
+314|  /**
+315|   * 记账用哪种钱。
+316|   *
+317|   * 【为什么要这一格】
+318|   * 价目表里存的都是「元 / 百万 token」（照各家国内官网抄的），
+319|   * 但主人可能拿美元对账（OpenAI 账单、中转站后台都是美元），
+320|   * 每次都自己在心里乘一下汇率太累了。这里让他选，界面按选的那一种显示。
+321|   *
+322|   * 只认 'cny' 和 'usd'，别的一律当 'cny' —— 存坏了也别让账本哑掉。
+323|   */
+324|  const currency = String(input.currency || '').toLowerCase() === 'usd' ? 'usd' : 'cny';
+325|  return { bottomLines, safeWords, safeWordNote, contextLimit, currency };
+326|}
+327|
+328|export function getSettings() {
+329|  const stored = readRaw();
+330|  /**
+331|   * 【底线和安全词不该被出厂值盖掉 —— 2026-10-28 修】
+332|   *
+333|   * settings.json 里没写这两项时（主人从没在设置面板里存过，只用过「设为默认」），
+334|   * 原来走的是 `...DEFAULT_SETTINGS` 硬编码那几条，于是：
+335|   *   - 主人点「设为默认」存进 defaults.json 的底线和安全词，对他自己不生效；

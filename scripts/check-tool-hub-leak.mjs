@@ -90,12 +90,12 @@ let cdp = null;
 if (!process.env.XY_CDP_PORT) {
   console.log('\n真机格：SKIP（没有 XY_CDP_PORT，不是隔离实例；源码断言已过）');
 } else {
-  try { const { connect } = await import('../_t_cdp.mjs'); cdp = await connect({ port: Number(process.env.XY_CDP_PORT) }); } catch (e) { cdp = null; }
+  try { const { connect } = await import('./_cdp-connect.mjs'); cdp = await connect({ port: Number(process.env.XY_CDP_PORT), match: process.env.BASE || '127.0.0.1' }); } catch (e) { cdp = null; }
   if (!cdp) console.log('\n真机格：SKIP（连不上隔离实例的调试端口）');
 }
 
 if (cdp) {
-  if (!(await ensureLogStore(cdp))) console.log('  （页面 store 一直没就绪，真机格按空处理）');
+  if (!(await ensureLogStore(cdp))) { console.log("  store 没就绪 —— 真机格跳过"); t.done(); process.exit(0); }
 
   /* ① 连续 3 张工具 → 1 个柜子，柜外 0 张散卡 */
   const r1 = await cdp.eval(`

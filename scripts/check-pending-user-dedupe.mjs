@@ -73,8 +73,8 @@ console.log('\n一、源码：历史写入必须经过 store（撤乐观气泡�
 if (!process.env.XY_CDP_PORT) {
   console.log('\n真机格：SKIP（没有 XY_CDP_PORT，不是隔离实例；源码断言已跑完）');
 } else {
-  const { connect } = await import('../_t_cdp.mjs');
-  const cdp = await connect({ port: Number(process.env.XY_CDP_PORT) });
+  const { connect } = await import('./_cdp-connect.mjs');
+  const cdp = await connect({ port: Number(process.env.XY_CDP_PORT), match: process.env.BASE || '127.0.0.1' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log('\n二、真机：发一句话跑完 → 主人的话只许占一个气泡');
 

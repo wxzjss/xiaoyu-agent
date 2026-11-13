@@ -16,7 +16,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { connect } from '../_t_cdp.mjs';
+import { connect } from './_cdp-connect.mjs';
 
 const PORT = 8788;
 const BASE = 'http://127.0.0.1:' + PORT;

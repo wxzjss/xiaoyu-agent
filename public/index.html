@@ -12018,7 +12018,17 @@ function closeFishPersonaDlg() {
   if (agentFromSettings) {
     agentFromSettings.onclick = async () => {
       const sd = document.getElementById('settingsDlg') || document.getElementById('settings');
-      if (sd && sd.open) { try { sd.close(); } catch { /* 忽略 */ } }
+      if (sd && sd.open) {
+        /* 【2026-11-13 修·主人报「设置→智能体面板→返回回不到设置页」】这里原来
+         * 直接 sd.close() —— 没走 closeOtherDialogs，来源栈里就没记设置页，
+         * 返回按钮查不到来源只能回主页面。现在先把来源记进栈再关。 */
+        try {
+          window.__dlgOriginStack = window.__dlgOriginStack || {};
+          const stack = (window.__dlgOriginStack['agentListDlg'] = window.__dlgOriginStack['agentListDlg'] || []);
+          if (!stack.includes('settingsDlg')) stack.push('settingsDlg');
+        } catch { /* 记不上就退回主页面，不算坏 */ }
+        try { sd.close(); } catch { /* 忽略 */ }
+      }
       await openAgentDlg();
     };
   }

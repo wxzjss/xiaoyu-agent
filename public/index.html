@@ -3457,8 +3457,18 @@
     .mobQrHead .hint { font-size: 11.5px; }
     .mobQrBox { display: flex; justify-content: center; }
     /* 【2026-11-13 主人报「二维码发光，刺眼」】二维码必须白底黑码才扫得动，
-     * 原来原图多大画多大 —— 暗色主题里整块纯白像一块发光的白砖。
-     * 收小 + 圆角 + 浅灰底 + 细描边，亮度降下来照样能扫。 */
+     * 但 qrSvg 生成的是**内联 SVG**（自带纯白 rect、原生 185px 大小）——
+     * 第一版选择器写的是 img 根本没命中，主人看到的还是发光白砖。
+     * 现在 .mobQrBox svg：限宽 132px + 圆角裁切 + brightness 降一档
+     * （白底 → ~#f0f0f0，黑码对比度不受影响照样能扫）。img 规则留着兜底。 */
+    .mobQrBox svg {
+      width: 132px; height: 132px; display: block;
+      border-radius: 8px;
+      clip-path: inset(0 round 8px);
+      filter: brightness(.93);
+      border: 1px solid rgba(255, 255, 255, .14);
+      box-sizing: border-box;
+    }
     .mobQrBox img {
       width: 148px; height: 148px; display: block;
       image-rendering: pixelated;

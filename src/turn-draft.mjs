@@ -106,14 +106,11 @@ export function draftAsMessage(draft, toolLabel = (n) => n) {
     const label = toolLabel(t.name) || t.name;
     if (!names.includes(label)) names.push(label);
   }
-  const tail = '（说到这儿断了一下——当时程序被关了，这段是接回来的。）';
-  const parts = [];
-  if (text) parts.push(text);
-  if (names.length) {
-    parts.push((text ? '' : '（这一轮还没说上话就被打断了。）') + `中间动了这些工具：${names.join('、')}`);
-  }
-  if (!parts.length) return '';
-  return parts.join('\n\n') + '\n\n' + tail;
+  /* 【2026-11-13 主人钦点删】接回消息只留正文——
+   * 「中间动了这些工具：…」和「（说到这儿断了一下——当时程序被关了，这段是接回来的。）」
+   * 这类系统交代全部去掉（names 变量因此不再使用，保留提取逻辑以备后用）。 */
+  void names;
+  return text || '';
 }
 
 /** 删草稿。正常收尾后必须调，不然下次打开会重复补一条。 */

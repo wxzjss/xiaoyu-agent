@@ -2780,13 +2780,15 @@
     /* 【2026-11-13 主人报「按钮跟隐身了一样特别废眼睛」】原来 border 用 --border，
      * 当前主题下它跟卡片底色几乎同色 —— 整颗按钮只剩两个字母飘着。改成
      * 半透明亮边 + 微底色，任何主题下都看得见轮廓；悬停亮 accent。 */
+    /* 【2026-11-13 主人钦点】插件卡按钮统一设置页同款（.ghost 家族）：
+     * var(--border) 描边 + 透明底 + 8px 圆角，悬停字亮边框加深——跟设置页一模一样 */
     .featEditBtn {
-      flex: none; height: 30px; border-radius: 999px; cursor: pointer;
-      /* 六套主题全是暗色底，白半透明在任何主题下都有轮廓 */
-      border: 1px solid rgba(255, 255, 255, .18); background: rgba(255, 255, 255, .05); color: var(--dim);
-      font-size: 12.5px; padding: 0 12px;
+      flex: none; height: 32px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 14px;
     }
-    .featEditBtn:hover { border-color: var(--accent); color: var(--accent); background: rgba(255, 255, 255, .09); }
+    .featEditBtn:hover { color: var(--text); border-color: var(--dim); }
+    .featEditBtn:active { background: rgba(255, 255, 255, .06); }
     /* 2026-10-29：智能体那一行有两个入口（小鱼的人设 / 小鲸的人设·选模型） */
     .featRow .featEditGroup { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 
@@ -2867,9 +2869,11 @@
      * 平时整颗藏着（opacity:0），鼠标落到这一行才露头 ——
      * 常驻的话一整列都是红的，天天勾人去点，容易误删。 */
     .featRow .featDelBtn {
-      flex: none; height: 30px; border-radius: 999px; cursor: pointer;
-      border: 1px solid transparent; background: transparent; color: var(--dim);
-      font-size: 12.5px; padding: 0 10px; opacity: 0;
+      /* 【2026-11-13 主人钦点】同款统一：ghost 形状（描边/透明底/8px 圆角），
+       * 平时隐身（opacity:0）悬停显形的老规矩不动，悬停红字提示删除 */
+      flex: none; height: 32px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--border); background: transparent; color: var(--dim);
+      font-size: 12.5px; padding: 0 14px; opacity: 0;
       transition: opacity .12s ease;
     }
     /* 键盘 Tab 走过来也得看得见，不然纯键盘操作时它就是个隐形按钮 */
@@ -4477,7 +4481,6 @@
               <label class="mdlKind"><input type="radio" name="mdlKind" value="chat" id="mdlKindChat" checked /><span>说话 / 干活</span></label>
               <label class="mdlKind"><input type="radio" name="mdlKind" value="image" id="mdlKindImage" /><span>出图</span></label>
             </div>
-            <span class="hint" id="mdlKindHint">出图那条走的是 /images/generations，跟聊天模型不是一个端点，别混着填。</span>
           </div>
           <div class="field">
             <label>这一条怎么算钱</label>
@@ -4504,7 +4507,6 @@
                    它跟价格四格打架：四格填的是最终价、倍率又乘一次，
                    同一笔账两条口子，算出来的数谁都说不清。
                    现在只认四格，填多少就是多少。 -->
-              <span class="hint" id="mdlPriceHint">四格全空 = 照官方价（× 倍率）。填了哪一格，那一格就按你填的算 —— 填的是**最终价**，不再乘倍率。</span>
             </div>
           </div>
           <div class="field">
@@ -21023,7 +21025,7 @@ if (mdlDiscoverBtn) {
     const base = (mdlBase && mdlBase.value ? mdlBase.value : '').trim();
     const key = (mdlKey && mdlKey.value ? mdlKey.value : '').trim();
     if (!base) {
-      if (!opts.silent && mdlModelHint) mdlModelHint.textContent = '先填接口地址，再来拉模型列表。';
+      if (!opts.silent && mdlModelHint) mdlModelHint.textContent = '';   /* 【2026-11-13 主人钦点】白字引导语删掉 */
       if (!opts.silent) { try { mdlBase.focus(); } catch {} }
       return false;
     }
@@ -21031,7 +21033,7 @@ if (mdlDiscoverBtn) {
     const oldText = mdlDiscoverBtn.textContent;
     mdlDiscoverBtn.disabled = true;
     mdlDiscoverBtn.textContent = '拉取中…';
-    if (mdlModelHint) mdlModelHint.textContent = '正在问服务商要模型列表…';
+    if (mdlModelHint) { mdlModelHint.className = 'hint'; mdlModelHint.textContent = '正在问服务商要模型列表…'; }
     try {
       const r = await fetch('/api/models/discover', {
         method: 'POST',
@@ -21056,11 +21058,12 @@ if (mdlDiscoverBtn) {
       mdlDiscovered = { base: '', ids: [] };
       paintModelPicker(base);
       if (mdlModelHint && !opts.silent) {
+        mdlModelHint.className = 'hint err';
         mdlModelHint.textContent = '没拉到：' + ((r && r.error) ? r.error : '网络错误') + '（下面还是预设表，也可以手填）';
       }
       return false;
     } catch (e) {
-      if (mdlModelHint && !opts.silent) mdlModelHint.textContent = '没拉到：' + ((e && e.message) || '网络错误');
+      if (mdlModelHint && !opts.silent) { mdlModelHint.className = 'hint err'; mdlModelHint.textContent = '没拉到：' + ((e && e.message) || '网络错误'); }
       return false;
     } finally {
       mdlDiscoverBtn.disabled = false;
@@ -21303,15 +21306,6 @@ function openForm(model) {
   const wantImage = Boolean(model) && model.kind === 'image';
   if (mdlKindChat) mdlKindChat.checked = !wantImage;
   if (mdlKindImage) mdlKindImage.checked = wantImage;
-  if (mdlKindHint) {
-    mdlKindHint.textContent = wantImage
-      /* 【2026-11-10 文案审查】原来写「要等 30~40 秒」—— 与实现不符。
-       * src/models.mjs:594 给生图测连通的超时是 180 秒，代码里自己还会说
-       * 「等了 3 分钟还没出图」。真实等待通常在几十秒到几分钟之间，写 30~40 秒
-       * 会让人在 40 秒时以为卡死了。 */
-      ? '出图那条：测连通会真画一张小图（慢的时候要等一两分钟，最多等 3 分钟），能出图才算通。'
-      : '说话 / 干活那条：测连通发一句 ping 就够，很快。';
-  }
 
   // 价目回填：填过的四格 + 当时用的哪种钱。没填过就全空（= 照官方价）
   {

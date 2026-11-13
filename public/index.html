@@ -2724,7 +2724,7 @@
     }
     /* 【2026-11-12 旁观者模式卡】展开的选人区：缩进一点表示「卡里的内容」，
        行本身复用 .featRow，不加边框免得看起来像第二张卡。 */
-    .specSub { padding: 2px 10px 10px 26px; }
+    .specSub { padding: 2px 10px 10px 26px; grid-column: 1 / -1; }
     .specSub .featRow { padding-top: 9px; padding-bottom: 9px; }
   .naLab { display: block; margin: 8px 0; font-size: 13px; }
   .naLab input, .naLab textarea { display: block; width: 100%; margin-top: 4px; }
@@ -2768,8 +2768,9 @@
       color: var(--dim); font-size: 11.5px; line-height: 1.65; margin-top: 3px;
       /* 【2026-11-13 合并·mac 侧】说明太长的卡会高矮不一，截到两行让网格整齐；悬停再展开 */
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+      /* 【2026-11-13 主人反馈】行数固定不随悬停变 —— 一变卡片就高，整个网格跟着重排，
+       * 滚轮滚动时满屏文本位移。要全文悬停卡片看 title 原生提示。 */
     }
-    .featRow:hover .featDesc { -webkit-line-clamp: 6; }
     .featRow .switch {
       /* 【2026-11-13 合并·mac 侧】贴到卡片右下角 */
       margin-left: auto;
@@ -2990,6 +2991,8 @@
       background: rgba(20,20,20,.85); color: #fff; padding: 8px 18px; border-radius: 8px;
       font-size: 13px; z-index: 999; pointer-events: none; transition: opacity .3s;
     }
+    /* 【2026-11-13 主人反馈「太小」】面板加宽到 1080：三列卡片更舒展 */
+    #featuresDlg { width: min(1080px, 94vw); }
     #featuresDlg > form { position: relative; }
     #featuresDlg.dropping { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
     .featDrop {
@@ -15605,8 +15608,17 @@ function specBuild() {
   const card = document.createElement('div');
   card.className = 'featRow specCard';
   card.dataset.spec = '1';
+  /* 【2026-11-13 网格版】旁观者卡内容多，独占一整行别跟别的卡挤三列 */
+  card.style.gridColumn = '1 / -1';
   const main = document.createElement('div');
   main.className = 'featMain';
+  /* 【2026-11-13 主人截图报「旁观者模式几个白色大字竖排」】网格版 .featMain 横排 flex，
+   * name/desc 两个 div 并排挤 —— 五个字被压成竖列。套上跟功能卡一样的结构。 */
+  const ico = document.createElement('div');
+  ico.className = 'featIco t-violet';
+  ico.textContent = '旁';
+  const text = document.createElement('div');
+  text.className = 'featText';
   const name = document.createElement('div');
   name.className = 'featName';
   const nm = document.createElement('span');
@@ -15620,7 +15632,8 @@ function specBuild() {
   desc.textContent = on
     ? '旁观中：' + Array.from(specState.chosen).join('、') + '。她干活时这几位随时插一句（说话带「旁观」小牌），纯闲聊不插话。'
     : '还没挑人。点「挑人」选几位（按会话生效），她干活时选中的随时插一句；纯闲聊不插话。';
-  main.append(name, desc);
+  text.append(name, desc);
+  main.append(ico, text);
   const pick = document.createElement('button');
   pick.type = 'button';
   pick.className = 'featEditBtn';
@@ -15931,8 +15944,16 @@ paintFeatNow();
     }
     const desc = document.createElement('div');
     desc.className = 'featDesc';
-    desc.textContent = f.desc;
-    text.append(desc);
+    /* 【2026-11-13 主人钦点】卡片里的介绍精简成一句短话：只取第一句，超 46 字再截；
+     * 全文挂 title 悬停可看。 */
+    const _full = String(f.desc || '').trim();
+    const _short = (_full.split(/[。；;\n]/)[0] || '').trim().slice(0, 46)
+      + ((_full.length > 46 || /[。；;\n]/.test(_full.slice(0, 47))) ? '…' : '');
+    desc.textContent = _short || '（没有说明）';
+    desc.title = _full || _short;
+    /* 【2026-11-13 修·主人报「卡片只显示一个字不知道完整名字」】名字必须挂在 text 里
+     * —— 之前移植时只 append 了 desc，name 丢了。 */
+    text.append(name, desc);
     main.append(ico, text);
 
     const sw = document.createElement('button');
@@ -21569,6 +21590,12 @@ async function localDeepSeekPost(p, body) {
 /* 把服务拉起来（含：没登录 → 开登录页等十分钟；有登录 → 自动取 token） */
 async function localDeepSeekEnsure() {
   let st = await localDeepSeekGet('/api/mini-deepseek/status');
+  // 【2026-11-13 修】up + hasToken 不够：token 可能已死（上游判 INVALID_TOKEN）。
+  //   probe 带回 tokenOk:false 就别当通的，先停服务再重拉 —— 旧进程喂的是死 token，换不了血。
+  if (st && st.up && st.hasToken && st.tokenOk === false) {
+    await localDeepSeekPost('/api/mini-deepseek/stop').catch(() => {});
+    st = null;
+  }
   if (st && st.up && st.hasToken) return st;
   st = await localDeepSeekPost('/api/mini-deepseek/start');
   if (!st) return { error: '本机 DeepSeek 起不来' };

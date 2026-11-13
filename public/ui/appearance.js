@@ -130,49 +130,115 @@ export const WALLPAPERS = [
    * 出厂就是这个状态：不铺任何纹理 —— 开着「视频背景」时露出的就是那段深海片子
    * （assets/background.mp4，主人桌面壁纸那支），关着就是主题底色。
    * 写成「无」会被当成「什么都没有」，一选就以为把背景删了。
+   *
+   * 【2026-11-13 重设计·主人报「壁纸之间区别非常小、样式简陋」】
+   * 原来那几张全是 .02~.07 透明度的白点白线，铺在黑底上肉眼几乎一样。
+   * 现在这一套：每张都带**自己的色相和明显结构**（渐变色斑 / 光带 / 织纹 / 星野），
+   * 并排看一眼就能分清；预览卡（pv）用更强的对比版本，挑起来不用眯眼。
+   * 全部纯 CSS 渐变，零图片资源，跟主题底色叠加也不出戏。
    */
   { id: '', name: '默认', soul: '不铺纹理：开着视频背景就露背景片，关着就是主题底色。', image: '' },
+
   {
-    id: 'dot', name: '网点', soul: '22px 一个点，几乎看不见，只是不让大片纯色发死。',
-    image: 'radial-gradient(circle, rgba(255,255,255,.05) 1px, transparent 1px)',
-    size: '22px 22px', repeat: 'repeat',
-    pv: 'radial-gradient(circle, rgba(255,255,255,.26) 1px, transparent 1px)',
-    pvSize: '12px 12px',
+    id: 'aurora', name: '深空极光', soul: '蓝紫两团极光色斑沉在深空里，右上还有一撮星尘。夜航感。',
+    image: 'radial-gradient(52% 44% at 18% 12%, rgba(64, 92, 255, .20), transparent 70%),'
+      + 'radial-gradient(46% 40% at 82% 24%, rgba(168, 85, 247, .16), transparent 72%),'
+      + 'radial-gradient(38% 30% at 62% 86%, rgba(56, 189, 248, .10), transparent 70%),'
+      + 'radial-gradient(1.2px 1.2px at 12% 32%, rgba(255,255,255,.5), transparent),'
+      + 'radial-gradient(1px 1px at 34% 68%, rgba(255,255,255,.36), transparent),'
+      + 'radial-gradient(1.4px 1.4px at 72% 18%, rgba(255,255,255,.44), transparent),'
+      + 'radial-gradient(1px 1px at 88% 55%, rgba(255,255,255,.3), transparent)',
+    size: 'cover, cover, cover, 100% 100%, 100% 100%, 100% 100%, 100% 100%',
+    repeat: 'no-repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat',
+    pv: 'radial-gradient(52% 44% at 18% 12%, rgba(64, 92, 255, .55), transparent 70%),'
+      + 'radial-gradient(46% 40% at 82% 24%, rgba(168, 85, 247, .48), transparent 72%),'
+      + 'radial-gradient(38% 30% at 62% 86%, rgba(56, 189, 248, .30), transparent 70%),'
+      + 'radial-gradient(2px 2px at 12% 32%, rgba(255,255,255,.9), transparent),'
+      + 'radial-gradient(1.6px 1.6px at 34% 68%, rgba(255,255,255,.7), transparent),'
+      + 'radial-gradient(2.2px 2.2px at 72% 18%, rgba(255,255,255,.85), transparent),'
+      + 'radial-gradient(1.6px 1.6px at 88% 55%, rgba(255,255,255,.6), transparent)',
   },
+
   {
-    id: 'grid', name: '方格', soul: '32px 细格，像坐标纸。',
-    image: 'linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),'
-      + 'linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px)',
-    size: '32px 32px', repeat: 'repeat',
-    pv: 'linear-gradient(rgba(255,255,255,.14) 1px, transparent 1px),'
-      + 'linear-gradient(90deg, rgba(255,255,255,.14) 1px, transparent 1px)',
-    pvSize: '18px 18px',
+    id: 'ember', name: '暮霞', soul: '地平线上升起的暖橙余晖，越往上越沉入夜色。像傍晚关窗前最后那眼天空。',
+    image: 'linear-gradient(to top, rgba(251, 146, 60, .16) 0%, rgba(190, 84, 66, .10) 26%,'
+      + 'rgba(30, 27, 48, .05) 58%, transparent 80%),'
+      + 'radial-gradient(60% 30% at 50% 100%, rgba(253, 186, 116, .14), transparent 74%)',
+    size: 'cover, cover',
+    repeat: 'no-repeat, no-repeat',
+    pv: 'linear-gradient(to top, rgba(251, 146, 60, .50) 0%, rgba(190, 84, 66, .30) 26%,'
+      + 'rgba(30, 27, 48, .12) 58%, transparent 80%),'
+      + 'radial-gradient(60% 30% at 50% 100%, rgba(253, 186, 116, .40), transparent 74%)',
   },
+
   {
-    id: 'rule', name: '横线', soul: '28px 一条横线，写东西时看着像本子。',
-    image: 'repeating-linear-gradient(to bottom, rgba(255,255,255,.032) 0 1px, transparent 1px 28px)',
-    size: 'auto', repeat: 'repeat',
-    pv: 'repeating-linear-gradient(to bottom, rgba(255,255,255,.16) 0 1px, transparent 1px 14px)',
+    id: 'moss', name: '翠谷', soul: '深谷里一层青苔绿雾，左下还有一汪更亮的潭水。白天看不刺眼。',
+    image: 'radial-gradient(56% 46% at 78% 82%, rgba(52, 211, 153, .16), transparent 72%),'
+      + 'radial-gradient(50% 40% at 14% 88%, rgba(20, 134, 108, .14), transparent 70%),'
+      + 'radial-gradient(40% 34% at 50% 10%, rgba(6, 78, 59, .22), transparent 74%)',
+    size: 'cover, cover, cover',
+    repeat: 'no-repeat, no-repeat, no-repeat',
+    pv: 'radial-gradient(56% 46% at 78% 82%, rgba(52, 211, 153, .48), transparent 72%),'
+      + 'radial-gradient(50% 40% at 14% 88%, rgba(20, 134, 108, .42), transparent 70%),'
+      + 'radial-gradient(40% 34% at 50% 10%, rgba(6, 78, 59, .55), transparent 74%)',
   },
+
   {
-    id: 'grain', name: '纸纹', soul: '两层极细斜纹叠出来的颗粒感，最接近真实纸张。',
-    image: 'repeating-linear-gradient(45deg, rgba(255,255,255,.02) 0 1px, transparent 1px 3px),'
-      + 'repeating-linear-gradient(-45deg, rgba(255,255,255,.016) 0 1px, transparent 1px 4px)',
-    size: 'auto', repeat: 'repeat',
-    pv: 'repeating-linear-gradient(45deg, rgba(255,255,255,.11) 0 1px, transparent 1px 2px),'
-      + 'repeating-linear-gradient(-45deg, rgba(255,255,255,.08) 0 1px, transparent 1px 3px)',
+    id: 'rose', name: '蔷薇暮色', soul: '左下一团蔷薇红晕往右上淡出，配一点紫。比深空极光更暖一档。',
+    image: 'radial-gradient(46% 40% at 16% 84%, rgba(244, 114, 182, .17), transparent 72%),'
+      + 'radial-gradient(44% 38% at 80% 20%, rgba(129, 90, 240, .13), transparent 74%)',
+    size: 'cover, cover',
+    repeat: 'no-repeat, no-repeat',
+    pv: 'radial-gradient(46% 40% at 16% 84%, rgba(244, 114, 182, .50), transparent 72%),'
+      + 'radial-gradient(44% 38% at 80% 20%, rgba(129, 90, 240, .40), transparent 74%)',
   },
+
   {
-    id: 'glow', name: '顶光', soul: '从顶部正中往下退的一层微光，屏幕上方像有盏灯。',
-    image: 'radial-gradient(120% 70% at 50% -10%, rgba(255,255,255,.075), transparent 62%)',
-    size: 'cover', repeat: 'no-repeat',
-    pv: 'radial-gradient(120% 80% at 50% -18%, rgba(255,255,255,.28), transparent 66%)',
+    id: 'blueprint', name: '蓝图', soul: '亮蓝细网格铺满，像一张摊开的工程图纸。格子是真看得清的那种。',
+    image: 'linear-gradient(rgba(96, 165, 250, .10) 1px, transparent 1px),'
+      + 'linear-gradient(90deg, rgba(96, 165, 250, .10) 1px, transparent 1px),'
+      + 'linear-gradient(rgba(96, 165, 250, .05) 1px, transparent 1px),'
+      + 'linear-gradient(90deg, rgba(96, 165, 250, .05) 1px, transparent 1px)',
+    size: '96px 96px, 96px 96px, 24px 24px, 24px 24px',
+    repeat: 'repeat, repeat, repeat, repeat',
+    pv: 'linear-gradient(rgba(96, 165, 250, .42) 1.4px, transparent 1.4px),'
+      + 'linear-gradient(90deg, rgba(96, 165, 250, .42) 1.4px, transparent 1.4px),'
+      + 'linear-gradient(rgba(96, 165, 250, .18) 1px, transparent 1px),'
+      + 'linear-gradient(90deg, rgba(96, 165, 250, .18) 1px, transparent 1px)',
   },
+
   {
-    id: 'vignette', name: '暗角', soul: '四角压暗、中间稍亮，注意力收在正文上。',
-    image: 'radial-gradient(120% 90% at 50% 45%, transparent 42%, rgba(0,0,0,.5) 100%)',
-    size: 'cover', repeat: 'no-repeat',
-    pv: 'radial-gradient(120% 90% at 50% 45%, rgba(255,255,255,.10) 30%, rgba(0,0,0,.72) 100%)',
+    id: 'weave', name: '织布', soul: '斜向织纹叠一层柔光，像闭着眼能摸到的那种布面质感。',
+    image: 'repeating-linear-gradient(45deg, rgba(255,255,255,.045) 0 2px, transparent 2px 6px),'
+      + 'repeating-linear-gradient(-45deg, rgba(255,255,255,.035) 0 2px, transparent 2px 6px),'
+      + 'radial-gradient(90% 70% at 50% 30%, rgba(255,255,255,.06), transparent 72%)',
+    size: 'auto, auto, cover',
+    repeat: 'repeat, repeat, no-repeat',
+    pv: 'repeating-linear-gradient(45deg, rgba(255,255,255,.24) 0 2px, transparent 2px 6px),'
+      + 'repeating-linear-gradient(-45deg, rgba(255,255,255,.18) 0 2px, transparent 2px 6px),'
+      + 'radial-gradient(90% 70% at 50% 30%, rgba(255,255,255,.22), transparent 72%)',
+  },
+
+  {
+    id: 'spotlight', name: '聚光', soul: '正中一盏柔聚光灯，四周沉沉压暗。注意力全钉在正文上。',
+    image: 'radial-gradient(56% 46% at 50% 40%, rgba(255, 244, 214, .11), transparent 58%),'
+      + 'radial-gradient(130% 100% at 50% 48%, transparent 38%, rgba(0, 0, 0, .62) 100%)',
+    size: 'cover, cover',
+    repeat: 'no-repeat, no-repeat',
+    pv: 'radial-gradient(56% 46% at 50% 40%, rgba(255, 244, 214, .34), transparent 58%),'
+      + 'radial-gradient(130% 100% at 50% 48%, rgba(255,255,255,.08) 30%, rgba(0, 0, 0, .86) 100%)',
+  },
+
+  {
+    id: 'dune', name: '沙丘', soul: '几条大弧线从左下往右上滚过去，像夜里被风吹平的沙。',
+    image: 'repeating-radial-gradient(120% 90% at -20% 110%, transparent 0 46px,'
+      + ' rgba(231, 190, 138, .06) 46px 92px, transparent 92px 138px),'
+      + 'radial-gradient(70% 50% at 80% 0%, rgba(217, 160, 96, .07), transparent 70%)',
+    size: 'cover, cover',
+    repeat: 'no-repeat, no-repeat',
+    pv: 'repeating-radial-gradient(120% 90% at -20% 110%, transparent 0 46px,'
+      + ' rgba(231, 190, 138, .26) 46px 92px, transparent 92px 138px),'
+      + 'radial-gradient(70% 50% at 80% 0%, rgba(217, 160, 96, .24), transparent 70%)',
   },
 ];
 

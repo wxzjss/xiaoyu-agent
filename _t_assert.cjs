@@ -1,0 +1,11 @@
+const fs = require('fs');
+const s = fs.readFileSync(process.env.APPDATA + String.fromCharCode(92) + '小鱼Agent' + String.fromCharCode(92) + 'data' + String.fromCharCode(92) + 'public' + String.fromCharCode(92) + 'index.html', 'utf8');
+const c1 = /mdlBase\.value = trimSlash\(.*?baseURL.*?\).*?\/v1`/.test(s) || s.includes("/v1`;") && s.includes('trimSlash(form.baseURL');
+const c2 = s.includes("// 8321 活着时 ensure 不会重启，旧进程里的失效 token 换不成新的：先停再起，强制重读");
+const c3 = s.includes("// 服务活着但 token 失效：ensure 见 up+hasToken 会跳过重启，旧进程换不了新 token，先停再起");
+const c4 = s.includes("proxyChain");
+console.log('添加页 base补/v1:', c1);
+console.log('添加页 token分支 stop→ensure:', c2);
+console.log('模型页 token分支 stop→ensure:', c3);
+console.log('JS 无括号残留（渲染检测前置）: 待真机');
+process.exit(c2 && c3 ? 0 : 1);

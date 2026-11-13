@@ -1,0 +1,188 @@
+export async function startLocalService({ token, opener, waitMs } = {}) {
+  const already = await probeLocalService(900);
+  if (already.up) return { ok: true, already: true, ids: already.ids };
+
+  const dir = miniDsDir();
+  if (!dir) return { ok: false, reason: 'no-program', error: '找不到 mini_ds 程序目录' };
+
+  let tk = String(token || '').trim();
+  if (!tk) {
+    let got = await refreshTokenAsync();
+    // __LOGIN_HOOK__ 【2026-11-12】没 token 不是直接失败：开内置浏览器登录页，等十分钟。
+    if (!got.token) {
+      const w = await waitForLogin({ opener, waitMs });
+      if (!w.ok) return { ok: false, reason: w.reason, error: w.error || '没登录 DeepSeek' };
+      tk = w.token;
+    } else {
+      tk = got.token;
+    }
+  }
+
+  const py = findPython();
+  const env = { ...process.env, DS_TOKEN: tk, DS_PORT: String(MINI_DS_PORT), PYTHONIOENCODING: 'utf-8' };
+  // 绝不让 token 落进日志或回给前端
+  delete env.DS_COOKIE;
+
+  const child = spawn(py, ['mini_ds.py'], {
+    cwd: dir,
+    env,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    // 【2026-11-12 修】脱离父进程：不然本进程一退，子服务跟着被带走。
+    detached: true,
+  });
+  st.proc = child;
+  st.startedAt = Date.now();
+  // 【2026-11-12 修】父进程退出时不要把子服务拖走（unref 只影响退出策略，不影响管道读取）。
+  try { child.unref(); } catch {}
+  st.logTail = [];
+  st.lastExit = null;
+
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', (d) => String(d).split(/\r?\n/).forEach((l) => l && noteLog(l)));
+  child.stderr?.on('data', (d) => String(d).split(/\r?\n/).forEach((l) => l && noteLog(l)));
+  child.on('exit', (code) => {
+    st.lastExit = { code, at: Date.now() };
+    st.proc = null;
+  });
+
+  // 最多等 20 秒起来。python 冷启动 + 建第一个连接大概 2~5 秒。
+  for (let i = 0; i < 40; i += 1) {
+    await new Promise((r) => setTimeout(r, 500));
+    const p = await probeLocalService(800);
+    if (p.up) {
+      invalidateTokenCache();
+      return { ok: true, started: true, ids: p.ids };
+    }
+    if (!st.proc) break;
+  }
+  const tail = st.logTail.slice(-6).join('\n');
+  stopLocalService();
+  return { ok: false, reason: 'start-failed', error: '服务起不来', log: tail };
+}
+
+/** 收尸。等登录那个定时器也一起清掉。 */
+export function stopLocalService() {
+  // 【2026-11-12 修】不是本进程起的服务（比如上次运行留下的）也要能停：按端口找 PID 再杀。
+  if (!st.proc) {
+    try {
+      const out = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true });
+      const pids = new Set();
+      for (const line of String(out.stdout || '').split(/\r?\n/)) {
+        if (!line.includes(':' + MINI_DS_PORT)) continue;
+        if (!/LISTENING/i.test(line)) continue;
+        const m = line.trim().match(/(\d+)\s*$/);
+        if (m) pids.add(m[1]);
+      }
+      for (const pid of pids) {
+        try { spawnSync('taskkill', ['/PID', pid, '/F'], { windowsHide: true }); } catch {}
+      }
+      return { ok: true, killed: [...pids] };
+    } catch { return { ok: false }; }
+  }
+
+  if (st.waitTimer) { clearTimeout(st.waitTimer); st.waitTimer = null; }
+  st.waitingLogin = false;
+  const p = st.proc;
+  st.proc = null;
+  if (!p) return { ok: true, already: true };
+  try { p.kill(); } catch { /* 已经死了 */ }
+  return { ok: true };
+}
+
+export function localStatus() {
+  return {
+    running: !!st.proc,
+    startedAt: st.startedAt,
+    waitingLogin: st.waitingLogin,
+    lastExit: st.lastExit,
+    logTail: st.logTail.slice(-20),
+    dir: miniDsDir(),
+    base: MINI_DS_BASE,
+    key: MINI_DS_KEY,
+    model: MINI_DS_MODEL,
+  };
+}
+
+/**
+ * 【2026-11-12】「本机 DeepSeek 到底能不能用」的唯一权威答案。
+ *
+ * 为什么不能只看 st.proc：主人可能自己双击过 start.bat，或者上次
+ * 程序没来得及收尾就退了 —— 那时候端口上明明有服务，st.proc 却是空的。
+ * 反过来 st.proc 还在不代表活得好（进程卡死、端口让出去）。
+ *
+ * 所以这里分两步问：
+ *   ① 先看本进程手里有没有子进程句柄 —— 有就说明是「我起的」；
+ *   ② 再探端口 —— 端口上有 /v1/models 应答，才叫真的能用。
+ * 两个都记录下来，前端据此决定「要不要再起一个」。
+ */
+export async function localHealth(timeoutMs = 1500) {
+  const p = await probeLocalService(timeoutMs);
+  return {
+    up: p.up,
+    ids: p.ids ?? [],
+    owned: !!st.proc,
+    waitingLogin: st.waitingLogin,
+    hasToken: !!readDeepSeekTokenCached().token,
+    base: MINI_DS_BASE,
+    key: MINI_DS_KEY,
+    model: MINI_DS_MODEL,
+    dir: miniDsDir(),
+    lastExit: st.lastExit,
+  };
+}
+
+// ─────────────────────────────────────────── 等登录
+
+/**
+ * 没登录的时候：打开内置浏览器的 DeepSeek 登录页，然后一直轮询本地存储，
+ * 直到拿到 token，或者过了十分钟。
+ *
+ * 这一步是「等」不是「问」—— 主人不用回来点任何东西，登录完自动往下走。
+ */
+export async function waitForLogin({ opener, waitMs, reader } = {}) {
+  // 已经在等了，别叠第二层
+  if (st.waitingLogin) return { ok: false, reason: 'already-waiting' };
+
+  const read = typeof reader === 'function' ? reader : readDeepSeekToken;
+  const got0 = read();
+  if (got0 && got0.token) return { ok: true, already: true };
+
+  st.waitingLogin = true;
+  try {
+    if (typeof opener === 'function') {
+      try { await opener('https://chat.deepseek.com/sign_in'); } catch { /* 打不开就算了，照样轮询 */ }
+    }
+    const total = Number(waitMs) > 0 ? Number(waitMs) : LOGIN_WAIT_MS;
+    const deadline = Date.now() + total;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      const got = read();
+      if (got && got.token) {
+        st.waitingLogin = false;
+        return { ok: true, token: got.token };
+      }
+    }
+    st.waitingLogin = false;
+    return { ok: false, reason: 'timeout', error: '十分钟内没检测到登录' };
+  } finally {
+    st.waitingLogin = false;
+  }
+}
+
+/** 【2026-11-12】给前端/接口用的三项默认值。 */
+export const LOCAL_ID = 'local-deepseek';
+
+export function localDeepSeekDefaults() {
+  return {
+    id: LOCAL_ID,
+    name: '本机 DeepSeek',
+    base: MINI_DS_BASE,
+    key: MINI_DS_KEY,
+    model: MINI_DS_MODEL,
+  };
+}
+
+
+

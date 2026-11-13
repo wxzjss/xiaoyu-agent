@@ -1,0 +1,52 @@
+===== savePlan =====
+function savePlan(key, state) {
+  if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+  archiveFinishedSteps(key, state);   // 底线第8条：done 超十条先归档再落盘
+  try { const prev = loadPlan(key); if (prev && prev.steps && prev.steps.length) archivePlan(key, prev, 'save'); } catch { /* 忽略 */ }
+  state.updatedAt = Date.now();
+  if (!state.createdAt) state.createdAt = state.updatedAt;
+  writeFileSync(fileFor(key), JSON.stringify(state, null, 2), 'utf8');
+  syncTxt(key, state);
+}
+
+===== archiveFinishedSteps =====
+function archiveFinishedSteps(key, state) {
+  try {
+    const steps = Array.isArray(state.steps) ? state.steps : [];
+    const finished = steps.filter((st) => st && (st.status === 'done' || st.status === 'skipped'));
+    if (finished.length <= ARCHIVE_KEEP_DONE) return 0;
+
+    // 按在清单里出现的先后排（不按 id：老清单删过步，id 会有空洞）
+    const ranked = finished
+      .map((st) => ({ st, idx: steps.indexOf(st) }))
+      .sort((a, b) => a.idx - b.idx);
+
+    // 【2026-11-08 修】原来这里一次只收 10 条、然后循环。
+    // 循环会把「最新做完的那几条」也当成最老的收走，而且收完还重编号，
+    // 外面拿着的 stepId 全错位 —— 打勾会改到别的步骤上。
+    //
+    // 现在：只收一批，收「最老的 10 条」，剩下的（包括最新的）一条不动；
+    // 收完绝对不重编号 —— id 就是身份证，动了就没人认得出谁是谁。
+    const take = ranked.slice(0, finished.length - ARCHIVE_KEEP_DONE).map((x) => x.st);
+    const takeSet = new Set(take);
+
+    // pinned 的留下：主人钉死的任务不许自动消失
+    const movable = take.filter((st) => !st.pinned);
+    if (!movable.length) return 0;
+    const movableSet = new Set(movable);
+
+    // 先单独存一份档：只放这批，别把没做完的也写进去
+    archivePlan(key, { ...state, steps: movable, notes: [] }, 'done-over');
+
+    // 从当前清单摘掉（id 原样保留，绝不重编号）
+    state.steps = steps.filter((st) => !movableSet.has(st));
+    return movable.length;
+  } catch {
+    return 0;
+  }
+}
+
+===== pinnedSteps =====
+function pinnedSteps(state) {
+  return (state.steps || []).filter((st) => st && st.pinned);
+}

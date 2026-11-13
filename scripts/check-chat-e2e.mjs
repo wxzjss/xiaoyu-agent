@@ -126,11 +126,11 @@ if (_upstreamDown) {
   ok(types1.filter((t) => t === 'done').length === 1, 'done 只发一次');
 }
 ok(afterDone.length === 0, 'done 之后不再有正文/工具事件');
-
 console.log('\n=== 3. 服务端发的事件，前端一个都别漏 ===');
 const srv = readFileSync('D:/小鱼Agent/src/server.mjs', 'utf8');
 const sent = new Set();
-for (const m of srv.matchAll(/type:\s*'([a-z_]+)'/g)) sent.add(m[1]);
+const srvCode = srv.split('\n').filter(l => !l.trim().startsWith('/*') && !l.trim().startsWith('*')).join('\n');
+for (const m of srvCode.matchAll(/type:\s*'([a-z_]+)'/g)) sent.add(m[1]);
 const html = readFileSync(DATA + '/public/index.html', 'utf8');
 const missing = [...sent].filter((t) => !html.includes("ev.type === '" + t + "'") && !html.includes("e.type === '" + t + "'"));
 ok(missing.length === 0, '服务端发的 ' + sent.size + ' 种事件前端都认了' + (missing.length ? '（漏：' + missing.join(',') + '）' : ''));

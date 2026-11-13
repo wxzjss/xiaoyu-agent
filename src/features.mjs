@@ -36,7 +36,7 @@ export const FEATURES = [
     id: 'browser',
     name: '内置浏览器',
     desc: '我自己的眼睛：能开网页、跳转、截一张图看看页面长什么样。关掉之后完全碰不了网页。',
-    tools: ['browser_open', 'browser_goto', 'browser_snap', 'browser_state'],
+    tools: ['browser_open', 'browser_goto', 'browser_snap', 'browser_state', 'browser_eval', 'browser_cookies', 'browser_setcookie', 'browser_network', 'browser_click', 'browser_type', 'browser_wait', 'browser_read'],
     defaultOn: true,
   },
   {

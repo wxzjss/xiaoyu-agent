@@ -18,7 +18,175 @@ function channel() {
 
 const NO_CHANNEL = '这台环境里没有可用的浏览器窗口（只有从桌面图标打开的小鱼Agent才有）。别假装看过页面。';
 
-export const browserTools = [
+const browserToolsExtra = [
+  {
+    name: 'browser_eval',
+    description:
+      '在内置浏览器当前页面里执行一段 JS，返回结果。用来读 DOM、抓页面变量、钩 fetch。'
+      + '支持 async。页面没开着会报错。',
+    parameters: {
+      type: 'object',
+      properties: {
+        js: {
+          type: 'string',
+          description: '要执行的 JS。最后一行的值会返回，如 document.title，或 await fetch("/api/x").then(r=>r.text())',
+        },
+      },
+      required: ['js'],
+    },
+    async run({ js }) {
+      const c = channel();
+      if (!c) return NO_CHANNEL;
+      if (!c.eval) return '这个版本的主进程没有 eval 通道，要更新小鱼Agent。';
+      const r = await c.eval(js);
+      if (!r || r.ok === false) return '执行失败：' + ((r && r.error) || '不知道为啥');
+      const out = r.result === undefined ? '(undefined)' : typeof r.result === 'string' ? r.result : JSON.stringify(r.result);
+      return String(out).slice(0, 12000);
+    },
+  },
+  {
+    name: 'browser_cookies',
+    description: '读内置浏览器当前站点的 cookie。登录排错、确认凭据在不在用。',
+    parameters: { type: 'object', properties: {} },
+    async run() {
+      const c = channel();
+      if (!c) return NO_CHANNEL;
+      if (!c.cookies) return '这个版本的主进程没有 cookies 通道，要更新小鱼Agent。';
+      const r = await c.cookies();
+      if (!r || r.ok === false) return '读不到：' + ((r && r.error) || '不知道为啥');
+      if (!r.cookies || !r.cookies.length) return '当前站点没有 cookie。';
+      return r.cookies.map((k) => k.name + ' = ' + String(k.value).slice(0, 80)).join('\n').slice(0, 8000);
+    },
+  },
+  {
+    name: 'browser_setcookie',
+    description: '给内置浏览器的会话写一条 cookie（name、value、url 必填）。有些站要带凭据才能进时用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'cookie 名' },
+        value: { type: 'string', description: 'cookie 值' },
+        url: { type: 'string', description: '归属网址，如 https://chat.deepseek.com' },
+        domain: { type: 'string' },
+        path: { type: 'string' },
+        secure: { type: 'boolean' },
+        httpOnly: { type: 'boolean' },
+      },
+      required: ['name', 'value', 'url'],
+    },
+    async run(args) {
+      const c = channel();
+      if (!c) return NO_CHANNEL;
+      if (!c.setCookie) return '这个版本的主进程没有 setCookie 通道，要更新小鱼Agent。';
+      const r = await c.setCookie(args);
+      if (!r || r.ok === false) return '没写进去：' + ((r && r.error) || '不知道为啥');
+      return '写好了：' + args.name + ' → ' + args.url;
+    },
+  },
+  {
+    name: 'browser_network',
+    description:
+      '看内置浏览器页面发了什么网络请求、收了什么响应（方法、URL、状态码、错误）。'
+      + '排接口报错、找页面真实调用的 API、看有没有被风控拦截时用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter: { type: 'string', description: '按 URL 过滤（不区分大小写），如 "login"' },
+        limit: { type: 'number', description: '最多几条，默认 30，最新在前' },
+        body: { type: 'boolean', description: 'true 时附带最近一条响应的正文（截断）' },
+      },
+    },
+    async run(args = {}) {
+      const c = channel();
+      if (!c) return NO_CHANNEL;
+      if (!c.network) return '这个版本的主进程没有 network 通道，要更新小鱼Agent。';
+      const r = await c.network(args);
+      if (!r || r.ok === false) return '读不到：' + ((r && r.error) || '不知道为啥');
+      const rows = (r.entries || []).map((e) => {
+        const t = new Date(e.ts).toTimeString().slice(0, 8);
+        const base = t + ' ' + (e.method || '') + ' ' + e.url + ' → ' + (e.phase === 'response' ? ('HTTP ' + e.status) : (e.error || e.phase));
+        if (e.bodySnippet) return base + '\n  正文: ' + e.bodySnippet;
+        return base;
+      });
+      return rows.length ? rows.join('\n').slice(0, 12000) : '这段时间页面没有网络请求记录。';
+    },
+  },
+  {
+    name: 'browser_click',
+    description: '点内置浏览器页面里的一个元素。给 CSS 选择器（如 "#login-btn"）。会先滚动到中间再点。',
+    parameters: {
+      type: 'object',
+      properties: { selector: { type: 'string', description: 'CSS 选择器' } },
+      required: ['selector'],
+    },
+    async run({ selector }) {
+      const c = channel();
+      if (!c) return NO_CHANNEL;
+      if (!c.click) return '这个版本的主进程没有 click 通道，要更新小鱼Agent。';
+      const r = await c.click(selector);
+      if (!r || r.ok === false) return '没点着：' + ((r && r.error) || '不知道为啥');
+      return '点好了：' + selector;
+    },
+  },
+  {
+    name: 'browser_type',
+    description: '往内置浏览器页面的输入框里填字。给 CSS 选择器和文本；会派发 input/change 事件，Vue/React 表单也听得到。',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '输入框的 CSS 选择器' },
+        text: { type: 'string', description: '要填的内容' },
+      },
+      required: ['selector', 'text'],
+    },
+    async run({ selector, text }) {
+      const c = channel();
+      if (!c) return NO_CHANNEL;
+      if (!c.type) return '这个版本的主进程没有 type 通道，要更新小鱼Agent。';
+      const r = await c.type(selector, text);
+      if (!r || r.ok === false) return '没填进去：' + ((r && r.error) || '不知道为啥');
+      return '填好了：' + selector;
+    },
+  },
+  {
+    name: 'browser_wait',
+    description: '等内置浏览器页面到达某条件：元素出现（selector）或 URL 变化（urlIncludes）。最多等 60 秒。跳转/登录后确认结果用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '等这个 CSS 选择器出现' },
+        urlIncludes: { type: 'string', description: '等 URL 包含这段字' },
+        timeout: { type: 'number', description: '最多等几毫秒，默认 10000' },
+      },
+    },
+    async run(args = {}) {
+      const c = channel();
+      if (!c) return NO_CHANNEL;
+      if (!c.wait) return '这个版本的主进程没有 wait 通道，要更新小鱼Agent。';
+      const r = await c.wait(args);
+      if (!r || r.ok === false) return '没等到：' + ((r && r.error) || '超时');
+      return '等到了：' + (r.url || '');
+    },
+  },
+  {
+    name: 'browser_read',
+    description: '读内置浏览器页面里的文字：整页正文或某个元素里的文字（最多 8000 字）。截图里小字看不清、要精确读内容时用它。',
+    parameters: {
+      type: 'object',
+      properties: { selector: { type: 'string', description: '只读这个元素；不给读整页' } },
+    },
+    async run(args = {}) {
+      const c = channel();
+      if (!c) return NO_CHANNEL;
+      if (!c.read) return '这个版本的主进程没有 read 通道，要更新小鱼Agent。';
+      const r = await c.read(args);
+      if (!r || r.ok === false) return '读不到：' + ((r && r.error) || '不知道为啥');
+      return (r.text || '').slice(0, 8000);
+    },
+  },
+];
+
+const browserTools = [...browserToolsExtra,
   {
     name: 'browser_open',
     description:
@@ -83,3 +251,5 @@ export const browserTools = [
     },
   },
 ];
+
+export { browserTools, browserToolsExtra };

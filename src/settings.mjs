@@ -913,21 +913,21 @@ export function matchSafeWord(text, settings = getSettings()) {
   // 安全词要是设成了英文（如 stop），全角字符会让 includes 对不上。
   const lower = toAsciiPunct(String(text)).toLowerCase();
   /**
-   * 【长词优先 —— 2026-10-28 修】
+   * 【最后说出的算 —— 2026-11-13 主人改】
    *
-   * 原来是按 safeWords 的存储顺序逐个 includes，谁先命中算谁。
-   * 于是 safeWords = ["停","停止"] 时，说「停止，别闹了」先撞上短词「停」，
-   * 只切到「停」这一档、永远进不了「停止」档 —— 用户设的更具体的词被短词吃掉。
-   *
-   * 现在先把词按长度降序排，更具体的词优先命中。
-   * 排序用拷贝（[...settings.safeWords]），不动 settings 本身，返回的仍是原词。
+   * 一句话里同时命中多个安全词，取出现位置最靠后的那个（= 最后说出的）。
+   * 例：「人设，然后停止」→ 停在「停止」档；「停止，回人设」→ 回「人设」。
+   * 同一个词出现多次，取它最后一次出现的位置。
    */
-  const words = [...settings.safeWords].sort(
-    (x, y) => String(y ?? '').length - String(x ?? '').length,
-  );
+  const words = [...settings.safeWords];
+  let best = null;
+  let bestAt = -1;
   for (const w of words) {
     const word = toAsciiPunct(String(w ?? '')).trim().toLowerCase();
-    if (word && lower.includes(word)) return w;
+    if (!word) continue;
+    const at = lower.lastIndexOf(word);
+    if (at > bestAt) { bestAt = at; best = w; }
   }
+  if (best !== null) return best;
   return null;
 }

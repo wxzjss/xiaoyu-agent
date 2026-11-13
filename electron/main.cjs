@@ -534,6 +534,138 @@ async function startServer() {
         return { ok: true, value: list.map((c) => ({ name: c.name, domain: c.domain, value: c.value })) };
       } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
     },
+    // 【2026-11-13 新加·网络抓取】挂 debug 协议记录请求/响应，小鱼能看到页面发了什么、收了什么。
+    // 只记内置浏览器窗口的，不带任何全局副作用；重启窗口自动清空。
+    network: async (opts) => {
+      try {
+        if (!browserWin || browserWin.isDestroyed()) return { ok: false, error: '浏览器没开着' };
+        const wc = browserWin.webContents;
+        const dbg = wc.debugger;
+        const o = opts || {};
+        const want = Number.isFinite(o.limit) ? Math.max(1, Math.min(200, o.limit)) : 30;
+        const filter = String(o.filter || '').toLowerCase();
+        if (!dbg.isAttached()) {
+          try { dbg.attach('1.3'); } catch (e) { return { ok: false, error: 'debugger 挂不上：' + String((e && e.message) || e) }; }
+          dbg.on('message', (_ev, method, params) => {
+            try {
+              const log = browserNetworkLog;
+              if (method === 'Network.requestWillBeSent') {
+                log.push({ ts: Date.now(), phase: 'request', url: params.request.url, method: params.request.method,
+                  headers: params.request.headers, postData: params.request.postData || undefined });
+                trimLog();
+              } else if (method === 'Network.responseReceived') {
+                log.push({ ts: Date.now(), phase: 'response', requestId: params.requestId, url: params.response.url, status: params.response.status,
+                  headers: params.response.headers, mimeType: params.response.mimeType });
+                trimLog();
+              } else if (method === 'Network.loadingFailed') {
+                log.push({ ts: Date.now(), phase: 'failed', url: params.errorText || '', error: params.errorText, canceled: !!params.canceled });
+                trimLog();
+              }
+            } catch {}
+          });
+          try { dbg.sendCommand('Network.enable', { maxPostDataSize: 65536 }); } catch {}
+        }
+        const log = browserNetworkLog;
+        let rows = log.slice().reverse(); // 最新的在前
+        if (filter) rows = rows.filter((r) => (r.url || '').toLowerCase().includes(filter) || (r.phase === 'failed' && (r.error || '').toLowerCase().includes(filter)));
+        rows = rows.slice(0, want);
+        // 可选：拿响应正文（只对过滤后第一条 response 有意义，避免刷屏）
+        let body;
+        if (o.body && rows.length) {
+          const firstResp = rows.find((r) => r.phase === 'response');
+          if (firstResp) {
+            try { body = await dbg.sendCommand('Network.getResponseBody', { requestId: firstResp.requestId || undefined }); } catch {}
+          }
+        }
+        return { ok: true, count: log.length, rows, body: body ? (body.body || '').slice(0, o.bodyMax || 4000) : undefined };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    },
+    // 【2026-11-13 新加·点页面元素】CSS 选择器；executeJavaScript 在页面里找元素并触发点击。
+    click: async (selector) => {
+      try {
+        if (!browserWin || browserWin.isDestroyed()) return { ok: false, error: '浏览器没开着' };
+        const sel = String(selector || '').trim();
+        if (!sel) return { ok: false, error: '要给一个 CSS 选择器' };
+        const js = `(() => {
+          const el = document.querySelector(${JSON.stringify(sel)});
+          if (!el) return { ok: false, error: '页面上没找到：' + ${JSON.stringify(sel)} };
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return { ok: true, tag: el.tagName, text: (el.textContent || '').trim().slice(0, 80) };
+        })()`;
+        const r = await browserWin.webContents.executeJavaScript(js, true);
+        return r && r.ok === false ? r : { ok: true, value: r };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    },
+    // 【2026-11-13 新加·填表单】selector + 文本；input/textarea 直接赋值 + 派发 input 事件（框架也能听到）。
+    type: async (selector, text) => {
+      try {
+        if (!browserWin || browserWin.isDestroyed()) return { ok: false, error: '浏览器没开着' };
+        const sel = String(selector || '').trim();
+        if (!sel) return { ok: false, error: '要给一个 CSS 选择器' };
+        const js = `(() => {
+          const el = document.querySelector(${JSON.stringify(sel)});
+          if (!el) return { ok: false, error: '页面上没找到：' + ${JSON.stringify(sel)} };
+          el.focus();
+          el.value = ${JSON.stringify(String(text ?? ''))};
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return { ok: true, tag: el.tagName, len: String(el.value || '').length };
+        })()`;
+        const r = await browserWin.webContents.executeJavaScript(js, true);
+        return r && r.ok === false ? r : { ok: true, value: r };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    },
+    // 【2026-11-13 新加·等条件】等选择器出现，最多 timeout 毫秒；也可等 URL 包含某段字。
+    wait: async (opts) => {
+      try {
+        if (!browserWin || browserWin.isDestroyed()) return { ok: false, error: '浏览器没开着' };
+        const o = opts || {};
+        const timeout = Number.isFinite(o.timeout) ? Math.max(100, Math.min(60000, o.timeout)) : 10000;
+        const t0 = Date.now();
+        while (Date.now() - t0 < timeout) {
+          if (o.urlIncludes) {
+            const u = browserWin.webContents.getURL();
+            if (u.includes(String(o.urlIncludes))) return { ok: true, url: u, waited: Date.now() - t0 };
+          } else if (o.selector) {
+            const js = `!!document.querySelector(${JSON.stringify(String(o.selector))})`;
+            const has = await browserWin.webContents.executeJavaScript(js, true).catch(() => false);
+            if (has) return { ok: true, waited: Date.now() - t0 };
+          } else {
+            // 什么都不给就等页面加载完
+            try { if (!browserWin.webContents.isLoading()) return { ok: true, waited: Date.now() - t0 }; } catch {}
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        return { ok: false, error: '等超了（' + timeout + 'ms）' };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    },
+    // 【2026-11-13 新加·读页面文字】整页正文或某个元素里的文字，截图看不清小字时用。
+    readText: async (selector) => {
+      try {
+        if (!browserWin || browserWin.isDestroyed()) return { ok: false, error: '浏览器没开着' };
+        const sel = String(selector || '').trim();
+        const js = sel
+          ? `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return { ok: false, error: '页面上没找到：' + ${JSON.stringify(sel)} }; return { ok: true, text: (el.innerText || el.textContent || '').slice(0, 8000) }; })()`
+          : '(() => ({ ok: true, text: (document.body && document.body.innerText || "").slice(0, 8000), title: document.title, url: location.href }))()';
+        const r = await browserWin.webContents.executeJavaScript(js, true);
+        return r && r.ok === false ? r : { ok: true, value: r };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    },
+    // 【2026-11-13 新加·写 cookie】给内置浏览器的会话塞 cookie（有些站要带凭据才能进）。
+    setCookie: async (opts) => {
+      try {
+        const { session } = require('electron');
+        const ses = (browserWin && !browserWin.isDestroyed())
+          ? browserWin.webContents.session
+          : session.defaultSession;
+        const o = opts || {};
+        if (!o.name || !o.value || !o.url) return { ok: false, error: '要给 name、value、url' };
+        await ses.cookies.set({ url: String(o.url), name: String(o.name), value: String(o.value),
+          domain: o.domain ? String(o.domain) : undefined, path: o.path || '/', secure: !!o.secure, httpOnly: !!o.httpOnly });
+        return { ok: true };
+      } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    },
   };
 
   // 告诉服务端「有人在管我」：界面上那个「重启让它生效」就是靠它决定
@@ -1403,6 +1535,10 @@ ipcMain.handle('app:openWorkspace', async () => {
 
 /** 浏览器窗口（单例：点第二次就把它叫到前面，不叠一摞） */
 let browserWin = null;
+
+  // 【2026-11-13 新加】内置浏览器的网络请求日志（network 工具读它）
+  const browserNetworkLog = [];
+  function trimLog() { try { while (browserNetworkLog.length > 500) browserNetworkLog.shift(); } catch {} }
 
 /** 只认 http / https —— file:// 和 javascript: 一律不接，这是底线 */
 function normalizeUrl(input) {

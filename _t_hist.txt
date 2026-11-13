@@ -1,0 +1,50 @@
+, max);
+}
+
+/** 某个会话的 txt 清单路径 */
+function txtFileFor(key) {
+  const safe = String(key || 'default').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 80) || 'default';
+  return join(TXT_DIR, `${safe}.txt`);
+}
+
+/** 【2026-10-31 清单活档案】
+ * 每个会话一份「活档案」：只追加、永不覆盖。
+ * 主人遇到过清单被一次 create 砍成 6 条（原本 25 条），靠 _history 归档才捞回来。
+ * 从今往后，任何一步的增/改/删都往这份 .board.md 里记一笔，谁砍了都能照它重建。
+ */
+function boardFileFor(key) {
+  const safe = String(key || 'default').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 80) || 'default';
+  return join(DIR, safe + '.board.md');
+}
+
+/** 把这一刻的清单快照追加进活档案（只追加，从不覆盖） */
+function appendBoard(key, state, why) {
+  try {
+    if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+    const f = boardFileFor(key);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+      + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+    const { done, total } = progress(state);
+    let out = '';
+    if (!existsSync(f)) {
+      out += '# 任务清单活档案\n';
+      out += '这份文件只增不删，是清单的最后一道保险。\n';
+      out += '清单要是被谁砍了，照这份从最新一条往上一段一段重建就行。\n';
+    }
+    out += '\n## ' + stamp + ' · ' + (why || 'sync') + ' · ' + done + '/' + total + '\n';
+    out += '目标：' + (state.goal || '（没写）') + '\n';
+    if (!state.steps.length) out += '（此刻清单是空的）\n';
+    for (const st of state.steps) {
+      out += '- [' + (st.status === 'done' ? 'x' : st.status === 'skipped' ? '-' : ' ') + '] '
+        + st.id + '. ' + st.text + (st.note ? '（' + st.note + '）' : '') + '\n';
+    }
+    appendFileSync(f, out, 'utf8');
+  } catch {
+    // 记档案失败不影响主流程
+  }
+}
+
+function fileFor(key) {
+  const safe = String(key || 'default').replace(/[^a-zA-Z0-

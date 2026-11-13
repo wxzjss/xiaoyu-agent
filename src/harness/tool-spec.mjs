@@ -16,7 +16,7 @@
 const READ_ONLY = [
   'read_file', 'list_dir', 'search_files', 'glob_files', 'grep_files',
   'web_search', 'fetch_url', 'fetch_txt', 'fetch_many',
-  'browser_state', 'browser_snap', 'look_screen', 'screen_watch_status', 'ui_observe',
+  'browser_state', 'browser_snap', 'browser_eval', 'browser_cookies', 'browser_network', 'browser_wait', 'browser_read', 'look_screen', 'screen_watch_status', 'ui_observe',
   'chronicle_toc', 'chronicle_search', 'chronicle_read', 'folded_list', 'folded_read',
   'memory_search', 'list_peers', 'read_peer_mail', 'list_workers', 'watch_worker',
   'video_probe', 'video_read', 'video_doctor',
@@ -26,7 +26,7 @@ const READ_ONLY = [
 const SIDE_EFFECT = [
   'write_file', 'run_command', 'send_file', 'qq_send', 'say', 'restart_self',
   'plan', 'note', 'memory_add', 'memory_pin', 'use_skill', 'ask_peer',
-  'browser_open', 'browser_goto', 'ui_click', 'ui_double_click', 'ui_right_click',
+  'browser_open', 'browser_goto', 'browser_setcookie', 'browser_click', 'browser_type', 'ui_click', 'ui_double_click', 'ui_right_click',
   'ui_type', 'ui_key', 'ui_scroll', 'make_image', 'video_sheet',
   't2s_convert', 'pack_book', 'ask_subagent', 'spawn_worker', 'spawn_workers',
   'tell_worker',

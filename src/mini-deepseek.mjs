@@ -274,14 +274,29 @@ export async function probeLocalService(timeoutMs = 1500) {
     if (!r.ok) return { up: false, status: r.status };
     const j = await r.json().catch(() => null);
     const ids = Array.isArray(j?.data) ? j.data.map((x) => x?.id).filter(Boolean) : [];
-    return { up: true, ids };
-  } catch {
-    return { up: false, status: 0 };
-  } finally {
-    clearTimeout(t);
+    // 【2026-11-13 加】models 是本地写死的，token 死了照样 200 —— 再问一嘴 /v1/health
+    //   tokenOk:false 时返回 up:true + tokenOk:false，让上层走「重新登录」分支，别假装通了。
+    //   health 要真打一次上游（可能好几秒），必须用独立超时，不能复用 models 的 ctl。
+    try {
+      const hctl = new AbortController();
+      const ht = setTimeout(() => hctl.abort(), 9000);
+      let h;
+      try {
+        h = await fetch(`${MINI_DS_BASE}/health`, {
+          headers: { Authorization: `Bearer ${MINI_DS_KEY}` },
+          signal: hctl.signal,
+        });
+      } finally { clearTimeout(ht); }
+      const hj = await h.json().catch(() => null);
+      if (hj && hj.ok && hj.tokenOk === false) {
+        return { up: true, status: r.status, ids, tokenOk: false, tokenError: hj.error || '' };
+      }
+    } catch { /* health 挂了不挡 probe：按 token 未知处理 */ }
+    return { up: true, status: r.status, ids, tokenOk: true };
+  } catch (e) {
+    return { up: false, error: String((e && e.message) || e) };
   }
 }
-
 /** 起服务。已经在跑就直接说在跑。 */
 export async function startLocalService({ token, opener, waitMs, forceRelogin } = {}) {
   const already = await probeLocalService(900);

@@ -564,6 +564,12 @@ function humanTextOf(text, fallback) {
   if (/no_available_account|no\s+available\s+account|无可用账号|no_available_channel/i.test(whole)) {
     return '这个接入点「没有可用账号」—— 多半是那条线路没给这个模型开，换个接入点或换个模型名';
   }
+  /* 【2026-11-13】本机 DeepSeek（8321）的登录过期：上游拒绝的原文里带着
+   * 「重新登录 chat.deepseek.com」「INVALID_TOKEN」这些字样——别让它撞进
+   * 下面 401 那条被误翻成「Key 不对」：这个 key 没错，是网页登录过期了。 */
+  if (/INVALID_TOKEN|chat\.deepseek\.com/i.test(whole)) {
+    return '本机 DeepSeek 的网页登录过期了 —— 点「重新登录」去浏览器再登一次';
+  }
   if (/invalid.*(api.?key|token)|unauthorized|401/i.test(whole)) {
     return 'Key 不对（401）—— 检查 API Key 有没有复制全、有没有多一个空格';
   }

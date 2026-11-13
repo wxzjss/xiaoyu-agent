@@ -1,0 +1,51 @@
+function planAction(key, args = {}) {
+  const state = loadPlan(key);
+  const action = clean(args.action, 20).toLowerCase() || 'view';
+
+  if (action === 'view' || action === 'show' || action === 'list') {
+    return { text: formatPlan(state), state };
+  }
+
+  if (action === 'create' || action === 'set' || action === 'new') {
+    const steps = (Array.isArray(args.steps) ? args.steps : [])
+      .map((s) => clean(typeof s === 'string' ? s : s?.text, 300))
+      .filter(Boolean)
+      .slice(0, MAX_STEPS);
+    if (!steps.length) return { text: 'ERROR：create 需要 steps（字符串数组，一句一步）', state };
+    // 【2026-10-31 清单只增不减】
+    // 主人原话：「清单内容只可增加，无论是否做完，清单内容全部保留，清单内容严禁删除，严禁覆盖」。
+    // 所以 create 不再是「推倒重来」，而是「往后面接」：
+    //   ① 老步骤一条不动，原样留着（完成的也留着，带勾）
+    //   ② 新步骤接在后面，跟老的重复的跳过
+    //   ③ 真的一条都没接上（全重复）就照实说，不假装新建了
+    if (state.steps.length) archivePlan(key, state, 'create-append');
+    const have = new Set((state.steps || []).map((st) => String(st.text || '').trim()));
+    const fresh = steps.filter((t) => !have.has(String(t).trim()));
+    const skipped = steps.length - fresh.length;
+    const base = (state.steps || []).slice();
+    const merged = [...base, ...fresh.map((text) => ({ text, status: 'pending', note: '' }))];
+    if (!fresh.length && base.length) {
+      return { text: ('新给的 ' + steps.length + ' 步清单上全都有了，没有重复记一遍。\n' + formatPlan(state)), state };
+    }
+    const next = {
+      goal: clean(args.goal, 300) || state.goal,
+      createdAt: Date.now(),
+      updatedAt: 0,
+      steps: merged.map((st, i) => ({ id: i + 1, text: st.text, status: st.status === 'done' ? 'done' : (st.status || 'pending'), note: st.note || '', pinned: !!st.pinned })),
+      notes: state.notes,
+    };
+    savePlan(key, next);
+    const tip = skipped > 0 ? `\n（有 ${skipped} 条之前就在清单上，没重复记）` : '';
+    return { text: `清单接上了（老的一步没删）：\n${formatPlan(next)}${tip}`, state: next };
+  }
+
+  if (action === 'update' || action === 'step' || action === 'mark') {
+    const id = Number(args.stepId ?? args.id ?? args.step);
+    const status = normStatus(args.status);
+    const step = state.steps.find((s) => s.id === id);
+    if (!step) return { text: `ERROR：没有第 ${args.stepId ?? '?'} 步（现有 1~${state.steps.length}）`, state };
+    if (!status) return { text: `ERROR：status 只能是 pending / doing / done / skipped`, state };
+    step.status = status;
+    if (args.note !== undefined) step.note = clean(args.note, 300);
+    if (args.pin != null) step.pinned = !!args.pin;
+ 

@@ -1,0 +1,118 @@
+getElementById('mdlTest').onclick = async () => {
+  try {
+    const payload = formPayload();
+    /* ---------- 本机 DeepSeek：它不需要地址、不需要 key、不需要模型名 ---------- */
+    if (payload && payload.providerLocalDeepSeek) {
+      const t0 = Date.now();
+      mdlLocalHint('', '');
+
+      // base 少 /v1 的话自动补上（not found 的根治：8321 只有 /v1 前缀路由）
+      if (mdlBase && mdlBase.value && !/\/v1\s*$/.test(mdlBase.value.trim())) {
+        mdlBase.value = mdlBase.value.trim().replace(/\/+$/, '') + '/v1';
+        payload = formPayload();
+      }
+
+      // 先把模型加进 / 对齐（内部会查服务、必要时起服务）
+      let done = await localDeepSeekApply(payload);
+      if (!done || done.error) {
+        mdlLocalHint('err', (done && done.error) || '自动添加模型失败');
+        return;
+      }
+      mdlState = done.state || mdlState;
+      if (mdlBase && done.baseURL) mdlBase.value = done.baseURL;
+      if (mdlKey && done.apiKey) mdlKey.value = done.apiKey;
+      if (mdlModel && done.model) mdlModel.value = done.model;
+      if (mdlName && !mdlNameTouched) { mdlName.value = '本机 DeepSeek'; mdlNameTouched = true; }
+      if (done.created) { paintModels(); syncHealth(); }
+
+      // 真打一次
+      let probe = await localDeepSeekGet('/api/mini-deepseek/probe');
+      if (probe && probe.ok && probe.up) {
+        mdlLocalHint('ok', '通了，服务在跑，token 也在');
+        if (!done.created) { paintModels(); syncHealth(); }
+        return;
+      }
+
+      // 没通 —— 按原因自己救
+      const why = (probe && probe.error) || '';
+      const notRunning = probe && (probe.running === false || !probe.up);
+      mdlLocalHint('', '');
+
+      if (notRunning) {
+        // 服务原因：先起服务（含登录引导），再对一次
+        const st = await localDeepSeekEnsure();
+        if (st && st.error) { mdlLocalHint('err', st.error); return; }
+      } else {
+        // token 原因：重新取一次 token 并重启服务
+        const tk = await localDeepSeekPost('/api/mini-deepseek/token');
+        if (!tk || tk.error) { mdlLocalHint('err', (tk && tk.error) || '重新取 token 失败'); return; }
+        // 8321 活着时 ensure 不会重启，旧进程里的失效 token 换不成新的：先停再起，强制重读
+        await localDeepSeekPost('/api/mini-deepseek/stop').catch(() => {});
+        const st = await localDeepSeekEnsure();
+        if (st && st.error) { mdlLocalHint('err', st.error); return; }
+      }
+
+      // 再对齐一次（地址/key/模型名可能变了），然后再测
+      done = await localDeepSeekApply(payload);
+      if (!done || done.error) { mdlLocalHint('err', (done && done.error) || '自动添加模型失败'); return; }
+      mdlState = done.state || mdlState;
+      if (mdlBase && done.baseURL) mdlBase.value = done.baseURL;
+      if (mdlKey && done.apiKey) mdlKey.value = done.apiKey;
+      if (mdlModel && done.model) mdlModel.value = done.model;
+      if (mdlName && !mdlNameTouched) { mdlName.value = '本机 DeepSeek'; mdlNameTouched = true; }
+      paintModels(); syncHealth();
+
+      probe = await localDeepSeekGet('/api/mini-deepseek/probe');
+      if (probe && probe.ok && probe.up) {
+        mdlLocalHint('ok', '通了，服务在跑，token 也在');
+        return;
+      }
+      mdlLocalHint('err', ((probe && probe.error) || why || '还是连不上') + '（已经试着自动恢复过一次）');
+      return;
+    }
+
+    /* ---------- 别的预设：老样子 ---------- */
+    if (!payload.model || !payload.baseURL) { clearFormHint('err', '地址和模型名先填上'); return; }
+    clearFormHint('', '正在连…');
+    const res = await fetch('/api/models/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const r = await jsonOrError(res);
+    clearFormHint('ok', `通了，${r.ms}ms`);
+  } catch (e) {
+    clearFormHint('err', '连不上：' + (e && e.message ? e.message : e));
+  }
+};
+document.getElementById('mdlSave').onclick = async () => {
+  const btn = document.getElementById('mdlSave');
+  try {
+    const payload = formPayload();
+    if (!payload.model) { clearFormHint('err', '模型名不能空'); return; }
+    if (!payload.baseURL) { clearFormHint('err', '接口地址不能空'); return; }
+    clearFormHint('', '保存中…');
+    if (btn) btn.disabled = true;
+    const res = await fetch('/api/models/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const r = await jsonOrError(res);
+    mdlState = r;
+    // 主人要求：编辑保存后自动启用这条模型（不用再手动点一下行）
+    try {
+      const savedId = r && r.model && r.model.id;
+      if (savedId && mdlState.activeId !== savedId) {
+        const sel = await fetch('/api/models/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: savedId }),
+        }).then((x) => x.json()).catch(() => null);
+        if (sel && !sel.error) mdlState = sel;
+      }
+    } catch (e2) {}
+    closeForm();
+    paintModels();
+    syncHealth();
+    if (optHint) optHint.textConten

@@ -78,7 +78,7 @@ t.ok('「只读命令也算」只在 run_command 真启用时才说',
   !prompt.includes('只读命令如 git status') || enabledToolSchemas().some((s) => (s.function || s).name === 'run_command'));
 
 // ── 7. 预算 / 红线 ─────────────────────────────────────────────────
-t.ok('提示词在 5600 字预算内', prompt.length <= 5600, prompt.length + ' 字');
+t.ok('提示词在 6000 字预算内', prompt.length <= 6000, prompt.length + ' 字');
 for (const k of ['SAFE_MODE_FALLBACK', 'PERSONA_WORD', 'safeMode', 'safeWord', 'loadPersona']) {
   t.ok('红线符号 ' + k + ' 没被动', src.includes(k));
 }

@@ -128,10 +128,14 @@ export function personaModeRules(settings = getSettings()) {
   const name = words.includes(PERSONA_WORD) ? PERSONA_WORD : words[0];
   const note = name ? safeWordNoteFor(name, settings) : '';
   const text = typeof note === 'string' ? note.trim() : '';
-  const head = name
-    ? `【当前状态：${name}档】这个会话没有触发别的安全词，所以从第一句起就按「${name}」这一档来，之后每一轮都是。`
-    : '【当前状态：默认档】这个会话没有触发别的安全词，按默认的说话方式来。';
-  const body = text || (name === PERSONA_WORD ? PERSONA_MODE_FALLBACK : SAFE_MODE_FALLBACK);
+  // 2026-11-13 主人钦点：默认段改成「闲聊=人设档 / 干活=命令档」双状态说明
+  const CHAT_WORK_BLOCK = [
+    '【闲聊状态：人设档】：当主人和你闲聊时，默认用人设档行事，此时把注意力聚焦到角色设定上，按人设的样子说话，别想别的',
+    '【工作状态：命令档】：当主人向你提要求，让你干活时，默认用命令档行事，此时你要做到不寒暄、不铺垫，直接按主人要求做，做完再报结果，如果有无法完成的事情，找是否存在现成工具可供使用，否则优先考虑开发新工具去做到',
+  ].join('\n');
+  if (!name || name === PERSONA_WORD) return CHAT_WORK_BLOCK;
+  const head = `【当前状态：${name}档】这个会话没有触发别的安全词，所以从第一句起就按「${name}」这一档来，之后每一轮都是。`;
+  const body = text || SAFE_MODE_FALLBACK;
   return [
     head,
     body,

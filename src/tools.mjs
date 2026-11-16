@@ -2085,7 +2085,7 @@ export const tools = [
         task: { type: 'string', description: '要她查什么，说具体点：查哪个文件、确认什么事、回答哪个疑问' },
         name: { type: 'string', description: '给她起个名，不填就叫「小鲸」' },
         allowWrite: { type: 'boolean', description: '要不要给她写文件 / 跑命令的权限。默认不给，只查。' },
-        maxRounds: { type: 'number', description: '最多让她跑几轮工具循环，默认 12' },
+        maxRounds: { type: 'number', description: '最多让她跑几轮工具循环；不传就不限轮数' },
         /**
          * 【冒充说话】主人亲口要求的：「可以用任何人的名字、任何名字颜色来说话，
          * 也可以用我的名字【主人】来和小鱼说话（必须能让小鱼真的以为是我在说话）」。
@@ -2166,7 +2166,7 @@ export const tools = [
         sessionId: currentSessionId(),
         allowWrite: allowWrite === true || allowWrite === 'true',
         // 主人要她像我一样：干多久干多久。这里不再写死 12 轮，用 subagent 的默认。
-        maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 200,
+        maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : Infinity,
       });
 
       /**
@@ -2609,7 +2609,7 @@ export const tools = [
         accept: { type: 'string', description: '什么算做成了 —— 写成能一眼验的条件，比如「npm run check 退出码 0」。' },
         scope: { type: 'string', description: '在哪儿干：目录或文件。超出这个范围不许它碰。' },
         forbid: { type: 'string', description: '不许碰什么，比如「别动 git 历史」「别改 public/」。' },
-        maxRounds: { type: 'number', description: '最多让它跑几轮工具循环，默认 60。小事 20 就够。' },
+        maxRounds: { type: 'number', description: '最多让它跑几轮工具循环；不传就不限轮数' },
         background: { type: 'boolean', description: '不填 = 后台跑（默认）：立刻返回门牌号，你接着干别的，它干完主动递汇报回来。只有确实需要「等它做完我才好继续」时才写 false（同步，会占住这一轮）。' },
       },
       required: ['task'],
@@ -2678,7 +2678,7 @@ export const tools = [
       if (background !== false) {
         /* 【2026-11-13 子 Agent 续上】brief 存全量任务原文 —— 程序重启后续跑要靠它接着干 */
         const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), brief: brief + reportAsk, accept: String(accept || '').slice(0, 200), status: 'running' });
-        dispatchWorker({ sessionId: sid, wid: String(w.id), name: nick, brief: brief + reportAsk, maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60 });
+        dispatchWorker({ sessionId: sid, wid: String(w.id), name: nick, brief: brief + reportAsk, maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : Infinity });
         return '【#' + w.id + ' 派出去了，正在后台干】\n'
           + '它跑它的，你别停 —— 有别的活就接着做；想看看进度用 watch_worker ' + w.id + '；想补话用 tell_worker ' + w.id + '。\n'
           + '干完我会主动告诉你。' + zhRenameNote;
@@ -2715,7 +2715,7 @@ export const tools = [
           name: nick,
           /* 【2026-11-10 按会话】同上：子任务按派活会话的功能开关干活 */
           sessionId: sid,
-          maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60,
+          maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : Infinity,
           allowWrite: true,
           pullMails: () => {
             try { const ms = drainWorkerMail(sid, __tid); if (ms && ms.length) __wPush('mail', '收到补话：' + ms.map((m) => m.text).join(' / ').slice(0, 160)); return ms; } catch { return []; }
@@ -2788,7 +2788,7 @@ export const tools = [
             required: ['task'],
           },
         },
-        maxRounds: { type: 'number', description: '每个最多跑几轮工具循环，默认 40。' },
+        maxRounds: { type: 'number', description: '每个最多跑几轮工具循环；不传就不限轮数' },
         background: { type: 'boolean', description: '不填 = 全部后台跑（默认）：立刻返回各件的门牌号，你接着干自己的。只有确实需要等它们全做完才写 false（同步，会占住这一轮）。' },
       },
       required: ['tasks'],
@@ -2814,7 +2814,7 @@ export const tools = [
        * 登记必须先做完再散出去 —— 反过来的话两个 worker 同时 noteWorker
        * 会互相覆盖（读-改-写没有中间 await，在 Node 里是安全的，但一起进去
        * 就有先后问题，宁可先排好队再跑）。 */
-      const roundMax = Number(maxRounds) > 0 ? Number(maxRounds) : 40;
+      const roundMax = Number(maxRounds) > 0 ? Number(maxRounds) : Infinity;
       const plans = list.map((t, i) => {
         /* 【2026-11-13 主人钦点】名字必须是中文，没给/给英文都规整成「工-N」 */
         const __z = enforceZhWorkerName(t.name, '工');

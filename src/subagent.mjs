@@ -310,19 +310,18 @@ function bottomLineText(who) {
 /**
  * 默认最多几轮工具循环。
  *
- * 【为什么从 12 放到 200】主人要她跟我一样：干多久干多久，别干一半被腰斩。
- * 我那边是不限（跑到模型自己收尾），她不行 —— 她是 server 放出来的、
- * 没人看着，真无限就可能一直转圈烧 token。所以给个「够大但有限」的上限。
+ * 【2026-11-16 主人钦点：不设上限】以前是「够大但有限」（12→200），
+ * 主人明确要求改成无限制 —— 干多久就干多久，别干一半被腰斩。
+ * 兜底还在：主人能点「停止」按钮，stop_worker 也能单叫停某一个。
  */
-const DEFAULT_MAX_ROUNDS = 200;
+const DEFAULT_MAX_ROUNDS = Infinity;
 /**
  * 默认总超时。
  *
- * 【为什么从 3 分钟放到 30 分钟】以前她只被用来「查一下东西」，3 分钟够。
- * 现在要她像我一样正经干活（读一堆文件、改代码、跑命令），3 分钟根本不够，
- * 干到一半就被判超时。30 分钟够长活，又不至于真挂一天。
+ * 【2026-11-16 一起改成不设上限】轮数都不限了，再卡 30 分钟就没意义。
+ * 调用方想加时限就显式传 timeoutMs；只有传了有限数才真挂定时器。
  */
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 分钟
+const DEFAULT_TIMEOUT_MS = Infinity;
 
 /**
  * 【2026-11-16 加·等上游回话的上限（只管子Agent）】
@@ -539,9 +538,13 @@ export async function runSubagent({
       try { signal.addEventListener('abort', () => abortCtrl.abort('stop'), { once: true }); } catch {}
     }
   }
-  const timer = setTimeout(() => {
-    try { abortCtrl.abort('timeout'); } catch {}
-  }, Math.max(5000, timeoutMs));
+  // 【坑】timeoutMs 传 Infinity 时不能挂定时器 —— Node 的 setTimeout(Infinity)
+  // 会溢出成 1ms，一挂就立刻判超时，等于把「不设上限」变成「立刻死」。
+  const timer = (Number.isFinite(timeoutMs) && timeoutMs > 0)
+    ? setTimeout(() => {
+        try { abortCtrl.abort('timeout'); } catch {}
+      }, Math.max(5000, timeoutMs))
+    : null;
 
   // 她说过的最后一句结论，到这里兜着 —— 万一中途抛出、或者调用方那条路断了，
   // finally 里还能把它投进信箱，主人至少能看到她说的话。
@@ -1303,14 +1306,14 @@ export async function runSubagent({
         truncated: true,
       };
     }
-    return {
-      ok: false,
-      text: `查了 ${maxRounds} 轮还没得出答案，先停在这儿。中间做过：\n${trace.join('\n') || '（无）'}`,
-      rounds: maxRounds,
-      tools: trace.length,
-      usage: totalUsage,
-      sessionId: subSessionId,
-    };
+      return {
+        ok: false,
+        text: `查了 ${Number.isFinite(maxRounds) ? maxRounds + ' ' : ''}轮还没得出答案，先停在这儿。中间做过：\n${trace.join('\n') || '（无）'}`,
+        rounds: maxRounds,
+        tools: trace.length,
+        usage: totalUsage,
+        sessionId: subSessionId,
+      };
   } catch (err) {
     return { ok: false, text: `子智能体出错了：${String(err?.message ?? err)}` };
   } finally {

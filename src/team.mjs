@@ -181,7 +181,7 @@ export function dispatchWorker({ sessionId, wid, name, brief, maxRounds, timeout
         task: String(brief || ''),
         name: nick,
         sessionId: sid,
-        maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60,
+        maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : Infinity,
         timeoutMs: Number(timeoutMs) > 0 ? Number(timeoutMs) : undefined,
         allowWrite: true,
         signal: ac.signal,
@@ -516,7 +516,7 @@ export function resumeInterruptedWorkers({ delayMs = 12000 } = {}) {
       ids.push(sid + '#' + w.id);
       setTimeout(() => {
         try {
-          dispatchWorker({ sessionId: sid, wid: String(w.id), name: w.name, brief: resumeBrief, maxRounds: 60 });
+          dispatchWorker({ sessionId: sid, wid: String(w.id), name: w.name, brief: resumeBrief, maxRounds: Infinity });
         } catch (e) {
           /* 续跑派发失败：老实标中断，别让界面停在「干活中」 */
           try { finishWorker(sid, w.id, { status: 'interrupted' }); } catch {}

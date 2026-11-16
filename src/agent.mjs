@@ -871,6 +871,14 @@ const FILLER_LOOSE = (s) => {
 };
 /** 剥掉「（尾巴一摆）」这种括号旁白再看 */
 const stripAside = (s) => String(s || '').replace(/^[（(][^）)]{0,40}[）)]\s*/, '').replace(/\s+/g, '');
+/** 【2026-11-17 加·嘴瓢清洗】正文里复读 context 提示的行、半截标签（如 <toolger>）落盘前剥掉 —— 这些是她对自己看的提示，被嘴瓢抄进正文就不该上主人的屏 */
+const CONTEXT_LINE_RE = /^\s{0,3}[【\[]?\s*(每轮开始|判断当前是在闲聊还是在工作|当前会话名|清单[\d\s]*步|如果需要跑回归|没有剩余步骤|以前做过的别再回头)/;
+const HALF_TAG_RE = /<\/?(?:toolger|tool_call)[^>\n]{0,40}>?/gi;
+const scrubNarration = (text) => String(text || '')
+  .split('\n')
+  .filter((line) => !CONTEXT_LINE_RE.test(line.trim()))
+  .map((line) => line.replace(HALF_TAG_RE, ''))
+  .join('\n').trim();
 const isFillerReply = (s) => {
   const t = stripAside(s);
   if (!t || t.length > 18) return false;
@@ -1563,7 +1571,7 @@ for (let round = 0; round < config.maxRounds; round++) {
           if (_tn > 8) {
             onEvent({ type: 'notice', text: '\n\n（连续 8 次都说到一半被掐断，先停在这儿。已经说出来的都留着。）\n\n' });
           } else {
-            messages.push({ role: 'assistant', content: text });
+            messages.push({ role: 'assistant', content: _narratorize(scrubNarration(text), sessionId) });
             messages.push({
               role: 'user',
               content: '（上一句太长被截断了，请从断开的地方直接接着往下写，不要重复已经写过的内容，也不要解释。）',
@@ -1686,7 +1694,7 @@ for (let round = 0; round < config.maxRounds; round++) {
           if (partial) {
             // 半截话作为 assistant 落进历史；再补一句指令，让模型知道从哪接着写，
             // 而不是把那半截话当成「说完了」重新开个头。
-            messages.push({ role: 'assistant', content: partial });
+            messages.push({ role: 'assistant', content: _narratorize(scrubNarration(partial), sessionId) });
             messages.push({
               role: 'user',
               content: '（上一句因为网络断了被截断，请从断开的地方直接接着往下写，不要重复已经写过的内容，也不要解释。）',
@@ -1822,7 +1830,7 @@ for (let round = 0; round < config.maxRounds; round++) {
            * 这句也照样落进去了。攒到二十来条之后，模型看着前面清一色「嗯，我在」，
            * 就跟着学，越回越短、越回越敷衍，拦都拦不住。
            * 所以：敷衍话一律不落历史，交给下面那道闸去重答。 */
-          if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(text, sessionId) });
+          if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(scrubNarration(text), sessionId) });
           for (const it of late) {
             /* 【2026-11-11 团队模式】turns 槽里带 _sysNote 的条目（worker 干完的汇报）
              * 是程序递的背景，不是主人说话 —— 落成 context + _sysNote，
@@ -1908,7 +1916,7 @@ for (let round = 0; round < config.maxRounds; round++) {
       }
       /* 【2026-11-15 修·只有署名的空消息】正文是空的就一律不落 —— 她这一句只写了
        * 压缩记忆（已被闸门剪走），界面上不该出现任何气泡，历史里也不该留空壳。 */
-      if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(text, sessionId) });
+      if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(scrubNarration(text), sessionId) });
       /**
        * 【2026-11-04 修「压缩死循环」的最后一环 · 写进去】
        *

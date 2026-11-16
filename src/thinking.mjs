@@ -32,23 +32,40 @@ const FILE = join(config.dataDir, '.state', 'thinking.json');
  *   · minimal / medium / xhigh 跟相邻档实测没区别，纯属选项太多。
  *
  * 主人原话：「把思考档位只保留 deepseek 官方的那种低、高与最高」「默认档位为高」。
+ *
+ * 【2026-11-16 主人再定·六档：关 / 低 / 中 / 高 / 超高 / 最高】
+ * 对照 WorkBuddy 的档位表（renderer 里 iL 数组：low/medium/high/xhigh，
+ * 中文包 effort.xhigh.label = 「超高」），主人要求小鱼补齐中间的「中」
+ * 与顶上的「超高」：
+ *   · medium 是 OpenAI reasoning_effort 的官方值（o 系列原生认）；
+ *   · xhigh 不是 OpenAI 官方值集，部分网关（含 WorkBuddy 用的那批）扩展认它 ——
+ *     发出去遇到不认的网关会走现成的降档链（isThinkingUnsupported）自动往下降，
+ *     所以加这一档是安全的。
+ * 兼容老值：normalizeLevel 里 'medium' 不再折算成 high（它现在是真档位），
+ * 'xhigh' 也不再折算成 max（同上）。历史上存过这两个值的会话当场升级成真档位。
  */
 export const LEVELS = [
   { id: 'off', name: '关', desc: '完全不思考，直接把答案说出来' },
   { id: 'low', name: '低', desc: '简单对话，便宜又快' },
+  { id: 'medium', name: '中', desc: '官方中档，速度与深度折中' },
   { id: 'high', name: '高', desc: '官方默认档，稳' },
+  { id: 'xhigh', name: '超高', desc: '比高再深一层（部分网关自定义值）' },
   { id: 'max', name: '最高', desc: '重任务，舍得花时间' },
 ];
 
 /**
- * 老配置里的档位怎么落到这四档上。
- * 会话/模型里存着 on、minimal、medium、xhigh 的，读到就当场换算，不用主人手动改一遍。
+ * 老配置里的档位怎么落到这六档上。
+ * 会话/模型里存着 on、minimal 的，读到就当场换算，不用主人手动改一遍。
+ *
+ * 【2026-11-16 档位扩到六档】'medium' 与 'xhigh' 不再折算 ——
+ * 它们现在是真档位（「中」「超高」）。历史上存过这两个值的会话/模型
+ * 当场升级：原来 medium 折成 high、xhigh 折成 max，现在原样保留，
+ * 深度分别多一档 / 少一档，这正是主人这次要的区分度。
  */
 export function normalizeLevel(v) {
   const s = String(v ?? '').trim();
-  if (s === 'off' || s === 'low' || s === 'high' || s === 'max') return s;
+  if (['off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(s)) return s;
   if (s === 'minimal') return 'low';
-  if (s === 'xhigh') return 'max';
   /* 【2026-11-15 主人报·新建会话显示「高」、展开勾的却是「关」】
    * 这里原来把「空 / 认不出的」一律落到 off —— 跟文件头上「默认高」的约定
    * 自相矛盾：显示读的是默认高，勾选读的是这里回的 off，于是两处对不上。
@@ -57,8 +74,9 @@ export function normalizeLevel(v) {
 }
 
 const LEVEL_IDS = new Set(LEVELS.map((l) => l.id));
-/** 强度梯度（off 不是强度值，单独处理） */
-const EFFORT_ORDER = ['low', 'high', 'max'];
+/** 强度梯度（off 不是强度值，单独处理）
+ * 【2026-11-16 扩到五档】low < medium < high < xhigh < max */
+const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /** 一次请求最多试几次（降档用的） */
 const MAX_ATTEMPTS = 3;
@@ -152,16 +170,17 @@ export function setThinking(input = {}) {
   const next = { level: cur.level, perModel: { ...cur.perModel } };
 
   if (input.level !== undefined) {
-    /* 先换算再校验：老值（off/on/minimal/medium/xhigh）不该报错，
-     * 它们都还能落到「低/高/最高」里的某一档。 */
+    /* 先换算再校验：老值（off/on/minimal）不该报错，
+     * 它们都还能落到六档里的某一档（medium/xhigh 自 11-16 起是真档位）。 */
     const lv = normalizeLevel(input.level);
     if (!LEVEL_IDS.has(lv)) {
       const e = new Error(`没有这个思考档位：${input.level}`);
       e.status = 400;
       throw e;
     }
-    /* 老档位（off/on/minimal/medium/xhigh）一律换算成三档之一，不报错 ——
-     * 界面上还有旧缓存、或者外部脚本还在传老值时，不该因此改不动设置。 */
+    /* 老档位（off/on/minimal）一律换算成六档之一，不报错 ——
+     * 界面上还有旧缓存、或者外部脚本还在传老值时，不该因此改不动设置。
+     * medium/xhigh 自 2026-11-16 起是真档位，原样通过。 */
     next.level = normalizeLevel(input.level);
   }
 
@@ -301,8 +320,8 @@ function asEndpoint(target) {
  * @param {{hasTools?:boolean, toolHeavy?:boolean}} ctx
  */
 export function resolveLevel(level, ctx = {}) {
-  /* 【2026-11-09 简化】只有 关/低/高/最高 四档，不再有 auto 调度。
-   * 老值（on/medium/minimal/xhigh/auto）由 normalizeLevel 统一换算 ——
+  /* 【2026-11-16 档位扩到六档】关/低/中/高/超高/最高。
+   * 老值（on/minimal/auto）由 normalizeLevel 统一换算 ——
    * ctx 留着是为了兼容旧调用点，暂时不用。 */
   void ctx;
   return normalizeLevel(level);
@@ -317,7 +336,7 @@ export function resolveLevel(level, ctx = {}) {
  *   | 档位          | openai（默认）                        | deepseek                | zai                                        | qwen                             |
  *   |---------------|---------------------------------------|-------------------------|--------------------------------------------|----------------------------------|
  *   | off           | thinking:{type:disabled} + effort:none | thinking:{type:disabled} | thinking:{type:disabled, clear_thinking:false} | thinking:{type:disabled} + enable_thinking:false |
- *   | low/high/max  | reasoning_effort: 档位                 | thinking:{type:enabled} | thinking:{type:enabled, clear_thinking:false} | enable_thinking:true             |
+ *   | low/medium/high/xhigh/max | reasoning_effort: 档位      | thinking:{type:enabled} | thinking:{type:enabled, clear_thinking:false} | enable_thinking:true             |
  *
  * ── deepseek 官方：不认 reasoning_effort，三档等价 ────────────────
  *
@@ -356,14 +375,15 @@ export function resolveLevel(level, ctx = {}) {
  * 降级逻辑以为「模型不支持这个字段」，于是把它整个删掉重发 —— 变成"什么都不发"，
  * 而网关默认就是开思考。所以关掉档位时**必须显式发 disabled**，不能靠省略字段。
  *
- * @param {string} level 解析后的档位（off/low/high/max；老值当场换算）
+ * @param {string} level 解析后的档位（off/low/medium/high/xhigh/max；老值当场换算）
  * @param {object|null} [ep] 这一轮用的接入点；不传按 openai 方言（保住老调用点行为）
  * @returns {{fields: object, mode: 'off'|'effort'|'on'}}
  */
 export function fieldsForLevel(level, ep = null) {
   if (!level) return { fields: {}, mode: 'on' };
   /* null / '' 是降级链里「什么都不发」那一档，上面已经挡掉了。
-   * 剩下的一律先换算成四档之一，别把 on / medium / xhigh 这些老值漏给网关。 */
+   * 剩下的一律先换算成六档之一，别把 on / minimal 这些老值漏给网关。
+   * （medium / xhigh 自 11-16 起是真档位，不再是「老值」。） */
   const lv = normalizeLevel(level);
   const fmt = thinkingFormatOf(ep);
 

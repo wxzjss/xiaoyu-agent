@@ -415,7 +415,34 @@ export default function LogView() {
         if (!t || t === el || !el.contains(t)) return false;
         const box = t.closest && t.closest('.hubBody, .thinkBody, details.tool > pre');
         if (!box) return false;
-        return box.scrollHeight > box.clientHeight + 1;
+        if (box.scrollHeight <= box.clientHeight + 1) return false;
+
+        /**
+         * 【2026-11-17 主人问·A 框滚到极限为什么不带动上下文】
+         *
+         * 原来这里一律 return true（凡落在内部滚动盒里就整条忽略），
+         * 于是 A 框（.hubBody）滚到头之后事件被吞掉，上下文一动不动 ——
+         * 主人只能把鼠标挪出柜子再滚，手感是断的。
+         *
+         * 现在分两种：
+         *   · B 框（thinkBody / pre，在柜子里面）→ 仍然整条忽略。
+         *     B 到头浏览器原生会把滚动交给 A（CSS 那边已放行），
+         *     链是平滑的，不需要我们插手，也绝不能插手（手动喂 scrollTop 会一卡一卡）。
+         *   · A 框（.hubBody，柜子自己的内容区）→ 看它**是不是已经到头**：
+         *     还在中途 → 忽略，让它自己滚；
+         *     到头了、滚轮还在往那个方向推 → 返回 false，这一发交给上下文。
+         */
+        if (box.classList.contains('hubBody')) {
+          const dir = Number(e && e.deltaY) || 0;
+          if (dir === 0) return true;
+          const atTop = box.scrollTop <= 0;
+          const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 1;
+          /* 往上滚却已到顶 / 往下滚却已到底 → 到头了，放行给上下文 */
+          if (dir < 0 && atTop) return false;
+          if (dir > 0 && atBottom) return false;
+          return true;
+        }
+        return true;
       } catch (err) { return false; }
     };
     const onWheel = (e) => {

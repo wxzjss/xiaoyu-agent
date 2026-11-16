@@ -197,10 +197,10 @@ try {
    * 断言跟着新规矩走，并补一条「空 / 认不出 → 高」把这次的改动钉住。 */
   t.ok('老值 on → 高（默认高）',
     mod.fieldsForLevel('on', EPS.openai).fields.reasoning_effort === 'high');
-  t.ok('老值 medium → 高（同上）', mod.fieldsForLevel('medium', EPS.openai).fields.reasoning_effort === 'high');
+  t.ok('medium 现在是真档位（不再折算）', mod.fieldsForLevel('medium', EPS.openai).fields.reasoning_effort === 'medium');
   t.ok('空 / 认不出 → 高（默认高，不再落关）',
     mod.normalizeLevel('') === 'high' && mod.normalizeLevel('whatever') === 'high');
-  t.ok('老值 xhigh → 最高', mod.fieldsForLevel('xhigh', EPS.openai).fields.reasoning_effort === 'max');
+  t.ok('xhigh 是真档位（OpenAI 扩展值，网关不认会走降档链）', mod.fieldsForLevel('xhigh', EPS.openai).fields.reasoning_effort === 'xhigh');
   /* 不传接入点时按 openai 方言（老调用点的行为不能变） */
   t.ok('不传接入点 = openai 方言',
     JSON.stringify(mod.fieldsForLevel('high').fields) === JSON.stringify({ reasoning_effort: 'high' }),
@@ -359,7 +359,7 @@ try {
   });
   t.ok('会话里存着 on → 读出来是 high（老值归高）', overrides.getOverride('ov_on').level === 'high', overrides.getOverride('ov_on').level);
   t.ok('会话里存着 off → 读出来还是 off（不被老值盖住）', overrides.getOverride('ov_off').level === 'off', overrides.getOverride('ov_off').level);
-  t.ok('会话里存着 medium → 读出来是 high（老值归高）', overrides.getOverride('ov_medium').level === 'high', overrides.getOverride('ov_medium').level);
+  t.ok('会话里存着 medium → 读出来还是 medium（真档位不再折算）', overrides.getOverride('ov_medium').level === 'medium', overrides.getOverride('ov_medium').level);
 
   /* 会话级「关」压过全局「高」，而且真的发出去 */
   setThinkingState({ level: 'high', perModel: {} });

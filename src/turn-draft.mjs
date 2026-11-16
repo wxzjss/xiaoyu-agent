@@ -144,17 +144,13 @@ export function listDrafts() {
  *   - 新增字数超过 minChars（默认 40）—— 保证内容确实在推进。
  * 另外 force 为真时无条件写（工具调用、结束前那次）。
  */
-/* 【2026-11-16 主人：我要实时落盘】
+/* 【2026-11-17 主人：每 50ms / 每 1 字写一次】
  *
- * 原来节流是「40 字 / 1.5 秒」—— 字面意义上最多丢 1.5 秒的话。
- * 他觉得还是会丢，那就把窗口压到最小：**8 字 / 0.4 秒**。
- * 写的是 drafts/<sid>.json（几 KB~几十 KB），一次同步写十几微秒，
- * 她说话时每秒最多 2-3 次，完全不拖流。
- *
- * 为什么不能真的「每个字都写」：一个 token 一次 writeFileSync，
- * 长回复几千字就是几千次磁盘写 —— 换不来肉眼可见的收益，
- * 因为 0.4 秒已经是「主人根本来不及察觉」的量级。 */
-export function makeDraftThrottle({ minGap = 400, minChars = 8 } = {}) {
+ * 历史：40 字/1.5 秒 → 8 字/0.4 秒 → **1 字/50ms**。
+ * 主人原话：「把【每 400ms 或每 8 字写一次草稿】改为【每 50ms 或每 1 字写一次草稿】」。
+ * 宁可多写盘也不能丢字：写频率被 50ms 门限压住，最多 20 次/秒，
+ * 文件只有几 KB~几十 KB，一次同步写十几微秒，对磁盘和流都无感。 */
+export function makeDraftThrottle({ minGap = 50, minChars = 1 } = {}) {
   let lastAt = 0;
   let lastLen = 0;
   return function shouldWrite(len, force = false) {
@@ -164,7 +160,7 @@ export function makeDraftThrottle({ minGap = 400, minChars = 8 } = {}) {
       return true;
     }
     const now = Date.now();
-    if (len - lastLen >= minChars && now - lastAt >= 300) {
+    if (len - lastLen >= minChars && now - lastAt >= minGap) {
       lastAt = now;
       lastLen = len;
       return true;

@@ -9239,7 +9239,7 @@
     const acts = Array.isArray(it.actions) ? it.actions : [];
     const isProcess = it.process === true;
     const [open, setOpen] = (0, import_react11.useState)(false);
-    const fullText = String(it.text || "");
+    const fullText = String(it.text || "").replace(/^[\s\u3000]+|[\s\u3000]+$/g, "");
     const oneLine = (() => {
       const flat = fullText.replace(/\s+/g, " ").trim();
       return flat.length > 60 ? flat.slice(0, 60) + "\u2026" : flat;
@@ -9823,7 +9823,17 @@
           if (!t || t === el || !el.contains(t)) return false;
           const box = t.closest && t.closest(".hubBody, .thinkBody, details.tool > pre");
           if (!box) return false;
-          return box.scrollHeight > box.clientHeight + 1;
+          if (box.scrollHeight <= box.clientHeight + 1) return false;
+          if (box.classList.contains("hubBody")) {
+            const dir = Number(e && e.deltaY) || 0;
+            if (dir === 0) return true;
+            const atTop = box.scrollTop <= 0;
+            const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 1;
+            if (dir < 0 && atTop) return false;
+            if (dir > 0 && atBottom) return false;
+            return true;
+          }
+          return true;
         } catch (err) {
           return false;
         }

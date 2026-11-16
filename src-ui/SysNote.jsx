@@ -18,7 +18,18 @@ export default function SysNote({ it, sid }) {
    */
   const isProcess = it.process === true;
   const [open, setOpen] = useState(false);
-  const fullText = String(it.text || '');
+  /**
+   * 【2026-11-17 主人问·这个框怎么这么大】
+   *
+   * 截图里「（连接断了一下，接着往下写…）」外面是个很高的方块。
+   * 不是宽度问题 —— 发过来的正文是 `'\n\n（…）\n\n'`，
+   * 而 `.sysnote` 是 `white-space: pre-wrap`，**首尾那四个换行被如实画出来**，
+   * 于是一行字被撑成一个方框。
+   *
+   * 这里统一 trim：所有系统提示都不许带首尾空行（中间的换行照留）。
+   * 断流那条已经不再发了（见 agent.mjs），这条兜住其余提示。
+   */
+  const fullText = String(it.text || '').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '');
   const oneLine = (() => {
     const flat = fullText.replace(/\s+/g, ' ').trim();
     return flat.length > 60 ? flat.slice(0, 60) + '…' : flat;

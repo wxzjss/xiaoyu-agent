@@ -55,8 +55,15 @@ ok('不在柜子里的独立卡仍然 320px 限高（外面没有 A 可接棒，
 const hubBody = ruleBody('details.toolhub > .hubBody');
 ok('A 框（.hubBody）自己有上限且在框内滚',
   /max-height\s*:\s*\d+px/.test(hubBody) && /overflow-y\s*:\s*auto/.test(hubBody));
-ok('A 框滚到底不把整个对话撸走（overscroll-behavior: contain）',
-  /overscroll-behavior\s*:\s*contain/.test(hubBody));
+/* 【2026-11-17 主人问·A 框滚到极限为什么不带动上下文】
+ * 原来断言 A 必须是 contain —— 那正是「A 到头之后彻底死掉」的原因：
+ * 原生滚动链到 A 就终止，主人只能把鼠标挪出柜子再滚。
+ * 现在改成 auto（链继续往上），边界由 JS 精确判断：
+ * installInnerToHubScrollChain 里 next === base 那一支会 return 让浏览器原生滚，
+ * 所以「滚到底把整个对话撸走」并不会发生。 */
+ok('A 框到头后把余量交给上下文（overscroll-behavior: auto）',
+  /overscroll-behavior\s*:\s*auto/.test(hubBody));
+ok('A 到头时 JS 放行、不拦原生滚动', /A 也到头了：别拦/.test(raw));
 /* 【2026-11-16 晚·主人报「必须把鼠标放在 B 框里才能滚」】
  * 老判据只找 B 框，鼠标挪到柜门/空隙/收起态卡片上就撒手；
  * A 的 contain 会让原生链止步，于是只有压在 B 上才滚得动。 */

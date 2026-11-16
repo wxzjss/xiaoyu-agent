@@ -576,7 +576,21 @@
     details.toolhub > .hubBody {
       max-height: 340px;
       overflow-y: auto;
-      overscroll-behavior: contain;
+      /* 【2026-11-17 主人问·A 框滚到极限为什么不带动上下文】
+       *
+       * A→B 那条链做得很好（B 到头原生带 A 滚），可 A→上下文这条断了，
+       * 断在两处，这里是第一处：
+       *
+       *   A 框（.hubBody）自己写着 contain —— 滚动链到 A 就终止，
+       *   浏览器永远不会把余量交给外层聊天区。当初写 contain 是为了
+       *   「别一撸到底把整个对话也滚走」（2026-11-11），那个担心是对的，
+       *   但代价是 A 到头之后**彻底死掉**，主人只能把鼠标挪出去再滚。
+       *
+       * 现在改成 auto：链会继续往上走。真正的边界交给 JS 精确判断
+       * （见 src-ui/LogView.jsx 的 fromInnerScroller）——
+       * 只有「A 真的已经到头、滚轮还在往那个方向推」时才让上下文接管，
+       * 中途滚动仍然全归 A，不会出现「滚柜子把对话带跑」那个老毛病。 */
+      overscroll-behavior: auto;
     }
 
     /* 【2026-11-14 修·B 框滚到头要带 A 框滚】
@@ -1977,8 +1991,18 @@
     @keyframes xyToastIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
     .sysnote {
-      max-width: 900px; margin: 6px auto 14px; padding: 6px 12px;
-      color: #d9a45b; font-size: 12px; line-height: 1.6;
+      /* 【2026-11-17 主人报·「（连接断了一下，接着往下写…）」的框怎么这么大】
+       *
+       * 病根不在宽度，在**上下的空行**：调用方发的事件正文是
+       * `'\n\n（…）\n\n'`，而这个 .sysnote 是 `white-space: pre-wrap` ——
+       * 前后各两个换行被如实画出来，框就被撑成了一个很高的方块，
+       * 里面就一行字，看着比例失衡。
+       *
+       * 这里把首尾空白吃掉（pre-wrap 会保留，所以显式 trim 掉视觉上的空行），
+       * 行高也收一点。真正的断流提示已经不再发了（见 agent.mjs），
+       * 这条是给其余系统提示兜底，别一个个都是大方块。 */
+      max-width: 900px; margin: 4px auto 8px; padding: 2px 10px;
+      color: #d9a45b; font-size: 12px; line-height: 1.5;
       background: rgba(217, 164, 91, .07);
       border-left: 2px solid rgba(217, 164, 91, .5);
       border-radius: 4px; user-select: text;
@@ -22178,10 +22202,14 @@ const PROVIDERS = [
     hint: '这一家地址就填到根，别再往后加 /v1（它自己带了）。',
   },
   {
-    key: 'feiyu', name: '飞鱼中转', base: 'https://ai.feiyuapi.top/v1',
-    match: /feiyuapi/i,
-    models: ['deepseek-v4.1-flash'],
-    hint: '飞鱼中转站，地址自带 /v1。',
+    /* 【2026-11-17 主人要求·删掉飞鱼预设，原位换成梦幻中转】
+     * 原话：「把添加模型页的飞鱼中转预设删了」「把飞鱼中转原来的位置改为梦幻中转」
+     * 位置保持在这里不动（原来飞鱼就在凌风后面这一格），只是换人。
+     * 地址取自现有配置里正在用的那条：梦幻 = https://mhapi.net（根地址，不带 /v1）。 */
+    key: 'menghuan', name: '梦幻中转', base: 'https://mhapi.net',
+    match: /mhapi/i,
+    models: ['claude-sonnet-5-5', 'claude-opus-5-5', 'deepseek-v4.1-flash'],
+    hint: '梦幻中转，地址就填到根，别再往后加 /v1。',
   },
   {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
@@ -23185,7 +23213,9 @@ let r429State = { config: { enabled: true, migrateThreshold: 3 }, cooldownLeft: 
 const FALLBACK_LEVELS = [
   { id: 'off', name: '关', desc: '不要思考，最快最省' },
   { id: 'low', name: '低', desc: '简单对话，便宜又快' },
+  { id: 'medium', name: '中', desc: '官方中档，速度与深度折中' },
   { id: 'high', name: '高', desc: '官方默认档，稳（默认）' },
+  { id: 'xhigh', name: '超高', desc: '比高再深一层（部分网关自定义值）' },
   { id: 'max', name: '最高', desc: '重任务，舍得花时间' },
 ];
 

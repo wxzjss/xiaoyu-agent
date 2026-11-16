@@ -938,13 +938,36 @@ function findDupUserRef(history, userMsg, now = Date.now()) {
   const content = String((userMsg && userMsg.content) ?? '');
   const myWho = who(userMsg);
   const STEER_FRESH_MS = 2 * 60 * 1000;
+  /* 【2026-11-17 主人报·历史里有个「继续」，再发一个「继续」会被吞】
+   *
+   * 原来只要内容和署名一样就算「同一轮兜底重发」，直接吞掉这一条。
+   * 可主人隔一会儿再说一遍「继续」是本意（那轮被停掉/断流/空转了，没答话），
+   * 吞掉之后他看到的就是「我说了却没反应」。
+   *
+   * 真正该吞的只有一种：**同一次发送的两个副本** ——
+   *   /api/interject 直推进历史 + 前端紧接着又 POST /api/chat 那位，
+   * 两句间隔是毫秒级。主人手打两遍「继续」不可能在 2 秒内。
+   *
+   * 所以加一道时间窗：只有「刚写过（≤2 秒）」的同文才算双写。
+   * 之前那两条判据（中间她答过话 / 只有工具过程）全部保留，跟时间窗叠加。
+   */
+  const DUP_WINDOW_MS = 2000;
+  const answeredSince = (fromIdx) => {
+    for (let q = fromIdx + 1; q < arr.length; q++) {
+      const m = arr[q];
+      if (!m || m.role !== 'assistant') continue;
+      if (m.note === true) continue;                  // 程序提示不算回复
+      const body = typeof m.content === 'string' ? m.content.trim() : '';
+      if (body) return true;                          // 说了正文 = 真答过
+      /* 只有工具调用、没有正文 → 这一圈只是过程，接着往后看 */
+    }
+    return false;
+  };
   for (let k = arr.length - 1, seen = 0; k >= 0 && seen < 6; k--) {
     const pm = arr[k];
     if (!pm || typeof pm !== 'object') continue;
     if (pm.role === 'assistant') {
-      // 她真的说过话 → 之后再发同样的话是有意重发，停
-      if (!pm.tool_calls) break;
-      continue;
+      continue;   // 过程/回复都不算对照物，只数 user
     }
     seen++;
     if (pm.role !== 'user') continue;
@@ -958,6 +981,16 @@ function findDupUserRef(history, userMsg, now = Date.now()) {
     }
     if (String(pm.content ?? '') !== content) continue;
     if (who(pm) !== myWho) continue;
+    if (answeredSince(k)) continue;
+    /* 【关键·普通发言的时间窗】
+     * 只有"刚写过"的同文才算双写。主人隔一会儿再发一遍同样的字是本意，必须落。
+     * _steer 那条走上面的「队尾 + 2 分钟」判据（前端异步链路本来就慢），
+     * 不再受这里的 2 秒窗口约束 —— 两个窗口管的是两件不同的事。 */
+    if (!pm._steer) {
+      const pmAt = Number(pm.at);
+      const freshDup = Number.isFinite(pmAt) && pmAt > Number(now) - DUP_WINDOW_MS;
+      if (!freshDup) continue;
+    }
     return pm;
   }
   return null;
@@ -984,7 +1017,46 @@ function saveUserMessage(sessionId, message, attachments = null) {
     const msgs = live.messages;
     try { repairHistory(msgs); } catch {}
     const last = msgs[msgs.length - 1];
-    const dup = Boolean(last && last.role === 'user' && String(last.content ?? '') === said);
+    /**
+     * 【2026-11-17 主人报·再发一个「继续」会被吞】
+     *
+     * 原来只看「最后一条是不是同样的话」就判重复 ——
+     *   msgs 尾部是 user(继续) → 主人再发「继续」 → 直接当重复，不写。
+     *
+     * 可那往往是一轮**还没答话**就被掐断（点停止 / 断流 / 空转），
+     * 主人补一句「继续」是本意，不是重发。吞掉之后他就看到「我说了但没反应」。
+     *
+     * 新判据：只有"这一句已经被回复过"才算重复 ——
+     *   末尾是同样的 user，且它后面已经有带正文的 assistant，才不重复写。
+     * 末尾就是它、后面什么都没有 → 那是待办的一句，得再写一条。
+     */
+    const answeredAfterLast = (() => {
+      /* 只看「那条 user 之后」有没有真回复，别扫到它前面去 ——
+       * 否则历史上任何一句 assistant 都会让判据成立，等于永远判重复。 */
+      if (!last || last.role !== 'user') return false;
+      for (let q = msgs.length - 1; q >= 0; q--) {
+        const m = msgs[q];
+        if (!m) continue;
+        if (m === last) return false;        // 走到这条 user 了，它后面没东西
+        if (m.role !== 'assistant') continue;
+        if (m.note === true) continue;
+        const body = typeof m.content === 'string' ? m.content.trim() : '';
+        if (body) return true;
+      }
+      return false;
+    })();
+    const dup = Boolean(
+      last && last.role === 'user' && String(last.content ?? '') === said
+      /* 【2026-11-17 加·2 秒时间窗】只有"刚刚才写过"的同文才算双写。
+       * 主人隔一会儿再说一遍「继续」是本意（上一轮被停/断流/空转，没答话），
+       * 只看内容相同就吞掉，他那边就是「我说了却没反应」。 */
+      && (() => {
+        const at = Number(last.at);
+        return Number.isFinite(at) && at > Date.now() - 2000;
+      })()
+      /* 而且那一句确实已经拿到过回复，才说明是重复而不是待办 */
+      && answeredAfterLast,
+    );
     if (!dup) {
       const uMsg = { role: 'user', content: message, at: Date.now() };
       if (Array.isArray(attachments) && attachments.length) uMsg.attachments = attachments;
@@ -4894,13 +4966,23 @@ async function resumeInterruptedTurn(onlySessionId) {
           : '') +
         '\n直接从断的地方往下做，该调工具就调，别问我「要不要继续」。' +
         '\n' + '如果需要跑回归以及耗时长的工具调用时，请优先让子Agent跑。' + '\n\n【重启续上·第一条】' + '\n' + TURN_MODE_HINT + '\n' +
+        /* 【2026-11-17 主人的判断·保留重启续上的系统提示】
+         *
+         * 主人原话：「如果你能做到断流重续不发系统提示，那么就可以保留重启续上发系统提示」
+         *
+         * 他的推断是对的：真正制造「重复整理清单」的不是重启续上（那个一轮只发一次），
+         * 而是**断流重试**——同一轮里断十几次，每次都补一句「接着往下写」+
+         * 之前那版还会把开场提示重拼一遍，于是清单/计划被反复重申，她就反复去整理。
+         *
+         * 所以这里恢复：重启续上照常带一次开场提示（它确实需要知道自己在接着干什么）。
+         * 真正的收口在 agent.mjs 的断流分支：同一轮内重试不再追加任何系统提示。
+         */
         /* 【2026-11-16 加】被打断那一轮的思考原文还在历史里（草稿回灌那条路补的），
          * 这里再带一句上一段的结论 —— 续跑最怕的就是「忘了刚才想清楚到哪一步」。 */
-        ((() => { try { const _t = lastTurnThink(sessionId); return _t ? '上一段我想清楚的：' + _t + '\n' : ''; } catch { return ''; } })()) +
+        ((() => { try { const _t = lastTurnThink(sessionId); return _t ? '\n上一段我想清楚的：' + _t : ''; } catch { return ''; } })()) +
         (Array.isArray(_liveOpen) && _liveOpen.length
-          ? ('如果当前不是闲聊，那么请先整理清单，然后根据清单上未完成的内容决定是否调用子Agent。' +
-             '\n清单还剩 ' + _liveOpen.length + ' 步没打勾，照上面那几步往下做。')
-          : '清单已经全部做完，没有剩余步骤 —— 别回头重做、别重新验证已经成立的事，做完手上这一下就收工。'),
+          ? ('\n清单还剩 ' + _liveOpen.length + ' 步没打勾，照上面那几步往下做。')
+          : '\n清单已经全部做完，没有剩余步骤 —— 别回头重做、别重新验证已经成立的事，做完手上这一下就收工。'),
       context: true,
     });
     const wire = history.slice();
@@ -5005,6 +5087,18 @@ async function resumeInterruptedTurn(onlySessionId) {
           }
         } else if (ev.type === 'reasoning') {
           _draft.reasoning += String(ev.text || '');
+          /* 【2026-11-17 主人要求·思考也要留】续跑这条路径原来只存内存，
+           * 重启就丢；现在跟正文一样节流落盘。 */
+          if (_shouldDraft(_draft.reasoning.length)) {
+            saveDraft(sessionId, { text: _draft.text, reasoning: _draft.reasoning, toolCalls: _draft.tools, startedAt: _draft.startedAt });
+          }
+        } else if (ev.type === 'flush_draft') {
+          /* 断流瞬间强制落盘（同主轮口径） */
+          try {
+            if (ev.text) _draft.text = _draft.text || String(ev.text);
+            saveDraft(sessionId, { text: _draft.text, reasoning: _draft.reasoning, toolCalls: _draft.tools, startedAt: _draft.startedAt });
+            diagLog('flush-draft-resume', sessionId + ' text=' + _draft.text.length);
+          } catch { /* 落盘失败不影响重连 */ }
         } else if (ev.type === 'tool_start' || ev.type === 'tool_end') {
           _draft.tools.push({ type: ev.type, name: ev.name, at: Date.now() });
           saveDraft(sessionId, { text: _draft.text, reasoning: _draft.reasoning, toolCalls: _draft.tools, startedAt: _draft.startedAt });
@@ -12978,6 +13072,21 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               + (_thinkEcho ? '\n上一段我想清楚的：' + _thinkEcho : '')
               + '\n如果需要跑回归以及耗时长的工具调用时，请优先让子Agent跑。',
             context: true,
+            /**
+             * 【2026-11-17 主人要求·这条提示用完就撤】
+             *
+             * 原话：「把我发消息（非插话消息）后会出现的系统提示在小鱼Agent
+             *        调用过三次工具调用后，自动在所有上下文、摘要等所有地方删除，
+             *        直到我下一次发消息（非插话消息）时才再出现」
+             *
+             * 意思是：它只在开头定个调（判断闲聊还是干活、叫什么名、清单在哪），
+             * 一旦真干起来了（工具调过 3 次）就该退场 —— 留着只会每圈重申一遍
+             * 「你要先整理清单」，把她按在原地反复对齐。
+             *
+             * 实现：打标记，agent 的工具循环里数到第 3 个工具就把它从 messages 里摘掉。
+             * 因为它本来就是 context 消息（不进历史、不进摘要），摘掉即彻底消失。
+             */
+            _turnStartHint: true,
           }]);
         } catch {}
         return runAgent({
@@ -13106,6 +13215,40 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           } else if (ev.type === 'reasoning') {
             draftReasoning += ev.text;
             if (reg.draft) reg.draft.reasoning = draftReasoning;
+            /**
+             * 【2026-11-17 主人要求·断流/重启也不能失忆，一个字都要留】
+             *
+             * 思考以前只进内存（draftReasoning），进程一重启就整段没了 ——
+             * 实测重启后 draft-restored 只剩几十字，前面几千字思考全丢，
+             * 她接着干活时只能从零重新推理（这也是"反复重来"的一个来源）。
+             *
+             * 现在：思考也跟正文一样走节流写盘（同一套 throttle，不额外加 IO）。
+             * 断流时 agent 会发 flush_draft，这里强制写一次，见下面那个分支。
+             */
+            if (shouldDraft(draftReasoning.length)) {
+              saveDraft(sessionId, {
+                text: draftText,
+                reasoning: draftReasoning,
+                toolCalls: draftTools,
+                startedAt: draftStartedAt,
+              });
+            }
+          } else if (ev.type === 'flush_draft') {
+            /* 【2026-11-17 加】断流那一刻的强制落盘。
+             * agent.mjs 检测到流被掐断、已经有半截正文时发这个事件，
+             * 这里无视节流立刻写一份 —— 之后就算进程被杀、被重启，
+             * 草稿也能把已经说出来的字灌回历史，一个字不丢。 */
+            try {
+              if (ev.text) draftText = draftText || String(ev.text);
+              if (reg.draft) { reg.draft.text = draftText; reg.draft.reasoning = draftReasoning; }
+              saveDraft(sessionId, {
+                text: draftText,
+                reasoning: draftReasoning,
+                toolCalls: draftTools,
+                startedAt: draftStartedAt,
+              });
+              diagLog('flush-draft', sessionId + ' text=' + draftText.length + ' reason=' + draftReasoning.length);
+            } catch { /* 落盘失败不许影响重连 */ }
           } else if (ev.type === 'tool_start' || ev.type === 'tool_end') {
             draftTools.push({ type: ev.type, name: ev.name, at: Date.now() });
             if (reg.draft) reg.draft.tools = draftTools;
@@ -14042,7 +14185,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * commitToolsNow 已落的前几段拼成重复。 */
           const _d = readDraft(sessionId);
           const _body = String((_d && _d.text) || '').trim();
-          if (_body) {
+          const _think = String((_d && _d.reasoning) || '').trim();
+          /**
+           * 【2026-11-17 主人报·点停止后这一轮的消息全消失】
+           *
+           * 原来这里只接 `_d.text`（正文），**思考和工具卡一个字都不接** ——
+           * 而这一轮她往往先想了上万字、调了几个工具，正文还一个字没说。
+           * 于是主人点停止，屏幕上本来有的思考链和工具卡整片没了，
+           * 看起来就是「这一轮被我按没了」。
+           *
+           * 更糟的是下面那个 `_landed` 判断：这一轮只要已经落过一条 assistant
+           * （哪怕只是收尾补的「主人把这一轮停掉了」），`_body` 就整段被丢掉。
+           *
+           * 现在改成：正文 / 思考各自独立接回，互不牵连；
+           * 思考挂到 `_reasoning`（柜子里画得出，也是历史的一部分）。
+           */
+          if (_body || _think) {
             const _s = getSession(sessionId);
             if (_s && Array.isArray(_s.messages)) {
               // 本轮起点 = 最后一条非 context 的 user
@@ -14057,7 +14215,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
                 if (_am && _am.role === 'assistant' && !_am.context) { _landed = true; break; }
               }
               if (!_landed) {
-                _s.messages.push({ role: 'assistant', content: _body, _text: _body, _stopped: true, at: Date.now() });
+                const _msg = { role: 'assistant', content: _body, _text: _body, _stopped: true, at: Date.now() };
+                /* 【2026-11-17】思考一起带上：这是这一轮真想过的东西，
+                 * 不接回来的话柜子里就是空白，主人说"消息全消失"就是这个。 */
+                if (_think) _msg._reasoning = _think;
+                _s.messages.push(_msg);
+                saveSession(_s);
+              } else if (_think) {
+                /* 正文已经有了（前几段工具轮落过一条），但思考还没地方挂 ——
+                 * 补到最后那条 assistant 上，别让这轮的思考凭空蒸发。 */
+                for (let _q = _s.messages.length - 1; _q > _lastUser; _q--) {
+                  const _am = _s.messages[_q];
+                  if (_am && _am.role === 'assistant' && !_am.context) {
+                    if (!String(_am._reasoning || '').trim()) _am._reasoning = _think;
+                    break;
+                  }
+                }
                 saveSession(_s);
               }
             }

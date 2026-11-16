@@ -31,10 +31,10 @@ const chatTail = atChat < 0 ? '' : src.slice(atChat, atChat + 180000);
 ok('主路拼了那句提示', chatTail.includes(HINT), '提示词不在 /api/chat 这条路上');
 ok('那句提示的标记是【每轮开始·第一条】', chatTail.includes('【每轮开始·第一条】'));
 ok('拼在 wireMessages 上（只给模型看，不进历史）',
-  /* 【2026-11-16 二次放宽】这条提示的正文又长了（加了「先判断闲聊/工作」那一句
-   * 和会话名拼接），200 字的窗口又不够。判据的本意没变：**这一个对象**必须走
-   * wireMessages.concat、并且带 context:true —— 窗口只是「同一对象内」的距离。 */
-  /wireMessages\s*=\s*wireMessages\.concat\(\[\{[\s\S]{0,400}?context:\s*true[\s\S]{0,60}?\}\]\)/.test(chatTail),
+  /* 【2026-11-17 三次放宽】这条提示的对象里现在多了 _turnStartHint 字段，
+   * 而且中间隔着一大段注释。判据本意不变：这一个对象必须走
+   * wireMessages.concat 且带 context:true，窗口只是「同一对象内」的距离。 */
+  /wireMessages\s*=\s*wireMessages\.concat\(\[\{[\s\S]{0,2600}?context:\s*true/.test(chatTail),
   '没有走 wireMessages.concat 就可能是 push 进 history —— 那会越堆越多');
 /* 【2026-11-16 判据过时修正】产品现在在这条提示里带了「当前会话名」，
  * content 不再是单一字符串字面量，而是 '【每轮开始·第一条】当前会话名：「' + _nameNow + ...
@@ -56,7 +56,7 @@ const resumeBody = (() => {
   }
   return '';
 })();
-ok('续跑引子里有那句提示', resumeBody.includes(HINT), '重启续上时没提醒她整理清单');
+ok('续跑引子不再喊「先整理清单」（见 2026-11-17 改动）', !resumeBody.includes(HINT), '还在喊整理清单 —— 会让她反复重排');
 ok('续跑那条也是【重启续上·第一条】+ context',
   resumeBody.includes('【重启续上·第一条】') && /context:\s*true/.test(resumeBody));
 

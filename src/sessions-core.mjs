@@ -697,6 +697,40 @@ export function renameSession(id, title) {
   const next = uniqueSessionTitle(id, title);
   if (!next) return null;
   s.title = next;
+  /**
+   * 【2026-11-17 主人要求·改完名要清掉之前弹过的起名提示】
+   *
+   * 原话：「改会话名的系统提示是只在当前会话名是【新会话】时才有的吗？
+   *        且当会话名不是【新会话】后就不再弹出这个提示，
+   *        且之前弹出过的提示也在上下文以及摘要等地方删除。」
+   *
+   * 起名提示本身是每轮现拼的（context 消息，不进历史），所以「不再弹」天然成立。
+   * 但**压缩摘要会把它当主人原话抄进去**，那段摘要永久留在历史里 ——
+   * 实测画图鱼的摘要第二条就钉着「当前会话名：「新会话」」，
+   * 她每轮读到都以为还没起名，于是反复改名（12 次）。
+   *
+   * 所以这里改名成功后立刻扫一遍历史：凡是含「当前会话名：「新会话」」的行整行删掉。
+   * 只动这一行，别的内容一个字不碰。
+   */
+  try {
+    const msgs = Array.isArray(s.messages) ? s.messages : [];
+    let cleaned = 0;
+    for (const m of msgs) {
+      if (!m || typeof m.content !== 'string') continue;
+      if (!m.content.includes('新会话')) continue;
+      const before = m.content;
+      const after = before
+        .split('\n')
+        .filter((line) => !/当前会话名：「?新会话」?/.test(line)
+          && !/还没有名字|先给自己起一个/.test(line))
+        .join('\n');
+      if (after !== before) { m.content = after; cleaned += 1; }
+    }
+    if (cleaned) {
+      try { console.log('[rename] 清掉 ' + cleaned + ' 条消息里的「还没有名字」残留'); } catch {}
+      saveSession(s);
+    }
+  } catch { /* 清扫失败不影响改名本身 */ }
   saveSession(s);
   return s;
 }

@@ -895,6 +895,9 @@ const needsRealReply = (s) => {
   return t.length >= 12;
 };
 let _fillerRetried = false;
+/* 【2026-11-17】整轮累计的工具调用次数 —— 用来让开场提示在第 3 个工具后退场。
+ * 跨圈累计（不随 round 重置），因为"调过三次工具"说的是这一整轮。 */
+let _toolCallCount = 0;
 
 for (let round = 0; round < config.maxRounds; round++) {
     /**
@@ -1576,8 +1579,13 @@ for (let round = 0; round < config.maxRounds; round++) {
               role: 'user',
               content: '（上一句太长被截断了，请从断开的地方直接接着往下写，不要重复已经写过的内容，也不要解释。）',
               _internal: true,
+              /* 【2026-11-17 同一条规矩·截断续写也不许弹提示】
+               * 原来这里播一句「（说到这儿断了一下，接着往下写…）」，
+               * 前端画成大大的 SysNote 框。主人要求重续全程静默，这里同样去掉。
+               * 也加 _dropRetryHint：一次性指令，别沉淀进历史（不然写 8 次就是 8 条）。 */
+              _dropRetryHint: true,
+              context: true,
             });
-            onEvent({ type: 'text', text: '\n\n（说到这儿断了一下，接着往下写…）\n\n', notice: true });
             _truncated = false;
             text = '';
             reasoning = '';
@@ -1684,28 +1692,81 @@ for (let round = 0; round < config.maxRounds; round++) {
           const partial = text.trim();
           const n = bumpStreak(sessionId + ':drop');
 
-          // 重试上限放宽到 30 次。原来 5 次太少了：网络抖一下、网关抽个风就来几条，
-          // 一晚上能攒够。而且「报错停下」对主人没有任何用 —— 她既不知道出了什么事，
-          // 也没法处理。宁可多等几轮自己缓过来。真断了二三十次那才说明是硬故障。
-          if (n > 30) {
-            throw new Error('上游连接断了很多次（30 次），这次是真的接不上了。已经写出来的都留着，稍后再叫我接着写。');
+          /**
+           * 【2026-11-17 主人要求·无论断多少次都要续上，且一个字都不能丢】
+           *
+           * 原来这里 `if (n > 30) throw`：断到第 31 次直接判死，整轮作废。
+           * 主人实测那家网关（丸子）一轮能断十几次，30 次很快就撞上 ——
+           * 撞上就是「她说着说着没了」，之前跑的全白费。
+           *
+           * 现在改成：**不设硬上限**。
+           *   · 断得多就退避久一点（封顶 8 秒，别把网关打爆）；
+           *   · 但永远不停 —— 除非主人自己点停止（signal.aborted 在更上面就返回了）。
+           * 代价是可能长时间耗在一次请求上，收益是「断了必续、绝不失忆」，
+           * 这正是主人要的：宁可慢，也不能丢。
+           */
+          /**
+           * 【2026-11-17 主人要求（第二次强调）·断流重续**不发任何**系统提示】
+           *
+           * 原话：「还有我要求是【断流重续不发任何系统提示】」
+           *
+           * 之前我只去掉了「每轮开始·第一条」那套，但还留着两句：
+           *   · 断到 30/60/120 次时喊「上游已经断了 N 次…」
+           *   · 每次断流都播「（连接断了一下，接着往下写…）」
+           * 而这一句在前端被画成**一个很大的框**（主人截图里那个），
+           * 断一次闪一次，屏幕上全是这种框，比不提示还烦。
+           *
+           * 现在：断流重试全程静默 —— 只写 diag 日志（排查用），
+           * 界面一个字都不出现。她自己接着往下写就行，主人不需要知道抖了几下。
+           */
+          if (n === 30 || n === 60 || n === 120) {
+            /* 只记日志，不推界面 */
+            console.warn('[stream-drop] 同一轮已断 ' + n + ' 次，继续重连：session=' + sessionId);
           }
 
           if (partial) {
-            // 半截话作为 assistant 落进历史；再补一句指令，让模型知道从哪接着写，
-            // 而不是把那半截话当成「说完了」重新开个头。
+            /* 【2026-11-17 主人推断·断流重试就是"重复整理清单"的元凶】
+             *
+             * 原话：「我发现断流重续有可能就是会重复发一遍这些，才导致一直整理清单」
+             *
+             * 他说对了，而且是两层叠加：
+             *
+             *   ① 原来这里每断一次就往 messages 里 push 两条：
+             *        assistant(半截话) + user(请接着往下写)
+             *      断 13 次就是 26 条 —— 上下文被撑爆，清单/计划被反复重申，
+             *      她每一圈都重新读一遍"我要接着干什么"，于是回去重排清单。
+             *
+             *   ② 这两条**没有 context 标记**，会真的落进历史，永久留在那儿。
+             *
+             * 现在改成：
+             *   · 半截话**照样落历史**（那是有内容的东西，不能丢）；
+             *   · 但"请接着往下写"这条指令改成**一次性**的：只在本次重试的
+             *     请求里存在，重试成功/失败后立刻从 messages 里摘掉，绝不累积。
+             */
             messages.push({ role: 'assistant', content: _narratorize(scrubNarration(partial), sessionId) });
+            /* 把上一发留下的临时指令先摘掉（正常情况下没有，保险） */
+            for (let _i = messages.length - 1; _i >= 0; _i--) {
+              if (messages[_i] && messages[_i]._dropRetryHint) messages.splice(_i, 1);
+            }
             messages.push({
               role: 'user',
               content: '（上一句因为网络断了被截断，请从断开的地方直接接着往下写，不要重复已经写过的内容，也不要解释。）',
               _internal: true,
+              /* 标记：这是断流重试的临时指令，**不进历史、不参与压缩、下一次重试前摘掉** */
+              _dropRetryHint: true,
+              context: true,
             });
-            onEvent({ type: 'text', text: '\n\n（连接断了一下，接着往下写…）\n\n', notice: true });
+            /* 断流瞬间强制落盘（不推任何界面提示） */
+            try { onEvent({ type: 'flush_draft', text: partial }); } catch {}
           }
 
           // 等待时间封顶 8 秒：原来卡在 3 次就封顶，连着抖就变成疯狂重连。
           const wait = retryDelay(Math.min(n, 8));
-          onEvent({ type: 'retry', reason: 'stream_drop', attempt: n, waitMs: wait });
+          /* 【2026-11-17 主人要求·断流重续不发任何系统提示】
+           * 原来这里每断一次就发一个 retry 事件，前端画成 SysNote 的大框
+           * （主人截图里那个「（连接断了一下，接着往下写…）」）。
+           * 抖一下闪一个框，屏幕全是框。现在不发了 —— 静默重连，
+           * 主人只看最终结果。要排查就翻 diag.log。 */
           await sleep(wait);
           continue; // 回到 for(attempt) 开头，重新发这次请求
         }
@@ -2077,6 +2138,33 @@ for (let round = 0; round < config.maxRounds; round++) {
     for (const call of assistantMsg.tool_calls) {
       /* 【2026-11-15 晚·删】这里原来给「这一步用了 N 次工具调用」记账，
        * 主人不要这个显示了，记账一并去掉（见 plan.mjs 顶部说明）。 */
+      /**
+       * 【2026-11-17 主人要求·开场提示在调用 3 次工具后自动退场】
+       *
+       * 原话：「把我发消息（非插话消息）后会出现的系统提示在小鱼Agent
+       *        调用过三次工具调用后，自动在所有上下文、摘要等所有地方删除，
+       *        直到我下一次发消息（非插话消息）时才再出现」
+       *
+       * 那条【每轮开始·第一条】本来只是开头定调（判断闲聊/干活、会话名、清单），
+       * 可它一直躺在 messages 里，每圈都跟着发一遍 —— 工具调得越多、
+       * 「请先整理清单」被重申的次数就越多，她就越容易回去重排清单。
+       *
+       * 现在数工具：真调满 3 次，就把它从 messages 里整条摘掉。
+       * 它是 context 消息（不进历史、不进摘要），摘掉即彻底消失；
+       * 下一轮主人说话时会重新拼一条新的，所以「下次发消息再出现」天然成立。
+       */
+      _toolCallCount += 1;
+      if (_toolCallCount === 3) {
+        try {
+          for (let _i = messages.length - 1; _i >= 0; _i--) {
+            if (messages[_i] && messages[_i]._turnStartHint) {
+              messages.splice(_i, 1);
+              try { console.warn('[turn-hint] session=' + sessionId + ' 已调 3 个工具，开场提示退场'); } catch {}
+              break;
+            }
+          }
+        } catch { /* 摘不掉不影响这轮干活 */ }
+      }
       const _hit = _poMap.get(call.id);
       if (!_hit) {
         /* 【2026-11-11 加】ts 同上：工具卡的动态耗时从事件上读 */

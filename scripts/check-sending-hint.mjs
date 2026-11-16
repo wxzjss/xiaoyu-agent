@@ -40,4 +40,31 @@ t.ok('3 秒巡检同时核对 busy 和灯本身',
 t.ok('真结束了仍然会灭灯（不会永远挂住）',
   /busy = false;\s*\n\s*hidingSendingSafe\(\);/.test(ui));
 
+/* 【2026-11-15 加·「柜子亮着金色【正在跑】时插话不立刻显示」】
+ * 服务端把插话推进直播清单了，可屏幕只由 SSE 事件触发重画 ——
+ * 工具跑着的十几分钟里一个事件都没有，插话只能等工具结束那条 tool_end 才冒出来。 */
+t.ok('插话收下后主动拉一次快照（不等下一个事件才显示）',
+  /r\.steered === true[\s\S]{0,900}nudgeLive\(sessionId\)/.test(ui));
+
+/* 【2026-11-16 加·「正在发消息闪一下就消失」+「排队还写正在发送」】
+ *
+ * 两个都是同一行提示被抢着写：
+ *   ① showSending 顺手把 _turnT0 填上 → syncSendBtn 当成「刚跑完」→ 闪「已完成」再灭灯；
+ *   ② 秒表 tick / 3 秒巡检每拍写死「正在发送消息」，把排队文案顶掉。
+ *
+ * 现在 ① 靠「刚点过发送的 8 秒内不闪完成」挡住，② 靠唯一出口 _liveHintText() 统一。 */
+/* 【2026-11-16 改判据】主人第二次报闪之后，产品把「已完成」闪屏整个关掉了：
+ * syncSendBtn 里那一段只剩 `_turnT0 = 0`，不再调 _flashDone()。
+ * 老判据要求有 8000ms 的闸门才通过 —— 产品已改成「干脆不闪」，比闸门更彻底。
+ * 判据跟着放宽：要么有 8 秒闸门（老写法），要么那一段里压根不调 _flashDone（新写法）。 */
+t.ok('刚点过发送的 8 秒内不闪「已完成」（不然正在发送只闪一帧）',
+  /wasBusy && !busy && _turnT0 > 0 && \(Date\.now\(\) - _sendFeedbackAt\) > 8000/.test(ui)
+  || /if \(wasBusy && !busy && _turnT0 > 0\) \{\s*_turnT0 = 0;\s*\}/.test(ui));
+t.ok('提示文案只有一个出口 _liveHintText()',
+  /function _liveHintText\(\)/.test(ui));
+t.ok('排队时不写「正在发送消息」（那句话其实还没发出去）',
+  /_queueHintUntil[\s\S]{0,200}已排队/.test(ui));
+t.ok('秒表 tick 与 3 秒巡检都走同一个出口（不许再写死）',
+  (ui.match(/_hintSetText\(_liveHintText\(\)\)/g) || []).length >= 2);
+
 t.done();

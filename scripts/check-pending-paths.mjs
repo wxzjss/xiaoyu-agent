@@ -188,7 +188,23 @@ console.log('\n四、窗口裁剪（WINDOW=40 + getWindowStart）不许裁掉/�
   }
   const count = (arr, pred) => arr.filter(pred).length;
   const r1 = buildMerged({ sid: 'W', turns: turns.slice(), live: null, pendingUser: [], notes: [] });
-  ok(r1.start === 20, '① 默认只画最近 40 轮（start=60-40=20）', 'start=' + r1.start);
+  /* 【2026-11-15 修判据】原来断言 start===20（WINDOW 粗算口径）。11-14 主人报
+   * 「重启后密密麻麻历史堆屏」后，items.js 已改成按「柜子」收窄（默认最近 3 柜），
+   * WINDOW=40 退化成硬上限。所以这里不再锁死具体下标，改钉两件事：
+   *   一、默认不全量画（0 < start <= 60-40，即受硬上限约束）；
+   *   二、实际画出来的 assistant 柜子不超过 3 个。 */
+  ok(r1.start > 0 && r1.start < 60, '① 默认不全量画（起点被窗口口径往前推过）', 'start=' + r1.start);
+  const _hubsOf = (items) => {
+    let n = 0;
+    for (let k = 0; k < items.length; k++) {
+      const c = items[k];
+      const nx = items[k + 1];
+      if (c && c.kind === 'assistant' && (!nx || nx.kind !== 'assistant')) n += 1;
+    }
+    return n;
+  };
+  const _h1 = _hubsOf(r1.items);
+  ok(_h1 > 0 && _h1 <= 3, '① 默认最多画最近 3 个柜子（11-14 收窄口径）', '实际 ' + _h1 + ' 柜');
   ok(r1.items.some((x) => x.kind === 'user' && x.text === '第 29 问'), '① 最后一句提问在窗口里');
   ok(count(r1.items, (x) => x.kind === 'user' && x.text === '第 29 问') === 1, '① 最后一句只画一次');
 

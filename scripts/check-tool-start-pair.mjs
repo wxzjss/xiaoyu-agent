@@ -123,8 +123,8 @@ if (cdp) {
       try { window.__logStore.setLive(sid, null); } catch (e) {}
       return out;
     `);
-    t.ok('真机：跑着的时候柜门写「正在跑命令…」（可带计数前缀）',
-      /(调了 \d+ 次 · )?正在跑命令…$/.test(String(run.hub)), JSON.stringify(run.hub));
+    t.ok('真机：跑着的时候柜门写「正在跑 N 个工具…」（旧文案「正在跑命令…」也算）',
+      /(调了 \d+ 次 · )?正在跑(命令…|\s*\d+\s*个工具…)$/.test(String(run.hub)), JSON.stringify(run.hub));
     t.ok('真机：跑着的时候卡上写「运行中…」',
       (run.statuses || []).filter((s) => /运行中/.test(s)).length === 2, JSON.stringify(run.statuses));
     t.ok('真机：跑完柜门退回「调了 2 次工具」', run.after === '调了 2 次工具', JSON.stringify(run.after));

@@ -233,7 +233,9 @@ function downloadWithGit(dir) {
     };
     let has;
     try {
-      has = spawnSync('git', ['--version'], { encoding: 'utf8', timeout: 8000 });
+      /* 【2026-11-15 修】spawn git 时不写 windowsHide，Windows 会给它开个黑框；
+       * 自更新是在后台跑的，不该在主人屏幕上闪一下。 */
+      has = spawnSync('git', ['--version'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
     } catch {
       return finish(null);
     }
@@ -243,6 +245,7 @@ function downloadWithGit(dir) {
     try {
       child = spawn('git', ['clone', '--depth', '1', '--branch', BRANCH, CLONE_URL, dir], {
         stdio: 'ignore',
+        windowsHide: true,   // 【2026-11-15】同上：克隆也别弹窗
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '15' },
       });
     } catch {

@@ -10,11 +10,37 @@ import { config } from './config.mjs';
 /* 【2026-11-07 harness 重做 · P5】简单命令不进 PowerShell（省约 300ms/次启动）。
  * 直接引子模块，不绕 index —— tools.mjs 和 tools-sendfile 是循环依赖，加载链越短越稳。 */
 import { pickShell } from './harness/exec-shell.mjs';
+
+/** 【2026-11-15 修·run_command 乱码】命令输出按真实编码解，别一律当 UTF-8。
+ *  · FF FE 开头 → UTF-16LE（控制台重定向 / Out-String 常见）
+ *  · BOM 丢了但零字节密度高 → 也按 UTF-16LE
+ *  · 其余 → UTF-8（剥掉可能的 UTF-8 BOM）
+ */
+function decodeCmdOutput(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  try {
+    const b = Buffer.isBuffer(v) ? v : Buffer.from(v);
+    if (!b.length) return '';
+    if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) return b.slice(2).toString('utf16le');
+    if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) {
+      const sw = Buffer.from(b.slice(2));
+      for (let i = 0; i + 1 < sw.length; i += 2) { const t = sw[i]; sw[i] = sw[i + 1]; sw[i + 1] = t; }
+      return sw.toString('utf16le');
+    }
+    const n = Math.min(b.length, 512);
+    let zeros = 0;
+    for (let i = 0; i < n; i++) if (b[i] === 0) zeros++;
+    if (zeros > n * 0.25) return b.toString('utf16le').replace(/\u0000/g, '');
+    return b.toString('utf8').replace(/^\uFEFF/, '');
+  } catch (e) { return String(v); }
+}
 import { planAction, noteAction } from './plan.mjs';
 import { isToolEnabled, featureOnFor, featureNameOfTool, enabledToolNames } from './features.mjs';
 import { snapshotBeforeWrite } from './rewind.mjs';
 import { webSearch, formatResults } from './search.mjs';
 import { sendFileTool } from './tools-sendfile.mjs';
+import { borrowedToolDefs } from './borrowed-tools-defs.mjs';
 import { sayTool } from './tools-say.mjs';
 import { qqSendTool } from './tools-qq-send.mjs';
 import { browserTools } from './tools-browser.mjs';
@@ -28,8 +54,8 @@ import { isImagePath, readImageDataUrl } from './attach.mjs';
 import { postMail, peekMail, takeMail, mailCount, formatMail } from './peer.mjs';
 import { listSessions, getLastSessionId } from './sessions-core.mjs';
 import { addTask, listTasks, removeTask, parseWhen } from './cron.mjs';
-import { listWorkers, noteWorker, finishWorker, drainWorkerMail, noteWorkerProgress, sendWorkerMail, workerDetail } from './task-mode.mjs';
-import { teamOn, dispatchWorker } from './team.mjs';
+import { listWorkers, noteWorker, finishWorker, beatWorker, drainWorkerMail, noteWorkerProgress, sendWorkerMail, workerDetail } from './task-mode.mjs';
+import { teamOn, dispatchWorker, stopWorker } from './team.mjs';
 
 /*
  * 内存保护线：单条输出超过这个长度就地砍掉（保头保尾），防止一条 100MB 的命令把进程撑爆。
@@ -226,6 +252,20 @@ export function setPeerDeliver(fn) {
 }
 
 /**
+ * 注入「给会话改名」的实现（2026-11-16 主人钦点）。
+ *
+ * 主人原话：「每个会话的ai都不知道自己的会话名是什么……只能由主人手动填写，
+ * 或会话里的ai发现自己的会话名是【新会话】时……手动填写【xx鱼】【xx猫】【xx人】的会话名」。
+ *
+ * 为什么要注入：改名要落盘（sessions-core）+ 通知前端（SSE）+ 重名去重，
+ * 这三样都在 server 那边。tools.mjs 反过来 import server 会成环，
+ * 照 setPeerWake 的老办法。
+ */
+export function setSessionRenamer(fn) {
+  CTX.renameSession = typeof fn === 'function' ? fn : null;
+}
+
+/**
  * 注入「查谁正在跑」的实现（2026-11-04 新增）。
  *
  * 为什么要有：list_peers 原来只有会话文件里记的历史轮数 s.turns，
@@ -332,8 +372,11 @@ export function pushToolContext() {
  * 不设这个，一个爱乱回答的子智能体能把进程拖死。
  */
 export const MAX_SUBAGENT_DEPTH = 2;
-/* 【2026-11-13 主人要求放宽】spawn_workers 单次派发上限：4 → 8（真无上限会把内存和 API 配额打爆，8 件已是「肉眼可见的多鱼干活」）。 */
-export const MAX_SPAWN_WORKERS = 8;
+/* 【2026-11-15 主人钦点·取消上限】原来这里卡着「一次最多 8 件」。
+ * 主人原话：「把限制小鱼Agent并行调用工具与并行调用子Agent上限的地方全删了」。
+ * 现在不设上限 —— 派多少件就跑多少件（真跑爆了是主人自己决定要派那么多，由她判断）。
+ * 常量留着只为兼容老引用，值给 Infinity（下面也不再拿它拦人）。 */
+export const MAX_SPAWN_WORKERS = Infinity;
 
 /* 【2026-11-13 主人钦点：子 Agent 名字必须是中文】spawn_worker / spawn_workers / ask_subagent
  * 给出来的 name 一律过这里：有汉字就直接用；没有就自动起个中文名（跑腿-N / 工-N），
@@ -487,6 +530,16 @@ function memoryLocked(abs) {
  * 「开了管理员 = 放行 / 没开 = 拦住」这条规矩。真正的调用方都在本文件里。
  * 中间那道 memoryLocked 谁都不例外，位置别动。
  */
+/**
+ * 这个路径是不是「程序维护的会话记忆本」（.state/memory/<sid>.md）。
+ *
+ * 只看形状、不碰文件系统：write_file 要在动手之前就拦住它。
+ */
+function isSessionMemoryBook(abs) {
+  const s = String(abs || '').replace(/\\/g, '/');
+  return /\/\.state\/memory\/[^/]+\.md$/i.test(s);
+}
+
 export function safePath(p, { tool = '' } = {}) {
   const abs = isAbsolute(p) ? resolve(p) : resolve(ROOT, p);
   if (!abs) throw new Error(`路径不对：${p}`);
@@ -718,6 +771,20 @@ export const tools = [
     },
     async run({ path, content }) {
       const abs = safePath(path, { tool: 'write_file' });
+      /**
+       * 【2026-11-16 加·会话记忆本不归 write_file 管】
+       *
+       * 现场：修理鱼 12:31~12:43 把 .state/memory/<sid>.md 整份覆盖写了 6 遍，
+       * 骨架（固定记忆/滚动摘要）被冲掉，只留下一段段【压缩记忆】。
+       * 她以为「压缩记忆 = 往本子里写文件」，于是一遍遍重写、一遍遍以为没成功。
+       *
+       * 本子由程序维护（appendDigest），整份覆盖会毁掉固定记忆区。
+       * 要写压缩记忆：直接在回复里写【压缩记忆·seg-xxx】，程序会自己收进本子。
+       */
+      if (isSessionMemoryBook(abs)) {
+        return '没写：' + path + ' 是程序维护的会话记忆本（固定记忆 + 滚动摘要都在里面），'
+          + '整份覆盖会把它清空。要写压缩记忆就把【压缩记忆·seg-xxx】直接写在回复里，程序会收进本子。';
+      }
       await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, content, 'utf8');
       return `wrote ${content.length} chars to ${path}`;
@@ -924,6 +991,8 @@ export const tools = [
       required: ['command'],
     },
     run({ command, timeout_ms, shell_hint }) {
+      /* 【2026-11-15 加·后台模式见「杀自己」拦截之后】 */
+
       /**
        * 【2026-11-03 主人要求】堵死「用命令把自己弄死」这条路。
        *
@@ -934,6 +1003,17 @@ export const tools = [
        * 真·重启只有一条路：主进程注入的 globalThis.__xiaoyuRelaunch
        * （app.relaunch + app.exit），服务端 exit(75) 主进程接住再重起服务。
        * 所以这里把「杀自己」的命令一律拦下来，并告诉调用方该走哪条路。
+       */
+      /* 【2026-11-16 主人钦点·回归工具全部还给她】
+       *
+       * 原话：「把小鱼Agent的回归等工具全部还给她，让她自己也能跑回归，
+       *        以及限制她自己跑后台的提示词全删。」
+       *
+       * 这里原来是一道硬拦：命令里出现 check-*.mjs / run-all-checks / --only=
+       * 且不是子Agent 在跑，就直接拒掉、让她改用 spawn_worker。
+       * 主人现在改主意了 —— 她有手，就让她自己跑。
+       * 怎么选改由提示词软引导：**优先**派子Agent（长活会占住她这一轮），
+       * 但短检查、需要当场看结果、或者派不出去的时候，她自己跑完全没问题。
        */
       {
         const raw = String(command || '');
@@ -1065,6 +1145,16 @@ export const tools = [
          命中回归/自检/构建/打包/测试这类长活就给 10 分钟，普通命令仍是 2 分钟。
          模型自己传了数值还是以它为准（上限 15 分钟不变）。
          ══════════════════════════════════════════════════════════════ */
+      /* 【2026-11-16 主人钦点·后台作业整套删掉】
+       *
+       * 原话：「把后台作业的有关代码全删了，要求代码层面做到要么前台要么子Agent」。
+       *
+       * 以前这里能把命令丢给 jobs.mjs，起个任务号、跑完再叫醒 —— 看着很美，
+       * 实际上作业还是挂在**这一轮**上：跑完叫醒又把整轮拉长一次，
+       * 主人在这期间发消息没人应。现在这条路彻底没了：
+       *   · run_command 只有前台一种跑法（普通命令 2 分钟、长活 12 分钟）；
+       *   · 要并行 / 要跑几分钟的活 → spawn_worker 派子Agent（它有自己的轮）。
+       */
       const _longTask = /(run-all-checks|check-[\w-]+\.mjs|_t_[\w-]+\.mjs|npm\s+(run\s+)?(test|build|pack)|yarn\s+(test|build)|pnpm\s+(test|build)|playwright|pytest|go\s+test|cargo\s+(build|test)|(^|\s)make(\s|$))/i.test(String(command || ''));
       /* 【2026-11-14 主人问「超时被掐」——拍板：不做软超时（exec 换 spawn 风险大），
        * 把长任务默认从 10 分钟提到 12 分钟。实测全量自检 8 分钟内跑完，12 分钟留足余量；
@@ -1083,9 +1173,21 @@ export const tools = [
             timeout: _longTask ? 0 : _TO,
             /* 回归日志可能很大（160 个脚本），长任务给 16MB 缓冲 */
             maxBuffer: _longTask ? 16 * 1024 * 1024 : 4 * 1024 * 1024,
+            /* 【2026-11-15 修·主人报「powershell 终端时不时弹出来」】
+             * 这里少一个 windowsHide，Windows 就会给**每一条命令**开一个控制台窗口：
+             * 她跑回归、跑 node、跑 git，屏幕上黑框一闪一闪，还留在任务栏里。
+             * 不是某个工具特有的毛病 —— run_command 是所有命令的唯一通道，就漏了这一处。
+             * 加上之后子进程照常跑、照常收输出，只是不再有窗口。 */
+            windowsHide: true,
             shell: pickShell(command, shell_hint),
+            /* 【2026-11-15 主人报·检查鱼消息里有乱码】命令输出有时是 UTF-16LE
+             * （BOM FF FE + 每字符间一个 \x00），node exec 默认按 UTF-8 解 → 一屏
+             * U+FFFD/\x00 乱码并落进会话。先拿 Buffer，再按 BOM/零字节密度选解码。 */
+            encoding: 'buffer',
           },
-          (err, stdout, stderr) => {
+          (err, stdoutBuf, stderrBuf) => {
+            const stdout = decodeCmdOutput(stdoutBuf);
+            const stderr = decodeCmdOutput(stderrBuf);
             try { if (_softTimer) clearInterval(_softTimer); } catch {}
             try { forgetChildPid(child && child.pid); } catch {}
             if (onAbort) signal.removeEventListener('abort', onAbort);
@@ -1338,7 +1440,9 @@ export const tools = [
           type: 'string',
           enum: ['create', 'update', 'add', 'view', 'clear'],
           description:
-      '维护这次任务的分步清单：create 新建，update 改某一步的状态，add 追加一步，view 看当前清单，clear 清空。新建清单和清空都会自动把旧清单留档到 .state/plan/_history/，钉死的步骤永不消失。长任务先用它把步骤列出来，别做到一半忘了。',
+      '维护这次任务的分步清单：create 往清单后面接新步骤（**不是推倒重来**：老的一步不删，重复的自动跳过），update 改某一步的状态，add 追加一步，view 看当前清单，clear 清空。'
+      + '【别重复列】要改状态/补备注用 update，别为了"重建"再 create 一遍 —— 换个说法再列一次会被当成近似重复挡掉，回报里会告诉你撞的是第几步。'
+      + '新建清单和清空都会自动把旧清单留档到 .state/plan/_history/，钉死的步骤永不消失。长任务先用它把步骤列出来，别做到一半忘了。',
         },
         goal: { type: 'string', description: '一句话说清主人要什么（仅 create）' },
         steps: {
@@ -1775,6 +1879,7 @@ export const tools = [
   makeDocxTool,
   makeXlsxTool,
   ...uiToolDefs,
+  ...borrowedToolDefs,
   /**
    * 往我自己的记忆本里记一条。
    *
@@ -1842,6 +1947,67 @@ export const tools = [
       return r.text + (r.truncated
         ? String.fromCharCode(10) + String.fromCharCode(10) + '（这份太长，只给了前 ' + r.text.length + ' 字，全文 ' + r.total + ' 字）'
         : '');
+    },
+  },
+  /* ══ 【2026-11-16 主人：让小鱼Agent兼容 dsh 插件 / 可以导入 dsh 插件】════════════
+   *
+   * 结论：**插件运行时不做兼容**（dsh 是 cordis IoC 插件，run 体直接吃
+   * exec.agent.session.append / ctx.sessionProjections / ctx.agents.currentInitiator
+   * 那一整套事件溯源运行时，小鱼没有那套模型 —— 真跑起来等于重写半个 dsh，
+   * 而能力小鱼 89 个工具已经全覆盖且更细）。
+   *
+   * 但 dsh 生态里有一类资产是纯文本、拿来就能用：**skill 包**。
+   *   dsh : ~/.dsh/<profile>/skills/xxx.md  （单文件 + frontmatter）
+   *   小鱼: <data>/skills/xxx/SKILL.md
+   * 差一层目录、差一个字段名（whenToUse → when）。这个工具补的就是这段。
+   *
+   * 给主人的用法：「把 dsh 里的 redteam 技能导进来」→ 她 scan 一下再 import。
+   */
+  {
+    name: 'import_dsh_skills',
+    description: '把 dsh（DeepSeek Harness）的 skill 包导进来，变成你自己的手艺。'
+      + String.fromCharCode(10) +
+      '先 action:"scan" 看有什么（只读，不写盘）；看完 action:"import" 真导。'
+      + String.fromCharCode(10) +
+      '会自动去 ~/.dsh 下面找 skills 目录（含 profiles/<名字>/skills），也可以给 path 指一个目录。'
+      + String.fromCharCode(10) +
+      '规矩：已有同名技能的不覆盖、dsh 里标了 enabled:false 的不要 —— 宁可少导，不许弄坏现有的。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['scan', 'import'], description: 'scan = 只看有什么；import = 真导（默认）' },
+        names: { type: 'array', items: { type: 'string' }, description: '只导这几个（按技能名）。不填就全导。' },
+        path: { type: 'string', description: 'Optional：指定的 dsh skills 目录（不填就自动找 ~/.dsh）' },
+        dryRun: { type: 'boolean', description: 'Optional：true 只演一遍，不落盘' },
+      },
+      required: [],
+    },
+    async run({ action, names, path, dryRun }) {
+      const { scanDshSkills, importDshSkills, summarizeImport } = await import('./dsh-skills.mjs');
+      try {
+        const act = String(action || 'import');
+        if (act === 'scan') {
+          const s = scanDshSkills(path ? { dirs: [String(path)] } : {});
+          if (!s.items.length) {
+            return '没在 ' + (path ? String(path) : '~/.dsh') + ' 下找到 dsh 技能。'
+              + String.fromCharCode(10) +
+              '（找过的目录：' + (s.dirs.join(' / ') || '无') + '）';
+          }
+          const rows = s.items.map((x) => '- ' + x.name + (x.description ? '：' + x.description.slice(0, 60) : '')
+            + (x.enabled ? '' : '（dsh 里已关掉）'));
+          return '找到 ' + s.items.length + ' 条 dsh 技能（' + s.dirs.length + ' 个目录）：' + String.fromCharCode(10) +
+            rows.join(String.fromCharCode(10)) + String.fromCharCode(10) +
+            '要导就 action:"import"（可带 names 只导几条）。';
+        }
+        const r = importDshSkills({
+          names: Array.isArray(names) ? names : undefined,
+          dryRun: dryRun === true || act === 'dry',
+          dirs: path ? [String(path)] : undefined,
+        });
+        return summarizeImport(r);
+      } catch (e) {
+        return 'ERROR：导 dsh 技能失败：' + String((e && e.message) || e);
+      }
     },
   },
   {
@@ -2229,7 +2395,7 @@ export const tools = [
   {
     name: 'knowledge_save',
     description:
-      '往「知识库」写一张知识卡（新建或更新）。适合把验证过的做法、主人定的规矩沉淀下来给所有会话共享。带 id 且存在=更新那张卡；不带 id=新建。标题必填；内容**只写方法做法**（问题是什么/根因是什么/正确做法是什么），不要写成故事或经历流水账——知识卡是给人查的手册，不是回忆录。',
+      '往「知识库」写一张知识卡（新建或更新）。规矩：如果你做某件事时曾绕了很大一个弯子，如果那件事现在再做能迅速完成，那么就把它的路径写进知识库里面，写成：要做到【只要做过某件事，下次再做必迅速完成】的程度。适合把验证过的做法、主人定的规矩沉淀下来给所有会话共享。带 id 且存在=更新那张卡；不带 id=新建。标题必填；内容**只写方法做法**（问题是什么/根因是什么/正确做法是什么），不要写成故事或经历流水账——知识卡是给人查的手册，不是回忆录。',
     parameters: {
       type: 'object',
       properties: {
@@ -2250,6 +2416,78 @@ export const tools = [
         return (r.created ? '已上架新书：' : '已更新：') + '【' + r.card.title + '】（id=' + r.card.id + '）。所有会话都能在知识库翻到它了。';
       } catch (e) {
         return { ok: false, output: '存卡出错：' + String(e?.message ?? e) };
+      }
+    },
+  },
+  /* ══════════ 会话知识库·手路（know.mjs，主人 2026-11-14 钦点）══════════
+   * 与上面 knowledge_* 书架卡的分工：
+   *   · 书架卡 = 沉淀给所有会话共享的手册（人写、界面可翻）；
+   *   · 手路   = 「这次是怎么干成的」步骤账（下次遇到同类任务线索递到手边）。
+   * trigger 索引已常驻系统提示（knowIndexBlock），模型看到沾边的就先搜。 */
+  {
+    name: 'know_search',
+    description:
+      '在「会话知识库」里搜现成手路——以前干过的同类活是怎么一步步干成的（改哪个文件哪一行、命令怎么敲、有什么坑）。系统提示里的手路索引哪条跟当前任务沾边，就先用它把步骤翻出来照着做，别从头摸索。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '关键词。中文英文都行，多个词用空格隔开，命中越多排得越前' },
+        limit: { type: 'number', description: '最多回几条，默认 3' },
+      },
+      required: ['query'],
+    },
+    async run({ query, limit }) {
+      const { knowSearch } = await import('./know.mjs');
+      try {
+        const hits = knowSearch(query, Number(limit) || 3);
+        if (!hits.length) return '知识库里没有沾边的手路（可以用 know_add 记一条这次的，下次就快了）。';
+        return hits
+          .map((h, i) => `【${i + 1}】${h.trigger}\n${h.steps}`)
+          .join('\n────────\n');
+      } catch (e) {
+        return { ok: false, output: '手路库翻不开：' + String(e?.message ?? e) };
+      }
+    },
+  },
+  {
+    name: 'know_add',
+    description:
+      '往「知识史书」记一条手路。规矩：**如果你做某件事时曾绕了很大一个弯子，如果那件事现在再做能迅速完成，那么就把它的路径写进知识库里面，写成：要做到【只要做过某件事，下次再做必迅速完成】的程度**。trigger 写下次遇到什么任务该想起这条；steps 只写方法做法（问题/根因/正确做法、改哪行、命令怎么敲），别写成故事流水账。同 trigger 再记会覆盖更新（旧版进史书留底）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        trigger: { type: 'string', description: '下次遇到什么任务该想起这条（一句话）' },
+        steps: { type: 'string', description: '手路本身：改哪个文件哪一行、命令怎么敲、步骤顺序、有什么坑' },
+        by: { type: 'string', description: '记的人（你的名字），可省略' },
+      },
+      required: ['trigger', 'steps'],
+    },
+    async run({ trigger, steps, by }) {
+      const { knowAdd } = await import('./know.mjs');
+      try {
+        const r = knowAdd({ trigger, steps, source: 'tool', by });
+        if (!r.ok) return { ok: false, output: '没记上：' + (r.error || '未知原因') };
+        return (r.updated ? '手路已更新：' : '手路已记下：') + String(trigger).slice(0, 80) + (r.updated ? '（覆盖了旧版，史书留了底）' : '') + '；库里有 ' + r.count + ' 条';
+      } catch (e) {
+        return { ok: false, output: '记手路出错：' + String(e?.message ?? e) };
+      }
+    },
+  },
+  {
+    name: 'know_delete',
+    description: '从「会话知识库」删一条过时的手路（按 trigger 精确匹配）。删之前先跟主人确认。',
+    parameters: {
+      type: 'object',
+      properties: { trigger: { type: 'string', description: '要删的那条手路的 trigger（精确匹配）' } },
+      required: ['trigger'],
+    },
+    async run({ trigger }) {
+      const { knowDelete } = await import('./know.mjs');
+      try {
+        const r = knowDelete(trigger);
+        return r.ok ? '已删：' + String(trigger).slice(0, 80) + '；史书里的历次版本还在，翻得回。' : { ok: false, output: '没删成：' + (r.error || '没有这条') };
+      } catch (e) {
+        return { ok: false, output: '删手路出错：' + String(e?.message ?? e) };
       }
     },
   },
@@ -2372,7 +2610,7 @@ export const tools = [
         scope: { type: 'string', description: '在哪儿干：目录或文件。超出这个范围不许它碰。' },
         forbid: { type: 'string', description: '不许碰什么，比如「别动 git 历史」「别改 public/」。' },
         maxRounds: { type: 'number', description: '最多让它跑几轮工具循环，默认 60。小事 20 就够。' },
-        background: { type: 'boolean', description: 'true = 后台跑：立刻返回门牌号，你接着干别的，它干完主动递汇报回来。不填 = 你在这等它干完（同步）。' },
+        background: { type: 'boolean', description: '不填 = 后台跑（默认）：立刻返回门牌号，你接着干别的，它干完主动递汇报回来。只有确实需要「等它做完我才好继续」时才写 false（同步，会占住这一轮）。' },
       },
       required: ['task'],
     },
@@ -2422,8 +2660,22 @@ export const tools = [
       const push = ctxNow().pushEvent;
 
       /* 【2026-11-11 后台派发】登记花名册 → 交给 team.mjs 放到后台 → 立刻回来。
-       * 门牌号在登记那一刻就定了，返回文案里直接用它。 */
-      if (background === true) {
+       * 门牌号在登记那一刻就定了，返回文案里直接用它。
+       *
+       * 【2026-11-15 改·默认就是后台】
+       * 主人问「子Agent运行时，小鱼Agent自己能不能干活？」—— 以前答案是不行：
+       * 这个参数默认 undefined，走同步分支 await 全部干完，主轮就卡在那儿。
+       * 而工具说明写的是「派完立刻回来，你去干自己的」，说明和实现自相矛盾。
+       * 现在反过来：不填 = 后台（她接着干自己的），要同步等才显式写 background:false。 */
+      /* 【2026-11-16 主人钦点·这一段查重删掉】
+       *
+       * 原话：「把你之前加的只能开一个子Agent的限制删了」「要求开子Agent没有任何限制」。
+       *
+       * 之前这里会拦「同一件活已经有 worker 在跑」—— 主人不要这个限制：
+       * 他要派几个就派几个。重复派活的根子在别处（子Agent 的汇报要等她当前
+       * 这次模型请求返回才被取走），不在工具层拦。 */
+
+      if (background !== false) {
         /* 【2026-11-13 子 Agent 续上】brief 存全量任务原文 —— 程序重启后续跑要靠它接着干 */
         const w = noteWorker(sid, { name: nick, task: body.slice(0, 200), brief: brief + reportAsk, accept: String(accept || '').slice(0, 200), status: 'running' });
         dispatchWorker({ sessionId: sid, wid: String(w.id), name: nick, brief: brief + reportAsk, maxRounds: Number(maxRounds) > 0 ? Number(maxRounds) : 60 });
@@ -2472,6 +2724,14 @@ export const tools = [
             try { noteWorkerProgress(sid, __tid, line); } catch {}
             __wPush('step', line);
           },
+          /* 【2026-11-16 实时轮次】这条路（单派一个 worker）原来完全没传 onBeat，
+           * 一次心跳都没打过，所以 watch_worker 只能看到收尾时那一次写入。 */
+          onBeat: (info) => {
+            try {
+              const b = info && typeof info === 'object' ? info : {};
+              beatWorker(sid, __tid, { round: b.round, tool: b.tool, lastTool: b.tool });
+            } catch {}
+          },
         });
       } catch (e) {
         r = { ok: false, text: '子智能体没起来：' + String(e?.message ?? e) };
@@ -2505,7 +2765,7 @@ export const tools = [
     name: 'spawn_workers',
     /* 【2026-11-11 团队模式完整版】删掉「等它们的时候可以先 watch_worker」这句
      * 假话 —— 现在派出去立刻回来，不是「等它们」。（设计文档 §三 验收点名） */
-    description: '一次派好几件互不依赖的活，让它们**同时**跑（不是一个一个排队），派完立刻回来，你去干自己的 —— 它们干完会各自把汇报递回来。最多 ' + MAX_SPAWN_WORKERS + ' 件。'
+    description: '一次派好几件互不依赖的活，让它们**同时**跑（不是一个一个排队），派完立刻回来，你去干自己的 —— 它们干完会各自把汇报递回来。件数不设上限，能一起跑就一次派完。'
       + '\n\n【什么时候用】几件事之间不需要别人先说、也不抢同一个文件 —— 比如「查 A 文档」「跑 B 测试」「统计 C 行数」。**两件以上互不依赖的活就默认拆给 workers 同时干，别自己一件件排队**——并行是默认工作方式，不是最后手段。'
       + '\n\n【什么时候别用】后一件要看前一件的结果 —— 那就一次派一件，等它回来再说。'
       + '\n\n【派完别停】它们跑它们的，你接着做自己的事；别因为派了活就停下来干等，也别在主人面前装作已经做完了。'
@@ -2515,7 +2775,7 @@ export const tools = [
       properties: {
         tasks: {
           type: 'array',
-          description: '要派出去的活，每件一个对象。1~' + MAX_SPAWN_WORKERS + ' 件。',
+          description: '要派出去的活，每件一个对象。1 件起，不设上限（几件互不依赖就派几件）。',
           items: {
             type: 'object',
             properties: {
@@ -2529,7 +2789,7 @@ export const tools = [
           },
         },
         maxRounds: { type: 'number', description: '每个最多跑几轮工具循环，默认 40。' },
-        background: { type: 'boolean', description: 'true = 全部后台跑：立刻返回各件的门牌号，你接着干自己的。不填 = 你在这等全部干完（同步）。' },
+        background: { type: 'boolean', description: '不填 = 全部后台跑（默认）：立刻返回各件的门牌号，你接着干自己的。只有确实需要等它们全做完才写 false（同步，会占住这一轮）。' },
       },
       required: ['tasks'],
     },
@@ -2542,7 +2802,6 @@ export const tools = [
       }
       const list = (Array.isArray(tasks) ? tasks : []).filter((t) => t && String(t.task || '').trim());
       if (!list.length) return 'ERROR：没说要干什么（tasks 是空的）。';
-      if (list.length > MAX_SPAWN_WORKERS) return `一次最多派 ${MAX_SPAWN_WORKERS} 件。要更多就先派 ${MAX_SPAWN_WORKERS} 件，等回来再派。`;
       if (list.length === 1) {
         return '只有一件活就不用这个工具了 —— 用 spawn_worker 就行（说明会清楚得多）。';
       }
@@ -2592,7 +2851,7 @@ export const tools = [
       /* 【2026-11-11 后台派发】每件都登记好了，一起放到后台，立刻返回门牌号。
        * 事件与汇报全由 team.mjs 管（liveLogs 落缓存 + followup 回传），
        * 这里一根线都不挂 —— 挂了就成了同步等待。 */
-      if (background === true) {
+      if (background !== false) {
         for (const p of plans) {
           dispatchWorker({ sessionId: sid, wid: p.id, name: p.nick, brief: p.brief, maxRounds: roundMax });
         }
@@ -2636,6 +2895,14 @@ export const tools = [
               try { noteWorkerProgress(sid, p.id, line); } catch {}
               __wPush('step', line);
             },
+            /* 【2026-11-16 实时轮次】不传这个的话 watch_worker 永远显示 0 轮 0 工具，
+             * 因为 rounds/tools 只在 finishWorker 收尾时写一次。心跳顺带把轮次打进去。 */
+            onBeat: (info) => {
+              try {
+                const b = info && typeof info === 'object' ? info : {};
+                beatWorker(sid, p.id, { round: b.round, tool: b.tool, lastTool: b.tool });
+              } catch {}
+            },
           });
           const text = String(r?.text || '').trim();
           finishWorker(sid, p.id, { status: r?.ok ? 'reported' : 'failed', rounds: r?.rounds, tools: r?.tools, said: text });
@@ -2662,6 +2929,29 @@ export const tools = [
           : '')
         + '\n\n' + rs.map((r) => '── ' + r.nick + ' #' + r.id + (r.ok ? '' : '（没干成）') + '──\n' + (r.text || '（它没说话）')).join('\n\n')
         + '\n\n（逐件核，别一律采信。哪件没干对就退回给同一个 worker。）';
+    },
+  },
+  {
+    name: 'stop_worker',
+    description: '叫停一个正在干活的 worker（它白干了、方向跑偏了、主人喊停的时候用）。'
+      + '\n\n【停完怎么办】停掉的活儿不会自己回来。要么等它把已经干到的那一步吐回来，要么重新派一件。'
+      + '\n\n【只停一个】给门牌号，别指望一次停一片。',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'worker 的门牌号（list_workers 里那个 #N）' } },
+      required: ['id'],
+    },
+    async run({ id }) {
+      const sid = ctxNow().sessionId || 'default';
+      const key = String(id || '').trim().replace(/^#/, '');
+      if (!key) return 'ERROR：没说停哪个 worker（id 是空的）。先用 list_workers 看一眼有谁。';
+      const r = stopWorker(sid, key);
+      if (!r || !r.ok) return '没停成：' + String((r && r.error) || '不知道什么原因');
+      const push = ctxNow().pushEvent;
+      if (typeof push === 'function') {
+        try { push({ type: 'note', text: '停了 #' + key }); } catch {}
+      }
+      return '【已经叫停 #' + key + '】它这一轮跑到一半就会被掐掉，已经干过的留在它的记录里。';
     },
   },
   {
@@ -2692,6 +2982,34 @@ export const tools = [
       }
       return '【已经递到 #' + key + ' 的信箱】它下一轮开头就能吃到（现在信箱里还有 ' + String(r.queued) + ' 句）。'
         + '\n\n它要是已经快跑完了，这句话可能来不及改变什么 —— 需要的话等它回来再退回给它。';
+    },
+  },
+  {
+    name: 'rename_session',
+    description: '给**当前会话**起名或改名（就是【会话】列表里显示的那一行）。\n'
+      + '什么时候用：① 当前会话名还是「新会话」—— 这时候你要主动起一个；'
+      + '② 主人明确让你改。别的时候一个字都别动它（不要因为聊到新话题就改名）。\n'
+      + '名字规矩：短（2~6 个字）+ 身份后缀 —— 你是鱼就叫「xx鱼」（搭桥鱼、回归鱼、收尾鱼），'
+      + '猫娘类叫「xx猫」，人类或别的身份叫「xx人」。\n'
+      + '起名依据：这个会话正在干的活 + 你自己是谁。重名系统会自动加数字，不用自己躲。',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '新的会话名：2~6 个字，带身份后缀（xx鱼 / xx猫 / xx人）' },
+      },
+      required: ['title'],
+    },
+    async run({ title }) {
+      const sid = ctxNow().sessionId || 'default';
+      const want = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      if (!want) return 'ERROR：会话名不能是空的。';
+      const fn = CTX.renameSession;
+      if (typeof fn !== 'function') return 'ERROR：改名通道没接上（服务端没注入）。';
+      let r = null;
+      try { r = fn(sid, want); } catch (e) { return 'ERROR：改名失败：' + String((e && e.message) || e); }
+      if (!r || !r.ok) return 'ERROR：改名失败' + (r && r.error ? '（' + r.error + '）' : '') + '。';
+      const note = r.title && r.title !== want ? '（原名被占用，系统自动加了个数字）' : '';
+      return '会话名已改成「' + r.title + '」' + note + '。主人看【会话】列表就是这个名字。';
     },
   },
   {
@@ -3166,6 +3484,9 @@ async function runToolInner(name, rawArgs, sessionId) {
    ══════════════════════════════════════════════════════════════════ */
 const CHILD_PID_FILE = () => join(config.dataDir, '.state', 'child-pids.json');
 
+/* 【2026-11-14 修2】本进程启动时刻（毫秒）。用来区分「上一进程留下的孤儿」和「pid 被回收后误认的别人」。 */
+const SELF_START_MS = Date.now();
+
 function readChildPids() {
   try {
     const a = JSON.parse(readFileSync(CHILD_PID_FILE(), 'utf8'));
@@ -3197,12 +3518,50 @@ function forgetChildPid(pid) {
 }
 
 /** 启动时调用：清掉上一进程留下的命令子进程（只杀记账里有的，不碰别人） */
+/** 【2026-11-14 修·杀孤儿前必须先核对身份】
+ *  事故：child-pids.json 里留着 [8660, 3428]，8660 那个 node 早死了，
+ *  pid 被系统回收给了正在跑命令的 powershell。启动时照名单 taskkill /T /F，
+ *  把主人跑命令的 shell 连同整棵进程树干掉 —— 表现是「零输出、exit 1、
+ *  连 exit 钩子都不触发」，查了很久才揪出来。
+ *  现在：只杀「现在确实是 node.exe」且「创建时间早于本进程启动时间」的 pid，
+ *  对不上号的一律跳过（宁可漏杀一个孤儿，也绝不错杀别人的进程）。 */
+function isLikelyOurChild(pid) {
+  try {
+    if (process.platform !== 'win32') {
+      try { process.kill(pid, 0); } catch { return false; }
+      return pid !== process.pid && pid !== process.ppid;
+    }
+    const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+    const out = String(r.stdout || '').trim();
+    if (!out) return false;
+    // 输出形如 "node.exe","1234","Console","1","12,345 K"
+    const name = (out.split(',')[0] || '').replace(/"/g, '').trim().toLowerCase();
+    if (name !== 'node.exe' && name !== 'node') return false;
+    /* 【2026-11-14 修2·只认进程名还会误杀】
+     * pid 被系统回收后新进程同样叫 node.exe（回归、隔离实例全是 node），
+     * 照名单 /T /F 会把别处的整棵 node 树连根杀掉 —— 表现就是「单跑没事、成套跑整进程消失」。
+     * 这里再核 创建时间 / 启动时间：本进程启动之前才活着的，才算上一进程留的孤儿。
+     * 拿不到时间就一律不杀（宁可漏杀，绝不错杀）。 */
+    const p = spawnSync('powershell', ['/NoProfile', '-Command',
+      `$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if($p){ [int64]($p.StartTime.ToUniversalTime() - [datetime]'1970-01-01').TotalMilliseconds }`],
+      { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+    const ct = Number(String(p.stdout || '').trim());
+    if (!Number.isFinite(ct) || ct <= 0) return false;
+    const selfStart = SELF_START_MS;
+    if (!Number.isFinite(selfStart) || selfStart <= 0) return false;
+    /* 允许 2 秒误差：同一批起的不算孤儿 */
+    return ct < selfStart - 2000;
+  } catch { return false; }
+}
+
 export function killOrphanChildren() {
   const list = readChildPids();
   if (!list.length) return 0;
   let killed = 0;
   for (const pid of list) {
     try {
+      if (pid === process.pid || pid === process.ppid) continue;
+      if (!isLikelyOurChild(pid)) continue;
       if (process.platform === 'win32') {
         spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 8000 });
       } else {

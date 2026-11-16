@@ -48,8 +48,11 @@ ok('button 全局兜底（透明底 + color:inherit，动态裸按钮绝不亮�
 /* ── ③ .featEditBtn 通用规则 ── */
 ok('.featEditBtn 是通用类规则（不带 .featRow 父级限定，主人报的【存】亮白根修）',
   /^\s*\.featEditBtn \{/m.test(html) && !/\.featRow \.featEditBtn \{/.test(html));
+/* 【2026-11-14 修】「改时长」按主人钦点改成独立弹窗，两个输入框换到 .holdSec/.holdMax，
+ * 尺寸也变了；断言只守「内联样式带主题变量、不吃 UA 亮白」这件事本身。 */
 ok('发送缓冲的两个时长输入框内联样式带主题变量（双保险）',
-  /width:56px;padding:3px 6px;background:var\(--input-bg/.test(html));
+  /holdCfgDlg/.test(html) && /class="holdSec"[^>]*background:var\(--input-bg/.test(html)
+  && /class="holdMax"[^>]*background:var\(--input-bg/.test(html));
 
 /* ── ④ 动态控件明文亮白检测 ── */
 /* 找所有 createElement('input'|'button'|'textarea'|'select') 后 6 行内联 cssText/style 里的明文亮白 */

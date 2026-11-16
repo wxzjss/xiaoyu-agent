@@ -20,9 +20,13 @@
 import { makeChecker } from './_harness_util.mjs';
 import { readUISource } from './_ui-src.mjs';
 import fs from 'node:fs';
+/* 2026-11-14 修·路径按模块位置算：以前是 readFileSync('src/llm.mjs')，
+   只有仓库根目录能跑；而仓库根目录一跑 node 就会被安全垫片静默杀掉。
+   join/dirname/fileURLToPath 的 import 就在下面几行。 */
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const t = makeChecker('llm / 工具调用文本（含 DSML）');
-const llmSrc = fs.readFileSync('src/llm.mjs', 'utf8');
+const llmSrc = fs.readFileSync(join(ROOT, 'src', 'llm.mjs'), 'utf8');
 const ui = readUISource();
 
 const L = await import('../src/llm.mjs');
@@ -80,7 +84,9 @@ t.ok('守护器也认 <invoke', g3.hit === true);
 t.ok('流式文字过守护器', /_xmlGuard\.feed\(cleaned\)/.test(llmSrc));
 t.ok('流结束 flush 尾巴', /_xmlGuard\.flush\(\)/.test(llmSrc));
 t.ok('流结束用白名单解析', /parseXmlToolCalls\(_xmlAcc, _toolNames\)/.test(llmSrc));
-t.ok('兜底触发条件认得 <tool_call>', /if \(!acc\.size && \/[\s\S]{0,40}tool_call/.test(llmSrc));
+t.ok('兜底分支：命中过守卫或正文里有 <tool_call> 都会去解析',
+  (llmSrc.includes('!acc.size && (_xmlGuard.hit') || llmSrc.includes('_xmlGuard.hit ||')),
+  '兜底触发条件');
 t.ok('解析不成要补发（不吞话）', /_xmlGuard\.hit && !_xc\.length/.test(llmSrc));
 t.ok('白名单来自真实 tools 参数', /const _toolNames = new Set\(/.test(llmSrc));
 t.ok('解析器认 DSML 标记', /DSML/.test(llmSrc));

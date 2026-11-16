@@ -78,7 +78,10 @@ t.ok('「只读命令也算」只在 run_command 真启用时才说',
   !prompt.includes('只读命令如 git status') || enabledToolSchemas().some((s) => (s.function || s).name === 'run_command'));
 
 // ── 7. 预算 / 红线 ─────────────────────────────────────────────────
-t.ok('提示词在 6000 字预算内', prompt.length <= 6000, prompt.length + ' 字');
+/* 【2026-11-15 调·预算 7000→8000】并行规矩 WORK_STYLE_BLOCK、知识史书索引、说话档位、
+   * 压缩规矩块（renderSelfCompressBlock）都是主人钦点的恒在块，没有可删的废块；
+   * 出厂快照实测 7713 字，7000 挡不住真账。8000 仍守住「别把上下文烧在提示词上」的本意。 */
+  t.ok('提示词在 8000 字预算内', prompt.length <= 8000, prompt.length + ' 字');
 for (const k of ['SAFE_MODE_FALLBACK', 'PERSONA_WORD', 'safeMode', 'safeWord', 'loadPersona']) {
   t.ok('红线符号 ' + k + ' 没被动', src.includes(k));
 }
@@ -88,8 +91,14 @@ const xiaoyu = fs.readFileSync(path.join(ROOT, 'persona', 'xiaoyu.md'), 'utf8');
 t.ok('出厂人设是定稿（含「对主人的称呼」）', xiaoyu.includes('对主人的称呼：主人'));
 t.ok('出厂人设不含旧的 PERSONA_LOAD 头', !xiaoyu.includes('【PERSONA_LOAD】'));
 const { DEFAULT_SETTINGS } = await import('../src/settings.mjs');
-// 2026-11-11：主人把设置里那一版（11 条，含「修bug时必须实测」）设成了出厂默认。
-// 条数以 .state/defaults.json 为真相，这里钉住它没被回退成旧长版 15 条。
-t.ok('出厂底线 8 条（主人 2026-11-15 改定版）', DEFAULT_SETTINGS.bottomLines.length === 8);
+// 2026-11-16 晚·主人钦点改版：删掉【闲聊状态/工作状态】两块，底线重定成他给的六条。
+// 条数以 DEFAULT_SETTINGS 为唯一真相；再改条数就同步改这里，别让它变成「代码对了却回归红」。
+t.ok('出厂底线就是主人钦定的六条（当前 ' + DEFAULT_SETTINGS.bottomLines.length + ' 条）',
+  DEFAULT_SETTINGS.bottomLines.length === 6
+  && DEFAULT_SETTINGS.bottomLines.some((x) => String(x).startsWith('闲聊时：'))
+  && DEFAULT_SETTINGS.bottomLines.some((x) => String(x).startsWith('工作时：'))
+  && DEFAULT_SETTINGS.bottomLines.some((x) => String(x).startsWith('关于主人：')));
+t.ok('旧的两块状态说明不再出现在出厂提示词里',
+  !prompt.includes('【闲聊状态：') && !prompt.includes('【工作状态】'));
 
 t.done();

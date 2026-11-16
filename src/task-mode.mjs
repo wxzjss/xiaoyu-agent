@@ -326,6 +326,7 @@ export function listWorkers(sessionId) {
       status: String(w.status || 'running'),
       startedAt: Number(w.startedAt) || 0,
       endedAt: Number(w.endedAt) || 0,
+      lastBeatAt: Number(w.lastBeatAt) || 0,
       rounds: Number(w.rounds) || 0,
       tools: Number(w.tools) || 0,
       said: String(w.said || ''),
@@ -335,6 +336,7 @@ export function listWorkers(sessionId) {
         ? w.progress.map((x) => ({ at: Number(x && x.at) || 0, line: String((x && x.line) || '') }))
         : [],
       mails: Array.isArray(w.mails) ? w.mails.length : 0,
+      stalledWhy: String(w.stalledWhy || ''),
     }))
     .filter((w) => w.id);
 }
@@ -368,6 +370,9 @@ export function noteWorker(sessionId, worker) {
       : (at >= 0 ? Number(list[at].resumes) || 0 : 0),
     status: String(worker.status || 'running'),
     startedAt: Number(worker.startedAt) || Date.now(),
+    /* 【2026-11-16 子 Agent 自动回收】最后活跃时间。每个工具事件都刷一次，
+     * 判「是不是已经僵死」只看它，不看 startedAt（有的 worker 能跑半小时很正常）。 */
+    lastBeatAt: Number(worker.lastBeatAt) || (at >= 0 ? Number(list[at].lastBeatAt) || 0 : 0),
     endedAt: Number(worker.endedAt) || 0,
     rounds: Number(worker.rounds) || 0,
     tools: Number(worker.tools) || 0,
@@ -379,6 +384,8 @@ export function noteWorker(sessionId, worker) {
     progress: Array.isArray(worker.progress)
       ? worker.progress.slice(-12)
       : (at >= 0 && Array.isArray(list[at].progress) ? list[at].progress.slice(-12) : []),
+    /* 2026-11-16 reaper: keep the reason so UI can show why it was reaped */
+    stalledWhy: String(worker.stalledWhy || (at >= 0 ? String(list[at].stalledWhy || '') : '')),
   };
   if (at >= 0) list[at] = rec;
   else list.push(rec);
@@ -452,7 +459,100 @@ export function noteWorkerProgress(sessionId, workerId, line) {
   const progress = Array.isArray(list[at].progress) ? list[at].progress.slice() : [];
   progress.push({ at: Date.now(), line: body.slice(0, 300) });
   while (progress.length > PROGRESS_MAX) progress.shift();
-  list[at] = { ...list[at], progress };
+  list[at] = { ...list[at], progress, lastBeatAt: Date.now() };
+  writeWorkers(sid, list);
+  return list[at];
+}
+
+/** 【2026-11-16 子 Agent 自动回收】给某个 worker 打一次心跳。
+ *  每轮工具循环开头、以及每个工具执行完都调一次 —— 这就是「它还在动」的唯一证据。
+ *  不写 progress（那会把台账刷满），只动 lastBeatAt。
+ *
+ *  【2026-11-16 实时轮次】顺手把 round / tools 一起写进来。
+ *  以前这两个数只在 finishWorker 收尾时写一次，所以 watch_worker 在它干活期间
+ *  永远显示「0 轮 / 0 工具」，看着像卡住了 —— 其实人家跑得正欢。
+ *  心跳每 15 秒就落一次盘，搭同一趟车把轮次带下去，界面就实时了。
+ *  patch.round 有值 = 现在跑到第几轮（覆盖）；patch.tool 有值 = 刚干完一个工具（+1）。 */
+export function beatWorker(sessionId, workerId, patch) {
+  const sid = String(sessionId || 'default');
+  const key = String(workerId || '').trim();
+  if (!key) return null;
+  const list = readWorkers(sid);
+  const at = list.findIndex((w) => String(w.id) === key);
+  if (at < 0) return null;
+  if (String(list[at].status) !== 'running') return null;   // 已经收工的不用再打
+  const p = patch && typeof patch === 'object' ? patch : {};
+  const next = { ...list[at], lastBeatAt: Date.now() };
+  if (Number(p.round) > 0) next.rounds = Math.max(Number(next.rounds) || 0, Number(p.round));
+  if (p.tool) next.tools = (Number(next.tools) || 0) + 1;
+  if (p.lastTool) next.lastTool = String(p.lastTool).slice(0, 60);
+  list[at] = next;
+  writeWorkers(sid, list);
+  return list[at];
+}
+
+/** 【2026-11-16 子 Agent 自动回收】多久没心跳算「僵死」。
+ *  取 6 分钟：正常一轮里最长的单个工具（跑回归、压包）也有两三分钟，
+ *  再留一倍余量；比这更久没动静，基本就是进程没了 / 请求挂死了。 */
+export const STALL_MS = 6 * 60 * 1000;
+
+/** 找出所有「还标着 running、但已经僵死」的 worker。
+ *  三种都算死：
+ *    ① 有心跳但超过 STALL_MS 没更新 —— 最常见的僵死（请求挂住 / 进程没了）；
+ *    ② 从没打过心跳（lastBeatAt=0）且 startedAt 已经是 STALL_MS 之前 —— 老记录没心跳字段；
+ *    ③ startedAt 比本进程启动还早 —— 上一个进程留下的残骸，跨重启没清掉。
+ *  返回 [{ id, name, deadByBoot, idleMs, why }]，给 team.mjs 的收尸器直接用。 */
+export function findStalledWorkers(sessionId, opts = {}) {
+  const sid = String(sessionId || 'default');
+  const now = Number(opts.now) || Date.now();
+  const stallMs = Number(opts.stallMs) || STALL_MS;
+  const bootAt = Number(opts.bootAt) || 0;
+  const out = [];
+  for (const w of readWorkers(sid)) {
+    if (!w || !w.id) continue;
+    if (String(w.status) !== 'running') continue;
+    const beat = Number(w.lastBeatAt) || 0;
+    const start = Number(w.startedAt) || 0;
+    const anchor = beat || start;
+    if (!anchor) continue;
+    /* ③ 跨重启残骸：startedAt 早于本进程启动一分钟以上，进程都换过了，它不可能还在跑 */
+    const deadByBoot = !!(bootAt && start && start < bootAt - 60 * 1000);
+    const idleMs = now - anchor;
+    if (deadByBoot) {
+      out.push({ id: w.id, name: w.name || '', deadByBoot: true, idleMs, why: '程序重启过，这个子Agent的进程已经没了' });
+      continue;
+    }
+    if (idleMs > stallMs) {
+      out.push({
+        id: w.id, name: w.name || '', deadByBoot: false, idleMs,
+        why: beat ? `已经 ${Math.round(idleMs / 60000)} 分钟没有任何动作，判定卡死` : '从没打过心跳，判定卡死',
+      });
+    }
+  }
+  return out;
+}
+
+/** 把一个僵死的 worker 在名册里落成 'stalled'。
+ *  跟 finishWorker 的区别：那个是「干完了/被打断」，这个是「自己不动了」，
+ *  前端要能看出是哪种，所以单开一个状态；顺手记下判定时间。 */
+export function reapStalledWorker(sessionId, workerId, opts = {}) {
+  const sid = String(sessionId || 'default');
+  const key = String(workerId || '').trim();
+  if (!key) return null;
+  const now = Number(opts.now) || Date.now();
+  const list = readWorkers(sid);
+  const at = list.findIndex((w) => String(w.id) === key);
+  if (at < 0) return null;
+  if (String(list[at].status) !== 'running') return list[at];
+  const why = String(opts.why || '').slice(0, 200);
+  list[at] = {
+    ...list[at],
+    status: 'stalled',
+    endedAt: now,
+    stalledAt: now,
+    stalledWhy: why,
+    error: why || '卡死，已自动回收',
+  };
   writeWorkers(sid, list);
   return list[at];
 }
@@ -532,6 +632,43 @@ export function dropWorker(sessionId, id) {
   const list = readWorkers(sid).filter((w) => String(w.id) !== key);
   writeWorkers(sid, list);
   return { ok: true, workers: list.length };
+}
+
+/**
+ * 【2026-11-16 补·清花名册】
+ *
+ * server.mjs 的 /api/team/workers 每会话最多 60 秒调一次这里（_pruneAt 管节流）。
+ * 花名册只增不删，跑一天能攒二十多条，界面那排「干活中…」会混进几小时前的死条目。
+ *
+ * 规矩：running 的一律不动；已结束的按 endedAt 新的在前只留最近 5 条，
+ * 另外 endedAt 早于 10 分钟前的全清掉。
+ */
+export function pruneWorkers(sessionId) {
+  const sid = String(sessionId || 'default');
+  const list = readWorkers(sid);
+  if (!list.length) return { ok: true, removed: 0 };
+
+  const now = Date.now();
+  const isEnded = (w) => String(w.status || 'running') !== 'running';
+
+  const endedSorted = list
+    .filter(isEnded)
+    .sort((a, b) => (Number(b.endedAt) || 0) - (Number(a.endedAt) || 0));
+  const tooOld = new Set(
+    endedSorted.slice(5).map((w) => String(w.id))
+  );
+
+  const next = list.filter((w) => {
+    if (!isEnded(w)) return true;
+    if (tooOld.has(String(w.id))) return false;
+    const t = Number(w.endedAt) || 0;
+    if (t && now - t > 10 * 60 * 1000) return false;
+    return true;
+  });
+
+  if (next.length === list.length) return { ok: true, removed: 0 };
+  writeWorkers(sid, next);
+  return { ok: true, removed: list.length - next.length };
 }
 
 /** 整个会话的子智能体全注销（关这一档、或会话被删时调）。 */

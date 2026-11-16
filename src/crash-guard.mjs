@@ -114,6 +114,29 @@ export function logCrash(kind, err, extra = '') {
  */
 export function installGuards({ onFatal } = {}) {
   const handle = (kind) => (err) => {
+    /* 【2026-11-14 修·真 bug·EPIPE 把整个程序干掉】
+     * EPIPE = 往一个**已经关闭的管道**写数据。典型场景：程序被用
+     * `-RedirectStandardOutput` 之类的方式启动，父进程一退出管道就关了；
+     * 程序这时再往 stdout 写一行日志 → EPIPE → uncaughtException。
+     *
+     * 以前这里把 EPIPE 当成「崩溃」：记一次指纹，同一指纹 60 秒内攒到 5 次
+     * 就 process.exit(1) —— **整个程序自己退掉**，主人只看到窗口一闪就没了。
+     * 实测：19:31 的 crash-count.json 里就是
+     *     {"Error: EPIPE: broken pipe, write [EPIPE]":{"times":5}}
+     * 正是它把程序连续干掉好几轮。
+     *
+     * 但 EPIPE 根本不是程序的问题 —— 是**日志的出口没了**。日志写不出去
+     * 就该闭嘴，不该自杀。所以：EPIPE（以及它的兄弟 ECONNRESET / ERR_STREAM_DESTROYED）
+     * 直接忽略，不记指纹、不计数、不退出。
+     */
+    const _msg = String((err && err.message) || err || '');
+    const _code = String((err && err.code) || '');
+    if (_code === 'EPIPE' || _code === 'ERR_STREAM_DESTROYED' || _code === 'ECONNRESET'
+        || /EPIPE|broken pipe|write after end/i.test(_msg)) {
+      try { console.warn('[crash] 日志出口没了（' + _code + '），忽略，不影响继续用'); } catch {}
+      return;
+    }
+
     const { fatal, times } = logCrash(kind, err);
 
     if (fatal) {

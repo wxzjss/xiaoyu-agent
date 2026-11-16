@@ -49,8 +49,11 @@ export function normalizeLevel(v) {
   if (s === 'off' || s === 'low' || s === 'high' || s === 'max') return s;
   if (s === 'minimal') return 'low';
   if (s === 'xhigh') return 'max';
-  /* on / medium / auto / 空 / 认不出的，一律落到默认的「关」 */
-  return 'off';
+  /* 【2026-11-15 主人报·新建会话显示「高」、展开勾的却是「关」】
+   * 这里原来把「空 / 认不出的」一律落到 off —— 跟文件头上「默认高」的约定
+   * 自相矛盾：显示读的是默认高，勾选读的是这里回的 off，于是两处对不上。
+   * 统一落 high（显式存着 'off' 的不动，那是主人自己选的关）。 */
+  return 'high';
 }
 
 const LEVEL_IDS = new Set(LEVELS.map((l) => l.id));

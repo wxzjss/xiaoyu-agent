@@ -325,6 +325,26 @@ const DEFAULT_MAX_ROUNDS = 200;
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 分钟
 
 /**
+ * 【2026-11-16 加·等上游回话的上限（只管子Agent）】
+ *
+ * 主人报「发子Agent 跑回归时非常大概率会卡住」。
+ * 查下来不是她卡在命令上，是卡在**等上游回话**：花名册里 status=running、
+ * progress=0、rounds=0，界面一动不动 —— 而这一段静默上限原来沿用主轮的 8 分钟。
+ *
+ * 主轮等得起（模型可能真在深想，主人就盯着那一句）；子Agent 等不起：
+ * 它是后台任务，8 分钟没有任何输出，主人只能判定「卡了」；
+ * 上游（第三方中转）在几个 worker 并发时本来就会排队，
+ * 8 分钟 × 5 次重试 = 40 分钟，期间一个字都看不见。
+ *
+ * 压到 2 分钟：撞了就抛 isTimeout，走下面的重试（换一条连接），
+ * 还不行就明确失败并把原因带回来 —— 比「永远 running」好得多。
+ * 跑一条长命令不在这条闸里（那是工具的超时，默认 12 分钟）。
+ */
+const SUB_IDLE_MS = Number(process.env.SUB_IDLE_TIMEOUT_MS) > 0
+  ? Number(process.env.SUB_IDLE_TIMEOUT_MS)
+  : 2 * 60 * 1000;
+
+/**
  * 跑一个子智能体，返回它的结论文本。
  *
  * @param {object} opts
@@ -423,6 +443,13 @@ export async function runSubagent({
   model = '',
   sessionId = '',
   onProgress = () => {},
+  /**
+   * 【2026-11-16 心跳】每跑完一个工具、每进一轮都调一次（只管「还活着」，不传内容）。
+   *
+   * 为什么跟 onProgress 分开：onProgress 是「有话说才调」，一个连着想好几轮的
+   * worker 可能好几分钟不调它；心跳必须是无条件按时发生的，否则拿它判死会误杀。
+   */
+  onBeat = null,
   __debugPrompt = false,
   /**
    * 她说到一半的字，一个字一个字往外给。
@@ -781,10 +808,10 @@ export async function runSubagent({
       '一条准则：查得到就给证据，查不到就换条路接着找 —— 别编，也别一遇卡壳就撂挑子。',
       '实在换了几条路都不通，再把「我找过哪些地方」列出来，说清卡在哪、下一步该往哪试。',
       '',
-      '【安全词对你也一样生效】',
-      T_ON + '和小鱼之间有一套安全词（「停止」「命令」「人设」这类）。这套词**同样管你** ——',
-      T_ON + '喊了哪个，你就跟小鱼一起换到那个说法上，不是只有她一个人换。',
-      '默认状态就是「人设」这一档：按你自己的人设说话，不额外加戏，也不用刻意提它。',
+      '【闲聊还是干活】',
+      T_ON + '主人跟你闲聊的时候，就按你自己的人设说话，注意力放在人设上，别想别的。',
+      T_ON + '主人让你干活、或者你开始调工具的时候，做完手头的事再开口，一次只报一句进度，别聊天。',
+      '默认状态就是闲聊：按你自己的人设说话，不额外加戏，也不用刻意提它。',
       '',
       // 这一档具体该怎么说话，由调用方传进来（正文来自设置里的安全词说明）
       ...(safeWordNote ? [
@@ -983,6 +1010,8 @@ export async function runSubagent({
     let totalUsage = null;
 
     for (let round = 0; round < maxRounds; round++) {
+      // 【心跳·进轮】无条件的，跟 onProgress 不一样：那个是"有话说才调"
+      try { if (onBeat) onBeat({ round }); } catch {}
       /**
        * 【每轮先看一眼信箱】—— 2026-10-27 新增
        *
@@ -1054,12 +1083,26 @@ export async function runSubagent({
       let _subTry = 0;
       for (;;) {
         const _textLenBefore = text.length;
+        /* 【2026-11-16 加·等上游的时候让人看得见】
+         * 以前这一趟从发出请求到第一个字之间是**完全静默**的：progress 不写、心跳不发，
+         * 界面上就是「干活中」一动不动，跟真卡死分不出来。
+         * 这里每 20 秒记一条「等上游回话…（已 N 秒）」，最多 3 条（不让步骤列表变长），
+         * 收到第一个事件就把定时器清掉。 */
+        const _waitAt = Date.now();
+        let _waitBeats = 0;
+        const _waitTimer = setInterval(() => {
+          if (_waitBeats >= 3) { try { clearInterval(_waitTimer); } catch {} return; }
+          _waitBeats += 1;
+          try { onProgress('等上游回话…（已 ' + Math.round((Date.now() - _waitAt) / 1000) + ' 秒）'); } catch {}
+        }, 20000);
         try {
           for await (const ev of streamChat({
             messages: sendSub,
             tools: toolSchemas,
             signal: abortCtrl.signal,
             sessionId: subSessionId,
+            /* 子Agent 的静默上限单独收紧（见 SUB_IDLE_MS 注释） */
+            idleMs: SUB_IDLE_MS,
             /**
              * 【她的模型也从身份卡里取】
              *
@@ -1068,6 +1111,7 @@ export async function runSubagent({
              */
             model: pickWhaleModel(model),
           })) {
+            if (_waitBeats >= 0) { try { clearInterval(_waitTimer); } catch {} _waitBeats = -1; }
             if (ev.type === 'text') {
               text += ev.text;
               /**
@@ -1086,12 +1130,30 @@ export async function runSubagent({
         } catch (e) {
           _subTry += 1;
           const _m = String(e && e.message ? e.message : e);
-          const _retriable = !/timed?\s*out|静了超过|认输/i.test(_m)
-            && /terminated|aborted|socket hang up|other side closed|ECONNRESET|fetch failed|premature close|UND_ERR_SOCKET/i.test(_m);
+          /**
+           * 【2026-11-16 改·「等上游等到超时」也该重试一次】
+           *
+           * 原来是「超时一律不重试」—— 对主轮是对的（别烧钱），可对子Agent 太脆：
+           * 上游只是排队慢了点，2 分钟一到整趟就死，主人看到的是「派了活立刻失败」。
+           * 换一条连接往往就通了（第三方中转有多个节点）。
+           *
+           * 所以分三类：
+           *   · 主人喊停（reason=stop）→ 不重试，立刻退；
+           *   · 整轮到点（reason=timeout）→ 不重试，已经 30 分钟了；
+           *   · 等上游等到静默超时 / 连接被掐 → 重试（最多 2 次，见 _subTry）。
+           */
+          const _stopReason = abortCtrl.signal.aborted ? String(abortCtrl.signal.reason || '') : '';
+          const _userStopped = _stopReason === 'stop' || _stopReason === 'timeout';
+          const _stalled = /静了超过|认输/i.test(_m) || /timed?\s*out/i.test(_m);
+          const _netBroken = /terminated|aborted|socket hang up|other side closed|ECONNRESET|fetch failed|premature close|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|ECONNREFUSED|EHOSTUNREACH/i.test(_m);
+          const _retriable = !_userStopped && (_stalled || _netBroken);
           const _nothingYet = text.length === _textLenBefore && !toolCalls;
           if (_subTry > 2 || !_retriable || !_nothingYet) throw e;
           console.warn('[subagent] 断流（还没吐出字），第 ' + _subTry + ' 次重试：' + _m.slice(0, 80));
           await new Promise((r) => setTimeout(r, 400 * _subTry));
+        } finally {
+          /* 不管这趟是成是败，心跳定时器都得收掉 —— 否则它会在下一轮里继续写 progress */
+          try { clearInterval(_waitTimer); } catch {}
         }
       }
 
@@ -1166,14 +1228,30 @@ export async function runSubagent({
         /* 【2026-11-03 主人：办事模式下只看得见「派活 · 运行中…」】
          * 进度原来是「调工具：run_command」这种没有信息量的一行 —— 主人看到也等于没看到。
          * 现在带上参数摘要；跑完再把结果的头一行补上，屏幕上就是一步一步的流水。 */
+        /* 【2026-11-16 主人问·「子Agent 展开后工具调用还是英文」】
+         *
+         * 两处英文：① 工具名用的是 tc.name（run_command / read_file 这种）；
+         * ② 参数直接甩原始 JSON（{"command":"cd ..."}）。
+         * 上面那句 `const label = featureNameOfTool(tc.name)` 早就把中文名算出来了，
+         * 可下面 onProgress 还在用 tc.name —— 等于白算。现在统一用 label，
+         * 参数也只取「人最关心的那个值」（命令原文 / 路径 / 关键词）。 */
         const __argHint = (() => {
           try {
             const raw = String(tc.arguments || '').replace(/\s+/g, ' ').trim();
             if (!raw || raw === '{}') return '';
+            let obj = null;
+            try { obj = JSON.parse(raw); } catch { obj = null; }
+            if (obj && typeof obj === 'object') {
+              const pick = obj.command ?? obj.cmd ?? obj.path ?? obj.file ?? obj.dir
+                ?? obj.query ?? obj.pattern ?? obj.task ?? obj.brief
+                ?? Object.values(obj).find((x) => typeof x === 'string');
+              const one = String(pick ?? '').replace(/\s+/g, ' ').trim();
+              if (one) return ' ' + (one.length > 100 ? one.slice(0, 100) + '…' : one);
+            }
             return ' ' + (raw.length > 100 ? raw.slice(0, 100) + '…' : raw);
           } catch { return ''; }
         })();
-        onProgress(`${tc.name}${__argHint}`);
+        onProgress(`${label}${__argHint}`);
 
         let out;
         if (!allowed.has(tc.name)) {
@@ -1193,7 +1271,8 @@ export async function runSubagent({
         {
           const __o = String(out.output || '').replace(/\r/g, '');
           const __first = (__o.split('\n').find((x) => x.trim()) || '').trim();
-          onProgress(`${tc.name} ${out.ok ? '✓' : '✗'} ${__first.slice(0, 110)}${__o.length > 110 ? ' …' : ''}`);
+          try { if (onBeat) onBeat({ round, tool: String(tc.name || '') }); } catch {}
+          onProgress(`${label} ${out.ok ? '✓' : '✗'} ${__first.slice(0, 110)}${__o.length > 110 ? ' …' : ''}`);
         }
         toolCount += 1;
 

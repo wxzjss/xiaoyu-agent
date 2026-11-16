@@ -24,8 +24,18 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DIR = path.join(process.cwd(), 'scripts');
+/**
+ * 【2026-11-14 修·从 scripts/ 里跑就全红】
+ * 原来靠 process.cwd() 拼根：在仓库根跑没事，`cd scripts; node check-changed.mjs`
+ * 就拼成 scripts/scripts、scripts/_t_ui.mjs 这种不存在的路径 -> 一堆 ENOENT，
+ * 看着像「24 个文件全坏了」，其实一个都没坏。
+ * 这台机器上根目录直接 `node 文件.mjs` 又会被安全垫片静默杀掉，只能 cd 进子目录跑，
+ * 所以必须按模块位置推根，不能再信 cwd。
+ */
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DIR = path.join(ROOT, 'scripts');
 /** 这三档自己不算「被影响的检查」，别递归 */
 const SELF = new Set(['check-smoke.mjs', 'check-changed.mjs', 'check-core.mjs']);
 
@@ -34,7 +44,7 @@ const DRY = argv.includes('--dry');
 
 function git(args) {
   try {
-    return execFileSync('git', args, { encoding: 'utf8', cwd: process.cwd() }).trim();
+    return execFileSync('git', args, { encoding: 'utf8', cwd: ROOT }).trim();
   } catch { return ''; }
 }
 
@@ -157,7 +167,7 @@ let fail = 0;
 const t0 = Date.now();
 for (const f of r.list) {
   const one = Date.now();
-  const x = spawnSync(process.execPath, [path.join(DIR, f)], {
+  const x = spawnSync(process.execPath, [path.join(DIR, f)], { cwd: ROOT,
     encoding: 'utf8', timeout: 15 * 60 * 1000,
   });
   const ms = Date.now() - one;

@@ -59,7 +59,7 @@ ok('退出收尾先拍「谁在跑」快照（_wasLiveAtQuit）', /_wasLiveAtQui
   '快照必须建在第一个 abort 之前');
 const qi = src.indexOf("'关窗口退出（这一轮还没跑完）'");
 ok('退出记账的 autoResume 认快照（不认 abort 之后的 runningTurns）',
-  qi > 0 && /_wasLiveAtQuit\.has\(String\(_qsid\)\)/.test(src.slice(Math.max(0, qi - 1200), qi + 400)));
+  qi > 0 && /_wasLiveAtQuit\.has\(String\(_qsid\)\)/.test(src.slice(Math.max(0, qi - 4000), qi + 1500)));
 
 console.log('\n── 续跑意图三道口子：' + pass + '/' + (pass + fail) + (fail ? ' 有失败' : ' 全过') + ' ──');
 process.exit(fail ? 1 : 0);

@@ -16,8 +16,10 @@
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 
-const DIR = path.join(process.cwd(), 'scripts');
+const DIR = path.join(__ROOT, 'scripts');
 
 /** 核心链路 —— 顺序按「坏了有多致命」排 */
 const CORE = [
@@ -83,7 +85,7 @@ const slow = [];
 for (const [f, why] of CORE) {
   const one = Date.now();
   const x = spawnSync(process.execPath, [path.join(DIR, f)], {
-    encoding: 'utf8', timeout: 10 * 60 * 1000,
+    cwd: __ROOT, encoding: 'utf8', timeout: 10 * 60 * 1000,
   });
   const ms = Date.now() - one;
   slow.push([f, ms]);

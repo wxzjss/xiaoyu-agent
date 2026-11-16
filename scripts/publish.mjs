@@ -99,6 +99,14 @@ const EXCLUDE_PATTERNS = [
    * 换台机器照底线做就会「文件不存在」。check-smoke.mjs 是给人用的工具，
    * 不是自测脚本，单独放行。 */
   /^e2e-.*\.mjs$/,
+  /* 【2026-11-15 晚·开发期一次性脚本一律不外发】
+   * 成因：发布边界检查报「真实代码里写死本机绝对路径」，命中的全是这类东西：
+   *   _t_readctx.mjs（读本机 server.mjs 某一段）、_patch-sendfile.mjs、_peek-lines.mjs、
+   *   gen-actor-test.mjs（往本机 dump/ 写一张 html）。
+   * 它们是"我干活时临时敲的工具"，既不是给用户的功能，也不该带着本机路径出门。
+   * 注意：_test-instance.mjs 是**基建**（隔离实例要用），不在排除之列 —— 前缀挑准。 */
+  /^_t_/, /^_tmp/, /^_patch-/, /^_peek-/, /^_dbg/, /^_cmp/, /^_hunt/, /^gen-actor-test\.mjs$/,
+
   /^run-all-checks\.mjs$/,
   /* 【2026-11-08 加·名字中间带 .bak 的备份会绕过扩展名规则】
    *
@@ -216,6 +224,15 @@ function scanRules(extraNames) {
   const personaPublic = [
     'scripts/publish.mjs', 'scripts/auto-publish.mjs', 'persona/xiaoyu.md',
     'persona/FACTORY-PROMPT.md',
+    /* 【2026-11-15 晚·主人明确要求「把当前的几个智能体（包括【鲸鱼娘】）连同出厂快照人设一起发布」】
+     *
+     * persona/agents/*.md 是**出厂智能体卡的人设正文**（小白曦 / 旁白 / 鲸鱼娘），
+     * 由 agent-presets.mjs 在每台新机器第一次启动时铺成卡片。
+     * 它们必然命中 local-persona 片段 —— 因为出厂定稿本来就是从主人那套改出来的，
+     * 这跟 persona/xiaoyu.md、FACTORY-PROMPT.md 完全同一个道理：
+     * 出厂默认是给人装机看的，必须发；本机私设（.state/）才是不能发的。
+     * 只放行这三个文件，别的一律照旧拦。 */
+    'persona/agents/xiaobaixi.md', 'persona/agents/pangbai.md', 'persona/agents/jingyuniang.md',
   ];
   for (const [i, frag] of mine.entries()) {
     const esc = frag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -332,6 +349,11 @@ function collectFiles(dir = ROOT, out = []) {
     const rel = relative(ROOT, p).replace(/\\/g, '/');
     if (EXCLUDE_NAMES.has(entry.name)) continue;
     if (PRIVATE_ONLY.includes(entry.name)) continue;
+    /* 【2026-11-15 加·.trash-* 是垃圾筐，不是源码】
+     * 清理动作会把删掉的文件挪进 scripts/.trash-<原因>-<时间戳>/ 留一手。
+     * 它们既不是要发的东西，里面又到处是本机路径（实测 39 处告警全来自这两个目录，
+     * 直接把发布卡死）。按"垃圾筐"整目录跳过 —— 看一眼都不看。 */
+    if (entry.name.startsWith('.trash')) continue;
     if (rel.split('/').some((seg) => seg.startsWith('sandbox'))) continue;
     if (entry.isDirectory()) {
       if (rel === 'dist') continue;

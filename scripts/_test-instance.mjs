@@ -17,11 +17,13 @@
  * 起不来就抛错，绝不「自动探测」退回 8788 —— 静默退回等于这道闸白装。
  */
 import { spawn, spawnSync } from 'node:child_process';
+import net from 'node:net';
 import { mkdtempSync, mkdirSync, readdirSync, copyFileSync, existsSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 
-const ROOT = resolve(process.cwd());
+const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 /**
  * 【2026-11-10 修·本机路径写死】
  *
@@ -140,11 +142,13 @@ export async function startIsolated({ appPort = 8795, cdpPort = 9223 } = {}) {
    *
    * 现在：**换一个空闲端口**（8795→8796→…），既不碰别人的实例，也不卡死自己。
    * 只有整段都被占满才报错 —— 那说明真有问题，该人来看。 */
+  /* 【2026-11-16 修】只搜 12 个太窄。本机残留的 headless Edge 钉子常一口气占掉
+   * 9222~9234 一整段，扩到 64 个才够跳过；真全占满才算该人来看。 */
   const pickFree = async (start, probe) => {
-    for (let p = start; p < start + 12; p++) {
+    for (let p = start; p < start + 64; p++) {
       if (await probe(p)) return p;
     }
-    throw new Error('端口 ' + start + '~' + (start + 11) + ' 全被占用，没法起隔离实例');
+    throw new Error('端口 ' + start + '~' + (start + 63) + ' 全被占用，没法起隔离实例');
   };
   appPort = await pickFree(appPort, portFree);
   cdpPort = await pickFree(cdpPort, portFreeProbe);
@@ -287,5 +291,19 @@ async function portFreeProbe(port) {
   try {
     await fetch('http://127.0.0.1:' + port + '/json/version', { signal: AbortSignal.timeout(1200) });
     return false;
-  } catch { return true; }
+  } catch { /* 连不上不代表空闲，见下面真正去绑一次 */ }
+
+  /* 【2026-11-16 修·僵尸监听把整条隔离链搞死】
+   * 现象：9222~9227 一堆残留的 headless Edge 占着监听端口，进程还在、accept 还在，
+   * 但 HTTP 不应答 —— /json/version 一定超时。
+   * 老判据只看 fetch：连不上就判「空闲」，于是 pickFree 照样把 9223 派出去，
+   * 新 Edge 绑不上端口 → CDP 起不来 → 「调试浏览器没打开隔离页面」，
+   * 5 个依赖隔离实例的检查全红，看着像代码炸了，其实是端口被死人占着。
+   * 现在改成真去 bind 一次：绑得上才算空闲，绑不上（EADDRINUSE）就是被占。 */
+  return await new Promise((res) => {
+    const srv = net.createServer();
+    srv.once('error', () => res(false));
+    srv.once('listening', () => srv.close(() => res(true)));
+    srv.listen(port, '127.0.0.1');
+  });
 }

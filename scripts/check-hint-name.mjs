@@ -27,9 +27,11 @@ const bare = [];
 }
 ok('没有裸写「正在发送消息」的赋值', bare.length === 0, bare.map((n) => 'L' + n).join(' '));
 
-/* ② 【2026-11-12 主人】改回不带名字前缀：写手统一走 _hintSetText('正在发送消息')
- * （showSending / 秒表 tick / 3 秒巡检 ≥3 处），防切换的「同一出口」规矩保留。 */
-const named = (s.match(/_hintSetText\(('正在发送消息'|want)\)/g) || []).length;
+/* ② 【2026-11-12 主人】改回不带名字前缀：写手统一走同一个出口，防切换的规矩保留。
+ * 【2026-11-16 判据更新】出口后来收敛成 _hintSetText(_liveHintText())（文案由 _liveHintText()
+ * 统一产出，排队态/发送态/回归态都在里面分），所以不再数字面量 '正在发送消息'，
+ * 改数「这个出口到底有几个写手在用」——showSending / 秒表 tick / 3 秒巡检 ≥3 处。 */
+const named = (s.match(/_hintSetText\(/g) || []).length;
 ok('写手统一走 _hintSetText（≥3 处）', named >= 3, '共 ' + named + ' 处');
 ok('名字前缀已去掉（不再有 _hintWho() + 的拼接）', !/_hintWho\(\) \+ '正在发送消息'/.test(s));
 

@@ -1,4 +1,4 @@
-// Minimal web server: static UI + one SSE endpoint that runs the agent.
+﻿// Minimal web server: static UI + one SSE endpoint that runs the agent.
 
 import { createServer } from 'node:http';
 import { readFile, open as pvOpen } from 'node:fs/promises';
@@ -19,7 +19,7 @@ import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
 import { startSelfwake, stopSelfwake, noteReplied, noteSpoke, shouldFire, getState as selfwakeState } from './selfwake.mjs';
 import { startCron, listTasks, addTask, removeTask, setEnabled as cronSetEnabled, markRan as cronMarkRan, dueTasks } from './cron.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
-import { checkToolDocs, setPeerWake, setPeerDeliver, setRunningProbe, runWithToolContext, tools as allTools, killOrphanChildren } from './tools.mjs';
+import { checkToolDocs, setPeerWake, setPeerDeliver, setRunningProbe, setSessionRenamer, runWithToolContext, tools as allTools, killOrphanChildren } from './tools.mjs';
 import { checkSkills } from './skills.mjs';
 import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
@@ -32,7 +32,7 @@ import { localVersion } from './updater.mjs';
 // 前情：一进来就记得的那段对话。只贴给模型看，不进会话记录，界面也不会画出来。
 import { preludeContextMessage, preludeInfo, addPreludeFromPath } from './prelude.mjs';
 // 会话记忆文件：一个会话一份自己的本子，每轮拼进系统提示（见 persona.mjs 的 memoryBlock）。
-import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, appendFixed, wipeMemory, snapMemory, SKELETON } from './session-memory.mjs';
+import { ensureMemory, copyMemory, trashMemory, memoryInfo, readMemory, writeMemory, appendDigest, appendFixed, wipeMemory, snapMemory, SKELETON, saveTurnThink, lastTurnThink, digTurnThink } from './session-memory.mjs';
 // 记忆本整本界面：小鲸那本是跨会话的，也要给主人看（见 /api/memory/book）
 import { readWhaleMemory, memoryPath as whaleMemoryPath } from './whale-memory.mjs';
 import { editMessage, undoEdit, editInfo, editDigest, digestLines, syncMemoryAfterEdit, unsyncMemoryAfterEdit, locateByMsgAt } from './edit.mjs';
@@ -42,9 +42,10 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 中途投递信箱：主人一边看她干活一边插的话排在这里（照 dsh 的 steering，见 inbox.mjs）
 import { steer, clearInbox, inboxCount, peekInbox, purgeStale as purgeStaleInbox } from './inbox.mjs';
+/* 【2026-11-15 加】后台任务跑完叫醒（主人：「回归类全改成后台跑，跑完自动叫醒该会话ai」） */
 import { initKnowledge, listCards, getCard, saveCard, deleteCard, importCards, exportCards, digestForAgent, reorderCards } from './knowledge.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
-import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted, listInterrupted } from './resume.mjs';
+import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted, listInterrupted, markAllPlanned } from './resume.mjs';
 /**
  * 【QQ小鱼】2026-11-01 加。
  *
@@ -67,6 +68,8 @@ const CLAIM_TTL_PUB = 10 * 60 * 1000;
  */
 import { unlinkSync as __fsUnlinkSync, appendFileSync as __diagAppend, mkdirSync as __diagMkdir, readFileSync as __diagRead, writeFileSync as __diagWrite, existsSync as __diagExists, readdirSync as __diagReaddir } from 'node:fs';
 import { join as __diagJoin } from 'node:path';
+/* 【2026-11-15 加】实时柜子恢复要判断目录在不在 */
+import { existsSync as __liveExists } from 'node:fs';
 function diagLog(tag, detail) {
   try {
     const fs = { appendFileSync: __diagAppend, mkdirSync: __diagMkdir, readFileSync: __diagRead, writeFileSync: __diagWrite };
@@ -183,10 +186,11 @@ import {
   taskFeatureOn,
   taskInfo,
   listWorkers,
+  pruneWorkers,
   forgetSession as forgetTaskSession,
 } from './task-mode.mjs';
 /* 【2026-11-11 团队模式】后台派发/停/回传的通道注入与启动清理（src/team.mjs） */
-import { setTeamChannels, markInterruptedWorkers, resumeInterruptedWorkers, stopWorker } from './team.mjs';
+import { setTeamChannels, markInterruptedWorkers, resumeInterruptedWorkers, stopWorker, isWorkerAlive, BOOT_AT, startWorkerReaper } from './team.mjs';
 // 【陪看屏幕】最近看过的几帧 + 帧目录（界面点开看大图用，见 /api/screen/frames）
 import { recentFrames, turnOffScreen, turnOnScreen } from './tools-screen.mjs';
 /* 【增强提示词】输入框那颗星星的一次性改写调用（src/enhance-prompt.mjs，2026-11-11） */
@@ -236,7 +240,7 @@ import {
 } from './plugins.mjs';
 import { getTTSState, writeTTS, speak } from './tts.mjs';
 import { runtimeInfo, installRuntime, removeRuntime, readyPythons, readyFfmpeg, ensureVoiceRuntimeInBackground } from './voice-runtime.mjs';
-import { postMail, peekMail, takeMail, formatMail, peerInfo, mailCount } from './peer.mjs';
+import { postMail, peekMail, takeMail, ackSessionMail, formatMail, peerInfo, mailCount } from './peer.mjs';
 import { getThinking, setThinking, LEVELS, levelFor } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
 import {
@@ -284,25 +288,11 @@ import {
   restoreEnvModel,
   probeEndpoint,
 } from './models.mjs';
-import {
-  startLocalService,
-  stopLocalService,
-  probeLocalService,
-  localStatus,
-  waitForLogin,
-  invalidateTokenCache,
-  readDeepSeekToken,
-  miniDsDir,
-  findPython,
-  localDeepSeekDefaults,
-  localHealth,
-  LOCAL_ID,
-  MINI_DS_BASE,
-  MINI_DS_KEY,
-  MINI_DS_MODEL,
-  MINI_DS_PORT,
-} from './mini-deepseek.mjs';
+/* 【2026-11-16 严检】本机 DeepSeek 的 import 一并删掉（模块已不存在） */
 import { loadRewinds, effectiveIndexes, createRewind, undoLastRewind, restoreWorkspace, restoreMemory } from './rewind.mjs';
+/* 【2026-11-15 加】折叠存档：让主人能在界面上翻原文、把某一段恢复回会话 */
+import { listSegments, readSegment } from './folded.mjs';
+
 
 /**
  * 【2026-11-12 加·本机 DeepSeek 登录引导】
@@ -349,6 +339,7 @@ import {
   listSessionsAsync,
   deleteSession,
   renameSession,
+  uniqueSessionTitle,
   getLastSessionId,
   setLastSessionId,
   titleFromMessage,
@@ -544,6 +535,14 @@ function collapseOldToolBodies(list, keep = 6) {
       const err = /^\s*ERROR:/.test(body) ? "（失败）" : "";
       const brief = "〔旧工具结果已收起" + err + "，全文 " + oneline.length + " 字，需要就看会话记录〕" + head;
       // 换新对象，别动 history 里那个
+      /* 【2026-11-15 修·「旧工具结果已收起」被当成新消息写进历史】
+       * 这个函数是**给发给模型的那份拷贝**用的（wire），可下游
+       * 「把 wire 里 seen 没有的接回 history」那个循环只认对象身份 ——
+       * 这里换出来的新对象没在 seen 里 → 每条被收起的旧工具结果都被当成
+       * 「新消息」push 进历史。实测会话 smwg61ggmhd4a：一次续跑就多出
+       * 238 条 `旧工具结果已收起`，tool_call_id 跟前面完全重复（上游会 400），
+       * 还把真正的新消息挤到后面，界面上看就是「中间一段没了」。
+       * 现在打 `_collapsed` 记号，接回历史那一律跳过（三处循环都认）。 */
       list[i] = Object.assign({}, m, { content: brief, _collapsed: true });
     }
     return list;
@@ -673,6 +672,27 @@ function publicSession(session) {
       continue;
     }
     if (!m || m.context) continue;
+    /* ══ 【2026-11-15 主人钦点·程序代递的消息一个字都不许上屏】══
+     *
+     * 主人原话：「不要在我的屏幕上显示【你派出去的 xxx 回来了】的子Agent回来时的
+     * 系统消息，也不要显示谁谁谁给谁谁谁递话的系统消息，甚至这些消息都不是
+     * 系统提示，而是以我的署名发的」。
+     *
+     * 新落盘的这类消息已经带 context+_sysNote（前端不画）。可**历史里还躺着**
+     * 一批老数据：那时候 /api/stop 倒信箱只抄了 text，标记全丢，于是它们成了
+     * 一条条裸的 role:'user' —— 前端只能当主人说的话画（实测 31 条，2026-11-15）。
+     *
+     * 这里加一道**渲染层兜底**：认这几句程序自己的开头（worker 汇报 / 跨会话递话），
+     * 一律不交给前端。数据不动（模型读起来还是同一份上下文），只是不再冒充主人。
+     * 判据用「开头」，不认全文 —— 主人自己不会这么打头。 */
+    if (m.role === 'user' && !m._sysNote) {
+      const _head = (typeof m.content === 'string' ? m.content : '').trimStart();
+      if (_head.startsWith('【你派出去的 #')
+        || _head.startsWith('【有别的会话里的我给你递了话】')
+        || _head.startsWith('（同机伙伴「')) {
+        continue;
+      }
+    }
     if (headSkip.has(i)) continue;
     if (!alive.has(i)) continue;
     // 工具结果不进 turns，它的内容会跟着上面那条 assistant 一起交出去
@@ -747,8 +767,18 @@ function publicSession(session) {
       role: 'assistant',
       ts: typeof m.at === 'number' ? m.at : 0,
       text,
+      /* 【2026-11-15 主人报·历史的柜子展开后没有思考链】
+       * 落盘的 assistant 消息把思考存在 _reasoning 里，publicSession 以前不带出来，
+       * 前端 items.js 里的 `turn.reasoning → think 条目` 就永远拿不到东西。
+       * 现在带上：前端可见的历史渲染保留思考链（至少柜子里看得见）。 */
+      reasoning: typeof m._reasoning === 'string' ? m._reasoning : '',
       rewindId: i,
       edited,
+      /* 【2026-11-16 主人要求·过程话别刷屏幕】
+       * 带工具调用的那条 assistant 消息里，content 是工具循环中间的旁白
+       * （"正在改 xxx；先补上…"），不是她对主人说的话。
+       * 交给前端时标上 process，前端画成一行灰字系统提示。 */
+      ...(m._process === true ? { process: true } : {}),
       spectator: m._spectator === true,
       out: Array.isArray(m._out) ? m._out : [],
       tools,
@@ -2123,6 +2153,85 @@ function startCooldownSafe(sessionId) {
  * 只留最近这一轮；轮次结束不清空，留着让「刚回来看」的前端也能补上尾巴。
  */
 const liveLogs = new Map();
+/* 【2026-11-16 晚加】「工具跑完却不接话、清单还没勾完」的自动续工计数。
+ * 每个会话连续最多 3 次；主人亲自说话就清零（见 /api/chat），60 秒没续也清零。
+ * 没有这道闸，模型一旦陷入「跑工具→不说话→被续→再跑工具」就会无限空转。 */
+const autoContinueBook = new Map();
+
+/**
+ * 一轮「跑完却没说话」时，判断要不要自动再起一轮把清单做完。
+ *
+ * 主人明确否掉了「重启」这个解释 —— 最后一条是 tool_end → done 的正常收尾，
+ * 模型在工具循环里把话咽回去了，屏幕上就停在那儿。这条闸对**所有**轮次入口
+ * 都生效（主人发消息 / 排队轮 / 重启续上），不然叫醒轮照样会停。
+ *
+ * finalText 为空才算「没接话」。三道防空转闸：最多连续 3 次、主人说话清零、
+ * 隔了 60 秒重新算。
+ */
+function maybeAutoContinueAfterSilentTurn(sessionId, ac, finalText) {
+  try {
+    if (!sessionId || !ac || ac.signal?.aborted) return false;
+    if (String(finalText || '').trim()) return false;
+    if (!planHasOpenSteps(sessionId)) return false;
+    let _busy = false;
+    try { _busy = (listWorkers(sessionId) || []).some((w) => w && w.status === 'running'); } catch {}
+    if (_busy) return false;
+    const _now = Date.now();
+    const _rec = autoContinueBook.get(sessionId) || { n: 0, at: 0, handoff: 0 };
+    if (_now - Number(_rec.at || 0) > 60000) _rec.n = 0;
+    _rec.n += 1; _rec.at = _now;
+    autoContinueBook.set(sessionId, _rec);
+    /* 【2026-11-16 晚·不再「撞上限就彻底停」】
+     * 原来 n>=3 直接 return：程序自己把续工掐了，主人看到的就是「彻底停了」。
+     * 现在分三档：前两次照常催；第三次起换成**升级措辞**（明说「先写一句正文、
+     * 做完打勾、别只调工具」）并逐步拉长退避；连续 6 次还不行，就**明确喊人** ——
+     * 落一条可见的程序提示（assistant note，不冒充主人），并隔 5 分钟重新给机会。
+     * 这样程序层面永远不会“无声地彻底停住”：要么她自己接上，要么主人看得见。
+     */
+    const _n = _rec.n;
+    const _delay = 1500 + Math.min(_n, 5) * 4000;
+    setTimeout(() => {
+      try {
+        if (runningTurns.has(sessionId)) return;
+        const _s = getSession(sessionId);
+        if (!_s || !Array.isArray(_s.messages)) return;
+        const _open = liveOpenSteps(sessionId);
+        if (!_open.length) return;
+        if (_n >= 6) {
+          if (_now - Number(_rec.handoff || 0) > 300000) {
+            _s.messages.push({
+              role: 'assistant', note: true,
+              content: '（程序提示：连续几轮都只跑工具、没有给结论，我先停下自动接回。清单还有 '
+                + _open.length + ' 步没打勾，历史都在；主人说一句「继续」我就接着做。）',
+              at: Date.now(), _autoContinueHandoff: true,
+            });
+            saveSession(_s);
+            _rec.handoff = _now; _rec.n = 0;
+            diagLog('auto-continue-handoff', sessionId + ' open=' + _open.length);
+          }
+          return;
+        }
+        const _hint = _n <= 2
+          ? '这一轮工具跑完没接上话，清单还有 ' + _open.length + ' 步没打勾。直接从没打勾那步接着干，不用等主人再问，也别回「我在」这种话。'
+          : '连续 ' + _n + ' 轮只跑工具、没有一句话。这一轮先给主人一句正文，说明做到哪一步；每做完一步立刻打勾，最后必须有正文汇报。清单还剩 ' + _open.length + ' 步，从没打勾那步接着干。';
+        _s.messages.push({
+          role: 'user',
+          content: '（程序提示：' + _hint + '）',
+          context: true,
+          _sysNote: true,
+        });
+        saveSession(_s);
+        diagLog('auto-continue-silent-turn', sessionId + ' n=' + _n + ' open=' + _open.length);
+        startQueuedTurn(sessionId, null).catch((e) => {
+          try { diagLog('auto-continue-silent-turn-FAIL', sessionId + ' ' + String(e && e.message || e)); } catch {}
+        });
+      } catch (e) { /* 续不上不影响这一轮已经落盘的结果 */ }
+    }, _delay).unref?.();
+    return true;
+  } catch (e) { return false; }
+}
+/* 【2026-11-16 加】每个会话上次清花名册的时间（60 秒一次，见 /api/team/workers） */
+const _pruneAt = new Map();
 
 /**
  * 【2026-11-10 D3·liveLogs 生命周期】
@@ -2144,8 +2253,251 @@ const liveLogs = new Map();
 const LIVE_RETAIN_MS = 10 * 60 * 1000;
 
 /** 把一份 done 的直播缓存清成轻量摘要（幂等：清过就不再动） */
+/* ══════════ 【2026-11-15 加·实时柜子「一个字都落盘」】══════════
+ *
+ * 主人原话：「每次重启，最近的正在运行的柜子都会消失」「落盘难道不是实时落盘吗？
+ * 哪怕输出一个字，一行代码也落盘。」
+ *
+ * 病根：`liveLogs` 是纯内存 Map，正在跑那一轮的工具卡/思考链一个字都没落过盘；
+ * 会话 messages 又是「这一轮跑完才写」。所以进程一退，在跑的那一轮必然消失。
+ *
+ * 【做法：append-only 日志，一条事件一行，立刻写】
+ * 不做「整份 JSON 重写」也不做防抖 —— 那样要么慢、要么丢最后一段。
+ * 这里每条事件 append 一行 JSONL（一次 appendFileSync，几微秒），真正实时：
+ * 屏幕上出现一个字，盘上就有那一行。
+ * 开机时把这一轮重放一遍（走同一条 appendLiveCacheRaw，items 的合并/封顶逻辑
+ * 跟在线时完全一致），柜子就长回原样。
+ *
+ * 【三条边界】
+ *   ① 这一轮已经收进历史（messages 最后一条 at >= startedAt）→ 日志没用，删掉，
+ *      否则会和历史里同一轮画两遍；
+ *   ② 只恢复 24 小时内的；
+ *   ③ 写盘出错一律吞掉 —— 柜子丢了是小事，把对话搞挂是大事。
+ */
+const LIVE_DIR = join(config.dataDir, '.state', 'live');
+const LIVE_FILE_KEEP_MS = 24 * 60 * 60 * 1000;
+/** 哪些 live 对象的日志已经起过头（每个 live 只需要一次开头） */
+const liveJournalHeads = new WeakSet();
+
+function liveJournalFor(sid) {
+  return join(LIVE_DIR, String(sid) + '.jsonl');
+}
+
+/** 这一轮的第一条事件：先建目录、把旧日志清掉、写一行开头 */
+function startLiveJournal(sid, live) {
+  try {
+    __mkPaste(LIVE_DIR, { recursive: true });
+    const head = JSON.stringify({ k: 'head', sid: String(sid), startedAt: Number(live.startedAt) || Date.now() });
+    writeFileSync(liveJournalFor(sid), head + '\n', 'utf8');
+    liveJournalHeads.add(live);
+  } catch {}
+}
+
+/** 一条事件立刻追加一行 */
+function journalLiveEvent(sid, live, ev) {
+  try {
+    if (!sid || !live || !ev) return;
+    if (!liveJournalHeads.has(live)) startLiveJournal(sid, live);
+    __diagAppend(liveJournalFor(sid), JSON.stringify({ k: 'ev', ev }) + '\n', 'utf8');
+  } catch {}
+}
+
+/** 这一轮结束了/收进历史了：日志删掉（历史才是它的家） */
+function dropLiveJournal(sid, live) {
+  try {
+    if (!sid) return;
+    __fsUnlinkSync(liveJournalFor(sid));
+  } catch {}
+  try { if (live) liveJournalHeads.delete(live); } catch {}
+}
+
+/**
+ * appendLiveCache 的包装：先走原来的合并逻辑，再把「这一条」写进日志。
+ *
+ * 【为什么包一层而不是在每个 return 前都加一行】
+ * 原函数有好几个 return 分支（合并、封顶 notice、压薄），
+ * 一处一处加必然漏 —— 那种漏法表现为「有些卡重启后不见了」，最难查。
+ * 包一层就只有一个入口，谁也漏不掉。
+ */
+/* ══════════ 【2026-11-15 加·工具调过 50 次就催她报进度】══════════
+ *
+ * 主人原话：「增加当前正在运行的柜子里的工具调用数超过 50 时让系统提示她汇报工作进度
+ * （50，55，60，65......）分别提醒一次，就像压缩提示一样。」
+ *
+ * 【为什么需要】一段活干到几十次工具调用，屏幕上只有一排工具卡，
+ * 主人完全不知道她走到哪了 —— 这就是他说的「柜子里的工具调用数」。
+ *
+ * 【怎么做·跟压缩提示同一套】
+ *   ① 屏幕上推一条 notice（前端画成 sysnote 小条，跟「本轮内容太多…」那条一模一样）；
+ *   ② 同时给她插一条 _sysNote 的系统提示（只她可见、不进对话正文），
+ *      让她停下来说一两句进度。用的是 steer()，就是「递话插进当前轮」那条通道。
+ * 两个都发：只发①他不一定注意到她没说话；只发②屏幕上看不出为什么她突然汇报了。
+ *
+ * 【为什么是 50 起、每 5 次一次】主人点名要的刻度。计的是**这一轮**的 tool_start 条数，
+ * 换一轮就归零（live 对象每轮新建）。同一次刻度只提醒一次 —— 用 live._nudged 记账，
+ * 否则一个阈值会在重放/重复事件里被催好几遍。
+ */
+/**
+ * 【2026-11-15 再改·主人点名：每 20 次提醒一次，不设上限】
+ *
+ * 主人原话：「把 55、60、65、75、80、85…的间隔五次工具调用就提醒一次删了，
+ * 改成间隔 20 次提醒一次」「不要设 100 上限，而是只要没回复消息，就一直提醒」。
+ *
+ * 所以：第 50 次起，50 / 70 / 90 / 110 … 每 20 次一条，**永远不停**。
+ * 「没回复消息」由下面那段管：她一开口说正文就把计数清零、从头再数，
+ * 于是只要她一直憋着不吭声，工具越调越多，提醒就一直跟着来。
+ */
+const TOOL_NUDGE_START = 50;   // 第 50 次开始提醒
+const TOOL_NUDGE_EVERY = 20;   // 之后每 20 次一条，没有上限
+
+/**
+ * 【2026-11-16 主人钦点】每发一条消息（非插话）、以及重启续上时，都要先问自己一句
+ * 「这是在闲聊还是在干活」，再按底线里那两条对应的要求来。
+ *
+ * 为什么单独一句：底线把两种状态写成了两行并存（闲聊要旁白+50字上限，工作要闭嘴干活），
+ * 但没有任何一句告诉模型**先判断再选**。她于是两头取中间：闲聊里带工整的汇报腔，
+ * 干活时又飘出人设旁白。
+ *
+ * 只出现在「每轮开始·第一条」和「重启续上·第一条」这两处（都是 context 消息，
+ * 界面不画、不进历史）。插话那条路**不许**塞 —— 主人正说着话，别拿这种框架打断她。
+ */
+const TURN_MODE_HINT = '【判断当前是在闲聊还是在工作，然后再按底线的【闲聊时】与【工作时】要求做】';
+
+function maybeNudgeProgress(live, ev) {
+  try {
+    if (!live || !ev) return;
+    /**
+     * 【2026-11-15 补·她一说话就从头计数】
+     *
+     * 主人问：「是否是只要发过一次消息就从新调用的工具开始重新计数？」
+     * 原来的实现是**整轮累计** —— 前 100 次工具提醒过之后，这一轮后面再干活
+     * 就再也不提醒了（因为刻度已经走过）。他要的是「每报完一次进度，重新从 50 数」。
+     * 所以这里在「她说了正文」的那一刻把账清零：
+     *   · 计数归零 → 下一批工具从 1 开始数，攒到 50 再提醒；
+     *   · _nudged 也一起清 → 同一轮里第二轮 50 次照样会提醒（不清就永远不会再提醒）。
+     * 只认正文 text（notice 是我们自己推的小条，不算她说话）。
+     */
+    if (ev.type === 'text' && !ev.notice) {
+      live._toolCalls = 0;
+      live._nudged = {};
+      return;
+    }
+    if (ev.type !== 'tool_start') return;
+    live._toolCalls = (Number(live._toolCalls) || 0) + 1;
+    const n = live._toolCalls;
+    if (n < TOOL_NUDGE_START) return;
+    const hit = ((n - TOOL_NUDGE_START) % TOOL_NUDGE_EVERY) === 0;
+    if (!hit) return;
+    if (!live._nudged || typeof live._nudged !== 'object') live._nudged = {};
+    if (live._nudged[n]) return;
+    live._nudged[n] = 1;
+    const sid = String(live.sessionId || '');
+    /* 【2026-11-16 主人钦点·这条小条不要画在屏幕上】
+     *
+     * 原话：「改柜子里有 50 次工具调用开始会有的提示为仅小鱼Agent可见的系统提示，
+     * 这个提示我自己不想看见」。
+     *
+     * 原来这里是「两个都发」：推一条 notice 画成屏幕小条 + 给她插一条 _sysNote。
+     * 主人明确不想看见那行字 —— 而且她收到提示后本来就会开口报进度，
+     * 那句话才是他该看到的。所以屏幕上那条删掉，只留给她本人的系统提示。 */
+    /* 真正提示她本人（只她可见的系统提示，不冒充主人说话） */
+    try {
+      if (sid) {
+        steer(sid, '（程序提示：这一轮你已经调用了 ' + n + ' 次工具。先停下来跟主人报一句进度——做到哪一步了、还差什么、下一步先做哪件。一两行就够，报完接着干，别从头复述。）', { _sysNote: true });
+      }
+    } catch {}
+  } catch { /* 提醒本身出错绝不能影响这一轮 */ }
+}
+
+function appendLiveCache(live, ev) {
+  const out = appendLiveCacheRaw(live, ev);
+  try {
+    if (out && live && live.sessionId) journalLiveEvent(live.sessionId, live, out);
+  } catch { /* 落盘不影响这条事件本身 */ }
+  try { maybeNudgeProgress(live, out); } catch {}
+  return out;
+}
+
+/**
+ * 开机：把「上次没跑完的那一轮」按日志重放回内存缓存。
+ * 重放走 appendLiveCacheRaw（不写日志），所以 items 的形状跟在线时一模一样。
+ */
+function restoreLiveLogsFromDisk() {
+  let n = 0;
+  try { diagLog('live-restore', 'enter dir=' + LIVE_DIR); } catch {}
+  try {
+    if (!__liveExists(LIVE_DIR)) { try { diagLog('live-restore', 'no-dir'); } catch {} return 0; }
+    const now = Date.now();
+    for (const f of readdirSync(LIVE_DIR)) {
+      if (!f.endsWith('.jsonl')) continue;
+      const abs = join(LIVE_DIR, f);
+      try {
+        const lines = __diagRead(abs, 'utf8').split('\n').filter(Boolean);
+        if (!lines.length) { try { __fsUnlinkSync(abs); } catch {} continue; }
+        let head = null;
+        const evs = [];
+        for (const ln of lines) {
+          let o = null;
+          try { o = JSON.parse(ln); } catch { continue; }
+          if (o && o.k === 'head') { head = o; continue; }
+          if (o && o.k === 'ev' && o.ev) evs.push(o.ev);
+        }
+        const sid = String((head && head.sid) || f.replace(/\.jsonl$/, ''));
+        const startedAt = Number(head && head.startedAt) || 0;
+        if (!isSessionId(sid) || !startedAt || now - startedAt > LIVE_FILE_KEEP_MS || !evs.length) {
+          try { __fsUnlinkSync(abs); } catch {}
+          continue;
+        }
+        /* 已经收进历史了就别再画一遍：历史里最后一条比这一轮开始还晚 */
+        const sess = (() => { try { return getSession(sid); } catch { return null; } })();
+        const msgs = sess && Array.isArray(sess.messages) ? sess.messages : [];
+        let lastAt = 0;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const at = Number(msgs[i] && msgs[i].at);
+          if (at > lastAt) lastAt = at;
+        }
+        if (lastAt >= startedAt) {
+          /* 【2026-11-15 修·「已进历史」判得太宽，会把没收尾的那轮柜子误删】
+           *  原判据：盘上任何一条消息的 at >= startedAt 就删日志。
+           *  可轮**中途**也有会写盘的时刻（压缩落地 onCompressed、worker 递文件
+           *  stashFile、插话被取走后跟着落地）—— 那几条消息的 at 同样 >= startedAt，
+           *  但这一轮根本没跑完、最终回复还没收进历史。这时硬杀/重启，
+           *  日志一删，柜子里那排工具卡就凭空消失（主人报「重启后正在跑的柜子没了」
+           *  在插话场景下的一种复发）。
+           *  收紧：只有「尾巴长得像真收尾」（最后一条是 assistant、有正文、没挂工具）
+           *  才认「已进历史」删日志；尾巴是 tool / 空壳 / user，都算断在半路，
+           *  照旧把日志重放回内存，柜子长回来。跟 restoreDraftHalfTurn 的
+           *  tailFinished 判据同一套口径。 */
+          const _lm = msgs.length ? msgs[msgs.length - 1] : null;
+          const _lmFinished = !!(_lm && _lm.role === 'assistant'
+            && String(_lm.content ?? '').trim().length
+            && !(Array.isArray(_lm.tool_calls) && _lm.tool_calls.length));
+          if (_lmFinished) {
+            try { diagLog('live-restore-skip', f + ' 已进历史'); } catch {} try { __fsUnlinkSync(abs); } catch {} continue;
+          }
+          try { diagLog('live-restore-keep', f + ' 盘上有新消息但尾巴没收尾，柜子照旧恢复'); } catch {}
+        }
+        if (liveLogs.has(sid)) { try { diagLog('live-restore-skip', f + ' 内存已有'); } catch {} continue; }
+        const live2 = { sessionId: sid, events: [], items: [], startedAt, done: false, _restored: true };
+        for (const ev2 of evs) {
+          try { appendLiveCacheRaw(live2, ev2); } catch {}
+        }
+        if (!live2.items.length) { try { __fsUnlinkSync(abs); } catch {} continue; }
+        /* 接着往同一个日志追加，别再起一个新头 */
+        liveJournalHeads.add(live2);
+        liveLogs.set(sid, live2);
+        n++;
+      } catch (e2) { try { diagLog('live-restore-err', f + ' ' + String((e2 && e2.message) || e2)); } catch {} }
+    }
+  } catch (e) { try { diagLog('live-restore', 'failed ' + String((e && e.message) || e)); } catch {} }
+  try { diagLog('live-restore', 'done n=' + n); } catch {}
+  return n;
+}
+
 function summarizeLiveLog(live) {
   if (!live || live._summarized) return;
+  /* 这一轮已经收进历史了，实时日志就不用留了（留着会和历史画两遍） */
+  try { if (live.sessionId) dropLiveJournal(live.sessionId, live); } catch {}
   live._summarized = true;
   const events = Array.isArray(live.events) ? live.events : [];
   const items = Array.isArray(live.items) ? live.items : [];
@@ -2322,6 +2674,23 @@ function appendLiveItem(items, ev) {
     if (ev.notice) { if (t) items.push({ k: 'note', t }); return; }
     const p = last();
     if (p && p.k === 'text' && !p.__segEnd) { p.t += t; return; }
+    /* 【2026-11-14 修·正文被思考切成两段】last() 是 think 时，
+     * 说明这段话被思考块隔开了 → 往前找那条 text 并把新字**并回去**。
+     * 规则：**只有 think 透明** —— 遇到别的（工具卡 / note / worker / whale）就停，
+     * 那是真的分段线，不许跨过去合并。
+     * （原来这里直接 push 一条新 text → 屏幕上同一句话变成两个气泡。） */
+    if (p && p.k === 'think' && !p.__segEnd) {
+      for (let i = items.length - 2; i >= 0; i--) {
+        const x = items[i];
+        if (!x) break;
+        if (x.k === 'think') continue;             // 思考是透明的，继续往前
+        if (x.k === 'text') {
+          if (x.__segEnd) break;                  // 上一轮已封口 → 另一轮，另起一段
+          x.t += t; return;
+        }
+        break;                                    // 别的（工具卡/note/worker）= 真分段线
+      }
+    }
     /* 【2026-11-10 修·空气泡（A6）】源头不落空 text：内容还是空就先不建条目，
      * 等真有字了再建 —— 不然 F5 之后屏幕会比清单多一个空气泡。 */
     if (!t) return;
@@ -2334,6 +2703,15 @@ function appendLiveItem(items, ev) {
   } else if (ev.type === 'tool_start') {
     /* 【2026-11-11 加】startedAt 从事件上读（agent 发 tool_start 时带 ts）——
      * 前端工具卡「正在跑 · Xs」的动态耗时靠它。旧事件没带就是 0，前端不画耗时。 */
+    /* 【2026-11-16 加·主人：过程旁白别刷我屏幕】
+     * 工具调用**之前**冒出来的那段话，是模型在干活中途的碎碎念（「我先看看」「换成搜索定位」），
+     * 不是给主人看的正式回复。真正对主人说的那段，永远在最后一次工具调用之后。
+     * 所以遇到 tool_start 时，把紧挨着的上一条正文标成 process，前端画成灰字系统提示。
+     * 判据很简单：后面还跟着工具卡 → 这句话是过程话。 */
+    {
+      const pv = last();
+      if (pv && pv.k === 'text') pv.process = true;
+    }
     items.push({ k: 'tool', id: String(ev.id || ''), name: String(ev.name || ''), args: String(ev.args || ''), status: 'run', output: '', startedAt: Number(ev.ts) || 0 });
   } else if (ev.type === 'tool_end') {
     const id = String(ev.id || '');
@@ -2477,7 +2855,7 @@ function appendLiveItem(items, ev) {
       for (let _i = items.length - 1; _i >= 0; _i--) {
         if (items[_i].k === 'file' && items[_i].fkey === _fk) { _dup = items[_i]; break; }
       }
-      if (_dup) continue;
+      if (_dup) { items.splice(items.indexOf(_dup), 1); }  /* 【2026-11-15 主人定】重复发同一文件 → 移走旧卡，只留最新一张 */
       items.push({
         k: 'file',
         fkey: _fk,
@@ -2554,9 +2932,44 @@ function buildLiveItems(events) {
   for (const e of (Array.isArray(events) ? events : [])) {
     if (!e || !e.type) continue;
     /* 轮末就是分段线：排队的下一轮是「另一段话」，不能跟上一轮拼一个气泡。 */
-    if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') { flush(); continue; }
+    if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') {
+      flush();
+      /* 【2026-11-14 修·真 bug·重算版没给轮末封口】
+       * 增量版 appendLiveItem 在轮末会给最后那段正文打一个**不可枚举**的 __segEnd
+       * 标记（下一段话不许再拼上去）。重算版原来只 flush() 就走了 —— 没封口。
+       * 于是：text ' ' → aborted（轮末）→ reasoning → text '的'
+       *   增量版：'的' 不并回 ' '（' ' 已封口）→ 两段
+       *   重算版：'的' 并回 ' ' → 一段
+       * 同一串事件，两份清单结构不同 → check-live-items-parity 随机串直接抓出不一致。
+       * 现在重算版也封口，两边同款。 */
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (!it) continue;
+        if (it.k !== 'text') break;
+        try { Object.defineProperty(it, '__segEnd', { value: true, enumerable: false, configurable: true }); } catch { it.__segEnd = true; }
+        break;
+      }
+      continue;
+    }
     if (e.type === 'text') {
       if (e.notice) { flush(); const _nt = String(e.text || ''); if (_nt) items.push({ k: 'note', t: _nt }); continue; }
+      /* 【2026-11-14 修·正文被思考切成两段】与增量版同款：
+       * 上一条是 think 时，这段话是被思考隔开的 → 并回前面那条 text。
+       * （原来这里 flush() 之后新起一条 → 同一句话在重算路径里也断成两个。） */
+      if (!cur && items.length && items[items.length - 1] && items[items.length - 1].k === 'think') {
+        let _merged = false;
+        for (let i = items.length - 2; i >= 0; i--) {
+          const x = items[i];
+          if (!x) break;
+          if (x.k === 'think') continue;             // 思考是透明的，继续往前
+          if (x.k === 'text') {
+            if (!x.__segEnd) { x.t += String(e.text || ''); _merged = true; }
+            break;
+          }
+          break;                                    // 别的 = 真分段线，不跨
+        }
+        if (_merged) continue;
+      }
       if (!cur) cur = { k: 'text', t: '' };
       cur.t += String(e.text || '');
     } else if (e.type === 'reasoning') {
@@ -2566,8 +2979,24 @@ function buildLiveItems(events) {
       else items.push({ k: 'think', t: String(e.text || '') });
     } else if (e.type === 'tool_start') {
       /* 新卡 = 新条目 → 分段线 */
-      /* 【2026-11-11 加】startedAt 与 appendLiveItem 同一口径：从事件上读，不就地取钟 */
+      /**
+       * 【2026-11-16 修·重算这条路以前几乎标不上 process】
+       *
+       * 原来顺序是「先 flush()、再判 `!items[末尾].__segEnd`」—— 可 flush() 会顺手
+       * 把这段**封口**（打上不可枚举的 `__segEnd`），判据于是永远为假：
+       * 重算出来的清单里，工具前那段过程话几乎没有 process 标记。
+       *
+       * 后果正是主人看到的那句「她回我的内容又出现在屏幕上」：
+       * 直播时那段被当过程话藏着，一刷新走重算这条路，标记没了、它冒充成正文冒出来。
+       *
+       * 现在跟增量那条（appendLiveItem）完全同一判据：flush 之后，末尾那段正文
+       * 只要是 text 就标 process，不再看 __segEnd。
+       */
       flush();
+      {
+        const _pv = items.length ? items[items.length - 1] : null;
+        if (_pv && _pv.k === 'text') _pv.process = true;
+      }
       items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '', startedAt: Number(e.ts) || 0 });
     } else if (e.type === 'tool_end') {
       const id = String(e.id || '');
@@ -2644,7 +3073,17 @@ function buildLiveItems(events) {
     } else if (e.type === 'sentfile' || e.type === 'files') {
       /* 【2026-11-10 收编（A2）】她发的文件进清单（与 appendLiveItem 同一口径：
        * 同一份文件只留一条；新文件 = 新条目 = 分段线）。 */
+      /* 【2026-11-15 修·重算版漏了 flush：文件卡前后的正文被粘成一段】
+       * 增量版（appendLiveItem）把文件卡当**分段线**：卡之后来的 text 另起一条。
+       * 重算版这里不 flush()，正在攒的 cur 就一直开着 —— 文件卡被 push 到 cur
+       * **前面**，后面那段 text 又并回 cur，于是：
+       *   增量：[text '我看一下。'] [file] [text '\n']
+       *   重算：[file] [text '我看一下。\n']   ← 屏幕上一段话跨着文件卡被粘起来
+       * check-live-items-parity 的 seed=13/15/31 直接抓出这条（三个 seed 全是它）。
+       * 规矩：**真要 push 新条目就 flush**，跟 tool_start / steer 同款。 */
       const list = e.type === 'sentfile' ? [e.file] : (Array.isArray(e.items) ? e.items : []);
+      const _files = list.filter((f) => f && (String(f.path || '') || String(f.key || '')));
+      if (_files.length) flush();
       for (const f of list) {
         if (!f || (!String(f.path || '') && !String(f.key || ''))) continue;
         const fk = String(f.key || f.path || '');
@@ -2652,8 +3091,7 @@ function buildLiveItems(events) {
         for (let i = items.length - 1; i >= 0; i--) {
           if (items[i].k === 'file' && items[i].fkey === fk) { dup = items[i]; break; }
         }
-        if (dup) continue;
-        flush();
+        if (dup) { items.splice(items.indexOf(dup), 1); }  /* 【2026-11-15 主人定】重复发同一文件 → 移走旧卡，只留最新一张 */
         items.push({
           k: 'file',
           fkey: fk,
@@ -2738,7 +3176,7 @@ const LIVE_CAP_NOTICE_TEXT = '本轮内容太多（超过 ' + LIVE_MAX_EVENTS + 
  * 返回值：真正进了缓存的那条事件（封顶时是 notice），静默丢弃时返回 null ——
  * 主轮的 SSE 据此决定写不写连接。
  */
-function appendLiveCache(live, ev) {
+function appendLiveCacheRaw(live, ev) {
   if (!live || !Array.isArray(live.events)) return null;
   try {
     if (!Array.isArray(live.items)) live.items = [];
@@ -3311,7 +3749,12 @@ async function startOpening(sessionId) {
       }
     } catch {}
   }
-  const pair = [userMsg, __say];
+  /* 【2026-11-15 晚·主人要求：「把主人说的那句『在吗』在代码里删了」】
+   * 开场白只落她自己那一句（assistant）。引子「在吗」是给模型看的语气铺垫，
+   * 一旦落盘就会变成历史第一条 user 消息 —— 主人删掉开场白之后它会重新冒出来，
+   * 看着就像主人刚说了句话。openingHeadIndexes / openingSpan 都认「单条 assistant」
+   * 这种形状，所以删掉引子不需要动别的地方。 */
+  const pair = [__say];
   if (at < 0) session.messages.push(...pair);
   else session.messages.splice(at, 0, ...pair);
   markOpened(session.id);
@@ -3412,13 +3855,10 @@ async function deliverMailNow(to, fromTitle, text) {
     } catch (e) {
       return { ok: false, note: '插进当前轮失败：' + String(e?.message ?? e) };
     }
-    /* 直播清单立刻可见（notice → 前端 SysNote 条，跟压缩提醒同款） */
-    try {
-      const lv = liveLogs.get(to);
-      if (lv && Array.isArray(lv.events)) {
-        appendLiveCache(lv, { notice: '「' + (fromTitle || '另一个会话') + '」递来一条话（已插进她当前这轮，仅她可见）', at: Date.now() });
-      }
-    } catch {}
+    /* 直播小条：**不往屏幕上推** —— 2026-11-15 主人钦点
+     * 「不要显示谁谁谁给谁谁谁递话的系统消息」。
+     * 她照样能在下一步读到这封信（steer 那条 _sysNote），只是主人屏幕上不再冒条。
+     * 留着这段注释，免得以后有人以为是漏了又给加回去。 */
     return { ok: true, note: '已即时插进她当前这轮（仅AI可见的系统提示）' };
   }
   /* 没在跑：信在信箱里，叫醒她 */
@@ -3474,7 +3914,8 @@ async function startPeerTurn(sessionId) {
   }
 
   const ac = new AbortController();
-  const turn = { ac, done: null, peerTurn: true };
+  const turn = { ac, done: null, peerTurn: true, startedAt: Date.now() }; /* 【2026-11-15 修·幽灵轮】不带 startedAt，自愈清理器会判成「纯幽灵」立刻删，
+   *  表现成「叫醒她了却一声不响就停」。peerTurn 是真轮，必须带。 */
   runningTurns.set(sessionId, turn);
   try {
     const history = session.messages;
@@ -3572,6 +4013,9 @@ async function startPeerTurn(sessionId) {
       if (seen.has(m)) continue;
       // system / 规则副本归系统提示管，不进历史（历史里永远只有开头那一条 system）。
       if (m && (m.role === 'system' || m.context || m._sysNote === true)) continue;
+      /* 【2026-11-15】`_collapsed` 是给模型看的「旧工具结果收起」副本，
+       * 不是新消息 —— 接进历史就是 238 条重复 tool（见 collapseOldToolBodies 注释）。 */
+      if (m && m._collapsed === true) continue;
       seen.add(m);
       history.push(m);
     }
@@ -3584,6 +4028,8 @@ async function startPeerTurn(sessionId) {
     }
     session.updatedAt = Date.now();
     saveSession(session);
+    /* 【2026-11-16 晚】递话轮也走同一道闸：工具跑完没接话就自动续清单 */
+    maybeAutoContinueAfterSilentTurn(sessionId, ac, out && out.text);
     return { ok: true, text: out && out.text };
   } catch (e) {
     console.warn('[peer] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
@@ -3831,7 +4277,7 @@ async function startQueuedTurn(sessionId, queue = null) {
    *  可 snap 在这个函数里从来没声明 —— 一叫醒就抛 ReferenceError，
    *  被外层 catch 吞掉，表现成「重启后没人叫醒我」。 */
   const snap = {};
-  const turn = { ac, done: null, queuedTurn: true };
+  const turn = { ac, done: null, queuedTurn: true, startedAt: Date.now() }; /* 【2026-11-15 修·幽灵轮】同上：排队接续轮也是真轮，漏了 startedAt 会被当幽灵删掉。 */
   runningTurns.set(sessionId, turn);
   /* 【2026-11-12 修·续跑账】排队轮也记账：插话后的接续轮被硬杀时，
    * 主轮开局记的那笔已经在主轮正常收尾时清掉了 —— 这里不重新记，
@@ -3941,6 +4387,8 @@ async function startQueuedTurn(sessionId, queue = null) {
     for (const m of wire) {
       if (seen.has(m)) continue;
       if (m && (m.role === 'system' || m.context || m._sysNote === true)) continue;
+      /* 【2026-11-15】收起的旧工具结果副本不进历史（同 collapseOldToolBodies 注释） */
+      if (m && m._collapsed === true) continue;
       seen.add(m);
       history.push(m);
     }
@@ -3955,6 +4403,8 @@ async function startQueuedTurn(sessionId, queue = null) {
       startedAt: live ? live.startedAt : Date.now(),
       queuedTurn: true,
     });
+    /* 【2026-11-16 晚】叫醒/接续轮也走同一道闸：工具跑完没接话就自动续清单 */
+    maybeAutoContinueAfterSilentTurn(sessionId, ac, out && out.text);
     return { ok: true, text: out && out.text, rest: rest() };
   } catch (e) {
     console.warn('[queued] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
@@ -3985,7 +4435,7 @@ function peekInterruptedInfo(sessionId) {
   try {
     const info = peekInterrupted();
     if (!info || info.sessionId !== sessionId) return null;
-    return { at: info.at, ageMs: info.ageMs, reason: info.reason, taskLine: info.taskLine };
+    return { at: info.at, ageMs: info.ageMs, reason: info.reason, taskLine: info.taskLine, planned: info.planned === true };
   } catch {
     return null;
   }
@@ -3995,6 +4445,40 @@ function peekInterruptedInfo(sessionId) {
  * 会话里主人最后说的那句话（去掉程序自己插的 context 提示和系统提示）。
  * 崩之前的续跑意图要带上它 —— 模型看到「原话 + 我断在哪儿」才知道该接着干什么。
  */
+/* 【2026-11-16 根治·续上提示念旧清单】
+ *
+ * 真出过的事：活早就干完了、清单全勾，可每次重启续上都念
+ * 「清单上还没打勾的 N 步」，于是一遍遍以为自己没做完，来回空转两小时。
+ *
+ * 根子在记账：resume.json 里的 openSteps 是【断点那一刻】的快照。
+ * 续跑提示和重启唤醒都直接照抄这份快照，从来不去读盘上的实时清单 ——
+ * 快照是老黄历，念出来就是假消息。
+ *
+ * 做法：以 loadPlan(sessionId) 的实时结果为准；
+ * 实时清单读不到（没这份清单文件）时才拿快照兜底。
+ * 清单全 done → 返回 []，提示里一个字都不许再提「没做完」。
+ */
+function liveOpenSteps(sessionId, snapshot) {
+  try {
+    const p = loadPlan(sessionId);
+    const steps = (p && Array.isArray(p.steps)) ? p.steps : null;
+    /* 【2026-11-16 根治·清了清单还念旧账】
+     * 原来这里写的是 steps.length 为真才走实时分支，于是清单被清空
+     * （主人手动清了 / 收工时 plan clear 了）就又掉回快照兜底，
+     * 把断点那一刻的老账重新念一遍 —— 这正是「明明做完了还在怀疑没做完」的第二条路。
+     * 现在改成：只要盘上确实有这份清单（steps 是数组），就以它为准，
+     * 空的也是准 —— 返回 []，一个字都不提没做完。
+     * 只有真的读不到清单文件（loadPlan 抛错）才拿快照兜底。 */
+    if (steps) {
+      return steps
+        .filter((x) => x && x.status !== 'done' && x.status !== 'skipped')
+        .map((x, i) => ({ n: x.n || x.id || (i + 1), text: String(x.text || '') }));
+    }
+  } catch {}
+  return Array.isArray(snapshot) ? snapshot : [];
+}
+
+
 function lastUserLine(sessionId) {
   try {
     const session = getSession(sessionId);
@@ -4114,14 +4598,46 @@ function restoreDraftHalfTurn(id) {
        * 于是同一段话被补成第二条。现在先问一句：这段正文历史里有没有？
        * 有就只删草稿，不再补。
        */
+      /**
+       * 【2026-11-16 加·断在半路的思考也要接回来】
+       *
+       * 主人问「各种情况下重启后思考链内容是否会落盘」，一查发现这里是个洞：
+       * 跑完的那一轮会在收尾把思考挂到 `_reasoning` 上写进会话；可**跑到一半被重启**
+       * 的那一轮，走的是这条草稿回灌的路 —— 草稿里明明存着 reasoning
+       *（turn-draft 一直在流式写盘），这里却只把正文接回来，思考直接随草稿删掉。
+       * 界面上「想过」那块就此消失，翻历史也查不到她当时在想什么。
+       *
+       * 现在两种分支都把思考补上：正文已在历史里的，补到最后那条 assistant 上；
+       * 正文要接回来的，跟它一起入历史。已经有思考的不覆盖（那是跑完时存的正本）。
+       */
+      const _draftReason = String(draft.reasoning || '').trim();
       if (alreadyCollected(session.messages, { role: 'assistant', content: body })) {
+        if (_draftReason) {
+          for (let k = session.messages.length - 1; k >= 0; k--) {
+            const m = session.messages[k];
+            if (!m || m.role !== 'assistant' || m.context) continue;
+            if (!String(m._reasoning || '').trim()) {
+              m._reasoning = _draftReason;
+              session.updatedAt = Date.now();
+              saveSession(session);
+              recovered = true;
+              diagLog('draft-reasoning-restored', `session=${id} len=${_draftReason.length}`);
+            }
+            break;
+          }
+        }
         dropDraft(id);
       } else {
         /* 【2026-11-13 补·接回消息带 at】前端 trimTurnsForLive 现在按
          * 「ts < 直播开工时刻」保住重启前已提交的历史——接回这条必须有
          * 时间戳才判得了，不然 ts=0 会被当成「本轮的」裁掉（续跑轮直播
          * 里没有它 → 屏幕上它就消失了）。 */
-        session.messages.push({ role: 'assistant', content: body, at: Date.now(), _recovered: true });
+        const _back = { role: 'assistant', content: body, at: Date.now(), _recovered: true };
+        if (_draftReason) {
+          _back._reasoning = _draftReason;
+          diagLog('draft-reasoning-restored', `session=${id} len=${_draftReason.length}`);
+        }
+        session.messages.push(_back);
         session.updatedAt = Date.now();
         saveSession(session);
         recovered = true;
@@ -4174,7 +4690,7 @@ async function resumeInterruptedTurn(onlySessionId) {
   if (!session) {
     console.log('[resume] 上次崩的会话已经没了：', sessionId);
     /* 【2026-11-07】只删这一条：别的会话的断点还得留着给下一轮续 */
-    try { dropInterrupted(sessionId); } catch (e) {}
+    try { dropInterrupted(sessionId, { force: true }); } catch (e) {}
   diagLog('resume-skip:no-session', sessionId);
     return;
   }
@@ -4323,6 +4839,7 @@ async function resumeInterruptedTurn(onlySessionId) {
      ══════════════════════════════════════════════════════════════════ */
   try {
     markInterrupted({
+      planned: true,   /* 【2026-11-16】这条提示不为「重启/退出」出现（见 resume.mjs 的 planned） */
       sessionId,
       text: String((info && info.text) || ''),
       reason: '续跑轮又被打断了（程序退出 / 上游断了）',
@@ -4361,6 +4878,7 @@ async function resumeInterruptedTurn(onlySessionId) {
     repairHistory(history);
     // 这句是给模型的临时提示，不是主人说的 —— 打 context 标记，
     // 这样它不进 turns、不参与压缩、跑完摘掉。
+    const _liveOpen = liveOpenSteps(sessionId, info && info.openSteps);
     history.push({
       role: 'user',
       content:
@@ -4370,11 +4888,19 @@ async function resumeInterruptedTurn(onlySessionId) {
         (info.taskLine ? `\n主人当时的原话：「${info.taskLine}」` : '') +
         /* 【2026-10-30】清单上没打勾的步骤一并告诉它 —— 否则它只知道「断在半句话」，
          * 不知道自己还有哪几步没做完，还是得等主人发「继续」。 */
-        (Array.isArray(info.openSteps) && info.openSteps.length
-          ? `\n清单上还没做完的这几步：` + info.openSteps.map((x) => `\n  ${x.n}. ${x.text}`).join('') +
+        (Array.isArray(_liveOpen) && _liveOpen.length
+          ? `\n清单上还没做完的这几步：` + _liveOpen.map((x) => `\n  ${x.n}. ${x.text}`).join('') +
             `\n就照这个往下做，按顺序来，别跳。`
           : '') +
-        '\n直接从断的地方往下做，该调工具就调，别问我「要不要继续」。',
+        '\n直接从断的地方往下做，该调工具就调，别问我「要不要继续」。' +
+        '\n' + '如果需要跑回归以及耗时长的工具调用时，请优先让子Agent跑。' + '\n\n【重启续上·第一条】' + '\n' + TURN_MODE_HINT + '\n' +
+        /* 【2026-11-16 加】被打断那一轮的思考原文还在历史里（草稿回灌那条路补的），
+         * 这里再带一句上一段的结论 —— 续跑最怕的就是「忘了刚才想清楚到哪一步」。 */
+        ((() => { try { const _t = lastTurnThink(sessionId); return _t ? '上一段我想清楚的：' + _t + '\n' : ''; } catch { return ''; } })()) +
+        (Array.isArray(_liveOpen) && _liveOpen.length
+          ? ('如果当前不是闲聊，那么请先整理清单，然后根据清单上未完成的内容决定是否调用子Agent。' +
+             '\n清单还剩 ' + _liveOpen.length + ' 步没打勾，照上面那几步往下做。')
+          : '清单已经全部做完，没有剩余步骤 —— 别回头重做、别重新验证已经成立的事，做完手上这一下就收工。'),
       context: true,
     });
     const wire = history.slice();
@@ -4397,6 +4923,97 @@ async function resumeInterruptedTurn(onlySessionId) {
       } catch {}
       return -1;
     })();
+    /* ── 【2026-11-15 修·续跑轮整段不落盘（检查鱼 23:14→23:39 全丢）】────────
+     * 主轮（/api/chat）的 onEvent 有两道落盘：
+     *   ① 正文增量进草稿（saveDraft，节流）；
+     *   ② 每跑完一个工具就把「齐了的工具组」接进正式历史并 saveSession。
+     * 续跑轮原来只有 send(ev) —— 推给 live 就完事，整轮跑多久都不写盘，
+     * 只在收尾 saveSession 一次。于是这一轮再被重启掐断（15:38 那次），
+     * 几十分钟的对话一个字都不剩，主人看到的就是「压根没落盘」。
+     *
+     * 这里按主轮同一口径补齐：正文进草稿、每个 tool_end 提交+写盘。
+     * 收尾照旧 dropDraft（不然下次重启草稿会被当成半截话补进历史，重复一条）。
+     * ──────────────────────────────────────────────────────────────── */
+    const _draft = { text: '', reasoning: '', tools: [], startedAt: Date.now() };
+    const _shouldDraft = makeDraftThrottle();
+
+    /** 把 wire 里「工具都回来了」的组接进 history 并写盘（等价于主轮的 commitToolsNow） */
+    const _commitResumeToolsNow = () => {
+      try {
+        const doneIds = new Set();
+        for (const m of wire) {
+          if (m && m.role === 'tool' && m.tool_call_id) doneIds.add(String(m.tool_call_id));
+        }
+        let added = 0;
+        for (const m of wire) {
+          if (!m || m.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) continue;
+          if (m.context || seen.has(m)) continue;
+          let all = true;
+          for (const tc of m.tool_calls) {
+            if (!doneIds.has(String(tc && tc.id ? tc.id : ''))) { all = false; break; }
+          }
+          if (!all) continue;
+          const key = m.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',');
+          let already = false;
+          for (let k = Math.max(0, history.length - 40); k < history.length; k++) {
+            const h = history[k];
+            if (!h || h.role !== 'assistant' || !Array.isArray(h.tool_calls)) continue;
+            if (h.tool_calls.map((t) => String(t && t.id ? t.id : '')).join(',') === key) { already = true; break; }
+          }
+          if (already) { seen.add(m); continue; }
+          seen.add(m);
+          if (!m._at) m._at = Date.now();
+          history.push(m);
+          added += 1;
+        }
+        if (!added) return 0;
+        for (const m of wire) {
+          if (!m || m.role !== 'tool' || seen.has(m)) continue;
+          const id = String(m.tool_call_id || '');
+          if (!id) continue;
+          let ownerIn = false;
+          for (let k = Math.max(0, history.length - 40); k < history.length; k++) {
+            const h = history[k];
+            if (h && h.role === 'assistant' && Array.isArray(h.tool_calls) &&
+                h.tool_calls.some((t) => String(t && t.id ? t.id : '') === id)) { ownerIn = true; break; }
+          }
+          if (!ownerIn) continue;
+          seen.add(m);
+          history.push(m);
+        }
+        try { saveSession(session); } catch {}
+        /* 【2026-11-16 同一条坑，续跑轮也一样】提交完就把草稿水位清掉，
+         * 否则下次重启会把整轮累计的碎片再拼成一条大消息。 */
+        try {
+          _draft.text = '';
+          _draft.tools = [];
+          try { _shouldDraft(0, true); } catch (e) {}
+        } catch (e) {}
+        return added;
+      } catch { return 0; }
+    };
+
+    const _onResumeEvent = (ev) => {
+      try { send(ev); } catch {}
+      try {
+        if (!ev || typeof ev !== 'object') return;
+        if (ev.type === 'text') {
+          if (ev.notice || !ev.text) return;      /* 提醒不是她说的正文，别进草稿 */
+          _draft.text += ev.text;
+          if (_shouldDraft(_draft.text.length)) {
+            saveDraft(sessionId, { text: _draft.text, reasoning: _draft.reasoning, toolCalls: _draft.tools, startedAt: _draft.startedAt });
+          }
+        } else if (ev.type === 'reasoning') {
+          _draft.reasoning += String(ev.text || '');
+        } else if (ev.type === 'tool_start' || ev.type === 'tool_end') {
+          _draft.tools.push({ type: ev.type, name: ev.name, at: Date.now() });
+          saveDraft(sessionId, { text: _draft.text, reasoning: _draft.reasoning, toolCalls: _draft.tools, startedAt: _draft.startedAt });
+          if (ev.type === 'tool_end') _commitResumeToolsNow();
+        }
+      } catch { /* 落盘失败不该影响这一轮 */ }
+    };
+
+
     const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
         try {
           const ss = (typeof session !== 'undefined' && session) ? session : null;
@@ -4438,24 +5055,46 @@ async function resumeInterruptedTurn(onlySessionId) {
        * 更要命的是看门狗：没有事件就判「真空转」，得等 12 分钟才掐。
        *
        * 现在跟主轮一样接上 send()。看得见，看门狗也能按「等模型」那档早点管。 */
-      onEvent: (ev) => { try { send(ev); } catch {} },
+      onEvent: (ev) => { _onResumeEvent(ev); },
     }));
     repairHistory(history);
     for (const m of wire) {
       if (seen.has(m)) continue;
       if (m && (m.role === 'system' || m.context || m._sysNote === true)) continue;
+      /* 【2026-11-15】收起的旧工具结果副本不进历史（同 collapseOldToolBodies 注释） */
+      if (m && m._collapsed === true) continue;
       seen.add(m);
       history.push(m);
     }
-    // 把接引那句摘掉：它只是这一轮的引子
+    /* 把接引那句摘掉：它只是这一轮的引子。
+     *
+     * 【2026-11-16 修·判据跟文案对不上，等于从来没摘过】
+     *
+     * 主人问：「重启续上时会把我说过的话再以我的署名发一遍给ai吗？」
+     * 查下来：界面上不会（前端有 `if (turn.context) return`），
+     * 但这句提示**一直留在 session.messages 里**，每轮都发给模型 ——
+     * 检查鱼那个会话里攒了 8 条，每条还内嵌着「主人当时的原话：「…」」，
+     * 模型每轮都能重读一遍主人说过的话。
+     *
+     * 根子在这里：push 的正文是「（上一轮跑到一半被打断了（程序重启 / 崩溃 / 被关掉都算）…」，
+     * 而这里找的是「程序崩了，进程被强杀」—— 两句话根本不是一回事，
+     * 条件永远不成立，所以一条都没摘掉。
+     *
+     * 现在：按真实文案的**开头**判（两种历史文案都覆盖），
+     * 并且顺带把「上一轮跑到一半被打断」的重复条目一起清干净。 */
+    const _resumeMarks = ['（上一轮跑到一半被打断了', '程序崩了，进程被强杀'];
     for (let k = history.length - 1; k >= 0; k--) {
       const m = history[k];
-      if (m && m.context && m.role === 'user' && String(m.content || '').includes('程序崩了，进程被强杀')) {
-        history.splice(k, 1);
-      }
+      if (!m || !m.context || m.role !== 'user') continue;
+      const _c = String(m.content || '');
+      if (_resumeMarks.some((mk) => _c.includes(mk))) history.splice(k, 1);
     }
     session.updatedAt = Date.now();
     saveSession(session);
+    /* 【2026-11-15】这一轮收尾 = 正文已经接回历史、也写盘了，草稿那份该作废。
+     * 不删的话下次重启 restoreDraftHalfTurn 会把这段当成「半截话」再补一条，
+     * 屏幕上就是同一段话出现两遍（补草稿那条路自己也是幂等的，但没必要留着）。 */
+    try { dropDraft(sessionId); } catch {}
     /* 【2026-11-05 修·续跑那一轮没有用量】
      *
      * 主人报「自动重启后没显示这一轮时长」。查下来是：续跑这条路跑完只打了日志、
@@ -4489,10 +5128,12 @@ async function resumeInterruptedTurn(onlySessionId) {
     /* 【2026-11-05 加】真跑完了才算用掉这份意图 —— 失败/中途 return 的都留着，下次还能试。
      * 【2026-11-07 改】只删这一个会话的那条：别的会话还排队等着续，
      * 原来无参调用会把整个文件端掉，于是第二个会话永远续不上。 */
-    try { dropInterrupted(sessionId); } catch (e) {}
+    try { dropInterrupted(sessionId, { force: true }); } catch (e) {}
 
     console.log('[resume] 续跑跑完了：', sessionId, out && out.text ? `（${String(out.text).length} 字）` : '');
     diagLog('resume-done', `session=${sessionId} textLen=${out && out.text ? String(out.text).length : 0}`);
+    /* 【2026-11-16 晚】续跑轮也走同一道闸（和主路/叫醒轮口径一致） */
+    maybeAutoContinueAfterSilentTurn(sessionId, ac, out && out.text);
     return { ok: true, sessionId, text: out && out.text };
   } catch (e) {
     console.warn('[resume] 续跑这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
@@ -5119,6 +5760,82 @@ const server = createServer(async (req, res) => {
   // ---- 改动 diff：GET /api/turn/:at/diff?id=（preview-fixer · 2026-11-11）----
   // 取那一轮（anchor = 这条 user 消息）登记的写文件快照（messages[at]._ws），
   // 跟当前磁盘内容比一遍，回 unified 风格的行数组。只读，不动任何文件。
+  /* ══════════ 【2026-11-15 加·折叠存档】主人报「重启后消息全没了」 ══════════
+   *
+   * 病根不在重启：压缩折叠把历史里的一大段原文折进 .state/folded/，
+   * 历史开头换成一条摘要，界面上只留一句「折叠存档了」——原文一个字都看不到，
+   * 人就以为「消息被删了」。数据其实一直在盘上。
+   *
+   * 这里给三条路：列出有哪些段、读某一段的原文、把某一段恢复回会话。
+   * 恢复是**有损**的：归档是文本，工具输出还被截断过，所以只还原
+   * 「主人说的话」和「她说的正文」两类，工具调用/结果一律不还原 ——
+   * 硬塞会造出「assistant 有 tool_calls 却没有 tool 结果」的孤儿对，上游直接 400。 */
+  if (req.method === 'GET' && url.pathname === '/api/folded') {
+    const id = String(url.searchParams.get('id') || '');
+    if (!isSessionId(id)) return json(res, 400, { ok: false, error: 'bad session id' });
+    try {
+      return json(res, 200, { ok: true, segments: listSegments(id) });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: '读折叠登记失败：' + String((e && e.message) || e) });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/folded/text') {
+    const id = String(url.searchParams.get('id') || '');
+    const seg = String(url.searchParams.get('seg') || '');
+    if (!isSessionId(id)) return json(res, 400, { ok: false, error: 'bad session id' });
+    const got = readSegment(id, seg);
+    return json(res, 200, got);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/folded/restore') {
+    const _pay = await body(req).catch(() => ({}));
+    const id = String((_pay && _pay.id) || '');
+    const seg = String((_pay && _pay.seg) || '');
+    const cap = Math.max(20, Math.min(400, Number(_pay && _pay.max) || 200));
+    if (!isSessionId(id)) return json(res, 400, { ok: false, error: 'bad session id' });
+    const session = getSession(id);
+    if (!session) return json(res, 404, { ok: false, error: 'session not found' });
+    const got = readSegment(id, seg);
+    if (!got.ok) return json(res, 200, got);
+    /* 归档是「--- #序号 [role] 时间 ---」+ 正文 的纯文本，按块切。
+     * 只留 user / assistant；`…（中间省略 N 字）…` 是截断标记，跳过。 */
+    const blocks = [];
+    {
+      let cur = null;
+      for (const line of String(got.text || '').split(/\r?\n/)) {
+        const m = /^---\s*#\d+\s*\[([a-zA-Z]+)\]/.exec(line);
+        if (m) { if (cur) blocks.push(cur); cur = { role: m[1], lines: [] }; continue; }
+        if (!cur) continue;
+        if (/^…（中间省略.*）…$/.test(line.trim())) continue;
+        cur.lines.push(line);
+      }
+      if (cur) blocks.push(cur);
+    }
+    const picked = [];
+    for (const b of blocks) {
+      if (b.role !== 'user' && b.role !== 'assistant') continue;
+      const t = b.lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+      if (!t) continue;
+      if (/^【早期对话摘要/.test(t) || /^（下面是程序自动生成/.test(t)) continue;
+      if (/^\[工具调用\]/.test(t)) continue;
+      picked.push({ role: b.role, content: t });
+    }
+    if (!picked.length) return json(res, 200, { ok: false, error: '这一段里没有能还原的对话内容（只有工具流水）' });
+    const use = picked.slice(-cap);
+    const msgs = Array.isArray(session.messages) ? session.messages : (session.messages = []);
+    /* 插在「摘要」那条后面：这样它排在折叠掉的位置上，而不是接在最新的对话尾巴上。
+     * 没有摘要就插在最前面（system 之后）。 */
+    let at = msgs.findIndex((m) => m && m.context && m.summary);
+    at = at >= 0 ? at + 1 : (msgs[0] && msgs[0].role === 'system' ? 1 : 0);
+    const base = Date.now() - use.length * 1000;
+    const restored = use.map((m, i) => ({
+      role: m.role, content: m.content, at: base + i * 1000, _fromFold: got.id,
+    }));
+    msgs.splice(at, 0, ...restored);
+    try { saveSession(session); } catch (e) {
+      return json(res, 200, { ok: false, error: '写回会话失败：' + String((e && e.message) || e) });
+    }
+    return json(res, 200, { ok: true, seg: got.id, restored: restored.length, at });
+  }
   if (req.method === 'GET' && /^\/api\/turn\/\d+\/diff$/.test(url.pathname)) {
     const at = Number(url.pathname.match(/^\/api\/turn\/(\d+)\/diff$/)[1]);
     const id = String(url.searchParams.get('id') || '');
@@ -5287,152 +6004,16 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  /**
-   * 【2026-11-12 加·本机 DeepSeek 预设】
+  /* 【2026-11-16 严检·本机 DeepSeek 后端整条链已拆】
    *
-   * 主人要在「添加模型」的接口地址预设末尾加一个【本机 DeepSeek】：
-   * 选中后什么都不填，点【测连通】就自动起服务、自动把地址/key/模型名填好。
-   *
-   * 四个接口分工：
-   *   GET  /api/mini-deepseek/status  现在什么情况（起没起、等没等登录、程序在不在）
-   *   POST /api/mini-deepseek/start   起服务；没登录就先开登录页等十分钟
-   *   POST /api/mini-deepseek/stop    收尸
-   *   POST /api/mini-deepseek/probe   只探端口，轻量、不启动
-   *
-   * 一条硬规矩：**token 绝不回给前端**，只回「有没有」。
-   */
-  if (req.method === 'GET' && url.pathname === '/api/mini-deepseek/status') {
-    const stt = localStatus();
-    const probe = await probeLocalService(900);
-    return json(res, 200, {
-      ok: true,
-      ...stt,
-      // running = 「现在服务能不能用」，不是「本进程有没有子进程句柄」。
-      // 服务可能是外部（start.bat）起的，那时 stt.running 为 false 但端口活得好好的。
-      running: !!(stt.running || probe.up),
-      up: probe.up,
-      ids: probe.ids ?? [],
-      // 【2026-11-13 修】probe 现在带 tokenOk（真打上游验过），status 原样透传给前端。
-      //   tokenOk:false = 服务活着但 token 已死 —— 前端 ensure 靠它决定「先停再换血」。
-      tokenOk: probe.tokenOk,
-      hasToken: !!readDeepSeekToken().token,
-      hasProgram: !!miniDsDir(),
-      python: findPython(),
-      modelFixed: MINI_DS_MODEL,
-    });
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/start') {
-    let payload = {};
-    try { payload = (await body(req)) ?? {}; } catch { payload = {}; }
-
-    // 先看已经在跑没
-    const running = await probeLocalService(900);
-    if (running.up && running.tokenOk !== false) {
-      return json(res, 200, {
-        ok: true, already: true, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL,
-      });
-    }
-    // 【2026-11-13 修】服务活着但 token 已死（tokenOk:false）：旧进程喂的是死 token，
-    //   直接回 already 等于假成功 —— 先停掉，往下走正常拉起流程换新 token。
-    if (running.up && running.tokenOk === false) {
-      try { await stopLocalService(); } catch {}
-      await new Promise((r) => setTimeout(r, 800));
-    }
-
-    // 没 token 就先等登录（这一步会挂十分钟以内）
-    if (!readDeepSeekToken().token) {
-      if (payload?.noWait) {
-        return json(res, 200, { ok: false, reason: 'need-login', error: '还没在内置浏览器登录 DeepSeek' });
-      }
-      const w = await waitForLogin({ opener: openInBrowser });
-      if (!w.ok) {
-        return json(res, 200, {
-          ok: false,
-          reason: w.reason === 'timeout' ? 'login-timeout' : 'need-login',
-          error: w.error || '没等到登录',
-        });
-      }
-    }
-
-    const r = await startLocalService();
-    if (!r.ok) {
-      return json(res, 200, { ok: false, reason: r.reason, error: r.error, log: r.log });
-    }
-    return json(res, 200, {
-      ok: true, started: true, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL, ids: r.ids ?? [],
-    });
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/stop') {
-    stopLocalService();
-    return json(res, 200, { ok: true });
-  }
-
-  /* 【2026-11-12】本机 DeepSeek 的三项默认值 + 自动落模型。
-   * 主人要的是「自动填写接口地址、key、模型名，在【模型】界面添加该模型」。
-   * 已经有同 id 的模型就不重复加（返回 created:false），前端据此「什么都不发生」。 */
-  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/apply') {
-    try {
-      const p = await body(req);
-      const plan = localDeepSeekDefaults();
-      const cur = listModels();
-      const dup = (cur.models || []).find((m) => m.id === LOCAL_ID || (m.baseURL === plan.base && m.model === plan.model));
-      if (dup) {
-        // 已经加过：不重复加，只把 key 刷新（token 是随时会变的东西）
-        saveModel({ ...dup, apiKey: plan.key });
-        return json(res, 200, { ok: true, created: false, already: true, id: dup.id, base: plan.base, key: plan.key, baseURL: plan.base, apiKey: plan.key, model: plan.model, state: listModels() });
-      }
-      const r = saveModel({
-        name: String(p?.name || '').trim() || '本机 DeepSeek',
-        baseURL: plan.base,
-        apiKey: plan.key,
-        model: plan.model,
-        kind: 'chat',
-      });
-      return json(res, 200, { ok: true, created: true, already: false, id: (r && r.id) || LOCAL_ID, base: plan.base, key: plan.key, baseURL: plan.base, apiKey: plan.key, model: plan.model, state: listModels() });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: String(e?.message ?? e) });
-    }
-  }
-  /* 【2026-11-12 加】token 过期了要能重新取：前端「测连通」失败且原因看着是 token 时调它。
-   * 绝不把 token 本体回给前端，只回「取到了没有」。 */
-  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/relogin') {
-    // token 失效专用：停服务 → 作废 token 缓存 → 开内置浏览器登录页等重登 → 带新 token 重启
-    try { stopLocalService(); } catch {}
-    invalidateTokenCache();
-    /* 【2026-11-13 顺手修】原稿写的 readBody——本项目没这个函数（助手叫 body），
-     * check-identifiers 抓的。变量名避开 helper 本名（const body = await body(req)
-     * 会 TDZ 自爆），改 _pay。 */
-    const _pay = await body(req).catch(() => ({}));
-    const started = await startLocalService({ opener: openInBrowser, waitMs: Number(_pay && _pay.waitMs) || 0, forceRelogin: true });
-    if (!started.ok) return json(res, 200, { ok: false, reason: started.reason, error: started.error || '重新登录失败' });
-    return json(res, 200, { ok: true, hasToken: true, base: MINI_DS_BASE, key: MINI_DS_KEY });
-  }
-
-if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
-    try {
-      const r = readDeepSeekToken();
-      if (!r || !r.token) {
-        return json(res, 200, { ok: false, reason: 'no-token', error: (r && r.reason) || '没在内置浏览器里登过 deepseek' });
-      }
-      return json(res, 200, { ok: true, hasToken: true, len: String(r.token).length });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: String((e && e.message) || e) });
-    }
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/probe') {
-    // 【2026-11-12 修】探不通就自动起服务（主人：「点测连通会自动起程序」）。
-    let p = await probeLocalService(1500);
-    let started = false;
-    if (!p.up) {
-      const s = await startLocalService({});
-      started = !!s.started;
-      p = await probeLocalService(1500);
-    }
-    return json(res, 200, { ok: true, up: p.up, running: p.up, already: p.up && !started, started, ids: p.ids ?? [], hasToken: !!readDeepSeekToken().token, base: MINI_DS_BASE, key: MINI_DS_KEY, model: MINI_DS_MODEL });
-  }
+   * 主人 11-16 原话：「把小鱼Agent【模型】里有关【本机 DeepSeek】的一切删除」。
+   * 上一轮只删了前端那条预设，后端这 6 个路由 + mini-deepseek.mjs（21KB）还留着，
+   * 我还在注释里写了「也一并拆了」——那是假话。这次真拆：
+   *   · 路由：status / start / stop / apply / relogin / token / probe 全删
+   *   · 模块：src/mini-deepseek.mjs 删除
+   *   · 守卫：scripts/check-mini-deepseek.mjs 删除
+   * 前端那段「本机 DeepSeek 测连通」的死代码暂时留着（分支永不进入，不影响功能），
+   * 见 public/index.html 里 isLocal 那处注释。 */
 
   /**
    * 【2026-11-10 主人钦点：「添加模型」的「选一个」不要写死的】
@@ -5584,7 +6165,37 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
   if (req.method === 'GET' && url.pathname === '/api/team/workers') {
     const sid = url.searchParams.get('sessionId') || '';
     if (!isSessionId(sid)) return json(res, 400, { error: 'bad sessionId' });
-    const ws = listWorkers(sid);
+    /* 【2026-11-16 主人钦点·已经失败的旧条目自动删】
+     *
+     * 原话：「已经失败的旧条目现在能自动删」。
+     * 花名册只增不删，一个会话跑一天能攒 20 多条；截图里那排「干活中…」
+     * 混着好几小时前的死条目，看着像她派了一堆活。
+     *
+     * 每个会话最多 60 秒清一次（pruneWorkers 里只留最近 5 条已结束的）。 */
+    try {
+      const _now = Date.now();
+      const _last = _pruneAt.get(sid) || 0;
+      if (_now - _last > 60 * 1000) {
+        _pruneAt.set(sid, _now);
+        pruneWorkers(sid);
+      }
+    } catch { /* 清垃圾失败不影响看进度 */ }
+    /* 【2026-11-16 主人问·「子Agent 干活死了会自动删显示吗」】
+     *
+     * 之前只做了「已结束的过 10 分钟自动删」，但还有一种更烦的情况：
+     * 进程被硬杀（重启 / 崩溃 / 任务管理器杀掉）时 finishWorker 来不及跑，
+     * 花名册里永远写着 running —— 界面就一直显示「⚑ N 个在后台干活…」，其实早死了。
+     *
+     * 判据很硬：**进程池里没有它 + 开工时间早于本进程启动（留 2 分钟错峰宽限）**
+     * → 一律当 interrupted 返回。这样死掉的卡片下一次轮询就从列表里消失。 */
+    const ws = listWorkers(sid).map((w) => {
+      try {
+        if (!w || w.status !== 'running') return w;
+        if (isWorkerAlive(sid, w.id)) return w;
+        if (Number(w.startedAt) > BOOT_AT - 120000) return w;
+        return Object.assign({}, w, { status: 'interrupted', endedAt: w.endedAt || Date.now() });
+      } catch { return w; }
+    });
     return json(res, 200, {
       sessionId: sid,
       workers: ws,
@@ -5774,6 +6385,74 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
       if (_t0 && _t0.ac && _t0.ac.signal && _t0.ac.signal.aborted) continue;
       if (live && live.done && !_t0) continue;   // 只剩个关掉的直播壳、连登记都没有：别报
       /**
+       * 【2026-11-15 加·幽灵登记自愈（主人报「检查鱼在干活，但她实际没干活，发消息也没反应」）】
+       *
+       * 现场实测 /api/running：
+       *   smvwf26l5ap3c  startedAt=0  events=0    ← 纯幽灵：既没开跑时间也没任何事件
+       *   smwg61ggmhd4a  startedAt=0  events=73   ← 半截登记
+       *   smwgjfw3gggro  idleMs=501278（8 分半没动静）
+       *
+       * 后果比「显示错了」严重得多：前端看到绿点以为在跑，主人发消息被判成
+       * 「这一轮还在跑」→ 排队等待 → **永远等不到**（那一轮其实早没了）。
+       * 表现出来就是「她在干活，我发消息没反应」，只能重启才好。
+       *
+       * 病根：登记只在「这一轮自己收尾的 finally」里删，而收尾可能整条路都走不到
+       * （进程被砍、上游挂死、异常从中间穿出去）。于是登记永远留在 Map 里。
+       *
+       * 自愈规则（都是**只删账、不动数据**）：
+       *   ① startedAt<=0 且 events===0 → 纯幽灵，立刻删；
+       *   ② 静了超过 30 分钟 → 认定这一轮早没了，删掉并记一行 diag。
+       */
+      const _nowMs = Date.now();
+      const _ageMs = _nowMs - Number(t.startedAt || 0);
+      const _evN = live && Array.isArray(live.events) ? live.events.length : 0;
+      /**
+       * 【2026-11-15 修·长轮被误杀】
+       *
+       * 规则②原来拿 startedAt 算「静了多久」，可 startedAt 是**开跑**时间：
+       * 一个跑回归跑了 35 分钟的轮（每步都有事件、一直在动）会被算成
+       * 「静了 35 分钟」直接删账。删账本身不动数据，但界面上的绿点没了、
+       * 后台叫醒的续跑账也没了 —— 看着就是「她干到一半自己停了」。
+       * 现在改成从「最后一次有动静」算，一个事件都没有时才退回 startedAt。
+       */
+      /* 【2026-11-16 修·startedAt=0 的登记被无条件删账】
+       * 病根：_lastAlive 原来直接退成 `Number(t.startedAt)||0` = 0，
+       * 于是 _nowMs - _lastAlive 是个天文数字（几十亿毫秒），
+       * 必然大于 30 分钟 → 规则②把这条账无条件删掉。
+       * 实测修理鱼(smwg61ggmhd4a)：startedAt=0 events=73，15 次被这样删。
+       * 修法：startedAt 无效时先不许删，只把「没有开跑时间」当作可疑，
+       * 交给下面的 30 分钟判据从**事件时间**算；事件也没有才退成「现在」（不删）。 */
+      let _lastAlive = Number(t.startedAt) || 0;
+      if (!(_lastAlive > 0)) {
+        /* startedAt 无效：改从**第一条**事件的时间当开跑时间。
+         * 一条事件都没有才退成「现在」（宁可不删，也不要凭空判死）。 */
+        _lastAlive = _nowMs;
+        if (live && _evN) {
+          for (let i = 0; i < _evN; i += 1) {
+            const _a = Number(live.events[i] && live.events[i].at);
+            if (Number.isFinite(_a) && _a > 0) { _lastAlive = _a; break; }
+          }
+        }
+      }
+      if (live && _evN) {
+        /* 从尾部往前找最近一条带 at 的事件（很多 push 处不带 at，只扫 8 条容易扑空）。
+         * 事件是按时间递增压进来的，找到第一条就是最新的那条。 */
+        for (let i = _evN - 1; i >= 0 && i >= _evN - 200; i -= 1) {
+          const _a = Number(live.events[i] && live.events[i].at);
+          if (Number.isFinite(_a) && _a > 0) { if (_a > _lastAlive) _lastAlive = _a; break; }
+        }
+      }
+      if ((!Number(t.startedAt) || Number(t.startedAt) <= 0) && _evN === 0) {
+        try { runningTurns.delete(id); } catch {}
+        try { diagLog('ghost-turn-clean', id + ' startedAt=0 events=0（幽灵登记）'); } catch {}
+        continue;
+      }
+      if (Number(t.startedAt) > 0 && (_nowMs - _lastAlive) > 30 * 60 * 1000) {
+        try { runningTurns.delete(id); } catch {}
+        try { diagLog('ghost-turn-clean', id + ' 静了 ' + Math.round((_nowMs - _lastAlive) / 60000) + ' 分钟（判定早结束）'); } catch {}
+        continue;
+      }
+      /**
        * 【2026-11-07 加·「在跑」和「卡住了」得能分开】
        *
        * 主人报：「会话列表显示她在跑（小绿点），点进去发现她早停了」。
@@ -5813,6 +6492,8 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     }
     return json(res, 200, { running: list });
   }
+
+  /* 【2026-11-16 主人钦点】/api/jobs/running 跟着后台作业一起删了（那个能力不存在了）。 */
 
   // ---- 429 自动回退：状态 / 开关 / 立即迁移 ----
   if (req.method === 'GET' && url.pathname === '/api/retry429') {
@@ -6192,6 +6873,41 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
   if (req.method === 'GET' && url.pathname === '/api/knowledge') {
     return json(res, 200, { cards: listCards() });
   }
+  /* 【2026-11-14 恢复·会话知识库（手路库）的界面接口】
+   * know.mjs 是上午主人钦点建在生效层的，集成代码随 server.mjs 被 sync 覆盖丢了。
+   * 现在收编回仓库：这里给界面两个口——列全部手路 / 删一条。 */
+  if (req.method === 'GET' && url.pathname === '/api/know') {
+    const { knowAll } = await import('./know.mjs');
+    return json(res, 200, { items: knowAll() });
+  }
+  /* 【2026-11-14 主人钦点·知识库面板三件套】知识史书的统计+目录（文本账） */
+  if (req.method === 'GET' && url.pathname === '/api/know/chronicle') {
+    const m = await import('./know-chronicle.mjs');
+    return json(res, 200, { stats: m.knowChronStats(), text: m.knowChronToc({ limit: 50 }) });
+  }
+  if (req.method === 'GET' && url.pathname === '/api/know/chronicle/search') {
+    const m = await import('./know-chronicle.mjs');
+    const q = url.searchParams;
+    return json(res, 200, m.knowChronSearch({ query: q.get('query') || '', limit: 12 }));
+  }
+  if (req.method === 'POST' && url.pathname === '/api/know/delete') {
+    const { trigger } = await body(req).catch(() => ({}));
+    const { knowDelete } = await import('./know.mjs');
+    const out = knowDelete(trigger);
+    return json(res, out.ok ? 200 : 400, out);
+  }
+  /* 【2026-11-14 主人钦点·全会话可增改】面板里直接记/改手路。
+   * knowAdd 同 trigger 覆盖更新（旧版进史书留底），所以保存接口一个就够。 */
+  if (req.method === 'POST' && url.pathname === '/api/know/save') {
+    const { trigger, steps, by } = await body(req).catch(() => ({}));
+    const { knowAdd } = await import('./know.mjs');
+    try {
+      const out = knowAdd({ trigger, steps, source: '面板', by: String(by || '主人') });
+      return json(res, out.ok ? 200 : 400, out);
+    } catch (e) {
+      return json(res, 500, { ok: false, error: String(e?.message ?? e) });
+    }
+  }
   if (req.method === 'GET' && url.pathname === '/api/knowledge/export') {
     return json(res, 200, exportCards());
   }
@@ -6219,7 +6935,11 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
 
   // ===== 定时任务（cron）—— 按主人要求加的 =====
   if (req.method === 'GET' && url.pathname === '/api/cron') {
-    return json(res, 200, { tasks: listTasks(), limits: { tickMs: 30000 } });
+    // 【2026-11-15 按会话】带 sid 参数时只返回该会话的任务；不传则返回全部（兼容旧调用）
+    const sid = String(url.searchParams.get('sid') || '');
+    const all = listTasks();
+    const tasks = sid ? all.filter((t) => !t.sessionId || t.sessionId === sid) : all;
+    return json(res, 200, { tasks, limits: { tickMs: 30000 } });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/cron') {
@@ -6768,8 +7488,9 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     try {
       return json(res, 200, { ok: true, sessionId: sid, on: adminOn(sid) });
     } catch (e) {
-      // 读盘失败 = 关（fail-closed，见 admin-mode.mjs 文件头）
-      return json(res, 200, { ok: true, sessionId: sid, on: false, note: String(e?.message ?? e) });
+      /* 【2026-11-14 修】管理员档 11-13 起「没显式关过 = 开」，读盘失败也按默认开，
+       * 跟 admin-mode.mjs 的 adminOn() 一个口径；原来这里回 on:false，界面会把默认开画成已关。 */
+      return json(res, 200, { ok: true, sessionId: sid, on: true, note: String(e?.message ?? e) });
     }
   }
   if (req.method === 'POST' && url.pathname === '/api/admin-mode') {
@@ -8457,9 +9178,12 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     }
 
     const level = ov.level || '';
-    const levelName = level
-      ? (LEVELS.find((l) => l.id === level)?.name || level)
-      : '默认';
+    /* 【2026-11-15 主人报·新建会话左上角写「高」、展开却勾着「关」】
+     * 原来这里没会话级设置时把文案写死「高」，而勾选读的是 defaultLevelName
+     * （= levelFor(当前模型)，此前那批老值全是 off）—— 两处各说各话。
+     * 现在一律取「实际生效的那一档」：显示和勾选同一个来源，再不可能打架。 */
+    const _effLevel = level || levelFor(epNow);
+    const levelName = LEVELS.find((l) => l.id === _effLevel)?.name || String(_effLevel || '');
 
     return json(res, 200, {
       sessionId: sid,
@@ -8469,7 +9193,11 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
       level,
       levelName,
       isModelCustom: Boolean(modelId),
-      isLevelCustom: Boolean(level),
+      /* 【2026-11-15 补·新建会话默认「低」之后，框别一直染成「自定义」】
+       * 新会话现在都显式记一条 level:'low'。若还按「有值就算自定义」，
+       * 每个新会话的思考框一开就变蓝、悬停写「临时用了低」—— 那不是主人改的，
+       * 是出厂默认。所以「低」不算自定义（它已经是标准档），其余照旧。 */
+      isLevelCustom: Boolean(level) && String(level) !== NEW_SESSION_DEFAULT_LEVEL,
       // 给下拉用
       models: listModels().models.map((m) => ({ id: m.id, name: m.name || m.model, active: m.active })),
       levels: LEVELS.map((l) => ({ id: l.id, name: l.name, desc: l.desc })),
@@ -8507,7 +9235,11 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
         modelId: ov.modelId || '',
         modelName,
         level: ov.level || '',
-        levelName: ov.level ? (LEVELS.find((l) => l.id === ov.level)?.name || ov.level) : '默认',
+        /* 【2026-11-15】同上：没有会话级设置时报「实际生效的那一档」，别写死。 */
+        levelName: (() => {
+          const lv = ov.level || levelFor(epNow);
+          return LEVELS.find((l) => l.id === lv)?.name || String(lv || '');
+        })(),
         isModelCustom: Boolean(ov.modelId),
         isLevelCustom: Boolean(ov.level),
       });
@@ -8897,7 +9629,9 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     const now = Date.now();
     const session = {
       id,
-      title: String(payload?.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 40) || '\u65b0\u4f1a\u8bdd',
+      /* 【2026-11-16 主人钦点·会话名不许重名】
+       * 主人手动起的名字也走一遍唯一化：撞上别的会话就自动加数字。 */
+      title: uniqueSessionTitle(id, String(payload?.title ?? '')) || '新会话',
       createdAt: now,
       updatedAt: now,
       messages: sysSeed(id),
@@ -8907,6 +9641,16 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     };
     saveSession(session);
     sessions.set(id, session);
+    /* 【2026-11-15 主人钦点·新建会话默认思考强度「低」】
+     * 原话：「改新建会话时，左上角思考强度默认为【低】」。
+     *
+     * 注意是**会话级覆盖**（session-overrides.json），不是改全局默认 ——
+     * 右上角「模型」面板里给这个模型设的那一档一个字都不动，老会话也都不受影响；
+     * 只有从此以后新建出来的会话，左上角一开是「低」。
+     * 主人当然还能在左上角随手换，换了就按他选的记（下次打开还是他选的那档）。 */
+    try { setOverride(id, { level: 'low' }); } catch (e) {
+      console.warn('[override] 新会话默认思考强度没设上（不影响使用）：', String(e?.message ?? e));
+    }
     // 新会话当场就有一份自己的记忆本子（骨架），不用等到第一次开口才建
     try {
       ensureMemory(id);
@@ -9052,6 +9796,11 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     } catch (err) {
       console.warn('[memory] 分支记忆没继承成：', String(err?.message ?? err));
     }
+    /* 分支 = 这一段对话接着往下长，思考强度也跟着原会话走（没记过就按新会话默认「低」） */
+    try {
+      const _ov = getOverride(id);
+      setOverride(newId, _ov.level ? { level: _ov.level } : { level: 'low' });
+    } catch {}
     setLastSessionId(newId);
     return json(res, 200, { session: publicSession(session), from: id, at: end });
   }
@@ -9315,7 +10064,18 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     const msg = session.messages[i];
     // 该条本身保留（含它挂着的工具消息），只砍 i 之后的所有
     const removed = session.messages.length - (i + 1);
-    if (removed > 0) session.messages.splice(i + 1);
+    if (removed > 0) {
+      /* 【2026-11-15 修·同 message-delete】砍掉的尾巴也要先登记指纹，
+       * 否则 saveSession 合流会把它们当成「没落盘的插话」一条条接回来（复活 + 乱序）。 */
+      if (!Array.isArray(session._deletedKeys)) session._deletedKeys = [];
+      const _deadTail = new Set(session._deletedKeys);
+      for (let _k = i + 1; _k < session.messages.length; _k++) {
+        const _fk = messageKey(session.messages[_k]);
+        if (_fk) _deadTail.add(_fk);
+      }
+      session._deletedKeys = [..._deadTail];
+      session.messages.splice(i + 1);
+    }
     // 已有回退点下标重映射：指向 <= i 的保留；> i 的（指向被删区间）丢弃
     if (Array.isArray(session.rewinds)) {
       session.rewinds = session.rewinds.filter(rw => {
@@ -9376,6 +10136,19 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
       }
     }
     const drops = [...drop].sort((a, b) => a - b);
+    /* 【2026-11-15 修·删掉的消息会复活】
+     * saveSession 落盘前有一道「合流」：磁盘上有、内存里没有的消息会被当成
+     * 「插话刚 push 进来、还没落盘的那一句」接回末尾（sessions-core.mjs 的 diskOnly 那段）。
+     * 真删的消息正中这个判据 —— 实测（sandbox/_repro_del_resurrect.mjs）：删掉一条，
+     * 下一轮存盘它就原样回来，还被排到最末尾（复活 + 乱序）。
+     * 删之前先把指纹登记进 session._deletedKeys，合流时命中的一律不接。
+     * （指纹用 messageKey，跟 sessions-core 合流那端同一套判据。） */
+    if (!Array.isArray(session._deletedKeys)) session._deletedKeys = [];
+    {
+      const _dead = new Set(session._deletedKeys);
+      for (const di of drops) { const k = messageKey(all[di]); if (k) _dead.add(k); }
+      session._deletedKeys = [..._dead];
+    }
     // 真删：splice 出数组
     for (let i = drops.length - 1; i >= 0; i--) all.splice(drops[i], 1);
     // ② 已有回退点/快照下标重映射：删掉的位置之后全部前移
@@ -9663,15 +10436,34 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
         let _qlive = null;
         try { _qlive = _wasLiveAtQuit.has(String(_qsid)) ? (runningTurns.get(_qsid) || { _wasLive: true }) : null; } catch {}
         if (_qlive || _qopen.length) {
+          /* 【2026-11-16 修·「准备阶段被掐」的会话会永久丢】
+           *
+           * 主人让重启后核查「有没有没续上的」，实测检查鱼（smvwf26l5ap3c）就是：
+           * 它 11:21:30 被续上 → 准备耗时 104 秒（读盘 + sanitize）→ 11:23:15 刚准备完
+           * 时，**第二个进程 11:23:13 已经起来了**，退出记账在 11:23:14 跑 ——
+           * 那一刻它还没进 runningTurns（准备阶段不算 running），于是 `_qlive` 是 null，
+           * 被记成「关窗口退出（清单上还有没做完的）」+ autoResume=false。
+           * 下一个进程只续 autoResume=true 的，检查鱼就再没人管了 —— 断点还在，
+           * 但它被当成「老账」，永远不会自动接上。主人看到的就是「有一个没续上」。
+           *
+           * 修法：**继承**。只要盘上原本就有一条 autoResume=true 的账（说明它本来就该续），
+           * 这次退出再掐一次也仍然是「该续」—— 不会因为恰好卡在准备窗口里就降级成老账。
+           */
+          const _prev = (() => { try { return (listInterrupted() || []).find((x) => String(x && x.sessionId) === String(_qsid)) || null; } catch { return null; } })();
+          const _shouldAuto = Boolean(_qlive) || Boolean(_prev && _prev.autoResume === true);
           markInterrupted({
+            planned: true,   /* 【2026-11-16】这条提示不为「重启/退出」出现（见 resume.mjs 的 planned） */
             sessionId: _qsid,
             text: _qlive && _qlive.draft ? _qlive.draft.text : '',
             reason: _qlive ? '关窗口退出（这一轮还没跑完）' : '关窗口退出（清单上还有没做完的）',
             taskLine: lastUserLine(_qsid),
             openSteps: _qopen,
             /* 【2026-11-07】只有「正在跑被打断」才在开机时自动接着干；
-             * 清单老账（人早就不在跑了）只记着，等主人手动点 —— 否则一次能拉起八个会话。 */
-            autoResume: Boolean(_qlive),
+             * 清单老账（人早就不在跑了）只记着，等主人手动点 —— 否则一次能拉起八个会话。
+             * 【2026-11-16】再加上「原本就该续」这条继承（见上面那段）。 */
+            autoResume: _shouldAuto,
+            /* 【2026-11-15 修·连续重启只剩一个续上】退出记的账不许被「上一轮跑完的收尾」删掉 */
+            locked: true,
           });
           diagLog('quit-resume:' + _qsid + ':' + _qopen.length, _qsid);
         }
@@ -9699,6 +10491,28 @@ if (req.method === 'POST' && url.pathname === '/api/mini-deepseek/token') {
     return json(res, 200, out);
   }
 if (req.method === 'POST' && url.pathname === '/api/app/restart') {
+    /* ══ 【2026-11-16 主人问「重启代码里是不是没有先落盘再退出重启」—— 确实没有】══
+     *
+     * 退出前先把在跑各轮手里还没落盘的东西补上：
+     *   ① reg.draft —— 正文草稿是节流写的（1.5 秒 / 40 字），最后那一小段常常还没进盘；
+     *   ② 会话本体 —— 内存里可能刚改过（工具组已接进 history 但没 saveSession）。
+     *
+     * 以前只有「崩溃兜底退出」走 crash-guard 的 onFatal 才补草稿，
+     * 正常重启这条路一条都不补。检查鱼 23:14→23:39 那一段就是这么没的
+     * （叠加另一条：续跑轮的 onEvent 根本没有任何落盘点）。
+     *
+     * 这里用同步写（saveDraft/saveSession 都是 writeFileSync），
+     * 后面的 kill 不会抢在它前面。
+     */
+    try {
+      for (const [_rid, _rt] of runningTurns) {
+        const _d = _rt && _rt.draft;
+        if (_d && String(_d.text || '').trim()) {
+          try { saveDraft(_rid, { text: _d.text, reasoning: _d.reasoning || '', toolCalls: _d.tools || [], startedAt: _d.startedAt }); } catch {}
+        }
+        try { const _rs = sessions.get(_rid); if (_rs) saveSession(_rs); } catch {}
+      }
+    } catch {}
     /* 【2026-11-03 主人要求】功能页那一档管的是「续不续上」，不是「能不能重启」。
      *
      * 主人原话：「如果这个功能被关，那么就改为能自动重启但不能续上」。
@@ -9943,6 +10757,10 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         }
       for (const _sid of new Set(_cands)) {
         const _live = runningTurns.get(_sid);
+        /* 【2026-11-15 补】盘上如果已经压着这个会话的旧账（上一轮退出记的），看一眼：
+         *  旧账带 autoResume:true 的（真在跑被打断），这次不许降级成不自动续。 */
+        let _prevResume = null;
+        try { _prevResume = peekInterrupted(_sid); } catch {}
         let _open = [];
         /** 【2026-11-06 修】_steps 原来在 try 里声明，出了 try 就取不到 —— 提到这里 */
         let _steps = [];
@@ -9994,6 +10812,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           .filter(Boolean)
           .slice(-6);
         markInterrupted({
+          planned: true,   /* 【2026-11-16】这条提示不为「重启/退出」出现（见 resume.mjs 的 planned） */
           sessionId: _sid,
           text: _live && _live.draft ? _live.draft.text : '',
           reason: _live
@@ -10007,8 +10826,15 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            *  于是 /api/app/restart 记的每一条都被当成「清单老账」跳过，
            *  日志只会说「没有需要自动续的」—— 重启完一片安静，正是主人报的现象。
            *  规矩跟退出那条路（/api/app/quitting）对齐：真的在跑被打断 → 自动续；
-           *  只是清单有剩（人早不在跑）→ 只记账，等主人手动点。 */
-          autoResume: Boolean(_live),
+           *  只是清单有剩（人早不在跑）→ 只记账，等主人手动点。
+           *  【2026-11-15 补】上一轮退出记的账（locked + autoResume:true）还在盘上、
+           *  这一轮还没来得及续（开机 8 秒内又要求重启）—— 不许把它降级成不自动续。 */
+          autoResume: Boolean(_live) || Boolean((_prevResume && _prevResume.autoResume === true)),
+          /* 【2026-11-15 修·连续重启只剩一个续上（跟退出路径同款）】
+           *  记账之后 200ms 进程就退了；这个窗口里如果恰好有一轮正常收尾，
+           *  它的 finally 会调 dropInterrupted(自己) —— 把刚记好的账顺手抹掉。
+           *  盖 locked 让收尾清不动它，只有续跑真的成功（force）才清。 */
+          locked: true,
           /* 【2026-11-06 加·5 段式交接】
            *  原来只记「断在哪、还剩哪几步」—— 醒来知道接着干，但不知道**为什么干**、
            *  也**已经定过什么主意**，于是要么把做过的重做一遍，要么拐到别的方向去。
@@ -10017,8 +10843,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           goal: _goal,
           decisions: _decisions,
         });
-        _resumeSid = _sid;
-        break;
+        /* 【2026-11-15 修·A 续上了、B 又被丢下（主人报的问题 6 根因）】
+         *  这个循环末尾原来有一个 break —— 标完第一个候选（通常就是点重启的那个
+         *  会话）就跳出去了，_cands 里排在后面的正在跑的 B 会话一条账都没记上。
+         *  重启完 resume.json 里只有 A，B 就静悄悄停在那儿 —— 正是
+         *  「A 会话运行重启代码重启后会续上，另一个同样在工作中被重启的会话不会续上」。
+         *  现在：每个候选都记，_resumeSid 只认第一个处理成的（点重启的那个排最前）。 */
+        if (!_resumeSid) _resumeSid = _sid;
       }
     } catch (e) {
       console.warn('[restart] 记续跑意图失败（不影响重启）：', String(e?.message ?? e));
@@ -10335,6 +11166,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 所以只要主人真发了一句，这里就归零。
      */
     try { noteReplied(sessionId); } catch {}
+    /* 【2026-11-16 晚】主人亲自发话 = 人工接管，自动续工计数清零重新算 */
+    try { autoContinueBook.delete(sessionId); } catch {}
 
     /**
      * 「小鱼」按钮禁用着 = 她不在这个屋。
@@ -10586,7 +11419,16 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
 
     const session = existing ?? {
       id: sessionId,
-      title: titleFromMessage(String(message).trim() || attachments.map((a) => a?.name).filter(Boolean).join(' ')),
+      /* 【2026-11-16 严检补漏·这条就是主人抱怨的「发个继续，会话名变成继续」】
+       *
+       * 上一轮删自动改名只删了「首句改名」和「收尾兜底」两处，漏了这里：
+       * 新会话第一次发消息时，拿那句正文直接当标题。
+       * 主人原话：「会话名不能随会话内发送的消息动态变化……只能由主人手动填写，
+       * 或会话里的ai发现自己的会话名是【新会话】时……自己填」。
+       * 所以统一给「新会话」—— 她第一轮看到这个名字会自己 rename_session 起一个。
+       * （另外两处 titleFromMessage 留着：「（手动接续）」「（限流后接续）」是程序故意
+       *  开的新会话，名字是给人看的标记，不随消息内容变，留着更清楚。） */
+      title: '新会话',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messages: sysSeed(sessionId),
@@ -10703,26 +11545,21 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         __opMsg._who = String(__opName);
         if (__opCard && __opCard !== 'xiaoyu') __opMsg._card = String(__opCard);
       }
-      const pair = [openingPack.userMsg, __opMsg];
+      /* 【2026-11-15 晚·同上】只垫她自己那句开场白，不垫主人的「在吗」。 */
+      const pair = [__opMsg];
       if (at < 0) history.push(...pair);
       else history.splice(at, 0, ...pair);
       delete session._openingPending;
     }
     if (!resume) {
-      /* 【2026-11-05 主人报·发了一句「继续」，会话名被改成了「继续」】
+      /* 【2026-11-16 主人钦点·会话名不许跟着消息变】
        *
-       *  原来只看「历史里有没有 user 消息」就当成第一句、直接改标题。
-       *  可分支出来的 / 压缩过的 / 续跑重建的会话，开头是摘要不是 user，
-       *  于是永远被判成「第一句」，主人随便发个「继续」就把标题覆盖了。
+       * 原话：「会话名不能随会话内发送的消息动态变化（比如我在会话里发了个继续，
+       *        会话名不能因此变成继续），只能由主人手动填写或会话里的 AI 自己填」。
        *
-       *  现在的判据加一条：当前标题得是空的 / 还是默认名「新会话」/ 或者短得不像名字，
-       *  才允许自动起名。已经有像样标题的，一句话都不许动。
-       *
-       *  （firstUserTurn 原来还兼职判断「这是不是第一句」，所以改名和判第一句要分开：
-       *    判第一句照旧看历史，改标题才加上面的标题守卫。）
-       */
-      const _curTitle = String(session.title || '').trim();
-      const _titleAutoOk = !_curTitle || _curTitle === '新会话' || _curTitle.length < 3;
+       * 这里原来会在「第一句话」时拿消息内容当标题（11-05 加过守卫只允许
+       * 空/新会话/短标题时生效，但仍然是「按消息改名」）。现在整块删掉：
+       * 名字只有两个来源 —— 主人手动改，或者 AI 发现自己是「新会话」时自己起。 */
       const firstUserTurn = !history.some((m) => m.role === 'user' && !m.context);
       const userMsg = { role: 'user', content: composeUserContent(message, attachments), at: Date.now() };
       /**
@@ -10821,8 +11658,6 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         history.push(_exMsg);
         diagLog('send-buffer-merge', sessionId + ' 缓冲窗合并 +1（' + _exText.slice(0, 30) + '）');
       }
-      /* 两个条件都要：这是第一句，而且现在的标题还空着/是默认名/短得不像名字。 */
-      if (firstUserTurn && _titleAutoOk) session.title = titleFromMessage(message);
     }
     sessions.set(sessionId, session);
     saveSession(session);
@@ -11013,7 +11848,18 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      * 只能读到「不忙」。现在挪到这里，闸 3 一判就是准的。
      * 后面 ac / done 建好之后再补挂上去（保持原逻辑不变）。
      */
-    const reg = { ac: null, done: Promise.resolve(), startedAt: live.startedAt, sessionId };
+    /* 【2026-11-16 修·startedAt 兜底】
+     * live.startedAt 有可能拿不到值（live 是别的分支建的，或这一轮不是 /api/chat 起的），
+     * 一旦落成 undefined/0，sweepGhostTurns 就会把这条账当幽灵删掉 ——
+     * 症状是「她干到一半自己停了」，而且不报任何错。这里兜一个真时间。 */
+    /* 【2026-11-16 修·占位的 done 不许是「已完成」】
+     * 原来这里是 done: Promise.resolve() —— 这一轮刚登记、ac 还没挂上，
+     * 任何 await reg.done 的代码会立刻拿到「已结束」，把这一轮当成了跑完的。
+     * 实际观察到：续跑轮 resume-done textLen=0（一个字没吐就报完成）。
+     * 改成挂一个真正等着被 resolve 的 promise，下面 reg.done = done 时接管。 */
+    let _releaseRegDone = () => {};
+    const _regDone = new Promise((r) => { _releaseRegDone = r; });
+    const reg = { ac: null, done: _regDone, startedAt: (Number(live && live.startedAt) || Date.now()), sessionId };
 
     /**
      * 【闸 3：主人喊收工，就别叫她开口】
@@ -11347,6 +12193,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
      */
     reg.ac = ac;
     reg.done = done;
+    try { if (typeof _releaseRegDone === "function") _releaseRegDone(); } catch {}
     runningTurns.set(sessionId, reg);
     /* 【2026-11-12 修·硬杀/崩溃零记账（主人钦定修续跑机制）】
      * 以前只有优雅退出（/api/app/quitting、/api/app/restart）才写续跑账 ——
@@ -11708,6 +12555,12 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         // 只接对话轮次；system / context 是每轮重算的，不进历史
         if (m.role !== 'user' && m.role !== 'assistant' && m.role !== 'tool') continue;
         if (m.context) continue;
+        /* 【2026-11-15 修·收起的旧工具结果副本被当成新消息接回历史】
+         * collapseOldToolBodies 给模型那份换的是**新对象**，这里靠对象身份分不出
+         * 新旧 → 每条都会 push 一次。实测一次续跑多出 238 条重复 tool
+         * （tool_call_id 和前面一模一样，上游直接 400），主对话被挤到后面。
+         * 认 `_collapsed` 记号，一律不接。 */
+        if (m._collapsed === true) continue;
         // 开场那两条自己走 finishOpening，不走这里。
         // 不然开场白会被接两次：一次是 finishOpening 插的，一次是这里接的，
         // 历史里就出现两条一模一样的助手消息（这个 bug 真发生过，别删这段）。
@@ -11837,6 +12690,22 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
         }
         // 记账之后立刻写盘 —— 这才是主人要的「重启后照样在」
         try { saveSession(session); } catch {}
+        /* 【2026-11-16 修·重启后「她一下子吐出一大堆话」（搭建鱼 07:49，1534 字）】
+         *
+         * 草稿里的 text 是**整轮从头累计**的。可这一段的正文刚刚已经接进正式历史了，
+         * 要是还留在草稿里，重启时 restoreDraftHalfTurn 会把十几分钟的零碎帖子
+         * （「我先查一下」「现在跑回归」「文档行号对完了」…）全拼成一条上千字的
+         * `_recovered` 消息补进历史 —— 屏幕上就是她一次性复述一遍刚才的流水。
+         *
+         * 草稿只该装「还没进历史的那一段」。所以这里提交完就把水位清掉。
+         * draftTools 同理：工具流水也已经有卡片在历史里了。 */
+        try {
+          draftText = '';
+          if (reg.draft) { reg.draft.text = ''; reg.draft.tools = []; }
+          try { shouldDraft(0, true); } catch (e) {}
+          saveDraft(sessionId, { text: '', reasoning: draftReasoning, toolCalls: [], startedAt: draftStartedAt });
+          if (typeof dropDraft === 'function') { try { dropDraft(sessionId); } catch (e) {} }
+        } catch (e) {}
         return added;
       } catch { return 0; }
     };    // 这一轮改过的文件先记在这条消息身上；回退到它时一起还原。
@@ -12054,7 +12923,64 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             }
           }
         } catch {}
-      } }, () => runAgent({
+      } }, (() => {
+        /* 【2026-11-16 主人钦点】他每发一句话（主消息，不是插话），都先提醒一句：
+         * 先整理清单，再按清单上没做完的活决定要不要拉子Agent。
+         *
+         * 只拼在**发给模型的那份拷贝**上（wireMessages）：
+         *   · 不进 history、不落盘 → 不会越堆越多；
+         *   · 界面不画（context 标记）→ 屏幕上只有主人自己那句话；
+         *   · 插话走 /api/interject，压根不经过这里 → 天然只作用于主消息。
+         */
+        try {
+          /* 【2026-11-16 主人钦点·让每个会话的 AI 都知道自己叫什么】
+           *
+           * 原话：「为什么每个会话的ai都不知道自己的会话名是什么？我希望能随会话名的变化
+           * 动态知道自己的会话名现在叫什么。」
+           *
+           * 做法：每轮开头把**当前**会话名带进去（只拼在发给模型的拷贝上，不进历史）。
+           * 她在这一轮里改了名，下一轮这条就是新名字 —— 不用重启、不用刷新。
+           *
+           * 名字还是「新会话」时把起名规矩一并给她：按「正在干的活 + 自己是谁」起
+           * 【xx鱼】【xx猫】【xx人】，用 rename_session 落下去。 */
+          const _nameNow = String(session.title || '').trim() || '新会话';
+          const _nameAsk = (_nameNow === '新会话')
+            ? ('\n这个会话还没有名字 —— 先给自己起一个（rename_session）：'
+              + '按你现在干的活 + 你自己的身份，短一点，鱼就叫「xx鱼」、猫娘类叫「xx猫」、人类或别的身份叫「xx人」，2~6 个字。起完再干活。')
+            : '';
+          /* 【2026-11-16 根治·清单全勾完还逼我找「未完成的内容」】
+           * 原来这句是无条件的：不管清单什么状态，都叫我「根据清单上未完成的内容」决定干什么。
+           * 清单早就全 done 了也照样这么喊，我一读就回头去历史里翻旧清单，
+           * 越翻越觉得自己没做完 —— 主人看到的「墨迹两小时怀疑自己」就是这么来的。
+           * 现在按实时清单分三种说法：全勾完就说「没有了，别回头重做」。 */
+          let _planLine = '如果当前不是闲聊，那么请先整理清单，然后根据清单上未完成的内容决定是否调用子Agent。';
+          try {
+            const _pNow = loadPlan(sessionId);
+            const _stNow = (_pNow && Array.isArray(_pNow.steps)) ? _pNow.steps : [];
+            const _openNow = _stNow.filter((x) => x && x.status !== 'done' && x.status !== 'skipped');
+            if (!_stNow.length) {
+              _planLine = '这一轮还没建清单 —— 先 plan create 把要做的几步列出来，再动手。';
+            } else if (!_openNow.length) {
+              _planLine = '清单 ' + _stNow.length + ' 步已经全部打勾做完了 —— 没有剩余步骤。以前做过的别再回头重做、别再重新验证已经成立的事；主人有新要求就照新要求做，没有就把这一轮收工。';
+            } else {
+              _planLine = '清单还剩 ' + _openNow.length + ' 步没打勾，照那几步往下做（别从头重来），然后决定要不要调用子Agent。';
+            }
+          } catch {}
+          /* 【2026-11-16 加·上一轮想清楚的结论，跨轮带一句】
+           * 只带结论不带原文：她上一轮那两万字思考留在历史里给自己看，
+           * 这一句（≤200 字）才是「我现在脑子里装着什么」，防的是重新想一遍。 */
+          let _thinkEcho = '';
+          try { _thinkEcho = lastTurnThink(sessionId); } catch {}
+          wireMessages = wireMessages.concat([{
+            role: 'user',
+            content: '【每轮开始·第一条】' + '\n' + TURN_MODE_HINT + '\n当前会话名：「' + _nameNow + '」。' + _nameAsk
+              + '\n' + _planLine
+              + (_thinkEcho ? '\n上一段我想清楚的：' + _thinkEcho : '')
+              + '\n如果需要跑回归以及耗时长的工具调用时，请优先让子Agent跑。',
+            context: true,
+          }]);
+        } catch {}
+        return runAgent({
         messages: wireMessages,
         sessionId,
         snap,
@@ -12255,7 +13181,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             else send({ type: 'tool_end', id: ev.id, name: ev.name, ok: ev.ok, output: ev.output, images: ev.images || 0 });
           }
         },
-      }));
+      });
+      }));   /* 【2026-11-16 修·这里原来写成 })()); —— 立刻调用了那个箭头函数，
+              * 于是 runWithToolContext 收到的第二个参数是 Promise 不是函数，
+              * AsyncLocalStorage.run 当场抛「Function.prototype.apply was called on #<Promise>」。
+              * 结果：每次发消息 130ms 就 error，界面上只闪一下「正在发消息」。 */
       // [usage-debug] 这一轮跑完了，看看用量到底有没有
       try {
         const dbg = (await import('node:fs')).appendFileSync;
@@ -12428,9 +13358,27 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               break;
             }
           }
-          if (target) {
+          /**
+           * 【2026-11-16 晚·别再拿整轮大段盖掉按圈存好的思考】
+           *
+           * agent.mjs 现在每一圈都把自己的思考挂在自己那条 assistant 上（_reasoning）。
+           * 以前这里是「整轮拼一段挂最后一条」，会把那些按圈存的字段全部重复一遍 ——
+           * 界面上就变成「最后一块很大 + 前面几块也在」，或者老规矩下只剩最后一块。
+           * 所以：这一轮已经有按圈存的了，就不再塞合并版；没有才退回老兜底。
+           */
+          const _hasPerRound = history.some((m) => m && m.role === 'assistant'
+            && typeof m._reasoning === 'string' && m._reasoning.trim());
+          if (target && !_hasPerRound) {
             target._reasoning = draftReasoning.trim();
             try { console.log('[reasoning] 已存 ' + target._reasoning.length + ' 字'); } catch {}
+            /* 【2026-11-16 加·跨轮只带「结论那一行」】
+             * 原文留给她自己看（_reasoning），跨轮要的只是一句结论：
+             * 下一轮开头以 context 消息拼回去，省两个数量级的 token，
+             * 也不依赖上游对 reasoning_content 的兼容。 */
+            try {
+              const _line = digTurnThink(draftReasoning);
+              if (_line) saveTurnThink(sessionId, _line);
+            } catch { /* 写不进去不影响这一轮 */ }
           } else {
             try { console.warn('[reasoning] 没找到可挂的 assistant，' + draftReasoning.length + ' 字丢掉'); } catch {}
           }
@@ -12529,9 +13477,21 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             idx = msgs.length - 1;
           }
           // 合并而不是覆盖：同一轮可能分几次发，前一批不能被后一批冲掉。
+          /* 【2026-11-15 主人定】同一文件重复发送 → 自动移除旧卡片，只留最新那张。
+           * 顺序：① 先算本次的 key 集合；② 把前面所有消息 _out 里的同 key 条目清掉；
+           *       ③ 再用「上一批 + 本次」的干净合并写回本轮（同 key 已去重）。 */
+          const _newKeys = new Set(sent.map((x) => String((x && x.key) || (x && x.path) || "")));
+          for (let _k = 0; _k < msgs.length; _k++) {
+            if (_k === idx) continue;
+            const _mo = msgs[_k]._out;
+            if (!Array.isArray(_mo) || !_mo.length) continue;
+            const _kept = _mo.filter((x) => !(x && _newKeys.has(String(x.key || x.path || ""))));
+            if (_kept.length !== _mo.length) msgs[_k]._out = _kept;
+          }
           const prev = Array.isArray(msgs[idx]._out) ? msgs[idx]._out : [];
-          const merged = prev.slice();
+          const merged = prev.filter((x) => !(x && _newKeys.has(String(x.key || x.path || ""))));
           for (const it of sent) {
+            if (!it) continue;
             const dup = merged.some((x) => x && x.key && it && x.key === it.key);
             if (!dup) merged.push(it);
           }
@@ -12966,22 +13926,9 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        * 现在取这一轮实际说话的人：往回找最后一条 assistant 的 _who（非小鱼身份
        * 说话时都记了）；找不到再看「屋里的人」第一个开着的；再不行才是小鱼。 */
       try {
-        /* 【2026-11-13 修·主人报「会话名还是新会话」】自动命名那块有守卫
-         * （resume / 续跑 / 非首句会整块跳过），收尾再兜一次：标题还是默认名
-         * 就找最近一条真 user 话补上，别让会话列表和通知一直挂着「新会话」。 */
-        try {
-          const _t = String(session.title || '').trim();
-          if (!_t || _t === '新会话') {
-            for (let _q = session.messages.length - 1; _q >= 0; _q--) {
-              const _um = session.messages[_q];
-              if (_um && _um.role === 'user' && !_um.context && typeof _um.content === 'string' && _um.content.trim()) {
-                const _newTitle = titleFromMessage(_um.content);
-                if (_newTitle && _newTitle !== '新会话') { session.title = _newTitle; saveSession(session); }
-                break;
-              }
-            }
-          }
-        } catch {}
+        /* 【2026-11-16 主人钦点】这一段原来是「标题还是『新会话』就拿最近一句
+         * 主人话补上」的兜底 —— 属于「按消息自动改名」，一起删掉。
+         * 名字现在只有两个来源：主人手动改，或者 AI 自己用 rename_session 起。 */
         let _nWho = '';
         try {
           for (let _q = session.messages.length - 1; _q >= 0 && !_nWho; _q--) {
@@ -13046,6 +13993,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           } catch { /* 判定失败就不弹，宁可少弹不要误弹 */ }
         }, 3000).unref?.();
       } catch {}
+      /* 【2026-11-16 晚·根治「做着做着自己停了」】统一走公用闸（三个轮次入口同一套） */
+      maybeAutoContinueAfterSilentTurn(sessionId, ac, turnTexts.join(' '));
       send({ type: 'done', usage, at: doneAt, model: turnModel || modelUsedThisTurn(sessionId), turnTexts });
     } catch (err) {
       /* 【2026-11-13 加·上游 408/5xx 静默收尾降级】主人报「每次她说一句就停了，
@@ -13113,7 +14062,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               }
             }
           }
-          dropDraft(sessionId);
+          // 【2026-11-15 修·递话丢信】信已经进了正式历史、也确实落盘了 —— 到这里才算真签收。
+      // 顺序不能反：saveSession 之前签收，万一存盘失败，那封信就永久没了（这就是
+      // 搭建鱼 01:12 那轮的情况：信取走了、话也说了，可整轮没落盘，历史里查无此信）。
+      try { ackSessionMail(sessionId); } catch {}
+      dropDraft(sessionId);
         } catch {}
         send({ type: 'aborted' });
       } else if (err?.handoff) {
@@ -13185,6 +14138,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * → 04:31:52 重试又撞 HTTP 502 抛到这里。整段十二分钟，界面一个字都没有。
            * 所以：这句话必须落盘。落进历史的东西切会话、刷新、重启都在。
            */
+          try { diagLog('chat-error-stack', String((err && err.stack) || err || '').slice(0, 1500)); } catch {}
           const errText = String(err?.message ?? err);
           /* 【2026-11-12 主人定·上游挂了要静默自动接回】
            *
@@ -13636,7 +14590,28 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
               if (_m && _m.role === 'user' && String(_m.content || '').trim() === _t) { _dup = true; break; }
             }
             if (_dup) continue;
-            _s.messages.push({ role: 'user', content: _t, at: Date.now(), _keptOnStop: true });
+            /**
+             * 【2026-11-15 修·「子Agent 汇报 / 递话变成主人说的话」的最后一条漏口】
+             *
+             * 主人 20:10 报：「不要显示【你派出去的 xxx 回来了】…甚至这些消息都不是
+             * 系统提示，而是以我的署名发的」。
+             *
+             * 数据实锤（会话 smwg61ggmhd4a，12:06:15）：一条 worker 汇报落成
+             * role:'user'、context=false、_sysNote=false —— 前端只能当主人说的话画。
+             * 来源就在这一行：点「停止」时把信箱里压着的**所有**条目（steps+turns）
+             * 原样倒进历史，而 turns 槽里的 worker 汇报是带 `_sysNote: true` 的。
+             * 这里只抄了 text，标记全丢了。
+             *
+             * 规矩跟 agent.mjs 里 drain 那两处一致：带 _sysNote 的落成
+             * context+_sysNote（程序递的背景，不冒充主人）；真插话才留 _steer。
+             */
+            const _isSys = it && it._sysNote === true;
+            _s.messages.push({
+              role: 'user',
+              content: _t,
+              at: Date.now(),
+              ...(_isSys ? { context: true, _sysNote: true } : { _keptOnStop: true }),
+            });
             _added += 1;
           }
           if (_added) {
@@ -13786,9 +14761,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
        */
       try {
         const __n = Number(atChars);
+        /* 【2026-11-15 晚·主人报「小鱼工作时用小鲸身份插话，消息变回主人」】
+         *
+         * 病因：插话走的是 steer → 信箱 → agent loop 取走再 push 成 user 消息，
+         * 这条链**从头到尾没带「此刻是谁在说话」**。而 /api/chat 那条路是用
+         * currentIdentity(sessionId) 现取身份的（主人身份也存）。
+         * 于是插话的气泡和落盘消息都拿不到 _who → 前端兜底成「主人」。
+         *
+         * 现在在这一刻就把身份取好，三个地方一起带上：
+         *   ① 信箱（agent 取走时写进消息的 _who）；
+         *   ② 直播清单那条 steer 事件（屏幕上那颗气泡的署名）；
+         *   ③ 真的落盘时用同一份（下面 non-running 分支原本就有，口径一致）。
+         */
+        const __me = (() => { try { return currentIdentity(sessionId); } catch { return null; } })();
         steer(sessionId, message, Object.assign(
           (Number.isFinite(__n) && __n >= 0) ? { atChars: __n } : {},
           _att.length ? { attachments: _att.map((x) => ({ path: String(x.path), name: String(x.name || ''), kind: String(x.kind || '') })) } : {},
+          __me && __me.name ? { who: String(__me.name), whoId: String(__me.id || '') } : {},
         ));
       } catch (e) {
         return json(res, 500, { ok: false, running: true, error: '话没排进信箱：' + String(e?.message ?? e) });
@@ -13819,6 +14808,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             text: String(message || ''),
             ts: Date.now(),
             at: Date.now(),
+            /* 【2026-11-15 晚】署名：前端 liveToItems 用 it.who，缺了就兜底「主人」 */
+            ...(() => { try { const w = currentIdentity(sessionId); return w && w.name ? { who: String(w.name), whoId: String(w.id || '') } : {}; } catch { return {}; } })(),
             ...(_att.length ? { atts: _att.map((x) => ({ path: String(x.path), name: String(x.name || ''), kind: String(x.kind || '') })) } : {}),
           };
           lv.rev = (typeof lv.rev === 'number' ? lv.rev : 0) + 1;
@@ -13973,6 +14964,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
   if (req.method === 'GET') return serveStatic(req, res);
   json(res, 405, { error: 'method not allowed' });
 });
+
+/**
+ * 【2026-11-15 主人钦点】新建会话的默认思考强度。
+ * 「改新建会话时，左上角思考强度默认为【低】」—— 只影响新会话，
+ * 右上角给模型设的全局档、以及所有老会话都不动。
+ */
+const NEW_SESSION_DEFAULT_LEVEL = 'low';
 
 /**
  * 退出前通知外面一声（服务句柄上的 on('exit')）。
@@ -14253,7 +15251,15 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     }
   };
   const close = () => new Promise((r) => {
-    try { server.close(r); } catch { r(); }
+    try {
+      server.close(r);
+      /* 【2026-11-15 主人报·重启慢】光 close 只是「不再接新连接」，已经建立的
+       * 长连接（直播 SSE、页面 keep-alive）会一直挂着 —— 实测它们能把主进程
+       * 退出拖住几十秒。这里主动掐断，句柄立刻释放。
+       * （closeAllConnections 要 Node 18.2+，老版本就静默跳过。） */
+      try { server.closeAllConnections?.(); } catch {}
+      try { server.closeIdleConnections?.(); } catch {}
+    } catch { r(); }
   });
   /** 回给调用者的句柄。port/url 在 listen 回调里补上。 */
   const handle = { port: 0, url: '', close, on, once, off };
@@ -14353,7 +15359,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       try {
         const _ri = peekInterrupted ? peekInterrupted() : null;
         if (_ri && String(_ri.sessionId || '') === String(_sid || '')) {
-          const _open = Array.isArray(_ri.openSteps) ? _ri.openSteps : [];
+          const _open = liveOpenSteps(_ri.sessionId || _sid, _ri.openSteps);
           const _lines = [];
           if (_ri.taskLine) _lines.push('断在主人这句话上：' + String(_ri.taskLine).slice(0, 200));
           if (_ri.reason) _lines.push('中断原因：' + String(_ri.reason).slice(0, 120));
@@ -14366,8 +15372,14 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           }
           if (_lines.length) {
             _hasBreakpoint = true;
+            /* 【2026-11-16 根治·收工时还催「从没打勾那步接着干」】
+             * 清单已经全打勾了，这里原来照样催一句「直接从没打勾那步接着干」，
+             * 我读着就以为自己还有活没干，回头去翻历史查清单。
+             * 现在按实时清单分流：没剩步骤就明说「已经做完了，别翻旧账」。 */
             _resumeMsg = '重启了。断点在这儿：\n' + _lines.join('\n') +
-              '\n\n（直接从没打勾那步接着干，不用等我再问。别回「我在」这种话。）';
+              ((Array.isArray(_open) && _open.length)
+                ? '\n\n（直接从没打勾那步接着干，不用等我再问。别回「我在」这种话。）'
+                : '\n\n（清单已经全部打勾做完，没有剩余步骤。别回头重做、别再验证已经成立的事；做完手上这一下就收工。）');
           }
           /* 读完就把它销掉：断点已经抄进这条消息里了（会话里存得住），
            * 留着只会让下一次重启又读到同一个旧断点，把老账重念一遍。
@@ -14378,6 +15390,30 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
           try { dropInterrupted(_sid); } catch {}
         }
       } catch (e) { try { console.warn('[restart] 读断点失败（不影响叫醒）：', String(e && e.message)); } catch {} }
+      /**
+       * 【2026-11-16 晚·根治「做着做着自己停了」】
+       *
+       * 主人报陪聊鱼 4 总是干着干着就停。查日志：她按清单在改代码，改完就 restart_self；
+       * 重启后叫醒语去读 resume.json —— 可她那条**没有断点账**（自己主动重启，不算中断），
+       * 于是只投一句「重启了」，`after-restart-kick-result` 每次都是 `{"text":"","rest":0}`：
+       * 空转一轮就收工。主人得再手动发一句「继续」，她才又动一下，然后又重启、又停。
+       *
+       * 修法：没有断点账时退一步看**清单本身**。只要还有没打勾的步骤，就把它们抄进
+       * 叫醒语（依然是 _sysNote，界面不画，只有她读得到），并明确叫她接着干。
+       * 这样「重启 → 叫醒 → 继续做」自己就能串起来，不必主人一次次手动续。
+       * 清单全 done 时一个字都不加 —— 别把已经做完的活又念一遍。
+       */
+      if (!_hasBreakpoint) {
+        try {
+          const _open = liveOpenSteps(_sid);
+          if (Array.isArray(_open) && _open.length) {
+            _resumeMsg = '重启了。清单还有 ' + _open.length + ' 步没打勾（从断点接着干，别从头重来）：\n'
+              + _open.slice(0, 12).map((st) => '  ' + (st && st.n ? st.n : '?') + '. ' + String((st && st.text) || '').slice(0, 220)).join('\n')
+              + '\n\n（直接从没打勾那步接着干，不用等我再问。别回「我在」这种话。）';
+            try { diagLog('after-restart-plan-pickup', _sid + ' open=' + _open.length); } catch {}
+          }
+        } catch (e) { /* 读清单失败就维持那句「重启了」，不影响叫醒本身 */ }
+      }
       /**
        * 【2026-11-08 加·「她在，但答非所问」】
        *
@@ -14425,7 +15461,14 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
          */
         try { console.log('[restart] 没有断点，不叫醒（免得换来一句「我在」）：' + _sid); } catch (e) {}
       } else {
-        _s.messages.push({ role: 'user', content: _resumeMsg, _sysNote: true });
+        _s.messages.push({
+          role: 'user',
+          /* 【2026-11-16 主人钦点·删「闲聊/工作状态」】原来这里会在叫醒语后面
+           * 再垫一遍那两块档位规矩。那两块已经从系统里删了（规矩并入「底色」六行，
+           * 每轮系统提示天然带着），这里就只投叫醒语本身，别再另外拼一段。 */
+          content: _resumeMsg,
+          _sysNote: true,
+        });
         saveSession(_s);
         try { diagLog('after-restart-kick', _sid); startQueuedTurn(_sid, null).then((r) => diagLog('after-restart-kick-result', _sid + ' ' + JSON.stringify(r ?? {}).slice(0,200))).catch((e) => { diagLog('after-restart-kick-FAIL', _sid + ' ' + String(e?.message ?? e)); console.warn('[restart] 叫醒失败：', String(e?.message ?? e)); }); } catch (e) { diagLog('after-restart-kick-sync-FAIL', _sid + ' ' + String(e?.message ?? e)); }
       }
@@ -14443,6 +15486,29 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
   setPeerDeliver(deliverMailNow);
   // 让 list_peers / 重启前自检能看见「此刻谁在跑」（2026-11-04）
   setRunningProbe(() => [...runningTurns.keys()]);
+  /* 【2026-11-16 主人钦点·AI 自己知道/改自己的会话名】
+   *
+   * 主人原话：「每个会话的ai都不知道自己的会话名是什么……只能由主人手动填写，
+   * 或会话里的ai发现自己的会话名是【新会话】时……手动填写【xx鱼】【xx猫】【xx人】的会话名」。
+   *
+   * 落盘（renameSession，自带重名去重）+ 通知那一屏（session_title 事件）都在本文件，
+   * 照 setPeerWake 的老办法注入给工具层。 */
+  setSessionRenamer((sid, title) => {
+    try {
+      const id = String(sid || '');
+      if (!isSessionId(id)) return { ok: false, error: 'bad sessionId' };
+      const saved = renameSession(id, title);
+      if (!saved) return { ok: false, error: 'rename failed' };
+      const hot = sessions.get(id);
+      if (hot) hot.title = saved.title;
+      try {
+        const lv = liveLogs.get(id);
+        if (lv) appendLiveCache(lv, { type: 'session_title', title: saved.title, at: Date.now() });
+      } catch {}
+      try { diagLog('session-rename', id + ' → ' + saved.title); } catch {}
+      return { ok: true, title: saved.title };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  });
 
   /**
    * 「重启整个程序」这件事，交给主进程做。
@@ -14626,10 +15692,29 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         try {
           let live = liveLogs.get(sid);
           if (!live || live.done) {
-            live = { sessionId: sid, events: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true };
+            live = { sessionId: sid, events: [], items: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true };
             liveLogs.set(sid, live);
           }
-          appendLiveItem(live.events, ev);
+          /**
+           * 【2026-11-15 修·子Agent 卡展开是空的（主人报）】
+           *
+           * 原来这行写的是 `appendLiveItem(live.events, ev)` ——
+           * 把**事件数组**当成 items 清单传进去了。appendLiveItem 的第二个参数
+           * 是「画面真身」清单（items），它不负责收事件。结果：
+           *   · worker 的 step 事件被塞进 events 数组里当 item 用，形状对不上，等于空转；
+           *   · `live.items` 里**从头到尾没有一张 worker 卡**；
+           *   · 前端照 items 画 → 卡上 steps 永远是 []，展开就是空白。
+           * 而且新建 live 时也没给 `items: []`，下面 appendLiveItem 直接 early return，
+           * 连碰都碰不到 —— 两个错叠在一起，静默无报错。
+           *
+           * 现在跟正常路径（3040 行那几处）完全一致：事件进 events，画面进 items。
+           */
+          if (!Array.isArray(live.events)) live.events = [];
+          if (!Array.isArray(live.items)) live.items = [];
+          live.events.push(ev);
+          appendLiveItem(live.items, ev);
+          /* 落盘：worker 的进度也要在重启后能接回来（跟主轮走同一条日志） */
+          try { journalLiveEvent(sid, live, ev); } catch {}
         } catch { /* 事件丢一条不致命，别连累 worker 本体 */ }
       },
       isTurnRunning: (sid) => runningTurns.has(sid),
@@ -14659,11 +15744,37 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     try { console.warn('[team] 通道挂不上（不影响主流程）：', e && e.message); } catch {}
   }
 
+  /* 【2026-11-16 主人钦点·后台作业整套删掉】
+   *
+   * 原话：「把后台作业的有关代码全删了，要求代码层面做到要么前台要么子Agent」。
+   *
+   * 这里原来是 setJobChannels 注入（作业起跑画卡、跑完叫醒）。
+   * jobs.mjs 已删，这条通道随之作废 —— 长活一律 spawn_worker，子Agent 自己会汇报。
+   */
+
   /* 【2026-11-13 子 Agent 续上（主人钦点）】启动时扫花名册：还挂着 running 的
    * worker 进程已经没了 —— 新鲜的（24h 内、没超过自动续跑上限）在 12s 后自动
    * 重新派发接着干（错峰，先让主会话自己的续跑轮跑）；过期/超限的照旧标
    * interrupted。原 markInterruptedWorkers 保留给别处用（这里不再调它）。 */
   try {
+
+    /* 【2026-11-16 主人钦点】启动时把盘上已有的断点全标成 planned。
+     *
+     * 原话：「把这段话【上一轮是被中断的（没跑完）。要接着做就跟我说一声。】
+     *        不要因为主动重启出现」。
+     *
+     * 进程一起来就把「这次启动之前留下的断点」打上 planned：那些本来就会被自动续跑接手，
+     * 主人不需要一句「要接着做就跟我说一声」。运行中真被掐断的断点不带这个标记，照旧提示。
+     * 必须在 boot-resume 之前跑，否则前端可能先 select 到还没标记的那份。 */
+    try {
+      const _planned = markAllPlanned();
+      if (_planned) diagLog('resume-planned', _planned + ' 条启动前断点标记为计划内重启');
+    } catch {}
+    /* 顺手清掉历史上攒下的续跑引子（见 sweepResumeHintResidue 的注释） */
+    try {
+      const _sw = sweepResumeHintResidue();
+      if (_sw.removed) diagLog('resume-hint-sweep', _sw.touched + ' 个会话 / 清掉 ' + _sw.removed + ' 条残留引子');
+    } catch {}
     const _r = resumeInterruptedWorkers({ delayMs: 12000 });
     if (_r && _r.ok && (_r.resumed || _r.interrupted)) {
       console.log('[team] 启动清理：' + _r.interrupted + ' 个过期 worker 标记中断，'
@@ -14672,6 +15783,13 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     }
   } catch (e) {
     try { console.warn('[team] worker 续跑安排失败（不影响启动）：', e && e.message); } catch {}
+  }
+
+  // 运行期给子Agent收尸（2026-11-16 主人钦点「自动清死掉的子Agent」）。
+  // 每 30s 扫一遍所有会话的名册：6 分钟没有任何一步心跳 = 卡死，
+  // abort 掉那一轮 + 标 stalled + 给主智能体递句话，不用人管。
+  try { startWorkerReaper({ everyMs: 30000 }); } catch (e) {
+    try { console.warn('[team] 收尸器起不来（不影响启动）：', e && e.message); } catch {}
   }
 
   // 运行中定时查版本。
@@ -14738,6 +15856,13 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         const _k = killOrphanChildren();
         if (_k) console.log('[boot] 清掉上一进程遗留的命令子进程 ' + _k + ' 个');
       } catch { /* 清理失败不影响启动 */ }
+      /* 【2026-11-15 加】把上次没跑完那一轮的柜子接回来（实时日志重放）。
+       * 主人报「每次重启，最近的正在运行的柜子都会消失」—— 以前 liveLogs 纯内存，
+       * 进程一退在跑的那一轮就没了。现在开机从 .state/live/*.jsonl 重放回内存。 */
+      try {
+        const _r = restoreLiveLogsFromDisk();
+        if (_r) console.log('[boot] 接回 ' + _r + ' 个未跑完的实时柜子');
+      } catch { /* 接不回来不影响启动 */ }
       const actual = server.address().port;
       listeningPort = actual;
       /* 【2026-11-12 修·restart_self 永远报「不知道自己监听哪个端口」】
@@ -14749,6 +15874,11 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       try { process.env.XIAOYU_PORT = String(actual); process.env.PORT = String(actual); } catch {}
       
       const url = `http://127.0.0.1:${actual}`;
+      /* 【2026-11-15 修·自检隔离实例永远起不来】
+       * running: 这行是 scripts/_test-instance.mjs 判「服务起来了」的唯一凭据，
+       * 2026-11-14 那轮把打印弄丢了，正则永远匹配不到 → startIsolated 必抛错 → 全量回归一启动就红。
+       */
+      console.log('running: ' + url);
       /**
        * 【2026-11-11 加·「干活中途退出重启后，我很早以前发过的消息跑到聊天最底下」】
        *
@@ -14941,16 +16071,29 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
             }
             console.log('  resume   : 有 ' + pendingList.length + ' 个会话没做完，逐个接着做');
             diagLog('boot-resume-go', pendingList.map((x) => x.sessionId).join(','));
+            /* 【2026-11-16 主人报·「多个会话工作时卡顿」】
+             *
+             * 实测：启动后事件循环连着卡 2~3 秒（diag 里 boot-lag 记录）。原因不在网络 ——
+             * 每续一个会话就要**同步**把一个几百 KB 的会话读进来、sanitize 一遍、重建 wire，
+             * 几百毫秒到两秒。原来错峰 1.5 秒，三个会话续跑会**叠在一起**，卡顿就叠成 3 秒。
+             *
+             * 这里把错峰拉到 4 秒（三个会话正好不重叠），并记每个会话准备耗时，
+             * 下次再卡能一眼看出是哪个会话、卡多久。
+             * （根子在同步 sanitize，真要根治得给消息做 key 级缓存 —— 那是下一步。） */
             pendingList.forEach((it, i) => {
               setTimeout(() => {
+                const _t0 = Date.now();
                 console.log('  resume   : [' + (i + 1) + '/' + pendingList.length + '] '
                   + it.sessionId + '（' + it.reason + '）');
                 resumeInterruptedTurn(it.sessionId)
+                  .then(() => {
+                    try { diagLog('boot-resume-ok', it.sessionId + ' 准备耗时 ' + (Date.now() - _t0) + 'ms'); } catch {}
+                  })
                   .catch((e) => {
                     console.warn('[resume] 自动续跑失败：', String(e?.message ?? e));
                     diagLog('boot-resume-fail', it.sessionId + ' ' + String(e?.message ?? e));
                   });
-              }, i * 1500);
+              }, i * 4000);
             });
           } catch (e) {
             console.warn('[resume] 开机自续没跑成（不影响使用）：', String(e?.message ?? e));
@@ -15037,6 +16180,51 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
  * 「开机自动连」对所有存过凭据的人都永远不生效。
  * 不 await：连不上也不拖住启动。
  */
+/**
+ * 【2026-11-16 加·清掉正式历史里攒下的「上一轮被打断了」残留】
+ *
+ * 主人问：「重启续上时会把我说过的话再以我的署名发一遍给ai吗？」
+ *
+ * 界面不会 —— 前端 `if (turn.context) return`，带 context 的条目不画。
+ * 但这些提示**一直躺在 session.messages 里**：每次续跑 push 一条，
+ * 原本该在收尾时摘掉，可摘除的判据跟正文对不上（找的是「程序崩了，进程被强杀」，
+ * 实际写的是「上一轮跑到一半被打断了…」），所以一条都没摘掉。
+ * 实测检查鱼那个会话攒了 8 条，每条还内嵌「主人当时的原话：「…」」——
+ * 模型每轮都要重读一遍主人说过的话，等于把他的话反复喂。
+ *
+ * 这个函数在启动时扫一遍所有会话，把这类残留清掉（只动带 context 的 user 条目，
+ * 「早期对话摘要」那条不匹配这两个标记，不受影响）。
+ * 返回 { touched: 动了几个会话, removed: 删了几条 }。
+ */
+function sweepResumeHintResidue() {
+  const marks = ['（上一轮跑到一半被打断了', '程序崩了，进程被强杀'];
+  let touched = 0;
+  let removed = 0;
+  let names = [];
+  try { names = readdirSync(join(config.dataDir, '.state', 'sessions')); } catch { return { touched, removed }; }
+  for (const n of names) {
+    if (!n.endsWith('.json') || n.startsWith('_') || n.includes('.bak')) continue;
+    const id = n.replace(/\.json$/, '');
+    let sess = null;
+    try { sess = loadSession(id); } catch { continue; }
+    const ms = sess && Array.isArray(sess.messages) ? sess.messages : null;
+    if (!ms || !ms.length) continue;
+    const keep = [];
+    let hit = 0;
+    for (const m of ms) {
+      if (m && m.context && m.role === 'user') {
+        const c = String(m.content || '');
+        if (marks.some((mk) => c.includes(mk))) { hit += 1; continue; }
+      }
+      keep.push(m);
+    }
+    if (!hit) continue;
+    sess.messages = keep;
+    try { saveSession(sess); touched += 1; removed += hit; } catch {}
+  }
+  return { touched, removed };
+}
+
 async function bootAutoStartQqBot(quiet) {
   try {
     const { qqBot, qqConfigured } = await import('./qq.mjs');

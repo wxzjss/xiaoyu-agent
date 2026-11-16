@@ -122,7 +122,11 @@ function desktopDirs() {
       const out = execFileSync(
         'powershell.exe',
         ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"],
-        { timeout: 15000, encoding: 'utf8' },
+        /* 【2026-11-15 修·主人报「powershell 终端时不时弹出来」】
+         * 自检每查一次桌面路径 / 快捷方式 / 启动项，都会起一个 PowerShell：
+         * 不写 windowsHide 就是一个黑框闪一下（查得快就闪得快，查得慢就留在屏幕上）。
+         * 这里三处一起补上 —— 只影响窗口，不影响拿到输出。 */
+        { timeout: 15000, encoding: 'utf8', windowsHide: true },
       ).trim();
       if (out) list.unshift(out);
     } catch {}
@@ -150,7 +154,7 @@ function lnkTarget(lnkPath) {
   try {
     const ps = `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnkPath.replace(/'/g, "''")}');` +
       `Write-Output $s.TargetPath; Write-Output '---'; Write-Output $s.WorkingDirectory; Write-Output '---'; Write-Output $s.IconLocation`;
-    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: 20000, encoding: 'utf8' });
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: 20000, encoding: 'utf8', windowsHide: true });
     const [target = '', workdir = '', icon = ''] = String(out).split('---').map((s) => s.trim());
     return { target, workdir, icon };
   } catch {
@@ -177,7 +181,7 @@ function makeShortcut(lnkPath) {
     .filter(Boolean)
     .join('; ');
   try {
-    execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: 25000, encoding: 'utf8' });
+    execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: 25000, encoding: 'utf8', windowsHide: true });
     return existsSync(lnkPath);
   } catch {
     return false;

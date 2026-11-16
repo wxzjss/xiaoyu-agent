@@ -22,8 +22,10 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 
-const DIR = path.join(process.cwd(), 'scripts');
+const DIR = path.join(__ROOT, 'scripts');
 /** 会拖时间的特征：连调试浏览器、起子进程、打网络、长等待 */
 const HEAVY = /_t_cdp|\bconnect\(|Page\.reload|\bfetch\(|spawnSync\(|setTimeout\([^,]+,\s*[1-9]\d{3,}\)/;
 /** 实测会卡到 60s 超时的：它走的是隔离实例那条路，源码里看不出 spawn 字样 */
@@ -46,8 +48,11 @@ const t0 = Date.now();
 const slow = [];
 for (const f of light) {
   const one = Date.now();
+  /* 【2026-11-16 修】不传 cwd 时子进程继承父进程 cwd —— 从 scripts/ 里跑冒烟，
+   * 子进程 cwd 就是 scripts/，那些写 readFileSync('src/server.mjs') 的检查
+   * 全变成 scripts/src/server.mjs 直接 ENOENT（假红）。这里钉死仓库根。 */
   const r = spawnSync(process.execPath, [path.join(DIR, f)], {
-    encoding: 'utf8', timeout: 60 * 1000,
+    encoding: 'utf8', timeout: 60 * 1000, cwd: __ROOT,
   });
   const ms = Date.now() - one;
   slow.push([f, ms]);

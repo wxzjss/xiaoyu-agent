@@ -144,7 +144,13 @@ console.log('\n四、源码层面钉住「这个洞别再开」');
   t.ok('服务端增量版认轮末（done/aborted/error）',
     /if \(ev\.type === 'done' \|\| ev\.type === 'aborted' \|\| ev\.type === 'error'\)/.test(SRV));
   t.ok('服务端一次性版认轮末',
-    /if \(e\.type === 'done' \|\| e\.type === 'aborted' \|\| e\.type === 'error'\) \{ flush\(\); continue; \}/.test(SRV));
+    /if \(e\.type === 'done' \|\| e\.type === 'aborted' \|\| e\.type === 'error'\) \{[\s\S]{0,400}?flush\(\);[\s\S]{0,600}?continue;/.test(SRV));
+  /* 【2026-11-14 补·轮末封口】
+   * 增量版在轮末会给最后那段正文打不可枚举的 __segEnd（下一段不许拼上去）。
+   * 重算版原来只 flush() 不封口 → 同一串事件两份清单结构不同
+   * （check-live-items-parity 的随机串直接抓出不一致）。现在两边同款：都封口。 */
+  t.ok('服务端一次性版也在轮末给正文封口（与增量版同款）',
+    /__segEnd/.test(SRV.slice(SRV.indexOf('function buildLiveItems('), SRV.indexOf('function buildLiveItems(') + 9000)));
   /* 【2026-11-09 判据改口径】原来这条查「前端镜像也认轮末」。
    * 前端那份合成器已经整段删了，所以该守的变成**反面**：
    * 别再长出第三份（那正是这一轮要根治的东西）。 */

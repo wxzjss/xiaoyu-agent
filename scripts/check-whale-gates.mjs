@@ -1,6 +1,11 @@
 /* 站岗：改前红 / 改后绿的源码级断言 */
 import { readFileSync } from 'node:fs';
-const srv = readFileSync('src/server.mjs', 'utf8');
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+/* 【2026-11-16 修】原来写死相对路径 'src/server.mjs'，从 scripts/ 里跑（冒烟就这么跑）
+ * 会拼成 scripts/src/server.mjs 直接 ENOENT。改成按本文件位置算仓库根。 */
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const srv = readFileSync(path.join(ROOT, 'src', 'server.mjs'), 'utf8');
 let p=0,f=0; const ok=(m,c)=>{c?(p++,console.log('  [ok] '+m)):(f++,console.log('  [!!] '+m));};
 ok('9657 口：她在屋里开着时旁白让位（正常轮带真工具来答）',
   srv.includes('__whaleAliveInRoom') && srv.includes('!__whaleAliveInRoom'));

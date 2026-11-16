@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -402,6 +402,12 @@
        * 空行（\n\n）本来就在，行距一松，段落的分界就看得出来了。 */
       line-height: 1.86; letter-spacing: .012em;
     }
+    /* 【2026-11-17 根治·短旁白可见】过程旁白不再一个字都不画，用淡灰小字低调显示，
+       保证主人能看见我说的每一句，又不至于跟正式答复抢眼。 */
+    .assistant.aside .bubble {
+      color: #8b94a6; font-size: 13px; line-height: 1.7; opacity: .88;
+    }
+    .assistant.aside .avatar, .assistant.aside .role { opacity: .7; }
     /* 【2026-11-01】她一段一个气泡之后，相邻气泡之间要有一点缝，不然像一大段 */
     .msg .bubble + .bubble { margin-top: 6px; }
 
@@ -573,6 +579,35 @@
       overscroll-behavior: contain;
     }
 
+    /* 【2026-11-14 修·B 框滚到头要带 A 框滚】
+     * B 框（柜子里每个抽屉的 pre / 思考链 thinkBody）原来沿用独立卡的
+     * overscroll-behavior: contain —— 那是防「把聊天区撸走」的，但在柜子里
+     * 它连 A 框（.hubBody）的滚动也一并掐死了。
+     * 现在：柜子内的 B 框放行，B 到头浏览器原生把滚动交给 A 框 ——
+     * 原生滚动链是平滑的（JS 手动喂 scrollTop 会一卡一卡，20:50 主人报过）。
+     * A 框自带 contain，链条到 A 为止，聊天区不会被带跑。
+     *
+     * 【2026-11-15 修·这句以前写的是 normal，等于没写】
+     *
+     * 主人报「工具卡滚轮能带柜子滚，思考链不行」，查了半天才挖到根：
+     * `overscroll-behavior` 的合法值只有 `auto | contain | none`，**没有 normal**。
+     * 写了 `normal` 的声明会被浏览器当成非法值整条丢掉 —— 于是这条「放行」的规则
+     * 从来没生效过（CDP 实测：全页 `overscroll-behavior: normal` 的规则 0 条）。
+     * 工具卡之所以看着正常，是因为它本来就没被设成 contain，默认就是 auto；
+     * 而 thinkBody 自己被显式设了 contain（见下面 details.think .thinkBody），
+     * 所以只有思考链滚到头不给柜子接力。
+     * 改成 **auto** 才是「不拦，交给祖先」的正解。 */
+    details.toolhub details.tool pre,
+    details.toolhub details.think .thinkBody {
+      overscroll-behavior: auto;
+    }
+    /* 【2026-11-15 主人报·工具调用 B 框能带 A 框滚，思考链 B 框不行】
+     * 差在父级：details.think 自己带 overflow:hidden（为了裁圆角），
+     * 它也是个滚动容器，把 thinkBody 的滚动链半路截住了。柜子内的思考块
+     * 改成 overflow:visible，滚动链就能直接从 thinkBody 接到 .hubBody（A 框）。 */
+    details.toolhub details.think { overflow: visible; }
+
+
     /* ========== 子任务卡（办事模式 · worker 的流水） ==========
      * 【2026-11-03】主人：「办事模式下我看不到干活的过程」「只显示一句派活 运行中…然后没了」。
      * 所以 worker 每干一步就在屏幕上长一行：一条浅色小卡，summary 写「#1 回声 · 干活中 · 12 步」，
@@ -702,7 +737,64 @@
     #log > .teamBar, #log > .teamBar details.wcard, #log > .teamBar .teamTail {
       max-width: 100%; box-sizing: border-box;
     }
+    /**
+     * 【2026-11-15 修·子Agent 那块还是横出消息栏右侧（主人第二次报）】
+     *
+     * 主人截图：#26、#27 两张「干活中」卡明显比上面的正文宽，右边捅出栏外。
+     *
+     * 病根：上面那把 892 宽的尺子（`#log > details.wcard`）只管**聊天流里**的卡；
+     * `.teamBar` 自己是 `#log` 的直接子元素，只写了 `max-width:100%` ——
+     * 100% 是相对 #log 的**整窗宽度**算的，而气泡列只有 900 居中。
+     * 于是这一块按整窗铺开，看着就比正文栏宽一圈。
+     *
+     * 现在：`.teamBar` 跟工具卡用**同一把尺子**（892 + 与气泡左缘对齐的 margin），
+     * 里面的卡再加 100% 收在它里面，三层一起收口。
+     */
+    #log > .teamBar {
+      max-width: 892px; width: 100%;
+      /* 跟 #log > details.wcard 完全同一套水平定位（442 = 900/2 - 8） */
+      margin-left: max(0px, calc(50% - 442px));
+      margin-right: auto;
+    }
+    #log > .teamBar details.wcard,
+    #log > .teamBar .teamTail {
+      max-width: 100%; min-width: 0; box-sizing: border-box;
+    }
     #log > .teamBar details.wcard > summary { min-width: 0; }
+    /* 【2026-11-16 主人澄清·别再用 sticky，按顺序排在最下面就行】
+
+       他的原话：「我要的不是滚轮往以前位置翻时子Agent干活的柜子直接消失，
+       我要的是和正常柜子一样正常显示在屏幕上，只是固定显示在所有消息与工具调用显示下面」。
+
+       11-15 我把他说的「始终保持在最底层」理解成了「钉在视口底部」，
+       于是给 .teamBar 加了 position: sticky; bottom: 0。这是错的 ——
+       它会让这块**脱离正常阅读顺序**，浮在旧消息上面：主人往上翻历史时，
+       它照样挂在屏幕上挡正文，他看着就是「这玩意儿跟着我的滚轮走」。
+
+       他要的其实很朴素：**它就是流里的最后一块**（所有消息、工具卡、思考链之后），
+       跟普通柜子一样跟着内容滚 —— 看最新时它在最下面，往上翻它就自然滚走。
+       TeamBar 本来就是 #log 的最后一个子元素，什么都不用做，
+       唯一要做的就是**不要给 position**。
+
+       （下面这些宽度/无底色/圆角是历史修复，照留。） */
+    #log > .teamBar {
+      /* 明确写 static：以后再有人想加 sticky，会先看到这行说明 */
+      position: static;
+      flex: 0 0 auto;
+      /**
+       * 【2026-11-15 修·那块黑带（主人截图：⚑ 上面横着一条死黑的横条）】
+       *
+       * 上一版在这里铺了 `linear-gradient(rgba(20,22,27,.96) …)` 想给贴底遮罩，
+       * 问题是这块是**硬编码的深色**：主人开着壁纸时，它就在画面正中间横着一条黑，
+       * 比周围的卡片还显眼 —— 主人一眼看到「甚至有黑色背景？？？」。
+       *
+       * 现在**不加任何底色**。空隙透出壁纸才是对的。
+       */
+      background: none;
+      padding-top: 6px;
+      padding-bottom: 2px;
+      border-radius: 0;
+    }
     #log > .teamBar details.wcard > summary .name,
     #log > .teamBar details.wcard > summary .status,
     #log > details.wcard > summary .name,
@@ -799,8 +891,26 @@
       background: transparent;
       font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
       white-space: pre-wrap; word-break: break-word;
-      max-height: 320px; overflow: auto; color: #c9d1d9;
+      /* ══ 【2026-11-16 主人报·B 框滚轮「连带 A 框一起滚，一卡一卡」】══
+       *
+       * 根子是柜子里套了两层滚动：
+       *   A = .hubBody（柜子内容区，340px 限高，自己滚）
+       *   B = 每张工具卡的 pre / 每段思考的 thinkBody（320px 限高，自己滚）
+       *
+       * 鼠标停在 B 里往下滚：B 先滚到自己底 → 浏览器把剩下的量交给 A →
+       * 可 A 往往只剩一两百像素余量，交棒两格又到底 → 再滚就完全不动了。
+       * 手感正是「滚一下、跳一下、然后卡住」。
+       *
+       * 柜子内**取消 B 的限高**：内容整段铺开，滚动只发生在 A 这一层，
+       * 一条链滚到底，不存在交棒，也就没有第二层的顿挫。
+       * 单卡 320px 限高仍然保留给「不在柜子里」的独立卡（details.tool pre，
+       * 那里外面没有 A 可接棒，不封顶会把整屏顶飞）。 */
+      max-height: none; overflow: visible; color: #c9d1d9;
     }
+    /* 柜子里的思考链同理：不再各自 320px 限高自己滚，交给 A 一条链。
+     * 特异性：`.hubBody .thinkBody`(0,2,0) > `details.think .thinkBody`(0,1,2)，
+     * 不用 !important 也能盖住上面那条通用规则。 */
+    .hubBody .thinkBody { max-height: none; overflow: visible; }
     details.think {
       border: 1px solid var(--border); border-radius: 8px; background: rgba(23, 26, 33, .72);
       font-size: 12.5px;
@@ -852,6 +962,12 @@
     /* 上面 #log > details.think 把 max-width 定成了 892（特异性更高），
        thinkPast 想要「窄一点」就得按同样的 92% 比例单独说一遍：892 * 0.92 ≈ 820 */
     #log > details.think.thinkPast { max-width: 820px; }
+    /* 【2026-11-16 晚·柜子里的思考要和工具卡一样宽】
+     * 主人报：「思考链在柜子里没和左右对齐，宽度明显小一截」。
+     * 上面那条 92%/820px 是给**独立飘在对话流里**的旧思考用的（免得旧块占满屏）；
+     * 现在思考块被收进柜子里，跟工具卡是同一列，再窄一截就左右不齐、右边空一块。
+     * 选择器带上 #log + .hubBody，把那条 820px 盖掉（否则 id 那条特异性更高）。 */
+    #log .hubBody details.think.thinkPast { max-width: 100%; }
     details.think.thinkPast > summary { padding: 5px 9px; font-size: 12px; opacity: .8; }
     details.think.thinkPast[open] { background: rgba(23, 26, 33, .72); border-color: var(--border); }
     .interjectTag {
@@ -2039,11 +2155,16 @@
       display: flex; align-items: center; gap: 10px;
       padding: 12px 16px; border-bottom: 1px solid var(--border);
     }
-    .dlgHead b { font-size: 15px; }
+    /* 【2026-11-16 主人钦点】弹窗里的数字框不要右侧上下小箭头 */
+    dialog input[type="number"]::-webkit-inner-spin-button,
+    dialog input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    dialog input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+    .dlgHead b { font-size: 15px; flex: none; white-space: nowrap; }
+    .dlgHead .meta { flex: 1 1 auto; min-width: 0; }
     /* 【2026-11-13 主人钦点·关闭按钮焕新】原来 transparent 底 + --border + 6px 圆角，
      * 焕新成顶栏/面板同款胶囊（微填充 + 白描边 + 8px + hover 亮 accent）。 */
     .dlgHead .x {
-      margin-left: auto; background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .14); color: var(--text);
+      margin-left: auto; flex: none; white-space: nowrap; background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .14); color: var(--text);
       border-radius: 8px; padding: 3px 12px; cursor: pointer;
       transition: border-color .12s ease, color .12s ease, background .12s ease;
     }
@@ -3017,7 +3138,7 @@
     .kbHead button { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16); color: #f2e9dc; border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
     .kbHead button:hover { background: rgba(255,255,255,.16); }
     body.skin .kbHead button { color: var(--text); }
-    .kbHead button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    /* 【2026-11-14 主人钦点】「＋ 记一条」不再覆盖 .primary —— 和【会话】面板的【＋ 新会话】按钮同一个样式 */
     .kbSearch { background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18); color: #f2e9dc; border-radius: 8px; padding: 6px 12px; font-size: 13px; width: 200px; }
     body.skin .kbSearch { color: var(--text); }
     .kbShelfWrap { flex: 1; overflow-y: auto; padding: 6px 4px 30px; }
@@ -3533,11 +3654,13 @@
      * 第一版选择器写的是 img 根本没命中，主人看到的还是发光白砖。
      * 现在 .mobQrBox svg：限宽 132px + 圆角裁切 + brightness 降一档
      * （白底 → ~#f0f0f0，黑码对比度不受影响照样能扫）。img 规则留着兜底。 */
+    /* 【2026-11-14 主人钦点·二维码亮度 = 聊天白字】聊天里小鱼发的白字是 var(--text) #e6e9ef
+     * ≈ 纯白的 90%；二维码白底就照这个亮度压，不再比正文亮。黑码照样黑，扫码不受影响。 */
     .mobQrBox svg {
       width: 132px; height: 132px; display: block;
       border-radius: 8px;
       clip-path: inset(0 round 8px);
-      filter: brightness(.93);
+      filter: brightness(.9);
       border: 1px solid rgba(255, 255, 255, .14);
       box-sizing: border-box;
     }
@@ -3545,7 +3668,7 @@
       width: 148px; height: 148px; display: block;
       image-rendering: pixelated;
       border-radius: 8px; padding: 6px; box-sizing: border-box;
-      background: #e9ebee;
+      background: var(--text, #e6e9ef);   /* 跟聊天白字同亮度（img 形态兜底） */
       border: 1px solid rgba(255, 255, 255, .14);
     }
     .mobQrFoot {
@@ -3780,11 +3903,38 @@
 .msg .msgActions > button:disabled { opacity: .5; cursor: default; }
 /* 正在改的时候按钮先收起来，别挡着输入框 */
 .msg.editing .msgActions { display: none; }
-/* 真机没有 hover，常驻显示 */
 /* 真机没有 hover（点不出「悬停」），按钮和用量行常驻半透明 */
 @media (hover: none) {
   .msg .msgActions > button { opacity: .75; }
   .turnUsage { opacity: .6; }
+}
+
+/* ── 【2026-11-15 加·手机端手感】触屏没有 hover，很多设计靠 :hover 才出反馈 ──
+ * 表现就是「点一下什么都没发生」，主人会以为没点上。这里给所有可点元素补上
+ * :active 按压反馈（缩一点点 + 提亮），只在没有 hover 的设备上生效，
+ * 桌面鼠标的悬停观感一点不动。 */
+@media (hover: none) {
+  button, .ghost, .primary, summary, .msgActions > button, .cfgMenuItem,
+  .featEditBtn, .sessItem, .pCard, .kbBook {
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:active, .ghost:active, .primary:active, summary:active,
+  .msgActions > button:active, .cfgMenuItem:active,
+  .featEditBtn:active, .sessItem:active, .pCard:active, .kbBook:active {
+    transform: scale(.972);
+    filter: brightness(1.18);
+  }
+  /* 工具卡的整行渐变在触屏上不会「悬停」，点开时给一次同样的高亮，
+   * 否则手机上点柜门像点了块死木头 */
+  details.toolhub > summary:active::after,
+  details.tool > summary:active::after,
+  details.toolhub details.tool > summary.toolHead:active::after {
+    opacity: .85;
+  }
+  /* 输入框在手机上要够大，不然光标点不准 */
+  textarea, input[type="text"], input[type="number"], input:not([type]) {
+    font-size: 16px;   /* <16px 时 iOS/部分安卓 WebView 会在聚焦时自动放大页面 */
+  }
 }
 .msg.user { position: relative; }
 .msg.assistant { position: relative; }
@@ -4005,6 +4155,13 @@
   body { max-width: 100vw; overflow-x: hidden; }
   header { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
   header button { padding: 4px 7px; font-size: 12px; }
+  /* 【2026-11-16 手机真机量出来的重叠】顶栏在 390px 下折成两行、高 81px，
+   * 可身份徽标还钉在桌面那套 top:54px —— 正好压在第二排的【外观/设置/模型】上
+   * （截图里「以「主人」身份说话中」和按钮糊成一团）。
+   * 现在把两枚固定徽标都挪到折行后的顶栏下面：身份 88px、当前智能体 118px，
+   * 右缘贴到 10px，字再收小一档。桌面完全不受影响（只在 ≤720px 生效）。 */
+  #idBadge { top: 88px; right: 10px; font-size: 11px; padding: 2px 8px; }
+  #agentChip { top: 118px; right: 10px; font-size: 11px; padding: 2px 8px; }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -4226,20 +4383,51 @@
     details.toolhub > summary,
     details.tool > summary,
     details.toolhub details.tool > summary.toolHead {
+      position: relative;
+      isolation: isolate;
       border-radius: 8px;
       background: rgba(255, 255, 255, .035);
       box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .09);
-      transition: background .12s ease, box-shadow .12s ease, color .12s ease;
+      transition: color .12s ease, box-shadow .12s ease;
+    }
+    /* 【2026-11-15 主人报·鼠标在工具卡上赏渐变时别卡】
+     * 原来是直接换 hover 的 background/box-shadow：一次 hover 就要重绘整行
+     * （color-mix 现算 + 10px 漫射阴影），柜子里几十张卡时容易掉帧；
+     * 而且 background-image 不能插值，视觉上是硬跳一下。
+     * 现在把「渐变 + 柔光」常驻在一层伪元素上，只过渡它的 opacity ——
+     * opacity 是合成层属性，GPU 直接推，不重排版也不重算阴影，渐显还更顺。
+     * 用 z-index:-1 + isolation 让它压在底色之上、文字之下，观感与原来一致。 */
+    details.toolhub > summary::after,
+    details.tool > summary::after,
+    details.toolhub details.tool > summary.toolHead::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      border-radius: inherit;
+      pointer-events: none;
+      opacity: 0;
+      background: linear-gradient(135deg,
+        color-mix(in srgb, var(--accent) 20%, transparent),
+        color-mix(in srgb, var(--accent) 7%, transparent));
+      /* 【2026-11-15 主人问「你把柔光删了？」—— 没删，但更稳的做法是把它放回卡自己身上：
+       * 柔光/描边留在 summary（见下面的 hover 规则，跟改造前一模一样），
+       * 这层伪元素只负责「整行渐变」的淡入（合成层，不重绘整行）。
+       * 这样观感 100% 等于以前，卡顿的根子（hover 换 background）也没了。 */
+      transition: opacity .14s ease;
+    }
+    details.toolhub > summary:hover::after,
+    details.tool > summary:hover::after,
+    details.toolhub details.tool > summary.toolHead:hover::after {
+      opacity: 1;
     }
     details.toolhub > summary:hover,
     details.tool > summary:hover,
     details.toolhub details.tool > summary.toolHead:hover {
-      background: linear-gradient(135deg,
-        color-mix(in srgb, var(--accent) 20%, transparent),
-        color-mix(in srgb, var(--accent) 7%, transparent));
+      color: var(--text);
+      /* 1px accent 内描边 + 10px 柔光：与改造前完全一致（主人明确要这口柔光） */
       box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent),
                   0 0 10px color-mix(in srgb, var(--accent) 14%, transparent);
-      color: var(--text);
     }
     /* 标题字亮一档（色相不变）；柜门后面那截灰字改成亮白，别抢 accent */
     details.toolhub > summary:hover .hubname,
@@ -4650,7 +4838,7 @@
     <button id="openSessions">会话</button>
     <button id="todoBtn" title="任务清单：我们俩一起看着办的活。小鱼开工前会先把步骤写在这儿，办完一步勾一步">清单</button>
     <button id="cronBtn" title="定时任务：跟她说一件事、再说什么时候做，到点她自己去做">定时</button>
-    <button id="kbBtn" title="知识库：所有会话共享的书架——架构速览、排查套路、踩坑经验。点开挑一本读；智能体也能用工具翻">知识库</button>
+    <button id="kbBtn" title="知识史书：所有会话共享——她干过的活怎么干的，都记在这儿，下次同类任务直接照着做">知识库</button>
     <!-- 【2026-11-13 合并·mac 侧】「功能」改叫「插件」：系统插件和自己的插件都在这儿，可启用、停用、导入、卸载 -->
     <button id="openFeatures" title="插件：系统插件和自己的插件都在这儿，可启用、停用、导入、卸载">插件</button>
     <!-- 【2026-11-13 合并·外观中心】主题 / 壁纸 / 插件（可插拔 js 插件）——面板由
@@ -4705,16 +4893,13 @@
   <div id="kbOverlay" hidden>
     <div class="kbHead">
       <b>知 识 库</b>
-      <input type="text" class="kbSearch" id="kbSearch" placeholder="搜书名 / 内容 / 作者 / 标签…">
-      <span class="kbHint" id="kbHint">所有会话共享的书架——点一本书读，智能体也能用工具翻</span>
-      <button type="button" id="kbCreate" class="primary">＋ 创建知识卡</button>
-      <button type="button" id="kbImport">导入</button>
-      <button type="button" id="kbExport">导出</button>
+      <span class="kbHint" id="kbHint">知识史书 · 所有会话共享——她干过的活怎么干的，都记在这儿；智能体也能用工具翻</span>
+      <button type="button" id="kbKnowAdd" class="primary">＋ 记一条</button>
       <button type="button" id="kbClose">关闭</button>
     </div>
-    <div class="kbShelfWrap" id="kbShelfWrap">
-      <div class="kbShelf" id="kbShelf"></div>
-    </div>
+    <!-- 【2026-11-14 主人钦点·知识库面板终版】只剩【知识史书】（know.mjs 会话知识库，全会话共享）。
+         旧书架知识卡 UI 按主人原令删除（仅保留知识库按钮）；know-chronicle 页签也删。 -->
+    <div id="kbKnowWrap" style="overflow-y:auto;max-height:76vh;padding:6px 4px"></div>
     <!-- 创建/编辑表单层 -->
     <div class="kbFormWrap" id="kbFormWrap" hidden>
       <div class="kbForm">
@@ -4800,10 +4985,6 @@
         <span class="hint" id="featFoot">关掉的功能小鱼就用不了，改了下一句生效。</span>
       </div>
       <!-- 拖文件进来时盖在上面那层（平时 hidden）。不吃鼠标，见 CSS 里那条说明。 -->
-      <div class="featDrop" id="featDrop" hidden>
-        <b>松手就导入</b>
-        <span>一次拖几个都行 · 只认功能文件（.json）</span>
-      </div>
           <div class="featDrop" id="featDrop" hidden>
         <b>松手就导入</b>
         <span>一次拖几个都行 · 功能插件是 .json，主题 / 壁纸是 .zip 包</span>
@@ -4962,7 +5143,7 @@
           </div>
           <div id="mobBody" hidden>
             <div class="field">
-              <label>用手机上的小鱼 App 扫下面这几张码，任一张都行；扫不出来也能手填下面的地址和配对码。</label>
+              <label>手机装上小鱼手机端（APK 在桌面／发布页的「小鱼Agent-手机端.apk」），打开后扫下面任意一张码；扫不出来也能手填地址和配对码。手机端不是另一套界面——它就是把电脑这份网页装进壳里，所以电脑改了界面，手机刷新即得。</label>
               <div id="mobQr" class="mobQrWrap"></div>
               <div class="mobLine"><span class="hint">配对码</span><code id="mobToken">—</code>
                 <button type="button" class="ghost" id="mobCopy">复制</button>
@@ -4973,6 +5154,7 @@
             </div>
             <div class="field">
               <label>连过的手机</label>
+              <div class="hint" style="margin:-2px 0 6px">配对码存在手机本地，下次打开自动连；「换一个配对码」会让连过的手机立刻失效，得重新扫。</div>
               <div id="mobDevices"><span class="hint">还没有手机连进来</span></div>
             </div>
           </div>
@@ -5042,7 +5224,11 @@
              查清了确实没用：settings.mjs 的 normalize() 不认 iconStyle / chatCover，
              存盘时被丢掉，点完保存下次打开还是默认 —— 所以点了也白点。整段删掉，不修。
              素材（assets/xiaoyu-whale*.ico / cover.png）留着，以后想用还在。 -->
-        <fieldset>
+        <!-- 【2026-11-14 主人钦点·删安全词】有了默认的【闲聊状态/工作状态】双状态之后，
+             安全词这套「喊个词切档」的机制不再需要：界面下架、服务端停用匹配、存的数据清空。
+             这里留一个 hidden 桩，只因为设置面板脚本还引用这些输入框 id；
+             等那段脚本拆干净后连桩一起删。主人看不到这一块。 -->
+        <fieldset hidden>
           <legend>安全词</legend>
           <div class="field">
             <label>用 / 或 , 分隔。消息里出现任意一个，小鱼这一回合就停下演出，只谈正事。</label>
@@ -5695,6 +5881,7 @@
     <div class="dlgFoot">
       <span class="hint" id="qqFootHint"></span>
       <button type="button" class="ghost" id="qqGateSave">保存白名单</button>
+      <button type="button" class="ghost" id="qqBackToFeat">返回</button>
       <button type="button" class="ghost" id="qqSave">保存</button>
     </div>
   </dialog>
@@ -5902,18 +6089,178 @@
         paint('资源没加载上：' + (t.src || t.href || t.tagName));
         return;
       }
-      paint(String((ev && ev.message) || '未知错误'), ev && ev.lineno);
+      paint(String((ev && ev.message) || '未知错误') +
+        ((ev && ev.error && ev.error.stack) ? '\n堆栈：\n' + String(ev.error.stack).slice(0, 2000) : ''),
+        ev && ev.lineno);
     } catch (e) { /* 忽略 */ }
   });
   window.addEventListener('unhandledrejection', function (ev) {
     try {
       var r = ev && ev.reason;
-      paint('异步任务出错：' + String((r && (r.message || r)) || '未知'));
+      var msg = '异步任务出错：' + String((r && (r.message || r)) || '未知');
+      if (r && r.stack) msg += '\n堆栈：\n' + String(r.stack).slice(0, 2000);
+      paint(msg);
+    } catch (e) { /* 忽略 */ }
+  });
+  /* 【2026-11-14 加·页面报错自动上报】红条只显示第一条就把 shown 锁死了，
+   * 后面的错全被吞；而且打包版窗口里打不开 DevTools，堆栈主人拿不到。
+   * 顺手把每条报错 POST 到 /api/debug-log（tag=page-error），
+   * 小鱼直接去 .state/console.log 捞堆栈，不用再猜。 */
+  function reportErr(kind, text) {
+    try {
+      fetch('/api/debug-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: 'page-error', kind: kind, text: String(text).slice(0, 4000), at: Date.now(), url: location.href }),
+      }).catch(function () {});
+    } catch (e) { /* 上报失败就算了，别二次炸 */ }
+  }
+  window.addEventListener('error', function (ev) {
+    try {
+      if (ev && ev.target && ev.target !== window) return; // 资源错误上面那条已经 paint 过了
+      reportErr('error', (ev && ev.message) + '\n' + ((ev && ev.error && ev.error.stack) || ''));
+    } catch (e) { /* 忽略 */ }
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    try {
+      var r = ev && ev.reason;
+      reportErr('rejection', ((r && (r.message || String(r))) || '未知') + '\n' + ((r && r.stack) || ''));
     } catch (e) { /* 忽略 */ }
   });
 })();
 
 const log = document.getElementById('log');
+
+/* ══════════ 【2026-11-15 加·B 框滚到头**立刻**带动 A 框，不用顿一下再滚】══════════
+ *
+ * 主人原话：「滚轮滚动到最上或下位置，需要停一下再滚轮滚动才能连带着滚动 A 框，
+ * 改成不需要停一下，在滚到 B 框上下极限位置时继续滚能连带滚动 A 框。」
+ *
+ * 【为什么会有「顿一下」】这是浏览器的规矩，不是 bug：
+ * 滚动链（scroll chaining）要等**这一串手势结束**（约 300~500ms 没有新的 wheel）
+ * 才会交给父级滚动容器。所以人滚到 B 框底部后，必须停手、再滚一次，A 框才动。
+ * 光靠 CSS 的 `overscroll-behavior: auto` 改不了这个延迟 —— 那是浏览器内部节奏。
+ *
+ * 【怎么做的】只接管「已经到极限」那一下：B 框在这个方向上再也滚不动了，
+ * 就把这一格的 deltaY 直接加给 A 框（.hubBody），并 preventDefault 掉浏览器
+ * 那套「等手势结束」的链。B 还能自己滚的时候一概不碰 —— 这点很要紧：
+ * 2026-11-14 那版「凡是滚轮都手动喂 scrollTop」，结果 B 框自己滚的时候也被一格一格喂，
+ * 主人当场报「一卡一卡」。现在只在边界处接力，里面还是浏览器原生滚，所以是顺的。
+ *
+ * 【一处细节】deltaMode 可能是「行」（火狐 / 部分鼠标驱动），那就按行高换算，
+ * 否则一次只滚 3 像素，看着像没动。
+ *
+ * 【2026-11-16 主人再报·「连带滚动 A 框时一卡一卡」】
+ *
+ * 上一版是「到边界就把这一格 deltaY 直接加给 A 框」—— 一格一跳，跳完等下一格。
+ * 手轮转得慢的时候尤其明显：A 框像被一齿一齿地拨，没有原生那种匀速滑。
+ * 根子还是「手喂 scrollTop」：赋值是瞬时跳变，浏览器不会替你补帧。
+ *
+ * 这版改成「目标 + 逐帧追」：滚轮只累加一个目标值，真正的位移交给 rAF
+ * 每帧吃掉剩余差的 45%（约 5 帧、80ms 收敛）。连续几格会叠在一起追，
+ * 视觉上是匀速滑过去的；手停之后残余也会自己滑完，不留半格。
+ * B 框自己还能滚的时候照旧一概不碰 —— 那里必须是原生手感。
+ *
+ * 【2026-11-16 晚再修·非 B 区域滚不动】上面那句「只接管 B 里到极限那一下」
+ * 同时也是毛病：鼠标一挪到柜门/空隙/收起态卡片上，程序就撒手不管，
+ * 而 A 的 overscroll-behavior:contain 会让原生链止步 —— 手必须一直压在 B 上。
+ * 现在整个 .toolhub 都归这套逻辑管：非 B 区域直接喂 A。
+
+ */
+(function installInnerToHubScrollChain() {
+  const B_SEL = '.hubBody .thinkBody, .hubBody details.tool > pre';
+  const A_SEL = '.hubBody';
+  const EPS = 1;   // 浮点误差：scrollTop 可能是 4018.666…
+  let raf = 0;
+  let targetA = null;
+  let targetVal = 0;
+  /* 每帧往目标靠 35%：不追死（那样等于瞬移），也不磨蹭（那样像拖影）。
+   * 【2026-11-16 晚·主人报「小小滚一下却一节一节跳」】
+   * 真机量过：一格滚轮（deltaY=120）总共走 119px，老参数 EAT=0.45 让
+   * **第一帧就走 54px**、后面 30/16/9… 迅速衰减 —— 手感就是「先猛跳一节，
+   * 再一小截一小截爬」。现在给每帧位移封顶 12px：前 9 帧匀速 12px 走掉 108px，
+   * 最后几帧才收尾。同样是 119px，但落在眼睛里是一条匀速的线，不是一节一节。 */
+  const EAT = 0.35;
+  const MAX_STEP = 12;
+  function pump() {
+    raf = 0;
+    const a = targetA;
+    if (!a) return;
+    const cur = a.scrollTop;
+    const d = targetVal - cur;
+    if (Math.abs(d) < 0.5) {
+      a.scrollTop = targetVal;
+      targetA = null;
+      return;
+    }
+    /* 先按 EAT 算这一帧该走多少，再封顶 —— 目标差得越大，越接近匀速爬。 */
+    const step = Math.sign(d) * Math.min(Math.abs(d) * EAT, MAX_STEP);
+    a.scrollTop = cur + step;
+    raf = requestAnimationFrame(pump);
+  }
+  document.addEventListener('wheel', function (e) {
+    try {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      /* 【2026-11-16 晚·主人报「必须把鼠标放在 B 框里才能滚」】
+       *
+       * 原来这里只接管落在 B 框（工具 pre / 思考正文）里的滚轮，落在柜子其它地方
+       * （柜门 summary、卡片之间的空隙、收起态的卡）就 return 给浏览器 —— 可 A 框
+       * 自带 `overscroll-behavior: contain`，原生滚动到 A 的边界就停，也好不到哪去；
+       * 更糟的是上一发 B 框接力留下的 rAF 还在追目标值，会把原生滚的那点位移拽回去。
+       * 表现就是：手必须一直压在展开的 B 框里，一挪开就滚不动。
+       *
+       * 现在判据放大到**整个柜子**：先找到 .toolhub，A 框就是它里面那个 .hubBody。
+       *   · 落在 B 框里、而且 B 还能自己滚 → 一概不碰，保持原生手感；
+       *   · 落在 B 框里但已经到边 → 按边界接力喂 A（原来那套逐帧追）；
+       *   · 落在柜子任何非 B 区域 → 直接喂 A，不再靠那条被 contain 掐死的原生链。
+       */
+      const hub = t.closest('.toolhub');
+      if (!hub) return;
+      const b = t.closest(B_SEL);
+      const a = b ? b.closest(A_SEL) : (hub.getElementsByClassName('hubBody')[0] || null);
+      if (!a || a === b) return;
+      let dy = Number(e.deltaY) || 0;
+      if (!dy) return;
+      if (e.deltaMode === 1) dy *= 16;            // 行 → 像素（约一行）
+      else if (e.deltaMode === 2) dy *= (b || a).clientHeight;
+      if (b) {
+        const maxTop = b.scrollHeight - b.clientHeight;
+        const atTop = b.scrollTop <= EPS;
+        const atBottom = b.scrollTop >= maxTop - EPS;
+        const wantUp = dy < 0;
+        // 只有「这个方向已经到头」才接管；否则让 B 框自己滚（原生手感）
+        if (!(wantUp ? atTop : atBottom)) return;
+      }
+      /* 连着打好几格时，从**当前目标**往上加，而不是从实际位置加 ——
+       * 否则后一格会把前一格还没追完的位移吃掉，手快反而滚得少。 */
+      const base = targetA === a ? targetVal : a.scrollTop;
+      const room = a.scrollHeight - a.clientHeight;
+      let next = base + dy;
+      next = Math.max(0, Math.min(next, Math.max(0, room)));
+      if (next === base) {
+        /* A 也到头了：别拦（让页面照常滚），同时把没追完的目标清掉 ——
+         * 不清的话残留的 rAF 会把之后原生滚的那点位移又拽回来。 */
+        if (targetA === a) { targetA = null; targetVal = 0; if (raf) { cancelAnimationFrame(raf); raf = 0; } }
+        return;
+      }
+      targetA = a;
+      targetVal = next;
+      e.preventDefault();
+      if (!raf) raf = requestAnimationFrame(pump);
+    } catch (err) { /* 滚动上的错不连累页面 */ }
+  }, { passive: false });
+})();
+
+/* ══════════ 【2026-11-14 主人报·B 框滚到头带 A 框滚·第一版】══════════
+ * 第一版用 JS 手动接力（wheel 里 preventDefault + a.scrollTop += deltaY）——
+ * 主人 20:50 报「滚动一卡一卡的」：手喂 scrollTop 是一格一格跳的，没有原生的顺滑。
+ *
+ * 改回**原生滚动链**：B 框在柜子里时不挡（overscroll-behavior: auto —— 注意不是
+ * normal，Chrome 不认 normal，写了会被整条丢掉，见上面 2026-11-15 那段），
+ * B 滚到头浏览器自己把滚动交给最近的滚动祖先 = A 框（.hubBody）——原生链是平滑的。
+ * A 框自己仍带 contain，所以柜子滚到头也不会把聊天区撸走 —— 链条到 A 为止。 */
+(function installChainScroll() { /* 已废弃：见上面说明，改用 CSS 原生滚动链 */ })();
 
 /**
  * 页面级的「一句话提示」。
@@ -7844,13 +8191,28 @@ async function tryHealAfterDisconnect(id) {
       turnMark = await markHistoryLength(id);
       if (sessionId === id) {
         /**
-         * 【2026-11-09 换框架】原来是 `log.innerHTML = ''`（把屏幕清空再重画）。
+         * 【2026-11-14 主人报·发消息时整屏内容清空，只留刚发那条】
          *
-         * 清空 DOM 这件事现在只有 React 能做 —— 直接抹容器会留下 React 记着的旧节点，
-         * 下一次渲染就按错位插入。这里改成清**数据**：历史置空、叫一次画，
-         * 屏幕自然变空；紧接着 attachLive 会把「这一轮现在长什么样」送进来。
+         * 原来这里是 `logSetHistory(id, [])` —— 断流自愈时把整屏历史抹空，
+         * 再指望 attachLive 回填；可服务端刚开盘的 live 清单里只有那条乐观气泡，
+         * 屏幕就只剩主人刚发的那句话，等她回话（哪怕是报错）重新拉历史才恢复。
+         *
+         * 照 public/ui/chat.js 里那条「宁可用旧屏，也不用空屏」的规矩：
+         * 先从 /api/sessions/select 拉真实历史换上；拉不到就**保持原屏不动**，
+         * 只挂直播。屏幕任何时刻都不再空白。
          */
-        try { window.logSetHistory(id, []); window.logSetLive(id, null); window.renderLog({ force: true }); } catch (e) {}
+        try {
+          const _sel = await fetch('/api/sessions/select', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id }),
+          }).then((r) => r.json()).catch(() => null);
+          const _turns = _sel && _sel.session && Array.isArray(_sel.session.turns) ? _sel.session.turns : null;
+          if (Array.isArray(_turns) && _turns.length) {
+            window.logSetHistory(id, _turns);
+            window.logSetLive(id, null);
+            window.renderLog({ force: true });
+          }
+        } catch (e) { /* 拉不到就不动画面，原屏留着 */ }
   // 【清空历史后扫残留光标】
   // 屏幕上刚清空，重新画出来的都是「已经说完的话」，不该有任何气泡还在闪光标。
   // 万一进程上次是被强杀的，类就留在那儿了 —— 这里扫一遍收干净。
@@ -8736,6 +9098,102 @@ function openTurnDiff(at) {
   });
 }
 
+/**
+ * 【2026-11-15 加·「翻原文」：把折叠存档的原文翻出来看，还能恢复回会话】
+ *
+ * 主人报「重启后消息全没了」，查明是压缩把历史折进 .state/folded/，
+ * 屏幕上只剩一句「折叠存档了」——数据一直在盘上，但没有入口，等于丢了。
+ * 那条提示旁边现在有颗「翻原文」，调的就是这里。
+ *
+ * 抽屉里做三件事：列出折过哪几段 → 点一段看原文 → 「恢复到会话」把人话那段插回历史。
+ * 恢复是**有损**的（归档是文本、工具输出被截断过），服务端只还原
+ * 「主人说的」和「她说的正文」，工具调用/结果一律不还原，免得造出孤儿 tool 消息。
+ */
+window.openFoldedArchive = function (sid) {
+  const id = String(sid || (typeof sessionId === 'string' ? sessionId : ''));
+  if (!id) return;
+  fvShow('折叠存档 · 原文', function (body) {
+    fvNote(body, '正在取折叠记录…');
+    const el = function (cls, text) {
+      const d = document.createElement('div');
+      d.className = cls;
+      if (text != null) d.textContent = text;
+      return d;
+    };
+    fetch('/api/folded?id=' + encodeURIComponent(id))
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!body.isConnected) return;
+        if (!j || j.ok === false) return fvNote(body, (j && j.error) || '取不到折叠记录。');
+        const segs = Array.isArray(j.segments) ? j.segments : [];
+        if (!segs.length) return fvNote(body, '这个会话还没有折叠过任何段，没有可翻的原文。');
+        body.textContent = '';
+        const tabs = el('fvTabs');
+        const view = document.createElement('div');
+        body.appendChild(tabs);
+        body.appendChild(view);
+
+        const showSeg = function (segId) {
+          view.textContent = '';
+          view.appendChild(el('dl ctx', '正在读原文…'));
+          fetch('/api/folded/text?id=' + encodeURIComponent(id) + '&seg=' + encodeURIComponent(segId))
+            .then(function (r) { return r.json(); })
+            .then(function (g) {
+              if (!body.isConnected) return;
+              view.textContent = '';
+              if (!g || !g.ok) { view.appendChild(el('dl ctx', (g && g.error) || '读不到这一段。')); return; }
+              view.appendChild(el('dl ctx', '第 ' + g.from + '–' + (g.to - 1) + ' 条，' + String(g.text || '').length + ' 字（原文存档）'));
+              const btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'sysnoteBtn';
+              btn.textContent = '恢复到会话';
+              btn.onclick = function () {
+                btn.disabled = true;
+                btn.textContent = '正在恢复…';
+                fetch('/api/folded/restore', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ id: id, seg: g.id }),
+                })
+                  .then(function (r) { return r.json(); })
+                  .then(function (x) {
+                    if (x && x.ok) {
+                      btn.textContent = '已恢复 ' + x.restored + ' 条（刷新会话可见）';
+                      try { if (typeof switchSession === 'function') switchSession(id); } catch (e) {}
+                    } else {
+                      btn.textContent = (x && x.error) || '恢复失败';
+                    }
+                  })
+                  .catch(function () { btn.textContent = '恢复失败（连不上服务）'; });
+              };
+              view.appendChild(btn);
+              const pre = el('dl ctx');
+              pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;font-size:12.5px;line-height:1.65;opacity:.92;margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:8px;background:rgba(255,255,255,.02)';
+              pre.textContent = String(g.text || '');
+              view.appendChild(pre);
+            })
+            .catch(function () {
+              if (!body.isConnected) return;
+              view.textContent = '';
+              view.appendChild(el('dl ctx', '连不上服务，稍后再试。'));
+            });
+        };
+
+        segs.forEach(function (sg, i2) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = sg.id + ' · 第' + sg.from + '–' + (sg.to - 1) + ' 条';
+          b.onclick = function () { showSeg(sg.id); };
+          tabs.appendChild(b);
+        });
+        showSeg(segs[segs.length - 1].id);
+      })
+      .catch(function () {
+        if (body.isConnected) fvNote(body, '连不上服务，稍后再试。');
+      });
+  });
+};
+
 /** diff 渲染：文件 tab + 行首 +/- 上色（加绿删红，全走主题变量）。只读。 */
 function renderDiffView(body, files) {
   if (!body) return;
@@ -9319,6 +9777,20 @@ const TOOL_NICE = {
   t2s_convert: '繁转简',
   say: '念给主人听',
   send_file: '发文件',
+  // 【借鉴工具 2026-11-16】从 dsh / WorkBuddy / Claude Code 挑来重写的，中文名跟着「发文件」这套走
+  edit_file: '改文件一小段',
+  term_start: '开个终端',
+  term_send: '终端里敲',
+  term_read: '看终端',
+  term_close: '关终端',
+  list_terminals: '看看几个终端',
+  find_files: '按名字找文件',
+  read_image: '看图',
+  goal_set: '立个目标',
+  ralph: '没做到就再做',
+  send_files: '发一组文件',
+  trace_turns: '翻自己流水',
+
   ask_subagent: '叫小鲸',
   memory_add: '记进本子',
   memory_pin: '钉住不忘',
@@ -9377,6 +9849,11 @@ const TOOL_NICE = {
   schedule_task: '定时任务',
   list_schedules: '看定时任务',
   cancel_schedule: '撤定时任务',
+  // 【2026-11-15 加】后台命令三件套：跑回归丢后台之后要看进度/停
+  check_job: '看后台进度',
+  list_jobs: '看后台任务',
+  stop_job: '停掉后台任务',
+  stop_worker: '叫停干活的',
   /**
    * 【2026-11-11 补·主人问「是不是还有别的显示不对」——扫注册表对出来的漏网之鱼】
    *
@@ -9399,6 +9876,26 @@ const TOOL_NICE = {
   baidu: '用百度查',
   bing: '用必应查',
   sogou: '用搜狗查',
+  /* 【2026-11-14 补】会话知识库三个工具一直漏在表外，界面露英文 know_search/know_add/know_delete */
+  know_search: '翻手路',
+  know_add: '记手路',
+  know_delete: '删手路',
+  /* 【2026-11-15 借鉴工具落地：12 个新工具的中文名，别让界面露英文】 */
+  edit_file: '精准改文件',
+  import_dsh_skills: '导入手艺',
+  term_start: '开常驻终端',
+  term_send: '往终端敲命令',
+  term_read: '读终端输出',
+  term_close: '关常驻终端',
+  list_terminals: '看开着哪些终端',
+  find_files: '找文件',
+  read_image: '看图',
+  goal_set: '设个目标',
+  send_files: '发一组文件',
+  ralph: '反复做到过',
+  trace_turns: '翻轮次',
+  /* 【2026-11-16 补】rename_session 一直漏在表外，界面露英文 rename_session */
+  rename_session: '改会话名',
 };
 /**
  * 【2026-11-07 主人要·别什么都叫「跑命令」】
@@ -10025,6 +10522,27 @@ function _hintWho() {
   } catch (e) {}
   return '小鱼';
 }
+/**
+ * 【2026-11-16】「这一行现在该写什么」的唯一出口。
+ *
+ * 以前三个写手各写各的（showSending / 秒表 tick / 3 秒巡检），
+ * 谁后写算谁 —— 排队文案刚写上去，下一秒就被 tick 改回「正在发送消息」，
+ * 主人就以为消息已经发出去了，其实还在队列里等着。
+ */
+function _liveHintText() {
+  try {
+    /* 【2026-11-16 修·TDZ】_queueHintUntil 声明在文件靠后（12191），
+     * 而这个函数在 10437 —— `let` 有暂时性死区，早期调用会抛 ReferenceError，
+     * 被 catch 吞掉后表现成「文案怎么都不更新」。用 typeof 兜住。 */
+    if (typeof _queueHintUntil !== 'number') return '正在发送消息';
+    if (Date.now() < _queueHintUntil) {
+      const n = (typeof pendingQueue !== 'undefined' && Array.isArray(pendingQueue)) ? pendingQueue.length : 0;
+      return n > 0 ? ('已排队 ' + n + ' 条 · 等她这轮说完自动发') : '已排队 · 等她这轮说完自动发';
+    }
+  } catch (e) {}
+  return '正在发送消息';
+}
+
 function _hintSetText(t) {
   try {
     const sp = sendingHint && sendingHint.querySelector('span');
@@ -10033,8 +10551,16 @@ function _hintSetText(t) {
 }
 
 function showSending(startAt) {
-  /* 名字跟着这次运行走（切会话/换身份都会变） */
-  try { _hintSetText('正在发送消息'); } catch (e) {}
+  /* 【2026-11-16 主人报·「还是闪一下『小鱼已完成』」】
+   *
+   * 上一版在 send()/sendBuffered()/interject() 里各记一次 —— 实测仍然闪，
+   * 说明有的入口根本没走到那行（或被早退挡住）。
+   * 干脆放在这里：**亮灯必然经过这个函数**，只要亮了灯，8 秒内就不许
+   * 被 syncSendBtn 认成「刚跑完」去闪「已完成」。 */
+  try { _sendFeedbackAt = Date.now(); } catch (e) {}
+  /* 名字跟着这次运行走（切会话/换身份都会变）。
+   * 正在排队（预发送）的时候别写「正在发送消息」—— 那句话还没发出去。 */
+  try { _hintSetText(_liveHintText()); } catch (e) {}
   sendingHint.classList.remove('done');
   sendingHint.classList.add('show');
   /* 【2026-11-12】原来这里 noteNewContent() +1 —— 你发的这句话本身会作为
@@ -10095,7 +10621,7 @@ function showSending(startAt) {
         if (!sendingHint.classList.contains('done')) {
           const sp2 = sendingHint && sendingHint.querySelector('span');
           if (sp2) {
-            const want = '正在发送消息';
+            const want = _liveHintText();
             if (sp2.textContent !== want) _hintSetText(want);
           }
         }
@@ -10127,6 +10653,14 @@ function hidingSendingSafe() {
     try { document.getElementById('sendingHint')?.classList.remove('show'); } catch {}
   }
 }
+
+/* 【2026-11-16 主人钦点·「正在跑变更…」整套删掉】
+ *
+ * 原话：「删输入框左上角【正在跑变更】之类的话」，后来又要求「把后台作业的有关代码全删了」，
+ * 所以这里不再保留空转函数：pollJobHint、它那个 3 秒定时器、以及 /api/jobs/running
+ * 的轮询一起删。那是唯一会往这一行写「正在跑回归…」的地方。
+ * 这一行从此只属于「正在发送消息 / 已排队」。
+ */
 
 /**
  * 【2026-11-09 主人报·做任务做着做着「正在发送消息」消失了，再也不回来】
@@ -10260,9 +10794,26 @@ function syncSendBtn() {
   try {
     const wasBusy = document.body.classList.contains('xy-busy');
     document.body.classList.toggle('xy-busy', !!busy);
+    /* 【2026-11-16 主人报·「正在发消息」闪一下就消失】
+     *
+     * 病根就在这一行：点【发送】时我们立刻 showSending（乐观提示），它会顺手把
+     * `_turnT0` 填上；紧接着只要 busy 从 true 变 false（她那一轮刚好收尾、
+     * 或 2 秒巡检判定不忙），这里就当成「本屏刚跑完一轮」→ `_flashDone()`
+     * 把文案改成「xx已完成」再灭灯 —— 主人看到的正是「闪一下就没了」。
+     *
+     * 判据加一条：刚点过发送的 8 秒内不闪完成。那 8 秒里不管发生什么，
+     * 屏幕上该是「正在发送消息」，不是「已完成」。 */
+    /* 【2026-11-16 主人两次报·「正在发送消息」然后瞬间变「小鱼已完成」再消失】
+     *
+     * 前面试过「刚点发送 8 秒内不闪」，实测还是会闪（好几个写手抢同一行，
+     * 且部分路径根本不经过那个时间戳）。既然主人明确不想要这个闪烁，
+     * 就把它关掉：这里只清计时起点，不再调 _flashDone()。
+     *
+     * 少一个「已完成」的正反馈，换来「正在发送」稳稳挂到她真正说完 ——
+     * 这个交易是值的：她说完话，屏幕上她的话就是最好的反馈。
+     * （_flashDone 保留定义，别处若要用还能调。） */
     if (wasBusy && !busy && _turnT0 > 0) {
       _turnT0 = 0;
-      _flashDone();
     }
   } catch (e) {}
   /* 【2026-11-11 主人要求：忙碌锁整个删掉】管理员/会话在任务跑动期间保持可点，
@@ -10745,6 +11296,20 @@ async function runTurn({ resume = false, text = '', attachments: _att = null, _s
            * 屏幕由 FileCard 照清单画（旧路 attachFiles / placeSentCard / outCard
            * 已删 —— mdInto 每个流式 tick 都重写 .bubble 的 innerHTML，谁挂谁没）。
            * 这里只剩信号：快照在上面那句 nudgeLive 已经拉过了。 */
+        } else if (ev.type === 'session_title') {
+          /* 【2026-11-16 主人钦点·AI 自己改名，这一屏要立刻跟上】
+           *
+           * 她调 rename_session 之后服务端会推这条。不处理的话，名字要等
+           * 下次刷新/切会话才变 —— 主人看到的还是旧名字，以为没改成。
+           * 这里三处一起刷：当前标题、顶栏那颗按钮的提示、左边【会话】列表。 */
+          try {
+            const t = fixMojibake(String(ev.title || '')).trim();
+            if (t) {
+              sessionTitle = t;
+              paintSessNow();
+              try { refreshSessions({ silent: true }); } catch (e) {}
+            }
+          } catch (e) {}
         } else if (ev.type === 'safe_word') {
           /* 【2026-11-10 收编】安全词提示不再手写 DOM（addEl 那条路已删）：
            * 走系统提示（store → React SysNote），信息照样在屏幕上。 */
@@ -11215,6 +11780,8 @@ async function settleFromHistory(id) {
  * ══════════════════════════════════════════════════════════════ */
 let pendingQueue = [];
 let _flushingPending = false;
+/* 【2026-11-15 加】内存里这排队属于哪个会话 —— 切会话时才好「存回旧 key、别串到新会话」。 */
+let _pendingOwner = '';
 
 function pendingStoreKey() {
   return 'xy_pending_' + (sessionId || 'none');
@@ -11224,9 +11791,29 @@ function loadPendingQueue() {
   try {
     const raw = localStorage.getItem(pendingStoreKey());
     const arr = raw ? JSON.parse(raw) : [];
-    pendingQueue = Array.isArray(arr)
+    let disk = Array.isArray(arr)
       ? arr.filter((x) => x && (x.text || (x.atts && x.atts.length)))
       : [];
+    /* 【2026-11-15 修·「刚入队就被读盘覆盖」】
+     *
+     * 2 秒一拍那个定时器每次切会话都会 loadPendingQueue()，而它是拿磁盘整份
+     * **覆盖**内存。于是这几种情况会丢话：
+     *   · 页面刚打开的头两秒里点了【发送】—— 恰好在第一次 tick 之前；
+     *   · 切走又切回来，内存里那几条还没落盘。
+     * 表现就是主人看到「待发送」一闪、接着自己没了。
+     *
+     * 改成**按 id 去重合并**：磁盘的算底，内存里磁盘没有的接在后面。
+     * 串会话由调用方先「存回旧 key + 清空内存」挡住（见轮询那段）。 */
+    if (Array.isArray(pendingQueue) && pendingQueue.length) {
+      const known = new Set(disk.map((x) => x && x.id).filter(Boolean));
+      for (const it of pendingQueue) {
+        if (!it || !it.id || known.has(it.id)) continue;
+        disk.push(it);
+      }
+    }
+    pendingQueue = disk;
+    _pendingOwner = sessionId || '';
+    savePendingQueue();
   } catch (e) { pendingQueue = []; }
   renderPendingQueue();
 }
@@ -11279,16 +11866,25 @@ function queueFromInput() {
 function renderPendingQueue() {
   const box = document.getElementById('pendingQueue');
   if (!box) return;
-  if (!pendingQueue.length) { box.hidden = true; box.innerHTML = ''; return; }
+  if (!pendingQueue.length) {
+    box.hidden = true; box.innerHTML = '';
+    /* 队列空了 → 退出排队态，提示行回到「正在发送消息」 */
+    try { _queueHintUntil = 0; } catch (e) {}
+    return;
+  }
   box.hidden = false;
   box.innerHTML = '';
 
   const _uncertain = pendingQueue.some((x) => x && x._uncertain);
   const head = document.createElement('div');
   head.className = 'pendingHead';
+  /* 【2026-11-15】状态说清楚：她在跑 = 「等她这轮说完自动发」；
+   * 她闲了 = 这两秒内就发（2 秒轮询 flush），别让人误会还要再点一次。 */
   head.textContent = _uncertain
     ? '有消息状态不确定 —— 可能已经发出去了，先确认下再点「直接发送」，别重复发'
-    : '待发送 ' + pendingQueue.length + ' 条 —— 这一轮结束后自动发出；也可以现在发，或撤回改';
+    : (busy
+      ? '待发送 ' + pendingQueue.length + ' 条 —— 她这轮说完自动发；也可以现在发，或撤回改'
+      : '待发送 ' + pendingQueue.length + ' 条 —— 马上发出…');
   box.appendChild(head);
 
   for (const it of pendingQueue) {
@@ -11359,6 +11955,8 @@ function editPending(id) {
     syncSendBtn();
     try { renderAttachBar(); } catch (e) {}
     input.focus({ preventScroll: true });
+    /* 【2026-11-15 加】搬回去之后说一句，别让人以为「编辑」是把字弄丢了 */
+    try { toast('已放回输入框 —— 改完再点【发送】'); } catch (e) {}
   } catch (e) {}
 }
 
@@ -11455,7 +12053,10 @@ async function flushPendingQueue() {
   try { savePendingQueue(); } catch (_) {}
   try { renderPendingQueue(); } catch (_) {}
   try {
-    await runTurn({ text: String(next.text || ''), attachments: Array.isArray(next.atts) ? next.atts : [] });
+    /* 【2026-11-16 主人报·「发出去的两个字不渲染」】排队那一刻已经在主气泡区
+     * 画过一条乐观气泡了（sendBuffered 的 busy 分支），这儿再画一次就是重影。
+     * 跟缓冲窗同一个口径：_skipUserDraw = 已经画过了，别画两遍。 */
+    await runTurn({ text: String(next.text || ''), attachments: Array.isArray(next.atts) ? next.atts : [], _skipUserDraw: true });
     sent = true;
   } catch (e) {
     /* 抛错不等于没发出去（见上面的说明）：标成「可能已发出」，不再自动重发 */
@@ -11486,12 +12087,24 @@ async function flushPendingQueue() {
  * 闲着且队列空时只做两次判断，开销可以忽略。
  */
 let _pendingLoadedSid = '';
+let _pendingBusyShown = null;   // 【2026-11-15】上一次画队列时的忙碌状态：变了就重画一句文案
 setInterval(() => {
   try {
     /* 会话一变就把那个会话的队列读出来（首次打开也走这条） */
     if (sessionId && sessionId !== _pendingLoadedSid) {
+      /* 【2026-11-15 加】走之前先把内存里的排队**存回它自己的 key**，再清空 ——
+       * 不清就会把 A 会话没发出去的话串到 B 会话去（两边都发一遍）。 */
+      if (_pendingOwner && _pendingOwner !== sessionId && pendingQueue.length) {
+        try { localStorage.setItem('xy_pending_' + _pendingOwner, JSON.stringify(pendingQueue)); } catch (e) {}
+        pendingQueue = [];
+      }
       _pendingLoadedSid = sessionId;
       loadPendingQueue();
+    }
+    /* 【2026-11-15】她说完了 / 又开跑了 → 队列那句状态跟着换（自动发 / 马上发出…） */
+    if (pendingQueue.length && _pendingBusyShown !== busy) {
+      _pendingBusyShown = busy;
+      try { renderPendingQueue(); } catch (e) {}
     }
     if (!busy && !_flushingPending && pendingQueue.length) flushPendingQueue();
   } catch (e) {}
@@ -11644,6 +12257,25 @@ if (enhanceBtn) {
  * 到点把攒下的话一次性发上去（extraMessages），全程不算插话。
  * 回车不缓冲 —— 回车就是直接发（主人钦定）。 */
 let _holdState = null;      // { queue, firstAt, deadline, bufferMs, maxMs, timer }
+/* 【2026-11-16 主人报·点发送后没有「正在发送消息」的提示】
+ *
+ * 根子：点【发送】走的是「发送缓冲」—— 先等 3 秒（这 3 秒是 11-12 主人要的
+ * 「合并多句」窗口）。可这 3 秒里界面**什么都不显示**，主人看到的就是
+ * 「点了发送，没反应，也没人回」。
+ * 更糟的是：她正在跑的时候 busy 可能还是 false（页面刷新/切会话后前端不知道），
+ * 于是 3 秒后撞 409 → 转插话 → 还得排队等她这一轮 —— 体感就是彻底没回。
+ *
+ * 这里记一个「刚刚点过发送」的时刻：pollJobHint 看到它就让位，
+ * 别拿「正在跑回归…」把「正在发送消息」顶掉。 */
+let _sendFeedbackAt = 0;
+/* 【2026-11-16 主人问「发消息没回」】
+ *
+ * 点【发送】时她正在跑 → 按 23:40 的口径，那句话进**预发送队列**，等她这轮说完才发。
+ * 可提示行一直写着「正在发送消息」—— 主人以为已经发出去了，其实在排队，
+ * 于是体感就是「发了没人回」。
+ * 这个时间戳表示「现在屏上该显示排队态」：排队期间 showSending 一律用排队文案，
+ * 队列空了就归零，回到「正在发送消息」。 */
+let _queueHintUntil = 0;
 let _bufCfgCache = { at: 0, val: null };
 
 async function _bufferCfg() {
@@ -11704,14 +12336,13 @@ function _restoreBuffered() {
     const st0 = JSON.parse(raw);
     if (!st0 || !Array.isArray(st0.queue) || !st0.queue.length) { _bufferClear(); return; }
     if (busy) {
-      /* 正在跑（比如开机自续的那一轮）：不能自动插话，把字退回输入框让主人自己发 */
-      const texts = st0.queue.map((m) => String(m.text || '')).filter(Boolean);
-      if (texts.length && !input.value.trim()) {
-        input.value = texts.join('\n');
-        autosizeInput();
-        try { saveDraft(); } catch {}
-        toast('（重启前有 ' + st0.queue.length + ' 条没发出去的话，先退回输入框了——她正忙，主人按回车自己发）');
-      }
+      /* 【2026-11-15 改】她正忙：**不再退回输入框**，直接收进预发送队列。
+       * 主人点过发送，意图就是「发出去」—— 退回去等于让他再点一次。
+       * 队列那边有「直接发送 / 编辑 / 删除」，比塞回输入框还能反悔。 */
+      if (_pendingLoadedSid !== sessionId) { _pendingLoadedSid = sessionId; loadPendingQueue(); }
+      let _n = 0;
+      for (const m of st0.queue) { try { if (enqueueMessage(m.text, m.atts || [])) _n += 1; } catch (e) {} }
+      if (_n) toast('（重启前有 ' + _n + ' 条没发出去的话，已经放进待发送 —— 她这轮说完就发）');
       _bufferClear();
       return;
     }
@@ -11737,17 +12368,17 @@ async function _holdFire() {
     text: m.text,
     attachments: (m.atts || []).map((a) => ({ path: a.path, name: a.name, kind: a.kind })),
   }));
-  /* 【2026-11-12 加·busy 分派】到点时她还在跑的话 runTurn 会被服务端 409 挡回
-   * （「这个会话还在跑」），整包话就丢了。改走插话通道：把整包合成一条
-   * （正文拼接、附件全并），交给 interject 织进当前轮 —— 主人看到的还是
-   * 「一次性把话说完」，只是以插话形式进她的上下文。 */
+  /* 【2026-11-15 改·跟【发送】按钮同一口径】按钮触发的发送不该在她跑起来那一刻
+   * 变成「插话打断」—— 到点时她若在跑，整包按顺序收进预发送队列，等她这轮说完自动发。 */
   if (busy) {
     const parts = [first.text].concat(extras.map((m) => m.text)).filter((t) => String(t || '').trim());
-    const merged = parts.join('\\n\\n');
+    /* 【2026-11-15 顺手修】这里原来写成 '\n\n'（两个反斜杠），拼出来的是字面量 \n\n
+     * 而不是真换行 —— 合并多句时模型看到的是一串反斜杠。 */
+    const merged = parts.join('\n\n');
     const allAtts = (first.atts || []).concat(...extras.map((m) => m.atts || []));
-    try {
-      await interject({ text: merged, atts: allAtts });
-    } catch (e) { /* interject 自己会兜错 */ }
+    if (enqueueMessage(merged, allAtts)) {
+      try { toast('先收着 —— 这一轮说完自动发'); } catch (e) {}
+    }
     return;
   }
   try {
@@ -11755,16 +12386,68 @@ async function _holdFire() {
   } catch (e) { /* runTurn 自己会兜错 */ }
 }
 
-/** 预发送：点【发送】按钮走这条（回车走 send() 不缓冲）。 */
+/** 点【发送】按钮走这条（回车走 send() 不缓冲、直接插话）。 */
 async function sendBuffered() {
-  /* 【2026-11-12 主人报·金框】busy 时不再进金色待发送框（那机制已死），
-   * 照常开缓冲窗 —— 到点 _holdFire 看 busy 分派：没在跑 runTurn 一次全发，
-   * 还在跑就把整包当一条插话（/api/interject）织进当前轮。 */
+  /* 【2026-11-15 主人钦点·插话预发送（按 WorkBuddy / DeepSeek Harness 的做法）】
+   *
+   * 口径（主人原话）：「点【发送】后不立即发送插话消息，而是先进入预发送状态，
+   * 待当前轮次结束后自动发送；预发送阶段可以直接发送、编辑或删除这条；
+   * 只有【发送】按钮触发的才进预发送，键盘回车仍保持直接插话。」
+   *
+   * 这里就是那个分道口：**她在跑 + 点的是按钮 → 收进预发送队列**，
+   * 不打断、不插话。队列的渲染/编辑/删除/直接发送/轮末自动发都在上面
+   * 【预发送队列】那段（pendingQueue + flushPendingQueue + 2 秒轮询），
+   * 属于复活，不是新造。
+   *
+   * 11-12 那次把它改成了「照常开缓冲窗，到点 busy 就 interject」，
+   * 于是「按钮 = 预发送」这条规矩丢了 —— 主人这次又撞上，恢复回来。
+   * 缓冲窗（等 3 秒合并多句）只留给**没在跑**的时候用。 */
   const text = input.value.trim();
-  if (!text && !attachments.length) { toast('（输入框是空的）'); return; }
+  if (!text && !attachments.length) {
+    /* 【2026-11-15 加】框里空的、但队列里已经排着 —— 别只甩一句「输入框是空的」，
+     * 说清楚「已经在排了」，不然点一下没反应像坏了。 */
+    if (busy && pendingQueue.length) {
+      toast('已经在待发送里排着 ' + pendingQueue.length + ' 条 —— 她这轮说完自动发');
+      return;
+    }
+    toast('（输入框是空的）');
+    return;
+  }
   if (!sessionId) {
     try { await booted; } catch {}
     if (!sessionId) return;
+  }
+  if (busy) {
+    /* 【2026-11-16 主人报·「发出去的『继续』两个字，屏幕上没渲染，过一会儿才冒出来」】
+     *
+     * 病根：busy（她这轮还没跑完）时点【发送】，以前只走 queueFromInput()
+     * ——话被收进输入框上方那条金色小面板，主气泡区**一个字都不画**。
+     * 主人盯着对话区，看着就像「我发的话消失了」，要等这一轮结束、
+     * flushPendingQueue 真发出去、服务端回包 renderTurns 才补上。
+     *
+     * 修法：跟下面不 busy 那条分支一样，先乐观画一个自己的气泡
+     * （pendingRewindBubble，flush 真发出去时会被顶掉，不会重影）。
+     * 面板照旧留着，两条路都能看见。 */
+    const _qText = text;
+    const _qAtts = attachments.slice();
+    if (queueFromInput()) {
+      try {
+        if (onScreen()) {
+          pendingRewindBubble = addUser(_qText, undefined, _qAtts, undefined, undefined, currentIdentityName);
+          jumpToBottom();
+        }
+      } catch (e) {}
+      /* 排队态：提示行改成「已排队…」，并且别让后面的 showSending 把它改回「正在发送」 */
+      try {
+        _sendFeedbackAt = Date.now();
+        _queueHintUntil = Date.now() + 10 * 60 * 1000;   // 队列在，排队态就一直有效
+        _hintSetText(_liveHintText());
+        sendingHint.classList.remove('done');
+        sendingHint.classList.add('show');
+      } catch (e) {}
+      toast('先收着 —— 这一轮说完自动发；要现在打断就点那条的「直接发送」，或者按回车直接插话');
+    }
+    return;
   }
   const cfg = await _bufferCfg();
   if (!cfg.on) return send();   // 功能关着 = 跟回车一样直接发
@@ -11780,6 +12463,8 @@ async function sendBuffered() {
   attachments = [];
   renderAttachBar();
   syncSendBtn();
+  /* 立刻给反馈：点下去就看见「正在发送消息」，别让那 3 秒缓冲变成一段空白 */
+  try { _sendFeedbackAt = Date.now(); showSending(); } catch (e) {}
   if (_holdState && _holdState.timer) {
     _holdState.queue.push(msg);
     _holdState.deadline = Math.min(_holdState.deadline + 1000, _holdState.firstAt + _holdState.maxMs);
@@ -11799,7 +12484,24 @@ async function sendBuffered() {
 }
 
 async function send() {
-  if (busy) return;
+  /* 【2026-11-16 主人报·「还是闪一下『小鱼已完成』】
+   *
+   * 上一版只在 sendBuffered 的缓冲窗分支里记了 _sendFeedbackAt ——
+   * 可「发送缓冲」功能一旦是关着的，按钮直接落到这里（send()），
+   * 回车也走这里，两条都没有那个时间戳 → 8 秒保护形同虚设，
+   * syncSendBtn 照样把「正在发送」认成「刚跑完」闪成「已完成」。 */
+  try { _sendFeedbackAt = Date.now(); } catch (e) {}
+  /* 【2026-11-15 晚·主人报「点输入框右边的【发送】没反应」】
+   *
+   * 病根就这一行：busy 时**静默 return**。而她那一轮可能正卡着（实测有个会话
+   * 5 分多钟没动静，界面仍算「在跑」），于是点【发送】既不说话、也不报错、什么都不发生，
+   * 看着就像按钮坏了。
+   *
+   * 按设计本来就不该这样：生成中点发送 = **插话**（服务端 /api/interject 会把话织进当前轮）。
+   * 缓冲窗那条路（_holdFire）一直是这么做的，只有「缓冲关着 / 直接发」这条漏了。
+   * 现在补上：busy 就走 interject，实在插不进去（比如这一轮真的已经结束）也不会是死的。
+   */
+  if (busy) return interject();
   /* 【发送缓冲】缓冲窗开着时按了回车 = 主人宣布说完了：
    * 把窗里攒下的话连同这句，按顺序（先攒的、后这句）一次性立刻发。 */
   if (_holdState && _holdState.timer) {
@@ -11850,6 +12552,8 @@ async function send() {
  *   服务端只负责「话落盘」；「接着跑」由这里根据 running 字段决定。
  */
 async function interject(_passed = null) {
+  /* 回车插话也算「刚发过」：别让它被当成「刚跑完」闪成已完成 */
+  try { _sendFeedbackAt = Date.now(); } catch (e) {}
   /* 【2026-11-12 加·_passed】缓冲窗到点她还在跑时，_holdFire 把整包传进来走插话通道
    * （服务端 /api/interject 对在跑的会话就是干这个的）；不传 = 老行为，从输入框取。 */
   const text = _passed ? String(_passed.text || '') : input.value.trim();
@@ -12023,6 +12727,25 @@ async function interject(_passed = null) {
     showSending();
     syncSendBtn();
   // 【2026-11-01 主人】插话后那条「收下了，排在她这一步之后」提示删掉，不刷屏。
+    /**
+     * 【2026-11-15 修·「柜子标题亮着金色【正在跑】时，插话不立刻显示」】
+     *
+     * 主人原话：「在小鱼Agent工作时如果柜子标题上出现金色的【正在跑】或其他
+     * 金色的提示文本时，此时我发出去的插话消息不会立即显示出来，会在金色的字
+     * 消失后才会显示出来」。
+     *
+     * 病根：服务端 /api/interject 已经把这句话推进**当前这一轮的直播清单**
+     * （k:'user'，位置＝真实顺序），可屏幕重画只由 SSE 事件触发
+     * （followLive 收到 text/tool_start… 才 nudgeLive 去拉快照）。
+     * 她正在跑一条长工具时，SSE 那边十几分钟一个事件都没有 ——
+     * 于是插话躺在服务端清单里，屏幕上只能等下一个事件（工具结束时那条
+     * tool_end）才一起冒出来。金色的「正在跑」正好就是这个状态的标志。
+     *
+     * 修法：插话收下后**主动拉一次快照重画**，不依赖「下一个事件」。
+     * 这样一按发送，那句话立刻就出现在对话流中间（她正说到哪儿就嵌在哪儿），
+     * 不用等工具跑完。
+     */
+    try { nudgeLive(sessionId); } catch (e) { /* 拉不动不影响话已经收下这件事 */ }
     return;
   }
   /**
@@ -14777,6 +15500,18 @@ async function saveQqBind() {
     qqSetHint('白名单存好了');
     await refreshQqPanel();
   });
+  /* 【2026-11-14 主人钦点】QQ 面板【返回】：关掉这层，回到【插件】页。
+   * 直接调顶栏那颗按钮的点击处理（它会现拉数据 + showModal），别只 close 了事。 */
+  wire('qqBackToFeat', () => {
+    const d = document.getElementById('qqDlg');
+    stopQrPoll();
+    if (d && d.open) { try { d.close(); } catch { /* 忽略 */ } }
+    try {
+      const b = document.getElementById('openFeatures');
+      if (b) b.click();
+      else { const f = document.getElementById('featuresDlg'); if (f && !f.open) f.showModal(); }
+    } catch (e) { /* 打不开就留在页面上，不抛错 */ }
+  });
   wire('qqToggle', async () => {    const running = Boolean(qqState && qqState.running);
     if (!running) {
       if (!(await saveQqCreds())) return;
@@ -16027,7 +16762,7 @@ function paintCronList(list) {
 
 async function loadCron() {
   try {
-    const r = await fetch('/api/cron').then((x) => x.json());
+    const r = await fetch('/api/cron' + (sessionId ? ('?sid=' + encodeURIComponent(sessionId)) : '')).then((x) => x.json());
     paintCronList(r && r.tasks);
     const f = document.getElementById('cronFoot');
     if (f) f.textContent = (r && Array.isArray(r.tasks)) ? ('共 ' + r.tasks.length + ' 条') : '';
@@ -16093,316 +16828,119 @@ try {
     } finally { add.disabled = false; }
   };
 } catch (e) { console.warn('[cron] 面板挂不上：', e && e.message); }
-/* ═══════════ 知识库·书架大界面（2026-11-12 主人钦点）═══════════ */
+/* ═══════════ 知识库·知识史书（2026-11-14 主人钦点终版）═══════════
+ * 旧「书架知识卡」整套 UI 已按原令删除（仅保留知识库按钮）；
+ * know-chronicle 页签也删。这里只剩【知识史书】= know.mjs 会话知识库：
+ * 她干过的活怎么干的（trigger + 步骤 + 命中次数），全会话共享、全会话可见，
+ * 智能体侧用 know_search / know_add / know_delete 工具读写。 */
 (function () {
   const $ = (id) => document.getElementById(id);
   if (!$('kbOverlay')) return;
-  const overlay = $('kbOverlay'), shelf = $('kbShelf'), hint = $('kbHint');
-  /* 【注意】这两行分开声明：check-ui 的声明正则不认链式声明的第二个变量（const a=…, b=…），拆开它才认 */
-  const formWrap = $('kbFormWrap');
-  const readWrap = $('kbReadWrap');
-  let cards = [];            // 当前列表
-  let editing = null;        // 正在编辑的卡（null=新建）
-  let reading = null;        // 正在读的卡
+  const overlay = $('kbOverlay');
+  const wrap = $('kbKnowWrap');
+  const hint = $('kbHint');
 
-  /* 封面色：按 id hash 从一套书脊色里挑，同一本书颜色永远一样 */
-  const BOOK_COLORS = ['#8c3b2e', '#2e5e4e', '#3b4d8c', '#7a5b2e', '#5e2e5e', '#2e6e7a', '#6e3b2e', '#456b2e'];
-  function bookColor(id) {
-    let h = 0;
-    for (let i = 0; i < String(id).length; i++) h = (h * 31 + String(id).charCodeAt(i)) >>> 0;
-    return BOOK_COLORS[h % BOOK_COLORS.length];
+  function esc(t) { return String(t == null ? '' : t).replace(/</g, '&lt;'); }
+  function fmt(ts) {
+    try { const d = new Date(Number(ts)); return isNaN(d) ? '' : (d.getMonth() + 1) + '-' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+    catch (e) { return ''; }
   }
 
-  function toast(msg) {
-    let t = document.querySelector('.kbToast');
-    if (!t) { t = document.createElement('div'); t.className = 'kbToast'; document.body.appendChild(t); }
-    t.textContent = msg; t.style.opacity = '1';
-    clearTimeout(t.__timer);
-    t.__timer = setTimeout(() => { t.style.opacity = '0'; }, 2200);
-  }
-
-  /* 【2026-11-13】长按 380ms 才进入拖动，免得点开阅读时误触。
-   * 桌面鼠标和触屏都走 pointer 事件；搜索状态下不许拖（不然只排到半张书架）。 */
-  function enableLongDrag(b, c) {
-    let timer = null;
-    let dragging = false;
-    let suppress = false;
-    let sx = 0;
-    let sy = 0;
-    b.dataset.id = c.id;
-    b.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      sx = e.clientX; sy = e.clientY;
-      timer = setTimeout(() => {
-        if (String(($('kbSearch') || {}).value || '').trim()) {
-          toast('先把搜索清空，再整架排序');
-          return;
-        }
-        dragging = true; suppress = true;
-        b.classList.add('kbDragging');
-        try { b.setPointerCapture(e.pointerId); } catch {}
-        toast('拖到想放的位置，松手就排好');
-      }, 380);
-    });
-    b.addEventListener('pointermove', (e) => {
-      if (!dragging) {
-        if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) > 8) clearTimeout(timer);
+  async function load() {
+    wrap.innerHTML = '<div style="opacity:.6;padding:14px">史书搬运中…</div>';
+    try {
+      const r = await fetch('/api/know').then((x) => x.json());
+      const items = r.items || [];
+      if (!items.length) {
+        wrap.innerHTML = '<div style="opacity:.6;padding:14px">知识史书还是空的——她干完有重复价值的活会自动记一条（know_add），下次同类任务就不用从头摸索。</div>';
         return;
       }
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      const other = el && el.closest ? el.closest('.kbBook') : null;
-      if (!other || other === b) return;
-      const r = other.getBoundingClientRect();
-      const after = (e.clientY > r.bottom) || (e.clientY > r.top && e.clientX > r.left + r.width / 2);
-      shelf.insertBefore(b, after ? other.nextSibling : other);
-    });
-    const finish = async () => {
-      clearTimeout(timer);
-      if (!dragging) return;
-      dragging = false;
-      b.classList.remove('kbDragging');
-      const ids = Array.prototype.slice.call(shelf.querySelectorAll('.kbBook'))
-        .map((x) => x.dataset.id).filter(Boolean);
-      setTimeout(() => { suppress = false; }, 150);
-      /* 先写本机：服务端还没重启时（旧路由 405），顺序照样留得住 */
-      writeKbOrder(ids);
-      const r = await fetch('/api/knowledge/reorder', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
-      }).then((x) => x.json()).catch(() => null);
-      if (r && r.ok) {
-        try { localStorage.removeItem(KB_ORDER_KEY); } catch {}
-        toast('书架顺序记好了');
-      } else {
-        toast('顺序先记在本机了（服务端重启后会自动接管）');
-      }
-      await load($('kbSearch').value);
-    };
-    b.addEventListener('pointerup', finish);
-    b.addEventListener('pointercancel', finish);
-    b.onclick = (e) => {
-      if (suppress) { e.preventDefault(); e.stopPropagation(); return; }
-      openRead(c);
-    };
-  }
-
-  /* ═══════════════════════════════════════════════════════════════
-     【2026-11-13 前端降级·不重启也能用】
-     服务端新代码要重启才加载，可主人这会儿有会话在跑，规矩不许擅自掐断。
-     所以排序先在前端站住：
-       ① 默认按 createdAt 升序 + id 稳定判据，**不看 updatedAt** ——
-          这是「编辑完自动排到后面」的根子，前端先堵死；
-       ② 主人拖过的顺序存 localStorage，刷新/换屏都在，新卡自动接末尾；
-       ③ 等服务端新版本起来了（卡上带 order 字段），把本地顺序一次性
-          POST 给 /api/knowledge/reorder，之后交给服务端，本地记录清掉。
-     ═══════════════════════════════════════════════════════════════ */
-  const KB_ORDER_KEY = 'xy.kb.order.v1';
-  function readKbOrder() {
-    try {
-      const a = JSON.parse(localStorage.getItem(KB_ORDER_KEY) || '[]');
-      return Array.isArray(a) ? a.map(String) : [];
-    } catch { return []; }
-  }
-  function writeKbOrder(ids) {
-    try { localStorage.setItem(KB_ORDER_KEY, JSON.stringify(ids)); } catch {}
-  }
-  function stableKb(list) {
-    const arr = list.slice().sort((a, b) =>
-      (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0) ||
-      String(a.id).localeCompare(String(b.id)));
-    const rank = new Map();
-    readKbOrder().forEach((id, i) => { if (!rank.has(id)) rank.set(id, i); });
-    if (!rank.size) return arr;
-    const stored = arr.filter((c) => rank.has(c.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
-    return stored.concat(arr.filter((c) => !rank.has(c.id)));
-  }
-
-  function paint(list) {
-    cards = list;
-    shelf.innerHTML = '';
-    const frag = document.createDocumentFragment();
-    for (const c of list) {
-      const b = document.createElement('div');
-      b.className = 'kbBook';
-      b.style.background = 'linear-gradient(160deg, ' + bookColor(c.id) + ' 0%, ' + bookColor(c.id) + ' 78%, rgba(0,0,0,.28) 100%)';
-      b.title = c.title + '（点开读）';
-      const esc = (t) => String(t || '').replace(/</g, '&lt;');
-      /* 【2026-11-13 主人钦点重做】卡片版：标题横排 + 内容摘录三行 + 作者/标签一行 */
-      const snippet = String(c.content || '').replace(/\s+/g, ' ').trim().slice(0, 90);
-      const tags = (c.tags && c.tags.length)
-        ? c.tags.slice(0, 2).map(function (t) { return '<span class="kbBTag">' + esc(t) + '</span>'; }).join('')
-        : '';
-      b.innerHTML = '<div class="kbBTitle">' + esc(c.title) + '</div>'
-        + (snippet ? '<div class="kbBSnippet">' + esc(snippet) + '…</div>' : '')
-        + '<div class="kbBFoot">' + (c.author ? '<span class="kbBAuthor">' + esc(c.author) + '</span>' : '') + tags + '</div>';
-      enableLongDrag(b, c);
-      frag.appendChild(b);
-    }
-    /* 书架尽头放一本「虚位以待」的空书 = 创建入口 */
-    const add = document.createElement('div');
-    add.className = 'kbBookAdd';
-    add.innerHTML = '<span>＋</span>创建知识卡';
-    add.onclick = () => openForm(null);
-    frag.appendChild(add);
-    shelf.appendChild(frag);
-    hint.textContent = '书架上有 ' + list.length + ' 本卡——点一本书读；智能体也能用工具翻';
-  }
-
-  async function load(q) {
-    try {
-      const r = await fetch('/api/knowledge').then((x) => x.json());
-      let list = stableKb(r.cards || []);
-      /* 服务端新版已生效 → 把本机拖好的顺序交还给它，之后不再靠 localStorage */
-      const _stored = readKbOrder();
-      if (_stored.length && (r.cards || []).some((c) => Number.isFinite(c.order))) {
-        try {
-          await fetch('/api/knowledge/reorder', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids: list.map((c) => c.id) }),
-          });
-          localStorage.removeItem(KB_ORDER_KEY);
-        } catch {}
-      }
-      const kw = String(q || '').trim().toLowerCase();
-      if (kw) {
-        list = list.filter((c) =>
-          (c.title + '\n' + c.content + '\n' + c.author + '\n' + (c.tags || []).join('\n')).toLowerCase().includes(kw));
-      }
-      paint(list);
-    } catch (e) { hint.textContent = '书架搬不动：' + String(e?.message ?? e); }
-  }
-
-  function openForm(card) {
-    editing = card || null;
-    $('kbFormTitle').textContent = card ? '编辑知识卡' : '创建知识卡';
-    $('kbFTitle').value = card ? card.title : '';
-    $('kbFAuthor').value = card ? (card.author || '') : '';
-    $('kbFTags').value = card ? (card.tags || []).join(',') : '';
-    $('kbFContent').value = card ? card.content : '';
-    readWrap.hidden = true;
-    formWrap.hidden = false;
-    setTimeout(() => { try { $('kbFTitle').focus(); } catch {} }, 60);
-  }
-
-  async function saveForm() {
-    const title = $('kbFTitle').value.trim();
-    if (!title) { toast('书名不能是空的'); return; }
-    const r = await fetch('/api/knowledge/save', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: editing ? editing.id : undefined,
-        title,
-        author: $('kbFAuthor').value.trim(),
-        tags: $('kbFTags').value.split(/[,，、]/).map((x) => x.trim()).filter(Boolean),
-        content: $('kbFContent').value,
-      }),
-    }).then((x) => x.json()).catch(() => null);
-    if (!r || !r.ok) { toast('没存进去：' + ((r && r.error) || '网络错误')); return; }
-    formWrap.hidden = true;
-    toast(editing ? '已更新' : '已上架新书');
-    await load($('kbSearch').value);
-  }
-
-  function openRead(card) {
-    reading = card;
-    $('kbRTitle').textContent = card.title;
-    $('kbRMeta').textContent = '作者：' + (card.author || '佚名')
-      + ((card.tags && card.tags.length) ? '｜标签：' + card.tags.join('、') : '')
-      + '｜更新：' + new Date(card.updatedAt || Date.now()).toLocaleString();
-    $('kbRBody').textContent = card.content;
-    formWrap.hidden = true;
-    readWrap.hidden = false;
-  }
-
-  async function delCard() {
-    if (!reading) return;
-    if (!confirm('把《' + reading.title + '》从书架上撤下来？删了智能体就学不到了。')) return;
-    const r = await fetch('/api/knowledge/delete', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: reading.id }),
-    }).then((x) => x.json()).catch(() => null);
-    if (!r || !r.ok) { toast('没删掉：' + ((r && r.error) || '网络错误')); return; }
-    readWrap.hidden = true;
-    toast('已撤下');
-    await load($('kbSearch').value);
-  }
-
-  async function copyPrompt() {
-    if (!reading) return;
-    const text = '请学习这张知识卡（来自知识库，所有会话共享）：\n\n【' + reading.title + '】\n作者：' + (reading.author || '佚名')
-      + '\n\n' + reading.content + '\n\n（学完就记在心里，之后干活照着做，不用复述给我听。）';
-    try {
-      await navigator.clipboard.writeText(text);
-      toast('提示词已复制，粘到哪个会话都能让那边的智能体学');
+      wrap.innerHTML = items.map((it) =>
+        '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;background:rgba(255,255,255,.02)">'
+        + '<div style="display:flex;gap:8px;align-items:baseline">'
+        + '<b style="flex:1;min-width:0">' + esc(it.trigger) + '</b>'
+        + '<span style="opacity:.55;font-size:11.5px;flex:none">用过 ' + (it.hits || 0) + ' 次' + (fmt(it.lastHit) ? ' · 最近 ' + fmt(it.lastHit) : '') + '</span>'
+        + '<button type="button" class="ghost kbKnowEdit" style="flex:none">改</button>'
+        + '<button type="button" class="ghost kbKnowDel" data-t="' + esc(it.trigger) + '" style="flex:none">删</button>'
+        + '</div>'
+        + '<div class="kbKnowBody" style="white-space:pre-wrap;font-size:12.5px;opacity:.85;margin-top:6px;max-height:200px;overflow-y:auto">' + esc(it.steps) + '</div>'
+        + '</div>'
+      ).join('');
+      /* 【2026-11-14 主人钦点·全会话可增改】每条手路能直接改：trigger / 步骤就地展开编辑，保存走 /api/know/save
+       * （knowAdd 同 trigger 覆盖更新，旧版自动进史书留底，翻得回）。 */
+      wrap.querySelectorAll('.kbKnowEdit').forEach((btn) => {
+        btn.onclick = () => {
+          const row = btn.closest('div[style*="border"]');
+          if (!row || row.querySelector('.kbKnowEditBox')) return;
+          const body = row.querySelector('.kbKnowBody');
+          const oldSteps = body.textContent;
+          const trigB = row.querySelector('b');
+          const box = document.createElement('div');
+          box.className = 'kbKnowEditBox';
+          box.style.cssText = 'margin-top:8px;border-top:1px dashed var(--border);padding-top:8px';
+          box.innerHTML = '<input class="kbEditTrigger" style="width:100%;box-sizing:border-box;margin-bottom:6px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;font:inherit" value="' + esc(trigB.textContent) + '">'
+            + '<textarea class="kbEditSteps" style="width:100%;box-sizing:border-box;min-height:110px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;font:inherit;white-space:pre-wrap"></textarea>'
+            + '<div style="text-align:right;margin-top:6px"><button type="button" class="ghost kbEditCancel" style="margin-right:6px">取消</button><button type="button" class="primary kbEditSave">保存</button></div>';
+          box.querySelector('.kbEditSteps').value = oldSteps;
+          body.replaceWith(box);
+          btn.disabled = true;
+          box.querySelector('.kbEditCancel').onclick = () => { box.replaceWith(body); btn.disabled = false; };
+          box.querySelector('.kbEditSave').onclick = async () => {
+            const nt = box.querySelector('.kbEditTrigger').value.trim();
+            const ns = box.querySelector('.kbEditSteps').value;
+            if (!nt || !ns.trim()) { alert('trigger 和步骤都不能为空'); return; }
+            try {
+              const rr = await fetch('/api/know/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trigger: nt, steps: ns, by: '主人' }) }).then((x) => x.json());
+              if (!rr || rr.ok !== true) { alert('没存上：' + ((rr && rr.error) || '未知原因')); return; }
+              load();
+            } catch (e) { alert('存出错：' + String(e && e.message ? e.message : e)); }
+          };
+        };
+      });
+      wrap.querySelectorAll('.kbKnowDel').forEach((btn) => {
+        btn.onclick = async () => {
+          if (!confirm('删这条手路？（史书留底里历次版本都还在，翻得回）')) return;
+          try {
+            await fetch('/api/know/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trigger: btn.getAttribute('data-t') }) });
+          } catch (e) { /* 删除失败下次进来还在，不炸 */ }
+          load();
+        };
+      });
+      hint.textContent = '知识史书 · ' + items.length + ' 条 · 所有会话共享——她干过的活怎么干的，都记在这儿';
     } catch (e) {
-      /* 剪贴板被拒（无焦点/权限）：退化成选中文本 */
-      const ta = document.createElement('textarea');
-      ta.value = text; document.body.appendChild(ta); ta.select();
-      try { document.execCommand('copy'); toast('提示词已复制'); } catch { toast('复制失败，请手动选中文本复制'); }
-      ta.remove();
+      wrap.innerHTML = '<div style="opacity:.6;padding:14px">史书翻不动：' + esc(e && e.message ? e.message : e) + '</div>';
     }
   }
 
-  async function doImport() {
-    const inp = document.createElement('input');
-    inp.type = 'file'; inp.accept = '.json,application/json';
-    inp.onchange = async () => {
-      const f = inp.files && inp.files[0];
-      if (!f) return;
-      try {
-        const text = await f.text();
-        const r = await fetch('/api/knowledge/import', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ json: text }),
-        }).then((x) => x.json()).catch(() => null);
-        if (!r || !r.ok) { toast('导入失败：' + ((r && r.error) || '文件格式不对')); return; }
-        toast('导入完成：新增 ' + (r.added || 0) + ' 本、更新 ' + (r.updated || 0) + ' 本');
-        await load('');
-      } catch (e) { toast('读文件出错：' + String(e?.message ?? e)); }
-    };
-    inp.click();
-  }
-
-  async function doExport() {
-    try {
-      const data = await fetch('/api/knowledge/export').then((x) => x.json());
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = '知识库-' + new Date().toISOString().slice(0, 10) + '.json';
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-      toast('已导出 ' + ((data.cards || []).length) + ' 本卡');
-    } catch (e) { toast('导出失败：' + String(e?.message ?? e)); }
-  }
-
-  $('kbBtn').onclick = () => {
-    overlay.hidden = false;
-    formWrap.hidden = true; readWrap.hidden = true;
-    load($('kbSearch').value);
-  };
   $('kbClose').onclick = () => { overlay.hidden = true; };
-  $('kbCreate').onclick = () => openForm(null);
-  $('kbFSave').onclick = saveForm;
-  $('kbFCancel').onclick = () => { formWrap.hidden = true; };
-  $('kbImport').onclick = doImport;
-  $('kbExport').onclick = doExport;
-  $('kbRDelete').onclick = delCard;
-  $('kbRCopy').onclick = copyPrompt;
-  $('kbREdit').onclick = () => { if (reading) openForm(reading); };
-  $('kbRClose').onclick = () => { readWrap.hidden = true; };
-  let _kbSearchTimer = null;
-  $('kbSearch').addEventListener('input', () => {
-    clearTimeout(_kbSearchTimer);
-    _kbSearchTimer = setTimeout(() => load($('kbSearch').value), 250);
-  });
-  /* Esc 逐层退出：表单/阅读层 → 整个书架 */
+  /* 【2026-11-14 主人钦点·全会话可增改】「＋ 记一条」：直接在面板里记新手路（同 trigger 保存即更新）。 */
+  $('kbKnowAdd').onclick = () => {
+    const box = document.createElement('div');
+    box.style.cssText = 'border:1px solid var(--accent);border-radius:8px;padding:10px 12px;margin:8px 0;background:rgba(255,255,255,.03)';
+    box.innerHTML = '<b style="opacity:.8">记一条新手路</b>'
+      + '<input class="kbNewTrigger" placeholder="下次遇到什么任务该想起这条（必填）" style="width:100%;box-sizing:border-box;margin:8px 0 6px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;font:inherit">'
+      + '<textarea class="kbNewSteps" placeholder="如果你做某件事时曾绕了很大一个弯子，如果那件事现在再做能迅速完成，那么就把它的路径写进知识库里面，写成：要做到【只要做过某件事，下次再做必迅速完成】的程度——只写方法做法（问题/根因/做法），别写成故事流水账（必填）" style="width:100%;box-sizing:border-box;min-height:110px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:inherit;font:inherit;white-space:pre-wrap"></textarea>'
+      + '<div style="text-align:right;margin-top:6px"><button type="button" class="ghost kbNewCancel" style="margin-right:6px">取消</button><button type="button" class="primary kbNewSave">保存</button></div>';
+    wrap.prepend(box);
+    box.querySelector('.kbNewCancel').onclick = () => box.remove();
+    box.querySelector('.kbNewSave').onclick = async () => {
+      const t = box.querySelector('.kbNewTrigger').value.trim();
+      const s = box.querySelector('.kbNewSteps').value;
+      if (!t || !s.trim()) { alert('trigger 和步骤都不能为空'); return; }
+      try {
+        const rr = await fetch('/api/know/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trigger: t, steps: s, by: '主人' }) }).then((x) => x.json());
+        if (!rr || rr.ok !== true) { alert('没存上：' + ((rr && rr.error) || '未知原因')); return; }
+        load();
+      } catch (e) { alert('存出错：' + String(e && e.message ? e.message : e)); }
+    };
+    box.querySelector('.kbNewTrigger').focus();
+  };
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || overlay.hidden) return;
-    if (!formWrap.hidden) { formWrap.hidden = true; return; }
-    if (!readWrap.hidden) { readWrap.hidden = true; return; }
     overlay.hidden = true;
   });
+  if (!$('kbBtn')) return;
+  $('kbBtn').onclick = () => { overlay.hidden = false; load(); };
 })();
 
 const featDlg = document.getElementById('featuresDlg');
@@ -17011,55 +17549,49 @@ paintFeatNow();
       cfgBtn.addEventListener('click', async (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        let box = row.nextElementSibling;
-        if (box && box.dataset && box.dataset.holdCfg === '1') { box.remove(); return; }
-        let num = { sendBufferSec: 3, sendBufferMaxSec: 5 };
-        try { num = await fetch('/api/features/numbers').then((x) => x.json()); } catch (e) {}
-        box = document.createElement('div');
-        box.dataset.holdCfg = '1';
-        box.style.cssText = 'padding:8px 10px 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px;';
-        const mk = (label, key, val) => {
-          const wrap = document.createElement('label');
-          wrap.style.cssText = 'display:flex;align-items:center;gap:5px;';
-          const sp = document.createElement('span');
-          sp.textContent = label;
-          const inp = document.createElement('input');
-          inp.type = 'number';
-          inp.min = '1';
-          inp.max = '60';
-          inp.value = String(val || (key === 'sendBufferSec' ? 3 : 5));
-          inp.style.cssText = 'width:56px;padding:3px 6px;background:var(--input-bg,rgba(10,12,17,.55));color:var(--text,#e6e9ef);border:1px solid var(--border,#262b36);border-radius:6px;';
-          inp.dataset.key = key;
-          wrap.append(sp, inp);
-          return wrap;
-        };
-        const s1 = mk('发出后先等', 'sendBufferSec', num.sendBufferSec);
-        const s2 = mk('上限', 'sendBufferMaxSec', num.sendBufferMaxSec);
-        const unit = document.createElement('span');
-        unit.textContent = '秒；这一拍里打字/再发都顺延 1 秒，到点一次性看到全部';
-        unit.style.cssText = 'opacity:.65;';
-        const save = document.createElement('button');
-        save.type = 'button';
-        save.className = 'featEditBtn';
-        save.textContent = '存';
-        save.addEventListener('click', async (ev2) => {
+        /* 【2026-11-14 主人钦点】点「改时长」打开一个**新界面**（独立弹窗）改，
+         * 不再是功能列表行内挂小框。两个数：发出后先等 / 上限。 */
+        const old = document.querySelector('dialog[data-hold-cfg-dlg="1"]');
+        if (old) { try { old.close(); } catch (e) {} old.remove(); }
+        const dlg = document.createElement('dialog');
+        dlg.dataset.holdCfgDlg = '1';
+        dlg.className = 'todoDlg';
+        dlg.innerHTML = '<div class="dlgHead"><b>发送缓冲 · 改时长</b><span class="meta">两个数都管「她说完话等多久再发」，改完立刻生效</span><button type="button" class="x" data-close="1">关闭</button></div>'
+          + '<div class="dlgBody" style="display:flex;flex-direction:row;align-items:center;gap:22px;flex-wrap:nowrap;padding:14px 16px">'
+          + '<label style="display:flex;align-items:center;gap:8px;white-space:nowrap;flex:none">发出后先等 <input type="number" min="1" max="60" class="holdSec" value="3" style="width:70px;padding:5px 8px;background:var(--input-bg,rgba(10,12,17,.55));color:inherit;border:1px solid var(--border,#262b36);border-radius:6px"> 秒</label>'
+          + '<label style="display:flex;align-items:center;gap:8px;white-space:nowrap;flex:none">上限 <input type="number" min="1" max="60" class="holdMax" value="5" style="width:70px;padding:5px 8px;background:var(--input-bg,rgba(10,12,17,.55));color:inherit;border:1px solid var(--border,#262b36);border-radius:6px"> 秒</label>'
+          + '</div>'
+          + '<div class="dlgFoot"><span class="hint">这一拍里打字 / 再发都顺延 1 秒，到点一次性看到全部。</span>'
+          + '<button type="button" class="ghost holdCancel">取消</button><button type="button" class="primary holdSave">存</button></div>';
+        document.body.appendChild(dlg);
+        dlg.addEventListener('close', () => { try { dlg.remove(); } catch (e) {} });
+        dlg.querySelector('[data-close]').addEventListener('click', () => dlg.close());
+        dlg.querySelector('.holdCancel').onclick = () => dlg.close();
+        dlg.querySelector('.holdSave').onclick = async (ev2) => {
           ev2.preventDefault();
           ev2.stopPropagation();
           try {
-            for (const inp of [s1.querySelector('input'), s2.querySelector('input')]) {
+            for (const [cls, key] of [['.holdSec', 'sendBufferSec'], ['.holdMax', 'sendBufferMaxSec']]) {
               await fetch('/api/features/number', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: inp.dataset.key, value: Number(inp.value) }),
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key, value: Number(dlg.querySelector(cls).value) }),
               }).then((x) => x.json());
             }
             try { _bufCfgCache.at = 0; } catch (e3) {}   // 让缓冲配置立刻重读
             toast('缓冲时长存好了');
-            box.remove();
+            dlg.close();
           } catch (e2) { toast('没存上：' + ((e2 && e2.message) || e2)); }
-        });
-        box.append(s1, unit, s2, save);
-        row.after(box);
+        };
+        /* 读服务端当前值：不 await，接口慢也不影响关闭按钮 */
+        (async () => {
+          try {
+            const num = await fetch('/api/features/numbers').then((x) => x.json());
+            const a = dlg.querySelector('.holdSec'); const b = dlg.querySelector('.holdMax');
+            if (a) a.value = String(num.sendBufferSec || 3);
+            if (b) b.value = String(num.sendBufferMaxSec || 5);
+          } catch (e) {}
+        })();
+        try { dlg.showModal(); } catch (e) { dlg.setAttribute('open', ''); }
       });
       row.append(main, cfgBtn, sw);
       featList.appendChild(row);
@@ -18813,6 +19345,8 @@ let voiceAudio = null;
 function closeVoicePicker() {
   voiceSeq += 1;
   voiceOpen = false;
+  const dlg = document.getElementById('voiceDlg');
+  if (dlg) { try { dlg.close(); } catch {} dlg.remove(); }
   const box = document.getElementById('voiceBox');
   if (box) box.remove();
   const btn = featList && featList.querySelector('.featRow[data-id="ttsVoice"] .featEditBtn');
@@ -18826,18 +19360,32 @@ function closeVoicePicker() {
 function toggleVoicePicker(row) {
   if (voiceOpen) closeVoicePicker();
   else openVoicePicker(row);
+  const btns = document.querySelectorAll('#featDlg .featEditBtn');
+  btns.forEach((b) => { if (b.textContent === '收起') b.textContent = '选声音'; });
 }
 
 async function openVoicePicker(row) {
   closeVoicePicker();
+  const old = document.getElementById('voiceDlg');
+  if (old) old.remove();
   const seq = voiceSeq;
   voiceOpen = true;
+  /* 【2026-11-15 主人钦点】选声音改成点击打开**独立新界面**（跟主页面「定时」同款 todoDlg），
+     不再是插件行内展开。 */
+  const dlg = document.createElement('dialog');
+  dlg.className = 'todoDlg';
+  dlg.id = 'voiceDlg';
+  dlg.innerHTML = '<div class="dlgHead"><b>选声音</b><span class="meta">听着哪个像她，就选哪个。选完不用点保存，下一句起就用这个声音说话了；右边可以试听。</span><button type="button" class="x" data-close="1">关闭</button></div>';
   const box = el('div', 'voiceBox');
   box.id = 'voiceBox';
-  box.append(el('div', 'voiceHint', '听着哪个像她，就选哪个。选完不用点保存，下一句起就用这个声音说话了；右边可以试听。'));
-  row.after(box);
-  const btn = row.querySelector('.featEditBtn');
-  if (btn) btn.textContent = '收起';
+  const body = el('div', 'dlgBody');
+  body.append(box);
+  const foot = el('div', 'dlgFoot');
+  foot.append(el('span', 'voiceHint', ''));
+  dlg.append(body, foot);
+  document.body.appendChild(dlg);
+  dlg.querySelector('[data-close]').addEventListener('click', () => closeVoicePicker());
+  try { dlg.showModal(); } catch (e) { dlg.setAttribute('open', ''); }
 
   const loading = el('div', 'voiceHint', '读着呢…');
   box.append(loading);
@@ -19889,6 +20437,40 @@ document.addEventListener('DOMContentLoaded', clearAllStreamingCursors, { once: 
   }
 })();
 
+/**
+ * 【2026-11-15 加·手机返回键先问页面】
+ *
+ * 手机壳（mobile/ 里的 WebView）按返回键时会先调 window.__xyBack()：
+ * 返回 true = 页面自己处理了（关了对话框 / 收起面板），壳就什么都不做；
+ * 返回 false = 页面不管，壳再决定「退历史」还是「回连接页」。
+ *
+ * 为什么需要：以前壳直接 web.goBack()，而页面里点开会话、开关面板都会写 #hash，
+ * 返回键就在历史里来回倒腾，最后退成白页 —— 看着像 App 崩了。
+ *
+ * 处理顺序按「屏幕上最上面那层」来：对话框 → 抽屉/面板 → 搜索条 → 都没开才放行。
+ */
+window.__xyBack = function () {
+  try {
+    // ① 任何可见的 dialog[open] / 遮罩层：按 Esc 同款路径关掉它
+    const dlg = Array.from(document.querySelectorAll('dialog[open]')).pop();
+    if (dlg) {
+      try { dlg.close(); } catch (e) {}
+      return true;
+    }
+    /* ② 不是 <dialog> 的覆盖层：知识库面板、换模型/换思考强度的浮层 */
+    const kb = document.getElementById('kbOverlay');
+    if (kb && !kb.hidden) { kb.hidden = true; return true; }
+    const menu = document.getElementById('cfgMenu');
+    if (menu && !menu.hidden) { menu.hidden = true; return true; }
+    /* ③ 往下没了：让壳去退历史 / 回连接页。
+     * 为什么不主动退历史：页面里点会话、开关面板会写 #hash，
+     * 壳一 goBack 就在历史里倒腾，最后退成白页 —— 那是主人报过的「像 App 崩了」。 */
+    return false;
+  } catch (e) {
+    return false;
+  }
+};
+
 // 版本水印：输入框右下角那行小字，只显示版本号。
 // 以前这里还挂了一串「对话框守护✓ / token显示✓」的自检标记 —— 那些是开发期
 // 用来一眼看出补丁有没有打上的，主人说看着乱，删了。真出问题时看控制台就行。
@@ -19935,7 +20517,7 @@ const cfgMenu = document.getElementById('cfgMenu');
 const cfgMenuHead = document.getElementById('cfgMenuHead');
 const cfgMenuList = document.getElementById('cfgMenuList');
 
-let cfgState = { level: '', levelName: '默认', modelId: '', modelName: '', models: [], levels: [], isLevelCustom: false, isModelCustom: false };
+let cfgState = { level: '', levelName: '高', modelId: '', modelName: '', models: [], levels: [], isLevelCustom: false, isModelCustom: false };
 let cfgMenuFor = null; // 'model' | 'think' | null
 
 function paintTopCfg() {
@@ -21091,7 +21673,9 @@ if (rwGo) {
     if (!r || r.error) {
       const why = (r && r.error) || '网络错误';
       try { rwText.textContent = '回退失败：' + why; } catch (e) {}
-      try { if (hint2(why)) {} } catch (e) {}
+      /* 【2026-11-15 修·`hint2 is not defined`】这里原来调了个从来没定义过的
+       * `hint2()`。包在 try 里所以没炸，但意思等于什么都不做 —— 主人看不到提示。 */
+      try { toast('回退失败：' + why); } catch (e) {}
       try { releaseComposer({ focus: true }); } catch (e) {}
       busy = false;
       try { syncSendBtn(); } catch (e) {}
@@ -21105,7 +21689,13 @@ if (rwGo) {
     try { turnsInFlight.delete(sessionId); } catch (e) {}
     try { renderTurns(r.session.turns || [], { force: true, noCarry: true }); } catch (e) {}
     try { resetScrollStick(); } catch (e) {}
-    if (hint) hint.textContent = '已回退：这条之后的消息已删除，正在重发';
+    /* 【2026-11-15 修·`hint is not defined`（主人截图那条红字）】
+     * 这里原来写 `if (hint) hint.textContent = …`，而 `hint` 这个变量根本不存在
+     * （页面里只有一堆各自函数内的局部 hint）。`if (hint)` 本身就要读这个自由变量，
+     * 所以 ReferenceError 在此抛出 —— **这一行之后的代码全不执行**，
+     * 回退后的「把原话填回输入框 + 自动重发」就这么静默失效了。
+     * 换成本页通用的 toast()，并且不再依赖任何未声明的自由变量。 */
+    try { toast('已回退：这条之后的消息已删除，正在重发'); } catch (e) {}
     // 回退=这条保留、后面全删；把那句话填回输入框并自动重发一遍
     const back = rwText.textContent;
     if (input && back && back !== '（这条没有文字）') {
@@ -21376,8 +21966,7 @@ async function importSessionsFromFile(file) {
   // 只导了一个就直接切过去，省得再找
   if (r.count === 1 && r.imported[0] && r.imported[0].id !== sessionId) {
     try { await switchSessionSafe(r.imported[0].id); } catch {}
-    sessDlg.close();
-    // 刚导入完，人十有八九要立刻跟她说两句
+    // 【2026-11-15 主人钦点·跟单删一个规矩】导入完不自动关面板，留在会话页看结果
     settleComposer({ focus: true });
   }
   setTimeout(() => { sessHint.textContent = `${sessionsCache.length} 个`; }, 3000);
@@ -21633,17 +22222,15 @@ const PROVIDERS = [
     models: ['qwen2.5:7b', 'llama3.2', 'deepseek-r1:7b'],
     hint: '自己电脑跑，不要钱。要先 ollama serve 起来。',
   },
-  // 【2026-11-12 加】本机 DeepSeek：永远排最后，主人说「预设末尾处」
-  {
-    key: 'local-deepseek',
-    name: '本机 DeepSeek',
-    base: '',
-    models: [],
-    hint: '在本机起一个 DeepSeek 网页版转接服务，不用 API key。选中后什么也不用填，直接点「测连通」。',
-    local: true,
-    /* 既能认下拉里的 key，也能认 8321 这个真地址（providerOf 两个方向都会走） */
-    match: /^local-deepseek$|:8321\b/i,
-  },
+  /* 【2026-11-16 主人钦点】「本机 DeepSeek」这条预设整个删掉 ——
+   * 原话：「把小鱼Agent【模型】里有关【本机 DeepSeek】的一切删除」。
+   * 【2026-11-16 严检】后端那条链（/api/mini-deepseek/* 六个路由 + src/mini-deepseek.mjs
+   * + scripts/check-mini-deepseek.mjs）**现在真的拆干净了**（上一轮注释里写「也一并拆了」
+   * 其实没拆，严检时发现并补上）。
+   *
+   * 下面还有一段「本机 DeepSeek 测连通」的前端死代码（约从 22518 的 `const isLocal` 到
+   * 23300 一带的 localDeepSeekGet/Post/Ensure/Apply），分支永不进入、不影响任何功能。
+   * 要不要彻底删由主人定 —— 它跟通用「测连通」逻辑缠在一起，硬拆容易碰坏别的模型。 */
 ];
 
 /** 按地址认厂商；认不出来返回 null */
@@ -22048,6 +22635,8 @@ window.__mdlRowTest = async (name) => {
   const model = (mdlState.models || []).find((m) => (m.name || m.model) === name);
   if (!model) return { ok: false, error: '没找到这个模型' };
 
+  /* 【2026-11-16 严检】这个分支已经没有入口了（预设删了、后端也拆了），
+   * 恒为 false。整段「本机 DeepSeek 自救」逻辑留着当参照，但不会再执行。 */
   const isLocal = String(model.id || model.model || '') === 'local-deepseek'
     || /127\.0\.0\.1:8321/.test(String(model.baseURL || model.base || ''));
 
@@ -23125,7 +23714,7 @@ setInterval(async () => {
          * 而秒表 tick 每秒写「<名字>正在发送消息」—— 两个写手对轰，
          * 屏幕上就 3 秒切一次裸的、1 秒切回带名字的。改成同一把出口（_hintSetText），
          * 名字取值跟 tick 完全同源，谁后写都一样。 */
-        try { _hintSetText('正在发送消息'); } catch (e) {}
+        try { _hintSetText(_liveHintText()); } catch (e) {}
         _hh.classList.remove('stalled');
       } else if (_hh) {
         _hh.classList.remove('stalled');

@@ -22,6 +22,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 import { makeChecker } from './_harness_util.mjs';
 
 const t = makeChecker('deadline / 定时器不许泄漏');
@@ -151,7 +153,7 @@ try {
   /* ══════════════════════════════════════════════════════════
      ⑤ 源码上锁：修法本身不许被人「顺手简化」掉
      ══════════════════════════════════════════════════════════ */
-  const src = fs.readFileSync(path.join(process.cwd(), 'src', 'deadline.mjs'), 'utf8');
+  const src = fs.readFileSync(path.join(__ROOT, 'src', 'deadline.mjs'), 'utf8');
   t.ok('⑤ stalledPromise 仍然带 stop()', /stalled\.stop\s*=\s*\(\)\s*=>/.test(src));
   t.ok('⑤ guardedStream 在 finally 里调了 stalled.stop()', /finally\s*\{[\s\S]{0,120}?stalled\.stop\(\)/.test(src));
   t.ok('⑤ 每轮都自己拿住叫醒器（不是直接塞进 race）',

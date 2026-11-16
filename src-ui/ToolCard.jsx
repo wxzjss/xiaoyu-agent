@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useOpen } from './useOpen.js';
+import { useOpen, closeOpenKeys } from './useOpen.js';
 import { GrayPeek } from './GrayText.jsx';
 import { formatArgs, niceTool, tidyToolText } from './bridge.js';
 import ThinkBlock from './ThinkBlock.jsx';
@@ -218,8 +218,15 @@ export function ToolGroup({ items }) {
   if (tools.length === 1 && !thinks.length) return <ToolCard it={tools[0]} />;
 
   const last = tools[tools.length - 1];
+  /* 【2026-11-15 主人钦点】柜门关上时，里面展开过的工具卡 / 思考链自动合上；
+   * 下次再开柜子就是干净的一列，不会一开门全摊着。开柜子不动内层状态。 */
+  const onHubToggle = (e) => {
+    onToggle(e);
+    const closing = !(e && e.currentTarget && e.currentTarget.open);
+    if (closing) { try { closeOpenKeys(list.map((t) => t.key)); } catch (err) {} }
+  };
   return (
-    <details className="toolhub" open={open} onToggle={onToggle}>
+    <details className="toolhub" open={open} onToggle={onHubToggle}>
       <summary>
         {/* 【2026-11-12 主人】柜门跟柜内工具卡标题**完全同款**：
               卡上是「名字(蓝) ⠿ 正在跑 · 1s(琥珀)」—— 状态是一个整串，

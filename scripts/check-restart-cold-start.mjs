@@ -21,6 +21,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { startIsolated } from './_test-instance.mjs';
 import { connect } from './_cdp-connect.mjs';
@@ -28,7 +30,7 @@ import { makeChecker } from './_harness_util.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const c = makeChecker('重启冷启动（杀进程再起，同一个数据目录）');
-const ROOT = process.cwd();
+const ROOT = __ROOT;
 
 /* ── 造数据 ───────────────────────────────────────────────────── */
 const ID = 'qaRestart' + Date.now().toString(36);

@@ -38,11 +38,14 @@ if (!fs.existsSync(DATA)) {
  * 仍不一致才判真不一致 —— 别把别人的中间态当成自己的错。 */
 function same(a, b) {
   if (!fs.existsSync(a) || !fs.existsSync(b)) return null;
+  /* 【2026-11-14 修·行尾噪音】仓库文件是 LF、生效层常被写成 CRLF，
+   * 字节级比较会把「内容一模一样只是行尾不同」误报成「改了不生效」。
+   * 内容比对一律先挖掉 \r 再比（sync-live 的 finger() 本来就是行尾无关的，
+   * 这里跟它对齐，别再一个说同步了一个说没同步）。 */
+  const norm = (f) => fs.readFileSync(f).toString().replace(/\r\n/g, '\n');
   const eq = () => {
     try {
-      const x = fs.readFileSync(a);
-      const y = fs.readFileSync(b);
-      return x.length === y.length && x.equals(y);
+      return norm(a) === norm(b);
     } catch {
       return null;
     }

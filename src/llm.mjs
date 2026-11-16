@@ -360,11 +360,33 @@ function endpointForForSession(sessionId) {
  * 万一哪天有人加了新字段忘了这里，后果是「模型看见了内部字段」，
  * 不是「消息丢了内容」—— 这个方向出错更安全。
  */
-const WIRE_KEYS = ['role', 'content', 'name', 'tool_calls', 'tool_call_id'];
+/**
+ * 【2026-11-16 加 reasoning_content·她得看得见自己上一圈想过什么】
+ *
+ * 主人抓到：「这一次的思考看不到上一次思考的内容，所以她会重复思考」。
+ * agent.mjs 现在把每圈的思考以 non-enumerable 的 reasoning_content 挂在
+ * 带 tool_calls 的 assistant 消息上，这里负责真的发出去。
+ *
+ * 但这条字段不是所有上游都吃：DeepSeek 官方接口收到 reasoning_content 会直接 400
+ * （"reasoning_content is not allowed"）。所以两道闸：
+ *   · 官方域名（api.deepseek.com）一律不发；
+ *   · 环境变量 XY_ECHO_REASONING=0 可以整体关掉（换模型出问题时的一键回退）。
+ */
+const WIRE_KEYS = ['role', 'content', 'name', 'tool_calls', 'tool_call_id', 'reasoning_content'];
+
+function echoReasoningAllowed() {
+  if (String(process.env.XY_ECHO_REASONING || '') === '0') return false;
+  const base = String(activeEndpoint()?.baseURL || '');
+  if (/api\.deepseek\.com/i.test(base)) return false;
+  return true;
+}
+
 export function wireMessage(m) {
   if (!m || typeof m !== 'object') return m;
   const out = {};
+  const allowReason = echoReasoningAllowed();
   for (const k of WIRE_KEYS) {
+    if (k === 'reasoning_content' && !allowReason) continue;
     if (m[k] !== undefined && m[k] !== null) out[k] = m[k];
   }
   // 网关不接受 content:null（有些连字段缺了都报错），带工具调用的那种补成空串
@@ -534,7 +556,23 @@ export function modelNameForSession(sessionId) {
  * Stream one chat completion.
  * Yields {type:'text', text} | {type:'reasoning', text} | {type:'tool_calls', toolCalls} | {type:'usage', usage}
  */
-export async function* streamChat({ messages, tools, signal, temperature, sessionId, model }) {
+/**
+ * 【2026-11-16 加 idleMs·子Agent 不该陪上游干等 8 分钟】
+ *
+ * 主人报「发子Agent 跑回归非常大概率卡住」。查下来：子Agent 的 progress 一直是 0、
+ * 状态 running、界面上一动不动 —— 它卡在**等上游回话**这一步，而这一段的静默上限
+ * 沿用的是主轮的 LLM_IDLE_MS（8 分钟）。
+ *
+ * 主轮该等（模型可能在深度思考，主人就盯着这一句）；子Agent 不该等 ——
+ * 它是后台任务，8 分钟里没有任何输出，主人只能判定「卡了」。
+ * 而且上游（第三方中转）在 4 个 worker 并发时本来就会排队，干等 8 分钟 ×5 次重试
+ * = 40 分钟，期间什么都看不见。
+ *
+ * 所以给调用方一个口子：传 idleMs 就用它（子Agent 传 2 分钟），不传维持 8 分钟。
+ */
+export async function* streamChat({ messages, tools, signal, temperature, sessionId, model, idleMs }) {
+  /* 这一趟的静默上限：显式传入优先，否则沿用主轮那套 */
+  const _idleCap = (Number.isFinite(Number(idleMs)) && Number(idleMs) > 0) ? Number(idleMs) : LLM_IDLE_MS;
   /**
    * 【显式指定的模型压过一切】
    *
@@ -627,7 +665,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
           body: JSON.stringify(payload),
           signal,
         }),
-        LLM_IDLE_MS,
+        _idleCap,
         { what: '等上游开始回话' },
       );
     } catch (e) {
@@ -647,7 +685,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       break;
     }
     lastStatus = r.status;
-    lastText = await withTimeout(r.text().catch(() => ''), LLM_IDLE_MS, { what: '读上游的错误正文' });
+    lastText = await withTimeout(r.text().catch(() => ''), _idleCap, { what: '读上游的错误正文' });
     /**
      * 【请求级可重试状态：统一走 WorkBuddy 分类学（#42）】
      *
@@ -752,7 +790,12 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
    */
   const _feedThink = createThinkStripper();
   /* 【2026-11-07】正文里的工具调用文本：先扣住，别让它流到屏幕上 */
-  const _xmlGuard = createXmlCallGuard();
+  /* 2026-11-14 修·模型把工具名自造成标签（<ask_peer"><to>..</to></ask_peer>）
+   * 守卫原来只认四个固定名字，这种形态一个都认不出 -> 原样描到屏幕上、工具不执行。
+   * 现在把真实注册的工具名全交给它。 */
+  const _xmlGuard = createXmlCallGuard(
+    (tools || []).map((t) => String((t && t.function && t.function.name) || (t && t.name) || '').trim()).filter(Boolean),
+  );
   /**
    * 【白名单挡误判】
    * 模型有时候会在回复里**讲解**这种格式（主人今天就在问这个）。要是没有白名单，
@@ -786,7 +829,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
     // 外部 cancel 会抛 ERR_INVALID_STATE（ReadableStream is locked）把进程带走。
     const guard = stallGuard({
       what: '上游往这边吐字',
-      limitMs: LLM_IDLE_MS,
+      limitMs: _idleCap,
     });
     /* 【2026-11-12 修·「说着说着突然断了，一个错都没有」】
      * 有的网关抽风时不发 finish_reason、不发 [DONE]，直接把 SSE 一关 ——
@@ -870,6 +913,12 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
         yield { type: 'tool_calls', toolCalls: [...acc.values()].filter((t) => t.name) };
         acc.clear();
       }
+      /* 【2026-11-14 修·正文被截断的信号发不出去】
+       * finish_reason === 'length' = 上游按 token 上限把输出硬掐了 —— 话说到一半。
+       * agent.mjs 一直在等这个信号好接着续写，可这里从来没人发过
+       * → 她这轮就半句断掉，看着像「说到一半不说了」。
+       * 现在把信号发出去（agent 侧收到后把半句落历史、再要一次接着写）。 */
+      if (finish === 'length') yield { type: 'truncated' };
     }
     }
     if (!sawFinish) {
@@ -896,7 +945,7 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
        * 现在两种壳子都算，解析器自己也认 DSML 分隔符。
        */
       let _xc = [];
-      if (!acc.size && /<(?:tool_call|invoke)\b/i.test(_xmlAcc)) {
+      if (!acc.size && (_xmlGuard.hit || /<(?:tool_call|invoke|run_command)\b/i.test(_xmlAcc))) {
         _xc = parseXmlToolCalls(_xmlAcc, _toolNames);
         if (_xc.length) yield { type: 'tool_calls', toolCalls: _xc };
       }
@@ -1011,6 +1060,68 @@ export function parseXmlToolCalls(text, knownNames) {
       push(name, m[3] || '');
     }
 
+    /* ①b 【2026-11-14 修·检查鱼会话卡住】工具名直接当标签、正文就是参数原文：
+     *   <run_command>Select-String -Path ...</run_command>
+     * 实测检查鱼 22:58 那一轮连吐三条这种，守护器和解析器都不认 →
+     * 工具一次没执行，XML 原文被当正文落盘，会话就此停住。
+     * 目前只有 run_command 用这种裸形态（正文 = command 参数）；别的工具不乱猜。 */
+    const rawRe = /<(run_command)\b[^>]*>([\s\S]*?)<\/\s*run_command\s*>/gi;
+    let rawM;
+    while ((rawM = rawRe.exec(src)) !== null) {
+      if (!okName('run_command')) continue;
+      const cmd = String(rawM[2] || '').trim();
+      if (!cmd) continue;
+      out.push({
+        id: 'xmlcall_' + Date.now().toString(36) + '_' + (n++),
+        name: 'run_command',
+        arguments: JSON.stringify({ command: cmd }),
+      });
+    }
+
+    /* ①c 【2026-11-14 修·工具名直接当标签、参数名当子标签】
+     *   <ask_peer">
+     *   <to>xxx</to>
+     *   <text>yyy</text>
+     *   </ask_peer>
+     * 标签名后面可能带一个多余引号（实测过），容忍。
+     * 参数优先按 <parameter name="k">v</parameter> 读，没有就按 <k>v</k> 读。
+     * 名字必须过 okName 白名单，讲解格式的正文不会被误执行。 */
+    const bareRe = /<([A-Za-z_][A-Za-z0-9_]*)"?\s*>([\s\S]*?)<\/\s*\1\s*>/gi;
+    /* 【2026-11-15 修】结构标签本身不是工具名。
+     * 真 bug：<call><invoke name="run_command">...</invoke></call> 这种正常形态，
+     * ① 已经正确解析出 run_command 了，①c 又把外层 <call>...</call> 当「裸形态工具」，
+     * 多吐一条 name:"call" 的假调用（okName 没传 knownNames 时 'call' 能过正则）。
+     * 手动实测：修前 parse 返回 2 条（run_command + call），修后应为 1 条。 */
+    const STRUCT_TAGS = new Set(['call', 'invoke', 'tool_call', 'function_calls', 'function_call', 'parameter', 'parameters', 'antml']);
+    let bm;
+    while ((bm = bareRe.exec(src)) !== null) {
+      const name = String(bm[1] || '').trim();
+      if (STRUCT_TAGS.has(name.toLowerCase())) continue;
+      if (!okName(name)) continue;
+      const body = bm[2] || '';
+      let got = null;
+      if (/<parameter\s+name\s*=/i.test(body)) {
+        const a1 = readParams(body);
+        if (Object.keys(a1).length) got = a1;
+      } else {
+        const kvRe = /<([A-Za-z_][A-Za-z0-9_]*)"?\s*>([\s\S]*?)<\/\s*\1\s*>/gi;
+        const a2 = {};
+        let km;
+        while ((km = kvRe.exec(body)) !== null) {
+          const k = String(km[1] || '').trim();
+          if (!k || k === 'parameter') continue;
+          a2[k] = String(km[2] || '').trim();
+        }
+        if (Object.keys(a2).length) got = a2;
+      }
+      if (!got) continue;
+      out.push({
+        id: 'xmlcall_' + Date.now().toString(36) + '_' + out.length,
+        name,
+        arguments: JSON.stringify(got),
+      });
+    }
+
     /* ② 缺尾形态：流被截断 / 模型没写完闭合标签（实测那次就是这样） */
     if (!out.length) {
       const looseRe = /<(?:invoke|tool_call)\s+name\s*=\s*"([^"]+)"\s*>([\s\S]*)$/i;
@@ -1112,8 +1223,23 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
  *   · 流结束时由调用方定：解析成工具调用 → 丢弃；解析不成 → 原样补发
  *     （不能吞话。万一模型真的在解释这段格式，主人得看得到）
  */
-export function createXmlCallGuard() {
-  const MARK = /<(?:tool_call|invoke|call)\b/i;
+export function createXmlCallGuard(knownNames) {
+  /* 2026-11-14 修·名单动态化：真实注册过的工具名一律算标记。
+   * 挡误伤靠下游 okName 白名单 + 「扣住了但解析不出就原样补发」。 */
+  const _extra = [];
+  try {
+    for (const raw of knownNames || []) {
+      const name = String(raw || '').trim();
+      if (!name || name.length > 64) continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]{1,63}$/.test(name)) continue;
+      if (/^(tool_call|invoke|call|run_command)$/.test(name)) continue;
+      _extra.push(name);
+    }
+  } catch {}
+  const MARK = new RegExp(
+    '<(?:(?:tool_call|invoke|call|run_command)' + (_extra.length ? '|' + _extra.join('|') : '') + ')\\b',
+    'i',
+  );
   const KEEP = 24;
   let pend = '';
   let held = '';

@@ -46,9 +46,14 @@ for (const p of FILES) {
   if (codeHits.length) no('手动退出还会偷偷 relaunch（__xyRelaunchOnQuit 出现在代码里）');
   else ok('手动退出不偷偷 relaunch');
 
-  /* ② 自动续跑必须在 selfRestart 开关之后 */
+  /* ② 自动续跑必须在 selfRestart 开关之后。
+   * 【2026-11-16 修·判据过时】原来拿「第一次出现的 listInterrupted()」当自动续跑的锚点，
+   * 但退出记账那段在开关之前也调了一次 listInterrupted()（读历史快照继承 autoResume），
+   * 那不是自动续跑。真正的自动续跑读的是 pendingAll。锚点改成它。 */
   const gateIdx = s.indexOf("id === 'selfRestart'");
-  const autoIdx = s.indexOf('listInterrupted()');
+  let autoIdx = s.indexOf('const pendingAll = listInterrupted()');
+  if (autoIdx < 0) autoIdx = s.indexOf('pendingAll = listInterrupted()');
+  if (autoIdx < 0) autoIdx = s.lastIndexOf('listInterrupted()');
   if (gateIdx < 0) no('找不到 selfRestart 开关（自动续跑会关不掉）');
   else if (autoIdx >= 0 && autoIdx < gateIdx) no('自动续跑跑在开关前面了（关不掉）');
   else ok('自动续跑受 selfRestart 开关管');

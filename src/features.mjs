@@ -117,7 +117,18 @@ export const FEATURES = [
     id: 'skills',
     name: '技能本',
     desc: '放在 data/skills/ 里的「手艺」：写周报的格式、剪视频的流程、审稿的规矩……平时只看见标题和一句话，用到时她自己翻开读。关掉之后她翻不了，已经读过的还在上下文里。',
-    tools: ['use_skill'],
+    tools: ['use_skill', 'import_dsh_skills'],
+    defaultOn: true,
+  },
+  {
+    /* 【2026-11-14 补·知识库漏登记】
+     * 这 6 个工具（knowledge_browse/read/save、know_search/add/delete）早就写进 tools.mjs 了，
+     * 但一直没在这张功能表里登记 —— 白名单机制下等于「永远关着」，她看得到名字却用不了。
+     * 隔离实例启动时报的那 6 条「没登记到 features 的功能表」就是这个。 */
+    id: 'knowledge',
+    name: '知识库',
+    desc: '所有会话共用的知识卡：做完一件事顺手把「下次怎么做最快」记成一张卡，以后沾边先翻它。目录只看标题，要细节再精读。',
+    tools: ['knowledge_browse', 'knowledge_read', 'knowledge_save', 'know_search', 'know_add', 'know_delete'],
     defaultOn: true,
   },
   {
@@ -167,6 +178,9 @@ export const FEATURES = [
     desc: '给以后定一件事：到点自动往会话里发一句，我接着干。「明天九点提醒我」「每小时看一次」「过半小时叫我」都靠它。关掉之后建不了也改不了闹钟。',
     tools: ['schedule_task', 'list_schedules', 'cancel_schedule'],
   },
+  /* 【2026-11-16 主人钦点·后台作业整套删掉】
+   * 原来这里有 id:'jobs' 这个功能（登记 check_job / list_jobs / stop_job）。
+   * jobs.mjs 与那三个工具已删 —— 功能跟着一起删，不然「功能」页会留一个空开关。 */
   {
     id: 'webFetchTxt',
     name: '联网抓取文本',
@@ -227,7 +241,7 @@ export const FEATURES = [
     id: 'team',
     name: '团队模式',
     defaultOn: true,
-    tools: ['spawn_worker', 'spawn_workers', 'list_workers', 'tell_worker', 'watch_worker'],
+    tools: ['spawn_worker', 'spawn_workers', 'list_workers', 'tell_worker', 'watch_worker', 'stop_worker'],
     desc: '开了之后我干活时可以拉一支小队一起上：你说一句「帮我查三份资料」，我自己判断要不要拆、拆几份、派给谁。派出去之后我不停下来等——它们跑它们的，我该干别的干别的，想起来就看看进度、补两句话。所有子智能体只属于这个会话，干完或会话删了就没了。这个开关没有顶栏按钮，全程我说了算；关掉之后我只会一个人干活。',
   },
   {
@@ -394,20 +408,30 @@ export const FEATURES = [
     defaultOn: true,
   },
   /**
-   * 画图（2026-11-03）
+   * 画图（2026-11-03 上架；2026-11-15 改成代码画图）
    *
    * 【为什么要单独一档，而不是并进「陪看屏幕」】
    * 那一档是「看」，这一档是「画」：一个往脑子里收，一个往外面出。
-   * 出图要花时间（30~40 秒）、要钱（按张计费），而且得有一条标成「出图」的模型才有用。
    * 混在一起的话，主人关掉「陪看屏幕」是想让她别偷看，结果连带把画图也关了，说不通。
    *
-   * 【默认关】
-   * 没配出图模型的时候开着也是个空按钮 —— 模型面板里加一条标成「出图」它才活。
+   * 【2026-11-15 改了什么】
+   * 以前只认「出图」模型：没配模型这一档就是个空按钮，配了也要等半分钟还花钱。
+   * 现在默认走 src/code-draw.mjs：本地排一张 SVG，再用本机浏览器无头截成 PNG。
+   * 零依赖、不联网、不花钱，几秒出图。八个模板八套配色，按 prompt 里的词自己挑，
+   * 也能直接点名要哪个模板、哪个配色、标题写什么。
+   * 出图模型没删，留成兜底：代码画图失手了才回头找它。
+   *
+   * 【默认开】不依赖任何外部条件了，开着就能用。
    */
   {
     id: 'makeImage',
     name: '画图',
-    desc: '让她真的画一张图出来：你说「画一只蓝色小鲸鱼」她就画，画完直接出现在聊天里，能点开保存。要等 30~40 秒，一次一张。得先在右上角模型面板里有一条标成「出图」的模型，不然这条是空的。',
+    desc: '真的画一张图出来：说「画一只蓝色小鲸鱼」她就画，几秒出图，画完直接出现在聊天里，能点开保存。'
+      + '不用配模型、不联网、不花钱。八个模板（星空／深海／山野／城市／星球／波纹／图案／海报）八套配色，'
+      + '按说的自己挑，也能点名要哪个模板、哪个配色、图上标题写什么。'
+      /* 【2026-11-16 晚】人物这条以前压根没接上，主人让她画鲸鱼娘只得到两张背景，卡片里得说清楚。 */
+      + '也能画人物/角色：鲸鱼娘、人鱼、女孩、男孩、猫、狗、狐狸、兔子、鸟、人剪影（subject 参数）。'
+      + '画角色一定要说清是谁，不然只会出场景和标题。',
     tools: ['make_image'],
     defaultOn: true,
   },
@@ -549,6 +573,42 @@ export const FEATURES = [
     tools: [],
     defaultOn: false,
   },
+  {
+    /**
+     * 借鉴工具一：动手那一套。
+     * 精准改一小段、常驻终端四件、按名字找文件、看图。
+     */
+    id: 'borrowed',
+    name: '借鉴工具·动手',
+    desc: '精准改文件里的一小段；开一个常驻终端在里面连着敲几条命令；按名字/通配找文件；直接把图看进眼里。',
+    tools: ['edit_file', 'term_start', 'term_send', 'term_read', 'term_close', 'list_terminals', 'find_files', 'read_image'],
+    defaultOn: true,
+  },
+  {
+    /**
+     * 借鉴工具二：长活那一套。
+     * 设目标、反复做到过、发一组文件、翻自己最近几轮干了什么。
+     */
+    id: 'borrowed2',
+    name: '借鉴工具·长活',
+    desc: '给任务立个目标和验收、没做到就反复做到过、一次发一组文件、翻自己最近几轮的流水。',
+    tools: ['goal_set', 'ralph', 'send_files', 'trace_turns'],
+    defaultOn: true,
+  },
+  {
+    /**
+     * 给会话起名。
+     *
+     * 原来 rename_session 是个「没人认领」的工具：tools.mjs 里注册着，功能表里一条没登记，
+     * 结果模型实际上拿不到它 —— 每一轮都被告知「先给自己起个名字」，
+     * 却根本调不动那个工具。这种「注册了但没人认领」的工具等于被静默关掉。
+     */
+    id: 'sessionName',
+    name: '会话起名',
+    desc: '给这次会话起个名字，界面上和会话列表里都能看见，方便过后翻回来找。',
+    tools: ['rename_session'],
+    defaultOn: true,
+  },
 ];
 
 /** 工具名 -> 所属功能 id（一个工具被多个功能声明时，记第一个，但判可用看全部） */
@@ -581,7 +641,10 @@ export function rebuildToolIndex(list) {
   TOOL_FEATURE.clear();
   TOOL_OWNERS.clear();
   for (const f of list) {
-    for (const t of f.tools) {
+    /* 【2026-11-16 修·容错】自定义功能（.state/features-custom.json 里导入的）
+     * 可能没有 tools 字段 —— 直接 for 会抛「f.tools is not iterable」，
+     * 整份出厂提示词生成就此中断（check-factory-prompt 报的就是这个）。 */
+    for (const t of (Array.isArray(f && f.tools) ? f.tools : [])) {
       if (!TOOL_FEATURE.has(t)) TOOL_FEATURE.set(t, f.id);
       const arr = TOOL_OWNERS.get(t);
       if (arr) { if (!arr.includes(f.id)) arr.push(f.id); } else TOOL_OWNERS.set(t, [f.id]);

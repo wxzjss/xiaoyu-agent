@@ -205,12 +205,38 @@ export function undoLastRewind(session) {
   };
 }
 
+/**
+ * 【2026-11-15 修·「查看改动」永远是空的】
+ *
+ * 主人报：「消息上的【查看改动】按钮点了后的界面里空空如也。」
+ *
+ * 查下去不是前端没画，是**根本没有快照可画**：四个会话里 `_ws` 全是空对象。
+ * 根因就在下面这个判断 —— 快照只认 `config.workspace`（开发机是 D:/小鱼Agent/sandbox），
+ * 而她实际改的是仓库根下的 D:\小鱼Agent\src\...。每一笔写都被判成
+ * 「工作区外，不归回退管」直接跳过，于是「这一轮改了什么」永远是空。
+ *
+ * 修法：允许两个根 —— workspace 和仓库根（config.root）。
+ * 为了两者不撞车，key 带前缀：仓库根下的记 `root:src/x.mjs`，
+ * 工作区里仍是不带前缀的旧格式（老数据不用迁移）。
+ * restoreWorkspace 按同一个约定解析，读写对称。
+ */
+function snapRoots() {
+  const ws = resolve(config.workspace);
+  const rt = resolve(config.root || process.cwd());
+  const list = [{ tag: '', root: ws }];
+  if (rt !== ws) list.push({ tag: 'root:', root: rt });
+  return list;
+}
+
 function resolveInsideWorkspace(p) {
-  const root = resolve(config.workspace);
-  const abs = isAbsolute(p) ? resolve(p) : resolve(root, p);
-  const rel = relative(root, abs);
-  if (rel.startsWith('..') || isAbsolute(rel)) return null;
-  return { abs, key: rel.replace(/\\/g, '/') };
+  const base = resolve(config.workspace);
+  const abs = isAbsolute(p) ? resolve(p) : resolve(base, p);
+  for (const { tag, root } of snapRoots()) {
+    const rel = relative(root, abs);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+    return { abs, key: tag + rel.replace(/\\/g, '/') };
+  }
+  return null;
 }
 
 /**
@@ -306,11 +332,14 @@ export function snapshotBeforeWrite(snap, p) {
  */
 export function restoreWorkspace(ws = {}) {
   const out = { restored: [], deleted: [], skipped: [], failed: [] };
-  const root = resolve(config.workspace);
   for (const [key, content] of Object.entries(ws || {})) {
-    const abs = resolve(root, key);
-    const rel = relative(root, abs);
-    if (rel.startsWith('..') || isAbsolute(rel)) continue;
+    /* key 可能带 `root:` 前缀（仓库根下的文件），也可能是老的「工作区相对路径」 */
+    const mRoot = /^root:(.*)$/.exec(String(key || ''));
+    const base = mRoot ? resolve(config.root || process.cwd()) : resolve(config.workspace);
+    const relKey = mRoot ? mRoot[1] : String(key || '');
+    const abs = resolve(base, relKey);
+    const rel = relative(base, abs);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
     try {
       if (content === '__TOO_BIG__') {
         /* 这一份当时太大、没备份成。不能当 null 删掉，也不能假装还原了。 */

@@ -21,8 +21,8 @@
  *
  * 跑法：node scripts/check-ask-approval.mjs   （要网络 + 模型配置，比较慢）
  */
-import { spawn, execFile } from 'node:child_process';
-import { writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { spawn, execFile, execFileSync } from 'node:child_process';
+import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { startIsolated } from './_test-instance.mjs';
 import { connect as cdpConnect } from './_cdp-connect.mjs';
@@ -34,27 +34,189 @@ const ok = (c, m, detail = '') => {
   else { fail++; console.log('  [FAIL] ' + m + (detail ? '   ' + detail : '')); }
 };
 
-/* ---- 记事本靶子 ---- */
+/* ---- 靶子窗口 ----
+ *
+ * 2026-11-16 换掉记事本：这台机器的记事本是**商店版（UWP）**，
+ * notepad.exe 只是个转接壳 —— 实测壳自己 MainWindowHandle=0，真窗口挂在
+ * broker 拉起的**另一个进程**上，父进程根本不是我们 spawn 的那个。
+ * 所以「只认自己 spawn 的那棵树」永远等不到窗口，只能掉进「正常窗口」兜底，
+ * 那个窗口就直接糊到主人脸上 —— 主人今天报的「记事本的问题又冒出来了」就是它。
+ *
+ * 换成自己起的 WinForms 窗口，三个好处：
+ *   ① 进程是我们亲生的：pid 确定、taskkill /T 一定清得掉；
+ *   ② 一出生就 SetWindowPos 甩到 (-32000,-32000)，主人看不见，但句柄照旧是真的；
+ *   ③ 里面是多行 TextBox：UIA 读得到文字、ctrl+delete 按得进去 —— 测试要的就这两点。
+ */
+import { tmpdir } from 'node:os';
 
-async function findNotepad() {
-  const ps = (cmd) => new Promise((res) => {
-    execFile('powershell.exe', ['-NoProfile', '-Command', cmd], { windowsHide: true }, (e, so) => res(e ? '' : String(so || '').trim()));
+const TARGET_MARK = 'xiaoyu-target';
+
+/**
+ * 靶子进程的「指纹」：靶子脚本 base64 的前 28 个字符。
+ *
+ * 为什么要这个：扫尸（sweepStaleLedger）要在**拉起之前**就能认出上次留下的靶子，
+ * 可命令行里只有一串 base64。base64 是从第一个字节开始编的，脚本开头那段
+ * （Add-Type …）永远一样 → 前 28 个字符恒定，拿它当指纹正好。
+ * 为什么不额外塞个字面量参数：`-EncodedCommand` 后面跟多余参数时，
+ * powershell 会当成参数错误直接退出（实测「使用 -Command 或 -EncodedCommand
+ * 指定了命令」那句报错），靶子反而起不来。
+ */
+const MARK_B64 = Buffer.from(targetScript(''), 'utf16le').toString('base64').slice(0, 28);
+
+function targetScript(hsPath) {
+  /* 注意：这段 PowerShell 里**不许出现 try/finally**（PowerShell 5.1 走
+   * -EncodedCommand 时会被防病毒扫成 ScriptContainedMaliciousContent）。 */
+  return [
+    'Add-Type -AssemblyName System.Windows.Forms',
+    'Add-Type -AssemblyName System.Drawing',
+    "$f = New-Object System.Windows.Forms.Form",
+    "$f.Text = '" + TARGET_MARK + "'",
+    '$f.Width = 520',
+    '$f.Height = 360',
+    '$t = New-Object System.Windows.Forms.TextBox',
+    '$t.Multiline = $true',
+    "$t.Dock = 'Fill'",
+    "$t.Text = 'xiaoyu target window'",
+    '[void]$f.Controls.Add($t)',
+    '$f.Show()',
+    "Add-Type -Namespace XyT -Name W -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);'",
+    '[void][XyT.W]::SetWindowPos($f.Handle, [IntPtr]::Zero, -32000, -32000, 0, 0, 0x1 -bor 0x4 -bor 0x10)',
+    "[System.IO.File]::WriteAllText('" + hsPath.replace(/\\/g, '\\\\') + "', [string]$f.Handle)",
+    'while ($true) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 150 }',
+  ].join('; ');
+}
+
+/**
+ * 起一个靶子窗口，返回 { pid, hwnd }。拿不到就返回 null（调用处会判失败）。
+ * 句柄通过一个握手文件回传 —— 比事后去查 MainWindowHandle 稳，不受启动时序影响。
+ */
+async function spawnTargetWindow() {
+  const hs = join(tmpdir(), 'xy-ask-target-' + process.pid + '.txt');
+  try { unlinkSync(hs); } catch {}
+  const b64 = Buffer.from(targetScript(hs), 'utf16le').toString('base64');
+  const p = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', b64], {
+    stdio: 'ignore', windowsHide: true, detached: false,
   });
-  for (let i = 0; i < 20; i++) {
-    const out = await ps(`Get-Process -Name notepad -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id) $($_.MainWindowHandle)" }`);
-    for (const line of out.split('\n')) {
-      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
-      if (m && Number(m[2]) > 0) return { pid: Number(m[1]), hwnd: Number(m[2]) };
+  if (!p || !p.pid) return null;
+  _myTargetPids.add(Number(p.pid));
+  writeLedger();
+  for (let i = 0; i < 60; i++) {
+    if (existsSync(hs)) {
+      let hwnd = 0;
+      try { hwnd = Number(String(readFileSync(hs, 'utf8')).trim()); } catch {}
+      if (hwnd > 0) { try { unlinkSync(hs); } catch {} return { pid: Number(p.pid), hwnd }; }
     }
-    await sleep(500);
+    await sleep(250);
   }
+  try { killTarget(p.pid); } catch {}
   return null;
 }
 
-function killNotepad(pid) {
-  if (!pid) return;
-  try { spawn('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore', windowsHide: true }); } catch {}
+/**
+ * 【2026-11-15 修·跑回归会漏一堆记事本窗口（主人报「后台近十个记事本」）】
+ *
+ * 现场：主人后台堆了 9 个记事本，时间戳正好对应 13:39~14:17 我跑分片回归的时段。
+ *
+ * 病根两个，叠在一起：
+ *   ① 只 kill 了 spawn 出来的那个 pid。Win11 记事本是 UWP 转接：
+ *      真窗口挂在**子进程**上，父进程（spawn 的那个）和转接壳都留着，
+ *      窗口就残在那儿 —— 每跑一次漏一个，跑十次漏十个。
+ *   ② 脚本中途崩了/被超时掐了（今天被打断过好几次），finally 根本走不到，
+ *      一个都不杀。
+ *
+ * 修法：spawn 时把整棵进程树的 pid 记在模块级集合里，收尾全杀；
+ * 再挂退出/中断钩子兜底 —— 崩了也清。只动自己这次开的，不碰主人自己开的。
+ */
+const _myTargetPids = new Set();
+
+/**
+ * 【2026-11-15 补·被强杀时也能清干净 —— 用「pid 落盘 + 下次启动先扫尸」】
+ *
+ * 上面那套（整树 taskkill + exit/SIGINT/SIGTERM 钩子）只能挡住「正常崩」。
+ * 挡不住**被 Stop-Process -Force / 超时 taskkill 直接砍**——那种情况下
+ * node 的 exit 钩子根本不会执行，记事本就永久留下来了。
+ * 主人今天就是被这个烦到：「记事本还是会偶尔时不时打开」。
+ *
+ * 所以再加一条落盘账：spawn 后立刻把 pid 写进 scripts/.notepad-pids.json；
+ * **每次脚本启动第一件事**就是读这个文件，把上次没清掉的 pid 全杀掉。
+ * 强杀留下的孤儿，下一次跑就自动收走了。
+ */
+const PID_LEDGER = 'D:\\小鱼Agent\\scripts\\.notepad-pids.json';
+
+function sweepStaleLedger() {
+  try {
+    if (!existsSync(PID_LEDGER)) return 0;
+    const raw = readFileSync(PID_LEDGER, 'utf8');
+    const list = JSON.parse(raw);
+    let n = 0;
+    for (const id of Array.isArray(list) ? list : []) {
+      const pid = Number(id);
+      if (!pid) continue;
+      try {
+        const name = execFileSync('tasklist', ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
+        /* 认两种：
+         *  · 老账里的记事本（2026-11-15 那批遗留，顺手收掉）
+         *  · 现在起的 powershell 靶子 —— powershell 太常见，必须再核一遍
+         *    命令行里有没有靶子标记，防 pid 复用误杀主人自己的脚本。 */
+        let hit = /notepad/i.test(name);
+        if (!hit && /powershell/i.test(name)) {
+          try {
+            const cmd = execFileSync('powershell.exe', ['-NoProfile', '-Command',
+              '(Get-CimInstance Win32_Process -Filter "ProcessId=' + pid + '").CommandLine'],
+            { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+            hit = String(cmd).includes(MARK_B64);
+          } catch { hit = false; }
+        }
+        if (!hit) continue;
+        spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+        n++;
+      } catch {}
+    }
+    try { unlinkSync(PID_LEDGER); } catch {}
+    if (n) console.log('[check-ask-approval] 顺手清掉上次遗留的靶子 ' + n + ' 个');
+    return n;
+  } catch { return 0; }
 }
+
+function writeLedger() {
+  try { writeFileSync(PID_LEDGER, JSON.stringify([..._myTargetPids]), 'utf8'); } catch {}
+}
+
+/* 一进门先扫尸 */
+sweepStaleLedger();
+
+/**
+ * 把某个窗口挪到屏幕外（不激活、不改大小、不抢焦点）。
+ * 失败一律吞掉：挪不动只是难看，不能因此让测试跑不了。
+ */
+function parkWindow(hwnd) {
+  const h = Number(hwnd) || 0;
+  if (!h) return;
+  try {
+    const ps = 'Add-Type -Namespace XyPark -Name U -MemberDefinition '
+      + "'[DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);';"
+      + ' [void][XyPark.U]::SetWindowPos([IntPtr]' + h + ', [IntPtr]::Zero, -32000, -32000, 0, 0, 0x1 -bor 0x4 -bor 0x10)';
+    execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true, timeout: 8000, encoding: 'utf8' });
+  } catch { /* 挪不动就算了 */ }
+}
+
+function killTarget(pid) {
+  const ids = new Set(_myTargetPids);
+  if (pid) ids.add(Number(pid));
+  /* /T 连子进程树一起杀 —— UWP 记事本只杀父进程是关不掉窗口的 */
+  for (const id of ids) {
+    try { spawn('taskkill', ['/PID', String(id), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch {}
+  }
+  _myTargetPids.clear();
+}
+
+/* 【崩了也要清】不装这些钩子，脚本被掐/抛错就是永久漏一个窗口 */
+function sweepMyTargets() {
+  try { if (_myTargetPids.size) killTarget(null); } catch {}
+}
+try { process.on('exit', sweepMyTargets); } catch {}
+try { process.on('SIGINT', () => { sweepMyTargets(); process.exit(130); }); } catch {}
+try { process.on('SIGTERM', () => { sweepMyTargets(); process.exit(143); }); } catch {}
 
 /* ---- CDP 助手 ---- */
 
@@ -80,10 +242,34 @@ async function cdpDismissStale(cdp) {
   }
 }
 
+/* 2026-11-14 诊断用 */
+function fsAppend(file, line) {
+  try { writeFileSync(file, readFileSync(file, 'utf8') + line + '\r\n'); }
+  catch (e) { try { writeFileSync(file, line + '\r\n'); } catch (e2) {} }
+}
+
 /* 等确认框弹出来；wantClickOk=true 点「允许」，false 点「不许」。
  * 返回 'clicked:标题' / 'timeout'。弹窗最长等 90 秒（前端拿到事件有延迟）。 */
 async function cdpWaitDialogAndClick(cdp, wantClickOk) {
+  let dumped = 0;
   for (let i = 0; i < 225; i++) {
+    /* 2026-11-14 诊断：每 10 轮（4 秒）dump 一次页面状态 */
+    if (i % 10 === 0) {
+      try {
+        const st = await cdpTry(cdp, `return JSON.stringify({
+          dlgOpen: !!(document.getElementById('confirmDlg') || {}).open,
+          dlgExists: !!document.getElementById('confirmDlg'),
+          title: ((document.getElementById('confirmTitle')||{}).textContent||'').slice(0,80),
+          msgs: document.querySelectorAll('.msg').length,
+          lastMsg: ((document.querySelector('.msg:last-child')||{}).textContent||'').slice(0,120),
+          hidden: document.hidden,
+          sid: String(window.sessionId||''),
+          turns: (window.turns||[]).length,
+          busy: String(window._curInFlight),
+        })`);
+        fsAppend('D:\\小鱼Agent\\scripts\\_dlglog.txt', 'i=' + i + ' ' + st);
+      } catch (e) {}
+    }
     const v = await cdpTry(cdp, `return (function(){
       const d = document.getElementById('confirmDlg');
       if (!d || !d.open) return 'closed';
@@ -157,7 +343,9 @@ async function waitTurnEnd(base, sid, maxMs = 150000) {
 
 /* ---- 主流程 ---- */
 
-const iso = await startIsolated({ appPort: 8795, cdpPort: 9223 });
+const _isoPort = Number(process.env.XY_CHECK_PORT) || 8795;
+const _isoCdp = Number(process.env.XY_CHECK_CDP) || 9223;
+const iso = await startIsolated({ appPort: _isoPort, cdpPort: _isoCdp });
 let np = null;
 try {
   console.log('隔离实例：' + iso.base);
@@ -175,13 +363,11 @@ try {
   st.uiAllowedApps = [];
   writeFileSync(setPath, JSON.stringify(st));
 
-  np = await findNotepad();
-  if (!np) {
-    spawn('notepad.exe', [], { stdio: 'ignore', detached: false });
-    np = await findNotepad();
-  }
-  if (!np) throw new Error('记事本靶子没起来（没查到带主窗口的 notepad 进程）');
-  console.log('靶子记事本：pid=' + np.pid + ' hwnd=' + np.hwnd);
+  /* 2026-11-15 修：只认自己 spawn 的记事本，不再抢机器上现成的那个 ——
+   * 并发跑多趟全量时会被别趟的 killTarget 连坐杀掉。 */
+  np = await spawnTargetWindow();
+  if (!np) throw new Error('靶子窗口没起来（拉起的那条路没回传 hwnd）');
+  console.log('靶子窗口：pid=' + np.pid + ' hwnd=' + np.hwnd);
 
   await sleep(1500);
   const cdp = await cdpConnect({ port: iso.cdpPort, match: iso.base });
@@ -199,12 +385,34 @@ try {
     + '1) 调用 ui_observe 工具，hwnd 参数填 ' + np.hwnd + '；'
     + '2) 调用 ui_key 工具，keys 参数填 ctrl+delete。';
 
+  /**
+   * 【2026-11-16 加·第一句常常「发出去了但没开轮」】
+   *
+   * 现场：刚 reload 完 9 秒就发第一句，页面这边 `sent` 返回成功，
+   * 可 /api/running 二十秒里一直是空的 —— 那一句被吞了（会话还没恢复完，
+   * 前端把消息挂在一个还没建好的会话上）。第二轮再发就正常。
+   * 于是第一组断言（点「不许」）整串挂掉，看着像功能坏了，其实是没开跑。
+   *
+   * 现在：发完等 25 秒还不开轮，就重发一次；最多三次。真坏了照样会挂。
+   */
+  async function sendAndGetSid(text) {
+    for (let i = 0; i < 3; i++) {
+      const r = await pageSend(cdp, text);
+      if (r !== 'sent') return { sent: r, sid: null };
+      const sid = await grabSessionId(iso.base);
+      if (sid) return { sent: 'sent', sid };
+      if (i < 2) console.log('  （第 ' + (i + 1) + ' 次发出去没开轮，重发一次）');
+    }
+    return { sent: 'sent', sid: null };
+  }
+
   /* ===== 第一轮：弹窗 → 点「不许」→ 工具必须红 ✗ 且没按 ===== */
   console.log('\n=== 1. 点「不许」===');
   await cdpDismissStale(cdp);
-  const sent1 = await pageSend(cdp, PROMPT);
+  const r1 = await sendAndGetSid(PROMPT);
+  const sent1 = r1.sent;
   ok(sent1 === 'sent', '从浏览器页面把消息发了出去', String(sent1));
-  const sid = await grabSessionId(iso.base);
+  const sid = r1.sid;
   ok(Boolean(sid), '拿到这一轮的 sessionId', String(sid));
 
   const dlg1 = await cdpWaitDialogAndClick(cdp, false);
@@ -219,9 +427,16 @@ try {
 
   /* ===== 第二轮：弹窗 → 真浏览器里点「允许」→ 工具执行 ===== */
   console.log('\n=== 2. 点「允许」===');
-  const sent2 = await pageSend(cdp, PROMPT);
+  const r2 = await sendAndGetSid(PROMPT);
+  const sent2 = r2.sent;
   ok(sent2 === 'sent', '第二轮消息发出', String(sent2));
-  const sid2 = await grabSessionId(iso.base);
+  const sid2 = r2.sid;
+  /* 2026-11-14 诊断 */
+  try {
+    const rn = await fetch(iso.base + '/api/running').then((r) => r.text());
+    const ss = await fetch(iso.base + '/api/sessions').then((r) => r.text());
+    writeFileSync('D:\\小鱼Agent\\scripts\\_diag2.json', JSON.stringify({ sid, sid2, sent2, rn: rn.slice(0, 500), ss: ss.slice(0, 800) }, null, 2));
+  } catch (e) {}
   ok(Boolean(sid2), '第二轮拿到 sessionId', String(sid2));
 
   const dlg2 = await cdpWaitDialogAndClick(cdp, true);
@@ -239,6 +454,6 @@ try {
   console.error('[check-ask-approval] ' + (e && e.message ? e.message : e));
   process.exitCode = 1;
 } finally {
-  killNotepad(np && np.pid);
+  killTarget(np && np.pid);
   await iso.stop();
 }

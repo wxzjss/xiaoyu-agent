@@ -97,7 +97,10 @@ console.log('\n一、隐私：非出厂的人设 / 提示词 / 私人数据不�
   /* persona 目录里只许出现出厂那几个（git 里追踪过的） */
   const personaFiles = all.filter((f) => f.startsWith('persona/'));
   const known = ['persona/FACTORY-PROMPT.md', 'persona/xiaoyu.md', 'persona/xiaoyu-qq.md',
-    'persona/xiaoyu.original.md', 'persona/agents/pangbai.md', 'persona/agents/xiaobaixi.md'];
+    'persona/xiaoyu.original.md', 'persona/agents/pangbai.md', 'persona/agents/xiaobaixi.md',
+    /* 【2026-11-15 晚】主人要求「把当前的几个智能体（包括【鲸鱼娘】）连同出厂快照人设一起发布」：
+     * 鲸鱼娘的人设正文已导出入库，跟小白曦/旁白同一个待遇 —— 是厂货，不是私设。 */
+    'persona/agents/jingyuniang.md'];
   const extra = personaFiles.filter((f) => !known.includes(f));
   ok(extra.length === 0, 'persona/ 里没有非出厂文件（' + personaFiles.length + ' 个，全是厂货）',
     extra.join(', '));

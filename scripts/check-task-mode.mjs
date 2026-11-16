@@ -20,7 +20,11 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const t = makeChecker('task / 办事模式');
-const src = fs.readFileSync('src/task-mode.mjs', 'utf8');
+/* 【2026-11-16 补】原来写的是相对路径 'src/task-mode.mjs' —— 这条脚本平时从仓库根
+   启动才找得到，一旦 cd 进 scripts 再跑就差一层，直接 ENOENT 崩掉（看着像产品坏了，
+   其实是检查脚本自己的路径 bug）。按脚本自身位置算仓库根，从哪儿启动都一样。 */
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const src = fs.readFileSync(join(ROOT, 'src/task-mode.mjs'), 'utf8');
 
 const tm = await import('../src/task-mode.mjs');
 const tl = await import('../src/tools.mjs');

@@ -33,15 +33,18 @@ ok('命中 repack 时有专门人话（说清正确姿势=外部终端）',
 
 /* ── ② 父链自检 ── */
 ok('repack 有父链自检（祖先里有小鱼就报错退出）',
-  /ParentProcessId/.test(repack) && /正在被小鱼Agent自己拉起/.test(repack) && /throw \('这个脚本正在被小鱼Agent自己拉起/.test(repack));
+  /* 【2026-11-14 修】throw 跨行拼接被 PowerShell 解析歧义咬过，已改成先拼 $msg 再 throw；
+   * 断言守「父链扫描 + 明确报错 + throw 退出」三件事，不钉死字符串拼接姿势。 */
+  /ParentProcessId/.test(repack) && /正在被小鱼Agent自己拉起/.test(repack) && /throw \$msg/.test(repack));
 ok('父链自检（throw 那句）排在真正的杀进程之前',
   repack.indexOf('正在被小鱼Agent自己拉起') < repack.indexOf('Stop-Process -Id'));
 
 /* ── ③ 杀掉后拉回 ── */
-ok('repack 结尾把应用拉回来（Start-Process 小鱼Agent.exe）',
-  /Start-Process \$exe/.test(repack) && /应用已重新拉起/.test(repack));
-ok('拉回排在 asar 替换之后（先 Copy-Item 后 Start-Process）',
-  repack.indexOf('Copy-Item $new $asarP') < repack.indexOf('Start-Process $exe'));
+/* 【2026-11-14 修】拉起改成 explorer + 端口轮询（避开单实例锁 / ELECTRON_RUN_AS_NODE） */
+ok('repack 结尾把应用拉回来（explorer 拉起 + 端口确认）',
+  /Start-Process explorer\.exe/.test(repack) && /端口轮询确认 200/.test(repack));
+ok('拉回排在 asar 替换之后（先 Copy-Item 后 explorer 拉起）',
+  repack.indexOf('Copy-Item $new $asarP') < repack.indexOf('Start-Process explorer.exe'));
 
 /* ── ④⑤ 管理员档自更（-SelfUpdate）── */
 ok('管理员档下 repack 拦截放行（CTX.adminMode 分叉在拦截之前）',
@@ -52,7 +55,7 @@ ok('放行给的是 -SelfUpdate 姿势（不是裸跑）',
 ok('repack 脚本有 -SelfUpdate 参数，且能跳过父链自检',
   /\[switch\]\$SelfUpdate/.test(repack) && /if \(\$probe -and -not \$SelfUpdate\)/.test(repack));
 ok('-SelfUpdate 不影响杀→换→拉回主流程（拉回仍在 Copy-Item 后）',
-  repack.indexOf('Copy-Item $new $asarP') < repack.indexOf('Start-Process $exe'));
+  repack.indexOf('Copy-Item $new $asarP') < repack.indexOf('Start-Process explorer.exe'));
 
 /* ── ⑥⑦ restart_self / spawn 的管理员自主 ── */
 ok('restart_self 409 时管理员档自动 force（不再先问主人）',
@@ -61,9 +64,11 @@ ok('restart_self 409 时管理员档自动 force（不再先问主人）',
 ok('spawn_worker(s) 管理员档不看团队模式开关',
   (tools.match(/!teamOn\(sid\) && CTX\.adminMode !== true/g) || []).length >= 2);
 
-/* ── 提示词把「程序本体掌控」写清 ── */
-ok('adminPromptBlock 写明程序本体掌控（改源码/重启/-SelfUpdate/派鱼）',
-  /完美掌控小鱼Agent这个程序/.test(admin) && /repack-installed-app\.ps1 -SelfUpdate/.test(admin));
+/* ── 【2026-11-16 主人点名删】adminPromptBlock 不再往系统提示里塞程序本体那段 ──
+ * 原来这条守的是「写明程序本体掌控」，主人明确要求整段删掉（标题段/本体段/三条段），
+ * 改成反向守卫：正文里不许再出现那两句话，免得以后谁又抄回来。 */
+ok('adminPromptBlock 不再塞「程序本体掌控」那段（2026-11-16 主人点名删）',
+  !/完美掌控小鱼Agent这个程序/.test(admin) && !/repack-installed-app\.ps1 -SelfUpdate/.test(admin));
 
 console.log(`\n防自毁三处钉死 + 管理员档自更：${pass} 过 / ${fail} 挂`);
 process.exit(fail ? 1 : 0);

@@ -47,7 +47,13 @@ t.ok('② 写入是按会话 upsert，不覆盖', /filter\(\(x\) => String\(x\.s
 t.ok('② 开机取全部待续，再按 autoResume 过滤',
   /const pendingAll = listInterrupted\(\)/.test(server)
   && /pendingAll\.filter\(\(x\) => x && x\.autoResume === true\)/.test(server));
-t.ok('② 只有「真被打断」才标 autoResume', /autoResume: Boolean\(_qlive\)/.test(server));
+/* 【2026-11-16 严检改·规则从「只认真被打断」放宽为「再继承旧账」】
+ * 起因：主人让核查「有没有没续上的」，查出检查鱼被永久丢掉 —— 它退出那一刻还在
+ * 准备阶段（没进 runningTurns），`_qlive` 是 null，于是被记成「清单老账」+ autoResume=false，
+ * 下一个进程就不续它了。修法：盘上原本 authResume=true 的，退出时继续 true。 */
+t.ok('② autoResume：真被打断就给，否则继承旧账（不把「本来就该续」的降级）',
+  /const _shouldAuto = Boolean\(_qlive\) \|\| Boolean\(_prev && _prev\.autoResume === true\)/.test(server)
+  && /autoResume: _shouldAuto,/.test(server));
 t.ok('② 续跑函数能指定会话', /async function resumeInterruptedTurn\(onlySessionId\)/.test(server));
 t.ok('② 跑完只删自己那条', /dropInterrupted\(sessionId\)/.test(server));
 t.ok('② 退出时遍历每个有活的会话', /const _cand = \[\];/.test(server) && /for \(const _qsid of _cand\)/.test(server));
@@ -98,6 +104,16 @@ if (got) {
   const ui = readUISource();
   t.ok('前端点重启确实会带 sessionId（所以上面那条才必须）',
     /api\/app\/restart',\s*\{[\s\S]{0,200}sessionId:/.test(ui));
+  /* 【2026-11-15 加·break 又把 B 丢下一次】
+   * 候选循环末尾原来有 `break` —— 标完第一个候选（点重启的那个）就跳出去了，
+   * 排在后面的正在跑的 B 一条账都没记，重启后照样不续。
+   * 守卫：循环里必须改成「每个候选都记」，且不许再有「赋完就 break」。 */
+  t.ok('重启记账循环不再 break（每个候选都记，_resumeSid 只认第一个）',
+    /if \(!_resumeSid\) _resumeSid = _sid;/.test(srv)
+    && !/_resumeSid = _sid;\s*\n\s*break;/.test(srv));
+  t.ok('重启记账盖 locked + 不降级旧账的 autoResume',
+    /autoResume: Boolean\(_live\) \|\| Boolean\(\(_prevResume && _prevResume\.autoResume === true\)\)/.test(srv)
+    && /autoResume: Boolean\(_live\) \|\| Boolean\(\(_prevResume && _prevResume\.autoResume === true\)\),[\s\S]{0,600}locked: true,/.test(srv));
 }
 
 t.done();

@@ -208,7 +208,7 @@ export async function transcodeVoiceToMp3(localPath) {
   if (!ff) return src;
   const dest = src.replace(/\.[^.]+$/, '') + '.mp3';
   await new Promise((ok, bad) => {
-    execFile(ff, ['-y', '-i', src, '-ar', '24000', '-ac', '1', '-b:a', '64k', dest], { timeout: 120_000 }, (err) => {
+    execFile(ff, ['-y', '-i', src, '-ar', '24000', '-ac', '1', '-b:a', '64k', dest], { timeout: 120_000, windowsHide: true }, (err) => {
       if (err) bad(err);
       else ok();
     });

@@ -19,81 +19,102 @@
  */
 
 import { memoryText } from './my-memory.mjs';
-import { readMemory as readSessionMemory, appendDigest as appendSessionDigest } from './session-memory.mjs';
+import { readMemory as readSessionMemory, appendDigest as appendSessionDigest, memoryMtime } from './session-memory.mjs';
 
 /** 压缩记忆开头的记号，收的时候靠它认出「这是压缩写的」并取出存档编号。 */
 export const SELF_NOTE_TAG = '【压缩记忆';
 
-/** 一句随笔最多这么长。够写目标+清单+卡点，不许写成流水账。 */
-export const SELF_NOTE_MAX = 1200;
-
-/**
- * 拼进 system 提示的那一段：每次开口都提醒「该你自己挑」。
- * 压缩关着的时候返回空串，一个字不花。
- */
-export function renderSelfCompressBlock(on = true) {
-  if (!on) return '';
-  return [
-    '【上下文太长的时候，是**你自己挑**重点，不是别人代挑】',
-    '真压起来的时候，程序会给你一份旧对话的原文存档编号，让你亲手写一段压缩记忆。规矩：',
-    '1. 这段活还在干什么（目标），一定要留 —— 这是后面接得上的唯一理由。',
-    '2. 清单打到第几步、哪几步做完打勾了，留清单就行；具体每一步做了什么，缩成一句话，能删就删。',
-    '3. 卡在哪儿、什么没成、什么被证明不通 —— 比做过什么重要得多，必须留。',
-    '4. 主人原话里的硬要求（不许干的事、他定的规矩、他说过的数）照原样抄，别改写。',
-    '5. 其余一律删。工具调用流水、「我先看看」「已经改完」这类过程废话，一个字都不要。',
-    '6. 每段开头写「【压缩记忆·存档编号】」，正文最多 1200 字。别人问你要不要继续、你也不许反问我。',
-    '7. 【写完之后立刻接着干原来那件事，中间不许停】压完不是收工。',
-    '   绝对不许说「压缩好了」「记忆写好了」「先停在这」「这一轮到此为止」这类话，',
-    '   也不许拿压缩当交差理由、把剩下的活留到下一轮。',
-    '   界面自己会显示一条【压缩中】的工具条，主人看得见；你要做的就是压完马上回到刚才那件事上继续做。',
-    '8. 【压缩记忆是写给**你自己**看的，不是对话内容】',
-    '   · 不许在给主人的回复里复述它、贴它、摘要它、引用它 —— 主人一个字都不需要看见。',
-    '   · 不许说「我记下了这些」「保留的重点是……」这种把内容摊开的话。',
-    '   · 主人问「你刚才压了什么」，也只答「记住了」或者一句概括，不要把记忆正文倒出来。',
-    '   · 压缩这件事本身对主人是**透明的**：他只会看到界面上一条【压缩中】，别的什么都不该出现。',
-  ].join('\n');
-}
-
-/**
- * 真到了要压的时候，给她的那条指令：不是模板填空，是让她按自己的判断整理。
+/** 一段压缩记忆最多这么长。
  *
- * @param {object} o
- * @param {string} o.foldedId 原文存档编号（能在 folded 里翻回去）
- * @param {number} o.total 折掉多少条
- * @param {string} [o.headText] 头部（人设/开场那几条），给她个语境
- * @param {string} [o.currentNote] 上一份压缩记忆（要合并，不许丢目标）
- * @param {string} [o.taskHint] 这一轮主人在要求什么
+ * 【2026-11-16 主人钦点·从 1200 提到 3000】
+ *
+ * 原话：「查压缩记忆是否存在问题」「你决定」。
+ *
+ * 查下来的问题就在这个数上：提示词写 1200、程序硬上限也是 1200，
+ * 而实际会话压缩比能到 553 条 → 1200 字（搭建鱼那段）。等于一小时的工作
+ * 只剩一张便签，细节全灭。提示词那边同时改成「六块固定结构」，
+ * 让这 3000 字落在该落的地方：目标 / 清单 / 已定 / 路径命令 / 坑 / 断点。
+ *
+ * 代价：每段摘要多约 1.5k~2k token。跟「重启后忘光、重做一遍」比，
+ * 这点钱可以忽略。 */
+export const SELF_NOTE_MAX = 3000;
+
+/**
+ * 【2026-11-15 加·压缩记忆别再画成"她说的空消息"（源头这一刀）】
+ *
+ * 主人报：「她思考链说要写压缩记忆，然后下一个回复就是空消息，只有署名。」
+ *
+ * 【病根】压缩记忆（`【压缩记忆·seg-xxx】…`）是**写给程序看的内部工作单**，
+ * 走的是她自己的正文通道。程序这边确实收了（saveSelfNote），但同一段文字
+ * 也照常被当成"她对主人说的话"：一边推给界面画气泡，一边落进历史。
+ * 前端后来加了个渲染过滤（items.js），可那只是**关掉了灯**——盘上、推流里、
+ * 上下文里都还在。真正要收的是源头：**这段文字根本不该进对话正文**。
+ *
+ * 【怎么收】在 agent 收流的时候就分叉：
+ *   · 看见记号 `【压缩记忆` → 之后的内容一律归"记忆"，不进 text、不推流、不落历史；
+ *   · 剩下的（前面的正文）照常走。
+ * 这样界面从头到尾都看不到它，历史里也不会留下一条只有署名、没有字的空消息。
+ *
+ * 为什么要在**流式**阶段分叉：气泡是逐字吐出来的，等最后再剪，
+ * 屏幕上已经先闪出一段"她的话"了。所以这里按块缓冲，攒到能判断开头为止。
  */
-export function buildSelfCompressInstruction(o = {}) {
-  const foldedId = String(o.foldedId ?? '未编号');
-  const total = Number(o.total) || 0;
-  const parts = [
-    `【该你自己压缩记忆了】这一轮历史太长，程序已经把折掉的 ${total} 条原文存好了，存档编号：${foldedId}（想翻原话随时能翻）。`,
-    '现在请你亲手写这一段的压缩记忆，写给过几天回来接着干的你自己看。别问要不要继续，别铺垫，直接写。',
-  ];
-  if (o.headText && String(o.headText).trim()) {
-    parts.push('', '【开头那几条，给你个语境】', String(o.headText).slice(0, 1200).trim());
-  }
-  if (o.currentNote && String(o.currentNote).trim()) {
-    parts.push('', '【上一份压缩记忆，合并进来，目标不许丢】', String(o.currentNote).slice(0, 1200).trim());
-  }
-  if (o.taskHint && String(o.taskHint).trim()) {
-    parts.push('', '【这一轮主人在要什么】', String(o.taskHint).slice(0, 400).trim());
-  }
-  parts.push(
-    '',
-    '【挑重点的规矩】',
-    '· 目标必须留一句：这段活到底在干什么。',
-    '· 清单：做完的打勾一句话，没做完的写清卡在哪 —— 具体做过什么能删就删。',
-    '· 主人原话里的硬要求、他定的规矩、他说的数，原样抄。',
-    '· 工具流水、「我先看看」「已经改完」这类过程废话，一个字都不要。',
-    `· 开头写「${SELF_NOTE_TAG}·${foldedId}】」，正文最多 ${SELF_NOTE_MAX} 字。`,
-  );
-  return parts.join('\n');
+export function splitSelfNote(raw) {
+  const s = String(raw ?? '');
+  const i = s.indexOf(SELF_NOTE_TAG);
+  if (i < 0) return { chat: s, note: '' };
+  return { chat: s.slice(0, i).replace(/\s+$/, ''), note: s.slice(i) };
 }
 
-/** 顾问腔：她把自己当成在跟人聊天，反问「要我继续吗」之类。这种不收。 */
-const ADVISOR_LINE = /(要我继续|需要我|要不要我|你希望|请问您|我可以帮|是否继续)[^\n]{0,12}[？?]/;
+/**
+ * 流式闸门：把"压缩记忆"从正文里剪掉，只让正常说话流到界面。
+ *
+ * 用法：
+ *   const gate = makeSelfNoteGate();
+ *   每收到一段 → for (const seg of gate.push(chunk)) 发出去;
+ *   每轮开头 → gate.reset()（正文归零，已收到的记忆**不清**）;
+ *   收尾     → gate.finish() 把还压着的一小段吐出来;
+ *   记忆正文 → gate.note
+ */
+export function makeSelfNoteGate() {
+  const TAG = SELF_NOTE_TAG;
+  let pending = '';        // 还没放行的尾巴（可能是记号的前半截，得等下一块才能定）
+  let mute = false;        // 已经进了记忆，后面全吞
+  let note = '';           // 攒下来的压缩记忆
+  return {
+    push(chunk) {
+      const out = [];
+      const s = String(chunk ?? '');
+      if (!s) return out;
+      if (mute) { note += s; return out; }
+      pending += s;
+      const i = pending.indexOf(TAG);
+      if (i >= 0) {
+        if (i > 0) out.push(pending.slice(0, i));
+        note += pending.slice(i);
+        pending = '';
+        mute = true;
+        return out;
+      }
+      /* 没有完整记号 —— 但结尾这几个字可能是记号的前半截（流式是一块一块来的，
+       * "【压" / "缩记" 这种半截必须先扣着，不然先把半截放出去就再也收不回了）。 */
+      let hold = 0;
+      const maxK = Math.min(TAG.length - 1, pending.length);
+      for (let k = maxK; k > 0; k--) {
+        if (TAG.startsWith(pending.slice(-k))) { hold = k; break; }
+      }
+      const cut = pending.length - hold;
+      if (cut > 0) out.push(pending.slice(0, cut));
+      pending = pending.slice(cut);
+      return out;
+    },
+    /** 每轮开头清"本条回复"的状态；记忆正文不清（那是要落到本子里的） */
+    reset() { pending = ''; mute = false; },
+    /** 收尾：还扣着的尾巴（不够组成记号）该放出去了 */
+    finish() { const s = pending; pending = ''; return s ? [s] : []; },
+    get note() { return note; },
+    get muted() { return mute; },
+  };
+}
 
 /**
  * 收她写回来的压缩记忆。
@@ -150,10 +171,31 @@ export function lastSelfNote(sessionId, wantSegId) {
     const want = String(wantSegId || '').trim();
     if (want) {
       const at = t.lastIndexOf(want);
-      if (at < 0) return '';
-      const tagAt = t.lastIndexOf(SELF_NOTE_TAG, at);
-      if (tagAt < 0) return '';
-      return t.slice(tagAt, Math.min(t.length, tagAt + SELF_NOTE_MAX));
+      if (at >= 0) {
+        const tagAt = t.lastIndexOf(SELF_NOTE_TAG, at);
+        if (tagAt >= 0) return t.slice(tagAt, Math.min(t.length, tagAt + SELF_NOTE_MAX));
+      }
+      /**
+       * 【2026-11-16 修·段号对不上就别把话卡死】
+       *
+       * 现场：修理鱼 12:31~12:43 把同一个本子 write_file 写了 6 遍，
+       * 段号一直写的是上一段的 seg-2-57a7ea6f58，而工作单要的是 seg-2-b9d0bbda25。
+       * 对不上 → 这里返回空 → 上层认为「她还没写」→ 再递工作单 → 她再写一遍。
+       * 从外面看就是「一直在写压缩记忆、一直在重复思考」。
+       *
+       * 判据退一步：本子是**刚被写过**的（一小时内），且最后一条确实是带编号的
+       * 压缩记忆，就认它是这一段的。段号对不上只记一笔，不再当成「没写」。
+       * 为什么敢这么松：一小时内写进本子的东西，不可能是「上一段的旧摘要」——
+       * 那正是不认它的唯一理由。
+       */
+      const age = Date.now() - memoryMtime(sid);
+      if (!(age >= 0 && age <= 60 * 60 * 1000)) return '';
+      const i = t.lastIndexOf(SELF_NOTE_TAG);
+      if (i < 0) return '';
+      try {
+        console.warn('[self-note] 段号对不上（要 ' + want + '，本子是另一次写的，' + Math.round(age / 60000) + ' 分钟前）→ 按「刚写过」认下来');
+      } catch { /* 日志失败不影响 */ }
+      return t.slice(i, Math.min(t.length, i + SELF_NOTE_MAX));
     }
     const i = t.lastIndexOf(SELF_NOTE_TAG);
     if (i < 0) return '';
@@ -201,6 +243,36 @@ export function saveSelfNote(sessionId, raw) {
  * 为什么不复用 buildSelfCompressInstruction：那条是塞进模型对话里的指令，
  * 这条是要**给她自己看**、提醒她这一轮必须先动手把记忆写出来的。
  */
+export function renderSelfCompressBlock(on = true) {
+  if (!on) return '';
+  return [
+    '【上下文太长的时候，是**你自己挑**重点，不是别人代挑】',
+    '真压起来的时候，程序会给你一份旧对话的原文存档编号，让你亲手写一段压缩记忆。规矩：',
+    '1. 这段活还在干什么（目标），一定要留 —— 这是后面接得上的唯一理由。',
+    '2. 清单打到第几步、哪几步做完打勾了，留清单就行；具体每一步做了什么，缩成一句话，能删就删。',
+    '3. 卡在哪儿、什么没成、什么被证明不通 —— 比做过什么重要得多，必须留。',
+    '4. 主人原话里的硬要求（不许干的事、他定的规矩、他说过的数）照原样抄，别改写。',
+    '5. 其余一律删。工具调用流水、「我先看看」「已经改完」这类过程废话，一个字都不要。',
+    '6. 每段开头写「【压缩记忆·存档编号】」。正文最多 3000 字，按下面六块写，缺一块就算没写完：',
+    '   · ## 目标 —— 这段活在干什么、怎么算做完（后面能接上全靠它）',
+    '   · ## 清单 —— 打到第几步、哪几步打勾了；没做的**照抄原文**，别转述',
+    '   · ## 已定的决定 —— 走过的路、为什么这么走；改过/否掉的方案也写一句为什么否',
+    '   · ## 关键路径·命令·参数 —— 文件在哪、命令原文、端口、会话 id、账号名；**照抄，不许改写**',
+    '   · ## 坑 —— 什么试过不通、哪条报错说明什么、什么东西一碰就再坏一次（这条比做过什么值钱）',
+    '   · ## 现在断在哪 —— 最后一句话是什么、下一步第一件事做什么',
+    '   别人问你要不要继续、你也不许反问我。',
+    '7. 【写完之后立刻接着干原来那件事，中间不许停】压完不是收工。',
+    '   绝对不许说「压缩好了」「记忆写好了」「先停在这」「这一轮到此为止」这类话，',
+    '   也不许拿压缩当交差理由、把剩下的活留到下一轮。',
+    '   界面自己会显示一条【压缩中】的工具条，主人看得见；你要做的就是压完马上回到刚才那件事上继续做。',
+    '8. 【压缩记忆是写给**你自己**看的，不是对话内容】',
+    '   · 不许在给主人的回复里复述它、贴它、摘要它、引用它 —— 主人一个字都不需要看见。',
+    '   · 不许说「我记下了这些」「保留的重点是……」这种把内容摊开的话。',
+    '   · 主人问「你刚才压了什么」，也只答「记住了」或者一句概括，不要把记忆正文倒出来。',
+    '   · 压缩这件事本身对主人是**透明的**：他只会看到界面上一条【压缩中】，别的什么都不该出现。',
+  ].join('\n');
+}
+
 export function selfCompressHint(o = {}) {
   const segId = String(o.segId ?? '未编号');
   const tokens = Number(o.tokens) || 0;

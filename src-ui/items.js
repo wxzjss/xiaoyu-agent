@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 把「两份数据」拍平成一份 keyed 清单。
  *
  * 规格 4.2 / 4.3：
@@ -12,6 +12,18 @@
  */
 
 import { getWindowStart, isWindowTouched } from './store.js';
+
+/**
+ * 【2026-11-17 晚·根治「她的话在屏幕上凭空消失」——定案】
+ *
+ * 病灶：带 tool_calls 的那一圈，后端会把整段正文打上 _process，前端历史上「一个像素都不画」。
+ * 结果同一轮里她只要顺手调了个工具（打个勾、建个清单），连她真正对主人说的那一大段话
+ * 也一起被抹掉 —— 主人真机撞上：六段原文发出去，界面上一句都找不到。
+ *
+ * 治法（主人原话定案：「我要的是像你现在这样就好，正常显示」）：
+ *   不再按字数分档、不再藏、不再降级成灰字条 —— 只要这句话有正文，
+ *   就一律走正常气泡，跟她非过程轮的答复一模一样。从根上杜绝「她的话消失」。
+ */
 
 /** 长会话只画最近这么多轮，往上翻再补（沿用原来的 40） */
 export const WINDOW = 40;
@@ -249,6 +261,40 @@ function turnToItems(turn, abs, userChars) {
       });
     }
   } else if (hasText(text) || outs.length) {
+    /* 【2026-11-16 晚·过程话彻底不上屏（主人第三次提这件事，这次说透了）】
+     *
+     * 主人原话：「我不想看到【（先给自己起个名，这事儿不能忘）】的提示出现在我的屏幕上，
+     * 改为只有她自己能看见」+「为什么她回我的内容会在金色的提示里？然后又回我一遍？」
+     *
+     * 前两版都还是把过程话降级成一行灰字/金字**提示**画在屏幕上 —— 只要画出来，
+     * 主人就会觉得「她的话怎么跑进系统提示里了」，而且金块里一句话、下面气泡又一句，
+     * 看着就是同一个人回了两遍。
+     *
+     * 现在：带 _process 的 assistant 消息**一个像素都不画**。
+     * 它照旧留在历史里、照旧发给模型（她自己看得见自己刚才说过什么），
+     * 只是屏幕上是干净的：只有柜子和她最终那句话。
+     */
+    if (turn._process === true || turn.process === true) {
+      /* 【2026-11-17 晚·主人口径定案】主人原话：「我要的是像你现在这样就好，正常显示」。
+       * 不再按字数分档、不再藏、不再降级成灰字条 —— 有正文就一律走正常气泡，
+       * 跟她非过程轮的答复一模一样。从根上杜绝「她的话消失」。 */
+      if (hasText(text)) {
+        out.push({
+          kind: 'assistant',
+          key,
+          who: String(turn.who || '').trim() || mainAgentName(),
+          bubbles: [text],
+          rewindId: numOrNull(turn.rewindId),
+          ts: numOrNull(turn.ts),
+          edited: Boolean(turn.edited),
+          cont: false,
+          usage: turn.usage || null,
+          model: String((turn.usage && turn.usage.model) || ''),
+          replyChars: String(text || '').length,
+          userChars: Number(userChars) || 0,
+        });
+      }
+    } else {
     out.push({
       kind: 'assistant',
       key,
@@ -264,6 +310,7 @@ function turnToItems(turn, abs, userChars) {
       replyChars: String(text || '').length,
       userChars: Number(userChars) || 0,
     });
+    }
   }
 
   /* 她发的文件：紧跟在这段话后面画（和工具一个节奏），刷新 / 翻回来照样看得见 */
@@ -355,6 +402,46 @@ function liveToItems(items, running) {
        * 因为它不含任何正文。
        */
       if (!String(it.t || '').trim()) continue;
+      /**
+       * 【2026-11-15 修·「只有署名的空消息」（主人报·游戏鱼截图）】
+       *
+       * 主人截图：一段思考链写着「我需要先写压缩记忆」，紧接着就冒出一个
+       * **只有「小鱼」署名、正文什么都没有**的气泡。
+       *
+       * 查明：那是她按程序要求写的**压缩记忆**（正文以 `【压缩记忆·seg-xxx】` 开头，
+       * 里面是「## 目标 / ## 决定」这类内部工作单）。这东西是给她自己下一轮读的档案，
+       * 不是对主人说的话 —— 可它走的是普通 text 事件，于是被画成一个正常气泡。
+       * 而 buildMerged 那侧还会把这类纯内部标记段折掉，结果屏幕上只剩一个空壳 + 署名。
+       *
+       * 现在：这种正文不进气泡。它该去的地方是会话本子（agent.mjs 的 saveSelfNote 负责），
+       * 界面上一个字都不用显示。
+       */
+      if (/^\s*【压缩记忆[·・]/.test(String(it.t || ''))) continue;
+      /**
+       * 【2026-11-16 晚·直播这半边也一起不画】
+       *
+       * 主人原话：「为什么她回我的内容会在金色的提示里？然后又回我一遍？」
+       * 过程话（工具循环中间的旁白）以前在直播里被降级成一行金字提示 ——
+       * 屏幕上一块金、下面又冒一个气泡，看着像她答了两遍。
+       * 现在跟历史那半边一个口径：**不上屏**。它仍在事件流和上下文里，她自己看得见。
+       */
+      if (it.process === true || it._process === true) {
+        /* 【2026-11-17 晚·主人口径定案】与历史半边一致：有正文就正常气泡，不分档、不藏、不灰字。 */
+        if (String(it.t || '').trim()) {
+          out.push({
+            kind: 'assistant',
+            key,
+            who: speaker,
+            bubbles: [String(it.t || '')],
+            rewindId: null,
+            ts: null,
+            edited: false,
+            cont: false,
+            isLive: true,
+          });
+        }
+        continue;
+      }
       out.push({
         kind: 'assistant',
         key,
@@ -607,6 +694,23 @@ function splitSteerAt(prev, steerItem, at) {
  * 顺序永远是：历史 → （还没落盘的主人那句）→ 直播。落盘之后乐观那条自动消失，
  * 位置不跳 —— 因为它本来就在同一个地方。
  */
+
+/* 【2026-11-15 主人定】同一文件重复发送 → 界面上只留最新一张卡：
+ * 从后往前扫，先见到的（=最新的）留下，前面同 fkey 的旧卡直接剔除。
+ * 落盘侧（server.mjs 轮末合并）已同步清旧，这里是渲染侧兜底 ——
+ * 历史卡是哪个轮落盘的都无所谓，屏幕上永远只剩最后一张。 */
+function dedupeFileCards(items) {
+  const seen = new Set();
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (!it || it.kind !== 'file') continue;
+    const fk = String(it.fkey || it.path || '');
+    if (!fk) continue;
+    if (seen.has(fk)) { items.splice(i, 1); continue; }
+    seen.add(fk);
+  }
+  return items;
+}
 export function buildMerged(snap) {
   const running = isRunning(snap);
   /* 刚发的那条还在 pending（服务端历史里还没它）—— 见 trimTurnsForLive 的注释。 */
@@ -695,8 +799,11 @@ export function buildMerged(snap) {
        工具现在都收在柜子里：一轮长活十几个工具调用，在 turns 里是十几个
        assistant，可界面上只是**一个柜子**。按 turn 数算窗口会把一个柜子
        当成十几轮，长任务一下子就把历史挤光。
-       从末尾往前扫，把「一段连续 assistant」算一个柜子，保留最近 8 个柜子
-       （外加它们之间的主人消息）；160 turn 兜底防卡。
+       从末尾往前扫，把「一段连续 assistant」算一个柜子，保留最近 3 个柜子
+       （外加它们之间的主人消息）；80 turn 兜底防卡。
+       【2026-11-14 夜·主人报「重启后密密麻麻历史消息堆屏」】原来是 8 柜/160 turn，
+       长任务一个柜子几十张工具卡，重启后整屏全是旧卡。收窄到 3 柜/80 turn：
+       既保住「不让一轮长活把历史挤光」（11-13 那次的坑），又不会一屏糊满。
        主人手动翻过的位置（isWindowTouched）照旧一律尊重。
        ══════════════════════════════════════════════════════════════ */
     let _hubs = 0;
@@ -706,10 +813,31 @@ export function buildMerged(snap) {
       const _next = all[_i + 1];
       // 倒着扫：当前是 assistant、而更靠后的那条不是 → 这是一段连续 assistant 的开头（一个柜子）
       if (_cur && _cur.role === 'assistant' && (!_next || _next.role !== 'assistant')) _hubs += 1;
-      if (_hubs > 8) break;
-      if (all.length - _i >= 160) break;
+      /* 【2026-11-15 修·off-by-one】倒扫到第 4 个柜子才 break，此时 _i 正指着
+       * 第 4 柜的开头，直接拿它当 start 会多画一整柜（注释说 3 柜、实际 4 柜）。
+       * 往回挪一条，让 start 落在第 3 柜前面那条（通常是它的提问）。 */
+      if (_hubs > 3) { _i += 1; break; }
+      if (all.length - _i >= 80) break;
     }
-    start = Math.max(0, Math.min(start, _i < 0 ? 0 : _i));
+    /* 【2026-11-15 修·3柜口径被 WINDOW 粗算压掉】原来这里是
+       start = Math.max(0, Math.min(start, _i)) —— 可上面第 684 行已经把 start
+       压成 all.length - WINDOW（40 turn），min 取更早的一条 → 柜子算出的
+       起点永远被压回去，3 柜口径等于没生效（12 柜的会话照样画 10 条主人
+       消息，主人报的「重启后密密麻麻」就是这个）。现在柜子算出的起点直接
+       说了算，再叠两道：① 至少盖住最近 3 条主人消息（长活占满 3 柜、
+      柜子里没有主人消息时靠它托底）；② 硬上限 120 turn 防卡。 */
+    const _hubStart = _i < 0 ? 0 : _i;
+    let _uSeen = 0;
+    let _uStart = all.length;
+    for (let _j = all.length - 1; _j >= 0; _j--) {
+      const _t = all[_j];
+      if (_t && _t.role === 'user') {
+        _uSeen += 1;
+        if (_uSeen >= 3) { _uStart = _j; break; }
+      }
+    }
+    start = Math.max(0, Math.min(_hubStart, _uStart));
+    if (all.length - start > 120) start = all.length - 120;
   }
 
   const items = [];
@@ -805,6 +933,6 @@ export function buildMerged(snap) {
     /* 【2026-11-11】历史这一份先过一道「插话劈段」：带 steerAt 的插话要把她那段话
      * 劈成两半、自己嵌在中间（见 applySteerSplits）。只对历史做 —— pend 是新发的
      * 那句（没有 steerAt），live 那边服务端已经按事件顺序排好了。 */
-    items: applySteerSplits(items).concat(pend, live, noteItems),
+    items: dedupeFileCards(applySteerSplits(items).concat(pend, live, noteItems)),
   };
 }

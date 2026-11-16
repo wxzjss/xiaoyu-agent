@@ -9,7 +9,7 @@ import { contextWindowOf } from './rates.mjs';
 import { activeEndpoint, endpointFor } from './models.mjs';
 // getOverride：会话里临时切过模型的话，报错要报那一套的地址，不是全局默认那套。
 import { getOverride } from './session-overrides.mjs';
-import { takeMail, formatMail } from './peer.mjs';
+import { takeMail, ackSessionMail, releaseClaimedMail, formatMail } from './peer.mjs';
 // 中途投递信箱：主人一边看她干活一边插的话，排在这里（见 inbox.mjs 顶上那段说明）
 import { drainSteps, drainTurns } from './inbox.mjs';
 // readImageDataUrl：工具（尤其 video_read / video_sheet）的结果里带着图片路径时，
@@ -59,7 +59,7 @@ import {
 } from './harness/index.mjs';
 import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
 // 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
-import { lastSelfNote, saveSelfNote, selfCompressHint } from './self-compress.mjs';
+import { lastSelfNote, saveSelfNote, selfCompressHint, makeSelfNoteGate } from './self-compress.mjs';
 // 【2026-11 全面重做压缩】内核：到线就动手，不再等我看见提示才想起来压。
 // 老的那套 `thinHistory`（trim-tools.mjs）不再用了 —— 它只在「这一轮的工具过程」里擦，
 // 历史里几百条旧工具结果碰都不碰，而后者才是大头。slimHistory 是它的超集。
@@ -609,7 +609,20 @@ export async function runAgent({
    */
   let text = '';
   let reasoning = '';
+  /* 【2026-11-15 加·压缩记忆不进正文（源头这一刀）】
+   * 主人报「思考链说要写压缩记忆，紧接着一个只有署名的空消息」。
+   * 压缩记忆是写给程序看的内部工作单，不该被当成她跟主人说的话 ——
+   * 这条闸门在**收流时**就把它剪掉：既不放给界面（不画气泡），也不进 text
+   * （不落历史，不留空壳）。记忆正文走 gate.note，照旧交给 saveSelfNote。 */
+  const _noteGate = makeSelfNoteGate();
   let toolCalls = [];
+  /* 【2026-11-15 修·工具卡延迟】占位 tool_start 的登记处。
+   * 键 = 占位 id（'pending-<idx>'），值 = {name, args, order, used}。
+   * 正式 tool_calls 到达时按 order 配对，用占位 id 发 tool_start（前端覆盖同一张卡）。 */
+  const _pendingToolIds = new Map();
+  /* 【2026-11-14 修·length 截断】这轮有没有收到 finish_reason=length 的信号。
+   * 收到 = 上游把话掐了一半 —— 把半句落历史、接着再要一次（见流循环收尾）。 */
+  let _truncated = false;
   /**
    * 【2026-11-07 harness 重做 · P2】工具调用改用**累积器**，不再覆盖赋值。
    *
@@ -1049,6 +1062,36 @@ for (let round = 0; round < config.maxRounds; round++) {
      *
      * 现在挂在 `_gate.shouldFold` 上 —— L2 瘦完还占着 80% 窗口才张口，平时一个字都不提。
      */
+    /**
+     * 【2026-11-16 晚·「她一直在思考链里念叨压缩记忆」】
+     *
+     * 主人报游戏鱼：思考里反复是「压缩记忆要写在回复里」「【压缩记忆·seg-xxx】要写在回复里」。
+     * 查出来是那条工作单的问题：它是**真消息**、会一直留在历史里，压完之后没人摘 ——
+     * 于是她每一轮都读到「还有一份压缩记忆没写」，每一轮都在想它，可她又忙着调工具不吐正文，
+     * 永远满足不了，就变成了念经。
+     *
+     * 现在两头都收：① 该压的时候递了工作单、压完立刻摘掉；
+     * ② 水位掉下来了（不再该压）也把残留的工作单摘掉。工作单只在「真的需要她动笔」那几轮存在。
+     */
+    const dropCompressOrders = () => {
+      try {
+        let removed = 0;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i];
+          if (m && m._sysNote === true && typeof m.content === 'string'
+            && m.content.includes('该你自己压了')) {
+            messages.splice(i, 1);
+            removed += 1;
+          }
+        }
+        if (removed) console.log('[compact] 摘掉 ' + removed + ' 条旧的压缩工作单（压完/不用压了，别再念）');
+        return removed;
+      } catch { return 0; }
+    };
+    if (!selfNote && !_gate.shouldFold) {
+      /* 已经不用她动笔了：残留的工作单留着只会让她每轮念叨一遍 */
+      dropCompressOrders();
+    }
     if (!selfNote && _gate.shouldFold) {
       let probe = null;
       try {
@@ -1188,6 +1231,8 @@ for (let round = 0; round < config.maxRounds; round++) {
     }
     if (compressed.compressed) {
       compressedThisTurn = true;
+      /* 【2026-11-16 晚】压完了就把那句工作单摘掉 —— 不摘她会一直以为还有一份没写。 */
+      dropCompressOrders();
       /**
        * 真压成了 —— 量线档位当场清零。
        * 不靠上面那道「水位降了才复位」去猜，压缩是最硬的证据。
@@ -1261,10 +1306,55 @@ for (let round = 0; round < config.maxRounds; round++) {
           const att = Array.isArray(it.attachments) ? it.attachments.filter((x) => x && x.path) : [];
           const imgs = att.map((x) => String(x.path)).filter((p) => isImagePath(p));
           const fls = att.map((x) => String(x.path)).filter((p) => !isImagePath(p));
+          /* 【2026-11-15 修·工作到一半切小鲸身份插话，她还是喊「主人」】
+           *
+           * 主人问：「切换小鲸身份发插话消息其实就是把【主人】的名字文本改成【小鲸】？
+           * 还是说不能在工作过程中切换身份？」
+           *
+           * 实情：**只有这一种情况是「只改了署名」**。
+           *   · 一轮开跑时身份就是小鲸 → server 在拼 wire 时给 user 消息加 `[小鲸]` 前缀，
+           *     人设/规矩里的「主人」也整段换成「小鲸」（retargetOwnerText）—— 是真换了人；
+           *   · 可这一轮**已经跑起来了**才切身份插话 → 系统提示和重定向在开跑那一刻
+           *     就定好了（那一份是「主人」），这里 push 进去的只是光秃秃一句话，
+           *     模型看历史时没有任何「换人了」的信号 → 她继续喊主人（截图实锤）。
+           *
+           * 修法：在这条消息本身带上前缀 —— 跟 server 拼 wire 的规矩一模一样
+           * （`[名字] 正文`），模型下一步读历史就看得见「这句是小鲸说的」。
+           * 正文用 _text 存原件：气泡只认 _text，屏幕上不会冒出 `[小鲸]` 三个字；
+           * 落盘后也是原件 + 前缀只存在于发给模型的那份，跟正常路径一致。 */
+          const _whoName = String(it.who || '').trim();
+          const _needTag = Boolean(_whoName) && _whoName !== '主人' && _whoName !== '小鱼'
+            && String(it.text || '').trim() && !String(it.text || '').trimStart().startsWith('[' + _whoName + ']');
+          const _body = composeUserContent(it.text, att);
+          /**
+           * 【2026-11-15 修·程序代递的消息又被画成「主人插话」（主人第二次报）】
+           *
+           * 主人截图：一行「主人 插话」气泡，正文是
+           * 「【后台任务跑完了 —— 这是程序递的，不是主人说的话】…」。
+           *
+           * 真凶就是这里：`/api/interject` 走 steer 之外，**程序自己**也会往
+           * steps 槽塞带 `_sysNote: true` 的条目（后台任务跑完的报告 / 进度催促 /
+           * 递话…）。这个循环原来不分青红皂白一律 push 成 `_steer` ——
+           * 那是「主人插话」的标记，前端当然画成主人气泡、还挂个「插话」小标。
+           * （上一轮我在 /api/stop 那条路上补了同一课，漏的是这条主路。）
+           *
+           * 规矩跟收尾 drainTurns 那条完全一致：带 `_sysNote` 的落成
+           * context+_sysNote（她读得到、界面不画成谁说的话）；真插话才留 _steer。
+           */
+          if (it._sysNote === true) {
+            messages.push({ role: 'user', content: String(it.text || ''), context: true, _sysNote: true });
+            continue;
+          }
           messages.push({
             role: 'user',
-            content: composeUserContent(it.text, att),
+            content: _needTag ? ('[' + _whoName + '] ' + _body) : _body,
+            ...(_needTag ? { _text: String(it.text || '') } : {}),
             _steer: true,
+            /* 【2026-11-15 晚·插话署名】信箱条目里带着「插话那一刻是谁在说话」
+             * （/api/interject 用 currentIdentity 取好放进去的）。这里必须原样落到消息上，
+             * 否则重画时前端只能兜底「主人」—— 主人用小鲸身份插话就会变回主人。 */
+            ...(it.who ? { _who: String(it.who) } : {}),
+            ...(it.whoId ? { _whoId: String(it.whoId) } : {}),
             ...(imgs.length ? { _images: imgs } : {}),
             ...(fls.length ? { _files: fls } : {}),
             ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}),
@@ -1285,7 +1375,9 @@ for (let round = 0; round < config.maxRounds; round++) {
      */
     text = '';
     reasoning = '';
+    _noteGate.reset();
     toolCalls = [];
+    _truncated = false;        // 【2026-11-14】length 截断信号只属于当前这一圈
     _callAcc.reset();          // 换一圈就换一桶，别把上一圈的工具带过来
     _meter.startRound();
     const _streamAt = Date.now();
@@ -1401,17 +1493,49 @@ for (let round = 0; round < config.maxRounds; round++) {
           sessionId, // 让「会话级模型/思考强度」生效
         })) {
           if (ev.type === 'text') {
-            text += ev.text;
-            onEvent({ type: 'text', text: ev.text });
+            /* 【2026-11-15 修·压缩记忆走岔路】push 只回"能给她看的那部分"；
+             * 【压缩记忆…】开头之后的字全被吞进 gate.note，一个字都不进 text、不推流。 */
+            for (const _seg of _noteGate.push(ev.text)) {
+              if (!_seg) continue;
+              text += _seg;
+              onEvent({ type: 'text', text: _seg });
+            }
           } else if (ev.type === 'reasoning') {
             reasoning += ev.text;
             onEvent({ type: 'reasoning', text: ev.text });
+          } else if (ev.type === 'tool_start') {
+            /* 【2026-11-15 修·工具卡延迟·补完半成品】
+             * llm.mjs 在**流式阶段**就发 tool_start 占位（id = 'pending-<idx>'），
+             * 目的是模型慢慢吐参数的那几秒里界面先亮一张卡，别看着像卡住了。
+             *
+             * 【原 bug】这套配套逻辑**从来没写完**：agent 侧只在下面用了一句
+             *     this._pendingToolIds.get(_pIdx)
+             * 去查「这个下标对应哪个占位 id」，可 this 在普通函数里是 undefined
+             * → 每次正式 tool_calls 到达就抛 ReferenceError
+             *   「Cannot read properties of undefined (reading '_pendingToolIds')」
+             * → 续跑那一轮直接崩在工具轮（主人 19:12 报「程序闪退」的元凶）。
+             *
+             * 现在把两半接上：
+             *   ① 这里收到占位 tool_start → 记进 _pendingToolIds，先亮出卡片；
+             *   ② 下面正式发 tool_start 时 → 用占位 id（前端按 id 覆盖同一张卡，不画两张）。
+             */
+            if (ev.pending) {
+              const _pk = String(ev.id || '');
+              if (_pk) {
+                _pendingToolIds.set(_pk, { name: String(ev.name || ''), args: String(ev.args || ''), order: _pendingToolIds.size, used: false });
+                onEvent({ type: 'tool_start', id: _pk, name: ev.name, args: ev.args, ts: Date.now() });
+              }
+            }
           } else if (ev.type === 'tool_calls') {
             /* 累积，不覆盖。第二次交付是补充，不是「把第一批冲掉」。 */
             _callAcc.merge(ev.toolCalls);
             toolCalls = _callAcc.values();
           } else if (ev.type === 'usage') {
             usage = ev.usage;
+          } else if (ev.type === 'truncated') {
+            /* 【2026-11-14 修·length 截断】上游按 token 上限把话掐了一半 —— 记下来，
+             * 循环收尾时把半句落历史、接着再要一次，别让她的话停在半截。 */
+            _truncated = true;
           }
         }
         /**
@@ -1430,6 +1554,38 @@ for (let round = 0; round < config.maxRounds; round++) {
         resetStreak(sessionId);
         resetStreak(sessionId + ':drop');
         resetStreak(sessionId + ':badshape');
+        /* 【2026-11-14 修·length 截断】上游把话掐了一半：把半句落进历史，
+         * 补一句内部指令让她从断开处接着写，然后重跑这一轮。
+         * 上限 8 次 —— 真有那种「每次都顶满上限」的超长输出，8 段拼起来也够长了；
+         * 再多就该是模型抽风，硬续只会白烧钱。 */
+        if (_truncated && String(text).trim() && !(toolCalls && toolCalls.length)) {
+          const _tn = bumpStreak(sessionId + ':trunc');
+          if (_tn > 8) {
+            onEvent({ type: 'notice', text: '\n\n（连续 8 次都说到一半被掐断，先停在这儿。已经说出来的都留着。）\n\n' });
+          } else {
+            messages.push({ role: 'assistant', content: text });
+            messages.push({
+              role: 'user',
+              content: '（上一句太长被截断了，请从断开的地方直接接着往下写，不要重复已经写过的内容，也不要解释。）',
+              _internal: true,
+            });
+            onEvent({ type: 'text', text: '\n\n（说到这儿断了一下，接着往下写…）\n\n', notice: true });
+            _truncated = false;
+            text = '';
+            reasoning = '';
+            _noteGate.reset();
+            continue; // 回到 attempt 循环开头，接着写
+          }
+        }
+        /* 【2026-11-15 加】收尾把闸门里还压着的一小段吐出来 —— 只可能是"开头几个字
+         * 还在观望是不是压缩记忆"的普通短句；真在记忆里的话（mute）这里什么都不吐。 */
+        try {
+          for (const _seg of _noteGate.finish()) {
+            if (!_seg) continue;
+            text += _seg;
+            onEvent({ type: 'text', text: _seg });
+          }
+        } catch { /* 吐不出来就算了，不影响这一轮 */ }
         break;      } catch (err) {
         if (signal?.aborted) throw err;
 
@@ -1677,6 +1833,9 @@ for (let round = 0; round < config.maxRounds; round++) {
               role: 'user',
               content: it.text,
               ...(_isSys ? { _sysNote: true, context: true } : { _steer: true }),
+              /* 【2026-11-15 晚】同上：插话的署名必须跟着消息走，别让它退回「主人」 */
+              ...(!_isSys && it.who ? { _who: String(it.who) } : {}),
+              ...(!_isSys && it.whoId ? { _whoId: String(it.whoId) } : {}),
               ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}),
             });
           }
@@ -1693,7 +1852,23 @@ for (let round = 0; round < config.maxRounds; round++) {
         }
         if (mails.length) {
           if (String(text || "").trim() && !isFillerReply(text)) messages.push({ role: "assistant", content: _narratorize(text, sessionId) });
-          messages.push({ role: 'user', content: formatMail(mails) });
+          /**
+           * 【2026-11-15 修·递话被画成「主人说话」（主人报）】
+           *
+           * 主人原话：「为什么子Agent干完活回来后，是以【主人】的口吻提示的而不是系统提示？还有递话也是」
+           *
+           * 上面 turns 槽那条路一直是对的（带 _sysNote → context + _sysNote，画成系统提示）。
+           * 漏的是**这一条**：`formatMail` 拼出来的同机伙伴来信，原来裸 push 成
+           * `{ role: 'user', content }`，既没有 _sysNote 也没有 context ——
+           * 前端一看就是「主人说的话」，模型也会当成主人的指令。
+           * 这同一封信可能在历史里永久留下来，变成一条冒充主人的消息。
+           *
+           * 现在跟 turns 槽一个口径：context + _sysNote，正文自带「不是主人说的」自证。
+           */
+          messages.push({ role: 'user', content: formatMail(mails), context: true, _sysNote: true });
+          // 【2026-11-15】takeMail 不再删信箱文件了（只标记占用）。这里只是把信拼进本轮历史，
+          // 历史还没落盘，所以还不算签收 —— 真签收在 server 那侧 saveSession 之后。
+          // 这一轮要是被掐断，信箱里的原文还在，下一轮会重投。
           onEvent({
             type: 'peer_mail',
             count: mails.length,
@@ -1731,7 +1906,9 @@ for (let round = 0; round < config.maxRounds; round++) {
           continue;
         }
       }
-      if (!isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(text, sessionId) });
+      /* 【2026-11-15 修·只有署名的空消息】正文是空的就一律不落 —— 她这一句只写了
+       * 压缩记忆（已被闸门剪走），界面上不该出现任何气泡，历史里也不该留空壳。 */
+      if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(text, sessionId) });
       /**
        * 【2026-11-04 修「压缩死循环」的最后一环 · 写进去】
        *
@@ -1743,9 +1920,14 @@ for (let round = 0; round < config.maxRounds; round++) {
        * 收错了就是把自己压失忆，比不压更糟）。失败绝不连累这一轮。
        */
       try {
-        if (String(text || '').includes('【压缩记忆')) {
+        /* 【2026-11-15 改·从闸门里取记忆正文，不再从 text 里捞】
+         * text 现在只剩"她对主人说的话"，压缩记忆已经在收流时被剪到 _noteGate.note 里了。
+         * 兜底那一支是给「没走流式」的极端情况留的，逻辑跟原来一模一样。 */
+        const _noteRaw = String(_noteGate.note || '').trim()
+          || (String(text || '').includes('【压缩记忆') ? String(text) : '');
+        if (_noteRaw) {
           const sid = sessionId || ctxNow()?.sessionId || '';
-          const saved = saveSelfNote(sid, text);
+          const saved = saveSelfNote(sid, _noteRaw);
           if (!saved.ok && process.env.COMPRESS_DEBUG) {
             console.log('[compress] 这条压缩记忆没收：' + saved.reason);
           }
@@ -1770,8 +1952,68 @@ for (let round = 0; round < config.maxRounds; round++) {
         type: 'function',
         function: { name: tc.name, arguments: tc.arguments || '{}' },
       })),
+      /* 【2026-11-16 主人要求·过程话别刷主人屏幕】
+       * 主人原话：「工作过程中有时候重启时屏幕上会显示密密麻麻的你做了什么的话，
+       * 我希望是仅你自己可见的系统提示形式，不要直接发在我屏幕上让我看见。」
+       *
+       * 病根：这一圈我说的话（"正在修改 plan.mjs；先补上…"这类）和工具调用一起
+       * 被塞进同一条 assistant 消息。一轮几十圈，这些中间话全留在历史里，
+       * 重启/补回草稿时前端一次性画成一大坨「我说的话」铺满屏幕。
+       *
+       * 做法：带工具调用的这条 assistant 消息，content 里的字是**过程旁白**，
+       * 打上 _process: true，前端把它画成灰字系统提示（或干脆折叠），
+       * 不再冒充「我对主人说的话」。content 本身照旧留着 ——
+       * 下一圈模型还要看得见自己上一圈说了什么，历史语义不变。 */
+      ...(String(text || '').trim() ? { _process: true } : {}),
     };
-    messages.push(assistantMsg);
+    /**
+     * 【2026-11-16 主人抓到的关键·她的思考没带回下一圈】
+     *
+     * 主人原话：「小鱼Agent 这一次的思考看不到上一次思考的内容，所以她会重复思考。」
+     * 查下来确实如此：这一圈流回来的 reasoning 只用来推给界面（onEvent），
+     * 攒在局部变量 `reasoning` 里，一圈结束就清空 —— 从来没挂到消息上，
+     * 更没发回给模型。于是模型每一圈都从「只看得见自己说过的话」重新推理：
+     * 同一个判断反复想、同一个方案反复推翻、同一份记忆反复重写。
+     *
+     * 修法：带工具调用的那条 assistant 消息上，把这一圈的思考以
+     * `reasoning_content` 挂回去（就是 DeepSeek 那套字段名），下发时一起带上去。
+     *
+     * 【两个必须的处理】
+     *  ① 用 non-enumerable 挂 —— 落盘的 JSON.stringify 看不见它。
+     *     思考动辄上万字，写进会话文件会让历史翻倍，而它只在**同一轮的工具循环**里
+     *     有用；重启之后本来就该按摘要重来。
+     *  ② 只留尾部 4000 字。上一圈想清楚的是「结论 + 下一步」，
+     *     前面的探索过程对下一圈没有增量，全带上只是白烧钱。
+     */
+    if (assistantMsg.tool_calls.length && String(reasoning || '').trim()) {
+      try {
+        Object.defineProperty(assistantMsg, 'reasoning_content', {
+          value: String(reasoning).slice(-4000),
+          enumerable: false,
+          writable: true,
+          configurable: true,
+        });
+      } catch { /* 挂不上就当这轮没思考，退回老行为 */ }
+    }
+    /**
+     * 【2026-11-16 晚·按圈落盘，柜子里才留得住每一段的思考】
+     *
+     * 主人报：「一轮结束后，思考链在柜子里只剩最后一条」。
+     * 根因不在前端：服务端收尾时把整轮思考**拼成一个大字符串**，挂在最后那条
+     * assistant 上 —— 于是历史里一条 turn 只产出一个思考块，直播时看到的那几块
+     * 刷新后全并成「最后一块」了。
+     *
+     * 现在每一圈把自己那段的思考挂在**自己那条** assistant 上（可枚举，会落盘）。
+     * 字段仍叫 `_reasoning`：服务端 publicSession 已经会把它交给前端，
+     * llm.mjs 的白名单也不会把它发给模型 —— 只给人看，不进上下文。
+     *
+     * 跟上面那个 reasoning_content 不冲突：那个是隐藏属性、只在同一轮工具循环里
+     * 回传给模型（不落盘）；这个是可枚举字段、只落盘给人看（不发模型）。
+     */
+    if (String(reasoning || '').trim()) assistantMsg._reasoning = String(reasoning).trim();
+    /* 【2026-11-15 修·空壳】没字、也没工具调用 → 这条什么都不画，别往历史里塞。
+     * 有工具调用时必须留着（上游要求 tool_calls 与 tool 结果成对）。 */
+    if (assistantMsg.tool_calls.length || String(assistantMsg.content || '').trim()) messages.push(assistantMsg);
     /* 这一圈的模型响应结束：记下它花了多久、要了几个工具、真实用量 */
     _meter.endRound({
       modelMs: Date.now() - _streamAt,
@@ -1825,6 +2067,8 @@ for (let round = 0; round < config.maxRounds; round++) {
     if (_parallelStats) _meter.noteParallel(_parallelStats);
 
     for (const call of assistantMsg.tool_calls) {
+      /* 【2026-11-15 晚·删】这里原来给「这一步用了 N 次工具调用」记账，
+       * 主人不要这个显示了，记账一并去掉（见 plan.mjs 顶部说明）。 */
       const _hit = _poMap.get(call.id);
       if (!_hit) {
         /* 【2026-11-11 加】ts 同上：工具卡的动态耗时从事件上读 */

@@ -7283,12 +7283,12 @@
   });
 
   // src-ui/main.jsx
-  var import_react15 = __toESM(require_react());
+  var import_react16 = __toESM(require_react());
   var import_client = __toESM(require_client());
   var import_react_dom = __toESM(require_react_dom());
 
   // src-ui/LogView.jsx
-  var import_react14 = __toESM(require_react());
+  var import_react15 = __toESM(require_react());
 
   // src-ui/store.js
   var store_exports = {};
@@ -7850,21 +7850,40 @@
         });
       }
     } else if (hasText(text) || outs.length) {
-      out.push({
-        kind: "assistant",
-        key,
-        who: String(turn.who || "").trim() || mainAgentName(),
-        bubbles: hasText(text) ? [text] : [],
-        rewindId: numOrNull(turn.rewindId),
-        ts: numOrNull(turn.ts),
-        edited: Boolean(turn.edited),
-        cont: false,
-        /* 这一轮的用量（token / 花费）。渲染时挂在她说的话下面，悬停才显示。 */
-        usage: turn.usage || null,
-        model: String(turn.usage && turn.usage.model || ""),
-        replyChars: String(text || "").length,
-        userChars: Number(userChars) || 0
-      });
+      if (turn._process === true || turn.process === true) {
+        if (hasText(text)) {
+          out.push({
+            kind: "assistant",
+            key,
+            who: String(turn.who || "").trim() || mainAgentName(),
+            bubbles: [text],
+            rewindId: numOrNull(turn.rewindId),
+            ts: numOrNull(turn.ts),
+            edited: Boolean(turn.edited),
+            cont: false,
+            usage: turn.usage || null,
+            model: String(turn.usage && turn.usage.model || ""),
+            replyChars: String(text || "").length,
+            userChars: Number(userChars) || 0
+          });
+        }
+      } else {
+        out.push({
+          kind: "assistant",
+          key,
+          who: String(turn.who || "").trim() || mainAgentName(),
+          bubbles: hasText(text) ? [text] : [],
+          rewindId: numOrNull(turn.rewindId),
+          ts: numOrNull(turn.ts),
+          edited: Boolean(turn.edited),
+          cont: false,
+          /* 这一轮的用量（token / 花费）。渲染时挂在她说的话下面，悬停才显示。 */
+          usage: turn.usage || null,
+          model: String(turn.usage && turn.usage.model || ""),
+          replyChars: String(text || "").length,
+          userChars: Number(userChars) || 0
+        });
+      }
     }
     for (let i = 0; i < outs.length; i++) {
       const f = outs[i];
@@ -7930,6 +7949,23 @@
       const key = "l-" + i;
       if (it.k === "text") {
         if (!String(it.t || "").trim()) continue;
+        if (/^\s*【压缩记忆[·・]/.test(String(it.t || ""))) continue;
+        if (it.process === true || it._process === true) {
+          if (String(it.t || "").trim()) {
+            out.push({
+              kind: "assistant",
+              key,
+              who: speaker,
+              bubbles: [String(it.t || "")],
+              rewindId: null,
+              ts: null,
+              edited: false,
+              cont: false,
+              isLive: true
+            });
+          }
+          continue;
+        }
         out.push({
           kind: "assistant",
           key,
@@ -8076,6 +8112,21 @@
     };
     return [frontItem, steerItem, backItem];
   }
+  function dedupeFileCards(items) {
+    const seen = /* @__PURE__ */ new Set();
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (!it || it.kind !== "file") continue;
+      const fk = String(it.fkey || it.path || "");
+      if (!fk) continue;
+      if (seen.has(fk)) {
+        items.splice(i, 1);
+        continue;
+      }
+      seen.add(fk);
+    }
+    return items;
+  }
   function buildMerged(snap) {
     const running = isRunning(snap);
     const _hasPending = Array.isArray(snap.pendingUser) && snap.pendingUser.length > 0;
@@ -8121,10 +8172,27 @@
         const _cur = all[_i];
         const _next = all[_i + 1];
         if (_cur && _cur.role === "assistant" && (!_next || _next.role !== "assistant")) _hubs += 1;
-        if (_hubs > 8) break;
-        if (all.length - _i >= 160) break;
+        if (_hubs > 3) {
+          _i += 1;
+          break;
+        }
+        if (all.length - _i >= 80) break;
       }
-      start = Math.max(0, Math.min(start, _i < 0 ? 0 : _i));
+      const _hubStart = _i < 0 ? 0 : _i;
+      let _uSeen = 0;
+      let _uStart = all.length;
+      for (let _j = all.length - 1; _j >= 0; _j--) {
+        const _t = all[_j];
+        if (_t && _t.role === "user") {
+          _uSeen += 1;
+          if (_uSeen >= 3) {
+            _uStart = _j;
+            break;
+          }
+        }
+      }
+      start = Math.max(0, Math.min(_hubStart, _uStart));
+      if (all.length - start > 120) start = all.length - 120;
     }
     const items = [];
     let lastUserChars = 0;
@@ -8179,7 +8247,7 @@
       /* 【2026-11-11】历史这一份先过一道「插话劈段」：带 steerAt 的插话要把她那段话
        * 劈成两半、自己嵌在中间（见 applySteerSplits）。只对历史做 —— pend 是新发的
        * 那句（没有 steerAt），live 那边服务端已经按事件顺序排好了。 */
-      items: applySteerSplits(items).concat(pend, live, noteItems)
+      items: dedupeFileCards(applySteerSplits(items).concat(pend, live, noteItems))
     };
   }
 
@@ -8611,10 +8679,72 @@
 
   // src-ui/AssistantBubble.jsx
   var import_jsx_runtime4 = __toESM(require_jsx_runtime());
+  var __seenSegs = /* @__PURE__ */ new Set();
+  function TypedText({ text, animate, streaming, segKey, className }) {
+    const full = String(text == null ? "" : text);
+    const boot = (() => {
+      if (!animate) return full.length;
+      if (__seenSegs.has(segKey)) return full.length;
+      if (full.length > 900) return full.length;
+      return 0;
+    })();
+    const [shown, setShown] = (0, import_react4.useState)(boot);
+    const curRef = (0, import_react4.useRef)(boot);
+    const targetRef = (0, import_react4.useRef)(full);
+    targetRef.current = full;
+    const animateRef = (0, import_react4.useRef)(animate);
+    animateRef.current = animate;
+    const runningRef = (0, import_react4.useRef)(false);
+    (0, import_react4.useEffect)(() => {
+      if (!animate && curRef.current >= String(text || "").length) return void 0;
+      __seenSegs.add(segKey);
+      runningRef.current = true;
+      let last = 0;
+      let id = 0;
+      const step = (ts) => {
+        const target = String(targetRef.current || "").length;
+        let cur = curRef.current;
+        if (cur > target) {
+          cur = target;
+          curRef.current = cur;
+          setShown(cur);
+        }
+        if (cur < target) {
+          const now = typeof ts === "number" ? ts : performance.now();
+          const dt = last ? Math.min(0.12, Math.max(0, (now - last) / 1e3)) : 0.016;
+          last = now;
+          const gap = target - cur;
+          const cps = gap > 300 ? 420 : 150;
+          cur = Math.min(target, cur + Math.max(1, Math.round(cps * dt)));
+          curRef.current = cur;
+          setShown(cur);
+        } else if (!animateRef.current) {
+          runningRef.current = false;
+          return;
+        }
+        id = requestAnimationFrame(step);
+      };
+      id = requestAnimationFrame(step);
+      return () => {
+        cancelAnimationFrame(id);
+        runningRef.current = false;
+      };
+    }, [segKey]);
+    const typing = shown < full.length || animate && streaming;
+    return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+      MdDiv,
+      {
+        className: (className || "bubble") + (typing ? " streaming" : ""),
+        text: shown < full.length ? full.slice(0, shown) : full
+      }
+    );
+  }
   function AssistantBubble({ it, ask, streaming }) {
     const wrap = (0, import_react4.useRef)(null);
     const bubbles = Array.isArray(it.bubbles) ? it.bubbles : [];
     const who = String(it.who || "\u5C0F\u9C7C");
+    const lastIdx = bubbles.length - 1;
+    const liveItem = it.isLive === true;
     (0, import_react4.useEffect)(() => {
       const w = wrap.current;
       if (!w) return;
@@ -8675,7 +8805,7 @@
       }
     })();
     const color = who !== "\u5C0F\u9C7C" ? mateColorOf(who) : "";
-    const cls = "msg assistant" + (it.cont ? " cont" : "") + (it.edited ? " edited" : "") + (editing ? " editing" : "");
+    const cls = "msg assistant" + (it.cont ? " cont" : "") + (it.edited ? " edited" : "") + (editing ? " editing" : "") + (it.aside ? " aside" : "");
     return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
       "div",
       {
@@ -8686,14 +8816,23 @@
         "data-at": it.rewindId == null ? void 0 : String(it.rewindId),
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "role", style: color ? { color } : void 0, children: who }),
-          editing ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(EditArea, { text: bubbles.join("\n\n"), at: it.rewindId, msgAt: it.ts }) : bubbles.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-            MdDiv,
-            {
-              className: "bubble" + (i > 0 ? " cont" : "") + (streaming && i === bubbles.length - 1 ? " streaming" : ""),
-              text: t
-            },
-            "b" + i
-          ))
+          editing ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(EditArea, { text: bubbles.join("\n\n"), at: it.rewindId, msgAt: it.ts }) : bubbles.map((t, i) => {
+            const cls2 = "bubble" + (i > 0 ? " cont" : "");
+            if (i === lastIdx) {
+              return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+                TypedText,
+                {
+                  segKey: String(it.key || "") + "#" + i,
+                  text: String(t == null ? "" : t),
+                  animate: liveItem,
+                  streaming: !!streaming && i === lastIdx,
+                  className: cls2
+                },
+                "b" + i + ":" + String(it.key || "")
+              );
+            }
+            return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(MdDiv, { className: cls2, text: String(t == null ? "" : t) }, "b" + i);
+          })
         ]
       }
     );
@@ -8771,11 +8910,39 @@
 
   // src-ui/useOpen.js
   var import_react6 = __toESM(require_react());
+  var listeners2 = /* @__PURE__ */ new Map();
+  function closeOpenKeys(keys) {
+    let n = 0;
+    for (const k of keys) {
+      openMap.set(k, false);
+      const subs = listeners2.get(k);
+      if (subs) for (const fn of subs) {
+        try {
+          fn(false);
+        } catch (e) {
+        }
+      }
+      n++;
+    }
+    return n;
+  }
   function useOpen(key, defaultOpen) {
     const [open, setOpen] = (0, import_react6.useState)(() => {
       if (openMap.has(key)) return openMap.get(key) === true;
       return Boolean(defaultOpen);
     });
+    (0, import_react6.useEffect)(() => {
+      let subs = listeners2.get(key);
+      if (!subs) {
+        subs = /* @__PURE__ */ new Set();
+        listeners2.set(key, subs);
+      }
+      subs.add(setOpen);
+      return () => {
+        subs.delete(setOpen);
+        if (!subs.size) listeners2.delete(key);
+      };
+    }, [key]);
     const onToggle = (0, import_react6.useCallback)(
       (e) => {
         const el = e && e.currentTarget;
@@ -8926,15 +9093,21 @@
   function TeamBar({ sid, items }) {
     const [ws, setWs] = (0, import_react10.useState)([]);
     const aliveRef = (0, import_react10.useRef)(true);
+    const curSidRef = (0, import_react10.useRef)(sid);
+    (0, import_react10.useEffect)(() => {
+      curSidRef.current = sid;
+    }, [sid]);
     (0, import_react10.useEffect)(() => {
       aliveRef.current = true;
+      const mySid = sid;
       let timer = null;
       const poll = async () => {
         if (!aliveRef.current) return;
         try {
-          const r = await fetch("/api/team/workers?sessionId=" + encodeURIComponent(String(sid || "")));
+          const r = await fetch("/api/team/workers?sessionId=" + encodeURIComponent(String(mySid || "")));
           const j = await r.json();
           if (!aliveRef.current) return;
+          if (String(curSidRef.current || "") !== String(mySid || "")) return;
           const list = Array.isArray(j && j.workers) ? j.workers : [];
           setWs(list);
           timer = setTimeout(poll, list.some((w) => w && w.status === "running") ? 3e3 : 1e4);
@@ -8952,11 +9125,7 @@
       setWs([]);
     }, [sid]);
     const running = ws.filter((w) => w && w.status === "running");
-    const inFlowRunning = (0, import_react10.useMemo)(
-      () => new Set((items || []).filter((x) => x && x.kind === "worker" && x.status === "run").map((x) => String(x.id))),
-      [items]
-    );
-    const extra = running.filter((w) => !inFlowRunning.has(String(w.id)));
+    const extra = running;
     const onStop = (wid) => {
       teamStopWorker(sid, wid);
     };
@@ -8967,11 +9136,36 @@
       } catch {
       }
     };
+    const [collapsed, setCollapsed] = (0, import_react10.useState)(true);
+    const onToggleCollapse = () => setCollapsed((v) => !v);
     if (!running.length && !extra.length) return null;
     return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "teamBar", "data-team-sid": String(sid || ""), children: [
       /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("style", { children: `
+        /* \u30102026-11-16 \u4E3B\u4EBA\u6F84\u6E05\u3011\u4E0D\u8981 sticky \u2014\u2014 \u5B83\u5C31\u662F\u6D41\u91CC\u7684\u6700\u540E\u4E00\u5757\u3002
+         * \u300C\u548C\u6B63\u5E38\u67DC\u5B50\u4E00\u6837\u6B63\u5E38\u663E\u793A\uFF0C\u53EA\u662F\u56FA\u5B9A\u663E\u793A\u5728\u6240\u6709\u6D88\u606F\u4E0E\u5DE5\u5177\u8C03\u7528\u663E\u793A\u4E0B\u9762\u300D\u3002
+         * \u4E00\u65E6 sticky\uFF0C\u5B83\u5C31\u4F1A\u6D6E\u5728\u65E7\u6D88\u606F\u4E0A\u9762\u8DDF\u7740\u6EDA\u8F6E\u8D70\uFF0C\u90A3\u662F\u4E3B\u4EBA\u660E\u786E\u4E0D\u8981\u7684\u3002 */
+        .teamBar {
+          position: static;
+          max-width: 100%; min-width: 0; box-sizing: border-box;
+          padding-top: 2px;
+          /*
+           * \u30102026-11-15 \u4FEE\xB7\u90A3\u5757\u9ED1\u5E95\uFF08\u4E3B\u4EBA\u622A\u56FE\uFF1A\u2691 \u90A3\u6761\u4E0B\u9762\u6A2A\u7740\u4E00\u6761\u9ED1\u5E26\uFF09\u3011
+           *
+           * \u4E0A\u4E00\u7248\u5728\u8FD9\u91CC\u94FA\u4E86\u4E00\u6761 linear-gradient \u60F3\u7ED9\u8D34\u5E95\u906E\u7F69\uFF0C
+           * \u7ED3\u679C\uFF1A\u58C1\u7EB8\u4E3B\u9898\u4E0B --bg \u662F**\u534A\u900F\u660E**\u7684 rgba\uFF08body.wall \u91CC --bg \u88AB\u6539\u6210
+           * rgba(var(--bg-rgb), var(--surface))\uFF09\uFF0C\u53E0\u5728\u56FE\u7247\u4E0A\u5C31\u662F\u4E00\u5927\u5757\u810F\u516E\u516E\u7684\u6DF1\u8272\uFF1B
+           * \u800C\u4E14\u8FD9\u6761\u6E10\u53D8\u94FA\u6EE1\u4E86\u6574\u5757 .teamBar \u7684\u5BBD\u5EA6\uFF0C\u6BD4\u6D88\u606F\u680F\u8FD8\u5BBD\u3002
+           *
+           * \u73B0\u5728\uFF1A**\u4E0D\u52A0\u4EFB\u4F55\u5E95\u8272**\u3002\u8D34\u5E95\u906E\u6321\u4EA4\u7ED9\u6BCF\u5F20\u5361\u81EA\u5DF1\u7684\u80CC\u666F\uFF08WorkerCard \u672C\u6765\u5C31\u6709\uFF09\uFF0C
+           * \u4E2D\u95F4\u7684\u7A7A\u9699\u900F\u51FA\u58C1\u7EB8\u624D\u662F\u5BF9\u7684 \u2014\u2014 \u4E3B\u4EBA\u8981\u7684\u662F"\u5361\u7247\u8D34\u5E95"\uFF0C\u4E0D\u662F"\u4E00\u6761\u9ED1\u6761\u8D34\u5E95"\u3002
+           * \uFF08\u6CE8\u610F\uFF1ACSS \u6CE8\u91CA\u91CC\u4E0D\u8981\u51FA\u73B0\u53CD\u5F15\u53F7\uFF0C\u4F1A\u622A\u65AD\u5916\u5C42\u7684\u6A21\u677F\u5B57\u7B26\u4E32\u3002\uFF09
+           */
+          background: none;
+        }
         .teamBar .teamHint {
-          position: sticky; top: 0; z-index: 6;
+          /* \u30102026-11-16\u3011\u539F\u6765\u8FD9\u91CC\u662F sticky; top:0 \u2014\u2014 \u5728\u6D41\u91CC\u5B83\u4F1A\u8BA9\u6309\u94AE
+           * \u7C98\u5728\u804A\u5929\u533A\u9876\u90E8\uFF08\u6B63\u662F\u300C\u8DDF\u7740\u6EDA\u8F6E\u8D70\u300D\u7684\u53E6\u4E00\u4E2A\u6765\u6E90\uFF09\u3002\u53BB\u6389\u3002 */
+          position: static;
           margin: 4px 0 6px 0;
           padding: 4px 12px;
           font-size: 12px;
@@ -8979,14 +9173,44 @@
           background: color-mix(in srgb, var(--warn, #d8a13a) 10%, transparent);
           border: 1px solid color-mix(in srgb, var(--warn, #d8a13a) 35%, transparent);
           border-radius: 999px;
-          width: fit-content;
+          width: fit-content; max-width: 100%;
           cursor: pointer;
           backdrop-filter: blur(4px);
+          /* \u6536\u8D77/\u5C55\u5F00\u7684\u7BAD\u5934\u8DDF\u7740\u8D70\uFF0C\u8BA9\u4E3B\u4EBA\u770B\u5F97\u51FA\u8FD9\u9897\u80FD\u70B9 */
+          display: inline-flex; align-items: center; gap: 5px;
         }
-        .teamBar .teamTail { margin: 2px 0 8px 0; }
+        .teamBar .teamHint .caret { font-size: 10px; opacity: .75; }
+        /* \u5361\u7247\u5217\u8868\uFF1A\u8D34\u5E95\u65F6\u6700\u591A\u5360\u534A\u5C4F\uFF0C\u591A\u4E86\u5728\u5185\u90E8\u6EDA \u2014\u2014
+         * \u4E0D\u8FD9\u6837\u7684\u8BDD\uFF0C\u4E09\u5F20\u5361\u4E00\u8D77\u8D34\u5E95\u5C31\u628A\u6B63\u6587\u5168\u906E\u4F4F\u4E86\u3002 */
+        .teamBar .teamTail {
+          margin: 2px 0 8px 0;
+          max-width: 100%; min-width: 0;
+          max-height: 42vh; overflow-y: auto;
+          overscroll-behavior: contain;
+        }
+        /* \u91CC\u9762\u7684 worker \u5361\u4E00\u5F8B\u4E0D\u8BB8\u8D85\u51FA\u6D88\u606F\u680F */
+        .teamBar .teamTail details.wcard,
+        .teamBar .teamTail details.wcard > summary,
+        .teamBar .teamTail details.wcard > pre {
+          max-width: 100%; min-width: 0; box-sizing: border-box;
+          overflow-wrap: anywhere;
+        }
       ` }),
-      running.length ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("button", { type: "button", className: "teamHint", onClick: jumpToLatest, children: "\u2691 " + running.length + " \u4E2A\u5728\u540E\u53F0\u5E72\u6D3B\u2026" }) : null,
-      extra.length ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "teamTail", children: extra.map((w) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
+      running.length || extra.length ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)(
+        "button",
+        {
+          type: "button",
+          className: "teamHint",
+          onClick: onToggleCollapse,
+          onDoubleClick: jumpToLatest,
+          title: collapsed ? "\u70B9\u4E00\u4E0B\u5C55\u5F00\u5B50Agent \u7684\u5E72\u6D3B\u6D41\u6C34\uFF08\u53CC\u51FB\u6EDA\u5230\u6700\u65B0\uFF09" : "\u70B9\u4E00\u4E0B\u6536\u8D77\uFF08\u53CC\u51FB\u6EDA\u5230\u6700\u65B0\uFF09",
+          children: [
+            running.length ? "\u2691 " + running.length + " \u4E2A\u5728\u540E\u53F0\u5E72\u6D3B\u2026" : "\u2691 " + extra.length + " \u4E2A\u5B50Agent \u7684\u5E72\u6D3B\u6D41\u6C34\u2026",
+            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "caret", children: collapsed ? "\u25B8" : "\u25BE" })
+          ]
+        }
+      ) : null,
+      !collapsed && extra.length ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "teamTail", children: extra.map((w) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
         WorkerCard,
         {
           it: {
@@ -9009,11 +9233,36 @@
   }
 
   // src-ui/SysNote.jsx
+  var import_react11 = __toESM(require_react());
   var import_jsx_runtime10 = __toESM(require_jsx_runtime());
-  function SysNote({ it }) {
+  function SysNote({ it, sid }) {
     const acts = Array.isArray(it.actions) ? it.actions : [];
+    const isProcess = it.process === true;
+    const [open, setOpen] = (0, import_react11.useState)(false);
+    const fullText = String(it.text || "");
+    const oneLine = (() => {
+      const flat = fullText.replace(/\s+/g, " ").trim();
+      return flat.length > 60 ? flat.slice(0, 60) + "\u2026" : flat;
+    })();
+    const shown = isProcess && !open ? oneLine : fullText;
+    const isFoldNote = /折叠存档/.test(String(it.text || ""));
     return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "sysnote", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { children: String(it.text || "") }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { children: shown }),
+      isProcess && fullText.replace(/\s+/g, " ").trim().length > 60 ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("button", { type: "button", className: "sysnoteBtn", onClick: () => setOpen((v) => !v), children: open ? "\u6536\u8D77" : "\u5C55\u5F00" }) : null,
+      isFoldNote ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "sysnoteBtn",
+          onClick: () => {
+            try {
+              if (typeof window.openFoldedArchive === "function") window.openFoldedArchive(sid);
+            } catch (e) {
+            }
+          },
+          children: "\u7FFB\u539F\u6587"
+        }
+      ) : null,
       acts.map((a, i) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
         "button",
         {
@@ -9033,7 +9282,7 @@
   }
 
   // src-ui/FileCard.jsx
-  var import_react11 = __toESM(require_react());
+  var import_react12 = __toESM(require_react());
   var import_jsx_runtime11 = __toESM(require_jsx_runtime());
   function fileUrl(f, download) {
     if (f.fkey) return "/api/attach/outbox-out?key=" + encodeURIComponent(f.fkey) + (download ? "&download=1" : "");
@@ -9061,11 +9310,11 @@
     return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "msgVoice", children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(Vbub, { url, dl, name: String(f.name || "\u8BED\u97F3") }) });
   }
   function Vbub({ url, dl, name }) {
-    const au = (0, import_react11.useRef)(null);
-    const [dur, setDur] = (0, import_react11.useState)(0);
-    const [left, setLeft] = (0, import_react11.useState)(0);
-    const [playing, setPlaying] = (0, import_react11.useState)(false);
-    const [paused, setPaused] = (0, import_react11.useState)(false);
+    const au = (0, import_react12.useRef)(null);
+    const [dur, setDur] = (0, import_react12.useState)(0);
+    const [left, setLeft] = (0, import_react12.useState)(0);
+    const [playing, setPlaying] = (0, import_react12.useState)(false);
+    const [paused, setPaused] = (0, import_react12.useState)(false);
     const secs = (n) => (n > 0 ? Math.max(1, Math.round(n)) : "\u2013") + "\u2033";
     const toggle = () => {
       const a = au.current;
@@ -9251,10 +9500,10 @@
     if (f.fkind === "video") return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(VideoRow, { f });
     return /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(DownCard, { f });
   }
-  var FileCard_default = (0, import_react11.memo)(FileCardInner);
+  var FileCard_default = (0, import_react12.memo)(FileCardInner);
 
   // src-ui/ToolCard.jsx
-  var import_react12 = __toESM(require_react());
+  var import_react13 = __toESM(require_react());
   var import_jsx_runtime12 = __toESM(require_jsx_runtime());
   function statusText(s) {
     if (s === "ok") return "\u5B8C\u6210";
@@ -9270,8 +9519,8 @@
   }
   var SPIN = ["\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F"];
   function useRunTicker(active) {
-    const [tick, setTick] = (0, import_react12.useState)(0);
-    (0, import_react12.useEffect)(() => {
+    const [tick, setTick] = (0, import_react13.useState)(0);
+    (0, import_react13.useEffect)(() => {
       if (!active) return void 0;
       const t = setInterval(() => {
         try {
@@ -9291,8 +9540,8 @@
   }
   function ToolCard({ it }) {
     const [open, onToggle] = useOpen(it.key, false);
-    const name = (0, import_react12.useMemo)(() => niceTool(it.name, it.args) || "\u5DE5\u5177", [it.name, it.args]);
-    const body = (0, import_react12.useMemo)(() => {
+    const name = (0, import_react13.useMemo)(() => niceTool(it.name, it.args) || "\u5DE5\u5177", [it.name, it.args]);
+    const body = (0, import_react13.useMemo)(() => {
       const args = formatArgs(it.args);
       let s = args ? "\u53C2\u6570\uFF1A" + tidyToolText(args) : "\uFF08\u65E0\u53C2\u6570\uFF09";
       if (it.output) s += "\n--- output ---\n" + tidyToolText(it.output);
@@ -9317,7 +9566,7 @@
     const [open, onToggle] = useOpen("hub-" + (list[0] ? list[0].key : "x"), false);
     const _running0 = tools.find((t) => t.status === "run" && (Number(t.startedAt) || 0) > 0) || null;
     const tick = useRunTicker(Boolean(_running0));
-    const stat = (0, import_react12.useMemo)(() => {
+    const stat = (0, import_react13.useMemo)(() => {
       const n = tools.length;
       const runList = tools.filter((t) => t.status === "run");
       const running = runList.length ? runList[runList.length - 1] : null;
@@ -9333,8 +9582,8 @@
     const spinOn = !!stat.running && _startedAt > 0;
     const doorTitle = spinOn ? stat.name.replace(/…$/, "") : stat.name;
     const doorSecs = spinOn ? Math.max(1, Math.round((Date.now() - _startedAt) / 1e3)) : 0;
-    const bodyRef = (0, import_react12.useRef)(null);
-    const followRef = (0, import_react12.useRef)(true);
+    const bodyRef = (0, import_react13.useRef)(null);
+    const followRef = (0, import_react13.useRef)(true);
     const onBodyScroll = () => {
       const el = bodyRef.current;
       if (!el) return;
@@ -9342,7 +9591,7 @@
     };
     const _lastOfList = list.length ? list[list.length - 1] : null;
     const tailSig = _lastOfList ? String(_lastOfList.output || "").length + String(_lastOfList.text || "").length : 0;
-    (0, import_react12.useLayoutEffect)(() => {
+    (0, import_react13.useLayoutEffect)(() => {
       const el = bodyRef.current;
       if (!el || !open) return;
       if (!followRef.current) return;
@@ -9353,7 +9602,17 @@
     }
     if (tools.length === 1 && !thinks.length) return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(ToolCard, { it: tools[0] });
     const last = tools[tools.length - 1];
-    return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "toolhub", open, onToggle, children: [
+    const onHubToggle = (e) => {
+      onToggle(e);
+      const closing = !(e && e.currentTarget && e.currentTarget.open);
+      if (closing) {
+        try {
+          closeOpenKeys(list.map((t) => t.key));
+        } catch (err) {
+        }
+      }
+    };
+    return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("details", { className: "toolhub", open, onToggle: onHubToggle, children: [
       /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("summary", { children: [
         /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "hubname", children: doorTitle }),
         spinOn ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("span", { className: "hubStatus", children: [
@@ -9369,9 +9628,9 @@
   }
 
   // src-ui/RowBoundary.jsx
-  var import_react13 = __toESM(require_react());
+  var import_react14 = __toESM(require_react());
   var import_jsx_runtime13 = __toESM(require_jsx_runtime());
-  var RowBoundary = class extends import_react13.default.Component {
+  var RowBoundary = class extends import_react14.default.Component {
     constructor(props) {
       super(props);
       this.state = { err: null };
@@ -9418,6 +9677,7 @@
       const tag = r.tag || "";
       if (!/^t-\d+$/.test(tag)) continue;
       if (r.items.some((x) => x && x.kind === "tool")) continue;
+      let merged = false;
       for (let j = i + 1; j < rows.length; j++) {
         const n = rows[j];
         if (!n || drop.has(n)) continue;
@@ -9426,11 +9686,28 @@
         if (n.type !== "group" || !n.items.some((x) => x && x.kind === "tool")) continue;
         n.items = r.items.concat(n.items);
         drop.add(r);
+        merged = true;
+        break;
+      }
+      if (merged) continue;
+      for (let j = i - 1; j >= 0; j--) {
+        const n = rows[j];
+        if (!n || drop.has(n)) continue;
+        if (n.type === "item") {
+          const k = n.it && n.it.kind;
+          if (k === "user" || k === "mate" || k === "say") break;
+          continue;
+        }
+        if (n.type !== "group") continue;
+        if (!n.items.some((x) => x && x.kind === "tool")) continue;
+        n.items = n.items.concat(r.items);
+        drop.add(r);
         break;
       }
     }
     return drop.size ? rows.filter((r) => !drop.has(r)) : rows;
   }
+  var HUB_MAX_ITEMS = 100;
   function toRows(items) {
     const rows = [];
     let run = null;
@@ -9438,7 +9715,7 @@
     for (const it of items) {
       if (it.kind === "tool" || it.kind === "think") {
         const tag = turnTagOf(it);
-        if (run && it.kind === "think" && tag && run.tag && tag !== run.tag) run = null;
+        if (run && run.items.length >= HUB_MAX_ITEMS) run = null;
         if (run) run.items.push(it);
         else {
           run = { type: "group", key: "hub-" + it.key, tag, items: [it] };
@@ -9455,21 +9732,21 @@
     return hoistTurnThinks(rows);
   }
   function LogView() {
-    (0, import_react14.useSyncExternalStore)(subscribe, getVersion, getVersion);
+    (0, import_react15.useSyncExternalStore)(subscribe, getVersion, getVersion);
     const snap = getSnapshot();
-    const merged = (0, import_react14.useMemo)(() => buildMerged(snap), [snap.sid, snap.turns, snap.live, snap.pendingUser, snap.notes, snap.windowStart]);
-    const rows = (0, import_react14.useMemo)(() => toRows(merged.items), [merged]);
-    const listRef = (0, import_react14.useRef)(null);
-    const atBottomRef = (0, import_react14.useRef)(true);
-    const userScrolledRef = (0, import_react14.useRef)(false);
-    const lastHeightRef = (0, import_react14.useRef)(0);
-    const lastDistRef = (0, import_react14.useRef)(0);
-    const lastScrollTopRef = (0, import_react14.useRef)(0);
-    const keepFromBottom = (0, import_react14.useRef)(null);
-    const preSwapScrollTop = (0, import_react14.useRef)(0);
-    const selfWriteRef = (0, import_react14.useRef)(0);
-    const prevCountRef = (0, import_react14.useRef)(0);
-    const followRef = (0, import_react14.useRef)(true);
+    const merged = (0, import_react15.useMemo)(() => buildMerged(snap), [snap.sid, snap.turns, snap.live, snap.pendingUser, snap.notes, snap.windowStart]);
+    const rows = (0, import_react15.useMemo)(() => toRows(merged.items), [merged]);
+    const listRef = (0, import_react15.useRef)(null);
+    const atBottomRef = (0, import_react15.useRef)(true);
+    const userScrolledRef = (0, import_react15.useRef)(false);
+    const lastHeightRef = (0, import_react15.useRef)(0);
+    const lastDistRef = (0, import_react15.useRef)(0);
+    const lastScrollTopRef = (0, import_react15.useRef)(0);
+    const keepFromBottom = (0, import_react15.useRef)(null);
+    const preSwapScrollTop = (0, import_react15.useRef)(0);
+    const selfWriteRef = (0, import_react15.useRef)(0);
+    const prevCountRef = (0, import_react15.useRef)(0);
+    const followRef = (0, import_react15.useRef)(true);
     const writeTop = (v) => {
       const el = listRef.current || document.getElementById("log");
       if (!el) return;
@@ -9486,7 +9763,7 @@
       const t = listRef.current.scrollTop;
       if (typeof t === "number" && t >= 0) preSwapScrollTop.current = t;
     }
-    (0, import_react14.useLayoutEffect)(() => {
+    (0, import_react15.useLayoutEffect)(() => {
       const el = listRef.current || document.getElementById("log");
       if (!el) return;
       listRef.current = el;
@@ -9616,7 +9893,7 @@
         }
       };
     }, []);
-    (0, import_react14.useLayoutEffect)(() => {
+    (0, import_react15.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el) return;
       try {
@@ -9624,8 +9901,8 @@
       } catch (e) {
       }
     }, [merged.totalTurns]);
-    const sidRef = (0, import_react14.useRef)(null);
-    (0, import_react14.useLayoutEffect)(() => {
+    const sidRef = (0, import_react15.useRef)(null);
+    (0, import_react15.useLayoutEffect)(() => {
       const el = listRef.current || document.getElementById("log");
       if (!el) return;
       listRef.current = el;
@@ -9647,7 +9924,7 @@
     }, [snap.sid]);
     const count = merged.items.length;
     const lastLen = tailLen(merged.items);
-    (0, import_react14.useLayoutEffect)(() => {
+    (0, import_react15.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el) return;
       if (keepFromBottom.current != null) return;
@@ -9668,7 +9945,7 @@
       }
       prevCountRef.current = count;
     }, [count]);
-    (0, import_react14.useLayoutEffect)(() => {
+    (0, import_react15.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el || keepFromBottom.current == null) return;
       writeTop(el.scrollHeight - keepFromBottom.current);
@@ -9712,6 +9989,7 @@
       }
       if (it.kind === "think") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(ThinkBlock, { it });
       if (it.kind === "worker") {
+        if (it.status === "run") return null;
         return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(
           WorkerCard,
           {
@@ -9722,7 +10000,7 @@
           }
         );
       }
-      if (it.kind === "note") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(SysNote, { it });
+      if (it.kind === "note") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(SysNote, { it, sid });
       if (it.kind === "file") return /* @__PURE__ */ (0, import_jsx_runtime14.jsx)(FileCard_default, { it });
       return null;
     }
@@ -9756,5 +10034,5 @@
   } catch (e) {
   }
   window.__mateColorsApply = applyMateColor;
-  window.__logDebug = { React: import_react15.default, createRoot: import_client.createRoot, LogView, store: store_exports };
+  window.__logDebug = { React: import_react16.default, createRoot: import_client.createRoot, LogView, store: store_exports };
 })();

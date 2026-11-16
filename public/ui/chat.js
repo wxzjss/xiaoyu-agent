@@ -640,8 +640,19 @@ export async function switchSession(id, opts) {
    * 顺序必须在 logSetHistory 之后 —— setHistory 会清空上一屏的提示行。
    */
   try {
+    /* 【2026-11-16 主人钦点】「不要因为主动重启出现」这句「上一轮是被中断的（没跑完）」。 */
+    /* 判据：断点记录里的 reason —— 主动重启写的是「主人让它重启（…）」。
+     * 那一轮本来就该被打断（他要重启），起来还会自动接着干，
+     * 再弹一句「上一轮是被中断的，要接着做就跟我说一声」纯属添乱。
+     * 真崩了 / 真被掐掉的（reason 里没有这句）照旧提示 —— 那种他需要知道。 */
+    /* 【2026-11-16 定稿】两层判据：
+     *   ① planned —— 服务端在**这次启动时**把盘上已有断点统一标的（最准：那就是重启前留下的）；
+     *   ② reason 里写着「主人让它重启」—— 老的兼容路（万一 planned 还没写进去）。
+     * 运行中真被掐断的（上游断 / 被 abort）不带 planned，照旧提示。 */
+    const _plannedRestart = (r.interrupted && r.interrupted.planned === true)
+      || /主人让它重启/.test(String((r.interrupted && r.interrupted.reason) || ''));
     if (r.recovered) window.addSysNote('上一轮断在半路（进程被关或被杀），她没说完的那半截话已经接回历史了。');
-    else if (r.interrupted) window.addSysNote('上一轮是被中断的（没跑完）。要接着做就跟我说一声。');
+    else if (r.interrupted && !_plannedRestart) window.addSysNote('上一轮是被中断的（没跑完）。要接着做就跟我说一声。');
   } catch (e) {}
   /* 【2026-11-12 加·两件切屏必做的事】
    * ① 完成闪字的「这轮是谁家的」旗子清掉 —— A 屏起的轮，切到 B 屏后 A 轮收尾

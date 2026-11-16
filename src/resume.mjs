@@ -27,7 +27,7 @@
  * 只在「要死了」这条极窄的路径上用，不能反过来把正常的对话拖下水：
  * 所有写盘都 try/catch 吞掉，读不出来就当没有。
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 
@@ -47,11 +47,24 @@ function alive(item) {
 function readAll() {
   try {
     if (!existsSync(FILE)) return [];
-    const j = JSON.parse(readFileSync(FILE, 'utf8'));
+    /**
+     * 【2026-11-15 修·带 BOM 的 resume.json 会被整份读空】
+     *
+     * 现场：2026-11-15 我自己用 PowerShell `Set-Content -Encoding utf8` 清过一次续跑队列，
+     * PS 5.1 写出的是 **UTF-8 + BOM**（EF BB BF）。这里原来直接 JSON.parse，
+     * 一个 BOM 就抛 "Unexpected token "，被下面 catch 一吞 → 返回 [] ——
+     * 表现就是「明明有待续的会话，开机一个都不续」，而且**没有任何日志**。
+     * （readWorkers / readTable 都早踩过同一个坑，各自剥过 BOM，这里漏了。）
+     * 现在读之前先剥 BOM；另外把「解析失败」记一行 diag，别再静默。
+     */
+    let raw = readFileSync(FILE, 'utf8');
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    const j = JSON.parse(raw);
     if (!j || typeof j !== 'object') return [];
-    const raw = Array.isArray(j.items) ? j.items : (j.sessionId ? [j] : []);
-    return raw.filter(alive);
+    const items = Array.isArray(j.items) ? j.items : (j.sessionId ? [j] : []);
+    return items.filter(alive);
   } catch {
+    /* 读不出来就当没有待续 —— 绝不能因为一个坏文件把启动带崩 */
     return [];
   }
 }
@@ -59,7 +72,20 @@ function readAll() {
 function writeAll(items) {
   try {
     if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
-    writeFileSync(FILE, JSON.stringify({ v: 2, items }, null, 2), 'utf8');
+    /* 【2026-11-15 改·原子写】原来是直接盖，多进程（重启过渡期老进程 + 新实例）
+     * 同时写的时候会留半截 JSON，读端 catch 一吞就变成「一条账都没有」。
+     * 先写 .tmp 再 rename —— Windows 上同名 rename 是原子的（先删旧再移会有窗口，
+     * 用重试兜一下）。 */
+    const tmp = FILE + '.tmp';
+    writeFileSync(tmp, JSON.stringify({ v: 2, items }, null, 2), 'utf8');
+    for (let i = 0; i < 3; i++) {
+      try {
+        renameSync(tmp, FILE);
+        return true;
+      } catch (e) {
+        if (i === 2) throw e;
+      }
+    }
     return true;
   } catch {
     return false;
@@ -73,11 +99,16 @@ function writeAll(items) {
 function shape(j) {
   return {
     sessionId: String(j.sessionId),
+    locked: j.locked === true,
     at: Number(j.at) || 0,
     ageMs: Date.now() - (Number(j.at) || 0),
     text: String(j.text || ''),
     reason: String(j.reason || ''),
     taskLine: String(j.taskLine || ''),
+    /* 【2026-11-16 加·这句提示不该为「主动重启」出现】
+     * 进程刚起来时把当次启动前留下的断点全打上 planned —— 那些本来就会被自动续跑接手，
+     * 主人不需要看到「上一轮是被中断的（没跑完）」。运行中真被打断的不带这个标记。 */
+    planned: j.planned === true,
     openSteps: Array.isArray(j.openSteps) ? j.openSteps : [],
     /* 【2026-11-06 加·5 段式交接】 */
     goal: String(j.goal || ''),
@@ -118,6 +149,21 @@ function shape(j) {
  * 【2026-11-07 改】按 sessionId upsert，不再整份覆盖：
  * 两个会话同时在跑时两条都留得住，重启后能一起续上。
  */
+/** 启动时调用一次：把「这次启动之前就躺在盘里的断点」统统标成 planned。
+ * 只影响前端要不要弹提示 —— 续跑逻辑一个字都不动。 */
+export function markAllPlanned() {
+  try {
+    const all = readAll();
+    if (!Array.isArray(all) || !all.length) return 0;
+    let n = 0;
+    for (const it of all) {
+      if (it && it.planned !== true) { it.planned = true; n += 1; }
+    }
+    if (n) writeAll(all);
+    return n;
+  } catch { return 0; }
+}
+
 export function markInterrupted(info = {}) {
   const sessionId = String(info.sessionId || '');
   if (!sessionId) return false;
@@ -147,6 +193,19 @@ export function markInterrupted(info = {}) {
       intent: 'continue',
       /* 只有「这一轮真的在跑、被掐断」才自动续；清单老账不自动续（见 shape 里的说明） */
       autoResume: info.autoResume === true,
+      /**
+       * 【2026-11-15 修·「连续重启后只有一个小会话续上」】
+       *
+       * 实测时间线（23:59:23）：退出那一刻 4 个会话都记了账（quit-resume ×4），
+       * 可同一秒里，上一轮**续跑跑完**的 3 个会话各自走收尾清账（resume-done → dropInterrupted）
+       * —— 它们删的是自己那条，可删的时候读的是刚写好的文件，再写回去就顺手把
+       * 另外几条一起抹了。结果新的实例开机只看到 1 条账，只续上 1 个。
+       *
+       * 现在给「退出路径记的账」盖个 locked：跑完收尾**不许**动它，
+       * 只有续跑真的成功了（显式 force）才清。退出时的账本来就是「下次要接着干」，
+       * 不该被上一轮的残局顺手删掉。
+       */
+      locked: info.locked === true,
     };
     const others = readAll().filter((x) => String(x.sessionId) !== sessionId);
     others.push(item);
@@ -205,14 +264,25 @@ export function takeInterrupted(sessionId) {
  * 【为什么必须能只删一条】续跑成功一个就删一个；
  * 另一个还没跑完的不能被顺手清掉 —— 那正是「只有一个续上」的另一半原因。
  */
-export function dropInterrupted(sessionId) {
+export function dropInterrupted(sessionId, opts = {}) {
   try {
     if (!existsSync(FILE)) return true;
     if (!sessionId) {
+      if (opts.force !== true) {
+        /* 无参清全部 = 老调用点的语义，但退出路径盖了 locked 的账不能这么一把抹掉 */
+        const keep = readAll().filter((x) => x.locked === true);
+        if (!keep.length) { unlinkSync(FILE); return true; }
+        return writeAll(keep);
+      }
       unlinkSync(FILE);
       return true;
     }
-    const rest = readAll().filter((x) => String(x.sessionId) !== String(sessionId));
+    const all = readAll();
+    const target = all.find((x) => String(x.sessionId) === String(sessionId));
+    /* 退出路径记的账（locked）不许被「跑完收尾」顺手清掉，只有 force 才行 ——
+     * 续跑真的跑成功了会带 force。 */
+    if (target && target.locked === true && opts.force !== true) return false;
+    const rest = all.filter((x) => String(x.sessionId) !== String(sessionId));
     if (!rest.length) {
       unlinkSync(FILE);
       return true;

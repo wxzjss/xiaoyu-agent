@@ -211,10 +211,16 @@ async function realReload() {
       await sleep(200);
       seen = await snap().catch(() => seen);
     }
-    ok(seen.liveCount === tx2.length,
-      'F5 之后屏幕正文气泡数 == 服务端 live.items 里的正文条数（' + tx2.length + '）',
-      '实际气泡 ' + seen.liveCount + ' 个 / 清单 ' + tx2.length + ' 段'
-      + (seen.liveCount === 0 ? '（屏幕上一个正文气泡都没有 —— 不是个数不对，是没画）' : ''));
+    /* 【2026-11-15 修·判据改口径】原来拿「整屏正文气泡数」比「live 段数」——
+     * 这两个数天生对不上：liveCount 数的是**整屏所有** .msg.assistant .bubble，
+     * 刷新回来那一刻历史里已经落了同一段，屏幕就是 2 个气泡 / 清单 1 段，
+     * 代码没毛病却被判挂（上面 74-76 行注释自己写着「历史正文画的也是气泡」）。
+     * 这条只负责「没丢」：live 那几段每一段都得在屏幕上找得到；
+     * 「没重」交给下面那条「每一段恰好一个容器」。 */
+    const lost = tx2.filter((t) => bubblesWithPrefix(seen.asstBubbles, t, 10) < 1);
+    ok(lost.length === 0,
+      'F5 之后 live 那几段正文每段都还在屏幕上（没丢段，共 ' + tx2.length + ' 段）',
+      lost.length ? '丢了 ' + lost.length + ' 段：' + lost.map((t) => String(t).slice(0, 14)).join(' | ') : '');
     let dup = 0;
     const detail = [];
     for (const t of tx2) {

@@ -72,6 +72,8 @@ function hoistTurnThinks(rows) {
     const tag = r.tag || '';
     if (!/^t-\d+$/.test(tag)) continue;
     if (r.items.some((x) => x && x.kind === 'tool')) continue;   // 本身就是柜子，不用挪
+    let merged = false;
+    /* ① 往后找：思考在柜子**上面**那种（历史里 思考→正文→工具 的老形态） */
     for (let j = i + 1; j < rows.length; j++) {
       const n = rows[j];
       if (!n || drop.has(n)) continue;
@@ -79,6 +81,37 @@ function hoistTurnThinks(rows) {
       if (nTag !== tag) break;                                   // 出了这一轮，收手
       if (n.type !== 'group' || !n.items.some((x) => x && x.kind === 'tool')) continue;
       n.items = r.items.concat(n.items);
+      drop.add(r);
+      merged = true;
+      break;
+    }
+    if (merged) continue;
+    /**
+     * ② 往回找：思考在柜子**下面**那种 —— 这才是现在的常态，也是主人
+     *    「一轮结束后思考链跑到柜子外面」那个报障。
+     *
+     * 为什么常态是「思考在下」：思考是**整轮**攒下来的，收尾时挂在
+     * 这一轮**最后一条** assistant 上（见 server.mjs 存 _reasoning 那段），
+     * 而工具挂在前面几条 assistant 上。落盘成 turn 之后顺序就成了
+     *     工具 → 工具 → 正文(带着整轮思考)
+     * 于是思考块单独成组、排在柜子下面：柜子一个、思考一个，看着就是
+     * 「思考链跑到柜子外面去了」。
+     *
+     * 这里往回找最近的、装着工具的柜子，把这块思考并进去（接在末尾，
+     * 时序上它本来就是最后想的）。碰到主人说话 / 别人说话就收手 ——
+     * 那是另一段活，不能把上一段的想法塞进这一段。
+     */
+    for (let j = i - 1; j >= 0; j--) {
+      const n = rows[j];
+      if (!n || drop.has(n)) continue;
+      if (n.type === 'item') {
+        const k = n.it && n.it.kind;
+        if (k === 'user' || k === 'mate' || k === 'say') break;   // 换人说话了，收手
+        continue;
+      }
+      if (n.type !== 'group') continue;
+      if (!n.items.some((x) => x && x.kind === 'tool')) continue;  // 只有思考的柜子，继续往前
+      n.items = n.items.concat(r.items);
       drop.add(r);
       break;
     }
@@ -107,6 +140,10 @@ function hoistTurnThinks(rows) {
  *   · 一段活不跨消息（turnTagOf 当边界，见 hoistTurnThinks 上面那段）；
  *   · 同一轮里「思考在她的话上面、工具在她的话下面」时，把思考挪进那个柜子。
  */
+/* 【2026-11-15 主人钦点】一个柜子最多存 100 条消息；再多就另起一个新柜子。
+ * 长任务一柜几百张卡会拖慢渲染，也不好翻；分段之后每柜都是能一眼扫完的一小段。 */
+const HUB_MAX_ITEMS = 100;
+
 function toRows(items) {
   const rows = [];
   let run = null;
@@ -128,8 +165,21 @@ function toRows(items) {
        * 历史里一条 turn 的顺序是 `思考 → 正文 → 工具`（items.js 的 turnToItems），
        * 所以「上一轮的工具」和「下一轮的思考」在清单里相邻 —— 那才是跨消息。
        * 工具之间即便跨 turn 也照旧并进同一个柜子（那正是「一段活」的形状）。
+       *
+       * 【2026-11-16 晚·主人报「工具调用没在同一个柜子里，被思考链隔开了」】
+       * 上面那条切分规矩被**按圈存思考**踩坏了：现在每一圈都把自己那段思考挂在
+       * 自己那条 assistant 上（见 agent.mjs 的 _reasoning），于是历史变成
+       *     思考(t5) → 工具(t5) → 思考(t6) → 工具(t6) → …
+       * 每一段思考都带一个新的 turn 标签，旧的「think 换标签就切」就变成
+       * **每次工具调用都被后面的思考切出一个新柜子** —— 截图里一柜只有一张卡。
+       *
+       * 现在整条切分规矩撤掉：think 和 tool 一样，只由「遇到正文 / 主人说话」
+       * 收口（下面 `run = null` 那一行）。思考本来就该跟工具待在同一个柜子里，
+       * 换圈不是换段。真要分段有主人消息和 HUB_MAX_ITEMS 两道闸兜着。
        */
-      if (run && it.kind === 'think' && tag && run.tag && tag !== run.tag) run = null;
+      /* 不再按 think 的 turn 标签切柜子（见上面 11-16 那段） */
+      /* 柜子封顶：满了就收口，新消息进下一个柜子（key 用新消息自己的，保证不撞） */
+      if (run && run.items.length >= HUB_MAX_ITEMS) run = null;
       if (run) run.items.push(it);
       else {
         run = { type: 'group', key: 'hub-' + it.key, tag, items: [it] };
@@ -601,6 +651,22 @@ function renderRow(r, running, lastItem, sid) {
         if (it.kind === 'think') return <ThinkBlock it={it} />;
         /* 【团队模式】跑着的卡带上「停掉」；历史收尾卡没有这个按钮 */
         if (it.kind === 'worker') {
+          /**
+           * 【2026-11-15 修·在跑的子Agent 卡不许再画在聊天流里（主人报「被顶到上面去了」）】
+           *
+           * 主人截图：两张「#23 干活中… / #24 干活中…」夹在消息流中间，被新消息一路顶上去，
+           * 而底下那颗【⚑ N 个在后台干活…】孤零零钉在最下面 —— 而且点了没反应。
+           *
+           * 病根是**同一个东西被画在两个地方**：
+           *   · 流里这一支（这里）把「在跑」的卡也画进正文流，新消息一来它就往上走；
+           *   · TeamBar 那边用 inFlowRunning 把「流里已有的」去重掉，于是一个都不剩，
+           *     收起开关收的是空集合 —— 点了当然没反应。
+           *
+           * 现在分工说死：**在跑的**统一交给底部 TeamBar（贴底、可收起），
+           * 这里只画**已经结束**的历史卡（回来了 / 没干成 / 停了 / 中断了）。
+           * 这样既不重复，也不会被顶走。
+           */
+          if (it.status === 'run') return null;
           return (
             <WorkerCard
               it={it}
@@ -608,7 +674,7 @@ function renderRow(r, running, lastItem, sid) {
             />
           );
         }
-        if (it.kind === 'note') return <SysNote it={it} />;
+        if (it.kind === 'note') return <SysNote it={it} sid={sid} />;
         /* 她发的文件（A2 收编后）：独立一行，跟工具卡一个节奏 */
         if (it.kind === 'file') return <FileCard it={it} />;
         return null;

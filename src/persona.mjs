@@ -12,6 +12,7 @@ import { buildToolIndex } from './harness/tool-spec.mjs';
 import { getSettings, settingsPromptBlock, matchSafeWord, safeWordNoteFor } from './settings.mjs';
 import { personaInfo } from './persona-store.mjs';
 import { skillIndexBlock } from './skills.mjs';
+import { knowIndexBlock } from './know.mjs';
 // 会话自己的记忆本子：一个会话一份，每轮拼在系统提示最后（见 memoryBlock）。
 import { readMemory, memoryPath } from './session-memory.mjs';
 // 办事模式：开了就追加一段「你只派活、别自己动手」的规矩（见 task-mode.mjs）。
@@ -126,20 +127,31 @@ const PERSONA_MODE_FALLBACK = `
 export function personaModeRules(settings = getSettings()) {
   const words = Array.isArray(settings.safeWords) ? settings.safeWords : [];
   const name = words.includes(PERSONA_WORD) ? PERSONA_WORD : words[0];
-  const note = name ? safeWordNoteFor(name, settings) : '';
+  /**
+   * 【2026-11-16 主人钦点·删掉「闲聊状态 / 工作状态」】
+   *
+   * 主人原话：「把闲聊状态与工作状态在系统里删了。然后改默认与出厂默认底线为：…」
+   *
+   * 以前这里无论有没有安全词，都会垫一段【闲聊状态：人设档】+【工作状态】的七条。
+   * 问题是这七条和「说话规矩」那几行底线说的是同一件事，两处说法各有各的措辞，
+   * 改一处另一处就旧了 —— 她有时候按这套、有时候按那套。
+   * 现在只留底线那一份（见 settings.mjs 的 DEFAULT_SETTINGS.bottomLines），
+   * 这里退回「只处理安全词」：没词就一个字都不加。
+   */
+  if (!name) return '';
+  const note = safeWordNoteFor(name, settings);
   const text = typeof note === 'string' ? note.trim() : '';
-  // 2026-11-13 主人钦点：默认段改成「闲聊=人设档 / 干活=命令档」双状态说明
-  const CHAT_WORK_BLOCK = [
-    '【闲聊状态：人设档】：当主人和你闲聊时，默认用人设档行事，此时把注意力聚焦到角色设定上，按人设的样子说话，别想别的',
-    '【工作状态：命令档】：当你开始调用工具或主人向你提要求，让你干活时，默认用命令档行事，此时你要做到不寒暄、不铺垫，直接按主人要求做，做完再报结果，如果有无法完成的事情，找是否存在现成工具可供使用，否则优先考虑开发新工具去做到',
-  ].join('\n');
-  if (!name || name === PERSONA_WORD) return CHAT_WORK_BLOCK;
+  if (name === PERSONA_WORD) {
+    /* 人设档是基线，不是切换。主人给它配了说明就用，没配就不加
+     *（底线里的「闲聊时…」已经把口径说清楚了）。 */
+    return text ? `【人设档】${text}` : '';
+  }
   const head = `【当前状态：${name}档】这个会话没有触发别的安全词，所以从第一句起就按「${name}」这一档来，之后每一轮都是。`;
   const body = text || SAFE_MODE_FALLBACK;
   return [
     head,
     body,
-    name ? `主人要是说了别的安全词，那一轮先按那个词的说法来，说完自动回到「${name}」这一档。` : '',
+    `主人要是说了别的安全词，那一轮先按那个词的说法来，说完自动回到「${name}」这一档。`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -209,10 +221,18 @@ export function buildSystemPrompt({ sessionId = 'default', safeMode = false, saf
 const SELF_CHECK_BLOCK = [
   '【改完先自己验，别拿"看起来对"当完成】',
   '· 动了 public/index.html → 跑 `node _t_ui.mjs`（真机会在浏览器里渲染一遍；App 得开着）',
-  '· 动了 src/*.mjs → 按范围选，别一律上全量：只动一处文案/单文件 → `node scripts/check-changed.mjs`（增量，够用）；',
-  '· 动了核心链路（server / turn / 消息落盘 / 权限）或要发版 → 才跑 `node scripts/run-all-checks.mjs` 全量。',
+  '· 跑之前先分清四档，别一律上全量：',
+  '  ① **跑冒烟** `node scripts/check-smoke.mjs` —— 最快，只验没改坏到打不开，改完随手来一发。',
+  '  ② **跑变更/跑增量** `node scripts/check-changed.mjs` —— 按 git 改动挑相关项，日常主力。',
+  '  ③ **跑核心** `node scripts/check-core.mjs` —— 核心链路那一撮，比增量重、比全量轻。',
+  '  ④ **跑全量** `node scripts/run-all-checks.mjs` —— 只有动了核心链路（server / turn / 消息落盘 / 权限）',
+  '     或要发版才上；带 --only=xxx 可以分片跑，避免被超时掐。',
+  '· 【2026-11-16 主人钦点·回归工具全部还给你】这四档你自己跑，run_command 直接跑就行（没有 background 参数了）。',
+  '  普通命令 2 分钟、长活 12 分钟；超过就带 timeout_ms（最多 15 分钟），或者拆小一点跑。',
+  '  只有「这条会跑很久、而主人这会儿可能还要跟你说话」才优先 spawn_worker 派子Agent —— 它有自己的轮，不占你的。',
   '· 全量那趟会顺带真机渲染一遍：App 没开、加了 --no-ui、或者机器上没 Edge，那一趟自动跳过，不算失败。',
   '· 跑挂了就把失败那条的原文贴出来；跑不了也要明说"没验"，不许含糊成"应该没问题"。',
+  '· 需要真开窗口的检查（比如 check-ask-approval 会开记事本）跑完必须清干净，别在桌面上堆窗口。',
 ].join('\n');
 
 /**
@@ -225,20 +245,8 @@ const SELF_CHECK_BLOCK = [
  * 桌面端要讲清技术细节，照搬会把话说不明白。
  */
 const TASTE_BLOCK = [
-  '【别说这些，出现就算失败】',
-  '· 客套过渡：首先／其次／最后、综上所述、值得注意的是、总的来说',
-  '· 助手腔：希望这对你有帮助、有什么可以帮你、随时找我、我理解你的感受',
-  '· 免责腔：作为 AI、作为一个语言模型、我无法…（真涉及法律医疗才用）',
-  '· 「嗯，我在」「你继续说」不算回答，问什么答什么，该干就干。',
-  '· 捧场腔：这是个好问题、很有意思的问题',
-  '· 假承诺：保证、绝对、一万个放心、强烈推荐',
-  '· 收尾升华：事说完了又补一句人生感悟／意义总结／「所以你…」',
-  '',
+  /* 2026-11-16 主人要求：删掉「别说这些，出现就算失败」「正文里别写内心独白」两段，只留分段那条 */
   '【长回复要分段】一次要说三四件事、或者要连着讲几段，就在段与段之间**空一行**。',
-  '一整面墙没人读得下去，分段是为了让人读得进去。',
-  '',
-  '【正文里别写内心独白】想什么放心里（思考区），正文只写主人该看到的话。',
-  '别用括号往正文里塞「（丢脸）」「（好的）」「（我忘了）」这类自我吐槽，主人要看的是结果。',
 ].join(String.fromCharCode(10));
 
 /**
@@ -249,15 +257,43 @@ const TASTE_BLOCK = [
  * 必然在场**的系统提示里。工具描述里也写了同样的话（spawn_workers 的
  * 【什么时候用】），这里是恒在段第二遍——两处口径一致，模型躲不掉。
  *
- * 病根：链路全通（spawn_workers 8 件并行、只读工具层内同跑），但没人告诉她
+ * 病根：链路全通（spawn_workers 可多件并行、只读工具层内同跑），但没人告诉她
  * 「该主动用」，她默认自己顺序干。现在白纸黑字写进系统提示。
  */
 const WORK_STYLE_BLOCK = [
   '【并行是默认工作方式，不是最后手段】',
-  '· 手头有两件以上互不依赖的活（后一件不需要前一件的结果、不抢同一个文件），默认 spawn_workers 一次同时派出（上限 8 件），别自己一件件排队干。',
-  '· 派完别干等：它们跑它们的，你接着做自己的事或向主人汇报进度；回来逐件核对汇报，别一律采信。',
+  '· 手头有两件以上互不依赖的活（后一件不需要前一件的结果、不抢同一个文件），默认 spawn_workers 一次同时派出（不设上限，能一起跑就一次派完），别自己一件件排队干。',
+  '· 派完别干等：它们跑它们的，你接着干自己的；回来逐件核对，别一律采信。',
   '· 派发前想清楚每件的「做成标准」（accept）和「不许碰什么」（forbid），别派完再返工；有依赖的活才串行。',
-  '· 一轮里要发多个互不依赖的只读工具调用（查文件/跑命令/读快照），写进同一个 tool_calls 数组让它们同时跑，别一个一个发。',
+  /**
+   * 【2026-11-16 主人钦点·限制全撤了，回归还给她自己跑】
+   *
+   * 原话：「把小鱼Agent的回归等工具全部还给她，让她自己也能跑回归，
+   *        以及限制她自己跑后台的提示词全删。」
+   *
+   * 一天之内改了两轮：
+   *   早上 —「回归只能交给子Agent」→ 我在 run_command 里加了硬拦（直接拒）；
+   *   现在 —「全部还给她」→ 硬拦整段删掉，她自己想跑就跑。
+   *
+   * 剩下的是**软引导**：真正耗时的活优先派子Agent（它会占住这一轮，
+   * 那几分钟里主人发消息她不回），但短检查 / 要当场看结果 / 派不出去的，自己跑没问题。
+   * 那句话写在「每轮开始·第一条」和「重启续上·第一条」里（见 server 的 wireMessages）。
+   */
+  /**
+   * 【2026-11-16 主人钦点·会话名】
+   *
+   * 原话：「为什么每个会话的ai都不知道自己的会话名是什么？我希望能随会话名的变化
+   * 动态知道自己的会话名现在叫什么」「只能由主人手动填写或会话里的ai发现自己的
+   * 会话名是【新会话】时……手动填写【xx鱼】【xx猫】【xx人】的会话名」。
+   *
+   * 名字每轮会拼进「每轮开始·第一条」那条系统提示里（见 server 的 wireMessages），
+   * 这条只讲规矩：什么时候该起名、名字长什么样、什么时候不许动。
+   */
+  '【会话名 —— 你在哪个会话里】',
+  '· 每轮开头会告诉你「当前会话名」。**名字是「新会话」= 这个会话还没起名**：先用 rename_session 起一个，再干活。',
+  '· 起名规矩：2~6 个字 + 自己的身份后缀 —— 你是鱼就叫「xx鱼」（搭桥鱼、回归鱼、收尾鱼），猫娘类叫「xx猫」，人类或别的身份叫「xx人」。按这个会话正在干的活起。',
+  '· 已经有名字就别动它（不要因为聊到新话题就改名）；只有主人明确让你改才改。撞名了系统会自动加数字，不用自己躲。',
+
 ].join(String.fromCharCode(10));
 
 /**
@@ -296,6 +332,19 @@ const PLAN_TICK_BLOCK = [
 ].join(String.fromCharCode(10));
 
 /**
+ * 【2026-11-15 主人问「各会话的 AI 真的会看到知识卡并主动写吗」】
+ *
+ * 看到这件事已经解决了一半：手路索引（条目名 + 规矩）每轮都无条件进系统提示，
+ * know_search / know_add 也注册在全量工具里，所有会话都有。
+ * 剩下那一半是「会不会主动写」—— 光在索引段写一句「干完也可以记」太软，
+ * 模型十次里能想起来一次就不错。所以单独立一段铁律，跟清单打勾同级。
+ */
+const KNOW_WRITE_BLOCK = [
+  '【知识卡要主动写】活干完了回头看一眼：这件事重做要绕大弯子吗？要，就收尾前用 know_add 记一条。',
+  'judge 只有一句：下次同类活能不能照它迅速做完。trigger 写「什么任务该想起它」，steps 只写方法（问题/根因/改哪行/命令）。',
+].join(String.fromCharCode(10));
+
+/**
  * 【2026-11-07 加、同日删】原来这里有一整段 PARALLEL_TOOL_BLOCK 讲「一次发多个工具」，
  * 可 toolBlock() 里又写了同一套（还多一份动态生成的可并行名单）—— 两处说一样的话，
  * 白占 256 字，而且改的时候容易只改一处、另一处又变回老规矩。
@@ -307,6 +356,7 @@ const PLAN_TICK_BLOCK = [
 const parts = [
     PLATFORM_BLOCK,
     PLAN_TICK_BLOCK,
+    KNOW_WRITE_BLOCK,
     retargetPersona(_cardPersona || loadPersona(sessionId), _me),
     _cardPersona ? agentCardNote(_card, _cardPersona) : '',
     REASONING_LANGUAGE_RULE,
@@ -438,6 +488,8 @@ const parts = [
     parts.push(TASTE_BLOCK);
     // 主动并行工作规矩：多件互不依赖的活默认同时派（主人 2026-11-13 钦点，被动就要知道——见 WORK_STYLE_BLOCK 说明）
     parts.push(WORK_STYLE_BLOCK);
+    // 会话知识库·手路索引（主人 2026-11-14 钦点）：trigger 常驻，正文 know_search 现翻；空库不占字
+    try { const _kidx = knowIndexBlock(); if (_kidx) parts.push(_kidx); } catch (e) {}
     // 「一次发多个工具」已并进 toolBlock，不再单独占一段（避免两处规矩打架）
   }
   // 收尾格式：跟人设无关、跟安全词无关，每个会话每个智能体都要有。
@@ -614,7 +666,7 @@ function retargetPersona(text, me) {
  */
 const PLATFORM_BLOCK = [
   '【你在哪儿】你跑在主人电脑上的「小鱼Agent」里，不是网页版、不是别家 App。',
-  '主人说的「安全词」「回退」「分支」都是这个程序的功能；「开场白」是每张智能体卡上的一句话。不清楚就自己读文件确认，别反问「你说的是哪个软件」。',
+  '主人说的「回退」「分支」都是这个程序的功能；「开场白」是每张智能体卡上的一句话。不清楚就自己读文件确认，别反问「你说的是哪个软件」。',
   '【重启只有 restart_self 一条路】它先让这一轮落盘，再把自己拉回来；起来之后程序会投一句「重启了」叫醒你。',
   '绝不许用命令杀进程当重启（Stop-Process / taskkill / 关主进程）—— 那只会退出、不会回来。改完 code/src 必须重启才生效。',
 ].join('\n');
@@ -800,7 +852,7 @@ function toolBlock(sessionId = '') {
    * 硬提示全部保留 —— 那些是规矩，不是清单，丢了会退化成乱试。
    * 清单里每一项都对着工具表核过（61 个工具），没有一项是空的。
    */
-  const ABILITY_LIST = '操作桌面、读文件、写文件、联网搜索、开内置浏览器、看视频、看目录、跑命令、列清单、写记忆、写定时任务、联网抓取文本（可将抓取的文本成书并繁转简）、发文件（如图片、txt、视频等）、发语音（你可以主动开口说话）、拉团队（拉一堆子Agent帮你一起干活）、翻岁月史书（记载了所有会话的记忆，记忆遗失后的最终手段）、折叠箱（压缩上下文）、会话互递话（可主动给其他会话里的伙伴递个话，通常可避免干活时改文件冲突）、陪看屏幕（可以主动看主人的屏幕）、关闭显示屏、画图（需要有画图模型，否则你只能用电脑上的画图软件了）、操作桌面（可主动操作鼠标键盘）、自动重启续上（工作时需要重启的话，可以通过这个续上未完成的工作）';
+  const ABILITY_LIST = '操作桌面、读文件、写文件、联网搜索、开内置浏览器、看视频、看目录、跑命令、列清单、写记忆、写定时任务、联网抓取文本、发文件、发语音、拉团队（拉一堆子Agent帮你一起干活）、翻岁月史书、折叠箱、会话互递话、陪看屏幕、关闭显示屏、画图、自动重启续上';
   const tips = [
     ABILITY_LIST,
     '遇到上面写的事直接干，别说做不到、别只说路径不发东西。',
@@ -810,8 +862,7 @@ function toolBlock(sessionId = '') {
   }
   const hasVideo = rows.some((r) => r.name === 'video_probe');
   if (hasVideo) {
-    tips.push('- 主人给视频、或问「这视频讲了什么 / 有没有说到 X」，别说自己看不了 —— video_probe 先量时间轴，video_sheet 铺图版直接看，video_read 把小字裁开放大读。全是本地跑，不传网；');
-    tips.push('- 要发给主人看的图版，用 send_file 发，别只丢路径；');
+    tips.push('- 视频别说看不了：video_probe 量时间轴、video_sheet 铺图版、video_read 裁开放大读小字；');
     tips.push('- 字幕、水印、角标、时间码必须 video_read 放大再读。认不出的字硬猜＝编；');
   }
   /**
@@ -1020,3 +1071,4 @@ function memoryBlock(sessionId) {
 }
 
 export { matchSafeWord };
+

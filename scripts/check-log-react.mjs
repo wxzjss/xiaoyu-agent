@@ -359,6 +359,10 @@ async function caseNormalTurn() {
   const B = 'QA乙段工具跑完了再说一句';
   const events = [
     { type: 'text', text: A },
+    /* 【2026-11-16 夹具适配】「工具前的正文 = 过程话不上屏」是新规矩。
+     * 这里验的是「对话分成两段、每段一份」，垫一条思考让 tool_start 前面不是 text，
+     * A 才不会被新规矩摘掉（思考块对正文是透明的，不影响分段结论）。 */
+    { type: 'reasoning', text: 'QA想一下再说' },
     { type: 'tool_start', id: 'lr1', name: 'run_command', args: '{"cmd":"echo hi"}' },
     { type: 'tool_end', id: 'lr1', ok: true, output: 'hi' },
     { type: 'text', text: B },

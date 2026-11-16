@@ -20,6 +20,7 @@ const READ_ONLY = [
   'chronicle_toc', 'chronicle_search', 'chronicle_read', 'folded_list', 'folded_read',
   'memory_search', 'list_peers', 'read_peer_mail', 'list_workers', 'watch_worker',
   'video_probe', 'video_read', 'video_doctor',
+  /* 【2026-11-15】后台任务只看不动：查进度、列清单。停任务要杀进程，算副作用。 */
 ];
 
 /** 明确要写 / 会改外部状态的工具。列出来是为了让检查脚本能验证「没被误判成只读」。 */

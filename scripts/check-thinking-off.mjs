@@ -191,10 +191,15 @@ try {
       t.ok(fmt + ' / ' + lv + ' 不发 reasoning_effort', f.reasoning_effort === undefined, JSON.stringify(f));
     }
   }
-  /* 老档位不许漏到线上 */
-  t.ok('老值 on → 关（发 none + thinking.disabled）',
-    mod.fieldsForLevel('on', EPS.openai).fields.reasoning_effort === 'none');
-  t.ok('老值 medium → 关（同上）', mod.fieldsForLevel('medium', EPS.openai).fields.reasoning_effort === 'none');
+  /* 老档位不许漏到线上
+   * 【2026-11-15 改】主人钦点「新建会话默认高」，normalizeLevel 的兜底从 off 改成 high ——
+   * 老值 on / medium 一律归到「高」（on 本来就是开着思考，medium 更接近高而不是关）。
+   * 断言跟着新规矩走，并补一条「空 / 认不出 → 高」把这次的改动钉住。 */
+  t.ok('老值 on → 高（默认高）',
+    mod.fieldsForLevel('on', EPS.openai).fields.reasoning_effort === 'high');
+  t.ok('老值 medium → 高（同上）', mod.fieldsForLevel('medium', EPS.openai).fields.reasoning_effort === 'high');
+  t.ok('空 / 认不出 → 高（默认高，不再落关）',
+    mod.normalizeLevel('') === 'high' && mod.normalizeLevel('whatever') === 'high');
   t.ok('老值 xhigh → 最高', mod.fieldsForLevel('xhigh', EPS.openai).fields.reasoning_effort === 'max');
   /* 不传接入点时按 openai 方言（老调用点的行为不能变） */
   t.ok('不传接入点 = openai 方言',
@@ -352,16 +357,16 @@ try {
     ov_off: { level: 'off' },
     ov_medium: { level: 'medium' },
   });
-  t.ok('会话里存着 on → 读出来是 off（老值归关）', overrides.getOverride('ov_on').level === 'off', overrides.getOverride('ov_on').level);
+  t.ok('会话里存着 on → 读出来是 high（老值归高）', overrides.getOverride('ov_on').level === 'high', overrides.getOverride('ov_on').level);
   t.ok('会话里存着 off → 读出来还是 off（不被老值盖住）', overrides.getOverride('ov_off').level === 'off', overrides.getOverride('ov_off').level);
-  t.ok('会话里存着 medium → 读出来是 off（老值归关）', overrides.getOverride('ov_medium').level === 'off', overrides.getOverride('ov_medium').level);
+  t.ok('会话里存着 medium → 读出来是 high（老值归高）', overrides.getOverride('ov_medium').level === 'high', overrides.getOverride('ov_medium').level);
 
   /* 会话级「关」压过全局「高」，而且真的发出去 */
   setThinkingState({ level: 'high', perModel: {} });
   const sOv = await runStream({ sessionId: 'ov_off' });
   t.ok('会话选「关」→ 线上收到 thinking.disabled', sOv.body?.thinking?.type === 'disabled', JSON.stringify(sOv.body.thinking));
   const sOvOn = await runStream({ sessionId: 'ov_on' });
-  t.ok('会话存的老值 on → 按「关」发', sOvOn.body?.reasoning_effort === 'none' && sOvOn.body?.thinking?.type === 'disabled', JSON.stringify({ e: sOvOn.body?.reasoning_effort, t: sOvOn.body?.thinking }));
+  t.ok('会话存的老值 on → 按「高」发', sOvOn.body?.reasoning_effort === 'high', JSON.stringify({ e: sOvOn.body?.reasoning_effort, t: sOvOn.body?.thinking }));
 
   /* ══════════════════════════════════════════════════════════
      ⑥ 全局兜底：整场下来一个 off 字面值都没发出去

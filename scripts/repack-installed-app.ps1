@@ -63,9 +63,16 @@ try {
   }
 } catch {}
 if ($probe -and -not $SelfUpdate) {
-  throw ('这个脚本正在被小鱼Agent自己拉起（祖先进程：' + $probe + '），跑下去会把它自己杀掉。'
-    + '请在**外部**终端（PowerShell/cmd）里运行这条命令 —— 替换完它会自动把应用拉回来。'
-    + '（管理员档下可以用 -SelfUpdate 参数：她就是在自更程序本体，杀掉后自动拉回、轮子自动接回。）')
+  # 【2026-11-14 修·这个 throw 块让整个脚本语法错误】
+  # 原来写成 `throw ('字符串' + $probe + '字符串'` 跨行拼接 —— Windows PowerShell 5.1
+  # 在这个位置解析不出来（报「表达式中缺少右")"」），**整个脚本根本跑不起来**，
+  # 于是「改完源码 → 打进安装包 → 重启」这条路一直是断的：改的东西只进了 data/code，
+  # 而程序跑的是 asar 里那份旧的。
+  # 现在改成先拼字符串再 throw，解析器不吃这套。
+  $msg = '这个脚本正在被小鱼Agent自己拉起（祖先进程：' + $probe + '），跑下去会把它自己杀掉。'
+  $msg += '请在**外部**终端（PowerShell/cmd）里运行这条命令 —— 替换完它会自动把应用拉回来。'
+  $msg += '（管理员档下可以用 -SelfUpdate 参数：她就是在自更程序本体，杀掉后自动拉回、轮子自动接回。）'
+  throw $msg
 }
 if ($SelfUpdate) {
   Write-Host '【SelfUpdate】管理员档自更：跳过父链自检，跑完自动把应用拉回来。'
@@ -136,7 +143,61 @@ Write-Host "好了：$files 个文件，app.asar = $((Get-Item $asarP).Length) �
 # -WindowStyle Hidden 让它跟正常双击一样进托盘/窗口，不带黑框。
 $exe = Join-Path $InstallDir '小鱼Agent.exe'
 if (Test-Path $exe) {
-  Start-Sleep -Seconds 1
-  Start-Process $exe | Out-Null
-  Write-Host '应用已重新拉起。'
+  # 【2026-11-14 夜修·自动拉起不稳】原来只 Start-Process 一次 explorer 就收工：
+  # 老进程刚被 kill 还没放掉单实例锁 / explorer 这次只是把请求交给已有窗口，
+  # 新实例都会秒退，表现就是「repack 说拉起了，其实端口没起来」。
+  # 现在：① 等老进程真的全退 ② explorer 拉起后轮询端口（port.txt 为准）
+  # ③ 60 秒内没起来就重试，最多 3 次，每次都重新确认没有残留实例。
+  $deadline = (Get-Date).AddSeconds(15)
+  while ((Get-Date) -lt $deadline) {
+    $left = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.ExecutablePath -like '*xiaoyu-mini-agent*' })
+    if ($left.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 500
+  }
+  $portFile = Join-Path $env:APPDATA '小鱼Agent\port.txt'
+  $up = $false
+  $ProgressPreference = 'SilentlyContinue'   # 轮询时别刷一屏 WebRequest 进度条
+  for ($try = 1; $try -le 3 -and -not $up; $try++) {
+    # 【2026-11-15 修·每打包一次就漏一个「Temp - 文件资源管理器」窗口】
+    #
+    # 主人报：「和记事本一样，我后台打开了一堆的文件管理器窗口。」
+    # 实测：13 个 explorer 进程，标题全是「Temp - 文件资源管理器」，
+    # 启动时间 9:11~13:14 —— 正好是我今天反复打包重启的时段，一次漏一个。
+    #
+    # 病根：explorer.exe 的 /select 与「把参数当路径打开」这层语义很挑。
+    # 传一个带中文/空格的 exe 路径时，若引号或工作目录不对，
+    # explorer 不认它是可执行文件 → **把它当目录打开**，而这个进程的当前目录
+    # 是 TEMP，于是开出一个「Temp」窗口；程序没起来，重试还再开一个（最多 3 次）。
+    #
+    # 修法：**不要自己给路径加引号**。Start-Process 会再包一层，
+    # 变成 ""C:\...\小鱼Agent.exe"" —— explorer 认不出这是可执行文件，
+    # 就当目录打开，于是弹出一个「Temp」窗口（explorer 当前目录是 TEMP）。
+    # 直接把路径作为参数交给 PowerShell，让它自己处理引号。
+    Start-Process explorer.exe -WorkingDirectory (Split-Path $exe -Parent) -ArgumentList $exe | Out-Null
+    for ($i = 0; $i -lt 20; $i++) {
+      Start-Sleep -Seconds 1
+      $port = 8788
+      try { $p = (Get-Content $portFile -Raw -ErrorAction Stop).Trim(); if ($p -match '^\d+$') { $port = [int]$p } } catch {}
+      try {
+        $r = Invoke-WebRequest "http://127.0.0.1:$port/" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+        if ($r.StatusCode -eq 200) { $up = $true; break }
+      } catch {}
+    }
+    if (-not $up) { Write-Host "第 $try 次拉起没见服务，再来一次…" }
+  }
+  if ($up) { Write-Host '应用已重新拉起（explorer + 端口轮询确认 200）。' }
+  else { Write-Host '⚠ 三次都没拉起来，请手动双击小鱼Agent.exe。' }
+
+  # 【2026-11-15 加·兜底清创】万一还是漏了「Temp - 文件资源管理器」窗口，
+  # 打包结束时自己收走 —— 主人的桌面不该因为我们的打包多出东西。
+  # 只认标题**精确等于**「Temp - 文件资源管理器」的，绝不碰主人自己开的文件夹。
+  try {
+    $stray = @(Get-Process explorer -ErrorAction SilentlyContinue |
+      Where-Object { $_.MainWindowTitle -eq 'Temp - 文件资源管理器' })
+    if ($stray.Count -gt 0) {
+      $stray | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+      Write-Host ("顺手关掉了 " + $stray.Count + " 个多出来的「Temp」窗口")
+    }
+  } catch {}
 }

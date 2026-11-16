@@ -19,11 +19,19 @@
  * 注入进来（setTeamChannels）。没注入时降级：回传只排 followup，不起轮。
  */
 
-import { readdirSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { readdirSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, basename, dirname } from 'node:path';
+import { config } from './config.mjs';
+
+/** worker 轨迹目录：跟花名册同级，用同一个 dataDir。
+ *  2026-11-16 借鉴 WB 的 appendToOutputFileById —— 汇报必须落到磁盘上，
+ *  不能只活在内存的 said 字段里（模型返回空就全丢）。 */
+function workerTraceDir(sessionId) {
+  return join(config.dataDir, '.state', 'worker-trace', String(sessionId || 'default'));
+}
 import { featureOnFor } from './features.mjs';
 import { followup, peekInbox, drainTurns } from './inbox.mjs';
-import { drainWorkerMail, finishWorker, listWorkers, noteWorker, workersPath } from './task-mode.mjs';
+import { drainWorkerMail, finishWorker, listWorkers, noteWorker, workersPath, beatWorker, findStalledWorkers, reapStalledWorker } from './task-mode.mjs';
 import { enforceZhWorkerName } from './name-zh.mjs';
 
 /** 这个会话现在开没开团队模式。读盘失败 = 没开（fail-closed，跟 taskOn 同一口径）。 */
@@ -51,6 +59,23 @@ function poolFor(sid) {
 export function registerWorkerCtrl(sid, wid, ac) {
   try { poolFor(sid).set(String(wid), ac); } catch {}
 }
+
+/**
+ * 【2026-11-16 主人问「子Agent 干活死了会自动删显示吗」】
+ *
+ * 进程池里有没有这个 worker —— 判断「它到底还在不在跑」的唯一可靠依据。
+ * 花名册是磁盘上的账，进程被硬杀（重启 / 崩溃 / 任务管理器杀掉）时它来不及改，
+ * 于是界面会一直显示「干活中…」，其实早死了。
+ */
+export function isWorkerAlive(sessionId, wid) {
+  try {
+    const m = CTRLS.get(String(sessionId || 'default'));
+    return !!(m && m.has(String(wid || '').replace(/^#/, '')));
+  } catch { return false; }
+}
+
+/** 本进程启动时刻 —— 早于它的 running 一定是上个进程留下的。 */
+export const BOOT_AT = Date.now();
 
 /** 收尾注销（跑完 / 停掉 / 挂了都要调，别让池子涨）。 */
 export function releaseWorkerCtrl(sid, wid) {
@@ -134,8 +159,21 @@ export function dispatchWorker({ sessionId, wid, name, brief, maxRounds, timeout
     pushWorkerEvent(sid, Object.assign({ type: 'worker', wid: key, name: nick, kind, text: String(text || '') }, extra || {}));
   };
 
+  /* 【2026-11-16 借鉴 WB】轨迹落盘缓冲：worker 每一行进度都记下来。
+   * 为什么要这个 —— 本会话实测：worker 模型最后返回空字符串时 r.text 是 ''，
+   * 汇报整段蒸发（花名册 said 空、父层什么都收不到、报告文件根本没生成）。
+   * WB 的做法是 appendToOutputFileById 强制落文件，这里照搬：轨迹先落盘，
+   * 空汇报就用轨迹兜底回传，绝不让一次派活白跑。 */
+  const trace = [];
+  const traceFile = join(workerTraceDir(sid), String(key) + '.txt');
+
   const run = (async () => {
     let r = null;
+    /* 【防误杀·2026-11-16】进轮/工具落地那两个心跳不够：跑一条 11 分钟的长命令期间
+     * 心跳不动，而 STALL_MS 才 6 分钟 —— 必然被当成死掉。这里再挂一个定时器：
+     * 只要这个 worker 进程还活着就按时踩一脚，真死了脚自然就停了。 */
+    const __hb = setInterval(() => { try { beatWorker(sid, key); } catch {} }, 20000);
+    try { __hb.unref?.(); } catch {}
     try {
       const { runSubagent } = await import('./subagent.mjs');
       pushEv('start', '开始干：' + String(brief || '').slice(0, 120), { startedAt: Date.now() });
@@ -150,14 +188,43 @@ export function dispatchWorker({ sessionId, wid, name, brief, maxRounds, timeout
         pullMails: () => {
           try { const ms = drainWorkerMail(sid, key); if (ms && ms.length) pushEv('mail', '收到补话：' + ms.map((m) => m.text).join(' / ').slice(0, 160)); return ms; } catch { return []; }
         },
+        // 【心跳】每轮开跑/每个工具落地都刷新 lastBeatAt —— 判死只看这个
+        // 【实时轮次】subagent 那边两处 onBeat 分别传 {round} 和 {round, tool}，
+        // 以前这里把它整个丢掉，导致 watch_worker 干活期间永远显示 0 轮 0 工具。
+        onBeat: (info) => {
+          try {
+            const p = info && typeof info === 'object' ? info : {};
+            beatWorker(sid, key, { round: p.round, tool: p.tool, lastTool: p.tool });
+          } catch {}
+        },
         onProgress: (line) => {
           pushEv('step', line);
+          /* 每一行都进轨迹缓冲（封顶 800 行，防长活把内存吃光） */
+          try { if (trace.length < 800) trace.push(String(line || '').slice(0, 300)); } catch {}
         },
       });
     } catch (e) {
       r = { ok: false, text: '子智能体没起来：' + String(e?.message ?? e) };
     }
-    const text = String((r && r.text) || '').trim();
+    try { clearInterval(__hb); } catch {}
+    /* 【落盘】轨迹无条件写一份，谁想复查都能查到它到底干了啥 */
+    try { mkdirSync(workerTraceDir(sid), { recursive: true }); writeFileSync(traceFile, trace.join('\n'), 'utf8'); } catch {}
+    let text = String((r && r.text) || '').trim();
+    /* 【空汇报兜底 2026-11-16】模型返回空 = 这次派活全白干。
+     * 用轨迹尾巴拼一份可读交代，至少让父层知道它走到哪、卡在哪。 */
+    if (!text) {
+      const tail = trace.slice(-12).join('\n');
+      if (tail) {
+        text = (r && r.ok ? '（模型没写汇报，以下是它最后几步的轨迹）\n' : '（子智能体没写汇报，以下是最后几步轨迹）\n') + tail
+          + '\n\n完整轨迹：' + traceFile;
+      } else if (r && !r.ok) {
+        text = '子智能体出错了，且没有任何进度记录。';
+      } else {
+        text = '（子智能体跑完但没留下任何汇报和轨迹）';
+      }
+      /* 补一句进实时事件，界面上也能看见它变成兜底汇报 */
+      try { pushEv('step', '⚠ 模型没写汇报，已用轨迹兜底'); } catch {}
+    }
     const stopped = ac.signal.aborted;      // 只有 /api/team/stop 会拉这一根
     try {
       finishWorker(sid, key, {
@@ -282,6 +349,91 @@ function notifyWorkerInterrupted(sid, wid, name, reason) {
     catch (e) { try { console.warn('[team] 中断通知投递失败 #' + wid + '：', e && e.message); } catch {} return false; }
   };
   if (!_deliver()) setTimeout(() => { try { _deliver(); } catch {} }, 3000).unref?.();
+
+  /* 【2026-11-16 主人钦点】通知递进 inbox 后，如果那一轮已经收尾、没人接走，
+   * 它就静静躺在信箱里 —— 主智能体要等下次开口才知道。
+   * 照 reportWorkerResult 的做法：2.5 秒后还没人取，就自己投引子起一轮。 */
+  setTimeout(() => {
+    try {
+      const s2 = String(sid || 'default');
+      /* 先判通道在不在、再取信 —— 反过来的话，通道不在时信已经被取走，就丢了 */
+      if (!_channels.startTurnWithIntro) return;
+      if (_channels.isTurnRunning && _channels.isTurnRunning(s2)) return;
+      const pending = peekInbox(s2).turns || [];
+      if (!pending.length) return;
+      const items = drainTurns(s2);
+      if (!items.length) return;
+      const joined = items.map((x) => String(x && x.text || '')).filter(Boolean).join('\n\n────────\n\n');
+      _channels.startTurnWithIntro(s2,
+        '（有个后台子Agent没能跑完 —— 下面这条是程序替你递的通知，不是主人说的话。）\n\n' + joined);
+    } catch { /* 起轮失败不连累任何在跑的东西 */ }
+  }, 2500).unref?.();
+}
+
+/* ── 运行期自动收尸（2026-11-16 主人钦点：死掉的子Agent自动清） ──────── */
+
+/**
+ * 主人原话：「我希望遇到这种情况能自动清」「自动清死掉的子Agent」。
+ *
+ * 之前的三个漏洞（这才是「跑了十几分钟还挂着」的真因）：
+ *   ① 花名册里**根本没有心跳字段** —— progress 只在 onProgress 那几处写，
+ *      一个卡在等模型回包的 worker 可以几十分钟不写一行，名册上看着跟活着一样；
+ *   ② isWorkerAlive 只看本进程内存里有没有 AbortController，
+ *      进程还在 = 永远「活着」，压根没有时间维度；
+ *   ③ markInterruptedWorkers 是死代码，全仓没人调 —— 于是跨重启残留的 running
+ *      永远留在名册上（实测 smwcwq8lbz3ly 的 #1/#2 从凌晨 01:53 一直挂到早上）。
+ *
+ * 现在：每个工具落地 + 每进一轮都 beatWorker() 刷 lastBeatAt；
+ * 这个清扫器每 30s 扫一遍名册，超时没心跳的立刻：
+ *   abort 真正在跑的那一轮 → 名册标 stalled → 给主智能体递一句话（别让她干等）。
+ *
+ * 【为什么用 6 分钟】正常的单步长工具（跑回归、全量自检）实测 2~5 分钟；
+ * 6 分钟没任何一步 = 卡在服务端不回包。再给 90 秒宽限，避免刚派出去就误杀。
+ */
+let _reapTimer = null;
+export function startWorkerReaper({ everyMs = 30000 } = {}) {
+  if (_reapTimer) return _reapTimer;
+  _reapTimer = setInterval(() => {
+    try { reapDeadWorkersOnce(); } catch (e) { try { console.warn('[team] 收尸出错：', e && e.message); } catch {} }
+  }, everyMs);
+  _reapTimer.unref?.();
+  return _reapTimer;
+}
+
+/** 扫一遍所有会话的名册，把死掉的收掉。返回这一趟收了几个。 */
+export function reapDeadWorkersOnce({ now = Date.now() } = {}) {
+  let dir = '';
+  try { dir = workersPath(); } catch { return 0; }
+  let files = [];
+  try { files = readdirSync(dir).filter((f) => f.endsWith('.json') && !f.startsWith('_')); } catch { return 0; }
+  let n = 0;
+  for (const f of files) {
+    const sid = basename(f, '.json');
+    if (!sid) continue;
+    let dead = [];
+    try { dead = findStalledWorkers(sid, { now, bootAt: BOOT_AT }); } catch { continue; }
+    for (const d of dead) {
+      /* ① 先把真正在跑的那一轮 abort 掉 —— 只改名册不掐轮子＝它还占着模型在烧钱 */
+      try { stopWorker(sid, d.id); } catch {}
+      /* ② 名册落成 stalled（不是 stopped：没人点停，是它自己不动了） */
+      let rec = null;
+      try { rec = reapStalledWorker(sid, d.id, { now, bootAt: BOOT_AT, why: d.deadByBoot ? '程序重启过，这个子Agent的进程已经没了' : '已经 ' + Math.round(Number(d.idleMs||0) / 60000) + ' 分钟没有任何动作，判定卡死' }); } catch {}
+      if (!rec) continue;
+      n += 1;
+      /* ③ 告诉主智能体：别等汇报了，要看进度看花名册 */
+      const why = d.deadByBoot
+        ? '程序重启过，这个子Agent的进程已经没了'
+        : '已经 ' + Math.round(d.idleMs / 60000) + ' 分钟没有任何动作，判定卡死';
+      try { releaseWorkerCtrl(sid, d.id); } catch {}
+      try { notifyWorkerInterrupted(sid, d.id, d.name, why); } catch {}
+      try {
+        if (_channels.pushWorkerEvent) _channels.pushWorkerEvent(sid, {
+          type: 'worker', op: 'stalled', id: String(d.id), name: String(d.name || ''), why,
+        });
+      } catch {}
+    }
+  }
+  return n;
 }
 
 /* ── 重启后的自动续跑（主人 2026-11-13 钦点：子 Agent 也要续上） ───── */

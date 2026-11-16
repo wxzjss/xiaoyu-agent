@@ -15,9 +15,11 @@
 import { makeChecker } from './_harness_util.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 
 const t = makeChecker('ui / 模块化');
-const root = process.cwd();
+const root = __ROOT;
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 const read = (p) => fs.readFileSync(path.join(root, 'public', 'ui', p), 'utf8');
 

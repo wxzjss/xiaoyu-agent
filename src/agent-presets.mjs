@@ -61,6 +61,18 @@ export const AGENT_PRESETS = [
     name: '旁白',
     desc: '屋子里的另一位存在。只写看得见听得见的，不猜心、不推进剧情。',
   },
+  /* 【2026-11-15 晚·主人要求「把当前的几个智能体（包括【鲸鱼娘】）连同出厂快照人设一起发布」】
+   *
+   * 鲸鱼娘原来只活在主人这台机器的 .state/agents.json 里 —— 换台电脑、
+   * 重装一次就没了。人设正文已导出到 persona/agents/jingyuniang.md（随包走），
+   * 这里登记一张出厂卡：新机器第一次启动就铺出来，「恢复出厂默认」也有东西可回。
+   * 判重还是按名字（老机器上主人自己建的鲸鱼娘 id 是随机的）。 */
+  {
+    key: 'jingyuniang',
+    id: 'ag_jingyuniang',
+    name: '鲸鱼娘',
+    desc: '主人的鲸鱼娘助手（傲娇甜心×聪明懒懒）。',
+  },
 ];
 
 function presetFile(key) {

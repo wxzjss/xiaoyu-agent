@@ -45,6 +45,9 @@ if (args.length && !args[0].startsWith('--')) {
       if (statSync(p).isFile() && (f.endsWith('.mjs') || f.endsWith('.cjs') || f.endsWith('.js'))) files.push(p);
     }
   }
+  /* 【2026-11-14 加】前端页面也要扫 —— 经典 <script> 里混进模块语法的那个真 bug 就在 index.html */
+  const htmlFile = join(ROOT, 'public', 'index.html');
+  if (statSync(htmlFile).isFile()) files.push(htmlFile);
 }
 
 /** 把注释 / 字符串 / 模板 / 正则挖空，保留换行让行号对得上。 */
@@ -135,6 +138,7 @@ function strip(code) {
 /** Node + 浏览器 + 鱼自己常挂的全局 */
 const GLOBALS = new Set([
   // 语言内建
+  'mute', 'muted', // 闭包局部变量/getter 名，self-compress 误报白名单
   'Object', 'Function', 'Array', 'Number', 'String', 'Boolean', 'Symbol', 'BigInt', 'Date', 'RegExp',
   'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError',
   'Map', 'Set', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry', 'Promise', 'Proxy', 'Reflect',
@@ -251,10 +255,10 @@ function collectDeclared(code, raw, noComment) {
   }
 
   // const / let / var，含解构
-  for (const m of code.matchAll(/\b(?:const|let|var)\s+([\s\S]{1,400}?)(?:=|;|$)/gm)) {
+  for (const m of code.matchAll(/\b(?:const|let|var)\s+([\s\S]{1,600}?)(?:;|\n(?=\s*(?:const|let|var|let|function|class|export|import|if|for|while|return|\}|$))|$)/gm)) {
     const decl = m[1];
     // 对象解构 { a, b: c, ...rest }
-    const ob = decl.match(/^\s*\{([\s\S]*)\}\s*$/);
+    const ob = decl.match(/^\s*\{([\s\S]*?)\}\s*(?:=|;|$)/);
     if (ob) {
       for (const part of ob[1].split(',')) {
         const t = part.trim().replace(/^\.\.\./, '');
@@ -265,7 +269,7 @@ function collectDeclared(code, raw, noComment) {
       continue;
     }
     // 数组解构
-    const ar = decl.match(/^\s*\[([\s\S]*)\]\s*$/);
+    const ar = decl.match(/^\s*\[([\s\S]*?)\]\s*(?:=|;|$)/);
     if (ar) {
       for (const part of ar[1].split(',')) {
         const t = part.trim().replace(/^\.\.\./, '').replace(/=.*$/, '');
@@ -288,13 +292,66 @@ function collectDeclared(code, raw, noComment) {
     add(m[1]);
     for (const p of m[2].split(',')) add(p.trim().replace(/=.*$/, '').replace(/^\.\.\./, '').replace(/[{}\[\]]/g, '').trim());
   }
-  // 所有括号参数表 —— 宁可多收，少报比多报好
-  for (const m of code.matchAll(/\(([^()]*)\)\s*(?:=>|\{)/g)) {    for (const p of m[1].split(',')) {
-      const t = p.trim().replace(/=.*$/, '').replace(/^\.\.\./, '');
-      if (/^[A-Za-z_$][\w$]*$/.test(t)) add(t);
-      // 解构参数 { a, b }
+  /**
+   * 【2026-11-16 补·参数表要支持嵌套括号】
+   *
+   * 原来这里是一条正则 `/\(([^()]*)\)\s*(?:=>|\{)/g` —— 参数表里只要出现一对
+   * 内层括号（最常见就是默认值写成 `onProgress = () => {}`），整段就匹配不上，
+   * 后面的参数一律漏收。subagent.mjs 的 onBeat 就是这么被报成「用了没声明」的
+   * （994 / 1221 两处误报，而它明明写在 432 行的参数表里）。
+   *
+   * 做法：配对括号找真正的参数表，再按顶层逗号切开收名字。宁可多收，少报比多报好。
+   */
+  function splitTopLevel(s) {
+    const parts = [];
+    let depth = 0;
+    let cur = '';
+    let inStr = null;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        cur += c;
+        if (c === '\\') { cur += s[++i] || ''; continue; }
+        if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') { inStr = c; cur += c; continue; }
+      if (c === '(' || c === '[' || c === '{') depth++;
+      else if (c === ')' || c === ']' || c === '}') depth--;
+      if (c === ',' && depth === 0) { parts.push(cur); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur.trim()) parts.push(cur);
+    return parts;
+  }
+
+  for (let i = 0; i < code.length; i++) {
+    if (code[i] !== '(') continue;
+    let depth = 0;
+    let j = i;
+    let inStr = null;
+    for (; j < code.length; j++) {
+      const c = code[j];
+      if (inStr) {
+        if (c === '\\') { j++; continue; }
+        if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') { inStr = c; continue; }
+      if (c === '(') depth++;
+      else if (c === ')') { depth--; if (depth === 0) break; }
+    }
+    if (depth !== 0) continue;
+    // 只在「参数表」形态上收：右括号后面紧跟 => 或 {
+    if (!/^\s*(?:=>|\{)/.test(code.slice(j + 1, j + 12))) continue;
+    for (const part of splitTopLevel(code.slice(i + 1, j))) {
+      const t = part.trim().replace(/^\.\.\./, '');
+      if (!t) continue;
+      const plain = t.replace(/=[\s\S]*$/, '').trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(plain)) { add(plain); continue; }
       for (const inner of t.matchAll(/([A-Za-z_$][\w$]*)/g)) add(inner[1]);
     }
+    i = j;
   }
   // 单个参数的箭头 x => ...
   for (const m of code.matchAll(/([A-Za-z_$][\w$]*)\s*=>/g)) add(m[1]);
@@ -326,6 +383,9 @@ let scanned = 0;
 
 for (const file of files) {
   const raw = readFileSync(file, 'utf8');
+  /* 【2026-11-14】html 只跑「经典脚本混模块语法」这一条规则 ——
+   * 标识符声明模型是给 .mjs/.js 设计的，对 html（满屏 DOM id / 内联事件）必炸 485 个误报。 */
+  const htmlOnly = file.endsWith('.html');
   const code = strip(raw);
   const noComment = stripCommentsOnly(raw);
   const declared = collectDeclared(code, raw, noComment);
@@ -333,7 +393,7 @@ for (const file of files) {
   const rawLines = raw.split(/\r?\n/);
   const reported = new Set();
 
-  for (let ln = 0; ln < lines.length; ln++) {
+  if (!htmlOnly) for (let ln = 0; ln < lines.length; ln++) {
     const line = lines[ln];
     // 类/对象里的方法定义形如 `name(args) {`、`async name(args) {`、`*gen() {`，
     // 那是「定义」不是「调用」，不该当未定义标识符报（run / beat / constructor 全是这种）。
@@ -401,6 +461,54 @@ for (const file of files) {
       console.log('  ✘ ' + relative(ROOT, file) + ':' + (ln + 1) + '  「' + name + '」没用过也没声明过');
       console.log('      ' + (rawLines[ln] || '').trim().slice(0, 120));
     }
+  }
+  /* ════【2026-11-14 加·规则 ①】普通函数里的 this._xxx ════
+   * 类方法里 this 指实例没问题；普通函数里 this 是 undefined —— this._foo 直接 ReferenceError。
+   * 今天的真 bug：agent.mjs 里 this._pendingToolIds.get(_pIdx)，声明模型抓不到（this 上的属性不进声明表）。
+   * 做法：先收「本文件给 this 挂过哪些属性」（this.xxx = 形态，挖掉注释后扫），
+   * 再扫每处「读 this.xxx」——挂过的不报；没挂过的一律报（跨文件挂的极少，报出来人工看一眼）。 */
+  if (!htmlOnly) {
+    const thisHas = new Set();
+    for (const m of noComment.matchAll(/\bthis\.([A-Za-z_$][\w$]*)\s*(?:\|\|=|&&=|\?\?=|=(?!=))/g)) thisHas.add(m[1]);
+    /* 方法简写也要收：class / 对象里的 `idleMs() { … }`（含 async/get/set/static/* 前缀）
+     * —— 它们通过 this.idleMs() 调用，但从来没有 this.idleMs = 赋值形态。 */
+    for (const m of noComment.matchAll(/(?:^|\n)\s*(?:(?:async|static|get|set)\s+|\*)?\s*([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{/g)) thisHas.add(m[1]);
+    const rawNoCommentLines = noComment.split(/\r?\n/);
+    rawNoCommentLines.forEach((ln, i) => {
+      if (!/\bthis\.[A-Za-z_$]/.test(ln)) return;
+      for (const m of ln.matchAll(/\bthis\.([A-Za-z_$][\w$]*)/g)) {
+        const name = m[1];
+        if (thisHas.has(name)) continue;
+        if (/^(app|BrowserWindow|ipcMain|globalThis|process|console|Buffer|URL|__dirname|__filename|window|document)$/.test(name)) continue;
+        const key = 'this:' + i + ':' + name;
+        if (reported.has(key)) continue;
+        reported.add(key);
+        bad++;
+        console.log('  ✘ ' + relative(ROOT, file) + ':' + (i + 1) + '  this.' + name + ' —— 本文件没有任何给 this.' + name + ' 赋值的地方（多半是普通函数里的 this，运行时是 undefined）');
+        console.log('      ' + (rawLines[i] || '').trim().slice(0, 120));
+      }
+    });
+  }
+  /* ════【2026-11-14 加·规则 ②】经典 <script> 里混进模块语法 ════
+   * 今天的真 bug：index.html 的经典脚本里被贴了一行 export const —— 整段 60 万字脚本语法错误全瘫。
+   * 只扫 html：没有 type="module" 的内联 <script> 里出现顶层 export/import 就报。 */
+  if (file.endsWith('.html')) {
+    const htmlLines = raw.split(/\r?\n/);
+    let inClassic = false;
+    htmlLines.forEach((ln, i) => {
+      const openM = ln.match(/<script\b([^>]*)>/i);
+      if (openM) inClassic = !/type\s*=\s*["']module["']/i.test(openM[1]) && !/\bsrc\s*=/i.test(openM[1]);
+      if (/<\/script>/i.test(ln)) inClassic = false;
+      if (!inClassic) return;
+      if (/^\s*(export\s+(const|let|var|function|class|default)\b|import\s+[^;]*\bfrom\s*['"])/.test(ln.trim())) {
+        const key = 'mod:' + i;
+        if (reported.has(key)) return;
+        reported.add(key);
+        bad++;
+        console.log('  ✘ ' + relative(ROOT, file) + ':' + (i + 1) + '  经典 <script> 里混进了模块语法（export/import）——整段脚本会语法错误全瘫');
+        console.log('      ' + (rawLines[i] || '').trim().slice(0, 120));
+      }
+    });
   }
   scanned++;
 }

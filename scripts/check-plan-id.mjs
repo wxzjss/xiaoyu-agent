@@ -135,6 +135,31 @@ console.log('\n【8】静态守门：src/plan.mjs 里不许按序号重排 id');
 
 console.log('\n────────────────────────');
 console.log(`通过 ${pass} / 失败 ${fail}`);
+/* 【2026-11-15 加·自己造的清单自己收】
+ * 这个检查会以 test-<pid>(-arch/-clear/-prog) 的名义真写清单，以前写完就不管了 ——
+ * 每跑一次往 .state/plan 留 12 个文件，攒到后来 check-plan-session 报「12 份孤儿清单」，
+ * 看着像真 bug，其实是自己留的垃圾。收尾统一删掉（只删本进程这棵前缀）。 */
+try {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const os = await import('node:os');
+  const cfg = await import('../src/config.mjs');
+  /* 两个可能的清单目录都扫一遍：仓库里跑用 config.dataDir，
+   * 装好之后跑用 %APPDATA%\小鱼Agent\data —— 只清「本进程这棵前缀」的，别的一律不碰。 */
+  const dirs = new Set([
+    path.join(cfg.config.dataDir, '.state', 'plan'),
+    path.join(os.homedir(), 'AppData', 'Roaming', '小鱼Agent', 'data', '.state', 'plan'),
+  ]);
+  let n = 0;
+  for (const dir of dirs) {
+    let list = [];
+    try { list = fs.readdirSync(dir); } catch { continue; }
+    for (const f of list) {
+      if (f.startsWith(KEY)) { try { fs.unlinkSync(path.join(dir, f)); n++; } catch {} }
+    }
+  }
+  if (n) console.log(`（已清理本次测试留下的 ${n} 个清单文件）`);
+} catch { /* 清理失败不影响结论 */ }
 if (fail) {
   console.log('失败项：');
   bad.forEach((b) => console.log('  - ' + b));

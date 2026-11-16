@@ -11,12 +11,16 @@
  *  ⑤ 'compressed' 那路保留 +1（压缩不是屏幕上的一行，它不数就没人数了）。
  */
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+/* 路径一律按本文件位置算，别用相对 cwd —— 从 scripts/ 里跑会多一层 scripts/ */
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 let pass = 0, fail = 0;
 const ok = (m, c, d) => { if (c) { pass++; console.log('  [ok] ' + m); } else { fail++; console.log('  [!!] ' + m + (d ? ' —— ' + d : '')); } };
 
-const logView = readFileSync('src-ui/LogView.jsx', 'utf8');
-const html = readFileSync('public/index.html', 'utf8');
+const logView = readFileSync(path.join(ROOT, 'src-ui', 'LogView.jsx'), 'utf8');
+const html = readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 
 ok('LogView 只认行数变大（count > prevCountRef）',
   /if \(count > prevCountRef\.current\) \{[\s\S]{0,120}noteNewContent/.test(logView));

@@ -32,12 +32,21 @@ function check(ok, name, detail = '') {
 const STATE = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/.state';
 const SRC = 'C:/Users/35453/AppData/Roaming/小鱼Agent/data/code/src';
 
+/* 【2026-11-15 修·回归跑得莫名其妙慢】原来这里 readFileSync 整个文件，只为看开头三个字节。
+ * .state 底下躺着几十 MB 的 jsonl（chronicle 历史）、还有 GB 级的 asar，
+ * 于是这条检查光读盘就能拖几分钟，全量回归常常卡在这儿像死了一样。
+ * 现在只开 fd 读前 3 个字节 —— 多大的文件都是瞬间。 */
 function hasBom(p) {
+  let fd = -1;
   try {
-    const b = fs.readFileSync(p);
-    return b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
+    fd = fs.openSync(p, 'r');
+    const b = Buffer.alloc(3);
+    const n = fs.readSync(fd, b, 0, 3, 0);
+    return n === 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
   } catch {
     return false;
+  } finally {
+    if (fd >= 0) { try { fs.closeSync(fd); } catch {} }
   }
 }
 
@@ -56,8 +65,8 @@ const walk = (dir, depth) => {
   for (const e of es) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
-        // outbox 放的是命令输出原文，本来就该原样保留，带 BOM 也照样是对的
-      if (!/^(slim|archive|trash|sessions|logs|tmp|test|_history|outbox)$/i.test(e.name)) walk(p, depth + 1);
+        // outbox / tool-out 放的是命令输出、工具输出原文，本来就该原样保留，带 BOM 也照样是对的
+      if (!/^(slim|archive|trash|sessions|logs|tmp|test|_history|outbox|tool-out)$/i.test(e.name)) walk(p, depth + 1);
       continue;
     }
     if (!/\.(json|md|jsonl|txt)$/i.test(e.name)) continue;

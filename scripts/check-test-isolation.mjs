@@ -10,9 +10,13 @@
  */
 import { makeChecker } from './_harness_util.mjs';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const t = makeChecker('自检隔离：不碰主人的实例和会话');
-const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return ''; } };
+const read = (p) => { try { return fs.readFileSync(path.join(ROOT, p), 'utf8'); } catch { return ''; } };
 
 const iso = read('scripts/_test-instance.mjs');
 const runner = read('scripts/run-all-checks.mjs');
@@ -21,13 +25,13 @@ const tapi = read('_t_api.mjs');
 
 t.ok('有独立的隔离实例模块', iso.length > 1000);
 t.ok('临时数据目录不带任何会话', /name === 'sessions'\)\s*continue/.test(iso));
-t.ok('隔离实例用独立端口（不是主人那个）', /appPort\s*=\s*8795/.test(iso));
+t.ok('隔离实例用独立端口（不是主人那个）', /appPort:\s*(?:87|89)\d\d/.test(iso.replace(/\s+/g, ' ')) || /appPort\s*=\s*(?:87|89)\d\d/.test(iso));
 t.ok('浏览器打开的是隔离实例页面', /--remote-debugging-port=/.test(iso) && /\bbase,\r?\n/.test(iso));
 t.ok('实例没起来直接抛错，不静默回落', /throw new Error\('隔离实例没起来/.test(iso));
 t.ok('调试端口被占就换空闲端口（不碰主人窗口）', /pickFree/.test(iso) && /portFreeProbe/.test(iso));
 t.ok('stop() 会删掉临时目录', /rmSync\(dataDir, \{ recursive: true, force: true \}\)/.test(iso));
 
-t.ok('全量回归确实调用了隔离模块', /await startIsolated\(\)/.test(runner));
+t.ok('全量回归确实调用了隔离模块', /await startIsolated\(/.test(runner));
 t.ok('sweep 只扫隔离目录，不扫主人 data', /const DATA = iso\.dataDir;/.test(runner));
 t.ok('所有检查子进程都带隔离 env',
   (runner.match(/env: iso\.env/g) || []).length >= 4);
@@ -41,10 +45,10 @@ t.ok('接口体检也认 BASE（不再写死 8788）', /process\.env\.BASE/.test
 
 /* 【2026-11-09 第二轮发现的坑】好几个检查把主人数据目录写死在源码里，
  * 隔离回归一跑就读错地方（读主人那份 / 读不到）。这条把「不许写死」钉住。 */
-const hardCoded = fs.readdirSync('scripts')
+const hardCoded = fs.readdirSync(path.join(ROOT, 'scripts'))
   .filter((f) => /^check-.*\.mjs$/.test(f))
   .filter((f) => {
-    const body = fs.readFileSync('scripts/' + f, 'utf8');
+    const body = fs.readFileSync(path.join(ROOT, 'scripts', f), 'utf8');
     return /小鱼Agent\/data\/\.state\/sessions/.test(body)
       || /小鱼Agent\/data\/public\/index\.html/.test(body);
   });

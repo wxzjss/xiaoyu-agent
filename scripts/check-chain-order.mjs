@@ -16,6 +16,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 import { buildCardMessages, pickSpeakers } from '../src/group.mjs';
 
 const t = makeChecker('链式接话：A→B→C，只有第一个有 Agent 能力');
@@ -119,7 +121,7 @@ try {
     console.log(JSON.stringify({ alive: a, main: mainAgentId('s1') }));
   `;
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', probe], {
-    cwd: process.cwd(), encoding: 'utf8', timeout: 30000,
+    cwd: __ROOT, encoding: 'utf8', timeout: 30000,
     env: { ...process.env, MINI_AGENT_DATA: dir },
   });
   let got = null;

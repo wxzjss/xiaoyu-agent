@@ -18,6 +18,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 
 const t = makeChecker('关掉小鱼后主智能体仍要完整回复');
 const server = fs.readFileSync('src/server.mjs', 'utf8');
@@ -45,7 +47,7 @@ try {
   const r = spawnSync(process.execPath, ['--input-type=module', '-e',
     `import { activeAgentIds, mainAgentId } from './src/agents.mjs';
      console.log(JSON.stringify({ alive: activeAgentIds('s1'), main: mainAgentId('s1') }));`],
-    { cwd: process.cwd(), encoding: 'utf8', timeout: 30000,
+    { cwd: __ROOT, encoding: 'utf8', timeout: 30000,
       env: { ...process.env, MINI_AGENT_DATA: dir } });
   let got = null;
   try { got = JSON.parse(String(r.stdout || '').trim().split('\n').pop()); } catch {}

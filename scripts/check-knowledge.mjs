@@ -74,22 +74,16 @@ ok('全屏书架 overlay（不是小弹窗）',
   /<div id="kbOverlay" hidden>/.test(html) && /#kbOverlay \{\s*\n\s*position: fixed; inset: 0;/.test(html));
 ok('书架样式：shelf 木板 + 书（kbBook）',
   /\.kbShelf \{/.test(html) && /\.kbBook \{/.test(html));
-ok('书=卡的 UI 外观（封面色按 id hash + hover 抬起）',
-  /function bookColor\(id\)/.test(html) && /\.kbBook:hover \{[^}]*translateY\(-6px\)/.test(html));
-ok('三入口齐：创建/导入/导出',
-  /id="kbCreate"/.test(html) && /id="kbImport"/.test(html) && /id="kbExport"/.test(html));
-ok('创建界面三件套：标题/作者名/知识内容',
-  /id="kbFTitle"/.test(html) && /id="kbFAuthor"/.test(html) && /id="kbFContent"/.test(html));
-ok('每卡按钮齐：编辑知识卡/复制提示词（+删除）',
-  /id="kbREdit"/.test(html) && /id="kbRCopy"/.test(html) && /id="kbRDelete"/.test(html));
-ok('复制提示词是「让那边智能体学习」的完整话术',
-  /请学习这张知识卡（来自知识库，所有会话共享）|请学习这张知识卡/.test(html) && /学完就记在心里/.test(html));
-ok('书架尽头有「＋创建」空书入口',
-  /kbBookAdd/.test(html) && /创建知识卡<\/div>/.test(html.replace(/\n/g, '').replace(/\s+/g, ' ')) || /创建知识卡/.test(html));
-ok('内层 wrap 的 hidden 有 display:none !important（display:flex 会盖掉 UA hidden，主人截图实锤）',
-  /\.kbFormWrap\[hidden\], \.kbReadWrap\[hidden\] \{ display: none !important; \}/.test(html));
-ok('Esc 逐层退出（表单/阅读层→书架）',
-  /Esc 逐层退出/.test(html));
+/* 【2026-11-14 主人钦点·面板终版】旧书架知识卡整套 UI 删除（仅保留知识库按钮），
+ * 面板只剩【知识史书】= know.mjs 会话知识库。断言跟着换： */
+ok('知识史书渲染器在（列表 + 删除 + 编辑）',
+  /kbKnowDel/.test(html) && /kbKnowEdit/.test(html) && /kbEditSave/.test(html));
+ok('全会话可增：「＋ 记一条」按钮 + 保存接口',
+  /id="kbKnowAdd"/.test(html) && /kbNewSave/.test(html));
+ok('写卡规矩写在写入口（只写方法做法，手册不是回忆录）',
+  /只写方法做法/.test(html));
+ok('Esc 直接关知识库面板',
+  /if \(e\.key !== 'Escape' \|\| overlay\.hidden\) return;/.test(html));
 
 /* 【2026-11-13 主人钦定】知识卡只写方法做法，不写故事——seed 卡里不许再出现叙事标记 */
 ok('seed 知识卡全是方法做法，没有故事叙事（血泪史/那次/曾经 等标记禁入）',

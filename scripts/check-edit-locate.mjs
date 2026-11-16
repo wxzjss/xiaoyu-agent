@@ -67,5 +67,14 @@ const ok = (name, cond, extra = '') => {
   ok('删除请求体带 msgAt', /message-delete[\s\S]{0,400}msgAt: Number\(msgAt\)/.test(html));
 }
 
+/* ── ⑤ 撤销修改的栈（session.edits）要跟着会话落盘 ────────────
+ * 【2026-11-15 修】原来 saveSession 的 payload 与 shapeSession 都不带 edits，
+ * 重启后「撤销修改」静默失灵（永远回「没有可撤销的修改」）。 */
+{
+  const core = readFileSync(new URL('../src/sessions-core.mjs', import.meta.url), 'utf-8');
+  ok('saveSession payload 带 edits', /edits: Array\.isArray\(session\.edits\) \? session\.edits\.slice\(-200\) : \[\]/.test(core));
+  ok('shapeSession 读回 edits', /edits: Array\.isArray\(raw\.edits\) \? raw\.edits : \[\]/.test(core));
+}
+
 console.log('\n改/删时间戳定位：' + pass + ' 过 / ' + fail + ' 挂');
 process.exit(fail ? 1 : 0);

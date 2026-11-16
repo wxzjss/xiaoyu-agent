@@ -69,7 +69,11 @@ const J = (x) => JSON.stringify(x);
 /* 【2026-11-10 A6 同步滤空】空 text（t 为空白）在两端都不再落清单 ——
  * 服务端源头已不产生，前端 liveToItems 对 say/text 对称滤空。
  * 这里的口径跟着改：textsOf 数的是「屏幕上会出现的正文段」，
- * 空段本来就不该出现，滤掉才能跟屏幕对上。 */
+ * 空段本来就不该出现，滤掉才能跟屏幕对上。
+ * 【2026-11-16 晚·最终口径（陪聊鱼 4 定案）】
+ * 「带 _process 且有正文就一律走正常气泡，不再藏、不再降级成灰字条」——
+ * 治的是「她的话在屏幕上凭空消失」。所以过程话**也算屏幕正文**，
+ * textsOf 不再按 process 过滤（这一条比先前「过程话全不上屏」更新）。 */
 const textsOf = (items) => (Array.isArray(items) ? items : [])
   .filter((x) => x && x.k === 'text' && String(x.t || '').trim())
   .map((x) => String(x.t || ''));
@@ -172,10 +176,31 @@ const EDGE = [
 {
   const c = compose(EDGE);
   ok(J(c.svInc) === J(c.svOne), '服务端：增量 == 从头重算', diffSummary(c.svInc, c.svOne));
-  ok(textsOf(c.svInc).join('|') === 'A|B|C|D|E|F|G',
-    '正文分成 7 段（工具 / 轮末 / 子任务 / 提示都是分段线）', textsOf(c.svInc).join('|'));
-  ok(kindsOf(c.svInc) === 'think,text,tool,text,text,think,text,text,worker,text,note,text',
+  /* 【2026-11-14 主人报「在【：】前面一两个字的时候被切断成两个」·修】
+   *
+   * 真凶：模型把一段正文当 reasoning 发了（检查鱼在直播清单里抓到现场：
+   * 前段尾「…(๑•」／中间 think「（timeout 900000）。」／后段头「̀ω•」
+   * —— 她的颜文字 `(๑•̀ω•` 被劈成两半）。
+   * 正文中间夹进一条 think → 下一段 text 另起一条 → 同一句话变成两个气泡。
+   *
+   * 现在：**只有 think 块是「透明」的** —— 正文前后被 think 隔开时并回同一段；
+   * 工具卡 / 轮末 / 子任务 / 提示 仍然是真分段线（不许跨）。
+   * 所以 C 与 D 被 R2R3 隔开 → 现在并成一段「CDE」。
+   */
+  ok(textsOf(c.svInc).join('|') === 'A|B|CDE|F|G',
+    '正文分成 6 段（think 不再切断正文；工具 / 轮末 / 子任务 / 提示仍是分段线）', textsOf(c.svInc).join('|'));
+  ok(kindsOf(c.svInc) === 'think,text,tool,text,text,think,worker,text,note,text',
     '种类顺序照事件原样', kindsOf(c.svInc));
+  /* 【2026-11-14 新增】钉住「think 透明」这条规矩，别再被改回去 */
+  {
+    const c2 = compose([
+      { type: 'text', text: '前半句：' },
+      { type: 'reasoning', text: '（想一下）' },
+      { type: 'text', text: '后半句' },
+    ]);
+    ok(textsOf(c2.svInc).join('|') === '前半句：后半句',
+      '正文被 think 隔开 → 并回同一段（颜文字不会被劈开）', textsOf(c2.svInc).join('|'));
+  }
 }
 
 console.log('\n二、随机串 200 轮（固定种子）');
@@ -218,7 +243,7 @@ console.log('\n三、最小形状：口径 + 屏幕段数');
   ];
   const SHAPES = [
     ['① 别人插一句之后她接着说', [{ type: 'whale_stream_start', who: '小鲸' }, { type: 'text', text: '我看一下。' }, { type: 'whale_delta', who: '小鲸', text: ' ' }, { type: 'text', text: '的' }], 1],
-    ['② 工具跑完之后她接着说', [{ type: 'text', text: 'A' }, { type: 'tool_start', id: 'k', name: 'run_command', args: '{}' }, { type: 'text', text: 'B' }, { type: 'tool_end', id: 'k', ok: true, output: 'o' }, { type: 'text', text: 'C' }], 2],
+    ['② 工具跑完之后她接着说（过程正文照常显示）', [{ type: 'text', text: 'A' }, { type: 'tool_start', id: 'k', name: 'run_command', args: '{}' }, { type: 'text', text: 'B' }, { type: 'tool_end', id: 'k', ok: true, output: 'o' }, { type: 'text', text: 'C' }], 2],
     ['③ text→worker→text→worker→text', [{ type: 'text', text: 'B' }, { type: 'worker', wid: 'w1', name: '干活', status: 'run', kind: 'step', text: 's1' }, { type: 'text', text: 'C' }, { type: 'worker', wid: 'w1', status: 'ok', kind: 'note', text: '' }, { type: 'text', text: 'D' }], 2],
     ['④ text→tool_end(更新)→text→tool_end(更新)→text', [{ type: 'tool_start', id: 'k1', name: 'run_command', args: '{}' }, { type: 'text', text: 'A' }, { type: 'tool_end', id: 'k1', ok: true, output: 'o1' }, { type: 'text', text: 'B' }, { type: 'tool_end', id: 'k1', ok: true, output: 'o2' }, { type: 'text', text: 'C' }], 1],
     ['⑤ text→whale_delta→text→whale_delta→text', [{ type: 'whale_stream_start', who: '小鲸' }, { type: 'text', text: 'A' }, { type: 'whale_delta', who: '小鲸', text: ' ' }, { type: 'text', text: 'B' }, { type: 'whale_delta', who: '小鲸', text: '！' }, { type: 'text', text: 'C' }], 1],
@@ -442,7 +467,11 @@ console.log('\n七、插话位置：消息1 → 插话 → 消息2（主人钦�
   const c = compose(STEER);
   ok(J(c.svInc) === J(c.svOne), '插话：服务端增量 == 从头重算', diffSummary(c.svInc, c.svOne));
   ok(kindsOf(c.svInc) === 'text,tool,user,text,tool', '种类顺序：正文1 → 工具 → 插话(user) → 正文2 → 工具', kindsOf(c.svInc));
-  ok(textsOf(c.svInc).join('|') === '消息1|消息2', '正文被插话劈成两段（插话是分段线）', textsOf(c.svInc).join('|'));
+  /* 【2026-11-16 晚·口径跟主人新要求走：工具前那两段都是过程话，不上屏】
+   * 这段夹具里「消息1」后面跟工具、「消息2」后面也跟工具 —— 按新规矩两段都是
+   * 过程旁白（只她自己可见）。所以屏幕上只剩那颗插话气泡。
+   * 顺序仍然钉着：钉在**清单**（kindsOf）上，而不是屏幕上不再出现的东西。 */
+  ok(textsOf(c.svInc).join('|') === '消息1|消息2', '过程话有正文就照常显示（最终口径）', textsOf(c.svInc).join('|'));
 
   /* 屏幕顺序：把清单当直播跑一遍 buildMerged，取出「正文 / 插话」的先后 */
   const scr = screenOf(c.svInc);
@@ -450,7 +479,7 @@ console.log('\n七、插话位置：消息1 → 插话 → 消息2（主人钦�
     .filter((x) => x && (x.kind === 'assistant' || (x.kind === 'user' && x.steer)))
     .map((x) => (x.kind === 'assistant' ? 'A:' + (x.bubbles || []).join('') : 'U:' + String(x.text || '')));
   ok(J(seq) === J(['A:消息1', 'U:插一句：先跑这个', 'A:消息2']),
-    '屏幕顺序：消息1 → 插话 → 消息2', J(seq));
+    '屏幕顺序：消息1 → 插话 → 消息2（过程话照常画）', J(seq));
   ok(scr.res.items.filter((x) => x && x.kind === 'user' && x.steer).length === 1,
     '插话在屏幕上恰好一颗气泡（不双画）');
 }

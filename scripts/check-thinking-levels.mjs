@@ -15,9 +15,11 @@
 import { makeChecker } from './_harness_util.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 
 const t = makeChecker('thinking / 档位');
-const root = process.cwd();
+const root = __ROOT;
 const src = fs.readFileSync(path.join(root, 'src', 'thinking.mjs'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
 
@@ -29,22 +31,22 @@ t.ok('档位正好四个', mod.LEVELS.length === 4, ids.join(','));
 t.ok('就是 关/低/高/最高', ids.join(',') === 'off,low,high,max', ids.join(','));
 
 // ── ② 老值都能落到四档里，不会卡住 ────────────────────────────
-/* 【2026-11-11 改·主人要求「模型页的思考档位在系统里默认设为【关】」】
- * 兜底档从 high 改成 off 之后，认不出来的老值也该落到 off（而不是回到高）。
- * 这里把期望一起改掉 —— 不改的话这条检查会拿旧口径去拦新行为。 */
+/* 【2026-11-15 改·主人报「新建会话显示『高』、展开勾的却是『关』」】
+ * normalizeLevel 的兜底从 off 改回 high：显示读的是默认高，勾选也读这里，两处必须同一个口径。
+ * 认不出来的老值（on/medium/auto/空/乱写）一律落 high；显式存着 'off' 的仍落 off。 */
 const CASES = [
   ['off', 'off'], ['low', 'low'], ['high', 'high'], ['max', 'max'],
-  ['on', 'off'], ['minimal', 'low'], ['medium', 'off'], ['xhigh', 'max'],
-  ['auto', 'off'], ['', 'off'], ['胡说八道', 'off'],
+  ['on', 'high'], ['minimal', 'low'], ['medium', 'high'], ['xhigh', 'max'],
+  ['auto', 'high'], ['', 'high'], ['胡说八道', 'high'],
 ];
 for (const [input, want] of CASES) {
   const got = mod.normalizeLevel(input);
   t.ok('老值 ' + JSON.stringify(input) + ' → ' + want, got === want, got);
 }
 
-// ── ③ 默认关 ──────────────────────────────────────────────────
-t.ok('没设过就是「关」（主人 2026-11-11 定的系统默认）', /const level = normalizeLevel\(raw\.level\)/.test(src)
-  && /return 'off';\s*\n\}/.test(src));
+// ── ③ 兜底口径：跟界面默认显示一致（2026-11-15 主人改回 high） ──
+t.ok('没设过跟「高」一致（display 与勾选同一口径）', /const level = normalizeLevel\(raw\.level\)/.test(src)
+  && /return 'high';\s*\n\}/.test(src));
 
 // ── ④ 发出去的字段：强度档不许再带 thinking ────────────────────
 const fOff = mod.fieldsForLevel('off');

@@ -743,6 +743,39 @@ public class MainActivity extends Activity {
         // blob: 下载的落盘桥（injectDownloadBridge 注入的页面 JS 调它）
         web.addJavascriptInterface(new DlBridge(), "XyDl");
 
+        /**
+         * 【2026-11-15 加·长按顶栏 = 重载】
+         *
+         * 手机上最容易遇到的一种「卡住」：电脑那边重启了 / Wi-Fi 换了，
+         * 页面里的 fetch 全在重试，界面看着还活着但什么都不动，而且没法刷新
+         * —— WebView 没有浏览器那条地址栏。
+         *
+         * 为什么用 GestureDetector 而不是 setOnLongClickListener：
+         * 后者一挂上去，页面里的「长按选字 / 长按链接菜单」全被吞掉。
+         * 这里只认**页面顶部 120px 那一带**的长按（0.6 秒），正文区域原样放行，
+         * 选字、复制、长按图片都不受影响。
+         */
+        final android.view.GestureDetector refreshGesture = new android.view.GestureDetector(this,
+                new android.view.GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public void onLongPress(android.view.MotionEvent e) {
+                        if (web == null) return;
+                        // 只认顶部那一带（页面顶栏区域），正文里的长按留给选字
+                        float y = e.getY();
+                        float limit = 120f * getResources().getDisplayMetrics().density;
+                        if (y > limit) return;
+                        try {
+                            web.reload();
+                            Toast.makeText(MainActivity.this, "已重新加载", Toast.LENGTH_SHORT).show();
+                        } catch (Exception ignore) {
+                        }
+                    }
+                });
+        web.setOnTouchListener((v, ev) -> {
+            refreshGesture.onTouchEvent(ev);
+            return false;   // 不消费，事件继续给 WebView
+        });
+
         root.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
@@ -1036,6 +1069,37 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        /* 【2026-11-15 改·主人手机上最烦的两件事】
+         *
+         * ① 老写法 `web.canGoBack() → goBack()`：网页里但凡有过一次 hash 跳转
+         *    （点开会话、开关面板都会写 #xxx），返回键就在历史里来回倒腾，
+         *    最后能退到一个白页，看着像「App 崩了」。
+         * ② 真法应该是：先问页面「你要不要自己处理这次返回」——
+         *    页面里有对话框开着就关对话框、有面板就收面板；
+         *    页面说不用（false）才轮到壳：回连接页。
+         *
+         * 怎么问：往页面里 eval 一段 JS，调 window.__xyBack()（前端那边有这个钩子；
+         * 没有就返回 false）。结果通过 evaluateJavascript 的 callback 异步回来。
+         */
+        if (web != null) {
+            final boolean[] handled = { false };
+            try {
+                web.evaluateJavascript(
+                    "(function(){try{return !!(window.__xyBack&&window.__xyBack())}catch(e){return false}})()",
+                    value -> {
+                        boolean ok = "true".equals(String.valueOf(value).replace("\"", "").trim());
+                        if (!ok) fallbackBack();
+                    });
+                return;
+            } catch (Exception ignore) {
+                // 页面还没跑起来 / 已销毁，直接走兜底
+            }
+        }
+        fallbackBack();
+    }
+
+    /** 页面不管返回键时的兜底：能退历史就退，否则回连接页（不退出 App）。 */
+    private void fallbackBack() {
         if (web != null && web.canGoBack()) {
             web.goBack();
             return;

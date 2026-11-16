@@ -17,10 +17,16 @@
  */
 import { makeChecker } from './_harness_util.mjs';
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/* 【2026-11-16 修】原来直接用相对路径 'src/server.mjs'，从 scripts/ 里跑
+ * 就变成 scripts/src/server.mjs（多一层）直接 ENOENT。改成按本文件位置算根。 */
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const t = makeChecker('harness / 整轮空闲看门狗');
-const server = fs.readFileSync('src/server.mjs', 'utf8');
-const dl = fs.readFileSync('src/deadline.mjs', 'utf8');
+const server = fs.readFileSync(path.join(ROOT, 'src', 'server.mjs'), 'utf8');
+const dl = fs.readFileSync(path.join(ROOT, 'src', 'deadline.mjs'), 'utf8');
 
 // ── 1. 源码守卫 ────────────────────────────────────────────────
 /* 【2026-11-08 改】5 分钟 → 12 分钟。
@@ -209,12 +215,17 @@ function makeWorld({ modelIdleMin = 18, toolIdleMin = 18, healthyIdleSec = 30 } 
 }
 
 /* 源码守卫：续跑轮不许再把事件吞掉 */
-const serverSrc = fs.readFileSync('src/server.mjs', 'utf8');
+const serverSrc = fs.readFileSync(path.join(ROOT, 'src', 'server.mjs'), 'utf8');
 /* 判据认「续跑轮」这个函数体：它后面紧接着 repairHistory(history)。
  * 不能写「全文件不许有 onEvent: () => {}」——别的路径（小鲸、子智能体）
  * 有意用空回调，一刀切会冤枉它们。 */
-t.ok('续跑轮的事件接上了 send（不是空的 onEvent）',
-  /onEvent: \(ev\) => \{ try \{ send\(ev\); \} catch \{\} \},[\s\S]{0,120}repairHistory\(history\)/.test(serverSrc));
+/* 【2026-11-16 修】判据只认死一种写法会冤枉重构：现在续跑轮是
+ * `onEvent: (ev) => { _onResumeEvent(ev); }`，而 _onResumeEvent 函数体第一行
+ * 就是 `try { send(ev); } catch {}`（还顺手记草稿）。两种写法都算接上了。 */
+const _sendDirect = /onEvent: \(ev\) => \{ try \{ send\(ev\); \} catch \{\} \},[\s\S]{0,120}repairHistory\(history\)/.test(serverSrc);
+const _sendViaResume = /onEvent: \(ev\) => \{ _onResumeEvent\(ev\); \},[\s\S]{0,120}repairHistory\(history\)/.test(serverSrc)
+  && /const _onResumeEvent = \(ev\) => \{\s*try \{ send\(ev\); \} catch \{\}/.test(serverSrc);
+t.ok('续跑轮的事件接上了 send（不是空的 onEvent）', _sendDirect || _sendViaResume);
 /* 【2026-11-08 补】光把 onEvent 改成 send 是不够的：
  * send 只在 /api/chat 和 startQueuedTurn 里局部定义，续跑函数里调它会抛
  * ReferenceError 被吞掉，事件照样全丢。必须连 live 和局部 send 一起补齐。 */

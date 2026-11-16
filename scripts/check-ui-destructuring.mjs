@@ -23,12 +23,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { makeChecker } from './_harness_util.mjs';
 
 const t = makeChecker('check-ui / 解构识别');
 
-const ROOT = process.cwd();
+const ROOT = __ROOT;
 const CHECK_UI = path.join(ROOT, 'scripts', 'check-ui.mjs');
 
 if (!fs.existsSync(CHECK_UI)) {

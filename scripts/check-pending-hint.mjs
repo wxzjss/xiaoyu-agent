@@ -1,9 +1,11 @@
 /**
  * check-pending-hint.mjs — 守「忙时消息进队列」这条链的零件都在。
  * 【2026-11-12 改】断言认现在的写法（sendBuffered / queueFromInput）。
- * 【2026-11-12 二次改·主人报了「按回车还出预发送金框」】回车/发送在忙时
- * 改成直接插话 interject()，不再走 queueFromInput()。原来那条「必须调
- * queueFromInput」的断言成了过期规矩，改成守「忙时直接插话」。
+ * 【2026-11-15 改·口径回到主人最初要的样子】
+ *   按钮在跑时 → **预发送入队**；回车在跑时 → **直接插话**。
+ *   原来那两条「回车不再退回待发送（queueFromInput 0 处）」是 11-12 的反向规矩，
+ *   现在把正面规矩交给 check-presend-queue.mjs（更细，按函数体断言），
+ *   这里只留「零件都在」这一层，免得两处各说一套。
  */
 import { readFileSync } from 'node:fs';
 
@@ -13,13 +15,13 @@ const oks = [];
 const ok = (t) => oks.push(t);
 const bad = (t, d) => bads.push({ t, d });
 
-const nInter = (s.match(/else interject\(\)|if \(!busy\) send\(\);|interject\(\);/g) || []).length;
-if (nInter >= 1) ok(`忙时直接插话（interject 调用 ${nInter} 处）`);
-else bad('忙时点【发送】/回车都在跑时直接插话', 'interject 调用 0 处');
+const nInter = (s.match(/if \(busy\) return interject\(\);/g) || []).length;
+if (nInter >= 1) ok(`回车在跑时仍直接插话（interject 调用 ${nInter} 处）`);
+else bad('回车在跑时直接插话', 'interject 调用 0 处');
 
-const nQueueCall = (s.match(/return queueFromInput\(\);/g) || []).length;
-if (nQueueCall === 0) ok('回车不再退回待发送金框（queueFromInput 调用 0 处）');
-else bad('回车不再退回待发送金框', `还在调 queueFromInput ${nQueueCall} 处`);
+const nQueueCall = (s.match(/queueFromInput\(\)/g) || []).length;
+if (nQueueCall >= 1) ok(`按钮在跑时收进预发送队列（queueFromInput 调用 ${nQueueCall} 处）`);
+else bad('按钮在跑时收进预发送队列', 'queueFromInput 调用 0 处');
 
 for (const [pat, t] of [
   [/function queueFromInput\(/, '入队函数 queueFromInput 在'],

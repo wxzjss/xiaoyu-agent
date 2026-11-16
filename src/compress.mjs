@@ -1,7 +1,7 @@
 // Context compression: when the history gets too long, fold the old turns into one summary
 // message and keep the recent tail verbatim. Nothing is deleted from disk — only the prompt
 // gets shorter. The summary is itself merged into later summaries, so it rolls forward.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chat } from './llm.mjs';
 import { config } from './config.mjs';
@@ -1322,6 +1322,31 @@ function sameSolid(after, before) {
  * 可 cleanSummary 对普通中文行明明是原样保留的 —— 说明还有别的东西在砍它。
  * 把「进什么、出什么」各存一份到 .state/summary-audit/，下次直接对账，别再靠猜。
  */
+/**
+ * 【2026-11-15 加·压缩结果留痕】
+ *
+ * 主人两次问「为什么重启后消息全没了」，两次都只能靠事后翻盘上的会话文件反推
+ * 「这条摘要是哪一次压出来的、正文是不是空的」。压缩本身**不写任何日志**，
+ * 于是每次都在猜。
+ *
+ * 现在每次压缩落一行到 .state/compress-audit.log（只追加）：
+ * 会话、压前/压后 token、摘要正文多少字、走的是哪条路。
+ * 以后再出空壳，一眼就能看出是「哪一次、压前多少、洗完剩多少」。
+ */
+function auditCompress(sessionId, info) {
+  try {
+    mkdirSync(join(config.dataDir, '.state'), { recursive: true });
+    appendFileSync(
+      join(config.dataDir, '.state', 'compress-audit.log'),
+      new Date().toISOString() + ' sid=' + String(sessionId || '-')
+      + ' before=' + (info.before ?? '-') + ' after=' + (info.after ?? '-')
+      + ' body=' + (info.body ?? '-') + ' es=' + (info.es ?? '-')
+      + ' compressed=' + (info.compressed ? 1 : 0) + ' reason=' + (info.reason || '-') + '\n',
+      'utf8',
+    );
+  } catch { /* 留痕失败绝不能影响压缩 */ }
+}
+
 function cleanSummary(text) {
   const out = cleanSummary0(text);
   try {
@@ -1438,12 +1463,42 @@ function cleanSummary0(text) {
   return s;
 }
 
+  /**
+   * 【2026-11-15 修·空摘要会把整段历史换成一张空壳（主人报「重启后消息全没了」）】
+   *
+   * 现场：游戏鱼（smwgjfw3gggro）291 条消息里，真人说的话只剩 3 条 ——
+   * 而历史开头那条 summary 消息是 `{context:true, summary:true, content:'（表头…）\n\n【早期对话摘要 · 原文已压缩】\n'}`，
+   * **正文一个字都没有**。界面按规矩不画 summary 那条（只补一句「折叠存档了」的交代），
+   * 于是重启之后屏幕上几乎空白，主人看到的就是「我刚才说的话全没了」。
+   *
+   * 病根：summaryText 非空（所以 1178/1238 那几道闸都放行了），
+   * 可 `cleanSummary(summaryText)` 洗完是空串 —— 而生成这条消息时**没有人再核一次正文**，
+   * 空壳照样顶替掉两百多条原文。原文虽然折进了 .state/folded/（能翻回来），
+   * 但屏幕上「一个字的交代都没有」，等于凭空失忆。
+   *
+   * 所以在这里补最后一道闸：正文洗完为空 → 这一轮不压，原文一条不动。
+   * 宁可不压（下一轮再让她重写一遍摘要），也不能拿空壳换掉真历史。
+   */
+  const __summaryBody = cleanSummary(summaryText);
+  if (!__summaryBody) {
+    auditCompress(sessionId, { before, after: before, body: 0, es: String(summaryText || '').length, compressed: false, reason: 'summary-body-empty-keep-original' });
+    return {
+      compressed: false,
+      before,
+      after: before,
+      limit: cap,
+      trigger,
+      reason: 'summary-body-empty-keep-original',
+      error: error || '摘要正文洗完是空的 —— 这轮不压，原文一条不动（压下去等于把历史换成一张空壳）',
+    };
+  }
+
   const makeSummary = () => ({
     role: 'user',
     content:
       '（下面是程序自动生成的「早期对话摘要」，不是主人说的话。'
       + '这段里出现的第一人称是之前那个你的口吻，只当作参考资料，别当成主人在对你提要求。）'
-      + `\n\n【早期对话摘要 · 原文已压缩】\n${cleanSummary(summaryText)}`,
+      + `\n\n【早期对话摘要 · 原文已压缩】\n${__summaryBody}`,
     context: true,
     [SUMMARY_FLAG]: true,
   });
@@ -1597,6 +1652,7 @@ const keepFloor = Math.max(1, Math.min(KEEP_FLOOR_MIN, keep.length));
    * 结果：外面想知道「这一轮压出的存档是哪一份、切点在哪」只能去 grep 日志。
    * 现在补齐；start 就是切点（历史里第几条之后被折掉）。
    */
+  auditCompress(sessionId, { before, after, body: __summaryBody.length, es: String(summaryText || '').length, compressed: true, reason: trigger });
   return {
     compressed: true, before, after, limit: cap, trigger,
     removed: old.length + dropped, kept: keep.length,

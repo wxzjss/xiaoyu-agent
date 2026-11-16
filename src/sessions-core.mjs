@@ -239,6 +239,8 @@ function shapeSession(id, raw) {
     messages: sanitizeLoadedMessages(Array.isArray(raw.messages) ? raw.messages : []),
     // 回退点跟着会话一起落盘：只追加、从不改写老消息。
     rewinds: Array.isArray(raw.rewinds) ? raw.rewinds : [],
+    // 【2026-11-15 修·撤销修改的栈也跟着落盘】（见 saveSession 里 edits 那段）
+    edits: Array.isArray(raw.edits) ? raw.edits : [],
     // 老会话没有这个字段 -> 当人设档处理，不去补写盘
     mode: raw.mode && typeof raw.mode === 'object' && raw.mode.word ? { word: String(raw.mode.word), since: Number(raw.mode.since) || 0 } : null,
   };
@@ -321,6 +323,39 @@ function dropRepeatedTurns(ms, maxScan = 400) {
 }
 
 /**
+ * 【2026-11-15 修·同一个文件重复发，旧卡片自动撤掉】
+ *  主人看到同一个文件挂了两张卡，要求「同一个文件只留最新那张」。
+ *  _out（文件卡）挂在**发它的那条消息**上，跨轮重复发送时，旧那条消息里的
+ *  _out 条目没人清，界面就一直挂着两张。
+ *  落盘前按 key（文件指纹）全量兜底：同一个 key 只留**最后出现**的那一条，
+ *  更早的全摘掉。只动 _out，别的一概不碰。
+ */
+function dropStaleFileCards(messages) {
+  if (!Array.isArray(messages) || !messages.length) return;
+  const lastAt = new Map(); // key -> 最后一次出现的消息下标
+  for (let i = 0; i < messages.length; i++) {
+    const out = messages[i] && messages[i]._out;
+    if (!Array.isArray(out)) continue;
+    for (const it of out) {
+      const k = it && (it.key || it.fkey);
+      if (typeof k === 'string' && k) lastAt.set(k, i);
+    }
+  }
+  if (!lastAt.size) return;
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || !Array.isArray(msg._out)) continue;
+    const kept = msg._out.filter((it) => {
+      const k = it && (it.key || it.fkey);
+      if (typeof k !== 'string' || !k) return true; // 没指纹的不动
+      return lastAt.get(k) === i;
+    });
+    if (kept.length === 0) delete msg._out;
+    else if (kept.length !== msg._out.length) msg._out = kept;
+  }
+}
+
+/**
  * 一条消息的指纹：role + tool_call_id + tool_calls 的 id + 正文。
  *
  * 合流去重、以及「删掉的别再接回来」都靠它认人。原来是 saveSession 里的局部函数，
@@ -368,6 +403,8 @@ function memStamp(session) {
 export function saveSession(session, _attempt = 0) {
   // 落盘前最后一道：清掉同一次生成被接入多份的重复回复（见 dropRepeatedTurns 上的说明）
   try { if (session && Array.isArray(session.messages)) dropRepeatedTurns(session.messages); } catch {}
+  // 【2026-11-15】同一个文件重复发，更早的卡片全部摘掉，只留最新那张
+  try { if (session && Array.isArray(session.messages)) dropStaleFileCards(session.messages); } catch {}
   /**
    * 【2026-11-02 历史迁移】旧版本投的「重启了」没带 _sysNote 标记，会在界面上冒充主人说话。
    *  主人要求这条只给我自己看（跟压缩提示同一个待遇）。
@@ -400,6 +437,12 @@ export function saveSession(session, _attempt = 0) {
     updatedAt: session.updatedAt,
     messages: session.messages ?? [],
     rewinds: Array.isArray(session.rewinds) ? session.rewinds : [],
+    /* 【2026-11-15 修·「撤销修改」重启后失灵】
+     *  改一句的撤销栈（session.edits）原来只活在内存里 —— saveSession 的
+     *  payload 根本不带它，shapeSession 读回来也没有。重启之后点「撤销修改」，
+     *  edit.mjs 的 undoEdit 拿到空栈，永远回「没有可撤销的修改」。
+     *  跟 rewinds 一样跟着会话落盘。 */
+    edits: Array.isArray(session.edits) ? session.edits.slice(-200) : [],
   };
   /**
    * 【删过的指纹跟着落盘】2026-10-29
@@ -423,6 +466,33 @@ export function saveSession(session, _attempt = 0) {
     const diskMsgs = Array.isArray(raw?.messages) ? raw.messages : [];
     const memMsgs = Array.isArray(payload.messages) ? payload.messages : [];
     if (diskMsgs.length) {
+      /**
+       * 【内存里的空摘要不许把磁盘上好的那份盖掉】—— 2026-11-16 修
+       *
+       * 现场：压缩折叠之后摘要正文是空的（表头 + 标签，一个字正文没有），
+       * 界面不画 summary 那条，于是屏幕上像「消息全没了」。
+       * check-summary-not-empty --fix 能从 folded 里把正文重建回来 —— 可那边刚修好，
+       * 这边会话还在内存里跑，每次落盘都拿内存那条空摘要原样覆盖回去：
+       * 修一次、空一次，冒烟怎么跑都红。
+       *
+       * 判据：都带 summary:true 的同一条摘要，内存那份正文几乎为空、磁盘那份有像样的正文
+       * → 拿磁盘的正文补上（只补正文，别的字段不动）。
+       */
+      try {
+        const bodyLen = (c) => {
+          const t = String(c || '');
+          const i = t.indexOf('【早期对话摘要');
+          return (i >= 0 ? t.slice(i) : t).trim().length;
+        };
+        for (let _i = 0; _i < Math.min(memMsgs.length, 4); _i++) {
+          const _m = memMsgs[_i];
+          if (!_m || _m.summary !== true) continue;
+          if (bodyLen(_m.content) > 80) continue; // 内存这份有正文，别动
+          const _d = diskMsgs.find((x) => x && x.summary === true);
+          if (!_d || bodyLen(_d.content) <= bodyLen(_m.content)) continue;
+          _m.content = _d.content;
+        }
+      } catch {}
       /**
        * 【合流用指纹】—— 2026-10-26 重写
        *
@@ -522,13 +592,44 @@ export function saveSession(session, _attempt = 0) {
       const countSummary = (arr) => arr.reduce((n, m) => n + (m && m.summary && m.context ? 1 : 0), 0);
       const compressedAnywhere = countSummary(memMsgs) > 0 || countSummary(diskMsgs) > 0;
       if (compressedAnywhere) {
-        // 只接磁盘上确实没有的；压缩移走的那些不算「磁盘独有」，而是「已被压掉」
-        for (const m of diskOnly) {
-          // 老消息的特征：磁盘上有、而且算得出指纹（说明是正常的对话条目）。
-          // 压缩之后内存里没有它，只可能是被折进摘要了 —— 跳过。
-          // 真正该接的是「内存里新长出来、磁盘还没见过」的内容，那从内存那边来，
-          // 根本不会出现在 diskOnly 里，所以这里直接不接。
-          void m;
+        /**
+         * 【2026-11-15 修·「重启后这段时间的消息全消失」（主人报·修理鱼）】
+         *
+         * 现场：会话 smwg61ggmhd4a，20:13 和 21:43 两条之间整整一个半小时的
+         * 对话在界面上没了。数据实锤：那段消息确实从 messages 里消失了，
+         * 而盘上那份（折叠后）其实还有。
+         *
+         * 病根就是这个分支原来**一条 diskOnly 都不接**：
+         *   「压缩过 → 磁盘独有的都是被折进摘要的老消息，跳过」。
+         * 这个假设只在「内存这份比磁盘新」时成立。可一旦某个进程手里攥着
+         * **压缩之前的旧副本**（重启过渡期、续跑轮、看门狗接回……），
+         * 它保存时：磁盘那份已被压缩成 [system, 摘要, 尾巴]，
+         * 内存那份还是压缩前的一大坨 —— 两边都有摘要（compressedAnywhere 为真），
+         * 于是磁盘上**压缩之后新产生的那些消息**被当成「老消息」整段丢掉，
+         * 写回去的还是那一大坨旧的。表现就是「重启一次，中间一段全没了」。
+         *
+         * 判据换成一个不会错的方向：**被折进摘要的只可能是「旧」消息**。
+         *   磁盘上有、内存里没有、而且比内存最后一条还**新** → 那绝不可能是
+         *   「已经折进摘要」的，只能是别人（另一轮 / 另一个进程）刚写的 —— 必须接。
+         *   比内存最后一条还旧的，才按老规矩当「已折进摘要」跳过。
+         *
+         * 内存里没有可比的时间戳（全是 tool 之类）时，退回老行为（不接），
+         * 宁可少接也不重复 —— 重复会直接把会话撑爆。
+         */
+        const lastMemAt = memMsgs.reduce((mx, m) => {
+          const t = Number(m && (m.at ?? m._at) || 0);
+          return t > mx ? t : mx;
+        }, 0);
+        if (lastMemAt > 0) {
+          for (const m of diskOnly) {
+            const t = Number(m && (m.at ?? m._at) || 0);
+            /* tool 结果本身没有 at，靠它父级 assistant 的时间——那种一律按旧的处理 */
+            if (!(t > lastMemAt)) continue;
+            const k = key(m);
+            if (!k || seenKey.has(k)) continue;
+            seenKey.add(k);
+            merged.push(m);
+          }
         }
       } else {
         for (const m of diskOnly) {
@@ -553,10 +654,47 @@ export function saveSession(session, _attempt = 0) {
   return session;
 }
 
+/**
+ * 【2026-11-16 主人钦点·会话名不许重名】
+ *
+ * 原话：「【会话】页不能有同样的会话名，如果有同样的会话名，就自动在那个名字后面加一个数字」。
+ *
+ * 两个会话都叫「搭建鱼」，在会话页上根本分不清谁是谁 —— 而且他发现
+ * 每个会话里的 AI 都不知道自己叫什么（那条另修）。这里先把「重名」堵在写入侧：
+ * 改名、新建都经过它，撞上了就往后加数字（「搭建鱼 2」「搭建鱼 3」…）。
+ *
+ * 【为什么「新会话」不去重】那个名字是「还没起名」的占位，也是 AI 自动起名的
+ * 触发条件（title === '新会话'）。给它加数字会变成「新会话 2」，
+ * 于是判断失效、AI 再也不给自己起名 —— 反而更糟。
+ */
+export function uniqueSessionTitle(id, wantTitle) {
+  const base = cleanTitle(wantTitle);
+  if (!base) return '';
+  if (base === '新会话') return base;
+  let taken = null;
+  try {
+    taken = new Set(
+      listSessions()
+        .filter((x) => x && String(x.id) !== String(id))
+        .map((x) => cleanTitle(x.title))
+        .filter(Boolean),
+    );
+  } catch { taken = null; }
+  if (!taken || !taken.has(base)) return base;
+  /* 已经是「X 2」这种，先把尾巴数字剥掉再往上加，别变成「X 2 2」 */
+  const m = /^(.*?)\s+(\d{1,3})$/.exec(base);
+  const stem = String((m && m[1]) || base).slice(0, Math.max(1, MAX_TITLE - 5));
+  for (let n = 2; n <= 999; n += 1) {
+    const cand = stem + ' ' + n;
+    if (!taken.has(cand)) return cand;
+  }
+  return (stem + ' ' + Date.now().toString(36).slice(-3)).slice(0, MAX_TITLE);
+}
+
 export function renameSession(id, title) {
   const s = loadSession(id);
   if (!s) return null;
-  const next = cleanTitle(title);
+  const next = uniqueSessionTitle(id, title);
   if (!next) return null;
   s.title = next;
   saveSession(s);

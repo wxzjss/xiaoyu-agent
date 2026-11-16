@@ -13,10 +13,12 @@
 import { makeChecker } from './_harness_util.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const t = makeChecker('harness / 回归分档');
-const ROOT = process.cwd();
+const ROOT = __ROOT;
 const ui = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const settings = fs.readFileSync(path.join(ROOT, 'src', 'settings.mjs'), 'utf8');
 

@@ -55,12 +55,16 @@ const r2 = await post('/api/app/restart', { sessionId: sid, byTool: true });
 console.log('  第二次 → ' + r2.status + '  ' + JSON.stringify(r2.json || r2.error).slice(0, 130));
 
 if (r1.status === 501) {
-  /* 隔离环境里没有 electron，走不到真重启。那么去验闸本身的行为：
-   * 闸在 501 之前的话，第二次应该被闸挡成 202。如果还是 501，
-   * 说明闸在 501 后面 —— 那顺序就错了，得挪。 */
-  ok('第二次被闸挡住（202 + skipped），不是又走到 501', r2.status === 202,
+  /* 【2026-11-15 改·这条断言以前写错了】
+   *
+   * 隔离实例里没有 electron 主进程，重启这条路根本走不通，501 是**如实拒绝**。
+   * 老断言却要求第二次回 202 skipped（「闸在 501 前面」）—— 那是错的：
+   * 真没在重启的时候报「正在重启，跳过」才是骗人，501 在前才是对的。
+   * 所以隔离环境这里只验两件事：两次行为一致（不半截）、不假报 skipped。
+   * 「闸真的挡得住」由下面 else 分支（真机 200/202）来验。 */
+  ok('隔离环境两次一致：都如实回 501（不留半截「正在重启」状态）', r2.status === 501,
     '实际 ' + r2.status);
-  ok('回包里带 skipped', !!(r2.json && r2.json.skipped));
+  ok('没有假报 skipped（没真重启就不该说正在重启）', !(r2.json && r2.json.skipped));
 } else {
   ok('第二次被闸挡住（202）', r2.status === 202, '实际 ' + r2.status);
   ok('回包里带 skipped', !!(r2.json && r2.json.skipped));

@@ -25,6 +25,9 @@ const t = makeChecker('ui / 工具卡不漏在外面');
 const ui = readUISource();
 const logView = fs.readFileSync('src-ui/LogView.jsx', 'utf8');
 const toolCard = fs.readFileSync('src-ui/ToolCard.jsx', 'utf8');
+const html = fs.readFileSync('public/index.html', 'utf8');
+const agentSrc = fs.readFileSync('src/agent.mjs', 'utf8');
+const serverSrc = fs.readFileSync('src/server.mjs', 'utf8');
 
 /* ── 源码：柜子只由「折行」产生 ─────────────────────────────────── */
 t.ok('LogView 里有唯一的分组逻辑 toRows', /function toRows\(items\)/.test(logView));
@@ -38,8 +41,9 @@ t.ok('LogView 里有唯一的分组逻辑 toRows', /function toRows\(items\)/.te
  * （历史里顺序是 思考→正文→工具，所以「上一轮工具 + 下一轮思考」才是跨消息的相邻形态）。 */
 t.ok('toRows 把连续的 tool / think 收成一组',
   /if \(it\.kind === 'tool' \|\| it\.kind === 'think'\)[\s\S]{0,1400}run\.items\.push\(it\)/.test(logView));
-t.ok('只在「换段的思考」处切边界（工具之间不切）',
-  /if \(run && it\.kind === 'think' && tag && run\.tag && tag !== run\.tag\) run = null;/.test(logView));
+t.ok('思考不再按 turn 标签切开工具串（按圈存思考后，换圈不是换段）',
+  !/if \(run && it\.kind === 'think' && tag && run\.tag && tag !== run\.tag\) run = null;/.test(logView)
+  && /不再按 think 的 turn 标签切柜子/.test(logView));
 t.ok('柜子组件 ToolGroup 在（单卡不成柜 / 只有思考时直画思考块）',
   /tools\.length === 1 && !thinks\.length\) return <ToolCard it=\{tools\[0\]\} \/>/.test(toolCard)
   && /if \(!tools\.length\)/.test(toolCard)
@@ -51,12 +55,30 @@ t.ok('柜子内容区套了 .hubBody（限高 + 内部滚动靠它）',
  * 下一轮的思考在清单里是**相邻**的。光按相邻分组会把两条消息塞进一个柜子
  * （实测：柜子里装着「上一轮的工具 + 下一轮的思考」）。key 里带着轮次
  * （items.js：历史 t-<轮次>、直播 l-<下标>），分组要拿它当边界。 */
-t.ok('分组按「轮次」设边界（turnTagOf 读 key 里的 t-<n> / l-<n>）',
-  /function turnTagOf\(it\)/.test(logView) && /\^\(t-\\d\+\)\(\?:-\|\$\)/.test(logView) && /run\.tag/.test(logView));
+t.ok('分组仍认得「轮次」标签（turnTagOf 读 key 里的 t-<n> / l-<n>）',
+  /function turnTagOf\(it\)/.test(logView) && /\^\(t-\\d\+\)\(\?:-\|\$\)/.test(logView)
+  && /tag, items: \[it\]/.test(logView));
 /* 同一轮里思考在她的话上面、工具在她的话下面 —— 不挪就永远进不了柜子（主人要的是「思考在柜子里」） */
 t.ok('同一轮里「只有思考」的那一行会并进那一轮的工具柜（hoistTurnThinks）',
   /function hoistTurnThinks\(rows\)/.test(logView) && /return hoistTurnThinks\(rows\)/.test(logView)
   && /n\.items = r\.items\.concat\(n\.items\)/.test(logView));
+/* 【2026-11-16 加·主人报「一轮结束后思考链在柜子外面」
+ * 落盘顺序是「工具 → 正文（带整轮思考）」，思考在柜子**下面** —— 只往后找永远找不到柜子。
+ * 现在还要往回找最近的工具柜并进去，碰到主人/别人说话才收手。 */
+t.ok('思考在柜子下面时，往回并进最近的工具柜（不许留在柜子外）',
+  /n\.items = n\.items\.concat\(r\.items\)/.test(logView)
+  && /k === 'user' \|\| k === 'mate' \|\| k === 'say'/.test(logView));
+/* 【2026-11-16 晚·主人报「柜子里思考块窄一截」「一轮结束只剩最后一条」】
+ * 宽度：历史思考块 .thinkPast 原来固定 92%/820px（给独立块用的），
+ *       收进柜子后要跟工具卡同宽，必须有一条更高特异性的覆盖。
+ * 条数：服务端原来把整轮思考并成一段挂最后一条，刷新后只剩一块；
+ *       现在每圈挂自己那条 assistant 上，收尾不能再拿合并版覆盖。 */
+t.ok('柜子里的历史思考块和工具卡同宽（有覆盖 92%/820px 的规则）',
+  /#log \.hubBody details\.think\.thinkPast\s*\{\s*max-width:\s*100%/.test(html));
+t.ok('每一圈把自己的思考挂在自己那条 assistant 上（_reasoning 按圈落盘）',
+  /assistantMsg\._reasoning\s*=/.test(agentSrc));
+t.ok('收尾不再用整轮合并版盖掉按圈存的思考',
+  /_hasPerRound/.test(serverSrc) && /if \(target && !_hasPerRound\)/.test(serverSrc));
 /* 【2026-11-11 加·hooks 必须无条件挂在形态分派之前】
  * ToolGroup 有三种形态（全是思考 / 单卡 / 柜子），直播是一帧一帧长的：
  * 「只有思考」那一帧走 early return 一个 hook 都不挂，「思考 + 刚到的工具」那一帧

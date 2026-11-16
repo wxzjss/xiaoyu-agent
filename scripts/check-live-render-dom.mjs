@@ -256,19 +256,24 @@ let SID_BOOT = '';
  * 一 + 二 + 五：说 → 工具 → 说 → 轮末 → 说
  * ══════════════════════════════════════════════════════════════════ */
 async function caseSegments() {
-  console.log('\n一、一轮里「说 → 工具 → 说 → 轮末 → 说」：屏幕上几个气泡、每段几次');
+  console.log('\n一、一轮里「工具 → 说 → 轮末 → 说 → 轮末 → 说」：屏幕上几个气泡、每段几次');
   const A = 'QA甲段我去看一眼';
   const B = 'QA乙段看完了没问题';
   const C = 'QA丙段下一轮接着说';
   const THINK = 'QA思考先想想要不要拆开写这一点要够长才像真的思考块';
 
+  /* 【2026-11-16 夹具适配】主人钦定「工具前的正文 = 过程话，不上屏」。
+   * 这条检查验的是「三段正文各一份、轮末之后另起一段」，不是验过程话可见性。
+   * 所以把工具挪到最前面，三段正文都排在工具之后 —— 它们都是「正式回复」，
+   * 分段仍由两个轮末事件制造，原来那批断言一条都不用改。 */
   await arm({
     gap: 420,
     events: [
       { type: 'reasoning', text: THINK },
-      { type: 'text', text: A },
       { type: 'tool_start', id: 'qa1', name: 'run_command', args: '{"cmd":"echo hi"}' },
       { type: 'tool_end', id: 'qa1', ok: true, output: 'hi' },
+      { type: 'text', text: A },
+      { type: 'done' },
       { type: 'text', text: B },
       { type: 'done' },
       { type: 'text', text: C },
@@ -318,9 +323,19 @@ async function caseSegments() {
   ok(series.some((s) => s.sending), '跑着的时候「正在发送消息」在屏幕上');
 
   /* 轮末之后那段（丙）另起一个气泡，不是接在乙后面 */
-  ok(!!withThree && cnt(withThree.qaLive.join('|'), B) === 1 && cnt(withThree.qaLive.join('|'), C) === 1,
-    '轮末之后的那段另起一个容器（乙、丙各在自己那句里）',
-    withThree ? JSON.stringify(withThree.qaLive) : '没抓到 qaCount=3 那一刻');
+  /* 轮末之后那段（丙）另起一个气泡，不是接在乙后面。
+   * 【2026-11-15 修判据】原来取 qaCount===3 的**第一帧**断言乙丙文字完整出现——
+   * 可那一帧丙才刚开始流式吐字（实测 `QA丙段下一轮接着`，少个「说」），于是假红。
+   * 现在扫所有 3 气泡帧，只要有一帧「乙所在气泡」和「丙所在气泡」是**两个不同的容器**就算过。 */
+  const threes = series.filter((s) => s.qaCount === 3);
+  const sepF = threes.find((s) => {
+    const bs = s.qaLive || [];
+    const ib = bs.findIndex((t) => t.indexOf(B) >= 0);
+    const ic = bs.findIndex((t) => t.indexOf('QA丙段') >= 0);
+    return ib >= 0 && ic >= 0 && ib !== ic;
+  }) || null;
+  ok(!!sepF, '轮末之后的那段另起一个容器（乙、丙各在自己那句里）',
+    sepF ? JSON.stringify(sepF.qaLive) : '没有一帧出现乙丙分属两个容器（3气泡帧 ' + threes.length + ' 个）');
 
   /* 等 runTurn 收尾（settleFromHistory 会把这一屏交给历史） */
   for (let i = 0; i < 60; i++) {
@@ -502,9 +517,17 @@ async function caseThreeToThree() {
   const series = await watch(50, 100);
   const maxLive = Math.max(0, ...series.map((s) => s.liveCount || 0));
   ok(maxLive === 3, '跑着的时候屏幕上 3 个气泡', '最多见到 ' + maxLive + ' 个');
-  const atThree = series.find((s) => s.liveCount === 3) || null;
-  ok(!!atThree && [S1, S2, S3].every((x) => cnt(atThree.text, x) === 1),
-    '跑着的时候三段各一份', atThree ? JSON.stringify(atThree.live) : '没抓到 3 个那一刻');
+  /* 【2026-11-15 修·口径】原来取「第一次出现 3 个气泡」那一帧 —— 可第三段刚冒出
+     几个字时就已经是 3 个气泡了，抓到的自然是半截话（实测只抓到「QA三段丙轮」）。
+     要判的是「三段各在自己容器里、谁都不重份」，所以：在所有 3 气泡帧里找一帧三段
+     都吐全的；并且任何一帧都不许出现某段两份（并泡）。 */
+  const threes = series.filter((s) => s.liveCount === 3);
+  const dupAny = threes.some((s) => [S1, S2, S3].some((x) => cnt(s.text, x) > 1));
+  const atThree = threes.find((s) => [S1, S2, S3].every((x) => cnt(s.text, x) === 1))
+    || threes[threes.length - 1] || null;
+  ok(!!atThree && !dupAny && [S1, S2, S3].every((x) => cnt(atThree.text, x) === 1),
+    '跑着的时候三段各一份', (atThree ? JSON.stringify(atThree.live) : '没抓到 3 个那一刻')
+      + (dupAny ? ' / 有帧出现重份' : '') + ' / 3气泡帧数=' + threes.length);
 
   /* ② 服务端此刻手里的清单 —— 用线上那两个合成器真跑一遍，不自己编 */
   const sv = serverLiveItems(events);

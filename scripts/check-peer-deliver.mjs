@@ -46,8 +46,8 @@ ok('在跑：steer 进 steps 槽带 _sysNote（仅AI可见，不打主人署名�
   /deliverMailNow[\s\S]{0,600}steer\(to, sysText, \{ _sysNote: true \}\)/.test(server));
 ok('系统提示文案：说明是程序转交的信、不是主人说的 + 指路 ask_peer 回信',
   /这是程序转交的信，不是主人说的/.test(server) && /要回话用 ask_peer 递回去/.test(server));
-ok('在跑：直播清单立刻推 notice（前端画系统提示条，跟压缩提醒同款）',
-  /deliverMailNow[\s\S]{0,1200}appendLiveCache\(lv, \{ notice:/.test(server));
+ok('在跑：递话不往主人屏幕上推系统条（2026-11-15 主人钦定「不要显示谁给谁递话」）',
+  !/deliverMailNow[\s\S]{0,1600}appendLiveCache\(lv, \{ notice:/.test(server));
 ok('没在跑：走 wakePeer 叫醒路径',
   /deliverMailNow[\s\S]{0,1600}await wakePeer\(to\)/.test(server));
 ok('递话事件写 diag（可追溯）',

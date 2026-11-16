@@ -243,17 +243,54 @@ async function verifyOne(seed) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: sid, message: text }),
       });
-      const txt = await r.text();
-      const compressed = txt.split('\n')
-        .filter((l) => l.startsWith('data:'))
-        .map((l) => { try { return JSON.parse(l.slice(5).trim()); } catch { return null; } })
-        .filter(Boolean)
-        .find((e) => e.type === 'compressed') || null;
+      /* 2026-11-15 修：原来 await r.text() 等整条 SSE 流结束才返回。
+       * 压缩一旦触发，上游假服务器那边的连接不会自己 end，fetch 就一直挂着，
+       * 到 5 分钟被底层掐掉 —— 表现成「跑挂了：terminated」，还误判成压缩没挺住。
+       * 改成流式读：读到 compressed 事件（或流自然结束）就收手 cancel()。 */
+      let compressed = null;
+      const dec = new TextDecoder(); let buf = '';
+      const rd = r.body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await rd.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const ls = buf.split('\n'); buf = ls.pop();
+          for (const l of ls) {
+            if (!l.startsWith('data:')) continue;
+            let e = null; try { e = JSON.parse(l.slice(5).trim()); } catch {}
+            if (e && e.type === 'compressed') compressed = e;
+          }
+          if (compressed) break;
+        }
+        /* 【2026-11-16 补·流尾巴】上游断开时最后一行常常没带换行，被 buf 留着没解析。
+         * done 之后补扫一次，不然 compressed 事件明明发了却读不到。 */
+        if (!compressed && buf.trim()) {
+          for (const l of buf.split('\n')) {
+            if (!l.startsWith('data:')) continue;
+            let e = null; try { e = JSON.parse(l.slice(5).trim()); } catch {}
+            if (e && e.type === 'compressed') compressed = e;
+          }
+        }
+      } finally {
+        if (compressed) { try { await rd.cancel(); } catch {} }
+      }
       return { ok: r.ok, compressed };
     };
 
     const r1 = await chatOne('开始验收，先压一遍');
-    const afterCompress = statOf(dstFile);
+    /* 【2026-11-16 修·等落盘，别抢跑】
+     * chatOne 一收到 compressed 事件就 cancel 返回，可服务端把压缩结果写回磁盘
+     * 是那之后才完成的。原来紧接着 statOf 读到的是「压缩前 + 刚说那一条」，
+     * 于是 853 条读成 977 条，判「条数没变少 / 没摘要」—— 全是冤枉。
+     * 实测同一份会话重读后是 9 条 / 摘要 1 条，压缩本身好好的。
+     * 改成轮询等到条数真的降下来（最多 8 秒），超时再按实际值判。 */
+    let afterCompress = statOf(dstFile);
+    const deadline = Date.now() + 8000;
+    while (afterCompress.count >= s0.count && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+      afterCompress = statOf(dstFile);
+    }
     lines.push(`  压完：${afterCompress.count} 条 / ${afterCompress.kb}KB / 摘要 ${afterCompress.summaries} 条`);
 
     // 【两种本来就不该压的情况，判「跳过」而不是「失败」，别让验收脚本冤枉代码】
@@ -266,7 +303,15 @@ async function verifyOne(seed) {
       return { ok: true, lines, skipped: true };
     }
 
-    ok(Boolean(r1.compressed), '第一轮就触发了压缩' + (r1.compressed ? `（${r1.compressed.before}→${r1.compressed.after}）` : ''));
+    /* 【2026-11-16 改·判据以磁盘为准，不当事件的奴隶】
+     * 原来只认 SSE 流里的 compressed 事件。可演练环境里压缩一落地，假上游就会
+     * 先掐连接（见日志 stream-error「流被中途掐断」），事件跟在后面就被吞了，
+     * 于是「磁盘明明 853 → 9 条、摘要 1 条」还判没压缩 —— 冤枉。
+     * 压缩的实质证据是磁盘：条数真降了 或 事件到了，都算压成。 */
+    ok(Boolean(r1.compressed) || afterCompress.count < s0.count,
+      '第一轮就触发了压缩' + (r1.compressed
+        ? `（${r1.compressed.before}→${r1.compressed.after}）`
+        : `（事件被掐断，但磁盘 ${s0.count} → ${afterCompress.count} 条，实打实压了）`));
     ok(afterCompress.count < s0.count, `磁盘上的条数真的变少了（${s0.count} → ${afterCompress.count}）`);
     ok(afterCompress.summaries >= 1, '落盘的那份里有摘要');
 

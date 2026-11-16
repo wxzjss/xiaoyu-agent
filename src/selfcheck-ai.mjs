@@ -176,6 +176,7 @@ export const PROBES = [
           cwd: ROOT,
           timeout: CMD_TIMEOUT,
           encoding: 'utf8',
+          windowsHide: true,   // 【2026-11-15】AI 自检跑的这条命令也不许弹窗
           stdio: ['ignore', 'pipe', 'pipe'],
         });
         return maskSensitive(String(out).trim()).slice(0, 3000) || '(没有输出)';

@@ -32,10 +32,19 @@
  *   · 失败时完整日志留在磁盘上并把路径打出来，要深挖直接打开看。
  */
 import fs from 'node:fs';
+const __racT=(m)=>{try{fs.appendFileSync('D:/小鱼Agent/.build/rac-trace.log',Date.now()+' '+m+String.fromCharCode(10))}catch{}};
+process.on('exit',(c)=>__racT('EXIT '+c));
+process.on('uncaughtException',(e)=>__racT('UNCAUGHT '+(e&&e.stack)));
+process.on('unhandledRejection',(e)=>__racT('UNHANDLED '+(e&&e.stack)));
+__racT('boot');
+
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { startIsolated } from './_test-instance.mjs';
+import { reapTestOrphans } from './_reap-test-orphans.mjs';
+import { sweepTmpDirs } from './_sweep-tmp.mjs';
 
 /* 【2026-11-09 闸】全量回归只在隔离实例上跑。
  * 以前默认连 8788 —— 那正是主人开着的窗口，检查会在他的会话里发消息、
@@ -43,7 +52,21 @@ import { startIsolated } from './_test-instance.mjs';
  * 起不来直接抛错退出，绝不退回主人实例。 */
 let iso;
 try {
-  iso = await startIsolated();
+  /* 清上一趟被强杀留下的孤儿 —— 它们占着 8950~8955，不清这一趟起不来 */
+  try { reapTestOrphans({ verbose: true }); } catch (e) {
+    console.log('  [reap] 清理孤儿进程时出错（不影响本次回归）：' + ((e && e.message) || e));
+  }
+  /* 【2026-11-14 磁盘闸】被掐断的回归会留 xy-check-* 目录，攒到撑满 C 盘
+   * 之后所有回归都 ENOSPC 起不来。起实例前先扫一遍历史残渣。 */
+  try {
+    const sw = sweepTmpDirs({ verbose: true });
+    if (sw.removed > 200) console.log('  [sweep-tmp] 注意：这次清了 ' + sw.removed + ' 个陈旧目录，说明之前有回归被硬掐断过。');
+  } catch (e) {
+    console.log('  [sweep-tmp] 清扫出错（不影响回归）：' + ((e && e.message) || e));
+  }
+  __racT('before startIsolated');
+  iso = await startIsolated({ appPort: Number(process.env.XY_CHECK_PORT)||8950, cdpPort: Number(process.env.XY_CHECK_CDP)||9450 });
+  __racT('after startIsolated ' + (iso && iso.base));
 } catch (e) {
   console.error('起隔离实例失败（绝不回落到主人实例）：', (e && e.stack) || e);
   process.exit(2);
@@ -86,6 +109,9 @@ function sweep(tag) {
  * （实测那 4 个红里有 2 个就是这么撞出来的）。
  * 这三个是**入口**，不是单项，全量只跑真正的一条条检查。
  */
+/* 【2026-11-14 修】原来全用 process.cwd()，从 scripts/ 里跑时全变成 scripts/scripts、scripts/_t_ui.mjs
+ * 这种不存在的路径 -> ENOENT / 静默失败。统一按模块位置推仓库根。 */
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TIER_ENTRY = new Set(['check-smoke.mjs', 'check-changed.mjs', 'check-core.mjs']);
 /* 【2026-11-08 加】check-gates-self 不进全量回归。
  * 它会把 public/index.html 改坏再还原（验证检查器抓得住），
@@ -94,7 +120,7 @@ const TIER_ENTRY = new Set(['check-smoke.mjs', 'check-changed.mjs', 'check-core.
 const META_ONLY = new Set(["check-gates-self.mjs"]);
 
 let scripts = fs
-  .readdirSync(path.join(process.cwd(), 'scripts'))
+  .readdirSync(path.join(ROOT, 'scripts'))
   .filter((f) => /^check-.*\.mjs$/.test(f) && !TIER_ENTRY.has(f) && !META_ONLY.has(f))
   .sort();
 
@@ -160,7 +186,9 @@ function runToFile(label, scriptPath, { timeout, env } = {}) {
   let r = null;
   try {
     fd = fs.openSync(file, 'w');
+    __racT('toFile-spawn ' + safe);
     r = spawnSync(process.execPath, [scriptPath], {
+      cwd: ROOT,          // 【2026-11-15 修】子脚本一律以仓库根为工作目录，别跟着 runner 的 cwd 跑（否则 scripts/src/xxx.mjs 这种相对路径全 ENOENT）
       stdio: ['ignore', fd, fd],     // 同一条 fd 给 stdout 和 stderr：看到的就是发生顺序
       timeout,
       env,
@@ -187,6 +215,7 @@ function runToFile(label, scriptPath, { timeout, env } = {}) {
   } catch {}
   const errCode = r && r.error ? (r.error.code || String(r.error.message || r.error)) : '';
   const timedOut = errCode === 'ETIMEDOUT' || (r && r.signal === 'SIGTERM' && errCode !== '');
+  __racT('toFile-done ' + safe);
   return { r, text, file, errCode, timedOut, readCut };
 }
 
@@ -238,7 +267,7 @@ function dropLog(got) {
 for (const f of scripts) {
   process.stdout.write(f.padEnd(36));
   const t0 = Date.now();
-  const got = runToFile(f, path.join(process.cwd(), 'scripts', f), {
+  const got = runToFile(f, path.join(ROOT, 'scripts', f), {
     timeout: 15 * 60 * 1000,
     env: iso.env,
   });
@@ -270,8 +299,8 @@ for (const f of scripts) {
    ───────────────────────────────────────────────────────────── */
 /* 【2026-11-05 加】POST 接口健壮性：自己起一个隔离实例（临时数据目录），
  * 空 body 打一遍，看有没有「没校验就 5xx」的。不碰主人正在用的那份。 */
-process.stdout.write('_t_post.mjs（POST）'.padEnd(36));
-const _gp = runToFile('_t_post', path.join(process.cwd(), '_t_post.mjs'), {
+if (!fs.existsSync(path.join(ROOT, '_t_post.mjs'))) { console.log('_t_post.mjs（POST）'.padEnd(36) + 'SKIP （文件不存在，以 check-live-render-dom 为替代口径）'); } else { process.stdout.write('_t_post.mjs（POST）'.padEnd(36));
+const _gp = runToFile('_t_post', path.join(ROOT, '_t_post.mjs'), {
   timeout: 6 * 60 * 1000,
   env: iso.env,
 });
@@ -282,7 +311,7 @@ if ((_gp.r || {}).status === 0) {
   fail++;
   failed.push('_t_post.mjs');
   console.log(' FAIL  输出 ' + _gp.file);
-  tails.push(failureBlock('_t_post.mjs', _gp).text);
+  tails.push(failureBlock('_t_post.mjs', _gp).text); }
 }
 
 if (!process.argv.includes('--no-ui')) {
@@ -300,8 +329,8 @@ if (!process.argv.includes('--no-ui')) {
       console.log(_f.padEnd(36) + ' 跳过：隔离实例没在跑（' + iso.base + ' 连不上）');
     }
   } else {
-    process.stdout.write('_t_ui.mjs（真机）'.padEnd(36));
-    const gui = runToFile('_t_ui', path.join(process.cwd(), '_t_ui.mjs'), {
+    if (!fs.existsSync(path.join(ROOT, '_t_ui.mjs'))) { console.log('_t_ui.mjs（真机）'.padEnd(36) + 'SKIP （文件不存在，以 check-live-render-dom 为替代口径）'); } else { process.stdout.write('_t_ui.mjs（真机）'.padEnd(36));
+    const gui = runToFile('_t_ui', path.join(ROOT, '_t_ui.mjs'), {
       timeout: 4 * 60 * 1000,
       env: iso.env,
     });
@@ -312,13 +341,13 @@ if (!process.argv.includes('--no-ui')) {
       fail++;
       failed.push('_t_ui.mjs');
       console.log(' FAIL  输出 ' + gui.file);
-      tails.push(failureBlock('_t_ui.mjs', gui).text);
+      tails.push(failureBlock('_t_ui.mjs', gui).text); }
     }
 
     /* 【2026-11-05 加】接口全量 + 只读工具：都只读，不会改任何状态 */
-    for (const _extra of ['_t_api.mjs', '_t_tools.mjs', '_t_write.mjs', '_t_agents2.mjs', '_t_prompt.mjs']) {
+    for (const _extra of ['_t_api.mjs', '_t_tools.mjs', '_t_write.mjs', '_t_agents2.mjs', '_t_prompt.mjs'].filter(f => fs.existsSync(path.join(ROOT, f)))) {
       process.stdout.write(_extra.padEnd(36));
-      const gx = runToFile(_extra, path.join(process.cwd(), _extra), {
+      const gx = runToFile(_extra, path.join(ROOT, _extra), {
         timeout: 3 * 60 * 1000,
         env: iso.env,
       });

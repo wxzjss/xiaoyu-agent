@@ -83,7 +83,9 @@ export const uiObserve = {
   async run(args) {
     const hwnd = Number(args?.hwnd) || 0;
     if (!hwnd) {
-      const list = await listWindows();
+      const r0 = await listWindows();
+      if (r0 && r0.ok === false) return { text: '列窗口失败了：' + (r0.error || '未知原因') };
+      const list = Array.isArray(r0) ? r0 : (Array.isArray(r0 && r0.windows) ? r0.windows : []);
       if (!list.length) return { text: '一个窗口也没看见 —— 桌面是空的？' };
       const body = list.map(windowLine).join('\n');
       return {

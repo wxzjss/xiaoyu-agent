@@ -128,15 +128,92 @@ export function postMail({ from, to, text, fromTitle = '' }) {
  *
  * @returns {Array<{from:string,fromTitle:string,text:string,at:number}>}
  */
+/**
+ * 【进程内占用表】已经交给某一轮、但还没确认落盘的信的 id。
+ *
+ * 为什么要有它：takeMail 现在不再当场删文件了（见下），如果不记一笔，
+ * 同一轮里每转一圈都会把同一封信重复喂进历史。这个 Set 就是「已出库未签收」。
+ * id 是全局唯一的（m + 时间戳 + 随机），不用按会话分桶。
+ */
+const _claimed = new Map();
+/** 占用的最长有效期（毫秒）—— 超过就当没占过，允许重投 */
+const CLAIM_TTL_MS = 10 * 60 * 1000; // sessionId -> Set<mailId>
+
+/**
+ * 取走某个会话信箱里「还没交出去过」的信。
+ *
+ * 【2026-11-15 改：不再取走即删】
+ * 原来是 readBox 之后立刻 rmSync 整个文件。真出过事：搭建鱼那边 22:50 收到了我递的话、
+ * 01:12 也回了信，可她那一轮被重启掐断，/api/chat 的 finally 从没执行、saveSession 一次没跑，
+ * 于是「信已经从信箱删了、历史里一个字都没有」—— 她那个会话 296 条消息里一条 peer 消息都没有，
+ * 从主人视角看就是「根本没收到」。
+ *
+ * 现在的语义：交给这一轮的时候只在进程内占个位，文件一个字不动；
+ * 等这一轮真的落盘了，由 ackSessionMail 把签收过的行从信箱里删掉。
+ * 中途被打断/进程被杀 → _claimed 跟着进程一起没了、文件也还在 → 下一轮照常重投。
+ * 代价是极端情况下可能重复投递一次（重投比丢信好）。
+ */
 export function takeMail(sessionId) {
   if (!isId(sessionId)) return [];
-  const f = boxPath(sessionId);
-  if (!existsSync(f)) return [];
   const all = readBox(sessionId);
+  if (!all.length) return [];
+  let set = _claimed.get(sessionId);
+  if (!set) { set = new Map(); _claimed.set(sessionId, set); }
+  // 【2026-11-15 兜底】占用带过期时间：万一哪个分支漏了释放（抛异常、提前 return、
+  // 换会话……），10 分钟后自动作废，信会重新投一次。宁可重复一次，不许永久卡死。
+  const now = Date.now();
+  for (const [id, at] of [...set]) if (now - at > CLAIM_TTL_MS) set.delete(id);
+  const fresh = all.filter((m) => m && m.id && !set.has(m.id));
+  for (const m of fresh) set.set(m.id, now);
+  return fresh;
+}
+
+/**
+ * 签收：这一轮已经落盘了，把被占用过、且确实在这个信箱里的信从文件里删掉。
+ * 返回真删了几条（给日志用）。
+ *
+ * 只删 _claimed 里的 —— 万一中途又有新信投进来，那些还没交给任何一轮，不能跟着一起清。
+ */
+export function ackSessionMail(sessionId) {
+  if (!isId(sessionId)) return 0;
+  const f = boxPath(sessionId);
+  const set = _claimed.get(sessionId) || new Set();
+  if (!existsSync(f)) {
+    _claimed.delete(sessionId);
+    return 0;
+  }
+  const all = readBox(sessionId);
+  const keep = [];
+  const gone = [];
+  for (const m of all) {
+    if (m && m.id && set.has(m.id)) gone.push(m.id);
+    else keep.push(m);
+  }
+  if (!gone.length) return 0;
   try {
-    rmSync(f, { force: true });
-  } catch {}
-  return all;
+    if (keep.length) writeFileSync(f, keep.map((m) => JSON.stringify(m)).join('\n') + '\n', 'utf8');
+    else rmSync(f, { force: true });
+  } catch {
+    // 删失败就别清占用表，下次还能再签一次
+    return 0;
+  }
+  if (set.size) _claimed.set(sessionId, set);
+  else _claimed.delete(sessionId);
+  return gone.length;
+}
+
+/** 这一轮彻底失败/被掐断时把占用吐回去，让下一轮还能重投（不删文件，只放回可投状态） */
+export function releaseClaimedMail(sessionId) {
+  if (sessionId) {
+    const set = _claimed.get(sessionId);
+    const n = set ? set.size : 0;
+    _claimed.delete(sessionId);
+    return n;
+  }
+  let n = 0;
+  for (const s of _claimed.values()) n += s.size;
+  _claimed.clear();
+  return n;
 }
 
 /** 只看一眼，不取走（给界面显示用） */

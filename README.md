@@ -73,7 +73,8 @@ npm run selfcheck -- --deep  # 深度
 |---|---|
 | 联网搜索 | `web_search` / `fetch_url` |
 | 读文件 / 写文件 / 看目录 | `read_file` / `write_file` / `list_dir` |
-| 跑命令 | `run_command` |
+| 跑命令 | `run_command`（`background:true` 丢后台，长活不占人） |
+| 看后台进度 | `check_job` / `list_jobs` / `stop_job` |
 | 任务清单 | `plan` |
 | 便签 | `note` |
 | 抓网页存文件 | `fetch_txt` / `fetch_many` |
@@ -126,7 +127,7 @@ npm run selfcheck -- --deep  # 深度
 
 ## 手机连接
 
-手机装 APK（`XiaoyuAgent-<版本>-Mobile.apk`），电脑上【设置】→【手机连接】打开局域网，扫二维码就连上了。
+手机装 APK（仓库里的 `mobile/` 工程打出来的 `小鱼Agent-手机端.apk`，桌面与发布页都有），电脑上【设置】→【手机连接】打开局域网，扫二维码就连上了。开机自启、组网连接、本地直连模式的细节在 `notes/手机连接.md`。
 
 - 手机端**不做第二套界面**，就是一个 WebView 壳，加载电脑上那份网页——所以电脑改了界面手机刷新即得，会话、记忆、模型全都共用。
 - 配对码通过 cookie 下发（`xy_token`），页面自己发的请求自动带上，不用改页面代码。

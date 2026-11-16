@@ -258,7 +258,7 @@ function checkFile(label, path) {
    */
   let _uiCode = '';
   try {
-    const _uiDir = join(process.cwd(), 'public', 'ui');
+    const _uiDir = join(ROOT, 'public', 'ui');
     if (existsSync(_uiDir)) {
       for (const f of readdirSync(_uiDir)) {
         if (f.endsWith('.js')) _uiCode += '\n' + readFileSync(join(_uiDir, f), 'utf8');

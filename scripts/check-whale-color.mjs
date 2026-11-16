@@ -129,7 +129,9 @@ const INJECT = `
     else { fail++; console.log('  [!!] ' + m + (extra ? '  → ' + extra : '')); }
   };
 
-  inst = await startIsolated({ appPort: 8795, cdpPort: 9223 });
+  const _isoPort = Number(process.env.XY_CHECK_PORT) || 8795;
+  const _isoCdp = Number(process.env.XY_CHECK_CDP) || 9223;
+  inst = await startIsolated({ appPort: _isoPort, cdpPort: _isoCdp });
   console.log('隔离实例: ' + inst.base + '   （/api/agents 延迟 ' + AGENTS_DELAY + 'ms）');
   try {
     /* 会话从哪来？

@@ -443,6 +443,86 @@ async function quickVersionCheck() {
   }
 }
 
+/**
+ * 【2026-11-15 主人报·自动重启后托盘半天不出人】自己拉起自己的「守候进程」。
+ *
+ * 为什么需要它：实测 app.relaunch 登记之后，老进程 1 秒就退干净了
+ * （boot.log 里 will-quit / quit 同一秒），可新实例直到 10 秒后才被 spawn ——
+ * 那 10 秒就是主人盯着空托盘的「好一会」。
+ *
+ * 做法：退出前放一个独立的 PowerShell（detached，不属于本进程树），
+ * 它每 150ms 看一眼本 pid 还在不在，一消失就 Start-Process 把自己拉回来。
+ *  · 用 -EncodedCommand 传 base64，绕开 cmd 的中文路径编码坑；
+ *  · 环境里先清掉 ELECTRON_RUN_AS_NODE（宿主是 Electron 时会带上它，
+ *    不清的话新实例会退化成 node，双击闪退那个老问题）；
+ *  · app.relaunch 仍然登记着当兜底：两条都拉时先拿到单实例锁的留下，
+ *    另一条抢不到锁 8 秒后自己退，不会双开。
+ */
+function spawnSelfRelauncher() {
+  try {
+    const { spawn } = require('node:child_process');
+    const path = require('node:path');
+    const exe = process.execPath;
+    /* 【2026-11-15 主人报「启动时弹出 Electron 欢迎页（QQ-agent 那个 electron.exe）」】
+     *
+     * 病根就在参数这一行：开发态（start.bat 起的 node_modules\electron\dist\electron.exe）
+     * 的 execPath **是 electron.exe 本身**，它需要「app 目录」当第一个参数。
+     * 只传 --xy-relaunch 的话，Electron 会把这个 flag 当成 app 路径 → 找不到
+     * → 弹那个「To run a local app, execute the following…」的欢迎页。
+     * 打包版（小鱼Agent.exe）不吃 app 目录、只吃 flag，所以以前没露。
+     */
+    const appDir = path.join(__dirname, '..');
+    const args = app.isPackaged ? [RELAUNCH_FLAG] : [appDir, RELAUNCH_FLAG];
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    /* 【2026-11-15 改·不再等本进程死】原来用 PowerShell 守候「本 pid 消失再拉」，
+     * 实测那 74 秒里新实例一直没出现（守候进程本身起得慢/被拦，且 app.relaunch
+     * 也在等同一条件）。现在改成**立刻就把新实例拉起来**：
+     *   · 新实例起来先抢锁 → 抢不到就每 120ms 重试（最多 12 秒）；
+     *   · 老进程这边收尾完 2 秒内硬退，锁一松，新实例下一次重试就拿到 → 出窗口。
+     * 这样「退出」和「拉起」并行，总耗时基本等于老进程收尾那 2 秒 + 新实例启动那 2 秒。
+     */
+    const child = spawn(exe, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env,
+      cwd: path.dirname(exe),
+    });
+    child.unref();
+    bootMark('已立刻拉起新实例（抢锁重试等老进程退）');
+    return true;
+  } catch (e) {
+    console.warn('[restart] 新实例没拉起来（还有 app.relaunch 兜底）：', String(e?.message ?? e));
+    return false;
+  }
+}
+
+/** 【2026-11-15】收掉「Electron 欢迎页孤儿进程」（见 whenReady 里的调用处）。
+ *
+ * 判据写得很窄，只认两种「一定是没人正常用的」：
+ *   ① 命令行只有 exe 本身（`...electron.exe`，后面什么都没有）→ 就是那个欢迎页；
+ *   ② `--xy-relaunch` 紧跟在 exe 后面（中间没 app 目录）→ 我们自己以前留下的孤儿。
+ * 正常开发态是 `electron.exe <项目目录> ...`，打包版进程名又不同，都不会命中。
+ * 出什么错都只打一行日志，绝不影响启动。 */
+function sweepOrphanWelcome() {
+  try {
+    const { execFile } = require('node:child_process');
+    const ps =
+      'Get-CimInstance Win32_Process -Filter "Name=\'electron.exe\'" | ' +
+      'Where-Object { $_.CommandLine -match \'electron\\.exe"?\\s+--xy-relaunch\' -or $_.CommandLine -match \'electron\\.exe"?\\s*$\' } | ' +
+      'ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; "killed:$($_.ProcessId)" } catch {} }';
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', ps],
+      { windowsHide: true, timeout: 8000 },
+      (err, out) => {
+        const hits = String(out || '').trim();
+        if (hits) console.log('[boot] 收掉孤儿欢迎页:', hits);
+      });
+  } catch (e) {
+    console.warn('[boot] 欢迎页自查没跑成（不影响使用）:', String(e?.message ?? e));
+  }
+}
+
 async function startServer() {
   const { startServer: run } = await importSrc('src/server.mjs');
 
@@ -474,9 +554,25 @@ async function startServer() {
      */
     try {
       app.relaunch({ args: process.argv.slice(1).concat(RELAUNCH_FLAG) });
+      /* 【2026-11-15】「开始重启」也记进 boot.log：新进程那边紧接着那句
+       * 「重启上来的（抢锁重试 x 次 / y ms）」跟它一对，就能量出退出到底慢在哪。 */
+      globalThis.__xyRestarting = true;
+      bootMark('开始重启（relaunch 已登记）');
     } catch (e) {
       console.warn('[restart] relaunch 登记失败：', String(e?.message ?? e));
     }
+    /* 【2026-11-15 主人报·自动重启后托盘半天不出人】自己再放一个守候进程。
+     *
+     * 实测（00:56 那轮）：老进程 1 秒就退干净了（will-quit/quit 同一秒），
+     * 但 Electron 的 relaunch 直到 **10 秒后**才真把新实例 spawn 出来 ——
+     * 主人看到的就是「退出了，托盘空着，过一会才回来」。
+     *
+     * 所以这里不押宝在它身上：退出前先放一个独立的 PowerShell 守候，
+     * 盯着本进程 pid，本进程一消失立刻 Start-Process 把自己拉回来（约 0.3 秒）。
+     * app.relaunch 那条仍登记着当兜底 —— 两条都拉时先拿到单实例锁的留下，
+     * 另一条抢不到锁 8 秒后自己退，不会双开。
+     */
+    spawnSelfRelauncher();
     quitting = true;
     try { app.quit(); } catch { try { app.exit(0); } catch { process.exit(0); } }
     /* 兜底：正常退出被什么东西卡住时，20 秒后硬退，别让窗口吊在那儿 */
@@ -511,7 +607,23 @@ async function startServer() {
    * 所以挂在这儿，tools.mjs 那边直接取得到。必须在 startServer() 之前挂好。
    */
   globalThis.__xiaoyuBrowser = {
-    open: (url) => openBrowser(url),
+    /* 默认后台打开（不弹窗）。要「抬起来给人看」必须显式传 show。 */
+    open: (url, opts) => openBrowser(url, opts),
+    /* 【2026-11-16 加】主人想自己看页面时用：把窗口显示出来 */
+    show: () => {
+      try {
+        if (!browserWin || browserWin.isDestroyed()) return Promise.resolve({ ok: false, error: '浏览器没开过（先让它打开一个页面）' });
+        browserWin.setSkipTaskbar(false);
+        browserWin.show();
+        browserWin.focus();
+        return Promise.resolve({ ok: true });
+      } catch (e) { return Promise.resolve({ ok: false, error: String(e?.message ?? e) }); }
+    },
+    /* 收回后台：不销毁页面，只是不占屏幕 */
+    hide: () => {
+      try { if (browserWin && !browserWin.isDestroyed()) { browserWin.hide(); browserWin.setSkipTaskbar(true); } } catch {}
+      return Promise.resolve({ ok: true });
+    },
     goto: (url) => {
       const u = normalizeUrl(url);
       if (!u) return Promise.resolve({ ok: false, error: '只支持 http / https 地址' });
@@ -1008,8 +1120,15 @@ async function createWindow(updated = false) {
      */
     try { win.setBackgroundColor('#000000'); } catch {}
 
+    /* 【2026-11-16 主人报·「当着我面开一个新的小鱼Agent弹窗弹我一脸」】
+     *
+     * 重启拉起来的这个是「接着干活」，不是主人双击要出来的 ——
+     * 用 showInactive：窗口出现（不闪、不消失，主人回来看得见），
+     * 但**不抢焦点、不把自己盖到别人窗口上面**。
+     * 他正打着字/看着别的东西时，鼠标焦点一根毫毛都不动。 */
+    if (RELAUNCHING) { try { win.showInactive(); } catch (e) { try { win.show(); } catch (e2) {} } }
     // 先让它在「全透明」的状态下露面：这一步屏幕上什么都不会变。
-    win.show();
+    else win.show();
     // 2026-11-02 主人：「那圈橙边看着不对，改回原来」—— 显出来之后把 34/35
     // 两个 DWM 属性还原成系统默认（外框不画、标题栏跟主题）。
     clearWindowBorderColor(win);
@@ -1020,7 +1139,8 @@ async function createWindow(updated = false) {
         win.setOpacity(1);
         // 再补「最大化」这个状态。放这儿而不是紧跟着 show，
         // 是因为 maximize 也会让 Windows 重画一下，等不透明之后再重画就看不见了。
-        if (!win.isMaximized()) win.maximize();
+        /* 重启拉起时别 maximize —— 那一下会把屏幕占满 + 触发一次重画，最像「弹一脸」 */
+        if (!RELAUNCHING && !win.isMaximized()) win.maximize();
       } catch {}
     }, 60);
     /**
@@ -1256,6 +1376,15 @@ function createTray() {
         else createWindow();
       } },
       { type: 'separator' },
+      /* 【2026-11-16 主人钦点】内置浏览器改成后台开（不弹窗），
+       * 想自己看页面时从这里把它叫出来。没开过就现开一个空白页。 */
+      { label: '显示内置浏览器', click: () => {
+        try {
+          if (browserWin && !browserWin.isDestroyed()) { browserWin.setSkipTaskbar(false); browserWin.show(); browserWin.focus(); }
+          else openBrowser('about:blank', { show: true });
+        } catch (e) { console.warn('[tray] 显示内置浏览器失败：', String(e?.message ?? e)); }
+      } },
+      { type: 'separator' },
       { label: '后台一直在跑，关窗口不会停', enabled: false },
       { type: 'separator' },
       { label: '彻底退出（正在跑的会停）', click: () => {
@@ -1277,18 +1406,38 @@ function createTray() {
 
 // 只允许一个实例：双击多次快捷方式不会开出一堆窗口，第二次只是把原来那个叫到前面。
 // 之前没有这道锁，重复双击会起多个进程、多个端口，关起来也容易搞混。
-/* 【2026-11-07】自己重启起来的那一版，先给老进程让路再抢锁。
- * 用 Atomics.wait 做同步小睡：主进程这会儿还没起事件循环，
- * 除了阻塞没有别的办法，1.2 秒是实测「老进程退干净」的余量。 */
-if (process.argv.includes(RELAUNCH_FLAG)) {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1200);
-    bootMark('重启上来的（等了 1.2s 让老进程退干净）');
-  } catch (e) {
-    console.warn('[restart] 等老进程时出错（不影响启动）：', String(e?.message ?? e));
+/* 【2026-11-15 主人报·自动重启后要等好一会才在托盘里见到它】
+ *
+ * 老写法两个毛病，凑一起就是「退出了，托盘半天不出人」：
+ *  ① 不管老进程退没退，先固定小睡 1.2 秒 —— 老进程往往早退了，纯白等；
+ *  ② 睡完**只试一次**锁，拿不到就 app.quit() 静默消失。boot.log 里只剩
+ *     「主进程起来了」一行、后面什么都没有，就是走了这条路。
+ *
+ * 现在：锁优先，小睡只当重试间隔。
+ *   · 首次就拿到 → 0 延迟往下走（绝大多数情况）；
+ *   · 拿不到 → 每 120ms 再试，最多 8 秒（老进程要把正在跑的一轮收尾完才退，
+ *     实测那段能有几秒；给足余量，但绝不无限等）；
+ *   · 真拿不到也写一行日志并 warn，不再无声无息。
+ */
+const RELAUNCHING = process.argv.includes(RELAUNCH_FLAG);
+let gotLock = app.requestSingleInstanceLock();
+if (RELAUNCHING) {
+  const t0 = Date.now();
+  let tries = 0;
+  while (!gotLock && Date.now() - t0 < 12000) {
+    tries++;
+    try {
+      // 主进程这会儿还没起事件循环，只能同步小睡；不烧 CPU。
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120);
+    } catch (e) {
+      console.warn('[restart] 等老进程时出错（不影响启动）：', String(e?.message ?? e));
+      break;
+    }
+    gotLock = app.requestSingleInstanceLock();
   }
+  bootMark(`重启上来的（抢锁重试 ${tries} 次 / ${Date.now() - t0}ms）`);
+  if (!gotLock) console.warn('[restart] 12 秒内没拿到单实例锁，这个实例只能退出');
 }
-const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
@@ -1330,6 +1479,18 @@ if (!gotLock) {
       return false;
     });
     createTray();
+    /* 【2026-11-15 主人报·启动时冒出个 Electron 欢迎页，不想看到它】
+     *
+     * 那种页面的成因只有一个：某个 electron.exe 被「没带 app 目录」地起起来了。
+     * 我们自己以前就干过这事（开发态的守候进程只传了 --xy-relaunch，被 Electron
+     * 当成 app 路径）。现在参数已经修好，但历史孤儿进程可能还留在系统里。
+     *
+     * 这里启动后自查一遍，只收「明确是我们留下的」那种：
+     *   · 进程名 electron.exe（打包版叫 小鱼Agent.exe，不在范围内）
+     *   · 命令行里 --xy-relaunch **紧跟着 exe**（说明中间没有 app 目录 → 孤儿）
+     * 别的一律不碰 —— QQ-agent 那些是别人的进程，不归我们管。
+     */
+    setTimeout(sweepOrphanWelcome, 3000).unref?.();
     await createWindow(false);
     // 自检结果回来之后，如果它说「需要重启才生效」，把界面重载一次就好，不再阻塞任何人。
     selfCheckDone.then((updated) => {
@@ -1365,6 +1526,13 @@ app.on('window-all-closed', () => {
  */
 let quitHandled = false;
 
+/* 【2026-11-15 主人报·自动重启要等好一会】退出这条路以前是黑盒：
+ * 只知道「点了重启」，不知道卡在收尾、卡在关窗、还是卡在进程退出。
+ * 这两行把最后两段也写进 boot.log —— 和「开始重启」「收尾完成」「重启上来的」
+ * 四行连起来，下一次再慢就能一眼指到具体那一段。 */
+app.on('will-quit', () => { try { bootMark('will-quit（窗口都关了）'); } catch {} });
+app.on('quit', () => { try { bootMark('quit（进程马上消失）'); } catch {} });
+
 app.on('before-quit', async (ev) => {
   if (quitHandled) return;
   quitHandled = true;
@@ -1372,7 +1540,10 @@ app.on('before-quit', async (ev) => {
   if (info && info.url) {
     ev.preventDefault();
     quitting = true;
-    const waitMs = 5000;
+    /* 【2026-11-15 主人报·重启太慢】收尾正常只要 300ms（接口立刻回 + 留 300ms 落盘），
+     * 5 秒只是「服务端卡住时」的兜底 —— 但主人正盯着屏幕等重启，那 5 秒就是干等。
+     * 主动重启这条路压到 2 秒；主人手动退出保持 5 秒，不急。 */
+    const waitMs = globalThis.__xyRestarting ? 2000 : 5000;
     const done = new Promise((resolve) => {
       const timer = setTimeout(resolve, waitMs);
       fetch(`${info.url}/api/app/quitting`, { method: 'POST' })
@@ -1386,7 +1557,26 @@ app.on('before-quit', async (ev) => {
         .finally(() => clearTimeout(timer));
     });
     await done;
+    /* 【2026-11-15】退出也记一行：跟「开始重启」「重启上来的」拼成完整时间线，
+     * 下次谁再报「重启慢」，看这三行就知道是收尾慢、退出慢、还是启动慢。 */
+    bootMark('收尾完成，准备真退');
     if (serverInfo && serverInfo.close) serverInfo.close().catch(() => {});
+    /* 【2026-11-15 主人报·自动重启要等好一会】重启这条路走到这里，该落盘的都落完了
+     * （草稿 / 会话 / 续跑意图，另外还留了 300ms），就别再让 Electron 慢慢收摊：
+     * 实测 quit 事件之后进程还要 32 秒才真从系统里消失（GPU/渲染子进程 + 挂着的
+     * HTTP 连接一起拖），新实例只能干等着，托盘就一直空着。
+     * 这里把该收的收掉（托盘、窗口），然后直接 app.exit(0) —— 进程立刻消失，
+     * 守候进程 0.3 秒内把新版拉起来。主人手动退出保持原来的温和路径，不硬来。 */
+    if (globalThis.__xyRestarting === true) {
+      try { if (tray && !tray.isDestroyed?.()) tray.destroy(); } catch {}
+      try {
+        const { BrowserWindow } = require('electron');
+        for (const w of BrowserWindow.getAllWindows()) { try { w.destroy(); } catch {} }
+      } catch {}
+      bootMark('重启路径：硬退（进程立即消失）');
+      try { app.exit(0); } catch { process.exit(0); }
+      return;
+    }
     /*
      * 【2026-11-02 主人报「我手动退出，它却自己重启」——已修】
      *
@@ -1605,11 +1795,23 @@ function pushBrowserState() {
 }
 
 /** 开浏览器窗口；已经开着就直接跳转 + 叫到前面 */
-function openBrowser(rawUrl) {
+/* 【2026-11-16 主人钦点·打开内置浏览器不要再弹窗】
+ *
+ * 原话：「我不想看到小鱼Agent打开内置浏览器时我后台有弹窗」。
+ *
+ * 以前 openBrowser 建窗不写 show，Electron 默认 true —— 她每次偷偷去开个网页
+ * （查资料、捞登录凭证），主人后台就凭空冒出一个窗口，还是带标题栏的，很打扰。
+ *
+ * 现在：**默认后台建窗（show:false）**，只有显式要「给人看」时才显示。
+ * 主人想自己看的时候有两条路：托盘菜单「显示内置浏览器」、或界面里点【看窗口】。
+ */
+function openBrowser(rawUrl, opts) {
   const target = normalizeUrl(rawUrl) || 'https://www.bing.com';
+  const wantShow = !!(opts && opts.show);
 
   if (browserWin && !browserWin.isDestroyed()) {
-    try { browserWin.show(); browserWin.focus(); } catch {}
+    /* 复用时不主动 show —— 她干活时窗口该留在后台；只有真要给人看才抬起来 */
+    if (wantShow) { try { browserWin.show(); browserWin.focus(); } catch {} }
     try { browserWin.loadURL(target); } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
     return { ok: true, reused: true, url: target };
   }
@@ -1619,6 +1821,9 @@ function openBrowser(rawUrl) {
     height: 820,
     title: '内置浏览器',
     icon: pickAppIcon(),
+    /* 关键：后台建窗，不抢焦点、不出现在任务栏 */
+    show: false,
+    skipTaskbar: true,
     webPreferences: {
       // 网页窗口不给 preload、不给 node —— 它就是个浏览器
       contextIsolation: true,
@@ -1630,6 +1835,7 @@ function openBrowser(rawUrl) {
   });
 
   browserWin.loadURL(target);
+  if (wantShow) { try { browserWin.show(); browserWin.focus(); } catch {} }
 
   // 地址栏跟着变
   for (const ev of ['did-navigate', 'did-navigate-in-page', 'did-start-loading', 'did-stop-loading', 'page-title-updated']) {

@@ -94,8 +94,104 @@ export function readMemory(id) {
   }
 }
 
-/** 写正文（整份覆盖）。force=false 时已存在就不动。 */
-export function writeMemory(id, text, { force = true } = {}) {
+/**
+ * 【2026-11-16 加·「上一段想过什么」——跨轮记住结论，而不是背思考原文】
+ *
+ * 主人问：「思考的压缩总结一行 system role 的输入，拼接的上下文 message list 可以这样吗？」
+ * 讨论下来的结论：跨轮要的是**结论**，不是原文。原文只在一轮的工具循环里有意义，
+ * 一串两万字回传给模型既贵又没必要，还可能被各家网关拒（DeepSeek 官方就 400）。
+ *
+ * 所以每轮收尾时，把这一轮思考的**收束部分**（她最后下的判断 / 下一步）摘成一行
+ * ≤200 字，写进本子的固定小节。下一轮开头作为 context 消息拼回去。
+ *
+ * 【为什么单独一个小节、而不是丢进滚动摘要】
+ * 滚动摘要区是「发生过什么」的流水，只增不减（还有 80 条上限），
+ * 而这一行是「我现在脑子里装着什么」，**每轮整条替换**。混在一起会两头都不对。
+ */
+const THINK_HEAD = '## 上一段想过什么';
+
+/** 这一行最多这么长。超过就没意义了 —— 它存在的目的只是「别重新想一遍」。 */
+export const TURN_THINK_MAX = 200;
+
+/** 从整轮思考里摘出收束的那几句（最后几句通常就是结论 + 下一步）。 */
+export function digTurnThink(reasoning) {
+  const t = String(reasoning ?? '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  // 按句号切；从后往前拼，攒到 200 字为止 —— 她思考的结尾往往就是「所以先改 X 再验 Y」
+  const parts = t.split(/(?<=[。！？!?\n])/).map((x) => x.trim()).filter(Boolean);
+  let out = '';
+  for (let i = parts.length - 1; i >= 0 && out.length < TURN_THINK_MAX; i--) out = parts[i] + out;
+  out = out.trim();
+  return out.length > TURN_THINK_MAX ? out.slice(-TURN_THINK_MAX) : out;
+}
+
+/** 写这一行（整条替换，不会越积越多）。空串 = 清掉。 */
+export function saveTurnThink(id, text) {
+  if (!isId(id)) return false;
+  const one = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, TURN_THINK_MAX);
+  try {
+    const cur = ensureMemory(id);
+    const lines = cur.split('\n');
+    let at = lines.findIndex((l) => l.trim() === THINK_HEAD);
+    if (at < 0) {
+      // 没有小节就插在「## 滚动摘要」前面（没有就追加到末尾）
+      const roll = lines.findIndex((l) => /^##\s*滚动摘要/.test(l));
+      const block = one ? [THINK_HEAD, one, ''] : [];
+      if (!block.length) return false;
+      if (roll >= 0) lines.splice(roll, 0, ...block);
+      else lines.push('', ...block);
+      writeMemAtomic(memoryPath(id), lines.join('\n'));
+      return true;
+    }
+    // 找到小节的正文范围（到下一个 ## 或文件末尾）
+    let end = at + 1;
+    while (end < lines.length && !/^##\s/.test(lines[end])) end += 1;
+    const next = one ? [THINK_HEAD, one, ''] : [];
+    lines.splice(at, end - at, ...next);
+    writeMemAtomic(memoryPath(id), lines.join('\n'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 读这一行。没有就给空串。 */
+export function lastTurnThink(id) {
+  if (!isId(id)) return '';
+  try {
+    const cur = readMemory(id);
+    if (!cur) return '';
+    const lines = cur.split('\n');
+    const at = lines.findIndex((l) => l.trim() === THINK_HEAD);
+    if (at < 0) return '';
+    const body = [];
+    for (let i = at + 1; i < lines.length && !/^##\s/.test(lines[i]); i += 1) body.push(lines[i]);
+    return body.join(' ').replace(/\s+/g, ' ').trim().slice(0, TURN_THINK_MAX);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 本子上次被写的时间（ms）。读不到给 0。
+ *
+ * 【2026-11-16 加·为什么需要「刚写过没」这个判据】
+ * 压缩记忆是按「段号」取的：本子里那条记的是 seg-2-57a7ea6f58，而工作单要的是
+ * seg-2-b9d0bbda25，两边对不上就当没写过 —— 于是她写了、程序说没写、再递工作单、
+ * 她再写一遍，一轮轮空转（修理鱼 12:31~12:43 把同一个本子写了 6 遍）。
+ * 现在段号对不上时退一步看「本子是不是刚被写过」，靠的就是这个时间戳。
+ */
+export function memoryMtime(id) {
+  if (!isId(id)) return 0;
+  try {
+    const st = statSync(join(DIR(), `${id}.md`));
+    return st.mtimeMs || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** 写正文（整份覆盖）。force=false 时已存在就不动。 */export function writeMemory(id, text, { force = true } = {}) {
   if (!isId(id)) {
     const e = new Error('会话 id 不合法：' + id);
     e.status = 400;

@@ -16,8 +16,10 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+const __ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { fileURLToPath } from 'node:url';
 
-const ROOT = process.cwd();
+const ROOT = __ROOT;
 let pass = 0;
 const failed = [];
 

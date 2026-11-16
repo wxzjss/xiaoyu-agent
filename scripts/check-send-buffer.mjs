@@ -46,23 +46,32 @@ ok('keydown 里挂了 _holdPat',
   /try \{ _holdPat\(\); \} catch/.test(html));
 ok('到点一次性发：_holdFire 带 _extraMsgs（没在跑）',
   /_holdFire[\s\S]{0,1400}_extraMsgs: extras/.test(html));
-ok('到点她还在跑：整包合成一条走插话通道（不许 409 丢话）',
-  /_holdFire[\s\S]{0,700}if \(busy\)[\s\S]{0,600}await interject\(\{ text: merged, atts: allAtts \}\);/.test(html));
+/* 【2026-11-15 改·主人要回预发送】到点她还在跑：不再当插话打断，
+ * 整包按顺序收进预发送队列，等她这轮说完自动发。
+ * 原来那条「走 interject 通道」是 11-12 的口径，已过期。 */
+ok('到点她还在跑：整包收进预发送队列（不许 409 丢话，也不再打断她）',
+  /enqueueMessage\(merged, allAtts\)/.test(html)
+  && !/await interject\(\{ text: merged/.test(html));
 ok('缓冲中的乐观显示不画两遍（_skipUserDraw）',
   html.includes('_skipUserDraw = false') && /if \(!_skipUserDraw\) \{[\s\S]{0,300}pendingRewindBubble = addUser\(text/.test(html));
 ok('缓冲窗开着时按回车 = 立刻连缓冲一起发',
   /缓冲窗开着时按了回车[\s\S]{0,900}await _holdFire\(\)/.test(html));
 ok('切会话前先放行缓冲（不把旧会话的话带过去）',
   /_holdFlushOnLeave\(\);[\s\S]{0,120}sessionId = String\(v \|\| ''\)/.test(html));
-ok('功能页有「改时长」入口（两个数字输入 + 存）',
-  /改时长」入口[\s\S]{0,800}sendBufferSec[\s\S]{0,600}sendBufferMaxSec/.test(html));
+/* 【2026-11-14 修】「改时长」按主人钦点改成独立弹窗（holdCfgDlg），两个输入在弹窗里。 */
+ok('功能页有「改时长」入口（独立弹窗 + 两个数字输入 + 存）',
+  /改时长/.test(html) && /holdCfgDlg/.test(html)
+  && /class="holdSec"[\s\S]{0,600}class="holdMax"[\s\S]{0,900}holdSave/.test(html)
+  && /sendBufferSec/.test(html) && /sendBufferMaxSec/.test(html));
 
   /* 【2026-11-12 主人问「预发送重启了还会在吗」——钉住落盘与恢复 */
   ok('缓冲队列落 localStorage（重启/刷新不丢）',
     /_bufferSave\(_holdState\)/.test(html) && /'__xySendBuffer:' \+ \(sessionId/.test(html));
   ok('_holdFire 取账时清落盘那份',
     /_holdState = null;[\s\S]{0,80}_bufferClear\(\)/.test(html));
-  ok('启动恢复残留缓冲：没在跑→续钟放行；在跑→退回输入框（不许自动插话）',
-    /_restoreBuffered\(\), 900\)/.test(html) && /重启前有/.test(html));
+/* 【2026-11-15 改】在跑时不再「退回输入框」（那等于要主人再点一次），
+ * 直接收进预发送队列 —— 点过发送就是要发出去。 */
+  ok('启动恢复残留缓冲：没在跑→续钟放行；在跑→收进预发送队列',
+    /_restoreBuffered\(\), 900\)/.test(html) && /已经放进待发送/.test(html));
 console.log('\n发送缓冲：' + pass + ' 过 / ' + fail + ' 挂');
 process.exit(fail ? 1 : 0);

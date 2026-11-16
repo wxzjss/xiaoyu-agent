@@ -20624,11 +20624,15 @@ function openCfgMenu(which) {
      * 时，✓ 原来挂在「默认」项上；现在改挂到**实际生效的那一档**（按 defaultLevelName
      * 对号），列表里永远有一项亮着勾，不会出现「没有任何选中」的悬空状态。 */
     for (const lv of cfgState.levels || []) {
-      const isEffDefault = !cfgState.isLevelCustom && cfgState.defaultLevelName && lv.name === cfgState.defaultLevelName;
+      /* 勾选和顶部「当前思考强度」显示用同一个来源：实际生效档名 levelName(levelName)。
+       * 旧写法「level 匹配 或 默认档匹配」两条路会打架 —— 新会话显式存了出厂默认档
+       * 'low'（isLevelCustom 判为 false），于是既按 level 勾了「低」，又按 defaultLevelName
+       * 勾了模型默认的「高」，两个勾。只认 levelName，一档一勾。 */
+      const isPicked = cfgState.levelName ? (lv.name === cfgState.levelName) : (cfgState.level === lv.id);
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'cfgMenuItem';
-      b.innerHTML = '<span class="ck">' + (cfgState.level === lv.id || isEffDefault ? '✓' : '') + '</span>';
+      b.innerHTML = '<span class="ck">' + (isPicked ? '✓' : '') + '</span>';
       const nm = document.createElement('span');
       nm.textContent = lv.name;
       b.appendChild(nm);

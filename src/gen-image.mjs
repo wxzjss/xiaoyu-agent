@@ -79,7 +79,16 @@ export function imageEndpoint() {
 
 /** 存一张 base64 的 PNG 到 genimg 目录，返回 { path, bytes, width, height }。 */
 export function savePng(b64, hint = 'img') {
-  const buf = Buffer.from(String(b64 || ''), 'base64');
+  /**
+   * 【2026-11-17 补·上游有时把 data:URL 头也塞进 b64_json】
+   * 直接拿整串去 base64 解码会得到一堆垃圾字节（PNG 头没了），
+   * 存出来的文件打不开 —— 主人看到的就是「图是坏的 / 乱码」。
+   * 这里先剥掉 `data:image/...;base64,` 前缀，再解码。
+   */
+  let clean = String(b64 || '').trim();
+  const m = /^data:image\/[a-zA-Z0-9.+-]+;base64,/.exec(clean);
+  if (m) clean = clean.slice(m[0].length);
+  const buf = Buffer.from(clean, 'base64');
   if (buf.length < 100) throw new Error('上游回了个空的图');
   const tag = createHash('sha1').update(buf).digest('hex').slice(0, 10);
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);

@@ -220,6 +220,7 @@ import {
 // 同一个人连着说 → 拼成一段。实现在 merge-voice.mjs，抽出去是为了能真跑一遍验。
 import { mergeSameVoice } from './merge-voice.mjs';
 import { extractInlineImages } from './gen-image.mjs';
+import { makeInlineImageSink } from './inline-image.mjs';
 import {
   getSkinState,
   writeSkin,
@@ -284,6 +285,7 @@ import {
 import {
   listModels,
   keyForBaseURL,
+  keysForBaseURL,
   saveModel,
   deleteModel,
   selectModel,
@@ -6166,6 +6168,13 @@ const server = createServer(async (req, res) => {
     }
     const _base0 = String((payload && payload.base) || '').trim();
     let _key0 = String((payload && payload.key) || '').trim();
+    /**
+     * 【2026-11-17】这次要试的 key 列表。
+     *
+     * 主人没填 key 时，同一个地址上存的**每一把**都试一遍（各能看到不同模型组，
+     * 详见 models.mjs 的 keysForBaseURL 注释）；填了 key 就只问那一把。
+     */
+    let _keyList = [];
     if (!_base0) return json(res, 400, { ok: false, error: '先填接口地址' });
     if (!/^https?:\/\//i.test(_base0)) return json(res, 400, { ok: false, error: '接口地址要以 http:// 或 https:// 开头' });
 
@@ -6185,16 +6194,23 @@ const server = createServer(async (req, res) => {
     if (!_key0) {
       try {
         /* 注意：不能用 listModels() 的返回去找 key（它只回 hasKey，从来不带 apiKey）。
-         * 必须走 keyForBaseURL —— 它是专门为这件事开的口子。 */
-        const _found = keyForBaseURL(_base0);
-        if (_found) {
-          _key0 = _found;
-          try { diagLog('models-discover-keyfallback', '按地址找到已保存的 key（长度 ' + _key0.length + '）'); } catch {}
+         * 必须走 keysForBaseURL —— 它是专门为这件事开的口子。 */
+        const _found = keysForBaseURL(_base0, { kind: String((payload && payload.kind) || '') });
+        if (_found.length) {
+          _keyList = _found.map((x) => x.key);
+          try {
+            diagLog('models-discover-keyfallback', '按地址找到 ' + _keyList.length + ' 把 key：'
+              + _found.map((x) => x.kind + '(尾' + x.key.slice(-4) + ')').join(','));
+          } catch {}
         } else {
           try { diagLog('models-discover-nokey', 'base=' + _base0 + ' 没有已保存的 key，按无 key 请求'); } catch {}
         }
       } catch (e) { /* 拿不到就用空 key 去试（有些自建站不校验） */ }
+    } else {
+      /* 主人自己填了 key：就只问这一把，别自作主张再去试别的 */
+      _keyList = [_key0];
     }
+    if (!_keyList.length) _keyList = [''];
 
     const _trimSlash = (s) => String(s ?? '').trim().replace(/\/+$/, '');
     const _b = _trimSlash(_base0);
@@ -6203,57 +6219,66 @@ const server = createServer(async (req, res) => {
       ? [`${_b}/models`]
       : [`${_b}/v1/models`, `${_b}/models`];
 
-    const _headers = { Accept: 'application/json' };
-    if (_key0) _headers.Authorization = `Bearer ${_key0}`;
-
     let _lastErr = '';
-    for (const _u of _cands) {
-      try {
-        const _res = await fetch(_u, { method: 'GET', headers: _headers, signal: AbortSignal.timeout(10_000) });
-        if (!_res.ok) {
-          /* 别把响应体整段塞回前端（可能有内部地址/调试信息），只留一行 */
-          const _txt = await _res.text().catch(() => '');
-          _lastErr = `HTTP ${_res.status}` + (_txt ? '：' + String(_txt).slice(0, 160).replace(/\s+/g, ' ') : '');
-          continue;
+    /** 所有 key 拉到的 id 都并进这里 —— 中转站一把 key 一个模型组，合并才看得全 */
+    const _allIds = [];
+    let _okUrl = '';
+    for (const _k of _keyList) {
+      const _headers = { Accept: 'application/json' };
+      if (_k) _headers.Authorization = `Bearer ${_k}`;
+      for (const _u of _cands) {
+        try {
+          const _res = await fetch(_u, { method: 'GET', headers: _headers, signal: AbortSignal.timeout(10_000) });
+          if (!_res.ok) {
+            /* 别把响应体整段塞回前端（可能有内部地址/调试信息），只留一行 */
+            const _txt = await _res.text().catch(() => '');
+            _lastErr = `HTTP ${_res.status}` + (_txt ? '：' + String(_txt).slice(0, 160).replace(/\s+/g, ' ') : '');
+            continue;
+          }
+          const _j = await _res.json().catch(() => null);
+          /* OpenAI 兼容形状：{data:[{id:'...'}]}；少数家直接给数组或 {models:[...]} */
+          let _arr = null;
+          if (_j && Array.isArray(_j.data)) _arr = _j.data;
+          else if (Array.isArray(_j)) _arr = _j;
+          else if (_j && Array.isArray(_j.models)) _arr = _j.models;
+          if (!_arr) { _lastErr = '返回里没有模型列表（不是 OpenAI 兼容格式）'; continue; }
+          for (const _m of _arr) {
+            const _id = String((_m && (_m.id || _m.name || _m.model)) || '').trim();
+            if (_id && !_allIds.includes(_id)) _allIds.push(_id);
+          }
+          if (!_okUrl) _okUrl = _u;
+          /* 这一把在这个 URL 上通了，别再试它的备用 URL */
+          break;
+        } catch (e) {
+          /* 网络层的错误对主人没意义（"fetch failed" / ECONNREFUSED），翻成人话 */
+          const _n = String(e?.name || '');
+          const _m = String(e?.message || '');
+          let _h = _m;
+          if (_n === 'TimeoutError' || /timeout/i.test(_m)) {
+            _h = '等太久了（10 秒没回话），地址或网络可能不对';
+          } else if (/ECONNREFUSED/i.test(_m)) {
+            _h = '连不上这个地址（服务没开 / 端口不对）';
+          } else if (/ENOTFOUND|getaddrinfo/i.test(_m)) {
+            _h = '找不到这个域名，地址可能写错了';
+          } else if (/certificate|SSL|TLS/i.test(_m)) {
+            _h = '证书有问题，试试 http:// 而不是 https://';
+          } else if (!_m || _m === 'fetch failed') {
+            _h = '连不上：地址不对，或者这个服务不接 /v1/models';
+          }
+          _lastErr = _h.slice(0, 180);
         }
-        const _j = await _res.json().catch(() => null);
-        /* OpenAI 兼容形状：{data:[{id:'...'}]}；少数家直接给数组或 {models:[...]} */
-        let _arr = null;
-        if (_j && Array.isArray(_j.data)) _arr = _j.data;
-        else if (Array.isArray(_j)) _arr = _j;
-        else if (_j && Array.isArray(_j.models)) _arr = _j.models;
-        if (!_arr) { _lastErr = '返回里没有模型列表（不是 OpenAI 兼容格式）'; continue; }
-        const _ids = [];
-        for (const _m of _arr) {
-          const _id = String((_m && (_m.id || _m.name || _m.model)) || '').trim();
-          if (_id && !_ids.includes(_id)) _ids.push(_id);
-        }
-        if (!_ids.length) { _lastErr = '拉到了列表，但里面没有可用的模型名'; continue; }
-        _ids.sort((a, b) => a.localeCompare(b));
-        try { diagLog('models-discover', `ok base=${_b} keyLen=${_key0.length} count=${_ids.length}`); } catch {}
-        return json(res, 200, { ok: true, ids: _ids, url: _u });
-      } catch (e) {
-        /* 网络层的错误对主人没意义（"fetch failed" / ECONNREFUSED），翻成人话 */
-        const _n = String(e?.name || '');
-        const _m = String(e?.message || '');
-        let _h = _m;
-        if (_n === 'TimeoutError' || /timeout/i.test(_m)) {
-          _h = '等太久了（10 秒没回话），地址或网络可能不对';
-        } else if (/ECONNREFUSED/i.test(_m)) {
-          _h = '连不上这个地址（服务没开 / 端口不对）';
-        } else if (/ENOTFOUND|getaddrinfo/i.test(_m)) {
-          _h = '找不到这个域名，地址可能写错了';
-        } else if (/certificate|SSL|TLS/i.test(_m)) {
-          _h = '证书有问题，试试 http:// 而不是 https://';
-        } else if (!_m || _m === 'fetch failed') {
-          _h = '连不上：地址不对，或者这个服务不接 /v1/models';
-        }
-        _lastErr = _h.slice(0, 180);
       }
     }
-    /* 日志里只记地址和失败原因 —— key 一个字都不写 */
-    try { diagLog('models-discover-fail', `base=${_b} keyLen=${_key0.length} err=${_lastErr}`); } catch {}
-    return json(res, 200, { ok: false, error: _lastErr || '拉不到模型列表' });
+    if (_allIds.length) {
+      _allIds.sort((a, b) => a.localeCompare(b));
+      try { diagLog('models-discover', `ok base=${_b} keys=${_keyList.length} count=${_allIds.length}`); } catch {}
+      return json(res, 200, { ok: true, ids: _allIds, url: _okUrl, keys: _keyList.length });
+    }
+    if (!_allIds.length) {
+      /* 日志里只记地址和失败原因 —— key 一个字都不写 */
+      try { diagLog('models-discover-fail', `base=${_b} keys=${_keyList.length} err=${_lastErr}`); } catch {}
+      return json(res, 200, { ok: false, error: _lastErr || '拉不到模型列表' });
+    }
   }
 
   // ---- 聊天风格：少说教开关 ----
@@ -12885,6 +12910,16 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       // 这一轮的草稿：边跑边落，进程中途没了也能把已经说的话捡回来。
       // 只在这一轮内部有效，整轮收尾时（下面 finally）会删掉。
       let draftText = '';
+      /**
+       * 【2026-11-17 加·流式内联图收集器】
+       *
+       * 出图模型有时候不走 /images/generations，而是把整张 PNG 的 base64
+       * 直接塞进聊天正文。老代码在**每个 chunk** 上跑一次正则，
+       * 而流式会把 base64 切成无数小块 → 正则永远匹配不上 → 整段 base64
+       * 顺着 draftText 写进气泡，主人看到的就是一大串乱码。
+       * 现在换成跨块收集（详见 src/inline-image.mjs 的注释）。
+       */
+      const _imgSink = makeInlineImageSink('inline');
       let draftReasoning = '';
       const draftTools = [];
       const draftStartedAt = Date.now();
@@ -13254,16 +13289,19 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             // 塞进聊天正文：![image_1](data:image/png;base64,...) —— 一次能到 266 万字符。
             // 直接放进 draftText 会：①界面涌出一堆英文字母 ②上下文被撑爆 ③每段都重写盘，卡死。
             // 这里当场把这种内联图抠出来存文件，正文里只留一句人话。
-            if (ev.text && ev.text.indexOf('data:image/') >= 0) {
+            if (ev.text) {
               try {
-                const _ex = extractInlineImages(String(ev.text), 'inline');
+                /* 【2026-11-17 改·整段喂给收集器，不再逐块正则】
+                 * 必须**每一块都喂**：标记 `data:image/` 本身就可能被切在两块之间。
+                 * 收集器会把「可能是标记前半截」的尾巴扣住，其余原样吐出来。 */
+                const _ex = _imgSink.push(String(ev.text));
                 if (_ex.images.length) {
                   for (const im of _ex.images) {
                     try { sentFiles.push({ path: im.path, kind: 'image' }); } catch {}
                   }
-                  ev = { ...ev, text: _ex.text };
                 }
-              } catch {}
+                if (_ex.text !== ev.text) ev = { ...ev, text: _ex.text };
+              } catch { /* 收集器出问题就按原文走，别把这一轮搞崩 */ }
             }
             draftText += ev.text;
             // 同步到 reg.draft：进程兜底退出前会读它补写最后一份，见 installGuards
@@ -13329,6 +13367,28 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             // 【A · 当场落盘】每跑完一个工具，就把已经齐了的工具组接进正式历史并写盘。
             // 这样进程被关/断电/重启，重启后那些【跑命令】【写文件】照样画得出来。
             if (ev.type === 'tool_end') commitToolsNow();
+          }
+
+          /**
+           * 【2026-11-17】收尾前把内联图收集器里压着的东西放干净。
+           *
+           * 压着的一般只有两种：① 几句话的尾巴（可能是标记前半截，一直扣着）；
+           * ② 一张还没等到收尾符的图。到 done/aborted 就该吐出来了 ——
+           * 不吐就是「最后半句话凭空消失」或者「图存下来了但正文没提它」。
+           */
+          if (ev.type === 'done' || ev.type === 'aborted' || ev.type === 'flush_draft') {
+            try {
+              const _f = _imgSink.flush();
+              if (_f.images.length) {
+                for (const im of _f.images) {
+                  try { sentFiles.push({ path: im.path, kind: 'image' }); } catch {}
+                }
+              }
+              if (_f.text) {
+                draftText += _f.text;
+                send({ type: 'text', text: _f.text });
+              }
+            } catch { /* 吐不出来就算了，别影响收尾 */ }
           }
 
           if (ev.type === 'aborted') send({ type: 'aborted' });

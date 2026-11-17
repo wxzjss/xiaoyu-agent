@@ -21,7 +21,7 @@ import { saveSegment, currentSegId } from './folded.mjs';
 /** 摘要消息的标记（只在本地用，不进 API 请求体）。 */
 const SUMMARY_FLAG = 'summary';
 
-const SUMMARY_BLOCK_TAG = /^\s*(主人要什么|已经做完|已完成|还没做完|未做完|待办|关键约束|结论|约束|现状|进度|背景|目标|备注)\s*[:：]/;
+const SUMMARY_BLOCK_TAG = /^\s*(主人原话|主人要什么|已经做完|已完成|还没做完|未做完|待办|关键约束|结论|约束|现状|进度|背景|目标|备注)\s*[:：]/;
 const SUMMARY_FACT_LINE = /\d|[\\/][\w.-]+|`[\w.]+`|[\w-]+\.(mjs|js|json|md|html|ts|py|exe|ps1|txt)\b/;
 const SUMMARY_ADVISOR = /(建议|要不要我|如果这是|如果你需要|请提供|需要你确认|需要确认|这看起来像|这串消息|你这段对话|我无法|我不能|有个明显问题|不一致|不是一回事|套模板|空转|困在|回放|测试桩|到底|我检查了|我发现|总结来说|下一步方案|只输出|四行标签|不许有|不合格|纠正|现在开始输出)/;
 
@@ -329,9 +329,11 @@ const SUMMARY_SYSTEM = `你是一个对话压缩器，不是助手，也不是�
 你不是对话的一方，没有人会回答你的问题；你输出的是档案，不是回复。
 
 输出格式（机器解析，格式不对整段作废）：
-只用下面这四个标签开头，每个标签单独占一行，格式固定为「标签: 内容」。
-每个标签下最多 5 行，每行以「- 」开头。
+只用下面这五个标签开头，每个标签单独占一行，格式固定为「标签: 内容」。
+每个标签下最多 5 行，每行以「- 」开头。（「主人原话」那一节可以到 8 行）
 
+主人原话:
+- （主人自己说的话，**逐条照抄原话**，一条一行；他改口/纠正过的地方一定要留）
 主人要什么:
 - （这段对话里主人提出的要求，一条一行）
 已经做完:
@@ -340,6 +342,16 @@ const SUMMARY_SYSTEM = `你是一个对话压缩器，不是助手，也不是�
 - （还没做的、卡住的、失败的事）
 关键约束:
 - （踩过的坑、必须遵守的规矩、环境限制）
+
+「主人原话」这一节单独说清，它跟别的四节规矩不一样：
+- 这里是**抄**，不是概括。主人怎么写你就怎么留，标点、数字、语气词都别改。
+- 尤其不许漏：他说的「不许」「必须」「只能」「一个字都不许改」这类硬话；
+  他纠正你的地方（「不是这个意思，我是说……」）；他给的数（端口、行数、字数、时间）。
+- 他连发几句短话就逐条列，别合成一句。
+- 单条太长的（贴了一大段日志/报错/文件内容），留开头 100 字 + 结尾 100 字，
+  中间用「……（中间省略）」代替，但**他到底要求你干什么必须原样留在句子里**。
+- 已经压成概括写进「主人要什么」了，就不要在「主人原话」里重复一遍自己的概括 ——
+  这一节只放原文。
 
 硬性要求：
 - 只写对话里能确认的事实。数字、路径、文件名、接口名、变量名原样保留，不许改写。
@@ -357,6 +369,10 @@ const SUMMARY_SYSTEM = `你是一个对话压缩器，不是助手，也不是�
 还有一点值得注意：单位是毫秒，45 秒应该是 45000，别误写成 150。
 
 【正确示范 —— 就写这样】
+主人原话:
+- 插话之后她不接着答，非要我再发一句才动。
+- 别改那套单元，我要的是插话这条链路。
+- 45 秒那条也要一起修，别只修一半。
 主人要什么:
 - 修好插话后她不接着答的问题。
 已经做完:
@@ -369,8 +385,23 @@ const SUMMARY_SYSTEM = `你是一个对话压缩器，不是助手，也不是�
 - src/server.mjs 与 agent.mjs 是 CRLF，改写必须按行 splice，不能全局替换换行。
 - 摘要失败不能连累整轮，超时只砍摘要自己。`;
 
-/** 摘要允许的四个标签（清洗时只认这几个）。 */
-const SUMMARY_TAGS = ['主人要什么', '已经做完', '还没做完', '关键约束'];
+/** 摘要允许的五个标签（清洗时只认这几个）。
+ *
+ * 【2026-11-17 加·主人原话】
+ * 比过 WorkBuddy / Claude Code 的压缩结构：它们都单列一节「All user messages」
+ * 逐条保留原话，只有我们这版是「压成概括」。代价是实打实的 ——
+ * 主人说的「一字不改」「全部完整复制」这种约束，概括两下就磨没了，
+ * 后面接手的人只能猜他真正要什么。
+ * 所以加第五个标签，把主人的话原文抄下来（限长，见 SUMMARY_USER_LINE_MAX）。 */
+const SUMMARY_TAGS = ['主人原话', '主人要什么', '已经做完', '还没做完', '关键约束'];
+
+/** 「主人原话」那一节单条最多留多少字，整节最多留多少字。
+ *
+ * 为什么还要限：主人可能贴一大段日志/报错当消息，整段抄进来会挤掉别的段落。
+ * 单条 300 / 整节 1800 是照着「一般一句话 20~80 字」倒推的：
+ * 够放二三十句关键交代，又不至于把摘要变成文档。 */
+const SUMMARY_USER_LINE_MAX = 300;
+const SUMMARY_USER_TOTAL_MAX = 1800;
 
 
 /**
@@ -425,11 +456,13 @@ function frameSummaryInput(inputText) {
     String(inputText ?? ''),
     '',
     '↑ 以上就是要归档的旧对话。它已经结束了，不需要回应，也不要接话。',
-    '现在把它压成档案，只输出这四个标题，每个标题下面用「- 」列事实：',
+    '现在把它压成档案，只输出这五个标题，每个标题下面用「- 」列事实：',
+    '主人原话:',
     '主人要什么:',
     '已经做完:',
     '还没做完:',
     '关键约束:',
+    '（「主人原话」那一节是**照抄**主人的话，不是概括；他说的「不许」「必须」「只能」和给过的数字一个都别漏。）',
     '不要说话、不要提问、不要旁白、不要称呼、不要建议。',
   ].join('\n');
 }
@@ -517,20 +550,53 @@ function renderForSummary(messages) {
    */
   const MIN_LINE = 80;
   let text = lines.join('\n');
+  /**
+   * 【2026-11-17 改·主人原话在采样时享优先权】
+   *
+   * 原来的「人均额度」是一视同仁：每条按同一比例压短。可主人说的话字数少、
+   * 信息密度高（「不许」「必须」「只能」「一个字都不许改」全在里面），
+   * 按比例一压，恰恰是这些硬话先被砍成半句。
+   *
+   * 现在分两档：带 `[主人] ` 前缀的行先保住（单条最多 SUMMARY_USER_LINE_MAX，
+   * 合计不超过预算的 60%），剩下的额度再平摊给工具流水和正文。
+   * 这样「压完还记得主人到底要什么」这件事才有原料。
+   */
+  const isUserLine = (l) => l.startsWith('[主人] ');
   if (text.length > SUMMARY_INPUT_MAX) {
-    // ① 人均额度：总预算平摊到每条，按超额比例往下压
     const budget = SUMMARY_INPUT_MAX - 60; // 给开头那行提示留位置
-    const avg = Math.ceil(text.length / Math.max(1, lines.length));
-    let room = Math.max(MIN_LINE, Math.floor(budget / Math.max(1, lines.length)));
-    if (room < avg) {
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].length > room) lines[i] = lines[i].slice(0, room) + '…';
+    const userIdx = [];
+    for (let i = 0; i < lines.length; i++) if (isUserLine(lines[i])) userIdx.push(i);
+
+    /* ① 先保主人原话：单条上限 + 整节上限都卡住 */
+    let userLen = 0;
+    if (userIdx.length) {
+      const totalCap = Math.min(SUMMARY_USER_TOTAL_MAX, Math.floor(budget * 0.6));
+      for (const i of userIdx) {
+        if (lines[i].length > SUMMARY_USER_LINE_MAX) {
+          lines[i] = lines[i].slice(0, SUMMARY_USER_LINE_MAX) + '…';
+        }
       }
-      text = lines.join('\n');
+      userLen = userIdx.reduce((s, i) => s + lines[i].length + 1, 0);
+      if (userLen > totalCap) {
+        const per = Math.max(120, Math.floor(totalCap / userIdx.length));
+        for (const i of userIdx) {
+          if (lines[i].length > per) lines[i] = lines[i].slice(0, per) + '…';
+        }
+        userLen = userIdx.reduce((s, i) => s + lines[i].length + 1, 0);
+      }
     }
+
+    /* ② 剩下的额度平摊给别的行（人均额度，人人有份，保留开头） */
+    const otherCount = Math.max(1, lines.length - userIdx.length);
+    const room = Math.max(MIN_LINE, Math.floor((budget - userLen) / otherCount));
+    for (let i = 0; i < lines.length; i++) {
+      if (isUserLine(lines[i])) continue;
+      if (lines[i].length > room) lines[i] = lines[i].slice(0, room) + '…';
+    }
+    text = lines.join('\n');
   }
   if (text.length > SUMMARY_INPUT_MAX) {
-    // ② 还塞不进：从最旧的开始丢，直到塞得下
+    // ③ 还塞不进：从最旧的开始丢，直到塞得下
     const total = lines.length;
     let at = 0;
     while (at < total - 1 && lines.slice(at).join('\n').length + 60 > SUMMARY_INPUT_MAX) at++;
@@ -544,7 +610,11 @@ function renderForSummary(messages) {
  * 只给验收脚本用：把内部函数掏出来测。
  * 前缀用 __for_test，正式代码里没人调，别在这上面搭业务。
  */
-export const __for_test = { renderForSummary, clipToolResult, TOOL_RESULT_CHARS };
+export const __for_test = {
+  renderForSummary,
+  clipToolResult,
+  TOOL_RESULT_CHARS,
+};
 
 /**
  * 压缩历史。就地改 messages，返回一份压缩前后统计。
@@ -1023,16 +1093,20 @@ export async function compressHistory({
     '记住：你不在那段对话里，也不跟任何人说话。你不是助手，不是顾问，没有人会回答你的问题，你也不许问任何问题。',
     '',
     '输出格式（机器解析，格式不对整段作废）：',
-    '只输出下面这四个标题，每个标题单独占一行，标题后面不要写东西；每个标题下面用「- 」列事实，每个标题最多 5 条。',
+    '只输出下面这五个标题，每个标题单独占一行，标题后面不要写东西；每个标题下面用「- 」列事实，每个标题最多 5 条（「主人原话」可以到 8 条）。',
     '',
+    '主人原话:',
     '主人要什么:',
     '已经做完:',
     '还没做完:',
     '关键约束:',
     '',
     '硬性要求：',
+    '- 「主人原话」那一节是**照抄**，不是概括：主人怎么写就怎么留，标点、数字、语气词都不改。',
+    '  他说的「不许」「必须」「只能」「一个字都不许改」，他纠正你的地方，他给过的数，一条都不许漏。',
     '- 只写这段对话里能确认的事实。不许编、不许猜、不许补全。数字、路径、文件名、接口名、变量名原样抄。',
     '- 不许写称呼（主人 / 你 / 我）、不许写旁白和括号里的动作、不许写语气词和表情、不许评价、不许给建议、不许反问。',
+    '  （**例外**：只有「主人原话」那一节不适用这条 —— 那里是照抄，主人话里有「你」「我」就原样留着，别改。）',
     '- 一段对话又长又重复时，删掉重复，只写一次事实；寒暄和空转的整段略过。',
     '- 尽量短。够后面接着干就行。宁可少写，也不要破坏上面这个格式。',
   ].join('\n');
@@ -1347,121 +1421,6 @@ function auditCompress(sessionId, info) {
   } catch { /* 留痕失败绝不能影响压缩 */ }
 }
 
-function cleanSummary(text) {
-  const out = cleanSummary0(text);
-  try {
-    if (String(text ?? '').trim()) {
-      const d = join(config.dataDir, '.state', 'summary-audit');
-      mkdirSync(d, { recursive: true });
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      writeFileSync(join(d, stamp + '.json'), JSON.stringify({ at: stamp, in: String(text), out: String(out) }, null, 2));
-    }
-  } catch { /* 审计失败不许影响压缩 */ }
-  return out;
-}
-
-function cleanSummary0(text) {
-  let s = String(text ?? '');
-  if (!s) return s;
-  // ── 先做通用的干净化 ────────────────────────────────
-  // 1) 围栏代码块记号（保留里面内容，只去 ``` 那一行）
-  s = s.replace(/^\s*```[^\n]*$/gm, '');
-  // 2) Markdown 记号：标题 #、粗体 **、__、反引号
-  s = s.replace(/^\s{0,3}#{1,6}\s+/gm, '');
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, '$1');
-  s = s.replace(/__([^_\n]+)__/g, '$1');
-  s = s.replace(/`([^`\n]+)`/g, '$1');
-  // 3) 列表记号统一成「- 」
-  s = s.replace(/^\s*[•·*+]\s+/gm, '- ');
-
-  // ── 再按结构筛 ────────────────────────────────────
-  // 关键判断：模型守不守格式。
-  // 守格式（出现 ≥2 个标签）→ 严格模式：只留四个标签下的行，标签外的一律不要。
-  // 不守格式 → 宽松模式：只按顾问腔/空话过滤，尽量保事实（老模型/换模型时的退路）。
-  const rawLines = s.split('\n').map((l) => l.trim()).filter(Boolean);
-  const tagHits = rawLines.filter((l) => SUMMARY_BLOCK_TAG.test(l)).length;
-  // 【2026-11-05 修】这条「我亲手写的压缩记忆」自己带 `## 目标 / ## 清单 / ## 关键约束`
-  // 这类 markdown 小节，`## ` 已被上面第（2）步剥掉，剩下的「目标」「清单」正好
-  // 撞上 SUMMARY_BLOCK_TAG（它本来是用来认模型那份四标签档案的）。
-  // 于是走「严格模式」，把小节下面的正文当「标签外的行」要求必须带数字 → 全被砍光，
-  // 255 字只剩三行骨架（实测，.state/summary-audit/ 里那份 in/out 对账就是）。
-  // 亲手写的那份**本来就不归它管**：它已经过了 acceptSelfNote 那一套（不许空话、
-  // 不许顾问腔、实字够多）。这里只做「去 markdown 记号 + 限长」，不做结构筛选。
-  /**
-   * 【2026-11-05 修：我亲手写的那份不归它筛】
-   *
-   * `## 目标 / ## 清单 / ## 关键约束` 剥掉 `## ` 之后，剩下的「目标」「清单」
-   * 正好撞上 SUMMARY_BLOCK_TAG（那是给模型那份四标签档案用的），于是走严格模式，
-   * 小节正文被当成「标签外的行」要求必须带数字 → 整行整行地砍掉。
-   * 实测：255 字进去，只剩「目标 / 清单 / 关键约束」三行骨架，
-   * 「- 做完了：探线、定位 renderTurns 的 const 重赋值」这种明明有字的行也没了
-   * （.state/summary-audit/ 里那份 in/out 对账就是铁证）。
-   *
-   * 亲手写的那份**已经**过了 acceptSelfNote（不许空话、不许顾问腔、实字够多），
-   * 这里不该再按别人的格式挑一遍。只做「去 markdown 记号 + 限长」。
-   */
-  const mine = /【压缩记忆/.test(s);
-  const strict = !mine && tagHits >= 2;
-
-  /** 明显的「空话」开头：寒暄、评论、复述自己在干什么 */
-  const noise = /^(我|你|好的|收到|明白|了解|嗯|当然|另外|不过|但是|同时|此外|所以|因此|总结来说|总的来说|主人说|小鱼回|这说明|这两件事|从第|需要|这种|这样|如果)/;
-
-  let kept = [];
-  if (mine) {
-    /**
-     * 【2026-11-05 新增：我亲手写的那份，原样留】
-     *
-     * 只砍「顾问腔」（那是我写歪了的信号），别的一行不许动 ——
-     * 上面那些「标签外的行必须带数字」的规矩是给模型那份档案用的，
-     * 用在我自己的提纲上，砍掉的全是真话。
-     */
-    kept = rawLines.filter((line) => !SUMMARY_ADVISOR.test(line));
-  } else if (strict) {
-    // 严格模式：认标签。标签下的每一行都留（只砍顾问腔），
-    // 标签外的行必须「像事实」（带数字/路径）才留 —— 那是模型的额外补充。
-    // 注意：标签下的行不再要求含数字，否则「合流时排除 system 和 context」这种
-    // 关键结论会被误杀（实测就吃过这个亏，摘要只剩一句 commit 号）。
-    let inTag = false;
-    for (const line of rawLines) {
-      const isTag = SUMMARY_BLOCK_TAG.test(line);
-      if (isTag) {
-        inTag = SUMMARY_TAGS.some((t) => new RegExp('^\\s*' + t + '\\s*[:：]').test(line));
-        if (inTag) {
-          kept.push(line.replace(/\s*[:：]\s*/, ': ').trim());
-        } else if (SUMMARY_FACT_LINE.test(line) && !SUMMARY_ADVISOR.test(line)) {
-          kept.push(line);
-        }
-        continue;
-      }
-      if (SUMMARY_ADVISOR.test(line)) continue;
-      if (inTag) { kept.push(line); continue; }
-      if (SUMMARY_FACT_LINE.test(line) && !noise.test(line)) kept.push(line);
-    }
-  } else {
-    // 宽松模式（模型没按标签写）：砍顾问腔和空话行，其余照留。
-    // 另外：以「- 」开头却一个数字/路径都没有的，基本是评论，不是事实，也丢掉。
-    kept = rawLines.filter((line) => {
-      if (SUMMARY_ADVISOR.test(line)) return false;
-      if (noise.test(line) && !SUMMARY_FACT_LINE.test(line)) return false;
-      if (/^-\s/.test(line) && !SUMMARY_FACT_LINE.test(line) && line.length < 60) return false;
-      return true;
-    });
-  }
-  s = kept.join('\n');
-
-  // ── 最后兜底：限长 ──────────────────────────────────
-  // 摘要长期留在历史里，超过这个长度就开始挤占「真正该留的对话」。
-  // 按句子边界截，避免截断在半个数字上。
-  const SUMMARY_TEXT_MAX = 2400;
-  if (s.length > SUMMARY_TEXT_MAX) {
-    const head = s.slice(0, SUMMARY_TEXT_MAX);
-    const lastStop = Math.max(head.lastIndexOf('。'), head.lastIndexOf('\n'), head.lastIndexOf('；'));
-    s = (lastStop > SUMMARY_TEXT_MAX * 0.5 ? head.slice(0, lastStop + 1) : head) + '\n（摘要过长，已截断）';
-  }
-  s = s.replace(/\n{3,}/g, '\n\n').trim();
-  // 全被洗空了也不能编一句假的顶上 —— 空着返回，让上层看见「这次没压出东西」
-  return s;
-}
 
   /**
    * 【2026-11-15 修·空摘要会把整段历史换成一张空壳（主人报「重启后消息全没了」）】
@@ -1751,3 +1710,271 @@ export function clampCut(messages, start, want, minKeep = 8, hardTail = false) {
 }
 
 /** 【2026-10-31 已删除 askCutPoint】切点不再问任何模型。 */
+
+/**
+ * 【2026-11-17 加·给守卫用的测试出口】
+ *
+ * 为什么放在文件末尾：`cleanSummary` 是后面才声明的，放在 613 行那个位置
+ * 引用它会踩「初始化顺序」（实测 ReferenceError）。挪到最后，
+ * 所有函数都定义好了再组装，谁都踩不到谁。
+ *
+ * 前缀 __for_test：正式代码里没人调，别在这上面搭业务。
+ */
+export const __for_test_quality = {
+  cleanSummary,
+  SUMMARY_TAGS,
+  SUMMARY_USER_LINE_MAX,
+  SUMMARY_USER_TOTAL_MAX,
+  SUMMARY_INPUT_MAX,
+  frameSummaryInput,
+};
+
+
+// ── 摘要清洗（2026-11-17 从 compressHistory 里提到模块顶层） ──────────
+export function cleanSummary(text) {
+  const out = cleanSummary0(text);
+  try {
+    if (String(text ?? '').trim()) {
+      const d = join(config.dataDir, '.state', 'summary-audit');
+      mkdirSync(d, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      writeFileSync(join(d, stamp + '.json'), JSON.stringify({ at: stamp, in: String(text), out: String(out) }, null, 2));
+    }
+  } catch { /* 审计失败不许影响压缩 */ }
+  return out;
+}
+
+export function cleanSummary0(text) {
+  let s = String(text ?? '');
+  if (!s) return s;
+  // ── 先做通用的干净化 ────────────────────────────────
+  // 1) 围栏代码块记号（保留里面内容，只去 ``` 那一行）
+  s = s.replace(/^\s*```[^\n]*$/gm, '');
+  // 2) Markdown 记号：标题 #、粗体 **、__、反引号
+  s = s.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+  s = s.replace(/__([^_\n]+)__/g, '$1');
+  s = s.replace(/`([^`\n]+)`/g, '$1');
+  // 3) 列表记号统一成「- 」
+  s = s.replace(/^\s*[•·*+]\s+/gm, '- ');
+
+  // ── 再按结构筛 ────────────────────────────────────
+  // 关键判断：模型守不守格式。
+  // 守格式（出现 ≥2 个标签）→ 严格模式：只留四个标签下的行，标签外的一律不要。
+  // 不守格式 → 宽松模式：只按顾问腔/空话过滤，尽量保事实（老模型/换模型时的退路）。
+  const rawLines = s.split('\n').map((l) => l.trim()).filter(Boolean);
+  const tagHits = rawLines.filter((l) => SUMMARY_BLOCK_TAG.test(l)).length;
+  // 【2026-11-05 修】这条「我亲手写的压缩记忆」自己带 `## 目标 / ## 清单 / ## 关键约束`
+  // 这类 markdown 小节，`## ` 已被上面第（2）步剥掉，剩下的「目标」「清单」正好
+  // 撞上 SUMMARY_BLOCK_TAG（它本来是用来认模型那份四标签档案的）。
+  // 于是走「严格模式」，把小节下面的正文当「标签外的行」要求必须带数字 → 全被砍光，
+  // 255 字只剩三行骨架（实测，.state/summary-audit/ 里那份 in/out 对账就是）。
+  // 亲手写的那份**本来就不归它管**：它已经过了 acceptSelfNote 那一套（不许空话、
+  // 不许顾问腔、实字够多）。这里只做「去 markdown 记号 + 限长」，不做结构筛选。
+  /**
+   * 【2026-11-05 修：我亲手写的那份不归它筛】
+   *
+   * `## 目标 / ## 清单 / ## 关键约束` 剥掉 `## ` 之后，剩下的「目标」「清单」
+   * 正好撞上 SUMMARY_BLOCK_TAG（那是给模型那份四标签档案用的），于是走严格模式，
+   * 小节正文被当成「标签外的行」要求必须带数字 → 整行整行地砍掉。
+   * 实测：255 字进去，只剩「目标 / 清单 / 关键约束」三行骨架，
+   * 「- 做完了：探线、定位 renderTurns 的 const 重赋值」这种明明有字的行也没了
+   * （.state/summary-audit/ 里那份 in/out 对账就是铁证）。
+   *
+   * 亲手写的那份**已经**过了 acceptSelfNote（不许空话、不许顾问腔、实字够多），
+   * 这里不该再按别人的格式挑一遍。只做「去 markdown 记号 + 限长」。
+   */
+  const mine = /【压缩记忆/.test(s);
+  const strict = !mine && tagHits >= 2;
+
+  /** 明显的「空话」开头：寒暄、评论、复述自己在干什么 */
+  const noise = /^(我|你|好的|收到|明白|了解|嗯|当然|另外|不过|但是|同时|此外|所以|因此|总结来说|总的来说|主人说|小鱼回|这说明|这两件事|从第|需要|这种|这样|如果)/;
+
+  let kept = [];
+  if (mine) {
+    /**
+     * 【2026-11-05 新增：我亲手写的那份，原样留】
+     *
+     * 只砍「顾问腔」（那是我写歪了的信号），别的一行不许动 ——
+     * 上面那些「标签外的行必须带数字」的规矩是给模型那份档案用的，
+     * 用在我自己的提纲上，砍掉的全是真话。
+     */
+    kept = rawLines.filter((line) => !SUMMARY_ADVISOR.test(line));
+  } else if (strict) {
+    // 严格模式：认标签。标签下的每一行都留（只砍顾问腔），
+    // 标签外的行必须「像事实」（带数字/路径）才留 —— 那是模型的额外补充。
+    // 注意：标签下的行不再要求含数字，否则「合流时排除 system 和 context」这种
+    // 关键结论会被误杀（实测就吃过这个亏，摘要只剩一句 commit 号）。
+    let inTag = false;
+    /** 当前是不是在「主人原话」那一节里 —— 那一节要照抄，不许被顾问腔过滤误杀。
+     * （主人原话里本来就可能出现「建议」「你是不是」这种词，那不是顾问腔，是他的话。） */
+    let inUserQuote = false;
+    for (const line of rawLines) {
+      const isTag = SUMMARY_BLOCK_TAG.test(line);
+      if (isTag) {
+        inTag = SUMMARY_TAGS.some((t) => new RegExp('^\\s*' + t + '\\s*[:：]').test(line));
+        inUserQuote = /^\s*主人原话\s*[:：]/.test(line);
+        if (inTag) {
+          kept.push(line.replace(/\s*[:：]\s*/, ': ').trim());
+        } else if (SUMMARY_FACT_LINE.test(line) && !SUMMARY_ADVISOR.test(line)) {
+          kept.push(line);
+        }
+        continue;
+      }
+      if (inUserQuote) { kept.push(line); continue; }
+      if (SUMMARY_ADVISOR.test(line)) continue;
+      if (inTag) { kept.push(line); continue; }
+      if (SUMMARY_FACT_LINE.test(line) && !noise.test(line)) kept.push(line);
+    }
+  } else {
+    // 宽松模式（模型没按标签写）：砍顾问腔和空话行，其余照留。
+    // 另外：以「- 」开头却一个数字/路径都没有的，基本是评论，不是事实，也丢掉。
+    kept = rawLines.filter((line) => {
+      if (SUMMARY_ADVISOR.test(line)) return false;
+      if (noise.test(line) && !SUMMARY_FACT_LINE.test(line)) return false;
+      if (/^-\s/.test(line) && !SUMMARY_FACT_LINE.test(line) && line.length < 60) return false;
+      return true;
+    });
+  }
+  s = kept.join('\n');
+
+  // ── 最后兜底：限长 ──────────────────────────────────
+  // 摘要长期留在历史里，超过这个长度就开始挤占「真正该留的对话」。
+  // 按句子边界截，避免截断在半个数字上。
+  /**
+   * 【2026-11-17 从 2400 提到 3600】
+   *
+   * 加了「主人原话」那一节之后，2400 根本不够：那一节自己就能到 1800
+   * （SUMMARY_USER_TOTAL_MAX），再加另外四节各五行，实测正常产出 2500~3200。
+   * 限长还是 2400 的话，尾巴上的「关键约束」会被整段截掉 ——
+   * 那恰好是踩过的坑和硬规矩，比什么都该留。
+   * 3600 字约 2.4k token，比它顶替掉的那几百条原文便宜得多。
+   */
+  const SUMMARY_TEXT_MAX = 3600;
+  if (s.length > SUMMARY_TEXT_MAX) {
+    const head = s.slice(0, SUMMARY_TEXT_MAX);
+    const lastStop = Math.max(head.lastIndexOf('。'), head.lastIndexOf('\n'), head.lastIndexOf('；'));
+    s = (lastStop > SUMMARY_TEXT_MAX * 0.5 ? head.slice(0, lastStop + 1) : head) + '\n（摘要过长，已截断）';
+  }
+  s = s.replace(/\n{3,}/g, '\n\n').trim();
+  // 全被洗空了也不能编一句假的顶上 —— 空着返回，让上层看见「这次没压出东西」
+  return s;
+}
+
+/* ────────────────────────────────────────────────────────────────
+ * 【2026-11-17 加·压缩连败熔断】
+ *
+ * 为什么要有：现在的策略是「这一轮压不成就算了，下一轮再试」——
+ * fail-open（原文一条不动）本身是对的，但它没有**止损**。
+ *
+ * 真实会撞上的场面：模型一直返回跑题稿/空稿。cleanSummary 把它洗空 →
+ * 这一轮不压 → 下一轮水位还在线上 → 再问一次模型 → 又是空稿。
+ * 结果是每一轮都白花一次摘要钱，水位数小时不动，主人只看到「一直在压、一直没压成」。
+ * Claude Code 那边是连续失败 3 次就停手（还有「刚压完又被塞满」的抖动检测）。
+ *
+ * 所以这里加一个按会话的熔断：
+ *   · 连续失败 3 次 → 打开闸门，**冷却 30 分钟**，这段时间里 L3 一步都不走
+ *     （L2 瘦身照常跑 —— 它不花钱、不靠模型，永远能兜住体积）；
+ *   · 中间只要成功一次，计数清零、闸门立刻关回去；
+ *   · 冷却到点自动恢复，不需要重启。
+ *
+ * 为什么不落盘：这是「这个进程此刻的健康状态」，跟着进程走才对。
+ * 重启等于换了个新进程，从头数三次，比拿一份过期状态继续拦更合理。
+ * ──────────────────────────────────────────────────────────────── */
+
+/** 连续失败几次就熔断 */
+export const COMPRESS_BREAKER_FAILS = 3;
+/** 熔断后冷却多久（毫秒）。默认 30 分钟。 */
+export const COMPRESS_BREAKER_COOLDOWN_MS = (() => {
+  const raw = process.env.COMPRESS_BREAKER_COOLDOWN_MS;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 30 * 60 * 1000;
+})();
+
+/** 会话 id → { fails, openUntil, lastReason, openedAt } */
+const _breakerBook = new Map();
+
+function _bkey(sessionId) {
+  return String(sessionId || '').trim() || 'default';
+}
+
+/** 这个会话现在是不是被熔断拦着（冷却期内 = true）
+ *
+ * @param {string} sessionId
+ * @param {number} [now] 只给守卫用：把「现在」拨到别处，才能验「冷却到点自动恢复」
+ *                       （不这么留口子的话，测这条得真 sleep 半小时）
+ */
+export function compressBreakerOpen(sessionId, now = Date.now()) {
+  const rec = _breakerBook.get(_bkey(sessionId));
+  if (!rec || !rec.openUntil) return false;
+  if (now >= rec.openUntil) {
+    /* 冷却到点：闸门自动关回去，但 fails 保留 —— 再连败一次就会立刻再开，
+     * 不用从零数起（避免「每 30 分钟试一次、每次都失败」那种慢性空转）。 */
+    rec.openUntil = 0;
+    rec.openedAt = 0;
+    return false;
+  }
+  return true;
+}
+
+/** 查一下状态（排查 / 界面 / 守卫用） */
+export function compressBreakerState(sessionId) {
+  const rec = _breakerBook.get(_bkey(sessionId));
+  if (!rec) return { fails: 0, open: false, openUntil: 0, lastReason: '' };
+  return {
+    fails: rec.fails,
+    open: compressBreakerOpen(sessionId),
+    openUntil: rec.openUntil,
+    lastReason: rec.lastReason || '',
+  };
+}
+
+/** 记一次失败。达到阈值就开闸，返回「这次是不是刚打开」 */
+export function noteCompressFailure(sessionId, reason = '') {
+  const k = _bkey(sessionId);
+  const rec = _breakerBook.get(k) || { fails: 0, openUntil: 0, openedAt: 0, lastReason: '' };
+  rec.fails += 1;
+  rec.lastReason = String(reason || '').slice(0, 200);
+  let justOpened = false;
+  if (rec.fails >= COMPRESS_BREAKER_FAILS && !rec.openUntil) {
+    rec.openUntil = Date.now() + COMPRESS_BREAKER_COOLDOWN_MS;
+    rec.openedAt = Date.now();
+    justOpened = true;
+  }
+  _breakerBook.set(k, rec);
+  return justOpened;
+}
+
+/** 记一次成功：计数清零、闸门立刻关回去 */
+export function noteCompressSuccess(sessionId) {
+  const k = _bkey(sessionId);
+  const rec = _breakerBook.get(k);
+  if (!rec) return;
+  rec.fails = 0;
+  rec.openUntil = 0;
+  rec.openedAt = 0;
+  rec.lastReason = '';
+  _breakerBook.set(k, rec);
+}
+
+/** 只给守卫用：把状态清干净，别让测试互相污染 */
+export function __resetCompressBreaker() {
+  _breakerBook.clear();
+}
+
+/**
+ * 【2026-11-17 加·这个「没压成」到底算不算失败】
+ *
+ * compressHistory 返回 compressed:false 有一大堆原因，但只有少数是**真失败**：
+ *   · under-trigger / too-few-messages / head-too-big / nothing-safe-to-drop
+ *     —— 都是「这会儿不需要压」或者「结构上不该动」，是正常结果；
+ *   · aborted（主人点了停止）、disabled（功能关着）、whale-says-hold（她判断先别压）
+ *     —— 也都是正常让路。
+ * 真失败是这几类：摘要被洗空、摘要请求失败、该压却没有摘要、压完还超。
+ * 熔断只该数真失败，否则「水位正常、每轮都不用压」会被误判成连败，把 L3 关掉。
+ */
+const COMPRESS_SKIP_REASON_RE = /^(aborted|disabled|under-trigger|too-few-messages|head-too-big|nothing-safe-to-drop|whale-says-hold)/;
+
+export function isCompressSkipReason(reason) {
+  return COMPRESS_SKIP_REASON_RE.test(String(reason || '').trim());
+}

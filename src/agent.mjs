@@ -57,9 +57,13 @@ import {
   createTurnMeter,
   DEADLINES,
 } from './harness/index.mjs';
-import { compressHistory, estimateTokens, noteRealTokens } from './compress.mjs';
+import {
+  compressHistory, estimateTokens, noteRealTokens,
+  compressBreakerOpen, noteCompressFailure, noteCompressSuccess, compressBreakerState,
+  COMPRESS_BREAKER_FAILS, COMPRESS_BREAKER_COOLDOWN_MS, isCompressSkipReason,
+} from './compress.mjs';
 // 压缩要我亲手挑重点（2026-10-30 主人原话：不许外包给模型）。
-import { lastSelfNote, saveSelfNote, selfCompressHint, makeSelfNoteGate } from './self-compress.mjs';
+import { lastSelfNote, saveSelfNote, selfCompressHint, makeSelfNoteGate, clearSelfNote } from './self-compress.mjs';
 // 【2026-11 全面重做压缩】内核：到线就动手，不再等我看见提示才想起来压。
 // 老的那套 `thinHistory`（trim-tools.mjs）不再用了 —— 它只在「这一轮的工具过程」里擦，
 // 历史里几百条旧工具结果碰都不碰，而后者才是大头。slimHistory 是它的超集。
@@ -615,6 +619,14 @@ export async function runAgent({
    * 这条闸门在**收流时**就把它剪掉：既不放给界面（不画气泡），也不进 text
    * （不落历史，不留空壳）。记忆正文走 gate.note，照旧交给 saveSelfNote。 */
   const _noteGate = makeSelfNoteGate();
+  /**
+   * 【2026-11-17 加·已经落过本子的那份压缩记忆原文】
+   *
+   * 为什么要记这一笔：压缩记忆改成「一写完就落盘」之后，同一个 turn 里
+   * 可能又被收尾那段再存一次（重复写会把本子撑大，也会让查重白跑）。
+   * 存原文比对，比存个布尔安全 —— 她要是这段之后又写了一版新的，还能再存。
+   */
+  let _noteSavedRaw = '';
   let toolCalls = [];
   /* 【2026-11-15 修·工具卡延迟】占位 tool_start 的登记处。
    * 键 = 占位 id（'pending-<idx>'），值 = {name, args, order, used}。
@@ -1289,7 +1301,32 @@ for (let round = 0; round < config.maxRounds; round++) {
      * 真正的收尾由下面那个 finally 负责，别在这儿再补 tool_end。
      */
     let compressed = noCompress;
-    if (!compressedThisTurn && _noteToUse && _gate.shouldFold) {
+    /**
+     * 【2026-11-17 加·连败熔断：一直压不成的时候，别再每轮白花一次钱】
+     *
+     * 原来这里只有 fail-open：压不成就算了，下一轮再试。方向对（原文一条不动），
+     * 但没有止损 —— 模型持续吐跑题稿/空稿时，每轮都要问它一次、每轮都失败，
+     * 水位数小时不动，主人看到的就是「一直在压、一直没压成」。
+     *
+     * 现在：连续失败 3 次 → 熔断 30 分钟，这段时间里 L3 一步都不走。
+     * L2 瘦身照常跑（不花钱、不靠模型、永远能兜住一部分体积），
+     * 所以「不压」不等于「放任它涨死」。
+     */
+    const _breakerOpen = (() => { try { return compressBreakerOpen(sessionId); } catch { return false; } })();
+    if (_breakerOpen && _gate.shouldFold && !compressedThisTurn) {
+      try {
+        const st = compressBreakerState(sessionId);
+        const left = Math.max(0, Math.round((st.openUntil - Date.now()) / 60000));
+        console.warn('[compress] 熔断中（' + st.fails + ' 次连败，还有 ' + left
+          + ' 分钟）→ 这一轮只做 L2 瘦身，不再问模型。上次原因：' + (st.lastReason || '-'));
+        onEvent({
+          type: 'compressed', before: 0, after: 0, removed: 0,
+          error: '压缩连续 ' + st.fails + ' 次没成，已暂停 ' + left + ' 分钟（这轮只做瘦身）',
+          breaker: true,
+        });
+      } catch { /* 提示发不出去不影响干活 */ }
+    }
+    if (!compressedThisTurn && _noteToUse && _gate.shouldFold && !_breakerOpen) {
       try {
         compressed = await compressHistory({
           messages,
@@ -1305,6 +1342,32 @@ for (let round = 0; round < config.maxRounds; round++) {
         compressed = { ...noCompress, error: String(e?.message ?? e) };
         onEvent({ type: 'compressed', before: 0, after: 0, removed: 0, error: String(e?.message ?? e) });
       }
+      /**
+       * 【2026-11-17】记一笔成败，喂给熔断。
+       * 「压成了」和「抛了」都要记；「压根没压」（noCompress 且没 error）不记 ——
+       * 那不是失败，是不需要压。
+       */
+      try {
+        if (compressed && compressed.compressed) noteCompressSuccess(sessionId);
+        else if (compressed) {
+          /* 【2026-11-17】只有**真失败**才喂熔断。
+           * under-trigger / too-few-messages / aborted / disabled 这些是「这会儿不用压」，
+           * 拿它们去数连败，会把一个完全正常的会话误熔断了。 */
+          const why = String(compressed.error || compressed.reason || '');
+          if (why && !isCompressSkipReason(why)) {
+            const justOpened = noteCompressFailure(sessionId, why);
+            if (justOpened) {
+              console.warn('[compress] 连续 ' + COMPRESS_BREAKER_FAILS + ' 次没压成 → 熔断 '
+                + Math.round(COMPRESS_BREAKER_COOLDOWN_MS / 60000) + ' 分钟，这期间只做 L2 瘦身');
+              onEvent({
+                type: 'compressed', before: 0, after: 0, removed: 0, breaker: true,
+                error: '压缩连续失败 ' + COMPRESS_BREAKER_FAILS + ' 次，暂停 L3 折叠 '
+                  + Math.round(COMPRESS_BREAKER_COOLDOWN_MS / 60000) + ' 分钟（瘦身照常）',
+              });
+            }
+          }
+        }
+      } catch { /* 记账失败不影响干活 */ }
     }
     if (compressed.compressed) {
       compressedThisTurn = true;
@@ -1318,6 +1381,15 @@ for (let round = 0; round < config.maxRounds; round++) {
       warnedRec.tier = 0;
       warnedRec.at = 0;
       midWarned = 0;
+      /**
+       * 【2026-11-17】这份笔记已经用掉了，作废掉（写墓碑）。
+       *
+       * 不作废的话：下一段历史再涨到线，lastSelfNote 那条「1 小时内段号对不上也认」
+       * 的宽口子会把**这一段的摘要**交上去压**下一段** ——
+       * 四道闸门全过，压完看着正常，其实内容错位了。墓碑写下来就没货可认。
+       * （位置特意放在量线复位之后：那三行是「压成功」的既有证据链，别插在中间。）
+       */
+      try { clearSelfNote(sessionId || ctxNow()?.sessionId || ''); } catch {}
       onEvent({
         type: 'compressed',
         before: compressed.before,
@@ -1938,6 +2010,42 @@ for (let round = 0; round < config.maxRounds; round++) {
      * 有信就把这句话变成一条 user 消息塞进去，然后 continue —— 不收尾，
      * 让她接着答。没信就照常返回。
      */
+    /**
+     * 【2026-11-17 修·「一直不停写压缩记忆」的最后一环：写完就落，别等到收尾】
+     *
+     * 原来落本子只有一处 —— 在「这一圈没有工具调用、整轮要返回」那个分支里。
+     * 可真正需要压的场面恰恰是**长任务**：她要连着调几十个工具，一轮里跑十几圈。
+     * 这种轮次十有八九不是「正常说完最后一句」结束的，而是被主人点停止、
+     * 撞上轮数上限、或者工具超时掐掉的 —— 那三条路都不走那个分支，
+     * 于是她辛苦写的那段压缩记忆**当场蒸发**，一个字都没存。
+     *
+     * 蒸发之后就是死循环：下一轮 lastSelfNote 还是空 → 再递【该你自己压了】
+     * → 她再写一遍 → 又是空的。主人看到的就是「一直在写压缩记忆」。
+     * （跟她写得好不好无关，是程序根本没接住。）
+     *
+     * 现在：**每圈收流一结束就检查一次**。闸门里攒到正文就立刻落本子，
+     * 落成功就把工作单摘掉 —— 她下一圈就不会再读到「你还没压」。
+     * 落不进去（太短/顾问腔/没编号）就不动，让这一圈照常干活，
+     * 下一圈她还有机会重写，不会因为存不上就卡住。
+     */
+    try {
+      const _liveNote = String(_noteGate.note || '').trim();
+      if (_liveNote && _liveNote !== _noteSavedRaw) {
+        const _sidNow = sessionId || ctxNow()?.sessionId || '';
+        const _saved = saveSelfNote(_sidNow, _liveNote);
+        if (_saved && _saved.ok) {
+          _noteSavedRaw = _liveNote;
+          try { console.log('[compress] 压缩记忆已落本子（' + _liveNote.length + ' 字），这一轮不用再写'); } catch {}
+          /* 工作单已经没用了：留着只会让她下一圈继续念叨「还有一份没写」 */
+          try { dropCompressOrders(); } catch {}
+        } else {
+          try { console.warn('[compress] 压缩记忆这次没收：' + String(_saved?.reason || '未知')); } catch {}
+        }
+      }
+    } catch (e) {
+      try { console.warn('[compress] 落压缩记忆出错（不影响这一轮）：' + String(e?.message ?? e)); } catch {}
+    }
+
     if (!toolCalls.length) {
       /**
        * 【这一步说到一半才插进来的话 —— 别收尾，接着答】
@@ -2062,11 +2170,14 @@ for (let round = 0; round < config.maxRounds; round++) {
          * 兜底那一支是给「没走流式」的极端情况留的，逻辑跟原来一模一样。 */
         const _noteRaw = String(_noteGate.note || '').trim()
           || (String(text || '').includes('【压缩记忆') ? String(text) : '');
-        if (_noteRaw) {
+        /* 【2026-11-17】每圈收流时已经落过一次了，这里只补「那一圈还没落上」的漏网。
+         * 不比对的话同一份会被写第二遍，本子里一条摘要占两格。 */
+        if (_noteRaw && _noteRaw !== _noteSavedRaw) {
           const sid = sessionId || ctxNow()?.sessionId || '';
           const saved = saveSelfNote(sid, _noteRaw);
-          if (!saved.ok && process.env.COMPRESS_DEBUG) {
-            console.log('[compress] 这条压缩记忆没收：' + saved.reason);
+          if (saved && saved.ok) _noteSavedRaw = _noteRaw;
+          if (!saved?.ok && process.env.COMPRESS_DEBUG) {
+            console.log('[compress] 这条压缩记忆没收：' + saved?.reason);
           }
         }
       } catch { /* 存不进去就不存，这轮照常返回 */ }

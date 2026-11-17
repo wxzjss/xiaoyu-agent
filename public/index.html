@@ -22627,7 +22627,11 @@ if (mdlDiscoverBtn) {
       const r = await fetch('/api/models/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base, key }),
+        /* 【2026-11-17】把「出图 / 聊天」也带上：同一家中转上，出图那条 key
+         * 和聊天那条 key 看到的是**不同的模型组**（实测 wanzi：chat key 只有
+         * 3 个 deepseek，image key 才有 4 个 gpt-image）。带上类型，服务端会
+         * 把同类型的 key 排前面、并且把所有 key 的列表合并回来。 */
+        body: JSON.stringify({ base, key, kind: (document.querySelector('input[name="mdlKind"]:checked') || {}).value || '' }),
       }).then((x) => x.json()).catch(() => null);
       if (r && r.ok && Array.isArray(r.ids) && r.ids.length) {
         mdlDiscovered = { base, ids: r.ids };

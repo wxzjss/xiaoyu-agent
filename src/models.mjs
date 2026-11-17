@@ -295,15 +295,55 @@ export function endpointFor(id) {
  * `https://x.com`、`https://x.com/`、`https://x.com/v1` 认为是同一家。
  */
 export function keyForBaseURL(baseURL) {
+  const list = keysForBaseURL(baseURL);
+  return list.length ? list[0].key : '';
+}
+
+/**
+ * 【2026-11-17 加·同一个地址上可能有**好几把 key**，各能看到不同的模型组】
+ *
+ * 主人报：「添加模型界面里【拉一下】拉不到出图模型」。
+ *
+ * 查下来不是服务商的问题，也不是网络问题 —— 是**只试了一把 key**：
+ *   同一家中转 napi.wanzij.cn，主人存了三条：
+ *     · 丸子 chat  key 尾号 aeXOep → 能看到 3 个 deepseek
+ *     · 生图 image key 尾号 jRqpJ0 → 能看到 4 个 gpt-image（就是拉不到的那批）
+ *     · claude chat key 尾号 oQr4Rr → 能看到 14 个 claude
+ *   旧实现 keyForBaseURL 取「第一条有 key 的」→ 永远拿到 chat 那把 →
+ *   下拉里永远只有 deepseek，出图模型一个都不出现。
+ *
+ * 这是中转站的常见形态：一把 key 一个模型组。所以要「都问一遍、合并」。
+ *
+ * @param {string} baseURL
+ * @param {{kind?: string}} [opts] kind='image' 时把出图那条排最前（出图表单里先看到出图模型）
+ * @returns {Array<{key:string, kind:string, name:string}>} 去重后的 key 列表
+ */
+export function keysForBaseURL(baseURL, { kind = '' } = {}) {
   const norm = (u) => String(u || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '').toLowerCase();
   const want = norm(baseURL);
-  if (!want) return '';
+  if (!want) return [];
   try {
     const { models } = readRaw();
-    const hit = (Array.isArray(models) ? models : []).find((m) => m && m.apiKey && norm(m.baseURL) === want);
-    return hit ? String(hit.apiKey) : '';
+    const hits = (Array.isArray(models) ? models : [])
+      .filter((m) => m && m.apiKey && norm(m.baseURL) === want);
+    const pref = String(kind || '').toLowerCase();
+    const ranked = pref
+      ? hits
+        .map((m, i) => ({ m, i, score: String(m.kind || 'chat').toLowerCase() === pref ? 0 : 1 }))
+        .sort((a, b) => (a.score - b.score) || (a.i - b.i))
+        .map((x) => x.m)
+      : hits;
+    const out = [];
+    const seen = new Set();
+    for (const m of ranked) {
+      const k = String(m.apiKey);
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push({ key: k, kind: String(m.kind || 'chat'), name: String(m.name || m.model || '') });
+    }
+    return out;
   } catch {
-    return '';
+    return [];
   }
 }
 

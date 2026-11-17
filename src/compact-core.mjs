@@ -266,23 +266,57 @@ function slimDir(sessionId) {
  * 【2026-11-07 根治·瘦身只落盘不清理】
  *
  * 以前每个会话的 slim 原文只增不减，单会话能攒到 7695 个文件、拖慢启动扫描。
- * 现在每写一条就顺手裁：每个会话只留最近 SLIM_KEEP_MAX 个原文文件（按 mtime 取最新），
- * 旧的删掉。删的是「已瘦身的旧工具输出副本」，会话 json 里本来就有截断版，
- * 工具重跑也能重生 —— 不会丢失任何对话内容。
+ * 现在每写一条就顺手裁。删的是「已瘦身的旧工具输出副本」，会话 json 里本来就有
+ * 截断版，工具重跑也能重生 —— 不会丢失任何对话内容。
+ *
+ * 【2026-11-17 改·按体积回收，不再按个数一刀切】
+ *
+ * 原来写死「每会话只留最近 300 个文件」。跟文件头那句承诺对不上：
+ * 「原文全部落盘可查、随时能翻回来」—— 长会话跑到第 301 条，最早的原文
+ * 就被悄悄回收了，而且删的时候**不看大小、不看重要程度，只看 mtime**。
+ *
+ * 更糟的是反过来：300 这个大数字对「一条 2KB 的小输出」太浪费，
+ * 对「一条 30MB 的构建日志」又可能撑爆磁盘。个数根本不是一个好的计量单位。
+ *
+ * 现在按**体积**管，配一个保底条数：
+ *   · SLIM_KEEP_MAX_BYTES：这个会话的原文存档总量上限（默认 128MB，环境变量可调）；
+ *   · SLIM_KEEP_MIN_FILES：不管多大，最近这么多份永远留着（默认 60）——
+ *     保证「刚才那几步的原文」一定翻得回来，不会因为一条巨型日志就把它们挤没。
+ * 从最新往旧累加，落到上限就停；超出的删掉。
  */
-const SLIM_KEEP_MAX = 300;
+const SLIM_KEEP_MAX_BYTES = (() => {
+  const raw = process.env.SLIM_KEEP_MAX_MB;
+  const v = Number(raw);
+  const mb = Number.isFinite(v) && v > 0 ? v : 128;
+  return Math.floor(mb * 1024 * 1024);
+})();
+const SLIM_KEEP_MIN_FILES = 60;
+
 function pruneSlimDir(sessionId) {
   try {
     const dir = slimDir(sessionId);
     if (!existsSync(dir)) return;
     const files = readdirSync(dir)
       .filter((f) => f.endsWith('.txt'))
-      .map((f) => ({ f, m: statSync(join(dir, f)).mtimeMs }))
-      .sort((a, b) => a.m - b.m)
-      .map((x) => x.f);
-    if (files.length <= SLIM_KEEP_MAX) return;
-    for (const f of files.slice(0, files.length - SLIM_KEEP_MAX)) {
-      try { unlinkSync(join(dir, f)); } catch {}
+      .map((f) => {
+        const st = statSync(join(dir, f));
+        return { f, m: st.mtimeMs, size: Number(st.size) || 0 };
+      })
+      .sort((a, b) => b.m - a.m);   // 新的在前
+    if (!files.length) return;
+
+    let bytes = 0;
+    let keep = 0;
+    for (const x of files) {
+      const underBytes = bytes + x.size <= SLIM_KEEP_MAX_BYTES;
+      const underMin = keep < SLIM_KEEP_MIN_FILES;
+      if (!underBytes && !underMin) break;
+      bytes += x.size;
+      keep += 1;
+    }
+    if (keep >= files.length) return;
+    for (const x of files.slice(keep)) {
+      try { unlinkSync(join(dir, x.f)); } catch {}
     }
   } catch {}
 }
@@ -703,6 +737,36 @@ export function buildRescueNote(messages, { planText = '', segId = '' } = {}) {
   const talks = body.filter(
     (m) => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim().length > 20,
   );
+  /**
+   * 【2026-11-17 加·兜底也要把主人的原话抄下来】
+   *
+   * 这份是「她没顾上写」时程序替她留的底。以前只摘她自己说过的话 ——
+   * 可真正不可再生的恰恰是**主人的原话**：他定的规矩、改口纠正过的地方、
+   * 说过的数字。她的旁白可以重编，主人的话编不出来。
+   *
+   * 所以兜底段也加一节「主人原话」，逐条照抄（单条 200 字、整节 1500 字封顶）。
+   * 注意：这是**摘原话**，不是生成 —— 跟本函数开头那三条规矩一致。
+   */
+  const users = body.filter(
+    (m) => m.role === 'user' && !m.context && typeof m.content === 'string'
+      && m.content.trim().length > 0,
+  );
+  if (users.length) {
+    const pickedU = users.slice(-6);
+    const lines = [];
+    let total = 0;
+    for (const m of pickedU) {
+      const one = '- ' + m.content.trim().replace(/\s+/g, ' ').slice(0, 200);
+      if (total + one.length > 1500) break;
+      lines.push(one);
+      total += one.length + 1;
+    }
+    if (lines.length) {
+      out.push('主人原话（照抄，最关键的就是这些）：');
+      out.push(...lines);
+    }
+  }
+
   const picked = talks.slice(-6);
   if (picked.length) {
     out.push('我做完了什么（从我自己的话里摘）：');
@@ -741,3 +805,13 @@ export function planTurnCompact(messages, limit, sessionId) {
     shouldFold: gate.tier === 'hard',
   };
 }
+
+/* 【2026-11-17 加】给守卫用：归档回收策略要能真跑验证。
+ * 这两个常量本来是内部实现细节，但「按体积回收」这件事必须被钉住 ——
+ * 它关系到「原文随时能翻回来」这句承诺还算不算数。 */
+export const __slimPolicy = {
+  maxBytes: SLIM_KEEP_MAX_BYTES,
+  minFiles: SLIM_KEEP_MIN_FILES,
+  pruneSlimDir,
+  slimDir,
+};

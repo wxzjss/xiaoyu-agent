@@ -20,9 +20,31 @@
 
 import { memoryText } from './my-memory.mjs';
 import { readMemory as readSessionMemory, appendDigest as appendSessionDigest, memoryMtime } from './session-memory.mjs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { config } from './config.mjs';
 
 /** 压缩记忆开头的记号，收的时候靠它认出「这是压缩写的」并取出存档编号。 */
 export const SELF_NOTE_TAG = '【压缩记忆';
+
+/**
+ * 【2026-11-17 修·一个从没定义过的符号把「写压缩记忆」整条链路弄死了】
+ *
+ * `acceptSelfNote` 里写着 `if (ADVISOR_LINE.test(body)) return { ok:false, reason:'顾问腔' }`，
+ * 可 `ADVISOR_LINE` **从来没定义过** —— 这个文件是 2026-11-17 才第一次入库的，
+ * 在那之前它一直躺在工作区里，这个 ReferenceError 也就一直没被任何守卫发现。
+ *
+ * 后果是灾难性的，而且极其隐蔽：
+ *   · `saveSelfNote` 第一行就调 `acceptSelfNote` → 直接抛 ReferenceError；
+ *   · 调用方（agent.mjs）整段包在 try/catch 里 → 抛了也没人喊；
+ *   · 于是「她写的压缩记忆」**一条都没进过本子**，`lastSelfNote` 永远是空；
+ *   · 上层认为「她还没写」→ 再递一次【该你自己压了】→ 她再写一遍 → 又是空。
+ *   主人看到的就是「一直在写压缩记忆、停不下来」（鲸娘建模鱼那个会话）。
+ *
+ * 现在把这个正则补上（跟 compress.mjs 的 SUMMARY_ADVISOR 一个意思：
+ * 她要是把压缩记忆写成了顾问腔/反问/套话，那不算写完）。
+ */
+const ADVISOR_LINE = /(建议你|要不要我|如果你需要|请提供|需要你确认|需要确认|这看起来像|你这段对话|我无法|我不能|总结来说|下一步方案)/;
 
 /** 一段压缩记忆最多这么长。
  *
@@ -159,6 +181,38 @@ export function acceptSelfNote(raw) {
 export function lastSelfNote(sessionId, wantSegId) {
   const sid = String(sessionId || '').trim();
   if (!sid) return '';
+  /* 【2026-11-17】先读完整存档（.state/selfnote/<会话>.txt）。
+   * 这是她自己写的那份六块正文，最长 3000 字 —— 折叠就该用它，
+   * 不能再用本子里被砍到 300 字的滚动摘要。 */
+  {
+    const full = readNoteFile(sid);
+    if (full && full.trim()) {
+      /* 这份已经被折叠用掉了（墓碑）—— 两条路都不许再拿它顶，
+       * 让她按新段号重写一份。 */
+      if (full.startsWith(NOTE_CONSUMED)) return '';
+      const want0 = String(wantSegId || '').trim();
+      const tagAt = full.lastIndexOf(SELF_NOTE_TAG);
+      if (tagAt >= 0) {
+        /* 段号对得上 = 就是给这一段写的，直接用。 */
+        if (!want0 || full.includes(want0)) return full.slice(tagAt, tagAt + SELF_NOTE_MAX);
+        /**
+         * 段号对不上时**不许无条件认**——那正是 2026-11-05 修过的坏：
+         * 拿上一段的摘要去换这一段的原文，四道闸门全过，上下文悄悄变错。
+         * 只给一个很窄的例外：文件是**刚写的**（1 小时内），说明多半是
+         * 「她写的段号跟工作单差一位」这种笔误，不是陈年旧稿。超过就老实返回空，
+         * 让她按新段号重写一遍 —— 顶多花她一轮，总比压错强。
+         */
+        const age = noteFileAge(sid);
+        if (age >= 0 && age <= 60 * 60 * 1000) {
+          try {
+            console.warn('[self-note] 完整存档段号对不上（要 ' + want0 + '，' + Math.round(age / 60000) + ' 分钟前写的）→ 按「刚写过」认下来');
+          } catch { /* 日志失败不影响 */ }
+          return full.slice(tagAt, tagAt + SELF_NOTE_MAX);
+        }
+        return '';
+      }
+    }
+  }
   try {
     const t = readSessionMemory(sid) || '';
     /**
@@ -223,18 +277,118 @@ export function saveSelfNote(sessionId, raw) {
   const sid = String(sessionId || '').trim();
   if (!sid) return { ok: false, reason: '没有会话 id，不知道该写进哪个本子' };
   try {
-    // 摘要是给人看的一段话，压成一行：标题 + 提纲，别把整块 markdown 塞进一条摘要。
-    const oneLine = String(got.text)
-      .replace(/\r\n?/g, '\n')
-      .replace(/\n+/g, ' ⏎ ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 400);
-    const r = appendSessionDigest(sid, oneLine);
-    return { ok: true, text: got.text, added: r && r.added !== false, skipped: r && r.skipped };
+    /**
+     * 【2026-11-17 修·压缩记忆被砍成 300 字（上限写 3000 却只存 300）】
+     *
+     * 原来这里只调 appendSessionDigest，而它内部第一句就是
+     * `.slice(0, 300)` —— 那是给「人看的滚动摘要」定的长度，
+     * 可压缩记忆是**喂给折叠用的正文**，SELF_NOTE_MAX 明明是 3000。
+     * 实测：写进去 2790 字，读回来 301 字，保住 11%。
+     * 也就是说就算她写满了 3000 字六块结构，折叠后也只剩一张便签 ——
+     * 「重启后忘光、重做一遍」有一半是这个造成的。
+     *
+     * 现在：**正文另存一份完整的**（.state/selfnote/<会话>.txt，按 SELF_NOTE_MAX 截），
+     * 本子里的滚动摘要照旧记一条 300 字的（那是给人翻的，不需要全文）。
+     * 读的时候先读完整那份，读不到才回落到本子 —— 老会话不用迁移。
+     */
+    writeNoteFile(sid, got.text);
+    let added = true;
+    let skipped;
+    try {
+      const oneLine = String(got.text)
+        .replace(/\r\n?/g, '\n')
+        .replace(/\n+/g, ' ⏎ ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 400);
+      const r = appendSessionDigest(sid, oneLine);
+      added = !(r && r.added === false);
+      skipped = r && r.skipped;
+    } catch { /* 本子记不上不影响正文已经存好 */ }
+    return { ok: true, text: got.text, added, skipped };
   } catch (e) {
     return { ok: false, reason: '写不进本子：' + (e && e.message ? e.message : e) };
   }
+}
+
+/* ── 压缩记忆的完整存档（2026-11-17 加） ────────────────────────────
+ *
+ * 为什么不复用会话本子：本子里的「滚动摘要」是给人翻的，一条 300 字刚好；
+ * 而压缩记忆是**折叠正文**，要按六块写满 3000 字。两件事长度差十倍，
+ * 塞进同一处必然有一边被砍。分开存，各按各的规矩来。
+ */
+function noteDir() {
+  const d = join(config.dataDir, '.state', 'selfnote');
+  try { if (!existsSync(d)) mkdirSync(d, { recursive: true }); } catch {}
+  return d;
+}
+
+function noteFile(sessionId) {
+  const sid = String(sessionId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'default';
+  return join(noteDir(), sid + '.txt');
+}
+
+/** 写一份完整的压缩记忆（原子替换：先写 .tmp 再 rename） */
+function writeNoteFile(sessionId, body) {
+  try {
+    const f = noteFile(sessionId);
+    const tmp = f + '.tmp';
+    writeFileSync(tmp, String(body || '').slice(0, SELF_NOTE_MAX), 'utf8');
+    renameSync(tmp, f);
+    return true;
+  } catch { return false; }
+}
+
+/** 读完整的压缩记忆；文件不在/读不出来返回空串（老会话会走到这里，回落到本子） */
+function readNoteFile(sessionId) {
+  try {
+    const f = noteFile(sessionId);
+    if (!existsSync(f)) return '';
+    return String(readFileSync(f, 'utf8') || '');
+  } catch { return ''; }
+}
+
+/** 完整存档是多久前写的（毫秒）。读不到返回 -1（调用方据此当「不新鲜」）。 */
+function noteFileAge(sessionId) {
+  try {
+    const f = noteFile(sessionId);
+    if (!existsSync(f)) return -1;
+    return Date.now() - statSync(f).mtimeMs;
+  } catch { return -1; }
+}
+
+/**
+ * 【2026-11-17 加·这份笔记用掉了就删掉】
+ *
+ * 为什么必须删：`lastSelfNote` 有个「1 小时内段号对不上也认」的宽口子
+ * （那个宽口子是为了防「她写错一位数字就永远压不动」的死循环）。
+ * 可笔记要是压完还留着，下一段一到线，这个宽口子就会把**上一段的摘要**
+ * 当成这一段的交上去 —— 四道闸门全过，上下文悄悄变错，最难查的那种。
+ *
+ * 所以折叠一成功就调这个清掉。清掉之后宽口子无货可认，自然老实返回空。
+ */
+/**
+ * 【2026-11-17 加·这份笔记用掉了就作废（留个墓碑，不删文件）】
+ *
+ * 为什么必须作废：`lastSelfNote` 有个「1 小时内段号对不上也认」的宽口子
+ * （那个宽口子是为了防「她写错一位数字就永远压不动」的死循环）。
+ * 可笔记要是压完还留着，下一段一到线，这个宽口子就会把**上一段的摘要**
+ * 当成这一段的交上去 —— 四道闸门全过，上下文悄悄变错，最难查的那种。
+ *
+ * 为什么是「写墓碑」而不是「删文件」：
+ * 删掉之后 lastSelfNote 会回落到会话本子里那份 300 字的滚动摘要，
+ * 而本子那条路也有个同样的宽口子 —— 等于换个地方复活。墓碑写下来，
+ * 两条路都一眼看出「这份已经用掉了」，谁都不许再拿它顶。
+ */
+const NOTE_CONSUMED = '\u0000consumed';
+
+export function clearSelfNote(sessionId, segId = '') {
+  try {
+    const f = noteFile(sessionId);
+    writeFileSync(f + '.tmp', NOTE_CONSUMED + '|' + String(segId || ''), 'utf8');
+    renameSync(f + '.tmp', f);
+    return true;
+  } catch { return false; }
 }
 
 /**
@@ -251,14 +405,18 @@ export function renderSelfCompressBlock(on = true) {
     '1. 这段活还在干什么（目标），一定要留 —— 这是后面接得上的唯一理由。',
     '2. 清单打到第几步、哪几步做完打勾了，留清单就行；具体每一步做了什么，缩成一句话，能删就删。',
     '3. 卡在哪儿、什么没成、什么被证明不通 —— 比做过什么重要得多，必须留。',
-    '4. 主人原话里的硬要求（不许干的事、他定的规矩、他说过的数）照原样抄，别改写。',
+    '4. 主人原话里的硬要求（不许干的事、他定的规矩、他说过的数）**单独抄一块**，别揉进别处。',
     '5. 其余一律删。工具调用流水、「我先看看」「已经改完」这类过程废话，一个字都不要。',
-    '6. 每段开头写「【压缩记忆·存档编号】」。正文最多 3000 字，按下面六块写，缺一块就算没写完：',
+    '6. 每段开头写「【压缩记忆·存档编号】」。正文最多 3000 字，按下面七块写，缺一块就算没写完：',
     '   · ## 目标 —— 这段活在干什么、怎么算做完（后面能接上全靠它）',
     '   · ## 清单 —— 打到第几步、哪几步打勾了；没做的**照抄原文**，别转述',
     '   · ## 已定的决定 —— 走过的路、为什么这么走；改过/否掉的方案也写一句为什么否',
     '   · ## 关键路径·命令·参数 —— 文件在哪、命令原文、端口、会话 id、账号名；**照抄，不许改写**',
     '   · ## 坑 —— 什么试过不通、哪条报错说明什么、什么东西一碰就再坏一次（这条比做过什么值钱）',
+    '   · ## 主人原话 —— **逐句照抄**主人说过的硬话：不许干的、必须干的、改口纠正过的、给过的数。',
+    '     这里的规矩跟别处相反：别概括、别转述、别总结，他怎么写就怎么留，一句话一行。',
+    '     挑最要紧的那几句（一般三到八句），长的贴文留头尾、中间用「……」带过，',
+    '     但**他到底要求你干什么必须原样留在句子里**。',
     '   · ## 现在断在哪 —— 最后一句话是什么、下一步第一件事做什么',
     '   别人问你要不要继续、你也不许反问我。',
     '7. 【写完之后立刻接着干原来那件事，中间不许停】压完不是收工。',

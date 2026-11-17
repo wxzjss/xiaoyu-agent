@@ -899,6 +899,72 @@ let _fillerRetried = false;
  * 跨圈累计（不随 round 重置），因为"调过三次工具"说的是这一整轮。 */
 let _toolCallCount = 0;
 
+/**
+ * 【2026-11-17 主人查上下文时揪出的第二个洞·单条有闸、整轮没闸】
+ *
+ * tools.mjs 的 clipToolResult 只管**单条**（8000 字封顶，read_file 2 万）。
+ * 一轮里连调 30 个工具，每条都合规，加起来 24 万字 —— 闸门一次都没响，
+ * 上下文照样被顶爆。查勾鱼那次就是活例子：一条 36 万字（对象型，老代码还
+ * 直接放行），一条就把整轮干掉了。
+ *
+ * 这里补一道**整轮累计**的闸：这一轮所有工具结果的字数加起来超过
+ * TOOL_OUT_TURN_BUDGET 之后，后续工具结果不再原样进 messages，
+ * 一律压成「头 800 字 + 尾 400 字 + 省略说明」。
+ *
+ * 为什么阈值定 12 万：正常干活一轮工具输出通常在 2~4 万（含几次 read_file），
+ * 12 万是「明显不正常」的位置；真到那儿了，多给原文也没用 —— 该压了。
+ *
+ * 只统计**进上下文的**那部分（数组形态的图片不算字），跟真实膨胀口径一致。
+ */
+const TOOL_OUT_TURN_BUDGET = 120000;
+const TURN_HEAD = 800;
+const TURN_TAIL = 400;
+let _turnToolChars = 0;
+
+/** 把一段工具结果按「头 + 尾 + 说明」压短（整轮预算用完之后的兜底） */
+function squeezeToolContent(content, name) {
+  let text = '';
+  let isArray = false;
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    isArray = true;
+    text = content.map((p) => (p && p.type === 'text' ? String(p.text || '') : '[图片]')).join('\n');
+  } else {
+    return content;
+  }
+  if (text.length <= TURN_HEAD + TURN_TAIL) return content;
+  const cut = text.length - TURN_HEAD - TURN_TAIL;
+  const out = text.slice(0, TURN_HEAD)
+    + '\n\n…（这一轮工具输出总字数已超预算，本条中间省略 ' + cut + ' 字）…\n\n'
+    + text.slice(-TURN_TAIL)
+    + '\n\n【整轮预算闸】这一轮所有工具结果累计 ' + _turnToolChars + ' 字，超过 ' + TOOL_OUT_TURN_BUDGET
+    + ' 字。本条（' + name + '）已压缩。要看全文就单独再调一次这个工具、或者用 read_file 分段读，别一次全灌。';
+  if (isArray) {
+    /* 【2026-11-17 关键·图片一张都不许丢】
+     * 原来这里写的是 `return [{ type: 'text', text: out }]` —— 把整条压成纯文字，
+     * 图全没了。那是致命的：video_read / look_screen 这类工具**唯一的产出就是图**，
+     * 图丢了模型等于什么都没看见，只会说「我看不清」，然后反复重试，
+     * 越试上下文越满，正好触发这道闸，成了死循环。
+     * 文字可以省，图不能省 —— 图是「看见」的唯一通道。
+     * 所以：文字压短，图片原样附在后面。 */
+    const keep = content.filter((p) => p && p.type !== 'text');
+    return [{ type: 'text', text: out }, ...keep];
+  }
+  return out;
+}
+
+/* 【2026-11-17 修·三个整轮计数器从来没归零】
+ * _fillerRetried/_toolCallCount/_turnToolChars 都是模块级变量，声明给了初值 0，
+ * 可 runAgent 每进来一次（新的一轮）谁都没清回去：
+ *   · _toolCallCount 涨过 3 后永远不等于 3 —— 开场提示调满 3 个工具退场，从第二轮起失效；
+ *   · _fillerRetried 不归零 —— 只回一句嗯我在的重问机会一辈子只用一次；
+ *   · _turnToolChars 不归零 —— 工具预算被历史轮次吃光，新的一开口就压。
+ * 每次 runAgent 开头统一清一遍，语义就是这一轮。 */
+_fillerRetried = false;
+_toolCallCount = 0;
+_turnToolChars = 0;
+
 for (let round = 0; round < config.maxRounds; round++) {
     /**
      * 【2026-11-08 修·「点了停止，她还要再说一句」】
@@ -1313,7 +1379,9 @@ for (let round = 0; round < config.maxRounds; round++) {
            * 通道 → 这句又被塞进信箱 → 走到这里再 push 一次 = 历史里两份。
            * 判据只看「带 _steer 的同文消息是不是就紧挨队尾」，
            * 所以主人真想说两遍同一句（中间她答过一次）不会被吞。 */
-          if (isSteerAlreadyLanded(messages, it.text)) continue;
+          /* 【2026-11-17】把 inbox 里这条的时间一起传进去 ——
+           * 重启续跑时靠它认出「这条其实已经落过盘了」，不再重发。 */
+          if (isSteerAlreadyLanded(messages, it.text, it.at)) continue;
           const att = Array.isArray(it.attachments) ? it.attachments.filter((x) => x && x.path) : [];
           const imgs = att.map((x) => String(x.path)).filter((p) => isImagePath(p));
           const fls = att.map((x) => String(x.path)).filter((p) => !isImagePath(p));
@@ -2284,6 +2352,27 @@ for (let round = 0; round < config.maxRounds; round++) {
           else if (Array.isArray(toolContent)) toolContent.unshift({ type: 'text', text: _need + '\n' });
         }
       } catch { /* 提醒本身出问题，绝不能拖垮这一轮 */ }
+      /* 【2026-11-17 整轮预算闸】先记账，再决定这条要不要压。
+       * 单条闸（tools.mjs 的 8000 字）管不住「30 条都合规、加起来 24 万字」，
+       * 查勾鱼那次 36 万字一条就把整轮顶死了 —— 这里补的是这个洞。 */
+      {
+        const _len = typeof toolContent === 'string'
+          ? toolContent.length
+          : (Array.isArray(toolContent)
+            ? toolContent.reduce((a, p) => a + (p && p.type === 'text' ? String(p.text || '').length : 0), 0)
+            : 0);
+        _turnToolChars += _len;
+        if (_turnToolChars > TOOL_OUT_TURN_BUDGET) {
+          try {
+            const before = toolContent;
+            toolContent = squeezeToolContent(toolContent, call.function.name);
+            if (toolContent !== before) {
+              console.warn('[tool-budget] session=' + sessionId + ' 这一轮工具输出累计 ' + _turnToolChars
+                + ' 字，已压缩 ' + toolCn(call.function.name) + ' 这条例结果');
+            }
+          } catch { /* 压不动就用原样，别因为预算闸把这一轮搞挂 */ }
+        }
+      }
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -2729,22 +2818,62 @@ function sumUsage(acc, u) {
  * @param {string} text 信箱里这条插话的正文
  * @returns {boolean} true = 已经有了，别再 push
  */
-function isSteerAlreadyLanded(messages, text) {
+/**
+ * 这条插话是不是已经落进历史了？
+ *
+ * 【2026-11-17 主人报·「运行过程中重启，把我插话的消息再发一遍给她」】
+ *
+ * 原来这里有一条 `break`：
+ *   if (m.role === 'assistant') { if (!m.tool_calls) break; continue; }
+ * 意思是「她答过话了 → 后面再插同样的算新话，停」。
+ *
+ * 这条在**正常运行中**是对的，但在**重启续跑**时就成了病根：
+ *   ① 主人插话 → /api/interject 当场把它落进历史（带 _steer）；
+ *   ② 她接着干活、说了几句正文（产生不带 tool_calls 的 assistant）；
+ *   ③ 进程重启，inbox 里那条插话还在（信箱是落盘的）；
+ *   ④ 续跑时走到这里 → 扫到最近的 assistant 有正文 → **直接 break** → 返回 false；
+ *   ⑤ 于是同一条插话又被当成新消息 push 一遍，她就再答一遍。
+ *
+ * 修法：多认一条「按时间对上」的证据 —— 传进来的 `at` 是 inbox 里这条的时间，
+ * 历史里如果有一条 _steer 的消息，内容一样**且时间对得上**（相差 5 秒内），
+ * 那它就是同一条，不管中间隔了多少轮 assistant。
+ *
+ * 为什么不用「内容一样就吞」：主人真可能过一会儿再插同一句
+ * （「继续」「快点」），那种时间对不上，必须照常落。
+ *
+ * @param {Array} messages 历史
+ * @param {string} text 插话正文
+ * @param {number} [at] inbox 里这条的时间戳（不传就退回老判据）
+ */
+function isSteerAlreadyLanded(messages, text, at = 0) {
   const arr = Array.isArray(messages) ? messages : [];
   const nz = (s) => String(s == null ? '' : s).replace(/\s+/g, '');
   const want = nz(text);
   if (!want) return false;
+  const wantAt = Number(at) || 0;
+  const AT_TOL = 5000;   // 5 秒内算同一条（落盘那一刻的时间跟 inbox 的 at 是同一次点击）
   for (let i = arr.length - 1, seen = 0; i >= 0 && seen < 4; i--) {
     const m = arr[i];
     if (!m || typeof m !== 'object') continue;
     if (m.role === 'assistant') {
-      if (!m.tool_calls) break;   // 她答过话了 → 后面再插同样的算新话
+      /* 【2026-11-17 分两条路】
+       *
+       * 有 at（正常调用点）：不能因为「她答过话」就停 —— 重启续跑时她答的
+       * 正是这条插话引出来的话，停了就等于没认出来，会重发。
+       * 靠时间窗认「是不是同一条」才准。
+       *
+       * 没 at（老调用点 / 探针）：保持老语义 —— 她答过话就算新话，停。
+       * 这样老行为一个字都不变，不会误吞主人后来真又说的同一句。 */
+      if (!wantAt && !m.tool_calls) break;
       continue;
     }
     if (m.role !== 'user') continue;
     seen += 1;
     if (m._steer !== true) continue;
-    if (nz(m.content) === want) return true;
+    if (nz(m.content) !== want) continue;
+    if (!wantAt) return true;                       // 老调用点：内容一样就算（保持原行为）
+    const mAt = Number(m.at) || 0;
+    if (mAt && Math.abs(mAt - wantAt) <= AT_TOL) return true;   // 时间对上 = 同一条
   }
   return false;
 }

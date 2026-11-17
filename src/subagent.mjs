@@ -1293,7 +1293,7 @@ export async function runSubagent({
     // 白重做一遍。现在：只要真动过手（有成功的工具调用），就算完成，只是没来得及总结。
     // 【2026-11-05 严检补】光调 plan / note / list_dir 不算「把活干出来了」——
     // 那些是记账和看一眼，真产出得是写过、发过、跑过。
-    const PRODUCTIVE = /^(write_file|send_file|qq_send|run_command|say|make_image|restart_self|spawn_worker|spawn_workers|chrom)/i;
+    const PRODUCTIVE = /^(write_file|send_file|qq_send|run_command|say|restart_self|spawn_worker|spawn_workers|chrom)/i;
     const didWork = trace.some((t) => / → 成：/.test(t) && PRODUCTIVE.test(t));
     if (didWork) {
       return {

@@ -28,7 +28,7 @@ const SIDE_EFFECT = [
   'write_file', 'run_command', 'send_file', 'qq_send', 'say', 'restart_self',
   'plan', 'note', 'memory_add', 'memory_pin', 'use_skill', 'ask_peer',
   'browser_open', 'browser_goto', 'browser_setcookie', 'browser_click', 'browser_type', 'ui_click', 'ui_double_click', 'ui_right_click',
-  'ui_type', 'ui_key', 'ui_scroll', 'make_image', 'video_sheet',
+  'ui_type', 'ui_key', 'ui_scroll', 'video_sheet',
   't2s_convert', 'pack_book', 'ask_subagent', 'spawn_worker', 'spawn_workers',
   'tell_worker',
 ];

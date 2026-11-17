@@ -435,7 +435,21 @@ export default function LogView() {
         if (box.classList.contains('hubBody')) {
           const dir = Number(e && e.deltaY) || 0;
           if (dir === 0) return true;
-          const atTop = box.scrollTop <= 0;
+          /* 【2026-11-17 修·「能往上带不能往下带」的真因】
+           *
+           * 原来这里用的是 `scrollTop <= 0` 和 `scrollTop + clientHeight >= scrollHeight - 1`。
+           * 后者看着有 1px 容差，可真正出问题的是**另一处**（installInnerToHubScrollChain）：
+           * 那边判断「A 到头没有」用的是 `next === base` 的**精确相等**。
+           *
+           * 而滚动到底部时 scrollTop 永远达不到精确的 (scrollHeight - clientHeight)：
+           * 浏览器会把它停在小数位上（实测 659.4 / 659.99 这种），
+           * 于是一格一格滚下去都是「base=659.4 → next=660 → 不相等 → preventDefault 吃掉」，
+           * pump 追到 659.4 后把 targetA 清空，下一格又从 659.4 算 —— **死循环**。
+           * 顶部是 scrollTop=0，精确可达，所以往上滚一下就放行。
+           * 这就是「能往上带、不能往下带」的全部原因。
+           *
+           * 这里统一改成 1px 容差（跟上面 installInner 里的 EPS 一个口径）。 */
+          const atTop = box.scrollTop <= 1;
           const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 1;
           /* 往上滚却已到顶 / 往下滚却已到底 → 到头了，放行给上下文 */
           if (dir < 0 && atTop) return false;

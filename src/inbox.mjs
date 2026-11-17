@@ -149,6 +149,46 @@ export function inboxCount(sessionId) {
 }
 
 /**
+ * 【2026-11-17 主人报·「重启会把我插话的消息再发一遍」的真身是 worker 汇报刷屏】
+ *
+ * 实盘抓到：同一个会话的信箱里躺着 6 条，两两成对 ——
+ *   #1「美术角色」被手动停下了 / #1「美术角色」程序重启过
+ *   #2「美术道具」…            / #2「美术道具」…
+ *   #3「音效师」…              / #3「音效师」…
+ *
+ * 原因：一个 worker 死掉会走**两条独立的通知路**
+ *   · team.mjs stopWorker() 里的「被手动停下了」
+ *   · team.mjs reapStalledWorker() 里的「程序重启过 / 卡死」
+ * 两条都往信箱塞 _sysNote，主智能体就看到同一个子Agent 报了两遍
+ * （体感就是「我说的话/我派出去的活，怎么又发一遍」）。
+ *
+ * 这里给一个按 worker 清旧通知的口子：塞新通知之前，先把同一个 worker
+ * 之前那条**还没被取走**的通知删掉 —— 只留最新、最准的那一条。
+ *
+ * @param {string} sessionId 会话
+ * @param {string} mark 用来认「是同一个 worker 的通知」的片段，例如 `#1「美术角色」`
+ * @returns {number} 删掉几条
+ */
+export function dropWorkerNote(sessionId, mark) {
+  const key = String(mark || '').trim();
+  if (!key) return 0;
+  const box = load(sessionId);
+  const keep = (arr) => (Array.isArray(arr) ? arr.filter((x) => {
+    if (!x || typeof x.text !== 'string') return true;
+    /* 只删「带 _sysNote 且提到这个 worker」的 —— 主人亲手说的话一个字都不许碰 */
+    return !(x._sysNote === true && x.text.includes(key));
+  }) : []);
+  const steps2 = keep(box.steps);
+  const turns2 = keep(box.turns);
+  const cut = (box.steps.length - steps2.length) + (box.turns.length - turns2.length);
+  if (!cut) return 0;
+  const next = { steps: steps2, turns: turns2 };
+  boxes.set(sidSafe(sessionId), next);
+  save(sessionId, next);
+  return cut;
+}
+
+/**
  * 清空。
  *
  * 【点「停止」时要连着清】dsh 的 cancel 默认也清 inbox（`options.keepInbox` 才留）：
@@ -214,6 +254,77 @@ export function purgeStale(maxAgeMs = 30 * 60 * 1000) {
     const box = { steps: steps2, turns: turns2 };
     boxes.set(sidSafe(sid), box);
     save(sid, box);   // 空的两槽 → save 会把文件删掉
+  }
+  return out;
+}
+
+/**
+ * 【2026-11-17 主人报·「运行过程中重启，会把我插话的消息再发一遍给她」】
+ *
+ * 上一版 purgeStale 只按**时间**判（30 分钟），治不了这一种：
+ *   ① 主人插话 → inbox 存一条（落盘）；
+ *   ② agent 在步骤边界 drainSteps 取走、push 成历史里一条 `_steer` 消息；
+ *   ③ 可 inbox 里那条**在 drain 时已经被清掉了**——
+ *      那为什么重启后还会重发？
+ *
+ * 实测的真实路径是这个：`/api/stop` 会把压着的插话**抄进历史**（带 `_steer: true`），
+ * 但它抄的时候**只清了 inbox 的内存副本**；进程被强杀（重启就是硬退）时，
+ * 落盘的那份 inbox 文件还带着那条——于是下次启动又读回来、又送一遍。
+ * 另外 /api/interject 在「这一轮没在跑」的分支里也是**落历史 + 留 inbox**两条路都走。
+ *
+ * 所以根治不能靠时间，得**跟历史比对**：内容一样、且时间对得上（5 秒内）、
+ * 历史里那条又确实带 `_steer` 的，就是同一句话，从 inbox 里删掉。
+ *
+ * @param {(sid:string)=>Array} getMessages 取某会话的 messages
+ * @returns {{scanned:number, dropped:number, kept:number}}
+ */
+export function dropAlreadyLanded(getMessages) {
+  const out = { scanned: 0, dropped: 0, kept: 0 };
+  if (typeof getMessages !== 'function') return out;
+  const nz = (s) => String(s == null ? '' : s).replace(/\s+/g, '');
+  const AT_TOL = 5000;
+  let names = [];
+  try { names = fs.readdirSync(DIR()); } catch { return out; }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    out.scanned += 1;
+    const f = join(DIR(), name);
+    let j = null;
+    try { j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { continue; }
+    const sid = String(j?.sessionId || '');
+    if (!sid) continue;
+    let msgs = [];
+    try { msgs = getMessages(sid) || []; } catch { msgs = []; }
+    if (!Array.isArray(msgs) || !msgs.length) continue;
+
+    /** 这条插话是不是已经在历史里（内容一样 + 时间对得上 + 带 _steer） */
+    const landed = (item) => {
+      const want = nz(item && item.text);
+      if (!want) return false;
+      const wantAt = Number(item && item.at) || 0;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (!m || m.role !== 'user' || m._steer !== true) continue;
+        if (nz(m.content) !== want) continue;
+        if (!wantAt) return true;                       // 没时间戳就只认内容
+        const mAt = Number(m.at) || 0;
+        if (mAt && Math.abs(mAt - wantAt) <= AT_TOL) return true;
+      }
+      return false;
+    };
+
+    const pick = (arr) => (Array.isArray(arr) ? arr.filter((x) => x && typeof x.text === 'string') : []);
+    const steps = pick(j?.steps);
+    const turns = pick(j?.turns);
+    const steps2 = steps.filter((x) => !landed(x));
+    const turns2 = turns.filter((x) => !landed(x));
+    const cut = (steps.length - steps2.length) + (turns.length - turns2.length);
+    out.dropped += cut;
+    out.kept += steps2.length + turns2.length;
+    if (!cut) continue;
+    const box = { steps: steps2, turns: turns2 };
+    boxes.set(sidSafe(sid), box);
+    save(sid, box);
   }
   return out;
 }

@@ -2079,7 +2079,27 @@
     }
     .cfgMenuItem:hover { background: #1b2129; color: var(--accent); }
     .cfgMenuItem .ck { width: 14px; color: var(--accent); flex: 0 0 auto; }
-    .cfgMenuItem .desc { color: var(--dim); font-size: 11px; margin-left: auto; flex: 0 0 auto; }
+    /**
+     * 【2026-11-17 主人报·「自动」两个字被挤成竖排】
+     *
+     * 原话：「自动档的描述太多了，都给"自动"两个字变成从上到下竖着排列的了」
+     *
+     * 成因：这一行是 flex，名字和描述并排。`desc` 写着 `flex: 0 0 auto`
+     * **完全不收缩**，而名字那一项没有任何收缩保护 —— 于是 auto 那条长描述
+     * 把名字挤到 0 宽度，中文没有「不可断」的概念，就一个字一行竖下来了。
+     *
+     * 修法（两边一起管）：
+     *   · 名字：不许缩、不许换行 —— 它必须整块可读；
+     *   · 描述：允许缩，超出打省略号（完整意思在档位上本来就有，短版够用）。
+     */
+    .cfgMenuItem > span:not(.ck):not(.desc) {
+      flex: 0 0 auto; white-space: nowrap;
+    }
+    .cfgMenuItem .desc {
+      color: var(--dim); font-size: 11px; margin-left: auto;
+      flex: 0 1 auto; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
 
     /* 人设可选栏：一排卡片，点一下就切过去 */
     .pList { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
@@ -6259,10 +6279,27 @@ const log = document.getElementById('log');
       /* 连着打好几格时，从**当前目标**往上加，而不是从实际位置加 ——
        * 否则后一格会把前一格还没追完的位移吃掉，手快反而滚得少。 */
       const base = targetA === a ? targetVal : a.scrollTop;
-      const room = a.scrollHeight - a.clientHeight;
+      const room = Math.max(0, a.scrollHeight - a.clientHeight);
       let next = base + dy;
       next = Math.max(0, Math.min(next, Math.max(0, room)));
-      if (next === base) {
+      /**
+       * 【2026-11-17 修·「能往上带不能往下带」的真因就在这一行】
+       *
+       * 原来是 `if (next === base)` —— **精确相等**才认为「A 也到头了」。
+       *
+       * 可滚动到底部时 scrollTop 永远到不了精确的 room：
+       * 浏览器会把它停在小数位上（实测 659.4 / 659.99 这种）。
+       * 于是往下滚变成死循环：
+       *   ① base = 659.4（实际位置），next = min(779.4, 660) = 660 → 不相等 → 吃掉；
+       *   ② pump 把 scrollTop 往 660 推，浏览器钳在 659.4，追到差 <0.5 就收工，
+       *      并顺手 `targetA = null`（见 pump 里那一支）；
+       *   ③ 下一格又从 base = 659.4 算，回到 ① —— 一格都放不出去。
+       * 顶部是 scrollTop = 0，**精确可达**，所以往上滚一下就能放行。
+       * 这就是「能带动上下文往上、不能往下」的全部原因。
+       *
+       * 判据改成「差不到 1px 就算到头」：跟上面 B 框那段 EPS 同一口径。
+       */
+      if (Math.abs(next - base) < 1) {
         /* A 也到头了：别拦（让页面照常滚），同时把没追完的目标清掉 ——
          * 不清的话残留的 rAF 会把之后原生滚的那点位移又拽回来。 */
         if (targetA === a) { targetA = null; targetVal = 0; if (raf) { cancelAnimationFrame(raf); raf = 0; } }
@@ -9854,7 +9891,6 @@ const TOOL_NICE = {
   // 【2026-10-29 主人要求：这几个漏在表外，界面上一直露英文名】
   look_screen: '看一眼屏幕',
   screen_watch_status: '看陪看状态',
-  make_image: '画一张图',
   qq_send: '发到 QQ',
   ui_observe: '看界面',
   ui_click: '点一下',
@@ -17271,7 +17307,7 @@ const FEAT_TONE = {
   // 界面外观
   videoBg: 'pink', ttsVoice: 'pink', identity: 'pink',
   // 输出 / 心跳 / 协作
-  video: 'cyan', makeImage: 'cyan', selfwake: 'cyan', peerMail: 'cyan', cron: 'cyan',
+  video: 'cyan', selfwake: 'cyan', peerMail: 'cyan', cron: 'cyan',
 };
 
 /** 卡片图标上的那个字：中文取首字，英文取首字母（mac 版原样） */
@@ -22202,16 +22238,6 @@ const PROVIDERS = [
     hint: '这一家地址就填到根，别再往后加 /v1（它自己带了）。',
   },
   {
-    /* 【2026-11-17 主人要求·删掉飞鱼预设，原位换成梦幻中转】
-     * 原话：「把添加模型页的飞鱼中转预设删了」「把飞鱼中转原来的位置改为梦幻中转」
-     * 位置保持在这里不动（原来飞鱼就在凌风后面这一格），只是换人。
-     * 地址取自现有配置里正在用的那条：梦幻 = https://mhapi.net（根地址，不带 /v1）。 */
-    key: 'menghuan', name: '梦幻中转', base: 'https://mhapi.net',
-    match: /mhapi/i,
-    models: ['claude-sonnet-5-5', 'claude-opus-5-5', 'deepseek-v4.1-flash'],
-    hint: '梦幻中转，地址就填到根，别再往后加 /v1。',
-  },
-  {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
     match: /api\.openai\.com/i,
     models: ['gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-4o', 'gpt-4o-mini'],
@@ -23204,18 +23230,26 @@ const r429Sw = document.getElementById('r429Sw');
 const r429Now = document.getElementById('r429Now');
 const optHint = document.getElementById('optHint');
 
-let thinkState = { level: 'off', perModel: {}, levels: [] };
+/* 【2026-11-17】初始值跟后端一致落到 auto —— 原来写 'off'，接口慢一步时
+ * 顶栏会先闪一下「关」，然后才被真实值覆盖，看着像自己变了。 */
+let thinkState = { level: 'auto', perModel: {}, levels: [] };
 let r429State = { config: { enabled: true, migrateThreshold: 3 }, cooldownLeft: 0, migrating: false };
 
 /* 【2026-11-09 主人定】只留官方四档：关 / 低 / 高 / 最高，默认「高」。
    原来那套八档（minimal/medium/xhigh/auto）实测跟相邻档没区别，选项太多，
-   而且「开」在有的接入点上等于不思考，长会话里会退化成只回一句「我在」。 */
+   而且「开」在有的接入点上等于不思考，长会话里会退化成只回一句「我在」。
+
+   【2026-11-17 主人要求·把「自动」加回来并设为默认】
+   原话：「增加一个自动档，并设置默认思考强度为自动档」
+   它不发固定档位，而是每轮按「这轮有没有工具」现算（干活→高、闲聊→低），
+   所以永远不会把 'auto' 这个字面值发给网关。放在第一位，最顺手。 */
 const FALLBACK_LEVELS = [
-  { id: 'off', name: '关', desc: '不要思考，最快最省' },
-  { id: 'low', name: '低', desc: '简单对话，便宜又快' },
-  { id: 'medium', name: '中', desc: '官方中档，速度与深度折中' },
-  { id: 'high', name: '高', desc: '官方默认档，稳（默认）' },
-  { id: 'xhigh', name: '超高', desc: '比高再深一层（部分网关自定义值）' },
+  { id: 'auto', name: '自动', desc: '干活用高，闲聊用低' },
+  { id: 'off', name: '关', desc: '不思考，最快' },
+  { id: 'low', name: '低', desc: '简单对话，省钱快' },
+  { id: 'medium', name: '中', desc: '速度深度折中' },
+  { id: 'high', name: '高', desc: '官方默认，稳' },
+  { id: 'xhigh', name: '超高', desc: '比高再深一层' },
   { id: 'max', name: '最高', desc: '重任务，舍得花时间' },
 ];
 

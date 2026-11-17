@@ -80,5 +80,34 @@ ok('A 到头时 JS 放行、不拦原生滚动', /A 也到头了：别拦/.test(
     /const MAX_STEP = 12/.test(fn) && /Math\.min\(Math\.abs\(d\) \* EAT, MAX_STEP\)/.test(fn));
 }
 
+/* ── 【2026-11-17 主人报·能往上带不能往下带】 ────────────────────
+ *
+ * 真因：到头判据用了「精确相等」。
+ * 滚到底部时 scrollTop 永远到不了精确的 (scrollHeight - clientHeight)
+ * —— 浏览器停在小数位上（659.4 这种）。于是往下滚变成死循环：
+ *   base=659.4 → next=660 → 不相等 → preventDefault 吃掉
+ *   → pump 追到 659.4 并清空 targetA → 下一格又从 659.4 算 → 再吃掉
+ * 顶部 scrollTop=0 精确可达，所以向上一下就能放行。
+ * 这就是「能往上、不能往下」的全部原因。
+ok('到头判据用容差而不是精确相等（防底部小数死循环）',
+  html.includes('Math.abs(next - base) < 1'), '又退回 next === base 了？');
+  /Math.abs(next - base) < 1/.test(html), "又退回 next === base 了？");
+ok("不再有 next === base 的精确比较",
+  !/if (next === base)/.test(html));
+
+/* 模拟四种边界：容差判据必须两个方向都放行 */
+{
+  const room = 660;
+  const canPass = (st, dy) => {
+    const base = st;
+    const next = Math.max(0, Math.min(base + dy, room));
+    return Math.abs(next - base) < 1;
+  };
+  ok("底部小数位往下滚 → 放行给上下文", canPass(659.4, 120), "被吞了");
+  ok("顶部往上滚 → 放行给上下文", canPass(0, -120), "被吞了");
+  ok("中间往下滚 → A 自己吃掉（不放行）", !canPass(300, 120), "误放行");
+  ok("中间往上滚 → A 自己吃掉（不放行）", !canPass(300, -120), "误放行");
+}
+
 console.log('\n柜子滚动：' + pass + ' 过 / ' + fail + ' 挂');
 process.exit(fail ? 1 : 0);

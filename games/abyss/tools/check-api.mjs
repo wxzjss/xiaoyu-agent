@@ -19,7 +19,9 @@ for (const f of files) {
 let bad = 0;
 for (const f of files) {
   const used = new Map();
-  for (const m of texts[f].matchAll(/\bG\.([A-Za-z_$][\w$]*)/g)) {
+  // 可选钩子：if (G.xxx) G.xxx(...) 这种守卫式调用，没人实现不算缺口
+  const scan = texts[f].replace(/if\s*\(\s*!?\s*G\.[\w$]+\s*\)[^;\n]*;?/g, '');
+  for (const m of scan.matchAll(/\bG\.([A-Za-z_$][\w$]*)/g)) {
     used.set(m[1], (used.get(m[1]) || 0) + 1);
   }
   const missing = [...used.keys()].filter((n) => !defined.has(n)).sort();

@@ -709,14 +709,6 @@ export function buildRescueNote(messages, { planText = '', segId = '' } = {}) {
     for (const m of picked) out.push('- ' + m.content.trim().replace(/\s+/g, ' ').slice(0, 80));
   }
 
-  const users = body.filter(
-    (m) => m.role === 'user' && !m._sysNote && typeof m.content === 'string' && m.content.trim().length > 4,
-  );
-  const u = users.slice(-5);
-  if (u.length) {
-    out.push('主人要什么（原话摘，比我的转述可信）：');
-    for (const m of u) out.push('- ' + m.content.trim().replace(/\s+/g, ' ').slice(0, 60));
-  }
 
   if (planText && String(planText).trim()) {
     out.push('清单：');

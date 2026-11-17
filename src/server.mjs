@@ -41,9 +41,14 @@ import { backupSummary, buildBackup, restoreBackup } from './backup.mjs';
 // 进行中那一轮的草稿：边跑边落，进程被杀也不会把已经说出来的话全丢。
 import { saveDraft, readDraft, draftAsMessage, dropDraft, makeDraftThrottle } from './turn-draft.mjs';
 // 中途投递信箱：主人一边看她干活一边插的话排在这里（照 dsh 的 steering，见 inbox.mjs）
-import { steer, clearInbox, inboxCount, peekInbox, purgeStale as purgeStaleInbox } from './inbox.mjs';
+import { steer, clearInbox, inboxCount, peekInbox, purgeStale as purgeStaleInbox, dropAlreadyLanded } from './inbox.mjs';
 /* 【2026-11-15 加】后台任务跑完叫醒（主人：「回归类全改成后台跑，跑完自动叫醒该会话ai」） */
-import { initKnowledge, listCards, getCard, saveCard, deleteCard, importCards, exportCards, digestForAgent, reorderCards } from './knowledge.mjs';
+/* 【2026-11-17】删掉 6 条旧书架路由后，只剩 initKnowledge 还在用 ——
+ * 启动时建一次索引（server.mjs 里 initKnowledge() 那行）。
+ * 其余函数（listCards/getCard/saveCard/deleteCard/importCards/exportCards/reorderCards）
+ * 已经没人从这里调了：agent 要存卡/查卡走的是 tools.mjs 里对 knowledge.mjs 的直连，
+ * 不经这层。别再往这个 import 里加，加了就是死代码。 */
+import { initKnowledge } from './knowledge.mjs';
 // 崩溃后续跑：临死前记下「谁被打断了」，下次启动接着做（见 resume.mjs）
 import { markInterrupted, takeInterrupted, peekInterrupted, dropInterrupted, listInterrupted, markAllPlanned } from './resume.mjs';
 /**
@@ -825,19 +830,47 @@ function publicSession(session) {
        * 原来只认 `_who`。主流程落盘回答只写 `_whale`（群聊插话的标记），不写 `_who`，
        * 这里交 undefined → 前端 `it.who || "小鱼"` 一律兜到「小鱼」。
        * 现在补两条：`_whale` 也认（老消息不必重写）；`_card` 记着当时是哪张卡。 */
+      /* 【这条是谁说的·2026-11-17 修·署名会跟着「现在谁主事」漂移】
+       *
+       * 四条证据依次认，全部是**消息自己带的**，不看现在的状态：
+       *   ① _who（落盘时写死的名字，2026-11-17 起一律写）
+       *   ② _whale（老消息的小鲸标记）
+       *   ③ _card（老消息的卡 id）
+       *   ④ _whoId（2026-11-17 起新加的 id，反查名字用）
+       *
+       * 原来第四条位置写的是「用**当前**主智能体兜底」，注释还挺得意
+       * （「人换了，整段历史跟着走」）—— 那恰恰是病根：
+       * 主人把鲸鱼娘拖上去当主智能体，当年小鱼说的那些空署名老消息
+       * 重绘时全挂上「鲸鱼娘」，读起来像她在冒充小鱼说过的话。
+       * 所以现在：真查不到就**如实交 undefined**，让前端按「早期消息」画，
+       * 绝不拿「现在谁当家」去猜「当年是谁说的」。
+       */
       who: (() => {
         const a = typeof m._who === 'string' ? m._who.trim() : '';
         if (a) return a;
         const b = typeof m._whale === 'string' ? m._whale.trim() : '';
         if (b) return b;
         const c = typeof m._card === 'string' ? m._card.trim() : '';
-        if (c) return c;
-        /* 【2026-11-11 主人报「历史消息署名全是小鱼」·第二刀】
-         * 上面三条全落空时（主流程落盘的普通回答就是这样：只有 role/at/content/_at），
-         * 交 undefined → 前端 `it.who || "小鱼"` 一律兜到「小鱼」。
-         * 这里用「这个会话现在的主智能体」兜底：老消息一条都不用重写，
-         * 重开窗口立刻就是对的。人换了，整段历史跟着走，也不会串。 */
-        return mainNameOfSession || undefined;
+        if (c) {
+          try {
+            const ag = listAgents().find((x) => String(x.id) === String(c));
+            if (ag && ag.name) return String(ag.name);
+          } catch { /* 卡被删了，退回下面 */ }
+          return c;   // 卡名查不到，至少把 id 交出去，别凭空编一个人
+        }
+        const d = typeof m._whoId === 'string' ? m._whoId.trim() : '';
+        if (d) {
+          try {
+            const ag = listAgents().find((x) => String(x.id) === String(d));
+            if (ag && ag.name) return String(ag.name);
+          } catch { /* 同上 */ }
+          return undefined;
+        }
+        /* 【最后一道】确实没有任何署名证据（2026-11-17 之前落盘的老消息）。
+         * 这里**故意不回当前主智能体的名字** —— 那会让历史随人事变动而改写。
+         * 交 undefined，前端按「这条没署名」画，保持历史原样。 */
+        void mainNameOfSession;
+        return undefined;
       })(),
       /**
        * 【这句是小鲸并排插进来的，不是这一轮的收尾回答】—— 2026-10-26 补
@@ -4957,7 +4990,6 @@ async function resumeInterruptedTurn(onlySessionId) {
         '（上一轮跑到一半被打断了（程序重启 / 崩溃 / 被关掉都算）。你现在是在**接着**那一轮做，' +
         '不是重新开始；已经说过的话主人已经看到了，别从头复述。）' +
         (info.text ? `\n你当时正说到：「${info.text.slice(-600)}」` : '') +
-        (info.taskLine ? `\n主人当时的原话：「${info.taskLine}」` : '') +
         /* 【2026-10-30】清单上没打勾的步骤一并告诉它 —— 否则它只知道「断在半句话」，
          * 不知道自己还有哪几步没做完，还是得等主人发「继续」。 */
         (Array.isArray(_liveOpen) && _liveOpen.length
@@ -6964,9 +6996,17 @@ const server = createServer(async (req, res) => {
    * 现在收在正确位置：下面的 cron / features 路由全部恢复生效。
    */
   // ===== 知识库（2026-11-12 主人钦点）：所有会话共享的书架 =====
-  if (req.method === 'GET' && url.pathname === '/api/knowledge') {
-    return json(res, 200, { cards: listCards() });
-  }
+  /* 【2026-11-17 主人查·删掉旧书架知识卡的 6 条死路由】
+   *
+   * 原话：「/api/knowledge/* 里是否存在 server.mjs 里活着，但前端已经没有调它的地方的路由」
+   * 查完确认：6 条全死（前端全仓 0 处调用，守卫脚本也 0 处引用）。
+   * 界面早就不在了 —— public/index.html:4945 那句注释写着
+   * 「旧书架知识卡 UI 按主人原令删除（仅保留知识库按钮）」，接口却一直留着。
+   *
+   * 注意：**knowledge.mjs 模块本身不能删** —— tools.mjs 还在用
+   * （digestForAgent 给 agent 查知识卡、saveCard 存卡、initKnowledge 启动建索引）。
+   * 死的只是这层 HTTP 皮。
+   */
   /* 【2026-11-14 恢复·会话知识库（手路库）的界面接口】
    * know.mjs 是上午主人钦点建在生效层的，集成代码随 server.mjs 被 sync 覆盖丢了。
    * 现在收编回仓库：这里给界面两个口——列全部手路 / 删一条。 */
@@ -7002,30 +7042,8 @@ const server = createServer(async (req, res) => {
       return json(res, 500, { ok: false, error: String(e?.message ?? e) });
     }
   }
-  if (req.method === 'GET' && url.pathname === '/api/knowledge/export') {
-    return json(res, 200, exportCards());
-  }
-  if (req.method === 'POST' && url.pathname === '/api/knowledge/save') {
-    const { id, title, author, content, tags } = await body(req).catch(() => ({}));
-    const out = saveCard({ id, title, author, content, tags });
-    return json(res, out.ok ? 200 : 400, out);
-  }
-  if (req.method === 'POST' && url.pathname === '/api/knowledge/delete') {
-    const { id } = await body(req).catch(() => ({}));
-    const out = deleteCard(id);
-    return json(res, out.ok ? 200 : 404, out);
-  }
-  if (req.method === 'POST' && url.pathname === '/api/knowledge/import') {
-    const { json: payload } = await body(req).catch(() => ({}));
-    const out = importCards(payload ?? null);
-    return json(res, out.ok ? 200 : 400, out);
-  }
-  /* 【2026-11-13】书架长按拖动排序：前端把当前 id 顺序整串递回来 */
-  if (req.method === 'POST' && url.pathname === '/api/knowledge/reorder') {
-    const { ids } = await body(req).catch(() => ({}));
-    const out = reorderCards(ids);
-    return json(res, out.ok ? 200 : 400, out);
-  }
+  /* 【2026-11-17 删·见上面那条注释，这 5 条也是旧书架的死路由】
+   * /api/knowledge/export、/save、/delete、/import、/reorder —— 前端全仓 0 处调用。 */
 
   // ===== 定时任务（cron）—— 按主人要求加的 =====
   if (req.method === 'GET' && url.pathname === '/api/cron') {
@@ -9740,9 +9758,9 @@ const server = createServer(async (req, res) => {
      *
      * 注意是**会话级覆盖**（session-overrides.json），不是改全局默认 ——
      * 右上角「模型」面板里给这个模型设的那一档一个字都不动，老会话也都不受影响；
-     * 只有从此以后新建出来的会话，左上角一开是「低」。
+     * 只有从此以后新建出来的会话，左上角一开是「自动」。
      * 主人当然还能在左上角随手换，换了就按他选的记（下次打开还是他选的那档）。 */
-    try { setOverride(id, { level: 'low' }); } catch (e) {
+    try { setOverride(id, { level: NEW_SESSION_DEFAULT_LEVEL }); } catch (e) {
       console.warn('[override] 新会话默认思考强度没设上（不影响使用）：', String(e?.message ?? e));
     }
     // 新会话当场就有一份自己的记忆本子（骨架），不用等到第一次开口才建
@@ -9890,10 +9908,10 @@ const server = createServer(async (req, res) => {
     } catch (err) {
       console.warn('[memory] 分支记忆没继承成：', String(err?.message ?? err));
     }
-    /* 分支 = 这一段对话接着往下长，思考强度也跟着原会话走（没记过就按新会话默认「低」） */
+    /* 分支 = 这一段对话接着往下长，思考强度也跟着原会话走（没记过就按新会话默认「自动」） */
     try {
       const _ov = getOverride(id);
-      setOverride(newId, _ov.level ? { level: _ov.level } : { level: 'low' });
+      setOverride(newId, _ov.level ? { level: _ov.level } : { level: NEW_SESSION_DEFAULT_LEVEL });
     } catch {}
     setLastSessionId(newId);
     return json(res, 200, { session: publicSession(session), from: id, at: end });
@@ -11419,7 +11437,24 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             return ids.map(String).includes(AGENT_XIAOJING);
           } catch { return false; }
         })();
-        if (sessForWhale && said && whaleOn(sessionId) && !__whaleAliveInRoom) {
+        /**
+         * 【2026-11-17 修·主人报「禁用小鲸只留鲸鱼娘，说话时还是小鲸在回复」】
+         *
+         * 原来这里判的是 `whaleOn(sessionId) && !__whaleAliveInRoom`：
+         *   · whaleOn = 小鱼自己的那本「小鲸功能开没开」
+         *   · __whaleAliveInRoom = 「屋里的人」那张牌开没开
+         * 这是**两套独立状态**。主人的场景里她只在屋里那张牌上关了鲸 ——
+         * 牌子关着 → 走不进正常轮；可 whaleOn 要是还开着 → 这条「旁白路」就抢答了。
+         * 于是屏幕上出现的还是小鲸，鲸鱼娘一个字没说。
+         *
+         * 现在：**屋里那张牌是唯一判据**。牌子关着，这条旁白路一步都不许走；
+         * 牌子开着说明她在屋里，那更该走正常轮（下面那句 guard 已经管着）。
+         * 顺手把 whaleOn 只留作「她这个功能有没有被主人彻底关掉」的额外保险。
+         */
+        const __whaleEnabledByCard = (() => {
+          try { return isGroupMemberEnabled(AGENT_XIAOJING, sessionId); } catch { return false; }
+        })();
+        if (sessForWhale && said && __whaleEnabledByCard && whaleOn(sessionId) && !__whaleAliveInRoom) {
           /**
            * 【这句是冲她说的】—— 2026-10-27 修
            *
@@ -12703,18 +12738,48 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 这里补上：这一轮是谁当主讲，就把名字一起存进消息。
          * 小鱼不标（她就是默认身份，空署名＝小鱼，见 576/607 行那两处约定）。
          */
-        if (m.role === 'assistant' && !m._who && !Array.isArray(m.tool_calls)) {
+        /**
+         * 【2026-11-17 第二刀·带 tool_calls 的 assistant 也必须署名】
+         *
+         * 上面那个判据原来还带着 `!Array.isArray(m.tool_calls)` —— 意思是
+         * 「带工具调用的只是过程旁白，不算她说的话，不用署名」。
+         *
+         * 可主智能体一整轮干活，几乎**每条** assistant 都带 tool_calls
+         * （她先在正文里说一句「我先看看」，然后挂一个 read_file）。
+         * 于是真正干活的那个人，说的话一条署名都没有；
+         * 等主人把别人拖上主讲位，这些旁白重绘时全挂上新人的名字 ——
+         * 「不一定真的是她在说话」最典型的就是这一类。
+         *
+         * 现在不带这个条件：只要是她说的，正文里的话就署名。
+         * 空正文（纯工具调用）也标 —— 界面不画它，但历史里躺着的是「谁在干活」，
+         * 以后要查「这步是谁干的」就有据可依。
+         */
+        if (m.role === 'assistant' && !m._who) {
           try {
             const __mid = String(mainAgentId(sessionId, (id) => mateSwitchOn(id, sessionId)) || '');
-            if (__mid && __mid !== AGENT_XIAOYU) {
+            /**
+             * 【2026-11-17 修·主人报「署名会变、不一定真的是她在说话」】
+             *
+             * 原来这里有个 `__mid !== AGENT_XIAOYU` —— 小鱼当主智能体时不写 _who
+             * （旧约定：空署名 = 小鱼）。可一旦主人把她拖下去、换别人当主智能体：
+             *   · 那些「空署名」的老消息，重绘时被 publicSession 兜底成**现在**的主智能体；
+             *   · 结果满屏历史署名全换成新人 —— 明明是当年小鱼说的，现在挂着鲸鱼娘的名字。
+             * 主人看到的「不一定真的是鲸鱼娘在说话」就是这个。
+             *
+             * 现在一律写死：谁当主讲就把名字存进消息，一条都不留空心。
+             * 旧消息不用重写 —— publicSession 那边也改了：兜底只在**确实查不到**时用，
+             * 而且不再跟着「现在谁主事」漂移。
+             */
+            if (__mid) {
               const __ag = getAgent(__mid);
               if (__ag && __ag.name) {
                 m._who = String(__ag.name);
+                m._whoId = String(__mid);
                 if (__mid === AGENT_XIAOJING) m._whale = String(__ag.name);
-                else m._card = String(__mid);
+                else if (__mid !== AGENT_XIAOYU) m._card = String(__mid);
               }
             }
-          } catch { /* 标不上就当小鱼，不影响说话 */ }
+          } catch { /* 标不上不影响说话 */ }
         }
         history.push(m);
         n++;
@@ -15139,11 +15204,17 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
 });
 
 /**
- * 【2026-11-15 主人钦点】新建会话的默认思考强度。
- * 「改新建会话时，左上角思考强度默认为【低】」—— 只影响新会话，
- * 右上角给模型设的全局档、以及所有老会话都不动。
+ * 【2026-11-15 主人钦点】新建会话的默认思考强度「低」。
+ * 【2026-11-17 主人改口·改成「自动」】
+ *
+ * 原话：「增加一个自动档，并设置默认思考强度为自动档」
+ *
+ * 11-15 那次定的是「低」，今天明确要求默认「自动」—— 新指令覆盖旧指令。
+ * 自动档的语义见 thinking.mjs 的 resolveLevel：每轮按有没有工具现算
+ * （干活→高、闲聊→低），所以它比写死「低」更贴合实际。
+ * 只影响新会话；右上角给模型设的全局档、以及所有老会话都不动。
  */
-const NEW_SESSION_DEFAULT_LEVEL = 'low';
+const NEW_SESSION_DEFAULT_LEVEL = 'auto';
 
 /**
  * 退出前通知外面一声（服务句柄上的 on('exit')）。
@@ -15534,7 +15605,6 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         if (_ri && String(_ri.sessionId || '') === String(_sid || '')) {
           const _open = liveOpenSteps(_ri.sessionId || _sid, _ri.openSteps);
           const _lines = [];
-          if (_ri.taskLine) _lines.push('断在主人这句话上：' + String(_ri.taskLine).slice(0, 200));
           if (_ri.reason) _lines.push('中断原因：' + String(_ri.reason).slice(0, 120));
           if (_ri.text) _lines.push('断的那一刻我正说到：' + String(_ri.text).slice(-600));
           if (_open.length) {
@@ -16072,6 +16142,26 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         }
       } catch (e) {
         try { diagLog('inbox-stale-purge-fail', String(e?.message ?? e)); } catch {}
+      }
+      /**
+       * 【2026-11-17 主人报·「运行过程中重启，会把我插话的消息再发一遍给她」】
+       *
+       * 上面那道只按时间清（30 分钟），治不了「刚插完就重启」。
+       * 这里再补一道更本质的：**跟历史比对** —— 已经落进历史（带 _steer、
+       * 内容一样、时间对得上）的那条，从信箱里删掉，别再送一遍。
+       *
+       * 病根在 /api/stop：它把压着的插话抄进历史时只清了内存里的信箱，
+       * 进程硬退（重启就是硬退）时落盘的那份文件还带着 —— 下次启动又读回来重发。
+       */
+      try {
+        const _dl = dropAlreadyLanded((sid) => {
+          try { const s = getSession(sid); return s && Array.isArray(s.messages) ? s.messages : []; } catch { return []; }
+        });
+        if (_dl && _dl.dropped > 0) {
+          diagLog('inbox-already-landed', '扫了 ' + _dl.scanned + ' 个文件，清掉已落盘的 ' + _dl.dropped + ' 条（不会再重发）');
+        }
+      } catch (e) {
+        try { diagLog('inbox-already-landed-fail', String(e?.message ?? e)); } catch {}
       }
       /* 【2026-11-03 记忆系统严检】起一个目录体检：超了就在日志里喊一声（不删东西）。
        * 严检时量到 .state 已经 1GB+，那些目录全是证据/交付物，不能自动删，

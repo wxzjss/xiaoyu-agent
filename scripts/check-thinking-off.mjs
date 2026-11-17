@@ -192,14 +192,16 @@ try {
     }
   }
   /* 老档位不许漏到线上
-   * 【2026-11-15 改】主人钦点「新建会话默认高」，normalizeLevel 的兜底从 off 改成 high ——
-   * 老值 on / medium 一律归到「高」（on 本来就是开着思考，medium 更接近高而不是关）。
-   * 断言跟着新规矩走，并补一条「空 / 认不出 → 高」把这次的改动钉住。 */
-  t.ok('老值 on → 高（默认高）',
-    mod.fieldsForLevel('on', EPS.openai).fields.reasoning_effort === 'high');
+   * 【2026-11-17 改】主人钦点「增加自动档并设为默认」，normalizeLevel 的兜底
+   * 从 high 改成 auto（DEFAULT_LEVEL）。
+   * 为什么 on 也归 auto 而不是 high：on 的语义就是「开思考但没指定强度」，
+   * 正好等于自动档「按干不干活自己定」；写死 high 反而是替他选了个具体档。
+   * auto 之后会被 resolveLevel 换算成 high/low，**永远不漏字面值到网关**。 */
+  t.ok('老值 on → auto（等同于"开、不指定强度"）',
+    mod.normalizeLevel('on') === 'auto');
   t.ok('medium 现在是真档位（不再折算）', mod.fieldsForLevel('medium', EPS.openai).fields.reasoning_effort === 'medium');
-  t.ok('空 / 认不出 → 高（默认高，不再落关）',
-    mod.normalizeLevel('') === 'high' && mod.normalizeLevel('whatever') === 'high');
+  t.ok('空 / 认不出 → auto（默认自动）',
+    mod.normalizeLevel('') === 'auto' && mod.normalizeLevel('whatever') === 'auto');
   t.ok('xhigh 是真档位（OpenAI 扩展值，网关不认会走降档链）', mod.fieldsForLevel('xhigh', EPS.openai).fields.reasoning_effort === 'xhigh');
   /* 不传接入点时按 openai 方言（老调用点的行为不能变） */
   t.ok('不传接入点 = openai 方言',
@@ -357,7 +359,7 @@ try {
     ov_off: { level: 'off' },
     ov_medium: { level: 'medium' },
   });
-  t.ok('会话里存着 on → 读出来是 high（老值归高）', overrides.getOverride('ov_on').level === 'high', overrides.getOverride('ov_on').level);
+  t.ok('会话里存着 on → 读出来是 auto（老值归自动）', overrides.getOverride('ov_on').level === 'auto', overrides.getOverride('ov_on').level);
   t.ok('会话里存着 off → 读出来还是 off（不被老值盖住）', overrides.getOverride('ov_off').level === 'off', overrides.getOverride('ov_off').level);
   t.ok('会话里存着 medium → 读出来还是 medium（真档位不再折算）', overrides.getOverride('ov_medium').level === 'medium', overrides.getOverride('ov_medium').level);
 
@@ -366,7 +368,11 @@ try {
   const sOv = await runStream({ sessionId: 'ov_off' });
   t.ok('会话选「关」→ 线上收到 thinking.disabled', sOv.body?.thinking?.type === 'disabled', JSON.stringify(sOv.body.thinking));
   const sOvOn = await runStream({ sessionId: 'ov_on' });
-  t.ok('会话存的老值 on → 按「高」发', sOvOn.body?.reasoning_effort === 'high', JSON.stringify({ e: sOvOn.body?.reasoning_effort, t: sOvOn.body?.thinking }));
+  /* 【2026-11-17】老值 on 归 auto；auto 在没有工具的那次调用里解析成 low
+   * （纯聊天便宜又快）。关键是**不许把 'auto' 这个字面值发给网关**。 */
+  t.ok('会话存的老值 on → 按「低」发（auto 无工具时落 low，字面值绝不外发）',
+    sOvOn.body?.reasoning_effort === 'low',
+    JSON.stringify({ e: sOvOn.body?.reasoning_effort, t: sOvOn.body?.thinking }));
 
   /* ══════════════════════════════════════════════════════════
      ⑥ 全局兜底：整场下来一个 off 字面值都没发出去

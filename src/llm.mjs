@@ -1,7 +1,7 @@
 // OpenAI-compatible chat client with streaming (SSE) support.
 // 端点 / key / 模型名都从 models.mjs 取：界面里能换，.env 只是其中一套。
 import { activeEndpoint } from './models.mjs';
-import { levelFor, resolveLevel, withEffort, isThinkingUnsupported, contextOverflowSize } from './thinking.mjs';
+import { levelFor, resolveLevel, withEffort, isThinkingUnsupported, isEffortValueRejected, EFFORT_ORDER_PUBLIC, contextOverflowSize } from './thinking.mjs';
 import { compressHistory, noteRealTokens } from './compress.mjs';
 import { endpointFor } from './models.mjs';
 import { getOverride } from './session-overrides.mjs';
@@ -745,6 +745,29 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
         console.warn('[llm] 压了也没成：', String(e?.message ?? e));
       }
     }
+    /**
+     * 【2026-11-17 修·「超高/最高」在官方 OpenAI 会整轮失败】
+     *
+     * 原来这里只有一条路：isThinkingUnsupported（模型压根不支持思考）→ level = null。
+     * 于是 `xhigh` 撞上官方接口回 "unsupported reasoning effort: xhigh" 时，
+     * 这个判据故意返回 false（它把「值不合法」排除了），直接 throw ——
+     * 主人看到的就是一句话都出不来。
+     *
+     * 现在多一条：**值不被认**就往下退一档再试（xhigh → high → medium → low），
+     * 从 auto 算出来的档位同样受益（万一 low 都不认，还有 off 之外的兜底）。
+     * 注意绝不退到 off —— 那是主人明确关掉的语义，不能偷偷打开。
+     */
+    if (isEffortValueRejected(r.status, lastText)) {
+      const i = EFFORT_ORDER_PUBLIC.indexOf(level);
+      const lower = i > 0 ? EFFORT_ORDER_PUBLIC[i - 1] : null;
+      if (lower) {
+        console.warn('[llm] 网关不认档位「' + level + '」，降一档重试：' + lower);
+        level = lower;
+        continue;
+      }
+      /* 已经退到最低还不认 —— 那就退到「什么都不发」 */
+      if (level) { level = null; continue; }
+    }
     if (!isThinkingUnsupported(r.status, lastText)) {
       const _he = humanErrorOfUpstream(r.status, lastText);
       /* 【2026-11-03】同上：400/422 留原件 + 请求骨架，别只留一句「HTTP 400」 */
@@ -1176,6 +1199,14 @@ export async function chat({ messages, tools, signal, sessionId = '', model }) {
     if (res.ok) return res.json();
     lastStatus = res.status;
     lastText = await res.text().catch(() => '');
+    /* 【2026-11-17 同主路径】档位值不被认就降一档（xhigh 在官方 OpenAI 会 400）。
+     * 这里是非流式那条路（摘要生成 / 测连通），逻辑保持一致。 */
+    if (isEffortValueRejected(res.status, lastText)) {
+      const i = EFFORT_ORDER_PUBLIC.indexOf(level);
+      const lower = i > 0 ? EFFORT_ORDER_PUBLIC[i - 1] : null;
+      if (lower) { console.warn('[llm] 网关不认档位「' + level + '」，降一档重试：' + lower); level = lower; continue; }
+      if (level) { level = null; continue; }
+    }
     if (!isThinkingUnsupported(res.status, lastText)) {
       /* 【2026-11-03】抛之前先把「上游原话」和「我们发出去的骨架」各记一份 */
       noteUpstreamError(lastStatus, lastText, ep);

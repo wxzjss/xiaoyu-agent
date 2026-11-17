@@ -55,7 +55,7 @@ t.ok('agent.mjs 里能找到 isSteerAlreadyLanded', typeof isSteerAlreadyLanded 
 t.ok('server.mjs 落盘处真的调了 findDupUserRef',
   /const\s+__dupUserRef\s*=\s*findDupUserRef\(history,\s*userMsg\)/.test(SERVER));
 t.ok('agent.mjs 取信箱处真的调了 isSteerAlreadyLanded',
-  /if\s*\(\s*isSteerAlreadyLanded\(messages,\s*it\.text\)\s*\)\s*continue;/.test(AGENT));
+  AGENT.includes('isSteerAlreadyLanded(messages, it.text, it.at)'));
 
 /* ── ① 落盘防重闸 ─────────────────────────────────────────── */
 if (typeof findDupUserRef === 'function') {

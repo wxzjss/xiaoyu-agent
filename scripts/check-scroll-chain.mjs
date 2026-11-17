@@ -79,10 +79,20 @@ const thinkOk = thinkChain.some((r) => /overscroll-behavior\s*:\s*(auto|none)/.t
 one(thinkOk, '柜子里的 thinkBody 是放行的（auto/none），滚到头能带动柜子',
   thinkChain.map((r) => r.decl).join(' | ').slice(0, 90));
 
-/* ③ 柜子内容区（.hubBody）自己要 contain：滚到头别把整个聊天区撸走 */
-const hubRules = chainRules.filter((r) => /hubBody/.test(r.sel) && /contain/.test(r.decl));
-one(hubRules.length > 0, '柜子内容区 .hubBody 自己带 contain（不把聊天区带走）',
-  hubRules.map((r) => r.sel).join(' | ').slice(0, 70));
+/* ③ 柜子内容区（.hubBody）必须放行（auto/none）：A 框滚到头要能带动上下文
+ *
+ * 【2026-11-17 判据反向·主人报「A 框滚到极限为什么不带动上下文」】
+ * 原来这条要求 .hubBody 自己带 contain —— 那是 2026-11-11 的取舍
+ * （防「一撸到底把整个对话也滚走」）。可代价是 A 到头之后**彻底死掉**，
+ * 主人只能把鼠标挪出去再滚。
+ * 现在改成 auto：链继续往上走，真正的边界交给 JS 精确判断
+ * （src-ui/LogView.jsx 的 fromInnerScroller）—— 只有 A 真的到头、
+ * 滚轮还在往那个方向推时才让上下文接管，中途滚动仍全归 A。
+ * 所以断言要跟着反过来：contain 才是错的。 */
+const hubRules = chainRules.filter((r) => /hubBody/.test(r.sel));
+const hubOk = hubRules.some((r) => /overscroll-behavior\s*:\s*(auto|none)/.test(r.decl));
+one(hubOk, '柜子内容区 .hubBody 是放行的（auto/none），滚到头能带动上下文',
+  hubRules.map((r) => r.decl).join(' | ').slice(0, 90));
 
 /* ④ 思考块在柜子里不能被 overflow:hidden 截住滚动链 */
 one(/details\.toolhub details\.think\s*\{\s*overflow\s*:\s*visible/.test(css),

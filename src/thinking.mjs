@@ -45,13 +45,29 @@ const FILE = join(config.dataDir, '.state', 'thinking.json');
  * 'xhigh' 也不再折算成 max（同上）。历史上存过这两个值的会话当场升级成真档位。
  */
 export const LEVELS = [
-  { id: 'off', name: '关', desc: '完全不思考，直接把答案说出来' },
-  { id: 'low', name: '低', desc: '简单对话，便宜又快' },
-  { id: 'medium', name: '中', desc: '官方中档，速度与深度折中' },
-  { id: 'high', name: '高', desc: '官方默认档，稳' },
-  { id: 'xhigh', name: '超高', desc: '比高再深一层（部分网关自定义值）' },
+  /**
+   * 【2026-11-17 主人要求·加「自动」档并设为默认】
+   *
+   * 原话：「增加一个自动档，并设置默认思考强度为自动档」
+   *
+   * 这一档**不发固定 effort**，而是每轮按「这轮有没有工具」现算：
+   *   · 带工具（要干活、要读文件、要跑回归）→ high，想清楚再动手
+   *   · 纯聊天（没工具）→ low，便宜又快
+   * 算出来的结果才发给网关，所以网关永远看不到 'auto' 这个字面值。
+   *
+   * 放在第一位：界面按数组顺序画选项，自动在最上面最顺手。
+   */
+  { id: 'auto', name: '自动', desc: '干活用高，闲聊用低' },
+  { id: 'off', name: '关', desc: '不思考，最快' },
+  { id: 'low', name: '低', desc: '简单对话，省钱快' },
+  { id: 'medium', name: '中', desc: '速度深度折中' },
+  { id: 'high', name: '高', desc: '官方默认，稳' },
+  { id: 'xhigh', name: '超高', desc: '比高再深一层' },
   { id: 'max', name: '最高', desc: '重任务，舍得花时间' },
 ];
+
+/** 默认档位。主人 2026-11-17 钦点：默认走自动。 */
+export const DEFAULT_LEVEL = 'auto';
 
 /**
  * 老配置里的档位怎么落到这六档上。
@@ -64,19 +80,23 @@ export const LEVELS = [
  */
 export function normalizeLevel(v) {
   const s = String(v ?? '').trim();
-  if (['off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(s)) return s;
+  if (['auto', 'off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(s)) return s;
   if (s === 'minimal') return 'low';
   /* 【2026-11-15 主人报·新建会话显示「高」、展开勾的却是「关」】
    * 这里原来把「空 / 认不出的」一律落到 off —— 跟文件头上「默认高」的约定
    * 自相矛盾：显示读的是默认高，勾选读的是这里回的 off，于是两处对不上。
-   * 统一落 high（显式存着 'off' 的不动，那是主人自己选的关）。 */
-  return 'high';
+   *
+   * 【2026-11-17 改】默认改成 auto（主人钦点），空值/认不出的都落到 auto。
+   * 显式存着 'off' 的不动，那是主人自己选的关。 */
+  return DEFAULT_LEVEL;
 }
 
 const LEVEL_IDS = new Set(LEVELS.map((l) => l.id));
-/** 强度梯度（off 不是强度值，单独处理）
+/** 强度梯度（off / auto 不是强度值，单独处理）
  * 【2026-11-16 扩到五档】low < medium < high < xhigh < max */
 const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** 同上，导出给 llm.mjs 的「值不被认就降一档」用 */
+export const EFFORT_ORDER_PUBLIC = EFFORT_ORDER;
 
 /** 一次请求最多试几次（降档用的） */
 const MAX_ATTEMPTS = 3;
@@ -311,20 +331,28 @@ function asEndpoint(target) {
 /**
  * 把 auto 解析成具体档位。
  *
- * 规则跟 dsh 那个插件一个思路，但简化成两档判断：
- *   - 这轮要调工具 / 刚调过工具 -> high（干活得想清楚）
- *   - 纯聊天                     -> low（便宜又快）
- * 显式选了档位的，原样返回。
+ * 【2026-11-17 主人要求·自动档恢复并设为默认】
+ *
+ * 这一档原来是死的：函数体里 `void ctx` 直接把上下文扔了，只剩 normalizeLevel，
+ * 而 LEVELS 里又没有 auto —— 界面上根本选不到，代码里残留的注释和 ctx 参数
+ * 是它曾经存在过的痕迹。现在真的把它做出来。
+ *
+ * 判据（两档，够用且可预测）：
+ *   · 这轮要调工具 / 带着工具 → high（干活得想清楚，读文件、跑回归都算）
+ *   · 纯聊天                   → low（便宜又快，别为一句闲话烧思考）
+ *
+ * 显式选了的档位原样返回，auto 只影响「没自己选过」的情况。
  *
  * @param {string} level 配置里的档位（可能是 auto）
  * @param {{hasTools?:boolean, toolHeavy?:boolean}} ctx
+ * @returns {string} 具体的六档之一（永远不会返回 auto）
  */
 export function resolveLevel(level, ctx = {}) {
-  /* 【2026-11-16 档位扩到六档】关/低/中/高/超高/最高。
-   * 老值（on/minimal/auto）由 normalizeLevel 统一换算 ——
-   * ctx 留着是为了兼容旧调用点，暂时不用。 */
-  void ctx;
-  return normalizeLevel(level);
+  const lv = normalizeLevel(level);
+  if (lv !== 'auto') return lv;
+  /* 干活判定：这一轮带工具就算「要动手」。toolHeavy 留给以后想更细地分档时用。 */
+  const working = Boolean(ctx && (ctx.hasTools || ctx.toolHeavy));
+  return working ? 'high' : 'low';
 }
 
 /**
@@ -382,9 +410,13 @@ export function resolveLevel(level, ctx = {}) {
 export function fieldsForLevel(level, ep = null) {
   if (!level) return { fields: {}, mode: 'on' };
   /* null / '' 是降级链里「什么都不发」那一档，上面已经挡掉了。
-   * 剩下的一律先换算成六档之一，别把 on / minimal 这些老值漏给网关。
-   * （medium / xhigh 自 11-16 起是真档位，不再是「老值」。） */
-  const lv = normalizeLevel(level);
+   * 剩下的一律先换算成七档之一，别把 on / minimal 这些老值漏给网关。
+   * （medium / xhigh 自 11-16 起是真档位，不再是「老值」。）
+   *
+   * 【2026-11-17】auto 走到这儿说明调用方没先 resolveLevel —— 不能把字面值
+   * 'auto' 发给网关（没有一家认）。这里按「不知道这轮干不干活」保守当聊天，
+   * 落 low。正常路径都会先 resolveLevel，这里只是兜底。 */
+  const lv = normalizeLevel(level) === 'auto' ? 'low' : normalizeLevel(level);
   const fmt = thinkingFormatOf(ep);
 
   if (lv === 'off') {
@@ -492,6 +524,31 @@ export function isThinkingUnsupported(status, text) {
   // 网关说 "unsupported reasoning effort: off" 属于值不对，重试用别的值没意义
   return /unknown|not support|unsupported parameter|unrecognized|unexpected/i.test(t)
     && !/unsupported reasoning effort/i.test(t);
+}
+
+/**
+ * 这个错误是不是「档位值本身不被认」——可以往下降一档重试。
+ *
+ * 【2026-11-17 加·超高/最高在官方 OpenAI 会 400】
+ *
+ * `xhigh` 不是 OpenAI 官方 reasoning_effort 的值（官方只有 low/medium/high），
+ * 部分中转站认它，官方接口直连时回的是：
+ *   HTTP 400  "unsupported reasoning effort: xhigh"
+ * 或者 `invalid value for 'reasoning_effort'`。
+ *
+ * 原来的 isThinkingUnsupported 故意**排除**了这种错误（注释写「重试用别的值没意义」）——
+ * 那句话在「模型压根不支持思考」的场景下是对的，但漏了另一种情况：
+ * 模型支持思考，只是**不认这一档**。这时候往下退一档完全有意义，
+ * 而不是让整轮直接失败（主人看到的是一句话都出不来）。
+ *
+ * 判据：400/422 + 报错里点名 effort 值域。
+ * 注意不退到 'off' —— 那是主人明确关掉的语义，不能偷偷打开。
+ */
+export function isEffortValueRejected(status, text) {
+  if (status !== 400 && status !== 422) return false;
+  const t = String(text ?? '');
+  if (!/effort/i.test(t)) return false;
+  return /unsupported reasoning effort|invalid value|not a valid|unknown.*effort|effort.*(?:invalid|unsupported)|enum/i.test(t);
 }
 
 /**

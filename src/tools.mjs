@@ -47,7 +47,7 @@ import { browserTools } from './tools-browser.mjs';
 import { videoTools } from './tools-video.mjs';
 import { screenTools } from './tools-screen.mjs';
 import { uiToolDefs } from './tools-ui.mjs';
-import { makeImageTool } from './tools-image.mjs';
+/* 【2026-11-17 删】不再 import makeImageTool —— 「画图」整档下线了。 */
 import { makePptxTool, makeDocxTool, makeXlsxTool } from './tools-office.mjs';
 import { adminOn } from './admin-mode.mjs';
 import { isImagePath, readImageDataUrl } from './attach.mjs';
@@ -1874,7 +1874,8 @@ export const tools = [
   ...browserTools,
   ...videoTools,
   ...screenTools,
-  makeImageTool,
+  /* 【2026-11-17 删·make_image 随「画图」整档下线】原来这里是 makeImageTool，
+   * 现在没有这一档了，工具也就不注册了（注册了但功能关着，只会白占提示词）。 */
   makePptxTool,
   makeDocxTool,
   makeXlsxTool,
@@ -3280,13 +3281,50 @@ async function saveToolOut(sessionId, name, text) {
 /** 出门闸门本体：超阈值就截成「头 + 尾 + 落盘路径」。 */
 async function clipToolResult(name, r, sessionId) {
   const out = r && r.output;
-  if (typeof out !== 'string') return r;
+
+  /**
+   * 【2026-11-17 主人查上下文时揪出的真凶·对象型返回整段不截】
+   *
+   * 原来第一句是：`if (typeof out !== 'string') return r;`
+   * 也就是说**只有字符串才过闸门**，对象原样放行。实测代价（查勾鱼会话，主人报
+   * 「你自己怎么停了」）：她为查文件为啥没收到，写脚本把整份会话 dump 进工具结果，
+   * 一条返回 364904 字符（会话全文才 416198），一条就吞了 88% 上下文，
+   * 当场顶到保命线，那一轮被程序掐断 —— 她只来得及甩出半句旁白。
+   *
+   * 而 3465 行那段注释早就承认过这个坑（「对象整段不截，ui_observe 上千字直接
+   * 怼进上下文」），可当时只修了失败判定，截断这一处没人动。
+   *
+   * 现在分三种：
+   *   ① 字符串 → 老规矩，超 cap 就截；
+   *   ② 对象带 text → 只截 text **本身**，其他字段原样保留。
+   *      这条最要紧：`{text, images:[…]}` 是 video/screen 那套的形制，
+   *      agent.mjs 靠 output.images 把图拼进多模态 content —— 一旦把对象
+   *      压成字符串，图就全没了。所以形状一个字都不许改，只换 text 的值。
+   *   ③ 对象没有 text → 序列化后按字符串截（agent.mjs 那边本来就有
+   *      `String(output.text ?? JSON.stringify(output))` 兜底，回字符串安全）。
+   */
+  if (out == null) return r;
+
+  let text = '';
+  let isObjWithText = false;
+  if (typeof out === 'string') {
+    text = out;
+  } else if (typeof out === 'object' && typeof out.text === 'string') {
+    text = out.text;
+    isObjWithText = true;
+  } else if (typeof out === 'object') {
+    try { text = JSON.stringify(out) || ''; } catch { return r; }
+  } else {
+    return r;   // 数字/布尔之类，不可能是洪水
+  }
+
   const cap = name === 'read_file' ? TOOL_OUT_READFILE : TOOL_OUT_MAX;
-  if (out.length <= cap) return r;
-  const saved = await saveToolOut(sessionId, name, out);
-  const head = out.slice(0, TOOL_OUT_HEAD);
-  const tail = out.slice(-TOOL_OUT_TAIL);
-  const cut = out.length - head.length - tail.length;
+  if (text.length <= cap) return r;
+
+  const saved = await saveToolOut(sessionId, name, text);
+  const head = text.slice(0, TOOL_OUT_HEAD);
+  const tail = text.slice(-TOOL_OUT_TAIL);
+  const cut = text.length - head.length - tail.length;
   const where = saved ? ('原文整份存在：' + saved) : '原文没能存盘（目录不可写）';
   const note = [
     '',
@@ -3294,11 +3332,16 @@ async function clipToolResult(name, r, sessionId) {
     '',
     tail,
     '',
-    '【工具输出太长，已截断】这次 ' + name + ' 一共返回 ' + out.length + ' 字，超过 ' + cap + ' 字的闸门。',
+    '【工具输出太长，已截断】这次 ' + name + ' 一共返回 ' + text.length + ' 字，超过 ' + cap + ' 字的闸门。',
     where,
     '要看被省略的部分：用 read_file 带 offset/limit 分段读上面那个文件，别一次全读（不然还会超）。',
   ].join('\n');
-  return Object.assign({}, r, { output: head + note });
+  const clipped = head + note;
+
+  /* ② 对象带 text：只换 text，images 等字段一个不动 */
+  if (isObjWithText) return Object.assign({}, r, { output: Object.assign({}, out, { text: clipped }) });
+  /* ①③ 字符串或纯对象：回字符串 */
+  return Object.assign({}, r, { output: clipped });
 }
 
 /**

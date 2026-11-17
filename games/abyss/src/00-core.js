@@ -572,7 +572,7 @@
     g.addColorStop(1, withAlpha(color, 0));
     ctx.fillStyle = g;
     ctx.fillRect(x - r, y - r, r * 2, r * 2);
-    if (ctx.fillStyle && ctx.fillStyle.indexOf('rgba') === 0) ctx.fillStyle = '#fff';
+    if (typeof ctx.fillStyle === 'string' && ctx.fillStyle.indexOf('rgba') === 0) ctx.fillStyle = '#fff';
   };
 
   console.log('[core] 就绪');

@@ -30,7 +30,7 @@ function workerTraceDir(sessionId) {
   return join(config.dataDir, '.state', 'worker-trace', String(sessionId || 'default'));
 }
 import { featureOnFor } from './features.mjs';
-import { followup, peekInbox, drainTurns } from './inbox.mjs';
+import { followup, peekInbox, drainTurns, dropWorkerNote } from './inbox.mjs';
 import { drainWorkerMail, finishWorker, listWorkers, noteWorker, workersPath, beatWorker, findStalledWorkers, reapStalledWorker } from './task-mode.mjs';
 import { enforceZhWorkerName } from './name-zh.mjs';
 
@@ -340,6 +340,21 @@ export function markInterruptedWorkers() {
  * 跟 reportWorkerResult 同一个画法：_sysNote 递进 inbox，不冒充主人说话。
  */
 function notifyWorkerInterrupted(sid, wid, name, reason) {
+  /* 【2026-11-17 主人报·同一个子Agent 报了两遍】
+   *
+   * 一个 worker 死掉会走两条独立的通知路（stopWorker 的「被手动停下」+
+   * reapStalledWorker 的「程序重启过/卡死」），两条都往信箱塞 _sysNote。
+   * 实盘抓到同一会话信箱里 6 条、两两成对，就是这来的。
+   *
+   * 这里先把这个 worker **还没被取走**的旧通知删掉，只留最新这条 ——
+   * 主人看到的永远是一条「#1 美术角色 没能跑完」，不会同一件事报两遍。
+   * 只删带 _sysNote 的，主人亲手说的话一个字都不碰。
+   */
+  try {
+    const mark = '#' + String(wid) + '「' + String(name || '') + '」';
+    const cut = dropWorkerNote(String(sid || 'default'), mark);
+    if (cut) { try { console.log('[team] 清掉 ' + cut + ' 条重复的中断通知：' + mark); } catch {} }
+  } catch { /* 清不掉不影响发新通知 */ }
   /* 【2026-11-13 验收补漏】原来一次 try{followup}catch{} 静默吞，连日志都没有 ——
    * 跟 reportWorkerResult 同款：留痕 + 3s 后重试一次。 */
   const body = '【你派出去的 #' + String(wid) + '「' + String(name || '') + '」没能跑完 —— ' + String(reason || '程序重启过，任务被打断') + '。'

@@ -9827,7 +9827,7 @@
           if (box.classList.contains("hubBody")) {
             const dir = Number(e && e.deltaY) || 0;
             if (dir === 0) return true;
-            const atTop = box.scrollTop <= 0;
+            const atTop = box.scrollTop <= 1;
             const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 1;
             if (dir < 0 && atTop) return false;
             if (dir > 0 && atBottom) return false;

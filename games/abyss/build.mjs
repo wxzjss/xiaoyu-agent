@@ -25,7 +25,7 @@ for (const f of ORDER) {
   if (!fs.existsSync(p)) { missing.push(f); continue; }
   const code = fs.readFileSync(p, 'utf8');
   totalBytes += Buffer.byteLength(code, 'utf8');
-  parts.push('/* ===== ' + f + ' ===== */\n' + code);
+  parts.push('/* ===== ' + f + ' ===== */\n;(function(){\n' + code + '\n})();');
 }
 if (missing.length) {
   console.warn('[build] 缺少文件：' + missing.join(', '));

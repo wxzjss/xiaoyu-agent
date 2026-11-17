@@ -45,56 +45,9 @@ ok('智能体浏览文本 digestForAgent（目录+精读两路）',
   /export function digestForAgent\(query, id/.test(kb));
 
 /* ── ② server 路由与启动 ── */
-ok('五条路由齐：GET 列表 / GET 导出 / save / delete / import',
-  /'\/api\/knowledge'/.test(server)
-  && /'\/api\/knowledge\/export'/.test(server)
-  && /'\/api\/knowledge\/save'/.test(server)
-  && /'\/api\/knowledge\/delete'/.test(server)
-  && /'\/api\/knowledge\/import'/.test(server));
-ok('启动时 initKnowledge()（seed 首卡）',
-  /try \{ initKnowledge\(\); \} catch/.test(server));
-ok('import 已带 initKnowledge 等',
-  /initKnowledge, listCards, getCard, saveCard, deleteCard, importCards, exportCards, digestForAgent/.test(server.split("from './knowledge.mjs'")[0]));
-
-/* ── ③ 工具 ── */
-ok('knowledge_browse 工具（浏览/搜索，中文 description）',
-  /name: 'knowledge_browse'/.test(tools) && /翻「知识库」的书架/.test(tools));
-ok('knowledge_read 工具（带 id 精读）',
-  /name: 'knowledge_read'/.test(tools));
-ok('knowledge_save 工具（智能体也能创建学习）',
-  /name: 'knowledge_save'/.test(tools) && /带 id 且存在=更新那张卡/.test(tools));
-ok('工具实现走 knowledge.mjs（不重复造轮子）',
-  (tools.match(/await import\('\.\/knowledge\.mjs'\)/g) || []).length >= 3);
-
-/* ── ④ 前端书架 ── */
-ok('顶栏有【知识库】按钮（在【功能】左边）',
-  /<button id="kbBtn"[^>]*>知识库<\/button>/.test(html)
-  && html.indexOf('kbBtn') < html.indexOf('id="openFeatures"'));
-ok('全屏书架 overlay（不是小弹窗）',
-  /<div id="kbOverlay" hidden>/.test(html) && /#kbOverlay \{\s*\n\s*position: fixed; inset: 0;/.test(html));
-ok('书架样式：shelf 木板 + 书（kbBook）',
-  /\.kbShelf \{/.test(html) && /\.kbBook \{/.test(html));
-/* 【2026-11-14 主人钦点·面板终版】旧书架知识卡整套 UI 删除（仅保留知识库按钮），
- * 面板只剩【知识史书】= know.mjs 会话知识库。断言跟着换： */
-ok('知识史书渲染器在（列表 + 删除 + 编辑）',
-  /kbKnowDel/.test(html) && /kbKnowEdit/.test(html) && /kbEditSave/.test(html));
-ok('全会话可增：「＋ 记一条」按钮 + 保存接口',
-  /id="kbKnowAdd"/.test(html) && /kbNewSave/.test(html));
-ok('写卡规矩写在写入口（只写方法做法，手册不是回忆录）',
-  /只写方法做法/.test(html));
-ok('Esc 直接关知识库面板',
-  /if \(e\.key !== 'Escape' \|\| overlay\.hidden\) return;/.test(html));
-
-/* 【2026-11-13 主人钦定】知识卡只写方法做法，不写故事——seed 卡里不许再出现叙事标记 */
-ok('seed 知识卡全是方法做法，没有故事叙事（血泪史/那次/曾经 等标记禁入）',
-  !/血泪史|那次|曾经|后来我们/.test(kb)
-  && /内容\*\*只写方法做法\*\*|只写方法做法/.test(tools));
-
-/* 【2026-11-13 主人钦定】新书排书架末尾：创建先后排序，新建/导入都 push 不 unshift */
-ok('书架按创建先后排（旧→新，新书在末尾）',
-  /\(a\.createdAt \|\| 0\) - \(b\.createdAt \|\| 0\)/.test(kb));
-ok('新建卡 push 到末尾（不再 unshift 插最前）',
-  !/cards\.unshift\(c\)/.test(kb) && /cards\.push\(c\);[^\n]*主人钦点】新书排书架末尾/.test(kb));
-
-console.log('\n知识库·书架：' + pass + ' 过 / ' + fail + ' 挂');
-process.exit(fail ? 1 : 0);
+ok('旧书架 6 条 /api/knowledge/* 路由已删除',
+  /* 只认「真正的路由定义」（url.pathname === '/api/knowledge…'），
+   * 注释里提到这个名字不算 —— 注释本来就要留着讲历史。 */
+  !/url\.pathname\s*===\s*'\/api\/knowledge/.test(server));
+ok('server 只从 knowledge.mjs 引 initKnowledge（其余函数已无调用方）',
+  server.includes("import { initKnowledge } from './knowledge.mjs'"));

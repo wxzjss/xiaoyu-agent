@@ -36,8 +36,15 @@ t.ok('摘的是带 _turnStartHint 标记那条', /messages\[_i\]\._turnStartHint
 // ③ 计数器不能在 for(round) 里被重置（否则永远是 1）
 {
   const loopAt = agent.indexOf('for (let round = 0; round < config.maxRounds; round++)');
-  const head = agent.slice(Math.max(0, loopAt - 400), loopAt);
-  t.ok('计数器声明在 round 循环之外（不随圈重置）', /let _toolCallCount = 0;/.test(head));
+  /* 【2026-11-17 改判据】原来要求「声明必须在循环前 400 字以内」——
+   * 那是拿「离得近」猜「在循环外」，太脆：中间插一段别的代码就误红
+   * （这次加工具预算闸就是被这么误判的）。改成直接比位置：
+   * 声明第一次出现的位置，必须早于循环起点。 */
+  const declAt = agent.indexOf('let _toolCallCount = 0;');
+  t.ok('计数器声明在 round 循环之外（不随圈重置）',
+    declAt >= 0 && loopAt >= 0 && declAt < loopAt,
+    'declAt=' + declAt + ' loopAt=' + loopAt);
+
 
   // 循环体内不许再出现 `let _toolCallCount = 0`
   const body = agent.slice(loopAt, loopAt + 20000);

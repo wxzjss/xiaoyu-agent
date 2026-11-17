@@ -153,15 +153,15 @@
     const es = Game.enemies;
     for (let i = 0; i < es.length; i++) {
       const e = es[i];
-      const k = gridKey((e.x / GS) | 0, (e.y / GS) | 0);
+      const k = gridKey(Math.floor(e.x / GS), Math.floor(e.y / GS));
       let a = grid.get(k);
       if (!a) { a = []; grid.set(k, a); }
       a.push(e);
     }
   }
   function nearEnemies(x, y, r, cb) {
-    const x0 = ((x - r) / GS) | 0, x1 = ((x + r) / GS) | 0;
-    const y0 = ((y - r) / GS) | 0, y1 = ((y + r) / GS) | 0;
+    const x0 = Math.floor((x - r) / GS), x1 = Math.floor((x + r) / GS);
+    const y0 = Math.floor((y - r) / GS), y1 = Math.floor((y + r) / GS);
     for (let gy = y0; gy <= y1; gy++) {
       for (let gx = x0; gx <= x1; gx++) {
         const a = grid.get(gridKey(gx, gy));
@@ -251,7 +251,7 @@
   function recomputeStats() {
     const p = Game.player;
     const m = {
-      dmg: Game.player.char.dmg + (Game.save.meta.m_dmg || 0) * 0.04,
+      dmg: 1 + Game.player.char.dmg + (Game.save.meta.m_dmg || 0) * 0.04,
       area: 1, moveSpeed: 1, cd: 1, amount: 0, duration: 1,
       magnet: 1, armor: 0, regen: 0, luck: Game.player.char.luck + (Game.save.meta.m_lck || 0) * 0.05,
       critDmg: 1.6, xpGain: 1 + (Game.save.meta.m_xp || 0) * 0.06,
@@ -505,7 +505,7 @@
     sfx(n) { if (G.AUDIO) G.AUDIO.sfx(n); },
     text(x, y, str, color) { floatText(x, y, str, color || '#fff'); },
     nearestEnemy(x, y, maxDist) {
-      let best = null, bd = maxDist == null ? 1e9 : maxDist;
+      let best = null, bd = maxDist == null ? 1e18 : maxDist * maxDist;
       const es = Game.enemies;
       for (let i = 0; i < es.length; i++) {
         const e = es[i];

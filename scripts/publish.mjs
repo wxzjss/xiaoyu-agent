@@ -105,7 +105,13 @@ const EXCLUDE_PATTERNS = [
    *   gen-actor-test.mjs（往本机 dump/ 写一张 html）。
    * 它们是"我干活时临时敲的工具"，既不是给用户的功能，也不该带着本机路径出门。
    * 注意：_test-instance.mjs 是**基建**（隔离实例要用），不在排除之列 —— 前缀挑准。 */
-  /^_t_/, /^_tmp/, /^_patch-/, /^_peek-/, /^_dbg/, /^_cmp/, /^_hunt/, /^gen-actor-test\.mjs$/,
+  /* 【2026-11-17 修·一个漏网的写成 _patch_noquote.mjs】
+   * 原来这条写的是 /^_patch-/（带连字符），而实际文件叫 `_patch_noquote.mjs`（下划线），
+   * 于是它没被挡住、进了发布包 —— check-release-boundary 报「真实代码里写死本机绝对路径」，
+   * 那条红了很久，根因就在这个字符上。
+   * 现在放宽成不带连字符：_patch 开头的无论后面接 - 还是 _ 一律不发。
+   * 这一串前缀的共同点都是「我干活时临时敲的工具」：都不该带着本机路径出门。 */
+  /^_t_/, /^_tmp/, /^_patch/, /^_peek-/, /^_dbg/, /^_cmp/, /^_hunt/, /^gen-actor-test\.mjs$/,
 
   /^run-all-checks\.mjs$/,
   /* 【2026-11-08 加·名字中间带 .bak 的备份会绕过扩展名规则】

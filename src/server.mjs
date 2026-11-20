@@ -16,12 +16,15 @@ import { spectatorsOf, isSpectator, setSpectators } from './spectator.mjs';
 // 顶栏那个「小鱼」按钮：默认在场，禁用后这个会话后面的话她一个字都不发。
 import { fishOn, setFishOn } from './fish-presence.mjs';
 import { runAgent, systemPrompt, repairHistory } from './agent.mjs';
+/* 【2026-11-19 加】工具「正在跑」的落盘账。历史不是唯一证据 —— 整轮没落盘时
+ * 只有这本账知道「她刚才调过什么」。见 src/tool-journal.mjs 顶部注释。 */
+import { liveTools } from './tool-journal.mjs';
 import { startSelfwake, stopSelfwake, noteReplied, noteSpoke, shouldFire, getState as selfwakeState } from './selfwake.mjs';
 import { startCron, listTasks, addTask, removeTask, setEnabled as cronSetEnabled, markRan as cronMarkRan, dueTasks } from './cron.mjs';
 // 启动自检用：查每个工具是不是都有中文 description / 参数说明。
 import { checkToolDocs, setPeerWake, setPeerDeliver, setRunningProbe, setSessionRenamer, runWithToolContext, tools as allTools, killOrphanChildren } from './tools.mjs';
 import { checkSkills } from './skills.mjs';
-import { browse, readImageDataUrl, readImageBytes, composeUserContent, isImagePath } from './attach.mjs';
+import { browse, readImageDataUrl, readImageBytes, composeUserContent, composeUserMessage, isImagePath } from './attach.mjs';
 import { mimeOf, fileKindOf, fmtSize, outboxPath, sendCheck } from './outbox.mjs';
 import { getOverride, setOverride } from './session-overrides.mjs';
 // 任务清单（界面面板用）：跟小鱼自己的 plan 工具是同一份数据，别另存一套
@@ -246,8 +249,8 @@ import {
 } from './plugins.mjs';
 import { getTTSState, writeTTS, speak } from './tts.mjs';
 import { runtimeInfo, installRuntime, removeRuntime, readyPythons, readyFfmpeg, ensureVoiceRuntimeInBackground } from './voice-runtime.mjs';
-import { postMail, peekMail, takeMail, ackSessionMail, formatMail, peerInfo, mailCount } from './peer.mjs';
-import { getThinking, setThinking, LEVELS, levelFor } from './thinking.mjs';
+import { postMail, peekMail, takeMail, claimMail, ackSessionMail, formatMail, peerInfo, mailCount } from './peer.mjs';
+import { getThinking, setThinking, LEVELS, levelFor, detectSessionLevels } from './thinking.mjs';
 import { getChatStyle, setChatStyle } from './chatstyle.mjs';
 import {
   getRetry429,
@@ -359,7 +362,17 @@ import {
    * 之前用裸 writeFileSync 直接盖，进程被杀那一刻会留半截 JSON。
    * 统一走 sessions-core 的 writeFileAtomic（tmp+fsync+rename+EPERM 重试）。 */
   writeFileAtomic,
+  /* 【2026-11-18】轮次 id —— 见 sessions-core 里 newTurnId 的注释 */
+  newTurnId,
 } from './sessions-core.mjs';
+/* 【2026-11-18】设备环境预热：位置天气、亮度音量窗口。
+ * 都是「异步取、同步读」—— contextMessage 只读缓存，这里负责定时刷新。 */
+import { warmEnv } from './sysinfo.mjs';
+import { refreshDevice } from './device-info.mjs';
+/* 【2026-11-18】工作区按会话分：文件预览 / 附件目录 / health 都要认会话目录 */
+import { workspaceFor, sharedWorkspace, currentSessionId, runInSession } from './workspace.mjs';
+/* 【2026-11-18】切走时把「只开场过、谁都没说过话」的空壳会话扔掉（主人要求） */
+import { judgeEmptyShell } from './empty-shell.mjs';
 
 /**
  * 界面文件目录。
@@ -396,6 +409,8 @@ import {
  */
 const msgFingerprint = (m) => {
   if (!m) return '';
+  // Persisted inbox identity survives copies and changes to the model-facing content.
+  if (m.role === 'user' && m._inboxId) return JSON.stringify(['inbox', m._inboxId]);
   const body = typeof m.content === 'string'
     ? m.content
     : Array.isArray(m.content)
@@ -404,7 +419,10 @@ const msgFingerprint = (m) => {
   const ids = Array.isArray(m.tool_calls) ? m.tool_calls.map((t) => String((t && t.id) || '')).join(',') : '';
   // _at 是服务端给每条 assistant 盖的时间戳：同一次生成只有这一个值。
   // 带上它，才能分清「同一句话被重复接入」（同 _at，该挡）和「我过一会儿又说了一遍」（不同 _at，该留）。
-  return String(m.role || '') + '|' + String(m._at || '') + '|' + String(m.tool_call_id || '') + '|' + ids + '|' + body;
+  const delivery = m.role === 'user' && m._steer === true
+    ? JSON.stringify([m.at ?? m._at ?? '', m._whoId || m._who || '', m._atChars ?? null, m._images || [], m._files || []])
+    : String(m._at || '');
+  return String(m.role || '') + '|' + delivery + '|' + String(m.tool_call_id || '') + '|' + ids + '|' + body;
 };
 /** 这段正文最近收过没有（只看尾部，够用且便宜） */
 const alreadyCollected = (ms, m) => {
@@ -598,18 +616,41 @@ function toolListOf(m, toolResults) {
   return out;
 }
 
+/**
+ * 老会话内联大图的「剥过一次」缓存：key 是消息对象，value 是 {text, images}。
+ * 用 WeakMap —— 消息对象被换掉/会话卸载后自动回收，不会攒内存。
+ * 见 publicSession 里 data:image/ 那段（2026-11-18）。
+ */
+const _inlineStripped = new WeakMap();
+
 /** What the UI needs to redraw a session: bubbles + the tool calls that went with them. */
 function publicSession(session) {
   const turns = [];
   /* 这个会话的主智能体叫什么 —— 只给「消息自己没记名字」的兜底用。
-   * 取不到就空着，前端还有它自己的兜底，别在这儿抛。 */
+   * 取不到就空着，前端还有它自己的兜底，别在这儿抛。
+   *
+   * 【2026-11-19 收尾修正·第一版取错了源】
+   * 第一版这里写的是 `mainAgentId`（屋里名单第一个还开着的人）。可「谁在屋里排队」
+   * 和「这个会话用哪张嘴说话」是两件事：
+   *   · 真正决定开口的是 `agentForSession` → `sessionAgentId`（agents.json 的 bySession，
+   *     也就是会话列表上那颗绑定的牌）；
+   *   · 名单头（groupBySession）只说明群里排队顺序。
+   * 于是出现「绑了小白曦、但名单头还是小鱼且没关掉」的会话 —— 名单口径算出「小鱼」，
+   * 兜底就白改了。抽查 2041 个绑卡会话，3 个栽在这儿。
+   * 现在按两个证据走：先看绑定，没绑定才退回名单头。 */
   const mainNameOfSession = (() => {
     try {
       const sid = String(session && session.id || '');
-      const id = mainAgentId(sid, (x) => mateSwitchOn(x, sid));
-      if (!id) return '';
-      const a = listAgents().find((x) => String(x.id) === String(id));
-      return a ? String(a.name || '') : '';
+      const nameOfId = (id) => {
+        if (!id) return '';
+        const a = listAgents().find((x) => String(x.id) === String(id));
+        return a ? String(a.name || '') : '';
+      };
+      /* ① 这个会话绑的卡（最硬的证据：新消息就是按这张卡的人格生成的） */
+      const bound = (() => { try { return sessionAgentId(sid); } catch { return ''; } })();
+      if (bound) return nameOfId(bound);
+      /* ② 没绑卡：退回屋里的名单头（群里第一个还开着的人） */
+      return nameOfId(mainAgentId(sid, (x) => mateSwitchOn(x, sid)));
     } catch { return ''; }
   })();
   // 回退：只按「有效下标」画气泡，被撤回的那些直接不出现。
@@ -727,7 +768,28 @@ function publicSession(session) {
 
     // content 可能是多模态数组（只在内存里出现过），取文字段
     const raw = m.content;
-    const text = (Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n') : String(raw ?? '')).trim();
+    let text = (Array.isArray(raw) ? raw.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n') : String(raw ?? '')).trim();
+    /**
+     * 【2026-11-18·老会话里的内联大图兜底（显示侧）】
+     * commitWireBack 那道是给新落盘的；已经躺在盘上的「画图的」会话那条
+     * 270 万字符消息得在这里救：把 base64 剥成文件、正文只留人话，图照样画出来。
+     * 按消息对象缓存 —— 同一条消息每次 publicSession 都会被重算，
+     * 不缓存的话每次切会话都跑一遍百万字正则 + 重写同一张 png。
+     */
+    if (m.role === 'assistant' && text.includes('data:image/')) {
+      let ex = _inlineStripped.get(m);
+      if (!ex) {
+        try { ex = extractInlineImages(text, 'inline'); } catch { ex = { text, images: [] }; }
+        _inlineStripped.set(m, ex);
+      }
+      if (ex.images.length) {
+        text = ex.text.trim();
+        for (const im of ex.images) {
+          if (!Array.isArray(m._images)) m._images = [];
+          if (!m._images.includes(im.path)) m._images.push(im.path);
+        }
+      }
+    }
     const atts = [
       ...(Array.isArray(m._files) ? m._files.map((p) => ({ path: p, kind: 'file' })) : []),
       ...(Array.isArray(m._images) ? m._images.map((p) => ({ path: p, kind: 'image' })) : []),
@@ -763,14 +825,29 @@ function publicSession(session) {
       /* 【2026-11-01 主人：插话要画在「我说到哪儿」的位置】steer=这条是主人生气时半路插进来的话；steerAt=他插话那一刻我已经说出多少字。前端靠这两个数把我那段话劈成两半，把他的话嵌在中间。老会话没有这两个字段，界面照老样子排末尾。 */
       /* 【2026-11-11】ts 兜底 _at：主流程的 userMsg 现在都带 at；老消息只有 assistant 补过 _at。
        * 老的 user 消息两个都没有 → 还是 0，前端就不画时间，历史数据不动。 */
-      turns.push({ role: 'user', ts: typeof m.at === 'number' ? m.at : (typeof m._at === 'number' ? m._at : 0), text: shown, atts, rewindId: i, edited, usage, who, sysNote: m._sysNote === true ? true : undefined,      steer: m._steer === true ? true : undefined,      steerAt: typeof m._atChars === 'number' ? m._atChars : undefined, });
+      turns.push({ role: 'user', turn: typeof m._turn === 'string' ? m._turn : undefined,  ts: typeof m.at === 'number' ? m.at : (typeof m._at === 'number' ? m._at : 0), text: shown, atts, rewindId: i, edited, usage, who, sysNote: m._sysNote === true ? true : undefined,      steer: m._steer === true ? true : undefined,      steerAt: typeof m._atChars === 'number' ? m._atChars : undefined, });
     }
     if (m.note === true) {
       /* 【2026-11-12】持久化的系统提示（note:true）：不冒充谁说话，给前端画 SysNote */
-      turns.push({ role: 'assistant', note: true, text: String(m.content || ''), ts: typeof m.at === 'number' ? m.at : 0 });
+      /* 【2026-11-18 修·主人报「刚发的图这一轮结束后就消失了」的后半段】
+       *
+       * items.js 那边已经把「note 上挂的文件也照画」补好了，但**这条 note 到前端时
+       * 根本没带 out** —— 于是那边拿到的永远是空数组，图照样消失。
+       *
+       * 具体是哪几轮：上游网关抖动时这一轮被落成 note（「抖了，程序正在自动重试」），
+       * 而她那一轮**真发出去的图/文件**就挂在这条消息的 _out 上（见 14654/14675/15522 那几处）。
+       * 不带出去 = 主人只在那几分钟的直播里见过那张图，一刷新就没了。 */
+      turns.push({
+        role: 'assistant',
+        note: true,
+        text: String(m.content || ''),
+        ts: typeof m.at === 'number' ? m.at : 0,
+        out: Array.isArray(m._out) ? m._out : [],
+      });
       continue;
     }
     else if (m.role === 'assistant') turns.push({
+      turn: typeof m._turn === 'string' ? m._turn : undefined, 
       role: 'assistant',
       ts: typeof m.at === 'number' ? m.at : 0,
       text,
@@ -868,10 +945,20 @@ function publicSession(session) {
           } catch { /* 同上 */ }
           return undefined;
         }
-        /* 【最后一道】确实没有任何署名证据（2026-11-17 之前落盘的老消息）。
-         * 这里**故意不回当前主智能体的名字** —— 那会让历史随人事变动而改写。
-         * 交 undefined，前端按「这条没署名」画，保持历史原样。 */
-        void mainNameOfSession;
+        /* 【最后一道·2026-11-19 修主人报的「小白曦的话变成小鱼」】
+         *
+         * 完全没有署名证据的老消息（2026-11-17 之前落盘的）。11-17 那次为了防
+         * 「人事一变、历史跟着改写」，这里故意交 undefined。
+         * 可前端拿到 undefined 之后兜底写死成 '小鱼'（items.js mainAgentName）——
+         * 于是小白曦那个会话里 128 条老消息，全被画成「小鱼」说的。
+         *
+         * 现在按**这个会话自己的主声**兜底，而且只在它不是小鱼时才用：
+         *   · 小鱼会话：完全保持 11-17 的行为，交 undefined、前端画小鱼，一个字不变；
+         *   · 绑了自建卡的会话（小白曦之类）：那些老消息本来该是她的。
+         * 这跟 11-11 被否掉的那套不是一回事：被否的是「屋里当前谁排第一」——
+         * 那是全局状态，主人切个身份，所有会话的历史一起改名。这里读的是
+         * 本会话的名单，换别的会话看历史互不牵连。 */
+        if (mainNameOfSession && mainNameOfSession !== '小鱼') return mainNameOfSession;
         return undefined;
       })(),
       /**
@@ -911,6 +998,19 @@ function publicSession(session) {
     title: session.title,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
+    /* 【2026-11-19 加·历史气泡的署名兜底得按「这个会话」来】
+     * 主人报：「小白曦会话的历史记录里，小白曦的名字变成了小鱼」。
+     *
+     * 查下来是两头对不上：
+     *   后端这边 11-17 已经改对了 —— 消息自己没带 _who 就**如实交 undefined**，
+     *   绝不拿「现在谁当家」去猜当年是谁说的；
+     *   可前端拿到 undefined 之后，兜底写死成 '小鱼'（items.js mainAgentName）。
+     * 于是小白曦那个会话里 128 条 11-17 之前落盘的老消息，全被画成「小鱼」。
+     *
+     * 这里的 mainName 是**会话级**的（agents.json 里 groupBySession 第一个开着的人），
+     * 不是「屋里现在谁在场」——换人不会波及别的会话，也不会因为切身份让整段历史改名。
+     * 前端只在「消息自己没署名」时才用它。 */
+    mainName: mainNameOfSession,
     turns,
     rewinds: rewinds.map((r) => ({ at: r.at, hidden: r.hidden })),
   };
@@ -1594,7 +1694,6 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
     return;
   }
 
-  const { setFullAccess } = await import('./tools.mjs');
   const { logWhaleAction } = await import('./whale-presence.mjs');
   // 【上锁】她这一趟还没跑完，就不许再起第二趟（见 __whaleRunning 的注释）
   if (__whaleRunning.has(sessionId)) {
@@ -1621,9 +1720,8 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
   try { send({ type: 'whale_stream_start', who: WHO, spectator: isSpectator(sessionId, WHO) }); } catch {}
 
   let r;
-  setFullAccess(true);
   try {
-    r = await runSubagent({
+    r = await runWithToolContext({ sessionId, fullAccess: true }, () => runSubagent({
       task,
       name: WHO,
       /* 【2026-11-10 按会话】她干活也要听这个会话的功能开关 */
@@ -1643,7 +1741,7 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
        */
       onDelta: (chunk) => {
         try {
-          send({ type: 'whale_delta', text: String(chunk || '') });
+          send({ type: 'whale_delta', who: WHO, spectator: isSpectator(sessionId, WHO), text: String(chunk || '') });
         } catch {}
       },
       /**
@@ -1682,13 +1780,12 @@ async function whaleMaybeReply({ session, userText, send, sessionId, live = null
        */
       /* 渠道化：小鲸那条路也不再塞身份解释块（回退：改回 identityBlock({speaker:'whale',sessionId})） */
       identityNote: '',
-    });
+    }));
   } catch (e) {
     // 【外层抛了也留下】不然日志里又是只剩一个「败」
     try { logWhaleAction('这一趟抛了：' + String(e?.message ?? e).slice(0, 400)); } catch {}
     dropWhaleSay(send);
   } finally {
-    setFullAccess(false);
     __whaleUnlock();  // 【放锁】她这一趟跑完/抛了都放开，下一轮才能再进
   }
 
@@ -2732,38 +2829,12 @@ function sessionsFingerprint() {
  *
  * 顺序就是事件原本的顺序（tool 与文字交错也照实排）。
  */
-/**
- * 【为什么还要一个「增量版」】
- *
- *  上面那个是从事件数组一次性算出来的（打开一个已经跑完的旧轮次时用）。
- *  可事件数组有上限（LIVE_SOFT_MAX），长回复会被压薄 —— 老的那些正文事件被丢掉，
- *  于是「照事件算出来的清单」就短了一截（屏幕上是短一版，刷新前后不一样）。
- *
- *  所以正在跑的轮次里，清单不从这里算，而是一条事件一条事件地接着长（appendLiveItem）。
- *  它只增不减、不受压薄影响 —— 服务端手里那份才是「这一轮现在到底长什么样」的真身，
- *  前端照着它画。压薄只影响「增量游标」（events），不影响画面。
- */
-/* 【2026-11-09 主人报·多段消息堆一块】
- *
- * 病根：排队轮（插话 / 定时任务 / 续跑）**复用同一份 live**（openLiveForQueuedTurn
- * 直接把上一轮的缓存接过来续写，见上面那段注释），可 `done` 不是分段线 ——
- * appendLiveItem 只看「最后一条是不是 text」，于是下一轮的第一段正文会接着
- * 上一轮最后那段往下拼，屏幕上就是「好几轮的话堆在一个气泡里」。
- * 这跟「正在发送消息」消失是同一个根：都发生在流断了、服务端自己接着跑下一轮时。
- *
- * 修法：`done` / `aborted` / `error` 三个轮末事件算**硬分段**。
- * 用 Symbol 打标记（JSON 序列化看不见、不会漏给前端，也不污染 items 的形状），
- * 下一段 text 就一定会新起一个 item。
- * `rate_limited` 不算 —— 那是同一轮里的重试，断开反而会把一句话劈成两个气泡。
- */
+/* 直播直接将每个原始事件投影到 items，不受 events 压薄影响。
+ * 没有现成清单时才从 events 重放；两条入口共用此处的分段与条目更新规则。 */
 function appendLiveItem(items, ev) {
   if (!items || !ev || !ev.type) return;
-  /* 轮末：把最后那段正文「封口」，下一轮的话不许再拼上去。
-   *
-   * 标记用**不可枚举属性**，不是 Symbol 常量 —— 因为 _t_live_cursor.mjs 和
-   * check-segment-split.mjs 会把这两个函数抽出来单独跑（new Function），
-   * 引用模块级常量会直接 ReferenceError。不可枚举 → JSON.stringify 看不见，
-   * 发给前端的 items 仍是干净的原样。 */
+  /* 排队轮会复用现有清单。轮末用不可枚举属性封口，避免跨轮拼接正文；
+   * rate_limited 属于同一轮的重试，照常接着写。 */
   if (ev.type === 'done' || ev.type === 'aborted' || ev.type === 'error') {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -2974,13 +3045,7 @@ function appendLiveItem(items, ev) {
       });
     }
   } else if (ev.type === 'worker') {
-    /* 【2026-11-03 · 子任务卡（办事模式看不见干活的过程）】
-     *  ★ 同一套规则有三份，改一份必须改全三份：
-     *    ① 这里 appendLiveItem（增量攒清单，界面一直在读的是它）
-     *    ② 下面的 buildLiveItems（从头重算，since=0 那趟、以及 items 空时兜底）
-     *    ③ public/index.html 的 itemsFromEvents（前端镜像）
-     *  漏了 ① 的真实现象：事件流里明明有 worker 的每一步，快照里却一张卡都没有
-     *  —— 屏幕上永远只有那张「派活 · 运行中…」。 */
+    /* 子任务卡按 wid 更新。只有首次加入清单才切断正在拼接的正文。 */
     const wid = String(ev.wid || '0');
     let it = null;
     for (let i = items.length - 1; i >= 0; i--) if (items[i].k === 'worker' && items[i].id === wid) { it = items[i]; break; }
@@ -3012,247 +3077,9 @@ function appendLiveItem(items, ev) {
 
 function buildLiveItems(events) {
   const items = [];
-  let cur = null;
-  const flush = () => { if (cur && cur.t) items.push(cur); cur = null; };
-  const lastOf = (k) => { for (let i = items.length - 1; i >= 0; i--) if (items[i].k === k) return items[i]; return null; };
-  /**
-   * 【2026-11-09 QA 复核抓到的真缺陷·两份实现对「分段线」判据不同】
-   *
-   *  `appendLiveItem`（增量，/api/chat/live 有 items 时走它）只看「最后一条 item 是不是 text」；
-   *  这里原来**见到任何非 text 事件都 flush()**，包括那些**只更新已有条目、不新增条目**的
-   *  （`tool_end` 改已有工具卡、`worker` 更新已有卡、`whale_delta` 补已有 say）。
-   *  于是同一条事件流：
-   *    appendLiveItem → [text 'B', worker, text 'CD']
-   *    buildLiveItems → [text 'B', worker, text 'C', text 'D']
-   *  `/api/chat/live` 在不同时刻（items 有 / items 空）给出**段数不同**的清单 ——
-   *  屏幕上就是「跑着的时候 3 个气泡，对个账 / 刷新一下变 2 个」。
-   *
-   *  口径（一边定死，四份实现都照这个来）：
-   *    **只有「新增一条条目」的事件才是分段线**；只更新已有条目的不算。
-   *  理由：那两种事件在屏幕上没有多出任何东西（只改状态 / 只给已有的卡补一句），
-   *  把一段话在这里劈开，主人看到的就是「一句话莫名断成两个气泡」。
-   *
-   *  所以下面 `flush()` 一律挪进「真要 push 一条新条目」的那一支：
-   *   `tool_end` / `whale_delta` / `worker` 命中已有条目时**不 flush**，正文接着长。
-   *  （`whale_stream_finish` 本来就只补字、不 push，所以它一直是对的。）
-   */
-  for (const e of (Array.isArray(events) ? events : [])) {
-    if (!e || !e.type) continue;
-    /* 轮末就是分段线：排队的下一轮是「另一段话」，不能跟上一轮拼一个气泡。 */
-    if (e.type === 'done' || e.type === 'aborted' || e.type === 'error') {
-      flush();
-      /* 【2026-11-14 修·真 bug·重算版没给轮末封口】
-       * 增量版 appendLiveItem 在轮末会给最后那段正文打一个**不可枚举**的 __segEnd
-       * 标记（下一段话不许再拼上去）。重算版原来只 flush() 就走了 —— 没封口。
-       * 于是：text ' ' → aborted（轮末）→ reasoning → text '的'
-       *   增量版：'的' 不并回 ' '（' ' 已封口）→ 两段
-       *   重算版：'的' 并回 ' ' → 一段
-       * 同一串事件，两份清单结构不同 → check-live-items-parity 随机串直接抓出不一致。
-       * 现在重算版也封口，两边同款。 */
-      for (let i = items.length - 1; i >= 0; i--) {
-        const it = items[i];
-        if (!it) continue;
-        if (it.k !== 'text') break;
-        try { Object.defineProperty(it, '__segEnd', { value: true, enumerable: false, configurable: true }); } catch { it.__segEnd = true; }
-        break;
-      }
-      continue;
-    }
-    if (e.type === 'text') {
-      if (e.notice) { flush(); const _nt = String(e.text || ''); if (_nt) items.push({ k: 'note', t: _nt }); continue; }
-      /* 【2026-11-14 修·正文被思考切成两段】与增量版同款：
-       * 上一条是 think 时，这段话是被思考隔开的 → 并回前面那条 text。
-       * （原来这里 flush() 之后新起一条 → 同一句话在重算路径里也断成两个。） */
-      if (!cur && items.length && items[items.length - 1] && items[items.length - 1].k === 'think') {
-        let _merged = false;
-        for (let i = items.length - 2; i >= 0; i--) {
-          const x = items[i];
-          if (!x) break;
-          if (x.k === 'think') continue;             // 思考是透明的，继续往前
-          if (x.k === 'text') {
-            if (!x.__segEnd) { x.t += String(e.text || ''); _merged = true; }
-            break;
-          }
-          break;                                    // 别的 = 真分段线，不跨
-        }
-        if (_merged) continue;
-      }
-      if (!cur) cur = { k: 'text', t: '' };
-      cur.t += String(e.text || '');
-    } else if (e.type === 'reasoning') {
-      flush();
-      const last = items[items.length - 1];
-      if (last && last.k === 'think') last.t += String(e.text || '');
-      else items.push({ k: 'think', t: String(e.text || '') });
-    } else if (e.type === 'tool_start') {
-      /* 新卡 = 新条目 → 分段线 */
-      /**
-       * 【2026-11-16 修·重算这条路以前几乎标不上 process】
-       *
-       * 原来顺序是「先 flush()、再判 `!items[末尾].__segEnd`」—— 可 flush() 会顺手
-       * 把这段**封口**（打上不可枚举的 `__segEnd`），判据于是永远为假：
-       * 重算出来的清单里，工具前那段过程话几乎没有 process 标记。
-       *
-       * 后果正是主人看到的那句「她回我的内容又出现在屏幕上」：
-       * 直播时那段被当过程话藏着，一刷新走重算这条路，标记没了、它冒充成正文冒出来。
-       *
-       * 现在跟增量那条（appendLiveItem）完全同一判据：flush 之后，末尾那段正文
-       * 只要是 text 就标 process，不再看 __segEnd。
-       */
-      flush();
-      {
-        const _pv = items.length ? items[items.length - 1] : null;
-        if (_pv && _pv.k === 'text') _pv.process = true;
-      }
-      items.push({ k: 'tool', id: String(e.id || ''), name: String(e.name || ''), args: String(e.args || ''), status: 'run', output: '', startedAt: Number(e.ts) || 0 });
-    } else if (e.type === 'tool_end') {
-      const id = String(e.id || '');
-      /**
-       * 【2026-11-11 修·与 appendLiveItem 同一口径：按 id 往回找那张还在跑的卡】
-       *
-       * 只认「最后一张工具卡」的话，一步里并行发起两个工具（两个 read_file）就会
-       * 配错对：A 的结束事件把 B 当对象、对不上 id → 另起一条 A(完成)，
-       * 最后清单里 4 条（两张永远「正在跑」+ 两张「完成」）。
-       * 增量那份（appendLiveItem）已经改了，这条必须同款 —— 否则
-       * check-live-items-parity 会立刻报「从头重算」和「增量攒」两份对不上。
-       */
-      let it = null;
-      if (id) {
-        for (let i = items.length - 1; i >= 0; i--) {
-          const x = items[i];
-          if (x && x.k === 'tool' && String(x.id || '') === id) { it = x; break; }
-        }
-      }
-      if (!it) {
-        const lb = lastOf('tool');
-        if (lb && String(lb.id || '') === id) it = lb;
-      }
-      /* 改已有那张卡：屏幕上没多出东西，**不算分段线**（不 flush） */
-      if (it) { it.status = e.ok ? 'ok' : 'err'; it.output = String(e.output || ''); }
-      else { flush(); items.push({ k: 'tool', id, name: String(e.name || ''), args: '', status: e.ok ? 'ok' : 'err', output: String(e.output || ''), startedAt: 0 }); }
-    } else if (e.type === 'whale' || e.type === 'agent') {
-      const t = String(e.text || '');
-      const who = String(e.who || '');
-      /* 【2026-11-10 修·空气泡（A6）】空 say 不落清单（与 appendLiveItem 同口径） */
-      if (t) {
-        /* 【2026-11-10 修·小鲸的话说两遍】与 appendLiveItem 同一个口径：
-         * 整句事件到达时，若最后一条就是同一人的 say，同句/占位/前缀补全 → 收口不新增。
-         * 两份实现必须算出逐字相等的清单（check-live-items-parity 钉的就是这个）。 */
-        const lastSay = lastOf('say');
-        const norm = (s) => String(s || '').replace(/\s+/g, '');
-        if (lastSay && lastSay.who === who) {
-          if (!String(lastSay.t || '').trim()) lastSay.t = t;
-          else if (norm(lastSay.t) === norm(t)) lastSay.t = t;
-          else if (norm(t).startsWith(norm(lastSay.t))) lastSay.t = t;
-          else { flush(); items.push({ k: 'say', who, t, spectator: e && e.spectator === true }); }
-        } else {
-          flush();
-          items.push({ k: 'say', who, t, spectator: e && e.spectator === true });
-        }
-      }
-    } else if (e.type === 'whale_stream_start') {
-      /* 【2026-11-10 A6 复核后保留】空 say 占位是分段记号（见 appendLiveItem 同支）；
-       * 两份实现都带着它，清单逐字相等；屏幕半边由 items.js 对称滤空。 */
-      flush();
-      items.push({ k: 'say', who: String(e.who || ''), t: '', spectator: e && e.spectator === true });
-    } else if (e.type === 'whale_delta') {
-      const it = lastOf('say');
-      /* 她那一句已经在屏幕上长着：只是接着长，**不算分段线** */
-      if (it && it.who === String(e.who || '')) it.t += String(e.text || '');
-      else { flush(); items.push({ k: 'say', who: String(e.who || ''), t: String(e.text || ''), spectator: e && e.spectator === true }); }
-    } else if (e.type === 'steer') {
-      /* 【2026-11-10 主人钦点·插话进对话流中间】与 appendLiveItem 同一口径：
-       * 插话是独立条目 = 分段线（flush 前置，不并进她正在说的正文）。
-       * 这是「从头重算」那条路，两份实现必须算出逐字相等的清单。 */
-      const _t = String(e.text || '');
-      if (_t || (Array.isArray(e.atts) && e.atts.length)) {
-        flush();
-        items.push({
-          k: 'user',
-          t: _t,
-          steer: true,
-          ts: Number(e.ts) || 0,
-          who: String(e.who || ''),
-          ...(Array.isArray(e.atts) && e.atts.length ? { atts: e.atts } : {}),
-          ...(e.rewindId != null ? { rewindId: e.rewindId } : {}),
-        });
-      }
-    } else if (e.type === 'sentfile' || e.type === 'files') {
-      /* 【2026-11-10 收编（A2）】她发的文件进清单（与 appendLiveItem 同一口径：
-       * 同一份文件只留一条；新文件 = 新条目 = 分段线）。 */
-      /* 【2026-11-15 修·重算版漏了 flush：文件卡前后的正文被粘成一段】
-       * 增量版（appendLiveItem）把文件卡当**分段线**：卡之后来的 text 另起一条。
-       * 重算版这里不 flush()，正在攒的 cur 就一直开着 —— 文件卡被 push 到 cur
-       * **前面**，后面那段 text 又并回 cur，于是：
-       *   增量：[text '我看一下。'] [file] [text '\n']
-       *   重算：[file] [text '我看一下。\n']   ← 屏幕上一段话跨着文件卡被粘起来
-       * check-live-items-parity 的 seed=13/15/31 直接抓出这条（三个 seed 全是它）。
-       * 规矩：**真要 push 新条目就 flush**，跟 tool_start / steer 同款。 */
-      const list = e.type === 'sentfile' ? [e.file] : (Array.isArray(e.items) ? e.items : []);
-      const _files = list.filter((f) => f && (String(f.path || '') || String(f.key || '')));
-      if (_files.length) flush();
-      for (const f of list) {
-        if (!f || (!String(f.path || '') && !String(f.key || ''))) continue;
-        const fk = String(f.key || f.path || '');
-        let dup = null;
-        for (let i = items.length - 1; i >= 0; i--) {
-          if (items[i].k === 'file' && items[i].fkey === fk) { dup = items[i]; break; }
-        }
-        if (dup) { items.splice(items.indexOf(dup), 1); }  /* 【2026-11-15 主人定】重复发同一文件 → 移走旧卡，只留最新一张 */
-        items.push({
-          k: 'file',
-          fkey: fk,
-          name: String(f.name || '文件'),
-          size: Number(f.size) || 0,
-          kind: String(f.kind || 'file'),
-          path: String(f.path || ''),
-          dir: 'out',
-        });
-      }
-    } else if (e.type === 'worker') {
-      /* 【2026-11-03 主人：办事模式下看不见干活的过程】
-       * 原来 worker 干什么只有主智能体（watch_worker）和文件里的进度知道，
-       * 主人屏幕上只有一张「派活 · 运行中…」的卡，它跑多久都只有那一行。
-       * 现在 worker 的每一步都当成一个事件推给界面，画成一棵可以展开的子任务卡。 */
-      const wid = String(e.wid || '0');
-      let it = null;
-      for (let i = items.length - 1; i >= 0; i--) {
-        if (items[i].k === 'worker' && items[i].id === wid) { it = items[i]; break; }
-      }
-      if (!it) {
-        /* 第一张卡 = 新条目 → 分段线；后面只是往这张卡上补一步，屏幕没多东西，不算 */
-        flush();
-        /* 【2026-11-11 parity 修·字段形状必须与 appendLiveItem 一致】
-         * 增量那边建卡时带 startedAt/endedAt 两个字段（团队模式的耗时），
-         * 这里漏了 → 同一张卡两条路径 JSON 不同（少两个键），parity 三条全红。
-         * 形状是清单契约的一部分：键不许一边有一边没有。 */
-        it = { k: 'worker', id: wid, name: String(e.name || ''), status: 'run', steps: [], note: '', startedAt: 0, endedAt: 0 };
-        items.push(it);
-      }
-      if (e.name) it.name = String(e.name);
-      if (e.status) it.status = String(e.status);
-      if (e.note) it.note = String(e.note);
-      /* 与 appendLiveItem 同一口径：耗时两个字段都从事件上读（不许就地取钟，
-       * 否则重算路径拿不到同一刻，清单对不上、刷新还会丢时长）。 */
-      if (e.startedAt && !it.startedAt) it.startedAt = Number(e.startedAt) || 0;
-      if (e.kind === 'end') it.endedAt = Number(e.endedAt) || 0;
-      const stepText = String(e.text || '').trim();
-      if (stepText && (e.kind === 'step' || e.kind === 'start' || e.kind === 'mail')) {
-        it.steps.push({ kind: String(e.kind || 'step'), t: stepText });
-        /* 只留最近 40 步 —— 一个 worker 跑几十轮，全留着会把整轮事件撑爆 */
-        if (it.steps.length > 40) it.steps.splice(0, it.steps.length - 40);
-      }
-    } else if (e.type === 'whale_stream_finish') {
-      // 定稿：把最后那条还没字的 say 补上正文（有字就不动）
-      const it = lastOf('say');
-      const t = String(e.text || '');
-      if (it && !it.t && t) it.t = t;
-    }
-    /* 【2026-11-10 D7·file/sentfile 合成】由上面「收编（A2）」的分支承担
-     * （sentfile / files → k:'file'，fkey/name/size/kind/path/dir，与
-     * src-ui/FileCard.jsx、src-ui/items.js 同一口径），此处不再重复落第二个分支。 */
+  if (Array.isArray(events)) {
+    for (const event of events) appendLiveItem(items, event);
   }
-  flush();
   return items;
 }
 
@@ -3557,6 +3384,53 @@ function refuseDeleteReason(id) {
   return '';
 }
 
+/**
+ * 【2026-11-18 主人要求·空壳会话切走就扔】
+ *
+ * 原话：「新建会话后，除了开场白，该会话里智能体与用户都没发过消息，
+ *        那么当用户切换到其他会话时自动删除那个新建的会话」。
+ *
+ * 干的就是：点「新会话」→ 屏幕上只有她那句开场白 → 主人转头去了别的会话 →
+ * 这个会话已经没用了，别在左栏赖着（主人每次试一下都会留一个空壳，攒几十个）。
+ *
+ * 【为什么放在服务端 select 里】
+ * 谁切走、前端怎么切、有没有别的客户端（QQ / 手机端）—— 全都走这一个口。
+ * 放前端只有一个入口能生效，换个壳就漏。
+ *
+ * 判据本身在 `empty-shell.mjs` 的 judgeEmptyShell（纯函数，单独可测）；
+ * 这里只负责把运行态（在跑 / 置顶 / 草稿）喂进去，然后真删。
+ *
+ * @param {string} keepId 马上要切过去的那个 —— 绝不删它
+ * @returns {string|null} 真删掉的 id
+ */
+function dropIfEmptyShell(keepId) {
+  const id = String(getLastSessionId() || '');
+  if (!id || id === String(keepId || '')) return null;
+  let sess = null;
+  try { sess = getSession(id); } catch { return null; }
+  if (!sess) return null;
+  const ctx = {
+    running: runningTurns.has(id),
+    pinned: (() => { try { return Boolean(loadPins()[id]); } catch { return true; } })(),
+    hasDraft: (() => { try { return Boolean(readDraft(id)); } catch { return true; } })(),
+    isOpening: isOpeningMessage,
+  };
+  let verdict = { drop: false, why: '判不出来' };
+  try { verdict = judgeEmptyShell(sess, ctx); } catch { return null; }
+  if (!verdict.drop) return null;
+  const why = refuseDeleteReason(id);
+  if (why) return null;
+  try {
+    if (!deleteSession(id)) return null;
+    try { trashMemory(id); } catch {}
+    try { forgetTaskSession(id); } catch {}
+    try { clearSessionPersona(id); } catch {}
+    sessions.delete(id);
+    try { diagLog('drop-empty-shell', id + ' → 切到 ' + String(keepId || '') + '（' + verdict.why + '）'); } catch {}
+    return id;
+  } catch { return null; }
+}
+
 function json(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -3575,6 +3449,44 @@ function json(res, code, obj) {
  * 内存表，重启即清 —— 挂着的弹窗随进程消失，不会隔夜复活。
  */
 const PENDING_ASKS = new Map();
+
+/**
+ * 【2026-11-18 加·审批通道的工厂函数】
+ *
+ * 原来这段逻辑**只写在主聊天路由那一处**（内联 27 行）。可全仓有 4 个地方
+ * 会建工具上下文：主聊天、worker 派发、续跑、断流后恢复。只有第一处接了审批，
+ * 另外三处 `askApproval` 是 undefined —— 而 cmd-guard 的规矩是「问不到就不动」。
+ *
+ * 于是那些路径上，任何危险命令都会被当场拦死，**主人连问都没被问**，
+ * 她只会看到「主人没有点头」然后寸步难行，还查不出原因。
+ *
+ * 所以抽成这一个函数，四处共用：行为完全一致（60s 超时、abort、桌面通知），
+ * 以后要改也只改这一处。
+ *
+ * @param {Function} send 往当前 SSE 推事件的函数
+ * @param {Function} notifyDesktop 桌面通知（可空）
+ * @param {AbortSignal} signal 这一轮的信号，掐了就算不许
+ */
+function makeAskApproval({ send, notifyDesktop, signal }) {
+  return ({ toolName, reason }) => new Promise((resolve) => {
+    const requestId = 'ask_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    let settled = false;
+    const finish = (yes, why) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      PENDING_ASKS.delete(requestId);
+      try { console.log('[ask] ' + requestId + ' tool=' + toolName + ' -> ' + (yes ? '允许' : '不许') + '（' + why + '）'); } catch {}
+      resolve(yes === true);
+    };
+    const timer = setTimeout(() => finish(false, '60s 超时'), 60000);
+    PENDING_ASKS.set(requestId, finish);
+    try { if (signal) signal.addEventListener('abort', () => finish(false, '本轮被掐'), { once: true }); } catch {}
+    try { send({ type: 'ask_approval', toolName: String(toolName || ''), reason: String(reason || ''), requestId }); }
+    catch (e) { finish(false, 'send 失败：' + String(e?.message || e)); }
+    try { if (notifyDesktop) notifyDesktop('ask-approval', '小鱼在等你确认', '她要动：' + String(toolName || '').slice(0, 40)); } catch {}
+  });
+}
 
 /**
  * 前情能插在哪儿（只认「安全缝」）。
@@ -3950,7 +3862,7 @@ async function wakePeer(sessionId) {
  *     同时直播清单立刻推一条 notice（前端马上看见「递了话」，跟压缩提醒同款）。
  *   · 她没在跑 → 信本来就在信箱里（postMail 落盘的），直接走 wakePeer 叫醒。
  */
-async function deliverMailNow(to, fromTitle, text) {
+async function deliverMailNow(to, fromTitle, text, { allowWake = true, mailId = '' } = {}) {
   const turn = runningTurns.get(to);
   const alive = Boolean(turn && turn.ac && !turn.ac.signal.aborted);
   const sysText = '（同机伙伴「' + (fromTitle || '另一个会话') + '」给你递了话：「' + String(text || '').slice(0, 2000)
@@ -3958,6 +3870,11 @@ async function deliverMailNow(to, fromTitle, text) {
   if (alive) {
     try {
       steer(to, sysText, { _sysNote: true });
+      /* 【2026-11-19 加】插进去的同时，把**这一封**在信箱里标成「已交给某一轮」。
+       * 不标的话，她这一轮收尾 takeMail 又会把同一封信投一遍 —— 同一句话读两遍。
+       * 只标这一封（按 id），同时间进来的别的信照旧正常投递；
+       * 这一轮要是被掐断，releaseClaimedMail 会把它放回来重投，不会丢。 */
+      try { if (mailId) claimMail(to, mailId); } catch {}
       diagLog('peer-deliver-live', 'to=' + to + '（在跑，系统提示已插进下一步）');
     } catch (e) {
       return { ok: false, note: '插进当前轮失败：' + String(e?.message ?? e) };
@@ -3968,7 +3885,11 @@ async function deliverMailNow(to, fromTitle, text) {
      * 留着这段注释，免得以后有人以为是漏了又给加回去。 */
     return { ok: true, note: '已即时插进她当前这轮（仅AI可见的系统提示）' };
   }
-  /* 没在跑：信在信箱里，叫醒她 */
+  /* 没在跑：信在信箱里，叫醒她。
+   * 【2026-11-19 加 allowWake】调用方明确表示「只送不叫」时（比如 /api/peer/send 的
+   * 不唤醒档，或者它判断她刚跑完、不该再花一次钱），这里就老实说没叫，
+   * 别偷偷起一轮 —— 起一轮是要花钱的。 */
+  if (!allowWake) return { ok: false, note: '她这会儿没在跑，信留在信箱里（这次没要求唤醒）' };
   try {
     const r = await wakePeer(to);
     return { ok: Boolean(r && r.ok), note: r && r.ok ? '已叫醒她，她这就去看信箱' : (r && r.note) || '叫醒没成' };
@@ -4024,6 +3945,28 @@ async function startPeerTurn(sessionId) {
   const turn = { ac, done: null, peerTurn: true, startedAt: Date.now() }; /* 【2026-11-15 修·幽灵轮】不带 startedAt，自愈清理器会判成「纯幽灵」立刻删，
    *  表现成「叫醒她了却一声不响就停」。peerTurn 是真轮，必须带。 */
   runningTurns.set(sessionId, turn);
+  /**
+   * 【2026-11-19 修·叫醒 100% 失败：`send is not defined`】
+   *
+   * 主人问：「为什么递话给其他会话，那个会话不能立即收到并被唤醒？」
+   * 实测（scripts/_probe-peer-instant.mjs）打出来的原话就是
+   * 「叫醒失败：send is not defined」—— 不是慢，是**根本没起来**。
+   *
+   * 病根：下面 4200 多行那个 runWithToolContext 里写了
+   *     askApproval: makeAskApproval({ send, ... }) 和 pushEvent: (ev) => { send(ev) }
+   * 可 `send` 在这函数里**从来没定义过**（它只存在于 /api/chat 那几个处理器里）。
+   * `{ send }` 是立即求值的 —— 一进到那一行就抛 ReferenceError，整轮当场死掉；
+   * wakePeer 接住这条错，如实回「叫醒失败：send is not defined」。
+   *
+   * 顺带把直播缓存开出来（跟排队轮一模一样）。以前就算叫醒了，那一轮的事件也
+   * 一条都到不了 /api/chat/live —— 屏幕上看不到她在说，要切过去重新拉历史才看得见。
+   * 「不即时」的体感一半来自这里。
+   */
+  const live = openLiveForQueuedTurn(sessionId);
+  const send = (ev) => {
+    if (!live) return;
+    try { appendLiveCache(live, { ...ev, at: Date.now() }); } catch {}
+  };
   try {
     const history = session.messages;
     repairHistory(history);
@@ -4075,7 +4018,7 @@ async function startPeerTurn(sessionId) {
       } catch {}
       return -1;
     })();
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, askApproval: makeAskApproval({ send, notifyDesktop: null, signal: ac.signal }), pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
         try {
           const ss = (typeof session !== 'undefined' && session) ? session : null;
           if (ss && Array.isArray(ss.messages) && f) {
@@ -4110,6 +4053,9 @@ async function startPeerTurn(sessionId) {
       safeWord: session.mode?.word || '',
       onEvent: (ev) => {
         if (ev.type === 'peer_mail') console.log('[peer] ' + sessionId + ' 收到 ' + ev.count + ' 封');
+        /* 【2026-11-19】顺手写进直播缓存：主人切到这个会话（或它就在屏幕上）时
+         * 能立刻看见她在说，而不是等落盘 + 重新拉历史。 */
+        send(ev);
       },
     }));
     // runAgent 已经把这一轮的话 push 进 wire 了；wire 是 history 的浅拷贝数组，
@@ -4142,6 +4088,8 @@ async function startPeerTurn(sessionId) {
     console.warn('[peer] 这一轮没跑成：', String(e?.message ?? e), 'sessionId =', sessionId);
     throw e;
   } finally {
+    /* 【2026-11-19】直播缓存收尾：不收这一下，前端那条轮询会一直以为她还在跑 */
+    if (live) { live.done = true; live.endedAt = Date.now(); }
     if (runningTurns.get(sessionId) === turn) runningTurns.delete(sessionId);
   }
 }
@@ -4195,7 +4143,7 @@ function openLiveForQueuedTurn(sessionId) {
     /* 【2026-11-12 修】items 一开始就要有：插话处理里 `if (!Array.isArray(lv.items))
      * lv.items = []` 会顺手建，但那是插话先到的情况；排队轮先吐内容、items 一直
      * 缺着的话，appendLiveCache 会补建 —— 这里显式建好更稳。 */
-    const live = { sessionId, events: [], items: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true };
+    const live = { sessionId, events: [], items: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true, turnId: newTurnId() };
     liveLogs.set(sessionId, live);
     return live;
   } catch { return null; }
@@ -4444,7 +4392,7 @@ async function startQueuedTurn(sessionId, queue = null) {
       } catch {}
       return -1;
     })();
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, askApproval: makeAskApproval({ send, notifyDesktop: null, signal: ac.signal }), pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
         try {
           const ss = (typeof session !== 'undefined' && session) ? session : null;
           if (ss && Array.isArray(ss.messages) && f) {
@@ -4982,7 +4930,25 @@ async function resumeInterruptedTurn(onlySessionId) {
   };
   try {
     const history = session.messages;
-    repairHistory(history);
+    /* 【2026-11-19 加】把「砍掉的工具调用」收下来 —— 见 agent.mjs repairHistory 的注释。
+     * 不说这一句，模型会以为自己刚才什么都没干，把已经生效的操作再执行一遍。 */
+    const _repair = { dropped: [] };
+    // 仅读已落盘的快照。内存结果可能还没提交，不能据此忽略待恢复记录。
+    const _savedHistory = loadSession(sessionId)?.messages;
+    const _live = liveTools(sessionId, _savedHistory);
+    repairHistory(history, _repair);
+    const _pending = [];
+    {
+      const seenKey = new Set();
+      for (const item of [..._repair.dropped, ..._live]) {
+        if (!item?.name) continue;
+        const key = item.name + '\u0000' + item.args;
+        if (seenKey.has(key)) continue;
+        seenKey.add(key);
+        _pending.push(item);
+      }
+    }
+    try { diagLog('resume-tools:' + _pending.length + '（账本 ' + _live.length + ' / 历史 ' + (Array.isArray(_repair.dropped) ? _repair.dropped.length : 0) + '）', sessionId); } catch {}
     // 这句是给模型的临时提示，不是主人说的 —— 打 context 标记，
     // 这样它不进 turns、不参与压缩、跑完摘掉。
     const _liveOpen = liveOpenSteps(sessionId, info && info.openSteps);
@@ -4992,6 +4958,21 @@ async function resumeInterruptedTurn(onlySessionId) {
         '（上一轮跑到一半被打断了（程序重启 / 崩溃 / 被关掉都算）。你现在是在**接着**那一轮做，' +
         '不是重新开始；已经说过的话主人已经看到了，别从头复述。）' +
         (info.text ? `\n你当时正说到：「${info.text.slice(-600)}」` : '') +
+        /* 【2026-11-19 加·被打断的工具调用必须点名】
+         * 主人在工作途中遇到重启，最危险的不是「话没说完」，而是
+         * 「工具已经做完、结果还没记上，她却以为自己没做」—— 重启后原样再跑一遍。
+         * 实测：一个追加命令的副作用已落地，强杀重启后计数从 1 变 2。
+         *
+         * 这里不替她判断「做没做」（我们确实不知道），只把事实摊开：
+         * 调了什么、参数是什么、结果没回来。让她**先确认**再决定重试。 */
+        (Array.isArray(_pending) && _pending.length
+          ? '\n\n⚠ 重启那一刻，下面这些工具**已经开始跑了，但结果没等到**。'
+            + '它们可能已经生效，也可能没做完 —— 我不确定，别假设没发生：'
+            + _pending.map((d) => `\n  · ${d.name}${d.args ? '（' + d.args + '）' : ''}`).join('')
+            + '\n先确认它们的实际效果（该看文件就看文件、该查状态就查状态），'
+            + '确认已经做成了就直接往下走，**别原样再执行一遍**；'
+            + '确实没做成，再补一次。'
+          : '') +
         /* 【2026-10-30】清单上没打勾的步骤一并告诉它 —— 否则它只知道「断在半句话」，
          * 不知道自己还有哪几步没做完，还是得等主人发「继续」。 */
         (Array.isArray(_liveOpen) && _liveOpen.length
@@ -5018,6 +4999,10 @@ async function resumeInterruptedTurn(onlySessionId) {
           ? ('\n清单还剩 ' + _liveOpen.length + ' 步没打勾，照上面那几步往下做。')
           : '\n清单已经全部做完，没有剩余步骤 —— 别回头重做、别重新验证已经成立的事，做完手上这一下就收工。'),
       context: true,
+      /* 【2026-11-19 加·不标这个就白写了】runAgent 进来会重建 system + context，
+       * 判据是 `!m.context` —— 这条警告也是 user+context，会被当成「旧副本」踢掉。
+       * 之前「点名被打断的工具」一直没生效，根子就在这儿。 */
+      resumeNote: true,
     });
     const wire = history.slice();
     // 【2026-10-31 主人要求】老的、已经收起来的工具结果不进上下文，只留一句摘要；
@@ -5142,7 +5127,7 @@ async function resumeInterruptedTurn(onlySessionId) {
     };
 
 
-    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
+    const out = await runWithToolContext({ sessionId, snap, signal: ac.signal, outbox: null, askApproval: makeAskApproval({ send, notifyDesktop: null, signal: ac.signal }), pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
         try {
           const ss = (typeof session !== 'undefined' && session) ? session : null;
           if (ss && Array.isArray(ss.messages) && f) {
@@ -5633,10 +5618,52 @@ const PV_IMAGE_MIME = {
 const PV_TEXT_CAP = 200 * 1024;      // 文本预览最多给前 200KB（对齐 read_file 的 20 万字符量级）
 const PV_STREAM_OVER = 4 * 1024 * 1024; // 超过 4MB 不整份拉进内存，只读头一段
 
-function pvInsideWorkspace(p) {
-  const root = resolve(config.workspace);
-  const abs = isAbsolutePath(p) ? resolve(p) : resolve(root, p);
-  const rel = relative(root, abs);
+/**
+ * 【2026-11-18 改·工作区按会话分】
+ *
+ * 预览接口原来只认全局 `config.workspace`。分会话之后，她给自己的会话目录
+ * 写了文件、界面上点「预览」就会被判「工作区外」—— 所以这里也认两块：
+ *   ① 会话自己的目录（`<共享区>/sessions/<sid>/`）
+ *   ② 共享区（老文件都在这儿）
+ */
+function pvInsideWorkspace(p, sidIn = '') {
+  const shared = resolve(config.workspace);
+  /* 【2026-11-18 注意】HTTP 请求不在 AsyncLocalStorage 的上下文里，
+   * currentSessionId() 在这里**恒为空** —— 所以必须允许调用方显式传 sid，
+   * 否则她写进会话目录的文件，界面上点「预览」永远被判「工作区外」。 */
+  const sid = String(sidIn || currentSessionId() || '').trim();
+  const mine = sid && /^[A-Za-z0-9_-]{1,64}$/.test(sid) ? join(shared, 'sessions', sid) : '';
+  const abs = isAbsolutePath(p) ? resolve(p) : resolve(mine || shared, p);
+  const ok = (base) => {
+    if (!base) return false;
+    const rel = relative(base, abs);
+    return !rel.startsWith('..') && !isAbsolutePath(rel);
+  };
+  if (ok(mine) || ok(shared)) return abs;
+  return null;
+}
+
+/**
+ * 【2026-11-18 加·快照 key 也可能是三种前缀】
+ *
+ * 「查看改动」里那份快照的 key 现在可能带 `sess:<sid>:` 或 `root:` 前缀
+ * （见 rewind.mjs 的 snapRoots）。原来这里直接把它当相对路径拼，
+ * 结果 `sess:abc:out.txt` 被当成一个文件名，永远 stat 不到 —— 改动列表全空。
+ * 这里跟 restoreWorkspace 用同一套解析，读写对称。
+ *
+ * @returns {string|null} 门外的返回 null
+ */
+function pvResolveKey(key, sidIn = '') {
+  const k = String(key || '');
+  const mSess = /^sess:([A-Za-z0-9_-]{1,64}):(.*)$/.exec(k);
+  const mRoot = mSess ? null : /^root:(.*)$/.exec(k);
+  const base = mSess
+    ? join(resolve(config.workspace), 'sessions', mSess[1])
+    : mRoot ? resolve(config.root || process.cwd()) : '';
+  if (!base) return pvInsideWorkspace(k, sidIn);
+  const rel0 = mSess ? mSess[2] : mRoot[1];
+  const abs = resolve(base, rel0);
+  const rel = relative(base, abs);
   if (rel.startsWith('..') || isAbsolutePath(rel)) return null;
   return abs;
 }
@@ -5840,7 +5867,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/file') {
     const p = String(url.searchParams.get('path') || '').trim();
     if (!p) return json(res, 400, { error: '没给 path 参数' });
-    const abs = pvInsideWorkspace(p);
+    const abs = pvInsideWorkspace(p, String(url.searchParams.get('sid') || '').trim());
     if (!abs) return json(res, 403, { error: '这个路径不在工作区里，不给预览' });
     let st = null;
     try { st = statSync(abs); } catch {
@@ -5989,7 +6016,7 @@ const server = createServer(async (req, res) => {
     if (!keys.length) return json(res, 200, { ok: true, at: anchor, files: [] });
     const files = [];
     for (const key of keys) {
-      const abs = pvInsideWorkspace(key);
+      const abs = pvResolveKey(key, id);
       if (!abs) continue; // 快照键本来就在工作区内产生，这里再验一道，双保险
       const before = ws[key];
       let nowText = null;
@@ -6001,7 +6028,11 @@ const server = createServer(async (req, res) => {
           if (st2.size <= 1024 * 1024) nowText = pvReadFileSync(abs, 'utf8'); // 现文件超 1MB 就不比了
         }
       } catch {}
-      const f = { path: key };
+      /* 【2026-11-18】key 可能带 `sess:<sid>:` / `root:` 前缀（快照按会话存）。
+       * 那个前缀是**内部约定**，别端到界面上给人看 —— 剥掉，只留相对路径。
+       * 原始 key 留在 f.key 里，排查时还能对上盘上的快照。 */
+      const _disp = String(key).replace(/^sess:[A-Za-z0-9_-]{1,64}:/, '').replace(/^root:/, '');
+      const f = { path: _disp, key };
       if (before === '__TOO_BIG__') { f.status = 'tooBig'; files.push(f); continue; }
       if (!exists) {
         if (before === null) { f.status = 'absent'; files.push(f); continue; } // 那一轮建的、后来又被删了
@@ -6038,8 +6069,11 @@ const server = createServer(async (req, res) => {
      * 现在两个都带出去，由前端把话说清楚。
      */
     const pendingVersion = localVersion();
+    const testToken = process.env.XY_TEST_INSTANCE === '1' && process.env.XY_TEST_INSTANCE_TOKEN;
     return json(res, 200, {
       ok: true,
+      ...(/^[a-f0-9]{64}$/.test(testToken || '') && req.headers['x-xy-test-instance'] === testToken
+        ? { testInstancePid: process.pid } : {}),
       version: config.version,
       running: config.version,
       target: pendingVersion || null,
@@ -6049,7 +6083,11 @@ const server = createServer(async (req, res) => {
       baseURL: ep.baseURL,
       hasKey: Boolean(ep.apiKey),
       source: ep.source,
-      workspace: config.workspace,
+      /* 【2026-11-18】工作区按会话分：带上「当前会话自己的目录」，
+       * 界面右上角那句「工作目录: …」才是她真在用的那个。sharedWorkspace 另给一份，
+       * 老文件在那边（设置里想找旧东西时用得上）。 */
+      workspace: (() => { try { return workspaceFor(String(url.searchParams.get('sid') || '')); } catch { return config.workspace; } })(),
+      workspaceShared: (() => { try { return sharedWorkspace(); } catch { return config.workspace; } })(),
       /**
        * 模型地址到底通不通。界面上拿这个画提示条。
        *
@@ -6169,12 +6207,25 @@ const server = createServer(async (req, res) => {
     const _base0 = String((payload && payload.base) || '').trim();
     let _key0 = String((payload && payload.key) || '').trim();
     /**
-     * 【2026-11-17】这次要试的 key 列表。
+     * 【2026-11-18 主人报·「拉一下」拉出不属于这个 API key 的模型】
      *
-     * 主人没填 key 时，同一个地址上存的**每一把**都试一遍（各能看到不同模型组，
-     * 详见 models.mjs 的 keysForBaseURL 注释）；填了 key 就只问那一把。
+     * 原话：「为什么模型页的【拉一下】会拉出不属于这个 API key 的模型？改」。
+     *
+     * 病根是我 11-17 为「拉不到出图模型」做的那个合并：主人没填 key 时，
+     * 把这个地址上**存着的每一把 key 都问一遍，然后把模型 id 全部并进一个列表**。
+     * 中转站一把 key 一个模型组，于是：
+     *   · 生图表单（image key 已保存）点「拉一下」→ 列表里混进 chat key 才有的 deepseek；
+     *   · 选一个 → 用 image key 去调 → 502/401，主人当然觉得「拉出来的是假的」。
+     *
+     * 一份列表只能属于**一把 key**。所以现在：
+     *   · 填了 key → 只问这一把（本来就是这样）；
+     *   · 没填 key → 只问**这个地址上跟当前表单类型对得上的那一把**（image 表单问 image key，
+     *     chat 表单问 chat key），拿不到才退到同地址的第一把。**绝不合并多把。**
+     *   · 同地址还有别的 key 能看别的模型组时，回一个 keyCount 让界面说清楚
+     *     「这里还有 N 把 key」，主人想拉那批就在对应位置填那条 key —— 而不是把它们混进来。
      */
     let _keyList = [];
+    let _keyCount = 0;
     if (!_base0) return json(res, 400, { ok: false, error: '先填接口地址' });
     if (!/^https?:\/\//i.test(_base0)) return json(res, 400, { ok: false, error: '接口地址要以 http:// 或 https:// 开头' });
 
@@ -6196,11 +6247,14 @@ const server = createServer(async (req, res) => {
         /* 注意：不能用 listModels() 的返回去找 key（它只回 hasKey，从来不带 apiKey）。
          * 必须走 keysForBaseURL —— 它是专门为这件事开的口子。 */
         const _found = keysForBaseURL(_base0, { kind: String((payload && payload.kind) || '') });
+        _keyCount = _found.length;
         if (_found.length) {
-          _keyList = _found.map((x) => x.key);
+          /* 【只取第一把】排序已经把「跟表单类型一致的那把」排在前面（keysForBaseURL 的 ranked）。
+           * 一把一份列表 —— 合并多把就是 11-18 主人报的那个「拉出不属于这个 key 的模型」。 */
+          _keyList = [_found[0].key];
           try {
-            diagLog('models-discover-keyfallback', '按地址找到 ' + _keyList.length + ' 把 key：'
-              + _found.map((x) => x.kind + '(尾' + x.key.slice(-4) + ')').join(','));
+            diagLog('models-discover-keypick', '按地址选了 ' + _found[0].kind + '(尾' + _found[0].key.slice(-4) + ')'
+              + '，同地址共 ' + _found.length + ' 把 key');
           } catch {}
         } else {
           try { diagLog('models-discover-nokey', 'base=' + _base0 + ' 没有已保存的 key，按无 key 请求'); } catch {}
@@ -6220,7 +6274,7 @@ const server = createServer(async (req, res) => {
       : [`${_b}/v1/models`, `${_b}/models`];
 
     let _lastErr = '';
-    /** 所有 key 拉到的 id 都并进这里 —— 中转站一把 key 一个模型组，合并才看得全 */
+    /** 这一次只问一把 key，所以拿到的就是「这把 key 真能用的模型」 */
     const _allIds = [];
     let _okUrl = '';
     for (const _k of _keyList) {
@@ -6272,7 +6326,9 @@ const server = createServer(async (req, res) => {
     if (_allIds.length) {
       _allIds.sort((a, b) => a.localeCompare(b));
       try { diagLog('models-discover', `ok base=${_b} keys=${_keyList.length} count=${_allIds.length}`); } catch {}
-      return json(res, 200, { ok: true, ids: _allIds, url: _okUrl, keys: _keyList.length });
+      /* keyCount = 这个地址上还存着几把 key。界面据此提示「还有 N 把 key」，
+       * 但列表本身只属于刚问的那一把 —— 不再混在一起。 */
+      return json(res, 200, { ok: true, ids: _allIds, url: _okUrl, keys: _keyList.length, keyCount: _keyCount || _keyList.length });
     }
     if (!_allIds.length) {
       /* 日志里只记地址和失败原因 —— key 一个字都不写 */
@@ -6458,6 +6514,14 @@ const server = createServer(async (req, res) => {
         return !!(t0 && t0.ac && t0.ac.signal && t0.ac.signal.aborted);
       })(),
       startedAt: live.startedAt,
+      /**
+       * 【2026-11-18 加·轮次 id】
+       *
+       * 前端拿它跟历史消息上的 `_turn` 对一下，就知道「这份直播清单是不是已经
+       * 落进正式历史了」—— 落进了就整段丢给历史去画，不用再靠正文文本猜。
+       * 老会话 / 老缓存没有这个字段，回 null，前端照旧走原来的兜底逻辑。
+       */
+      turnId: live.turnId || null,
       endedAt: live.endedAt ?? null,
       since,
       total: all.length,
@@ -7625,9 +7689,7 @@ const server = createServer(async (req, res) => {
     try {
       return json(res, 200, { ok: true, sessionId: sid, on: adminOn(sid) });
     } catch (e) {
-      /* 【2026-11-14 修】管理员档 11-13 起「没显式关过 = 开」，读盘失败也按默认开，
-       * 跟 admin-mode.mjs 的 adminOn() 一个口径；原来这里回 on:false，界面会把默认开画成已关。 */
-      return json(res, 200, { ok: true, sessionId: sid, on: true, note: String(e?.message ?? e) });
+      return json(res, 200, { ok: true, sessionId: sid, on: false });
     }
   }
   if (req.method === 'POST' && url.pathname === '/api/admin-mode') {
@@ -9035,7 +9097,13 @@ const server = createServer(async (req, res) => {
             : mime.includes('webp') ? 'webp'
               : mime.includes('bmp') ? 'bmp'
                 : 'png';
-      const dir = join(config.workspace || config.dataDir, 'attachments');
+      /* 【2026-11-18】粘贴的图落在**这个会话自己的工作区**里，
+       * 不然所有会话的粘贴图都堆在同一个 attachments 目录里（跟工作区一个毛病）。
+       * 前端不一定传 sessionId（老版本不传），所以拿不到就退共享区。 */
+      const _wsForPaste = (() => {
+        try { return workspaceFor(String(payload?.sessionId || '')); } catch { return config.workspace || config.dataDir; }
+      })();
+      const dir = join(_wsForPaste || config.dataDir, 'attachments');
       __mkPaste(dir, { recursive: true });
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const name = 'paste-' + ts + '-' + Math.random().toString(36).slice(2, 7) + '.' + ext;
@@ -9075,7 +9143,27 @@ const server = createServer(async (req, res) => {
    * （resolve 后 relative 出 .. 或绝对路径就拒），一寸都不多给。
    */
   if (req.method === 'GET' && url.pathname === '/api/files/mention') {
-    const root = resolve(config.workspace || '.');
+    /**
+     * 【2026-11-18 改·@ 提及按会话】
+     *
+     * 分会话之后，她自己的活都写在会话目录里；@ 提及要是还只列共享区，
+     * 主人打 @ 就永远看不到她刚生成的那个文件。
+     *
+     * 现在：带 sid 且该会话目录存在 → 先列**会话目录**（她自己的活），
+     * 再补上共享区的（主人的旧素材、旧 dump 全在根上；只列会话目录的话
+     * 主人打 @ 一个老文件都找不到）。
+     *
+     * 为什么不干脆混成一锅：同名项会出现两次，选哪个都不知道。
+     * 所以会话目录里已经有的名字不再从共享区补；补进来的标「（共享区）」，
+     * 一眼能看出那不是她这一轮生成的。
+     */
+    const _sidM = String(url.searchParams.get('sid') || '').trim();
+    const sharedRoot = resolve(config.workspace || '.');
+    let root = sharedRoot;
+    if (_sidM && /^[A-Za-z0-9_-]{1,64}$/.test(_sidM)) {
+      const mine = join(sharedRoot, 'sessions', _sidM);
+      try { if (statSync(mine).isDirectory()) root = mine; } catch { /* 还没建就用共享区 */ }
+    }
     const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
     const dirParam = String(url.searchParams.get('dir') || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
     const startAbs = dirParam ? resolve(root, dirParam) : root;
@@ -9084,7 +9172,7 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { error: 'path outside workspace is not allowed' });
     }
     /* 跟 search_files 一个规矩：重目录不进去翻 */
-    const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.cache', 'playground', '.state', 'sandbox', 'attachments', 'logs', 'dump', 'backup', 'voice']);
+    const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.cache', 'playground', '.state', 'sandbox', 'attachments', 'logs', 'dump', 'backup', 'voice', 'sessions']);
     const LIMIT = 20;
     const hits = [];
     let scanned = 0;
@@ -9093,13 +9181,14 @@ const server = createServer(async (req, res) => {
     /* 广度优先：浅的永远排前面 —— 深度优先的话，a-test-data 里几千个文件
        能把扫描预算吃光，主人根目录下那个真想要的文件永远轮不上。 */
     const queue = [[startAbs, dirParam, 0]];
-    while (queue.length && hits.length < LIMIT && scanned <= 3000) {
-      const [abs, rel, depth] = queue.shift();
+    const scanInto = (q0, limit) => {
+    while (q0.length && hits.length < limit && scanned <= 3000) {
+      const [abs, rel, depth] = q0.shift();
       if (depth > 6) continue;
       let ents;
       try { ents = readdirSync(abs, { withFileTypes: true }); } catch { continue; }
       for (const e of ents) {
-        if (hits.length >= LIMIT || scanned > 3000) break;
+        if (hits.length >= limit || scanned > 3000) break;
         scanned++;
         const name = e.name;
         if (name.startsWith('.trash')) continue;
@@ -9109,7 +9198,7 @@ const server = createServer(async (req, res) => {
           if (!q || name.toLowerCase().includes(q) || r.toLowerCase().includes(q)) {
             hits.push({ name: r, dir: true });
           }
-          if (!shallow) queue.push([join(abs, name), r, depth + 1]);
+          if (!shallow) q0.push([join(abs, name), r, depth + 1]);
         } else {
           if (name.startsWith('.')) continue;
           if (!q || name.toLowerCase().includes(q) || r.toLowerCase().includes(q)) {
@@ -9117,6 +9206,25 @@ const server = createServer(async (req, res) => {
           }
         }
       }
+    }
+    };
+    scanInto(queue, LIMIT);
+    /* 【2026-11-18 补】会话目录列完还不够：主人的旧素材全在共享区根上，
+     * 只列会话目录的话，打 @ 一个老文件都找不到。这里补一遍共享区，
+     * 同名的不重复列，补进来的标一句「（共享区）」。
+     * 只补根这一层：老根上有 255 个文件，翻深了会把扫描预算吃光。 */
+    if (root !== sharedRoot && !dirParam && hits.length < LIMIT) {
+      const seen = new Set(hits.map((h) => String(h.name)));
+      const before = hits.length;
+      scanInto([[sharedRoot, '', 0]], LIMIT);
+      const kept = hits.slice(0, before);
+      for (let i = before; i < hits.length; i++) {
+        const h = hits[i];
+        if (!h || seen.has(String(h.name))) continue;
+        kept.push({ name: h.name, dir: h.dir, mark: '（共享区）' });
+      }
+      hits.length = 0;
+      hits.push(...kept);
     }
     /* 目录排前面，同类按名字排 */
     hits.sort((a, b) => (a.dir !== b.dir) ? (a.dir ? -1 : 1) : a.name.localeCompare(b.name, 'zh'));
@@ -9299,49 +9407,31 @@ const server = createServer(async (req, res) => {
   // ---------------- 会话级：这个会话用哪个模型 / 哪个思考强度 ----------------
   // 左上角那两个框改的就是这里。只影响当前会话，不碰右上角面板的设置。
 
+  async function sessionConfigView(sid, ov) {
+    const picked = ov.modelId ? endpointFor(ov.modelId) : null;
+    const ep = picked ?? activeEndpoint();
+    const level = ov.level || '';
+    const defaultLevel = levelFor(ep);
+    const effectiveLevel = level || defaultLevel;
+    return {
+      sessionId: sid,
+      modelId: picked?.id || '',
+      modelName: ep.name || ep.model || '没配模型',
+      hasKey: Boolean(ep.apiKey),
+      level,
+      effectiveLevel,
+      levelName: LEVELS.find((l) => l.id === effectiveLevel)?.name || effectiveLevel,
+      isModelCustom: Boolean(picked),
+      isLevelCustom: Boolean(level) && String(level) !== NEW_SESSION_DEFAULT_LEVEL,
+      models: listModels().models.map((m) => ({ id: m.id, name: m.name || m.model, active: m.id === ep.id })),
+      levels: await detectSessionLevels(ep),
+      defaultLevelName: LEVELS.find((l) => l.id === defaultLevel)?.name || '默认',
+    };
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/session-config') {
     const sid = url.searchParams.get('sessionId') || '';
-    const ov = getOverride(sid);
-    const epNow = activeEndpoint();
-    const th = getThinking();
-
-    // 模型名：会话临时切过就显示那个，否则显示右上角当前那个
-    let modelId = ov.modelId || '';
-    let modelName = epNow.name || epNow.model;
-    if (ov.modelId) {
-      const picked = endpointFor(ov.modelId);
-      if (picked) modelName = picked.name || picked.model;
-      else modelId = ''; // 那个模型被删了，回落
-    }
-
-    const level = ov.level || '';
-    /* 【2026-11-15 主人报·新建会话左上角写「高」、展开却勾着「关」】
-     * 原来这里没会话级设置时把文案写死「高」，而勾选读的是 defaultLevelName
-     * （= levelFor(当前模型)，此前那批老值全是 off）—— 两处各说各话。
-     * 现在一律取「实际生效的那一档」：显示和勾选同一个来源，再不可能打架。 */
-    const _effLevel = level || levelFor(epNow);
-    const levelName = LEVELS.find((l) => l.id === _effLevel)?.name || String(_effLevel || '');
-
-    return json(res, 200, {
-      sessionId: sid,
-      modelId,
-      modelName: modelName || '没配模型',
-      hasKey: Boolean(epNow.apiKey),
-      level,
-      levelName,
-      isModelCustom: Boolean(modelId),
-      /* 【2026-11-15 补·新建会话默认「低」之后，框别一直染成「自定义」】
-       * 新会话现在都显式记一条 level:'low'。若还按「有值就算自定义」，
-       * 每个新会话的思考框一开就变蓝、悬停写「临时用了低」—— 那不是主人改的，
-       * 是出厂默认。所以「低」不算自定义（它已经是标准档），其余照旧。 */
-      isLevelCustom: Boolean(level) && String(level) !== NEW_SESSION_DEFAULT_LEVEL,
-      // 给下拉用
-      models: listModels().models.map((m) => ({ id: m.id, name: m.name || m.model, active: m.active })),
-      levels: LEVELS.map((l) => ({ id: l.id, name: l.name, desc: l.desc })),
-      /* 【2026-11-09 改】perModel 的键现在优先是「地址/模型名」的稳定键，
-       * 直接拿 epNow.id 去查会漏。统一走 levelFor（它内部两个键都认）。 */
-      defaultLevelName: LEVELS.find((l) => l.id === levelFor(epNow))?.name || '默认',
-    });
+    return json(res, 200, await sessionConfigView(sid, getOverride(sid)));
   }
 
   if (req.method === 'POST' && url.pathname === '/api/session-config/set') {
@@ -9357,29 +9447,16 @@ const server = createServer(async (req, res) => {
     try {
       const patch = {};
       if (payload.modelId !== undefined) patch.modelId = payload.modelId;
-      if (payload.level !== undefined) patch.level = payload.level;
-      setOverride(sid, patch);
-
-      const ov = getOverride(sid);
-      const epNow = activeEndpoint();
-      let modelName = epNow.name || epNow.model;
-      if (ov.modelId) {
-        const picked = endpointFor(ov.modelId);
-        if (picked) modelName = picked.name || picked.model;
+      if (payload.level !== undefined) {
+        const modelId = patch.modelId === undefined ? getOverride(sid).modelId : patch.modelId;
+        const ep = endpointFor(modelId) ?? activeEndpoint();
+        if (payload.level !== '' && payload.level !== null
+          && !(await detectSessionLevels(ep)).some((l) => l.id === payload.level)) {
+          return json(res, 400, { error: '当前会话的模型不支持这个思考强度选项' });
+        }
+        patch.level = payload.level;
       }
-      return json(res, 200, {
-        sessionId: sid,
-        modelId: ov.modelId || '',
-        modelName,
-        level: ov.level || '',
-        /* 【2026-11-15】同上：没有会话级设置时报「实际生效的那一档」，别写死。 */
-        levelName: (() => {
-          const lv = ov.level || levelFor(epNow);
-          return LEVELS.find((l) => l.id === lv)?.name || String(lv || '');
-        })(),
-        isModelCustom: Boolean(ov.modelId),
-        isLevelCustom: Boolean(ov.level),
-      });
+      return json(res, 200, await sessionConfigView(sid, setOverride(sid, patch)));
     } catch (err) {
       return json(res, err?.status ?? 500, { error: String(err?.message ?? err) });
     }
@@ -9794,6 +9871,9 @@ const server = createServer(async (req, res) => {
     } catch (err) {
       console.warn('[memory] 新会话本子没建起来：', String(err?.message ?? err));
     }
+    /* 【2026-11-18】新建会话本身就是「切走」—— 上一个只剩开场白的空壳顺手扔掉。
+       必须在 setLastSessionId(id) **之前**：那一步会把「上一个会话是谁」这条线索覆盖掉。 */
+    try { dropIfEmptyShell(id); } catch {}
     setLastSessionId(id);
     // 建完就立刻去跑开场（后台跑，不等它）。主人要的是「新建那一瞬间就已经历过第一轮」，
     // 所以不能等主人先开口 —— 但也不能让新建接口卡十几秒，所以 fire-and-forget。
@@ -10158,6 +10238,11 @@ const server = createServer(async (req, res) => {
     if (!isSessionId(id)) return json(res, 400, { error: 'bad session id' });
     const session = getSession(id);
     if (!session) return json(res, 404, { error: 'session not found' });
+    /* 【2026-11-18 主人要求】切走时把上一个「只开场过、谁都没说过话」的空壳会话扔掉。
+       顺序是命门：**必须赶在记下「当前是哪个会话」之前**——那一步会把「上一个是谁」
+       这条线索覆盖掉，之后就再也认不出该扔哪个了。判据见 judgeEmptyShell。 */
+    let dropped = null;
+    try { dropped = dropIfEmptyShell(id); } catch {}
     setLastSessionId(id);
     // 上次这一轮没跑完（进程被杀 / 断电 / 点了退出）留下的草稿：
     // 把已经说出来的话补成一条正式的助手消息，别让主人以为「记忆丢了」。
@@ -10172,7 +10257,7 @@ const server = createServer(async (req, res) => {
       recovered = restoreDraftHalfTurn(id);
     }
     // 顺带把本子的状态带回去，界面不用再单发一次请求就知道有没有记忆
-    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id), recovered, interrupted: peekInterruptedInfo(id), running: runningTurns.has(id) });
+    return json(res, 200, { session: publicSession(session), memory: memoryInfo(id), recovered, interrupted: peekInterruptedInfo(id), running: runningTurns.has(id), dropped });
   }
 
   // ---- 对话回退 ----
@@ -11890,7 +11975,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     // 这一轮的所有事件都先记进直播缓存，再往连接上写
     /* 【2026-11-10 D3】开新一轮前顺手扫一遍过期缓存（惰性清扫） */
     try { sweepLiveLogs(); } catch {}
-    const live = { sessionId, events: [], items: [], startedAt: Date.now(), done: false };
+    const live = { sessionId, events: [], items: [], startedAt: Date.now(), done: false, turnId: newTurnId() };
     liveLogs.set(sessionId, live);
     /**
      * 【2026-11-01 08:45 删掉了一段「send 还没定义就调用它」的残留】
@@ -12752,6 +12837,29 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 对象身份靠不住（数组会被换掉），内容靠得住。
          */
         if (alreadyCollected(history, m)) continue;
+        /**
+         * 【2026-11-18·画图会话吐出 270 万字符乱码的兜底】
+         *
+         * 现场：gpt-image 这类模型不走流式正文，而是把「工具参数 JSON + 一整张
+         * ![image_x](data:image/png;base64,……)」**整段**塞进一条 assistant content。
+         * 直播那条路有 makeInlineImageSink 跨块拦着，可这条是整段绕过它直接进
+         * wireMessages → commitWireBack → 历史，两道闸都没过 —— 落盘 270 万字符、
+         * 界面上全是英文字母、上下文还被算进 96 万 token。
+         *
+         * 这里在落盘前补最后一道：整段剥一次。图存成 png，路径记到 _images
+         * （前端按 FileCard 画），正文里只留一句人话。幂等 —— 剥过一次就没有
+         * data:image/ 了，下次自然跳过；流式那边处理过的正文也不会再有这个标记。
+         */
+        if (m.role === 'assistant' && typeof m.content === 'string' && m.content.includes('data:image/')) {
+          try {
+            const _ex = extractInlineImages(m.content, 'inline');
+            if (_ex.images.length) {
+              m._images = [...(Array.isArray(m._images) ? m._images : []), ..._ex.images.map((x) => x.path)];
+              m.content = _ex.text;
+              try { diagLog('inline-img', '落盘前剥出 ' + _ex.images.length + ' 张图'); } catch {}
+            }
+          } catch { /* 剥不出来就按原文走，别把这一轮搞崩 */ }
+        }
         if (m.role === 'assistant' && !m._at) m._at = Date.now();
         /* 【2026-11-03 修·主讲人不是小鱼时，她说的话没署名】
          * 主人 2026-10-28 定过：身份名跟着消息一起存，画的时候直接用这份，
@@ -12806,6 +12914,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
             }
           } catch { /* 标不上不影响说话 */ }
         }
+        /* 【2026-11-18】盖轮次号：前端靠它判断「直播那半是不是已经落进历史」，不再靠正文比对 */
+        if (!m._turn && live && live.turnId) m._turn = live.turnId;
         history.push(m);
         n++;
       }
@@ -12851,6 +12961,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           if (already) { committed.add(m); continue; }
           committed.add(m);
           if (!m._at) m._at = Date.now();
+        /* 【2026-11-18】盖轮次号：前端靠它判断「直播那半是不是已经落进历史」，不再靠正文比对 */
+          if (!m._turn && live && live.turnId) m._turn = live.turnId;
           history.push(m);
           added++;
         }
@@ -12870,6 +12982,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           }
           if (!ownerIn) continue;
           committed.add(m);
+        /* 【2026-11-18】盖轮次号：前端靠它判断「直播那半是不是已经落进历史」，不再靠正文比对 */
+          if (!m._turn && live && live.turnId) m._turn = live.turnId;
           history.push(m);
         }
         // 记账之后立刻写盘 —— 这才是主人要的「重启后照样在」
@@ -13071,27 +13185,11 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
          * 现在在这里把通道接上：SSE 推 ask_approval 给前端 → 前端弹确认框（「她要动：xx」）
          * → 点允许/不许 POST /api/ask-approval → 这里 resolve。
          * 【失败关闭】60 秒没答复 = 不许；这一轮被掐（abort）也算不许 ——
-         * 问不到主人就不动，绝不「问不到就自己决定」。 */
-        askApproval: ({ toolName, reason }) => new Promise((resolve) => {
-          const requestId = 'ask_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-          let settled = false;
-          const finish = (yes, why) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            PENDING_ASKS.delete(requestId);
-            try { console.log('[ask] ' + requestId + ' ui=' + toolName + ' -> ' + (yes ? '允许' : '不许') + '（' + why + '）'); } catch {}
-            resolve(yes === true);
-          };
-          const timer = setTimeout(() => finish(false, '60s 超时'), 60000);
-          PENDING_ASKS.set(requestId, finish);
-          try { if (ac.signal) ac.signal.addEventListener('abort', () => finish(false, '本轮被掐'), { once: true }); } catch {}
-          try { send({ type: 'ask_approval', toolName: String(toolName || ''), reason: String(reason || ''), requestId }); }
-          catch (e) { finish(false, 'send 失败：' + String(e?.message || e)); }
-          /* 【2026-11-11 加·桌面通知】她卡在等主人点头（60 秒没人答就不动）——
-           * 主人切走了得喊一声。只报工具名（ui_delete 这种），不带 reason 全文。 */
-          try { notifyDesktop('ask-approval', '小鱼在等你确认', '她要动：' + String(toolName || '').slice(0, 40)); } catch {}
-        }),
+         * 问不到主人就不动，绝不「问不到就自己决定」。
+         *
+         * 【2026-11-18 改】逻辑抽成 makeAskApproval 了 —— 因为另外三处
+         * （worker 派发 / 续跑 / 断流恢复）也要用同一份，不能只有主轮有。 */
+        askApproval: makeAskApproval({ send, notifyDesktop, signal: ac.signal }),
         pushEvent: (ev) => { try { send(ev); } catch {} }, stashFile: (f) => {
         try {
           const ss = (typeof session !== 'undefined' && session) ? session : null;
@@ -13136,11 +13234,31 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
            * 她在这一轮里改了名，下一轮这条就是新名字 —— 不用重启、不用刷新。
            *
            * 名字还是「新会话」时把起名规矩一并给她：按「正在干的活 + 自己是谁」起
-           * 【xx鱼】【xx猫】【xx人】，用 rename_session 落下去。 */
+           * 【xx鱼】【xx猫】【xx人】，用 rename_session 落下去。
+           *
+           * 【2026-11-18 主人改时机：十句之后才催她起名】
+           *
+           * 原话：「把插件【会话起名】回滚成一开始的样子，然后仅在一开始的样子上改为
+           *        主人发十条消息后」。
+           *
+           * 「一开始的样子」= 这一段：**她自己**按人设、按正在干的活用 rename_session 起，
+           * 没有第二个模型插一脚（所以 auto-name.mjs 那套外挂已经拆掉，见 git 记录）。
+           * 改的只有**时机**：以前第一轮只要名字还叫「新会话」就催 —— 可她那时只看见一句话，
+           * 起出来的名字经常跟后面真正干的事对不上（主人早抱怨过）。
+           * 现在攒够十句才催：上下文够了，名字才真的像这个会话在干什么。
+           */
           const _nameNow = String(session.title || '').trim() || '新会话';
-          const _nameAsk = (_nameNow === '新会话')
-            ? ('\n这个会话还没有名字 —— 先给自己起一个（rename_session）：'
-              + '按你现在干的活 + 你自己的身份，短一点，鱼就叫「xx鱼」、猫娘类叫「xx猫」、人类或别的身份叫「xx人」，2~6 个字。起完再干活。')
+          const _userSaidCount = (() => {
+            try {
+              return (Array.isArray(session.messages) ? session.messages : [])
+                .filter((m) => m && m.role === 'user' && !m.context && !m._sysNote).length;
+            } catch { return 0; }
+          })();
+          const _nameAsk = (_nameNow === '新会话' && _userSaidCount >= 10)
+            ? ('\n主人已经跟你说了 ' + _userSaidCount + ' 句，这个会话还叫「新会话」—— '
+              + '现在给它起个名字（rename_session）：按你们一路在干的活 + 你自己的身份，'
+              + '鱼就叫「xx鱼」、猫娘类叫「xx猫」、人类或别的身份叫「xx人」，2~6 个字。'
+              + '起完接着干。')
             : '';
           /* 【2026-11-16 根治·清单全勾完还逼我找「未完成的内容」】
            * 原来这句是无条件的：不管清单什么状态，都叫我「根据清单上未完成的内容」决定干什么。
@@ -14668,13 +14786,13 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       }
       // 正常结束那条路已经接过一次；出错 / 被中止时这里兜底，
       // 不然「半截回答」也跟着丢。commitWireBack 内部用 Set 记账，重复调不会重复接。
-      try {
-        commitWireBack();
-      } catch {}
-      /**
-       * 【收尾存盘：绝不能拿这一轮开工时那份老 session 覆盖】
-       *
-       * 2026-10-26 实测抓到的真凶（插话丢话）：
+        try {
+          commitWireBack();
+        } catch {}
+        /**
+         * 【收尾存盘：绝不能拿这一轮开工时那份老 session 覆盖】
+         *
+         * 2026-10-26 实测抓到的真凶（插话丢话）：
        *   · 这一轮在 4212 行 getSession() 拿到 session 对象，一路攥着；
        *   · 主人插话时 /api/interject 也调 getSession()，但那边发现磁盘比内存新，
        *     会从磁盘 loadSession() 读一份**全新的对象**，push 话、存盘；
@@ -14879,37 +14997,23 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
           _s.messages = Array.isArray(_s.messages) ? _s.messages : [];
           let _added = 0;
           for (const it of _queued) {
-            const _t = String((it && it.text) || '').trim();
-            if (!_t) continue;
-            /* 已经在这一轮里被取走、落过盘的，别再来一条 */
-            let _dup = false;
-            for (let k = _s.messages.length - 1; k >= 0 && k >= _s.messages.length - 6; k -= 1) {
-              const _m = _s.messages[k];
-              if (_m && _m.role === 'user' && String(_m.content || '').trim() === _t) { _dup = true; break; }
+            const text = String(it.text ?? '').trim();
+            const message = it._sysNote === true
+              ? { role: 'user', content: text, context: true, _sysNote: true }
+              : { ...composeUserMessage(text, it.attachments), _keptOnStop: true };
+            if (!message.content) continue;
+            message.at = Number(it.at) || Date.now();
+            if (it._inboxId) message._inboxId = it._inboxId;
+            if (it.who && it._sysNote !== true) message._who = String(it.who);
+            if (it.whoId && it._sysNote !== true) message._whoId = String(it.whoId);
+            if (it._sysNote !== true) {
+              message._steer = true;
+              if (Number.isFinite(Number(it.atChars))) message._atChars = Number(it.atChars);
             }
-            if (_dup) continue;
-            /**
-             * 【2026-11-15 修·「子Agent 汇报 / 递话变成主人说的话」的最后一条漏口】
-             *
-             * 主人 20:10 报：「不要显示【你派出去的 xxx 回来了】…甚至这些消息都不是
-             * 系统提示，而是以我的署名发的」。
-             *
-             * 数据实锤（会话 smwg61ggmhd4a，12:06:15）：一条 worker 汇报落成
-             * role:'user'、context=false、_sysNote=false —— 前端只能当主人说的话画。
-             * 来源就在这一行：点「停止」时把信箱里压着的**所有**条目（steps+turns）
-             * 原样倒进历史，而 turns 槽里的 worker 汇报是带 `_sysNote: true` 的。
-             * 这里只抄了 text，标记全丢了。
-             *
-             * 规矩跟 agent.mjs 里 drain 那两处一致：带 _sysNote 的落成
-             * context+_sysNote（程序递的背景，不冒充主人）；真插话才留 _steer。
-             */
-            const _isSys = it && it._sysNote === true;
-            _s.messages.push({
-              role: 'user',
-              content: _t,
-              at: Date.now(),
-              ...(_isSys ? { context: true, _sysNote: true } : { _keptOnStop: true }),
-            });
+            const turnId = liveLogs.get(sessionId)?.turnId;
+            if (turnId && it._sysNote !== true) message._turn = turnId;
+            if (alreadyCollected(_s.messages, message)) continue;
+            _s.messages.push(message);
             _added += 1;
           }
           if (_added) {
@@ -15167,9 +15271,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       const __me = currentIdentity(sessionId);
       if (__me) { _whoName = String(__me.name || ''); _whoId = String(__me.id || ''); }
     } catch {}
-    history.push({
-      role: 'user',
-      content: message,
+    const userMessage = {
+      ...composeUserMessage(message, _att),
       /* 【2026-11-11 补 at·原来这条没有时间戳】
        * 没有 at 有两个后果：①界面上这句的时间是空的（publicSession 的 ts 兜底读 m.at）；
        * ②findDupUserRef 认不出「这是刚刚直推进来的同一句」（它靠 at 判新鲜度），
@@ -15179,7 +15282,8 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
       ...(_whoName ? { _who: _whoName } : {}),
       ...(_whoId ? { _whoId } : {}),
       ...(Number.isFinite(_atC) && _atC >= 0 ? { _atChars: _atC } : {}),
-    });
+    };
+    history.push(userMessage);
     /**
      * 【这句话必须真的进磁盘】
      *
@@ -15196,8 +15300,7 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     setLastSessionId(sessionId);
     try {
       const back = getSession(sessionId);
-      const okInMem = Boolean(back && Array.isArray(back.messages)
-        && back.messages.some((m) => m && m.role === 'user' && String(m.content ?? '').slice(-40) === String(message).slice(-40)));
+      const okInMem = Boolean(back?.messages?.some((m) => m?.role === 'user' && m.at === userMessage.at && m.content === userMessage.content));
       const { logWhaleAction } = await import('./whale-presence.mjs');
       logWhaleAction('插话落盘：在内存里=' + okInMem + ' 长度=' + history.length);
     } catch {}
@@ -15231,12 +15334,33 @@ if (req.method === 'POST' && url.pathname === '/api/app/restart') {
     } catch {}
     const r = postMail({ from, to, text, fromTitle: title });
     if (!r.ok) return json(res, 400, { error: r.error });
-    if (!wake) return json(res, 200, { ok: true, id: r.id, woke: false });
-    // 叫醒 = 替她开一轮。她正在跑就绝不双开，等她这轮收尾自然会看到。
+    /**
+     * 【2026-11-19 修·「她正在跑」就等于「看不到」】
+     *
+     * 主人问：「为什么递话给其他会话，那个会话不能立即收到并被唤醒？」
+     * 以前这条分支只回一句「她正在跑，收尾时自然会看到」—— 然后就没有然后了：
+     * 信只是在信箱里躺着，她那一轮**跑完收尾时**才取一次。长任务一跑十几分钟，
+     * 主人早以为「递了也没人理」。
+     *
+     * 其实同一条链子在工具（ask_peer）那边早就修好了：走 deliverMailNow，
+     * 她正在跑就 steer 成一条「仅AI可见的系统提示」插进**下一步**，不打断、不花钱。
+     * 这里漏了没接。现在接上，而且只接「不唤醒」那一半 ——
+     * 她在跑就不用叫醒，绝不多花一分钱。
+     *
+     * wake=false（不唤醒）时也照样插：插一句话不花钱，
+     * 「不打扰」指的是不叫醒、不中断，不是「把话扣着不放」。
+     */
     const busy = runningTurns.get(to);
-    if (busy && !busy.ac.signal.aborted) {
-      return json(res, 200, { ok: true, id: r.id, woke: false, note: '她正在跑，收尾时自然会看到' });
+    const busyAlive = Boolean(busy && busy.ac && !busy.ac.signal.aborted);
+    if (busyAlive) {
+      const d = await deliverMailNow(to, title, text, { allowWake: false, mailId: r.id });
+      return json(res, 200, {
+        ok: true, id: r.id, woke: false,
+        note: (d && d.ok ? '已即时插进她当前这轮（仅AI可见的系统提示）' : '她正在跑，收尾时自然会看到')
+          + (d && !d.ok && d.note ? '（' + d.note + '）' : ''),
+      });
     }
+    if (!wake) return json(res, 200, { ok: true, id: r.id, woke: false, note: '信已经放进她信箱，她下次说话时会看到' });
     // wakePeer 现在是 async（要接住「起不来」的错，别谎报成功），这里得等它
     const ws = await wakePeer(to);
     return json(res, 200, { ok: true, id: r.id, woke: Boolean(ws && ws.ok), note: ws && ws.note });
@@ -15800,10 +15924,12 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
     try {
       const id = String(sid || '');
       if (!isSessionId(id)) return { ok: false, error: 'bad sessionId' };
-      const saved = renameSession(id, title);
-      if (!saved) return { ok: false, error: 'rename failed' };
-      const hot = sessions.get(id);
-      if (hot) hot.title = saved.title;
+        /* 【2026-11-18】这是**她自己**起的名字，标成 'ai' ——
+         * 主人手动改过的（'user'）永远不覆盖；她自己起的下次还能再改。 */
+        const saved = renameSession(id, title, 'ai');
+        if (!saved) return { ok: false, error: 'rename failed' };
+        const hot = sessions.get(id);
+        if (hot) { hot.title = saved.title; hot.titleBy = 'ai'; }
       try {
         const lv = liveLogs.get(id);
         if (lv) appendLiveCache(lv, { type: 'session_title', title: saved.title, at: Date.now() });
@@ -15995,7 +16121,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
         try {
           let live = liveLogs.get(sid);
           if (!live || live.done) {
-            live = { sessionId: sid, events: [], items: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true };
+            live = { sessionId: sid, events: [], items: [], startedAt: Date.now(), done: false, endedAt: 0, queuedTurn: true, turnId: newTurnId() };
             liveLogs.set(sid, live);
           }
           /**
@@ -16150,7 +16276,7 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
      * 开了手机配对（.state/mobile.json 里 enabled=true）之后才监听 0.0.0.0，
      * 局域网里的手机连得上；此时所有请求都要过 checkAccess 的 token 校验。
      */
-    const lanOn = publicMobileState().enabled;
+    const lanOn = process.env.XY_TEST_INSTANCE !== '1' && publicMobileState().enabled;
     const bindHost = lanOn ? '0.0.0.0' : '127.0.0.1';
     server.listen(port, bindHost, () => {
       /* 【2026-11-14】启动第一件事：清掉上一个进程留下的命令子进程（孤儿）。
@@ -16162,10 +16288,30 @@ export function startServer({ port = config.port, quiet = false, selfCheck = tru
       /* 【2026-11-15 加】把上次没跑完那一轮的柜子接回来（实时日志重放）。
        * 主人报「每次重启，最近的正在运行的柜子都会消失」—— 以前 liveLogs 纯内存，
        * 进程一退在跑的那一轮就没了。现在开机从 .state/live/*.jsonl 重放回内存。 */
-      try {
-        const _r = restoreLiveLogsFromDisk();
-        if (_r) console.log('[boot] 接回 ' + _r + ' 个未跑完的实时柜子');
-      } catch { /* 接不回来不影响启动 */ }
+        try {
+          const _r = restoreLiveLogsFromDisk();
+          if (_r) console.log('[boot] 接回 ' + _r + ' 个未跑完的实时柜子');
+        } catch { /* 接不回来不影响启动 */ }
+        /**
+         * 【2026-11-18 加·设备环境信息预热】
+         *
+         * 主人要她「知道当前时间、设备电量、所在地区与天气、屏幕亮度、音量与静音、
+         * 后台开着哪些窗口」。这几样分两类：
+         *   · 电量 / 时间 —— 同步就能读（电量问 WMI，带 60 秒缓存）；
+         *   · 位置天气 / 亮度音量窗口 —— 要发网络请求或起子进程（实测 1.6~3 秒）。
+         *
+         * contextMessage 是**同步**拼的，所以后一类绝不能在那里等 ——
+         * 这里开机先预热一次，之后定时刷新；contextMessage 只读上一次的结果。
+         * 拿不到就空着，一个字都不报错。
+         */
+        try { if (typeof warmEnv === 'function') warmEnv().catch(() => {}); } catch {}
+        try { if (typeof refreshDevice === 'function') refreshDevice().catch(() => {}); } catch {}
+        try {
+          const _warmEnvTimer = setInterval(() => { try { warmEnv().catch(() => {}); } catch {} }, 10 * 60 * 1000);
+          const _warmDevTimer = setInterval(() => { try { refreshDevice().catch(() => {}); } catch {} }, 60 * 1000);
+          if (_warmEnvTimer.unref) _warmEnvTimer.unref();
+          if (_warmDevTimer.unref) _warmDevTimer.unref();
+        } catch {}
       const actual = server.address().port;
       listeningPort = actual;
       /* 【2026-11-12 修·restart_self 永远报「不知道自己监听哪个端口」】
@@ -16683,7 +16829,7 @@ mountQq({
   },
 });
 
-if (isDirectRun) startServer().catch((err) => {
+if (isDirectRun) startServer({ selfCheck: process.env.XY_TEST_INSTANCE !== '1' }).catch((err) => {
   console.error('failed to start:', err?.message ?? err);
   process.exit(1);
 });

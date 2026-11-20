@@ -10,6 +10,7 @@
  */
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { config } from './config.mjs';
 /* 只为了「接入点 id → 地址/模型名」，好把 perModel 的键算成稳定键。
  * models.mjs 只 import config，不回头 import 本文件 —— 不成环。 */
@@ -296,6 +297,66 @@ export function thinkingFormatOf(ep) {
   /* 通义 / 百炼：dashscope.aliyuncs.com，国际站 dashscope-intl.aliyuncs.com */
   if (host.includes('dashscope') || host.includes('aliyuncs')) return 'qwen';
   return 'openai';
+}
+
+/** 会话选择器只列出已确认的档位。自动是本地策略，始终可选。 */
+const modelCapabilityCache = new Map();
+
+export async function detectSessionLevels(ep, fetchModel = fetch) {
+  if (Array.isArray(ep?.thinkingLevels) || !ep?.model || !ep?.baseURL) return sessionLevelsFor(ep);
+  const key = createHash('sha256').update(JSON.stringify([ep.baseURL, ep.model, ep.apiKey])).digest('hex');
+  let entry = modelCapabilityCache.get(key);
+  if (!entry || entry.until <= Date.now()) {
+    entry = { until: Date.now() + 60_000 };
+    entry.result = (async () => {
+      try {
+        const url = new URL(ep.baseURL);
+        if (!['http:', 'https:'].includes(url.protocol)) return undefined;
+        url.search = '';
+        url.hash = '';
+        const modelsPath = url.pathname.replace(/\/+$/, '') + '/models';
+        const options = {
+          headers: ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : {},
+          signal: AbortSignal.timeout(1500),
+          redirect: 'error',
+        };
+        const paths = [modelsPath];
+        if (!url.pathname.replace(/\/+$/, '').endsWith('/v1')) paths.push(modelsPath.replace(/\/models$/, '/v1/models'));
+        let levels;
+        for (const path of paths) {
+          for (const suffix of ['/' + encodeURIComponent(ep.model), '']) {
+            url.pathname = path + suffix;
+            const response = await fetchModel(url, options);
+            if (!response.ok) { await response.body?.cancel(); continue; }
+            const data = await response.json().catch(() => null);
+            const model = Array.isArray(data?.data) ? data.data.find((item) => item?.id === ep.model) : data;
+            if (model?.id !== ep.model) continue;
+            levels = model.supported_reasoning_efforts ?? model.supported_reasoning_effort ?? model.thinkingLevels;
+            if (Array.isArray(levels)) break;
+          }
+          if (Array.isArray(levels)) break;
+        }
+        if (!Array.isArray(levels)) return undefined;
+        entry.until = Date.now() + 600_000;
+        return levels.map((level) => level === 'none' ? 'off' : level);
+      } catch { return undefined; }
+    })();
+    modelCapabilityCache.set(key, entry);
+    if (modelCapabilityCache.size > 128) modelCapabilityCache.delete(modelCapabilityCache.keys().next().value);
+  }
+  return sessionLevelsFor({ ...ep, thinkingLevels: await entry.result });
+}
+
+export function sessionLevelsFor(ep) {
+  const format = thinkingFormatOf(ep);
+  const configured = ep?.thinkingLevels;
+  // 官方 deepseek-flash 的开关已实测见 fieldsForLevel，其他模型不能仅凭方言推断。
+  const verified = format === 'deepseek' && hostOf(ep?.baseURL) === 'api.deepseek.com'
+    && ep?.model === 'deepseek-flash' ? ['off'] : [];
+  const supported = Array.isArray(configured) ? configured : verified;
+  // 当前传输在其余方言下只能发送开关，不能区分多个强度。
+  return LEVELS.filter(({ id }) => id === 'auto'
+    || (supported.includes(id) && (format === 'openai' || id === 'off')));
 }
 
 /**

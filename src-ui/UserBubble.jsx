@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fmtSize } from './bridge.js';
 import { beginEdit, getEdit } from './store.js';
 import EditArea from './EditArea.jsx';
@@ -20,9 +20,11 @@ function rawUrl(path, download) {
 /** 一个附件纸片（图片 / 文件） */
 function AttachChip({ a }) {
   const src = a.dataUrl || rawUrl(a.path, false);
+  const [failedSrc, setFailedSrc] = useState(null);
+  const isImage = a.kind === 'image';
   return (
     <div className="attachChip" title={a.path || ''}>
-      {a.kind === 'image' ? (
+      {isImage && failedSrc !== src ? (
         <img
           className="thumb"
           alt={a.name || ''}
@@ -31,19 +33,12 @@ function AttachChip({ a }) {
           onClick={() => {
             try { window.openImgView && window.openImgView(src); } catch (e) { /* 打不开就不放大 */ }
           }}
-          onError={(e) => {
-            /* 图没了就退成图标，别显示破图 */
-            const im = e.currentTarget;
-            const d = document.createElement('div');
-            d.className = 'ficon';
-            d.textContent = '🖼';
-            try { im.replaceWith(d); } catch (e2) { im.style.display = 'none'; }
-          }}
+          onError={() => setFailedSrc(src)}
         />
       ) : (
-        <div className="ficon">{'📄'}</div>
+        <div className="ficon">{isImage ? '🖼' : '📄'}</div>
       )}
-      {a.kind !== 'image' ? <div className="aname">{a.name || ''}</div> : null}
+      {!isImage || failedSrc === src ? <div className="aname">{a.name || ''}</div> : null}
     </div>
   );
 }
@@ -70,6 +65,16 @@ function MediaRow({ a }) {
   );
 }
 
+export function MessageAttachments({ attachments }) {
+  const list = Array.isArray(attachments) ? attachments.filter((a) => a && a.path) : [];
+  if (!list.length) return null;
+  return (
+    <div className="msgAttach">
+      {list.map((a, i) => mediaKindOf(a) ? <MediaRow key={'m' + i} a={a} /> : <AttachChip key={'c' + i} a={a} />)}
+    </div>
+  );
+}
+
 /**
  * 主人说的话（含附件、插话标记、改名、回退/编辑/分支/删除）。
  *
@@ -79,7 +84,6 @@ function MediaRow({ a }) {
  */
 export default function UserBubble({ it }) {
   const wrap = useRef(null);
-  const list = Array.isArray(it.atts) ? it.atts.filter((a) => a && a.path) : [];
 
   /* 悬停按钮 / 时间戳 / 编辑能力：复用 index.html 里那几段打磨过的装饰器。
    * 它们只往这个节点里「加」东西，React 从不重建这个节点（key 稳定），
@@ -109,13 +113,7 @@ export default function UserBubble({ it }) {
         {String(it.who || '主人')}
         {it.tag ? <span className="interjectTag">{it.tag}</span> : null}
       </div>
-      {list.length ? (
-        <div className="msgAttach">
-          {list.map((a, i) =>
-            mediaKindOf(a) ? <MediaRow key={'m' + i} a={a} /> : <AttachChip key={'c' + i} a={a} />,
-          )}
-        </div>
-      ) : null}
+      <MessageAttachments attachments={it.atts} />
       {editing ? (
         <EditArea text={String(it.text || '')} at={it.rewindId} msgAt={it.ts} />
       ) : (

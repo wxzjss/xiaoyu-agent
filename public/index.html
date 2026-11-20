@@ -1736,11 +1736,6 @@
     .sendingHint span, .sendingHint {
       color: var(--dim); font-size: 12px; white-space: nowrap;
     }
-    .specTag {
-      display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 5px;
-      font-size: 10px; line-height: 15px; vertical-align: 1px;
-      color: #f0b954; border: 1px solid rgba(240,185,84,.45); background: rgba(240,185,84,.08);
-    }
     .sendingHint .dots::after {
       content: ''; animation: sendingDots 1.4s steps(4, end) infinite;
     }
@@ -2983,10 +2978,6 @@
       display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
       gap: 9px; align-content: start;
     }
-    /* 【2026-11-12 旁观者模式卡】展开的选人区：缩进一点表示「卡里的内容」，
-       行本身复用 .featRow，不加边框免得看起来像第二张卡。 */
-    .specSub { padding: 2px 10px 10px 26px; grid-column: 1 / -1; }
-    .specSub .featRow { padding-top: 9px; padding-bottom: 9px; }
   .naLab { display: block; margin: 8px 0; font-size: 13px; }
   .naLab input, .naLab textarea { display: block; width: 100%; margin-top: 4px; }
     .featRow {
@@ -4147,6 +4138,9 @@
 .msgTime {
   margin-left: 8px; font-size: 11px; font-weight: 400;
   color: var(--dim, #98a2b3); opacity: .65; user-select: none;
+  /* 【2026-11-18】显示改成完整的「年-月-日 时:分:秒」，比原来的「时:分」长一截：
+   * 一行放不下时宁可整块换到下一行，也不要中间被折断成两截。 */
+  white-space: nowrap;
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -4851,7 +4845,7 @@
         <span id="topModelName">…</span><span class="caret">▾</span>
       </button>
       <button type="button" class="cfgBox cfgThink" id="topThink" title="点一下换思考强度（只影响这个会话）">
-        <span class="thinkPrefix">当前思考强度：</span><span id="topThinkName">高</span><span class="caret">▾</span>
+        <span class="thinkPrefix">当前思考强度：</span><span id="topThinkName">—</span><span class="caret">▾</span>
       </button>
     </span>
     <!-- 2026-11-01【主人的话：「删除专业模式，回滚办事模式，然后让【专业模式】按钮变成【办事模式】按钮」】
@@ -5020,9 +5014,6 @@
         <div class="frBody" id="featReportBody"></div>
       </div>
       <div class="featScroll">
-        <!-- 【2026-11-12 旁观者模式·进功能卡列表（主人定）】做成【读文件】【写文件】同款卡片。
-             卡片本体由 renderFeatList → specPaintInto 画在 featList 最下方（specBuild），
-             这里不再放独立标题条 —— 之前那块跟功能卡不一个门脸。 -->
         <div class="featList" id="featList"></div>
       </div>
       <div class="dlgFoot">
@@ -5036,24 +5027,6 @@
 </form>
   </dialog>
 
-  <!-- 【2026-11-13 主人钦点】旁观者挑人独立窗：原来选人区铺在插件列表里，
-       占一大片还把卡片挤到顶端位移。现在单独一张 dialog，点「挑人」才开。 -->
-  <dialog id="specPickDlg">
-    <form method="dialog">
-      <div class="dlgHead">
-        <b>挑旁观者</b><span class="meta">点开关即生效</span>
-        <button type="button" class="x" data-close="1">关闭</button>
-      </div>
-      <div class="sessTop">
-        <span class="hint">按会话生效。她干活时选中的随时插一句（说话带「旁观」小牌）；纯闲聊不插话。干活的主智能体和已在「屋里的人」里的不能旁观</span>
-      </div>
-      <div class="featList" id="specPickList" style="grid-template-columns: 1fr; padding: 10px 12px;"></div>
-      <div class="dlgFoot">
-        <span class="hint">改完直接关窗就行，开关点了就存</span>
-        <button type="button" class="primary" id="specPickDone">完成</button>
-      </div>
-    </form>
-  </dialog>
   <!-- 导入插件（2026-11-12 主人：「导入应该做一个 dialog form，说明清楚，也可以粘贴代码编辑」）。
        两张脸：从文件（拖 / 选，系统自己的面板）、粘贴代码（JS 功能 / CSS 主题）。
        为什么不做成「点了直接弹文件框」：主人得先知道 .zip 和 .json 是两种东西，
@@ -6030,6 +6003,10 @@
           <button type="button" role="menuitem" id="pickImage" data-kind="image">
             <span class="ico">🖼️</span><span>图片</span><span class="sub">图片库</span>
           </button>
+          <button type="button" role="menuitem" id="pickPhonePhoto" hidden style="display:none">
+            <span class="ico">🖼️</span><span>手机相册</span><span class="sub">上传</span>
+          </button>
+          <input type="file" id="phonePhotoInput" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" hidden>
           <button type="button" role="menuitem" id="logDownload" class="logItem" title="把这个会话的原始记录和附件打成一个压缩包下载">
             <span class="ico">📦</span><span>下载日志</span><span class="sub">.zip</span>
           </button>
@@ -6535,6 +6512,8 @@ const meta = document.getElementById('meta');
 const usageEl = document.getElementById('usage');
 const sendingHint = document.getElementById('sendingHint');
 let busy = false;
+/** 【2026-11-02】切会话的世代号：只增不减。异步回来时对不上，就说明主人已经切走了。 */
+let __switchGen = 0;
 
 // ===== 加号附件：文件 / 图片 =====
 const plusBtn = document.getElementById("plusBtn");
@@ -7089,6 +7068,50 @@ async function commitPick() {
 
 document.getElementById("pickFile").onclick = () => openPicker("file");
 document.getElementById("pickImage").onclick = () => openPicker("image");
+if (/XiaoyuMobile/i.test(navigator.userAgent)) {
+  const photoButton = document.getElementById('pickPhonePhoto');
+  const photoInput = document.getElementById('phonePhotoInput');
+  const photoTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp']);
+  let photoTarget;
+  photoButton.hidden = false;
+  photoButton.style.display = '';
+  photoButton.onclick = () => {
+    setMenu(false);
+    if (!sessionId) return;
+    photoTarget = { id: sessionId, generation: __switchGen };
+    photoInput.value = '';
+    photoInput.click();
+  };
+  photoInput.addEventListener('change', async () => {
+    const target = photoTarget;
+    const photo = photoInput.files?.[0];
+    const stillCurrent = () => target && target.id === sessionId && target.generation === __switchGen;
+    if (!photo || !stillCurrent()) return;
+    try {
+      if (!photoTypes.has(photo.type)) throw new Error('请选择 PNG、JPEG、GIF、WebP 或 BMP 图片');
+      if (!photo.size || photo.size > 32 * 1024 * 1024) throw new Error('图片必须在 32 MiB 以内且不能为空');
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(reader.error || new Error('图片读取失败'));
+        reader.onabort = () => reject(new Error('图片读取已取消'));
+        reader.readAsDataURL(photo);
+      });
+      if (!stillCurrent()) return;
+      const response = await fetch('/api/attach/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: target.id, dataUrl }),
+      });
+      const result = await response.json();
+      if (!stillCurrent()) return;
+      if (!response.ok || !result.path) throw new Error(result.error || '上传失败');
+      addAttachment({ path: result.path, name: photo.name || result.name, kind: 'image', size: result.size, dataUrl });
+    } catch (error) {
+      if (stillCurrent()) addSysNote('手机图片未添加：' + String(error.message || error));
+    }
+  });
+}
 document.getElementById("pickClose").onclick = closePicker;
 document.getElementById("pickCancel").onclick = closePicker;
 document.getElementById("pickOk").onclick = commitPick;
@@ -8162,9 +8185,6 @@ function markTailRole(turns) {
 
 
 /** 只停某个会话的轮询；别的会话的定时器一根汗毛都不碰 */
-/** 【2026-11-02】切会话的世代号：只增不减。异步回来时对不上，就说明主人已经切走了。 */
-let __switchGen = 0;
-
 function stopFollow(id) {
   const t = followingBySession.get(id);
   if (t) {
@@ -8671,7 +8691,10 @@ window.__reloadTaskState = loadTaskState;
 
 /** 重新拉一次 /api/health，刷新顶栏那行（换模型/删模型之后调） */
 function syncHealth() {
-  fetch('/api/health')
+  /* 【2026-11-18】带上会话 id：工作区按会话分之后，health 里的 workspace
+   * 要按当前会话算，右上角那句「工作目录」才准。 */
+  const _sid = (typeof sessionId === 'string' && sessionId) ? ('?sid=' + encodeURIComponent(sessionId)) : '';
+  fetch('/api/health' + _sid)
     .then((r) => r.json())
     .then((h) => {
       paintHealth(h);
@@ -8895,20 +8918,45 @@ function attachDelBtn(wrap, at, msgAt) {
 /**
  * 【2026-11-05 加·给消息挂一个时间】
  *
- * 会话历史里原来没有时间可显示 —— 服务端现在每条消息都带 `at`（毫秒），
- * 这里只画「时:分」，完整时间放 title。老会话没有这个字段，就不画，不占位。
+ * 会话历史里原来没有时间可显示 —— 服务端现在每条消息都带 `at`（毫秒）。
+ * 老会话没有这个字段，就不画，不占位。
+ *
+ * 【2026-11-18 改·主人要求显示年月日】
+ *
+ * 原来只画「时:分」，主人看不出是今天还是上周说的 —— 长会话里隔天接着聊，
+ * 满屏都是 09:12 / 14:30，根本分不清哪条是昨天的。
+ * 现在画完整时间 `2026-11-18 16:16:05`（年月日 + 时分秒），悬停再给一份
+ * 带星期的中文长格式。
+ *
+ * 为什么保留秒：主人原话「要有年月日以及具体时间」——「具体」就具体到底。
+ * 11px 灰字，一行放得下；窄屏用 nowrap + 允许换行兜住（见 .msgTime 样式）。
  */
+function fmtMsgTime(ts) {
+  try {
+    const d = new Date(Number(ts));
+    if (!Number.isFinite(d.getTime()) || d.getTime() <= 0) return '';
+    const p2 = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate())
+      + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+  } catch { return ''; }
+}
+
 function attachTime(wrap, ts) {
   if (!wrap || !ts) return;
   try {
     const d = new Date(Number(ts));
     if (!Number.isFinite(d.getTime()) || d.getTime() <= 0) return;
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
+    const full = fmtMsgTime(ts);
+    if (!full) return;
     const el = document.createElement('span');
     el.className = 'msgTime';
-    el.textContent = hh + ':' + mm;
-    el.title = d.toLocaleString();
+    el.textContent = full;
+    /* 悬停给一份中文长格式（带星期），排查「这条到底哪天的」时不用换算 */
+    try {
+      const wd = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
+      el.title = d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日 星期' + wd
+        + ' ' + full.slice(11);
+    } catch { el.title = full; }
     wrap.appendChild(el);
   } catch {}
 }
@@ -9021,7 +9069,9 @@ function openFileView(path) {
   fvShow(p, (body, copyBtn) => {
     if (!body) return;
     fvNote(body, '读取中…');
-    fetch('/api/file?path=' + encodeURIComponent(p))
+    /* 【2026-11-18】带会话 id：工作区按会话分之后，她刚生成的文件在
+     * sessions/<sid>/ 下面，不带 sid 服务端只认共享区，预览会被判「工作区外」。 */
+    fetch('/api/file?path=' + encodeURIComponent(p) + '&sid=' + encodeURIComponent((typeof sessionId === 'string' && sessionId) || ''))
       .then((x) => x.json())
       .then((r) => {
         if (!r || r.error) return fvNote(body, (r && r.error) || '打不开这个文件。');
@@ -9375,7 +9425,7 @@ function attachRetry(wrap, askQueue) {
   rb.type = "button";
   rb.className = "retryBtn";
   rb.textContent = "↻ 重发";
-  rb.title = "把这一轮退掉，用你当时那句话重新问一遍";
+  rb.title = "删掉这条回答，按当前上下文重新说一遍（你的原话不动）";
   rb.onclick = () => retryHere(Number(ask.at), String(ask.text || ""), rb);
   actionsOf(wrap).appendChild(rb);
   /* 【2026-11-11 加·查看改动】这一轮她用写文件工具改过东西的话，给个入口看 diff。
@@ -9435,11 +9485,26 @@ async function retryHere(at, askText, btn) {
     const nFiles = (f.restored || []).length + (f.deleted || []).length;
     if (nFiles) addSysNote("已跟着退回 " + nFiles + " 个文件");
     if (r.memory) addSysNote("记忆也退回到这一轮之前");
-    // 退完了，把原话放回输入框，走正常那一轮 ——
-    // 这样流式、思考块、插话那套全都跟平时一样，不用另铺一条路
-    input.value = askText;
-    input.focus();
-    runTurn({ text: askText });
+    /**
+     * 【2026-11-19 修·主人报「重发＝删掉这条再把我上一句重发一遍」】
+     *
+     * 以前这里是：把原话塞回输入框，再 runTurn({text: askText}) 重新发一遍。
+     *
+     * 可 11-12 之后 /api/sessions/rewind 的语义已经改了 ——
+     *   「该条本身保留，只删它**之后**的所有消息」。
+     * 上面那句 rewind 传的是 ask.at（主人那一问的下标），也就是说
+     * **主人那句话一直留在历史里**，本来就没被删。
+     * 再 runTurn 一次，等于又把同一句话 push 进历史 ——
+     * 屏幕上是「我的话出现两遍」，行为上就是主人说的
+     * 「删除该消息，再把我上一句说的话发一遍」，而不是「按上下文重新回答」。
+     *
+     * 现在：退完之后**不重发那句话**，直接以「接着答」的方式起一轮
+     * （runTurn 的 resume 档：POST /api/chat 只带 { sessionId, resume: true }，
+     *  服务端不追加 user 消息，拿现有历史去请求模型）。
+     * 输入框里主人正在打的东西也一个字都不动 —— 以前那句 input.value = askText
+     * 会覆盖掉他没发出去的草稿。
+     */
+    runTurn({ resume: true });
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -10435,10 +10500,11 @@ function nudgeLive(sid) {
       if (sessionId !== want) return;              // 主人在等的这一拍里切走了
       /* 已经在拉了就别再开一条：这一拍会被后续事件重新排上，不需要堆请求 */
       if (__nudgeInFlight > 0) return;
+      const stillCurrent = window.guardLiveReply(want);
       let live = null;
       __nudgeInFlight++;
       try {
-        live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(want)).then((r) => r.json());
+        live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(want)).then((r) => r.ok ? r.json() : null);
       } catch (e) {
         return;                                    // 网络抖一下，下一次事件会再来
       } finally {
@@ -10446,11 +10512,15 @@ function nudgeLive(sid) {
          * 之后所有 nudge 都被闸挡住 —— 界面从此不再更新，比卡顿严重得多。 */
         __nudgeInFlight--;
       }
-      if (sessionId !== want) return;
+      if (!stillCurrent(live) || !live) return;
       try {
-        logSetLive(want, live);
-        renderLog();
-      } catch (e) { /* 单个事件画不出来不能连累这一轮 */ }
+        if (live.running === false) {
+          const record = turnsInFlight.get(want);
+          if (!record || record.streamDone || record.adopted) window.settleLiveHistory(want, live);
+        } else if (logSetLive(want, live)) {
+          renderLog();
+        }
+      } catch (e) { /* 下一次快照仍可更新 */ }
     }, __NUDGE_MS);
   } catch (e) {}
 }
@@ -11755,68 +11825,7 @@ async function runTurn({ resume = false, text = '', attachments: _att = null, _s
  *  每 700ms 再问一次，直到「历史最后那条助手不比直播快照短」为止；最多 6 次。
  */
 async function settleFromHistory(id) {
-  try {
-    if (!id || sessionId !== id) return;
-    const _nz = (s) => { try { return String(fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); } };
-    let _lv0 = null;
-    /* 【2026-11-11 修·收尾对账空等 4.2 秒（steer-fixer）】
-     * 原判据是「历史最后一条 assistant 的长度 ≥ 直播正文总长」。多段轮里它恒不成立：
-     * want 是几段正文之和，last 只是最后一段 —— 六次重试（约 4.2 秒）必然全部落空，
-     * 期间屏幕塌缩成旧历史，主人看到的就是「她说的话消失了好几秒才回来」。
-     * 其实服务端在摘登记（running 翻 false）**之前**就已经 commitWireBack + saveSession，
-     * 历史此刻必然是完整的。判据改成「直播里的**最后一段正文**能在历史正文里找到」：
-     * 找得到 = 历史齐了，立刻收尾；找不到才是真没写完，照旧重试兜底。 */
-    let _lastSeg = '';
-    try {
-      _lv0 = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
-      for (const _it of (_lv0 && Array.isArray(_lv0.items) ? _lv0.items : [])) {
-        if (_it && _it.k === 'text') {
-          const _seg = _nz(_it.t);
-          if (_seg) _lastSeg = _seg;
-        }
-      }
-    } catch (e) {}
-    /* 【2026-11-11 修·排队轮跑动时别抢着收尾（steer-fixer）】
-     * 这一轮的 SSE 结束、但服务端还在跑（插话的排队轮已经接上）时，
-     * 这里**不能**按历史收尾：排队轮的回答还在长，重试 6 次也等不到
-     * 「历史不比清单短」，最后会把 live 清成 null、拿旧历史盖掉
-     * followLive 正在画的排队轮内容 —— 主人看着就是「她的回复闪一下又没了」。
-     * 这次对账让给跟播那边：attachLive 挂上的 followLive 在排队轮答完时
-     * 会走 finishTurn，把历史和屏幕都收干净。 */
-    if (_lv0 && _lv0.running) return;
-    let _turns = null;
-    for (let _k = 0; _k < 6; _k++) {
-      if (sessionId !== id) return;
-      const sel = await fetch('/api/sessions/select', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      }).then((r) => r.json()).catch(() => null);
-      if (sessionId !== id) return;
-      _turns = (sel && sel.session && Array.isArray(sel.session.turns)) ? sel.session.turns : null;
-      if (_turns) {
-        const _allA = _nz(_turns
-          .filter((t) => t && t.role === 'assistant' && !t.whale)
-          .map((t) => String(t.text || ''))
-          .join('\n'));
-        /* 历史里找得到「直播的最后一段正文」= 历史齐了（判据见上面 _lastSeg 的注释） */
-        if (!_lastSeg || _allA.indexOf(_lastSeg) >= 0) break;
-      }
-      await new Promise((r) => setTimeout(r, 700));
-    }
-    if (sessionId !== id) return;
-    /**
-     * 【2026-11-09 收口】跑完了 → 这一轮归历史。
-     *
-     * 必须走 state（logSetHistory + logSetLive(null) + renderLog），不能只调 renderTurns：
-     * 只换 DOM 不换 state 的话，LOG_STATE.live 里那份「running: true 的清单」还在，
-     * 下一次谁叫一声 renderLog（比如来了条 whale），它就会把这一轮**再画一遍**——
-     * 「刷新后有那么一瞬间正常，马上又堆一块」正是这个。
-     */
-    if (_turns) {
-      try { window.logSetHistory(id, _turns); window.logSetLive(id, null); window.renderLog({ force: true }); }
-      catch (e) { renderTurns(_turns, { force: true }); }
-    }
-  } catch (e) {}
+  return window.settleLiveHistory(id);
 }
 
 /** 会话 id -> 后台轮次记录（切走也不停，切回来能接着看）。在下面统一初始化。 */
@@ -11936,16 +11945,12 @@ function renderPendingQueue() {
   box.innerHTML = '';
 
   const _uncertain = pendingQueue.some((x) => x && x._uncertain);
-  const head = document.createElement('div');
-  head.className = 'pendingHead';
-  /* 【2026-11-15】状态说清楚：她在跑 = 「等她这轮说完自动发」；
-   * 她闲了 = 这两秒内就发（2 秒轮询 flush），别让人误会还要再点一次。 */
-  head.textContent = _uncertain
-    ? '有消息状态不确定 —— 可能已经发出去了，先确认下再点「直接发送」，别重复发'
-    : (busy
-      ? '待发送 ' + pendingQueue.length + ' 条 —— 她这轮说完自动发；也可以现在发，或撤回改'
-      : '待发送 ' + pendingQueue.length + ' 条 —— 马上发出…');
-  box.appendChild(head);
+  if (_uncertain) {
+    const head = document.createElement('div');
+    head.className = 'pendingHead';
+    head.textContent = '有消息状态不确定 —— 可能已经发出去了，先确认下再点「直接发送」，别重复发';
+    box.appendChild(head);
+  }
 
   for (const it of pendingQueue) {
     const row = document.createElement('div');
@@ -12624,15 +12629,15 @@ async function interject(_passed = null) {
    * 另外原来 `!text` 就直接 return：只拖图不打字时，图会静悄悄消失，连提示都没有。 */
   const atts = _passed ? (_passed.atts || []).slice() : attachments.slice();
   if (!busy || (!text && !atts.length)) return;
-  if (_passed) {
-    // 外部传入（缓冲窗）：不动输入框和全局附件 —— 那些不是这次的内容
-  } else {
+  const targetSession = sessionId;
+  const turnAtSend = turnsInFlight.get(targetSession);
+  if (!_passed) {
     input.value = '';
-    clearDraft();   // 插话发出去也算发了
+    clearDraft();
+    autosizeInput();
+    attachments = [];
+    renderAttachBar();
   }
-  autosizeInput();
-  attachments = [];
-  renderAttachBar();
   // 插话也是「现在这个身份说的话」，署名跟着当前身份走
   /* 【2026-11-02 主人：插话位置错乱 —— 同一轮插三次，第二次只算到 1 个字】
      原来这个锚点是从 DOM 里数：「找屏幕上最后一个还在流式的气泡，数它的 _rawText 长度」。
@@ -12707,30 +12712,24 @@ async function interject(_passed = null) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      sessionId,
+      sessionId: targetSession,
       message: text,
       atChars: _atCharsNow,
       attachments: atts.map((x) => ({ path: x.path, name: x.name, kind: x.kind })),
     }),
   }).then((x) => x.json()).catch(() => null);
 
-  // ② 服务端说：没有在跑的那一轮。界面这边的 busy 是假的，现在纠正它。
-  //
-  // 别再要求 r.ok === false 了：服务端回的是 { ok:true, running:false }，
-  // 意思是「话收进历史了，但根本没有在跑的那一轮」。这种也得当成新一轮发出去，
-  // 不然这句话就只剩历史里一条，谁也不会接着回 —— 主人看到的就是「消息没了」。
-  if (r && r.running === false) {
+  if (sessionId !== targetSession) return;
+  const currentTurn = turnsInFlight.get(targetSession);
+  if (currentTurn && currentTurn !== turnAtSend) return;
+
+  // 插话到达时旧轮已经结束。服务端已保存整条消息，直接接着回答。
+  if (r?.ok === true && r.running === false) {
     pendingResume = false;
     busy = false;
-    turnsInFlight.delete(sessionId);
+    turnsInFlight.delete(targetSession);
     syncSendBtn();
-    // 刚画的那条「插话」气泡是假的（那句没进历史），撤掉再正常发
-    /* 【2026-11-09 换框架】撤掉改成「让 store 忘掉这条乐观气泡」——
-     * 气泡本身是 React 画的，摘节点等于让 React 的账本对不上。 */
-    try { if (pendingRewindBubble && pendingRewindBubble.__pendingId) window.__logStore.dropPending(pendingRewindBubble.__pendingId); } catch {}
-    pendingRewindBubble = null;
-    if (input.value.trim() === '') input.value = text;
-    return runTurn({ text });
+    return runTurn({ resume: true });
   }
 
   // ③ 真出错了：说清楚，并且把界面状态重新对一遍
@@ -12744,6 +12743,10 @@ async function interject(_passed = null) {
     addSysNote('⚠ 这句没插进去：' + (r && r.error ? r.error : '网络错误'));
     // 话给回主人，别让他白打一遍
     if (!input.value.trim()) { input.value = text; autosizeInput(); }
+    if (atts.length) {
+      attachments = [...atts, ...attachments];
+      renderAttachBar();
+    }
     return;
   }
 
@@ -13904,25 +13907,25 @@ async function openScreenFramesDlg() {
 /**
  * 【2026-11-13 主人钦点】管理员档改成卡片放进【插件】面板（顶栏按钮已删）。
  *
- * 卡片形态跟旁观者卡同一套结构（featRow + featIco + featText + switch），
+ * 卡片形态跟功能卡同一套结构（featRow + featIco + featText + switch），
  * 默认开启（admin-mode.mjs 默认档语义：没显式关过 = 开）。
  * 开关走 /api/admin-mode（POST {sessionId, on}），动完当场生效 + toast 回执。
  *
  * 谁调它：loadFeatures（每次画插件面板都会调，状态每回现读）、开关点完。
  */
-let adminCardOn = true;   // 缓存上一回读到的状态；现读为主，这个只省首帧闪烁
+let adminCardRequest = 0;
 
 async function adminPaintInto(list) {
   if (!list) return;
-  try {
-    const r = await fetch('/api/admin-mode?sessionId=' + encodeURIComponent(sessionId || 'default'))
-      .then((x) => x.json()).catch(() => null);
-    adminCardOn = Boolean(r && r.on === true);
-  } catch { /* 问不到就沿用缓存（默认开） */ }
-
-  // 面板里可能已经有这颗卡（renderFeatList 被连续调两次时），先摘旧的再画新的
+  const request = ++adminCardRequest;
+  const selectedId = sessionId || 'default';
+  const sameSession = () => (sessionId || 'default') === selectedId;
   const old = list.querySelector('[data-admin-card]');
   if (old) old.remove();
+  const r = await fetch('/api/admin-mode?sessionId=' + encodeURIComponent(selectedId))
+    .then((x) => x.json()).catch(() => null);
+  if (!sameSession() || request !== adminCardRequest || typeof r?.on !== 'boolean') return;
+  const adminCardOn = r.on;
 
   const card = document.createElement('div');
   card.className = 'featRow';
@@ -13957,21 +13960,20 @@ async function adminPaintInto(list) {
   sw.className = 'switch' + (adminCardOn ? ' on' : '');
   sw.textContent = adminCardOn ? '点一下关' : '点一下开';
   sw.onclick = async () => {
-    const want = !adminCardOn;
+    if (!sessionId || !sameSession() || request !== adminCardRequest) return;
     sw.disabled = true;
     try {
       const r = await fetch('/api/admin-mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, on: want }),
+        body: JSON.stringify({ sessionId: selectedId, on: !adminCardOn }),
       }).then((x) => x.json());
+      if (!sameSession()) return;
       if (!r || r.error) { toast?.(r?.error || '没存上'); return; }
-      adminCardOn = Boolean(r.on);
-      toast?.(adminCardOn ? '管理员权限：开了（这个会话）。她可以动整台机器和程序本体了。' : '管理员权限：关了（这个会话）。她回到工作区里。');
-      // 就地重画这颗卡（状态字、描述、开关都跟着换）
+      toast?.(r.on ? '管理员权限：开了（这个会话）。她可以动整台机器和程序本体了。' : '管理员权限：关了（这个会话）。她回到工作区里。');
       await adminPaintInto(list);
     } catch (e) {
-      toast?.('没存上：' + (e?.message || e));
+      if (sameSession()) toast?.('没存上：' + (e?.message || e));
     } finally {
       sw.disabled = false;
     }
@@ -13990,7 +13992,10 @@ async function adminPaintInto(list) {
  *
  * 谁调它：loadTopCfg（开机 + 每次切会话都会走）、绑定/解绑之后。
  */
+let agentChipRequest = 0;
 async function refreshAgentChip() {
+  const request = ++agentChipRequest;
+  const selectedId = sessionId;
   const el = document.getElementById('agentChip');
   if (!el) return;
   /* 【2026-11-04 加固·切会话时先归零】兜底名是「万一某条消息没带署名」时的最后一道
@@ -14008,11 +14013,12 @@ async function refreshAgentChip() {
    *
    * 两条请求并发发：一块牌等两趟串行往返太慢，切会话时会看得见地闪一下。
    */
-  const sid = encodeURIComponent(sessionId);
+  const sid = encodeURIComponent(selectedId);
   const [cur, grp] = await Promise.all([
     fetch('/api/agents/current?sessionId=' + sid).then((x) => x.json()).catch(() => null),
     fetch('/api/agents/group?sessionId=' + sid).then((x) => x.json()).catch(() => null),
   ]);
+  if (sessionId !== selectedId || request !== agentChipRequest) return;
   /* 【2026-11-04 加固·接口没答上来时，别留着上一个会话的名字】
    * 这时画不出牌子，但历史还是要画；若兜底名还是上一个会话的人，
    * 那些没带署名的消息就会顶着别人的名字出来 —— 主人这次报的就是这个。
@@ -14122,7 +14128,9 @@ function callIntoRoom(name) {
  *
  * 谁调它：loadTopCfg（开机 + 每次切会话）、新建会话之后、改名单/安静/开关/顺序之后。
  */
+let whoRailRequest = 0;
 async function refreshWhoRail() {
+  const request = ++whoRailRequest;
   const box = document.getElementById('whoRail');
   if (!box) return;
   const sid = (typeof sessionId === 'string' && sessionId) ? sessionId : '';
@@ -14134,7 +14142,7 @@ async function refreshWhoRail() {
     members = (r && !r.error && Array.isArray(r.members)) ? r.members : [];
   } catch { members = []; }
   // 切会话很快时会有几次并发请求，回来的顺序不一定 —— 只认最后那一次的会话
-  if (String(sessionId || '') !== sid) return;
+  if (String(sessionId || '') !== sid || request !== whoRailRequest) return;
   box.innerHTML = '';
   const cap = document.createElement('div');
   cap.className = 'whoCap';
@@ -16916,21 +16924,37 @@ try {
         return;
       }
       wrap.innerHTML = items.map((it) =>
-        '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;background:rgba(255,255,255,.02)">'
-        + '<div style="display:flex;gap:8px;align-items:baseline">'
+        '<div class="kbKnowCard" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;background:rgba(255,255,255,.02)">'
+        + '<div class="kbKnowHead" style="display:flex;gap:8px;align-items:baseline;cursor:pointer" title="点一下展开 / 收起">'
+        + '<span class="kbKnowArrow" style="flex:none;opacity:.6;font-size:11px;user-select:none">▸</span>'
         + '<b style="flex:1;min-width:0">' + esc(it.trigger) + '</b>'
         + '<span style="opacity:.55;font-size:11.5px;flex:none">用过 ' + (it.hits || 0) + ' 次' + (fmt(it.lastHit) ? ' · 最近 ' + fmt(it.lastHit) : '') + '</span>'
         + '<button type="button" class="ghost kbKnowEdit" style="flex:none">改</button>'
         + '<button type="button" class="ghost kbKnowDel" data-t="' + esc(it.trigger) + '" style="flex:none">删</button>'
         + '</div>'
-        + '<div class="kbKnowBody" style="white-space:pre-wrap;font-size:12.5px;opacity:.85;margin-top:6px;max-height:200px;overflow-y:auto">' + esc(it.steps) + '</div>'
+        + '<div class="kbKnowBody" style="display:none;white-space:pre-wrap;font-size:12.5px;opacity:.85;margin-top:6px;max-height:200px;overflow-y:auto">' + esc(it.steps) + '</div>'
         + '</div>'
       ).join('');
+      /* 【2026-11-18 主人钦点·知识卡默认折叠，点头那行展开】
+       * 只绑在标题行上、不绑整张卡：步骤正文要能选中复制，点正文不该把它收起来。
+       * 编辑/删除两个按钮在点标题时会被忽略（closest('button')），各走各的 onclick。 */
+      wrap.querySelectorAll('.kbKnowHead').forEach((head) => {
+        head.onclick = (e) => {
+          if (e.target.closest('button')) return;
+          const card = head.closest('.kbKnowCard');
+          const body = card.querySelector('.kbKnowBody');
+          const arrow = card.querySelector('.kbKnowArrow');
+          if (!body) return;
+          const open = body.style.display !== 'none';
+          body.style.display = open ? 'none' : '';
+          if (arrow) arrow.textContent = open ? '▸' : '▾';
+        };
+      });
       /* 【2026-11-14 主人钦点·全会话可增改】每条手路能直接改：trigger / 步骤就地展开编辑，保存走 /api/know/save
        * （knowAdd 同 trigger 覆盖更新，旧版自动进史书留底，翻得回）。 */
       wrap.querySelectorAll('.kbKnowEdit').forEach((btn) => {
         btn.onclick = () => {
-          const row = btn.closest('div[style*="border"]');
+          const row = btn.closest('.kbKnowCard');
           if (!row || row.querySelector('.kbKnowEditBox')) return;
           const body = row.querySelector('.kbKnowBody');
           const oldSteps = body.textContent;
@@ -17060,199 +17084,6 @@ function featSid() {
 }
 
 // 功能按钮上只留「功能」两个字，开关状态看面板或悬停提示。
-/* ===== 旁观者模式·功能卡（2026-11-12 主人钦点：做成【读文件】【写文件】同款卡片） ======
- *
- * 原来是功能卡列表上方一块独立标题条 + 一排选人行，跟功能卡不一个门脸。
- * 现在收进 featList：一张「旁观者模式」卡（名字+徽标+说明+「挑人/收起」+开关），
- * 点「挑人」展开选人区，里面一行一个智能体（还是 featRow 同款）。
- *
- * 数据在 specState，面板每次打开 specLoad() 现拉全量（/api/agents + /api/spectator）——
- * 所以**自建新卡会自动出现在候选里**，不用维护第二份名单。
- * 名单存的是名字（按会话，上限 8 个）：删掉的卡自动从候选里消失，残留名字无害。 */
-const specState = { loaded: false, cards: [], chosen: new Set(), main: '', occupied: new Set(), expanded: false };
-
-/* 【2026-11-13】挑人窗的「完成」/ 点外面关 */
-const specPickDlg = document.getElementById('specPickDlg');
-if (specPickDlg) {
-  const _done = document.getElementById('specPickDone');
-  if (_done) _done.addEventListener('click', () => { try { specPickDlg.close(); } catch {} });
-  specPickDlg.addEventListener('click', (ev) => { if (ev.target === specPickDlg) { try { specPickDlg.close(); } catch {} } });
-}
-
-
-async function specLoad() {
-  const sid = featSid();
-  const _r = await fetch('/api/spectator?sessionId=' + encodeURIComponent(sid)).then((x) => x.json()).catch(() => null);
-  const _ag = await fetch('/api/agents').then((x) => x.json()).catch(() => null);
-  specState.cards = (Array.isArray(_ag && _ag.agents) ? _ag.agents : (Array.isArray(_ag) ? _ag : []))
-    .filter((c) => c && String(c.name || '').trim() && c.enabled !== false);
-  specState.chosen = new Set(Array.isArray(_r && _r.agents) ? _r.agents : []);
-  specState.main = String((_r && _r.main) || '').trim();
-  specState.occupied = new Set(Array.isArray(_r && _r.occupied) ? _r.occupied : []);
-  /* 冲突自愈：已勾的旁观者现在进了屋里 → 当场摘掉并回存（服务端闸还有一道双保险） */
-  let _dirty = false;
-  for (const _n of [].concat(Array.from(specState.chosen))) {
-    if (_n === specState.main || specState.occupied.has(_n)) { specState.chosen.delete(_n); _dirty = true; }
-  }
-  if (_dirty) {
-    fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: sid, agents: Array.from(specState.chosen) }) }).catch(() => {});
-  }
-  specState.loaded = true;
-}
-
-async function specSave() {
-  const sid = featSid();
-  const names = specState.cards.map((x) => String(x.name || '').trim()).filter((n) => specState.chosen.has(n));
-  const rr = await fetch('/api/spectator', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId: sid, agents: names }) }).then((x) => x.json()).catch(() => null);
-  return Boolean(rr && rr.ok);
-}
-
-/** 旁观者卡 + 选人区（展开时）。返回一个 fragment，调用方往哪插都行。 */
-function specBuild() {
-  const frag = document.createDocumentFragment();
-  const on = specState.chosen.size > 0;
-
-  const card = document.createElement('div');
-  card.className = 'featRow specCard';
-  card.dataset.spec = '1';
-  const main = document.createElement('div');
-  main.className = 'featMain';
-  /* 【2026-11-13 主人截图报「旁观者模式几个白色大字竖排」】网格版 .featMain 横排 flex，
-   * name/desc 两个 div 并排挤 —— 五个字被压成竖列。套上跟功能卡一样的结构。 */
-  const ico = document.createElement('div');
-  ico.className = 'featIco t-violet';
-  ico.textContent = '旁';
-  const text = document.createElement('div');
-  text.className = 'featText';
-  const name = document.createElement('div');
-  name.className = 'featName';
-  const nm = document.createElement('span');
-  nm.textContent = '旁观者模式';
-  const badge = document.createElement('span');
-  badge.className = 'badge' + (on ? '' : ' off');
-  badge.textContent = on ? '旁观中·' + specState.chosen.size + '人' : '未旁观';
-  name.append(nm, badge);
-  const desc = document.createElement('div');
-  desc.className = 'featDesc';
-  /* 【2026-11-13 主人钦点】卡片一句话+在旁观谁；挑人开独立窗，不再在列表里铺一大片 */
-  desc.textContent = on
-    ? '旁观中：' + Array.from(specState.chosen).join('、')
-    : '挑几位智能体，她干活时选中的随时插一句（纯闲聊不插）。';
-  desc.title = on
-    ? '旁观中：' + Array.from(specState.chosen).join('、') + '。她干活时这几位随时插一句（说话带「旁观」小牌），纯闲聊不插话。'
-    : '还没挑人。点「挑人」选几位（按会话生效），她干活时选中的随时插一句；纯闲聊不插话。';
-  text.append(name, desc);
-  main.append(ico, text);
-  const pick = document.createElement('button');
-  pick.type = 'button';
-  pick.className = 'featEditBtn';
-  pick.textContent = '挑人';
-  pick.title = '选几位智能体来旁观（单独的窗口，不占这块地方）';
-  const sw = document.createElement('button');
-  sw.type = 'button';
-  sw.className = 'switch' + (on ? ' on' : '');
-  sw.textContent = on ? '点一下关' : '点一下开';
-  if (on) {
-    /* 关 = 清空名单（回到没人旁观） */
-    sw.onclick = async () => { specState.chosen.clear(); if (await specSave()) specRepaint(); };
-  } else {
-    /* 开 = 打开挑人窗让人挑；挑上人就真正「旁观中」 */
-    sw.onclick = () => { openSpecPick(); };
-  }
-  pick.onclick = () => { openSpecPick(); };
-  card.append(main, pick, sw);
-
-  frag.append(card);
-  return frag;
-}
-
-function specPaintInto(list) {
-  if (!specState.loaded) return;
-  list.append(specBuild());
-}
-
-/** 只重画旁观者那张卡（挑人已挪到独立窗，选人区没有了）。
- * 【2026-11-13 主人报「点挑人后瞬间位移到最顶端」】原来每次 repaint 把卡
- * insertBefore 到列表最前 + 整列重画，滚动位置直接丢。现在就地替换：
- * 记住这张卡原来的位置，新卡插回同一个地方。 */
-function specRepaint() {
-  if (!featList || !specState.loaded) return;
-  const oldCard = featList.querySelector('.featRow.specCard');
-  const frag = specBuild();
-  if (oldCard && oldCard.parentNode === featList) {
-    featList.insertBefore(frag, oldCard);
-    oldCard.remove();
-  } else {
-    featList.append(frag);
-  }
-}
-
-/* ── 挑人独立窗（2026-11-13 主人钦点：「点击挑人后打开一个新界面」）────────── */
-function openSpecPick() {
-  const dlg = document.getElementById('specPickDlg');
-  if (!dlg) return;
-  const list = document.getElementById('specPickList');
-  if (list) {
-    list.innerHTML = '';
-    if (!specState.cards.length) {
-      const empty = document.createElement('div');
-      empty.className = 'featDesc';
-      empty.style.padding = '10px 4px';
-      empty.textContent = '没有可选的智能体。';
-      list.append(empty);
-    } else {
-      for (const c of specState.cards) {
-        const _name = String(c.name || '').trim();
-        const _isMain = _name === specState.main;
-        const _inRoom = specState.occupied.has(_name);
-        const _locked = _isMain || _inRoom;
-        const row = document.createElement('div');
-        row.className = 'featRow';
-        row.dataset.name = _name;
-        const nameEl = document.createElement('div');
-        nameEl.className = 'featName';
-        const nmm = document.createElement('span');
-        nmm.textContent = _name;
-        const badge2 = document.createElement('span');
-        badge2.className = 'badge' + (_locked ? ' off' : (specState.chosen.has(_name) ? '' : ' off'));
-        badge2.textContent = _locked ? (_isMain ? '干活中' : '在屋里') : (specState.chosen.has(_name) ? '旁观中' : '未旁观');
-        nameEl.append(nmm, badge2);
-        const desc2 = document.createElement('div');
-        desc2.className = 'featDesc';
-        desc2.textContent = _locked
-          ? (_isMain ? '本会话正在干活的主智能体，不能自己旁观自己。'
-                     : '已在「屋里的人」里，会接话干活，不能再当旁观者（把她移出屋里才能旁观）。')
-          : String(c.desc || '').trim() || '拨开后，她干活时这位可以随时插一句（说话带「旁观」小牌）。';
-        const mainEl = document.createElement('div');
-        mainEl.className = 'featMain';
-        mainEl.append(nameEl, desc2);
-        const sw2 = document.createElement('button');
-        sw2.type = 'button';
-        sw2.className = 'switch' + (specState.chosen.has(_name) ? ' on' : '');
-        sw2.textContent = _locked ? '不能旁观' : (specState.chosen.has(_name) ? '停止旁观' : '开始旁观');
-        if (_locked) {
-          sw2.disabled = true;
-          sw2.title = _isMain ? '干活的人不能旁观自己' : '在「屋里的人」里的不能旁观';
-        } else {
-          sw2.onclick = async () => {
-            if (specState.chosen.has(_name)) specState.chosen.delete(_name); else specState.chosen.add(_name);
-            if (await specSave()) {
-              specRepaint();   // 卡片上的「旁观中：…」跟着更新
-              openSpecPick();   // 重开一遍刷新名单状态（最省事的幂等刷新）
-            }
-          };
-        }
-        row.append(mainEl, sw2);
-        list.append(row);
-      }
-    }
-  }
-  if (!dlg.open) {
-    try { dlg.showModal(); } catch { dlg.setAttribute('open', '1'); }
-  }
-}
 
 function paintFeatNow() {
   const btn = document.getElementById('openFeatures');
@@ -17405,15 +17236,12 @@ function renderFeatList() {
     box.append(t);
     featList.appendChild(box);
     if (featHint) featHint.textContent = '0 / ' + (featRows().length + featApPlugins.length);
-    specPaintInto(featList);
     paintFeatNow();
     return;
   }
   if (!rows.length && !apAll.length) {
     featPaintEmpty();
     if (featHint) featHint.textContent = featState.error ? '没读到' : '0 个插件';
-        /* 【2026-11-13 旁观者模式卡】挪到功能列表最下方（主人要求） */
-    specPaintInto(featList);
 paintFeatNow();
     return;
   }
@@ -17422,7 +17250,6 @@ paintFeatNow();
   if (!rows.length) {
     for (const p of apAll) featList.appendChild(apPlugCard(p));
     if (featHint) featHint.textContent = `${apAll.length} 个插件（都是插件目录里的）`;
-    specPaintInto(featList);
     paintFeatNow();
     return;
   }
@@ -17727,8 +17554,6 @@ paintFeatNow();
       : `${total} 个插件`;
     featHint.textContent = offAll ? `${head} · ${offAll} 个关着` : `${head} · 全开`;
   }
-  /* 【2026-11-13 旁观者模式卡】挪到功能列表最下方（主人要求） */
-  specPaintInto(featList);
   paintFeatNow();
 }
 
@@ -18186,7 +18011,11 @@ function repaintUserRoles() {
   });
 }
 
+let identityBadgeRequest = 0;
 async function refreshIdentityBadge() {
+  const request = ++identityBadgeRequest;
+  const selectedId = sessionId;
+  const isCurrent = () => sessionId === selectedId && request === identityBadgeRequest;
   const el = document.getElementById('idBadge');
   if (!el) return;
   /* 【2026-11-13 主人钦点·常驻 + 按会话自动切换】
@@ -18208,7 +18037,8 @@ async function refreshIdentityBadge() {
     } catch { return '主人'; }
   };
   try {
-    const r = await fetch('/api/identity?sessionId=' + encodeURIComponent(sessionId || '')).then((x) => x.json());
+    const r = await fetch('/api/identity?sessionId=' + encodeURIComponent(selectedId || '')).then((x) => x.json());
+    if (!isCurrent()) return;
     if (!r || !r.ok) { currentIdentityName = paint('主人', true); return; }
     /* 身份功能被全局关掉时，语义就是「永远按主人算」（identityOn=false） */
     const off = r.enabled === false;
@@ -18218,7 +18048,7 @@ async function refreshIdentityBadge() {
     currentIdentityName = paint(nm, id === 'owner');
     if (typeof repaintUserRoles === 'function') repaintUserRoles();
   } catch {
-    currentIdentityName = paint('主人', true);
+    if (isCurrent()) currentIdentityName = paint('主人', true);
   }
 }
 
@@ -18519,10 +18349,6 @@ if (openFeaturesBtn) {
     /* 【2026-11-10】以前读失败就 alert 一句然后不打开面板 ——
      * 主人点了一下，弹个「读取功能列表失败」，面板还是没出来，等于白点。
      * 现在无论如何都打开：读不到就在列表位置写清原因 + 给一颗重试。 */
-    /* 【2026-11-12 旁观者模式·进功能卡列表（主人定）】先拉旁观者数据，再 loadFeatures ——
-     * renderFeatList 会把「旁观者模式」卡画在功能列表最下方（specPaintInto）。
-     * 每次打开都现拉 /api/agents 全表：自建新卡自动进候选，不用维护第二份名单。 */
-    await specLoad();
     await loadFeatures();
     featHideReport();   // 上一次导入的账本别在新一次打开时还杵着
     closeOtherDialogs('featuresDlg');
@@ -19089,7 +18915,7 @@ if (featCopyPromptBtn) {
     if (!ok) {
       /* 兜底：Electron 里 navigator.clipboard 可能因为焦点/权限不可用，
          用一个临时 textarea + execCommand 复制。
-         注意 textarea 必须插进 <dialog id="featuresDlg"> 内部而不是 body ——
+         注意 textarea 必须插进 #featuresDlg 对话框内部而不是 body ——
          modal 打开时 dialog 之外的子树全在 inert 状态，inert 里的 select() 拿不到选区，
          execCommand 会必然返回 false（那样兜底就等于没有）。 */
       try {
@@ -20577,14 +20403,12 @@ const cfgMenu = document.getElementById('cfgMenu');
 const cfgMenuHead = document.getElementById('cfgMenuHead');
 const cfgMenuList = document.getElementById('cfgMenuList');
 
-let cfgState = { level: '', levelName: '高', modelId: '', modelName: '', models: [], levels: [], isLevelCustom: false, isModelCustom: false };
+let cfgState = { level: '', levelName: '', modelId: '', modelName: '', models: [], levels: [], isLevelCustom: false, isModelCustom: false };
 let cfgMenuFor = null; // 'model' | 'think' | null
 
 function paintTopCfg() {
   topModelName.textContent = cfgState.modelName || '没配模型';
-  /* 【2026-11-13 主人报「删了默认档，新会话还是显示默认」】回落文案残留旧八档
-   * 时代的「默认」。档位表早改成 关/低/高/最高（默认=高），回落显示也得跟着。 */
-  topThinkName.textContent = cfgState.levelName || '高';
+  topThinkName.textContent = cfgState.levelName || '—';
   // 会话自定义过的，框变个色，免得忘了自己改过
   topModel.classList.toggle('custom', Boolean(cfgState.isModelCustom));
   topThink.classList.toggle('custom', Boolean(cfgState.isLevelCustom));
@@ -20593,10 +20417,14 @@ function paintTopCfg() {
     : `跟右上角一致：${cfgState.modelName}（点一下换，只影响这个会话）`;
   topThink.title = cfgState.isLevelCustom
     ? `这个会话临时用了「${cfgState.levelName}」（点一下换）`
-    : '跟右上角给这个模型设的强度走（没设过就是「高」；点一下换，只影响这个会话）';
+    : '点一下切换思考强度，只影响这个会话';
 }
 
+let topCfgRequest = 0;
 async function loadTopCfg() {
+  const request = ++topCfgRequest;
+  const selectedId = sessionId;
+  const isCurrent = () => sessionId === selectedId && request === topCfgRequest;
   // 顶栏「现在是谁在说话」那块牌跟着会话走，顺手一起刷（失败就当没这块牌）
   try { refreshAgentChip(); } catch { /* 忽略 */ }
   /* 【2026-11-13 主人报「测试鱼会话用小鲸说话，屏上署名乱」】身份是按会话存的，
@@ -20604,18 +20432,17 @@ async function loadTopCfg() {
    * 「小鲸」的会话时它还拿着上一个会话的值，乐观气泡署名就画错了。
    * loadTopCfg 在每次切会话/新会话都会跑，这里顺手把身份徽标和署名一起刷。 */
   try { if (typeof refreshIdentityBadge === 'function') await refreshIdentityBadge(); } catch { /* 忽略 */ }
+  if (!isCurrent()) return;
   // 「管理员权限」默认开、按会话存 —— 插件面板开着的话把卡片刷成新会话的状态
   try { if (typeof featuresDlg !== 'undefined' && featuresDlg && featuresDlg.open) { const _fl = document.getElementById('featList'); if (_fl) await adminPaintInto(_fl); } } catch { /* 忽略 */ }
+  if (!isCurrent()) return;
   // 左上角那竖列「屋里的人」也是跟着会话走的
   try { refreshWhoRail(); } catch { /* 忽略 */ }
-  if (!sessionId) return;
-  const r = await fetch(`/api/session-config?sessionId=${encodeURIComponent(sessionId)}`)
+  if (!selectedId) return;
+  const r = await fetch(`/api/session-config?sessionId=${encodeURIComponent(selectedId)}`)
     .then((x) => x.json()).catch(() => null);
-  if (!r || r.error) return;
-  // 整份替换，不要 {...cfgState, ...r}：
-  // 后者在服务端少回一个字段时会把旧的留着，modelName / models 就会一直停在启动时那版
-  // —— 表现就是「加了新模型，左上角下拉里看不见」。
-  cfgState = { ...cfgState, ...r };
+  if (!isCurrent() || !r || r.error) return;
+  cfgState = r;
   paintTopCfg();
   // 菜单正开着就按新数据重画一遍，否则用户看到的是点开瞬间那一份旧列表
   if (cfgMenuFor) {
@@ -20679,16 +20506,14 @@ function openCfgMenu(which) {
     cfgMenuList.appendChild(back);
   } else {
     cfgMenuHead.textContent = '换思考强度（只影响这个会话）';
-    /* 【2026-11-13 主人钦点删】「默认」那一项（level:'' 跟模型走）从菜单里拿掉——
-     * 主人不想看到它。删掉后有个小账要算平：会话还没自己设过档（isLevelCustom=false）
-     * 时，✓ 原来挂在「默认」项上；现在改挂到**实际生效的那一档**（按 defaultLevelName
-     * 对号），列表里永远有一项亮着勾，不会出现「没有任何选中」的悬空状态。 */
-    for (const lv of cfgState.levels || []) {
-      /* 勾选和顶部「当前思考强度」显示用同一个来源：实际生效档名 levelName(levelName)。
-       * 旧写法「level 匹配 或 默认档匹配」两条路会打架 —— 新会话显式存了出厂默认档
-       * 'low'（isLevelCustom 判为 false），于是既按 level 勾了「低」，又按 defaultLevelName
-       * 勾了模型默认的「高」，两个勾。只认 levelName，一档一勾。 */
-      const isPicked = cfgState.levelName ? (lv.name === cfgState.levelName) : (cfgState.level === lv.id);
+    const levels = cfgState.sessionId === sessionId ? (cfgState.levels || []) : [];
+    if (!levels.length) {
+      cfgMenuList.innerHTML = '<div class="cfgMenuHead">暂未取得这个模型的思考选项</div>';
+    } else if (!levels.some((lv) => lv.id === cfgState.effectiveLevel)) {
+      cfgMenuList.innerHTML = '<div class="cfgMenuHead">已保存的档位不在当前模型的已知选项中</div>';
+    }
+    for (const lv of levels) {
+      const isPicked = lv.id === cfgState.effectiveLevel;
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'cfgMenuItem';
@@ -20717,17 +20542,24 @@ function openCfgMenu(which) {
 }
 
 async function setSessionCfg(patch) {
-  if (!sessionId) return;
+  const selectedId = sessionId;
+  if (!selectedId) return;
+  const request = ++topCfgRequest;
+  closeCfgMenu();
   const r = await fetch('/api/session-config/set', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, ...patch }),
+    body: JSON.stringify({ sessionId: selectedId, ...patch }),
   }).then((x) => x.json()).catch(() => null);
-  closeCfgMenu();
+  if (sessionId !== selectedId || request !== topCfgRequest) return;
   if (!r || r.error) { alert('没设上：' + (r && r.error ? r.error : '网络错误')); return; }
-  cfgState = { ...cfgState, ...r };
+  cfgState = r;
   paintTopCfg();
-  if (meta) meta.title = (meta.title || '') ;
+  if (cfgMenuFor) {
+    const which = cfgMenuFor;
+    cfgMenuFor = null;
+    openCfgMenu(which);
+  }
 }
 
 topModel.onclick = (e) => { e.stopPropagation(); openCfgMenu('model'); };
@@ -22232,10 +22064,10 @@ const PROVIDERS = [
     hint: '整合站，一个 key 走很多家。',
   },
   {
-    key: 'lingfeng', name: '凌风中转', base: 'https://ai.windking.shop',
-    match: /windking/i,
+    key: 'a6api', name: 'A6聚合', base: 'https://api.a6api.vip/v1',
+    match: /a6api/i,
     models: ['deepseek-v4.1-flash', 'deepseek-v4.1', 'deepseek-v4-pro'],
-    hint: '这一家地址就填到根，别再往后加 /v1（它自己带了）。',
+    hint: '地址已经带到 /v1，直接填这个就好。',
   },
   {
     key: 'openai', name: 'OpenAI 官方', base: 'https://api.openai.com/v1',
@@ -22627,10 +22459,14 @@ if (mdlDiscoverBtn) {
       const r = await fetch('/api/models/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        /* 【2026-11-17】把「出图 / 聊天」也带上：同一家中转上，出图那条 key
-         * 和聊天那条 key 看到的是**不同的模型组**（实测 wanzi：chat key 只有
-         * 3 个 deepseek，image key 才有 4 个 gpt-image）。带上类型，服务端会
-         * 把同类型的 key 排前面、并且把所有 key 的列表合并回来。 */
+        /* 【2026-11-18 改·只问一把 key，绝不合并】
+         *
+         * 11-17 为了让「出图表单也能看到出图模型」，服务端把同地址上**每一把 key**
+         * 都问一遍再合并 —— 结果 A key 的表单里混进只有 B key 才有的模型，
+         * 选中就调不通（主人当场报「拉出不属于这个 API key 的模型」）。
+         *
+         * 现在按类型挑那一把（image 表单问 image key）就问它一个，
+         * 返回的 ids 全部属于当前这把。kind 照旧带上，服务端靠它选 key。 */
         body: JSON.stringify({ base, key, kind: (document.querySelector('input[name="mdlKind"]:checked') || {}).value || '' }),
       }).then((x) => x.json()).catch(() => null);
       if (r && r.ok && Array.isArray(r.ids) && r.ids.length) {
@@ -22640,6 +22476,13 @@ if (mdlDiscoverBtn) {
          * 局部改动：id 排序保持服务商给的顺序（toSorted 不一定有，用 slice）。 */
         saveModelIdCache(base, r.ids);
         paintModelPicker(base);
+        /* 【2026-11-18 补】同地址上还存着别的 key 时，把这件事说清楚 ——
+         * 主人可能以为「只有这几个模型」，其实是另一把 key 能看的组。
+         * 只在多于一把时提示，一把的时候一个字都不加（别没事找话）。 */
+        if (mdlModelHint && !opts.silent && Number(r.keyCount) > 1) {
+          mdlModelHint.className = 'hint';
+          mdlModelHint.textContent = `${r.ids.length} 个模型（只属于当前这把 Key；这个地址还存着 ${r.keyCount - 1} 把，想看那批就把那条 Key 填进来再拉）`;
+        }
         /* 拉到了就顺手填第一个 —— 主人一般就是想要个能用的，省一次点击 */
         if (mdlModel && !(mdlModel.value || '').trim()) {
           mdlModel.value = r.ids[0];
@@ -24316,7 +24159,9 @@ refreshMusic();
         i.textContent = ico;
         const n = document.createElement('span');
         n.className = 'mName';
-        n.textContent = it.name;   // textContent：文件名再怪也只是字
+        /* 【2026-11-18】mark 是「（共享区）」这类出处标记：显示出来，但插入时只插 name
+         * （insertItem 用的是 it.name，不带标记），这样写进输入框的还是干净路径。 */
+        n.textContent = it.name + (it.mark || '');   // textContent：文件名再怪也只是字
         b.appendChild(i);
         b.appendChild(n);
         pop.appendChild(b);
@@ -24342,7 +24187,10 @@ refreshMusic();
     debounceT = setTimeout(async () => {
       let its = [];
       try {
-        const r = await fetch('/api/files/mention?dir=&q=' + encodeURIComponent(q)).then((x) => x.json());
+        /* 【2026-11-18】带上会话 id：工作区按会话分之后，@ 提及要列**这个会话自己的**
+         * 文件（她刚生成的东西就在那儿）；不带 sid 就退回共享区（老文件照样找得到）。 */
+        const _sidForMention = (typeof sessionId === 'string' && sessionId) ? sessionId : '';
+        const r = await fetch('/api/files/mention?dir=&sid=' + encodeURIComponent(_sidForMention) + '&q=' + encodeURIComponent(q)).then((x) => x.json());
         its = Array.isArray(r && r.items) ? r.items : [];
       } catch { /* 拉不到就空着，浮层显示「没有匹配」 */ }
       if (mySeq !== seq || !open) return;

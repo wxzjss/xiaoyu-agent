@@ -456,6 +456,10 @@ export function loadPlan(key = 'default') {
           status: STATUSES.includes(s.status) ? s.status : 'pending',
           note: clean(s.note, 300),
           pinned: !!s.pinned,
+          /* 【2026-11-18 加】并行标记 —— 标了它的步骤不受「同时只一个 doing」约束。
+           * 必须在这里显式带上，否则 savePlan 一归一化就把它丢了，
+           * 下一轮"唯一 doing"那道闸会把真正的并行场景误拦。 */
+          parallel: !!s.parallel,
           /* 【2026-11-15 加·主人要「每项任务各用了几次工具调用」】
            * 这里是白名单式重建，漏一个字段就等于读回来时把它丢了（这坑踩过两次：
            * goal/decisions、intent 各一次）。toolCalls 必须跟着一起留。 */
@@ -917,7 +921,39 @@ export function planAction(key, args = {}) {
       return { text: `ERROR：没有第 ${args.stepId ?? '?'} 步（现有这些号：${ids || '空清单'}）`, state };
     }
     if (!status) return { text: `ERROR：status 只能是 pending / doing / done / skipped`, state };
+    /**
+     * 【2026-11-18 加·同时只允许一步在「doing」】
+     *
+     * 为什么要这条（不是提示词，是结构约束）：
+     *   实测 34 个会话 322 步，完成率只有 65% —— 三成多步骤停在半路。
+     *   查下来一个典型形态是：同时标好几个 doing，然后哪个都没真做完。
+     *   清单从"执行计划"退化成"许愿池"，界面上也看不出现在到底在干哪件。
+     *
+     * Claude Code 的做法是状态层直接拒（`Error: Only one todo can be in_progress`），
+     * 不靠劝。这条照它的思路，但**留了后门**：
+     *   · 真的并行干活（spawn_workers 那种）时，给步骤标 `parallel: true` 就不受限；
+     *   · 否则必须先把上一步勾掉，再标下一步。
+     *
+     * 为什么留后门：我们确实有并行派活的场景（spawn_workers / team 模式），
+     * 一刀切禁掉会挡住真活儿。而且"同时三件事"有时是对的 —— 只是得显式声明。
+     */
+    if (status === 'doing') {
+      const others = (state.steps || []).filter(
+        (s) => s.id !== id && s.status === 'doing' && !s.parallel,
+      );
+      /* 本步自己标了 parallel 就不受约束（它本来就打算并行） */
+      if (others.length && !step.parallel && args.parallel !== true) {
+        const list = others.map((s) => `第${s.id}步「${s.text}」`).join('、');
+        return {
+          text: `ERROR：现在已经有 ${list} 在做（同时只能有一个 doing）。\n`
+            + '要么先把那一步勾成 done / skipped，要么改成 pending 排队。\n'
+            + '如果是真的要并行跑（比如派了 worker），给这一步加 parallel: true 再标 doing。',
+          state,
+        };
+      }
+    }
     step.status = status;
+    if (args.parallel !== undefined) step.parallel = !!args.parallel;
     if (args.note !== undefined) step.note = clean(args.note, 300);
     if (args.pin != null) step.pinned = !!args.pin;
     /* 【2026-11-15 晚·主人要求删掉】

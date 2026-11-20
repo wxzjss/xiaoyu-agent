@@ -9,11 +9,13 @@
 import { writeFileSync, mkdirSync, existsSync, statSync, unlinkSync } from 'node:fs';
 import { resolve, isAbsolute, join, dirname } from 'node:path';
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
+import { workspaceFor, sharedWorkspace, currentSessionId } from './workspace.mjs';
 
 /** 脚本所在的 scripts 目录：仓库版和打包版位置不同，按运行时目录往上找。 */
 function scriptsDir() {
-  const here = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+  const here = dirname(fileURLToPath(import.meta.url));
   const cands = [
     resolve(here, '..', 'scripts'),                        // data/code/src -> data/code/scripts
     resolve(here, '..', '..', 'scripts'),
@@ -28,6 +30,7 @@ function runScript(script, args, timeoutMs = 90000) {
   return new Promise((ok, bad) => {
     execFile(process.execPath, [join(scriptsDir(), script), ...args], {
       timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+      env: process.versions.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env,
     }, (err, stdout, stderr) => {
       if (err) {
         const msg = String(stderr || err.message || '').trim().slice(-800);
@@ -64,7 +67,12 @@ function officeTool({ name, ext, script, key, describe }) {
       if (!spec || typeof spec !== 'object') return `ERROR：${key} 要是对象，不能空。`;
 
       const title = String(spec.title || '未命名');
-      const base = (config.workspace || process.cwd());
+      /* 【2026-11-18 改·按会话分】相对路径落到**这个会话自己的目录**，
+       * 不再全塞进全局 workspace。见 src/workspace.mjs。 */
+      const base = (() => {
+        try { return workspaceFor(currentSessionId()) || sharedWorkspace(); }
+        catch { return (config.workspace || process.cwd()); }
+      })();
       const tmpDir = join(base, 'dump', '.tmp');
       mkdirSync(tmpDir, { recursive: true });
       const tmpJson = join(tmpDir, `office-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);

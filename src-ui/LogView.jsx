@@ -12,15 +12,6 @@ import FileCard from './FileCard.jsx';
 import { ToolGroup } from './ToolCard.jsx';
 import RowBoundary from './RowBoundary.jsx';
 
-/** 一行里最后那段文字有多长（滚动 effect 要跟着它走：流式吐字不增条目也在长） */
-function tailLen(items) {
-  if (!items || !items.length) return 0;
-  const it = items[items.length - 1];
-  if (!it) return 0;
-  if (Array.isArray(it.bubbles)) return it.bubbles.join('').length;
-  return String(it.text || '').length;
-}
-
 /**
  * 这个 item 属于「哪一段活」。
  *
@@ -590,7 +581,6 @@ export default function LogView() {
   }, [snap.sid]);
 
   const count = merged.items.length;
-  const lastLen = tailLen(merged.items);
 
   /**
    * 滚动（规格 4.4）：只有这一处写 scrollTop。

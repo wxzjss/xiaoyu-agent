@@ -130,7 +130,7 @@ export function extractInlineImages(text, prefix = 'inline') {
   const src = String(text ?? '');
   if (!src || src.indexOf('data:image/') < 0) return { text: src, images: [] };
   const images = [];
-  const out = src.replace(INLINE_IMG_RE, (_all, mime, b64) => {
+  let out = src.replace(INLINE_IMG_RE, (_all, mime, b64) => {
     try {
       const { path } = savePng(String(b64).replace(/\s+/g, ''), prefix);
       images.push({ path, caption: '' });
@@ -139,7 +139,19 @@ export function extractInlineImages(text, prefix = 'inline') {
       return '（图没取出来）';
     }
   });
-  return { text: out, images };
+  /**
+   * 【2026-11-18】生图模型有时把「生图参数 JSON」也当正文吐出来，拼在图前面：
+   *   {"size":"auto","referenced_image_ids":[...],"prompt":"..."}![image_1](data:…)
+   * 图剥掉后这串 JSON 还在，主人看着还是「一堆看不懂的字」。
+   * 只认带**生图专属键**的 JSON —— 她真的在给主人展示一段配置 JSON 时不误伤。
+   */
+  if (images.length) {
+    out = out.replace(/\{\s*"[^"]+"\s*:[^}]{0,20000}?\}\s*(?=（图已取出来)/g, (m) => {
+      if (!/referenced_image_ids|is_style_transfer|b64_json|"prompt"\s*:/.test(m)) return m;
+      return '';
+    });
+  }
+  return { text: out.trim(), images };
 }
 
 export async function generateImage({ prompt, ep = null, size = DEFAULT_SIZE, prefix = 'img' } = {}) {

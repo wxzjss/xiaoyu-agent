@@ -37,6 +37,7 @@ import { featureNameOfTool, featureOnFor } from './features.mjs';
 // 底线要从设置里读 —— 主人定的那几条对她也生效（主人 2026-10-25 明确要求）
 import { getSettings } from './settings.mjs';
 import { config } from './config.mjs';
+import { workspaceFor, sharedWorkspace } from './workspace.mjs';
 import { whalePersonaOverride, whaleModelId } from './whale-profile.mjs';
 import { endpointFor } from './models.mjs';
 import { readWhaleMemory, appendWhaleMemory, compactWhaleMemory } from './whale-memory.mjs';
@@ -587,6 +588,21 @@ export async function runSubagent({
       outbox: [],
       pushEvent: parent?.pushEvent ?? null,
       stashFile: parent?.stashFile ?? null,
+      /**
+       * 【2026-11-18 加·把审批通道继承下去】
+       *
+       * 起因：run_command 接上「危险命令要先问主人」之后，子智能体那条路会出事 ——
+       * 子Agent 的工具上下文是这里新建的，**没有 askApproval**，
+       * 而 cmd-guard 的规矩是「问不到就不动」（失败关闭）。
+       * 于是子Agent 一跑 `rm -rf ./build` 这类命令就被当场拦死，
+       * 而主人那边**连问都没人问** —— 他派她出去干活，结果她寸步难行，
+       * 还看不出为什么。这比不拦更糟。
+       *
+       * 所以把父层那条通道原样递下去：弹窗还是弹在主人眼前，
+       * 「她要动：xxx」里写的是子Agent 要跑的命令 —— 主人一样能点头或拒绝。
+       * 父层没有（比如老的调用路径）就是 undefined，cmd-guard 那边自然会失败关闭。
+       */
+      askApproval: parent?.askApproval ?? null,
       subagentDepth: parentDepth + 1,
     },
     async () => {
@@ -900,10 +916,14 @@ export async function runSubagent({
           '同一件事你已经说过「还差一轮」「待核」的，下一轮不许再说第二遍 —— 那是复读，不是提醒。' +
           '别把「我这趟做不了什么」说出来 —— 那是诉苦，不是说话。',
       '',
-      '工作区就在这儿：' + (config.workspace || process.cwd()),
+      /* 【2026-11-18 改·工作区按会话分】原来这里写的是全局 config.workspace，
+       * 于是姐妹被告知的工作区跟它真正能写的地方**不是一处**：
+       * 它相对路径落到自己会话目录，提示词却指着公共根。
+       * 现在两边取同一个值（见 src/workspace.mjs）。 */
+      '工作区就在这儿：' + WS_DIR(),
       '相对路径都按它算。找东西先 list_dir 看一眼这个目录，别满磁盘乱翻；',
       '连查两三次还找不到，就停手说「没找到，找过这些地方：…」，别一直翻。',
-      appRoot && appRoot !== (config.workspace || process.cwd())
+      appRoot && appRoot !== WS_DIR()
         ? '程序本体的目录（说的「项目」「源码」一般指这个）：' + appRoot
         : null,
       '',
@@ -1329,4 +1349,17 @@ export async function runSubagent({
   }
   },
   );
+}
+
+/**
+ * 【2026-11-18】姐妹这一趟该在哪干活。
+ * 正在替哪个会话干活就给它哪个目录；拿不到就退回共享区。
+ * 放函数里而不是常量：姐妹是被不同会话叫起来的，目录得现算。
+ */
+function WS_DIR() {
+  try {
+    return workspaceFor(currentSessionId()) || sharedWorkspace();
+  } catch {
+    return (config.workspace || process.cwd());
+  }
 }

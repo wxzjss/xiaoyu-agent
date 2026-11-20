@@ -181,6 +181,7 @@ function publicView(m) {
     price: normPrice(m.price),
     /** price 那四个数是用哪种钱填的：'cny' 或 'usd' */
     priceCurrency: normPriceCurrency(m.priceCurrency),
+    thinkingLevels: Array.isArray(m.thinkingLevels) ? m.thinkingLevels : undefined,
     createdAt: m.createdAt ?? 0,
     updatedAt: m.updatedAt ?? 0,
   };
@@ -228,6 +229,7 @@ export function activeEndpoint() {
       /* 少数自建/中转接入点说不清是哪家的「思考方言」，允许在 models.json 里直接写死。
        * 认得的四种取值见 thinking.mjs 的 THINKING_FORMATS；不写就按地址自动判断。 */
       thinkingFormat: String(pick.thinkingFormat ?? ''),
+      thinkingLevels: pick.thinkingLevels,
     };
   }
   // 选中的是 .env 那条、可 .env 里没有 key（装成 exe 之后根本没有 .env 文件），
@@ -243,6 +245,7 @@ export function activeEndpoint() {
         apiKey: withKey.apiKey,
         source: 'user',
         thinkingFormat: String(withKey.thinkingFormat ?? ''),
+        thinkingLevels: withKey.thinkingLevels,
       };
     }
   }
@@ -279,6 +282,7 @@ export function endpointFor(id) {
     source: 'user',
     /* 见 activeEndpoint 里的说明：这一条说的是哪家的思考方言（可不填） */
     thinkingFormat: String(pick.thinkingFormat ?? ''),
+    thinkingLevels: pick.thinkingLevels,
   };
 }
 
@@ -354,7 +358,7 @@ function normalizeInput(input = {}) {
   if (!/^https?:\/\//i.test(baseURL)) {
     throw Object.assign(new Error('接口地址要以 http:// 或 https:// 开头'), { status: 400 });
   }
-  return {
+  const out = {
     model,
     baseURL,
     name: String(input.name ?? '').trim() || model,
@@ -363,6 +367,10 @@ function normalizeInput(input = {}) {
     price: normPrice(input.price),
     priceCurrency: normPriceCurrency(input.priceCurrency),
   };
+  if (Array.isArray(input.thinkingLevels)) {
+    out.thinkingLevels = input.thinkingLevels.filter((id) => ['auto', 'off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(id));
+  }
+  return out;
 }
 
 /** 新增或更新一条模型配置；apiKey 留空表示沿用原值。 */

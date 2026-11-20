@@ -10,9 +10,35 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
  * 数据根：可写的那一层。
  * 开发时就是 ROOT；打成 exe 跑的时候 app.asar 只读，写 .state 会失败，
  * 所以 electron/main.cjs 用 MINI_AGENT_DATA 把它指到 %APPDATA%\xiaoyu-mini-agent。
+ *
+ * 【2026-11-18 加·别名兼容 —— 这个坑已经害过三次了】
+ *
+ * 正式变量名是 `MINI_AGENT_DATA`（名字里没有「小鱼」二字，确实容易记错）。
+ * 实际踩过的：
+ *   · check-plan-id.mjs 设了 `XIAOYU_DATA_DIR` —— 变量名根本不生效，
+ *     于是它自称「全程在临时目录里跑，绝不碰真实的 .state/plan」，
+ *     实际上一直在往主人的真实目录写。攒了 37 个 test-<pid> 孤儿清单，
+ *     把 check-plan-session 报红了两次，我一直以为是「被 kill 掉没走到清理」。
+ *   · check-peer-mail-ack.mjs 踩过同一个坑（那个文件的注释里记着），
+ *     但只写了注释，没堵住源头，后来的脚本照样抄错。
+ *   · 2026-11-18 我自己写 check-mem-gc.mjs 时又抄了 check-plan-id 的做法，
+ *     28 条守卫里 7 条假绿（测的是真实目录，扫出来 0 个孤儿）。
+ *
+ * 只写注释挡不住第三个人。所以这里认它：
+ * 如果只给了 XIAOYU_DATA_DIR，就把它当 MINI_AGENT_DATA 用，并**大声警告**——
+ * 隔离仍然生效（安全），但下次别再写错（有提示）。
  */
-const DATA = process.env.MINI_AGENT_DATA
-  ? resolve(process.env.MINI_AGENT_DATA)
+const _ALT_DATA = process.env.XIAOYU_DATA_DIR;
+if (!process.env.MINI_AGENT_DATA && _ALT_DATA) {
+  console.warn('[config] 环境变量名写错了：应该用 MINI_AGENT_DATA，不是 XIAOYU_DATA_DIR。'
+    + '这次先按你的意思隔离到 ' + _ALT_DATA + '（不会污染真实数据），但请改脚本。');
+}
+
+/** 真正生效的那个数据目录入口（可能来自正确名，也可能来自上面兼容的错名） */
+const _DATA_ENV = process.env.MINI_AGENT_DATA || _ALT_DATA;
+
+const DATA = _DATA_ENV
+  ? resolve(_DATA_ENV)
   : // 没指 MINI_AGENT_DATA 时用哪个数据目录：
     //
     // 装了 exe 的人在 %APPDATA%\小鱼Agent\data 底下存会话、设置、记忆，代码在 asar 里只读。

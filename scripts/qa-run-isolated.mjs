@@ -10,7 +10,7 @@
  *
  * 用法：node scripts/qa-run-isolated.mjs scripts/check-core.mjs [--more args]
  */
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { startIsolated } from './_test-instance.mjs';
 
@@ -33,13 +33,16 @@ console.log('跑：' + path.basename(target) + '\n');
 
 let code = 1;
 try {
-  const r = spawnSync(process.execPath, [target, ...args.slice(1)], {
-    stdio: 'inherit',
-    env: iso.env,
-    timeout: 20 * 60 * 1000,
+  code = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [target, ...args.slice(1)], {
+      stdio: 'inherit', env: iso.env, timeout: 20 * 60 * 1000,
+    });
+    child.once('error', reject);
+    child.once('close', (status) => resolve(status ?? 1));
   });
-  code = r.status == null ? 1 : r.status;
+} catch (error) {
+  console.error('检查启动失败：', error);
 } finally {
-  try { await iso.stop(); } catch (e) {}
+  try { await iso.stop(); } catch (error) { code = 1; console.error(error); }
 }
-process.exit(code);
+process.exitCode = code;

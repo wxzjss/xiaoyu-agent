@@ -28,7 +28,7 @@
  * 这一档是**会话级的**：每轮开跑前把它读进 CTX.adminMode，
  * 两个条件满足一个就放开 —— 谁都别去改 CTX.fullAccess 来蹭这一档的语义。
  */
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { config } from './config.mjs';
 
@@ -47,22 +47,26 @@ function logFile() {
  *  旧语义是「没开过 = 关」（fail-closed，升高权限要显式点头）。
  *  主人原话：「改为默认开启」—— 现在反过来：**没显式关过 = 开**。
  *  表里只记「谁被显式关掉」（off）；旧的 on 表读进来只为兼容（旧 on:true 跟默认开同义）。
- *  读盘失败也按默认开处理（主人的意图就是让它开）。
+ *  文件尚未创建时使用默认值。配置损坏或无法读取时关闭权限。
  */
 function readState() {
   try {
     const f = file();
-    if (!existsSync(f)) return { off: {}, on: {} };
     /* 【2026-11-06 修·BOM 会让整张权限表静默失效】读之前剥掉 BOM；解析失败喊一声。 */
     let raw = readFileSync(f, 'utf8');
     if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
     const j = JSON.parse(raw);
-    return {
-      off: (j && j.off && typeof j.off === 'object' && !Array.isArray(j.off)) ? j.off : {},
-      on: (j && j.on && typeof j.on === 'object' && !Array.isArray(j.on)) ? j.on : {},
-    };
+    const isTable = (value) => value && typeof value === 'object' && !Array.isArray(value);
+    if (!isTable(j) || (!Object.hasOwn(j, 'off') && !Object.hasOwn(j, 'on'))
+        || (j.version === 2 && !Object.hasOwn(j, 'off'))
+        || ['off', 'on'].some((key) => Object.hasOwn(j, key)
+          && (!isTable(j[key]) || Object.values(j[key]).some((value) => typeof value !== 'boolean')))) {
+      throw new Error('权限表格式错误');
+    }
+    return { off: j.off || {}, on: j.on || {} };
   } catch (e) {
-    log('读表失败，按「默认开启」处理：' + (e && e.message ? e.message : e));
+    if (e?.code === 'ENOENT') return { off: {}, on: {} };
+    log('读表失败，关闭管理员权限：' + (e && e.message ? e.message : e));
     return null;
   }
 }
@@ -98,7 +102,7 @@ function log(line) {
 export function adminOn(sessionId) {
   const sid = String(sessionId || 'default');
   const st = readState();
-  if (!st) return true;
+  if (!st) return false;
   if (st.off[sid] === true) return false;
   return true;
 }
@@ -111,7 +115,8 @@ export function adminOn(sessionId) {
 export function setAdminOn(sessionId, on) {
   const sid = String(sessionId || 'default');
   const want = on === true;
-  const st = readState() || { off: {}, on: {} };
+  const st = readState();
+  if (!st) return { ok: false, sessionId: sid, on: false };
   if (want) {
     delete st.off[sid];
     st.on[sid] = true;

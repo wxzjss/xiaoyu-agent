@@ -48,12 +48,22 @@ import { execFile } from 'node:child_process';
 import { join, resolve, dirname, isAbsolute, extname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
+import { workspaceFor, sharedWorkspace, currentSessionId } from './workspace.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** 资源根（程序自己的目录，打包后是 app.asar 里面） */
 const APP_ROOT = dirname(HERE);
-/** 工作区根（主人让我干活的地方） */
-const ROOT = resolve(config.workspace);
+/**
+ * 工作区根（主人让我干活的地方）。
+ *
+ * 【2026-11-18 改·按会话分】原来是个模块级常量，所有会话共用一份目录。
+ * 现在是函数：谁在干活就落到谁自己的目录。见 src/workspace.mjs。
+ * 保留 `ROOT` 这个名字、只改成函数调用，是为了少改十几处引用。
+ */
+const ROOT = () => {
+  try { return workspaceFor(currentSessionId()) || sharedWorkspace(); }
+  catch { return resolve(config.workspace || process.cwd()); }
+};
 
 /** 技能本体（跟着程序走的那份） */
 const VW_DIR = join(APP_ROOT, 'vendor', 'video-watch');
@@ -106,7 +116,7 @@ async function findPython() {
 function mediaPath(p) {
   const s = String(p ?? '').trim().replace(/^["']|["']$/g, '');
   if (!s) return '';
-  const abs = isAbsolute(s) ? s : resolve(ROOT, s);
+  const abs = isAbsolute(s) ? s : resolve(ROOT(), s);
   return abs;
 }
 
@@ -119,7 +129,7 @@ function mediaPath(p) {
 function workDirFor(abs) {
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
   const name = basename(abs, extname(abs)).replace(/[^\w\u4e00-\u9fff-]+/g, '_').slice(0, 40) || 'video';
-  return join(ROOT, 'dump', 'video', `${name}-${stamp}`);
+  return join(ROOT(), 'dump', 'video', `${name}-${stamp}`);
 }
 
 // ─────────────────────────── 跑 vw.py ───────────────────────────
@@ -175,7 +185,7 @@ async function checkMedia(abs) {
     if (!st.isFile()) return `不是文件：${abs}`;
     if (st.size === 0) return `这个文件是空的（0 字节）：${abs}`;
   } catch {
-    return `找不到这个文件：${abs}（工作区是 ${ROOT}，相对路径按它算）`;
+    return `找不到这个文件：${abs}（工作区是 ${ROOT()}，相对路径按它算）`;
   }
   const ext = extname(abs).toLowerCase();
   if (!VIDEO_EXT.has(ext)) {
@@ -480,7 +490,7 @@ export const videoTools = [
       // 找 shotlist：显式给的 > 这个视频最近一次铺图留下的
       let shot = shotlistPath ? mediaPath(shotlistPath) : '';
       if (!shot || !existsSync(shot)) {
-        const base = join(ROOT, 'dump', 'video');
+        const base = join(ROOT(), 'dump', 'video');
         if (existsSync(base)) {
           const dirs = (await readdir(base).catch(() => []))
             .filter((d) => d.startsWith(basename(abs, extname(abs)).replace(/[^\w\u4e00-\u9fff-]+/g, '_').slice(0, 40)))

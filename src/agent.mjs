@@ -15,9 +15,11 @@ import { drainSteps, drainTurns } from './inbox.mjs';
 // readImageDataUrl：工具（尤其 video_read / video_sheet）的结果里带着图片路径时，
 // 得当场把图变成多模态 content 递给模型。只给路径她看不见图 —— 会去 read_file 读 PNG
 // 读成乱码，然后如实说「一片糊」。她没撒谎，是真的没看见。
-import { inflateHistory, readImageDataUrl, composeUserContent, isImagePath } from './attach.mjs';
+import { inflateHistory, readImageDataUrl, composeUserMessage } from './attach.mjs';
 import { slimRoundMessages, measureMessages } from './turn-slim.mjs';
 import { toolSchemas, enabledToolSchemas, runTool, setToolContext, beginOutbox, ctxNow } from './tools.mjs';
+/* 【2026-11-19 加】工具「正在跑」的账 —— 中途被杀时，续跑得知道自己调过什么 */
+import { beginTool } from './tool-journal.mjs';
 import { config } from './config.mjs';
 /* 瘦身暴涨时要把那一条落到 .state/slim-spike.log（打包版没有控制台） */
 import { appendFileSync } from 'node:fs';
@@ -47,6 +49,7 @@ import { currentIdentity, retargetOwnerText, retargetOwnerWords } from './identi
 import { adminPromptBlock } from './admin-mode.mjs';
 // 办事模式：主智能体不自己动手，只派活/检查/验收/压上下文。
 import { taskOn, KEEP_TOOLS as TASK_KEEP_TOOLS } from './task-mode.mjs';
+import { plan as planToolLayers } from './harness/scheduler.mjs';
 /* 【2026-11-07 harness 重做 · P2】
  * 只读判定、工具调用累积这两件「能不能并行 / 会不会丢批」的事，收进 src/harness/。
  * 这里保留同名导出，是为了不改动任何已有调用点（以及构建副本里的老引用）。 */
@@ -70,11 +73,18 @@ import { lastSelfNote, saveSelfNote, selfCompressHint, makeSelfNoteGate, clearSe
 import { planTurnCompact, slimHistory, estTokens, buildRescueNote, CRITICAL_RATIO, stripImages } from './compact-core.mjs';
 import { currentSegId } from './folded.mjs';
 // 清单：压缩记忆里要带「做到第几步」，所以得把清单读进来。
-import { planTextFor, formatPlan, markToolTouched, resetToolTouched, planEmptyHint } from './plan.mjs';
+import { planTextFor, formatPlan, markToolTouched, resetToolTouched, planEmptyHint, progressBlock } from './plan.mjs';
 // 我自己的长期记忆本：插在那条「user 版规则」末尾，跟着人设一起走。
 // 为什么不单开一条 system：很多网关会把 system 整段丢掉（今天实测过），
 // 只有 user 那趟是稳的。
 import { memoryText, readMemoryFor } from './my-memory.mjs';
+/* 【2026-11-18】设备状态（电量）—— 只拼进模型上下文，界面不显示。
+ * 见 sysinfo.mjs 的注释（带 60 秒缓存，避免每轮都起 PowerShell）。 */
+import { batteryText, envText } from './sysinfo.mjs';
+/* 【2026-11-18】亮度 / 音量 / 静音 / 后台窗口 —— 同样只进上下文，界面不显示。
+ * 注意：refreshDevice() 是**异步**的（一次约 1.6 秒），只能由 server 定时预热，
+ * 绝不能在这里 await —— contextMessage 是同步拼的。 */
+import { deviceText } from './device-info.mjs';
 import { featureOnFor, featureNameOfTool } from './features.mjs';
 
 /**
@@ -439,7 +449,74 @@ export function contextMessage(sessionId = 'default', opts = {}) {
   /* 【2026-11-07 根治】压缩规矩跟着规矩走，接在最后（最靠后最被当回事）。
    * 原来它挂在 system 末尾；现在完整规矩只在 user 这一份，它也得跟着搬过来，
    * 否则「压就悄悄压」这条铁律会随着 system 一起被网关吞掉。 */
-  return `${_head}\n\n${_tail}\n\n${retargetOwnerText(SILENT_COMPRESS_RULE, _who)}`;
+  /**
+   * 【2026-11-18 改·清单进度挪到整条消息的最末尾】
+   *
+   * 为什么：清单**每勾一步就变**，而它原来在 `_rules` 的末尾 ——
+   * 一有清单，从那个位置往后（记忆本、管理员块、压缩铁律）的 KV-cache 全部作废。
+   * 实测：14138 字符里前 8208（58%）本来是稳定的，清单一来就从 8208 整段失效。
+   *
+   * 现在顺序改成：
+   *   _head(身份锚) → _rules(规矩) → _adm(管理档) → 压缩铁律 → _mem(记忆本) → 清单
+   *
+   * 这样除了最后那几十到一两百字的清单，前面全部稳定 —— 稳定区从 58% 提到约 99%。
+   *
+   * 顺带把压缩铁律往前挪了一句：原来它是全篇最后一句。位置变了，内容没变；
+   * 它靠的是自己在规矩堆里的分量，不靠"最后一句"这个位置。
+   */
+  let _plan = '';
+  try { _plan = progressBlock(sessionId); } catch { _plan = ''; }
+  const _silent = retargetOwnerText(SILENT_COMPRESS_RULE, _who);
+  /**
+   * 【2026-11-18 加·现在时间 + 设备电量（主人要求）】
+   *
+   * 主人原话：「我要求每条消息要显示发送时间，小鱼Agent发消息时能看到以前每条
+   * 消息的发送时间以及当前时间」「还要让她知道当前设备的电量（仅她知道，
+   * 不对用户前端显示）」。
+   *
+   * 放在整条消息的**最末尾**，理由跟清单一样：这一块**每轮都变**（时钟一直在走），
+   * 放前面会把后面的缓存全废掉。现在它后面什么都没有，每轮只废掉自己这几十个字。
+   *
+   * 附带解释每条消息前面那个 `[年-月-日 时:分]` 是什么 —— 那是 llm.mjs 的
+   * wireMessage 在**发出去的那一份**上加的（磁盘上的正文一个字没动）。
+   * 不解释一句的话，她会把那个方括号当成正文的一部分去模仿。
+   */
+  let _now = '';
+  try {
+    const _d = new Date();
+    const _p2 = (n) => String(n).padStart(2, '0');
+    const _wd = ['日', '一', '二', '三', '四', '五', '六'][_d.getDay()];
+    const _stamp = _d.getFullYear() + '-' + _p2(_d.getMonth() + 1) + '-' + _p2(_d.getDate())
+      + ' ' + _p2(_d.getHours()) + ':' + _p2(_d.getMinutes()) + ':' + _p2(_d.getSeconds());
+    const _lines = ['【现在】'];
+    _lines.push('· 现在时间：' + _stamp + '（星期' + _wd + '）');
+    _lines.push('· 主人每条话前面都带着 [年-月-日 时:分]，那是它被说出来的时刻。'
+      + '说「刚才 / 昨天 / 上周 / 隔了多久」之前，先跟上面的时间比一下再开口，别凭感觉；'
+      + '那个方括号是系统标的，**你回话时一个字都不许带**，也不许自己给回复加时间戳。'
+      + '你自己那句话是什么时候说的，看紧挨在它前面的那条主人消息就够了。');
+    /* 位置 / 天气（异步预热，这里只读上一次的结果；没预热到就不写） */
+    try {
+      const env = envText();
+      if (env.place) _lines.push('· 这台设备所在地区：' + env.place);
+      if (env.weather) _lines.push('· 那边现在的天气：' + env.weather);
+    } catch {}
+    let _bat = '';
+    try { _bat = batteryText(); } catch { _bat = ''; }
+    if (_bat) _lines.push('· 这台设备的电量：' + _bat + ' —— 只给你自己参考，界面上不显示；觉得该提醒主人充电就提醒');
+    /* 亮度 / 音量 / 静音 / 后台窗口（同样只读缓存） */
+    try {
+      const dv = deviceText();
+      const bits = [];
+      if (Number.isFinite(dv.bright)) bits.push('亮度 ' + dv.bright + '%');
+      if (Number.isFinite(dv.vol)) bits.push('音量 ' + dv.vol + '%' + (dv.mute ? '（**已静音**）' : ''));
+      if (bits.length) _lines.push('· 屏幕与声音：' + bits.join('，'));
+      if (Array.isArray(dv.wins) && dv.wins.length) {
+        _lines.push('· 后台开着的窗口（最多列 12 条）：' + dv.wins.join('；'));
+      }
+    } catch {}
+    _now = _lines.join('\n');
+  } catch { _now = ''; }
+  return [_head, _tail, _silent, _plan, _now].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -706,7 +783,13 @@ export async function runAgent({
         const sys = messages[0]?.role === 'system' ? [{ role: 'system', content: text }] : [];
         // 只摘掉「旧的那条 context 副本」（每轮重算，留着就是重复）；
         // 摘要不在此列 —— 它是旧对话压出来的账，摘掉就真丢了。
-        const withoutCtx = rest.filter((m) => !m.context || isSummary(m));
+        /* 【2026-11-19 修·续跑警告从来没送到模型过（实测挖出来的）】
+         * runAgent 一进来就重建 system + context，用的是 `!m.context` 这条判据 ——
+         * 而「上一轮被打断 / 有个工具没等到结果」那段警告也是 role:'user' + context:true，
+         * 于是被当成「旧副本」整条踢掉。实测：账本明明记着 run_command 在跑，
+         * 提示也拼进了 wire，模型收到的 messages 里就是没有它 → 她又把命令跑了一遍。
+         * 现在给这类「这一轮才生成的临时说明」一个专属标记，重建时放过。 */
+        const withoutCtx = rest.filter((m) => !m.context || isSummary(m) || (m && m.resumeNote === true));
         messages.length = 0;
         messages.push(...sys, { role: 'user', content: ctx, context: true }, ...withoutCtx);
       }
@@ -1439,78 +1522,7 @@ for (let round = 0; round < config.maxRounds; round++) {
       let steered = [];
       try { steered = drainSteps(sessionId); } catch { steered = []; }
       if (steered.length) {
-        /* 【2026-11-01 插话要能画在「我说到哪儿」】把前端算好的字数一起带进消息，前端重绘时拿它劈气泡。 */
-        /* 【2026-11-05 修·插话带附件】
-         * 原来只 push content: it.text —— 主人插话时拖进来的图全丢了。
-         * 现在照 /api/chat 那条路的规矩来：正文用 composeUserContent 拼附件说明，
-         * 图片路径单记在 _images，发请求前由 inflateHistory 现读现编码。 */        for (const it of steered) {
-          /* 【2026-11-11 修·插话在历史里出现两遍（数据层双写）】
-           *
-           * 首字延迟那个窗口里，/api/interject 会判「这一轮没在跑」，把主人的话
-           * **带 _steer 标记直推进历史**；前端随后又重发一遍，撞 409 后改走 steer
-           * 通道 → 这句又被塞进信箱 → 走到这里再 push 一次 = 历史里两份。
-           * 判据只看「带 _steer 的同文消息是不是就紧挨队尾」，
-           * 所以主人真想说两遍同一句（中间她答过一次）不会被吞。 */
-          /* 【2026-11-17】把 inbox 里这条的时间一起传进去 ——
-           * 重启续跑时靠它认出「这条其实已经落过盘了」，不再重发。 */
-          if (isSteerAlreadyLanded(messages, it.text, it.at)) continue;
-          const att = Array.isArray(it.attachments) ? it.attachments.filter((x) => x && x.path) : [];
-          const imgs = att.map((x) => String(x.path)).filter((p) => isImagePath(p));
-          const fls = att.map((x) => String(x.path)).filter((p) => !isImagePath(p));
-          /* 【2026-11-15 修·工作到一半切小鲸身份插话，她还是喊「主人」】
-           *
-           * 主人问：「切换小鲸身份发插话消息其实就是把【主人】的名字文本改成【小鲸】？
-           * 还是说不能在工作过程中切换身份？」
-           *
-           * 实情：**只有这一种情况是「只改了署名」**。
-           *   · 一轮开跑时身份就是小鲸 → server 在拼 wire 时给 user 消息加 `[小鲸]` 前缀，
-           *     人设/规矩里的「主人」也整段换成「小鲸」（retargetOwnerText）—— 是真换了人；
-           *   · 可这一轮**已经跑起来了**才切身份插话 → 系统提示和重定向在开跑那一刻
-           *     就定好了（那一份是「主人」），这里 push 进去的只是光秃秃一句话，
-           *     模型看历史时没有任何「换人了」的信号 → 她继续喊主人（截图实锤）。
-           *
-           * 修法：在这条消息本身带上前缀 —— 跟 server 拼 wire 的规矩一模一样
-           * （`[名字] 正文`），模型下一步读历史就看得见「这句是小鲸说的」。
-           * 正文用 _text 存原件：气泡只认 _text，屏幕上不会冒出 `[小鲸]` 三个字；
-           * 落盘后也是原件 + 前缀只存在于发给模型的那份，跟正常路径一致。 */
-          const _whoName = String(it.who || '').trim();
-          const _needTag = Boolean(_whoName) && _whoName !== '主人' && _whoName !== '小鱼'
-            && String(it.text || '').trim() && !String(it.text || '').trimStart().startsWith('[' + _whoName + ']');
-          const _body = composeUserContent(it.text, att);
-          /**
-           * 【2026-11-15 修·程序代递的消息又被画成「主人插话」（主人第二次报）】
-           *
-           * 主人截图：一行「主人 插话」气泡，正文是
-           * 「【后台任务跑完了 —— 这是程序递的，不是主人说的话】…」。
-           *
-           * 真凶就是这里：`/api/interject` 走 steer 之外，**程序自己**也会往
-           * steps 槽塞带 `_sysNote: true` 的条目（后台任务跑完的报告 / 进度催促 /
-           * 递话…）。这个循环原来不分青红皂白一律 push 成 `_steer` ——
-           * 那是「主人插话」的标记，前端当然画成主人气泡、还挂个「插话」小标。
-           * （上一轮我在 /api/stop 那条路上补了同一课，漏的是这条主路。）
-           *
-           * 规矩跟收尾 drainTurns 那条完全一致：带 `_sysNote` 的落成
-           * context+_sysNote（她读得到、界面不画成谁说的话）；真插话才留 _steer。
-           */
-          if (it._sysNote === true) {
-            messages.push({ role: 'user', content: String(it.text || ''), context: true, _sysNote: true });
-            continue;
-          }
-          messages.push({
-            role: 'user',
-            content: _needTag ? ('[' + _whoName + '] ' + _body) : _body,
-            ...(_needTag ? { _text: String(it.text || '') } : {}),
-            _steer: true,
-            /* 【2026-11-15 晚·插话署名】信箱条目里带着「插话那一刻是谁在说话」
-             * （/api/interject 用 currentIdentity 取好放进去的）。这里必须原样落到消息上，
-             * 否则重画时前端只能兜底「主人」—— 主人用小鲸身份插话就会变回主人。 */
-            ...(it.who ? { _who: String(it.who) } : {}),
-            ...(it.whoId ? { _whoId: String(it.whoId) } : {}),
-            ...(imgs.length ? { _images: imgs } : {}),
-            ...(fls.length ? { _files: fls } : {}),
-            ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}),
-          });
-        }
+        for (const it of steered) appendInboxMessage(messages, it);
         try { onEvent({ type: 'steer', count: steered.length }); } catch { /* 画不画得出不影响这一轮 */ }
       }
     }
@@ -1592,6 +1604,7 @@ for (let round = 0; round < config.maxRounds; round++) {
          */
         const slimmed = slimRoundMessages(messages, { from: turnStart });
         const sendMessages = slimmed.changed ? slimmed.messages : messages;
+
         /**
          * 【2026-11-07 加·暴涨时无条件留痕】
          *
@@ -2061,30 +2074,15 @@ for (let round = 0; round < config.maxRounds; round++) {
       if (sessionId) {
         let late = [];
         try { late = drainSteps(sessionId).concat(drainTurns(sessionId)); } catch { late = []; }
-        if (late.length) {
-          /* 【2026-11-08 修「嗯，我在」自我强化】
-           * 原来这里无条件把她这句话落进历史 —— 后来发现模型只说一句「嗯，我在」时，
-           * 这句也照样落进去了。攒到二十来条之后，模型看着前面清一色「嗯，我在」，
-           * 就跟着学，越回越短、越回越敷衍，拦都拦不住。
-           * 所以：敷衍话一律不落历史，交给下面那道闸去重答。 */
-          if (String(text || '').trim() && !isFillerReply(text)) messages.push({ role: 'assistant', content: _narratorize(scrubNarration(text), sessionId) });
-          for (const it of late) {
-            /* 【2026-11-11 团队模式】turns 槽里带 _sysNote 的条目（worker 干完的汇报）
-             * 是程序递的背景，不是主人说话 —— 落成 context + _sysNote，
-             * 前端画成系统提示；不能打 _steer（那会冒充主人插话，还永久占历史）。
-             * 真正的主人插话（steps 槽 / 没带标记的）照旧走 _steer。 */
-            const _isSys = it && it._sysNote === true;
-            messages.push({
-              role: 'user',
-              content: it.text,
-              ...(_isSys ? { _sysNote: true, context: true } : { _steer: true }),
-              /* 【2026-11-15 晚】同上：插话的署名必须跟着消息走，别让它退回「主人」 */
-              ...(!_isSys && it.who ? { _who: String(it.who) } : {}),
-              ...(!_isSys && it.whoId ? { _whoId: String(it.whoId) } : {}),
-              ...(Number.isFinite(Number(it.atChars)) ? { _atChars: Number(it.atChars) } : {}),
-            });
+        const insertAt = messages.length;
+        for (const it of late) appendInboxMessage(messages, it);
+        const count = messages.length - insertAt;
+        if (count) {
+          // 用收流前的历史判重，再把当前回复放回新插话之前；全是副本则正常收尾。
+          if (String(text || '').trim() && !isFillerReply(text)) {
+            messages.splice(insertAt, 0, { role: 'assistant', content: _narratorize(scrubNarration(text), sessionId) });
           }
-          try { onEvent({ type: 'steer', count: late.length }); } catch { /* 同上 */ }
+          try { onEvent({ type: 'steer', count }); } catch { /* 同上 */ }
           continue;
         }
       }
@@ -2278,43 +2276,45 @@ for (let round = 0; round < config.maxRounds; round++) {
      * 现在 plan() 按依赖元数据切层：层内真并行、有副作用的分层串行，
      * [读,读,写,读,读] 这种「中间夹一个写」也能把前后两批读都并起来。
      *
-     * 只把「层内 ≥2 个」的层交给调度器预跑 —— 单个工具和写操作仍走
-     * 下面那个 for，它那边的独立 AbortController / 超时提醒 / 图片编码 /
-     * 逐条落盘一个字都没动，**事件序列与改前完全一致**。
+     * 主循环到达对应层时才启动并行读，避免写操作后的读取提前执行。
+     * 单个工具和写操作仍走逐条执行路径，保留超时、取消和结果处理。
      */
     const _poMap = new Map();
-    let _parallelStats = null;
-    try {
-      const _batched = await executeBatch(assistantMsg.tool_calls, {
-        runTool: (name, args, sid, sig) => runTool(name, args, sid, sig),
-        emitEvents: false,           // tool_end 仍由下面主循环一条条发，契约不变
-        /* 并行批必须在开跑之前先报 tool_start，否则前端柜门不会显示「正在跑命令…」；
-         * 下面主循环命中 _poMap 时会跳过重复发，正好一人一次。 */
-        onStart: (c) => onEvent({
-          type: 'tool_start',
-          id: c.id,
-          name: c.function.name,
-          args: c.function.arguments,
-          /* 【2026-11-11 加】开跑时刻：前端工具卡用它算「已耗时秒数」。
-           * 从事件上读、不许前端就地取钟（buildLiveItems 与 appendLiveItem 两份
-           * 实现要算出逐字相等的清单，就地取钟会让重算路径对不上）。 */
-          ts: Date.now(),
-        }),
-        onlyParallelLayers: true,   // 单个 / 写操作留给主循环
-        sessionId,
-        round: _harnessRunKey + ':' + round,   // 幂等键带 run nonce，跨消息不串账
-        signal,
-        timeoutMs: Math.min(TOOL_MAX_MS, 120000),
-      });
-      for (const [id, r] of _batched.results) _poMap.set(id, r);
-      _parallelStats = _batched.stats;
-    } catch (e) {
-      /* 调度这条路挂了不影响正常执行 —— 下面那个 for 会一条条自己跑 */
-      try { console.warn('[harness] 并行批没跑起来，退回逐条执行：' + String((e && e.message) || e)); } catch {}
-    }
-    if (_parallelStats) _meter.noteParallel(_parallelStats);
+    const journalTokens = new Map();
+    const parallelLayers = new Map(planToolLayers(assistantMsg.tool_calls)
+      .filter((layer) => layer.length > 1)
+      .map((layer) => [layer[0], layer]));
 
     for (const call of assistantMsg.tool_calls) {
+      // Start each batch only after all preceding calls have settled.
+      const layer = parallelLayers.get(call);
+      if (layer && !signal?.aborted) {
+        try {
+          const _batched = await executeBatch(layer, {
+            runTool: (name, args, sid, sig) => runTool(name, args, sid, sig),
+            emitEvents: false, // tool_end 仍在结果处理时逐条发出
+            onStart: (c) => {
+              journalTokens.set(c.id, beginTool(sessionId, c));
+              onEvent({
+                type: 'tool_start',
+                id: c.id,
+                name: c.function.name,
+                args: c.function.arguments,
+                ts: Date.now(),
+              });
+            },
+            onResult: (c, result) => { _poMap.set(c.id, result); },
+            sessionId,
+            round: _harnessRunKey + ':' + round,
+            signal,
+            timeoutMs: Math.min(TOOL_MAX_MS, 120000),
+          });
+          for (const [id, result] of _batched.results) _poMap.set(id, result);
+          _meter.noteParallel(_batched.stats);
+        } catch (e) {
+          try { console.warn('[harness] 并行批没跑起来，退回逐条执行：' + String((e && e.message) || e)); } catch {}
+        }
+      }
       /* 【2026-11-15 晚·删】这里原来给「这一步用了 N 次工具调用」记账，
        * 主人不要这个显示了，记账一并去掉（见 plan.mjs 顶部说明）。 */
       /**
@@ -2397,28 +2397,37 @@ for (let round = 0; round < config.maxRounds; round++) {
       if (_pre) {
         try { if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', _onTurnAbort); } catch (e) {}
       }
-      const { ok, output } = _pre ? _pre : await withTimeout(
-        runTool(call.function.name, call.function.arguments, sessionId, _toolSignal),
-        TOOL_MAX_MS,
-        {
-        what: '工具「' + toolCn(call.function.name) + '」',
-        ac: _toolAc,   // 这里必须给 controller：deadline 到点会调它的 abort()
-        /* 【2026-11-11 删·主人要求】
-         * 原来跑到 10 分钟会往正文里插一句
-         *   「（「跑命令」还在跑，已经 10 分钟，再等等我。）」
-         * 主人明确要求删掉：这句话会**混进她的正文里**，看着像她说了半句废话；
-         * 而且主人本来就知道工具在跑（界面转着圈），不需要中间报平安。
-         * 工具该跑多久还是跑多久，只是不再插话 —— TOOL_MAX_MS 那道 30 分钟的闸没动。
-         */
-        },
-        ).catch((e) => ({
-        ok: false,
-        output: e?.isTimeout
-          ? '「' + toolCn(call.function.name) + '」超过 ' + (TOOL_MAX_MS >= 60000 ? Math.round(TOOL_MAX_MS / 60000) + ' 分钟' : Math.round(TOOL_MAX_MS / 1000) + ' 秒') + '还是没返回，先跳过它，接着往下走。'
-          : String(e?.message ?? e),
-      })).finally(() => {
-        try { if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', _onTurnAbort); } catch {}
-      });
+      const { ok, output } = _pre ? _pre : await (async () => {
+        // 只在实际执行前记账，清账由会话保存负责。
+        journalTokens.set(call.id, beginTool(sessionId, call));
+        try {
+          return await withTimeout(
+            runTool(call.function.name, call.function.arguments, sessionId, _toolSignal),
+            TOOL_MAX_MS,
+            {
+            what: '工具「' + toolCn(call.function.name) + '」',
+            ac: _toolAc,   // 这里必须给 controller：deadline 到点会调它的 abort()
+            /* 【2026-11-11 删·主人要求】
+             * 原来跑到 10 分钟会往正文里插一句
+             *   「（「跑命令」还在跑，已经 10 分钟，再等等我。）」
+             * 主人明确要求删掉：这句话会**混进她的正文里**，看着像她说了半句废话；
+             * 而且主人本来就知道工具在跑（界面转着圈），不需要中间报平安。
+             * 工具该跑多久还是跑多久，只是不再插话 —— TOOL_MAX_MS 那道 30 分钟的闸没动。
+             */
+            },
+          ).catch((e) => ({
+            ok: false,
+            output: e?.isTimeout
+              ? '「' + toolCn(call.function.name) + '」超过 ' + (TOOL_MAX_MS >= 60000 ? Math.round(TOOL_MAX_MS / 60000) + ' 分钟' : Math.round(TOOL_MAX_MS / 1000) + ' 秒') + '还是没返回，先跳过它，接着往下走。'
+              : String(e?.message ?? e),
+          })).finally(() => {
+            try { if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', _onTurnAbort); } catch {}
+          });
+        } catch (e) {
+          try { if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', _onTurnAbort); } catch {}
+          throw e;
+        }
+      })();
       /**
        * 【工具结果里带图】
        *
@@ -2447,7 +2456,6 @@ for (let round = 0; round < config.maxRounds; round++) {
         // 兜底：万一哪个工具返回了对象却没 images，别把 [object Object] 喂给模型
         toolContent = String(output.text ?? JSON.stringify(output));
       }
-      onEvent({ type: 'tool_end', id: call.id, name: call.function.name, ok, output, images: imgGot });
       /**
        * 【2026-11-08 根治·干完活不列清单】
        *
@@ -2484,11 +2492,14 @@ for (let round = 0; round < config.maxRounds; round++) {
           } catch { /* 压不动就用原样，别因为预算闸把这一轮搞挂 */ }
         }
       }
+      const journalToken = journalTokens.get(call.id);
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
         content: toolContent,
+        ...(journalToken ? { _journalToken: journalToken } : {}),
       });
+      onEvent({ type: 'tool_end', id: call.id, name: call.function.name, ok, output, images: imgGot });
       /**
        * 一个工具跑完就检查一次「是不是被叫停了」。
        *
@@ -2670,7 +2681,42 @@ for (let round = 0; round < config.maxRounds; round++) {
  * 现在只处理真正不齐的情况：tool 结果缺失、或 assistant 带着悬空的 tool_calls。
  * 普通 assistant 一律留着 —— 它是正常内容，不是残渣。
  */
-export function repairHistory(messages) {
+/**
+ * 「这次调用没等到结果」的占位正文。
+ *
+ * 为什么会需要它：进程在工具跑完、结果还没写回历史时被杀，历史里就留下
+ * 「有调用、没结果」。协议不许留没有前驱的 tool，也不许留没有结果的 tool_calls，
+ * 两条路都堵死了 —— 除非补一条结果。
+ *
+ * 措辞必须让模型**不敢当成成功**：它可能已经生效（发出去的消息、删掉的文件），
+ * 也可能什么都没做。所以写清「不确定」，并让上层再点名一遍具体是哪个工具。
+ */
+const MISSING_TOOL_RESULT = '（这次调用没等到结果 —— 进程在结果回来之前退出了。'
+  + '它可能已经生效，也可能没做完，别假设它没发生；需要的话先查清楚实际效果，再决定要不要重做。）';
+
+export function repairHistory(messages, out) {
+  /* 【2026-11-19 加·被砍掉的工具调用得留个名】
+   *
+   * 这里会把「有调用、没结果」的工具组整条 pop 掉 —— 历史是干净了，但模型
+   * 下一轮**完全不知道自己刚才调过什么**。实测后果：一个「追加一行」的命令
+   * 副作用已经落地、结果还没回来时被强杀，重启后模型又原样调了一遍
+   * （计数 1 → 2）。发消息、删文件、提交代码这类工具重做一次就是真事故。
+   *
+   * 现在把砍掉的那些调用名/参数收集到 out.dropped 里，让续跑提示能明确说
+   * 「你刚才调过 run_command 做 X，结果没回来」—— 模型才能先确认副作用
+   * 有没有发生，再决定要不要重试。out 是可选的，老调用点行为一个字不变。 */
+  const _drop = (tcs) => {
+    if (!out || !Array.isArray(tcs)) return;
+    for (const tc of tcs) {
+      try {
+        out.dropped.push({
+          id: String(tc.id || ''),
+          name: String(tc.function?.name || tc.name || ''),
+          args: String(tc.function?.arguments ?? tc.arguments ?? '').replace(/\s+/g, ' ').slice(0, 180),
+        });
+      } catch { /* 收不上就跳过，绝不因为记账拖累修复 */ }
+    }
+  };
   // 头部的第二种情况也要排除摘要：摘要虽然带 context:true，但它是可再折叠的旧对话，
   // 当成框架会让 floor 抬高，后面那些该清的重复 system / 悬空 tool_calls 就清不到。
   const headIsFraming = messages[1]?.context && !messages[1]?.summary;
@@ -2687,7 +2733,18 @@ export function repairHistory(messages) {
     const m = messages[i];
     if (m && m.role === 'system') messages.splice(i, 1);
   }
-  dedupeToolCalls(messages, floor);
+  /* 【2026-11-19 补·上一版把 _drop 挂错地方了】
+   *
+   * 上一版只在下面 while 的两处调 _drop，以为清理都发生在那里。实测（自测
+   * check-resume-tool-journal）才发现：**最常见的清理根本走不到 while** ——
+   * dedupeToolCalls 第二趟会把「带着 tool_calls、可结果没回来」的 assistant
+   * 就地换成一条普通 assistant（tool_calls 被剥掉、人话留着）。
+   * 于是 while 看到的尾巴已经是干净的，直接 return，一声不吭。
+   *
+   * 而且这个形状比整条 pop 更糟：模型看到自己说过「我先写个文件」，
+   * 却完全看不到那次调用 —— 比彻底没提过更容易原样重来一遍。
+   * 所以把 _drop 也传进 dedupe。 */
+  dedupeToolCalls(messages, floor, _drop);
   while (messages.length > floor) {
     const last = messages[messages.length - 1];
     if (last.role === 'tool') {
@@ -2701,11 +2758,26 @@ export function repairHistory(messages) {
       const need = new Set(owner.tool_calls.map((tc) => tc.id));
       for (let k = i + 1; k < messages.length; k++) need.delete(messages[k].tool_call_id);
       if (!need.size) return messages;
-      messages.length = Math.max(floor, i);
+      /* 【2026-11-19 改·别把整组连结果一起扔】
+       * 原来这里直接 `messages.length = i`，把 assistant 和**已经拿到的结果**一锅端。
+       * 那些结果是真的，扔掉等于让模型白干一遍（工具还得重跑一次）。
+       * 可协议也不许留下没有前驱的 tool，所以不能只删 assistant 留着 tool。
+       * 折中：给没回来的那几颗补一条明确的占位结果 —— 历史合法、已有结果保住、
+       * 缺的那颗也说得明明白白。 */
+      const missing = owner.tool_calls.filter((tc) => need.has(tc.id));
+      _drop(missing);
+      if (!missing.length) {           // 兜底：理论上走不到，防止万一死循环
+        messages.length = Math.max(floor, i);
+        continue;
+      }
+      for (const tc of missing) {
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: MISSING_TOOL_RESULT });
+      }
       continue;
     }
     // assistant 带着 tool_calls 但后面一条 tool 结果都没有 —— 这组是不齐的，砍掉
     if (last.role === 'assistant' && last.tool_calls?.length) {
+      _drop(last.tool_calls);
       messages.pop();
       continue;
     }
@@ -2732,7 +2804,7 @@ export function repairHistory(messages) {
  *   · 重复的 tool 结果 → 删（第一组的才有效）。
  * 只动重复的，正常的对话一条都不碰。
  */
-function dedupeToolCalls(messages, floor = 0) {
+function dedupeToolCalls(messages, floor = 0, onDrop = null) {
   if (!Array.isArray(messages) || messages.length <= floor) return messages;
 
   /**
@@ -2776,6 +2848,7 @@ function dedupeToolCalls(messages, floor = 0) {
         replacedOk.add(i);
       } else {
         // 一句话都没有的空壳 —— 落盘只会让历史更脏（实测一条会话里 928 条这种），删
+        if (onDrop) onDrop(m.tool_calls);
         drop.add(i);
       }
     }
@@ -2869,6 +2942,11 @@ function dedupeToolCalls(messages, floor = 0) {
       if (owned && okTool.has(owned)) { hasFollowing = true; break; }
     }
     if (hasFollowing) continue;   // 还有结果在，交给下一轮判断，不在这儿拆
+    /* 【2026-11-19 加·这一句最容易把模型骗一遍】
+     * 到这里 = 这些调用一个结果都没回来，接下来要把 tool_calls 剥掉。
+     * 人话还留着（它要说「我先写个文件」，模型就真以为自己只是说了一句），
+     * 所以必须把被剥掉的调用名报上去，让续跑提示点名。 */
+    if (onDrop) onDrop(m.tool_calls.filter((tc) => tc && tc.id && !okTool.has(String(tc.id))));
     const said = typeof m.content === 'string' ? m.content.trim() : '';
     if (said) {
       messages[i] = { role: 'assistant', content: m.content, ...(m._at ? { _at: m._at } : {}) };
@@ -2905,10 +2983,47 @@ function sumUsage(acc, u) {
     prompt_tokens: next.prompt_tokens + (u.prompt_tokens ?? 0),
     completion_tokens: next.completion_tokens + (u.completion_tokens ?? 0),
     total_tokens: next.total_tokens + (u.total_tokens ?? 0),
+    /* 【2026-11-18 修·calls 恒为 0】server 两处读 usage.last_calls 存进 _usage.calls，
+     * 可 sumUsage 从来没记过这个字段 → 界面那份数据永远是 0。
+     * 一圈 = 一次模型请求，累加次数就是这一轮调了几次模型。 */
+    last_calls: Number(next.last_calls ?? 0) + 1,
     // 只要有一圈报了缓存就记着（没报的那些圈当 0，不影响别的圈的贡献）
     prompt_cache_hit_tokens: Number(next.prompt_cache_hit_tokens ?? 0) + hit,
     prompt_cache_miss_tokens: Number(next.prompt_cache_miss_tokens ?? 0) + miss,
   };
+}
+
+function appendInboxMessage(messages, it) {
+  if (it._sysNote === true) {
+    messages.push({ role: 'user', content: String(it.text ?? ''), context: true, _sysNote: true });
+    return;
+  }
+  const message = composeUserMessage(it.text, it.attachments);
+  if (!message.content) return;
+  const who = String(it.who ?? '').trim();
+  const tag = '[' + who + ']';
+  if (who && who !== '主人' && who !== '小鱼' && !message.content.startsWith(tag)) {
+    message.content = tag + ' ' + message.content;
+  }
+  if (it._inboxId) {
+    if (messages.some((m) => m?.role === 'user' && m._inboxId === it._inboxId)) return;
+  } else if (message._files || message._images) {
+    // 兼容没有投递标识的旧附件队列。
+    if (messages.some((m) => m?._steer === true && !m._inboxId && m.at === it.at
+      && m.content === message.content && m._who === it.who)) return;
+  } else if (isSteerAlreadyLanded(messages, it.text, it.at, it.who, it.whoId)) {
+    return;
+  }
+  const atChars = Number(it.atChars);
+  messages.push({
+    ...message,
+    _steer: true,
+    ...(it.who ? { _who: String(it.who) } : {}),
+    ...(it.whoId ? { _whoId: String(it.whoId) } : {}),
+    ...(Number.isFinite(atChars) && atChars >= 0 ? { _atChars: atChars } : {}),
+    ...(Number.isFinite(it.at) ? { at: it.at } : {}),
+    ...(it._inboxId ? { _inboxId: it._inboxId } : {}),
+  });
 }
 
 /**
@@ -2921,70 +3036,39 @@ function sumUsage(acc, u) {
  *（主人看到的就是「我发的那句话重复了」，办事鱼会话里 [246][247][248] 就是这形态。）
  *
  * 判据刻意收得很窄，只认「同文 + 带 _steer + 就在队尾附近」：
- *   · 主人真想把同一句说两遍（中间她答过一次）→ 中间那条不带 tool_calls 的
- *     assistant 会让扫描停下，不会被吞；
- *   · 上一轮早先的插话即便文字相同，也离队尾很远，同样不受影响。
+ *   · 没有正文回复隔开时，允许 5 秒内的同文匹配，识别前端的兜底重投。
+ *   · 跨正文回复只认相同的入队时间戳，既拦重启续跑的副本，也保留用户有意重发的同文。
  *
  * @param {Array} messages 当前要发给模型的消息数组（历史 + 本轮已落的）
  * @param {string} text 信箱里这条插话的正文
+ * @param {number} [at] 插话的入队时间戳
  * @returns {boolean} true = 已经有了，别再 push
  */
-/**
- * 这条插话是不是已经落进历史了？
- *
- * 【2026-11-17 主人报·「运行过程中重启，把我插话的消息再发一遍给她」】
- *
- * 原来这里有一条 `break`：
- *   if (m.role === 'assistant') { if (!m.tool_calls) break; continue; }
- * 意思是「她答过话了 → 后面再插同样的算新话，停」。
- *
- * 这条在**正常运行中**是对的，但在**重启续跑**时就成了病根：
- *   ① 主人插话 → /api/interject 当场把它落进历史（带 _steer）；
- *   ② 她接着干活、说了几句正文（产生不带 tool_calls 的 assistant）；
- *   ③ 进程重启，inbox 里那条插话还在（信箱是落盘的）；
- *   ④ 续跑时走到这里 → 扫到最近的 assistant 有正文 → **直接 break** → 返回 false；
- *   ⑤ 于是同一条插话又被当成新消息 push 一遍，她就再答一遍。
- *
- * 修法：多认一条「按时间对上」的证据 —— 传进来的 `at` 是 inbox 里这条的时间，
- * 历史里如果有一条 _steer 的消息，内容一样**且时间对得上**（相差 5 秒内），
- * 那它就是同一条，不管中间隔了多少轮 assistant。
- *
- * 为什么不用「内容一样就吞」：主人真可能过一会儿再插同一句
- * （「继续」「快点」），那种时间对不上，必须照常落。
- *
- * @param {Array} messages 历史
- * @param {string} text 插话正文
- * @param {number} [at] inbox 里这条的时间戳（不传就退回老判据）
- */
-function isSteerAlreadyLanded(messages, text, at = 0) {
+function isSteerAlreadyLanded(messages, text, at = 0, who = '', whoId = '') {
   const arr = Array.isArray(messages) ? messages : [];
   const nz = (s) => String(s == null ? '' : s).replace(/\s+/g, '');
   const want = nz(text);
   if (!want) return false;
   const wantAt = Number(at) || 0;
-  const AT_TOL = 5000;   // 5 秒内算同一条（落盘那一刻的时间跟 inbox 的 at 是同一次点击）
+  const AT_TOL = 5000;
+  let answered = false;
   for (let i = arr.length - 1, seen = 0; i >= 0 && seen < 4; i--) {
     const m = arr[i];
     if (!m || typeof m !== 'object') continue;
     if (m.role === 'assistant') {
-      /* 【2026-11-17 分两条路】
-       *
-       * 有 at（正常调用点）：不能因为「她答过话」就停 —— 重启续跑时她答的
-       * 正是这条插话引出来的话，停了就等于没认出来，会重发。
-       * 靠时间窗认「是不是同一条」才准。
-       *
-       * 没 at（老调用点 / 探针）：保持老语义 —— 她答过话就算新话，停。
-       * 这样老行为一个字都不变，不会误吞主人后来真又说的同一句。 */
-      if (!wantAt && !m.tool_calls) break;
+      if (!m.tool_calls?.length && !m._sysNote && String(m.content ?? '').trim()) answered = true;
+      if (answered && !wantAt) break;
       continue;
     }
     if (m.role !== 'user') continue;
     seen += 1;
     if (m._steer !== true) continue;
-    if (nz(m.content) !== want) continue;
-    if (!wantAt) return true;                       // 老调用点：内容一样就算（保持原行为）
+    if (nz(m._text ?? m.content) !== want) continue;
+    const sameIdentity = whoId && m._whoId ? whoId === m._whoId : String(who || '') === String(m._who || '');
+    if (!sameIdentity) continue;
+    if (!wantAt) return true;
     const mAt = Number(m.at) || 0;
-    if (mAt && Math.abs(mAt - wantAt) <= AT_TOL) return true;   // 时间对上 = 同一条
+    if (mAt && (mAt === wantAt || (!answered && Math.abs(mAt - wantAt) <= AT_TOL))) return true;
   }
   return false;
 }

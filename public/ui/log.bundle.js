@@ -7422,7 +7422,7 @@
     return {
       sid: _sid,
       turns: Array.isArray(st.turns) ? st.turns : [],
-      live: st.live && Array.isArray(st.live.items) ? st.live : null,
+      live: st.live || null,
       /* 只画本屏的乐观气泡 —— 别的会话的账不属于这一屏（串消息根治） */
       pendingUser: pendingUser.filter((p) => !p.sid || p.sid === _eff),
       notes,
@@ -7436,7 +7436,7 @@
   var _liveRestoreObj = null;
   function writeLive(sid, live) {
     const st = logState();
-    st.live = live && Array.isArray(live.items) ? live : null;
+    st.live = live;
     const s = String(sid || "");
     if (!s) return st.live;
     if (st.live) {
@@ -7460,13 +7460,13 @@
   function restoreLiveFor(sid) {
     const s = String(sid || "");
     const hit = liveCache.get(s);
-    if (!hit || !hit.live) return null;
+    if (!hit?.live) return null;
+    if (hit.live.awaitingHistory === true) return hit.live;
     if (Date.now() - hit.at > LIVE_CACHE_TTL) {
       liveCache.delete(s);
       return null;
     }
-    if (hit.live.running === false) return null;
-    return hit.live;
+    return hit.live.running === false ? null : hit.live;
   }
   function armRestoreCheck(sid, obj) {
     if (_liveRestoreTimer) {
@@ -7484,7 +7484,7 @@
       if (st.live !== _liveRestoreObj) return;
       st.live = null;
       liveCache.delete(_liveRestoreSid);
-      pendingUser = dropLandedPending(pendingUser, st.turns);
+      settleScreenPending(st.turns);
       bump();
     }, 2500);
   }
@@ -7497,15 +7497,10 @@
     if (changedScreen) {
       const _pad = restoreLiveFor(_sid || effectiveSid());
       st.live = _pad;
-      if (_pad) armRestoreCheck(_sid || effectiveSid(), _pad);
+      if (_pad && !_pad.awaitingHistory) armRestoreCheck(_sid || effectiveSid(), _pad);
     }
     notes = [];
-    const others = pendingUser.filter((p) => p.sid && p.sid !== (_sid || effectiveSid()));
-    const mine = dropLandedPending(
-      pendingUser.filter((p) => !p.sid || p.sid === (_sid || effectiveSid())),
-      st.turns
-    );
-    pendingUser = mine.concat(others);
+    settleScreenPending(st.turns);
     if (changedScreen) {
       histWin.delete(_sid);
       histTouched.delete(_sid);
@@ -7513,12 +7508,35 @@
     }
     bump();
   }
+  function isTruncatedPrefix(next, prev) {
+    if (!next.length || next.length > prev.length) return false;
+    let shorter = next.length < prev.length;
+    for (let i = 0; i < next.length; i++) {
+      const a = next[i] || {};
+      const b = prev[i] || {};
+      if (a.k !== b.k || a.id !== b.id) return false;
+      const text = String(a.t ?? "");
+      const previousText = String(b.t ?? "");
+      if (!previousText.startsWith(text)) return false;
+      if (text.length < previousText.length) shorter = true;
+    }
+    return shorter;
+  }
   function setLive(sid, live) {
     const st = logState();
     if (String(sid || "") !== String(st.sid || "")) return false;
-    const _nowFalse = !!(live && live.running === false);
-    const _wasRunning = !!(st.live && st.live.running !== false);
-    if (_nowFalse && (_wasRunning || _falseWriteTimer)) {
+    if (live !== null && (!live || typeof live.running !== "boolean")) return false;
+    const prev = st.live;
+    const prevStart = Number(prev?.startedAt) || 0;
+    const nextStart = Number(live?.startedAt) || 0;
+    const sameTurn = prev?.turnId && live?.turnId ? prev.turnId === live.turnId : prevStart > 0 && prevStart === nextStart;
+    if (!sameTurn && prevStart && nextStart && nextStart < prevStart) return false;
+    if (sameTurn && prev.running === false && live.running) return false;
+    if (sameTurn && live.running && Number.isFinite(prev.nextSince) && Number.isFinite(live.nextSince) && live.nextSince < prev.nextSince) return false;
+    const _nowFalse = live?.running === false;
+    const _wasRunning = prev?.running === true;
+    if (_nowFalse && prev?.turnId && live.turnId && !sameTurn && nextStart <= prevStart) return false;
+    if (_nowFalse && !live.awaitingHistory && (_wasRunning || _falseWriteTimer)) {
       _falseWritePending = live;
       if (!_falseWriteTimer) {
         _falseWriteSid = String(sid || "");
@@ -7533,26 +7551,14 @@
       _falseWriteTimer = 0;
       _falseWritePending = null;
     }
-    const _prevItems = st.live && Array.isArray(st.live.items) && st.live.items.length ? st.live.items : null;
-    const _nextItems = live && Array.isArray(live.items) && live.items.length ? live.items : null;
-    const _sameHead = (a, b) => {
-      if (!Array.isArray(a) || !Array.isArray(b) || a.length > b.length) return false;
-      for (let i = 0; i < a.length; i++) {
-        const x = a[i] || {}, y = b[i] || {};
-        if (String(x.k || "") !== String(y.k || "")) return false;
-        if (String(x.id || "") !== String(y.id || "")) return false;
-        const tx = String(x.t == null ? "" : x.t), ty = String(y.t == null ? "" : y.t);
-        if (tx !== ty.slice(0, tx.length)) return false;
-      }
-      return true;
-    };
-    const _wouldShrink = !!(_prevItems && live && live.running !== false && (!_nextItems || _nextItems.length < _prevItems.length && _sameHead(_nextItems, _prevItems)));
-    if (_wouldShrink) live = Object.assign({}, live, { items: _prevItems });
-    if (live && live.running !== false && notes.length) notes = [];
-    writeLive(sid, live && Array.isArray(live.items) ? live : null);
-    if (!st.live || st.live && st.live.running === false) {
-      pendingUser = dropLandedPending(pendingUser, st.turns);
+    const prevItems = prev?.items;
+    const nextItems = live?.items;
+    if (sameTurn && live.running && Array.isArray(prevItems) && (!Array.isArray(nextItems) || isTruncatedPrefix(nextItems, prevItems))) {
+      live = { ...live, items: prevItems };
     }
+    if (live?.running && notes.length) notes = [];
+    writeLive(sid, live);
+    if (!live || _nowFalse) settleScreenPending(st.turns);
     bump();
     return true;
   }
@@ -7565,12 +7571,8 @@
     if (_falseWriteSid !== String(st.sid || "")) return;
     if (st.live !== _falseWritePrevLive) return;
     const _len = Array.isArray(st.turns) ? st.turns.length : 0;
-    if (_len > _falseWritePrevTurns) {
-      writeLive(_falseWriteSid, null);
-      pendingUser = dropLandedPending(pendingUser, st.turns);
-    } else {
-      st.live = p;
-    }
+    writeLive(_falseWriteSid, _len > _falseWritePrevTurns ? null : p);
+    settleScreenPending(st.turns);
     bump();
   }
   function notify() {
@@ -7676,6 +7678,15 @@
       return String(s || "").replace(/\s+/g, "");
     }
   }
+  function settleScreenPending(turns) {
+    const sid = effectiveSid();
+    const mine = pendingUser.filter((p) => !p.sid || p.sid === sid);
+    const settled = dropLandedPending(mine, turns);
+    if (settled !== mine) {
+      const keep = new Set(settled);
+      pendingUser = pendingUser.filter((p) => p.sid && p.sid !== sid || keep.has(p));
+    }
+  }
   function dropLandedPending(list, turns) {
     if (!list.length) return list;
     const arr = Array.isArray(turns) ? turns : [];
@@ -7757,6 +7768,15 @@
   var WINDOW = 40;
   function trimTurnsForLive(turns, opts = {}) {
     if (!Array.isArray(turns) || !turns.length) return turns;
+    const _byTurn = Number.isInteger(opts && opts.liveTurnIndex) ? opts.liveTurnIndex : -1;
+    if (_byTurn >= 0) {
+      let boundary = _byTurn;
+      const turnId = turns[_byTurn]?.turn;
+      while (turns[boundary]?.role === "user" && turns[boundary].turn === turnId && !turns[boundary].steer) {
+        boundary += 1;
+      }
+      return turns.slice(0, boundary);
+    }
     if (opts && opts.hasPending && !opts.pendingLanded) return turns;
     const _startedAt = Number(opts && opts.startedAt) || 0;
     for (let i = turns.length - 1; i >= 0; i--) {
@@ -7797,7 +7817,23 @@
     const out = [];
     if (!turn || typeof turn !== "object") return out;
     if (turn.note) {
-      return [{ kind: "note", key: "t-" + abs + "-note", text: String(turn.text || ""), isLive: false }];
+      const _items = [{ kind: "note", key: "t-" + abs + "-note", text: String(turn.text || ""), isLive: false }];
+      const _nouts = Array.isArray(turn.out) ? turn.out.filter((f) => f && (f.path || f.key)) : [];
+      for (let i = 0; i < _nouts.length; i++) {
+        const f = _nouts[i];
+        _items.push({
+          kind: "file",
+          key: "t-" + abs + "-nf" + i,
+          name: String(f.name || "\u6587\u4EF6"),
+          size: Number(f.size) || 0,
+          fkind: String(f.kind || "file"),
+          path: String(f.path || ""),
+          fkey: String(f.key || ""),
+          dir: "out",
+          isLive: false
+        });
+      }
+      return _items;
     }
     if (turn.role === "system" || turn.context || turn.sysNote) return out;
     const key = "t-" + abs;
@@ -7940,7 +7976,8 @@
     }
     return out;
   }
-  function liveToItems(items, running) {
+  function liveToItems(items, running, startedAt) {
+    const T = Number(startedAt) > 0 ? Number(startedAt) : null;
     const out = [];
     const speaker = turnSpeaker();
     for (let i = 0; i < items.length; i++) {
@@ -7958,7 +7995,7 @@
               who: speaker,
               bubbles: [String(it.t || "")],
               rewindId: null,
-              ts: null,
+              ts: T,
               edited: false,
               cont: false,
               isLive: true
@@ -7972,7 +8009,7 @@
           who: speaker,
           bubbles: [String(it.t || "")],
           rewindId: null,
-          ts: null,
+          ts: T,
           edited: false,
           cont: false,
           isLive: true
@@ -8020,7 +8057,7 @@
           spectator: Boolean(it.spectator),
           bubbles: [String(it.t || "")],
           rewindId: null,
-          ts: null,
+          ts: T,
           edited: false,
           cont: false,
           isLive: true
@@ -8039,14 +8076,17 @@
           isLive: true
         });
       } else if (it.k === "user") {
-        const _t = String(it.t || "");
-        if (!_t.trim()) continue;
+        const text = String(it.t || "");
+        const atts = Array.isArray(it.atts) ? it.atts.filter((a) => a && a.path) : [];
+        const who = String(it.who || "\u4E3B\u4EBA");
+        if (!hasText(text) && !atts.length) continue;
         out.push({
-          kind: "user",
+          kind: who === "\u4E3B\u4EBA" ? "user" : "mate",
           key,
-          text: _t,
-          atts: Array.isArray(it.atts) ? it.atts : [],
-          who: String(it.who || "\u4E3B\u4EBA"),
+          text,
+          bubbles: hasText(text) ? [text] : [],
+          atts,
+          who,
           tag: "\u63D2\u8BDD",
           steer: true,
           ts: Number(it.ts) || null,
@@ -8066,7 +8106,7 @@
     for (let i = 0; i < arr.length; i++) {
       const it = arr[i];
       const nx = arr[i + 1];
-      if (it && it.kind === "assistant" && !it.isLive && nx && nx.kind === "user" && nx.steer && typeof nx.steerAt === "number" && Number.isFinite(nx.steerAt)) {
+      if (it && it.kind === "assistant" && !it.isLive && nx && (nx.kind === "user" || nx.kind === "mate") && nx.steer && typeof nx.steerAt === "number" && Number.isFinite(nx.steerAt)) {
         const cut = splitSteerAt(it, nx, nx.steerAt);
         if (cut) {
           for (const x of cut) out.push(x);
@@ -8086,11 +8126,11 @@
     if (!last) return null;
     const cut = Math.max(0, Math.min(last.length, Math.floor(Number(at) || 0)));
     if (cut >= last.length) return null;
-    if (cut === 0) return [steerItem, prev];
+    if (cut === 0 && lastIdx === 0) return [steerItem, prev];
     const frontItem = Object.assign({}, prev, {
       /* 前半保住原 key / rewindId / 用量行 —— 「这一轮」的按钮和用量都挂在它上面，
        * 挪到后半就等于把编辑、回退、分支全挂到了一段"残句"上。 */
-      bubbles: bs.slice(0, lastIdx).concat([last.slice(0, cut)])
+      bubbles: cut === 0 ? bs.slice(0, lastIdx) : bs.slice(0, lastIdx).concat([last.slice(0, cut)])
     });
     const backItem = {
       kind: "assistant",
@@ -8101,7 +8141,10 @@
       bubbles: [last.slice(cut)],
       /* 编辑/回退/分支/删除四颗按钮只给前半（同一个 turn 不许长出两套按钮） */
       rewindId: null,
-      ts: null,
+      /* 【2026-11-18 改】原来这里是 null —— 插话劈出来的后半截不显示时间，
+       * 屏幕上就成了「同一条回复，前半有时间、后半没有」。它本来就是同一条，
+       * 时间跟着前半走。 */
+      ts: prev && prev.ts || null,
       edited: false,
       cont: false,
       usage: null,
@@ -8160,7 +8203,19 @@
         return false;
       }
     })();
-    const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded, startedAt: snap.live && Number(snap.live.startedAt) || 0 }) : snap.turns;
+    const _liveTurnId = snap.live && typeof snap.live.turnId === "string" ? snap.live.turnId : "";
+    const _liveTurnIndex = (() => {
+      if (!_liveTurnId) return -1;
+      const t = Array.isArray(snap.turns) ? snap.turns : [];
+      for (let i = 0; i < t.length; i++) {
+        if (t[i] && t[i].turn === _liveTurnId) return i;
+      }
+      return -1;
+    })();
+    const liveItems = Array.isArray(snap.live?.items) ? snap.live.items : [];
+    const awaitingHistory = snap.live?.running === false && snap.live.awaitingHistory === true;
+    const showLive = running || awaitingHistory;
+    const all = showLive && liveItems.length ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded, startedAt: Number(snap.live?.startedAt) || 0, liveTurnIndex: _liveTurnIndex }) : snap.turns;
     const sid = snap.sid;
     let start = Number(getWindowStart(sid)) || 0;
     if (!isWindowTouched(sid)) start = Math.max(0, all.length - WINDOW);
@@ -8197,18 +8252,33 @@
     const items = [];
     let lastUserChars = 0;
     let wantUsageRow = false;
+    let lastAsst = null;
+    let lastAsstTurn = "";
     for (let i = start; i < all.length; i++) {
       const turn = all[i];
       const part = turnToItems(turn, i, lastUserChars);
       if (turn && turn.role === "user") {
         lastUserChars = String(turn.text || "").length;
         wantUsageRow = true;
+        lastAsst = null;
+        lastAsstTurn = "";
       }
+      const turnId = turn && typeof turn.turn === "string" && turn.turn || "";
       for (const it of part) {
         const prev = items.length ? items[items.length - 1] : null;
-        if (it.kind === "assistant" && prev && prev.kind === "assistant" && prev.who === it.who && !prev.isLive && !it.isLive) {
-          prev.bubbles = prev.bubbles.concat(it.bubbles);
-          if (it.rewindId != null) prev.rewindId = prev.rewindId == null ? it.rewindId : prev.rewindId;
+        let target = null;
+        if (it.kind === "assistant" && !it.isLive) {
+          if (turnId && lastAsstTurn === turnId && lastAsst && lastAsst.who === it.who) {
+            target = lastAsst;
+          } else if ((!turnId || !lastAsstTurn) && prev && prev.kind === "assistant" && prev.who === it.who && !prev.isLive) {
+            target = prev;
+          }
+        }
+        if (target) {
+          target.bubbles = (target.bubbles || []).concat(it.bubbles || []);
+          if (it.rewindId != null) target.rewindId = target.rewindId == null ? it.rewindId : target.rewindId;
+          if (it.usageRow) target.usageRow = true;
+          if (it.usage && !target.usage) target.usage = it.usage;
           continue;
         }
         if (it.kind === "assistant" && wantUsageRow) {
@@ -8219,9 +8289,13 @@
           }
         }
         items.push(it);
+        if (it.kind === "assistant" && !it.isLive) {
+          lastAsst = it;
+          lastAsstTurn = turnId;
+        }
       }
     }
-    const _liveEnded = !!(snap.live && snap.live.running === false);
+    const _liveEnded = snap.live?.running === false && !awaitingHistory;
     const pend = _liveEnded || _pendingLanded ? [] : (snap.pendingUser || []).map((p) => ({
       kind: p.who && p.who !== "\u4E3B\u4EBA" ? "mate" : "user",
       key: p.id.indexOf("p") === 0 ? "p-" + p.id.slice(1) : "p-" + p.id,
@@ -8237,8 +8311,12 @@
       edited: false,
       isLive: true
     }));
-    const _liveItems = snap.live && Array.isArray(snap.live.items) ? snap.live.items : [];
-    const live = running ? liveToItems(_liveItems, true) : [];
+    const live = showLive ? liveToItems(liveItems, running, Number(snap.live?.startedAt) || 0) : [];
+    if (awaitingHistory) {
+      for (const item of live) {
+        if (item.kind === "assistant") item.isLive = false;
+      }
+    }
     const noteItems = (snap.notes || []).map((n) => ({ kind: "note", key: n.id, text: n.text, actions: n.actions || null }));
     return {
       running,
@@ -8560,8 +8638,10 @@
   }
   function AttachChip({ a }) {
     const src = a.dataUrl || rawUrl(a.path, false);
+    const [failedSrc, setFailedSrc] = (0, import_react2.useState)(null);
+    const isImage = a.kind === "image";
     return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "attachChip", title: a.path || "", children: [
-      a.kind === "image" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+      isImage && failedSrc !== src ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
         "img",
         {
           className: "thumb",
@@ -8574,20 +8654,10 @@
             } catch (e) {
             }
           },
-          onError: (e) => {
-            const im = e.currentTarget;
-            const d = document.createElement("div");
-            d.className = "ficon";
-            d.textContent = "\u{1F5BC}";
-            try {
-              im.replaceWith(d);
-            } catch (e2) {
-              im.style.display = "none";
-            }
-          }
+          onError: () => setFailedSrc(src)
         }
-      ) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "ficon", children: "\u{1F4C4}" }),
-      a.kind !== "image" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "aname", children: a.name || "" }) : null
+      ) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "ficon", children: isImage ? "\u{1F5BC}" : "\u{1F4C4}" }),
+      !isImage || failedSrc === src ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "aname", children: a.name || "" }) : null
     ] });
   }
   function MediaRow({ a }) {
@@ -8602,9 +8672,13 @@
       ] })
     ] });
   }
+  function MessageAttachments({ attachments }) {
+    const list = Array.isArray(attachments) ? attachments.filter((a) => a && a.path) : [];
+    if (!list.length) return null;
+    return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "msgAttach", children: list.map((a, i) => mediaKindOf(a) ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(MediaRow, { a }, "m" + i) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(AttachChip, { a }, "c" + i)) });
+  }
   function UserBubble({ it }) {
     const wrap = (0, import_react2.useRef)(null);
-    const list = Array.isArray(it.atts) ? it.atts.filter((a) => a && a.path) : [];
     (0, import_react2.useEffect)(() => {
       const w = wrap.current;
       if (!w) return;
@@ -8650,9 +8724,7 @@
             String(it.who || "\u4E3B\u4EBA"),
             it.tag ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "interjectTag", children: it.tag }) : null
           ] }),
-          list.length ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "msgAttach", children: list.map(
-            (a, i) => mediaKindOf(a) ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(MediaRow, { a }, "m" + i) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(AttachChip, { a }, "c" + i)
-          ) }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(MessageAttachments, { attachments: it.atts }),
           editing ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(EditArea, { text: String(it.text || ""), at: it.rewindId, msgAt: it.ts }) : String(it.text || "") ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "bubble", children: String(it.text || "") }) : null
         ]
       }
@@ -8700,6 +8772,7 @@
       __seenSegs.add(segKey);
       runningRef.current = true;
       let last = 0;
+      let lastPublish = -Infinity;
       let id = 0;
       const step = (ts) => {
         const target = String(targetRef.current || "").length;
@@ -8717,7 +8790,10 @@
           const cps = gap > 300 ? 420 : 150;
           cur = Math.min(target, cur + Math.max(1, Math.round(cps * dt)));
           curRef.current = cur;
-          setShown(cur);
+          if (cur === target || now - lastPublish >= 50) {
+            lastPublish = now;
+            setShown(cur);
+          }
         } else if (!animateRef.current) {
           runningRef.current = false;
           return;
@@ -8897,8 +8973,10 @@
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "role", children: [
             who,
-            it.spectator ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "specTag", children: "\u65C1\u89C2" }) : null
+            it.spectator ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "specTag", children: "\u65C1\u89C2" }) : null,
+            it.tag ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "interjectTag", children: it.tag }) : null
           ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(MessageAttachments, { attachments: it.atts }),
           editing ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(EditArea, { text: bubbles.join("\n\n"), at: it.rewindId, msgAt: it.ts }) : bubbles.map((t, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(MdDiv, { className: "bubble" + (i > 0 ? " cont" : ""), text: t }, "b" + i))
         ]
       }
@@ -9655,13 +9733,6 @@
 
   // src-ui/LogView.jsx
   var import_jsx_runtime14 = __toESM(require_jsx_runtime());
-  function tailLen(items) {
-    if (!items || !items.length) return 0;
-    const it = items[items.length - 1];
-    if (!it) return 0;
-    if (Array.isArray(it.bubbles)) return it.bubbles.join("").length;
-    return String(it.text || "").length;
-  }
   function turnTagOf(it) {
     const k = String(it && it.key || "");
     const m = /^(t-\d+)(?:-|$)/.exec(k);
@@ -9933,7 +10004,6 @@
       lastScrollTopRef.current = el.scrollTop;
     }, [snap.sid]);
     const count = merged.items.length;
-    const lastLen = tailLen(merged.items);
     (0, import_react15.useLayoutEffect)(() => {
       const el = listRef.current;
       if (!el) return;

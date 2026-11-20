@@ -229,7 +229,30 @@ export async function runQqTurn({ sessionId, text, fromQq, onEvent, replyTarget,
       replyTarget: replyTarget || null,
       attachments: Array.isArray(media) ? media.filter((m) => m && m.ok).map((m) => ({ kind: m.kind, localPath: m.localPath })) : [],
     });
-    const out = await h.runWithToolContext({ sessionId: id, snap, signal: ac.signal, outbox: null }, () => h.runAgent({
+    /**
+     * 【2026-11-18 加·QQ 这条路的审批怎么办】
+     *
+     * run_command 现在会对危险命令问主人（cmd-guard）。可 QQ 桥**没有弹窗通道** ——
+     * 这里没有 SSE、没有前端确认框，只有聊天窗。
+     *
+     * 三条路可选，我选第三条：
+     *   ① 继承主会话的 askApproval → 拒绝（QQ 那头批不了，等于静默拦死，最糟）
+     *   ② 直接放行 → 等于 QQ 成了绕过审批的后门，最危险
+     *   ③ **给一个会说话的拒绝**：告诉她要做什么得回电脑前批准
+     *
+     * 理由：主人用 QQ 遥控时，危险操作的批准权本来就该回到电脑前 ——
+     * 那是他能看清「这条命令到底要干什么」的地方。QQ 里一句话「帮我删了 D 盘」，
+     * 谁也说不清他是不是真那个意思。
+     */
+    const askApprovalFromQQ = ({ toolName, reason }) => {
+      try {
+        console.log('[cmd-guard] QQ 路径拒绝危险操作：' + toolName + '｜' + String(reason || '').slice(0, 120));
+      } catch {}
+      return Promise.resolve(false);
+    };
+    const out = await h.runWithToolContext(
+      { sessionId: id, snap, signal: ac.signal, outbox: null, askApproval: askApprovalFromQQ },
+      () => h.runAgent({
       messages: wire,
       signal: ac.signal,
       sessionId: id,

@@ -689,6 +689,7 @@ export async function compressHistory({
   /** 只算「该不该压、能折多少」，不真动手 —— 用来先问我，等我写完再折。 */
   dryPlan = false,
 } = {}) {
+  const originalMessages = Array.isArray(messages) ? structuredClone(messages) : [];
   if (signal?.aborted) return { compressed: false, before: estimateTokens(messages, sessionId), after: estimateTokens(messages, sessionId), reason: 'aborted' };
 
   // 没显式给 limit 就去设置里问（带上模型名，自动档才能算对）
@@ -1582,10 +1583,33 @@ const keepFloor = Math.max(1, Math.min(KEEP_FLOOR_MIN, keep.length));
       if (seg) {
         segInfo = seg;
         console.log('[compress] 折掉的 ' + lost.length + ' 条原文已存盘：' + seg.id);
+      } else {
+        messages.length = 0;
+        messages.push(...originalMessages);
+        return {
+          compressed: false,
+          before,
+          after: before,
+          limit: cap,
+          trigger,
+          reason: 'archive-failed-keep-original',
+        };
       }
     }
   } catch (err) {
-    console.warn('[compress] 存折叠原文出错了（不影响压缩）：', String(err?.message ?? err));
+    console.warn('[compress] 存折叠原文出错了（保留原文）：', String(err?.message ?? err));
+    if (lost.length && sessionId) {
+      messages.length = 0;
+      messages.push(...originalMessages);
+      return {
+        compressed: false,
+        before,
+        after: before,
+        limit: cap,
+        trigger,
+        reason: 'archive-failed-keep-original',
+      };
+    }
   }
 
   messages.length = 0;

@@ -17,6 +17,8 @@ import { join, basename, extname, resolve, isAbsolute, dirname } from "node:path
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { config } from "./config.mjs";
+/* 【2026-11-18】工作区按会话分：发文件既认会话自己的目录，也认共享区 */
+import { workspaceFor, sharedWorkspace, currentSessionId } from "./workspace.mjs";
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -87,6 +89,9 @@ function allowedDrives() {
     if (m) set.add(m[1].toUpperCase());
   };
   push(config.workspace);
+  /* 【2026-11-18】按会话分之后，会话自己的目录也在工作区内（<共享区>/sessions/<sid>），
+   * 盘符本来就一样；这里推共享区就够。留着 config.workspace 是为了兼容关掉开关的情形。 */
+  push(sharedWorkspace());
   push(process.env.USERPROFILE);
   push(APP_ROOT);
   if (!set.size) { set.add("C"); set.add("D"); }
@@ -102,9 +107,20 @@ function allowedDrives() {
 function toAbs(raw) {
   const s = String(raw);
   if (isAbsolute(s)) return resolve(s);
-  const ws = config.workspace || process.cwd();
+  /**
+   * 【2026-11-18 改·相对路径先按「这个会话自己的工作区」算】
+   *
+   * 按会话分之后，她的相对路径应该落在自己的目录里；老文件还在共享区，
+   * 所以第二个候选就是共享区（`dump/logs/x.out` 那种老路径照样找得到）。
+   */
+  const ws = workspaceFor(currentSessionId()) || sharedWorkspace() || process.cwd();
   const a = resolve(ws, s);
   if (existsSync(a)) return a;
+  const shared = sharedWorkspace();
+  if (shared && shared !== ws) {
+    const c = resolve(shared, s);
+    if (existsSync(c)) return c;
+  }
   const b = resolve(APP_ROOT, s);
   if (existsSync(b)) return b;
   return a;

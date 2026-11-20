@@ -1,6 +1,6 @@
 // 重新上传附件：中文文件名在 uploads.github.com 被吞掉，改用 ASCII 名 + label 显示中文
 import { readFileSync, existsSync, createReadStream, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const REPO = 'wxzjss/xiaoyu-agent';
 const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -26,23 +26,24 @@ const plan = [
   },
 ];
 
-const r = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/${TAG}`, { headers: H });
-const rel = await r.json();
-if (!rel.id) throw new Error('release not found');
-
-// 删掉之前那批名字被吞坏的附件
-for (const a of rel.assets || []) {
-  await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${a.id}`, { method: 'DELETE', headers: H });
-  console.log('deleted ' + a.name);
+const files = plan.map((p) => {
+  const abs = fileURLToPath(new URL('../' + p.file, import.meta.url));
+  const info = statSync(abs);
+  if (!info.isFile() || !info.size) throw new Error('Invalid attachment: ' + p.file);
+  return { ...p, abs, size: info.size };
+});
+const response = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/${TAG}`, { headers: H });
+if (!response.ok) throw new Error('Release lookup failed HTTP ' + response.status);
+const rel = await response.json();
+if (!rel.id || rel.draft !== true || rel.tag_name !== TAG || !Array.isArray(rel.assets)) {
+  throw new Error('Expected a draft release for ' + TAG);
+}
+if (files.some((p) => rel.assets.some((a) => a.name === p.name))) {
+  throw new Error('Release already has a planned attachment; use a new version');
 }
 
-for (const p of plan) {
-  const abs = join(process.cwd(), p.file);
-  if (!existsSync(abs)) {
-    console.error('missing ' + p.file);
-    continue;
-  }
-  const size = statSync(abs).size;
+for (const p of files) {
+  const { abs, size } = p;
   console.log(`uploading ${p.name} (${(size / 1048576).toFixed(1)} MB)…`);
   const up = await fetch(
     `https://uploads.github.com/repos/${REPO}/releases/${rel.id}/assets?name=${encodeURIComponent(p.name)}&label=${encodeURIComponent(p.label)}`,
@@ -54,8 +55,10 @@ for (const p of plan) {
     },
   );
   const out = await up.json();
-  if (out.state === 'uploaded') console.log('  ✓ ' + out.browser_download_url);
-  else console.error('  ✗ ' + JSON.stringify(out).slice(0, 300));
+  if (!up.ok || out.state !== 'uploaded' || out.size !== size) {
+    throw new Error(`Attachment upload failed validation: ${p.name} (HTTP ${up.status})`);
+  }
+  console.log('  ✓ ' + out.browser_download_url);
 }
 
 console.log('done: https://github.com/' + REPO + '/releases/tag/' + TAG);

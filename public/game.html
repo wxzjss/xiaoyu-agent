@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>躲避小游戏</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            color: #fff;
+        }
+        
+        .game-container {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+        
+        .game-header {
+            text-align: center;
+            z-index: 10;
+        }
+        
+        .game-header h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .stats {
+            display: flex;
+            gap: 30px;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+        }
+        
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        #gameCanvas {
+            border: 3px solid #fff;
+            background: linear-gradient(to bottom, #1a1a2e, #16213e);
+            cursor: crosshair;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            display: block;
+        }
+        
+        .controls {
+            text-align: center;
+            font-size: 16px;
+            max-width: 600px;
+            line-height: 1.6;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+        }
+        
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            transition: transform 0.2s, box-shadow 0.2s;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        .game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            z-index: 20;
+            display: none;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            border: 2px solid #667eea;
+        }
+        
+        .game-over.show {
+            display: block;
+            animation: popIn 0.3s ease-out;
+        }
+        
+        @keyframes popIn {
+            from {
+                transform: translate(-50%, -50%) scale(0.8);
+                opacity: 0;
+            }
+            to {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 1;
+            }
+        }
+        
+        .game-over h2 {
+            font-size: 36px;
+            margin-bottom: 20px;
+            color: #ff6b6b;
+        }
+        
+        .game-over p {
+            font-size: 24px;
+            margin: 15px 0;
+        }
+        
+        .final-score {
+            font-size: 32px;
+            color: #51cf66;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        
+        .difficulty-info {
+            font-size: 14px;
+            color: #adb5bd;
+            margin-top: 20px;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="game-header">
+            <h1>🎮 躲避小游戏</h1>
+            <div class="stats">
+                <div class="stat-item">
+                    <span>分数：</span>
+                    <span id="score">0</span>
+                </div>
+                <div class="stat-item">
+                    <span>难度：</span>
+                    <span id="difficulty">1</span>
+                </div>
+            </div>
+        </div>
+        
+        <canvas id="gameCanvas" width="600" height="600"></canvas>
+        
+        <div class="controls">
+            <p>✨ 点击绿色物体 +1 分 | 💣 避开红色物体 -1 分</p>
+            <p>物体掉落速度逐渐加快，看你能坚持多久！</p>
+            <div class="btn-group">
+                <button onclick="startGame()">开始游戏</button>
+                <button onclick="resetGame()">重新开始</button>
+            </div>
+        </div>
+        
+        <div class="game-over" id="gameOverScreen">
+            <h2>游戏结束</h2>
+            <p>最终分数</p>
+            <div class="final-score" id="finalScore">0</div>
+            <div class="difficulty-info">
+                <p>你坚持到了难度 <span id="finalDifficulty">1</span></p>
+                <button onclick="startGame()" style="margin-top: 20px;">再来一局</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Audio context
+        let audioContext = null;
+        function getAudioContext() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            return audioContext;
+        }
+        
+        // Play sound effect
+        function playSound(frequency, duration, type = 'sine') {
+            try {
+                const context = getAudioContext();
+                const oscillator = context.createOscillator();
+                const gainNode = context.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(context.destination);
+                
+                oscillator.frequency.value = frequency;
+                oscillator.type = type;
+                
+                gainNode.gain.setValueAtTime(0.3, context.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + duration);
+                
+                oscillator.start(context.currentTime);
+                oscillator.stop(context.currentTime + duration);
+            } catch (e) {
+                // Audio not available, continue anyway
+            }
+        }
+        
+        // Game state
+        const game = {
+            score: 0,
+            difficulty: 1,
+            gameRunning: false,
+            playerX: canvas.width / 2,
+            playerY: canvas.height - 40,
+            playerSize: 30,
+            objects: [],
+            spawnRate: 2,
+            maxSpawnRate: 8,
+            speedBase: 2,
+            maxSpeed: 8,
+            lives: 3
+        };
+        
+        // Draw player
+        function drawPlayer() {
+            ctx.fillStyle = '#FFD700';
+            ctx.shadowColor = 'rgba(255, 215, 0, 0.5)';
+            ctx.shadowBlur = 10;
+            ctx.beginPath();
+            ctx.arc(game.playerX, game.playerY, game.playerSize, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowColor = 'transparent';
+            
+            // Draw border
+            ctx.strokeStyle = '#FFA500';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        
+        // Draw falling objects
+        function drawObjects() {
+            game.objects.forEach(obj => {
+                ctx.fillStyle = obj.good ? '#51cf66' : '#ff6b6b';
+                ctx.shadowColor = obj.good ? 'rgba(81, 207, 102, 0.4)' : 'rgba(255, 107, 107, 0.4)';
+                ctx.shadowBlur = 8;
+                ctx.beginPath();
+                ctx.arc(obj.x, obj.y, obj.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowColor = 'transparent';
+                
+                // Draw emoji inside
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 16px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(obj.good ? '✨' : '💣', obj.x, obj.y);
+            });
+        }
+        
+        // Draw background
+        function drawBackground() {
+            ctx.fillStyle = '#16213e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= canvas.width; i += 60) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, canvas.height);
+                ctx.stroke();
+            }
+            for (let i = 0; i <= canvas.height; i += 60) {
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(canvas.width, i);
+                ctx.stroke();
+            }
+        }
+        
+        // Spawn new objects
+        function spawnObject() {
+            const good = Math.random() > 0.4; // 60% good, 40% bad
+            const x = Math.random() * (canvas.width - 40) + 20;
+            game.objects.push({
+                x: x,
+                y: -20,
+                size: 15,
+                good: good,
+                speed: game.speedBase + (game.difficulty - 1) * 0.3 + Math.random() * 1
+            });
+        }
+        
+        // Update game state
+        function update() {
+            if (!game.gameRunning) return;
+            
+            // Spawn new objects
+            if (Math.random() < game.spawnRate / 100) {
+                spawnObject();
+            }
+            
+            // Update object positions
+            for (let i = game.objects.length - 1; i >= 0; i--) {
+                const obj = game.objects[i];
+                obj.y += obj.speed;
+                
+                // Check collision with player
+                const dx = obj.x - game.playerX;
+                const dy = obj.y - game.playerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                if (dist < game.playerSize + obj.size) {
+                    if (obj.good) {
+                        game.score += 1;
+                        playSound(800, 0.1);
+                    } else {
+                        game.score -= 1;
+                        game.lives--;
+                        playSound(200, 0.2);
+                    }
+                    game.objects.splice(i, 1);
+                    continue;
+                }
+                
+                // Remove objects that fell off screen
+                if (obj.y > canvas.height + 20) {
+                    game.objects.splice(i, 1);
+                }
+            }
+            
+            // Increase difficulty
+            game.difficulty = Math.floor(game.score / 10) + 1;
+            game.spawnRate = Math.min(2 + game.difficulty * 0.8, game.maxSpawnRate);
+            game.speedBase = Math.min(2 + game.difficulty * 0.3, game.maxSpeed);
+            
+            // Check game over
+            if (game.lives <= 0 || game.score < -5) {
+                endGame();
+            }
+            
+            // Update UI
+            document.getElementById('score').textContent = game.score;
+            document.getElementById('difficulty').textContent = game.difficulty;
+        }
+        
+        // Game loop
+        function gameLoop() {
+            drawBackground();
+            update();
+            drawObjects();
+            drawPlayer();
+            
+            if (game.gameRunning) {
+                requestAnimationFrame(gameLoop);
+            }
+        }
+        
+        // Mouse move
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            game.playerX = e.clientX - rect.left;
+            game.playerY = e.clientY - rect.top;
+            
+            // Clamp to canvas
+            game.playerX = Math.max(game.playerSize, Math.min(canvas.width - game.playerSize, game.playerX));
+            game.playerY = Math.max(game.playerSize, Math.min(canvas.height - game.playerSize, game.playerY));
+        });
+        
+        // Start game
+        function startGame() {
+            game.gameRunning = true;
+            game.objects = [];
+            document.getElementById('gameOverScreen').classList.remove('show');
+            playSound(400, 0.1); // Start sound
+            gameLoop();
+        }
+        
+        // End game
+        function endGame() {
+            game.gameRunning = false;
+            playSound(300, 0.3); // Game over sound
+            document.getElementById('finalScore').textContent = game.score;
+            document.getElementById('finalDifficulty').textContent = game.difficulty;
+            document.getElementById('gameOverScreen').classList.add('show');
+        }
+        
+        // Reset game
+        function resetGame() {
+            game.score = 0;
+            game.difficulty = 1;
+            game.lives = 3;
+            game.objects = [];
+            game.spawnRate = 2;
+            document.getElementById('gameOverScreen').classList.remove('show');
+            document.getElementById('score').textContent = '0';
+            document.getElementById('difficulty').textContent = '1';
+        }
+        
+        // Initial draw
+        drawBackground();
+        drawPlayer();
+    </script>
+</body>
+</html>

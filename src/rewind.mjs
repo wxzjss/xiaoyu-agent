@@ -220,18 +220,52 @@ export function undoLastRewind(session) {
  * 工作区里仍是不带前缀的旧格式（老数据不用迁移）。
  * restoreWorkspace 按同一个约定解析，读写对称。
  */
-function snapRoots() {
+function snapRoots(sessionId = '') {
+  /**
+   * 【2026-11-18 改·工作区按会话分之后，快照要认三块】
+   *
+   *   ① 这个会话自己的目录（`<共享区>/sessions/<sid>/`）—— key 带 `sess:<sid>:` 前缀
+   *   ② 共享区（老的全局 workspace）—— key 不带前缀（老数据不用迁移）
+   *   ③ 仓库根（开发机才有）—— key 带 `root:` 前缀
+   *
+   * 为什么 ① 要带 sid：不同会话目录里可能有同名文件（`out.txt`），
+   * 不带 sid 的话两个会话的快照 key 撞在一起，回退会互相覆盖。
+   */
   const ws = resolve(config.workspace);
   const rt = resolve(config.root || process.cwd());
-  const list = [{ tag: '', root: ws }];
+  const list = [];
+  const sid = String(sessionId || '').trim();
+  if (sid && /^[A-Za-z0-9_-]{1,64}$/.test(sid)) {
+    const mine = join(ws, 'sessions', sid);
+    list.push({ tag: 'sess:' + sid + ':', root: mine });
+  }
+  list.push({ tag: '', root: ws });
   if (rt !== ws) list.push({ tag: 'root:', root: rt });
   return list;
 }
 
-function resolveInsideWorkspace(p) {
-  const base = resolve(config.workspace);
-  const abs = isAbsolute(p) ? resolve(p) : resolve(base, p);
-  for (const { tag, root } of snapRoots()) {
+function resolveInsideWorkspace(p, sessionId = '') {
+  /**
+   * 【2026-11-18 改·相对路径先按会话目录算】
+   *
+   * 写类工具现在把相对路径落到 `<共享区>/sessions/<sid>/`，可这里原来只按共享区解析。
+   * 于是 `write_file('out.txt')` 实际改了会话目录里那份，快照却去共享区根上拍 ——
+   * 拍了个不存在的路径，回退时「这一轮改了什么」是空的。
+   *
+   * 现在候选两个：会话目录优先（跟工具一致），再退共享区（老文件）。
+   */
+  const raw = String(p ?? '');
+  const cands = [];
+  if (isAbsolute(raw)) cands.push(resolve(raw));
+  else {
+    const sid0 = String(sessionId || '').trim();
+    if (sid0 && /^[A-Za-z0-9_-]{1,64}$/.test(sid0)) cands.push(resolve(config.workspace, 'sessions', sid0, raw));
+    cands.push(resolve(config.workspace, raw));
+  }
+  /* 存的就挑「文件真在的那个」；都不在就按第一个（= 会话目录，跟工具一致）——
+     不存在时也要拍，`null` 的含义是「原来没有」，这正是新建文件要记的。 */
+  const abs = cands.find((c) => existsSync(c)) || cands[0];
+  for (const { tag, root } of snapRoots(sessionId)) {
     const rel = relative(root, abs);
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
     return { abs, key: tag + rel.replace(/\\/g, '/') };
@@ -309,9 +343,9 @@ export function restoreMemory(session, rewind) {
   }
 }
 
-export function snapshotBeforeWrite(snap, p) {
+export function snapshotBeforeWrite(snap, p, sessionId = '') {
   if (!snap || typeof snap !== 'object') return;
-  const hit = resolveInsideWorkspace(String(p ?? ''));
+  const hit = resolveInsideWorkspace(String(p ?? ''), sessionId);
   if (!hit) return; // 工作区外，本来就不归回退管
   if (Object.prototype.hasOwnProperty.call(snap, hit.key)) return; // 同一轮写过两次，只留第一次的原样
   try {
@@ -333,10 +367,16 @@ export function snapshotBeforeWrite(snap, p) {
 export function restoreWorkspace(ws = {}) {
   const out = { restored: [], deleted: [], skipped: [], failed: [] };
   for (const [key, content] of Object.entries(ws || {})) {
-    /* key 可能带 `root:` 前缀（仓库根下的文件），也可能是老的「工作区相对路径」 */
-    const mRoot = /^root:(.*)$/.exec(String(key || ''));
-    const base = mRoot ? resolve(config.root || process.cwd()) : resolve(config.workspace);
-    const relKey = mRoot ? mRoot[1] : String(key || '');
+    /* key 可能是三种：
+     *   · `sess:<sid>:<相对路径>` —— 按会话分之后的会话目录（2026-11-18 加）
+     *   · `root:<相对路径>`        —— 开发机的仓库根
+     *   · 裸相对路径               —— 老格式，相对共享区 */
+    const mSess = /^sess:([A-Za-z0-9_-]{1,64}):(.*)$/.exec(String(key || ''));
+    const mRoot = mSess ? null : /^root:(.*)$/.exec(String(key || ''));
+    const base = mSess
+      ? join(resolve(config.workspace), 'sessions', mSess[1])
+      : mRoot ? resolve(config.root || process.cwd()) : resolve(config.workspace);
+    const relKey = mSess ? mSess[2] : mRoot ? mRoot[1] : String(key || '');
     const abs = resolve(base, relKey);
     const rel = relative(base, abs);
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;

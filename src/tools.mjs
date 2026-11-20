@@ -1,12 +1,14 @@
 // Built-in tools. Each tool: { name, description, parameters(JSON Schema), run(args) }
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { appendFileSync } from 'node:fs';
-import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, createReadStream } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, lstatSync } from 'node:fs';
 import { exec, execFile, spawnSync } from 'node:child_process';
-import { resolve, dirname, isAbsolute, relative, join } from 'node:path';
+import { resolve, dirname, isAbsolute, relative, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.mjs';
+/* 【2026-11-18】工作区按会话分（主人问「为什么所有工作区都在同一个文件夹下」） */
+import { workspaceFor, sharedWorkspace, runInSession, currentSessionId as wsSessionId } from './workspace.mjs';
 /* 【2026-11-07 harness 重做 · P5】简单命令不进 PowerShell（省约 300ms/次启动）。
  * 直接引子模块，不绕 index —— tools.mjs 和 tools-sendfile 是循环依赖，加载链越短越稳。 */
 import { pickShell } from './harness/exec-shell.mjs';
@@ -47,6 +49,10 @@ import { browserTools } from './tools-browser.mjs';
 import { videoTools } from './tools-video.mjs';
 import { screenTools } from './tools-screen.mjs';
 import { uiToolDefs } from './tools-ui.mjs';
+/* 【2026-11-18 加】run_command 的命令级危险识别 + 审批（见 cmd-guard.mjs 文件头）。
+ * askApproval 用的是 ui-guard 那份（它只管「怎么问」，「问不问」由 cmd-guard 判）。 */
+import { judgeCommand, needAsk } from './cmd-guard.mjs';
+import { askApproval } from './ui-guard.mjs';
 /* 【2026-11-17 删】不再 import makeImageTool —— 「画图」整档下线了。 */
 import { makePptxTool, makeDocxTool, makeXlsxTool } from './tools-office.mjs';
 import { adminOn } from './admin-mode.mjs';
@@ -66,7 +72,28 @@ import { teamOn, dispatchWorker, stopWorker } from './team.mjs';
  */
 const LIMIT = 200000;
 
-const ROOT = resolve(config.workspace);
+/**
+ * 【2026-11-18 改·工作区按会话分】
+ *
+ * 原来这里是 `const ROOT = resolve(config.workspace)` —— 一个模块级常量，
+ * 所有会话共用一份目录（主人的真实数据目录里堆了 255 个文件，分不清谁是谁的）。
+ *
+ * 现在改成函数：**按当前会话现算**。见 src/workspace.mjs 的说明。
+ *   · 会话自己那份：`<共享区>/sessions/<sid>/`（相对路径默认落这儿）
+ *   · 共享区（老目录）：照样读写放行 —— 旧文件一个都不会「消失」
+ *
+ * 为什么保留 `ROOT` 这个名字：它在这个文件里被引用了十几处，
+ * 全部改名风险大、收益零。改成函数后调用处一律写 `ROOT()`。
+ */
+const ROOT = () => {
+  try {
+    /* 先看异步链路里那个（并发安全），没有再退到 CTX 单例 */
+    const sid = wsSessionId() || ctxNow()?.sessionId || CTX.sessionId;
+    return workspaceFor(sid);
+  } catch {
+    return resolve(config.workspace || process.cwd());
+  }
+};
 /** 程序自己的安装目录（src 的上一级），scripts/ 和 dump/ 都在这下面 */
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /**
@@ -160,8 +187,13 @@ export function runWithToolContext(ctx, fn) {
    * 调用方给什么覆盖什么。现有调用点要么在最外层（基底=全局，行为不变），
    * 要么显式传全字段，都不受影响。见 scripts/check-signal-isolation.mjs。
    */
-  const base = CTX_STORE.getStore() || CTX;
-  const merged = (ctx && typeof ctx === 'object') ? { ...base, ...ctx } : base;
+  const parent = CTX_STORE.getStore();
+  const base = parent || CTX;
+  const merged = { ...base, ...ctx };
+  // Nested workers can narrow their parent's permissions, never widen them.
+  merged.adminParents = parent ? [...new Set([...parent.adminParents, parent.sessionId])] : [];
+  merged.adminCeiling = !parent || (parent.adminMode === true && toolAdminOn());
+  merged.adminMode = merged.adminCeiling && adminOnSync(merged.sessionId);
   /**
    * 【2026-11-05 加·这一轮跑了多久】
    *
@@ -173,7 +205,10 @@ export function runWithToolContext(ctx, fn) {
    * 补在 usage._ms 上：跟着 usage 一起落盘，重绘历史也还在，不会「切走再回来就没了」。
    */
   const _t0 = Date.now();
-  const p = CTX_STORE.run(merged, fn);
+  /* 【2026-11-18】把「这一轮替哪个会话干活」也塞进异步链路 ——
+   * workspace.mjs / outbox.mjs 靠它算这个会话的工作区目录。 */
+  const _sid = String(merged?.sessionId || '');
+  const p = _sid ? runInSession(_sid, () => CTX_STORE.run(merged, fn)) : CTX_STORE.run(merged, fn);
   if (!p || typeof p.then !== 'function') return p;
   return p.then((r) => {
     try {
@@ -308,14 +343,15 @@ export function setToolEventPusher(fn) {
 }
 
 export function setToolContext(sessionId, snap = null, signal = null) {
-  CTX.sessionId = sessionId || 'default';
-  CTX.snap = snap && typeof snap === 'object' ? snap : null;
+  const context = ctxNow();
+  context.sessionId = sessionId || 'default';
+  context.snap = snap && typeof snap === 'object' ? snap : null;
   // 这一轮的 AbortSignal：主人点停止 / 点退出时，长命令（Start-Sleep、ffmpeg、装依赖）
   // 要能被真的打断。否则 agent 卡在 await 里，那一轮的 finally 永远不执行，
   // 磁盘上就只剩主人那句话 —— 看起来像「她压根没回」。
-  CTX.signal = signal && typeof signal === 'object' ? signal : null;
+  context.signal = signal && typeof signal === 'object' ? signal : null;
   // 这一轮要发给主人的文件（send_file 往里塞，跑完由 server 挂到回复上）
-  CTX.outbox = null;
+  context.outbox = null;
   /**
    * 这个会话开没开「管理员权限」——每轮开跑时现读一次盘。
    *
@@ -327,13 +363,20 @@ export function setToolContext(sessionId, snap = null, signal = null) {
   try {
     // 同步读：这里必须是同步的，setToolContext 在 agent 主循环之前调，
     // 变成 async 会一路传染到 runAgent 的签名。
-    CTX.adminMode = adminOnSync(sessionId || 'default');
+    context.adminMode = context.adminCeiling !== false && adminOnSync(context.sessionId);
   } catch {
-    CTX.adminMode = false;
+    context.adminMode = false;
   }
 }
 
 /** admin-mode 的同步版本（tools.mjs 在同步上下文里要用，见 setToolContext 注释）。 */
+function toolAdminOn() {
+  const context = ctxNow();
+  return (context === CTX || context.adminMode === true)
+    && adminOnSync(context.sessionId)
+    && (context.adminParents || []).every(adminOnSync);
+}
+
 function adminOnSync(sessionId) {
   try {
     // 循环依赖：admin-mode.mjs → config.mjs，不会回到 tools.mjs，所以静态 import 安全。
@@ -541,8 +584,27 @@ function isSessionMemoryBook(abs) {
 }
 
 export function safePath(p, { tool = '' } = {}) {
-  const abs = isAbsolute(p) ? resolve(p) : resolve(ROOT, p);
+  let abs = isAbsolute(p) ? resolve(p) : resolve(ROOT(), p);
   if (!abs) throw new Error(`路径不对：${p}`);
+  /**
+   * 【2026-11-18 加·相对路径的「老文件」回退】
+   *
+   * 工作区按会话分之后，相对路径默认落在 `sessions/<sid>/`。可主人的旧文件
+   * 全都还在共享区（根目录）—— 老会话里她写 `read_file('dump/logs/x.out')`，
+   * 按新规矩会找 `sessions/<sid>/dump/logs/x.out`，找不到就报「文件不存在」，
+   * 看上去跟「文件被删了」一模一样。
+   *
+   * 所以：**只读**工具用相对路径时，本会话目录下没有、共享区里有的，就用共享区那份。
+   * 写工具绝不回退 —— 否则她改一个同名文件会把共享区的旧件盖掉，
+   * 那才是真的丢东西。新写的一律进自己会话目录。
+   */
+  if (!isAbsolute(p) && READ_ONLY_TOOLS.has(tool)) {
+    try {
+      const shared = resolve(sharedWorkspace(), p);
+      const mine = abs;
+      if (mine !== shared && !existsSync(mine) && existsSync(shared)) abs = shared;
+    } catch { /* 回退失败就按原路径来，别把这一轮卡死 */ }
+  }
   /**
    * 长期记忆关着时，记忆本**只读**：
    *   · 读类工具（read_file / list_dir）照常放行 —— 主人要的就是「还能看」
@@ -573,12 +635,24 @@ export function safePath(p, { tool = '' } = {}) {
    * 现在改成：以 CTX.sessionId 现查一遍盘上那张表为准，缓存只当兜底。
    * 每次多读一次小 json，这个代价换「权限不会中途变卦」值得。
    */
-  let _adminNow = CTX.adminMode === true;
-  try {
-    const _sid = ctxNow()?.sessionId || CTX.sessionId;
-    if (_sid) _adminNow = adminOnSync(_sid);
-  } catch {}
-  if (_adminNow || CTX.fullAccess === true) return abs;
+  if (toolAdminOn() || ctxNow().fullAccess === true) return abs;
+  const normalizedPath = resolve(abs);
+  const parsedPath = parse(normalizedPath);
+  let cursor = parsedPath.root;
+  const parts = normalizedPath.slice(parsedPath.root.length).split(/[\\/]+/);
+  for (const part of parts) {
+    if (!part || part === '.') continue;
+    cursor = part === '..' ? dirname(cursor) : join(cursor, part);
+    let entry;
+    try {
+      entry = lstatSync(cursor);
+    } catch (e) {
+      if (!e || (e.code !== 'ENOENT' && e.code !== 'ENOTDIR')) throw e;
+    }
+    if (entry && entry.isSymbolicLink()) {
+      throw new Error(`symbolic links are not allowed: ${p}`);
+    }
+  }
   /**
    * 【本会话自己的记忆本子，放行】—— 2026-11
    *
@@ -605,16 +679,34 @@ export function safePath(p, { tool = '' } = {}) {
    * 只放行**读类工具**：那目录里的东西是我的落盘产物，模型能看，但不该往里写。
    */
   if (READ_ONLY_TOOLS.has(tool) && isToolOutFile(abs)) return abs;
-  const rel = relative(ROOT, abs);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    /* 不在主工作区，但落在这台机器的开发仓库里 → 放行（见上面 DEV_REPO 的说明） */
-    if (DEV_REPO) {
-      const r2 = relative(DEV_REPO, abs);
-      if (!r2.startsWith('..') && !isAbsolute(r2)) return abs;
-    }
-    throw new Error(`path outside workspace is not allowed: ${p}`);
+  /**
+   * 【2026-11-18 改·工作区按会话分之后，放行范围是两块】
+   *
+   *   ① 这个会话自己的目录（相对路径默认落这儿）
+   *   ② **共享区**（老的全局 workspace）—— 旧文件全在这儿，不放行就等于「文件没了」
+   *
+   * 为什么不放行「别的会话的目录」：那才是分区的意义。她换会话干活时，
+   * 不该顺手翻到另一个会话的草稿。真要看，主人开管理员权限就行。
+   */
+  const inside = (base) => {
+    const r = relative(base, abs);
+    return !r.startsWith('..') && !isAbsolute(r);
+  };
+  const wsNow = ROOT();
+  const shared = sharedWorkspace();
+  if (inside(wsNow)) return abs;                       // ① 自己的目录
+  if (wsNow !== shared && inside(shared)) {
+    /* ② 共享区 —— 但要挡掉 `sessions/<别人>/` 那一层 */
+    const rel = relative(shared, abs).replace(/\\/g, '/');
+    const other = /^sessions\/[^/]+(\/|$)/.test(rel);
+    if (!other) return abs;
   }
-  return abs;
+  /* 不在工作区，但落在这台机器的开发仓库里 → 放行（见上面 DEV_REPO 的说明） */
+  if (DEV_REPO) {
+    const r2 = relative(DEV_REPO, abs);
+    if (!r2.startsWith('..') && !isAbsolute(r2)) return abs;
+  }
+  throw new Error(`path outside workspace is not allowed: ${p}`);
 }
 
 /**
@@ -709,6 +801,36 @@ function clip(s) {
   return `${head}\n...[中间省略 ${cut} 字，尾巴留着（报错通常在这）]...\n${tail}`;
 }
 
+async function readTextPage(path, offset, limit, signal) {
+  if ((await stat(path)).size <= 2 * 1024 * 1024) {
+    const text = await readFile(path, { encoding: 'utf8', signal });
+    const part = text.slice(offset, limit ? offset + limit : undefined);
+    return { total: text.length, length: part.length, content: clip(part) };
+  }
+
+  // Count decoded UTF-16 units, including across UTF-8 chunk boundaries.
+  let total = 0;
+  let length = 0;
+  let head = '';
+  let tail = '';
+  const end = limit ? offset + limit : Infinity;
+  for await (const chunk of createReadStream(path, { encoding: 'utf8', signal })) {
+    const chunkEnd = total + chunk.length;
+    if (chunkEnd > offset && total < end) {
+      const part = chunk.slice(Math.max(0, offset - total), end - total);
+      length += part.length;
+      const take = Math.max(0, LIMIT - 4000 - head.length);
+      head += part.slice(0, take);
+      if (take < part.length) tail = (tail + part.slice(take)).slice(-4000);
+    }
+    total = chunkEnd;
+  }
+  const content = length <= LIMIT
+    ? head + tail
+    : `${head}\n...[中间省略 ${length - LIMIT} 字，尾巴留着（报错通常在这）]...\n${tail}`;
+  return { total, length, content };
+}
+
 export const tools = [
   {
     name: 'read_file',
@@ -737,24 +859,14 @@ export const tools = [
           images: [abs],
         };
       }
-      const whole = await readFile(abs, 'utf8');
-      /*
-       * 分段读 —— 2026-11-05 加。
-       * 起因：runTool 出口那道闸门会把超长输出落盘，然后告诉模型「用 offset/limit 去读」，
-       * 可这个工具当时根本没有 offset/limit 两个参数 —— 提示语在说一件不存在的事。
-       * 与其把话改软，不如把功能补上：200000 字的大文件本来也不可能一次看完。
-       * 单位是**字符**不是行：行号得先切一遍再数，中文与 CRLF 都会算错，没必要。
-       */
       const off = Math.max(0, Math.floor(Number(offset) || 0));
       const limRaw = Math.floor(Number(limit) || 0);
-      const lim = limRaw > 0 ? Math.min(limRaw, 200000) : 0;
+      const lim = limRaw > 0 ? Math.min(limRaw, LIMIT) : 0;
+      const page = await readTextPage(abs, off, lim, ctxNow().signal || undefined);
       if (off > 0 || lim > 0) {
-        const end = lim > 0 ? off + lim : undefined;
-        const part = whole.slice(off, end);
-        const head = `[第 ${off}~${off + part.length} 字 / 全文共 ${whole.length} 字]`;
-        return head + '\n' + clip(part);
+        return `[第 ${off}~${off + page.length} 字 / 全文共 ${page.total} 字]\n${page.content}`;
       }
-      return clip(whole);
+      return page.content;
     },
   },
   {
@@ -800,7 +912,46 @@ export const tools = [
       required: ['path'],
     },
     async run({ path }) {
+      /**
+       * 【2026-11-18 改·「.」要看得见老文件】
+       *
+       * 相对路径默认落进 `sessions/<sid>/`，可主人问「工作区里有什么」时，
+       * 想看的往往是**根目录**（他的素材、旧 dump 都在那儿）。
+       * 只列会话目录会让她回一句「这里是空的」—— 明明有一屋子东西。
+       *
+       * 所以：列「.」时，会话目录里有的照列，另外把共享区根上的东西也带上，
+       * 标一句「（共享区）」分清楚。会话目录里已有同名项就不重复列。
+       * 显式给了子路径（比如 `dump/logs`）就按 safePath 那套走，不做合并。
+       */
+      const NL = String.fromCharCode(10);
+      const isRoot = !path || String(path).trim() === '.' || String(path).trim() === './';
       const abs = safePath(path || '.', { tool: 'list_dir' });
+      const rowsOf = async (dir, mark) => {
+        const entries = await readdir(dir, { withFileTypes: true });
+        return Promise.all(entries.map(async (e) => {
+          if (e.isDirectory()) return `${e.name}/` + mark;
+          try {
+            const s = await stat(resolve(dir, e.name));
+            return `${e.name} (${s.size}B)` + mark;
+          } catch {
+            return e.name + mark;
+          }
+        }));
+      };
+      if (isRoot) {
+        const shared = sharedWorkspace();
+        const mine = abs;
+        const a = await rowsOf(mine, '');
+        if (mine !== shared && existsSync(shared)) {
+          const seen = new Set(a.map((x) => String(x).replace(/\s*\(.*$/, '').replace(/\/$/, '')));
+          const b = (await rowsOf(shared, ' （共享区）'))
+            .filter((x) => !seen.has(String(x).replace(/\s*\(.*$/, '').replace(/\/$/, '')))
+            /* 不把 `sessions/` 列出来：那是所有会话目录的父目录，列出来等于邀请她往里翻 */
+            .filter((x) => !String(x).startsWith('sessions/'));
+          return [...a, ...b].sort().join(NL) || '(empty)';
+        }
+        return a.sort().join(NL) || '(empty)';
+      }
       const entries = await readdir(abs, { withFileTypes: true });
       const rows = await Promise.all(
         entries.map(async (e) => {
@@ -933,6 +1084,61 @@ export const tools = [
         return 'ERROR：搜不动（' + String((e && e.message) || e) + '）';
       }
 
+      /**
+       * 【2026-11-18 补·会话目录没搜到就去共享区再搜一遍】
+       *
+       * 默认根是这个会话自己的目录，可主人的老文件、老 dump 全在共享区根上。
+       * 只搜会话目录的话，她说「没搜到」—— 其实东西就在隔壁那间屋。
+       * 只在**一条都没搜到**时才补这一趟：有结果就不用翻两遍，省时间。
+       */
+      if (!hits.length) {
+        const shared = sharedWorkspace();
+        if (root !== shared && !isAbsolute(String(path || ''))) {
+          try {
+            const root2 = shared;
+            const files2 = [];
+            const walk2 = (dir, depth) => {
+              if (truncated || depth > 12 || files2.length > MAX_FILES) return;
+              let ents;
+              try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+              for (const e of ents) {
+                const fp = resolve(dir, e.name);
+                if (e.isDirectory()) {
+                  if (SKIP_DIR.has(e.name) || e.name.indexOf('.trash') === 0 || e.name === 'sessions') continue;
+                  walk2(fp, depth + 1);
+                  continue;
+                }
+                if (!e.isFile() || BIN_RE.test(e.name)) continue;
+                if (gRe) {
+                  const relp = relative(root2, fp).split(String.fromCharCode(92)).join('/');
+                  if (!gRe.test(e.name) && !gRe.test(relp)) continue;
+                }
+                files2.push({ fp, depth });
+              }
+            };
+            walk2(root2, 0);
+            files2.sort((x, y) => x.depth - y.depth);
+            for (const f of files2) {
+              if (hits.length >= cap) break;
+              let t;
+              try {
+                const st2 = await stat(f.fp);
+                if (st2.size > MAX_BYTES) continue;
+                t = await readFile(f.fp, 'utf8');
+              } catch { continue; }
+              if (t.indexOf(String.fromCharCode(0)) >= 0) continue;
+              const ls = t.split(String.fromCharCode(10)).map((x) => x.split(String.fromCharCode(13)).join(''));
+              for (let i = 0; i < ls.length && hits.length < cap; i++) {
+                if (re.test(ls[i])) {
+                  const rel = relative(root2, f.fp).split(String.fromCharCode(92)).join('/') || f.fp;
+                  hits.push('（共享区）' + rel + ':' + (i + 1) + ': ' + ls[i].trim().slice(0, 220));
+                }
+              }
+            }
+          } catch { /* 补搜失败就当没搜到，别把这一轮弄挂 */ }
+        }
+      }
+
       if (!hits.length) return '没搜到「' + pat + '」。（换个词试试；或者文件在 node_modules / .git 里，那些我默认不搜。）';
       const tail = truncated ? '\n\n（文件太多，只翻了前 ' + MAX_FILES + ' 个。缩小 path 或加 glob 会更准。）' : '';
       return '搜到 ' + hits.length + ' 条：\n' + hits.join('\n') + tail;
@@ -990,7 +1196,11 @@ export const tools = [
       },
       required: ['command'],
     },
-    run({ command, timeout_ms, shell_hint }) {
+    /* 【2026-11-18 改·加 async】因为里面要 `await askApproval(...)` 问主人。
+     * 框架那边本来就是 `await tool.run(args, ctx)`（见 runTool），
+     * 改成 async 对调用方零影响 —— await 一个同步函数本来也合法，
+     * 反过来同步函数里 await 才是真的错。 */
+    async run({ command, timeout_ms, shell_hint }) {
       /* 【2026-11-15 加·后台模式见「杀自己」拦截之后】 */
 
       /**
@@ -1059,7 +1269,7 @@ export const tools = [
            * 重启后由开机自续接回（半截话也能显示，见 _t_restart_dup_screen）。
            * 所以管理员档下 repack 不再拦，改给 -SelfUpdate 的正确用法；
            * 其它自杀命令（裸 taskkill 自己）照旧拦 —— 那不是掌控，是自杀，重启请走 restart_self。 */
-          const _admin = CTX.adminMode === true;
+          const _admin = toolAdminOn();
           const _isRepack = /repack-installed-app/i.test(hit) || /repack/i.test(raw);
           if (_admin && _isRepack) {
             return [
@@ -1100,6 +1310,67 @@ export const tools = [
                 '被拦下的命令：' + raw.slice(0, 200),
               ];
           return head.join('\n');
+        }
+      }
+
+      /**
+       * 【2026-11-18 加·动真格之前问一声】
+       *
+       * 为什么要有这一段：`ui-guard` 那套审批只盖住了 UI 动作（点按钮/按键/打字），
+       * 而 **run_command 拿的是宿主全权限** —— 破坏力比点一个按钮大得多，
+       * 却一道审批都没有。外部诊断把这条列为「必须重做」，
+       * 但查过之后发现审批管道早就接通了（server.mjs 里有真 askApproval 注入：
+       * 60 秒超时兜底、abort 兜底、问不到就当不许、还带桌面通知），
+       * 缺的只是「run_command 这边没人去问」。
+       *
+       * 所以这里就是那一问。分级判定在 cmd-guard.mjs（可测、纯函数）。
+       *
+       * 【几个刻意的设计】
+       *  · **只在 needAsk 时问**，普通开发命令一条都不打扰 —— 问太勤主人会烦，
+       *    烦到最后把整个功能关掉，那才是最大的不安全。
+       *  · **问不到就不动**（fail-closed）。这是 ui-guard 立下的规矩，照抄。
+       *  · **管理员档免问**：主人开了管理员权限就是授权全权，再问一遍是浪费他时间。
+       *  · 返回 `ok:false` 且带 `✗` 前缀 —— 不然被拦下的命令会显示成绿勾，
+       *    主人看到「她做成了」实际啥都没干（ui-guard 踩过这个坑，见那儿注释）。
+       */
+      {
+        const rawForGuard = String(command || '');
+        const verdict = judgeCommand(rawForGuard);
+        if (needAsk(verdict.level)) {
+          const _ctx = ctxNow() || CTX;
+          const _admin = toolAdminOn();
+          if (!_admin) {
+            /**
+             * 【2026-11-18 加·弹窗里得是给主人看的话，不是给人看工具名】
+             *
+             * 前端那个确认框的模板是「她要动：{toolName}」「她要【{toolName}】来{reason}」。
+             * 这套模板是给 UI 动作（ui_delete / ui_key）写的，填进去正好通顺：
+             *   「她要动：ui_click」→ 她要【ui_click】来点「删除」按钮
+             *
+             * 但 run_command 填进去就成了：
+             *   「她要动：run_command」→ 她要【run_command】来递归删除盘根
+             * 主人根本不知道 run_command 是什么，也不知道要跑哪条命令。
+             *
+             * 所以这里把 toolName 写成**人话**（「跑一条命令」），
+             * 真正的命令原文放进 reason 里 —— 这才是主人判断要不要点头的依据。
+             */
+            const cmdOneLine = rawForGuard.replace(/\s+/g, ' ').trim().slice(0, 200);
+            const yes = await askApproval({
+              exec: _ctx,
+              toolName: '跑一条命令',
+              reason: verdict.why + '。命令是：' + cmdOneLine,
+            });
+            if (!yes) {
+              return {
+                ok: false,
+                text: '✗ 没动：这条命令会' + verdict.why + '，主人没有点头，就先不跑。\n\n'
+                  + '被拦下的命令：' + rawForGuard.slice(0, 300) + '\n\n'
+                  + '（真要跑，请主人自己开管理员档，或者在终端里手动执行；'
+                  + '我不能替他决定这种量级的事。）',
+              };
+            }
+            try { console.log('[cmd-guard] 主人允许了：' + verdict.id + '｜' + rawForGuard.slice(0, 120)); } catch {}
+          }
         }
       }
 
@@ -1167,7 +1438,7 @@ export const tools = [
           /* 【P5】简单命令走 cmd，省掉 PowerShell 那 300ms 启动；
            * 出现 $ / 引号 / 管道 / cmdlet 一律回老路，分错只会慢、不会跑歪。 */
           {
-            cwd: ROOT,
+            cwd: ROOT(),
             /* 【2026-11-14 主人钦点·软超时】长任务不设硬超时（0=不限），
              * 改成下面按「有没有输出」判；普通命令还是原来的 2 分钟硬超时。 */
             timeout: _longTask ? 0 : _TO,
@@ -1396,7 +1667,7 @@ export const tools = [
           if (r.status === 409) {
             /* 【2026-11-13 管理员档】别的会话在跑时不再「先问主人」——主人钦点管理员档下
              * 一切不过问。直接带 force 重试一次（别的轮被安全掐断、各自有接回兜底）。 */
-            if (CTX.adminMode === true) {
+            if (toolAdminOn()) {
               try {
                 const r2 = await fetch('http://127.0.0.1:' + port + '/api/app/restart', {
                   method: 'POST',
@@ -1560,7 +1831,9 @@ export const tools = [
       const deliver = ctxNow().peerDeliver;
       if (typeof deliver === 'function') {
         try {
-          const d = await deliver(String(to), title, text);
+          /* 【2026-11-19】把信的 id 一起递过去：她正在跑的时候，那边插进下一步的同时
+           * 会把**这一封**在信箱里标成已交付，免得这一轮收尾又投一遍。 */
+          const d = await deliver(String(to), title, text, { mailId: r.id });
           if (d && d.ok) return head + '（已即时递到：' + (d.note || '她这就看到') + '）';
           return head + '（即时递送没成：' + ((d && d.note) || '未知原因') + '。信留在信箱里，她下次说话时会看到）';
         } catch (e) {
@@ -1741,7 +2014,7 @@ export const tools = [
     async run({ urls, file, dir, follow }) {
       let list = Array.isArray(urls) ? urls.slice() : [];
       if (file) {
-        const p = isAbsolute(file) ? file : resolve(ROOT, file);
+        const p = isAbsolute(file) ? file : resolve(ROOT(), file);
         if (!existsSync(p)) throw new Error(`file not found: ${p}`);
         list = list.concat(
           readFileSync(p, 'utf8')
@@ -1847,9 +2120,10 @@ export const tools = [
         const { writeFileSync, copyFileSync: cp, statSync, existsSync } = await import('node:fs');
         // 工作区里找不到，就按程序根目录再找一次（dump/txt 在那儿，抓来的书也顺手）
         const rel = String(path);
+        /* 【2026-11-18 改·按会话分】先找这个会话自己的目录，再找共享区（旧书都放那儿）。 */
         const guesses = isAbsolute(rel)
           ? [rel]
-          : [resolve(config.workspace || process.cwd(), rel), resolve(rel)];
+          : [resolve(ROOT(), rel), resolve(sharedWorkspace(), rel), resolve(rel)];
         const abs = guesses.find((g) => existsSync(g)) || guesses[0];
         statSync(abs);
         const raw = readFileSync(abs, 'utf8');
@@ -2621,7 +2895,7 @@ export const tools = [
        * 派活的闸换成【团队模式】的按会话开关。 */
       /* 【2026-11-13 管理员档】主人钦点「完全自主」：管理员档下派鱼不看团队模式开关——
        * 开关是给平时省钱的，管理员档的语义就是「别拿开关绊她」。 */
-      if (!teamOn(sid) && CTX.adminMode !== true) {
+      if (!teamOn(sid) && !toolAdminOn()) {
         return 'ERROR：【团队模式】现在是关着的，派不了活。要用就在功能页里打开「团队模式」；这件活现在你自己动手做。';
       }
       const body = String(task || '').trim();
@@ -2798,7 +3072,7 @@ export const tools = [
       const sid = ctxNow().sessionId || 'default';
       /* 【2026-11-11 换闸】同 spawn_worker：闸换成【团队模式】的按会话开关。 */
       /* 【2026-11-13 管理员档】同上：管理员档下不看团队模式开关。 */
-      if (!teamOn(sid) && CTX.adminMode !== true) {
+      if (!teamOn(sid) && !toolAdminOn()) {
         return 'ERROR：【团队模式】现在是关着的，派不了活。要用就在功能页里打开「团队模式」；这些活现在你自己动手做。';
       }
       const list = (Array.isArray(tasks) ? tasks : []).filter((t) => t && String(t.task || '').trim());
@@ -3437,7 +3711,7 @@ async function runToolInner(name, rawArgs, sessionId) {
   const _snapNow = (() => { try { return ctxNow()?.snap; } catch { return null; } })();
   if (name === 'write_file' && _snapNow) {
     try {
-      snapshotBeforeWrite(_snapNow, args?.path);
+      snapshotBeforeWrite(_snapNow, args?.path, wsSessionId() || ctxNow()?.sessionId || CTX.sessionId);
     } catch {}
   }
   try {

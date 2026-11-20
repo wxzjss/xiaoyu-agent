@@ -3,6 +3,7 @@ import MdDiv from './MdDiv.jsx';
 import { mateColorOf } from './bridge.js';
 import { beginEdit, getEdit } from './store.js';
 import EditArea from './EditArea.jsx';
+import { MessageAttachments } from './UserBubble.jsx';
 
 /**
  * 「别人说的话」—— 小鲸，或群聊里别的智能体卡。
@@ -62,7 +63,12 @@ export default function MateBubble({ it, ask }) {
       data-rewind-id={it.rewindId == null ? undefined : String(it.rewindId)}
       data-at={it.rewindId == null ? undefined : String(it.rewindId)}
     >
-      <div className="role">{who}{it.spectator ? <span className="specTag">旁观</span> : null}</div>
+      <div className="role">
+        {who}
+        {it.spectator ? <span className="specTag">旁观</span> : null}
+        {it.tag ? <span className="interjectTag">{it.tag}</span> : null}
+      </div>
+      <MessageAttachments attachments={it.atts} />
       {editing ? (
         <EditArea text={bubbles.join('\n\n')} at={it.rewindId} msgAt={it.ts} />
       ) : (

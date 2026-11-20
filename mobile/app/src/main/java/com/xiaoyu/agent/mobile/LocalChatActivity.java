@@ -13,6 +13,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.util.AtomicFile;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.SurfaceHolder;
@@ -26,6 +27,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -35,27 +37,36 @@ import android.widget.Toast;
 import com.xiaoyu.agent.mobile.ui.Ui;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * 不连电脑时的本地模式：手机上自己填模型地址、密钥、模型名，直接跟模型说话。
  *
- * 跟电脑端那套是**两回事**，别指望它有记忆文件、工具、会话分支：
- *   - 电脑端那套的重活（读写文件、跑命令、记忆、多会话）都在电脑上，
- *     手机壳只是个显示窗口；
- *   - 这里是「电脑没开机 / 人在外面 / 只想问两句」时的退路，纯聊天。
+ * 本地模式保存手机里的聊天会话和手动填写的本机记忆，不读取电脑端的记忆文件、工具或会话分支。
  *
  * 为什么不用 WebView 装个网页：手机上没有服务端，网页直接 fetch 模型接口会被
  * 浏览器 CORS 拦死（file:// 源）。所以这里用 HttpURLConnection 原生的，没有 CORS 这回事。
@@ -70,6 +81,9 @@ public class LocalChatActivity extends Activity {
     private static final String K_KEY = "key";
     private static final String K_MODEL = "model";
     private static final String K_SYS = "sys";
+    private static final String K_LOCAL_MEMORY = "localMemory";
+    private static final String K_SEND_LOCAL_MEMORY = "sendLocalMemory";
+    private static final int LOCAL_MEMORY_LIMIT = 4000;
     /** 外观：面板不透明度（0 最透、100 最实）。跟电脑端那个 --surface 是一个意思 */
     private static final String K_SURFACE = "surface";
     /** 背景音乐：开没开、音量、哪首（空 = 内置那首，也就是电脑端默认的壁纸音乐） */
@@ -81,9 +95,6 @@ public class LocalChatActivity extends Activity {
     private static final String K_VEIL = "veil";
     private static final String K_VIDEO_FILE = "videoFile";
 
-    /** APK 里自带的那段视频，跟连接页共用一份（assets/bg-video.mp4，约 7MB） */
-    private static final String ASSET_BUNDLED_VIDEO = "bg-video.mp4";
-
     private static final String DEFAULT_BASE = "https://api.deepseek.com/v1";
     private static final String DEFAULT_MODEL = "deepseek-chat";
 
@@ -93,21 +104,99 @@ public class LocalChatActivity extends Activity {
     private ScrollView scroll;
     private EditText input;
     private Button sendBtn;
+    private Button sessionsBtn;
+    private Button modelBtn;
+    private Button thinkingBtn;
     private TextView subtitle;
 
     /** 视频背景那三层：画面在最底下，上面盖压暗层，再上面才是聊天内容 */
     private FrameLayout root;
+    private ImageView whaleBg;
     private SurfaceView videoSurface;
     private MediaPlayer videoMp;
     private View veil;
     /** 聊天内容那一大块（顶栏+消息区+输入条）。它自己是透明的，才透得出下面的画面 */
     private LinearLayout page;
 
-    /** 对话本身：每条 {role, content}。只是聊天记录，不是电脑那边那种带工具的 messages */
-    private final JSONArray msgs = new JSONArray();
-    private File store;
+    private static final int STORE_VERSION = 1;
 
-    private boolean busy = false;
+    private static final class Session {
+        final String id;
+        JSONArray messages;
+        String modelOverride = "";
+        ThinkingLevel thinking = ThinkingLevel.DEFAULT;
+
+        Session(String id, JSONArray messages) {
+            this.id = id;
+            this.messages = messages;
+        }
+    }
+
+    private enum ThinkingLevel {
+        DEFAULT("default", "模型默认"),
+        OFF("off", "关");
+
+        final String id;
+        final String label;
+
+        ThinkingLevel(String id, String label) {
+            this.id = id;
+            this.label = label;
+        }
+
+        static ThinkingLevel fromId(String id) {
+            for (ThinkingLevel level : values()) {
+                if (level.id.equals(id)) return level;
+            }
+            return DEFAULT;
+        }
+    }
+
+    private enum ThinkingSupport {
+        NONE,
+        DEEPSEEK(ThinkingLevel.OFF);
+
+        final ThinkingLevel[] options;
+
+        ThinkingSupport(ThinkingLevel... options) {
+            this.options = options;
+        }
+
+        ThinkingLevel validate(ThinkingLevel selected) {
+            for (ThinkingLevel option : options) {
+                if (option == selected) return selected;
+            }
+            return ThinkingLevel.DEFAULT;
+        }
+    }
+
+    private final List<Session> sessions = new ArrayList<>();
+    private Session activeSession;
+    private AtomicFile store;
+    private boolean storeReadOnly;
+
+    private static final class Turn {
+        final Session session;
+        final String url;
+        final String key;
+        final byte[] payload;
+        volatile HttpURLConnection connection;
+        volatile boolean cancelled;
+        TextView bubble;
+
+        Turn(Session session, String url, String key, byte[] payload) {
+            this.session = session;
+            this.url = url;
+            this.key = key;
+            this.payload = payload;
+        }
+
+        void throwIfCancelled() throws IOException {
+            if (cancelled) throw new IOException("请求已取消");
+        }
+    }
+
+    private Turn activeTurn;
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     @Override
@@ -115,7 +204,7 @@ public class LocalChatActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         sp = getSharedPreferences(SP, MODE_PRIVATE);
-        store = new File(getFilesDir(), "local-chat.json");
+        store = new AtomicFile(new File(getFilesDir(), "local-chat.json"));
 
         Window w = getWindow();
         /**
@@ -144,7 +233,22 @@ public class LocalChatActivity extends Activity {
             });
         }
         loadHistory();
+        if (savedInstanceState != null) {
+            String pending = savedInstanceState.getString(STATE_TEXT_PICKER_SESSION);
+            if (activeSession.id.equals(pending)) {
+                textImportTarget = activeSession;
+                textPickerOpen = true;
+            }
+        }
         render();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        if (textPickerOpen && textImportTarget != null) {
+            state.putString(STATE_TEXT_PICKER_SESSION, textImportTarget.id);
+        }
     }
 
     // ────────────────────────────── 界面 ──────────────────────────────
@@ -154,46 +258,55 @@ public class LocalChatActivity extends Activity {
         // page 自己不画底色（透明），中间那层压暗由 veil 负责 —— 这样才透得出画面。
         root = new FrameLayout(this);
         root.setBackgroundColor(Ui.BG);
+        whaleBg = new ImageView(this);
+        whaleBg.setImageResource(R.drawable.whale_muse_bg);
+        whaleBg.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        whaleBg.setAlpha(0.46f);
+        whaleBg.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        root.addView(whaleBg, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setBackgroundColor(android.graphics.Color.TRANSPARENT);
 
         // ---- 顶栏 ----
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        int bp = Ui.dp(this, 12);
-        bar.setPadding(bp, Ui.dp(this, 10), bp, Ui.dp(this, 10));
-        // 顶栏做半透明：全不透明的面板色会把顶上一条视频糊死，看着像 bug
-        bar.setBackgroundColor(Ui.panelAlpha(72));
+        int bp = Ui.dp(this, 14);
+        LinearLayout bar = Ui.row(this);
+        bar.setPadding(bp, Ui.dp(this, 6), bp, Ui.dp(this, 6));
+        bar.setBackgroundColor(Ui.bgAlpha(88));
 
-        LinearLayout titles = new LinearLayout(this);
-        titles.setOrientation(LinearLayout.VERTICAL);
-        TextView t = Ui.text(this, "本地模式", 17, Ui.TEXT, true);
-        subtitle = Ui.text(this, "", 11.5f, Ui.DIM, false);
-        titles.addView(t);
-        titles.addView(subtitle);
-        bar.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout identity = Ui.column(this, 0);
+        TextView title = Ui.text(this, "小鱼", 22, Ui.TEXT, true);
+        title.setTypeface(Typeface.create("serif", Typeface.BOLD));
+        identity.addView(title);
+        subtitle = Ui.text(this, "本机独立聊天", 12, Ui.DIM, false);
+        identity.addView(subtitle);
+        bar.addView(identity, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2));
 
-        Button cfg = Ui.button(this, "模型设置", false);
-        cfg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        cfg.setMinHeight(Ui.dp(this, 38));
-        cfg.setOnClickListener(v -> showSettings());
-        bar.addView(cfg);
+        sessionsBtn = compactButton("会话");
+        sessionsBtn.setOnClickListener(v -> showSessions());
+        LinearLayout.LayoutParams sessionParams = Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 3);
+        sessionParams.leftMargin = Ui.dp(this, 8);
+        bar.addView(sessionsBtn, sessionParams);
+        page.addView(bar, Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
 
-        // 外观 / 背景音乐
-        Button look = Ui.button(this, "外观", false);
-        look.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        look.setMinHeight(Ui.dp(this, 38));
-        LinearLayout.LayoutParams lkp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lkp.leftMargin = Ui.dp(this, 8);
-        look.setOnClickListener(v -> showLook());
-        bar.addView(look, lkp);
+        LinearLayout modelBar = Ui.row(this);
+        modelBar.setPadding(bp, 0, bp, Ui.dp(this, 7));
+        modelBar.setBackgroundColor(Ui.bgAlpha(88));
+        modelBtn = compactButton("模型");
+        modelBtn.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        modelBtn.setOnClickListener(v -> showSessionModel());
+        modelBar.addView(modelBtn, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        page.addView(bar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        thinkingBtn = compactButton("思考");
+        thinkingBtn.setOnClickListener(v -> showSessionThinking());
+        LinearLayout.LayoutParams thinkParams = Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0);
+        thinkParams.leftMargin = Ui.dp(this, 8);
+        modelBar.addView(thinkingBtn, thinkParams);
+        page.addView(modelBar, Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0));
 
         // ---- 消息区 ----
         scroll = new ScrollView(this);
@@ -209,68 +322,102 @@ public class LocalChatActivity extends Activity {
         page.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // ---- 输入条 ----
-        LinearLayout bar2 = new LinearLayout(this);
-        bar2.setOrientation(LinearLayout.HORIZONTAL);
+        // ---- 输入区与快捷入口 ----
+        LinearLayout composer = Ui.column(this, 0);
+        composer.setPadding(bp, Ui.dp(this, 8), bp, Ui.dp(this, 6));
+        composer.setBackgroundColor(Ui.bgAlpha(94));
+        LinearLayout bar2 = Ui.row(this);
         bar2.setGravity(Gravity.BOTTOM);
-        int p2 = Ui.dp(this, 10);
-        bar2.setPadding(p2, p2, p2, p2);
-        bar2.setBackgroundColor(Ui.panelAlpha(72));
 
         input = new EditText(this);
         input.setHint("跟小鱼说点什么…");
-        input.setHintTextColor(0xFF6b7484);
+        input.setHintTextColor(Ui.DIM);
         input.setTextColor(Ui.TEXT);
-        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        input.setBackground(Ui.roundStroke(0xCC0b0e13, Ui.LINE, 10, this));
-        int ip = Ui.dp(this, 12);
-        input.setPadding(ip, Ui.dp(this, 10), ip, Ui.dp(this, 10));
+        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        input.setBackground(Ui.roundStroke(Ui.PANEL, Ui.LINE, 14, this));
+        int ip = Ui.dp(this, 14);
+        input.setPadding(ip, Ui.dp(this, 12), ip, Ui.dp(this, 12));
+        input.setMinHeight(Ui.dp(this, 50));
         input.setMaxLines(5);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         bar2.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         sendBtn = Ui.button(this, "发送", true);
-        LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sendBtn.setMinHeight(Ui.dp(this, 50));
+        sendBtn.setMinWidth(Ui.dp(this, 66));
+        LinearLayout.LayoutParams sbp = Ui.lp(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0);
         sbp.leftMargin = Ui.dp(this, 8);
         bar2.addView(sendBtn, sbp);
-        sendBtn.setOnClickListener(v -> send());
+        sendBtn.setOnClickListener(v -> {
+            if (activeTurn == null) send();
+            else stopTurn();
+        });
+        composer.addView(bar2, Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
 
-        page.addView(bar2, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout shortcuts = Ui.row(this);
+        addShortcut(shortcuts, "导入文本", this::pickTextDocument);
+        addShortcut(shortcuts, "工具", this::showLocalTools);
+        addShortcut(shortcuts, "设置", this::showLocalSettings);
+        addShortcut(shortcuts, "连接电脑", this::connectDesktop);
+        LinearLayout.LayoutParams shortcutParams = Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0);
+        shortcutParams.topMargin = Ui.dp(this, 5);
+        composer.addView(shortcuts, shortcutParams);
+        page.addView(composer, Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 0));
 
         // 组装：视频层 + 压暗层 + 聊天内容，三层从下往上摞
         root.addView(page, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        startVideoBackdrop();   // 它自己会把自己插到 root 的第 0 层（压在 page 底下）
+        startVideoBackdrop();
         setContentView(root);
     }
 
-    /** 把一整段对话重画一遍。条数不多（就一段聊天），全量重画最省事也最不容易错。 */
+    private Button compactButton(String text) {
+        Button button = Ui.button(this, text, false);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        button.setMinWidth(0);
+        button.setMinHeight(Ui.dp(this, 44));
+        button.setPadding(Ui.dp(this, 9), Ui.dp(this, 6), Ui.dp(this, 9), Ui.dp(this, 6));
+        button.setSingleLine(true);
+        button.setEllipsize(TextUtils.TruncateAt.END);
+        return button;
+    }
+
+    private void addShortcut(LinearLayout row, String label, Runnable action) {
+        Button button = compactButton(label);
+        button.setSingleLine(false);
+        button.setMaxLines(2);
+        button.setPadding(Ui.dp(this, 2), Ui.dp(this, 4), Ui.dp(this, 2), Ui.dp(this, 4));
+        button.setBackground(Ui.round(Ui.bgAlpha(70), 8, this));
+        button.setOnClickListener(v -> action.run());
+        row.addView(button, Ui.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+    }
+
+    /** 切换会话时重画历史，流式回复只更新自己的气泡。 */
     private void render() {
         list.removeAllViews();
+        JSONArray msgs = activeSession.messages;
 
         if (msgs.length() == 0) {
-            // 空状态这几行直接压在视频上，字会糊在画面里 —— 套一层半透明底再放
-            TextView empty = Ui.text(this,
-                    "这里不连电脑，也不会念记忆。\n"
-                            + "点右上角「模型设置」填上接口地址、密钥和模型名就能用。\n\n"
-                            + "要记忆、要工具、要连着电脑那套会话，回上一页连电脑。",
-                    13, 0xFF98a2b3, false);
-            empty.setGravity(Gravity.CENTER);
-            empty.setLineSpacing(Ui.dp(this, 5), 1f);
-            int ep = Ui.dp(this, 20);
-            empty.setPadding(ep, Ui.dp(this, 18), ep, Ui.dp(this, 18));
-            empty.setBackground(Ui.round(0xB80b0e13, 14, this));
-
-            LinearLayout wrap = new LinearLayout(this);
-            wrap.setOrientation(LinearLayout.VERTICAL);
-            int wp = Ui.dp(this, 28);
-            wrap.setPadding(wp, Ui.dp(this, 40), wp, wp);
-            wrap.addView(empty, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            list.addView(wrap);
+            boolean needsKey = sp.getString(K_KEY, "").trim().isEmpty();
+            LinearLayout empty = Ui.column(this, 16);
+            empty.setBackground(Ui.round(Ui.bgAlpha(82), 16, this));
+            TextView headline = Ui.text(this, needsKey ? "先配置聊天模型" : "开启对话", 19, Ui.TEXT, true);
+            empty.addView(headline);
+            TextView guidance = Ui.text(this, needsKey ? "添加接口地址和密钥后即可聊天。"
+                    : "在下方输入消息，或导入文本。", 14, Ui.DIM, false);
+            guidance.setPadding(0, Ui.dp(this, 5), 0, 0);
+            empty.addView(guidance);
+            if (needsKey) {
+                Button configure = compactButton("模型设置");
+                configure.setOnClickListener(v -> showSettings());
+                empty.addView(configure, Ui.lpMT(ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 10, this));
+            }
+            list.addView(empty, Ui.lpMT(ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 16, this));
         } else {
             for (int i = 0; i < msgs.length(); i++) {
                 JSONObject m = msgs.optJSONObject(i);
@@ -282,15 +429,72 @@ public class LocalChatActivity extends Activity {
             }
         }
 
-        String model = sp.getString(K_MODEL, DEFAULT_MODEL);
-        String base = sp.getString(K_BASE, DEFAULT_BASE);
-        subtitle.setText(hostOf(base) + " · " + model);
-
+        updateHeader();
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 
+    private void updateHeader() {
+        String label = sessionLabel(activeSession, sessions.indexOf(activeSession));
+        sessionsBtn.setText(label.startsWith("会话 ") ? label + " ▾" : "会话 · " + label + " ▾");
+        sessionsBtn.setContentDescription("切换会话，当前：" + label);
+        String model = modelFor(activeSession);
+        String base = sp.getString(K_BASE, DEFAULT_BASE);
+        ThinkingSupport support = thinkingSupport(base, model);
+        ThinkingLevel thinking = support.validate(activeSession.thinking);
+        subtitle.setText(storeReadOnly ? "存档只读" : "本机独立聊天");
+        subtitle.setContentDescription(storeReadOnly ? "旧存档无法读取，本次聊天不会覆盖它"
+                : "本机独立聊天，模型接口 " + hostOf(base));
+        modelBtn.setText("模型 · " + model + " ▾");
+        modelBtn.setContentDescription("切换当前会话模型，当前：" + model);
+        thinkingBtn.setVisibility(support == ThinkingSupport.NONE ? View.GONE : View.VISIBLE);
+        thinkingBtn.setText("思考 · " + thinking.label + " ▾");
+        thinkingBtn.setContentDescription("切换当前会话思考档位，当前：" + thinking.label);
+    }
+
+    private static String sessionLabel(Session session, int index) {
+        for (int i = 0; i < session.messages.length(); i++) {
+            JSONObject message = session.messages.optJSONObject(i);
+            if (message == null || !"user".equals(message.optString("role"))) continue;
+            String text = message.optString("content", "").replaceAll("\\s+", " ").trim();
+            if (text.isEmpty()) continue;
+            int limit = Math.min(24, text.codePointCount(0, text.length()));
+            int end = text.offsetByCodePoints(0, limit);
+            return end == text.length() ? text : text.substring(0, end) + "…";
+        }
+        return "会话 " + (index + 1);
+    }
+
+    private void showSessions() {
+        if (activeTurn != null) return;
+        String[] labels = new String[sessions.size()];
+        for (int i = 0; i < labels.length; i++) labels[i] = sessionLabel(sessions.get(i), i);
+        new AlertDialog.Builder(this)
+                .setTitle("本地会话")
+                .setSingleChoiceItems(labels, sessions.indexOf(activeSession), (d, index) -> {
+                    d.dismiss();
+                    if (activeTurn == null) selectSession(sessions.get(index));
+                })
+                .setPositiveButton("新建", (d, w) -> {
+                    if (activeTurn != null) return;
+                    Session session = new Session(UUID.randomUUID().toString(), new JSONArray());
+                    sessions.add(session);
+                    selectSession(session);
+                })
+                .setNeutralButton("清空当前", (d, w) -> confirmClear())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void selectSession(Session session) {
+        if (session == activeSession) return;
+        activeSession = session;
+        input.setText("");
+        save();
+        render();
+    }
+
     /** 一条气泡。user 靠右、assistant 靠左，error 是提示（不算对话内容）。 */
-    private void addBubble(String role, String content) {
+    private TextView addBubble(String role, String content) {
         boolean me = "user".equals(role);
         boolean err = "error".equals(role);
 
@@ -322,11 +526,136 @@ public class LocalChatActivity extends Activity {
 
         list.addView(rowWrap, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return b;
     }
 
     // ────────────────────────────── 模型设置 ──────────────────────────────
 
+    private String defaultModel() {
+        String model = sp.getString(K_MODEL, DEFAULT_MODEL).trim();
+        return model.isEmpty() ? DEFAULT_MODEL : model;
+    }
+
+    private String modelFor(Session session) {
+        return session.modelOverride.isEmpty() ? defaultModel() : session.modelOverride;
+    }
+
+    private void showSessionModel() {
+        if (activeTurn != null) return;
+        Session target = activeSession;
+        EditText field = Ui.input(this, defaultModel(), true);
+        field.setText(target.modelOverride);
+        field.setSelectAllOnFocus(true);
+        LinearLayout form = Ui.column(this, 18);
+        form.addView(field, Ui.lp(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 0));
+        new AlertDialog.Builder(this)
+                .setTitle("当前会话模型")
+                .setMessage("填写当前接口支持的模型 ID。留空时跟随默认模型。")
+                .setView(form)
+                .setPositiveButton("保存", (d, w) -> setSessionModel(target, field.getText().toString().trim()))
+                .setNeutralButton("用默认模型", (d, w) -> setSessionModel(target, ""))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void setSessionModel(Session target, String modelOverride) {
+        if (activeTurn != null || activeSession != target || target.modelOverride.equals(modelOverride)) return;
+        String previousModel = modelFor(target);
+        target.modelOverride = modelOverride;
+        if (!previousModel.equals(modelFor(target))) target.thinking = ThinkingLevel.DEFAULT;
+        save();
+        updateHeader();
+    }
+
+    private void showSessionThinking() {
+        if (activeTurn != null) return;
+        Session target = activeSession;
+        String base = sp.getString(K_BASE, DEFAULT_BASE);
+        String model = modelFor(target);
+        ThinkingSupport support = thinkingSupport(base, model);
+        if (support == ThinkingSupport.NONE) return;
+        ThinkingLevel current = support.validate(target.thinking);
+        String[] labels = new String[support.options.length + 1];
+        labels[0] = ThinkingLevel.DEFAULT.label;
+        int selected = 0;
+        for (int i = 0; i < support.options.length; i++) {
+            ThinkingLevel option = support.options[i];
+            labels[i + 1] = option.label;
+            if (option == current) selected = i + 1;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("当前会话思考档位")
+                .setSingleChoiceItems(labels, selected, (d, index) -> {
+                    d.dismiss();
+                    if (activeTurn != null || activeSession != target) return;
+                    target.thinking = index == 0 ? ThinkingLevel.DEFAULT : support.options[index - 1];
+                    save();
+                    updateHeader();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showLocalTools() {
+        new AlertDialog.Builder(this)
+                .setTitle("本机工具")
+                .setItems(new CharSequence[]{"本机记忆", "导入文本"}, (dialog, which) -> {
+                    if (which == 0) showLocalMemory();
+                    else pickTextDocument();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showLocalSettings() {
+        new AlertDialog.Builder(this)
+                .setTitle("设置")
+                .setItems(new CharSequence[]{"模型设置", "外观与背景"}, (dialog, which) -> {
+                    if (which == 0) showSettings();
+                    else showLook();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void connectDesktop() {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.putExtra(MainActivity.EXTRA_CONNECT_FROM_LOCAL, true);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(intent);
+    }
+
+    private void showLocalMemory() {
+        EditText note = new EditText(this);
+        note.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        note.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(LOCAL_MEMORY_LIMIT)});
+        note.setMinLines(4);
+        note.setGravity(Gravity.TOP);
+        note.setHint("写下希望小鱼记住的偏好或背景");
+        note.setText(sp.getString(K_LOCAL_MEMORY, ""));
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        int pad = Ui.dp(this, 20);
+        form.setPadding(pad, 0, pad, 0);
+        form.addView(note, new LinearLayout.LayoutParams(-1, -2));
+        CheckBox sendMemory = new CheckBox(this);
+        sendMemory.setText("随消息发给当前模型");
+        sendMemory.setChecked(sp.getBoolean(K_SEND_LOCAL_MEMORY, false));
+        form.addView(sendMemory);
+        new AlertDialog.Builder(this)
+                .setTitle("本机记忆")
+                .setMessage("独立会话共用。默认不发送给模型，但可能随系统备份或迁移。勾选后会随每轮消息发给当前配置的模型。留空保存即可清空，请勿填写密钥。")
+                .setView(form)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", (dialog, which) -> sp.edit()
+                        .putString(K_LOCAL_MEMORY, note.getText().toString().trim())
+                        .putBoolean(K_SEND_LOCAL_MEMORY, sendMemory.isChecked()).apply())
+                .show();
+    }
+
     private void showSettings() {
+        if (activeTurn != null) return;
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         int p = Ui.dp(this, 18);
@@ -346,7 +675,7 @@ public class LocalChatActivity extends Activity {
         col.addView(eBase);
         col.addView(label("密钥"));
         col.addView(eKey);
-        col.addView(label("模型名"));
+        col.addView(label("默认模型名"));
         col.addView(eModel);
         col.addView(label("人设 / 系统提示（可留空）"));
         col.addView(eSys);
@@ -375,16 +704,27 @@ public class LocalChatActivity extends Activity {
                     if (base.isEmpty()) base = DEFAULT_BASE;
                     String model = eModel.getText().toString().trim();
                     if (model.isEmpty()) model = DEFAULT_MODEL;
+                    boolean endpointChanged = !chatUrl(base).equals(chatUrl(sp.getString(K_BASE, DEFAULT_BASE)));
+                    boolean defaultChanged = !model.equals(defaultModel());
+                    boolean resetThinking = false;
+                    for (Session session : sessions) {
+                        if (session.thinking != ThinkingLevel.DEFAULT
+                                && (endpointChanged || (defaultChanged && session.modelOverride.isEmpty()))) {
+                            session.thinking = ThinkingLevel.DEFAULT;
+                            resetThinking = true;
+                        }
+                    }
+                    if (resetThinking) save();
                     sp.edit()
                             .putString(K_BASE, base)
                             .putString(K_KEY, eKey.getText().toString().trim())
                             .putString(K_MODEL, model)
                             .putString(K_SYS, eSys.getText().toString().trim())
                             .apply();
-                    render();
+                    if (activeSession.messages.length() == 0) render();
+                    else updateHeader();
                     Toast.makeText(this, "存好了", Toast.LENGTH_SHORT).show();
                 })
-                .setNeutralButton("清空对话", (d, which) -> confirmClear())
                 .setNegativeButton("取消", null)
                 .show();
     }
@@ -409,7 +749,7 @@ public class LocalChatActivity extends Activity {
 
         // ---- 视频背景 ----
         final CheckBox cvOn = new CheckBox(this);
-        cvOn.setText("播视频背景");
+        cvOn.setText("显示聊天背景");
         cvOn.setTextColor(Ui.TEXT);
         cvOn.setChecked(sp.getBoolean(K_VIDEO_ON, true));
         col.addView(cvOn);
@@ -418,7 +758,7 @@ public class LocalChatActivity extends Activity {
         videoNow.setLineSpacing(Ui.dp(this, 3), 1f);
         col.addView(videoNow);
 
-        col.addView(label("背景暗度"));
+        col.addView(label("自选视频暗度"));
         final SeekBar veilBar = new SeekBar(this);
         veilBar.setMax(100);
         veilBar.setProgress(sp.getInt(K_VEIL, 85));
@@ -438,7 +778,7 @@ public class LocalChatActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         dvp.leftMargin = Ui.dp(this, 8);
         defV.setOnClickListener(v -> {
-            // 删掉自己挑的那段，退回 APK 自带的
+            // 退出自选视频，恢复默认的鲸鱼娘立绘。
             String old = sp.getString(K_VIDEO_FILE, "");
             if (!TextUtils.isEmpty(old)) {
                 try {
@@ -593,8 +933,9 @@ public class LocalChatActivity extends Activity {
         if (tv == null) return;
         String f = sp.getString(K_VIDEO_FILE, "");
         boolean on = sp.getBoolean(K_VIDEO_ON, true);
-        String name = TextUtils.isEmpty(f) ? "自带的壁纸视频" : new File(f).getName();
-        tv.setText(on ? "现在放的是：" + name : "已关闭。上次放的是：" + name);
+        File custom = TextUtils.isEmpty(f) ? null : new File(f);
+        String name = custom != null && custom.isFile() && custom.length() > 0 ? custom.getName() : "鲸鱼娘";
+        tv.setText(on ? "当前背景：" + name : "背景已关闭");
     }
 
     /**
@@ -729,27 +1070,20 @@ public class LocalChatActivity extends Activity {
         }
     }
 
-    /** 现在该播哪个视频文件：自己挑的优先，否则 APK 自带的 */
+    /** 自选视频不存在时，显示内置鲸鱼娘立绘。 */
     private File pickVideoFile() {
-        String f = sp.getString(K_VIDEO_FILE, "");
-        if (!TextUtils.isEmpty(f)) {
-            File mine = new File(f);
-            if (mine.exists() && mine.length() > 0) return mine;
-            // 挑的那段被删了：悄悄退回自带的，别弹框
-        }
-        return assetToCache(ASSET_BUNDLED_VIDEO);
+        String path = sp.getString(K_VIDEO_FILE, "");
+        if (TextUtils.isEmpty(path)) return null;
+        File file = new File(path);
+        return file.isFile() && file.length() > 0 ? file : null;
     }
 
-    /**
-     * 铺上视频背景。以前这里是空的，还留了一句「视频不在手机上」——
-     * 那是 0.9.11 之前的事：现在 bg-video.mp4 就打进 APK 里（连接页一直在用），
-     * 本地模式当然也该有。原生的 SurfaceView + MediaPlayer，跟连接页同一套写法。
-     *
-     * 失败一律静默降级成纯色底：背景是装饰，不能因为它崩了聊天。
-     */
+    /** 背景默认使用立绘，用户选过视频时再启动播放器。 */
     private void startVideoBackdrop() {
         stopVideoBackdrop();
-        if (!sp.getBoolean(K_VIDEO_ON, true)) return;
+        boolean backgroundOn = sp.getBoolean(K_VIDEO_ON, true);
+        whaleBg.setVisibility(backgroundOn ? View.VISIBLE : View.GONE);
+        if (!backgroundOn) return;
 
         try {
             final File vfile = pickVideoFile();
@@ -806,8 +1140,8 @@ public class LocalChatActivity extends Activity {
 
             videoSurface = sv;
             videoMp = mp;
-            // 插到第 0 层：page 早就加进 root 了，不指定 index 的话视频会盖住整个聊天
-            root.addView(sv, 0, new FrameLayout.LayoutParams(
+            // 自选视频盖住默认立绘，聊天内容仍在最上层。
+            root.addView(sv, 1, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         } catch (Throwable e) {
             videoSurface = null;
@@ -905,6 +1239,121 @@ public class LocalChatActivity extends Activity {
     }
 
     private static final int REQ_MUSIC = 4301;
+    private static final int REQ_TEXT = 4303;
+    private static final int IMPORT_LIMIT_BYTES = 32 * 1024;
+    private static final String STATE_TEXT_PICKER_SESSION = "textPickerSession";
+    private Session textImportTarget;
+    private boolean textPickerOpen;
+    private TextImport textImport;
+    private static final int TEXT_IMPORT_TIMEOUT_MS = 20_000;
+    private static final java.util.concurrent.ExecutorService TEXT_IMPORT_READERS =
+            new java.util.concurrent.ThreadPoolExecutor(0, 2, 30, java.util.concurrent.TimeUnit.SECONDS,
+                    new java.util.concurrent.SynchronousQueue<>());
+
+    private static final class TextImport {
+        java.util.concurrent.Future<?> reader;
+        AlertDialog dialog;
+        Runnable timeout;
+    }
+
+    private void pickTextDocument() {
+        if (activeTurn != null || textImportTarget != null) {
+            Toast.makeText(this, "请等当前操作结束后再导入", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/*");
+        textImportTarget = activeSession;
+        textPickerOpen = true;
+        try {
+            startActivityForResult(intent, REQ_TEXT);
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            textPickerOpen = false;
+            textImportTarget = null;
+            Toast.makeText(this, "无法打开系统文件选择器", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    static String readImportedText(InputStream in) throws IOException {
+        if (in == null) throw new IOException("文件无法打开");
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        byte[] chunk = new byte[4096];
+        for (int count; (count = in.read(chunk)) != -1; ) {
+            if (count > IMPORT_LIMIT_BYTES - bytes.size()) throw new IOException("文件超过 32 KiB");
+            bytes.write(chunk, 0, count);
+        }
+        String text = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes.toByteArray())).toString();
+        if (text.startsWith("\uFEFF")) text = text.substring(1);
+        if (text.indexOf('\0') >= 0 || text.trim().isEmpty()) throw new IOException("文件为空或不是有效文本");
+        return text;
+    }
+
+    private void importText(android.net.Uri uri, Session target) {
+        TextImport job = new TextImport();
+        textImport = job;
+        job.timeout = () -> {
+            if (finishTextImport(job, true)) {
+                Toast.makeText(this, "读取超时，请重试或选择本地文件", Toast.LENGTH_LONG).show();
+            }
+        };
+        job.dialog = new AlertDialog.Builder(this)
+                .setTitle("正在读取文本")
+                .setNegativeButton("取消", (dialog, which) -> finishTextImport(job, true))
+                .setOnCancelListener(dialog -> finishTextImport(job, true))
+                .show();
+        ui.postDelayed(job.timeout, TEXT_IMPORT_TIMEOUT_MS);
+        android.content.ContentResolver resolver = getContentResolver();
+        try {
+            job.reader = TEXT_IMPORT_READERS.submit(() -> {
+                String text;
+                try (InputStream in = resolver.openInputStream(uri)) {
+                    text = readImportedText(in);
+                } catch (IOException | RuntimeException e) {
+                    ui.post(() -> {
+                        if (!finishTextImport(job, false) || isFinishing() || isDestroyed()
+                                || activeSession != target) return;
+                        String hint = e instanceof java.nio.charset.CharacterCodingException
+                                ? "只支持 UTF-8 文本" : (e instanceof SecurityException ? "没有读取权限" : e.getMessage());
+                        Toast.makeText(this, "导入失败：" + (hint == null ? "文件无法读取" : hint), Toast.LENGTH_LONG).show();
+                    });
+                    return;
+                }
+                ui.post(() -> {
+                    if (finishTextImport(job, false)) previewImportedText(target, text);
+                });
+            });
+        } catch (java.util.concurrent.RejectedExecutionException busy) {
+            finishTextImport(job, false);
+            Toast.makeText(this, "文件提供方仍在读取，请稍后重试", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean finishTextImport(TextImport job, boolean cancel) {
+        if (job == null || textImport != job) return false;
+        textImport = null;
+        textImportTarget = null;
+        ui.removeCallbacks(job.timeout);
+        if (cancel && job.reader != null) job.reader.cancel(true);
+        job.dialog.dismiss();
+        return true;
+    }
+
+    private void previewImportedText(Session target, String text) {
+        if (isFinishing() || isDestroyed() || target != activeSession || activeTurn != null) return;
+        int end = text.offsetByCodePoints(0, Math.min(600, text.codePointCount(0, text.length())));
+        new AlertDialog.Builder(this)
+                .setTitle("导入文本预览")
+                .setMessage(text.substring(0, end) + (end < text.length() ? "\n…（仅显示开头）" : "")
+                        + "\n\n插入后可以编辑。只有点发送，文本才会随消息发送给当前模型。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("插入草稿", (dialog, which) -> {
+                    if (target != activeSession || activeTurn != null) return;
+                    if (input.length() > 0) input.append("\n\n");
+                    input.append(text);
+                    input.setSelection(input.length());
+                }).show();
+    }
 
     /** 选一首手机里的歌，拷进 App 私有目录再播（换了手机也还在，除非卸载） */
     private void pickMusic() {
@@ -921,6 +1370,20 @@ public class LocalChatActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_TEXT) {
+            textPickerOpen = false;
+            Session target = textImportTarget;
+            if (res == RESULT_OK && target != null && target == activeSession
+                    && data != null && data.getData() != null) {
+                importText(data.getData(), target);
+            } else {
+                textImportTarget = null;
+                if (res == RESULT_OK) {
+                    Toast.makeText(this, "无法确认导入目标，请重新选择文件", Toast.LENGTH_SHORT).show();
+                }
+            }
+            return;
+        }
         if (res != RESULT_OK || data == null || data.getData() == null) return;
         if (req == REQ_VIDEO) {
             onPickedVideo(data);
@@ -963,6 +1426,9 @@ public class LocalChatActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        finishTextImport(textImport, true);
+        cancelActiveTurn();
+        ui.removeCallbacksAndMessages(null);
         stopMusic();
         stopVideoBackdrop();
         super.onDestroy();
@@ -978,11 +1444,14 @@ public class LocalChatActivity extends Activity {
     }
 
     private void confirmClear() {
+        if (activeTurn != null) return;
+        Session target = activeSession;
         new AlertDialog.Builder(this)
-                .setTitle("清空对话")
-                .setMessage("这段聊天记录会删掉，删了找不回来。模型设置不动。")
+                .setTitle("清空当前会话")
+                .setMessage("只清空这个会话的聊天记录；其他会话和模型设置不受影响。")
                 .setPositiveButton("清空", (d, w) -> {
-                    while (msgs.length() > 0) msgs.remove(0);
+                    if (activeTurn != null || activeSession != target) return;
+                    target.messages = new JSONArray();
                     save();
                     render();
                 })
@@ -993,140 +1462,294 @@ public class LocalChatActivity extends Activity {
     // ────────────────────────────── 发消息 ──────────────────────────────
 
     private void send() {
-        if (busy) return;
-        final String text = input.getText().toString().trim();
+        if (activeTurn != null) return;
+        String text = input.getText().toString().trim();
         if (text.isEmpty()) return;
 
-        String key = sp.getString(K_KEY, "");
-        if (TextUtils.isEmpty(key)) {
-            Toast.makeText(this, "先去右上角「模型设置」填密钥", Toast.LENGTH_LONG).show();
+        String key = sp.getString(K_KEY, "").trim();
+        if (key.isEmpty()) {
+            Toast.makeText(this, "请先填写模型密钥", Toast.LENGTH_LONG).show();
             showSettings();
             return;
         }
 
-        input.setText("");
+        String base = sp.getString(K_BASE, DEFAULT_BASE);
+        String url = chatUrl(base);
+        String sys = sp.getString(K_SYS, "").trim();
+        Session target = activeSession;
+        String model = modelFor(target);
+        ThinkingSupport support = thinkingSupport(base, model);
+        Turn turn;
         try {
-            msgs.put(new JSONObject().put("role", "user").put("content", text));
-        } catch (Exception ignore) {
+            JSONArray requestMessages = new JSONArray();
+            String memory = sp.getBoolean(K_SEND_LOCAL_MEMORY, false)
+                    ? sp.getString(K_LOCAL_MEMORY, "").trim() : "";
+            String systemContext = sys;
+            if (!memory.isEmpty()) {
+                systemContext += (systemContext.isEmpty() ? "" : "\n\n") + "用户手动填写的本机记忆：\n" + memory;
+            }
+            if (!systemContext.isEmpty()) {
+                requestMessages.put(new JSONObject().put("role", "system").put("content", systemContext));
+            }
+            for (int i = 0; i < target.messages.length(); i++) requestMessages.put(target.messages.getJSONObject(i));
+            JSONObject user = new JSONObject().put("role", "user").put("content", text);
+            requestMessages.put(user);
+            JSONObject body = new JSONObject().put("model", model).put("messages", requestMessages).put("stream", true);
+            applyThinking(body, support, target.thinking);
+            turn = new Turn(target, url, key, body.toString().getBytes(StandardCharsets.UTF_8));
+            target.messages.put(user);
+        } catch (JSONException e) {
+            Toast.makeText(this, "无法组装聊天请求", Toast.LENGTH_LONG).show();
+            return;
         }
+
+        activeTurn = turn;
+        setBusy(true);
+        input.setText("");
         save();
         render();
+        turn.bubble = addBubble("assistant", "正在等待回复…");
+        new Thread(() -> runTurn(turn), "local-chat").start();
+    }
 
-        setBusy(true);
-        final int msgCountBefore = msgs.length();
+    private void setBusy(boolean busy) {
+        sendBtn.setText(busy ? "停止" : "发送");
+        input.setEnabled(!busy);
+        sessionsBtn.setEnabled(!busy);
+        modelBtn.setEnabled(!busy);
+        thinkingBtn.setEnabled(!busy);
+    }
 
-        new Thread(() -> {
-            String reply = null;
-            String err = null;
-            try {
-                reply = askModel();
-            } catch (Exception e) {
-                err = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            }
+    private void stopTurn() {
+        Turn turn = cancelActiveTurn();
+        if (turn == null) return;
+        removeReplyBubble(turn);
+        setBusy(false);
+    }
 
-            final String fReply = reply;
-            final String fErr = err;
-            ui.post(() -> {
-                setBusy(false);
-                if (fReply != null) {
-                    try {
-                        msgs.put(new JSONObject().put("role", "assistant").put("content", fReply));
-                    } catch (Exception ignore) {
-                    }
-                    save();
-                    render();
-                } else {
-                    // 报错不塞进对话里 —— 那不是「小鱼说的话」，重进的时候也不该被当历史
-                    addBubble("error", "⚠ " + fErr);
-                    scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
-                    if (msgs.length() > msgCountBefore) {
-                        // 用户那条留着，方便点完「模型设置」再重发
-                    }
+    private Turn cancelActiveTurn() {
+        Turn turn = activeTurn;
+        if (turn == null) return null;
+        turn.cancelled = true;
+        activeTurn = null;
+        HttpURLConnection connection = turn.connection;
+        if (connection != null) {
+            // disconnect 可能等待网络流关闭，不能阻塞界面线程。
+            new Thread(connection::disconnect, "local-chat-cancel").start();
+        }
+        return turn;
+    }
+
+    private boolean isCurrentTurn(Turn turn) {
+        return !turn.cancelled && activeTurn == turn && activeSession == turn.session && !isFinishing();
+    }
+
+    private void updateReply(Turn turn, String reply) {
+        boolean atBottom = !scroll.canScrollVertically(1);
+        turn.bubble.setText(reply);
+        if (atBottom) scroll.post(() -> {
+            if (!turn.cancelled && activeSession == turn.session) scroll.fullScroll(View.FOCUS_DOWN);
+        });
+    }
+
+    private void removeReplyBubble(Turn turn) {
+        View bubbleRow = (View) turn.bubble.getParent().getParent();
+        list.removeView(bubbleRow);
+    }
+
+    private void runTurn(Turn turn) {
+        String reply = null;
+        String error = null;
+        try {
+            reply = askModel(turn, new Consumer<CharSequence>() {
+                private long lastUpdate;
+
+                @Override
+                public void accept(CharSequence text) {
+                    long now = System.nanoTime();
+                    if (turn.cancelled || (lastUpdate != 0 && now - lastUpdate < 40_000_000L)) return;
+                    lastUpdate = now;
+                    String snapshot = text.toString();
+                    ui.post(() -> {
+                        if (isCurrentTurn(turn)) updateReply(turn, snapshot);
+                    });
                 }
             });
-        }, "local-chat").start();
-    }
-
-    private void setBusy(boolean b) {
-        busy = b;
-        sendBtn.setEnabled(!b);
-        sendBtn.setText(b ? "…" : "发送");
-    }
-
-    /** 真正去请求模型。跑在后台线程，返回助手回复的正文。 */
-    private String askModel() throws Exception {
-        String base = sp.getString(K_BASE, DEFAULT_BASE).trim();
-        String key = sp.getString(K_KEY, "").trim();
-        String model = sp.getString(K_MODEL, DEFAULT_MODEL).trim();
-        String sys = sp.getString(K_SYS, "").trim();
-
-        String url = base;
-        while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
-        if (!url.endsWith("/chat/completions")) url = url + "/chat/completions";
-
-        JSONArray arr = new JSONArray();
-        if (!sys.isEmpty()) arr.put(new JSONObject().put("role", "system").put("content", sys));
-        for (int i = 0; i < msgs.length(); i++) {
-            JSONObject m = msgs.optJSONObject(i);
-            if (m == null) continue;
-            // 屏幕上可能画过 error 气泡，但那些不进 msgs，这里不用筛
-            arr.put(m);
-        }
-
-        JSONObject body = new JSONObject();
-        body.put("model", model);
-        body.put("messages", arr);
-        body.put("stream", false);
-
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setRequestMethod("POST");
-        c.setConnectTimeout(20000);
-        c.setReadTimeout(180000);
-        c.setDoOutput(true);
-        c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        c.setRequestProperty("Authorization", "Bearer " + key);
-        c.setRequestProperty("Accept", "application/json");
-
-        byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
-        c.setFixedLengthStreamingMode(payload.length);
-        try (OutputStream os = c.getOutputStream()) {
-            os.write(payload);
-        }
-
-        int code = c.getResponseCode();
-        String raw = readAll(code >= 400 ? c.getErrorStream() : c.getInputStream());
-
-        if (code >= 400) {
-            String brief = raw == null ? "" : raw.replaceAll("\\s+", " ").trim();
-            if (brief.length() > 300) brief = brief.substring(0, 300) + "…";
-            throw new Exception("接口返回 " + code + (brief.isEmpty() ? "" : "：" + brief));
-        }
-
-        JSONObject j = new JSONObject(raw == null ? "{}" : raw);
-        JSONArray choices = j.optJSONArray("choices");
-        if (choices == null || choices.length() == 0) {
-            throw new Exception("接口没回内容：" + (raw == null ? "" : raw.substring(0, Math.min(200, raw.length()))));
-        }
-        JSONObject msg = choices.getJSONObject(0).optJSONObject("message");
-        if (msg == null) throw new Exception("接口回的格式不认识");
-        String content = msg.optString("content", "");
-        if (TextUtils.isEmpty(content)) {
-            // 推理模型（deepseek-reasoner / qwq 之类）有时只给 reasoning_content
-            content = msg.optString("reasoning_content", "");
-        }
-        if (TextUtils.isEmpty(content)) throw new Exception("模型这次没说话，再点一次试试");
-        return content;
-    }
-
-    private static String readAll(InputStream in) {
-        if (in == null) return "";
-        try (InputStream i = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = i.read(buf)) > 0) out.write(buf, 0, n);
-            return new String(out.toByteArray(), StandardCharsets.UTF_8);
         } catch (Exception e) {
-            return "";
+            error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        }
+        if (turn.cancelled) return;
+        String finalReply = reply;
+        String finalError = error;
+        ui.post(() -> finishTurn(turn, finalReply, finalError));
+    }
+
+    private void finishTurn(Turn turn, String reply, String error) {
+        if (!isCurrentTurn(turn)) return;
+        activeTurn = null;
+        setBusy(false);
+        if (reply != null) {
+            try {
+                turn.session.messages.put(new JSONObject().put("role", "assistant").put("content", reply));
+                updateReply(turn, reply);
+                save();
+                return;
+            } catch (JSONException e) {
+                error = "无法保存模型回复";
+            }
+        }
+        // 未完成的回复不进入历史或下一次模型上下文。
+        boolean atBottom = !scroll.canScrollVertically(1);
+        removeReplyBubble(turn);
+        addBubble("error", "回复未完成：" + error);
+        if (atBottom) scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private static String askModel(Turn turn, Consumer<CharSequence> progress) throws Exception {
+        turn.throwIfCancelled();
+        HttpURLConnection c = (HttpURLConnection) new URL(turn.url).openConnection();
+        turn.connection = c;
+        try {
+            turn.throwIfCancelled();
+            c.setRequestMethod("POST");
+            c.setConnectTimeout(20000);
+            c.setReadTimeout(180000);
+            c.setInstanceFollowRedirects(false);
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            c.setRequestProperty("Authorization", "Bearer " + turn.key);
+            c.setRequestProperty("Accept", "text/event-stream, application/json");
+            c.setFixedLengthStreamingMode(turn.payload.length);
+            turn.throwIfCancelled();
+            try (OutputStream os = c.getOutputStream()) {
+                turn.throwIfCancelled();
+                os.write(turn.payload);
+            }
+
+            turn.throwIfCancelled();
+            int code = c.getResponseCode();
+            turn.throwIfCancelled();
+            if (code < 200 || code >= 300) {
+                String brief = "";
+                InputStream err = c.getErrorStream();
+                if (err != null) {
+                    try (InputStreamReader reader = new InputStreamReader(err, StandardCharsets.UTF_8)) {
+                        char[] buffer = new char[300];
+                        int count = reader.read(buffer);
+                        if (count > 0) brief = new String(buffer, 0, count).replaceAll("\\s+", " ").trim();
+                    }
+                }
+                throw new IOException("接口返回 " + code + (brief.isEmpty() ? "" : "：" + brief));
+            }
+            try (InputStream in = c.getInputStream()) {
+                return readReply(turn, in, progress);
+            }
+        } finally {
+            c.disconnect();
+            turn.connection = null;
+        }
+    }
+
+    private static String readReply(Turn turn, InputStream in, Consumer<CharSequence> progress) throws Exception {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+        String line = readReplyLine(turn, reader);
+        if (line != null && line.startsWith("\uFEFF")) line = line.substring(1);
+        while (line != null && line.trim().isEmpty()) line = readReplyLine(turn, reader);
+        if (line == null) throw new IOException("接口没有返回内容");
+        if (line.trim().startsWith("{")) {
+            StringBuilder json = new StringBuilder(line);
+            while ((line = readReplyLine(turn, reader)) != null) json.append('\n').append(line);
+            JSONObject choice = firstChoice(new JSONObject(json.toString()));
+            JSONObject message = choice == null ? null : choice.optJSONObject("message");
+            String content = messageText(message, "content");
+            return requireReply(content.isEmpty() ? messageText(message, "reasoning_content") : content);
+        }
+
+        StringBuilder data = new StringBuilder();
+        StringBuilder content = new StringBuilder();
+        StringBuilder reasoning = new StringBuilder();
+        while (true) {
+            if (line == null || line.isEmpty()) {
+                if (data.length() > 0) {
+                    if ("[DONE]".equals(data.toString().trim())) break;
+                    JSONObject choice = firstChoice(new JSONObject(data.toString()));
+                    if (choice != null) {
+                        JSONObject delta = choice.optJSONObject("delta");
+                        String part = messageText(delta, "content");
+                        String thought = messageText(delta, "reasoning_content");
+                        if (!part.isEmpty()) {
+                            content.append(part);
+                            progress.accept(content);
+                        } else if (content.length() == 0 && !thought.isEmpty()) {
+                            reasoning.append(thought);
+                            progress.accept(reasoning);
+                        }
+                        if (!messageText(choice, "finish_reason").isEmpty()) break;
+                    }
+                    data.setLength(0);
+                }
+                if (line == null) throw new IOException("连接在回复结束前断开，未保存这次回复");
+            } else if (line.equals("data") || line.startsWith("data:")) {
+                String value = line.equals("data") ? "" : line.substring(5);
+                if (value.startsWith(" ")) value = value.substring(1);
+                data.append(value).append('\n');
+            }
+            line = readReplyLine(turn, reader);
+        }
+        return requireReply((content.length() > 0 ? content : reasoning).toString());
+    }
+
+    private static String readReplyLine(Turn turn, BufferedReader reader) throws IOException {
+        turn.throwIfCancelled();
+        return reader.readLine();
+    }
+
+    private static JSONObject firstChoice(JSONObject event) throws IOException {
+        Object error = event.opt("error");
+        if (error != null && error != JSONObject.NULL) {
+            String message = error instanceof JSONObject ? messageText((JSONObject) error, "message") : String.valueOf(error);
+            throw new IOException(message.isEmpty() ? "模型接口返回了错误" : message.substring(0, Math.min(300, message.length())));
+        }
+        JSONArray choices = event.optJSONArray("choices");
+        return choices == null ? null : choices.optJSONObject(0);
+    }
+
+    private static String messageText(JSONObject object, String field) {
+        Object value = object == null ? null : object.opt(field);
+        return value instanceof String ? (String) value : "";
+    }
+
+    private static String requireReply(String text) throws IOException {
+        if (text.isEmpty()) throw new IOException("模型这次没有返回可显示的内容");
+        return text;
+    }
+
+    private static String chatUrl(String base) {
+        String url = base.trim();
+        while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
+        return url.endsWith("/chat/completions") ? url : url + "/chat/completions";
+    }
+
+    private static ThinkingSupport thinkingSupport(String base, String model) {
+        // 与桌面实测映射一致，只在官方端点的这个模型上提供关闭选项。
+        try {
+            URI endpoint = new URI(base.trim());
+            if ("https".equalsIgnoreCase(endpoint.getScheme())
+                    && "api.deepseek.com".equalsIgnoreCase(endpoint.getHost())
+                    && (endpoint.getPort() == -1 || endpoint.getPort() == 443)
+                    && "deepseek-flash".equals(model)) {
+                return ThinkingSupport.DEEPSEEK;
+            }
+        } catch (URISyntaxException ignored) {
+            return ThinkingSupport.NONE;
+        }
+        return ThinkingSupport.NONE;
+    }
+
+    private static void applyThinking(JSONObject body, ThinkingSupport support, ThinkingLevel selection)
+            throws JSONException {
+        if (support.validate(selection) == ThinkingLevel.OFF) {
+            body.put("thinking", new JSONObject().put("type", "disabled"));
         }
     }
 
@@ -1143,25 +1766,90 @@ public class LocalChatActivity extends Activity {
     // ────────────────────────────── 存档 ──────────────────────────────
 
     private void save() {
-        try (FileOutputStream out = new FileOutputStream(store)) {
-            out.write(msgs.toString().getBytes(StandardCharsets.UTF_8));
-        } catch (Exception ignore) {
+        if (storeReadOnly) return;
+        FileOutputStream out = null;
+        try {
+            JSONArray entries = new JSONArray();
+            for (Session session : sessions) {
+                JSONObject entry = new JSONObject().put("id", session.id).put("messages", session.messages);
+                if (!session.modelOverride.isEmpty()) entry.put("modelOverride", session.modelOverride);
+                if (session.thinking != ThinkingLevel.DEFAULT) entry.put("thinking", session.thinking.id);
+                entries.put(entry);
+            }
+            JSONObject data = new JSONObject().put("version", STORE_VERSION)
+                    .put("activeSessionId", activeSession.id).put("sessions", entries);
+            out = store.startWrite();
+            out.write(data.toString().getBytes(StandardCharsets.UTF_8));
+            store.finishWrite(out);
+        } catch (Exception e) {
+            if (out != null) store.failWrite(out);
+            Toast.makeText(this, "聊天存档写入失败", Toast.LENGTH_LONG).show();
         }
     }
 
     private void loadHistory() {
-        if (!store.exists()) return;
-        try (FileInputStream in = new FileInputStream(store)) {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-            JSONArray arr = new JSONArray(new String(out.toByteArray(), StandardCharsets.UTF_8));
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject m = arr.optJSONObject(i);
-                if (m != null) msgs.put(m);
+        try {
+            String raw = StandardCharsets.UTF_8.newDecoder()
+                    .decode(ByteBuffer.wrap(store.readFully())).toString();
+            JSONTokener input = new JSONTokener(raw);
+            Object data = input.nextValue();
+            if (input.nextClean() != 0 || input.more() || raw.indexOf('\0') >= 0) {
+                throw new JSONException("存档含无效内容");
             }
-        } catch (Exception ignore) {
+            if (data instanceof JSONArray) {
+                JSONArray messages = validateMessages((JSONArray) data);
+                activeSession = new Session(UUID.randomUUID().toString(), messages);
+                sessions.add(activeSession);
+                save();
+                return;
+            }
+            if (!(data instanceof JSONObject)) throw new JSONException("未知的存档格式");
+            JSONObject root = (JSONObject) data;
+            if (!Integer.valueOf(STORE_VERSION).equals(root.opt("version"))) {
+                throw new JSONException("未知的存档版本");
+            }
+            Object activeId = root.opt("activeSessionId");
+            JSONArray entries = root.getJSONArray("sessions");
+            List<Session> loaded = new ArrayList<>();
+            Set<String> ids = new HashSet<>();
+            Session selected = null;
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject entry = entries.getJSONObject(i);
+                Object id = entry.opt("id");
+                if (!(id instanceof String) || ((String) id).isEmpty() || !ids.add((String) id)) {
+                    throw new JSONException("无效或重复的会话编号");
+                }
+                Session session = new Session((String) id, validateMessages(entry.getJSONArray("messages")));
+                session.modelOverride = messageText(entry, "modelOverride").trim();
+                session.thinking = ThinkingLevel.fromId(messageText(entry, "thinking"));
+                loaded.add(session);
+                if (session.id.equals(activeId)) selected = session;
+            }
+            if (loaded.isEmpty()) throw new JSONException("存档没有会话");
+            sessions.addAll(loaded);
+            activeSession = selected != null ? selected : loaded.get(0);
+            return;
+        } catch (FileNotFoundException e) {
+            File base = store.getBaseFile();
+            storeReadOnly = base.exists() || new File(base.getPath() + ".bak").exists();
+        } catch (Exception e) {
+            storeReadOnly = true;
         }
+        activeSession = new Session(UUID.randomUUID().toString(), new JSONArray());
+        sessions.add(activeSession);
+        // Persist the first session before an external picker can recreate this Activity.
+        if (!storeReadOnly) save();
+    }
+
+    private static JSONArray validateMessages(JSONArray messages) throws JSONException {
+        for (int i = 0; i < messages.length(); i++) {
+            JSONObject message = messages.getJSONObject(i);
+            Object role = message.opt("role");
+            if ((!"user".equals(role) && !"assistant".equals(role))
+                    || !(message.opt("content") instanceof String)) {
+                throw new JSONException("无效的聊天消息");
+            }
+        }
+        return messages;
     }
 }

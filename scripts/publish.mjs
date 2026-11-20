@@ -2,8 +2,9 @@
  * 发布到 GitHub。
  *
  *   node scripts/publish.mjs            打包 + 提交 + 推送（有改动才提交）
- *   node scripts/publish.mjs --dry      只打包到 dist/release，不碰 git / 网络
- *   node scripts/publish.mjs --deep-scan 只做敏感信息扫描
+ *   node scripts/publish.mjs --dry      打包到新的 dist/release-*，不碰 git / 网络
+ *   node scripts/publish.mjs --deep-scan 只扫描源码树
+ *   node scripts/publish.mjs --scan-dir <目录> 只扫描指定目录（隔离测试入口）
  *
  * 规矩：
  *   - 发布物的白名单制：只带源码、素材、默认配置；.env / .state / sandbox / node_modules 一律不带。
@@ -11,12 +12,10 @@
  *   - token 从 C:\GitHub仓库\ghp.txt 或环境变量 GITHUB_TOKEN 读，绝不写进任何文件。
  */
 import {
-  existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync, readdirSync, statSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, cpSync, readdirSync, statSync,
 } from 'node:fs';
 import { join, dirname, relative, extname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { publishViaApi } from './publish-api.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -29,14 +28,8 @@ const ROOT = dirname(HERE);
  * 谁先谁后就把对方踩了（实测回归冤枉过它一次红）。给它一个自己专属的目录，
  * 从此井水不犯河水：`XY_PUBLISH_DIST=... node scripts/publish.mjs --dry`
  */
-const DIST = process.env.XY_PUBLISH_DIST
-  ? resolve(process.env.XY_PUBLISH_DIST)
-  : join(ROOT, 'dist', 'release');
+let DIST;
 const TOKEN_FILE = 'C:\\GitHub仓库\\ghp.txt';
-
-const REPO_NAME = 'xiaoyu-agent';
-const REPO_DESC = '一个自用的极简 Agent 平台：Electron 桌面版 + OpenAI 兼容 API + 工具循环。带启动自检。';
-const BRANCH = 'main';
 
 // ------------------------------------------------------------------ 白名单
 
@@ -56,13 +49,17 @@ const BRANCH = 'main';
  * （Electron 安装包那边 package.json 的 build.files 里一直有 "skills/**\/*"，
  *   所以只有「源码发布」这条路漏了 —— 两边得一致。）
  */
-const INCLUDE_DIRS = ['src', 'public', 'electron', 'persona', 'skills', 'assets', 'scripts'];
+const INCLUDE_DIRS = ['src', 'src-ui', 'public', 'electron', 'persona', 'skills', 'assets', 'scripts'];
+const MOBILE_ROOT_FILES = new Set(['mobile/build.gradle', 'mobile/settings.gradle', 'mobile/gradle.properties', 'mobile/app/build.gradle']);
+const isMobileSource = (rel) => MOBILE_ROOT_FILES.has(rel) || rel.startsWith('mobile/app/src/main/');
 
 /** 要发布的单文件 */
 const INCLUDE_FILES = [
   'package.json',
   'package-lock.json',
+  'esbuild.config.mjs',
   'README.md',
+  'CHANGELOG.md',
   'LICENSE',
   '.env.example',
   '.gitignore',
@@ -87,7 +84,7 @@ const EXCLUDE_EXT = new Set(['.log', '.bak', '.tmp', '.pyc', '.ps1.txt']);
 
 /** 文件名这些前缀/片段的，一律不发（测试探针、临时文件） */
 const EXCLUDE_PATTERNS = [
-  /^__/, /\.probe\./, /-probe\./, /^\./, /~(\d+)?$/,
+  /^__/, /^_?probe-/, /\.probe\./, /-probe\./, /^\./, /~(\d+)?$/,
   /* 【2026-11-07】自测脚本一律不发。两个理由都是硬的：
    *   ① 里面写死了本机路径（C:\\Users\\<这台机器的用户名>\\...），出门扫描会逐条命中；
    *   ② 用户拿到的是 exe，这些脚本对他毫无用处。
@@ -112,6 +109,24 @@ const EXCLUDE_PATTERNS = [
    * 现在放宽成不带连字符：_patch 开头的无论后面接 - 还是 _ 一律不发。
    * 这一串前缀的共同点都是「我干活时临时敲的工具」：都不该带着本机路径出门。 */
   /^_t_/, /^_tmp/, /^_patch/, /^_peek-/, /^_dbg/, /^_cmp/, /^_hunt/, /^gen-actor-test\.mjs$/,
+  /**
+   * 【2026-11-18 加·`_` 开头的只放行 .mjs】
+   *
+   * 上面那一串是**黑名单**（_t_ / _tmp / _patch / _dbg …），一路加下来是打地鼠：
+   * 每次发现某个临时文件漏进发布包，就补一条前缀。
+   * 这次又漏了两个，而且比上次严重：
+   *   · `_diag2.json` —— 里面是**测试会话 id 和它的 running 状态**；
+   *   · `_live.out`   —— 是**完整系统提示词的转储**（16KB）。
+   * 两个都不在 .gitignore 里（只挡了 `_*.mjs`），于是 `cpSync` 从工作区直接拷走。
+   *
+   * 换成白名单口径：`scripts/` 下 `_` 开头的文件，**只有 .mjs 才可能是基建**
+   * （_base / _cdp-connect / _cdp-port / _harness_util / _test-instance / _ui-src …），
+   * 其余扩展名（.json / .out / .txt …）一律不发 —— 那些都是跑检查时落下的现场。
+   *
+   * 为什么这条值得单独写一段：发布边界是**安全边界**，
+   * 打地鼠式黑名单在这里是错的方法 —— 漏一个就是一次泄漏。
+   */
+  /^_(?!.*\.mjs$)/,
 
   /^run-all-checks\.mjs$/,
   /* 【2026-11-08 加·名字中间带 .bak 的备份会绕过扩展名规则】
@@ -349,10 +364,10 @@ function loadLocalPersonaFragments() {
 }
 
 /** 递归列出白名单文件 */
-function collectFiles(dir = ROOT, out = []) {
+function collectFiles(baseRoot = ROOT, dir = baseRoot, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
-    const rel = relative(ROOT, p).replace(/\\/g, '/');
+    const rel = relative(baseRoot, p).replace(/\\/g, '/');
     if (EXCLUDE_NAMES.has(entry.name)) continue;
     if (PRIVATE_ONLY.includes(entry.name)) continue;
     /* 【2026-11-15 加·.trash-* 是垃圾筐，不是源码】
@@ -362,15 +377,17 @@ function collectFiles(dir = ROOT, out = []) {
     if (entry.name.startsWith('.trash')) continue;
     if (rel.split('/').some((seg) => seg.startsWith('sandbox'))) continue;
     if (entry.isDirectory()) {
-      if (rel === 'dist') continue;
-      if (INCLUDE_DIRS.includes(rel.split('/')[0]) || rel.split('/').length === 0) collectFiles(p, out);
+      if (INCLUDE_DIRS.includes(rel.split('/')[0]) || ['mobile', 'mobile/app', 'mobile/app/src', 'mobile/app/src/main'].includes(rel) || isMobileSource(rel)) {
+        collectFiles(baseRoot, p, out);
+      }
       continue;
     }
+    if (!entry.isFile() || /\.(?:jks|keystore|p12|apk|aab)$/i.test(entry.name)) continue;
     if (EXCLUDE_EXT.has(extname(entry.name).toLowerCase())) continue;
     if (EXCLUDE_PATTERNS.some((re) => re.test(entry.name))) continue;
     const top = rel.split('/')[0];
     if (rel.includes('/')) {
-      if (!INCLUDE_DIRS.includes(top)) continue;
+      if (!INCLUDE_DIRS.includes(top) && !isMobileSource(rel)) continue;
     } else {
       if (!INCLUDE_FILES.includes(rel)) continue;
     }
@@ -380,7 +397,7 @@ function collectFiles(dir = ROOT, out = []) {
 }
 
 /** 纯文本才扫 */
-const TEXT_EXT = new Set(['.mjs', '.cjs', '.js', '.json', '.md', '.html', '.css', '.bat', '.ps1', '.sh', '.example', '.txt', '.yml', '.yaml', '']);
+const TEXT_EXT = new Set(['.mjs', '.cjs', '.js', '.jsx', '.json', '.md', '.html', '.css', '.bat', '.ps1', '.sh', '.example', '.txt', '.yml', '.yaml', '.xml', '.java', '.gradle', '.properties', '']);
 
 function isText(rel) {
   const e = extname(rel).toLowerCase();
@@ -388,8 +405,8 @@ function isText(rel) {
   return basename(rel).endsWith('.example') || !e;
 }
 
-function scan(extraNames = []) {
-  const files = collectFiles();
+function scan(extraNames = [], baseRoot = ROOT) {
+  const files = collectFiles(baseRoot);
   const rules = scanRules(extraNames);
 
   // 真·私密值：整串出现就中止。转义正则特殊字符。
@@ -407,7 +424,7 @@ function scan(extraNames = []) {
     if (!isText(rel)) continue;
     let text;
     try {
-      text = readFileSync(join(ROOT, rel), 'utf8');
+      text = readFileSync(join(baseRoot, rel), 'utf8');
     } catch {
       continue;
     }
@@ -417,7 +434,7 @@ function scan(extraNames = []) {
       let m;
       while ((m = rule.re.exec(text)) !== null) {
         const line = text.slice(0, m.index).split('\n').length;
-        hits.push({ file: rel, line, rule: rule.id, why: rule.why, sample: m[0].slice(0, 80) });
+        hits.push({ file: rel, line, rule: rule.id, why: rule.why });
         if (m[0].length === 0) break;
       }
     }
@@ -482,8 +499,21 @@ desktop-shot.png
 
 /** 写发布目录 */
 function buildRelease() {
-  rmSync(DIST, { recursive: true, force: true });
-  mkdirSync(DIST, { recursive: true });
+  if (process.env.XY_PUBLISH_DIST) {
+    DIST = resolve(process.env.XY_PUBLISH_DIST);
+    // Reserve the output atomically. Never reuse, overwrite or delete an existing directory.
+    try {
+      mkdirSync(DIST);
+    } catch (err) {
+      if (err.code === 'EEXIST') throw new Error('XY_PUBLISH_DIST must name a new directory');
+      throw err;
+    }
+  } else {
+    const parent = join(ROOT, 'dist');
+    mkdirSync(parent, { recursive: true });
+    /* keep-tmp: dist/release-* 是发布产物，故意保留，跑完不清（不是漏删） */
+    DIST = mkdtempSync(join(parent, 'release-'));
+  }
 
   const files = collectFiles();
   for (const rel of files) {
@@ -503,40 +533,12 @@ function buildRelease() {
 
 // ------------------------------------------------------------------ git
 
-function git(args, opts = {}) {
-  return execFileSync('git', args, {
-    cwd: opts.cwd ?? DIST,
-    encoding: 'utf8',
-    stdio: opts.stdio ?? 'pipe',
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(opts.env ?? {}) },
-  });
-}
-
 function readToken() {
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN.trim();
   if (!existsSync(TOKEN_FILE)) return null;
   const raw = readFileSync(TOKEN_FILE, 'utf8');
   const m = raw.match(/gh[pousr]_[A-Za-z0-9]{20,}/);
   return m ? m[0] : null;
-}
-
-async function ensureRepo(token) {
-  const headers = { Authorization: `token ${token}`, 'User-Agent': 'xiaoyu-publisher', Accept: 'application/vnd.github+json' };
-  const me = await fetch('https://api.github.com/user', { headers }).then((r) => r.json());
-  if (!me.login) throw new Error('GitHub 认证失败，检查 token');
-  const owner = me.login;
-
-  const existing = await fetch(`https://api.github.com/repos/${owner}/${REPO_NAME}`, { headers });
-  if (existing.status === 200) return { owner, created: false, url: `https://github.com/${owner}/${REPO_NAME}` };
-  if (existing.status !== 404) throw new Error(`查询仓库失败 HTTP ${existing.status}`);
-
-  const created = await fetch('https://api.github.com/user/repos', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ name: REPO_NAME, description: REPO_DESC, private: false, has_issues: true, has_wiki: false, auto_init: false }),
-  }).then((r) => r.json());
-  if (!created.full_name) throw new Error('创建仓库失败：' + JSON.stringify(created).slice(0, 300));
-  return { owner, created: true, url: `https://github.com/${owner}/${REPO_NAME}` };
 }
 
 /** 变更摘要：给人看的提交信息 */
@@ -550,10 +552,25 @@ function summarizeChanges(files) {
 const argv = process.argv.slice(2);
 const DRY = argv.includes('--dry');
 const SCAN_ONLY = argv.includes('--deep-scan');
+const scanDirArg = argv.indexOf('--scan-dir');
+const SCAN_DIR = scanDirArg >= 0 ? resolve(argv[scanDirArg + 1] || '.') : null;
 
 // 本机用户名当敏感词（从环境变量推，不写死）
 const machineUser = (process.env.USERNAME || process.env.USER || '').trim();
 const extraNames = machineUser && machineUser.length >= 3 ? [machineUser] : [];
+
+// 隔离测试入口：只扫描指定目录，不打包、不清理、不提交、不联网。
+if (SCAN_DIR) {
+  const result = scan(extraNames, SCAN_DIR);
+  console.log(`扫描 ${result.files.length} 个文件…`);
+  if (result.hits.length) {
+    console.error(`发现 ${result.hits.length} 处疑似敏感信息：`);
+    for (const h of result.hits.slice(0, 40)) console.error(`  ${h.file}:${h.line} [${h.rule}]`);
+    process.exit(1);
+  }
+  console.log('敏感信息扫描通过');
+  process.exit(0);
+}
 
 // 1) 先扫，扫不干净什么都不做
 const pre = scan(extraNames);
@@ -561,7 +578,7 @@ console.log(`扫描 ${pre.files.length} 个文件…`);
 if (pre.hits.length) {
   console.error(`\n✗ 发现 ${pre.hits.length} 处疑似敏感信息，已中止发布：\n`);
   for (const h of pre.hits.slice(0, 40)) {
-    console.error(`  ${h.file}:${h.line}  [${h.rule}] ${h.why}\n    ${h.sample}`);
+    console.error(`  ${h.file}:${h.line}  [${h.rule}] ${h.why}`);
   }
   if (pre.hits.length > 40) console.error(`  …还有 ${pre.hits.length - 40} 处`);
   process.exit(1);
@@ -574,160 +591,28 @@ if (SCAN_ONLY) process.exit(0);
 const files = buildRelease();
 console.log(`✓ 打包到 ${relative(ROOT, DIST)}（${files.length} 个文件，已剔除 .env / .state / sandbox / node_modules）`);
 
-// 对发布物再扫一遍（双保险：万一 copy 带进来什么）
-const post = scan(extraNames);
+// 对实际发布物再扫一遍（双保险：万一 copy 带进来什么）
+const post = scan(extraNames, DIST);
 if (post.hits.length) {
   console.error(`\n✗ 发布物里还有 ${post.hits.length} 处敏感信息，已中止：`);
-  for (const h of post.hits.slice(0, 20)) console.error(`  ${h.file}:${h.line} [${h.rule}] ${h.sample}`);
+  for (const h of post.hits.slice(0, 20)) console.error(`  ${h.file}:${h.line} [${h.rule}]`);
   process.exit(1);
 }
 
 if (DRY) {
-  console.log('--dry：不提交、不推送。发布物在 dist/release，自己看。');
+  console.log('--dry：不提交、不推送。');
   process.exit(0);
 }
 
-// 3) 提交推送
+// 3) 仅通过 API 发布已扫描的快照，不同步本地源码历史。
 const token = readToken();
 if (!token) {
   console.error('✗ 找不到 GitHub token：设 GITHUB_TOKEN 环境变量，或放到 ' + TOKEN_FILE);
   process.exit(1);
 }
 
-const repo = await ensureRepo(token);
-console.log(`✓ 仓库 ${repo.url}${repo.created ? '（刚建好）' : ''}`);
-
-const remote = `https://x-access-token:${token}@github.com/${repo.owner}/${REPO_NAME}.git`;
-
-if (!existsSync(join(DIST, '.git'))) {
-  git(['init', '-b', BRANCH]);
-}
-git(['config', 'user.name', 'xiaoyu']);
-git(['config', 'user.email', 'xiaoyu@users.noreply.github.com']);
-// 第一次跑还没有 origin，add 之前先试着一脚踢开；没有就算了
-try {
-  git(['remote', 'set-url', 'origin', remote]);
-} catch {
-  git(['remote', 'add', 'origin', remote]);
-}
-git(['add', '-A']);
-
-let dirty = true;
-try {
-  git(['diff', '--cached', '--quiet']);
-  dirty = false;
-} catch {
-  dirty = true;
-}
-
-if (!dirty) {
-  console.log('✓ 没有变化，不用发布');
-  process.exit(0);
-}
-
 const stamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
 const msg = `chore: 自动发布 ${stamp}\n\n更新：${summarizeChanges(files)}\n`;
-git(['commit', '-m', msg]);
-console.log('✓ 已提交');
-
-/**
- * 推送。GitHub 经常把大一点的 push 掐掉（Connection was reset），
- * 所以：直连 → 换 HTTP/1.1 → 缩短包体 → 退一步别强推。四轮都失败才认。
- */
-function pushWithRetry() {
-  const attempts = [
-    { label: '直连', args: ['-c', 'http.version=HTTP/1.1', 'push', '-u', 'origin', `${BRANCH}:${BRANCH}`, '--force'] },
-    { label: 'HTTP/1.1 + 小包', args: ['-c', 'http.version=HTTP/1.1', '-c', 'http.postBuffer=524288000', 'push', '-u', 'origin', `${BRANCH}:${BRANCH}`, '--force'] },
-    { label: '重试', args: ['-c', 'http.version=HTTP/1.1', 'push', '-u', 'origin', `${BRANCH}:${BRANCH}`, '--force'] },
-    { label: '不强推', args: ['-c', 'http.version=HTTP/1.1', 'push', '-u', 'origin', `${BRANCH}:${BRANCH}`] },
-  ];
-
-  let lastErr = null;
-  for (const [i, a] of attempts.entries()) {
-    try {
-      git(a.args);
-      console.log(`✓ 已推送（${a.label}）`);
-      return true;
-    } catch (err) {
-      lastErr = err;
-      const msg = String(err?.stderr || err?.message || '').split('\n').filter(Boolean).pop() || '';
-      console.log(`… 第 ${i + 1} 次推送失败（${a.label}）：${msg.slice(0, 120)}`);
-      if (i < attempts.length - 1) {
-        // 等一下再试，网络抖动通常几秒就好
-        execFileSync(process.execPath, ['-e', 'setTimeout(()=>{}, 4000)']);
-      }
-    }
-  }
-  throw lastErr ?? new Error('推送失败');
-}
-
-let pushed = false;
-try {
-  pushWithRetry();
-  pushed = true;
-  console.log(`✓ 已推送到 ${repo.url}`);
-} catch (err) {
-  // git 推不上去（常见：网络把 github.com:443 掐了），改走 GitHub API 上传
-  console.log('… git 推送不通，改走 GitHub API 上传');
-  const msg = `chore: 自动发布 ${stamp}\n\n更新：${summarizeChanges(files)}\n`;
-  const r = await publishViaApi(DIST, token, msg);
-  if (!r) {
-    console.log('✓ 线上内容已经和本地一致，不用动');
-  } else {
-    console.log(`✓ 已通过 API 推送 ${r.files} 个文件（commit ${r.commit.slice(0, 7)}）`);
-  }
-  pushed = true;
-  console.log(`✓ 已推送到 ${repo.url}`);
-}
-
-// 提交完把 remote 里的 token 摘掉，别留在 dist/release/.git/config
-try {
-  git(['remote', 'set-url', 'origin', `https://github.com/${repo.owner}/${REPO_NAME}.git`]);
-} catch {}
-
-/**
- * 【2026-11-10 主人钦点：发布时 main 分支也要带上新版】
- *
- * 以前这里只把「发布物快照」推进远端 main —— 那是**单提交**（每次 force 覆盖），
- * 远端 main 上看不到任何开发历史，clone 下来也没法接着改。
- * 本地这条 master 分支攒了 500 多个提交从来没上去过。
- *
- * 现在补一趟：把**本地仓库当前分支**也推到远端 main，让远端 main
- * 就是一条能看、能改、能 clone 的真代码分支。
- *
- * 顺序讲究：先推快照（上面那趟，保证发布物一定最新），再推源码历史
- * （这趟是 force，会把 snapshot 那条盖掉 —— 但源码树本来就是超集，
- * 发布物该有的文件一个不少，只是多了提交历史与开发文件）。
- * 所以这趟必须放在最后，且失败不判死：快照已经上去了，发布就算成了。
- */
-const SYNC_MAIN = !DRY && !argv.includes('--no-source-sync');
-if (SYNC_MAIN) {
-  try {
-    /* 当前分支名（通常 master；也可能是别人临时开的分支） */
-    const cur = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
-    if (cur && cur !== 'HEAD') {
-      console.log(`\n… 同步源码分支到远端 main（本地 ${cur} → origin/main）`);
-      const attempts = [
-        ['-c', 'http.version=HTTP/1.1', 'push', '-u', 'origin', `${cur}:${BRANCH}`, '--force'],
-        ['-c', 'http.version=HTTP/1.1', '-c', 'http.postBuffer=524288000', 'push', '-u', 'origin', `${cur}:${BRANCH}`, '--force'],
-        ['-c', 'http.version=HTTP/1.1', 'push', '-u', 'origin', `${cur}:${BRANCH}`, '--force'],
-      ];
-      let ok = false;
-      for (const [i, args] of attempts.entries()) {
-        try {
-          execFileSync('git', args, { cwd: ROOT, stdio: 'pipe' });
-          ok = true;
-          break;
-        } catch (e) {
-          const m = String(e?.stderr || e?.message || '').split('\n').filter(Boolean).pop() || '';
-          console.log(`… 源码同步第 ${i + 1} 次失败：${m.slice(0, 110)}`);
-          if (i < attempts.length - 1) execFileSync(process.execPath, ['-e', 'setTimeout(()=>{}, 4000)']);
-        }
-      }
-      if (ok) console.log(`✓ 远端 ${BRANCH} 已是本地 ${cur} 的完整历史`);
-      else console.log(`… 源码历史没推上去（发布物已经上去了，不影响使用）：下次网络好时重跑 publish 即可`);
-    }
-  } catch (e) {
-    console.log(`… 源码分支同步跳过：${String(e?.message ?? e).slice(0, 120)}`);
-  }
-}
+const result = await publishViaApi(DIST, token, msg);
+if (result) console.log(`✓ 快照已提交（${result.commit.slice(0, 7)}）`);
+else console.log('✓ 线上内容已经和本地一致，不用动');

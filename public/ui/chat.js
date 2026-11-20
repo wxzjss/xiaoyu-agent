@@ -21,6 +21,7 @@ import { refreshRunning, renderSessList } from './sessions.js';
 
 /* 【2026-11-08 模块化】`log` 是主脚本里的 const（#log 那个元素）。 */
 const log = window.log;
+let activeSwitchGen = 0;
 
 /* ══════════════════════════════════════════════════════════════
  * 单一数据源
@@ -114,14 +115,19 @@ export function logSetLive(sid, live) {
    * 现在一律转调 store（sid 校验 + 清账都在那一份里）；
    * store 没就位时（模块加载顺序的极端情况）才退回直写，保证不至于整屏空着。
    */
-  const safe = live && Array.isArray(live.items) && live.items.length ? live : null;
+  if (live !== null && (!live || typeof live.running !== 'boolean')) return false;
   try {
     if (window.__logStore && typeof window.__logStore.setLive === 'function') {
-      return window.__logStore.setLive(sid, safe);
+      return window.__logStore.setLive(sid, live);
     }
   } catch (e) { /* 掉到下面的兜底 */ }
-  if (String(sid || '') !== LOG_STATE.sid) return false;   // 不是这一屏的，别污染
-  LOG_STATE.live = safe;
+  if (String(sid || '') !== LOG_STATE.sid) return false;
+  const prev = LOG_STATE.live;
+  if (live?.running && liveTurnRelation(prev, live) === 'same' &&
+      !Array.isArray(live.items) && Array.isArray(prev?.items)) {
+    live = { ...live, items: prev.items };
+  }
+  LOG_STATE.live = live;
   notifyStore();
   return true;
 }
@@ -172,6 +178,38 @@ export function renderLog(opts) {
 
 /* ── 直播拉取 ───────────────────────────────────────────────── */
 
+function liveTurnRelation(previous, next) {
+  if (!previous || !next) return 'unknown';
+  if (previous === next) return 'same';
+  if (previous.turnId && next.turnId) return previous.turnId === next.turnId ? 'same' : 'different';
+  const start = Number(previous.startedAt) || 0;
+  const nextStart = Number(next.startedAt) || 0;
+  return start && nextStart ? (start === nextStart ? 'same' : 'different') : 'unknown';
+}
+
+/** 请求发出后，切屏、新开轮或已上屏的新轮都会使旧回包失效。 */
+export function guardLiveReply(id) {
+  const switchGen = activeSwitchGen;
+  const record = window.turnsInFlight?.get(id);
+  const observed = LOG_STATE.live;
+  return (next) => {
+    if (window.sessionId !== id || activeSwitchGen !== switchGen ||
+        window.turnsInFlight?.get(id) !== record) return false;
+    const current = LOG_STATE.live;
+    if (next?.sessionId && next.sessionId !== id) return false;
+    const relation = liveTurnRelation(current, next);
+    if (relation === 'different' && !(Number(next?.startedAt) > Number(current?.startedAt))) return false;
+    if (current !== observed && relation !== 'same' &&
+        !(Number(next?.startedAt) > Number(current?.startedAt))) return false;
+    return true;
+  };
+}
+
+async function fetchLive(id) {
+  const response = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id));
+  return response.ok === false ? null : response.json();
+}
+
 /**
  * 把一个还在跑的会话接上：问服务端「这一轮现在长什么样」，交给 store。
  *
@@ -181,26 +219,34 @@ export function renderLog(opts) {
  *   **服务端给的 items 进 LOG_STATE，React 照它渲染。**
  */
 export async function attachLive(id) {
+  const stillCurrent = guardLiveReply(id);
   let live = null;
   try {
-    live = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+    live = await fetchLive(id);
   } catch {
     return false;
   }
-  /* 这一句 await 可能挂好几百毫秒。等它回来时主人可能已经切走了 ——
-   * 那就一个字节都不画（否则 B 会话的话会长在 C 会话的屏幕上）。 */
+  if (!stillCurrent(live)) return false;
   try {
     if (live && live.running) window.__xyLiveStartAt = Number(live.startedAt) || 0;
   } catch (e) {}
-  if (window.sessionId !== id) return false;
 
-  if (!live || !live.running) {
-    /* 没在跑：这一屏归历史，直播节点一个都不许留 */
-    try { window.turnsInFlight.delete(id); } catch (e) {}
+  if (!live || typeof live.running !== 'boolean') return false;
+  if (live.running === false) {
+    const record = window.turnsInFlight?.get(id);
+    if (record && !record.adopted && record.running && !record.streamDone) return false;
+    if (LOG_STATE.live?.running || LOG_STATE.live?.awaitingHistory) {
+      const settled = await settleLiveHistory(id, live);
+      if (settled && window.sessionId === id && window.turnsInFlight?.get(id) === record) {
+        window.turnsInFlight?.delete(id);
+      }
+    } else {
+      window.turnsInFlight?.delete(id);
+    }
     return false;
   }
 
-  logSetLive(id, live);
+  if (!logSetLive(id, live)) return false;
   renderLog({ force: true });
   /* 起点推到末尾：已经在那份快照里的内容不用再「补」，后面新来的靠轮询 */
   followLive(id, Array.isArray(live.events) ? live.events.length : 0);
@@ -218,33 +264,31 @@ export async function attachLive(id) {
  */
 export function followLive(id, fromIndex) {
   window.stopFollow(id);
-  const startedAt = Date.now();
+  const switchGen = activeSwitchGen;
+  const screenChanged = () => window.sessionId !== id || activeSwitchGen !== switchGen;
 
   const timer = setInterval(async () => {
-    if (window.sessionId !== id) {
+    if (window.followingBySession.get(id) !== timer) return;
+    if (screenChanged()) {
       window.stopFollow(id);
       return;
     }
+    const stillCurrent = guardLiveReply(id);
     let snap = null;
     try {
-      snap = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
+      snap = await fetchLive(id);
     } catch (e) {
-      return;   // 网络抖一下：下一拍再来
-    }
-    /* 这一拍卡在 fetch 里的时候主人可能已经切走了 —— 回来再判一次 */
-    if (window.sessionId !== id) {
-      window.stopFollow(id);
       return;
     }
-    if (!snap || !Array.isArray(snap.items)) return;
+    if (window.followingBySession.get(id) !== timer || !stillCurrent(snap)) return;
+    if (!snap || typeof snap.running !== 'boolean') return;
 
-    logSetLive(id, snap);
-    renderLog();
-
-    if (!snap.running) {
+    if (snap.running === false) {
       window.stopFollow(id);
-      finishTurn(id, snap, startedAt);
+      finishTurn(id, snap);
+      return;
     }
+    if (logSetLive(id, snap)) renderLog();
   }, 1200);
 
   window.followingBySession.set(id, timer);
@@ -254,111 +298,118 @@ export function followLive(id, fromIndex) {
 /**
  * 这一轮结束了：把屏幕彻底交回给历史。
  *
- * 为什么要「等」：刚结束那一拍，写盘可能还没跟上（落盘的是半截）。
- * 这时候就按历史画，屏幕会永远停在那半截 —— 后面不会有人来补。
- * 所以每 700ms 再问一次，直到「直播的最后一段正文能在历史正文里找到」为止
- * （判据详见下方注释）；最多 6 次（约 4 秒），还不齐就直接按历史画 —— 宁可用落盘的，
- * 也不用可能被压薄的直播。
+ * 历史尚未写齐时保留直播内容。重试耗尽后将该快照标为已结束，
+ * 输入区可以恢复发送，稍后拿到完整历史再交接。
  */
-async function finishTurn(id, snap, startedAt) {
-  try {
-    window.turnsInFlight.delete(id);
-    const nz = (s) => {
-      try { return String(window.fixMojibake(String(s || '')) || '').replace(/\s+/g, ''); } catch (e) { return String(s || '').replace(/\s+/g, ''); }
-    };
-    /* 【2026-11-11 修·收尾对账空等 4.2 秒（对齐 index.html settleFromHistory 同款修法）】
-     * 原判据是「历史最后一条 assistant 的长度 ≥ 直播正文总长」。多段轮里它恒不成立：
-     * want 是几段正文之和，last 只是最后一段 —— 六次重试（约 4.2 秒）必然全部落空，
-     * 期间屏幕塌缩成旧历史，主人看到的就是「回复消失了几秒才回来」。
-     * 其实服务端在摘登记（running 翻 false）之前就已 saveSession，历史此刻必然完整。
-     * 判据改成「直播里的**最后一段正文**能在（全部 assistant 正文拼接后的）历史正文里
-     * indexOf 找到」：找得到 = 历史齐了，立刻收尾；找不到才是真没写完，照旧重试兜底。 */
-    let lastSeg = '';
-    try {
-      const lv = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(id)).then((r) => r.json());
-      for (const it of (lv && Array.isArray(lv.items) ? lv.items : [])) {
-        if (it && it.k === 'text') {
-          const seg = nz(it.t);
-          if (seg) lastSeg = seg;
-        }
-      }
-    } catch (e) {}
+async function finishTurn(id, snap) {
+  const switchGen = activeSwitchGen;
+  const record = window.turnsInFlight.get(id);
+  const screenChanged = () => window.sessionId !== id || activeSwitchGen !== switchGen;
+  if (!await settleLiveHistory(id, snap) || screenChanged() || window.turnsInFlight.get(id) !== record) return;
+  window.turnsInFlight.delete(id);
+  window.busy = false;
+  try { window.hideSending(); } catch (e) {}
+  try { window.syncSendBtn(); } catch (e) {}
+  try { window.refreshSessions({ silent: true }).catch(() => {}); } catch (e) {}
+  if (window.pendingResume) {
+    window.pendingResume = false;
+    const text = String(window.lastInterjectText || '').trim();
+    setTimeout(() => {
+      if (screenChanged() || window.turnsInFlight.has(id)) return;
+      window.resumeOrResend(id, text).catch((e) => {
+        if (screenChanged() || window.turnsInFlight.has(id)) return;
+        window.busy = false;
+        window.syncSendBtn();
+        if (window.input && !window.input.value.trim() && text) { window.input.value = text; window.autosizeInput(); }
+        window.addSysNote('插的这句没接上：' + (e?.message || '未知错误') + '，已经放回输入框');
+      });
+    }, 30);
+  }
+}
 
-    let turns = null;
-    for (let k = 0; k < 6; k++) {
-      if (window.sessionId !== id) return;
-      const sel = await fetch('/api/sessions/select', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      }).then((r) => r.json()).catch(() => null);
-      if (window.sessionId !== id) return;
-      turns = (sel && sel.session && Array.isArray(sel.session.turns)) ? sel.session.turns : null;
-      if (turns) {
-        const allA = nz(turns
-          .filter((t) => t && t.role === 'assistant' && !t.whale)
-          .map((t) => String(t.text || ''))
-          .join('\n'));
-        /* 历史里找得到「直播的最后一段正文」= 历史齐了 */
-        if (!lastSeg || allA.indexOf(lastSeg) >= 0) break;
-      }
-      await new Promise((r) => setTimeout(r, 700));
+let settlingLive = null;
+
+export async function settleLiveHistory(id, snap = null) {
+  if (!id || window.sessionId !== id || LOG_STATE.sid !== id) return false;
+  const stillCurrent = guardLiveReply(id);
+  try {
+    const ended = snap || await fetchLive(id);
+    if (ended?.running !== false || !stillCurrent(ended)) return false;
+    const observed = LOG_STATE.live;
+    const record = window.turnsInFlight?.get(id);
+    const active = settlingLive;
+    if (active && active.id === id && active.switchGen === activeSwitchGen && active.record === record &&
+        liveTurnRelation(active.ended, ended) !== 'different' &&
+        (active.observed === observed || liveTurnRelation(active.ended, observed) === 'same')) {
+      return await active.result;
     }
-    if (window.sessionId !== id) return;
-    /* 这一轮归历史：先换 state，再叫一次画。顺序反了就会被旧历史盖回去。 */
-    /**
-     * 【2026-11-10 修·空历史把乐观气泡留成孤儿（真 bug）】
-     *
-     * 这里原来是 `if (turns)`。而 **空数组是真值** —— `if ([])` 为 true。
-     * 于是「服务端这条历史是空的」会走进 logSetHistory(id, [])，
-     * 把 store 的历史设成空；接着 setHistory 里的 dropLandedPending 拿空数组
-     * 去清乐观气泡 —— 一条都匹配不上 → 主人那颗气泡永久留在屏幕上。
-     *
-     * 什么情况下历史会空？上游失败（402/502/断网）时：主人那句话是落了盘，
-     * 但 assistant 一条都没有，而 finishTurn 拉到的 turns 可能是 []（服务端还没
-     * 写完 / 读到了半截）。实测：每跑一次这种失败轮，屏幕上就多一颗叠着，
-     * 连跑三次变三颗（check-pending-user-dedupe 就是这么红的）。
-     *
-     * 现在：只有**真的拿到了历史**（非空数组）才换屏。空数组一律按「这次没拿到」
-     * 处理 —— 保持原屏不动，等下一次刷新自己对齐。宁可用旧屏，也不用空屏。
-     */
-    if (Array.isArray(turns) && turns.length) {
-      logSetHistory(id, turns);
-      logSetLive(id, null);
-      renderLog({ force: true });
-    } else {
-      /* 拿不到历史也要把本屏的乐观气泡清掉：
-       * 这一轮已经结束了（running=false 才走到 finishTurn），而话早在开跑前
-       * 就 saveUserMessage 落过盘了 —— 屏幕上不该再留一颗「还没落盘」的气泡。
-       * 不清它就会永远叠着：实测上游失败（402/502）那条路每轮多一颗，
-       * 连跑三次屏幕上三颗一模一样的主人气泡。
-       *
-       * 只清**本屏**的账（dropPendingForScreen 内部按 sid 过滤），
-       * 别的会话的账原样留着（切回去还要用）。 */
-      try { window.__logStore && window.__logStore.dropPendingForScreen && window.__logStore.dropPendingForScreen(); } catch (e) {}
+    const entry = { id, switchGen: activeSwitchGen, record, ended, observed,
+      result: readSettledHistory(id, observed, ended, stillCurrent) };
+    settlingLive = entry;
+    try {
+      return await entry.result;
+    } finally {
+      if (settlingLive === entry) settlingLive = null;
     }
   } catch (e) {
-    try { console.warn('[finishTurn] 收尾对账失败（不影响屏幕，历史下次刷新会自己对齐）:', e && e.message ? e.message : e); } catch (e2) {}
-  } finally {
-    window.busy = false;
-    try { window.hideSending(); } catch (e) {}
-    try { window.syncSendBtn(); } catch (e) {}
-    try { window.refreshSessions({ silent: true }).catch(() => {}); } catch (e) {}
-    /* 断了流之后走这条旁路收尾时，插话还挂着 → 现在就该接着答 */
-    if (window.pendingResume) {
-      window.pendingResume = false;
-      const t = String(window.lastInterjectText || '').trim();
-      const sid = id;
-      setTimeout(() => {
-        window.resumeOrResend(sid, t).catch((e) => {
-          window.busy = false;
-          window.syncSendBtn();
-          if (window.input && !window.input.value.trim() && t) { window.input.value = t; window.autosizeInput(); }
-          window.addSysNote('⚠ 插的这句没接上：' + (e && e.message ? e.message : '未知错误') + '，已经放回输入框');
-        });
-      }, 30);
-    }
-    void startedAt;
+    console.warn('[settleLiveHistory] 收尾对账失败:', e?.message || e);
+    return false;
   }
+}
+
+async function readSettledHistory(id, observed, ended, stillCurrent) {
+  const normalize = (text) => String(window.fixMojibake?.(String(text || '')) ?? (text || '')).replace(/\s+/g, '');
+  const liveItems = Array.isArray(ended.items) && ended.items.length
+    ? ended.items
+    : (liveTurnRelation(observed, ended) !== 'different' ? observed?.items : null);
+  const lastText = normalize(Array.isArray(liveItems) ? liveItems.findLast((item) => item?.k === 'text' && item.t)?.t : '');
+  const sameObserved = liveTurnRelation(observed, ended) !== 'different';
+  const turnId = ended.turnId || (sameObserved ? observed?.turnId : null);
+  let readyHistory = null;
+  const canSettle = () => stillCurrent(ended) && LOG_STATE.sid === id &&
+    (LOG_STATE.live === observed || liveTurnRelation(LOG_STATE.live, ended) === 'same');
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (!canSettle()) return false;
+    const selected = await fetch('/api/sessions/select', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then((r) => r.ok === false ? null : r.json()).catch(() => null);
+    if (!canSettle()) return false;
+    const history = selected?.session?.turns;
+    if (Array.isArray(history)) {
+      const assistant = history.filter((item) => item?.role === 'assistant' && !item.whale);
+      const matching = turnId ? assistant.filter((item) => item.turn === turnId) : assistant;
+      const hasLiveItems = Boolean(liveItems?.length);
+      const historyReady = lastText
+        ? normalize(matching.map((item) => item.text).join('\n')).includes(lastText)
+        : hasLiveItems ? Boolean(turnId && matching.length) : history.length > 0;
+      if (historyReady) {
+        readyHistory = history;
+        break;
+      }
+    }
+    if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+  if (!canSettle()) return false;
+  if (readyHistory) {
+    logSetHistory(id, readyHistory);
+    logSetLive(id, null);
+  } else if (liveItems?.length) {
+    // 已确认结束。历史没接住这一轮时，仍展示已经收到的回复。
+    logSetLive(id, {
+      ...ended,
+      turnId,
+      startedAt: ended.startedAt || (sameObserved ? observed?.startedAt : undefined),
+      items: liveItems,
+      awaitingHistory: true,
+    });
+  } else {
+    logSetLive(id, null);
+    window.__logStore?.dropPendingForScreen?.();
+  }
+  renderLog({ force: true });
+  return true;
 }
 
 /**
@@ -382,17 +433,7 @@ export function replayInFlight(id) {
     if (rec) rec.userDrawn = true;
   } catch (e) {}
 
-  try {
-    fetch('/api/chat/live?sessionId=' + encodeURIComponent(id))
-      .then((r) => r.json())
-      .then((live) => {
-        if (!live || !Array.isArray(live.items)) return;
-        if (window.sessionId !== id) return;      // 拉的过程中主人已经切走了
-        logSetLive(id, live);
-        renderLog({ force: true });
-      })
-      .catch(() => {});
-  } catch (e) {}
+  attachLive(id).catch(() => {});
   if (rec) rec.drawnParts = Array.isArray(rec.parts) ? rec.parts.length : 0;
   return true;
 }
@@ -486,8 +527,7 @@ export async function switchSession(id, opts) {
    * 现在：网络给 30 秒；解析单独兜住，失败时把原文前 200 字也带上，能一眼看出
    * 是服务端返了错页、还是数据太大解析崩了。
    */
-  window.__switchGen++;
-  const __switchGenSeen = window.__switchGen;
+  const requestGen = ++window.__switchGen;
   const __t0 = performance.now();
   const __mark = (name) => {
     const ms = Math.round(performance.now() - __t0);
@@ -509,19 +549,23 @@ export async function switchSession(id, opts) {
       body: JSON.stringify({ id }),
     }, 30000);
   } catch (e) {
+    if (requestGen !== window.__switchGen) return true;
     console.warn('[switchSession] 请求失败:', e && e.message ? e.message : e);
     return null;
   }
+  if (requestGen !== window.__switchGen) return true;
   __mark('响应头回来');
 
   let __raw = '';
   let r = null;
   try {
     __raw = await __resp.text();
+    if (requestGen !== window.__switchGen) return true;
     __mark('读完正文(' + __raw.length + '字符)');
     r = JSON.parse(__raw);
     __mark('解析完(' + (r && r.session && r.session.turns ? r.session.turns.length : 0) + '个turn)');
   } catch (e) {
+    if (requestGen !== window.__switchGen) return true;
     // 这里以前只会静静地返回 null，主人看到的就是「切不过去」却不知道为什么。
     const why = e && e.message ? e.message : String(e);
     console.warn('[switchSession] 响应解析失败:', why, '原文前 200 字:', String(__raw).slice(0, 200));
@@ -546,25 +590,22 @@ export async function switchSession(id, opts) {
         setTimeout(() => { try { window.sessHint.classList.remove('sessWarn'); } catch {} }, 4000);
       }
     } catch {}
-    await window.refreshSessions({ silent: true });
+    await window.refreshSessions({ silent: true }).catch(() => {});
+    if (requestGen !== window.__switchGen) return true;
     // 切不过去也别把输入区锁着
     window.releaseComposer();
     return false;
   }
-  /* 【2026-11-02 串会话 · 第三道闸】
-   *  拉历史这一段也可能很慢（186 个 turn 要几十毫秒甚至更久）。
-   *  等回来时若主人已经又点开了第三个会话，这里再往下画就是拿旧会话的 turns 盖新屏幕。
-   *  判据用一个只增不减的世代号：发起时记一份，回来时对不上就整段作废。 */
-  /* 作废要返回 true —— 这不是「切失败」。主人已经切到别的会话去了，
-   *  这一趟的活儿本来就该扔；返回 false 会让 bootSessions 以为连续三次没切过去，
-   *  再弹出那句「刚才没能自动回到上次的会话」，等于凭空造一个错。 */
-  if (__switchGenSeen !== window.__switchGen) return true;
+  // 新请求成功后才接管当前屏幕，避免目标会话打开失败时丢掉当前历史。
+  const selectedId = r.session.id;
+  activeSwitchGen = requestGen;
+  const screenChanged = () => activeSwitchGen !== requestGen || window.sessionId !== selectedId;
   /* 【2026-11-03 修·切会话输入框串味】原来这里只给 sessionId 赋新值，
    *  从没碰过草稿：在 A 里打的字，切到 B 还留在输入框里（切回来又变成 B 的），
    *  等于草稿根本没按会话分开 —— 可 draftKey() 明明是按 sessionId 存的。
    *  修法：赋值前先把旧会话的打字存进它自己的格子，赋值后再把新会话的打字捞出来。 */
   try { if (typeof window.saveDraft === 'function') window.saveDraft(); } catch { /* 存不上也不许挡切换 */ }
-  window.sessionId = r.session.id;
+  window.sessionId = selectedId;
   window.sessionTitle = r.session.title;
   localStorage.setItem(window.STORE_KEY, window.sessionId);
   try { if (typeof window.restoreDraft === 'function') window.restoreDraft(); } catch { /* 恢复失败就当空白 */ }
@@ -577,7 +618,8 @@ export async function switchSession(id, opts) {
   // 办事模式同理，而且它还带着 worker 名册 —— 切会话必须重读
   try { if (typeof window.__reloadTaskState === 'function') window.__reloadTaskState(); } catch {}
   /* 【2026-11-13】身份徽标是异步刷的，等它回来，别让上一会话的名字残留一拍 */
-  try { await window.loadTopCfg?.(); } catch (e) { try { window.loadTopCfg?.(); } catch {} } // 左上角那两个框跟着换成本会话的设置
+  try { await window.loadTopCfg?.(); } catch {}
+  if (screenChanged()) return true;
   /* 【2026-11-02 修·切回来自家会话，历史署名全变成上一个会话的人】
    * 病根在顺序：renderTurns 先把 578 条历史画出来，而它给每条气泡配署名时
    * 优先看这条消息自带的名字，老消息没存名字就退回全局 mainAgentName ——
@@ -586,6 +628,7 @@ export async function switchSession(id, opts) {
    * 按 F5 重开就正常，正因为那时 chip 早就算完了。
    * 现在：画之前先把身份算准，算不出来也照画（不能因为一个名字卡住整屏）。 */
   try { if (typeof window.refreshAgentChip === 'function') await window.refreshAgentChip(); } catch { /* 名字算不出来也要画 */ }
+  if (screenChanged()) return true;
   /**
    * 【2026-11-10 A4 清理】原来这里有句 window.hubReset()：
    * 切会话时把「还指着旧柜子的指针」断开。换 React 之后柜子没有指针了
@@ -627,7 +670,7 @@ export async function switchSession(id, opts) {
    * 这段原来自己算 dropTail、自己传 force —— 和 attachLive、followLive 各判一套。
    * 判错一次就是「切回来还画着上一个会话」（实测 45 条 → 切走 → 切回还是别人的）。
    * 现在屏幕归谁、这一轮归谁，全由 LOG_STATE + renderLog 一个地方决定。 */
-  logSetHistory(window.sessionId, r.session.turns);
+  logSetHistory(selectedId, r.session.turns);
   renderLog({ force: true });
   /**
    * 【2026-11-12 加·「上一轮断在半路」必须有一句交代】
@@ -667,11 +710,12 @@ export async function switchSession(id, opts) {
   // 先问服务端（窗口关过也能补回来），再退回本页内存里的记录。
   // 整段包 try：补画失败只是少一段内容，绝不能连累输入框。
   try {
-    const liveRunning = typeof attachLive === 'function' ? await attachLive(window.sessionId) : false;
+    const liveRunning = await attachLive(selectedId);
+    if (screenChanged()) return true;
     if (!liveRunning) {
-      const stillRunning = typeof window.turnsInFlight !== 'undefined' && window.turnsInFlight.has(window.sessionId);
+      const stillRunning = typeof window.turnsInFlight !== 'undefined' && window.turnsInFlight.has(selectedId);
       if (stillRunning && typeof replayInFlight === 'function') {
-        replayInFlight(window.sessionId);
+        replayInFlight(selectedId);
         window.busy = true;
         window.showSending();
       } else {
@@ -688,7 +732,7 @@ export async function switchSession(id, opts) {
          */
         let _stillUp = false;
         try {
-          const _l = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(window.sessionId)).then((x) => x.json());
+          const _l = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(selectedId)).then((x) => x.json());
           _stillUp = Boolean(_l && _l.running);
         /* 【2026-11-02 修·切过来看不到这轮已经吐出来的字】
          *
@@ -698,6 +742,7 @@ export async function switchSession(id, opts) {
          * 起点还用的是 events.length（末尾），中间那一大段就永远画不出来了。
          */
         } catch {}
+        if (screenChanged()) return true;
         if (_stillUp) {
           window.busy = true;
           window.showSending();
@@ -715,6 +760,7 @@ export async function switchSession(id, opts) {
       try { window.syncSendBtn(); } catch {}
     }
   } catch (err) {
+    if (screenChanged()) return true;
     console.warn('[switchSession] 补画后台进度失败（不影响输入）:', err && err.message ? err.message : err);
     /**
      * 【2026-11-01 修 Ctrl+F5：补画失手 ≠ 这一轮跑完了】
@@ -728,22 +774,39 @@ export async function switchSession(id, opts) {
      * 剩下的字照样会通过 followLive 长出来。只有服务端明确说没跑，才放开。
      */
     try {
-      const live2 = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(window.sessionId)).then((x) => x.json());
+      const live2 = await fetch('/api/chat/live?sessionId=' + encodeURIComponent(selectedId)).then((x) => x.json());
+      if (screenChanged()) return true;
       if (live2 && live2.running) {
         window.busy = true;
         window.showSending();
-        try { followLive(window.sessionId, Array.isArray(live2.events) ? live2.events.length : 0); } catch {}
+        try { followLive(selectedId, Array.isArray(live2.events) ? live2.events.length : 0); } catch {}
       } else {
         window.busy = false;
         window.hidingSendingSafe();
       }
     } catch {
+      if (screenChanged()) return true;
       window.busy = false;
       window.hidingSendingSafe();
     }
   }
   window.stopping = false;
   window.syncSendBtn();
+
+  /**
+   * 【2026-11-18 主人要求·空壳会话切走就扔】
+   *
+   * 原话：「新建会话后，除了开场白，该会话里智能体与用户都没发过消息，
+   *        那么当用户切换到其他会话时自动删除那个新建的会话」。
+   *
+   * 真正删的动作在服务端 select 里（那才是唯一的切换口，QQ / 手机端也走它），
+   * 这里只负责一件事：它说刚扔了哪个，就把列表重读一遍 —— 不然左栏里
+   * 那个空壳还在（renderSessList 用的是切会话之前那份 sessionsCache）。
+   */
+  if (r && r.dropped) {
+    try { await window.refreshSessions({ silent: true }); } catch {}
+    if (screenChanged()) return true;
+  }
 
   renderSessList();
   /**
@@ -770,5 +833,5 @@ export async function switchSession(id, opts) {
    模块有独立作用域，不挂回 window 它们就找不到了。 */
 Object.assign(window, {
   logSettle, logSetHistory, logBeginTurn, logSetLive, logHistoryFp, renderLog,
-  attachLive, followLive, replayInFlight, renderTurns, switchSessionSafe, switchSession,
+  attachLive, followLive, guardLiveReply, settleLiveHistory, replayInFlight, renderTurns, switchSessionSafe, switchSession,
 });

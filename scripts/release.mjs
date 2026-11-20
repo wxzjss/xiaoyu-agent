@@ -1,7 +1,7 @@
 // 发布 GitHub Release 并上传附件（桌面 exe ×2 + 手机 APK）
-// 用法：node scripts/release.mjs
+// 用法：node scripts/release.mjs --commit <40 位 Git SHA> [--assets-dir <目录>] [--mobile-version <版本>] [--check]
 import { readFileSync, existsSync, createReadStream, statSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 
@@ -119,6 +119,87 @@ APK 也支持**不连电脑**的模式：填一个 API Key 直接在手机上聊
  * 查得到就返回 null，走上面那份通用的。
  */
 function changelogFor(v) {
+  /**
+   * 【1.0.0】第一个「承诺稳定」的版本。
+   *
+   * 写这里的意义：1.0 不是"加了多少功能"，而是"哪些事以后不随便改了"。
+   * 所以这份说明按「你实际会感觉到什么」来写，不按提交记录写。
+   */
+  if (v === '1.0.0') {
+    return `这一版整理了桌面消息链路、工具调度与 Android 独立聊天。已完成隔离回归；真实供应商长对话、Windows 安装向导和 Android 真机升级仍需验收。
+
+## 一、她动危险命令之前，会先问你
+
+删一大批文件、格式化、关机、改系统设置、卸载、下载回来直接执行、git 强推 ——
+这些以前是**直接跑**的，现在会**弹窗问你**，你点了允许才动。
+
+- **60 秒没人答 = 不许**。你不在电脑前，她就不动，不会自己拍板。
+- 这一轮被你掐掉，也算不许。
+- 弹窗会写清楚：要动什么、为什么、影响多大。
+
+## 二、勾清单不再"每次都付全价"
+
+以前清单进度塞在提示词中间，**你每勾一个勾，后面 42% 的上下文缓存就作废一次**。
+现在挪到了最末尾：
+
+| 你做了什么 | 缓存影响 |
+|---|---|
+| 什么都没变，连着说话 | 完全命中 |
+| 勾一步清单 | 只影响 1.9%（原来 42%） |
+| 她往记忆本里写东西 | 前 74% 还能命中 |
+
+省钱这件事你感觉不到，但账单能感觉到。
+
+## 三、垃圾文件不再只增不减
+
+查出来一个吓人的数：**chronicle 里 5871 个文件，5839 个是孤儿**（占 84% 的空间）。
+根因是"删会话只删了会话本身，它的史书/存档/笔记全留在原地"。
+
+现在有 \`mem-gc\`：
+
+\`\`\`bash
+node scripts/mem-gc.mjs              # 只看清单，不动手（默认）
+node scripts/mem-gc.mjs --apply      # 真收
+\`\`\`
+
+- 史书/存档/笔记 → **先打包成 .gz 再删**，要翻还能捞回来
+- 工具输出副本 → 直接删（会话里本来就有截断版）
+- **你的记忆本 → 一个字都不碰**（哪怕会话没了，它可能是唯一一份）
+
+## 四、清单一次只推进一件事
+
+以前她可以同时把好几步标成"正在做"，然后哪一步都没做完。
+实测 984 步里只有 65% 被勾掉，剩下的一直挂在那。
+
+现在同时只能有一个"正在做"；真需要并行时她会显式说明。
+
+## 五、修掉的那些"不显眼但会咬人"的 bug
+
+| 症状 | 根因（一句话） |
+|---|---|
+| 她一遍遍写压缩记忆、停不下来 | 收稿函数引用了一个**从来没定义过**的变量，抛错被上层吞掉，于是一份都没存进去 |
+| 压缩记忆写了 3000 字，折叠后只剩便签 | 落盘链路里有一句 \`.slice(0, 300)\` |
+| 长任务被中止时，压缩记忆白写 | 落盘写在"正常收尾"分支里，而需要压的恰恰是长任务 |
+| 「拉一下」拉不到出图模型 | 同一中转的多把 key 是**多套模型**，旧代码只试第一把 |
+| 出图模型的图变成一屏乱码 | 流式把 base64 切成小块，旧代码逐块跑正则，永远凑不齐 |
+
+## 六、聊天消息和 Android
+
+- 桌面实时显示和刷新重放共用消息处理逻辑。回复穿过工具卡时保持连贯，轮末历史暂时没写齐时继续保留屏幕上的回复。
+- 每次插话有独立投递编号。相同内容可以连续发送，纯附件插话也可以保存和回读。
+- 思考强度根据当前会话模型展示可用档位。预发送保留自动放行和操作按钮。
+- Android 可直接配置模型独立使用，也可以从「更多」连接电脑。随包提供鲸鱼娘静态背景。
+- Windows 安装版和便携版未作 Authenticode 签名。Android APK 的版本号单独标在附件名里。
+
+## 七、验收范围
+
+- 桌面隔离回归已通过 224 项，本机覆盖层文件核对 168 项一致。
+- 候选桌面包的 166 个应用源码与资源文件与发布前仓库一致。
+- Android 0.9.49（versionCode 29）通过 APK v2 验签，设备当前离线，未完成真机安装、升级和权限操作实测。
+- Android 不等于完整桌面工具环境；插件与无 Root 任务的完整覆盖仍未验收。
+- 真实模型的长回复、生成中刷新与插话、正式安装向导仍需验收。
+`;
+  }
   if (v === '0.9.49') {
     return `这一版从 11 月 10 日攒到现在，主题只有一个：**让她干活时别再原地打转，也别把过程糊到你屏幕上**。
 
@@ -1147,56 +1228,93 @@ imm32 脚本、ime:matchSystem 桥、功能开关、设置项全部删干净。
 
 
 async function main() {
+  const args = process.argv.slice(2);
+  const options = {};
+  const valueOptions = new Set(['--commit', '--assets-dir', '--mobile-version']);
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (Object.hasOwn(options, flag)) throw new Error('重复参数：' + flag);
+    if (flag === '--check') {
+      options[flag] = true;
+      continue;
+    }
+    if (!valueOptions.has(flag) || !args[i + 1] || args[i + 1].startsWith('--')) {
+      throw new Error('无效参数：' + flag);
+    }
+    options[flag] = args[++i];
+  }
+  const commit = options['--commit']?.toLowerCase();
+  const checkOnly = options['--check'] === true;
+  if ((!checkOnly || commit) && !/^[a-f0-9]{40}$/.test(commit ?? '')) {
+    throw new Error('请用 --commit 指定完整 Git 提交 SHA');
+  }
+  const mobileVersion = options['--mobile-version'] ?? VERSION;
+  if (!/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/i.test(mobileVersion)) {
+    throw new Error('无效的 Android 版本号');
+  }
+  const assetsDir = resolve(ROOT, options['--assets-dir'] ?? 'dist/installer');
+  const files = [
+    `XiaoyuAgent-${VERSION}-Setup-x64.exe`,
+    `XiaoyuAgent-${VERSION}-Portable.exe`,
+    `XiaoyuAgent-${mobileVersion}-Mobile.apk`,
+  ].map((name) => {
+    const abs = join(assetsDir, name);
+    if (!existsSync(abs)) throw new Error('缺少发布附件：' + abs);
+    const info = statSync(abs);
+    if (!info.isFile() || info.size === 0) throw new Error('发布附件不是有效文件：' + abs);
+    return { abs, size: info.size, name };
+  });
+  if (checkOnly) {
+    for (const { name, size } of files) console.log(`${name} (${size} bytes)`);
+    return;
+  }
+
   const token = readToken();
   if (!token) throw new Error('找不到 GitHub token（环境变量 GITHUB_TOKEN 或 GitHub仓库/ghp.txt）');
   const headers = { Authorization: `token ${token}`, 'User-Agent': 'xiaoyu-release', Accept: 'application/vnd.github+json' };
 
-  // 1) 已有同名 release 就复用，方便重跑
-  let rel = null;
-  const listRes = await fetch(`https://api.github.com/repos/${REPO}/releases`, { headers });
-  const list = await listRes.json();
-  if (Array.isArray(list)) rel = list.find((r) => r.tag_name === TAG) || null;
+  const api = `https://api.github.com/repos/${REPO}`;
+  const target = await fetch(`${api}/commits/${commit}`, { headers });
+  if (!target.ok || (await target.json()).sha !== commit) {
+    throw new Error('GitHub 上无法验证发布提交（HTTP ' + target.status + '）');
+  }
+  const tagRef = await fetch(`${api}/git/ref/tags/${TAG}`, { headers });
+  if (tagRef.status !== 404) {
+    if (!tagRef.ok) throw new Error('查询标签失败 HTTP ' + tagRef.status);
+    const taggedCommit = await fetch(`${api}/commits/${TAG}`, { headers });
+    if (!taggedCommit.ok || (await taggedCommit.json()).sha !== commit) {
+      throw new Error('标签已指向其他提交：' + TAG);
+    }
+  }
+  const tagged = await fetch(`${api}/releases/tags/${TAG}`, { headers });
+  if (!tagged.ok && tagged.status !== 404) throw new Error('查询版本失败 HTTP ' + tagged.status);
+  let rel = tagged.ok ? await tagged.json() : null;
+  if (rel && !rel.draft) throw new Error('此版本已发布，请使用新版本号');
 
   if (!rel) {
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases`, {
+    const body = (changelogFor(VERSION) || BODY) + `\n\n## 安装包\n\n${files.map(({ name }) => '- `' + name + '`').join('\n')}\n`;
+    const res = await fetch(`${api}/releases`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ tag_name: TAG, name: NAME, body: changelogFor(VERSION) || BODY, draft: false, prerelease: false, target_commitish: 'main' }),
+      body: JSON.stringify({ tag_name: TAG, name: NAME, body, draft: true, prerelease: false, target_commitish: commit }),
     });
+    if (!res.ok) throw new Error('创建草稿失败 HTTP ' + res.status);
     rel = await res.json();
-    if (!rel.id) throw new Error('创建 release 失败：' + JSON.stringify(rel).slice(0, 400));
-    console.log('created release ' + rel.tag_name + ' id=' + rel.id);
+    console.log('created draft ' + TAG);
   } else {
     console.log('reuse release ' + rel.tag_name + ' id=' + rel.id);
   }
 
-  // 2) 上传附件（同名先删）
-  // 附件名一律用英文。
-  // GitHub 的 asset 名只认 ASCII，中文会被逐字剥掉（实测「小鱼Agent-免安装版-0.9.0.exe」
-  // 传上去变成「Agent-.-0.9.0.exe」，装完根本看不出是什么）。
-  // 中文名留给桌面和安装目录，下载列表用英文反而更清楚。
-  const files = [
-    `dist/installer/XiaoyuAgent-${VERSION}-Setup-x64.exe`,
-    `dist/installer/XiaoyuAgent-${VERSION}-Portable.exe`,
-    `dist/installer/XiaoyuAgent-${VERSION}-Mobile.apk`,
-  ];
-  const have = Array.isArray(rel.assets) ? rel.assets : [];
+  if (!rel.id || rel.draft !== true || rel.tag_name !== TAG || rel.target_commitish !== commit || !Array.isArray(rel.assets)) {
+    throw new Error('发布草稿响应校验失败');
+  }
+  const have = rel.assets;
+  const collisions = files.filter(({ name }) => have.some((asset) => asset.name === name));
+  if (collisions.length) {
+    throw new Error('此版本已有同名附件，请使用新版本号：' + collisions.map(({ name }) => name).join(', '));
+  }
 
-  for (const relPath of files) {
-    const abs = join(ROOT, relPath);
-    if (!existsSync(abs)) {
-      console.error('missing ' + relPath);
-      continue;
-    }
-    const base = abs.split(/[\\/]/).pop();
-
-    const dup = have.find((a) => a.name === base);
-    if (dup) {
-      await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${dup.id}`, { method: 'DELETE', headers });
-      console.log('deleted old asset ' + base);
-    }
-
-    const size = statSync(abs).size;
+  for (const { abs, size, name: base } of files) {
     console.log(`uploading ${base} (${(size / 1048576).toFixed(1)} MB)…`);
     const res = await fetch(
       `https://uploads.github.com/repos/${REPO}/releases/${rel.id}/assets?name=${encodeURIComponent(base)}`,
@@ -1208,10 +1326,18 @@ async function main() {
       },
     );
     const out = await res.json();
-    if (out.state === 'uploaded') console.log('  ✓ ' + out.browser_download_url);
-    else console.error('  ✗ ' + JSON.stringify(out).slice(0, 300));
+    if (!res.ok || out.state !== 'uploaded' || out.size !== size) {
+      throw new Error(`附件上传未通过校验：${base}（HTTP ${res.status}）`);
+    }
+    console.log('  ✓ ' + base);
   }
 
+  const published = await fetch(`https://api.github.com/repos/${REPO}/releases/${rel.id}`, {
+    method: 'PATCH', headers, body: JSON.stringify({ draft: false }),
+  });
+  if (!published.ok) throw new Error('发布草稿失败 HTTP ' + published.status);
+  const finalRelease = await published.json();
+  if (finalRelease.draft !== false || finalRelease.tag_name !== TAG) throw new Error('发布状态校验失败');
   console.log('done: https://github.com/' + REPO + '/releases/tag/' + TAG);
 }
 

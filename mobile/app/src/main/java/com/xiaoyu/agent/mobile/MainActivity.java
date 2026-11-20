@@ -63,6 +63,7 @@ import com.xiaoyu.agent.mobile.ui.Ui;
 public class MainActivity extends Activity {
 
     private static final String URL_PAGE = "/?mobile=1";
+    static final String EXTRA_CONNECT_FROM_LOCAL = "connect_from_local";
     /** 手机端是单手竖屏，给电脑端页面塞个标记，方便以后按需微调（不塞也不影响） */
     private WebView web;
     private FrameLayout root;
@@ -117,6 +118,9 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        root = new FrameLayout(this);
+        root.setBackgroundColor(Ui.BG);
+
         Window w = getWindow();
         /**
          * 【2026-11-11 加】安全区：targetSdk 34 起在 Android 15 设备上窗口默认
@@ -142,11 +146,23 @@ public class MainActivity extends Activity {
         }
         w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
-        root = new FrameLayout(this);
-        root.setBackgroundColor(Ui.BG);
         setContentView(root);
 
-        showConnectScreen(false);
+        boolean connectFromLocal = getIntent().getBooleanExtra(EXTRA_CONNECT_FROM_LOCAL, false);
+        if (savedInstanceState == null && !connectFromLocal) {
+            startActivity(new Intent(this, LocalChatActivity.class));
+        } else {
+            showConnectScreen(false);
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent.getBooleanExtra(EXTRA_CONNECT_FROM_LOCAL, false)) {
+            showConnectScreen(false);
+        }
     }
 
     // ────────────────────────────── 连接页 ──────────────────────────────

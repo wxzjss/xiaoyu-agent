@@ -1,6 +1,6 @@
 {
   "name": "xiaoyu-mini-agent",
-  "version": "0.9.50",
+  "version": "1.0.0",
   "private": true,
   "description": "小鱼Agent —— 一个自用的极简 Agent 平台：Electron 桌面版 + OpenAI 兼容 API + 工具循环",
   "main": "electron/main.cjs",
@@ -11,6 +11,8 @@
     "server": "node src/server.mjs",
     "cli": "node src/cli.mjs",
     "selfcheck": "node src/selfcheck-cli.mjs",
+    "test": "node scripts/check-smoke.mjs",
+    "test:full": "node scripts/run-all-checks.mjs",
     "shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File make-shortcut.ps1",
     "publish": "node scripts/preflight.mjs && node scripts/publish.mjs",
     "publish:dry": "node scripts/publish.mjs --dry",
@@ -30,7 +32,7 @@
     "models:fix": "node scripts/refresh-model-presets.mjs --apply"
   },
   "devDependencies": {
-    "electron": "33.4.11",
+    "electron": "38.8.6",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "react": "^18.3.1",
@@ -53,6 +55,12 @@
       "assets/**/*",
       "scripts/voice/**/*",
       "scripts/fetch-txt.mjs",
+      "scripts/fetch-batch.mjs",
+      "scripts/fetch-engine.mjs",
+      "scripts/qq-protocol.mjs",
+      "scripts/make-docx.mjs",
+      "scripts/make-pptx.mjs",
+      "scripts/make-xlsx.mjs",
       "scripts/screen-off.ps1",
       "package.json",
       "!**/*.bak",

@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join, isAbsolute, resolve } from 'node:path';
 import { config } from './config.mjs';
+import { sharedWorkspace } from './workspace.mjs';
 import { getEnabledMap } from './features.mjs';
 
 const STATE = join(config.dataDir, '.state');
@@ -144,7 +145,12 @@ export function writeSkin(patch) {
 export function skinVideoPath() {
   const { file } = readSkin();
   if (file) {
-    const p = isAbsolute(file) ? file : resolve(config.workspace, file);
+    /* 【2026-11-18 注意·这条故意**不**按会话分】
+     * 背景视频是**整台机器一份**的设置（存在 <数据目录>/.state/skin.json），
+     * 不是某个会话的东西：主人换了个会话，背景还得是同一张。
+     * 所以相对路径只按共享区解释 —— 跟改分区之前的行为一模一样，
+     * 别为了「统一」把它挪到 sessions/<sid>/ 下面，那样换会话就黑屏了。 */
+    const p = isAbsolute(file) ? file : resolve(sharedWorkspace(), file);
     try {
       if (existsSync(p) && statSync(p).isFile()) return p;
     } catch {}

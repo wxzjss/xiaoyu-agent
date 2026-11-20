@@ -880,6 +880,36 @@ function byIdMap() {
  */
 const BY_SESSION_FILE = join(config.dataDir, '.state', 'feature-by-session.json');
 
+/**
+ * 【2026-11-18 加·写盘前顺手清掉「指向已不存在插件」的旧记录】
+ *
+ * 实测：这台机器 `feature-by-session.json` 里有 13 条按会话的开关，
+ * 其中 **9 条指向一个叫 `makeImage` 的插件 —— 它早就不在代码里了**。
+ *
+ * 影响有多大：几乎没有 —— `featureOnFor()` 只按现存 id 去查，
+ * 这些键永远不会被读到。但两件事让它值得清：
+ *   ① 它是死数据，越攒越多，将来有人照着这个文件排查会被误导；
+ *   ② 万一以后新插件撞上同一个 id（`makeImage` 这种名字很常见），
+ *      这些老的开/关记录会**突然生效**，表现成「新插件一装上就是关的/开的」，
+ *      而且没有任何地方会报错。
+ *
+ * 口径是：**保存时顺手剪掉不认识的 id**，不做一次性删文件
+ * （那属于动主人数据，得他点头；而且删坏了没处捞）。
+ */
+function pruneBySession(all) {
+  try {
+    const alive = byIdMap();
+    for (const sid of Object.keys(all || {})) {
+      const m = all[sid];
+      if (!m || typeof m !== 'object') { delete all[sid]; continue; }
+      for (const k of Object.keys(m)) {
+        if (!alive.has(k)) delete m[k];
+      }
+      if (!Object.keys(m).length) delete all[sid];
+    }
+  } catch { /* 清不掉不影响开关本身 */ }
+}
+
 function readBySession() {
   try {
     if (!existsSync(BY_SESSION_FILE)) return {};
@@ -1001,6 +1031,7 @@ export function setFeatureFor(sessionId, id, on) {
     throw e;
   }
   const all = readBySession();
+  pruneBySession(all);   // 顺手剪掉指向已不存在插件的旧键（见 pruneBySession 注释）
   if (!all[sid] || typeof all[sid] !== 'object') all[sid] = {};
   all[sid][key] = Boolean(on);
   const dir = join(config.dataDir, '.state');

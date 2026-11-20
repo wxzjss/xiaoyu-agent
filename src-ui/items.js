@@ -61,6 +61,32 @@ export const WINDOW = 40;
 export function trimTurnsForLive(turns, opts = {}) {
   if (!Array.isArray(turns) || !turns.length) return turns;
   /**
+   * 【2026-11-18 加·有轮次 id 就按 id 裁 —— 这一条最准，所以放最前面】
+   *
+   * 上面那一大串注释（hasPending / startedAt / 下标推算）全是在**没有轮次标识**时
+   * 的猜测：靠"最后一条 user 是不是本轮"、"这条 assistant 的时间戳早不早于直播开工"
+   * 来推断哪一段该裁。判据越多，缝隙越多 —— 前后为此加了 12 个去重检查。
+   *
+   * 现在服务端每轮起手发一个 turnId，落盘时给这一轮的消息盖 `_turn`，
+   * 直播清单也带着同一个 turnId。于是"这一轮在历史里从第几条开始"变成一个**确定的数**：
+   *   · 找到第一条 `turn === live.turnId` 的下标 i → 历史只画 [0, i)，
+   *     i 之后全交给直播（直播里一定有完整一份）；
+   *   · 找不到（这一轮还没落盘）→ 返回 -1，走下面的老逻辑兜底。
+   *
+   * 老会话 / 老服务端没有这个字段 → `liveTurnIndex` 是 -1 → 行为跟以前一模一样，
+   * 不会因为这次改动变差。
+   */
+  const _byTurn = Number.isInteger(opts && opts.liveTurnIndex) ? opts.liveTurnIndex : -1;
+  if (_byTurn >= 0) {
+    // 起轮的用户消息已落盘，直播只补正文和中途插话。
+    let boundary = _byTurn;
+    const turnId = turns[_byTurn]?.turn;
+    while (turns[boundary]?.role === 'user' && turns[boundary].turn === turnId && !turns[boundary].steer) {
+      boundary += 1;
+    }
+    return turns.slice(0, boundary);
+  }
+  /**
    * 【2026-11-11 再修·主人报「一个小鲸白名字、一个小鲸蓝名字，然后都不见了」】
    *
    * 上午那版写成「有 pending 就一律不裁」，放得太宽了：
@@ -138,6 +164,14 @@ export function isRunning(snap) {
  *   所以历史气泡的兜底**必须永远固定 '小鱼'**，谁在场都不影响它。
  *
  * 本轮谁在说话是另一件事，用 turnSpeaker() 取（读 window.__turnSpeakerName）。
+ *
+ * 【2026-11-19 补·这条兜底现在几乎用不上了，但一个字都不能改】
+ * 主人报「小白曦会话的历史里，她的名字变成小鱼」——就是这里兜的。
+ * 后端改了：`publicSession` 会把**本会话绑的那张卡**的名字放进 who 里，
+ * 只有「绑的就是小鱼」才继续交 undefined，落到这里。
+ * 所以：
+ *   · 这里**仍然固定 '小鱼'**，绝不能改成读当前在场名单（11-11 栽过一次）；
+ *   · 绑卡的会话已经由后端署名，不靠这句。
  */
 function mainAgentName() {
   return '小鱼';
@@ -180,7 +214,29 @@ function turnToItems(turn, abs, userChars) {
    * 那段注释）：她半路被杀、半截话被接回历史这件事，以前屏幕上一个字都不提，
    * 主人以为是「回答丢了」。这里把它画成一行系统提示 —— 不是谁说的话，不挂气泡。 */
   if (turn.note) {
-    return [{ kind: 'note', key: 't-' + abs + '-note', text: String(turn.text || ''), isLive: false }];
+    /* 【2026-11-18 修·主人报「刚发的图这一轮结束后就消失了」】
+     * 上游网关抖动时，那一轮被服务端存成一条 note（「网关波动了，正在重试」），
+     * 而她那轮**真发出去的图**是挂在这条 note 上的（turn.out / 老字段名 _out）。
+     * 老代码在这里直接 return 一行提示，文件条目整段跳过 —— 于是图只在直播时看得见，
+     * 一轮落地换历史视图就"消失"了，主人以为是丢图。
+     * 现在：提示照画，挂在它身上的文件也照画（跟正常 turn 的 file 条目同一规格）。 */
+    const _items = [{ kind: 'note', key: 't-' + abs + '-note', text: String(turn.text || ''), isLive: false }];
+    const _nouts = Array.isArray(turn.out) ? turn.out.filter((f) => f && (f.path || f.key)) : [];
+    for (let i = 0; i < _nouts.length; i++) {
+      const f = _nouts[i];
+      _items.push({
+        kind: 'file',
+        key: 't-' + abs + '-nf' + i,
+        name: String(f.name || '文件'),
+        size: Number(f.size) || 0,
+        fkind: String(f.kind || 'file'),
+        path: String(f.path || ''),
+        fkey: String(f.key || ''),
+        dir: 'out',
+        isLive: false,
+      });
+    }
+    return _items;
   }
   if (turn.role === 'system' || turn.context || turn.sysNote) return out;
   const key = 't-' + abs;
@@ -379,7 +435,19 @@ function turnToItems(turn, abs, userChars) {
 }
 
 /** 服务端的 liveItems → item。一个字段都不改，只补 key 和「谁说的」。 */
-function liveToItems(items, running) {
+/**
+ * 【2026-11-18 改·live 条目也带时间】
+ *
+ * 原来流式那几条的 ts 一律是 null —— 界面上就是「历史有完整时间、正在说的那条没有」。
+ * 主人要求「每条消息都显示发送时间」，所以把**本轮开工时刻**（live.startedAt）
+ * 传进来当它们的时间。
+ *
+ * 为什么用本轮开工时刻而不是逐条记时：服务端的事件里没有逐条时间戳，
+ * 而一轮通常几十秒内写完 —— 精确到分钟的话，整轮是同一分钟，没区别。
+ */
+function liveToItems(items, running, startedAt) {
+  /* 时间只在「有值且合理」时给，否则保持 null（界面上就不画，不占位） */
+  const T = (Number(startedAt) > 0) ? Number(startedAt) : null;
   const out = [];
   /* 【2026-11-11】流式气泡的署名用 turnSpeaker()（本轮谁在说话），
    * **不是** mainAgentName()（历史兜底固定小鱼）—— 切到小鲸时她正在说的话
@@ -434,7 +502,7 @@ function liveToItems(items, running) {
             who: speaker,
             bubbles: [String(it.t || '')],
             rewindId: null,
-            ts: null,
+            ts: T,
             edited: false,
             cont: false,
             isLive: true,
@@ -448,7 +516,7 @@ function liveToItems(items, running) {
         who: speaker,
         bubbles: [String(it.t || '')],
         rewindId: null,
-        ts: null,
+        ts: T,
         edited: false,
         cont: false,
         isLive: true,
@@ -513,7 +581,7 @@ function liveToItems(items, running) {
         spectator: Boolean(it.spectator),
         bubbles: [String(it.t || '')],
         rewindId: null,
-        ts: null,
+        ts: T,
         edited: false,
         cont: false,
         isLive: true,
@@ -554,14 +622,17 @@ function liveToItems(items, running) {
        * ＝屏幕最底，正是主人不满意的地方。轮末落盘换历史时，
        * 这句已经在 turns 里了，key 从 l-N 换成 t-N，内容一致、位置不跳。
        */
-      const _t = String(it.t || '');
-      if (!_t.trim()) continue;
+      const text = String(it.t || '');
+      const atts = Array.isArray(it.atts) ? it.atts.filter((a) => a && a.path) : [];
+      const who = String(it.who || '主人');
+      if (!hasText(text) && !atts.length) continue;
       out.push({
-        kind: 'user',
+        kind: who === '主人' ? 'user' : 'mate',
         key,
-        text: _t,
-        atts: Array.isArray(it.atts) ? it.atts : [],
-        who: String(it.who || '主人'),
+        text,
+        bubbles: hasText(text) ? [text] : [],
+        atts,
+        who,
         tag: '插话',
         steer: true,
         ts: Number(it.ts) || null,
@@ -628,7 +699,7 @@ export function applySteerSplits(items) {
       it.kind === 'assistant' &&
       !it.isLive &&
       nx &&
-      nx.kind === 'user' &&
+      (nx.kind === 'user' || nx.kind === 'mate') &&
       nx.steer &&
       typeof nx.steerAt === 'number' &&
       Number.isFinite(nx.steerAt)
@@ -661,12 +732,12 @@ function splitSteerAt(prev, steerItem, at) {
    *    她这一整段已经说完，插话本来就该排在这一段之后） */
   if (cut >= last.length) return null;
   /* ② 0 字：她这一段还没开始说 → 插话排在这一段**前面** */
-  if (cut === 0) return [steerItem, prev];
+  if (cut === 0 && lastIdx === 0) return [steerItem, prev];
   /* ③ 中间：前半 / 插话 / 后半 */
   const frontItem = Object.assign({}, prev, {
     /* 前半保住原 key / rewindId / 用量行 —— 「这一轮」的按钮和用量都挂在它上面，
      * 挪到后半就等于把编辑、回退、分支全挂到了一段"残句"上。 */
-    bubbles: bs.slice(0, lastIdx).concat([last.slice(0, cut)]),
+    bubbles: cut === 0 ? bs.slice(0, lastIdx) : bs.slice(0, lastIdx).concat([last.slice(0, cut)]),
   });
   const backItem = {
     kind: 'assistant',
@@ -675,9 +746,12 @@ function splitSteerAt(prev, steerItem, at) {
     key: String(prev.key || '') + '-sb',
     who: prev.who,
     bubbles: [last.slice(cut)],
-    /* 编辑/回退/分支/删除四颗按钮只给前半（同一个 turn 不许长出两套按钮） */
-    rewindId: null,
-    ts: null,
+      /* 编辑/回退/分支/删除四颗按钮只给前半（同一个 turn 不许长出两套按钮） */
+      rewindId: null,
+      /* 【2026-11-18 改】原来这里是 null —— 插话劈出来的后半截不显示时间，
+       * 屏幕上就成了「同一条回复，前半有时间、后半没有」。它本来就是同一条，
+       * 时间跟着前半走。 */
+      ts: (prev && prev.ts) || null,
     edited: false,
     cont: false,
     usage: null,
@@ -772,7 +846,31 @@ export function buildMerged(snap) {
       });
     } catch { return false; }
   })();
-  const all = running ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded, startedAt: (snap.live && Number(snap.live.startedAt)) || 0 }) : snap.turns;
+  /**
+   * 【2026-11-18 加·这一轮在历史里从第几条开始】
+   *
+   * 直播清单带着服务端发的 `turnId`，历史每个 turn 带着 `turn: <同一个 id>`。
+   * 扫一遍找出「本轮第一条已落盘消息」的下标，交给 trimTurnsForLive 精确裁剪。
+   *
+   * 找不到就是 -1（这一轮还没落盘 / 老数据没有这个字段）→ 走原来的兜底判据。
+   * 这就是为什么这次改动**不会让老会话变差**：没信息时行为完全不变。
+   */
+  const _liveTurnId = (snap.live && typeof snap.live.turnId === 'string') ? snap.live.turnId : '';
+  const _liveTurnIndex = (() => {
+    if (!_liveTurnId) return -1;
+    const t = Array.isArray(snap.turns) ? snap.turns : [];
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] && t[i].turn === _liveTurnId) return i;
+    }
+    return -1;
+  })();
+  const liveItems = Array.isArray(snap.live?.items) ? snap.live.items : [];
+  const awaitingHistory = snap.live?.running === false && snap.live.awaitingHistory === true;
+  const showLive = running || awaitingHistory;
+  // 等直播确实有内容可画，再让它接管历史中属于这一轮的消息。
+  const all = showLive && liveItems.length
+    ? trimTurnsForLive(snap.turns, { hasPending: _hasPending, pendingLanded: _pendingLanded, startedAt: Number(snap.live?.startedAt) || 0, liveTurnIndex: _liveTurnIndex })
+    : snap.turns;
   const sid = snap.sid;
 
   /* 窗口：只画最近 WINDOW 轮（长会话一次性建上万个节点会把主线程顶住） */
@@ -844,27 +942,48 @@ export function buildMerged(snap) {
   let lastUserChars = 0;
   /* 用量行是「一轮一行」，挂在那一轮她说的话下面 —— 所以只给每轮第一段打标 */
   let wantUsageRow = false;
+  /**
+   * 【2026-11-18 主人报「她说话断断续续，像被工具调用截断」】
+   *
+   * 现场：同一轮（同一个 turnId）里，服务端把正文按「说一句 → 跑工具 → 再说一句」
+   * 落成了好几条 assistant 消息（搭建鱼会话一条轮次里有 3 段正文、中间夹 4 张工具卡）。
+   * 老合并判据只看「紧挨着的上一条是不是 assistant」—— 中间夹了 tool item 就合不了，
+   * 于是她一句话被画成三个各自带署名的气泡，读起来一顿一顿。
+   *
+   * 新判据：拿**轮次号**认亲。同一个 turnId + 同一个人 + 都非直播 → 后面的正文
+   * 一律并进这一段的第一条气泡（工具卡留在原位，它们本来就该显示）。
+   * lastAsst 记「本轮最近那条 assistant item」，跳过中间的工具/文件卡也能找到。
+   * 没有 turnId 的老消息退回原判据（紧挨着的两条仍合并），行为不变。
+   */
+  let lastAsst = null;
+  let lastAsstTurn = '';
   for (let i = start; i < all.length; i++) {
     const turn = all[i];
     const part = turnToItems(turn, i, lastUserChars);
     if (turn && turn.role === 'user') {
       lastUserChars = String(turn.text || '').length;
       wantUsageRow = true;
+      lastAsst = null;
+      lastAsstTurn = '';
     }
+    const turnId = (turn && typeof turn.turn === 'string' && turn.turn) || '';
     for (const it of part) {
-      /* 同一句话被工具活劈成好几条 assistant turn 时，并回一个气泡（原 sameStem 的口径） */
+      /* 同一个人说的话（可能隔着工具卡）并回一个气泡 */
       const prev = items.length ? items[items.length - 1] : null;
-      if (
-        it.kind === 'assistant' &&
-        prev &&
-        prev.kind === 'assistant' &&
-        prev.who === it.who &&
-        !prev.isLive &&
-        !it.isLive
-      ) {
-        prev.bubbles = prev.bubbles.concat(it.bubbles);
-        if (it.rewindId != null) prev.rewindId = prev.rewindId == null ? it.rewindId : prev.rewindId;
-        continue;
+      let target = null;
+      if (it.kind === 'assistant' && !it.isLive) {
+        if (turnId && lastAsstTurn === turnId && lastAsst && lastAsst.who === it.who) {
+          target = lastAsst;                       // 同一轮、隔着工具也能认回来
+        } else if ((!turnId || !lastAsstTurn) && prev && prev.kind === 'assistant' && prev.who === it.who && !prev.isLive) {
+          target = prev;                           // 老数据没轮次号：仍只合并紧挨着的
+        }
+      }
+      if (target) {
+        target.bubbles = (target.bubbles || []).concat(it.bubbles || []);
+        if (it.rewindId != null) target.rewindId = target.rewindId == null ? it.rewindId : target.rewindId;
+        if (it.usageRow) target.usageRow = true;
+        if (it.usage && !target.usage) target.usage = it.usage;
+        continue;                                  // 这一条不单独建气泡了
       }
       if (it.kind === 'assistant' && wantUsageRow) {
         /* 【2026-11-12 修·主人问「为什么露了署名但没说话」】
@@ -879,6 +998,10 @@ export function buildMerged(snap) {
         }
       }
       items.push(it);
+      if (it.kind === 'assistant' && !it.isLive) {
+        lastAsst = it;
+        lastAsstTurn = turnId;
+      }
     }
   }
 
@@ -903,7 +1026,7 @@ export function buildMerged(snap) {
    * 其余（live=null 刚发出 / live.running=true 正在跑）一律照常画乐观气泡。
    * live 真被置 null 之后，store 的 dropLandedPending 已把账收干净，
    * pendingUser 自然为空，不会把「收尾后」误判成「刚发出」。 */
-  const _liveEnded = !!(snap.live && snap.live.running === false);
+  const _liveEnded = snap.live?.running === false && !awaitingHistory;
   const pend = (_liveEnded || _pendingLanded) ? [] : (snap.pendingUser || []).map((p) => ({
     kind: p.who && p.who !== '主人' ? 'mate' : 'user',
     key: p.id.indexOf('p') === 0 ? 'p-' + p.id.slice(1) : 'p-' + p.id,
@@ -920,10 +1043,12 @@ export function buildMerged(snap) {
     isLive: true,
   }));
 
-  /* 【2026-11-11】isRunning 现在只要服务端说在跑就算 —— 清单可能还是空的（第一个字没到），
-   * 这里加一道数组保护，空清单就当一个都不画，不会画出空气泡。 */
-  const _liveItems = (snap.live && Array.isArray(snap.live.items)) ? snap.live.items : [];
-  const live = running ? liveToItems(_liveItems, true) : [];
+  const live = showLive ? liveToItems(liveItems, running, Number(snap.live?.startedAt) || 0) : [];
+  if (awaitingHistory) {
+    for (const item of live) {
+      if (item.kind === 'assistant') item.isLive = false;
+    }
+  }
   const noteItems = (snap.notes || []).map((n) => ({ kind: 'note', key: n.id, text: n.text, actions: n.actions || null }));
 
   return {

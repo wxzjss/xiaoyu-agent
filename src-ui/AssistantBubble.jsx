@@ -44,6 +44,7 @@ function TypedText({ text, animate, streaming, segKey, className }) {
     __seenSegs.add(segKey);
     runningRef.current = true;
     let last = 0;
+    let lastPublish = -Infinity;
     let id = 0;
     const step = (ts) => {
       const target = String(targetRef.current || '').length;
@@ -58,7 +59,12 @@ function TypedText({ text, animate, streaming, segKey, className }) {
         const cps = gap > 300 ? 420 : 150;
         cur = Math.min(target, cur + Math.max(1, Math.round(cps * dt)));
         curRef.current = cur;
-        setShown(cur);
+        // Markdown rebuilds its DOM for each visible prefix. Keep the typing clock,
+        // but batch intermediate prefixes and always publish the final one immediately.
+        if (cur === target || now - lastPublish >= 50) {
+          lastPublish = now;
+          setShown(cur);
+        }
       } else if (!animateRef.current) {
         runningRef.current = false;
         return;                       // 吐完 + 已不是直播 → 收工，不空转

@@ -29,6 +29,7 @@
  * `.state/inbox/<sessionId>.json`，重启后还认得。
  */
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { config } from './config.mjs';
 
@@ -86,12 +87,14 @@ function save(sessionId, box) {
 
 function push(sessionId, slot, text, extra = {}) {
   const t = String(text ?? '');
-  if (!t.trim()) return 0;
+  const hasAttachments = Array.isArray(extra.attachments) && extra.attachments.some((a) => a && a.path);
+  if (!t.trim() && !hasAttachments) return 0;
   const box = load(sessionId);
   const item = {
     text: t,
     at: Date.now(),
     ...extra,
+    ...(extra._sysNote === true ? {} : { _inboxId: randomUUID() }),
   };
   box[slot].push(item);
   save(sessionId, box);
@@ -272,8 +275,8 @@ export function purgeStale(maxAgeMs = 30 * 60 * 1000) {
  * 落盘的那份 inbox 文件还带着那条——于是下次启动又读回来、又送一遍。
  * 另外 /api/interject 在「这一轮没在跑」的分支里也是**落历史 + 留 inbox**两条路都走。
  *
- * 所以根治不能靠时间，得**跟历史比对**：内容一样、且时间对得上（5 秒内）、
- * 历史里那条又确实带 `_steer` 的，就是同一句话，从 inbox 里删掉。
+ * 带 `_inboxId` 的投递仅按历史用户消息的同一 ID 判重。
+ * 旧条目继续按正文、身份和入队时间匹配；跨正文回复时要求入队时间一致。
  *
  * @param {(sid:string)=>Array} getMessages 取某会话的 messages
  * @returns {{scanned:number, dropped:number, kept:number}}
@@ -297,18 +300,29 @@ export function dropAlreadyLanded(getMessages) {
     try { msgs = getMessages(sid) || []; } catch { msgs = []; }
     if (!Array.isArray(msgs) || !msgs.length) continue;
 
-    /** 这条插话是不是已经在历史里（内容一样 + 时间对得上 + 带 _steer） */
     const landed = (item) => {
-      const want = nz(item && item.text);
+      if (item._inboxId) {
+        return msgs.some((message) => message?.role === 'user' && message._inboxId === item._inboxId);
+      }
+      const want = nz(item.text);
       if (!want) return false;
       const wantAt = Number(item && item.at) || 0;
+      let answered = false;
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
-        if (!m || m.role !== 'user' || m._steer !== true) continue;
-        if (nz(m.content) !== want) continue;
-        if (!wantAt) return true;                       // 没时间戳就只认内容
+        if (m?.role === 'assistant' && !m.tool_calls?.length && !m._sysNote && String(m.content ?? '').trim()) {
+          answered = true;
+          if (!wantAt) break;
+        }
+        if (m?.role !== 'user' || m._steer !== true) continue;
+        if (nz(m._text ?? m.content) !== want) continue;
+        const sameIdentity = item.whoId && m._whoId
+          ? item.whoId === m._whoId
+          : String(item.who || '') === String(m._who || '');
+        if (!sameIdentity) continue;
+        if (!wantAt) return true;
         const mAt = Number(m.at) || 0;
-        if (mAt && Math.abs(mAt - wantAt) <= AT_TOL) return true;
+        if (mAt && (mAt === wantAt || (!answered && Math.abs(mAt - wantAt) <= AT_TOL))) return true;
       }
       return false;
     };

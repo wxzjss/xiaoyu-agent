@@ -170,9 +170,8 @@ export function saveSegment({ sessionId, fromIndex, toIndex, messages, tokens, s
     };
     const idx = readIndex(sessionId);
     idx.push(entry);
-    // 只留最近 200 条登记，老的不删原文（原文按会话留着），只是不再列出来
-    const trimmed = idx.length > 200 ? idx.slice(-200) : idx;
-    writeIndex(sessionId, trimmed);
+    // 索引是原文的唯一可列出/读取入口，必须保留全部登记项。
+    writeIndex(sessionId, idx);
     return entry;
   } catch (err) {
     console.warn('[folded] 存折叠原文失败：', String(err?.message ?? err));

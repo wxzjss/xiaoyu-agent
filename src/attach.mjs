@@ -277,6 +277,26 @@ export function composeUserContent(text, attachments = []) {
   return lines.join('\n');
 }
 
+/** 生成可落盘的用户消息，附件说明供模型读取，原话供界面展示。 */
+export function composeUserMessage(text, attachments = []) {
+  const original = String(text ?? '').trim();
+  const message = {
+    role: 'user',
+    content: composeUserContent(original, attachments),
+    _text: original,
+  };
+  const images = [];
+  const files = [];
+  for (const attachment of Array.isArray(attachments) ? attachments : []) {
+    if (!attachment?.path) continue;
+    const path = String(attachment.path);
+    (isImagePath(path) ? images : files).push(path);
+  }
+  if (images.length) message._images = images;
+  if (files.length) message._files = files;
+  return message;
+}
+
 /** 这条消息带的图片路径。 */
 export function imagesOf(msg) {
   if (!msg || msg.role !== 'user') return [];

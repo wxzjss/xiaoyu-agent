@@ -169,6 +169,31 @@ export function takeMail(sessionId) {
 }
 
 /**
+ * 只认领**指定的那一封**（别的信一个字都不碰）。
+ *
+ * 【2026-11-19 加·递话即时送达后，别再让她读第二遍】
+ *
+ * 即时递送（deliverMailNow）是把信的内容做成一条「仅AI可见的系统提示」插进
+ * 她当前这轮的下一步 —— 可信本身还躺在信箱文件里。等这一轮收尾，
+ * agent 主循环 takeMail 又把同一封信当成「新信」投一遍，她就同一句话读了两遍
+ * （主人对这种重复特别敏感，11-17 报过一次「通知发两遍」）。
+ *
+ * 所以插进去的同时，按 id 把这一封标成「已交给某一轮」——
+ * 只标这一封，同时间进来的别的信照旧正常投递。
+ * 跟 takeMail 的占用语义完全一致：进程死掉 / 这一轮被掐断，
+ * releaseClaimedMail 会把它放回来重投，不会丢。
+ */
+export function claimMail(sessionId, id) {
+  const sid = String(sessionId || '');
+  const mid = String(id || '');
+  if (!isId(sid) || !mid) return false;
+  let set = _claimed.get(sid);
+  if (!set) { set = new Map(); _claimed.set(sid, set); }
+  set.set(mid, Date.now());
+  return true;
+}
+
+/**
  * 签收：这一轮已经落盘了，把被占用过、且确实在这个信箱里的信从文件里删掉。
  * 返回真删了几条（给日志用）。
  *
@@ -197,6 +222,11 @@ export function ackSessionMail(sessionId) {
     // 删失败就别清占用表，下次还能再签一次
     return 0;
   }
+  /* 【2026-11-19 补】签收掉的那几封，占用表里也把它们划掉。
+   * 原来这里原样留在 set 里，签收完了还记着「已出库未签收」——
+   * 文件里早就没了，留着纯属残留（每次 releaseClaimedMail 都会多报几条）。
+   * 只划掉 gone 里的；同时间新进来的信还没交给任何一轮，不动。 */
+  for (const id of gone) set.delete(id);
   if (set.size) _claimed.set(sessionId, set);
   else _claimed.delete(sessionId);
   return gone.length;

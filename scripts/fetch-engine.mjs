@@ -143,6 +143,25 @@ function fileNameFrom(url, ext = 'txt') {
 
 const MAX_BYTES = 12 * 1024 * 1024;
 
+async function readPageBody(body) {
+  if (!body) return Buffer.alloc(0);
+  const reader = body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, length);
+      length += value.byteLength;
+      if (length > MAX_BYTES) throw new Error('页面太大（超过 12 MiB），先只抓局部');
+      chunks.push(value);
+    }
+  } finally {
+    try { await reader.cancel(); } catch {}
+    reader.releaseLock();
+  }
+}
+
 /**
  * 抓一页。
  * @param {string} url
@@ -162,15 +181,16 @@ export async function fetchText(url, opts = {}) {
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
     },
-    signal: opts.signal ?? AbortSignal.timeout(timeout),
+    signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
+  if (!res.ok) {
+    try { await res.body?.cancel(); } catch {}
+    throw new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
+  }
 
   const ctype = res.headers.get('content-type') || '';
-  const ab = await res.arrayBuffer();
-  if (ab.byteLength > MAX_BYTES) throw new Error(`页面太大（${(ab.byteLength / 1048576).toFixed(1)}MB），先只抓局部`);
-
-  const { text: raw, charset } = decodeBuffer(Buffer.from(ab), ctype);
+  const buffer = await readPageBody(res.body);
+  const { text: raw, charset } = decodeBuffer(buffer, ctype);
   const looksHtml = /html|xml/i.test(ctype) || /^\s*</.test(raw.slice(0, 200));
   const title = looksHtml ? extractTitle(raw) : '';
   let text = looksHtml ? htmlToText(raw) : raw.trim();

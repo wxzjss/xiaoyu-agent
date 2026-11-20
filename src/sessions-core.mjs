@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rename
 import * as fsp from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
 import { config } from './config.mjs';
+import { acknowledgeSavedTools } from './tool-journal.mjs';
 
 const DIR = join(config.dataDir, '.state', 'sessions');
 const TRASH = join(DIR, '.trash');
@@ -144,6 +145,28 @@ export function newSessionId() {
 }
 
 /**
+ * 【2026-11-18 加·轮次 id】
+ *
+ * 为什么要有这个：以前「这一轮」只有隐含的定义（历史里最后一条 user 之后，
+ * 或者 live.startedAt 之后），前端要把「直播那半」和「历史那半」对齐时
+ * **只能靠正文文本比对 + 下标推算**（见 src-ui/items.js 的 _pendingNorm）。
+ * 文本比对在四种情况下必然失效：连发两句一样的话、空格差异、
+ * 长消息被截断、正文被压缩改写 —— 那正是主人看到的「偶尔重复 / 闪一下 / 顺序不对」。
+ *
+ * 现在每一轮起手就发一个 id，两边都带着它：
+ *   · 直播：live.turnId（/api/chat/live 会回给前端）
+ *   · 历史：这一轮接回历史的每条消息上挂 `_turn`
+ * 前端只要问一句「这个 turnId 在历史里出现过吗」，就知道直播那半是不是已经落盘了 ——
+ * 不用再猜文本。
+ *
+ * 前缀用 `t` 跟会话 id（`s`）区分，形状沿用 newSessionId 那套（时间戳 36 进制 + 随机尾巴），
+ * 好处是**天然有序**：日志里一眼能看出哪一轮在前。
+ */
+export function newTurnId() {
+  return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/**
  * 读历史时剔掉「伪装成主人说话的报错」。
  *
  * 【为什么要有】
@@ -233,6 +256,11 @@ function shapeSession(id, raw) {
   if (!raw || typeof raw !== 'object') return null;
   return {
     id,
+    /* 【2026-11-18 加】格式版本：文件里没写 v = 1（1.0 之前的老会话）。
+     * 见 SCHEMA_VERSION 上的说明 —— 读出来给上层判断，不参与渲染。 */
+    schemaVersion: readSchemaVersion(raw),
+    /* 没这个字段的老会话：当作「主人起的」，自动改名不去碰它 */
+    titleBy: (raw.titleBy === 'ai' || raw.titleBy === 'auto') ? raw.titleBy : 'user',
     title: cleanTitle(raw.title) || '新会话',
     createdAt: Number(raw.createdAt) || 0,
     updatedAt: Number(raw.updatedAt) || 0,
@@ -400,6 +428,34 @@ function memStamp(session) {
   return (Array.isArray(m) ? m.length : -1) + '|' + String(session.updatedAt || 0);
 }
 
+/**
+ * 【2026-11-18 加·会话文件格式版本】
+ *
+ * 为什么要加：1.0 之前，会话 json 里的 `messages` 是一堆**没有版本标识**的裸对象。
+ * 结构靠代码里的约定维持（缺字段就在 shapeSession 里补默认值）。
+ * 这在"只加字段"的年代够用，但 1.0 是「承诺数据格式不再随意变动」的版本 ——
+ * 从这版起，一旦要改 message 的形状，**必须先有办法认出老数据**。
+ *
+ * 版本怎么读：
+ *   · 文件里没有 `v` → 当作 **1**（1.0 之前所有会话都是这个形状）
+ *   · `v === SCHEMA_VERSION` → 当前形状
+ *   · `v > SCHEMA_VERSION` → 这是**更新版本的程序**写的（用户降级了）。
+ *     不崩、不猜、按当前能认的字段读，同时打一行日志 —— 让降级这件事留下痕迹。
+ *
+ * 1 → 2 改了什么（只说形状）：
+ *   · message 上多了 `_turn`（轮次 id，前端用来对齐直播和历史，见 newTurnId）
+ *   · 这是**纯新增字段**，老程序读到会忽略它，所以 1 和 2 互相能读。
+ *     之所以还是把版本号提上去：从 2 起，`_turn` 是**可依赖的** ——
+ *     以后写迁移代码时可以按版本判断，不用再靠"有没有这个字段"猜。
+ */
+export const SCHEMA_VERSION = 2;
+
+/** 读盘时把 `v` 归一成一个整数，认不出来的一律当 1（老数据） */
+function readSchemaVersion(raw) {
+  const v = Number(raw && raw.v);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 1;
+}
+
 export function saveSession(session, _attempt = 0) {
   // 落盘前最后一道：清掉同一次生成被接入多份的重复回复（见 dropRepeatedTurns 上的说明）
   try { if (session && Array.isArray(session.messages)) dropRepeatedTurns(session.messages); } catch {}
@@ -431,6 +487,9 @@ export function saveSession(session, _attempt = 0) {
   session.updatedAt = Date.now();
   if (!session.createdAt) session.createdAt = session.updatedAt;
   const payload = {
+    /* 格式版本放最前面 —— 人和脚本打开文件第一眼就能看到这是哪一版。
+     * 老程序读到这个字段会忽略，所以加了它也不破坏向后兼容。 */
+    v: SCHEMA_VERSION,
     id: session.id,
     title: cleanTitle(session.title) || '新会话',
     createdAt: session.createdAt,
@@ -443,6 +502,9 @@ export function saveSession(session, _attempt = 0) {
      *  edit.mjs 的 undoEdit 拿到空栈，永远回「没有可撤销的修改」。
      *  跟 rewinds 一样跟着会话落盘。 */
     edits: Array.isArray(session.edits) ? session.edits.slice(-200) : [],
+    /* 【2026-11-18】名字是谁起的 —— 见 renameSession 的注释。
+     * 只在有值时写，别给老会话平白多一个字段。 */
+    ...(session.titleBy ? { titleBy: String(session.titleBy) } : {}),
   };
   /**
    * 【删过的指纹跟着落盘】2026-10-29
@@ -650,6 +712,7 @@ export function saveSession(session, _attempt = 0) {
     return saveSession(session, _attempt + 1);
   }
   writeFileAtomic(fileFor(session.id), JSON.stringify(payload));
+  acknowledgeSavedTools(session.id, payload.messages);
   if (session._wipe) delete session._wipe;
   return session;
 }
@@ -691,12 +754,25 @@ export function uniqueSessionTitle(id, wantTitle) {
   return (stem + ' ' + Date.now().toString(36).slice(-3)).slice(0, MAX_TITLE);
 }
 
-export function renameSession(id, title) {
+export function renameSession(id, title, by = 'user') {
   const s = loadSession(id);
   if (!s) return null;
   const next = uniqueSessionTitle(id, title);
   if (!next) return null;
   s.title = next;
+  /**
+   * 【2026-11-18 加·记下「这个名字是谁起的」】
+   *
+   * 主人要求：「用户累计发出十句消息后，如果用户没有手动改过会话名，
+   * 就调当前会话 API 根据上下文给会话改名」。
+   *
+   * 要判断「有没有手动改过」，就得知道每次改名是谁发起的：
+   *   · 'user' —— 主人在界面上改名（**最高优先级，永不被自动改名覆盖**）
+   *   · 'ai'   —— 她自己用 rename_session 起的（第一轮常见，只凭一句话，往往不准）
+   *   · 'auto' —— 十句之后按上下文自动起的
+   * 老会话没这个字段 → 当作 'user'（宁可不改，也不要覆盖人家起好的名字）。
+   */
+  s.titleBy = (by === 'ai' || by === 'auto') ? by : 'user';
   /**
    * 【2026-11-17 主人要求·改完名要清掉之前弹过的起名提示】
    *

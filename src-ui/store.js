@@ -229,7 +229,7 @@ export function getSnapshot() {
   return {
     sid: _sid,
     turns: Array.isArray(st.turns) ? st.turns : [],
-    live: st.live && Array.isArray(st.live.items) ? st.live : null,
+    live: st.live || null,
     /* 只画本屏的乐观气泡 —— 别的会话的账不属于这一屏（串消息根治） */
     pendingUser: pendingUser.filter((p) => !p.sid || p.sid === _eff),
     notes,
@@ -271,7 +271,7 @@ let _liveRestoreObj = null;
 /** 写直播 + 维护快照缓存（null = 这一轮收摊，缓存一起删） */
 function writeLive(sid, live) {
   const st = logState();
-  st.live = live && Array.isArray(live.items) ? live : null;
+  st.live = live;
   const s = String(sid || '');
   if (!s) return st.live;
   if (st.live) {
@@ -293,10 +293,11 @@ function writeLive(sid, live) {
 function restoreLiveFor(sid) {
   const s = String(sid || '');
   const hit = liveCache.get(s);
-  if (!hit || !hit.live) return null;
+  if (!hit?.live) return null;
+  // 待确认的终态保留在有界缓存里，切回时由 attachLive 重新对账。
+  if (hit.live.awaitingHistory === true) return hit.live;
   if (Date.now() - hit.at > LIVE_CACHE_TTL) { liveCache.delete(s); return null; }
-  if (hit.live.running === false) return null;   // 已经收尾的那一轮归历史管
-  return hit.live;
+  return hit.live.running === false ? null : hit.live;
 }
 
 /** 垫上之后挂一个 2.5s 的自愈：没有更新的快照来就把这层垫子撤掉 */
@@ -311,7 +312,7 @@ function armRestoreCheck(sid, obj) {
     if (st.live !== _liveRestoreObj) return;                // 已经有更新的写（直播接手了）
     st.live = null;                                        // 陈旧快照：收摊，交给历史
     liveCache.delete(_liveRestoreSid);
-    pendingUser = dropLandedPending(pendingUser, st.turns);
+    settleScreenPending(st.turns);
     bump();
   }, 2500);
 }
@@ -332,7 +333,7 @@ export function setHistory(sid, turns) {
   if (changedScreen) {
     const _pad = restoreLiveFor(_sid || effectiveSid());
     st.live = _pad;
-    if (_pad) armRestoreCheck(_sid || effectiveSid(), _pad);
+    if (_pad && !_pad.awaitingHistory) armRestoreCheck(_sid || effectiveSid(), _pad);
   }
   notes = [];
   /**
@@ -343,12 +344,7 @@ export function setHistory(sid, turns) {
    *     （finishTurn 对后台轮的收账被 sid 校验挡住），切回时历史里已有这句，
    *     不收就是两颗。收完的本屏账 + 原样保留的别家账 = 新账本。
    */
-  const others = pendingUser.filter((p) => p.sid && p.sid !== (_sid || effectiveSid()));
-  const mine = dropLandedPending(
-    pendingUser.filter((p) => !p.sid || p.sid === (_sid || effectiveSid())),
-    st.turns,
-  );
-  pendingUser = mine.concat(others);
+  settleScreenPending(st.turns);
   if (changedScreen) {
     /**
      * 【2026-11-12 修·换屏要清的几笔账（切会话的四个病一起收）】
@@ -366,6 +362,21 @@ export function setHistory(sid, turns) {
     edit = null;
   }
   bump();
+}
+
+function isTruncatedPrefix(next, prev) {
+  if (!next.length || next.length > prev.length) return false;
+  let shorter = next.length < prev.length;
+  for (let i = 0; i < next.length; i++) {
+    const a = next[i] || {};
+    const b = prev[i] || {};
+    if (a.k !== b.k || a.id !== b.id) return false;
+    const text = String(a.t ?? '');
+    const previousText = String(b.t ?? '');
+    if (!previousText.startsWith(text)) return false;
+    if (text.length < previousText.length) shorter = true;
+  }
+  return shorter;
 }
 
 /** 这一轮现在长什么样（服务端 /api/chat/live 的 items） */
@@ -390,9 +401,22 @@ export function setLive(sid, live) {
    * 250ms 后才落账也没关系：那时要么历史已接管（running:false 本来就不画
    * live 段），要么屏上已有更新的 running:true 快照（落账前会再查一次）。
    */
-  const _nowFalse = !!(live && live.running === false);
-  const _wasRunning = !!(st.live && st.live.running !== false);
-  if (_nowFalse && (_wasRunning || _falseWriteTimer)) {
+  if (live !== null && (!live || typeof live.running !== 'boolean')) return false;
+  const prev = st.live;
+  const prevStart = Number(prev?.startedAt) || 0;
+  const nextStart = Number(live?.startedAt) || 0;
+  const sameTurn = prev?.turnId && live?.turnId
+    ? prev.turnId === live.turnId
+    : prevStart > 0 && prevStart === nextStart;
+  if (!sameTurn && prevStart && nextStart && nextStart < prevStart) return false;
+  if (sameTurn && prev.running === false && live.running) return false;
+  if (sameTurn && live.running && Number.isFinite(prev.nextSince) &&
+      Number.isFinite(live.nextSince) && live.nextSince < prev.nextSince) return false;
+
+  const _nowFalse = live?.running === false;
+  const _wasRunning = prev?.running === true;
+  if (_nowFalse && prev?.turnId && live.turnId && !sameTurn && nextStart <= prevStart) return false;
+  if (_nowFalse && !live.awaitingHistory && (_wasRunning || _falseWriteTimer)) {
     _falseWritePending = live;
     if (!_falseWriteTimer) {
       _falseWriteSid = String(sid || '');
@@ -419,44 +443,22 @@ export function setLive(sid, live) {
    * buildMerged 当场把 live 段丢掉：她已经说出来的话在屏幕上凭空消失，
    * 得等这一轮收尾落盘才回来。
    *
-   * 规矩定死：**同一轮里，屏幕上的正文只许变多，不许变少。**
-   * 新快照不带 items（或正文比现在少）→ 保留屏上这份 items，只把新的 running/时间接过来。
-   * 真要清空（这一轮结束）走的是 setLive(null) / running:false，那条路不受影响。
+   * 只有已确认的同一轮才能继续用已有条目。缺字段表示内容未知，显式空数组表示清单为空。
+   * 有内容但只是同轮已显示清单的截短前缀，也继续保留原清单。
    */
-  const _prevItems = (st.live && Array.isArray(st.live.items) && st.live.items.length) ? st.live.items : null;
-  const _nextItems = (live && Array.isArray(live.items) && live.items.length) ? live.items : null;
-  /* 【判据要收窄】只认两种「真变薄」：
-   *   ① 新快照**根本没带 items**（排队轮那份只有 events）—— 照收就等于清屏；
-   *   ② 新清单是旧清单的**前缀截短**（同一条活、条目被削掉尾巴）。
-   * 千万别拿「正文总字数」去比：新一轮可能整段换成「思考 + 工具」、正文是 0，
-   * 那是正常的阶段切换（真机上会把柜子整段吞掉，check-log-react 二·c 就是这么红的）。 */
-  const _sameHead = (a, b) => {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length > b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      const x = a[i] || {}, y = b[i] || {};
-      if (String(x.k || '') !== String(y.k || '')) return false;
-      if (String(x.id || '') !== String(y.id || '')) return false;
-      const tx = String(x.t == null ? '' : x.t), ty = String(y.t == null ? '' : y.t);
-      if (tx !== ty.slice(0, tx.length)) return false;
-    }
-    return true;
-  };
-  const _wouldShrink = !!(_prevItems && live && live.running !== false &&
-    (!_nextItems || (_nextItems.length < _prevItems.length && _sameHead(_nextItems, _prevItems))));
-  if (_wouldShrink) live = Object.assign({}, live, { items: _prevItems });
+  const prevItems = prev?.items;
+  const nextItems = live?.items;
+  if (sameTurn && live.running && Array.isArray(prevItems) &&
+      (!Array.isArray(nextItems) || isTruncatedPrefix(nextItems, prevItems))) {
+    live = { ...live, items: prevItems };
+  }
   /* 【2026-11-12 修·主人嫌「上一轮被中断」提示钉死在屏幕最底部】
    * 她开工的整轮期间它都杵在历史末尾（她跑工具没正文时更显眼）。
    * 现在她一开口干活（直播 running 进来）提示就收掉 —— 它的使命
    * 只是「你回来时交代一句」，不是常驻横幅。主人发话也一样收（见 pushPendingUser）。 */
-  if (live && live.running !== false && notes.length) notes = [];
-  writeLive(sid, live && Array.isArray(live.items) ? live : null);
-  /* 【2026-11-13 严检·主人问「一轮结束后会不会把我说过的消息重渲染一遍」】
-   * 原来只在 !st.live 时清 pending —— 可收尾那一拍 live 对象还挂着（running:false
-   * 而不是 null），清理不触发，乐观气泡和历史里同文的那条就双份画着，
-   * 等下一拍 live 真被置空才恢复。现在 running:false（这一轮已结束）也清。 */
-  if (!st.live || (st.live && st.live.running === false)) {
-    pendingUser = dropLandedPending(pendingUser, st.turns);
-  }
+  if (live?.running && notes.length) notes = [];
+  writeLive(sid, live);
+  if (!live || _nowFalse) settleScreenPending(st.turns);
   bump();
   return true;
 }
@@ -495,14 +497,8 @@ function _fireFalseWrite() {
   /* ② 这期间有更新的写（换人 / 已经收成 null）→ 别拿旧的 false 去盖 */
   if (st.live !== _falseWritePrevLive) return;
   const _len = Array.isArray(st.turns) ? st.turns.length : 0;
-  if (_len > _falseWritePrevTurns) {
-    /* ③ 历史已经接住了：直播收摊，屏幕交给历史 */
-    writeLive(_falseWriteSid, null);
-    pendingUser = dropLandedPending(pendingUser, st.turns);
-  } else {
-    /* ④ 没人接手：落账真相（running:false），别让界面永远以为在跑 */
-    st.live = p;
-  }
+  writeLive(_falseWriteSid, _len > _falseWritePrevTurns ? null : p);
+  settleScreenPending(st.turns);
   bump();
 }
 
@@ -654,6 +650,16 @@ function norm(s) {
  * 刻意**不**全表扫：主人隔了很多轮又说一句同样的话（比如第三次「继续」），
  * 全表扫会把它当「已经在历史里」当场收掉，屏幕上看着像话被吞了。
  */
+function settleScreenPending(turns) {
+  const sid = effectiveSid();
+  const mine = pendingUser.filter((p) => !p.sid || p.sid === sid);
+  const settled = dropLandedPending(mine, turns);
+  if (settled !== mine) {
+    const keep = new Set(settled);
+    pendingUser = pendingUser.filter((p) => (p.sid && p.sid !== sid) || keep.has(p));
+  }
+}
+
 function dropLandedPending(list, turns) {
   if (!list.length) return list;
   const arr = Array.isArray(turns) ? turns : [];

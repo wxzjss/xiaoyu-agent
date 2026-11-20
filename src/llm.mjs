@@ -136,12 +136,39 @@ function htmlFacts(text) {
  * 上游报错的原件留一份在 diag.log 里（界面只看人话，但排查还得有原话）。
  * 写不进去就算了 —— 记日志失败绝不许影响主流程。
  */
+/**
+ * 【2026-11-19 加·把「内容审核 / 风控」从一堆 403 里挑出来】
+ *
+ * 主人问：「为什么有时候会触发上游安全策略？是不是我提问的方式不对？」
+ *
+ * 麻烦在于这类拦截**长得跟别的报错一样**：都是一句 HTTP 4xx 加一段英文，
+ * 混在「余额不足」「渠道不存在」「限流」里根本挑不出来。上次查日志时
+ * 34 条 403 全是中转站余额不足，一条审核都没有 —— 因为没有标记，
+ * 只能人肉逐条读。
+ *
+ * 现在命中这些字样就在行首打一个 [policy]，下次主人再遇上，
+ * 一句 `grep policy diag.log` 就能把「是她问错了」和「是渠道/余额的锅」分开。
+ * 只做标记，**不改变任何行为** —— 判错的代价只是多一行不该有的标记。
+ */
+const POLICY_HINT_RE = /安全策略|内容审核|审核未通过|违规|敏感内容|不受支持|拒绝访问|风控|拦截|content[_ -]?filter|content[_ -]?policy|moderation|safety[_ -]?(?:policy|block|filter)|policy[_ -]?violation|blocked by (?:policy|safety)|risk control/i;
+
+function isPolicyHit(status, rawText) {
+  const s = Number(status) || 0;
+  /* 只认 4xx：500 段里的 "safety" 多半是网关自己崩了吐的模板，不算审核 */
+  if (!(s >= 400 && s < 500)) return false;
+  return POLICY_HINT_RE.test(String(rawText ?? ''));
+}
+
+/** 行尾：这两份排障日志都靠它。以前忘了定义，整条日志在拼接时就抛 ReferenceError，被 catch 吞掉 —— 等于一条都没写过。 */
+const NL = String.fromCharCode(10);
+
 function noteUpstreamError(status, rawText, ep) {
   try {
     const dir = join(config.dataDir, '.state');
     mkdirSync(dir, { recursive: true });
     const who = [ep?.name, ep?.baseURL, ep?.model].filter(Boolean).join(' · ');
-    const line = new Date().toISOString() + ' [llm-upstream] HTTP ' + status
+    const pol = isPolicyHit(status, rawText) ? ' [policy]' : '';
+    const line = new Date().toISOString() + ' [llm-upstream]' + pol + ' HTTP ' + status
       + (who ? ' ' + who : '') + ' :: ' + String(rawText ?? '').replace(/\s+/g, ' ').slice(0, 600) + NL;
     appendFileSync(join(dir, 'diag.log'), line, 'utf8');
   } catch { /* 记不上就算了 */ }
@@ -236,7 +263,10 @@ export function humanErrorOfUpstream(status, rawText) {
   } catch { said = ''; }
   if (!said) said = raw.slice(0, 220);
   const tail = gateway ? '\n' + GATEWAY_HINT : '';
-  return { text: 'HTTP ' + status2 + (status2 ? ' ' : '') + said.trim() + tail, gateway, looksHtml: false };
+  /* 【2026-11-19 加·别让主人以为是自己的错】审核/风控拦下来的，长得跟普通报错一样，
+   * 主人只会看到一句英文 403，很容易怀疑「是不是我问得不对」。这里直接说清是谁的问题。 */
+  const pol = isPolicyHit(status2, raw) ? '（这看着是上游的内容审核 / 风控拦的，不是你问错了——换个渠道或换个说法再试）\n' : '';
+  return { text: pol + 'HTTP ' + status2 + (status2 ? ' ' : '') + said.trim() + tail, gateway, looksHtml: false };
 }
 
 function cfReason(status) {
@@ -381,6 +411,73 @@ function echoReasoningAllowed() {
   return true;
 }
 
+/**
+ * 给一条消息盖上「它是什么时候说的」。
+ *
+ * 【2026-11-18 加·主人要求「她能看见以前每条消息的发送时间」】
+ *
+ * 只改**发出去的这一份**（wireMessage 返回的新对象），磁盘上的 content 一个字不动 ——
+ * 理由跟上面 normalizeToolPairing 一样：界面要显示原文，模型要看得懂时间，两边各要各的。
+ *
+ * 格式 `[2026-11-18 16:16]`：年月日 + 时分，一眼能算出「刚才 / 昨天 / 上周」。
+ * 不带秒 —— 每条都多 3 个字符，一屏几十条就是几百 token，而秒级精度对聊天没用。
+ *
+ * tool 结果不挂：对判断「谁什么时候说的」没意义，而且 tool 内容常被上游严格校验。
+ *
+ * ─────────────────────────────────────────────────────────────
+ * 【2026-11-19 修·assistant 不再加前缀，已加的还要剥掉】
+ *
+ * 主人报：「【小白曦】会话里，她说的话前面会加上类似 [2026-11-19 12:53] 的时间」。
+ *
+ * 上一版 user 和 assistant 都加。于是模型看到的是「我自己说过的每句话都以
+ * [年-月-日 时:分] 开头」—— 那不是"一条消息的属性"，在它眼里就是**我说话的格式**，
+ * 于是照着学。系统提示里虽然写了「那个方括号不许模仿到你自己的回复里」，
+ * 可那是一条远在末尾的禁令，抵不过历史里几十条示范。小鱼扛住了，
+ * 换一张人设卡（小白曦）就学过去了 —— 说明靠禁令压本来就不可靠。
+ *
+ * 现在的口径：
+ *   · user 照旧带前缀 —— 「主人这句话是刚才说的还是昨天的」，这个必须知道；
+ *   · assistant 不带 —— 她的回复紧跟在主人那句话后面，时间几乎相同，
+ *     再叠一遍只是把格式示范塞满屏幕；
+ *   · 历史里已经学坏的那些（正文开头就带方括号的），**发出去这份里剥掉**。
+ *     磁盘不动、界面照旧显示，但她下一次看到的自己不再带前缀，
+ *     这个习惯会自己退掉，不用主人手动清会话。
+ */
+const STAMP_HEAD_RE = /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*/;
+
+function stampTime(m, out) {
+  try {
+    if (!out || out.role !== 'user') return;
+    const ts = Number((m && (m.at || m._at)) || 0);
+    if (!(ts > 0)) return;
+    const body = out.content;
+    if (typeof body !== 'string' || !body) return;
+    /* 幂等：万一同一条被 flow 走了两次，别叠成两层时间 */
+    if (/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] /.test(body)) return;
+    const d = new Date(ts);
+    if (!Number.isFinite(d.getTime()) || d.getTime() <= 0) return;
+    const p2 = (n) => String(n).padStart(2, '0');
+    const st = d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate())
+      + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+    out.content = '[' + st + '] ' + body;
+  } catch { /* 标不上不影响说话 */ }
+}
+
+/**
+ * 把她历史里「学着带出来的」时间前缀剥掉（只剥发出去那一份）。
+ * 见 stampTime 上面那段 —— 这是让已经学坏的老会话自己退烧的那一步。
+ */
+function stripStampHead(out) {
+  try {
+    if (!out || out.role !== 'assistant') return;
+    const body = out.content;
+    if (typeof body !== 'string' || !STAMP_HEAD_RE.test(body)) return;
+    const rest = body.replace(STAMP_HEAD_RE, '');
+    /* 整条只有时间戳、没有正文的（空壳）就别剥成空串了，原样留着 */
+    out.content = rest.trim() ? rest : body;
+  } catch { /* 剥不掉就当没这回事 */ }
+}
+
 export function wireMessage(m) {
   if (!m || typeof m !== 'object') return m;
   const out = {};
@@ -392,6 +489,8 @@ export function wireMessage(m) {
   // 网关不接受 content:null（有些连字段缺了都报错），带工具调用的那种补成空串
   if (out.role === 'assistant' && (out.content === undefined || out.content === null)) out.content = '';
   if (out.role === 'tool' && out.content === undefined) out.content = '';
+  stripStampHead(out);
+  stampTime(m, out);
   return out;
 }
 /**
@@ -876,6 +975,17 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
          * 总比让它静默消失强；正常结束时 acc 早被清空了，不会重复交付。 */
         if (acc.size) {
           try {
+            /* 【2026-11-19 修·工具调用之前，先把正文的尾巴交出去】
+             * 守护器为了防「标记被切在两块中间」，一直扣着最后 24 个字符不放。
+             * 原来这 24 字要等**整条流结束**才交 —— 可工具调用是先交的，
+             * 于是屏幕上的顺序变成「正文只剩前 3 个字 → 一串工具卡 → 剩下的 24 字」，
+             * 主人看到的就是「话说一半就被工具截断了」。
+             * 实测 #224：落盘 27 字（「（耳朵竖起来）主人～给模型加新地址，我先找到那一行喵。」），
+             * 直播里 text 只有「（耳朵」三个字，后面紧跟 16 个 tool_start ——
+             * 27 - 24 = 3，一字不差。
+             * 既然已经确定要交工具调用，尾巴就是正文，不会再变成 XML 标记了，先放出去。 */
+            const _t0 = _xmlGuard.flush();
+            if (_t0) yield { type: 'text', text: _t0 };
             yield { type: 'tool_calls', toolCalls: [...acc.values()].filter((t) => t.name) };
             acc.clear();
           } catch {}
@@ -933,6 +1043,11 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
       }
 
       if (finish === 'tool_calls' && acc.size) {
+        /* 同上：先把扣着的正文尾巴放出去，再交工具调用 —— 否则正文被工具卡劈成两截 */
+        try {
+          const _t1 = _xmlGuard.flush();
+          if (_t1) yield { type: 'text', text: _t1 };
+        } catch {}
         yield { type: 'tool_calls', toolCalls: [...acc.values()].filter((t) => t.name) };
         acc.clear();
       }
@@ -986,6 +1101,10 @@ export async function* streamChat({ messages, tools, signal, temperature, sessio
     // 然后往上抛一个带标记的错，交给 agent 那边决定「续跑」。
     if (acc.size) {
       try {
+        /* 断流时同样先把扣着的正文尾巴放出来 —— 那 24 个字符是真说过的字，
+         * 续写要靠它接上，丢了就等于「同一句话少一截」 */
+        const _t2 = _xmlGuard.flush();
+        if (_t2) yield { type: 'text', text: _t2 };
         yield { type: 'tool_calls', toolCalls: [...acc.values()].filter((t) => t.name) };
         acc.clear();
       } catch {}
